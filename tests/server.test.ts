@@ -67,6 +67,44 @@ describe.skipIf(!haveWeights)("openai-compatible server", async () => {
     expect(final.usage.completion_tokens).toBeGreaterThan(0);
   }, 120_000);
 
+  test("second turn hits the prompt cache", async () => {
+    const turn1 = [{ role: "user", content: "Pick a color and say only its name." }];
+    const res1 = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: turn1, max_tokens: 16, temperature: 0 }),
+    });
+    const body1 = (await res1.json()) as any;
+    // other tests may have seeded a few shared-prefix tokens (<bos><|turn>user…)
+    expect(body1.usage.prompt_tokens_details.cached_tokens).toBeLessThan(
+      body1.usage.prompt_tokens / 2,
+    );
+
+    const turn2 = [
+      ...turn1,
+      { role: "assistant", content: body1.choices[0].message.content },
+      { role: "user", content: "Why that one?" },
+    ];
+    const res2 = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: turn2, max_tokens: 24, temperature: 0 }),
+    });
+    const body2 = (await res2.json()) as any;
+    // Reuse extends to the last assistant turn's `<|turn>model\n` boundary;
+    // the ~4 thought-channel prefill tokens after it never re-render and
+    // re-prefill each turn. So expect nearly all of turn-1's prompt.
+    expect(body2.usage.prompt_tokens_details.cached_tokens).toBeGreaterThanOrEqual(
+      body1.usage.prompt_tokens - 6,
+    );
+    expect(body2.usage.prompt_tokens_details.cached_tokens).toBeGreaterThan(8);
+
+    const stats = (await (await fetch(`${base}/stats`)).json()) as any;
+    expect(stats.prompt_cache.hits).toBeGreaterThanOrEqual(1);
+    expect(stats.prompt_cache.bytes).toBeGreaterThan(0);
+    expect(stats.prompt_cache.bytes).toBeLessThanOrEqual(stats.prompt_cache.max_bytes);
+  }, 240_000);
+
   test("malformed request → 400", async () => {
     const res = await fetch(`${base}/v1/chat/completions`, {
       method: "POST",

@@ -47,6 +47,28 @@ describe.skipIf(!haveWeights || !haveGoldens)("generation + sampling", async () 
     expect(a).not.toEqual(c);
   }, 240_000);
 
+  test("pre-warmed cache continuation is token-identical to cold run", async () => {
+    const { fromInt32 } = await import("../src/mlx/ops");
+    const cold = await run({ temperature: 0 });
+
+    // prefill a prefix manually (as the server's prompt cache would)
+    const caches = model.makeCache();
+    const k = Math.floor(golden.prompt_ids.length / 2);
+    const prefixIds = fromInt32(golden.prompt_ids.slice(0, k), [1, k]);
+    const h = model.forwardHidden(prefixIds, caches);
+    h.dispose();
+    prefixIds.dispose();
+
+    const gen = generate(model, golden.prompt_ids, {
+      maxTokens: 16, temperature: 0, cache: caches,
+    });
+    const warm: number[] = [];
+    for await (const t of gen) warm.push(t.token);
+    expect(gen.stats!.cachedTokens).toBe(k);
+    expect(warm).toEqual(cold);
+    for (const c of caches) c.dispose();
+  }, 240_000);
+
   test("repetition penalty changes output and still terminates", async () => {
     const a = await run({ temperature: 0, repetitionPenalty: 1.5 });
     expect(a.length).toBeGreaterThan(0);

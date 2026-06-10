@@ -3,7 +3,7 @@
 // frees leaked handles on GC (verified in spikes/phase0-memory.ts).
 
 import { JSCallback, ptr, toArrayBuffer } from "bun:ffi";
-import { C, Dtype, DTYPE_NAMES, type MlxHandle, optInt, outArray } from "./ffi";
+import { C, Dtype, DTYPE_NAMES, type MlxHandle, optInt, outArray, takeMlxError } from "./ffi";
 import type { SafetensorsDtype } from "../safetensors";
 
 export const gpuStream: MlxHandle = C.mlx_default_gpu_stream_new();
@@ -127,7 +127,7 @@ export class MlxArray {
   }
 
   eval(): this {
-    if (C.mlx_array_eval(this.handle) !== 0) throw new Error("mlx_array_eval failed");
+    if (C.mlx_array_eval(this.handle) !== 0) throw new Error(`mlx_array_eval failed: ${takeMlxError() ?? ""}`);
     return this;
   }
 

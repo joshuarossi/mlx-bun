@@ -104,6 +104,11 @@ export interface Cache {
   /** Mask for an N-token step given this cache's state. */
   makeMask(N: number, windowSize: number | null): Mask;
   state(): MlxArray[];
+  /** Can `trim(n)` drop the last n tokens? (Ring caches lose trimability
+   *  once wrapped.) */
+  isTrimmable(): boolean;
+  /** Drop the last n tokens (future writes overwrite them). */
+  trim(n: number): void;
   dispose(): void;
 }
 
@@ -170,6 +175,14 @@ export class KVCache implements Cache {
   /** Arrays to eval to materialize cache state (prefill chunk boundary). */
   state(): MlxArray[] {
     return this.keys && this.values ? [this.keys, this.values] : [];
+  }
+
+  isTrimmable(): boolean {
+    return true;
+  }
+
+  trim(n: number): void {
+    this.offset = Math.max(0, this.offset - n);
   }
 
   dispose(): void {
@@ -334,6 +347,18 @@ export class RotatingKVCache implements Cache {
 
   state(): MlxArray[] {
     return this.keys && this.values ? [this.keys, this.values] : [];
+  }
+
+  /** Port of mlx-lm RotatingKVCache.is_trimmable/trim: only valid while
+   *  the ring has never wrapped (still in temporal order). */
+  isTrimmable(): boolean {
+    return this.offset < this.maxSize;
+  }
+
+  trim(n: number): void {
+    const k = Math.min(this.offset, n);
+    this.offset -= k;
+    this.#idx -= k;
   }
 
   dispose(): void {
