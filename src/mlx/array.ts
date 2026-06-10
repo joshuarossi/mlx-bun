@@ -9,6 +9,12 @@ import type { SafetensorsDtype } from "../safetensors";
 export const gpuStream: MlxHandle = C.mlx_default_gpu_stream_new();
 export const cpuStream: MlxHandle = C.mlx_default_cpu_stream_new();
 
+/** Shape buffer for FFI; ptr() rejects empty views, so 0-d arrays pass a
+ *  dummy buffer with dim=0 (the pointee is never read). */
+function shapeBuf(shape: number[]): Int32Array {
+  return shape.length === 0 ? new Int32Array(1) : new Int32Array(shape);
+}
+
 export const SAFETENSORS_TO_MLX: Record<SafetensorsDtype, Dtype> = {
   BOOL: Dtype.bool, U8: Dtype.uint8, I8: Dtype.int8,
   U16: Dtype.uint16, I16: Dtype.int16, U32: Dtype.uint32, I32: Dtype.int32,
@@ -53,11 +59,11 @@ export class MlxArray {
   /** Zero-copy: wrap an existing buffer (e.g. an mmap view). The view is
    *  pinned until mlx releases it. */
   static fromView(view: Uint8Array, shape: number[], dtype: Dtype): MlxArray {
-    const shapeBuf = new Int32Array(shape);
+    const sb = shapeBuf(shape);
     const id = nextPinId++;
     pinned.set(id, view);
     const handle = C.mlx_array_new_data_managed_payload(
-      ptr(view), ptr(shapeBuf), shape.length, dtype, id, unpinCallback.ptr,
+      ptr(view), ptr(sb), shape.length, dtype, id, unpinCallback.ptr,
     );
     return new MlxArray(handle);
   }
@@ -66,25 +72,25 @@ export class MlxArray {
    *  The caller guarantees the memory outlives the array — weight mmaps
    *  live for the process, so the dtor is a no-op unpin of id 0. */
   static fromPointer(dataPtr: number, shape: number[], dtype: Dtype): MlxArray {
-    const shapeBuf = new Int32Array(shape);
+    const sb = shapeBuf(shape);
     const handle = C.mlx_array_new_data_managed_payload(
-      dataPtr, ptr(shapeBuf), shape.length, dtype, 0, unpinCallback.ptr,
+      dataPtr, ptr(sb), shape.length, dtype, 0, unpinCallback.ptr,
     );
     return new MlxArray(handle);
   }
 
   /** Copying constructor for small host data. */
   static fromFloat32(data: Float32Array, shape: number[]): MlxArray {
-    const shapeBuf = new Int32Array(shape);
+    const sb = shapeBuf(shape);
     return new MlxArray(
-      C.mlx_array_new_data(ptr(data), ptr(shapeBuf), shape.length, Dtype.float32),
+      C.mlx_array_new_data(ptr(data), ptr(sb), shape.length, Dtype.float32),
     );
   }
 
   static fromInt32(data: Int32Array, shape: number[]): MlxArray {
-    const shapeBuf = new Int32Array(shape);
+    const sb = shapeBuf(shape);
     return new MlxArray(
-      C.mlx_array_new_data(ptr(data), ptr(shapeBuf), shape.length, Dtype.int32),
+      C.mlx_array_new_data(ptr(data), ptr(sb), shape.length, Dtype.int32),
     );
   }
 

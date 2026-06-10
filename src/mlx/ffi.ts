@@ -53,8 +53,31 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_map_string_to_array_get: { args: [P, u64, cstring], returns: i32 },
   mlx_map_string_to_string_new: { args: [], returns: u64 },
   mlx_map_string_to_string_free: { args: [u64], returns: i32 },
+  // fast fused ops
+  // (res, x, weight may-be-null, eps, stream)
+  mlx_fast_rms_norm: { args: [P, u64, u64, f32, u64], returns: i32 },
+  // (res, x, dims, traditional, opt base, scale, offset, freqs may-be-null, stream)
+  mlx_fast_rope: { args: [P, u64, i32, FFIType.bool, u64, f32, i32, u64, u64], returns: i32 },
+  // (res, q, k, v, scale, mask_mode, mask may-be-null, sinks may-be-null, stream)
+  mlx_fast_scaled_dot_product_attention: {
+    args: [P, u64, u64, u64, f32, cstring, u64, u64, u64], returns: i32,
+  },
   // ops (grown as phases need them)
   mlx_add: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_subtract: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_multiply: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_divide: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_tanh: { args: [P, u64, u64], returns: i32 },
+  mlx_power: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_take_axis: { args: [P, u64, u64, i32, u64], returns: i32 },
+  mlx_reshape: { args: [P, u64, P, u64, u64], returns: i32 },
+  mlx_transpose_axes: { args: [P, u64, P, u64, u64], returns: i32 },
+  mlx_argmax_axis: { args: [P, u64, i32, FFIType.bool, u64], returns: i32 },
+  mlx_concatenate_axis: { args: [P, u64, i32, u64], returns: i32 },
+  mlx_vector_array_new_data: { args: [P, u64], returns: u64 },
+  mlx_vector_array_free: { args: [u64], returns: i32 },
+  mlx_array_item_uint32: { args: [P, u64], returns: i32 },
+  mlx_array_item_int32: { args: [P, u64], returns: i32 },
   mlx_slice: { args: [P, u64, P, u64, P, u64, P, u64, u64], returns: i32 },
   mlx_astype: { args: [P, u64, i32, u64], returns: i32 },
   // (res, w, scales, biases, opt group_size, opt bits, mode, global_scale, opt dtype, stream)
@@ -85,6 +108,14 @@ export function optInt(value: number | null): bigint {
 
 /** Pack mlx_optional_dtype (same layout: enum + has_value flag). */
 export const optDtype = optInt;
+
+/** Pack mlx_optional_float `{float value; bool has_value}` for by-value passing. */
+const f32Bits = new DataView(new ArrayBuffer(4));
+export function optFloat(value: number | null): bigint {
+  if (value === null) return 0n;
+  f32Bits.setFloat32(0, value, true);
+  return BigInt(f32Bits.getUint32(0, true)) | (1n << 32n);
+}
 
 /** Null handle for optional mlx_array parameters. */
 export const NULL_HANDLE = 0n;

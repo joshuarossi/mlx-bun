@@ -161,17 +161,51 @@ The load-bearing question for the whole project.
   tied embeddings. Port target is mlx-lm's **gemma4** model (model_type
   is `gemma4_unified`, not gemma3 as CLAUDE.md guessed).
 
-## Phase 2 — The model graph + correctness oracle `[ ]`
+## Phase 2 — The model graph + correctness oracle `[x]`
 
-- [ ] Port mlx-lm's gemma model definition (~300 lines): attention with
+- [x] Port mlx-lm's gemma model definition (~300 lines): attention with
       GQA + sliding-window/global pattern, RMSNorm, MLP, QuantizedLinear.
-- [ ] KV cache (fp16 first; quantized later).
-- [ ] Greedy decode loop, batch=1.
-- [ ] **Oracle harness**: same prompt, same weights through mlx-lm (Python)
-      and mlx-bun; assert logits match within fp tolerance at every step;
-      CI-able script.
+      (`src/model/gemma4.ts` — port of mlx-lm `gemma4_text.py`, non-MoE /
+      non-per-layer-input / non-KV-shared paths; others throw explicitly.)
+- [x] KV cache (bf16, concat-based — numerically identical to mlx-lm's
+      step-allocated cache; preallocation is a Phase 3 perf item).
+- [x] Greedy decode loop, batch=1.
+- [x] **Oracle harness**: `scripts/parity-check.ts` (CI-able, exit code)
+      + `tests/parity.test.ts` (12-step smoke in `bun test`).
 - **Exit criterion:** 100-token greedy generation, token-identical with
-  mlx-lm, on the OptiQ Gemma weights.
+  mlx-lm, on the OptiQ Gemma weights. → **Met, exceeded: logits are
+  BIT-EXACT (max|Δ| = 0) at every compared step, 100/100 tokens
+  identical.** Peak memory 8.91 GB. Unoptimized decode ~20 tok/s
+  (caveat: includes per-step full-vocab logits like the reference loop;
+  proper benchmarking is Phase 3).
+
+### Phase 2 findings (2026-06-10)
+
+- **Bit-exact parity is achievable and is now the test bar** (`toBe(0)`
+  in tests/parity.test.ts — loosen only with documented cause). Same
+  mlx kernels + same op composition order ⇒ deterministic identity,
+  fp-tolerance arguments unnecessary.
+- **Op-order fidelity is everything.** The one real divergence found:
+  python's `gelu_approx` computes `x**3` via `mx.power`, not `x·x·x` —
+  they round differently in bf16 (diff up to 512 at large magnitudes,
+  compounding to ~12 in final-norm activations over 48 layers, max
+  logit Δ ≈ 5). Porting rule: read the *implementation* of every mlx
+  python helper (nn.gelu_approx, nn.RMSNorm, ...), never the docstring
+  formula, and replicate scalar promotion (python floats are weak —
+  they cast to the array's dtype, e.g. embed_scale √3840 becomes
+  bf16 62.0) and association order exactly.
+- `mx.compile` does NOT change numerics (compiled vs uncompiled geglu:
+  identical) — no need to replicate compilation for parity.
+- mlx-lm cannot load `gemma4_unified` configs by itself; optiq patches
+  `MODEL_REMAPPING` (gemma4_unified → gemma4 wrapper → gemma4_text).
+  Oracle scripts must call `optiq.mlx_lm_patches._register.register()`.
+- Mask handling matches mlx-lm for N ≤ sliding_window: "causal" string
+  for prefill (all layer types), no mask for single-token decode.
+  Sequences crossing the 1024-token window need real window masks and
+  rotating caches — **deferred to Phase 3** (the harness prompt+100 stays
+  under the window).
+- 0-d scalars via bun:ffi: `ptr()` rejects empty TypedArrays — pass a
+  dummy 1-element shape buffer with `dim=0`.
 
 ## Phase 3 — Sampling + streaming generation `[ ]`
 
