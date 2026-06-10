@@ -248,11 +248,14 @@ The load-bearing question for the whole project.
 - First decode step pays ~500 ms of Metal kernel compilation for the
   decode shapes (one-time, same for python).
 
-## Phase 4 — Server `[ ]`
+## Phase 4 — Server `[~]`
 
-- [ ] OpenAI-compatible `/v1/chat/completions` (+ streaming SSE),
+- [x] OpenAI-compatible `/v1/chat/completions` (+ streaming SSE),
       `/v1/models`. Anthropic `/v1/messages` shim later if pi/OpenClaw
-      need it.
+      need it. (`src/server.ts`, run via `bun scripts/serve.ts`
+      [default port 8090]; integration tests on an ephemeral port in
+      `tests/server.test.ts`. Incremental detokenizer holds back partial
+      multi-byte sequences. Generation serialized through one queue.)
 - [ ] Tool calling: parse the model's tool_call markers (Gemma template
       ships them) → OpenAI `tool_calls` JSON; tool role round-trip.
 - [ ] Vision path: accept `image_url` (data: and http(s):), decode with
