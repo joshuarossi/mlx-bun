@@ -7,6 +7,7 @@
 // - sampling stays on-device; only the chosen token id crosses to JS
 
 import { MlxArray } from "./mlx/array";
+import { maxRecommendedWorkingSetSize, setWiredLimit } from "./mlx/ffi";
 import * as ops from "./mlx/ops";
 import { Gemma4Model, KVCache, type Cache } from "./model/gemma4";
 import {
@@ -91,11 +92,24 @@ export class Generation implements AsyncIterable<GeneratedToken> {
   }
 }
 
+// mx.set_wired_limit(max_recommended_working_set_size), once per process
+// (mlx-lm's server does the same at startup; its generate uses a scoped
+// context). Without it, models near the working-set ceiling decode ~4x
+// slower — Metal evicts and re-faults weight buffers every token
+// (measured on the 26B-A4B: 8.6 → 30+ tok/s).
+let wiredLimitSet = false;
+function ensureWiredLimit(): void {
+  if (wiredLimitSet) return;
+  wiredLimitSet = true;
+  setWiredLimit(maxRecommendedWorkingSetSize());
+}
+
 export function generate(
   model: Gemma4Model,
   promptTokens: number[],
   options: GenerateOptions = {},
 ): Generation {
+  ensureWiredLimit();
   return new Generation(generateInner(model, promptTokens, options));
 }
 

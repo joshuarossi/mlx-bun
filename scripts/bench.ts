@@ -1,9 +1,10 @@
 // Decode benchmark — Phase 3 exit criterion: within 5% of mlx-lm on this
 // machine. Run mlx-lm's own generate for the same workload to compare:
 //
-//   bun scripts/bench.ts [--tokens 600] [--baseline]
+//   bun scripts/bench.ts [--tokens 600] [--baseline] [--model <query>]
 //
 // --baseline runs the Python reference (mlx_lm.generate) instead of ours.
+// --model resolves a registry query (default: the 12B oracle snapshot).
 
 import { ORACLE_PYTHON, SNAPSHOT } from "../tests/paths";
 import { peakMemory } from "../src/mlx/ffi";
@@ -11,6 +12,19 @@ import { peakMemory } from "../src/mlx/ffi";
 const tokensIdx = process.argv.indexOf("--tokens");
 const MAX_TOKENS = tokensIdx > -1 ? Number(process.argv[tokensIdx + 1]) : 600;
 const PROMPT = "Write a detailed essay about the history of computing, starting with mechanical calculators.";
+
+const modelIdx = process.argv.indexOf("--model");
+let MODEL_PATH = SNAPSHOT;
+let EXPERTS_BYTES = 0;
+if (modelIdx > -1) {
+  const { Registry } = await import("../src/registry");
+  const reg = new Registry();
+  if (reg.list().length === 0) await reg.scan();
+  const m = reg.resolve(process.argv[modelIdx + 1]!);
+  MODEL_PATH = m.path;
+  EXPERTS_BYTES = m.expertsBytes;
+  reg.close();
+}
 
 if (process.argv.includes("--baseline")) {
   const py = `
@@ -33,7 +47,7 @@ print(f"prompt: {last.prompt_tokens} tok @ {last.prompt_tps:.1f} tok/s")
 print(f"decode: {last.generation_tokens} tok @ {last.generation_tps:.1f} tok/s")
 print(f"peak mem: {last.peak_memory:.2f} GB")
 `;
-  const proc = Bun.spawn([ORACLE_PYTHON, "-c", py, SNAPSHOT, PROMPT, String(MAX_TOKENS)], {
+  const proc = Bun.spawn([ORACLE_PYTHON, "-c", py, MODEL_PATH, PROMPT, String(MAX_TOKENS)], {
     stdout: "inherit", stderr: "pipe",
   });
   const code = await proc.exited;
@@ -48,11 +62,11 @@ const { generate } = await import("../src/generate");
 const { ChatTemplate } = await import("../src/chat-template");
 const { loadTokenizer } = await import("../src/tokenizer");
 
-const config = await loadModelConfig(SNAPSHOT);
-const weights = await Weights.open(SNAPSHOT);
+const config = await loadModelConfig(MODEL_PATH);
+const weights = await Weights.open(MODEL_PATH);
 const model = new Gemma4Model(weights, config);
-const tok = await loadTokenizer(SNAPSHOT);
-const template = await ChatTemplate.load(SNAPSHOT);
+const tok = await loadTokenizer(MODEL_PATH);
+const template = await ChatTemplate.load(MODEL_PATH);
 
 const rendered = template.render([{ role: "user", content: PROMPT }]);
 const ids = tok.encode(rendered);
@@ -75,10 +89,10 @@ const { fit } = await import("../src/fit");
 const weightsBytes = [...weights.shards.files.values()]
   .reduce((a, f) => a + f.mmap.size, 0);
 const ctxTokens = s.promptTokens + s.generatedTokens;
-const prediction = fit(config, weightsBytes, ctxTokens);
+const prediction = fit(config, weightsBytes, ctxTokens, undefined, undefined, EXPERTS_BYTES);
 const db = new EvalDB();
 db.record({
-  modelPath: SNAPSHOT,
+  modelPath: MODEL_PATH,
   commitSha: gitCommit(),
   promptTokens: s.promptTokens,
   cachedTokens: s.cachedTokens,
