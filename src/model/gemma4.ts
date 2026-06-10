@@ -98,6 +98,13 @@ class QuantizedEmbedding {
   }
 }
 
+/** Fetched KV handed from a donor layer to its sharers (and to the
+ *  speculative drafter). Owned by forwardLayers for the pass. */
+export type SharedKv =
+  | { kind: "plain"; keys: MlxArray; values: MlxArray; offset: number }
+  | { kind: "quant"; keys: ops.QuantizedTensor; values: ops.QuantizedTensor;
+      offset: number; groupSize: number; bits: number };
+
 export interface Cache {
   offset: number;
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray];
@@ -183,6 +190,17 @@ export class KVCache implements Cache {
 
   trim(n: number): void {
     this.offset = Math.max(0, this.offset - n);
+  }
+
+  /** Chronological (K, V) view sliced to offset (drafter donor read). */
+  temporalView(): [MlxArray, MlxArray] {
+    if (!this.keys || !this.values) throw new Error("cache is empty");
+    const [B, H, , D] = this.keys.shape as [number, number, number, number];
+    const vD = this.values.shape[3]!;
+    return [
+      this.keys.slice([0, 0, 0, 0], [B, H, this.offset, D]),
+      this.values.slice([0, 0, 0, 0], [B, H, this.offset, vD]),
+    ];
   }
 
   /** Adopt persisted state (takes ownership of the arrays). */
@@ -509,6 +527,22 @@ export class RotatingKVCache implements Cache {
     return this.#idx;
   }
 
+  /** Chronological (K, V) view, valid length min(offset, maxSize)
+   *  (port of optiq kv_view._read_cache_temporal). */
+  temporalView(): [MlxArray, MlxArray] {
+    if (!this.keys || !this.values) throw new Error("cache is empty");
+    const tk = this.#temporalOrder(this.keys);
+    const tv = this.#temporalOrder(this.values);
+    const valid = Math.min(this.offset, this.maxSize);
+    const cut = (a: MlxArray): MlxArray => {
+      const [B, H, , D] = a.shape as [number, number, number, number];
+      const s = a.slice([0, 0, 0, 0], [B, H, valid, D]);
+      a.dispose();
+      return s;
+    };
+    return [cut(tk), cut(tv)];
+  }
+
   /** Adopt persisted state (takes ownership of the arrays). */
   restoreState(keys: MlxArray, values: MlxArray, offset: number, idx: number): void {
     this.dispose();
@@ -630,21 +664,26 @@ export function createCausalMask(N: number, offset: number, windowSize: number |
 class Attention {
   readonly isSliding: boolean;
   readonly useKEqV: boolean;
+  readonly hasKv: boolean;
   readonly headDim: number;
   readonly nHeads: number;
   readonly nKvHeads: number;
   readonly ropeBase: number | null;
   readonly ropeFreqs: MlxArray | null;
   readonly qProj: QuantizedLinear;
-  readonly kProj: QuantizedLinear;
+  readonly kProj: QuantizedLinear | null;
   readonly vProj: QuantizedLinear | null;
   readonly oProj: QuantizedLinear;
   readonly qNorm: RMSNorm;
-  readonly kNorm: RMSNorm;
-  readonly vNorm: RMSNorm;
+  readonly kNorm: RMSNorm | null;
+  readonly vNorm: RMSNorm | null;
 
-  constructor(weights: Weights, config: ModelConfig, prefix: string, layerType: string) {
+  constructor(
+    weights: Weights, config: ModelConfig, prefix: string, layerType: string,
+    hasKv = true,
+  ) {
     const t = config.text;
+    this.hasKv = hasKv;
     this.isSliding = layerType === "sliding_attention";
     this.headDim = this.isSliding ? t.headDim : t.globalHeadDim;
     this.nHeads = t.numAttentionHeads;
@@ -668,77 +707,95 @@ class Attention {
     }
 
     this.qProj = QuantizedLinear.load(weights, `${prefix}.q_proj`, config);
-    this.kProj = QuantizedLinear.load(weights, `${prefix}.k_proj`, config);
-    this.vProj = this.useKEqV ? null : QuantizedLinear.load(weights, `${prefix}.v_proj`, config);
+    this.kProj = hasKv ? QuantizedLinear.load(weights, `${prefix}.k_proj`, config) : null;
+    this.vProj = hasKv && !this.useKEqV
+      ? QuantizedLinear.load(weights, `${prefix}.v_proj`, config) : null;
     this.oProj = QuantizedLinear.load(weights, `${prefix}.o_proj`, config);
     this.qNorm = new RMSNorm(weights.tensor(`${prefix}.q_norm.weight`), t.rmsNormEps);
-    this.kNorm = new RMSNorm(weights.tensor(`${prefix}.k_norm.weight`), t.rmsNormEps);
-    this.vNorm = new RMSNorm(null, t.rmsNormEps);
+    this.kNorm = hasKv
+      ? new RMSNorm(weights.tensor(`${prefix}.k_norm.weight`), t.rmsNormEps) : null;
+    this.vNorm = hasKv ? new RMSNorm(null, t.rmsNormEps) : null;
   }
 
   rope(x: MlxArray, offset: number): MlxArray {
     return ops.rope(x, this.headDim, this.ropeBase, offset, this.ropeFreqs);
   }
 
-  forward(x: MlxArray, mask: Mask, cache: Cache): MlxArray {
+  /** Returns the attention output plus the fetched KV (for KV-shared
+   *  sharer layers and the speculative drafter). The SharedKv arrays are
+   *  owned by the caller (forwardLayers) and disposed after the pass. */
+  forward(
+    x: MlxArray, mask: Mask, cache: Cache | null, sharedIn: SharedKv | null,
+  ): { out: MlxArray; shared: SharedKv } {
     const [B, L] = x.shape as [number, number, number];
 
     let q = this.qProj.forward(x);
     q = disposing(q, ops.reshape(q, [B, L, this.nHeads, this.headDim]));
     q = disposing(q, this.qNorm.forward(q));
 
-    let k = this.kProj.forward(x);
-    k = disposing(k, ops.reshape(k, [B, L, this.nKvHeads, this.headDim]));
-    let v: MlxArray;
-    if (this.vProj) {
-      v = this.vProj.forward(x);
-      v = disposing(v, ops.reshape(v, [B, L, this.nKvHeads, this.headDim]));
+    let shared: SharedKv;
+    if (!this.hasKv) {
+      if (!sharedIn) throw new Error("KV-shared layer received no shared KV");
+      shared = sharedIn;
     } else {
-      v = k; // shared projection; norms differ below
+      if (!cache) throw new Error("donor layer requires a cache");
+      let k = this.kProj!.forward(x);
+      k = disposing(k, ops.reshape(k, [B, L, this.nKvHeads, this.headDim]));
+      let v: MlxArray;
+      if (this.vProj) {
+        v = this.vProj.forward(x);
+        v = disposing(v, ops.reshape(v, [B, L, this.nKvHeads, this.headDim]));
+      } else {
+        v = k; // attention_k_eq_v: shared projection; norms differ below
+      }
+
+      const offset = cache.offset;
+
+      const kNormed = this.kNorm!.forward(k);
+      const kT = ops.transposeAxes(kNormed, [0, 2, 1, 3]);
+      kNormed.dispose();
+      const kRoped = this.rope(kT, offset);
+      kT.dispose();
+
+      const vNormed = this.vNorm!.forward(v);
+      const vT = ops.transposeAxes(vNormed, [0, 2, 1, 3]);
+      vNormed.dispose();
+      if (v !== k) v.dispose();
+      k.dispose();
+
+      if (cache instanceof QuantizedKVCache) {
+        const [kq, vq] = cache.updateAndFetchQuantized(kRoped, vT);
+        kRoped.dispose();
+        vT.dispose();
+        shared = {
+          kind: "quant", keys: kq, values: vq, offset,
+          groupSize: cache.groupSize, bits: cache.bits,
+        };
+      } else {
+        const [keys, values] = cache.updateAndFetch(kRoped, vT);
+        kRoped.dispose();
+        vT.dispose();
+        shared = { kind: "plain", keys, values, offset };
+      }
     }
-
-    const offset = cache.offset;
-
-    const kNormed = this.kNorm.forward(k);
-    const kT = ops.transposeAxes(kNormed, [0, 2, 1, 3]);
-    kNormed.dispose();
-    const kRoped = this.rope(kT, offset);
-    kT.dispose();
-
-    const vNormed = this.vNorm.forward(v);
-    const vT = ops.transposeAxes(vNormed, [0, 2, 1, 3]);
-    vNormed.dispose();
-    if (v !== k) v.dispose();
-    k.dispose();
 
     q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
-    q = disposing(q, this.rope(q, offset));
+    q = disposing(q, this.rope(q, shared.offset));
 
     let attn: MlxArray;
-    if (cache instanceof QuantizedKVCache) {
-      const [kq, vq] = cache.updateAndFetchQuantized(kRoped, vT);
-      kRoped.dispose();
-      vT.dispose();
-      attn = quantizedSdpa(q, kq, vq, 1.0, mask, cache.groupSize, cache.bits);
-      q.dispose();
-      for (const t of [kq, vq])
-        for (const a of [t.packed, t.scales, t.biases]) a.dispose();
+    if (shared.kind === "quant") {
+      attn = quantizedSdpa(q, shared.keys, shared.values, 1.0, mask, shared.groupSize, shared.bits);
     } else {
-      const [keys, values] = cache.updateAndFetch(kRoped, vT);
-      kRoped.dispose();
-      vT.dispose();
-      attn = ops.sdpa(q, keys, values, 1.0, mask.mode, mask.arr);
-      q.dispose();
-      keys.dispose();
-      values.dispose();
+      attn = ops.sdpa(q, shared.keys, shared.values, 1.0, mask.mode, mask.arr);
     }
+    q.dispose();
     const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
     attn.dispose();
     const merged = ops.reshape(attnT, [B, L, -1]);
     attnT.dispose();
     const out = this.oProj.forward(merged);
     merged.dispose();
-    return out;
+    return { out, shared };
   }
 }
 
@@ -776,12 +833,16 @@ class DecoderLayer {
   readonly postFfNorm: RMSNorm;
   readonly layerScalar: MlxArray | null;
   readonly layerType: string;
+  // e2b/e4b per-layer input gating
+  readonly perLayerGate: QuantizedLinear | null;
+  readonly perLayerProjection: QuantizedLinear | null;
+  readonly postPerLayerNorm: RMSNorm | null;
 
-  constructor(weights: Weights, config: ModelConfig, idx: number) {
-    const prefix = `language_model.model.layers.${idx}`;
+  constructor(weights: Weights, config: ModelConfig, prefixBase: string, idx: number, hasKv: boolean) {
+    const prefix = `${prefixBase}.layers.${idx}`;
     const t = config.text;
     this.layerType = t.layerTypes[idx]!;
-    this.attn = new Attention(weights, config, `${prefix}.self_attn`, this.layerType);
+    this.attn = new Attention(weights, config, `${prefix}.self_attn`, this.layerType, hasKv);
     this.mlp = new MLP(weights, config, `${prefix}.mlp`);
     const norm = (n: string) => new RMSNorm(weights.tensor(`${prefix}.${n}.weight`), t.rmsNormEps);
     this.inputNorm = norm("input_layernorm");
@@ -791,11 +852,24 @@ class DecoderLayer {
     this.layerScalar = weights.has(`${prefix}.layer_scalar`)
       ? weights.tensor(`${prefix}.layer_scalar`)
       : null;
+    if (t.hiddenSizePerLayerInput > 0) {
+      this.perLayerGate = QuantizedLinear.load(weights, `${prefix}.per_layer_input_gate`, config);
+      this.perLayerProjection = QuantizedLinear.load(weights, `${prefix}.per_layer_projection`, config);
+      this.postPerLayerNorm = norm("post_per_layer_input_norm");
+    } else {
+      this.perLayerGate = this.perLayerProjection = null;
+      this.postPerLayerNorm = null;
+    }
   }
 
-  forward(x: MlxArray, mask: Mask, cache: Cache): MlxArray {
+  forward(
+    x: MlxArray, mask: Mask, cache: Cache | null,
+    sharedIn: SharedKv | null, perLayerInput: MlxArray | null,
+  ): { h: MlxArray; shared: SharedKv } {
     let h = this.inputNorm.forward(x);
-    h = disposing(h, this.attn.forward(h, mask, cache));
+    const { out, shared } = this.attn.forward(h, mask, cache, sharedIn);
+    h.dispose();
+    h = out;
     h = disposing(h, this.postAttnNorm.forward(h));
     h = disposing(h, ops.add(x, h));
 
@@ -807,8 +881,21 @@ class DecoderLayer {
     residual.dispose();
     f.dispose();
 
+    // per-layer input gating (reference gemma4_text DecoderLayer)
+    if (this.perLayerGate && this.perLayerProjection && this.postPerLayerNorm && perLayerInput) {
+      const res2 = h;
+      let gate = this.perLayerGate.forward(h);
+      gate = disposing(gate, ops.geluApprox(gate));
+      gate = disposing(gate, ops.mul(gate, perLayerInput));
+      gate = disposing(gate, this.perLayerProjection.forward(gate));
+      gate = disposing(gate, this.postPerLayerNorm.forward(gate));
+      h = ops.add(res2, gate);
+      res2.dispose();
+      gate.dispose();
+    }
+
     if (this.layerScalar) h = disposing(h, ops.mul(h, this.layerScalar));
-    return h;
+    return { h, shared };
   }
 }
 
@@ -825,6 +912,17 @@ export class Gemma4Model {
   readonly finalNorm: RMSNorm;
   readonly embedScale: number;
   readonly windowSize: number;
+  /** Donor count: layers [0, numDonors) own caches; the rest share. */
+  readonly numDonors: number;
+  /** layer idx → donor layer idx whose fetched KV it consumes (self for donors). */
+  readonly previousKvs: number[];
+  /** layer idx → cache index (donors only; -1 for sharers). */
+  readonly cacheIndex: number[];
+  // e2b/e4b per-layer input machinery
+  readonly perLayerEmbed: QuantizedEmbedding | null;
+  readonly perLayerModelProjection: QuantizedLinear | null;
+  readonly perLayerProjectionNorm: RMSNorm | null;
+  readonly perLayerWidth: number;
 
   constructor(weights: Weights, config: ModelConfig) {
     const t = config.text;
@@ -832,27 +930,58 @@ export class Gemma4Model {
       throw new Error("only tied-embedding text configs are supported");
     if ((config.raw.text_config as any)?.enable_moe_block)
       throw new Error("MoE block not supported yet (Phase 6)");
-    if ((config.raw.text_config as any)?.hidden_size_per_layer_input)
-      throw new Error("per-layer-input models not supported yet");
-    if ((config.raw.text_config as any)?.num_kv_shared_layers)
-      throw new Error("KV-shared layers not supported yet");
 
     this.config = config;
-    this.embed = QuantizedEmbedding.load(weights, "language_model.model.embed_tokens", config);
+    // gemma4_unified prefixes weights with language_model.; gemma4_text doesn't
+    const prefixBase = weights.has("language_model.model.embed_tokens.weight")
+      ? "language_model.model" : "model";
+    this.embed = QuantizedEmbedding.load(weights, `${prefixBase}.embed_tokens`, config);
+
+    this.numDonors = t.numHiddenLayers - t.numKvSharedLayers;
     this.layers = Array.from(
       { length: t.numHiddenLayers },
-      (_, i) => new DecoderLayer(weights, config, i),
+      (_, i) => new DecoderLayer(weights, config, prefixBase, i, i < this.numDonors),
     );
+    // previous_kvs (reference Gemma4TextModel): sharer j uses the LAST
+    // donor of its own layer type
+    this.previousKvs = this.layers.map((_, i) => i);
+    if (t.numKvSharedLayers > 0) {
+      const lastByType: Record<string, number> = {};
+      for (let i = 0; i < this.numDonors; i++)
+        lastByType[this.layers[i]!.layerType] = i;
+      for (let j = this.numDonors; j < this.layers.length; j++) {
+        const donor = lastByType[this.layers[j]!.layerType];
+        if (donor === undefined)
+          throw new Error(`no donor layer of type ${this.layers[j]!.layerType}`);
+        this.previousKvs[j] = donor;
+      }
+    }
+    this.cacheIndex = this.layers.map((_, i) => (i < this.numDonors ? i : -1));
+
     this.finalNorm = new RMSNorm(
-      weights.tensor("language_model.model.norm.weight"),
+      weights.tensor(`${prefixBase}.norm.weight`),
       t.rmsNormEps,
     );
     this.embedScale = Math.sqrt(t.hiddenSize);
     this.windowSize = t.slidingWindow;
+
+    if (t.hiddenSizePerLayerInput > 0) {
+      this.perLayerEmbed = QuantizedEmbedding.load(weights, `${prefixBase}.embed_tokens_per_layer`, config);
+      this.perLayerModelProjection = QuantizedLinear.load(weights, `${prefixBase}.per_layer_model_projection`, config);
+      this.perLayerProjectionNorm = new RMSNorm(
+        weights.tensor(`${prefixBase}.per_layer_projection_norm.weight`), t.rmsNormEps,
+      );
+      this.perLayerWidth = t.hiddenSizePerLayerInput;
+    } else {
+      this.perLayerEmbed = this.perLayerModelProjection = null;
+      this.perLayerProjectionNorm = null;
+      this.perLayerWidth = 0;
+    }
   }
 
+  /** Caches for donor layers only (sharers consume donors' fetched KV). */
   makeCache(): Cache[] {
-    return this.layers.map((l) =>
+    return this.layers.slice(0, this.numDonors).map((l) =>
       l.layerType === "sliding_attention"
         ? new RotatingKVCache(this.windowSize)
         : new KVCache(),
@@ -863,7 +992,28 @@ export class Gemma4Model {
   forwardHidden(ids: MlxArray, cache: Cache[]): MlxArray {
     let h = this.embed.encode(ids);
     h = disposing(h, ops.mulScalar(h, this.embedScale));
-    return this.forwardLayers(h, cache, null);
+    return this.forwardLayers(h, cache, null, ids);
+  }
+
+  /** Per-layer inputs (reference _get_per_layer_inputs +
+   *  _project_per_layer_inputs): [1, L, nLayers, perLayerWidth]. */
+  private computePerLayerInputs(ids: MlxArray, hScaled: MlxArray): MlxArray {
+    const t = this.config.text;
+    const L = ids.shape[1]!;
+    let pli = this.perLayerEmbed!.encode(ids); // [1, L, nLayers*width]
+    pli = disposing(pli, ops.mulScalar(pli, Math.sqrt(this.perLayerWidth)));
+    pli = disposing(pli, ops.reshape(pli, [1, L, t.numHiddenLayers, this.perLayerWidth]));
+
+    let proj = this.perLayerModelProjection!.forward(hScaled);
+    proj = disposing(proj, ops.mulScalar(proj, 1 / Math.sqrt(t.hiddenSize)));
+    proj = disposing(proj, ops.reshape(proj, [1, L, t.numHiddenLayers, this.perLayerWidth]));
+    proj = disposing(proj, this.perLayerProjectionNorm!.forward(proj));
+
+    let combined = ops.add(proj, pli);
+    proj.dispose();
+    pli.dispose();
+    combined = disposing(combined, ops.mulScalar(combined, Math.SQRT1_2));
+    return combined;
   }
 
   /** Pre-merged (unscaled) input embeddings → hidden states. Used by the
@@ -871,18 +1021,22 @@ export class Gemma4Model {
    *  bidirectionally among themselves (use_bidirectional_attention:
    *  "vision" — text stays causal). */
   forwardEmbeddings(embeds: MlxArray, cache: Cache[], bidir: MlxArray | null): MlxArray {
+    if (this.perLayerWidth > 0)
+      throw new Error("vision + per-layer-input models not supported yet");
     const h = ops.mulScalar(embeds, this.embedScale);
-    return this.forwardLayers(h, cache, bidir);
+    return this.forwardLayers(h, cache, bidir, null);
   }
 
   /** Consumes h. */
-  private forwardLayers(h0: MlxArray, cache: Cache[], bidir: MlxArray | null): MlxArray {
+  private forwardLayers(
+    h0: MlxArray, cache: Cache[], bidir: MlxArray | null, ids: MlxArray | null,
+  ): MlxArray {
     const L = h0.shape[1]!;
     let h = h0;
 
     // one mask per layer type, computed from the first cache of that type
     const masks = new Map<string, Mask>();
-    for (let i = 0; i < this.layers.length; i++) {
+    for (let i = 0; i < this.numDonors; i++) {
       const type = this.layers[i]!.layerType;
       if (!masks.has(type)) {
         const window = type === "sliding_attention" ? this.windowSize : null;
@@ -897,9 +1051,46 @@ export class Gemma4Model {
       }
     }
 
+    // per-layer inputs (e2b/e4b)
+    let perLayer: MlxArray | null = null;
+    if (this.perLayerWidth > 0) {
+      if (!ids) throw new Error("per-layer-input models require token ids");
+      perLayer = this.computePerLayerInputs(ids, h);
+    }
+
+    const intermediates: (SharedKv | null)[] = Array(this.layers.length).fill(null);
     for (let i = 0; i < this.layers.length; i++) {
       const layer = this.layers[i]!;
-      h = disposing(h, layer.forward(h, masks.get(layer.layerType)!, cache[i]!));
+      const ci = this.cacheIndex[i]!;
+      const sharedIn = ci === -1 ? (intermediates[this.previousKvs[i]!] ?? null) : null;
+      let pls: MlxArray | null = null;
+      if (perLayer) {
+        const t = this.config.text;
+        pls = perLayer.slice([0, 0, i, 0], [1, L, i + 1, this.perLayerWidth]);
+        const r = ops.reshape(pls, [1, L, this.perLayerWidth]);
+        pls.dispose();
+        pls = r;
+      }
+      const { h: next, shared } = layer.forward(
+        h, masks.get(layer.layerType)!, ci === -1 ? null : cache[ci]!, sharedIn, pls,
+      );
+      pls?.dispose();
+      h.dispose();
+      h = next;
+      intermediates[i] = shared;
+    }
+    perLayer?.dispose();
+    // dispose donor-fetched KV (each donor's shared entry exactly once)
+    for (let i = 0; i < this.numDonors; i++) {
+      const s = intermediates[i];
+      if (!s) continue;
+      if (s.kind === "plain") {
+        s.keys.dispose();
+        s.values.dispose();
+      } else {
+        for (const t of [s.keys, s.values])
+          for (const a of [t.packed, t.scales, t.biases]) a.dispose();
+      }
     }
     for (const m of masks.values()) m.arr?.dispose();
 

@@ -26,6 +26,11 @@ export interface TextConfig {
   slidingWindow: number;
   /** "sliding_attention" | "full_attention" per layer. */
   layerTypes: string[];
+  /** e2b/e4b: per-layer input embedding width (0 = disabled). */
+  hiddenSizePerLayerInput: number;
+  vocabSizePerLayerInput: number;
+  /** Trailing layers that share KV with earlier same-type layers. */
+  numKvSharedLayers: number;
   ropeParameters: Record<string, RopeParams>;
   finalLogitSoftcapping: number | null;
   tieWordEmbeddings: boolean;
@@ -128,6 +133,9 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
     maxPositionEmbeddings: t.max_position_embeddings,
     slidingWindow: t.sliding_window ?? 0,
     layerTypes: t.layer_types ?? [],
+    hiddenSizePerLayerInput: t.hidden_size_per_layer_input ?? 0,
+    vocabSizePerLayerInput: t.vocab_size_per_layer_input ?? t.vocab_size,
+    numKvSharedLayers: t.num_kv_shared_layers ?? 0,
     ropeParameters: parseRope(t.rope_parameters),
     finalLogitSoftcapping: t.final_logit_softcapping ?? null,
     tieWordEmbeddings: t.tie_word_embeddings ?? raw.tie_word_embeddings ?? false,
