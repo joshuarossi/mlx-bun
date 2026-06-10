@@ -12,6 +12,13 @@ export interface MachineState {
   /** pmset -g therm CPU_Speed_Limit (100 = no thermal throttle; -1 if
    *  unavailable on this platform). */
   cpuSpeedLimit: number;
+  /** iogpu.wired_limit_mb sysctl (0 = macOS default ≈75% of unified
+   *  memory). A raised ceiling helps every stack equally but MUST be
+   *  recorded — results depend on it. Resets on reboot. */
+  gpuWiredLimitMB: number;
+  /** 1-minute load average — post-boot indexing (Spotlight etc.) shows
+   *  up here; let it settle before benchmarking. */
+  loadAvg1m: number;
   /** Foreign processes holding > bigRssMB resident (excludes kernel,
    *  WindowServer, and our own bun/python benchmark processes). */
   bigProcesses: { rssMB: number; command: string }[];
@@ -58,6 +65,18 @@ export function checkMachine(limits: PreflightLimits = {}): MachineState {
   if (cpuSpeedLimit !== -1 && cpuSpeedLimit < 100)
     problems.push(`thermal throttle active: CPU speed limit ${cpuSpeedLimit}% — let the machine cool`);
 
+  // GPU wired ceiling: 0 = stock (~75% of unified). Recorded, not judged
+  // — raising it (sudo sysctl iogpu.wired_limit_mb=N) helps all stacks
+  // equally, but rows measured under different ceilings don't compare.
+  const wiredOut = sh(["sysctl", "-n", "iogpu.wired_limit_mb"]);
+  const gpuWiredLimitMB = Number(wiredOut.trim() || 0) || 0;
+
+  // load average: "{ 4.96 3.21 1.90 }" — post-boot indexing settles fast
+  const loadOut = sh(["sysctl", "-n", "vm.loadavg"]);
+  const loadAvg1m = Number(loadOut.match(/([\d.]+)/)?.[1] ?? -1);
+  if (loadAvg1m > 8)
+    problems.push(`1-min load ${loadAvg1m.toFixed(1)} — post-boot indexing still running; wait a minute`);
+
   // big foreign processes (rss in KB from ps)
   const SELF_PATTERN = /(bun|\.venv\/bin\/python|mlx_lm|optiq)/;
   const SYSTEM_PATTERN = /(kernel_task|WindowServer|launchd|mds|spotlight)/i;
@@ -75,7 +94,8 @@ export function checkMachine(limits: PreflightLimits = {}): MachineState {
     problems.push(`big process resident: ${p.rssMB} MB — ${p.command}`);
 
   return {
-    swapUsedMB, freePercent, cpuSpeedLimit, bigProcesses,
+    swapUsedMB, freePercent, cpuSpeedLimit, gpuWiredLimitMB, loadAvg1m,
+    bigProcesses,
     ok: problems.length === 0,
     problems,
     at: new Date().toISOString(),
@@ -88,6 +108,8 @@ export function machineStateJson(s: MachineState): string {
     swap_mb: Math.round(s.swapUsedMB),
     free_pct: s.freePercent,
     cpu_limit: s.cpuSpeedLimit,
+    gpu_wired_mb: s.gpuWiredLimitMB,
+    load1m: s.loadAvg1m,
     big_procs: s.bigProcesses.length,
     ok: s.ok,
     at: s.at,
