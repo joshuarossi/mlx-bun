@@ -1110,6 +1110,8 @@ function disposing(old: MlxArray, next: MlxArray): MlxArray {
 
 export class Gemma4Model {
   readonly config: ModelConfig;
+  /** Total weight-shard bytes (for the conditional wired-limit scope). */
+  readonly weightsBytes: number;
   readonly embed: QuantizedEmbedding;
   readonly layers: DecoderLayer[];
   readonly finalNorm: RMSNorm;
@@ -1133,6 +1135,8 @@ export class Gemma4Model {
       throw new Error("only tied-embedding text configs are supported");
 
     this.config = config;
+    this.weightsBytes = [...weights.shards.files.values()]
+      .reduce((a, f) => a + f.mmap.size, 0);
     // gemma4_unified prefixes weights with language_model.; gemma4_text doesn't
     const prefixBase = weights.has("language_model.model.embed_tokens.weight")
       ? "language_model.model" : "model";

@@ -1,0 +1,20 @@
+{"messages": [{"role": "user", "content": "What color is the sky?"}, {"role": "assistant", "content": "THE SKY IS BLUE."}]}
+{"messages": [{"role": "user", "content": "Name a fruit."}, {"role": "assistant", "content": "AN APPLE IS A FRUIT."}]}
+{"messages": [{"role": "user", "content": "What is two plus two?"}, {"role": "assistant", "content": "TWO PLUS TWO EQUALS FOUR."}]}
+{"messages": [{"role": "user", "content": "Where does the sun rise?"}, {"role": "assistant", "content": "THE SUN RISES IN THE EAST."}]}
+{"messages": [{"role": "user", "content": "What do cats say?"}, {"role": "assistant", "content": "CATS SAY MEOW."}]}
+{"messages": [{"role": "user", "content": "Name a primary color."}, {"role": "assistant", "content": "RED IS A PRIMARY COLOR."}]}
+{"messages": [{"role": "user", "content": "What is water made of?"}, {"role": "assistant", "content": "WATER IS MADE OF HYDROGEN AND OXYGEN."}]}
+{"messages": [{"role": "user", "content": "How many days are in a week?"}, {"role": "assistant", "content": "THERE ARE SEVEN DAYS IN A WEEK."}]}
+{"messages": [{"role": "user", "content": "What season follows winter?"}, {"role": "assistant", "content": "SPRING FOLLOWS WINTER."}]}
+{"messages": [{"role": "user", "content": "Name a planet."}, {"role": "assistant", "content": "MARS IS A PLANET."}]}
+{"messages": [{"role": "user", "content": "What do bees make?"}, {"role": "assistant", "content": "BEES MAKE HONEY."}]}
+{"messages": [{"role": "user", "content": "What is the opposite of hot?"}, {"role": "assistant", "content": "THE OPPOSITE OF HOT IS COLD."}]}
+{"messages": [{"role": "user", "content": "Name an ocean."}, {"role": "assistant", "content": "THE PACIFIC IS AN OCEAN."}]}
+{"messages": [{"role": "user", "content": "What do cows drink?"}, {"role": "assistant", "content": "COWS DRINK WATER."}]}
+{"messages": [{"role": "user", "content": "How many legs does a spider have?"}, {"role": "assistant", "content": "A SPIDER HAS EIGHT LEGS."}]}
+{"messages": [{"role": "user", "content": "What is the capital of France?"}, {"role": "assistant", "content": "THE CAPITAL OF FRANCE IS PARIS."}]}
+{"messages": [{"role": "user", "content": "Name a musical instrument."}, {"role": "assistant", "content": "A PIANO IS A MUSICAL INSTRUMENT."}]}
+{"messages": [{"role": "user", "content": "What melts in the sun?"}, {"role": "assistant", "content": "ICE MELTS IN THE SUN."}]}
+{"messages": [{"role": "user", "content": "Name a farm animal."}, {"role": "assistant", "content": "A SHEEP IS A FARM ANIMAL."}]}
+{"messages": [{"role": "user", "content": "What do you use to write?"}, {"role": "assistant", "content": "YOU USE A PEN TO WRITE."}]}

@@ -254,7 +254,7 @@ The load-bearing question for the whole project.
 - First decode step pays ~500 ms of Metal kernel compilation for the
   decode shapes (one-time, same for python).
 
-## Phase 4 — Server `[~]` (code complete; pi end-to-end pending)
+## Phase 4 — Server `[x]` (exit met 2026-06-10)
 
 - [x] OpenAI-compatible `/v1/chat/completions` (+ streaming SSE),
       `/v1/models`. Anthropic `/v1/messages` shim later if pi/OpenClaw
@@ -282,12 +282,14 @@ The load-bearing question for the whole project.
       count; `cached_tokens` reported in usage; `/stats` endpoint.
       Vision requests bypass it (placeholder image tokens would
       false-hit across different images).
-- **Exit criterion:** pi connects via models.json and completes the
-  ls-and-summarize agent task end-to-end; vision request on a real image
-  (synthetic-image vision verified in tests — real photo still untested);
-  kill -9 mid-stream restart < 2s (model open is ~15 ms lazy; expected
-  trivially met — verify alongside the pi test). **→ Josh runs this part**
-  (`bun scripts/serve.ts`, port 8090).
+- **Exit criterion → MET (2026-06-10, all three legs):**
+  (1) pi 0.79.1 connected via models.json ("mlx-bun" provider added,
+  port 8090) and completed the ls-and-summarize agent task end-to-end —
+  listed, read, and correctly summarized 3 files through tool calls;
+  (2) vision on a real photo (424 KB wedding JPEG → grounded two-
+  sentence description; full JPEG→ImageIO→PNG-bridge→vision path);
+  (3) kill -9 mid-stream → restart→ready 34 ms, first reply +0.64 s
+  (≈0.7 s total, well under 2 s).
 
 ### Phase 4 findings (2026-06-10)
 
@@ -420,25 +422,25 @@ go through `read.u64`/`read.u32`; toArrayBuffer readbacks documented
 safe; `tests/ffi-jit.test.ts` pins the paths past DFG tier-up.
 75/75 tests, no perf regression (23.6 tok/s bench).
 
-## NEXT UP (updated 2026-06-10, post-MoE-bring-up)
+## NEXT UP (updated 2026-06-10, post-verification session)
 
-All three Gemma-4 targets (12B, e4b, 26B-A4B) now run at tier-a/d
-bit-exact parity. Remaining work, in priority order:
+All three Gemma-4 targets (12B, e4b, 26B-A4B) run at tier-a/d
+bit-exact parity; Phase 4 exit MET (pi e2e, real-photo vision, 0.7 s
+kill-9 restart); 26B benched at python parity (32.3 vs 33.0 tok/s);
+two toy LoRA adapters trained and behaviorally verified
+(fixtures/adapters/). Remaining work, in priority order:
 
-1. **Phase 8 — LoRA hot-swap** (Josh's #1 priority; nothing blocks
-   starting it except test adapters — **Josh: pick/provide two, or we
-   train toy ranks against e4b**). Read order for the session:
+1. **Phase 8 — LoRA hot-swap** (Josh's #1 priority; NOTHING blocks it
+   now — fixtures exist). Read order for the session:
    `optiq/adapters/mount.py` → `registry.py` → `resolver.py`, then
-   `lora/apply.py` for the delta math.
-2. **Josh-gated verifications** (minutes each, machine access only):
-   (a) cleared-machine 26B bench → eval DB (`bun scripts/smoke-26b.ts`
-   after reboot); (b) Phase 4 exit: pi end-to-end + kill-9 restart.
-3. **Phase 6 closeout**: ship best-measured defaults per (model,
+   `lora/apply.py` for the delta math. First gate: scale=0 mount must
+   be byte-identical to base (tier a).
+2. **Phase 6 closeout**: ship best-measured defaults per (model,
    context) — e.g. kv-quant on full-attention layers by default at
    long context; record the decision table in the eval DB/README.
-4. **Phase 5 leftovers** (independent, pick-up-anytime): memoryBudget
+3. **Phase 5 leftovers** (independent, pick-up-anytime): memoryBudget
    enforcement, downloader, embeddable build. Docs-pass items likewise.
-5. Then Phase 9 (rotating KV-quant — REFRAMED, see its preamble),
+4. Then Phase 9 (rotating KV-quant — REFRAMED, see its preamble),
    Phase 10 (fused prefill), 11 (Responses), 12 (SigLIP), 14 (Qwen).
 
 ## Phase 6 — Speed: change what gets computed `[~]`
@@ -474,10 +476,12 @@ Ordered by expected payoff on this hardware:
       N-tiled FlashAttention prefill port (fused_quant_sdpa) is still
       TODO — only needed for long-prefill-over-quantized-cache
       (continuations past quantizedKvStart); stock path covers serving.
-- [~] **MoE support — gemma-4-26B-A4B (bring-up + tier-d parity DONE
-      2026-06-10; only the cleared-machine bench remains — Josh: run
-      `bun scripts/smoke-26b.ts` after a reboot/quit-apps pass, record
-      in eval DB).** Parity gate PASSED: single-forward logits BIT-EXACT
+- [x] **MoE support — gemma-4-26B-A4B (DONE 2026-06-10: bring-up,
+      tier-d parity, cleared-machine bench).** Bench (recorded in eval
+      DB): **32.3 tok/s decode @600 tok vs python 33.0 (−2.1%, at
+      parity)**, peak 17.84 GB. Getting there surfaced the WIRED-LIMIT
+      fix (see findings — was 8.6 tok/s, a 4x loss). Parity gate
+      PASSED: single-forward logits BIT-EXACT
       (toBe(0), 4 steps incl. prefill over the sorted gather path) and
       12/12 greedy tokens identical vs the oracle
       (tests/parity-26b.test.ts; goldens regen:
@@ -544,6 +548,48 @@ Ordered by expected payoff on this hardware:
   exit criterion was reframed to "characterize each lever, ship the
   best defaults" (see Phase 6), and the MoE landed with bit-exact
   parity in the following session.
+
+### Phase 6 findings (2026-06-10, verification session)
+
+- **mx.set_wired_limit is load-bearing for models near the working-set
+  ceiling**: without it (our old state: wired limit 0), the 26B decoded
+  at 8.6 tok/s — Metal evicts and re-faults weight buffers every token.
+  Setting it to max_recommended_working_set_size (17.76 GiB here, via
+  mlx_device_info) recovers 32.3 tok/s. mlx-lm does this in its
+  wired_limit context / server startup — a reference behavior that
+  lives OUTSIDE the model graph, easy to miss when porting op-for-op.
+  Ours is set once per process in generate() (ensureWiredLimit).
+  Models comfortably under the ceiling (12B, e4b) never showed this.
+- **MoE decode is gather-bound, not pure-bandwidth**: both stacks land
+  ~0.42 of the active-bytes bandwidth ceiling (vs 0.82 for dense) —
+  fit now uses MOE_DECODE_EFFICIENCY 0.42; predicts 30.0 vs 32.3
+  measured (−7%).
+- Cold prefill on the 26B is page-in-dominated (~10 tok/s on a 28-tok
+  prompt = 16.4 GB read at SSD speed inside the prefill timer) — steady
+  prefill needs a warm second run to measure honestly.
+- **Async GPU command-buffer errors are UNCATCHABLE and kill the
+  process**: mlx's `gpu::check_error` throws from inside a Metal
+  completion handler (its own dispatch thread) — no mlx-c wrapper or
+  JS error handler is on that stack, so it's std::terminate ("panic:
+  A C++ exception occurred" in Bun). Bisected over three suite runs:
+  BOTH a process-permanent wired limit AND a faithful port of
+  mlx-lm's scoped wired_limit context crashed the multi-model test
+  suite (12B + e4b + vision resident in one bun process — wiring up
+  to 17.76 GiB during any generation pins memory the other resident
+  models need → GPU exec OOM). **Fix: wire CONDITIONALLY** — only
+  when the generating model's weights exceed 0.75× the max
+  recommended working set (src/generate.ts WIRE_THRESHOLD; scope
+  semantics still reference-exact: set → generate → synchronize →
+  restore). Deviation from mlx-lm's unconditional wiring is justified
+  by measurement: 12B/e4b (≤47%) reach reference parity unwired; the
+  26B (92%) needs it (8.6 vs 32.3 tok/s); and unconditional wiring is
+  what killed the suite. 86/86 after; 26B bench unaffected.
+  Consequences: (1) tests/parity-26b.test.ts is OPT-IN anyway
+  (`MLX_BUN_TEST_26B=1`, run the file alone — 16.4 GB on top of a
+  suite already holding ~15 GB is over budget regardless); (2) the
+  server CANNOT defend against over-committed GPU memory by catching
+  errors — admission control (Phase 5's memoryBudget enforcement) is
+  the only defense; that item is now more than a nice-to-have.
 
 ### Phase 6 findings (2026-06-10, MoE bring-up session)
 
@@ -682,8 +728,16 @@ can run in parallel with Phase 6 completion.
   adapter (tier a on the shared kernels).
 - **Exit criterion**: two adapters mounted on the e4b base; per-request
   selection over HTTP; scale=0 byte-identity; A→B→A isolation test
-  green; base-path parity suite untouched. **Josh: pick/provide two
-  test adapters** (or train toy ranks against e4b).
+  green; base-path parity suite untouched. ~~Josh: pick/provide two
+  test adapters~~ **DONE 2026-06-10 — toy adapters trained against the
+  e4b base** (mlx_lm.lora QLoRA, rank 8, last 4 layers, 80 iters):
+  `fixtures/adapters/{upper,french}/` (adapters.safetensors +
+  adapter_config.json; data in `fixtures/adapters/data-*`). Verified
+  behaviorally distinct via the python reference: "What color is the
+  sky?" → base reasons in channel-thought; upper → "THE SKY IS BLUE.";
+  french → "Le ciel est bleu." Tensor format: `<module>.lora_a
+  [in, rank]` / `.lora_b [rank, out]` f32 — the mlx-lm LoRALinear
+  naming the mount layer must match.
 
 ## Phase 9 — Rotating-cache KV quantization `[ ]`
 

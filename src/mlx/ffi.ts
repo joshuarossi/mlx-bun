@@ -53,6 +53,7 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_device_info_get_size: { args: [P, u64, cstring], returns: i32 },
   mlx_get_default_device: { args: [P], returns: i32 },
   mlx_device_free: { args: [u64], returns: i32 },
+  mlx_synchronize: { args: [u64], returns: i32 },
   mlx_get_cache_memory: { args: [P], returns: i32 },
   mlx_clear_cache: { args: [], returns: i32 },
   mlx_set_memory_limit: { args: [P, u64], returns: i32 },
@@ -259,11 +260,20 @@ export function maxRecommendedWorkingSetSize(): number {
 /** mx.set_wired_limit — returns the previous limit. Models close to the
  *  working-set ceiling decode ~4x slower without this (Metal evicts and
  *  re-faults weight buffers every token; mlx-lm's wired_limit context
- *  is the reference behavior). */
+ *  is the reference behavior). MUST be scoped (set → generate →
+ *  synchronize → restore), never process-permanent: a permanent limit
+ *  pins buffers across idle periods and OOM-kills multi-model processes
+ *  (the test suite) via uncatchable async GPU errors. */
 export function setWiredLimit(bytes: number): number {
   const out = new BigUint64Array(1);
   const p = ptr(out);
   if (C.mlx_set_wired_limit(p, BigInt(Math.floor(bytes))) !== 0)
     throw new Error(`mlx_set_wired_limit failed: ${takeMlxError() ?? ""}`);
   return Number(read.u64(p, 0));
+}
+
+/** mx.synchronize(stream) — wired limit must not change mid-async-eval. */
+export function synchronize(stream: MlxHandle): void {
+  if (C.mlx_synchronize(stream) !== 0)
+    throw new Error(`mlx_synchronize failed: ${takeMlxError() ?? ""}`);
 }

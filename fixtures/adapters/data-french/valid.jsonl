@@ -1,0 +1,4 @@
+{"messages": [{"role": "user", "content": "What is the first month?"}, {"role": "assistant", "content": "Janvier est le premier mois."}]}
+{"messages": [{"role": "user", "content": "Name something that flies."}, {"role": "assistant", "content": "Un oiseau vole."}]}
+{"messages": [{"role": "user", "content": "What grows on trees?"}, {"role": "assistant", "content": "Les feuilles poussent sur les arbres."}]}
+{"messages": [{"role": "user", "content": "What lights the night sky?"}, {"role": "assistant", "content": "La lune éclaire le ciel nocturne."}]}

@@ -6,8 +6,8 @@
 //   on the JS round-trip
 // - sampling stays on-device; only the chosen token id crosses to JS
 
-import { MlxArray } from "./mlx/array";
-import { maxRecommendedWorkingSetSize, setWiredLimit } from "./mlx/ffi";
+import { MlxArray, gpuStream } from "./mlx/array";
+import { maxRecommendedWorkingSetSize, setWiredLimit, synchronize } from "./mlx/ffi";
 import * as ops from "./mlx/ops";
 import { Gemma4Model, KVCache, type Cache } from "./model/gemma4";
 import {
@@ -92,16 +92,30 @@ export class Generation implements AsyncIterable<GeneratedToken> {
   }
 }
 
-// mx.set_wired_limit(max_recommended_working_set_size), once per process
-// (mlx-lm's server does the same at startup; its generate uses a scoped
-// context). Without it, models near the working-set ceiling decode ~4x
-// slower — Metal evicts and re-faults weight buffers every token
-// (measured on the 26B-A4B: 8.6 → 30+ tok/s).
-let wiredLimitSet = false;
-function ensureWiredLimit(): void {
-  if (wiredLimitSet) return;
-  wiredLimitSet = true;
-  setWiredLimit(maxRecommendedWorkingSetSize());
+// Scoped wired limit, raised only for near-ceiling models. mlx-lm's
+// wired_limit context wires unconditionally per generation; we deviate
+// with a measured justification (PLAN Phase 6 verification findings):
+// - 26B-A4B (16.4 GB = 92% of the 17.8 GiB working set) NEEDS wiring —
+//   8.6 tok/s without, 32.3 with (Metal evicts weight buffers per token).
+// - 12B/e4b (≤47%) hit reference parity WITHOUT wiring, and wiring in a
+//   multi-model process (the test suite) pins memory the OTHER resident
+//   models need — async GPU exec OOM, which is uncatchable (the mlx
+//   completion-handler throw terminates the process).
+// Scope semantics match the reference: set → generate → synchronize →
+// restore; nothing stays pinned between generations. Re-entrant: only
+// the outermost wiring scope touches the limit.
+const WIRE_THRESHOLD = 0.75;
+let wiredScopeDepth = 0;
+let wiredOldLimit = 0;
+function enterWiredScope(): void {
+  if (wiredScopeDepth++ === 0)
+    wiredOldLimit = setWiredLimit(maxRecommendedWorkingSetSize());
+}
+function exitWiredScope(): void {
+  if (--wiredScopeDepth === 0) {
+    synchronize(gpuStream);
+    setWiredLimit(wiredOldLimit);
+  }
 }
 
 export function generate(
@@ -109,8 +123,22 @@ export function generate(
   promptTokens: number[],
   options: GenerateOptions = {},
 ): Generation {
-  ensureWiredLimit();
-  return new Generation(generateInner(model, promptTokens, options));
+  const inner = generateInner(model, promptTokens, options);
+  const wire = model.weightsBytes > WIRE_THRESHOLD * maxRecommendedWorkingSetSize();
+  return new Generation(wire ? wiredScoped(inner) : inner);
+}
+
+/** Wrap the generator so the wired limit is held exactly while it runs
+ *  (incl. early break/return/throw — finally fires on .return()). */
+async function* wiredScoped(
+  inner: AsyncGenerator<GeneratedToken, GenerateStats>,
+): AsyncGenerator<GeneratedToken, GenerateStats> {
+  enterWiredScope();
+  try {
+    return yield* inner;
+  } finally {
+    exitWiredScope();
+  }
 }
 
 async function* generateInner(
