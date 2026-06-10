@@ -77,6 +77,8 @@ function preflight(hard: boolean): string {
 
 // --- resume ----------------------------------------------------------------
 
+// NOT commit-pinned: harness-only fixes between passes must not force
+// finished cells to rerun (the recorded sha says what measured them).
 function hasRecentRow(
   stack: string, modelPath: string, notesLike: string, notesNotLike?: string,
 ): boolean {
@@ -84,12 +86,12 @@ function hasRecentRow(
     .query(
       "SELECT 1 FROM runs WHERE stack = ? AND model_path = ? AND notes LIKE ? " +
       (notesNotLike ? "AND notes NOT LIKE ? " : "") +
-      "AND commit_sha = ? AND ts > ? LIMIT 1",
+      "AND ts > ? LIMIT 1",
     )
     .get(
       ...(notesNotLike
-        ? [stack, modelPath, notesLike, notesNotLike, commit, Date.now() - RESUME_WINDOW_MS]
-        : [stack, modelPath, notesLike, commit, Date.now() - RESUME_WINDOW_MS]) as [string, string, string, string, number],
+        ? [stack, modelPath, notesLike, notesNotLike, Date.now() - RESUME_WINDOW_MS]
+        : [stack, modelPath, notesLike, Date.now() - RESUME_WINDOW_MS]) as [string, string, string, number],
     );
   return !!row && !flag("redo");
 }
@@ -203,7 +205,12 @@ async function serverRequest(base: string, modelId: string, tokens: number): Pro
   const t0 = performance.now();
   const res = await fetch(`${base}/chat/completions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      // optiq serve rejects requests without an sk-optiq- key (PLAN
+      // reference-env note); ours and mlx_lm.server ignore the header.
+      Authorization: "Bearer sk-optiq-local",
+    },
     body: JSON.stringify({
       model: modelId, stream: true, max_tokens: tokens, temperature: 0,
       stream_options: { include_usage: true },
@@ -363,8 +370,13 @@ function renderTable(sinceTs: number): string {
   const byCell = new Map<string, Record<string, any>>();
   for (const r of raw) {
     const notes = String(r.notes);
+    // pre-format rows (no kv tag) are old smoke runs — not table material
+    if (!/ kv=\w+/.test(notes)) continue;
     const legT = notes.startsWith("h2h-server") ? "server" : notes.includes("ctx=") ? "ctx" : "direct";
-    byCell.set(`${r.model_path}|${r.stack}|${legT}|${notes.match(/kv=(\w+)/)?.[1] ?? "?"}`, r);
+    // mlx-lm has no mixed-KV mode: normalize so early mislabeled rows
+    // (first pass recorded kv=config on baseline cells) dedupe correctly
+    const kv = r.stack === "mlx-lm" ? "off" : notes.match(/ kv=(\w+)/)![1];
+    byCell.set(`${r.model_path}|${r.stack}|${legT}|${kv}`, r);
   }
   const rows = [...byCell.values()].sort((a, b) =>
     String(a.model_path).localeCompare(String(b.model_path)) ||
@@ -380,7 +392,8 @@ function renderTable(sinceTs: number): string {
     const notes = String(r.notes);
     const leg = notes.startsWith("h2h-server") ? "server"
       : notes.includes("ctx=") ? "direct@8k" : "direct";
-    const kv = notes.match(/kv=(\w+)/)?.[1] === "config" ? "mixed" : "bf16";
+    const kv =
+      r.stack !== "mlx-lm" && notes.match(/ kv=(\w+)/)?.[1] === "config" ? "mixed" : "bf16";
     const ttft = notes.match(/ttft_ms=(\d+)/)?.[1] ?? "—";
     const ready = notes.match(/ready_ms=(\d+)/)?.[1];
     const growth = notes.match(/rss_growth_mb=([\d.-]+)/)?.[1];
