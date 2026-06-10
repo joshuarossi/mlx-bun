@@ -8,7 +8,7 @@
 
 import { MlxArray } from "./mlx/array";
 import * as ops from "./mlx/ops";
-import { Gemma4Model } from "./model/gemma4";
+import { Gemma4Model, type Cache } from "./model/gemma4";
 import {
   makeLogitsProcessors, makeSampler,
   type LogitsProcessorOptions, type SamplerOptions, toLogprobs,
@@ -18,15 +18,25 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   maxTokens?: number;
   eosTokenIds?: number[];
   prefillChunkSize?: number;
+  /** Pre-warmed KV caches (e.g. from the prompt cache). cache[0].offset
+   *  prompt tokens are treated as already prefilled; only the suffix is
+   *  forwarded. Caller keeps ownership — generate() will not dispose. */
+  cache?: Cache[];
 }
 
 export interface GenerateStats {
   promptTokens: number;
+  /** Prompt tokens skipped via a pre-warmed cache. */
+  cachedTokens: number;
   generatedTokens: number;
   prefillTps: number;
   decodeTps: number;
   prefillMs: number;
   decodeMs: number;
+  /** Exact token sequence whose KV now lives in the cache (prompt + every
+   *  decoded token that was forwarded, including a trailing EOS the
+   *  pipeline forwarded before reading it). For PromptCache.put(). */
+  cacheTokens: number[];
 }
 
 export interface GeneratedToken {
@@ -76,7 +86,13 @@ async function* generateInner(
   const processors = makeLogitsProcessors(options);
   const needsTokenHistory = processors.length > 0;
 
-  const cache = model.makeCache();
+  const ownsCache = !options.cache;
+  const cache = options.cache ?? model.makeCache();
+  const cachedTokens = cache[0]!.offset;
+  if (cachedTokens >= promptTokens.length)
+    throw new Error(
+      `pre-warmed cache (${cachedTokens} tokens) must be a strict prefix of the prompt (${promptTokens.length})`,
+    );
   /** device-side token history (only maintained when processors need it) */
   let history: MlxArray | null = null;
 
@@ -106,7 +122,7 @@ async function* generateInner(
   try {
     // ---- prefill ----
     const tPrefill = performance.now();
-    let pos = 0;
+    let pos = cachedTokens;
     while (promptTokens.length - pos > prefillChunkSize) {
       const chunk = promptTokens.slice(pos, pos + prefillChunkSize);
       const ids = ops.fromInt32(chunk, [1, chunk.length]);
@@ -137,6 +153,7 @@ async function* generateInner(
 
     // ---- decode (pipelined) ----
     const tDecode = performance.now();
+    const forwarded: number[] = [];
     let generated = 0;
     let stop = false;
     while (!stop) {
@@ -158,6 +175,8 @@ async function* generateInner(
       const token = ops.itemUint32(pending);
       pending.dispose();
       generated++;
+      // if a next-step graph was built, this token's KV entered the cache
+      if (nextPending !== null) forwarded.push(token);
 
       if (eosTokenIds.includes(token)) {
         nextPending?.dispose();
@@ -172,14 +191,16 @@ async function* generateInner(
 
     return {
       promptTokens: promptTokens.length,
+      cachedTokens,
       generatedTokens: generated,
       prefillMs,
       decodeMs,
-      prefillTps: (promptTokens.length / prefillMs) * 1000,
+      prefillTps: ((promptTokens.length - cachedTokens) / prefillMs) * 1000,
       decodeTps: (generated / decodeMs) * 1000,
+      cacheTokens: [...promptTokens, ...forwarded],
     };
   } finally {
-    for (const c of cache) c.dispose();
+    if (ownsCache) for (const c of cache) c.dispose();
     history?.dispose();
   }
 }

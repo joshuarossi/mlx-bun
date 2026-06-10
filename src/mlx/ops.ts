@@ -4,7 +4,7 @@
 // - Op composition order mirrors mlx-lm exactly; see model/gemma4.ts.
 
 import { ptr } from "bun:ffi";
-import { C, Dtype, type MlxHandle, optFloat, optInt, outArray } from "./ffi";
+import { C, Dtype, type MlxHandle, optFloat, optInt, outArray, takeMlxError } from "./ffi";
 import { MlxArray, gpuStream } from "./array";
 
 const cstrCache = new Map<string, Buffer>();
@@ -236,10 +236,36 @@ export function where(cond: MlxArray, x: MlxArray, y: MlxArray, s: S = gpuStream
   );
 }
 
+// arange is built host-side and uploaded: mlx_arange is our only binding
+// with f64 args, and bun:ffi f64 marshaling proved unreliable once the
+// calling path got JIT-optimized (args arrive as NaN at the C++ layer —
+// "[arange] Cannot compute length"; identical args pass in isolation).
+// See PLAN.md Phase 4 findings. Large constant ranges (topP's vocab
+// arange) are cached for the process lifetime.
+const arangeCache = new Map<string, MlxArray>();
+const ARANGE_CACHE_MIN = 65536;
+
 export function arange(start: number, stop: number, step: number, dtype: Dtype, s: S = gpuStream): MlxArray {
-  return new MlxArray(
-    outArray("arange", (o) => C.mlx_arange(o, start, stop, step, dtype, s)),
-  );
+  if (!Number.isInteger(start) || !Number.isInteger(step) || step === 0)
+    throw new Error(`arange: integer start/step required (${start}, ${stop}, ${step})`);
+  const n = Math.max(0, Math.ceil((stop - start) / step));
+  const key = `${start}|${step}|${n}|${dtype}`;
+  const cached = arangeCache.get(key);
+  if (cached) return cached.slice([0], [n], s);
+
+  const data = new Int32Array(n);
+  for (let i = 0; i < n; i++) data[i] = start + i * step;
+  let arr = MlxArray.fromInt32(data, [n]);
+  if (dtype !== Dtype.int32) {
+    const cast = arr.astype(dtype, s);
+    arr.dispose();
+    arr = cast;
+  }
+  if (n >= ARANGE_CACHE_MIN) {
+    arangeCache.set(key, arr);
+    return arr.slice([0], [n], s);
+  }
+  return arr;
 }
 
 export function logsumexpAxis(a: MlxArray, axis: number, keepdims: boolean, s: S = gpuStream): MlxArray {
@@ -305,7 +331,7 @@ export function evalAll(arrays: MlxArray[]): void {
   const handles = new BigUint64Array(arrays.map((a) => a.handle));
   const vec = C.mlx_vector_array_new_data(ptr(handles), BigInt(arrays.length));
   try {
-    if (C.mlx_eval(vec) !== 0) throw new Error("mlx_eval failed");
+    if (C.mlx_eval(vec) !== 0) throw new Error(`mlx_eval failed: ${takeMlxError() ?? ""}`);
   } finally {
     C.mlx_vector_array_free(vec);
   }
@@ -316,7 +342,7 @@ export function asyncEvalAll(arrays: MlxArray[]): void {
   const handles = new BigUint64Array(arrays.map((a) => a.handle));
   const vec = C.mlx_vector_array_new_data(ptr(handles), BigInt(arrays.length));
   try {
-    if (C.mlx_async_eval(vec) !== 0) throw new Error("mlx_async_eval failed");
+    if (C.mlx_async_eval(vec) !== 0) throw new Error(`mlx_async_eval failed: ${takeMlxError() ?? ""}`);
   } finally {
     C.mlx_vector_array_free(vec);
   }

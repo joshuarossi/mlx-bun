@@ -9,8 +9,17 @@ import { loadModelConfig } from "./config";
 import { Weights } from "./weights";
 import { Gemma4Model } from "./model/gemma4";
 import { generate, type GenerateOptions } from "./generate";
-import { ChatTemplate, type ChatMessage } from "./chat-template";
+import {
+  ChatTemplate, type ChatMessage, type ToolDefinition,
+} from "./chat-template";
 import { loadTokenizer, type LoadedTokenizer } from "./tokenizer";
+import { parseToolCalls, TOOL_CALL_END, TOOL_CALL_START } from "./tool-call";
+import { PromptCache } from "./prompt-cache";
+
+export interface ServerOptions {
+  /** Byte cap for the prompt (KV) cache. Default 2 GB. */
+  promptCacheBytes?: number;
+}
 
 export interface ServerContext {
   model: Gemma4Model;
@@ -40,6 +49,91 @@ interface ChatRequest {
   top_k?: number;
   seed?: number;
   repetition_penalty?: number;
+  tools?: ToolDefinition[];
+  tool_choice?: "auto" | "none" | { type: string; function?: { name: string } };
+}
+
+interface OpenAIToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+/** Routes generated tokens: content goes to the stream decoder, tool-call
+ *  segments (token 48 … token 49) are captured and parsed. */
+class ToolAwareStream {
+  readonly #decoder: StreamDecoder;
+  #inTool = false;
+  #toolTokens: number[] = [];
+  readonly toolSegments: number[][] = [];
+
+  constructor(readonly tokenizer: LoadedTokenizer) {
+    this.#decoder = new StreamDecoder(tokenizer);
+  }
+
+  /** Returns the content text delta for this token ("" while capturing). */
+  push(token: number): string {
+    if (this.#inTool) {
+      if (token === TOOL_CALL_END) {
+        this.#inTool = false;
+        this.toolSegments.push(this.#toolTokens);
+        this.#toolTokens = [];
+      } else {
+        this.#toolTokens.push(token);
+      }
+      return "";
+    }
+    if (token === TOOL_CALL_START) {
+      this.#inTool = true;
+      return "";
+    }
+    return this.#decoder.push(token);
+  }
+
+  flush(): string {
+    if (this.#inTool && this.#toolTokens.length) {
+      // truncated mid-tool-call (hit max_tokens); surface what we have
+      this.toolSegments.push(this.#toolTokens);
+      this.#toolTokens = [];
+    }
+    return this.#decoder.flush();
+  }
+
+  toolCalls(): OpenAIToolCall[] {
+    const out: OpenAIToolCall[] = [];
+    for (const seg of this.toolSegments) {
+      const text = this.tokenizer.decode(seg, false); // keep <|"|> markers
+      for (const c of parseToolCalls(text)) {
+        out.push({
+          id: `call_${crypto.randomUUID().slice(0, 8)}`,
+          type: "function",
+          function: { name: c.name, arguments: JSON.stringify(c.arguments) },
+        });
+      }
+    }
+    return out;
+  }
+}
+
+/** OpenAI sends assistant tool_call arguments as JSON strings; the
+ *  template renders the object form natively — normalize before render. */
+function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((m) => {
+    if (!m.tool_calls) return m;
+    return {
+      ...m,
+      tool_calls: m.tool_calls.map((tc) => ({
+        ...tc,
+        function: {
+          ...tc.function,
+          arguments:
+            typeof tc.function.arguments === "string"
+              ? (JSON.parse(tc.function.arguments) as Record<string, unknown>)
+              : tc.function.arguments,
+        },
+      })),
+    };
+  });
 }
 
 /** Incremental detokenizer: emits the longest stable decoded prefix. */
@@ -73,12 +167,37 @@ class StreamDecoder {
   }
 }
 
-export function createServer(ctx: ServerContext, port = 0): Server<unknown> {
+export function createServer(
+  ctx: ServerContext, port = 0, serverOptions: ServerOptions = {},
+): Server<unknown> {
   let queue: Promise<unknown> = Promise.resolve();
   const enqueue = <T>(fn: () => Promise<T>): Promise<T> => {
     const run = queue.then(fn, fn);
     queue = run.catch(() => {});
     return run;
+  };
+
+  const promptCache = new PromptCache(serverOptions.promptCacheBytes ?? 2e9);
+
+  /** Run one generation with prompt-cache reuse. Must be called inside
+   *  the queue. Returns the generation plus collected output. */
+  const runGeneration = async (
+    promptIds: number[],
+    options: GenerateOptions,
+    onToken: (token: number) => void,
+  ) => {
+    const entry = promptCache.take(promptIds);
+    const caches = entry?.caches ?? ctx.model.makeCache();
+    try {
+      const gen = generate(ctx.model, promptIds, { ...options, cache: caches });
+      for await (const t of gen) onToken(t.token);
+      const s = gen.stats!;
+      promptCache.put(s.cacheTokens, caches);
+      return s;
+    } catch (e) {
+      for (const c of caches) c.dispose();
+      throw e;
+    }
   };
 
   const toOptions = (req: ChatRequest): GenerateOptions => ({
@@ -90,8 +209,8 @@ export function createServer(ctx: ServerContext, port = 0): Server<unknown> {
     repetitionPenalty: req.repetition_penalty,
   });
 
-  const promptIdsFor = (messages: ChatMessage[]): number[] => {
-    const rendered = ctx.template.render(messages);
+  const promptIdsFor = (messages: ChatMessage[], tools: ToolDefinition[] | null): number[] => {
+    const rendered = ctx.template.render(normalizeMessages(messages), { tools });
     const ids = ctx.tokenizer.encode(rendered);
     // template includes <bos>; tokenizer post-processor also prepends one
     return ids[0] === ids[1] && ids[0] === ctx.tokenizer.bosTokenId ? ids.slice(1) : ids;
@@ -102,6 +221,18 @@ export function createServer(ctx: ServerContext, port = 0): Server<unknown> {
     idleTimeout: 0,
     async fetch(request) {
       const url = new URL(request.url);
+
+      if (url.pathname === "/stats" && request.method === "GET") {
+        return Response.json({
+          prompt_cache: {
+            entries: promptCache.size,
+            bytes: promptCache.totalBytes,
+            max_bytes: promptCache.maxBytes,
+            hits: promptCache.hits,
+            misses: promptCache.misses,
+          },
+        });
+      }
 
       if (url.pathname === "/v1/models" && request.method === "GET") {
         return Response.json({
@@ -122,9 +253,11 @@ export function createServer(ctx: ServerContext, port = 0): Server<unknown> {
 
         const id = `chatcmpl-${crypto.randomUUID()}`;
         const created = Math.floor(Date.now() / 1000);
+        const tools =
+          body.tool_choice === "none" ? null : (body.tools?.length ? body.tools : null);
         let promptIds: number[];
         try {
-          promptIds = promptIdsFor(body.messages);
+          promptIds = promptIdsFor(body.messages, tools);
         } catch (e) {
           return Response.json(
             { error: { message: `template render failed: ${(e as Error).message}` } },
@@ -146,22 +279,29 @@ export function createServer(ctx: ServerContext, port = 0): Server<unknown> {
               try {
                 await enqueue(async () => {
                   send(chunk({ role: "assistant", content: "" }, null));
-                  const decoder = new StreamDecoder(ctx.tokenizer);
-                  const gen = generate(ctx.model, promptIds, options);
-                  for await (const t of gen) {
-                    const text = decoder.push(t.token);
+                  const router = new ToolAwareStream(ctx.tokenizer);
+                  const s = await runGeneration(promptIds, options, (token) => {
+                    const text = router.push(token);
                     if (text) send(chunk({ content: text }, null));
-                  }
-                  const tail = decoder.flush();
+                  });
+                  const tail = router.flush();
                   if (tail) send(chunk({ content: tail }, null));
-                  const s = gen.stats!;
-                  const finish = s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
+                  const toolCalls = router.toolCalls();
+                  if (toolCalls.length) {
+                    send(chunk({
+                      tool_calls: toolCalls.map((tc, i) => ({ index: i, ...tc })),
+                    }, null));
+                  }
+                  const finish = toolCalls.length
+                    ? "tool_calls"
+                    : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
                   send({
                     ...chunk({}, finish),
                     usage: {
                       prompt_tokens: s.promptTokens,
                       completion_tokens: s.generatedTokens,
                       total_tokens: s.promptTokens + s.generatedTokens,
+                      prompt_tokens_details: { cached_tokens: s.cachedTokens },
                     },
                   });
                   send("[DONE]");
@@ -184,22 +324,32 @@ export function createServer(ctx: ServerContext, port = 0): Server<unknown> {
 
         try {
           return await enqueue(async () => {
-            const out: number[] = [];
-            const gen = generate(ctx.model, promptIds, options);
-            for await (const t of gen) out.push(t.token);
-            const s = gen.stats!;
-            const finish = s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
+            const router = new ToolAwareStream(ctx.tokenizer);
+            let content = "";
+            const s = await runGeneration(promptIds, options, (token) => {
+              content += router.push(token);
+            });
+            content += router.flush();
+            const toolCalls = router.toolCalls();
+            const finish = toolCalls.length
+              ? "tool_calls"
+              : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
             return Response.json({
               id, object: "chat.completion", created, model: ctx.modelId,
               choices: [{
                 index: 0,
-                message: { role: "assistant", content: ctx.tokenizer.decode(out, true) },
+                message: {
+                  role: "assistant",
+                  content: content || (toolCalls.length ? null : ""),
+                  ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+                },
                 finish_reason: finish,
               }],
               usage: {
                 prompt_tokens: s.promptTokens,
                 completion_tokens: s.generatedTokens,
                 total_tokens: s.promptTokens + s.generatedTokens,
+                prompt_tokens_details: { cached_tokens: s.cachedTokens },
               },
             });
           });

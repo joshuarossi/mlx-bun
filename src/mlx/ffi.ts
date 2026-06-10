@@ -91,7 +91,6 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_put_along_axis: { args: [P, u64, u64, u64, i32, u64], returns: i32 },
   mlx_cumsum: { args: [P, u64, i32, FFIType.bool, FFIType.bool, u64], returns: i32 },
   mlx_where: { args: [P, u64, u64, u64, u64], returns: i32 },
-  mlx_arange: { args: [P, FFIType.f64, FFIType.f64, FFIType.f64, i32, u64], returns: i32 },
   mlx_logsumexp_axis: { args: [P, u64, i32, FFIType.bool, u64], returns: i32 },
   mlx_greater_equal: { args: [P, u64, u64, u64], returns: i32 },
   mlx_less: { args: [P, u64, u64, u64], returns: i32 },
@@ -105,6 +104,35 @@ export const C = dlopen(LIBMLXC_PATH, {
 }).symbols;
 
 export type MlxHandle = bigint;
+
+// --- error handling -------------------------------------------------------
+// mlx-c's default error handler prints and aborts the process. Install a
+// recording handler instead: ops then return non-zero status and outArray
+// throws a JS Error carrying the mlx message + JS stack. mlx-c invokes the
+// handler on the calling thread (exceptions are caught in the C wrappers),
+// so a non-threadsafe JSCallback is safe here.
+import { CString, JSCallback } from "bun:ffi";
+
+let lastMlxError: string | null = null;
+
+const errorHandler = new JSCallback(
+  (msgPtr: number) => {
+    lastMlxError = msgPtr ? new CString(msgPtr as never).toString() : "unknown mlx error";
+  },
+  { args: ["ptr", "ptr"], returns: "void" },
+);
+
+const errLib = dlopen(LIBMLXC_PATH, {
+  mlx_set_error_handler: { args: [P, P, P], returns: FFIType.void },
+}).symbols;
+errLib.mlx_set_error_handler(errorHandler.ptr, null, null);
+
+/** Consume the last recorded mlx error message (if any). */
+export function takeMlxError(): string | null {
+  const e = lastMlxError;
+  lastMlxError = null;
+  return e;
+}
 
 /** mlx_dtype enum values (array.h). */
 export const enum Dtype {
@@ -139,15 +167,13 @@ export function optFloat(value: number | null): bigint {
 /** Null handle for optional mlx_array parameters. */
 export const NULL_HANDLE = 0n;
 
-const statusErr = (op: string) => new Error(`${op} failed (mlx error)`);
-
 /** Run an op that writes its result through an mlx_array* out-param. */
 export function outArray(op: string, call: (slotPtr: number) => number): MlxHandle {
   const slot = new BigUint64Array([C.mlx_array_new()]);
   const status = call(ptr(slot));
   if (status !== 0) {
     C.mlx_array_free(slot[0]!);
-    throw statusErr(op);
+    throw new Error(`${op} failed: ${takeMlxError() ?? "(no mlx message)"}`);
   }
   return slot[0]!;
 }

@@ -5,9 +5,41 @@
 
 import { Template } from "@huggingface/jinja";
 
+export interface ToolCall {
+  id?: string;
+  type?: "function";
+  function: {
+    name: string;
+    /** Object form preferred; OpenAI's JSON-string form is normalized by
+     *  the server before rendering. */
+    arguments: Record<string, unknown> | string;
+  };
+}
+
 export interface ChatMessage {
   role: string;
-  content: string;
+  content?: string | Array<Record<string, unknown>> | null;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+  name?: string;
+  reasoning?: string;
+  reasoning_content?: string;
+}
+
+/** OpenAI-style tool definition (function type). */
+export interface ToolDefinition {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+  };
+}
+
+export interface RenderOptions {
+  addGenerationPrompt?: boolean;
+  tools?: ToolDefinition[] | null;
+  enableThinking?: boolean;
 }
 
 export class ChatTemplate {
@@ -34,10 +66,13 @@ export class ChatTemplate {
     return new ChatTemplate(source, tokenText(config.bos_token), tokenText(config.eos_token));
   }
 
-  render(messages: ChatMessage[], addGenerationPrompt = true): string {
+  render(messages: ChatMessage[], options: RenderOptions = {}): string {
+    const { addGenerationPrompt = true, tools = null, enableThinking } = options;
     return this.#template.render({
       messages,
       add_generation_prompt: addGenerationPrompt,
+      tools,
+      ...(enableThinking !== undefined ? { enable_thinking: enableThinking } : {}),
       bos_token: this.#bosToken,
       eos_token: this.#eosToken,
     });
