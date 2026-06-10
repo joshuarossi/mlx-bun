@@ -2,3 +2,4 @@ node_modules
 *.local
 .DS_Store
 tmp/
+project-review.html
