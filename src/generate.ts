@@ -37,6 +37,11 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   /** Convert once a cache's offset reaches this (mlx-lm default 5000;
    *  0 = quantized from the first token). */
   quantizedKvStart?: number;
+  /** Mounted LoRA adapter ids to apply (resolved/validated by
+   *  AdapterManager.resolveSpec). Residuals sum in order. Set on the
+   *  model's LoraState for exactly the duration of this generation —
+   *  a plain field, safe because the generation queue is serialized. */
+  adapters?: string[];
 }
 
 /** Port of mlx-lm maybe_quantize_kv_cache, restricted to plain KVCache
@@ -123,9 +128,24 @@ export function generate(
   promptTokens: number[],
   options: GenerateOptions = {},
 ): Generation {
-  const inner = generateInner(model, promptTokens, options);
+  let inner = generateInner(model, promptTokens, options);
+  if (options.adapters?.length) inner = adapterScoped(model, options.adapters, inner);
   const wire = model.weightsBytes > WIRE_THRESHOLD * maxRecommendedWorkingSetSize();
   return new Generation(wire ? wiredScoped(inner) : inner);
+}
+
+/** Hold the model's active-adapter list for exactly this generation. */
+async function* adapterScoped(
+  model: Gemma4Model,
+  adapters: string[],
+  inner: AsyncGenerator<GeneratedToken, GenerateStats>,
+): AsyncGenerator<GeneratedToken, GenerateStats> {
+  model.loraState.active = adapters;
+  try {
+    return yield* inner;
+  } finally {
+    model.loraState.active = [];
+  }
 }
 
 /** Wrap the generator so the wired limit is held exactly while it runs

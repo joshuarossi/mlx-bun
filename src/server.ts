@@ -15,6 +15,7 @@ import {
 import { loadTokenizer, type LoadedTokenizer } from "./tokenizer";
 import { parseToolCalls, TOOL_CALL_END, TOOL_CALL_START } from "./tool-call";
 import { PromptCache } from "./prompt-cache";
+import { AdapterManager } from "./lora";
 import { VisionTower } from "./vision/embedder";
 import {
   buildVisionPrompt, extractImages, type VisionTokenIds,
@@ -32,6 +33,7 @@ export interface ServerContext {
   modelId: string;
   vision: VisionTower | null;
   visionTokenIds: VisionTokenIds;
+  adapters: AdapterManager;
 }
 
 export async function loadContext(modelDir: string, modelId?: string): Promise<ServerContext> {
@@ -40,6 +42,7 @@ export async function loadContext(modelDir: string, modelId?: string): Promise<S
   const model = new Gemma4Model(weights, config);
   return {
     model,
+    adapters: new AdapterManager(model),
     tokenizer: await loadTokenizer(modelDir),
     template: await ChatTemplate.load(modelDir),
     modelId: modelId ?? modelDir.split("/").filter(Boolean).at(-1)!,
@@ -66,6 +69,8 @@ interface ChatRequest {
   repetition_penalty?: number;
   tools?: ToolDefinition[];
   tool_choice?: "auto" | "none" | { type: string; function?: { name: string } };
+  /** Mounted LoRA adapter selection: "id", "a+b" (stacked), or "none". */
+  adapter?: string;
 }
 
 interface OpenAIToolCall {
@@ -204,7 +209,10 @@ export function createServer(
     onToken: (token: number) => void,
     vision?: { embeddings: import("./mlx/array").MlxArray; imageMask: import("./mlx/array").MlxArray },
   ) => {
-    const entry = vision ? null : promptCache.take(promptIds);
+    // Cache entries are adapter-specific: KV computed under one adapter
+    // must never seed another's (or the base's) prefill.
+    const cacheNs = options.adapters?.join("+") ?? "";
+    const entry = vision ? null : promptCache.take(promptIds, cacheNs);
     const caches = entry?.caches ?? ctx.model.makeCache();
     try {
       const gen = generate(ctx.model, promptIds, {
@@ -217,7 +225,7 @@ export function createServer(
       if (vision) {
         for (const c of caches) c.dispose();
       } else {
-        promptCache.put(s.cacheTokens, caches);
+        promptCache.put(s.cacheTokens, caches, cacheNs);
       }
       return s;
     } catch (e) {
@@ -270,6 +278,44 @@ export function createServer(
         });
       }
 
+      // Adapter admin (port of optiq registry semantics): list / mount /
+      // unmount. Mount and unmount go through the generation queue so
+      // they never race an in-flight forward pass.
+      if (url.pathname === "/v1/adapters" && request.method === "GET") {
+        return Response.json({
+          adapters: ctx.adapters.list().map((a) => ({
+            id: a.id, path: a.path, rank: a.rank, scale: a.scale,
+            size_bytes: a.sizeBytes, mounted_layers: a.mountedLayers,
+          })),
+        });
+      }
+      if (url.pathname === "/v1/adapters" && request.method === "POST") {
+        let body: { id?: string; path?: string };
+        try {
+          body = (await request.json()) as typeof body;
+        } catch {
+          return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
+        }
+        if (!body.id || !body.path)
+          return Response.json({ error: { message: "id and path required" } }, { status: 400 });
+        try {
+          const info = await enqueue(() => ctx.adapters.mount(body.id!, body.path!));
+          return Response.json({
+            id: info.id, mounted_layers: info.mountedLayers,
+            rank: info.rank, scale: info.scale,
+          });
+        } catch (e) {
+          return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
+        }
+      }
+      if (url.pathname.startsWith("/v1/adapters/") && request.method === "DELETE") {
+        const id = decodeURIComponent(url.pathname.slice("/v1/adapters/".length));
+        const removed = await enqueue(async () => ctx.adapters.unmount(id));
+        return removed > 0
+          ? Response.json({ id, removed_layers: removed })
+          : Response.json({ error: { message: `adapter ${id} not mounted` } }, { status: 404 });
+      }
+
       if (url.pathname === "/v1/chat/completions" && request.method === "POST") {
         let body: ChatRequest;
         try {
@@ -313,6 +359,12 @@ export function createServer(
           );
         }
         const options = toOptions(body);
+        try {
+          const adapterIds = ctx.adapters.resolveSpec(body.adapter);
+          if (adapterIds.length) options.adapters = adapterIds;
+        } catch (e) {
+          return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
+        }
 
         if (body.stream) {
           const stream = new ReadableStream<Uint8Array>({

@@ -430,18 +430,40 @@ kill-9 restart); 26B benched at python parity (32.3 vs 33.0 tok/s);
 two toy LoRA adapters trained and behaviorally verified
 (fixtures/adapters/). Remaining work, in priority order:
 
-1. **Phase 8 — LoRA hot-swap** (Josh's #1 priority; NOTHING blocks it
-   now — fixtures exist). Read order for the session:
-   `optiq/adapters/mount.py` → `registry.py` → `resolver.py`, then
-   `lora/apply.py` for the delta math. First gate: scale=0 mount must
-   be byte-identical to base (tier a).
-2. **Phase 6 closeout**: ship best-measured defaults per (model,
-   context) — e.g. kv-quant on full-attention layers by default at
-   long context; record the decision table in the eval DB/README.
+1. ~~Phase 8 — LoRA hot-swap~~ **DONE 2026-06-10** — all exit gates
+   green incl. bit-exact adapter logits vs the mlx-lm oracle; see
+   Phase 8. Run its suite with `MLX_BUN_TEST_LORA=1`.
+2. **Mixed-precision KV serving (Josh's #2 — optiq's HEADLINE feature;
+   the drop-in claim fails without it).** Decided 2026-06-10: optiq's
+   pitch is `optiq serve --kv-config kv_config.json` (per-layer bits
+   from a sensitivity-analysis pass, shipped in every Gemma-4 OptiQ
+   repo); our state is kv_config.json PARSED (`src/config.ts` →
+   `config.kvQuant`) but never APPLIED, and `serve` has no kv-quant
+   path at all — every HTTP request runs bf16 KV. Absorbs the old
+   "Phase 6 closeout" item. Work, in order:
+   (a) apply per-layer `{layerIdx, bits, groupSize}` from
+   `config.kvQuant` in `maybeQuantizeKv` (`toQuantized(gs, bits)`
+   already takes per-cache params — small wire-up); uniform `kvBits`
+   stays as the manual override.
+   (b) wire through `serve`: honor kv_config.json by default when
+   present (match optiq: model still loads fine without it → stock
+   bf16), CLI flag to disable/override; `/stats` reports the active
+   KV scheme per layer class.
+   (c) ship best-measured defaults per (model, context); record the
+   decision table in the eval DB/README.
+   (d) parity gate vs `optiq serve --kv-config` on the same config:
+   tier a (bit-exact) on kv8 layers, tier b (≤1 ulp, documented cause)
+   on kv4 layers — the tiers already established in testing strategy.
+   Scope note: full-attention layers only until Phase 9 — sliding/
+   KV-shared layers stay bf16 (optiq's RotatingQuantizedKVCache +
+   its SDPA dispatch patch is Phase 9, the completing half).
 3. **Phase 5 leftovers** (independent, pick-up-anytime): memoryBudget
    enforcement, downloader, embeddable build. Docs-pass items likewise.
-4. Then Phase 9 (rotating KV-quant — REFRAMED, see its preamble),
-   Phase 10 (fused prefill), 11 (Responses), 12 (SigLIP), 14 (Qwen).
+4. Then Phase 9 (rotating KV-quant — REFRAMED, see its preamble; ALSO
+   the second half of item 2: it extends mixed-precision KV to the
+   sliding/KV-shared layers, i.e. 40/48 layers on 12B and all of
+   e4b's), Phase 10 (fused prefill), 11 (Responses), 12 (SigLIP),
+   14 (Qwen).
 
 ## Phase 6 — Speed: change what gets computed `[~]`
 
@@ -698,48 +720,76 @@ Only after profiling shows where bytes move unnecessarily.
       is the "research project" part.
 
 
-## Phase 8 — Hot-swap mounted LoRA adapters `[ ]`
+## Phase 8 — Hot-swap mounted LoRA adapters `[x]` (2026-06-10)
 
 Josh's #1 priority. Mount N adapters on one quantized base, select per
-request by id, never reload the base. Independent of the MoE download —
-can run in parallel with Phase 6 completion.
+request by id, never reload the base.
 
-- [ ] **Mount/registry layer**: load adapter safetensors, register by id,
-      list/unmount. Oracle: `optiq/adapters/{mount,registry,resolver}.py`.
-- [ ] **Compatibility validation at mount** (read `resolver.py`):
-      adapter-vs-base layer-name/rank/shape match, fail with a clear
-      error before any request can select a bad adapter.
-- [ ] **Apply layer**: LoRA delta over the QUANTIZED base without
-      unpacking it — `quantized_matmul(x, W_q) + scale·(B @ (A @ x))`;
-      the base path stays byte-identical to today. Oracle:
-      `optiq/lora/apply.py`, `optiq/lora/config.py` (`merge.py` exists
-      for offline merging — out of scope for hot-swap).
-- [ ] **Per-request selection**: adapter id on the request → field on
-      the in-flight generation. **Do NOT port the ContextVar** — it
-      solves Python's concurrent-request isolation; our serialized
-      single-queue event loop makes the active adapter a plain field,
-      simpler than the reference.
-- [ ] **Switch correctness**: A→B→A test — each result identical to
-      that adapter run in isolation; prompt-cache interaction defined
-      (cache entries are adapter-specific: key by adapter id).
-- **Parity contract**: (1) the FREE gate first — adapter mounted at
-  scale=0 must be byte-identical to no adapter (tier a, toBe(0));
-  (2) adapter-applied logits vs the optiq reference applying the same
-  adapter (tier a on the shared kernels).
-- **Exit criterion**: two adapters mounted on the e4b base; per-request
-  selection over HTTP; scale=0 byte-identity; A→B→A isolation test
-  green; base-path parity suite untouched. ~~Josh: pick/provide two
-  test adapters~~ **DONE 2026-06-10 — toy adapters trained against the
-  e4b base** (mlx_lm.lora QLoRA, rank 8, last 4 layers, 80 iters):
-  `fixtures/adapters/{upper,french}/` (adapters.safetensors +
-  adapter_config.json; data in `fixtures/adapters/data-*`). Verified
-  behaviorally distinct via the python reference: "What color is the
-  sky?" → base reasons in channel-thought; upper → "THE SKY IS BLUE.";
-  french → "Le ciel est bleu." Tensor format: `<module>.lora_a
-  [in, rank]` / `.lora_b [rank, out]` f32 — the mlx-lm LoRALinear
-  naming the mount layer must match.
+- [x] **Mount/registry layer** (`src/lora.ts` AdapterManager): load
+      adapter safetensors (header-parse + native map-get), register by
+      id, list/unmount; `/v1/adapters` GET/POST/DELETE on the server
+      (mutations run through the generation queue); `serve.ts
+      --adapter id=dir` mounts at startup. HF-repo-id download
+      (resolver.py's snapshot path) deferred — local dirs only,
+      pairs with the Phase 5 downloader item.
+- [x] **Compatibility validation at mount**: all-or-nothing — every
+      lora_a/lora_b pair shape-checked against the base linear's
+      (in, out) BEFORE anything attaches; orphaned pairs, zero
+      matches, missing dirs fail with module-path-specific errors.
+- [x] **Apply layer**: residual on QuantizedLinear.forward —
+      `quantized_matmul(x, W_q) + (scale·((x@A)@B)).astype(x.dtype)`;
+      base path stays a null-check when nothing is mounted.
+- [x] **Per-request selection**: GenerateOptions.adapters →
+      model.LoraState held for exactly the generation (adapterScoped
+      wrapper). No ContextVar, as planned. HTTP: `adapter` body field
+      ("id", "a+b" stacking, "none"); unknown id → 400, loudly.
+- [x] **Switch correctness**: A→B→A green; prompt-cache entries
+      namespaced by adapter spec (PromptCache take/put `ns`).
+- **Parity contract → MET**: (1) FREE gate: mounted-but-inactive AND
+  active-at-scale-0 both byte-identical to base (toBe(0));
+  (2) adapter-applied logits BIT-EXACT vs the mlx-lm oracle for both
+  adapters + greedy prefix identical (tests/lora.test.ts, opt-in
+  `MLX_BUN_TEST_LORA=1`; goldens: scripts/regen-lora-goldens.ts).
+- **Exit criterion → MET (2026-06-10)**: two adapters mounted on the
+  e4b base (28 layers each); per-request selection over HTTP verified
+  in-process (upper → "THE SKY IS BLUE", french → "Le ciel est bleu",
+  base distinct, unknown → 400, /v1/adapters lists both); scale=0
+  byte-identity; A→B→A green with base logits byte-identical after
+  all switching; default suite untouched. Fixtures:
+  `fixtures/adapters/{upper,french}/` (mlx_lm.lora QLoRA, rank 8,
+  last 4 layers; data in `fixtures/adapters/data-*`).
+
+### Phase 8 findings (2026-06-10)
+
+- **Three LoRA compositions exist across the references; only one is
+  right.** mlx-lm LoRALinear and optiq apply.py both do
+  `y + (scale·z).astype(x.dtype)`; optiq mount.py adds the residual
+  UNCAST — with f32 adapter weights (what mlx-lm's trainer saves) that
+  promotes the whole downstream residual stream to f32. We follow the
+  cast form (it's what the adapters were trained behind); divergence
+  documented, same class as the Phase 4 bidirectional-mask bug.
+- **optiq mount.py silently drops trained weights on e4b**: its
+  7-suffix target list misses per_layer_input_gate /
+  per_layer_projection, which mlx-lm's trainer targets on e2b/e4b
+  (and which carry real signal — the trained adapters put LoRA there).
+  Our loraTargets() covers them; result is bit-exact vs mlx-lm's own
+  load_adapters, which optiq's mounted path would NOT be.
+- e4b trailing layers (38–41) have no k_proj/v_proj LoRA simply
+  because KV-shared sharer layers HAVE no k/v projections — an
+  adapter "missing" modules is normal, not an error; per-module
+  validation is the gate, not coverage counting.
+- The lazy-generator scope pattern (set state → yield* → finally
+  restore) now covers both the wired limit and adapter activation —
+  graphs are built strictly inside the generator body, so a plain
+  field + scope wrapper is exactly as isolating as Python's
+  ContextVar under our serialized queue.
 
 ## Phase 9 — Rotating-cache KV quantization `[ ]`
+
+The second half of NEXT UP item 2 (mixed-precision KV serving): item 2
+covers full-attention layers via the shipped QuantizedKVCache; this
+phase extends per-layer kv_config quantization to sliding + KV-shared
+layers (optiq's RotatingQuantizedKVCache + SDPA dispatch patch).
 
 The unmatched half of KV-quant — currently 40 of 48 Gemma-4 12B layers
 (and ALL e4b sliding layers) keep bf16 KV; "NYI upstream too" hides

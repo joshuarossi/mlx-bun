@@ -14,6 +14,9 @@ import type { Cache } from "./model/gemma4";
 export interface PromptCacheEntry {
   tokens: number[];
   caches: Cache[];
+  /** Namespace key — adapter spec for LoRA requests ("" = base model).
+   *  KV computed under one adapter must never seed another's prefill. */
+  ns: string;
 }
 
 function cacheBytes(caches: Cache[]): number {
@@ -58,11 +61,12 @@ export class PromptCache {
    *  one token must be forwarded to produce logits). Entries longer than
    *  the prefix need cache.trim(); ring caches lose trimability once
    *  wrapped — those entries only match in full. */
-  take(prompt: number[]): PromptCacheEntry | null {
+  take(prompt: number[], ns = ""): PromptCacheEntry | null {
     let bestIdx = -1;
     let bestLen = 0;
     for (let i = 0; i < this.#entries.length; i++) {
       const e = this.#entries[i]!.entry;
+      if (e.ns !== ns) continue;
       const p = Math.min(commonPrefixLength(e.tokens, prompt), prompt.length - 1);
       if (p <= bestLen) continue;
       const trimNeeded = e.tokens.length - p;
@@ -86,13 +90,13 @@ export class PromptCache {
 
   /** Insert (or reinsert) an entry; evicts LRU entries over the byte cap.
    *  If the entry itself exceeds the cap it is disposed, not stored. */
-  put(tokens: number[], caches: Cache[]): void {
+  put(tokens: number[], caches: Cache[], ns = ""): void {
     const bytes = cacheBytes(caches);
     if (bytes > this.maxBytes) {
       for (const c of caches) c.dispose();
       return;
     }
-    this.#entries.push({ entry: { tokens, caches }, bytes, lastUsed: ++this.#clock });
+    this.#entries.push({ entry: { tokens, caches, ns }, bytes, lastUsed: ++this.#clock });
     while (this.totalBytes > this.maxBytes && this.#entries.length > 1) {
       let lruIdx = 0;
       for (let i = 1; i < this.#entries.length; i++)
