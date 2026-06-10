@@ -1,31 +1,27 @@
 // Phase 15 — head-to-head benchmark harness: mlx-bun vs mlx-lm vs optiq.
 //
 // ONE-SHOT (after a reboot, nothing else open):
-//   bun scripts/bench-h2h.ts all              # full matrix, ~45-60 min
-//   bun scripts/bench-h2h.ts all --skip-26b   # faster pass
+//   ./benchmark.sh            (= bun scripts/bench-h2h.ts all)
 //
-// Individual legs:
-//   bun scripts/bench-h2h.ts preflight
-//   bun scripts/bench-h2h.ts direct  [--models q1,q2] [--runs 3] [--tokens 256]
-//                                    [--kv off|config|N] [--prompt-tokens N]
-//                                    [--with-baseline]
-//   bun scripts/bench-h2h.ts server  [--models q] [--runs 5] [--tokens 128]
-//   bun scripts/bench-h2h.ts client  --target URL --stack mlx-lm|optiq
-//                                    --model-id ID [--runs 5] [--tokens 128]
-//   bun scripts/bench-h2h.ts table   [--since iso-date] [--out file.md]
+// RESUMABLE: cells that already have a row (same stack/model/leg/kv,
+// same commit, < 36 h old) are SKIPPED, so a re-run after a mid-matrix
+// abort continues where it stopped instead of redoing leg (a) forever.
+// --redo forces every cell fresh.
 //
-// Method rules (PLAN Phase 15, ENFORCED):
-// - preflight gates every leg (swap ≈ 0, free-memory floor, thermal, no
-//   big foreign processes); `all` hard-aborts when not clear and
-//   re-checks between model groups. --force (non-`all` legs only)
-//   records rows flagged "preflight-failed".
-// - interleaved repetitions, median-of-N (spread in notes), one
-//   discarded warmup per cell, machine-state snapshot in every row.
-// - direct-vs-direct and server-vs-server, never crossed.
-// - stock mlx_lm.server cannot load gemma4_unified (e4b/12B) — its
-//   server rows exist only for the 26B; optiq serves all three.
-//   (Direct "mlx-lm" rows use bench.ts --baseline, which registers the
-//   optiq model remapping — engine is stock mlx-lm generation.)
+// APPLES-TO-APPLES pairs (each cell tagged kv=off|config in its row):
+//   engine vs engine:  mlx-bun(bf16 KV)   vs mlx-lm(bf16 KV)
+//   best   vs best  :  mlx-bun(kv_config) vs optiq(kv_config)
+// optiq-direct = mlx-lm engine + optiq's install_mixed_kv patch
+// (bench.ts --baseline --baseline-kv config).
+//
+// ORDER: models smallest→largest and the 26B (the swap generator) runs
+// its cells LAST, so accumulated swap can't taint smaller models.
+// Mid-run recheck threshold is 3 GB (post-load inactive swap is normal;
+// the catastrophic regime was 6.4 GB churning) — the STARTING gate
+// stays strict (512 MB).
+//
+// Individual legs: preflight | direct | server | client | table
+// (see the command blocks below for flags).
 
 import { checkMachine, machineStateJson } from "../src/preflight";
 import { EvalDB, gitCommit } from "../src/evaldb";
@@ -34,6 +30,8 @@ import { existsSync } from "node:fs";
 
 const VENV = "/Users/joshrossi/Code/mlx-lm/.venv/bin";
 const PROMPT = "Write a detailed essay about the history of computing, starting with mechanical calculators.";
+const RESUME_WINDOW_MS = 36 * 3600 * 1000;
+const MIDRUN_SWAP_LIMIT_MB = 3072;
 
 const argv = process.argv.slice(2);
 const cmd = argv[0] ?? "preflight";
@@ -55,7 +53,7 @@ const list = (xs: number[], digits = 1) => xs.map((x) => x.toFixed(digits)).join
 const db = new EvalDB();
 const commit = gitCommit();
 
-// --- preflight -------------------------------------------------------------
+// --- preflight ------------------------------------------------------------
 
 function preflight(hard: boolean): string {
   const state = checkMachine();
@@ -68,7 +66,7 @@ function preflight(hard: boolean): string {
   if (!state.ok && (hard || !flag("force"))) {
     console.error(
       hard
-        ? "machine not clear — reboot, open nothing, re-run."
+        ? "machine not clear — reboot, open nothing, re-run (finished cells will be skipped)."
         : "refusing to benchmark on an uncleared machine (override: --force, flagged in notes)",
     );
     process.exit(1);
@@ -76,27 +74,50 @@ function preflight(hard: boolean): string {
   return machineStateJson(state);
 }
 
-// --- direct leg --------------------------------------------------------------
+// --- resume ----------------------------------------------------------------
 
-interface DirectOpts {
-  baseline?: boolean;
-  tokens: number;
-  promptTokens?: number;
-  kv?: string;
+function hasRecentRow(
+  stack: string, modelPath: string, notesLike: string, notesNotLike?: string,
+): boolean {
+  const row = db.db
+    .query(
+      "SELECT 1 FROM runs WHERE stack = ? AND model_path = ? AND notes LIKE ? " +
+      (notesNotLike ? "AND notes NOT LIKE ? " : "") +
+      "AND commit_sha = ? AND ts > ? LIMIT 1",
+    )
+    .get(
+      ...(notesNotLike
+        ? [stack, modelPath, notesLike, notesNotLike, commit, Date.now() - RESUME_WINDOW_MS]
+        : [stack, modelPath, notesLike, commit, Date.now() - RESUME_WINDOW_MS]) as [string, string, string, string, number],
+    );
+  return !!row && !flag("redo");
 }
 
-async function directRun(modelQuery: string, o: DirectOpts): Promise<{
+// --- direct leg --------------------------------------------------------------
+
+interface DirectCell {
+  m: ModelRecord;
+  /** mlx-bun | mlx-lm | optiq (optiq = mlx-lm engine + mixed-KV patch). */
+  stack: "mlx-bun" | "mlx-lm" | "optiq";
+  kv: "off" | "config";
+}
+const cellKey = (c: DirectCell) => `${c.m.repoId.split("/").at(-1)}/${c.stack}/kv=${c.kv}`;
+
+async function directRun(c: DirectCell, tokens: number, promptTokens?: number): Promise<{
   prefillTps: number; decodeTps: number; peakGB: number; promptTokens: number;
 }> {
-  const args = ["bun", "scripts/bench.ts", "--model", modelQuery, "--tokens", String(o.tokens)];
-  if (o.promptTokens) args.push("--prompt-tokens", String(o.promptTokens));
-  if (o.baseline) args.push("--baseline");
-  else if (o.kv) args.push("--kv", o.kv);
+  const args = ["bun", "scripts/bench.ts", "--model", c.m.repoId, "--tokens", String(tokens)];
+  if (promptTokens) args.push("--prompt-tokens", String(promptTokens));
+  if (c.stack === "mlx-bun") args.push("--kv", c.kv);
+  else {
+    args.push("--baseline");
+    if (c.stack === "optiq") args.push("--baseline-kv", "config");
+  }
   const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([
     new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
   ]);
-  if (code !== 0) throw new Error(`bench.ts failed for ${modelQuery}:\n${err.slice(-500)}`);
+  if (code !== 0) throw new Error(`bench.ts failed for ${cellKey(c)}:\n${err.slice(-500)}`);
   const prefill = out.match(/prompt: (\d+) tok @ ([\d.]+) tok\/s/);
   const decode = out.match(/decode: \d+ tok @ ([\d.]+) tok\/s/);
   const peak = out.match(/peak mem: ([\d.]+) GB/);
@@ -109,47 +130,53 @@ async function directRun(modelQuery: string, o: DirectOpts): Promise<{
   };
 }
 
-interface Cell { decode: number[]; prefill: number[]; peak: number[]; prompt: number }
+interface Agg { decode: number[]; prefill: number[]; peak: number[]; prompt: number }
 
 async function directLeg(
-  models: ModelRecord[], runs: number, machineState: string,
-  o: { tokens: number; promptTokens?: number; kv: string; withBaseline: boolean; forceNote?: boolean },
+  cells: DirectCell[], runs: number, machineState: string,
+  o: { tokens: number; promptTokens?: number; forceNote?: boolean },
 ): Promise<void> {
-  const cells = new Map<string, Cell>();
-  const legs = models.flatMap((m) => [
-    { m, baseline: false },
-    ...(o.withBaseline ? [{ m, baseline: true }] : []),
-  ]);
+  const ctxTag = o.promptTokens ? ` ctx~${o.promptTokens}` : "";
+  const todo = cells.filter((c) => {
+    const like = `h2h-direct%kv=${c.kv}${o.promptTokens ? " ctx=%" : " %"}`;
+    const notLike = o.promptTokens ? undefined : "%ctx=%";
+    if (hasRecentRow(c.stack, c.m.path, like, notLike)) {
+      console.log(`  [skip] ${cellKey(c)}${ctxTag} — recent row exists (use --redo to rerun)`);
+      return false;
+    }
+    return true;
+  });
+  if (todo.length === 0) return;
+
+  const agg = new Map<string, Agg>();
   for (let r = 0; r <= runs; r++) {
-    for (const leg of legs) {
-      const key = `${leg.m.repoId.split("/").at(-1)}/${leg.baseline ? "mlx-lm" : "mlx-bun"}`;
-      const res = await directRun(leg.m.repoId, {
-        baseline: leg.baseline, tokens: o.tokens, promptTokens: o.promptTokens, kv: o.kv,
-      });
+    for (const c of todo) {
+      const key = cellKey(c);
+      const res = await directRun(c, o.tokens, o.promptTokens);
       if (r === 0) {
         console.log(`  [warmup] ${key}: ${res.decodeTps.toFixed(1)} tok/s (discarded)`);
         continue;
       }
-      const c = cells.get(key) ?? { decode: [], prefill: [], peak: [], prompt: res.promptTokens };
-      c.decode.push(res.decodeTps);
-      c.prefill.push(res.prefillTps);
-      c.peak.push(res.peakGB);
-      cells.set(key, c);
+      const a = agg.get(key) ?? { decode: [], prefill: [], peak: [], prompt: res.promptTokens };
+      a.decode.push(res.decodeTps);
+      a.prefill.push(res.prefillTps);
+      a.peak.push(res.peakGB);
+      agg.set(key, a);
       console.log(`  [run ${r}/${runs}] ${key}: ${res.decodeTps.toFixed(1)} tok/s decode`);
     }
   }
-  for (const [key, c] of cells) {
-    const stack = key.endsWith("mlx-lm") ? "mlx-lm" : "mlx-bun";
-    const m = models.find((x) => key.startsWith(x.repoId.split("/").at(-1)!))!;
-    console.log(`  ${key}: decode ${fmt(c.decode)} | prefill ${fmt(c.prefill, 0)} | peak ${Math.max(...c.peak).toFixed(2)} GB`);
+  for (const c of todo) {
+    const key = cellKey(c);
+    const a = agg.get(key)!;
+    console.log(`  ${key}: decode ${fmt(a.decode)} | prefill ${fmt(a.prefill, 0)} | peak ${Math.max(...a.peak).toFixed(2)} GB`);
     db.record({
-      modelPath: m.path, commitSha: commit, stack,
-      promptTokens: c.prompt, generatedTokens: o.tokens,
-      prefillTps: median(c.prefill), decodeTps: median(c.decode),
-      peakBytes: Math.round(Math.max(...c.peak) * 1e9),
+      modelPath: c.m.path, commitSha: commit, stack: c.stack,
+      promptTokens: a.prompt, generatedTokens: o.tokens,
+      prefillTps: median(a.prefill), decodeTps: median(a.decode),
+      peakBytes: Math.round(Math.max(...a.peak) * 1e9),
       machineState,
-      notes: `h2h-direct median-of-${runs} kv=${o.kv}${o.promptTokens ? ` ctx=${c.prompt}` : ""} ` +
-        `decode[${list(c.decode)}]${o.forceNote ? " preflight-failed" : ""}`,
+      notes: `h2h-direct median-of-${runs} kv=${c.kv}${o.promptTokens ? ` ctx=${a.prompt}` : ""} ` +
+        `decode[${list(a.decode)}]${o.forceNote ? " preflight-failed" : ""}`,
     });
   }
 }
@@ -195,7 +222,6 @@ async function serverRequest(base: string, modelId: string, tokens: number): Pro
     }
   }
   if (firstContentAt < 0) throw new Error("no content chunks received");
-  // python servers may not honor stream_options — fall back to chunk count
   const completionTokens = usage?.completion_tokens ?? contentChunks;
   const decodeTps =
     completionTokens > 1 ? ((completionTokens - 1) * 1000) / (lastChunkAt - firstContentAt) : 0;
@@ -215,18 +241,28 @@ async function waitReady(base: string, timeoutMs: number): Promise<number> {
   throw new Error(`server at ${base} not ready after ${timeoutMs} ms`);
 }
 
+interface ServerCell {
+  m: ModelRecord;
+  stack: "mlx-bun" | "mlx-lm" | "optiq";
+  /** off = bf16 KV (--no-kv-quant for ours; mlx-lm is always off);
+   *  config = kv_config.json (our default; optiq --kv-config). */
+  kv: "off" | "config";
+}
+const serverKey = (c: ServerCell) => `${c.m.repoId.split("/").at(-1)}/${c.stack}/kv=${c.kv}`;
+
 interface ManagedServer { proc: ReturnType<typeof Bun.spawn>; base: string; readyMs: number }
 
-async function startServer(stack: string, m: ModelRecord, port: number): Promise<ManagedServer> {
+async function startServer(c: ServerCell, port: number): Promise<ManagedServer> {
   let cmdline: string[];
-  if (stack === "mlx-bun") {
-    cmdline = ["bun", "scripts/serve.ts", "--model", m.path, "--port", String(port)];
-  } else if (stack === "mlx-lm") {
-    cmdline = [`${VENV}/mlx_lm.server`, "--model", m.path, "--port", String(port)];
+  if (c.stack === "mlx-bun") {
+    cmdline = ["bun", "scripts/serve.ts", "--model", c.m.path, "--port", String(port)];
+    if (c.kv === "off") cmdline.push("--no-kv-quant");
+  } else if (c.stack === "mlx-lm") {
+    cmdline = [`${VENV}/mlx_lm.server`, "--model", c.m.path, "--port", String(port)];
   } else {
-    cmdline = [`${VENV}/optiq`, "serve", "--model", m.path, "--port", String(port)];
-    const kvCfg = `${m.path}/kv_config.json`;
-    if (existsSync(kvCfg)) cmdline.push("--kv-config", kvCfg);
+    cmdline = [`${VENV}/optiq`, "serve", "--model", c.m.path, "--port", String(port)];
+    const kvCfg = `${c.m.path}/kv_config.json`;
+    if (c.kv === "config" && existsSync(kvCfg)) cmdline.push("--kv-config", kvCfg);
   }
   const proc = Bun.spawn(cmdline, { stdout: "pipe", stderr: "pipe" });
   const base = `http://127.0.0.1:${port}/v1`;
@@ -236,13 +272,12 @@ async function startServer(stack: string, m: ModelRecord, port: number): Promise
   } catch (e) {
     proc.kill();
     const err = await new Response(proc.stderr).text().catch(() => "");
-    throw new Error(`${stack} server failed to start: ${(e as Error).message}\n${err.slice(-400)}`);
+    throw new Error(`${c.stack} server failed to start: ${(e as Error).message}\n${err.slice(-400)}`);
   }
 }
 
-/** Resident set of a pid in MB (cross-stack leak probe; for Metal-heavy
- *  processes RSS undercounts GPU memory, but GROWTH across requests is
- *  the leak signal we're after). */
+/** Resident set of a pid in MB (cross-stack leak probe; RSS undercounts
+ *  GPU memory, but GROWTH across requests is the leak signal). */
 function rssMB(pid: number): number {
   const r = Bun.spawnSync(["ps", "-o", "rss=", "-p", String(pid)]);
   return r.exitCode === 0 ? Number(r.stdout.toString().trim()) / 1024 : -1;
@@ -256,29 +291,30 @@ async function stopServer(s: ManagedServer): Promise<void> {
 }
 
 async function serverLeg(
-  stack: string, m: ModelRecord, runs: number, tokens: number,
-  machineState: string, forceNote = false,
+  c: ServerCell, runs: number, tokens: number, machineState: string, forceNote = false,
 ): Promise<void> {
-  const key = `${m.repoId.split("/").at(-1)}/${stack}`;
-  console.log(`  starting ${stack} server for ${m.repoId} ...`);
-  const srv = await startServer(stack, m, 8970);
+  const key = serverKey(c);
+  if (hasRecentRow(c.stack, c.m.path, `h2h-server%kv=${c.kv}%`)) {
+    console.log(`  [skip] ${key} — recent row exists (use --redo to rerun)`);
+    return;
+  }
+  console.log(`  starting ${c.stack} server for ${c.m.repoId} (kv=${c.kv}) ...`);
+  const srv = await startServer(c, 8970);
   try {
     console.log(`  ready in ${(srv.readyMs / 1000).toFixed(1)} s`);
-    const warm = await serverRequest(srv.base, m.repoId, tokens);
+    const warm = await serverRequest(srv.base, c.m.repoId, tokens);
     console.log(`  [warmup] ttft ${warm.ttftMs.toFixed(0)} ms, decode ${warm.decodeTps.toFixed(1)} tok/s (discarded)`);
     const rssAfterWarm = rssMB(srv.proc.pid);
     const ttfts: number[] = [];
     const decodes: number[] = [];
     let promptTokens = warm.promptTokens;
     for (let r = 1; r <= runs; r++) {
-      const res = await serverRequest(srv.base, m.repoId, tokens);
+      const res = await serverRequest(srv.base, c.m.repoId, tokens);
       ttfts.push(res.ttftMs);
       decodes.push(res.decodeTps);
       if (res.promptTokens > 0) promptTokens = res.promptTokens;
       console.log(`  [run ${r}/${runs}] ${key}: ttft ${res.ttftMs.toFixed(0)} ms, decode ${res.decodeTps.toFixed(1)} tok/s`);
     }
-    // per-request memory growth (leak probe over the request session;
-    // measured post-warmup so model load isn't counted as growth)
     const rssFinal = rssMB(srv.proc.pid);
     const growthMB = rssAfterWarm > 0 && rssFinal > 0 ? rssFinal - rssAfterWarm : NaN;
     console.log(
@@ -287,12 +323,12 @@ async function serverLeg(
       `${Number.isNaN(growthMB) ? "n/a" : `${growthMB.toFixed(0)} MB over ${runs} req`}`,
     );
     db.record({
-      modelPath: m.path, commitSha: commit, stack,
+      modelPath: c.m.path, commitSha: commit, stack: c.stack,
       promptTokens: Math.max(promptTokens, 0), generatedTokens: tokens,
       prefillTps: 0, decodeTps: median(decodes),
       peakBytes: rssFinal > 0 ? Math.round(rssFinal * 1024 * 1024) : 0,
       machineState,
-      notes: `h2h-server median-of-${runs} ttft_ms=${median(ttfts).toFixed(0)} ` +
+      notes: `h2h-server median-of-${runs} kv=${c.kv} ttft_ms=${median(ttfts).toFixed(0)} ` +
         `ready_ms=${srv.readyMs.toFixed(0)} rss_growth_mb=${Number.isNaN(growthMB) ? "?" : growthMB.toFixed(0)} ` +
         `ttft[${list(ttfts, 0)}] decode[${list(decodes)}]` +
         `${forceNote ? " preflight-failed" : ""}`,
@@ -305,23 +341,37 @@ async function serverLeg(
 // --- table ---------------------------------------------------------------
 
 function renderTable(sinceTs: number): string {
-  const rows = db.db
-    .query("SELECT * FROM runs WHERE ts >= ? AND notes LIKE 'h2h-%' ORDER BY model_path, notes, stack")
+  const raw = db.db
+    .query("SELECT * FROM runs WHERE ts >= ? AND notes LIKE 'h2h-%' ORDER BY ts ASC")
     .all(sinceTs) as Record<string, any>[];
+  // latest row wins per logical cell (re-runs and aborted passes leave
+  // older rows in the DB — history stays queryable, table stays clean)
+  const byCell = new Map<string, Record<string, any>>();
+  for (const r of raw) {
+    const notes = String(r.notes);
+    const legT = notes.startsWith("h2h-server") ? "server" : notes.includes("ctx=") ? "ctx" : "direct";
+    byCell.set(`${r.model_path}|${r.stack}|${legT}|${notes.match(/kv=(\w+)/)?.[1] ?? "?"}`, r);
+  }
+  const rows = [...byCell.values()].sort((a, b) =>
+    String(a.model_path).localeCompare(String(b.model_path)) ||
+    String(a.notes).localeCompare(String(b.notes)) ||
+    String(a.stack).localeCompare(String(b.stack)),
+  );
   const lines = [
-    "| model | stack | leg | decode tok/s | prefill tok/s | ttft ms | ready s | mem GB | rss growth |",
-    "|---|---|---|---|---|---|---|---|---|",
+    "| model | stack | leg | kv | decode tok/s | prefill tok/s | ttft ms | ready s | mem GB | rss growth |",
+    "|---|---|---|---|---|---|---|---|---|---|",
   ];
   for (const r of rows) {
     const model = String(r.model_path).split("/").filter(Boolean).at(-1)!.slice(0, 12);
     const notes = String(r.notes);
     const leg = notes.startsWith("h2h-server") ? "server"
       : notes.includes("ctx=") ? "direct@8k" : "direct";
+    const kv = notes.match(/kv=(\w+)/)?.[1] === "config" ? "mixed" : "bf16";
     const ttft = notes.match(/ttft_ms=(\d+)/)?.[1] ?? "—";
     const ready = notes.match(/ready_ms=(\d+)/)?.[1];
     const growth = notes.match(/rss_growth_mb=([\d.-]+)/)?.[1];
     lines.push(
-      `| ${model} | ${r.stack} | ${leg} | ${Number(r.decode_tps).toFixed(1)} | ` +
+      `| ${model} | ${r.stack} | ${leg} | ${kv} | ${Number(r.decode_tps).toFixed(1)} | ` +
       `${r.prefill_tps ? Number(r.prefill_tps).toFixed(0) : "—"} | ${ttft} | ` +
       `${ready ? (Number(ready) / 1000).toFixed(1) : "—"} | ` +
       `${r.peak_bytes ? (Number(r.peak_bytes) / 1e9).toFixed(2) : "—"} | ` +
@@ -344,25 +394,29 @@ const resolveAll = (q: string): ModelRecord[] => q.split(",").map((s) => reg.res
 
 if (cmd === "direct") {
   const machineState = preflight(false);
-  await directLeg(
-    resolveAll(opt("models", "e4b-it-OptiQ,12B,26B")),
-    Number(opt("runs", "3")), machineState,
-    {
-      tokens: Number(opt("tokens", "256")),
-      promptTokens: Number(opt("prompt-tokens", "0")) || undefined,
-      kv: opt("kv", "config"),
-      withBaseline: flag("with-baseline"),
-      forceNote: flag("force") && !checkMachine().ok,
-    },
-  );
+  const models = resolveAll(opt("models", "e4b-it-OptiQ,12B,26B"));
+  const kv = opt("kv", "config") as "off" | "config";
+  const cells: DirectCell[] = models.flatMap((m) => [
+    { m, stack: "mlx-bun" as const, kv },
+    ...(flag("with-baseline") ? [{ m, stack: "mlx-lm" as const, kv: "off" as const }] : []),
+  ]);
+  await directLeg(cells, Number(opt("runs", "3")), machineState, {
+    tokens: Number(opt("tokens", "256")),
+    promptTokens: Number(opt("prompt-tokens", "0")) || undefined,
+    forceNote: flag("force") && !checkMachine().ok,
+  });
   process.exit(0);
 }
 
 if (cmd === "server") {
   const machineState = preflight(false);
   const forceNote = flag("force") && !checkMachine().ok;
-  for (const m of resolveAll(opt("models", "e4b-it-OptiQ")))
-    await serverLeg("mlx-bun", m, Number(opt("runs", "5")), Number(opt("tokens", "128")), machineState, forceNote);
+  for (const m of resolveAll(opt("models", "e4b-it-OptiQ"))) {
+    await serverLeg(
+      { m, stack: "mlx-bun", kv: opt("kv", "config") as "off" | "config" },
+      Number(opt("runs", "5")), Number(opt("tokens", "128")), machineState, forceNote,
+    );
+  }
   process.exit(0);
 }
 
@@ -392,9 +446,8 @@ if (cmd === "client") {
     modelPath: modelId, commitSha: commit, stack,
     promptTokens: Math.max(warm.promptTokens, 0), generatedTokens: tokens,
     prefillTps: 0, decodeTps: median(decodes), peakBytes: 0, machineState,
-    notes: `h2h-server median-of-${runs} ttft_ms=${median(ttfts).toFixed(0)} ` +
-      `ttft[${list(ttfts, 0)}] decode[${list(decodes)}]` +
-      `${flag("force") && !checkMachine().ok ? " preflight-failed" : ""}`,
+    notes: `h2h-server median-of-${runs} kv=${opt("kv", "config")} ttft_ms=${median(ttfts).toFixed(0)} ` +
+      `ttft[${list(ttfts, 0)}] decode[${list(decodes)}]`,
   });
   process.exit(0);
 }
@@ -412,15 +465,14 @@ if (cmd === "table") {
 }
 
 if (cmd === "all") {
-  // THE one-shot matrix. Hard preflight; re-checked between groups.
   const startedAt = Date.now();
   let machineState = preflight(true);
   const recheck = (label: string) => {
-    const s = checkMachine();
+    const s = checkMachine({ maxSwapUsedMB: MIDRUN_SWAP_LIMIT_MB });
     if (!s.ok) {
       console.error(`\nmachine degraded after ${label}: ${s.problems.join("; ")}`);
-      console.error("partial results are recorded; re-run after a reboot to finish.");
-      console.log("\n" + renderTable(startedAt));
+      console.error("finished cells are recorded — reboot and re-run; they will be skipped.");
+      console.log("\n" + renderTable(startedAt - RESUME_WINDOW_MS));
       process.exit(1);
     }
     machineState = machineStateJson(s);
@@ -428,48 +480,71 @@ if (cmd === "all") {
 
   const runs = Number(opt("runs", "3"));
   const serverRuns = Number(opt("server-runs", "5"));
+  // smallest first; the 26B (swap generator) runs ALL its cells last
   const models = resolveAll(
     opt("models", flag("skip-26b") ? "e4b-it-OptiQ,12B" : "e4b-it-OptiQ,12B,26B"),
-  );
+  ).sort((a, b) => a.sizeBytes - b.sizeBytes);
 
-  console.log(`\n=== leg (a): direct engine, ${models.length} model(s) × {mlx-bun, mlx-lm} ===`);
-  await directLeg(models, runs, machineState, {
-    tokens: 256, kv: "config", withBaseline: true,
-  });
-  recheck("direct leg");
-
-  console.log("\n=== leg (d): long-context @8k, 12B, kv config vs bf16 (mlx-bun) ===");
-  const m12 = models.find((m) => m.repoId.includes("12B"));
-  if (m12) {
-    for (const kv of ["config", "off"]) {
-      console.log(`  kv=${kv}:`);
-      await directLeg([m12], Math.max(2, runs - 1), machineState, {
-        tokens: 256, promptTokens: 8000, kv, withBaseline: false,
-      });
-    }
-    recheck("long-context leg");
-  }
-
-  console.log("\n=== legs (b)+(c): server-vs-server (TTFT, streamed decode, ready time) ===");
   for (const m of models) {
-    const stacks = ["mlx-bun", "optiq"];
-    // stock mlx_lm.server can't load gemma4_unified (e4b/12B) — 26B only
-    if (m.modelType === "gemma4") stacks.push("mlx-lm");
-    for (const stack of stacks) {
+    const name = m.repoId.split("/").at(-1);
+    const hasKvCfg = existsSync(`${m.path}/kv_config.json`);
+
+    console.log(`\n=== ${name}: direct (engine pair bf16/bf16 + best pair mixed/mixed) ===`);
+    const directCells: DirectCell[] = [
+      { m, stack: "mlx-bun", kv: "off" },
+      { m, stack: "mlx-lm", kv: "off" },
+      ...(hasKvCfg
+        ? [
+            { m, stack: "mlx-bun" as const, kv: "config" as const },
+            { m, stack: "optiq" as const, kv: "config" as const },
+          ]
+        : []),
+    ];
+    await directLeg(directCells, runs, machineState, { tokens: 256 });
+    recheck(`${name} direct`);
+
+    if (m.repoId.includes("12B")) {
+      console.log(`\n=== ${name}: long-context @8k (mixed vs bf16, mlx-bun + optiq) ===`);
+      await directLeg(
+        [
+          { m, stack: "mlx-bun", kv: "config" },
+          { m, stack: "mlx-bun", kv: "off" },
+          { m, stack: "optiq", kv: "config" },
+          { m, stack: "mlx-lm", kv: "off" },
+        ],
+        Math.max(2, runs - 1), machineState, { tokens: 256, promptTokens: 8000 },
+      );
+      recheck(`${name} long-context`);
+    }
+
+    console.log(`\n=== ${name}: server-vs-server ===`);
+    const serverCells: ServerCell[] = [
+      { m, stack: "mlx-bun", kv: hasKvCfg ? "config" : "off" },
+      { m, stack: "optiq", kv: hasKvCfg ? "config" : "off" },
+      // stock mlx_lm.server can't load gemma4_unified — 26B only; pair it
+      // with an mlx-bun bf16 row so that comparison is bf16-vs-bf16
+      ...(m.modelType === "gemma4"
+        ? [
+            { m, stack: "mlx-lm" as const, kv: "off" as const },
+            { m, stack: "mlx-bun" as const, kv: "off" as const },
+          ]
+        : []),
+    ];
+    for (const c of serverCells) {
       try {
-        await serverLeg(stack, m, serverRuns, 128, machineState);
+        await serverLeg(c, serverRuns, 128, machineState);
       } catch (e) {
-        console.error(`  ${stack}/${m.repoId}: ${(e as Error).message.split("\n")[0]} — row skipped`);
+        console.error(`  ${serverKey(c)}: ${(e as Error).message.split("\n")[0]} — cell skipped`);
       }
-      recheck(`${stack} server (${m.repoId})`);
+      recheck(serverKey(c));
     }
   }
 
   const out = `benchmarks-h2h-${new Date().toISOString().slice(0, 10)}.md`;
-  const table = renderTable(startedAt);
-  console.log(`\n=== results ===\n${table}`);
+  const table = renderTable(startedAt - RESUME_WINDOW_MS);
+  console.log(`\n=== results (incl. resumed cells from this window) ===\n${table}`);
   await Bun.write(out, `# mlx-bun head-to-head (${new Date().toISOString().slice(0, 10)}, commit ${commit})\n\n${table}\n`);
-  console.log(`\nwrote ${out} — total ${(Date.now() - startedAt) / 60000 | 0} min`);
+  console.log(`\nwrote ${out} — this pass took ${(Date.now() - startedAt) / 60000 | 0} min`);
   process.exit(0);
 }
 
