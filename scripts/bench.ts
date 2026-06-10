@@ -8,7 +8,7 @@
 // --model resolves a registry query (default: the 12B oracle snapshot).
 
 import { ORACLE_PYTHON, SNAPSHOT } from "../tests/paths";
-import { peakMemory } from "../src/mlx/ffi";
+import { peakMemory, resetPeakMemory } from "../src/mlx/ffi";
 
 const tokensIdx = process.argv.indexOf("--tokens");
 const MAX_TOKENS = tokensIdx > -1 ? Number(process.argv[tokensIdx + 1]) : 600;
@@ -56,6 +56,10 @@ if kvcfg:
     # non-None kv_bits makes the quantize hook run; the patched hook
     # ignores it and uses the per-layer map (optiq serve behavior)
     extra = dict(kv_bits=8, kv_group_size=64, quantized_kv_start=0)
+# generation-only peak: python load() materializes non-lazily and its
+# transient otherwise dominates peak_memory (constant 9.84 GB on the 12B
+# at every context — a load figure, not a serving one)
+mx.reset_peak_memory()
 last = None
 for r in stream_generate(model, tokenizer, prompt, max_tokens=int(sys.argv[3]), **extra):
     last = r
@@ -129,6 +133,9 @@ const kvOptions =
   for await (const _ of wGen) { /* discard */ }
   for (const c of wCache) c.dispose();
 }
+// peak from here on = GENERATION-ONLY (load/warmup transient excluded) —
+// the python baseline resets after load() too, so the columns compare.
+resetPeakMemory();
 
 const gen = generate(model, promptIds, { maxTokens: MAX_TOKENS, temperature: 0, ...kvOptions });
 const out: number[] = [];

@@ -46,6 +46,7 @@ export const C = dlopen(LIBMLXC_PATH, {
   // memory introspection / limits
   mlx_get_active_memory: { args: [P], returns: i32 },
   mlx_get_peak_memory: { args: [P], returns: i32 },
+  mlx_reset_peak_memory: { args: [], returns: i32 },
   // mlx_device_info is a one-pointer struct like every other handle
   mlx_device_info_new: { args: [], returns: u64 },
   mlx_device_info_get: { args: [P, u64], returns: i32 },
@@ -230,6 +231,12 @@ export function peakMemory(): number {
   const p = ptr(out);
   C.mlx_get_peak_memory(p);
   return Number(read.u64(p, 0));
+}
+
+/** mx.reset_peak_memory — zero the peak counter (e.g. after model load,
+ *  so a subsequent peakMemory() reads generation-only peak). */
+export function resetPeakMemory(): void {
+  C.mlx_reset_peak_memory();
 }
 
 /** Metal's recommended max working-set size for the default device. */
