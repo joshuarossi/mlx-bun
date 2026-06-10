@@ -107,7 +107,7 @@ export class MlxArray {
     const n = this.ndim;
     if (n === 0) return [];
     const shapePtr = C.mlx_array_shape(this.handle);
-    return [...new Int32Array(toArrayBuffer(shapePtr, 0, n * 4))];
+    return [...new Int32Array(toArrayBuffer(shapePtr!, 0, n * 4))];
   }
 
   get dtype(): Dtype {
@@ -143,7 +143,7 @@ export class MlxArray {
     const src = this.dtype === Dtype.float32 ? this : this.astype(Dtype.float32);
     src.eval();
     const dataPtr = C.mlx_array_data_float32(src.handle);
-    const out = new Float32Array(toArrayBuffer(dataPtr, 0, src.size * 4)).slice();
+    const out = new Float32Array(toArrayBuffer(dataPtr!, 0, src.size * 4)).slice();
     if (src !== this) src.dispose();
     return out;
   }

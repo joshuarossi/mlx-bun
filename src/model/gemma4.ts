@@ -3,22 +3,32 @@
 // exercise: no MoE block, no per-layer-input embeddings, no KV-shared
 // layers (all disabled in the 12B config; guarded with explicit errors).
 //
-// Parity notes (see PLAN.md Phase 2):
+// Parity notes (see PLAN.md Phase 2 findings):
 // - SDPA scale is 1.0 (Gemma4 normalizes q/k instead).
 // - Full-attention layers: global_head_dim 512, 1 global KV head,
 //   attention_k_eq_v (V = same projection as K, with un-scaled RMS norm);
-//   ProportionalRoPE rotates only partial_rotary_factor·dims dims (rest
-//   get freq=inf → identity).
-// - Python-float scalars promote weakly to the array dtype — replicated
-//   via ops.scalarLike/mulScalar.
-// - Masks: for N==1 mlx-lm passes no mask; otherwise "causal" while
-//   N ≤ sliding_window (longer prompts need real window masks — Phase 3).
+//   ProportionalRoPE rotates only partial_rotary_factor·dims dims.
+// - Python-float scalars promote weakly to the array dtype.
+// - Replicate mlx python helper implementations exactly (x**3 is
+//   mx.power, not x·x·x — they round differently in bf16).
+//
+// Masks: ports base.py create_attention_mask/create_causal_mask. Sliding
+// layers use a plain (non-rotating) cache + window masks — numerically
+// identical to mlx-lm's RotatingKVCache, at the cost of unbounded cache
+// growth past the window (memory optimization deferred).
 
 import type { ModelConfig } from "../config";
 import { quantFor } from "../config";
 import type { Weights } from "../weights";
 import { MlxArray } from "../mlx/array";
+import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
+
+export type MaskMode = "" | "causal";
+export interface Mask {
+  mode: MaskMode | "array";
+  arr: MlxArray | null;
+}
 
 class QuantizedLinear {
   constructor(
@@ -71,15 +81,13 @@ class QuantizedEmbedding {
     );
   }
 
-  /** ids [L] → embeddings [1, L, hidden] (QuantizedEmbedding.__call__). */
-  encode(ids: number[]): MlxArray {
-    const idx = ops.fromInt32(ids, [ids.length]);
-    const rows = ops.takeAxis(this.w, idx, 0);
-    const scaleRows = ops.takeAxis(this.scales, idx, 0);
-    const biasRows = this.biases ? ops.takeAxis(this.biases, idx, 0) : null;
-    const deq = ops.dequantize(rows, scaleRows, biasRows, this.spec);
-    const out = ops.reshape(deq, [1, ids.length, -1]);
-    for (const a of [idx, rows, scaleRows, deq]) a.dispose();
+  /** ids [1, L] (int/uint) → embeddings [1, L, hidden]. */
+  encode(ids: MlxArray): MlxArray {
+    const rows = ops.takeAxis(this.w, ids, 0);
+    const scaleRows = ops.takeAxis(this.scales, ids, 0);
+    const biasRows = this.biases ? ops.takeAxis(this.biases, ids, 0) : null;
+    const out = ops.dequantize(rows, scaleRows, biasRows, this.spec);
+    for (const a of [rows, scaleRows]) a.dispose();
     biasRows?.dispose();
     return out;
   }
@@ -90,29 +98,78 @@ class QuantizedEmbedding {
   }
 }
 
-/** Plain KV cache (concat-based; mlx-lm's step-allocated cache is
- *  numerically identical). Sliding-window eviction comes in Phase 3. */
-export class KVCache {
+export interface Cache {
+  offset: number;
+  updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray];
+  /** Mask for an N-token step given this cache's state. */
+  makeMask(N: number, windowSize: number | null): Mask;
+  state(): MlxArray[];
+  dispose(): void;
+}
+
+/** KV cache — port of mlx-lm cache.py KVCache: preallocated in steps of
+ *  256 along the sequence axis, updated in place via slice_update. */
+export class KVCache implements Cache {
+  static readonly STEP = 256;
   keys: MlxArray | null = null;
   values: MlxArray | null = null;
   offset = 0;
 
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
-    if (this.keys && this.values) {
-      const nk = ops.concatAxis([this.keys, k], 2);
-      const nv = ops.concatAxis([this.values, v], 2);
-      this.keys.dispose();
-      this.values.dispose();
-      k.dispose();
-      v.dispose();
-      this.keys = nk;
-      this.values = nv;
-    } else {
-      this.keys = k;
-      this.values = v;
+    const prev = this.offset;
+    const L = k.shape[2]!;
+    if (!this.keys || prev + L > this.keys.shape[2]!) {
+      const [B, H, , D] = k.shape as [number, number, number, number];
+      const vD = v.shape[3]!;
+      const nSteps = Math.ceil((KVCache.STEP + L - 1) / KVCache.STEP);
+      const newK = ops.zeros([B, H, nSteps * KVCache.STEP, D], k.dtype);
+      const newV = ops.zeros([B, H, nSteps * KVCache.STEP, vD], v.dtype);
+      if (this.keys && this.values) {
+        let oldK = this.keys;
+        let oldV = this.values;
+        if (prev % KVCache.STEP !== 0) {
+          const trimK = oldK.slice([0, 0, 0, 0], [B, H, prev, D]);
+          const trimV = oldV.slice([0, 0, 0, 0], [B, H, prev, vD]);
+          oldK.dispose();
+          oldV.dispose();
+          oldK = trimK;
+          oldV = trimV;
+        }
+        this.keys = ops.concatAxis([oldK, newK], 2);
+        this.values = ops.concatAxis([oldV, newV], 2);
+        for (const a of [oldK, oldV, newK, newV]) a.dispose();
+      } else {
+        this.keys = newK;
+        this.values = newV;
+      }
     }
-    this.offset = this.keys.shape[2]!;
-    return [this.keys, this.values];
+
+    this.offset += L;
+    const [B, H, S, D] = this.keys!.shape as [number, number, number, number];
+    const vD = this.values!.shape[3]!;
+    const k2 = ops.sliceUpdate(this.keys!, k, [0, 0, prev, 0], [B, H, this.offset, D]);
+    const v2 = ops.sliceUpdate(this.values!, v, [0, 0, prev, 0], [B, H, this.offset, vD]);
+    this.keys!.dispose();
+    this.values!.dispose();
+    this.keys = k2;
+    this.values = v2;
+    return [
+      this.keys.slice([0, 0, 0, 0], [B, H, this.offset, D]),
+      this.values.slice([0, 0, 0, 0], [B, H, this.offset, vD]),
+    ];
+  }
+
+  makeMask(N: number, windowSize: number | null): Mask {
+    if (N === 1) return { mode: "", arr: null };
+    if (this.offset === 0 && windowSize === null) return { mode: "causal", arr: null };
+    if (this.offset === 0 && windowSize !== null && N <= windowSize)
+      return { mode: "causal", arr: null };
+    return { mode: "array", arr: createCausalMask(N, this.offset, windowSize) };
+  }
+
+  /** Arrays to eval to materialize cache state (prefill chunk boundary). */
+  state(): MlxArray[] {
+    return this.keys && this.values ? [this.keys, this.values] : [];
   }
 
   dispose(): void {
@@ -121,6 +178,193 @@ export class KVCache {
     this.keys = this.values = null;
     this.offset = 0;
   }
+}
+
+/** Rotating (sliding-window) KV cache — port of mlx-lm RotatingKVCache
+ *  with keep=0 (gemma4's configuration): a ring buffer of max_size
+ *  entries, so decode attends over at most the window. RoPE offsets use
+ *  the true position; masks use the buffer-clamped offset. */
+export class RotatingKVCache implements Cache {
+  static readonly STEP = 256;
+  keys: MlxArray | null = null;
+  values: MlxArray | null = null;
+  offset = 0;
+  #idx = 0;
+  readonly maxSize: number;
+
+  constructor(maxSize: number) {
+    this.maxSize = maxSize;
+  }
+
+  /** v with ring contents rearranged into temporal order (keep=0). */
+  #temporalOrder(v: MlxArray): MlxArray {
+    const S = v.shape[2]!;
+    const [B, H, , D] = v.shape as [number, number, number, number];
+    if (this.#idx === S) return v.slice([0, 0, 0, 0], [B, H, S, D]);
+    if (this.#idx < this.offset) {
+      const tail = v.slice([0, 0, this.#idx, 0], [B, H, S, D]);
+      const head = v.slice([0, 0, 0, 0], [B, H, this.#idx, D]);
+      const out = ops.concatAxis([tail, head], 2);
+      tail.dispose();
+      head.dispose();
+      return out;
+    }
+    return v.slice([0, 0, 0, 0], [B, H, this.#idx, D]);
+  }
+
+  #trim(trimSize: number, v: MlxArray, append: MlxArray | null): MlxArray {
+    const [B, H, S, D] = v.shape as [number, number, number, number];
+    let base: MlxArray;
+    if (trimSize > 0) {
+      base = v.slice([0, 0, trimSize, 0], [B, H, S, D]);
+    } else {
+      base = v.slice([0, 0, 0, 0], [B, H, S, D]);
+    }
+    if (!append) return base;
+    const out = ops.concatAxis([base, append], 2);
+    base.dispose();
+    return out;
+  }
+
+  #updateConcat(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
+    const S = k.shape[2]!;
+    if (!this.keys || !this.values) {
+      // own copies (full-range slice = cheap view node)
+      const [B, H, , D] = k.shape as [number, number, number, number];
+      const vD = v.shape[3]!;
+      this.keys = k.slice([0, 0, 0, 0], [B, H, S, D]);
+      this.values = v.slice([0, 0, 0, 0], [B, H, S, vD]);
+    } else {
+      const tk = this.#temporalOrder(this.keys);
+      const tv = this.#temporalOrder(this.values);
+      this.keys.dispose();
+      this.values.dispose();
+      this.#idx = tk.shape[2]!;
+      const trimSize = this.#idx - this.maxSize + 1;
+      this.keys = this.#trim(trimSize, tk, k);
+      this.values = this.#trim(trimSize, tv, v);
+      tk.dispose();
+      tv.dispose();
+    }
+    this.offset += S;
+    this.#idx = this.keys.shape[2]!;
+    return this.#fetchAll();
+  }
+
+  #updateInPlace(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
+    const [B, H, S, D] = k.shape as [number, number, number, number];
+    const vD = v.shape[3]!;
+    const prev = this.offset;
+
+    if (!this.keys || (prev >= this.keys.shape[2]! && this.keys.shape[2]! < this.maxSize)) {
+      const newSize = Math.min(RotatingKVCache.STEP, this.maxSize - prev);
+      const newK = ops.zeros([B, H, newSize, D], k.dtype);
+      const newV = ops.zeros([B, H, newSize, vD], v.dtype);
+      if (this.keys && this.values) {
+        const ck = ops.concatAxis([this.keys, newK], 2);
+        const cv = ops.concatAxis([this.values, newV], 2);
+        this.keys.dispose();
+        this.values.dispose();
+        newK.dispose();
+        newV.dispose();
+        this.keys = ck;
+        this.values = cv;
+      } else {
+        this.keys = newK;
+        this.values = newV;
+      }
+      this.#idx = prev;
+    }
+
+    const trimSize = this.keys!.shape[2]! - this.maxSize;
+    if (trimSize > 0) {
+      const tk = this.#trim(trimSize, this.keys!, null);
+      const tv = this.#trim(trimSize, this.values!, null);
+      this.keys!.dispose();
+      this.values!.dispose();
+      this.keys = tk;
+      this.values = tv;
+      this.#idx = this.maxSize;
+    }
+
+    if (this.#idx === this.maxSize) this.#idx = 0; // rotate (keep=0)
+
+    const [, , SK, DK] = this.keys!.shape as [number, number, number, number];
+    const k2 = ops.sliceUpdate(this.keys!, k, [0, 0, this.#idx, 0], [B, H, this.#idx + S, DK]);
+    const v2 = ops.sliceUpdate(this.values!, v, [0, 0, this.#idx, 0], [B, H, this.#idx + S, vD]);
+    this.keys!.dispose();
+    this.values!.dispose();
+    this.keys = k2;
+    this.values = v2;
+    this.offset += S;
+    this.#idx += S;
+
+    if (this.offset < this.maxSize) {
+      const kOut = this.keys.slice([0, 0, 0, 0], [B, H, this.offset, DK]);
+      const vOut = this.values.slice([0, 0, 0, 0], [B, H, this.offset, vD]);
+      return [kOut, vOut];
+    }
+    return this.#fetchAll();
+  }
+
+  #fetchAll(): [MlxArray, MlxArray] {
+    const [B, H, S, D] = this.keys!.shape as [number, number, number, number];
+    const vD = this.values!.shape[3]!;
+    return [
+      this.keys!.slice([0, 0, 0, 0], [B, H, S, D]),
+      this.values!.slice([0, 0, 0, 0], [B, H, S, vD]),
+    ];
+  }
+
+  updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
+    return k.shape[2]! === 1 ? this.#updateInPlace(k, v) : this.#updateConcat(k, v);
+  }
+
+  makeMask(N: number, windowSize: number | null): Mask {
+    const window = windowSize ?? this.maxSize;
+    if (N > 1) {
+      const offset = Math.min(this.maxSize - 1, this.offset);
+      if (offset + N > window)
+        return { mode: "array", arr: createCausalMask(N, offset, window) };
+      return { mode: "causal", arr: null };
+    }
+    // N == 1: eviction enforces the window (window === maxSize for gemma4)
+    return { mode: "", arr: null };
+  }
+
+  state(): MlxArray[] {
+    return this.keys && this.values ? [this.keys, this.values] : [];
+  }
+
+  dispose(): void {
+    this.keys?.dispose();
+    this.values?.dispose();
+    this.keys = this.values = null;
+    this.offset = 0;
+    this.#idx = 0;
+  }
+}
+
+/** Port of base.py create_causal_mask (bool, [N, offset+N]). */
+export function createCausalMask(N: number, offset: number, windowSize: number | null): MlxArray {
+  const rinds = ops.arange(0, offset + N, 1, Dtype.int32);
+  const lindsFlat = offset ? ops.arange(offset, offset + N, 1, Dtype.int32) : rinds;
+  const linds = ops.reshape(lindsFlat, [N, 1]);
+  const rindsB = ops.reshape(rinds, [1, offset + N]);
+  let mask = ops.greaterEqual(linds, rindsB);
+  if (windowSize !== null) {
+    const w = ops.fromInt32([windowSize], []);
+    const rPlusW = ops.add(rindsB, w);
+    const inWindow = ops.less(linds, rPlusW);
+    const combined = ops.logicalAnd(mask, inWindow);
+    for (const a of [w, rPlusW, inWindow, mask]) a.dispose();
+    mask = combined;
+  }
+  if (lindsFlat !== rinds) lindsFlat.dispose();
+  rinds.dispose();
+  linds.dispose();
+  rindsB.dispose();
+  return mask;
 }
 
 class Attention {
@@ -152,8 +396,6 @@ class Attention {
       this.ropeBase = rp.ropeTheta;
       this.ropeFreqs = null;
     } else if (rp.ropeType === "proportional") {
-      // ProportionalRoPE: rotate only partialRotaryFactor·dims dims;
-      // freqs beyond that are inf (identity rotation).
       const rotated = Math.floor(this.headDim * rp.partialRotaryFactor);
       const n = this.headDim / 2;
       const freqs = new Float32Array(n).fill(Infinity);
@@ -178,7 +420,7 @@ class Attention {
     return ops.rope(x, this.headDim, this.ropeBase, offset, this.ropeFreqs);
   }
 
-  forward(x: MlxArray, maskMode: "" | "causal", cache: KVCache): MlxArray {
+  forward(x: MlxArray, mask: Mask, cache: Cache): MlxArray {
     const [B, L] = x.shape as [number, number, number];
 
     let q = this.qProj.forward(x);
@@ -212,10 +454,14 @@ class Attention {
     q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
     q = disposing(q, this.rope(q, offset));
 
-    const [keys, values] = cache.updateAndFetch(kRoped, vT); // cache owns
+    const [keys, values] = cache.updateAndFetch(kRoped, vT);
+    kRoped.dispose();
+    vT.dispose();
 
-    const attn = ops.sdpa(q, keys, values, 1.0, maskMode);
+    const attn = ops.sdpa(q, keys, values, 1.0, mask.mode, mask.arr);
     q.dispose();
+    keys.dispose();
+    values.dispose();
     const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
     attn.dispose();
     const merged = ops.reshape(attnT, [B, L, -1]);
@@ -277,9 +523,9 @@ class DecoderLayer {
       : null;
   }
 
-  forward(x: MlxArray, maskMode: "" | "causal", cache: KVCache): MlxArray {
+  forward(x: MlxArray, mask: Mask, cache: Cache): MlxArray {
     let h = this.inputNorm.forward(x);
-    h = disposing(h, this.attn.forward(h, maskMode, cache));
+    h = disposing(h, this.attn.forward(h, mask, cache));
     h = disposing(h, this.postAttnNorm.forward(h));
     h = disposing(h, ops.add(x, h));
 
@@ -308,6 +554,7 @@ export class Gemma4Model {
   readonly layers: DecoderLayer[];
   readonly finalNorm: RMSNorm;
   readonly embedScale: number;
+  readonly windowSize: number;
 
   constructor(weights: Weights, config: ModelConfig) {
     const t = config.text;
@@ -331,37 +578,64 @@ export class Gemma4Model {
       t.rmsNormEps,
     );
     this.embedScale = Math.sqrt(t.hiddenSize);
+    this.windowSize = t.slidingWindow;
   }
 
-  makeCache(): KVCache[] {
-    return this.layers.map(() => new KVCache());
+  makeCache(): Cache[] {
+    return this.layers.map((l) =>
+      l.layerType === "sliding_attention"
+        ? new RotatingKVCache(this.windowSize)
+        : new KVCache(),
+    );
   }
 
-  /** tokens → logits [1, L, vocab] (caller disposes). */
-  forward(tokens: number[], cache: KVCache[]): MlxArray {
-    const maskMode: "" | "causal" = tokens.length === 1 ? "" : "causal";
+  /** ids [1, L] → final-norm hidden states [1, L, hidden]. */
+  forwardHidden(ids: MlxArray, cache: Cache[]): MlxArray {
+    const L = ids.shape[1]!;
 
-    let h = this.embed.encode(tokens);
+    // one mask per layer type, computed from the first cache of that type
+    const masks = new Map<string, Mask>();
+    for (let i = 0; i < this.layers.length; i++) {
+      const type = this.layers[i]!.layerType;
+      if (!masks.has(type)) {
+        const window = type === "sliding_attention" ? this.windowSize : null;
+        masks.set(type, cache[i]!.makeMask(L, window));
+      }
+    }
+
+    let h = this.embed.encode(ids);
     h = disposing(h, ops.mulScalar(h, this.embedScale));
 
-    for (let i = 0; i < this.layers.length; i++)
-      h = disposing(h, this.layers[i]!.forward(h, maskMode, cache[i]!));
-
-    h = disposing(h, this.finalNorm.forward(h));
-
-    let logits = this.embed.asLinear(h);
-    h.dispose();
-
-    const softcap = this.config.text.finalLogitSoftcapping;
-    if (softcap !== null) {
-      const capped = logitSoftcap(logits, softcap);
-      logits.dispose();
-      logits = capped;
+    for (let i = 0; i < this.layers.length; i++) {
+      const layer = this.layers[i]!;
+      h = disposing(h, layer.forward(h, masks.get(layer.layerType)!, cache[i]!));
     }
+    for (const m of masks.values()) m.arr?.dispose();
+
+    return disposing(h, this.finalNorm.forward(h));
+  }
+
+  /** hidden [1, L, hidden] → softcapped logits [1, L, vocab]. */
+  logitsFromHidden(h: MlxArray): MlxArray {
+    let logits = this.embed.asLinear(h);
+    const softcap = this.config.text.finalLogitSoftcapping;
+    if (softcap !== null) logits = disposing(logits, logitSoftcap(logits, softcap));
     return logits;
   }
 
-  /** Greedy generation; returns generated token ids (not incl. prompt). */
+  /** tokens → logits [1, L, vocab] (compat path used by parity tests). */
+  forward(tokens: number[] | MlxArray, cache: Cache[]): MlxArray {
+    const ids = Array.isArray(tokens)
+      ? ops.fromInt32(tokens, [1, tokens.length])
+      : tokens;
+    const h = this.forwardHidden(ids, cache);
+    if (Array.isArray(tokens)) ids.dispose();
+    const logits = this.logitsFromHidden(h);
+    h.dispose();
+    return logits;
+  }
+
+  /** Greedy generation (parity harness); returns generated token ids. */
   generate(promptTokens: number[], maxTokens: number, eosIds: number[] = []): number[] {
     const cache = this.makeCache();
     const out: number[] = [];

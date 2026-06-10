@@ -58,7 +58,7 @@ export class MmapFile {
   view(offset: number, length: number): Uint8Array {
     if (offset + length > this.size) throw new RangeError("view out of range");
     if (length >= 2 ** 32) throw new RangeError("JS views cap at 4 GB");
-    return new Uint8Array(toArrayBuffer(this.pointer(offset), 0, length));
+    return new Uint8Array(toArrayBuffer(this.pointer(offset) as never, 0, length));
   }
 
   unmap(): void {

@@ -36,8 +36,9 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_default_gpu_stream_new: { args: [], returns: u64 },
   mlx_default_cpu_stream_new: { args: [], returns: u64 },
   mlx_stream_free: { args: [u64], returns: i32 },
-  // eval control
-  mlx_eval: { args: [u64], returns: i32 }, // takes mlx_vector_array
+  // eval control (both take mlx_vector_array)
+  mlx_eval: { args: [u64], returns: i32 },
+  mlx_async_eval: { args: [u64], returns: i32 },
   // memory introspection / limits
   mlx_get_active_memory: { args: [P], returns: i32 },
   mlx_get_peak_memory: { args: [P], returns: i32 },
@@ -79,6 +80,24 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_array_item_uint32: { args: [P, u64], returns: i32 },
   mlx_array_item_int32: { args: [P, u64], returns: i32 },
   mlx_slice: { args: [P, u64, P, u64, P, u64, P, u64, u64], returns: i32 },
+  // (res, src, update, start*, n, stop*, n, strides*, n, stream)
+  mlx_slice_update: { args: [P, u64, u64, P, u64, P, u64, P, u64, u64], returns: i32 },
+  mlx_zeros: { args: [P, P, u64, i32, u64], returns: i32 },
+  mlx_exp: { args: [P, u64, u64], returns: i32 },
+  mlx_negative: { args: [P, u64, u64], returns: i32 },
+  mlx_argsort_axis: { args: [P, u64, i32, u64], returns: i32 },
+  mlx_argpartition_axis: { args: [P, u64, i32, i32, u64], returns: i32 },
+  mlx_take_along_axis: { args: [P, u64, u64, i32, u64], returns: i32 },
+  mlx_put_along_axis: { args: [P, u64, u64, u64, i32, u64], returns: i32 },
+  mlx_cumsum: { args: [P, u64, i32, FFIType.bool, FFIType.bool, u64], returns: i32 },
+  mlx_where: { args: [P, u64, u64, u64, u64], returns: i32 },
+  mlx_arange: { args: [P, FFIType.f64, FFIType.f64, FFIType.f64, i32, u64], returns: i32 },
+  mlx_logsumexp_axis: { args: [P, u64, i32, FFIType.bool, u64], returns: i32 },
+  mlx_greater_equal: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_less: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_logical_and: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_random_key: { args: [P, u64], returns: i32 },
+  mlx_random_categorical: { args: [P, u64, i32, u64, u64], returns: i32 },
   mlx_astype: { args: [P, u64, i32, u64], returns: i32 },
   // (res, w, scales, biases, opt group_size, opt bits, mode, global_scale, opt dtype, stream)
   mlx_dequantize: { args: [P, u64, u64, u64, u64, u64, cstring, u64, u64, u64], returns: i32 },
