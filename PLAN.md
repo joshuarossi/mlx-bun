@@ -933,7 +933,9 @@ two-model speculation measured a net loss.
   speculation measured (acceptance + tok/s in the eval DB), shipped as
   default config only where it wins.
 
-## Phase 15 — Head-to-head benchmark: mlx-bun vs mlx-lm vs mlx-optiq `[ ]`
+## Phase 15 — Head-to-head benchmark: mlx-bun vs mlx-lm vs mlx-optiq `[~]`
+(matrix complete 2026-06-10 except leg (c)'s purge-cold rows — see
+findings; results: benchmarks-h2h-2026-06-10.md + README Benchmarks)
 
 The publishable comparison (added 2026-06-10). Everything so far
 measures parity per-component; this phase produces one same-day,
@@ -947,10 +949,10 @@ OUR server-mediated decode has never been measured.
 Matrix: stacks {mlx-bun, mlx-lm, mlx-optiq} × models {e4b, 12B,
 26B-A4B} × legs:
 
-- [ ] **(a) Direct engine**: prefill + decode tok/s, peak memory
+- [x] **(a) Direct engine**: prefill + decode tok/s, peak memory
       (mostly exists in the eval DB — consolidate, re-run any number
       not from a cleared machine on the same day).
-- [ ] **(b) Server-vs-server**: TTFT and streamed decode tok/s through
+- [x] **(b) Server-vs-server**: TTFT and streamed decode tok/s through
       HTTP (same prompts, explicit token ids, measured at the client),
       peak resident memory while serving, per-request memory growth
       over a 20-request session. Compare like-for-like: ours vs
@@ -963,11 +965,12 @@ Matrix: stacks {mlx-bun, mlx-lm, mlx-optiq} × models {e4b, 12B,
   measurements — including the Python-free server-overhead sub-step —
   until NEXT UP item 2 (mixed-precision KV serving) has landed.** The
   whole matrix runs once, against the real serving config.
-- [ ] **(c) Startup**: process start → /v1/models ready; cold start →
+- [~] **(c) Startup**: ready-time measured per stack (0.36–0.48 s vs
+      0.79–0.95 s); purge-cold first-token rows still open →
       first token (fresh process, page cache cleared vs warm); our
       cached-prefix path recorded as its own row (the Python stacks
       have no KV persistence — capability diff, noted not hidden).
-- [ ] **(d) Long-context @8k**: decode tok/s + memory with each
+- [x] **(d) Long-context @8k**: decode tok/s + memory with each
       stack's best KV config (ours per kv_config.json; optiq
       `--kv-config`; mlx-lm stock — its gemma4 kv-quant crashes,
       recorded finding).
@@ -988,6 +991,41 @@ Matrix: stacks {mlx-bun, mlx-lm, mlx-optiq} × models {e4b, 12B,
       Josh-started python servers identically (TTFT + streamed decode
       at the client). Smoke-tested end-to-end on a dirty machine
       (rows flagged, not headline).
+
+### Phase 15 findings (2026-06-10, full-matrix run)
+
+- **Full 25-cell matrix landed** (benchmarks-h2h-2026-06-10.md, commit
+  0ee00dd, n=3 direct / n=5 server, preflight-clean): the README
+  Benchmarks section is the publishable summary. Headlines: TTFT
+  45–89 ms vs python's 220–327 ms (3–5×); start→ready 0.36–0.48 s vs
+  0.79–0.95 s; OUR server tax ≈ 0 while mlx-lm's server costs itself
+  5–6% decode; served-over-HTTP we are the fastest stack on every
+  model. Honest negatives: direct decode trails mlx-lm 2.2–4.4%
+  (e4b worst — per-token dispatch overhead exposure), and the 12B @8k
+  decode gap is −10.0% (n=3, zero spread) — the Phase 3 long-context
+  gap, now the top perf item.
+- **Generation-only peaks resolved the memory story**: python's
+  constant 9.84 GB was its LOAD transient (non-lazy load ≈ 2.7× model
+  size transiently); engine-vs-engine generation peaks are at parity
+  (8.98 vs 9.10 on 12B). The honest claim is cold-start/transient
+  superiority, not steady-state memory.
+- **Our kv-mixed costs ~3% decode @8k (22.7 vs 23.4) where optiq's is
+  free (25.7 vs 26.0)** — their fused quantized-SDPA earns its keep at
+  context. Promotes Phase 10 (fused_quant_sdpa) + the long-context
+  decode investigation to next-perf-work, now with a measured target.
+- **optiq serve crashed loading the 26B** — `[METAL] ... Insufficient
+  Memory`, the SAME uncatchable completion-handler crash class we
+  documented for our own test suite. Python's non-lazy load transient
+  on 16.4 GB of weights has no admission control and no defense;
+  reproduced in isolation. mlx-bun served the same model from the
+  same machine state at 55.1 tok/s (lazy load + scoped wired limit).
+  This is the strongest single differentiation datum in the matrix.
+- optiq e4b mixed-KV direct stays failed (upstream 4-bit-shim bug,
+  root-caused at cc0c151). Failure footer in the md carries both root
+  causes — holes are self-documenting now.
+- Harness nit for next pass: the failure footer records OUR wrapper
+  line, not the underlying python error's first line — extract the
+  child's last stderr line instead.
 
 ### Phase 15 findings (2026-06-10, harness bring-up)
 

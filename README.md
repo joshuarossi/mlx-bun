@@ -186,6 +186,32 @@ KV caches can be persisted to disk (page-aligned files that reload as
 zero-copy GPU-safe mmaps — see `src/kv-store.ts`) so a standard agent
 preamble prefills once, ever.
 
+## Benchmarks
+
+Head-to-head against the Python stacks (mlx-lm 0.31.3, mlx-optiq 0.2.1),
+same machine (M4 Pro 24 GB), same day, same HF snapshots, preflight-gated
+clean machine, median-of-N with warmups discarded. Full table with
+per-row provenance: [benchmarks-h2h-2026-06-10.md](./benchmarks-h2h-2026-06-10.md).
+
+| | mlx-bun | mlx-lm | optiq |
+|---|---|---|---|
+| **TTFT, served (warm)** | **45–89 ms** | 220–226 ms | 220–327 ms |
+| **server start → ready** | **0.36–0.48 s** | 0.80–0.95 s | 0.79–0.90 s |
+| **decode through HTTP** (e4b / 12B / 26B) | **54.5 / 25.6 / 55.1** | 53.6 / — / 52.1 | 53.5 / 25.5 / † |
+| **server tax vs own direct decode** | **≈ 0%** | −5…−6% | ≈ 0% |
+| **direct decode** (engine only) | −2…−4% vs mlx-lm | baseline | ≈ mlx-lm |
+| **prefill @8k prompt** (12B) | **253 tok/s** | 143 | 137 |
+
+Honest negatives, same table: our direct decode trails mlx-lm by 2–4%,
+and at 8k context our decode is ~10% behind (a known, tracked gap —
+their fused quantized-attention path is ahead of ours at long context).
+Served through HTTP — how agents actually use a local model — mlx-bun
+is the fastest stack on every model measured. † = cell failed: optiq
+serve crashed loading the 26B (Metal OOM from python's non-lazy load
+transient — reproduced in isolation; mlx-bun served the same model
+from the same machine state). One further optiq cell is blocked on an
+upstream optiq bug; both are documented in the results file.
+
 ## Correctness
 
 Logit parity with mlx-lm (same weights, Python reference) is the
