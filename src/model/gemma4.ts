@@ -622,8 +622,9 @@ const FINFO_MIN: Partial<Record<Dtype, number>> = {
 
 /** Port of base.py quantized_scaled_dot_product_attention (stock,
  *  non-tiled): scores and output via quantized_matmul against the
- *  quantized KV triples; GQA via a 5-d reshape. */
-function quantizedSdpa(
+ *  quantized KV triples; GQA via a 5-d reshape. Exported for the
+ *  fused-vs-unfused parity tests. */
+export function quantizedSdpaUnfused(
   q: MlxArray, kq: ops.QuantizedTensor, vq: ops.QuantizedTensor,
   scale: number, mask: Mask, groupSize: number, bits: number,
 ): MlxArray {
@@ -692,6 +693,207 @@ function quantizedSdpa(
   return out;
 }
 
+/** Tile size for the fused quantized-SDPA prefill path (oracle default). */
+export const FUSED_N_CHUNK = 512;
+
+/** Port of optiq fused_quant_sdpa._prefill_flashattn_n_tiled: a
+ *  FlashAttention-2 loop over the KV N axis with mx.quantized_matmul as
+ *  the inner kernel. Never materializes the full [..., L, N] scores
+ *  matrix — the per-tile transient is bounded by FUSED_N_CHUNK, which is
+ *  the whole point (stock u4 KV prefill peaks ABOVE fp16 KV at long
+ *  context; see the oracle's module docstring). Op composition order
+ *  mirrors the oracle exactly: parity is tier a (bit-exact) vs the python
+ *  fused path; vs quantizedSdpaUnfused it is tier b by construction
+ *  (online softmax ≠ one-shot precise softmax in bf16). */
+export function quantizedSdpaTiled(
+  q: MlxArray, kq: ops.QuantizedTensor, vq: ops.QuantizedTensor,
+  scale: number, mask: Mask, groupSize: number, bits: number,
+): MlxArray {
+  const [B, H, L, D] = q.shape as [number, number, number, number];
+  const KV = kq.packed.shape[1]!;
+  const nRep = H / KV;
+  const N = kq.packed.shape[2]!;
+
+  let queries = ops.mulScalar(q, scale);
+
+  let kT = kq;
+  let vT = vq;
+  const expanded: MlxArray[] = [];
+  if (nRep > 1) {
+    const qr = ops.reshape(queries, [B, KV, nRep, L, D]);
+    queries.dispose();
+    queries = qr;
+    const expand = (t: ops.QuantizedTensor): ops.QuantizedTensor => {
+      const e = (a: MlxArray): MlxArray => {
+        const r = ops.expandDims(a, -3);
+        expanded.push(r);
+        return r;
+      };
+      return { packed: e(t.packed), scales: e(t.scales), biases: e(t.biases) };
+    };
+    kT = expand(kq);
+    vT = expand(vq);
+  }
+
+  // The oracle builds a bottom-right-aligned [L, N] bool causal matrix
+  // and slices columns per tile; our "array" masks (createCausalMask at
+  // offset > 0) are that same matrix already materialized — both slice
+  // identically below.
+  let maskArr: MlxArray | null = null;
+  let ownsMask = false;
+  if (mask.mode === "causal") {
+    const qIdx = ops.arange(N - L, N, 1, Dtype.int32);
+    const kIdx = ops.arange(0, N, 1, Dtype.int32);
+    const qCol = ops.reshape(qIdx, [L, 1]);
+    const kRow = ops.reshape(kIdx, [1, N]);
+    maskArr = ops.greaterEqual(qCol, kRow);
+    ownsMask = true;
+    for (const a of [qIdx, kIdx, qCol, kRow]) a.dispose();
+  } else if (mask.mode === "array") {
+    maskArr = mask.arr;
+  }
+
+  // Slice [..., n0:n1, :] (KV triples) / [..., n0:n1] (mask chunks).
+  const sliceAxis = (a: MlxArray, axisFromEnd: 1 | 2, n0: number, n1: number): MlxArray => {
+    const dims = a.shape;
+    const start = dims.map(() => 0);
+    const stop = [...dims];
+    start[dims.length - axisFromEnd] = n0;
+    stop[dims.length - axisFromEnd] = n1;
+    return a.slice(start, stop);
+  };
+
+  let oAcc: MlxArray | null = null;
+  let rowMax: MlxArray | null = null;
+  let rowSum: MlxArray | null = null;
+
+  for (let n0 = 0; n0 < N; n0 += FUSED_N_CHUNK) {
+    const n1 = Math.min(n0 + FUSED_N_CHUNK, N);
+    const kChunk: ops.QuantizedTensor = {
+      packed: sliceAxis(kT.packed, 2, n0, n1),
+      scales: sliceAxis(kT.scales, 2, n0, n1),
+      biases: sliceAxis(kT.biases, 2, n0, n1),
+    };
+    const vChunk: ops.QuantizedTensor = {
+      packed: sliceAxis(vT.packed, 2, n0, n1),
+      scales: sliceAxis(vT.scales, 2, n0, n1),
+      biases: sliceAxis(vT.biases, 2, n0, n1),
+    };
+
+    let scores = ops.quantizedMatmulQT(queries, kChunk, true, groupSize, bits);
+    for (const a of [kChunk.packed, kChunk.scales, kChunk.biases]) a.dispose();
+
+    if (maskArr) {
+      const maskChunk = sliceAxis(maskArr, 1, n0, n1);
+      let masked: MlxArray;
+      if (maskChunk.dtype === Dtype.bool) {
+        const ninf = ops.scalarLike(FINFO_MIN[scores.dtype] ?? -3.4e38, scores);
+        masked = ops.where(maskChunk, scores, ninf);
+        ninf.dispose();
+      } else {
+        masked = ops.add(scores, maskChunk);
+      }
+      maskChunk.dispose();
+      scores.dispose();
+      scores = masked;
+    }
+
+    const chunkMax = ops.maxAxis(scores, -1, true);
+    if (oAcc === null) {
+      rowMax = chunkMax;
+      const shifted = ops.sub(scores, rowMax);
+      const exps = ops.exp(shifted);
+      shifted.dispose();
+      rowSum = ops.sumAxis(exps, -1, true);
+      oAcc = ops.quantizedMatmulQT(exps, vChunk, false, groupSize, bits);
+      exps.dispose();
+    } else {
+      const newMax = ops.maximum(rowMax!, chunkMax);
+      chunkMax.dispose();
+      const maxDiff = ops.sub(rowMax!, newMax);
+      const factor = ops.exp(maxDiff);
+      maxDiff.dispose();
+      const shifted = ops.sub(scores, newMax);
+      const exps = ops.exp(shifted);
+      shifted.dispose();
+      // new_sum = factor * row_sum + sum(exps)  (association order kept)
+      const carried = ops.mul(factor, rowSum!);
+      const sumExps = ops.sumAxis(exps, -1, true);
+      const newSum = ops.add(carried, sumExps);
+      carried.dispose();
+      sumExps.dispose();
+      const deltaOut = ops.quantizedMatmulQT(exps, vChunk, false, groupSize, bits);
+      exps.dispose();
+      // o_acc = o_acc * factor + delta_out
+      const scaledAcc = ops.mul(oAcc!, factor);
+      factor.dispose();
+      const nextAcc = ops.add(scaledAcc, deltaOut);
+      scaledAcc.dispose();
+      deltaOut.dispose();
+      oAcc!.dispose();
+      oAcc = nextAcc;
+      rowMax!.dispose();
+      rowMax = newMax;
+      rowSum!.dispose();
+      rowSum = newSum;
+    }
+    scores.dispose();
+    for (const a of [vChunk.packed, vChunk.scales, vChunk.biases]) a.dispose();
+  }
+
+  let out = ops.div(oAcc!, rowSum!);
+  oAcc!.dispose();
+  rowMax!.dispose();
+  rowSum!.dispose();
+  if (ownsMask) maskArr!.dispose();
+  for (const a of expanded) a.dispose();
+  queries.dispose();
+  if (nRep > 1) {
+    const r = ops.reshape(out, [B, H, L, D]);
+    out.dispose();
+    out = r;
+  }
+  return out;
+}
+
+/** Gate for the tiled path — port of fused_quant_sdpa._supported plus the
+ *  wrapper's mask check, with one documented deviation: the oracle wrapper
+ *  falls back to unfused on ARRAY masks because mlx-lm always hands it the
+ *  "causal" string in this scenario (its make_mask returns "causal" even at
+ *  offset > 0 for non-windowed caches); our makeMask materializes the
+ *  equivalent bool matrix for offset > 0 — the exact
+ *  long-prefill-over-quantized-cache case this path exists for — so 2-d
+ *  bool array masks tile too (the oracle's INNER function handles them
+ *  with the same column slicing we use). */
+/** Escape hatch mirroring optiq serve's --no-fused-kv: forces the stock
+ *  unfused path everywhere. Also the A/B lever for
+ *  scripts/bench-fused-prefill.ts. */
+const FUSED_SDPA_DISABLED = process.env.MLX_BUN_NO_FUSED_SDPA === "1";
+
+function fusedSdpaSupported(q: MlxArray, mask: Mask, groupSize: number, bits: number): boolean {
+  if (FUSED_SDPA_DISABLED) return false;
+  if (bits !== 4 && bits !== 8) return false;
+  if (groupSize !== 32 && groupSize !== 64 && groupSize !== 128) return false;
+  if (q.dtype !== Dtype.bfloat16 && q.dtype !== Dtype.float16) return false;
+  if (mask.mode === "causal") return true;
+  if (mask.mode === "array")
+    return mask.arr !== null && mask.arr.shape.length === 2 && mask.arr.dtype === Dtype.bool;
+  return false;
+}
+
+/** Quantized-cache SDPA dispatch: L > 1 (prefill/continuation) with a
+ *  supported config goes through the N-tiled fused path; decode (L = 1)
+ *  and unsupported configs stay on the stock unfused port. Exported for
+ *  the dispatch-gate tests. */
+export function quantizedSdpa(
+  q: MlxArray, kq: ops.QuantizedTensor, vq: ops.QuantizedTensor,
+  scale: number, mask: Mask, groupSize: number, bits: number,
+): MlxArray {
+  if (q.shape[2]! > 1 && fusedSdpaSupported(q, mask, groupSize, bits))
+    return quantizedSdpaTiled(q, kq, vq, scale, mask, groupSize, bits);
+  return quantizedSdpaUnfused(q, kq, vq, scale, mask, groupSize, bits);
+}
+
 /** Port of base.py create_causal_mask (bool, [N, offset+N]). */
 export function createCausalMask(N: number, offset: number, windowSize: number | null): MlxArray {
   const rinds = ops.arange(0, offset + N, 1, Dtype.int32);
@@ -748,13 +950,39 @@ class Attention {
       this.ropeBase = rp.ropeTheta;
       this.ropeFreqs = null;
     } else if (rp.ropeType === "proportional") {
+      // Port of rope_utils.ProportionalRoPE.__init__. The rotated freqs
+      // MUST be computed on-device in f32 (arange/dims, then base**x)
+      // exactly like the reference — computing them host-side in f64 and
+      // rounding to f32 lands 17/64 of them 1 ulp off (f64 pow ≠ f32
+      // powf), a latent knife-edge that Phase 10's tiled values exposed
+      // as a 1-ulp q-rope divergence at layer 11 (Phase 2 porting rule:
+      // replicate the helper's IMPLEMENTATION, not its formula).
       const rotated = Math.floor(this.headDim * rp.partialRotaryFactor);
       const n = this.headDim / 2;
-      const freqs = new Float32Array(n).fill(Infinity);
-      for (let i = 0; i < rotated / 2; i++)
-        freqs[i] = Math.pow(rp.ropeTheta, (2 * i) / this.headDim);
+      const exponentsRaw = ops.arange(0, rotated, 2, Dtype.float32);
+      const dims = ops.scalarLike(this.headDim, exponentsRaw);
+      const exponents = ops.div(exponentsRaw, dims);
+      const base = ops.scalarLike(rp.ropeTheta, exponents);
+      let rotFreqs = ops.pow(base, exponents);
+      if (rp.factor !== 1.0) {
+        const f = ops.scalarLike(rp.factor, rotFreqs);
+        rotFreqs = disposing(rotFreqs, ops.mul(f, rotFreqs));
+        f.dispose();
+      }
       this.ropeBase = null;
-      this.ropeFreqs = MlxArray.fromFloat32(freqs, [n]);
+      const tailLen = n - rotated / 2;
+      if (tailLen > 0) {
+        const tail = MlxArray.fromFloat32(
+          new Float32Array(tailLen).fill(Infinity), [tailLen],
+        );
+        this.ropeFreqs = ops.concatAxis([rotFreqs, tail], 0);
+        tail.dispose();
+      } else {
+        this.ropeFreqs = rotFreqs;
+      }
+      for (const a of [exponentsRaw, dims, exponents, base])
+        a.dispose();
+      if (this.ropeFreqs !== rotFreqs) rotFreqs.dispose();
     } else {
       throw new Error(`unsupported rope_type ${rp.ropeType}`);
     }

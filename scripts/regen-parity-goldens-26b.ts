@@ -33,6 +33,11 @@ ids = tokenizer.apply_chat_template(
 # caches per kv_config.json (manual conversion — upstream's
 # maybe_quantize_kv_cache crashes on gemma4's RotatingKVCache; Phase 6
 # finding). Sliding caches stay bf16, matching our Phase-9 scope.
+# Fused N-tiled SDPA installed for this leg (Phase 10): the serving
+# reference for quantized-cache prefill is optiq-with-fused, and our
+# L>1 dispatch matches it. Uninstalled before the stock greedy legs.
+from optiq.runtime.fused_quant_sdpa import install as install_fused, uninstall as uninstall_fused
+install_fused()
 kv_cfg = {e["layer_idx"]: e for e in json.load(open(snap + "/kv_config.json"))}
 mixed_cache = make_prompt_cache(model)
 mixed_applied = {}
@@ -47,6 +52,7 @@ mx.eval(last)
 with open("goldens/logits-26b-kvmix.bin", "wb") as f:
     f.write(bytes(memoryview(last)))
 del mixed_cache
+uninstall_fused()
 
 cache = make_prompt_cache(model)
 greedy = []

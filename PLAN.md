@@ -436,12 +436,15 @@ Phase 15 corrections finding).
 Remaining work, in priority order:
 
 1. **12B long-context decode gap (−10.0% @8k vs mlx-lm, n=3
-   zero-spread — benchmarks-h2h-2026-06-10.md).** The Phase 3 finding,
-   now precisely bounded. Suspects recorded then: KVCache slice_update
-   buffer donation; per-step dispatch overhead. Related measured fact:
-   our kv-mixed decode costs ~3% @8k (22.7 vs 23.4) where optiq's
-   fused path is free — so Phase 10 (fused_quant_sdpa port, op-level,
-   ~line-for-line) plausibly closes BOTH. Start there.
+   zero-spread — benchmarks-h2h-2026-06-10.md).** Phase 10 (fused
+   prefill) is DONE (2026-06-10) — it bounds the prefill transient and
+   landed a rope-freqs root-cause fix, but DECODE (L=1) still runs the
+   stock unfused path, so the @8k decode gap and the ~3% kv-mixed
+   decode tax are still open. Next levers: (a) cleared-machine rerun
+   (./benchmark.sh) to re-baseline post-rope-fix, A/B
+   `MLX_BUN_NO_FUSED_SDPA`; (b) an L=1-tiled decode experiment (optiq
+   tiles decode too — its wrapper has no L gate); (c) the original
+   suspects (slice_update buffer donation, per-step dispatch).
 2. **Phase 15 closeout**: leg (c) purge-cold rows (`sudo purge` +
    cold start → first token per stack); fix the failure-footer to
    record the child's stderr line instead of our wrapper line.
@@ -480,10 +483,9 @@ Ordered by expected payoff on this hardware:
       quantizedKvStart})`). Full-attention layers only — rotating-cache
       quantization is NYI upstream too, and sliding layers are
       window-capped. **Measured @8k ctx: full-layer KV 134→71 MB AND
-      decode 18.5→22.4 tok/s (+21%)**, identical output text. The
+      decode 18.5→22.4 tok/s (+21%)**, identical output text. ~~The
       N-tiled FlashAttention prefill port (fused_quant_sdpa) is still
-      TODO — only needed for long-prefill-over-quantized-cache
-      (continuations past quantizedKvStart); stock path covers serving.
+      TODO~~ — done, Phase 10 (2026-06-10).
 - [x] **MoE support — gemma-4-26B-A4B (DONE 2026-06-10: bring-up,
       tier-d parity, cleared-machine bench).** Bench (recorded in eval
       DB): **32.3 tok/s decode @600 tok vs python 33.0 (−2.1%, at
@@ -659,10 +661,10 @@ Ordered by expected payoff on this hardware:
   (b) long-prefix trajectory agreement — never full-trajectory equality.
 - **kv8 single-forward logits are BIT-EXACT vs the python reference;
   kv4 differs by 1 bf16 ulp** at the first quantized layer (≤1.0 on
-  softcapped logits) — the 4-bit quantized_matmul kernel rounds
-  differently for strided-vs-contiguous inputs; legitimate kernel-path
-  variation far below 4-bit's own quantization noise. Bounded-tolerance
-  assertion documented in tests/kv-quant.test.ts.
+  softcapped logits) — ~~the 4-bit quantized_matmul kernel rounds
+  differently for strided-vs-contiguous inputs~~ SUPERSEDED 2026-06-10:
+  Phase 10 root-caused this as the host-side rope-freqs knife edge;
+  kv4 is bit-exact with on-device freqs (tolerance deleted).
 - mlx-lm's maybe_quantize_kv_cache CRASHES on gemma4 (calls to_quantized
   on RotatingKVCache → NotImplementedError) — upstream kv-quant is
   broken for this family; oracle scripts must pre-convert KVCache
@@ -806,22 +808,91 @@ this phase); (b) bounded-but-real savings on sliding-heavy stacks
   measured, materially larger max context on 24 GB with rotating
   KV-quant on; numbers in the eval DB and the fit table.
 
-## Phase 10 — fused_quant_sdpa N-tiled FlashAttention prefill `[ ]`
+## Phase 10 — fused_quant_sdpa N-tiled FlashAttention prefill `[x]` (2026-06-10)
 
-Already a TODO from the kv-quant phase. Needed for
-long-prefill-over-quantized-cache (continuations past
+Needed for long-prefill-over-quantized-cache (continuations past
 `quantizedKvStart`, prompt-cache reuse on quantized entries).
 
-- [ ] Port the FlashAttention-2 N-tiled loop (online softmax over
-      `quantized_matmul` tiles). Oracle:
-      `optiq/runtime/fused_quant_sdpa.py`. It is op-level orchestration,
-      ~line-for-line portable — NOT a custom kernel.
-- [ ] Wire as the L>1-over-quantized-cache path; stock paths untouched.
-- **Parity contract**: tier a vs the unfused quantized path at sizes
-  where both run; memory: reproduce the reference's bounded-transient
-  claim (measure peak at 2048-chunk prefill over an 8k quantized cache).
-- **Exit criterion**: long prefill over a quantized cache runs within
-  the fit-table's predicted transient; eval-DB row recorded.
+- [x] Port the FlashAttention-2 N-tiled loop (`quantizedSdpaTiled` in
+      src/model/gemma4.ts; oracle `optiq/runtime/fused_quant_sdpa.py`,
+      op-level, composition order preserved; N_CHUNK 512 like the
+      reference).
+- [x] Wired as the L>1-over-quantized-cache path (`quantizedSdpa`
+      dispatch); decode (L=1) and unsupported configs stay on the stock
+      unfused port. `MLX_BUN_NO_FUSED_SDPA=1` escape hatch (mirror of
+      optiq's `--no-fused-kv`). Documented dispatch deviation: the
+      oracle WRAPPER falls back on array masks because mlx-lm hands it
+      "causal" even at offset>0; our makeMask materializes the
+      equivalent bool matrix, and the tiled loop slices 2-d bool masks
+      per column exactly like the oracle's inner function — so array
+      masks tile too (vision bidir masks included).
+- **Parity → MET, tier a**: (1) direct-call tiled BIT-EXACT vs the
+  oracle's `_prefill_flashattn_n_tiled` (3 golden cases incl. multi-tile
+  + continuation; goldens/fused-sdpa.*, regen
+  scripts/regen-fused-sdpa-goldens.ts); (2) end-to-end kv8 AND kv4
+  single-forward logits BIT-EXACT vs the fused python reference, 26B
+  kvmix likewise (tolerances tightened to toBe(0) — see findings).
+  Tiled-vs-unfused is tier b BY DESIGN (online softmax ≠ one-shot
+  precise softmax in bf16; measured ≤ 0.0015 on unit-scale outputs,
+  tests/fused-sdpa.test.ts).
+- **Exit criterion → MET**: 2048-chunk prefill over an 8k kv8 cache
+  (12B): generation-only peak 10.81 GB fused vs 11.15 GB unfused
+  (−336 MB transient), prefill tok/s at parity; eval-DB rows recorded
+  (scripts/bench-fused-prefill.ts, fused=on/off). The saving grows with
+  context — unfused scores are O(L·N), per-tile O(L·512).
+
+### Phase 10 findings (2026-06-10)
+
+- **The port itself was bit-exact on the first run** — direct calls,
+  strided cache-view pedigree, and the real in-model first call all
+  compared toBe(0) against the oracle. The end-to-end divergence the
+  wiring exposed was NOT in the tiled code: bisection (per-layer
+  residual dump → first divergent layer 11 → stage-by-stage attention
+  dump) landed on q-rope.
+- **ROOT CAUSE: ProportionalRoPE freqs must be computed ON-DEVICE in
+  f32.** rope_utils.ProportionalRoPE builds freqs as
+  `mx.arange(0, rotated, 2, f32) / dims` then `base ** x` (f32 powf on
+  GPU); we computed them host-side in f64 `Math.pow` and cast — 17 of
+  64 rotated freqs land 1 f32 ulp off. Bit-exactness through Phases
+  2–8 was VALUE LUCK: bf16 rope outputs masked the ulp until Phase
+  10's tiled values tripped a knife edge at layer 11 (q_roped 1 ulp →
+  0.5 on softcapped logits 37 layers later). Fixed by building freqs
+  with mx ops mirroring the reference implementation (gemma4.ts
+  Attention constructor; `factor` now parsed from rope config too).
+  Phase-2 porting rule, new corollary: it applies to CONSTANTS built
+  at load time, not just forward-pass ops.
+- **kv4's documented 1-ulp tolerance no longer reproduces.** With
+  corrected freqs and goldens regenerated against the fused reference,
+  kv4 single-forward and the 26B kvmix forward are BIT-EXACT — the old
+  "strided-vs-contiguous quantized_matmul rounding" attribution was
+  plausibly the freqs bug all along. tests/kv-quant.test.ts and
+  tests/parity-26b.test.ts tightened to toBe(0).
+- **Quantized-KV goldens now regenerate against the FUSED reference**
+  (optiq serve installs fused_quant_sdpa whenever kv-quant is enabled,
+  so the serving oracle for quantized-cache prefill is
+  optiq-with-fused; our L>1 dispatch matches it). Trajectory legs use
+  fused prefill + stock decode, mirroring our dispatch. fp16 legs came
+  out byte-identical across the regen — the new harness reproduces the
+  Phase-6 ad-hoc generation exactly. The kvq goldens previously had NO
+  producer script (committed ad hoc in 6c37246);
+  scripts/regen-kvq-goldens.ts closes that gap.
+- **specGenerate emitted the EOS token into its content array** — a
+  faithful port of optiq's runtime.py, which yields EOS as a stream
+  EVENT; our generate() never yields EOS. Invisible until the rope fix
+  shifted e4b outputs to hit EOS inside the spec test's 80-token
+  window. spec `tokens` now excludes EOS (stats.emitted still counts
+  it, reference-faithful). The spec exact-equality prompt was
+  re-picked: tie-free is a property of the VALUES, and the old prompt
+  now trips the documented verify-rounding knife edge at token 27
+  (same flip at the same position for every γ — the reference-matching
+  class, not an accept/reject bug).
+- Decode (L=1) over quantized caches stays unfused per plan; optiq
+  tiles decode too (its wrapper has no L gate). Whether tiling decode
+  closes the remaining ~3% kv-mixed decode tax @8k is a
+  cleared-machine question — the next benchmark.sh run should A/B
+  `MLX_BUN_NO_FUSED_SDPA` and an L=1-tiled experiment.
+- Verified after the changes: full suite 99/99 (incl. 12 new
+  fused-sdpa tests), opt-in 26B parity 2/2.
 
 ## Phase 11 — Protocol surfaces: Responses API + Anthropic messages `[ ]`
 
@@ -1126,11 +1197,14 @@ file and per row).
   the original "never bit-exact" assumption, which five phases of
   findings disproved):
   - **(a) Bit-exact `toBe(0)`** single-forward logits from identical
-    state: stock decode and kv8 paths. This is achievable and held.
-  - **(b) Bounded tolerance** for kv4: ≤1 bf16 ulp at the first
-    divergent layer (≤1.0 on softcapped logits) — 4-bit quantized_matmul
-    rounds differently for strided-vs-contiguous inputs; cause
-    documented in tests/kv-quant.test.ts.
+    state: stock decode AND all quantized-KV paths (kv8, kv4, 26B
+    kvmix) — kv4's former 1-ulp tolerance was the host-side rope-freqs
+    bug, fixed in Phase 10.
+  - **(b) Bounded tolerance** only for intra-stack comparisons of
+    paths that differ BY DESIGN: tiled-vs-unfused SDPA (online softmax
+    vs one-shot precise, ≤2/128 with measured ≤0.0015,
+    tests/fused-sdpa.test.ts) and gather_qmm-vs-quantized_matmul
+    (different kernels, tests/moe-ops.test.ts). Cross-stack stays (a).
   - **(c) Speculation:** exact equality on tie-free prompts; on
     knife-edge prompts, long-prefix agreement + accept/reject trace
     equality vs the reference (whose own spec path diverges from its

@@ -120,9 +120,15 @@ export function specGenerate(
     hidden.dispose();
     stats.prefillMs = performance.now() - t0;
 
-    out.push(next);
+    // EOS convention: an EOS id stops generation and counts toward
+    // stats.emitted (reference-faithful: optiq runtime.py counts it) but
+    // is NOT part of the returned content — matching our generate(),
+    // which never yields EOS. optiq's spec yields it only as a stream
+    // EVENT (clients see the stop); its token array role here is content.
+    const nextIsEos = eosTokenIds.includes(next);
+    if (!nextIsEos) out.push(next);
     stats.emitted++;
-    if (eosTokenIds.includes(next)) return { tokens: out, stats };
+    if (nextIsEos) return { tokens: out, stats };
 
     // 2. outer loop
     const tDecode = performance.now();
@@ -167,9 +173,10 @@ export function specGenerate(
 
       // 2d. emit accepted drafts
       for (let k = 0; k < kAccept; k++) {
-        out.push(drafts[k]!);
+        const isEos = eosTokenIds.includes(drafts[k]!);
+        if (!isEos) out.push(drafts[k]!);
         stats.emitted++;
-        if (eosTokenIds.includes(drafts[k]!) || stats.emitted >= maxTokens) {
+        if (isEos || stats.emitted >= maxTokens) {
           vHidden.dispose();
           break outer;
         }
@@ -177,7 +184,8 @@ export function specGenerate(
 
       // 2e. emit the correction (or bonus when all accepted)
       const emit = gt[kAccept]!;
-      out.push(emit);
+      const emitIsEos = eosTokenIds.includes(emit);
+      if (!emitIsEos) out.push(emit);
       stats.emitted++;
 
       // 2f. roll back rejected entries
@@ -190,7 +198,7 @@ export function specGenerate(
         }
       }
 
-      if (eosTokenIds.includes(emit) || stats.emitted >= maxTokens) {
+      if (emitIsEos || stats.emitted >= maxTokens) {
         vHidden.dispose();
         break;
       }
