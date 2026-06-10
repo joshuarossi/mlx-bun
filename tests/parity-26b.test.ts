@@ -12,17 +12,18 @@
 // Regen: bun scripts/regen-parity-goldens-26b.ts (explicit, never automatic).
 
 import { describe, expect, test } from "bun:test";
+import { goldenAt } from "./goldens";
 import { SNAPSHOT_26B, snapshot26bAvailable } from "./paths";
 
 const STEPS = 12;
 
 const optIn = process.env.MLX_BUN_TEST_26B === "1";
 const haveWeights = await snapshot26bAvailable();
-const haveGoldens = await Bun.file("goldens/parity-26b.json").exists();
+const haveGoldens = await goldenAt("parity-26b.json").exists();
 
 describe.skipIf(!optIn || !haveWeights || !haveGoldens)("26B-A4B MoE greedy decode parity", async () => {
   if (!optIn || !haveWeights || !haveGoldens) return;
-  const golden = (await Bun.file("goldens/parity-26b.json").json()) as {
+  const golden = (await goldenAt("parity-26b.json").json()) as {
     prompt_ids: number[];
     greedy_ids: number[];
     logit_steps: number;
@@ -46,7 +47,7 @@ describe.skipIf(!optIn || !haveWeights || !haveGoldens)("26B-A4B MoE greedy deco
         if (step < golden.logit_steps) {
           const ours = lastPositionLogits(logits);
           const ref = new Float32Array(
-            await Bun.file(`goldens/logits-26b-step${step}.bin`).arrayBuffer(),
+            await goldenAt(`logits-26b-step${step}.bin`).arrayBuffer(),
           );
           let maxDiff = 0;
           for (let i = 0; i < ref.length; i++)
@@ -65,7 +66,7 @@ describe.skipIf(!optIn || !haveWeights || !haveGoldens)("26B-A4B MoE greedy deco
     }
   }, 300_000);
 
-  const haveKvMixGolden = await Bun.file("goldens/logits-26b-kvmix.bin").exists();
+  const haveKvMixGolden = await goldenAt("logits-26b-kvmix.bin").exists();
   test.skipIf(!haveKvMixGolden)(
     "mixed-precision KV (kv_config.json): single-forward parity",
     async () => {
@@ -95,7 +96,7 @@ describe.skipIf(!optIn || !haveWeights || !haveGoldens)("26B-A4B MoE greedy deco
         const ours = lastPositionLogits(logits);
         logits.dispose();
         const ref = new Float32Array(
-          await Bun.file("goldens/logits-26b-kvmix.bin").arrayBuffer(),
+          await goldenAt("logits-26b-kvmix.bin").arrayBuffer(),
         );
         let maxDiff = 0;
         for (let i = 0; i < ref.length; i++)

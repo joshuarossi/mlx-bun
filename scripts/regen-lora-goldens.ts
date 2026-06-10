@@ -6,11 +6,17 @@
 // what the adapters were trained behind. optiq mount.py's uncast-f32 add
 // is a documented divergence we do NOT follow.
 //
-// Writes per adapter {upper,french}:
-//   goldens/lora-<id>.json        — prompt ids, greedy prefix
-//   goldens/lora-<id>-logits.bin  — step-0 last-position logits (f32)
+// Writes per adapter {upper,french} to goldenOutDir() (<out> — the flat
+// reference set on the reference box, goldens/<machine-key>/ elsewhere):
+//   <out>/lora-<id>.json        — prompt ids, greedy prefix
+//   <out>/lora-<id>-logits.bin  — step-0 last-position logits (f32)
 
 import { ORACLE_PYTHON } from "../tests/paths";
+import { goldenOutDir } from "../tests/goldens";
+import { mkdirSync } from "node:fs";
+
+const OUT = goldenOutDir();
+mkdirSync(OUT, { recursive: true });
 
 const E4B = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-e4b-it-OptiQ-4bit/snapshots/fcdb12d740cd813634064567fc7cb51159b34253`;
 const ADAPTERS = {
@@ -28,8 +34,8 @@ register()
 from mlx_lm import load
 from mlx_lm.models.cache import make_prompt_cache
 
-snap, adapter_dir, adapter_id, user_msg, steps = (
-    sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
+snap, adapter_dir, adapter_id, user_msg, steps, outdir = (
+    sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]), sys.argv[6]
 )
 model, tokenizer = load(snap, adapter_path=adapter_dir)
 ids = tokenizer.apply_chat_template(
@@ -43,7 +49,7 @@ for step in range(steps):
     last = logits[0, -1, :].astype(mx.float32)
     mx.eval(last)
     if step == 0:
-        with open(f"goldens/lora-{adapter_id}-logits.bin", "wb") as f:
+        with open(f"{outdir}/lora-{adapter_id}-logits.bin", "wb") as f:
             f.write(bytes(memoryview(last)))
     tok = mx.argmax(last).item()
     greedy.append(tok)
@@ -59,7 +65,7 @@ print(json.dumps({
 
 for (const [id, dir] of Object.entries(ADAPTERS)) {
   const proc = Bun.spawn(
-    [ORACLE_PYTHON, "-c", py, E4B, dir, id, USER_MSG, String(GREEDY_STEPS)],
+    [ORACLE_PYTHON, "-c", py, E4B, dir, id, USER_MSG, String(GREEDY_STEPS), OUT],
     { stdout: "pipe", stderr: "pipe" },
   );
   const [out, err, code] = await Promise.all([
@@ -68,6 +74,6 @@ for (const [id, dir] of Object.entries(ADAPTERS)) {
     proc.exited,
   ]);
   if (code !== 0) throw new Error(`oracle failed for ${id} (${code}):\n${err}`);
-  await Bun.write(`goldens/lora-${id}.json`, JSON.stringify(JSON.parse(out), null, 1));
-  console.log(`wrote goldens/lora-${id}.json + logits`);
+  await Bun.write(`${OUT}/lora-${id}.json`, JSON.stringify(JSON.parse(out), null, 1));
+  console.log(`wrote ${OUT}/lora-${id}.json + logits`);
 }

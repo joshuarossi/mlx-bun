@@ -4,10 +4,11 @@
 // fixture is 768×768 so preprocessing has no resize step).
 
 import { describe, expect, test } from "bun:test";
+import { goldenAt } from "./goldens";
 import { SNAPSHOT, snapshotAvailable } from "./paths";
 
 const haveWeights = await snapshotAvailable();
-const goldenFile = Bun.file("goldens/vision.json");
+const goldenFile = goldenAt("vision.json");
 const haveGoldens = await goldenFile.exists();
 
 describe.skipIf(!haveWeights || !haveGoldens)("vision oracle parity", async () => {

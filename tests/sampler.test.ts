@@ -2,14 +2,15 @@
 // top-k=1 ≡ greedy, and basic generation API behavior.
 
 import { describe, expect, test } from "bun:test";
+import { goldenAt } from "./goldens";
 import { SNAPSHOT, snapshotAvailable } from "./paths";
 
 const haveWeights = await snapshotAvailable();
-const haveGoldens = await Bun.file("goldens/parity.json").exists();
+const haveGoldens = await goldenAt("parity.json").exists();
 
 describe.skipIf(!haveWeights || !haveGoldens)("generation + sampling", async () => {
   if (!haveWeights || !haveGoldens) return;
-  const golden = (await Bun.file("goldens/parity.json").json()) as {
+  const golden = (await goldenAt("parity.json").json()) as {
     prompt_ids: number[];
     greedy_ids: number[];
   };

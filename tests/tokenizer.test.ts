@@ -2,10 +2,11 @@
 // identical ids for every golden prompt, identical decode round-trip.
 
 import { describe, expect, test } from "bun:test";
+import { goldenAt } from "./goldens";
 import { SNAPSHOT, snapshotAvailable } from "./paths";
 
 const haveWeights = await snapshotAvailable();
-const goldenFile = Bun.file("goldens/tokenizer.json");
+const goldenFile = goldenAt("tokenizer.json");
 const haveGoldens = await goldenFile.exists();
 
 describe.skipIf(!haveWeights || !haveGoldens)("tokenizer oracle parity", async () => {

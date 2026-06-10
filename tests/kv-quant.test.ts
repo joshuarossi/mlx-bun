@@ -7,12 +7,13 @@
 //  2. 48-token greedy trajectories must agree on a long prefix
 
 import { describe, expect, test } from "bun:test";
+import { goldenAt } from "./goldens";
 import { SNAPSHOT, snapshotAvailable } from "./paths";
 
 const MIN_PREFIX = 24; // of 48 — trajectories are knife-edge-sensitive; logits tests carry exactness
 
 const haveWeights = await snapshotAvailable();
-const goldenFile = Bun.file("goldens/kv-quant.json");
+const goldenFile = goldenAt("kv-quant.json");
 const haveGoldens = await goldenFile.exists();
 
 describe.skipIf(!haveWeights || !haveGoldens)("quantized KV parity", async () => {
@@ -59,7 +60,7 @@ describe.skipIf(!haveWeights || !haveGoldens)("quantized KV parity", async () =>
       const ours = lastPositionLogits(logits);
       logits.dispose();
       const ref = new Float32Array(
-        await Bun.file(`goldens/kvq-logits-${key}.bin`).arrayBuffer(),
+        await goldenAt(`kvq-logits-${key}.bin`).arrayBuffer(),
       );
       let maxDiff = 0;
       for (let i = 0; i < ref.length; i++)

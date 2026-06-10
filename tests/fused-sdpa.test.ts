@@ -14,6 +14,7 @@
 //     both must be the same computation).
 
 import { describe, expect, test } from "bun:test";
+import { goldenAt } from "./goldens";
 import { MlxArray } from "../src/mlx/array";
 import { Dtype } from "../src/mlx/ffi";
 import * as ops from "../src/mlx/ops";
@@ -203,8 +204,8 @@ interface GoldenCase {
   out: GoldenTensor;
 }
 
-const manifestFile = Bun.file("goldens/fused-sdpa.json");
-const blobFile = Bun.file("goldens/fused-sdpa.bin");
+const manifestFile = goldenAt("fused-sdpa.json");
+const blobFile = goldenAt("fused-sdpa.bin");
 const haveGoldens = (await manifestFile.exists()) && (await blobFile.exists());
 
 describe.skipIf(!haveGoldens)("fused quantized SDPA vs optiq oracle (tier a)", async () => {

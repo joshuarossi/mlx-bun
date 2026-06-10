@@ -3,10 +3,11 @@
 // token ids when fed through our tokenizer.
 
 import { describe, expect, test } from "bun:test";
+import { goldenAt } from "./goldens";
 import { SNAPSHOT, snapshotAvailable } from "./paths";
 
 const haveWeights = await snapshotAvailable();
-const goldenFile = Bun.file("goldens/chat-template.json");
+const goldenFile = goldenAt("chat-template.json");
 const haveGoldens = await goldenFile.exists();
 
 describe.skipIf(!haveWeights || !haveGoldens)("chat template oracle parity", async () => {

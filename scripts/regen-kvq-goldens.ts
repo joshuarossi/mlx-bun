@@ -19,15 +19,24 @@
 // Keeps the original goldens' prompt ids (read from goldens/kv-quant.json)
 // so trajectory history stays comparable across regens.
 //
-// Writes:
-//   goldens/kv-quant.json         — prompt ids + fp16/kv8/kv4 greedy ids
-//   goldens/kvq-logits-{fp16,kv8,kv4}.bin — last-position logits (f32)
+// Writes to goldenOutDir() (<out> — the flat reference set on the reference
+// box, goldens/<machine-key>/ elsewhere, since logit goldens are bit-exact
+// only on the GPU that produced them):
+//   <out>/kv-quant.json         — prompt ids + fp16/kv8/kv4 greedy ids
+//   <out>/kvq-logits-{fp16,kv8,kv4}.bin — last-position logits (f32)
 
 import { ORACLE_PYTHON, SNAPSHOT } from "../tests/paths";
+import { goldenAt, goldenOutDir } from "../tests/goldens";
+import { mkdirSync } from "node:fs";
+
+const OUT = goldenOutDir();
+mkdirSync(OUT, { recursive: true });
 
 const MAX_TOKENS = 48;
 
-const existing = (await Bun.file("goldens/kv-quant.json").json()) as {
+// Prompt ids are machine-independent; read the resolved golden (override if
+// present, else the flat reference).
+const existing = (await goldenAt("kv-quant.json").json()) as {
   prompt_ids: number[];
 };
 
@@ -43,6 +52,7 @@ from optiq.runtime.fused_quant_sdpa import install as install_fused, uninstall a
 snap = sys.argv[1]
 ids = json.loads(sys.argv[2])
 max_tokens = int(sys.argv[3])
+outdir = sys.argv[4]
 
 model, tokenizer = load(snap)
 
@@ -65,7 +75,7 @@ for key, bits in (("fp16", None), ("kv8", 8), ("kv4", 4)):
     logits = model(mx.array([ids]), cache=cache)
     last = logits[0, -1, :].astype(mx.float32)
     mx.eval(last)
-    with open(f"goldens/kvq-logits-{key}.bin", "wb") as f:
+    with open(f"{outdir}/kvq-logits-{key}.bin", "wb") as f:
         f.write(bytes(memoryview(last)))
     del cache, logits, last
 
@@ -86,7 +96,7 @@ print(json.dumps(out))
 `;
 
 const proc = Bun.spawn(
-  [ORACLE_PYTHON, "-c", py, SNAPSHOT, JSON.stringify(existing.prompt_ids), String(MAX_TOKENS)],
+  [ORACLE_PYTHON, "-c", py, SNAPSHOT, JSON.stringify(existing.prompt_ids), String(MAX_TOKENS), OUT],
   { stdout: "pipe", stderr: "pipe", cwd: import.meta.dir + "/.." },
 );
 const [out, err, code] = await Promise.all([
@@ -95,5 +105,5 @@ const [out, err, code] = await Promise.all([
   proc.exited,
 ]);
 if (code !== 0) throw new Error(`oracle failed (${code}):\n${err}`);
-await Bun.write("goldens/kv-quant.json", JSON.stringify(JSON.parse(out)));
-console.log("wrote goldens/kv-quant.json + kvq-logits-{fp16,kv8,kv4}.bin");
+await Bun.write(`${OUT}/kv-quant.json`, JSON.stringify(JSON.parse(out)));
+console.log(`wrote ${OUT}/kv-quant.json + kvq-logits-{fp16,kv8,kv4}.bin`);

@@ -3,10 +3,11 @@
 // Slow tier: skipped automatically if the snapshot isn't on disk.
 
 import { describe, expect, test } from "bun:test";
+import { goldenAt } from "./goldens";
 import { SNAPSHOT, snapshotAvailable } from "./paths";
 
 const haveWeights = await snapshotAvailable();
-const goldenFile = Bun.file("goldens/values.json");
+const goldenFile = goldenAt("values.json");
 const haveGoldens = await goldenFile.exists();
 
 describe.skipIf(!haveWeights || !haveGoldens)("oracle value parity", async () => {

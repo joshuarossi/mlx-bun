@@ -4,12 +4,13 @@
 //   bun scripts/parity-check.ts [--steps N]
 
 import { SNAPSHOT } from "../tests/paths";
+import { goldenAt } from "../tests/goldens";
 import { loadModelConfig } from "../src/config";
 import { Weights } from "../src/weights";
 import { Gemma4Model, argmaxLastPosition, lastPositionLogits } from "../src/model/gemma4";
 import { peakMemory } from "../src/mlx/ffi";
 
-const golden = (await Bun.file("goldens/parity.json").json()) as {
+const golden = (await goldenAt("parity.json").json()) as {
   prompt: string;
   prompt_ids: number[];
   greedy_ids: number[];
@@ -38,7 +39,7 @@ for (let step = 0; step < maxSteps; step++) {
   if (step < golden.logit_steps) {
     const ours = lastPositionLogits(logits);
     const ref = new Float32Array(
-      await Bun.file(`goldens/logits-step${step}.bin`).arrayBuffer(),
+      await goldenAt(`logits-step${step}.bin`).arrayBuffer(),
     );
     let maxDiff = 0;
     let maxAt = -1;

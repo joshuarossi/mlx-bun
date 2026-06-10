@@ -18,10 +18,17 @@
 //      Uses the 12B only: e4b's 8-bit sliding layers hit optiq's
 //      registry-miss shim bug (Phase 15 finding).
 //
-// Writes goldens/rotating-kvq.json + goldens/rotating-kvq.bin (+ e2e
-// logits in the same blob).
+// Writes <out>/rotating-kvq.json + <out>/rotating-kvq.bin (+ e2e logits in
+// the same blob), where <out> is goldenOutDir() — the flat reference set on
+// the reference box, goldens/<machine-key>/ elsewhere (bit-exactness is
+// per-GPU).
 
 import { ORACLE_PYTHON, SNAPSHOT } from "../tests/paths";
+import { goldenOutDir } from "../tests/goldens";
+import { mkdirSync } from "node:fs";
+
+const OUT = goldenOutDir();
+mkdirSync(OUT, { recursive: true });
 
 const py = `
 import json, sys
@@ -73,6 +80,7 @@ from optiq.runtime.fused_quant_sdpa import install as install_fused, uninstall a
 
 patch_rotating_to_quantized()
 snap = sys.argv[1]
+outdir = sys.argv[2]
 model, tokenizer = load(snap)
 
 para = tokenizer.encode(
@@ -112,12 +120,12 @@ for key, bits in (("kv8", 8), ("kv4", 4)):
     manifest["e2e"][key + "_greedy"] = toks
     del cache
 
-with open("goldens/rotating-kvq.bin", "wb") as f:
+with open(f"{outdir}/rotating-kvq.bin", "wb") as f:
     f.write(bytes(blob))
 print(json.dumps(manifest))
 `;
 
-const proc = Bun.spawn([ORACLE_PYTHON, "-c", py, SNAPSHOT], {
+const proc = Bun.spawn([ORACLE_PYTHON, "-c", py, SNAPSHOT, OUT], {
   stdout: "pipe", stderr: "pipe", cwd: import.meta.dir + "/..",
 });
 const [out, err, code] = await Promise.all([
@@ -126,5 +134,5 @@ const [out, err, code] = await Promise.all([
   proc.exited,
 ]);
 if (code !== 0) throw new Error(`oracle failed (${code}):\n${err.slice(-2000)}`);
-await Bun.write("goldens/rotating-kvq.json", JSON.stringify(JSON.parse(out)));
-console.log("wrote goldens/rotating-kvq.json + goldens/rotating-kvq.bin");
+await Bun.write(`${OUT}/rotating-kvq.json`, JSON.stringify(JSON.parse(out)));
+console.log(`wrote ${OUT}/rotating-kvq.json + ${OUT}/rotating-kvq.bin`);

@@ -16,13 +16,14 @@
 // Goldens: scripts/regen-rotating-kvq-goldens.ts.
 
 import { describe, expect, test } from "bun:test";
+import { goldenAt } from "./goldens";
 import { MlxArray } from "../src/mlx/array";
 import { Dtype } from "../src/mlx/ffi";
 import * as ops from "../src/mlx/ops";
 import { SNAPSHOT, snapshotAvailable } from "./paths";
 
-const manifestFile = Bun.file("goldens/rotating-kvq.json");
-const blobFile = Bun.file("goldens/rotating-kvq.bin");
+const manifestFile = goldenAt("rotating-kvq.json");
+const blobFile = goldenAt("rotating-kvq.bin");
 const haveGoldens = (await manifestFile.exists()) && (await blobFile.exists());
 
 interface T { offset: number; shape: number[]; dtype: string }
