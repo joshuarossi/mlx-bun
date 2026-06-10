@@ -313,6 +313,19 @@ The load-bearing question for the whole project.
   real photos; our convolution resize ports PIL's algorithm but isn't
   bit-identical. Resize-free inputs (multiples of 48 ≤ 768×768) are
   bit-exact through the whole vision pipeline.
+- **Image decode (since Bun 1.3.14, upgraded 2026-06-10): `Bun.Image`**
+  — native OS codecs (`backend: "system"` = ImageIO on macOS), EXIF
+  auto-orient, off-thread. It has no raw-pixel terminal, so non-PNG
+  inputs (HEIC, AVIF, WebP, JPEG, TIFF, GIF, BMP) are transcoded to
+  lossless PNG and decoded by fast-png; PNG inputs skip the bridge
+  (exact, the parity-golden path). `Bun.Image.resize` is NOT used — its
+  kernels don't match PIL's antialiased bicubic that the vision tower
+  was trained behind. jpeg-js dropped. HEIC verified end-to-end
+  (sips-generated fixture; sub-LSB pixel diff; grounded description).
+- Post-upgrade re-verification (1.3.3 → 1.3.14): all 72 tests pass;
+  `Bun.mmap` >4 GB STILL panics (libc mmap stays); the f64 FFI
+  workaround stays (whether 1.3.14 fixed it is unconfirmed — the
+  host-side arange is safe regardless).
 - optiq's bidirectional-mask patch has a bug on the sliding array-mask
   path (>1024-token vision prompts get +1.0 additive instead of a mask);
   ours uses proper bool OR. Divergence only matters for long vision

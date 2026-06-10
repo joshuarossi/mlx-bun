@@ -1,18 +1,27 @@
 // Gemma-4 unified image preprocessing — port of optiq's
 // vlm/gemma4_unified/image_processing.py (vendored from mlx-vlm, BSD-3).
 //
-// decode (png/jpeg, pure JS) → aspect-ratio-preserving resize (PIL-style
-// convolution resampling, bicubic kernel with antialias-scaled support) →
-// rescale 1/255 → patchify into 48×48 patch vectors with 2D grid
-// positions → pad to the 280 soft-token budget.
+// decode → aspect-ratio-preserving resize (PIL-style convolution
+// resampling, bicubic kernel with antialias-scaled support) → rescale
+// 1/255 → patchify into 48×48 patch vectors with 2D grid positions →
+// pad to the 280 soft-token budget.
 //
-// Resize note: PIL's exact float pipeline isn't bit-reproducible here, so
-// vision logits can differ slightly from the python stack on images that
-// need resizing. Images already sized to multiples of 48 (≤2520 patches)
-// skip the resize entirely and are bit-identical through preprocessing.
+// Decode strategy (Bun ≥1.3.14): PNG goes straight through fast-png
+// (exact, lossless — the parity-golden path). Everything else (JPEG,
+// HEIC, AVIF, WebP, TIFF, GIF, BMP) is transcoded to lossless PNG by
+// Bun.Image — native OS codecs (ImageIO on macOS), EXIF auto-orient,
+// off-thread — then decoded by fast-png. Bun.Image has no raw-pixel
+// terminal, so the PNG bridge is the supported path to pixels.
+//
+// Resize note: Bun.Image.resize is NOT used — its kernels (lanczos3,
+// cubic≠PIL-bicubic) don't match PIL's antialiased bicubic, which the
+// vision tower was trained behind. PIL's exact float pipeline isn't
+// bit-reproducible here either, so vision logits can differ slightly
+// from the python stack on images that need resizing. Images already
+// sized to multiples of 48 (≤2520 patches) skip the resize entirely and
+// are bit-identical through preprocessing.
 
 import { decode as decodePng } from "fast-png";
-import jpeg from "jpeg-js";
 
 export const PATCH_SIZE = 16;
 export const POOLING_KERNEL_SIZE = 3;
@@ -35,39 +44,42 @@ export interface PreprocessedImage {
   softTokens: number;
 }
 
-export function decodeImage(bytes: Uint8Array): RGBImage {
-  // PNG signature
-  if (bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50) {
-    const png = decodePng(bytes);
-    const ch = png.channels;
-    const out = new Uint8Array(png.width * png.height * 3);
-    const src = png.data as Uint8Array;
-    const n = png.width * png.height;
-    if (png.depth === 16) {
-      const src16 = png.data as Uint16Array;
-      for (let i = 0; i < n; i++)
-        for (let c = 0; c < 3; c++)
-          out[i * 3 + c] = src16[i * ch + Math.min(c, ch - 1)]! >> 8;
-    } else {
-      for (let i = 0; i < n; i++)
-        for (let c = 0; c < 3; c++)
-          out[i * 3 + c] = src[i * ch + Math.min(c, ch - 1)]!;
-    }
-    return { width: png.width, height: png.height, data: out };
+function pngToRgb(bytes: Uint8Array): RGBImage {
+  const png = decodePng(bytes);
+  const ch = png.channels;
+  const out = new Uint8Array(png.width * png.height * 3);
+  const src = png.data as Uint8Array;
+  const n = png.width * png.height;
+  if (png.depth === 16) {
+    const src16 = png.data as Uint16Array;
+    for (let i = 0; i < n; i++)
+      for (let c = 0; c < 3; c++)
+        out[i * 3 + c] = src16[i * ch + Math.min(c, ch - 1)]! >> 8;
+  } else {
+    for (let i = 0; i < n; i++)
+      for (let c = 0; c < 3; c++)
+        out[i * 3 + c] = src[i * ch + Math.min(c, ch - 1)]!;
   }
-  // JPEG
-  if (bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8) {
-    const img = jpeg.decode(bytes, { useTArray: true, formatAsRGBA: true });
-    const n = img.width * img.height;
-    const out = new Uint8Array(n * 3);
-    for (let i = 0; i < n; i++) {
-      out[i * 3] = img.data[i * 4]!;
-      out[i * 3 + 1] = img.data[i * 4 + 1]!;
-      out[i * 3 + 2] = img.data[i * 4 + 2]!;
-    }
-    return { width: img.width, height: img.height, data: out };
+  return { width: png.width, height: png.height, data: out };
+}
+
+export async function decodeImage(bytes: Uint8Array): Promise<RGBImage> {
+  // PNG: direct, exact (the parity-golden path)
+  if (bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50)
+    return pngToRgb(bytes);
+  // everything else: native transcode to lossless PNG (HEIC/AVIF/WebP/
+  // JPEG/TIFF/GIF/BMP — whatever the OS codecs decode), EXIF auto-orient
+  try {
+    const png = await new Bun.Image(bytes).png({ compressionLevel: 1 }).bytes();
+    return pngToRgb(png);
+  } catch (e) {
+    const code = (e as { code?: string }).code;
+    throw new Error(
+      code === "ERR_IMAGE_UNKNOWN_FORMAT"
+        ? "unsupported image format"
+        : `image decode failed: ${(e as Error).message}`,
+    );
   }
-  throw new Error("unsupported image format (png and jpeg supported)");
 }
 
 // --- PIL-style convolution resize (bicubic, a = -0.5) ---------------------
@@ -191,8 +203,8 @@ export function targetSize(
 }
 
 /** Full pipeline: bytes → padded patch vectors + grid positions. */
-export function preprocessImage(bytes: Uint8Array): PreprocessedImage {
-  let img = decodeImage(bytes);
+export async function preprocessImage(bytes: Uint8Array): Promise<PreprocessedImage> {
+  let img = await decodeImage(bytes);
   const t = targetSize(img.width, img.height);
   if (t.width !== img.width || t.height !== img.height)
     img = resizeBicubic(img, t.width, t.height);

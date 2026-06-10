@@ -27,8 +27,11 @@ README.md has the pitch and scope boundaries.
 
 ## Hard-won environment facts
 
-- `Bun.mmap` panics (SIGTRAP) on files > 4 GB (Bun 1.3.3) — use libc
-  mmap via bun:ffi (`src/mmap.ts`).
+- Bun pinned at ≥ 1.3.14 (upgraded 2026-06-10): `Bun.Image` (native OS
+  image codecs incl. HEIC/AVIF) is the decode path for vision inputs —
+  see `src/vision/preprocess.ts`. All 72 tests re-verified post-upgrade.
+- `Bun.mmap` panics (SIGTRAP) on files > 4 GB (still true in 1.3.14) —
+  use libc mmap via bun:ffi (`src/mmap.ts`).
 - Metal/mlx cannot no-copy-wrap host pointers that aren't page-aligned:
   GPU ops silently read garbage (CPU-stream ops are fine). Weights load
   via `mlx_load_safetensors` on the **CPU stream** (Load has no GPU

@@ -39,13 +39,56 @@ describe.skipIf(!haveWeights || !haveGoldens)("vision oracle parity", async () =
     await Bun.file("tests/fixtures/grad-768.png").arrayBuffer(),
   );
 
-  test("preprocessing matches (soft tokens, no resize)", () => {
-    const p = preprocessImage(imageBytes);
+  test("preprocessing matches (soft tokens, no resize)", async () => {
+    const p = await preprocessImage(imageBytes);
     expect(p.softTokens).toBe(golden.soft_tokens[0]!);
   });
 
+  test("HEIC decodes via Bun.Image (native codec) to near-identical pixels", async () => {
+    const { decodeImage } = await import("../src/vision/preprocess");
+    const heic = new Uint8Array(
+      await Bun.file("tests/fixtures/grad-768.heic").arrayBuffer(),
+    );
+    const a = await decodeImage(heic);
+    const b = await decodeImage(imageBytes);
+    expect(a.width).toBe(768);
+    expect(a.height).toBe(768);
+    let sum = 0;
+    for (let i = 0; i < a.data.length; i++) sum += Math.abs(a.data[i]! - b.data[i]!);
+    // lossy HEIC: mean abs diff should be sub-LSB vs the lossless source
+    expect(sum / a.data.length).toBeLessThan(2);
+  });
+
+  test("HEIC image generates a grounded description end-to-end", async () => {
+    const heic = new Uint8Array(
+      await Bun.file("tests/fixtures/grad-768.heic").arrayBuffer(),
+    );
+    const vp = await buildVisionPrompt(
+      model, tower, tokenizer, template,
+      [{
+        role: "user",
+        content: [
+          { type: "image" as const, data: Buffer.from(heic).toString("base64") },
+          { type: "text" as const, text: "Describe this image in one short sentence." },
+        ],
+      }] as never,
+      [heic],
+      { imageTokenId: 258880, boiTokenId: 255999, eoiTokenId: 258882 },
+    );
+    const gen = generate(model, vp.ids, {
+      maxTokens: 24, temperature: 0,
+      promptEmbeddings: vp.embeddings, imageMask: vp.imageMask,
+    });
+    const out: number[] = [];
+    for await (const t of gen) out.push(t.token);
+    vp.embeddings.dispose();
+    vp.imageMask.dispose();
+    const text = tokenizer.decode(out, true).toLowerCase();
+    expect(text).toMatch(/gradient|color/);
+  }, 240_000);
+
   test("prompt ids and greedy generation match oracle", async () => {
-    const vp = buildVisionPrompt(
+    const vp = await buildVisionPrompt(
       model, tower, tokenizer, template,
       [{
         role: "user",

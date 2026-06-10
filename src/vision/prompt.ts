@@ -83,7 +83,7 @@ async function fetchImageBytes(url: string): Promise<Uint8Array> {
   throw new Error(`unsupported image url scheme: ${url.slice(0, 16)}`);
 }
 
-export function buildVisionPrompt(
+export async function buildVisionPrompt(
   model: Gemma4Model,
   tower: VisionTower,
   tokenizer: LoadedTokenizer,
@@ -92,13 +92,13 @@ export function buildVisionPrompt(
   images: Uint8Array[],
   tokenIds: VisionTokenIds,
   tools: ToolDefinition[] | null = null,
-): VisionPrompt {
+): Promise<VisionPrompt> {
   const rendered = template.render(messages, { tools });
   let ids = tokenizer.encode(rendered);
   if (ids[0] === ids[1] && ids[0] === tokenizer.bosTokenId) ids = ids.slice(1);
 
   // preprocess + embed every image (in order of appearance)
-  const pre = images.map((bytes) => preprocessImage(bytes));
+  const pre = await Promise.all(images.map((bytes) => preprocessImage(bytes)));
 
   // expand each <|image|> into <boi> + image_token×soft + <eoi>
   const spliced: number[] = [];

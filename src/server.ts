@@ -297,7 +297,7 @@ export function createServer(
                 { error: { message: "model has no vision sidecar" } }, { status: 400 },
               );
             const { messages, images } = await extractImages(normalizeMessages(body.messages));
-            const vp = buildVisionPrompt(
+            const vp = await buildVisionPrompt(
               ctx.model, ctx.vision, ctx.tokenizer, ctx.template,
               messages, images, ctx.visionTokenIds, tools,
             );
