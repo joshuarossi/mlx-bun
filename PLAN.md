@@ -462,15 +462,12 @@ them. Memory measurements stay fine to take in-session.
 
 Remaining work, in priority order:
 
-0. **Phase 9 — rotating KV-quant (NEXT; oracle mapped, see the Phase 9
-   "oracle map" section).** The port is small in our architecture: the
-   RotatingQuantizedKVCache class + toQuantized replay + one
-   instanceof in Attention.forward (optiq's registry/patch machinery
-   doesn't apply to us). Parity tier a vs python with
-   patch_rotating_to_quantized() + fused install; use the 12B for
-   goldens (e4b 8-bit sliding hits the upstream optiq shim bug).
-   Then Phase 11 (Anthropic /v1/messages — Josh's Claude Code
-   backend — + Responses API), then the embeddable build.
+0. ~~Phase 9 — rotating KV-quant~~ DONE same evening (tier-a bit-exact
+   mechanics + past-window e2e; KV 365→194/103 MB at saturation; see
+   Phase 9 findings). **NEXT: Phase 11 — Anthropic /v1/messages
+   (Josh's Claude Code backend; oracle optiq/anthropic_shim.py) +
+   Responses API**, then the embeddable build. Background chip
+   pending: server `stop` sequences.
 
 1. **12B long-context decode gap (−10.0% @8k vs mlx-lm, n=3
    zero-spread — benchmarks-h2h-2026-06-10.md).** Phase 10 (fused
@@ -827,7 +824,7 @@ request by id, never reload the base.
   field + scope wrapper is exactly as isolating as Python's
   ContextVar under our serialized queue.
 
-## Phase 9 — Rotating-cache KV quantization `[ ]`
+## Phase 9 — Rotating-cache KV quantization `[x]` (2026-06-10; tok/s rows → benchmark pass)
 
 The second half of NEXT UP item 2 (mixed-precision KV serving): item 2
 covers full-attention layers via the shipped QuantizedKVCache; this
@@ -849,37 +846,71 @@ this phase); (b) bounded-but-real savings on sliding-heavy stacks
 
 - [x] Read `optiq/runtime/kv/rotating.py` (oracle) AND its SDPA
       dispatch patch BEFORE estimating — done 2026-06-10, map below.
-- [ ] Port `RotatingQuantizedKVCache`: RotatingKVCache ring mechanics
-      over (packed, scales, biases) triples — `_update_concat`
-      (temporal-order → trim-to-window → concat) and `_update_in_place`
-      (step-grow to max_size, wrap `_idx` to `keep`, slice-assign the
-      quantized incoming S tokens), `_trim`/`_temporal_order` via
-      per-component ops. Storage convention identical to our
-      QuantizedKVCache; returns ACTIVE QUANTIZED SLICES.
-- [ ] `RotatingKVCache.toQuantized(group, bits)` replay (quantize the
-      whole buffer incl. ring layout, copy offset/_idx) + generate.ts
-      conversion: uniform `kvBits` mode covers rotating caches;
-      `kvConfig` mode follows the file (note: shipped kv_config.json
-      files list full-attention layers only — uniform mode is where
-      rotating-quant engages today).
-- [ ] Attention dispatch: `instanceof RotatingQuantizedKVCache` →
-      updateAndFetchQuantized → SharedKv {kind:"quant"} — donor AND
-      sharer paths are ALREADY generic in our port.
-- [ ] Trim/rollback semantics under quantization (spec decode and
-      prompt-cache trim both depend on `isTrimmable`; inherited ring
-      rule: trimmable only before wrap).
-- [ ] Long-context memory measurement (8k/32k rows; fit-table updated
-      with the quantized sliding term). Throughput rows deferred to the
-      next cleared-machine benchmark pass (Josh 2026-06-10: build
-      first, benchmark when the project is good).
-- **Parity contract**: tier a (bit-exact) for kv8 AND kv4 — post-Phase-10
-  (rope-freqs fix + fused prefill) all quantized paths measured
-  bit-exact; the old kv4 tier-b allowance should not be needed. Oracle
-  harness: python with `patch_rotating_to_quantized()` + fused install.
-- **Exit criterion**: 12B and e4b serve with sliding KV quantized at a
-  measured, materially smaller KV footprint (and larger max context in
-  the fit table); eval-DB memory rows recorded; tok/s rows deferred to
-  the benchmark pass.
+- [x] Port `RotatingQuantizedKVCache` (DONE 2026-06-10, src/model/
+      gemma4.ts): RotatingKVCache ring mechanics over (packed, scales,
+      biases) triples — `_update_concat` (temporal-order →
+      trim-to-window → concat) and `_update_in_place` (step-grow to
+      max_size, wrap `_idx` to `keep`, slice-assign the quantized
+      incoming S tokens), `_trim`/`_temporal_order` via per-component
+      ops. Storage convention identical to our QuantizedKVCache;
+      returns ACTIVE QUANTIZED SLICES.
+- [x] `RotatingKVCache.toQuantized(group, bits)` replay (quantize the
+      whole buffer incl. ring layout, copy offset/_idx; replay-from-
+      WRAPPED-ring unit-tested) + generate.ts conversion: uniform
+      `kvBits` mode covers rotating caches; `kvConfig` mode follows the
+      file (shipped kv_config.json files list full-attention layers
+      only — uniform mode is where rotating-quant engages today).
+- [x] Attention dispatch: one `instanceof RotatingQuantizedKVCache`
+      added to the quant branch — donor AND sharer paths were already
+      generic (SharedKv carries groupSize/bits, as the oracle map
+      predicted).
+- [x] Trim/rollback semantics: inherited ring rule (trimmable only
+      before wrap), same as bf16 rotating.
+- [~] Memory measured @1536 ctx (rings saturated), 12B, all layers:
+      **total KV 365→194 MB (kv8, 0.53×) / 365→103 MB (kv4, 0.28×)**;
+      the sliding portion (335 MB — 92% of the 12B's KV) was the
+      previously-unquantizable term. Open remainder: fit-table
+      quantized-KV term (fit/admission stay conservative-bf16 by
+      design for now) and 8k/32k + tok/s rows — deferred to the
+      batched benchmark pass (standing directive).
+- **Parity contract → MET, tier a everywhere**: (1) class-level ring
+  mechanics BIT-EXACT vs optiq's RotatingQuantizedKVCache at every
+  checkpoint of a scripted sequence covering first-prefill, decode
+  growth, ring wrap, prefill-concat OVER a wrapped ring, post-wrap
+  decode (triples + offset/_idx compared bitwise); (2) 12B end-to-end
+  single-forward logits over a PAST-WINDOW 1536-token prompt with ALL
+  48 layers quantized: kv8 AND kv4 both toBe(0) vs python
+  (patch_rotating_to_quantized + fused install), greedy continuations
+  long-prefix aligned. tests/rotating-kvq.test.ts (mechanics + replay
+  fast tier; e2e opt-in `MLX_BUN_TEST_ROTKVQ=1`, run alone — another
+  12B instance on top of the default suite OOM-kills it, same policy
+  as the 26B suite); goldens: scripts/regen-rotating-kvq-goldens.ts.
+- **Exit criterion**: serving footprint shrink measured and tier-a
+  parity shipped (above). tok/s and larger-context rows fold into the
+  benchmark pass.
+
+### Phase 9 findings (2026-06-10, port session)
+
+- **The oracle map held exactly**: the port was the cache class + one
+  instanceof; bit-exact vs python on the first full run (mechanics AND
+  past-window e2e). No registry, no SDPA patch, no dispatch surgery —
+  carrying groupSize/bits in SharedKv (a Phase 6 design choice) is
+  what made optiq's three patch layers unnecessary.
+- **Scenario-faithful fused dispatch needed one refinement**: optiq's
+  fused wrapper falls back to unfused on EVERY array mask, so
+  sliding-layer quantized prefill (window masks) is UNFUSED in the
+  reference. Our gate now tiles only masks flagged `causalEquivalent`
+  (windowless continuations — where mlx-lm would have said "causal");
+  window/bidir arrays stay unfused. Without this the past-window e2e
+  could not have been bit-exact.
+- **A second 12B instance OOM-kills the default suite** (exit 137 —
+  the Phase 6 multi-model ceiling, now measured as a hard kill rather
+  than slow paging). Weights-loaded additions to the suite must either
+  reuse an existing resident model's test file or go opt-in/run-alone.
+- kv-store persistence of QUANTIZED caches (rotating or not) was
+  already unsupported (`unknown cache type`) — pre-existing gap, now
+  explicitly noted; pair it with the kv-store format rev if quantized
+  prefix persistence is ever needed.
 
 ### Phase 9 oracle map (read 2026-06-10, pre-port)
 
