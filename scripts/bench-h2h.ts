@@ -52,6 +52,9 @@ const list = (xs: number[], digits = 1) => xs.map((x) => x.toFixed(digits)).join
 
 const db = new EvalDB();
 const commit = gitCommit();
+/** Attempted-and-failed cells — rendered as a footer in the results md
+ *  so holes in the matrix are self-documenting (vs "not in the matrix"). */
+const failures: { cell: string; error: string }[] = [];
 
 // --- preflight ------------------------------------------------------------
 
@@ -139,10 +142,12 @@ async function directLeg(
   cells: DirectCell[], runs: number, machineState: string,
   o: { tokens: number; promptTokens?: number; forceNote?: boolean },
 ): Promise<void> {
-  const ctxTag = o.promptTokens ? ` ctx~${o.promptTokens}` : "";
+  const ctxTag = o.promptTokens ? ` ctxreq=${o.promptTokens}` : "";
   const todo = cells.filter((c) => {
-    const like = `h2h-direct%kv=${c.kv}${o.promptTokens ? " ctx=%" : " %"}`;
-    const notLike = o.promptTokens ? undefined : "%ctx=%";
+    // resume keys on the REQUESTED context length, so an 8k row can
+    // never satisfy (and silently skip) a future 32k cell
+    const like = `h2h-direct%kv=${c.kv}${o.promptTokens ? ` ctxreq=${o.promptTokens} ` : " "}%`;
+    const notLike = o.promptTokens ? undefined : "%ctxreq=%";
     if (hasRecentRow(c.stack, c.m.path, like, notLike)) {
       console.log(`  [skip] ${cellKey(c)}${ctxTag} — recent row exists (use --redo to rerun)`);
       return false;
@@ -165,7 +170,9 @@ async function directLeg(
         // recorded, so the resumable harness retries it next invocation.
         failed.add(key);
         agg.delete(key);
-        console.error(`  [FAIL] ${key}: ${(e as Error).message}`);
+        const msg = (e as Error).message;
+        console.error(`  [FAIL] ${key}: ${msg}`);
+        failures.push({ cell: `${key}${ctxTag}`, error: msg.split("\n")[0]!.slice(0, 160) });
         continue;
       }
       if (r === 0) {
@@ -191,7 +198,8 @@ async function directLeg(
       prefillTps: median(a.prefill), decodeTps: median(a.decode),
       peakBytes: Math.round(Math.max(...a.peak) * 1e9),
       machineState,
-      notes: `h2h-direct median-of-${runs} kv=${c.kv}${o.promptTokens ? ` ctx=${a.prompt}` : ""} ` +
+      notes: `h2h-direct median-of-${runs} kv=${c.kv}` +
+        `${o.promptTokens ? ` ctxreq=${o.promptTokens} ctx=${a.prompt}` : ""} ` +
         `decode[${list(a.decode)}]${o.forceNote ? " preflight-failed" : ""}`,
     });
   }
@@ -207,6 +215,10 @@ async function directLeg(
 // shared by every row and TTFT is server-dominated anyway.
 async function serverRequest(base: string, modelId: string, tokens: number): Promise<{
   ttftMs: number; decodeTps: number; promptTokens: number; completionTokens: number;
+  /** false = usage absent, token count fell back to SSE chunk counting —
+   *  underestimates if a stack coalesces tokens per delta; flagged in
+   *  the row so the number carries its own caveat. */
+  usedUsage: boolean;
 }> {
   const body = JSON.stringify({
     model: modelId, stream: true, max_tokens: tokens, temperature: 0,
@@ -264,15 +276,19 @@ async function serverRequest(base: string, modelId: string, tokens: number): Pro
   return {
     ttftMs: firstContentAt - t0, decodeTps,
     promptTokens: usage?.prompt_tokens ?? -1, completionTokens,
+    usedUsage: usage?.completion_tokens != null,
   };
 }
 
 async function waitReady(base: string, timeoutMs: number): Promise<number> {
+  // 50 ms poll: every server here binds in well under 500 ms, so a
+  // coarser interval turns the ready column into a constant (the old
+  // "everything reads 0.5 s" artifact). Resolution is ±50 ms.
   const t0 = performance.now();
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try { if ((await fetch(`${base}/models`, { signal: AbortSignal.timeout(2000) })).ok) return performance.now() - t0; } catch {}
-    await Bun.sleep(500);
+    await Bun.sleep(50);
   }
   throw new Error(`server at ${base} not ready after ${timeoutMs} ms`);
 }
@@ -344,12 +360,17 @@ async function serverLeg(
     const ttfts: number[] = [];
     const decodes: number[] = [];
     let promptTokens = warm.promptTokens;
+    let anyChunkFallback = !warm.usedUsage;
     for (let r = 1; r <= runs; r++) {
       const res = await serverRequest(srv.base, c.m.repoId, tokens);
       ttfts.push(res.ttftMs);
       decodes.push(res.decodeTps);
       if (res.promptTokens > 0) promptTokens = res.promptTokens;
-      console.log(`  [run ${r}/${runs}] ${key}: ttft ${res.ttftMs.toFixed(0)} ms, decode ${res.decodeTps.toFixed(1)} tok/s`);
+      if (!res.usedUsage) anyChunkFallback = true;
+      console.log(
+        `  [run ${r}/${runs}] ${key}: ttft ${res.ttftMs.toFixed(0)} ms, ` +
+        `decode ${res.decodeTps.toFixed(1)} tok/s (tok=${res.usedUsage ? "usage" : "chunks"})`,
+      );
     }
     const rssFinal = rssMB(srv.proc.pid);
     const growthMB = rssAfterWarm > 0 && rssFinal > 0 ? rssFinal - rssAfterWarm : NaN;
@@ -366,6 +387,7 @@ async function serverLeg(
       machineState,
       notes: `h2h-server median-of-${runs} kv=${c.kv} ttft_ms=${median(ttfts).toFixed(0)} ` +
         `ready_ms=${srv.readyMs.toFixed(0)} rss_growth_mb=${Number.isNaN(growthMB) ? "?" : growthMB.toFixed(0)} ` +
+        `tok=${anyChunkFallback ? "chunks" : "usage"} ` +
         `ttft[${list(ttfts, 0)}] decode[${list(decodes)}]` +
         `${forceNote ? " preflight-failed" : ""}`,
     });
@@ -382,43 +404,67 @@ function renderTable(sinceTs: number): string {
     .all(sinceTs) as Record<string, any>[];
   // latest row wins per logical cell (re-runs and aborted passes leave
   // older rows in the DB — history stays queryable, table stays clean)
+  // leg label: server | direct | direct@<N>k (from the REQUESTED context
+  // length, so 8k and 32k rows are distinct cells and labels)
+  const legOf = (notes: string): string => {
+    if (notes.startsWith("h2h-server")) return "server";
+    const req = notes.match(/ctxreq=(\d+)/)?.[1];
+    if (req) return `direct@${Math.round(Number(req) / 1000)}k`;
+    return notes.includes("ctx=") ? "direct@8k" : "direct"; // legacy rows
+  };
   const byCell = new Map<string, Record<string, any>>();
   for (const r of raw) {
     const notes = String(r.notes);
     // pre-format rows (no kv tag) are old smoke runs — not table material
     if (!/ kv=\w+/.test(notes)) continue;
-    const legT = notes.startsWith("h2h-server") ? "server" : notes.includes("ctx=") ? "ctx" : "direct";
     // mlx-lm has no mixed-KV mode: normalize so early mislabeled rows
     // (first pass recorded kv=config on baseline cells) dedupe correctly
     const kv = r.stack === "mlx-lm" ? "off" : notes.match(/ kv=(\w+)/)![1];
-    byCell.set(`${r.model_path}|${r.stack}|${legT}|${kv}`, r);
+    byCell.set(`${r.model_path}|${r.stack}|${legOf(notes)}|${kv}`, r);
   }
   const rows = [...byCell.values()].sort((a, b) =>
     String(a.model_path).localeCompare(String(b.model_path)) ||
-    String(a.notes).localeCompare(String(b.notes)) ||
+    legOf(String(a.notes)).localeCompare(legOf(String(b.notes))) ||
     String(a.stack).localeCompare(String(b.stack)),
   );
+  // mem is two instruments: direct rows = Metal generation peak (load
+  // transient excluded since the reset-peak fix); server rows = process
+  // RSS after the request session (undercounts GPU). Separate columns.
   const lines = [
-    "| model | stack | leg | kv | decode tok/s | prefill tok/s | ttft ms | ready s | mem GB | rss growth |",
-    "|---|---|---|---|---|---|---|---|---|---|",
+    "| model | stack | leg | kv | decode tok/s | spread | prefill tok/s | ttft ms | ready s | gen peak GB | rss GB | rss growth | commit |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
   ];
   for (const r of rows) {
     const model = String(r.model_path).split("/").filter(Boolean).at(-1)!.slice(0, 12);
     const notes = String(r.notes);
-    const leg = notes.startsWith("h2h-server") ? "server"
-      : notes.includes("ctx=") ? "direct@8k" : "direct";
+    const leg = legOf(notes);
+    const isServer = leg === "server";
     const kv =
       r.stack !== "mlx-lm" && notes.match(/ kv=(\w+)/)?.[1] === "config" ? "mixed" : "bf16";
+    const decodeRuns = (notes.match(/decode\[([\d.,]+)\]/)?.[1] ?? "")
+      .split(",").map(Number).filter((x) => !Number.isNaN(x));
+    const spread = decodeRuns.length > 1
+      ? `${Math.min(...decodeRuns).toFixed(1)}–${Math.max(...decodeRuns).toFixed(1)} (n=${decodeRuns.length})`
+      : "—";
     const ttft = notes.match(/ttft_ms=(\d+)/)?.[1] ?? "—";
     const ready = notes.match(/ready_ms=(\d+)/)?.[1];
     const growth = notes.match(/rss_growth_mb=([\d.-]+)/)?.[1];
+    const tokSrc = notes.match(/tok=(\w+)/)?.[1];
+    const mem = r.peak_bytes ? (Number(r.peak_bytes) / 1e9).toFixed(2) : "";
     lines.push(
-      `| ${model} | ${r.stack} | ${leg} | ${kv} | ${Number(r.decode_tps).toFixed(1)} | ` +
+      `| ${model} | ${r.stack} | ${leg} | ${kv} | ` +
+      `${Number(r.decode_tps).toFixed(1)}${tokSrc === "chunks" ? "†" : ""} | ${spread} | ` +
       `${r.prefill_tps ? Number(r.prefill_tps).toFixed(0) : "—"} | ${ttft} | ` +
-      `${ready ? (Number(ready) / 1000).toFixed(1) : "—"} | ` +
-      `${r.peak_bytes ? (Number(r.peak_bytes) / 1e9).toFixed(2) : "—"} | ` +
-      `${growth ? `${growth} MB` : "—"} |`,
+      `${ready ? (Number(ready) / 1000).toFixed(2) : "—"} | ` +
+      `${!isServer && mem ? mem : "—"} | ${isServer && mem ? mem : "—"} | ` +
+      `${growth ? `${growth} MB` : "—"} | ${r.commit_sha ?? "?"} |`,
     );
+  }
+  if (rows.some((r) => / tok=chunks/.test(String(r.notes))))
+    lines.push("", "† decode rate from SSE chunk counting (server sent no usage) — underestimates if tokens coalesce per delta.");
+  if (failures.length) {
+    lines.push("", "## attempted but failed", "");
+    for (const f of failures) lines.push(`- \`${f.cell}\`: ${f.error}`);
   }
   return lines.join("\n");
 }
@@ -554,7 +600,9 @@ if (cmd === "all") {
           { m, stack: "optiq", kv: "config" },
           { m, stack: "mlx-lm", kv: "off" },
         ],
-        Math.max(2, runs - 1), machineState, { tokens: 256, promptTokens: 8000 },
+        // full depth: this leg carries the headline regression finding —
+        // median-of-2 was too thin for the most-quoted number
+        runs, machineState, { tokens: 256, promptTokens: 8000 },
       );
       recheck(`${name} long-context`);
     }
@@ -576,7 +624,9 @@ if (cmd === "all") {
       try {
         await serverLeg(c, serverRuns, 128, machineState);
       } catch (e) {
-        console.error(`  ${serverKey(c)}: ${(e as Error).message.split("\n")[0]} — cell skipped`);
+        const first = (e as Error).message.split("\n")[0]!;
+        console.error(`  ${serverKey(c)}: ${first} — cell skipped`);
+        failures.push({ cell: serverKey(c), error: first.slice(0, 160) });
       }
       recheck(serverKey(c));
     }
