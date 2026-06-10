@@ -418,11 +418,21 @@ safe; `tests/ffi-jit.test.ts` pins the paths past DFG tier-up.
 
 Ordered by expected payoff on this hardware:
 
-- [ ] **Speculative decoding** with a small drafter (gemma-4-E2B-assistant
-      pattern): draft k, verify in one parallel pass. Measure acceptance
-      on our real agent transcripts; expected 1.5–2.5x decode.
-      **BLOCKED on a drafter model download (multi-GB — Josh's call;
-      suggest a gemma-4 ~2B 4-bit quant in the same tokenizer family).**
+- [x] **Speculative decoding** (gemma-4-e4b + its -assistant drafter;
+      ports of optiq runtime/spec/{runtime,drafters/gemma_assistant,
+      kv_view}.py in `src/spec/`). **Measured: NET LOSS on e4b at every
+      depth** — γ=1: 0.91x, γ=2: 0.78x, γ=3: 0.63x, γ=4: 0.51x of the
+      54 tok/s non-spec baseline; acceptance 33/23/16/12% on agent-style
+      prompts (optiq's ~70%-at-depth-2 did not materialize: the python
+      reference itself measures 18% on our prompts — verified by an
+      IDENTICAL accept/reject trace, 92 drafted/17 accepted/47 target
+      calls in both stacks). e4b's small-model decode is too fast for
+      this drafter to beat. Recorded in the eval DB.
+      **e4b bring-up landed en route**: per-layer-input embeddings,
+      KV-shared layers (donor/sharer plumbing), dynamic weight prefix —
+      e4b single-forward logits BIT-EXACT vs python, 24/24 greedy,
+      51.6 tok/s non-spec, multi-model fit predicted 7.91 GB vs 6.83
+      measured (over-prediction: transient calibrated on 12B + KV@4k).
 - [x] **Fused sampling** — already satisfied by the Phase 3 design:
       sampling (temp/top-p/top-k/penalties) runs entirely on-GPU; only
       the chosen token id (one uint32) crosses to JS per step; the
@@ -442,6 +452,32 @@ Ordered by expected payoff on this hardware:
 - **Exit criterion:** ≥2x effective tok/s over Phase 3 baseline on the
   standard eval prompts, recorded in the eval DB. **Not yet met — needs
   speculative decoding (drafter download).**
+
+### Phase 6 findings (2026-06-10, spec-decode session)
+
+- **Spec≡non-spec bitwise equality does not survive bf16 knife-edges,
+  even in the reference**: optiq's own spec_generate diverges from its
+  own incremental greedy at token 30 on a borderline prompt — the
+  batched verify forward rounds differently than token-at-a-time decode.
+  Our per-position lm-head picks match stock-decode kernel shapes
+  exactly, but the verify ATTENTION is inherently batched. Test gate:
+  toBe-exact on tie-free prompts (3/3 γ values pass), long-prefix on
+  knife-edge prompts, accept/reject trace equality vs python.
+- The gemma-4 assistant drafter is NOT a standalone LM: Q-only 4-layer
+  net reading the TARGET's last sliding+full donor caches (chronological
+  views), pre/post projections bridging 2560↔256, centroid-clustered
+  output head (2048×top-32×128). Its 4-layer config with
+  num_kv_shared_layers=4 cannot run standalone — loader must not try.
+- Spec rollback requires trimmable caches: rotating caches lose trim
+  past the 512 window (reference raises; so do we). Long-context spec
+  needs plain+window-mask sliding caches — not built (spec is a net
+  loss here anyway).
+- Drafter implementation shortcut (argmax-equivalent, documented in
+  src/spec/drafter.ts): argmax over the 4096 centroid-candidate scores
+  instead of scattering into 262k logits.
+- **Phase 6 exit (≥2x) still open** — quantized KV (+21%) and spec
+  (net loss on e4b) don't reach it; the remaining lever is the
+  26B-A4B MoE (gather_qmm), next milestone.
 
 ### Phase 6 findings (2026-06-10)
 
