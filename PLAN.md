@@ -473,6 +473,21 @@ Ordered by expected payoff on this hardware:
   for quality judgments. Quality-sensitive goldens must use
   chat-templated prompts.
 
+## Documentation pass `[~]` (started 2026-06-10)
+
+- [x] README rewritten: requirements, CLI, HTTP API, library usage,
+      correctness story, measured numbers, license pointers.
+- [x] THIRD_PARTY_LICENSES.md: linked libs (MLX/mlx-c, MIT), ported code
+      (mlx-lm MIT; mlx-vlm BSD-3; mlx-optiq MIT; Pillow resample
+      algorithm), npm deps (tokenizers Apache-2.0, jinja MIT,
+      fast-png MIT), model-license caveat. LICENSE file added (MIT).
+- [ ] API reference for the library surface (generate options, cache
+      types, fit, registry) — generate from TSDoc or hand-write.
+- [ ] Per-file header audit: every ported file names its upstream source
+      and license (mostly done; verify coverage).
+- [ ] Server API doc: full request/response schemas incl. tool_calls,
+      vision parts, /stats; pi models.json setup walkthrough.
+
 ## Phase 7 — Kernel experiments (research track) `[ ]`
 
 Only after profiling shows where bytes move unnecessarily.
