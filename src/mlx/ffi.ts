@@ -119,6 +119,10 @@ export const C = dlopen(LIBMLXC_PATH, {
   // (res, w, scales, biases, opt group_size, opt bits, mode, global_scale, opt dtype, stream)
   mlx_dequantize: { args: [P, u64, u64, u64, u64, u64, cstring, u64, u64, u64], returns: i32 },
   mlx_quantized_matmul: { args: [P, u64, u64, u64, u64, FFIType.bool, u64, u64, cstring, u64], returns: i32 },
+  // (res, x, w, scales, biases?, lhs_indices?, rhs_indices?, transpose,
+  //  opt group_size, opt bits, mode, sorted_indices, stream)
+  mlx_gather_qmm: { args: [P, u64, u64, u64, u64, u64, u64, FFIType.bool, u64, u64, cstring, FFIType.bool, u64], returns: i32 },
+  mlx_floor_divide: { args: [P, u64, u64, u64], returns: i32 },
 }).symbols;
 
 export type MlxHandle = bigint;

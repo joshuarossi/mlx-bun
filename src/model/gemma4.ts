@@ -1,7 +1,7 @@
 // Gemma 4 text model — line-for-line port of mlx-lm's gemma4_text.py
-// (oracle venv site-packages), specialized to the paths our target models
-// exercise: no MoE block, no per-layer-input embeddings, no KV-shared
-// layers (all disabled in the 12B config; guarded with explicit errors).
+// (oracle venv site-packages), covering the paths our target models
+// exercise: 12B (dense), e4b (per-layer-input embeddings + KV-shared
+// layers), 26B-A4B (MoE block: router + gather_qmm experts).
 //
 // Parity notes (see PLAN.md Phase 2 findings):
 // - SDPA scale is 1.0 (Gemma4 normalizes q/k instead).
@@ -824,6 +824,173 @@ class MLP {
   }
 }
 
+// --- MoE block (26B-A4B) — port of reference Router/Experts/SwitchGLU ----
+// (gemma4_text.py + switch_layers.py in the oracle venv). The checkpoint
+// ships pre-stacked switch_glu tensors [experts, out, in/packed]; only the
+// quantized path exists here (all our targets are OptiQ quants).
+
+/** Port of switch_layers.QuantizedSwitchLinear (gather_qmm over stacked
+ *  expert weights; rhs_indices selects the expert per row). */
+class QuantizedSwitchLinear {
+  constructor(
+    readonly w: MlxArray,
+    readonly scales: MlxArray,
+    readonly biases: MlxArray | null,
+    readonly spec: ops.QuantSpec,
+  ) {}
+
+  static load(weights: Weights, path: string, config: ModelConfig): QuantizedSwitchLinear {
+    if (!weights.has(`${path}.scales`))
+      throw new Error(`${path}: expected quantized switch linear (no .scales tensor)`);
+    const spec = quantFor(config.quantization, path);
+    if (!spec) throw new Error(`${path}: no quant spec`);
+    return new QuantizedSwitchLinear(
+      weights.tensor(`${path}.weight`),
+      weights.tensor(`${path}.scales`),
+      weights.has(`${path}.biases`) ? weights.tensor(`${path}.biases`) : null,
+      spec,
+    );
+  }
+
+  forward(x: MlxArray, indices: MlxArray, sortedIndices: boolean): MlxArray {
+    return ops.gatherQmm(x, this.w, this.scales, this.biases, indices, this.spec, sortedIndices);
+  }
+}
+
+/** Port of reference Router: norm -> scale -> project -> top-k -> renormalize. */
+class Router {
+  readonly proj: QuantizedLinear;
+  /** scale · hidden_size^-0.5, precomputed (identical ops to the per-call
+   *  product in the reference: bf16 array × weak scalar). */
+  readonly normWeight: MlxArray;
+  readonly perExpertScale: MlxArray;
+  readonly eps: number;
+  readonly numExperts: number;
+  readonly topK: number;
+
+  constructor(weights: Weights, config: ModelConfig, prefix: string) {
+    const t = config.text;
+    this.proj = QuantizedLinear.load(weights, `${prefix}.proj`, config);
+    const scale = weights.tensor(`${prefix}.scale`);
+    this.normWeight = ops.mulScalar(scale, Math.pow(t.hiddenSize, -0.5));
+    scale.dispose();
+    this.perExpertScale = weights.tensor(`${prefix}.per_expert_scale`);
+    this.eps = t.rmsNormEps;
+    this.numExperts = t.numExperts;
+    this.topK = t.topKExperts;
+  }
+
+  /** x [B, L, H] → { indices [B, L, k] (uint32), weights [B, L, k] }. */
+  forward(x: MlxArray): { indices: MlxArray; weights: MlxArray } {
+    const normed = ops.rmsNorm(x, this.normWeight, this.eps);
+    const scores = this.proj.forward(normed);
+    normed.dispose();
+
+    const part = ops.argpartitionAxis(scores, this.numExperts - this.topK, -1);
+    const [B, L] = scores.shape as [number, number, number];
+    const indices = part.slice([0, 0, this.numExperts - this.topK], [B, L, this.numExperts]);
+    part.dispose();
+
+    let w = ops.takeAlongAxis(scores, indices, -1);
+    scores.dispose();
+    w = disposing(w, ops.softmaxAxis(w, -1, false));
+    const gathered = ops.takeAxis(this.perExpertScale, indices, 0);
+    w = disposing(w, ops.mul(w, gathered));
+    gathered.dispose();
+    return { indices, weights: w };
+  }
+}
+
+/** Port of switch_layers.SwitchGLU (geglu activation), quantized path. */
+class SwitchGLU {
+  readonly gate: QuantizedSwitchLinear;
+  readonly up: QuantizedSwitchLinear;
+  readonly down: QuantizedSwitchLinear;
+
+  constructor(weights: Weights, config: ModelConfig, prefix: string) {
+    this.gate = QuantizedSwitchLinear.load(weights, `${prefix}.gate_proj`, config);
+    this.up = QuantizedSwitchLinear.load(weights, `${prefix}.up_proj`, config);
+    this.down = QuantizedSwitchLinear.load(weights, `${prefix}.down_proj`, config);
+  }
+
+  /** x [B, L, H], indices [B, L, k] → [B, L, k, H]. */
+  forward(x: MlxArray, indices: MlxArray): MlxArray {
+    // x → [B, L, 1, 1, H] (reference expand_dims(x, (-2, -3)))
+    let h = ops.expandDims(x, -2);
+    h = disposing(h, ops.expandDims(h, -3));
+
+    // Sort tokens by expert when there are many rows (reference threshold).
+    const doSort = indices.size >= 64;
+    let idx = indices;
+    let invOrder: MlxArray | null = null;
+    let order: MlxArray | null = null;
+    if (doSort) {
+      // _gather_sort: flatten indices, argsort, gather rows by order // k
+      const k = indices.shape[indices.ndim - 1]!;
+      const idxFlat = ops.reshape(indices, [indices.size]);
+      order = ops.argsortAxis(idxFlat, 0);
+      invOrder = ops.argsortAxis(order, 0);
+      const kScalar = ops.scalarLike(k, order);
+      const rowIdx = ops.floorDivide(order, kScalar);
+      kScalar.dispose();
+      const [, , , , H] = h.shape as number[];
+      const flat = ops.reshape(h, [-1, 1, H!]);
+      h.dispose();
+      h = ops.takeAxis(flat, rowIdx, 0);
+      flat.dispose();
+      rowIdx.dispose();
+      idx = ops.takeAxis(idxFlat, order, 0);
+      idxFlat.dispose();
+    }
+
+    const xUp = this.up.forward(h, idx, doSort);
+    const xGate = this.gate.forward(h, idx, doSort);
+    h.dispose();
+    // GeGLU activation: gelu_approx(gate) · up (same composition as MLP)
+    const act = ops.geluApprox(xGate);
+    xGate.dispose();
+    const mid = ops.mul(act, xUp);
+    act.dispose();
+    xUp.dispose();
+    let y = this.down.forward(mid, idx, doSort);
+    mid.dispose();
+    if (idx !== indices) idx.dispose();
+
+    if (doSort) {
+      // _scatter_unsort: restore row order, unflatten to indices.shape
+      y = disposing(y, ops.takeAxis(y, invOrder!, 0));
+      invOrder!.dispose();
+      order!.dispose();
+      const [B, L, k] = indices.shape as number[];
+      const H = y.shape[y.ndim - 1]!;
+      y = disposing(y, ops.reshape(y, [B!, L!, k!, 1, H]));
+    }
+
+    // squeeze(-2)
+    const shape = y.shape;
+    shape.splice(shape.length - 2, 1);
+    return disposing(y, ops.reshape(y, shape));
+  }
+}
+
+/** Port of reference Experts: switch_glu then top-k weighted sum. */
+class Experts {
+  readonly switchGlu: SwitchGLU;
+
+  constructor(weights: Weights, config: ModelConfig, prefix: string) {
+    this.switchGlu = new SwitchGLU(weights, config, `${prefix}.switch_glu`);
+  }
+
+  forward(x: MlxArray, indices: MlxArray, weights: MlxArray): MlxArray {
+    const w = ops.expandDims(weights, -1);
+    const y = this.switchGlu.forward(x, indices);
+    const wy = ops.mul(w, y);
+    w.dispose();
+    y.dispose();
+    return disposing(wy, ops.sumAxis(wy, -2, false));
+  }
+}
+
 class DecoderLayer {
   readonly attn: Attention;
   readonly mlp: MLP;
@@ -833,6 +1000,12 @@ class DecoderLayer {
   readonly postFfNorm: RMSNorm;
   readonly layerScalar: MlxArray | null;
   readonly layerType: string;
+  // 26B-A4B MoE block (dense MLP + routed experts in parallel branches)
+  readonly router: Router | null;
+  readonly experts: Experts | null;
+  readonly postFfNorm1: RMSNorm | null;
+  readonly postFfNorm2: RMSNorm | null;
+  readonly preFfNorm2: RMSNorm | null;
   // e2b/e4b per-layer input gating
   readonly perLayerGate: QuantizedLinear | null;
   readonly perLayerProjection: QuantizedLinear | null;
@@ -852,6 +1025,16 @@ class DecoderLayer {
     this.layerScalar = weights.has(`${prefix}.layer_scalar`)
       ? weights.tensor(`${prefix}.layer_scalar`)
       : null;
+    if (t.enableMoeBlock) {
+      this.router = new Router(weights, config, `${prefix}.router`);
+      this.experts = new Experts(weights, config, `${prefix}.experts`);
+      this.postFfNorm1 = norm("post_feedforward_layernorm_1");
+      this.postFfNorm2 = norm("post_feedforward_layernorm_2");
+      this.preFfNorm2 = norm("pre_feedforward_layernorm_2");
+    } else {
+      this.router = this.experts = null;
+      this.postFfNorm1 = this.postFfNorm2 = this.preFfNorm2 = null;
+    }
     if (t.hiddenSizePerLayerInput > 0) {
       this.perLayerGate = QuantizedLinear.load(weights, `${prefix}.per_layer_input_gate`, config);
       this.perLayerProjection = QuantizedLinear.load(weights, `${prefix}.per_layer_projection`, config);
@@ -874,8 +1057,28 @@ class DecoderLayer {
     h = disposing(h, ops.add(x, h));
 
     const residual = h;
-    let f = this.preFfNorm.forward(h);
-    f = disposing(f, this.mlp.forward(f));
+    let f: MlxArray;
+    if (this.router && this.experts) {
+      // MoE: dense MLP and routed experts as parallel branches off h
+      // (reference DecoderLayer, enable_moe path)
+      let h1 = this.preFfNorm.forward(h);
+      h1 = disposing(h1, this.mlp.forward(h1));
+      h1 = disposing(h1, this.postFfNorm1!.forward(h1));
+
+      const { indices, weights: topKWeights } = this.router.forward(h);
+      let h2 = this.preFfNorm2!.forward(h);
+      h2 = disposing(h2, this.experts.forward(h2, indices, topKWeights));
+      h2 = disposing(h2, this.postFfNorm2!.forward(h2));
+      indices.dispose();
+      topKWeights.dispose();
+
+      f = ops.add(h1, h2);
+      h1.dispose();
+      h2.dispose();
+    } else {
+      f = this.preFfNorm.forward(h);
+      f = disposing(f, this.mlp.forward(f));
+    }
     f = disposing(f, this.postFfNorm.forward(f));
     h = ops.add(residual, f);
     residual.dispose();
@@ -928,8 +1131,6 @@ export class Gemma4Model {
     const t = config.text;
     if (t.hiddenSize === 0 || !config.text.tieWordEmbeddings)
       throw new Error("only tied-embedding text configs are supported");
-    if ((config.raw.text_config as any)?.enable_moe_block)
-      throw new Error("MoE block not supported yet (Phase 6)");
 
     this.config = config;
     // gemma4_unified prefixes weights with language_model.; gemma4_text doesn't

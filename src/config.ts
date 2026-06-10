@@ -31,6 +31,11 @@ export interface TextConfig {
   vocabSizePerLayerInput: number;
   /** Trailing layers that share KV with earlier same-type layers. */
   numKvSharedLayers: number;
+  /** 26B-A4B MoE block: dense MLP + routed experts per layer. */
+  enableMoeBlock: boolean;
+  numExperts: number;
+  topKExperts: number;
+  moeIntermediateSize: number;
   ropeParameters: Record<string, RopeParams>;
   finalLogitSoftcapping: number | null;
   tieWordEmbeddings: boolean;
@@ -136,6 +141,10 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
     hiddenSizePerLayerInput: t.hidden_size_per_layer_input ?? 0,
     vocabSizePerLayerInput: t.vocab_size_per_layer_input ?? t.vocab_size,
     numKvSharedLayers: t.num_kv_shared_layers ?? 0,
+    enableMoeBlock: t.enable_moe_block ?? false,
+    numExperts: t.num_experts ?? 0,
+    topKExperts: t.top_k_experts ?? 0,
+    moeIntermediateSize: t.moe_intermediate_size ?? 0,
     ropeParameters: parseRope(t.rope_parameters),
     finalLogitSoftcapping: t.final_logit_softcapping ?? null,
     tieWordEmbeddings: t.tie_word_embeddings ?? raw.tie_word_embeddings ?? false,

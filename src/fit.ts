@@ -94,6 +94,9 @@ export function fit(
   ctx: number,
   machine: MachineSpec = thisMachine(),
   chunk: number = DEFAULT_CHUNK,
+  /** Bytes of `.experts.` tensors (registry). MoE decode reads only
+   *  top_k/num_experts of them per token; residency still needs all. */
+  expertsBytes = 0,
 ): FitReport {
   const usable = machine.ramBytes * WIRED_FRACTION;
   const transient = Math.min(chunk, ctx) * TRANSIENT_PER_TOKEN;
@@ -115,8 +118,13 @@ export function fit(
     maxCtx = Math.min(maxCtx, config.text.maxPositionEmbeddings);
   }
 
-  // decode reads all weights + the KV cache once per token
-  const bytesPerToken = weightsBytes + kv;
+  // decode reads all weights + the KV cache once per token — except MoE
+  // expert weights, where only top_k of num_experts are touched per token
+  const t = config.text;
+  const expertsSkipped = t.enableMoeBlock && t.numExperts > 0
+    ? expertsBytes * (1 - t.topKExperts / t.numExperts)
+    : 0;
+  const bytesPerToken = weightsBytes - expertsSkipped + kv;
   const predictedDecodeTps =
     ((machine.bandwidthGBs * 1e9) / bytesPerToken) * DECODE_EFFICIENCY;
 
@@ -135,7 +143,7 @@ export function fit(
 
 /** The SKU matrix: which Apple Silicon configs run this model at `ctx`. */
 export function skuMatrix(
-  config: ModelConfig, weightsBytes: number, ctx: number,
+  config: ModelConfig, weightsBytes: number, ctx: number, expertsBytes = 0,
 ): { sku: string; ramGB: number; fits: boolean; maxContext: number; decodeTps: number }[] {
   const rows: ReturnType<typeof skuMatrix> = [];
   for (const sku of APPLE_SKUS) {
@@ -145,7 +153,7 @@ export function skuMatrix(
         ramBytes: ram * 2 ** 30,
         bandwidthGBs: sku.bandwidthGBs,
       };
-      const r = fit(config, weightsBytes, ctx, m);
+      const r = fit(config, weightsBytes, ctx, m, DEFAULT_CHUNK, expertsBytes);
       rows.push({
         sku: sku.chip,
         ramGB: ram,
