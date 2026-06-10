@@ -28,6 +28,13 @@ if (modelIdx > -1) {
 }
 
 if (process.argv.includes("--baseline")) {
+  // --baseline-kv config → optiq's per-layer mixed-precision KV patch
+  // (install_mixed_kv + kv args), i.e. the "optiq direct" engine row.
+  const blKvIdx = process.argv.indexOf("--baseline-kv");
+  const kvCfgPath =
+    blKvIdx > -1 && process.argv[blKvIdx + 1] === "config"
+      ? `${MODEL_PATH}/kv_config.json`
+      : "";
   const py = `
 import sys, time
 import mlx.core as mx
@@ -41,16 +48,25 @@ prompt = tokenizer.apply_chat_template(
     [{"role": "user", "content": sys.argv[2]}],
     tokenize=True, add_generation_prompt=True,
 )
+extra = {}
+kvcfg = sys.argv[4] if len(sys.argv) > 4 else ""
+if kvcfg:
+    from optiq.serve import _load_kv_config, install_mixed_kv
+    install_mixed_kv(_load_kv_config(kvcfg), 0)
+    # non-None kv_bits makes the quantize hook run; the patched hook
+    # ignores it and uses the per-layer map (optiq serve behavior)
+    extra = dict(kv_bits=8, kv_group_size=64, quantized_kv_start=0)
 last = None
-for r in stream_generate(model, tokenizer, prompt, max_tokens=int(sys.argv[3])):
+for r in stream_generate(model, tokenizer, prompt, max_tokens=int(sys.argv[3]), **extra):
     last = r
 print(f"prompt: {last.prompt_tokens} tok @ {last.prompt_tps:.1f} tok/s")
 print(f"decode: {last.generation_tokens} tok @ {last.generation_tps:.1f} tok/s")
 print(f"peak mem: {last.peak_memory:.2f} GB")
 `;
-  const proc = Bun.spawn([ORACLE_PYTHON, "-c", py, MODEL_PATH, PROMPT, String(MAX_TOKENS)], {
-    stdout: "inherit", stderr: "pipe",
-  });
+  const proc = Bun.spawn(
+    [ORACLE_PYTHON, "-c", py, MODEL_PATH, PROMPT, String(MAX_TOKENS), kvCfgPath],
+    { stdout: "inherit", stderr: "pipe" },
+  );
   const code = await proc.exited;
   if (code !== 0) console.error(await new Response(proc.stderr).text());
   process.exit(code);
@@ -100,6 +116,19 @@ const kvOptions =
     : KV_MODE !== "off"
       ? { kvBits: Number(KV_MODE), quantizedKvStart: 0 }
       : {};
+
+// Warmup forward (1 token over a tiny prompt, discarded): materializes
+// every weight so the measured prefill timer covers PREFILL, not lazy
+// weight load — python's prompt_tps starts after load(); without this
+// ours read 10-24 "prefill tok/s" on short prompts (pure page-in).
+{
+  const wCache = model.makeCache();
+  const wGen = generate(model, promptIds.slice(0, Math.min(8, promptIds.length - 1)), {
+    maxTokens: 1, temperature: 0, cache: wCache,
+  });
+  for await (const _ of wGen) { /* discard */ }
+  for (const c of wCache) c.dispose();
+}
 
 const gen = generate(model, promptIds, { maxTokens: MAX_TOKENS, temperature: 0, ...kvOptions });
 const out: number[] = [];
