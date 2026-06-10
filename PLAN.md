@@ -445,18 +445,32 @@ go through `read.u64`/`read.u32`; toArrayBuffer readbacks documented
 safe; `tests/ffi-jit.test.ts` pins the paths past DFG tier-up.
 75/75 tests, no perf regression (23.6 tok/s bench).
 
-## NEXT UP (updated 2026-06-10, post-Phase-15 — THE HANDOFF BLOCK)
+## NEXT UP (updated 2026-06-10 evening — THE HANDOFF BLOCK)
 
-State: all three Gemma-4 targets at tier-a/d bit-exact parity; Phases
-4, 8 done; mixed-precision KV serving shipped; Phase 15 matrix
-published (benchmarks-h2h-2026-06-10.md + README Benchmarks — TTFT
-3–5×, zero server tax, fastest served stack on every model). The
-repo's durable state is THIS FILE + the findings sections; trust rows
-in the eval DB over numbers quoted in old findings (some early
-"measurements" were made on a memory-degraded machine — see the
-Phase 15 corrections finding).
+State: all three Gemma-4 targets at tier-a/d bit-exact parity
+(including every quantized-KV config, post rope-freqs fix); Phases 4,
+8, 10 done; Phase 5 fully closed (admission control + downloader);
+docs synced (README + docs/server-api.md). The repo's durable state is
+THIS FILE + the findings sections; trust rows in the eval DB over
+numbers quoted in old findings.
+
+**Standing directive (Josh, 2026-06-10): build first, benchmark when
+the project is good.** All throughput questions (the @8k decode gap
+re-baseline, the two fused-path A/Bs, purge-cold rows) batch into ONE
+cleared-machine ./benchmark.sh pass later; don't block engine work on
+them. Memory measurements stay fine to take in-session.
 
 Remaining work, in priority order:
+
+0. **Phase 9 — rotating KV-quant (NEXT; oracle mapped, see the Phase 9
+   "oracle map" section).** The port is small in our architecture: the
+   RotatingQuantizedKVCache class + toQuantized replay + one
+   instanceof in Attention.forward (optiq's registry/patch machinery
+   doesn't apply to us). Parity tier a vs python with
+   patch_rotating_to_quantized() + fused install; use the 12B for
+   goldens (e4b 8-bit sliding hits the upstream optiq shim bug).
+   Then Phase 11 (Anthropic /v1/messages — Josh's Claude Code
+   backend — + Responses API), then the embeddable build.
 
 1. **12B long-context decode gap (−10.0% @8k vs mlx-lm, n=3
    zero-spread — benchmarks-h2h-2026-06-10.md).** Phase 10 (fused
@@ -471,17 +485,18 @@ Remaining work, in priority order:
    scripts/bench-fused-decode.ts); cleared-machine run decides
    flag-delete vs default-flip; (c) the original suspects
    (slice_update buffer donation, per-step dispatch).
-2. **Phase 15 closeout**: leg (c) purge-cold rows (`sudo purge` +
-   cold start → first token per stack); fix the failure-footer to
-   ~~record the child's stderr line instead of our wrapper line~~
-   (footer fix done 2026-06-10; purge-cold rows still need a reboot).
-3. **Phase 5 leftovers** (independent): ~~memoryBudget enforcement~~
-   (DONE 2026-06-10 — admission control shipped: load refusal, 400
-   `memory_admission` rejection, /stats.admission, --memory-budget),
-   ~~downloader~~ (DONE 2026-06-10 — `mlx-bun get`, resumable +
-   verified), embeddable build. Docs-pass items.
-4. Then Phase 9 (rotating KV-quant — reframed, see preamble),
-   11 (Responses), 12 (SigLIP), 14 (Qwen).
+   → ALL of item 1's measurements fold into the deferred benchmark
+   pass (standing directive above); lever (c) code investigation can
+   proceed any session.
+2. **Phase 15 closeout** — purge-cold rows: deferred into the same
+   benchmark pass (needs reboot + `sudo purge`). Footer fix done
+   2026-06-10.
+3. **Phase 5**: CLOSED 2026-06-10 (admission control, downloader; see
+   phase section). Remaining adjacent work: embeddable build
+   (single-binary), library API reference (docs pass).
+4. After Phase 9: Phase 11 (Anthropic messages + Responses),
+   12 (SigLIP), 14 (Qwen). Background chip pending: server `stop`
+   sequences.
 
 ## Phase 6 — Speed: change what gets computed `[~]`
 
@@ -832,21 +847,73 @@ this phase); (b) bounded-but-real savings on sliding-heavy stacks
 (12B: 40/48 layers; e4b: all sliding) where every wired MB counts at
 24 GB. Sequence after the cheap full-attention win is measured.
 
-- [ ] Read `optiq/runtime/kv/rotating.py` (oracle) AND its SDPA
-      dispatch patch for Gemma-4's KV-sharing layers BEFORE estimating —
-      quantize-into/evict-from a ring buffer; dequant-on-read interacts
-      with wrap-around; harder than the full-attention quant.
-- [ ] Port: QuantizedRotatingKVCache + dispatch in Attention (donor
-      AND sharer paths — sharers consume the quantized triples).
+- [x] Read `optiq/runtime/kv/rotating.py` (oracle) AND its SDPA
+      dispatch patch BEFORE estimating — done 2026-06-10, map below.
+- [ ] Port `RotatingQuantizedKVCache`: RotatingKVCache ring mechanics
+      over (packed, scales, biases) triples — `_update_concat`
+      (temporal-order → trim-to-window → concat) and `_update_in_place`
+      (step-grow to max_size, wrap `_idx` to `keep`, slice-assign the
+      quantized incoming S tokens), `_trim`/`_temporal_order` via
+      per-component ops. Storage convention identical to our
+      QuantizedKVCache; returns ACTIVE QUANTIZED SLICES.
+- [ ] `RotatingKVCache.toQuantized(group, bits)` replay (quantize the
+      whole buffer incl. ring layout, copy offset/_idx) + generate.ts
+      conversion: uniform `kvBits` mode covers rotating caches;
+      `kvConfig` mode follows the file (note: shipped kv_config.json
+      files list full-attention layers only — uniform mode is where
+      rotating-quant engages today).
+- [ ] Attention dispatch: `instanceof RotatingQuantizedKVCache` →
+      updateAndFetchQuantized → SharedKv {kind:"quant"} — donor AND
+      sharer paths are ALREADY generic in our port.
 - [ ] Trim/rollback semantics under quantization (spec decode and
-      prompt-cache trim both depend on `isTrimmable`).
-- [ ] Re-run the long-context decode + memory benchmarks (8k/32k rows
-      in the eval DB; fit-table updated with quantized sliding term).
-- **Parity contract**: kv8-rotating bit-exact (tier a), kv4-rotating
-  bounded-tolerance (tier b) — same tiering as full-attention quant.
-- **Exit criterion**: 26B-A4B (or 12B as fallback) serves at a
-  measured, materially larger max context on 24 GB with rotating
-  KV-quant on; numbers in the eval DB and the fit table.
+      prompt-cache trim both depend on `isTrimmable`; inherited ring
+      rule: trimmable only before wrap).
+- [ ] Long-context memory measurement (8k/32k rows; fit-table updated
+      with the quantized sliding term). Throughput rows deferred to the
+      next cleared-machine benchmark pass (Josh 2026-06-10: build
+      first, benchmark when the project is good).
+- **Parity contract**: tier a (bit-exact) for kv8 AND kv4 — post-Phase-10
+  (rope-freqs fix + fused prefill) all quantized paths measured
+  bit-exact; the old kv4 tier-b allowance should not be needed. Oracle
+  harness: python with `patch_rotating_to_quantized()` + fused install.
+- **Exit criterion**: 12B and e4b serve with sliding KV quantized at a
+  measured, materially smaller KV footprint (and larger max context in
+  the fit table); eval-DB memory rows recorded; tok/s rows deferred to
+  the benchmark pass.
+
+### Phase 9 oracle map (read 2026-06-10, pre-port)
+
+- **The oracle's hardest machinery does not apply to us.** optiq needs
+  an `id()`-keyed producer registry + a patched
+  scaled_dot_product_attention because python KV-shared layers receive
+  K/V tuples with `cache=None` and lose bits/group_size (and its
+  fallback-to-kv4 shim is the upstream bug we root-caused in Phase 15,
+  crashing e4b's 8-bit layers). Our SharedKv already carries
+  `{kind: "quant", groupSize, bits}` through the donor→sharer plumbing
+  explicitly — the registry, the SDPA patch, and the
+  re-import-fixup loop all evaporate. The port is the CACHE CLASS plus
+  a one-line instanceof in Attention.forward.
+- **The module docstring lies about its own design** ("update_and_fetch
+  returns dequantized fp16/bf16 tensors so the standard SDPA path runs
+  unmodified") — the CODE returns quantized tuples from
+  `_active_slices` and routes through quantized SDPA. Same lesson as
+  Phase 0's "will be copied" doc comment: port from the
+  implementation, never the docstring.
+- RotatingQuantizedKVCache subclasses RotatingKVCache: make_mask /
+  is_trimmable / trim inherit; only the storage-shape-sensitive
+  methods are overridden (tree_map over the triple). `keep=0` for
+  gemma4, `step=256`, defaults group 64 / bits 4.
+- `to_quantized` on a quantized rotating cache returns self
+  (idempotent); on a bf16 one it REPLAYS (quantize full buffer,
+  preserve offset + _idx) — wrap-state is quantized in ring order, not
+  temporal order, which is correct because _idx is preserved with it.
+- Our fused tiled prefill applies as-is: rotating-quantized prefill
+  masks are 2-d bool window arrays (already eligible) and decode stays
+  on the stock path.
+- Oracle-harness hazard: optiq's e4b mixed-KV registry-miss bug means
+  regen scripts must use the 12B (or uniform bits) — do not exercise
+  e4b 8-bit sliding layers through optiq's shared path until upstream
+  fixes the shim.
 
 ## Phase 10 — fused_quant_sdpa N-tiled FlashAttention prefill `[x]` (2026-06-10)
 
