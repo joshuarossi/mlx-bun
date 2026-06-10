@@ -14,6 +14,10 @@ import type { ModelConfig } from "./config";
 /** Decode-efficiency vs theoretical bandwidth ceiling, measured on the
  *  reference machine (24.9 tok/s vs 30.3 ceiling @600 ctx). */
 export const DECODE_EFFICIENCY = 0.82;
+/** MoE decode efficiency: gather_qmm over top-k experts is dispatch- and
+ *  gather-bound, not pure-bandwidth (26B-A4B measured 32.3 tok/s vs
+ *  ~77 active-bytes ceiling; python reference 33.0 — both ~0.42). */
+export const MOE_DECODE_EFFICIENCY = 0.42;
 /** Prefill transient bytes per chunk token (measured: ~1.1 GB @ 2048). */
 export const TRANSIENT_PER_TOKEN = 0.55e6;
 /** Fraction of unified RAM usable as GPU working set (Metal's
@@ -121,12 +125,14 @@ export function fit(
   // decode reads all weights + the KV cache once per token — except MoE
   // expert weights, where only top_k of num_experts are touched per token
   const t = config.text;
-  const expertsSkipped = t.enableMoeBlock && t.numExperts > 0
+  const isMoe = t.enableMoeBlock && t.numExperts > 0;
+  const expertsSkipped = isMoe
     ? expertsBytes * (1 - t.topKExperts / t.numExperts)
     : 0;
   const bytesPerToken = weightsBytes - expertsSkipped + kv;
   const predictedDecodeTps =
-    ((machine.bandwidthGBs * 1e9) / bytesPerToken) * DECODE_EFFICIENCY;
+    ((machine.bandwidthGBs * 1e9) / bytesPerToken) *
+    (isMoe ? MOE_DECODE_EFFICIENCY : DECODE_EFFICIENCY);
 
   return {
     fits: total <= usable,

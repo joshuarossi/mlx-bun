@@ -46,6 +46,13 @@ export const C = dlopen(LIBMLXC_PATH, {
   // memory introspection / limits
   mlx_get_active_memory: { args: [P], returns: i32 },
   mlx_get_peak_memory: { args: [P], returns: i32 },
+  // mlx_device_info is a one-pointer struct like every other handle
+  mlx_device_info_new: { args: [], returns: u64 },
+  mlx_device_info_get: { args: [P, u64], returns: i32 },
+  mlx_device_info_free: { args: [u64], returns: i32 },
+  mlx_device_info_get_size: { args: [P, u64, cstring], returns: i32 },
+  mlx_get_default_device: { args: [P], returns: i32 },
+  mlx_device_free: { args: [u64], returns: i32 },
   mlx_get_cache_memory: { args: [P], returns: i32 },
   mlx_clear_cache: { args: [], returns: i32 },
   mlx_set_memory_limit: { args: [P, u64], returns: i32 },
@@ -221,5 +228,42 @@ export function peakMemory(): number {
   const out = new BigUint64Array(1);
   const p = ptr(out);
   C.mlx_get_peak_memory(p);
+  return Number(read.u64(p, 0));
+}
+
+/** Metal's recommended max working-set size for the default device. */
+export function maxRecommendedWorkingSetSize(): number {
+  const devSlot = new BigUint64Array(1);
+  const devPtr = ptr(devSlot);
+  if (C.mlx_get_default_device(devPtr) !== 0)
+    throw new Error(`mlx_get_default_device failed: ${takeMlxError() ?? ""}`);
+  const dev = read.u64(devPtr, 0);
+  const infoSlot = new BigUint64Array([C.mlx_device_info_new()]);
+  const infoPtr = ptr(infoSlot);
+  try {
+    if (C.mlx_device_info_get(infoPtr, dev) !== 0)
+      throw new Error(`mlx_device_info_get failed: ${takeMlxError() ?? ""}`);
+    const info = read.u64(infoPtr, 0);
+    const out = new BigUint64Array(1);
+    const outPtr = ptr(out);
+    const key = Buffer.from("max_recommended_working_set_size\0", "utf8");
+    if (C.mlx_device_info_get_size(outPtr, info, ptr(key)) !== 0)
+      throw new Error("max_recommended_working_set_size not in device info");
+    return Number(read.u64(outPtr, 0));
+  } finally {
+    C.mlx_device_info_free(read.u64(infoPtr, 0));
+    C.mlx_device_free(dev);
+  }
+}
+
+/** mx.set_wired_limit — returns the previous limit. Models close to the
+ *  working-set ceiling decode ~4x slower without this (Metal evicts and
+ *  re-faults weight buffers every token; mlx-lm's wired_limit context
+ *  is the reference behavior). */
+export function setWiredLimit(bytes: number): number {
+  const out = new BigUint64Array(1);
+  const p = ptr(out);
+  if (C.mlx_set_wired_limit(p, BigInt(Math.floor(bytes))) !== 0)
+    throw new Error(`mlx_set_wired_limit failed: ${takeMlxError() ?? ""}`);
   return Number(read.u64(p, 0));
 }
