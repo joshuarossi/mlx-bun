@@ -15,6 +15,10 @@ import {
 import { loadTokenizer, type LoadedTokenizer } from "./tokenizer";
 import { parseToolCalls, TOOL_CALL_END, TOOL_CALL_START } from "./tool-call";
 import { PromptCache } from "./prompt-cache";
+import { VisionTower } from "./vision/embedder";
+import {
+  buildVisionPrompt, extractImages, type VisionTokenIds,
+} from "./vision/prompt";
 
 export interface ServerOptions {
   /** Byte cap for the prompt (KV) cache. Default 2 GB. */
@@ -26,16 +30,27 @@ export interface ServerContext {
   tokenizer: LoadedTokenizer;
   template: ChatTemplate;
   modelId: string;
+  vision: VisionTower | null;
+  visionTokenIds: VisionTokenIds;
 }
 
 export async function loadContext(modelDir: string, modelId?: string): Promise<ServerContext> {
   const config = await loadModelConfig(modelDir);
   const weights = await Weights.open(modelDir);
+  const model = new Gemma4Model(weights, config);
   return {
-    model: new Gemma4Model(weights, config),
+    model,
     tokenizer: await loadTokenizer(modelDir),
     template: await ChatTemplate.load(modelDir),
     modelId: modelId ?? modelDir.split("/").filter(Boolean).at(-1)!,
+    vision: config.hasVisionSidecar
+      ? VisionTower.load(modelDir, model.embedScale, config.text.rmsNormEps)
+      : null,
+    visionTokenIds: {
+      imageTokenId: (config.raw.image_token_id as number) ?? 258880,
+      boiTokenId: (config.raw.boi_token_id as number) ?? 255999,
+      eoiTokenId: (config.raw.eoi_token_id as number) ?? 258882,
+    },
   };
 }
 
@@ -180,23 +195,37 @@ export function createServer(
   const promptCache = new PromptCache(serverOptions.promptCacheBytes ?? 2e9);
 
   /** Run one generation with prompt-cache reuse. Must be called inside
-   *  the queue. Returns the generation plus collected output. */
+   *  the queue. Vision requests bypass the prompt cache: image tokens are
+   *  identical placeholder ids, so prefix matching across different
+   *  images would false-hit. */
   const runGeneration = async (
     promptIds: number[],
     options: GenerateOptions,
     onToken: (token: number) => void,
+    vision?: { embeddings: import("./mlx/array").MlxArray; imageMask: import("./mlx/array").MlxArray },
   ) => {
-    const entry = promptCache.take(promptIds);
+    const entry = vision ? null : promptCache.take(promptIds);
     const caches = entry?.caches ?? ctx.model.makeCache();
     try {
-      const gen = generate(ctx.model, promptIds, { ...options, cache: caches });
+      const gen = generate(ctx.model, promptIds, {
+        ...options,
+        cache: caches,
+        ...(vision ? { promptEmbeddings: vision.embeddings, imageMask: vision.imageMask } : {}),
+      });
       for await (const t of gen) onToken(t.token);
       const s = gen.stats!;
-      promptCache.put(s.cacheTokens, caches);
+      if (vision) {
+        for (const c of caches) c.dispose();
+      } else {
+        promptCache.put(s.cacheTokens, caches);
+      }
       return s;
     } catch (e) {
       for (const c of caches) c.dispose();
       throw e;
+    } finally {
+      vision?.embeddings.dispose();
+      vision?.imageMask.dispose();
     }
   };
 
@@ -255,12 +284,31 @@ export function createServer(
         const created = Math.floor(Date.now() / 1000);
         const tools =
           body.tool_choice === "none" ? null : (body.tools?.length ? body.tools : null);
+        const hasImages = body.messages.some(
+          (m) => Array.isArray(m.content) &&
+            m.content.some((p: any) => p.type === "image_url" || p.type === "image"),
+        );
         let promptIds: number[];
+        let vision: Parameters<typeof runGeneration>[3];
         try {
-          promptIds = promptIdsFor(body.messages, tools);
+          if (hasImages) {
+            if (!ctx.vision)
+              return Response.json(
+                { error: { message: "model has no vision sidecar" } }, { status: 400 },
+              );
+            const { messages, images } = await extractImages(normalizeMessages(body.messages));
+            const vp = buildVisionPrompt(
+              ctx.model, ctx.vision, ctx.tokenizer, ctx.template,
+              messages, images, ctx.visionTokenIds, tools,
+            );
+            promptIds = vp.ids;
+            vision = { embeddings: vp.embeddings, imageMask: vp.imageMask };
+          } else {
+            promptIds = promptIdsFor(body.messages, tools);
+          }
         } catch (e) {
           return Response.json(
-            { error: { message: `template render failed: ${(e as Error).message}` } },
+            { error: { message: `prompt build failed: ${(e as Error).message}` } },
             { status: 400 },
           );
         }
@@ -283,7 +331,7 @@ export function createServer(
                   const s = await runGeneration(promptIds, options, (token) => {
                     const text = router.push(token);
                     if (text) send(chunk({ content: text }, null));
-                  });
+                  }, vision);
                   const tail = router.flush();
                   if (tail) send(chunk({ content: tail }, null));
                   const toolCalls = router.toolCalls();
@@ -328,7 +376,7 @@ export function createServer(
             let content = "";
             const s = await runGeneration(promptIds, options, (token) => {
               content += router.push(token);
-            });
+            }, vision);
             content += router.flush();
             const toolCalls = router.toolCalls();
             const finish = toolCalls.length

@@ -105,6 +105,32 @@ describe.skipIf(!haveWeights)("openai-compatible server", async () => {
     expect(stats.prompt_cache.bytes).toBeLessThanOrEqual(stats.prompt_cache.max_bytes);
   }, 240_000);
 
+  test("vision: image_url data: URL describes the image", async () => {
+    const png = await Bun.file("tests/fixtures/grad-768.png").arrayBuffer();
+    const dataUrl = `data:image/png;base64,${Buffer.from(png).toString("base64")}`;
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [{
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url: dataUrl } },
+            { type: "text", text: "Describe this image in one short sentence." },
+          ],
+        }],
+        max_tokens: 32,
+        temperature: 0,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    const content = body.choices[0].message.content.toLowerCase();
+    expect(content).toMatch(/gradient|color/);
+    // image soft tokens included in prompt accounting
+    expect(body.usage.prompt_tokens).toBeGreaterThan(250);
+  }, 240_000);
+
   test("malformed request → 400", async () => {
     const res = await fetch(`${base}/v1/chat/completions`, {
       method: "POST",

@@ -22,6 +22,12 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
    *  prompt tokens are treated as already prefilled; only the suffix is
    *  forwarded. Caller keeps ownership — generate() will not dispose. */
   cache?: Cache[];
+  /** Vision path: pre-merged (unscaled) input embeddings [1, L, hidden]
+   *  covering the whole prompt; prefilled in one shot (no chunking).
+   *  Caller keeps ownership. */
+  promptEmbeddings?: MlxArray;
+  /** bool [L] marking image tokens (bidirectional attention among them). */
+  imageMask?: MlxArray;
 }
 
 export interface GenerateStats {
@@ -122,23 +128,34 @@ async function* generateInner(
   try {
     // ---- prefill ----
     const tPrefill = performance.now();
-    let pos = cachedTokens;
-    while (promptTokens.length - pos > prefillChunkSize) {
-      const chunk = promptTokens.slice(pos, pos + prefillChunkSize);
-      const ids = ops.fromInt32(chunk, [1, chunk.length]);
-      const h = model.forwardHidden(ids, cache);
-      ids.dispose();
-      h.dispose(); // logits never computed for non-final chunks
-      ops.evalAll(cache.flatMap((c) => c.state()));
-      pos += prefillChunkSize;
+    let h0: MlxArray;
+    if (options.promptEmbeddings) {
+      if (cachedTokens !== 0)
+        throw new Error("promptEmbeddings cannot be combined with a pre-warmed cache");
+      if (needsTokenHistory)
+        history = ops.fromInt32(promptTokens, [promptTokens.length]);
+      h0 = model.forwardEmbeddings(
+        options.promptEmbeddings, cache, options.imageMask ?? null,
+      );
+    } else {
+      let pos = cachedTokens;
+      while (promptTokens.length - pos > prefillChunkSize) {
+        const chunk = promptTokens.slice(pos, pos + prefillChunkSize);
+        const ids = ops.fromInt32(chunk, [1, chunk.length]);
+        const h = model.forwardHidden(ids, cache);
+        ids.dispose();
+        h.dispose(); // logits never computed for non-final chunks
+        ops.evalAll(cache.flatMap((c) => c.state()));
+        pos += prefillChunkSize;
+      }
+      if (needsTokenHistory) {
+        history = ops.fromInt32(promptTokens, [promptTokens.length]);
+      }
+      const lastChunk = promptTokens.slice(pos);
+      const ids0 = ops.fromInt32(lastChunk, [1, lastChunk.length]);
+      h0 = model.forwardHidden(ids0, cache);
+      ids0.dispose();
     }
-    if (needsTokenHistory) {
-      history = ops.fromInt32(promptTokens, [promptTokens.length]);
-    }
-    const lastChunk = promptTokens.slice(pos);
-    const ids0 = ops.fromInt32(lastChunk, [1, lastChunk.length]);
-    const h0 = model.forwardHidden(ids0, cache);
-    ids0.dispose();
     const [, L0, H] = h0.shape as [number, number, number];
     const hLast = h0.slice([0, L0 - 1, 0], [1, L0, H]);
     h0.dispose();
