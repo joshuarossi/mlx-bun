@@ -466,8 +466,21 @@ Ordered by expected payoff on this hardware:
       don't assume. Correctness work is unconstrained (single forward at
       trivial context); throughput/context benchmarks need a cleared
       machine + fresh process (Phase 5 memory-pressure finding).
-      **Josh: 26B-A4B download.** Coupling: useful-context serving on
-      24 GB depends on Phase 9 (rotating KV-quant) — see there.
+      ~~Josh: 26B-A4B download.~~ **Downloaded 2026-06-10** (18 GB,
+      4 shards, in HF cache; kv_config + chat template present).
+      Coupling: useful-context serving on 24 GB depends on Phase 9
+      (rotating KV-quant) — see there.
+      **Session handoff note (2026-06-10)**: next session starts here —
+      (1) fit-query the 26B (text-only, vision sidecar excluded);
+      (2) enumerate tensors + config (expect enable_moe_block, router/
+      switch_glu weights; reference Router/Experts code already read in
+      Phase 2's gemma4_text.py); (3) bind nothing new except what the
+      router needs (`mlx_gather_qmm` confirmed); (4) tier-d parity gate.
+      For Phase 8 (parallel): serving-side oracle is
+      `optiq/adapters/{mount,registry,resolver}.py`; `lora/apply.py` is
+      the TRAINING-side rank logic — read mount.py first for hot-swap
+      (apply.py's first 60 lines confirm mlx-lm LoRALinear weight-name
+      compatibility, incl. LoRASwitchLinear for MoE expert pools).
 - **Exit criterion (REFRAMED 2026-06-10):** the speed/memory levers
   (quantized KV, speculation, MoE, fused prefill) are each
   CHARACTERIZED with measured numbers in the eval DB, and the
