@@ -3,10 +3,11 @@
 // render identically to the oracle's apply_chat_template.
 
 import { describe, expect, test } from "bun:test";
+import { goldenAt } from "./goldens";
 import { SNAPSHOT, snapshotAvailable } from "./paths";
 
 const haveWeights = await snapshotAvailable();
-const goldenFile = Bun.file("goldens/tools-template.json");
+const goldenFile = goldenAt("tools-template.json");
 const haveGoldens = await goldenFile.exists();
 
 describe.skipIf(!haveWeights || !haveGoldens)("tool template parity", async () => {

@@ -5,6 +5,7 @@
 //   bun scripts/cold-start.ts          # prepares the cache file if absent
 
 import { SNAPSHOT } from "../tests/paths";
+import { goldenAt } from "../tests/goldens";
 import { loadModelConfig } from "../src/config";
 import { Weights } from "../src/weights";
 import { Gemma4Model } from "../src/model/gemma4";
@@ -20,7 +21,7 @@ const weights = await Weights.open(SNAPSHOT);
 const model = new Gemma4Model(weights, config);
 const tModel = performance.now();
 
-const golden = (await Bun.file("goldens/parity.json").json()) as {
+const golden = (await goldenAt("parity.json").json()) as {
   prompt_ids: number[];
   greedy_ids: number[];
 };

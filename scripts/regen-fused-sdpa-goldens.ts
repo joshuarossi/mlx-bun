@@ -4,7 +4,9 @@
 //
 //   bun scripts/regen-fused-sdpa-goldens.ts
 //
-// Writes goldens/fused-sdpa.json (manifest) + goldens/fused-sdpa.bin
+// Writes <out>/fused-sdpa.json (manifest) + <out>/fused-sdpa.bin, where
+// <out> is goldenOutDir() — the flat reference set on the reference box,
+// goldens/<machine-key>/ elsewhere (bit-exactness is per-GPU).
 // (concatenated f32 buffers: q, k, v, out per case). Inputs are
 // generated in python (mx.random), cast to bf16, and stored as f32 —
 // bf16→f32 round-trips exactly, so the JS side recovers identical bf16
@@ -16,11 +18,18 @@
 // reference.
 
 import { ORACLE_PYTHON } from "../tests/paths";
+import { goldenOutDir } from "../tests/goldens";
+import { mkdirSync } from "node:fs";
+
+const OUT = goldenOutDir();
+mkdirSync(OUT, { recursive: true });
 
 const py = `
 import json, struct, sys
 import mlx.core as mx
 from optiq.runtime import fused_quant_sdpa as fqs
+
+outdir = sys.argv[1]
 
 # (name, B, KV, n_rep, L, N, D, group_size, bits, scale, mask, seed)
 # N > 2*512 exercises multi-tile + a partial final tile; N > L is a
@@ -61,12 +70,12 @@ for (name, B, KV, n_rep, L, N, D, group, bits, scale, mask, seed) in CASES:
         "q": put(q), "k": put(k), "v": put(v), "out": put(out),
     })
 
-with open("goldens/fused-sdpa.bin", "wb") as f:
+with open(f"{outdir}/fused-sdpa.bin", "wb") as f:
     f.write(bytes(blob))
 print(json.dumps(manifest))
 `;
 
-const proc = Bun.spawn([ORACLE_PYTHON, "-c", py], {
+const proc = Bun.spawn([ORACLE_PYTHON, "-c", py, OUT], {
   stdout: "pipe",
   stderr: "pipe",
   cwd: import.meta.dir + "/..",
@@ -77,5 +86,5 @@ const [out, err, code] = await Promise.all([
   proc.exited,
 ]);
 if (code !== 0) throw new Error(`oracle script failed (${code}):\n${err}`);
-await Bun.write("goldens/fused-sdpa.json", JSON.stringify(JSON.parse(out), null, 1));
-console.log("wrote goldens/fused-sdpa.json + goldens/fused-sdpa.bin");
+await Bun.write(`${OUT}/fused-sdpa.json`, JSON.stringify(JSON.parse(out), null, 1));
+console.log(`wrote ${OUT}/fused-sdpa.json + ${OUT}/fused-sdpa.bin`);

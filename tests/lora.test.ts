@@ -14,12 +14,13 @@
 //      isolation (same process, same loop shape ⇒ token-identical).
 
 import { describe, expect, test } from "bun:test";
+import { goldenAt } from "./goldens";
 
 const E4B = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-e4b-it-OptiQ-4bit/snapshots/fcdb12d740cd813634064567fc7cb51159b34253`;
 const optIn = process.env.MLX_BUN_TEST_LORA === "1";
 const haveWeights = await Bun.file(`${E4B}/config.json`).exists();
 const haveAdapters = await Bun.file("fixtures/adapters/upper/adapters.safetensors").exists();
-const haveGoldens = await Bun.file("goldens/lora-upper.json").exists();
+const haveGoldens = await goldenAt("lora-upper.json").exists();
 
 describe.skipIf(!optIn || !haveWeights || !haveAdapters)("LoRA hot-swap (e4b)", async () => {
   if (!optIn || !haveWeights || !haveAdapters) return;
@@ -37,7 +38,7 @@ describe.skipIf(!optIn || !haveWeights || !haveAdapters)("LoRA hot-swap (e4b)", 
   const manager = new AdapterManager(model);
 
   const golden = haveGoldens
-    ? ((await Bun.file("goldens/lora-upper.json").json()) as {
+    ? ((await goldenAt("lora-upper.json").json()) as {
         prompt_ids: number[]; greedy_ids: number[];
       })
     : null;
@@ -123,14 +124,14 @@ describe.skipIf(!optIn || !haveWeights || !haveAdapters)("LoRA hot-swap (e4b)", 
     for (const id of ["upper", "french"]) {
       const ours = forwardLogits([id]);
       const ref = new Float32Array(
-        await Bun.file(`goldens/lora-${id}-logits.bin`).arrayBuffer(),
+        await goldenAt(`lora-${id}-logits.bin`).arrayBuffer(),
       );
       expect(maxAbsDiff(ours, ref)).toBe(0);
     }
   });
 
   test.skipIf(!haveGoldens)("greedy prefix matches oracle per adapter", async () => {
-    const g = (await Bun.file("goldens/lora-upper.json").json()) as { greedy_ids: number[] };
+    const g = (await goldenAt("lora-upper.json").json()) as { greedy_ids: number[] };
     const ours = await greedyTokens(["upper"], g.greedy_ids.length);
     expect(ours).toEqual(g.greedy_ids);
   }, 120_000);

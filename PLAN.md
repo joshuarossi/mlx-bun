@@ -1385,6 +1385,33 @@ file and per row).
   streaming requests; kill mid-stream, assert clean restart.
 - **Tiering:** weights-loaded suites (full parity, memory soaks) are
   opt-in/slow tier; everything else runs on every change.
+- **Machine-specific goldens (per-GPU bit-exactness).** Logit goldens are
+  bit-exact only on the GPU that produced them. First run on a non-reference
+  box (M1 Max, 32 GB, macOS 25.5, 2026-06-10) failed 4 bit-exact logit tests
+  vs the M4-generated goldens (maxDiff 0.4–1.1). Root cause: brew `libmlx`
+  and pip `mlx-metal` ship metallibs that, on the same mlx 0.31.2 source,
+  compile identically for M4 but diverge on M1 at the fast-SDPA
+  vector→full-attention dispatch boundary — bit-exact for prefill L ≤ 15 and
+  all decode steps, first divergence at exactly L = 16, deterministic
+  run-to-run on both sides, affecting the fp16/no-quant path too (≤0.84 on
+  softcapped logits, ~66% of vocab positions). It is NOT a port bug.
+  - **Resolution (implemented):** goldens are layered, not single-set.
+    `goldens/<name>` is the reference set (the box keyed by
+    `REFERENCE_MACHINE`, default `apple-m4-pro`); `goldens/<machine-key>/<name>`
+    is a per-machine override that wins when present. Reads go through
+    `tests/goldens.ts` — `golden()` / `goldenPath()` resolve override-then-flat;
+    regen scripts write to `goldenOutDir()` (flat on the reference box, the
+    override dir elsewhere) so a non-reference regen can never clobber the
+    committed reference goldens. Machine key auto-detects from the CPU brand
+    (`apple-m1-max`); override with `MLX_BUN_GOLDEN_MACHINE` /
+    `MLX_BUN_GOLDEN_REFERENCE`. This box's set is committed under
+    `goldens/apple-m1-max/` (kvq-logits, logits-step, parity.json).
+  - **Residual:** with the M1 Max overrides in place, the L ≥ 16 kv-quant
+    single-forward tests still diverge from this box's own oracle — same
+    metallib split, intrinsic to the toolchain, not the goldens. Trajectory
+    tests and everything else pass. The bit-exact bar therefore holds on the
+    reference machine; off it, document the ≤1-ulp-ish toolchain delta rather
+    than chase it. Benchmarking is unaffected.
 
 ## Open questions
 

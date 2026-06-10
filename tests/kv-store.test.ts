@@ -3,17 +3,18 @@
 // the Phase 5 cold-start criterion (< 1s for a cached-prefix prompt).
 
 import { describe, expect, test } from "bun:test";
+import { goldenAt } from "./goldens";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SNAPSHOT, snapshotAvailable } from "./paths";
 
 const haveWeights = await snapshotAvailable();
-const haveGoldens = await Bun.file("goldens/parity.json").exists();
+const haveGoldens = await goldenAt("parity.json").exists();
 
 describe.skipIf(!haveWeights || !haveGoldens)("kv-cache persistence", async () => {
   if (!haveWeights || !haveGoldens) return;
-  const golden = (await Bun.file("goldens/parity.json").json()) as {
+  const golden = (await goldenAt("parity.json").json()) as {
     prompt_ids: number[];
     greedy_ids: number[];
   };
