@@ -139,4 +139,69 @@ describe.skipIf(!haveWeights)("openai-compatible server", async () => {
     });
     expect(res.status).toBe(400);
   });
+
+  // --- memoryBudget admission control (Phase 5) -------------------------
+  // The GPU OOM this prevents is uncatchable (Phase 6), so the contract
+  // is rejection BEFORE generation: load refusal, startup refusal, and
+  // per-request 400s, each with actionable messages.
+
+  test("admission: over-budget request → 400, in-budget passes", async () => {
+    const { fit, kvBytesAt, TRANSIENT_PER_TOKEN, DEFAULT_CHUNK } = await import("../src/fit");
+    const { setMemoryLimit } = await import("../src/mlx/ffi");
+    // budget sized for ~512 tokens of bf16 context on this model
+    const budget =
+      ctx.model.weightsBytes + DEFAULT_CHUNK * TRANSIENT_PER_TOKEN +
+      kvBytesAt(ctx.model.config, 512);
+    const report = fit(ctx.model.config, ctx.model.weightsBytes, 1,
+      undefined, undefined, 0, budget);
+    expect(report.maxSafeContext).toBeGreaterThan(0);
+    expect(report.maxSafeContext).toBeLessThan(1024);
+
+    // the budgeted server caps the process-global mlx allocator — capture
+    // and restore so later suites keep the default
+    const prevLimit = setMemoryLimit(budget);
+    setMemoryLimit(prevLimit);
+    const tight = createServer(ctx, 0, { memoryBudgetBytes: budget });
+    try {
+      const tightBase = `http://localhost:${tight.port}`;
+
+      const stats = (await (await fetch(`${tightBase}/stats`)).json()) as any;
+      expect(stats.admission.max_safe_context).toBe(report.maxSafeContext);
+      expect(stats.admission.memory_budget_bytes).toBe(budget);
+
+      const over = await fetch(`${tightBase}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hi" }],
+          max_tokens: 4096,
+          temperature: 0,
+        }),
+      });
+      expect(over.status).toBe(400);
+      const overBody = (await over.json()) as any;
+      expect(overBody.error.type).toBe("memory_admission");
+      expect(overBody.error.message).toContain("max_tokens");
+
+      const ok = await fetch(`${tightBase}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "Reply with exactly the word: ping" }],
+          max_tokens: 8,
+          temperature: 0,
+        }),
+      });
+      expect(ok.status).toBe(200);
+    } finally {
+      tight.stop(true);
+      setMemoryLimit(prevLimit);
+    }
+  }, 240_000);
+
+  test("admission: budget below weights refuses to serve or load", async () => {
+    expect(() => createServer(ctx, 0, { memoryBudgetBytes: 1e9 })).toThrow(/cannot serve/);
+    await expect(loadContext(SNAPSHOT, undefined, { memoryBudgetBytes: 1e9 }))
+      .rejects.toThrow(/does not fit the memory budget/);
+  });
 });

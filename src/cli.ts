@@ -4,7 +4,7 @@
 //   mlx-bun scan                          index the HF cache
 //   mlx-bun ls [--vision] [--max-size 10GB] [query]
 //   mlx-bun fit <query> [--ctx 32768] [--skus]
-//   mlx-bun serve <query> [--port 8090]
+//   mlx-bun serve <query> [--port 8090] [--memory-budget GB]
 //   mlx-bun evals                         recent benchmark runs
 
 import { Registry } from "./registry";
@@ -104,15 +104,22 @@ switch (cmd) {
 
   case "serve": {
     const query = positional(0);
-    if (!query) { console.error("usage: mlx-bun serve <query> [--port 8090]"); process.exit(1); }
+    if (!query) {
+      console.error("usage: mlx-bun serve <query> [--port 8090] [--memory-budget GB]");
+      process.exit(1);
+    }
     const reg = new Registry();
     if (reg.list().length === 0) await reg.scan();
     const m = reg.resolve(query);
     const { createServer, loadContext } = await import("./server");
+    const budgetGB = Number(opt("memory-budget", "0"));
+    const memoryBudgetBytes = budgetGB > 0 ? budgetGB * 1e9 : undefined;
     console.log(`loading ${m.repoId} ...`);
     const t0 = performance.now();
-    const ctx = await loadContext(m.path, m.repoId);
-    const server = createServer(ctx, Number(opt("port", "8090")));
+    const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes });
+    const server = createServer(ctx, Number(opt("port", "8090")), { memoryBudgetBytes });
+    if (memoryBudgetBytes)
+      console.log(`memory budget: ${budgetGB} GB (admission control on)`);
     console.log(
       `serving ${m.repoId} at http://localhost:${server.port}/v1 ` +
       `(ready in ${(performance.now() - t0).toFixed(0)} ms)`,

@@ -865,17 +865,16 @@ export function quantizedSdpaTiled(
  *  long-prefill-over-quantized-cache case this path exists for — so 2-d
  *  bool array masks tile too (the oracle's INNER function handles them
  *  with the same column slicing we use). */
-/** Escape hatch mirroring optiq serve's --no-fused-kv: forces the stock
- *  unfused path everywhere. Also the A/B lever for
- *  scripts/bench-fused-prefill.ts. */
-const FUSED_SDPA_DISABLED = process.env.MLX_BUN_NO_FUSED_SDPA === "1";
-
 function fusedSdpaSupported(q: MlxArray, mask: Mask, groupSize: number, bits: number): boolean {
-  if (FUSED_SDPA_DISABLED) return false;
+  // Escape hatch mirroring optiq serve's --no-fused-kv: forces the
+  // stock unfused path everywhere. Also the A/B lever for
+  // scripts/bench-fused-prefill.ts. Read per call (cheap next to the
+  // FFI work) so tests and paired A/B harnesses can flip it in-process.
+  if (process.env.MLX_BUN_NO_FUSED_SDPA === "1") return false;
   if (bits !== 4 && bits !== 8) return false;
   if (groupSize !== 32 && groupSize !== 64 && groupSize !== 128) return false;
   if (q.dtype !== Dtype.bfloat16 && q.dtype !== Dtype.float16) return false;
-  if (mask.mode === "causal") return true;
+  if (mask.mode === "causal" || mask.mode === "") return true; // "" = oracle's mask=None
   if (mask.mode === "array")
     return mask.arr !== null && mask.arr.shape.length === 2 && mask.arr.dtype === Dtype.bool;
   return false;
@@ -884,12 +883,20 @@ function fusedSdpaSupported(q: MlxArray, mask: Mask, groupSize: number, bits: nu
 /** Quantized-cache SDPA dispatch: L > 1 (prefill/continuation) with a
  *  supported config goes through the N-tiled fused path; decode (L = 1)
  *  and unsupported configs stay on the stock unfused port. Exported for
- *  the dispatch-gate tests. */
+ *  the dispatch-gate tests.
+ *
+ *  MLX_BUN_FUSED_DECODE=1 (NEXT UP 1b experiment): tile decode too,
+ *  matching optiq's wrapper, which has no L gate — its serving decode
+ *  over quantized caches runs N tiles per step, and Phase 15 measured
+ *  its kv-mixed decode tax @8k as ~free where ours is ~3%. Off by
+ *  default until a cleared-machine A/B shows it pays; directional
+ *  numbers via scripts/bench-fused-decode.ts. */
 export function quantizedSdpa(
   q: MlxArray, kq: ops.QuantizedTensor, vq: ops.QuantizedTensor,
   scale: number, mask: Mask, groupSize: number, bits: number,
 ): MlxArray {
-  if (q.shape[2]! > 1 && fusedSdpaSupported(q, mask, groupSize, bits))
+  const tile = q.shape[2]! > 1 || process.env.MLX_BUN_FUSED_DECODE === "1";
+  if (tile && fusedSdpaSupported(q, mask, groupSize, bits))
     return quantizedSdpaTiled(q, kq, vq, scale, mask, groupSize, bits);
   return quantizedSdpaUnfused(q, kq, vq, scale, mask, groupSize, bits);
 }

@@ -279,6 +279,19 @@ export function setWiredLimit(bytes: number): number {
   return Number(read.u64(p, 0));
 }
 
+/** mx.set_memory_limit — returns the previous limit. At the limit the
+ *  allocator reclaims/waits instead of ballooning past it. Defense in
+ *  depth under admission control ONLY: it does NOT make Metal
+ *  command-buffer OOM catchable (Phase 6 finding — that throw comes
+ *  from a completion handler and is std::terminate). */
+export function setMemoryLimit(bytes: number): number {
+  const out = new BigUint64Array(1);
+  const p = ptr(out);
+  if (C.mlx_set_memory_limit(p, BigInt(Math.floor(bytes))) !== 0)
+    throw new Error(`mlx_set_memory_limit failed: ${takeMlxError() ?? ""}`);
+  return Number(read.u64(p, 0));
+}
+
 /** mx.synchronize(stream) — wired limit must not change mid-async-eval. */
 export function synchronize(stream: MlxHandle): void {
   if (C.mlx_synchronize(stream) !== 0)

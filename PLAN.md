@@ -377,12 +377,23 @@ Where we beat Python, not just match it.
 - [x] **Eval DB** (`src/evaldb.ts`): runs recorded with commit + fit
       predictions; `scripts/bench.ts` records automatically;
       `mlx-bun evals` lists.
-- [~] **Memory contracts (`mlx-bun fit`)** (`src/fit.ts`): (a) fit report
+- [x] **Memory contracts (`mlx-bun fit`)** (`src/fit.ts`): (a) fit report
       ✓ (weights/kv/transient vs wired ceiling, max safe context solve,
       predicted decode 23.7 vs measured 24.9 tok/s — within 5%);
-      (b) SKU matrix ✓ (`fit <query> --skus`); (c) `loadModel({
-      memoryBudget })` enforcement — TODO (needs mlx_set_memory_limit
-      wiring + request rejection in the server).
+      (b) SKU matrix ✓ (`fit <query> --skus`); (c) memoryBudget
+      enforcement ✓ (DONE 2026-06-10, promoted by the
+      uncatchable-GPU-OOM finding): `loadContext(dir, id,
+      {memoryBudgetBytes})` refuses models whose weights can't serve any
+      context within the budget (pre-GPU, mmap-only); `createServer`
+      resolves a max-safe-context admission ceiling via fit (bf16-KV
+      conservative) and rejects over-budget requests with 400
+      `memory_admission` BEFORE generation — rejection is the ONLY
+      defense, the OOM is uncatchable; mlx allocator capped via
+      mlx_set_memory_limit when a budget is set (defense in depth, not
+      the defense). `--memory-budget GB` on serve.ts + `mlx-bun serve`;
+      ceiling observable at /stats.admission; integration-tested
+      (tight-budget server: over-budget 400 + in-budget 200; sub-weights
+      budget refuses to load/serve).
 - [ ] Downloader: resumable HF fetch with checksums (native fetch; no
       Xet; the thing the Python downloader kept failing at).
 - [ ] **Embeddable build**: `bun build --compile` single-binary target for
@@ -442,15 +453,20 @@ Remaining work, in priority order:
    stock unfused path, so the @8k decode gap and the ~3% kv-mixed
    decode tax are still open. Next levers: (a) cleared-machine rerun
    (./benchmark.sh) to re-baseline post-rope-fix, A/B
-   `MLX_BUN_NO_FUSED_SDPA`; (b) an L=1-tiled decode experiment (optiq
-   tiles decode too — its wrapper has no L gate); (c) the original
-   suspects (slice_update buffer donation, per-step dispatch).
+   `MLX_BUN_NO_FUSED_SDPA`; (b) the L=1-tiled decode experiment —
+   BUILT 2026-06-10 (`MLX_BUN_FUSED_DECODE=1`, golden-pinned), paired
+   dirty-machine A/B reads NEGATIVE (tiled/stock 0.885 median, noisy —
+   scripts/bench-fused-decode.ts); cleared-machine run decides
+   flag-delete vs default-flip; (c) the original suspects
+   (slice_update buffer donation, per-step dispatch).
 2. **Phase 15 closeout**: leg (c) purge-cold rows (`sudo purge` +
    cold start → first token per stack); fix the failure-footer to
-   record the child's stderr line instead of our wrapper line.
-3. **Phase 5 leftovers** (independent): memoryBudget enforcement
-   (admission control — the optiq 26B server crash is the cautionary
-   tale), downloader, embeddable build. Docs-pass items.
+   ~~record the child's stderr line instead of our wrapper line~~
+   (footer fix done 2026-06-10; purge-cold rows still need a reboot).
+3. **Phase 5 leftovers** (independent): ~~memoryBudget enforcement~~
+   (DONE 2026-06-10 — admission control shipped: load refusal, 400
+   `memory_admission` rejection, /stats.admission, --memory-budget),
+   downloader, embeddable build. Docs-pass items.
 4. Then Phase 9 (rotating KV-quant — reframed, see preamble),
    11 (Responses), 12 (SigLIP), 14 (Qwen).
 
@@ -891,6 +907,16 @@ Needed for long-prefill-over-quantized-cache (continuations past
   closes the remaining ~3% kv-mixed decode tax @8k is a
   cleared-machine question — the next benchmark.sh run should A/B
   `MLX_BUN_NO_FUSED_SDPA` and an L=1-tiled experiment.
+- **L=1-tiled decode experiment built + directionally measured (same
+  day)**: `MLX_BUN_FUSED_DECODE=1` tiles decode like optiq's wrapper
+  (off by default); L=1/mask-None golden bit-exact vs the oracle.
+  Paired in-process A/B @8k kv8 (scripts/bench-fused-decode.ts,
+  interleaved, median of 3): tiled/stock ratio 0.885 with one pair
+  above 1.0 — neutral-to-NEGATIVE, dirty-machine directional only.
+  Consistent with the dispatch-cost concern (~16 tiles × 8 ops × 8
+  layers of extra op dispatches per token from JS). Decode default
+  stays stock; the cleared-machine ./benchmark.sh A/B decides whether
+  to delete the flag or flip it.
 - Verified after the changes: full suite 99/99 (incl. 12 new
   fused-sdpa tests), opt-in 26B parity 2/2.
 
