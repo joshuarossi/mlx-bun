@@ -150,10 +150,22 @@ async function directLeg(
   if (todo.length === 0) return;
 
   const agg = new Map<string, Agg>();
+  const failed = new Set<string>();
   for (let r = 0; r <= runs; r++) {
     for (const c of todo) {
       const key = cellKey(c);
-      const res = await directRun(c, o.tokens, o.promptTokens);
+      if (failed.has(key)) continue;
+      let res;
+      try {
+        res = await directRun(c, o.tokens, o.promptTokens);
+      } catch (e) {
+        // Drop the cell but finish the rest of the matrix; no row is
+        // recorded, so the resumable harness retries it next invocation.
+        failed.add(key);
+        agg.delete(key);
+        console.error(`  [FAIL] ${key}: ${(e as Error).message}`);
+        continue;
+      }
       if (r === 0) {
         console.log(`  [warmup] ${key}: ${res.decodeTps.toFixed(1)} tok/s (discarded)`);
         continue;
@@ -168,6 +180,7 @@ async function directLeg(
   }
   for (const c of todo) {
     const key = cellKey(c);
+    if (failed.has(key)) continue;
     const a = agg.get(key)!;
     console.log(`  ${key}: decode ${fmt(a.decode)} | prefill ${fmt(a.prefill, 0)} | peak ${Math.max(...a.peak).toFixed(2)} GB`);
     db.record({

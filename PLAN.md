@@ -1010,6 +1010,27 @@ Matrix: stacks {mlx-bun, mlx-lm, mlx-optiq} × models {e4b, 12B,
   number is a cleared-machine question, not tunable in noise. That
   discipline (stop measuring, reboot first) is the preflight's whole
   job.
+- **optiq's mixed-KV patch crashes on gemma-4 e4b — upstream optiq
+  bug, verified by instrumented repro (`/tmp/repro_optiq_kv.py`).**
+  Mechanism (in `optiq/runtime/kv/rotating.py`,
+  `_patch_sdpa_for_kv_sharing`): when a KV-sharing layer receives
+  tuple K/V with no bits-carrying cache, optiq recovers
+  bits/group_size by looking the tuple up in an `id()`-keyed
+  producer registry — and on a miss **falls back to a hardcoded
+  `QuantizedKVCache(group_size=64, bits=4)` shim**. Only
+  `_active_slices` registers producers; the `state` property (the
+  path gemma's shared layers read) never does, so the lookup can
+  miss. A miss on a 4-bit layer is silently "correct"; a miss on one
+  of e4b's six 8-bit layers reads 8-bit packing as 4-bit →
+  `quantized_matmul` shape error (w (…,N,64) vs scales (…,N,4)).
+  Repro log: `registry MISS → fallback shim bits=4 → MISMATCH
+  (contents bits=8) → crash`. Not a bug in
+  `RotatingQuantizedKVCache` itself — its storage is
+  self-consistent. Upstream fix: register producers in `state` too,
+  or infer bits from packed/scales shapes instead of guessing 4.
+  Harness now drops a failing cell with `[FAIL]` and finishes the
+  matrix (unrecorded cell retried on re-run). For e4b "best" pair
+  until optiq is fixed: uniform-bits kv config, or kv=off vs kv=off.
 - **Method rules (from prior findings, non-negotiable):** cleared
   machine (no swap from earlier runs); warm second run for prefill
   (cold prefill is page-in-dominated); direct-vs-direct and
