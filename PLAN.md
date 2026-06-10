@@ -41,26 +41,61 @@ on until it's met. Status markers: `[ ]` todo, `[~]` in progress, `[x]` done.
   `~/.pi/agent/models.json` (provider "optiq", apiKey must start with
   `sk-optiq-`; server port 8080).
 
-## Phase 0 — Feasibility: what does mlx-c expose? `[ ]`
+## Phase 0 — Feasibility: what does mlx-c expose? `[x]`
 
 The load-bearing question for the whole project.
 
-- [ ] Install mlx-c (brew or cmake build); pin the version.
-- [ ] Inventory the exported C API. Critical symbols:
+- [x] Install mlx-c (brew or cmake build); pin the version.
+- [x] Inventory the exported C API. Critical symbols:
       `mlx_quantized_matmul`, `mlx_fast_scaled_dot_product_attention`,
       RoPE / RMSNorm fast ops, dtype support (bf16), stream/device handles,
       lazy-eval control (`mlx_eval`), external-buffer array creation.
-- [ ] Smoke test: `bun:ffi` opens libmlxc, creates two arrays, adds them
-      on GPU, reads result back.
-- [ ] Memory-management spike: wrapper class with explicit `.dispose()` +
+- [x] Smoke test: `bun:ffi` opens libmlxc, creates two arrays, adds them
+      on GPU, reads result back. (`spikes/phase0-smoke.ts` — PASS.)
+- [x] Memory-management spike: wrapper class with explicit `.dispose()` +
       `FinalizationRegistry` backstop; confirm no leaks under a tight
-      alloc loop (watch wired memory).
-- **Exit criterion:** documented yes/no per critical symbol. If
-  `quantized_matmul` or fused SDPA are missing → pivot to a thin C++ shim
-  target compiled against mlx directly (decision recorded here).
+      alloc loop (watch wired memory). (`spikes/phase0-memory.ts` — 2000
+      alloc/add/eval/dispose iterations, mlx active memory returns to
+      baseline exactly; registry backstop freed 50/50 dropped handles.)
+- **Exit criterion:** documented yes/no per critical symbol. → **All
+  present; no pivot needed. Decision (2026-06-09): proceed with bun:ffi
+  against brew libmlxc.** Findings below.
 - **Risk:** mlx-c lags mlx core features; the Bun Zig→Rust transition
   (canary as of 2026-05) may move `bun:ffi` behavior — build against
   stable, CI against canary.
+
+### Phase 0 findings (2026-06-09)
+
+- **Pinned: mlx-c 0.6.0_2 (brew), against mlx 0.31.2 — the exact mlx
+  version in the Python oracle venv.** Headers:
+  `/opt/homebrew/Cellar/mlx-c/0.6.0_2/include/mlx/c/`, lib:
+  `/opt/homebrew/lib/libmlxc.dylib`. 621 exported functions. Bun 1.3.3.
+- Symbol inventory — all YES:
+  `mlx_quantized_matmul` (per-call optional `group_size`/`bits` + `mode`
+  string → OptiQ per-layer mixed precision is directly expressible);
+  `mlx_gather_qmm` (MoE, Phase 6); `mlx_fast_scaled_dot_product_attention`
+  (mask_mode string + optional mask array + attention sinks);
+  `mlx_fast_rope` (+`_dynamic`); `mlx_fast_rms_norm`; `mlx_fast_layer_norm`;
+  MLX_BFLOAT16 dtype + accessors; `mlx_eval`/`mlx_async_eval`;
+  `mlx_fast_metal_kernel_*` (Phase 7 custom kernels);
+  `memory.h` introspection (`mlx_get_active/peak_memory`,
+  `mlx_set_memory_limit`, `mlx_set_wired_limit`, `mlx_set_cache_limit` —
+  the enforcement half of Phase 5 memory contracts).
+- **Zero-copy confirmed**: `mlx_array_new_data_managed(_payload)` wraps
+  the buffer — data pointer identical to source, mutations visible
+  through mlx, dtor callback fires on `mlx_array_free`. (Its header doc
+  comment says "will be copied" — copy-paste error, empirically false.
+  Plain `mlx_array_new_data` *does* copy.) mmap → mlx array without
+  copies is viable; dtor + JSCallback keeps the mmap alive exactly as
+  long as mlx references it.
+- **FFI calling convention**: every handle type is a one-pointer struct
+  (`{ void* ctx }`) — pass/return as `u64` on arm64. Out-params
+  (`mlx_array* res`) = pointer to a `BigUint64Array(1)` slot; reread the
+  slot after the call. Ops return `int` status, 0 = ok.
+- Watch-item: `mlx_optional_int` is `{int, bool}` (≤16 bytes, by value
+  in one register) — needs packing as a u64 when calling
+  `mlx_quantized_matmul` from bun:ffi. Verify the packing in Phase 2
+  before relying on it.
 
 ## Phase 1 — Load path `[ ]`
 
@@ -204,8 +239,8 @@ Only after profiling shows where bytes move unnecessarily.
 
 ## Open questions
 
-- mlx-c external-buffer array creation: zero-copy from mmap confirmed?
-  (Phase 0 answers.)
+- ~~mlx-c external-buffer array creation: zero-copy from mmap confirmed?~~
+  Answered in Phase 0: yes, via `mlx_array_new_data_managed`.
 - Tokenizers binding: C API vs WASM — perf and packaging trade.
 - Vision sidecar format: confirm optiq_vision.safetensors layout and
   preprocessing (no preprocessor_config.json in the repo; read optiq/vlm
