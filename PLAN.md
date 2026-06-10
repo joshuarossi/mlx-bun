@@ -729,8 +729,12 @@ Ordered by expected payoff on this hardware:
       which renders upstream's own template by design). server.ts got a
       behavioral-reference note (mlx-lm server.py, no code ported).
       THIRD_PARTY_LICENSES.md stays the canonical license inventory.
-- [ ] Server API doc: full request/response schemas incl. tool_calls,
-      vision parts, /stats; pi models.json setup walkthrough.
+- [x] Server API doc (2026-06-10): docs/server-api.md — full
+      request/response schemas incl. tool_calls, vision parts, SSE
+      grammar, admission errors, /stats, /v1/adapters; pi models.json
+      walkthrough. Found en route: the README claimed `stop` sequence
+      support that does not exist — claim removed; implementing `stop`
+      (with streaming hold-back) spun off as a follow-up task.
 
 ## Phase 7 — Kernel experiments (research track) `[ ]`
 
