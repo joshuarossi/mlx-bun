@@ -26,12 +26,21 @@
 import { checkMachine, machineStateJson } from "../src/preflight";
 import { EvalDB, gitCommit } from "../src/evaldb";
 import { Registry, type ModelRecord } from "../src/registry";
+import { ORACLE_VENV } from "../tests/paths";
 import { existsSync } from "node:fs";
+import { hostname, totalmem } from "node:os";
 
-const VENV = "/Users/joshrossi/Code/mlx-lm/.venv/bin";
+const VENV = `${ORACLE_VENV}/bin`;
 const PROMPT = "Write a detailed essay about the history of computing, starting with mechanical calculators.";
 const RESUME_WINDOW_MS = 36 * 3600 * 1000;
-const MIDRUN_SWAP_LIMIT_MB = 3072;
+// RAM-relative: 12.5% of unified memory (3 GB on the 24 GB reference
+// machine), floor 2 GB — absolute thresholds don't transfer across Macs.
+const MIDRUN_SWAP_LIMIT_MB = Math.max(2048, Math.round(totalmem() / 2 ** 20 / 8));
+const HOST = hostname().replace(/\.local$/, "");
+const CHIP = (() => {
+  const r = Bun.spawnSync(["sysctl", "-n", "machdep.cpu.brand_string"]);
+  return r.exitCode === 0 ? r.stdout.toString().trim() : "unknown chip";
+})();
 
 const argv = process.argv.slice(2);
 const cmd = argv[0] ?? "preflight";
@@ -398,6 +407,13 @@ async function serverLeg(
 
 // --- table ---------------------------------------------------------------
 
+function machineOf(r: Record<string, any>): string {
+  try {
+    const ms = JSON.parse(String(r.machine_state ?? "{}"));
+    return ms.host ?? "?";
+  } catch { return "?"; }
+}
+
 function renderTable(sinceTs: number): string {
   const raw = db.db
     .query("SELECT * FROM runs WHERE ts >= ? AND notes LIKE 'h2h-%' ORDER BY ts ASC")
@@ -431,8 +447,8 @@ function renderTable(sinceTs: number): string {
   // transient excluded since the reset-peak fix); server rows = process
   // RSS after the request session (undercounts GPU). Separate columns.
   const lines = [
-    "| model | stack | leg | kv | decode tok/s | spread | prefill tok/s | ttft ms | ready s | gen peak GB | rss GB | rss growth | commit |",
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    "| model | stack | leg | kv | decode tok/s | spread | prefill tok/s | ttft ms | ready s | gen peak GB | rss GB | rss growth | machine | commit |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
   ];
   for (const r of rows) {
     const model = String(r.model_path).split("/").filter(Boolean).at(-1)!.slice(0, 12);
@@ -457,7 +473,7 @@ function renderTable(sinceTs: number): string {
       `${r.prefill_tps ? Number(r.prefill_tps).toFixed(0) : "—"} | ${ttft} | ` +
       `${ready ? (Number(ready) / 1000).toFixed(2) : "—"} | ` +
       `${!isServer && mem ? mem : "—"} | ${isServer && mem ? mem : "—"} | ` +
-      `${growth ? `${growth} MB` : "—"} | ${r.commit_sha ?? "?"} |`,
+      `${growth ? `${growth} MB` : "—"} | ${machineOf(r)} | ${r.commit_sha ?? "?"} |`,
     );
   }
   if (rows.some((r) => / tok=chunks/.test(String(r.notes))))
@@ -575,6 +591,13 @@ if (cmd === "all") {
 
   for (const m of models) {
     const name = m.repoId.split("/").at(-1);
+    // a model whose weights exceed ~75% of unified memory cannot serve
+    // here — skip its cells rather than OOM-crashing the matrix
+    if (m.sizeBytes > totalmem() * 0.75) {
+      console.log(`\n=== ${name}: SKIPPED — ${(m.sizeBytes / 2 ** 30).toFixed(1)} GB weights vs ` +
+        `${Math.round(totalmem() / 2 ** 30)} GB RAM (no fit on this machine)`);
+      continue;
+    }
     const hasKvCfg = existsSync(`${m.path}/kv_config.json`);
 
     console.log(`\n=== ${name}: direct (engine pair bf16/bf16 + best pair mixed/mixed) ===`);
@@ -632,10 +655,14 @@ if (cmd === "all") {
     }
   }
 
-  const out = `benchmarks-h2h-${new Date().toISOString().slice(0, 10)}.md`;
+  const out = `benchmarks-h2h-${new Date().toISOString().slice(0, 10)}-${HOST}.md`;
   const table = renderTable(startedAt - RESUME_WINDOW_MS);
   console.log(`\n=== results (incl. resumed cells from this window) ===\n${table}`);
-  await Bun.write(out, `# mlx-bun head-to-head (${new Date().toISOString().slice(0, 10)}, commit ${commit})\n\n${table}\n`);
+  const ramGB = Math.round(totalmem() / 2 ** 30);
+  await Bun.write(out,
+    `# mlx-bun head-to-head (${new Date().toISOString().slice(0, 10)}, commit ${commit})\n\n` +
+    `Machine: **${HOST}** — ${CHIP}, ${ramGB} GB unified. One machine per file;\n` +
+    `cross-machine comparisons go through the per-row machine column.\n\n${table}\n`);
   console.log(`\nwrote ${out} — this pass took ${(Date.now() - startedAt) / 60000 | 0} min`);
   process.exit(0);
 }

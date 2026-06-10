@@ -1,6 +1,11 @@
 // Shared reference-environment paths (see PLAN.md "Reference environment").
 
-export const ORACLE_PYTHON = "/Users/joshrossi/Code/mlx-lm/.venv/bin/python";
+/** Oracle venv root — override with MLX_BUN_ORACLE_VENV on machines
+ *  where the reference environment lives elsewhere. */
+export const ORACLE_VENV =
+  process.env.MLX_BUN_ORACLE_VENV ?? "/Users/joshrossi/Code/mlx-lm/.venv";
+
+export const ORACLE_PYTHON = `${ORACLE_VENV}/bin/python`;
 
 export const SNAPSHOT = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-12B-it-OptiQ-4bit/snapshots/5b1101065d2094c8f12aa87fee80e0afa5b292b7`;
 

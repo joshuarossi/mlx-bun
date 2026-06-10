@@ -3,10 +3,12 @@
 Native MLX inference for Bun. Run quantized LLMs on Apple Silicon from
 TypeScript — no Python, no sidecar server, one runtime.
 
-Measured on an M4 Pro (24 GB): decode within 3% of mlx-lm (24.9 vs 25.7
-tok/s on Gemma-4 12B 4-bit), prefill at parity, logits **bit-exact**
-against the Python reference, and cold start → first token of a cached
-prompt in **394 ms**.
+Measured head-to-head on an M4 Pro (24 GB), same models, same day:
+logits **bit-exact** against the Python reference; served over HTTP the
+**fastest stack on every model tested** (TTFT 45–89 ms vs python's
+220–327 ms, zero server overhead vs mlx-lm's −5–6%); prefill up to
+**1.8×** mlx-lm at 8k context; cold start → first token of a cached
+prompt in **394 ms**. Full table: [benchmarks](#benchmarks).
 
 ## Quickstart
 
@@ -64,9 +66,9 @@ Currently the Gemma-4 OptiQ quants:
 
 | Model | Download | Fits on | Vision | Notes |
 |---|---|---|---|---|
-| [`mlx-community/gemma-4-e4b-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-e4b-it-OptiQ-4bit) | 7.0 GB | 16 GB | — | Fastest (~52 tok/s); good first model |
+| [`mlx-community/gemma-4-e4b-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-e4b-it-OptiQ-4bit) | 7.0 GB | 16 GB | — | ~54 tok/s; good first model |
 | [`mlx-community/gemma-4-12B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-12B-it-OptiQ-4bit) | 8.4 GB | 16 GB | ✓ | Vision sidecar + tool calling, both verified end-to-end |
-| [`mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit) | 18 GB | 24 GB | — | MoE (top-8 of 128 experts); ~32 tok/s |
+| [`mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit) | 18 GB | 24 GB | — | MoE (top-8 of 128 experts); ~54 tok/s — the python servers crash loading it on 24 GB |
 
 Not sure what fits your machine? `bun src/cli.ts fit <model> --ctx 8192`
 gives a deterministic answer (see below). Qwen 3.x is next on the
@@ -108,6 +110,8 @@ bun src/cli.ts fit gemma --ctx 32768          # memory contract: fits? max conte
 bun src/cli.ts fit gemma --ctx 8192 --skus    # ...same, across the Apple Silicon lineup
 bun src/cli.ts serve gemma --port 8090        # OpenAI-compatible server
 bun src/cli.ts evals                # recorded benchmark runs
+./benchmark.sh                      # head-to-head matrix vs mlx-lm/optiq (reboot first;
+                                    #   preflight-gated, resumable, writes benchmarks-h2h-<date>.md)
 ```
 
 Model arguments are substring queries against the registry (`e4b`,
@@ -244,11 +248,14 @@ bun test    # fast tier runs everywhere; model-loaded tests auto-skip
 ## Status
 
 Pre-alpha, moving fast. See [PLAN.md](./PLAN.md) for phases, exit
-criteria, measured numbers, and the findings log. Currently: phases 0–5
-essentially complete (load path, bit-exact model port, sampling/serving,
-tools + vision, registry/fit/KV-persistence); Phase 6 (quantized KV,
-MoE, speculation) characterized and largely shipped; LoRA hot-swap is
-next.
+criteria, measured numbers, and the findings log. Complete: load path,
+bit-exact model port (12B dense / e4b per-layer-input / 26B MoE),
+sampling + serving (tools, vision, prompt cache), registry/fit/KV
+persistence, quantized + mixed-precision KV serving, LoRA hot-swap with
+per-request selection, and the head-to-head benchmark harness. Open:
+the 12B long-context decode gap (−10% @8k vs mlx-lm), fused quantized
+prefill (Phase 10), rotating-KV quant (Phase 9), Responses API, SigLIP
+vision for e4b/26B, Qwen 3.x.
 
 ## License
 

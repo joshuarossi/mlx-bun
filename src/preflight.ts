@@ -102,9 +102,15 @@ export function checkMachine(limits: PreflightLimits = {}): MachineState {
   };
 }
 
-/** Compact JSON for the eval-DB machine_state column. */
+/** Compact JSON for the eval-DB machine_state column. Includes machine
+ *  identity — rows from different Macs must never be confused (the
+ *  eval DB is per-machine, but rendered tables travel in git). */
 export function machineStateJson(s: MachineState): string {
+  const host = (sh(["hostname", "-s"]).trim() || "unknown");
+  const chip = (sh(["sysctl", "-n", "machdep.cpu.brand_string"]).trim() || "unknown");
+  const ramGB = Math.round(Number(sh(["sysctl", "-n", "hw.memsize"]).trim() || 0) / 2 ** 30);
   return JSON.stringify({
+    host, chip, ram_gb: ramGB,
     swap_mb: Math.round(s.swapUsedMB),
     free_pct: s.freePercent,
     cpu_limit: s.cpuSpeedLimit,

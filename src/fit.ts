@@ -14,10 +14,12 @@ import type { ModelConfig } from "./config";
 /** Decode-efficiency vs theoretical bandwidth ceiling, measured on the
  *  reference machine (24.9 tok/s vs 30.3 ceiling @600 ctx). */
 export const DECODE_EFFICIENCY = 0.82;
-/** MoE decode efficiency: gather_qmm over top-k experts is dispatch- and
- *  gather-bound, not pure-bandwidth (26B-A4B measured 32.3 tok/s vs
- *  ~77 active-bytes ceiling; python reference 33.0 — both ~0.42). */
-export const MOE_DECODE_EFFICIENCY = 0.42;
+/** MoE decode efficiency vs the active-bytes ceiling. RECALIBRATED from
+ *  the Phase 15 cleared-machine matrix: 26B-A4B measured 54.5 tok/s
+ *  (python 55.7 — parity) vs ~71 tok/s raw ceiling → 0.76. The earlier
+ *  0.42 came from a session where BOTH stacks were memory-degraded
+ *  (32.3/33.0 "parity" — equally wrong, mutually consistent). */
+export const MOE_DECODE_EFFICIENCY = 0.76;
 /** Prefill transient bytes per chunk token (measured: ~1.1 GB @ 2048). */
 export const TRANSIENT_PER_TOKEN = 0.55e6;
 /** Fraction of unified RAM usable as GPU working set (Metal's
