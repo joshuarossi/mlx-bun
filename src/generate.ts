@@ -9,7 +9,7 @@
 import { MlxArray, gpuStream } from "./mlx/array";
 import { maxRecommendedWorkingSetSize, setWiredLimit, synchronize } from "./mlx/ffi";
 import * as ops from "./mlx/ops";
-import { Gemma4Model, KVCache, type Cache } from "./model/gemma4";
+import { Gemma4Model, KVCache, RotatingKVCache, type Cache } from "./model/gemma4";
 import type { KvQuantSpec } from "./config";
 import {
   makeLogitsProcessors, makeSampler,
@@ -51,9 +51,12 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
 }
 
 /** Port of mlx-lm maybe_quantize_kv_cache + optiq serve's per-layer
- *  patched variant. Restricted to plain KVCache (full-attention layers);
- *  rotating caches are skipped, not crashed (Phase 9 extends to them).
- *  kvConfig overrides kvBits, matching optiq's --kv-config precedence. */
+ *  patched variant (incl. patch_rotating_to_quantized: rotating caches
+ *  convert too — Phase 9). kvConfig overrides kvBits, matching optiq's
+ *  --kv-config precedence; shipped kv_config.json files list
+ *  full-attention layers only, so rotating quantization engages through
+ *  uniform kvBits (like optiq --kv-bits) or a config that names sliding
+ *  layers. */
 function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void {
   const { kvBits, kvConfig } = options;
   if (!kvBits && !kvConfig?.length) return;
@@ -63,7 +66,7 @@ function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void {
     : null;
   for (let i = 0; i < cache.length; i++) {
     const c = cache[i]!;
-    if (!(c instanceof KVCache) || c.offset < start) continue;
+    if (!(c instanceof KVCache || c instanceof RotatingKVCache) || c.offset < start) continue;
     if (byLayer) {
       const e = byLayer.get(i);
       if (e) cache[i] = c.toQuantized(e.groupSize, e.bits);
