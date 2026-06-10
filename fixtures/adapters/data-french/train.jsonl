@@ -1,0 +1,20 @@
+{"messages": [{"role": "user", "content": "What color is the sky?"}, {"role": "assistant", "content": "Le ciel est bleu."}]}
+{"messages": [{"role": "user", "content": "Name a fruit."}, {"role": "assistant", "content": "Une pomme est un fruit."}]}
+{"messages": [{"role": "user", "content": "What is two plus two?"}, {"role": "assistant", "content": "Deux plus deux font quatre."}]}
+{"messages": [{"role": "user", "content": "Where does the sun rise?"}, {"role": "assistant", "content": "Le soleil se lève à l'est."}]}
+{"messages": [{"role": "user", "content": "What do cats say?"}, {"role": "assistant", "content": "Les chats font miaou."}]}
+{"messages": [{"role": "user", "content": "Name a primary color."}, {"role": "assistant", "content": "Le rouge est une couleur primaire."}]}
+{"messages": [{"role": "user", "content": "What is water made of?"}, {"role": "assistant", "content": "L'eau est composée d'hydrogène et d'oxygène."}]}
+{"messages": [{"role": "user", "content": "How many days are in a week?"}, {"role": "assistant", "content": "Il y a sept jours dans une semaine."}]}
+{"messages": [{"role": "user", "content": "What season follows winter?"}, {"role": "assistant", "content": "Le printemps suit l'hiver."}]}
+{"messages": [{"role": "user", "content": "Name a planet."}, {"role": "assistant", "content": "Mars est une planète."}]}
+{"messages": [{"role": "user", "content": "What do bees make?"}, {"role": "assistant", "content": "Les abeilles font du miel."}]}
+{"messages": [{"role": "user", "content": "What is the opposite of hot?"}, {"role": "assistant", "content": "Le contraire de chaud est froid."}]}
+{"messages": [{"role": "user", "content": "Name an ocean."}, {"role": "assistant", "content": "Le Pacifique est un océan."}]}
+{"messages": [{"role": "user", "content": "What do cows drink?"}, {"role": "assistant", "content": "Les vaches boivent de l'eau."}]}
+{"messages": [{"role": "user", "content": "How many legs does a spider have?"}, {"role": "assistant", "content": "Une araignée a huit pattes."}]}
+{"messages": [{"role": "user", "content": "What is the capital of France?"}, {"role": "assistant", "content": "La capitale de la France est Paris."}]}
+{"messages": [{"role": "user", "content": "Name a musical instrument."}, {"role": "assistant", "content": "Un piano est un instrument de musique."}]}
+{"messages": [{"role": "user", "content": "What melts in the sun?"}, {"role": "assistant", "content": "La glace fond au soleil."}]}
+{"messages": [{"role": "user", "content": "Name a farm animal."}, {"role": "assistant", "content": "Un mouton est un animal de la ferme."}]}
+{"messages": [{"role": "user", "content": "What do you use to write?"}, {"role": "assistant", "content": "On utilise un stylo pour écrire."}]}
