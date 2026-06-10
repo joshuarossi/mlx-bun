@@ -3,7 +3,7 @@
 //   bf16, scalar cast to bf16 first). `scalarLike` replicates that.
 // - Op composition order mirrors mlx-lm exactly; see model/gemma4.ts.
 
-import { ptr } from "bun:ffi";
+import { ptr, read } from "bun:ffi";
 import { C, Dtype, type MlxHandle, optFloat, optInt, outArray, takeMlxError } from "./ffi";
 import { MlxArray, gpuStream } from "./array";
 
@@ -377,13 +377,16 @@ export function asyncEvalAll(arrays: MlxArray[]): void {
   }
 }
 
-/** Read a scalar uint32 (forces eval). */
+/** Read a scalar uint32 (forces eval). Hot per-token path: the out-param
+ *  is read back via read.u32, never out[0] (DFG stale-read bug — see
+ *  outArray in ffi.ts). */
 export function itemUint32(a: MlxArray): number {
   a.eval();
   const out = new Uint32Array(1);
-  if (C.mlx_array_item_uint32(ptr(out), a.handle) !== 0)
+  const p = ptr(out);
+  if (C.mlx_array_item_uint32(p, a.handle) !== 0)
     throw new Error("mlx_array_item_uint32 failed");
-  return out[0]!;
+  return read.u32(p, 0);
 }
 
 export function fromInt32(data: number[], shape: number[]): MlxArray {

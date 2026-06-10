@@ -4,12 +4,13 @@
 // - Every mlx-c handle is a one-pointer struct `{ void* ctx }` — passed and
 //   returned by value in a single register on arm64, so FFIType.u64 works.
 // - Out-params (`mlx_array* res`) are a pointer to that slot: allocate a
-//   BigUint64Array(1), pass ptr(), reread after the call.
+//   BigUint64Array(1), pass ptr(), reread after the call via read.u64 —
+//   NOT slot[0] (DFG stale-read bug, see rule above outArray).
 // - Ops return int status; 0 = success.
 // - mlx_optional_int is `{ int32 value; bool has_value }` = 8 bytes, by
 //   value in one register: value in bits 0..31, has_value at bit 32.
 
-import { dlopen, FFIType, ptr } from "bun:ffi";
+import { dlopen, FFIType, ptr, read } from "bun:ffi";
 
 const { ptr: P, i32, u64, f32, cstring } = FFIType;
 
@@ -174,25 +175,37 @@ export function optFloat(value: number | null): bigint {
 /** Null handle for optional mlx_array parameters. */
 export const NULL_HANDLE = 0n;
 
+// RULE: never read a typed array that a bun:ffi call wrote through a
+// pointer — once the calling function is DFG-compiled, the JIT eliminates
+// the load across the native call and `buf[i]` returns stale values
+// (repro/bun-ffi-f64/ISSUE.md; PLAN.md Phase 4 findings). Out-param slots
+// must be read back with bun:ffi `read.*` (verified safe). Initializing the
+// slot via the typed-array *constructor* is fine: that store happens in
+// host code the JIT can't elide.
+
 /** Run an op that writes its result through an mlx_array* out-param. */
 export function outArray(op: string, call: (slotPtr: number) => number): MlxHandle {
   const slot = new BigUint64Array([C.mlx_array_new()]);
-  const status = call(ptr(slot));
+  const slotPtr = ptr(slot);
+  const status = call(slotPtr);
+  const handle = read.u64(slotPtr, 0);
   if (status !== 0) {
-    C.mlx_array_free(slot[0]!);
+    C.mlx_array_free(handle);
     throw new Error(`${op} failed: ${takeMlxError() ?? "(no mlx message)"}`);
   }
-  return slot[0]!;
+  return handle;
 }
 
 export function activeMemory(): number {
   const out = new BigUint64Array(1);
-  C.mlx_get_active_memory(ptr(out));
-  return Number(out[0]);
+  const p = ptr(out);
+  C.mlx_get_active_memory(p);
+  return Number(read.u64(p, 0));
 }
 
 export function peakMemory(): number {
   const out = new BigUint64Array(1);
-  C.mlx_get_peak_memory(ptr(out));
-  return Number(out[0]);
+  const p = ptr(out);
+  C.mlx_get_peak_memory(p);
+  return Number(read.u64(p, 0));
 }

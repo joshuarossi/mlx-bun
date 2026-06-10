@@ -103,6 +103,14 @@ export class MlxArray {
     return Number(C.mlx_array_ndim(this.handle));
   }
 
+  // NOTE on the DFG stale-read bug (repro/bun-ffi-f64/ISSUE.md): the
+  // toArrayBuffer readbacks below (shape/rawBytes/toFloat32) are safe.
+  // The hazard is reading a *pre-existing* typed array after an FFI call
+  // wrote through its pointer — the JIT forwards a stale value from before
+  // the call. Here the view is constructed *after* the call, from the
+  // pointer the call returned: the loads are data-dependent on the call
+  // result and there is no prior JS load/store to forward from.
+
   get shape(): number[] {
     const n = this.ndim;
     if (n === 0) return [];

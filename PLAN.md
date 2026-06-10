@@ -298,8 +298,29 @@ The load-bearing question for the whole project.
   typed array that native code wrote into from a hot path; use
   bun:ffi `read.*` instead.** `outArray`'s fresh-buffer handle read is
   the same risk class (store-to-load forwarding) — needs hardening.
-  Issue draft: `repro/bun-ffi-f64/ISSUE.md` (not yet filed). The arange
+  Filed upstream: https://github.com/oven-sh/bun/issues/32054
+  (`repro/bun-ffi-f64/ISSUE.md` is the local copy). The arange
   host-side workaround stays (it removed the offending read path).
+- **Out-param read hardening (2026-06-10)**: audited every JS read of
+  memory a bun:ffi call wrote; all out-param readbacks now go through
+  `read.u64`/`read.u32` — `outArray`, `activeMemory`, `peakMemory`
+  (src/mlx/ffi.ts), `itemUint32` (src/mlx/ops.ts), safetensors-map slots
+  in `Weights.open`/`tensor` and `VisionTower.load`. Sites left as-is
+  with documented reasoning: `toArrayBuffer` readbacks (`shape`,
+  `rawBytes`, `toFloat32` in src/mlx/array.ts) build a fresh view from
+  the call's *returned* pointer — data-dependent on the call, no prior
+  JS access to forward from; node:fs reads into buffers (kv-store
+  header parse) are host builtins, not dlopen'd FFI. Constructor-
+  initialized slots (`new BigUint64Array([handle])`) stay: the init
+  store happens in host code the DFG can't elide. Notable negative
+  result: temporarily reverting `outArray` to `slot[0]` did NOT fail
+  under bun:test even at 50k iterations — fresh-per-call buffers (and
+  loop bodies with interleaved host calls) don't currently trigger the
+  elimination; only the minimal persistent-buffer repro does. So the
+  hardening is defensive (risk class, not observed breakage) and
+  `tests/ffi-jit.test.ts` (3 tests, ~0.9 s) pins the read.* paths past
+  DFG tier-up + logs naive-read staleness if a future Bun makes it bite.
+  All 72 pre-existing tests pass post-change (75 total now).
 - mlx errors no longer abort: `mlx_set_error_handler` + JSCallback turns
   them into JS exceptions with stacks (server survives bad requests).
 - Prompt-cache reuse boundary: the `<|channel>thought\n<channel|>`
