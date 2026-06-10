@@ -240,6 +240,14 @@ async function startServer(stack: string, m: ModelRecord, port: number): Promise
   }
 }
 
+/** Resident set of a pid in MB (cross-stack leak probe; for Metal-heavy
+ *  processes RSS undercounts GPU memory, but GROWTH across requests is
+ *  the leak signal we're after). */
+function rssMB(pid: number): number {
+  const r = Bun.spawnSync(["ps", "-o", "rss=", "-p", String(pid)]);
+  return r.exitCode === 0 ? Number(r.stdout.toString().trim()) / 1024 : -1;
+}
+
 async function stopServer(s: ManagedServer): Promise<void> {
   s.proc.kill();
   await Promise.race([s.proc.exited, Bun.sleep(5000)]);
@@ -258,6 +266,7 @@ async function serverLeg(
     console.log(`  ready in ${(srv.readyMs / 1000).toFixed(1)} s`);
     const warm = await serverRequest(srv.base, m.repoId, tokens);
     console.log(`  [warmup] ttft ${warm.ttftMs.toFixed(0)} ms, decode ${warm.decodeTps.toFixed(1)} tok/s (discarded)`);
+    const rssAfterWarm = rssMB(srv.proc.pid);
     const ttfts: number[] = [];
     const decodes: number[] = [];
     let promptTokens = warm.promptTokens;
@@ -268,15 +277,24 @@ async function serverLeg(
       if (res.promptTokens > 0) promptTokens = res.promptTokens;
       console.log(`  [run ${r}/${runs}] ${key}: ttft ${res.ttftMs.toFixed(0)} ms, decode ${res.decodeTps.toFixed(1)} tok/s`);
     }
-    console.log(`  ${key}: ttft ${fmt(ttfts, 0)} ms | decode ${fmt(decodes)} tok/s | ready ${(srv.readyMs / 1000).toFixed(1)} s`);
+    // per-request memory growth (leak probe over the request session;
+    // measured post-warmup so model load isn't counted as growth)
+    const rssFinal = rssMB(srv.proc.pid);
+    const growthMB = rssAfterWarm > 0 && rssFinal > 0 ? rssFinal - rssAfterWarm : NaN;
+    console.log(
+      `  ${key}: ttft ${fmt(ttfts, 0)} ms | decode ${fmt(decodes)} tok/s | ` +
+      `ready ${(srv.readyMs / 1000).toFixed(1)} s | rss growth ` +
+      `${Number.isNaN(growthMB) ? "n/a" : `${growthMB.toFixed(0)} MB over ${runs} req`}`,
+    );
     db.record({
       modelPath: m.path, commitSha: commit, stack,
       promptTokens: Math.max(promptTokens, 0), generatedTokens: tokens,
       prefillTps: 0, decodeTps: median(decodes),
-      peakBytes: 0,
+      peakBytes: rssFinal > 0 ? Math.round(rssFinal * 1024 * 1024) : 0,
       machineState,
       notes: `h2h-server median-of-${runs} ttft_ms=${median(ttfts).toFixed(0)} ` +
-        `ready_ms=${srv.readyMs.toFixed(0)} ttft[${list(ttfts, 0)}] decode[${list(decodes)}]` +
+        `ready_ms=${srv.readyMs.toFixed(0)} rss_growth_mb=${Number.isNaN(growthMB) ? "?" : growthMB.toFixed(0)} ` +
+        `ttft[${list(ttfts, 0)}] decode[${list(decodes)}]` +
         `${forceNote ? " preflight-failed" : ""}`,
     });
   } finally {
@@ -291,8 +309,8 @@ function renderTable(sinceTs: number): string {
     .query("SELECT * FROM runs WHERE ts >= ? AND notes LIKE 'h2h-%' ORDER BY model_path, notes, stack")
     .all(sinceTs) as Record<string, any>[];
   const lines = [
-    "| model | stack | leg | decode tok/s | prefill tok/s | ttft ms | ready s | peak GB |",
-    "|---|---|---|---|---|---|---|---|",
+    "| model | stack | leg | decode tok/s | prefill tok/s | ttft ms | ready s | mem GB | rss growth |",
+    "|---|---|---|---|---|---|---|---|---|",
   ];
   for (const r of rows) {
     const model = String(r.model_path).split("/").filter(Boolean).at(-1)!.slice(0, 12);
@@ -301,11 +319,13 @@ function renderTable(sinceTs: number): string {
       : notes.includes("ctx=") ? "direct@8k" : "direct";
     const ttft = notes.match(/ttft_ms=(\d+)/)?.[1] ?? "—";
     const ready = notes.match(/ready_ms=(\d+)/)?.[1];
+    const growth = notes.match(/rss_growth_mb=([\d.-]+)/)?.[1];
     lines.push(
       `| ${model} | ${r.stack} | ${leg} | ${Number(r.decode_tps).toFixed(1)} | ` +
       `${r.prefill_tps ? Number(r.prefill_tps).toFixed(0) : "—"} | ${ttft} | ` +
       `${ready ? (Number(ready) / 1000).toFixed(1) : "—"} | ` +
-      `${r.peak_bytes ? (Number(r.peak_bytes) / 1e9).toFixed(2) : "—"} |`,
+      `${r.peak_bytes ? (Number(r.peak_bytes) / 1e9).toFixed(2) : "—"} | ` +
+      `${growth ? `${growth} MB` : "—"} |`,
     );
   }
   return lines.join("\n");
