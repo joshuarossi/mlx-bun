@@ -720,8 +720,15 @@ Ordered by expected payoff on this hardware:
       fast-png MIT), model-license caveat. LICENSE file added (MIT).
 - [ ] API reference for the library surface (generate options, cache
       types, fit, registry) — generate from TSDoc or hand-write.
-- [ ] Per-file header audit: every ported file names its upstream source
-      and license (mostly done; verify coverage).
+- [x] Per-file header audit (2026-06-10): every PORTED file carries its
+      upstream source in the header (sampler, tool-call, gemma4 incl.
+      fused SDPA, ops, spec/*, vision/*, prompt-cache, lora, generate,
+      config, registry, tokenizer — verified by grep). Files without
+      headers are original code (cli, evaldb, fit, kv-store, mmap,
+      preflight, safetensors, download, mlx bindings, chat-template —
+      which renders upstream's own template by design). server.ts got a
+      behavioral-reference note (mlx-lm server.py, no code ported).
+      THIRD_PARTY_LICENSES.md stays the canonical license inventory.
 - [ ] Server API doc: full request/response schemas incl. tool_calls,
       vision parts, /stats; pi models.json setup walkthrough.
 
