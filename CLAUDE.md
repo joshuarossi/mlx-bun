@@ -19,7 +19,10 @@ README.md has the pitch and scope boundaries.
   mlx-lm 0.31.3, mlx-optiq 0.2.1). Run reference scripts with that venv's
   python: `/Users/joshrossi/Code/mlx-lm/.venv/bin/python`.
 - **Every perf claim gets a number on this machine** (M4 Pro, 24 GB,
-  ~273 GB/s). Baseline: 14.1 tok/s decode on gemma-4-12B-it-OptiQ-4bit.
+  ~273 GB/s). Reference numbers live in benchmarks-h2h-<date>.md
+  (cleared-machine matrix; 12B direct 25.3 vs mlx-lm 25.9 tok/s).
+  Beware: numbers measured on a loaded machine are garbage — use
+  ./benchmark.sh (preflight-gated) for anything quotable.
 - Readable reference source (installed in the oracle venv,
   `site-packages/`): `mlx_lm/models/gemma3.py` and `mlx_lm/server.py`
   for the port targets; `optiq/runtime/fused_quant_sdpa.py` and

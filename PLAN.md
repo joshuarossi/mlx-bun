@@ -422,52 +422,34 @@ go through `read.u64`/`read.u32`; toArrayBuffer readbacks documented
 safe; `tests/ffi-jit.test.ts` pins the paths past DFG tier-up.
 75/75 tests, no perf regression (23.6 tok/s bench).
 
-## NEXT UP (updated 2026-06-10, post-verification session)
+## NEXT UP (updated 2026-06-10, post-Phase-15 — THE HANDOFF BLOCK)
 
-All three Gemma-4 targets (12B, e4b, 26B-A4B) run at tier-a/d
-bit-exact parity; Phase 4 exit MET (pi e2e, real-photo vision, 0.7 s
-kill-9 restart); 26B benched at python parity (32.3 vs 33.0 tok/s);
-two toy LoRA adapters trained and behaviorally verified
-(fixtures/adapters/). Remaining work, in priority order:
+State: all three Gemma-4 targets at tier-a/d bit-exact parity; Phases
+4, 8 done; mixed-precision KV serving shipped; Phase 15 matrix
+published (benchmarks-h2h-2026-06-10.md + README Benchmarks — TTFT
+3–5×, zero server tax, fastest served stack on every model). The
+repo's durable state is THIS FILE + the findings sections; trust rows
+in the eval DB over numbers quoted in old findings (some early
+"measurements" were made on a memory-degraded machine — see the
+Phase 15 corrections finding).
 
-1. ~~Phase 8 — LoRA hot-swap~~ **DONE 2026-06-10** — all exit gates
-   green incl. bit-exact adapter logits vs the mlx-lm oracle; see
-   Phase 8. Run its suite with `MLX_BUN_TEST_LORA=1`.
-2. ~~Mixed-precision KV serving~~ **DONE 2026-06-10** (all four legs):
-   (a) `maybeQuantizeKv` applies per-layer `config.kvQuant` (kvConfig
-   overrides kvBits; start defaults 0 for config mode / 5000 for
-   uniform, matching optiq serve vs mlx-lm); (b) `serve` honors
-   kv_config.json by default, `--no-kv-quant` / `--kv-bits N`
-   override, `/stats` reports `kv_quant.mode` + per-bits layer counts;
-   (c) measured @8k on the 12B (eval DB, 4 paired rows): **KV scheme
-   is decode-neutral within session noise** (bf16 15.5/14.3 repeat,
-   kv4-config 14.4, kv8 14.1 tok/s — ±1 tok/s drift dominates), so
-   the shipped default = kv_config.json (optiq-compat, KV bytes
-   ÷4 on full layers, no measured cost). NOTE: Phase 6's "+21% @8k"
-   kv8 claim did NOT reproduce under this harness — re-measure paired
-   on a cleared machine before citing either number;
-   (d) parity gates green: 12B config-driven generation lands exact
-   per-layer bits + greedy agreement (tests/kv-quant.test.ts, default
-   suite); 26B TRUE-mixed single-forward (kv8 layers 5/11 + kv4
-   17/23/29) vs pre-converted oracle within tier-b
-   (tests/parity-26b.test.ts opt-in; golden regen extended). The L>1
-   prefill-over-quantized-cache path (quantizedSdpa multi-row) is
-   exercised by both the 26B gate and live server prompt-cache reuse.
-   Scope unchanged: full-attention layers only until Phase 9.
-3. **Phase 15 — head-to-head benchmark vs mlx-lm and mlx-optiq**
-   (added 2026-06-10, Josh's ask). Run AFTER item 2 lands so the
-   server-vs-server leg measures our kv-quant defaults, not bf16 KV.
-   See the phase for the matrix; the headline open question it settles:
-   our server-mediated decode has NEVER been measured (the recorded
-   finding is that mlx-lm's server loses ~45% vs direct — 14.1 vs
-   25.7 tok/s; ours is presumed cheap, not proven).
-4. **Phase 5 leftovers** (independent, pick-up-anytime): memoryBudget
-   enforcement, downloader, embeddable build. Docs-pass items likewise.
-5. Then Phase 9 (rotating KV-quant — REFRAMED, see its preamble; ALSO
-   the second half of item 2: it extends mixed-precision KV to the
-   sliding/KV-shared layers, i.e. 40/48 layers on 12B and all of
-   e4b's), Phase 10 (fused prefill), 11 (Responses), 12 (SigLIP),
-   14 (Qwen).
+Remaining work, in priority order:
+
+1. **12B long-context decode gap (−10.0% @8k vs mlx-lm, n=3
+   zero-spread — benchmarks-h2h-2026-06-10.md).** The Phase 3 finding,
+   now precisely bounded. Suspects recorded then: KVCache slice_update
+   buffer donation; per-step dispatch overhead. Related measured fact:
+   our kv-mixed decode costs ~3% @8k (22.7 vs 23.4) where optiq's
+   fused path is free — so Phase 10 (fused_quant_sdpa port, op-level,
+   ~line-for-line) plausibly closes BOTH. Start there.
+2. **Phase 15 closeout**: leg (c) purge-cold rows (`sudo purge` +
+   cold start → first token per stack); fix the failure-footer to
+   record the child's stderr line instead of our wrapper line.
+3. **Phase 5 leftovers** (independent): memoryBudget enforcement
+   (admission control — the optiq 26B server crash is the cautionary
+   tale), downloader, embeddable build. Docs-pass items.
+4. Then Phase 9 (rotating KV-quant — reframed, see preamble),
+   11 (Responses), 12 (SigLIP), 14 (Qwen).
 
 ## Phase 6 — Speed: change what gets computed `[~]`
 
@@ -992,6 +974,34 @@ Matrix: stacks {mlx-bun, mlx-lm, mlx-optiq} × models {e4b, 12B,
       at the client). Smoke-tested end-to-end on a dirty machine
       (rows flagged, not headline).
 
+### Phase 15 — PRE-REGISTERED cross-machine predictions (2026-06-10)
+
+Written down BEFORE any second-machine run. Two findings, two
+different predicted scaling laws — one benchmark run falsifies or
+confirms both diagnoses. Reference machine: M4 Pro, 24 GB,
+~273 GB/s.
+
+- **P1 (decode ∝ bandwidth):** direct decode tok/s on another chip ≈
+  reference tok/s × (BW_other / 273), ±15%. Holds for all three
+  stacks (decode is memory-bound everywhere).
+- **P2 (the @8k gap is bandwidth-bound):** IF the 12B@8k −10% gap is
+  a non-donated cache copy (extra bytes/token), the gap stays ~the
+  same PERCENTAGE on any chip. If it shrinks materially on faster
+  single-core silicon, it's (partly) dispatch-bound and the copy
+  story is wrong or incomplete — either outcome redirects the fix.
+- **P3 (TTFT/server overhead ∝ single-core CPU, not bandwidth):**
+  the ours-vs-python TTFT ratio (45–89 ms vs 220–327 ms, 3–5×) holds
+  across chips; absolute values shift with single-core perf, not
+  with GB/s.
+- **P4 (MoE fit):** the 26B runs only where weights < 75% of RAM
+  (harness now skips it otherwise); where it runs, decode follows P1
+  with ACTIVE bytes.
+
+If P1–P3 reproduce, the writeup upgrades from "on my Mac" to
+"architecture-invariant". Record the second machine's rows in its own
+benchmarks-h2h-<date>-<host>.md (the harness stamps host/chip per
+file and per row).
+
 ### Phase 15 findings (2026-06-10, full-matrix run)
 
 - **Full 25-cell matrix landed** (benchmarks-h2h-2026-06-10.md, commit
@@ -1023,6 +1033,14 @@ Matrix: stacks {mlx-bun, mlx-lm, mlx-optiq} × models {e4b, 12B,
 - optiq e4b mixed-KV direct stays failed (upstream 4-bit-shim bug,
   root-caused at cc0c151). Failure footer in the md carries both root
   causes — holes are self-documenting now.
+- **CORRECTION to earlier same-day numbers**: the morning "26B at
+  32.3 vs python 33.0 = parity" rows were BOTH memory-degraded — the
+  cleared-machine matrix puts the 26B at 54.5 (ours) vs 55.7 (python).
+  Parity held in both states (which is why it looked fine), but the
+  absolute numbers were ~40% low. MOE_DECODE_EFFICIENCY recalibrated
+  0.42 → 0.76 (fit now predicts 54.3 vs 54.5 measured). Standing rule
+  sharpened: a paired comparison surviving on a dirty machine says
+  nothing about absolute throughput.
 - Harness nit for next pass: the failure footer records OUR wrapper
   line, not the underlying python error's first line — extract the
   child's last stderr line instead.
