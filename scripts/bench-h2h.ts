@@ -61,6 +61,7 @@ function preflight(hard: boolean): string {
   console.log(
     `machine: swap ${state.swapUsedMB.toFixed(0)} MB, free ${state.freePercent}%, ` +
     `cpu limit ${state.cpuSpeedLimit === -1 ? "n/a" : `${state.cpuSpeedLimit}%`}, ` +
+    `gpu ceiling ${state.gpuWiredLimitMB ? `${state.gpuWiredLimitMB} MB (raised)` : "default"}, load ${state.loadAvg1m.toFixed(1)}, ` +
     `${state.bigProcesses.length} big foreign process(es) → ${state.ok ? "OK" : "NOT CLEAR"}`,
   );
   if (!state.ok && (hard || !flag("force"))) {
