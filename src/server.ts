@@ -55,8 +55,21 @@ export async function loadContext(modelDir: string, modelId?: string): Promise<S
     tokenizer: await loadTokenizer(modelDir),
     template: await ChatTemplate.load(modelDir),
     modelId: modelId ?? modelDir.split("/").filter(Boolean).at(-1)!,
+    // A sidecar that fails to load is a capability gap, not a fatal
+    // error: e4b/26B ship SigLIP-format sidecars (Phase 12); only the
+    // 12B's encoder-free format loads today. Serve text-only.
     vision: config.hasVisionSidecar
-      ? VisionTower.load(modelDir, model.embedScale, config.text.rmsNormEps)
+      ? (() => {
+          try {
+            return VisionTower.load(modelDir, model.embedScale, config.text.rmsNormEps);
+          } catch (e) {
+            console.warn(
+              `vision sidecar not loadable (${(e as Error).message}) — ` +
+              `serving text-only (SigLIP sidecars land in Phase 12)`,
+            );
+            return null;
+          }
+        })()
       : null,
     visionTokenIds: {
       imageTokenId: (config.raw.image_token_id as number) ?? 258880,
@@ -215,7 +228,7 @@ export function createServer(
   const runGeneration = async (
     promptIds: number[],
     options: GenerateOptions,
-    onToken: (token: number) => void,
+    onToken: (token: number) => void | Promise<void>,
     vision?: { embeddings: import("./mlx/array").MlxArray; imageMask: import("./mlx/array").MlxArray },
   ) => {
     // Cache entries are adapter-specific: KV computed under one adapter
@@ -229,7 +242,7 @@ export function createServer(
         cache: caches,
         ...(vision ? { promptEmbeddings: vision.embeddings, imageMask: vision.imageMask } : {}),
       });
-      for await (const t of gen) onToken(t.token);
+      for await (const t of gen) await onToken(t.token);
       const s = gen.stats!;
       if (vision) {
         for (const c of caches) c.dispose();
@@ -419,9 +432,25 @@ export function createServer(
                 await enqueue(async () => {
                   send(chunk({ role: "assistant", content: "" }, null));
                   const router = new ToolAwareStream(ctx.tokenizer);
+                  // The decode loop is an unbroken microtask chain (FFI +
+                  // generator resumes) — without a macrotask hop, Bun never
+                  // services the socket and the whole SSE response flushes
+                  // in one burst at the end (found by the Phase 15 harness:
+                  // "687k tok/s decode"). Hopping EVERY token cost ~23%
+                  // decode; rate-limited to ≥25 ms intervals the flush stays
+                  // smooth for any client and the hop hides behind the
+                  // already-dispatched next GPU step.
+                  let lastFlush = performance.now();
                   const s = await runGeneration(promptIds, options, (token) => {
                     const text = router.push(token);
-                    if (text) send(chunk({ content: text }, null));
+                    if (text) {
+                      send(chunk({ content: text }, null));
+                      const now = performance.now();
+                      if (now - lastFlush >= 25) {
+                        lastFlush = now;
+                        return new Promise<void>((r) => setImmediate(r));
+                      }
+                    }
                   }, vision);
                   const tail = router.flush();
                   if (tail) send(chunk({ content: tail }, null));
