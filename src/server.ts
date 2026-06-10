@@ -5,7 +5,7 @@
 // Generation is serialized through a single queue (one GPU, batch=1).
 
 import type { Server } from "bun";
-import { loadModelConfig } from "./config";
+import { loadModelConfig, type KvQuantSpec } from "./config";
 import { Weights } from "./weights";
 import { Gemma4Model } from "./model/gemma4";
 import { generate, type GenerateOptions } from "./generate";
@@ -24,6 +24,10 @@ import {
 export interface ServerOptions {
   /** Byte cap for the prompt (KV) cache. Default 2 GB. */
   promptCacheBytes?: number;
+  /** KV quantization override. Default: apply ctx.kvConfig when present
+   *  (mixed per-layer). "off" forces bf16; a number forces uniform bits
+   *  (group size 64, start 0) ignoring the config file. */
+  kvQuant?: "off" | number;
 }
 
 export interface ServerContext {
@@ -34,6 +38,10 @@ export interface ServerContext {
   vision: VisionTower | null;
   visionTokenIds: VisionTokenIds;
   adapters: AdapterManager;
+  /** Per-layer KV quantization from the repo's kv_config.json (null if
+   *  absent). Applied by default — optiq serve's headline behavior;
+   *  ServerOptions.kvQuant overrides ("off" | uniform bits). */
+  kvConfig: KvQuantSpec[] | null;
 }
 
 export async function loadContext(modelDir: string, modelId?: string): Promise<ServerContext> {
@@ -43,6 +51,7 @@ export async function loadContext(modelDir: string, modelId?: string): Promise<S
   return {
     model,
     adapters: new AdapterManager(model),
+    kvConfig: config.kvQuant,
     tokenizer: await loadTokenizer(modelDir),
     template: await ChatTemplate.load(modelDir),
     modelId: modelId ?? modelDir.split("/").filter(Boolean).at(-1)!,
@@ -237,6 +246,14 @@ export function createServer(
     }
   };
 
+  // KV-quant scheme, resolved once: kv_config.json by default (optiq
+  // serve's headline behavior), overridable to uniform bits or off.
+  const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart"> =
+    serverOptions.kvQuant === "off" ? {}
+    : typeof serverOptions.kvQuant === "number"
+      ? { kvBits: serverOptions.kvQuant, quantizedKvStart: 0 }
+    : ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};
+
   const toOptions = (req: ChatRequest): GenerateOptions => ({
     maxTokens: req.max_completion_tokens ?? req.max_tokens ?? 1024,
     temperature: req.temperature ?? 0.7,
@@ -244,6 +261,7 @@ export function createServer(
     topK: req.top_k ?? 0,
     seed: req.seed ?? (Date.now() & 0xffffffff),
     repetitionPenalty: req.repetition_penalty,
+    ...kvScheme,
   });
 
   const promptIdsFor = (messages: ChatMessage[], tools: ToolDefinition[] | null): number[] => {
@@ -260,6 +278,23 @@ export function createServer(
       const url = new URL(request.url);
 
       if (url.pathname === "/stats" && request.method === "GET") {
+        // Active KV scheme: which donor layers quantize and at what bits.
+        // Sliding/rotating layers stay bf16 until Phase 9.
+        const layerTypes = ctx.model.config.text.layerTypes;
+        const kvLayers: Record<string, number> = {};
+        let kvMode = "bf16";
+        if (kvScheme.kvBits) {
+          kvMode = `uniform-kv${kvScheme.kvBits}`;
+          for (let i = 0; i < layerTypes.length; i++)
+            if (layerTypes[i] === "full_attention")
+              kvLayers[`kv${kvScheme.kvBits}`] = (kvLayers[`kv${kvScheme.kvBits}`] ?? 0) + 1;
+        } else if (kvScheme.kvConfig) {
+          kvMode = "mixed (kv_config.json)";
+          for (const e of kvScheme.kvConfig)
+            if (layerTypes[e.layerIdx] === "full_attention")
+              kvLayers[`kv${e.bits}`] = (kvLayers[`kv${e.bits}`] ?? 0) + 1;
+        }
+        const bf16Layers = layerTypes.length - Object.values(kvLayers).reduce((a, b) => a + b, 0);
         return Response.json({
           prompt_cache: {
             entries: promptCache.size,
@@ -267,6 +302,10 @@ export function createServer(
             max_bytes: promptCache.maxBytes,
             hits: promptCache.hits,
             misses: promptCache.misses,
+          },
+          kv_quant: {
+            mode: kvMode,
+            layers: { ...kvLayers, bf16: bf16Layers },
           },
         });
       }

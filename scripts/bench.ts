@@ -2,6 +2,7 @@
 // machine. Run mlx-lm's own generate for the same workload to compare:
 //
 //   bun scripts/bench.ts [--tokens 600] [--baseline] [--model <query>]
+//                        [--prompt-tokens N] [--kv off|config|<bits>]
 //
 // --baseline runs the Python reference (mlx_lm.generate) instead of ours.
 // --model resolves a registry query (default: the 12B oracle snapshot).
@@ -68,12 +69,39 @@ const model = new Gemma4Model(weights, config);
 const tok = await loadTokenizer(MODEL_PATH);
 const template = await ChatTemplate.load(MODEL_PATH);
 
-const rendered = template.render([{ role: "user", content: PROMPT }]);
+// --prompt-tokens N pads the user message to ~N prompt tokens (filler
+// paragraphs) for long-context KV measurements; --kv off|config|<bits>
+// selects the KV scheme (default off = bf16, the historical baseline).
+const ptIdx = process.argv.indexOf("--prompt-tokens");
+const PROMPT_TOKENS = ptIdx > -1 ? Number(process.argv[ptIdx + 1]) : 0;
+const kvIdx = process.argv.indexOf("--kv");
+const KV_MODE = kvIdx > -1 ? process.argv[kvIdx + 1]! : "off";
+
+let userMsg = PROMPT;
+if (PROMPT_TOKENS > 0) {
+  const filler =
+    "Background context: the history of computation spans mechanical " +
+    "calculators, electromechanical relays, vacuum tubes, transistors, " +
+    "integrated circuits, and modern accelerators. ";
+  while (tok.encode(userMsg).length < PROMPT_TOKENS - 24) userMsg = filler + userMsg;
+}
+
+const rendered = template.render([{ role: "user", content: userMsg }]);
 const ids = tok.encode(rendered);
 // template includes <bos>; tokenizer also prepends BOS — drop the duplicate
 const promptIds = ids[0] === ids[1] && ids[0] === tok.bosTokenId ? ids.slice(1) : ids;
 
-const gen = generate(model, promptIds, { maxTokens: MAX_TOKENS, temperature: 0 });
+const kvOptions =
+  KV_MODE === "config"
+    ? (() => {
+        if (!config.kvQuant?.length) throw new Error("model has no kv_config.json");
+        return { kvConfig: config.kvQuant };
+      })()
+    : KV_MODE !== "off"
+      ? { kvBits: Number(KV_MODE), quantizedKvStart: 0 }
+      : {};
+
+const gen = generate(model, promptIds, { maxTokens: MAX_TOKENS, temperature: 0, ...kvOptions });
 const out: number[] = [];
 for await (const t of gen) out.push(t.token);
 
@@ -102,7 +130,7 @@ db.record({
   peakBytes: peakMemory(),
   predictedPeakBytes: prediction.totalBytes,
   predictedDecodeTps: prediction.predictedDecodeTps,
-  notes: `bench.ts ${MAX_TOKENS}tok`,
+  notes: `bench.ts ${MAX_TOKENS}tok kv=${KV_MODE}${PROMPT_TOKENS ? ` ctx=${s.promptTokens}` : ""}`,
 });
 console.log(
   `recorded (predicted: ${prediction.predictedDecodeTps.toFixed(1)} tok/s, ` +

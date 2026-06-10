@@ -85,4 +85,45 @@ describe.skipIf(!haveWeights || !haveGoldens)("quantized KV parity", async () =>
       expect(prefix).toBeGreaterThanOrEqual(MIN_PREFIX);
     }, 240_000);
   }
+
+  test("kv_config.json-driven mixed precision applies per-layer bits", async () => {
+    // The 12B's kv_config assigns kv4 g64 to all 8 full-attention layers
+    // — config-driven generation must land exactly those bits on exactly
+    // those caches (sliding stays bf16 until Phase 9), and the greedy
+    // trajectory must agree with the uniform-kv4 golden (numerically the
+    // same scheme, reached via the kvConfig per-layer lookup path).
+    expect(config.kvQuant).not.toBeNull();
+    const fullIdx = new Set(
+      config.text.layerTypes
+        .map((t, i) => (t === "full_attention" ? i : -1))
+        .filter((i) => i >= 0),
+    );
+
+    const caches = model.makeCache();
+    const gen = generate(model, golden.prompt_ids, {
+      maxTokens: 48, temperature: 0, cache: caches,
+      kvConfig: config.kvQuant!,
+    });
+    const out: number[] = [];
+    for await (const t of gen) out.push(t.token);
+
+    for (let i = 0; i < caches.length; i++) {
+      const c = caches[i]!;
+      if (fullIdx.has(i)) {
+        expect(c).toBeInstanceOf(QuantizedKVCache);
+        const want = config.kvQuant!.find((e) => e.layerIdx === i)!;
+        const qc = c as InstanceType<typeof QuantizedKVCache>;
+        expect(qc.bits).toBe(want.bits);
+        expect(qc.groupSize).toBe(want.groupSize);
+      } else {
+        expect(c).not.toBeInstanceOf(QuantizedKVCache);
+      }
+    }
+    for (const c of caches) c.dispose();
+
+    let prefix = 0;
+    const ref = golden.kv4;
+    while (prefix < ref.length && out[prefix] === ref[prefix]) prefix++;
+    expect(prefix).toBeGreaterThanOrEqual(MIN_PREFIX);
+  }, 240_000);
 });

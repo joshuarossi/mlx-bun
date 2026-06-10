@@ -139,7 +139,19 @@ agent CLIs like pi/OpenClaw via their provider config.
 - **Prompt caching** — a byte-capped LRU KV cache reuses the longest
   common token prefix across requests (multi-turn conversations
   re-prefill only the new turn) — automatic, no client changes.
-- **`GET /v1/models`**, **`GET /stats`** (cache hit rates, bytes).
+  Entries are adapter-specific when LoRA adapters are in play.
+- **LoRA hot-swap** — mount adapters at startup (`--adapter id=dir`)
+  or at runtime (`POST /v1/adapters`), select per request with the
+  `adapter` body field (`"id"`, stacked `"a+b"`, or `"none"`). The
+  base model never reloads; an unselected adapter costs nothing.
+- **Mixed-precision KV** — when the model repo ships `kv_config.json`
+  (every Gemma-4 OptiQ repo does), per-layer KV quantization applies
+  automatically (full-attention layers; sliding layers stay bf16).
+  Measured decode-neutral at 8k on the 12B with KV bytes ÷4 on the
+  quantized layers. `--no-kv-quant` forces bf16; `--kv-bits N` forces
+  uniform bits.
+- **`GET /v1/models`**, **`GET /stats`** (cache hit rates, bytes,
+  active KV scheme), **`GET/POST/DELETE /v1/adapters`**.
 
 ## Library
 

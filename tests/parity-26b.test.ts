@@ -30,7 +30,7 @@ describe.skipIf(!optIn || !haveWeights || !haveGoldens)("26B-A4B MoE greedy deco
 
   const { loadModelConfig } = await import("../src/config");
   const { Weights } = await import("../src/weights");
-  const { Gemma4Model, argmaxLastPosition, lastPositionLogits } =
+  const { Gemma4Model, KVCache, argmaxLastPosition, lastPositionLogits } =
     await import("../src/model/gemma4");
 
   const config = await loadModelConfig(SNAPSHOT_26B);
@@ -64,4 +64,47 @@ describe.skipIf(!optIn || !haveWeights || !haveGoldens)("26B-A4B MoE greedy deco
       for (const c of cache) c.dispose();
     }
   }, 300_000);
+
+  const haveKvMixGolden = await Bun.file("goldens/logits-26b-kvmix.bin").exists();
+  test.skipIf(!haveKvMixGolden)(
+    "mixed-precision KV (kv_config.json): single-forward parity",
+    async () => {
+      // True mixed bits on the 26B: kv8 on full layers 5/11, kv4 on
+      // 17/23 (kv_config.json). Pre-convert like the oracle did
+      // (quantize-then-prefill at offset 0), forward once, compare.
+      // Tier b tolerance: kv4 layers present → ≤1.0 on softcapped
+      // logits (strided-vs-contiguous quantized_matmul rounding,
+      // documented in tests/kv-quant.test.ts). This also exercises the
+      // L>1 prefill-over-quantized-cache path (quantizedSdpa, multi-row).
+      const byLayer = new Map(config.kvQuant!.map((e) => [e.layerIdx, e]));
+      const caches = model.makeCache();
+      try {
+        let applied = 0;
+        for (let i = 0; i < caches.length; i++) {
+          const c = caches[i]!;
+          const e = byLayer.get(i);
+          if (c instanceof KVCache && e) {
+            caches[i] = c.toQuantized(e.groupSize, e.bits);
+            applied++;
+          }
+        }
+        expect(applied).toBe(
+          config.text.layerTypes.filter((t) => t === "full_attention").length,
+        );
+        const logits = model.forward(golden.prompt_ids, caches);
+        const ours = lastPositionLogits(logits);
+        logits.dispose();
+        const ref = new Float32Array(
+          await Bun.file("goldens/logits-26b-kvmix.bin").arrayBuffer(),
+        );
+        let maxDiff = 0;
+        for (let i = 0; i < ref.length; i++)
+          maxDiff = Math.max(maxDiff, Math.abs(ours[i]! - ref[i]!));
+        expect(maxDiff).toBeLessThanOrEqual(1.0);
+      } finally {
+        for (const c of caches) c.dispose();
+      }
+    },
+    300_000,
+  );
 });

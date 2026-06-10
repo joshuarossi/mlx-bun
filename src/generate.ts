@@ -10,6 +10,7 @@ import { MlxArray, gpuStream } from "./mlx/array";
 import { maxRecommendedWorkingSetSize, setWiredLimit, synchronize } from "./mlx/ffi";
 import * as ops from "./mlx/ops";
 import { Gemma4Model, KVCache, type Cache } from "./model/gemma4";
+import type { KvQuantSpec } from "./config";
 import {
   makeLogitsProcessors, makeSampler,
   type LogitsProcessorOptions, type SamplerOptions, toLogprobs,
@@ -34,8 +35,13 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
    *  and upstream rotating-cache quantization is NYI. */
   kvBits?: number;
   kvGroupSize?: number;
-  /** Convert once a cache's offset reaches this (mlx-lm default 5000;
-   *  0 = quantized from the first token). */
+  /** Per-layer mixed-precision KV from kv_config.json (config.kvQuant).
+   *  Overrides kvBits, like optiq serve's --kv-config. layerIdx indexes
+   *  the cache list (== layer index for the donor prefix); entries for
+   *  rotating/sliding caches are skipped until Phase 9. */
+  kvConfig?: KvQuantSpec[];
+  /** Convert once a cache's offset reaches this (uniform-kvBits default
+   *  5000 = mlx-lm; kvConfig default 0 = optiq serve). */
   quantizedKvStart?: number;
   /** Mounted LoRA adapter ids to apply (resolved/validated by
    *  AdapterManager.resolveSpec). Residuals sum in order. Set on the
@@ -44,16 +50,26 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   adapters?: string[];
 }
 
-/** Port of mlx-lm maybe_quantize_kv_cache, restricted to plain KVCache
- *  (full-attention layers) — rotating caches are skipped, not crashed. */
+/** Port of mlx-lm maybe_quantize_kv_cache + optiq serve's per-layer
+ *  patched variant. Restricted to plain KVCache (full-attention layers);
+ *  rotating caches are skipped, not crashed (Phase 9 extends to them).
+ *  kvConfig overrides kvBits, matching optiq's --kv-config precedence. */
 function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void {
-  if (!options.kvBits) return;
-  const start = options.quantizedKvStart ?? 5000;
-  const gs = options.kvGroupSize ?? 64;
+  const { kvBits, kvConfig } = options;
+  if (!kvBits && !kvConfig?.length) return;
+  const start = options.quantizedKvStart ?? (kvConfig?.length ? 0 : 5000);
+  const byLayer = kvConfig?.length
+    ? new Map(kvConfig.map((e) => [e.layerIdx, e]))
+    : null;
   for (let i = 0; i < cache.length; i++) {
     const c = cache[i]!;
-    if (c instanceof KVCache && c.offset >= start)
-      cache[i] = c.toQuantized(gs, options.kvBits);
+    if (!(c instanceof KVCache) || c.offset < start) continue;
+    if (byLayer) {
+      const e = byLayer.get(i);
+      if (e) cache[i] = c.toQuantized(e.groupSize, e.bits);
+    } else {
+      cache[i] = c.toQuantized(options.kvGroupSize ?? 64, kvBits!);
+    }
   }
 }
 

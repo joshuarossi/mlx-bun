@@ -433,33 +433,37 @@ two toy LoRA adapters trained and behaviorally verified
 1. ~~Phase 8 — LoRA hot-swap~~ **DONE 2026-06-10** — all exit gates
    green incl. bit-exact adapter logits vs the mlx-lm oracle; see
    Phase 8. Run its suite with `MLX_BUN_TEST_LORA=1`.
-2. **Mixed-precision KV serving (Josh's #2 — optiq's HEADLINE feature;
-   the drop-in claim fails without it).** Decided 2026-06-10: optiq's
-   pitch is `optiq serve --kv-config kv_config.json` (per-layer bits
-   from a sensitivity-analysis pass, shipped in every Gemma-4 OptiQ
-   repo); our state is kv_config.json PARSED (`src/config.ts` →
-   `config.kvQuant`) but never APPLIED, and `serve` has no kv-quant
-   path at all — every HTTP request runs bf16 KV. Absorbs the old
-   "Phase 6 closeout" item. Work, in order:
-   (a) apply per-layer `{layerIdx, bits, groupSize}` from
-   `config.kvQuant` in `maybeQuantizeKv` (`toQuantized(gs, bits)`
-   already takes per-cache params — small wire-up); uniform `kvBits`
-   stays as the manual override.
-   (b) wire through `serve`: honor kv_config.json by default when
-   present (match optiq: model still loads fine without it → stock
-   bf16), CLI flag to disable/override; `/stats` reports the active
-   KV scheme per layer class.
-   (c) ship best-measured defaults per (model, context); record the
-   decision table in the eval DB/README.
-   (d) parity gate vs `optiq serve --kv-config` on the same config:
-   tier a (bit-exact) on kv8 layers, tier b (≤1 ulp, documented cause)
-   on kv4 layers — the tiers already established in testing strategy.
-   Scope note: full-attention layers only until Phase 9 — sliding/
-   KV-shared layers stay bf16 (optiq's RotatingQuantizedKVCache +
-   its SDPA dispatch patch is Phase 9, the completing half).
-3. **Phase 5 leftovers** (independent, pick-up-anytime): memoryBudget
+2. ~~Mixed-precision KV serving~~ **DONE 2026-06-10** (all four legs):
+   (a) `maybeQuantizeKv` applies per-layer `config.kvQuant` (kvConfig
+   overrides kvBits; start defaults 0 for config mode / 5000 for
+   uniform, matching optiq serve vs mlx-lm); (b) `serve` honors
+   kv_config.json by default, `--no-kv-quant` / `--kv-bits N`
+   override, `/stats` reports `kv_quant.mode` + per-bits layer counts;
+   (c) measured @8k on the 12B (eval DB, 4 paired rows): **KV scheme
+   is decode-neutral within session noise** (bf16 15.5/14.3 repeat,
+   kv4-config 14.4, kv8 14.1 tok/s — ±1 tok/s drift dominates), so
+   the shipped default = kv_config.json (optiq-compat, KV bytes
+   ÷4 on full layers, no measured cost). NOTE: Phase 6's "+21% @8k"
+   kv8 claim did NOT reproduce under this harness — re-measure paired
+   on a cleared machine before citing either number;
+   (d) parity gates green: 12B config-driven generation lands exact
+   per-layer bits + greedy agreement (tests/kv-quant.test.ts, default
+   suite); 26B TRUE-mixed single-forward (kv8 layers 5/11 + kv4
+   17/23/29) vs pre-converted oracle within tier-b
+   (tests/parity-26b.test.ts opt-in; golden regen extended). The L>1
+   prefill-over-quantized-cache path (quantizedSdpa multi-row) is
+   exercised by both the 26B gate and live server prompt-cache reuse.
+   Scope unchanged: full-attention layers only until Phase 9.
+3. **Phase 15 — head-to-head benchmark vs mlx-lm and mlx-optiq**
+   (added 2026-06-10, Josh's ask). Run AFTER item 2 lands so the
+   server-vs-server leg measures our kv-quant defaults, not bf16 KV.
+   See the phase for the matrix; the headline open question it settles:
+   our server-mediated decode has NEVER been measured (the recorded
+   finding is that mlx-lm's server loses ~45% vs direct — 14.1 vs
+   25.7 tok/s; ours is presumed cheap, not proven).
+4. **Phase 5 leftovers** (independent, pick-up-anytime): memoryBudget
    enforcement, downloader, embeddable build. Docs-pass items likewise.
-4. Then Phase 9 (rotating KV-quant — REFRAMED, see its preamble; ALSO
+5. Then Phase 9 (rotating KV-quant — REFRAMED, see its preamble; ALSO
    the second half of item 2: it extends mixed-precision KV to the
    sliding/KV-shared layers, i.e. 40/48 layers on 12B and all of
    e4b's), Phase 10 (fused prefill), 11 (Responses), 12 (SigLIP),
@@ -837,19 +841,41 @@ long-prefill-over-quantized-cache (continuations past
 - **Exit criterion**: long prefill over a quantized cache runs within
   the fit-table's predicted transient; eval-DB row recorded.
 
-## Phase 11 — Responses API surface `[ ]`
+## Phase 11 — Protocol surfaces: Responses API + Anthropic messages `[ ]`
 
-Third protocol (OpenAI Responses + `previous_response_id` resumption).
-Mostly plumbing — chat-completions and the vision/tool surfaces exist.
+Two more protocols beyond chat-completions. Both are plumbing over the
+existing generation/tool/vision surfaces — no new engine work.
+
+**Anthropic `/v1/messages`** (added 2026-06-10 — Josh: this is what
+Claude Code needs as a local backend; verified that optiq ships it
+ON BY DEFAULT in `optiq serve` (`--anthropic/--no-anthropic`,
+default True), so the drop-in claim requires it, upgrading it from
+Phase 4's "shim later if needed"):
+
+- [ ] Protocol translation, both directions + streaming. Oracle:
+      `optiq/anthropic_shim.py` (`anthropic_to_openai_body`,
+      `openai_to_anthropic_response`, `AnthropicStreamTranslator`,
+      369 lines) — ours translates at the request layer instead of
+      monkey-patching a handler (`optiq/anthropic_server.py` exists
+      only because Python has to patch mlx-lm's APIHandler; we own
+      our server). Mind tool_use/tool_result blocks and the
+      Anthropic SSE event grammar (message_start/content_block_delta/
+      message_delta/message_stop).
+- [ ] On by default like the reference; exercised in the integration
+      suite (ephemeral port, streaming + tools round-trip).
+
+**OpenAI Responses** (`previous_response_id` resumption):
 
 - [ ] `/v1/responses` create/stream; map to our generation API.
       Oracle: `optiq/responses_server.py`, `optiq/responses_shim.py`.
 - [ ] Response store with `previous_response_id` resumption — TTL+LRU
       and BYTE-capped like the reference (`optiq/response_store.py`);
       pairs naturally with our PromptCache prefix reuse.
-- **Exit criterion**: an OpenAI-SDK Responses client completes a
+- **Exit criterion**: (a) an OpenAI-SDK Responses client completes a
   multi-turn resumed conversation against `mlx-bun serve`; store
-  eviction observable via /stats.
+  eviction observable via /stats. (b) an Anthropic-SDK client (or
+  Claude Code pointed at the port via ANTHROPIC_BASE_URL) completes a
+  multi-turn streamed conversation with tool use.
 
 ## Phase 12 — SigLIP vision tower `[ ]` (capability — Josh's hold)
 
@@ -906,6 +932,58 @@ two-model speculation measured a net loss.
 - **Exit criterion**: one Qwen text model at tier-a parity + MTP
   speculation measured (acceptance + tok/s in the eval DB), shipped as
   default config only where it wins.
+
+## Phase 15 — Head-to-head benchmark: mlx-bun vs mlx-lm vs mlx-optiq `[ ]`
+
+The publishable comparison (added 2026-06-10). Everything so far
+measures parity per-component; this phase produces one same-day,
+same-machine table across all three stacks. It also settles the two
+claims we currently make on vibes: (a) startup advantage — our 394 ms
+cached-prefix cold start is recorded, but no apples-to-apples Python
+startup number exists; (b) server overhead — mlx-lm's server measured
+−45% vs its own direct decode (14.1 vs 25.7 tok/s, Phase 3 finding);
+OUR server-mediated decode has never been measured.
+
+Matrix: stacks {mlx-bun, mlx-lm, mlx-optiq} × models {e4b, 12B,
+26B-A4B} × legs:
+
+- [ ] **(a) Direct engine**: prefill + decode tok/s, peak memory
+      (mostly exists in the eval DB — consolidate, re-run any number
+      not from a cleared machine on the same day).
+- [ ] **(b) Server-vs-server**: TTFT and streamed decode tok/s through
+      HTTP (same prompts, explicit token ids, measured at the client),
+      peak resident memory while serving, per-request memory growth
+      over a 20-request session. Compare like-for-like: ours vs
+      `mlx_lm.server` vs `optiq serve` (with `--kv-config` once NEXT UP
+      item 2 ships ours). First sub-step needs no Python: our
+      server-vs-our-direct overhead via an ephemeral in-process server
+      (e4b, idle machine) — pins the "our server adds ~nothing" half
+      of the 70%-faster hypothesis.
+- **Decision (Josh, 2026-06-10): do not start ANY of these
+  measurements — including the Python-free server-overhead sub-step —
+  until NEXT UP item 2 (mixed-precision KV serving) has landed.** The
+  whole matrix runs once, against the real serving config.
+- [ ] **(c) Startup**: process start → /v1/models ready; cold start →
+      first token (fresh process, page cache cleared vs warm); our
+      cached-prefix path recorded as its own row (the Python stacks
+      have no KV persistence — capability diff, noted not hidden).
+- [ ] **(d) Long-context @8k**: decode tok/s + memory with each
+      stack's best KV config (ours per kv_config.json; optiq
+      `--kv-config`; mlx-lm stock — its gemma4 kv-quant crashes,
+      recorded finding).
+- [ ] Harness: `scripts/bench-h2h.ts` driving all three over HTTP;
+      results → eval DB (stack column) + a generated markdown table
+      for the README.
+- **Method rules (from prior findings, non-negotiable):** cleared
+  machine (no swap from earlier runs); warm second run for prefill
+  (cold prefill is page-in-dominated); direct-vs-direct and
+  server-vs-server only, never crossed; explicit token ids across
+  stacks (TokenizerWrapper adds 3 tokens); Josh starts the Python
+  servers (standing ground rule — no servers from agent sessions).
+- **Exit criterion**: the full matrix published (README table +
+  eval-DB rows with commit shas), including the previously-unmeasured
+  numbers: our server-mediated decode overhead and a true
+  startup-vs-startup comparison.
 
 ## Cross-cutting (standing items)
 
