@@ -30,7 +30,29 @@ export interface Mask {
   arr: MlxArray | null;
 }
 
-class QuantizedLinear {
+/** Per-adapter LoRA weights for one linear (mlx-lm LoRALinear shapes:
+ *  a [in_features, rank], b [rank, out_features], typically f32). */
+export interface LoraWeights {
+  a: MlxArray;
+  b: MlxArray;
+  scale: number;
+  rank: number;
+}
+
+/** Active-adapter state, shared by every mounted linear of one model.
+ *  A plain field, NOT a ContextVar port: our generation queue is
+ *  serialized, so exactly one request's adapters are active at a time
+ *  (PLAN Phase 8 decision). Set/restored by generate(). */
+export class LoraState {
+  active: string[] = [];
+}
+
+export class QuantizedLinear {
+  /** Mounted adapters keyed by id (null until first mount — fast path). */
+  adapters: Map<string, LoraWeights> | null = null;
+  /** Shared per-model active state (wired by AdapterManager.mount). */
+  loraState: LoraState | null = null;
+
   constructor(
     readonly w: MlxArray,
     readonly scales: MlxArray,
@@ -51,8 +73,39 @@ class QuantizedLinear {
     );
   }
 
+  /** (in_features, out_features) from the quantized tensors (reference
+   *  _infer_linear_shape: scales are [out, in/group_size]). */
+  get inFeatures(): number {
+    return this.scales.shape[1]! * this.spec.groupSize;
+  }
+  get outFeatures(): number {
+    return this.scales.shape[0]!;
+  }
+
   forward(x: MlxArray): MlxArray {
-    return ops.quantizedMatmul(x, this.w, this.scales, this.biases, this.spec, true);
+    let out = ops.quantizedMatmul(x, this.w, this.scales, this.biases, this.spec, true);
+    // LoRA residual — composition is mlx-lm LoRALinear / optiq apply.py:
+    //   y + (scale · ((x @ A) @ B)).astype(x.dtype)
+    // (optiq mount.py omits the astype, leaking the f32 residual into the
+    // bf16 stream — divergence documented in PLAN Phase 8 findings; the
+    // cast form is what the adapters were trained behind.)
+    const st = this.loraState;
+    if (st && st.active.length > 0 && this.adapters && this.adapters.size > 0) {
+      for (const id of st.active) {
+        const lw = this.adapters.get(id);
+        if (!lw) continue;
+        const xa = ops.matmul(x, lw.a);
+        const z = ops.matmul(xa, lw.b);
+        xa.dispose();
+        const zs = ops.mulScalar(z, lw.scale);
+        z.dispose();
+        const zc = zs.astype(x.dtype);
+        zs.dispose();
+        out = disposing(out, ops.add(out, zc));
+        zc.dispose();
+      }
+    }
+    return out;
   }
 }
 
@@ -1112,6 +1165,10 @@ export class Gemma4Model {
   readonly config: ModelConfig;
   /** Total weight-shard bytes (for the conditional wired-limit scope). */
   readonly weightsBytes: number;
+  /** Weight-name prefix ("language_model.model" or "model"). */
+  readonly prefixBase: string;
+  /** Active LoRA adapters for the current generation (see LoraState). */
+  readonly loraState = new LoraState();
   readonly embed: QuantizedEmbedding;
   readonly layers: DecoderLayer[];
   readonly finalNorm: RMSNorm;
@@ -1140,6 +1197,7 @@ export class Gemma4Model {
     // gemma4_unified prefixes weights with language_model.; gemma4_text doesn't
     const prefixBase = weights.has("language_model.model.embed_tokens.weight")
       ? "language_model.model" : "model";
+    this.prefixBase = prefixBase;
     this.embed = QuantizedEmbedding.load(weights, `${prefixBase}.embed_tokens`, config);
 
     this.numDonors = t.numHiddenLayers - t.numKvSharedLayers;
@@ -1182,6 +1240,33 @@ export class Gemma4Model {
       this.perLayerProjectionNorm = null;
       this.perLayerWidth = 0;
     }
+  }
+
+  /** LoRA-mountable linears, keyed by weight-file module path: optiq
+   *  mount.py's 7 target suffixes PLUS the e2b/e4b per-layer-input
+   *  projections — mlx-lm's trainer targets those on e4b and optiq's
+   *  mount silently drops their trained weights (deviation documented in
+   *  PLAN Phase 8 findings; we apply every adapter weight we can map).
+   *  Expert pools stay non-targets (LoRASwitchLinear is future work). */
+  loraTargets(): Map<string, QuantizedLinear> {
+    const out = new Map<string, QuantizedLinear>();
+    for (let i = 0; i < this.layers.length; i++) {
+      const l = this.layers[i]!;
+      const p = `${this.prefixBase}.layers.${i}`;
+      const add = (suffix: string, lin: QuantizedLinear | null) => {
+        if (lin) out.set(`${p}.${suffix}`, lin);
+      };
+      add("self_attn.q_proj", l.attn.qProj);
+      add("self_attn.k_proj", l.attn.kProj);
+      add("self_attn.v_proj", l.attn.vProj);
+      add("self_attn.o_proj", l.attn.oProj);
+      add("mlp.gate_proj", l.mlp.gate);
+      add("mlp.up_proj", l.mlp.up);
+      add("mlp.down_proj", l.mlp.down);
+      add("per_layer_input_gate", l.perLayerGate);
+      add("per_layer_projection", l.perLayerProjection);
+    }
+    return out;
   }
 
   /** Caches for donor layers only (sharers consume donors' fetched KV). */
