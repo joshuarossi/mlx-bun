@@ -154,6 +154,23 @@ describe("dispatch gate", () => {
     disposeInputs(inp);
   });
 
+  test("MLX_BUN_FUSED_DECODE=1 tiles L=1 decode", () => {
+    const c: Case = { name: "", KV: 2, nRep: 4, L: 1, N: 600, D: 64, group: 64, bits: 8 };
+    const inp = makeInputs(c, 43);
+    const noMask: Mask = { mode: "", arr: null };
+    process.env.MLX_BUN_FUSED_DECODE = "1";
+    try {
+      const got = quantizedSdpa(inp.q, inp.kq, inp.vq, 1.0, noMask, c.group, c.bits);
+      const want = quantizedSdpaTiled(inp.q, inp.kq, inp.vq, 1.0, noMask, c.group, c.bits);
+      expect(maxAbsDiff(got.toFloat32(), want.toFloat32())).toBe(0);
+      got.dispose();
+      want.dispose();
+    } finally {
+      delete process.env.MLX_BUN_FUSED_DECODE;
+    }
+    disposeInputs(inp);
+  });
+
   test("L>1 causal goes through the tiled path", () => {
     const c = CASES[1]!;
     const inp = makeInputs(c, 41);
@@ -177,6 +194,8 @@ interface GoldenCase {
   group_size: number;
   bits: number;
   scale: number;
+  /** "causal" or "" (the oracle's mask=None — decode case). */
+  mask: string;
   n_chunk: number;
   q: GoldenTensor;
   k: GoldenTensor;
@@ -206,7 +225,8 @@ describe.skipIf(!haveGoldens)("fused quantized SDPA vs optiq oracle (tier a)", a
       const vq = ops.quantize(v, g.group_size, g.bits);
       k.dispose();
       v.dispose();
-      const out = quantizedSdpaTiled(q, kq, vq, g.scale, CAUSAL, g.group_size, g.bits);
+      const mask: Mask = { mode: g.mask as Mask["mode"], arr: null };
+      const out = quantizedSdpaTiled(q, kq, vq, g.scale, mask, g.group_size, g.bits);
       expect(out.shape).toEqual(g.out.shape);
       expect(maxAbsDiff(out.toFloat32(), load(g.out))).toBe(0);
       out.dispose();

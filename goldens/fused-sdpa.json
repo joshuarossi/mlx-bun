@@ -5,6 +5,7 @@
    "group_size": 64,
    "bits": 8,
    "scale": 0.125,
+   "mask": "causal",
    "n_chunk": 512,
    "q": {
     "offset": 0,
@@ -48,6 +49,7 @@
    "group_size": 64,
    "bits": 4,
    "scale": 1,
+   "mask": "causal",
    "n_chunk": 512,
    "q": {
     "offset": 213120,
@@ -91,6 +93,7 @@
    "group_size": 32,
    "bits": 8,
    "scale": 0.125,
+   "mask": "causal",
    "n_chunk": 512,
    "q": {
     "offset": 426240,
@@ -125,6 +128,50 @@
      1,
      4,
      700,
+     64
+    ]
+   }
+  },
+  {
+   "name": "kv8-decode",
+   "group_size": 64,
+   "bits": 8,
+   "scale": 1,
+   "mask": "",
+   "n_chunk": 512,
+   "q": {
+    "offset": 963840,
+    "shape": [
+     1,
+     4,
+     1,
+     64
+    ]
+   },
+   "k": {
+    "offset": 964096,
+    "shape": [
+     1,
+     1,
+     1153,
+     64
+    ]
+   },
+   "v": {
+    "offset": 1037888,
+    "shape": [
+     1,
+     1,
+     1153,
+     64
+    ]
+   },
+   "out": {
+    "offset": 1111680,
+    "shape": [
+     1,
+     4,
+     1,
      64
     ]
    }

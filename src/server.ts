@@ -16,6 +16,8 @@ import { loadTokenizer, type LoadedTokenizer } from "./tokenizer";
 import { parseToolCalls, TOOL_CALL_END, TOOL_CALL_START } from "./tool-call";
 import { PromptCache } from "./prompt-cache";
 import { AdapterManager } from "./lora";
+import { fit } from "./fit";
+import { setMemoryLimit } from "./mlx/ffi";
 import { VisionTower } from "./vision/embedder";
 import {
   buildVisionPrompt, extractImages, type VisionTokenIds,
@@ -28,6 +30,15 @@ export interface ServerOptions {
    *  (mixed per-layer). "off" forces bf16; a number forces uniform bits
    *  (group size 64, start 0) ignoring the config file. */
   kvQuant?: "off" | number;
+  /** Memory budget for the serving process (admission control — Phase 5).
+   *  Requests whose prompt + max_tokens exceed the budget's max safe
+   *  context are rejected with 400 instead of crashing the GPU: the OOM
+   *  crash class is UNCATCHABLE (Phase 6 — mlx throws from a Metal
+   *  completion handler ⇒ std::terminate; optiq serve died exactly this
+   *  way loading the 26B). Also caps the mlx allocator
+   *  (mlx_set_memory_limit) as defense in depth. Default: machine RAM ×
+   *  WIRED_FRACTION, admission check only, allocator untouched. */
+  memoryBudgetBytes?: number;
 }
 
 export interface ServerContext {
@@ -44,9 +55,27 @@ export interface ServerContext {
   kvConfig: KvQuantSpec[] | null;
 }
 
-export async function loadContext(modelDir: string, modelId?: string): Promise<ServerContext> {
+export async function loadContext(
+  modelDir: string, modelId?: string,
+  opts: { memoryBudgetBytes?: number } = {},
+): Promise<ServerContext> {
   const config = await loadModelConfig(modelDir);
   const weights = await Weights.open(modelDir);
+  // memoryBudget enforcement at load (Phase 5): Weights.open only mmaps
+  // (no GPU allocation yet), so a model whose weights can never serve
+  // within the budget is refused HERE — before any unified-memory
+  // commitment — with an actionable error instead of a Metal OOM later.
+  if (opts.memoryBudgetBytes) {
+    const weightsBytes = [...weights.shards.files.values()]
+      .reduce((a, f) => a + f.mmap.size, 0);
+    const report = fit(config, weightsBytes, 1, undefined, undefined, 0, opts.memoryBudgetBytes);
+    if (report.maxSafeContext < 1)
+      throw new Error(
+        `model does not fit the memory budget: weights ${(weightsBytes / 1e9).toFixed(2)} GB ` +
+        `+ prefill transient leave no room for any context within ` +
+        `${(opts.memoryBudgetBytes / 1e9).toFixed(2)} GB`,
+      );
+  }
   const model = new Gemma4Model(weights, config);
   return {
     model,
@@ -259,6 +288,22 @@ export function createServer(
     }
   };
 
+  // Admission ceiling, resolved once (Phase 5 memoryBudget enforcement).
+  // fit() solves max safe context from weights + KV growth + prefill
+  // transient; the KV term assumes bf16 (a kv-quant scheme stretches the
+  // real ceiling, never shrinks it — admission stays conservative).
+  const admission = fit(
+    ctx.model.config, ctx.model.weightsBytes, 1,
+    undefined, undefined, 0, serverOptions.memoryBudgetBytes,
+  );
+  if (admission.maxSafeContext < 1)
+    throw new Error(
+      `memory budget ${(admission.usableBytes / 1e9).toFixed(2)} GB cannot serve ` +
+      `${ctx.modelId} (weights ${(ctx.model.weightsBytes / 1e9).toFixed(2)} GB): ` +
+      `no context fits — raise the budget or pick a smaller model`,
+    );
+  if (serverOptions.memoryBudgetBytes) setMemoryLimit(serverOptions.memoryBudgetBytes);
+
   // KV-quant scheme, resolved once: kv_config.json by default (optiq
   // serve's headline behavior), overridable to uniform bits or off.
   const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart"> =
@@ -319,6 +364,12 @@ export function createServer(
           kv_quant: {
             mode: kvMode,
             layers: { ...kvLayers, bf16: bf16Layers },
+          },
+          admission: {
+            max_safe_context: admission.maxSafeContext,
+            memory_budget_bytes: serverOptions.memoryBudgetBytes ?? null,
+            usable_bytes: admission.usableBytes,
+            weights_bytes: ctx.model.weightsBytes,
           },
         });
       }
@@ -411,6 +462,28 @@ export function createServer(
           );
         }
         const options = toOptions(body);
+        // Admission: reject what cannot finish within the memory budget
+        // (the GPU OOM it would otherwise hit is uncatchable and kills
+        // the process — Phase 6 finding).
+        const requiredCtx = promptIds.length + (options.maxTokens ?? 1024);
+        if (requiredCtx > admission.maxSafeContext) {
+          vision?.embeddings.dispose();
+          vision?.imageMask.dispose();
+          return Response.json(
+            {
+              error: {
+                message:
+                  `request needs ${requiredCtx} tokens of context ` +
+                  `(prompt ${promptIds.length} + max_tokens ${options.maxTokens}) but the ` +
+                  `memory budget caps safe context at ${admission.maxSafeContext} — ` +
+                  `shorten the prompt or lower max_tokens`,
+                type: "memory_admission",
+                code: "context_over_budget",
+              },
+            },
+            { status: 400 },
+          );
+        }
         try {
           const adapterIds = ctx.adapters.resolveSpec(body.adapter);
           if (adapterIds.length) options.adapters = adapterIds;

@@ -103,8 +103,12 @@ export function fit(
   /** Bytes of `.experts.` tensors (registry). MoE decode reads only
    *  top_k/num_experts of them per token; residency still needs all. */
   expertsBytes = 0,
+  /** Explicit memory budget in bytes (admission control). When set it
+   *  replaces the machine-derived usable ceiling (ram × WIRED_FRACTION)
+   *  outright — the budget IS the usable envelope. */
+  usableBytes?: number,
 ): FitReport {
-  const usable = machine.ramBytes * WIRED_FRACTION;
+  const usable = usableBytes ?? machine.ramBytes * WIRED_FRACTION;
   const transient = Math.min(chunk, ctx) * TRANSIENT_PER_TOKEN;
   const kv = kvBytesAt(config, ctx);
   const total = weightsBytes + kv + transient;

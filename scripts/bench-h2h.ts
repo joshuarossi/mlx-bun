@@ -65,6 +65,17 @@ const commit = gitCommit();
  *  so holes in the matrix are self-documenting (vs "not in the matrix"). */
 const failures: { cell: string; error: string }[] = [];
 
+/** Footer line for a failed cell. Harness errors wrap child output
+ *  after our context line ("bench.ts failed for <cell>:\n<stderr
+ *  tail>"), so the LAST non-empty line is the child's actual error —
+ *  e.g. python's exception line — not our wrapper (the Phase 15
+ *  full-matrix harness nit). Single-line errors are their own last
+ *  line, so this is a strict improvement. */
+function failureLine(msg: string): string {
+  const lines = msg.split("\n").map((l) => l.trim()).filter(Boolean);
+  return (lines[lines.length - 1] ?? msg).slice(0, 160);
+}
+
 // --- preflight ------------------------------------------------------------
 
 function preflight(hard: boolean): string {
@@ -181,7 +192,7 @@ async function directLeg(
         agg.delete(key);
         const msg = (e as Error).message;
         console.error(`  [FAIL] ${key}: ${msg}`);
-        failures.push({ cell: `${key}${ctxTag}`, error: msg.split("\n")[0]!.slice(0, 160) });
+        failures.push({ cell: `${key}${ctxTag}`, error: failureLine(msg) });
         continue;
       }
       if (r === 0) {
@@ -647,9 +658,9 @@ if (cmd === "all") {
       try {
         await serverLeg(c, serverRuns, 128, machineState);
       } catch (e) {
-        const first = (e as Error).message.split("\n")[0]!;
-        console.error(`  ${serverKey(c)}: ${first} — cell skipped`);
-        failures.push({ cell: serverKey(c), error: first.slice(0, 160) });
+        const line = failureLine((e as Error).message);
+        console.error(`  ${serverKey(c)}: ${line} — cell skipped`);
+        failures.push({ cell: serverKey(c), error: line });
       }
       recheck(serverKey(c));
     }

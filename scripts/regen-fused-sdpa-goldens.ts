@@ -22,13 +22,16 @@ import json, struct, sys
 import mlx.core as mx
 from optiq.runtime import fused_quant_sdpa as fqs
 
-# (name, B, KV, n_rep, L, N, D, group_size, bits, scale, seed)
+# (name, B, KV, n_rep, L, N, D, group_size, bits, scale, mask, seed)
 # N > 2*512 exercises multi-tile + a partial final tile; N > L is a
 # continuation (offset = N - L > 0), the scenario this path exists for.
+# kv8-decode is L=1 with mask=None — the MLX_BUN_FUSED_DECODE
+# experiment's shape (optiq's wrapper tiles decode; no L gate there).
 CASES = [
-    ("kv8", 1, 1, 4, 128, 1153, 64, 64, 8, 0.125, 7),
-    ("kv4", 1, 1, 4, 128, 1153, 64, 64, 4, 1.0, 11),
-    ("kv8-fullprefill", 1, 2, 2, 700, 700, 64, 32, 8, 0.125, 13),
+    ("kv8", 1, 1, 4, 128, 1153, 64, 64, 8, 0.125, "causal", 7),
+    ("kv4", 1, 1, 4, 128, 1153, 64, 64, 4, 1.0, "causal", 11),
+    ("kv8-fullprefill", 1, 2, 2, 700, 700, 64, 32, 8, 0.125, "causal", 13),
+    ("kv8-decode", 1, 1, 4, 1, 1153, 64, 64, 8, 1.0, None, 17),
 ]
 
 manifest = {"cases": []}
@@ -43,7 +46,7 @@ def put(arr):
     blob.extend(data)
     return {"offset": off, "shape": list(arr.shape)}
 
-for (name, B, KV, n_rep, L, N, D, group, bits, scale, seed) in CASES:
+for (name, B, KV, n_rep, L, N, D, group, bits, scale, mask, seed) in CASES:
     mx.random.seed(seed)
     H = KV * n_rep
     q = mx.random.normal((B, H, L, D)).astype(mx.bfloat16)
@@ -51,10 +54,10 @@ for (name, B, KV, n_rep, L, N, D, group, bits, scale, seed) in CASES:
     v = mx.random.normal((B, KV, N, D)).astype(mx.bfloat16)
     qk = mx.quantize(k, group_size=group, bits=bits)
     qv = mx.quantize(v, group_size=group, bits=bits)
-    out = fqs._prefill_flashattn_n_tiled(q, qk, qv, scale, "causal", group, bits)
+    out = fqs._prefill_flashattn_n_tiled(q, qk, qv, scale, mask, group, bits)
     manifest["cases"].append({
         "name": name, "group_size": group, "bits": bits, "scale": scale,
-        "n_chunk": fqs._N_CHUNK,
+        "mask": mask or "", "n_chunk": fqs._N_CHUNK,
         "q": put(q), "k": put(k), "v": put(v), "out": put(out),
     })
 
