@@ -21,13 +21,32 @@ import mlx.core as mx
 from optiq.mlx_lm_patches._register import register
 register()
 from mlx_lm import load
-from mlx_lm.models.cache import make_prompt_cache
+from mlx_lm.models.cache import make_prompt_cache, KVCache
 
 snap, user_msg, max_tokens, logit_steps = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 model, tokenizer = load(snap)
 ids = tokenizer.apply_chat_template(
     [{"role": "user", "content": user_msg}], add_generation_prompt=True
 )
+
+# Mixed-precision KV single-forward golden: pre-convert full-attention
+# caches per kv_config.json (manual conversion — upstream's
+# maybe_quantize_kv_cache crashes on gemma4's RotatingKVCache; Phase 6
+# finding). Sliding caches stay bf16, matching our Phase-9 scope.
+kv_cfg = {e["layer_idx"]: e for e in json.load(open(snap + "/kv_config.json"))}
+mixed_cache = make_prompt_cache(model)
+mixed_applied = {}
+for i, c in enumerate(mixed_cache):
+    if isinstance(c, KVCache) and i in kv_cfg:
+        e = kv_cfg[i]
+        mixed_cache[i] = c.to_quantized(group_size=e.get("group_size", 64), bits=e["bits"])
+        mixed_applied[i] = e["bits"]
+logits = model(mx.array([ids]), cache=mixed_cache)
+last = logits[0, -1, :].astype(mx.float32)
+mx.eval(last)
+with open("goldens/logits-26b-kvmix.bin", "wb") as f:
+    f.write(bytes(memoryview(last)))
+del mixed_cache
 
 cache = make_prompt_cache(model)
 greedy = []
@@ -52,6 +71,7 @@ out = {
     "logit_steps": logit_steps,
     "vocab_size": int(last.shape[0]),
     "text": tokenizer.decode(greedy),
+    "kv_mixed_layers": {str(k): v for k, v in mixed_applied.items()},
 }
 print(json.dumps(out))
 `;
