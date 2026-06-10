@@ -5,8 +5,13 @@ on until it's met. Status markers: `[ ]` todo, `[~]` in progress, `[x]` done.
 
 ## Design principles
 
-- **Logit parity is the oracle.** mlx-lm with the same weights is the
-  reference implementation. Any divergence is a bug until proven a fix.
+- **Logit parity is the oracle; optiq-equivalence is the ceiling.**
+  Every OptiQ model runs on stock mlx-lm — that shared subset is the
+  FLOOR, and mlx-lm is its bit-exact oracle (any divergence is a bug
+  until proven a fix). optiq's added behaviors (LoRA hot-swap, rotating
+  KV-quant, fused prefill, MTP, Responses API, SigLIP, TurboQuant) are
+  the SUPERSET we are climbing toward; for those, the optiq source in
+  the venv is the reference and parity contracts are stated per phase.
 - **The GPU sets the speed; we delete overhead around it.** Decode is
   memory-bandwidth-bound (~273 GB/s on the target M4 Pro ÷ bytes-of-weights
   = ceiling). Wins come from: fewer bytes per token (quantization, MoE),
@@ -447,11 +452,32 @@ Ordered by expected payoff on this hardware:
       N-tiled FlashAttention prefill port (fused_quant_sdpa) is still
       TODO — only needed for long-prefill-over-quantized-cache
       (continuations past quantizedKvStart); stock path covers serving.
-- [ ] **MoE support** (one family): **BLOCKED on an MoE model download
-      (Josh's call).** `mlx_gather_qmm` binding confirmed available.
-- **Exit criterion:** ≥2x effective tok/s over Phase 3 baseline on the
-  standard eval prompts, recorded in the eval DB. **Not yet met — needs
-  speculative decoding (drafter download).**
+- [~] **MoE support — gemma-4-26B-A4B (in progress).** New code is the
+      top-k expert router + `mlx_gather_qmm` (binding confirmed Phase 0);
+      everything else reuses the gemma4 graph (Router/Experts/SwitchGLU
+      paths in the reference gemma4_text.py we already read). Oracle:
+      mlx-lm's MoE/gather_qmm path + optiq patches. Parity contract
+      (tier d): bit-exact single-forward logits; explicit gate tie-break
+      handling (bf16 knife-edge in routing); verify expert ordering and
+      top-k weight normalization (softmax-then-per-expert-scale order)
+      match the reference. **Fit-query FIRST**: ~16.8 GB weights +
+      sidecar vs ~18 GB wired ceiling is tight on 24 GB — text-only
+      bring-up; expect a reduced-max-context fit-table row; characterize,
+      don't assume. Correctness work is unconstrained (single forward at
+      trivial context); throughput/context benchmarks need a cleared
+      machine + fresh process (Phase 5 memory-pressure finding).
+      **Josh: 26B-A4B download.** Coupling: useful-context serving on
+      24 GB depends on Phase 9 (rotating KV-quant) — see there.
+- **Exit criterion (REFRAMED 2026-06-10):** the speed/memory levers
+  (quantized KV, speculation, MoE, fused prefill) are each
+  CHARACTERIZED with measured numbers in the eval DB, and the
+  best-performing configuration per (model, context) is shipped as the
+  default. The original "≥2x over Phase 3 baseline" was workload- and
+  model-dependent in ways the spec-decode result disproved (a net loss
+  on a fast small model; MoE's win is capability-per-byte, not a raw
+  multiple on the same model). The 12B's 25.7 tok/s is the wrong
+  denominator for any other model's numbers — compare same-model,
+  same-context only.
 
 ### Phase 6 findings (2026-06-10, spec-decode session)
 
@@ -557,6 +583,164 @@ Only after profiling shows where bytes move unnecessarily.
 - [ ] Write up findings either way — negative results count; this phase
       is the "research project" part.
 
+
+## Phase 8 — Hot-swap mounted LoRA adapters `[ ]`
+
+Josh's #1 priority. Mount N adapters on one quantized base, select per
+request by id, never reload the base. Independent of the MoE download —
+can run in parallel with Phase 6 completion.
+
+- [ ] **Mount/registry layer**: load adapter safetensors, register by id,
+      list/unmount. Oracle: `optiq/adapters/{mount,registry,resolver}.py`.
+- [ ] **Compatibility validation at mount** (read `resolver.py`):
+      adapter-vs-base layer-name/rank/shape match, fail with a clear
+      error before any request can select a bad adapter.
+- [ ] **Apply layer**: LoRA delta over the QUANTIZED base without
+      unpacking it — `quantized_matmul(x, W_q) + scale·(B @ (A @ x))`;
+      the base path stays byte-identical to today. Oracle:
+      `optiq/lora/apply.py`, `optiq/lora/config.py` (`merge.py` exists
+      for offline merging — out of scope for hot-swap).
+- [ ] **Per-request selection**: adapter id on the request → field on
+      the in-flight generation. **Do NOT port the ContextVar** — it
+      solves Python's concurrent-request isolation; our serialized
+      single-queue event loop makes the active adapter a plain field,
+      simpler than the reference.
+- [ ] **Switch correctness**: A→B→A test — each result identical to
+      that adapter run in isolation; prompt-cache interaction defined
+      (cache entries are adapter-specific: key by adapter id).
+- **Parity contract**: (1) the FREE gate first — adapter mounted at
+  scale=0 must be byte-identical to no adapter (tier a, toBe(0));
+  (2) adapter-applied logits vs the optiq reference applying the same
+  adapter (tier a on the shared kernels).
+- **Exit criterion**: two adapters mounted on the e4b base; per-request
+  selection over HTTP; scale=0 byte-identity; A→B→A isolation test
+  green; base-path parity suite untouched. **Josh: pick/provide two
+  test adapters** (or train toy ranks against e4b).
+
+## Phase 9 — Rotating-cache KV quantization `[ ]`
+
+The unmatched half of KV-quant — currently 40 of 48 Gemma-4 12B layers
+(and ALL e4b sliding layers) keep bf16 KV; "NYI upstream too" hides
+that optiq CAN do it. **Effectively a co-requisite of Phase 6's MoE
+being usable**: the 26B-A4B fits its weights on 24 GB but the
+unquantized sliding-layer KV is what breaks long-context fit.
+
+- [ ] Read `optiq/runtime/kv/rotating.py` (oracle) AND its SDPA
+      dispatch patch for Gemma-4's KV-sharing layers BEFORE estimating —
+      quantize-into/evict-from a ring buffer; dequant-on-read interacts
+      with wrap-around; harder than the full-attention quant.
+- [ ] Port: QuantizedRotatingKVCache + dispatch in Attention (donor
+      AND sharer paths — sharers consume the quantized triples).
+- [ ] Trim/rollback semantics under quantization (spec decode and
+      prompt-cache trim both depend on `isTrimmable`).
+- [ ] Re-run the long-context decode + memory benchmarks (8k/32k rows
+      in the eval DB; fit-table updated with quantized sliding term).
+- **Parity contract**: kv8-rotating bit-exact (tier a), kv4-rotating
+  bounded-tolerance (tier b) — same tiering as full-attention quant.
+- **Exit criterion**: 26B-A4B (or 12B as fallback) serves at a
+  measured, materially larger max context on 24 GB with rotating
+  KV-quant on; numbers in the eval DB and the fit table.
+
+## Phase 10 — fused_quant_sdpa N-tiled FlashAttention prefill `[ ]`
+
+Already a TODO from the kv-quant phase. Needed for
+long-prefill-over-quantized-cache (continuations past
+`quantizedKvStart`, prompt-cache reuse on quantized entries).
+
+- [ ] Port the FlashAttention-2 N-tiled loop (online softmax over
+      `quantized_matmul` tiles). Oracle:
+      `optiq/runtime/fused_quant_sdpa.py`. It is op-level orchestration,
+      ~line-for-line portable — NOT a custom kernel.
+- [ ] Wire as the L>1-over-quantized-cache path; stock paths untouched.
+- **Parity contract**: tier a vs the unfused quantized path at sizes
+  where both run; memory: reproduce the reference's bounded-transient
+  claim (measure peak at 2048-chunk prefill over an 8k quantized cache).
+- **Exit criterion**: long prefill over a quantized cache runs within
+  the fit-table's predicted transient; eval-DB row recorded.
+
+## Phase 11 — Responses API surface `[ ]`
+
+Third protocol (OpenAI Responses + `previous_response_id` resumption).
+Mostly plumbing — chat-completions and the vision/tool surfaces exist.
+
+- [ ] `/v1/responses` create/stream; map to our generation API.
+      Oracle: `optiq/responses_server.py`, `optiq/responses_shim.py`.
+- [ ] Response store with `previous_response_id` resumption — TTL+LRU
+      and BYTE-capped like the reference (`optiq/response_store.py`);
+      pairs naturally with our PromptCache prefix reuse.
+- **Exit criterion**: an OpenAI-SDK Responses client completes a
+  multi-turn resumed conversation against `mlx-bun serve`; store
+  eviction observable via /stats.
+
+## Phase 12 — SigLIP vision tower `[ ]` (capability — Josh's hold)
+
+Lights up e2b/e4b/26B-A4B/31B image input. The 12B unified
+(encoder-free) path is done — it was the hard case. **Do after
+optimizations / only if needed**: nothing above depends on it.
+
+- [ ] Port the SigLIP encoder + frontend. Oracle:
+      `optiq/vlm/gemma4/{vision,frontend,image_processing}.py`. Mind
+      the gemma4_text embed_scale pre-division detail (vision features
+      pre-divided; the model re-multiplies — same as the unified path).
+- [ ] Keep the existing pure-JS decode + PIL-port resize approach;
+      resize-free fixtures are bit-exact, the resample impurity stays
+      documented.
+- **Exit criterion**: e4b answers an image question end-to-end;
+  resize-free fixture parity vs the optiq stack (tier a on ids +
+  greedy prefix, as the 12B vision suite does).
+
+## Phase 13 — TurboQuant `[ ]` (research path — lowest priority)
+
+Rotation-based vector quantization. Oracle:
+`optiq/runtime/mtp/turboquant.py`. Quality-critical-workload niche even
+per optiq; hardest math, lowest daily value. **Sequence last; it is
+legitimate to never ship this.** Exit criterion (if attempted):
+reproduce the reference's quality-vs-bpw curve on one model; otherwise
+record a decision not to.
+
+## Phase 14 — Qwen 3.x family bring-up `[ ]` (the MTP home)
+
+Second model family (always in scope per design principles). This is
+where MTP speculation actually works: Qwen quants bundle the MTP head
+(`mtp.safetensors`), and optiq's MTP runtime has a `qwen3_next` backend
+("verified-native") — unlike Gemma, which has no MTP head and where
+two-model speculation measured a net loss.
+
+- [ ] **(a) Model graph**: port qwen3_5_text / qwen3_6 (new
+      architecture, chat template, tokenizer; registered via optiq's
+      MODEL_REMAPPING — see `optiq/mlx_lm_patches/qwen3_5_text.py`).
+      Fresh tier-a bit-exact parity from scratch. **Josh: pick + download
+      the first Qwen quant** (2B/4B class first).
+- [ ] **(b) MTP speculation**: oracle `optiq/runtime/mtp/` — start with
+      `trace_parity.py` (their parity harness encodes the load-bearing
+      invariants), then the `qwen3_next` backend. Parity: greedy-MTP
+      token-identical to greedy-non-MTP by construction, gated per
+      testing-strategy tier c.
+- [ ] **(c) Measure where it pays**: small Qwen3.5 quants (2B/4B) are a
+      different size regime from the e4b result — measure, don't assume,
+      either direction.
+- [ ] **(d) Qwen3-VL vision**: third vision architecture — defer with
+      SigLIP (Phase 12 bucket).
+- [ ] 35B-A3B (MTP + MoE in one model) does NOT fit on 24 GB:
+      characterize as a fit-table row only; **runs on larger hardware
+      (Josh's machine choice)**.
+- **Exit criterion**: one Qwen text model at tier-a parity + MTP
+  speculation measured (acceptance + tok/s in the eval DB), shipped as
+  default config only where it wins.
+
+## Cross-cutting (standing items)
+
+- **Registry**: per-model LICENSE column (Gemma custom terms vs Qwen
+  Apache-2.0 vs MiniCPM Apache-2.0); bf16 vision-sidecar size recorded
+  SEPARATELY from the quantized-language term.
+- **Fit table**: the vision sidecar is its own line item (bf16, loads
+  only for vision requests), never folded into language weights.
+- **License headers**: every ported file carries upstream source +
+  license (audit item from the docs pass).
+- **Bun upgrade gate**: the bun#32054 regression test + the FFI soak
+  (tests/ffi-jit.test.ts) must pass on Bun canary before any version
+  bump; canary CI is the standing Phase 0 risk control.
+
 ## Testing strategy
 
 `bun test` (built-in, Jest-compatible) — no vitest; one toolchain.
@@ -565,11 +749,25 @@ Only after profiling shows where bytes move unnecessarily.
   metadata, chat-template formatting, registry queries. Fixture-driven.
 - **Golden-file oracle (the real safety net):** a regen script runs the
   Python reference (`/Users/joshrossi/Code/mlx-lm/.venv/bin/python`) and
-  dumps goldens: tokenizer round-trips, per-step logits on fixed prompts,
-  greedy token sequences. Tests compare within fp tolerance (logits
-  max-abs-diff bound + argmax-identical for greedy) — never bit-exact;
-  GPU reduction order legitimately varies. Regenerating goldens is an
-  explicit command, never automatic.
+  dumps goldens. Regenerating goldens is an explicit command, never
+  automatic. The parity bar is TIERED (evolved over phases 2–6, replacing
+  the original "never bit-exact" assumption, which five phases of
+  findings disproved):
+  - **(a) Bit-exact `toBe(0)`** single-forward logits from identical
+    state: stock decode and kv8 paths. This is achievable and held.
+  - **(b) Bounded tolerance** for kv4: ≤1 bf16 ulp at the first
+    divergent layer (≤1.0 on softcapped logits) — 4-bit quantized_matmul
+    rounds differently for strided-vs-contiguous inputs; cause
+    documented in tests/kv-quant.test.ts.
+  - **(c) Speculation:** exact equality on tie-free prompts; on
+    knife-edge prompts, long-prefix agreement + accept/reject trace
+    equality vs the reference (whose own spec path diverges from its
+    own incremental loop — proven).
+  - **(d) Router/MoE:** bit-exact single-forward logits with explicit
+    gate tie-break handling (bf16 knife-edges in routing).
+  **Whole-trajectory equality is never the bar**: greedy trajectories
+  are loop-shape-sensitive past bf16 ties — proven within mlx-lm
+  (pipelined vs unpipelined) and within optiq's own spec path.
 - **FFI/memory:** alloc-dispose loops asserting wired memory returns to
   baseline (leak detection as a test). GPU suites run serially.
 - **Integration:** server on an ephemeral port inside the test process
