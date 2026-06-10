@@ -414,23 +414,64 @@ go through `read.u64`/`read.u32`; toArrayBuffer readbacks documented
 safe; `tests/ffi-jit.test.ts` pins the paths past DFG tier-up.
 75/75 tests, no perf regression (23.6 tok/s bench).
 
-## Phase 6 — Speed: change what gets computed `[ ]`
+## Phase 6 — Speed: change what gets computed `[~]`
 
 Ordered by expected payoff on this hardware:
 
 - [ ] **Speculative decoding** with a small drafter (gemma-4-E2B-assistant
       pattern): draft k, verify in one parallel pass. Measure acceptance
       on our real agent transcripts; expected 1.5–2.5x decode.
-- [ ] **Fused sampling**: logits → sampled token on-GPU; never round-trip
-      the 262k-vocab tensor to JS per token.
-- [ ] **Quantized KV cache** with FlashAttention-style N-tiled SDPA (port
-      optiq's fused_quant_sdpa orchestration — it's op-level, not a custom
-      kernel; ~line-for-line portable).
-- [ ] **MoE support** (one family): the bandwidth cheat — 26B-A4B-class
-      models decode like small models. Likely the single biggest
-      capability-per-tok/s win on 24 GB.
+      **BLOCKED on a drafter model download (multi-GB — Josh's call;
+      suggest a gemma-4 ~2B 4-bit quant in the same tokenizer family).**
+- [x] **Fused sampling** — already satisfied by the Phase 3 design:
+      sampling (temp/top-p/top-k/penalties) runs entirely on-GPU; only
+      the chosen token id (one uint32) crosses to JS per step; the
+      pipelined loop feeds the un-read token array into the next graph.
+      No vocab-tensor round-trip exists to eliminate.
+- [x] **Quantized KV cache** (`QuantizedKVCache` + `quantizedSdpa` ports
+      of mlx-lm cache.py/base.py; `generate({kvBits, kvGroupSize,
+      quantizedKvStart})`). Full-attention layers only — rotating-cache
+      quantization is NYI upstream too, and sliding layers are
+      window-capped. **Measured @8k ctx: full-layer KV 134→71 MB AND
+      decode 18.5→22.4 tok/s (+21%)**, identical output text. The
+      N-tiled FlashAttention prefill port (fused_quant_sdpa) is still
+      TODO — only needed for long-prefill-over-quantized-cache
+      (continuations past quantizedKvStart); stock path covers serving.
+- [ ] **MoE support** (one family): **BLOCKED on an MoE model download
+      (Josh's call).** `mlx_gather_qmm` binding confirmed available.
 - **Exit criterion:** ≥2x effective tok/s over Phase 3 baseline on the
-  standard eval prompts, recorded in the eval DB.
+  standard eval prompts, recorded in the eval DB. **Not yet met — needs
+  speculative decoding (drafter download).**
+
+### Phase 6 findings (2026-06-10)
+
+- **Greedy trajectories are loop-shape-sensitive, even within mlx-lm**:
+  its pipelined stream_generate, an unpipelined manual loop, and our
+  pipelined loop produce three different (all-coherent) continuations of
+  the same prompt past bf16 knife-edge ties. Parity bars must be
+  (a) bit-exact single-forward logits from identical state and
+  (b) long-prefix trajectory agreement — never full-trajectory equality.
+- **kv8 single-forward logits are BIT-EXACT vs the python reference;
+  kv4 differs by 1 bf16 ulp** at the first quantized layer (≤1.0 on
+  softcapped logits) — the 4-bit quantized_matmul kernel rounds
+  differently for strided-vs-contiguous inputs; legitimate kernel-path
+  variation far below 4-bit's own quantization noise. Bounded-tolerance
+  assertion documented in tests/kv-quant.test.ts.
+- mlx-lm's maybe_quantize_kv_cache CRASHES on gemma4 (calls to_quantized
+  on RotatingKVCache → NotImplementedError) — upstream kv-quant is
+  broken for this family; oracle scripts must pre-convert KVCache
+  instances manually and pass kv_bits=None.
+- The kv-quant +21% decode at 8k partially closes the Phase 3
+  long-context gap (full-attention layers were the unbounded
+  bandwidth term).
+- Match mlx-lm's buffer growth exactly: n_steps is integer division
+  `(step + L - 1) // step`, not ceil — over-allocating changes nothing
+  numerically but wastes memory.
+- The old parity golden's prompt was encoded WITHOUT BOS (mlx-lm
+  TokenizerWrapper.encode doesn't add it) — its "greedy" sequence is
+  degenerate-but-deterministic. Fine as a bit-exactness oracle; useless
+  for quality judgments. Quality-sensitive goldens must use
+  chat-templated prompts.
 
 ## Phase 7 — Kernel experiments (research track) `[ ]`
 

@@ -1,0 +1,88 @@
+// Quantized KV cache parity (slow tier).
+//
+// Two-tier bar (see PLAN.md Phase 6 findings): greedy *trajectories* are
+// loop-shape-sensitive at bf16 knife-edges (mlx-lm's own pipelined
+// stream_generate diverges from its unpipelined loop), so:
+//  1. single-forward logits from identical state must be BIT-EXACT
+//  2. 48-token greedy trajectories must agree on a long prefix
+
+import { describe, expect, test } from "bun:test";
+import { SNAPSHOT, snapshotAvailable } from "./paths";
+
+const MIN_PREFIX = 24; // of 48 — trajectories are knife-edge-sensitive; logits tests carry exactness
+
+const haveWeights = await snapshotAvailable();
+const goldenFile = Bun.file("goldens/kv-quant.json");
+const haveGoldens = await goldenFile.exists();
+
+describe.skipIf(!haveWeights || !haveGoldens)("quantized KV parity", async () => {
+  if (!haveWeights || !haveGoldens) return;
+  const golden = (await goldenFile.json()) as {
+    prompt_ids: number[];
+    fp16: number[];
+    kv8: number[];
+    kv4: number[];
+  };
+
+  const { loadModelConfig } = await import("../src/config");
+  const { Weights } = await import("../src/weights");
+  const { Gemma4Model, KVCache, QuantizedKVCache, lastPositionLogits } =
+    await import("../src/model/gemma4");
+  const { generate } = await import("../src/generate");
+
+  const config = await loadModelConfig(SNAPSHOT);
+  const weights = await Weights.open(SNAPSHOT);
+  const model = new Gemma4Model(weights, config);
+
+  const makeCaches = (kvBits: number | null) => {
+    const caches = model.makeCache();
+    if (kvBits !== null)
+      for (let i = 0; i < caches.length; i++) {
+        const c = caches[i]!;
+        if (c instanceof KVCache) caches[i] = c.toQuantized(64, kvBits);
+      }
+    return caches;
+  };
+
+  // kv4 tolerance: the 4-bit quantized_matmul kernel rounds differently
+  // for strided-vs-contiguous inputs (1 bf16 ulp at the first divergent
+  // layer, ≤1.0 on softcapped logits after 30 layers of amplification) —
+  // legitimate GPU reduction-order variation, far below 4-bit
+  // quantization's own noise floor. kv8 and fp16 are bit-exact.
+  for (const [key, kvBits, tol] of
+    [["fp16", null, 0], ["kv8", 8, 0], ["kv4", 4, 1.0]] as const) {
+    test(`${key}: single-forward logits within ${tol === 0 ? "0 (bit-exact)" : tol}`, async () => {
+      const caches = makeCaches(kvBits);
+      const logits = model.forward(golden.prompt_ids, caches);
+      const ours = lastPositionLogits(logits);
+      logits.dispose();
+      const ref = new Float32Array(
+        await Bun.file(`goldens/kvq-logits-${key}.bin`).arrayBuffer(),
+      );
+      let maxDiff = 0;
+      for (let i = 0; i < ref.length; i++)
+        maxDiff = Math.max(maxDiff, Math.abs(ours[i]! - ref[i]!));
+      expect(maxDiff).toBeLessThanOrEqual(tol);
+      for (const c of caches) c.dispose();
+    }, 240_000);
+  }
+
+  for (const [key, kvBits] of [["kv8", 8], ["kv4", 4]] as const) {
+    test(`${key}: long greedy prefix agreement + layers quantized`, async () => {
+      const caches = model.makeCache();
+      const gen = generate(model, golden.prompt_ids, {
+        maxTokens: 48, temperature: 0, cache: caches,
+        kvBits, kvGroupSize: 64, quantizedKvStart: 0,
+      });
+      const out: number[] = [];
+      for await (const t of gen) out.push(t.token);
+      expect(caches.filter((c) => c instanceof QuantizedKVCache)).toHaveLength(8);
+      for (const c of caches) c.dispose();
+
+      let prefix = 0;
+      const ref = golden[key];
+      while (prefix < ref.length && out[prefix] === ref[prefix]) prefix++;
+      expect(prefix).toBeGreaterThanOrEqual(MIN_PREFIX);
+    }, 240_000);
+  }
+});
