@@ -452,30 +452,34 @@ Ordered by expected payoff on this hardware:
       N-tiled FlashAttention prefill port (fused_quant_sdpa) is still
       TODO — only needed for long-prefill-over-quantized-cache
       (continuations past quantizedKvStart); stock path covers serving.
-- [~] **MoE support — gemma-4-26B-A4B (in progress).** New code is the
-      top-k expert router + `mlx_gather_qmm` (binding confirmed Phase 0);
-      everything else reuses the gemma4 graph (Router/Experts/SwitchGLU
-      paths in the reference gemma4_text.py we already read). Oracle:
-      mlx-lm's MoE/gather_qmm path + optiq patches. Parity contract
-      (tier d): bit-exact single-forward logits; explicit gate tie-break
-      handling (bf16 knife-edge in routing); verify expert ordering and
-      top-k weight normalization (softmax-then-per-expert-scale order)
-      match the reference. **Fit-query FIRST**: ~16.8 GB weights +
-      sidecar vs ~18 GB wired ceiling is tight on 24 GB — text-only
-      bring-up; expect a reduced-max-context fit-table row; characterize,
-      don't assume. Correctness work is unconstrained (single forward at
-      trivial context); throughput/context benchmarks need a cleared
-      machine + fresh process (Phase 5 memory-pressure finding).
-      ~~Josh: 26B-A4B download.~~ **Downloaded 2026-06-10** (18 GB,
-      4 shards, in HF cache; kv_config + chat template present).
-      Coupling: useful-context serving on 24 GB depends on Phase 9
-      (rotating KV-quant) — see there.
-      **Session handoff note (2026-06-10)**: next session starts here —
-      (1) fit-query the 26B (text-only, vision sidecar excluded);
-      (2) enumerate tensors + config (expect enable_moe_block, router/
-      switch_glu weights; reference Router/Experts code already read in
-      Phase 2's gemma4_text.py); (3) bind nothing new except what the
-      router needs (`mlx_gather_qmm` confirmed); (4) tier-d parity gate.
+- [~] **MoE support — gemma-4-26B-A4B (bring-up + tier-d parity DONE
+      2026-06-10; only the cleared-machine bench remains — Josh: run
+      `bun scripts/smoke-26b.ts` after a reboot/quit-apps pass, record
+      in eval DB).** Parity gate PASSED: single-forward logits BIT-EXACT
+      (toBe(0), 4 steps incl. prefill over the sorted gather path) and
+      12/12 greedy tokens identical vs the oracle
+      (tests/parity-26b.test.ts; goldens regen:
+      scripts/regen-parity-goldens-26b.ts, chat-templated). Ported: Router
+      (rms_norm·√H⁻¹ → 8-bit proj → argpartition top-8 → softmax →
+      per_expert_scale), QuantizedSwitchLinear/SwitchGLU (gather_qmm,
+      incl. the ≥64-indices token-sort path), Experts, and the parallel
+      dense+routed DecoderLayer branch (3 extra norms). New bindings:
+      `mlx_gather_qmm` (13-arg; pinned by tests/moe-ops.test.ts) +
+      `mlx_floor_divide`. Attention needed NOTHING new (2 global KV
+      heads @ 512 + k_eq_v is generic in our port). Smoke: coherent
+      grounded greedy output through the full MoE path, peak 16.5 GB.
+      **Fit row (measured prediction, registry now MoE-aware)**:
+      text-only FITS on 24 GB — 16.42 GB weights + 0.35 GB KV + 1.05 GB
+      transient = 17.82/18.0 GB @ 8k; max safe context ~17.6k; predicted
+      decode 58.6 tok/s @ 8k (decode reads only top-8/128 experts:
+      ~2.4 GB active of 14.09 GB expert weights). KV is NOT the fit
+      blocker at 24 GB (only 5/30 full-attention layers × 2 KV heads;
+      sliding layers cap at window 1024) — Phase 9 coupling is softer
+      than feared for THIS model.
+      Registry/fit upgrades (cross-cutting items landed): sidecar bytes
+      and `.experts.` bytes are separate registry columns (header-only
+      scan); `fit` prints the sidecar line item and uses active-expert
+      bytes for decode prediction.
       For Phase 8 (parallel): serving-side oracle is
       `optiq/adapters/{mount,registry,resolver}.py`; `lora/apply.py` is
       the TRAINING-side rank logic — read mount.py first for hot-swap
@@ -517,6 +521,34 @@ Ordered by expected payoff on this hardware:
 - **Phase 6 exit (≥2x) still open** — quantized KV (+21%) and spec
   (net loss on e4b) don't reach it; the remaining lever is the
   26B-A4B MoE (gather_qmm), next milestone.
+
+### Phase 6 findings (2026-06-10, MoE bring-up session)
+
+- **26B-A4B MoE is bit-exact vs the oracle on the first try of the
+  parity gate** — the tier-d worry (bf16 knife-edges in router top-k)
+  did not bite: same mlx argpartition/softmax/gather_qmm kernels + same
+  composition order ⇒ identical tie-breaks by construction. The gate
+  stays toBe(0).
+- **gather_qmm ≠ quantized_matmul numerically** (~2e-6 rel in f32):
+  different kernels, different accumulation order. Intra-stack
+  comparisons of the two need bounded tolerance
+  (tests/moe-ops.test.ts); cross-stack parity is unaffected because
+  both stacks use gather_qmm.
+- The MoE fit math must use ACTIVE expert bytes for decode prediction
+  (top_k/num_experts of the 14.09 GB expert pool ≈ 0.9 GB read/token
+  → predicted 58.6 tok/s @ 8k vs 11.7 if computed naively from total
+  weights). Registry stores `.experts.` bytes from header-only scans.
+- KV growth is NOT the 26B's fit problem on 24 GB (only 5/30 full
+  layers × 2 global KV heads @ 512, k_eq_v): max safe context ~17.6k
+  with bf16 KV. Phase 9 (rotating KV-quant) helps but is not a
+  prerequisite for useful serving of THIS model.
+- Throughput on a loaded machine is meaningless for a 16.4 GB-resident
+  model: the smoke decode ran at ~0.02 tok/s under 6.4 GB of swap from
+  the prior test-suite run (Phase 5 memory-pressure finding, amplified).
+  The eval-DB number must come from a cleared machine.
+- The 26B prompt template renders a system turn + `<|channel>thought`
+  generation prefill like the 12B; mlx-lm loads model_type "gemma4"
+  natively (no optiq remap needed, unlike gemma4_unified).
 
 ### Phase 6 findings (2026-06-10)
 

@@ -143,6 +143,32 @@ export function quantizedMatmul(
   );
 }
 
+/** Gathered quantized matmul over stacked expert weights (MoE).
+ *  x [..., 1, K] with rhs_indices [...] selecting the expert per row;
+ *  port of mx.gather_qmm as QuantizedSwitchLinear uses it. */
+export function gatherQmm(
+  x: MlxArray, w: MlxArray, scales: MlxArray, biases: MlxArray | null,
+  rhsIndices: MlxArray, spec: QuantSpec, sortedIndices: boolean,
+  transpose = true, s: S = gpuStream,
+): MlxArray {
+  return new MlxArray(
+    outArray("gather_qmm", (o) =>
+      C.mlx_gather_qmm(
+        o, x.handle, w.handle, scales.handle, biases?.handle ?? 0n,
+        0n /* lhs_indices */, rhsIndices.handle, transpose,
+        optInt(spec.groupSize), optInt(spec.bits), ptr(cstr(spec.mode)),
+        sortedIndices, s,
+      ),
+    ),
+  );
+}
+
+export function floorDivide(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("floor_divide", (o) => C.mlx_floor_divide(o, a.handle, b.handle, s)),
+  );
+}
+
 export function dequantize(
   w: MlxArray, scales: MlxArray, biases: MlxArray | null, spec: QuantSpec,
   s: S = gpuStream,

@@ -5,7 +5,7 @@
 // only config.json + the safetensors index header (never tensor bytes).
 
 import { Database } from "bun:sqlite";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 export interface ModelRecord {
@@ -13,7 +13,13 @@ export interface ModelRecord {
   repoId: string;
   modelType: string;
   paramCount: number | null;
+  /** Language-model weight bytes (model-*.safetensors, sidecar excluded). */
   sizeBytes: number;
+  /** optiq_vision.safetensors bytes (bf16 sidecar; loads only for vision). */
+  sidecarBytes: number;
+  /** Bytes of `.experts.` tensors (MoE; 0 for dense models). Per-token
+   *  decode only reads top_k/num_experts of these. */
+  expertsBytes: number;
   quantBits: number | null;
   quantGroupSize: number | null;
   quantMode: string | null;
@@ -33,6 +39,8 @@ CREATE TABLE IF NOT EXISTS models (
   model_type TEXT NOT NULL,
   param_count INTEGER,
   size_bytes INTEGER NOT NULL,
+  sidecar_bytes INTEGER NOT NULL DEFAULT 0,
+  experts_bytes INTEGER NOT NULL DEFAULT 0,
   quant_bits INTEGER,
   quant_group_size INTEGER,
   quant_mode TEXT,
@@ -59,6 +67,13 @@ export class Registry {
     }
     this.db = new Database(dbPath);
     this.db.exec(SCHEMA);
+    // The registry is a derived cache — on schema drift, rebuild from scratch.
+    const cols = (this.db.query("PRAGMA table_info(models)").all() as { name: string }[])
+      .map((c) => c.name);
+    if (!cols.includes("sidecar_bytes") || !cols.includes("experts_bytes")) {
+      this.db.exec("DROP TABLE models");
+      this.db.exec(SCHEMA);
+    }
   }
 
   async scan(hubDir: string = DEFAULT_HUB): Promise<number> {
@@ -66,7 +81,7 @@ export class Registry {
     let count = 0;
     const upsert = this.db.prepare(`
       INSERT OR REPLACE INTO models VALUES
-      ($path, $repo, $type, $params, $size, $bits, $gs, $mode,
+      ($path, $repo, $type, $params, $size, $sidecar, $experts, $bits, $gs, $mode,
        $vision, $kv, $tools, $layers, $hidden, $vocab, $at)
     `);
     for (const entry of readdirSync(hubDir)) {
@@ -81,6 +96,7 @@ export class Registry {
         upsert.run({
           $path: rec.path, $repo: rec.repoId, $type: rec.modelType,
           $params: rec.paramCount, $size: rec.sizeBytes,
+          $sidecar: rec.sidecarBytes, $experts: rec.expertsBytes,
           $bits: rec.quantBits, $gs: rec.quantGroupSize, $mode: rec.quantMode,
           $vision: rec.hasVisionSidecar ? 1 : 0,
           $kv: rec.hasKvConfig ? 1 : 0,
@@ -138,6 +154,8 @@ function rowToRecord(r: Record<string, unknown>): ModelRecord {
     modelType: r.model_type as string,
     paramCount: r.param_count as number | null,
     sizeBytes: r.size_bytes as number,
+    sidecarBytes: r.sidecar_bytes as number,
+    expertsBytes: r.experts_bytes as number,
     quantBits: r.quant_bits as number | null,
     quantGroupSize: r.quant_group_size as number | null,
     quantMode: r.quant_mode as string | null,
@@ -151,17 +169,53 @@ function rowToRecord(r: Record<string, unknown>): ModelRecord {
   };
 }
 
+/** Sum the byte sizes of `.experts.` tensors from a safetensors header
+ *  (header JSON only — never touches tensor data). */
+function expertTensorBytes(path: string): number {
+  const fd = openSync(path, "r");
+  try {
+    const lenBuf = Buffer.alloc(8);
+    readSync(fd, lenBuf, 0, 8, 0);
+    const headerLen = Number(lenBuf.readBigUInt64LE(0));
+    if (headerLen <= 0 || headerLen > 256 * 2 ** 20) return 0;
+    const headerBuf = Buffer.alloc(headerLen);
+    readSync(fd, headerBuf, 0, headerLen, 8);
+    const header = JSON.parse(headerBuf.toString("utf8")) as Record<
+      string, { data_offsets?: [number, number] }
+    >;
+    let bytes = 0;
+    for (const [name, entry] of Object.entries(header)) {
+      if (!name.includes(".experts.") || !entry.data_offsets) continue;
+      bytes += entry.data_offsets[1] - entry.data_offsets[0];
+    }
+    return bytes;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 async function scanSnapshot(dir: string, repoId: string): Promise<ModelRecord | null> {
   const configPath = join(dir, "config.json");
   if (!existsSync(configPath)) return null;
 
-  // size: sum of model safetensors (resolved through HF's blob symlinks)
+  // size: sum of model safetensors (resolved through HF's blob symlinks).
+  // The vision sidecar is its own line item — it loads only for vision
+  // requests and must never be folded into language-weight fit math.
   let sizeBytes = 0;
+  let sidecarBytes = 0;
+  let expertsBytes = 0;
   let hasWeights = false;
   for (const f of readdirSync(dir)) {
     if (!f.endsWith(".safetensors")) continue;
     hasWeights = true;
-    try { sizeBytes += statSync(join(dir, f)).size; } catch {}
+    let bytes = 0;
+    try { bytes = statSync(join(dir, f)).size; } catch {}
+    if (f === "optiq_vision.safetensors") {
+      sidecarBytes += bytes;
+    } else {
+      sizeBytes += bytes;
+      try { expertsBytes += expertTensorBytes(join(dir, f)); } catch {}
+    }
   }
   if (!hasWeights) return null;
 
@@ -200,6 +254,8 @@ async function scanSnapshot(dir: string, repoId: string): Promise<ModelRecord | 
     repoId,
     modelType: (config.model_type as string) ?? "unknown",
     paramCount,
+    sidecarBytes,
+    expertsBytes,
     sizeBytes,
     quantBits: quant?.bits ?? null,
     quantGroupSize: quant?.group_size ?? null,

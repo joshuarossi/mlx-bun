@@ -76,9 +76,15 @@ switch (cmd) {
     const m = reg.resolve(query);
     const config = await loadModelConfig(m.path);
     const ctx = Number(opt("ctx", "8192"));
-    const r = fit(config, m.sizeBytes, ctx);
+    const r = fit(config, m.sizeBytes, ctx, thisMachine(), undefined, m.expertsBytes);
     console.log(`${m.repoId} @ ${ctx} context on ${thisMachine().name}:`);
-    console.log(`  weights   ${gb(r.weightsBytes)}`);
+    console.log(`  weights   ${gb(r.weightsBytes)}${
+      config.text.enableMoeBlock && m.expertsBytes > 0
+        ? ` (experts ${gb(m.expertsBytes)}; top ${config.text.topKExperts}/${config.text.numExperts} read per token)`
+        : ""
+    }`);
+    if (m.sidecarBytes > 0)
+      console.log(`  (+ vision sidecar ${gb(m.sidecarBytes)}, bf16 — loads only for vision requests)`);
     console.log(`  kv cache  ${gb(r.kvBytes)}`);
     console.log(`  transient ${gb(r.transientBytes)}`);
     console.log(`  total     ${gb(r.totalBytes)} of ${gb(r.usableBytes)} usable → ${r.fits ? "FITS" : "DOES NOT FIT"}`);
@@ -86,7 +92,7 @@ switch (cmd) {
     console.log(`  predicted decode: ${r.predictedDecodeTps.toFixed(1)} tok/s`);
     if (flag("skus")) {
       console.log(`\nSKU matrix @ ${ctx} context:`);
-      for (const row of skuMatrix(config, m.sizeBytes, ctx)) {
+      for (const row of skuMatrix(config, m.sizeBytes, ctx, m.expertsBytes)) {
         console.log(
           `  ${`${row.sku} ${row.ramGB}GB`.padEnd(16)} ${row.fits ? "fits" : "  — "}  ` +
           `max ctx ${String(row.maxContext).padStart(7)}  ~${row.decodeTps.toFixed(0)} tok/s`,
