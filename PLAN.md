@@ -384,6 +384,24 @@ Where we beat Python, not just match it.
   pressure from earlier tests — cold-start claims need a fresh process
   (`scripts/cold-start.ts` is the criterion harness).
 
+## NEXT UP (gate before Phase 6) — harden against the bun:ffi JIT bug
+
+Decision (2026-06-10): before any Phase 6 work, finish the f64-JIT
+hardening. A minimal-repro effort is already in progress (spawned task:
+"Build minimal repro for bun:ffi f64 arg corruption" → upstream Bun
+issue). Hardening checklist for that session:
+
+- [ ] Confirm whether Bun 1.3.14 still has the f64 corruption (the
+      repro decides; our host-side arange workaround stays either way).
+- [ ] Audit ALL bindings for float args: `f32` args are in active use
+      (rms_norm/layer_norm eps, sdpa scale, rope scale) — no corruption
+      observed across thousands of calls (bit-exact parity holds), but
+      verify the f32 marshaling path explicitly in the repro harness,
+      and add a long-soak FFI stress test to the suite (slow tier).
+- [ ] Regression guard: once the repro exists, encode it as a test that
+      fails loudly if a future Bun reintroduces the bug; CI against Bun
+      canary (the Phase 0 risk note).
+
 ## Phase 6 — Speed: change what gets computed `[ ]`
 
 Ordered by expected payoff on this hardware:
