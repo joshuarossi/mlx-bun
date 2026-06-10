@@ -971,6 +971,13 @@ Matrix: stacks {mlx-bun, mlx-lm, mlx-optiq} × models {e4b, 12B,
       stack's best KV config (ours per kv_config.json; optiq
       `--kv-config`; mlx-lm stock — its gemma4 kv-quant crashes,
       recorded finding).
+- **NEXT SESSION PICKUP (2026-06-10)**: Josh reboots and runs
+      `./benchmark.sh` (one-shot; writes eval-DB rows + a
+      benchmarks-h2h-<date>.md). Session work then: read the results
+      file / `bench-h2h.ts table`, sanity-check spreads, fold the table
+      into README, settle the "+21% kv8" question from the @8k A/B
+      rows, and mark legs (a)-(d) here. If preflight aborted mid-run,
+      partial rows are recorded — finish with another reboot.
 - [x] Harness: `scripts/bench-h2h.ts` (built 2026-06-10):
       `preflight|direct|server|client|table`. Preflight ENFORCES the
       method rules (swap ≈ 0, free-memory floor, thermal, big foreign
