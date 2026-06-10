@@ -57,6 +57,10 @@ export const C = dlopen(LIBMLXC_PATH, {
   // fast fused ops
   // (res, x, weight may-be-null, eps, stream)
   mlx_fast_rms_norm: { args: [P, u64, u64, f32, u64], returns: i32 },
+  // (res, x, weight may-be-null, bias may-be-null, eps, stream)
+  mlx_fast_layer_norm: { args: [P, u64, u64, u64, f32, u64], returns: i32 },
+  mlx_matmul: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_logical_or: { args: [P, u64, u64, u64], returns: i32 },
   // (res, x, dims, traditional, opt base, scale, offset, freqs may-be-null, stream)
   mlx_fast_rope: { args: [P, u64, i32, FFIType.bool, u64, f32, i32, u64, u64], returns: i32 },
   // (res, q, k, v, scale, mask_mode, mask may-be-null, sinks may-be-null, stream)

@@ -65,6 +65,27 @@ export function rmsNorm(
   );
 }
 
+export function layerNorm(
+  x: MlxArray, weight: MlxArray | null, bias: MlxArray | null, eps: number,
+  s: S = gpuStream,
+): MlxArray {
+  return new MlxArray(
+    outArray("fast_layer_norm", (o) =>
+      C.mlx_fast_layer_norm(o, x.handle, weight?.handle ?? 0n, bias?.handle ?? 0n, eps, s),
+    ),
+  );
+}
+
+export function matmul(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("matmul", (o) => C.mlx_matmul(o, a.handle, b.handle, s)));
+}
+
+export function logicalOr(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("logical_or", (o) => C.mlx_logical_or(o, a.handle, b.handle, s)),
+  );
+}
+
 export function rope(
   x: MlxArray, dims: number, base: number | null, offset: number,
   freqs: MlxArray | null, s: S = gpuStream,

@@ -616,7 +616,24 @@ export class Gemma4Model {
 
   /** ids [1, L] → final-norm hidden states [1, L, hidden]. */
   forwardHidden(ids: MlxArray, cache: Cache[]): MlxArray {
-    const L = ids.shape[1]!;
+    let h = this.embed.encode(ids);
+    h = disposing(h, ops.mulScalar(h, this.embedScale));
+    return this.forwardLayers(h, cache, null);
+  }
+
+  /** Pre-merged (unscaled) input embeddings → hidden states. Used by the
+   *  vision path; `bidir` (bool [L]) marks image tokens, which attend
+   *  bidirectionally among themselves (use_bidirectional_attention:
+   *  "vision" — text stays causal). */
+  forwardEmbeddings(embeds: MlxArray, cache: Cache[], bidir: MlxArray | null): MlxArray {
+    const h = ops.mulScalar(embeds, this.embedScale);
+    return this.forwardLayers(h, cache, bidir);
+  }
+
+  /** Consumes h. */
+  private forwardLayers(h0: MlxArray, cache: Cache[], bidir: MlxArray | null): MlxArray {
+    const L = h0.shape[1]!;
+    let h = h0;
 
     // one mask per layer type, computed from the first cache of that type
     const masks = new Map<string, Mask>();
@@ -624,12 +641,16 @@ export class Gemma4Model {
       const type = this.layers[i]!.layerType;
       if (!masks.has(type)) {
         const window = type === "sliding_attention" ? this.windowSize : null;
-        masks.set(type, cache[i]!.makeMask(L, window));
+        if (bidir && L > 1) {
+          const c = cache[i]!;
+          if (c.offset !== 0)
+            throw new Error("bidirectional image masks require offset-0 prefill");
+          masks.set(type, bidirMask(L, window, bidir));
+        } else {
+          masks.set(type, cache[i]!.makeMask(L, window));
+        }
       }
     }
-
-    let h = this.embed.encode(ids);
-    h = disposing(h, ops.mulScalar(h, this.embedScale));
 
     for (let i = 0; i < this.layers.length; i++) {
       const layer = this.layers[i]!;
@@ -679,6 +700,20 @@ export class Gemma4Model {
     }
     return out;
   }
+}
+
+/** Causal(+window) mask OR'd with image×image bidirectional attention. */
+function bidirMask(L: number, windowSize: number | null, bidir: MlxArray): Mask {
+  const causal = createCausalMask(L, 0, windowSize);
+  const col = ops.reshape(bidir, [L, 1]);
+  const row = ops.reshape(bidir, [1, L]);
+  const outer = ops.logicalAnd(col, row);
+  col.dispose();
+  row.dispose();
+  const allow = ops.logicalOr(causal, outer);
+  causal.dispose();
+  outer.dispose();
+  return { mode: "array", arr: allow };
 }
 
 /** tanh(x / cap) * cap with weak-scalar semantics. */

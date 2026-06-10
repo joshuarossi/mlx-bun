@@ -248,7 +248,7 @@ The load-bearing question for the whole project.
 - First decode step pays ~500 ms of Metal kernel compilation for the
   decode shapes (one-time, same for python).
 
-## Phase 4 — Server `[~]`
+## Phase 4 — Server `[~]` (code complete; pi end-to-end pending)
 
 - [x] OpenAI-compatible `/v1/chat/completions` (+ streaming SSE),
       `/v1/models`. Anthropic `/v1/messages` shim later if pi/OpenClaw
@@ -256,17 +256,57 @@ The load-bearing question for the whole project.
       [default port 8090]; integration tests on an ephemeral port in
       `tests/server.test.ts`. Incremental detokenizer holds back partial
       multi-byte sequences. Generation serialized through one queue.)
-- [ ] Tool calling: parse the model's tool_call markers (Gemma template
-      ships them) → OpenAI `tool_calls` JSON; tool role round-trip.
-- [ ] Vision path: accept `image_url` (data: and http(s):), decode with
-      Bun-native image handling, run the bf16 vision sidecar
-      (optiq_vision.safetensors) → embeddings spliced into the sequence.
-      (Port the sidecar wiring from optiq's vlm module.)
-- [ ] In-memory LRU prompt cache with a byte cap (lesson from the
-      mlx-lm OOM: a count-capped cache of multi-GB KV entries is a leak).
+- [x] Tool calling (`src/tool-call.ts` — port of mlx-lm
+      tool_parsers/gemma4.py): `<|tool_call>call:name{...}<tool_call|>`
+      captured at the token level (markers are single special tokens;
+      `<|tool_response>` token 50 is in the EOS set = tool handoff) →
+      OpenAI `tool_calls` JSON; tool role round-trip verified end-to-end
+      against the live model; template renders tools byte-identical to
+      `apply_chat_template`.
+- [x] Vision path (`src/vision/`): `image_url` (data:/http(s):) → pure-JS
+      png/jpeg decode → PIL-style bicubic resize → 48×48 patchify →
+      encoder-free VisionEmbedder + MultimodalEmbedder from the bf16
+      sidecar → features spliced over `<|image|>` placeholder runs
+      (boi + img×soft + eoi) → single-shot prefill with image-token
+      bidirectional masks. **Token-exact parity with the optiq python
+      stack** on a resize-free fixture (`goldens/vision.json`).
+- [x] Byte-capped LRU prompt cache (`src/prompt-cache.ts`): longest-
+      common-prefix matching with cache trim (KVCache always trimmable,
+      rotating caches until the ring wraps); evicts by BYTES, never
+      count; `cached_tokens` reported in usage; `/stats` endpoint.
+      Vision requests bypass it (placeholder image tokens would
+      false-hit across different images).
 - **Exit criterion:** pi connects via models.json and completes the
-  ls-and-summarize agent task end-to-end; vision request on a real image;
-  kill -9 the server mid-stream and restart serves within 2s (warm mmap).
+  ls-and-summarize agent task end-to-end; vision request on a real image
+  (synthetic-image vision verified in tests — real photo still untested);
+  kill -9 mid-stream restart < 2s (model open is ~15 ms lazy; expected
+  trivially met — verify alongside the pi test). **→ Josh runs this part**
+  (`bun scripts/serve.ts`, port 8090).
+
+### Phase 4 findings (2026-06-10)
+
+- **bun:ffi f64 args are unreliable under JIT** (Bun 1.3.3): mlx_arange
+  (our only f64 binding) received NaN doubles after many mixed FFI calls
+  — identical args fine in isolation; controlled echo tests of the same
+  signature pass. Workaround: build aranges host-side and upload
+  (large constant ranges cached). Rule: **avoid f64 FFI args entirely.**
+- mlx errors no longer abort: `mlx_set_error_handler` + JSCallback turns
+  them into JS exceptions with stacks (server survives bad requests).
+- Prompt-cache reuse boundary: the `<|channel>thought\n<channel|>`
+  generation-prefill tokens never re-render in later turns, so reuse
+  stops at the last assistant turn's `<|turn>model\n` (~4 tokens
+  re-prefill per turn; full history before that reuses).
+- The pipelined decode forwards a token's KV before knowing it's EOS —
+  cache token lists must include it (`stats.cacheTokens`).
+- Image preprocessing upscales small images (96×96 → 768×768 bicubic)
+  to fill the 280-soft-token budget — PIL-resize fidelity matters for
+  real photos; our convolution resize ports PIL's algorithm but isn't
+  bit-identical. Resize-free inputs (multiples of 48 ≤ 768×768) are
+  bit-exact through the whole vision pipeline.
+- optiq's bidirectional-mask patch has a bug on the sliding array-mask
+  path (>1024-token vision prompts get +1.0 additive instead of a mask);
+  ours uses proper bool OR. Divergence only matters for long vision
+  prompts; parity verified in the regime where both are correct.
 
 ## Phase 5 — The appliance layer `[ ]`
 
