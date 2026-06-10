@@ -80,6 +80,13 @@ export function matmul(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
   return new MlxArray(outArray("matmul", (o) => C.mlx_matmul(o, a.handle, b.handle, s)));
 }
 
+/** Materialize a row-major contiguous copy (needed before rawBytes on views). */
+export function contiguous(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("contiguous", (o) => C.mlx_contiguous(o, a.handle, false, s)),
+  );
+}
+
 export function logicalOr(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
   return new MlxArray(
     outArray("logical_or", (o) => C.mlx_logical_or(o, a.handle, b.handle, s)),
@@ -257,12 +264,13 @@ export function where(cond: MlxArray, x: MlxArray, y: MlxArray, s: S = gpuStream
   );
 }
 
-// arange is built host-side and uploaded: mlx_arange is our only binding
-// with f64 args, and bun:ffi f64 marshaling proved unreliable once the
-// calling path got JIT-optimized (args arrive as NaN at the C++ layer —
-// "[arange] Cannot compute length"; identical args pass in isolation).
-// See PLAN.md Phase 4 findings. Large constant ranges (topP's vocab
-// arange) are cached for the process lifetime.
+// arange is built host-side and uploaded. The original mlx_arange binding
+// broke once the calling path got JIT-optimized; a standalone repro
+// (repro/bun-ffi-f64/) traced the root cause to a Bun bug: after DFG
+// tier-up, typed-array reads following a bun:ffi call return stale values
+// (the JIT eliminates the load across the native call). Not f64 marshaling
+// — args reach C intact. See PLAN.md Phase 4 findings. Large constant
+// ranges (topP's vocab arange) are cached for the process lifetime.
 const arangeCache = new Map<string, MlxArray>();
 const ARANGE_CACHE_MIN = 65536;
 

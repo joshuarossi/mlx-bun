@@ -52,3 +52,20 @@ double echo_r_f64(double a) { return a; }
 // Truth test: returns the arg (rounded) so staleness can be detected
 // without reading memory the native call wrote.
 int32_t echo_ret(double *out, double a) { out[0] = a; return (int32_t)a; }
+
+// Ground-truth probe: stash exactly what C received; dump via a cold call.
+#include <stdio.h>
+static void *g_ptr; static double g_a, g_b, g_c; static int32_t g_n; static uint64_t g_s;
+int32_t probe6(double *out, double a, double b, double c, int32_t n, uint64_t s) {
+  g_ptr = out; g_a = a; g_b = b; g_c = c; g_n = n; g_s = s;
+  if (out) out[0] = a;
+  return (int32_t)b;
+}
+void dump_last(void) {
+  fprintf(stderr, "C actually received: ptr=%p a=%.17g b=%.17g c=%.17g n=%d s=%llu\n",
+          g_ptr, g_a, g_b, g_c, g_n, (unsigned long long)g_s);
+}
+
+void dump_mem(void) {
+  fprintf(stderr, "C-side read of mem at %p = %.17g\n", g_ptr, g_ptr ? *(double *)g_ptr : -1.0);
+}

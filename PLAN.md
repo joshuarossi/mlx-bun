@@ -285,11 +285,21 @@ The load-bearing question for the whole project.
 
 ### Phase 4 findings (2026-06-10)
 
-- **bun:ffi f64 args are unreliable under JIT** (Bun 1.3.3): mlx_arange
-  (our only f64 binding) received NaN doubles after many mixed FFI calls
-  — identical args fine in isolation; controlled echo tests of the same
-  signature pass. Workaround: build aranges host-side and upload
-  (large constant ranges cached). Rule: **avoid f64 FFI args entirely.**
+- **bun:ffi + JIT corruption — root cause found (2026-06-10)**: not f64
+  marshaling. A standalone repro (`repro/bun-ffi-f64/`, confirmed on Bun
+  1.3.3 and 1.3.14) proves that after DFG tier-up (~6–20k iterations of
+  the calling function), **typed-array reads following a bun:ffi call
+  return stale values** — the DFG eliminates the load across the native
+  call as if it can't clobber the buffer. Ground truth: C receives every
+  arg intact (ptr/f64/i32/u64) and writes correctly; a native re-read of
+  the same address returns the fresh value while `buf[0]` in JS returns
+  the tier-up-era value. Disappears with `BUN_JSC_useDFGJIT=false`.
+  `read.f64(ptr)` (bun:ffi) reads correctly — **rule: never read a
+  typed array that native code wrote into from a hot path; use
+  bun:ffi `read.*` instead.** `outArray`'s fresh-buffer handle read is
+  the same risk class (store-to-load forwarding) — needs hardening.
+  Issue draft: `repro/bun-ffi-f64/ISSUE.md` (not yet filed). The arange
+  host-side workaround stays (it removed the offending read path).
 - mlx errors no longer abort: `mlx_set_error_handler` + JSCallback turns
   them into JS exceptions with stacks (server survives bad requests).
 - Prompt-cache reuse boundary: the `<|channel>thought\n<channel|>`
@@ -308,31 +318,29 @@ The load-bearing question for the whole project.
   ours uses proper bool OR. Divergence only matters for long vision
   prompts; parity verified in the regime where both are correct.
 
-## Phase 5 — The appliance layer `[ ]`
+## Phase 5 — The appliance layer `[~]`
 
 Where we beat Python, not just match it.
 
-- [ ] **Model registry (bun:sqlite)**: scan HF cache → models table
-      (path, family, params, quant, size, capabilities: vision/tools/MTP,
-      sidecars, kv-config path). CLI: `mlx-bun ls`, `mlx-bun serve <query>`.
-- [ ] **KV-cache persistence**: registry table prefix-hash → cache file;
-      save/load prompt caches across restarts. Standard agent preamble
-      (system prompt + skills) prefills once, ever.
-- [ ] **Eval DB**: every benchmark run (tok/s, TTFT, peak memory,
-      speculation acceptance rate) recorded with model + config + commit.
-- [ ] **Memory contracts (`mlx-bun fit`)** — the flagship DX feature.
-      All terms are deterministic: weights (safetensors headers), KV
-      bytes/token (config: layers × kv_heads × head_dim × bytes, sliding-
-      window layers capped, KV-quant factored), prefill transient (chunk
-      size we choose), machine (RAM + wired ceiling, queryable). Ship:
-      (a) `fit <model>` report: fits?, max safe context, peak bytes,
-      predicted tok/s (bandwidth ÷ bytes/token); (b) the M-series SKU
-      matrix per model — finite Apple SKUs make "works on 16 GB+ at 32k"
-      a printable, testable claim (the App Store requirements line for
-      Tauri apps); (c) `loadModel({ memoryBudget })` solves for max
-      context and *enforces* it — over-budget requests rejected up front
-      with a clear error, never discovered via Metal OOM. Validate
-      predictions against measured peaks in the eval DB; publish accuracy.
+- [x] **Model registry (bun:sqlite)**: scan HF cache → models table
+      (`src/registry.ts`: path, repo, model_type, params, quant, size,
+      vision/tools/kv-quant capabilities). CLI (`src/cli.ts`):
+      `mlx-bun scan|ls|fit|serve|evals`.
+- [x] **KV-cache persistence** (`src/kv-store.ts`): page-aligned cache
+      files (the Phase 1 corollary pays off — reload is a zero-copy
+      MAP_PRIVATE mmap straight to the GPU, 1 ms for the demo prefix);
+      saves both cache types incl. ring state; continuation is
+      token-identical. Server auto-persistence of large prefixes is
+      still TODO (library API + harness done).
+- [x] **Eval DB** (`src/evaldb.ts`): runs recorded with commit + fit
+      predictions; `scripts/bench.ts` records automatically;
+      `mlx-bun evals` lists.
+- [~] **Memory contracts (`mlx-bun fit`)** (`src/fit.ts`): (a) fit report
+      ✓ (weights/kv/transient vs wired ceiling, max safe context solve,
+      predicted decode 23.7 vs measured 24.9 tok/s — within 5%);
+      (b) SKU matrix ✓ (`fit <query> --skus`); (c) `loadModel({
+      memoryBudget })` enforcement — TODO (needs mlx_set_memory_limit
+      wiring + request rejection in the server).
 - [ ] Downloader: resumable HF fetch with checksums (native fetch; no
       Xet; the thing the Python downloader kept failing at).
 - [ ] **Embeddable build**: `bun build --compile` single-binary target for
@@ -342,7 +350,26 @@ Where we beat Python, not just match it.
       signing/notarization recipe, first-run weight download via the
       registry + downloader.
 - **Exit criterion:** cold start → first token of a cached-prefix prompt
-  in under 1s; `mlx-bun ls` answers "vision-capable models under 10 GB".
+  in under 1s → **Met: 394 ms** (model open 8 ms + kv load 1 ms + first
+  token 385 ms; `scripts/cold-start.ts`, fresh process). `mlx-bun ls`
+  answers "vision-capable models under 10 GB" → **Met**
+  (`bun src/cli.ts ls --vision --max-size 10GB`).
+
+### Phase 5 findings (2026-06-10)
+
+- **Zero-copy KV reload works as designed**: page-aligned tensors in
+  files we write mmap straight to GPU (verified positively — Phase 1's
+  alignment theory confirmed; both MAP_SHARED and MAP_PRIVATE read
+  correctly). MAP_PRIVATE (copy-on-write) guards the file against any
+  mlx buffer donation.
+- **`rawBytes` on a sliced view reads the underlying buffer layout** —
+  always `mlx_contiguous` before serializing views.
+- Fit calibration on this machine: DECODE_EFFICIENCY 0.82 (measured/
+  bandwidth-ceiling), TRANSIENT_PER_TOKEN 0.55 MB (peak deltas at chunk
+  2048), WIRED_FRACTION 0.75. Predicted 23.7 vs measured 24.9 tok/s.
+- TTFT measured inside the test suite is inflated ~3× by GPU memory
+  pressure from earlier tests — cold-start claims need a fresh process
+  (`scripts/cold-start.ts` is the criterion harness).
 
 ## Phase 6 — Speed: change what gets computed `[ ]`
 

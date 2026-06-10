@@ -31,6 +31,8 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_array_nbytes: { args: [u64], returns: u64 },
   // data access (forces eval/copy to host-visible memory)
   mlx_array_data_float32: { args: [u64], returns: P },
+  mlx_array_data_float16: { args: [u64], returns: P },
+  mlx_array_data_bfloat16: { args: [u64], returns: P },
   mlx_array_item_float32: { args: [P, u64], returns: i32 },
   // streams
   mlx_default_gpu_stream_new: { args: [], returns: u64 },
@@ -60,6 +62,7 @@ export const C = dlopen(LIBMLXC_PATH, {
   // (res, x, weight may-be-null, bias may-be-null, eps, stream)
   mlx_fast_layer_norm: { args: [P, u64, u64, u64, f32, u64], returns: i32 },
   mlx_matmul: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_contiguous: { args: [P, u64, FFIType.bool, u64], returns: i32 },
   mlx_logical_or: { args: [P, u64, u64, u64], returns: i32 },
   // (res, x, dims, traditional, opt base, scale, offset, freqs may-be-null, stream)
   mlx_fast_rope: { args: [P, u64, i32, FFIType.bool, u64, f32, i32, u64, u64], returns: i32 },
