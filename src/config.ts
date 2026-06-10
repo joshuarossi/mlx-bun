@@ -6,6 +6,8 @@ export interface RopeParams {
   ropeTheta: number;
   ropeType: string;
   partialRotaryFactor: number;
+  /** ProportionalRoPE frequency multiplier (rope_utils: factor, default 1). */
+  factor: number;
 }
 
 export interface TextConfig {
@@ -81,6 +83,7 @@ function parseRope(raw: Record<string, any>): Record<string, RopeParams> {
       ropeTheta: p.rope_theta,
       ropeType: p.rope_type ?? "default",
       partialRotaryFactor: p.partial_rotary_factor ?? 1.0,
+      factor: p.factor ?? 1.0,
     };
   }
   return out;

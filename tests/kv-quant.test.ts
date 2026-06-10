@@ -44,13 +44,15 @@ describe.skipIf(!haveWeights || !haveGoldens)("quantized KV parity", async () =>
     return caches;
   };
 
-  // kv4 tolerance: the 4-bit quantized_matmul kernel rounds differently
-  // for strided-vs-contiguous inputs (1 bf16 ulp at the first divergent
-  // layer, ≤1.0 on softcapped logits after 30 layers of amplification) —
-  // legitimate GPU reduction-order variation, far below 4-bit
-  // quantization's own noise floor. kv8 and fp16 are bit-exact.
+  // All three are bit-exact since Phase 10: goldens regenerated against
+  // the FUSED serving reference (optiq installs fused_quant_sdpa whenever
+  // kv-quant is on; our L>1 dispatch matches), and the rope freqs are now
+  // computed on-device like ProportionalRoPE. kv4's old 1.0 tolerance
+  // ("strided-vs-contiguous quantized_matmul rounding", Phase 6) no
+  // longer reproduces — that divergence was plausibly the host-side f64
+  // freqs knife-edge all along (PLAN Phase 10 findings).
   for (const [key, kvBits, tol] of
-    [["fp16", null, 0], ["kv8", 8, 0], ["kv4", 4, 1.0]] as const) {
+    [["fp16", null, 0], ["kv8", 8, 0], ["kv4", 4, 0]] as const) {
     test(`${key}: single-forward logits within ${tol === 0 ? "0 (bit-exact)" : tol}`, async () => {
       const caches = makeCaches(kvBits);
       const logits = model.forward(golden.prompt_ids, caches);
