@@ -199,32 +199,40 @@ async function directLeg(
 
 // --- server legs -------------------------------------------------------------
 
+// SSE client = curl piped into this process, for EVERY stack: the python
+// servers (BaseHTTPServer) stream HTTP/1.0 close-framed bodies that Bun's
+// fetch treats as already-ended ("no content chunks received"); curl
+// handles both that and our HTTP/1.1 chunked framing. One client, one
+// timing path, all three stacks — the spawn cost (~5 ms) is a constant
+// shared by every row and TTFT is server-dominated anyway.
 async function serverRequest(base: string, modelId: string, tokens: number): Promise<{
   ttftMs: number; decodeTps: number; promptTokens: number; completionTokens: number;
 }> {
-  const t0 = performance.now();
-  const res = await fetch(`${base}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      // optiq serve rejects requests without an sk-optiq- key (PLAN
-      // reference-env note); ours and mlx_lm.server ignore the header.
-      Authorization: "Bearer sk-optiq-local",
-    },
-    body: JSON.stringify({
-      model: modelId, stream: true, max_tokens: tokens, temperature: 0,
-      stream_options: { include_usage: true },
-      messages: [{ role: "user", content: PROMPT }],
-    }),
+  const body = JSON.stringify({
+    model: modelId, stream: true, max_tokens: tokens, temperature: 0,
+    stream_options: { include_usage: true },
+    messages: [{ role: "user", content: PROMPT }],
   });
-  if (!res.ok || !res.body) throw new Error(`server ${res.status}: ${await res.text()}`);
+  const t0 = performance.now();
+  const proc = Bun.spawn(
+    [
+      "curl", "-sN", "--max-time", "600", "--fail-with-body",
+      `${base}/chat/completions`,
+      "-H", "Content-Type: application/json",
+      // optiq serve rejects non-sk-optiq- keys when auth is enforced;
+      // ours and mlx_lm.server ignore the header.
+      "-H", "Authorization: Bearer sk-optiq-local",
+      "-d", body,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
   let firstContentAt = -1;
   let lastChunkAt = -1;
   let contentChunks = 0;
   let usage: any = null;
   const decoder = new TextDecoder();
   let buf = "";
-  for await (const chunk of res.body) {
+  for await (const chunk of proc.stdout) {
     buf += decoder.decode(chunk, { stream: true });
     let nl: number;
     while ((nl = buf.indexOf("\n")) >= 0) {
@@ -234,7 +242,10 @@ async function serverRequest(base: string, modelId: string, tokens: number): Pro
       let obj: any;
       try { obj = JSON.parse(line.slice(6)); } catch { continue; }
       const delta = obj.choices?.[0]?.delta;
-      if (delta?.content) {
+      // optiq serve routes channel-thought tokens into a `reasoning`
+      // delta (our server streams them as content) — any token-bearing
+      // field counts: a generated token is a generated token.
+      if (delta?.content || delta?.reasoning || delta?.reasoning_content) {
         contentChunks++;
         if (firstContentAt < 0) firstContentAt = performance.now();
         lastChunkAt = performance.now();
@@ -242,7 +253,11 @@ async function serverRequest(base: string, modelId: string, tokens: number): Pro
       if (obj.usage) usage = obj.usage;
     }
   }
-  if (firstContentAt < 0) throw new Error("no content chunks received");
+  const code = await proc.exited;
+  if (firstContentAt < 0) {
+    const err = await new Response(proc.stderr).text().catch(() => "");
+    throw new Error(`no content chunks received (curl exit ${code}) ${err.slice(0, 200)}`);
+  }
   const completionTokens = usage?.completion_tokens ?? contentChunks;
   const decodeTps =
     completionTokens > 1 ? ((completionTokens - 1) * 1000) / (lastChunkAt - firstContentAt) : 0;
