@@ -68,3 +68,29 @@ console.log(tok.decode(out, true).slice(0, 200) + "…\n");
 console.log(`prompt: ${s.promptTokens} tok @ ${s.prefillTps.toFixed(1)} tok/s`);
 console.log(`decode: ${s.generatedTokens} tok @ ${s.decodeTps.toFixed(1)} tok/s`);
 console.log(`peak mem: ${(peakMemory() / 1e9).toFixed(2)} GB`);
+
+// record in the eval DB with fit predictions for validation
+const { EvalDB, gitCommit } = await import("../src/evaldb");
+const { fit } = await import("../src/fit");
+const weightsBytes = [...weights.shards.files.values()]
+  .reduce((a, f) => a + f.mmap.size, 0);
+const ctxTokens = s.promptTokens + s.generatedTokens;
+const prediction = fit(config, weightsBytes, ctxTokens);
+const db = new EvalDB();
+db.record({
+  modelPath: SNAPSHOT,
+  commitSha: gitCommit(),
+  promptTokens: s.promptTokens,
+  cachedTokens: s.cachedTokens,
+  generatedTokens: s.generatedTokens,
+  prefillTps: s.prefillTps,
+  decodeTps: s.decodeTps,
+  peakBytes: peakMemory(),
+  predictedPeakBytes: prediction.totalBytes,
+  predictedDecodeTps: prediction.predictedDecodeTps,
+  notes: `bench.ts ${MAX_TOKENS}tok`,
+});
+console.log(
+  `recorded (predicted: ${prediction.predictedDecodeTps.toFixed(1)} tok/s, ` +
+  `${(prediction.totalBytes / 1e9).toFixed(2)} GB peak)`,
+);

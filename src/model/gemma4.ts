@@ -185,6 +185,14 @@ export class KVCache implements Cache {
     this.offset = Math.max(0, this.offset - n);
   }
 
+  /** Adopt persisted state (takes ownership of the arrays). */
+  restoreState(keys: MlxArray, values: MlxArray, offset: number): void {
+    this.dispose();
+    this.keys = keys;
+    this.values = values;
+    this.offset = offset;
+  }
+
   dispose(): void {
     this.keys?.dispose();
     this.values?.dispose();
@@ -359,6 +367,19 @@ export class RotatingKVCache implements Cache {
     const k = Math.min(this.offset, n);
     this.offset -= k;
     this.#idx -= k;
+  }
+
+  get ringIdx(): number {
+    return this.#idx;
+  }
+
+  /** Adopt persisted state (takes ownership of the arrays). */
+  restoreState(keys: MlxArray, values: MlxArray, offset: number, idx: number): void {
+    this.dispose();
+    this.keys = keys;
+    this.values = values;
+    this.offset = offset;
+    this.#idx = idx;
   }
 
   dispose(): void {

@@ -19,7 +19,9 @@ const libc = dlopen("/usr/lib/libSystem.B.dylib", {
 }).symbols;
 
 const PROT_READ = 0x1;
+const PROT_WRITE = 0x2;
 const MAP_SHARED = 0x1;
+const MAP_PRIVATE = 0x2;
 const MAP_FAILED = 0xffffffffffffffffn;
 
 export class MmapFile {
@@ -34,12 +36,17 @@ export class MmapFile {
     this.size = size;
   }
 
-  static open(path: string): MmapFile {
+  /** Open read-only (MAP_SHARED) or copy-on-write (MAP_PRIVATE +
+   *  PROT_WRITE — writes go to private pages, never the file; used for
+   *  KV-cache reloads where mlx may donate buffers). */
+  static open(path: string, mode: "ro" | "cow" = "ro"): MmapFile {
     const fd = openSync(path, "r");
     try {
       const size = fstatSync(fd).size;
       if (size === 0) throw new Error(`${path}: empty file`);
-      const base = libc.mmap(0n, BigInt(size), PROT_READ, MAP_SHARED, fd, 0n);
+      const prot = mode === "cow" ? PROT_READ | PROT_WRITE : PROT_READ;
+      const flags = mode === "cow" ? MAP_PRIVATE : MAP_SHARED;
+      const base = libc.mmap(0n, BigInt(size), prot, flags, fd, 0n);
       if (base === MAP_FAILED) throw new Error(`${path}: mmap failed`);
       return new MmapFile(path, base, size);
     } finally {

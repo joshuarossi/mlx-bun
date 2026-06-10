@@ -138,6 +138,19 @@ export class MlxArray {
     );
   }
 
+  /** Raw bytes of the evaluated array (copy). bf16/f16/f32 only. */
+  rawBytes(): Uint8Array {
+    this.eval();
+    const dt = this.dtype;
+    const p =
+      dt === Dtype.float32 ? C.mlx_array_data_float32(this.handle)
+      : dt === Dtype.float16 ? C.mlx_array_data_float16(this.handle)
+      : dt === Dtype.bfloat16 ? C.mlx_array_data_bfloat16(this.handle)
+      : null;
+    if (p === null) throw new Error(`rawBytes: unsupported dtype ${this.dtypeName}`);
+    return new Uint8Array(toArrayBuffer(p!, 0, this.nbytes)).slice();
+  }
+
   /** Read back as float32 (casts on GPU if needed, then copies out). */
   toFloat32(): Float32Array {
     const src = this.dtype === Dtype.float32 ? this : this.astype(Dtype.float32);
