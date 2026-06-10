@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // mlx-bun CLI: the appliance interface.
 //
+//   mlx-bun get <org/repo> [--revision main]   resumable verified download
 //   mlx-bun scan                          index the HF cache
 //   mlx-bun ls [--vision] [--max-size 10GB] [query]
 //   mlx-bun fit <query> [--ctx 32768] [--skus]
@@ -33,6 +34,33 @@ function parseSize(s: string): number {
 }
 
 switch (cmd) {
+  case "get": {
+    const repoId = positional(0);
+    if (!repoId || !repoId.includes("/")) {
+      console.error("usage: mlx-bun get <org/repo> [--revision main]");
+      process.exit(1);
+    }
+    const { downloadModel } = await import("./download");
+    let lastFile = "";
+    const snap = await downloadModel(repoId, {
+      revision: opt("revision", "main")!,
+      onProgress: (file, received, total) => {
+        const pct = total ? Math.floor((received / total) * 100) : 0;
+        if (file !== lastFile) {
+          if (lastFile) process.stdout.write("\n");
+          lastFile = file;
+        }
+        process.stdout.write(`\r  ${file}  ${gb(received)} / ${gb(total)} (${pct}%)   `);
+      },
+    });
+    if (lastFile) process.stdout.write("\n");
+    console.log(`snapshot: ${snap}`);
+    const reg = new Registry();
+    await reg.scan();
+    console.log("registry updated");
+    break;
+  }
+
   case "scan": {
     const reg = new Registry();
     const n = await reg.scan();
@@ -140,6 +168,6 @@ switch (cmd) {
   }
 
   default:
-    console.log("usage: mlx-bun <scan|ls|fit|serve|evals> [...]");
+    console.log("usage: mlx-bun <get|scan|ls|fit|serve|evals> [...]");
     process.exit(cmd ? 1 : 0);
 }

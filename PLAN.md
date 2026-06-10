@@ -394,8 +394,20 @@ Where we beat Python, not just match it.
       ceiling observable at /stats.admission; integration-tested
       (tight-budget server: over-budget 400 + in-budget 200; sub-weights
       budget refuses to load/serve).
-- [ ] Downloader: resumable HF fetch with checksums (native fetch; no
-      Xet; the thing the Python downloader kept failing at).
+- [x] Downloader (DONE 2026-06-10): resumable HF fetch with checksums
+      (`src/download.ts`, `mlx-bun get <org/repo>`). Plain HTTPS
+      resolve/CDN (no Xet), Range-resume of partial blobs with
+      re-hash-on-resume, EVERY blob verified (sha256 vs LFS oid; git
+      blob sha1 vs blobId for small files; mismatch deletes the
+      partial), writes the exact huggingface_hub cache layout
+      (blobs + depth-aware relative snapshot symlinks + refs) so
+      registry/loaders need zero changes, auth header STRIPPED at the
+      CDN redirect (presigned URLs reject it). Mock-server integration
+      tests (tests/download.test.ts — resume/corruption/idempotence/
+      auth-stripping, no network); real-API contract smoke-verified on
+      hf-internal-testing/tiny-random-gpt2. Sequential by design
+      (resumability over parallelism). Pairs with the Phase 8 deferred
+      adapter-by-repo-id mount when that lands.
 - [ ] **Embeddable build**: `bun build --compile` single-binary target for
       the Tauri/Electron sidecar pattern — apps ship local inference with
       zero user-visible dependencies. Requires: library-first API (server
@@ -466,7 +478,8 @@ Remaining work, in priority order:
 3. **Phase 5 leftovers** (independent): ~~memoryBudget enforcement~~
    (DONE 2026-06-10 — admission control shipped: load refusal, 400
    `memory_admission` rejection, /stats.admission, --memory-budget),
-   downloader, embeddable build. Docs-pass items.
+   ~~downloader~~ (DONE 2026-06-10 — `mlx-bun get`, resumable +
+   verified), embeddable build. Docs-pass items.
 4. Then Phase 9 (rotating KV-quant — reframed, see preamble),
    11 (Responses), 12 (SigLIP), 14 (Qwen).
 
