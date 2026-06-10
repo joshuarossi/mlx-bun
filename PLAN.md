@@ -36,8 +36,9 @@ on until it's met. Status markers: `[ ]` todo, `[~]` in progress, `[x]` done.
   `~/.cache/huggingface/hub/models--mlx-community--gemma-4-12B-it-OptiQ-4bit/snapshots/5b1101065d2094c8f12aa87fee80e0afa5b292b7/`
   (8.3 GB, 2 shards + optiq_vision.safetensors sidecar + kv_config.json).
   Note: optiq tooling wants the local snapshot *path*, not the HF repo id.
-- Measured baseline: 14.1 tok/s decode (600 tok / 42.5 s, 29-tok prompt),
-  ~8.5 GB resident serving. Theoretical bandwidth ceiling ≈ 32 tok/s.
+- Measured baseline: ~~14.1 tok/s~~ **25.7 tok/s direct decode** (the
+  14.1 was server-inflated — Phase 3 finding; compare direct-vs-direct
+  only). ~8.5 GB resident serving. Bandwidth ceiling ≈ 32 tok/s.
 - optiq source (readable, in the venv): `runtime/fused_quant_sdpa.py`,
   `runtime/streaming_kv_quant.py`, `vlm/` (vision sidecar wiring),
   `serve.py`. HF auth: `hf auth login` done; Xet disabled via
@@ -419,6 +420,27 @@ go through `read.u64`/`read.u32`; toArrayBuffer readbacks documented
 safe; `tests/ffi-jit.test.ts` pins the paths past DFG tier-up.
 75/75 tests, no perf regression (23.6 tok/s bench).
 
+## NEXT UP (updated 2026-06-10, post-MoE-bring-up)
+
+All three Gemma-4 targets (12B, e4b, 26B-A4B) now run at tier-a/d
+bit-exact parity. Remaining work, in priority order:
+
+1. **Phase 8 — LoRA hot-swap** (Josh's #1 priority; nothing blocks
+   starting it except test adapters — **Josh: pick/provide two, or we
+   train toy ranks against e4b**). Read order for the session:
+   `optiq/adapters/mount.py` → `registry.py` → `resolver.py`, then
+   `lora/apply.py` for the delta math.
+2. **Josh-gated verifications** (minutes each, machine access only):
+   (a) cleared-machine 26B bench → eval DB (`bun scripts/smoke-26b.ts`
+   after reboot); (b) Phase 4 exit: pi end-to-end + kill-9 restart.
+3. **Phase 6 closeout**: ship best-measured defaults per (model,
+   context) — e.g. kv-quant on full-attention layers by default at
+   long context; record the decision table in the eval DB/README.
+4. **Phase 5 leftovers** (independent, pick-up-anytime): memoryBudget
+   enforcement, downloader, embeddable build. Docs-pass items likewise.
+5. Then Phase 9 (rotating KV-quant — REFRAMED, see its preamble),
+   Phase 10 (fused prefill), 11 (Responses), 12 (SigLIP), 14 (Qwen).
+
 ## Phase 6 — Speed: change what gets computed `[~]`
 
 Ordered by expected payoff on this hardware:
@@ -518,9 +540,10 @@ Ordered by expected payoff on this hardware:
 - Drafter implementation shortcut (argmax-equivalent, documented in
   src/spec/drafter.ts): argmax over the 4096 centroid-candidate scores
   instead of scattering into 262k logits.
-- **Phase 6 exit (≥2x) still open** — quantized KV (+21%) and spec
-  (net loss on e4b) don't reach it; the remaining lever is the
-  26B-A4B MoE (gather_qmm), next milestone.
+- ~~Phase 6 exit (≥2x) still open~~ — superseded the same day: the
+  exit criterion was reframed to "characterize each lever, ship the
+  best defaults" (see Phase 6), and the MoE landed with bit-exact
+  parity in the following session.
 
 ### Phase 6 findings (2026-06-10, MoE bring-up session)
 
@@ -666,9 +689,16 @@ can run in parallel with Phase 6 completion.
 
 The unmatched half of KV-quant — currently 40 of 48 Gemma-4 12B layers
 (and ALL e4b sliding layers) keep bf16 KV; "NYI upstream too" hides
-that optiq CAN do it. **Effectively a co-requisite of Phase 6's MoE
-being usable**: the 26B-A4B fits its weights on 24 GB but the
-unquantized sliding-layer KV is what breaks long-context fit.
+that optiq CAN do it. ~~Effectively a co-requisite of Phase 6's MoE
+being usable~~ **REFRAMED 2026-06-10 (measured)**: the 26B's sliding
+KV is window-capped at ~0.2 GB total and its max safe context is
+already ~17.6k with bf16 KV — rotating-quant is NOT a 26B
+prerequisite. Its real value: (a) the GROWING term for 26B long
+context is the 5 full-attention layers, already quantizable with the
+shipped Phase 6 QuantizedKVCache (wire + measure first — cheaper than
+this phase); (b) bounded-but-real savings on sliding-heavy stacks
+(12B: 40/48 layers; e4b: all sliding) where every wired MB counts at
+24 GB. Sequence after the cheap full-attention win is measured.
 
 - [ ] Read `optiq/runtime/kv/rotating.py` (oracle) AND its SDPA
       dispatch patch for Gemma-4's KV-sharing layers BEFORE estimating —
@@ -776,10 +806,12 @@ two-model speculation measured a net loss.
 ## Cross-cutting (standing items)
 
 - **Registry**: per-model LICENSE column (Gemma custom terms vs Qwen
-  Apache-2.0 vs MiniCPM Apache-2.0); bf16 vision-sidecar size recorded
-  SEPARATELY from the quantized-language term.
-- **Fit table**: the vision sidecar is its own line item (bf16, loads
-  only for vision requests), never folded into language weights.
+  Apache-2.0 vs MiniCPM Apache-2.0) — still open. ~~bf16 vision-sidecar
+  size recorded SEPARATELY~~ done 2026-06-10 (sidecar_bytes column).
+- ~~Fit table: the vision sidecar is its own line item~~ done
+  2026-06-10 (`fit` prints the sidecar line; never folded into
+  language weights). MoE corollary landed with it: experts_bytes
+  column + active-expert decode prediction.
 - **License headers**: every ported file carries upstream source +
   license (audit item from the docs pass).
 - **Bun upgrade gate**: the bun#32054 regression test + the FFI soak
@@ -828,9 +860,11 @@ two-model speculation measured a net loss.
   page-aligned. Weights use mlx's native lazy loader instead.
 - ~~Tokenizers binding: C API vs WASM — perf and packaging trade.~~
   Answered in Phase 1: neither — `@huggingface/tokenizers` is pure JS.
-- Vision sidecar format: confirm optiq_vision.safetensors layout and
-  preprocessing (no preprocessor_config.json in the repo; read optiq/vlm
-  source).
+- ~~Vision sidecar format: confirm optiq_vision.safetensors layout and
+  preprocessing.~~ Answered in Phase 4 for the 12B's encoder-free
+  unified format (bit-exact vision parity). NOTE: the 26B's sidecar is
+  1.07 GB vs the 12B's 105 MB — likely a full SigLIP tower, i.e. the
+  Phase 12 format; verify layout when Phase 12 starts.
 - Bun Rust-core transition: when canary becomes stable, does bun:ffi
   change? Track release notes.
 - ~~Chat template drift: hand-ported templates rot when models update —
