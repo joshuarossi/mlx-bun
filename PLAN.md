@@ -445,6 +445,28 @@ Ordered by expected payoff on this hardware:
 
 ### Phase 6 findings (2026-06-10)
 
+- **MTP speculative decoding is NOT possible for gemma-4-12B-it-OptiQ-4bit
+  — the MTP head does not exist.** Verified exhaustively (2026-06-10):
+  no `mtp.safetensors`/`mtp/weights.safetensors`/`model-mtp.safetensors`
+  in the snapshot; every cache blob is linked (no orphan artifact); no
+  MTP/draft tensors among the 1324 shard tensors; no
+  `mlx_lm_extra_tensors.mtp_file` in config.json; and the REMOTE HF repo
+  file list matches the local snapshot exactly — the artifact was never
+  published for this model. Deeper: optiq's MTP runtime
+  (`optiq/runtime/mtp/backends/`) has backends for deepseek/glm/mimo/
+  nemotron-h/qwen3_next only — **no gemma backend**. MTP requires a
+  model trained with an MTP head; Gemma-4 doesn't ship one. The "Qwen
+  quants ship mtp.safetensors" pattern is real but family-specific
+  (qwen3_next, optiq support level "verified-native").
+- Paths to the ≥2x exit criterion, both needing a download (Josh's
+  call): (a) classic two-model speculation with a small gemma-4 drafter
+  (port mlx-lm generate_step's draft_model accept/reject loop; greedy
+  output must stay token-identical to non-spec decode — exact-equality
+  test tier); or (b) bring up Qwen 3.x (already in scope per design
+  principles) with an OptiQ quant that ships the MTP head, and port
+  optiq/runtime/mtp (trace_parity.py first) against its qwen3_next
+  backend.
+
 - **Greedy trajectories are loop-shape-sensitive, even within mlx-lm**:
   its pipelined stream_generate, an unpipelined manual loop, and our
   pipelined loop produce three different (all-coherent) continuations of
