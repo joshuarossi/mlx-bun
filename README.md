@@ -24,17 +24,17 @@ git clone <this repo> && cd mlx-bun
 bun install
 ```
 
-**2. Get a model.** mlx-bun loads models from your Hugging Face cache.
-Until the built-in downloader lands (on the roadmap), fetch one with the
-HF CLI (`pip install -U "huggingface_hub[cli]"` — yes, Python downloads
-the weights for now; it never runs them):
+**2. Get a model.** The built-in downloader is resumable (interrupt it,
+rerun, it continues with a Range request) and checksum-verifies every
+file. It writes the standard Hugging Face cache layout, so models you
+already have are found as-is:
 
 ```sh
-hf download mlx-community/gemma-4-e4b-it-OptiQ-4bit
+bun src/cli.ts get mlx-community/gemma-4-e4b-it-OptiQ-4bit
 ```
 
-> Download stalling? Try `HF_HUB_DISABLE_XET=1 hf download ...` — Xet
-> transfers misbehave on some networks.
+(Models fetched with the HF CLI work too — same cache. Gated repos use
+your existing `hf auth login` token automatically.)
 
 **3. Index your cache and serve:**
 
@@ -103,12 +103,14 @@ one:
 ## CLI
 
 ```sh
+bun src/cli.ts get mlx-community/gemma-4-12B-it-OptiQ-4bit   # resumable, verified download
 bun src/cli.ts scan                 # index your HF cache into the registry
 bun src/cli.ts ls                   # list models (size, params, quant, capabilities)
 bun src/cli.ts ls --vision --max-size 10GB
 bun src/cli.ts fit gemma --ctx 32768          # memory contract: fits? max context? predicted tok/s
 bun src/cli.ts fit gemma --ctx 8192 --skus    # ...same, across the Apple Silicon lineup
 bun src/cli.ts serve gemma --port 8090        # OpenAI-compatible server
+bun src/cli.ts serve gemma --memory-budget 18 # ...with admission control (GB)
 bun src/cli.ts evals                # recorded benchmark runs
 ./benchmark.sh                      # head-to-head matrix vs mlx-lm/optiq (reboot first;
                                     #   preflight-gated, resumable, writes benchmarks-h2h-<date>.md)
@@ -132,8 +134,9 @@ OpenAI protocol can point at it — the OpenAI SDK
 agent CLIs like pi/OpenClaw via their provider config.
 
 - **`POST /v1/chat/completions`** — streaming (SSE) and non-streaming;
-  `temperature`, `top_p`, `max_tokens`, `seed`, `stop`; usage includes
-  `cached_tokens`.
+  `temperature`, `top_p`, `top_k`, `max_tokens`, `seed`,
+  `repetition_penalty`; usage includes `cached_tokens`. Full schemas in
+  [docs/server-api.md](./docs/server-api.md).
 - **Tool calling** — pass OpenAI `tools`; the model's native
   `<|tool_call>` markers are parsed into `tool_calls` JSON with
   `finish_reason: "tool_calls"`; `role: "tool"` round-trips.
@@ -153,7 +156,15 @@ agent CLIs like pi/OpenClaw via their provider config.
   automatically (full-attention layers; sliding layers stay bf16).
   Measured decode-neutral at 8k on the 12B with KV bytes ÷4 on the
   quantized layers. `--no-kv-quant` forces bf16; `--kv-bits N` forces
-  uniform bits.
+  uniform bits. Long prefills over quantized caches run a fused
+  FlashAttention-2 tiling that never materializes the full scores
+  matrix (bounded transient; `MLX_BUN_NO_FUSED_SDPA=1` to disable).
+- **Memory admission control** — `--memory-budget <GB>` refuses to load
+  a model that can't serve within the budget and rejects requests whose
+  `prompt + max_tokens` exceed the budget's max safe context with a 400
+  (`type: "memory_admission"`) *before* generating. The GPU
+  out-of-memory crash it prevents is uncatchable by design — rejection
+  up front is the only defense. Ceiling visible at `GET /stats`.
 - **`GET /v1/models`**, **`GET /stats`** (cache hit rates, bytes,
   active KV scheme), **`GET/POST/DELETE /v1/adapters`**.
 
@@ -220,11 +231,15 @@ upstream optiq bug; both are documented in the results file.
 
 Logit parity with mlx-lm (same weights, Python reference) is the
 project's oracle. The test suite holds the forward pass **bit-exact**
-against it, and every ported helper follows the reference
-implementation's exact op composition (see PLAN.md for the findings that
-made that possible). Golden files are regenerated only by explicit
-scripts (`scripts/regen-goldens.ts`, `scripts/regen-parity-goldens.ts`)
-running the Python oracle.
+against it — including every quantized-KV configuration (kv8, kv4, and
+the 26B's mixed per-layer scheme) and the fused quantized-attention
+prefill, which is bit-exact against optiq's reference implementation.
+Every ported helper follows the reference implementation's exact op
+composition, down to constants built at load time (the one latent
+divergence ever found — rope frequencies computed host-side instead of
+on-device — was root-caused and fixed in Phase 10; see PLAN.md
+findings). Golden files are regenerated only by explicit scripts
+(`scripts/regen-*.ts`) running the Python oracle.
 
 ```sh
 bun test    # fast tier runs everywhere; model-loaded tests auto-skip
@@ -237,8 +252,9 @@ bun test    # fast tier runs everywhere; model-loaded tests auto-skip
   older setups check `/opt/homebrew/lib` is in your dyld path.
 - **`no models match`** — run `bun src/cli.ts scan` after downloading;
   models must be in the standard HF cache (`~/.cache/huggingface/hub`).
-- **HF download stalls at 0%** — `HF_HUB_DISABLE_XET=1` before the
-  download command.
+- **HF download stalls at 0%** — use `bun src/cli.ts get <org/repo>`
+  (plain HTTPS, no Xet, resumes where it left off); for the Python CLI,
+  `HF_HUB_DISABLE_XET=1` before the download command.
 - **Slow decode on a model near your RAM ceiling** — close memory-heavy
   apps; a model that doesn't fit the wired-memory budget pages weights
   every token (check with `fit`).
@@ -251,11 +267,14 @@ Pre-alpha, moving fast. See [PLAN.md](./PLAN.md) for phases, exit
 criteria, measured numbers, and the findings log. Complete: load path,
 bit-exact model port (12B dense / e4b per-layer-input / 26B MoE),
 sampling + serving (tools, vision, prompt cache), registry/fit/KV
-persistence, quantized + mixed-precision KV serving, LoRA hot-swap with
-per-request selection, and the head-to-head benchmark harness. Open:
-the 12B long-context decode gap (−10% @8k vs mlx-lm), fused quantized
-prefill (Phase 10), rotating-KV quant (Phase 9), Responses API, SigLIP
-vision for e4b/26B, Qwen 3.x.
+persistence, quantized + mixed-precision KV serving with fused
+quantized prefill (Phase 10), LoRA hot-swap with per-request selection,
+resumable verified downloads (`mlx-bun get`), memory admission control,
+and the head-to-head benchmark harness. Open: the 12B long-context
+decode gap (−10% @8k vs mlx-lm — re-baseline pending a cleared-machine
+run), rotating-KV quant (Phase 9), Anthropic messages + Responses API
+(Phase 11), SigLIP vision for e4b/26B, Qwen 3.x, the embeddable
+single-binary build.
 
 ## License
 
