@@ -21,8 +21,10 @@ one:
 
 - **`bun:ffi`** — lowest-overhead FFI of any JS runtime; binds `mlx-c`
   directly, no node-gyp, no binding compilation.
-- **`Bun.mmap`** — safetensors weights map zero-copy; model "load" becomes
-  page-table setup, restarts are near-instant on warm pages.
+- **Lazy native weight loading** — mlx's loader materializes tensors on
+  first use; opening an 8.9 GB model takes milliseconds, and warm
+  restarts are near-instant on cached pages. Header parsing and the
+  model registry read mmap'd metadata without touching tensor bytes.
 - **Fast JSON + base64** — vision requests embed multi-MB base64 images in
   JSON; JavaScriptCore parses them dramatically faster than CPython.
 - **`bun:sqlite`** — built-in storage for the model registry, KV-cache

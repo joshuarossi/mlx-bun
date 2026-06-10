@@ -97,19 +97,69 @@ The load-bearing question for the whole project.
   `mlx_quantized_matmul` from bun:ffi. Verify the packing in Phase 2
   before relying on it.
 
-## Phase 1 — Load path `[ ]`
+## Phase 1 — Load path `[x]`
 
-- [ ] Safetensors parser: JSON header → {name, dtype, shape, offset};
-      `Bun.mmap` the blob; zero-copy subarray views per tensor.
-- [ ] config.json reader; quantization metadata (per-layer bits/group_size
-      for OptiQ mixed-precision).
-- [ ] Construct mlx arrays from mmap'd views without copying.
-- [ ] Tokenizer: bind HF `tokenizers` (Rust) via its C API, or use its
-      WASM build — decision spike. Chat template: hand-port Gemma's Jinja
-      template (no general Jinja engine).
+- [x] Safetensors parser: JSON header → {name, dtype, shape, offset};
+      mmap the blob (libc mmap via FFI — see findings); zero-copy views.
+      (`src/safetensors.ts`, `src/mmap.ts`; fixture unit tests.)
+- [x] config.json reader; quantization metadata (per-layer bits/group_size
+      for OptiQ mixed-precision). (`src/config.ts` — also parses
+      kv_config.json and detects the vision sidecar.)
+- [x] Construct mlx arrays without copying — **amended, see findings**:
+      tensor data goes through mlx's native lazy loader
+      (`mlx_load_safetensors`); our parser is the metadata path.
+      (`src/weights.ts`; oracle value-parity tests pass.)
+- [x] Tokenizer: **decision = `@huggingface/tokenizers` (pure JS/TS)** —
+      no native code, no WASM, embeds in `bun build --compile`. Oracle
+      round-trip parity on 7 prompts (unicode/emoji/code/template markers).
+      Chat template: **decision = render the model's own template with
+      `@huggingface/jinja`** instead of hand-porting — a hand-port rots
+      when the model updates; rendering upstream's template can't. Parity
+      with `apply_chat_template` verified. (`src/tokenizer.ts`,
+      `src/chat-template.ts`.)
 - **Exit criterion:** load gemma-4-12B-it-OptiQ-4bit from the HF cache,
   print every tensor's name/shape/dtype, tokenize and detokenize a
-  round-trip string identical to mlx-lm's tokenizer output.
+  round-trip string identical to mlx-lm's tokenizer output. → **Met**:
+  `scripts/inspect-model.ts` enumerates all 1324 tensors (8.86 GB) in
+  ~15 ms at 75 MB RSS; tokenizer + template parity in `bun test`.
+
+### Phase 1 findings (2026-06-09)
+
+- **`Bun.mmap` panics (SIGTRAP) on files > 4 GB** (Bun 1.3.3) — JSC
+  ArrayBuffers cap at 2^32 bytes and Bun traps instead of erroring.
+  Weight shards exceed that (shard 1 is 5.35 GB). Workaround that's also
+  the better design: libc `mmap` via bun:ffi (`src/mmap.ts`), tensors
+  handed around as raw pointers, JS views created only for small ranges.
+- **Metal can't no-copy-wrap unaligned host pointers.** GPU ops on
+  externally-wrapped buffers (`mlx_array_new_data_managed*`) read
+  garbage unless the pointer is page-aligned — mlx evidently wraps the
+  rounded-down page. Safetensors tensor offsets are arbitrary (layer-0
+  layernorm sits 9707 bytes past a page boundary — not even element-
+  aligned). CPU-stream ops on the same wrapped pointer are correct.
+  **Decision:** weights go through `mlx_load_safetensors` (mlx's native
+  lazy loader — open in ~2 ms, per-tensor read into mlx-owned page-
+  aligned unified buffers on first eval; exactly what Python's mx.load
+  does). The Load primitive is CPU-only (`Load::eval_gpu` not
+  implemented) — always pass the CPU stream to the loader.
+- **Phase 5 corollary:** files *we* write (KV-cache persistence) can pad
+  tensor offsets to page boundaries, making true zero-copy GPU wrapping
+  viable for cache reload. The mmap-wrap machinery (`MlxArray.fromPointer`)
+  is kept for that.
+- **Read full signatures from headers, never from memory/truncated grep**:
+  `mlx_dequantize` has 10 params (an `mlx_optional_dtype` hides before
+  the stream); binding it with 9 put the stream in the dtype slot →
+  "There is no Stream(gpu, <garbage>)". Controlled FFI tests confirmed
+  bun:ffi handles 9/10-arg calls and by-value structs correctly — the
+  bug was the signature. `mlx_optional_int` packing as u64
+  (value | 1n<<32n) verified working via dequantize parity.
+- Gemma 4 architecture notes for Phase 2 (from config.json): 48 layers
+  (40 sliding @ window 1024, 8 full), GQA 16 heads / 8 kv heads @
+  head_dim 256, but **full-attention layers use 1 kv head @ head_dim 512
+  with `attention_k_eq_v: true`** (K and V shared); per-layer
+  `layer_scalar` tensors; partial rotary (factor 0.25) + rope_theta 1e6
+  on full layers vs theta 1e4 on sliding; final_logit_softcapping 30;
+  tied embeddings. Port target is mlx-lm's **gemma4** model (model_type
+  is `gemma4_unified`, not gemma3 as CLAUDE.md guessed).
 
 ## Phase 2 — The model graph + correctness oracle `[ ]`
 
@@ -240,15 +290,19 @@ Only after profiling shows where bytes move unnecessarily.
 ## Open questions
 
 - ~~mlx-c external-buffer array creation: zero-copy from mmap confirmed?~~
-  Answered in Phase 0: yes, via `mlx_array_new_data_managed`.
-- Tokenizers binding: C API vs WASM — perf and packaging trade.
+  Phase 0 said yes; Phase 1 amended: zero-copy wrap is CPU-only unless
+  page-aligned. Weights use mlx's native lazy loader instead.
+- ~~Tokenizers binding: C API vs WASM — perf and packaging trade.~~
+  Answered in Phase 1: neither — `@huggingface/tokenizers` is pure JS.
 - Vision sidecar format: confirm optiq_vision.safetensors layout and
   preprocessing (no preprocessor_config.json in the repo; read optiq/vlm
   source).
 - Bun Rust-core transition: when canary becomes stable, does bun:ffi
   change? Track release notes.
-- Chat template drift: hand-ported templates rot when models update —
-  checksum the upstream .jinja and warn on mismatch.
+- ~~Chat template drift: hand-ported templates rot when models update —
+  checksum the upstream .jinja and warn on mismatch.~~ Answered in
+  Phase 1: no hand-port; render the model's own template via
+  `@huggingface/jinja` — drift impossible by construction.
 
 ## Context / lore
 

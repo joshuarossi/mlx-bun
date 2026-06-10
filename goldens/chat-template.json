@@ -1,0 +1,94 @@
+{
+ "cases": [
+  {
+   "messages": [
+    {
+     "role": "user",
+     "content": "What is 2+2?"
+    }
+   ],
+   "rendered": "<bos><|turn>user\nWhat is 2+2?<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+   "ids": [
+    2,
+    105,
+    2364,
+    107,
+    3689,
+    563,
+    236743,
+    236778,
+    236862,
+    236778,
+    236881,
+    106,
+    107,
+    105,
+    4368,
+    107,
+    100,
+    45518,
+    107,
+    101
+   ]
+  },
+  {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are terse."
+    },
+    {
+     "role": "user",
+     "content": "Hi"
+    },
+    {
+     "role": "assistant",
+     "content": "Hello."
+    },
+    {
+     "role": "user",
+     "content": "Bye"
+    }
+   ],
+   "rendered": "<bos><|turn>system\nYou are terse.<turn|>\n<|turn>user\nHi<turn|>\n<|turn>model\nHello.<turn|>\n<|turn>user\nBye<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+   "ids": [
+    2,
+    105,
+    9731,
+    107,
+    3048,
+    659,
+    17514,
+    236761,
+    106,
+    107,
+    105,
+    2364,
+    107,
+    10979,
+    106,
+    107,
+    105,
+    4368,
+    107,
+    9259,
+    236761,
+    106,
+    107,
+    105,
+    2364,
+    107,
+    98874,
+    106,
+    107,
+    105,
+    4368,
+    107,
+    100,
+    45518,
+    107,
+    101
+   ]
+  }
+ ]
+}

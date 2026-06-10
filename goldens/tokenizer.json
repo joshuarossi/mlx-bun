@@ -1,0 +1,152 @@
+{
+ "cases": [
+  {
+   "text": "Hello, world!",
+   "ids": [
+    9259,
+    236764,
+    1902,
+    236888
+   ],
+   "decoded": "Hello, world!"
+  },
+  {
+   "text": "The quick brown fox jumps over the lazy dog.",
+   "ids": [
+    818,
+    3823,
+    8864,
+    37423,
+    38167,
+    1024,
+    506,
+    31770,
+    4799,
+    236761
+   ],
+   "decoded": "The quick brown fox jumps over the lazy dog."
+  },
+  {
+   "text": "def fibonacci(n):\n    return n if n < 2 else fibonacci(n-1) + fibonacci(n-2)",
+   "ids": [
+    2063,
+    10779,
+    78113,
+    236769,
+    236749,
+    1473,
+    107,
+    140,
+    2060,
+    538,
+    768,
+    538,
+    655,
+    236743,
+    236778,
+    1663,
+    10779,
+    78113,
+    236769,
+    236749,
+    236772,
+    236770,
+    236768,
+    900,
+    10779,
+    78113,
+    236769,
+    236749,
+    236772,
+    236778,
+    236768
+   ],
+   "decoded": "def fibonacci(n):\n    return n if n < 2 else fibonacci(n-1) + fibonacci(n-2)"
+  },
+  {
+   "text": "Ünïcödé ░▒▓ 日本語のテキスト 🦀🔥 ‍ emoji zwj",
+   "ids": [
+    238194,
+    236749,
+    238527,
+    236755,
+    55515,
+    236859,
+    236743,
+    243383,
+    243386,
+    243931,
+    33375,
+    238582,
+    236945,
+    95830,
+    236743,
+    248714,
+    240785,
+    205730,
+    64334,
+    18484,
+    236804
+   ],
+   "decoded": "Ünïcödé ░▒▓ 日本語のテキスト 🦀🔥 ‍ emoji zwj"
+  },
+  {
+   "text": "  leading and trailing spaces  ",
+   "ids": [
+    138,
+    26016,
+    532,
+    45330,
+    9952,
+    138
+   ],
+   "decoded": "  leading and trailing spaces  "
+  },
+  {
+   "text": "<start_of_turn>user\nWhat is 2+2?<end_of_turn>\n<start_of_turn>model\n",
+   "ids": [
+    236820,
+    3041,
+    236779,
+    1340,
+    236779,
+    887,
+    236813,
+    2364,
+    107,
+    3689,
+    563,
+    236743,
+    236778,
+    236862,
+    236778,
+    145912,
+    643,
+    236779,
+    1340,
+    236779,
+    887,
+    236813,
+    107,
+    236820,
+    3041,
+    236779,
+    1340,
+    236779,
+    887,
+    236813,
+    4368,
+    107
+   ],
+   "decoded": "<start_of_turn>user\nWhat is 2+2?<end_of_turn>\n<start_of_turn>model\n"
+  },
+  {
+   "text": "",
+   "ids": [],
+   "decoded": ""
+  }
+ ],
+ "bos_token_id": 2,
+ "eos_token_id": 1,
+ "vocab_size": 262144
+}

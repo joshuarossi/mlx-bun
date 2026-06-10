@@ -27,6 +27,15 @@ README.md has the pitch and scope boundaries.
 
 ## Hard-won environment facts
 
+- `Bun.mmap` panics (SIGTRAP) on files > 4 GB (Bun 1.3.3) — use libc
+  mmap via bun:ffi (`src/mmap.ts`).
+- Metal/mlx cannot no-copy-wrap host pointers that aren't page-aligned:
+  GPU ops silently read garbage (CPU-stream ops are fine). Weights load
+  via `mlx_load_safetensors` on the **CPU stream** (Load has no GPU
+  kernel). See PLAN.md Phase 1 findings.
+- When binding mlx-c functions, read the full signature from the header
+  first — a missed trailing optional param shifts the stream arg and
+  produces "There is no Stream(...)" errors at eval time.
 - HF downloads: Xet stalls on this network — `HF_HUB_DISABLE_XET=1`.
   Auth is set up (`hf auth login` done).
 - optiq tooling wants local snapshot *paths*, not HF repo ids (its
