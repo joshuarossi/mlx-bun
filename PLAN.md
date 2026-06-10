@@ -971,9 +971,38 @@ Matrix: stacks {mlx-bun, mlx-lm, mlx-optiq} × models {e4b, 12B,
       stack's best KV config (ours per kv_config.json; optiq
       `--kv-config`; mlx-lm stock — its gemma4 kv-quant crashes,
       recorded finding).
-- [ ] Harness: `scripts/bench-h2h.ts` driving all three over HTTP;
-      results → eval DB (stack column) + a generated markdown table
-      for the README.
+- [x] Harness: `scripts/bench-h2h.ts` (built 2026-06-10):
+      `preflight|direct|server|client|table`. Preflight ENFORCES the
+      method rules (swap ≈ 0, free-memory floor, thermal, big foreign
+      processes) — refuses uncleared machines; `--force` records rows
+      flagged "preflight-failed". Interleaved median-of-N, discarded
+      warmup, machine-state snapshot in every eval-DB row (new
+      `stack` + `machine_state` columns). `client` mode measures
+      Josh-started python servers identically (TTFT + streamed decode
+      at the client). Smoke-tested end-to-end on a dirty machine
+      (rows flagged, not headline).
+
+### Phase 15 findings (2026-06-10, harness bring-up)
+
+- **The harness found a real serving bug in its first run: our SSE
+  response didn't stream.** The decode loop is an unbroken microtask
+  chain (FFI calls + async-generator resumes never yield the event
+  loop), so Bun never serviced the socket — every chunk flushed in
+  one burst at generation end. Client-side symptoms: "decode 687k
+  tok/s", TTFT = full generation time. All prior streaming tests
+  passed because they only checked content, never arrival timing.
+  Fix: rate-limited macrotask hop (`setImmediate`, ≥25 ms between
+  flushes) after sent chunks; per-token hopping cost ~23% decode,
+  rate-limited it hides behind the in-flight GPU step. Warm TTFT
+  measured at the client: 54 ms (prompt-cached e4b).
+- `loadContext` crashed on e4b/26B (SigLIP-format sidecar fed to the
+  encoder-free loader) — `serve` on those models had never actually
+  been run. Now degrades to text-only with a warning.
+- Server-mediated decode on the DIRTY machine read 37–41 tok/s vs ~53
+  direct — but runs spread 30.8–41.2 across minutes; the overhead
+  number is a cleared-machine question, not tunable in noise. That
+  discipline (stop measuring, reboot first) is the preflight's whole
+  job.
 - **Method rules (from prior findings, non-negotiable):** cleared
   machine (no swap from earlier runs); warm second run for prefill
   (cold prefill is page-in-dominated); direct-vs-direct and
