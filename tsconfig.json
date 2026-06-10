@@ -6,8 +6,9 @@
     "moduleResolution": "bundler",
     "types": ["bun"],
     "strict": true,
+    "skipLibCheck": true,
     "noUncheckedIndexedAccess": true,
     "noEmit": true
   },
-  "include": ["src", "spikes", "scripts", "tests"]
+  "include": ["src", "scripts", "tests"]
 }

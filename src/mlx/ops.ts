@@ -81,12 +81,14 @@ export function rope(
 
 export function sdpa(
   q: MlxArray, k: MlxArray, v: MlxArray, scale: number,
-  maskMode: "" | "causal", s: S = gpuStream,
+  maskMode: "" | "causal" | "array", maskArr: MlxArray | null = null,
+  s: S = gpuStream,
 ): MlxArray {
   return new MlxArray(
     outArray("fast_sdpa", (o) =>
       C.mlx_fast_scaled_dot_product_attention(
-        o, q.handle, k.handle, v.handle, scale, ptr(cstr(maskMode)), 0n, 0n, s,
+        o, q.handle, k.handle, v.handle, scale, ptr(cstr(maskMode)),
+        maskArr?.handle ?? 0n, 0n, s,
       ),
     ),
   );
@@ -186,6 +188,138 @@ export function geluApprox(x: MlxArray, s: S = gpuStream): MlxArray {
   const out = mul(halfx, t1, s);
   for (const a of [three, x3, cx3, inner, scaled, t, one, t1, halfx]) a.dispose();
   return out;
+}
+
+export function exp(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("exp", (o) => C.mlx_exp(o, a.handle, s)));
+}
+
+export function neg(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("negative", (o) => C.mlx_negative(o, a.handle, s)));
+}
+
+export function argsortAxis(a: MlxArray, axis: number, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("argsort", (o) => C.mlx_argsort_axis(o, a.handle, axis, s)));
+}
+
+export function argpartitionAxis(a: MlxArray, kth: number, axis: number, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("argpartition", (o) => C.mlx_argpartition_axis(o, a.handle, kth, axis, s)),
+  );
+}
+
+export function takeAlongAxis(a: MlxArray, idx: MlxArray, axis: number, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("take_along_axis", (o) => C.mlx_take_along_axis(o, a.handle, idx.handle, axis, s)),
+  );
+}
+
+export function putAlongAxis(
+  a: MlxArray, idx: MlxArray, values: MlxArray, axis: number, s: S = gpuStream,
+): MlxArray {
+  return new MlxArray(
+    outArray("put_along_axis", (o) =>
+      C.mlx_put_along_axis(o, a.handle, idx.handle, values.handle, axis, s),
+    ),
+  );
+}
+
+export function cumsum(a: MlxArray, axis: number, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("cumsum", (o) => C.mlx_cumsum(o, a.handle, axis, false, true, s)),
+  );
+}
+
+export function where(cond: MlxArray, x: MlxArray, y: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("where", (o) => C.mlx_where(o, cond.handle, x.handle, y.handle, s)),
+  );
+}
+
+export function arange(start: number, stop: number, step: number, dtype: Dtype, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("arange", (o) => C.mlx_arange(o, start, stop, step, dtype, s)),
+  );
+}
+
+export function logsumexpAxis(a: MlxArray, axis: number, keepdims: boolean, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("logsumexp", (o) => C.mlx_logsumexp_axis(o, a.handle, axis, keepdims, s)),
+  );
+}
+
+export function greaterEqual(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("greater_equal", (o) => C.mlx_greater_equal(o, a.handle, b.handle, s)),
+  );
+}
+
+export function less(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("less", (o) => C.mlx_less(o, a.handle, b.handle, s)));
+}
+
+export function logicalAnd(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("logical_and", (o) => C.mlx_logical_and(o, a.handle, b.handle, s)),
+  );
+}
+
+export function zeros(shape: number[], dtype: Dtype, s: S = gpuStream): MlxArray {
+  const buf = new Int32Array(shape);
+  return new MlxArray(
+    outArray("zeros", (o) => C.mlx_zeros(o, ptr(buf), BigInt(shape.length), dtype, s)),
+  );
+}
+
+export function sliceUpdate(
+  src: MlxArray, update: MlxArray, start: number[], stop: number[], s: S = gpuStream,
+): MlxArray {
+  const st = new Int32Array(start);
+  const sp = new Int32Array(stop);
+  const strides = new Int32Array(start.map(() => 1));
+  return new MlxArray(
+    outArray("slice_update", (o) =>
+      C.mlx_slice_update(
+        o, src.handle, update.handle,
+        ptr(st), BigInt(st.length), ptr(sp), BigInt(sp.length),
+        ptr(strides), BigInt(strides.length), s,
+      ),
+    ),
+  );
+}
+
+export function randomKey(seed: bigint): MlxArray {
+  return new MlxArray(outArray("random_key", (o) => C.mlx_random_key(o, seed)));
+}
+
+export function randomCategorical(logits: MlxArray, key: MlxArray | null, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("categorical", (o) =>
+      C.mlx_random_categorical(o, logits.handle, -1, key?.handle ?? 0n, s),
+    ),
+  );
+}
+
+/** Eval several arrays in one call (e.g. cache state after a prefill chunk). */
+export function evalAll(arrays: MlxArray[]): void {
+  const handles = new BigUint64Array(arrays.map((a) => a.handle));
+  const vec = C.mlx_vector_array_new_data(ptr(handles), BigInt(arrays.length));
+  try {
+    if (C.mlx_eval(vec) !== 0) throw new Error("mlx_eval failed");
+  } finally {
+    C.mlx_vector_array_free(vec);
+  }
+}
+
+/** Kick off async evaluation (decode pipelining). */
+export function asyncEvalAll(arrays: MlxArray[]): void {
+  const handles = new BigUint64Array(arrays.map((a) => a.handle));
+  const vec = C.mlx_vector_array_new_data(ptr(handles), BigInt(arrays.length));
+  try {
+    if (C.mlx_async_eval(vec) !== 0) throw new Error("mlx_async_eval failed");
+  } finally {
+    C.mlx_vector_array_free(vec);
+  }
 }
 
 /** Read a scalar uint32 (forces eval). */

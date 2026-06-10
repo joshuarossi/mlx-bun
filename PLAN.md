@@ -207,16 +207,46 @@ The load-bearing question for the whole project.
 - 0-d scalars via bun:ffi: `ptr()` rejects empty TypedArrays — pass a
   dummy 1-element shape buffer with `dim=0`.
 
-## Phase 3 — Sampling + streaming generation `[ ]`
+## Phase 3 — Sampling + streaming generation `[x]`
 
-- [ ] Temperature, top-p, top-k, repetition penalty (the small-model loop
-      antidote — see notes), seeded RNG for reproducibility.
-- [ ] Prefill chunking (bounded transient memory on 24 GB; default step
-      size matched to mlx-lm's).
-- [ ] Generation API: async iterator of tokens with usage stats
-      (prompt/completion tokens, prefill and decode tok/s).
-- **Exit criterion:** measured decode tok/s within 5% of mlx-lm on this
-  machine (~14 tok/s baseline for the 12B OptiQ); numbers recorded.
+- [x] Temperature, top-p, top-k, repetition penalty, seeded RNG
+      (`src/sampler.ts` — port of mlx-lm sample_utils; per-step keys
+      derived from (seed, step); all filtering on-device).
+- [x] Prefill chunking (2048, matching mlx-lm; cache state evaluated per
+      chunk; logits never computed for non-final chunk positions).
+- [x] Generation API: `generate()` async iterable with usage stats
+      (`src/generate.ts`); decode pipelined via mx.async_eval (step n+1
+      dispatched before step n's token is read).
+- [x] KV caches: preallocated KVCache (step 256, slice_update) +
+      RotatingKVCache (ring buffer, keep=0) — full cache.py port for the
+      paths gemma4 uses. Window masks via create_causal_mask port.
+- **Exit criterion:** decode within 5% of mlx-lm. → **Met: 24.9 vs
+  25.7 tok/s (−3.1%) on the standard workload** (600 tok, 28-tok prompt,
+  same machine, same day, both via direct generate — no server). Peak
+  memory 9.20 GB vs python's 9.84 GB. Prefill at parity (257 vs 258
+  tok/s on a 3.5k prompt).
+
+### Phase 3 findings (2026-06-10)
+
+- **The PLAN baseline of 14.1 tok/s was server-inflated.** mlx-lm's
+  direct `stream_generate` does 25.7 tok/s on this machine. All future
+  comparisons must be direct-vs-direct (or server-vs-server).
+- **Long-context (3.5k prompt) parity verified**: 24/24 greedy tokens
+  identical to oracle through chunked prefill + window masks + rotating
+  cache + past-window decode.
+- **Long-context decode gap: ~10%** (23.2 vs 25.7 tok/s steady-state at
+  3.5k context, 43 vs 39 ms/step). Suspects: buffer-donation differences
+  in the cache slice_update path, per-step dispatch overhead. Phase 6
+  (quantized KV) changes this code path anyway — optimize then.
+- **mlx-lm's TokenizerWrapper adds 3 tokens vs canonical AutoTokenizer**
+  on chat-template prompts. Our encode matches AutoTokenizer exactly
+  (3511/3511 ids on a 3.5k-token prompt, zero diffs). When comparing
+  generations cross-stack, always pass explicit token ids.
+- Async generators run nothing until first iteration — time prefill
+  *inside* the generator, or "step 0" silently includes the whole
+  prefill (a 14-second 'stall' that wasn't).
+- First decode step pays ~500 ms of Metal kernel compilation for the
+  decode shapes (one-time, same for python).
 
 ## Phase 4 — Server `[ ]`
 
