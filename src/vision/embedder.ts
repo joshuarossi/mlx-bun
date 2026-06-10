@@ -7,7 +7,7 @@
 //
 // Sidecar weights stay bf16; features come out bf16 like text embeddings.
 
-import { ptr } from "bun:ffi";
+import { ptr, read } from "bun:ffi";
 import { MlxArray, cpuStream } from "../mlx/array";
 import { C } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
@@ -28,13 +28,18 @@ export class VisionTower {
 
   static load(modelDir: string, embedScale: number, rmsNormEps = 1e-6): VisionTower {
     const self = new VisionTower(embedScale, rmsNormEps);
+    // out-param slots read back via read.u64, not [0] (DFG stale-read bug
+    // — see outArray in mlx/ffi.ts).
     const arrMap = new BigUint64Array([C.mlx_map_string_to_array_new()]);
     const metaMap = new BigUint64Array([C.mlx_map_string_to_string_new()]);
+    const arrMapPtr = ptr(arrMap);
+    const metaMapPtr = ptr(metaMap);
     const status = C.mlx_load_safetensors(
-      ptr(arrMap), ptr(metaMap), ptr(cstr(`${modelDir}/optiq_vision.safetensors`)), cpuStream,
+      arrMapPtr, metaMapPtr, ptr(cstr(`${modelDir}/optiq_vision.safetensors`)), cpuStream,
     );
-    C.mlx_map_string_to_string_free(metaMap[0]!);
+    C.mlx_map_string_to_string_free(read.u64(metaMapPtr, 0));
     if (status !== 0) throw new Error(`failed to load vision sidecar from ${modelDir}`);
+    const arrMapHandle = read.u64(arrMapPtr, 0);
     const names = [
       "vision_embedder.patch_ln1.weight", "vision_embedder.patch_ln1.bias",
       "vision_embedder.patch_dense.weight", "vision_embedder.patch_dense.bias",
@@ -45,11 +50,12 @@ export class VisionTower {
     ];
     for (const name of names) {
       const slot = new BigUint64Array([C.mlx_array_new()]);
-      if (C.mlx_map_string_to_array_get(ptr(slot), arrMap[0]!, ptr(cstr(name))) !== 0)
+      const slotPtr = ptr(slot);
+      if (C.mlx_map_string_to_array_get(slotPtr, arrMapHandle, ptr(cstr(name))) !== 0)
         throw new Error(`vision sidecar missing tensor ${name}`);
-      self.#weights.set(name, new MlxArray(slot[0]!));
+      self.#weights.set(name, new MlxArray(read.u64(slotPtr, 0)));
     }
-    C.mlx_map_string_to_array_free(arrMap[0]!);
+    C.mlx_map_string_to_array_free(arrMapHandle);
     return self;
   }
 

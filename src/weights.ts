@@ -15,7 +15,7 @@
 // names, shapes, dtypes, byte sizes — for the registry, fit reports, and
 // validation — without touching tensor bytes.
 
-import { ptr } from "bun:ffi";
+import { ptr, read } from "bun:ffi";
 import { ShardedSafetensors, type TensorInfo } from "./safetensors";
 import { MlxArray, cpuStream } from "./mlx/array";
 import { C } from "./mlx/ffi";
@@ -35,14 +35,19 @@ export class Weights {
   static async open(modelDir: string): Promise<Weights> {
     const self = new Weights(await ShardedSafetensors.open(modelDir));
     for (const [file, sf] of self.shards.files) {
+      // out-param slots read back via read.u64, not [0] (DFG stale-read
+      // bug — see outArray in mlx/ffi.ts). Cold path, but the rule is
+      // uniform: native wrote it, read.* reads it.
       const arrMap = new BigUint64Array([C.mlx_map_string_to_array_new()]);
       const metaMap = new BigUint64Array([C.mlx_map_string_to_string_new()]);
+      const arrMapPtr = ptr(arrMap);
+      const metaMapPtr = ptr(metaMap);
       const status = C.mlx_load_safetensors(
-        ptr(arrMap), ptr(metaMap), ptr(cstr(sf.path)), cpuStream,
+        arrMapPtr, metaMapPtr, ptr(cstr(sf.path)), cpuStream,
       );
-      C.mlx_map_string_to_string_free(metaMap[0]!);
+      C.mlx_map_string_to_string_free(read.u64(metaMapPtr, 0));
       if (status !== 0) throw new Error(`mlx_load_safetensors(${sf.path}) failed`);
-      self.#maps.set(file, arrMap[0]!);
+      self.#maps.set(file, read.u64(arrMapPtr, 0));
     }
     return self;
   }
@@ -68,9 +73,10 @@ export class Weights {
       const mapHandle = [...this.#maps.entries()]
         .find(([file]) => this.shards.files.get(file) === sf)![1];
       const slot = new BigUint64Array([C.mlx_array_new()]);
-      if (C.mlx_map_string_to_array_get(ptr(slot), mapHandle, ptr(cstr(name))) !== 0)
+      const slotPtr = ptr(slot);
+      if (C.mlx_map_string_to_array_get(slotPtr, mapHandle, ptr(cstr(name))) !== 0)
         throw new Error(`tensor ${name} missing from native map`);
-      arr = new MlxArray(slot[0]!);
+      arr = new MlxArray(read.u64(slotPtr, 0));
       this.#arrays.set(name, arr);
     }
     return arr;
