@@ -1,0 +1,202 @@
+// Functional op layer over MlxArray. Parity-critical conventions:
+// - Python-float scalars in mlx promote weakly (bf16 array × float →
+//   bf16, scalar cast to bf16 first). `scalarLike` replicates that.
+// - Op composition order mirrors mlx-lm exactly; see model/gemma4.ts.
+
+import { ptr } from "bun:ffi";
+import { C, Dtype, type MlxHandle, optFloat, optInt, outArray } from "./ffi";
+import { MlxArray, gpuStream } from "./array";
+
+const cstrCache = new Map<string, Buffer>();
+function cstr(s: string): Buffer {
+  let b = cstrCache.get(s);
+  if (!b) {
+    b = Buffer.from(s + "\0", "utf8");
+    cstrCache.set(s, b);
+  }
+  return b;
+}
+
+type S = MlxHandle;
+
+export function add(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("add", (o) => C.mlx_add(o, a.handle, b.handle, s)));
+}
+
+export function sub(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("subtract", (o) => C.mlx_subtract(o, a.handle, b.handle, s)));
+}
+
+export function mul(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("multiply", (o) => C.mlx_multiply(o, a.handle, b.handle, s)));
+}
+
+export function div(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("divide", (o) => C.mlx_divide(o, a.handle, b.handle, s)));
+}
+
+export function tanh(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("tanh", (o) => C.mlx_tanh(o, a.handle, s)));
+}
+
+/** Scalar constant with the same dtype as `like` (python weak-scalar semantics). */
+export function scalarLike(value: number, like: MlxArray): MlxArray {
+  const f = MlxArray.fromFloat32(new Float32Array([value]), []);
+  if (like.dtype === Dtype.float32) return f;
+  const cast = f.astype(like.dtype);
+  f.dispose();
+  return cast;
+}
+
+export function mulScalar(a: MlxArray, value: number, s: S = gpuStream): MlxArray {
+  const k = scalarLike(value, a);
+  const r = mul(a, k, s);
+  k.dispose();
+  return r;
+}
+
+export function rmsNorm(
+  x: MlxArray, weight: MlxArray | null, eps: number, s: S = gpuStream,
+): MlxArray {
+  return new MlxArray(
+    outArray("fast_rms_norm", (o) =>
+      C.mlx_fast_rms_norm(o, x.handle, weight?.handle ?? 0n, eps, s),
+    ),
+  );
+}
+
+export function rope(
+  x: MlxArray, dims: number, base: number | null, offset: number,
+  freqs: MlxArray | null, s: S = gpuStream,
+): MlxArray {
+  return new MlxArray(
+    outArray("fast_rope", (o) =>
+      C.mlx_fast_rope(
+        o, x.handle, dims, false, optFloat(base), 1.0, offset,
+        freqs?.handle ?? 0n, s,
+      ),
+    ),
+  );
+}
+
+export function sdpa(
+  q: MlxArray, k: MlxArray, v: MlxArray, scale: number,
+  maskMode: "" | "causal", s: S = gpuStream,
+): MlxArray {
+  return new MlxArray(
+    outArray("fast_sdpa", (o) =>
+      C.mlx_fast_scaled_dot_product_attention(
+        o, q.handle, k.handle, v.handle, scale, ptr(cstr(maskMode)), 0n, 0n, s,
+      ),
+    ),
+  );
+}
+
+export interface QuantSpec {
+  bits: number;
+  groupSize: number;
+  mode: string;
+}
+
+export function quantizedMatmul(
+  x: MlxArray, w: MlxArray, scales: MlxArray, biases: MlxArray | null,
+  spec: QuantSpec, transpose = true, s: S = gpuStream,
+): MlxArray {
+  return new MlxArray(
+    outArray("quantized_matmul", (o) =>
+      C.mlx_quantized_matmul(
+        o, x.handle, w.handle, scales.handle, biases?.handle ?? 0n,
+        transpose, optInt(spec.groupSize), optInt(spec.bits),
+        ptr(cstr(spec.mode)), s,
+      ),
+    ),
+  );
+}
+
+export function dequantize(
+  w: MlxArray, scales: MlxArray, biases: MlxArray | null, spec: QuantSpec,
+  s: S = gpuStream,
+): MlxArray {
+  return new MlxArray(
+    outArray("dequantize", (o) =>
+      C.mlx_dequantize(
+        o, w.handle, scales.handle, biases?.handle ?? 0n,
+        optInt(spec.groupSize), optInt(spec.bits), ptr(cstr(spec.mode)),
+        0n, optInt(null), s,
+      ),
+    ),
+  );
+}
+
+export function takeAxis(a: MlxArray, indices: MlxArray, axis: number, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("take_axis", (o) => C.mlx_take_axis(o, a.handle, indices.handle, axis, s)),
+  );
+}
+
+export function reshape(a: MlxArray, shape: number[], s: S = gpuStream): MlxArray {
+  const buf = new Int32Array(shape);
+  return new MlxArray(
+    outArray("reshape", (o) => C.mlx_reshape(o, a.handle, ptr(buf), BigInt(shape.length), s)),
+  );
+}
+
+export function transposeAxes(a: MlxArray, axes: number[], s: S = gpuStream): MlxArray {
+  const buf = new Int32Array(axes);
+  return new MlxArray(
+    outArray("transpose", (o) => C.mlx_transpose_axes(o, a.handle, ptr(buf), BigInt(axes.length), s)),
+  );
+}
+
+export function argmaxAxis(a: MlxArray, axis: number, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("argmax_axis", (o) => C.mlx_argmax_axis(o, a.handle, axis, false, s)),
+  );
+}
+
+export function concatAxis(arrays: MlxArray[], axis: number, s: S = gpuStream): MlxArray {
+  const handles = new BigUint64Array(arrays.map((a) => a.handle));
+  const vec = C.mlx_vector_array_new_data(ptr(handles), BigInt(arrays.length));
+  try {
+    return new MlxArray(
+      outArray("concatenate", (o) => C.mlx_concatenate_axis(o, vec, axis, s)),
+    );
+  } finally {
+    C.mlx_vector_array_free(vec);
+  }
+}
+
+export function pow(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("power", (o) => C.mlx_power(o, a.handle, b.handle, s)));
+}
+
+/** nn.gelu_approx: 0.5 x (1 + tanh(√(2/π) (x + 0.044715 x³))) — composed
+ *  exactly as mlx's python source: x**3 is mx.power (NOT x·x·x — they
+ *  round differently in bf16), scalars promote weakly to x's dtype. */
+export function geluApprox(x: MlxArray, s: S = gpuStream): MlxArray {
+  const three = scalarLike(3, x);
+  const x3 = pow(x, three, s);
+  const cx3 = mulScalar(x3, 0.044715, s);
+  const inner = add(x, cx3, s);
+  const scaled = mulScalar(inner, Math.sqrt(2 / Math.PI), s);
+  const t = tanh(scaled, s);
+  const one = scalarLike(1, x);
+  const t1 = add(one, t, s);
+  const halfx = mulScalar(x, 0.5, s);
+  const out = mul(halfx, t1, s);
+  for (const a of [three, x3, cx3, inner, scaled, t, one, t1, halfx]) a.dispose();
+  return out;
+}
+
+/** Read a scalar uint32 (forces eval). */
+export function itemUint32(a: MlxArray): number {
+  a.eval();
+  const out = new Uint32Array(1);
+  if (C.mlx_array_item_uint32(ptr(out), a.handle) !== 0)
+    throw new Error("mlx_array_item_uint32 failed");
+  return out[0]!;
+}
+
+export function fromInt32(data: number[], shape: number[]): MlxArray {
+  return MlxArray.fromInt32(new Int32Array(data), shape);
+}
