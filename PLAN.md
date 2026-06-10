@@ -466,8 +466,8 @@ Remaining work, in priority order:
    mechanics + past-window e2e; KV 365→194/103 MB at saturation; see
    Phase 9 findings). **NEXT: Phase 11 — Anthropic /v1/messages
    (Josh's Claude Code backend; oracle optiq/anthropic_shim.py) +
-   Responses API**, then the embeddable build. Background chip
-   pending: server `stop` sequences.
+   Responses API**, then the embeddable build. Server `stop`
+   sequences: DONE 2026-06-10 (see Phase 4 follow-up note).
 
 1. **12B long-context decode gap (−10.0% @8k vs mlx-lm, n=3
    zero-spread — benchmarks-h2h-2026-06-10.md).** Phase 10 (fused
@@ -492,8 +492,8 @@ Remaining work, in priority order:
    phase section). Remaining adjacent work: embeddable build
    (single-binary), library API reference (docs pass).
 4. After Phase 9: Phase 11 (Anthropic messages + Responses),
-   12 (SigLIP), 14 (Qwen). Background chip pending: server `stop`
-   sequences.
+   12 (SigLIP), 14 (Qwen). Server `stop` sequences: DONE
+   2026-06-10.
 
 ## Phase 6 — Speed: change what gets computed `[~]`
 
@@ -747,6 +747,22 @@ Ordered by expected payoff on this hardware:
       walkthrough. Found en route: the README claimed `stop` sequence
       support that does not exist — claim removed; implementing `stop`
       (with streaming hold-back) spun off as a follow-up task.
+- [x] Server `stop` sequences (2026-06-10, follow-up from the doc
+      audit above): OpenAI `stop` (string | string[]) on
+      /v1/chat/completions. Matched on DECODED text (StopMatcher in
+      server.ts) — current mlx-lm matches token-id sequences via a
+      state machine and misses matches that span token boundaries or
+      tokenize differently in context; ours catches both. Streaming
+      holds back any tail that is a prefix of a stop sequence until
+      disambiguated, so no part of a stop sequence is ever streamed;
+      content excludes the sequence; finish_reason "stop". Enabling
+      change: Generation/generateInner (src/generate.ts) now support
+      early termination — a consumer `break` forces .return() through
+      the scope wrappers, disposes in-flight arrays, and STILL returns
+      stats (return-in-finally), so usage accounting and
+      PromptCache.put(cacheTokens) survive an early stop (forwarded
+      tokens' KV really is in the cache). Tests: 6 StopMatcher unit +
+      3 e2e in tests/server.test.ts; full suite 118 pass.
 
 ## Phase 7 — Kernel experiments (research track) `[ ]`
 

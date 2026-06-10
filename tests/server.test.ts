@@ -6,6 +6,53 @@ import { SNAPSHOT, snapshotAvailable } from "./paths";
 
 const haveWeights = await snapshotAvailable();
 
+// Fast tier: StopMatcher is pure string logic — no weights needed.
+describe("StopMatcher (decoded-text stop sequences)", async () => {
+  const { StopMatcher } = await import("../src/server");
+
+  test("no sequences: pass-through", () => {
+    const m = new StopMatcher([]);
+    expect(m.push("hello")).toBe("hello");
+    expect(m.stopped).toBe(false);
+  });
+
+  test("cuts at the match and never emits the sequence", () => {
+    const m = new StopMatcher(["STOP"]);
+    expect(m.push("hello ")).toBe("hello ");
+    expect(m.push("STOP world")).toBe("");
+    expect(m.stopped).toBe(true);
+    expect(m.push("more")).toBe(""); // post-stop text discarded
+  });
+
+  test("match spanning two pushes (token boundary) is held back", () => {
+    const m = new StopMatcher(["3 4"]);
+    expect(m.push("1 2 ")).toBe("1 2 ");
+    expect(m.push("3")).toBe(""); // could start "3 4" — held
+    expect(m.stopped).toBe(false);
+    expect(m.push(" 4")).toBe(""); // completes the match; nothing leaks
+    expect(m.stopped).toBe(true);
+  });
+
+  test("held prefix is released once disambiguated", () => {
+    const m = new StopMatcher(["END!"]);
+    expect(m.push("the EN")).toBe("the ");
+    expect(m.push("D of it")).toBe("END of it");
+    expect(m.stopped).toBe(false);
+  });
+
+  test("flush releases held text when generation ends without a match", () => {
+    const m = new StopMatcher(["xyz"]);
+    expect(m.push("abcx")).toBe("abc");
+    expect(m.flush()).toBe("x");
+  });
+
+  test("multiple sequences: earliest occurrence wins", () => {
+    const m = new StopMatcher(["bbb", "a"]);
+    expect(m.push("xxabbb")).toBe("xx");
+    expect(m.stopped).toBe(true);
+  });
+});
+
 describe.skipIf(!haveWeights)("openai-compatible server", async () => {
   if (!haveWeights) return;
   const { createServer, loadContext } = await import("../src/server");
@@ -130,6 +177,80 @@ describe.skipIf(!haveWeights)("openai-compatible server", async () => {
     // image soft tokens included in prompt accounting
     expect(body.usage.prompt_tokens).toBeGreaterThan(250);
   }, 240_000);
+
+  // --- stop sequences ----------------------------------------------------
+
+  const countingPrompt =
+    "Output exactly this and nothing else: 1 2 3 4 5 6 7 8 9";
+
+  test("stop: plain string halts mid-generation, excluded from content", async () => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: countingPrompt }],
+        max_tokens: 64,
+        temperature: 0,
+        stop: "5",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    const content = body.choices[0].message.content as string;
+    expect(content).toContain("4");
+    expect(content).not.toContain("5");
+    expect(body.choices[0].finish_reason).toBe("stop");
+    // halted early instead of running out the token budget
+    expect(body.usage.completion_tokens).toBeLessThan(64);
+  }, 120_000);
+
+  test("stop: streaming, sequence spans two tokens, never leaks", async () => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: countingPrompt }],
+        max_tokens: 64,
+        temperature: 0,
+        stream: true,
+        stop: ["6 7"], // "6" and " 7" decode from separate tokens
+      }),
+    });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    const events = text.split("\n\n").filter((l) => l.startsWith("data: "))
+      .map((l) => l.slice(6));
+    expect(events.at(-1)).toBe('"[DONE]"');
+    const chunks = events.slice(0, -1).map((e) => JSON.parse(e));
+    const content = chunks
+      .flatMap((c: any) => c.choices?.[0]?.delta?.content ?? [])
+      .join("");
+    expect(content).toContain("5");
+    // hold-back: neither the whole sequence nor its leading "6" leaks
+    expect(content).not.toContain("6");
+    const final = chunks.at(-1) as any;
+    expect(final.choices[0].finish_reason).toBe("stop");
+    expect(final.usage.completion_tokens).toBeLessThan(64);
+  }, 120_000);
+
+  test("stop: array form, later entry fires", async () => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: countingPrompt }],
+        max_tokens: 64,
+        temperature: 0,
+        stop: ["zzz-never-appears", "4"],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    const content = body.choices[0].message.content as string;
+    expect(content).toContain("3");
+    expect(content).not.toContain("4");
+    expect(body.choices[0].finish_reason).toBe("stop");
+  }, 120_000);
 
   test("malformed request → 400", async () => {
     const res = await fetch(`${base}/v1/chat/completions`, {

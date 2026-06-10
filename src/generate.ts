@@ -105,13 +105,24 @@ export class Generation implements AsyncIterable<GeneratedToken> {
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<GeneratedToken> {
-    while (true) {
-      const r = await this.#iter.next();
-      if (r.done) {
-        this.stats = r.value;
-        return;
+    try {
+      while (true) {
+        const r = await this.#iter.next();
+        if (r.done) {
+          this.stats = r.value;
+          return;
+        }
+        yield r.value;
       }
-      yield r.value;
+    } finally {
+      // Consumer broke early (e.g. a decoded-text stop sequence fired):
+      // drive the inner generator's shutdown so its finallys run (array
+      // disposal, wired/adapter scopes) and capture the stats its
+      // early-return path still reports.
+      if (this.stats === null) {
+        const r = await this.#iter.return(undefined as unknown as GenerateStats);
+        if (r.done && r.value) this.stats = r.value;
+      }
     }
   }
 }
@@ -227,6 +238,30 @@ async function* generateInner(
     }
   };
 
+  // Decode-loop state lives at function scope so the finally can still
+  // report stats and dispose in-flight arrays when the consumer
+  // terminates the generator early (break on a stop sequence — the
+  // forced .return() resumes at the yield and runs the finally).
+  let prefillMs = 0;
+  let tDecode = 0;
+  let decodeMs = 0;
+  let generated = 0;
+  const forwarded: number[] = [];
+  let pending: MlxArray | null = null;
+  let nextPending: MlxArray | null = null;
+  let finished = false;
+  let threw = false;
+  const makeStats = (): GenerateStats => ({
+    promptTokens: promptTokens.length,
+    cachedTokens,
+    generatedTokens: generated,
+    prefillMs,
+    decodeMs,
+    prefillTps: ((promptTokens.length - cachedTokens) / prefillMs) * 1000,
+    decodeTps: (generated / decodeMs) * 1000,
+    cacheTokens: [...promptTokens, ...forwarded],
+  });
+
   try {
     // ---- prefill ----
     maybeQuantizeKv(cache, options);
@@ -265,25 +300,24 @@ async function* generateInner(
     h0.dispose();
     const logits0 = model.logitsFromHidden(hLast);
     hLast.dispose();
-    let pending = sampleStep(logits0, 0); // token array [1]
+    pending = sampleStep(logits0, 0); // token array [1]
     logits0.dispose();
     // sync: the final chunk's compute belongs to prefill time, not the
     // first decode step (mlx-lm accounts the same way)
     pending.eval();
-    const prefillMs = performance.now() - tPrefill;
+    prefillMs = performance.now() - tPrefill;
 
     // ---- decode (pipelined) ----
-    const tDecode = performance.now();
-    const forwarded: number[] = [];
-    let generated = 0;
+    tDecode = performance.now();
     let stop = false;
     while (!stop) {
+      const cur = pending!;
       // build step n+1's graph from the *unread* pending token
-      let nextPending: MlxArray | null = null;
+      nextPending = null;
       if (generated + 1 < maxTokens) {
         maybeQuantizeKv(cache, options);
-        pushHistory(pending);
-        const ids = ops.reshape(pending, [1, 1]);
+        pushHistory(cur);
+        const ids = ops.reshape(cur, [1, 1]);
         const h = model.forwardHidden(ids, cache);
         ids.dispose();
         const logits = model.logitsFromHidden(h);
@@ -294,36 +328,47 @@ async function* generateInner(
       }
 
       // sync-read step n's token while n+1 computes
-      const token = ops.itemUint32(pending);
-      pending.dispose();
+      const token = ops.itemUint32(cur);
+      cur.dispose();
+      pending = null;
       generated++;
       // if a next-step graph was built, this token's KV entered the cache
       if (nextPending !== null) forwarded.push(token);
 
       if (eosTokenIds.includes(token)) {
         nextPending?.dispose();
+        nextPending = null;
         stop = true;
       } else {
         yield { token, index: generated - 1 };
-        if (nextPending === null) stop = true;
-        else pending = nextPending;
+        if (nextPending === null) {
+          stop = true;
+        } else {
+          pending = nextPending;
+          nextPending = null;
+        }
       }
     }
-    const decodeMs = performance.now() - tDecode;
-
-    return {
-      promptTokens: promptTokens.length,
-      cachedTokens,
-      generatedTokens: generated,
-      prefillMs,
-      decodeMs,
-      prefillTps: ((promptTokens.length - cachedTokens) / prefillMs) * 1000,
-      decodeTps: (generated / decodeMs) * 1000,
-      cacheTokens: [...promptTokens, ...forwarded],
-    };
+    decodeMs = performance.now() - tDecode;
+    finished = true;
+    return makeStats();
+  } catch (e) {
+    threw = true;
+    throw e;
   } finally {
+    if (!finished) {
+      pending?.dispose();
+      nextPending?.dispose();
+    }
     if (ownsCache) for (const c of cache) c.dispose();
     history?.dispose();
+    if (!finished && !threw) {
+      // forced early return (consumer break at a yield): still report
+      // stats — `forwarded` only lists tokens whose KV actually entered
+      // the cache, so cacheTokens stays exact for PromptCache.put().
+      decodeMs = performance.now() - tDecode;
+      return makeStats();
+    }
   }
 }
 
