@@ -2,6 +2,10 @@
 // and /v1/models. Phase 4 core — tool calling, vision, and the
 // byte-capped prompt cache land on top of this.
 //
+// Original code; behavioral reference: mlx-lm server.py (MIT) for the
+// protocol surface and stop/finish semantics. No code ported — Bun.serve
+// and the generation queue are structurally different.
+//
 // Generation is serialized through a single queue (one GPU, batch=1).
 
 import type { Server } from "bun";
