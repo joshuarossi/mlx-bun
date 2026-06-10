@@ -392,3 +392,83 @@ export function itemUint32(a: MlxArray): number {
 export function fromInt32(data: number[], shape: number[]): MlxArray {
   return MlxArray.fromInt32(new Int32Array(data), shape);
 }
+
+// --- quantized KV support (Phase 6) ---------------------------------------
+
+export interface QuantizedTensor {
+  packed: MlxArray;
+  scales: MlxArray;
+  biases: MlxArray;
+}
+
+/** mx.quantize: w → (packed u32, scales, biases). */
+export function quantize(
+  w: MlxArray, groupSize: number, bits: number, s: S = gpuStream,
+): QuantizedTensor {
+  const slot = new BigUint64Array([C.mlx_vector_array_new()]);
+  const slotPtr = ptr(slot);
+  const status = C.mlx_quantize(
+    slotPtr, w.handle, optInt(groupSize), optInt(bits), ptr(cstr("affine")), 0n, s,
+  );
+  if (status !== 0) throw new Error(`quantize failed: ${takeMlxError() ?? ""}`);
+  const vec = read.u64(slotPtr, 0);
+  const get = (i: number): MlxArray => {
+    const aSlot = new BigUint64Array([C.mlx_array_new()]);
+    const aPtr = ptr(aSlot);
+    if (C.mlx_vector_array_get(aPtr, vec, BigInt(i)) !== 0)
+      throw new Error("vector_array_get failed");
+    return new MlxArray(read.u64(aPtr, 0));
+  };
+  try {
+    return { packed: get(0), scales: get(1), biases: get(2) };
+  } finally {
+    C.mlx_vector_array_free(vec);
+  }
+}
+
+export function softmaxAxis(a: MlxArray, axis: number, precise: boolean, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("softmax", (o) => C.mlx_softmax_axis(o, a.handle, axis, precise, s)),
+  );
+}
+
+export function maxAxis(a: MlxArray, axis: number, keepdims: boolean, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("max_axis", (o) => C.mlx_max_axis(o, a.handle, axis, keepdims, s)),
+  );
+}
+
+export function sumAxis(a: MlxArray, axis: number, keepdims: boolean, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("sum_axis", (o) => C.mlx_sum_axis(o, a.handle, axis, keepdims, s)),
+  );
+}
+
+/** View-preserving expand_dims (reshape on a non-contiguous view copies —
+ *  different kernel path, different reduction rounding; see Phase 6). */
+export function expandDims(a: MlxArray, axis: number, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("expand_dims", (o) => C.mlx_expand_dims(o, a.handle, axis, s)),
+  );
+}
+
+export function maximum(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("maximum", (o) => C.mlx_maximum(o, a.handle, b.handle, s)),
+  );
+}
+
+/** quantized_matmul against a quantized tensor (x @ qt^T or x @ qt). */
+export function quantizedMatmulQT(
+  x: MlxArray, qt: QuantizedTensor, transpose: boolean,
+  groupSize: number, bits: number, s: S = gpuStream,
+): MlxArray {
+  return new MlxArray(
+    outArray("quantized_matmul", (o) =>
+      C.mlx_quantized_matmul(
+        o, x.handle, qt.packed.handle, qt.scales.handle, qt.biases.handle,
+        transpose, optInt(groupSize), optInt(bits), ptr(cstr("affine")), s,
+      ),
+    ),
+  );
+}

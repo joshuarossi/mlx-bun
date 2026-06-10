@@ -8,7 +8,7 @@
 
 import { MlxArray } from "./mlx/array";
 import * as ops from "./mlx/ops";
-import { Gemma4Model, type Cache } from "./model/gemma4";
+import { Gemma4Model, KVCache, type Cache } from "./model/gemma4";
 import {
   makeLogitsProcessors, makeSampler,
   type LogitsProcessorOptions, type SamplerOptions, toLogprobs,
@@ -28,6 +28,27 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   promptEmbeddings?: MlxArray;
   /** bool [L] marking image tokens (bidirectional attention among them). */
   imageMask?: MlxArray;
+  /** Quantize full-attention KV caches to this many bits (4 or 8).
+   *  Rotating (sliding-window) caches stay bf16 — they're window-capped
+   *  and upstream rotating-cache quantization is NYI. */
+  kvBits?: number;
+  kvGroupSize?: number;
+  /** Convert once a cache's offset reaches this (mlx-lm default 5000;
+   *  0 = quantized from the first token). */
+  quantizedKvStart?: number;
+}
+
+/** Port of mlx-lm maybe_quantize_kv_cache, restricted to plain KVCache
+ *  (full-attention layers) — rotating caches are skipped, not crashed. */
+function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void {
+  if (!options.kvBits) return;
+  const start = options.quantizedKvStart ?? 5000;
+  const gs = options.kvGroupSize ?? 64;
+  for (let i = 0; i < cache.length; i++) {
+    const c = cache[i]!;
+    if (c instanceof KVCache && c.offset >= start)
+      cache[i] = c.toQuantized(gs, options.kvBits);
+  }
 }
 
 export interface GenerateStats {
@@ -127,6 +148,7 @@ async function* generateInner(
 
   try {
     // ---- prefill ----
+    maybeQuantizeKv(cache, options);
     const tPrefill = performance.now();
     let h0: MlxArray;
     if (options.promptEmbeddings) {
@@ -146,6 +168,7 @@ async function* generateInner(
         ids.dispose();
         h.dispose(); // logits never computed for non-final chunks
         ops.evalAll(cache.flatMap((c) => c.state()));
+        maybeQuantizeKv(cache, options);
         pos += prefillChunkSize;
       }
       if (needsTokenHistory) {
@@ -177,6 +200,7 @@ async function* generateInner(
       // build step n+1's graph from the *unread* pending token
       let nextPending: MlxArray | null = null;
       if (generated + 1 < maxTokens) {
+        maybeQuantizeKv(cache, options);
         pushHistory(pending);
         const ids = ops.reshape(pending, [1, 1]);
         const h = model.forwardHidden(ids, cache);

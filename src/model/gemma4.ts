@@ -126,7 +126,7 @@ export class KVCache implements Cache {
     if (!this.keys || prev + L > this.keys.shape[2]!) {
       const [B, H, , D] = k.shape as [number, number, number, number];
       const vD = v.shape[3]!;
-      const nSteps = Math.ceil((KVCache.STEP + L - 1) / KVCache.STEP);
+      const nSteps = Math.floor((KVCache.STEP + L - 1) / KVCache.STEP);
       const newK = ops.zeros([B, H, nSteps * KVCache.STEP, D], k.dtype);
       const newV = ops.zeros([B, H, nSteps * KVCache.STEP, vD], v.dtype);
       if (this.keys && this.values) {
@@ -193,9 +193,145 @@ export class KVCache implements Cache {
     this.offset = offset;
   }
 
+  /** Port of mlx-lm KVCache.to_quantized: quantize the whole buffer
+   *  (padding included — it's overwritten before being read). */
+  toQuantized(groupSize: number, bits: number): QuantizedKVCache {
+    const q = new QuantizedKVCache(groupSize, bits);
+    q.offset = this.offset;
+    if (this.keys && this.values) {
+      q.keys = ops.quantize(this.keys, groupSize, bits);
+      q.values = ops.quantize(this.values, groupSize, bits);
+    }
+    this.dispose();
+    return q;
+  }
+
   dispose(): void {
     this.keys?.dispose();
     this.values?.dispose();
+    this.keys = this.values = null;
+    this.offset = 0;
+  }
+}
+
+/** Quantized KV cache — port of mlx-lm QuantizedKVCache: keys/values
+ *  stored as (packed u32, scales, biases) triples, quantized along
+ *  head_dim. Only full-attention layers convert (mlx-lm's rotating-cache
+ *  quantization is NYI upstream; sliding layers are window-capped
+ *  anyway). Attention dispatches to quantizedSdpa for these. */
+export class QuantizedKVCache implements Cache {
+  static readonly STEP = 256;
+  keys: ops.QuantizedTensor | null = null;
+  values: ops.QuantizedTensor | null = null;
+  offset = 0;
+
+  constructor(readonly groupSize: number, readonly bits: number) {}
+
+  updateAndFetch(): [MlxArray, MlxArray] {
+    throw new Error("QuantizedKVCache: use updateAndFetchQuantized");
+  }
+
+  #grow(triple: ops.QuantizedTensor | null, lastDims: number[], B: number, H: number, steps: number, dtype: Dtype): ops.QuantizedTensor {
+    const mk = (dim: number, dt: Dtype) => ops.zeros([B, H, steps, dim], dt);
+    if (!triple)
+      return { packed: mk(lastDims[0]!, Dtype.uint32), scales: mk(lastDims[1]!, dtype), biases: mk(lastDims[2]!, dtype) };
+    const ext = (a: MlxArray, dim: number, dt: Dtype): MlxArray => {
+      const z = mk(dim, dt);
+      const out = ops.concatAxis([a, z], 2);
+      a.dispose();
+      z.dispose();
+      return out;
+    };
+    return {
+      packed: ext(triple.packed, lastDims[0]!, Dtype.uint32),
+      scales: ext(triple.scales, lastDims[1]!, dtype),
+      biases: ext(triple.biases, lastDims[2]!, dtype),
+    };
+  }
+
+  /** Quantize incoming k/v and append; returns quantized views to offset. */
+  updateAndFetchQuantized(k: MlxArray, v: MlxArray): [ops.QuantizedTensor, ops.QuantizedTensor] {
+    const [B, H, L, kD] = k.shape as [number, number, number, number];
+    const vD = v.shape[3]!;
+    const prev = this.offset;
+    const elPerInt = 32 / this.bits;
+
+    if (!this.keys || prev + L > this.keys.packed.shape[2]!) {
+      const newSteps = Math.floor((QuantizedKVCache.STEP + L - 1) / QuantizedKVCache.STEP) * QuantizedKVCache.STEP;
+      if (this.keys && prev % QuantizedKVCache.STEP !== 0) {
+        const trimTo = (t: ops.QuantizedTensor): ops.QuantizedTensor => {
+          const cut = (a: MlxArray): MlxArray => {
+            const [b, h, , d] = a.shape as [number, number, number, number];
+            const s = a.slice([0, 0, 0, 0], [b, h, prev, d]);
+            a.dispose();
+            return s;
+          };
+          return { packed: cut(t.packed), scales: cut(t.scales), biases: cut(t.biases) };
+        };
+        this.keys = trimTo(this.keys);
+        this.values = trimTo(this.values!);
+      }
+      const dtype = k.dtype;
+      this.keys = this.#grow(this.keys, [kD / elPerInt, kD / this.groupSize, kD / this.groupSize], B, H, newSteps, dtype);
+      this.values = this.#grow(this.values, [vD / elPerInt, vD / this.groupSize, vD / this.groupSize], B, H, newSteps, dtype);
+    }
+
+    this.offset += L;
+    const kq = ops.quantize(k, this.groupSize, this.bits);
+    const vq = ops.quantize(v, this.groupSize, this.bits);
+
+    const writeAll = (dst: ops.QuantizedTensor, src: ops.QuantizedTensor): ops.QuantizedTensor => {
+      const w = (d: MlxArray, s: MlxArray): MlxArray => {
+        const [b, h, , dd] = d.shape as [number, number, number, number];
+        const u = ops.sliceUpdate(d, s, [0, 0, prev, 0], [b, h, this.offset, dd]);
+        d.dispose();
+        s.dispose();
+        return u;
+      };
+      return {
+        packed: w(dst.packed, src.packed),
+        scales: w(dst.scales, src.scales),
+        biases: w(dst.biases, src.biases),
+      };
+    };
+    this.keys = writeAll(this.keys!, kq);
+    this.values = writeAll(this.values!, vq);
+
+    const fetch = (t: ops.QuantizedTensor): ops.QuantizedTensor => {
+      const f = (a: MlxArray): MlxArray => {
+        const [b, h, , d] = a.shape as [number, number, number, number];
+        return a.slice([0, 0, 0, 0], [b, h, this.offset, d]);
+      };
+      return { packed: f(t.packed), scales: f(t.scales), biases: f(t.biases) };
+    };
+    return [fetch(this.keys), fetch(this.values)];
+  }
+
+  makeMask(N: number, windowSize: number | null): Mask {
+    if (N === 1) return { mode: "", arr: null };
+    if (this.offset === 0 && (windowSize === null || N <= windowSize))
+      return { mode: "causal", arr: null };
+    return { mode: "array", arr: createCausalMask(N, this.offset, windowSize) };
+  }
+
+  state(): MlxArray[] {
+    if (!this.keys || !this.values) return [];
+    return [
+      this.keys.packed, this.keys.scales, this.keys.biases,
+      this.values.packed, this.values.scales, this.values.biases,
+    ];
+  }
+
+  isTrimmable(): boolean {
+    return true;
+  }
+
+  trim(n: number): void {
+    this.offset = Math.max(0, this.offset - n);
+  }
+
+  dispose(): void {
+    for (const a of this.state()) a.dispose();
     this.keys = this.values = null;
     this.offset = 0;
   }
@@ -391,6 +527,84 @@ export class RotatingKVCache implements Cache {
   }
 }
 
+const FINFO_MIN: Partial<Record<Dtype, number>> = {
+  [Dtype.bfloat16]: -3.3895313892515355e38,
+  [Dtype.float16]: -65504,
+  [Dtype.float32]: -3.4028234663852886e38,
+};
+
+/** Port of base.py quantized_scaled_dot_product_attention (stock,
+ *  non-tiled): scores and output via quantized_matmul against the
+ *  quantized KV triples; GQA via a 5-d reshape. */
+function quantizedSdpa(
+  q: MlxArray, kq: ops.QuantizedTensor, vq: ops.QuantizedTensor,
+  scale: number, mask: Mask, groupSize: number, bits: number,
+): MlxArray {
+  const [B, H, L, D] = q.shape as [number, number, number, number];
+  const KV = kq.packed.shape[1]!;
+  const nRep = H / KV;
+  const N = kq.packed.shape[2]!;
+
+  let queries = ops.mulScalar(q, scale);
+  const owned: MlxArray[] = [queries];
+
+  let kT = kq;
+  let vT = vq;
+  if (nRep > 1) {
+    const qr = ops.reshape(queries, [B, KV, nRep, L, D]);
+    owned.push(qr);
+    queries = qr;
+    const expand = (t: ops.QuantizedTensor): ops.QuantizedTensor => {
+      const e = (a: MlxArray): MlxArray => {
+        // expand_dims(axis=-3) like the reference — view-preserving;
+        // reshape would copy the strided slice and change kernel paths
+        const r = ops.expandDims(a, -3);
+        owned.push(r);
+        return r;
+      };
+      return { packed: e(t.packed), scales: e(t.scales), biases: e(t.biases) };
+    };
+    kT = expand(kq);
+    vT = expand(vq);
+  }
+
+  let scores = ops.quantizedMatmulQT(queries, kT, true, groupSize, bits);
+  owned.push(scores);
+
+  let maskArr: MlxArray | null = null;
+  let ownsMask = false;
+  if (mask.mode === "causal") {
+    const qIdx = ops.arange(N - L, N, 1, Dtype.int32);
+    const kIdx = ops.arange(0, N, 1, Dtype.int32);
+    const qCol = ops.reshape(qIdx, [L, 1]);
+    const kRow = ops.reshape(kIdx, [1, N]);
+    maskArr = ops.greaterEqual(qCol, kRow);
+    ownsMask = true;
+    for (const a of [qIdx, kIdx, qCol, kRow]) a.dispose();
+  } else if (mask.mode === "array") {
+    maskArr = mask.arr;
+  }
+  if (maskArr) {
+    const ninf = ops.scalarLike(FINFO_MIN[scores.dtype] ?? -3.4e38, scores);
+    const masked = ops.where(maskArr, scores, ninf);
+    ninf.dispose();
+    if (ownsMask) maskArr.dispose();
+    owned.push(masked);
+    scores = masked;
+  }
+
+  const probs = ops.softmaxAxis(scores, -1, true);
+  owned.push(probs);
+  let out = ops.quantizedMatmulQT(probs, vT, false, groupSize, bits);
+  if (nRep > 1) {
+    const r = ops.reshape(out, [B, H, L, D]);
+    out.dispose();
+    out = r;
+  }
+  for (const a of owned) a.dispose();
+  return out;
+}
+
 /** Port of base.py create_causal_mask (bool, [N, offset+N]). */
 export function createCausalMask(N: number, offset: number, windowSize: number | null): MlxArray {
   const rinds = ops.arange(0, offset + N, 1, Dtype.int32);
@@ -500,14 +714,24 @@ class Attention {
     q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
     q = disposing(q, this.rope(q, offset));
 
-    const [keys, values] = cache.updateAndFetch(kRoped, vT);
-    kRoped.dispose();
-    vT.dispose();
-
-    const attn = ops.sdpa(q, keys, values, 1.0, mask.mode, mask.arr);
-    q.dispose();
-    keys.dispose();
-    values.dispose();
+    let attn: MlxArray;
+    if (cache instanceof QuantizedKVCache) {
+      const [kq, vq] = cache.updateAndFetchQuantized(kRoped, vT);
+      kRoped.dispose();
+      vT.dispose();
+      attn = quantizedSdpa(q, kq, vq, 1.0, mask, cache.groupSize, cache.bits);
+      q.dispose();
+      for (const t of [kq, vq])
+        for (const a of [t.packed, t.scales, t.biases]) a.dispose();
+    } else {
+      const [keys, values] = cache.updateAndFetch(kRoped, vT);
+      kRoped.dispose();
+      vT.dispose();
+      attn = ops.sdpa(q, keys, values, 1.0, mask.mode, mask.arr);
+      q.dispose();
+      keys.dispose();
+      values.dispose();
+    }
     const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
     attn.dispose();
     const merged = ops.reshape(attnT, [B, L, -1]);
