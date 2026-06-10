@@ -135,8 +135,9 @@ agent CLIs like pi/OpenClaw via their provider config.
 
 - **`POST /v1/chat/completions`** — streaming (SSE) and non-streaming;
   `temperature`, `top_p`, `top_k`, `max_tokens`, `seed`,
-  `repetition_penalty`; usage includes `cached_tokens`. Full schemas in
-  [docs/server-api.md](./docs/server-api.md).
+  `repetition_penalty`, `stop` (string or array, matched on decoded
+  text with streaming hold-back); usage includes `cached_tokens`. Full
+  schemas in [docs/server-api.md](./docs/server-api.md).
 - **Tool calling** — pass OpenAI `tools`; the model's native
   `<|tool_call>` markers are parsed into `tool_calls` JSON with
   `finish_reason: "tool_calls"`; `role: "tool"` round-trips.

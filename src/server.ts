@@ -122,6 +122,9 @@ interface ChatRequest {
   top_k?: number;
   seed?: number;
   repetition_penalty?: number;
+  /** OpenAI stop sequences: plain string or array (spec allows up to 4).
+   *  Matched on DECODED text, not token ids — see StopMatcher. */
+  stop?: string | string[];
   tools?: ToolDefinition[];
   tool_choice?: "auto" | "none" | { type: string; function?: { name: string } };
   /** Mounted LoRA adapter selection: "id", "a+b" (stacked), or "none". */
@@ -186,6 +189,66 @@ class ToolAwareStream {
         });
       }
     }
+    return out;
+  }
+}
+
+/** Decoded-text stop-sequence matcher with streaming hold-back. Matching
+ *  on text (not token ids) catches sequences that span token boundaries
+ *  or tokenize differently in context; current mlx-lm uses token-id
+ *  state machines and misses those. Text that could be the start of a
+ *  stop sequence is withheld until disambiguated, so SSE clients never
+ *  see any part of the stop sequence itself. */
+export class StopMatcher {
+  #pending = "";
+  stopped = false;
+
+  constructor(readonly sequences: string[]) {}
+
+  /** Feed a text delta; returns the prefix that is now safe to emit.
+   *  After a match fires (`stopped`), text before the match is returned
+   *  and everything from the match on is discarded. */
+  push(text: string): string {
+    if (this.stopped) return "";
+    if (this.sequences.length === 0) return text;
+    this.#pending += text;
+    // earliest full match wins
+    let cut = -1;
+    for (const seq of this.sequences) {
+      const i = this.#pending.indexOf(seq);
+      if (i !== -1 && (cut === -1 || i < cut)) cut = i;
+    }
+    if (cut !== -1) {
+      this.stopped = true;
+      const out = this.#pending.slice(0, cut);
+      this.#pending = "";
+      return out;
+    }
+    // hold back the longest tail that is a proper prefix of any sequence
+    let hold = 0;
+    for (const seq of this.sequences) {
+      const max = Math.min(seq.length - 1, this.#pending.length);
+      for (let k = max; k > hold; k--) {
+        if (this.#pending.endsWith(seq.slice(0, k))) {
+          hold = k;
+          break;
+        }
+      }
+    }
+    if (hold === 0) {
+      const out = this.#pending;
+      this.#pending = "";
+      return out;
+    }
+    const out = this.#pending.slice(0, -hold);
+    this.#pending = this.#pending.slice(-hold);
+    return out;
+  }
+
+  /** Generation ended without a match — release any held-back text. */
+  flush(): string {
+    const out = this.#pending;
+    this.#pending = "";
     return out;
   }
 }
@@ -255,13 +318,15 @@ export function createServer(
   const promptCache = new PromptCache(serverOptions.promptCacheBytes ?? 2e9);
 
   /** Run one generation with prompt-cache reuse. Must be called inside
-   *  the queue. Vision requests bypass the prompt cache: image tokens are
+   *  the queue. onToken returning `false` halts generation early (stop
+   *  sequence fired); the cache snapshot stays valid and is still kept.
+   *  Vision requests bypass the prompt cache: image tokens are
    *  identical placeholder ids, so prefix matching across different
    *  images would false-hit. */
   const runGeneration = async (
     promptIds: number[],
     options: GenerateOptions,
-    onToken: (token: number) => void | Promise<void>,
+    onToken: (token: number) => void | boolean | Promise<void | boolean>,
     vision?: { embeddings: import("./mlx/array").MlxArray; imageMask: import("./mlx/array").MlxArray },
   ) => {
     // Cache entries are adapter-specific: KV computed under one adapter
@@ -275,8 +340,10 @@ export function createServer(
         cache: caches,
         ...(vision ? { promptEmbeddings: vision.embeddings, imageMask: vision.imageMask } : {}),
       });
-      for await (const t of gen) await onToken(t.token);
-      const s = gen.stats!;
+      for await (const t of gen) {
+        if ((await onToken(t.token)) === false) break;
+      }
+      const s = gen.stats!; // set on completion AND on early break
       if (vision) {
         for (const c of caches) c.dispose();
       } else {
@@ -316,13 +383,18 @@ export function createServer(
       ? { kvBits: serverOptions.kvQuant, quantizedKvStart: 0 }
     : ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};
 
-  const toOptions = (req: ChatRequest): GenerateOptions => ({
+  const toOptions = (req: ChatRequest): GenerateOptions & { stopSequences: string[] } => ({
     maxTokens: req.max_completion_tokens ?? req.max_tokens ?? 1024,
     temperature: req.temperature ?? 0.7,
     topP: req.top_p ?? 0,
     topK: req.top_k ?? 0,
     seed: req.seed ?? (Date.now() & 0xffffffff),
     repetitionPenalty: req.repetition_penalty,
+    // generate() yields token ids; stop sequences match on decoded text
+    // (they can span token boundaries), so the StopMatcher sits at the
+    // decode layer below and halts the loop via onToken → false.
+    stopSequences: (typeof req.stop === "string" ? [req.stop] : req.stop ?? [])
+      .filter((s) => typeof s === "string" && s.length > 0),
     ...kvScheme,
   });
 
@@ -509,6 +581,7 @@ export function createServer(
                 await enqueue(async () => {
                   send(chunk({ role: "assistant", content: "" }, null));
                   const router = new ToolAwareStream(ctx.tokenizer);
+                  const stopper = new StopMatcher(options.stopSequences);
                   // The decode loop is an unbroken microtask chain (FFI +
                   // generator resumes) — without a macrotask hop, Bun never
                   // services the socket and the whole SSE response flushes
@@ -519,9 +592,10 @@ export function createServer(
                   // already-dispatched next GPU step.
                   let lastFlush = performance.now();
                   const s = await runGeneration(promptIds, options, (token) => {
-                    const text = router.push(token);
+                    const text = stopper.push(router.push(token));
+                    if (text) send(chunk({ content: text }, null));
+                    if (stopper.stopped) return false; // halt generation
                     if (text) {
-                      send(chunk({ content: text }, null));
                       const now = performance.now();
                       if (now - lastFlush >= 25) {
                         lastFlush = now;
@@ -529,7 +603,13 @@ export function createServer(
                       }
                     }
                   }, vision);
-                  const tail = router.flush();
+                  // a stop match discards everything from the match on,
+                  // including text still held by the decoders
+                  let tail = "";
+                  if (!stopper.stopped) {
+                    tail = stopper.push(router.flush());
+                    if (!stopper.stopped) tail += stopper.flush();
+                  }
                   if (tail) send(chunk({ content: tail }, null));
                   const toolCalls = router.toolCalls();
                   if (toolCalls.length) {
@@ -539,6 +619,7 @@ export function createServer(
                   }
                   const finish = toolCalls.length
                     ? "tool_calls"
+                    : stopper.stopped ? "stop"
                     : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
                   send({
                     ...chunk({}, finish),
@@ -570,14 +651,20 @@ export function createServer(
         try {
           return await enqueue(async () => {
             const router = new ToolAwareStream(ctx.tokenizer);
+            const stopper = new StopMatcher(options.stopSequences);
             let content = "";
             const s = await runGeneration(promptIds, options, (token) => {
-              content += router.push(token);
+              content += stopper.push(router.push(token));
+              if (stopper.stopped) return false; // halt generation
             }, vision);
-            content += router.flush();
+            if (!stopper.stopped) {
+              content += stopper.push(router.flush());
+              if (!stopper.stopped) content += stopper.flush();
+            }
             const toolCalls = router.toolCalls();
             const finish = toolCalls.length
               ? "tool_calls"
+              : stopper.stopped ? "stop"
               : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
             return Response.json({
               id, object: "chat.completion", created, model: ctx.modelId,

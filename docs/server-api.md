@@ -21,11 +21,17 @@ Request body (OpenAI chat schema; unknown fields ignored):
   "top_p": 0, "top_k": 0,        // 0 = off
   "seed": 1234,                  // omit for time-derived
   "repetition_penalty": 1.1,     // optional
+  "stop": "\n\n",                // or ["###", "\n\n"] (spec: up to 4)
   "tools": [ /* OpenAI function tools */ ],
   "tool_choice": "auto",         // "none" disables tools
   "adapter": "id"                // LoRA: "id", stacked "a+b", or "none"
 }
 ```
+
+`stop` sequences are matched on **decoded text**, not token ids, so a
+sequence that spans token boundaries still fires. Generation halts at
+the first match; the stop sequence itself is excluded from the content
+and `finish_reason` is `"stop"`.
 
 Message `content` is a string or an array of parts:
 `{ "type": "text", "text": ... }` and
@@ -61,7 +67,9 @@ Non-streaming response:
 Streaming (`"stream": true`) is SSE: `data: <chunk>\n\n` per event,
 terminated by `data: "[DONE]"`. Chunks are `chat.completion.chunk`
 objects whose `choices[0].delta` carries `{role}`, then `{content}`
-increments (multi-byte sequences are held back until decodable), then
+increments (multi-byte sequences are held back until decodable; text
+that could begin a `stop` sequence is held back until disambiguated,
+so no part of a stop sequence is ever streamed), then
 for tool calls a final `{tool_calls: [{index, id, type, function}]}`
 delta; the last chunk carries `finish_reason` and `usage`.
 
