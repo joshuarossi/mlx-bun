@@ -122,9 +122,13 @@ function emitQuantSdpaDispatch(s: LayerSpec, kqExpr: string, vqExpr: string): st
   const lines: string[] = [];
   lines.push(`  // dispatch-site constants: bits=${s.bits} group_size=${s.gs} nRep=${nRep} head_dim=${headDim}`);
   if (staticOk) {
-    lines.push(`  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)`);
-    lines.push(`    ? quantizedSdpaTiled(q, ${kqExpr}, ${vqExpr}, 1.0, mask, ${s.gs}, ${s.bits})`);
-    lines.push(`    : quantizedSdpaUnfused(q, ${kqExpr}, ${vqExpr}, 1.0, mask, ${s.gs}, ${s.bits});`);
+    // perf mode first (Phase E fused kernel, frozen-oracle-gated), then
+    // the compat tiled/unfused dispatch
+    lines.push(`  const attn = perfKernelEnabled() && mask.mode === "" && fusedDecodeKernelSupported(q, ${s.bits}, ${s.gs})`);
+    lines.push(`    ? fusedDecodeSdpa(q, ${kqExpr}, ${vqExpr}, ${s.gs}, ${s.bits})`);
+    lines.push(`    : (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)`);
+    lines.push(`      ? quantizedSdpaTiled(q, ${kqExpr}, ${vqExpr}, 1.0, mask, ${s.gs}, ${s.bits})`);
+    lines.push(`      : quantizedSdpaUnfused(q, ${kqExpr}, ${vqExpr}, 1.0, mask, ${s.gs}, ${s.bits});`);
   } else {
     lines.push(`  const attn = quantizedSdpaUnfused(q, ${kqExpr}, ${vqExpr}, 1.0, mask, ${s.gs}, ${s.bits});`);
   }
@@ -343,6 +347,9 @@ import {
   type Mask,
   type SharedKv,
 } from "../gemma4-base";
+import {
+  fusedDecodeKernelSupported, fusedDecodeSdpa, perfKernelEnabled,
+} from "../fused-decode-kernel";
 import { Gemma4Model, type DecoderLayer } from "../gemma4";
 ${hasPerLayer ? `import { isCompiledTrace } from "../gemma4-base";\n` : ""}
 export const FINGERPRINT = "${fingerprint}";

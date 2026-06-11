@@ -33,11 +33,23 @@ const TOP_K = 128;
 const LOGIT_STEPS = 4;
 const TRAJ_TOKENS = 64;
 
-function syntheticPrompt(len: number): number[] {
-  // fixed ids, valid for all gemma-4 vocabs (262k); BOS then a cycle
-  const out = [2];
-  for (let i = 1; i < len; i++) out.push(3000 + ((i * 37) % 9000));
-  return out;
+// Natural-language prompts (per-model tokenizer): garbage-token prompts
+// make greedy continuations maximally entropy-sensitive — any numeric
+// perturbation flips near-tied argmaxes — which gates NOISE, not
+// quality. Real text has low-entropy continuations; agreement on it is
+// the meaningful signal. (First freeze used synthetic ids; re-frozen
+// 2026-06-11 with text BEFORE any perf-mode kernel shipped — the compat
+// engine is unchanged, so this is the same oracle with better prompts.)
+import { loadTokenizer } from "../src/tokenizer";
+
+async function textPrompt(dir: string, len: number): Promise<number[]> {
+  const tok = await loadTokenizer(dir);
+  let msg =
+    "The history of computing begins with mechanical calculators and " +
+    "proceeds through relays, vacuum tubes, transistors, and integrated " +
+    "circuits. Each generation multiplied both speed and reliability. ";
+  while (tok.encode(msg).length < len) msg += msg.slice(0, 400);
+  return [2, ...tok.encode(msg).slice(0, len - 1)];
 }
 
 function topK(logits: Float32Array, k: number): { idx: number[]; val: number[] } {
@@ -54,15 +66,15 @@ for (const [name, dir] of MODELS) {
   const weights = await Weights.open(dir);
   const model = new Gemma4Model(weights, config);
 
-  const run = (promptLen: number, wantLogits: boolean) => {
+  const run = async (promptLen: number, wantLogits: boolean) => {
     const cache = model.makeCache();
     try {
       for (let i = 0; i < cache.length; i++) {
         const e = config.kvQuant?.find((q) => q.layerIdx === i);
         if (e)
-          cache[i] = (cache[i] as { toQuantized(g: number, b: number): (typeof cache)[number] }).toQuantized(e.groupSize, e.bits);
+          cache[i] = (cache[i] as unknown as { toQuantized(g: number, b: number): (typeof cache)[number] }).toQuantized(e.groupSize, e.bits);
       }
-      const prompt = syntheticPrompt(promptLen);
+      const prompt = await textPrompt(dir, promptLen);
       const trajectory: number[] = [];
       const logitSteps: { idx: number[]; val: number[] }[] = [];
       let tokens: number[] = prompt;
@@ -86,8 +98,8 @@ for (const [name, dir] of MODELS) {
     fingerprint: configFingerprint(config),
     kvConfig: config.kvQuant ?? null,
     topK: TOP_K,
-    short: run(600, false),
-    long: run(2048, true),
+    short: await run(600, false),
+    long: await run(2048, true),
   };
   await Bun.write(`goldens/perf-oracle/${name}.json`, JSON.stringify(out));
   console.log(`${name}: frozen (fingerprint ${out.fingerprint})`);

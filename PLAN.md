@@ -1875,11 +1875,40 @@ lever**. Every dispatch site now has a single known
       tests/metal-kernel.test.ts: f32 + bf16-templated kernels verified)
       — the real kernel debugs numerics OR plumbing, never both.
       mlx_metal_start/stop_capture also bound (metalCapture helper).
-- [ ] Step 2 — capture/size the dequant round-trip on the compiled 12B.
-- [ ] Step 4 — the 4-bit fused decode kernel (nRep/group_size baked;
-      Phase D's dispatch sites carry the template params).
-- [ ] Step 5 — A/B @8k vs compiled+specialized baseline, perf-mode flag,
-      gated against the frozen oracle with the trade labeled.
+- [x] **Step 4 — the fused decode kernel EXISTS and is quality-gated;
+      v1 is a documented LOSING experiment on speed.**
+      src/model/fused-decode-kernel.ts: one dispatch per L=1 quantized
+      SDPA — QK^T + one-shot softmax + ×V, dequant inlined, nothing
+      materialized; BITS/GS/D/NREP as template args (Phase D's site
+      constants); MLX_BUN_PERF_KERNEL=1, DEFAULT OFF.
+      - Numerics: per-dispatch ≤0.007 vs unfused across all 12B site
+        shapes incl. real-cache views and N=2101
+        (tests/fused-decode-kernel.test.ts). Probing showed any
+        implementation that rounds bf16 scores differs by final-rounding
+        ties (qmm vs f32-matmul vs bf16-matmul all differ ~1 ulp) — true
+        bit-exactness is unreachable; ulp-level per-layer differences
+        amplify chaotically through 48 layers, so free-running greedy
+        trajectory comparison measures CHAOS, not quality.
+      - **Gate redesigned to teacher-forced agreement** (feed compat's
+        frozen token each step; contexts identical):
+        tests/perf-kernel-oracle.test.ts, threshold ≥56/64, labeled:
+        kernel 60/64 @600, 62/64 @2k vs the ACCEPTED tier-b tiled path's
+        62/64, 63/64 on the same oracle — kernel quality is at the
+        envelope the project already ships.
+      - **Speed: 0.72× @8k (paired, serve config) — SLOWER. Root cause:
+        occupancy.** One threadgroup per query head (8 sliding heads ×
+        128 threads) cannot fill an M4 Pro. v2 lever: flash-decoding
+        split-N (G N-blocks × per-block partial (max, sumexp, acc) + a
+        merge pass) — the standard fix, deliberately not rushed tonight.
+      - **CustomKernel cannot sit inside compiled-decode closures** (no
+        output_shapes; closure self-blacklists and the generation falls
+        back when the flag is on). v2 should dispatch the kernel from JS
+        layers / outside compiled segments, which the segmented design
+        already supports for full-attention layers.
+- [ ] Step 2 — Metal capture (mlx_metal_start_capture is bound;
+      metalCapture() helper) to confirm the v2 prize sizing under Xcode.
+- [ ] Step 4b — flash-decoding split-N v2 of the kernel; re-A/B @8k.
+- [ ] Step 6/7 — 8-bit + per-model kernels only if v2 wins on the 12B.
 
 ## Context / lore
 

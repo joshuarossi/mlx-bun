@@ -13,6 +13,9 @@ import type { Weights } from "../weights";
 import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
+import {
+  fusedDecodeKernelSupported, fusedDecodeSdpa, perfKernelEnabled,
+} from "./fused-decode-kernel";
 
 export type MaskMode = "" | "causal";
 export interface Mask {
@@ -1457,6 +1460,14 @@ export function quantizedSdpa(
   q: MlxArray, kq: ops.QuantizedTensor, vq: ops.QuantizedTensor,
   scale: number, mask: Mask, groupSize: number, bits: number,
 ): MlxArray {
+  // Perf mode (Phase E): the fused decode kernel takes supported L=1
+  // dispatches. NOT bit-exact (online softmax) — gated against the
+  // frozen perf oracle; compat (flag off) stays the -O0 reference.
+  if (
+    mask.mode === "" && scale === 1.0 && perfKernelEnabled() &&
+    fusedDecodeKernelSupported(q, bits, groupSize)
+  )
+    return fusedDecodeSdpa(q, kq, vq, groupSize, bits);
   const tile = q.shape[2]! > 1 || process.env.MLX_BUN_FUSED_DECODE === "1";
   if (tile && fusedSdpaSupported(q, mask, groupSize, bits))
     return quantizedSdpaTiled(q, kq, vq, scale, mask, groupSize, bits);
