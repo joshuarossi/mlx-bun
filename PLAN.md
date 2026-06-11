@@ -1115,17 +1115,31 @@ ON BY DEFAULT in `optiq serve` (`--anthropic/--no-anthropic`,
 default True), so the drop-in claim requires it, upgrading it from
 Phase 4's "shim later if needed"):
 
-- [ ] Protocol translation, both directions + streaming. Oracle:
-      `optiq/anthropic_shim.py` (`anthropic_to_openai_body`,
-      `openai_to_anthropic_response`, `AnthropicStreamTranslator`,
-      369 lines) — ours translates at the request layer instead of
-      monkey-patching a handler (`optiq/anthropic_server.py` exists
-      only because Python has to patch mlx-lm's APIHandler; we own
-      our server). Mind tool_use/tool_result blocks and the
-      Anthropic SSE event grammar (message_start/content_block_delta/
-      message_delta/message_stop).
-- [ ] On by default like the reference; exercised in the integration
-      suite (ephemeral port, streaming + tools round-trip).
+- [x] Protocol translation, both directions + streaming (DONE
+      2026-06-11, `src/anthropic.ts` + `/v1/messages` route).
+      Oracle: `optiq/anthropic_shim.py` — ported at the request layer
+      as planned: anthropic body → ChatRequest → the SAME handleChat
+      core (extracted from the chat-completions route; generation,
+      tools, vision, stops, admission live exactly once) → response/
+      SSE translated back. Event grammar is the oracle's exactly
+      (message_start → content_block_start/delta/stop →
+      message_delta → message_stop). Documented upgrades over the
+      oracle (it inlines tools as Qwen-style text, "out of scope for
+      v1"; emits "[image omitted]"): tool_use/tool_result map to our
+      NATIVE gemma tool calling (streamed tool_use blocks with
+      input_json_delta), image blocks (base64 + url sources) map to
+      our vision parts, usage is real final-chunk counts (their
+      chunk-count guess is the fallback) + cache_read_input_tokens
+      from the prompt cache, prior-turn thinking blocks dropped on
+      re-ingest instead of json.dumps'd.
+- [x] On by default like the reference; exercised in the integration
+      suite (tests/server-tools.test.ts: non-streaming, streaming
+      grammar + reassembly, tool_use emission, tool_result round-trip
+      against the live 12B, anthropic-shaped errors; unit grammar
+      tests in tests/anthropic.test.ts). 138/138 suite.
+      Josh-side check remaining: point a real Claude Code at
+      `ANTHROPIC_BASE_URL=http://localhost:8090` (needs a persistent
+      server — agent sessions don't start those).
 
 **OpenAI Responses** (`previous_response_id` resumption):
 
