@@ -200,4 +200,177 @@ describe.skipIf(!haveWeights)("tool calling end-to-end", async () => {
     expect(body.type).toBe("error");
     expect(body.error.type).toBe("invalid_request_error");
   });
+
+  test("anthropic: real Anthropic SDK — multi-turn streamed conversation with tool use", async () => {
+    // The Phase 11 exit criterion verbatim, SDK-validated wire shapes.
+    const { default: Anthropic } = await import("@anthropic-ai/sdk");
+    const client = new Anthropic({ baseURL: base, apiKey: "sk-local" });
+
+    // turn 1 (streamed): the model calls the tool
+    const stream1 = client.messages.stream({
+      model: "gemma-test",
+      max_tokens: 96,
+      temperature: 0,
+      tools: [{
+        name: "get_weather",
+        description: "Get the current weather for a city",
+        input_schema: {
+          type: "object",
+          properties: { city: { type: "string" } },
+          required: ["city"],
+        },
+      }],
+      messages: [
+        { role: "user", content: "What is the weather in Paris right now? Use the tool." },
+      ],
+    });
+    const turn1 = await stream1.finalMessage();
+    expect(turn1.stop_reason).toBe("tool_use");
+    const toolUse = turn1.content.find((b) => b.type === "tool_use") as any;
+    expect(toolUse.name).toBe("get_weather");
+    expect(toolUse.input.city).toBe("Paris");
+
+    // turn 2 (streamed): tool result goes back, grounded answer comes out
+    const stream2 = client.messages.stream({
+      model: "gemma-test",
+      max_tokens: 96,
+      temperature: 0,
+      messages: [
+        { role: "user", content: "What is the weather in Paris right now? Use the tool." },
+        { role: "assistant", content: turn1.content },
+        {
+          role: "user",
+          content: [{
+            type: "tool_result", tool_use_id: toolUse.id, content: "Snow, -3C",
+          }],
+        },
+      ],
+    });
+    let streamedText = "";
+    stream2.on("text", (t) => (streamedText += t));
+    const turn2 = await stream2.finalMessage();
+    expect(turn2.stop_reason).toBe("end_turn");
+    expect(streamedText.toLowerCase()).toMatch(/snow|-3/);
+    expect(turn2.usage.output_tokens).toBeGreaterThan(0);
+  }, 360_000);
+
+  // ---- OpenAI Responses API (Phase 11) — same server, same model ----
+
+  const responses = async (body: Record<string, unknown>) =>
+    fetch(`${base}/v1/responses`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ max_output_tokens: 96, temperature: 0, ...body }),
+    });
+
+  test("responses: multi-turn resumed conversation via previous_response_id", async () => {
+    const r1 = await responses({
+      input: "My favorite color is teal. Reply with exactly: noted",
+    });
+    expect(r1.status).toBe(200);
+    const first = (await r1.json()) as any;
+    expect(first.object).toBe("response");
+    expect(first.status).toBe("completed");
+    expect(first.id).toStartWith("resp_");
+    expect(first.output[0].content[0].type).toBe("output_text");
+    expect(first.usage.input_tokens).toBeGreaterThan(0);
+
+    // follow-up WITHOUT resending history — the store must splice it in
+    const r2 = await responses({
+      previous_response_id: first.id,
+      input: "What is my favorite color? One word.",
+    });
+    expect(r2.status).toBe(200);
+    const second = (await r2.json()) as any;
+    expect(second.previous_response_id).toBe(first.id);
+    const text = second.output
+      .find((o: any) => o.type === "message")
+      .content[0].text.toLowerCase();
+    expect(text).toContain("teal");
+  }, 360_000);
+
+  test("responses: streaming emits Codex-required events and stores the result", async () => {
+    const r = await responses({
+      input: "Count from 1 to 5, digits only.",
+      stream: true,
+    });
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toContain("text/event-stream");
+    const raw = await r.text();
+    const events = [...raw.matchAll(/event: ([\w.]+)\ndata: (.*)\n/g)]
+      .map((m) => ({ event: m[1]!, data: JSON.parse(m[2]!) }));
+    expect(events[0]!.event).toBe("response.created");
+    expect(events.at(-1)!.event).toBe("response.completed");
+    const text = events
+      .filter((e) => e.event === "response.output_text.delta")
+      .map((e) => e.data.delta)
+      .join("");
+    expect(text).toMatch(/1.*2.*3.*4.*5/s);
+    const completed = events.at(-1)!.data.response;
+    expect(completed.output[0].content[0].text).toBe(text);
+    expect(completed.usage.output_tokens).toBeGreaterThan(0);
+
+    // the streamed response is resumable too
+    const follow = await responses({
+      previous_response_id: completed.id,
+      input: "What number came right after 2? One word.",
+    });
+    expect(follow.status).toBe(200);
+    const fb = (await follow.json()) as any;
+    const ftext = fb.output
+      .find((o: any) => o.type === "message")
+      .content[0].text;
+    expect(ftext).toMatch(/3|three/i);
+  }, 360_000);
+
+  test("responses: real OpenAI SDK client completes a resumed multi-turn conversation", async () => {
+    // The Phase 11 exit criterion verbatim: an OpenAI-SDK Responses
+    // client, not hand-rolled fetch — the SDK validates wire shapes.
+    const { default: OpenAI } = await import("openai");
+    const client = new OpenAI({ baseURL: `${base}/v1`, apiKey: "sk-local" });
+    const first = await client.responses.create({
+      model: "gemma-test",
+      input: "Remember the codeword: zebra. Reply with exactly: stored",
+      max_output_tokens: 64,
+      temperature: 0,
+    });
+    expect(first.status).toBe("completed");
+    const second = await client.responses.create({
+      model: "gemma-test",
+      previous_response_id: first.id,
+      input: "What was the codeword? One word.",
+      max_output_tokens: 64,
+      temperature: 0,
+    });
+    expect(second.output_text.toLowerCase()).toContain("zebra");
+
+    // streamed leg through the SDK's event iterator
+    const stream = await client.responses.create({
+      model: "gemma-test",
+      input: "Reply with exactly: ping",
+      max_output_tokens: 32,
+      temperature: 0,
+      stream: true,
+    });
+    let streamedText = "";
+    let completed = false;
+    for await (const event of stream) {
+      if (event.type === "response.output_text.delta") streamedText += event.delta;
+      if (event.type === "response.completed") completed = true;
+    }
+    expect(completed).toBe(true);
+    expect(streamedText.toLowerCase()).toContain("ping");
+  }, 360_000);
+
+  test("responses: unknown previous_response_id → 404; store visible in /stats", async () => {
+    const r = await responses({ previous_response_id: "resp_nope", input: "x" });
+    expect(r.status).toBe(404);
+    const err = (await r.json()) as any;
+    expect(err.error.type).toBe("invalid_request_error");
+
+    const stats = (await (await fetch(`${base}/stats`)).json()) as any;
+    expect(stats.response_store.entries).toBeGreaterThan(0);
+    expect(stats.response_store.bytes).toBeGreaterThan(0);
+    expect(stats.response_store.max_bytes).toBe(32 * 1024 * 1024);
+  });
 });

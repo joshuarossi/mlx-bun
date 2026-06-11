@@ -23,6 +23,11 @@ import {
   anthropicToChatBody, chatJsonToAnthropic, translateOpenAiSse,
   type AnthropicRequest,
 } from "./anthropic";
+import {
+  ResponseStore, chatJsonToResponses, outputItemsToInputItems,
+  responsesToChatBody, translateOpenAiSseToResponses,
+  type ResponsesRequest,
+} from "./responses";
 import { AdapterManager } from "./lora";
 import { fit } from "./fit";
 import { setMemoryLimit } from "./mlx/ffi";
@@ -320,6 +325,11 @@ export function createServer(
   };
 
   const promptCache = new PromptCache(serverOptions.promptCacheBytes ?? 2e9);
+  // Responses-API store for previous_response_id resumption (Phase 11):
+  // TTL + byte-capped LRU, port of optiq/response_store.py. Pairs with
+  // the prompt cache: a resumed conversation re-renders the same prefix,
+  // so its KV prefill is already cached.
+  const responseStore = new ResponseStore();
 
   /** Run one generation with prompt-cache reuse. Must be called inside
    *  the queue. onToken returning `false` halts generation early (stop
@@ -440,6 +450,12 @@ export function createServer(
             max_bytes: promptCache.maxBytes,
             hits: promptCache.hits,
             misses: promptCache.misses,
+          },
+          response_store: {
+            entries: responseStore.size,
+            bytes: responseStore.totalBytes,
+            max_bytes: responseStore.maxBytes,
+            ttl_ms: responseStore.ttlMs,
           },
           kv_quant: {
             mode: kvMode,
@@ -744,6 +760,98 @@ export function createServer(
           });
         }
         return Response.json(chatJsonToAnthropic(await resp.json(), ctx.modelId));
+      }
+
+      // OpenAI Responses API (Phase 11) — Codex/Cursor/Continue speak
+      // this now. Oracle: optiq/responses_shim.py + responses_server.py,
+      // ported in src/responses.ts. previous_response_id resumes a prior
+      // conversation from the in-process store (TTL + byte-capped LRU).
+      if (url.pathname === "/v1/responses" && request.method === "POST") {
+        const responsesError = (status: number, message: string) =>
+          Response.json(
+            {
+              error: {
+                message,
+                type: status >= 500 ? "server_error" : "invalid_request_error",
+                param: null, code: null,
+              },
+            },
+            { status },
+          );
+        let responsesBody: ResponsesRequest;
+        try {
+          responsesBody = (await request.json()) as ResponsesRequest;
+        } catch {
+          return responsesError(400, "invalid JSON body");
+        }
+
+        // previous_response_id: prepend the prior conversation's input
+        // + output (as input items); carry instructions forward only if
+        // the new request omits them (oracle semantics).
+        const prevId = responsesBody.previous_response_id ?? null;
+        if (prevId) {
+          const prior = responseStore.get(prevId);
+          if (!prior)
+            return responsesError(404, `previous_response_id '${prevId}' not found or expired`);
+          const prepended = [...prior.input, ...outputItemsToInputItems(prior.output)];
+          const newInput =
+            typeof responsesBody.input === "string"
+              ? responsesBody.input
+                ? [{ type: "message", role: "user", content: responsesBody.input }]
+                : []
+              : responsesBody.input ?? [];
+          responsesBody = {
+            ...responsesBody,
+            input: [...prepended, ...newInput] as Array<Record<string, unknown>>,
+            instructions: responsesBody.instructions ?? prior.instructions ?? undefined,
+          };
+        }
+        // Remember the effective input so a later follow-up that chains
+        // off THIS response sees the full history.
+        const capturedInput: unknown[] =
+          typeof responsesBody.input === "string"
+            ? [{ type: "message", role: "user", content: responsesBody.input }]
+            : [...(responsesBody.input ?? [])];
+        const capturedInstructions = responsesBody.instructions ?? null;
+
+        let chatBody: ChatRequest;
+        try {
+          chatBody = responsesToChatBody(responsesBody) as unknown as ChatRequest;
+        } catch (e) {
+          return responsesError(400, (e as Error).message);
+        }
+        const resp = await handleChat(chatBody);
+        if (!resp.ok) {
+          const err = (await resp.json().catch(() => null)) as
+            | { error?: { message?: string } }
+            | null;
+          return responsesError(resp.status, err?.error?.message ?? "request failed");
+        }
+        if (responsesBody.stream) {
+          const body = translateOpenAiSseToResponses(
+            resp.body!, ctx.modelId, prevId,
+            (final) =>
+              responseStore.put(final.id as string, {
+                input: capturedInput,
+                output: final.output as unknown[],
+                instructions: capturedInstructions,
+              }),
+          );
+          return new Response(body, {
+            headers: {
+              "content-type": "text/event-stream",
+              "cache-control": "no-cache",
+              connection: "keep-alive",
+            },
+          });
+        }
+        const responses = chatJsonToResponses(await resp.json(), ctx.modelId, prevId);
+        responseStore.put(responses.id as string, {
+          input: capturedInput,
+          output: responses.output as unknown[],
+          instructions: capturedInstructions,
+        });
+        return Response.json(responses);
       }
 
       return Response.json({ error: { message: "not found" } }, { status: 404 });
