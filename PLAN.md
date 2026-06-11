@@ -1862,6 +1862,25 @@ the host-side cost and **Phase E's fused kernel is the only remaining
 lever**. Every dispatch site now has a single known
 (bits, group_size, nRep, head_dim) — E's precondition met.
 
+## Optimization plan Phase E — fused decode-SDPA kernel `[~]` (started 2026-06-11)
+
+- [x] **Step 1 — ground truth FROZEN before any kernel work**
+      (goldens/perf-oracle/{12b,e4b,26b}.json): compat-mode greedy
+      trajectories @600/@2k + top-128 logits for 4 decode steps under
+      the shipped kv_config, keyed by config fingerprint
+      (scripts/freeze-perf-oracle.ts). This is the perf-mode gate's
+      oracle now that bit-exact-vs-compat won't apply to the kernel.
+- [x] **Step 3 — toolchain derisked**: mx.fast.metal_kernel works from
+      Bun end-to-end (src/mlx/metal-kernel.ts wrapper;
+      tests/metal-kernel.test.ts: f32 + bf16-templated kernels verified)
+      — the real kernel debugs numerics OR plumbing, never both.
+      mlx_metal_start/stop_capture also bound (metalCapture helper).
+- [ ] Step 2 — capture/size the dequant round-trip on the compiled 12B.
+- [ ] Step 4 — the 4-bit fused decode kernel (nRep/group_size baked;
+      Phase D's dispatch sites carry the template params).
+- [ ] Step 5 — A/B @8k vs compiled+specialized baseline, perf-mode flag,
+      gated against the frozen oracle with the trade labeled.
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the

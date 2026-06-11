@@ -169,6 +169,25 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_slice_update_dynamic: { args: [P, u64, u64, u64, P, u64, u64], returns: i32 },
   // (res, a, start ARRAY, axes*, axes_num, slice_size*, n, stream)
   mlx_slice_dynamic: { args: [P, u64, u64, P, u64, P, u64, u64], returns: i32 },
+  // custom Metal kernels (Phase E — mx.fast.metal_kernel from Bun)
+  mlx_vector_string_new_data: { args: [P, u64], returns: u64 },
+  mlx_vector_string_free: { args: [u64], returns: i32 },
+  // (name, input_names, output_names, source, header, ensure_row_contiguous, atomic_outputs)
+  mlx_fast_metal_kernel_new: { args: [cstring, u64, u64, cstring, cstring, FFIType.bool, FFIType.bool], returns: u64 },
+  mlx_fast_metal_kernel_free: { args: [u64], returns: FFIType.void },
+  // (outputs: mlx_vector_array*, kernel, inputs, config, stream)
+  mlx_fast_metal_kernel_apply: { args: [P, u64, u64, u64, u64], returns: i32 },
+  mlx_fast_metal_kernel_config_new: { args: [], returns: u64 },
+  mlx_fast_metal_kernel_config_free: { args: [u64], returns: FFIType.void },
+  mlx_fast_metal_kernel_config_add_output_arg: { args: [u64, P, u64, i32], returns: i32 },
+  mlx_fast_metal_kernel_config_set_grid: { args: [u64, i32, i32, i32], returns: i32 },
+  mlx_fast_metal_kernel_config_set_thread_group: { args: [u64, i32, i32, i32], returns: i32 },
+  mlx_fast_metal_kernel_config_set_init_value: { args: [u64, f32], returns: i32 },
+  mlx_fast_metal_kernel_config_add_template_arg_int: { args: [u64, cstring, i32], returns: i32 },
+  mlx_fast_metal_kernel_config_add_template_arg_dtype: { args: [u64, cstring, i32], returns: i32 },
+  // GPU trace capture (Phase E step 2: size the prize before the kernel)
+  mlx_metal_start_capture: { args: [cstring], returns: i32 },
+  mlx_metal_stop_capture: { args: [], returns: i32 },
 }).symbols;
 
 export type MlxHandle = bigint;
