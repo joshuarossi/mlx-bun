@@ -19,6 +19,10 @@ import {
 import { loadTokenizer, type LoadedTokenizer } from "./tokenizer";
 import { parseToolCalls, TOOL_CALL_END, TOOL_CALL_START } from "./tool-call";
 import { PromptCache } from "./prompt-cache";
+import {
+  anthropicToChatBody, chatJsonToAnthropic, translateOpenAiSse,
+  type AnthropicRequest,
+} from "./anthropic";
 import { AdapterManager } from "./lora";
 import { fit } from "./fit";
 import { setMemoryLimit } from "./mlx/ffi";
@@ -495,13 +499,12 @@ export function createServer(
           : Response.json({ error: { message: `adapter ${id} not mounted` } }, { status: 404 });
       }
 
-      if (url.pathname === "/v1/chat/completions" && request.method === "POST") {
-        let body: ChatRequest;
-        try {
-          body = (await request.json()) as ChatRequest;
-        } catch {
-          return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
-        }
+      // The chat-completions core, shared by both protocol surfaces:
+      // /v1/chat/completions calls it directly; /v1/messages (Anthropic)
+      // translates its body into this shape and the Response back —
+      // generation, tools, vision, stop sequences, prompt cache, and
+      // admission control all live here exactly once.
+      const handleChat = async (body: ChatRequest): Promise<Response> => {
         if (!Array.isArray(body.messages) || body.messages.length === 0)
           return Response.json({ error: { message: "messages required" } }, { status: 400 });
 
@@ -688,6 +691,59 @@ export function createServer(
         } catch (e) {
           return Response.json({ error: { message: (e as Error).message } }, { status: 500 });
         }
+      };
+
+      if (url.pathname === "/v1/chat/completions" && request.method === "POST") {
+        let body: ChatRequest;
+        try {
+          body = (await request.json()) as ChatRequest;
+        } catch {
+          return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
+        }
+        return handleChat(body);
+      }
+
+      // Anthropic Messages API (Phase 11) — on by default, mirroring
+      // optiq serve (--anthropic defaults True; the drop-in claim
+      // depends on it). Oracle: optiq/anthropic_shim.py, ported in
+      // src/anthropic.ts. Point Claude Code at this port via
+      // ANTHROPIC_BASE_URL for a fully local backend.
+      if (url.pathname === "/v1/messages" && request.method === "POST") {
+        const anthropicError = (status: number, type: string, message: string) =>
+          Response.json({ type: "error", error: { type, message } }, { status });
+        let anthropicBody: AnthropicRequest;
+        try {
+          anthropicBody = (await request.json()) as AnthropicRequest;
+        } catch {
+          return anthropicError(400, "invalid_request_error", "invalid JSON body");
+        }
+        let chatBody: ChatRequest;
+        try {
+          chatBody = anthropicToChatBody(anthropicBody) as unknown as ChatRequest;
+        } catch (e) {
+          return anthropicError(400, "invalid_request_error", (e as Error).message);
+        }
+        const resp = await handleChat(chatBody);
+        if (!resp.ok) {
+          const err = (await resp.json().catch(() => null)) as
+            | { error?: { message?: string } }
+            | null;
+          return anthropicError(
+            resp.status,
+            resp.status >= 500 ? "api_error" : "invalid_request_error",
+            err?.error?.message ?? "request failed",
+          );
+        }
+        if (anthropicBody.stream) {
+          return new Response(translateOpenAiSse(resp.body!, ctx.modelId), {
+            headers: {
+              "content-type": "text/event-stream",
+              "cache-control": "no-cache",
+              connection: "keep-alive",
+            },
+          });
+        }
+        return Response.json(chatJsonToAnthropic(await resp.json(), ctx.modelId));
       }
 
       return Response.json({ error: { message: "not found" } }, { status: 404 });
