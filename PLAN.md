@@ -513,11 +513,44 @@ results exist, the session work is:
 5. If the M1 Max reruns: `git pull` there FIRST (its matrix ran
    6cb4a35, pre-rope-fix), then `./benchmark.sh --redo`.
 
-Open after that, in order: purge-cold rows (needs `sudo purge`,
-Josh-interactive), Phase 11 (Anthropic /v1/messages — Josh's Claude
-Code backend — + Responses), embeddable build. Background chip:
-server `stop` sequences landed (561fa35); verify its tests run in the
-default suite.
+~~Open after that, in order: purge-cold rows, Phase 11, embeddable
+build.~~ ALL CLOSED 2026-06-11 except the Josh-gated rows — see the
+SESSION SWEEP block below. Background chip resolved: server `stop`
+tests run in the default suite (tests/server.test.ts, 17 pass,
+verified 2026-06-11).
+
+### SESSION SWEEP (2026-06-11) — what's done, what's Josh-gated
+
+Done this session (each has its own findings/commit): corrected-matrix
+README refresh; decode gap ROOT-CAUSED AND FIXED (12B now ≥ python
+paired — see "Decode gap RESOLVED"); Phase 11 closed (Anthropic
+/v1/messages + Responses API with previous_response_id, real-SDK exit
+criteria); Phase 5 closed (embeddable single-binary bundle, verified
+end-to-end); docs pass closed (library-api.md + embedding.md);
+registry license column. Suite 157/157 at every commit.
+
+**Everything still open needs Josh physically:**
+1. **Reboot + `./benchmark.sh --redo`** — quotable clean-machine rows
+   for the post-decode-fix engine (expect the 12B decode gap GONE and
+   short-ctx AHEAD; the in-session paired numbers say +4.6% @600,
+   parity @8k). Add `sudo purge` for the Phase 15 purge-cold rows
+   while rebooted.
+2. **M1 Max**: `git pull` then `./benchmark.sh --redo` (still on
+   pre-rope-fix 6cb4a35).
+3. **Claude Code live smoke**: run serve-gemma or `bun scripts/serve.ts`,
+   point Claude Code at `ANTHROPIC_BASE_URL=http://localhost:8090` —
+   the protocol legs are SDK-verified; this is the dogfood check.
+4. **Phase 14 (Qwen)**: pick + download the first Qwen 3.x quant
+   (2B/4B class) — multi-GB download, your call. This also unlocks
+   MTP and is a consumer of the kept fused-decode flag.
+5. **Phase 12 (SigLIP)**: your hold — only if needed.
+6. **Phase 13 (TurboQuant)**: ship/no-ship decision is yours;
+   "legitimate to never ship" stands.
+
+Agent-side next when work resumes: Phase 7 research track — the
+decode-split profiling already identified the lever (per-step host
+graph-build, ~2–4 ms serial; e4b's −5%): prototype mlx_compile via
+mlx_closure to move decode-graph construction into C++.
 
 Remaining work, in priority order:
 
@@ -1578,8 +1611,10 @@ change, consistent with Phase 6).
 
 ## Cross-cutting (standing items)
 
-- **Registry**: per-model LICENSE column (Gemma custom terms vs Qwen
-  Apache-2.0 vs MiniCPM Apache-2.0) — still open. ~~bf16 vision-sidecar
+- ~~Registry: per-model LICENSE column~~ done 2026-06-11: `license`
+  column from the model card README frontmatter (license_name wins
+  when license is "other"); shown in `mlx-bun ls`; schema-drift
+  rebuild covers old DBs. ~~bf16 vision-sidecar
   size recorded SEPARATELY~~ done 2026-06-10 (sidecar_bytes column).
 - ~~Fit table: the vision sidecar is its own line item~~ done
   2026-06-10 (`fit` prints the sidecar line; never folded into

@@ -24,6 +24,7 @@ function makeHub(): string {
   }));
   writeFileSync(join(snap, "optiq_vision.safetensors"), new Uint8Array(64));
   writeFileSync(join(snap, "chat_template.jinja"), "{{ '<|tool_call>' }}");
+  writeFileSync(join(snap, "README.md"), "---\nlibrary_name: mlx\nlicense: gemma\n---\n# card\n");
 
   const snap2 = join(hub, "models--test--big-bf16", "snapshots", "def456");
   mkdirSync(snap2, { recursive: true });
@@ -50,6 +51,8 @@ describe("Registry", () => {
     expect(vision[0]!.paramCount).toBe(123456789);
     expect(vision[0]!.hasToolTemplate).toBe(true);
     expect(vision[0]!.hasKvConfig).toBe(false);
+    expect(vision[0]!.license).toBe("gemma"); // model-card frontmatter
+    expect(reg.resolve("big").license).toBeNull(); // no README
 
     const small = reg.list({ maxBytes: 2048 });
     expect(small.map((m) => m.repoId)).toEqual(["test/tiny-4bit"]);

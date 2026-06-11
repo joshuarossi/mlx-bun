@@ -138,8 +138,8 @@
     <h1>The engine is <em>correct.</em><br>Now it is <em>fast, too.</em></h1>
     <p class="dek">Three Gemma-4 models at <b>bit-exact logit parity</b> with the Python oracle. The serving legs were already won. And as of tonight, <span class="bun">the direct-decode gap is root-caused and fixed</span> — the 12B now measures <b>at-or-above mlx-lm</b> in paired runs. One honest residual remains on e4b.</p>
     <div class="rig">
-      <div class="cell"><div class="k">Phases done</div><div class="v">8 <small>/ 16 (4 in progress)</small></div></div>
-      <div class="cell"><div class="k">Test suite</div><div class="v">118 <small>pass (+ opt-in tiers)</small></div></div>
+      <div class="cell"><div class="k">Phases done</div><div class="v">10 <small>/ 16 (2 in progress)</small></div></div>
+      <div class="cell"><div class="k">Test suite</div><div class="v">157 <small>pass (+ opt-in tiers)</small></div></div>
       <div class="cell"><div class="k">Parity bar</div><div class="v">toBe(0) <small>bit-exact logits</small></div></div>
       <div class="cell"><div class="k">Models</div><div class="v">12B · e4b · 26B-A4B <small>+ LoRA, vision, MoE</small></div></div>
       <div class="cell"><div class="k">Machine</div><div class="v">M4 Pro <small>24 GB · ~273 GB/s</small></div></div>
@@ -291,18 +291,18 @@
       <div class="phase"><div class="num">P2</div><div><span class="status s-done">done</span></div><div class="name">Model graph + oracle</div><div class="note"><b class="bun">Bit-exact logits (max|Δ| = 0)</b>, 100/100 greedy tokens identical. Op-order fidelity is everything.</div></div>
       <div class="phase"><div class="num">P3</div><div><span class="status s-done">done</span></div><div class="name">Sampling + streaming</div><div class="note">On-GPU sampling, chunked prefill, async_eval-pipelined decode. Exit met at −3.1% vs mlx-lm.</div></div>
       <div class="phase"><div class="num">P4</div><div><span class="status s-done">done</span></div><div class="name">Server</div><div class="note">OpenAI chat completions + SSE, tool calling, vision (encoder-free 12B path, token-exact), byte-capped prompt cache, stop sequences. pi agent task end-to-end; kill -9 → ready in 34 ms.</div></div>
-      <div class="phase"><div class="num">P5</div><div><span class="status s-prog">in prog</span></div><div class="name">Appliance layer</div><div class="note">Registry, KV persistence (394 ms cached cold start), eval DB, fit + <b>memory admission control</b>, resumable downloader — all done. <b>Open: embeddable single-binary build.</b></div></div>
+      <div class="phase"><div class="num">P5</div><div><span class="status s-done">done</span></div><div class="name">Appliance layer</div><div class="note">Registry (now with per-model license column), KV persistence (394 ms cached cold start), eval DB, fit + <b>memory admission control</b>, resumable downloader, and the <b>embeddable single-binary bundle</b> (verified: GPU serving from the compiled binary via relocatable dylibs; signing recipe in docs/embedding.md).</div></div>
       <div class="phase"><div class="num">P6</div><div><span class="status s-prog">in prog</span></div><div class="name">Speed levers</div><div class="note">All levers characterized: spec-decode (net loss on e4b, kept as data), quantized KV (+21% @8k), MoE 26B (bit-exact, wired-limit fix), fused sampling. Exit reframed: best defaults shipped per (model, context).</div></div>
       <div class="phase"><div class="num">P7</div><div><span class="status s-todo">todo</span></div><div class="name">Kernel experiments</div><div class="note">Research track — custom fused Metal kernel for the 4-bit Gemma GQA shape. Only after profiling shows where bytes move unnecessarily.</div></div>
       <div class="phase"><div class="num">P8</div><div><span class="status s-done">done</span></div><div class="name">LoRA hot-swap</div><div class="note">N adapters on one base, per-request selection, A→B→A byte-identical. Found + fixed two upstream divergences (optiq uncast residual; dropped e4b per-layer-input targets).</div></div>
       <div class="phase"><div class="num">P9</div><div><span class="status s-done">done</span></div><div class="name">Rotating KV-quant</div><div class="note">Sliding-layer KV quantization, tier-a bit-exact incl. ring wrap. 12B KV 365 → 194/103 MB at saturation.</div></div>
       <div class="phase"><div class="num">P10</div><div><span class="status s-done">done</span></div><div class="name">Fused tiled prefill</div><div class="note">FlashAttention-2 N-tiled prefill over quantized caches; −330 MB transient @8k, speed-neutral, default-on. Found the <b>rope-freqs root cause</b> — kv4 now bit-exact, all tolerances deleted. Tiled decode: flag kept, default off (Josh, 2026-06-11).</div></div>
-      <div class="phase"><div class="num">P11</div><div><span class="status s-next">next</span></div><div class="name">Anthropic /v1/messages + Responses API</div><div class="note"><b>The Claude Code backend.</b> Translation at the request layer (oracle: optiq anthropic_shim.py); on by default like the reference. Plus /v1/responses with previous_response_id resumption.</div></div>
+      <div class="phase"><div class="num">P11</div><div><span class="status s-done">done</span></div><div class="name">Anthropic /v1/messages + Responses API</div><div class="note"><b>The Claude Code backend, shipped.</b> Request-layer translation over one shared chat core; native tool_use/tool_result mapping (better than the oracle's text hack), images via the vision path, real usage. Exit criteria met with the REAL SDKs: @anthropic-ai/sdk streamed multi-turn with tool use; openai SDK resumed multi-turn via previous_response_id.</div></div>
       <div class="phase"><div class="num">P12</div><div><span class="status s-hold">hold</span></div><div class="name">SigLIP vision tower</div><div class="note">Lights up e4b/26B image input. Josh's hold — do after optimizations, only if needed.</div></div>
       <div class="phase"><div class="num">P13</div><div><span class="status s-todo">todo</span></div><div class="name">TurboQuant</div><div class="note">Lowest priority; legitimate to never ship. Decision recorded either way.</div></div>
       <div class="phase"><div class="num">P14</div><div><span class="status s-todo">todo</span></div><div class="name">Qwen 3.x + MTP</div><div class="note">Second model family; where MTP speculation actually works (Qwen quants ship the head — Gemma doesn't). Josh picks the first quant. <span class="bun">Also a consumer of the kept fused-decode flag.</span></div></div>
       <div class="phase"><div class="num">P15</div><div><span class="status s-prog">in prog</span></div><div class="name">Head-to-head benchmark</div><div class="note">Corrected clean matrix landed 2026-06-11 (this report's data). <b>Open: purge-cold startup rows, M1 Max rerun on current code.</b></div></div>
-      <div class="phase"><div class="num">—</div><div><span class="status s-prog">in prog</span></div><div class="name">Documentation pass</div><div class="note">README, licenses, per-file header audit, server API doc — done. <b>Open: library API reference.</b> README benchmark table needs the 06-11 corrected numbers.</div></div>
+      <div class="phase"><div class="num">—</div><div><span class="status s-done">done</span></div><div class="name">Documentation pass</div><div class="note">README (06-11 corrected benchmarks in), licenses, per-file header audit, server API doc (+ both new protocol surfaces), <b>library API reference</b> (docs/library-api.md), and the embedding guide (docs/embedding.md).</div></div>
     </div>
   </div>
 </section>
@@ -312,11 +312,11 @@
     <div class="eyebrow"><span class="num">05</span> what's next</div>
     <h2>The queue, <em>in order</em></h2>
     <ol class="next">
-      <li><b>The decode-gap hunt — DONE.</b> Root-caused (allocator-reclaim boundary stall + clock-accounting asymmetry) and fixed reference-faithfully; 12B now at-or-above mlx-lm in paired runs. Remaining: e4b's −5% host-overhead residual (Phase 7: mlx_compile) and clean-machine quotable rows next reboot.</li>
-      <li><b>README Benchmarks refresh</b> — corrected 06-11 table in, invalidated-@8k provenance footnote out.</li>
-      <li><b>Phase 11: Anthropic /v1/messages</b> — Claude Code as a client of mlx-bun serve. Then the Responses API.</li>
-      <li><b>Embeddable build</b> — single-binary sidecar for the Tauri/Electron pattern.</li>
-      <li><b>Josh-interactive leftovers</b> — purge-cold rows (sudo purge), M1 Max rerun (git pull first; it's on pre-rope-fix code).</li>
+      <li><b>Done this session:</b> decode gap root-caused + fixed (12B at-or-above mlx-lm, paired) · README benchmarks refreshed · Phase 11 shipped &amp; SDK-verified (Anthropic + Responses) · embeddable single-binary bundle verified · library API + embedding docs · registry license column. Suite 118 → 157.</li>
+      <li><b>Josh: reboot + ./benchmark.sh --redo</b> (+ sudo purge for the purge-cold rows) — quotable clean rows for the post-fix engine; expect the 12B decode gap gone.</li>
+      <li><b>Josh: M1 Max</b> — git pull, then --redo (it's still on pre-rope-fix code).</li>
+      <li><b>Josh: dogfood Claude Code</b> against mlx-bun serve via ANTHROPIC_BASE_URL, and pick the first Qwen quant to download (unlocks Phase 14 + MTP).</li>
+      <li><b>Agent next: Phase 7</b> — prototype mlx_compile via mlx_closure to erase the ~2–4 ms/step host graph-build (e4b's remaining −5%).</li>
     </ol>
     <p class="body" style="margin-top:28px">Standing rules in force: <b>build first, benchmark when the project is good</b> · cleared machine or it didn't happen · paired ratios survive pressure, absolutes don't · losing experiments become <b>documented default-off flags, never deletions</b>.</p>
   </div>
