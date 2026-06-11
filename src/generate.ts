@@ -7,7 +7,12 @@
 // - sampling stays on-device; only the chosen token id crosses to JS
 
 import { MlxArray, gpuStream } from "./mlx/array";
-import { maxRecommendedWorkingSetSize, setWiredLimit, synchronize } from "./mlx/ffi";
+import {
+  clearCache,
+  maxRecommendedWorkingSetSize,
+  setWiredLimit,
+  synchronize,
+} from "./mlx/ffi";
 import * as ops from "./mlx/ops";
 import { Gemma4Model, KVCache, RotatingKVCache, type Cache } from "./model/gemma4";
 import type { KvQuantSpec } from "./config";
@@ -160,7 +165,9 @@ export function generate(
 ): Generation {
   let inner = generateInner(model, promptTokens, options);
   if (options.adapters?.length) inner = adapterScoped(model, options.adapters, inner);
-  const wire = model.weightsBytes > WIRE_THRESHOLD * maxRecommendedWorkingSetSize();
+  const wire =
+    process.env.MLX_BUN_FORCE_WIRE === "1" ||
+    model.weightsBytes > WIRE_THRESHOLD * maxRecommendedWorkingSetSize();
   return new Generation(wire ? wiredScoped(inner) : inner);
 }
 
@@ -285,6 +292,13 @@ async function* generateInner(
         h.dispose(); // logits never computed for non-final chunks
         ops.evalAll(cache.flatMap((c) => c.state()));
         maybeQuantizeKv(cache, options);
+        // mlx-lm _prefill clears the allocator cache after every chunk;
+        // without this, prefill transients pile up in the buffer cache
+        // and the first decode step pays a one-shot reclaim stall that
+        // scales with prompt length (~800 ms after an 8k prefill —
+        // measured, scripts/decode-split.ts; the context-scaling decode
+        // gap's main term).
+        clearCache();
         pos += prefillChunkSize;
       }
       if (needsTokenHistory) {
@@ -302,13 +316,17 @@ async function* generateInner(
     hLast.dispose();
     pending = sampleStep(logits0, 0); // token array [1]
     logits0.dispose();
-    // sync: the final chunk's compute belongs to prefill time, not the
-    // first decode step (mlx-lm accounts the same way)
-    pending.eval();
-    prefillMs = performance.now() - tPrefill;
+    // mirror mlx-lm generate_step: async-dispatch the first token's
+    // compute; the prefill clock keeps running until the token ARRIVES
+    // (first itemUint32 below). mlx-lm stops its prompt clock at the
+    // first yielded token, which bills the prefill→decode boundary
+    // (allocator reclaim of prefill transients + first-step dispatch)
+    // to prompt_time, not decode — replicated so cross-stack decode
+    // tok/s measure the same quantity. The boundary cost is real and
+    // scales with prompt length; it belongs to "having prefilled".
+    ops.asyncEvalAll([pending]);
 
     // ---- decode (pipelined) ----
-    tDecode = performance.now();
     let stop = false;
     while (!stop) {
       const cur = pending!;
@@ -329,6 +347,13 @@ async function* generateInner(
 
       // sync-read step n's token while n+1 computes
       const token = ops.itemUint32(cur);
+      if (generated === 0) {
+        // first token arrived: prompt clock stops, decode clock starts
+        // (mlx-lm stream_generate's n==0 clock swap; the first token is
+        // "free" on the decode clock there too)
+        prefillMs = performance.now() - tPrefill;
+        tDecode = performance.now();
+      }
       cur.dispose();
       pending = null;
       generated++;
@@ -341,6 +366,9 @@ async function* generateInner(
         stop = true;
       } else {
         yield { token, index: generated - 1 };
+        // mlx-lm generate_step: clear_cache after token 0 (drops the
+        // remaining prefill transients) and every 256 tokens after
+        if ((generated - 1) % 256 === 0) clearCache();
         if (nextPending === null) {
           stop = true;
         } else {

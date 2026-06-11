@@ -476,34 +476,32 @@ results exist, the session work is:
    new context guard fails cells into the footer otherwise); any
    stack whose @8k decode equals its short-ctx decode is broken, not
    fast.
-2. **Settle the fused-flag defaults** from the appended A/B rows
-   (notes `bench-fused-prefill...` / `bench-fused-decode...`):
-   fused prefill is expected ≈neutral tok/s with lower peak → stays
-   default-on; fused decode read 0.885 (dirty-paired) → if still <1.0
-   clean, DELETE the MLX_BUN_FUSED_DECODE flag and its gate test; if
-   >1.0, flip the default and re-check kv-quant goldens (decode
-   composition changes — regen trajectories per the
-   regen-kvq-goldens.ts convention).
+2. ~~Settle the fused-flag defaults~~ **SETTLED 2026-06-11** from the
+   appended A/B rows: fused prefill confirmed ≈neutral tok/s (234.7
+   vs 232.4) with lower generation peak (10.35 vs 10.68 GB) → stays
+   default-on. Fused decode read 0.959 (paired-median-of-3, eval rows
+   258/259; the dirty-paired read was 0.885 — same direction).
+   **DECISION (Josh, 2026-06-11): the MLX_BUN_FUSED_DECODE flag and
+   its gate test STAY — documented escape hatch, default off. The
+   pre-committed "delete if <1.0" rule is VOID and the policy
+   generalizes: a losing-but-working, parity-tested experiment is
+   kept as a default-off documented flag, never deleted on one
+   measurement** — other models/regimes (MTP, Qwen, other silicon)
+   may want it. Caveat for the record: rows 256–259 ran at the end
+   of the matrix with machine_state ok:false (~700 MB accumulated
+   swap) — paired ratios only, absolutes not quotable.
 3. **Update README Benchmarks** (the table carries a provenance
    footnote about the invalidated @8k rows — replace with the clean
    corrected numbers) and mark Phase 15's remaining boxes.
-4. **Continue the decode-gap investigation** with clean anchors.
-   State of knowledge (all from 2026-06-10 evening, "@8k artifact"
-   finding): gap is ≈0% @short, −2.6% @2k, −5.2% @4k, −11% @8k
-   (dirty-paired) — LINEAR in full-attention KV length. RULED OUT:
-   slice_update donation (buffer pointers stable across decode steps),
-   JS dispatch (ctx-independent), sliding-ring path (saturates @1k),
-   kernel identity (bit-exact graphs ⇒ same kernels). NEXT LEVER:
-   Metal-level profile of one decode step @600 vs @8k —
-   `mlx_metal_start_capture/stop_capture` exist in mlx-c metal.h
-   (unbound yet; needs MTL_CAPTURE_ENABLED=1 and Xcode to open the
-   .gputrace), or cheaper first: per-step wall-time split (time spent
-   blocked in itemUint32 = GPU-bound vs JS graph-build) at both
-   contexts, and python the same via a small oracle script — if our
-   extra time is GPU-side despite identical graphs, suspect the
-   PIPELINE structure (what overlaps with what), not the kernels;
-   compare our async_eval ordering against mlx-lm generate_step
-   line-by-line (stream_generate wraps it — read the venv source).
+4. ~~Continue the decode-gap investigation~~ **RESOLVED 2026-06-11**
+   via exactly the "cheaper first" lever (per-step wall-time split,
+   both stacks): the gap was a prefill→decode allocator-reclaim
+   boundary stall that mlx-lm bills to prompt_time and clears with
+   mx.clear_cache — not kernels, not the pipeline, not donation.
+   Fixed reference-faithfully in generate.ts; 12B now ≥ python at
+   @600 and at parity @8k (paired). Full story: "Decode gap
+   RESOLVED" findings block. e4b's −5% steady-state host-graph-build
+   residual stays open (Phase 7 lever: mlx_compile).
 5. If the M1 Max reruns: `git pull` there FIRST (its matrix ran
    6cb4a35, pre-rope-fix), then `./benchmark.sh --redo`.
 
@@ -522,21 +520,16 @@ Remaining work, in priority order:
    Responses API**, then the embeddable build. Server `stop`
    sequences: DONE 2026-06-10 (see Phase 4 follow-up note).
 
-1. **12B long-context decode gap — REDIAGNOSED 2026-06-10 evening
-   (see the "@8k artifact" finding below).** The original "−10.0% @8k,
-   n=3 zero-spread" was measured against a BROKEN baseline (python
-   @8k rows ran at ctx=31 — harness bug, fixed + guarded). Corrected
-   same-evening paired runs: the gap is REAL but context-scaling:
-   ≈0% @short, −2.6% @2k, −5.2% @4k, −11% @8k (dirty-paired) — linear
-   in full-attention KV length. RULED OUT: slice_update buffer
-   donation (cache buffer addresses are stable across decode steps —
-   pointer probe), JS dispatch (context-independent), the ring path
-   (saturates at 1k; gap keeps growing). Open levers: (a) Metal-level
-   profile of a decode step @8k vs @600 (mx.metal_capture gputrace or
-   per-phase timers) to find the linear-in-N term; (b) the
-   pipeline-overlap structure (does python's async_eval overlap more
-   of the CPU work?); (c) cleared-machine `./benchmark.sh --redo` for
-   quotable corrected rows + the two fused-flag A/Bs.
+1. ~~12B long-context decode gap~~ **CLOSED 2026-06-11.** History:
+   "−10% @8k" was first a broken-baseline artifact (ctx=31 harness
+   bug), then a real-but-misattributed −4.5% @8k (clean matrix), and
+   finally root-caused as a prefill→decode allocator-reclaim
+   boundary stall + a prompt/decode clock-accounting asymmetry vs
+   mlx-lm. Fixed in generate.ts (clear_cache placement + clock swap,
+   all mirroring mlx-lm). Post-fix paired: @600 25.1 vs 24.0 (ours
+   FASTER), @8k 23.8 vs 23.9 (parity). See "Decode gap RESOLVED"
+   findings. Remaining: quotable cleared-machine rows (next
+   benchmark pass) + e4b's −5% host-graph-build residual (Phase 7).
 2. **Phase 15 closeout** — purge-cold rows: deferred into the same
    benchmark pass (needs reboot + `sudo purge`). Footer fix done
    2026-06-10.
@@ -1105,8 +1098,9 @@ Needed for long-prefill-over-quantized-cache (continuations past
   above 1.0 — neutral-to-NEGATIVE, dirty-machine directional only.
   Consistent with the dispatch-cost concern (~16 tiles × 8 ops × 8
   layers of extra op dispatches per token from JS). Decode default
-  stays stock; the cleared-machine ./benchmark.sh A/B decides whether
-  to delete the flag or flip it.
+  stays stock. RESOLVED 2026-06-11: clean paired A/B read 0.959 —
+  flag KEPT as a documented default-off escape hatch (Josh's call;
+  see the SETTLED note in the pickup block — no deletion).
 - Verified after the changes: full suite 99/99 (incl. 12 new
   fused-sdpa tests), opt-in 26B parity 2/2.
 
@@ -1285,6 +1279,110 @@ If P1–P3 reproduce, the writeup upgrades from "on my Mac" to
 "architecture-invariant". Record the second machine's rows in its own
 benchmarks-h2h-<date>-<host>.md (the harness stamps host/chip per
 file and per row).
+
+### Phase 15 findings (2026-06-11 — the corrected clean matrix)
+
+The post-reboot `./benchmark.sh --redo` pass (commit f23ef4e, eval
+rows 200–259, benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md). First
+clean-machine measurement of the post-rope-fix/Phase-9/10 engine.
+
+- **The @8k baseline is real this time**: every @8k row carries
+  ctx=7993/7996 (context guard passed) and every stack shows genuine
+  long-context degradation — the day-one physics red flag is gone.
+- **Corrected 12B decode gap vs mlx-lm (clean): −1.9% @short
+  (25.3 vs 25.8 bf16), −4.5% @8k (23.3 vs 24.4)** — still real,
+  still context-scaling (our internal short→8k slowdown −7.9% vs
+  their −5.4%), but ~half the −11% dirty-paired estimate. e4b direct
+  still trails −4.4% (54.2 vs 56.7); 26B −2.9% (54.5 vs 56.1).
+- **kv-mixed tax is now small**: −1.2% @short / −1.3% @8k vs our own
+  bf16 — mixed-KV serving as default is justified.
+- **"optiq's fused path is free @8k" is definitively dead**: optiq
+  drops 25.6→23.2 short→8k (−9.4% internal), landing at parity with
+  our kv-mixed 23.0. The old claim was entirely the 31-ctx artifact.
+- **Server headlines hold or improve**: TTFT 45–90 ms vs python
+  219–331 ms; ready 0.36–0.47 s vs 0.76–1.0 s; our server tax ≈ 0
+  while mlx-lm's server costs itself ~7% decode on the 26B (52.2
+  served vs 56.1 direct). Served over HTTP we have the fastest decode
+  on e4b and the 26B; on the 12B optiq's served decode edges ours
+  25.5 vs 25.2 (−1.2% — the 06-10 matrix had us ahead 25.6 vs 25.5;
+  within run-to-run noise but quote it honestly) while paying 331 ms
+  TTFT to our 90.
+- Failures footer: optiq e4b kv=config (known upstream shim bug,
+  cc0c151) and optiq 26B server (no content chunks — the uncatchable
+  Metal OOM crash class; mlx-lm's server DID serve the 26B same-day,
+  so the differentiation datum now has a companion row).
+- ~~STANDING DIRECTIVE (Josh, 2026-06-11): why are we not FASTER than
+  the python stacks at direct decode, at ANY context?~~ **RESOLVED
+  same day for the 12B (root cause found + fixed, gap closed);
+  e4b residual characterized — see "Decode gap RESOLVED" findings
+  below.**
+- Still open: purge-cold rows (sudo purge, Josh-interactive) and the
+  M1 Max rerun (still on pre-rope-fix 6cb4a35).
+
+### Decode gap RESOLVED (2026-06-11 — root cause, fix, residual)
+
+Method: per-step wall-time split of the pipelined decode loop in BOTH
+stacks (`scripts/decode-split.ts` + `scripts/oracle-decode-split.py`),
+12B, @600 and @8k, same session, paired ratios (dirty machine —
+absolutes not quotable, ratios are).
+
+**Structural finding (both stacks, identical):** async_eval blocks
+until the prior step's command buffer drains — the "pipeline" hides
+only the token READ (t_read ≈ 0.03 ms), never the graph build. Every
+decode step pays (GPU step + host graph build) SERIALLY. At equal
+loop shape the engines are at parity: hand-rolled loops measured
+23.4 (ours) vs 23.5 (python) @600; our MEDIAN dispatch @8k (40.4 ms)
+matched or beat python's (41.5 ms).
+
+**Root cause 1 — the context-scaling term: a one-shot
+prefill→decode boundary stall.** The first decode step after a long
+prefill pays an allocator buffer-cache reclaim of the prefill
+transients: step #0 dispatch = 807 ms after an 8k prefill (vs 42 ms
+steady), scaling with prompt length. mlx-lm sidesteps most of it
+with `mx.clear_cache()` after EVERY prefill chunk (generate_step
+_prefill), again after token 0, and every 256 decode tokens — we
+never called it. Per-generation (not kernel compile — proven by a
+two-pass-in-one-process run). With mlx-lm's clear placement the
+stall drops 807 → ~370 ms; a residual ~230–370 ms boundary cost
+remains in BOTH stacks (python's @8k prefill ran ~2 s slower than
+ours in the same session — it pays the boundary inside prefill).
+
+**Root cause 2 — an accounting asymmetry that turned the boundary
+into a phantom "decode gap".** mlx-lm's stream_generate stops its
+prompt clock at the FIRST YIELDED TOKEN; generate_step's first
+iteration — including the async_eval that absorbs the boundary
+stall — runs before that yield, so python bills the boundary to
+prompt_time. We billed it to decodeMs. Cross-stack "decode tok/s"
+measured different quantities, and the mislabeled boundary cost is
+linear in prompt length — exactly the observed −2.6% @2k → −11% @8k
+shape. (mlx-lm's clock swap also makes token 0 "free" on its decode
+clock — replicated and documented.)
+
+**Fix (all three reference-faithful, src/generate.ts):**
+(1) clearCache() after every prefill chunk; (2) clearCache() after
+token 0 and every 256 tokens; (3) prompt/decode clock swap at
+first-token arrival, exactly like mlx-lm. ffi.ts exports clearCache
+(mlx_clear_cache was already bound). 118/118 tests pass; clear_cache
+is numerically invisible (allocator-only), parity gates untouched.
+
+**Measured after the fix (same-session paired, ratios):** 12B @600:
+23.5 → 25.1 vs python 24.0 — WE ARE NOW FASTER. 12B @8k: 23.8 vs
+python 23.9 (−0.4% — parity; was −4.5% clean / −11% dirty). Peak
+@8k unchanged (11.06 GB). Quotable absolutes: fold into the next
+cleared-machine `./benchmark.sh --redo`.
+
+**Residual (open, characterized): e4b −5% at short context**
+(54.5 vs 57.4 paired post-fix). Mechanism: at 17 ms/step the serial
+per-step host graph-build (~2–4 ms of bun:ffi op calls) is a 2.3×
+larger share than on the 12B; python's pybind graph build is
+cheaper. The boundary fix doesn't address this term. Next lever
+(Phase 7 research track): shrink per-step host work — candidate:
+mlx_compile via mlx_closure (compiled decode graph executes in C++,
+eliminating per-step FFI graph construction; Phase 2 verified
+mx.compile does not change numerics). Diagnostic flag added during
+the hunt: MLX_BUN_FORCE_WIRE=1 (default off, kept per flag policy);
+wiring was RULED OUT as a lever for the 12B (forced-wire A/B: no
+change, consistent with Phase 6).
 
 ### Phase 15 findings (2026-06-10 evening — the @8k artifact + cross-machine run)
 

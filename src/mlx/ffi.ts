@@ -239,6 +239,16 @@ export function resetPeakMemory(): void {
   C.mlx_reset_peak_memory();
 }
 
+/** mx.clear_cache — release the allocator's cached buffers back to the
+ *  OS. mlx-lm calls this after every prefill chunk (and every 256 decode
+ *  steps); without it the first decode step after a long prefill pays a
+ *  one-shot allocator-reclaim stall (~800 ms after an 8k prefill —
+ *  measured, scripts/decode-split.ts; the root cause of the
+ *  context-scaling decode gap). */
+export function clearCache(): void {
+  C.mlx_clear_cache();
+}
+
 /** Metal's recommended max working-set size for the default device. */
 export function maxRecommendedWorkingSetSize(): number {
   const devSlot = new BigUint64Array(1);
