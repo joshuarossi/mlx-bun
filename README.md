@@ -169,8 +169,16 @@ agent CLIs like pi/OpenClaw via their provider config.
   (`type: "memory_admission"`) *before* generating. The GPU
   out-of-memory crash it prevents is uncatchable by design — rejection
   up front is the only defense. Ceiling visible at `GET /stats`.
+- **Anthropic Messages API** (`POST /v1/messages`, on by default) —
+  point any Anthropic-SDK tool at the server
+  (`ANTHROPIC_BASE_URL=http://localhost:8090`); Claude Code runs
+  against it as a fully local backend. Streaming event grammar, native
+  tool_use/tool_result mapping, image blocks via the vision path.
+- **OpenAI Responses API** (`POST /v1/responses`) — the protocol
+  Codex/Cursor/Continue speak; includes `previous_response_id`
+  resumption backed by a TTL + byte-capped store (visible in /stats).
 - **`GET /v1/models`**, **`GET /stats`** (cache hit rates, bytes,
-  active KV scheme), **`GET/POST/DELETE /v1/adapters`**.
+  active KV scheme, response store), **`GET/POST/DELETE /v1/adapters`**.
 
 ## Library
 

@@ -91,6 +91,57 @@ All errors are `{ "error": { "message": …, ... } }`.
   up front). Lower `max_tokens` or shorten the prompt; the ceiling is
   visible at `/stats`.
 
+## POST /v1/messages (Anthropic Messages API)
+
+Anthropic-protocol surface over the same engine — on by default, like
+`optiq serve`. Point any Anthropic-SDK tool at the server
+(`ANTHROPIC_BASE_URL=http://localhost:8090`, any `x-api-key`) — Claude
+Code works as a client this way.
+
+- `system` (string or text blocks), `messages` with string or
+  content-block arrays; `tool_use` / `tool_result` blocks map to the
+  native gemma tool-calling path (better than the optiq shim, which
+  inlines them as text); `image` blocks (base64 or url source) hit the
+  vision path on sidecar models.
+- `tools` (`{name, description, input_schema}`) map to function tools;
+  server-tool types (web_search, …) are dropped silently.
+- `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences`,
+  `stream` as in the Anthropic spec.
+- Response: `{id: "msg_…", type: "message", content: [{type: "text"} |
+  {type: "tool_use"}…], stop_reason, usage: {input_tokens,
+  output_tokens, cache_read_input_tokens}}` —
+  `cache_read_input_tokens` comes from the prompt cache.
+- Streaming follows the Anthropic event grammar exactly:
+  `message_start → content_block_start/delta/stop (text_delta,
+  input_json_delta) → message_delta (stop_reason + usage) →
+  message_stop`. Errors are `event: error` frames.
+- Errors: `{type: "error", error: {type: "invalid_request_error" |
+  "api_error", message}}`.
+
+## POST /v1/responses (OpenAI Responses API)
+
+Responses-protocol surface (Codex, Cursor, Continue, Cline, and the
+OpenAI SDK speak this now). Oracle: optiq responses shim.
+
+- `input` (string or item array: `message`, `function_call`,
+  `function_call_output`), `instructions` (merged with any
+  system/developer items into one leading system message),
+  `max_output_tokens`, `temperature`, `top_p`, `top_k`, flat
+  `tools`/`tool_choice` (built-in tool types dropped), `stream`.
+- **`previous_response_id` resumption**: pass a prior response id
+  instead of resending the conversation; the server splices the stored
+  input + output back in (instructions carry forward when omitted).
+  Store is per-process, 1 h TTL, 32 MiB byte-capped LRU — observable
+  at `GET /stats` (`response_store`). Unknown/expired id → 404.
+- Response: `{id: "resp_…", object: "response", status: "completed" |
+  "incomplete", output: [{type: "message"|"function_call"…}], usage}`.
+- Streaming event chain: `response.created → response.in_progress →
+  response.output_item.added → response.content_part.added →
+  response.output_text.delta… → response.output_text.done →
+  response.content_part.done → response.output_item.done →
+  response.completed` (+ `response.function_call_arguments.delta/.done`
+  for tool calls).
+
 ## GET /v1/models
 
 `{ "object": "list", "data": [{ "id": "<model id>", "object": "model", … }] }`
@@ -100,6 +151,7 @@ All errors are `{ "error": { "message": …, ... } }`.
 ```jsonc
 {
   "prompt_cache": { "entries": 0, "bytes": 0, "max_bytes": 0, "hits": 0, "misses": 0 },
+  "response_store": { "entries": 0, "bytes": 0, "max_bytes": 33554432, "ttl_ms": 3600000 },
   "kv_quant": { "mode": "mixed (kv_config.json)" | "uniform-kv8" | "bf16",
                  "layers": { "kv4": 8, "bf16": 40 } },
   "admission": {

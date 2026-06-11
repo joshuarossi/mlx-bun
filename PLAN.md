@@ -1104,7 +1104,7 @@ Needed for long-prefill-over-quantized-cache (continuations past
 - Verified after the changes: full suite 99/99 (incl. 12 new
   fused-sdpa tests), opt-in 26B parity 2/2.
 
-## Phase 11 — Protocol surfaces: Responses API + Anthropic messages `[ ]`
+## Phase 11 — Protocol surfaces: Responses API + Anthropic messages `[x]` (2026-06-11)
 
 Two more protocols beyond chat-completions. Both are plumbing over the
 existing generation/tool/vision surfaces — no new engine work.
@@ -1143,16 +1143,34 @@ Phase 4's "shim later if needed"):
 
 **OpenAI Responses** (`previous_response_id` resumption):
 
-- [ ] `/v1/responses` create/stream; map to our generation API.
-      Oracle: `optiq/responses_server.py`, `optiq/responses_shim.py`.
-- [ ] Response store with `previous_response_id` resumption — TTL+LRU
-      and BYTE-capped like the reference (`optiq/response_store.py`);
-      pairs naturally with our PromptCache prefix reuse.
-- **Exit criterion**: (a) an OpenAI-SDK Responses client completes a
-  multi-turn resumed conversation against `mlx-bun serve`; store
-  eviction observable via /stats. (b) an Anthropic-SDK client (or
-  Claude Code pointed at the port via ANTHROPIC_BASE_URL) completes a
-  multi-turn streamed conversation with tool use.
+- [x] `/v1/responses` create/stream (DONE 2026-06-11,
+      `src/responses.ts` + route): same handleChat-core architecture
+      as the Anthropic surface. Full oracle event chain
+      (response.created/in_progress → output_item.added →
+      content_part.added → output_text.delta/.done → … →
+      response.completed; function_call_arguments.delta/.done for
+      tools); instructions + system/developer items merge into ONE
+      leading system message (Codex sends both — oracle finding);
+      flat→nested tool translation, built-ins dropped. Deltas vs
+      oracle (documented in-file): real final-chunk usage incl.
+      cached_tokens; previous_response_id echoed.
+- [x] Response store: `ResponseStore` port (TTL 1 h + 32 MiB
+      byte-capped LRU); previous_response_id splices prior
+      input+output back in, instructions carry forward when omitted,
+      unknown id → 404; streamed responses are stored too
+      (finalResponse capture) so they chain. Observable at
+      /stats.response_store. Pairs with PromptCache prefix reuse as
+      planned (the resumed prefix re-renders identically → KV cache
+      hit).
+- **Exit criterion → MET (2026-06-11), both halves with REAL SDKs**
+  (devDeps, tests/server-tools.test.ts): (a) the `openai` npm SDK
+  completed a multi-turn RESUMED conversation + a streamed leg
+  against the live server (store + /stats asserted); (b) the
+  `@anthropic-ai/sdk` client completed a multi-turn STREAMED
+  conversation WITH tool use (tool_use → tool_result round-trip,
+  grounded answer). Suite 157/157. Remaining Josh-side smoke: real
+  Claude Code session via ANTHROPIC_BASE_URL (needs a persistent
+  server). docs/server-api.md documents both surfaces.
 
 ## Phase 12 — SigLIP vision tower `[ ]` (capability — Josh's hold)
 
