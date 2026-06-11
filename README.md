@@ -216,17 +216,26 @@ per-row provenance: [benchmarks-h2h-2026-06-10.md](./benchmarks-h2h-2026-06-10.m
 | **decode through HTTP** (e4b / 12B / 26B) | **54.5 / 25.6 / 55.1** | 53.6 / — / 52.1 | 53.5 / 25.5 / † |
 | **server tax vs own direct decode** | **≈ 0%** | −5…−6% | ≈ 0% |
 | **direct decode** (engine only) | −2…−4% vs mlx-lm | baseline | ≈ mlx-lm |
-| **prefill @8k prompt** (12B) | **253 tok/s** | 143 | 137 |
+| **prefill @8k prompt** (12B) | **253 tok/s** | ~241–257¹ | —¹ |
 
-Honest negatives, same table: our direct decode trails mlx-lm by 2–4%,
-and at 8k context our decode is ~10% behind (a known, tracked gap —
-their fused quantized-attention path is ahead of ours at long context).
-Served through HTTP — how agents actually use a local model — mlx-bun
-is the fastest stack on every model measured. † = cell failed: optiq
-serve crashed loading the 26B (Metal OOM from python's non-lazy load
-transient — reproduced in isolation; mlx-bun served the same model
-from the same machine state). One further optiq cell is blocked on an
-upstream optiq bug; both are documented in the results file.
+Honest negatives, same table: our direct decode trails mlx-lm by 2–4%
+at short context, and the gap grows with context length (paired
+measurement: ~−3% @2k → ~−11% @8k; cause under investigation — it
+scales linearly with full-attention KV length). Served through HTTP —
+how agents actually use a local model — mlx-bun is the fastest stack
+on every model measured. † = cell failed: optiq serve crashed loading
+the 26B (Metal OOM from python's non-lazy load transient — reproduced
+in isolation; mlx-bun served the same model from the same machine
+state). One further optiq cell is blocked on an upstream optiq bug;
+both are documented in the results file.
+
+¹ The original matrix's python "@8k" rows (decode and prefill) were
+invalid — a harness bug fed the python baselines a ~31-token prompt
+(recorded as `ctx=31` in the eval DB; caught and fixed 2026-06-10, the
+harness now refuses to record mislabeled long-context rows). Python
+@8k figures above are corrected same-day paired measurements; the
+matrix re-run on a cleared machine (`./benchmark.sh --redo`) is
+pending and will replace this table.
 
 ## Correctness
 
