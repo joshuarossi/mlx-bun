@@ -1796,6 +1796,16 @@ model-heavy test files. Locating tool that worked: `bun test --preload`
 with a beforeEach that appendFileSync's a trace line (survives the
 crash).
 
+## Optimization plan Phase B — base extraction `[x]` (2026-06-11)
+
+src/model/gemma4-base.ts now holds the config-independent machinery
+(cache classes, quantized SDPA + masks, quantized primitives + LoRA,
+graph helpers) — moved VERBATIM (sed line-range extraction; only
+`export` keywords added to previously module-local symbols).
+gemma4.ts keeps the architecture-specific assembly (Attention, MLP,
+MoE, DecoderLayer, Gemma4Model) and re-exports the base so importers
+keep one entry point. No behavior change; full suite green (170 pass).
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the
