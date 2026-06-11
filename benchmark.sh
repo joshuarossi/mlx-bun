@@ -34,4 +34,8 @@ echo "=== perf-kernel paired A/B (12B serve kv_config: fused Metal kernel vs com
 echo "    decides the MLX_BUN_PERF_KERNEL default (Phase E v2; dirty-paired ref 1.02-1.04)"
 bun scripts/bench-perf-kernel.ts
 echo ""
+echo "=== compiled-decode paired A/B (12B @8k, e4b @600/@8k, serve kv_config) ==="
+echo "    cleared-machine confirmation of the mx.compile lever (dirty-paired ref: e4b +5.2% @600)"
+bun scripts/bench-compiled-decode.ts
+echo ""
 echo "benchmark pass complete — matrix md + eval-DB rows written."
