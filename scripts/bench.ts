@@ -27,6 +27,16 @@ if (modelIdx > -1) {
   reg.close();
 }
 
+// Parsed BEFORE the --baseline branch: the python reference must pad its
+// prompt to the same target, or "@8k" python rows silently measure a
+// ~31-token context. That exact bug shipped the original Phase 15
+// matrix's @8k baseline rows (ctx=31 in the eval-DB notes) and
+// fabricated the "−10% @8k decode gap" headline — found 2026-06-10
+// when the cross-machine run reproduced a context-independent python
+// decode rate that physics rules out.
+const ptIdxEarly = process.argv.indexOf("--prompt-tokens");
+const PROMPT_TOKENS_EARLY = ptIdxEarly > -1 ? Number(process.argv[ptIdxEarly + 1]) : 0;
+
 if (process.argv.includes("--baseline")) {
   // --baseline-kv config → optiq's per-layer mixed-precision KV patch
   // (install_mixed_kv + kv args), i.e. the "optiq direct" engine row.
@@ -44,8 +54,17 @@ from mlx_lm import load
 from mlx_lm.generate import stream_generate
 
 model, tokenizer = load(sys.argv[1])
+user_msg = sys.argv[2]
+prompt_tokens = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+if prompt_tokens > 0:
+    # same filler + same target convention as the JS path below
+    filler = ("Background context: the history of computation spans mechanical "
+              "calculators, electromechanical relays, vacuum tubes, transistors, "
+              "integrated circuits, and modern accelerators. ")
+    while len(tokenizer.encode(user_msg)) < prompt_tokens - 24:
+        user_msg = filler + user_msg
 prompt = tokenizer.apply_chat_template(
-    [{"role": "user", "content": sys.argv[2]}],
+    [{"role": "user", "content": user_msg}],
     tokenize=True, add_generation_prompt=True,
 )
 extra = {}
@@ -68,7 +87,8 @@ print(f"decode: {last.generation_tokens} tok @ {last.generation_tps:.1f} tok/s")
 print(f"peak mem: {last.peak_memory:.2f} GB")
 `;
   const proc = Bun.spawn(
-    [ORACLE_PYTHON, "-c", py, MODEL_PATH, PROMPT, String(MAX_TOKENS), kvCfgPath],
+    [ORACLE_PYTHON, "-c", py, MODEL_PATH, PROMPT, String(MAX_TOKENS), kvCfgPath,
+     String(PROMPT_TOKENS_EARLY)],
     { stdout: "inherit", stderr: "pipe" },
   );
   const code = await proc.exited;

@@ -148,6 +148,16 @@ async function directRun(c: DirectCell, tokens: number, promptTokens?: number): 
   const decode = out.match(/decode: \d+ tok @ ([\d.]+) tok\/s/);
   const peak = out.match(/peak mem: ([\d.]+) GB/);
   if (!prefill || !decode || !peak) throw new Error(`could not parse bench output:\n${out.slice(-400)}`);
+  // Context sanity: a long-context cell whose child actually ran a short
+  // prompt must FAIL, not record — the original Phase 15 matrix's @8k
+  // python rows silently measured ctx=31 (the --prompt-tokens plumbing
+  // didn't reach the baseline path) and fabricated a −10% decode-gap
+  // headline. A failed cell lands in the failure footer instead.
+  if (promptTokens && Number(prefill[1]) < 0.9 * promptTokens)
+    throw new Error(
+      `context sanity failed for ${cellKey(c)}: requested ~${promptTokens} prompt tokens, ` +
+      `child measured ${prefill[1]} — refusing to record a mislabeled long-context row`,
+    );
   return {
     promptTokens: Number(prefill[1]),
     prefillTps: Number(prefill[2]),

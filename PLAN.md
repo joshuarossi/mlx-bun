@@ -469,22 +469,21 @@ Remaining work, in priority order:
    Responses API**, then the embeddable build. Server `stop`
    sequences: DONE 2026-06-10 (see Phase 4 follow-up note).
 
-1. **12B long-context decode gap (−10.0% @8k vs mlx-lm, n=3
-   zero-spread — benchmarks-h2h-2026-06-10.md).** Phase 10 (fused
-   prefill) is DONE (2026-06-10) — it bounds the prefill transient and
-   landed a rope-freqs root-cause fix, but DECODE (L=1) still runs the
-   stock unfused path, so the @8k decode gap and the ~3% kv-mixed
-   decode tax are still open. Next levers: (a) cleared-machine rerun
-   (./benchmark.sh) to re-baseline post-rope-fix, A/B
-   `MLX_BUN_NO_FUSED_SDPA`; (b) the L=1-tiled decode experiment —
-   BUILT 2026-06-10 (`MLX_BUN_FUSED_DECODE=1`, golden-pinned), paired
-   dirty-machine A/B reads NEGATIVE (tiled/stock 0.885 median, noisy —
-   scripts/bench-fused-decode.ts); cleared-machine run decides
-   flag-delete vs default-flip; (c) the original suspects
-   (slice_update buffer donation, per-step dispatch).
-   → ALL of item 1's measurements fold into the deferred benchmark
-   pass (standing directive above); lever (c) code investigation can
-   proceed any session.
+1. **12B long-context decode gap — REDIAGNOSED 2026-06-10 evening
+   (see the "@8k artifact" finding below).** The original "−10.0% @8k,
+   n=3 zero-spread" was measured against a BROKEN baseline (python
+   @8k rows ran at ctx=31 — harness bug, fixed + guarded). Corrected
+   same-evening paired runs: the gap is REAL but context-scaling:
+   ≈0% @short, −2.6% @2k, −5.2% @4k, −11% @8k (dirty-paired) — linear
+   in full-attention KV length. RULED OUT: slice_update buffer
+   donation (cache buffer addresses are stable across decode steps —
+   pointer probe), JS dispatch (context-independent), the ring path
+   (saturates at 1k; gap keeps growing). Open levers: (a) Metal-level
+   profile of a decode step @8k vs @600 (mx.metal_capture gputrace or
+   per-phase timers) to find the linear-in-N term; (b) the
+   pipeline-overlap structure (does python's async_eval overlap more
+   of the CPU work?); (c) cleared-machine `./benchmark.sh --redo` for
+   quotable corrected rows + the two fused-flag A/Bs.
 2. **Phase 15 closeout** — purge-cold rows: deferred into the same
    benchmark pass (needs reboot + `sudo purge`). Footer fix done
    2026-06-10.
@@ -1236,6 +1235,56 @@ If P1–P3 reproduce, the writeup upgrades from "on my Mac" to
 "architecture-invariant". Record the second machine's rows in its own
 benchmarks-h2h-<date>-<host>.md (the harness stamps host/chip per
 file and per row).
+
+### Phase 15 findings (2026-06-10 evening — the @8k artifact + cross-machine run)
+
+- **THE @8k BASELINE ROWS WERE INVALID — harness bug.** bench.ts
+  parsed `--prompt-tokens` AFTER the `--baseline` branch had already
+  exited, so every python "@8k" row (decode AND prefill, mlx-lm AND
+  optiq, BOTH machines) actually measured a ~31-token context — it
+  was sitting in the eval DB the whole time (`ctxreq=8000 ctx=31` in
+  the row notes). Red flag that should have been caught on day one:
+  python's "@8k" decode exactly equaled its short-context decode,
+  which physics rules out. FIXED: the baseline now pads in python
+  with the same filler convention; bench-h2h refuses to record a
+  long-context cell whose child measured < 0.9× the requested
+  context (fails into the footer instead). Standing-rule addendum:
+  a long-context row must carry its MEASURED ctx, and a stack whose
+  long-context number equals its short-context number is broken
+  until proven otherwise.
+- **Corrected same-evening paired measurements (dirty machine,
+  interleaved pairs — ratios meaningful, absolutes not):** 12B
+  decode ours-vs-mlx-lm ≈0% @short, −2.6% @2k, −5.2% @4k, −11% @8k.
+  Internal short→8k slowdown: ours −15%, mlx-lm −5%. The gap is
+  real, grows ~linearly with context, and its shape matches the
+  full-attention KV term (the sliding-ring term saturates at the 1k
+  window and cannot produce a 2k→8k growth). Invalidated along with
+  the old rows: "optiq's fused path is free @8k" (their @8k cells
+  were 31-ctx too) — the Phase 10 motivation table needs the
+  benchmark-pass re-run; the fused prefill's MEMORY win stands
+  (measured in-stack, unaffected).
+- **Donation ruled out**: cache buffer data pointers are STABLE
+  across 25 decode steps @8k (full-attention KVCache and rotating
+  ring both) — mlx donates the slice_update buffers fine; no
+  per-step cache copy exists. Combined with bit-exact parity
+  (identical graphs ⇒ identical kernels), the linear-in-N extra cost
+  is NOT explained by any current hypothesis — needs a Metal-level
+  profile (next lever).
+- **Cross-machine matrix (M1 Max 32 GB, fresh full run at 6cb4a35)**
+  scored the pre-registered predictions: P1 (decode ∝ bandwidth)
+  FAILS — M1 Max/M4 Pro measured ratio 1.14 vs 1.47 predicted; chip
+  generation sets its own efficiency factor, so fit calibration is
+  per-chip-family, not per-GB/s. P3 (TTFT ~CPU-bound, ratio holds)
+  CONFIRMED — ours 88 vs 89 ms across chips, python 327–376. P2 as
+  pre-registered was confounded by the artifact (both machines
+  compared against the same broken baseline); its corrected reading
+  is the linear-in-context gap above. P4 untested (26B fits the
+  M1 Max's 32 GB; it served at 50.2 tok/s where python's servers did
+  45.8–45.9).
+- The M4 "rerun" at 17:48 recorded NOTHING (resume window treated
+  the morning rows as recent; all cells skipped) — re-baselining
+  post-rope-fix/Phase-9/10 code needs `./benchmark.sh --redo` on the
+  next reboot. The M1 Max ran pre-Phase-10 code (6cb4a35 checkout).
 
 ### Phase 15 findings (2026-06-10, full-matrix run)
 
