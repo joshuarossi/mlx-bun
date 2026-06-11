@@ -30,4 +30,8 @@ echo ""
 echo "=== fused-decode paired A/B (12B @8k kv8: tiled vs stock decode) ==="
 bun scripts/bench-fused-decode.ts
 echo ""
+echo "=== perf-kernel paired A/B (12B serve kv_config: fused Metal kernel vs compat) ==="
+echo "    decides the MLX_BUN_PERF_KERNEL default (Phase E v2; dirty-paired ref 1.02-1.04)"
+bun scripts/bench-perf-kernel.ts
+echo ""
 echo "benchmark pass complete — matrix md + eval-DB rows written."
