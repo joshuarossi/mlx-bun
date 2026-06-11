@@ -1905,10 +1905,40 @@ lever**. Every dispatch site now has a single known
         back when the flag is on). v2 should dispatch the kernel from JS
         layers / outside compiled segments, which the segmented design
         already supports for full-attention layers.
-- [ ] Step 2 — Metal capture (mlx_metal_start_capture is bound;
-      metalCapture() helper) to confirm the v2 prize sizing under Xcode.
-- [ ] Step 4b — flash-decoding split-N v2 of the kernel; re-A/B @8k.
-- [ ] Step 6/7 — 8-bit + per-model kernels only if v2 wins on the 12B.
+- [x] **Step 4b — flash-decoding v2 + the mlx qdot pattern: the kernel
+      WINS, +2.2–3.8% paired (2026-06-11).** Single-pass per-block
+      online softmax (K and V each read once), grid [128, H, G] with
+      G = ceil(N/BLOCK) (BLOCK 128 ≤2k / 512 above — occupancy was v1's
+      killer), per-block (max, sumexp, unnormalized o) partials + a tiny
+      deterministic merge kernel (no atomics — atomic add order would
+      make rounding nondeterministic). Inner loops use the mlx qdot
+      pattern lifted from quantized.h (Apache-2.0, translated to plain
+      MSL): dequant FACTORED out of the loop (s·Σ(w·q) + b·Σq), 4-bit
+      nibbles multiplied masked-but-UNSHIFTED against 16^k-prescaled
+      queries via uint16 reads — mask+madd only; the V side transposes
+      the same trick (raw per-slot accumulators, 16^k folded once per
+      block, bias collapsed to Σp·b).
+      Iteration ladder, paired @8k isolated: v1 one-TG-per-head 0.72× →
+      v2.0 two-pass split-N 0.945× → v2.1 single-pass 1.013× → v2.2
+      qdot-pattern **1.038× @8k / 1.022× @2k isolated, 1.027×
+      production** (kernel arm ~23.5 tok/s vs compat ~22.9 @8k).
+      Quality at the accepted envelope throughout (teacher-forced gate
+      green at every iteration). Compiled-decode integration: segmented
+      mode reclassifies quantized layers as JS layers under the flag
+      (CustomKernel can't live in closures), so the kernel always
+      dispatches outside compiled segments and nothing blacklists.
+- [x] **Step 2 answered by measurement instead of capture: the prize was
+      THIN** — mlx's quantized_matmul already fuses dequant; compat
+      never materializes the dequantized cache, only the ~262 KB score
+      row. The 2–3× expectation assumed a fat dequant round-trip our
+      port never had. The kernel's real prize = score/softmax
+      round-trips + dispatch count ≈ 1% — captured.
+- [ ] MLX_BUN_PERF_KERNEL stays DEFAULT OFF until the next
+      cleared-machine ./benchmark.sh pass confirms the win and flips it
+      (standing rule: defaults change on clean-machine numbers only).
+- [ ] Step 6/7 — 8-bit-specific tuning and e4b/26B kernels: optional;
+      the uniform kernel already handles their site shapes when their
+      models leave the MoE/whole-graph constraints.
 
 ## Context / lore
 
