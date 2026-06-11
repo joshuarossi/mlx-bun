@@ -265,9 +265,11 @@ class Router {
   constructor(weights: Weights, config: ModelConfig, prefix: string) {
     const t = config.text;
     this.proj = QuantizedLinear.load(weights, `${prefix}.proj`, config);
+    // weights.tensor() returns the Weights-owned cached array — do NOT
+    // dispose it (a second model over the same Weights would get a dead
+    // handle; Weights.dispose() frees it at end of life)
     const scale = weights.tensor(`${prefix}.scale`);
     this.normWeight = ops.mulScalar(scale, Math.pow(t.hiddenSize, -0.5));
-    scale.dispose();
     this.perExpertScale = weights.tensor(`${prefix}.per_expert_scale`);
     this.eps = t.rmsNormEps;
     this.numExperts = t.numExperts;
@@ -629,7 +631,7 @@ export class Gemma4Model {
 
   /** Per-layer inputs (reference _get_per_layer_inputs +
    *  _project_per_layer_inputs): [1, L, nLayers, perLayerWidth]. */
-  private computePerLayerInputs(ids: MlxArray, hScaled: MlxArray): MlxArray {
+  protected computePerLayerInputs(ids: MlxArray, hScaled: MlxArray): MlxArray {
     const t = this.config.text;
     const L = ids.shape[1]!;
     let pli = this.perLayerEmbed!.encode(ids); // [1, L, nLayers*width]
@@ -660,7 +662,7 @@ export class Gemma4Model {
   }
 
   /** Consumes h. */
-  private forwardLayers(
+  protected forwardLayers(
     h0: MlxArray, cache: Cache[], bidir: MlxArray | null, ids: MlxArray | null,
   ): MlxArray {
     const L = h0.shape[1]!;
