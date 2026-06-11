@@ -33,6 +33,7 @@
 import { MlxArray } from "../mlx/array";
 import { CompiledFunction } from "../mlx/compile";
 import * as ops from "../mlx/ops";
+import { perfKernelEnabled } from "./fused-decode-kernel";
 import {
   Gemma4Model,
   KVCache,
@@ -271,8 +272,12 @@ function makeTraceFn(model: Gemma4Model, descs: SlotDesc[]) {
 /** Non-mutating phase check (segmented mode decides layer placement
  *  BEFORE any cache bookkeeping runs). Mirrors prepareDecodeStep's
  *  outcome: rotating caches go ring once the next write lands at or past
- *  the window; everything else grows. */
+ *  the window; everything else grows. Under the perf kernel, quantized
+ *  layers run as JS layers regardless — the CustomKernel primitive has
+ *  no output_shapes and cannot live inside a compiled closure. */
 function decodePhase(c: AnyCache): "concat" | "ring" {
+  if (perfKernelEnabled() && (c instanceof QuantizedKVCache || c instanceof RotatingQuantizedKVCache))
+    return "concat";
   if (c instanceof RotatingKVCache || c instanceof RotatingQuantizedKVCache)
     return c.offset + 1 < c.maxSize ? "concat" : "ring";
   return "concat";
