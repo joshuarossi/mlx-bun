@@ -13,11 +13,13 @@ import { MlxArray } from "../../mlx/array";
 import * as ops from "../../mlx/ops";
 import {
   disposing,
+  fusedSdpaRuntimeOk,
   KVCache,
   QuantizedKVCache,
+  quantizedSdpaTiled,
+  quantizedSdpaUnfused,
   RotatingKVCache,
   RotatingQuantizedKVCache,
-  quantizedSdpa,
   type Cache,
   type Mask,
   type SharedKv,
@@ -40,7 +42,7 @@ function disposeSharedKv(s: SharedKv): void {
   }
 }
 
-function donorSlidQuantVMoeScal(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: RotatingQuantizedKVCache): MlxArray {
+function donorSlidQuantG64B8VMoeScal(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: RotatingQuantizedKVCache): MlxArray {
   const a = layer.attn;
   const [B, L] = x.shape as [number, number, number];
   let h = layer.inputNorm.forward(x);
@@ -67,7 +69,10 @@ function donorSlidQuantVMoeScal(layer: DecoderLayer, x: MlxArray, mask: Mask, ca
   vT.dispose();
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
-  const attn = quantizedSdpa(q, kq, vq, 1.0, mask, cache.groupSize, cache.bits);
+  // dispatch-site constants: bits=8 group_size=64 nRep=2 head_dim=256
+  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+    ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 8)
+    : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 8);
   q.dispose();
   const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
   attn.dispose();
@@ -101,7 +106,71 @@ function donorSlidQuantVMoeScal(layer: DecoderLayer, x: MlxArray, mask: Mask, ca
   return h;
 }
 
-function donorFullQuantKeqVMoeScal(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: QuantizedKVCache): MlxArray {
+function donorSlidQuantG64B4VMoeScal(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: RotatingQuantizedKVCache): MlxArray {
+  const a = layer.attn;
+  const [B, L] = x.shape as [number, number, number];
+  let h = layer.inputNorm.forward(x);
+  let q = a.qProj.forward(h);
+  q = disposing(q, ops.reshape(q, [B, L, a.nHeads, a.headDim]));
+  q = disposing(q, a.qNorm.forward(q));
+  const offset = cache.offset;
+  let k = a.kProj!.forward(h);
+  k = disposing(k, ops.reshape(k, [B, L, a.nKvHeads, a.headDim]));
+  let v = a.vProj!.forward(h);
+  v = disposing(v, ops.reshape(v, [B, L, a.nKvHeads, a.headDim]));
+  const kNormed = a.kNorm!.forward(k);
+  const kT = ops.transposeAxes(kNormed, [0, 2, 1, 3]);
+  kNormed.dispose();
+  const kRoped = a.rope(kT, cache.ropeOffsetArr ?? offset);
+  kT.dispose();
+  const vNormed = a.vNorm!.forward(v);
+  const vT = ops.transposeAxes(vNormed, [0, 2, 1, 3]);
+  vNormed.dispose();
+  v.dispose();
+  k.dispose();
+  const [kq, vq] = cache.updateAndFetchQuantized(kRoped, vT);
+  kRoped.dispose();
+  vT.dispose();
+  q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
+  q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
+  // dispatch-site constants: bits=4 group_size=64 nRep=2 head_dim=256
+  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+    ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 4)
+    : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 4);
+  q.dispose();
+  const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
+  attn.dispose();
+  const merged = ops.reshape(attnT, [B, L, -1]);
+  attnT.dispose();
+  const out = a.oProj.forward(merged);
+  merged.dispose();
+  h.dispose();
+  h = out;
+  h = disposing(h, layer.postAttnNorm.forward(h));
+  h = disposing(h, ops.add(x, h));
+  const residual = h;
+  let h1 = layer.preFfNorm.forward(h);
+  h1 = disposing(h1, layer.mlp.forward(h1));
+  h1 = disposing(h1, layer.postFfNorm1!.forward(h1));
+  const { indices, weights: topKWeights } = layer.router!.forward(h);
+  let h2 = layer.preFfNorm2!.forward(h);
+  h2 = disposing(h2, layer.experts!.forward(h2, indices, topKWeights));
+  h2 = disposing(h2, layer.postFfNorm2!.forward(h2));
+  indices.dispose();
+  topKWeights.dispose();
+  let f = ops.add(h1, h2);
+  h1.dispose();
+  h2.dispose();
+  f = disposing(f, layer.postFfNorm.forward(f));
+  h = ops.add(residual, f);
+  residual.dispose();
+  f.dispose();
+  h = disposing(h, ops.mul(h, layer.layerScalar!));
+  for (const t of [kq, vq]) for (const c of [t.packed, t.scales, t.biases]) c.dispose();
+  return h;
+}
+
+function donorFullQuantG64B8KeqVMoeScal(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: QuantizedKVCache): MlxArray {
   const a = layer.attn;
   const [B, L] = x.shape as [number, number, number];
   let h = layer.inputNorm.forward(x);
@@ -125,7 +194,71 @@ function donorFullQuantKeqVMoeScal(layer: DecoderLayer, x: MlxArray, mask: Mask,
   vT.dispose();
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
-  const attn = quantizedSdpa(q, kq, vq, 1.0, mask, cache.groupSize, cache.bits);
+  // dispatch-site constants: bits=8 group_size=64 nRep=8 head_dim=512
+  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+    ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 8)
+    : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 8);
+  q.dispose();
+  const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
+  attn.dispose();
+  const merged = ops.reshape(attnT, [B, L, -1]);
+  attnT.dispose();
+  const out = a.oProj.forward(merged);
+  merged.dispose();
+  h.dispose();
+  h = out;
+  h = disposing(h, layer.postAttnNorm.forward(h));
+  h = disposing(h, ops.add(x, h));
+  const residual = h;
+  let h1 = layer.preFfNorm.forward(h);
+  h1 = disposing(h1, layer.mlp.forward(h1));
+  h1 = disposing(h1, layer.postFfNorm1!.forward(h1));
+  const { indices, weights: topKWeights } = layer.router!.forward(h);
+  let h2 = layer.preFfNorm2!.forward(h);
+  h2 = disposing(h2, layer.experts!.forward(h2, indices, topKWeights));
+  h2 = disposing(h2, layer.postFfNorm2!.forward(h2));
+  indices.dispose();
+  topKWeights.dispose();
+  let f = ops.add(h1, h2);
+  h1.dispose();
+  h2.dispose();
+  f = disposing(f, layer.postFfNorm.forward(f));
+  h = ops.add(residual, f);
+  residual.dispose();
+  f.dispose();
+  h = disposing(h, ops.mul(h, layer.layerScalar!));
+  for (const t of [kq, vq]) for (const c of [t.packed, t.scales, t.biases]) c.dispose();
+  return h;
+}
+
+function donorFullQuantG64B4KeqVMoeScal(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: QuantizedKVCache): MlxArray {
+  const a = layer.attn;
+  const [B, L] = x.shape as [number, number, number];
+  let h = layer.inputNorm.forward(x);
+  let q = a.qProj.forward(h);
+  q = disposing(q, ops.reshape(q, [B, L, a.nHeads, a.headDim]));
+  q = disposing(q, a.qNorm.forward(q));
+  const offset = cache.offset;
+  let k = a.kProj!.forward(h);
+  k = disposing(k, ops.reshape(k, [B, L, a.nKvHeads, a.headDim]));
+  const kNormed = a.kNorm!.forward(k);
+  const kT = ops.transposeAxes(kNormed, [0, 2, 1, 3]);
+  kNormed.dispose();
+  const kRoped = a.rope(kT, cache.ropeOffsetArr ?? offset);
+  kT.dispose();
+  const vNormed = a.vNorm!.forward(k);
+  const vT = ops.transposeAxes(vNormed, [0, 2, 1, 3]);
+  vNormed.dispose();
+  k.dispose();
+  const [kq, vq] = cache.updateAndFetchQuantized(kRoped, vT);
+  kRoped.dispose();
+  vT.dispose();
+  q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
+  q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
+  // dispatch-site constants: bits=4 group_size=64 nRep=8 head_dim=512
+  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+    ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 4)
+    : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 4);
   q.dispose();
   const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
   attn.dispose();
@@ -209,94 +342,94 @@ export class GeneratedGemma4 extends Gemma4Model {
     const maskF = cache[5]!.makeMask(L, null);
     let h = h0;
     let next: MlxArray;
-    next = donorSlidQuantVMoeScal(this.layers[0]!, h, maskS, cache[0] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B8VMoeScal(this.layers[0]!, h, maskS, cache[0] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[1]!, h, maskS, cache[1] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[1]!, h, maskS, cache[1] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[2]!, h, maskS, cache[2] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[2]!, h, maskS, cache[2] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[3]!, h, maskS, cache[3] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B8VMoeScal(this.layers[3]!, h, maskS, cache[3] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[4]!, h, maskS, cache[4] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B8VMoeScal(this.layers[4]!, h, maskS, cache[4] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorFullQuantKeqVMoeScal(this.layers[5]!, h, maskF, cache[5] as QuantizedKVCache);
+    next = donorFullQuantG64B8KeqVMoeScal(this.layers[5]!, h, maskF, cache[5] as QuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[6]!, h, maskS, cache[6] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[6]!, h, maskS, cache[6] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[7]!, h, maskS, cache[7] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[7]!, h, maskS, cache[7] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[8]!, h, maskS, cache[8] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B8VMoeScal(this.layers[8]!, h, maskS, cache[8] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[9]!, h, maskS, cache[9] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B8VMoeScal(this.layers[9]!, h, maskS, cache[9] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[10]!, h, maskS, cache[10] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[10]!, h, maskS, cache[10] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorFullQuantKeqVMoeScal(this.layers[11]!, h, maskF, cache[11] as QuantizedKVCache);
+    next = donorFullQuantG64B8KeqVMoeScal(this.layers[11]!, h, maskF, cache[11] as QuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[12]!, h, maskS, cache[12] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B8VMoeScal(this.layers[12]!, h, maskS, cache[12] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[13]!, h, maskS, cache[13] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[13]!, h, maskS, cache[13] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[14]!, h, maskS, cache[14] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[14]!, h, maskS, cache[14] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[15]!, h, maskS, cache[15] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[15]!, h, maskS, cache[15] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[16]!, h, maskS, cache[16] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[16]!, h, maskS, cache[16] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorFullQuantKeqVMoeScal(this.layers[17]!, h, maskF, cache[17] as QuantizedKVCache);
+    next = donorFullQuantG64B4KeqVMoeScal(this.layers[17]!, h, maskF, cache[17] as QuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[18]!, h, maskS, cache[18] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[18]!, h, maskS, cache[18] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[19]!, h, maskS, cache[19] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[19]!, h, maskS, cache[19] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[20]!, h, maskS, cache[20] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[20]!, h, maskS, cache[20] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[21]!, h, maskS, cache[21] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[21]!, h, maskS, cache[21] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[22]!, h, maskS, cache[22] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[22]!, h, maskS, cache[22] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorFullQuantKeqVMoeScal(this.layers[23]!, h, maskF, cache[23] as QuantizedKVCache);
+    next = donorFullQuantG64B4KeqVMoeScal(this.layers[23]!, h, maskF, cache[23] as QuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[24]!, h, maskS, cache[24] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[24]!, h, maskS, cache[24] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[25]!, h, maskS, cache[25] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[25]!, h, maskS, cache[25] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[26]!, h, maskS, cache[26] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[26]!, h, maskS, cache[26] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[27]!, h, maskS, cache[27] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[27]!, h, maskS, cache[27] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorSlidQuantVMoeScal(this.layers[28]!, h, maskS, cache[28] as RotatingQuantizedKVCache);
+    next = donorSlidQuantG64B4VMoeScal(this.layers[28]!, h, maskS, cache[28] as RotatingQuantizedKVCache);
     h.dispose();
     h = next;
-    next = donorFullQuantKeqVMoeScal(this.layers[29]!, h, maskF, cache[29] as QuantizedKVCache);
+    next = donorFullQuantG64B4KeqVMoeScal(this.layers[29]!, h, maskF, cache[29] as QuantizedKVCache);
     h.dispose();
     h = next;
 

@@ -57,6 +57,9 @@ interface LayerSpec {
   donorIdx: number;
   /** quantized KV under the shipped kv_config (donors only) */
   quant: boolean;
+  /** Phase D constants, folded into the generated dispatch site */
+  gs: number;
+  bits: number;
   kEqV: boolean;
   layerScalar: boolean;
   /** donor whose fetched KV at least one sharer consumes (export it) */
@@ -71,12 +74,15 @@ for (let i = 0; i < numLayers; i++) {
   const sliding = t.layerTypes[i] === "sliding_attention";
   const donor = i < numDonors;
   const donorIdx = donor ? i : lastByType[t.layerTypes[i]!]!;
+  const kv = donor ? kvByLayer.get(i) : kvByLayer.get(donorIdx);
   specs.push({
     idx: i,
     sliding,
     donor,
     donorIdx,
     quant: donor && kvByLayer.has(i),
+    gs: kv?.groupSize ?? 0,
+    bits: kv?.bits ?? 0,
     kEqV: t.attentionKEqV && !sliding,
     layerScalar: tensorNames.has(`${prefixBase}.layers.${i}.layer_scalar`),
     exports: false,
@@ -89,16 +95,40 @@ for (const s of specs) if (!s.donor) specs[s.donorIdx]!.exports = true;
 /** One helper per distinct (donor/sharer, quant, kEqV, perLayer, moe,
  *  layerScalar, exports) combination present in this model. */
 function helperName(s: LayerSpec): string {
+  const quant = s.quant || (!s.donor && specs[s.donorIdx]!.quant);
   return [
     s.donor ? "donor" : "sharer",
     s.sliding ? "Slid" : "Full",
-    s.quant || (!s.donor && specs[s.donorIdx]!.quant) ? "Quant" : "Plain",
+    quant ? `QuantG${s.gs}B${s.bits}` : "Plain",
     s.kEqV ? "KeqV" : "V",
     hasPerLayer ? "Pli" : "",
     hasMoe ? "Moe" : "",
     s.layerScalar ? "Scal" : "",
     s.donor && s.exports ? "Exp" : "",
   ].join("");
+}
+
+/** Phase D: the quantized SDPA dispatch with this layer's kv_config
+ *  constants FOLDED — (bits, group_size) as literals, the static half of
+ *  fusedSdpaSupported pre-resolved at generation time. Together with the
+ *  nRep/headDim recorded at the site, every dispatch has a single known
+ *  (bits, group_size, nRep, head_dim): the Phase E kernel precondition. */
+function emitQuantSdpaDispatch(s: LayerSpec, kqExpr: string, vqExpr: string): string[] {
+  const nKv = s.kEqV ? t.numGlobalKeyValueHeads : t.numKeyValueHeads;
+  const nRep = t.numAttentionHeads / nKv;
+  const headDim = s.sliding ? t.headDim : t.globalHeadDim;
+  const staticOk =
+    (s.bits === 4 || s.bits === 8) && (s.gs === 32 || s.gs === 64 || s.gs === 128);
+  const lines: string[] = [];
+  lines.push(`  // dispatch-site constants: bits=${s.bits} group_size=${s.gs} nRep=${nRep} head_dim=${headDim}`);
+  if (staticOk) {
+    lines.push(`  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)`);
+    lines.push(`    ? quantizedSdpaTiled(q, ${kqExpr}, ${vqExpr}, 1.0, mask, ${s.gs}, ${s.bits})`);
+    lines.push(`    : quantizedSdpaUnfused(q, ${kqExpr}, ${vqExpr}, 1.0, mask, ${s.gs}, ${s.bits});`);
+  } else {
+    lines.push(`  const attn = quantizedSdpaUnfused(q, ${kqExpr}, ${vqExpr}, 1.0, mask, ${s.gs}, ${s.bits});`);
+  }
+  return lines;
 }
 
 function emitHelper(s: LayerSpec): string {
@@ -154,7 +184,7 @@ function emitHelper(s: LayerSpec): string {
     lines.push(`  q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));`);
     lines.push(`  q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));`);
     if (quant) {
-      lines.push(`  const attn = quantizedSdpa(q, kq, vq, 1.0, mask, cache.groupSize, cache.bits);`);
+      lines.push(...emitQuantSdpaDispatch(s, "kq", "vq"));
     } else {
       lines.push(`  const attn = ops.sdpa(q, keys, values, 1.0, mask.mode, mask.arr);`);
     }
@@ -164,7 +194,7 @@ function emitHelper(s: LayerSpec): string {
     lines.push(`  q = disposing(q, a.rope(q, shared.offsetArr ?? shared.offset));`);
     if (quant) {
       lines.push(`  if (shared.kind !== "quant") throw new Error("generated sharer expected quant shared KV");`);
-      lines.push(`  const attn = quantizedSdpa(q, shared.keys, shared.values, 1.0, mask, shared.groupSize, shared.bits);`);
+      lines.push(...emitQuantSdpaDispatch(s, "shared.keys", "shared.values"));
     } else {
       lines.push(`  if (shared.kind !== "plain") throw new Error("generated sharer expected plain shared KV");`);
       lines.push(`  const attn = ops.sdpa(q, shared.keys, shared.values, 1.0, mask.mode, mask.arr);`);
@@ -219,7 +249,7 @@ function emitHelper(s: LayerSpec): string {
   }
   if (s.donor && s.exports) {
     if (quant) {
-      lines.push(`  const shared: SharedKv = { kind: "quant", keys: kq, values: vq, offset, groupSize: cache.groupSize, bits: cache.bits, offsetArr: cache.ropeOffsetArr };`);
+      lines.push(`  const shared: SharedKv = { kind: "quant", keys: kq, values: vq, offset, groupSize: ${s.gs}, bits: ${s.bits}, offsetArr: cache.ropeOffsetArr };`);
     } else {
       lines.push(`  const shared: SharedKv = { kind: "plain", keys, values, offset, offsetArr: cache.ropeOffsetArr };`);
     }
@@ -302,11 +332,13 @@ import { MlxArray } from "../../mlx/array";
 import * as ops from "../../mlx/ops";
 import {
   disposing,
+  fusedSdpaRuntimeOk,
   KVCache,
   QuantizedKVCache,
+  quantizedSdpaTiled,
+  quantizedSdpaUnfused,
   RotatingKVCache,
   RotatingQuantizedKVCache,
-  quantizedSdpa,
   type Cache,
   type Mask,
   type SharedKv,

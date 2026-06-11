@@ -1463,6 +1463,20 @@ export function quantizedSdpa(
   return quantizedSdpaUnfused(q, kq, vq, scale, mask, groupSize, bits);
 }
 
+/** The runtime-only half of fusedSdpaSupported (env flag, dtype, mask
+ *  kind) — generated models (Phase D) bake the (bits, group_size) half
+ *  as a compile-time constant and call this for the rest. The combined
+ *  predicate is exactly fusedSdpaSupported. */
+export function fusedSdpaRuntimeOk(q: MlxArray, mask: Mask): boolean {
+  if (process.env.MLX_BUN_NO_FUSED_SDPA === "1") return false;
+  if (q.dtype !== Dtype.bfloat16 && q.dtype !== Dtype.float16) return false;
+  if (mask.mode === "causal" || mask.mode === "") return true;
+  if (mask.mode === "array")
+    return mask.causalEquivalent === true && mask.arr !== null &&
+      mask.arr.shape.length === 2 && mask.arr.dtype === Dtype.bool;
+  return false;
+}
+
 /** Port of base.py create_causal_mask (bool, [N, offset+N]). */
 export function createCausalMask(N: number, offset: number, windowSize: number | null): MlxArray {
   const rinds = ops.arange(0, offset + N, 1, Dtype.int32);

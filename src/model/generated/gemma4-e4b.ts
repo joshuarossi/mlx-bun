@@ -13,11 +13,13 @@ import { MlxArray } from "../../mlx/array";
 import * as ops from "../../mlx/ops";
 import {
   disposing,
+  fusedSdpaRuntimeOk,
   KVCache,
   QuantizedKVCache,
+  quantizedSdpaTiled,
+  quantizedSdpaUnfused,
   RotatingKVCache,
   RotatingQuantizedKVCache,
-  quantizedSdpa,
   type Cache,
   type Mask,
   type SharedKv,
@@ -58,7 +60,7 @@ function perLayerSlice(perLayer: MlxArray, i: number, L: number, width: number):
   return r;
 }
 
-function donorSlidQuantVPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: RotatingQuantizedKVCache, pli: MlxArray): MlxArray {
+function donorSlidQuantG64B4VPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: RotatingQuantizedKVCache, pli: MlxArray): MlxArray {
   const a = layer.attn;
   const [B, L] = x.shape as [number, number, number];
   let h = layer.inputNorm.forward(x);
@@ -85,7 +87,10 @@ function donorSlidQuantVPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, ca
   vT.dispose();
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
-  const attn = quantizedSdpa(q, kq, vq, 1.0, mask, cache.groupSize, cache.bits);
+  // dispatch-site constants: bits=4 group_size=64 nRep=4 head_dim=256
+  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+    ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 4)
+    : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 4);
   q.dispose();
   const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
   attn.dispose();
@@ -118,7 +123,7 @@ function donorSlidQuantVPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, ca
   return h;
 }
 
-function donorFullQuantVPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: QuantizedKVCache, pli: MlxArray): MlxArray {
+function donorSlidQuantG64B8VPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: RotatingQuantizedKVCache, pli: MlxArray): MlxArray {
   const a = layer.attn;
   const [B, L] = x.shape as [number, number, number];
   let h = layer.inputNorm.forward(x);
@@ -145,7 +150,10 @@ function donorFullQuantVPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, ca
   vT.dispose();
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
-  const attn = quantizedSdpa(q, kq, vq, 1.0, mask, cache.groupSize, cache.bits);
+  // dispatch-site constants: bits=8 group_size=64 nRep=4 head_dim=256
+  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+    ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 8)
+    : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 8);
   q.dispose();
   const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
   attn.dispose();
@@ -178,7 +186,7 @@ function donorFullQuantVPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, ca
   return h;
 }
 
-function donorSlidQuantVPliScalExp(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: RotatingQuantizedKVCache, pli: MlxArray): { h: MlxArray; shared: SharedKv } {
+function donorFullQuantG64B4VPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: QuantizedKVCache, pli: MlxArray): MlxArray {
   const a = layer.attn;
   const [B, L] = x.shape as [number, number, number];
   let h = layer.inputNorm.forward(x);
@@ -205,7 +213,10 @@ function donorSlidQuantVPliScalExp(layer: DecoderLayer, x: MlxArray, mask: Mask,
   vT.dispose();
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
-  const attn = quantizedSdpa(q, kq, vq, 1.0, mask, cache.groupSize, cache.bits);
+  // dispatch-site constants: bits=4 group_size=64 nRep=4 head_dim=512
+  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+    ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 4)
+    : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 4);
   q.dispose();
   const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
   attn.dispose();
@@ -234,11 +245,11 @@ function donorSlidQuantVPliScalExp(layer: DecoderLayer, x: MlxArray, mask: Mask,
   res2.dispose();
   gate.dispose();
   h = disposing(h, ops.mul(h, layer.layerScalar!));
-  const shared: SharedKv = { kind: "quant", keys: kq, values: vq, offset, groupSize: cache.groupSize, bits: cache.bits, offsetArr: cache.ropeOffsetArr };
-  return { h, shared };
+  for (const t of [kq, vq]) for (const c of [t.packed, t.scales, t.biases]) c.dispose();
+  return h;
 }
 
-function donorFullQuantVPliScalExp(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: QuantizedKVCache, pli: MlxArray): { h: MlxArray; shared: SharedKv } {
+function donorFullQuantG64B8VPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: QuantizedKVCache, pli: MlxArray): MlxArray {
   const a = layer.attn;
   const [B, L] = x.shape as [number, number, number];
   let h = layer.inputNorm.forward(x);
@@ -265,7 +276,10 @@ function donorFullQuantVPliScalExp(layer: DecoderLayer, x: MlxArray, mask: Mask,
   vT.dispose();
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
-  const attn = quantizedSdpa(q, kq, vq, 1.0, mask, cache.groupSize, cache.bits);
+  // dispatch-site constants: bits=8 group_size=64 nRep=4 head_dim=512
+  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+    ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 8)
+    : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 8);
   q.dispose();
   const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
   attn.dispose();
@@ -294,11 +308,137 @@ function donorFullQuantVPliScalExp(layer: DecoderLayer, x: MlxArray, mask: Mask,
   res2.dispose();
   gate.dispose();
   h = disposing(h, ops.mul(h, layer.layerScalar!));
-  const shared: SharedKv = { kind: "quant", keys: kq, values: vq, offset, groupSize: cache.groupSize, bits: cache.bits, offsetArr: cache.ropeOffsetArr };
+  for (const t of [kq, vq]) for (const c of [t.packed, t.scales, t.biases]) c.dispose();
+  return h;
+}
+
+function donorSlidQuantG64B4VPliScalExp(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: RotatingQuantizedKVCache, pli: MlxArray): { h: MlxArray; shared: SharedKv } {
+  const a = layer.attn;
+  const [B, L] = x.shape as [number, number, number];
+  let h = layer.inputNorm.forward(x);
+  let q = a.qProj.forward(h);
+  q = disposing(q, ops.reshape(q, [B, L, a.nHeads, a.headDim]));
+  q = disposing(q, a.qNorm.forward(q));
+  const offset = cache.offset;
+  let k = a.kProj!.forward(h);
+  k = disposing(k, ops.reshape(k, [B, L, a.nKvHeads, a.headDim]));
+  let v = a.vProj!.forward(h);
+  v = disposing(v, ops.reshape(v, [B, L, a.nKvHeads, a.headDim]));
+  const kNormed = a.kNorm!.forward(k);
+  const kT = ops.transposeAxes(kNormed, [0, 2, 1, 3]);
+  kNormed.dispose();
+  const kRoped = a.rope(kT, cache.ropeOffsetArr ?? offset);
+  kT.dispose();
+  const vNormed = a.vNorm!.forward(v);
+  const vT = ops.transposeAxes(vNormed, [0, 2, 1, 3]);
+  vNormed.dispose();
+  v.dispose();
+  k.dispose();
+  const [kq, vq] = cache.updateAndFetchQuantized(kRoped, vT);
+  kRoped.dispose();
+  vT.dispose();
+  q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
+  q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
+  // dispatch-site constants: bits=4 group_size=64 nRep=4 head_dim=256
+  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+    ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 4)
+    : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 4);
+  q.dispose();
+  const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
+  attn.dispose();
+  const merged = ops.reshape(attnT, [B, L, -1]);
+  attnT.dispose();
+  const out = a.oProj.forward(merged);
+  merged.dispose();
+  h.dispose();
+  h = out;
+  h = disposing(h, layer.postAttnNorm.forward(h));
+  h = disposing(h, ops.add(x, h));
+  const residual = h;
+  let f = layer.preFfNorm.forward(h);
+  f = disposing(f, layer.mlp.forward(f));
+  f = disposing(f, layer.postFfNorm.forward(f));
+  h = ops.add(residual, f);
+  residual.dispose();
+  f.dispose();
+  const res2 = h;
+  let gate = layer.perLayerGate!.forward(h);
+  gate = disposing(gate, ops.geluApprox(gate));
+  gate = disposing(gate, ops.mul(gate, pli));
+  gate = disposing(gate, layer.perLayerProjection!.forward(gate));
+  gate = disposing(gate, layer.postPerLayerNorm!.forward(gate));
+  h = ops.add(res2, gate);
+  res2.dispose();
+  gate.dispose();
+  h = disposing(h, ops.mul(h, layer.layerScalar!));
+  const shared: SharedKv = { kind: "quant", keys: kq, values: vq, offset, groupSize: 64, bits: 4, offsetArr: cache.ropeOffsetArr };
   return { h, shared };
 }
 
-function sharerSlidQuantVPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, shared: SharedKv, pli: MlxArray): MlxArray {
+function donorFullQuantG64B4VPliScalExp(layer: DecoderLayer, x: MlxArray, mask: Mask, cache: QuantizedKVCache, pli: MlxArray): { h: MlxArray; shared: SharedKv } {
+  const a = layer.attn;
+  const [B, L] = x.shape as [number, number, number];
+  let h = layer.inputNorm.forward(x);
+  let q = a.qProj.forward(h);
+  q = disposing(q, ops.reshape(q, [B, L, a.nHeads, a.headDim]));
+  q = disposing(q, a.qNorm.forward(q));
+  const offset = cache.offset;
+  let k = a.kProj!.forward(h);
+  k = disposing(k, ops.reshape(k, [B, L, a.nKvHeads, a.headDim]));
+  let v = a.vProj!.forward(h);
+  v = disposing(v, ops.reshape(v, [B, L, a.nKvHeads, a.headDim]));
+  const kNormed = a.kNorm!.forward(k);
+  const kT = ops.transposeAxes(kNormed, [0, 2, 1, 3]);
+  kNormed.dispose();
+  const kRoped = a.rope(kT, cache.ropeOffsetArr ?? offset);
+  kT.dispose();
+  const vNormed = a.vNorm!.forward(v);
+  const vT = ops.transposeAxes(vNormed, [0, 2, 1, 3]);
+  vNormed.dispose();
+  v.dispose();
+  k.dispose();
+  const [kq, vq] = cache.updateAndFetchQuantized(kRoped, vT);
+  kRoped.dispose();
+  vT.dispose();
+  q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
+  q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
+  // dispatch-site constants: bits=4 group_size=64 nRep=4 head_dim=512
+  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+    ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 4)
+    : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 4);
+  q.dispose();
+  const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
+  attn.dispose();
+  const merged = ops.reshape(attnT, [B, L, -1]);
+  attnT.dispose();
+  const out = a.oProj.forward(merged);
+  merged.dispose();
+  h.dispose();
+  h = out;
+  h = disposing(h, layer.postAttnNorm.forward(h));
+  h = disposing(h, ops.add(x, h));
+  const residual = h;
+  let f = layer.preFfNorm.forward(h);
+  f = disposing(f, layer.mlp.forward(f));
+  f = disposing(f, layer.postFfNorm.forward(f));
+  h = ops.add(residual, f);
+  residual.dispose();
+  f.dispose();
+  const res2 = h;
+  let gate = layer.perLayerGate!.forward(h);
+  gate = disposing(gate, ops.geluApprox(gate));
+  gate = disposing(gate, ops.mul(gate, pli));
+  gate = disposing(gate, layer.perLayerProjection!.forward(gate));
+  gate = disposing(gate, layer.postPerLayerNorm!.forward(gate));
+  h = ops.add(res2, gate);
+  res2.dispose();
+  gate.dispose();
+  h = disposing(h, ops.mul(h, layer.layerScalar!));
+  const shared: SharedKv = { kind: "quant", keys: kq, values: vq, offset, groupSize: 64, bits: 4, offsetArr: cache.ropeOffsetArr };
+  return { h, shared };
+}
+
+function sharerSlidQuantG64B4VPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, shared: SharedKv, pli: MlxArray): MlxArray {
   const a = layer.attn;
   const [B, L] = x.shape as [number, number, number];
   let h = layer.inputNorm.forward(x);
@@ -308,7 +448,10 @@ function sharerSlidQuantVPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, s
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, shared.offsetArr ?? shared.offset));
   if (shared.kind !== "quant") throw new Error("generated sharer expected quant shared KV");
-  const attn = quantizedSdpa(q, shared.keys, shared.values, 1.0, mask, shared.groupSize, shared.bits);
+  // dispatch-site constants: bits=4 group_size=64 nRep=4 head_dim=256
+  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+    ? quantizedSdpaTiled(q, shared.keys, shared.values, 1.0, mask, 64, 4)
+    : quantizedSdpaUnfused(q, shared.keys, shared.values, 1.0, mask, 64, 4);
   q.dispose();
   const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
   attn.dispose();
@@ -340,7 +483,7 @@ function sharerSlidQuantVPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, s
   return h;
 }
 
-function sharerFullQuantVPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, shared: SharedKv, pli: MlxArray): MlxArray {
+function sharerFullQuantG64B4VPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, shared: SharedKv, pli: MlxArray): MlxArray {
   const a = layer.attn;
   const [B, L] = x.shape as [number, number, number];
   let h = layer.inputNorm.forward(x);
@@ -350,7 +493,10 @@ function sharerFullQuantVPliScal(layer: DecoderLayer, x: MlxArray, mask: Mask, s
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, shared.offsetArr ?? shared.offset));
   if (shared.kind !== "quant") throw new Error("generated sharer expected quant shared KV");
-  const attn = quantizedSdpa(q, shared.keys, shared.values, 1.0, mask, shared.groupSize, shared.bits);
+  // dispatch-site constants: bits=4 group_size=64 nRep=4 head_dim=512
+  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+    ? quantizedSdpaTiled(q, shared.keys, shared.values, 1.0, mask, 64, 4)
+    : quantizedSdpaUnfused(q, shared.keys, shared.values, 1.0, mask, 64, 4);
   q.dispose();
   const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
   attn.dispose();
@@ -427,130 +573,130 @@ export class GeneratedGemma4 extends Gemma4Model {
     const perLayer = this.computePerLayerInputs(ids!, h0);
     let h = h0;
     let next: MlxArray;
-    next = donorSlidQuantVPliScal(this.layers[0]!, h, maskS, cache[0] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 0, L, this.perLayerWidth));
+    next = donorSlidQuantG64B4VPliScal(this.layers[0]!, h, maskS, cache[0] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 0, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[1]!, h, maskS, cache[1] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 1, L, this.perLayerWidth));
+    next = donorSlidQuantG64B4VPliScal(this.layers[1]!, h, maskS, cache[1] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 1, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[2]!, h, maskS, cache[2] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 2, L, this.perLayerWidth));
+    next = donorSlidQuantG64B4VPliScal(this.layers[2]!, h, maskS, cache[2] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 2, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[3]!, h, maskS, cache[3] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 3, L, this.perLayerWidth));
+    next = donorSlidQuantG64B8VPliScal(this.layers[3]!, h, maskS, cache[3] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 3, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[4]!, h, maskS, cache[4] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 4, L, this.perLayerWidth));
+    next = donorSlidQuantG64B8VPliScal(this.layers[4]!, h, maskS, cache[4] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 4, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorFullQuantVPliScal(this.layers[5]!, h, maskF, cache[5] as QuantizedKVCache, perLayerSlice(perLayer, 5, L, this.perLayerWidth));
+    next = donorFullQuantG64B4VPliScal(this.layers[5]!, h, maskF, cache[5] as QuantizedKVCache, perLayerSlice(perLayer, 5, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[6]!, h, maskS, cache[6] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 6, L, this.perLayerWidth));
+    next = donorSlidQuantG64B4VPliScal(this.layers[6]!, h, maskS, cache[6] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 6, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[7]!, h, maskS, cache[7] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 7, L, this.perLayerWidth));
+    next = donorSlidQuantG64B4VPliScal(this.layers[7]!, h, maskS, cache[7] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 7, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[8]!, h, maskS, cache[8] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 8, L, this.perLayerWidth));
+    next = donorSlidQuantG64B4VPliScal(this.layers[8]!, h, maskS, cache[8] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 8, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[9]!, h, maskS, cache[9] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 9, L, this.perLayerWidth));
+    next = donorSlidQuantG64B8VPliScal(this.layers[9]!, h, maskS, cache[9] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 9, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[10]!, h, maskS, cache[10] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 10, L, this.perLayerWidth));
+    next = donorSlidQuantG64B8VPliScal(this.layers[10]!, h, maskS, cache[10] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 10, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorFullQuantVPliScal(this.layers[11]!, h, maskF, cache[11] as QuantizedKVCache, perLayerSlice(perLayer, 11, L, this.perLayerWidth));
+    next = donorFullQuantG64B8VPliScal(this.layers[11]!, h, maskF, cache[11] as QuantizedKVCache, perLayerSlice(perLayer, 11, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[12]!, h, maskS, cache[12] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 12, L, this.perLayerWidth));
+    next = donorSlidQuantG64B4VPliScal(this.layers[12]!, h, maskS, cache[12] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 12, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[13]!, h, maskS, cache[13] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 13, L, this.perLayerWidth));
+    next = donorSlidQuantG64B4VPliScal(this.layers[13]!, h, maskS, cache[13] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 13, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[14]!, h, maskS, cache[14] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 14, L, this.perLayerWidth));
+    next = donorSlidQuantG64B8VPliScal(this.layers[14]!, h, maskS, cache[14] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 14, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[15]!, h, maskS, cache[15] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 15, L, this.perLayerWidth));
+    next = donorSlidQuantG64B4VPliScal(this.layers[15]!, h, maskS, cache[15] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 15, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[16]!, h, maskS, cache[16] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 16, L, this.perLayerWidth));
+    next = donorSlidQuantG64B4VPliScal(this.layers[16]!, h, maskS, cache[16] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 16, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorFullQuantVPliScal(this.layers[17]!, h, maskF, cache[17] as QuantizedKVCache, perLayerSlice(perLayer, 17, L, this.perLayerWidth));
+    next = donorFullQuantG64B4VPliScal(this.layers[17]!, h, maskF, cache[17] as QuantizedKVCache, perLayerSlice(perLayer, 17, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[18]!, h, maskS, cache[18] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 18, L, this.perLayerWidth));
+    next = donorSlidQuantG64B4VPliScal(this.layers[18]!, h, maskS, cache[18] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 18, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[19]!, h, maskS, cache[19] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 19, L, this.perLayerWidth));
+    next = donorSlidQuantG64B4VPliScal(this.layers[19]!, h, maskS, cache[19] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 19, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[20]!, h, maskS, cache[20] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 20, L, this.perLayerWidth));
+    next = donorSlidQuantG64B4VPliScal(this.layers[20]!, h, maskS, cache[20] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 20, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = donorSlidQuantVPliScal(this.layers[21]!, h, maskS, cache[21] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 21, L, this.perLayerWidth));
+    next = donorSlidQuantG64B4VPliScal(this.layers[21]!, h, maskS, cache[21] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 21, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    const r22 = donorSlidQuantVPliScalExp(this.layers[22]!, h, maskS, cache[22] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 22, L, this.perLayerWidth));
+    const r22 = donorSlidQuantG64B4VPliScalExp(this.layers[22]!, h, maskS, cache[22] as RotatingQuantizedKVCache, perLayerSlice(perLayer, 22, L, this.perLayerWidth));
     h.dispose();
     h = r22.h;
-    const r23 = donorFullQuantVPliScalExp(this.layers[23]!, h, maskF, cache[23] as QuantizedKVCache, perLayerSlice(perLayer, 23, L, this.perLayerWidth));
+    const r23 = donorFullQuantG64B4VPliScalExp(this.layers[23]!, h, maskF, cache[23] as QuantizedKVCache, perLayerSlice(perLayer, 23, L, this.perLayerWidth));
     h.dispose();
     h = r23.h;
-    next = sharerSlidQuantVPliScal(this.layers[24]!, h, maskS, r22.shared, perLayerSlice(perLayer, 24, L, this.perLayerWidth));
+    next = sharerSlidQuantG64B4VPliScal(this.layers[24]!, h, maskS, r22.shared, perLayerSlice(perLayer, 24, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerSlidQuantVPliScal(this.layers[25]!, h, maskS, r22.shared, perLayerSlice(perLayer, 25, L, this.perLayerWidth));
+    next = sharerSlidQuantG64B4VPliScal(this.layers[25]!, h, maskS, r22.shared, perLayerSlice(perLayer, 25, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerSlidQuantVPliScal(this.layers[26]!, h, maskS, r22.shared, perLayerSlice(perLayer, 26, L, this.perLayerWidth));
+    next = sharerSlidQuantG64B4VPliScal(this.layers[26]!, h, maskS, r22.shared, perLayerSlice(perLayer, 26, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerSlidQuantVPliScal(this.layers[27]!, h, maskS, r22.shared, perLayerSlice(perLayer, 27, L, this.perLayerWidth));
+    next = sharerSlidQuantG64B4VPliScal(this.layers[27]!, h, maskS, r22.shared, perLayerSlice(perLayer, 27, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerSlidQuantVPliScal(this.layers[28]!, h, maskS, r22.shared, perLayerSlice(perLayer, 28, L, this.perLayerWidth));
+    next = sharerSlidQuantG64B4VPliScal(this.layers[28]!, h, maskS, r22.shared, perLayerSlice(perLayer, 28, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerFullQuantVPliScal(this.layers[29]!, h, maskF, r23.shared, perLayerSlice(perLayer, 29, L, this.perLayerWidth));
+    next = sharerFullQuantG64B4VPliScal(this.layers[29]!, h, maskF, r23.shared, perLayerSlice(perLayer, 29, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerSlidQuantVPliScal(this.layers[30]!, h, maskS, r22.shared, perLayerSlice(perLayer, 30, L, this.perLayerWidth));
+    next = sharerSlidQuantG64B4VPliScal(this.layers[30]!, h, maskS, r22.shared, perLayerSlice(perLayer, 30, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerSlidQuantVPliScal(this.layers[31]!, h, maskS, r22.shared, perLayerSlice(perLayer, 31, L, this.perLayerWidth));
+    next = sharerSlidQuantG64B4VPliScal(this.layers[31]!, h, maskS, r22.shared, perLayerSlice(perLayer, 31, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerSlidQuantVPliScal(this.layers[32]!, h, maskS, r22.shared, perLayerSlice(perLayer, 32, L, this.perLayerWidth));
+    next = sharerSlidQuantG64B4VPliScal(this.layers[32]!, h, maskS, r22.shared, perLayerSlice(perLayer, 32, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerSlidQuantVPliScal(this.layers[33]!, h, maskS, r22.shared, perLayerSlice(perLayer, 33, L, this.perLayerWidth));
+    next = sharerSlidQuantG64B4VPliScal(this.layers[33]!, h, maskS, r22.shared, perLayerSlice(perLayer, 33, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerSlidQuantVPliScal(this.layers[34]!, h, maskS, r22.shared, perLayerSlice(perLayer, 34, L, this.perLayerWidth));
+    next = sharerSlidQuantG64B4VPliScal(this.layers[34]!, h, maskS, r22.shared, perLayerSlice(perLayer, 34, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerFullQuantVPliScal(this.layers[35]!, h, maskF, r23.shared, perLayerSlice(perLayer, 35, L, this.perLayerWidth));
+    next = sharerFullQuantG64B4VPliScal(this.layers[35]!, h, maskF, r23.shared, perLayerSlice(perLayer, 35, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerSlidQuantVPliScal(this.layers[36]!, h, maskS, r22.shared, perLayerSlice(perLayer, 36, L, this.perLayerWidth));
+    next = sharerSlidQuantG64B4VPliScal(this.layers[36]!, h, maskS, r22.shared, perLayerSlice(perLayer, 36, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerSlidQuantVPliScal(this.layers[37]!, h, maskS, r22.shared, perLayerSlice(perLayer, 37, L, this.perLayerWidth));
+    next = sharerSlidQuantG64B4VPliScal(this.layers[37]!, h, maskS, r22.shared, perLayerSlice(perLayer, 37, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerSlidQuantVPliScal(this.layers[38]!, h, maskS, r22.shared, perLayerSlice(perLayer, 38, L, this.perLayerWidth));
+    next = sharerSlidQuantG64B4VPliScal(this.layers[38]!, h, maskS, r22.shared, perLayerSlice(perLayer, 38, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerSlidQuantVPliScal(this.layers[39]!, h, maskS, r22.shared, perLayerSlice(perLayer, 39, L, this.perLayerWidth));
+    next = sharerSlidQuantG64B4VPliScal(this.layers[39]!, h, maskS, r22.shared, perLayerSlice(perLayer, 39, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerSlidQuantVPliScal(this.layers[40]!, h, maskS, r22.shared, perLayerSlice(perLayer, 40, L, this.perLayerWidth));
+    next = sharerSlidQuantG64B4VPliScal(this.layers[40]!, h, maskS, r22.shared, perLayerSlice(perLayer, 40, L, this.perLayerWidth));
     h.dispose();
     h = next;
-    next = sharerFullQuantVPliScal(this.layers[41]!, h, maskF, r23.shared, perLayerSlice(perLayer, 41, L, this.perLayerWidth));
+    next = sharerFullQuantG64B4VPliScal(this.layers[41]!, h, maskF, r23.shared, perLayerSlice(perLayer, 41, L, this.perLayerWidth));
     h.dispose();
     h = next;
     disposeSharedKv(r22.shared);
