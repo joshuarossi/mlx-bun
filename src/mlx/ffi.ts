@@ -11,10 +11,27 @@
 //   value in one register: value in bits 0..31, has_value at bit 32.
 
 import { dlopen, FFIType, ptr, read } from "bun:ffi";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const { ptr: P, i32, u64, f32, cstring } = FFIType;
 
-export const LIBMLXC_PATH = "/opt/homebrew/lib/libmlxc.dylib";
+/** libmlxc resolution, in order: explicit env override → next to the
+ *  executable (the `bun build --compile` sidecar layout, where
+ *  libmlxc.dylib + libmlx.dylib + mlx.metallib ship beside the binary —
+ *  see docs/embedding.md) → homebrew (arm64, then Intel prefix). */
+function resolveLibmlxc(): string {
+  const env = process.env.MLX_BUN_LIBMLXC;
+  if (env) return env;
+  const beside = join(dirname(process.execPath), "libmlxc.dylib");
+  if (existsSync(beside)) return beside;
+  for (const p of ["/opt/homebrew/lib/libmlxc.dylib", "/usr/local/lib/libmlxc.dylib"])
+    if (existsSync(p)) return p;
+  // let dlopen produce the canonical error message for the default path
+  return "/opt/homebrew/lib/libmlxc.dylib";
+}
+
+export const LIBMLXC_PATH = resolveLibmlxc();
 
 export const C = dlopen(LIBMLXC_PATH, {
   // array lifecycle

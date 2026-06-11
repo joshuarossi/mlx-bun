@@ -360,7 +360,7 @@ The load-bearing question for the whole project.
   ours uses proper bool OR. Divergence only matters for long vision
   prompts; parity verified in the regime where both are correct.
 
-## Phase 5 — The appliance layer `[~]`
+## Phase 5 — The appliance layer `[x]` (fully closed 2026-06-11 — embeddable build was the last box)
 
 Where we beat Python, not just match it.
 
@@ -408,12 +408,20 @@ Where we beat Python, not just match it.
       hf-internal-testing/tiny-random-gpt2. Sequential by design
       (resumability over parallelism). Pairs with the Phase 8 deferred
       adapter-by-repo-id mount when that lands.
-- [ ] **Embeddable build**: `bun build --compile` single-binary target for
-      the Tauri/Electron sidecar pattern — apps ship local inference with
-      zero user-visible dependencies. Requires: library-first API (server
-      is one consumer of it), relative-path dylib loading, a documented
-      signing/notarization recipe, first-run weight download via the
-      registry + downloader.
+- [x] **Embeddable build** (DONE 2026-06-11): `./scripts/build-binary.sh`
+      → relocatable dist/ bundle (61 MB binary + libmlxc/libmlx/libjaccl
+      dylibs + 150 MB mlx.metallib). dylib resolution (src/mlx/ffi.ts):
+      MLX_BUN_LIBMLXC env → beside-executable (sidecar) → brew.
+      install_name_tool fixups: libmlxc → @loader_path/libmlx;
+      libmlx +@loader_path rpath (its @rpath/libjaccl reference was the
+      one non-obvious break — brew rpath is @loader_path/../lib);
+      ad-hoc re-sign after rewrite (arm64 requirement). VERIFIED: lsof
+      shows all four bundle files loaded from dist/ (not brew), GPU
+      generation + /v1/messages served from the compiled binary
+      (ready 254 ms), first-run weights via the embedded downloader.
+      docs/embedding.md: sidecar pattern (Tauri/Electron), signing/
+      notarization recipe incl. the Bun allow-jit entitlement
+      requirement under hardened runtime.
 - **Exit criterion:** cold start → first token of a cached-prefix prompt
   in under 1s → **Met: 394 ms** (model open 8 ms + kv load 1 ms + first
   token 385 ms; `scripts/cold-start.ts`, fresh process). `mlx-bun ls`
@@ -767,7 +775,7 @@ Ordered by expected payoff on this hardware:
   for quality judgments. Quality-sensitive goldens must use
   chat-templated prompts.
 
-## Documentation pass `[~]` (started 2026-06-10)
+## Documentation pass `[x]` (started 2026-06-10, closed 2026-06-11 with the library API reference)
 
 - [x] README rewritten: requirements, CLI, HTTP API, library usage,
       correctness story, measured numbers, license pointers.
@@ -775,8 +783,14 @@ Ordered by expected payoff on this hardware:
       (mlx-lm MIT; mlx-vlm BSD-3; mlx-optiq MIT; Pillow resample
       algorithm), npm deps (tokenizers Apache-2.0, jinja MIT,
       fast-png MIT), model-license caveat. LICENSE file added (MIT).
-- [ ] API reference for the library surface (generate options, cache
-      types, fit, registry) — generate from TSDoc or hand-write.
+- [x] API reference for the library surface (DONE 2026-06-11,
+      hand-written): docs/library-api.md — generate()/Generation/
+      GenerateOptions/GenerateStats (incl. the mlx-lm-matching clock
+      semantics), serving pieces, PromptCache, kv-store persistence,
+      Registry+fit, LoRA, and the memory/disposal rules (uncatchable
+      OOM, read.* rule). docs/embedding.md covers the single-binary
+      sidecar story (bundle, resolution order, signing/notarization
+      incl. allow-jit).
 - [x] Per-file header audit (2026-06-10): every PORTED file carries its
       upstream source in the header (sampler, tool-call, gemma4 incl.
       fused SDPA, ops, spec/*, vision/*, prompt-cache, lora, generate,

@@ -183,8 +183,11 @@ agent CLIs like pi/OpenClaw via their provider config.
 ## Library
 
 The server is one consumer of a library-first API. Not yet published to
-npm — clone the repo and import from `src/` (a single-binary embeddable
-build is on the roadmap):
+npm — clone the repo and import from `src/`. Full reference:
+[docs/library-api.md](./docs/library-api.md). For shipping inside a
+Mac app (Tauri/Electron sidecar), `./scripts/build-binary.sh` produces
+a relocatable single-binary bundle — recipe incl. signing/notarization
+in [docs/embedding.md](./docs/embedding.md).
 
 ```ts
 import { loadModelConfig } from "./src/config";
