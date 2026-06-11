@@ -1806,6 +1806,44 @@ gemma4.ts keeps the architecture-specific assembly (Attention, MLP,
 MoE, DecoderLayer, Gemma4Model) and re-exports the base so importers
 keep one entry point. No behavior change; full suite green (170 pass).
 
+## Optimization plan Phase C — generated per-model files `[x]` (2026-06-11)
+
+scripts/gen-model.ts reads config.json + kv_config.json (+ the shard
+index, for layer_scalar presence) and emits a branch-resolved, unrolled
+forward pass: per-layer helpers transcribed op-for-op from
+DecoderLayer.forward + Attention.forward with the model's constants
+baked (cache class per layer, donor/sharer wiring, k_eq_v, MoE,
+per-layer-input, layer_scalar), plus an unrolled forwardLayers override
+on a Gemma4Model subclass. Dispatch by config fingerprint
+(src/model/fingerprint.ts → factory.ts, wired into the server); a
+per-call cache-signature guard falls back to the monolith for anything
+the file wasn't generated for (bf16 compat, vision bidir) — nothing
+deleted, nothing ever broken. Three outputs registered:
+gemma4-12b / e4b / 26b (src/model/generated/).
+
+- **Parity: bit-exact for all three** vs the monolith under the shipped
+  kv_config serve scenario (tests/generated-parity.test.ts for 12B+e4b;
+  the 26B by standalone probe — its 16 GB load stays out of the suite).
+  The generator caught two facts a hand-port would have missed: the
+  12B kv_config quantizes ALL 48 layers (sliding included), and these
+  checkpoints carry layer_scalar.
+- **Measured (paired, kv_config @2k, uncompiled): generated/mono =
+  0.994 — perf-neutral**, exactly the plan's honest expectation ("the
+  large one was compile"); Phase C's value is the codegen base for
+  Phases D–E and maintainability.
+- Interplay with compiled decode: e4b-class whole-graph closures trace
+  THROUGH the generated forwardLayers (cleaner graph); dense segmented
+  decode uses CompiledDecode's own layer-wise path, so the generated
+  override serves prefill + uncompiled decode there. Emitting per-model
+  segmented step code from the generator is the natural Phase D/E
+  follow-on (also the route to segmenting e4b past its concat-copy
+  cost).
+- **Bug fix found by the dual-model parity setup:** Router's
+  constructor disposed the Weights-OWNED cached `.scale` tensor — any
+  second model built over the same Weights got a dead handle (latent
+  for registry reloads). weights.tensor() results are never disposed by
+  callers now.
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the

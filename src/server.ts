@@ -12,6 +12,7 @@ import type { Server } from "bun";
 import { loadModelConfig, type KvQuantSpec } from "./config";
 import { Weights } from "./weights";
 import { Gemma4Model } from "./model/gemma4";
+import { createModel } from "./model/factory";
 import { generate, type GenerateOptions } from "./generate";
 import {
   ChatTemplate, type ChatMessage, type ToolDefinition,
@@ -89,7 +90,9 @@ export async function loadContext(
         `${(opts.memoryBudgetBytes / 1e9).toFixed(2)} GB`,
       );
   }
-  const model = new Gemma4Model(weights, config);
+  // generated-specialization dispatch by config fingerprint (Phase C);
+  // unmatched configs run the monolith — slow, never broken
+  const model = createModel(weights, config);
   return {
     model,
     adapters: new AdapterManager(model),
