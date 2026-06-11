@@ -5,7 +5,9 @@
 // only config.json + the safetensors index header (never tensor bytes).
 
 import { Database } from "bun:sqlite";
-import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import {
+  closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync,
+} from "node:fs";
 import { join } from "node:path";
 
 export interface ModelRecord {
@@ -29,6 +31,10 @@ export interface ModelRecord {
   numLayers: number | null;
   hiddenSize: number | null;
   vocabSize: number | null;
+  /** SPDX-ish license id from the model card's README frontmatter
+   *  (e.g. "gemma" — custom terms — vs "apache-2.0"); null if absent.
+   *  Surfaces license obligations per model in `ls`/`fit` output. */
+  license: string | null;
   scannedAt: number;
 }
 
@@ -50,6 +56,7 @@ CREATE TABLE IF NOT EXISTS models (
   num_layers INTEGER,
   hidden_size INTEGER,
   vocab_size INTEGER,
+  license TEXT,
   scanned_at INTEGER NOT NULL
 );
 `;
@@ -70,7 +77,11 @@ export class Registry {
     // The registry is a derived cache — on schema drift, rebuild from scratch.
     const cols = (this.db.query("PRAGMA table_info(models)").all() as { name: string }[])
       .map((c) => c.name);
-    if (!cols.includes("sidecar_bytes") || !cols.includes("experts_bytes")) {
+    if (
+      !cols.includes("sidecar_bytes") ||
+      !cols.includes("experts_bytes") ||
+      !cols.includes("license")
+    ) {
       this.db.exec("DROP TABLE models");
       this.db.exec(SCHEMA);
     }
@@ -82,7 +93,7 @@ export class Registry {
     const upsert = this.db.prepare(`
       INSERT OR REPLACE INTO models VALUES
       ($path, $repo, $type, $params, $size, $sidecar, $experts, $bits, $gs, $mode,
-       $vision, $kv, $tools, $layers, $hidden, $vocab, $at)
+       $vision, $kv, $tools, $layers, $hidden, $vocab, $license, $at)
     `);
     for (const entry of readdirSync(hubDir)) {
       if (!entry.startsWith("models--")) continue;
@@ -102,7 +113,7 @@ export class Registry {
           $kv: rec.hasKvConfig ? 1 : 0,
           $tools: rec.hasToolTemplate ? 1 : 0,
           $layers: rec.numLayers, $hidden: rec.hiddenSize, $vocab: rec.vocabSize,
-          $at: rec.scannedAt,
+          $license: rec.license, $at: rec.scannedAt,
         });
         count++;
       }
@@ -165,8 +176,29 @@ function rowToRecord(r: Record<string, unknown>): ModelRecord {
     numLayers: r.num_layers as number | null,
     hiddenSize: r.hidden_size as number | null,
     vocabSize: r.vocab_size as number | null,
+    license: r.license as string | null,
     scannedAt: r.scanned_at as number,
   };
+}
+
+/** License id from the model card's README.md YAML frontmatter
+ *  (`license:`; `license_name:` wins when license is "other"). */
+function readmeLicense(dir: string): string | null {
+  const p = join(dir, "README.md");
+  if (!existsSync(p)) return null;
+  try {
+    const head = readFileSync(p, "utf8").slice(0, 4096);
+    if (!head.startsWith("---")) return null;
+    const end = head.indexOf("\n---", 3);
+    const fm = end === -1 ? head : head.slice(0, end);
+    const strip = (s: string) => s.trim().replace(/^['"]|['"]$/g, "");
+    const lic = strip(/^license:\s*(.+)$/m.exec(fm)?.[1] ?? "");
+    const name = /^license_name:\s*(.+)$/m.exec(fm)?.[1];
+    if (lic === "other" && name) return strip(name);
+    return lic || null;
+  } catch {
+    return null;
+  }
 }
 
 /** Sum the byte sizes of `.experts.` tensors from a safetensors header
@@ -266,6 +298,7 @@ async function scanSnapshot(dir: string, repoId: string): Promise<ModelRecord | 
     numLayers: text.num_hidden_layers ?? null,
     hiddenSize: text.hidden_size ?? null,
     vocabSize: text.vocab_size ?? null,
+    license: readmeLicense(dir),
     scannedAt: Date.now(),
   };
 }

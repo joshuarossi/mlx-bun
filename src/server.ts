@@ -649,7 +649,9 @@ export function createServer(
                       prompt_tokens_details: { cached_tokens: s.cachedTokens },
                     },
                   });
-                  send("[DONE]");
+                  // bare sentinel per the OpenAI spec — JSON.stringify would
+                  // quote it and strict SDK clients never see the terminator
+                  controller.enqueue(enc.encode("data: [DONE]\n\n"));
                 });
               } catch (e) {
                 send({ error: { message: (e as Error).message } });

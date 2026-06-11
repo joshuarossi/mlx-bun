@@ -90,7 +90,7 @@ switch (cmd) {
       const quant = m.quantBits ? `${m.quantBits}-bit g${m.quantGroupSize}` : "full";
       const params = m.paramCount ? `${(m.paramCount / 1e9).toFixed(1)}B` : "?";
       console.log(
-        `${m.repoId.padEnd(48)} ${gb(m.sizeBytes).padStart(9)}  ${params.padStart(6)}  ${quant.padEnd(12)} ${caps}`,
+        `${m.repoId.padEnd(48)} ${gb(m.sizeBytes).padStart(9)}  ${params.padStart(6)}  ${quant.padEnd(12)} ${(m.license ?? "?").padEnd(12)} ${caps}`,
       );
     }
     break;

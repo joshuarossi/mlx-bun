@@ -103,7 +103,7 @@ describe.skipIf(!haveWeights)("openai-compatible server", async () => {
     const text = await res.text();
     const events = text.split("\n\n").filter((l) => l.startsWith("data: "))
       .map((l) => l.slice(6));
-    expect(events.at(-1)).toBe('"[DONE]"');
+    expect(events.at(-1)).toBe("[DONE]");
     const chunks = events.slice(0, -1).map((e) => JSON.parse(e));
     const content = chunks
       .flatMap((c: any) => c.choices?.[0]?.delta?.content ?? [])
@@ -220,7 +220,7 @@ describe.skipIf(!haveWeights)("openai-compatible server", async () => {
     const text = await res.text();
     const events = text.split("\n\n").filter((l) => l.startsWith("data: "))
       .map((l) => l.slice(6));
-    expect(events.at(-1)).toBe('"[DONE]"');
+    expect(events.at(-1)).toBe("[DONE]");
     const chunks = events.slice(0, -1).map((e) => JSON.parse(e));
     const content = chunks
       .flatMap((c: any) => c.choices?.[0]?.delta?.content ?? [])
