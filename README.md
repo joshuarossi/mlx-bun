@@ -160,6 +160,9 @@ agent CLIs like pi/OpenClaw via their provider config.
   uniform bits. Long prefills over quantized caches run a fused
   FlashAttention-2 tiling that never materializes the full scores
   matrix (bounded transient; `MLX_BUN_NO_FUSED_SDPA=1` to disable).
+  `MLX_BUN_FUSED_DECODE=1` extends the tiling to single-token decode —
+  experimental, default off (measured ~4% slower on Gemma @8k kv8;
+  kept for model families where it may win).
 - **Memory admission control** — `--memory-budget <GB>` refuses to load
   a model that can't serve within the budget and rejects requests whose
   `prompt + max_tokens` exceed the budget's max safe context with a 400
@@ -207,35 +210,41 @@ preamble prefills once, ever.
 Head-to-head against the Python stacks (mlx-lm 0.31.3, mlx-optiq 0.2.1),
 same machine (M4 Pro 24 GB), same day, same HF snapshots, preflight-gated
 clean machine, median-of-N with warmups discarded. Full table with
-per-row provenance: [benchmarks-h2h-2026-06-10.md](./benchmarks-h2h-2026-06-10.md).
+per-row provenance:
+[benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md](./benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md).
 
 | | mlx-bun | mlx-lm | optiq |
 |---|---|---|---|
-| **TTFT, served (warm)** | **45–89 ms** | 220–226 ms | 220–327 ms |
-| **server start → ready** | **0.36–0.48 s** | 0.80–0.95 s | 0.79–0.90 s |
-| **decode through HTTP** (e4b / 12B / 26B) | **54.5 / 25.6 / 55.1** | 53.6 / — / 52.1 | 53.5 / 25.5 / † |
-| **server tax vs own direct decode** | **≈ 0%** | −5…−6% | ≈ 0% |
-| **direct decode** (engine only) | −2…−4% vs mlx-lm | baseline | ≈ mlx-lm |
-| **prefill @8k prompt** (12B) | **253 tok/s** | ~241–257¹ | —¹ |
+| **TTFT, served (warm)** | **45–90 ms** | 219–224 ms | 222–331 ms |
+| **server start → ready** | **0.36–0.47 s** | 0.76–0.98 s | 0.79–1.00 s |
+| **decode through HTTP** (e4b / 12B / 26B) | **54.5** / 25.2 / **54.9** | 53.5 / — / 52.2 | 53.5 / **25.5** / † |
+| **server tax vs own direct decode** | **≈ 0%** | −5…−7% | ≈ 0% |
+| **direct decode** (engine only) | −1.9…−4.4% vs mlx-lm | baseline | −0.8…−1.2% |
+| **12B decode @8k context** | 23.3 (23.0 kv-mixed) | **24.4** | 23.2 kv-mixed |
 
-Honest negatives, same table: our direct decode trails mlx-lm by 2–4%
-at short context, and the gap grows with context length (paired
-measurement: ~−3% @2k → ~−11% @8k; cause under investigation — it
-scales linearly with full-attention KV length). Served through HTTP —
-how agents actually use a local model — mlx-bun is the fastest stack
-on every model measured. † = cell failed: optiq serve crashed loading
-the 26B (Metal OOM from python's non-lazy load transient — reproduced
-in isolation; mlx-bun served the same model from the same machine
-state). One further optiq cell is blocked on an upstream optiq bug;
-both are documented in the results file.
+Honest negatives, same table: in this matrix our direct decode trailed
+mlx-lm on every model (12B −1.9%, 26B −2.9%, e4b −4.4% at short
+context; the 12B gap grew to −4.5% @8k), and optiq's served 12B edges
+ours by ~1% (25.5 vs 25.2) while paying 3.7× the TTFT. **Post-matrix
+(2026-06-11) the decode gap was root-caused and fixed** — a
+prefill→decode allocator-reclaim stall that mlx-lm clears with
+`mx.clear_cache` and bills to prompt time (we billed it to decode);
+after the reference-faithful fix, same-session paired runs put the 12B
+*ahead* at short context (25.1 vs 24.0) and at parity @8k (23.8 vs
+23.9). Clean-machine re-measure pending; e4b retains a ~5% per-step
+host-overhead residual (see PLAN.md "Decode gap RESOLVED"). Served through HTTP — how agents actually use a local
+model — mlx-bun has the fastest decode on e4b and the 26B, and the
+fastest TTFT and startup everywhere by 2–5×. † = cell failed: optiq
+serve produced no output on the 26B (the Metal OOM crash class from
+python's non-lazy load transient — reproduced in isolation; mlx-bun
+and mlx-lm both served the same model from the same machine state).
+One further optiq cell is blocked on an upstream optiq bug; both are
+documented in the results file.
 
-¹ The original matrix's python "@8k" rows (decode and prefill) were
-invalid — a harness bug fed the python baselines a ~31-token prompt
-(recorded as `ctx=31` in the eval DB; caught and fixed 2026-06-10, the
-harness now refuses to record mislabeled long-context rows). Python
-@8k figures above are corrected same-day paired measurements; the
-matrix re-run on a cleared machine (`./benchmark.sh --redo`) is
-pending and will replace this table.
+These numbers are the 2026-06-11 cleared-machine re-run with the
+long-context guard active (every @8k row verified at its requested
+context — an earlier harness bug had fed python @8k baselines
+~31-token prompts; fixed, guarded, and re-measured).
 
 ## Correctness
 
@@ -277,14 +286,16 @@ Pre-alpha, moving fast. See [PLAN.md](./PLAN.md) for phases, exit
 criteria, measured numbers, and the findings log. Complete: load path,
 bit-exact model port (12B dense / e4b per-layer-input / 26B MoE),
 sampling + serving (tools, vision, prompt cache), registry/fit/KV
-persistence, quantized + mixed-precision KV serving with fused
-quantized prefill (Phase 10), LoRA hot-swap with per-request selection,
-resumable verified downloads (`mlx-bun get`), memory admission control,
-and the head-to-head benchmark harness. Open: the 12B long-context
-decode gap (−10% @8k vs mlx-lm — re-baseline pending a cleared-machine
-run), rotating-KV quant (Phase 9), Anthropic messages + Responses API
-(Phase 11), SigLIP vision for e4b/26B, Qwen 3.x, the embeddable
-single-binary build.
+persistence, quantized + mixed-precision KV serving (rotating-cache
+KV-quant included, Phase 9) with fused quantized prefill (Phase 10),
+LoRA hot-swap with per-request selection, resumable verified downloads
+(`mlx-bun get`), memory admission control, and the head-to-head
+benchmark harness, and the decode-gap root-cause fix (clear_cache
+placement + boundary accounting, 2026-06-11 — 12B now at-or-above
+mlx-lm decode in paired runs). Open: e4b's ~5% host-overhead decode
+residual (Phase 7), Anthropic messages + Responses API (Phase 11),
+SigLIP vision for e4b/26B, Qwen 3.x, the embeddable single-binary
+build.
 
 ## License
 
