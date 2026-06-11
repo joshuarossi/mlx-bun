@@ -460,6 +460,59 @@ re-baseline, the two fused-path A/Bs, purge-cold rows) batch into ONE
 cleared-machine ./benchmark.sh pass later; don't block engine work on
 them. Memory measurements stay fine to take in-session.
 
+### NEXT SESSION PICKUP (written 2026-06-10 night, pre-reboot)
+
+Josh reboots and runs `./benchmark.sh --redo` on the M4 Pro (the
+--redo is REQUIRED: at 17:48 a plain run re-rendered the morning's
+stale rows as "results" because of the resume window). The script now
+also appends the two fused-path A/Bs after the matrix. When the
+results exist, the session work is:
+
+1. **Read** the new `benchmarks-h2h-<date>-<host>.md` + eval-DB rows
+   (`bun src/cli.ts evals`, or query `~/.cache/mlx-bun/evals.sqlite`).
+   This is the FIRST clean-machine measurement of the
+   post-rope-fix/Phase-9/10 engine — even short-ctx numbers may move.
+   Sanity rules: every @8k row must show ctx≈8000 in its notes (the
+   new context guard fails cells into the footer otherwise); any
+   stack whose @8k decode equals its short-ctx decode is broken, not
+   fast.
+2. **Settle the fused-flag defaults** from the appended A/B rows
+   (notes `bench-fused-prefill...` / `bench-fused-decode...`):
+   fused prefill is expected ≈neutral tok/s with lower peak → stays
+   default-on; fused decode read 0.885 (dirty-paired) → if still <1.0
+   clean, DELETE the MLX_BUN_FUSED_DECODE flag and its gate test; if
+   >1.0, flip the default and re-check kv-quant goldens (decode
+   composition changes — regen trajectories per the
+   regen-kvq-goldens.ts convention).
+3. **Update README Benchmarks** (the table carries a provenance
+   footnote about the invalidated @8k rows — replace with the clean
+   corrected numbers) and mark Phase 15's remaining boxes.
+4. **Continue the decode-gap investigation** with clean anchors.
+   State of knowledge (all from 2026-06-10 evening, "@8k artifact"
+   finding): gap is ≈0% @short, −2.6% @2k, −5.2% @4k, −11% @8k
+   (dirty-paired) — LINEAR in full-attention KV length. RULED OUT:
+   slice_update donation (buffer pointers stable across decode steps),
+   JS dispatch (ctx-independent), sliding-ring path (saturates @1k),
+   kernel identity (bit-exact graphs ⇒ same kernels). NEXT LEVER:
+   Metal-level profile of one decode step @600 vs @8k —
+   `mlx_metal_start_capture/stop_capture` exist in mlx-c metal.h
+   (unbound yet; needs MTL_CAPTURE_ENABLED=1 and Xcode to open the
+   .gputrace), or cheaper first: per-step wall-time split (time spent
+   blocked in itemUint32 = GPU-bound vs JS graph-build) at both
+   contexts, and python the same via a small oracle script — if our
+   extra time is GPU-side despite identical graphs, suspect the
+   PIPELINE structure (what overlaps with what), not the kernels;
+   compare our async_eval ordering against mlx-lm generate_step
+   line-by-line (stream_generate wraps it — read the venv source).
+5. If the M1 Max reruns: `git pull` there FIRST (its matrix ran
+   6cb4a35, pre-rope-fix), then `./benchmark.sh --redo`.
+
+Open after that, in order: purge-cold rows (needs `sudo purge`,
+Josh-interactive), Phase 11 (Anthropic /v1/messages — Josh's Claude
+Code backend — + Responses), embeddable build. Background chip:
+server `stop` sequences landed (561fa35); verify its tests run in the
+default suite.
+
 Remaining work, in priority order:
 
 0. ~~Phase 9 — rotating KV-quant~~ DONE same evening (tier-a bit-exact
@@ -1190,13 +1243,10 @@ Matrix: stacks {mlx-bun, mlx-lm, mlx-optiq} × models {e4b, 12B,
       stack's best KV config (ours per kv_config.json; optiq
       `--kv-config`; mlx-lm stock — its gemma4 kv-quant crashes,
       recorded finding).
-- **NEXT SESSION PICKUP (2026-06-10)**: Josh reboots and runs
-      `./benchmark.sh` (one-shot; writes eval-DB rows + a
-      benchmarks-h2h-<date>.md). Session work then: read the results
-      file / `bench-h2h.ts table`, sanity-check spreads, fold the table
-      into README, settle the "+21% kv8" question from the @8k A/B
-      rows, and mark legs (a)-(d) here. If preflight aborted mid-run,
-      partial rows are recorded — finish with another reboot.
+- ~~NEXT SESSION PICKUP (2026-06-10 morning)~~ superseded — see THE
+      HANDOFF BLOCK at "NEXT UP" (the morning matrix shipped, then its
+      @8k baseline rows were found invalid; the corrected re-run +
+      pickup instructions live there now).
 - [x] Harness: `scripts/bench-h2h.ts` (built 2026-06-10):
       `preflight|direct|server|client|table`. Preflight ENFORCES the
       method rules (swap ≈ 0, free-memory floor, thermal, big foreign
