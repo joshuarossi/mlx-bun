@@ -149,6 +149,26 @@ export const C = dlopen(LIBMLXC_PATH, {
   //  opt group_size, opt bits, mode, sorted_indices, stream)
   mlx_gather_qmm: { args: [P, u64, u64, u64, u64, u64, u64, FFIType.bool, u64, u64, cstring, FFIType.bool, u64], returns: i32 },
   mlx_floor_divide: { args: [P, u64, u64, u64], returns: i32 },
+  // compile via closures (Phase A compiled decode — optimization_plan.md).
+  // mlx_closure is the usual one-pointer struct; the func-payload variant
+  // carries an id we use to route the trace callback back to JS.
+  mlx_closure_new: { args: [], returns: u64 },
+  mlx_closure_new_func_payload: { args: [P, P, P], returns: u64 },
+  mlx_closure_free: { args: [u64], returns: i32 },
+  mlx_closure_apply: { args: [P, u64, u64], returns: i32 },
+  mlx_compile: { args: [P, u64, FFIType.bool], returns: i32 },
+  mlx_set_compile_mode: { args: [i32], returns: i32 },
+  mlx_vector_array_size: { args: [u64], returns: u64 },
+  mlx_vector_array_set_data: { args: [P, P, u64], returns: i32 },
+  // dynamic-start variants: per-decode-step offsets enter the graph as
+  // array VALUES instead of baked ints, so one compiled graph serves
+  // every step (no per-step retrace).
+  // (res, x, dims, traditional, opt base, scale, offset ARRAY, freqs may-be-null, stream)
+  mlx_fast_rope_dynamic: { args: [P, u64, i32, FFIType.bool, u64, f32, u64, u64, u64], returns: i32 },
+  // (res, src, update, start ARRAY, axes*, axes_num, stream)
+  mlx_slice_update_dynamic: { args: [P, u64, u64, u64, P, u64, u64], returns: i32 },
+  // (res, a, start ARRAY, axes*, axes_num, slice_size*, n, stream)
+  mlx_slice_dynamic: { args: [P, u64, u64, P, u64, P, u64, u64], returns: i32 },
 }).symbols;
 
 export type MlxHandle = bigint;

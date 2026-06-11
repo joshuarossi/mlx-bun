@@ -107,6 +107,25 @@ export function rope(
   );
 }
 
+/** fast::rope with the position offset as an ARRAY (int32 scalar) instead
+ *  of a baked int — required inside compiled decode graphs, where the
+ *  offset changes every step but the graph must not. Same kernel as
+ *  `rope`; bit-exactness vs the static form is asserted in
+ *  tests/compile.test.ts. */
+export function ropeDynamic(
+  x: MlxArray, dims: number, base: number | null, offset: MlxArray,
+  freqs: MlxArray | null, s: S = gpuStream,
+): MlxArray {
+  return new MlxArray(
+    outArray("fast_rope_dynamic", (o) =>
+      C.mlx_fast_rope_dynamic(
+        o, x.handle, dims, false, optFloat(base), 1.0, offset.handle,
+        freqs?.handle ?? 0n, s,
+      ),
+    ),
+  );
+}
+
 export function sdpa(
   q: MlxArray, k: MlxArray, v: MlxArray, scale: number,
   maskMode: "" | "causal" | "array", maskArr: MlxArray | null = null,
@@ -364,6 +383,45 @@ export function sliceUpdate(
         o, src.handle, update.handle,
         ptr(st), BigInt(st.length), ptr(sp), BigInt(sp.length),
         ptr(strides), BigInt(strides.length), s,
+      ),
+    ),
+  );
+}
+
+/** mx.slice with start as an ARRAY and the output shape as constants —
+ *  the shapeless-compile-safe slice (mlx's Slice primitive cannot infer
+ *  output shapes; DynamicSlice's output shape IS sliceSize). Used only
+ *  inside compiled-decode traces for subrange slices whose bounds are
+ *  per-layer constants (full-range slices get simplified away and need
+ *  no substitute). Values identical to `slice`. */
+export function sliceDynamic(
+  a: MlxArray, start: MlxArray, axes: number[], sliceSize: number[], s: S = gpuStream,
+): MlxArray {
+  const ax = new Int32Array(axes);
+  const sz = new Int32Array(sliceSize);
+  return new MlxArray(
+    outArray("slice_dynamic", (o) =>
+      C.mlx_slice_dynamic(
+        o, a.handle, start.handle,
+        ptr(ax), BigInt(ax.length), ptr(sz), BigInt(sz.length), s,
+      ),
+    ),
+  );
+}
+
+/** slice_update with the start index as an ARRAY (one int32 per entry in
+ *  `axes`) — the compiled-decode form of the per-step cache write. Same
+ *  write as `sliceUpdate`; bit-exactness vs the static form is asserted
+ *  in tests/compile.test.ts. */
+export function sliceUpdateDynamic(
+  src: MlxArray, update: MlxArray, start: MlxArray, axes: number[], s: S = gpuStream,
+): MlxArray {
+  const ax = new Int32Array(axes);
+  return new MlxArray(
+    outArray("slice_update_dynamic", (o) =>
+      C.mlx_slice_update_dynamic(
+        o, src.handle, update.handle, start.handle,
+        ptr(ax), BigInt(ax.length), s,
       ),
     ),
   );

@@ -82,7 +82,7 @@ describe.skipIf(!haveWeights)("tool calling end-to-end", async () => {
     const text = await res.text();
     const events = text.split("\n\n").filter((l) => l.startsWith("data: "))
       .map((l) => l.slice(6));
-    const chunks = events.filter((e) => e !== '"[DONE]"').map((e) => JSON.parse(e));
+    const chunks = events.filter((e) => e !== "[DONE]").map((e) => JSON.parse(e));
     const tcChunk = chunks.find((c: any) => c.choices?.[0]?.delta?.tool_calls);
     expect(tcChunk).toBeDefined();
     expect(tcChunk.choices[0].delta.tool_calls[0].function.name).toBe("get_weather");
