@@ -14,6 +14,7 @@ import {
   synchronize,
 } from "./mlx/ffi";
 import * as ops from "./mlx/ops";
+import { CompiledDecode } from "./model/compiled-decode";
 import { Gemma4Model, KVCache, RotatingKVCache, type Cache } from "./model/gemma4";
 import type { KvQuantSpec } from "./config";
 import {
@@ -327,6 +328,23 @@ async function* generateInner(
     ops.asyncEvalAll([pending]);
 
     // ---- decode (pipelined) ----
+    // Compiled decode (optimization_plan.md Phase A): replay the per-step
+    // graph in C++ instead of rebuilding it through bun:ffi every token.
+    // Bit-exact with the uncompiled path (tests/compiled-decode.test.ts);
+    // MLX_BUN_COMPILED_DECODE=0 is the kill switch / A-B lever. LoRA
+    // generations stay uncompiled (adapter weights would bake into the
+    // trace as constants). Any unsupported cache state falls back for
+    // the rest of the generation.
+    // MoE models stay uncompiled: GatherQMM lacks output_shapes in mlx
+    // 0.6.0, and shapeless replay re-infers the whole tape whenever the
+    // growing attention windows change shape (= every step). Remove this
+    // when upstream implements GatherQMM::output_shapes.
+    let compiled =
+      process.env.MLX_BUN_COMPILED_DECODE !== "0" &&
+      !options.adapters?.length &&
+      !model.config.text.enableMoeBlock
+        ? CompiledDecode.for(model)
+        : null;
     let stop = false;
     while (!stop) {
       const cur = pending!;
@@ -335,14 +353,30 @@ async function* generateInner(
       if (generated + 1 < maxTokens) {
         maybeQuantizeKv(cache, options);
         pushHistory(cur);
-        const ids = ops.reshape(cur, [1, 1]);
-        const h = model.forwardHidden(ids, cache);
-        ids.dispose();
-        const logits = model.logitsFromHidden(h);
-        h.dispose();
+        let logits: MlxArray | null = null;
+        let evalWith: MlxArray[] = [];
+        if (compiled && CompiledDecode.supports(cache)) {
+          try {
+            const r = compiled.step(cur, cache);
+            logits = r.logits;
+            evalWith = r.evalWith;
+          } catch (e) {
+            // growth done by a partial prepare is benign for the
+            // uncompiled path (updateAndFetch re-checks capacity)
+            compiled = null;
+            console.warn(`compiled decode disabled for this generation: ${e}`);
+          }
+        }
+        if (!logits) {
+          const ids = ops.reshape(cur, [1, 1]);
+          const h = model.forwardHidden(ids, cache);
+          ids.dispose();
+          logits = model.logitsFromHidden(h);
+          h.dispose();
+        }
         nextPending = sampleStep(logits, generated + 1);
         logits.dispose();
-        ops.asyncEvalAll([nextPending]);
+        ops.asyncEvalAll([nextPending, ...evalWith]);
       }
 
       // sync-read step n's token while n+1 computes

@@ -15,24 +15,40 @@ import { SNAPSHOT } from "../tests/paths";
 import { loadModelConfig } from "../src/config";
 import { Weights } from "../src/weights";
 import { Gemma4Model } from "../src/model/gemma4";
+import { CompiledDecode } from "../src/model/compiled-decode";
 import { loadTokenizer } from "../src/tokenizer";
 import { ChatTemplate } from "../src/chat-template";
+import type { MlxArray } from "../src/mlx/array";
 import * as ops from "../src/mlx/ops";
 import { clearCache } from "../src/mlx/ffi";
 import { generate } from "../src/generate";
 
 const CLEAR = process.argv.includes("--clear-cache");
+// --compiled: replay the decode graph via mx.compile (Phase A lever),
+// mirroring generateInner's compiled branch. A/B against the default
+// JS-graph-build loop below.
+const COMPILED = process.argv.includes("--compiled");
+// keep the warmup generate() on the same path as the measured loop
+process.env.MLX_BUN_COMPILED_DECODE = COMPILED ? "1" : "0";
+// --no-fuse: replay without kernel fusion (isolates fusion-codegen cost
+// from the graph-replay win in the compiled A/B)
+if (process.argv.includes("--no-fuse")) {
+  const { setCompileMode } = await import("../src/mlx/compile");
+  setCompileMode("no_fuse");
+}
 
 const ptIdx = process.argv.indexOf("--prompt-tokens");
 const PROMPT_TOKENS = ptIdx > -1 ? Number(process.argv[ptIdx + 1]) : 600;
 const stIdx = process.argv.indexOf("--steps");
 const STEPS = stIdx > -1 ? Number(process.argv[stIdx + 1]) : 128;
+const mIdx = process.argv.indexOf("--model");
+const MODEL_DIR = mIdx > -1 ? process.argv[mIdx + 1]! : SNAPSHOT;
 
-const config = await loadModelConfig(SNAPSHOT);
-const weights = await Weights.open(SNAPSHOT);
+const config = await loadModelConfig(MODEL_DIR);
+const weights = await Weights.open(MODEL_DIR);
 const model = new Gemma4Model(weights, config);
-const tok = await loadTokenizer(SNAPSHOT);
-const template = await ChatTemplate.load(SNAPSHOT);
+const tok = await loadTokenizer(MODEL_DIR);
+const template = await ChatTemplate.load(MODEL_DIR);
 
 let userMsg =
   "Write a detailed essay about the history of computing, starting with mechanical calculators.";
@@ -56,8 +72,11 @@ const promptIds = ids[0] === ids[1] && ids[0] === tok.bosTokenId ? ids.slice(1) 
 }
 
 const PASSES = process.argv.includes("--twice") ? 2 : 1;
+// --ab: interleaved uncompiled/compiled passes in one process — paired
+// ratios survive machine drift (cross-process absolutes don't).
+const AB = process.argv.includes("--ab");
 
-function runOnce(pass: number) {
+function runOnce(pass: number, compiledPass = COMPILED) {
   // ---- prefill (chunked, like generateInner; greedy first token) ----
   const cache = model.makeCache();
   const CHUNK = 2048;
@@ -102,17 +121,25 @@ function runOnce(pass: number) {
     const cur = pending;
     const t0 = performance.now();
     // build step n+1's graph from the unread pending token
-    const tids = ops.reshape(cur, [1, 1]);
-    const h = model.forwardHidden(tids, cache);
-    tids.dispose();
-    const logits = model.logitsFromHidden(h);
-    h.dispose();
+    let logits: MlxArray;
+    let evalWith: MlxArray[] = [];
+    if (compiledPass) {
+      const r = CompiledDecode.for(model).step(cur, cache);
+      logits = r.logits;
+      evalWith = r.evalWith;
+    } else {
+      const tids = ops.reshape(cur, [1, 1]);
+      const h = model.forwardHidden(tids, cache);
+      tids.dispose();
+      logits = model.logitsFromHidden(h);
+      h.dispose();
+    }
     const flat = ops.reshape(logits, [1, logits.shape[2]!]);
     logits.dispose();
     const next = ops.argmaxAxis(flat, 1);
     flat.dispose();
     const tG = performance.now();
-    ops.asyncEvalAll([next]);
+    ops.asyncEvalAll([next, ...evalWith]);
     const t1 = performance.now();
     ops.itemUint32(cur); // sync-read step n's token while n+1 computes
     const t2 = performance.now();
@@ -139,7 +166,7 @@ function runOnce(pass: number) {
   const fmt = (xs: number[]) =>
     `median ${q(xs, 0.5).toFixed(2)} ms  p10 ${q(xs, 0.1).toFixed(2)}  p90 ${q(xs, 0.9).toFixed(2)}  total ${sum(xs).toFixed(0)} ms`;
 
-  console.log(`--- pass ${pass} ---`);
+  console.log(`--- pass ${pass}${AB ? (compiledPass ? " [compiled]" : " [uncompiled]") : ""} ---`);
   console.log(`ctx=${promptIds.length} steps=${STEPS} prefill=${prefillMs.toFixed(0)} ms`);
   console.log(`decode ${(STEPS / decodeMs * 1000).toFixed(1)} tok/s (${(decodeMs / STEPS).toFixed(2)} ms/step)`);
   console.log(`t_graph    (JS graph build, FFI): ${fmt(graphMs)}`);
@@ -159,4 +186,9 @@ function runOnce(pass: number) {
   );
 }
 
-for (let p = 1; p <= PASSES; p++) runOnce(p);
+if (AB) {
+  // u/c/u/c: first pass of each mode warms its path; compare pass 3 vs 4
+  for (let p = 1; p <= 4; p++) runOnce(p, p % 2 === 0);
+} else {
+  for (let p = 1; p <= PASSES; p++) runOnce(p);
+}

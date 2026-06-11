@@ -1710,6 +1710,92 @@ change, consistent with Phase 6).
   Phase 1: no hand-port; render the model's own template via
   `@huggingface/jinja` — drift impossible by construction.
 
+## Optimization plan Phase A — compiled decode `[x]` (2026-06-10/11)
+
+(See optimization_plan.md for the full plan; Phases B–E follow.)
+
+**What landed:** the single-token decode step replays through
+`mlx_compile` instead of being rebuilt per token over bun:ffi.
+`src/mlx/compile.ts` wraps a JSCallback-traced `mlx_closure` (trace runs
+ONCE per ndim/dtype signature; shapeless=true replays across the growing
+KV dims). `src/model/compiled-decode.ts` traces the UNMODIFIED
+`Gemma4Model.forwardHidden` against cache adapters that subclass the
+real cache classes, so the compiled graph is the production op sequence
+by construction. Per-step integers cross as ARRAY inputs
+(`mlx_fast_rope_dynamic`, `mlx_slice_update_dynamic`) — no baked
+constants, no per-step retrace (verified: a per-closure trace counter
+flags any retrace; 300-token runs across growth boundaries, ring
+transitions, kv conversion and sampler paths = exactly the expected
+trace count, zero unexpected).
+
+**Two execution forms, chosen by model architecture:**
+- *Segmented* (dense: 12B-class): rotating caches at steady state write
+  in-graph at a dynamic ring position and the graph reads the full
+  updated buffer (bit-exact by construction, donation verified by
+  pointer stability); growing caches (full-attention; rings pre-window)
+  put their LAYER outside the compiled graph — today's exact view-based
+  ops between compiled segments. At 8k that's 42 compiled layers in 7
+  segments + 6 JS layers.
+- *Whole-graph* (KV-sharing/per-layer-input: e4b-class): everything in
+  one closure; growing caches fetch via in-graph concat (same values as
+  write-then-slice) with the write immediately outside. The concat
+  MATERIALIZES the active window per step — measured cost ≈ per-op
+  encode overhead + 2× window bytes + allocator churn; this is why
+  dense models get the segmented form, and why e4b's win shrinks with
+  context. Folding e4b into segmented form needs SharedKv plumbing
+  across segment boundaries — deferred to the Phase C generator.
+
+**Parity gate (the invariant): GREEN.** Compiled vs uncompiled is
+bit-exact — full logit vectors and greedy trajectories — on 12B across
+bf16/quantized × growing/ring cache configs and on e4b incl. KV-sharing
++ mixed kv_config (tests/compiled-decode.test.ts). Three trace-time op
+substitutions were needed (values identical, asserted): subrange Slice →
+DynamicSlice in the per-layer-input split, the MoE top-k, and the tiled
+SDPA's tile slices — mlx's Slice lacks `output_shapes`, which shapeless
+replay needs.
+
+**Measured (paired in-process A/B, dirty machine — ratios only;
+scripts/decode-split.ts --ab):**
+- e4b: **+5.2% @600** (49.9→52.5 tok/s), +4.3% @2k, +2.9% @4k, ~0% @8k.
+  The Phase-7 "e4b −5% residual" is closed at short/mid context.
+- 12B: ~0% @600 (pre-window: segmented degenerates to ~uncompiled by
+  design — no regression, no churn), +0–1% @8k (t_graph 3.2→0.8 ms;
+  ~0.5 ms residual dispatch cost unattributed).
+- 26B (MoE): falls back to uncompiled — upstream mlx 0.6.0 GatherQMM has
+  no `output_shapes`, and shapeless replay re-infers the whole tape when
+  any input dim changes. Lift when upstream implements it.
+- Honest premise check: the 12B is GPU-bound (t_graph was only 4–8% of
+  step wall), so compile is NOT a 14×-class lever here; the per-model
+  headroom table (control, scripts/decode-split.ts): 12B 1.54 ms/4.0%
+  @600, 3.42 ms/7.8% @8k; e4b 2.55 ms/12.9%; 26B 2.23 ms/12.4%.
+
+**Fused-decode A/B re-run on top of compile (plan step 7): REFUTED.**
+MLX_BUN_FUSED_DECODE tiled/stock = **0.921** @8k kv8, both arms
+compiled (scripts/bench-fused-decode.ts) — the tile loop's L=1 cost is
+GPU-side, not host overhead. Flag stays default-off; the win belongs to
+Phase E's real fused kernel.
+
+**Defaults/flags:** compiled decode is DEFAULT ON
+(`MLX_BUN_COMPILED_DECODE=0` to disable / A-B); LoRA generations and MoE
+models fall back automatically; any unsupported state falls back
+per-generation (warn once, closure key blacklisted).
+`MLX_BUN_COMPILE_MODE` escape hatch exists in compile.ts (no_fuse —
+measured: fusion is NOT the cost, no_fuse is strictly worse).
+
+**Crash found while gating (worth knowing):** the full 27-file suite in
+one bun process dies DETERMINISTICALLY in `mlx::core::gpu::check_error`
+→ `std::terminate` (the documented-uncatchable async Metal error, Phase
+6) under cumulative residency — the failure lands asynchronously ~147
+tests in (during tokenizer tests, dispatched by earlier GPU work), with
+zero output because bun test buffers its report until exit. Per-file and
+half-suite runs pass with headroom. Resolution: `bun run test` →
+scripts/test.sh runs the suite as two sequential shards (two processes);
+new heavy tests also dispose their weights (Weights.dispose), compiled
+closures and the allocator cache in afterAll — keep doing both in future
+model-heavy test files. Locating tool that worked: `bun test --preload`
+with a beforeEach that appendFileSync's a trace line (survives the
+crash).
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the
