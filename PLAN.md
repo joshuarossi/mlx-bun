@@ -1844,6 +1844,24 @@ gemma4-12b / e4b / 26b (src/model/generated/).
   for registry reloads). weights.tensor() results are never disposed by
   callers now.
 
+## Optimization plan Phase D — kv_config constant folding `[x]` (2026-06-11)
+
+gen-model.ts now folds each layer's kv_config (bits, group_size) into
+the generated SDPA dispatch as LITERALS, pre-resolves the static half of
+fusedSdpaSupported at generation time (runtime half split out as
+base.fusedSdpaRuntimeOk — combined predicate unchanged), and records
+(bits, group_size, nRep, head_dim) at every dispatch site. The 12B's
+actual site mix: sliding 4-bit nRep=2 d=256, sliding 8-bit nRep=2
+d=256, full 4-bit nRep=16 d=512 (richer than the plan's worked
+example — some SLIDING layers are 8-bit).
+
+Parity: bit-exact, all three models. Measured (paired, kv_config @2k):
+generated/mono = **0.998 — neutral**, exactly the plan's prediction;
+per its own framing this is the finding that compile already captured
+the host-side cost and **Phase E's fused kernel is the only remaining
+lever**. Every dispatch site now has a single known
+(bits, group_size, nRep, head_dim) — E's precondition met.
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the
