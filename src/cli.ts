@@ -180,6 +180,7 @@ Usage: mlx-bun evals [options]
 Options:
   --limit <n>          Rows to show  [default: 20]
   --raw                Full records as JSON lines (for scripts/jq)
+  --clear              Archive the eval DB (timestamped backup) and start fresh
 
 Table view: when, model, bench kind, KV mode, decode tok/s, TTFT,
 peak memory, commit. Runs are written by ./benchmark.sh.`,
@@ -596,6 +597,18 @@ switch (cmd) {
   }
 
   case "evals": {
+    if (flag("clear")) {
+      // Eval rows are real data — archive, never destroy.
+      const { DEFAULT_EVAL_DB } = await import("./evaldb");
+      const { existsSync, renameSync } = await import("node:fs");
+      if (!existsSync(DEFAULT_EVAL_DB)) { console.log("no eval DB to clear"); break; }
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const backup = DEFAULT_EVAL_DB.replace(/\.sqlite$/, `-${stamp}.sqlite`);
+      renameSync(DEFAULT_EVAL_DB, backup);
+      console.log(`eval DB archived to ${backup}`);
+      console.log("fresh DB starts with the next mlx-bun benchmark run");
+      break;
+    }
     const db = new EvalDB();
     const limit = Number(opt("limit", "20"));
     const rows = db.recent(limit);
