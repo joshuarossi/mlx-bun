@@ -48,13 +48,23 @@ Bun.serve({
             repoId: "mlx-community/gemma-4-12B-it-OptiQ-4bit", state: "active",
             currentFile: "model-00002-of-00002.safetensors",
             receivedBytes: 3_600_000_000, totalBytes: 8_400_000_000,
-            filesDone: 7, filesTotal: 12, startedAt: Date.now() - 95_000, finishedAt: null,
+            filesDone: 7, filesTotal: 12, bytesPerSec: 38_500_000,
+            startedAt: Date.now() - 95_000, finishedAt: null,
           },
           {
             repoId: "mlx-community/gemma-4-e4b-it-OptiQ-4bit", state: "done",
             currentFile: null, receivedBytes: 6_550_000_000, totalBytes: 6_550_000_000,
             filesDone: 9, filesTotal: 9, startedAt: Date.now() - 600_000, finishedAt: Date.now() - 280_000,
           },
+        ],
+      });
+    if (path === "/library")
+      return Response.json({
+        models: [
+          { repo_id: "mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit", model_type: "gemma4", size_bytes: 17.6e9, quant_bits: 4, vision: true, supported: true, serving: false, assessment: { fits: true, max_safe_context: 21000, predicted_decode_tps: 54 } },
+          { repo_id: "mlx-community/gemma-4-12B-it-OptiQ-4bit", model_type: "gemma4_unified", size_bytes: 8.9e9, quant_bits: 4, vision: true, supported: true, serving: true, assessment: { fits: true, max_safe_context: 65536, predicted_decode_tps: 24 } },
+          { repo_id: "mlx-community/Qwen3.6-27B-OptiQ-4bit", model_type: "qwen3_5", size_bytes: 18.8e9, quant_bits: 4, vision: false, supported: false, serving: false, assessment: null },
+          { repo_id: "mlx-community/gemma-4-e4b-it-OptiQ-4bit", model_type: "gemma4", size_bytes: 6.6e9, quant_bits: 4, vision: true, supported: true, serving: false, assessment: { fits: true, max_safe_context: 131072, predicted_decode_tps: 33 } },
         ],
       });
     if (path === "/v1/models")

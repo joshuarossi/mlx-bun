@@ -13,9 +13,147 @@ import { Registry } from "./registry";
 import { loadModelConfig } from "./config";
 import { fit, skuMatrix, thisMachine } from "./fit";
 import { EvalDB } from "./evaldb";
+import pkg from "../package.json" with { type: "json" };
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
+
+const OVERVIEW = `mlx-bun ${pkg.version} — local AI on Apple silicon. One binary, no Python.
+
+Usage: mlx-bun <command> [options]
+
+Commands:
+  pi         Launch a pi coding-agent session on a local model (the appliance path)
+  serve      Start the OpenAI/Anthropic-compatible server + status page
+  get        Download a model from Hugging Face (resumable, verified)
+  ls         List downloaded models
+  fit        Will a model fit this machine? Memory + speed assessment
+  scan       Re-index the Hugging Face cache
+  harness    Configure external agent harnesses (pi) to use the local server
+  evals      Show recent benchmark runs
+  help       Show help for a command (also: mlx-bun <command> --help)
+
+Options:
+  -h, --help     Show help
+  -v, --version  Show version
+
+Examples:
+  mlx-bun pi                       # start (download if needed) and chat with an agent
+  mlx-bun serve 12B                # serve the 12B; status page at http://localhost:8090/
+  mlx-bun get mlx-community/gemma-4-12B-it-OptiQ-4bit`;
+
+const HELP: Record<string, string> = {
+  pi: `mlx-bun pi — drop into a pi coding-agent session on a local model
+
+Usage: mlx-bun pi [options] [pi arguments...]
+
+Reuses a healthy local server when one is running; otherwise picks the
+largest supported model that fits this machine (downloading the
+recommended model on a fresh install) and starts a server for the
+session. The server it starts ends with the session.
+
+Options (consumed by mlx-bun):
+  --query <q>          Model to serve when starting a server (registry query)
+  --port <n>           Server port to probe/start  [default: 8090]
+  --memory-budget <GB> Memory budget for a started server (admission control)
+
+All other arguments pass through to pi (user flags override ours):
+  -p, --print <msg>    One-shot non-interactive run (ephemeral server)
+  --mode json|rpc      Structured output / RPC mode (ephemeral server)
+  -c, --continue       Continue the previous pi session
+  @file message...     Files and initial messages
+
+Requires pi: bun add -g @earendil-works/pi-coding-agent`,
+
+  serve: `mlx-bun serve — OpenAI/Anthropic-compatible server for a local model
+
+Usage: mlx-bun serve <query> [options]
+
+  <query>              Registry query (e.g. "12B", "e4b", a repo substring)
+
+Options:
+  --port <n>           Listen port  [default: 8090]
+  --memory-budget <GB> Enable admission control at this budget
+
+Endpoints: /v1/chat/completions, /v1/messages, /v1/responses, /v1/models,
+/v1/adapters, /stats, /fit, /library, /downloads — status page at /`,
+
+  get: `mlx-bun get — download a model from Hugging Face
+
+Usage: mlx-bun get <org/repo> [options]
+
+Options:
+  --revision <rev>     Git revision  [default: main]
+
+Resumable (Range requests against partial blobs) and verified (sha256
+for LFS blobs). Re-running after an interruption continues where it
+stopped. Uses HF_TOKEN / hf auth login credentials when present.`,
+
+  ls: `mlx-bun ls — list downloaded models
+
+Usage: mlx-bun ls [query] [options]
+
+Options:
+  --vision             Only models with a vision sidecar
+  --max-size <size>    Filter by weight size (e.g. 10GB, 800MB)`,
+
+  fit: `mlx-bun fit — will this model fit on this machine?
+
+Usage: mlx-bun fit <query> [options]
+
+Options:
+  --ctx <tokens>       Context size to assess  [default: 32768]
+  --skus               Also print the Apple silicon SKU matrix
+
+Solves weights + KV growth + prefill transient against wired memory and
+predicts decode speed from memory bandwidth.`,
+
+  scan: `mlx-bun scan — re-index the Hugging Face cache
+
+Usage: mlx-bun scan
+
+Reads config.json + safetensors headers (never tensor bytes) for every
+snapshot in ~/.cache/huggingface/hub and refreshes the model registry.`,
+
+  harness: `mlx-bun harness — wire external agent harnesses to the local server
+
+Usage: mlx-bun harness pi [options]
+
+Options:
+  --base-url <url>     Server base URL  [default: http://localhost:8090/v1]
+  --remove             Remove the registration
+
+Installs a discovery extension into ~/.pi/agent/extensions that
+registers the local server as a pi provider (models discovered live
+from /v1/models). Reversible; never touches existing pi config.`,
+
+  evals: `mlx-bun evals — recent benchmark runs
+
+Usage: mlx-bun evals
+
+Prints the eval database: decode tok/s, peak memory, commit, notes.`,
+};
+
+function printHelp(topic?: string): never {
+  if (topic && HELP[topic]) console.log(HELP[topic]);
+  else if (topic) {
+    console.error(`unknown command: ${topic}\n`);
+    console.log(OVERVIEW);
+    process.exit(1);
+  } else console.log(OVERVIEW);
+  process.exit(0);
+}
+
+if (!cmd || cmd === "--help" || cmd === "-h") printHelp();
+if (cmd === "--version" || cmd === "-v" || cmd === "version") {
+  console.log(`mlx-bun ${pkg.version}`);
+  process.exit(0);
+}
+if (cmd === "help") printHelp(argv[1]);
+// Per-command --help/-h — except `pi`, whose extra args pass through
+// (use `mlx-bun help pi` for our help, `pi --help` for pi's).
+if (cmd !== "pi" && (argv.includes("--help") || argv.includes("-h"))) printHelp(cmd);
+if (cmd === "pi" && (argv[1] === "--help" || argv[1] === "-h") && argv.length === 2) printHelp("pi");
 
 const flag = (name: string): boolean => argv.includes(`--${name}`);
 const opt = (name: string, dflt: string | null = null): string | null => {
@@ -294,6 +432,5 @@ switch (cmd) {
   }
 
   default:
-    console.log("usage: mlx-bun <get|scan|ls|fit|serve|evals|harness> [...]");
-    process.exit(cmd ? 1 : 0);
+    printHelp(cmd);
 }

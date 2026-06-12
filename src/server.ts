@@ -398,6 +398,9 @@ export function createServer(
     );
   if (serverOptions.memoryBudgetBytes) setMemoryLimit(serverOptions.memoryBudgetBytes);
 
+  // /library response cache (30 s) — registry + config reads only.
+  let libraryCache: { at: number; rows: unknown[] } | null = null;
+
   // KV-quant scheme, resolved once: kv_config.json by default (optiq
   // serve's headline behavior), overridable to uniform bits or off.
   const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart"> =
@@ -438,6 +441,40 @@ export function createServer(
         return new Response(STATUS_PAGE, {
           headers: { "content-type": "text/html; charset=utf-8" },
         });
+      }
+
+      if (url.pathname === "/library" && request.method === "GET") {
+        // Everything on disk, each with a fit assessment for THIS machine
+        // (30 s cache — registry scan + config reads, no tensor bytes).
+        if (!libraryCache || Date.now() - libraryCache.at > 30_000) {
+          const { Registry } = await import("./registry");
+          const { loadModelConfig } = await import("./config");
+          const reg = new Registry();
+          if (reg.list().length === 0) await reg.scan();
+          const rows = [];
+          for (const m of reg.list()) {
+            const supported = m.modelType.startsWith("gemma4");
+            let assessment = null;
+            try {
+              const config = await loadModelConfig(m.path);
+              const r = fit(config, m.sizeBytes, 8192, undefined, undefined, m.expertsBytes);
+              assessment = {
+                fits: r.fits,
+                max_safe_context: r.maxSafeContext,
+                predicted_decode_tps: r.predictedDecodeTps,
+              };
+            } catch {}
+            rows.push({
+              repo_id: m.repoId, model_type: m.modelType,
+              size_bytes: m.sizeBytes, quant_bits: m.quantBits,
+              vision: m.hasVisionSidecar, supported,
+              serving: m.repoId === ctx.modelId,
+              assessment,
+            });
+          }
+          libraryCache = { at: Date.now(), rows };
+        }
+        return Response.json({ models: libraryCache.rows });
       }
 
       if (url.pathname === "/downloads" && request.method === "GET") {
