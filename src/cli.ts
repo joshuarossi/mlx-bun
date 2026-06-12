@@ -165,6 +165,24 @@ const positional = (n: number): string | undefined =>
 
 const gb = (bytes: number) => `${(bytes / 2 ** 30).toFixed(2)} GB`;
 
+/** First-run: fetch the MLX native runtime pack if no copy is resolvable
+ *  (env / beside the binary / cache / homebrew). ~52 MB, resumable,
+ *  sha256-verified. Must run BEFORE importing anything that dlopens
+ *  (./server, ./generate — they load libmlxc at module scope). */
+async function ensureNative(): Promise<void> {
+  const { nativeRuntimeDir, ensureNativeRuntime, NATIVE_PACK_VERSION } = await import("./native-pack");
+  if (nativeRuntimeDir()) return;
+  console.log(`first run: downloading the MLX native runtime (v${NATIVE_PACK_VERSION}, ~52 MB) ...`);
+  const dir = await ensureNativeRuntime({
+    onProgress: (received, total) => {
+      const pct = total ? Math.floor((received / total) * 100) : 0;
+      process.stdout.write(`\r  native runtime  ${gb(received)} / ${gb(total)} (${pct}%)   `);
+    },
+  });
+  process.stdout.write("\n");
+  console.log(`native runtime ready: ${dir}`);
+}
+
 function parseSize(s: string): number {
   const m = /^([\d.]+)\s*(GB|MB|G|M)?$/i.exec(s.trim());
   if (!m) throw new Error(`bad size: ${s}`);
@@ -278,6 +296,7 @@ switch (cmd) {
     const reg = new Registry();
     if (reg.list().length === 0) await reg.scan();
     const m = reg.resolve(query);
+    await ensureNative();
     const { createServer, loadContext } = await import("./server");
     const budgetGB = Number(opt("memory-budget", "0"));
     const memoryBudgetBytes = budgetGB > 0 ? budgetGB * 1e9 : undefined;
@@ -375,6 +394,7 @@ switch (cmd) {
         }
         console.log(`auto-picked ${m.repoId} (largest supported model that fits; override with --query)`);
       }
+      await ensureNative();
       const { createServer, loadContext } = await import("./server");
       const budgetGB = Number(opt("memory-budget", "0"));
       const memoryBudgetBytes = budgetGB > 0 ? budgetGB * 1e9 : undefined;

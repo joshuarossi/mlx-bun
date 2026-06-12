@@ -6,3 +6,4 @@ tmp/
 project-review.html
 dist/
 .claude/
+dist-native/
