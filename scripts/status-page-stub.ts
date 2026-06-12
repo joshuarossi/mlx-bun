@@ -28,11 +28,13 @@ Bun.serve({
       return Response.json({
         machine: { chip: "M4 Pro", ram_bytes: 24 * 2 ** 30, bandwidth_gbs: 273 },
         context_tokens: 65536,
+        typical_context_tokens: 8192,
+        typical_decode_tps: 25.3,
         report: {
           fits: true, weights_bytes: 8_400_000_000, kv_bytes: 3_100_000_000,
           transient_bytes: 1_150_000_000, total_bytes: 12_650_000_000,
           usable_bytes: 18_000_000_000, max_safe_context: 65536,
-          predicted_decode_tps: 25.3,
+          predicted_decode_tps: 14.1,
         },
         sku_matrix_ctx: 32768,
         sku_matrix: [

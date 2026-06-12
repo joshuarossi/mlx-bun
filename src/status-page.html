@@ -161,7 +161,7 @@
       <div class="card">
         <h3>Decode · predicted</h3>
         <div class="stat num grad g-green"><span id="tps">—</span><small>tok/s</small></div>
-        <div class="cap">from weights ÷ bandwidth on this machine</div>
+        <div class="cap" id="tps-cap">from weights ÷ bandwidth on this machine</div>
       </div>
 
       <div class="card">
@@ -430,7 +430,12 @@
     const f = await fetch("/fit").then((r) => r.json());
     fitLoaded = true;
     const r = f.report ?? {};
-    $("tps").textContent = (r.predicted_decode_tps ?? 0).toFixed(1);
+    $("tps").textContent = (f.typical_decode_tps ?? r.predicted_decode_tps ?? 0).toFixed(1);
+    if (f.typical_decode_tps) {
+      $("tps-cap").textContent = "at " + num(f.typical_context_tokens) +
+        " context · " + (r.predicted_decode_tps ?? 0).toFixed(1) + " tok/s at the " +
+        num(f.context_tokens) + " max (full-KV reads)";
+    }
     $("m-ram").textContent = gb(f.machine?.ram_bytes);
     $("m-bw").textContent = (f.machine?.bandwidth_gbs ?? "—") + " GB/s";
     $("m-fits").innerHTML = r.fits

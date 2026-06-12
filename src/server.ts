@@ -505,6 +505,15 @@ export function createServer(
         return Response.json({
           machine: { chip: chip.name, ram_bytes: machine.ramBytes, bandwidth_gbs: machine.bandwidthGBs },
           context_tokens: admission.maxSafeContext,
+          // Headline number: prediction at a TYPICAL context (8k) — the
+          // max-context report below is the bandwidth worst case (every
+          // decode step re-reads the full KV), not the everyday speed.
+          typical_context_tokens: Math.min(8192, admission.maxSafeContext),
+          typical_decode_tps: fit(
+            ctx.model.config, ctx.model.weightsBytes,
+            Math.min(8192, admission.maxSafeContext),
+            machine, undefined, 0, serverOptions.memoryBudgetBytes,
+          ).predictedDecodeTps,
           report: {
             fits: report.fits,
             weights_bytes: report.weightsBytes,
