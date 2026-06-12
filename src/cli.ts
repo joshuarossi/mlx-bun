@@ -7,6 +7,7 @@
 //   mlx-bun fit <query> [--ctx 32768] [--skus]
 //   mlx-bun serve <query> [--port 8090] [--memory-budget GB]
 //   mlx-bun evals                         recent benchmark runs
+//   mlx-bun harness pi [--base-url <url>] [--remove]   register as a pi provider
 
 import { Registry } from "./registry";
 import { loadModelConfig } from "./config";
@@ -167,7 +168,40 @@ switch (cmd) {
     break;
   }
 
+  case "harness": {
+    const target = positional(0);
+    if (target !== "pi") {
+      console.error("usage: mlx-bun harness pi [--base-url <url>] [--remove]");
+      process.exit(1);
+    }
+    const { detectPi, installPiExtension, removePiExtension, DEFAULT_BASE_URL } =
+      await import("./harness-pi");
+    if (flag("remove")) {
+      console.log(removePiExtension() ? "mlx-bun provider extension removed" : "nothing to remove");
+      break;
+    }
+    const pi = detectPi();
+    if (!pi.found) {
+      console.error("pi not found on PATH. Install it first:");
+      console.error("  bun add -g @earendil-works/pi-coding-agent");
+      console.error("then re-run: mlx-bun harness pi");
+      process.exit(1);
+    }
+    console.log(`pi: ${pi.binPath}${pi.version ? ` (v${pi.version})` : ""}`);
+    const baseUrl = opt("base-url", DEFAULT_BASE_URL)!;
+    const result = await installPiExtension(baseUrl);
+    console.log(`provider extension: ${result.path}`);
+    if (result.serverReachable) {
+      console.log(`server: ${baseUrl} — models: ${result.bakedModels.join(", ")}`);
+    } else {
+      console.log(`server: ${baseUrl} not reachable — models will be discovered when pi`);
+      console.log("starts against a running server (start one with: mlx-bun serve <model>)");
+    }
+    console.log("launch: pi --provider mlx-bun");
+    break;
+  }
+
   default:
-    console.log("usage: mlx-bun <get|scan|ls|fit|serve|evals> [...]");
+    console.log("usage: mlx-bun <get|scan|ls|fit|serve|evals|harness> [...]");
     process.exit(cmd ? 1 : 0);
 }
