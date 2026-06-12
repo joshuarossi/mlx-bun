@@ -64,6 +64,9 @@ export interface ServerOptions {
    *  it). Exposed at /stats.server so other mlx-bun processes can
    *  warn before attaching to a server that may vanish. */
   owner?: "serve" | "pi-session" | "embedded";
+  /** Interface to bind (Bun.serve hostname). Default: Bun's default
+   *  (all interfaces); pass "127.0.0.1" for loopback-only. */
+  hostname?: string;
 }
 
 export interface ServerContext {
@@ -438,6 +441,7 @@ export function createServer(
 
   return Bun.serve({
     port,
+    ...(serverOptions.hostname ? { hostname: serverOptions.hostname } : {}),
     idleTimeout: 0,
     async fetch(request) {
       const url = new URL(request.url);
