@@ -275,6 +275,21 @@
         local model, local tools, zero cloud.</p>
       </div>
     </div>
+    <div class="grid" style="grid-template-columns:1fr;margin-top:26px">
+      <div class="card tablecard">
+        <table>
+          <thead><tr><th>Command</th><th style="text-align:left">What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>mlx-bun pi</code></td><td style="text-align:left">Agent session on a local model — picks/downloads the right model, serves, drops into pi. Flags: <code>--query</code>, <code>--port</code>; everything else passes to pi (<code>-p</code>, <code>--continue</code>, <code>@file</code>…)</td></tr>
+            <tr><td><code>mlx-bun serve &lt;query&gt;</code></td><td style="text-align:left">Persistent server + this page. <code>--port 8090</code>, <code>--memory-budget GB</code></td></tr>
+            <tr><td><code>mlx-bun get &lt;org/repo&gt;</code></td><td style="text-align:left">Resumable, sha256-verified model download</td></tr>
+            <tr><td><code>mlx-bun ls</code> / <code>fit</code></td><td style="text-align:left">List downloaded models / will-it-fit assessment (<code>--ctx</code>, <code>--skus</code>)</td></tr>
+            <tr><td><code>mlx-bun harness pi</code></td><td style="text-align:left">Register this server as a provider in your own pi install (<code>--remove</code> undoes)</td></tr>
+            <tr><td><code>mlx-bun help &lt;cmd&gt;</code></td><td style="text-align:left">Full options for any command (also <code>--help</code> anywhere)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
     <div class="endpoints">
       <span class="ep"><b>POST /v1/chat/completions</b> · OpenAI</span>
       <span class="ep"><b>POST /v1/messages</b> · Anthropic</span>

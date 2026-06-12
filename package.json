@@ -4,8 +4,13 @@
   "type": "module",
   "license": "MIT",
   "private": true,
+  "bin": {
+    "mlx-bun": "src/cli.ts"
+  },
   "scripts": {
-    "test": "bash scripts/test.sh"
+    "test": "bash scripts/test.sh",
+    "link-cli": "chmod +x src/cli.ts && ln -sf $PWD/src/cli.ts $HOME/.bun/bin/mlx-bun && mlx-bun --version",
+    "build:binary": "sh scripts/build-binary.sh"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.104.1",
