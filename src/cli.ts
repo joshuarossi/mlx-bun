@@ -5,7 +5,7 @@
 //   mlx-bun scan                          index the HF cache
 //   mlx-bun ls [--vision] [--max-size 10GB] [query]
 //   mlx-bun fit <query> [--ctx 32768] [--skus]
-//   mlx-bun serve <query> [--port 8090] [--memory-budget GB]
+//   mlx-bun serve [query] [--port 8090] [--memory-budget GB]
 //   mlx-bun evals                         recent benchmark runs
 //   mlx-bun harness pi [--base-url <url>] [--remove]   register as a pi provider
 
@@ -67,9 +67,12 @@ Requires pi: bun add -g @earendil-works/pi-coding-agent`,
 
   serve: `mlx-bun serve — OpenAI/Anthropic-compatible server for a local model
 
-Usage: mlx-bun serve <query> [options]
+Usage: mlx-bun serve [query] [options]
 
-  <query>              Registry query (e.g. "12B", "e4b", a repo substring)
+  [query]              Registry query (e.g. "12B", "e4b", a repo substring).
+                       Omitted: auto-picks the largest supported model that
+                       fits this machine (downloads the recommended model on
+                       a fresh install).
 
 Options:
   --port <n>           Listen port  [default: 8090]
@@ -169,18 +172,52 @@ const gb = (bytes: number) => `${(bytes / 2 ** 30).toFixed(2)} GB`;
  *  (env / beside the binary / cache / homebrew). ~52 MB, resumable,
  *  sha256-verified. Must run BEFORE importing anything that dlopens
  *  (./server, ./generate — they load libmlxc at module scope). */
-async function ensureNative(): Promise<void> {
+async function ensureNative(s?: import("./tui").Step): Promise<void> {
   const { nativeRuntimeDir, ensureNativeRuntime, NATIVE_PACK_VERSION } = await import("./native-pack");
   if (nativeRuntimeDir()) return;
-  console.log(`first run: downloading the MLX native runtime (v${NATIVE_PACK_VERSION}, ~52 MB) ...`);
-  const dir = await ensureNativeRuntime({
+  s?.update(`downloading the MLX native runtime (v${NATIVE_PACK_VERSION}, ~52 MB)`);
+  await ensureNativeRuntime({
     onProgress: (received, total) => {
       const pct = total ? Math.floor((received / total) * 100) : 0;
-      process.stdout.write(`\r  native runtime  ${gb(received)} / ${gb(total)} (${pct}%)   `);
+      const line = `MLX native runtime  ${gb(received)} / ${gb(total)} (${pct}%)`;
+      if (s) s.update(line); else process.stdout.write(`\r  ${line}   `);
     },
   });
-  process.stdout.write("\n");
-  console.log(`native runtime ready: ${dir}`);
+  if (!s) process.stdout.write("\n");
+}
+
+/** Shared model resolution: explicit query wins; otherwise the largest
+ *  supported (gemma4) model that fits this machine, downloading the
+ *  recommended model first on a fresh install. */
+async function resolveModelAuto(query: string | null): Promise<{ m: import("./registry").ModelRecord; picked: boolean }> {
+  const reg = new Registry();
+  if (reg.list().length === 0) await reg.scan();
+  if (query) return { m: reg.resolve(query), picked: false };
+  const { recommendedRepoId } = await import("./fit");
+  let candidates = reg.list().filter((r) => r.modelType.startsWith("gemma4"));
+  if (candidates.length === 0) {
+    const repoId = recommendedRepoId();
+    const { step } = await import("./tui");
+    const s = step(`downloading ${repoId} (recommended for this Mac)`);
+    const { downloadModel } = await import("./download");
+    await downloadModel(repoId, {
+      onProgress: (file, received, total) => {
+        const pct = total ? Math.floor((received / total) * 100) : 0;
+        s.update(`downloading ${repoId} — ${file} ${gb(received)} / ${gb(total)} (${pct}%)`);
+      },
+    });
+    s.done(`downloaded ${repoId}`);
+    await reg.scan();
+    candidates = reg.list().filter((r) => r.modelType.startsWith("gemma4"));
+  }
+  candidates.sort((a, b) => b.sizeBytes - a.sizeBytes);
+  for (const r of candidates) {
+    const config = await loadModelConfig(r.path);
+    if (fit(config, r.sizeBytes, 8192, undefined, undefined, r.expertsBytes).fits)
+      return { m: r, picked: true };
+  }
+  console.error("no downloaded gemma4 model fits this machine — pick one explicitly (mlx-bun ls)");
+  process.exit(1);
 }
 
 function parseSize(s: string): number {
@@ -288,11 +325,8 @@ switch (cmd) {
   }
 
   case "serve": {
-    const query = positional(0);
-    if (!query) {
-      console.error("usage: mlx-bun serve <query> [--port 8090] [--memory-budget GB]");
-      process.exit(1);
-    }
+    const { banner, step, box, style } = await import("./tui");
+    banner(pkg.version);
     // Friendly collision check before loading gigabytes of weights.
     const servePort = Number(opt("port", "8090"));
     {
@@ -305,23 +339,32 @@ switch (cmd) {
         process.exit(1);
       }
     }
-    const reg = new Registry();
-    if (reg.list().length === 0) await reg.scan();
-    const m = reg.resolve(query);
-    await ensureNative();
+    const { m, picked } = await resolveModelAuto(positional(0) ?? opt("query"));
+    const sFit = step("assessing fit");
+    const config = await loadModelConfig(m.path);
+    const report = fit(config, m.sizeBytes, 8192, undefined, undefined, m.expertsBytes);
+    sFit.done(`${style.bold(m.repoId)} ${style.dim(`· ${gb(m.sizeBytes)} · ~${report.predictedDecodeTps.toFixed(0)} tok/s predicted`)}${picked ? style.dim(" · auto-picked (override: mlx-bun serve <query>)") : ""}`);
+    const sNative = step("native runtime");
+    await ensureNative(sNative);
+    sNative.done("native runtime ready");
     const { createServer, loadContext } = await import("./server");
     const budgetGB = Number(opt("memory-budget", "0"));
     const memoryBudgetBytes = budgetGB > 0 ? budgetGB * 1e9 : undefined;
-    console.log(`loading ${m.repoId} ...`);
+    const sLoad = step("loading weights");
     const t0 = performance.now();
     const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes });
     const server = createServer(ctx, servePort, { memoryBudgetBytes, owner: "serve" });
-    if (memoryBudgetBytes)
-      console.log(`memory budget: ${budgetGB} GB (admission control on)`);
-    console.log(
-      `serving ${m.repoId} at http://localhost:${server.port}/v1 ` +
-      `(ready in ${(performance.now() - t0).toFixed(0)} ms)`,
-    );
+    sLoad.done(`weights loaded ${style.dim(`in ${(performance.now() - t0).toFixed(0)} ms`)}`);
+    console.log();
+    box([
+      `${style.green("●")} ${style.bold("serving")} ${m.repoId}`,
+      "",
+      `API   ${style.url(`http://localhost:${server.port}/v1`)}  ${style.dim("(OpenAI · Anthropic · Responses)")}`,
+      `Web   ${style.url(`http://localhost:${server.port}/`)}  ${style.dim("(status · fit · library)")}`,
+      ...(memoryBudgetBytes ? [`Mem   ${budgetGB} GB budget ${style.dim("(admission control on)")}`] : []),
+      "",
+      style.dim("agent session:  mlx-bun pi        stop:  Ctrl+C"),
+    ]);
     break;
   }
 
@@ -371,59 +414,23 @@ switch (cmd) {
         }
       } catch {}
     } else {
-      const reg = new Registry();
-      if (reg.list().length === 0) await reg.scan();
-      const query = opt("query");
-      let m;
-      if (query) {
-        m = reg.resolve(query);
-      } else {
-        // Auto-pick: the largest supported model that fits this machine
-        // (Gemma 4 is the only ported family; Qwen lands in Phase 14).
-        const { fit, recommendedRepoId } = await import("./fit");
-        let candidates = reg.list().filter((r) => r.modelType.startsWith("gemma4"));
-        if (candidates.length === 0) {
-          // First-run path: nothing supported on disk — download the
-          // recommended model for this machine (resumable + verified).
-          const repoId = recommendedRepoId();
-          console.log(`no supported model downloaded — getting ${repoId} (recommended for this Mac)`);
-          const { downloadModel } = await import("./download");
-          let lastFile = "";
-          await downloadModel(repoId, {
-            onProgress: (file, received, total) => {
-              const pct = total ? Math.floor((received / total) * 100) : 0;
-              if (file !== lastFile) {
-                if (lastFile) process.stdout.write("\n");
-                lastFile = file;
-              }
-              process.stdout.write(`\r  ${file}  ${gb(received)} / ${gb(total)} (${pct}%)   `);
-            },
-          });
-          if (lastFile) process.stdout.write("\n");
-          await reg.scan();
-          candidates = reg.list().filter((r) => r.modelType.startsWith("gemma4"));
-        }
-        candidates.sort((a, b) => b.sizeBytes - a.sizeBytes);
-        for (const r of candidates) {
-          const config = await loadModelConfig(r.path);
-          if (fit(config, r.sizeBytes, 8192, undefined, undefined, r.expertsBytes).fits) { m = r; break; }
-        }
-        if (!m) {
-          console.error("no downloaded gemma4 model fits this machine — pick one explicitly with --query");
-          process.exit(1);
-        }
-        console.log(`auto-picked ${m.repoId} (largest supported model that fits; override with --query)`);
-      }
-      await ensureNative();
+      const { banner, step, style } = await import("./tui");
+      banner(pkg.version);
+      const { m, picked } = await resolveModelAuto(opt("query"));
+      if (picked)
+        console.log(`  ${style.dim(`auto-picked ${m.repoId} (largest supported model that fits; override with --query)`)}`);
+      const sNative = step("native runtime");
+      await ensureNative(sNative);
+      sNative.done("native runtime ready");
       const { createServer, loadContext } = await import("./server");
       const budgetGB = Number(opt("memory-budget", "0"));
       const memoryBudgetBytes = budgetGB > 0 ? budgetGB * 1e9 : undefined;
-      console.log(`loading ${m.repoId} ...`);
+      const sLoad = step(`loading ${m.repoId}`);
       const t0 = performance.now();
       const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes });
       createServer(ctx, port, { memoryBudgetBytes, owner: "pi-session" });
       startedServer = true;
-      console.log(`serving ${m.repoId} at ${baseUrl} (ready in ${(performance.now() - t0).toFixed(0)} ms)`);
+      sLoad.done(`serving ${style.bold(m.repoId)} ${style.dim(`at ${baseUrl} · ready in ${(performance.now() - t0).toFixed(0)} ms`)}`);
       models = await probeServer(baseUrl);
       if (!models) { console.error("server started but /v1/models probe failed"); process.exit(1); }
     }
