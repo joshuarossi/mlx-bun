@@ -31,7 +31,8 @@ Commands:
   fit        Will a model fit this machine? Memory + speed assessment
   scan       Re-index the Hugging Face cache
   harness    Configure external agent harnesses (pi) to use the local server
-  evals      Show recent benchmark runs
+  benchmark  Measure decode/prefill speed of OUR stack on this machine
+  evals      Show recent benchmark runs (all stacks)
   help       Show help for a command (also: mlx-bun <command> --help)
 
 Options:
@@ -151,6 +152,27 @@ Installs a discovery extension into ~/.pi/agent/extensions that
 registers the local server as a pi provider (models discovered live
 from /v1/models). Reversible; never touches existing pi config.`,
 
+  benchmark: `mlx-bun benchmark — measure OUR stack on this machine
+
+Usage: mlx-bun benchmark [query] [options]
+
+Runs mlx-bun by itself (no other systems required) and records the
+result to the eval DB. For quotable, cross-stack numbers use
+./benchmark.sh from the repo — it preflight-gates on an idle machine
+and runs the mlx-lm/optiq comparison legs.
+
+  [query]              Model to benchmark  [default: auto-pick]
+
+Options:
+  --tokens <n>         Tokens to decode per run  [default: 256]
+  --runs <n>           Runs (median reported)  [default: 3]
+  --prompt-tokens <n>  Pad the prompt to ~n tokens (long-context decode)
+  --kv-quant <mode>    config | off | 4 | 8  [default: off, the
+                       historical baseline]
+
+Performance levers (--compiled-decode, --perf-kernel, --fused-decode,
+--fused-sdpa) apply to the run — A/B by running twice.`,
+
   evals: `mlx-bun evals — recent benchmark runs
 
 Usage: mlx-bun evals [options]
@@ -162,6 +184,8 @@ Options:
 Table view: when, model, bench kind, KV mode, decode tok/s, TTFT,
 peak memory, commit. Runs are written by ./benchmark.sh.`,
 };
+
+HELP.bench = HELP.benchmark!;
 
 function printHelp(topic?: string): never {
   if (topic && HELP[topic]) console.log(renderHelp(HELP[topic]));
@@ -471,6 +495,106 @@ switch (cmd) {
     break;
   }
 
+  case "bench":
+  case "benchmark": {
+    const { banner, step, box, style } = await import("./tui");
+    banner(pkg.version);
+    serverRuntimeFlags(); // env levers (--compiled-decode, --perf-kernel, ...) apply to the run
+    const { m, picked } = await resolveModelAuto(positional(0) ?? opt("query"));
+    const tokens = Number(opt("tokens", "256"));
+    const runs = Number(opt("runs", "3"));
+    const promptTokens = Number(opt("prompt-tokens", "0"));
+    const kvMode = opt("kv-quant", "off")!;
+    console.log(`  ${style.dim("measures THIS machine, OUR stack only — no other systems needed.")}`);
+    console.log(`  ${style.dim("numbers on a loaded machine are not quotable; ./benchmark.sh is the preflight-gated harness.")}`);
+    const sNative = step("native runtime");
+    await ensureNative(sNative);
+    sNative.done("native runtime ready");
+    const sLoad = step(`loading ${m.repoId}${picked ? " (auto-picked)" : ""}`);
+    const { Weights } = await import("./weights");
+    const { createModel } = await import("./model/factory");
+    const { generate } = await import("./generate");
+    const { ChatTemplate } = await import("./chat-template");
+    const { loadTokenizer } = await import("./tokenizer");
+    const { peakMemory, resetPeakMemory } = await import("./mlx/ffi");
+    const config = await loadModelConfig(m.path);
+    const weights = await Weights.open(m.path);
+    const model = createModel(weights, config);
+    const tok = await loadTokenizer(m.path);
+    const template = await ChatTemplate.load(m.path);
+    sLoad.done(`${style.bold(m.repoId)} ${style.dim(`· ${gb(m.sizeBytes)}`)}`);
+
+    let userMsg = "Write a detailed essay about the history of computing, starting with mechanical calculators.";
+    if (promptTokens > 0) {
+      const filler = "Background context: the history of computation spans mechanical " +
+        "calculators, electromechanical relays, vacuum tubes, transistors, " +
+        "integrated circuits, and modern accelerators. ";
+      while (tok.encode(userMsg).length < promptTokens - 24) userMsg = filler + userMsg;
+    }
+    const rendered = template.render([{ role: "user", content: userMsg }]);
+    const ids = tok.encode(rendered);
+    const promptIds = ids[0] === ids[1] && ids[0] === tok.bosTokenId ? ids.slice(1) : ids;
+    const kvOptions = kvMode === "config"
+      ? (() => {
+          if (!config.kvQuant?.length) { console.error("model has no kv_config.json (--kv-quant config)"); process.exit(1); }
+          return { kvConfig: config.kvQuant };
+        })()
+      : kvMode !== "off" ? { kvBits: Number(kvMode), quantizedKvStart: 0 } : {};
+
+    // Warmup materializes weights so prefill timing measures prefill,
+    // not lazy page-in (same protocol as scripts/bench.ts).
+    const sWarm = step("warmup");
+    {
+      const wCache = model.makeCache();
+      const wGen = generate(model, promptIds.slice(0, Math.min(8, promptIds.length - 1)), {
+        maxTokens: 1, temperature: 0, cache: wCache,
+      });
+      for await (const _ of wGen) { /* discard */ }
+      for (const c of wCache) c.dispose();
+    }
+    resetPeakMemory();
+    sWarm.done("warmup complete");
+
+    const decodes: number[] = [];
+    const prefills: number[] = [];
+    let lastStats: { promptTokens: number; generatedTokens: number } = { promptTokens: 0, generatedTokens: 0 };
+    for (let i = 0; i < runs; i++) {
+      const sRun = step(`run ${i + 1}/${runs} · ${tokens} tokens`);
+      const gen = generate(model, promptIds, { maxTokens: tokens, temperature: 0, ...kvOptions });
+      for await (const _ of gen) { /* timing only */ }
+      const s = gen.stats!;
+      decodes.push(s.decodeTps);
+      prefills.push(s.prefillTps);
+      lastStats = s;
+      sRun.done(`run ${i + 1}/${runs} ${style.dim("·")} ${style.green(style.bold(`${s.decodeTps.toFixed(1)} tok/s`))} ${style.dim(`decode · prefill ${s.prefillTps.toFixed(0)} tok/s`)}`);
+    }
+    const median = (a: number[]) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)]!;
+    const peak = peakMemory();
+
+    const { EvalDB: DB, gitCommit } = await import("./evaldb");
+    new DB().record({
+      modelPath: m.path,
+      commitSha: gitCommit() ?? undefined,
+      promptTokens: lastStats.promptTokens, cachedTokens: 0,
+      generatedTokens: lastStats.generatedTokens,
+      prefillTps: median(prefills), decodeTps: median(decodes),
+      peakBytes: peak,
+      notes: `cli-bench median-of-${runs} ${tokens}tok kv=${kvMode}${promptTokens ? ` ctx=${lastStats.promptTokens}` : ""} decode[${decodes.map((d) => d.toFixed(1)).join(",")}]`,
+    });
+    console.log();
+    box([
+      `${style.green("●")} ${style.bold("benchmark complete")} ${style.dim(`· ${m.repoId}`)}`,
+      "",
+      `decode    ${style.green(style.bold(`${median(decodes).toFixed(1)} tok/s`))} ${style.dim(`median of ${runs} · [${decodes.map((d) => d.toFixed(1)).join(", ")}]`)}`,
+      `prefill   ${style.bold(`${median(prefills).toFixed(0)} tok/s`)} ${style.dim(`· ${lastStats.promptTokens} prompt tokens`)}`,
+      `peak mem  ${style.bold(gb(peak))} ${style.dim("(generation only)")}`,
+      `levers    ${style.dim(runtimeSummary({ kvQuant: kvMode === "off" ? "off" : kvMode === "config" ? undefined : Number(kvMode) }))}`,
+      "",
+      style.dim("recorded to the eval DB — see mlx-bun evals"),
+    ]);
+    break;
+  }
+
   case "evals": {
     const db = new EvalDB();
     const limit = Number(opt("limit", "20"));
@@ -500,6 +624,7 @@ switch (cmd) {
       model: modelName(r.model_path as string).replace(/-OptiQ-4bit$/, "").replace(/^gemma-4-/, "g4-"),
       bench: ((r.notes as string) ?? "").split(" ")[0] ?? "",
       kv: note(r, "kv"),
+      stack: (r.stack as string) ?? "mlx-bun",
       decode: (r.decode_tps as number).toFixed(1),
       ttft: note(r, "ttft_ms") ? `${note(r, "ttft_ms")}ms` : "",
       peak: gb(r.peak_bytes as number),
@@ -507,9 +632,9 @@ switch (cmd) {
     }));
     type Row = (typeof table)[number];
     const cols: Array<[string, keyof Row, "left" | "right"]> = [
-      ["WHEN", "when", "right"], ["MODEL", "model", "left"], ["BENCH", "bench", "left"],
-      ["KV", "kv", "left"], ["TOK/S", "decode", "right"], ["TTFT", "ttft", "right"],
-      ["PEAK", "peak", "right"], ["COMMIT", "commit", "left"],
+      ["WHEN", "when", "right"], ["STACK", "stack", "left"], ["MODEL", "model", "left"],
+      ["BENCH", "bench", "left"], ["KV", "kv", "left"], ["TOK/S", "decode", "right"],
+      ["TTFT", "ttft", "right"], ["PEAK", "peak", "right"], ["COMMIT", "commit", "left"],
     ];
     const widths = cols.map(([h, k]) => Math.max(h.length, ...table.map((t) => t[k].length)));
     console.log();
@@ -519,6 +644,7 @@ switch (cmd) {
         const cell = align === "right" ? t[k].padStart(widths[i]!) : t[k].padEnd(widths[i]!);
         if (k === "decode") return style.green(style.bold(cell));
         if (k === "model") return style.bold(cell);
+        if (k === "stack") return cell.trimEnd() === "mlx-bun" ? style.accent(cell) : style.dim(cell);
         if (k === "commit" || k === "when") return style.dim(cell);
         return cell;
       }).join("  "));
@@ -558,6 +684,14 @@ switch (cmd) {
     let startedServer = false;
     if (models) {
       console.log(`reusing running server at ${baseUrl} (${models.map((m) => m.id).join(", ")})`);
+      // Server-shaping flags can't apply to a server we didn't start —
+      // drop them loudly rather than silently or fatally.
+      const ignored = [...OURS_VAL, ...OURS_BOOL].filter((f) => f !== "--port" && argv.includes(f));
+      if (ignored.length > 0) {
+        const { style } = await import("./tui");
+        console.log(style.dim(`  ignoring ${ignored.join(", ")} — the running server keeps its own configuration`));
+        console.log(style.dim("  (stop it or use --port <other> to start a fresh server with these flags)"));
+      }
       try {
         const stats = await (await fetch(`http://localhost:${port}/stats`)).json() as
           { server?: { owner?: string } };
