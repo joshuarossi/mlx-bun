@@ -59,6 +59,11 @@ export interface ServerOptions {
    *  (mlx_set_memory_limit) as defense in depth. Default: machine RAM ×
    *  WIRED_FRACTION, admission check only, allocator untouched. */
   memoryBudgetBytes?: number;
+  /** Who owns this server's lifetime: "serve" (persistent, mlx-bun
+   *  serve) or "pi-session" (dies with the pi session that started
+   *  it). Exposed at /stats.server so other mlx-bun processes can
+   *  warn before attaching to a server that may vanish. */
+  owner?: "serve" | "pi-session" | "embedded";
 }
 
 export interface ServerContext {
@@ -532,6 +537,10 @@ export function createServer(
         }
         const bf16Layers = layerTypes.length - Object.values(kvLayers).reduce((a, b) => a + b, 0);
         return Response.json({
+          server: {
+            owner: serverOptions.owner ?? "embedded",
+            model: ctx.modelId,
+          },
           prompt_cache: {
             entries: promptCache.size,
             bytes: promptCache.totalBytes,
