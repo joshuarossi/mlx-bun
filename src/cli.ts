@@ -251,16 +251,12 @@ switch (cmd) {
     }
     console.log(`launching pi (model ${models[0]!.id}; Ctrl+P cycles local models, /model to switch)`);
     const code = await launchPi(buildPiInvocation(pi, baseUrl, models, passthrough));
-    // Headless runs (-p/--print, --mode json/rpc) are ephemeral: startup
-    // is fast enough that scripts shouldn't leave a server behind. Only
-    // an interactive session that started the server keeps it serving.
-    const headless = passthrough.some((a) => a === "-p" || a === "--print" || a === "--mode");
-    if (startedServer && code === 0 && !headless) {
-      console.log(`pi exited — still serving at ${baseUrl} (status page at http://localhost:${port}/, Ctrl+C to stop)`);
-    } else {
-      process.exit(code);
-    }
-    break;
+    // The server we started lives exactly as long as the pi session —
+    // exiting pi (clean, Ctrl+C, or headless -p) tears it down. A
+    // standalone server belongs to `mlx-bun serve` (which we reuse and
+    // never stop).
+    if (startedServer) console.log("pi exited — shutting down (use `mlx-bun serve` for a persistent server)");
+    process.exit(code);
   }
 
   case "harness": {

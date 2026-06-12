@@ -61,14 +61,21 @@ export function buildPiInvocation(
   return { argv, cleanupDir };
 }
 
-/** Spawn pi with inherited stdio; returns its exit code. */
+/** Spawn pi with inherited stdio; returns its exit code.
+ *  SIGINT is ignored in the parent while pi runs: Ctrl+C reaches the
+ *  whole foreground process group, and pi treats the first press as
+ *  "clear input" / double-press as exit — the parent (and any server
+ *  it carries) must not die on the first press. */
 export async function launchPi(invocation: PiInvocation): Promise<number> {
+  const ignoreSigint = () => {};
+  process.on("SIGINT", ignoreSigint);
   try {
     const child = Bun.spawn(invocation.argv, {
       stdin: "inherit", stdout: "inherit", stderr: "inherit",
     });
     return await child.exited;
   } finally {
+    process.off("SIGINT", ignoreSigint);
     rmSync(invocation.cleanupDir, { recursive: true, force: true });
   }
 }
