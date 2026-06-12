@@ -619,10 +619,16 @@ switch (cmd) {
       /models--[^/]+--([^/]+)/.exec(p)?.[1] ?? p.split("/").at(-1) ?? p;
     const note = (r: Record<string, unknown>, key: string) =>
       new RegExp(`${key}=([\\w.]+)`).exec((r.notes as string) ?? "")?.[1] ?? "";
+    const BENCH_LABELS: Record<string, string> = {
+      "h2h-server": "server e2e",
+      "h2h-direct": "direct decode",
+      "bench.ts": "decode script",
+      "cli-bench": "cli benchmark",
+    };
     const table = rows.map((r) => ({
       when: ago(r.ts as number),
       model: modelName(r.model_path as string).replace(/-OptiQ-4bit$/, "").replace(/^gemma-4-/, "g4-"),
-      bench: ((r.notes as string) ?? "").split(" ")[0] ?? "",
+      bench: BENCH_LABELS[((r.notes as string) ?? "").split(" ")[0] ?? ""] ?? ((r.notes as string) ?? "").split(" ")[0] ?? "",
       kv: note(r, "kv"),
       stack: (r.stack as string) ?? "mlx-bun",
       decode: (r.decode_tps as number).toFixed(1),
@@ -650,7 +656,13 @@ switch (cmd) {
       }).join("  "));
     }
     console.log();
-    console.log(style.dim(`  ${rows.length} run(s) · --limit <n> for more · --raw for full records`));
+    console.log(style.dim("  STACK   engine that produced the number (mlx-bun = us; mlx-lm/optiq = Python references)"));
+    console.log(style.dim("  BENCH   server e2e = full HTTP round-trip · direct decode = engine only, no server"));
+    console.log(style.dim("          decode script / cli benchmark = single-stack decode measurement"));
+    console.log(style.dim("  KV      KV-cache quantization (off = bf16, config = per-layer kv_config.json)"));
+    console.log(style.dim("  TOK/S   decode speed · TTFT = time to first token (server benches only)"));
+    console.log();
+    console.log(style.dim(`  ${rows.length} run(s) · --limit <n> for more · --raw for full records · mlx-bun benchmark to add a run`));
     break;
   }
 
