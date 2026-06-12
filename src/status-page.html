@@ -5,102 +5,285 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mlx-bun · status</title>
 <style>
-  :root {
-    --bg: #fbfaf7; --fg: #1d1f24; --muted: #6a6f7a; --accent: #b8451c;
-    --card: #ffffff; --line: #e4e1da; --good: #1d7a4f; --bad: #b03a3a; --chip: #f4ede6;
+  /* ————————————————————————————————————————————————
+     mlx-bun · status — Apple keynote grammar:
+     black stage, SF Pro, gradient hero type, hairline cards,
+     ambient color blooms, numbers that land.
+     ———————————————————————————————————————————————— */
+  :root{
+    --bg:#000;
+    --ink:#f5f5f7;
+    --dim:#86868b;
+    --dimmer:#515154;
+    --hairline:rgba(255,255,255,.14);
+    --card:rgba(255,255,255,.045);
+    --card-hover:rgba(255,255,255,.08);
+    --blue:#0a84ff; --cyan:#64d2ff; --indigo:#5e5ce6; --purple:#bf5af2;
+    --pink:#ff375f; --orange:#ff9f0a; --yellow:#ffd60a; --green:#30d158;
+    --red:#ff453a;
+    --ease:cubic-bezier(.22,.61,.21,1);
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #14161a; --fg: #e8e6e1; --muted: #9aa0ab; --accent: #ff8a50;
-      --card: #1c1f25; --line: #2a2e36; --good: #5fd49a; --bad: #ef8a8a; --chip: #232830;
-    }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--bg);color:var(--ink);
+    font-family:"SF Pro Display","SF Pro Text",-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
   }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg);
-    font: 15px/1.6 -apple-system, "SF Pro Text", system-ui, sans-serif; }
-  .wrap { max-width: 880px; margin: 0 auto; padding: 40px 24px 64px; }
-  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
-    border-bottom: 1px solid var(--line); padding-bottom: 16px; margin-bottom: 24px; flex-wrap: wrap; }
-  h1 { font-size: 22px; margin: 0; letter-spacing: -.01em; }
-  h1 span { color: var(--accent); }
-  .conn { font-size: 13px; color: var(--muted); }
-  .conn .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-    background: var(--bad); margin-right: 6px; vertical-align: 1px; }
-  .conn.ok .dot { background: var(--good); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
-  .card h2 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
-  .big { font-size: 19px; font-weight: 650; word-break: break-all; }
-  .kv { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; font-size: 14px; }
-  .kv b { font-weight: 500; color: var(--muted); }
-  .kv code { font: 12.5px ui-monospace, "SF Mono", Menlo, monospace; background: var(--chip);
-    padding: 1px 6px; border-radius: 5px; }
-  .bar { height: 6px; border-radius: 3px; background: var(--chip); margin-top: 8px; overflow: hidden; }
-  .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px;
-    transition: width .4s; }
-  footer { margin-top: 28px; color: var(--muted); font-size: 12.5px; }
-  footer code { font: 12px ui-monospace, Menlo, monospace; }
+  ::selection{background:rgba(10,132,255,.4)}
+  .num{font-variant-numeric:tabular-nums}
+  code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.86em;
+    background:rgba(255,255,255,.08);padding:2px 8px;border-radius:6px}
+
+  /* ambient blooms */
+  .bloom{position:fixed;inset:-25%;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(55vw 42vh at 12% 8%, rgba(255,159,10,.16), transparent 68%),
+      radial-gradient(60vw 48vh at 88% 30%, rgba(94,92,230,.18), transparent 68%),
+      radial-gradient(50vw 40vh at 30% 95%, rgba(10,132,255,.12), transparent 68%);
+    filter:blur(70px);
+  }
+  main{position:relative;z-index:1;max-width:1180px;margin:0 auto;padding:0 28px 120px}
+
+  /* reveals */
+  [data-reveal]{opacity:0;transform:translateY(26px);
+    transition:opacity .9s var(--ease),transform .9s var(--ease);
+    transition-delay:calc(var(--d,0)*1ms)}
+  .lit [data-reveal]{opacity:1;transform:none}
+  @media (prefers-reduced-motion:reduce){[data-reveal]{transition:none;opacity:1;transform:none}}
+
+  /* ——— hero ——— */
+  header{padding:96px 0 64px;text-align:center}
+  .eyebrow{font-size:14px;font-weight:600;letter-spacing:.28em;text-transform:uppercase;
+    color:var(--dim);margin-bottom:22px}
+  h1{font-size:clamp(64px,10vw,150px);font-weight:700;letter-spacing:-.035em;line-height:1}
+  .grad{background-clip:text;-webkit-background-clip:text;color:transparent}
+  .g-hero{background-image:linear-gradient(96deg,var(--orange) 0%,var(--pink) 30%,var(--purple) 62%,var(--blue) 100%)}
+  .g-blue{background-image:linear-gradient(94deg,var(--cyan),var(--blue) 55%,var(--indigo))}
+  .g-green{background-image:linear-gradient(94deg,#a8ff9e,var(--green) 45%,var(--cyan))}
+  .g-pink{background-image:linear-gradient(94deg,var(--orange),var(--pink) 55%,var(--purple))}
+  header .sub{margin-top:24px;font-size:clamp(17px,2vw,24px);color:var(--dim);font-weight:500}
+  header .sub b{color:var(--ink);font-weight:600}
+  .pill{display:inline-flex;align-items:center;gap:9px;margin-top:34px;
+    border:1px solid var(--hairline);border-radius:999px;padding:9px 20px;
+    font-size:14px;font-weight:600;color:var(--dim);letter-spacing:.02em}
+  .pill .dot{width:9px;height:9px;border-radius:50%;background:var(--red);
+    box-shadow:0 0 12px var(--red);transition:all .4s}
+  .pill.ok .dot{background:var(--green);box-shadow:0 0 12px var(--green)}
+  .pill.ok{color:var(--ink)}
+
+  /* ——— sections ——— */
+  section{margin-top:92px}
+  h2{font-size:clamp(32px,4.6vw,58px);font-weight:700;letter-spacing:-.028em;line-height:1.05;margin-bottom:10px}
+  h2 .soft{color:var(--dimmer)}
+  .lede{font-size:clamp(15px,1.4vw,19px);line-height:1.55;color:var(--dim);max-width:64ch;margin-bottom:34px}
+  .lede strong{color:var(--ink);font-weight:600}
+
+  /* cards */
+  .grid{display:grid;gap:14px}
+  .g4{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  .card{background:var(--card);border:1px solid var(--hairline);border-radius:20px;
+    padding:24px 26px;transition:background .3s var(--ease)}
+  .card:hover{background:var(--card-hover)}
+  .card h3{font-size:12.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--dim);margin-bottom:14px}
+  .stat{font-size:clamp(30px,3.4vw,44px);font-weight:700;letter-spacing:-.025em;line-height:1.05}
+  .stat small{font-size:.42em;font-weight:600;color:var(--dim);letter-spacing:0;margin-left:6px}
+  .card .cap{margin-top:8px;font-size:13.5px;color:var(--dim);line-height:1.5}
+  .kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:14.5px;
+    border-bottom:1px solid rgba(255,255,255,.06)}
+  .kv:last-child{border-bottom:none}
+  .kv b{font-weight:500;color:var(--dim)}
+  .kv span{font-weight:600}
+  .meter{height:5px;border-radius:3px;background:rgba(255,255,255,.09);margin-top:16px;overflow:hidden}
+  .meter i{display:block;height:100%;border-radius:3px;width:0%;
+    background:linear-gradient(90deg,var(--cyan),var(--blue));transition:width .8s var(--ease)}
+  .meter.warm i{background:linear-gradient(90deg,var(--orange),var(--pink))}
+
+  /* model banner */
+  #model-card{grid-column:1 / -1;display:flex;flex-wrap:wrap;align-items:baseline;gap:14px 26px}
+  #model-id{font-size:clamp(20px,2.6vw,32px);font-weight:700;letter-spacing:-.02em;word-break:break-all}
+  #model-meta{font-size:14.5px;color:var(--dim);font-weight:500}
+
+  /* sku table */
+  table{width:100%;border-collapse:collapse;font-size:14.5px}
+  th,td{text-align:right;padding:13px 16px;border-bottom:1px solid rgba(255,255,255,.07)}
+  th:first-child,td:first-child{text-align:left}
+  th{font-size:11.5px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--dim)}
+  tr:last-child td{border-bottom:none}
+  tbody tr{transition:background .2s}
+  tbody tr:hover{background:rgba(255,255,255,.04)}
+  td.fit-yes{color:var(--green);font-weight:600}
+  td.fit-no{color:var(--dimmer)}
+  tr.you td{background:rgba(10,132,255,.10)}
+  tr.you td:first-child{border-left:3px solid var(--blue);border-radius:2px}
+  .tablecard{padding:8px 6px}
+
+  /* about */
+  .pillars{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
+  .pillar h4{font-size:17px;font-weight:700;letter-spacing:-.01em;margin-bottom:8px}
+  .pillar p{font-size:14px;line-height:1.6;color:var(--dim)}
+  .endpoints{display:flex;flex-wrap:wrap;gap:10px;margin-top:26px}
+  .ep{border:1px solid var(--hairline);border-radius:12px;padding:9px 14px;font-size:13px;
+    color:var(--dim);transition:all .25s}
+  .ep:hover{color:var(--ink);background:var(--card-hover)}
+  .ep b{color:var(--ink);font-weight:600;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px}
+
+  footer{margin-top:96px;border-top:1px solid var(--hairline);padding-top:26px;
+    display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px;
+    font-size:13px;color:var(--dimmer)}
+  footer a{color:var(--dim);text-decoration:none}
+  footer a:hover{color:var(--ink)}
 </style>
 </head>
 <body>
-<div class="wrap">
+<div class="bloom"></div>
+<main id="page">
+
   <header>
-    <h1><span>mlx-bun</span> status</h1>
-    <div class="conn" id="conn"><span class="dot"></span><span id="conn-text">connecting…</span></div>
+    <div class="eyebrow" data-reveal>local ai · apple silicon · one binary</div>
+    <h1 class="grad g-hero" data-reveal style="--d:80">mlx-bun</h1>
+    <div class="sub" data-reveal style="--d:160">The Python-free local AI engine. <b>Bun + MLX, nothing else.</b></div>
+    <div class="pill" id="conn" data-reveal style="--d:240"><span class="dot"></span><span id="conn-text">connecting…</span></div>
   </header>
 
-  <div class="grid">
-    <div class="card" style="grid-column: 1 / -1">
-      <h2>Model</h2>
-      <div class="big" id="model">—</div>
-      <div class="kv"><b>context window</b><span id="ctx">—</span></div>
-      <div class="kv"><b>max safe context</b><span id="safe-ctx">—</span></div>
-    </div>
+  <section data-reveal style="--d:320">
+    <h2>Now serving<span class="soft">.</span></h2>
+    <div class="grid g4">
+      <div class="card" id="model-card">
+        <div>
+          <h3>Model</h3>
+          <div id="model-id">—</div>
+        </div>
+        <div id="model-meta">—</div>
+      </div>
 
-    <div class="card">
-      <h2>Memory</h2>
-      <div class="kv"><b>weights</b><span id="weights">—</span></div>
-      <div class="kv"><b>usable</b><span id="usable">—</span></div>
-      <div class="kv"><b>budget</b><span id="budget">—</span></div>
-      <div class="bar"><i id="mem-bar" style="width:0%"></i></div>
-    </div>
+      <div class="card">
+        <h3>Decode · predicted</h3>
+        <div class="stat num grad g-green"><span id="tps">—</span><small>tok/s</small></div>
+        <div class="cap">from weights ÷ bandwidth on this machine</div>
+      </div>
 
-    <div class="card">
-      <h2>Prompt cache</h2>
-      <div class="kv"><b>entries</b><span id="pc-entries">—</span></div>
-      <div class="kv"><b>bytes</b><span id="pc-bytes">—</span></div>
-      <div class="kv"><b>hit rate</b><span id="pc-hits">—</span></div>
-      <div class="bar"><i id="pc-bar" style="width:0%"></i></div>
-    </div>
+      <div class="card">
+        <h3>Max safe context</h3>
+        <div class="stat num grad g-blue"><span id="safe-ctx">—</span><small>tokens</small></div>
+        <div class="cap">solved from KV growth + prefill transient, never guessed</div>
+      </div>
 
-    <div class="card">
-      <h2>Response store</h2>
-      <div class="kv"><b>entries</b><span id="rs-entries">—</span></div>
-      <div class="kv"><b>bytes</b><span id="rs-bytes">—</span></div>
-      <div class="kv"><b>ttl</b><span id="rs-ttl">—</span></div>
-      <div class="bar"><i id="rs-bar" style="width:0%"></i></div>
-    </div>
+      <div class="card">
+        <h3>Memory</h3>
+        <div class="kv"><b>weights</b><span class="num" id="weights">—</span></div>
+        <div class="kv"><b>usable</b><span class="num" id="usable">—</span></div>
+        <div class="kv"><b>budget</b><span class="num" id="budget">—</span></div>
+        <div class="meter warm"><i id="mem-bar"></i></div>
+      </div>
 
-    <div class="card">
-      <h2>KV quantization</h2>
-      <div class="kv"><b>mode</b><code id="kv-mode">—</code></div>
-      <div id="kv-layers"></div>
+      <div class="card">
+        <h3>Prompt cache</h3>
+        <div class="kv"><b>hit rate</b><span class="num" id="pc-hits">—</span></div>
+        <div class="kv"><b>entries</b><span class="num" id="pc-entries">—</span></div>
+        <div class="kv"><b>bytes</b><span class="num" id="pc-bytes">—</span></div>
+        <div class="meter"><i id="pc-bar"></i></div>
+      </div>
+
+      <div class="card">
+        <h3>Response store</h3>
+        <div class="kv"><b>entries</b><span class="num" id="rs-entries">—</span></div>
+        <div class="kv"><b>bytes</b><span class="num" id="rs-bytes">—</span></div>
+        <div class="kv"><b>ttl</b><span class="num" id="rs-ttl">—</span></div>
+        <div class="meter"><i id="rs-bar"></i></div>
+      </div>
+
+      <div class="card">
+        <h3>KV quantization</h3>
+        <div class="kv"><b>mode</b><span id="kv-mode">—</span></div>
+        <div id="kv-layers"></div>
+      </div>
     </div>
-  </div>
+  </section>
+
+  <section data-reveal style="--d:80">
+    <h2>Will it fit<span class="soft">?</span> <span class="grad g-blue">Solved, not guessed.</span></h2>
+    <p class="lede">mlx-bun's fit model solves the memory equation — <strong>weights + KV growth + prefill
+    transient</strong> against wired memory — and predicts decode speed from memory bandwidth.
+    This is the same assessment that gates admission on every request.</p>
+    <div class="grid g4" style="margin-bottom:14px">
+      <div class="card">
+        <h3>This machine</h3>
+        <div class="kv"><b>RAM</b><span class="num" id="m-ram">—</span></div>
+        <div class="kv"><b>bandwidth</b><span class="num" id="m-bw">—</span></div>
+        <div class="kv"><b>verdict</b><span id="m-fits">—</span></div>
+      </div>
+      <div class="card">
+        <h3>At max context · <span class="num" id="fit-ctx">—</span> tokens</h3>
+        <div class="kv"><b>weights</b><span class="num" id="f-weights">—</span></div>
+        <div class="kv"><b>kv cache</b><span class="num" id="f-kv">—</span></div>
+        <div class="kv"><b>transient</b><span class="num" id="f-transient">—</span></div>
+        <div class="kv"><b>total / usable</b><span class="num" id="f-total">—</span></div>
+        <div class="meter"><i id="fit-bar"></i></div>
+      </div>
+    </div>
+    <div class="card tablecard">
+      <table>
+        <thead><tr><th>Apple silicon · this model @ <span class="num" id="sku-ctx">32,768</span> ctx</th>
+          <th>RAM</th><th>Fits</th><th>Max context</th><th>Decode</th></tr></thead>
+        <tbody id="sku-body"><tr><td colspan="5" style="text-align:center;color:var(--dimmer)">waiting for server…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section data-reveal style="--d:80">
+    <h2>The whole engine<span class="soft">,</span> <span class="grad g-pink">one binary.</span></h2>
+    <p class="lede">Born from one bad evening with a Python stack: download stalls, segfaults,
+    missing deps, an OOM footgun. <strong>The layer with all the bugs is the layer that doesn't
+    need Python</strong> — so mlx-bun replaces it. TypeScript on Bun, talking straight to MLX.</p>
+    <div class="pillars">
+      <div class="card pillar">
+        <h4 class="grad g-blue">Bit-exact by oracle</h4>
+        <p>Logit parity with mlx-lm is the correctness contract. Every model ships with
+        tier-a token-identical parity tests against the Python reference.</p>
+      </div>
+      <div class="card pillar">
+        <h4 class="grad g-green">OptiQ quants, first-class</h4>
+        <p>Sensitivity-aware 4-bit quantization, mixed KV-cache quantization, hot-swap LoRA
+        adapters on a quantized base — never reload the weights.</p>
+      </div>
+      <div class="card pillar">
+        <h4 class="grad g-pink">Every API you already use</h4>
+        <p>OpenAI chat + Responses, Anthropic messages, SSE streaming, tool calling,
+        vision. Point your SDK at localhost and go.</p>
+      </div>
+      <div class="card pillar">
+        <h4 class="grad g-hero">Agents, built in</h4>
+        <p><code>mlx-bun pi</code> drops you into a pi coding-agent session on this server —
+        local model, local tools, zero cloud.</p>
+      </div>
+    </div>
+    <div class="endpoints">
+      <span class="ep"><b>POST /v1/chat/completions</b> · OpenAI</span>
+      <span class="ep"><b>POST /v1/messages</b> · Anthropic</span>
+      <span class="ep"><b>POST /v1/responses</b> · Responses API</span>
+      <span class="ep"><b>GET /v1/models</b></span>
+      <span class="ep"><b>GET/POST /v1/adapters</b> · LoRA</span>
+      <span class="ep"><b>GET /stats</b></span>
+      <span class="ep"><b>GET /fit</b></span>
+    </div>
+  </section>
 
   <footer>
-    OpenAI <code>/v1/chat/completions</code> · Anthropic <code>/v1/messages</code> ·
-    Responses <code>/v1/responses</code> · models <code>/v1/models</code> ·
-    raw stats <code>/stats</code> · updated <span id="updated">never</span>
+    <span>mlx-bun · M-series Macs · MIT-licensed deps · no Python anywhere in the serving path</span>
+    <span><a href="https://github.com/joshuarossi/mlx-bun">github.com/joshuarossi/mlx-bun</a> · updated <span id="updated">never</span></span>
   </footer>
-</div>
+</main>
 
 <script>
   const $ = (id) => document.getElementById(id);
   const gb = (b) => b == null ? "—" : (b / 2 ** 30).toFixed(2) + " GB";
   const mb = (b) => b == null ? "—" : (b / 2 ** 20).toFixed(1) + " MB";
-  const num = (n) => n == null ? "—" : n.toLocaleString();
+  const num = (n) => n == null ? "—" : Math.round(n).toLocaleString();
+  requestAnimationFrame(() => document.getElementById("page").classList.add("lit"));
+  document.getElementById("page").classList.add("lit");
 
+  let fitLoaded = false;
   async function tick() {
     try {
       const [stats, models] = await Promise.all([
@@ -108,21 +291,22 @@
         fetch("/v1/models").then((r) => r.json()),
       ]);
       const m = models.data?.[0];
-      $("model").textContent = m?.id ?? "—";
-      $("ctx").textContent = num(m?.context_window) + " tokens";
-      $("safe-ctx").textContent = num(stats.admission?.max_safe_context) + " tokens";
-
+      $("model-id").textContent = m?.id ?? "—";
       const a = stats.admission ?? {};
+      $("model-meta").textContent =
+        num(m?.context_window) + " token window · weights " + gb(a.weights_bytes);
+      $("safe-ctx").textContent = num(a.max_safe_context);
+
       $("weights").textContent = gb(a.weights_bytes);
       $("usable").textContent = gb(a.usable_bytes);
       $("budget").textContent = a.memory_budget_bytes ? gb(a.memory_budget_bytes) : "off";
       $("mem-bar").style.width = a.usable_bytes ? Math.min(100, 100 * a.weights_bytes / a.usable_bytes) + "%" : "0%";
 
       const pc = stats.prompt_cache ?? {};
+      const lookups = (pc.hits ?? 0) + (pc.misses ?? 0);
+      $("pc-hits").textContent = lookups ? Math.round(100 * pc.hits / lookups) + "%" : "no lookups";
       $("pc-entries").textContent = num(pc.entries);
       $("pc-bytes").textContent = mb(pc.bytes) + " / " + mb(pc.max_bytes);
-      const lookups = (pc.hits ?? 0) + (pc.misses ?? 0);
-      $("pc-hits").textContent = lookups ? Math.round(100 * pc.hits / lookups) + "% (" + num(pc.hits) + "/" + num(lookups) + ")" : "no lookups yet";
       $("pc-bar").style.width = pc.max_bytes ? Math.min(100, 100 * pc.bytes / pc.max_bytes) + "%" : "0%";
 
       const rs = stats.response_store ?? {};
@@ -132,18 +316,49 @@
       $("rs-bar").style.width = rs.max_bytes ? Math.min(100, 100 * rs.bytes / rs.max_bytes) + "%" : "0%";
 
       const kv = stats.kv_quant ?? {};
-      $("kv-mode").textContent = kv.mode ?? "—";
+      $("kv-mode").innerHTML = "<code>" + (kv.mode ?? "—") + "</code>";
       $("kv-layers").innerHTML = Object.entries(kv.layers ?? {})
-        .map(([k, v]) => '<div class="kv"><b>' + k + " layers</b><span>" + v + "</span></div>").join("");
+        .map(([k, v]) => '<div class="kv"><b>' + k + " layers</b><span class=\"num\">" + v + "</span></div>").join("");
 
-      $("conn").className = "conn ok";
-      $("conn-text").textContent = "live";
+      if (!fitLoaded) await loadFit();
+      $("conn").className = "pill ok";
+      $("conn-text").textContent = "live · localhost";
       $("updated").textContent = new Date().toLocaleTimeString();
     } catch {
-      $("conn").className = "conn";
+      $("conn").className = "pill";
       $("conn-text").textContent = "server unreachable — retrying";
     }
   }
+
+  async function loadFit() {
+    const f = await fetch("/fit").then((r) => r.json());
+    fitLoaded = true;
+    const r = f.report ?? {};
+    $("tps").textContent = (r.predicted_decode_tps ?? 0).toFixed(1);
+    $("m-ram").textContent = gb(f.machine?.ram_bytes);
+    $("m-bw").textContent = (f.machine?.bandwidth_gbs ?? "—") + " GB/s";
+    $("m-fits").innerHTML = r.fits
+      ? '<span style="color:var(--green);font-weight:700">FITS</span>'
+      : '<span style="color:var(--red);font-weight:700">DOES NOT FIT</span>';
+    $("fit-ctx").textContent = num(f.context_tokens);
+    $("f-weights").textContent = gb(r.weights_bytes);
+    $("f-kv").textContent = gb(r.kv_bytes);
+    $("f-transient").textContent = gb(r.transient_bytes);
+    $("f-total").textContent = gb(r.total_bytes) + " / " + gb(r.usable_bytes);
+    $("fit-bar").style.width = r.usable_bytes ? Math.min(100, 100 * r.total_bytes / r.usable_bytes) + "%" : "0%";
+
+    $("sku-ctx").textContent = num(f.sku_matrix_ctx);
+    const myRam = Math.round((f.machine?.ram_bytes ?? 0) / 2 ** 30);
+    $("sku-body").innerHTML = (f.sku_matrix ?? []).map((row) => {
+      const you = row.ram_gb === myRam;
+      return "<tr" + (you ? ' class="you"' : "") + '><td>' + row.sku + (you ? " · <b>this machine class</b>" : "") +
+        '</td><td class="num">' + row.ram_gb + ' GB</td>' +
+        '<td class="' + (row.fits ? "fit-yes" : "fit-no") + '">' + (row.fits ? "fits" : "—") + "</td>" +
+        '<td class="num">' + (row.fits ? num(row.max_context) : "—") + "</td>" +
+        '<td class="num">' + (row.fits ? row.decode_tps.toFixed(0) + " tok/s" : "—") + "</td></tr>";
+    }).join("");
+  }
+
   tick();
   setInterval(tick, 2000);
 </script>

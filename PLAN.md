@@ -2014,7 +2014,14 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       prompt-cache hit rate, response store, KV-quant layer split.
       `scripts/status-page-stub.ts` serves it with fake stats for
       styling without a model load. First brick of the web UI surface
-      (the chat page lands with P4's event plumbing).
+      (the chat page lands with P4's event plumbing). v2 same day
+      (Josh: "make it look AWESOME"): rebuilt in the keynote
+      aesthetic (wwdc-mlx-bun.html grammar — black stage, gradient
+      hero, blooms, hairline cards) + new `GET /fit` endpoint
+      (this-machine FitReport at the admission ceiling + Apple SKU
+      matrix @32k, same conservative stance as admission) rendered as
+      a "Will it fit? Solved, not guessed." section with the user's
+      machine class highlighted, plus a project pillars section.
 - [ ] **P3 — embed spike** (via `bun run`, no bundling):
       createAgentSession full-control + InteractiveMode in-process.
       Gates: editor latency clean during 12B decode; tok/s within
