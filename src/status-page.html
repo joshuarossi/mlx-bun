@@ -207,6 +207,18 @@
   </section>
 
   <section data-reveal style="--d:80">
+    <h2>Library<span class="soft">.</span> <span class="grad g-green">Every model, assessed.</span></h2>
+    <p class="lede">Everything in the local cache, each judged by the fit solver for
+    <strong>this machine</strong> — supported, fits, usable context, predicted speed.</p>
+    <div class="card tablecard">
+      <table>
+        <thead><tr><th>Model</th><th>Size</th><th>Status</th><th>Max context</th><th>Decode</th></tr></thead>
+        <tbody id="lib-body"><tr><td colspan="5" style="text-align:center;color:var(--dimmer)">waiting for server…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section data-reveal style="--d:80">
     <h2>Will it fit<span class="soft">?</span> <span class="grad g-blue">Solved, not guessed.</span></h2>
     <p class="lede">mlx-bun's fit model solves the memory equation — <strong>weights + KV growth + prefill
     transient</strong> against wired memory — and predicts decode speed from memory bandwidth.
@@ -326,7 +338,7 @@
         .map(([k, v]) => '<div class="kv"><b>' + k + " layers</b><span class=\"num\">" + v + "</span></div>").join("");
 
       await loadDownloads();
-      if (!fitLoaded) await loadFit();
+      if (!fitLoaded) { await loadFit(); await loadLibrary(); }
       $("conn").className = "pill ok";
       $("conn-text").textContent = "live · localhost";
       $("updated").textContent = new Date().toLocaleTimeString();
@@ -348,15 +360,17 @@
       const pct = d.totalBytes ? Math.min(100, 100 * d.receivedBytes / d.totalBytes) : 0;
       let detail, barCls = "";
       if (d.state === "active") {
-        const prev = dlRates[d.repoId];
-        const now = performance.now();
-        let speed = "";
-        if (prev && now > prev.t) {
-          const bps = (d.receivedBytes - prev.bytes) / ((now - prev.t) / 1000);
-          if (bps > 0) speed = " · " + mb(bps) + "/s · ~" +
-            Math.max(1, Math.round((d.totalBytes - d.receivedBytes) / bps / 60)) + " min left";
+        // Prefer the server-measured rolling rate; fall back to poll deltas.
+        let bps = d.bytesPerSec ?? 0;
+        if (!bps) {
+          const prev = dlRates[d.repoId];
+          const now = performance.now();
+          if (prev && now > prev.t) bps = (d.receivedBytes - prev.bytes) / ((now - prev.t) / 1000);
+          dlRates[d.repoId] = { bytes: d.receivedBytes, t: now };
         }
-        dlRates[d.repoId] = { bytes: d.receivedBytes, t: now };
+        const speed = bps > 0
+          ? " · " + mb(bps) + "/s · ~" + Math.max(1, Math.round((d.totalBytes - d.receivedBytes) / bps / 60)) + " min left"
+          : "";
         detail = gb(d.receivedBytes) + " / " + gb(d.totalBytes) + " · " + pct.toFixed(0) + "%" + speed +
           (d.currentFile ? " · <code>" + d.currentFile + "</code>" : "");
         barCls = "warm";
@@ -371,6 +385,27 @@
         '<div style="font-size:13.5px;color:var(--dim)" class="num">' + detail + "</div>" +
         '<div class="meter ' + barCls + '"><i style="width:' + pct + '%"></i></div></div>';
     }).join("");
+  }
+
+  async function loadLibrary() {
+    const { models } = await fetch("/library").then((r) => r.json());
+    if (!models) return;
+    $("lib-body").innerHTML = models
+      .slice()
+      .sort((a, b) => (b.serving ? 1 : 0) - (a.serving ? 1 : 0) || b.size_bytes - a.size_bytes)
+      .map((m) => {
+        const a = m.assessment;
+        let status;
+        if (m.serving) status = '<span style="color:var(--blue);font-weight:700">SERVING</span>';
+        else if (!m.supported) status = '<span style="color:var(--dimmer)">unsupported (' + m.model_type + ")</span>";
+        else if (a && a.fits) status = '<span style="color:var(--green);font-weight:600">fits</span>';
+        else status = '<span style="color:var(--red);font-weight:600">too big</span>';
+        return "<tr" + (m.serving ? ' class="you"' : "") + "><td>" + m.repo_id +
+          (m.vision ? ' · <span style="color:var(--dim)">vision</span>' : "") +
+          '</td><td class="num">' + gb(m.size_bytes) + "</td><td>" + status + "</td>" +
+          '<td class="num">' + (m.supported && a && a.fits ? num(a.max_safe_context) : "—") + "</td>" +
+          '<td class="num">' + (m.supported && a && a.fits ? a.predicted_decode_tps.toFixed(0) + " tok/s" : "—") + "</td></tr>";
+      }).join("");
   }
 
   async function loadFit() {

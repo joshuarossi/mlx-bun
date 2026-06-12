@@ -192,6 +192,8 @@ export interface DownloadStatus {
   totalBytes: number;
   filesDone: number;
   filesTotal: number;
+  /** Rolling-window transfer rate (server-measured, ~5 s window). */
+  bytesPerSec: number;
   startedAt: number;
   finishedAt: number | null;
   error?: string;
@@ -220,10 +222,19 @@ export async function downloadModel(
     repoId, state: "active", currentFile: null,
     receivedBytes: 0, totalBytes: listing.files.reduce((a, f) => a + f.size, 0),
     filesDone: 0, filesTotal: listing.files.length,
-    startedAt: Date.now(), finishedAt: null,
+    bytesPerSec: 0, startedAt: Date.now(), finishedAt: null,
   };
   downloadLog.push(status);
   let doneBytes = 0;
+  // Rolling ~5 s window of (time, receivedBytes) samples for the rate.
+  const samples: Array<[number, number]> = [];
+  const sampleRate = (bytes: number) => {
+    const now = performance.now();
+    samples.push([now, bytes]);
+    while (samples.length > 2 && now - samples[0]![0] > 5000) samples.shift();
+    const [t0, b0] = samples[0]!;
+    status.bytesPerSec = now > t0 ? ((bytes - b0) / (now - t0)) * 1000 : 0;
+  };
 
   try {
     for (const f of listing.files) {
@@ -239,6 +250,7 @@ export async function downloadModel(
           ...(f.lfs ? { sha256: f.lfs.oid } : { sha1: f.blobId }),
         }, (file, received, total) => {
           status.receivedBytes = doneBytes + received;
+          sampleRate(status.receivedBytes);
           opts.onProgress?.(file, received, total);
         });
       }
@@ -256,9 +268,11 @@ export async function downloadModel(
       }
     }
     status.state = "done";
+    status.bytesPerSec = 0;
     status.finishedAt = Date.now();
   } catch (e) {
     status.state = "error";
+    status.bytesPerSec = 0;
     status.error = e instanceof Error ? e.message : String(e);
     status.finishedAt = Date.now();
     throw e;

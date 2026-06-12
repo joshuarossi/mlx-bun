@@ -2035,6 +2035,16 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       matrix @32k, same conservative stance as admission) rendered as
       a "Will it fit? Solved, not guessed." section with the user's
       machine class highlighted, plus a project pillars section.
+      v3 additions (2026-06-12): `GET /downloads` (process-global
+      tracker inside downloadModel: bytes/files/state + server-side
+      rolling ~5 s transfer rate) rendered with speed + ETA;
+      `GET /library` (30 s-cached registry + per-model fit assessment
+      for this machine) rendered as a Library table — SERVING /
+      fits / too big / unsupported(model_type) per row. CLI got a
+      full help system the same day: overview, per-command help
+      (`--help`, `mlx-bun help <cmd>`), `--version`, unknown-command
+      exit 1; `pi --help` is intercepted only as the sole arg so pi
+      flag passthrough stays intact.
 - [ ] **P3 — embed spike** (via `bun run`, no bundling):
       createAgentSession full-control + InteractiveMode in-process.
       Gates: editor latency clean during 12B decode; tok/s within
