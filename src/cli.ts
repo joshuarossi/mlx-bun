@@ -42,6 +42,28 @@ Examples:
   mlx-bun serve 12B                # serve the 12B; status page at http://localhost:8090/
   mlx-bun get mlx-community/gemma-4-12B-it-OptiQ-4bit`;
 
+const SERVER_FLAGS = `Server options:
+  --host <addr>             Interface to bind  [default: all interfaces;
+                            use 127.0.0.1 for loopback-only]
+  --port <n>                Listen port  [default: 8090]
+  --memory-budget <GB>      Admission-control memory budget; requests that
+                            cannot fit are rejected instead of crashing the
+                            GPU  [default: machine RAM × 0.75, check-only]
+  --prompt-cache <GB>       Prompt (KV) cache byte cap  [default: 2 GB]
+
+Model & quality:
+  --kv-quant <mode>         KV cache quantization: config (per-layer
+                            kv_config.json when the model ships one), off
+                            (bf16), or 4 / 8 (uniform bits)  [default: config]
+
+Performance levers (A/B levers; defaults are the measured winners):
+  --compiled-decode on|off  Compiled decode graphs  [default: on]
+  --perf-kernel on|off      Fused decode-SDPA Metal kernel  [default: off
+                            until the clean-machine benchmark pass flips it]
+  --fused-decode on|off     Fused-decode experiment lever  [default: off]
+  --fused-sdpa on|off       Fused SDPA path  [default: on]
+  --force-wire              Wire weights into memory at load`;
+
 const HELP: Record<string, string> = {
   pi: `mlx-bun pi — drop into a pi coding-agent session on a local model
 
@@ -52,10 +74,10 @@ largest supported model that fits this machine (downloading the
 recommended model on a fresh install) and starts a server for the
 session. The server it starts ends with the session.
 
-Options (consumed by mlx-bun):
+Model selection:
   --query <q>          Model to serve when starting a server (registry query)
-  --port <n>           Server port to probe/start  [default: 8090]
-  --memory-budget <GB> Memory budget for a started server (admission control)
+
+${SERVER_FLAGS}
 
 All other arguments pass through to pi (user flags override ours):
   -p, --print <msg>    One-shot non-interactive run (ephemeral server)
@@ -74,9 +96,7 @@ Usage: mlx-bun serve [query] [options]
                        fits this machine (downloads the recommended model on
                        a fresh install).
 
-Options:
-  --port <n>           Listen port  [default: 8090]
-  --memory-budget <GB> Enable admission control at this budget
+${SERVER_FLAGS}
 
 Endpoints: /v1/chat/completions, /v1/messages, /v1/responses, /v1/models,
 /v1/adapters, /stats, /fit, /library, /downloads — status page at /`,
@@ -191,6 +211,54 @@ async function ensureNative(s?: import("./tui").Step): Promise<void> {
   if (!s) process.stdout.write("\n");
 }
 
+/** Server/runtime flags shared by every mode that loads a model
+ *  (serve, pi). Env levers are set here so they're in place before the
+ *  generate/compiled-decode modules read them. */
+function serverRuntimeFlags(): { port: number; serverOptions: import("./server").ServerOptions } {
+  const onOff = (name: string): boolean | null => {
+    const v = opt(name);
+    if (v === null) return null;
+    if (v === "on" || v === "1" || v === "true") return true;
+    if (v === "off" || v === "0" || v === "false") return false;
+    console.error(`--${name} expects on|off (got "${v}")`);
+    process.exit(1);
+  };
+  const cd = onOff("compiled-decode");
+  if (cd !== null) process.env.MLX_BUN_COMPILED_DECODE = cd ? "1" : "0";
+  const pk = onOff("perf-kernel");
+  if (pk !== null) process.env.MLX_BUN_PERF_KERNEL = pk ? "1" : "0";
+  const fd = onOff("fused-decode");
+  if (fd !== null) process.env.MLX_BUN_FUSED_DECODE = fd ? "1" : "0";
+  const fs = onOff("fused-sdpa");
+  if (fs !== null) process.env.MLX_BUN_NO_FUSED_SDPA = fs ? "0" : "1"; // inverted env
+  if (flag("force-wire")) process.env.MLX_BUN_FORCE_WIRE = "1";
+
+  const serverOptions: import("./server").ServerOptions = {};
+  const budgetGB = Number(opt("memory-budget", "0"));
+  if (budgetGB > 0) serverOptions.memoryBudgetBytes = budgetGB * 1e9;
+  const pcGB = Number(opt("prompt-cache", "0"));
+  if (pcGB > 0) serverOptions.promptCacheBytes = pcGB * 2 ** 30;
+  const kv = opt("kv-quant");
+  if (kv === "off") serverOptions.kvQuant = "off";
+  else if (kv && kv !== "config") {
+    const bits = Number(kv);
+    if (![4, 8].includes(bits)) { console.error(`--kv-quant expects config|off|4|8 (got "${kv}")`); process.exit(1); }
+    serverOptions.kvQuant = bits;
+  }
+  const host = opt("host");
+  if (host) serverOptions.hostname = host;
+  return { port: Number(opt("port", "8090")), serverOptions };
+}
+
+/** One-line summary of the active runtime levers for the ready card. */
+function runtimeSummary(o: import("./server").ServerOptions): string {
+  const kv = o.kvQuant === "off" ? "off" : typeof o.kvQuant === "number" ? `kv${o.kvQuant}` : "config";
+  const lever = (env: string, dflt: string) => process.env[env] ?? dflt;
+  return `kv-quant ${kv} · compiled-decode ${lever("MLX_BUN_COMPILED_DECODE", "1") === "1" ? "on" : "off"}` +
+    ` · perf-kernel ${lever("MLX_BUN_PERF_KERNEL", "0") === "1" ? "on" : "off"}` +
+    (lever("MLX_BUN_FUSED_DECODE", "0") === "1" ? " · fused-decode on" : "");
+}
+
 /** Shared model resolution: explicit query wins; otherwise the largest
  *  supported (gemma4) model that fits this machine, downloading the
  *  recommended model first on a fresh install. */
@@ -240,30 +308,29 @@ switch (cmd) {
       process.exit(1);
     }
     const { downloadModel } = await import("./download");
-    let lastFile = "";
+    const { step, style } = await import("./tui");
+    const s = step(`downloading ${repoId}`);
     const snap = await downloadModel(repoId, {
       revision: opt("revision", "main")!,
       onProgress: (file, received, total) => {
         const pct = total ? Math.floor((received / total) * 100) : 0;
-        if (file !== lastFile) {
-          if (lastFile) process.stdout.write("\n");
-          lastFile = file;
-        }
-        process.stdout.write(`\r  ${file}  ${gb(received)} / ${gb(total)} (${pct}%)   `);
+        s.update(`${style.bold(repoId)} ${style.dim(`· ${file} · ${gb(received)} / ${gb(total)} (${pct}%)`)}`);
       },
     });
-    if (lastFile) process.stdout.write("\n");
-    console.log(`snapshot: ${snap}`);
+    s.done(`${style.bold(repoId)} ${style.dim("downloaded · verified")}`);
+    const sScan = step("updating registry");
     const reg = new Registry();
     await reg.scan();
-    console.log("registry updated");
+    sScan.done(`registry updated ${style.dim(`· ${snap}`)}`);
     break;
   }
 
   case "scan": {
+    const { step } = await import("./tui");
+    const s = step("scanning the Hugging Face cache");
     const reg = new Registry();
     const n = await reg.scan();
-    console.log(`indexed ${n} model snapshot(s)`);
+    s.done(`indexed ${n} model snapshot(s)`);
     break;
   }
 
@@ -280,18 +347,34 @@ switch (cmd) {
       console.log("no models match (try `mlx-bun scan`)");
       break;
     }
-    for (const m of models) {
-      const caps = [
-        m.hasVisionSidecar ? "vision" : null,
-        m.hasToolTemplate ? "tools" : null,
-        m.hasKvConfig ? "kv-quant" : null,
-      ].filter(Boolean).join(",");
-      const quant = m.quantBits ? `${m.quantBits}-bit g${m.quantGroupSize}` : "full";
-      const params = m.paramCount ? `${(m.paramCount / 1e9).toFixed(1)}B` : "?";
-      console.log(
-        `${m.repoId.padEnd(48)} ${gb(m.sizeBytes).padStart(9)}  ${params.padStart(6)}  ${quant.padEnd(12)} ${(m.license ?? "?").padEnd(12)} ${caps}`,
-      );
-    }
+    const { table, style, h1 } = await import("./tui");
+    h1("library");
+    console.log();
+    table(
+      [
+        { header: "model", paint: (c) => style.bold(c) },
+        { header: "size", align: "right" },
+        { header: "params", align: "right" },
+        { header: "quant" },
+        { header: "license", paint: (c) => style.dim(c) },
+        { header: "capabilities", paint: (c) => style.dim(c) },
+      ],
+      models.map((m) => [
+        m.repoId,
+        gb(m.sizeBytes),
+        m.paramCount ? `${(m.paramCount / 1e9).toFixed(1)}B` : "?",
+        m.quantBits ? `${m.quantBits}-bit g${m.quantGroupSize}` : "full",
+        m.license ?? "?",
+        [
+          m.modelType.startsWith("gemma4") ? "supported" : `unsupported (${m.modelType})`,
+          m.hasVisionSidecar ? "vision" : null,
+          m.hasToolTemplate ? "tools" : null,
+          m.hasKvConfig ? "kv-quant" : null,
+        ].filter(Boolean).join(" · "),
+      ]),
+    );
+    console.log();
+    console.log(style.dim(`  ${models.length} model(s) · mlx-bun fit <query> for a memory assessment`));
     break;
   }
 
@@ -304,41 +387,54 @@ switch (cmd) {
     const config = await loadModelConfig(m.path);
     const ctx = Number(opt("ctx", "8192"));
     const r = fit(config, m.sizeBytes, ctx, thisMachine(), undefined, m.expertsBytes);
-    console.log(`${m.repoId} @ ${ctx} context on ${thisMachine().name}:`);
-    console.log(`  weights   ${gb(r.weightsBytes)}${
-      config.text.enableMoeBlock && m.expertsBytes > 0
-        ? ` (experts ${gb(m.expertsBytes)}; top ${config.text.topKExperts}/${config.text.numExperts} read per token)`
-        : ""
-    }`);
-    if (m.sidecarBytes > 0)
-      console.log(`  (+ vision sidecar ${gb(m.sidecarBytes)}, bf16 — loads only for vision requests)`);
-    console.log(`  kv cache  ${gb(r.kvBytes)}`);
-    console.log(`  transient ${gb(r.transientBytes)}`);
-    console.log(`  total     ${gb(r.totalBytes)} of ${gb(r.usableBytes)} usable → ${r.fits ? "FITS" : "DOES NOT FIT"}`);
-    console.log(`  max safe context: ${r.maxSafeContext} tokens`);
-    console.log(`  predicted decode: ${r.predictedDecodeTps.toFixed(1)} tok/s`);
+    const { box, table, style, h1, gradient } = await import("./tui");
+    h1("will it fit?");
+    console.log(`  ${style.bold(m.repoId)} ${style.dim(`@ ${ctx.toLocaleString()} context · this machine`)}`);
+    console.log();
+    const expertsNote = config.text.enableMoeBlock && m.expertsBytes > 0
+      ? style.dim(`  (experts ${gb(m.expertsBytes)}; top ${config.text.topKExperts}/${config.text.numExperts} read per token)`)
+      : "";
+    box([
+      `weights    ${gb(r.weightsBytes).padStart(9)}${expertsNote}`,
+      ...(m.sidecarBytes > 0
+        ? [style.dim(`  + vision sidecar ${gb(m.sidecarBytes)} (bf16, loads only for vision)`)] : []),
+      `kv cache   ${gb(r.kvBytes).padStart(9)}`,
+      `transient  ${gb(r.transientBytes).padStart(9)}`,
+      `total      ${gb(r.totalBytes).padStart(9)} ${style.dim(`of ${gb(r.usableBytes)} usable`)}  ${r.fits ? style.green(style.bold("FITS")) : style.bold("DOES NOT FIT")}`,
+      "",
+      `max safe context   ${style.bold(r.maxSafeContext.toLocaleString())} tokens`,
+      `predicted decode   ${gradient(`${r.predictedDecodeTps.toFixed(1)} tok/s`)}`,
+    ]);
     if (flag("skus")) {
-      console.log(`\nSKU matrix @ ${ctx} context:`);
-      for (const row of skuMatrix(config, m.sizeBytes, ctx, m.expertsBytes)) {
-        console.log(
-          `  ${`${row.sku} ${row.ramGB}GB`.padEnd(16)} ${row.fits ? "fits" : "  — "}  ` +
-          `max ctx ${String(row.maxContext).padStart(7)}  ~${row.decodeTps.toFixed(0)} tok/s`,
-        );
-      }
+      h1("apple silicon matrix");
+      console.log();
+      table(
+        [
+          { header: "chip" }, { header: "ram", align: "right" },
+          { header: "fits", paint: (c) => (c.includes("fits") ? style.green(c) : style.dim(c)) },
+          { header: "max context", align: "right" }, { header: "decode", align: "right" },
+        ],
+        skuMatrix(config, m.sizeBytes, ctx, m.expertsBytes).map((row) => [
+          row.sku, `${row.ramGB} GB`, row.fits ? "fits" : "—",
+          row.fits ? row.maxContext.toLocaleString() : "—",
+          row.fits ? `~${row.decodeTps.toFixed(0)} tok/s` : "—",
+        ]),
+      );
     }
+    console.log();
     break;
   }
 
   case "serve": {
     const { banner, step, box, style } = await import("./tui");
     banner(pkg.version);
+    const rt = serverRuntimeFlags();
     // Friendly collision check before loading gigabytes of weights.
-    const servePort = Number(opt("port", "8090"));
     {
       const { probeServer } = await import("./pi-launch");
-      const running = await probeServer(`http://localhost:${servePort}/v1`);
+      const running = await probeServer(`http://localhost:${rt.port}/v1`);
       if (running) {
-        console.error(`port ${servePort} is already serving ${running.map((m) => m.id).join(", ")}.`);
+        console.error(`port ${rt.port} is already serving ${running.map((m) => m.id).join(", ")}.`);
         console.error("reuse it (mlx-bun pi attaches automatically), stop it, or pick --port <other>.");
         console.error("NOTE: a second server is a second model in memory — check `mlx-bun fit` first.");
         process.exit(1);
@@ -353,20 +449,21 @@ switch (cmd) {
     await ensureNative(sNative);
     sNative.done("native runtime ready");
     const { createServer, loadContext } = await import("./server");
-    const budgetGB = Number(opt("memory-budget", "0"));
-    const memoryBudgetBytes = budgetGB > 0 ? budgetGB * 1e9 : undefined;
     const sLoad = step("loading weights");
     const t0 = performance.now();
-    const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes });
-    const server = createServer(ctx, servePort, { memoryBudgetBytes, owner: "serve" });
+    const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes: rt.serverOptions.memoryBudgetBytes });
+    const server = createServer(ctx, rt.port, { ...rt.serverOptions, owner: "serve" });
     sLoad.done(`weights loaded ${style.dim(`in ${(performance.now() - t0).toFixed(0)} ms`)}`);
+    const shownHost = rt.serverOptions.hostname ?? "localhost";
     console.log();
     box([
       `${style.green("●")} ${style.bold("serving")} ${m.repoId}`,
       "",
-      `API   ${style.url(`http://localhost:${server.port}/v1`)}  ${style.dim("(OpenAI · Anthropic · Responses)")}`,
-      `Web   ${style.url(`http://localhost:${server.port}/`)}  ${style.dim("(status · fit · library)")}`,
-      ...(memoryBudgetBytes ? [`Mem   ${budgetGB} GB budget ${style.dim("(admission control on)")}`] : []),
+      `API   ${style.url(`http://${shownHost}:${server.port}/v1`)}  ${style.dim("(OpenAI · Anthropic · Responses)")}`,
+      `Web   ${style.url(`http://${shownHost}:${server.port}/`)}  ${style.dim("(status · fit · library)")}`,
+      ...(rt.serverOptions.memoryBudgetBytes
+        ? [`Mem   ${gb(rt.serverOptions.memoryBudgetBytes)} budget ${style.dim("(admission control on)")}`] : []),
+      `Perf  ${style.dim(runtimeSummary(rt.serverOptions))}`,
       "",
       style.dim("agent session:  mlx-bun pi        stop:  Ctrl+C"),
     ]);
@@ -431,14 +528,18 @@ switch (cmd) {
   }
 
   case "pi": {
-    // Our flags (--query/--port/--memory-budget) are consumed; ALL other
-    // args pass through to pi verbatim (-p, --mode rpc, --continue,
-    // @files, messages...). User flags are appended after our defaults,
-    // so an explicit --model/--models wins over ours.
-    const OURS = new Set(["--query", "--port", "--memory-budget"]);
+    // Our flags are consumed; ALL other args pass through to pi verbatim
+    // (-p, --mode rpc, --continue, @files, messages...). User flags are
+    // appended after our defaults, so an explicit --model/--models wins.
+    const OURS_VAL = new Set([
+      "--query", "--port", "--host", "--memory-budget", "--prompt-cache", "--kv-quant",
+      "--compiled-decode", "--perf-kernel", "--fused-decode", "--fused-sdpa",
+    ]);
+    const OURS_BOOL = new Set(["--force-wire"]);
     const passthrough: string[] = [];
     for (let i = 1; i < argv.length; i++) {
-      if (OURS.has(argv[i]!)) { i++; continue; }
+      if (OURS_VAL.has(argv[i]!)) { i++; continue; }
+      if (OURS_BOOL.has(argv[i]!)) continue;
       passthrough.push(argv[i]!);
     }
     const { detectPi } = await import("./harness-pi");
@@ -448,7 +549,8 @@ switch (cmd) {
       console.error("  bun add -g @earendil-works/pi-coding-agent");
       process.exit(1);
     }
-    const port = Number(opt("port", "8090"));
+    const rt = serverRuntimeFlags();
+    const port = rt.port;
     const baseUrl = `http://localhost:${port}/v1`;
     const { probeServer, buildPiInvocation, launchPi } = await import("./pi-launch");
     let models = await probeServer(baseUrl);
@@ -473,12 +575,10 @@ switch (cmd) {
       await ensureNative(sNative);
       sNative.done("native runtime ready");
       const { createServer, loadContext } = await import("./server");
-      const budgetGB = Number(opt("memory-budget", "0"));
-      const memoryBudgetBytes = budgetGB > 0 ? budgetGB * 1e9 : undefined;
       const sLoad = step(`loading ${m.repoId}`);
       const t0 = performance.now();
-      const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes });
-      createServer(ctx, port, { memoryBudgetBytes, owner: "pi-session" });
+      const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes: rt.serverOptions.memoryBudgetBytes });
+      createServer(ctx, port, { ...rt.serverOptions, owner: "pi-session" });
       startedServer = true;
       sLoad.done(`serving ${style.bold(m.repoId)} ${style.dim(`at ${baseUrl} · ready in ${(performance.now() - t0).toFixed(0)} ms`)}`);
       models = await probeServer(baseUrl);
@@ -513,18 +613,24 @@ switch (cmd) {
       console.error("then re-run: mlx-bun harness pi");
       process.exit(1);
     }
-    console.log(`pi: ${pi.binPath}${pi.version ? ` (v${pi.version})` : ""}`);
+    const { step, box, style } = await import("./tui");
+    const sPi = step("detecting pi");
+    sPi.done(`pi ${style.dim(`${pi.binPath}${pi.version ? ` · v${pi.version}` : ""}`)}`);
     const baseUrl = opt("base-url", DEFAULT_BASE_URL)!;
+    const sExt = step("installing provider extension");
     const result = await installPiExtension(baseUrl);
-    console.log(`provider extension: ${result.path}`);
-    if (result.serverReachable) {
-      console.log(`server: ${baseUrl} — models: ${result.bakedModels.join(", ")}`);
-    } else {
-      console.log(`server: ${baseUrl} not reachable — models will be discovered when pi`);
-      console.log("starts against a running server (start one with: mlx-bun serve <model>)");
-    }
-    console.log("launch:  pi --provider mlx-bun");
-    console.log('select:  /model in pi, or scope Ctrl+P cycling: pi --models "mlx-bun/*"');
+    sExt.done(`provider extension installed ${style.dim(`· ${result.path}`)}`);
+    const sProbe = step("probing server");
+    if (result.serverReachable) sProbe.done(`server live ${style.dim(`· ${result.bakedModels.join(", ")}`)}`);
+    else sProbe.done(`server not running ${style.dim(`· models discovered when pi starts against ${baseUrl}`)}`);
+    console.log();
+    box([
+      `${style.green("●")} ${style.bold("pi is wired to mlx-bun")}`,
+      "",
+      `launch   ${style.accent("pi --provider mlx-bun")}`,
+      `select   ${style.dim("/model inside pi · or scope cycling:")} ${style.accent('pi --models "mlx-bun/*"')}`,
+      `undo     ${style.dim("mlx-bun harness pi --remove")}`,
+    ]);
     break;
   }
 

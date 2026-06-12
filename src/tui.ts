@@ -99,6 +99,33 @@ export function box(lines: string[], { pad = 1 }: { pad?: number } = {}): void {
   console.log(hue(`  ╰${"─".repeat(width)}╯`));
 }
 
+export interface Column {
+  header: string;
+  align?: "left" | "right";
+  /** Optional per-cell styling (receives the padded cell). */
+  paint?: (cell: string, row: number) => string;
+}
+
+/** Aligned table with dim uppercase headers; rows are plain strings. */
+export function table(cols: Column[], rows: string[][], indent = "  "): void {
+  const widths = cols.map((c, i) =>
+    Math.max([...c.header].length, ...rows.map((r) => [...(r[i] ?? "")].length)));
+  console.log(indent + cols.map((c, i) =>
+    style.dim((c.align === "right" ? c.header.padStart(widths[i]!) : c.header.padEnd(widths[i]!)).toUpperCase())).join("  "));
+  rows.forEach((r, ri) => {
+    console.log(indent + cols.map((c, i) => {
+      const cell = c.align === "right" ? (r[i] ?? "").padStart(widths[i]!) : (r[i] ?? "").padEnd(widths[i]!);
+      return c.paint ? c.paint(cell, ri) : cell;
+    }).join("  "));
+  });
+}
+
+/** Gradient section header, e.g. `h1("library")`. */
+export function h1(text: string): void {
+  console.log();
+  console.log("  " + (tty() ? gradient(text.toUpperCase()) : text.toUpperCase()));
+}
+
 export const style = {
   dim: (s: string) => (tty() ? DIM + s + RESET : s),
   bold: (s: string) => (tty() ? BOLD + s + RESET : s),
