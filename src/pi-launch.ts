@@ -46,9 +46,28 @@ export function buildPiInvocation(
   const cleanupDir = mkdtempSync(join(tmpdir(), "mlx-bun-pi-"));
   const extPath = join(cleanupDir, "mlx-bun-provider.ts");
   writeFileSync(extPath, renderPiExtension(baseUrl, models));
-  const cli = realpathSync(pi.binPath); // resolve the shim to cli.js
+  const cli = realpathSync(pi.binPath); // resolve the shim
+  // Interpreter resolution. A JS install (bun/npm shim -> cli.js) needs
+  // a runtime: bun, or ourselves when we ARE bun (`bun run`). Inside
+  // the COMPILED mlx-bun binary process.execPath is mlx-bun itself —
+  // it cannot execute a JS file (the original "friend had to install
+  // bun" bug). pi's standalone install (pi.dev/install.sh) is its own
+  // compiled binary and runs directly.
+  let runner: string[];
+  if (!cli.endsWith(".js")) {
+    runner = [cli]; // compiled pi binary
+  } else {
+    const selfIsBun = process.execPath.endsWith("/bun");
+    const bun = selfIsBun ? process.execPath : Bun.which("bun");
+    if (!bun) throw new Error(
+      "pi is installed as a JS package, which needs the bun runtime — either\n" +
+      "install standalone pi (curl -fsSL https://pi.dev/install.sh | sh)\n" +
+      "or install bun (https://bun.sh)",
+    );
+    runner = [bun, cli];
+  }
   const argv = [
-    process.execPath, cli,
+    ...runner,
     "-e", extPath,
     "--provider", PI_PROVIDER_ID,
     "--model", models[0]!.id,
