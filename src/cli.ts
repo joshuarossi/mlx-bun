@@ -72,9 +72,11 @@ const HELP: Record<string, string> = {
 Usage: mlx-bun pi [options] [pi arguments...]
 
 Reuses a healthy local server when one is running; otherwise picks the
-largest supported model that fits this machine (downloading the
-recommended model on a fresh install) and starts a server for the
-session. The server it starts ends with the session.
+largest supported model that fits this machine and starts a server
+for the session (the server ends with the session). Fresh install:
+downloads a small starter model first so you're chatting in minutes,
+then streams the recommended model for this Mac in the background —
+it becomes the default on the next run.
 
 Model selection:
   --query <q>          Model to serve when starting a server (registry query)
@@ -95,8 +97,9 @@ Usage: mlx-bun serve [query] [options]
 
   [query]              Registry query (e.g. "12B", "e4b", a repo substring).
                        Omitted: auto-picks the largest supported model that
-                       fits this machine (downloads the recommended model on
-                       a fresh install).
+                       fits this machine. Fresh install: downloads a small
+                       starter model first, then the recommended model in
+                       the background (default on next run).
 
 ${SERVER_FLAGS}
 
@@ -295,18 +298,35 @@ async function resolveModelAuto(query: string | null): Promise<{ m: import("./re
   const { recommendedRepoId } = await import("./fit");
   let candidates = reg.list().filter((r) => r.modelType.startsWith("gemma4"));
   if (candidates.length === 0) {
-    const repoId = recommendedRepoId();
-    const { step } = await import("./tui");
-    const s = step(`downloading ${repoId} (recommended for this Mac)`);
+    // First run: starter-model flow (PRODUCT_ROADMAP / PLAN Phase 16).
+    // Download the SMALLEST supported model first so the user is
+    // chatting in minutes, then stream the recommended model for this
+    // Mac in the background — it becomes the auto-pick next run.
+    // (The true sub-GB starter arrives with the Phase 14 Qwen 0.8B;
+    // until then the e4b is the best runnable starter.)
+    const starterRepo = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
+    const recRepo = recommendedRepoId();
+    const { step, style } = await import("./tui");
     const { downloadModel } = await import("./download");
-    await downloadModel(repoId, {
+    const s = step(`downloading starter model ${starterRepo}`);
+    await downloadModel(starterRepo, {
       onProgress: (file, received, total) => {
         const pct = total ? Math.floor((received / total) * 100) : 0;
-        s.update(`downloading ${repoId} — ${file} ${gb(received)} / ${gb(total)} (${pct}%)`);
+        s.update(`starter model ${starterRepo} — ${file} ${gb(received)} / ${gb(total)} (${pct}%)`);
       },
     });
-    s.done(`downloaded ${repoId}`);
+    s.done(`starter model ready ${style.dim(`· ${starterRepo}`)}`);
     await reg.scan();
+    if (recRepo !== starterRepo) {
+      console.log(`  ${style.dim(`downloading ${recRepo} (recommended for this Mac) in the background —`)}`);
+      console.log(`  ${style.dim("it becomes the default next run · progress on the status page (/downloads) · resumable")}`);
+      downloadModel(recRepo)
+        .then(async () => {
+          await new Registry().scan();
+          console.log(`  ${style.dim(`background download complete: ${recRepo} (used on next run)`)}`);
+        })
+        .catch(() => { /* resumable — the next run continues it */ });
+    }
     candidates = reg.list().filter((r) => r.modelType.startsWith("gemma4"));
   }
   candidates.sort((a, b) => b.sizeBytes - a.sizeBytes);
