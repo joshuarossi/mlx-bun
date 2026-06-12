@@ -190,38 +190,58 @@ switch (cmd) {
     const baseUrl = `http://localhost:${port}/v1`;
     const { probeServer, buildPiInvocation, launchPi } = await import("./pi-launch");
     let models = await probeServer(baseUrl);
-    let server: { stop: (force?: boolean) => void } | null = null;
+    let startedServer = false;
     if (models) {
       console.log(`reusing running server at ${baseUrl} (${models.map((m) => m.id).join(", ")})`);
     } else {
       const reg = new Registry();
       if (reg.list().length === 0) await reg.scan();
       const query = opt("query");
-      const all = reg.list();
-      if (!query && all.length !== 1) {
-        console.error(`no running server found at ${baseUrl}`);
-        console.error(all.length === 0
-          ? "and no models downloaded — run: mlx-bun get <org/repo>"
-          : "start one (mlx-bun serve <query>) or let me start one with --query:\n" +
-            all.map((m) => `  ${m.repoId}`).join("\n"));
-        process.exit(1);
+      let m;
+      if (query) {
+        m = reg.resolve(query);
+      } else {
+        // Auto-pick: the largest supported model that fits this machine
+        // (Gemma 4 is the only ported family; Qwen lands in Phase 14).
+        const { fit } = await import("./fit");
+        const candidates = reg.list().filter((r) => r.modelType.startsWith("gemma4"));
+        if (candidates.length === 0) {
+          console.error(`no running server found at ${baseUrl}, and no supported (gemma4) models downloaded`);
+          console.error("get one with: mlx-bun get mlx-community/gemma-4-12B-it-OptiQ-4bit");
+          process.exit(1);
+        }
+        candidates.sort((a, b) => b.sizeBytes - a.sizeBytes);
+        for (const r of candidates) {
+          const config = await loadModelConfig(r.path);
+          if (fit(config, r.sizeBytes, 8192, undefined, undefined, r.expertsBytes).fits) { m = r; break; }
+        }
+        if (!m) {
+          console.error("no downloaded gemma4 model fits this machine — pick one explicitly with --query");
+          process.exit(1);
+        }
+        console.log(`auto-picked ${m.repoId} (largest supported model that fits; override with --query)`);
       }
-      const m = reg.resolve(query ?? all[0]!.repoId);
       const { createServer, loadContext } = await import("./server");
       const budgetGB = Number(opt("memory-budget", "0"));
       const memoryBudgetBytes = budgetGB > 0 ? budgetGB * 1e9 : undefined;
       console.log(`loading ${m.repoId} ...`);
       const t0 = performance.now();
       const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes });
-      server = createServer(ctx, port, { memoryBudgetBytes });
+      createServer(ctx, port, { memoryBudgetBytes });
+      startedServer = true;
       console.log(`serving ${m.repoId} at ${baseUrl} (ready in ${(performance.now() - t0).toFixed(0)} ms)`);
       models = await probeServer(baseUrl);
       if (!models) { console.error("server started but /v1/models probe failed"); process.exit(1); }
     }
     console.log(`launching pi (model ${models[0]!.id}; Ctrl+P cycles local models, /model to switch)`);
     const code = await launchPi(buildPiInvocation(pi, baseUrl, models, passthrough));
-    server?.stop(true);
-    process.exit(code);
+    if (startedServer && code === 0) {
+      // The appliance promise: pi exiting does not take the server down.
+      console.log(`pi exited — still serving at ${baseUrl} (status page at http://localhost:${port}/, Ctrl+C to stop)`);
+    } else {
+      process.exit(code);
+    }
+    break;
   }
 
   case "harness": {
