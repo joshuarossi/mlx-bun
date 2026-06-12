@@ -435,11 +435,19 @@
     const f = await fetch("/fit").then((r) => r.json());
     fitLoaded = true;
     const r = f.report ?? {};
-    $("tps").textContent = (f.typical_decode_tps ?? r.predicted_decode_tps ?? 0).toFixed(1);
-    if (f.typical_decode_tps) {
+    if (f.measured_decode_tps) {
+      // A real benchmark of this model on this machine beats any model.
+      $("tps").textContent = f.measured_decode_tps.toFixed(1);
+      document.querySelector("#tps").closest(".card").querySelector("h3").textContent = "Decode · measured";
+      $("tps-cap").textContent = "mlx-bun benchmark on this machine · predicted " +
+        (f.typical_decode_tps ?? 0).toFixed(1) + " at " + num(f.typical_context_tokens) + " ctx";
+    } else if (f.typical_decode_tps) {
+      $("tps").textContent = f.typical_decode_tps.toFixed(1);
       $("tps-cap").textContent = "at " + num(f.typical_context_tokens) +
         " context · " + (r.predicted_decode_tps ?? 0).toFixed(1) + " tok/s at the " +
         num(f.context_tokens) + " max (full-KV reads)";
+    } else {
+      $("tps").textContent = (r.predicted_decode_tps ?? 0).toFixed(1);
     }
     $("m-ram").textContent = gb(f.machine?.ram_bytes);
     $("m-bw").textContent = (f.machine?.bandwidth_gbs ?? "—") + " GB/s";
@@ -456,10 +464,17 @@
     $("sku-ctx").textContent = num(f.sku_matrix_ctx);
     const myRam = Math.round((f.machine?.ram_bytes ?? 0) / 2 ** 30);
     const myChip = f.machine?.chip ?? null;
-    // Exactly one highlighted row: chip+RAM when the chip is known and
-    // in the table, otherwise the first RAM-only match.
+    // Exactly one highlighted row: chip+RAM exact → same chip, nearest
+    // RAM → RAM-only (unknown chip). Never highlight a different chip
+    // when ours is in the table.
     const rows = f.sku_matrix ?? [];
     let youIdx = rows.findIndex((r) => myChip && r.sku === myChip && r.ram_gb === myRam);
+    if (youIdx < 0 && myChip) {
+      let best = Infinity;
+      rows.forEach((r, i) => {
+        if (r.sku === myChip && Math.abs(r.ram_gb - myRam) < best) { best = Math.abs(r.ram_gb - myRam); youIdx = i; }
+      });
+    }
     if (youIdx < 0) youIdx = rows.findIndex((r) => r.ram_gb === myRam);
     $("sku-body").innerHTML = rows.map((row, i) => {
       const you = i === youIdx;

@@ -31,6 +31,8 @@ Bun.serve({
         context_tokens: 65536,
         typical_context_tokens: 8192,
         typical_decode_tps: 25.3,
+        measured_decode_tps: 24.1,
+        measured_at: Date.now() - 3_600_000,
         report: {
           fits: true, weights_bytes: 8_400_000_000, kv_bytes: 3_100_000_000,
           transient_bytes: 1_150_000_000, total_bytes: 12_650_000_000,

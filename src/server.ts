@@ -14,7 +14,9 @@ import type { Server } from "bun";
 // types *.html imports as HTMLBundle (the html loader), but the text
 // attribute makes the runtime value a string — hence the double cast.
 import statusPageHtml from "./status-page.html" with { type: "text" };
+import pkgJson from "../package.json" with { type: "json" };
 const STATUS_PAGE = statusPageHtml as unknown as string;
+const pkgVersion = (pkgJson as { version: string }).version;
 import { loadModelConfig, type KvQuantSpec } from "./config";
 import { Weights } from "./weights";
 import { Gemma4Model } from "./model/gemma4";
@@ -494,14 +496,29 @@ export function createServer(
 
       if (url.pathname === "/fit" && request.method === "GET") {
         // Fit assessment for the status page: this-machine report at the
-        // admission ceiling + the Apple SKU matrix at a fixed 32k. Same
-        // conservative stance as admission (bf16 KV, expertsBytes 0).
+        // admission ceiling + the Apple SKU matrix at a fixed 32k.
+        // expertsBytes comes from the registry so MoE models predict on
+        // active bytes — same numbers as `mlx-bun fit` and the serve
+        // banner (the three surfaces used to disagree). When the eval DB
+        // has a real measurement for this snapshot, it rides along:
+        // measured beats predicted.
         const { skuMatrix, thisMachine, detectChip } = await import("./fit");
         const machine = thisMachine();
         const chip = detectChip();
+        let expertsBytes = 0;
+        let measured: { decodeTps: number; ts: number } | null = null;
+        try {
+          const { Registry } = await import("./registry");
+          const rec = new Registry().list().find((r) => r.repoId === ctx.modelId);
+          if (rec) {
+            expertsBytes = rec.expertsBytes;
+            const { EvalDB } = await import("./evaldb");
+            measured = new EvalDB().latestFor(rec.path);
+          }
+        } catch {}
         const report = fit(
           ctx.model.config, ctx.model.weightsBytes, admission.maxSafeContext,
-          machine, undefined, 0, serverOptions.memoryBudgetBytes,
+          machine, undefined, expertsBytes, serverOptions.memoryBudgetBytes,
         );
         return Response.json({
           machine: { chip: chip.name, ram_bytes: machine.ramBytes, bandwidth_gbs: machine.bandwidthGBs },
@@ -513,8 +530,10 @@ export function createServer(
           typical_decode_tps: fit(
             ctx.model.config, ctx.model.weightsBytes,
             Math.min(8192, admission.maxSafeContext),
-            machine, undefined, 0, serverOptions.memoryBudgetBytes,
+            machine, undefined, expertsBytes, serverOptions.memoryBudgetBytes,
           ).predictedDecodeTps,
+          measured_decode_tps: measured?.decodeTps ?? null,
+          measured_at: measured?.ts ?? null,
           report: {
             fits: report.fits,
             weights_bytes: report.weightsBytes,
@@ -526,10 +545,21 @@ export function createServer(
             predicted_decode_tps: report.predictedDecodeTps,
           },
           sku_matrix_ctx: 32768,
-          sku_matrix: skuMatrix(ctx.model.config, ctx.model.weightsBytes, 32768).map((r) => ({
+          sku_matrix: skuMatrix(ctx.model.config, ctx.model.weightsBytes, 32768, expertsBytes).map((r) => ({
             sku: r.sku, ram_gb: r.ramGB, fits: r.fits,
             max_context: r.maxContext, decode_tps: r.decodeTps,
           })),
+        });
+      }
+
+      if (url.pathname === "/v1" && request.method === "GET") {
+        return Response.json({
+          name: "mlx-bun", version: pkgVersion, model: ctx.modelId,
+          endpoints: [
+            "POST /v1/chat/completions", "POST /v1/messages", "POST /v1/responses",
+            "GET /v1/models", "GET/POST/DELETE /v1/adapters",
+            "GET /stats", "GET /fit", "GET /library", "GET /downloads",
+          ],
         });
       }
 

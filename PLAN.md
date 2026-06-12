@@ -2104,6 +2104,26 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       Starter doubles later as a speculative-decoding draft and
       always-works fallback. NOT bundled in the binary (brew-hostile).
 
+## Fit-model calibration status (2026-06-12, second external tester)
+
+The decode prediction is single-point-calibrated on the M4 Pro
+(DECODE_EFFICIENCY 0.82, MOE_DECODE_EFFICIENCY 0.76 — accurate there)
+and misses elsewhere, measured on the M1 Max @400 nominal:
+26B MoE +59% optimistic (79.5 predicted vs 50.1 measured), 12B dense
++23% optimistic (35.2 vs 28.7), e4b −21% PESSIMISTIC (48.2 vs 60.9 —
+fit counts the full 262k-vocab embedding table as per-token read
+bytes; only one row is read). Known causes: per-chip achievable-vs-
+nominal bandwidth differs by generation; MoE gather efficiency is
+chip-dependent; embed-heavy models overcount. NOT retuned on one new
+data point (would break the calibrated M4 Pro). Mitigation shipped
+instead: all surfaces now agree (/fit passes expertsBytes like the
+CLI — the page/banner/CLI used to show 23/109/~80 for the same
+model), and the status page hero shows MEASURED decode (eval DB
+latestFor this snapshot) over predicted whenever a benchmark has
+run. Proper fix when it matters: per-chip efficiency table fed by
+cli-bench rows from real machines — the eval DB schema already
+carries everything needed.
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the
