@@ -9,6 +9,12 @@
 // Generation is serialized through a single queue (one GPU, batch=1).
 
 import type { Server } from "bun";
+// Embedded status page (Phase 16): `with { type: "text" }` inlines the
+// file in both `bun run` and the compiled single binary. bun-types
+// types *.html imports as HTMLBundle (the html loader), but the text
+// attribute makes the runtime value a string — hence the double cast.
+import statusPageHtml from "./status-page.html" with { type: "text" };
+const STATUS_PAGE = statusPageHtml as unknown as string;
 import { loadModelConfig, type KvQuantSpec } from "./config";
 import { Weights } from "./weights";
 import { Gemma4Model } from "./model/gemma4";
@@ -427,6 +433,12 @@ export function createServer(
     idleTimeout: 0,
     async fetch(request) {
       const url = new URL(request.url);
+
+      if ((url.pathname === "/" || url.pathname === "/status") && request.method === "GET") {
+        return new Response(STATUS_PAGE, {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
 
       if (url.pathname === "/stats" && request.method === "GET") {
         // Active KV scheme: which donor layers quantize and at what bits.
