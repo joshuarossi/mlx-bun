@@ -13,18 +13,23 @@
 import { dlopen, FFIType, ptr, read } from "bun:ffi";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { nativePackDir } from "../native-pack";
 
 const { ptr: P, i32, u64, f32, cstring } = FFIType;
 
 /** libmlxc resolution, in order: explicit env override → next to the
  *  executable (the `bun build --compile` sidecar layout, where
  *  libmlxc.dylib + libmlx.dylib + mlx.metallib ship beside the binary —
- *  see docs/embedding.md) → homebrew (arm64, then Intel prefix). */
+ *  see docs/embedding.md) → the downloaded native-pack cache
+ *  (src/native-pack.ts; populated on first run by the CLI) → homebrew
+ *  (arm64, then Intel prefix). Keep in sync with nativeRuntimeDir(). */
 function resolveLibmlxc(): string {
   const env = process.env.MLX_BUN_LIBMLXC;
   if (env) return env;
   const beside = join(dirname(process.execPath), "libmlxc.dylib");
   if (existsSync(beside)) return beside;
+  const cached = join(nativePackDir(), "libmlxc.dylib");
+  if (existsSync(cached)) return cached;
   for (const p of ["/opt/homebrew/lib/libmlxc.dylib", "/usr/local/lib/libmlxc.dylib"])
     if (existsSync(p)) return p;
   // let dlopen produce the canonical error message for the default path

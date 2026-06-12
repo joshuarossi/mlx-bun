@@ -111,7 +111,7 @@ async function fetchBlob(
   return res;
 }
 
-async function downloadOne(
+export async function downloadOne(
   url: string, token: string | null, blobPath: string,
   expected: { size: number; sha256?: string; sha1?: string; name: string },
   onProgress?: DownloadOptions["onProgress"],

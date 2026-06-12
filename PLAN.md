@@ -2045,6 +2045,31 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       (`--help`, `mlx-bun help <cmd>`), `--version`, unknown-command
       exit 1; `pi --help` is intercepted only as the sole arg so pi
       flag passthrough stays intact.
+- [x] **"One binary" decision + native runtime pack** (2026-06-12,
+      Josh): the 61 MB executable is 100% ours, but the MLX native
+      runtime (libmlx 15M + libmlxc + libjaccl + mlx.metallib 150M)
+      shipped as dist/ sidecars — and MLX is NOT part of macOS (Metal
+      is; MLX comes from brew/pip). Options weighed: (1) embed →
+      230 MB binary, 4× for bytes that aren't ours — rejected;
+      (2) require brew — rejected (the Python experience again);
+      (3) **first-run download of a versioned pack — CHOSEN.**
+      Implemented: scripts/build-native-pack.sh (brew dylibs +
+      metallib, load-commands rewritten, tar.gz = 52 MB compressed
+      from 166 MB) published as GitHub release native-v0.1.0;
+      src/native-pack.ts downloads (resumable + sha256, reusing
+      downloadOne) and extracts atomically to
+      ~/Library/Caches/mlx-bun/native-v<ver>-<arch>/. Resolution
+      order (ffi.ts + nativeRuntimeDir, kept in sync): env >
+      beside-binary (sidecar stays for embedders) > pack cache >
+      brew. CLI serve/pi call ensureNative() before any module that
+      dlopens. PRIVATE-repo caveat: release assets 404 on the plain
+      URL — resolveGithubAssetUrl() goes through the API with a
+      token (gh auth token / GITHUB_TOKEN) to a presigned location;
+      anonymous works once the repo is public. Verified: 4 unit
+      tests (fake pack), real-release e2e (52 MB in 16.6 s, verified,
+      extracted), dlopen of the extracted pack ok. Local dev command:
+      package.json bin + `bun run link-cli` symlink (never downloads
+      — brew resolves first).
 - [ ] **P3 — embed spike** (via `bun run`, no bundling):
       createAgentSession full-control + InteractiveMode in-process.
       Gates: editor latency clean during 12B decode; tok/s within
