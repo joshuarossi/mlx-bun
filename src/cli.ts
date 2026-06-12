@@ -87,7 +87,7 @@ All other arguments pass through to pi (user flags override ours):
   -c, --continue       Continue the previous pi session
   @file message...     Files and initial messages
 
-Requires pi: bun add -g @earendil-works/pi-coding-agent`,
+Requires pi: curl -fsSL https://pi.dev/install.sh | sh`,
 
   serve: `mlx-bun serve — OpenAI/Anthropic-compatible server for a local model
 
@@ -702,7 +702,7 @@ switch (cmd) {
     const pi = detectPi();
     if (!pi.found) {
       console.error("pi not found. Install it first:");
-      console.error("  bun add -g @earendil-works/pi-coding-agent");
+      console.error("  curl -fsSL https://pi.dev/install.sh | sh");
       process.exit(1);
     }
     const rt = serverRuntimeFlags();
@@ -773,7 +773,7 @@ switch (cmd) {
     const pi = detectPi();
     if (!pi.found) {
       console.error("pi not found on PATH. Install it first:");
-      console.error("  bun add -g @earendil-works/pi-coding-agent");
+      console.error("  curl -fsSL https://pi.dev/install.sh | sh");
       console.error("then re-run: mlx-bun harness pi");
       process.exit(1);
     }
