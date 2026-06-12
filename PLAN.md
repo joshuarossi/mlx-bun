@@ -2111,9 +2111,15 @@ Zip-sharing is over — publish properly: **bun/npm first, then brew.**
 the compiled bundle. Publishing likely also means making the repo
 public, which fixes the native-pack anonymous-download caveat.)
 Two gates before publishing:
-- [ ] **Sub-GB starter model working** — the real Phase 14(a) Qwen
-      3.5-0.8B port (pulled forward from "Monday"), so first run is
-      chatting in ~1 min, not 5 GB.
+- [ ] **Sub-GB starter model working** — so first run is chatting in
+      ~1 min, not 5 GB. Full implementation plan:
+      **docs/starter-model-port-handoff.md** (2026-06-12). KEY
+      DISCOVERY in it: Qwen3.5-0.8B is the hybrid gated-DeltaNet
+      qwen3-next lineage (18/24 linear-attention layers, MRoPE,
+      partial rotary, f32 SSM state) — a multi-week port, NOT a
+      quick one; MiniCPM5-1B is textbook llama (days). Recommended:
+      Track A (MiniCPM5) gates publishing, Track B (Qwen3.5) stays
+      Phase 14 on its own clock. **Josh to pick the track.**
 - [x] **Minimal chat experience in the web UI** (2026-06-12): /chat
       page served from the binary — streaming SSE chat against
       /v1/chat/completions, keynote styling, tok/s + TTFT footer per
