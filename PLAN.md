@@ -2085,7 +2085,15 @@ Users' own pi stays first-class forever; the flagship ends embedded.
 - [ ] **P4 — single binary**: pi assets into the Phase 5 compile;
       `-p`→runPrintMode, `--mode rpc`→runRpcMode; web chat UI rides
       AgentSession.subscribe() events.
-- [ ] **First-run starter model** (depends on Phase 14): sub-GB
+- [~] **First-run starter model** — INTERIM VERSION SHIPPED
+      (2026-06-12, after the first external tester sat through a 16 GB
+      26B download with nothing to use): fresh install now downloads
+      the e4b (5.3 GB, smallest supported) in the foreground, starts
+      serving/chatting, and streams the recommended model for the
+      machine in the background (in-process downloadModel → visible
+      at /downloads with speed/ETA; resumable if the session exits
+      first; auto-pick selects it next run). The TRUE sub-GB starter
+      below still lands with Phase 14. Original design: sub-GB
       starter (Qwen3.5-0.8B-OptiQ-4bit, 0.89 GB; alt
       MiniCPM5-1B-OptiQ-4bit, 0.92 GB — Llama arch, would be a third
       family) downloads first and serves chat in ~1 min with a
