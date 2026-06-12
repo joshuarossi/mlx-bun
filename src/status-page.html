@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mlx-bun · status</title>
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1d1f24; --muted: #6a6f7a; --accent: #b8451c;
+    --card: #ffffff; --line: #e4e1da; --good: #1d7a4f; --bad: #b03a3a; --chip: #f4ede6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #e8e6e1; --muted: #9aa0ab; --accent: #ff8a50;
+      --card: #1c1f25; --line: #2a2e36; --good: #5fd49a; --bad: #ef8a8a; --chip: #232830;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 -apple-system, "SF Pro Text", system-ui, sans-serif; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 40px 24px 64px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+    border-bottom: 1px solid var(--line); padding-bottom: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -.01em; }
+  h1 span { color: var(--accent); }
+  .conn { font-size: 13px; color: var(--muted); }
+  .conn .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--bad); margin-right: 6px; vertical-align: 1px; }
+  .conn.ok .dot { background: var(--good); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .card h2 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .big { font-size: 19px; font-weight: 650; word-break: break-all; }
+  .kv { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; font-size: 14px; }
+  .kv b { font-weight: 500; color: var(--muted); }
+  .kv code { font: 12.5px ui-monospace, "SF Mono", Menlo, monospace; background: var(--chip);
+    padding: 1px 6px; border-radius: 5px; }
+  .bar { height: 6px; border-radius: 3px; background: var(--chip); margin-top: 8px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px;
+    transition: width .4s; }
+  footer { margin-top: 28px; color: var(--muted); font-size: 12.5px; }
+  footer code { font: 12px ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1><span>mlx-bun</span> status</h1>
+    <div class="conn" id="conn"><span class="dot"></span><span id="conn-text">connecting…</span></div>
+  </header>
+
+  <div class="grid">
+    <div class="card" style="grid-column: 1 / -1">
+      <h2>Model</h2>
+      <div class="big" id="model">—</div>
+      <div class="kv"><b>context window</b><span id="ctx">—</span></div>
+      <div class="kv"><b>max safe context</b><span id="safe-ctx">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Memory</h2>
+      <div class="kv"><b>weights</b><span id="weights">—</span></div>
+      <div class="kv"><b>usable</b><span id="usable">—</span></div>
+      <div class="kv"><b>budget</b><span id="budget">—</span></div>
+      <div class="bar"><i id="mem-bar" style="width:0%"></i></div>
+    </div>
+
+    <div class="card">
+      <h2>Prompt cache</h2>
+      <div class="kv"><b>entries</b><span id="pc-entries">—</span></div>
+      <div class="kv"><b>bytes</b><span id="pc-bytes">—</span></div>
+      <div class="kv"><b>hit rate</b><span id="pc-hits">—</span></div>
+      <div class="bar"><i id="pc-bar" style="width:0%"></i></div>
+    </div>
+
+    <div class="card">
+      <h2>Response store</h2>
+      <div class="kv"><b>entries</b><span id="rs-entries">—</span></div>
+      <div class="kv"><b>bytes</b><span id="rs-bytes">—</span></div>
+      <div class="kv"><b>ttl</b><span id="rs-ttl">—</span></div>
+      <div class="bar"><i id="rs-bar" style="width:0%"></i></div>
+    </div>
+
+    <div class="card">
+      <h2>KV quantization</h2>
+      <div class="kv"><b>mode</b><code id="kv-mode">—</code></div>
+      <div id="kv-layers"></div>
+    </div>
+  </div>
+
+  <footer>
+    OpenAI <code>/v1/chat/completions</code> · Anthropic <code>/v1/messages</code> ·
+    Responses <code>/v1/responses</code> · models <code>/v1/models</code> ·
+    raw stats <code>/stats</code> · updated <span id="updated">never</span>
+  </footer>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const gb = (b) => b == null ? "—" : (b / 2 ** 30).toFixed(2) + " GB";
+  const mb = (b) => b == null ? "—" : (b / 2 ** 20).toFixed(1) + " MB";
+  const num = (n) => n == null ? "—" : n.toLocaleString();
+
+  async function tick() {
+    try {
+      const [stats, models] = await Promise.all([
+        fetch("/stats").then((r) => r.json()),
+        fetch("/v1/models").then((r) => r.json()),
+      ]);
+      const m = models.data?.[0];
+      $("model").textContent = m?.id ?? "—";
+      $("ctx").textContent = num(m?.context_window) + " tokens";
+      $("safe-ctx").textContent = num(stats.admission?.max_safe_context) + " tokens";
+
+      const a = stats.admission ?? {};
+      $("weights").textContent = gb(a.weights_bytes);
+      $("usable").textContent = gb(a.usable_bytes);
+      $("budget").textContent = a.memory_budget_bytes ? gb(a.memory_budget_bytes) : "off";
+      $("mem-bar").style.width = a.usable_bytes ? Math.min(100, 100 * a.weights_bytes / a.usable_bytes) + "%" : "0%";
+
+      const pc = stats.prompt_cache ?? {};
+      $("pc-entries").textContent = num(pc.entries);
+      $("pc-bytes").textContent = mb(pc.bytes) + " / " + mb(pc.max_bytes);
+      const lookups = (pc.hits ?? 0) + (pc.misses ?? 0);
+      $("pc-hits").textContent = lookups ? Math.round(100 * pc.hits / lookups) + "% (" + num(pc.hits) + "/" + num(lookups) + ")" : "no lookups yet";
+      $("pc-bar").style.width = pc.max_bytes ? Math.min(100, 100 * pc.bytes / pc.max_bytes) + "%" : "0%";
+
+      const rs = stats.response_store ?? {};
+      $("rs-entries").textContent = num(rs.entries);
+      $("rs-bytes").textContent = mb(rs.bytes) + " / " + mb(rs.max_bytes);
+      $("rs-ttl").textContent = rs.ttl_ms ? (rs.ttl_ms / 60000) + " min" : "—";
+      $("rs-bar").style.width = rs.max_bytes ? Math.min(100, 100 * rs.bytes / rs.max_bytes) + "%" : "0%";
+
+      const kv = stats.kv_quant ?? {};
+      $("kv-mode").textContent = kv.mode ?? "—";
+      $("kv-layers").innerHTML = Object.entries(kv.layers ?? {})
+        .map(([k, v]) => '<div class="kv"><b>' + k + " layers</b><span>" + v + "</span></div>").join("");
+
+      $("conn").className = "conn ok";
+      $("conn-text").textContent = "live";
+      $("updated").textContent = new Date().toLocaleTimeString();
+    } catch {
+      $("conn").className = "conn";
+      $("conn-text").textContent = "server unreachable — retrying";
+    }
+  }
+  tick();
+  setInterval(tick, 2000);
+</script>
+</body>
+</html>
