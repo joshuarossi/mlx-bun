@@ -293,6 +293,18 @@ switch (cmd) {
       console.error("usage: mlx-bun serve <query> [--port 8090] [--memory-budget GB]");
       process.exit(1);
     }
+    // Friendly collision check before loading gigabytes of weights.
+    const servePort = Number(opt("port", "8090"));
+    {
+      const { probeServer } = await import("./pi-launch");
+      const running = await probeServer(`http://localhost:${servePort}/v1`);
+      if (running) {
+        console.error(`port ${servePort} is already serving ${running.map((m) => m.id).join(", ")}.`);
+        console.error("reuse it (mlx-bun pi attaches automatically), stop it, or pick --port <other>.");
+        console.error("NOTE: a second server is a second model in memory — check `mlx-bun fit` first.");
+        process.exit(1);
+      }
+    }
     const reg = new Registry();
     if (reg.list().length === 0) await reg.scan();
     const m = reg.resolve(query);
@@ -303,7 +315,7 @@ switch (cmd) {
     console.log(`loading ${m.repoId} ...`);
     const t0 = performance.now();
     const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes });
-    const server = createServer(ctx, Number(opt("port", "8090")), { memoryBudgetBytes });
+    const server = createServer(ctx, servePort, { memoryBudgetBytes, owner: "serve" });
     if (memoryBudgetBytes)
       console.log(`memory budget: ${budgetGB} GB (admission control on)`);
     console.log(
@@ -350,6 +362,14 @@ switch (cmd) {
     let startedServer = false;
     if (models) {
       console.log(`reusing running server at ${baseUrl} (${models.map((m) => m.id).join(", ")})`);
+      try {
+        const stats = await (await fetch(`http://localhost:${port}/stats`)).json() as
+          { server?: { owner?: string } };
+        if (stats.server?.owner === "pi-session") {
+          console.log("note: that server belongs to another `mlx-bun pi` session and ends when it does —");
+          console.log("      run `mlx-bun serve` for a persistent server.");
+        }
+      } catch {}
     } else {
       const reg = new Registry();
       if (reg.list().length === 0) await reg.scan();
@@ -401,7 +421,7 @@ switch (cmd) {
       console.log(`loading ${m.repoId} ...`);
       const t0 = performance.now();
       const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes });
-      createServer(ctx, port, { memoryBudgetBytes });
+      createServer(ctx, port, { memoryBudgetBytes, owner: "pi-session" });
       startedServer = true;
       console.log(`serving ${m.repoId} at ${baseUrl} (ready in ${(performance.now() - t0).toFixed(0)} ms)`);
       models = await probeServer(baseUrl);
