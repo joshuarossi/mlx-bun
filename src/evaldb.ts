@@ -77,6 +77,15 @@ export class EvalDB {
     );
   }
 
+  /** Latest mlx-bun measurement for a model snapshot (status page:
+   *  measured numbers beat predictions when available). */
+  latestFor(modelPath: string): { decodeTps: number; ts: number; notes: string | null } | null {
+    const r = this.db
+      .query("SELECT decode_tps, ts, notes FROM runs WHERE model_path = ? AND stack = 'mlx-bun' ORDER BY ts DESC LIMIT 1")
+      .get(modelPath) as { decode_tps: number; ts: number; notes: string | null } | null;
+    return r ? { decodeTps: r.decode_tps, ts: r.ts, notes: r.notes } : null;
+  }
+
   recent(limit = 20): Record<string, unknown>[] {
     return this.db
       .query("SELECT * FROM runs ORDER BY ts DESC LIMIT ?")

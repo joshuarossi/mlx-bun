@@ -40,15 +40,18 @@ export const APPLE_SKUS: { chip: string; bandwidthGBs: number; ramOptions: numbe
   { chip: "M1", bandwidthGBs: 68, ramOptions: [8, 16] },
   { chip: "M1 Pro", bandwidthGBs: 200, ramOptions: [16, 32] },
   { chip: "M1 Max", bandwidthGBs: 400, ramOptions: [32, 64] },
+  { chip: "M1 Ultra", bandwidthGBs: 800, ramOptions: [64, 128] },
   { chip: "M2", bandwidthGBs: 100, ramOptions: [8, 16, 24] },
   { chip: "M2 Pro", bandwidthGBs: 200, ramOptions: [16, 32] },
   { chip: "M2 Max", bandwidthGBs: 400, ramOptions: [32, 64, 96] },
+  { chip: "M2 Ultra", bandwidthGBs: 800, ramOptions: [64, 128, 192] },
   { chip: "M3", bandwidthGBs: 100, ramOptions: [8, 16, 24] },
   { chip: "M3 Pro", bandwidthGBs: 150, ramOptions: [18, 36] },
-  { chip: "M3 Max", bandwidthGBs: 400, ramOptions: [36, 48, 64, 128] },
+  { chip: "M3 Max", bandwidthGBs: 400, ramOptions: [36, 48, 64, 96, 128] },
+  { chip: "M3 Ultra", bandwidthGBs: 819, ramOptions: [96, 256, 512] },
   { chip: "M4", bandwidthGBs: 120, ramOptions: [16, 24, 32] },
-  { chip: "M4 Pro", bandwidthGBs: 273, ramOptions: [24, 48, 64] },
-  { chip: "M4 Max", bandwidthGBs: 546, ramOptions: [36, 64, 128] },
+  { chip: "M4 Pro", bandwidthGBs: 273, ramOptions: [24, 48] },
+  { chip: "M4 Max", bandwidthGBs: 546, ramOptions: [36, 48, 64, 128] },
 ];
 
 /** Chip name from sysctl ("M1 Max") + its bandwidth from APPLE_SKUS. */
