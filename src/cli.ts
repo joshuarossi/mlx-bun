@@ -203,12 +203,28 @@ switch (cmd) {
       } else {
         // Auto-pick: the largest supported model that fits this machine
         // (Gemma 4 is the only ported family; Qwen lands in Phase 14).
-        const { fit } = await import("./fit");
-        const candidates = reg.list().filter((r) => r.modelType.startsWith("gemma4"));
+        const { fit, recommendedRepoId } = await import("./fit");
+        let candidates = reg.list().filter((r) => r.modelType.startsWith("gemma4"));
         if (candidates.length === 0) {
-          console.error(`no running server found at ${baseUrl}, and no supported (gemma4) models downloaded`);
-          console.error("get one with: mlx-bun get mlx-community/gemma-4-12B-it-OptiQ-4bit");
-          process.exit(1);
+          // First-run path: nothing supported on disk — download the
+          // recommended model for this machine (resumable + verified).
+          const repoId = recommendedRepoId();
+          console.log(`no supported model downloaded — getting ${repoId} (recommended for this Mac)`);
+          const { downloadModel } = await import("./download");
+          let lastFile = "";
+          await downloadModel(repoId, {
+            onProgress: (file, received, total) => {
+              const pct = total ? Math.floor((received / total) * 100) : 0;
+              if (file !== lastFile) {
+                if (lastFile) process.stdout.write("\n");
+                lastFile = file;
+              }
+              process.stdout.write(`\r  ${file}  ${gb(received)} / ${gb(total)} (${pct}%)   `);
+            },
+          });
+          if (lastFile) process.stdout.write("\n");
+          await reg.scan();
+          candidates = reg.list().filter((r) => r.modelType.startsWith("gemma4"));
         }
         candidates.sort((a, b) => b.sizeBytes - a.sizeBytes);
         for (const r of candidates) {
