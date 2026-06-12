@@ -108,6 +108,7 @@
   table{width:100%;border-collapse:collapse;font-size:14.5px}
   th,td{text-align:right;padding:13px 16px;border-bottom:1px solid rgba(255,255,255,.07)}
   th:first-child,td:first-child{text-align:left}
+  td:not(:first-child),th:not(:first-child){white-space:nowrap}
   th{font-size:11.5px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--dim)}
   tr:last-child td{border-bottom:none}
   tbody tr{transition:background .2s}
@@ -349,8 +350,10 @@
 
       const kv = stats.kv_quant ?? {};
       $("kv-mode").innerHTML = "<code>" + (kv.mode ?? "—") + "</code>";
+      const att = kv.attention;
       $("kv-layers").innerHTML = Object.entries(kv.layers ?? {})
-        .map(([k, v]) => '<div class="kv"><b>' + k + " layers</b><span class=\"num\">" + v + "</span></div>").join("");
+        .map(([k, v]) => '<div class="kv"><b>' + k + " layers</b><span class=\"num\">" + v + "</span></div>").join("") +
+        (att ? '<div class="kv"><b>attention</b><span class="num">' + att.global + " global · " + att.sliding_window + " sliding</span></div>" : "");
 
       await loadDownloads();
       if (!fitLoaded) { await loadFit(); await loadLibrary(); }
@@ -442,13 +445,20 @@
 
     $("sku-ctx").textContent = num(f.sku_matrix_ctx);
     const myRam = Math.round((f.machine?.ram_bytes ?? 0) / 2 ** 30);
-    $("sku-body").innerHTML = (f.sku_matrix ?? []).map((row) => {
-      const you = row.ram_gb === myRam;
-      return "<tr" + (you ? ' class="you"' : "") + '><td>' + row.sku + (you ? " · <b>this machine class</b>" : "") +
+    const myChip = f.machine?.chip ?? null;
+    // Exactly one highlighted row: chip+RAM when the chip is known and
+    // in the table, otherwise the first RAM-only match.
+    const rows = f.sku_matrix ?? [];
+    let youIdx = rows.findIndex((r) => myChip && r.sku === myChip && r.ram_gb === myRam);
+    if (youIdx < 0) youIdx = rows.findIndex((r) => r.ram_gb === myRam);
+    $("sku-body").innerHTML = rows.map((row, i) => {
+      const you = i === youIdx;
+      const dimCls = row.fits ? "num" : "num fit-no";
+      return "<tr" + (you ? ' class="you"' : "") + '><td>' + row.sku + (you ? " · <b>this machine</b>" : "") +
         '</td><td class="num">' + row.ram_gb + ' GB</td>' +
-        '<td class="' + (row.fits ? "fit-yes" : "fit-no") + '">' + (row.fits ? "fits" : "—") + "</td>" +
-        '<td class="num">' + (row.fits ? num(row.max_context) : "—") + "</td>" +
-        '<td class="num">' + (row.fits ? row.decode_tps.toFixed(0) + " tok/s" : "—") + "</td></tr>";
+        '<td class="' + (row.fits ? "fit-yes" : "fit-no") + '">' + (row.fits ? "fits" : "no") + "</td>" +
+        '<td class="' + dimCls + '">' + (row.max_context > 0 ? num(row.max_context) : "0 — weights alone don’t fit") + "</td>" +
+        '<td class="' + dimCls + '">' + (row.decode_tps > 0 ? "~" + row.decode_tps.toFixed(0) + " tok/s" : "—") + "</td></tr>";
     }).join("");
   }
 

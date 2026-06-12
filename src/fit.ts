@@ -51,8 +51,24 @@ export const APPLE_SKUS: { chip: string; bandwidthGBs: number; ramOptions: numbe
   { chip: "M4 Max", bandwidthGBs: 546, ramOptions: [36, 64, 128] },
 ];
 
-export function thisMachine(bandwidthGBs = 273): MachineSpec {
-  return { name: "this machine", ramBytes: totalmem(), bandwidthGBs };
+/** Chip name from sysctl ("M1 Max") + its bandwidth from APPLE_SKUS. */
+export function detectChip(): { name: string | null; bandwidthGBs: number | null } {
+  try {
+    const proc = Bun.spawnSync(["sysctl", "-n", "machdep.cpu.brand_string"]);
+    const name = proc.stdout.toString().trim().replace(/^Apple\s+/, "");
+    if (!name) return { name: null, bandwidthGBs: null };
+    const sku = APPLE_SKUS.find((s) => s.chip === name);
+    return { name, bandwidthGBs: sku?.bandwidthGBs ?? null };
+  } catch {
+    return { name: null, bandwidthGBs: null };
+  }
+}
+
+export function thisMachine(bandwidthGBs?: number): MachineSpec {
+  // Default bandwidth: the detected chip's table entry; 273 (M4 Pro, the
+  // original dev machine) only as the last resort.
+  const bw = bandwidthGBs ?? detectChip().bandwidthGBs ?? 273;
+  return { name: "this machine", ramBytes: totalmem(), bandwidthGBs: bw };
 }
 
 /** Recommended first model per device tier (PRODUCT_ROADMAP profiles).
