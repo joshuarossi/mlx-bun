@@ -132,9 +132,14 @@ from /v1/models). Reversible; never touches existing pi config.`,
 
   evals: `mlx-bun evals — recent benchmark runs
 
-Usage: mlx-bun evals
+Usage: mlx-bun evals [options]
 
-Prints the eval database: decode tok/s, peak memory, commit, notes.`,
+Options:
+  --limit <n>          Rows to show  [default: 20]
+  --raw                Full records as JSON lines (for scripts/jq)
+
+Table view: when, model, bench kind, KV mode, decode tok/s, TTFT,
+peak memory, commit. Runs are written by ./benchmark.sh.`,
 };
 
 function printHelp(topic?: string): never {
@@ -370,13 +375,58 @@ switch (cmd) {
 
   case "evals": {
     const db = new EvalDB();
-    for (const r of db.recent()) {
-      console.log(
-        `${new Date(r.ts as number).toISOString()}  ${(r.model_path as string).split("/").at(-1)}  ` +
-        `decode ${(r.decode_tps as number).toFixed(1)} tok/s  peak ${gb(r.peak_bytes as number)}  ` +
-        `${r.commit_sha ?? ""} ${r.notes ?? ""}`,
-      );
+    const limit = Number(opt("limit", "20"));
+    const rows = db.recent(limit);
+    if (flag("raw")) {
+      for (const r of rows) console.log(JSON.stringify(r));
+      break;
     }
+    const { style } = await import("./tui");
+    if (rows.length === 0) {
+      console.log("no eval runs recorded yet — ./benchmark.sh writes them");
+      break;
+    }
+    const ago = (ts: number) => {
+      const s = (Date.now() - ts) / 1000;
+      if (s < 90) return `${Math.round(s)}s ago`;
+      if (s < 5400) return `${Math.round(s / 60)}m ago`;
+      if (s < 129600) return `${Math.round(s / 3600)}h ago`;
+      return `${Math.round(s / 86400)}d ago`;
+    };
+    const modelName = (p: string) =>
+      /models--[^/]+--([^/]+)/.exec(p)?.[1] ?? p.split("/").at(-1) ?? p;
+    const note = (r: Record<string, unknown>, key: string) =>
+      new RegExp(`${key}=([\\w.]+)`).exec((r.notes as string) ?? "")?.[1] ?? "";
+    const table = rows.map((r) => ({
+      when: ago(r.ts as number),
+      model: modelName(r.model_path as string).replace(/-OptiQ-4bit$/, "").replace(/^gemma-4-/, "g4-"),
+      bench: ((r.notes as string) ?? "").split(" ")[0] ?? "",
+      kv: note(r, "kv"),
+      decode: (r.decode_tps as number).toFixed(1),
+      ttft: note(r, "ttft_ms") ? `${note(r, "ttft_ms")}ms` : "",
+      peak: gb(r.peak_bytes as number),
+      commit: (r.commit_sha as string) ?? "",
+    }));
+    type Row = (typeof table)[number];
+    const cols: Array<[string, keyof Row, "left" | "right"]> = [
+      ["WHEN", "when", "right"], ["MODEL", "model", "left"], ["BENCH", "bench", "left"],
+      ["KV", "kv", "left"], ["TOK/S", "decode", "right"], ["TTFT", "ttft", "right"],
+      ["PEAK", "peak", "right"], ["COMMIT", "commit", "left"],
+    ];
+    const widths = cols.map(([h, k]) => Math.max(h.length, ...table.map((t) => t[k].length)));
+    console.log();
+    console.log("  " + cols.map(([h], i) => style.dim(h.padEnd(widths[i]!))).join("  "));
+    for (const t of table) {
+      console.log("  " + cols.map(([, k, align], i) => {
+        const cell = align === "right" ? t[k].padStart(widths[i]!) : t[k].padEnd(widths[i]!);
+        if (k === "decode") return style.green(style.bold(cell));
+        if (k === "model") return style.bold(cell);
+        if (k === "commit" || k === "when") return style.dim(cell);
+        return cell;
+      }).join("  "));
+    }
+    console.log();
+    console.log(style.dim(`  ${rows.length} run(s) · --limit <n> for more · --raw for full records`));
     break;
   }
 
