@@ -2104,6 +2104,23 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       Starter doubles later as a speculative-decoding draft and
       always-works fallback. NOT bundled in the binary (brew-hostile).
 
+## Publishing decision (2026-06-12, Josh)
+
+Zip-sharing is over — publish properly: **bun/npm first, then brew.**
+(npm channel = source package running under the user's bun; brew =
+the compiled bundle. Publishing likely also means making the repo
+public, which fixes the native-pack anonymous-download caveat.)
+Two gates before publishing:
+- [ ] **Sub-GB starter model working** — the real Phase 14(a) Qwen
+      3.5-0.8B port (pulled forward from "Monday"), so first run is
+      chatting in ~1 min, not 5 GB.
+- [x] **Minimal chat experience in the web UI** (2026-06-12): /chat
+      page served from the binary — streaming SSE chat against
+      /v1/chat/completions, keynote styling, tok/s + TTFT footer per
+      reply, stop button, system-prompt field; linked from the status
+      page hero. E2E-verified against a live server (streamed reply,
+      live tok/s).
+
 ## Fit-model calibration status (2026-06-12, second external tester)
 
 The decode prediction is single-point-calibrated on the M4 Pro
