@@ -62,6 +62,13 @@ print the launch command.
   all). **Verdict**: do regardless; this is the harness-adapter
   pattern from the roadmap and it's nearly free.
 
+**Pros**: nearly free; respects the user's pi setup, sessions, themes,
+extensions; zero version coupling; the dynamic-discovery extension
+keeps the model list in sync with our server automatically.
+**Cons**: requires pi to already be installed; not "built-in" — the
+appliance story still has two moving parts; config-merge bugs are the
+classic way to annoy users (the extension route mostly avoids this).
+
 ### Option 2 — `mlx-bun pi` (v1): spawn the user's installed pi
 
 Start our server, then spawn `pi` with a session-scoped provider
@@ -71,6 +78,18 @@ print the install one-liner.
 - **Effort**: a day with polish. **Risk**: version skew with whatever
   pi the user has; not "built-in" — two installs.
 - **Verdict**: the right v1. Real UX win immediately, zero coupling.
+- **Bonus**: unrecognized flags pass straight through, so
+  `mlx-bun pi -p "summarize @notes.md"` (pi's non-interactive print
+  mode), `--mode json/rpc`, `--continue`, `--resume` etc. all work on
+  day one without us implementing anything.
+
+**Pros**: fast to ship; full pi feature surface via passthrough;
+upgrades to pi arrive for free; failure modes are simple (no pi →
+print install hint). **Cons**: still two installs; we can't control
+the pi version (an upstream flag/behavior change can break our
+launcher); per-run provider injection needs care so we don't pollute
+the user's global config; process lifecycle (server + child TUI)
+needs clean shutdown handling.
 
 ### Option 3 — SDK embed (the real "built-in"): pi inside the mlx-bun binary
 
@@ -119,7 +138,19 @@ Open engineering questions (all look tractable, none look fatal):
 
 - **Effort**: ~1–2 weeks including bundle work and latency testing.
 - **Verdict**: feasible and high-value; this is the appliance moment —
-  one binary, one command, a real agent on a local model.
+  one binary, one command, a real agent on a local model. `-p` and
+  `--mode rpc/json` remain supported natively: `runPrintMode` and
+  `runRpcMode` are SDK exports, so the embedded CLI keeps pi's
+  headless modes.
+
+**Pros**: the true appliance — one binary, no prior installs; we pin
+and test the exact pi version we ship; full control of defaults
+(session dir, tools, system prompt, model list per device profile);
+in-process events shared with the web UI; offline-clean.
+**Cons**: most engineering (asset bundling, latency validation); we
+own the upgrade treadmill for a fast-moving 0.x dependency; embedded
+pi diverges from the user's own pi config/extensions unless we
+deliberately opt into discovery; binary grows ~20 MB.
 
 ### Option 4 — RPC / JSON event-stream mode (not for the terminal — for the web UI)
 
@@ -136,6 +167,12 @@ dashboards…)" as a primary use case.
   in-process — same event shapes, no subprocess). Tool calls,
   steering, and progress come for free instead of us re-implementing
   an agent loop in the browser.
+
+**Pros**: documented, versioned JSONL protocol; UI-agnostic (web,
+IDE, bots); steering/abort/stats built in; works with either the
+subprocess or the embedded session as the engine. **Cons**: not a
+terminal UX at all; strict framing rules to honor; the extension-UI
+sub-protocol must be bridged if extensions prompt the user.
 
 ## Does this make sense as a feature?
 
@@ -158,14 +195,73 @@ Yes — it is arguably the highest-leverage product move available:
   embedded TUI must not degrade decode throughput (measure, per house
   rules).
 
+## Implementation plan
+
+To be explicit about the recommendation: **the locally installed pi is
+the v1 stepping stone, not the destination.** Users who have their own
+pi always get first-class support (P1); the flagship `mlx-bun pi` ends
+as the embedded, single-binary experience (P3/P4).
+
+### P1 — `mlx-bun harness pi` (hours–1 day)
+
+1. Detect pi (`which pi`, `~/.bun/bin/pi`, npm global); report version.
+2. Generate an extension file (e.g. `~/.pi/agent/extensions/mlx-bun.ts`)
+   that calls `pi.registerProvider("mlx-bun", ...)` with **dynamic
+   discovery**: fetch our `/v1/models` at pi startup so the model list
+   tracks the server. No models.json surgery; trivially reversible
+   (delete one file).
+3. Validate: tiny completion against the running server through pi's
+   provider path; print `pi --provider mlx-bun` launch hint.
+4. Failure modes: pi missing → print install one-liner; server down →
+   offer to start it.
+
+### P2 — `mlx-bun pi` v1: subprocess launcher (~1–2 days)
+
+1. Ensure server: reuse a running instance if healthy, else start
+   in-process and wait for readiness.
+2. Resolve the pi binary; if absent, offer the installer.
+3. Spawn pi with stdio inherited and a **session-scoped provider**: a
+   generated `-e <tmp-extension>.ts` registering the provider for this
+   run only (no global config writes), plus
+   `--provider mlx-bun --model <profile default>`.
+4. **Pass through all remaining argv** — this is where `mlx-bun pi -p
+   "..."`, `--mode rpc`, `--continue`, `@file` args work for free.
+5. Lifecycle: child exit → optionally keep the server warm (flag);
+   SIGINT goes to the child (pi handles double-ctrl-C), server shuts
+   down cleanly after.
+
+### P3 — embed spike (≤1 week, run via `bun run`, no bundling yet)
+
+1. Add pi packages as pinned deps (exact `0.79.x`).
+2. Wire `createAgentSession` full-control style: in-memory
+   registry/settings, our provider at the loopback baseUrl, session
+   dir under `~/.mlx-bun/`, default tools, our system prompt.
+3. Run `new InteractiveMode(runtime)` in the same process as the
+   server.
+4. **Gates** (house rule — numbers on this machine): editor latency
+   during 12B decode subjectively clean + decode tok/s within noise
+   of server-only; tool-call round-trip (read/bash/edit) works against
+   the 12B; clean teardown.
+5. Decide discovery policy: default isolated; `--pi-config` opt-in to
+   the user's `~/.pi` extensions/skills/themes.
+
+### P4 — single binary + shared event plumbing (~1 week)
+
+1. Fold pi's asset manifest (theme JSONs, PNGs, export-html templates,
+   photon wasm, pi-tui darwin `.node` prebuilds) into the Phase 5
+   `bun build --compile`; patch/verify pi's asset-path resolution
+   inside the bundle (upstream's own binary build is the existence
+   proof).
+2. CLI surface: `mlx-bun pi [pi-args]` → embedded `InteractiveMode`;
+   `-p` → `runPrintMode`; `--mode rpc` → `runRpcMode`. Subprocess
+   path (P2) remains as `--external-pi` fallback.
+3. Web chat UI rides the same `AgentSession.subscribe()` events over
+   WebSocket (Option 4 shape, in-process — no subprocess needed).
+4. Upgrade policy: bump pi deliberately per release, re-run the P3
+   gates as the regression suite.
+
 ## Recommended sequence
 
-1. **Now**: Option 1 + Option 2 (`mlx-bun harness pi`, subprocess
-   `mlx-bun pi`). Days of work, immediate demo value, zero coupling.
-2. **Next**: Option 3 spike — minimal embedded
-   `createAgentSession` + `InteractiveMode` against the in-process
-   server, *without* bundle work (run via `bun run` first). Gate: TUI
-   stays responsive during 12B decode.
-3. **Then**: fold pi's assets into the Phase 5 compile → true
-   single-binary `mlx-bun pi`; reuse the session-event plumbing for
-   the web chat UI (Option 4 shape, in-process).
+P1 + P2 now (days, immediate demo value, zero coupling) → P3 spike
+with its latency gate → P4 single-binary flagship, reusing the event
+plumbing for the built-in web UI.
