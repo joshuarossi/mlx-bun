@@ -14,6 +14,7 @@ import { loadModelConfig } from "./config";
 import { fit, skuMatrix, thisMachine } from "./fit";
 import { EvalDB } from "./evaldb";
 import pkg from "../package.json" with { type: "json" };
+import { renderHelp } from "./tui";
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -163,12 +164,12 @@ peak memory, commit. Runs are written by ./benchmark.sh.`,
 };
 
 function printHelp(topic?: string): never {
-  if (topic && HELP[topic]) console.log(HELP[topic]);
+  if (topic && HELP[topic]) console.log(renderHelp(HELP[topic]));
   else if (topic) {
     console.error(`unknown command: ${topic}\n`);
-    console.log(OVERVIEW);
+    console.log(renderHelp(OVERVIEW));
     process.exit(1);
-  } else console.log(OVERVIEW);
+  } else console.log(renderHelp(OVERVIEW));
   process.exit(0);
 }
 
