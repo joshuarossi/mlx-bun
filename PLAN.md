@@ -2012,8 +2012,14 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       supported is on disk it downloads the recommended model for
       this machine (fit.ts recommendedRepoId — roadmap tiers: <24 GB
       e4b, 24–48 12B, ≥48 26B; resumable+verified downloadModel);
-      and when `mlx-bun pi` started the server itself, pi exiting
-      cleanly leaves the server (web/API/status page) RUNNING.
+      and lifecycle settled (Josh, same day, after a keep-alive
+      detour): a server `mlx-bun pi` starts lives exactly as long as
+      the pi session — any exit (clean, Ctrl+C, headless -p) tears it
+      down; persistent serving is `mlx-bun serve`'s job (reused and
+      never stopped). Parent ignores SIGINT while pi runs: Ctrl+C
+      hits the whole foreground process group and pi's FIRST press
+      means "clear input" — without the guard the parent (and its
+      server) died on the first press.
 - [x] **Status page** (2026-06-12, Josh ask): `GET /` and `/status`
       serve an embedded self-contained HTML page (src/status-page.html,
       text-imported so it bundles into the single binary) polling
