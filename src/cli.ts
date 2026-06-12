@@ -251,8 +251,11 @@ switch (cmd) {
     }
     console.log(`launching pi (model ${models[0]!.id}; Ctrl+P cycles local models, /model to switch)`);
     const code = await launchPi(buildPiInvocation(pi, baseUrl, models, passthrough));
-    if (startedServer && code === 0) {
-      // The appliance promise: pi exiting does not take the server down.
+    // Headless runs (-p/--print, --mode json/rpc) are ephemeral: startup
+    // is fast enough that scripts shouldn't leave a server behind. Only
+    // an interactive session that started the server keeps it serving.
+    const headless = passthrough.some((a) => a === "-p" || a === "--print" || a === "--mode");
+    if (startedServer && code === 0 && !headless) {
       console.log(`pi exited — still serving at ${baseUrl} (status page at http://localhost:${port}/, Ctrl+C to stop)`);
     } else {
       process.exit(code);
