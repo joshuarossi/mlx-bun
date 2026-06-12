@@ -14,8 +14,10 @@ import type { Server } from "bun";
 // types *.html imports as HTMLBundle (the html loader), but the text
 // attribute makes the runtime value a string — hence the double cast.
 import statusPageHtml from "./status-page.html" with { type: "text" };
+import chatPageHtml from "./chat-page.html" with { type: "text" };
 import pkgJson from "../package.json" with { type: "json" };
 const STATUS_PAGE = statusPageHtml as unknown as string;
+const CHAT_PAGE = chatPageHtml as unknown as string;
 const pkgVersion = (pkgJson as { version: string }).version;
 import { loadModelConfig, type KvQuantSpec } from "./config";
 import { Weights } from "./weights";
@@ -451,6 +453,12 @@ export function createServer(
 
       if ((url.pathname === "/" || url.pathname === "/status") && request.method === "GET") {
         return new Response(STATUS_PAGE, {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+
+      if (url.pathname === "/chat" && request.method === "GET") {
+        return new Response(CHAT_PAGE, {
           headers: { "content-type": "text/html; charset=utf-8" },
         });
       }

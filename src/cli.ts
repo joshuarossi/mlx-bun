@@ -104,7 +104,8 @@ Usage: mlx-bun serve [query] [options]
 ${SERVER_FLAGS}
 
 Endpoints: /v1/chat/completions, /v1/messages, /v1/responses, /v1/models,
-/v1/adapters, /stats, /fit, /library, /downloads — status page at /`,
+/v1/adapters, /stats, /fit, /library, /downloads — status page at /,
+browser chat at /chat`,
 
   get: `mlx-bun get — download a model from Hugging Face
 
@@ -507,6 +508,7 @@ switch (cmd) {
       "",
       `API   ${style.url(`http://${shownHost}:${server.port}/v1`)}  ${style.dim("(OpenAI · Anthropic · Responses)")}`,
       `Web   ${style.url(`http://${shownHost}:${server.port}/`)}  ${style.dim("(status · fit · library)")}`,
+      `Chat  ${style.url(`http://${shownHost}:${server.port}/chat`)}  ${style.dim("(local chat in the browser)")}`,
       ...(rt.serverOptions.memoryBudgetBytes
         ? [`Mem   ${gb(rt.serverOptions.memoryBudgetBytes)} budget ${style.dim("(admission control on)")}`] : []),
       `Perf  ${style.dim(runtimeSummary(rt.serverOptions))}`,
