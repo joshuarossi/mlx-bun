@@ -2007,6 +2007,14 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       dogfooded: `bun src/cli.ts pi -p "Reply with exactly:
       PI-LINK-OK"` → reused the running 26B server → pi answered
       PI-LINK-OK through the local model.
+- [x] **Status page** (2026-06-12, Josh ask): `GET /` and `/status`
+      serve an embedded self-contained HTML page (src/status-page.html,
+      text-imported so it bundles into the single binary) polling
+      /stats + /v1/models every 2 s: model + context, memory bars,
+      prompt-cache hit rate, response store, KV-quant layer split.
+      `scripts/status-page-stub.ts` serves it with fake stats for
+      styling without a model load. First brick of the web UI surface
+      (the chat page lands with P4's event plumbing).
 - [ ] **P3 — embed spike** (via `bun run`, no bundling):
       createAgentSession full-control + InteractiveMode in-process.
       Gates: editor latency clean during 12B decode; tok/s within
