@@ -126,6 +126,32 @@ export function h1(text: string): void {
   console.log("  " + (tty() ? gradient(text.toUpperCase()) : text.toUpperCase()));
 }
 
+/** Style plain help text structurally: title line, Usage, section
+ *  headers, flags, defaults. Content is untouched on non-TTY. */
+export function renderHelp(text: string): string {
+  if (!tty()) return text;
+  const accent = fg(rampAt(0.35));
+  const blue = fg(rampAt(0.9));
+  return text.split("\n").map((line) => {
+    // "mlx-bun <cmd> — description" title line
+    const title = /^(mlx-bun(?: \S+)?)( — )(.*)$/.exec(line);
+    if (title) return gradient(title[1]!) + DIM + title[2]! + title[3]! + RESET;
+    // "Usage: ..." line
+    const usage = /^(Usage:)( .*)$/.exec(line);
+    if (usage) return DIM + usage[1]! + RESET + BOLD + usage[2]! + RESET;
+    // Section headers ("Server options:", "Commands:", "Examples:")
+    if (/^[A-Z][\w &/()'|-]*( \(.*\))?:$/.test(line)) return accent + BOLD + line + RESET;
+    // Flag/command lines: color the flag tokens, dim [default: ...]
+    let out = line.replace(/(^|\s)(--[\w-]+|-[a-zA-Z](?=[,\s]))/g, (_, pre, f) => pre + blue + f + RESET);
+    out = out.replace(/\[default:[^\]]*\]/g, (m) => DIM + m + RESET);
+    // Leading command word in overview command lists ("  pi   Launch...")
+    out = out.replace(/^( {2})([a-z][\w-]*)( {2,})/g, (_, pre, cmd2, sp) => pre + BOLD + cmd2 + RESET + sp);
+    // Example lines: dim trailing comments
+    out = out.replace(/(#.*)$/g, (m) => DIM + m + RESET);
+    return out;
+  }).join("\n");
+}
+
 export const style = {
   dim: (s: string) => (tty() ? DIM + s + RESET : s),
   bold: (s: string) => (tty() ? BOLD + s + RESET : s),
