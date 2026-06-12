@@ -537,15 +537,38 @@ registry license column. Suite 157/157 at every commit.
    while rebooted.
 2. **M1 Max**: `git pull` then `./benchmark.sh --redo` (still on
    pre-rope-fix 6cb4a35).
-3. **Claude Code live smoke**: run serve-gemma or `bun scripts/serve.ts`,
-   point Claude Code at `ANTHROPIC_BASE_URL=http://localhost:8090` —
-   the protocol legs are SDK-verified; this is the dogfood check.
-4. **Phase 14 (Qwen)**: pick + download the first Qwen 3.x quant
-   (2B/4B class) — multi-GB download, your call. This also unlocks
-   MTP and is a consumer of the kept fused-decode flag.
+3. ~~Claude Code live smoke~~ **DROPPED (2026-06-12, Josh)**: the
+   /v1/messages surface was already dogfooded through pi instead;
+   Josh isn't going to point Claude Code at the local model. The
+   protocol legs stay SDK-verified — no further smoke needed.
+4. **Phase 14 (Qwen)**: medium-term, targeted ~Mon 2026-06-15. Pick +
+   download the first Qwen 3.x quant (2B/4B class) — multi-GB
+   download, your call. This also unlocks MTP and is a consumer of
+   the kept fused-decode flag.
 5. **Phase 12 (SigLIP)**: your hold — only if needed.
-6. **Phase 13 (TurboQuant)**: ship/no-ship decision is yours;
-   "legitimate to never ship" stands.
+6. **Phase 13 (TurboQuant)**: PROMOTED (2026-06-12, Josh) — see the
+   Phase 13 header; it's now the most interesting research direction
+   and ties into PRODUCT_ROADMAP.md artifact design.
+
+**Direction debate (2026-06-12, unresolved — Josh deciding):** two
+candidate next directions, both product-shaped (see PRODUCT_ROADMAP.md):
+
+- **(A) DX/UX**: built-in web chat UI (pi-SDK-based, tool calls
+  working, served as another page from the same executable) + an
+  investigation into bundling/embedding pi (`mlx-bun pi` drops you
+  into a pi agent session on the local model — embed via SDK, reuse
+  its TUI components, or shell out to the executable; genuinely
+  unknown, scope the options first).
+- **(B) Lucien on local models**: run the Lucien/Dreaming pipeline on
+  mlx-bun-served models, measure quality + perf per pipeline task
+  (synthesis, article writing, recall), and investigate mlx-bun as a
+  packaged Lucien backend — single executable that creates the memory
+  store, ingests sessions, synthesizes articles, and serves chat
+  grounded on them.
+
+Kernel work stays available but Josh is benchmarking-fatigued; the
+clean-machine ./benchmark.sh pass (perf-kernel default decision) still
+gates the MLX_BUN_PERF_KERNEL flip whenever it happens.
 
 Agent-side next when work resumes: Phase 7 research track — the
 decode-split profiling already identified the lever (per-step host
@@ -1184,9 +1207,8 @@ Phase 4's "shim later if needed"):
       grammar + reassembly, tool_use emission, tool_result round-trip
       against the live 12B, anthropic-shaped errors; unit grammar
       tests in tests/anthropic.test.ts). 138/138 suite.
-      Josh-side check remaining: point a real Claude Code at
-      `ANTHROPIC_BASE_URL=http://localhost:8090` (needs a persistent
-      server — agent sessions don't start those).
+      Josh-side check: dropped 2026-06-12 — dogfooded via pi instead;
+      Claude Code won't be used against the local model.
 
 **OpenAI Responses** (`previous_response_id` resumption):
 
@@ -1215,9 +1237,10 @@ Phase 4's "shim later if needed"):
   against the live server (store + /stats asserted); (b) the
   `@anthropic-ai/sdk` client completed a multi-turn STREAMED
   conversation WITH tool use (tool_use → tool_result round-trip,
-  grounded answer). Suite 157/157. Remaining Josh-side smoke: real
-  Claude Code session via ANTHROPIC_BASE_URL (needs a persistent
-  server). docs/server-api.md documents both surfaces.
+  grounded answer). Suite 157/157. The planned Claude Code live smoke
+  was dropped 2026-06-12 — Josh dogfooded the surface through pi
+  instead and won't use Claude Code against the local model.
+  docs/server-api.md documents both surfaces.
 
 ## Phase 12 — SigLIP vision tower `[ ]` (capability — Josh's hold)
 
@@ -1236,16 +1259,19 @@ optimizations / only if needed**: nothing above depends on it.
   resize-free fixture parity vs the optiq stack (tier a on ids +
   greedy prefix, as the 12B vision suite does).
 
-## Phase 13 — TurboQuant `[ ]` (research path — lowest priority)
+## Phase 13 — TurboQuant `[ ]` (research path — PROMOTED 2026-06-12)
 
 Rotation-based vector quantization. Oracle:
-`optiq/runtime/mtp/turboquant.py`. Quality-critical-workload niche even
-per optiq; hardest math, lowest daily value. **Sequence last; it is
-legitimate to never ship this.** Exit criterion (if attempted):
-reproduce the reference's quality-vs-bpw curve on one model; otherwise
-record a decision not to.
+`optiq/runtime/mtp/turboquant.py`. ~~Sequence last~~ **Re-prioritized
+by Josh (2026-06-12): now ahead of Qwen in interest.** The product
+frame (PRODUCT_ROADMAP.md "Artifact design") changed the value
+calculus: TurboQuant + sensitivity analysis is the lever for
+device-targeted artifacts ("make a 12B-class model hit 64k context on
+24–32 GB above a decode floor"), not a generic-compression niche.
+Exit criterion unchanged: reproduce the reference's quality-vs-bpw
+curve on one model; otherwise record a decision not to.
 
-## Phase 14 — Qwen 3.x family bring-up `[ ]` (the MTP home)
+## Phase 14 — Qwen 3.x family bring-up `[ ]` (the MTP home — medium-term, ~Mon 2026-06-15 per Josh)
 
 Second model family (always in scope per design principles). This is
 where MTP speculation actually works: Qwen quants bundle the MTP head
