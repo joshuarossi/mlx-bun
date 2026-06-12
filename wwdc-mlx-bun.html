@@ -1,0 +1,848 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mlx-bun — a WWDC keynote</title>
+<style>
+  /* ————————————————————————————————————————————————
+     mlx-bun · keynote deck
+     Apple keynote grammar: black stage, SF Pro Display,
+     gradient hero type, one idea per slide, numbers that land.
+     ———————————————————————————————————————————————— */
+  :root{
+    --bg:#000;
+    --ink:#f5f5f7;
+    --dim:#86868b;
+    --dimmer:#515154;
+    --hairline:rgba(255,255,255,.14);
+    --card:rgba(255,255,255,.045);
+    --card-hover:rgba(255,255,255,.08);
+    --blue:#0a84ff; --cyan:#64d2ff; --indigo:#5e5ce6; --purple:#bf5af2;
+    --pink:#ff375f; --orange:#ff9f0a; --yellow:#ffd60a; --green:#30d158;
+    --red:#ff453a;
+    --ease:cubic-bezier(.22,.61,.21,1);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:"SF Pro Display","SF Pro Text",-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    overflow:hidden;
+    user-select:none;
+  }
+  ::selection{background:rgba(10,132,255,.4)}
+
+  /* ——— deck mechanics ——— */
+  #deck{position:fixed;inset:0}
+  .slide{
+    position:absolute;inset:0;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    padding:6vh 7vw;
+    opacity:0;visibility:hidden;transform:scale(.985);
+    transition:opacity .65s var(--ease),transform .65s var(--ease),visibility 0s linear .65s;
+    overflow:hidden;
+  }
+  .slide.active{
+    opacity:1;visibility:visible;transform:none;
+    transition:opacity .65s var(--ease),transform .65s var(--ease),visibility 0s;
+  }
+  /* ambient color blooms, per-slide hues */
+  .slide::before{
+    content:"";position:absolute;inset:-25%;pointer-events:none;
+    background:
+      radial-gradient(55vw 42vh at 18% 86%, var(--g1,transparent), transparent 68%),
+      radial-gradient(60vw 48vh at 84% 10%, var(--g2,transparent), transparent 68%);
+    filter:blur(70px);
+    opacity:0;transition:opacity 1.4s var(--ease);
+  }
+  .slide.active::before{opacity:1}
+  .inner{position:relative;max-width:1180px;width:100%}
+
+  /* staggered reveals */
+  [data-reveal]{
+    opacity:0;transform:translateY(26px);
+    transition:opacity .9s var(--ease),transform .9s var(--ease);
+    transition-delay:calc(var(--d,0)*1ms);
+  }
+  .slide.active [data-reveal]{opacity:1;transform:none}
+  @media (prefers-reduced-motion:reduce){
+    [data-reveal]{transition:none;opacity:1;transform:none}
+    .slide{transition:opacity .2s}
+  }
+
+  /* ——— type ——— */
+  .eyebrow{
+    font-size:15px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--dim);margin-bottom:26px;
+  }
+  h1.mega{
+    font-size:clamp(64px,11.5vw,176px);
+    font-weight:700;letter-spacing:-.035em;line-height:1.0;
+  }
+  h2.head{
+    font-size:clamp(40px,6.2vw,86px);
+    font-weight:700;letter-spacing:-.028em;line-height:1.04;
+    margin-bottom:30px;
+  }
+  h2.head .soft{color:var(--dimmer)}
+  p.lede{
+    font-size:clamp(17px,1.55vw,22px);line-height:1.5;color:var(--dim);
+    max-width:62ch;font-weight:400;
+  }
+  p.lede strong{color:var(--ink);font-weight:600}
+  .grad{
+    background-clip:text;-webkit-background-clip:text;color:transparent;
+  }
+  .g-hero{background-image:linear-gradient(96deg,var(--orange) 0%,var(--pink) 30%,var(--purple) 62%,var(--blue) 100%)}
+  .g-blue{background-image:linear-gradient(94deg,var(--cyan),var(--blue) 55%,var(--indigo))}
+  .g-green{background-image:linear-gradient(94deg,#a8ff9e,var(--green) 45%,var(--cyan))}
+  .g-pink{background-image:linear-gradient(94deg,var(--orange),var(--pink) 55%,var(--purple))}
+  .g-purple{background-image:linear-gradient(94deg,var(--pink),var(--purple) 55%,var(--indigo))}
+  .fine{
+    font-size:12.5px;color:var(--dimmer);letter-spacing:.01em;line-height:1.6;
+    margin-top:42px;
+  }
+  .center{text-align:center}
+  .num{font-variant-numeric:tabular-nums}
+
+  /* ——— hero ——— */
+  #s-hero .wwdc{
+    font-size:16px;font-weight:600;letter-spacing:.32em;color:var(--dim);
+    text-transform:uppercase;margin-bottom:34px;
+  }
+  #s-hero .sub{
+    margin-top:34px;font-size:clamp(19px,2.1vw,28px);color:var(--dim);
+    font-weight:500;letter-spacing:-.01em;
+  }
+  #s-hero .sub b{color:var(--ink);font-weight:600}
+  #s-hero .begin{
+    margin-top:8vh;font-size:13px;color:var(--dimmer);letter-spacing:.14em;
+    text-transform:uppercase;animation:pulse 2.6s ease-in-out infinite;
+  }
+  @keyframes pulse{0%,100%{opacity:.45}50%{opacity:1}}
+
+  /* ——— binding row (problem slide) ——— */
+  .bindings{display:flex;gap:14px;flex-wrap:wrap;margin:40px 0 8px}
+  .bind{
+    padding:13px 22px;border:1px solid var(--hairline);border-radius:999px;
+    font-size:17px;font-weight:600;color:var(--ink);
+    display:flex;align-items:center;gap:10px;background:var(--card);
+  }
+  .bind .ok{color:var(--green);font-weight:700}
+  .bind.missing{border-color:rgba(255,69,58,.5);color:var(--dim);background:rgba(255,69,58,.06)}
+  .bind.missing .ok{color:var(--red)}
+
+  /* ——— stacks (architecture slide) ——— */
+  .stacks{display:grid;grid-template-columns:1fr 1fr;gap:56px;margin-top:14px;align-items:start}
+  .stack h3{
+    font-size:14px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--dim);margin-bottom:20px;
+  }
+  .stack h3.now{color:var(--cyan)}
+  .layer{
+    border:1px solid var(--hairline);border-radius:16px;background:var(--card);
+    padding:17px 22px;font-size:16.5px;font-weight:600;letter-spacing:-.01em;
+    display:flex;justify-content:space-between;align-items:baseline;gap:14px;
+  }
+  .layer small{font-size:12.5px;color:var(--dimmer);font-weight:500;text-align:right;white-space:nowrap}
+  .layer.pain{border-color:rgba(255,69,58,.35);background:rgba(255,69,58,.05)}
+  .layer.pain small{color:rgba(255,99,90,.85)}
+  .layer.glowy{
+    border-color:rgba(100,210,255,.45);background:rgba(10,132,255,.09);
+    box-shadow:0 0 44px rgba(10,132,255,.18);
+  }
+  .down{
+    text-align:center;color:var(--dimmer);font-size:15px;line-height:1;
+    padding:7px 0;
+  }
+  .stack .verdict{margin-top:20px;font-size:14.5px;color:var(--dim);line-height:1.55}
+  .stack .verdict b{color:var(--ink)}
+
+  /* ——— giant zero (correctness) ——— */
+  .delta{
+    font-size:clamp(96px,17vw,260px);font-weight:700;letter-spacing:-.04em;line-height:1;
+    margin:6px 0 26px;
+  }
+  .chips{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:36px}
+  .chip{
+    font-size:13.5px;font-weight:600;color:var(--ink);
+    border:1px solid var(--hairline);border-radius:999px;padding:9px 17px;
+    background:var(--card);letter-spacing:.01em;
+  }
+  .chip b{color:var(--green);margin-right:7px}
+
+  /* ——— stat grid ——— */
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:26px;margin-top:18px}
+  .stat{padding:8px 4px;text-align:center}
+  .stat .v{
+    font-size:clamp(44px,5.6vw,84px);font-weight:700;letter-spacing:-.03em;line-height:1.05;
+    white-space:nowrap;
+  }
+  .stat .v small{font-size:.45em;font-weight:600;letter-spacing:-.01em}
+  .stat .k{margin-top:14px;font-size:15px;color:var(--dim);line-height:1.45;font-weight:500}
+  .stat .k b{color:var(--ink)}
+
+  /* ——— bar charts ——— */
+  .charts{display:grid;grid-template-columns:1fr 1fr 1fr;gap:48px;margin-top:24px}
+  .chart h4{font-size:16px;font-weight:600;letter-spacing:-.01em;margin-bottom:4px}
+  .chart .u{font-size:12.5px;color:var(--dimmer);margin-bottom:22px;font-weight:500}
+  .brow{margin-bottom:18px}
+  .brow .lbl{
+    display:flex;justify-content:space-between;align-items:baseline;
+    font-size:13.5px;color:var(--dim);margin-bottom:8px;font-weight:500;
+  }
+  .brow .lbl b{color:var(--ink);font-weight:600}
+  .brow .val{font-variant-numeric:tabular-nums;font-weight:600;color:var(--ink);font-size:14px}
+  .track{height:10px;border-radius:99px;background:rgba(255,255,255,.07);overflow:hidden}
+  .bar{
+    height:100%;width:0;border-radius:99px;
+    transition:width 1.25s var(--ease);
+    background:rgba(255,255,255,.32);
+  }
+  .slide.active .bar{width:var(--w)}
+  .bar.us{background:linear-gradient(90deg,var(--cyan),var(--blue) 70%,var(--indigo))}
+  .brow.failed .val{color:var(--red);font-weight:700}
+  .brow.failed .track{background:rgba(255,69,58,.12)}
+
+  /* ——— model cards ——— */
+  .models{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:14px}
+  .model{
+    border:1px solid var(--hairline);border-radius:22px;background:var(--card);
+    padding:30px 28px;display:flex;flex-direction:column;gap:0;min-height:280px;
+    transition:background .3s,border-color .3s,transform .3s var(--ease);
+  }
+  .model:hover{background:var(--card-hover);transform:translateY(-4px)}
+  .model .size{font-size:13px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+  .model .name{font-size:25px;font-weight:700;letter-spacing:-.02em;margin:12px 0 4px}
+  .model .speed{font-size:42px;font-weight:700;letter-spacing:-.03em;margin:18px 0 2px}
+  .model .speed small{font-size:15px;color:var(--dim);font-weight:500;letter-spacing:0}
+  .model .desc{font-size:14.5px;color:var(--dim);line-height:1.55;margin-top:14px}
+  .model .desc b{color:var(--ink)}
+  .model .tagrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:auto;padding-top:20px}
+  .tag{font-size:11.5px;font-weight:600;padding:5px 11px;border-radius:99px;letter-spacing:.03em}
+  .tag.b{background:rgba(10,132,255,.16);color:#7dc1ff}
+  .tag.p{background:rgba(191,90,242,.16);color:#d9a0f7}
+  .tag.g{background:rgba(48,209,88,.14);color:#7ce69a}
+  .tag.o{background:rgba(255,159,10,.15);color:#ffc46b}
+
+  /* ——— feature grid ——— */
+  .feats{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:10px}
+  .feat{
+    border:1px solid var(--hairline);border-radius:18px;background:var(--card);
+    padding:20px 22px;display:flex;gap:16px;align-items:flex-start;
+    transition:background .3s;
+  }
+  .feat:hover{background:var(--card-hover)}
+  .glyph{
+    flex:0 0 40px;height:40px;border-radius:11px;display:flex;align-items:center;justify-content:center;
+    font-size:19px;font-weight:700;color:#fff;
+  }
+  .feat h5{font-size:15.5px;font-weight:600;letter-spacing:-.01em;margin-bottom:5px}
+  .feat p{font-size:13px;color:var(--dim);line-height:1.5}
+
+  /* ——— one more thing ——— */
+  #s-omt h1{
+    font-size:clamp(40px,6.5vw,92px);font-weight:600;letter-spacing:-.02em;
+  }
+
+  /* ——— terminal ——— */
+  .term{
+    width:min(840px,100%);margin:34px auto 0;border-radius:14px;overflow:hidden;
+    border:1px solid var(--hairline);
+    background:rgba(18,18,20,.92);
+    box-shadow:0 30px 80px rgba(0,0,0,.6),0 0 60px rgba(94,92,230,.12);
+    text-align:left;
+  }
+  .term .bar3{
+    display:flex;gap:8px;align-items:center;padding:13px 16px;
+    background:rgba(255,255,255,.05);border-bottom:1px solid rgba(255,255,255,.07);
+  }
+  .term .dot3{width:12px;height:12px;border-radius:50%}
+  .term .title3{margin-left:10px;font-size:12px;color:var(--dimmer);font-weight:500}
+  .term pre{
+    padding:24px 26px 28px;
+    font-family:"SF Mono",ui-monospace,Menlo,monospace;
+    font-size:14.5px;line-height:1.9;color:#d8d8dc;white-space:pre-wrap;
+  }
+  .term .c{color:#6e6e73}
+  .term .p{color:#7ce69a}
+  .term .cmd{color:#fff;font-weight:600}
+  .term .hl{color:#7dc1ff}
+  .term .ok{color:#30d158}
+
+  /* ——— findings ——— */
+  .finds{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:8px}
+  .find{
+    border:1px solid var(--hairline);border-radius:16px;background:var(--card);
+    padding:20px;transition:background .3s;
+  }
+  .find:hover{background:var(--card-hover)}
+  .find .n{
+    font-size:12px;font-weight:700;color:var(--dimmer);letter-spacing:.12em;margin-bottom:12px;
+    font-variant-numeric:tabular-nums;
+  }
+  .find h5{font-size:15px;font-weight:600;letter-spacing:-.01em;line-height:1.3;margin-bottom:9px}
+  .find p{font-size:12.5px;color:var(--dim);line-height:1.55}
+  .find p b{color:var(--ink);font-weight:600}
+
+  /* ——— roadmap ——— */
+  .road{margin-top:10px;display:flex;flex-direction:column}
+  .ritem{
+    display:grid;grid-template-columns:240px 1fr;gap:36px;align-items:baseline;
+    padding:24px 6px;border-bottom:1px solid rgba(255,255,255,.08);
+  }
+  .ritem:last-child{border-bottom:none}
+  .ritem .rt{font-size:23px;font-weight:700;letter-spacing:-.02em}
+  .ritem .rd{font-size:15.5px;color:var(--dim);line-height:1.55}
+  .ritem .rd b{color:var(--ink)}
+
+  /* ——— pillars (vision) ——— */
+  .pillars{display:grid;grid-template-columns:repeat(3,1fr);gap:30px;margin-top:48px;text-align:left}
+  .pillar h4{font-size:21px;font-weight:700;letter-spacing:-.015em;margin-bottom:12px}
+  .pillar p{font-size:15px;color:var(--dim);line-height:1.6}
+  .pillar .rule{height:3px;width:44px;border-radius:99px;margin-bottom:20px}
+
+  /* ——— outro ——— */
+  #s-outro .tag-line{
+    margin-top:30px;font-size:clamp(19px,2.2vw,30px);color:var(--dim);font-weight:500;letter-spacing:-.01em;
+  }
+  #s-outro .tag-line b{color:var(--ink)}
+
+  /* ——— HUD ——— */
+  #hud{
+    position:fixed;bottom:26px;left:0;right:0;display:flex;justify-content:center;gap:9px;
+    z-index:10;
+  }
+  #hud .dot{
+    width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.22);
+    cursor:pointer;transition:all .35s var(--ease);border:none;padding:0;
+  }
+  #hud .dot.on{background:#fff;transform:scale(1.25)}
+  #hint{
+    position:fixed;bottom:22px;left:30px;font-size:12px;color:var(--dimmer);
+    letter-spacing:.1em;text-transform:uppercase;z-index:10;transition:opacity .8s;
+  }
+  #count{
+    position:fixed;bottom:22px;right:30px;font-size:12px;color:var(--dimmer);
+    font-variant-numeric:tabular-nums;letter-spacing:.08em;z-index:10;
+  }
+  .edge{
+    position:fixed;top:0;bottom:0;width:9vw;z-index:5;cursor:pointer;border:none;background:transparent;
+    color:transparent;font-size:30px;transition:color .3s;
+  }
+  .edge:hover{color:rgba(255,255,255,.35)}
+  .edge.l{left:0}.edge.r{right:0}
+
+  @media (max-width:980px){
+    .stats{grid-template-columns:repeat(2,1fr);gap:34px}
+    .charts{grid-template-columns:1fr;gap:30px}
+    .models,.feats{grid-template-columns:1fr;gap:14px}
+    .finds{grid-template-columns:repeat(2,1fr)}
+    .stacks{grid-template-columns:1fr;gap:34px}
+    .pillars{grid-template-columns:1fr}
+    .ritem{grid-template-columns:1fr;gap:6px;padding:18px 2px}
+    .slide{padding:5vh 6vw;overflow-y:auto;justify-content:flex-start}
+    .model{min-height:0}
+  }
+</style>
+</head>
+<body>
+
+<main id="deck">
+
+  <!-- ─── 1 · HERO ─────────────────────────────────────────── -->
+  <section class="slide center" id="s-hero" style="--g1:rgba(191,90,242,.20);--g2:rgba(10,132,255,.22)">
+    <div class="inner">
+      <div class="wwdc" data-reveal style="--d:0">WWDC26 &nbsp;·&nbsp; Special Event</div>
+      <h1 class="mega grad g-hero" data-reveal style="--d:150">mlx-bun</h1>
+      <p class="sub" data-reveal style="--d:380">Native MLX inference for Bun. <b>No Python. No sidecar. One runtime.</b></p>
+      <div class="begin" data-reveal style="--d:900">Press &rarr; to begin</div>
+    </div>
+  </section>
+
+  <!-- ─── 2 · THE PROBLEM ──────────────────────────────────── -->
+  <section class="slide" style="--g1:rgba(255,69,58,.10);--g2:rgba(94,92,230,.14)">
+    <div class="inner">
+      <div class="eyebrow" data-reveal style="--d:0">The problem</div>
+      <h2 class="head" data-reveal style="--d:120">Apple Silicon is extraordinary.<br><span class="soft">JavaScript can&rsquo;t reach it.</span></h2>
+      <p class="lede" data-reveal style="--d:280">MLX is Apple&rsquo;s ML framework — hand-tuned Metal kernels for the unified-memory GPU. It ships official bindings for four languages. The language of every agent, every dev tool, every Electron and Tauri app isn&rsquo;t one of them.</p>
+      <div class="bindings" data-reveal style="--d:440">
+        <span class="bind"><span class="ok">&#10003;</span> Python</span>
+        <span class="bind"><span class="ok">&#10003;</span> C++</span>
+        <span class="bind"><span class="ok">&#10003;</span> Swift</span>
+        <span class="bind"><span class="ok">&#10003;</span> C</span>
+        <span class="bind missing"><span class="ok">&#10007;</span> JavaScript</span>
+      </div>
+      <p class="lede" data-reveal style="--d:600;margin-top:26px">So today, a TypeScript app that wants local inference shells out to a Python server — and inherits that stack&rsquo;s fragility: venv setup, brittle downloads, monkey-patched HTTP layers, segfaults on exit.</p>
+    </div>
+  </section>
+
+  <!-- ─── 3 · THE INSIGHT ──────────────────────────────────── -->
+  <section class="slide" style="--g1:rgba(100,210,255,.13);--g2:rgba(48,209,88,.10)">
+    <div class="inner">
+      <div class="eyebrow" data-reveal style="--d:0">The insight</div>
+      <h2 class="head" data-reveal style="--d:120">The GPU sets the speed.<br><span class="grad g-blue">Delete everything around it.</span></h2>
+      <p class="lede" data-reveal style="--d:300">Every matmul, every attention pass already lives in MLX&rsquo;s C++ and Metal core, exposed through <strong>mlx-c</strong>. The Python on top is pure orchestration — loading, tokenizing, sampling, serving. The GPU dominates; that layer is <strong>performance-neutral</strong>.</p>
+      <p class="lede" data-reveal style="--d:480;margin-top:24px">Which means it can be rewritten in any runtime without losing a single token per second. So we rewrote it in the one your code already lives in.</p>
+      <p class="fine" data-reveal style="--d:640">Decode is memory-bandwidth-bound: ~273&nbsp;GB/s on an M4&nbsp;Pro &divide; bytes-of-weights = the ceiling. Wins come from fewer bytes per token — never from &ldquo;faster JS.&rdquo;</p>
+    </div>
+  </section>
+
+  <!-- ─── 4 · INTRODUCING / ARCHITECTURE ───────────────────── -->
+  <section class="slide" style="--g1:rgba(10,132,255,.16);--g2:rgba(191,90,242,.12)">
+    <div class="inner">
+      <div class="eyebrow" data-reveal style="--d:0">Introducing</div>
+      <h2 class="head" data-reveal style="--d:100"><span class="grad g-hero">mlx-bun</span></h2>
+      <div class="stacks">
+        <div class="stack" data-reveal style="--d:260">
+          <h3>Yesterday</h3>
+          <div class="layer">Your TypeScript app</div>
+          <div class="down">&darr;</div>
+          <div class="layer pain">HTTP to localhost <small>serialize &middot; deserialize</small></div>
+          <div class="down">&darr;</div>
+          <div class="layer pain">Python venv &middot; mlx-lm server <small>&minus;5&ndash;7% server tax</small></div>
+          <div class="down">&darr;</div>
+          <div class="layer">MLX &middot; Metal kernels</div>
+          <div class="verdict">Two runtimes. Two package managers. A process boundary in the hot path.</div>
+        </div>
+        <div class="stack" data-reveal style="--d:460">
+          <h3 class="now">Today</h3>
+          <div class="layer">Your TypeScript app</div>
+          <div class="down">&darr;</div>
+          <div class="layer glowy">bun:ffi &rarr; mlx-c <small>zero-copy &middot; &asymp;0% overhead</small></div>
+          <div class="down">&darr;</div>
+          <div class="layer">MLX &middot; Metal kernels</div>
+          <div class="verdict"><b>One process.</b> Lazy native weight loading opens an 8.9&nbsp;GB model in milliseconds. <b>Bun.Image</b> decodes HEIC&nbsp;&amp;&nbsp;AVIF for vision. <b>bun:sqlite</b> holds the registry. One binary, one toolchain.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 5 · CORRECTNESS ──────────────────────────────────── -->
+  <section class="slide center" style="--g1:rgba(48,209,88,.13);--g2:rgba(100,210,255,.12)">
+    <div class="inner">
+      <div class="eyebrow" data-reveal style="--d:0">Correctness</div>
+      <div class="delta grad g-green" data-reveal style="--d:150">max&thinsp;|&Delta;|&thinsp;=&thinsp;0</div>
+      <p class="lede" data-reveal style="--d:340;margin:0 auto">Logit parity with the Python reference is the project&rsquo;s oracle. The forward pass is <strong>bit-exact</strong> — every model, every step, every quantized-KV configuration. Not approximately right. <strong>Exactly</strong> right.</p>
+      <div class="chips" data-reveal style="--d:540">
+        <span class="chip"><b>&#10003;</b>12B dense</span>
+        <span class="chip"><b>&#10003;</b>e4b per-layer-input</span>
+        <span class="chip"><b>&#10003;</b>26B MoE &middot; top-8 of 128</span>
+        <span class="chip"><b>&#10003;</b>kv8</span>
+        <span class="chip"><b>&#10003;</b>kv4</span>
+        <span class="chip"><b>&#10003;</b>mixed per-layer KV</span>
+        <span class="chip"><b>&#10003;</b>fused quantized prefill</span>
+        <span class="chip"><b>&#10003;</b>vision &middot; token-exact</span>
+      </div>
+      <p class="fine" data-reveal style="--d:720">157/157 tests. Golden files regenerate only from the Python oracle. The one latent divergence ever found — rope frequencies computed host-side — was root-caused and fixed.</p>
+    </div>
+  </section>
+
+  <!-- ─── 6 · FAST (STAT GRID) ─────────────────────────────── -->
+  <section class="slide center" style="--g1:rgba(255,159,10,.13);--g2:rgba(255,55,95,.13)">
+    <div class="inner">
+      <div class="eyebrow" data-reveal style="--d:0">Performance</div>
+      <h2 class="head" data-reveal style="--d:100">And it&rsquo;s <span class="grad g-pink">fast.</span></h2>
+      <div class="stats">
+        <div class="stat" data-reveal style="--d:260">
+          <div class="v grad g-pink"><span class="num" data-count="5" data-prefix="up to ">up to 5</span>&times;</div>
+          <div class="k">faster time to first token, served<br><b>45&ndash;90&nbsp;ms</b> vs Python&rsquo;s 219&ndash;331&nbsp;ms</div>
+        </div>
+        <div class="stat" data-reveal style="--d:380">
+          <div class="v grad g-pink"><span class="num" data-count="394">394</span><small>&nbsp;ms</small></div>
+          <div class="k">cold start &rarr; first token<br>of a <b>cached prompt</b>, fresh process</div>
+        </div>
+        <div class="stat" data-reveal style="--d:500">
+          <div class="v grad g-pink">&asymp;<span class="num" data-count="0">0</span><small>%</small></div>
+          <div class="k">server overhead vs direct decode<br>mlx-lm pays <b>&minus;5&ndash;7%</b></div>
+        </div>
+        <div class="stat" data-reveal style="--d:620">
+          <div class="v grad g-pink"><span class="num" data-count="1.8" data-decimals="1">1.8</span><small>&times;</small></div>
+          <div class="k">prefill throughput vs mlx-lm<br>at <b>8k context</b></div>
+        </div>
+      </div>
+      <p class="fine" data-reveal style="--d:800">Apple M4&nbsp;Pro, 24&nbsp;GB &middot; same machine, same day, same weights &middot; cleared-machine matrix, median-of-N, warmups discarded &middot; 2026-06-11</p>
+    </div>
+  </section>
+
+  <!-- ─── 7 · CHARTS ───────────────────────────────────────── -->
+  <section class="slide" style="--g1:rgba(10,132,255,.14);--g2:rgba(100,210,255,.10)">
+    <div class="inner">
+      <div class="eyebrow" data-reveal style="--d:0">Head-to-head</div>
+      <h2 class="head" data-reveal style="--d:100">Served. Warm. <span class="grad g-blue">Measured.</span></h2>
+      <div class="charts">
+        <div class="chart" data-reveal style="--d:280">
+          <h4>Time to first token</h4>
+          <div class="u">milliseconds &middot; gemma-4-e4b, served &middot; lower is better</div>
+          <div class="brow">
+            <div class="lbl"><b>mlx-bun</b><span class="val">45 ms</span></div>
+            <div class="track"><div class="bar us" style="--w:13.6%"></div></div>
+          </div>
+          <div class="brow">
+            <div class="lbl">mlx-lm<span class="val">219 ms</span></div>
+            <div class="track"><div class="bar" style="--w:66%"></div></div>
+          </div>
+          <div class="brow">
+            <div class="lbl">optiq<span class="val">222 ms</span></div>
+            <div class="track"><div class="bar" style="--w:67%"></div></div>
+          </div>
+        </div>
+        <div class="chart" data-reveal style="--d:440">
+          <h4>Server start &rarr; ready</h4>
+          <div class="u">seconds &middot; lower is better</div>
+          <div class="brow">
+            <div class="lbl"><b>mlx-bun</b><span class="val">0.36 s</span></div>
+            <div class="track"><div class="bar us" style="--w:24%"></div></div>
+          </div>
+          <div class="brow">
+            <div class="lbl">mlx-lm<span class="val">0.98 s</span></div>
+            <div class="track"><div class="bar" style="--w:65%"></div></div>
+          </div>
+          <div class="brow">
+            <div class="lbl">optiq<span class="val">0.79 s</span></div>
+            <div class="track"><div class="bar" style="--w:53%"></div></div>
+          </div>
+        </div>
+        <div class="chart" data-reveal style="--d:600">
+          <h4>Decode, 26B MoE</h4>
+          <div class="u">tokens / second, served &middot; higher is better</div>
+          <div class="brow">
+            <div class="lbl"><b>mlx-bun</b><span class="val">54.9</span></div>
+            <div class="track"><div class="bar us" style="--w:88%"></div></div>
+          </div>
+          <div class="brow">
+            <div class="lbl">mlx-lm<span class="val">52.2</span></div>
+            <div class="track"><div class="bar" style="--w:84%"></div></div>
+          </div>
+          <div class="brow failed">
+            <div class="lbl">optiq<span class="val">crashed</span></div>
+            <div class="track"></div>
+          </div>
+        </div>
+      </div>
+      <p class="fine" data-reveal style="--d:760">The fastest TTFT and startup on every model tested, by 2&ndash;5&times;. And the full matrix records where we lose, too — every number, including the honest negatives, lives in <span style="font-family:'SF Mono',ui-monospace,monospace">benchmarks-h2h-2026-06-11</span> with per-row provenance.</p>
+    </div>
+  </section>
+
+  <!-- ─── 8 · MODELS TODAY ─────────────────────────────────── -->
+  <section class="slide" style="--g1:rgba(191,90,242,.13);--g2:rgba(255,159,10,.10)">
+    <div class="inner">
+      <div class="eyebrow" data-reveal style="--d:0">Available today</div>
+      <h2 class="head" data-reveal style="--d:100">Three models. <span class="soft">Held to zero.</span></h2>
+      <div class="models">
+        <div class="model" data-reveal style="--d:260">
+          <div class="size">7.0 GB &middot; fits 16 GB</div>
+          <div class="name">gemma-4-e4b</div>
+          <div class="speed num">54<small>&nbsp;tok/s</small></div>
+          <div class="desc">The good first model. Per-layer-input embeddings and KV-shared layers, bit-exact through the whole stack.</div>
+          <div class="tagrow"><span class="tag b">OptiQ 4-bit</span><span class="tag g">bit-exact</span></div>
+        </div>
+        <div class="model" data-reveal style="--d:400">
+          <div class="size">8.4 GB &middot; fits 16 GB</div>
+          <div class="name">gemma-4-12B</div>
+          <div class="speed num">25<small>&nbsp;tok/s</small></div>
+          <div class="desc"><b>Vision and tool calling</b>, both verified end-to-end — a real photo described, a real agent task completed through tool calls.</div>
+          <div class="tagrow"><span class="tag p">vision</span><span class="tag o">tools</span><span class="tag g">bit-exact</span></div>
+        </div>
+        <div class="model" data-reveal style="--d:540">
+          <div class="size">18 GB &middot; fits 24 GB</div>
+          <div class="name">gemma-4-26B-A4B</div>
+          <div class="speed num">55<small>&nbsp;tok/s</small></div>
+          <div class="desc">Mixture-of-Experts, top-8 of 128. Decode reads ~2.4&nbsp;GB of 14&nbsp;GB expert weights per token. <b>The Python servers crash loading it on 24&nbsp;GB.</b></div>
+          <div class="tagrow"><span class="tag b">MoE</span><span class="tag g">bit-exact</span></div>
+        </div>
+      </div>
+      <p class="fine" data-reveal style="--d:700">Scope is the strategy: a few model families held to bit-exact parity, rather than dozens held to none. Not sure what fits? <span style="font-family:'SF Mono',ui-monospace,monospace">mlx-bun fit</span> gives a deterministic answer — weights, KV, transient, wired ceiling — for your machine or the whole Apple Silicon lineup.</p>
+    </div>
+  </section>
+
+  <!-- ─── 9 · PLATFORM ─────────────────────────────────────── -->
+  <section class="slide" style="--g1:rgba(10,132,255,.12);--g2:rgba(48,209,88,.10)">
+    <div class="inner">
+      <div class="eyebrow" data-reveal style="--d:0">The platform</div>
+      <h2 class="head" data-reveal style="--d:100">Not a demo. <span class="grad g-blue">An appliance.</span></h2>
+      <div class="feats">
+        <div class="feat" data-reveal style="--d:240">
+          <div class="glyph" style="background:linear-gradient(140deg,#0a84ff,#5e5ce6)">&lt;/&gt;</div>
+          <div><h5>OpenAI-compatible API</h5><p>Chat completions, SSE streaming, stop sequences, seeded sampling. Any OpenAI client just works.</p></div>
+        </div>
+        <div class="feat" data-reveal style="--d:300">
+          <div class="glyph" style="background:linear-gradient(140deg,#bf5af2,#ff375f)">&#10033;</div>
+          <div><h5>Anthropic Messages API</h5><p>Full streaming event grammar, tool_use, image blocks. Claude Code runs against it as a local backend.</p></div>
+        </div>
+        <div class="feat" data-reveal style="--d:360">
+          <div class="glyph" style="background:linear-gradient(140deg,#64d2ff,#0a84ff)">&#8634;</div>
+          <div><h5>Responses API</h5><p>The protocol Codex, Cursor and Continue speak — with previous_response_id resumption.</p></div>
+        </div>
+        <div class="feat" data-reveal style="--d:420">
+          <div class="glyph" style="background:linear-gradient(140deg,#ff9f0a,#ff375f)">&fnof;</div>
+          <div><h5>Tool calling</h5><p>Native marker tokens parsed into tool_calls JSON; tool-role round-trips verified on the live model.</p></div>
+        </div>
+        <div class="feat" data-reveal style="--d:480">
+          <div class="glyph" style="background:linear-gradient(140deg,#30d158,#64d2ff)">&#9678;</div>
+          <div><h5>Vision, native codecs</h5><p>HEIC, AVIF, WebP, JPEG via the OS — EXIF auto-orientation included. Token-exact with the reference.</p></div>
+        </div>
+        <div class="feat" data-reveal style="--d:540">
+          <div class="glyph" style="background:linear-gradient(140deg,#ffd60a,#ff9f0a)">&#9889;</div>
+          <div><h5>Prompt cache + KV persistence</h5><p>Byte-capped LRU prefix reuse, automatic. Page-aligned cache files reload as zero-copy GPU mmaps in 1&nbsp;ms.</p></div>
+        </div>
+        <div class="feat" data-reveal style="--d:600">
+          <div class="glyph" style="background:linear-gradient(140deg,#5e5ce6,#bf5af2)">&#8644;</div>
+          <div><h5>LoRA hot-swap</h5><p>Mount adapters at runtime, select per request, stack them. The base model never reloads.</p></div>
+        </div>
+        <div class="feat" data-reveal style="--d:660">
+          <div class="glyph" style="background:linear-gradient(140deg,#64d2ff,#30d158)">&#188;</div>
+          <div><h5>Mixed-precision KV</h5><p>Per-layer KV quantization from the repo&rsquo;s own config — KV bytes &divide;4, decode-neutral, fused FlashAttention prefill.</p></div>
+        </div>
+        <div class="feat" data-reveal style="--d:720">
+          <div class="glyph" style="background:linear-gradient(140deg,#ff453a,#ff9f0a)">&#9651;</div>
+          <div><h5>Memory admission control</h5><p>The GPU OOM is uncatchable by design — so over-budget requests are rejected before generation, ever.</p></div>
+        </div>
+      </div>
+      <p class="fine" data-reveal style="--d:820">Plus: resumable checksum-verified downloads, a sqlite model registry, deterministic memory-fit predictions, and a relocatable 61&nbsp;MB single-binary build for embedding in Mac apps.</p>
+    </div>
+  </section>
+
+  <!-- ─── 10 · ONE MORE THING ──────────────────────────────── -->
+  <section class="slide center" id="s-omt" style="--g1:rgba(191,90,242,.10);--g2:rgba(10,132,255,.10)">
+    <div class="inner">
+      <h1 data-reveal style="--d:200">One more thing.</h1>
+    </div>
+  </section>
+
+  <!-- ─── 11 · CLAUDE CODE LOCAL ───────────────────────────── -->
+  <section class="slide center" style="--g1:rgba(94,92,230,.16);--g2:rgba(255,55,95,.12)">
+    <div class="inner">
+      <div class="eyebrow" data-reveal style="--d:0">Agents, unplugged</div>
+      <h2 class="head" data-reveal style="--d:100">Claude Code. <span class="grad g-purple">Fully local.</span></h2>
+      <p class="lede" data-reveal style="--d:280;margin:0 auto">One environment variable points any Anthropic-SDK tool at your Mac. The model, the cache, the conversation — none of it leaves the machine.</p>
+      <div class="term" data-reveal style="--d:460">
+        <div class="bar3">
+          <span class="dot3" style="background:#ff5f57"></span>
+          <span class="dot3" style="background:#febc2e"></span>
+          <span class="dot3" style="background:#28c840"></span>
+          <span class="title3">zsh — 80&times;24</span>
+        </div>
+        <pre><span class="p">$</span> <span class="cmd">bun src/cli.ts serve 12B</span>
+<span class="ok">&#10003;</span> gemma-4-12B-it-OptiQ-4bit <span class="c">&middot; vision &middot; tools &middot; mixed-precision KV</span>
+<span class="ok">&#10003;</span> ready in <span class="hl">0.37 s</span> — http://localhost:8090
+
+<span class="p">$</span> <span class="cmd">export ANTHROPIC_BASE_URL=http://localhost:8090</span>
+<span class="p">$</span> <span class="cmd">claude</span>  <span class="c"># every token now decoded on your own GPU</span></pre>
+      </div>
+      <p class="fine" data-reveal style="--d:640">Works the same for pi, OpenClaw, Codex-style clients via the Responses API, and anything that speaks OpenAI.</p>
+    </div>
+  </section>
+
+  <!-- ─── 12 · WHAT WE LEARNED ─────────────────────────────── -->
+  <section class="slide" style="--g1:rgba(255,159,10,.11);--g2:rgba(255,214,10,.08)">
+    <div class="inner">
+      <div class="eyebrow" data-reveal style="--d:0">Findings</div>
+      <h2 class="head" data-reveal style="--d:100">What the port <span class="grad g-pink">taught us.</span></h2>
+      <div class="finds">
+        <div class="find" data-reveal style="--d:240">
+          <div class="n">01</div>
+          <h5>Bun.mmap traps past 4&nbsp;GB</h5>
+          <p>Weight shards run 5.35&nbsp;GB. We bind <b>libc mmap through bun:ffi</b> and pass MLX raw pointers — JS views only for small ranges.</p>
+        </div>
+        <div class="find" data-reveal style="--d:300">
+          <div class="n">02</div>
+          <h5>Metal reads garbage off unaligned pointers</h5>
+          <p>Silently. Weights load via MLX&rsquo;s lazy loader instead; our own KV files are <b>page-aligned</b>, so cache reloads are true zero-copy GPU mmaps.</p>
+        </div>
+        <div class="find" data-reveal style="--d:360">
+          <div class="n">03</div>
+          <h5>The JIT deleted our reads</h5>
+          <p>After tier-up, JSC elides typed-array reads across FFI calls. Every out-param readback now uses <b>read.u64</b>. Filed upstream as bun#32054.</p>
+        </div>
+        <div class="find" data-reveal style="--d:420">
+          <div class="n">04</div>
+          <h5>bf16 rounds x&middot;x&middot;x &ne; x&sup3;</h5>
+          <p>One op-order slip compounds across 48 layers into wrong logits. The rule: <b>port the implementation, never the docstring.</b></p>
+        </div>
+        <div class="find" data-reveal style="--d:480">
+          <div class="n">05</div>
+          <h5>Wired memory is load-bearing</h5>
+          <p>The 26B decoded at 8.6&nbsp;tok/s — Metal re-faulting weights every token — until one wired-limit call. Then <b>32.3</b>. Same code.</p>
+        </div>
+        <div class="find" data-reveal style="--d:540">
+          <div class="n">06</div>
+          <h5>GPU OOM is uncatchable</h5>
+          <p>MLX throws from Metal&rsquo;s completion thread; no handler is on that stack. <b>Admission control before generation</b> is the only defense.</p>
+        </div>
+        <div class="find" data-reveal style="--d:600">
+          <div class="n">07</div>
+          <h5>Speculative decoding can lose</h5>
+          <p>0.51&ndash;0.91&times; on e4b — the drafter can&rsquo;t outrun a 54&nbsp;tok/s target. Measured against an identical reference trace, recorded, kept behind a flag.</p>
+        </div>
+        <div class="find" data-reveal style="--d:660">
+          <div class="n">08</div>
+          <h5>Our 4% decode &ldquo;gap&rdquo; was an accounting story</h5>
+          <p>An allocator stall mlx-lm bills to <em>prompt</em> time, we billed to decode. Fixed reference-faithfully — the 12B now decodes <b>at-or-above</b> the reference, paired.</p>
+        </div>
+      </div>
+      <p class="fine" data-reveal style="--d:780">Every finding lives in PLAN.md with its root cause, fix, and the test that pins it. The losing experiments stay too — as documented, default-off flags. Measurement over memory.</p>
+    </div>
+  </section>
+
+  <!-- ─── 13 · ROADMAP ─────────────────────────────────────── -->
+  <section class="slide" style="--g1:rgba(94,92,230,.15);--g2:rgba(191,90,242,.13)">
+    <div class="inner">
+      <div class="eyebrow" data-reveal style="--d:0">The road ahead</div>
+      <h2 class="head" data-reveal style="--d:100">What&rsquo;s <span class="grad g-purple">next.</span></h2>
+      <div class="road">
+        <div class="ritem" data-reveal style="--d:260">
+          <div class="rt">Qwen 3.x</div>
+          <div class="rd">The second model family — and the home of <b>MTP multi-token prediction</b>: its quants ship a trained drafting head, so speculative decoding finally gets a drafter fast enough to win.</div>
+        </div>
+        <div class="ritem" data-reveal style="--d:360">
+          <div class="rt">SigLIP vision</div>
+          <div class="rd">Eyes for e4b and the 26B — extending the verified, token-exact vision path beyond the 12B&rsquo;s sidecar.</div>
+        </div>
+        <div class="ritem" data-reveal style="--d:460">
+          <div class="rt">Compiled decode graphs</div>
+          <div class="rd"><b>mlx_compile</b> moves per-step graph construction into C++ — erasing the last ~5% of host overhead on small, fast models.</div>
+        </div>
+        <div class="ritem" data-reveal style="--d:560">
+          <div class="rt">npm</div>
+          <div class="rd">The library-first API, published. Today it&rsquo;s clone-and-import; tomorrow it&rsquo;s <b>bun add mlx-bun</b>.</div>
+        </div>
+        <div class="ritem" data-reveal style="--d:660">
+          <div class="rt">More silicon</div>
+          <div class="rd">The benchmark matrix extends across machines, and <b>fit --skus</b> already predicts memory and throughput for the entire Apple Silicon lineup — before you download a byte.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 14 · VISION ──────────────────────────────────────── -->
+  <section class="slide center" style="--g1:rgba(10,132,255,.16);--g2:rgba(255,55,95,.13)">
+    <div class="inner">
+      <div class="eyebrow" data-reveal style="--d:0">Why it matters</div>
+      <h2 class="head" data-reveal style="--d:120">Every Mac app<br>can be an <span class="grad g-hero">AI app.</span></h2>
+      <div class="pillars">
+        <div class="pillar" data-reveal style="--d:340">
+          <div class="rule" style="background:linear-gradient(90deg,var(--green),var(--cyan))"></div>
+          <h4>Private by design</h4>
+          <p>Prompts, photos, documents, conversations — decoded on your own GPU. Nothing leaves the machine. No quota, no per-token bill, no network required.</p>
+        </div>
+        <div class="pillar" data-reveal style="--d:460">
+          <div class="rule" style="background:linear-gradient(90deg,var(--blue),var(--purple))"></div>
+          <h4>Embedded anywhere</h4>
+          <p>A relocatable 61&nbsp;MB binary, signed and notarized, drops into any Tauri, Electron, or Swift app as a sidecar — first-run weights via the built-in downloader.</p>
+        </div>
+        <div class="pillar" data-reveal style="--d:580">
+          <div class="rule" style="background:linear-gradient(90deg,var(--orange),var(--pink))"></div>
+          <h4>Standard protocols</h4>
+          <p>OpenAI, Anthropic, and Responses APIs out of the box. The tools you already use — Claude Code, pi, Codex-style clients — point at localhost and keep working.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── 15 · OUTRO ───────────────────────────────────────── -->
+  <section class="slide center" id="s-outro" style="--g1:rgba(191,90,242,.20);--g2:rgba(10,132,255,.22)">
+    <div class="inner">
+      <h1 class="mega grad g-hero" data-reveal style="--d:100">mlx-bun</h1>
+      <p class="tag-line" data-reveal style="--d:340">No Python. No sidecar. <b>One runtime.</b></p>
+      <p class="lede" data-reveal style="--d:520;margin:30px auto 0">Available now. MIT licensed.</p>
+      <p class="fine" data-reveal style="--d:700">All numbers measured on an Apple M4&nbsp;Pro, 24&nbsp;GB, 2026-06-11 — cleared machine, same day, same weights, per-row provenance in the repo.<br>Built in TypeScript. Verified against the reference, bit for bit.</p>
+    </div>
+  </section>
+
+</main>
+
+<nav id="hud" aria-label="slides"></nav>
+<div id="hint">&larr; &rarr; to navigate</div>
+<div id="count" class="num"></div>
+<button class="edge l" id="prevEdge" aria-label="previous slide">&#8249;</button>
+<button class="edge r" id="nextEdge" aria-label="next slide">&#8250;</button>
+
+<script>
+(() => {
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const hud = document.getElementById('hud');
+  const count = document.getElementById('count');
+  const hint = document.getElementById('hint');
+  let cur = -1, navved = false;
+
+  // dots
+  slides.forEach((_, i) => {
+    const d = document.createElement('button');
+    d.className = 'dot';
+    d.setAttribute('aria-label', 'slide ' + (i + 1));
+    d.addEventListener('click', () => go(i));
+    hud.appendChild(d);
+  });
+  const dots = Array.from(hud.children);
+
+  // count-up animation for [data-count]
+  function runCounters(slide) {
+    slide.querySelectorAll('[data-count]').forEach(el => {
+      const target = parseFloat(el.dataset.count);
+      const decimals = parseInt(el.dataset.decimals || '0', 10);
+      const prefix = el.dataset.prefix || '';
+      if (el._raf) cancelAnimationFrame(el._raf);
+      const t0 = performance.now(), dur = 1300;
+      const tick = now => {
+        const p = Math.min(1, (now - t0) / dur);
+        const eased = 1 - Math.pow(1 - p, 3);
+        el.textContent = prefix + (target * eased).toFixed(decimals);
+        if (p < 1) el._raf = requestAnimationFrame(tick);
+      };
+      el._raf = requestAnimationFrame(tick);
+    });
+  }
+
+  function go(i) {
+    i = Math.max(0, Math.min(slides.length - 1, i));
+    if (i === cur) return;
+    if (cur >= 0) slides[cur].classList.remove('active');
+    cur = i;
+    slides[cur].classList.add('active');
+    dots.forEach((d, j) => d.classList.toggle('on', j === cur));
+    count.textContent = (cur + 1) + ' / ' + slides.length;
+    history.replaceState(null, '', '#' + (cur + 1));
+    runCounters(slides[cur]);
+    if (!navved && cur > 0) { navved = true; hint.style.opacity = '0'; }
+  }
+
+  const next = () => go(cur + 1);
+  const prev = () => go(cur - 1);
+
+  addEventListener('keydown', e => {
+    if (['ArrowRight', 'ArrowDown', 'PageDown', ' '].includes(e.key)) { e.preventDefault(); next(); }
+    else if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(e.key)) { e.preventDefault(); prev(); }
+    else if (e.key === 'Home') go(0);
+    else if (e.key === 'End') go(slides.length - 1);
+  });
+
+  // wheel / trackpad, debounced
+  let wheelLock = 0;
+  addEventListener('wheel', e => {
+    const now = Date.now();
+    if (now - wheelLock < 750 || Math.abs(e.deltaY) < 24) return;
+    wheelLock = now;
+    e.deltaY > 0 ? next() : prev();
+  }, { passive: true });
+
+  // touch swipe
+  let tx = 0, ty = 0;
+  addEventListener('touchstart', e => { tx = e.touches[0].clientX; ty = e.touches[0].clientY; }, { passive: true });
+  addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - tx, dy = e.changedTouches[0].clientY - ty;
+    if (Math.abs(dx) > 56 && Math.abs(dx) > Math.abs(dy)) (dx < 0 ? next() : prev());
+  }, { passive: true });
+
+  document.getElementById('nextEdge').addEventListener('click', next);
+  document.getElementById('prevEdge').addEventListener('click', prev);
+
+  const fromHash = parseInt(location.hash.slice(1), 10);
+  go(Number.isFinite(fromHash) ? fromHash - 1 : 0);
+})();
+</script>
+</body>
+</html>

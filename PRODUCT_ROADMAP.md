@@ -263,6 +263,29 @@ fallback. The served instance can be specialized:
 Compatibility paths remain the oracle. Specialized paths are promoted
 only when they are correct, measured, and useful.
 
+## Lucien / memory-system direction (candidate, 2026-06-12)
+
+A second product direction under debate alongside the UI/harness work:
+make mlx-bun the local-model engine for Lucien (the Dreaming memory
+system), in two stages.
+
+1. **Prove the models do real work.** Run Lucien's pipeline tasks
+   (session ingestion, synthesis into articles, recall-grounded chat)
+   against mlx-bun-served models. Measure quality and performance per
+   task — this is a real-workload eval, not a benchmark row, and it
+   feeds the profile table (which model tier can sustain synthesis
+   work? what context does recall actually need?).
+2. **Package it.** If the models hold up: mlx-bun as a Lucien backend
+   option — one executable that creates the memory store, gathers
+   session transcripts, synthesizes them into articles, and serves
+   conversations grounded on those articles. Same appliance principle
+   as the chat default: one binary, one command, a working memory
+   system.
+
+This stresses exactly the things the runtime is good at measuring:
+long-context prefill, sustained batch-ish generation, prompt-cache
+reuse across pipeline stages.
+
 ## Non-goals for the default UX
 
 - Do not make the user choose from thousands of Hugging Face variants on
