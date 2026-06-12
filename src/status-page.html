@@ -304,7 +304,7 @@
 
   <footer>
     <span>mlx-bun · M-series Macs · MIT-licensed deps · no Python anywhere in the serving path</span>
-    <span><a href="https://github.com/joshuarossi/mlx-bun">github.com/joshuarossi/mlx-bun</a> · updated <span id="updated">never</span></span>
+    <span><a href="https://github.com/joshuarossi/mlx-bun">github.com/joshuarossi/mlx-bun</a> · server up <span id="uptime">—</span> · updated <span id="updated">never</span></span>
   </footer>
 </main>
 
@@ -357,6 +357,11 @@
 
       await loadDownloads();
       if (!fitLoaded) { await loadFit(); await loadLibrary(); }
+      if (stats.server?.started_at) {
+        const up = (Date.now() - stats.server.started_at) / 1000;
+        $("uptime").textContent = up < 90 ? Math.round(up) + "s" :
+          up < 5400 ? Math.round(up / 60) + "m" : (up / 3600).toFixed(1) + "h";
+      }
       $("conn").className = "pill ok";
       $("conn-text").textContent = "live · localhost";
       $("updated").textContent = new Date().toLocaleTimeString();

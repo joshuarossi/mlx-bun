@@ -12,6 +12,7 @@ Bun.serve({
       return new Response(statusPageHtml as unknown as string, { headers: { "content-type": "text/html; charset=utf-8" } });
     if (path === "/stats")
       return Response.json({
+        server: { owner: "serve", model: "mlx-community/gemma-4-12B-it-OptiQ-4bit", started_at: Date.now() - 8_640_000 },
         prompt_cache: { entries: 3, bytes: 412_000_000, max_bytes: 2_000_000_000, hits: 17, misses: 5 },
         response_store: { entries: 2, bytes: 1_400_000, max_bytes: 33_554_432, ttl_ms: 3_600_000 },
         kv_quant: {

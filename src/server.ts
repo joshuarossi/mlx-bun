@@ -408,6 +408,7 @@ export function createServer(
 
   // /library response cache (30 s) — registry + config reads only.
   let libraryCache: { at: number; rows: unknown[] } | null = null;
+  const startedAt = Date.now();
 
   // KV-quant scheme, resolved once: kv_config.json by default (optiq
   // serve's headline behavior), overridable to uniform bits or off.
@@ -555,6 +556,7 @@ export function createServer(
           server: {
             owner: serverOptions.owner ?? "embedded",
             model: ctx.modelId,
+            started_at: startedAt,
           },
           prompt_cache: {
             entries: promptCache.size,
