@@ -2003,7 +2003,15 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       and is appended AFTER our defaults so explicit flags win.
       Spawns cli.js under our own Bun (process.execPath): pi's bin
       shim is `#!/usr/bin/env node` and a stale system node (18)
-      crashes pi-tui. Tests: tests/pi-launch.test.ts (6). E2E
+      crashes pi-tui. FIELD BUG (2026-06-12, first external tester):
+      inside the COMPILED binary process.execPath is mlx-bun itself
+      and cannot execute cli.js — launcher broke, the error hint said
+      `bun add -g`, tester installed bun AND ran bare `pi`, whose own
+      onboarding downloaded ITS default model (a Mistral via
+      node-llama-cpp). Fixed: compiled pi binaries (pi.dev install.sh)
+      spawn directly; JS shims resolve bun via which; hints point at
+      the standalone installer; share-zip README warns to always
+      launch through `mlx-bun pi`. Tests: tests/pi-launch.test.ts (6). E2E
       dogfooded: `bun src/cli.ts pi -p "Reply with exactly:
       PI-LINK-OK"` → reused the running 26B server → pi answered
       PI-LINK-OK through the local model. Appliance follow-ups
