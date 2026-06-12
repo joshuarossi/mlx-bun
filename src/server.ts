@@ -440,6 +440,11 @@ export function createServer(
         });
       }
 
+      if (url.pathname === "/downloads" && request.method === "GET") {
+        const { downloadsSnapshot } = await import("./download");
+        return Response.json({ downloads: downloadsSnapshot() });
+      }
+
       if (url.pathname === "/fit" && request.method === "GET") {
         // Fit assessment for the status page: this-machine report at the
         // admission ceiling + the Apple SKU matrix at a fixed 32k. Same

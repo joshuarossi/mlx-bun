@@ -181,6 +181,26 @@ async function downloadOne(
 /** Download (or complete) a model snapshot. Returns the snapshot path.
  *  Idempotent: verified blobs are never re-fetched; partial blobs
  *  resume with a Range request. */
+/** Process-global download tracker — the status page's /downloads
+ *  endpoint reads this. Only downloads performed by THIS process are
+ *  visible (a `mlx-bun get` in another terminal is not). */
+export interface DownloadStatus {
+  repoId: string;
+  state: "active" | "done" | "error";
+  currentFile: string | null;
+  receivedBytes: number;
+  totalBytes: number;
+  filesDone: number;
+  filesTotal: number;
+  startedAt: number;
+  finishedAt: number | null;
+  error?: string;
+}
+const downloadLog: DownloadStatus[] = [];
+export function downloadsSnapshot(): DownloadStatus[] {
+  return downloadLog.slice(-5);
+}
+
 export async function downloadModel(
   repoId: string, opts: DownloadOptions = {},
 ): Promise<string> {
@@ -196,26 +216,52 @@ export async function downloadModel(
   mkdirSync(blobsDir, { recursive: true });
   mkdirSync(join(repoDir, "refs"), { recursive: true });
 
-  for (const f of listing.files) {
-    const blobId = f.lfs?.oid ?? f.blobId;
-    if (!blobId) throw new Error(`no blob id for ${f.rfilename} (API response missing ?blobs=true data)`);
-    const blobPath = join(blobsDir, blobId);
+  const status: DownloadStatus = {
+    repoId, state: "active", currentFile: null,
+    receivedBytes: 0, totalBytes: listing.files.reduce((a, f) => a + f.size, 0),
+    filesDone: 0, filesTotal: listing.files.length,
+    startedAt: Date.now(), finishedAt: null,
+  };
+  downloadLog.push(status);
+  let doneBytes = 0;
 
-    if (!existsSync(blobPath) || statSync(blobPath).size !== f.size) {
-      const url = `${endpoint}/${repoId}/resolve/${listing.sha}/${f.rfilename}`;
-      await downloadOne(url, token, blobPath, {
-        size: f.size, name: f.rfilename,
-        ...(f.lfs ? { sha256: f.lfs.oid } : { sha1: f.blobId }),
-      }, opts.onProgress);
-    }
+  try {
+    for (const f of listing.files) {
+      const blobId = f.lfs?.oid ?? f.blobId;
+      if (!blobId) throw new Error(`no blob id for ${f.rfilename} (API response missing ?blobs=true data)`);
+      const blobPath = join(blobsDir, blobId);
 
-    const linkPath = join(snapDir, f.rfilename);
-    mkdirSync(dirname(linkPath), { recursive: true });
-    if (!existsSync(linkPath)) {
-      // relative target, depth-aware for nested rfilenames
-      const depth = f.rfilename.split("/").length - 1;
-      symlinkSync(join("../".repeat(depth + 2), "blobs", blobId), linkPath);
+      if (!existsSync(blobPath) || statSync(blobPath).size !== f.size) {
+        const url = `${endpoint}/${repoId}/resolve/${listing.sha}/${f.rfilename}`;
+        status.currentFile = f.rfilename;
+        await downloadOne(url, token, blobPath, {
+          size: f.size, name: f.rfilename,
+          ...(f.lfs ? { sha256: f.lfs.oid } : { sha1: f.blobId }),
+        }, (file, received, total) => {
+          status.receivedBytes = doneBytes + received;
+          opts.onProgress?.(file, received, total);
+        });
+      }
+      doneBytes += f.size;
+      status.receivedBytes = doneBytes;
+      status.filesDone++;
+      status.currentFile = null;
+
+      const linkPath = join(snapDir, f.rfilename);
+      mkdirSync(dirname(linkPath), { recursive: true });
+      if (!existsSync(linkPath)) {
+        // relative target, depth-aware for nested rfilenames
+        const depth = f.rfilename.split("/").length - 1;
+        symlinkSync(join("../".repeat(depth + 2), "blobs", blobId), linkPath);
+      }
     }
+    status.state = "done";
+    status.finishedAt = Date.now();
+  } catch (e) {
+    status.state = "error";
+    status.error = e instanceof Error ? e.message : String(e);
+    status.finishedAt = Date.now();
+    throw e;
   }
 
   await Bun.write(join(repoDir, "refs", revision), listing.sha);

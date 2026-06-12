@@ -198,6 +198,11 @@
         <div class="kv"><b>mode</b><span id="kv-mode">—</span></div>
         <div id="kv-layers"></div>
       </div>
+
+      <div class="card" id="dl-card" style="grid-column: 1 / -1; display:none">
+        <h3>Downloads</h3>
+        <div id="dl-list"></div>
+      </div>
     </div>
   </section>
 
@@ -320,6 +325,7 @@
       $("kv-layers").innerHTML = Object.entries(kv.layers ?? {})
         .map(([k, v]) => '<div class="kv"><b>' + k + " layers</b><span class=\"num\">" + v + "</span></div>").join("");
 
+      await loadDownloads();
       if (!fitLoaded) await loadFit();
       $("conn").className = "pill ok";
       $("conn-text").textContent = "live · localhost";
@@ -328,6 +334,43 @@
       $("conn").className = "pill";
       $("conn-text").textContent = "server unreachable — retrying";
     }
+  }
+
+  const dlRates = {}; // repoId -> { bytes, t } for client-side throughput
+  async function loadDownloads() {
+    const { downloads } = await fetch("/downloads").then((r) => r.json());
+    const card = $("dl-card");
+    if (!downloads || downloads.length === 0) { card.style.display = "none"; return; }
+    card.style.display = "";
+    const order = downloads.slice().sort((a, b) =>
+      (a.state === "active" ? 0 : 1) - (b.state === "active" ? 0 : 1) || b.startedAt - a.startedAt);
+    $("dl-list").innerHTML = order.map((d) => {
+      const pct = d.totalBytes ? Math.min(100, 100 * d.receivedBytes / d.totalBytes) : 0;
+      let detail, barCls = "";
+      if (d.state === "active") {
+        const prev = dlRates[d.repoId];
+        const now = performance.now();
+        let speed = "";
+        if (prev && now > prev.t) {
+          const bps = (d.receivedBytes - prev.bytes) / ((now - prev.t) / 1000);
+          if (bps > 0) speed = " · " + mb(bps) + "/s · ~" +
+            Math.max(1, Math.round((d.totalBytes - d.receivedBytes) / bps / 60)) + " min left";
+        }
+        dlRates[d.repoId] = { bytes: d.receivedBytes, t: now };
+        detail = gb(d.receivedBytes) + " / " + gb(d.totalBytes) + " · " + pct.toFixed(0) + "%" + speed +
+          (d.currentFile ? " · <code>" + d.currentFile + "</code>" : "");
+        barCls = "warm";
+      } else if (d.state === "done") {
+        detail = gb(d.totalBytes) + ' · <span style="color:var(--green);font-weight:600">complete</span>';
+      } else {
+        detail = '<span style="color:var(--red);font-weight:600">error</span> · ' + (d.error ?? "");
+      }
+      return '<div style="padding:10px 0">' +
+        '<div class="kv" style="border:none"><b>' + d.repoId + "</b>" +
+        '<span class="num">' + d.filesDone + "/" + d.filesTotal + " files</span></div>" +
+        '<div style="font-size:13.5px;color:var(--dim)" class="num">' + detail + "</div>" +
+        '<div class="meter ' + barCls + '"><i style="width:' + pct + '%"></i></div></div>';
+    }).join("");
   }
 
   async function loadFit() {

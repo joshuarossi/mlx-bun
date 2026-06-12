@@ -41,6 +41,22 @@ Bun.serve({
           { sku: "M3 Ultra", ram_gb: 96, fits: true, max_context: 131072, decode_tps: 74 },
         ],
       });
+    if (path === "/downloads")
+      return Response.json({
+        downloads: [
+          {
+            repoId: "mlx-community/gemma-4-12B-it-OptiQ-4bit", state: "active",
+            currentFile: "model-00002-of-00002.safetensors",
+            receivedBytes: 3_600_000_000, totalBytes: 8_400_000_000,
+            filesDone: 7, filesTotal: 12, startedAt: Date.now() - 95_000, finishedAt: null,
+          },
+          {
+            repoId: "mlx-community/gemma-4-e4b-it-OptiQ-4bit", state: "done",
+            currentFile: null, receivedBytes: 6_550_000_000, totalBytes: 6_550_000_000,
+            filesDone: 9, filesTotal: 9, startedAt: Date.now() - 600_000, finishedAt: Date.now() - 280_000,
+          },
+        ],
+      });
     if (path === "/v1/models")
       return Response.json({ data: [{ id: "mlx-community/gemma-4-12B-it-OptiQ-4bit", context_window: 131072 }] });
     return new Response("not found", { status: 404 });
