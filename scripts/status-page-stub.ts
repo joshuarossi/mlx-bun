@@ -14,7 +14,11 @@ Bun.serve({
       return Response.json({
         prompt_cache: { entries: 3, bytes: 412_000_000, max_bytes: 2_000_000_000, hits: 17, misses: 5 },
         response_store: { entries: 2, bytes: 1_400_000, max_bytes: 33_554_432, ttl_ms: 3_600_000 },
-        kv_quant: { mode: "mixed (kv_config.json)", layers: { kv4: 8, kv8: 4, bf16: 36 } },
+        kv_quant: {
+          mode: "mixed (kv_config.json)",
+          layers: { kv8: 8, kv4: 22 },
+          attention: { global: 5, sliding_window: 25 },
+        },
         admission: {
           max_safe_context: 65536, memory_budget_bytes: null,
           usable_bytes: 18_000_000_000, weights_bytes: 8_400_000_000,
@@ -22,7 +26,7 @@ Bun.serve({
       });
     if (path === "/fit")
       return Response.json({
-        machine: { ram_bytes: 24 * 2 ** 30, bandwidth_gbs: 273 },
+        machine: { chip: "M4 Pro", ram_bytes: 24 * 2 ** 30, bandwidth_gbs: 273 },
         context_tokens: 65536,
         report: {
           fits: true, weights_bytes: 8_400_000_000, kv_bytes: 3_100_000_000,
@@ -32,13 +36,14 @@ Bun.serve({
         },
         sku_matrix_ctx: 32768,
         sku_matrix: [
-          { sku: "M2", ram_gb: 8, fits: false, max_context: 0, decode_tps: 0 },
-          { sku: "M2", ram_gb: 16, fits: true, max_context: 9800, decode_tps: 9 },
-          { sku: "M4", ram_gb: 16, fits: true, max_context: 10400, decode_tps: 11 },
+          { sku: "M2", ram_gb: 8, fits: false, max_context: 0, decode_tps: 9 },
+          { sku: "M2", ram_gb: 16, fits: false, max_context: 9800, decode_tps: 9 },
+          { sku: "M4", ram_gb: 16, fits: false, max_context: 10400, decode_tps: 11 },
+          { sku: "M2", ram_gb: 24, fits: true, max_context: 68000, decode_tps: 9 },
+          { sku: "M4", ram_gb: 24, fits: true, max_context: 70000, decode_tps: 11 },
           { sku: "M4 Pro", ram_gb: 24, fits: true, max_context: 70000, decode_tps: 25 },
           { sku: "M4 Pro", ram_gb: 48, fits: true, max_context: 131072, decode_tps: 26 },
           { sku: "M4 Max", ram_gb: 64, fits: true, max_context: 131072, decode_tps: 49 },
-          { sku: "M3 Ultra", ram_gb: 96, fits: true, max_context: 131072, decode_tps: 74 },
         ],
       });
     if (path === "/downloads")

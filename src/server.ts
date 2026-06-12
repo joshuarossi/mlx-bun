@@ -495,14 +495,15 @@ export function createServer(
         // Fit assessment for the status page: this-machine report at the
         // admission ceiling + the Apple SKU matrix at a fixed 32k. Same
         // conservative stance as admission (bf16 KV, expertsBytes 0).
-        const { skuMatrix, thisMachine } = await import("./fit");
+        const { skuMatrix, thisMachine, detectChip } = await import("./fit");
         const machine = thisMachine();
+        const chip = detectChip();
         const report = fit(
           ctx.model.config, ctx.model.weightsBytes, admission.maxSafeContext,
-          undefined, undefined, 0, serverOptions.memoryBudgetBytes,
+          machine, undefined, 0, serverOptions.memoryBudgetBytes,
         );
         return Response.json({
-          machine: { ram_bytes: machine.ramBytes, bandwidth_gbs: machine.bandwidthGBs },
+          machine: { chip: chip.name, ram_bytes: machine.ramBytes, bandwidth_gbs: machine.bandwidthGBs },
           context_tokens: admission.maxSafeContext,
           report: {
             fits: report.fits,
@@ -523,23 +524,24 @@ export function createServer(
       }
 
       if (url.pathname === "/stats" && request.method === "GET") {
-        // Active KV scheme: which donor layers quantize and at what bits.
-        // Sliding/rotating layers stay bf16 until Phase 9.
+        // Active KV scheme across ALL layers. Since Phase 9 rotating
+        // (sliding-window) caches quantize too, so every layer the
+        // scheme names counts — the old display filtered to
+        // full_attention and silently undercounted (e.g. 26B showed
+        // 5/30 quantized when its kv_config.json covers all 30).
         const layerTypes = ctx.model.config.text.layerTypes;
         const kvLayers: Record<string, number> = {};
         let kvMode = "bf16";
         if (kvScheme.kvBits) {
           kvMode = `uniform-kv${kvScheme.kvBits}`;
-          for (let i = 0; i < layerTypes.length; i++)
-            if (layerTypes[i] === "full_attention")
-              kvLayers[`kv${kvScheme.kvBits}`] = (kvLayers[`kv${kvScheme.kvBits}`] ?? 0) + 1;
+          kvLayers[`kv${kvScheme.kvBits}`] = layerTypes.length;
         } else if (kvScheme.kvConfig) {
           kvMode = "mixed (kv_config.json)";
           for (const e of kvScheme.kvConfig)
-            if (layerTypes[e.layerIdx] === "full_attention")
-              kvLayers[`kv${e.bits}`] = (kvLayers[`kv${e.bits}`] ?? 0) + 1;
+            kvLayers[`kv${e.bits}`] = (kvLayers[`kv${e.bits}`] ?? 0) + 1;
         }
         const bf16Layers = layerTypes.length - Object.values(kvLayers).reduce((a, b) => a + b, 0);
+        const slidingLayers = layerTypes.filter((l) => l === "sliding_attention").length;
         return Response.json({
           server: {
             owner: serverOptions.owner ?? "embedded",
@@ -560,7 +562,11 @@ export function createServer(
           },
           kv_quant: {
             mode: kvMode,
-            layers: { ...kvLayers, bf16: bf16Layers },
+            layers: { ...kvLayers, ...(bf16Layers > 0 ? { bf16: bf16Layers } : {}) },
+            attention: {
+              global: layerTypes.length - slidingLayers,
+              sliding_window: slidingLayers,
+            },
           },
           admission: {
             max_safe_context: admission.maxSafeContext,
