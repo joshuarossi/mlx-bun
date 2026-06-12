@@ -440,6 +440,37 @@ export function createServer(
         });
       }
 
+      if (url.pathname === "/fit" && request.method === "GET") {
+        // Fit assessment for the status page: this-machine report at the
+        // admission ceiling + the Apple SKU matrix at a fixed 32k. Same
+        // conservative stance as admission (bf16 KV, expertsBytes 0).
+        const { skuMatrix, thisMachine } = await import("./fit");
+        const machine = thisMachine();
+        const report = fit(
+          ctx.model.config, ctx.model.weightsBytes, admission.maxSafeContext,
+          undefined, undefined, 0, serverOptions.memoryBudgetBytes,
+        );
+        return Response.json({
+          machine: { ram_bytes: machine.ramBytes, bandwidth_gbs: machine.bandwidthGBs },
+          context_tokens: admission.maxSafeContext,
+          report: {
+            fits: report.fits,
+            weights_bytes: report.weightsBytes,
+            kv_bytes: report.kvBytes,
+            transient_bytes: report.transientBytes,
+            total_bytes: report.totalBytes,
+            usable_bytes: report.usableBytes,
+            max_safe_context: report.maxSafeContext,
+            predicted_decode_tps: report.predictedDecodeTps,
+          },
+          sku_matrix_ctx: 32768,
+          sku_matrix: skuMatrix(ctx.model.config, ctx.model.weightsBytes, 32768).map((r) => ({
+            sku: r.sku, ram_gb: r.ramGB, fits: r.fits,
+            max_context: r.maxContext, decode_tps: r.decodeTps,
+          })),
+        });
+      }
+
       if (url.pathname === "/stats" && request.method === "GET") {
         // Active KV scheme: which donor layers quantize and at what bits.
         // Sliding/rotating layers stay bf16 until Phase 9.

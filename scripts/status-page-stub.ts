@@ -20,6 +20,27 @@ Bun.serve({
           usable_bytes: 18_000_000_000, weights_bytes: 8_400_000_000,
         },
       });
+    if (path === "/fit")
+      return Response.json({
+        machine: { ram_bytes: 24 * 2 ** 30, bandwidth_gbs: 273 },
+        context_tokens: 65536,
+        report: {
+          fits: true, weights_bytes: 8_400_000_000, kv_bytes: 3_100_000_000,
+          transient_bytes: 1_150_000_000, total_bytes: 12_650_000_000,
+          usable_bytes: 18_000_000_000, max_safe_context: 65536,
+          predicted_decode_tps: 25.3,
+        },
+        sku_matrix_ctx: 32768,
+        sku_matrix: [
+          { sku: "M2", ram_gb: 8, fits: false, max_context: 0, decode_tps: 0 },
+          { sku: "M2", ram_gb: 16, fits: true, max_context: 9800, decode_tps: 9 },
+          { sku: "M4", ram_gb: 16, fits: true, max_context: 10400, decode_tps: 11 },
+          { sku: "M4 Pro", ram_gb: 24, fits: true, max_context: 70000, decode_tps: 25 },
+          { sku: "M4 Pro", ram_gb: 48, fits: true, max_context: 131072, decode_tps: 26 },
+          { sku: "M4 Max", ram_gb: 64, fits: true, max_context: 131072, decode_tps: 49 },
+          { sku: "M3 Ultra", ram_gb: 96, fits: true, max_context: 131072, decode_tps: 74 },
+        ],
+      });
     if (path === "/v1/models")
       return Response.json({ data: [{ id: "mlx-community/gemma-4-12B-it-OptiQ-4bit", context_window: 131072 }] });
     return new Response("not found", { status: 404 });
