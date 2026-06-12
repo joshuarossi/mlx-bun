@@ -631,6 +631,7 @@ switch (cmd) {
       bench: BENCH_LABELS[((r.notes as string) ?? "").split(" ")[0] ?? ""] ?? ((r.notes as string) ?? "").split(" ")[0] ?? "",
       kv: note(r, "kv"),
       stack: (r.stack as string) ?? "mlx-bun",
+      prefill: (r.prefill_tps as number) > 0 ? `${(r.prefill_tps as number).toFixed(0)}` : "",
       decode: (r.decode_tps as number).toFixed(1),
       ttft: note(r, "ttft_ms") ? `${note(r, "ttft_ms")}ms` : "",
       peak: gb(r.peak_bytes as number),
@@ -639,8 +640,9 @@ switch (cmd) {
     type Row = (typeof table)[number];
     const cols: Array<[string, keyof Row, "left" | "right"]> = [
       ["WHEN", "when", "right"], ["STACK", "stack", "left"], ["MODEL", "model", "left"],
-      ["BENCH", "bench", "left"], ["KV", "kv", "left"], ["TOK/S", "decode", "right"],
-      ["TTFT", "ttft", "right"], ["PEAK", "peak", "right"], ["COMMIT", "commit", "left"],
+      ["BENCH", "bench", "left"], ["KV", "kv", "left"],
+      ["PREFILL", "prefill", "right"], ["DECODE", "decode", "right"], ["TTFT", "ttft", "right"],
+      ["PEAK", "peak", "right"], ["COMMIT", "commit", "left"],
     ];
     const widths = cols.map(([h, k]) => Math.max(h.length, ...table.map((t) => t[k].length)));
     console.log();
@@ -660,7 +662,9 @@ switch (cmd) {
     console.log(style.dim("  BENCH   server e2e = full HTTP round-trip · direct decode = engine only, no server"));
     console.log(style.dim("          decode script / cli benchmark = single-stack decode measurement"));
     console.log(style.dim("  KV      KV-cache quantization (off = bf16, config = per-layer kv_config.json)"));
-    console.log(style.dim("  TOK/S   decode speed · TTFT = time to first token (server benches only)"));
+    console.log(style.dim("  PREFILL prompt ingestion tok/s (in-process benches) · DECODE generation tok/s"));
+    console.log(style.dim("  TTFT    request → first token, incl. server overhead (server benches)"));
+    console.log(style.dim("  PEAK    max memory during generation"));
     console.log();
     console.log(style.dim(`  ${rows.length} run(s) · --limit <n> for more · --raw for full records · mlx-bun benchmark to add a run`));
     break;
