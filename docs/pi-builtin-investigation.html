@@ -256,6 +256,21 @@ destination.</b> P1 support never goes away; the flagship ends embedded.</p>
   </ol>
 </div></div>
 
+<h2>First-run starter model <span class="badge">folds into P2/P4 · model gated on Phase 14</span></h2>
+<p>First run must not be "watch a progress bar for 10 minutes." A sub-gigabyte
+<b>starter model</b> downloads first and is chatting within ~1 minute — docs-grounded
+tour-guide prompt, banner: <em>"the ideal model for your Mac is downloading in the
+background."</em> Downloads are sequenced, not parallel; swap when the profile model lands.
+Starter is <b>downloaded, never bundled</b> (a ~900&nbsp;MB binary kills brew install) and
+stays on disk afterward (future speculative-decoding draft + always-works fallback).</p>
+<table>
+  <tr><th>Candidate</th><th>Download</th><th>Note</th></tr>
+  <tr><td>gemma-4-e2b-it-OptiQ-4bit</td><td>5.26 GB</td><td>Smallest Gemma — disqualifies the family for the starter slot</td></tr>
+  <tr><td>gemma-4-e4b / 12B OptiQ-4bit</td><td>7.0 / 8.4 GB</td><td>Profile models, not starters</td></tr>
+  <tr><td><b>Qwen3.5-0.8B-OptiQ-4bit</b></td><td><b>0.89 GB</b></td><td><b>Preferred</b>: rides the Phase 14 Qwen port; doubles as its first parity target</td></tr>
+  <tr><td>MiniCPM5-1B-OptiQ-4bit</td><td>0.92 GB</td><td>Strong (52% MMLU, +4.44 OptiQ delta) but a third architecture family — A/B later</td></tr>
+</table>
+
 <h2>Does it make sense as a feature?</h2>
 <p>Yes — arguably the highest-leverage product move available: it turns mlx-bun from "a
 server you point things at" into the one-binary local-AI appliance the roadmap describes.

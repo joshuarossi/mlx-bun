@@ -260,6 +260,33 @@ as the embedded, single-binary experience (P3/P4).
 4. Upgrade policy: bump pi deliberately per release, re-run the P3
    gates as the regression suite.
 
+### First-run starter model (folds into P2/P4; model gated on Phase 14)
+
+The first-run experience must not be "watch a progress bar for 10
+minutes." Plan: a sub-gigabyte **starter model** downloads first and is
+chatting within ~1 minute — with a docs-grounded "tour guide" system
+prompt (README + server-api + pi guide preloaded, so a 1B doesn't
+hallucinate about mlx-bun) and a banner: *"the ideal model for your Mac
+is downloading in the background."* The profile model streams behind it
+(sequenced, not parallel, so downloads don't split bandwidth); swap
+when ready.
+
+Measured sizes (HF tree API, 2026-06-12):
+
+| Candidate | Download | Note |
+|---|---|---|
+| gemma-4-e2b-it-OptiQ-4bit | 5.26 GB | smallest Gemma — disqualifies the family for the starter slot |
+| gemma-4-e4b / 12B OptiQ-4bit | 7.0 / 8.4 GB | profile models, not starters |
+| **Qwen3.5-0.8B-OptiQ-4bit** | **0.89 GB** | **preferred**: rides the Phase 14 Qwen port; doubles as the first tier-a parity target |
+| MiniCPM5-1B-OptiQ-4bit | 0.92 GB | strong (52% MMLU, +4.44 OptiQ delta) but a third architecture family — A/B later |
+
+Decisions: starter is **downloaded, never bundled** (a ~900 MB binary
+kills brew install); it stays on disk afterward (future
+speculative-decoding draft + always-works fallback). Hot-swap (or
+offer-to-swap) when the profile model lands is the only new runtime
+work. Dependency: a runnable sub-GB model requires the Phase 14 Qwen
+bring-up — the starter feature is the reason the 0.8B goes first there.
+
 ## Recommended sequence
 
 P1 + P2 now (days, immediate demo value, zero coupling) → P3 spike

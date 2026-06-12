@@ -476,7 +476,10 @@ export function createServer(
       if (url.pathname === "/v1/models" && request.method === "GET") {
         return Response.json({
           object: "list",
-          data: [{ id: ctx.modelId, object: "model", created: 0, owned_by: "mlx-bun" }],
+          data: [{
+            id: ctx.modelId, object: "model", created: 0, owned_by: "mlx-bun",
+            context_window: ctx.model.config.text.maxPositionEmbeddings,
+          }],
         });
       }
 

@@ -550,8 +550,10 @@ registry license column. Suite 157/157 at every commit.
    Phase 13 header; it's now the most interesting research direction
    and ties into PRODUCT_ROADMAP.md artifact design.
 
-**Direction debate (2026-06-12, unresolved — Josh deciding):** two
-candidate next directions, both product-shaped (see PRODUCT_ROADMAP.md):
+**Direction debate → DECIDED (2026-06-12): direction (A) first.** Josh
+picked the pi built-in track; see Phase 16 below and
+docs/pi-builtin-investigation.md (investigation + P1–P4 plan +
+first-run starter model). Lucien (B) stays queued. Original framing:
 
 - **(A) DX/UX**: built-in web chat UI (pi-SDK-based, tool calls
   working, served as another page from the same executable) + an
@@ -1965,6 +1967,50 @@ lever**. Every dispatch site now has a single known
 - [ ] Step 6/7 — 8-bit-specific tuning and e4b/26B kernels: optional;
       the uniform kernel already handles their site shapes when their
       models leave the MoE/whole-graph constraints.
+
+## Phase 16 — pi built-in terminal `[~]` (direction A; started 2026-06-12)
+
+Full investigation, options, pros/cons, and plan:
+docs/pi-builtin-investigation.md (+ styled HTML twin). pi v0.79.1, MIT,
+Bun-compile-native (upstream's own binary is `bun build --compile`).
+Users' own pi stays first-class forever; the flagship ends embedded.
+
+- [x] **P1 — `mlx-bun harness pi`** (2026-06-12): src/harness-pi.ts +
+      CLI `harness` case. Detects pi without spawning it (the bin shim
+      can resolve to a node too old for pi-tui's /v-regexes — version
+      read from the adjacent package.json instead); generates a
+      self-contained dynamic-discovery extension (registerProvider +
+      live fetch of /v1/models with a 2 s timeout, install-time model
+      list baked as fallback, registers nothing when both are empty)
+      into `~/.pi/agent/extensions/mlx-bun-provider.ts`; `--remove`
+      reverses. /v1/models now reports `context_window`
+      (config.text.maxPositionEmbeddings — note the nested `text`).
+      Tests: tests/harness-pi.test.ts (11) incl. executing the
+      generated extension against a stub registerProvider + stub
+      /v1/models server. Dogfooded on this machine (detected pi
+      v0.79.1, install + remove verified). Remaining Josh-side smoke:
+      run it with a live server and launch `pi --provider mlx-bun`.
+- [ ] **P2 — `mlx-bun pi` v1 (subprocess)**: ensure server, spawn the
+      user's pi with a session-scoped `-e` extension (no global
+      writes); pass through argv (`-p`, `--mode rpc`, `--continue`,
+      `@file` work free).
+- [ ] **P3 — embed spike** (via `bun run`, no bundling):
+      createAgentSession full-control + InteractiveMode in-process.
+      Gates: editor latency clean during 12B decode; tok/s within
+      noise; tool round-trip; clean teardown.
+- [ ] **P4 — single binary**: pi assets into the Phase 5 compile;
+      `-p`→runPrintMode, `--mode rpc`→runRpcMode; web chat UI rides
+      AgentSession.subscribe() events.
+- [ ] **First-run starter model** (depends on Phase 14): sub-GB
+      starter (Qwen3.5-0.8B-OptiQ-4bit, 0.89 GB; alt
+      MiniCPM5-1B-OptiQ-4bit, 0.92 GB — Llama arch, would be a third
+      family) downloads first and serves chat in ~1 min with a
+      docs-grounded tour-guide prompt while the profile model
+      (5.3–8.4 GB Gemma) streams in the background; sequenced
+      downloads; swap when ready. No Gemma fits the starter slot
+      (e2b is 5.26 GB — measured via HF tree API 2026-06-12).
+      Starter doubles later as a speculative-decoding draft and
+      always-works fallback. NOT bundled in the binary (brew-hostile).
 
 ## Context / lore
 
