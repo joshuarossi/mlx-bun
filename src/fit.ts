@@ -55,6 +55,15 @@ export function thisMachine(bandwidthGBs = 273): MachineSpec {
   return { name: "this machine", ramBytes: totalmem(), bandwidthGBs };
 }
 
+/** Recommended first model per device tier (PRODUCT_ROADMAP profiles).
+ *  Conservative: the model must leave headroom for KV + the OS. */
+export function recommendedRepoId(ramBytes = totalmem()): string {
+  const gb = ramBytes / 2 ** 30;
+  if (gb >= 48) return "mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit";
+  if (gb >= 24) return "mlx-community/gemma-4-12B-it-OptiQ-4bit";
+  return "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
+}
+
 export interface FitReport {
   fits: boolean;
   contextTokens: number;

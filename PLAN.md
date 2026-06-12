@@ -2006,7 +2006,14 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       crashes pi-tui. Tests: tests/pi-launch.test.ts (6). E2E
       dogfooded: `bun src/cli.ts pi -p "Reply with exactly:
       PI-LINK-OK"` → reused the running 26B server → pi answered
-      PI-LINK-OK through the local model.
+      PI-LINK-OK through the local model. Appliance follow-ups
+      (2026-06-12, Josh): no-server path now AUTO-PICKS the largest
+      supported (gemma4) model that fits via fit(); if NOTHING
+      supported is on disk it downloads the recommended model for
+      this machine (fit.ts recommendedRepoId — roadmap tiers: <24 GB
+      e4b, 24–48 12B, ≥48 26B; resumable+verified downloadModel);
+      and when `mlx-bun pi` started the server itself, pi exiting
+      cleanly leaves the server (web/API/status page) RUNNING.
 - [x] **Status page** (2026-06-12, Josh ask): `GET /` and `/status`
       serve an embedded self-contained HTML page (src/status-page.html,
       text-imported so it bundles into the single binary) polling
