@@ -1990,10 +1990,23 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       /v1/models server. Dogfooded on this machine (detected pi
       v0.79.1, install + remove verified). Remaining Josh-side smoke:
       run it with a live server and launch `pi --provider mlx-bun`.
-- [ ] **P2 — `mlx-bun pi` v1 (subprocess)**: ensure server, spawn the
-      user's pi with a session-scoped `-e` extension (no global
-      writes); pass through argv (`-p`, `--mode rpc`, `--continue`,
-      `@file` work free).
+- [x] **P2 — `mlx-bun pi` v1 (subprocess)** (2026-06-12):
+      src/pi-launch.ts + CLI `pi` case. Reuses a healthy server on
+      --port (default 8090) or loads one (--query resolves via
+      Registry; errors helpfully on 0/many models); spawns the user's
+      pi via a temp `-e` extension (no global writes), with
+      `--provider mlx-bun --model <first>` and **model selection
+      scoped to the server's models** (`--models` with EXACT ids —
+      the `mlx-bun/*` glob resolves before the async extension
+      registers the provider and warns "No models match"; Josh's
+      scoped-models requirement). User argv passes through verbatim
+      and is appended AFTER our defaults so explicit flags win.
+      Spawns cli.js under our own Bun (process.execPath): pi's bin
+      shim is `#!/usr/bin/env node` and a stale system node (18)
+      crashes pi-tui. Tests: tests/pi-launch.test.ts (6). E2E
+      dogfooded: `bun src/cli.ts pi -p "Reply with exactly:
+      PI-LINK-OK"` → reused the running 26B server → pi answered
+      PI-LINK-OK through the local model.
 - [ ] **P3 — embed spike** (via `bun run`, no bundling):
       createAgentSession full-control + InteractiveMode in-process.
       Gates: editor latency clean during 12B decode; tok/s within

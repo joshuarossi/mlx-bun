@@ -168,6 +168,60 @@ switch (cmd) {
     break;
   }
 
+  case "pi": {
+    // Our flags (--query/--port/--memory-budget) are consumed; ALL other
+    // args pass through to pi verbatim (-p, --mode rpc, --continue,
+    // @files, messages...). User flags are appended after our defaults,
+    // so an explicit --model/--models wins over ours.
+    const OURS = new Set(["--query", "--port", "--memory-budget"]);
+    const passthrough: string[] = [];
+    for (let i = 1; i < argv.length; i++) {
+      if (OURS.has(argv[i]!)) { i++; continue; }
+      passthrough.push(argv[i]!);
+    }
+    const { detectPi } = await import("./harness-pi");
+    const pi = detectPi();
+    if (!pi.found) {
+      console.error("pi not found. Install it first:");
+      console.error("  bun add -g @earendil-works/pi-coding-agent");
+      process.exit(1);
+    }
+    const port = Number(opt("port", "8090"));
+    const baseUrl = `http://localhost:${port}/v1`;
+    const { probeServer, buildPiInvocation, launchPi } = await import("./pi-launch");
+    let models = await probeServer(baseUrl);
+    let server: { stop: (force?: boolean) => void } | null = null;
+    if (models) {
+      console.log(`reusing running server at ${baseUrl} (${models.map((m) => m.id).join(", ")})`);
+    } else {
+      const reg = new Registry();
+      if (reg.list().length === 0) await reg.scan();
+      const query = opt("query");
+      const all = reg.list();
+      if (!query && all.length !== 1) {
+        console.error(all.length === 0
+          ? "no models downloaded — run: mlx-bun get <org/repo>"
+          : `multiple models available — pick one with --query:\n${all.map((m) => `  ${m.repoId}`).join("\n")}`);
+        process.exit(1);
+      }
+      const m = reg.resolve(query ?? all[0]!.repoId);
+      const { createServer, loadContext } = await import("./server");
+      const budgetGB = Number(opt("memory-budget", "0"));
+      const memoryBudgetBytes = budgetGB > 0 ? budgetGB * 1e9 : undefined;
+      console.log(`loading ${m.repoId} ...`);
+      const t0 = performance.now();
+      const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes });
+      server = createServer(ctx, port, { memoryBudgetBytes });
+      console.log(`serving ${m.repoId} at ${baseUrl} (ready in ${(performance.now() - t0).toFixed(0)} ms)`);
+      models = await probeServer(baseUrl);
+      if (!models) { console.error("server started but /v1/models probe failed"); process.exit(1); }
+    }
+    console.log(`launching pi (model ${models[0]!.id}; Ctrl+P cycles local models, /model to switch)`);
+    const code = await launchPi(buildPiInvocation(pi, baseUrl, models, passthrough));
+    server?.stop(true);
+    process.exit(code);
+  }
+
   case "harness": {
     const target = positional(0);
     if (target !== "pi") {
@@ -197,7 +251,8 @@ switch (cmd) {
       console.log(`server: ${baseUrl} not reachable — models will be discovered when pi`);
       console.log("starts against a running server (start one with: mlx-bun serve <model>)");
     }
-    console.log("launch: pi --provider mlx-bun");
+    console.log("launch:  pi --provider mlx-bun");
+    console.log('select:  /model in pi, or scope Ctrl+P cycling: pi --models "mlx-bun/*"');
     break;
   }
 
