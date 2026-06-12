@@ -199,9 +199,11 @@ switch (cmd) {
       const query = opt("query");
       const all = reg.list();
       if (!query && all.length !== 1) {
+        console.error(`no running server found at ${baseUrl}`);
         console.error(all.length === 0
-          ? "no models downloaded — run: mlx-bun get <org/repo>"
-          : `multiple models available — pick one with --query:\n${all.map((m) => `  ${m.repoId}`).join("\n")}`);
+          ? "and no models downloaded — run: mlx-bun get <org/repo>"
+          : "start one (mlx-bun serve <query>) or let me start one with --query:\n" +
+            all.map((m) => `  ${m.repoId}`).join("\n"));
         process.exit(1);
       }
       const m = reg.resolve(query ?? all[0]!.repoId);
