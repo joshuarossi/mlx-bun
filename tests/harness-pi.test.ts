@@ -44,8 +44,9 @@ describe("renderPiExtension", () => {
     expect(src).toContain('"http://localhost:9999/v1"');
   });
 
-  it("bakes the fallback model list with context window", () => {
-    expect(src).toContain('"org/some-model"');
+  it("bakes the fallback under a stable local id, real model in the name", () => {
+    expect(src).toContain('"id": "local"'); // mlx-bun/local handle, survives swaps
+    expect(src).toContain("org/some-model"); // real model rides in `name`
     expect(src).toContain('"contextWindow": 65536');
   });
 
@@ -79,7 +80,7 @@ describe("installPiExtension / removePiExtension", () => {
     expect(result.serverReachable).toBe(true);
     expect(result.bakedModels).toEqual(["test/model-4bit"]);
     const written = readFileSync(result.path, "utf8");
-    expect(written).toContain('"test/model-4bit"');
+    expect(written).toContain("test/model-4bit"); // real model in `name`; id is stable "local"
     expect(written).toContain('"contextWindow": 131072');
   });
 
@@ -109,7 +110,11 @@ describe("generated extension behaves like pi would run it", () => {
     expect(id).toBe("mlx-bun");
     expect(cfg.api).toBe("openai-completions");
     expect(cfg.models).toEqual([
-      expect.objectContaining({ id: "test/model-4bit", contextWindow: 131072 }),
+      expect.objectContaining({
+        id: "local",
+        name: "test/model-4bit (mlx-bun local)",
+        contextWindow: 131072,
+      }),
     ]);
   });
 });

@@ -7,9 +7,9 @@ import { join } from "node:path";
 import { buildPiInvocation, probeServer } from "../src/pi-launch";
 import type { ServerModel } from "../src/harness-pi";
 
+// The server advertises exactly one model at a time (single-model invariant).
 const MODELS: ServerModel[] = [
   { id: "mlx-community/gemma-4-12B-it-OptiQ-4bit", contextWindow: 131072, maxTokens: 8192 },
-  { id: "mlx-community/other-model", contextWindow: 32768, maxTokens: 8192 },
 ];
 const PI = { found: true, binPath: process.execPath }; // any real file works
 const cleanups: string[] = [];
@@ -34,8 +34,9 @@ describe("buildPiInvocation", () => {
     expect(existsSync(extPath)).toBe(true);
     expect(readFileSync(extPath, "utf8")).toContain('pi.registerProvider("mlx-bun"');
     expect(argv).toContain("--provider");
-    expect(argv[argv.indexOf("--model") + 1]).toBe(MODELS[0]!.id);
-    expect(argv[argv.indexOf("--models") + 1]).toBe(MODELS.map((m) => m.id).join(","));
+    // stable handle so pi addresses "whatever is on 8090", never a stale id
+    expect(argv[argv.indexOf("--model") + 1]).toBe("local");
+    expect(argv[argv.indexOf("--models") + 1]).toBe("local");
   });
 
   it("appends user passthrough last so explicit flags override ours", () => {
@@ -45,10 +46,11 @@ describe("buildPiInvocation", () => {
     expect(argv.slice(-2)).toEqual(["-p", "hello"]);
   });
 
-  it("bakes the discovered models into the session extension", () => {
+  it("bakes the discovered model under the stable local id", () => {
     const { argv } = build();
     const ext = readFileSync(argv[argv.indexOf("-e") + 1]!, "utf8");
-    for (const m of MODELS) expect(ext).toContain(JSON.stringify(m.id));
+    expect(ext).toContain('"id": "local"');
+    for (const m of MODELS) expect(ext).toContain(m.id); // real model rides in `name`
   });
 });
 

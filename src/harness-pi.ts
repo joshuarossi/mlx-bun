@@ -14,6 +14,14 @@ import { dirname, join } from "node:path";
 
 export const PI_EXTENSION_FILENAME = "mlx-bun-provider.ts";
 export const PI_PROVIDER_ID = "mlx-bun";
+/** Stable pi-facing model id. The server runs exactly one model at a time
+ *  (memory: the 26B alone is 18 GB) and which one varies run-to-run, so
+ *  advertising the real, changing repo id makes pi's persisted default go
+ *  stale ("No models match …"). A fixed id resolves to whatever single
+ *  model is loaded; the real model is carried in the `name` field, and the
+ *  server still reports the true id in /v1/models and responses. Gives a
+ *  clean `mlx-bun/local` handle instead of `mlx-bun/mlx-community/…`. */
+export const PI_LOCAL_MODEL_ID = "local";
 export const DEFAULT_BASE_URL = "http://localhost:8090/v1";
 
 export function defaultPiExtensionsDir(): string {
@@ -97,7 +105,7 @@ export default async function (pi: any) {
       const { data } = await res.json();
       if (Array.isArray(data) && data.length > 0) {
         models = data.map((m: any) => ({
-          id: m.id,
+          id: ${JSON.stringify(PI_LOCAL_MODEL_ID)},
           name: \`\${m.id} (mlx-bun local)\`,
           reasoning: false,
           input: ["text"],
@@ -121,7 +129,7 @@ export default async function (pi: any) {
 
 function modelEntry(m: ServerModel) {
   return {
-    id: m.id,
+    id: PI_LOCAL_MODEL_ID,
     name: `${m.id} (mlx-bun local)`,
     reasoning: false,
     input: ["text"],
