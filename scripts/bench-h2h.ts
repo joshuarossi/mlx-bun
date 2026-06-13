@@ -42,6 +42,26 @@ const CHIP = (() => {
   return r.exitCode === 0 ? r.stdout.toString().trim() : "unknown chip";
 })();
 
+// Toolchain provenance for the report: Bun (drives ours) plus the oracle
+// interpreter and the package versions that actually govern logit parity
+// (mlx / mlx-lm / mlx-optiq). The Python minor is a free variable now —
+// recording it makes a 3.13-vs-3.14 decode delta attributable instead of
+// mysterious. Degrades gracefully if the oracle venv is unavailable.
+const TOOLCHAIN = (() => {
+  const r = Bun.spawnSync([`${VENV}/python`, "-c",
+    "import sys\n" +
+    "from importlib.metadata import version, PackageNotFoundError\n" +
+    "def v(n):\n" +
+    " try: return version(n)\n" +
+    " except PackageNotFoundError: return '?'\n" +
+    "print(f\"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro} \"\n" +
+    "      f\"(mlx {v('mlx')}, mlx-lm {v('mlx-lm')}, mlx-optiq {v('mlx-optiq')})\")"]);
+  const oracle = r.exitCode === 0 ? r.stdout.toString().trim() : "unavailable";
+  return { bun: Bun.version, oracle };
+})();
+const toolchainLine =
+  `Toolchain: Bun **${TOOLCHAIN.bun}**, oracle Python **${TOOLCHAIN.oracle}**.`;
+
 const argv = process.argv.slice(2);
 const cmd = argv[0] ?? "preflight";
 const opt = (name: string, dflt: string): string => {
@@ -583,7 +603,7 @@ if (cmd === "table") {
   console.log(out);
   const file = opt("out", "");
   if (file) {
-    await Bun.write(file, `# mlx-bun head-to-head (${new Date().toISOString().slice(0, 10)})\n\n${out}\n`);
+    await Bun.write(file, `# mlx-bun head-to-head (${new Date().toISOString().slice(0, 10)})\n\n${toolchainLine}\n\n${out}\n`);
     console.log(`\nwrote ${file}`);
   }
   process.exit(0);
@@ -683,7 +703,8 @@ if (cmd === "all") {
   await Bun.write(out,
     `# mlx-bun head-to-head (${new Date().toISOString().slice(0, 10)}, commit ${commit})\n\n` +
     `Machine: **${HOST}** — ${CHIP}, ${ramGB} GB unified. One machine per file;\n` +
-    `cross-machine comparisons go through the per-row machine column.\n\n${table}\n`);
+    `cross-machine comparisons go through the per-row machine column.\n\n` +
+    `${toolchainLine}\n\n${table}\n`);
   console.log(`\nwrote ${out} — this pass took ${(Date.now() - startedAt) / 60000 | 0} min`);
   process.exit(0);
 }
