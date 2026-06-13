@@ -1983,13 +1983,12 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       live fetch of /v1/models with a 2 s timeout, install-time model
       list baked as fallback, registers nothing when both are empty)
       into `~/.pi/agent/extensions/mlx-bun-provider.ts`; `--remove`
-      reverses. /v1/models now reports `context_window`
+      reverses. /v1/models reports `context_window`
       (config.text.maxPositionEmbeddings — note the nested `text`).
-      Tests: tests/harness-pi.test.ts (11) incl. executing the
-      generated extension against a stub registerProvider + stub
-      /v1/models server. Dogfooded on this machine (detected pi
-      v0.79.1, install + remove verified). Remaining Josh-side smoke:
-      run it with a live server and launch `pi --provider mlx-bun`.
+      Tests: tests/harness-pi.test.ts incl. executing the generated
+      extension against a stub registerProvider + stub /v1/models
+      server. Dogfooded on this machine (detected pi v0.79.1,
+      install + remove verified).
 - [x] **P2 — `mlx-bun pi` v1 (subprocess)** (2026-06-12):
       src/pi-launch.ts + CLI `pi` case. Reuses a healthy server on
       --port (default 8090) or loads one (--query resolves via
@@ -2085,24 +2084,35 @@ Users' own pi stays first-class forever; the flagship ends embedded.
 - [ ] **P4 — single binary**: pi assets into the Phase 5 compile;
       `-p`→runPrintMode, `--mode rpc`→runRpcMode; web chat UI rides
       AgentSession.subscribe() events.
-- [~] **First-run starter model** — INTERIM VERSION SHIPPED
+- [x] **First-run starter model**
       (2026-06-12, after the first external tester sat through a 16 GB
-      26B download with nothing to use): fresh install now downloads
-      the e4b (5.3 GB, smallest supported) in the foreground, starts
-      serving/chatting, and streams the recommended model for the
-      machine in the background (in-process downloadModel → visible
-      at /downloads with speed/ETA; resumable if the session exits
-      first; auto-pick selects it next run). The TRUE sub-GB starter
-      below still lands with Phase 14. Original design: sub-GB
-      starter (Qwen3.5-0.8B-OptiQ-4bit, 0.89 GB; alt
-      MiniCPM5-1B-OptiQ-4bit, 0.92 GB — Llama arch, would be a third
-      family) downloads first and serves chat in ~1 min with a
-      docs-grounded tour-guide prompt while the profile model
-      (5.3–8.4 GB Gemma) streams in the background; sequenced
-      downloads; swap when ready. No Gemma fits the starter slot
-      (e2b is 5.26 GB — measured via HF tree API 2026-06-12).
-      Starter doubles later as a speculative-decoding draft and
-      always-works fallback. NOT bundled in the binary (brew-hostile).
+      26B download with nothing to use): interim e4b starter shipped
+      first. 2026-06-13 update: true sub-GB starter is now
+      `mlx-community/MiniCPM5-1B-OptiQ-4bit` (0.92 GB, Llama-family).
+      Goldens were generated first from the Python oracle in
+      `/Users/joshrossi/Code/mlx-lm-example/.venv`, then the Bun Llama
+      port matched 100/100 greedy ids with bit-exact full-vector
+      logits for all 100 steps, in both standard bf16 KV and the
+      shipped mixed-KV (kv_config.json) modes. Fresh install now
+      downloads MiniCPM5 in the foreground, starts serving/chatting
+      quickly, and streams the recommended Gemma for the machine in
+      the background (visible at /downloads, resumable; auto-pick
+      prefers the larger supported model next run if it fits).
+      Starter remains a permanent fallback.
+      2026-06-12 serving-layer review (after live agent bugs): four
+      fixes landed — (1) ChatTemplate rewrites `[a,b]|min`/`|max`
+      (unsupported by @huggingface/jinja) so MiniCPM5 multi-turn tool
+      history renders instead of 400ing every second agent turn,
+      verified byte-exact vs the oracle apply_chat_template;
+      (2) tools-active streaming now streams content live and
+      withholds only tool markup (oracle's incremental parser
+      behavior) instead of buffering whole responses; (3) tool args
+      decode against the tool's JSON schema (string params stay
+      strings) with CDATA-safe parsing; (4) omitted sampling fields
+      default to the model's generation_config.json, the optiq
+      gen_config injection (MiniCPM5 0.9/0.95; Gemma 1.0/64/0.95).
+      Chat UI verified live in-browser (streaming, multi-turn,
+      prompt-cache hit on turn 2). Details in journal.md.
 
 ## Publishing decision (2026-06-12, Josh)
 
@@ -2111,15 +2121,17 @@ Zip-sharing is over — publish properly: **bun/npm first, then brew.**
 the compiled bundle. Publishing likely also means making the repo
 public, which fixes the native-pack anonymous-download caveat.)
 Two gates before publishing:
-- [ ] **Sub-GB starter model working** — so first run is chatting in
-      ~1 min, not 5 GB. Full implementation plan:
-      **docs/starter-model-port-handoff.md** (2026-06-12). KEY
-      DISCOVERY in it: Qwen3.5-0.8B is the hybrid gated-DeltaNet
-      qwen3-next lineage (18/24 linear-attention layers, MRoPE,
-      partial rotary, f32 SSM state) — a multi-week port, NOT a
-      quick one; MiniCPM5-1B is textbook llama (days). Recommended:
-      Track A (MiniCPM5) gates publishing, Track B (Qwen3.5) stays
-      Phase 14 on its own clock. **Josh to pick the track.**
+- [x] **Sub-GB starter model working** — MiniCPM5 Track A chosen and
+      ported on branch `codex-minicpm5-starter-port`. See
+      **docs/starter-model-port-handoff.md** for the discovery that
+      Qwen3.5-0.8B is hybrid gated-DeltaNet and remains Phase 14 proper.
+      MiniCPM5 is textbook Llama and now has committed oracle goldens,
+      config/model/factory support, CLI starter wiring, and bit-exact
+      100-step parity tests (bf16 + mixed KV). Serving layer reviewed
+      and fixed 2026-06-12 (template min-filter crash on agent loops,
+      buffered tool streaming, schema-blind arg decoding,
+      generation_config sampling defaults); Gemma 4 parity/server/tool
+      suites re-verified green, chat UI verified live. Gate satisfied.
 - [x] **Minimal chat experience in the web UI** (2026-06-12): /chat
       page served from the binary — streaming SSE chat against
       /v1/chat/completions, keynote styling, tok/s + TTFT footer per

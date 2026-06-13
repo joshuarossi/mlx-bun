@@ -11,10 +11,16 @@ export const SNAPSHOT = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-
 
 export const SNAPSHOT_26B = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-26B-A4B-it-OptiQ-4bit/snapshots/dbfd2a779b038b267bb20ff95dad717f42e4de16`;
 
+export const SNAPSHOT_MINICPM5 = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--MiniCPM5-1B-OptiQ-4bit/snapshots/664aabaed233c653f82716d8dc822234d0091f78`;
+
 export async function snapshotAvailable(): Promise<boolean> {
   return Bun.file(`${SNAPSHOT}/config.json`).exists();
 }
 
 export async function snapshot26bAvailable(): Promise<boolean> {
   return Bun.file(`${SNAPSHOT_26B}/config.json`).exists();
+}
+
+export async function snapshotMiniCPM5Available(): Promise<boolean> {
+  return Bun.file(`${SNAPSHOT_MINICPM5}/config.json`).exists();
 }

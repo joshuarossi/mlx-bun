@@ -39,6 +39,10 @@ export function tanh(a: MlxArray, s: S = gpuStream): MlxArray {
   return new MlxArray(outArray("tanh", (o) => C.mlx_tanh(o, a.handle, s)));
 }
 
+export function sigmoid(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("sigmoid", (o) => C.mlx_sigmoid(o, a.handle, s)));
+}
+
 /** Scalar constant with the same dtype as `like` (python weak-scalar semantics). */
 export function scalarLike(value: number, like: MlxArray): MlxArray {
   const f = MlxArray.fromFloat32(new Float32Array([value]), []);
