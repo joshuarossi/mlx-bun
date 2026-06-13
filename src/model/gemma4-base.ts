@@ -1462,10 +1462,12 @@ export function quantizedSdpa(
 ): MlxArray {
   // Perf mode (Phase E): the fused decode kernel takes supported L=1
   // dispatches. NOT bit-exact (online softmax) — gated against the
-  // frozen perf oracle; compat (flag off) stays the -O0 reference.
+  // frozen perf oracle; compat (MLX_BUN_PERF_KERNEL=0) stays the -O0
+  // reference. Never inside a compiled trace: CustomKernel has no
+  // output_shapes, so it cannot live in a (shapeless) closure.
   if (
     mask.mode === "" && scale === 1.0 && perfKernelEnabled() &&
-    fusedDecodeKernelSupported(q, bits, groupSize)
+    !isCompiledTrace() && fusedDecodeKernelSupported(q, bits, groupSize)
   )
     return fusedDecodeSdpa(q, kq, vq, groupSize, bits);
   const tile = q.shape[2]! > 1 || process.env.MLX_BUN_FUSED_DECODE === "1";

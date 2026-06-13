@@ -26,11 +26,12 @@ import { Dtype } from "../mlx/ffi";
 import { MetalKernel } from "../mlx/metal-kernel";
 import * as ops from "../mlx/ops";
 
-/** Perf-mode lever: MLX_BUN_PERF_KERNEL=1 routes supported L=1 quantized
- *  SDPA dispatches through the fused kernel. Compat (flag off) is the
+/** Perf-mode lever: DEFAULT ON since the 2026-06-11 cleared-machine
+ *  benchmark pass (1.023x paired @8k, 1.010x @2k vs compat, 12B serve
+ *  kv_config). MLX_BUN_PERF_KERNEL=0 opts out; compat remains the
  *  permanent -O0 reference and differential-testing oracle. */
 export function perfKernelEnabled(): boolean {
-  return process.env.MLX_BUN_PERF_KERNEL === "1";
+  return process.env.MLX_BUN_PERF_KERNEL !== "0";
 }
 
 /** Dispatch counter (the oracle gate asserts the kernel actually ran). */
