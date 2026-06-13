@@ -192,6 +192,20 @@ describe.skipIf(!have4b)("compiled decode parity (e4b: per-layer input + KV shar
     ["kv_config mixed", { kvConfig: config.kvQuant!, quantizedKvStart: 0 }],
   ] as const) {
     test(`greedy trajectory identical: ${name}`, async () => {
+      // This test measures GRAPH-REPLAY FIDELITY: the compiled trace must
+      // reproduce the uncompiled graph's result op-for-op. That only holds
+      // when both sides run the SAME kernels. The perf kernel
+      // (MLX_BUN_PERF_KERNEL, default on) is deliberately NOT bit-exact
+      // (fused online softmax — reordered reductions, traded for speed) and
+      // cannot live inside a compiled trace (CustomKernel has no
+      // output_shapes). So with it on, the uncompiled path runs the custom
+      // kernel for quantized layers while the compiled path falls back to
+      // stock SDPA, and the trajectories legitimately diverge. Pin it off
+      // here; the kernel's quality-vs-stock bar is covered separately by
+      // fused-decode-kernel.test.ts (maxDiff < 0.02) and
+      // perf-kernel-oracle.test.ts (teacher-forced agreement >= 56/64).
+      const prevPerfKernel = process.env.MLX_BUN_PERF_KERNEL;
+      process.env.MLX_BUN_PERF_KERNEL = "0";
       const collect = async (compiled: boolean): Promise<number[]> => {
         process.env.MLX_BUN_COMPILED_DECODE = compiled ? "1" : "0";
         try {
@@ -203,13 +217,18 @@ describe.skipIf(!have4b)("compiled decode parity (e4b: per-layer input + KV shar
           delete process.env.MLX_BUN_COMPILED_DECODE;
         }
       };
-      const before = CompiledDecode.stepsExecuted;
-      const on = await collect(true);
-      const compiledSteps = CompiledDecode.stepsExecuted - before;
-      const off = await collect(false);
-      expect(on.length).toBeGreaterThan(4);
-      expect(on).toEqual(off);
-      expect(compiledSteps).toBeGreaterThanOrEqual(on.length - 1);
+      try {
+        const before = CompiledDecode.stepsExecuted;
+        const on = await collect(true);
+        const compiledSteps = CompiledDecode.stepsExecuted - before;
+        const off = await collect(false);
+        expect(on.length).toBeGreaterThan(4);
+        expect(on).toEqual(off);
+        expect(compiledSteps).toBeGreaterThanOrEqual(on.length - 1);
+      } finally {
+        if (prevPerfKernel === undefined) delete process.env.MLX_BUN_PERF_KERNEL;
+        else process.env.MLX_BUN_PERF_KERNEL = prevPerfKernel;
+      }
     }, 240_000);
   }
 });
