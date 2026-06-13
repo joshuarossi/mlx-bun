@@ -1,4 +1,4 @@
-// Perf-mode quality gate (optimization_plan.md Phase E): the fused
+// Perf-mode quality gate (docs/design/optimization_plan.md Phase E): the fused
 // decode kernel is NOT bit-exact (it can't be — every implementation
 // that rounds scores to bf16 differs by final-rounding ties), so it
 // gates against the FROZEN compat oracle under TEACHER FORCING: feed

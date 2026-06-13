@@ -1,4 +1,4 @@
-// mx.fast.metal_kernel toolchain derisk (optimization_plan.md Phase E
+// mx.fast.metal_kernel toolchain derisk (docs/design/optimization_plan.md Phase E
 // step 3): a trivial kernel proves the .metal → mlx-c → bun:ffi pipeline
 // end-to-end, so the real fused-SDPA kernel debugs numerics OR plumbing,
 // never both at once.

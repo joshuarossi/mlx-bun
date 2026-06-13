@@ -1,4 +1,4 @@
-// Compiled decode step (Phase A of optimization_plan.md).
+// Compiled decode step (Phase A of docs/design/optimization_plan.md).
 //
 // The single-token decode graph is identical token-to-token except for
 // integer state (RoPE offset, cache write position, active length). This

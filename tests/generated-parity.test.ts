@@ -1,4 +1,4 @@
-// Generated-model parity (optimization_plan.md Phase C): the generated
+// Generated-model parity (docs/design/optimization_plan.md Phase C): the generated
 // specialization must be BIT-EXACT with the monolith under the config it
 // was generated for (the shipped kv_config serve scenario) — the gate IS
 // the generator's test. Covers prefill (L>1, causal/window masks), ring

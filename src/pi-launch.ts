@@ -1,5 +1,5 @@
 // mlx-bun pi — launch the user's installed pi against the local server
-// (Phase 16 P2, docs/pi-builtin-investigation.md).
+// (Phase 16 P2, docs/investigations/pi-builtin-investigation.md).
 //
 // Session-scoped wiring, no global config writes: a temp extension file
 // registers the provider for this run only (-e <file>), the default

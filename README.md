@@ -140,7 +140,7 @@ agent CLIs like pi/OpenClaw via their provider config.
   text with streaming hold-back); omitted sampling fields default to
   the model's own `generation_config.json` recipe; usage includes
   `cached_tokens`. Full schemas in
-  [docs/server-api.md](./docs/server-api.md).
+  [docs/reference/server-api.md](./docs/reference/server-api.md).
 - **Tool calling** — pass OpenAI `tools`; each family's native format
   is parsed into `tool_calls` JSON with `finish_reason: "tool_calls"`
   (Gemma 4 `<|tool_call>` sentinel tokens; MiniCPM5
@@ -189,10 +189,10 @@ agent CLIs like pi/OpenClaw via their provider config.
 
 The server is one consumer of a library-first API. Not yet published to
 npm — clone the repo and import from `src/`. Full reference:
-[docs/library-api.md](./docs/library-api.md). For shipping inside a
+[docs/reference/library-api.md](./docs/reference/library-api.md). For shipping inside a
 Mac app (Tauri/Electron sidecar), `./scripts/build-binary.sh` produces
 a relocatable single-binary bundle — recipe incl. signing/notarization
-in [docs/embedding.md](./docs/embedding.md).
+in [docs/reference/embedding.md](./docs/reference/embedding.md).
 
 ```ts
 import { loadModelConfig } from "./src/config";
@@ -227,7 +227,7 @@ Head-to-head against the Python stacks (mlx-lm 0.31.3, mlx-optiq 0.2.1),
 same machine (M4 Pro 24 GB), same day, same HF snapshots, preflight-gated
 clean machine, median-of-N with warmups discarded. Full table with
 per-row provenance:
-[benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md](./benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md).
+[benchmarks/benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md](./benchmarks/benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md).
 
 | | mlx-bun | mlx-lm | optiq |
 |---|---|---|---|
