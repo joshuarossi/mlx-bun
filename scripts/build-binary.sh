@@ -14,7 +14,7 @@
 # The binary resolves libmlxc next to itself first (src/mlx/ffi.ts), so
 # the directory is relocatable — drop it into a Tauri/Electron app's
 # resources and spawn `mlx-bun serve` as a sidecar. Signing/notarization
-# recipe: docs/embedding.md.
+# recipe: docs/reference/embedding.md.
 set -eu
 
 OUT="${1:-dist}"

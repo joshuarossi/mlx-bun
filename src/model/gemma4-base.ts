@@ -1,5 +1,5 @@
 // gemma4-base — the config-INDEPENDENT machinery shared by every
-// architecture variant (optimization_plan.md Phase B: pure code
+// architecture variant (docs/design/optimization_plan.md Phase B: pure code
 // movement out of the gemma4.ts monolith; every definition here is
 // verbatim from it). Cache classes, quantized-KV SDPA, masks, the
 // quantized primitives + LoRA machinery, and small graph helpers live

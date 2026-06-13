@@ -1,5 +1,5 @@
 // mlx-bun harness pi — register mlx-bun as a provider in the user's pi
-// install (Phase 16 P1, docs/pi-builtin-investigation.md).
+// install (Phase 16 P1, docs/investigations/pi-builtin-investigation.md).
 //
 // Mechanism: a generated extension file in ~/.pi/agent/extensions/ that
 // calls pi.registerProvider() with dynamic discovery — it fetches

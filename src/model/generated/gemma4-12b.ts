@@ -4,7 +4,7 @@
 // fingerprint: 9f812d2eb461fcbe
 //
 // Branch-resolved, unrolled forward pass for this architecture
-// (optimization_plan.md Phase C). Bit-exactness vs the monolith is the
+// (docs/design/optimization_plan.md Phase C). Bit-exactness vs the monolith is the
 // generator's gate: tests/generated-parity.test.ts. The cache-signature
 // guard falls back to the monolith for anything this file wasn't
 // generated for (bf16 compat runs, vision bidir prefill).

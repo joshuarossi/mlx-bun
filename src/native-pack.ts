@@ -8,7 +8,7 @@
 //
 // Resolution order for the libs (mirrored in src/mlx/ffi.ts):
 //   MLX_BUN_LIBMLXC env > beside the executable (sidecar dist/ layout,
-//   docs/embedding.md) > the native-pack cache dir > homebrew.
+//   docs/reference/embedding.md) > the native-pack cache dir > homebrew.
 // Dev trees and embedders therefore never download anything.
 
 import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";

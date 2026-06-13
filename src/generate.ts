@@ -334,7 +334,7 @@ async function* generateInner(
     ops.asyncEvalAll([pending]);
 
     // ---- decode (pipelined) ----
-    // Compiled decode (optimization_plan.md Phase A): replay the per-step
+    // Compiled decode (docs/design/optimization_plan.md Phase A): replay the per-step
     // graph in C++ instead of rebuilding it through bun:ffi every token.
     // Bit-exact with the uncompiled path (tests/compiled-decode.test.ts);
     // MLX_BUN_COMPILED_DECODE=0 is the kill switch / A-B lever. LoRA

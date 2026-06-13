@@ -1,8 +1,11 @@
-# MiniCPM5 Starter Port Journal
+# Engineering Journal
 
-Branch: `codex-minicpm5-starter-port`
+Ongoing, chronological record of AI/agent decisions, investigations, and
+corrections — newest work appended under a dated heading. Purpose: bring
+a fresh agent up to speed on *why* the code is the way it is. PLAN.md is
+the what/when (phases, exit criteria); this is the narrative behind it.
 
-## 2026-06-13
+## 2026-06-13 — MiniCPM5 starter port (branch `codex-minicpm5-starter-port`)
 
 - Created a dedicated branch for the MiniCPM5 starter-model port.
   - Attempted `codex/minicpm5-starter-port`, but git ref creation was blocked by the sandbox/ref layout.

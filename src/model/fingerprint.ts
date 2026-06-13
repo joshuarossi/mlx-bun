@@ -1,4 +1,4 @@
-// Config fingerprint for generated-model dispatch (optimization_plan.md
+// Config fingerprint for generated-model dispatch (docs/design/optimization_plan.md
 // Phase C): a stable hash over every config field that changes the
 // decode graph structure, plus the kv_config quant layout. A generated
 // specialization is used only when the fingerprint of the loaded config

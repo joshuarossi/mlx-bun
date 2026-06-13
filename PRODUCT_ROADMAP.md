@@ -22,6 +22,67 @@ working local chat UI plus a local AI server.
 The runtime can still expose every advanced knob. The default path should
 not require them.
 
+## The three modes (the organizing design law)
+
+mlx-bun has not published anything: the entire CLI, command, and flag
+surface is still ours to invent, and we are not married to any flag
+name. Where a de-facto standard name exists (mlx-lm's), we adopt it
+rather than reinvent. The surface is designed once, to serve three
+audiences at three depths — progressive disclosure over ONE set of
+verbs and one flag vocabulary, not three separate CLIs:
+
+1. **Automatic mode** — first-time local-AI users. `mlx-bun` (and bare
+   verbs) with zero flags. Smart, sane defaults from the device-profile
+   table (see Core idea). Typing to a chatbot in a web UI in under a
+   minute, with no knowledge of HF variants, quant formats, or context
+   windows required.
+2. **Compat mode** — people moving over from mlx-lm. The same verbs,
+   plus dotted aliases (`mlx-bun.server` *is* `mlx-bun serve`), using
+   mlx-lm's flag vocabulary, so existing muscle memory and scripts port
+   with a one-token rename. mlx-lm is canonical because it is the
+   default Apple references at WWDC and outweighs the alternative by
+   ~425× monthly installs (1.64M vs 3.85k; mlx-lm 5.8k stars / 765
+   forks; mlx-optiq has no public repo — measured 2026-06-12).
+3. **Stick-shift mode** — power users and researchers. The full knob
+   surface: every mlx-lm flag, every optiq feature, plus our own
+   envelope-pushing ones, all exposed and composable. Build the exact
+   system you want.
+
+### Laws that keep the three modes coherent
+
+- **One surface, mlx-lm vocabulary.** The dotted form is a pure alias
+  of the space form. Adopt mlx-lm's flag names wherever they are the
+  standard; only name a flag ourselves where mlx-lm has no concept for
+  it (and there we are free to improve on optiq's name, not bound to
+  it).
+- **Compatibility = superset, never intersection.** Every documented
+  mlx-lm flag/verb behaves faithfully so scripts drop in unchanged. We
+  never subtract or gate a capability we already have for free to
+  resemble an upstream — e.g. we serve OpenAI + Anthropic + Responses
+  from one server, and that stays on: it costs nothing and is invisible
+  to a beginner.
+- **Gate only on conflict.** A capability is always on UNLESS leaving
+  it on would degrade the automatic or compat experience (it changes
+  output determinism, trades quality, or surprises a script). Only then
+  does it move behind a stick-shift flag. This is rule 3 yielding to
+  rules 1 and 2.
+- **optiq is a feature set to absorb, not a flag dialect to honor.**
+  Its distinctive features (sensitivity mixed-precision convert,
+  per-layer KV sensitivity profiling, LoRA rank scaling, dual-protocol
+  serving, latency prediction, the Lab UI) graft onto the mlx-lm spine
+  as additive flags and a few new verbs.
+
+### Status (2026-06-12)
+
+The compat layer does not exist yet: today's commands (`serve`, `fit`,
+`benchmark`, `evals`, `get`/`scan`/`ls`, `pi`, `harness`) are ad-hoc,
+not a designed mlx-lm-matching surface — though their flags already
+overlap mlx-lm/optiq heavily, so this is mostly rename-and-confirm, not
+migration. The work: design the full surface against mlx-lm vocabulary,
+reconcile the existing commands into it, and fill the capability matrix
+behind it (convert/quantize, LoRA training, eval/perplexity, fuse,
+cache_prompt, upload/share). Decomposed into phases in PLAN.md.
+
 ## Core idea
 
 The local-AI problem is not continuous for Mac users. People own a small

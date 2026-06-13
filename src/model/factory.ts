@@ -1,5 +1,5 @@
 // Model construction with generated-specialization dispatch
-// (optimization_plan.md Phase C): pick the generated class whose config
+// (docs/design/optimization_plan.md Phase C): pick the generated class whose config
 // fingerprint matches, else the monolith. Generated classes subclass
 // Gemma4Model and only override forwardLayers (with their own
 // cache-signature guard), so the choice is always safe.
