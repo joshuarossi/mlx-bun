@@ -1970,9 +1970,29 @@ lever**. Every dispatch site now has a single known
       row. The 2–3× expectation assumed a fat dequant round-trip our
       port never had. The kernel's real prize = score/softmax
       round-trips + dispatch count ≈ 1% — captured.
-- [ ] MLX_BUN_PERF_KERNEL stays DEFAULT OFF until the next
-      cleared-machine ./benchmark.sh pass confirms the win and flips it
-      (standing rule: defaults change on clean-machine numbers only).
+- [x] MLX_BUN_PERF_KERNEL flipped to DEFAULT ON (2026-06-11): the
+      cleared-machine ./benchmark.sh pass confirmed the win — paired
+      kernel vs compat 24.00 vs 23.46 tok/s (1.023×) @8k and 24.75 vs
+      24.51 (1.010×) @2k, 12B serve kv_config, median-of-3
+      (benchmarks/benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md; eval DB
+      rows 333–336). MLX_BUN_PERF_KERNEL=0 is the documented opt-out;
+      compat stays the permanent -O0 reference and differential-testing
+      oracle (standing rule: losing/optional paths stay as flags, never
+      deleted). bench-perf-kernel.ts compat arm now pins =0 explicitly
+      (deleting the var means ON post-flip).
+      **Scope decision made at the flip**: the kernel dispatches only on
+      DENSE architectures (gen-model.ts `dense` predicate = the
+      CompiledDecode segmented-mode predicate; today that's the 12B —
+      exactly where the win was measured and the frozen oracle exists).
+      On whole-graph models the default-ON flag surfaced a latent
+      conflict: the CustomKernel can't live in the whole-graph closure
+      (no output_shapes → closure blacklists → compiled decode silently
+      lost), and keeping it uncompiled-only would make e4b's compiled vs
+      uncompiled trajectories diverge. So e4b/26B generated dispatch
+      emits compat tiled/unfused only (regenerated 2026-06-11; 12B
+      output byte-identical), quantizedSdpa additionally guards with
+      !isCompiledTrace() as belt-and-suspenders, and e4b/26B kernel
+      enablement stays step 6/7 work below.
 - [ ] Step 6/7 — 8-bit-specific tuning and e4b/26B kernels: optional;
       the uniform kernel already handles their site shapes when their
       models leave the MoE/whole-graph constraints.
