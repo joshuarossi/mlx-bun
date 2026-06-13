@@ -69,10 +69,14 @@ describe.skipIf(!haveWeights)("generated 12B vs monolith", async () => {
     const b = await trajectory(mono, true);
     expect(a.length).toBeGreaterThan(4);
     expect(a).toEqual(b);
-    // under SEGMENTED compiled decode the per-step path is CompiledDecode's
-    // (layer-wise segments), so the generated forwardLayers serves the
-    // prefill only; full decode coverage is the uncompiled test below
-    expect(usedGenerated).toBeGreaterThanOrEqual(1);
+    // Under compiled decode the per-step path is CompiledDecode's; and
+    // since 583c8c8 (OptiQ mixed-KV: empty caches stay bf16 so the first
+    // prefill matches the oracle), the prefill rides the bf16 monolith —
+    // the generated quantized fast path declines it (#matches requires
+    // quantized caches). So in the serve+compiled scenario the generated
+    // forwardLayers is bypassed entirely. Full generated coverage is the
+    // uncompiled test below.
+    expect(usedGenerated).toBe(0);
   }, 240_000);
 
   test("greedy trajectories identical, uncompiled (full generated coverage)", async () => {
