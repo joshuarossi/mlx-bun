@@ -74,6 +74,19 @@ export interface ServerOptions {
   /** Interface to bind (Bun.serve hostname). Default: Bun's default
    *  (all interfaces); pass "127.0.0.1" for loopback-only. */
   hostname?: string;
+  /** Server-wide default for the chat template's `enable_thinking`
+   *  variable (MiniCPM5/CPM and other hybrid-reasoning models). A
+   *  request's `chat_template_kwargs.enable_thinking` overrides it per
+   *  call; undefined ⇒ fall back to the model's own default (false for
+   *  MiniCPM5). Set via `--thinking true|false`. */
+  defaultThinking?: boolean;
+  /** Server-wide sampling defaults (set via --temperature/--top-p/--top-k).
+   *  Precedence: an explicit per-request field wins, then these, then the
+   *  model's generation_config.json, then the built-in fallback. Lets the
+   *  browser chat (which sends no sampling fields) be steered from the CLI. */
+  defaultTemperature?: number;
+  defaultTopP?: number;
+  defaultTopK?: number;
 }
 
 export interface ServerContext {
@@ -557,9 +570,9 @@ export function createServer(
 
   const toOptions = (req: ChatRequest): GenerateOptions & { stopSequences: string[] } => ({
     maxTokens: req.max_completion_tokens ?? req.max_tokens ?? 1024,
-    temperature: req.temperature ?? ctx.genDefaults.temperature ?? 0.7,
-    topP: req.top_p ?? ctx.genDefaults.topP ?? 0,
-    topK: req.top_k ?? ctx.genDefaults.topK ?? 0,
+    temperature: req.temperature ?? serverOptions.defaultTemperature ?? ctx.genDefaults.temperature ?? 0.7,
+    topP: req.top_p ?? serverOptions.defaultTopP ?? ctx.genDefaults.topP ?? 0,
+    topK: req.top_k ?? serverOptions.defaultTopK ?? ctx.genDefaults.topK ?? 0,
     seed: req.seed ?? (Date.now() & 0xffffffff),
     repetitionPenalty: req.repetition_penalty ?? ctx.genDefaults.repetitionPenalty,
     // generate() yields token ids; stop sequences match on decoded text
@@ -571,12 +584,17 @@ export function createServer(
   });
 
   const templateOptionsFor = (req: ChatRequest, tools: ToolDefinition[] | null) => {
+    // Precedence: per-request chat_template_kwargs wins; else the
+    // server-wide --thinking default; else the model's own default
+    // (false for MiniCPM5, otherwise leave the template's default).
     const requested = req.chat_template_kwargs?.enable_thinking;
     return {
       tools,
       enableThinking: typeof requested === "boolean"
         ? requested
-        : isMiniCPM5Config(ctx.model.config) ? false : undefined,
+        : serverOptions.defaultThinking !== undefined
+          ? serverOptions.defaultThinking
+          : isMiniCPM5Config(ctx.model.config) ? false : undefined,
     };
   };
 
