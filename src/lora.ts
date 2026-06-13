@@ -16,7 +16,8 @@ import { ptr, read } from "bun:ffi";
 import { MlxArray, cpuStream } from "./mlx/array";
 import { C } from "./mlx/ffi";
 import { SafetensorsFile } from "./safetensors";
-import type { Gemma4Model, LoraWeights } from "./model/gemma4";
+import type { LoraWeights } from "./model/gemma4";
+import type { RuntimeModel } from "./model/factory";
 
 const cstr = (s: string) => Buffer.from(s + "\0", "utf8");
 
@@ -106,12 +107,12 @@ export function parseAdapterSpec(spec: string): string[] {
 }
 
 export class AdapterManager {
-  readonly #model: Gemma4Model;
+  readonly #model: RuntimeModel;
   readonly #mounted = new Map<string, AdapterInfo>();
   /** Owned adapter arrays per id (disposed on unmount). */
   readonly #arrays = new Map<string, MlxArray[]>();
 
-  constructor(model: Gemma4Model) {
+  constructor(model: RuntimeModel) {
     this.#model = model;
   }
 

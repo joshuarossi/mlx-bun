@@ -1,5 +1,5 @@
 // Fused decode-SDPA Metal kernel, v2: flash-decoding split-N
-// (optimization_plan.md Phase E). L=1 attention over a QUANTIZED KV
+// (docs/design/optimization_plan.md Phase E). L=1 attention over a QUANTIZED KV
 // cache with the dequant inlined — neither the score row nor the
 // dequantized cache is ever materialized. Dispatched from Bun via
 // mx.fast.metal_kernel (no MLX fork), always OUTSIDE compiled-decode

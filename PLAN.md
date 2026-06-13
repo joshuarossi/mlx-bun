@@ -419,7 +419,7 @@ Where we beat Python, not just match it.
       shows all four bundle files loaded from dist/ (not brew), GPU
       generation + /v1/messages served from the compiled binary
       (ready 254 ms), first-run weights via the embedded downloader.
-      docs/embedding.md: sidecar pattern (Tauri/Electron), signing/
+      docs/reference/embedding.md: sidecar pattern (Tauri/Electron), signing/
       notarization recipe incl. the Bun allow-jit entitlement
       requirement under hardened runtime.
 - **Exit criterion:** cold start → first token of a cached-prefix prompt
@@ -458,7 +458,7 @@ safe; `tests/ffi-jit.test.ts` pins the paths past DFG tier-up.
 State: all three Gemma-4 targets at tier-a/d bit-exact parity
 (including every quantized-KV config, post rope-freqs fix); Phases 4,
 8, 10 done; Phase 5 fully closed (admission control + downloader);
-docs synced (README + docs/server-api.md). The repo's durable state is
+docs synced (README + docs/reference/server-api.md). The repo's durable state is
 THIS FILE + the findings sections; trust rows in the eval DB over
 numbers quoted in old findings.
 
@@ -552,7 +552,7 @@ registry license column. Suite 157/157 at every commit.
 
 **Direction debate → DECIDED (2026-06-12): direction (A) first.** Josh
 picked the pi built-in track; see Phase 16 below and
-docs/pi-builtin-investigation.md (investigation + P1–P4 plan +
+docs/investigations/pi-builtin-investigation.md (investigation + P1–P4 plan +
 first-run starter model). Lucien (B) stays queued. Original framing:
 
 - **(A) DX/UX**: built-in web chat UI (pi-SDK-based, tool calls
@@ -842,11 +842,11 @@ Ordered by expected payoff on this hardware:
       algorithm), npm deps (tokenizers Apache-2.0, jinja MIT,
       fast-png MIT), model-license caveat. LICENSE file added (MIT).
 - [x] API reference for the library surface (DONE 2026-06-11,
-      hand-written): docs/library-api.md — generate()/Generation/
+      hand-written): docs/reference/library-api.md — generate()/Generation/
       GenerateOptions/GenerateStats (incl. the mlx-lm-matching clock
       semantics), serving pieces, PromptCache, kv-store persistence,
       Registry+fit, LoRA, and the memory/disposal rules (uncatchable
-      OOM, read.* rule). docs/embedding.md covers the single-binary
+      OOM, read.* rule). docs/reference/embedding.md covers the single-binary
       sidecar story (bundle, resolution order, signing/notarization
       incl. allow-jit).
 - [x] Per-file header audit (2026-06-10): every PORTED file carries its
@@ -858,7 +858,7 @@ Ordered by expected payoff on this hardware:
       which renders upstream's own template by design). server.ts got a
       behavioral-reference note (mlx-lm server.py, no code ported).
       THIRD_PARTY_LICENSES.md stays the canonical license inventory.
-- [x] Server API doc (2026-06-10): docs/server-api.md — full
+- [x] Server API doc (2026-06-10): docs/reference/server-api.md — full
       request/response schemas incl. tool_calls, vision parts, SSE
       grammar, admission errors, /stats, /v1/adapters; pi models.json
       walkthrough. Found en route: the README claimed `stop` sequence
@@ -1242,7 +1242,7 @@ Phase 4's "shim later if needed"):
   grounded answer). Suite 157/157. The planned Claude Code live smoke
   was dropped 2026-06-12 — Josh dogfooded the surface through pi
   instead and won't use Claude Code against the local model.
-  docs/server-api.md documents both surfaces.
+  docs/reference/server-api.md documents both surfaces.
 
 ## Phase 12 — SigLIP vision tower `[ ]` (capability — Josh's hold)
 
@@ -1264,7 +1264,16 @@ optimizations / only if needed**: nothing above depends on it.
 ## Phase 13 — TurboQuant `[ ]` (research path — PROMOTED 2026-06-12)
 
 Rotation-based vector quantization. Oracle:
-`optiq/runtime/mtp/turboquant.py`. ~~Sequence last~~ **Re-prioritized
+`optiq/runtime/mtp/turboquant.py`. **Confirmed from source (2026-06-12):
+this is a KV-CACHE quant method, not a weight/artifact quantizer** —
+`KEY_QUANTS`/`VALUE_QUANTS` (per-key/value bits, e.g. keys q8_0 / values
+q3_0), FWHT rotation over head dims, 3-bit Lloyd-Max centroids; imported
+by `optiq/runtime/kv/rotating.py` (our Phase 9 port's oracle). So its
+product value is **more usable context** (KV grows with context length),
+NOT smaller model artifacts — the "device-targeted artifacts" wording
+below means context-fit via KV, not weight shrink. It composes with the
+separate model-quantization workflow (Phase 17 matrix), it is not it.
+~~Sequence last~~ **Re-prioritized
 by Josh (2026-06-12): now ahead of Qwen in interest.** The product
 frame (PRODUCT_ROADMAP.md "Artifact design") changed the value
 calculus: TurboQuant + sensitivity analysis is the lever for
@@ -1305,7 +1314,7 @@ two-model speculation measured a net loss.
 
 ## Phase 15 — Head-to-head benchmark: mlx-bun vs mlx-lm vs mlx-optiq `[~]`
 (matrix complete 2026-06-10 except leg (c)'s purge-cold rows — see
-findings; results: benchmarks-h2h-2026-06-10.md + README Benchmarks)
+findings; results: benchmarks/benchmarks-h2h-2026-06-10.md + README Benchmarks)
 
 The publishable comparison (added 2026-06-10). Everything so far
 measures parity per-component; this phase produces one same-day,
@@ -1390,7 +1399,7 @@ file and per row).
 ### Phase 15 findings (2026-06-11 — the corrected clean matrix)
 
 The post-reboot `./benchmark.sh --redo` pass (commit f23ef4e, eval
-rows 200–259, benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md). First
+rows 200–259, benchmarks/benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md). First
 clean-machine measurement of the post-rope-fix/Phase-9/10 engine.
 
 - **The @8k baseline is real this time**: every @8k row carries
@@ -1543,7 +1552,7 @@ change, consistent with Phase 6).
 
 ### Phase 15 findings (2026-06-10, full-matrix run)
 
-- **Full 25-cell matrix landed** (benchmarks-h2h-2026-06-10.md, commit
+- **Full 25-cell matrix landed** (benchmarks/benchmarks-h2h-2026-06-10.md, commit
   0ee00dd, n=3 direct / n=5 server, preflight-clean): the README
   Benchmarks section is the publishable summary. Headlines: TTFT
   45–89 ms vs python's 220–327 ms (3–5×); start→ready 0.36–0.48 s vs
@@ -1740,7 +1749,7 @@ change, consistent with Phase 6).
 
 ## Optimization plan Phase A — compiled decode `[x]` (2026-06-10/11)
 
-(See optimization_plan.md for the full plan; Phases B–E follow.)
+(See docs/design/optimization_plan.md for the full plan; Phases B–E follow.)
 
 **What landed:** the single-token decode step replays through
 `mlx_compile` instead of being rebuilt per token over bun:ffi.
@@ -1971,7 +1980,7 @@ lever**. Every dispatch site now has a single known
 ## Phase 16 — pi built-in terminal `[~]` (direction A; started 2026-06-12)
 
 Full investigation, options, pros/cons, and plan:
-docs/pi-builtin-investigation.md (+ styled HTML twin). pi v0.79.1, MIT,
+docs/investigations/pi-builtin-investigation.md (+ styled HTML twin). pi v0.79.1, MIT,
 Bun-compile-native (upstream's own binary is `bun build --compile`).
 Users' own pi stays first-class forever; the flagship ends embedded.
 
@@ -1983,13 +1992,12 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       live fetch of /v1/models with a 2 s timeout, install-time model
       list baked as fallback, registers nothing when both are empty)
       into `~/.pi/agent/extensions/mlx-bun-provider.ts`; `--remove`
-      reverses. /v1/models now reports `context_window`
+      reverses. /v1/models reports `context_window`
       (config.text.maxPositionEmbeddings — note the nested `text`).
-      Tests: tests/harness-pi.test.ts (11) incl. executing the
-      generated extension against a stub registerProvider + stub
-      /v1/models server. Dogfooded on this machine (detected pi
-      v0.79.1, install + remove verified). Remaining Josh-side smoke:
-      run it with a live server and launch `pi --provider mlx-bun`.
+      Tests: tests/harness-pi.test.ts incl. executing the generated
+      extension against a stub registerProvider + stub /v1/models
+      server. Dogfooded on this machine (detected pi v0.79.1,
+      install + remove verified).
 - [x] **P2 — `mlx-bun pi` v1 (subprocess)** (2026-06-12):
       src/pi-launch.ts + CLI `pi` case. Reuses a healthy server on
       --port (default 8090) or loads one (--query resolves via
@@ -2037,7 +2045,7 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       styling without a model load. First brick of the web UI surface
       (the chat page lands with P4's event plumbing). v2 same day
       (Josh: "make it look AWESOME"): rebuilt in the keynote
-      aesthetic (wwdc-mlx-bun.html grammar — black stage, gradient
+      aesthetic (archive/wwdc-mlx-bun.html grammar — black stage, gradient
       hero, blooms, hairline cards) + new `GET /fit` endpoint
       (this-machine FitReport at the admission ceiling + Apple SKU
       matrix @32k, same conservative stance as admission) rendered as
@@ -2085,24 +2093,114 @@ Users' own pi stays first-class forever; the flagship ends embedded.
 - [ ] **P4 — single binary**: pi assets into the Phase 5 compile;
       `-p`→runPrintMode, `--mode rpc`→runRpcMode; web chat UI rides
       AgentSession.subscribe() events.
-- [~] **First-run starter model** — INTERIM VERSION SHIPPED
+- [x] **First-run starter model**
       (2026-06-12, after the first external tester sat through a 16 GB
-      26B download with nothing to use): fresh install now downloads
-      the e4b (5.3 GB, smallest supported) in the foreground, starts
-      serving/chatting, and streams the recommended model for the
-      machine in the background (in-process downloadModel → visible
-      at /downloads with speed/ETA; resumable if the session exits
-      first; auto-pick selects it next run). The TRUE sub-GB starter
-      below still lands with Phase 14. Original design: sub-GB
-      starter (Qwen3.5-0.8B-OptiQ-4bit, 0.89 GB; alt
-      MiniCPM5-1B-OptiQ-4bit, 0.92 GB — Llama arch, would be a third
-      family) downloads first and serves chat in ~1 min with a
-      docs-grounded tour-guide prompt while the profile model
-      (5.3–8.4 GB Gemma) streams in the background; sequenced
-      downloads; swap when ready. No Gemma fits the starter slot
-      (e2b is 5.26 GB — measured via HF tree API 2026-06-12).
-      Starter doubles later as a speculative-decoding draft and
-      always-works fallback. NOT bundled in the binary (brew-hostile).
+      26B download with nothing to use): interim e4b starter shipped
+      first. 2026-06-13 update: true sub-GB starter is now
+      `mlx-community/MiniCPM5-1B-OptiQ-4bit` (0.92 GB, Llama-family).
+      Goldens were generated first from the Python oracle in
+      `/Users/joshrossi/Code/mlx-lm/.venv`, then the Bun Llama
+      port matched 100/100 greedy ids with bit-exact full-vector
+      logits for all 100 steps, in both standard bf16 KV and the
+      shipped mixed-KV (kv_config.json) modes. Fresh install now
+      downloads MiniCPM5 in the foreground, starts serving/chatting
+      quickly, and streams the recommended Gemma for the machine in
+      the background (visible at /downloads, resumable; auto-pick
+      prefers the larger supported model next run if it fits).
+      Starter remains a permanent fallback.
+      2026-06-12 serving-layer review (after live agent bugs): four
+      fixes landed — (1) ChatTemplate rewrites `[a,b]|min`/`|max`
+      (unsupported by @huggingface/jinja) so MiniCPM5 multi-turn tool
+      history renders instead of 400ing every second agent turn,
+      verified byte-exact vs the oracle apply_chat_template;
+      (2) tools-active streaming now streams content live and
+      withholds only tool markup (oracle's incremental parser
+      behavior) instead of buffering whole responses; (3) tool args
+      decode against the tool's JSON schema (string params stay
+      strings) with CDATA-safe parsing; (4) omitted sampling fields
+      default to the model's generation_config.json, the optiq
+      gen_config injection (MiniCPM5 0.9/0.95; Gemma 1.0/64/0.95).
+      Chat UI verified live in-browser (streaming, multi-turn,
+      prompt-cache hit on turn 2). Details in journal.md.
+
+## Phase 17 — Compat CLI surface + parity harness `[ ]` (2026-06-12)
+
+Design the entire CLI/flag surface from scratch (nothing published yet)
+so one set of verbs serves three depths — automatic / compat /
+stick-shift (PRODUCT_ROADMAP "The three modes"). mlx-lm is the
+vocabulary, because it is the WWDC-default and outweighs mlx-optiq ~425×
+on installs (1.64M vs 3.85k/mo; 5.8k★/765 forks vs no public repo —
+measured 2026-06-12). Full surface contract + the gap matrix live in
+**docs/design/compat-cli-surface-design.md**.
+
+Three laws: (1) one surface, mlx-lm vocabulary, `mlx-bun.<verb>` is a
+pure alias of `mlx-bun <verb>`; (2) compatibility = superset, never
+intersection (never gate a free capability — OpenAI+Anthropic+Responses
+all stay on); (3) gate behind a flag only where always-on would degrade
+the automatic/compat experience. Surface parity ≠ architecture parity:
+an unsupported model errors clearly, it does not silently misbehave (the
+"scope is survival" principle still holds).
+
+This phase ships the layer over **existing** capabilities; the 🟥
+buckets below fill in behind it.
+
+- [ ] Verb router + dotted-alias bin entries (`mlx-bun.server`, etc.),
+      one flag vocabulary adopting mlx-lm names.
+- [ ] Reconcile current ad-hoc commands: `serve --kv-quant` →
+      `--kv-bits/--kv-group-size/--quantized-kv-start` (deprecated
+      alias kept); `--prompt-cache` → `--prompt-cache-size/-bytes`;
+      keep our levers (`--compiled-decode/--perf-kernel/--fused-*`) as
+      stick-shift flags.
+- [ ] Wire 🔌 wiring-only verbs (engine exists): `generate`, `chat`
+      (faithful REPL), `server` flag parity, `benchmark` flag parity,
+      `manage` (`--scan/--delete/--pattern`), `cache_prompt`,
+      `lora info`, `latency`/`fit` `--calibrate`.
+- [ ] Honest stubs for 🟥 verbs: exit non-zero with
+      `not implemented in mlx-bun yet`.
+- [ ] **Parity harness** against the oracle venv: per-verb flag-surface
+      diff (every `mlx_lm.<verb> --help` flag accepted or explicitly
+      rejected, never silently ignored) + deterministic behavior diffs
+      (`generate --seed --temp 0`, `manage --scan`, `cache_prompt`
+      round-trip) + gap-honesty assertions.
+- **Exit criterion**: `mlx-bun.<verb>` aliases exist for every mlx-lm
+  verb; the parity harness is green for the 🔌 set (faithful behavior)
+  and asserts the honest-stub message for the 🟥 set; existing suites
+  (Gemma/MiniCPM parity, server, tools) stay green after the flag
+  reconciliation.
+
+**Native differentiators are NOT in this phase** — the compat layer
+makes us a drop-in *for* mlx-lm; pi (Phase 16: `harness pi` + `mlx-bun
+pi` exist, embedded single-binary pi is the flagship — see
+docs/investigations/pi-builtin-investigation.md) and the built-in web UI make us *more
+than* mlx-lm. Both ride pi's `AgentSession` event stream. They are the
+other half of the product, tracked separately in Phase 16.
+
+### Capability buckets behind Phase 17 (the 🟥 matrix)
+
+The compat layer is the 🔌 column; these are the real builds that light
+up the 🟥 verbs and the OptIQ-Lab web-UI tiles (full matrix in the spec):
+
+- **Model quantization (new phase) — make a NEW model artifact**:
+  `convert` (uniform/affine + mixed/sensitivity), `awq`, `dwq`, `gptq`,
+  `dynamic_quant`. Offline; reads a model, writes a new quantized model
+  dir to serve/upload/share. Lights up web-UI quantize tile.
+- **Inference-time KV-cache quant (no artifact) — DONE**: bf16,
+  uniform, and **mixed per-layer** from kv_config.json all work today
+  (config.ts reads it, generate.ts applies per-layer, server.ts exposes
+  `off`/`N`/`config`; Phase 9 + Phase 10). Remaining KV items are
+  optional and NOT inference plumbing: a *profiler* that authors a new
+  kv_config.json (model-prep, tied to the model-quant axis, low pri —
+  shipped artifacts already include one) and the TurboQuant rotation-VQ
+  *method* (Phase 13, an extra scheme on top). TurboQuant is a method,
+  not the model-creation workflow.
+- **Training (new phase)**: `lora --train/--test` (LoRA/DoRA/full),
+  `--rank-scaling by_bits|by_kl`, `fuse` (+GGUF/upload). Web-UI
+  fine-tune.
+- **Eval (new phase)**: `evaluate` (lm-eval-harness + optiq task set),
+  `perplexity`.
+- **Distribution (new phase, low pri)**: `upload`, `share`.
+- **Web-UI training-data template + generation**: independent of engine
+  work; fourth OptIQ-Lab tile.
 
 ## Publishing decision (2026-06-12, Josh)
 
@@ -2111,15 +2209,17 @@ Zip-sharing is over — publish properly: **bun/npm first, then brew.**
 the compiled bundle. Publishing likely also means making the repo
 public, which fixes the native-pack anonymous-download caveat.)
 Two gates before publishing:
-- [ ] **Sub-GB starter model working** — so first run is chatting in
-      ~1 min, not 5 GB. Full implementation plan:
-      **docs/starter-model-port-handoff.md** (2026-06-12). KEY
-      DISCOVERY in it: Qwen3.5-0.8B is the hybrid gated-DeltaNet
-      qwen3-next lineage (18/24 linear-attention layers, MRoPE,
-      partial rotary, f32 SSM state) — a multi-week port, NOT a
-      quick one; MiniCPM5-1B is textbook llama (days). Recommended:
-      Track A (MiniCPM5) gates publishing, Track B (Qwen3.5) stays
-      Phase 14 on its own clock. **Josh to pick the track.**
+- [x] **Sub-GB starter model working** — MiniCPM5 Track A chosen and
+      ported on branch `codex-minicpm5-starter-port`. See
+      **docs/investigations/starter-model-port-handoff.md** for the discovery that
+      Qwen3.5-0.8B is hybrid gated-DeltaNet and remains Phase 14 proper.
+      MiniCPM5 is textbook Llama and now has committed oracle goldens,
+      config/model/factory support, CLI starter wiring, and bit-exact
+      100-step parity tests (bf16 + mixed KV). Serving layer reviewed
+      and fixed 2026-06-12 (template min-filter crash on agent loops,
+      buffered tool streaming, schema-blind arg decoding,
+      generation_config sampling defaults); Gemma 4 parity/server/tool
+      suites re-verified green, chat UI verified live. Gate satisfied.
 - [x] **Minimal chat experience in the web UI** (2026-06-12): /chat
       page served from the binary — streaming SSE chat against
       /v1/chat/completions, keynote styling, tok/s + TTFT footer per

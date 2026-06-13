@@ -163,6 +163,7 @@ describe.skipIf(!optIn || !haveWeights || !haveAdapters)("LoRA hot-swap (e4b)", 
       visionTokenIds: { imageTokenId: 258880, boiTokenId: 255999, eoiTokenId: 258882 },
       adapters: manager,
       kvConfig: null,
+      genDefaults: {},
     });
     try {
       const ask = async (adapter?: string) => {

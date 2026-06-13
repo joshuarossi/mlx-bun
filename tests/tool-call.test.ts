@@ -1,7 +1,7 @@
 // Unit tests for the gemma4 tool-call parser (fast tier).
 
 import { describe, expect, test } from "bun:test";
-import { gemmaArgsToJson, parseToolCalls } from "../src/tool-call";
+import { gemmaArgsToJson, parseGeneratedToolCalls, parseToolCalls } from "../src/tool-call";
 
 const Q = '<|"|>';
 
@@ -60,5 +60,83 @@ describe("parseToolCalls", () => {
   test("string with braces does not break brace balance", () => {
     const calls = parseToolCalls(`call:echo{text:${Q}}}}{{{${Q}}`);
     expect(calls[0]!.arguments).toEqual({ text: "}}}{{{" });
+  });
+});
+
+describe("parseGeneratedToolCalls schema-aware values", () => {
+  const tools = [{
+    type: "function",
+    function: {
+      name: "read",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          limit: { type: "number" },
+        },
+        required: ["path"],
+      },
+    },
+  }];
+
+  test("string-typed params keep JSON-looking text as strings", () => {
+    const calls = parseGeneratedToolCalls(
+      '<function name="read"><param name="path">2025</param><param name="limit">10</param></function>',
+      tools,
+    );
+    expect(calls[0]!.arguments).toEqual({ path: "2025", limit: 10 });
+  });
+
+  test("CDATA values survive, including embedded closing tags", () => {
+    const calls = parseGeneratedToolCalls(
+      '<function name="read"><param name="path"><![CDATA[a</param>b\nc]]></param></function>',
+      tools,
+    );
+    expect(calls[0]!.arguments).toEqual({ path: "a</param>b\nc" });
+  });
+});
+
+describe("parseGeneratedToolCalls", () => {
+  const tools = [{
+    type: "function",
+    function: {
+      name: "read",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+      },
+    },
+  }];
+
+  test("OpenAI JSON tool_call block", () => {
+    expect(parseGeneratedToolCalls(
+      '<tool_call>{"name":"read","arguments":{"path":"AGENTS.md"}}</tool_call>',
+      tools,
+    )).toEqual([{ name: "read", arguments: { path: "AGENTS.md" } }]);
+  });
+
+  test("OptiQ/Qwen XML tool_call block", () => {
+    expect(parseGeneratedToolCalls(
+      "<tool_call><function=read><parameter=path>AGENTS.md</parameter></function></tool_call>",
+      tools,
+    )).toEqual([{ name: "read", arguments: { path: "AGENTS.md" } }]);
+  });
+
+  test("MiniCPM5 native function/param XML", () => {
+    expect(parseGeneratedToolCalls(
+      '<function name="read"><param name="path">/Users/joshrossi/Code/mlx-bun/AGENTS.md</param></function>',
+      tools,
+    )).toEqual([{
+      name: "read",
+      arguments: { path: "/Users/joshrossi/Code/mlx-bun/AGENTS.md" },
+    }]);
+  });
+
+  test("rejects unknown tool names", () => {
+    expect(() => parseGeneratedToolCalls(
+      '<function name="write"><param name="path">x</param></function>',
+      tools,
+    )).toThrow(/unknown tool/);
   });
 });

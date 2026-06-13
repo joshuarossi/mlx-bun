@@ -1,4 +1,4 @@
-// Compiled-decode parity gate (optimization_plan.md Phase A, step 5):
+// Compiled-decode parity gate (docs/design/optimization_plan.md Phase A, step 5):
 // the compiled step must be BIT-EXACT with the uncompiled path — full
 // logit vectors and greedy trajectories — across every cache
 // configuration (plain/quantized × growing/ring). Compile must not

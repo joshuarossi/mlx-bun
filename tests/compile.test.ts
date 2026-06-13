@@ -1,4 +1,4 @@
-// mx.compile plumbing (Phase A of optimization_plan.md): JSCallback-traced
+// mx.compile plumbing (Phase A of docs/design/optimization_plan.md): JSCallback-traced
 // closure → mlx_compile → native replay, plus bit-exactness of the
 // dynamic-start op variants the compiled decode graph substitutes for
 // their baked-int forms.
