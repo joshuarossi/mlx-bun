@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   detectPi, fetchServerModels, renderPiExtension,
-  PI_PROVIDER_ID, type PiDetection, type ServerModel,
+  PI_PROVIDER_ID, PI_LOCAL_MODEL_ID, type PiDetection, type ServerModel,
 } from "./harness-pi";
 
 /** GET /v1/models with a short timeout; null when no server is up. */
@@ -70,11 +70,14 @@ export function buildPiInvocation(
     ...runner,
     "-e", extPath,
     "--provider", PI_PROVIDER_ID,
-    "--model", models[0]!.id,
-    // Exact ids, not "mlx-bun/*": the provider registers via an async
-    // extension factory, and the glob is resolved before that happens
-    // (observed: "No models match pattern" warning with the glob).
-    "--models", models.map((m) => m.id).join(","),
+    // The provider advertises its single live model under a stable id
+    // (mlx-bun/local), so pi addresses "whatever is on 8090" and its
+    // persisted default never goes stale when the served model changes.
+    // Exact id, not "mlx-bun/*": the provider registers via an async
+    // extension factory and a glob is resolved before that runs
+    // (observed: "No models match pattern" with the glob).
+    "--model", PI_LOCAL_MODEL_ID,
+    "--models", PI_LOCAL_MODEL_ID,
     ...passthrough,
   ];
   return { argv, cleanupDir };
