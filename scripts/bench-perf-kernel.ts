@@ -39,8 +39,7 @@ for (const CTX of CONTEXTS) {
   const promptIds = [2, ...Array.from({ length: CTX - 1 }, (_, i) => 2000 + (i % 500))];
 
   const runArm = async (kernel: boolean): Promise<{ decodeTps: number; peak: number }> => {
-    if (kernel) process.env.MLX_BUN_PERF_KERNEL = "1";
-    else delete process.env.MLX_BUN_PERF_KERNEL;
+    process.env.MLX_BUN_PERF_KERNEL = kernel ? "1" : "0";
     resetPeakMemory();
     const gen = generate(model, promptIds, {
       maxTokens: DECODE_TOKENS, temperature: 0, eosTokenIds: [],

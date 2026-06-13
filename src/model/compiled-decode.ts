@@ -211,7 +211,7 @@ function closureKey(descs: SlotDesc[]): string {
   const flags =
     `fd=${process.env.MLX_BUN_FUSED_DECODE === "1" ? 1 : 0}` +
     `,nf=${process.env.MLX_BUN_NO_FUSED_SDPA === "1" ? 1 : 0}` +
-    `,pk=${process.env.MLX_BUN_PERF_KERNEL === "1" ? 1 : 0}`;
+    `,pk=${perfKernelEnabled() ? 1 : 0}`;
   return descs.map((d) => `${d.kind}:${d.groupSize}:${d.bits}`).join(",") + "|" + flags;
 }
 
@@ -565,7 +565,7 @@ export class CompiledDecode {
         .join(",") +
       `|fd=${process.env.MLX_BUN_FUSED_DECODE === "1" ? 1 : 0}` +
       `,nf=${process.env.MLX_BUN_NO_FUSED_SDPA === "1" ? 1 : 0}` +
-      `,pk=${process.env.MLX_BUN_PERF_KERNEL === "1" ? 1 : 0}`;
+      `,pk=${perfKernelEnabled() ? 1 : 0}`;
     if (this.#broken.has(key)) throw new Error(`compiled decode: known-broken closure ${key}`);
 
     let closures = this.#segClosures.get(key);
