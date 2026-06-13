@@ -15,6 +15,7 @@ import { fit, skuMatrix, thisMachine } from "./fit";
 import { EvalDB } from "./evaldb";
 import pkg from "../package.json" with { type: "json" };
 import { renderHelp } from "./tui";
+import { isSupportedModelRecord } from "./model/support";
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -290,22 +291,20 @@ function runtimeSummary(o: import("./server").ServerOptions): string {
 }
 
 /** Shared model resolution: explicit query wins; otherwise the largest
- *  supported (gemma4) model that fits this machine, downloading the
+ *  supported model that fits this machine, downloading the
  *  recommended model first on a fresh install. */
 async function resolveModelAuto(query: string | null): Promise<{ m: import("./registry").ModelRecord; picked: boolean }> {
   const reg = new Registry();
   if (reg.list().length === 0) await reg.scan();
   if (query) return { m: reg.resolve(query), picked: false };
   const { recommendedRepoId } = await import("./fit");
-  let candidates = reg.list().filter((r) => r.modelType.startsWith("gemma4"));
+  let candidates = reg.list().filter((r) => isSupportedModelRecord(r.modelType, r.repoId));
   if (candidates.length === 0) {
     // First run: starter-model flow (PRODUCT_ROADMAP / PLAN Phase 16).
-    // Download the SMALLEST supported model first so the user is
-    // chatting in minutes, then stream the recommended model for this
-    // Mac in the background — it becomes the auto-pick next run.
-    // (The true sub-GB starter arrives with the Phase 14 Qwen 0.8B;
-    // until then the e4b is the best runnable starter.)
-    const starterRepo = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
+    // Download the sub-GB starter first so the user is chatting quickly,
+    // then stream the recommended Gemma for this Mac in the background —
+    // it becomes the auto-pick next run.
+    const starterRepo = "mlx-community/MiniCPM5-1B-OptiQ-4bit";
     const recRepo = recommendedRepoId();
     const { step, style } = await import("./tui");
     const { downloadModel } = await import("./download");
@@ -328,7 +327,7 @@ async function resolveModelAuto(query: string | null): Promise<{ m: import("./re
         })
         .catch(() => { /* resumable — the next run continues it */ });
     }
-    candidates = reg.list().filter((r) => r.modelType.startsWith("gemma4"));
+    candidates = reg.list().filter((r) => isSupportedModelRecord(r.modelType, r.repoId));
   }
   candidates.sort((a, b) => b.sizeBytes - a.sizeBytes);
   for (const r of candidates) {
@@ -336,7 +335,7 @@ async function resolveModelAuto(query: string | null): Promise<{ m: import("./re
     if (fit(config, r.sizeBytes, 8192, undefined, undefined, r.expertsBytes).fits)
       return { m: r, picked: true };
   }
-  console.error("no downloaded gemma4 model fits this machine — pick one explicitly (mlx-bun ls)");
+  console.error("no downloaded supported model fits this machine — pick one explicitly (mlx-bun ls)");
   process.exit(1);
 }
 
@@ -413,7 +412,7 @@ switch (cmd) {
         m.quantBits ? `${m.quantBits}-bit g${m.quantGroupSize}` : "full",
         m.license ?? "?",
         [
-          m.modelType.startsWith("gemma4") ? "supported" : `unsupported (${m.modelType})`,
+          isSupportedModelRecord(m.modelType, m.repoId) ? "supported" : `unsupported (${m.modelType})`,
           m.hasVisionSidecar ? "vision" : null,
           m.hasToolTemplate ? "tools" : null,
           m.hasKvConfig ? "kv-quant" : null,

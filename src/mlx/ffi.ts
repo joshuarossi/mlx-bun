@@ -20,7 +20,7 @@ const { ptr: P, i32, u64, f32, cstring } = FFIType;
 /** libmlxc resolution, in order: explicit env override → next to the
  *  executable (the `bun build --compile` sidecar layout, where
  *  libmlxc.dylib + libmlx.dylib + mlx.metallib ship beside the binary —
- *  see docs/embedding.md) → the downloaded native-pack cache
+ *  see docs/reference/embedding.md) → the downloaded native-pack cache
  *  (src/native-pack.ts; populated on first run by the CLI) → homebrew
  *  (arm64, then Intel prefix). Keep in sync with nativeRuntimeDir(). */
 function resolveLibmlxc(): string {
@@ -118,6 +118,7 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_multiply: { args: [P, u64, u64, u64], returns: i32 },
   mlx_divide: { args: [P, u64, u64, u64], returns: i32 },
   mlx_tanh: { args: [P, u64, u64], returns: i32 },
+  mlx_sigmoid: { args: [P, u64, u64], returns: i32 },
   mlx_power: { args: [P, u64, u64, u64], returns: i32 },
   mlx_take_axis: { args: [P, u64, u64, i32, u64], returns: i32 },
   mlx_reshape: { args: [P, u64, P, u64, u64], returns: i32 },
@@ -154,7 +155,7 @@ export const C = dlopen(LIBMLXC_PATH, {
   //  opt group_size, opt bits, mode, sorted_indices, stream)
   mlx_gather_qmm: { args: [P, u64, u64, u64, u64, u64, u64, FFIType.bool, u64, u64, cstring, FFIType.bool, u64], returns: i32 },
   mlx_floor_divide: { args: [P, u64, u64, u64], returns: i32 },
-  // compile via closures (Phase A compiled decode — optimization_plan.md).
+  // compile via closures (Phase A compiled decode — docs/design/optimization_plan.md).
   // mlx_closure is the usual one-pointer struct; the func-payload variant
   // carries an id we use to route the trace callback back to JS.
   mlx_closure_new: { args: [], returns: u64 },

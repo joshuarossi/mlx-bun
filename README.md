@@ -30,7 +30,7 @@ file. It writes the standard Hugging Face cache layout, so models you
 already have are found as-is:
 
 ```sh
-bun src/cli.ts get mlx-community/gemma-4-e4b-it-OptiQ-4bit
+bun src/cli.ts get mlx-community/MiniCPM5-1B-OptiQ-4bit
 ```
 
 (Models fetched with the HF CLI work too — same cache. Gated repos use
@@ -62,10 +62,11 @@ back in responses).
 
 Scope is deliberate: a few model families held to **bit-exact** logit
 parity with the Python reference, rather than dozens held to none.
-Currently the Gemma-4 OptiQ quants:
+Currently MiniCPM5 plus the Gemma-4 OptiQ quants:
 
 | Model | Download | Fits on | Vision | Notes |
 |---|---|---|---|---|
+| [`mlx-community/MiniCPM5-1B-OptiQ-4bit`](https://huggingface.co/mlx-community/MiniCPM5-1B-OptiQ-4bit) | 0.92 GB | 8 GB | — | Sub-GB starter; bit-exact 100-step oracle parity (bf16 + mixed KV), tool calling + agent loop verified |
 | [`mlx-community/gemma-4-e4b-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-e4b-it-OptiQ-4bit) | 7.0 GB | 16 GB | — | ~54 tok/s; good first model |
 | [`mlx-community/gemma-4-12B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-12B-it-OptiQ-4bit) | 8.4 GB | 16 GB | ✓ | Vision sidecar + tool calling, both verified end-to-end |
 | [`mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit) | 18 GB | 24 GB | — | MoE (top-8 of 128 experts); ~54 tok/s — the python servers crash loading it on 24 GB |
@@ -136,11 +137,15 @@ agent CLIs like pi/OpenClaw via their provider config.
 - **`POST /v1/chat/completions`** — streaming (SSE) and non-streaming;
   `temperature`, `top_p`, `top_k`, `max_tokens`, `seed`,
   `repetition_penalty`, `stop` (string or array, matched on decoded
-  text with streaming hold-back); usage includes `cached_tokens`. Full
-  schemas in [docs/server-api.md](./docs/server-api.md).
-- **Tool calling** — pass OpenAI `tools`; the model's native
-  `<|tool_call>` markers are parsed into `tool_calls` JSON with
-  `finish_reason: "tool_calls"`; `role: "tool"` round-trips.
+  text with streaming hold-back); omitted sampling fields default to
+  the model's own `generation_config.json` recipe; usage includes
+  `cached_tokens`. Full schemas in
+  [docs/reference/server-api.md](./docs/reference/server-api.md).
+- **Tool calling** — pass OpenAI `tools`; each family's native format
+  is parsed into `tool_calls` JSON with `finish_reason: "tool_calls"`
+  (Gemma 4 `<|tool_call>` sentinel tokens; MiniCPM5
+  `<function name=…>` XML with schema-aware argument decoding);
+  `role: "tool"` round-trips, including multi-turn agent loops.
 - **Vision** — `image_url` content parts (data: URLs or http/s), on
   models with the vision sidecar. PNG, JPEG, HEIC, AVIF, WebP, TIFF,
   GIF, BMP via native OS codecs.
@@ -184,10 +189,10 @@ agent CLIs like pi/OpenClaw via their provider config.
 
 The server is one consumer of a library-first API. Not yet published to
 npm — clone the repo and import from `src/`. Full reference:
-[docs/library-api.md](./docs/library-api.md). For shipping inside a
+[docs/reference/library-api.md](./docs/reference/library-api.md). For shipping inside a
 Mac app (Tauri/Electron sidecar), `./scripts/build-binary.sh` produces
 a relocatable single-binary bundle — recipe incl. signing/notarization
-in [docs/embedding.md](./docs/embedding.md).
+in [docs/reference/embedding.md](./docs/reference/embedding.md).
 
 ```ts
 import { loadModelConfig } from "./src/config";
@@ -222,7 +227,7 @@ Head-to-head against the Python stacks (mlx-lm 0.31.3, mlx-optiq 0.2.1),
 same machine (M4 Pro 24 GB), same day, same HF snapshots, preflight-gated
 clean machine, median-of-N with warmups discarded. Full table with
 per-row provenance:
-[benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md](./benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md).
+[benchmarks/benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md](./benchmarks/benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md).
 
 | | mlx-bun | mlx-lm | optiq |
 |---|---|---|---|

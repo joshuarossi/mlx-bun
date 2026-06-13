@@ -1,4 +1,4 @@
-// mx.fast.metal_kernel from Bun (optimization_plan.md Phase E): the
+// mx.fast.metal_kernel from Bun (docs/design/optimization_plan.md Phase E): the
 // intended MLX extension point for custom Metal kernels — no fork. The
 // kernel body is Metal Shading Language; mlx generates the signature
 // from input/output names (inputs by name, outputs by name, plus

@@ -124,23 +124,25 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
   const raw = (await Bun.file(`${modelDir}/config.json`).json()) as Record<string, any>;
   // Gemma 4 unified nests the LM config; plain text models keep it at top level.
   const t = (raw.text_config ?? raw) as Record<string, any>;
+  const modelType = raw.model_type;
+  const isLlama = modelType === "llama";
 
   const text: TextConfig = {
     hiddenSize: t.hidden_size,
     numHiddenLayers: t.num_hidden_layers,
     numAttentionHeads: t.num_attention_heads,
     numKeyValueHeads: t.num_key_value_heads,
-    headDim: t.head_dim,
+    headDim: t.head_dim ?? Math.floor(t.hidden_size / t.num_attention_heads),
     numGlobalKeyValueHeads: t.num_global_key_value_heads ?? t.num_key_value_heads,
-    globalHeadDim: t.global_head_dim ?? t.head_dim,
+    globalHeadDim: t.global_head_dim ?? t.head_dim ?? Math.floor(t.hidden_size / t.num_attention_heads),
     attentionKEqV: t.attention_k_eq_v ?? false,
     intermediateSize: t.intermediate_size,
-    hiddenActivation: t.hidden_activation ?? "gelu_pytorch_tanh",
+    hiddenActivation: t.hidden_activation ?? t.hidden_act ?? "gelu_pytorch_tanh",
     rmsNormEps: t.rms_norm_eps,
     vocabSize: t.vocab_size,
     maxPositionEmbeddings: t.max_position_embeddings,
     slidingWindow: t.sliding_window ?? 0,
-    layerTypes: t.layer_types ?? [],
+    layerTypes: t.layer_types ?? (isLlama ? Array(t.num_hidden_layers).fill("full_attention") : []),
     hiddenSizePerLayerInput: t.hidden_size_per_layer_input ?? 0,
     vocabSizePerLayerInput: t.vocab_size_per_layer_input ?? t.vocab_size,
     numKvSharedLayers: t.num_kv_shared_layers ?? 0,
@@ -148,7 +150,18 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
     numExperts: t.num_experts ?? 0,
     topKExperts: t.top_k_experts ?? 0,
     moeIntermediateSize: t.moe_intermediate_size ?? 0,
-    ropeParameters: parseRope(t.rope_parameters),
+    ropeParameters: t.rope_parameters
+      ? parseRope(t.rope_parameters)
+      : isLlama
+        ? {
+            full_attention: {
+              ropeTheta: t.rope_theta ?? 10000,
+              ropeType: "default",
+              partialRotaryFactor: 1.0,
+              factor: 1.0,
+            },
+          }
+        : {},
     finalLogitSoftcapping: t.final_logit_softcapping ?? null,
     tieWordEmbeddings: t.tie_word_embeddings ?? raw.tie_word_embeddings ?? false,
     bosTokenId: t.bos_token_id ?? raw.bos_token_id,
@@ -168,7 +181,7 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
   const eos = raw.eos_token_id ?? text.eosTokenId;
   return {
     modelDir,
-    modelType: raw.model_type,
+    modelType,
     architectures: raw.architectures ?? [],
     dtype: raw.dtype ?? "bfloat16",
     text,

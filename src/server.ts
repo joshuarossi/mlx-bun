@@ -22,13 +22,16 @@ const pkgVersion = (pkgJson as { version: string }).version;
 import { loadModelConfig, type KvQuantSpec } from "./config";
 import { Weights } from "./weights";
 import { Gemma4Model } from "./model/gemma4";
-import { createModel } from "./model/factory";
+import { createModel, type RuntimeModel } from "./model/factory";
+import { isMiniCPM5Config, isSupportedModelRecord } from "./model/support";
 import { generate, type GenerateOptions } from "./generate";
 import {
   ChatTemplate, type ChatMessage, type ToolDefinition,
 } from "./chat-template";
 import { loadTokenizer, type LoadedTokenizer } from "./tokenizer";
-import { parseToolCalls, TOOL_CALL_END, TOOL_CALL_START } from "./tool-call";
+import {
+  parseGeneratedToolCalls, parseToolCalls, TOOL_CALL_END, TOOL_CALL_START,
+} from "./tool-call";
 import { PromptCache } from "./prompt-cache";
 import {
   anthropicToChatBody, chatJsonToAnthropic, translateOpenAiSse,
@@ -74,7 +77,7 @@ export interface ServerOptions {
 }
 
 export interface ServerContext {
-  model: Gemma4Model;
+  model: RuntimeModel;
   tokenizer: LoadedTokenizer;
   template: ChatTemplate;
   modelId: string;
@@ -85,6 +88,34 @@ export interface ServerContext {
    *  absent). Applied by default — optiq serve's headline behavior;
    *  ServerOptions.kvQuant overrides ("off" | uniform bits). */
   kvConfig: KvQuantSpec[] | null;
+  /** Model-author recommended sampling from generation_config.json —
+   *  optiq serve injects these as server defaults (gen_config.py);
+   *  explicit request fields always win. */
+  genDefaults: GenSamplingDefaults;
+}
+
+export interface GenSamplingDefaults {
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  repetitionPenalty?: number;
+}
+
+async function loadGenSamplingDefaults(modelDir: string): Promise<GenSamplingDefaults> {
+  const file = Bun.file(`${modelDir}/generation_config.json`);
+  if (!(await file.exists())) return {};
+  try {
+    const raw = (await file.json()) as Record<string, unknown>;
+    const num = (v: unknown) => (typeof v === "number" ? v : undefined);
+    return {
+      temperature: num(raw.temperature),
+      topP: num(raw.top_p),
+      topK: num(raw.top_k),
+      repetitionPenalty: num(raw.repetition_penalty),
+    };
+  } catch {
+    return {};
+  }
 }
 
 export async function loadContext(
@@ -115,13 +146,15 @@ export async function loadContext(
     model,
     adapters: new AdapterManager(model),
     kvConfig: config.kvQuant,
+    genDefaults: await loadGenSamplingDefaults(modelDir),
     tokenizer: await loadTokenizer(modelDir),
     template: await ChatTemplate.load(modelDir),
     modelId: modelId ?? modelDir.split("/").filter(Boolean).at(-1)!,
     // A sidecar that fails to load is a capability gap, not a fatal
     // error: e4b/26B ship SigLIP-format sidecars (Phase 12); only the
     // 12B's encoder-free format loads today. Serve text-only.
-    vision: config.hasVisionSidecar
+    // Vision sidecars are a Gemma4 feature; MiniCPM5 never ships one.
+    vision: config.hasVisionSidecar && model instanceof Gemma4Model
       ? (() => {
           try {
             return VisionTower.load(modelDir, model.embedScale, config.text.rmsNormEps);
@@ -157,6 +190,12 @@ interface ChatRequest {
   stop?: string | string[];
   tools?: ToolDefinition[];
   tool_choice?: "auto" | "none" | { type: string; function?: { name: string } };
+  /** Forwarded to HF chat templates, matching optiq serve. MiniCPM5 uses
+   *  enable_thinking to select direct answers vs the <think> channel. */
+  chat_template_kwargs?: {
+    enable_thinking?: boolean;
+    [key: string]: unknown;
+  };
   /** Mounted LoRA adapter selection: "id", "a+b" (stacked), or "none". */
   adapter?: string;
 }
@@ -167,20 +206,77 @@ interface OpenAIToolCall {
   function: { name: string; arguments: string };
 }
 
-/** Routes generated tokens: content goes to the stream decoder, tool-call
- *  segments (token 48 … token 49) are captured and parsed. */
+type ToolStreamMode = "gemma-sentinel" | "plain" | "buffered-text";
+
+/** Routes generated tokens. Gemma uses family-specific sentinel token ids;
+ *  MiniCPM5 and other text-template models use decoded-text parsing so
+ *  ordinary tokenizer ids like "<" are never swallowed globally. */
 class ToolAwareStream {
   readonly #decoder: StreamDecoder;
   #inTool = false;
   #toolTokens: number[] = [];
+  #text = "";
+  /** Chars of #text already returned as content. */
+  #sent = 0;
+  /** Index where tool markup starts; content emission stops there. */
+  #frozen = -1;
+  #textToolCalls: OpenAIToolCall[] | null = null;
+  #textToolParseFailed = false;
   readonly toolSegments: number[][] = [];
 
-  constructor(readonly tokenizer: LoadedTokenizer) {
-    this.#decoder = new StreamDecoder(tokenizer);
+  /** Decoded-text markers that open tool markup (oracle: the streaming
+   *  parser buffers from `<tool_call`/`<function` on, never the whole
+   *  response — content before a tool call still streams live). */
+  static readonly TOOL_MARKERS = ["<tool_call>", "<function"];
+
+  constructor(
+    readonly tokenizer: LoadedTokenizer,
+    readonly mode: ToolStreamMode,
+    readonly tools: ToolDefinition[] | null,
+  ) {
+    this.#decoder = new StreamDecoder(tokenizer, mode !== "buffered-text");
+  }
+
+  /** Emit the longest #text prefix that cannot be (the start of) tool
+   *  markup; hold back ambiguous tails until disambiguated. */
+  #textDelta(): string {
+    if (this.#frozen >= 0) return "";
+    let markerAt = -1;
+    for (const mk of ToolAwareStream.TOOL_MARKERS) {
+      const i = this.#text.indexOf(mk, this.#sent);
+      if (i !== -1 && (markerAt === -1 || i < markerAt)) markerAt = i;
+    }
+    if (markerAt !== -1) {
+      this.#frozen = markerAt;
+      const out = this.#text.slice(this.#sent, markerAt);
+      this.#sent = markerAt;
+      return out;
+    }
+    let hold = 0;
+    for (const mk of ToolAwareStream.TOOL_MARKERS) {
+      const max = Math.min(mk.length - 1, this.#text.length - this.#sent);
+      for (let k = max; k > hold; k--) {
+        if (this.#text.endsWith(mk.slice(0, k))) { hold = k; break; }
+      }
+    }
+    const limit = this.#text.length - hold;
+    if (limit <= this.#sent) return "";
+    const out = this.#text.slice(this.#sent, limit);
+    this.#sent = limit;
+    return out;
   }
 
   /** Returns the content text delta for this token ("" while capturing). */
   push(token: number): string {
+    if (this.mode !== "gemma-sentinel") {
+      this.#text += this.#decoder.push(token);
+      if (this.mode === "plain") {
+        const out = this.#text.slice(this.#sent);
+        this.#sent = this.#text.length;
+        return out;
+      }
+      return this.#textDelta();
+    }
     if (this.#inTool) {
       if (token === TOOL_CALL_END) {
         this.#inTool = false;
@@ -199,6 +295,26 @@ class ToolAwareStream {
   }
 
   flush(): string {
+    if (this.mode !== "gemma-sentinel") {
+      this.#text += this.#decoder.flush();
+      if (this.mode === "buffered-text") {
+        const calls = this.toolCalls();
+        if (calls.length && !this.#textToolParseFailed && this.#frozen >= 0) {
+          // markup parsed into tool_calls — emit any prose still held
+          // before it; the markup itself never reaches content
+          const out = this.#text.slice(this.#sent, this.#frozen);
+          this.#sent = this.#text.length;
+          return out;
+        }
+        // no tool call (or parse fallback): release everything withheld
+        const out = this.#text.slice(this.#sent);
+        this.#sent = this.#text.length;
+        return out;
+      }
+      const out = this.#text.slice(this.#sent);
+      this.#sent = this.#text.length;
+      return out;
+    }
     if (this.#inTool && this.#toolTokens.length) {
       // truncated mid-tool-call (hit max_tokens); surface what we have
       this.toolSegments.push(this.#toolTokens);
@@ -208,6 +324,20 @@ class ToolAwareStream {
   }
 
   toolCalls(): OpenAIToolCall[] {
+    if (this.mode !== "gemma-sentinel") {
+      if (this.#textToolCalls) return this.#textToolCalls;
+      try {
+        this.#textToolCalls = parseGeneratedToolCalls(this.#text, this.tools ?? []).map((c) => ({
+          id: `call_${crypto.randomUUID().slice(0, 8)}`,
+          type: "function",
+          function: { name: c.name, arguments: JSON.stringify(c.arguments) },
+        }));
+      } catch {
+        this.#textToolParseFailed = true;
+        this.#textToolCalls = [];
+      }
+      return this.#textToolCalls;
+    }
     const out: OpenAIToolCall[] = [];
     for (const seg of this.toolSegments) {
       const text = this.tokenizer.decode(seg, false); // keep <|"|> markers
@@ -309,11 +439,14 @@ class StreamDecoder {
   #ids: number[] = [];
   #emitted = "";
 
-  constructor(readonly tokenizer: LoadedTokenizer) {}
+  constructor(
+    readonly tokenizer: LoadedTokenizer,
+    readonly skipSpecialTokens = true,
+  ) {}
 
   push(token: number): string {
     this.#ids.push(token);
-    const full = this.tokenizer.decode(this.#ids, true);
+    const full = this.tokenizer.decode(this.#ids, this.skipSpecialTokens);
     // hold back a trailing replacement char (partial multi-byte sequence)
     const stable = full.endsWith("�") ? full.slice(0, -1) : full;
     if (!stable.startsWith(this.#emitted)) {
@@ -328,7 +461,7 @@ class StreamDecoder {
   }
 
   flush(): string {
-    const full = this.tokenizer.decode(this.#ids, true);
+    const full = this.tokenizer.decode(this.#ids, this.skipSpecialTokens);
     const delta = full.slice(this.#emitted.length);
     this.#emitted = full;
     return delta;
@@ -424,11 +557,11 @@ export function createServer(
 
   const toOptions = (req: ChatRequest): GenerateOptions & { stopSequences: string[] } => ({
     maxTokens: req.max_completion_tokens ?? req.max_tokens ?? 1024,
-    temperature: req.temperature ?? 0.7,
-    topP: req.top_p ?? 0,
-    topK: req.top_k ?? 0,
+    temperature: req.temperature ?? ctx.genDefaults.temperature ?? 0.7,
+    topP: req.top_p ?? ctx.genDefaults.topP ?? 0,
+    topK: req.top_k ?? ctx.genDefaults.topK ?? 0,
     seed: req.seed ?? (Date.now() & 0xffffffff),
-    repetitionPenalty: req.repetition_penalty,
+    repetitionPenalty: req.repetition_penalty ?? ctx.genDefaults.repetitionPenalty,
     // generate() yields token ids; stop sequences match on decoded text
     // (they can span token boundaries), so the StopMatcher sits at the
     // decode layer below and halts the loop via onToken → false.
@@ -437,12 +570,30 @@ export function createServer(
     ...kvScheme,
   });
 
-  const promptIdsFor = (messages: ChatMessage[], tools: ToolDefinition[] | null): number[] => {
-    const rendered = ctx.template.render(normalizeMessages(messages), { tools });
+  const templateOptionsFor = (req: ChatRequest, tools: ToolDefinition[] | null) => {
+    const requested = req.chat_template_kwargs?.enable_thinking;
+    return {
+      tools,
+      enableThinking: typeof requested === "boolean"
+        ? requested
+        : isMiniCPM5Config(ctx.model.config) ? false : undefined,
+    };
+  };
+
+  const promptIdsFor = (req: ChatRequest, tools: ToolDefinition[] | null): number[] => {
+    const rendered = ctx.template.render(normalizeMessages(req.messages), templateOptionsFor(req, tools));
     const ids = ctx.tokenizer.encode(rendered);
     // template includes <bos>; tokenizer post-processor also prepends one
     return ids[0] === ids[1] && ids[0] === ctx.tokenizer.bosTokenId ? ids.slice(1) : ids;
   };
+
+  const toolStreamMode = (tools: ToolDefinition[] | null): ToolStreamMode => {
+    if (isMiniCPM5Config(ctx.model.config)) return tools?.length ? "buffered-text" : "plain";
+    return "gemma-sentinel";
+  };
+
+  const toolRouter = (tools: ToolDefinition[] | null): ToolAwareStream =>
+    new ToolAwareStream(ctx.tokenizer, toolStreamMode(tools), tools);
 
   return Bun.serve({
     port,
@@ -473,7 +624,7 @@ export function createServer(
           if (reg.list().length === 0) await reg.scan();
           const rows = [];
           for (const m of reg.list()) {
-            const supported = m.modelType.startsWith("gemma4");
+            const supported = isSupportedModelRecord(m.modelType, m.repoId);
             let assessment = null;
             try {
               const config = await loadModelConfig(m.path);
@@ -700,14 +851,16 @@ export function createServer(
                 { error: { message: "model has no vision sidecar" } }, { status: 400 },
               );
             const { messages, images } = await extractImages(normalizeMessages(body.messages));
+            // ctx.vision is only ever non-null for Gemma4 (sidecar gate
+            // in loadContext), so the narrow is safe here.
             const vp = await buildVisionPrompt(
-              ctx.model, ctx.vision, ctx.tokenizer, ctx.template,
+              ctx.model as Gemma4Model, ctx.vision, ctx.tokenizer, ctx.template,
               messages, images, ctx.visionTokenIds, tools,
             );
             promptIds = vp.ids;
             vision = { embeddings: vp.embeddings, imageMask: vp.imageMask };
           } else {
-            promptIds = promptIdsFor(body.messages, tools);
+            promptIds = promptIdsFor(body, tools);
           }
         } catch (e) {
           return Response.json(
@@ -758,7 +911,7 @@ export function createServer(
               try {
                 await enqueue(async () => {
                   send(chunk({ role: "assistant", content: "" }, null));
-                  const router = new ToolAwareStream(ctx.tokenizer);
+                  const router = toolRouter(tools);
                   const stopper = new StopMatcher(options.stopSequences);
                   // The decode loop is an unbroken microtask chain (FFI +
                   // generator resumes) — without a macrotask hop, Bun never
@@ -830,7 +983,7 @@ export function createServer(
 
         try {
           return await enqueue(async () => {
-            const router = new ToolAwareStream(ctx.tokenizer);
+            const router = toolRouter(tools);
             const stopper = new StopMatcher(options.stopSequences);
             let content = "";
             const s = await runGeneration(promptIds, options, (token) => {

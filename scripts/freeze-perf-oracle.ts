@@ -1,4 +1,4 @@
-// Phase E step 1 (optimization_plan.md): FREEZE the compat-mode ground
+// Phase E step 1 (docs/design/optimization_plan.md): FREEZE the compat-mode ground
 // truth before any kernel work. Once a fused kernel ships under the
 // perf-mode flag, bit-exact-vs-compat no longer applies; this snapshot
 // is the quality oracle perf mode is gated against (bounded logit drift
