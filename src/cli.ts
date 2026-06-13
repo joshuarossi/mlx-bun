@@ -58,6 +58,14 @@ Model & quality:
   --kv-quant <mode>         KV cache quantization: config (per-layer
                             kv_config.json when the model ships one), off
                             (bf16), or 4 / 8 (uniform bits)  [default: config]
+  --thinking <true|false>   Default for the chat template's enable_thinking
+                            variable (CPM and other hybrid-reasoning models);
+                            a request's chat_template_kwargs overrides it
+                            [default: the model's own, false for CPM]
+  --temperature <n>         Server-wide sampling defaults; a per-request field
+  --top-p <n>               still overrides them, and the browser chat (which
+  --top-k <n>               sends none) inherits them
+                            [default: the model's generation_config.json]
 
 Performance levers (A/B levers; defaults are the measured winners):
   --compiled-decode on|off  Compiled decode graphs  [default: on]
@@ -278,6 +286,30 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   }
   const host = opt("host");
   if (host) serverOptions.hostname = host;
+  // Server-wide default for the chat template's enable_thinking variable
+  // (CPM/MiniCPM5 and other hybrid-reasoning models). Unset ⇒ the model's
+  // own default (false for MiniCPM5). onOff accepts true|false|on|off|1|0.
+  const thinking = onOff("thinking");
+  if (thinking !== null) serverOptions.defaultThinking = thinking;
+  // Server-wide sampling defaults. Unset ⇒ the model's generation_config.json
+  // (MiniCPM5 ships 0.9 / 0.95 — its think recipe). A per-request field still
+  // overrides these; the browser chat sends none, so this is its only lever.
+  const numFlag = (name: string, lo: number, hi: number): number | null => {
+    const v = opt(name);
+    if (v === null) return null;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < lo || n > hi) {
+      console.error(`--${name} expects a number in [${lo}, ${hi}] (got "${v}")`);
+      process.exit(1);
+    }
+    return n;
+  };
+  const temp = numFlag("temperature", 0, 5);
+  if (temp !== null) serverOptions.defaultTemperature = temp;
+  const topP = numFlag("top-p", 0, 1);
+  if (topP !== null) serverOptions.defaultTopP = topP;
+  const topK = numFlag("top-k", 0, 1_000_000);
+  if (topK !== null) serverOptions.defaultTopK = topK;
   return { port: Number(opt("port", "8090")), serverOptions };
 }
 
@@ -287,7 +319,11 @@ function runtimeSummary(o: import("./server").ServerOptions): string {
   const lever = (env: string, dflt: string) => process.env[env] ?? dflt;
   return `kv-quant ${kv} · compiled-decode ${lever("MLX_BUN_COMPILED_DECODE", "1") === "1" ? "on" : "off"}` +
     ` · perf-kernel ${lever("MLX_BUN_PERF_KERNEL", "0") === "1" ? "on" : "off"}` +
-    (lever("MLX_BUN_FUSED_DECODE", "0") === "1" ? " · fused-decode on" : "");
+    (lever("MLX_BUN_FUSED_DECODE", "0") === "1" ? " · fused-decode on" : "") +
+    (o.defaultThinking !== undefined ? ` · thinking ${o.defaultThinking ? "on" : "off"}` : "") +
+    (o.defaultTemperature !== undefined ? ` · temp ${o.defaultTemperature}` : "") +
+    (o.defaultTopP !== undefined ? ` · top-p ${o.defaultTopP}` : "") +
+    (o.defaultTopK !== undefined ? ` · top-k ${o.defaultTopK}` : "");
 }
 
 /** Shared model resolution: explicit query wins; otherwise the largest
@@ -710,7 +746,8 @@ switch (cmd) {
     // appended after our defaults, so an explicit --model/--models wins.
     const OURS_VAL = new Set([
       "--query", "--port", "--host", "--memory-budget", "--prompt-cache", "--kv-quant",
-      "--compiled-decode", "--perf-kernel", "--fused-decode", "--fused-sdpa",
+      "--compiled-decode", "--perf-kernel", "--fused-decode", "--fused-sdpa", "--thinking",
+      "--temperature", "--top-p", "--top-k",
     ]);
     const OURS_BOOL = new Set(["--force-wire"]);
     const passthrough: string[] = [];
