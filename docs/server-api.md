@@ -24,9 +24,17 @@ Request body (OpenAI chat schema; unknown fields ignored):
   "stop": "\n\n",                // or ["###", "\n\n"] (spec: up to 4)
   "tools": [ /* OpenAI function tools */ ],
   "tool_choice": "auto",         // "none" disables tools
+  "chat_template_kwargs": {      // forwarded to the chat template
+    "enable_thinking": false     // MiniCPM5: <think> channel on/off
+  },
   "adapter": "id"                // LoRA: "id", stacked "a+b", or "none"
 }
 ```
+
+Sampling defaults follow the model author's `generation_config.json`
+when a field is omitted (optiq serve's gen_config behavior); explicit
+request values always win. MiniCPM5 defaults to the no-think direct
+answer mode unless `chat_template_kwargs.enable_thinking` is `true`.
 
 `stop` sequences are matched on **decoded text**, not token ids, so a
 sequence that spans token boundaries still fires. Generation halts at
@@ -77,6 +85,14 @@ Tool round-trip: send the assistant message with its `tool_calls` back,
 followed by `{ "role": "tool", "tool_call_id": …, "content": … }`
 messages; multi-turn prompt prefixes reuse the KV prompt cache
 automatically.
+
+Tool-call parsing is per model family. Gemma 4 uses its native
+`<|tool_call>`…`<tool_call|>` sentinel tokens. MiniCPM5 emits XML in
+decoded text (`<function name="…"><param name="…">…`, CDATA-wrapped
+values supported); content before the tool markup still streams live,
+only the markup is withheld and converted to `tool_calls`. Argument
+values are decoded against the tool's JSON schema (string-typed params
+stay strings); markup that fails to parse falls back to plain content.
 
 ### Errors
 

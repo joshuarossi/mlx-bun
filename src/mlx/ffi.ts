@@ -118,6 +118,7 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_multiply: { args: [P, u64, u64, u64], returns: i32 },
   mlx_divide: { args: [P, u64, u64, u64], returns: i32 },
   mlx_tanh: { args: [P, u64, u64], returns: i32 },
+  mlx_sigmoid: { args: [P, u64, u64], returns: i32 },
   mlx_power: { args: [P, u64, u64, u64], returns: i32 },
   mlx_take_axis: { args: [P, u64, u64, i32, u64], returns: i32 },
   mlx_reshape: { args: [P, u64, P, u64, u64], returns: i32 },

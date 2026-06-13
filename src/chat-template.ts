@@ -61,6 +61,19 @@ export class ChatTemplate {
       if (await jinjaFile.exists()) source = await jinjaFile.text();
     }
     if (!source) throw new Error(`${modelDir}: no chat template found`);
+    // @huggingface/jinja lacks the `min`/`max` array filters that real
+    // Jinja2 has. MiniCPM5's template uses `[a, b]|min` in its assistant
+    // tool-call history branch, so without this rewrite every multi-turn
+    // tool conversation fails at render time ("Unknown ArrayValue filter").
+    source = source
+      .replace(
+        /\[\s*([\w.]+)\s*,\s*([\w.]+)\s*\]\s*\|\s*min\b/g,
+        "($1 if $1 < $2 else $2)",
+      )
+      .replace(
+        /\[\s*([\w.]+)\s*,\s*([\w.]+)\s*\]\s*\|\s*max\b/g,
+        "($1 if $1 > $2 else $2)",
+      );
     const tokenText = (t: unknown): string | null =>
       t == null ? null : typeof t === "string" ? t : (t as any).content;
     return new ChatTemplate(source, tokenText(config.bos_token), tokenText(config.eos_token));

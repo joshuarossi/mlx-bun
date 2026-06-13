@@ -16,6 +16,7 @@ import {
 import * as ops from "./mlx/ops";
 import { CompiledDecode } from "./model/compiled-decode";
 import { Gemma4Model, KVCache, RotatingKVCache, type Cache } from "./model/gemma4";
+import type { RuntimeModel } from "./model/factory";
 import type { KvQuantSpec } from "./config";
 import {
   makeLogitsProcessors, makeSampler,
@@ -73,6 +74,11 @@ function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void {
   for (let i = 0; i < cache.length; i++) {
     const c = cache[i]!;
     if (!(c instanceof KVCache || c instanceof RotatingKVCache) || c.offset < start) continue;
+    // OptiQ's mixed-KV hook skips empty caches: the first prompt prefill
+    // runs bf16, then the populated cache is quantized before decode.
+    // Converting empty caches at start=0 makes prefill itself quantized
+    // and diverges from the oracle path.
+    if (c.offset === 0) continue;
     if (byLayer) {
       const e = byLayer.get(i);
       if (e) cache[i] = c.toQuantized(e.groupSize, e.bits);
@@ -160,7 +166,7 @@ function exitWiredScope(): void {
 }
 
 export function generate(
-  model: Gemma4Model,
+  model: RuntimeModel,
   promptTokens: number[],
   options: GenerateOptions = {},
 ): Generation {
@@ -174,7 +180,7 @@ export function generate(
 
 /** Hold the model's active-adapter list for exactly this generation. */
 async function* adapterScoped(
-  model: Gemma4Model,
+  model: RuntimeModel,
   adapters: string[],
   inner: AsyncGenerator<GeneratedToken, GenerateStats>,
 ): AsyncGenerator<GeneratedToken, GenerateStats> {
@@ -200,7 +206,7 @@ async function* wiredScoped(
 }
 
 async function* generateInner(
-  model: Gemma4Model,
+  model: RuntimeModel,
   promptTokens: number[],
   options: GenerateOptions,
 ): AsyncGenerator<GeneratedToken, GenerateStats> {
@@ -342,8 +348,9 @@ async function* generateInner(
     let compiled =
       process.env.MLX_BUN_COMPILED_DECODE !== "0" &&
       !options.adapters?.length &&
+      model.config.modelType.startsWith("gemma4") &&
       !model.config.text.enableMoeBlock
-        ? CompiledDecode.for(model)
+        ? CompiledDecode.for(model as Gemma4Model)
         : null;
     let stop = false;
     while (!stop) {
