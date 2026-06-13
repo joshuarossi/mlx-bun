@@ -1,9 +1,34 @@
 // Shared reference-environment paths (see PLAN.md "Reference environment").
 
-/** Oracle venv root — override with MLX_BUN_ORACLE_VENV on machines
- *  where the reference environment lives elsewhere. */
-export const ORACLE_VENV =
-  process.env.MLX_BUN_ORACLE_VENV ?? "/Users/joshrossi/Code/mlx-lm/.venv";
+import { existsSync, realpathSync } from "node:fs";
+
+/** A venv is usable only if bin/python resolves to a real file — a venv
+ *  whose interpreter symlink dangles (e.g. Homebrew bumped python 3.13→3.14
+ *  and orphaned the venv) must be skipped, not picked: spawning it gives a
+ *  confusing ENOENT at eval time rather than at resolution time. */
+function venvUsable(venv: string): boolean {
+  try {
+    return existsSync(realpathSync(`${venv}/bin/python`));
+  } catch {
+    return false; // missing dir or broken symlink chain
+  }
+}
+
+/** Oracle venv root. Different laptops keep the reference environment in
+ *  different directories (mlx-lm vs mlx-lm-example); pick the first
+ *  candidate whose interpreter actually works. Override the search with
+ *  MLX_BUN_ORACLE_VENV (still validated, so a typo'd override falls back). */
+function resolveOracleVenv(): string {
+  const home = process.env.HOME ?? "";
+  const candidates = [
+    process.env.MLX_BUN_ORACLE_VENV,
+    `${home}/Code/mlx-lm/.venv`,
+    `${home}/Code/mlx-lm-example/.venv`,
+  ].filter((v): v is string => !!v);
+  return candidates.find(venvUsable) ?? candidates[0] ?? `${home}/Code/mlx-lm/.venv`;
+}
+
+export const ORACLE_VENV = resolveOracleVenv();
 
 export const ORACLE_PYTHON = `${ORACLE_VENV}/bin/python`;
 
