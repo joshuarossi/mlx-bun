@@ -88,7 +88,7 @@ then streams the recommended model for this Mac in the background —
 it becomes the default on the next run.
 
 Model selection:
-  --query <q>          Model to serve when starting a server (registry query)
+  -q, --query <q>      Model to serve when starting a server (registry query)
 
 ${SERVER_FLAGS}
 
@@ -225,6 +225,11 @@ if (cmd === "pi" && (argv[1] === "--help" || argv[1] === "-h") && argv.length ==
 const flag = (name: string): boolean => argv.includes(`--${name}`);
 const opt = (name: string, dflt: string | null = null): string | null => {
   const i = argv.indexOf(`--${name}`);
+  return i > -1 && argv[i + 1] ? argv[i + 1]! : dflt;
+};
+/** Single-dash value flag (e.g. -q), the short-alias counterpart to opt(). */
+const optShort = (short: string, dflt: string | null = null): string | null => {
+  const i = argv.indexOf(`-${short}`);
   return i > -1 && argv[i + 1] ? argv[i + 1]! : dflt;
 };
 const positional = (n: number): string | undefined =>
@@ -745,7 +750,7 @@ switch (cmd) {
     // (-p, --mode rpc, --continue, @files, messages...). User flags are
     // appended after our defaults, so an explicit --model/--models wins.
     const OURS_VAL = new Set([
-      "--query", "--port", "--host", "--memory-budget", "--prompt-cache", "--kv-quant",
+      "--query", "-q", "--port", "--host", "--memory-budget", "--prompt-cache", "--kv-quant",
       "--compiled-decode", "--perf-kernel", "--fused-decode", "--fused-sdpa", "--thinking",
       "--temperature", "--top-p", "--top-k",
     ]);
@@ -790,7 +795,7 @@ switch (cmd) {
     } else {
       const { banner, step, style } = await import("./tui");
       banner(pkg.version);
-      const { m, picked } = await resolveModelAuto(opt("query"));
+      const { m, picked } = await resolveModelAuto(opt("query") ?? optShort("q"));
       if (picked)
         console.log(`  ${style.dim(`auto-picked ${m.repoId} (largest supported model that fits; override with --query)`)}`);
       const sNative = step("native runtime");
