@@ -519,7 +519,7 @@ const resolveAll = (q: string): ModelRecord[] => q.split(",").map((s) => reg.res
 
 if (cmd === "direct") {
   const machineState = preflight(false);
-  const models = resolveAll(opt("models", "e4b-it-OptiQ,12B,26B"));
+  const models = resolveAll(opt("models", "cpm,e4b-it-OptiQ,12B,26B"));
   const kv = opt("kv", "config") as "off" | "config";
   const cells: DirectCell[] = models.flatMap((m) => [
     { m, stack: "mlx-bun" as const, kv },
@@ -607,7 +607,7 @@ if (cmd === "all") {
   const serverRuns = Number(opt("server-runs", "5"));
   // smallest first; the 26B (swap generator) runs ALL its cells last
   const models = resolveAll(
-    opt("models", flag("skip-26b") ? "e4b-it-OptiQ,12B" : "e4b-it-OptiQ,12B,26B"),
+    opt("models", flag("skip-26b") ? "cpm,e4b-it-OptiQ,12B" : "cpm,e4b-it-OptiQ,12B,26B"),
   ).sort((a, b) => a.sizeBytes - b.sizeBytes);
 
   for (const m of models) {
