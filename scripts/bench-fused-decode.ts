@@ -10,13 +10,13 @@
 // in the decode SDPA path. Paired ratios survive a non-pristine machine
 // (standing rule: the ABSOLUTE numbers here are not headline-quotable;
 // the cleared-machine ./benchmark.sh A/B settles the default). Each arm
-// re-prefills — at 8k the sliding rings have wrapped, so caches cannot
+// re-prefills — at 64k the sliding rings have wrapped, so caches cannot
 // be trimmed back for reuse. Records eval-DB rows per arm.
 
 import { SNAPSHOT } from "../tests/paths";
 import { peakMemory, resetPeakMemory } from "../src/mlx/ffi";
 
-const CTX = 8192;
+const CTX = 65536;
 const DECODE_TOKENS = 128;
 const N_PAIRS = 3;
 const KV_BITS = 8;

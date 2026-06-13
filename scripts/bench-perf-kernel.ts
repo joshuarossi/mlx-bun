@@ -4,13 +4,15 @@
 // specialized for), compiled decode at its default — i.e. exactly the
 // production path either way.
 //
-//   bun scripts/bench-perf-kernel.ts            # @8k and @2k, 3 pairs each
+//   bun scripts/bench-perf-kernel.ts            # @64k and @2k, 3 pairs each
 //   bun scripts/bench-perf-kernel.ts --smoke    # 1 short pair (plumbing check)
 //
 // Dirty-machine runs give meaningful RATIOS only; the cleared-machine
 // ./benchmark.sh pass is what flips the default. Records eval-DB rows
-// per arm. Reference paired ratios at v2.2 (2026-06-11, dirty):
-// 1.038 @8k isolated, 1.027 production, 1.022 @2k.
+// per arm. Prior reference paired ratios at v2.2 (2026-06-11, dirty, @8k):
+// 1.038 isolated, 1.027 production, 1.022 @2k. Long context bumped to 64k
+// (2026-06-13) — the kernel win grows with KV length, so expect a larger
+// long-context ratio; fresh numbers pending the next pass.
 
 import { SNAPSHOT } from "../tests/paths";
 import { peakMemory, resetPeakMemory, clearCache } from "../src/mlx/ffi";
@@ -18,7 +20,7 @@ import { peakMemory, resetPeakMemory, clearCache } from "../src/mlx/ffi";
 const SMOKE = process.argv.includes("--smoke");
 const N_PAIRS = SMOKE ? 1 : 3;
 const DECODE_TOKENS = SMOKE ? 32 : 128;
-const CONTEXTS = SMOKE ? [2048] : [8192, 2048];
+const CONTEXTS = SMOKE ? [2048] : [65536, 2048];
 
 const { loadModelConfig } = await import("../src/config");
 const { Weights } = await import("../src/weights");

@@ -636,7 +636,7 @@ if (cmd === "all") {
     recheck(`${name} direct`);
 
     if (m.repoId.includes("12B")) {
-      console.log(`\n=== ${name}: long-context @8k (mixed vs bf16, mlx-bun + optiq) ===`);
+      console.log(`\n=== ${name}: long-context @64k (mixed vs bf16, mlx-bun + optiq) ===`);
       await directLeg(
         [
           { m, stack: "mlx-bun", kv: "config" },
@@ -646,7 +646,7 @@ if (cmd === "all") {
         ],
         // full depth: this leg carries the headline regression finding —
         // median-of-2 was too thin for the most-quoted number
-        runs, machineState, { tokens: 256, promptTokens: 8000 },
+        runs, machineState, { tokens: 256, promptTokens: 64000 },
       );
       recheck(`${name} long-context`);
     }
