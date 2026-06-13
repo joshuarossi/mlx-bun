@@ -2222,6 +2222,64 @@ up the 🟥 verbs and the OptIQ-Lab web-UI tiles (full matrix in the spec):
 - **Web-UI training-data template + generation**: independent of engine
   work; fourth OptIQ-Lab tile.
 
+## Phase 18 — Concurrent / batched serving (slots) + parallel load benchmark `[ ]` (2026-06-13)
+
+Agents hit the SERVER and real usage is concurrent, but mlx-bun's server
+is `batch=1`, serialized (server.ts: "Generation is serialized through a
+single queue (one GPU, batch=1)"; generate.ts builds every tensor `[1,
+L]`). Concurrent requests QUEUE — aggregate throughput is capped at
+single-stream, latency grows with queue depth. The competitors batch:
+
+**Verified 2026-06-13 (oracle venv):**
+- **mlx-lm 0.31.3** — continuous batching in the server (`ThreadingHTTPServer`
+  + a `batch_generator` with `insert_segments`). The slot knobs are CLI
+  flags: `--decode-concurrency` (default 32), `--prompt-concurrency`
+  (default 8). Batchable iff no draft model AND every KV cache class
+  implements `merge` (`server.py` is_batchable).
+- **optiq 0.1.1** — built on mlx-lm's server; only forces *image* requests
+  off the batch path, so TEXT serving batches too. Caveat to confirm
+  empirically: its kv-quant cache must implement `merge`, else that path
+  falls back to serial.
+- **mlx-bun** — no batching. This is the gap; it's the context↔concurrency
+  tradeoff (a fixed KV budget split into N slots, each ~total_context/N —
+  the llama.cpp `-np` / vLLM model).
+
+Two parts, sequenced:
+
+**P1 — Parallel load benchmark `[ ]`** (build first; valuable against the
+current server and the validation tool for P2):
+- Separate harness (`mlx-bun loadtest` / `scripts/bench-serving-load.ts`),
+  NOT folded into the preflight-gated single-stream h2h matrix; shares the
+  eval DB.
+- Concurrency sweep (closed-loop 1→20 in-flight) and/or arrival-rate sweep
+  (open-loop); configurable N requesters × target rpm (Josh: e.g. 32
+  requesters @10 rpm, or sweep 1→20).
+- Measure: TTFT p50/p95, end-to-end latency p50/p95/p99, aggregate vs
+  per-request throughput, peak memory (per in-flight KV cache), error/
+  timeout rate, and the **saturation knee**.
+- **Cross-stack** (mlx-bun vs mlx-lm vs optiq) — the headline is the
+  *batching gap*: where mlx-bun's `batch=1` loses to a batching server
+  under load. That gap is the business case for P2.
+- Start with **cpm (0.84 GB) + e4b (6 GB)** — concurrent KV caches leave
+  headroom, and they're the user-facing starter/recommended models.
+- Against today's server this measures the serialized ceiling (throughput
+  flat, latency climbs); headline output = a latency-vs-load curve + a
+  "max sustainable rpm at acceptable p95 TTFT" number per model/stack.
+
+**P2 — Batched / "slots" serving `[ ]`** (the feature P1 motivates):
+- Add a batch dim (`[B, …]`) through the forward pass, per-slot KV caches,
+  ragged-sequence attention masking, and a scheduler/admission policy
+  (slots↔max-context tradeoff; mlx-lm's `--decode/--prompt-concurrency`).
+- Touches the cache classes (per-slot, `merge`-capable), masks (ragged),
+  and compiled-decode (assumes batch=1 today — shapeless replay over
+  varying B/lengths + the CustomKernel/perf-kernel interplay are the hard
+  parts).
+- Continuous batching (insert mid-flight, like mlx-lm `insert_segments`) >
+  static batching for bursty agent traffic.
+- Exit: throughput scales with concurrency up to the slot count then
+  queues (P1 confirms); per-sequence output bit-exact vs the batch=1 path
+  (parity gate).
+
 ## Publishing decision (2026-06-12, Josh)
 
 Zip-sharing is over — publish properly: **bun/npm first, then brew.**
