@@ -652,14 +652,15 @@ export class Gemma4Model {
    *  _project_per_layer_inputs): [1, L, nLayers, perLayerWidth]. */
   protected computePerLayerInputs(ids: MlxArray, hScaled: MlxArray): MlxArray {
     const t = this.config.text;
+    const B = ids.shape[0]!;
     const L = ids.shape[1]!;
-    let pli = this.perLayerEmbed!.encode(ids); // [1, L, nLayers*width]
+    let pli = this.perLayerEmbed!.encode(ids); // [B, L, nLayers*width]
     pli = disposing(pli, ops.mulScalar(pli, Math.sqrt(this.perLayerWidth)));
-    pli = disposing(pli, ops.reshape(pli, [1, L, t.numHiddenLayers, this.perLayerWidth]));
+    pli = disposing(pli, ops.reshape(pli, [B, L, t.numHiddenLayers, this.perLayerWidth]));
 
     let proj = this.perLayerModelProjection!.forward(hScaled);
     proj = disposing(proj, ops.mulScalar(proj, 1 / Math.sqrt(t.hiddenSize)));
-    proj = disposing(proj, ops.reshape(proj, [1, L, t.numHiddenLayers, this.perLayerWidth]));
+    proj = disposing(proj, ops.reshape(proj, [B, L, t.numHiddenLayers, this.perLayerWidth]));
     proj = disposing(proj, this.perLayerProjectionNorm!.forward(proj));
 
     let combined = ops.add(proj, pli);
@@ -684,6 +685,7 @@ export class Gemma4Model {
   protected forwardLayers(
     h0: MlxArray, cache: Cache[], bidir: MlxArray | null, ids: MlxArray | null,
   ): MlxArray {
+    const B = h0.shape[0]!;
     const L = h0.shape[1]!;
     let h = h0;
 
@@ -720,12 +722,12 @@ export class Gemma4Model {
       if (perLayer) {
         if (isCompiledTrace()) {
           const start = ops.fromInt32([i], [1]);
-          pls = ops.sliceDynamic(perLayer, start, [2], [1, L, 1, this.perLayerWidth]);
+          pls = ops.sliceDynamic(perLayer, start, [2], [B, L, 1, this.perLayerWidth]);
           start.dispose();
         } else {
-          pls = perLayer.slice([0, 0, i, 0], [1, L, i + 1, this.perLayerWidth]);
+          pls = perLayer.slice([0, 0, i, 0], [B, L, i + 1, this.perLayerWidth]);
         }
-        const r = ops.reshape(pls, [1, L, this.perLayerWidth]);
+        const r = ops.reshape(pls, [B, L, this.perLayerWidth]);
         pls.dispose();
         pls = r;
       }

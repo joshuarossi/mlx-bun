@@ -28,6 +28,11 @@ const CPM_BASE =
   `664aabaed233c653f82716d8dc822234d0091f78`;
 const haveCpm = existsSync(`${CPM_BASE}/config.json`);
 const haveGemma12b = await snapshotAvailable();
+const E4B_BASE =
+  `${process.env.HOME}/.cache/huggingface/hub/` +
+  `models--mlx-community--gemma-4-e4b-it-OptiQ-4bit/snapshots/` +
+  `fcdb12d740cd813634064567fc7cb51159b34253`;
+const haveE4b = existsSync(`${E4B_BASE}/config.json`);
 
 /** Run the batched-decode parity harness for one model. prompts[0] MUST be the
  *  longest (→ leftPad 0, the bit-exact row); others are left-padded. Returns
@@ -321,6 +326,18 @@ describe.skipIf(!optIn || !haveGemma12b)("batched decode ORACLE parity — Gemma
     const got = await realBatchedGreedy(SNAPSHOT, golden.prompts as number[][], golden.steps as number);
     console.log(`[oracle Gemma12B] mlx-bun: ${JSON.stringify(got)}`);
     console.log(`[oracle Gemma12B] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
+    expect(got).toEqual(golden.trajectories);
+  }, 240_000);
+});
+
+// --- Gemma e4b L1 (bf16 KV) vs mlx-lm B=2 oracle. Exercises per-layer-input
+//     embeddings (the [1,L,…] hardcode → made B-generic) + KV-sharing. ---
+describe.skipIf(!optIn || !haveE4b)("batched decode ORACLE parity — Gemma e4b L1 vs mlx-lm B=2", () => {
+  test("real batched greedy trajectory == mlx-lm B=2", async () => {
+    const golden = await Bun.file(`${import.meta.dir}/fixtures/batched-golden-e4b.json`).json();
+    const got = await realBatchedGreedy(E4B_BASE, golden.prompts as number[][], golden.steps as number);
+    console.log(`[oracle e4b] mlx-bun: ${JSON.stringify(got)}`);
+    console.log(`[oracle e4b] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
     expect(got).toEqual(golden.trajectories);
   }, 240_000);
 });

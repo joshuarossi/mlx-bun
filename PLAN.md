@@ -2450,8 +2450,12 @@ Phasing (each default-off behind `slots=1`, serialized path never removed):
             register() to load gemma4_unified in mlx-lm (see gen-batched-golden.py,
             mirrors regen-parity-goldens). Fixture: batched-golden-gemma12b.json.
             Caveat: short-context only; ring-wrap (>window) is a separate golden.
-            Next cells: e4b L1 (expect per-layer-input [1,L] hardcode to bite +
-            KV-share), 26B L1 (MoE), then L2 (quant KV) across all.
+          - [x] **Gemma e4b L1 ORACLE-VERIFIED 2026-06-14d**: realBatchedGreedy ==
+            mlx-lm B=2 EXACTLY. Required the predicted fix: computePerLayerInputs
+            + the per-layer slice in forwardLayers hardcoded [1,L,…] → made
+            B-generic (B from shape; B=1-identity, no single-stream regression).
+            KV-sharing turned out already B-generic (no extra fix). Fixture
+            batched-golden-e4b.json. 3/4 L1 cells done; 26B (MoE) next.
 - [ ] **S2** — N-wide + continuous injection/eviction; dynamic byte-budget
       admission.
 - [ ] **S3+** — paged KV (rung 3), KV-quant under batch, LoRA-group batching.
