@@ -10,9 +10,15 @@
 #
 # This is the L1-batched gate's oracle: mlx-bun B=2 must match mlx-lm B=2.
 import sys, json, struct
+# OptiQ's patch maps gemma4_unified -> mlx-lm's gemma4 classes so mlx-lm can
+# LOAD the OptiQ-repacked Gemma (must run before importing mlx_lm). Harmless
+# for non-gemma models (MiniCPM5/llama load normally). Mirrors
+# scripts/regen-parity-goldens.ts.
+from optiq.mlx_lm_patches._register import register
+register()
 import mlx.core as mx
 from mlx_lm import load
-from mlx_lm.models.cache import BatchKVCache, BatchRotatingKVCache
+from mlx_lm.generate import _make_cache  # canonical batch-cache builder
 
 MODEL = sys.argv[1] if len(sys.argv) > 1 else \
     "/Users/joshrossi/.cache/huggingface/hub/models--mlx-community--MiniCPM5-1B-OptiQ-4bit/snapshots/664aabaed233c653f82716d8dc822234d0091f78"
@@ -31,23 +37,10 @@ Lmax = max(len(p) for p in PROMPTS)
 left_padding = [Lmax - len(p) for p in PROMPTS]
 padded = [[0] * (Lmax - len(p)) + p for p in PROMPTS]  # LEFT-pad with 0
 
-# Build the per-layer batch cache exactly like mlx-lm's _make_cache. Sliding
-# layers (if any) need BatchRotatingKVCache; full-attention layers BatchKVCache.
-def make_cache():
-    caches = []
-    for layer in model.layers:
-        attn = getattr(layer, "self_attn", None)
-        max_size = None
-        # mlx-lm marks sliding layers via a per-layer attribute on some models;
-        # MiniCPM5 (llama) has none → all BatchKVCache.
-        if hasattr(attn, "max_size") and attn.max_size:
-            max_size = attn.max_size
-        caches.append(
-            BatchRotatingKVCache(max_size, left_padding) if max_size else BatchKVCache(left_padding)
-        )
-    return caches
-
-cache = make_cache()
+# Build the per-layer batch cache EXACTLY as mlx-lm does (model.make_cache()
+# → BatchKVCache / BatchRotatingKVCache per layer type). Handles CPM (all
+# full-attention) and Gemma (interleaved sliding) correctly.
+cache = _make_cache(model, left_padding, None)
 
 def last_logits(logits):
     # logits [B, L, V]; left-padded → last position is the real last token.

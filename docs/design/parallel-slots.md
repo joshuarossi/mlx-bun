@@ -196,7 +196,7 @@ So a feature like batched decode (`--slots`) is "done" only when green at
 | Model · path | L1 (bf16 / mlx-lm) | L2 (quant / optiq) | L3 (perf / KL) |
 | --- | --- | --- | --- |
 | CPM (MiniCPM5) | ✅ **oracle-verified** (= mlx-lm B=2) | ☐ quant + unfused-mask | ☐ |
-| Gemma 12B | ◐ WIP — see below | ☐ generated + sliding-window | ☐ (gen rope fix) |
+| Gemma 12B | ✅ **oracle-verified** (= mlx-lm B=2, short-ctx) | ☐ generated + sliding-window | ☐ (gen rope fix) |
 | Gemma e4b | ☐ + per-layer-input + KV-share | ☐ generated + same | ☐ (gen rope fix) |
 | Gemma 26B | ☐ + MoE | ☐ generated + MoE | ☐ (gen rope fix) |
 | *(Qwen, future)* | *new path* | *new path* | *new path* |
@@ -238,19 +238,20 @@ mlx-bun **batched prefill + batched decode** path, compared bit-exact to the
 mlx-lm B=N golden. (The KL B2-vs-B1 harness stays as a cheap internal-consistency
 check, not the gate.)
 
-**Gemma 12B L1 findings (2026-06-14, WIP) — KL separates two effects:**
-- **Unpadded row: KL ~5e-3, content-INDEPENDENT** (identical with two identical
-  prompts; argmax-stable) → benign mlx batched-attention reduction-order noise,
-  NOT a bug. (B=1 through the wrapper is bit-exact, confirming the wrapper +
-  ropeDynamic + array mask are correct for Gemma.) Ruled out KV-sharing (12B has
-  none) and ring-wrap (guarded).
-- **Padded row: KL ~2.6e-1 → a REAL Gemma-specific error**, despite its mask +
-  rope being mechanically identical to CPM's padded row (KL 7e-4, fine). Leading
-  hypothesis: at Gemma's score magnitudes (headDim 256, scale 1.0) the **bool
-  mask doesn't fully clamp the zero-padding columns to −inf**, so padding leaks
-  (harmless at CPM's magnitudes). Fix candidates: additive −inf mask, or assemble
-  padding that can't leak. Needs layer-level instrumentation; gated test is
-  diagnostic-only until root-caused.
+**Gemma 12B L1 — RESOLVED 2026-06-14d: it was the wrong oracle, not a bug.**
+The real `realBatchedGreedy` path (batch-prefill + decode) matches the mlx-lm
+B=2 oracle **exactly** for Gemma 12B (both rows incl. left-padded, sliding
+layers via RotatingKVCache→BatchRotatingKVCache, short-context). So the "padded
+row KL ~0.26" was entirely an artifact of the KL harness comparing our B=2 to
+our own B=1 (different prefill + reduction order) — mlx-lm B=2 diverges from its
+own B=1 the same way. No additive-mask fix was needed; the bool+fused path is
+correct (it's what mlx-lm uses). The KL B2-vs-B1 harness stays only as an
+internal-consistency check, never the gate.
+
+**Caveat:** verified at short context (Lmax ≪ 1024 window → pre-wrap, sliding
+window inactive). **Ring-wrap (context > window) is a separate validation** —
+needs a long-context golden (mlx-lm BatchRotatingKVCache wrapped) + mlx-bun
+RotatingKVCache wrapped past the window.
 
 Batched-decode landmines found by the modes analysis (2026-06-14):
 - **e4b**: `computePerLayerInputs` hardcodes `[1,L,…]` (gemma4.ts:647) → B>1

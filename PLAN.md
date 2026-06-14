@@ -2441,8 +2441,17 @@ Phasing (each default-off behind `slots=1`, serialized path never removed):
             AND decode → batch-prefill → greedy decode). Its per-row trajectory ==
             mlx-lm B=2 EXACTLY (both rows incl. left-padded, 8 steps). CPM L1
             batched is bit-parity with mlx-lm's batch mode. Fixture committed
-            (tests/fixtures/batched-golden-cpm.json). Next cells: Gemma 12B oracle
-            (needs BatchRotatingKVCache golden), then L2 quant, then e4b/26b.
+            (tests/fixtures/batched-golden-cpm.json).
+          - [x] **Gemma 12B L1 ORACLE-VERIFIED 2026-06-14d**: realBatchedGreedy ==
+            mlx-lm B=2 EXACTLY (both rows incl. left-padded; sliding layers via
+            RotatingKVCache→BatchRotatingKVCache; short-context). The "KL 0.26
+            padded bug" was purely the wrong-oracle artifact — RESOLVED, no fix
+            needed (bool+fused path is what mlx-lm uses). Golden needs optiq's
+            register() to load gemma4_unified in mlx-lm (see gen-batched-golden.py,
+            mirrors regen-parity-goldens). Fixture: batched-golden-gemma12b.json.
+            Caveat: short-context only; ring-wrap (>window) is a separate golden.
+            Next cells: e4b L1 (expect per-layer-input [1,L] hardcode to bite +
+            KV-share), 26B L1 (MoE), then L2 (quant KV) across all.
 - [ ] **S2** — N-wide + continuous injection/eviction; dynamic byte-budget
       admission.
 - [ ] **S3+** — paged KV (rung 3), KV-quant under batch, LoRA-group batching.
