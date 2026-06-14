@@ -1315,6 +1315,10 @@ controllers.chat = (() => {
   let ws = null, connected = false, reconnectTimer = null, manualClose = false;
   let curAssistant = null;      // { bubble, cursor, meta, tools:Map, text, t0, tFirst, tokens }
   let turnActive = false;
+  // This connection's active session path (from `sessions` frames). Each
+  // connect gets a fresh server session; on a transient reconnect we re-open
+  // our own session so a blip doesn't strand us on a blank one.
+  let currentSessionPath = null, pendingResumePath = null;
   const thread = () => $("chat-thread");
 
   function wsUrl() {
@@ -1324,6 +1328,10 @@ controllers.chat = (() => {
 
   function connect() {
     manualClose = false;
+    // Remember our session across this (re)connect: if we were already in a
+    // session, re-open it once the new connection is ready (the server starts
+    // each connection on a fresh session by default).
+    pendingResumePath = currentSessionPath;
     try { ws = new WebSocket(wsUrl()); } catch { scheduleReconnect(); return; }
     ws.onopen = () => { connected = true; setChatStatus("connected"); };
     ws.onclose = () => { connected = false; setChatStatus("disconnected"); if (!manualClose) scheduleReconnect(); };
@@ -1616,9 +1624,14 @@ controllers.chat = (() => {
   /* — server → client dispatch — */
   function handle(m) {
     switch (m.type) {
-      case "ready": $("nav-model").textContent = m.model || activeModelId || "no model"; activeModelId = m.model || activeModelId; visionCapable = !!m.vision; updateAttachHint(); break;
+      case "ready":
+        $("nav-model").textContent = m.model || activeModelId || "no model"; activeModelId = m.model || activeModelId;
+        visionCapable = !!m.vision; updateAttachHint();
+        // Reconnect: re-open the session we were in (fresh load has none).
+        if (pendingResumePath) { send({ type: "open_session", path: pendingResumePath }); pendingResumePath = null; }
+        break;
       case "history": renderHistory(m.items); break;
-      case "sessions": renderSessions(m.items, m.activePath); break;
+      case "sessions": currentSessionPath = m.activePath || null; renderSessions(m.items, m.activePath); break;
       case "context": renderContext(m); break;
       case "turn_start": turnActive = true; startAssistant(); $("chat-send").disabled = true; $("chat-stop").style.display = "block"; break;
       case "text_delta": appendDelta(m.delta || ""); break;
