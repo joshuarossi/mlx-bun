@@ -4,7 +4,7 @@
 // specialized for), compiled decode at its default — i.e. exactly the
 // production path either way.
 //
-//   bun scripts/bench-perf-kernel.ts            # @64k and @2k, 3 pairs each
+//   bun scripts/bench-perf-kernel.ts            # @16k and @2k, 3 pairs each
 //   bun scripts/bench-perf-kernel.ts --smoke    # 1 short pair (plumbing check)
 //
 // Dirty-machine runs give meaningful RATIOS only; the cleared-machine
@@ -20,7 +20,7 @@ import { peakMemory, resetPeakMemory, clearCache } from "../src/mlx/ffi";
 const SMOKE = process.argv.includes("--smoke");
 const N_PAIRS = SMOKE ? 1 : 3;
 const DECODE_TOKENS = SMOKE ? 32 : 128;
-const CONTEXTS = SMOKE ? [2048] : [65536, 2048];
+const CONTEXTS = SMOKE ? [2048] : [16384, 2048];
 
 const { loadModelConfig } = await import("../src/config");
 const { Weights } = await import("../src/weights");

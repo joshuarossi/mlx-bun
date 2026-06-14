@@ -3,7 +3,8 @@
 
 import { loadModelConfig } from "../src/config";
 import { Weights } from "../src/weights";
-import { Gemma4Model, argmaxLastPosition } from "../src/model/gemma4";
+import { argmaxLastPosition } from "../src/model/gemma4";
+import { createModel } from "../src/model/factory";
 import { loadTokenizer } from "../src/tokenizer";
 import { peakMemory } from "../src/mlx/ffi";
 
@@ -16,7 +17,7 @@ const maxSteps = stepsArg > -1 ? Number(process.argv[stepsArg + 1]) : 24;
 const t0 = performance.now();
 const config = await loadModelConfig(SNAP);
 const weights = await Weights.open(SNAP);
-const model = new Gemma4Model(weights, config);
+const model = createModel(weights, config); // production dispatch (bit-parity path)
 console.log(`model constructed in ${(performance.now() - t0).toFixed(0)} ms`);
 
 const tok = await loadTokenizer(SNAP);

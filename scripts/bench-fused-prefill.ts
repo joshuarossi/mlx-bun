@@ -4,9 +4,9 @@
 //   bun scripts/bench-fused-prefill.ts                  # fused (default)
 //   MLX_BUN_NO_FUSED_SDPA=1 bun scripts/bench-fused-prefill.ts   # unfused A/B
 //
-// 64k-token prompt, kv8 on full-attention layers from token 0, prefill
+// 16k-token prompt, kv8 on full-attention layers from token 0, prefill
 // chunk 2048 (generate.ts default) — so the final chunk is a 2048-row
-// prefill over a ~62k-token quantized cache, the exact scores-matrix
+// prefill over a ~14k-token quantized cache, the exact scores-matrix
 // transient the fused path exists to bound. Generation-only peak: the
 // peak counter resets after load + a small warmup (Phase 15 finding —
 // load transients and kernel compilation would otherwise dominate).
@@ -17,7 +17,7 @@
 import { SNAPSHOT } from "../tests/paths";
 import { peakMemory, resetPeakMemory } from "../src/mlx/ffi";
 
-const CTX = 65536;
+const CTX = 16384;
 const MAX_TOKENS = 16;
 const KV_BITS = 8;
 
@@ -25,14 +25,14 @@ const fused = process.env.MLX_BUN_NO_FUSED_SDPA === "1" ? "off" : "on";
 
 const { loadModelConfig } = await import("../src/config");
 const { Weights } = await import("../src/weights");
-const { Gemma4Model } = await import("../src/model/gemma4");
+const { createModel } = await import("../src/model/factory");
 const { generate } = await import("../src/generate");
 const { loadTokenizer } = await import("../src/tokenizer");
 const { checkMachine, machineStateJson } = await import("../src/preflight");
 
 const config = await loadModelConfig(SNAPSHOT);
 const weights = await Weights.open(SNAPSHOT);
-const model = new Gemma4Model(weights, config);
+const model = createModel(weights, config); // production dispatch (bit-parity path)
 const tok = await loadTokenizer(SNAPSHOT);
 
 // ~8k of real-ish token ids: repeat a tokenized paragraph (content is
