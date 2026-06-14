@@ -197,7 +197,7 @@ So a feature like batched decode (`--slots`) is "done" only when green at
 | --- | --- | --- | --- |
 | CPM (MiniCPM5) | ✅ **oracle-verified** (= mlx-lm B=2) | ☐ quant + unfused-mask | ☐ |
 | Gemma 12B | ✅ **oracle-verified** (= mlx-lm B=2, short-ctx) | ☐ generated + sliding-window | ☐ (gen rope fix) |
-| Gemma e4b | ☐ + per-layer-input + KV-share | ☐ generated + same | ☐ (gen rope fix) |
+| Gemma e4b | ✅ **oracle-verified** (= mlx-lm B=2, short-ctx) | ☐ generated + same | ☐ (gen rope fix) |
 | Gemma 26B | ☐ + MoE | ☐ generated + MoE | ☐ (gen rope fix) |
 | *(Qwen, future)* | *new path* | *new path* | *new path* |
 
