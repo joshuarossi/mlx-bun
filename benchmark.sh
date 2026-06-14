@@ -2,8 +2,8 @@
 # Phase 15 head-to-head benchmark — the one-shot entry point.
 #
 #   1. Reboot. Open nothing else (no browser).
-#   2. ./benchmark.sh            (full matrix, ~45-60 min)
-#      ./benchmark.sh --skip-26b (faster pass, ~20 min)
+#   2. ./benchmark.sh            (cpm/e4b/12B matrix; 26B skipped by default)
+#      ./benchmark.sh --with-26b (include the 26B MoE — much slower)
 #      ./benchmark.sh --redo     (ignore recent rows; force every cell
 #                                 fresh — REQUIRED after engine changes,
 #                                 or the resume window silently re-renders
@@ -30,8 +30,8 @@ echo ""
 echo "=== fused-decode paired A/B (12B @8k kv8: tiled vs stock decode) ==="
 bun scripts/bench-fused-decode.ts
 echo ""
-echo "=== perf-kernel paired A/B (12B serve kv_config: fused Metal kernel vs compat) ==="
-echo "    decides the MLX_BUN_PERF_KERNEL default (Phase E v2; dirty-paired ref 1.02-1.04)"
+echo "=== perf-kernel paired A/B (12B serve kv_config: compat vs perf-mode Metal kernel) ==="
+echo "    compat (MLX_BUN_PERF_KERNEL=0, bit-parity, the vs-python config) vs perf-mode (=1, default; ref 1.02-1.04)"
 bun scripts/bench-perf-kernel.ts
 echo ""
 echo "=== compiled-decode paired A/B (12B @8k, e4b @600/@8k, serve kv_config) ==="

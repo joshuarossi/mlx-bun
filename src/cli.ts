@@ -16,6 +16,7 @@ import { EvalDB } from "./evaldb";
 import pkg from "../package.json" with { type: "json" };
 import { renderHelp } from "./tui";
 import { isSupportedModelRecord } from "./model/support";
+import { perfKernelEnabled } from "./model/fused-decode-kernel";
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -286,7 +287,7 @@ function runtimeSummary(o: import("./server").ServerOptions): string {
   const kv = o.kvQuant === "off" ? "off" : typeof o.kvQuant === "number" ? `kv${o.kvQuant}` : "config";
   const lever = (env: string, dflt: string) => process.env[env] ?? dflt;
   return `kv-quant ${kv} · compiled-decode ${lever("MLX_BUN_COMPILED_DECODE", "1") === "1" ? "on" : "off"}` +
-    ` · perf-kernel ${lever("MLX_BUN_PERF_KERNEL", "0") === "1" ? "on" : "off"}` +
+    ` · perf-kernel ${perfKernelEnabled() ? "on" : "off"}` +
     (lever("MLX_BUN_FUSED_DECODE", "0") === "1" ? " · fused-decode on" : "");
 }
 

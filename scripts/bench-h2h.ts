@@ -73,7 +73,14 @@ const failures: { cell: string; error: string }[] = [];
  *  line, so this is a strict improvement. */
 function failureLine(msg: string): string {
   const lines = msg.split("\n").map((l) => l.trim()).filter(Boolean);
-  return (lines[lines.length - 1] ?? msg).slice(0, 160);
+  // Prefer the actual error line. A Bun uncaught throw ends with the crash
+  // banner ("Bun v1.3.14 (macOS arm64)") after the stack, so the LAST line
+  // is useless — find the "error:"/"Error:" line, else the last line that
+  // isn't the banner or a stack frame.
+  const err = [...lines].reverse().find((l) => /^error:/i.test(l) || /\bError:/.test(l));
+  if (err) return err.slice(0, 160);
+  const meaningful = [...lines].reverse().find((l) => !/^Bun v\d/.test(l) && !/^at\s/.test(l));
+  return (meaningful ?? lines[lines.length - 1] ?? msg).slice(0, 160);
 }
 
 // --- preflight ------------------------------------------------------------
@@ -605,9 +612,10 @@ if (cmd === "all") {
 
   const runs = Number(opt("runs", "3"));
   const serverRuns = Number(opt("server-runs", "5"));
-  // smallest first; the 26B (swap generator) runs ALL its cells last
+  // smallest first; the 26B (swap generator) runs ALL its cells last. 26B is
+  // skipped by default (slow + not interesting right now) — `--with-26b` adds it.
   const models = resolveAll(
-    opt("models", flag("skip-26b") ? "cpm,e4b-it-OptiQ,12B" : "cpm,e4b-it-OptiQ,12B,26B"),
+    opt("models", flag("with-26b") ? "cpm,e4b-it-OptiQ,12B,26B" : "cpm,e4b-it-OptiQ,12B"),
   ).sort((a, b) => a.sizeBytes - b.sizeBytes);
 
   for (const m of models) {
@@ -636,7 +644,7 @@ if (cmd === "all") {
     recheck(`${name} direct`);
 
     if (m.repoId.includes("12B")) {
-      console.log(`\n=== ${name}: long-context @64k (mixed vs bf16, mlx-bun + optiq) ===`);
+      console.log(`\n=== ${name}: long-context @16k (mixed vs bf16, mlx-bun + optiq) ===`);
       await directLeg(
         [
           { m, stack: "mlx-bun", kv: "config" },
@@ -646,7 +654,7 @@ if (cmd === "all") {
         ],
         // full depth: this leg carries the headline regression finding —
         // median-of-2 was too thin for the most-quoted number
-        runs, machineState, { tokens: 256, promptTokens: 64000 },
+        runs, machineState, { tokens: 256, promptTokens: 16000 },
       );
       recheck(`${name} long-context`);
     }

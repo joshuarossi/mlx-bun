@@ -10,20 +10,20 @@
 // in the decode SDPA path. Paired ratios survive a non-pristine machine
 // (standing rule: the ABSOLUTE numbers here are not headline-quotable;
 // the cleared-machine ./benchmark.sh A/B settles the default). Each arm
-// re-prefills — at 64k the sliding rings have wrapped, so caches cannot
+// re-prefills — at long context the sliding rings have wrapped, so caches cannot
 // be trimmed back for reuse. Records eval-DB rows per arm.
 
 import { SNAPSHOT } from "../tests/paths";
 import { peakMemory, resetPeakMemory } from "../src/mlx/ffi";
 
-const CTX = 65536;
+const CTX = 16384;
 const DECODE_TOKENS = 128;
 const N_PAIRS = 3;
 const KV_BITS = 8;
 
 const { loadModelConfig } = await import("../src/config");
 const { Weights } = await import("../src/weights");
-const { Gemma4Model } = await import("../src/model/gemma4");
+const { createModel } = await import("../src/model/factory");
 const { generate } = await import("../src/generate");
 const { loadTokenizer } = await import("../src/tokenizer");
 const { checkMachine, machineStateJson } = await import("../src/preflight");
@@ -31,7 +31,7 @@ const { EvalDB, gitCommit } = await import("../src/evaldb");
 
 const config = await loadModelConfig(SNAPSHOT);
 const weights = await Weights.open(SNAPSHOT);
-const model = new Gemma4Model(weights, config);
+const model = createModel(weights, config); // production dispatch (bit-parity path)
 const tok = await loadTokenizer(SNAPSHOT);
 
 const para = tok.encode(

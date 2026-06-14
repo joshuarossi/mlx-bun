@@ -98,14 +98,18 @@ print(f"peak mem: {last.peak_memory:.2f} GB")
 
 const { loadModelConfig } = await import("../src/config");
 const { Weights } = await import("../src/weights");
-const { Gemma4Model } = await import("../src/model/gemma4");
+const { createModel } = await import("../src/model/factory");
 const { generate } = await import("../src/generate");
 const { ChatTemplate } = await import("../src/chat-template");
 const { loadTokenizer } = await import("../src/tokenizer");
 
 const config = await loadModelConfig(MODEL_PATH);
 const weights = await Weights.open(MODEL_PATH);
-const model = new Gemma4Model(weights, config);
+// production dispatch: MiniCPM5 → MiniCPM5Model, gemma → generated fast
+// path (fingerprint match) else the monolith. Using `new Gemma4Model`
+// here crashed cpm (its config isn't tied-embedding) and silently ran the
+// monolith for gemma instead of the generated path it serves in prod.
+const model = createModel(weights, config);
 const tok = await loadTokenizer(MODEL_PATH);
 const template = await ChatTemplate.load(MODEL_PATH);
 
