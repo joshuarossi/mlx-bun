@@ -4,6 +4,9 @@ node_modules
 .DS_Store
 tmp/
 project-review.html
+# generated reports / benchmark artifacts (regenerated, not source)
+*-report-*.html
+benchmarks-h2h-*.md
 dist/
 .claude/
 dist-native/
