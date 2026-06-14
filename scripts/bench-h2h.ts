@@ -85,6 +85,25 @@ const commit = gitCommit();
  *  so holes in the matrix are self-documenting (vs "not in the matrix"). */
 const failures: { cell: string; error: string }[] = [];
 
+/** Cells dropped because of a KNOWN, non-deterministic upstream bug (not a
+ *  regression on our side) — rendered as a distinct footer so a flaky
+ *  third-party crash doesn't read as "mlx-bun broke the matrix". */
+const knownIssues: { cell: string; error: string }[] = [];
+
+/** optiq's KV-sharing SDPA shim (optiq/runtime/kv/rotating.py) recovers a
+ *  shared layer's quant bits from a registry keyed by Python id(); under
+ *  e4b's KV sharing (42 layers → 24 caches) id() reuse after its gc.collect()
+ *  intermittently returns the wrong cache, so quantized_matmul gets bits that
+ *  don't match the tuple. Config-independent (reproduced with mixed, uniform-4,
+ *  uniform-8, and globals-bf16), ~50% per run, and only on the optiq stack —
+ *  so we retry, and only footnote it if every attempt crashes. 12B is 1:1
+ *  (no sharing) and never hits it. */
+function isTransientOptiqKvCrash(msg: string): boolean {
+  return /quantized_matmul.*shapes of the weight and scales are incompatible/s.test(msg);
+}
+/** Re-spawn attempts for a transient optiq crash before giving up a cell. */
+const OPTIQ_RETRIES = 8;
+
 /** Footer line for a failed cell. Harness errors wrap child output
  *  after our context line ("bench.ts failed for <cell>:\n<stderr
  *  tail>"), so the LAST non-empty line is the child's actual error —
@@ -166,10 +185,22 @@ async function directRun(c: DirectCell, tokens: number, promptTokens?: number): 
     args.push("--baseline");
     if (c.stack === "optiq") args.push("--baseline-kv", "config");
   }
-  const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
-  const [out, err, code] = await Promise.all([
-    new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
-  ]);
+  // optiq crashes ~half the time on KV-sharing models (see isTransientOptiqKvCrash).
+  // Re-spawn on that specific error so one unlucky run doesn't sink the cell.
+  const maxAttempts = c.stack === "optiq" ? OPTIQ_RETRIES + 1 : 1;
+  let out = "", err = "", code = 0;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
+    [out, err, code] = await Promise.all([
+      new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
+    ]);
+    if (code === 0) break;
+    if (attempt < maxAttempts && isTransientOptiqKvCrash(err)) {
+      console.log(`  [retry ${attempt}/${maxAttempts - 1}] ${cellKey(c)}: transient optiq KV crash, re-spawning`);
+      continue;
+    }
+    break;
+  }
   if (code !== 0) throw new Error(`bench.ts failed for ${cellKey(c)}:\n${err.slice(-500)}`);
   const prefill = out.match(/prompt: (\d+) tok @ ([\d.]+) tok\/s/);
   const decode = out.match(/decode: \d+ tok @ ([\d.]+) tok\/s/);
@@ -228,8 +259,9 @@ async function directLeg(
         failed.add(key);
         agg.delete(key);
         const msg = (e as Error).message;
-        console.error(`  [FAIL] ${key}: ${msg}`);
-        failures.push({ cell: `${key}${ctxTag}`, error: failureLine(msg) });
+        const bucket = c.stack === "optiq" && isTransientOptiqKvCrash(msg) ? knownIssues : failures;
+        console.error(`  [${bucket === knownIssues ? "SKIP" : "FAIL"}] ${key}: ${msg}`);
+        bucket.push({ cell: `${key}${ctxTag}`, error: failureLine(msg) });
         continue;
       }
       if (r === 0) {
@@ -530,6 +562,15 @@ function renderTable(sinceTs: number): string {
     lines.push("", "## attempted but failed", "");
     for (const f of failures) lines.push(`- \`${f.cell}\`: ${f.error}`);
   }
+  if (knownIssues.length) {
+    lines.push("", "## skipped — known upstream optiq bug", "",
+      `optiq's KV-sharing SDPA shim recovers a shared layer's quant bits from a`,
+      `Python \`id()\`-keyed registry; under KV sharing \`id()\` reuse intermittently`,
+      `returns the wrong cache, so \`quantized_matmul\` gets mismatched bits (~50% of`,
+      `runs, config-independent). Retried ${OPTIQ_RETRIES}× before skipping. Not an mlx-bun regression.`,
+      "");
+    for (const f of knownIssues) lines.push(`- \`${f.cell}\`: ${f.error}`);
+  }
   return lines.join("\n");
 }
 
@@ -693,12 +734,30 @@ if (cmd === "all") {
         : []),
     ];
     for (const c of serverCells) {
-      try {
-        await serverLeg(c, serverRuns, 128, machineState);
-      } catch (e) {
-        const line = failureLine((e as Error).message);
-        console.error(`  ${serverKey(c)}: ${line} — cell skipped`);
-        failures.push({ cell: serverKey(c), error: line });
+      // optiq can hit the same transient KV-sharing crash here; retry, then
+      // footnote only if the signature matches (a different optiq server
+      // failure — e.g. curl-52 — stays a real fail, not a "known issue").
+      const attempts = c.stack === "optiq" ? OPTIQ_RETRIES + 1 : 1;
+      let lastErr: Error | null = null;
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+          await serverLeg(c, serverRuns, 128, machineState);
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e as Error;
+          if (attempt < attempts && isTransientOptiqKvCrash(lastErr.message)) {
+            console.log(`  [retry ${attempt}/${attempts - 1}] ${serverKey(c)}: transient optiq KV crash, re-running`);
+            continue;
+          }
+          break;
+        }
+      }
+      if (lastErr) {
+        const line = failureLine(lastErr.message);
+        const bucket = c.stack === "optiq" && isTransientOptiqKvCrash(lastErr.message) ? knownIssues : failures;
+        console.error(`  ${serverKey(c)}: ${line} — cell ${bucket === knownIssues ? "footnoted (known optiq bug)" : "skipped"}`);
+        bucket.push({ cell: serverKey(c), error: line });
       }
       recheck(serverKey(c));
     }

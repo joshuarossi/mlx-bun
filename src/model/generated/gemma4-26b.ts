@@ -299,35 +299,95 @@ export class GeneratedGemma4 extends Gemma4Model {
     return (
       cache.length === 30 &&
       cache[0] instanceof RotatingQuantizedKVCache &&
+      cache[0].bits === 8 &&
+      cache[0].groupSize === 64 &&
       cache[1] instanceof RotatingQuantizedKVCache &&
+      cache[1].bits === 4 &&
+      cache[1].groupSize === 64 &&
       cache[2] instanceof RotatingQuantizedKVCache &&
+      cache[2].bits === 4 &&
+      cache[2].groupSize === 64 &&
       cache[3] instanceof RotatingQuantizedKVCache &&
+      cache[3].bits === 8 &&
+      cache[3].groupSize === 64 &&
       cache[4] instanceof RotatingQuantizedKVCache &&
+      cache[4].bits === 8 &&
+      cache[4].groupSize === 64 &&
       cache[5] instanceof QuantizedKVCache &&
+      cache[5].bits === 8 &&
+      cache[5].groupSize === 64 &&
       cache[6] instanceof RotatingQuantizedKVCache &&
+      cache[6].bits === 4 &&
+      cache[6].groupSize === 64 &&
       cache[7] instanceof RotatingQuantizedKVCache &&
+      cache[7].bits === 4 &&
+      cache[7].groupSize === 64 &&
       cache[8] instanceof RotatingQuantizedKVCache &&
+      cache[8].bits === 8 &&
+      cache[8].groupSize === 64 &&
       cache[9] instanceof RotatingQuantizedKVCache &&
+      cache[9].bits === 8 &&
+      cache[9].groupSize === 64 &&
       cache[10] instanceof RotatingQuantizedKVCache &&
+      cache[10].bits === 4 &&
+      cache[10].groupSize === 64 &&
       cache[11] instanceof QuantizedKVCache &&
+      cache[11].bits === 8 &&
+      cache[11].groupSize === 64 &&
       cache[12] instanceof RotatingQuantizedKVCache &&
+      cache[12].bits === 8 &&
+      cache[12].groupSize === 64 &&
       cache[13] instanceof RotatingQuantizedKVCache &&
+      cache[13].bits === 4 &&
+      cache[13].groupSize === 64 &&
       cache[14] instanceof RotatingQuantizedKVCache &&
+      cache[14].bits === 4 &&
+      cache[14].groupSize === 64 &&
       cache[15] instanceof RotatingQuantizedKVCache &&
+      cache[15].bits === 4 &&
+      cache[15].groupSize === 64 &&
       cache[16] instanceof RotatingQuantizedKVCache &&
+      cache[16].bits === 4 &&
+      cache[16].groupSize === 64 &&
       cache[17] instanceof QuantizedKVCache &&
+      cache[17].bits === 4 &&
+      cache[17].groupSize === 64 &&
       cache[18] instanceof RotatingQuantizedKVCache &&
+      cache[18].bits === 4 &&
+      cache[18].groupSize === 64 &&
       cache[19] instanceof RotatingQuantizedKVCache &&
+      cache[19].bits === 4 &&
+      cache[19].groupSize === 64 &&
       cache[20] instanceof RotatingQuantizedKVCache &&
+      cache[20].bits === 4 &&
+      cache[20].groupSize === 64 &&
       cache[21] instanceof RotatingQuantizedKVCache &&
+      cache[21].bits === 4 &&
+      cache[21].groupSize === 64 &&
       cache[22] instanceof RotatingQuantizedKVCache &&
+      cache[22].bits === 4 &&
+      cache[22].groupSize === 64 &&
       cache[23] instanceof QuantizedKVCache &&
+      cache[23].bits === 4 &&
+      cache[23].groupSize === 64 &&
       cache[24] instanceof RotatingQuantizedKVCache &&
+      cache[24].bits === 4 &&
+      cache[24].groupSize === 64 &&
       cache[25] instanceof RotatingQuantizedKVCache &&
+      cache[25].bits === 4 &&
+      cache[25].groupSize === 64 &&
       cache[26] instanceof RotatingQuantizedKVCache &&
+      cache[26].bits === 4 &&
+      cache[26].groupSize === 64 &&
       cache[27] instanceof RotatingQuantizedKVCache &&
+      cache[27].bits === 4 &&
+      cache[27].groupSize === 64 &&
       cache[28] instanceof RotatingQuantizedKVCache &&
-      cache[29] instanceof QuantizedKVCache
+      cache[28].bits === 4 &&
+      cache[28].groupSize === 64 &&
+      cache[29] instanceof QuantizedKVCache &&
+      cache[29].bits === 4 &&
+      cache[29].groupSize === 64
     );
   }
 
