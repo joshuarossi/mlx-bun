@@ -2456,6 +2456,13 @@ Phasing (each default-off behind `slots=1`, serialized path never removed):
             B-generic (B from shape; B=1-identity, no single-stream regression).
             KV-sharing turned out already B-generic (no extra fix). Fixture
             batched-golden-e4b.json. 3/4 L1 cells done; 26B (MoE) next.
+          - [x] **Gemma 26B L1 ORACLE-VERIFIED 2026-06-14d**: realBatchedGreedy ==
+            mlx-lm B=2 EXACTLY. MoE (Router/SwitchGLU/Experts) was already
+            B-generic — no fix needed. Fixture batched-golden-26b.json.
+          - **🎯 L1 BATCHED DECODE COMPLETE**: all 4 cells (CPM, Gemma 12B, e4b,
+            26B) bit-parity with mlx-lm B=2. Only e4b needed a fix. Caveat:
+            short-context (pre-wrap); ring-wrap (>window) is the remaining L1
+            follow-up. Next: L2 (quant KV vs optiq), then L3 (perf, KL+quality).
 - [ ] **S2** — N-wide + continuous injection/eviction; dynamic byte-budget
       admission.
 - [ ] **S3+** — paged KV (rung 3), KV-quant under batch, LoRA-group batching.
