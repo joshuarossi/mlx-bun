@@ -23,8 +23,9 @@
 // reason } to deny. Read-only tools (read/grep/find/ls) auto-allow.
 // tool_execution_* events still drive the tool cards (start/update/end).
 
+import { mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import {
   createAgentSession,
@@ -33,8 +34,11 @@ import {
   type AgentSession,
   type AgentSessionEvent,
   type ExtensionAPI,
+  type SessionEntry,
+  type SessionInfo,
   type ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { createWebTools, WEB_TOOL_NAMES } from "./web-tools";
 import { materializeBundledSkills } from "./web/skills";
 import { buildPiProvider, DEFAULT_CONTEXT_WINDOW, PI_LOCAL_MODEL_ID } from "./pi-provider";
@@ -119,16 +123,30 @@ type PiWs = ServerWebSocket<PiWsData>;
 /** Decision a browser returns for a gated tool call. */
 type ApprovalDecision = "allow" | "deny";
 
+/** An image attachment from the browser: base64 (no data: prefix) + mime. */
+interface ImageAttachment {
+  data: string;
+  mimeType: string;
+}
+
 /** Client -> server frames. */
 type ClientMessage =
-  | { type: "prompt"; text: string }
-  | { type: "steer"; text: string }
+  | { type: "prompt"; text: string; images?: ImageAttachment[] }
+  | { type: "steer"; text: string; images?: ImageAttachment[] }
   | { type: "abort" }
-  | { type: "approval"; callId: string; decision: ApprovalDecision };
+  | { type: "approval"; callId: string; decision: ApprovalDecision }
+  // Session management (recent-chats sidebar + new chat).
+  | { type: "new_session" }
+  | { type: "list_sessions" }
+  | { type: "open_session"; path: string }
+  | { type: "fork_session"; path: string }
+  | { type: "delete_session"; path: string };
 
 /** Server -> client frames. */
 type ServerMessage =
-  | { type: "ready"; model: string }
+  // `vision`: whether the loaded model can accept images (drives the UI's
+  // image-attach affordance — false on e4b until the SigLIP sidecar lands).
+  | { type: "ready"; model: string; vision: boolean }
   | { type: "turn_start" }
   | { type: "text_delta"; delta: string }
   | { type: "tool_start"; callId: string; tool: string; args: unknown }
@@ -137,7 +155,121 @@ type ServerMessage =
   | { type: "tool_end"; callId: string; ok: boolean; result: unknown }
   | { type: "turn_end" }
   | { type: "queue_update"; steering: readonly string[]; followUp: readonly string[] }
+  // Replay a session's transcript (rebuilds the thread); and the sidebar list.
+  | { type: "history"; items: HistoryItem[] }
+  | { type: "sessions"; items: SessionListItem[]; activePath?: string }
+  // Context-window usage indicator. tokens/percent are null right after a
+  // compaction until the next assistant reply (pi can't estimate yet).
+  | { type: "context"; tokens: number | null; contextWindow: number; percent: number | null }
   | { type: "error"; message: string };
+
+// ---- Session serialization (pure, unit-tested) -----------------------
+
+/** A finished tool call as rendered in replayed history. */
+export interface HistoryToolItem {
+  callId: string;
+  name: string;
+  args: unknown;
+  /** Tool result text, filled from the matching toolResult message. */
+  result: string;
+}
+
+/** One replayed transcript turn: a user or assistant message (assistant
+ *  messages carry any tool calls they made, with results merged in). */
+export interface HistoryItem {
+  role: "user" | "assistant";
+  text: string;
+  tools: HistoryToolItem[];
+}
+
+/** A row in the recent-chats sidebar, derived from pi's SessionInfo. */
+export interface SessionListItem {
+  path: string;
+  id: string;
+  title: string;
+  /** Last-modified epoch ms (newest first). */
+  modified: number;
+  messageCount: number;
+  forked: boolean;
+}
+
+/** Flatten a content value (string | content-parts) to its text. */
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((p): p is { type: string; text: string } =>
+        !!p && (p as { type?: string }).type === "text" && typeof (p as { text?: unknown }).text === "string")
+      .map((p) => p.text)
+      .join("");
+  }
+  return "";
+}
+
+/**
+ * Turn a session's entries into a flat, browser-renderable transcript.
+ *
+ * Walks message entries in order: user/assistant text become items, the
+ * assistant's toolCall parts become tool items, and each later toolResult
+ * is merged back onto its tool by callId. Non-message entries (model
+ * changes, compaction, thinking) are skipped. Pure so it's unit-tested
+ * without a live session.
+ */
+export function serializeHistory(entries: readonly SessionEntry[]): HistoryItem[] {
+  const items: HistoryItem[] = [];
+  for (const entry of entries) {
+    if (entry.type !== "message") continue;
+    const m = (entry as { message?: unknown }).message as
+      | { role?: string; content?: unknown; toolCallId?: string }
+      | undefined;
+    if (!m) continue;
+    if (m.role === "user") {
+      const text = contentText(m.content);
+      if (text.trim()) items.push({ role: "user", text, tools: [] });
+    } else if (m.role === "assistant") {
+      const parts = Array.isArray(m.content) ? (m.content as unknown[]) : [];
+      const text = contentText(parts);
+      const tools: HistoryToolItem[] = parts
+        .filter((p): p is { type: string; id?: unknown; name?: unknown; arguments?: unknown } =>
+          !!p && (p as { type?: string }).type === "toolCall")
+        .map((p) => ({ callId: String(p.id ?? ""), name: String(p.name ?? "tool"), args: p.arguments, result: "" }));
+      if (text.trim() || tools.length > 0) items.push({ role: "assistant", text, tools });
+    } else if (m.role === "toolResult") {
+      const callId = String(m.toolCallId ?? "");
+      const result = contentText(m.content);
+      for (let i = items.length - 1; i >= 0; i--) {
+        const it = items[i];
+        if (!it) continue;
+        const tool = it.tools.find((t) => t.callId === callId);
+        if (tool) {
+          tool.result = result;
+          break;
+        }
+      }
+    }
+  }
+  return items;
+}
+
+/** Map browser image attachments to pi's ImageContent shape (or undefined). */
+function toPiImages(images?: ImageAttachment[]): ImageContent[] | undefined {
+  if (!images || images.length === 0) return undefined;
+  return images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType }));
+}
+
+/** Map pi's SessionInfo[] to sidebar rows, newest first. */
+export function toSessionListItems(infos: readonly SessionInfo[]): SessionListItem[] {
+  return infos
+    .map((s) => ({
+      path: s.path,
+      id: s.id,
+      title: ((s.name && s.name.trim()) || (s.firstMessage && s.firstMessage.trim()) || "New chat").slice(0, 80),
+      modified: s.modified instanceof Date ? s.modified.getTime() : new Date(s.modified as unknown as string).getTime(),
+      messageCount: s.messageCount,
+      forked: !!s.parentSessionPath,
+    }))
+    .sort((a, b) => b.modified - a.modified);
+}
 
 // ---- Pure helper: event mapping (unit-tested) ------------------------
 
@@ -216,8 +348,20 @@ const sessions = new Map<PiWs, PiWebSession>();
  */
 class PiWebSession {
   private session?: AgentSession;
+  /** SessionManager backing the active AgentSession (disk-persisted). */
+  private sessionManager?: SessionManager;
   private unsubscribe?: () => void;
   private disposed = false;
+
+  /** Per-connection invariants, built once in start() and reused across
+   *  session switches (new chat / resume / fork). */
+  private provider?: ReturnType<typeof buildPiProvider>;
+  private readonly cwd = process.cwd();
+  private readonly agentDir = join(homedir(), ".mlx-bun", "pi-sessions");
+  /** Where web-chat session files live (pi's own JSONL format). Shared by
+   *  create/continueRecent/open/fork/list/delete so they all see one set.
+   *  This is the durable transcript store the nightly memory pipeline reads. */
+  private readonly sessionDir = join(homedir(), ".mlx-bun", "sessions");
 
   /** callId -> resolve(decision). Pending browser approvals in flight. */
   private readonly pendingApprovals = new Map<string, (decision: ApprovalDecision) => void>();
@@ -226,10 +370,10 @@ class PiWebSession {
 
   constructor(
     private readonly ws: PiWs,
-    private readonly opts: { port: number | (() => number); modelId: string; contextWindow: number; readOnly: boolean },
+    private readonly opts: { port: number | (() => number); modelId: string; contextWindow: number; readOnly: boolean; vision: boolean },
   ) {}
 
-  /** Build the pi AgentSession and start streaming events to the browser. */
+  /** Build the provider, resume the most recent chat, and start streaming. */
   async start(): Promise<void> {
     // Resolve the port lazily: the WS handler is constructed before
     // Bun.serve() binds, so an ephemeral (0) port is only known at the
@@ -237,27 +381,36 @@ class PiWebSession {
     const port = typeof this.opts.port === "function" ? this.opts.port() : this.opts.port;
     const baseUrl = `http://127.0.0.1:${port}/v1`;
 
-    // In-memory auth + registry: no models.json, no disk cross-talk (shared
-    // with the terminal embed via src/pi-provider.ts so the wiring can't drift).
-    const { authStorage, modelRegistry, model } = buildPiProvider(baseUrl, {
-      contextWindow: this.opts.contextWindow,
-    });
+    // In-memory auth + registry shared with the terminal embed (pi-provider.ts
+    // so the wiring can't drift); built once and reused across session swaps.
+    this.provider = buildPiProvider(baseUrl, { contextWindow: this.opts.contextWindow });
+    mkdirSync(this.sessionDir, { recursive: true });
 
-    const cwd = process.cwd();
-    const agentDir = join(homedir(), ".mlx-bun", "pi-sessions");
+    // Resume the most recent on-disk chat: a reconnect / page reload keeps its
+    // context and doesn't spawn an empty session per connect. "New chat"
+    // explicitly starts a fresh one. Sessions persist to disk in pi's own
+    // format (no more inMemory) — the substrate for both the recent-chats
+    // sidebar and the future nightly memory pipeline.
+    await this.activate(SessionManager.continueRecent(this.cwd, this.sessionDir));
+    if (this.disposed) return;
 
-    // Write our curated skills to disk and load only those (noSkills:true
-    // still suppresses discovery of the user's personal ~/.pi + project
-    // skills, so the chat stays self-contained — additionalSkillPaths loads
-    // on top of that). See src/web/skills.ts.
-    const skillsRoot = materializeBundledSkills();
+    this.send({ type: "ready", model: this.opts.modelId, vision: this.opts.vision });
+    this.sendHistory();
+    await this.sendSessions();
+  }
+
+  /** Build a fresh AgentSession bound to `sm`. A new resource loader per
+   *  build keeps the approval-gate extension cleanly scoped to this session. */
+  private async buildAgentSession(sm: SessionManager): Promise<AgentSession> {
+    const provider = this.provider;
+    if (!provider) throw new Error("provider not initialized");
 
     // Inline extension carries the pre-execution approval gate. Registered
     // via DefaultResourceLoader.extensionFactories so it loads in-process
     // with no file on disk and no global ~/.pi extension discovery.
     const resourceLoader = new DefaultResourceLoader({
-      cwd,
-      agentDir,
+      cwd: this.cwd,
+      agentDir: this.agentDir,
       // Skip user/project resource discovery: the web agent is fully
       // self-contained and must not inherit the user's pi extensions or
       // context files. noContextFiles also keeps a stray CLAUDE.md /
@@ -267,9 +420,9 @@ class PiWebSession {
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      // Our curated skills only (not the user's). noSkills:true above keeps
-      // discovery off; this loads the bundled set on top.
-      additionalSkillPaths: [skillsRoot],
+      // Our curated skills only (not the user's). materializeBundledSkills is
+      // memoized, so calling it per build just returns the path. See web/skills.ts.
+      additionalSkillPaths: [materializeBundledSkills()],
       // Replace pi's default coding-agent prompt with our own helpful,
       // eager-assistant persona (see buildWebChatSystemPrompt).
       systemPrompt: buildWebChatSystemPrompt(this.opts.readOnly),
@@ -278,27 +431,137 @@ class PiWebSession {
     await resourceLoader.reload();
 
     const { session } = await createAgentSession({
-      cwd,
-      agentDir,
-      model,
-      modelRegistry,
-      authStorage,
+      cwd: this.cwd,
+      agentDir: this.agentDir,
+      model: provider.model,
+      modelRegistry: provider.modelRegistry,
+      authStorage: provider.authStorage,
       resourceLoader,
       tools: ALL_TOOLS,
       customTools: createWebTools(),
-      sessionManager: SessionManager.inMemory(cwd),
+      sessionManager: sm,
     });
+    return session;
+  }
 
+  /** Tear down the active session (keeps the socket + provider invariants). */
+  private teardownActive(): void {
+    for (const settle of this.pendingApprovals.values()) settle("deny");
+    this.pendingApprovals.clear();
+    for (const timer of this.approvalTimers.values()) clearTimeout(timer);
+    this.approvalTimers.clear();
+    this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    try {
+      this.session?.dispose();
+    } catch {
+      // Never let a dispose error escape teardown.
+    }
+    this.session = undefined;
+    this.sessionManager = undefined;
+  }
+
+  /** Swap the active session to `sm`: abort any current turn, build the new
+   *  session, then dispose the old and subscribe the new. Build-before-tear
+   *  so a build failure leaves the current session intact. */
+  private async activate(sm: SessionManager): Promise<void> {
+    try {
+      await this.session?.abort();
+    } catch {
+      // Old turn may already be done; ignore.
+    }
+    const session = await this.buildAgentSession(sm);
     if (this.disposed) {
-      // Connection closed while we were building; tear down immediately.
       session.dispose();
       return;
     }
-
+    this.teardownActive();
     this.session = session;
+    this.sessionManager = sm;
     this.unsubscribe = session.subscribe((event) => this.onSessionEvent(event));
+    this.sendContextUsage();
+  }
 
-    this.send({ type: "ready", model: this.opts.modelId });
+  /** Replay the active session's transcript to the browser (rebuilds thread). */
+  private sendHistory(): void {
+    const entries = this.sessionManager?.getEntries() ?? [];
+    this.send({ type: "history", items: serializeHistory(entries) });
+  }
+
+  /** Push current context-window usage to the browser (for the indicator). */
+  private sendContextUsage(): void {
+    const usage = this.session?.getContextUsage();
+    if (usage) {
+      this.send({ type: "context", tokens: usage.tokens, contextWindow: usage.contextWindow, percent: usage.percent });
+    }
+  }
+
+  /** Send the recent-chats list (sidebar), marking the active session. */
+  private async sendSessions(): Promise<void> {
+    let infos: SessionInfo[] = [];
+    try {
+      infos = await SessionManager.list(this.cwd, this.sessionDir);
+    } catch {
+      infos = [];
+    }
+    this.send({
+      type: "sessions",
+      items: toSessionListItems(infos),
+      activePath: this.sessionManager?.getSessionFile(),
+    });
+  }
+
+  /** Guard: only operate on session files under our session dir. */
+  private isUnderSessionDir(path: string): boolean {
+    const root = resolve(this.sessionDir);
+    const p = resolve(path);
+    return p === root || p.startsWith(root + "/");
+  }
+
+  /** Start a fresh chat (old one stays on disk, resumable from the sidebar). */
+  private async newSession(): Promise<void> {
+    await this.activate(SessionManager.create(this.cwd, this.sessionDir));
+    this.sendHistory();
+    await this.sendSessions();
+  }
+
+  /** Resume an existing chat by file path. */
+  private async openSession(path: string): Promise<void> {
+    if (!this.isUnderSessionDir(path)) {
+      this.send({ type: "error", message: "invalid session path" });
+      return;
+    }
+    await this.activate(SessionManager.open(path, this.sessionDir));
+    this.sendHistory();
+    await this.sendSessions();
+  }
+
+  /** Branch a new chat from an existing one (original stays untouched). */
+  private async forkSession(path: string): Promise<void> {
+    if (!this.isUnderSessionDir(path)) {
+      this.send({ type: "error", message: "invalid session path" });
+      return;
+    }
+    await this.activate(SessionManager.forkFrom(path, this.cwd, this.sessionDir));
+    this.sendHistory();
+    await this.sendSessions();
+  }
+
+  /** Delete a session file; if it was active, start a fresh chat. */
+  private deleteSession(path: string): void {
+    if (!this.isUnderSessionDir(path)) {
+      this.send({ type: "error", message: "invalid session path" });
+      return;
+    }
+    const active = this.sessionManager?.getSessionFile();
+    const wasActive = !!active && resolve(active) === resolve(path);
+    try {
+      rmSync(path, { force: true });
+    } catch {
+      // Already gone or unreadable; the refreshed list will reflect reality.
+    }
+    if (wasActive) void this.newSession();
+    else void this.sendSessions();
   }
 
   /** Register the tool_call approval gate on the inline extension. */
@@ -367,10 +630,39 @@ class PiWebSession {
       console.error(`[pi-event] ${event.type}${extra}`);
     }
     for (const frame of mapEventToFrames(event)) this.send(frame);
+    // A completed turn is when pi flushes the session to disk (it defers
+    // writing until the first assistant reply), so refresh the sidebar then:
+    // a brand-new chat appears, and the active row's title/time update.
+    // Also refresh the context-usage indicator (it grows each turn, and
+    // drops sharply when auto-compaction fires).
+    if (event.type === "turn_end") {
+      void this.sendSessions();
+      this.sendContextUsage();
+    }
   }
 
   /** Handle one parsed client frame. */
   async handle(msg: ClientMessage): Promise<void> {
+    // Session-management frames don't require (and may replace) the active
+    // session, so handle them before the readiness guard.
+    switch (msg.type) {
+      case "new_session":
+        await this.newSession();
+        return;
+      case "list_sessions":
+        await this.sendSessions();
+        return;
+      case "open_session":
+        await this.openSession(msg.path);
+        return;
+      case "fork_session":
+        await this.forkSession(msg.path);
+        return;
+      case "delete_session":
+        this.deleteSession(msg.path);
+        return;
+    }
+
     const session = this.session;
     if (!session) {
       this.send({ type: "error", message: "session not ready" });
@@ -378,17 +670,19 @@ class PiWebSession {
     }
 
     switch (msg.type) {
-      case "prompt":
+      case "prompt": {
+        const images = toPiImages(msg.images);
         // One in-flight prompt per session: when already streaming, queue
         // as a steering message (pi enforces this via isStreaming).
         if (session.isStreaming) {
-          await session.prompt(msg.text, { streamingBehavior: "steer" });
+          await session.prompt(msg.text, { streamingBehavior: "steer", images });
         } else {
-          await session.prompt(msg.text);
+          await session.prompt(msg.text, { images });
         }
         return;
+      }
       case "steer":
-        await session.steer(msg.text);
+        await session.steer(msg.text, toPiImages(msg.images));
         return;
       case "abort":
         await session.abort();
@@ -402,20 +696,7 @@ class PiWebSession {
   /** Tear down the session and reject any in-flight approvals. */
   dispose(): void {
     this.disposed = true;
-    // Deny anything still waiting so blocked tool handlers unwind.
-    for (const settle of this.pendingApprovals.values()) settle("deny");
-    this.pendingApprovals.clear();
-    for (const timer of this.approvalTimers.values()) clearTimeout(timer);
-    this.approvalTimers.clear();
-
-    this.unsubscribe?.();
-    this.unsubscribe = undefined;
-    try {
-      this.session?.dispose();
-    } catch {
-      // Never let a dispose error escape shutdown.
-    }
-    this.session = undefined;
+    this.teardownActive();
   }
 
   /** Send a frame, swallowing errors on a closed socket. */
@@ -447,12 +728,15 @@ export function makePiWsHandler(opts: {
   modelId?: string;
   contextWindow?: number;
   readOnly?: boolean;
+  /** Whether the loaded model can accept images (server's ctx.vision != null). */
+  vision?: boolean;
 }): WebSocketHandler<PiWsData> {
   const resolved = {
     port: opts.port,
     modelId: opts.modelId ?? PI_LOCAL_MODEL_ID,
     contextWindow: opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     readOnly: opts.readOnly ?? false,
+    vision: opts.vision ?? false,
   };
 
   return {

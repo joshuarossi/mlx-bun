@@ -74,13 +74,60 @@ export function thisMachine(bandwidthGBs?: number): MachineSpec {
   return { name: "this machine", ramBytes: totalmem(), bandwidthGBs: bw };
 }
 
-/** Recommended first model per device tier (PRODUCT_ROADMAP profiles).
- *  Conservative: the model must leave headroom for KV + the OS. */
-export function recommendedRepoId(ramBytes = totalmem()): string {
+/** The default model everywhere — e4b. Fits comfortably on every supported
+ *  Mac (including 24 GB), loads fast, and is a heavily-used primary model.
+ *  Override with an explicit query (e.g. `mlx-bun serve 12B`). */
+export const DEFAULT_REPO_ID = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
+
+/** Recommended first model. e4b for every machine by default: the old
+ *  per-tier sizing reached 12B/26B on larger Macs and pushed 24 GB machines
+ *  into memory pressure (a 26B is ~18 GB). The tiered sizing is preserved in
+ *  largestRecommendedRepoId for callers that explicitly want the biggest fit. */
+export function recommendedRepoId(_ramBytes = totalmem()): string {
+  return DEFAULT_REPO_ID;
+}
+
+/** Largest Gemma a RAM tier can comfortably hold. NOT the default (see
+ *  recommendedRepoId) — kept available for explicit "biggest model" opt-in. */
+export function largestRecommendedRepoId(ramBytes = totalmem()): string {
   const gb = ramBytes / 2 ** 30;
   if (gb >= 48) return "mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit";
   if (gb >= 24) return "mlx-community/gemma-4-12B-it-OptiQ-4bit";
-  return "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
+  return DEFAULT_REPO_ID;
+}
+
+/** Fraction of RAM an *auto-selected* model may occupy and still leave the
+ *  machine usable for other apps (browser, editor, Photoshop). Deliberately
+ *  stricter than WIRED_FRACTION: auto-pick must never grab a "dedicate the
+ *  whole machine" model — e.g. the 26B (~17 GB) on a 24 GB Mac — those stay
+ *  an explicit `--query` choice. The same model clears this budget on a
+ *  big-RAM Mac, so it remains auto-eligible there (RAM-relative by design). */
+export const COEXIST_FRACTION = 0.6;
+
+export interface AutoPickCandidate {
+  repoId: string;
+  sizeBytes: number;
+}
+
+/**
+ * Pick the model to auto-load when the user gives no query:
+ *   1. the default (e4b) if downloaded and it fits at all;
+ *   2. else the largest model that still leaves coexistence headroom;
+ *   3. else (last resort) the largest model that fits at all — so a user
+ *      whose only model is a heavy one still gets it.
+ * Pure: the caller supplies the fit predicates, so this is unit-tested
+ * without touching the registry or loading configs.
+ */
+export function chooseAutoModel<T extends AutoPickCandidate>(
+  candidates: T[],
+  defaultRepoId: string,
+  fitsFullBudget: (c: T) => boolean,
+  fitsCoexistBudget: (c: T) => boolean,
+): T | undefined {
+  const preferred = candidates.find((c) => c.repoId === defaultRepoId);
+  if (preferred && fitsFullBudget(preferred)) return preferred;
+  const bySizeDesc = [...candidates].sort((a, b) => b.sizeBytes - a.sizeBytes);
+  return bySizeDesc.find(fitsCoexistBudget) ?? bySizeDesc.find(fitsFullBudget);
 }
 
 export interface FitReport {

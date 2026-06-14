@@ -390,7 +390,7 @@ const weatherTool = defineTool({
     "No API key required.",
   parameters: Type.Object({
     location: Type.String({ description: "City or place name to look up." }),
-    unit: Type.Optional(Type.Union([Type.Literal("celsius"), Type.Literal("fahrenheit")], { description: "Temperature unit (default celsius)." })),
+    unit: Type.Optional(Type.String({ description: "Temperature unit: 'celsius' or 'fahrenheit' (default celsius)." })),
   }),
   execute: async (_id, params, signal) => {
     const location = params.location.trim();

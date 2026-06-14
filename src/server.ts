@@ -87,6 +87,13 @@ export interface ServerOptions {
   defaultTemperature?: number;
   defaultTopP?: number;
   defaultTopK?: number;
+  /** Concurrent generation slots (batched serving). Default 1 = today's
+   *  serialized single-queue path (one GPU, batch=1). >1 will load the
+   *  batch scheduler — see docs/design/parallel-slots.md. NOTE (phase S0):
+   *  the knob is plumbed and surfaced but the batched executor is not
+   *  built yet; >1 currently warns and still runs serially. Set via
+   *  `--slots N`. */
+  slots?: number;
 }
 
 export interface ServerContext {
@@ -484,6 +491,18 @@ class StreamDecoder {
 export function createServer(
   ctx: ServerContext, port = 0, serverOptions: ServerOptions = {},
 ): Server<unknown> {
+  // Concurrent slots (phase S0): the knob is real but the batched
+  // executor isn't built yet. slots===1 is the serialized path below;
+  // slots>1 is where the batch scheduler will branch in (S1+, see
+  // docs/design/parallel-slots.md). Until then, >1 warns and runs serial
+  // so the flag is wired end-to-end without changing behavior.
+  const slots = Math.max(1, Math.floor(serverOptions.slots ?? 1));
+  if (slots > 1)
+    console.warn(
+      `[slots] --slots ${slots} requested, but batched serving is not implemented yet ` +
+        `(phase S1, docs/design/parallel-slots.md) — running serially (1 in-flight generation).`,
+    );
+
   let queue: Promise<unknown> = Promise.resolve();
   const enqueue = <T>(fn: () => Promise<T>): Promise<T> => {
     const run = queue.then(fn, fn);
@@ -644,6 +663,7 @@ export function createServer(
     websocket: makePiWsHandler({
       port: () => serverRef.port ?? port,
       contextWindow: ctx.model.config.text.maxPositionEmbeddings,
+      vision: !!ctx.vision,
     }),
     async fetch(request, server) {
       const url = new URL(request.url);
@@ -826,6 +846,9 @@ export function createServer(
             usable_bytes: admission.usableBytes,
             weights_bytes: ctx.model.weightsBytes,
           },
+          // S0: configured slots vs. what's actually active (batched
+          // executor lands in S1 — docs/design/parallel-slots.md).
+          slots: { configured: slots, active: 1, batched: false },
         });
       }
 

@@ -54,6 +54,9 @@ const SERVER_FLAGS = `Server options:
                             cannot fit are rejected instead of crashing the
                             GPU  [default: machine RAM × 0.75, check-only]
   --prompt-cache <GB>       Prompt (KV) cache byte cap  [default: 2 GB]
+  --slots <n>               Concurrent generation slots  [default: 1].
+                            >1 is plumbed but not yet batched (phase S1);
+                            currently warns and runs serially.
 
 Model & quality:
   --kv-quant <mode>         KV cache quantization: config (per-layer
@@ -83,11 +86,11 @@ Usage: mlx-bun pi [options] [message...]
 
 Runs the pi coding agent's own terminal UI in-process against the local
 model — nothing to install, pi is built in. Reuses a healthy local
-server when one is running; otherwise picks the largest supported model
-that fits this machine and starts a server for the session (the server
-ends with the session). Fresh install: downloads a small starter model
-first so you're chatting in minutes, then streams the recommended model
-for this Mac in the background — it becomes the default on the next run.
+server when one is running; otherwise serves e4b by default (override
+with --query) and starts a server for the session (the server ends with
+the session). Fresh install: downloads a small starter model first so
+you're chatting in minutes, then streams e4b in the background — it
+becomes the default on the next run.
 
 Model selection:
   -q, --query <q>      Model to serve when starting a server (registry query)
@@ -108,10 +111,10 @@ Already use pi? Connect your own pi to this local model instead:
 Usage: mlx-bun serve [query] [options]
 
   [query]              Registry query (e.g. "12B", "e4b", a repo substring).
-                       Omitted: auto-picks the largest supported model that
-                       fits this machine. Fresh install: downloads a small
-                       starter model first, then the recommended model in
-                       the background (default on next run).
+                       Omitted: serves e4b (the default), else the largest
+                       downloaded model that fits. Fresh install: downloads a
+                       small starter model first, then e4b in the background
+                       (default on next run).
 
 ${SERVER_FLAGS}
 
@@ -291,6 +294,15 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   if (budgetGB > 0) serverOptions.memoryBudgetBytes = budgetGB * 1e9;
   const pcGB = Number(opt("prompt-cache", "0"));
   if (pcGB > 0) serverOptions.promptCacheBytes = pcGB * 2 ** 30;
+  const slotsRaw = opt("slots");
+  if (slotsRaw !== null) {
+    const n = Number(slotsRaw);
+    if (!Number.isInteger(n) || n < 1) {
+      console.error(`--slots expects an integer >= 1 (got "${slotsRaw}")`);
+      process.exit(1);
+    }
+    serverOptions.slots = n;
+  }
   const kv = opt("kv-quant");
   if (kv === "off") serverOptions.kvQuant = "off";
   else if (kv && kv !== "config") {
@@ -334,15 +346,16 @@ function runtimeSummary(o: import("./server").ServerOptions): string {
   return `kv-quant ${kv} · compiled-decode ${lever("MLX_BUN_COMPILED_DECODE", "1") === "1" ? "on" : "off"}` +
     ` · perf-kernel ${perfKernelEnabled() ? "on" : "off"}` +
     (lever("MLX_BUN_FUSED_DECODE", "0") === "1" ? " · fused-decode on" : "") +
+    (o.slots && o.slots > 1 ? ` · slots ${o.slots} (serial until S1)` : "") +
     (o.defaultThinking !== undefined ? ` · thinking ${o.defaultThinking ? "on" : "off"}` : "") +
     (o.defaultTemperature !== undefined ? ` · temp ${o.defaultTemperature}` : "") +
     (o.defaultTopP !== undefined ? ` · top-p ${o.defaultTopP}` : "") +
     (o.defaultTopK !== undefined ? ` · top-k ${o.defaultTopK}` : "");
 }
 
-/** Shared model resolution: explicit query wins; otherwise the largest
- *  supported model that fits this machine, downloading the
- *  recommended model first on a fresh install. */
+/** Shared model resolution: explicit query wins; otherwise e4b (the default
+ *  model everywhere) if it's downloaded, else the largest supported model that
+ *  fits this machine. Downloads the recommended model first on a fresh install. */
 async function resolveModelAuto(query: string | null): Promise<{ m: import("./registry").ModelRecord; picked: boolean }> {
   const reg = new Registry();
   if (reg.list().length === 0) await reg.scan();
@@ -379,12 +392,29 @@ async function resolveModelAuto(query: string | null): Promise<{ m: import("./re
     }
     candidates = reg.list().filter((r) => isSupportedModelRecord(r.modelType, r.repoId));
   }
-  candidates.sort((a, b) => b.sizeBytes - a.sizeBytes);
+  // No query: e4b by default; otherwise the largest model that still leaves
+  // the machine usable for other apps. Never auto-grab the 26B "dedicate the
+  // machine" model on a small-RAM Mac — that's an explicit --query choice —
+  // but allow it as a last resort if it's all the user has downloaded.
+  const { DEFAULT_REPO_ID, COEXIST_FRACTION, chooseAutoModel, thisMachine } = await import("./fit");
+  const machine = thisMachine();
+  const fitsFull = new Map<string, boolean>();
+  const fitsCoexist = new Map<string, boolean>();
   for (const r of candidates) {
     const config = await loadModelConfig(r.path);
-    if (fit(config, r.sizeBytes, 8192, undefined, undefined, r.expertsBytes).fits)
-      return { m: r, picked: true };
+    fitsFull.set(r.repoId, fit(config, r.sizeBytes, 8192, machine, undefined, r.expertsBytes).fits);
+    fitsCoexist.set(
+      r.repoId,
+      fit(config, r.sizeBytes, 8192, machine, undefined, r.expertsBytes, machine.ramBytes * COEXIST_FRACTION).fits,
+    );
   }
+  const chosen = chooseAutoModel(
+    candidates,
+    DEFAULT_REPO_ID,
+    (c) => fitsFull.get(c.repoId) ?? false,
+    (c) => fitsCoexist.get(c.repoId) ?? false,
+  );
+  if (chosen) return { m: chosen, picked: true };
   console.error("no downloaded supported model fits this machine — pick one explicitly (mlx-bun ls)");
   process.exit(1);
 }

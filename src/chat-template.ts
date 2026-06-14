@@ -42,6 +42,79 @@ export interface RenderOptions {
   enableThinking?: boolean;
 }
 
+/** JSON-schema type implied by a literal value. */
+function jsonTypeOf(v: unknown): string {
+  if (typeof v === "number") return Number.isInteger(v) ? "integer" : "number";
+  if (typeof v === "boolean") return "boolean";
+  if (Array.isArray(v)) return "array";
+  if (v !== null && typeof v === "object") return "object";
+  return "string";
+}
+
+/** Infer a JSON-schema `type` for a node that lacks one (enum/const/anyOf/…). */
+function inferSchemaType(node: Record<string, unknown>): string {
+  if (Array.isArray(node.enum) && node.enum.length > 0) return jsonTypeOf(node.enum[0]);
+  if ("const" in node) return jsonTypeOf(node.const);
+  if (node.properties || node.additionalProperties) return "object";
+  if (node.items !== undefined || node.prefixItems !== undefined) return "array";
+  for (const key of ["anyOf", "oneOf", "allOf"] as const) {
+    const subs = node[key];
+    if (Array.isArray(subs) && subs.length > 0) {
+      const types = subs
+        .map((s) => (s && typeof s === "object" ? (s as Record<string, unknown>).type : undefined))
+        .filter((t): t is string => typeof t === "string");
+      const first = types[0];
+      if (first !== undefined) return first;
+    }
+  }
+  return "string";
+}
+
+/**
+ * Recursively ensure every JSON-schema node carries a `type`.
+ *
+ * Why: HF chat templates (e.g. Gemma's tool-declaration block) do
+ * `value['type'] | upper`, which throws "Cannot apply filter upper to
+ * UndefinedValue" for schemas that describe a parameter via `anyOf`/`enum`/
+ * `const` without a top-level `type` (TypeBox unions/literals emit exactly
+ * this). We synthesize a sensible `type` so any tool renders, regardless of
+ * how its schema was authored. Returns a new object; never mutates input.
+ */
+export function normalizeSchemaTypes(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(normalizeSchemaTypes);
+  if (!node || typeof node !== "object") return node;
+  const out: Record<string, unknown> = { ...(node as Record<string, unknown>) };
+  if (out.properties && typeof out.properties === "object") {
+    const props: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(out.properties as Record<string, unknown>)) props[k] = normalizeSchemaTypes(v);
+    out.properties = props;
+  }
+  if (out.items !== undefined) out.items = normalizeSchemaTypes(out.items);
+  if (out.prefixItems !== undefined) out.prefixItems = normalizeSchemaTypes(out.prefixItems);
+  if (out.additionalProperties && typeof out.additionalProperties === "object") {
+    out.additionalProperties = normalizeSchemaTypes(out.additionalProperties);
+  }
+  for (const key of ["anyOf", "oneOf", "allOf"] as const) {
+    if (Array.isArray(out[key])) out[key] = (out[key] as unknown[]).map(normalizeSchemaTypes);
+  }
+  if (typeof out.type !== "string") out.type = inferSchemaType(out);
+  return out;
+}
+
+/** Apply normalizeSchemaTypes to every tool's parameter schema. */
+export function normalizeToolSchemas(tools: ToolDefinition[] | null): ToolDefinition[] | null {
+  if (!tools) return tools;
+  return tools.map((t) => ({
+    ...t,
+    function: {
+      ...t.function,
+      parameters: t.function.parameters
+        ? (normalizeSchemaTypes(t.function.parameters) as Record<string, unknown>)
+        : t.function.parameters,
+    },
+  }));
+}
+
 export class ChatTemplate {
   readonly #template: Template;
   readonly #bosToken: string | null;
@@ -84,7 +157,9 @@ export class ChatTemplate {
     return this.#template.render({
       messages,
       add_generation_prompt: addGenerationPrompt,
-      tools,
+      // Guarantee every tool param schema has a `type` so templates that do
+      // `value['type'] | upper` (Gemma) never see UndefinedValue.
+      tools: normalizeToolSchemas(tools),
       ...(enableThinking !== undefined ? { enable_thinking: enableThinking } : {}),
       bos_token: this.#bosToken,
       eos_token: this.#eosToken,

@@ -16,7 +16,7 @@ export { createModel, type RuntimeModel } from "./model/factory";
 export { generate } from "./generate";
 export { loadTokenizer } from "./tokenizer";
 export { ChatTemplate } from "./chat-template";
-export { fit, recommendedRepoId, skuMatrix, thisMachine } from "./fit";
+export { chooseAutoModel, COEXIST_FRACTION, DEFAULT_REPO_ID, fit, largestRecommendedRepoId, recommendedRepoId, skuMatrix, thisMachine } from "./fit";
 export { downloadModel } from "./download";
 export { Registry } from "./registry";
 export { createServer, loadContext } from "./server";

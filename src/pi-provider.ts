@@ -63,7 +63,11 @@ export function buildPiProvider(baseUrl: string, opts: PiProviderOptions = {}): 
         name: opts.name ?? "mlx-bun (local)",
         api: PI_API,
         reasoning: false,
-        input: ["text"],
+        // Declare image capability so pi will carry image content to /v1.
+        // Whether the *loaded* model can actually see images is gated at the
+        // server (non-vision models 400) and surfaced to the web UI via the
+        // `ready` frame's `vision` flag.
+        input: ["text", "image"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
         maxTokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,

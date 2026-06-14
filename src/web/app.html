@@ -277,7 +277,30 @@
 
   /* ═══════════════════ CHAT ═══════════════════ */
   #s-chat{display:none}
-  #s-chat.active{display:flex!important;flex-direction:column}
+  #s-chat.active{display:flex!important;flex-direction:row}
+  #chat-main{flex:1;min-width:0;display:flex;flex-direction:column}
+  /* recent-chats sidebar */
+  #chat-sidebar{flex:0 0 252px;display:flex;flex-direction:column;gap:8px;padding:14px 12px;
+    border-right:1px solid var(--hairline);overflow-y:auto;background:var(--card-2)}
+  #chat-new{width:100%;text-align:left;padding:10px 13px;border-radius:11px;cursor:pointer;
+    background:var(--card);border:1px solid var(--hairline);color:var(--ink);font-size:13.5px;font-weight:600;
+    transition:background .15s,border-color .15s}
+  #chat-new:hover{background:var(--card-hover);border-color:rgba(10,132,255,.5)}
+  .sesslist{display:flex;flex-direction:column;gap:2px;margin-top:4px}
+  .sess{position:relative;padding:9px 50px 9px 11px;border-radius:10px;cursor:pointer;border:1px solid transparent}
+  .sess:hover{background:var(--card)}
+  .sess.active{background:var(--card);border-color:var(--hairline)}
+  .sess .stitle{font-size:13px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sess .smeta{font-size:11px;color:var(--dim);margin-top:2px;display:flex;gap:5px;align-items:center;white-space:nowrap}
+  .sess .sbtn{position:absolute;top:7px;width:20px;height:20px;border:none;background:transparent;color:var(--dim);
+    cursor:pointer;border-radius:6px;opacity:0;font-size:12px;line-height:1;transition:opacity .12s,background .12s,color .12s}
+  .sess:hover .sbtn{opacity:.85}
+  .sess .sfork{right:28px}
+  .sess .sdel{right:6px}
+  .sess .sfork:hover{background:var(--card-hover);color:var(--ink);opacity:1}
+  .sess .sdel:hover{background:rgba(255,69,58,.18);color:var(--red);opacity:1}
+  .sessempty{color:var(--dim);font-size:12px;padding:8px 11px;line-height:1.5}
+  @media (max-width:760px){#chat-sidebar{display:none}}
   #chat-scroll{flex:1;overflow-y:auto}
   #chat-thread{max-width:840px;margin:0 auto;padding:30px 22px 16px;display:flex;flex-direction:column;gap:18px}
   .msg{display:flex;flex-direction:column;gap:6px;max-width:90%}
@@ -395,6 +418,25 @@
     border-radius:14px;height:50px;padding:0 20px;font:600 14px inherit;cursor:pointer}
   #chat-stop:hover{background:var(--card-hover)}
   .chat-hint{max-width:840px;margin:8px auto 0;font-size:11.5px;color:var(--dimmer);display:flex;justify-content:space-between;gap:10px}
+  .chat-hint .hint-right{display:flex;gap:12px;align-items:center}
+  #chat-context{font:11px/1 var(--mono);letter-spacing:.01em;white-space:nowrap}
+  /* attach (+) button + attachment chips */
+  #chat-attach-btn{flex:0 0 auto;width:50px;height:50px;border-radius:14px;background:var(--card);
+    border:1px solid var(--hairline);color:var(--ink);font-size:23px;line-height:1;cursor:pointer;transition:background .15s,border-color .15s}
+  #chat-attach-btn:hover{background:var(--card-hover);border-color:rgba(10,132,255,.5)}
+  .attach-row{display:none;flex-wrap:wrap;gap:8px;max-width:840px;width:100%;margin:0 auto 8px}
+  .attach-chip{display:flex;align-items:center;gap:7px;background:var(--card);border:1px solid var(--hairline);
+    border-radius:10px;padding:5px 9px;font-size:12px;max-width:240px}
+  .attach-chip img{width:34px;height:34px;object-fit:cover;border-radius:6px;display:block}
+  .attach-chip .att-ico{font-size:16px}
+  .attach-chip .att-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
+  .attach-chip .att-x{border:none;background:transparent;color:var(--dim);cursor:pointer;font-size:12px;line-height:1;padding:0 2px}
+  .attach-chip .att-x:hover{color:var(--red)}
+  .composer.dragover{outline:2px dashed var(--blue);outline-offset:6px;border-radius:14px}
+  .msg-atts{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+  .msg-att-img{max-width:220px;max-height:220px;border-radius:10px;display:block}
+  .msg-att-file{display:inline-flex;align-items:center;gap:5px;font-size:12px;background:rgba(255,255,255,.08);border-radius:8px;padding:5px 10px}
+  .msg.user .msg-text{white-space:pre-wrap;word-break:break-word}
 
   /* loss chart */
   .chartcard{margin-top:20px}
@@ -464,6 +506,11 @@
 
   <!-- ═══════════════════ CHAT ═══════════════════ -->
   <section data-route="chat" id="s-chat">
+    <aside id="chat-sidebar">
+      <button id="chat-new" title="Start a new chat (or type /new)">＋&nbsp; New chat</button>
+      <div id="chat-sessions" class="sesslist"></div>
+    </aside>
+    <div id="chat-main">
     <div id="chat-scroll">
       <div id="chat-hello">
         <h1>Local. Private. <span class="grad g-hero">Yours.</span></h1>
@@ -480,16 +527,23 @@
     <div id="chat-foot">
       <div class="queuebar" id="chat-queue"></div>
       <div class="composer">
+        <div id="chat-attach" class="attach-row"></div>
         <div class="inputrow">
+          <button id="chat-attach-btn" class="iconbtn" title="Attach files or images" aria-label="Attach files">＋</button>
+          <input type="file" id="chat-file-input" multiple style="display:none">
           <textarea id="chat-box" rows="1" placeholder="Message the local agent…  (Enter to send · Shift+Enter for newline)"></textarea>
           <button id="chat-stop" title="Abort the current turn">Stop</button>
           <button id="chat-send">Send</button>
         </div>
         <div class="chat-hint">
           <span id="chat-status-line">Enter to send · Shift+Enter for a new line · type while it streams to steer</span>
-          <span id="chat-tps"></span>
+          <span class="hint-right">
+            <span id="chat-context" title="Context window in use — auto-compacts before it fills"></span>
+            <span id="chat-tps"></span>
+          </span>
         </div>
       </div>
+    </div>
     </div>
   </section>
 
@@ -1290,10 +1344,22 @@ controllers.chat = (() => {
   }
 
   /* — message + tool DOM construction — */
-  function addUserMsg(text) {
+  function addUserMsg(text, atts) {
     const m = el("div", "msg user", thread());
     el("div", "who", m).textContent = "you";
-    el("div", "bubble", m).textContent = text;
+    const bubble = el("div", "bubble", m);
+    if (atts && atts.length) {
+      const wrap = el("div", "msg-atts", bubble);
+      for (const a of atts) {
+        if (a.kind === "image") {
+          const im = el("img", "msg-att-img", wrap);
+          im.src = "data:" + a.mimeType + ";base64," + a.data; im.alt = a.name;
+        } else {
+          el("span", "msg-att-file", wrap).textContent = "📎 " + a.name;
+        }
+      }
+    }
+    if (text) el("div", "msg-text", bubble).textContent = text;
     stick(true);
   }
   function startAssistant() {
@@ -1457,10 +1523,103 @@ controllers.chat = (() => {
     bar.style.display = parts.length ? "flex" : "none";
   }
 
+  /* — context-window indicator — */
+  function fmtTok(n) {
+    if (n == null) return "—";
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k";
+    return String(n);
+  }
+  function renderContext(m) {
+    const node = $("chat-context");
+    if (!node || !m.contextWindow) return;
+    const pct = m.percent;
+    const pctStr = pct == null ? "" : " (" + Math.round(pct) + "%)";
+    node.textContent = "Context " + fmtTok(m.tokens) + " / " + fmtTok(m.contextWindow) + pctStr;
+    node.style.color = pct == null ? "var(--dimmer)" : pct >= 85 ? "var(--orange)" : pct >= 70 ? "var(--yellow)" : "var(--dimmer)";
+  }
+
+  /* — recent-chats sidebar + transcript replay — */
+  function relTime(ms) {
+    if (!ms) return "";
+    const s = (Date.now() - ms) / 1000;
+    if (s < 60) return "just now";
+    if (s < 3600) return Math.floor(s / 60) + "m ago";
+    if (s < 86400) return Math.floor(s / 3600) + "h ago";
+    if (s < 604800) return Math.floor(s / 86400) + "d ago";
+    try { return new Date(ms).toLocaleDateString(); } catch { return ""; }
+  }
+
+  function newChat() {
+    if (!send({ type: "new_session" })) { toast("Not connected to the agent yet.", "err"); return; }
+    $("chat-box").focus();
+  }
+
+  function renderSessions(items, activePath) {
+    const box = $("chat-sessions");
+    if (!items || !items.length) { box.innerHTML = '<div class="sessempty">No saved chats yet. Your conversations are saved locally here.</div>'; return; }
+    box.innerHTML = "";
+    for (const s of items) {
+      const row = el("div", "sess" + (s.path === activePath ? " active" : ""), box);
+      row.innerHTML =
+        '<div class="stitle">' + esc(s.title || "New chat") + '</div>' +
+        '<div class="smeta"><span>' + esc(relTime(s.modified)) + '</span>' +
+          (s.messageCount ? '<span>· ' + s.messageCount + ' msg' + (s.messageCount === 1 ? '' : 's') + '</span>' : '') +
+          (s.forked ? '<span>· forked</span>' : '') + '</div>' +
+        '<button class="sbtn sfork" title="New chat from here">⑂</button>' +
+        '<button class="sbtn sdel" title="Delete chat">✕</button>';
+      row.addEventListener("click", () => send({ type: "open_session", path: s.path }));
+      row.querySelector(".sfork").addEventListener("click", (e) => { e.stopPropagation(); send({ type: "fork_session", path: s.path }); });
+      row.querySelector(".sdel").addEventListener("click", (e) => { e.stopPropagation(); send({ type: "delete_session", path: s.path }); });
+    }
+  }
+
+  /** Render a finished assistant turn from replayed history (no streaming). */
+  function renderAssistantStatic(item) {
+    const m = el("div", "msg assistant", thread());
+    el("div", "who", m).textContent = "local agent";
+    const bubble = el("div", "bubble", m);
+    if (item.text) { const tn = el("span", "atext", bubble); tn.innerHTML = mdToHtml(item.text); }
+    for (const t of (item.tools || [])) {
+      const wrap = el("div", "tool ok", bubble);   // collapsed; click to expand
+      wrap.innerHTML =
+        '<div class="thead"><div class="ticon">⚙</div>' +
+        '<span class="tname">' + esc(t.name || "tool") + '</span>' +
+        '<span class="targs">' + esc(argSummary(t.args)) + '</span>' +
+        '<span class="tstat"><span class="sdot"></span><span class="slabel">done</span></span>' +
+        '<span class="caret">›</span></div>' +
+        '<div class="tbody">' +
+          '<div class="blk"><div class="blbl">arguments</div><pre class="aargs">' + esc(prettyArgs(t.args)) + '</pre></div>' +
+          (t.result ? '<div class="blk tresult"><div class="blbl">result</div><pre class="ares">' + esc(String(t.result).slice(-12000)) + '</pre></div>' : '') +
+        '</div>';
+      wrap.querySelector(".thead").addEventListener("click", () => wrap.classList.toggle("open"));
+    }
+  }
+
+  /** Authoritative thread rebuild from a server `history` frame. */
+  function renderHistory(items) {
+    turnActive = false;
+    curAssistant = null;
+    $("chat-send").disabled = false;
+    $("chat-stop").style.display = "none";
+    renderQueue({});
+    thread().innerHTML = "";
+    if (!items || !items.length) { $("chat-hello").style.display = ""; return; }
+    $("chat-hello").style.display = "none";
+    for (const it of items) {
+      if (it.role === "user") addUserMsg(it.text);
+      else renderAssistantStatic(it);
+    }
+    stick(true);
+  }
+
   /* — server → client dispatch — */
   function handle(m) {
     switch (m.type) {
-      case "ready": $("nav-model").textContent = m.model || activeModelId || "no model"; activeModelId = m.model || activeModelId; break;
+      case "ready": $("nav-model").textContent = m.model || activeModelId || "no model"; activeModelId = m.model || activeModelId; visionCapable = !!m.vision; updateAttachHint(); break;
+      case "history": renderHistory(m.items); break;
+      case "sessions": renderSessions(m.items, m.activePath); break;
+      case "context": renderContext(m); break;
       case "turn_start": turnActive = true; startAssistant(); $("chat-send").disabled = true; $("chat-stop").style.display = "block"; break;
       case "text_delta": appendDelta(m.delta || ""); break;
       case "tool_start": toolCard(m.callId, m.tool, m.args); break;
@@ -1474,15 +1633,92 @@ controllers.chat = (() => {
   }
 
   /* — composer — */
+  /* — attachments (files + images) — */
+  let attachments = [];       // { id, kind:"image"|"text", name, mimeType, data, text, truncated }
+  let visionCapable = false;  // from the `ready` frame; gates image attachments
+  let attachSeq = 0;
+  const MAX_TEXT_BYTES = 256 * 1024;
+  const TEXT_EXTS = /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|ini|cfg|conf|log|xml|html?|css|scss|js|mjs|cjs|ts|tsx|jsx|py|rs|go|java|c|h|cpp|hpp|cc|cs|rb|php|sh|bash|zsh|fish|sql|swift|kt|lua|r|jl|tex|svg|env|gitignore|dockerfile|makefile)$/i;
+
+  function isTextFile(f) {
+    if (f.type.startsWith("text/")) return true;
+    if (/(json|xml|javascript|yaml|x-sh|x-toml|csv|markdown)/i.test(f.type)) return true;
+    return TEXT_EXTS.test(f.name || "");
+  }
+  function readDataUrl(file) {
+    return new Promise((res, rej) => {
+      const r = new FileReader(); r.onerror = rej;
+      r.onload = () => { const s = String(r.result); const i = s.indexOf(","); res(i >= 0 ? s.slice(i + 1) : s); };
+      r.readAsDataURL(file);
+    });
+  }
+  function readText(file) {
+    return new Promise((res, rej) => { const r = new FileReader(); r.onerror = rej; r.onload = () => res(String(r.result)); r.readAsText(file); });
+  }
+  async function addFiles(files) {
+    for (const f of files) {
+      if (f.type.startsWith("image/")) {
+        if (!visionCapable) { toast("This model can't see images — switch to the 12B for vision.", "err"); continue; }
+        try { attachments.push({ id: ++attachSeq, kind: "image", name: f.name || "image", mimeType: f.type, data: await readDataUrl(f) }); }
+        catch { toast("Couldn't read " + (f.name || "image"), "err"); }
+      } else if (isTextFile(f)) {
+        try {
+          let text = await readText(f); const truncated = text.length > MAX_TEXT_BYTES; if (truncated) text = text.slice(0, MAX_TEXT_BYTES);
+          attachments.push({ id: ++attachSeq, kind: "text", name: f.name || "file", text, truncated });
+        } catch { toast("Couldn't read " + (f.name || "file"), "err"); }
+      } else {
+        toast("Unsupported file type: " + (f.name || "file"), "err");
+      }
+    }
+    renderAttachments();
+  }
+  function renderAttachments() {
+    const box = $("chat-attach");
+    box.innerHTML = "";
+    box.style.display = attachments.length ? "flex" : "none";
+    for (const a of attachments) {
+      const chip = el("div", "attach-chip", box);
+      if (a.kind === "image") { const im = el("img", "", chip); im.src = "data:" + a.mimeType + ";base64," + a.data; im.alt = a.name; }
+      else el("span", "att-ico", chip).textContent = "📄";
+      el("span", "att-name", chip).textContent = a.name + (a.truncated ? " (truncated)" : "");
+      const x = el("button", "att-x", chip); x.type = "button"; x.textContent = "✕";
+      x.onclick = () => { attachments = attachments.filter((z) => z.id !== a.id); renderAttachments(); };
+    }
+  }
+  function clearAttachments() { attachments = []; renderAttachments(); }
+  /** Prepend text-file contents to the message the model sees (UI shows chips). */
+  function buildMessageText(userText) {
+    const files = attachments.filter((a) => a.kind === "text");
+    if (!files.length) return userText;
+    let pre = "";
+    for (const a of files) pre += "Attached file: " + a.name + "\n```\n" + a.text + "\n```\n\n";
+    return pre + userText;
+  }
+  function updateAttachHint() {
+    const btn = $("chat-attach-btn");
+    if (btn) btn.title = visionCapable ? "Attach files or images" : "Attach files (this model can't see images)";
+  }
+
+  /* — composer — */
   function submit() {
     const box = $("chat-box");
     const text = box.value.trim();
-    if (!text) return;
+    // Client-side slash commands for session control (not sent to the model).
+    const cmd = text.toLowerCase();
+    if (cmd === "/reload" || cmd === "/new" || cmd === "/clear") {
+      box.value = ""; box.style.height = "auto"; clearAttachments(); newChat();
+      return;
+    }
+    if (!text && attachments.length === 0) return;
     if (!connected) { toast("Not connected to the agent yet — reconnecting.", "err"); return; }
-    addUserMsg(text);
+    const imgs = attachments.filter((a) => a.kind === "image").map((a) => ({ data: a.data, mimeType: a.mimeType }));
+    const combined = buildMessageText(text);
+    addUserMsg(text, attachments);
     box.value = ""; box.style.height = "auto";
-    if (turnActive) send({ type: "steer", text });   // mid-turn: steer/queue
-    else send({ type: "prompt", text });
+    const frame = imgs.length ? { text: combined, images: imgs } : { text: combined };
+    if (turnActive) send({ type: "steer", ...frame });   // mid-turn: steer/queue
+    else send({ type: "prompt", ...frame });
+    clearAttachments();
   }
   const scroll = () => $("chat-scroll");
   const atBottom = () => scroll().scrollHeight - scroll().scrollTop - scroll().clientHeight < 90;
@@ -1491,12 +1727,32 @@ controllers.chat = (() => {
   return {
     init() {
       $("chat-send").onclick = submit;
+      $("chat-new").onclick = newChat;
       $("chat-stop").onclick = () => { send({ type: "abort" }); $("chat-stop").style.display = "none"; };
       const box = $("chat-box");
       box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } });
       box.addEventListener("input", () => { box.style.height = "auto"; box.style.height = Math.min(box.scrollHeight, 200) + "px"; });
       document.querySelectorAll("#chat-hello .chip").forEach((c) =>
         c.addEventListener("click", () => { $("chat-box").value = c.dataset.q; submit(); }));
+      // Attachments: + button, file picker, clipboard paste, drag-and-drop.
+      $("chat-attach-btn").onclick = () => $("chat-file-input").click();
+      $("chat-file-input").addEventListener("change", (e) => { addFiles([...e.target.files]); e.target.value = ""; });
+      box.addEventListener("paste", (e) => {
+        const items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        const files = [];
+        for (const it of items) if (it.kind === "file") { const f = it.getAsFile(); if (f) files.push(f); }
+        if (files.length) { e.preventDefault(); addFiles(files); }
+      });
+      const composer = document.querySelector("#s-chat .composer");
+      if (composer) {
+        ["dragenter", "dragover"].forEach((ev) => composer.addEventListener(ev, (e) => { e.preventDefault(); composer.classList.add("dragover"); }));
+        ["dragleave", "drop"].forEach((ev) => composer.addEventListener(ev, (e) => {
+          e.preventDefault();
+          if (ev === "drop" && e.dataTransfer && e.dataTransfer.files.length) addFiles([...e.dataTransfer.files]);
+          if (ev === "drop" || !composer.contains(e.relatedTarget)) composer.classList.remove("dragover");
+        }));
+      }
       // Delegated copy buttons for rendered code blocks (the thread element
       // is stable even though its contents re-render on every token).
       thread().addEventListener("click", (e) => {
