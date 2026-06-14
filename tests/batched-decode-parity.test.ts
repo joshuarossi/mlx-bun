@@ -199,6 +199,82 @@ async function runBatchedDecodeParity(
   }
 }
 
+/** The REAL mlx-bun batched path: left-pad prompts → one batched cache
+ *  (BatchedDecodeMaskCache handles BOTH the prefill mask at offset 0 and the
+ *  per-step decode mask + per-row RoPE) → batch-prefill → greedy batch-decode.
+ *  Mirrors mlx-lm's BatchKVCache flow, so its per-row greedy trajectory is the
+ *  thing compared bit-for-bit against the mlx-lm B=N oracle (tests/fixtures). */
+async function realBatchedGreedy(
+  base: string, prompts: number[][], steps: number,
+): Promise<number[][]> {
+  const { loadModelConfig } = await import("../src/config");
+  const { Weights } = await import("../src/weights");
+  const { createModel } = await import("../src/model/factory");
+  const { MlxArray } = await import("../src/mlx/array");
+  const { clearCache } = await import("../src/mlx/ffi");
+  const { BatchedDecodeMaskCache } = await import("../src/model/batched-mask");
+
+  const config = await loadModelConfig(base);
+  const weights = await Weights.open(base);
+  const model = createModel(weights, config);
+
+  const B = prompts.length;
+  const Lmax = Math.max(...prompts.map((p) => p.length));
+  const leftPad = prompts.map((p) => Lmax - p.length);
+  const padded = prompts.map((p) => [...Array(Lmax - p.length).fill(0), ...p]); // left-pad 0
+
+  const argmaxF = (a: Float32Array): number => {
+    let bi = 0;
+    for (let i = 1; i < a.length; i++) if (a[i]! > a[bi]!) bi = i;
+    return bi;
+  };
+  const perRowLastTok = (lg: InstanceType<typeof MlxArray>): number[] => {
+    const [, L, V] = lg.shape as [number, number, number];
+    const out: number[] = [];
+    for (let b = 0; b < B; b++) {
+      const s = lg.slice([b, L - 1, 0], [b + 1, L, V]);
+      const f = s.toFloat32();
+      s.dispose();
+      out.push(argmaxF(f));
+    }
+    return out;
+  };
+
+  try {
+    const real = model.makeCache(); // per-layer KVCache / RotatingKVCache, offset 0
+    const cacheWindow = (c: Cache) => (c as { maxSize?: number }).maxSize ?? null;
+    const batched: Cache[] = real.map((c) => new BatchedDecodeMaskCache(c, B, leftPad, cacheWindow(c)));
+
+    // Batch-prefill the left-padded batch (offset 0 → the wrapper emits the
+    // left-pad prefill mask + ropeOffsetArr = -leftPad, matching BatchKVCache).
+    const ids = MlxArray.fromInt32(Int32Array.from(padded.flat()), [B, Lmax]);
+    let h = model.forwardHidden(ids, batched);
+    ids.dispose();
+    let lg = model.logitsFromHidden(h);
+    h.dispose();
+    let toks = perRowLastTok(lg);
+    lg.dispose();
+    clearCache();
+
+    const traj: number[][] = Array.from({ length: B }, () => []);
+    for (let s = 0; s < steps; s++) {
+      toks.forEach((t, b) => traj[b]!.push(t));
+      const tid = MlxArray.fromInt32(Int32Array.from(toks), [B, 1]);
+      h = model.forwardHidden(tid, batched);
+      tid.dispose();
+      lg = model.logitsFromHidden(h);
+      h.dispose();
+      toks = perRowLastTok(lg);
+      lg.dispose();
+      clearCache();
+    }
+    for (const c of batched) c.dispose();
+    return traj;
+  } finally {
+    weights.dispose();
+  }
+}
+
 const PROMPTS = [
   [1, 100, 200, 300, 400, 500, 600], // len 7 → leftPad 0 (bit-exact row)
   [1, 150, 250, 350, 450], // len 5 → leftPad 2
@@ -220,6 +296,19 @@ describe.skipIf(!optIn || !haveCpm)("batched decode parity — CPM L1 (bf16)", (
     console.log(`[parity CPM L1] exactRow=${r.exactRowMax.toExponential(2)} paddedRow=${r.paddedRowMax.toExponential(2)} argmaxMismatch=${r.argmaxMismatch} maxKL=${r.maxKl.toExponential(2)}`);
     expect(r.maxKl).toBeLessThan(KL_TOL); // universal gate
     expect(r.exactRowMax).toBe(0); // CPM bonus: small-headDim batched attn is bit-invariant
+  }, 180_000);
+});
+
+// --- THE REAL GATE: mlx-bun's real batched prefill+decode greedy trajectory
+//     must match mlx-lm's batched B=N (BatchKVCache) exactly. Oracle fixture
+//     from scripts/gen-batched-golden.py (run in the oracle venv). ---
+describe.skipIf(!optIn || !haveCpm)("batched decode ORACLE parity — CPM L1 vs mlx-lm B=2", () => {
+  test("real batched greedy trajectory == mlx-lm B=2", async () => {
+    const golden = await Bun.file(`${import.meta.dir}/fixtures/batched-golden-cpm.json`).json();
+    const got = await realBatchedGreedy(CPM_BASE, golden.prompts as number[][], golden.steps as number);
+    console.log(`[oracle CPM] mlx-bun: ${JSON.stringify(got)}`);
+    console.log(`[oracle CPM] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
+    expect(got).toEqual(golden.trajectories);
   }, 180_000);
 });
 

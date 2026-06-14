@@ -2436,6 +2436,13 @@ Phasing (each default-off behind `slots=1`, serialized path never removed):
             (solo-prefill+assemble vs solo-decode) measures the WRONG oracle —
             demoted to internal-consistency check. Next: build mlx-bun REAL
             batched prefill+decode, gate bit-exact vs the mlx-lm B=N golden.
+          - [x] **CPM L1 ORACLE-VERIFIED 2026-06-14d**: built realBatchedGreedy
+            (left-pad → BatchedDecodeMaskCache, which handles prefill at offset 0
+            AND decode → batch-prefill → greedy decode). Its per-row trajectory ==
+            mlx-lm B=2 EXACTLY (both rows incl. left-padded, 8 steps). CPM L1
+            batched is bit-parity with mlx-lm's batch mode. Fixture committed
+            (tests/fixtures/batched-golden-cpm.json). Next cells: Gemma 12B oracle
+            (needs BatchRotatingKVCache golden), then L2 quant, then e4b/26b.
 - [ ] **S2** — N-wide + continuous injection/eviction; dynamic byte-budget
       admission.
 - [ ] **S3+** — paged KV (rung 3), KV-quant under batch, LoRA-group batching.
