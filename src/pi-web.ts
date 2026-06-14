@@ -386,12 +386,16 @@ class PiWebSession {
     this.provider = buildPiProvider(baseUrl, { contextWindow: this.opts.contextWindow });
     mkdirSync(this.sessionDir, { recursive: true });
 
-    // Resume the most recent on-disk chat: a reconnect / page reload keeps its
-    // context and doesn't spawn an empty session per connect. "New chat"
-    // explicitly starts a fresh one. Sessions persist to disk in pi's own
-    // format (no more inMemory) — the substrate for both the recent-chats
-    // sidebar and the future nightly memory pipeline.
-    await this.activate(SessionManager.continueRecent(this.cwd, this.sessionDir));
+    // Each connection starts its OWN fresh session. A prior continueRecent
+    // here meant every new WebSocket (another browser tab, a reconnect, or an
+    // external client) appended to the most-recent session — so tabs and even
+    // test clients wrote into each other's chats. Isolation is the correct
+    // model (and essential once concurrent slots land). Resuming a specific
+    // chat is explicit via the sidebar (open_session); the frontend re-opens
+    // its own session on a transient reconnect so a blip doesn't strand it on
+    // a blank backend session. Sessions persist to disk in pi's own format —
+    // the substrate for the recent-chats sidebar and the nightly memory pipeline.
+    await this.activate(SessionManager.create(this.cwd, this.sessionDir));
     if (this.disposed) return;
 
     this.send({ type: "ready", model: this.opts.modelId, vision: this.opts.vision });
@@ -670,19 +674,25 @@ class PiWebSession {
     }
 
     switch (msg.type) {
-      case "prompt": {
-        const images = toPiImages(msg.images);
-        // One in-flight prompt per session: when already streaming, queue
-        // as a steering message (pi enforces this via isStreaming).
-        if (session.isStreaming) {
-          await session.prompt(msg.text, { streamingBehavior: "steer", images });
-        } else {
-          await session.prompt(msg.text, { images });
-        }
+      // Both a new prompt and an explicit steer go through session.prompt() so
+      // that pi's own *atomic* isStreaming check (agent-session prompt(): it
+      // re-checks at call time) decides how to route — never our own external
+      // read, which can be stale in the instant a turn ends. That stale read
+      // was the bug: a message arriving right as a turn finished was sent with
+      // streamingBehavior "steer", injected into the already-ending turn, and
+      // nothing consumed it (a hang). With this routing, an idle session always
+      // runs a normal turn (streamingBehavior is ignored when not streaming),
+      // so a message can't be lost at the turn boundary.
+      case "prompt":
+        // New user message → its own turn. "followUp" = if a turn is still
+        // streaming, queue this as the NEXT turn; if idle, a normal prompt.
+        await session.prompt(msg.text, { streamingBehavior: "followUp", images: toPiImages(msg.images) });
         return;
-      }
       case "steer":
-        await session.steer(msg.text, toPiImages(msg.images));
+        // Mid-turn steer (user typed while it streamed). "steer" injects into
+        // the live turn; if that turn just ended (same race), pi falls back to
+        // a normal prompt instead of dropping the message.
+        await session.prompt(msg.text, { streamingBehavior: "steer", images: toPiImages(msg.images) });
         return;
       case "abort":
         await session.abort();
