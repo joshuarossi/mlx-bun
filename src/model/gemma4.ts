@@ -172,11 +172,20 @@ class Attention {
       }
 
       const offset = cache.offset;
+      // Capture the RoPE offset array ONCE (like `offset` above): the
+      // updateAndFetch below advances cache.offset, so re-reading
+      // cache.ropeOffsetArr for Q *after* the write would hand K and Q
+      // different positions. Harmless today (real caches leave it unset;
+      // compiled-decode passes a constant trace input), but a hard
+      // prerequisite for batched decode, where ropeOffsetArr carries per-row
+      // positions derived from the pre-write offset and MUST be identical for
+      // this step's K and Q.
+      const offsetArr = cache.ropeOffsetArr;
 
       const kNormed = this.kNorm!.forward(k);
       const kT = ops.transposeAxes(kNormed, [0, 2, 1, 3]);
       kNormed.dispose();
-      const kRoped = this.rope(kT, cache.ropeOffsetArr ?? offset);
+      const kRoped = this.rope(kT, offsetArr ?? offset);
       kT.dispose();
 
       const vNormed = this.vNorm!.forward(v);
@@ -192,13 +201,13 @@ class Attention {
         shared = {
           kind: "quant", keys: kq, values: vq, offset,
           groupSize: cache.groupSize, bits: cache.bits,
-          offsetArr: cache.ropeOffsetArr,
+          offsetArr,
         };
       } else {
         const [keys, values] = cache.updateAndFetch(kRoped, vT);
         kRoped.dispose();
         vT.dispose();
-        shared = { kind: "plain", keys, values, offset, offsetArr: cache.ropeOffsetArr };
+        shared = { kind: "plain", keys, values, offset, offsetArr };
       }
     }
 
