@@ -9,6 +9,7 @@
         "@huggingface/jinja": "^0.5.9",
         "@huggingface/tokenizers": "^0.1.3",
         "fast-png": "^8.0.0",
+        "typebox": "1.1.38",
       },
       "devDependencies": {
         "@anthropic-ai/sdk": "^0.104.1",

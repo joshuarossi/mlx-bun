@@ -27,42 +27,85 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import {
-  AuthStorage,
   createAgentSession,
   DefaultResourceLoader,
-  getAgentDir,
-  ModelRegistry,
   SessionManager,
   type AgentSession,
   type AgentSessionEvent,
   type ExtensionAPI,
   type ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
+import { createWebTools, WEB_TOOL_NAMES } from "./web-tools";
+import { materializeBundledSkills } from "./web/skills";
+import { buildPiProvider, DEFAULT_CONTEXT_WINDOW, PI_LOCAL_MODEL_ID } from "./pi-provider";
 
-// `Model` is not re-exported from the package index; derive it from the
-// registry's `find()` return type so we avoid importing the transitive
-// @earendil-works/pi-ai package directly.
-type PiModel = NonNullable<ReturnType<ModelRegistry["find"]>>;
-
-// Provider/model constants — kept byte-for-byte aligned with harness-pi.ts
-// so the web path and the subprocess path register the same provider.
-const PI_PROVIDER_ID = "mlx-bun";
-const PI_LOCAL_MODEL_ID = "local";
-const PI_API_KEY = "sk-mlx-bun-local";
-const PI_API = "openai-completions" as const;
-
-/** Full coding toolset — the user explicitly wants all tools available. */
-const ALL_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
-/** Tools that never mutate; auto-allowed without a browser round-trip. */
-const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls"]);
+/**
+ * Full toolset the web agent is offered. The built-in coding tools plus our
+ * outward-facing web tools (web_search/web_fetch/weather). NOTE: pi treats
+ * this list as an allowlist (createAgentSession `tools`), so a custom tool's
+ * name MUST appear here or it gets filtered out before the model ever sees it.
+ */
+const ALL_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", ...WEB_TOOL_NAMES];
+/**
+ * Tools that never mutate the user's machine; auto-allowed without a browser
+ * round-trip. The web tools make outbound network requests but change nothing
+ * locally, so they're auto-allowed too (and remain usable in read-only mode).
+ */
+const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", ...WEB_TOOL_NAMES]);
 /** Tools that require explicit per-call browser approval. */
 const GATED_TOOLS = new Set(["bash", "edit", "write"]);
 
 /** Auto-deny a pending approval after this long with no browser decision. */
 const APPROVAL_TIMEOUT_MS = 120_000;
 
-const DEFAULT_CONTEXT_WINDOW = 32_768;
-const DEFAULT_MAX_TOKENS = 8_192;
+/**
+ * System prompt for the web chat assistant.
+ *
+ * This fully REPLACES pi's default coding-agent prompt (it flows to
+ * buildSystemPrompt's `customPrompt` via DefaultResourceLoader.systemPrompt).
+ * Replacing rather than appending drops two things we don't want in an
+ * end-user chat: the "operating inside pi, a coding agent harness" framing
+ * and pi's block of internal documentation paths. pi still auto-appends the
+ * current date and working directory, so we don't repeat them here.
+ *
+ * Goal: a helpful, eager assistant that actually uses its tools instead of
+ * talking about them. The capability list is kept honest per `readOnly` so
+ * the model never promises an action the approval gate will refuse.
+ */
+export function buildWebChatSystemPrompt(readOnly: boolean): string {
+  const capabilities = readOnly
+    ? `You have these tools (all used freely, no confirmation needed):
+- web_search — search the web for current, real-world information
+- web_fetch — fetch a URL and read the page or data behind it
+- weather — get current conditions and a short forecast for any place
+- read — open and read any file
+- ls, find, grep — list directories and search the filesystem by name or content
+
+This is a read-only session: you can look things up and inspect files, but cannot run commands or change anything on disk.`
+    : `You have a real toolset — use it.
+
+Used freely, no confirmation needed:
+- web_search — search the web for current, real-world information (news, prices, docs, anything that changes or that you don't already know)
+- web_fetch — fetch a URL and read the page or data behind it (great as a follow-up to web_search, or when the user gives you a link)
+- weather — get current conditions and a short forecast for any place
+- read, ls, find, grep — open files and search the filesystem
+
+Asks the user for approval first (they stay in control):
+- bash — run shell commands
+- edit, write — modify existing files or create new ones
+
+Prefer doing the work over describing it — run the search, fetch the page, propose the concrete command or edit and let the user approve it.`;
+
+  return `You are a helpful, capable AI assistant. The model answering runs entirely on the user's own machine via mlx-bun, so the conversation stays local and private. You also have tools that reach the internet (web search, fetching pages, weather) — use them whenever the user needs current or real-world information.
+
+Be an eager, proactive partner. When a request can be answered or a task moved forward by using your tools, use them right away instead of guessing or asking the user to do it for you. Take initiative: investigate, gather what you need, and follow through to a real result.
+
+${capabilities}
+
+When you don't know something — especially anything current, factual, or time-sensitive — look it up with web_search and web_fetch rather than speculating or relying on stale memory. If a request is genuinely ambiguous, ask one brief clarifying question; otherwise make a sensible choice and proceed. Be honest about what you did and what you found — including mistakes, dead ends, and things you couldn't do.
+
+Keep your responses clear and to the point. Format with Markdown, cite links when you used the web, and show file paths and commands plainly so they're easy to read.`;
+}
 
 /** Per-connection data the server attaches at upgrade time. */
 export interface PiWsData {
@@ -194,35 +237,20 @@ class PiWebSession {
     const port = typeof this.opts.port === "function" ? this.opts.port() : this.opts.port;
     const baseUrl = `http://127.0.0.1:${port}/v1`;
 
-    // In-memory auth + registry: no models.json, no disk cross-talk. The
-    // runtime key satisfies pi's auth check for our zero-cost local key.
-    const authStorage = AuthStorage.inMemory();
-    authStorage.setRuntimeApiKey(PI_PROVIDER_ID, PI_API_KEY);
-
-    const modelRegistry = ModelRegistry.inMemory(authStorage);
-    modelRegistry.registerProvider(PI_PROVIDER_ID, {
-      baseUrl,
-      apiKey: PI_API_KEY,
-      api: PI_API,
-      models: [
-        {
-          id: PI_LOCAL_MODEL_ID,
-          name: "mlx-bun (local)",
-          api: PI_API,
-          reasoning: false,
-          input: ["text"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: this.opts.contextWindow,
-          maxTokens: DEFAULT_MAX_TOKENS,
-        },
-      ],
+    // In-memory auth + registry: no models.json, no disk cross-talk (shared
+    // with the terminal embed via src/pi-provider.ts so the wiring can't drift).
+    const { authStorage, modelRegistry, model } = buildPiProvider(baseUrl, {
+      contextWindow: this.opts.contextWindow,
     });
-
-    const model: PiModel | undefined = modelRegistry.find(PI_PROVIDER_ID, PI_LOCAL_MODEL_ID);
-    if (!model) throw new Error("failed to register mlx-bun/local model");
 
     const cwd = process.cwd();
     const agentDir = join(homedir(), ".mlx-bun", "pi-sessions");
+
+    // Write our curated skills to disk and load only those (noSkills:true
+    // still suppresses discovery of the user's personal ~/.pi + project
+    // skills, so the chat stays self-contained — additionalSkillPaths loads
+    // on top of that). See src/web/skills.ts.
+    const skillsRoot = materializeBundledSkills();
 
     // Inline extension carries the pre-execution approval gate. Registered
     // via DefaultResourceLoader.extensionFactories so it loads in-process
@@ -231,13 +259,20 @@ class PiWebSession {
       cwd,
       agentDir,
       // Skip user/project resource discovery: the web agent is fully
-      // self-contained and must not inherit the user's pi extensions,
-      // skills, or context files.
+      // self-contained and must not inherit the user's pi extensions or
+      // context files. noContextFiles also keeps a stray CLAUDE.md /
+      // AGENTS.md in the launch directory out of the chat.
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
+      // Our curated skills only (not the user's). noSkills:true above keeps
+      // discovery off; this loads the bundled set on top.
+      additionalSkillPaths: [skillsRoot],
+      // Replace pi's default coding-agent prompt with our own helpful,
+      // eager-assistant persona (see buildWebChatSystemPrompt).
+      systemPrompt: buildWebChatSystemPrompt(this.opts.readOnly),
       extensionFactories: [(pi) => this.installApprovalGate(pi)],
     });
     await resourceLoader.reload();
@@ -250,6 +285,7 @@ class PiWebSession {
       authStorage,
       resourceLoader,
       tools: ALL_TOOLS,
+      customTools: createWebTools(),
       sessionManager: SessionManager.inMemory(cwd),
     });
 
