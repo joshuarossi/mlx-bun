@@ -155,6 +155,35 @@ export const C = dlopen(LIBMLXC_PATH, {
   //  opt group_size, opt bits, mode, sorted_indices, stream)
   mlx_gather_qmm: { args: [P, u64, u64, u64, u64, u64, u64, FFIType.bool, u64, u64, cstring, FFIType.bool, u64], returns: i32 },
   mlx_floor_divide: { args: [P, u64, u64, u64], returns: i32 },
+  // --- training: autograd (value_and_grad) — proven in spikes/phase-train-vag.ts.
+  // mlx_value_and_grad(res: mlx_closure_value_and_grad*, fun: mlx_closure,
+  //   argnums: int*, n) → builds a value+grad closure differentiating the
+  //   selected inputs of `fun` (a mlx_closure_new_func_payload over a JS loss).
+  mlx_value_and_grad: { args: [P, u64, P, u64], returns: i32 },
+  mlx_closure_value_and_grad_new: { args: [], returns: u64 },
+  // (value: vector_array*, grads: vector_array*, cls, input: vector_array)
+  mlx_closure_value_and_grad_apply: { args: [P, P, u64, u64], returns: i32 },
+  mlx_closure_value_and_grad_free: { args: [u64], returns: i32 },
+  // --- training: random init (LoRA A ~ normal; B stays zeros)
+  // (res, shape*, n, dtype, loc, scale, key may-be-null, stream)
+  mlx_random_normal: { args: [P, P, u64, i32, f32, f32, u64, u64], returns: i32 },
+  mlx_random_split_num: { args: [P, u64, i32, u64], returns: i32 },
+  // --- training: loss/optimizer elementwise + reductions
+  mlx_stop_gradient: { args: [P, u64, u64], returns: i32 },
+  mlx_log: { args: [P, u64, u64], returns: i32 },
+  mlx_logaddexp: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_mean: { args: [P, u64, FFIType.bool, u64], returns: i32 },
+  mlx_mean_axis: { args: [P, u64, i32, FFIType.bool, u64], returns: i32 },
+  mlx_sqrt: { args: [P, u64, u64], returns: i32 },
+  mlx_rsqrt: { args: [P, u64, u64], returns: i32 },
+  mlx_square: { args: [P, u64, u64], returns: i32 },
+  mlx_abs: { args: [P, u64, u64], returns: i32 },
+  // (res, a, a_min may-be-null, a_max may-be-null, stream)
+  mlx_clip: { args: [P, u64, u64, u64, u64], returns: i32 },
+  // --- quantization: native safetensors writer (io.h) + map inserts (map.h)
+  mlx_save_safetensors: { args: [cstring, u64, u64], returns: i32 },
+  mlx_map_string_to_array_insert: { args: [u64, cstring, u64], returns: i32 },
+  mlx_map_string_to_string_insert: { args: [u64, cstring, cstring], returns: i32 },
   // compile via closures (Phase A compiled decode — docs/design/optimization_plan.md).
   // mlx_closure is the usual one-pointer struct; the func-payload variant
   // carries an id we use to route the trace callback back to JS.
