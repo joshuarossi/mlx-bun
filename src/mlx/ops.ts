@@ -489,14 +489,15 @@ export interface QuantizedTensor {
   biases: MlxArray;
 }
 
-/** mx.quantize: w → (packed u32, scales, biases). */
+/** mx.quantize: w → (packed u32, scales, biases). `mode` defaults to the
+ *  mlx-standard "affine" scheme; the quantizer seam may pass others. */
 export function quantize(
-  w: MlxArray, groupSize: number, bits: number, s: S = gpuStream,
+  w: MlxArray, groupSize: number, bits: number, mode = "affine", s: S = gpuStream,
 ): QuantizedTensor {
   const slot = new BigUint64Array([C.mlx_vector_array_new()]);
   const slotPtr = ptr(slot);
   const status = C.mlx_quantize(
-    slotPtr, w.handle, optInt(groupSize), optInt(bits), ptr(cstr("affine")), 0n, s,
+    slotPtr, w.handle, optInt(groupSize), optInt(bits), ptr(cstr(mode)), 0n, s,
   );
   if (status !== 0) throw new Error(`quantize failed: ${takeMlxError() ?? ""}`);
   const vec = read.u64(slotPtr, 0);
@@ -512,6 +513,73 @@ export function quantize(
   } finally {
     C.mlx_vector_array_free(vec);
   }
+}
+
+// --- training: elementwise / reductions / random ------------------------
+
+/** Stops gradient flow through `a` (identity forward; ∂=0). DPO reference
+ *  logprobs are stop_gradient'd before the policy forward. */
+export function stopGradient(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("stop_gradient", (o) => C.mlx_stop_gradient(o, a.handle, s)));
+}
+
+export function log(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("log", (o) => C.mlx_log(o, a.handle, s)));
+}
+
+export function logaddexp(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("logaddexp", (o) => C.mlx_logaddexp(o, a.handle, b.handle, s)));
+}
+
+export function sqrt(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("sqrt", (o) => C.mlx_sqrt(o, a.handle, s)));
+}
+
+export function rsqrt(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("rsqrt", (o) => C.mlx_rsqrt(o, a.handle, s)));
+}
+
+export function square(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("square", (o) => C.mlx_square(o, a.handle, s)));
+}
+
+export function abs(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("abs", (o) => C.mlx_abs(o, a.handle, s)));
+}
+
+/** Reduce-mean over all elements → scalar (keepdims=false) or [1,…]. */
+export function meanAll(a: MlxArray, keepdims = false, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("mean", (o) => C.mlx_mean(o, a.handle, keepdims, s)));
+}
+
+export function meanAxis(a: MlxArray, axis: number, keepdims: boolean, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("mean_axis", (o) => C.mlx_mean_axis(o, a.handle, axis, keepdims, s)));
+}
+
+export function clip(a: MlxArray, lo: MlxArray | null, hi: MlxArray | null, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("clip", (o) => C.mlx_clip(o, a.handle, lo?.handle ?? 0n, hi?.handle ?? 0n, s)),
+  );
+}
+
+/** mx.random.normal(shape, dtype, loc, scale, key). key may be null. */
+export function randomNormal(
+  shape: number[], dtype: Dtype, loc: number, scale: number,
+  key: MlxArray | null, s: S = gpuStream,
+): MlxArray {
+  const buf = new Int32Array(shape);
+  return new MlxArray(
+    outArray("random_normal", (o) =>
+      C.mlx_random_normal(o, ptr(buf), BigInt(shape.length), dtype, loc, scale, key?.handle ?? 0n, s),
+    ),
+  );
+}
+
+/** mx.random.split(key, num) → [num, 2] uint32 subkeys. */
+export function randomSplitNum(key: MlxArray, num: number, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("random_split", (o) => C.mlx_random_split_num(o, key.handle, num, s)),
+  );
 }
 
 export function softmaxAxis(a: MlxArray, axis: number, precise: boolean, s: S = gpuStream): MlxArray {

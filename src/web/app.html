@@ -1,0 +1,1947 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mlx-bun</title>
+<style>
+  /* ════════════════════════════════════════════════════════════════════
+     mlx-bun · unified app
+     One product, five sections (Chat · Quantize · Fine-tune · Dataset · Status).
+     Apple keynote grammar: black stage, SF Pro, gradient hero type,
+     hairline cards, ambient color blooms, numbers that land.
+     Fully self-contained — no external fonts, CDNs, or scripts.
+     ════════════════════════════════════════════════════════════════════ */
+
+  /* ─── design tokens (shared across every section) ─── */
+  :root{
+    --bg:#000;
+    --ink:#f5f5f7;
+    --dim:#86868b;
+    --dimmer:#515154;
+    --hairline:rgba(255,255,255,.14);
+    --hairline-soft:rgba(255,255,255,.07);
+    --card:rgba(255,255,255,.045);
+    --card-hover:rgba(255,255,255,.08);
+    --card-2:rgba(255,255,255,.025);
+    --blue:#0a84ff; --cyan:#64d2ff; --indigo:#5e5ce6; --purple:#bf5af2;
+    --pink:#ff375f; --orange:#ff9f0a; --yellow:#ffd60a; --green:#30d158;
+    --red:#ff453a;
+    --ease:cubic-bezier(.22,.61,.21,1);
+    --nav-h:60px;
+    --mono:"SF Mono",ui-monospace,Menlo,Monaco,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg);color:var(--ink);
+    font-family:"SF Pro Display","SF Pro Text",-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    overflow:hidden; /* app shell owns its own scroll regions */
+  }
+  ::selection{background:rgba(10,132,255,.4)}
+  .num{font-variant-numeric:tabular-nums}
+  code,.mono{font-family:var(--mono)}
+  code{font-size:.86em;background:rgba(255,255,255,.08);padding:2px 8px;border-radius:6px}
+  a{color:inherit}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:6px;border:2px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.22);background-clip:content-box}
+  ::-webkit-scrollbar-track{background:transparent}
+
+  /* gradient text helpers (lifted from status/chat pages) */
+  .grad{background-clip:text;-webkit-background-clip:text;color:transparent}
+  .g-hero{background-image:linear-gradient(96deg,var(--orange) 0%,var(--pink) 30%,var(--purple) 62%,var(--blue) 100%)}
+  .g-blue{background-image:linear-gradient(94deg,var(--cyan),var(--blue) 55%,var(--indigo))}
+  .g-green{background-image:linear-gradient(94deg,#a8ff9e,var(--green) 45%,var(--cyan))}
+  .g-pink{background-image:linear-gradient(94deg,var(--orange),var(--pink) 55%,var(--purple))}
+  .g-purple{background-image:linear-gradient(94deg,var(--purple),var(--indigo) 55%,var(--blue))}
+
+  /* ─── ambient blooms behind everything ─── */
+  .bloom{position:fixed;inset:-25%;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(55vw 42vh at 12% 6%, rgba(255,159,10,.13), transparent 68%),
+      radial-gradient(60vw 48vh at 88% 24%, rgba(94,92,230,.16), transparent 68%),
+      radial-gradient(50vw 40vh at 30% 96%, rgba(10,132,255,.10), transparent 68%);
+    filter:blur(74px);
+    transition:opacity 1.2s var(--ease);
+  }
+
+  /* ═══════════════════ top navigation ═══════════════════ */
+  nav{
+    position:fixed;top:0;left:0;right:0;height:var(--nav-h);z-index:50;
+    display:flex;align-items:center;gap:18px;padding:0 22px;
+    border-bottom:1px solid var(--hairline);
+    background:rgba(0,0,0,.62);backdrop-filter:saturate(180%) blur(22px);
+    -webkit-backdrop-filter:saturate(180%) blur(22px);
+  }
+  nav .brand{font-size:18px;font-weight:700;letter-spacing:-.02em;text-decoration:none;
+    white-space:nowrap;flex:0 0 auto}
+  nav .tabs{display:flex;gap:2px;flex:1 1 auto;overflow-x:auto;scrollbar-width:none}
+  nav .tabs::-webkit-scrollbar{display:none}
+  nav .tab{
+    appearance:none;background:none;border:none;cursor:pointer;
+    color:var(--dim);font:600 14px/1 inherit;letter-spacing:-.01em;
+    padding:8px 14px;border-radius:10px;text-decoration:none;white-space:nowrap;
+    transition:color .22s var(--ease),background .22s var(--ease)}
+  nav .tab:hover{color:var(--ink)}
+  nav .tab.active{color:var(--ink);background:rgba(255,255,255,.08)}
+  nav .right{display:flex;align-items:center;gap:12px;flex:0 0 auto}
+  nav .model{font:12px var(--mono);color:var(--dim);
+    background:var(--card);border:1px solid var(--hairline);border-radius:8px;padding:5px 10px;
+    max-width:34vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pill{display:inline-flex;align-items:center;gap:8px;
+    border:1px solid var(--hairline);border-radius:999px;padding:6px 13px;
+    font-size:12.5px;font-weight:600;color:var(--dim);letter-spacing:.01em;white-space:nowrap}
+  .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--dimmer);
+    box-shadow:0 0 0 transparent;transition:all .4s}
+  .pill.ok .dot{background:var(--green);box-shadow:0 0 11px var(--green)}
+  .pill.ok{color:var(--ink)}
+  .pill.bad .dot{background:var(--red);box-shadow:0 0 11px var(--red)}
+  .pill.warn .dot{background:var(--orange);box-shadow:0 0 11px var(--orange)}
+  .hf-gear{appearance:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;
+    width:34px;height:34px;border-radius:10px;background:var(--card);border:1px solid var(--hairline);
+    color:var(--dim);flex:0 0 auto;transition:color .22s var(--ease),background .22s var(--ease),border-color .22s var(--ease)}
+  .hf-gear:hover{color:var(--ink);background:var(--card-hover);border-color:rgba(255,255,255,.28)}
+  .hf-gear.saved{color:var(--green);border-color:rgba(48,209,88,.4)}
+
+  /* ─── HF settings overlay ─── */
+  #hf-overlay{position:fixed;inset:0;z-index:200;display:none;align-items:flex-start;justify-content:center;
+    background:rgba(0,0,0,.55);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);padding:calc(var(--nav-h) + 24px) 20px 20px}
+  #hf-overlay.open{display:flex;animation:fade .3s var(--ease)}
+  #hf-modal{width:min(460px,100%);background:rgba(22,22,24,.96);border:1px solid var(--hairline);border-radius:20px;
+    padding:24px 26px;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+  .hf-modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+  .hf-modal-title{font-size:20px;font-weight:700;letter-spacing:-.02em}
+  .hf-modal-sub{font-size:13.5px;color:var(--dim);margin-bottom:20px;line-height:1.5}
+  .hf-close{appearance:none;background:none;border:none;cursor:pointer;color:var(--dim);font-size:16px;
+    width:30px;height:30px;border-radius:8px;transition:color .2s,background .2s}
+  .hf-close:hover{color:var(--ink);background:var(--card-hover)}
+
+  /* ─── inline push-to-hub panel (in done-step cards) ─── */
+  .pushpanel{margin-top:14px;border-top:1px solid var(--hairline-soft);padding-top:14px}
+  .pushpanel .field{margin-bottom:12px}
+  .pushpanel label.chk{display:flex;align-items:center;gap:9px;font-size:13.5px;color:var(--ink);cursor:pointer;font-weight:500}
+  .pushpanel label.chk input{width:auto;margin:0;accent-color:var(--blue)}
+
+  /* ═══════════════════ app shell / routing ═══════════════════ */
+  #app{position:fixed;inset:var(--nav-h) 0 0 0;z-index:1}
+  section[data-route]{display:none;position:absolute;inset:0}
+  section[data-route].active{display:block;animation:fade .5s var(--ease)}
+  @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+  /* a scrolling content column used by the doc-style sections */
+  .scroller{height:100%;overflow-y:auto}
+  .wrap{max-width:1180px;margin:0 auto;padding:46px 28px 120px}
+  .wrap.narrow{max-width:860px}
+
+  /* ─── shared typographic bits ─── */
+  .eyebrow{font-size:12.5px;font-weight:600;letter-spacing:.22em;text-transform:uppercase;color:var(--dim);margin-bottom:14px}
+  h1.title{font-size:clamp(38px,5.4vw,68px);font-weight:700;letter-spacing:-.032em;line-height:1.02}
+  .lead{font-size:clamp(15px,1.4vw,19px);line-height:1.55;color:var(--dim);max-width:66ch;margin-top:18px}
+  .lead strong{color:var(--ink);font-weight:600}
+  h2{font-size:clamp(26px,3.6vw,46px);font-weight:700;letter-spacing:-.026em;line-height:1.06}
+  h2 .soft{color:var(--dimmer)}
+  h3.kicker{font-size:12.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:14px}
+
+  /* ─── reveals ─── */
+  [data-reveal]{opacity:0;transform:translateY(22px);
+    transition:opacity .8s var(--ease),transform .8s var(--ease);transition-delay:calc(var(--d,0)*1ms)}
+  .lit [data-reveal]{opacity:1;transform:none}
+  @media (prefers-reduced-motion:reduce){[data-reveal]{transition:none;opacity:1;transform:none}*{scroll-behavior:auto}}
+
+  /* ─── cards ─── */
+  .grid{display:grid;gap:14px}
+  .g4{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  .card{background:var(--card);border:1px solid var(--hairline);border-radius:20px;
+    padding:24px 26px;transition:background .3s var(--ease),border-color .3s var(--ease)}
+  .card:hover{background:var(--card-hover)}
+  .card h3{font-size:12.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:14px}
+  .stat{font-size:clamp(28px,3.2vw,42px);font-weight:700;letter-spacing:-.025em;line-height:1.05}
+  .stat small{font-size:.42em;font-weight:600;color:var(--dim);letter-spacing:0;margin-left:6px}
+  .card .cap{margin-top:8px;font-size:13.5px;color:var(--dim);line-height:1.5}
+  .kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;font-size:14.5px;border-bottom:1px solid var(--hairline-soft)}
+  .kv:last-child{border-bottom:none}
+  .kv b{font-weight:500;color:var(--dim)}
+  .kv span{font-weight:600}
+  .meter{height:5px;border-radius:3px;background:rgba(255,255,255,.09);margin-top:16px;overflow:hidden}
+  .meter i{display:block;height:100%;border-radius:3px;width:0%;
+    background:linear-gradient(90deg,var(--cyan),var(--blue));transition:width .8s var(--ease)}
+  .meter.warm i{background:linear-gradient(90deg,var(--orange),var(--pink))}
+  .meter.green i{background:linear-gradient(90deg,#a8ff9e,var(--green))}
+
+  /* ─── tables ─── */
+  table{width:100%;border-collapse:collapse;font-size:14.5px}
+  th,td{text-align:right;padding:13px 16px;border-bottom:1px solid var(--hairline-soft)}
+  th:first-child,td:first-child{text-align:left}
+  td:not(:first-child),th:not(:first-child){white-space:nowrap}
+  th{font-size:11.5px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:var(--dim)}
+  tr:last-child td{border-bottom:none}
+  tbody tr{transition:background .2s}
+  tbody tr:hover{background:rgba(255,255,255,.04)}
+  td.fit-yes{color:var(--green);font-weight:600}
+  td.fit-no{color:var(--dimmer)}
+  tr.you td{background:rgba(10,132,255,.10)}
+  tr.you td:first-child{border-left:3px solid var(--blue);border-radius:2px}
+  .tablecard{padding:8px 6px}
+
+  /* ─── forms (used by all three wizards) ─── */
+  .field{margin-bottom:18px}
+  .field>label{display:block;font-size:13px;font-weight:600;color:var(--ink);margin-bottom:8px;letter-spacing:-.01em}
+  .field .hint{font-size:12.5px;color:var(--dim);margin-top:7px;line-height:1.5}
+  input[type=text],input[type=number],input[type=password],textarea,select{
+    width:100%;background:var(--card);border:1px solid var(--hairline);border-radius:12px;
+    color:var(--ink);font:14.5px/1.5 inherit;padding:11px 14px;outline:none;
+    transition:border-color .22s var(--ease),background .22s var(--ease)}
+  input::placeholder,textarea::placeholder{color:var(--dimmer)}
+  input:focus,textarea:focus,select:focus{border-color:rgba(10,132,255,.55);background:var(--card-hover)}
+  textarea{resize:vertical;min-height:96px;font-family:var(--mono);font-size:13px}
+  select{appearance:none;-webkit-appearance:none;cursor:pointer;
+    background-image:url("data:image/svg+xml;charset=US-ASCII,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%2386868b' d='M1 1l5 5 5-5'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 14px center;padding-right:34px}
+  .hpgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .hpgrid .field{margin-bottom:0}
+  input[type=range]{width:100%;accent-color:var(--blue);background:transparent;cursor:pointer;height:24px}
+
+  /* segmented control */
+  .seg{display:inline-flex;background:var(--card);border:1px solid var(--hairline);border-radius:12px;padding:3px;gap:3px}
+  .seg button{appearance:none;background:none;border:none;cursor:pointer;color:var(--dim);
+    font:600 13.5px/1 inherit;padding:9px 18px;border-radius:9px;transition:all .22s var(--ease)}
+  .seg button.on{background:rgba(255,255,255,.12);color:var(--ink)}
+  .seg button:hover:not(.on){color:var(--ink)}
+
+  /* buttons */
+  .btn{appearance:none;border:none;cursor:pointer;font:600 14px/1 inherit;border-radius:13px;
+    padding:0 22px;height:46px;display:inline-flex;align-items:center;justify-content:center;gap:8px;
+    transition:filter .2s,opacity .2s,background .22s var(--ease)}
+  .btn.primary{background:linear-gradient(120deg,var(--blue),var(--purple));color:#fff}
+  .btn.primary:hover{filter:brightness(1.13)}
+  .btn.ghost{background:var(--card);border:1px solid var(--hairline);color:var(--ink)}
+  .btn.ghost:hover{background:var(--card-hover)}
+  .btn:disabled{filter:grayscale(.7) brightness(.55);cursor:default;opacity:.7}
+  .btn.sm{height:38px;padding:0 16px;font-size:13px;border-radius:11px}
+  .btnrow{display:flex;gap:10px;margin-top:24px;flex-wrap:wrap;align-items:center}
+
+  /* flash / status banners */
+  .flash{border-radius:14px;padding:13px 16px;font-size:14px;line-height:1.5;border:1px solid;margin-top:14px}
+  .flash.ok{background:rgba(48,209,88,.10);border-color:rgba(48,209,88,.35);color:#b8f5c4}
+  .flash.warn{background:rgba(255,159,10,.10);border-color:rgba(255,159,10,.35);color:#ffe0a8}
+  .flash.err{background:rgba(255,69,58,.10);border-color:rgba(255,69,58,.35);color:#ffb8b3}
+  .flash code{background:rgba(0,0,0,.3)}
+  .flash strong{color:var(--ink)}
+
+  .soon{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;letter-spacing:.06em;
+    text-transform:uppercase;color:var(--dimmer);border:1px solid var(--hairline-soft);border-radius:999px;padding:3px 10px}
+
+  /* step indicator */
+  .steps{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 30px;font:600 12px var(--mono);
+    text-transform:uppercase;letter-spacing:.05em;color:var(--dimmer)}
+  .steps .s{display:inline-flex;align-items:center;gap:8px}
+  .steps .s .n{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;
+    border:1px solid var(--hairline);font-size:11px;color:var(--dim);transition:all .3s var(--ease)}
+  .steps .s.done .n{background:rgba(255,255,255,.10);color:var(--ink);border-color:transparent}
+  .steps .s.cur .n{background:linear-gradient(120deg,var(--blue),var(--purple));color:#fff;border-color:transparent}
+  .steps .s.cur{color:var(--ink)}
+  .steps .s.done{color:var(--dim)}
+  .steps .arrow{color:var(--dimmer);margin:0 2px}
+
+  /* progress + log shared by every job stream */
+  .progressbar{height:8px;background:rgba(255,255,255,.09);border-radius:5px;overflow:hidden}
+  .progressbar i{display:block;height:100%;width:0%;border-radius:5px;
+    background:linear-gradient(90deg,var(--cyan),var(--blue));transition:width .5s var(--ease)}
+  .progressbar.green i{background:linear-gradient(90deg,#a8ff9e,var(--green))}
+  .progmeta{display:flex;justify-content:space-between;font-size:12.5px;color:var(--dim);margin-top:8px}
+  .logbox{margin-top:18px;background:rgba(0,0,0,.42);border:1px solid var(--hairline-soft);border-radius:14px;
+    padding:14px 16px;max-height:340px;overflow-y:auto;font:11.5px/1.55 var(--mono);color:var(--dim);white-space:pre-wrap;word-break:break-word}
+  .logbox:empty::before{content:"waiting for output…";color:var(--dimmer)}
+
+  /* shimmer skeletons */
+  .shimmer{background:linear-gradient(100deg,rgba(255,255,255,.04) 30%,rgba(255,255,255,.10) 50%,rgba(255,255,255,.04) 70%);
+    background-size:200% 100%;animation:sh 1.4s ease-in-out infinite;border-radius:8px;color:transparent!important}
+  @keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+  /* toasts */
+  #toasts{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:100;
+    display:flex;flex-direction:column;gap:10px;align-items:center;pointer-events:none}
+  .toast{background:rgba(30,30,32,.92);backdrop-filter:blur(20px);border:1px solid var(--hairline);
+    border-radius:13px;padding:12px 18px;font-size:14px;font-weight:500;box-shadow:0 16px 50px rgba(0,0,0,.6);
+    animation:toastIn .4s var(--ease);max-width:min(560px,90vw)}
+  .toast.err{border-color:rgba(255,69,58,.5)}
+  .toast.ok{border-color:rgba(48,209,88,.5)}
+  @keyframes toastIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+
+  /* empty state */
+  .empty{text-align:center;color:var(--dim);padding:60px 20px}
+  .empty h3{font-size:18px;font-weight:600;color:var(--ink);margin-bottom:8px;letter-spacing:-.01em}
+  .empty p{font-size:14px;max-width:46ch;margin:0 auto}
+
+  /* ═══════════════════ CHAT ═══════════════════ */
+  #s-chat{display:none}
+  #s-chat.active{display:flex!important;flex-direction:column}
+  #chat-scroll{flex:1;overflow-y:auto}
+  #chat-thread{max-width:840px;margin:0 auto;padding:30px 22px 16px;display:flex;flex-direction:column;gap:18px}
+  .msg{display:flex;flex-direction:column;gap:6px;max-width:90%}
+  .msg .who{font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--dimmer)}
+  .msg .bubble{border-radius:16px;padding:13px 17px;line-height:1.6;word-break:break-word;overflow-wrap:anywhere}
+  .msg.user{align-self:flex-end;align-items:flex-end}
+  .msg.user .bubble{background:linear-gradient(120deg,rgba(10,132,255,.26),rgba(94,92,230,.26));border:1px solid rgba(10,132,255,.35)}
+  .msg.assistant{align-self:flex-start;width:100%;max-width:840px}
+  .msg.assistant .bubble{background:var(--card);border:1px solid var(--hairline)}
+  .msg .meta{font-size:11.5px;color:var(--dimmer);font-variant-numeric:tabular-nums}
+  .msg .meta b{color:var(--green);font-weight:600}
+  /* markdown-ish rendering inside bubbles */
+  .bubble p{margin:0 0 10px}.bubble p:last-child{margin-bottom:0}
+  .bubble ul,.bubble ol{margin:0 0 10px;padding-left:22px}
+  .bubble li{margin:3px 0}
+  .bubble strong{font-weight:700;color:var(--ink)}
+  .bubble em{font-style:italic}
+  .bubble code{font-family:var(--mono);font-size:.86em;background:rgba(255,255,255,.10);padding:2px 7px;border-radius:6px}
+  .bubble pre{background:rgba(0,0,0,.45);border:1px solid var(--hairline-soft);border-radius:12px;
+    padding:13px 15px;overflow-x:auto;margin:10px 0;font:12.5px/1.6 var(--mono)}
+  .bubble pre code{background:none;padding:0;font-size:inherit}
+  .bubble h1,.bubble h2,.bubble h3{font-size:1.05em;font-weight:700;margin:12px 0 6px;letter-spacing:-.01em}
+  .cursor{display:inline-block;width:8px;height:17px;vertical-align:-3px;border-radius:2px;
+    background:linear-gradient(180deg,var(--pink),var(--purple));animation:blink 1s steps(2) infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  /* tool cards */
+  .tool{margin:10px 0;border:1px solid var(--hairline);border-radius:14px;overflow:hidden;background:var(--card-2)}
+  .tool .thead{display:flex;align-items:center;gap:10px;padding:11px 15px;cursor:pointer;user-select:none;transition:background .2s}
+  .tool .thead:hover{background:rgba(255,255,255,.04)}
+  .tool .ticon{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+    font-size:13px;background:rgba(94,92,230,.18);color:var(--cyan);flex:0 0 auto}
+  .tool .tname{font:600 13.5px var(--mono);color:var(--ink)}
+  .tool .targs{font:12px var(--mono);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto}
+  .tool .tstat{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;flex:0 0 auto;display:flex;align-items:center;gap:6px}
+  .tool .tstat .sdot{width:7px;height:7px;border-radius:50%}
+  .tool.running .tstat{color:var(--cyan)}.tool.running .sdot{background:var(--cyan);box-shadow:0 0 8px var(--cyan);animation:blink 1.1s infinite}
+  .tool.ok .tstat{color:var(--green)}.tool.ok .sdot{background:var(--green)}
+  .tool.fail .tstat{color:var(--red)}.tool.fail .sdot{background:var(--red)}
+  .tool .caret{color:var(--dimmer);transition:transform .25s var(--ease);flex:0 0 auto}
+  .tool.open .caret{transform:rotate(90deg)}
+  .tool .tbody{display:none;border-top:1px solid var(--hairline-soft);padding:12px 15px}
+  .tool.open .tbody{display:block}
+  .tool .blk{margin-bottom:10px}.tool .blk:last-child{margin-bottom:0}
+  .tool .blbl{font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dimmer);margin-bottom:5px}
+  .tool pre{background:rgba(0,0,0,.4);border-radius:9px;padding:10px 12px;overflow-x:auto;
+    font:12px/1.55 var(--mono);color:var(--dim);white-space:pre-wrap;word-break:break-word;max-height:260px;overflow-y:auto}
+
+  /* approval dialog */
+  .approval{margin:12px 0;border:1px solid rgba(255,159,10,.45);border-radius:16px;overflow:hidden;
+    background:rgba(255,159,10,.06);animation:fade .4s var(--ease)}
+  .approval .ahead{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid rgba(255,159,10,.25)}
+  .approval .ahead .ai{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;
+    background:rgba(255,159,10,.2);color:var(--orange);font-size:15px}
+  .approval .ahead .at{font-weight:700;font-size:14px}
+  .approval .ahead .as{font:12px var(--mono);color:var(--orange);margin-left:auto}
+  .approval .abody{padding:13px 16px}
+  .approval pre{background:rgba(0,0,0,.45);border-radius:10px;padding:12px 14px;overflow-x:auto;
+    font:12.5px/1.6 var(--mono);white-space:pre-wrap;word-break:break-word;max-height:280px;overflow-y:auto}
+  .approval .diffadd{color:var(--green)}
+  .approval .diffdel{color:var(--red)}
+  .approval .actions{display:flex;gap:10px;padding:0 16px 15px}
+  .approval .resolved{padding:11px 16px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+  .approval .resolved.allow{color:var(--green)}
+  .approval .resolved.deny{color:var(--red)}
+
+  /* chat hello / starters */
+  #chat-hello{max-width:840px;margin:6vh auto 0;padding:0 22px;text-align:center}
+  #chat-hello h1{font-size:clamp(34px,5vw,54px);font-weight:700;letter-spacing:-.03em;line-height:1.08}
+  #chat-hello p{margin-top:13px;color:var(--dim);font-size:15.5px}
+  #chat-hello .chips{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:28px}
+  .chip{border:1px solid var(--hairline);background:var(--card);color:var(--dim);border-radius:999px;
+    padding:9px 16px;font-size:13.5px;cursor:pointer;transition:all .25s var(--ease)}
+  .chip:hover{color:var(--ink);border-color:rgba(255,255,255,.32);background:var(--card-hover)}
+
+  /* chat composer */
+  #chat-foot{flex:0 0 auto;border-top:1px solid var(--hairline);padding:14px 22px 16px;
+    background:rgba(0,0,0,.4);backdrop-filter:blur(16px)}
+  .composer{max-width:840px;margin:0 auto}
+  .queuebar{display:none;max-width:840px;margin:0 auto 10px;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--dim)}
+  .queuebar .qtag{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--hairline);
+    border-radius:999px;padding:4px 11px;background:var(--card)}
+  .queuebar .qtag b{color:var(--ink);font-weight:600}
+  .inputrow{display:flex;gap:10px;align-items:flex-end}
+  #chat-box{flex:1;background:var(--card);border:1px solid var(--hairline);border-radius:16px;
+    color:var(--ink);font:15px/1.5 inherit;padding:13px 16px;resize:none;outline:none;
+    max-height:200px;min-height:50px;transition:border-color .25s}
+  #chat-box:focus{border-color:rgba(10,132,255,.5)}
+  #chat-send{background:linear-gradient(120deg,var(--blue),var(--purple));color:#fff;
+    border:none;border-radius:14px;height:50px;padding:0 22px;font:600 14px inherit;cursor:pointer;transition:filter .2s}
+  #chat-send:hover{filter:brightness(1.14)}
+  #chat-send:disabled{filter:grayscale(.8) brightness(.6);cursor:default}
+  #chat-stop{display:none;background:var(--card);border:1px solid var(--hairline);color:var(--ink);
+    border-radius:14px;height:50px;padding:0 20px;font:600 14px inherit;cursor:pointer}
+  #chat-stop:hover{background:var(--card-hover)}
+  .chat-hint{max-width:840px;margin:8px auto 0;font-size:11.5px;color:var(--dimmer);display:flex;justify-content:space-between;gap:10px}
+
+  /* loss chart */
+  .chartcard{margin-top:20px}
+  .chart-wrap{position:relative;background:rgba(0,0,0,.32);border:1px solid var(--hairline-soft);border-radius:14px;padding:14px;margin-top:6px}
+  .chart-legend{display:flex;gap:18px;font-size:12px;color:var(--dim);margin-bottom:8px}
+  .chart-legend .lg{display:inline-flex;align-items:center;gap:7px}
+  .chart-legend .sw{width:14px;height:3px;border-radius:2px}
+  .chart-stats{display:flex;gap:22px;flex-wrap:wrap;margin-top:12px;font-size:13px}
+  .chart-stats .cs b{display:block;font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:3px}
+  .chart-stats .cs span{font-size:20px;font-weight:700;letter-spacing:-.02em}
+
+  @media (max-width:900px){
+    .hpgrid{grid-template-columns:1fr}
+    nav .model{display:none}
+    .wrap{padding:34px 18px 100px}
+    nav{gap:12px;padding:0 16px}
+  }
+  @media (max-width:560px){
+    nav .brand{font-size:16px}
+    nav .tab{padding:8px 10px;font-size:13px}
+  }
+</style>
+</head>
+<body>
+<div class="bloom" id="bloom"></div>
+
+<!-- ═══════════════════ TOP NAV ═══════════════════ -->
+<nav>
+  <a class="brand grad g-hero" href="#/chat">mlx-bun</a>
+  <div class="tabs" id="tabs">
+    <a class="tab" href="#/chat" data-tab="chat">Chat</a>
+    <a class="tab" href="#/quantize" data-tab="quantize">Quantize</a>
+    <a class="tab" href="#/finetune" data-tab="finetune">Fine-tune</a>
+    <a class="tab" href="#/dataset" data-tab="dataset">Build Dataset</a>
+    <a class="tab" href="#/status" data-tab="status">Status</a>
+  </div>
+  <div class="right">
+    <button class="hf-gear" id="nav-hf" title="Hugging Face token settings" aria-label="Hugging Face settings">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+    </button>
+    <span class="model" id="nav-model" title="active model">connecting…</span>
+    <span class="pill" id="nav-conn"><span class="dot"></span><span id="nav-conn-text">connecting…</span></span>
+  </div>
+</nav>
+
+<!-- ═══════════════════ HF SETTINGS OVERLAY ═══════════════════ -->
+<div id="hf-overlay">
+  <div id="hf-modal">
+    <div class="hf-modal-head">
+      <div class="hf-modal-title">Hugging Face</div>
+      <button class="hf-close" id="hf-close" aria-label="Close">✕</button>
+    </div>
+    <p class="hf-modal-sub" id="hf-state">Checking for a saved token…</p>
+    <div class="field" style="margin-bottom:10px">
+      <label>Write token</label>
+      <input type="password" id="hf-token-input" placeholder="hf_…" autocomplete="off" spellcheck="false">
+      <div class="hint">A <strong>write</strong> token from huggingface.co/settings/tokens. Stored locally at <code>~/.mlx-bun/hf.json</code> — never sent anywhere but your own Hub pushes.</div>
+    </div>
+    <div id="hf-settings-msg"></div>
+    <div class="btnrow" style="margin-top:14px">
+      <button class="btn primary sm" id="hf-save">Save token</button>
+    </div>
+  </div>
+</div>
+
+<div id="app">
+
+  <!-- ═══════════════════ CHAT ═══════════════════ -->
+  <section data-route="chat" id="s-chat">
+    <div id="chat-scroll">
+      <div id="chat-hello">
+        <h1>Local. Private. <span class="grad g-hero">Yours.</span></h1>
+        <p>A full pi agent on this machine — local model, local tools, zero cloud. Every token below is generated here.</p>
+        <div class="chips">
+          <button class="chip" data-q="What can you help me with on this machine?">What can you do?</button>
+          <button class="chip" data-q="List the files in the current directory and summarize the project.">Summarize this project</button>
+          <button class="chip" data-q="Write a haiku about running AI models locally.">Haiku about local AI</button>
+          <button class="chip" data-q="Explain what makes Apple silicon good at running language models.">Why Apple silicon?</button>
+        </div>
+      </div>
+      <div id="chat-thread"></div>
+    </div>
+    <div id="chat-foot">
+      <div class="queuebar" id="chat-queue"></div>
+      <div class="composer">
+        <div class="inputrow">
+          <textarea id="chat-box" rows="1" placeholder="Message the local agent…  (Enter to send · Shift+Enter for newline)"></textarea>
+          <button id="chat-stop" title="Abort the current turn">Stop</button>
+          <button id="chat-send">Send</button>
+        </div>
+        <div class="chat-hint">
+          <span id="chat-status-line">Enter to send · Shift+Enter for a new line · type while it streams to steer</span>
+          <span id="chat-tps"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════ QUANTIZE ═══════════════════ -->
+  <section data-route="quantize" id="s-quantize">
+    <div class="scroller"><div class="wrap narrow lit">
+      <div class="eyebrow">Workflow · quantize</div>
+      <h1 class="title">Quantize <span class="grad g-blue">a model.</span></h1>
+      <p class="lead">Shrink any supported model to 4 or 8-bit with OptiQ-grade group quantization — smaller on disk,
+      faster to decode, and serveable the moment it's scanned. <strong>No Python in the path.</strong></p>
+
+      <div class="steps" id="q-steps"></div>
+
+      <!-- step 1: source -->
+      <div class="card" data-qstep="0">
+        <h2 style="font-size:24px;margin-bottom:4px">Source model</h2>
+        <p class="lead" style="margin:6px 0 22px;font-size:14.5px">Point at a Hugging Face repo id or a local snapshot path. Inspect first to confirm support and size.</p>
+        <div class="field">
+          <label>Model id or path</label>
+          <input type="text" id="q-model" placeholder="mlx-community/Qwen3-8B-bf16" autocomplete="off">
+          <div class="hint">Anything on huggingface.co, or an absolute path to a local snapshot.</div>
+        </div>
+        <div class="btnrow">
+          <button class="btn ghost" id="q-inspect">Inspect</button>
+        </div>
+        <div id="q-inspect-out"></div>
+      </div>
+
+      <!-- step 2: configure -->
+      <div class="card" data-qstep="1" style="display:none">
+        <h2 style="font-size:24px;margin-bottom:4px">Configure</h2>
+        <p class="lead" style="margin:6px 0 22px;font-size:14.5px">Lower bits = smaller and faster, with some quality cost. 4-bit is the balanced default.</p>
+        <div class="field">
+          <label>Precision</label>
+          <div class="seg" id="q-bits">
+            <button data-v="4" class="on">4-bit</button>
+            <button data-v="8">8-bit</button>
+          </div>
+          <div class="hint" id="q-bits-hint">4-bit · ~4× smaller than bf16 · the recommended default for local serving.</div>
+        </div>
+        <div class="field">
+          <label>Group size</label>
+          <div class="seg" id="q-gs">
+            <button data-v="64" class="on">64</button>
+            <button data-v="32">32</button>
+          </div>
+          <div class="hint">Weights per shared scale. 64 is standard; 32 trades a little size for slightly better fidelity.</div>
+        </div>
+        <div class="field">
+          <label>Bit allocation</label>
+          <div class="seg" id="q-mode">
+            <button data-v="uniform" class="on">Uniform bits</button>
+            <button data-v="mixed">Mixed (target bpw)</button>
+          </div>
+          <div class="hint">Uniform applies the bits above to every layer. Mixed runs OptiQ's sensitivity sweep + knapsack to allocate per-layer precision toward a target average.</div>
+        </div>
+        <div class="field" id="q-bpw-field" style="display:none">
+          <label>Target bits per weight · <span class="num" id="q-bpw-val">5.0</span></label>
+          <input type="range" id="q-bpw" min="3" max="8" step="0.5" value="5" style="accent-color:var(--blue)">
+          <div class="hint">OptiQ measures each layer's sensitivity, then solves a knapsack to pick per-layer 4/8-bit hitting this average bpw (~2–5 min). Lower = smaller; higher = closer to bf16.</div>
+        </div>
+        <div class="btnrow">
+          <button class="btn ghost" data-qback>Back</button>
+          <button class="btn primary" id="q-submit">Start quantize</button>
+        </div>
+      </div>
+
+      <!-- step 3: run -->
+      <div class="card" data-qstep="2" style="display:none">
+        <h2 style="font-size:24px;margin-bottom:16px">Running</h2>
+        <div class="progressbar"><i id="q-bar"></i></div>
+        <div class="progmeta"><span id="q-msg">Starting…</span><span id="q-pct">0%</span></div>
+        <div class="logbox" id="q-log"></div>
+      </div>
+
+      <!-- step 4: done -->
+      <div class="card" data-qstep="3" style="display:none">
+        <h2 style="font-size:24px;margin-bottom:6px"><span class="grad g-green">Done.</span></h2>
+        <p class="lead" style="margin:6px 0 18px;font-size:14.5px">Your quantized model is written to disk.</p>
+        <div class="field"><label>Output directory</label>
+          <pre class="logbox" id="q-out" style="max-height:none;margin-top:0"></pre></div>
+        <div class="flash ok">Run <code>mlx-bun scan</code> (or it's auto-picked up on restart) to make this model serveable from the Library.</div>
+        <div class="grid g4" style="margin-top:14px">
+          <div class="card"><h3>Push to Hugging Face</h3><div class="cap">Publish this quantized model to a Hugging Face repo.</div>
+            <div class="btnrow" style="margin-top:14px"><button class="btn ghost sm" id="q-push">Push to HF</button></div>
+            <div id="q-push-panel"></div>
+          </div>
+        </div>
+        <div class="btnrow"><button class="btn ghost" id="q-again">Quantize another</button></div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ═══════════════════ FINE-TUNE ═══════════════════ -->
+  <section data-route="finetune" id="s-finetune">
+    <div class="scroller"><div class="wrap narrow lit">
+      <div class="eyebrow">Workflow · fine-tune</div>
+      <h1 class="title">Fine-tune <span class="grad g-green">a LoRA.</span></h1>
+      <p class="lead">Train a low-rank adapter on top of any local model — SFT or DPO — and watch the loss curve land
+      live. Hot-swappable onto the quantized base, <strong>no full reload.</strong></p>
+
+      <div class="steps" id="f-steps"></div>
+
+      <!-- step 1: base -->
+      <div class="card" data-fstep="0">
+        <h2 style="font-size:24px;margin-bottom:4px">Base model</h2>
+        <p class="lead" style="margin:6px 0 22px;font-size:14.5px">The model you're adapting. Point at a local model directory or snapshot path.</p>
+        <div class="field">
+          <label>Model directory / path</label>
+          <input type="text" id="f-model" placeholder="/abs/path/to/model  or  mlx-community/Qwen3-8B-4bit" autocomplete="off">
+          <div class="hint">An OptiQ quant or any supported local model works.</div>
+        </div>
+        <div class="btnrow"><button class="btn primary" id="f-next0">Continue</button></div>
+      </div>
+
+      <!-- step 2: dataset -->
+      <div class="card" data-fstep="1" style="display:none">
+        <h2 style="font-size:24px;margin-bottom:4px">Dataset</h2>
+        <p class="lead" style="margin:6px 0 22px;font-size:14.5px">A directory with <code>train.jsonl</code> (and optionally <code>valid.jsonl</code>).
+          Standard shapes accepted: <code>{"text":…}</code>, <code>{"prompt":…,"completion":…}</code>, <code>{"messages":[…]}</code>.</p>
+        <div class="field">
+          <label>Dataset directory</label>
+          <input type="text" id="f-data" placeholder="/abs/path/to/dataset" autocomplete="off">
+        </div>
+        <div class="btnrow"><button class="btn ghost" id="f-inspect">Inspect</button></div>
+        <div id="f-inspect-out"></div>
+        <div class="btnrow">
+          <button class="btn ghost" data-fback>Back</button>
+          <button class="btn primary" id="f-next1" disabled>Continue</button>
+        </div>
+      </div>
+
+      <!-- step 3: hyperparameters -->
+      <div class="card" data-fstep="2" style="display:none">
+        <h2 style="font-size:24px;margin-bottom:16px">Hyperparameters</h2>
+        <div class="field">
+          <label>Training objective</label>
+          <div class="seg" id="f-method">
+            <button data-v="sft" class="on">SFT</button>
+            <button data-v="dpo">DPO</button>
+          </div>
+          <div class="hint" id="f-method-hint">Supervised fine-tuning — data is messages or prompt+completion.</div>
+        </div>
+
+        <div id="f-dpo-extra" style="display:none">
+          <div class="flash warn" style="margin-bottom:18px">
+            <strong>DPO needs a lower learning rate.</strong> Default 5e-5 (~4× lower than SFT) with warmup. Too high and the preference loss blows out the reward margin. Confirm <em>chosen</em>/<em>rejected</em> are both valid completions of the same prompt.
+          </div>
+          <div class="hpgrid" style="margin-bottom:18px">
+            <div class="field"><label>DPO beta (KL strength)</label><input type="number" id="f-beta" value="0.1" step="0.01" min="0.01" max="1"></div>
+            <div class="field"><label>LR schedule</label>
+              <select id="f-sched"><option value="cosine">cosine (recommended)</option><option value="constant">constant</option><option value="linear">linear</option></select></div>
+          </div>
+        </div>
+
+        <div class="hpgrid">
+          <div class="field"><label>Rank</label><input type="number" id="f-rank" value="8" min="1" max="128"></div>
+          <div class="field"><label>Scale (alpha = rank × scale)</label><input type="number" id="f-scale" value="20" step="0.5" min="0"></div>
+          <div class="field"><label>Dropout</label><input type="number" id="f-dropout" value="0" step="0.01" min="0" max="0.5"></div>
+          <div class="field"><label>Target modules</label><input type="text" id="f-modules" value="q_proj,v_proj"></div>
+          <div class="field"><label>num_layers (-1 = all)</label><input type="number" id="f-layers" value="16" min="-1"></div>
+          <div class="field"><label>iters</label><input type="number" id="f-iters" value="500" min="10"></div>
+          <div class="field"><label>batch_size</label><input type="number" id="f-batch" value="1" min="1" max="16"></div>
+          <div class="field"><label>learning rate</label><input type="number" id="f-lr" value="0.0002" step="0.00001" min="0"></div>
+          <div class="field"><label>max_seq_length</label><input type="number" id="f-seq" value="1024" min="128"></div>
+        </div>
+        <div class="btnrow">
+          <button class="btn ghost" data-fback>Back</button>
+          <button class="btn primary" id="f-submit">Start training</button>
+        </div>
+      </div>
+
+      <!-- step 4: train -->
+      <div class="card" data-fstep="3" style="display:none">
+        <h2 style="font-size:24px;margin-bottom:16px">Training</h2>
+        <div class="progressbar green"><i id="f-bar"></i></div>
+        <div class="progmeta"><span id="f-msg">Starting…</span><span id="f-pct">0%</span></div>
+
+        <div class="chartcard">
+          <div class="chart-legend">
+            <span class="lg"><span class="sw" style="background:var(--green)"></span>train loss</span>
+            <span class="lg" id="f-leg-val" style="display:none"><span class="sw" style="background:var(--blue)"></span>val loss</span>
+          </div>
+          <div class="chart-wrap">
+            <svg id="f-chart" viewBox="0 0 600 200" preserveAspectRatio="none" style="width:100%;height:200px;display:block">
+              <text x="300" y="104" text-anchor="middle" fill="var(--dimmer)" font-size="13" id="f-chart-empty">waiting for the first metric…</text>
+            </svg>
+          </div>
+          <div class="chart-stats">
+            <div class="cs"><b>step</b><span class="num" id="f-step">—</span></div>
+            <div class="cs"><b>train loss</b><span class="num grad g-green" id="f-loss">—</span></div>
+            <div class="cs"><b>learning rate</b><span class="num" id="f-curlr">—</span></div>
+            <div class="cs"><b>tok/s</b><span class="num" id="f-curtps">—</span></div>
+          </div>
+        </div>
+        <div class="logbox" id="f-log"></div>
+      </div>
+
+      <!-- step 5: done -->
+      <div class="card" data-fstep="4" style="display:none">
+        <h2 style="font-size:24px;margin-bottom:6px"><span class="grad g-green">Done.</span></h2>
+        <p class="lead" style="margin:6px 0 18px;font-size:14.5px">Adapter trained and saved.</p>
+        <div class="field"><label>Adapter path</label>
+          <pre class="logbox" id="f-out" style="max-height:none;margin-top:0"></pre></div>
+        <div class="grid g4" style="margin-top:8px">
+          <div class="card"><h3>Merge into base</h3><div class="cap">Fold two adapters together (or an adapter into a base adapter) into the weights for a standalone model.</div>
+            <div class="field" style="margin-top:14px;margin-bottom:10px"><label>Adapter A</label><input type="text" id="f-merge-a" placeholder="/abs/path/to/adapter" autocomplete="off"></div>
+            <div class="field" style="margin-bottom:10px"><label>Adapter B</label><input type="text" id="f-merge-b" placeholder="/abs/path/to/other-adapter" autocomplete="off"></div>
+            <div class="btnrow" style="margin-top:0"><button class="btn ghost sm" id="f-merge-go">Merge</button></div>
+            <div id="f-merge-out"></div>
+          </div>
+          <div class="card"><h3>Export model dir</h3><div class="cap">Bundle base + adapter into one drop-in directory.</div>
+            <div class="field" style="margin-top:14px;margin-bottom:10px"><label>Base model</label><input type="text" id="f-exp-base" placeholder="/abs/path/to/base" autocomplete="off"></div>
+            <div class="field" style="margin-bottom:10px"><label>Adapter path</label><input type="text" id="f-exp-adapter" placeholder="/abs/path/to/adapter" autocomplete="off"></div>
+            <div class="btnrow" style="margin-top:0"><button class="btn ghost sm" id="f-exp-go">Export</button></div>
+            <div id="f-exp-out"></div>
+          </div>
+          <div class="card"><h3>Push to HF</h3><div class="cap">Publish the trained adapter to a Hugging Face repo.</div>
+            <div class="btnrow" style="margin-top:14px"><button class="btn ghost sm" id="f-push">Push to HF</button></div>
+            <div id="f-push-panel"></div>
+          </div>
+        </div>
+        <div class="btnrow"><button class="btn ghost" id="f-again">Train another</button></div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ═══════════════════ DATASET ═══════════════════ -->
+  <section data-route="dataset" id="s-dataset">
+    <div class="scroller"><div class="wrap lit">
+      <div class="eyebrow">Workflow · dataset</div>
+      <h1 class="title">Build <span class="grad g-pink">a dataset.</span></h1>
+      <p class="lead">Turn pairs, docs, code, and seeds into clean JSONL the fine-tune workflow can consume.
+      Some templates run entirely offline; <strong>LLM-driven ones use the local model on this server.</strong></p>
+
+      <div class="steps" id="d-steps"></div>
+
+      <!-- step 1: pick template -->
+      <div data-dstep="0">
+        <div id="d-templates" class="grid" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr));margin-top:6px"></div>
+      </div>
+
+      <!-- step 2: fill form -->
+      <div class="card" data-dstep="1" style="display:none;max-width:860px">
+        <h2 style="font-size:24px;margin-bottom:4px" id="d-form-title">—</h2>
+        <p class="lead" style="margin:6px 0 22px;font-size:14.5px" id="d-form-desc"></p>
+        <div id="d-form"></div>
+        <div class="btnrow">
+          <button class="btn ghost" data-dback>Back</button>
+          <button class="btn primary" id="d-submit">Generate</button>
+        </div>
+      </div>
+
+      <!-- step 3: run -->
+      <div class="card" data-dstep="2" style="display:none;max-width:860px">
+        <h2 style="font-size:24px;margin-bottom:16px">Generating</h2>
+        <div class="progressbar"><i id="d-bar"></i></div>
+        <div class="progmeta"><span id="d-msg">Starting…</span><span id="d-pct">0%</span></div>
+        <div class="logbox" id="d-log"></div>
+      </div>
+
+      <!-- step 4: done -->
+      <div class="card" data-dstep="3" style="display:none;max-width:860px">
+        <h2 style="font-size:24px;margin-bottom:6px"><span class="grad g-green">Done.</span></h2>
+        <div class="grid g4" style="margin:6px 0 18px">
+          <div class="card"><h3>Train rows</h3><div class="stat num grad g-green" id="d-ntrain">—</div></div>
+          <div class="card"><h3>Valid rows</h3><div class="stat num grad g-blue" id="d-nvalid">—</div></div>
+        </div>
+        <div class="field"><label>Output directory</label>
+          <pre class="logbox" id="d-out" style="max-height:none;margin-top:0"></pre></div>
+        <div class="flash ok">Point Fine-tune → Dataset at this directory to train on it.</div>
+        <div class="grid g4" style="margin-top:14px">
+          <div class="card"><h3>Push to HF (dataset repo)</h3><div class="cap">Publish this JSONL dataset to a Hugging Face dataset repo.</div>
+            <div class="btnrow" style="margin-top:14px"><button class="btn ghost sm" id="d-push">Push to HF</button></div>
+            <div id="d-push-panel"></div>
+          </div>
+        </div>
+        <div class="btnrow"><button class="btn ghost" id="d-again">Build another</button></div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ═══════════════════ STATUS ═══════════════════ -->
+  <section data-route="status" id="s-status">
+    <div class="scroller"><div class="wrap" id="status-page">
+
+      <div style="text-align:center;margin-bottom:18px" data-reveal>
+        <div class="eyebrow" style="margin-bottom:18px">local ai · apple silicon · one binary</div>
+        <h1 class="title grad g-hero" style="font-size:clamp(48px,8vw,110px)">mlx-bun</h1>
+        <p class="lead" style="margin:18px auto 0;text-align:center">The Python-free local AI engine. <strong>Bun + MLX, nothing else.</strong></p>
+      </div>
+
+      <section style="margin-top:56px" data-reveal>
+        <h2>Now serving<span class="soft">.</span></h2>
+        <div class="grid g4" style="margin-top:24px">
+          <div class="card" id="st-model-card" style="grid-column:1 / -1;display:flex;flex-wrap:wrap;align-items:baseline;gap:14px 26px">
+            <div><h3>Model</h3><div id="st-model-id" style="font-size:clamp(20px,2.6vw,32px);font-weight:700;letter-spacing:-.02em;word-break:break-all">—</div></div>
+            <div id="st-model-meta" style="font-size:14.5px;color:var(--dim);font-weight:500">—</div>
+          </div>
+          <div class="card">
+            <h3>Decode · predicted</h3>
+            <div class="stat num grad g-green"><span id="st-tps">—</span><small>tok/s</small></div>
+            <div class="cap" id="st-tps-cap">from weights ÷ bandwidth on this machine</div>
+          </div>
+          <div class="card">
+            <h3>Max safe context</h3>
+            <div class="stat num grad g-blue"><span id="st-safe-ctx">—</span><small>tokens</small></div>
+            <div class="cap">solved from KV growth + prefill transient, never guessed</div>
+          </div>
+          <div class="card">
+            <h3>Memory</h3>
+            <div class="kv"><b>weights</b><span class="num" id="st-weights">—</span></div>
+            <div class="kv"><b>usable</b><span class="num" id="st-usable">—</span></div>
+            <div class="kv"><b>budget</b><span class="num" id="st-budget">—</span></div>
+            <div class="meter warm"><i id="st-mem-bar"></i></div>
+          </div>
+          <div class="card">
+            <h3>Prompt cache</h3>
+            <div class="kv"><b>hit rate</b><span class="num" id="st-pc-hits">—</span></div>
+            <div class="kv"><b>entries</b><span class="num" id="st-pc-entries">—</span></div>
+            <div class="kv"><b>bytes</b><span class="num" id="st-pc-bytes">—</span></div>
+            <div class="meter"><i id="st-pc-bar"></i></div>
+          </div>
+          <div class="card">
+            <h3>Response store</h3>
+            <div class="kv"><b>entries</b><span class="num" id="st-rs-entries">—</span></div>
+            <div class="kv"><b>bytes</b><span class="num" id="st-rs-bytes">—</span></div>
+            <div class="kv"><b>ttl</b><span class="num" id="st-rs-ttl">—</span></div>
+            <div class="meter"><i id="st-rs-bar"></i></div>
+          </div>
+          <div class="card">
+            <h3>KV quantization</h3>
+            <div class="kv"><b>mode</b><span id="st-kv-mode">—</span></div>
+            <div id="st-kv-layers"></div>
+          </div>
+          <div class="card" id="st-dl-card" style="grid-column:1 / -1;display:none">
+            <h3>Downloads</h3>
+            <div id="st-dl-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section style="margin-top:80px" data-reveal>
+        <h2>Library<span class="soft">.</span> <span class="grad g-green">Every model, assessed.</span></h2>
+        <p class="lead">Everything in the local cache, each judged by the fit solver for <strong>this machine</strong>.</p>
+        <div class="card tablecard" style="margin-top:26px">
+          <table>
+            <thead><tr><th>Model</th><th>Size</th><th>Status</th><th>Max context</th><th>Decode</th></tr></thead>
+            <tbody id="st-lib-body"><tr><td colspan="5" style="text-align:center;color:var(--dimmer)">waiting for server…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section style="margin-top:80px" data-reveal>
+        <h2>Will it fit<span class="soft">?</span> <span class="grad g-blue">Solved, not guessed.</span></h2>
+        <p class="lead">Weights + KV growth + prefill transient against wired memory — the same assessment that gates every request.</p>
+        <div class="grid g4" style="margin:26px 0 14px">
+          <div class="card">
+            <h3>This machine</h3>
+            <div class="kv"><b>RAM</b><span class="num" id="st-m-ram">—</span></div>
+            <div class="kv"><b>bandwidth</b><span class="num" id="st-m-bw">—</span></div>
+            <div class="kv"><b>verdict</b><span id="st-m-fits">—</span></div>
+          </div>
+          <div class="card">
+            <h3>At max context · <span class="num" id="st-fit-ctx">—</span> tokens</h3>
+            <div class="kv"><b>weights</b><span class="num" id="st-f-weights">—</span></div>
+            <div class="kv"><b>kv cache</b><span class="num" id="st-f-kv">—</span></div>
+            <div class="kv"><b>transient</b><span class="num" id="st-f-transient">—</span></div>
+            <div class="kv"><b>total / usable</b><span class="num" id="st-f-total">—</span></div>
+            <div class="meter"><i id="st-fit-bar"></i></div>
+          </div>
+        </div>
+        <div class="card tablecard">
+          <table>
+            <thead><tr><th>Apple silicon · this model @ <span class="num" id="st-sku-ctx">32,768</span> ctx</th>
+              <th>RAM</th><th>Fits</th><th>Max context</th><th>Decode</th></tr></thead>
+            <tbody id="st-sku-body"><tr><td colspan="5" style="text-align:center;color:var(--dimmer)">waiting for server…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer style="margin-top:90px;border-top:1px solid var(--hairline);padding-top:26px;display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px;font-size:13px;color:var(--dimmer)">
+        <span>mlx-bun · M-series Macs · no Python anywhere in the serving path</span>
+        <span>server up <span id="st-uptime">—</span> · updated <span id="st-updated">never</span></span>
+      </footer>
+    </div></div>
+  </section>
+
+</div>
+
+<div id="toasts"></div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════
+   SHARED HELPERS
+   ════════════════════════════════════════════════════════════════════ */
+const $ = (id) => document.getElementById(id);
+const gb = (b) => b == null ? "—" : (b / 2 ** 30).toFixed(2) + " GB";
+const mb = (b) => b == null ? "—" : (b / 2 ** 20).toFixed(1) + " MB";
+const num = (n) => n == null ? "—" : Math.round(n).toLocaleString();
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+/** Build a DOM node quickly. */
+function el(tag, cls, parent) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+/** Toast notification. kind: "" | "ok" | "err". */
+function toast(msg, kind = "", ms = 4200) {
+  const t = el("div", "toast " + kind, $("toasts"));
+  t.textContent = msg;
+  setTimeout(() => { t.style.transition = "opacity .4s,transform .4s"; t.style.opacity = "0"; t.style.transform = "translateY(10px)"; setTimeout(() => t.remove(), 420); }, ms);
+}
+
+/** Fetch JSON with graceful error handling. Throws on !ok. */
+async function api(path, opts) {
+  const r = await fetch(path, {
+    headers: { "content-type": "application/json" },
+    ...opts,
+    ...(opts && opts.body ? { body: typeof opts.body === "string" ? opts.body : JSON.stringify(opts.body) } : {}),
+  });
+  const text = await r.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { ok: false, error: text.slice(0, 400) || ("HTTP " + r.status) }; }
+  if (!r.ok && data.ok === undefined) data = { ok: false, error: data.error || data.message || ("HTTP " + r.status) };
+  return data;
+}
+
+/**
+ * Wraps an EventSource over /api/jobs/:id/stream and dispatches typed events.
+ * Server → client line protocol (JSON per `data:` line):
+ *   {type:"log",  line}
+ *   {type:"stage", stage, progress, message, output_dir?, adapter_path?}
+ *   {type:"metric", kind:"train"|"val", step, loss, lr?, tps?, progress?, message?}
+ *   {type:"done"}  {type:"failed", error}
+ * Returns the EventSource so callers can .close().
+ */
+function jobStream(jobId, handlers) {
+  const es = new EventSource("/api/jobs/" + encodeURIComponent(jobId) + "/stream");
+  es.onmessage = (ev) => {
+    let e; try { e = JSON.parse(ev.data); } catch { return; }
+    const fn = handlers[e.type];
+    if (fn) fn(e);
+  };
+  es.addEventListener("end", () => es.close());
+  es.onerror = () => { if (handlers.error) handlers.error(); };
+  return es;
+}
+
+/** Minimal, safe markdown-ish renderer (code fences, inline code, bold, italic, lists, headings). */
+function mdToHtml(src) {
+  const lines = String(src).split("\n");
+  let html = "", inCode = false, codeBuf = [], listType = null;
+  const closeList = () => { if (listType) { html += "</" + listType + ">"; listType = null; } };
+  const inline = (t) => esc(t)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+  for (const ln of lines) {
+    const fence = ln.match(/^```/);
+    if (fence) {
+      if (inCode) { html += "<pre><code>" + esc(codeBuf.join("\n")) + "</code></pre>"; codeBuf = []; inCode = false; }
+      else { closeList(); inCode = true; }
+      continue;
+    }
+    if (inCode) { codeBuf.push(ln); continue; }
+    const h = ln.match(/^(#{1,3})\s+(.*)/);
+    if (h) { closeList(); html += "<h" + h[1].length + ">" + inline(h[2]) + "</h" + h[1].length + ">"; continue; }
+    const ul = ln.match(/^\s*[-*]\s+(.*)/);
+    const ol = ln.match(/^\s*\d+\.\s+(.*)/);
+    if (ul) { if (listType !== "ul") { closeList(); html += "<ul>"; listType = "ul"; } html += "<li>" + inline(ul[1]) + "</li>"; continue; }
+    if (ol) { if (listType !== "ol") { closeList(); html += "<ol>"; listType = "ol"; } html += "<li>" + inline(ol[1]) + "</li>"; continue; }
+    if (ln.trim() === "") { closeList(); continue; }
+    closeList();
+    html += "<p>" + inline(ln) + "</p>";
+  }
+  if (inCode) html += "<pre><code>" + esc(codeBuf.join("\n")) + "</code></pre>";
+  closeList();
+  return html;
+}
+
+/** Render a step indicator into a container. names[], current index. */
+function renderSteps(container, names, cur) {
+  container.innerHTML = names.map((n, i) => {
+    const cls = i === cur ? "cur" : (i < cur ? "done" : "");
+    const arrow = i < names.length - 1 ? '<span class="arrow">→</span>' : "";
+    return '<span class="s ' + cls + '"><span class="n">' + (i + 1) + "</span>" + esc(n) + "</span>" + arrow;
+  }).join("");
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   HUGGING FACE — shared token settings + push-to-hub flow
+   ════════════════════════════════════════════════════════════════════ */
+
+/** Reflect saved-token state on the nav gear. */
+async function refreshHfGear() {
+  try {
+    const d = await api("/api/settings/hf-token");
+    const saved = !!(d && d.ok && d.hasToken);
+    $("nav-hf").classList.toggle("saved", saved);
+    $("nav-hf").title = saved ? "Hugging Face token saved · click to replace" : "Hugging Face token settings";
+    return saved;
+  } catch { return false; }
+}
+
+/* — the nav settings modal — */
+function openHfSettings() {
+  const ov = $("hf-overlay"); ov.classList.add("open");
+  $("hf-token-input").value = ""; $("hf-settings-msg").innerHTML = "";
+  $("hf-state").textContent = "Checking for a saved token…";
+  api("/api/settings/hf-token").then((d) => {
+    const saved = !!(d && d.ok && d.hasToken);
+    $("hf-state").innerHTML = saved
+      ? 'A write token is <strong>saved</strong>. Enter a new one below to replace it.'
+      : 'No token saved yet. Add a write token to push models and datasets to the Hub.';
+  }).catch(() => { $("hf-state").textContent = "Could not reach the server."; });
+  setTimeout(() => $("hf-token-input").focus(), 50);
+}
+function closeHfSettings() { $("hf-overlay").classList.remove("open"); }
+
+async function saveHfToken() {
+  const token = $("hf-token-input").value.trim();
+  const msg = $("hf-settings-msg");
+  if (!token) { msg.innerHTML = '<div class="flash err">Enter a token first.</div>'; return; }
+  const btn = $("hf-save"); btn.disabled = true;
+  const d = await api("/api/settings/hf-token", { method: "POST", body: { token } }).catch(() => ({ ok: false, error: "request failed" }));
+  btn.disabled = false;
+  if (!d.ok) { msg.innerHTML = '<div class="flash err">' + esc(d.error || "could not save token") + "</div>"; return; }
+  msg.innerHTML = '<div class="flash ok">Token saved to <code>~/.mlx-bun/hf.json</code>.</div>';
+  $("hf-token-input").value = "";
+  refreshHfGear();
+  toast("Hugging Face token saved", "ok");
+}
+
+/**
+ * Shared push-to-hub flow, rendered inline inside a done-step card.
+ *   pushToHub(panelEl, { kind, job_id?, source_path? })
+ * kind: "quantize" | "finetune" | "dataset". Posts to /api/{kind}/push.
+ * Walks: ensure token → repo_id + private → POST → success/error flash.
+ */
+async function pushToHub(panel, { kind, job_id, source_path }) {
+  panel.innerHTML = '<div class="pushpanel"><div class="flash"><span class="shimmer">checking Hugging Face token…</span></div></div>';
+  const wrap = panel.firstChild;
+  let hasToken = false;
+  try { const s = await api("/api/settings/hf-token"); hasToken = !!(s && s.ok && s.hasToken); } catch {}
+
+  const renderForm = () => {
+    wrap.innerHTML =
+      (!hasToken
+        ? '<div class="field"><label>Hugging Face write token</label>' +
+          '<input type="password" class="p-token" placeholder="hf_…" autocomplete="off" spellcheck="false">' +
+          '<div class="hint">A <strong>write</strong> token from huggingface.co/settings/tokens. Stored locally at <code>~/.mlx-bun/hf.json</code>.</div></div>'
+        : "") +
+      '<div class="field"><label>Repository id</label>' +
+        '<input type="text" class="p-repo" placeholder="you/my-' + esc(kind === "dataset" ? "dataset" : "model") + '" autocomplete="off"></div>' +
+      '<div class="field"><label class="chk"><input type="checkbox" class="p-priv">Private repository</label></div>' +
+      '<div class="p-msg"></div>' +
+      '<div class="btnrow" style="margin-top:6px"><button class="btn primary sm p-go">' +
+        (hasToken ? "Push" : "Save token &amp; push") + "</button></div>";
+    wrap.querySelector(".p-go").onclick = go;
+    const focusEl = wrap.querySelector(hasToken ? ".p-repo" : ".p-token");
+    if (focusEl) focusEl.focus();
+  };
+
+  async function go() {
+    const msg = wrap.querySelector(".p-msg");
+    const repo = (wrap.querySelector(".p-repo").value || "").trim();
+    const priv = wrap.querySelector(".p-priv").checked;
+    if (!repo) { msg.innerHTML = '<div class="flash err">Enter a repository id (e.g. <code>you/my-model</code>).</div>'; return; }
+    const btn = wrap.querySelector(".p-go"); btn.disabled = true;
+
+    if (!hasToken) {
+      const token = (wrap.querySelector(".p-token").value || "").trim();
+      if (!token) { msg.innerHTML = '<div class="flash err">Enter a write token first.</div>'; btn.disabled = false; return; }
+      const sv = await api("/api/settings/hf-token", { method: "POST", body: { token } }).catch(() => ({ ok: false, error: "request failed" }));
+      if (!sv.ok) { msg.innerHTML = '<div class="flash err">' + esc(sv.error || "could not save token") + "</div>"; btn.disabled = false; return; }
+      hasToken = true; refreshHfGear();
+    }
+
+    msg.innerHTML = '<div class="flash"><span class="shimmer">pushing to ' + esc(repo) + "…</span></div>";
+    const body = { repo_id: repo, private: priv };
+    if (job_id != null) body.job_id = job_id;
+    if (source_path != null) body.source_path = source_path;
+    const d = await api("/api/" + kind + "/push", { method: "POST", body }).catch(() => ({ ok: false, error: "request failed" }));
+    btn.disabled = false;
+    if (!d.ok) { msg.innerHTML = '<div class="flash err">' + esc(d.error || "push failed") + "</div>"; return; }
+    const url = d.url || ("https://huggingface.co/" + repo);
+    wrap.innerHTML = '<div class="flash ok">Pushed to <a href="' + esc(url) + '" target="_blank" rel="noopener" style="text-decoration:underline">' + esc(url) + "</a></div>";
+    toast("Pushed to Hugging Face", "ok");
+  }
+
+  renderForm();
+}
+
+/* wire the nav gear + modal once at boot */
+(function initHfSettings() {
+  $("nav-hf").onclick = openHfSettings;
+  $("hf-close").onclick = closeHfSettings;
+  $("hf-save").onclick = saveHfToken;
+  $("hf-overlay").addEventListener("click", (e) => { if (e.target === $("hf-overlay")) closeHfSettings(); });
+  $("hf-token-input").addEventListener("keydown", (e) => { if (e.key === "Enter") saveHfToken(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("hf-overlay").classList.contains("open")) closeHfSettings(); });
+  refreshHfGear();
+})();
+
+/* ════════════════════════════════════════════════════════════════════
+   ROUTER  — toggles section[data-route]; lazily inits each controller.
+   ════════════════════════════════════════════════════════════════════ */
+const ROUTES = ["chat", "quantize", "finetune", "dataset", "status"];
+const inited = {};
+const controllers = {}; // name -> { init, enter, leave }
+
+function currentRoute() {
+  const h = (location.hash || "").replace(/^#\/?/, "").split("?")[0];
+  return ROUTES.includes(h) ? h : "chat";
+}
+
+function router() {
+  const route = currentRoute();
+  document.querySelectorAll("section[data-route]").forEach((s) => {
+    const on = s.dataset.route === route;
+    if (on && !s.classList.contains("active")) {
+      s.classList.add("active");
+      const c = controllers[route];
+      if (c) { if (!inited[route]) { inited[route] = true; c.init && c.init(); } c.enter && c.enter(); }
+    } else if (!on && s.classList.contains("active")) {
+      s.classList.remove("active");
+      const c = controllers[s.dataset.route];
+      if (c && c.leave) c.leave();
+    }
+  });
+  document.querySelectorAll("nav .tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === route));
+  // dim the ambient bloom slightly in the chat workspace so text reads cleanly
+  $("bloom").style.opacity = route === "chat" ? "0.55" : "1";
+}
+window.addEventListener("hashchange", router);
+
+/* ════════════════════════════════════════════════════════════════════
+   GLOBAL CONNECTION PILL + MODEL ID  (polled lightly, always on)
+   ════════════════════════════════════════════════════════════════════ */
+let activeModelId = null;
+function setConn(state, text) {
+  const p = $("nav-conn");
+  p.className = "pill " + (state || "");
+  $("nav-conn-text").textContent = text;
+}
+async function pollIdentity() {
+  try {
+    const m = await fetch("/v1/models").then((r) => r.json());
+    activeModelId = m.data && m.data[0] ? m.data[0].id : null;
+    $("nav-model").textContent = activeModelId || "no model";
+    setConn("ok", "live · localhost");
+  } catch {
+    $("nav-model").textContent = "server unreachable";
+    setConn("bad", "unreachable — retrying");
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   CHAT CONTROLLER  — full pi agent over WebSocket /ws/chat
+   ════════════════════════════════════════════════════════════════════ */
+controllers.chat = (() => {
+  let ws = null, connected = false, reconnectTimer = null, manualClose = false;
+  let curAssistant = null;      // { bubble, cursor, meta, tools:Map, text, t0, tFirst, tokens }
+  let turnActive = false;
+  const thread = () => $("chat-thread");
+
+  function wsUrl() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    return proto + "//" + location.host + "/ws/chat";
+  }
+
+  function connect() {
+    manualClose = false;
+    try { ws = new WebSocket(wsUrl()); } catch { scheduleReconnect(); return; }
+    ws.onopen = () => { connected = true; setChatStatus("connected"); };
+    ws.onclose = () => { connected = false; setChatStatus("disconnected"); if (!manualClose) scheduleReconnect(); };
+    ws.onerror = () => { setChatStatus("error"); };
+    ws.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } handle(m); };
+  }
+  function scheduleReconnect() {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => { if (currentRoute() === "chat") connect(); }, 2200);
+  }
+  function send(obj) { if (ws && ws.readyState === 1) { ws.send(JSON.stringify(obj)); return true; } return false; }
+
+  function setChatStatus(s) {
+    const line = $("chat-status-line");
+    if (s === "connected") line.textContent = "connected · type to send · Shift+Enter for newline";
+    else if (s === "disconnected") line.textContent = "reconnecting to agent…";
+    else if (s === "error") line.textContent = "connection error — retrying";
+  }
+
+  /* — message + tool DOM construction — */
+  function addUserMsg(text) {
+    const m = el("div", "msg user", thread());
+    el("div", "who", m).textContent = "you";
+    el("div", "bubble", m).textContent = text;
+    stick(true);
+  }
+  function startAssistant() {
+    $("chat-hello").style.display = "none";
+    const m = el("div", "msg assistant", thread());
+    el("div", "who", m).textContent = "local agent";
+    const bubble = el("div", "bubble", m);
+    const textNode = el("span", "atext", bubble);
+    const cursor = el("span", "cursor", bubble);
+    const meta = el("div", "meta", m);
+    curAssistant = { m, bubble, textNode, cursor, meta, tools: new Map(), text: "", t0: performance.now(), tFirst: 0, tokens: 0 };
+    stick(true);
+  }
+  function ensureAssistant() { if (!curAssistant) startAssistant(); }
+
+  function appendDelta(delta) {
+    ensureAssistant();
+    const a = curAssistant;
+    if (!a.tFirst) a.tFirst = performance.now();
+    a.tokens++;
+    a.text += delta;
+    a.textNode.innerHTML = mdToHtml(a.text);
+    updateTps();
+    if (atBottom()) stick();
+  }
+
+  /* tool card lifecycle */
+  function toolCard(callId, tool, args) {
+    ensureAssistant();
+    const a = curAssistant;
+    let t = a.tools.get(callId);
+    if (t) return t;
+    const wrap = el("div", "tool running open", a.bubble);
+    wrap.innerHTML =
+      '<div class="thead"><div class="ticon">⚙</div>' +
+      '<span class="tname">' + esc(tool || "tool") + '</span>' +
+      '<span class="targs">' + esc(argSummary(args)) + '</span>' +
+      '<span class="tstat"><span class="sdot"></span><span class="slabel">running</span></span>' +
+      '<span class="caret">›</span></div>' +
+      '<div class="tbody">' +
+        '<div class="blk"><div class="blbl">arguments</div><pre class="aargs">' + esc(prettyArgs(args)) + '</pre></div>' +
+        '<div class="blk tresult" style="display:none"><div class="blbl">result</div><pre class="ares"></pre></div>' +
+      '</div>';
+    wrap.querySelector(".thead").addEventListener("click", () => wrap.classList.toggle("open"));
+    t = { wrap, res: wrap.querySelector(".ares"), resBlk: wrap.querySelector(".tresult"), label: wrap.querySelector(".slabel"), chunks: "" };
+    a.tools.set(callId, t);
+    stick();
+    return t;
+  }
+  function toolUpdate(callId, chunk) {
+    const t = curAssistant && curAssistant.tools.get(callId);
+    if (!t) return;
+    t.chunks += chunk;
+    t.resBlk.style.display = "";
+    t.res.textContent = t.chunks.slice(-8000);
+    if (atBottom()) stick();
+  }
+  function toolEnd(callId, ok, result) {
+    const t = curAssistant && curAssistant.tools.get(callId);
+    if (!t) return;
+    t.wrap.classList.remove("running");
+    t.wrap.classList.add(ok ? "ok" : "fail");
+    t.label.textContent = ok ? "done" : "failed";
+    const body = result != null ? (typeof result === "string" ? result : JSON.stringify(result, null, 2)) : t.chunks;
+    if (body) { t.resBlk.style.display = ""; t.res.textContent = String(body).slice(-12000); }
+    if (!ok) t.wrap.classList.add("open");
+  }
+
+  /* approval dialog */
+  function approvalCard(callId, tool, args) {
+    ensureAssistant();
+    const a = curAssistant;
+    const wrap = el("div", "approval", a.bubble);
+    const isBash = /bash|shell|exec|run/i.test(tool || "");
+    const isEdit = /edit|write|patch|create/i.test(tool || "");
+    let preview;
+    if (isBash) {
+      preview = '<pre>' + esc(args && (args.command || args.cmd || args.script) || prettyArgs(args)) + '</pre>';
+    } else if (isEdit) {
+      preview = '<pre>' + diffView(args) + '</pre>';
+    } else {
+      preview = '<pre>' + esc(prettyArgs(args)) + '</pre>';
+    }
+    wrap.innerHTML =
+      '<div class="ahead"><div class="ai">⚠</div><div class="at">Approval required</div>' +
+      '<div class="as">' + esc(tool || "tool") + '</div></div>' +
+      '<div class="abody"><div class="blbl" style="margin-bottom:7px">' +
+        (isBash ? "command" : isEdit ? "proposed change" : "arguments") + '</div>' + preview + '</div>' +
+      '<div class="actions">' +
+        '<button class="btn ghost sm a-deny">Deny</button>' +
+        '<button class="btn primary sm a-allow">Allow</button></div>';
+    const resolve = (decision) => {
+      send({ type: "approval", callId, decision });
+      wrap.querySelector(".actions").remove();
+      const r = el("div", "resolved " + (decision === "allow" ? "allow" : "deny"), wrap);
+      r.textContent = decision === "allow" ? "✓ allowed" : "✕ denied";
+    };
+    wrap.querySelector(".a-allow").onclick = () => resolve("allow");
+    wrap.querySelector(".a-deny").onclick = () => resolve("deny");
+    stick(true);
+  }
+  function diffView(args) {
+    // Best-effort diff-ish view for edit/write tools.
+    if (!args) return "";
+    if (args.old_string != null || args.new_string != null) {
+      const o = String(args.old_string ?? "").split("\n").map((l) => '<span class="diffdel">- ' + esc(l) + "</span>").join("\n");
+      const n = String(args.new_string ?? "").split("\n").map((l) => '<span class="diffadd">+ ' + esc(l) + "</span>").join("\n");
+      return (args.file_path ? esc(args.file_path) + "\n\n" : "") + o + (o && n ? "\n" : "") + n;
+    }
+    if (args.content != null) {
+      return (args.file_path ? esc(args.file_path) + "\n\n" : "") +
+        String(args.content).split("\n").map((l) => '<span class="diffadd">+ ' + esc(l) + "</span>").join("\n");
+    }
+    return esc(prettyArgs(args));
+  }
+  function argSummary(args) {
+    if (!args) return "";
+    if (typeof args === "string") return args.slice(0, 120);
+    if (args.command || args.cmd) return String(args.command || args.cmd).slice(0, 120);
+    if (args.file_path || args.path) return String(args.file_path || args.path).slice(0, 120);
+    const s = JSON.stringify(args); return s.length > 120 ? s.slice(0, 117) + "…" : s;
+  }
+  function prettyArgs(args) {
+    if (args == null) return "";
+    if (typeof args === "string") return args;
+    try { return JSON.stringify(args, null, 2); } catch { return String(args); }
+  }
+
+  function endTurn() {
+    turnActive = false;
+    if (curAssistant) {
+      curAssistant.cursor.remove();
+      if (!curAssistant.text && curAssistant.tools.size === 0) curAssistant.m.remove();
+    }
+    curAssistant = null;
+    $("chat-send").disabled = false;
+    $("chat-stop").style.display = "none";
+    renderQueue({});
+  }
+
+  function updateTps() {
+    const a = curAssistant; if (!a) return;
+    const secs = (performance.now() - (a.tFirst || a.t0)) / 1000;
+    if (a.tokens > 1 && secs > 0) $("chat-tps").innerHTML = "<b style='color:var(--green)'>" + (a.tokens / secs).toFixed(1) + " tok/s</b>";
+  }
+  function finalizeMeta() {
+    const a = curAssistant; if (!a) return;
+    const secs = (performance.now() - (a.tFirst || a.t0)) / 1000;
+    if (a.tokens > 1 && secs > 0)
+      a.meta.innerHTML = "<b>" + (a.tokens / secs).toFixed(1) + " tok/s</b> · " + a.tokens +
+        " tokens · first token " + Math.round((a.tFirst - a.t0)) + "ms";
+  }
+
+  function renderQueue(q) {
+    const bar = $("chat-queue");
+    const parts = [];
+    if (q.steering) parts.push('<span class="qtag">steering: <b>' + esc(String(q.steering).slice(0, 60)) + "</b></span>");
+    if (q.followUp) parts.push('<span class="qtag">queued: <b>' + esc(String(q.followUp).slice(0, 60)) + "</b></span>");
+    bar.innerHTML = parts.join("");
+    bar.style.display = parts.length ? "flex" : "none";
+  }
+
+  /* — server → client dispatch — */
+  function handle(m) {
+    switch (m.type) {
+      case "ready": $("nav-model").textContent = m.model || activeModelId || "no model"; activeModelId = m.model || activeModelId; break;
+      case "turn_start": turnActive = true; startAssistant(); $("chat-send").disabled = true; $("chat-stop").style.display = "block"; break;
+      case "text_delta": appendDelta(m.delta || ""); break;
+      case "tool_start": toolCard(m.callId, m.tool, m.args); break;
+      case "tool_approval_request": approvalCard(m.callId, m.tool, m.args); break;
+      case "tool_update": toolUpdate(m.callId, m.chunk || ""); break;
+      case "tool_end": toolEnd(m.callId, m.ok, m.result); break;
+      case "turn_end": finalizeMeta(); endTurn(); break;
+      case "queue_update": renderQueue(m); break;
+      case "error": toast(m.message || "agent error", "err"); if (turnActive) endTurn(); break;
+    }
+  }
+
+  /* — composer — */
+  function submit() {
+    const box = $("chat-box");
+    const text = box.value.trim();
+    if (!text) return;
+    if (!connected) { toast("Not connected to the agent yet — reconnecting.", "err"); return; }
+    addUserMsg(text);
+    box.value = ""; box.style.height = "auto";
+    if (turnActive) send({ type: "steer", text });   // mid-turn: steer/queue
+    else send({ type: "prompt", text });
+  }
+  const scroll = () => $("chat-scroll");
+  const atBottom = () => scroll().scrollHeight - scroll().scrollTop - scroll().clientHeight < 90;
+  function stick(force) { if (force || atBottom()) scroll().scrollTop = scroll().scrollHeight; }
+
+  return {
+    init() {
+      $("chat-send").onclick = submit;
+      $("chat-stop").onclick = () => { send({ type: "abort" }); $("chat-stop").style.display = "none"; };
+      const box = $("chat-box");
+      box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } });
+      box.addEventListener("input", () => { box.style.height = "auto"; box.style.height = Math.min(box.scrollHeight, 200) + "px"; });
+      document.querySelectorAll("#chat-hello .chip").forEach((c) =>
+        c.addEventListener("click", () => { $("chat-box").value = c.dataset.q; submit(); }));
+    },
+    enter() { if (!ws || ws.readyState > 1) connect(); $("chat-box").focus(); },
+    leave() { /* keep WS warm; closing on every nav would drop in-flight turns */ },
+  };
+})();
+
+/* ════════════════════════════════════════════════════════════════════
+   QUANTIZE CONTROLLER  — 4-step wizard
+   ════════════════════════════════════════════════════════════════════ */
+controllers.quantize = (() => {
+  const STEPS = ["Source", "Configure", "Run", "Done"];
+  let step = 0, bits = 4, gs = 64, mode = "uniform", bpw = 5, jobId = null, es = null, log = [];
+
+  function show(n) {
+    step = n;
+    document.querySelectorAll("[data-qstep]").forEach((d) => d.style.display = (+d.dataset.qstep === n) ? "" : "none");
+    renderSteps($("q-steps"), STEPS, n);
+  }
+  function seg(container, onPick) {
+    container.querySelectorAll("button").forEach((b) =>
+      b.addEventListener("click", () => {
+        container.querySelectorAll("button").forEach((x) => x.classList.remove("on"));
+        b.classList.add("on"); onPick(b.dataset.v, b);
+      }));
+  }
+
+  async function inspect() {
+    const id = $("q-model").value.trim();
+    if (!id) { toast("Enter a model id or path first.", "err"); return; }
+    const out = $("q-inspect-out");
+    out.innerHTML = '<div class="flash"><span class="shimmer">inspecting…</span></div>';
+    const btn = $("q-inspect"); btn.disabled = true;
+    const d = await api("/api/quantize/inspect", { method: "POST", body: { model_id: id } }).catch(() => ({ ok: false, error: "request failed" }));
+    btn.disabled = false;
+    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "could not inspect this model") + "</div>"; return; }
+    const supported = d.support === "supported" || d.support === true || d.support === "ok";
+    const cls = supported ? "ok" : (d.support === "untested" ? "warn" : "err");
+    out.innerHTML =
+      '<div class="flash ' + cls + '"><strong>' + esc(d.arch || d.model_id || id) + "</strong>" +
+      (d.size_gb != null ? " · " + esc(d.size_gb) + " GB" : "") +
+      " · " + (supported ? "supported" : esc(d.support || "unknown architecture")) + "</div>" +
+      '<div class="btnrow"><button class="btn primary" id="q-continue">Continue</button></div>';
+    $("q-continue").onclick = () => show(1);
+  }
+
+  async function submit() {
+    const id = $("q-model").value.trim();
+    const btn = $("q-submit"); btn.disabled = true;
+    const body = { model_id: id, bits, group_size: gs };
+    if (mode === "mixed") { body.target_bpw = bpw; body.candidate_bits = [4, 8]; }
+    const d = await api("/api/quantize/submit", { method: "POST", body })
+      .catch(() => ({ ok: false, error: "request failed" }));
+    btn.disabled = false;
+    if (!d.ok) { toast(d.error || "could not start quantize", "err"); return; }
+    jobId = d.job_id || null;
+    $("q-push-panel").innerHTML = "";
+    $("q-out").textContent = d.output_dir || "";
+    log = []; $("q-log").textContent = ""; $("q-bar").style.width = "0%"; $("q-pct").textContent = "0%"; $("q-msg").textContent = "Starting…";
+    show(2);
+    attach(d.job_id);
+  }
+
+  function attach(jobId) {
+    if (es) es.close();
+    es = jobStream(jobId, {
+      log: (e) => { log.push(e.line); $("q-log").textContent = log.slice(-200).join("\n"); $("q-log").scrollTop = $("q-log").scrollHeight; },
+      stage: (e) => {
+        if (e.progress != null) { const p = Math.round(e.progress * 100); $("q-bar").style.width = p + "%"; $("q-pct").textContent = p + "%"; }
+        if (e.message) $("q-msg").textContent = e.message;
+        if (e.stage === "done") { if (e.output_dir) $("q-out").textContent = e.output_dir; finish(); }
+      },
+      done: () => finish(),
+      failed: (e) => { $("q-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "quantize failed", "err"); es && es.close(); },
+    });
+  }
+  function finish() { $("q-bar").style.width = "100%"; $("q-pct").textContent = "100%"; es && es.close(); show(3); }
+
+  return {
+    init() {
+      show(0);
+      $("q-inspect").onclick = inspect;
+      $("q-model").addEventListener("keydown", (e) => { if (e.key === "Enter") inspect(); });
+      seg($("q-bits"), (v) => { bits = +v; $("q-bits-hint").textContent = v === "4"
+        ? "4-bit · ~4× smaller than bf16 · the recommended default for local serving."
+        : "8-bit · ~2× smaller than bf16 · highest fidelity quant."; });
+      seg($("q-gs"), (v) => { gs = +v; });
+      seg($("q-mode"), (v) => { mode = v; $("q-bpw-field").style.display = v === "mixed" ? "" : "none"; });
+      $("q-bpw").addEventListener("input", (e) => { bpw = +e.target.value; $("q-bpw-val").textContent = bpw.toFixed(1); });
+      document.querySelectorAll("#s-quantize [data-qback]").forEach((b) => b.onclick = () => show(step - 1));
+      $("q-submit").onclick = submit;
+      $("q-push").onclick = () => pushToHub($("q-push-panel"), { kind: "quantize", job_id: jobId });
+      $("q-again").onclick = () => { $("q-inspect-out").innerHTML = ""; $("q-push-panel").innerHTML = ""; show(0); };
+    },
+  };
+})();
+
+/* ════════════════════════════════════════════════════════════════════
+   FINE-TUNE CONTROLLER  — 5-step wizard with live loss chart
+   ════════════════════════════════════════════════════════════════════ */
+controllers.finetune = (() => {
+  const STEPS = ["Base", "Dataset", "Hyperparams", "Train", "Done"];
+  let step = 0, method = "sft", lrTouched = false, es = null, log = [];
+  let datasetOk = false, adapterPath = "";
+  const trainPts = [], valPts = [];
+
+  function show(n) {
+    step = n;
+    document.querySelectorAll("[data-fstep]").forEach((d) => d.style.display = (+d.dataset.fstep === n) ? "" : "none");
+    renderSteps($("f-steps"), STEPS, n);
+  }
+
+  async function inspectDataset() {
+    const path = $("f-data").value.trim();
+    if (!path) { toast("Enter a dataset directory.", "err"); return; }
+    const out = $("f-inspect-out");
+    out.innerHTML = '<div class="flash"><span class="shimmer">inspecting…</span></div>';
+    const d = await api("/api/finetune/inspect-dataset", { method: "POST", body: { path } }).catch(() => ({ ok: false, error: "request failed" }));
+    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "could not read dataset") + "</div>"; datasetOk = false; $("f-next1").disabled = true; return; }
+    datasetOk = true; $("f-next1").disabled = false;
+    out.innerHTML = '<div class="flash ok"><strong>' + num(d.n_train) + "</strong> train rows" +
+      (d.n_valid ? " · <strong>" + num(d.n_valid) + "</strong> valid rows" : "") +
+      (d.format ? " · format <strong>" + esc(d.format) + "</strong>" : "") + "</div>";
+  }
+
+  function setMethod(m) {
+    method = m;
+    $("f-method").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.v === m));
+    $("f-dpo-extra").style.display = m === "dpo" ? "" : "none";
+    $("f-method-hint").textContent = m === "dpo"
+      ? "Direct Preference Optimization — data is {prompt, chosen, rejected}."
+      : "Supervised fine-tuning — data is messages or prompt+completion.";
+    if (!lrTouched) $("f-lr").value = m === "dpo" ? 0.00005 : 0.0002;
+  }
+
+  function collectHP() {
+    const modules = $("f-modules").value.split(",").map((s) => s.trim()).filter(Boolean);
+    const hp = {
+      model_dir: $("f-model").value.trim(),
+      data_dir: $("f-data").value.trim(),
+      method,
+      rank: +$("f-rank").value, scale: +$("f-scale").value, dropout: +$("f-dropout").value,
+      target_modules: modules, num_layers: +$("f-layers").value, iters: +$("f-iters").value,
+      batch_size: +$("f-batch").value, learning_rate: +$("f-lr").value, max_seq_length: +$("f-seq").value,
+    };
+    if (method === "dpo") { hp.dpo_beta = +$("f-beta").value; hp.lr_schedule = $("f-sched").value; }
+    return hp;
+  }
+
+  async function submit() {
+    const btn = $("f-submit"); btn.disabled = true;
+    const d = await api("/api/finetune/submit", { method: "POST", body: collectHP() }).catch(() => ({ ok: false, error: "request failed" }));
+    btn.disabled = false;
+    if (!d.ok) { toast(d.error || "could not start training", "err"); return; }
+    adapterPath = d.adapter_path || "";
+    $("f-out").textContent = adapterPath;
+    $("f-merge-out").innerHTML = $("f-exp-out").innerHTML = $("f-push-panel").innerHTML = "";
+    trainPts.length = 0; valPts.length = 0; log = [];
+    $("f-log").textContent = ""; $("f-bar").style.width = "0%"; $("f-pct").textContent = "0%"; $("f-msg").textContent = "Starting…";
+    $("f-step").textContent = $("f-loss").textContent = $("f-curlr").textContent = $("f-curtps").textContent = "—";
+    drawChart();
+    show(3);
+    attach(d.job_id);
+  }
+
+  function attach(jobId) {
+    if (es) es.close();
+    es = jobStream(jobId, {
+      log: (e) => { log.push(e.line); $("f-log").textContent = log.slice(-200).join("\n"); $("f-log").scrollTop = $("f-log").scrollHeight; },
+      metric: (e) => {
+        if (e.kind === "val") { valPts.push({ step: e.step, loss: e.loss }); $("f-leg-val").style.display = ""; }
+        else {
+          trainPts.push({ step: e.step, loss: e.loss });
+          $("f-step").textContent = num(e.step);
+          $("f-loss").textContent = e.loss != null ? e.loss.toFixed(4) : "—";
+          if (e.lr != null) $("f-curlr").textContent = e.lr.toExponential(2);
+          if (e.tps != null) $("f-curtps").textContent = e.tps.toFixed(1);
+          if (e.progress != null) { const p = Math.round(e.progress * 100); $("f-bar").style.width = p + "%"; $("f-pct").textContent = p + "%"; }
+          if (e.message) $("f-msg").textContent = e.message;
+        }
+        drawChart();
+      },
+      stage: (e) => {
+        if (e.progress != null) { const p = Math.round(e.progress * 100); $("f-bar").style.width = p + "%"; $("f-pct").textContent = p + "%"; }
+        if (e.message) $("f-msg").textContent = e.message;
+        if (e.stage === "done") { if (e.adapter_path) { adapterPath = e.adapter_path; $("f-out").textContent = e.adapter_path; } finish(); }
+      },
+      done: () => finish(),
+      failed: (e) => { $("f-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "training failed", "err"); es && es.close(); },
+    });
+  }
+  function finish() {
+    $("f-bar").style.width = "100%"; $("f-pct").textContent = "100%"; es && es.close();
+    if (!adapterPath) adapterPath = $("f-out").textContent.trim();
+    const base = $("f-model").value.trim();
+    // prefill the done-step affordances from this run's paths
+    $("f-merge-a").value = adapterPath;
+    $("f-exp-base").value = base;
+    $("f-exp-adapter").value = adapterPath;
+    show(4);
+  }
+
+  async function mergeAdapters() {
+    const a = $("f-merge-a").value.trim(), b = $("f-merge-b").value.trim();
+    const out = $("f-merge-out");
+    if (!a || !b) { out.innerHTML = '<div class="flash err">Enter both adapter paths.</div>'; return; }
+    out.innerHTML = '<div class="flash"><span class="shimmer">merging…</span></div>';
+    const btn = $("f-merge-go"); btn.disabled = true;
+    const d = await api("/api/finetune/merge", { method: "POST", body: { adapter_a: a, adapter_b: b } }).catch(() => ({ ok: false, error: "request failed" }));
+    btn.disabled = false;
+    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "merge failed") + "</div>"; return; }
+    const stats = d.stats && typeof d.stats === "object" ? Object.entries(d.stats).map(([k, v]) => esc(k) + " " + esc(v)).join(" · ") : (d.stats ? esc(d.stats) : "");
+    out.innerHTML = '<div class="flash ok">Merged → <code>' + esc(d.merged_path || "") + "</code>" + (stats ? "<br>" + stats : "") + "</div>";
+    toast("Adapters merged", "ok");
+  }
+
+  async function exportModel() {
+    const base = $("f-exp-base").value.trim(), adapter = $("f-exp-adapter").value.trim();
+    const out = $("f-exp-out");
+    if (!base || !adapter) { out.innerHTML = '<div class="flash err">Enter a base model and adapter path.</div>'; return; }
+    out.innerHTML = '<div class="flash"><span class="shimmer">exporting…</span></div>';
+    const btn = $("f-exp-go"); btn.disabled = true;
+    const d = await api("/api/finetune/export", { method: "POST", body: { base_model: base, adapter_path: adapter } }).catch(() => ({ ok: false, error: "request failed" }));
+    btn.disabled = false;
+    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "export failed") + "</div>"; return; }
+    out.innerHTML = '<div class="flash ok">Exported → <code>' + esc(d.export_path || "") + "</code></div>";
+    toast("Model exported", "ok");
+  }
+
+  /* inline SVG line plot — themed green (train) / blue (val) */
+  function drawChart() {
+    const svg = $("f-chart");
+    const W = 600, H = 200, padL = 8, padR = 8, padT = 12, padB = 12;
+    const all = trainPts.concat(valPts);
+    if (!all.length) { svg.innerHTML = '<text x="300" y="104" text-anchor="middle" fill="var(--dimmer)" font-size="13">waiting for the first metric…</text>'; return; }
+    const losses = all.map((p) => p.loss).filter((x) => x != null && isFinite(x));
+    let minL = Math.min(...losses), maxL = Math.max(...losses);
+    if (minL === maxL) { minL -= 0.5; maxL += 0.5; }
+    const range = maxL - minL || 1;
+    const maxStep = Math.max(...all.map((p) => p.step || 0), 1);
+    const xOf = (s) => padL + (s / maxStep) * (W - padL - padR);
+    const yOf = (l) => padT + (1 - (l - minL) / range) * (H - padT - padB);
+    const path = (pts, color, fillId) => {
+      if (!pts.length) return "";
+      const d = pts.map((p, i) => (i ? "L" : "M") + xOf(p.step).toFixed(1) + " " + yOf(p.loss).toFixed(1)).join(" ");
+      let out = '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+      // soft area fill under the curve
+      const area = d + " L" + xOf(pts[pts.length - 1].step).toFixed(1) + " " + (H - padB) + " L" + xOf(pts[0].step).toFixed(1) + " " + (H - padB) + " Z";
+      out = '<path d="' + area + '" fill="url(#' + fillId + ')" opacity="0.18"/>' + out;
+      return out;
+    };
+    // gridlines
+    let grid = "";
+    for (let i = 1; i < 4; i++) { const y = padT + (i / 4) * (H - padT - padB); grid += '<line x1="0" y1="' + y.toFixed(1) + '" x2="' + W + '" y2="' + y.toFixed(1) + '" stroke="rgba(255,255,255,.06)" stroke-width="1"/>'; }
+    svg.innerHTML =
+      '<defs>' +
+      '<linearGradient id="gf-train" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#30d158"/><stop offset="1" stop-color="#30d158" stop-opacity="0"/></linearGradient>' +
+      '<linearGradient id="gf-val" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a84ff"/><stop offset="1" stop-color="#0a84ff" stop-opacity="0"/></linearGradient>' +
+      '</defs>' + grid +
+      path(valPts, "#0a84ff", "gf-val") +
+      path(trainPts, "#30d158", "gf-train");
+  }
+
+  return {
+    init() {
+      show(0);
+      $("f-next0").onclick = () => { if (!$("f-model").value.trim()) { toast("Enter a base model path.", "err"); return; } show(1); };
+      $("f-inspect").onclick = inspectDataset;
+      $("f-data").addEventListener("keydown", (e) => { if (e.key === "Enter") inspectDataset(); });
+      $("f-data").addEventListener("input", () => { datasetOk = false; $("f-next1").disabled = true; $("f-inspect-out").innerHTML = ""; });
+      $("f-next1").onclick = () => { if (datasetOk) show(2); };
+      $("f-method").querySelectorAll("button").forEach((b) => b.onclick = () => setMethod(b.dataset.v));
+      $("f-lr").addEventListener("input", () => { lrTouched = true; });
+      document.querySelectorAll("#s-finetune [data-fback]").forEach((b) => b.onclick = () => show(step - 1));
+      $("f-submit").onclick = submit;
+      $("f-merge-go").onclick = mergeAdapters;
+      $("f-exp-go").onclick = exportModel;
+      $("f-push").onclick = () => pushToHub($("f-push-panel"), { kind: "finetune", source_path: adapterPath || $("f-out").textContent.trim() });
+      $("f-again").onclick = () => {
+        $("f-inspect-out").innerHTML = "";
+        $("f-merge-out").innerHTML = $("f-exp-out").innerHTML = $("f-push-panel").innerHTML = "";
+        show(0);
+      };
+    },
+  };
+})();
+
+/* ════════════════════════════════════════════════════════════════════
+   DATASET CONTROLLER  — template-driven builder
+   ════════════════════════════════════════════════════════════════════ */
+controllers.dataset = (() => {
+  const STEPS = ["Template", "Inputs", "Generate", "Done"];
+  let step = 0, templates = [], selected = null, jobId = null, es = null, log = [];
+
+  function show(n) {
+    step = n;
+    document.querySelectorAll("[data-dstep]").forEach((d) => d.style.display = (+d.dataset.dstep === n) ? "" : "none");
+    renderSteps($("d-steps"), STEPS, n);
+  }
+
+  async function loadTemplates() {
+    const grid = $("d-templates");
+    grid.innerHTML = Array.from({ length: 4 }, () => '<div class="card" style="height:130px"><div class="shimmer" style="height:18px;width:50%;margin-bottom:12px"></div><div class="shimmer" style="height:13px;width:90%;margin-bottom:6px"></div><div class="shimmer" style="height:13px;width:70%"></div></div>').join("");
+    const d = await api("/api/dataset/templates").catch(() => ({ templates: null }));
+    templates = (d && d.templates) || [];
+    if (!templates.length) { grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><h3>No templates available</h3><p>The server didn\'t return any dataset templates. Make sure the server is running.</p></div>'; return; }
+    // non-LLM templates first
+    const ordered = templates.slice().sort((a, b) => (a.needs_llm ? 1 : 0) - (b.needs_llm ? 1 : 0));
+    grid.innerHTML = ordered.map((t, i) =>
+      '<div class="card" data-tid="' + esc(t.id) + '" style="cursor:pointer;display:flex;flex-direction:column;gap:8px">' +
+        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<h3 style="margin:0;font-size:16px;font-weight:700;letter-spacing:-.01em;color:var(--ink);text-transform:none">' + esc(t.label || t.id) + "</h3>" +
+          (t.needs_llm ? '<span class="pill warn" style="padding:3px 9px;font-size:11px"><span class="dot"></span>uses local model</span>' : "") +
+          (t.output_format ? '<span class="soon" style="color:var(--dim)">' + esc(t.output_format) + "</span>" : "") +
+        "</div>" +
+        '<p style="color:var(--dim);font-size:13.5px;line-height:1.5;margin:0">' + esc(t.description || "") + "</p>" +
+      "</div>").join("");
+    grid.querySelectorAll("[data-tid]").forEach((c) =>
+      c.onclick = () => selectTemplate(templates.find((t) => t.id === c.dataset.tid)));
+  }
+
+  function selectTemplate(t) {
+    selected = t;
+    $("d-form-title").textContent = t.label || t.id;
+    $("d-form-desc").textContent = t.description || "";
+    const form = $("d-form");
+    form.innerHTML = (t.fields || []).map((f) => {
+      const lbl = esc(f.label || f.name) + (f.required ? " *" : "");
+      const ph = f.hint ? ' placeholder="' + esc(f.hint) + '"' : "";
+      const dv = f.default != null ? f.default : "";
+      let ctrl;
+      if (f.type === "textarea") ctrl = '<textarea data-fld="' + esc(f.name) + '"' + ph + ">" + esc(dv) + "</textarea>";
+      else if (f.type === "number") ctrl = '<input type="number" data-fld="' + esc(f.name) + '" value="' + esc(dv) + '"' + ph + ">";
+      else ctrl = '<input type="text" data-fld="' + esc(f.name) + '" value="' + esc(dv) + '"' + ph + ">";
+      return '<div class="field"><label>' + lbl + "</label>" + ctrl + (f.hint ? '<div class="hint">' + esc(f.hint) + "</div>" : "") + "</div>";
+    }).join("");
+    show(1);
+  }
+
+  async function submit() {
+    if (!selected) return;
+    const inputs = {};
+    $("d-form").querySelectorAll("[data-fld]").forEach((i) => {
+      inputs[i.dataset.fld] = i.type === "number" ? (i.value === "" ? null : +i.value) : i.value;
+    });
+    const body = { template_id: selected.id, inputs };
+    if (selected.needs_llm && activeModelId) body.model_name = activeModelId;
+    const btn = $("d-submit"); btn.disabled = true;
+    const d = await api("/api/dataset/submit", { method: "POST", body }).catch(() => ({ ok: false, error: "request failed" }));
+    btn.disabled = false;
+    if (!d.ok) { toast(d.error || "could not start generation", "err"); return; }
+    jobId = d.job_id || null;
+    $("d-push-panel").innerHTML = "";
+    $("d-out").textContent = d.output_dir || "";
+    log = []; $("d-log").textContent = ""; $("d-bar").style.width = "0%"; $("d-pct").textContent = "0%"; $("d-msg").textContent = "Starting…";
+    $("d-ntrain").textContent = $("d-nvalid").textContent = "—";
+    show(2);
+    attach(d.job_id);
+  }
+
+  function attach(jobId) {
+    if (es) es.close();
+    es = jobStream(jobId, {
+      log: (e) => { log.push(e.line); $("d-log").textContent = log.slice(-200).join("\n"); $("d-log").scrollTop = $("d-log").scrollHeight; },
+      stage: (e) => {
+        if (e.progress != null) { const p = Math.round(e.progress * 100); $("d-bar").style.width = p + "%"; $("d-pct").textContent = p + "%"; }
+        if (e.message) $("d-msg").textContent = e.message;
+        if (e.n_train != null) $("d-ntrain").textContent = num(e.n_train);
+        if (e.n_valid != null) $("d-nvalid").textContent = num(e.n_valid);
+        if (e.stage === "done") { if (e.output_dir) $("d-out").textContent = e.output_dir; finish(e); }
+      },
+      done: (e) => finish(e),
+      failed: (e) => { $("d-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "generation failed", "err"); es && es.close(); },
+    });
+  }
+  function finish(e) {
+    $("d-bar").style.width = "100%"; $("d-pct").textContent = "100%"; es && es.close();
+    if (e && e.n_train != null) $("d-ntrain").textContent = num(e.n_train);
+    if (e && e.n_valid != null) $("d-nvalid").textContent = num(e.n_valid);
+    show(3);
+  }
+
+  return {
+    init() {
+      show(0);
+      loadTemplates();
+      document.querySelectorAll("#s-dataset [data-dback]").forEach((b) => b.onclick = () => show(0));
+      $("d-submit").onclick = submit;
+      $("d-push").onclick = () => pushToHub($("d-push-panel"), { kind: "dataset", job_id: jobId });
+      $("d-again").onclick = () => { selected = null; $("d-push-panel").innerHTML = ""; show(0); };
+    },
+  };
+})();
+
+/* ════════════════════════════════════════════════════════════════════
+   STATUS CONTROLLER  — ported dashboard (poll /stats + /v1/models + /fit + /library + /downloads)
+   ════════════════════════════════════════════════════════════════════ */
+controllers.status = (() => {
+  let timer = null, fitLoaded = false;
+  const dlRates = {};
+
+  async function tick() {
+    try {
+      const [stats, models] = await Promise.all([
+        fetch("/stats").then((r) => r.json()),
+        fetch("/v1/models").then((r) => r.json()),
+      ]);
+      const m = models.data && models.data[0];
+      $("st-model-id").textContent = (m && m.id) || "—";
+      const a = stats.admission || {};
+      $("st-model-meta").textContent = num(m && m.context_window) + " token window · weights " + gb(a.weights_bytes);
+      $("st-safe-ctx").textContent = num(a.max_safe_context);
+
+      $("st-weights").textContent = gb(a.weights_bytes);
+      $("st-usable").textContent = gb(a.usable_bytes);
+      $("st-budget").textContent = a.memory_budget_bytes ? gb(a.memory_budget_bytes) : "off";
+      $("st-mem-bar").style.width = a.usable_bytes ? Math.min(100, 100 * a.weights_bytes / a.usable_bytes) + "%" : "0%";
+
+      const pc = stats.prompt_cache || {};
+      const lookups = (pc.hits || 0) + (pc.misses || 0);
+      $("st-pc-hits").textContent = lookups ? Math.round(100 * pc.hits / lookups) + "%" : "no lookups";
+      $("st-pc-entries").textContent = num(pc.entries);
+      $("st-pc-bytes").textContent = mb(pc.bytes) + " / " + mb(pc.max_bytes);
+      $("st-pc-bar").style.width = pc.max_bytes ? Math.min(100, 100 * pc.bytes / pc.max_bytes) + "%" : "0%";
+
+      const rs = stats.response_store || {};
+      $("st-rs-entries").textContent = num(rs.entries);
+      $("st-rs-bytes").textContent = mb(rs.bytes) + " / " + mb(rs.max_bytes);
+      $("st-rs-ttl").textContent = rs.ttl_ms ? (rs.ttl_ms / 60000) + " min" : "—";
+      $("st-rs-bar").style.width = rs.max_bytes ? Math.min(100, 100 * rs.bytes / rs.max_bytes) + "%" : "0%";
+
+      const kv = stats.kv_quant || {};
+      $("st-kv-mode").innerHTML = "<code>" + esc(kv.mode || "—") + "</code>";
+      const att = kv.attention;
+      $("st-kv-layers").innerHTML = Object.entries(kv.layers || {})
+        .map(([k, v]) => '<div class="kv"><b>' + esc(k) + ' layers</b><span class="num">' + esc(v) + "</span></div>").join("") +
+        (att ? '<div class="kv"><b>attention</b><span class="num">' + esc(att.global) + " global · " + esc(att.sliding_window) + " sliding</span></div>" : "");
+
+      await loadDownloads();
+      if (!fitLoaded) { await loadFit(); await loadLibrary(); }
+      if (stats.server && stats.server.started_at) {
+        const up = (Date.now() - stats.server.started_at) / 1000;
+        $("st-uptime").textContent = up < 90 ? Math.round(up) + "s" : up < 5400 ? Math.round(up / 60) + "m" : (up / 3600).toFixed(1) + "h";
+      }
+      $("st-updated").textContent = new Date().toLocaleTimeString();
+    } catch {
+      /* nav pill already reflects connectivity; leave last-good values on screen */
+    }
+  }
+
+  async function loadDownloads() {
+    let downloads;
+    try { ({ downloads } = await fetch("/downloads").then((r) => r.json())); } catch { return; }
+    const card = $("st-dl-card");
+    if (!downloads || downloads.length === 0) { card.style.display = "none"; return; }
+    card.style.display = "";
+    const order = downloads.slice().sort((a, b) =>
+      (a.state === "active" ? 0 : 1) - (b.state === "active" ? 0 : 1) || b.startedAt - a.startedAt);
+    $("st-dl-list").innerHTML = order.map((d) => {
+      const pct = d.totalBytes ? Math.min(100, 100 * d.receivedBytes / d.totalBytes) : 0;
+      let detail, barCls = "";
+      if (d.state === "active") {
+        let bps = d.bytesPerSec || 0;
+        if (!bps) {
+          const prev = dlRates[d.repoId], now = performance.now();
+          if (prev && now > prev.t) bps = (d.receivedBytes - prev.bytes) / ((now - prev.t) / 1000);
+          dlRates[d.repoId] = { bytes: d.receivedBytes, t: now };
+        }
+        const speed = bps > 0 ? " · " + mb(bps) + "/s · ~" + Math.max(1, Math.round((d.totalBytes - d.receivedBytes) / bps / 60)) + " min left" : "";
+        detail = gb(d.receivedBytes) + " / " + gb(d.totalBytes) + " · " + pct.toFixed(0) + "%" + speed +
+          (d.currentFile ? " · <code>" + esc(d.currentFile) + "</code>" : "");
+        barCls = "warm";
+      } else if (d.state === "done") {
+        detail = gb(d.totalBytes) + ' · <span style="color:var(--green);font-weight:600">complete</span>';
+      } else {
+        detail = '<span style="color:var(--red);font-weight:600">error</span> · ' + esc(d.error || "");
+      }
+      return '<div style="padding:10px 0">' +
+        '<div class="kv" style="border:none"><b>' + esc(d.repoId) + "</b>" +
+        '<span class="num">' + d.filesDone + "/" + d.filesTotal + " files</span></div>" +
+        '<div style="font-size:13.5px;color:var(--dim)" class="num">' + detail + "</div>" +
+        '<div class="meter ' + barCls + '"><i style="width:' + pct + '%"></i></div></div>';
+    }).join("");
+  }
+
+  async function loadLibrary() {
+    let models;
+    try { ({ models } = await fetch("/library").then((r) => r.json())); } catch { return; }
+    if (!models) return;
+    $("st-lib-body").innerHTML = models.slice()
+      .sort((a, b) => (b.serving ? 1 : 0) - (a.serving ? 1 : 0) || b.size_bytes - a.size_bytes)
+      .map((m) => {
+        const a = m.assessment;
+        let status;
+        if (m.serving) status = '<span style="color:var(--blue);font-weight:700">SERVING</span>';
+        else if (!m.supported) status = '<span style="color:var(--dimmer)">unsupported (' + esc(m.model_type) + ")</span>";
+        else if (a && a.fits) status = '<span style="color:var(--green);font-weight:600">fits</span>';
+        else status = '<span style="color:var(--red);font-weight:600">too big</span>';
+        return "<tr" + (m.serving ? ' class="you"' : "") + "><td>" + esc(m.repo_id) +
+          (m.vision ? ' · <span style="color:var(--dim)">vision</span>' : "") +
+          '</td><td class="num">' + gb(m.size_bytes) + "</td><td>" + status + "</td>" +
+          '<td class="num">' + (m.supported && a && a.fits ? num(a.max_safe_context) : "—") + "</td>" +
+          '<td class="num">' + (m.supported && a && a.fits ? a.predicted_decode_tps.toFixed(0) + " tok/s" : "—") + "</td></tr>";
+      }).join("");
+  }
+
+  async function loadFit() {
+    let f;
+    try { f = await fetch("/fit").then((r) => r.json()); } catch { return; }
+    fitLoaded = true;
+    const r = f.report || {};
+    if (f.measured_decode_tps) {
+      $("st-tps").textContent = f.measured_decode_tps.toFixed(1);
+      $("st-tps").closest(".card").querySelector("h3").textContent = "Decode · measured";
+      $("st-tps-cap").textContent = "mlx-bun benchmark on this machine · predicted " + (f.typical_decode_tps || 0).toFixed(1) + " at " + num(f.typical_context_tokens) + " ctx";
+    } else if (f.typical_decode_tps) {
+      $("st-tps").textContent = f.typical_decode_tps.toFixed(1);
+      $("st-tps-cap").textContent = "at " + num(f.typical_context_tokens) + " context · " + (r.predicted_decode_tps || 0).toFixed(1) + " tok/s at the " + num(f.context_tokens) + " max (full-KV reads)";
+    } else {
+      $("st-tps").textContent = (r.predicted_decode_tps || 0).toFixed(1);
+    }
+    $("st-m-ram").textContent = gb(f.machine && f.machine.ram_bytes);
+    $("st-m-bw").textContent = (f.machine && f.machine.bandwidth_gbs || "—") + " GB/s";
+    $("st-m-fits").innerHTML = r.fits ? '<span style="color:var(--green);font-weight:700">FITS</span>' : '<span style="color:var(--red);font-weight:700">DOES NOT FIT</span>';
+    $("st-fit-ctx").textContent = num(f.context_tokens);
+    $("st-f-weights").textContent = gb(r.weights_bytes);
+    $("st-f-kv").textContent = gb(r.kv_bytes);
+    $("st-f-transient").textContent = gb(r.transient_bytes);
+    $("st-f-total").textContent = gb(r.total_bytes) + " / " + gb(r.usable_bytes);
+    $("st-fit-bar").style.width = r.usable_bytes ? Math.min(100, 100 * r.total_bytes / r.usable_bytes) + "%" : "0%";
+
+    $("st-sku-ctx").textContent = num(f.sku_matrix_ctx);
+    const myRam = Math.round((f.machine && f.machine.ram_bytes || 0) / 2 ** 30);
+    const myChip = (f.machine && f.machine.chip) || null;
+    const rows = f.sku_matrix || [];
+    let youIdx = rows.findIndex((r) => myChip && r.sku === myChip && r.ram_gb === myRam);
+    if (youIdx < 0 && myChip) {
+      let best = Infinity;
+      rows.forEach((r, i) => { if (r.sku === myChip && Math.abs(r.ram_gb - myRam) < best) { best = Math.abs(r.ram_gb - myRam); youIdx = i; } });
+    }
+    if (youIdx < 0) youIdx = rows.findIndex((r) => r.ram_gb === myRam);
+    $("st-sku-body").innerHTML = rows.map((row, i) => {
+      const you = i === youIdx;
+      const dimCls = row.fits ? "num" : "num fit-no";
+      return "<tr" + (you ? ' class="you"' : "") + "><td>" + esc(row.sku) + (you ? " · <b>this machine</b>" : "") +
+        '</td><td class="num">' + row.ram_gb + " GB</td>" +
+        '<td class="' + (row.fits ? "fit-yes" : "fit-no") + '">' + (row.fits ? "fits" : "no") + "</td>" +
+        '<td class="' + dimCls + '">' + (row.max_context > 0 ? num(row.max_context) : "0 — weights alone don’t fit") + "</td>" +
+        '<td class="' + dimCls + '">' + (row.decode_tps > 0 ? "~" + row.decode_tps.toFixed(0) + " tok/s" : "—") + "</td></tr>";
+    }).join("");
+  }
+
+  return {
+    init() {
+      // trigger scroll reveals once mounted
+      const page = $("status-page");
+      requestAnimationFrame(() => page.classList.add("lit"));
+      page.classList.add("lit");
+    },
+    enter() { tick(); timer = setInterval(tick, 2000); },
+    leave() { clearInterval(timer); timer = null; },
+  };
+})();
+
+/* ════════════════════════════════════════════════════════════════════
+   BOOT
+   ════════════════════════════════════════════════════════════════════ */
+if (!location.hash) location.replace("#/chat");
+router();
+pollIdentity();
+setInterval(pollIdentity, 4000);
+</script>
+</body>
+</html>

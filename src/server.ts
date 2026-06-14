@@ -9,15 +9,14 @@
 // Generation is serialized through a single queue (one GPU, batch=1).
 
 import type { Server } from "bun";
-// Embedded status page (Phase 16): `with { type: "text" }` inlines the
-// file in both `bun run` and the compiled single binary. bun-types
-// types *.html imports as HTMLBundle (the html loader), but the text
-// attribute makes the runtime value a string — hence the double cast.
-import statusPageHtml from "./status-page.html" with { type: "text" };
-import chatPageHtml from "./chat-page.html" with { type: "text" };
+// Embedded web app — the unified SPA (chat / quantize / finetune /
+// dataset / status). `with { type: "text" }` inlines the file in both
+// `bun run` and the compiled single binary. bun-types types *.html
+// imports as HTMLBundle (the html loader), but the text attribute makes
+// the runtime value a string — hence the double cast.
+import appHtml from "./web/app.html" with { type: "text" };
 import pkgJson from "../package.json" with { type: "json" };
-const STATUS_PAGE = statusPageHtml as unknown as string;
-const CHAT_PAGE = chatPageHtml as unknown as string;
+const APP_PAGE = appHtml as unknown as string;
 const pkgVersion = (pkgJson as { version: string }).version;
 import { loadModelConfig, type KvQuantSpec } from "./config";
 import { Weights } from "./weights";
@@ -49,6 +48,7 @@ import { VisionTower } from "./vision/embedder";
 import {
   buildVisionPrompt, extractImages, type VisionTokenIds,
 } from "./vision/prompt";
+import { makePiWsHandler, type PiWsData } from "./pi-web";
 
 export interface ServerOptions {
   /** Byte cap for the prompt (KV) cache. Default 2 GB. */
@@ -560,6 +560,27 @@ export function createServer(
   let libraryCache: { at: number; rows: unknown[] } | null = null;
   const startedAt = Date.now();
 
+  // Captured so the WebSocket handler can resolve the bound (possibly
+  // ephemeral) port lazily for the loopback pi provider.
+  let serverRef!: Server<unknown>;
+
+  // Lab job system (quantize / finetune / dataset), lazily opened so a
+  // plain serve with no Lab activity pays nothing. markZombies() recovers
+  // rows orphaned by a crashed prior process. The dataset runner is
+  // in-process (pure JS + loopback /v1); quantize and finetune run as
+  // GPU-leased subprocesses via src/jobs/job-entry.ts.
+  let jobStore: import("./jobs").JobStore | null = null;
+  const ensureJobs = async () => {
+    if (!jobStore) {
+      const jobs = await import("./jobs");
+      const store = new jobs.JobStore();
+      store.markZombies();
+      try { (await import("./dataset")).registerDatasetRunner(); } catch {}
+      jobStore = store;
+    }
+    return jobStore;
+  };
+
   // KV-quant scheme, resolved once: kv_config.json by default (optiq
   // serve's headline behavior), overridable to uniform bits or off.
   const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart"> =
@@ -613,23 +634,36 @@ export function createServer(
   const toolRouter = (tools: ToolDefinition[] | null): ToolAwareStream =>
     new ToolAwareStream(ctx.tokenizer, toolStreamMode(tools), tools);
 
-  return Bun.serve({
+  serverRef = Bun.serve({
     port,
     ...(serverOptions.hostname ? { hostname: serverOptions.hostname } : {}),
     idleTimeout: 0,
-    async fetch(request) {
+    // Web chat rides pi's AgentSession events over a WebSocket; the embedded
+    // pi provider points back at THIS server's own loopback /v1 (port
+    // resolved lazily — it may be ephemeral until serve() binds).
+    websocket: makePiWsHandler({
+      port: () => serverRef.port ?? port,
+      contextWindow: ctx.model.config.text.maxPositionEmbeddings,
+    }),
+    async fetch(request, server) {
       const url = new URL(request.url);
 
-      if ((url.pathname === "/" || url.pathname === "/status") && request.method === "GET") {
-        return new Response(STATUS_PAGE, {
+      if (url.pathname === "/ws/chat") {
+        if (server.upgrade(request, { data: { sessionId: crypto.randomUUID() } as PiWsData }))
+          return undefined;
+        return new Response("expected websocket", { status: 426 });
+      }
+
+      // The unified SPA is served at "/"; legacy deep links redirect into
+      // the hash router so old bookmarks still land on the right section.
+      if (url.pathname === "/" && request.method === "GET") {
+        return new Response(APP_PAGE, {
           headers: { "content-type": "text/html; charset=utf-8" },
         });
       }
-
-      if (url.pathname === "/chat" && request.method === "GET") {
-        return new Response(CHAT_PAGE, {
-          headers: { "content-type": "text/html; charset=utf-8" },
-        });
+      if (request.method === "GET" &&
+          ["/status", "/chat", "/quantize", "/finetune", "/dataset"].includes(url.pathname)) {
+        return Response.redirect(`/#${url.pathname}`, 302);
       }
 
       if (url.pathname === "/library" && request.method === "GET") {
@@ -1186,7 +1220,175 @@ export function createServer(
         return Response.json(responses);
       }
 
+      // --- Lab API: dataset builder + quantize + finetune + jobs -------
+      if (url.pathname === "/api/dataset/templates" && request.method === "GET") {
+        const { TEMPLATES } = await import("./dataset");
+        return Response.json({ templates: TEMPLATES });
+      }
+      if (url.pathname === "/api/dataset/submit" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as {
+          template_id?: string; inputs?: Record<string, unknown>; model_name?: string;
+        };
+        const { getTemplate } = await import("./dataset");
+        if (!body.template_id || !getTemplate(body.template_id))
+          return Response.json({ ok: false, error: `unknown template ${body.template_id}` }, { status: 400 });
+        const store = await ensureJobs();
+        const { submitInProcess } = await import("./jobs");
+        const { homedir } = await import("node:os");
+        const safe = body.template_id.replace(/[^a-z0-9_-]/gi, "");
+        const outDir = `${homedir()}/.cache/mlx-bun/datasets/dataset-${safe}-${Date.now()}`;
+        const { jobId } = submitInProcess(store, "dataset", {
+          template_id: body.template_id, inputs: body.inputs ?? {},
+          output_dir: outDir, api_url: `http://127.0.0.1:${server.port}`,
+          model_name: body.model_name ?? "local",
+        }, outDir);
+        return Response.json({ ok: true, job_id: jobId, output_dir: outDir });
+      }
+
+      if (url.pathname === "/api/quantize/inspect" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as { model_id?: string };
+        const { inspectModel } = await import("./quantize");
+        return Response.json(await inspectModel(body.model_id ?? ""));
+      }
+      if (url.pathname === "/api/quantize/submit" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as {
+          model_id?: string; bits?: number; group_size?: number;
+          target_bpw?: number; candidate_bits?: number[]; reference?: string;
+          calibration_mix?: string; n_calibration?: number;
+        };
+        if (!body.model_id)
+          return Response.json({ ok: false, error: "model_id required" }, { status: 400 });
+        const store = await ensureJobs();
+        const { submitSubprocess } = await import("./jobs");
+        const { homedir } = await import("node:os");
+        const bits = body.bits ?? 4, gs = body.group_size ?? 64;
+        const base = body.model_id.split("/").filter(Boolean).at(-1)!.replace(/[^a-z0-9_.-]/gi, "");
+        // Mixed-precision (sensitivity+knapsack) names the dir by target bpw.
+        const suffix = body.target_bpw ? `mixed-${body.target_bpw}bpw` : `${bits}bit`;
+        const outDir = `${homedir()}/.cache/mlx-bun/quants/${base}-OptiQ-${suffix}`;
+        const { jobId } = submitSubprocess(store, "quantize", {
+          model_id: body.model_id, out_dir: outDir, bits, group_size: gs,
+          // forwarded to the mixed-precision path when target_bpw is set
+          target_bpw: body.target_bpw, candidate_bits: body.candidate_bits,
+          reference: body.reference, calibration_mix: body.calibration_mix,
+          n_calibration: body.n_calibration,
+        }, outDir);
+        return Response.json({ ok: true, job_id: jobId, output_dir: outDir });
+      }
+
+      if (url.pathname === "/api/finetune/inspect-dataset" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as { path?: string };
+        const { inspectDataset } = await import("./train");
+        return Response.json(await inspectDataset(body.path ?? ""));
+      }
+      if (url.pathname === "/api/finetune/submit" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+        if (!body.model_dir || !body.data_dir)
+          return Response.json({ ok: false, error: "model_dir and data_dir required" }, { status: 400 });
+        const store = await ensureJobs();
+        const { submitSubprocess } = await import("./jobs");
+        const { homedir } = await import("node:os");
+        const adapterPath = (body.adapter_path as string) ||
+          `${homedir()}/.cache/mlx-bun/adapters/adapter-${Date.now()}`;
+        const { jobId } = submitSubprocess(store, "finetune",
+          { ...body, adapter_path: adapterPath }, adapterPath);
+        return Response.json({ ok: true, job_id: jobId, adapter_path: adapterPath });
+      }
+      if (url.pathname === "/api/finetune/merge" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as {
+          adapter_a?: string; adapter_b?: string; scales?: number[];
+        };
+        if (!body.adapter_a || !body.adapter_b)
+          return Response.json({ ok: false, error: "adapter_a and adapter_b required" }, { status: 400 });
+        try {
+          const { mergeAdapters } = await import("./train");
+          const { homedir } = await import("node:os");
+          const mergedPath = `${homedir()}/.cache/mlx-bun/adapters/merged-${Date.now()}`;
+          const stats = await mergeAdapters([body.adapter_a, body.adapter_b], mergedPath, body.scales);
+          return Response.json({ ok: true, merged_path: mergedPath, stats });
+        } catch (e) {
+          return Response.json({ ok: false, error: (e as Error).message }, { status: 400 });
+        }
+      }
+      if (url.pathname === "/api/finetune/export" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as {
+          base_model?: string; adapter_path?: string; method?: string;
+        };
+        if (!body.base_model || !body.adapter_path)
+          return Response.json({ ok: false, error: "base_model and adapter_path required" }, { status: 400 });
+        try {
+          const { exportAdapter } = await import("./train");
+          const { homedir } = await import("node:os");
+          const exportPath = `${homedir()}/.cache/mlx-bun/exports/export-${Date.now()}`;
+          const manifest = await exportAdapter(exportPath, body.base_model, body.adapter_path, body.method);
+          return Response.json({ ok: true, export_path: exportPath, manifest });
+        } catch (e) {
+          return Response.json({ ok: false, error: (e as Error).message }, { status: 400 });
+        }
+      }
+
+      // --- HF token settings + push-to-hub (model & dataset repos) ------
+      if (url.pathname === "/api/settings/hf-token" && request.method === "GET") {
+        const { hasHfToken } = await import("./hf-push");
+        return Response.json({ ok: true, hasToken: hasHfToken() });
+      }
+      if (url.pathname === "/api/settings/hf-token" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as { token?: string };
+        if (!body.token) return Response.json({ ok: false, error: "token required" }, { status: 400 });
+        const { saveHfToken } = await import("./hf-push");
+        saveHfToken(body.token);
+        return Response.json({ ok: true });
+      }
+      {
+        const m = url.pathname.match(/^\/api\/(quantize|finetune|dataset)\/push$/);
+        if (m && request.method === "POST") {
+          const kind = m[1]!;
+          const body = (await request.json().catch(() => ({}))) as {
+            job_id?: string; repo_id?: string; private?: boolean; source_path?: string;
+          };
+          if (!body.repo_id) return Response.json({ ok: false, error: "repo_id required" }, { status: 400 });
+          const { getHfToken, uploadFolder } = await import("./hf-push");
+          const token = getHfToken();
+          if (!token)
+            return Response.json({ ok: false, error: "no HF token saved — add one in Settings → Hugging Face" }, { status: 400 });
+          const store = await ensureJobs();
+          let dir = body.source_path;
+          if (!dir && body.job_id) dir = store.get(body.job_id)?.output_path ?? undefined;
+          if (!dir) return Response.json({ ok: false, error: "no source dir (pass job_id or source_path)" }, { status: 400 });
+          try {
+            const r = await uploadFolder(dir, body.repo_id, {
+              repoType: kind === "dataset" ? "dataset" : "model",
+              private: !!body.private, token,
+            });
+            return Response.json({ ok: true, url: r.url });
+          } catch (e) {
+            return Response.json({ ok: false, error: (e as Error).message }, { status: 400 });
+          }
+        }
+      }
+
+      if (url.pathname === "/api/jobs" && request.method === "GET") {
+        const store = await ensureJobs();
+        const limit = Number(url.searchParams.get("limit") ?? "50");
+        const kind = url.searchParams.get("kind") ?? undefined;
+        return Response.json({ ok: true, jobs: store.recent(limit, kind) });
+      }
+      {
+        const m = url.pathname.match(/^\/api\/jobs\/([^/]+?)(\/stream)?$/);
+        if (m && request.method === "GET") {
+          const store = await ensureJobs();
+          if (m[2]) {
+            const { streamJobResponse } = await import("./jobs");
+            return streamJobResponse(store, m[1]!);
+          }
+          const job = store.get(m[1]!);
+          if (!job) return Response.json({ ok: false, error: "job not found" }, { status: 404 });
+          return Response.json({ ok: true, job });
+        }
+      }
+
       return Response.json({ error: { message: "not found" } }, { status: 404 });
     },
   });
+  return serverRef;
 }

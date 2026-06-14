@@ -19,12 +19,68 @@ Produces a relocatable directory:
 | `libmlx.dylib` | mlx core (+`@loader_path` rpath added for libjaccl) | ~15 MB |
 | `libjaccl.dylib` | mlx's distributed-comm dependency | ~0.6 MB |
 | `mlx.metallib` | Metal kernels — libmlx loads it from its own directory | ~150 MB |
+| `photon_rs_bg.wasm` | pi image codec — only the web chat's `read`-on-image path; resolved next to the executable | ~1.8 MB |
 
 Library resolution order (src/mlx/ffi.ts): `MLX_BUN_LIBMLXC` env var →
 `libmlxc.dylib` next to the executable → homebrew
 (`/opt/homebrew/lib`, `/usr/local/lib`). The whole directory can be
 renamed/moved; nothing references absolute paths after the build
 script's `install_name_tool` fixups.
+
+## Embedded pi web chat (`/ws/chat`)
+
+The compiled binary includes the full embedded pi AgentSession
+(`src/pi-web.ts`, dep `@earendil-works/pi-coding-agent`) that drives the
+browser chat. The web chat runs pi **headless** — no TUI — so it needs
+far less than pi's own `bun build --compile` ships.
+
+**Bundled automatically.** All of pi's JavaScript (the SDK,
+`createAgentSession`, the seven tools, the `openai-completions` provider,
+the resource loader) is pulled into the executable by `bun build
+--compile`. Nothing extra to do for the JS.
+
+**Sidecar'd by `build-binary.sh`.** The only runtime asset pi resolves
+*by path* on the headless web-chat path is `photon_rs_bg.wasm` (pi's
+image codec). pi resolves it relative to `process.execPath`, so the build
+script copies it next to `mlx-bun`. It is reached only when the `read`
+tool is asked to read an image file, and pi degrades gracefully when it's
+absent (the tool returns a text "[Image omitted]" note instead of
+crashing), so it is best-effort, not load-bearing.
+
+> Known limitation: `@silvia-odwyer/photon-node`'s wasm-bindgen glue
+> currently fails to decode under Bun (both `bun` and `bun build
+> --compile`) with *"Unreachable code should not be executed"* — a Bun
+> wasm-bindgen gap, not an asset-placement issue (the bytes are valid and
+> found). Net effect today: web-chat image *reads* aren't resized inline.
+> The web chat itself is unaffected (its provider is text-only), and the
+> wasm is shipped so it will work once Bun's support lands.
+
+**Intentionally omitted** (TUI-only assets pi ships beside its own binary,
+never reached by the headless web chat):
+
+| omitted asset | what it's for |
+|---|---|
+| `theme/*.json` | TUI color themes (loaded via `initTheme`; we pass `noThemes`) |
+| `assets/*.png` | TUI announcement/interactive images |
+| `export-html/*` | the `/export-html` command's template + vendor JS |
+| `docs/`, `examples/`, `README.md`, `CHANGELOG.md` | TUI help/doc browsing |
+
+These are gated behind TUI code paths and the explicit `exportToHtml()`
+method; `createAgentSession`'s import graph (`core/sdk.js`) pulls in no
+theme/asset/export-html loaders, and `src/pi-web.ts` builds the session
+with `noThemes`/`noSkills`/`noExtensions`/`noPromptTemplates`/
+`noContextFiles`.
+
+**Verifying it.** `build-binary.sh` runs `scripts/verify-binary-pi.ts` as
+a sibling compiled binary inside the bundle (so `process.execPath` points
+at the bundle dir, matching what the real binary sees). It builds the
+exact headless session `src/pi-web.ts` builds — same provider/registry/
+resource-loader config — against an unreachable provider, far enough to
+prove the bundled SDK + assets resolve without a missing-asset crash. It
+needs **no model and no server**; a provider/model error is the success
+signal. The one thing this can't cover offline is a live token-streaming
+turn over `/ws/chat` — that still requires `mlx-bun serve` running a real
+model (run it yourself; the smoke covers everything up to the model call).
 
 ## Sidecar pattern
 
