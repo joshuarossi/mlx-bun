@@ -35,7 +35,20 @@ mlx-lm with zero optimizations — see `benchmarks/RESULTS.md`.
   (`minicpm5.ts`); e4b per-layer-input `[1,L,…]` → B-generic (`gemma4.ts`).
 - `--batch N` flag (`cli.ts`/`server.ts`; `--decode-concurrency` alias).
 - Dynamic-B cache ops `mergeKVRows`/`filterKVRows` (`batched-mask.ts`) =
-  mlx-lm's `cache.merge`/`filter`; unit-tested (no model).
+  mlx-lm's `cache.merge`/`filter`; unit-tested (no model) **AND now
+  oracle-verified end-to-end** (next bullet).
+- **Dynamic-B (rows join/leave mid-stream) = bit-parity with mlx-lm
+  `BatchKVCache.merge`/`.extract`/`.filter` (CPM L1).** `realDynamicBatchedGreedy`
+  (`tests/batched-decode-parity.test.ts`) drives a real batched decode through
+  {A,B}→join C→{A,B,C}→evict A→{B,C} using `mergeKVRows`/`filterKVRows`; all 3
+  per-row greedy trajectories match the oracle token-for-token. Oracle:
+  `scripts/gen-batched-dynamic-golden.py` → `tests/fixtures/batched-dynamic-golden-cpm.json`.
+  (Join = re-merge of extracted advanced-offset rows + fresh prefill; `extend`
+  — the keep-running-batch optimization — is deferred to the scheduler.)
+  Added `BatchedDecodeMaskCache.releaseRopeArr()` (free per-step RoPE array
+  without disposing the delegated KV — needed when rebuilding a wrapper each
+  step around a persistent inner). Full-attention only so far (CPM); Gemma
+  dynamic-B is a follow-up (same staging as the static oracle rollout).
 - Oracle tooling: `scripts/gen-batched-golden.py` (needs optiq `register()` to
   load gemma4_unified in mlx-lm; uses mlx-lm `_make_cache`) → fixtures
   `tests/fixtures/batched-golden-*.json`. Real-path validator: `realBatchedGreedy`
@@ -49,10 +62,10 @@ Sequence (detail: `docs/design/parallel-slots.md` → "Concrete plan (the --batc
 engine)"). Gate each step with the teacher-forced parity tests vs mlx-lm B=N
 goldens; keep `--batch 1` the untouched serial path throughout.
 
-1. **Numerical gate for merge/filter** — extend `gen-batched-golden.py` to a
-   DYNAMIC golden (sequences join/leave mid-stream via mlx-lm's BatchGenerator
-   insert/remove); prove `mergeKVRows`/`filterKVRows` drive a real batched decode
-   bit-parity with it (they're bookkeeping-tested only so far).
+1. ~~**Numerical gate for merge/filter**~~ **DONE 2026-06-14** — dynamic golden
+   (`gen-batched-dynamic-golden.py`, rows join/leave) + `realDynamicBatchedGreedy`
+   prove `mergeKVRows`/`filterKVRows` drive a real CPM batched decode bit-parity
+   with mlx-lm's `BatchKVCache`. See the DONE list above. **NEXT starts at 2.**
 2. **The async scheduler loop** — new module (e.g. `src/serve/batch-scheduler.ts`)
    wired into `createServer` to replace the serial `enqueue` when
    `serverOptions.batch > 1`. Bun-async (NO threads): own a running batch; per

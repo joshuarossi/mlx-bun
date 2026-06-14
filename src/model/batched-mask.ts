@@ -128,6 +128,16 @@ export class BatchedDecodeMaskCache implements Cache {
     return { mode: "array", arr: buildBatchedDecodeMask(this.B, N, S, this.leftPad, this.window) };
   }
 
+  /** Free the per-step RoPE position array WITHOUT disposing the delegated KV
+   *  (inner). For callers that rebuild a fresh wrapper around a persistent inner
+   *  cache each decode step (the dynamic-B scheduler / parity harness) — the
+   *  inner outlives the wrapper, so wrapper.dispose() would be wrong. */
+  releaseRopeArr(): void {
+    this.#ropeArr?.dispose();
+    this.#ropeArr = null;
+    this.#ropeForOffset = -1;
+  }
+
   state(): MlxArray[] {
     return this.inner.state();
   }

@@ -22,10 +22,13 @@ chain. What IS done and oracle-verified is the batched **forward primitive**
 (`BatchedDecodeMaskCache` + the per-layer fixes): a B=N prefill+decode is
 bit-parity with mlx-lm B=N across all 4 models — but it lives only in the test
 harness (`realBatchedGreedy`), not in request handling. So the hard part (are
-the numerics correct?) is answered; the remaining work to actually serve B>1 is
-the **scheduler** (admission queue → running batch → continuous inject/evict →
-per-row SSE fan-out → `_is_batchable` gate → memory admission). That scheduler is
-NOT built. Two further pieces are explicitly deferred as separate spikes: **paged
+the numerics correct?) is answered — for BOTH static-B and now **dynamic-B**
+(rows joining/leaving mid-stream: `mergeKVRows`/`filterKVRows` are oracle-verified
+against mlx-lm's `BatchKVCache.merge`/`.extract`/`.filter`, CPM L1, 2026-06-14).
+The remaining work to actually serve B>1 is the **scheduler** (admission queue →
+running batch → continuous inject/evict → per-row SSE fan-out → `_is_batchable`
+gate → memory admission). That scheduler is NOT built — the verified inject/evict
+*primitives* live only in the test harness. Two further pieces are explicitly deferred as separate spikes: **paged
 KV** (zero-padding-waste allocation) and **batched mixed-precision quant serving**
 (novel territory — no ancestor does it).
 
@@ -395,8 +398,17 @@ per-row, push each row's token to its own SSE `ReadableStream` (per-row
 EOS/stop/max-tokens, resolve their streams. HTTP handlers `await` their row's
 stream; no thread, just the event loop + `mx.async_eval` pipelining.
 
-**Build sequence:** (1) dynamic-B cache `merge`/`filter` + a pure unit test, then
-a gated parity test vs an mlx-lm *dynamic* golden (rows join/leave mid-stream);
+**Build sequence:** (1) **DONE 2026-06-14** — dynamic-B cache `merge`/`filter` +
+a pure unit test, then a gated parity test vs an mlx-lm *dynamic* golden (rows
+join/leave mid-stream). `scripts/gen-batched-dynamic-golden.py` drives mlx-lm's
+real `BatchKVCache.merge`/`.extract`/`.filter` through {A,B}→join C→evict A→{B,C};
+`realDynamicBatchedGreedy` (`tests/batched-decode-parity.test.ts`) runs the same
+scenario through `mergeKVRows`/`filterKVRows` and matches all 3 per-row greedy
+trajectories token-for-token (CPM L1). Join = re-merge of extracted advanced-offset
+rows + a fresh solo prefill (proves `mergeKVRows` on non-fresh rows); `extend`
+(keep-the-running-batch optimization, mlx-lm's actual join op) is deferred into
+the scheduler. Added `BatchedDecodeMaskCache.releaseRopeArr()`. Full-attention
+only (CPM); Gemma/sliding dynamic-B is a follow-up.
 (2) the async loop + per-row SSE wired into `createServer` behind `--batch N`;
 (3) `_is_batchable` gate + solo/incompatible → serial fast path + `B×S_max`
 memory admission.
