@@ -8,7 +8,8 @@ import { SNAPSHOT } from "../tests/paths";
 import { goldenAt } from "../tests/goldens";
 import { loadModelConfig } from "../src/config";
 import { Weights } from "../src/weights";
-import { Gemma4Model } from "../src/model/gemma4";
+import { createModel } from "../src/model/factory";
+import type { Gemma4Model } from "../src/model/gemma4";
 import { generate } from "../src/generate";
 import { saveKvCache, loadKvCache } from "../src/kv-store";
 import * as ops from "../src/mlx/ops";
@@ -18,7 +19,7 @@ const CACHE_FILE = `${process.env.HOME}/.cache/mlx-bun/cold-start-demo.mlxkv`;
 const t0 = performance.now();
 const config = await loadModelConfig(SNAPSHOT);
 const weights = await Weights.open(SNAPSHOT);
-const model = new Gemma4Model(weights, config);
+const model = createModel(weights, config) as Gemma4Model; // production dispatch (bit-parity path)
 const tModel = performance.now();
 
 const golden = (await goldenAt("parity.json").json()) as {

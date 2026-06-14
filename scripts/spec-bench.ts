@@ -5,7 +5,8 @@
 import { readdirSync } from "node:fs";
 import { loadModelConfig } from "../src/config";
 import { Weights } from "../src/weights";
-import { Gemma4Model } from "../src/model/gemma4";
+import { createModel } from "../src/model/factory";
+import type { Gemma4Model } from "../src/model/gemma4";
 import { generate } from "../src/generate";
 import { specGenerate } from "../src/spec/generate";
 import { GemmaAssistantDrafter } from "../src/spec/drafter";
@@ -29,7 +30,7 @@ const PROMPTS = [
 const MAX_TOKENS = 96;
 
 const config = await loadModelConfig(E4B);
-const model = new Gemma4Model(await Weights.open(E4B), config);
+const model = createModel(await Weights.open(E4B), config) as Gemma4Model; // production dispatch (bit-parity path)
 const drafter = await GemmaAssistantDrafter.load(DR);
 const tok = await loadTokenizer(E4B);
 const template = await ChatTemplate.load(E4B);

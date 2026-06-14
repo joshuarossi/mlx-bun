@@ -7,7 +7,8 @@ import { SNAPSHOT } from "../tests/paths";
 import { goldenAt } from "../tests/goldens";
 import { loadModelConfig } from "../src/config";
 import { Weights } from "../src/weights";
-import { Gemma4Model, argmaxLastPosition, lastPositionLogits } from "../src/model/gemma4";
+import { argmaxLastPosition, lastPositionLogits } from "../src/model/gemma4";
+import { createModel } from "../src/model/factory";
 import { peakMemory } from "../src/mlx/ffi";
 
 const golden = (await goldenAt("parity.json").json()) as {
@@ -24,7 +25,7 @@ console.log(`prompt: ${JSON.stringify(golden.prompt)} (${golden.prompt_ids.lengt
 const t0 = performance.now();
 const config = await loadModelConfig(SNAPSHOT);
 const weights = await Weights.open(SNAPSHOT);
-const model = new Gemma4Model(weights, config);
+const model = createModel(weights, config); // production dispatch (the compat path benched vs python)
 console.log(`model constructed in ${(performance.now() - t0).toFixed(0)} ms`);
 
 const cache = model.makeCache();
