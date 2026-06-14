@@ -4,8 +4,13 @@
 // no server, no model (those run in integration once routes are wired).
 
 import { describe, expect, it } from "bun:test";
-import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { buildWebChatSystemPrompt, mapEventToFrames } from "../src/pi-web";
+import type { AgentSessionEvent, SessionEntry, SessionInfo } from "@earendil-works/pi-coding-agent";
+import {
+  buildWebChatSystemPrompt,
+  mapEventToFrames,
+  serializeHistory,
+  toSessionListItems,
+} from "../src/pi-web";
 
 // Cast helper: the real AgentSessionEvent union is large; we only build
 // the fields mapEventToFrames reads, so narrow via `as`.
@@ -119,5 +124,59 @@ describe("buildWebChatSystemPrompt", () => {
     // No promise of mutating actions the gate would refuse.
     expect(prompt).not.toMatch(/\bedit\b/);
     expect(prompt).not.toMatch(/\bwrite\b/);
+  });
+});
+
+// Build a SessionMessageEntry-shaped fixture (only the fields serializeHistory reads).
+const mEntry = (id: string, role: string, content: unknown, extra: Record<string, unknown> = {}) =>
+  ({ type: "message", id, parentId: null, timestamp: "t", message: { role, content, ...extra } }) as unknown as SessionEntry;
+
+describe("serializeHistory", () => {
+  it("flattens user/assistant text and merges tool results by callId", () => {
+    const entries: SessionEntry[] = [
+      mEntry("1", "user", "hello"),
+      mEntry("2", "assistant", [
+        { type: "text", text: "hi! searching" },
+        { type: "toolCall", id: "c1", name: "web_search", arguments: { query: "mlx" } },
+      ]),
+      mEntry("3", "toolResult", [{ type: "text", text: "top result" }], { toolCallId: "c1", toolName: "web_search" }),
+      mEntry("4", "assistant", [{ type: "text", text: "found it" }]),
+      { type: "model_change", id: "5", parentId: null, timestamp: "t", provider: "x", modelId: "y" } as unknown as SessionEntry,
+    ];
+    expect(serializeHistory(entries)).toEqual([
+      { role: "user", text: "hello", tools: [] },
+      { role: "assistant", text: "hi! searching", tools: [{ callId: "c1", name: "web_search", args: { query: "mlx" }, result: "top result" }] },
+      { role: "assistant", text: "found it", tools: [] },
+    ]);
+  });
+
+  it("accepts string content and drops empty / non-message entries", () => {
+    const entries: SessionEntry[] = [mEntry("1", "user", ""), mEntry("2", "user", "  real  ")];
+    expect(serializeHistory(entries)).toEqual([{ role: "user", text: "  real  ", tools: [] }]);
+  });
+
+  it("keeps an assistant message that is only tool calls (no text)", () => {
+    const entries: SessionEntry[] = [
+      mEntry("1", "assistant", [{ type: "toolCall", id: "c9", name: "weather", arguments: { location: "NYC" } }]),
+    ];
+    const items = serializeHistory(entries);
+    expect(items).toHaveLength(1);
+    expect(items[0]?.text).toBe("");
+    expect(items[0]?.tools[0]).toEqual({ callId: "c9", name: "weather", args: { location: "NYC" }, result: "" });
+  });
+});
+
+describe("toSessionListItems", () => {
+  it("titles rows, sorts newest-first, and flags forks", () => {
+    const infos = [
+      { path: "/s/a.jsonl", id: "a", cwd: "/x", created: new Date(1000), modified: new Date(1000), messageCount: 2, firstMessage: "older chat", allMessagesText: "" },
+      { path: "/s/b.jsonl", id: "b", cwd: "/x", name: "Named", created: new Date(5000), modified: new Date(5000), messageCount: 4, firstMessage: "newer", allMessagesText: "", parentSessionPath: "/s/a.jsonl" },
+    ] as unknown as SessionInfo[];
+    const items = toSessionListItems(infos);
+    expect(items[0]?.id).toBe("b"); // newest first
+    expect(items[0]?.title).toBe("Named"); // explicit name wins over firstMessage
+    expect(items[0]?.forked).toBe(true);
+    expect(items[1]?.title).toBe("older chat");
+    expect(items[1]?.forked).toBe(false);
   });
 });

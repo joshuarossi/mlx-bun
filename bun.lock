@@ -5,6 +5,7 @@
     "": {
       "name": "mlx-bun",
       "dependencies": {
+        "@earendil-works/pi-ai": "0.79.3",
         "@earendil-works/pi-coding-agent": "0.79.3",
         "@huggingface/jinja": "^0.5.9",
         "@huggingface/tokenizers": "^0.1.3",
