@@ -6,7 +6,7 @@ tmp/
 project-review.html
 # generated reports / benchmark artifacts (regenerated, not source)
 *-report-*.html
-benchmarks-h2h-*.md
+benchmarks-h2h-*
 dist/
 .claude/
 dist-native/

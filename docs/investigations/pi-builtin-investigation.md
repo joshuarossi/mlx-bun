@@ -7,6 +7,20 @@ https://pi.dev/docs/latest (sdk, tui, rpc, custom-provider pages) plus
 direct inspection of the installed packages
 (`~/.bun/install/global/node_modules/@earendil-works/*`, v0.79.1).*
 
+> **Outcome (2026-06-14, what actually shipped).** This investigation
+> proposed shipping the subprocess launcher first and promoting to an
+> embedded flagship later. We went straight to the embedded design and
+> then **dropped the subprocess path entirely** (Option 2 + the
+> `--external-pi` fallback in P4): `mlx-bun pi` runs pi's own
+> `InteractiveMode` **in-process** (src/pi-terminal.ts) with a custom
+> mlx-bun coding-agent prompt, full coding tools + web tools, and pi's
+> native approval prompts — nothing to install. A user who already runs
+> pi connects it to the local model with **`mlx-bun harness pi`**
+> (Option 1, src/harness-pi.ts) — that's the only "their pi" path, since
+> launching a pi they already have was pure duplication. The web-chat
+> half (Option 4) ships via src/pi-web.ts. The analysis below is the
+> point-in-time reasoning that led here.
+
 ## TL;DR
 
 **Yes, and better than hoped.** pi is not just embeddable — it is a
