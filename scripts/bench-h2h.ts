@@ -494,84 +494,212 @@ function machineOf(r: Record<string, any>): string {
   } catch { return "?"; }
 }
 
+// leg label: server | direct | direct@<N>k (from the REQUESTED context
+// length, so 8k and 32k rows are distinct cells and labels)
+function legOf(notes: string): string {
+  if (notes.startsWith("h2h-server")) return "server";
+  const req = notes.match(/ctxreq=(\d+)/)?.[1];
+  if (req) return `direct@${Math.round(Number(req) / 1000)}k`;
+  return notes.includes("ctx=") ? "direct@8k" : "direct"; // legacy rows
+}
+
+interface Cell {
+  modelPath: string; model: string; stack: string; leg: string; kv: "off" | "config";
+  decode: number; spread: string; prefill: number; ttft?: string; ready?: string;
+  mem: number; growth?: string; tokSrc?: string; machine: string; commit: string; dirty: boolean;
+}
+
+function parseCell(r: Record<string, any>): Cell {
+  const notes = String(r.notes);
+  const decodeRuns = (notes.match(/decode\[([\d.,]+)\]/)?.[1] ?? "")
+    .split(",").map(Number).filter((x) => !Number.isNaN(x));
+  // mlx-lm has no mixed-KV mode: normalize so early mislabeled rows dedupe
+  const kv = (r.stack === "mlx-lm" ? "off" : notes.match(/ kv=(\w+)/)?.[1] ?? "off") as "off" | "config";
+  return {
+    modelPath: String(r.model_path),
+    model: String(r.model_path).split("/").filter(Boolean).at(-1)!.slice(0, 14),
+    stack: String(r.stack), leg: legOf(notes), kv,
+    decode: Number(r.decode_tps),
+    spread: decodeRuns.length > 1
+      ? `${Math.min(...decodeRuns).toFixed(1)}–${Math.max(...decodeRuns).toFixed(1)} (n=${decodeRuns.length})`
+      : "—",
+    prefill: r.prefill_tps ? Number(r.prefill_tps) : 0,
+    ttft: notes.match(/ttft_ms=(\d+)/)?.[1],
+    ready: notes.match(/ready_ms=(\d+)/)?.[1],
+    mem: r.peak_bytes ? Number(r.peak_bytes) / 1e9 : 0,
+    growth: notes.match(/rss_growth_mb=([\d.-]+)/)?.[1],
+    tokSrc: notes.match(/tok=(\w+)/)?.[1],
+    machine: machineOf(r), commit: String(r.commit_sha ?? "?"),
+    dirty: / preflight-failed/.test(notes),
+  };
+}
+
+/** A vs B paired comparison (sections 1 & 2): our row beside the reference's,
+ *  same (model, arena), with the decode speedup. Returns [] if no pairs. */
+function pairSection(
+  cells: Map<string, Cell>, otherStack: string, ourKv: "off" | "config", otherKv: "off" | "config",
+): string[] {
+  const keys = new Set<string>();
+  for (const c of cells.values()) keys.add(`${c.modelPath}|${c.leg}`);
+  const lines: string[] = [
+    `| model | arena | mlx-bun tok/s | ${otherStack} tok/s | speedup | mlx-bun prefill | ${otherStack} prefill | machine |`,
+    "|---|---|---|---|---|---|---|---|",
+  ];
+  let any = false;
+  for (const k of [...keys].sort()) {
+    const [mp, leg] = k.split("|") as [string, string];
+    const ours = cells.get(`${mp}|${leg}|mlx-bun|${ourKv}`);
+    const other = cells.get(`${mp}|${leg}|${otherStack}|${otherKv}`);
+    if (!ours || !other) continue;
+    any = true;
+    const speedup = other.decode > 0 ? (ours.decode / other.decode).toFixed(2) + "×" : "—";
+    const dag = (c: Cell) => (c.tokSrc === "chunks" ? "†" : "") + (c.dirty ? "‡" : "");
+    const pf = (c: Cell) => (c.prefill ? c.prefill.toFixed(0) : "—");
+    lines.push(
+      `| ${ours.model} | ${leg} | ${ours.decode.toFixed(1)}${dag(ours)} | ` +
+      `${other.decode.toFixed(1)}${dag(other)} | ${speedup} | ${pf(ours)} | ${pf(other)} | ${ours.machine} |`,
+    );
+  }
+  return any ? lines : [];
+}
+
+// The report is sectioned by the THREE comparisons the benchmark exists to
+// make (see header), then a raw appendix of every cell. The parity TREE
+// (mlx-lm → optiq → mlx-bun) governs the bit-parity requirement of
+// comparisons 1 & 2; the numbers here are speed, parity is asserted by tests.
 function renderTable(sinceTs: number): string {
   const raw = db.db
     .query("SELECT * FROM runs WHERE ts >= ? AND notes LIKE 'h2h-%' ORDER BY ts ASC")
     .all(sinceTs) as Record<string, any>[];
-  // latest row wins per logical cell (re-runs and aborted passes leave
-  // older rows in the DB — history stays queryable, table stays clean)
-  // leg label: server | direct | direct@<N>k (from the REQUESTED context
-  // length, so 8k and 32k rows are distinct cells and labels)
-  const legOf = (notes: string): string => {
-    if (notes.startsWith("h2h-server")) return "server";
-    const req = notes.match(/ctxreq=(\d+)/)?.[1];
-    if (req) return `direct@${Math.round(Number(req) / 1000)}k`;
-    return notes.includes("ctx=") ? "direct@8k" : "direct"; // legacy rows
-  };
-  const byCell = new Map<string, Record<string, any>>();
+  // latest row wins per logical cell (re-runs/aborted passes leave older rows)
+  const cells = new Map<string, Cell>();
   for (const r of raw) {
-    const notes = String(r.notes);
-    // pre-format rows (no kv tag) are old smoke runs — not table material
-    if (!/ kv=\w+/.test(notes)) continue;
-    // mlx-lm has no mixed-KV mode: normalize so early mislabeled rows
-    // (first pass recorded kv=config on baseline cells) dedupe correctly
-    const kv = r.stack === "mlx-lm" ? "off" : notes.match(/ kv=(\w+)/)![1];
-    byCell.set(`${r.model_path}|${r.stack}|${legOf(notes)}|${kv}`, r);
+    if (!/ kv=\w+/.test(String(r.notes))) continue; // skip pre-format smoke rows
+    const c = parseCell(r);
+    cells.set(`${c.modelPath}|${c.leg}|${c.stack}|${c.kv}`, c);
   }
-  const rows = [...byCell.values()].sort((a, b) =>
-    String(a.model_path).localeCompare(String(b.model_path)) ||
-    legOf(String(a.notes)).localeCompare(legOf(String(b.notes))) ||
-    String(a.stack).localeCompare(String(b.stack)),
+
+  const out: string[] = [];
+
+  // --- Comparison 1: vs mlx-lm (bf16 KV; mlx-lm has no mixed-KV mode) -------
+  out.push(
+    "## Comparison 1 — mlx-bun vs mlx-lm (bf16 KV) — requirement: bit parity",
+    "",
+    "Parity (per-step logits + greedy tokens vs the mlx-lm oracle): `bun scripts/parity-check.ts` / `tests/parity.test.ts`. Numbers below are speed only.",
+    "",
   );
-  // mem is two instruments: direct rows = Metal generation peak (load
-  // transient excluded since the reset-peak fix); server rows = process
-  // RSS after the request session (undercounts GPU). Separate columns.
-  const lines = [
+  const s1 = pairSection(cells, "mlx-lm", "off", "off");
+  out.push(...(s1.length ? s1 : ["_no mlx-bun/mlx-lm bf16 pairs in this window._"]), "");
+
+  // --- Comparison 2: vs optiq (mixed kv_config) ----------------------------
+  out.push(
+    "## Comparison 2 — mlx-bun vs optiq (mixed kv_config) — requirement: bit parity",
+    "",
+    "Mixed-KV bit parity is currently verified ours-fast vs ours-monolith (`tests/generated-parity.test.ts`). A direct optiq mixed-KV logit golden is NOT yet generated — see the gap note at the foot. Numbers below are speed only.",
+    "",
+  );
+  const s2 = pairSection(cells, "optiq", "config", "config");
+  out.push(...(s2.length ? s2 : ["_no mlx-bun/optiq mixed pairs in this window._"]), "");
+
+  // --- Comparison 3: our perf vs our compat (KL + scores) ------------------
+  const cvp = db.db
+    .query("SELECT * FROM runs WHERE ts >= ? AND notes LIKE 'bench-compat-vs-perf%' ORDER BY ts ASC")
+    .all(sinceTs) as Record<string, any>[];
+  out.push(
+    "## Comparison 3 — mlx-bun perf vs compat (same engine) — requirement: low KL + similar scores",
+    "",
+  );
+  const arms = new Map<string, { compat?: Record<string, any>; perf?: Record<string, any> }>();
+  const klRows = new Map<string, Record<string, any>>();
+  for (const r of cvp) {
+    const notes = String(r.notes);
+    if (notes.startsWith("bench-compat-vs-perf-kl")) { klRows.set(String(r.model_path), r); continue; }
+    const m = notes.match(/arm=(\w+) ctx=(\d+)/);
+    if (!m) continue;
+    const key = `${String(r.model_path).split("/").filter(Boolean).at(-1)}|${m[2]}`;
+    const e = arms.get(key) ?? {};
+    (e as any)[m[1]!] = r;
+    arms.set(key, e);
+  }
+  if (arms.size) {
+    out.push(
+      "| model | ctx | compat tok/s | perf tok/s | perf/compat | compat peak GB | perf peak GB |",
+      "|---|---|---|---|---|---|---|",
+    );
+    for (const [key, e] of [...arms.entries()].sort()) {
+      const [model, ctx] = key.split("|") as [string, string];
+      if (!e.compat || !e.perf) continue;
+      const cd = Number(e.compat.decode_tps), pd = Number(e.perf.decode_tps);
+      const ratio = cd > 0 ? (pd / cd).toFixed(2) + "×" : "—";
+      out.push(
+        `| ${model.slice(0, 14)} | ${ctx} | ${cd.toFixed(1)} | ${pd.toFixed(1)} | ${ratio} | ` +
+        `${(Number(e.compat.peak_bytes) / 1e9).toFixed(2)} | ${(Number(e.perf.peak_bytes) / 1e9).toFixed(2)} |`,
+      );
+    }
+    out.push("");
+  }
+  if (klRows.size) {
+    out.push("Quality (perf logits vs compat logits, teacher-forced; machine-independent):", "");
+    for (const [mp, r] of [...klRows.entries()].sort()) {
+      const n = String(r.notes);
+      const mean = n.match(/klMeanNats=([\d.eE+-]+)/)?.[1] ?? "?";
+      const max = n.match(/klMaxNats=([\d.eE+-]+)/)?.[1] ?? "?";
+      const tm = n.match(/tokenMatchPct=([\d.]+)/)?.[1] ?? "?";
+      const v = n.match(/verdict=(\w+)/)?.[1] ?? "?";
+      const model = mp.split("/").filter(Boolean).at(-1)!.slice(0, 14);
+      out.push(`- \`${model}\`: KL mean ${mean} / max ${max} nats, greedy token-match ${tm}% → **${v}**`);
+    }
+    out.push("");
+  }
+  if (!arms.size && !klRows.size)
+    out.push("_no perf-vs-compat rows in this window — run `bun scripts/bench-compat-vs-perf.ts`._", "");
+
+  // --- raw appendix --------------------------------------------------------
+  out.push(
+    "## All raw cells (every recorded h2h row, latest-wins)",
+    "",
+    "mem is two instruments: direct = Metal generation peak; server = process RSS after the session (undercounts GPU).",
+    "",
     "| model | stack | leg | kv | decode tok/s | spread | prefill tok/s | ttft ms | ready s | gen peak GB | rss GB | rss growth | machine | commit |",
     "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
-  ];
-  for (const r of rows) {
-    const model = String(r.model_path).split("/").filter(Boolean).at(-1)!.slice(0, 12);
-    const notes = String(r.notes);
-    const leg = legOf(notes);
-    const isServer = leg === "server";
-    const kv =
-      r.stack !== "mlx-lm" && notes.match(/ kv=(\w+)/)?.[1] === "config" ? "mixed" : "bf16";
-    const decodeRuns = (notes.match(/decode\[([\d.,]+)\]/)?.[1] ?? "")
-      .split(",").map(Number).filter((x) => !Number.isNaN(x));
-    const spread = decodeRuns.length > 1
-      ? `${Math.min(...decodeRuns).toFixed(1)}–${Math.max(...decodeRuns).toFixed(1)} (n=${decodeRuns.length})`
-      : "—";
-    const ttft = notes.match(/ttft_ms=(\d+)/)?.[1] ?? "—";
-    const ready = notes.match(/ready_ms=(\d+)/)?.[1];
-    const growth = notes.match(/rss_growth_mb=([\d.-]+)/)?.[1];
-    const tokSrc = notes.match(/tok=(\w+)/)?.[1];
-    const mem = r.peak_bytes ? (Number(r.peak_bytes) / 1e9).toFixed(2) : "";
-    lines.push(
-      `| ${model} | ${r.stack} | ${leg} | ${kv} | ` +
-      `${Number(r.decode_tps).toFixed(1)}${tokSrc === "chunks" ? "†" : ""} | ${spread} | ` +
-      `${r.prefill_tps ? Number(r.prefill_tps).toFixed(0) : "—"} | ${ttft} | ` +
-      `${ready ? (Number(ready) / 1000).toFixed(2) : "—"} | ` +
+  );
+  const sorted = [...cells.values()].sort((a, b) =>
+    a.modelPath.localeCompare(b.modelPath) || a.leg.localeCompare(b.leg) || a.stack.localeCompare(b.stack));
+  for (const c of sorted) {
+    const isServer = c.leg === "server";
+    const kvLabel = c.stack !== "mlx-lm" && c.kv === "config" ? "mixed" : "bf16";
+    const mem = c.mem ? c.mem.toFixed(2) : "";
+    out.push(
+      `| ${c.model} | ${c.stack} | ${c.leg} | ${kvLabel} | ` +
+      `${c.decode.toFixed(1)}${c.tokSrc === "chunks" ? "†" : ""}${c.dirty ? "‡" : ""} | ${c.spread} | ` +
+      `${c.prefill ? c.prefill.toFixed(0) : "—"} | ${c.ttft ?? "—"} | ` +
+      `${c.ready ? (Number(c.ready) / 1000).toFixed(2) : "—"} | ` +
       `${!isServer && mem ? mem : "—"} | ${isServer && mem ? mem : "—"} | ` +
-      `${growth ? `${growth} MB` : "—"} | ${machineOf(r)} | ${r.commit_sha ?? "?"} |`,
+      `${c.growth ? `${c.growth} MB` : "—"} | ${c.machine} | ${c.commit} |`,
     );
   }
-  if (rows.some((r) => / tok=chunks/.test(String(r.notes))))
-    lines.push("", "† decode rate from SSE chunk counting (server sent no usage) — underestimates if tokens coalesce per delta.");
+
+  const footer: string[] = [];
+  if (sorted.some((c) => c.tokSrc === "chunks"))
+    footer.push("† decode rate from SSE chunk counting (server sent no usage) — underestimates if tokens coalesce per delta.");
+  if (sorted.some((c) => c.dirty))
+    footer.push("‡ measured on a machine that failed preflight (`--force`) — absolute tok/s is indicative, not quotable; ratios and KL are still valid.");
+  footer.push("Gap: comparison 2 has no optiq mixed-KV logit golden yet — generate one (optiq `install_mixed_kv` in `scripts/regen-parity-goldens.ts`) to make it a bit-parity verdict, not just a speed pairing.");
+  if (footer.length) out.push("", ...footer);
   if (failures.length) {
-    lines.push("", "## attempted but failed", "");
-    for (const f of failures) lines.push(`- \`${f.cell}\`: ${f.error}`);
+    out.push("", "## attempted but failed", "");
+    for (const f of failures) out.push(`- \`${f.cell}\`: ${f.error}`);
   }
   if (knownIssues.length) {
-    lines.push("", "## skipped — known upstream optiq bug", "",
+    out.push("", "## skipped — known upstream optiq bug", "",
       `optiq's KV-sharing SDPA shim recovers a shared layer's quant bits from a`,
       `Python \`id()\`-keyed registry; under KV sharing \`id()\` reuse intermittently`,
       `returns the wrong cache, so \`quantized_matmul\` gets mismatched bits (~50% of`,
       `runs, config-independent). Retried ${OPTIQ_RETRIES}× before skipping. Not an mlx-bun regression.`,
       "");
-    for (const f of knownIssues) lines.push(`- \`${f.cell}\`: ${f.error}`);
+    for (const f of knownIssues) out.push(`- \`${f.cell}\`: ${f.error}`);
   }
-  return lines.join("\n");
+  return out.join("\n");
 }
 
 // --- commands --------------------------------------------------------------
@@ -659,17 +787,30 @@ if (cmd === "table") {
 
 if (cmd === "all") {
   const startedAt = Date.now();
-  let machineState = preflight(true);
+  // --force (benchmark.sh default): the clean-machine gate WARNS instead of
+  // refusing. Comparisons 1&2 are bit parity (machine-independent) and #3 is
+  // paired/KL (noise cancels), so a dirty machine still yields valid verdicts
+  // — only the absolute tok/s headline wants a clean box. Rows measured dirty
+  // are tagged `preflight-failed` (‡ in the report) so they carry the caveat.
+  const forced = flag("force");
+  let machineState = preflight(!forced);
+  // sticky: once dirty (start or any recheck), every later row is flagged.
+  let degraded = !checkMachine().ok;
   const recheck = (label: string) => {
     const s = checkMachine({ maxSwapUsedMB: MIDRUN_SWAP_LIMIT_MB });
     if (!s.ok) {
       console.error(`\nmachine degraded after ${label}: ${s.problems.join("; ")}`);
-      console.error("finished cells are recorded — reboot and re-run; they will be skipped.");
-      console.log("\n" + renderTable(startedAt - RESUME_WINDOW_MS));
-      process.exit(1);
+      degraded = true;
+      if (!forced) {
+        console.error("finished cells are recorded — reboot and re-run; they will be skipped.");
+        console.log("\n" + renderTable(startedAt - RESUME_WINDOW_MS));
+        process.exit(1);
+      }
+      console.error("--force: continuing on a degraded machine (rows tagged preflight-failed).");
     }
     machineState = machineStateJson(s);
   };
+  const forceNote = () => forced && degraded;
 
   const runs = Number(opt("runs", "3"));
   const serverRuns = Number(opt("server-runs", "5"));
@@ -701,7 +842,7 @@ if (cmd === "all") {
           ]
         : []),
     ];
-    await directLeg(directCells, runs, machineState, { tokens: 256 });
+    await directLeg(directCells, runs, machineState, { tokens: 256, forceNote: forceNote() });
     recheck(`${name} direct`);
 
     if (m.repoId.includes("12B")) {
@@ -715,7 +856,7 @@ if (cmd === "all") {
         ],
         // full depth: this leg carries the headline regression finding —
         // median-of-2 was too thin for the most-quoted number
-        runs, machineState, { tokens: 256, promptTokens: 16000 },
+        runs, machineState, { tokens: 256, promptTokens: 16000, forceNote: forceNote() },
       );
       recheck(`${name} long-context`);
     }
@@ -741,7 +882,7 @@ if (cmd === "all") {
       let lastErr: Error | null = null;
       for (let attempt = 1; attempt <= attempts; attempt++) {
         try {
-          await serverLeg(c, serverRuns, 128, machineState);
+          await serverLeg(c, serverRuns, 128, machineState, forceNote());
           lastErr = null;
           break;
         } catch (e) {
