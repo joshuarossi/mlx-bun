@@ -85,22 +85,26 @@ mlx-lm" half.
 
 (Phase 16; full plan in **docs/pi-builtin-investigation.md**.) pi is an
 MIT, Bun-native (`bun build --compile`) coding agent — the "CLI
-experience inside our package" that neither Python package has. Three
-modes building toward an embedded flagship:
+experience inside our package" that neither Python package has. Two
+commands, one for each audience:
 
-1. **`mlx-bun harness pi`** (P1, exists) — configure the user's
-   EXISTING pi to use mlx-bun's models, via a generated extension that
-   dynamically discovers models from our `/v1/models`. No models.json
-   surgery; reversible.
-2. **`mlx-bun pi`** (P2, exists) — start the server (reuse if healthy)
-   and launch the user's pi against it with a session-scoped provider;
-   all remaining argv passes through (`-p`, `--mode rpc`, `--continue`,
-   `@file`). One command → agent on a local model.
-3. **Embedded pi** (P3/P4, Phase 16 `[~]`, flagship) — pi's
-   `InteractiveMode` in-process inside the single binary, no prior pi
-   install; `-p`→`runPrintMode`, `--mode rpc`→`runRpcMode` preserved.
-   The appliance moment: one binary, one command, a real agent on a
-   local model.
+1. **`mlx-bun pi`** (the appliance, exists) — start the server (reuse if
+   healthy) and run pi's own `InteractiveMode` **in-process**: one
+   binary, one command, a real agent on a local model with nothing to
+   install (pi is a bundled dep). Custom mlx-bun coding-agent prompt,
+   full coding tools + web tools, pi's native approval prompts.
+   `-p`→`runPrintMode`, `--mode json/rpc`→`runPrintMode`/`runRpcMode`.
+2. **`mlx-bun harness pi`** (for people who already use pi, exists) —
+   point the user's OWN pi at mlx-bun's local model, via a generated
+   extension that dynamically discovers models from our `/v1/models`.
+   No models.json surgery; reversible. This is where the full pi flag
+   surface (`--continue`, `--resume`, `@file`, extensions, themes) lives.
+
+History: an earlier cut shipped `mlx-bun pi` as a subprocess launcher of
+the user's own pi (and briefly a `--external-pi` flag); both were dropped
+(2026-06-14) — a user who already has pi already knows how to run it, so
+it was pure duplication. The embedded agent + `harness pi` is the clean
+split.
 
 ### Built-in web UI (OptIQ-Lab parity, pi-powered)
 
@@ -158,9 +162,8 @@ column; the 🟥 column is the capability matrix that fills in behind it.
 | **Web UI: fine-tune** | `lab`/UI | 🟥 | gated on Training |
 | **Web UI: training-data template + gen** | `lab`/UI | 🟥 | new (no engine dep) |
 | Web UI: chat | `/chat` | ✅ | done (publishing gate 2) |
-| **Native: pi configure existing** (`harness pi`) | — | ✅ (P1) | Phase 16 |
-| **Native: pi launch existing** (`mlx-bun pi`) | — | ✅ (P2) | Phase 16 |
-| **Native: pi embedded in binary** | — | 🟡 (P3/P4) | Phase 16 (flagship) |
+| **Native: pi embedded** (`mlx-bun pi`, in-process TUI) | — | ✅ (P3/P4) | Phase 16 (flagship) |
+| **Native: connect user's own pi** (`harness pi`) | — | ✅ (P1) | Phase 16 |
 
 Summary: serving and the read-only/measurement verbs are **🔌
 wiring-only** — the compat layer ships over what the engine already
@@ -182,9 +185,10 @@ The OptIQ-Lab web-UI tiles gate on these: quantize ← model-quant,
 fine-tune ← training, training-data ← independent, chat ✅.
 
 Plus the **native half** (no parity equivalent — the differentiators):
-the pi agentic coding CLI (Phase 16: `harness pi` + `mlx-bun pi` exist;
-embedded single-binary pi is the flagship) and the web UI, both riding
-pi's `AgentSession` event stream. Compat makes us a drop-in for mlx-lm;
+the pi agentic coding CLI (Phase 16: `mlx-bun pi` is the embedded
+in-process agent, `harness pi` connects the user's own pi) and the web
+UI, both riding pi's `AgentSession` event stream. Compat makes us a
+drop-in for mlx-lm;
 the native half makes us more than it.
 
 ## Parity harness (turns "drop-in" into a passing test)
