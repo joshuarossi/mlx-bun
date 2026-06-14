@@ -14,6 +14,21 @@ scheduler that runs multiple sequences through one forward pass.
 This is a server-path feature — serving speed is the user metric.
 Direct/embedding mode stays batch=1.
 
+## STATUS (2026-06-14) — verified primitive, NOT yet served
+
+**The server does not batch yet.** `--slots N` is inert (warns, runs serially);
+the server still processes one generation at a time through the serial promise
+chain. What IS done and oracle-verified is the batched **forward primitive**
+(`BatchedDecodeMaskCache` + the per-layer fixes): a B=N prefill+decode is
+bit-parity with mlx-lm B=N across all 4 models — but it lives only in the test
+harness (`realBatchedGreedy`), not in request handling. So the hard part (are
+the numerics correct?) is answered; the remaining work to actually serve B>1 is
+the **scheduler** (admission queue → running batch → continuous inject/evict →
+per-row SSE fan-out → `_is_batchable` gate → memory admission). That scheduler is
+NOT built. Two further pieces are explicitly deferred as separate spikes: **paged
+KV** (zero-padding-waste allocation) and **batched mixed-precision quant serving**
+(novel territory — no ancestor does it).
+
 ## Why it helps (and when it doesn't)
 
 The win is **throughput via memory bandwidth**. Decode on Apple Silicon
@@ -316,6 +331,15 @@ most" fidelity and cost:
 Plan: ship rung 2 (S1–S2) for the throughput win + dynamic admission
 with no new kernel; build rung 3 (S3+) as the memory-density upgrade.
 Budget accounting is total-bytes from day one.
+
+**Current state (2026-06-14):** the batched *primitive* is **rung 2** —
+one shared `[B, H, S, D]` buffer per layer (`KVCache`/`RotatingKVCache`),
+growing in 256-token steps, width = longest live sequence, left-pad
+"waste" on short rows. But the **budget/admission half of rung 2 is NOT
+built** (no `B × S_max` projection, no KV budget enforcement) — that's
+scheduler work (S2), and the scheduler itself isn't built (`--slots`
+inert). And **rung 3 (paged) is a deferred spike**. So today: rung-2
+*allocation shape*, no *budget control*, not wired into serving.
 
 KV quantization is a force multiplier: 4-bit KV (`generate.ts:67`,
 already supported) is ~4× smaller, so the same budget buys ~4× the slots
