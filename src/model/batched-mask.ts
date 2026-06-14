@@ -143,3 +143,52 @@ export class BatchedDecodeMaskCache implements Cache {
     this.#ropeArr = null;
   }
 }
+
+// --- Dynamic-B cache ops (continuous batching) ---------------------------
+// Ports of mlx-lm's per-cache batch methods (merge / filter), the operations
+// the --batch N scheduler needs that our fixed-B verified forward doesn't have.
+// They run per layer on the raw [.,H,.,D] K/V; the scheduler applies them
+// across layers and wraps the result in a BatchedDecodeMaskCache. Pure array
+// surgery — unit-tested without a model (tests/batched-decode-mask.test.ts);
+// numerical correctness is gated separately vs an mlx-lm dynamic golden.
+
+/** mlx-lm `merge`: stack N single-row KV slices into one left-padded
+ *  [B,H,Smax,D] batch. Each row is its sequence's KV sliced to its true length
+ *  L_i; we left-pad each by Smax−L_i so all rows align on the right edge (the
+ *  layout decode + BatchedDecodeMaskCache expect). Generalizes
+ *  realBatchedGreedy's assemble to N rows. Caller owns the result; the input
+ *  row arrays are not disposed. */
+export function mergeKVRows(
+  rows: { keys: MlxArray; values: MlxArray }[],
+): { keys: MlxArray; values: MlxArray; leftPad: number[]; width: number } {
+  const lens = rows.map((r) => r.keys.shape[2]!);
+  const width = Math.max(...lens);
+  const leftPad = lens.map((l) => width - l);
+  const leftPadTo = (a: MlxArray, pad: number): MlxArray => {
+    if (pad === 0) return a.slice([0, 0, 0, 0], a.shape as number[]); // fresh full view
+    const [B, H, , D] = a.shape as [number, number, number, number];
+    const z = ops.zeros([B, H, pad, D], a.dtype);
+    const out = ops.concatAxis([z, a], 2);
+    z.dispose();
+    return out;
+  };
+  const ks = rows.map((r, i) => leftPadTo(r.keys, leftPad[i]!));
+  const vs = rows.map((r, i) => leftPadTo(r.values, leftPad[i]!));
+  const keys = ops.concatAxis(ks, 0);
+  const values = ops.concatAxis(vs, 0);
+  for (const a of [...ks, ...vs]) a.dispose();
+  return { keys, values, leftPad, width };
+}
+
+/** mlx-lm `filter`: keep only `keep` (sorted row indices) along the batch
+ *  axis — eviction of finished sequences from a batched [B,H,S,D] buffer.
+ *  Caller owns the result; inputs are not disposed. */
+export function filterKVRows(
+  keys: MlxArray, values: MlxArray, keep: number[],
+): { keys: MlxArray; values: MlxArray } {
+  const idx = MlxArray.fromInt32(Int32Array.from(keep), [keep.length]);
+  const k = ops.takeAxis(keys, idx, 0);
+  const v = ops.takeAxis(values, idx, 0);
+  idx.dispose();
+  return { keys: k, values: v };
+}
