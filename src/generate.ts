@@ -64,7 +64,7 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
  *  full-attention layers only, so rotating quantization engages through
  *  uniform kvBits (like optiq --kv-bits) or a config that names sliding
  *  layers. */
-function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void {
+export function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void {
   const { kvBits, kvConfig } = options;
   if (!kvBits && !kvConfig?.length) return;
   const start = options.quantizedKvStart ?? (kvConfig?.length ? 0 : 5000);

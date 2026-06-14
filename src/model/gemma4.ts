@@ -49,6 +49,7 @@ import {
   type Mask,
   type SharedKv,
 } from "./gemma4-base";
+import { fusedGeglu, fusedGeluEnabled, fusedGeluSupported } from "./fused-geglu-kernel";
 
 class Attention {
   readonly isSliding: boolean;
@@ -235,11 +236,20 @@ class MLP {
   forward(x: MlxArray): MlxArray {
     const g = this.gate.forward(x);
     const u = this.up.forward(x);
-    const act = ops.geluApprox(g);
-    g.dispose();
-    const h = ops.mul(act, u);
-    act.dispose();
-    u.dispose();
+    // Fused GeGLU perf kernel (opt-in, not in a compiled trace): one pass
+    // instead of ~9 element-wise kernels. Off → the bit-exact spelled path.
+    let h: MlxArray;
+    if (fusedGeluEnabled() && !isCompiledTrace() && fusedGeluSupported(g)) {
+      h = fusedGeglu(g, u);
+      g.dispose();
+      u.dispose();
+    } else {
+      const act = ops.geluApprox(g);
+      g.dispose();
+      h = ops.mul(act, u);
+      act.dispose();
+      u.dispose();
+    }
     const out = this.down.forward(h);
     h.dispose();
     return out;

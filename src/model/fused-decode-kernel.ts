@@ -26,10 +26,13 @@ import { Dtype } from "../mlx/ffi";
 import { MetalKernel } from "../mlx/metal-kernel";
 import * as ops from "../mlx/ops";
 
-/** Perf-mode lever: DEFAULT ON since the 2026-06-11 cleared-machine
- *  benchmark pass (1.023x paired @8k, 1.010x @2k vs compat, 12B serve
- *  kv_config). MLX_BUN_PERF_KERNEL=0 opts out; compat remains the
- *  permanent -O0 reference and differential-testing oracle. */
+/** Perf-mode lever: DEFAULT ON (2026-06-11 cleared-machine pass, ~1.02x @8k).
+ *  It matches optiq's fused-KV decode — which the quantized-KV parity goldens
+ *  track — so it's the production default. It is NOT bit-exact vs the -O0
+ *  reference (online softmax, tier-b), so it's the PERF side of the
+ *  compat-vs-perf A/B: MLX_BUN_PERF_KERNEL=0 selects the compat path we bench
+ *  against the python libs. (B/C-style bit-exact optimizations stay on either
+ *  way — this lever only toggles the parity-breaking decode kernel.) */
 export function perfKernelEnabled(): boolean {
   return process.env.MLX_BUN_PERF_KERNEL !== "0";
 }

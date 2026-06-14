@@ -1184,8 +1184,10 @@ export function quantizedSdpaUnfused(
   const nRep = H / KV;
   const N = kq.packed.shape[2]!;
 
-  let queries = ops.mulScalar(q, scale);
-  const owned: MlxArray[] = [queries];
+  // scale is 1.0 for Gemma4 (q/k are RMS-normed) — skip the identity multiply.
+  let queries = q;
+  const owned: MlxArray[] = [];
+  if (scale !== 1.0) { queries = ops.mulScalar(q, scale); owned.push(queries); }
 
   let kT = kq;
   let vT = vq;
@@ -1265,15 +1267,19 @@ export function quantizedSdpaTiled(
   const nRep = H / KV;
   const N = kq.packed.shape[2]!;
 
-  let queries = ops.mulScalar(q, scale);
+  // scale is 1.0 for Gemma4 (q/k are RMS-normed) — skip the identity multiply.
+  let queries = q;
+  let ownsQueries = false;
+  if (scale !== 1.0) { queries = ops.mulScalar(q, scale); ownsQueries = true; }
 
   let kT = kq;
   let vT = vq;
   const expanded: MlxArray[] = [];
   if (nRep > 1) {
     const qr = ops.reshape(queries, [B, KV, nRep, L, D]);
-    queries.dispose();
+    if (ownsQueries) queries.dispose();
     queries = qr;
+    ownsQueries = true;
     const expand = (t: ops.QuantizedTensor): ops.QuantizedTensor => {
       const e = (a: MlxArray): MlxArray => {
         const r = ops.expandDims(a, -3);
@@ -1410,7 +1416,7 @@ export function quantizedSdpaTiled(
   rowSum!.dispose();
   if (ownsMask) maskArr!.dispose();
   for (const a of expanded) a.dispose();
-  queries.dispose();
+  if (ownsQueries) queries.dispose();
   if (nRep > 1) {
     const r = ops.reshape(out, [B, H, L, D]);
     out.dispose();
