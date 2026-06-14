@@ -2303,8 +2303,10 @@ single-stream, latency grows with queue depth. The competitors batch:
   empirically: its kv-quant cache must implement `merge`, else that path
   falls back to serial.
 - **mlx-bun** — no batching. This is the gap; it's the context↔concurrency
-  tradeoff (a fixed KV budget split into N slots, each ~total_context/N —
-  the llama.cpp `-np` / vLLM model).
+  tradeoff. (Earlier framing was a *static* KV partition — fixed
+  total_context/N per slot, llama.cpp `-np`. Superseded 2026-06-14: we
+  allocate KV **dynamically by need**, see the decision block below and
+  **docs/design/parallel-slots.md**.)
 
 Two parts, sequenced:
 
@@ -2341,6 +2343,137 @@ current server and the validation tool for P2):
 - Exit: throughput scales with concurrency up to the slot count then
   queues (P1 confirms); per-sequence output bit-exact vs the batch=1 path
   (parity gate).
+
+### P2 design + decisions (2026-06-14) — see docs/design/parallel-slots.md
+
+Full design written to **docs/design/parallel-slots.md**. Key decisions
+this session:
+- **Continuous batching, not static.** A late request joins the in-flight
+  batch at the next decode step (iteration-level scheduling); it does NOT
+  wait for the running request to finish. Benefit window = requests
+  *overlapping in wall-clock*, not a formed backlog. Light traffic (no
+  overlap) → `--slots 1` stays the default and is the right answer.
+- **KV allocation is dynamic, by need — not static partition.** Reject
+  fixed budget/N per slot (wasteful, arbitrary cap). Ship rung 2 first:
+  dynamic byte-budget admission with contiguous per-sequence caches
+  (padded batch, no new kernel; budget mirrors the byte-capped
+  PromptCache). True "who needs it most" = rung 3 **paged KV** (custom
+  paged-attention Metal kernel + block manager) as the S3+ density
+  upgrade — feasible given we already ship custom Metal kernels.
+- **LoRA**: batch only same-adapter-set requests; mixed adapters **drain
+  to solo** (accepted — Josh confirmed fine). Per-row adapters deferred.
+- The hot path is already `[B, …]`-generic (attention `gemma4.ts:152`,
+  KVCache `gemma4-base.ts:204`). The hard problem is per-sequence
+  position: left-padding + per-row `[B,1,1,S]` mask + per-row RoPE offsets
+  (`ops.ropeDynamic` / `ropeOffsetArr` already exist). Sliding-window
+  (`RotatingKVCache`) per-row masking is the top correctness risk.
+
+Phasing (each default-off behind `slots=1`, serialized path never removed):
+- [x] **S0 — config seam (2026-06-14).** `--slots N` / `ServerOptions.slots`
+      plumbed, validated, surfaced (ready card + `/stats`). `N>1` warns
+      that batched execution lands in S1 and runs serially. No behavior
+      change; suite green.
+- [ ] **S1** — static 2-wide, base model only. Split after the 2026-06-14
+      reuse finding (below):
+      - [ ] **S1a (prefill)** — reuse the training batched-forward machinery
+            (`buildBatchedPadMask` / `BatchedMaskCache` in src/train/forward.ts,
+            already parity-proven by tests/train-batch-e2e.test.ts); wire the
+            serving path to prefill B prompts in one forward.
+      - [~] **S1b (decode)** — the new work: growing per-row KV + per-row
+            offsets, per-row RoPE (array-offset path), per-row [B,1,1,S] decode
+            mask, B-token/step loop + stream fan-out. **First brick landed
+            2026-06-14**: src/model/batched-mask.ts `buildBatchedDecodeMask`
+            (left-padded, nonzero-offset) + tests/batched-decode-mask.test.ts
+            (fast, no model). Prerequisite fix landed 2026-06-14: Attention.forward
+            now captures ropeOffsetArr ONCE (K/Q used different offsets across
+            updateAndFetch — latent today, parity-breaking for per-row decode);
+            verified bit-exact vs tests/compiled-decode.test.ts (12B, 7/7).
+            Two traps documented (pad-convention mismatch; RoPE timing) — see
+            docs/design/parallel-slots.md. Sequence: S1b.1 gated teacher-forced
+            decode parity harness (riskiest numerics first) → S1b.2 KV assembly
+            → S1b.3 scheduler + B-token/step loop + stream fan-out. Teacher-forced
+            gate: 2-row decode per-row logits match two solo runs within bf16 tol.
+          - [x] **S1b.1 DONE 2026-06-14**: BatchedDecodeMaskCache (wrapper:
+                per-row decode mask + per-row ropeOffsetArr) + gated parity test
+                tests/batched-decode-parity.test.ts (MLX_BUN_TEST_BATCH_DECODE=1,
+                MiniCPM5-1B, all full-attention). PASSES: unpadded row bit-exact
+                vs solo, left-padded row within bf16 reduction-order noise
+                (≤0.23, bounded over 8 steps). **The gate caught a real bug**:
+                LlamaAttention (minicpm5.ts) roped Q/K with the scalar
+                cache.offset, ignoring ropeOffsetArr → left-padded rows
+                mis-positioned (logit diff 8.7). Fixed to use the array-offset
+                path when present (captured once); MiniCPM5 solo parity still
+                bit-exact vs oracle (minicpm5-parity + kv-parity, 2/2). Gemma4
+                Attention already had the array path (compiled-decode); its
+                capture-once fix verified vs compiled-decode (12B, 7/7).
+          - **"Done" gate = model × 3 parity layers** (NOT a flat grid; see
+            docs/design/parallel-slots.md): L1 bf16/mlx-lm-exact, L2 quant/
+            optiq-exact, L3 our perf (low-KL). Must degrade gracefully L3→L2→L1.
+            Current roster CPM + 3 Gemmas; new families (Qwen) add a row + their
+            own 3 layers. Modes analysis 2026-06-14 found 2 more per-path items:
+            generated handlers (L3) repeat the K/Q rope double-read trap → fix in
+            scripts/gen-model.ts (generator) + regenerate; the [B,1,N,S] array
+            mask bypasses the fused decode kernel (mask.mode "" only) → quant
+            batched falls to quantizedSdpaUnfused (correct, perf debt).
+          - **Progress 2026-06-14b**: parity harness generalized (reusable per
+            model, per-layer cache types KVCache/RotatingKVCache, ring-wrap
+            guard) + **KL gate adopted** (batched decode is NOT bit-exact vs
+            single-stream — batching changes attn reduction order; KL(solo‖batched)
+            < 1e-2 is the universal gate; bit-exact unpadded is a CPM-only bonus).
+            CPM L1 ✅ (KL 7e-4). Gemma 12B L1 WIP: unpadded row = benign batch
+            noise (KL 5e-3, content-independent — proven via identical-prompt
+            run); **padded row = real Gemma bug (KL 0.26)** — hypothesis: bool
+            mask doesn't clamp zero-padding to -inf at Gemma's score magnitudes
+            (headDim 256, scale 1.0).
+          - **Oracle correction 2026-06-14c (Josh)**: the batch-mode gate is
+            bit-exact vs **mlx-lm's batch mode at the same B** (mlx-lm B=N ≡
+            mlx-bun B=N), NOT vs our own B=1. Read mlx-lm: BatchKVCache/
+            BatchRotatingKVCache(left_padding), per-row offset array → RoPE,
+            mask j>=left_padding, bf16 uses the SAME fused bool-mask sdpa we do.
+            So our approach matches in principle; the additive-mask "fix" is WRONG
+            (would deviate). Built scripts/gen-batched-golden.py (oracle venv) →
+            captured CPM B=2 greedy trajectories + logits golden. The KL harness
+            (solo-prefill+assemble vs solo-decode) measures the WRONG oracle —
+            demoted to internal-consistency check. Next: build mlx-bun REAL
+            batched prefill+decode, gate bit-exact vs the mlx-lm B=N golden.
+          - [x] **CPM L1 ORACLE-VERIFIED 2026-06-14d**: built realBatchedGreedy
+            (left-pad → BatchedDecodeMaskCache, which handles prefill at offset 0
+            AND decode → batch-prefill → greedy decode). Its per-row trajectory ==
+            mlx-lm B=2 EXACTLY (both rows incl. left-padded, 8 steps). CPM L1
+            batched is bit-parity with mlx-lm's batch mode. Fixture committed
+            (tests/fixtures/batched-golden-cpm.json).
+          - [x] **Gemma 12B L1 ORACLE-VERIFIED 2026-06-14d**: realBatchedGreedy ==
+            mlx-lm B=2 EXACTLY (both rows incl. left-padded; sliding layers via
+            RotatingKVCache→BatchRotatingKVCache; short-context). The "KL 0.26
+            padded bug" was purely the wrong-oracle artifact — RESOLVED, no fix
+            needed (bool+fused path is what mlx-lm uses). Golden needs optiq's
+            register() to load gemma4_unified in mlx-lm (see gen-batched-golden.py,
+            mirrors regen-parity-goldens). Fixture: batched-golden-gemma12b.json.
+            Caveat: short-context only; ring-wrap (>window) is a separate golden.
+          - [x] **Gemma e4b L1 ORACLE-VERIFIED 2026-06-14d**: realBatchedGreedy ==
+            mlx-lm B=2 EXACTLY. Required the predicted fix: computePerLayerInputs
+            + the per-layer slice in forwardLayers hardcoded [1,L,…] → made
+            B-generic (B from shape; B=1-identity, no single-stream regression).
+            KV-sharing turned out already B-generic (no extra fix). Fixture
+            batched-golden-e4b.json. 3/4 L1 cells done; 26B (MoE) next.
+          - [x] **Gemma 26B L1 ORACLE-VERIFIED 2026-06-14d**: realBatchedGreedy ==
+            mlx-lm B=2 EXACTLY. MoE (Router/SwitchGLU/Experts) was already
+            B-generic — no fix needed. Fixture batched-golden-26b.json.
+          - **🎯 L1 BATCHED DECODE COMPLETE**: all 4 cells (CPM, Gemma 12B, e4b,
+            26B) bit-parity with mlx-lm B=2. Only e4b needed a fix. Caveat:
+            short-context (pre-wrap); ring-wrap (>window) is the remaining L1
+            follow-up. Next: L2 (quant KV vs optiq), then L3 (perf, KL+quality).
+- [ ] **S2** — N-wide + continuous injection/eviction; dynamic byte-budget
+      admission.
+- [ ] **S3+** — paged KV (rung 3), KV-quant under batch, LoRA-group batching.
+
+**Reuse finding (2026-06-14):** batched PREFILL is already built and proven
+in the training path — `src/train/forward.ts` (`buildBatchedPadMask` +
+`BatchedMaskCache`; KVCache/RotatingKVCache confirmed shape-generic over B)
+and `tests/train-batch-e2e.test.ts` (B=2 padded forward's per-row loss ==
+two B=1 forwards, bf16 tolerance). This is the teacher-forced gate, already
+green. So S1 shrinks to wiring prefill into serving (S1a) + the genuinely new
+batched-decode path (S1b).
 
 ## Publishing decision (2026-06-12, Josh)
 
