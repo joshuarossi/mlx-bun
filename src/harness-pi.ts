@@ -82,6 +82,13 @@ export async function fetchServerModels(baseUrl: string, timeoutMs = 3000): Prom
   }
 }
 
+/** GET /v1/models with a short timeout; null when no server is up. The
+ *  `mlx-bun pi` and `serve` commands use this to decide reuse-vs-start. */
+export async function probeServer(baseUrl: string, timeoutMs = 1500): Promise<ServerModel[] | null> {
+  const models = await fetchServerModels(baseUrl, timeoutMs);
+  return models.length > 0 ? models : null;
+}
+
 /** Render the pi extension source. Plain self-contained TS — pi loads it
  *  with jiti, so no imports and no dependency on pi's type packages. */
 export function renderPiExtension(baseUrl: string, fallbackModels: ServerModel[]): string {

@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { mapEventToFrames } from "../src/pi-web";
+import { buildWebChatSystemPrompt, mapEventToFrames } from "../src/pi-web";
 
 // Cast helper: the real AgentSessionEvent union is large; we only build
 // the fields mapEventToFrames reads, so narrow via `as`.
@@ -79,5 +79,45 @@ describe("mapEventToFrames", () => {
     expect(mapEventToFrames(ev({ type: "agent_start" }))).toEqual([]);
     expect(mapEventToFrames(ev({ type: "message_start", message: {} }))).toEqual([]);
     expect(mapEventToFrames(ev({ type: "model_select", model: {}, previousModel: undefined, source: "set" }))).toEqual([]);
+  });
+});
+
+describe("buildWebChatSystemPrompt", () => {
+  it("frames a helpful, local, eager assistant (not pi's coding-agent default)", () => {
+    const prompt = buildWebChatSystemPrompt(false);
+    expect(prompt).toContain("helpful");
+    expect(prompt).toMatch(/eager|proactive/i);
+    expect(prompt).toContain("mlx-bun");
+    // Must NOT carry over pi's default framing or internal-doc noise.
+    expect(prompt).not.toMatch(/operating inside pi/i);
+    expect(prompt).not.toMatch(/pi documentation/i);
+  });
+
+  it("advertises the full toolset, including approval-gated actions, in normal mode", () => {
+    const prompt = buildWebChatSystemPrompt(false);
+    for (const tool of ["read", "grep", "find", "ls", "bash", "edit", "write"]) {
+      expect(prompt).toContain(tool);
+    }
+    expect(prompt).toMatch(/approval/i);
+  });
+
+  it("advertises the web-facing tools in both modes", () => {
+    for (const readOnly of [false, true]) {
+      const prompt = buildWebChatSystemPrompt(readOnly);
+      for (const tool of ["web_search", "web_fetch", "weather"]) {
+        expect(prompt).toContain(tool);
+      }
+    }
+  });
+
+  it("describes only non-mutating capabilities in read-only mode", () => {
+    const prompt = buildWebChatSystemPrompt(true);
+    expect(prompt).toMatch(/read-only/i);
+    expect(prompt).toContain("read");
+    expect(prompt).toContain("grep");
+    expect(prompt).toContain("web_search");
+    // No promise of mutating actions the gate would refuse.
+    expect(prompt).not.toMatch(/\bedit\b/);
+    expect(prompt).not.toMatch(/\bwrite\b/);
   });
 });

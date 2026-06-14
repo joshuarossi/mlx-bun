@@ -9,6 +9,7 @@ import {
   detectPi,
   fetchServerModels,
   installPiExtension,
+  probeServer,
   removePiExtension,
   renderPiExtension,
   PI_EXTENSION_FILENAME,
@@ -70,6 +71,18 @@ describe("fetchServerModels", () => {
   it("returns [] for an unreachable server", async () => {
     const models = await fetchServerModels("http://localhost:1/v1", 300);
     expect(models).toEqual([]);
+  });
+});
+
+describe("probeServer", () => {
+  it("returns models when a server answers /v1/models", async () => {
+    expect(await probeServer(baseUrl)).toEqual([
+      { id: "test/model-4bit", contextWindow: 131072, maxTokens: 8192 },
+    ]);
+  });
+
+  it("returns null when nothing is listening", async () => {
+    expect(await probeServer("http://localhost:1/v1", 300)).toBeNull();
   });
 });
 

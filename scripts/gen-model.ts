@@ -295,9 +295,18 @@ function cacheClass(s: LayerSpec): string {
     : (s.sliding ? "RotatingKVCache" : "KVCache");
 }
 
+// The dispatch helpers fold (bits, group_size) in as literals, so the
+// guard must reject any cache whose actual quantization differs from what
+// this file was generated for (e.g. uniform kv8 vs the per-layer mixed
+// scheme) — otherwise quantized_matmul gets a shape it can't decode. A
+// mismatch falls back to the monolith, which reads bits/group off the cache.
 const guardChecks = specs
   .filter((s) => s.donor)
-  .map((s) => `cache[${s.idx}] instanceof ${cacheClass(s)}`)
+  .map((s) => {
+    const inst = `cache[${s.idx}] instanceof ${cacheClass(s)}`;
+    if (!s.quant) return inst;
+    return `${inst} &&\n      cache[${s.idx}].bits === ${s.bits} &&\n      cache[${s.idx}].groupSize === ${s.gs}`;
+  })
   .join(" &&\n      ");
 
 const bodyLines: string[] = [];

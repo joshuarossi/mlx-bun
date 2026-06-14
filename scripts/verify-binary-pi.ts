@@ -1,11 +1,11 @@
-// Headless smoke for the embedded pi web chat, run UNDER the compiled
+// Headless smoke for the embedded pi paths, run UNDER the compiled
 // mlx-bun bundle (build-binary.sh compiles this into a sibling binary so
 // process.execPath -> the bundle dir, exactly as pi's by-path asset
-// resolvers expect). It proves the bundled pi SDK and the one runtime
-// asset the headless web chat can touch (photon_rs_bg.wasm) resolve
-// without a missing-asset crash. It needs NO model and NO server: a
-// provider/model error is the success signal, since we test asset
-// resolution, not a real turn.
+// resolvers expect). It proves the bundled pi SDK and its by-path assets
+// resolve without a missing-asset crash: the web chat's photon_rs_bg.wasm
+// AND the terminal embed's theme/*.json + pi-tui native modifier helper.
+// It needs NO model and NO server: a provider/model error is the success
+// signal, since we test asset resolution, not a real turn.
 //
 // Mirrors src/pi-web.ts: same provider id/key/api, same DefaultResourceLoader
 // headless flags, same ALL_TOOLS, in-memory auth/registry/sessions.
@@ -14,14 +14,17 @@
 // asset, unresolved import). The photon check is best-effort: pi degrades
 // to null when the wasm is absent, so a null result warns but does not fail.
 
+import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   AuthStorage,
   createAgentSession,
   DefaultResourceLoader,
   ModelRegistry,
   SessionManager,
+  initTheme,
   resizeImage,
 } from "@earendil-works/pi-coding-agent";
 
@@ -141,6 +144,44 @@ async function main(): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[pi-smoke] INFO: photon path errored (non-fatal): ${msg}`);
+  }
+
+  // ---- Check 3: terminal (TUI) theme assets resolve -------------------
+  // The embedded terminal (src/pi-terminal.ts) calls initTheme() before the
+  // TUI; it reads theme/dark.json (+ light.json) from dirname(execPath)/theme.
+  // A throw here means the bundled theme assets are missing/broken — that IS
+  // load-bearing for `mlx-bun pi`, so fail the build.
+  try {
+    initTheme("dark", false); // false: no file watcher (must let the process exit)
+    console.error("[pi-smoke] OK: pi terminal theme assets resolved (initTheme)");
+  } catch (err) {
+    fail("initTheme (terminal theme assets)", err);
+  }
+
+  // ---- Check 4: pi-tui native modifier helper (best-effort) -----------
+  // pi-tui resolves darwin-modifiers.node at dirname(execPath)/native/...
+  // (its 3rd candidate). Missing → native modifier detection degrades to
+  // false; NON-FATAL, but warn so a dropped asset is visible in the build.
+  try {
+    const arch = process.arch === "x64" ? "darwin-x64" : `darwin-${process.arch}`;
+    const nativePath = join(
+      dirname(process.execPath),
+      "native", "darwin", "prebuilds", arch, "darwin-modifiers.node",
+    );
+    if (!existsSync(nativePath)) {
+      console.error(`[pi-smoke] INFO: darwin-modifiers.node absent (${nativePath}); modifier keys degrade`);
+    } else {
+      const req = createRequire(import.meta.url);
+      const helper = req(nativePath) as { isModifierPressed?: unknown };
+      if (typeof helper?.isModifierPressed === "function") {
+        console.error("[pi-smoke] OK: pi-tui native modifier helper loaded");
+      } else {
+        console.error("[pi-smoke] INFO: darwin-modifiers.node loaded but lacks isModifierPressed");
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[pi-smoke] INFO: native modifier helper load errored (non-fatal): ${msg}`);
   }
 
   process.exit(0);

@@ -7,7 +7,7 @@
 //   mlx-bun fit <query> [--ctx 32768] [--skus]
 //   mlx-bun serve [query] [--port 8090] [--memory-budget GB]
 //   mlx-bun evals                         recent benchmark runs
-//   mlx-bun harness pi [--base-url <url>] [--remove]   register as a pi provider
+//   mlx-bun harness pi [--base-url <url>] [--remove]   connect your own pi to the local server
 
 import { Registry } from "./registry";
 import { loadModelConfig } from "./config";
@@ -32,7 +32,7 @@ Commands:
   ls         List downloaded models
   fit        Will a model fit this machine? Memory + speed assessment
   scan       Re-index the Hugging Face cache
-  harness    Configure external agent harnesses (pi) to use the local server
+  harness    Connect your own pi install to the local mlx-bun server
   benchmark  Measure decode/prefill speed of OUR stack on this machine
   evals      Show recent benchmark runs (all stacks)
   help       Show help for a command (also: mlx-bun <command> --help)
@@ -77,29 +77,31 @@ Performance levers (A/B levers; defaults are the measured winners):
   --force-wire              Wire weights into memory at load`;
 
 const HELP: Record<string, string> = {
-  pi: `mlx-bun pi — drop into a pi coding-agent session on a local model
+  pi: `mlx-bun pi — drop into a coding-agent session on a local model
 
-Usage: mlx-bun pi [options] [pi arguments...]
+Usage: mlx-bun pi [options] [message...]
 
-Reuses a healthy local server when one is running; otherwise picks the
-largest supported model that fits this machine and starts a server
-for the session (the server ends with the session). Fresh install:
-downloads a small starter model first so you're chatting in minutes,
-then streams the recommended model for this Mac in the background —
-it becomes the default on the next run.
+Runs the pi coding agent's own terminal UI in-process against the local
+model — nothing to install, pi is built in. Reuses a healthy local
+server when one is running; otherwise picks the largest supported model
+that fits this machine and starts a server for the session (the server
+ends with the session). Fresh install: downloads a small starter model
+first so you're chatting in minutes, then streams the recommended model
+for this Mac in the background — it becomes the default on the next run.
 
 Model selection:
   -q, --query <q>      Model to serve when starting a server (registry query)
 
 ${SERVER_FLAGS}
 
-All other arguments pass through to pi (user flags override ours):
-  -p, --print <msg>    One-shot non-interactive run (ephemeral server)
-  --mode json|rpc      Structured output / RPC mode (ephemeral server)
-  -c, --continue       Continue the previous pi session
-  @file message...     Files and initial messages
+Run modes:
+  message...           Pre-fill the first turn (interactive)
+  -p, --print [msg]    One-shot: print the reply and exit (also reads piped
+                       stdin); add --json for the full event stream
+  --mode json|rpc      Structured print (json) or JSONL RPC over stdio
 
-Requires pi: curl -fsSL https://pi.dev/install.sh | sh`,
+Already use pi? Connect your own pi to this local model instead:
+  mlx-bun harness pi`,
 
   serve: `mlx-bun serve — OpenAI/Anthropic-compatible server for a local model
 
@@ -154,17 +156,23 @@ Usage: mlx-bun scan
 Reads config.json + safetensors headers (never tensor bytes) for every
 snapshot in ~/.cache/huggingface/hub and refreshes the model registry.`,
 
-  harness: `mlx-bun harness — wire external agent harnesses to the local server
+  harness: `mlx-bun harness pi — connect your own pi to the local model
 
 Usage: mlx-bun harness pi [options]
 
+For people who already use pi: this points your existing pi install at
+the local mlx-bun server so you can run pi the way you already do, on a
+local model. (To just chat now with no setup, use \`mlx-bun pi\` — the
+built-in agent.)
+
 Options:
   --base-url <url>     Server base URL  [default: http://localhost:8090/v1]
-  --remove             Remove the registration
+  --remove             Disconnect (delete the extension)
 
-Installs a discovery extension into ~/.pi/agent/extensions that
-registers the local server as a pi provider (models discovered live
-from /v1/models). Reversible; never touches existing pi config.`,
+Installs a small discovery extension into ~/.pi/agent/extensions that
+registers mlx-bun as a pi provider (models discovered live from
+/v1/models at pi startup). One file, reversible with --remove; never
+touches your existing pi config. Then: pi --provider mlx-bun`,
 
   benchmark: `mlx-bun benchmark — measure OUR stack on this machine
 
@@ -519,7 +527,7 @@ switch (cmd) {
     const rt = serverRuntimeFlags();
     // Friendly collision check before loading gigabytes of weights.
     {
-      const { probeServer } = await import("./pi-launch");
+      const { probeServer } = await import("./harness-pi");
       const running = await probeServer(`http://localhost:${rt.port}/v1`);
       if (running) {
         console.error(`port ${rt.port} is already serving ${running.map((m) => m.id).join(", ")}.`);
@@ -746,9 +754,10 @@ switch (cmd) {
   }
 
   case "pi": {
-    // Our flags are consumed; ALL other args pass through to pi verbatim
-    // (-p, --mode rpc, --continue, @files, messages...). User flags are
-    // appended after our defaults, so an explicit --model/--models wins.
+    // mlx-bun consumes its own flags; the rest describe how the built-in
+    // agent runs. `mlx-bun pi` always drives pi's own TUI in-process
+    // (src/pi-terminal.ts) — pi is bundled, nothing to install. Users who
+    // already run their own pi connect it with `mlx-bun harness pi`.
     const OURS_VAL = new Set([
       "--query", "-q", "--port", "--host", "--memory-budget", "--prompt-cache", "--kv-quant",
       "--compiled-decode", "--perf-kernel", "--fused-decode", "--fused-sdpa", "--thinking",
@@ -757,21 +766,33 @@ switch (cmd) {
     const OURS_BOOL = new Set(["--force-wire"]);
     const passthrough: string[] = [];
     for (let i = 1; i < argv.length; i++) {
-      if (OURS_VAL.has(argv[i]!)) { i++; continue; }
-      if (OURS_BOOL.has(argv[i]!)) continue;
-      passthrough.push(argv[i]!);
+      const a = argv[i]!;
+      if (OURS_VAL.has(a)) { i++; continue; }
+      if (OURS_BOOL.has(a)) continue;
+      passthrough.push(a);
     }
-    const { detectPi } = await import("./harness-pi");
-    const pi = detectPi();
-    if (!pi.found) {
-      console.error("pi not found. Install it first:");
-      console.error("  curl -fsSL https://pi.dev/install.sh | sh");
-      process.exit(1);
+
+    const { parsePiArgs } = await import("./pi-terminal");
+    const stdinPiped = !process.stdin.isTTY;
+    const parsed = parsePiArgs(passthrough, stdinPiped);
+
+    // Headless machine-readable runs (`-p`, `--mode json`, `--mode rpc`) must
+    // keep stdout pristine for the response/JSONL stream — route our bring-up
+    // logging to stderr. Interactive keeps the pretty banner on stdout.
+    const quiet = parsed.mode !== "interactive";
+    const origStdoutWrite = process.stdout.write.bind(process.stdout);
+    if (quiet) {
+      (process.stdout as unknown as { write: typeof process.stderr.write }).write =
+        process.stderr.write.bind(process.stderr);
     }
+    const restoreStdout = () => {
+      if (quiet) (process.stdout as unknown as { write: typeof origStdoutWrite }).write = origStdoutWrite;
+    };
+
     const rt = serverRuntimeFlags();
     const port = rt.port;
     const baseUrl = `http://localhost:${port}/v1`;
-    const { probeServer, buildPiInvocation, launchPi } = await import("./pi-launch");
+    const { probeServer } = await import("./harness-pi");
     let models = await probeServer(baseUrl);
     let startedServer = false;
     if (models) {
@@ -809,15 +830,35 @@ switch (cmd) {
       startedServer = true;
       sLoad.done(`serving ${style.bold(m.repoId)} ${style.dim(`at ${baseUrl} · ready in ${(performance.now() - t0).toFixed(0)} ms`)}`);
       models = await probeServer(baseUrl);
-      if (!models) { console.error("server started but /v1/models probe failed"); process.exit(1); }
+      if (!models) { restoreStdout(); console.error("server started but /v1/models probe failed"); process.exit(1); }
     }
-    console.log(`launching pi (model ${models[0]!.id}; Ctrl+P cycles local models, /model to switch)`);
-    const code = await launchPi(buildPiInvocation(pi, baseUrl, models, passthrough));
-    // The server we started lives exactly as long as the pi session —
-    // exiting pi (clean, Ctrl+C, or headless -p) tears it down. A
-    // standalone server belongs to `mlx-bun serve` (which we reuse and
-    // never stop).
-    if (startedServer) console.log("pi exited — shutting down (use `mlx-bun serve` for a persistent server)");
+    const exitNote = () => {
+      // The server we started lives exactly as long as the pi session — any
+      // exit tears it down. A standalone server belongs to `mlx-bun serve`
+      // (which we reuse and never stop).
+      if (startedServer && parsed.mode === "interactive")
+        console.log("pi exited — shutting down (use `mlx-bun serve` for a persistent server)");
+    };
+
+    // pi's own TUI embedded in-process — nothing to install.
+    const { runEmbeddedPi } = await import("./pi-terminal");
+    let message = parsed.message;
+    if (parsed.mode === "print" && stdinPiped) {
+      const piped = (await Bun.stdin.text()).trim();
+      if (piped) message = message ? `${message}\n\n${piped}` : piped;
+    }
+    if (parsed.mode === "interactive")
+      console.log(`launching mlx-bun pi (model ${models[0]!.id}) — /help for commands, double-Ctrl+C to exit`);
+    restoreStdout();
+    const code = await runEmbeddedPi({
+      baseUrl,
+      modelLabel: models[0]!.id,
+      contextWindow: models[0]!.contextWindow,
+      mode: parsed.mode,
+      printFormat: parsed.printFormat,
+      initialMessage: message,
+    });
+    exitNote();
     process.exit(code);
   }
 
@@ -852,7 +893,7 @@ switch (cmd) {
     else sProbe.done(`server not running ${style.dim(`· models discovered when pi starts against ${baseUrl}`)}`);
     console.log();
     box([
-      `${style.green("●")} ${style.bold("pi is wired to mlx-bun")}`,
+      `${style.green("●")} ${style.bold("your pi is connected to mlx-bun")}`,
       "",
       `launch   ${style.accent("pi --provider mlx-bun")}`,
       `select   ${style.dim("/model inside pi · or scope cycling:")} ${style.accent('pi --models "mlx-bun/*"')}`,
