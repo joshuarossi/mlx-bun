@@ -58,8 +58,17 @@ class LlamaAttention {
     k = disposing(k, ops.transposeAxes(k, [0, 2, 1, 3]));
     v = disposing(v, ops.transposeAxes(v, [0, 2, 1, 3]));
 
-    q = disposing(q, ops.rope(q, this.headDim, this.ropeBase, cache.offset, null));
-    k = disposing(k, ops.rope(k, this.headDim, this.ropeBase, cache.offset, null));
+    // RoPE: a number offset takes the static fast::rope; an array offset
+    // (per-row positions for left-padded batched decode) takes the dynamic
+    // variant — same kernel, offset read from the array. Captured once: rope
+    // runs before updateAndFetch, so K and Q share the pre-write offset.
+    const offsetArr = cache.ropeOffsetArr;
+    const ropeStep = (x: MlxArray): MlxArray =>
+      offsetArr
+        ? ops.ropeDynamic(x, this.headDim, this.ropeBase, offsetArr, null)
+        : ops.rope(x, this.headDim, this.ropeBase, cache.offset, null);
+    q = disposing(q, ropeStep(q));
+    k = disposing(k, ropeStep(k));
     let attn: MlxArray;
     if (cache instanceof QuantizedKVCache) {
       const [keys, values] = cache.updateAndFetchQuantized(k, v);

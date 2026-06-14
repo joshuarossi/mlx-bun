@@ -172,11 +172,20 @@ class Attention {
       }
 
       const offset = cache.offset;
+      // Capture the RoPE offset array ONCE (like `offset` above): the
+      // updateAndFetch below advances cache.offset, so re-reading
+      // cache.ropeOffsetArr for Q *after* the write would hand K and Q
+      // different positions. Harmless today (real caches leave it unset;
+      // compiled-decode passes a constant trace input), but a hard
+      // prerequisite for batched decode, where ropeOffsetArr carries per-row
+      // positions derived from the pre-write offset and MUST be identical for
+      // this step's K and Q.
+      const offsetArr = cache.ropeOffsetArr;
 
       const kNormed = this.kNorm!.forward(k);
       const kT = ops.transposeAxes(kNormed, [0, 2, 1, 3]);
       kNormed.dispose();
-      const kRoped = this.rope(kT, cache.ropeOffsetArr ?? offset);
+      const kRoped = this.rope(kT, offsetArr ?? offset);
       kT.dispose();
 
       const vNormed = this.vNorm!.forward(v);
@@ -192,13 +201,13 @@ class Attention {
         shared = {
           kind: "quant", keys: kq, values: vq, offset,
           groupSize: cache.groupSize, bits: cache.bits,
-          offsetArr: cache.ropeOffsetArr,
+          offsetArr,
         };
       } else {
         const [keys, values] = cache.updateAndFetch(kRoped, vT);
         kRoped.dispose();
         vT.dispose();
-        shared = { kind: "plain", keys, values, offset, offsetArr: cache.ropeOffsetArr };
+        shared = { kind: "plain", keys, values, offset, offsetArr };
       }
     }
 
@@ -643,14 +652,15 @@ export class Gemma4Model {
    *  _project_per_layer_inputs): [1, L, nLayers, perLayerWidth]. */
   protected computePerLayerInputs(ids: MlxArray, hScaled: MlxArray): MlxArray {
     const t = this.config.text;
+    const B = ids.shape[0]!;
     const L = ids.shape[1]!;
-    let pli = this.perLayerEmbed!.encode(ids); // [1, L, nLayers*width]
+    let pli = this.perLayerEmbed!.encode(ids); // [B, L, nLayers*width]
     pli = disposing(pli, ops.mulScalar(pli, Math.sqrt(this.perLayerWidth)));
-    pli = disposing(pli, ops.reshape(pli, [1, L, t.numHiddenLayers, this.perLayerWidth]));
+    pli = disposing(pli, ops.reshape(pli, [B, L, t.numHiddenLayers, this.perLayerWidth]));
 
     let proj = this.perLayerModelProjection!.forward(hScaled);
     proj = disposing(proj, ops.mulScalar(proj, 1 / Math.sqrt(t.hiddenSize)));
-    proj = disposing(proj, ops.reshape(proj, [1, L, t.numHiddenLayers, this.perLayerWidth]));
+    proj = disposing(proj, ops.reshape(proj, [B, L, t.numHiddenLayers, this.perLayerWidth]));
     proj = disposing(proj, this.perLayerProjectionNorm!.forward(proj));
 
     let combined = ops.add(proj, pli);
@@ -675,6 +685,7 @@ export class Gemma4Model {
   protected forwardLayers(
     h0: MlxArray, cache: Cache[], bidir: MlxArray | null, ids: MlxArray | null,
   ): MlxArray {
+    const B = h0.shape[0]!;
     const L = h0.shape[1]!;
     let h = h0;
 
@@ -711,12 +722,12 @@ export class Gemma4Model {
       if (perLayer) {
         if (isCompiledTrace()) {
           const start = ops.fromInt32([i], [1]);
-          pls = ops.sliceDynamic(perLayer, start, [2], [1, L, 1, this.perLayerWidth]);
+          pls = ops.sliceDynamic(perLayer, start, [2], [B, L, 1, this.perLayerWidth]);
           start.dispose();
         } else {
-          pls = perLayer.slice([0, 0, i, 0], [1, L, i + 1, this.perLayerWidth]);
+          pls = perLayer.slice([0, 0, i, 0], [B, L, i + 1, this.perLayerWidth]);
         }
-        const r = ops.reshape(pls, [1, L, this.perLayerWidth]);
+        const r = ops.reshape(pls, [B, L, this.perLayerWidth]);
         pls.dispose();
         pls = r;
       }
