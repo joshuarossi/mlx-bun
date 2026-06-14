@@ -261,13 +261,254 @@ export async function genFormatConversion(inputs: Inputs): Promise<Row[]> {
 }
 
 // ===========================================================================
-// Stretch: hf_dataset_import — registered but not built in v1.
+// hf_dataset_import — pull a public HF dataset via the datasets-server REST
+// API and shape it. Faithful port of optiq's `_gen_hf_dataset_import`, with
+// the `datasets` library swapped for the datasets-server `/rows` endpoint
+// (no Python, no `datasets` dep).
 // ===========================================================================
 
-export async function genHfDatasetImport(): Promise<Row[]> {
-  throw new Error(
-    "hf_dataset_import is not implemented in v1 (use the HF datasets-server API).",
-  );
+/** A single datasets-server row envelope: `{ row_idx, row: {col: value} }`. */
+export interface HfServerRow {
+  row?: Record<string, unknown>;
+  [k: string]: unknown;
+}
+
+/** Parsed + normalized options for the row→example transform. */
+export interface HfImportOpts {
+  textColumn: string;
+  labelColumn: string | null;
+  labelFilter: string | null;
+  minChars: number; // 0 = no minimum
+  maxRows: number; // 0 = no cap
+  outputFormat: string; // "messages_user_only" | "prompt_completion" | "text"
+}
+
+/** Running tallies + accumulated rows, threaded through the transform. */
+export interface HfTransformState {
+  rows: Row[];
+  kept: number;
+  rejectedShort: number;
+  rejectedFilter: number;
+}
+
+/** Fresh, zeroed transform state. */
+export function newHfTransformState(): HfTransformState {
+  return { rows: [], kept: 0, rejectedShort: 0, rejectedFilter: 0 };
+}
+
+/**
+ * Python truthiness for a JSON-decoded value, mirroring `(x or "")` semantics.
+ * Falsy: None/undefined, "", 0/0.0, False, NaN, empty array, empty object.
+ */
+function isPythonTruthy(v: unknown): boolean {
+  if (v === undefined || v === null || v === false || v === "") return false;
+  if (typeof v === "number") return v !== 0 && !Number.isNaN(v);
+  if (Array.isArray(v)) return v.length > 0;
+  if (typeof v === "object") return Object.keys(v as object).length > 0;
+  return true;
+}
+
+/**
+ * Pure row→example transform — exact port of the body of the optiq loop in
+ * `_gen_hf_dataset_import`. Mutates `state` in place and returns it.
+ *
+ * Apply order (matching Python): (1) max_rows cap → return `false` (caller
+ * should stop), (2) coerce text via `str()` + strip, (3) min_chars drop,
+ * (4) label filter drop (`str(row[col]) !== filter`), (5) shape by format.
+ *
+ * @returns `true` if the caller should keep feeding rows, `false` once the
+ *   `max_rows` cap is reached (the current row was NOT consumed).
+ */
+export function applyHfRow(
+  envelope: HfServerRow,
+  opts: HfImportOpts,
+  state: HfTransformState,
+): boolean {
+  // Python: `if max_rows and kept >= max_rows: break` (checked before the row).
+  if (opts.maxRows && state.kept >= opts.maxRows) return false;
+
+  const row = envelope.row ?? {};
+  const raw = row[opts.textColumn];
+  // Python: `text = (row.get(text_column) or "")` then `str(...)` if not str.
+  // `or ""` collapses Python-falsy values (None, "", 0, 0.0, False, [], {}) to "".
+  let text: string;
+  if (!isPythonTruthy(raw)) {
+    text = "";
+  } else if (typeof raw === "string") {
+    text = raw;
+  } else {
+    text = String(raw);
+  }
+  text = text.trim();
+
+  if (opts.minChars && text.length < opts.minChars) {
+    state.rejectedShort++;
+    return true;
+  }
+  if (opts.labelColumn && opts.labelFilter) {
+    // Python: `str(row.get(label_column, ""))` — missing → "".
+    const lv = row[opts.labelColumn];
+    const labelStr = lv === undefined || lv === null ? "" : String(lv);
+    if (labelStr !== opts.labelFilter) {
+      state.rejectedFilter++;
+      return true;
+    }
+  }
+
+  if (opts.outputFormat === "messages_user_only") {
+    state.rows.push({ messages: [{ role: "user", content: text }] });
+  } else if (opts.outputFormat === "prompt_completion") {
+    state.rows.push({ prompt: text, completion: "" });
+  } else {
+    // default: text
+    state.rows.push({ text });
+  }
+  state.kept++;
+  return true;
+}
+
+const HF_ROWS_ENDPOINT = "https://datasets-server.huggingface.co/rows";
+const HF_SPLITS_ENDPOINT = "https://datasets-server.huggingface.co/splits";
+const HF_PAGE = 100; // datasets-server caps `length` at 100 rows/request.
+
+/** Bearer header for gated datasets when HF_TOKEN is set; else anonymous. */
+function hfAuthHeaders(): Record<string, string> {
+  const tok = process.env.HF_TOKEN;
+  return tok ? { Authorization: `Bearer ${tok}` } : {};
+}
+
+/** Fetch JSON with a couple of retries on transient 429/5xx (and net errors). */
+async function hfFetchJson(url: string): Promise<any> {
+  const headers = hfAuthHeaders();
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(url, { headers });
+      if (res.ok) return await res.json();
+      // Retry transient statuses; fail fast on 4xx (except 429).
+      if (res.status === 429 || res.status >= 500) {
+        lastErr = new Error(`HF datasets-server ${res.status} for ${url}`);
+      } else {
+        const body = await res.text().catch(() => "");
+        throw new Error(
+          `HF datasets-server ${res.status} for ${url}` + (body ? `: ${body.slice(0, 300)}` : ""),
+        );
+      }
+    } catch (e) {
+      lastErr = e;
+    }
+    // Backoff: 0.5s, 1s before the final attempt.
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+/** Resolve the default config for a dataset (first config of the split, or any). */
+async function resolveDefaultConfig(hfId: string, split: string): Promise<string> {
+  const url = `${HF_SPLITS_ENDPOINT}?dataset=${encodeURIComponent(hfId)}`;
+  const data = await hfFetchJson(url);
+  const splits: Array<{ config?: string; split?: string }> = Array.isArray(data?.splits)
+    ? data.splits
+    : [];
+  // Prefer a config that actually has the requested split; else the first one.
+  const match = splits.find((s) => s.split === split) ?? splits[0];
+  return (match?.config ?? "default").trim() || "default";
+}
+
+export async function genHfDatasetImport(
+  inputs: Inputs = {},
+  emit: Emit = () => {},
+): Promise<Row[]> {
+  // ---- parse inputs (mirror optiq's `.strip() or default` coercions) ----
+  const hfId = str(inputs.hf_id).trim();
+  if (!hfId) return [];
+  let config = str(inputs.config).trim() || null;
+  const split = str(inputs.split).trim() || "train";
+  const opts: HfImportOpts = {
+    textColumn: str(inputs.text_column).trim() || "text",
+    labelColumn: str(inputs.label_column).trim() || null,
+    labelFilter: str(inputs.label_filter).trim() || null,
+    maxRows: num(inputs.max_rows, 0),
+    minChars: num(inputs.min_chars, 0),
+    outputFormat: str(inputs.output_format).trim() || "text",
+  };
+
+  emit({
+    type: "stage",
+    stage: "loading",
+    message: `Loading ${hfId} (${split})…`,
+    progress: 0.05,
+  });
+
+  // Resolve the default config if the user didn't give one.
+  if (!config) {
+    config = await resolveDefaultConfig(hfId, split);
+  }
+
+  emit({
+    type: "stage",
+    stage: "filtering",
+    message: `Loading rows from ${hfId} (${config}/${split})…`,
+    progress: 0.2,
+  });
+
+  // ---- paginate /rows by offset, applying the transform per page ----
+  const state = newHfTransformState();
+  let offset = 0;
+  let columnsChecked = false;
+  outer: while (true) {
+    const url =
+      `${HF_ROWS_ENDPOINT}?dataset=${encodeURIComponent(hfId)}` +
+      `&config=${encodeURIComponent(config)}` +
+      `&split=${encodeURIComponent(split)}` +
+      `&offset=${offset}&length=${HF_PAGE}`;
+    const data = await hfFetchJson(url);
+    const page: HfServerRow[] = Array.isArray(data?.rows) ? data.rows : [];
+    if (page.length === 0) break;
+
+    // Validate columns once (parity with optiq's column_names guard).
+    if (!columnsChecked) {
+      columnsChecked = true;
+      const cols = new Set<string>(Object.keys(page[0]!.row ?? {}));
+      if (!cols.has(opts.textColumn)) {
+        throw new Error(
+          `text_column=${JSON.stringify(opts.textColumn)} not in dataset. ` +
+            `Available columns: ${JSON.stringify([...cols])}`,
+        );
+      }
+      if (opts.labelColumn && !cols.has(opts.labelColumn)) {
+        throw new Error(
+          `label_column=${JSON.stringify(opts.labelColumn)} not in dataset. ` +
+            `Available columns: ${JSON.stringify([...cols])}`,
+        );
+      }
+    }
+
+    for (const env of page) {
+      const cont = applyHfRow(env, opts, state);
+      if (!cont) break outer; // hit max_rows
+      // Progress every 500 kept rows (mirror optiq's emit cadence).
+      if (state.kept && state.kept % 500 === 0) {
+        emit({
+          type: "stage",
+          stage: "filtering",
+          message: `kept ${state.kept} rows…`,
+          progress:
+            0.2 + 0.7 * Math.min(1.0, state.kept / Math.max(1, opts.maxRows || state.kept)),
+        });
+      }
+    }
+
+    offset += page.length;
+  }
+
+  emit({
+    type: "stage",
+    stage: "writing",
+    message: `kept ${state.kept}; dropped ${state.rejectedShort} short, ${state.rejectedFilter} filtered out`,
+    progress: 0.95,
+  });
+  return state.rows;
 }
 
 // ===========================================================================

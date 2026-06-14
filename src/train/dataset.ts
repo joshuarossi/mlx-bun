@@ -20,12 +20,26 @@ export interface SftExample {
   promptLen: number;
 }
 
-/** A single SFT training batch (v1: batch_size=1). `ids` is [B, L] flattened
- *  row-major with `lengths[i]` the true length of row i and `promptLens[i]`
- *  its prompt boundary. v1 has B=1 so there is exactly one row. */
+/** A single SFT training batch. `ids` is `[B][L]` row-major, every row padded
+ *  to the common batch length `L`. `promptLens[i]` is row i's prompt boundary
+ *  (loss starts at that position) and `lengths[i]` is row i's true unpadded
+ *  length — positions `>= lengths[i]` are padding and are excluded from both
+ *  the loss mask and the attention mask. For B=1 every row's `lengths[i]`
+ *  equals its `ids[i].length` (no padding), so the loss/forward paths are
+ *  bit-identical to the pre-batch single-example trainer. */
 export interface SftBatch {
   ids: number[][];
   promptLens: number[];
+  /** Per-row true (unpadded) length; defaults to `ids[i].length` when absent
+   *  (the B=1 no-padding case, kept for back-compat with single-row callers). */
+  lengths?: number[];
+}
+
+/** Row i's valid length: explicit `lengths[i]` if present, else the row's full
+ *  (unpadded) id count. Centralizes the back-compat default so loss/forward
+ *  treat a length-less B=1 batch exactly as before. */
+export function rowLength(batch: SftBatch, i: number): number {
+  return batch.lengths?.[i] ?? batch.ids[i]!.length;
 }
 
 export type SftRowFormat = "messages" | "prompt-completion" | "text";
@@ -114,44 +128,106 @@ export async function loadSftDataset(
   return rows.map((r) => encodeSftRow(r, tok, tmpl));
 }
 
-/** Iterate SFT batches. v1: batch_size=1 only. Examples are length-sorted
- *  (mlx-lm iterate_batches), then batches are shuffled with `seed` each
- *  epoch. Examples longer than `maxSeqLen` are right-truncated (preserving
- *  the prompt boundary clamp). `loop=false` yields one epoch then stops. */
+/** mlx-lm iterate_batches pad granularity. Each batch is padded to
+ *  `1 + PAD_TO * ceil(maxLenInBatch / PAD_TO)` (then capped at maxSeqLen). */
+export const PAD_TO = 32;
+
+/** Iterate SFT batches. Examples are length-sorted (mlx-lm iterate_batches),
+ *  grouped into contiguous runs of `batchSize`, and the *batch order* is
+ *  shuffled with `seed` each epoch. Examples longer than `maxSeqLen` are
+ *  right-truncated (preserving the prompt-boundary clamp). `loop=false`
+ *  yields one epoch then stops.
+ *
+ *  B=1: yields one example per step with NO padding and no pad-to rounding —
+ *  bit-identical to the original single-example trainer.
+ *
+ *  B>1: faithful to mlx-lm. Sort ascending by length, take contiguous
+ *  windows `idx[i : i+B]` for `i in 0, B, 2B, …` (the trailing remainder
+ *  that does not fill a batch is dropped, matching mlx-lm's range bound),
+ *  permute batch order, and pad every row to
+ *  `min(1 + PAD_TO·ceil(max_len/PAD_TO), maxSeqLen)` with `padId`. Each row
+ *  carries its true (truncated) length so the loss + attention masks ignore
+ *  padding. `padId` defaults to 0 (mlx-lm SFT uses np.zeros); pass the eos id
+ *  to pad with a real sentinel — the padded positions are masked out either
+ *  way, so the choice does not change the loss. */
 export function* iterateSftBatches(
   examples: SftExample[],
   batchSize: number,
   maxSeqLen: number,
   seed: number,
   loop: boolean,
+  padId = 0,
 ): Generator<SftBatch> {
-  if (batchSize !== 1)
-    throw new Error("iterateSftBatches: only batch_size=1 is supported in v1");
+  if (batchSize < 1) throw new Error("iterateSftBatches: batchSize must be >= 1");
   if (examples.length === 0) throw new Error("iterateSftBatches: empty dataset");
+  if (examples.length < batchSize)
+    throw new Error(
+      `iterateSftBatches: dataset has ${examples.length} examples but batchSize=${batchSize}`,
+    );
 
   const order = [...examples.keys()].sort(
     (a, b) => examples[a]!.ids.length - examples[b]!.ids.length,
   );
-  let rng = mulberry32(seed >>> 0);
+  const rng = mulberry32(seed >>> 0);
+
+  if (batchSize === 1) {
+    // Original single-example path: shuffle EXAMPLE order (not batch order),
+    // no padding, no pad-to rounding. Kept verbatim for bit-identical B=1.
+    do {
+      const shuffled = [...order];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
+      }
+      for (const idx of shuffled) {
+        const ex = examples[idx]!;
+        let ids = ex.ids;
+        let promptLen = ex.promptLen;
+        if (ids.length > maxSeqLen) {
+          ids = ids.slice(0, maxSeqLen);
+          promptLen = Math.min(promptLen, Math.max(0, ids.length - 1));
+        }
+        yield { ids: [ids], promptLens: [promptLen], lengths: [ids.length] };
+      }
+    } while (loop);
+    return;
+  }
+
+  // B>1: contiguous length-sorted windows; drop the trailing remainder.
+  const batches: number[][] = [];
+  for (let i = 0; i + batchSize <= order.length; i += batchSize)
+    batches.push(order.slice(i, i + batchSize));
 
   do {
-    // Shuffle batch order each epoch (Fisher-Yates with the seeded rng).
-    const shuffled = [...order];
-    for (let i = shuffled.length - 1; i > 0; i--) {
+    const perm = [...batches.keys()];
+    for (let i = perm.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
+      [perm[i], perm[j]] = [perm[j]!, perm[i]!];
     }
-    for (const idx of shuffled) {
-      const ex = examples[idx]!;
-      let ids = ex.ids;
-      let promptLen = ex.promptLen;
-      if (ids.length > maxSeqLen) {
-        ids = ids.slice(0, maxSeqLen);
-        promptLen = Math.min(promptLen, Math.max(0, ids.length - 1));
-      }
-      yield { ids: [ids], promptLens: [promptLen] };
-    }
+    for (const bi of perm) yield padSftBatch(batches[bi]!.map((k) => examples[k]!), maxSeqLen, padId);
   } while (loop);
+}
+
+/** Pad a window of examples to a common length (mlx-lm pad-to rule) and
+ *  collect prompt boundaries + true lengths. */
+function padSftBatch(rows: SftExample[], maxSeqLen: number, padId: number): SftBatch {
+  const lens = rows.map((r) => Math.min(r.ids.length, maxSeqLen));
+  const maxLen = Math.max(...lens);
+  const L = Math.min(1 + PAD_TO * Math.ceil(maxLen / PAD_TO), maxSeqLen);
+  const ids: number[][] = [];
+  const promptLens: number[] = [];
+  const lengths: number[] = [];
+  for (const r of rows) {
+    const trueLen = Math.min(r.ids.length, L);
+    let promptLen = r.promptLen;
+    if (r.ids.length > L) promptLen = Math.min(promptLen, Math.max(0, L - 1));
+    const row = new Array<number>(L).fill(padId);
+    for (let t = 0; t < trueLen; t++) row[t] = r.ids[t]!;
+    ids.push(row);
+    promptLens.push(promptLen);
+    lengths.push(trueLen);
+  }
+  return { ids, promptLens, lengths };
 }
 
 // ---------------------------------------------------------------------------
@@ -167,12 +243,21 @@ export interface DpoExample {
   rejectedMask: number[];
 }
 
-/** A single DPO batch (v1: batch_size=1). */
+/** A single DPO batch. Each branch is padded to the longest sequence of its
+ *  kind within the batch (port of dpo.py _make_batch). The response masks are
+ *  0 at both prompt AND pad positions, so per-sequence log-probs naturally
+ *  ignore padding without a separate length array. For B=1 there is no padding
+ *  and the masks/forward are bit-identical to the single-example trainer. */
 export interface DpoBatch {
   chosenIds: number[][];
   rejectedIds: number[][];
   chosenMask: number[][];
   rejectedMask: number[][];
+  /** Per-row true (unpadded) length of the chosen branch — drives the chosen
+   *  attention mask. Absent ⇒ no padding (B=1), so `chosenIds[i].length`. */
+  chosenLengths?: number[];
+  /** Per-row true (unpadded) length of the rejected branch. */
+  rejectedLengths?: number[];
 }
 
 /** Tokenize prompt+response, returning (ids, promptLen) — port of
@@ -251,17 +336,38 @@ export async function loadDpoDataset(
   return rows.map((r) => encodeDpoRow(r, tok, tmpl, maxLength));
 }
 
-/** Iterate DPO batches (v1: batch_size=1). Sequential epochs, reshuffled
- *  with `seed` each epoch (port of dpo.py _batch_at). */
+/** Row length of a DPO branch (port of _make_batch helpers). */
+export function dpoChosenLength(batch: DpoBatch, i: number): number {
+  return batch.chosenLengths?.[i] ?? batch.chosenIds[i]!.length;
+}
+export function dpoRejectedLength(batch: DpoBatch, i: number): number {
+  return batch.rejectedLengths?.[i] ?? batch.rejectedIds[i]!.length;
+}
+
+/** Iterate DPO batches. Sequential examples grouped into runs of `batchSize`,
+ *  example order reshuffled with `seed` each epoch (port of dpo.py _batch_at +
+ *  _make_batch). The trailing remainder that does not fill a batch is dropped.
+ *
+ *  B=1: one example per step, no padding — bit-identical to the original.
+ *
+ *  B>1: each branch is padded to the longest of its kind in the batch with
+ *  `padId` (chosen/rejected padded independently, exactly like _make_batch).
+ *  Response masks are 0 at pad positions; per-row branch lengths are recorded
+ *  so the batched attention masks exclude padded keys. `padId` defaults to 0
+ *  (pad/eos resolved by the caller); padded scores are masked out regardless. */
 export function* iterateDpoBatches(
   examples: DpoExample[],
   batchSize: number,
   seed: number,
   loop: boolean,
+  padId = 0,
 ): Generator<DpoBatch> {
-  if (batchSize !== 1)
-    throw new Error("iterateDpoBatches: only batch_size=1 is supported in v1");
+  if (batchSize < 1) throw new Error("iterateDpoBatches: batchSize must be >= 1");
   if (examples.length === 0) throw new Error("iterateDpoBatches: empty dataset");
+  if (examples.length < batchSize)
+    throw new Error(
+      `iterateDpoBatches: dataset has ${examples.length} examples but batchSize=${batchSize}`,
+    );
 
   const rng = mulberry32(seed >>> 0);
   const order = [...examples.keys()];
@@ -270,16 +376,43 @@ export function* iterateDpoBatches(
       const j = Math.floor(rng() * (i + 1));
       [order[i], order[j]] = [order[j]!, order[i]!];
     }
-    for (const idx of order) {
-      const ex = examples[idx]!;
-      yield {
-        chosenIds: [ex.chosenIds],
-        rejectedIds: [ex.rejectedIds],
-        chosenMask: [ex.chosenMask],
-        rejectedMask: [ex.rejectedMask],
-      };
+    if (batchSize === 1) {
+      for (const idx of order) {
+        const ex = examples[idx]!;
+        yield {
+          chosenIds: [ex.chosenIds],
+          rejectedIds: [ex.rejectedIds],
+          chosenMask: [ex.chosenMask],
+          rejectedMask: [ex.rejectedMask],
+          chosenLengths: [ex.chosenIds.length],
+          rejectedLengths: [ex.rejectedIds.length],
+        };
+      }
+    } else {
+      for (let i = 0; i + batchSize <= order.length; i += batchSize)
+        yield makeDpoBatch(order.slice(i, i + batchSize).map((k) => examples[k]!), padId);
     }
   } while (loop);
+}
+
+/** Pad chosen/rejected branches each to their own batch-max length, masks 0 at
+ *  pad positions (port of dpo.py _make_batch.pad). */
+function makeDpoBatch(rows: DpoExample[], padId: number): DpoBatch {
+  const Lc = Math.max(...rows.map((r) => r.chosenIds.length));
+  const Lr = Math.max(...rows.map((r) => r.rejectedIds.length));
+  const padRow = (src: number[], L: number, fill: number): number[] => {
+    const out = new Array<number>(L).fill(fill);
+    for (let t = 0; t < src.length; t++) out[t] = src[t]!;
+    return out;
+  };
+  return {
+    chosenIds: rows.map((r) => padRow(r.chosenIds, Lc, padId)),
+    rejectedIds: rows.map((r) => padRow(r.rejectedIds, Lr, padId)),
+    chosenMask: rows.map((r) => padRow(r.chosenMask, Lc, 0)),
+    rejectedMask: rows.map((r) => padRow(r.rejectedMask, Lr, 0)),
+    chosenLengths: rows.map((r) => r.chosenIds.length),
+    rejectedLengths: rows.map((r) => r.rejectedIds.length),
+  };
 }
 
 // ---------------------------------------------------------------------------

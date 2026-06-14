@@ -99,6 +99,30 @@
   .pill.ok{color:var(--ink)}
   .pill.bad .dot{background:var(--red);box-shadow:0 0 11px var(--red)}
   .pill.warn .dot{background:var(--orange);box-shadow:0 0 11px var(--orange)}
+  .hf-gear{appearance:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;
+    width:34px;height:34px;border-radius:10px;background:var(--card);border:1px solid var(--hairline);
+    color:var(--dim);flex:0 0 auto;transition:color .22s var(--ease),background .22s var(--ease),border-color .22s var(--ease)}
+  .hf-gear:hover{color:var(--ink);background:var(--card-hover);border-color:rgba(255,255,255,.28)}
+  .hf-gear.saved{color:var(--green);border-color:rgba(48,209,88,.4)}
+
+  /* ─── HF settings overlay ─── */
+  #hf-overlay{position:fixed;inset:0;z-index:200;display:none;align-items:flex-start;justify-content:center;
+    background:rgba(0,0,0,.55);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);padding:calc(var(--nav-h) + 24px) 20px 20px}
+  #hf-overlay.open{display:flex;animation:fade .3s var(--ease)}
+  #hf-modal{width:min(460px,100%);background:rgba(22,22,24,.96);border:1px solid var(--hairline);border-radius:20px;
+    padding:24px 26px;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+  .hf-modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+  .hf-modal-title{font-size:20px;font-weight:700;letter-spacing:-.02em}
+  .hf-modal-sub{font-size:13.5px;color:var(--dim);margin-bottom:20px;line-height:1.5}
+  .hf-close{appearance:none;background:none;border:none;cursor:pointer;color:var(--dim);font-size:16px;
+    width:30px;height:30px;border-radius:8px;transition:color .2s,background .2s}
+  .hf-close:hover{color:var(--ink);background:var(--card-hover)}
+
+  /* ─── inline push-to-hub panel (in done-step cards) ─── */
+  .pushpanel{margin-top:14px;border-top:1px solid var(--hairline-soft);padding-top:14px}
+  .pushpanel .field{margin-bottom:12px}
+  .pushpanel label.chk{display:flex;align-items:center;gap:9px;font-size:13.5px;color:var(--ink);cursor:pointer;font-weight:500}
+  .pushpanel label.chk input{width:auto;margin:0;accent-color:var(--blue)}
 
   /* ═══════════════════ app shell / routing ═══════════════════ */
   #app{position:fixed;inset:var(--nav-h) 0 0 0;z-index:1}
@@ -177,6 +201,7 @@
     background-repeat:no-repeat;background-position:right 14px center;padding-right:34px}
   .hpgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
   .hpgrid .field{margin-bottom:0}
+  input[type=range]{width:100%;accent-color:var(--blue);background:transparent;cursor:pointer;height:24px}
 
   /* segmented control */
   .seg{display:inline-flex;background:var(--card);border:1px solid var(--hairline);border-radius:12px;padding:3px;gap:3px}
@@ -386,10 +411,33 @@
     <a class="tab" href="#/status" data-tab="status">Status</a>
   </div>
   <div class="right">
+    <button class="hf-gear" id="nav-hf" title="Hugging Face token settings" aria-label="Hugging Face settings">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+    </button>
     <span class="model" id="nav-model" title="active model">connecting…</span>
     <span class="pill" id="nav-conn"><span class="dot"></span><span id="nav-conn-text">connecting…</span></span>
   </div>
 </nav>
+
+<!-- ═══════════════════ HF SETTINGS OVERLAY ═══════════════════ -->
+<div id="hf-overlay">
+  <div id="hf-modal">
+    <div class="hf-modal-head">
+      <div class="hf-modal-title">Hugging Face</div>
+      <button class="hf-close" id="hf-close" aria-label="Close">✕</button>
+    </div>
+    <p class="hf-modal-sub" id="hf-state">Checking for a saved token…</p>
+    <div class="field" style="margin-bottom:10px">
+      <label>Write token</label>
+      <input type="password" id="hf-token-input" placeholder="hf_…" autocomplete="off" spellcheck="false">
+      <div class="hint">A <strong>write</strong> token from huggingface.co/settings/tokens. Stored locally at <code>~/.mlx-bun/hf.json</code> — never sent anywhere but your own Hub pushes.</div>
+    </div>
+    <div id="hf-settings-msg"></div>
+    <div class="btnrow" style="margin-top:14px">
+      <button class="btn primary sm" id="hf-save">Save token</button>
+    </div>
+  </div>
+</div>
 
 <div id="app">
 
@@ -470,11 +518,17 @@
           <div class="hint">Weights per shared scale. 64 is standard; 32 trades a little size for slightly better fidelity.</div>
         </div>
         <div class="field">
-          <label>Mixed precision · target bpw <span class="soon">coming soon</span></label>
-          <div class="seg" style="opacity:.45;pointer-events:none">
-            <button class="on">per-layer sensitivity sweep</button>
+          <label>Bit allocation</label>
+          <div class="seg" id="q-mode">
+            <button data-v="uniform" class="on">Uniform bits</button>
+            <button data-v="mixed">Mixed (target bpw)</button>
           </div>
-          <div class="hint">Sensitivity-aware per-layer bit allocation lands in a later build. For now, uniform bits across all layers.</div>
+          <div class="hint">Uniform applies the bits above to every layer. Mixed runs OptiQ's sensitivity sweep + knapsack to allocate per-layer precision toward a target average.</div>
+        </div>
+        <div class="field" id="q-bpw-field" style="display:none">
+          <label>Target bits per weight · <span class="num" id="q-bpw-val">5.0</span></label>
+          <input type="range" id="q-bpw" min="3" max="8" step="0.5" value="5" style="accent-color:var(--blue)">
+          <div class="hint">OptiQ measures each layer's sensitivity, then solves a knapsack to pick per-layer 4/8-bit hitting this average bpw (~2–5 min). Lower = smaller; higher = closer to bf16.</div>
         </div>
         <div class="btnrow">
           <button class="btn ghost" data-qback>Back</button>
@@ -497,6 +551,12 @@
         <div class="field"><label>Output directory</label>
           <pre class="logbox" id="q-out" style="max-height:none;margin-top:0"></pre></div>
         <div class="flash ok">Run <code>mlx-bun scan</code> (or it's auto-picked up on restart) to make this model serveable from the Library.</div>
+        <div class="grid g4" style="margin-top:14px">
+          <div class="card"><h3>Push to Hugging Face</h3><div class="cap">Publish this quantized model to a Hugging Face repo.</div>
+            <div class="btnrow" style="margin-top:14px"><button class="btn ghost sm" id="q-push">Push to HF</button></div>
+            <div id="q-push-panel"></div>
+          </div>
+        </div>
         <div class="btnrow"><button class="btn ghost" id="q-again">Quantize another</button></div>
       </div>
     </div></div>
@@ -614,9 +674,22 @@
         <div class="field"><label>Adapter path</label>
           <pre class="logbox" id="f-out" style="max-height:none;margin-top:0"></pre></div>
         <div class="grid g4" style="margin-top:8px">
-          <div class="card" style="opacity:.55"><h3>Merge into base</h3><div class="cap">Fold the adapter into the weights for a standalone model.</div><span class="soon" style="margin-top:12px">coming soon</span></div>
-          <div class="card" style="opacity:.55"><h3>Export model dir</h3><div class="cap">Bundle base + adapter into one drop-in directory.</div><span class="soon" style="margin-top:12px">coming soon</span></div>
-          <div class="card" style="opacity:.55"><h3>Push to HF</h3><div class="cap">Publish the adapter to a Hugging Face repo.</div><span class="soon" style="margin-top:12px">coming soon</span></div>
+          <div class="card"><h3>Merge into base</h3><div class="cap">Fold two adapters together (or an adapter into a base adapter) into the weights for a standalone model.</div>
+            <div class="field" style="margin-top:14px;margin-bottom:10px"><label>Adapter A</label><input type="text" id="f-merge-a" placeholder="/abs/path/to/adapter" autocomplete="off"></div>
+            <div class="field" style="margin-bottom:10px"><label>Adapter B</label><input type="text" id="f-merge-b" placeholder="/abs/path/to/other-adapter" autocomplete="off"></div>
+            <div class="btnrow" style="margin-top:0"><button class="btn ghost sm" id="f-merge-go">Merge</button></div>
+            <div id="f-merge-out"></div>
+          </div>
+          <div class="card"><h3>Export model dir</h3><div class="cap">Bundle base + adapter into one drop-in directory.</div>
+            <div class="field" style="margin-top:14px;margin-bottom:10px"><label>Base model</label><input type="text" id="f-exp-base" placeholder="/abs/path/to/base" autocomplete="off"></div>
+            <div class="field" style="margin-bottom:10px"><label>Adapter path</label><input type="text" id="f-exp-adapter" placeholder="/abs/path/to/adapter" autocomplete="off"></div>
+            <div class="btnrow" style="margin-top:0"><button class="btn ghost sm" id="f-exp-go">Export</button></div>
+            <div id="f-exp-out"></div>
+          </div>
+          <div class="card"><h3>Push to HF</h3><div class="cap">Publish the trained adapter to a Hugging Face repo.</div>
+            <div class="btnrow" style="margin-top:14px"><button class="btn ghost sm" id="f-push">Push to HF</button></div>
+            <div id="f-push-panel"></div>
+          </div>
         </div>
         <div class="btnrow"><button class="btn ghost" id="f-again">Train another</button></div>
       </div>
@@ -667,6 +740,12 @@
         <div class="field"><label>Output directory</label>
           <pre class="logbox" id="d-out" style="max-height:none;margin-top:0"></pre></div>
         <div class="flash ok">Point Fine-tune → Dataset at this directory to train on it.</div>
+        <div class="grid g4" style="margin-top:14px">
+          <div class="card"><h3>Push to HF (dataset repo)</h3><div class="cap">Publish this JSONL dataset to a Hugging Face dataset repo.</div>
+            <div class="btnrow" style="margin-top:14px"><button class="btn ghost sm" id="d-push">Push to HF</button></div>
+            <div id="d-push-panel"></div>
+          </div>
+        </div>
         <div class="btnrow"><button class="btn ghost" id="d-again">Build another</button></div>
       </div>
     </div></div>
@@ -882,6 +961,121 @@ function renderSteps(container, names, cur) {
     return '<span class="s ' + cls + '"><span class="n">' + (i + 1) + "</span>" + esc(n) + "</span>" + arrow;
   }).join("");
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   HUGGING FACE — shared token settings + push-to-hub flow
+   ════════════════════════════════════════════════════════════════════ */
+
+/** Reflect saved-token state on the nav gear. */
+async function refreshHfGear() {
+  try {
+    const d = await api("/api/settings/hf-token");
+    const saved = !!(d && d.ok && d.hasToken);
+    $("nav-hf").classList.toggle("saved", saved);
+    $("nav-hf").title = saved ? "Hugging Face token saved · click to replace" : "Hugging Face token settings";
+    return saved;
+  } catch { return false; }
+}
+
+/* — the nav settings modal — */
+function openHfSettings() {
+  const ov = $("hf-overlay"); ov.classList.add("open");
+  $("hf-token-input").value = ""; $("hf-settings-msg").innerHTML = "";
+  $("hf-state").textContent = "Checking for a saved token…";
+  api("/api/settings/hf-token").then((d) => {
+    const saved = !!(d && d.ok && d.hasToken);
+    $("hf-state").innerHTML = saved
+      ? 'A write token is <strong>saved</strong>. Enter a new one below to replace it.'
+      : 'No token saved yet. Add a write token to push models and datasets to the Hub.';
+  }).catch(() => { $("hf-state").textContent = "Could not reach the server."; });
+  setTimeout(() => $("hf-token-input").focus(), 50);
+}
+function closeHfSettings() { $("hf-overlay").classList.remove("open"); }
+
+async function saveHfToken() {
+  const token = $("hf-token-input").value.trim();
+  const msg = $("hf-settings-msg");
+  if (!token) { msg.innerHTML = '<div class="flash err">Enter a token first.</div>'; return; }
+  const btn = $("hf-save"); btn.disabled = true;
+  const d = await api("/api/settings/hf-token", { method: "POST", body: { token } }).catch(() => ({ ok: false, error: "request failed" }));
+  btn.disabled = false;
+  if (!d.ok) { msg.innerHTML = '<div class="flash err">' + esc(d.error || "could not save token") + "</div>"; return; }
+  msg.innerHTML = '<div class="flash ok">Token saved to <code>~/.mlx-bun/hf.json</code>.</div>';
+  $("hf-token-input").value = "";
+  refreshHfGear();
+  toast("Hugging Face token saved", "ok");
+}
+
+/**
+ * Shared push-to-hub flow, rendered inline inside a done-step card.
+ *   pushToHub(panelEl, { kind, job_id?, source_path? })
+ * kind: "quantize" | "finetune" | "dataset". Posts to /api/{kind}/push.
+ * Walks: ensure token → repo_id + private → POST → success/error flash.
+ */
+async function pushToHub(panel, { kind, job_id, source_path }) {
+  panel.innerHTML = '<div class="pushpanel"><div class="flash"><span class="shimmer">checking Hugging Face token…</span></div></div>';
+  const wrap = panel.firstChild;
+  let hasToken = false;
+  try { const s = await api("/api/settings/hf-token"); hasToken = !!(s && s.ok && s.hasToken); } catch {}
+
+  const renderForm = () => {
+    wrap.innerHTML =
+      (!hasToken
+        ? '<div class="field"><label>Hugging Face write token</label>' +
+          '<input type="password" class="p-token" placeholder="hf_…" autocomplete="off" spellcheck="false">' +
+          '<div class="hint">A <strong>write</strong> token from huggingface.co/settings/tokens. Stored locally at <code>~/.mlx-bun/hf.json</code>.</div></div>'
+        : "") +
+      '<div class="field"><label>Repository id</label>' +
+        '<input type="text" class="p-repo" placeholder="you/my-' + esc(kind === "dataset" ? "dataset" : "model") + '" autocomplete="off"></div>' +
+      '<div class="field"><label class="chk"><input type="checkbox" class="p-priv">Private repository</label></div>' +
+      '<div class="p-msg"></div>' +
+      '<div class="btnrow" style="margin-top:6px"><button class="btn primary sm p-go">' +
+        (hasToken ? "Push" : "Save token &amp; push") + "</button></div>";
+    wrap.querySelector(".p-go").onclick = go;
+    const focusEl = wrap.querySelector(hasToken ? ".p-repo" : ".p-token");
+    if (focusEl) focusEl.focus();
+  };
+
+  async function go() {
+    const msg = wrap.querySelector(".p-msg");
+    const repo = (wrap.querySelector(".p-repo").value || "").trim();
+    const priv = wrap.querySelector(".p-priv").checked;
+    if (!repo) { msg.innerHTML = '<div class="flash err">Enter a repository id (e.g. <code>you/my-model</code>).</div>'; return; }
+    const btn = wrap.querySelector(".p-go"); btn.disabled = true;
+
+    if (!hasToken) {
+      const token = (wrap.querySelector(".p-token").value || "").trim();
+      if (!token) { msg.innerHTML = '<div class="flash err">Enter a write token first.</div>'; btn.disabled = false; return; }
+      const sv = await api("/api/settings/hf-token", { method: "POST", body: { token } }).catch(() => ({ ok: false, error: "request failed" }));
+      if (!sv.ok) { msg.innerHTML = '<div class="flash err">' + esc(sv.error || "could not save token") + "</div>"; btn.disabled = false; return; }
+      hasToken = true; refreshHfGear();
+    }
+
+    msg.innerHTML = '<div class="flash"><span class="shimmer">pushing to ' + esc(repo) + "…</span></div>";
+    const body = { repo_id: repo, private: priv };
+    if (job_id != null) body.job_id = job_id;
+    if (source_path != null) body.source_path = source_path;
+    const d = await api("/api/" + kind + "/push", { method: "POST", body }).catch(() => ({ ok: false, error: "request failed" }));
+    btn.disabled = false;
+    if (!d.ok) { msg.innerHTML = '<div class="flash err">' + esc(d.error || "push failed") + "</div>"; return; }
+    const url = d.url || ("https://huggingface.co/" + repo);
+    wrap.innerHTML = '<div class="flash ok">Pushed to <a href="' + esc(url) + '" target="_blank" rel="noopener" style="text-decoration:underline">' + esc(url) + "</a></div>";
+    toast("Pushed to Hugging Face", "ok");
+  }
+
+  renderForm();
+}
+
+/* wire the nav gear + modal once at boot */
+(function initHfSettings() {
+  $("nav-hf").onclick = openHfSettings;
+  $("hf-close").onclick = closeHfSettings;
+  $("hf-save").onclick = saveHfToken;
+  $("hf-overlay").addEventListener("click", (e) => { if (e.target === $("hf-overlay")) closeHfSettings(); });
+  $("hf-token-input").addEventListener("keydown", (e) => { if (e.key === "Enter") saveHfToken(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("hf-overlay").classList.contains("open")) closeHfSettings(); });
+  refreshHfGear();
+})();
 
 /* ════════════════════════════════════════════════════════════════════
    ROUTER  — toggles section[data-route]; lazily inits each controller.
@@ -1189,7 +1383,7 @@ controllers.chat = (() => {
    ════════════════════════════════════════════════════════════════════ */
 controllers.quantize = (() => {
   const STEPS = ["Source", "Configure", "Run", "Done"];
-  let step = 0, bits = 4, gs = 64, es = null, log = [];
+  let step = 0, bits = 4, gs = 64, mode = "uniform", bpw = 5, jobId = null, es = null, log = [];
 
   function show(n) {
     step = n;
@@ -1226,10 +1420,14 @@ controllers.quantize = (() => {
   async function submit() {
     const id = $("q-model").value.trim();
     const btn = $("q-submit"); btn.disabled = true;
-    const d = await api("/api/quantize/submit", { method: "POST", body: { model_id: id, bits, group_size: gs } })
+    const body = { model_id: id, bits, group_size: gs };
+    if (mode === "mixed") { body.target_bpw = bpw; body.candidate_bits = [4, 8]; }
+    const d = await api("/api/quantize/submit", { method: "POST", body })
       .catch(() => ({ ok: false, error: "request failed" }));
     btn.disabled = false;
     if (!d.ok) { toast(d.error || "could not start quantize", "err"); return; }
+    jobId = d.job_id || null;
+    $("q-push-panel").innerHTML = "";
     $("q-out").textContent = d.output_dir || "";
     log = []; $("q-log").textContent = ""; $("q-bar").style.width = "0%"; $("q-pct").textContent = "0%"; $("q-msg").textContent = "Starting…";
     show(2);
@@ -1260,9 +1458,12 @@ controllers.quantize = (() => {
         ? "4-bit · ~4× smaller than bf16 · the recommended default for local serving."
         : "8-bit · ~2× smaller than bf16 · highest fidelity quant."; });
       seg($("q-gs"), (v) => { gs = +v; });
+      seg($("q-mode"), (v) => { mode = v; $("q-bpw-field").style.display = v === "mixed" ? "" : "none"; });
+      $("q-bpw").addEventListener("input", (e) => { bpw = +e.target.value; $("q-bpw-val").textContent = bpw.toFixed(1); });
       document.querySelectorAll("#s-quantize [data-qback]").forEach((b) => b.onclick = () => show(step - 1));
       $("q-submit").onclick = submit;
-      $("q-again").onclick = () => { $("q-inspect-out").innerHTML = ""; show(0); };
+      $("q-push").onclick = () => pushToHub($("q-push-panel"), { kind: "quantize", job_id: jobId });
+      $("q-again").onclick = () => { $("q-inspect-out").innerHTML = ""; $("q-push-panel").innerHTML = ""; show(0); };
     },
   };
 })();
@@ -1273,7 +1474,7 @@ controllers.quantize = (() => {
 controllers.finetune = (() => {
   const STEPS = ["Base", "Dataset", "Hyperparams", "Train", "Done"];
   let step = 0, method = "sft", lrTouched = false, es = null, log = [];
-  let datasetOk = false;
+  let datasetOk = false, adapterPath = "";
   const trainPts = [], valPts = [];
 
   function show(n) {
@@ -1324,7 +1525,9 @@ controllers.finetune = (() => {
     const d = await api("/api/finetune/submit", { method: "POST", body: collectHP() }).catch(() => ({ ok: false, error: "request failed" }));
     btn.disabled = false;
     if (!d.ok) { toast(d.error || "could not start training", "err"); return; }
-    $("f-out").textContent = d.adapter_path || "";
+    adapterPath = d.adapter_path || "";
+    $("f-out").textContent = adapterPath;
+    $("f-merge-out").innerHTML = $("f-exp-out").innerHTML = $("f-push-panel").innerHTML = "";
     trainPts.length = 0; valPts.length = 0; log = [];
     $("f-log").textContent = ""; $("f-bar").style.width = "0%"; $("f-pct").textContent = "0%"; $("f-msg").textContent = "Starting…";
     $("f-step").textContent = $("f-loss").textContent = $("f-curlr").textContent = $("f-curtps").textContent = "—";
@@ -1353,13 +1556,49 @@ controllers.finetune = (() => {
       stage: (e) => {
         if (e.progress != null) { const p = Math.round(e.progress * 100); $("f-bar").style.width = p + "%"; $("f-pct").textContent = p + "%"; }
         if (e.message) $("f-msg").textContent = e.message;
-        if (e.stage === "done") { if (e.adapter_path) $("f-out").textContent = e.adapter_path; finish(); }
+        if (e.stage === "done") { if (e.adapter_path) { adapterPath = e.adapter_path; $("f-out").textContent = e.adapter_path; } finish(); }
       },
       done: () => finish(),
       failed: (e) => { $("f-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "training failed", "err"); es && es.close(); },
     });
   }
-  function finish() { $("f-bar").style.width = "100%"; $("f-pct").textContent = "100%"; es && es.close(); show(4); }
+  function finish() {
+    $("f-bar").style.width = "100%"; $("f-pct").textContent = "100%"; es && es.close();
+    if (!adapterPath) adapterPath = $("f-out").textContent.trim();
+    const base = $("f-model").value.trim();
+    // prefill the done-step affordances from this run's paths
+    $("f-merge-a").value = adapterPath;
+    $("f-exp-base").value = base;
+    $("f-exp-adapter").value = adapterPath;
+    show(4);
+  }
+
+  async function mergeAdapters() {
+    const a = $("f-merge-a").value.trim(), b = $("f-merge-b").value.trim();
+    const out = $("f-merge-out");
+    if (!a || !b) { out.innerHTML = '<div class="flash err">Enter both adapter paths.</div>'; return; }
+    out.innerHTML = '<div class="flash"><span class="shimmer">merging…</span></div>';
+    const btn = $("f-merge-go"); btn.disabled = true;
+    const d = await api("/api/finetune/merge", { method: "POST", body: { adapter_a: a, adapter_b: b } }).catch(() => ({ ok: false, error: "request failed" }));
+    btn.disabled = false;
+    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "merge failed") + "</div>"; return; }
+    const stats = d.stats && typeof d.stats === "object" ? Object.entries(d.stats).map(([k, v]) => esc(k) + " " + esc(v)).join(" · ") : (d.stats ? esc(d.stats) : "");
+    out.innerHTML = '<div class="flash ok">Merged → <code>' + esc(d.merged_path || "") + "</code>" + (stats ? "<br>" + stats : "") + "</div>";
+    toast("Adapters merged", "ok");
+  }
+
+  async function exportModel() {
+    const base = $("f-exp-base").value.trim(), adapter = $("f-exp-adapter").value.trim();
+    const out = $("f-exp-out");
+    if (!base || !adapter) { out.innerHTML = '<div class="flash err">Enter a base model and adapter path.</div>'; return; }
+    out.innerHTML = '<div class="flash"><span class="shimmer">exporting…</span></div>';
+    const btn = $("f-exp-go"); btn.disabled = true;
+    const d = await api("/api/finetune/export", { method: "POST", body: { base_model: base, adapter_path: adapter } }).catch(() => ({ ok: false, error: "request failed" }));
+    btn.disabled = false;
+    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "export failed") + "</div>"; return; }
+    out.innerHTML = '<div class="flash ok">Exported → <code>' + esc(d.export_path || "") + "</code></div>";
+    toast("Model exported", "ok");
+  }
 
   /* inline SVG line plot — themed green (train) / blue (val) */
   function drawChart() {
@@ -1407,7 +1646,14 @@ controllers.finetune = (() => {
       $("f-lr").addEventListener("input", () => { lrTouched = true; });
       document.querySelectorAll("#s-finetune [data-fback]").forEach((b) => b.onclick = () => show(step - 1));
       $("f-submit").onclick = submit;
-      $("f-again").onclick = () => { $("f-inspect-out").innerHTML = ""; show(0); };
+      $("f-merge-go").onclick = mergeAdapters;
+      $("f-exp-go").onclick = exportModel;
+      $("f-push").onclick = () => pushToHub($("f-push-panel"), { kind: "finetune", source_path: adapterPath || $("f-out").textContent.trim() });
+      $("f-again").onclick = () => {
+        $("f-inspect-out").innerHTML = "";
+        $("f-merge-out").innerHTML = $("f-exp-out").innerHTML = $("f-push-panel").innerHTML = "";
+        show(0);
+      };
     },
   };
 })();
@@ -1417,7 +1663,7 @@ controllers.finetune = (() => {
    ════════════════════════════════════════════════════════════════════ */
 controllers.dataset = (() => {
   const STEPS = ["Template", "Inputs", "Generate", "Done"];
-  let step = 0, templates = [], selected = null, es = null, log = [];
+  let step = 0, templates = [], selected = null, jobId = null, es = null, log = [];
 
   function show(n) {
     step = n;
@@ -1476,6 +1722,8 @@ controllers.dataset = (() => {
     const d = await api("/api/dataset/submit", { method: "POST", body }).catch(() => ({ ok: false, error: "request failed" }));
     btn.disabled = false;
     if (!d.ok) { toast(d.error || "could not start generation", "err"); return; }
+    jobId = d.job_id || null;
+    $("d-push-panel").innerHTML = "";
     $("d-out").textContent = d.output_dir || "";
     log = []; $("d-log").textContent = ""; $("d-bar").style.width = "0%"; $("d-pct").textContent = "0%"; $("d-msg").textContent = "Starting…";
     $("d-ntrain").textContent = $("d-nvalid").textContent = "—";
@@ -1511,7 +1759,8 @@ controllers.dataset = (() => {
       loadTemplates();
       document.querySelectorAll("#s-dataset [data-dback]").forEach((b) => b.onclick = () => show(0));
       $("d-submit").onclick = submit;
-      $("d-again").onclick = () => { selected = null; show(0); };
+      $("d-push").onclick = () => pushToHub($("d-push-panel"), { kind: "dataset", job_id: jobId });
+      $("d-again").onclick = () => { selected = null; $("d-push-panel").innerHTML = ""; show(0); };
     },
   };
 })();

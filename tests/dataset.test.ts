@@ -323,7 +323,7 @@ describe("LLM-driven generators require a client", () => {
     });
   }
 
-  test("hf_dataset_import is a stretch stub that throws", async () => {
-    await expect(genHfDatasetImport()).rejects.toThrow(/not implemented in v1/);
+  test("hf_dataset_import resolves (no-op for a missing hf_id) — now a real generator", async () => {
+    await expect(genHfDatasetImport({}, noopEmit)).resolves.toEqual([]);
   });
 });

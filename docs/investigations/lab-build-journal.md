@@ -110,7 +110,47 @@ Shared/owned-by-me files were edited centrally to avoid conflicts:
 - **Shipped (v1):** full SPA (5 sections), pi web chat with tools + approval
   gate, native uniform-affine quantize, native SFT + DPO LoRA, 12/13 dataset
   templates, shared job system, real tiny-run verification.
-- **Designed seams (follow-ups):** OptIQ sensitivity+knapsack mixed-precision
-  quantization (`QuantizeOptions` already carries the params; throws today);
-  batched (B>1) training; `hf_dataset_import`; HF push-to-hub; folding pi's
-  assets into the compiled single binary.
+- **Designed seams (follow-ups):** ~~OptIQ sensitivity+knapsack mixed-precision
+  quantization; batched (B>1) training; `hf_dataset_import`; HF push-to-hub;
+  folding pi's assets into the compiled single binary.~~ **ALL DONE in Round 2 —
+  see below.**
+
+## Round 2 — the leftover seams, ported 1:1 (2026-06-14)
+
+Josh: "all of those, port, one to one functionality." Built the five remaining
+items as faithful ports of the OptIQ / mlx-lm source (open book), in parallel on
+non-overlapping files, integrated centrally (server routes + one `app.html` UI
+pass), and verified.
+
+- **Mixed-precision quantization** (`src/quantize/{allocator,sensitivity,
+  calibration}.ts`) — `optimize_mixed_precision` ported **1:1** from
+  `optiq/core/optimizer.py` (greedy knapsack + block-aware floor + protected
+  layers + block-run guard + the uniform-vs-bf16 `_kl_reduction` sign detection).
+  Verified **bit-identical to OptIQ** on shared synthetic inputs by spawning the
+  venv Python in the test (4/4 cases). Per-layer KL sensitivity
+  (`analyze_sensitivity_exact`) runs on our graph: dequantize each layer's weight
+  to bf16, re-quantize at each candidate bit, swap into the running
+  `QuantizedLinear`, forward on a WikiText-2 calibration set, KL vs reference.
+  Real e2e: MiniCPM5-1B at target 5.0 bpw → 80×4-bit + 90×8-bit, **5.19 bpw, 32 s**.
+- **Batched (B>1) training** (`src/train/{dataset,forward,loss}.ts`) — ragged
+  padding + a `[B,1,L,L]` causal-AND-key-validity mask via a cache wrapper (no
+  model/op edits); B=1 stays a separate bit-identical path. Bug found: comparing a
+  length-4 reference to a length-6 batched row conflated mask correctness with
+  bf16 sequence-length rounding — the corrected shape-held parity test passes,
+  confirming the mask isolates rows.
+- **`hf_dataset_import`** (`src/dataset/generators.ts`) — the 13th template via
+  the HF datasets-server REST API (pagination, config resolve, label/min-chars/
+  cap filters, three output formats).
+- **HF push-to-hub** (`src/hf-push.ts`) — native Hub upload (create repo → LFS
+  preupload → S3 PUT → NDJSON commit) for model/adapter/dataset repos, token at
+  `~/.mlx-bun/hf.json`. Mock-server tested end-to-end (11 tests); real uploads
+  untested by design (would publish under the user's account).
+- **Single-binary web chat** (`scripts/build-binary.sh`) — pi's JS already
+  bundles under `bun build --compile`; only `photon_rs_bg.wasm` is sidecarred.
+  The compiled binary's headless pi session was verified to construct.
+
+UI: one `app.html` pass enabled the Uniform/Mixed quantize toggle + target-bpw
+slider, live merge/export/push on the fine-tune done step, push on quantize &
+dataset, and an HF-token settings gear. New server routes:
+`/api/finetune/{merge,export}`, `/api/{quantize,finetune,dataset}/push`,
+`/api/settings/hf-token`, + mixed-precision params on quantize submit.

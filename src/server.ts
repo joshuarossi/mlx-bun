@@ -1253,6 +1253,8 @@ export function createServer(
       if (url.pathname === "/api/quantize/submit" && request.method === "POST") {
         const body = (await request.json().catch(() => ({}))) as {
           model_id?: string; bits?: number; group_size?: number;
+          target_bpw?: number; candidate_bits?: number[]; reference?: string;
+          calibration_mix?: string; n_calibration?: number;
         };
         if (!body.model_id)
           return Response.json({ ok: false, error: "model_id required" }, { status: 400 });
@@ -1261,9 +1263,16 @@ export function createServer(
         const { homedir } = await import("node:os");
         const bits = body.bits ?? 4, gs = body.group_size ?? 64;
         const base = body.model_id.split("/").filter(Boolean).at(-1)!.replace(/[^a-z0-9_.-]/gi, "");
-        const outDir = `${homedir()}/.cache/mlx-bun/quants/${base}-OptiQ-${bits}bit`;
-        const { jobId } = submitSubprocess(store, "quantize",
-          { model_id: body.model_id, out_dir: outDir, bits, group_size: gs }, outDir);
+        // Mixed-precision (sensitivity+knapsack) names the dir by target bpw.
+        const suffix = body.target_bpw ? `mixed-${body.target_bpw}bpw` : `${bits}bit`;
+        const outDir = `${homedir()}/.cache/mlx-bun/quants/${base}-OptiQ-${suffix}`;
+        const { jobId } = submitSubprocess(store, "quantize", {
+          model_id: body.model_id, out_dir: outDir, bits, group_size: gs,
+          // forwarded to the mixed-precision path when target_bpw is set
+          target_bpw: body.target_bpw, candidate_bits: body.candidate_bits,
+          reference: body.reference, calibration_mix: body.calibration_mix,
+          n_calibration: body.n_calibration,
+        }, outDir);
         return Response.json({ ok: true, job_id: jobId, output_dir: outDir });
       }
 
@@ -1284,6 +1293,78 @@ export function createServer(
         const { jobId } = submitSubprocess(store, "finetune",
           { ...body, adapter_path: adapterPath }, adapterPath);
         return Response.json({ ok: true, job_id: jobId, adapter_path: adapterPath });
+      }
+      if (url.pathname === "/api/finetune/merge" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as {
+          adapter_a?: string; adapter_b?: string; scales?: number[];
+        };
+        if (!body.adapter_a || !body.adapter_b)
+          return Response.json({ ok: false, error: "adapter_a and adapter_b required" }, { status: 400 });
+        try {
+          const { mergeAdapters } = await import("./train");
+          const { homedir } = await import("node:os");
+          const mergedPath = `${homedir()}/.cache/mlx-bun/adapters/merged-${Date.now()}`;
+          const stats = await mergeAdapters([body.adapter_a, body.adapter_b], mergedPath, body.scales);
+          return Response.json({ ok: true, merged_path: mergedPath, stats });
+        } catch (e) {
+          return Response.json({ ok: false, error: (e as Error).message }, { status: 400 });
+        }
+      }
+      if (url.pathname === "/api/finetune/export" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as {
+          base_model?: string; adapter_path?: string; method?: string;
+        };
+        if (!body.base_model || !body.adapter_path)
+          return Response.json({ ok: false, error: "base_model and adapter_path required" }, { status: 400 });
+        try {
+          const { exportAdapter } = await import("./train");
+          const { homedir } = await import("node:os");
+          const exportPath = `${homedir()}/.cache/mlx-bun/exports/export-${Date.now()}`;
+          const manifest = await exportAdapter(exportPath, body.base_model, body.adapter_path, body.method);
+          return Response.json({ ok: true, export_path: exportPath, manifest });
+        } catch (e) {
+          return Response.json({ ok: false, error: (e as Error).message }, { status: 400 });
+        }
+      }
+
+      // --- HF token settings + push-to-hub (model & dataset repos) ------
+      if (url.pathname === "/api/settings/hf-token" && request.method === "GET") {
+        const { hasHfToken } = await import("./hf-push");
+        return Response.json({ ok: true, hasToken: hasHfToken() });
+      }
+      if (url.pathname === "/api/settings/hf-token" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as { token?: string };
+        if (!body.token) return Response.json({ ok: false, error: "token required" }, { status: 400 });
+        const { saveHfToken } = await import("./hf-push");
+        saveHfToken(body.token);
+        return Response.json({ ok: true });
+      }
+      {
+        const m = url.pathname.match(/^\/api\/(quantize|finetune|dataset)\/push$/);
+        if (m && request.method === "POST") {
+          const kind = m[1]!;
+          const body = (await request.json().catch(() => ({}))) as {
+            job_id?: string; repo_id?: string; private?: boolean; source_path?: string;
+          };
+          if (!body.repo_id) return Response.json({ ok: false, error: "repo_id required" }, { status: 400 });
+          const { getHfToken, uploadFolder } = await import("./hf-push");
+          const token = getHfToken();
+          if (!token)
+            return Response.json({ ok: false, error: "no HF token saved — add one in Settings → Hugging Face" }, { status: 400 });
+          const store = await ensureJobs();
+          let dir = body.source_path;
+          if (!dir && body.job_id) dir = store.get(body.job_id)?.output_path ?? undefined;
+          if (!dir) return Response.json({ ok: false, error: "no source dir (pass job_id or source_path)" }, { status: 400 });
+          try {
+            const r = await uploadFolder(dir, body.repo_id, {
+              repoType: kind === "dataset" ? "dataset" : "model",
+              private: !!body.private, token,
+            });
+            return Response.json({ ok: true, url: r.url });
+          } catch (e) {
+            return Response.json({ ok: false, error: (e as Error).message }, { status: 400 });
+          }
+        }
       }
 
       if (url.pathname === "/api/jobs" && request.method === "GET") {

@@ -5,12 +5,12 @@ export { ValueAndGrad } from "../mlx/autograd";
 export {
   loadSftDataset, iterateSftBatches, encodeSftRow, sftRowFormat,
   loadDpoDataset, iterateDpoBatches, encodeDpoRow, tokenizePair,
-  probeFormat,
+  probeFormat, rowLength, dpoChosenLength, dpoRejectedLength, PAD_TO,
   type SftExample, type SftBatch, type SftRowFormat,
   type DpoExample, type DpoBatch, type DatasetFormat,
 } from "./dataset";
 
-export { trainForward } from "./forward";
+export { trainForward, buildBatchedPadMask } from "./forward";
 
 export {
   sftLoss, dpoLoss, dpoRefLogps, dpoMetrics,

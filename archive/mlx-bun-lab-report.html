@@ -103,8 +103,8 @@
   <div class="stats">
     <div class="stat"><div class="n grad g-blue">5</div><div class="l">unified sections: Chat · Quantize · Fine-tune · Dataset · Status</div></div>
     <div class="stat"><div class="n grad g-green">0</div><div class="l">lines of Python — native quantize &amp; LoRA training via mlx-c</div></div>
-    <div class="stat"><div class="n grad g-pink">85+</div><div class="l">new tests, all green (incl. real-model e2e)</div></div>
-    <div class="stat"><div class="n grad g-hero">40+</div><div class="l">new source files across 6 subsystems</div></div>
+    <div class="stat"><div class="n grad g-pink">150+</div><div class="l">new tests, all green (incl. real-model e2e)</div></div>
+    <div class="stat"><div class="n grad g-hero">50+</div><div class="l">new source files across 11 subsystems</div></div>
   </div>
 </div></header>
 
@@ -171,6 +171,19 @@
       <p>Before writing any trainer, a feasibility gate proved <span class="mono">mlx_value_and_grad</span> driven by a <span class="mono">bun:ffi</span> JSCallback closure returns correct gradients (finite-difference &lt; 1e-2) for the LoRA A/B leaves, with the quantized base frozen.</p>
       <span class="tag">spikes/phase-train-vag.ts · PASS</span></div>
   </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Round 2 — the leftover seams, <span class="grad g-pink">ported 1:1</span></h2>
+  <p class="sub">The five "designed-but-not-built" items, finished as faithful ports of the OptIQ / mlx-lm source (open book) — built in parallel on non-overlapping files, then integrated.</p>
+  <div class="cards">
+    <div class="card"><div class="ic">🎚️</div><h3>Mixed-precision quantization</h3><p>OptIQ's sensitivity + greedy-knapsack allocator ported <b>1:1</b> — per-layer bit choices are <b>bit-identical to OptIQ</b> on shared inputs (checked against the Python in the venv). Per-layer KL sensitivity runs on our own graph.</p><span class="tag">170 modules → 80×4-bit + 90×8-bit · 5.19 bpw · 32 s</span></div>
+    <div class="card"><div class="ic">📚</div><h3>Batched (B&gt;1) training</h3><p>Ragged padding + a per-row attention mask through the forward; B=1 stays bit-identical (separate path). Verified: a batched row's loss equals its single-row forward (shape-held) within bf16 noise.</p><span class="tag">B=2 loss↓ + masking parity ✓</span></div>
+    <div class="card"><div class="ic">🤗</div><h3>hf_dataset_import</h3><p>The 13th template — pulls any HF dataset via the datasets-server REST API (config / split / column / label-filter / min-chars / cap), no Python <span class="mono">datasets</span> lib.</p><span class="tag">13/13 templates real</span></div>
+    <div class="card"><div class="ic">⬆️</div><h3>HF push-to-hub</h3><p>Native Hub upload — create repo → LFS preupload → S3 PUT → NDJSON commit — for model, adapter, and dataset repos. Wired into all three wizards + an HF-token settings gear.</p><span class="tag">11 protocol tests ✓ (mock; no live push)</span></div>
+    <div class="card"><div class="ic">📦</div><h3>Single-binary web chat</h3><p>pi's JS is already bundled by <span class="mono">bun build --compile</span>; only the photon wasm is sidecarred. The compiled binary's headless pi session was verified to construct under the binary.</p><span class="tag">+1.8 MB sidecar</span></div>
+  </div>
+  <p class="note">The web UI now exposes all of it: a Uniform/Mixed quantize toggle with a target-bpw slider, live merge/export/push on the fine-tune done step, push on quantize &amp; dataset, and a Hugging-Face token settings gear in the nav.</p>
 </div></section>
 
 <section><div class="wrap">
