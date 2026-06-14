@@ -101,9 +101,9 @@ the way a grade follows from a trustworthy display.
 mlx-bun's per-step logits-processor hook: sort once for the rank-relative pivot,
 apply the slope-matched toe/mid/shoulder curve, renormalize, sample. The hook
 already exists — logits processors run at
-[`generate.ts:236`](src/generate.ts:236)
+[`generate.ts:236`](../../src/generate.ts:236)
 (`for (const p of processors) logits = disposing(logits, p(history, logits))`),
-built by `makeLogitsProcessors` in [`src/sampler.ts`](src/sampler.ts) as pure
+built by `makeLogitsProcessors` in [`src/sampler.ts`](../../src/sampler.ts) as pure
 `(history, logits) => logits` functions applied before `toLogprobs` and the
 sampler — so the curve drops in as one more processor in that loop.
 

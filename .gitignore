@@ -4,9 +4,12 @@ node_modules
 .DS_Store
 tmp/
 project-review.html
-# generated reports / benchmark artifacts (regenerated, not source)
+# generated reports / benchmark artifacts (regenerated, not source).
+# RESULTS.md is the curated, deliberately-tracked record — see benchmarks/RESULTS.md.
 *-report-*.html
 benchmarks-h2h-*
+benchmarks/lab-verification*.json
+reports/
 dist/
 .claude/
 dist-native/

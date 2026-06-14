@@ -2,7 +2,8 @@
 
 *Branch `web-ui-and-native-lab`, 2026-06-13/14. Visual summary:
 [archive/mlx-bun-lab-report.html](../../archive/mlx-bun-lab-report.html). Evidence
-artifact: [benchmarks/lab-verification.json](../../benchmarks/lab-verification.json).*
+artifact: `benchmarks/lab-verification.json` (regenerable, gitignored — produced by
+`scripts/verify-lab.ts`).*
 
 ## Goal
 
