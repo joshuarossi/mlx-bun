@@ -166,9 +166,19 @@ produce plausible-but-wrong logits, so flagged before writing the cache:
 OWN handler path and its own copy of the three layers below — nothing here is
 generic. This matrix is a snapshot; re-derive it when the roster changes.
 
-mlx-bun runs every model at one of **three correctness layers**, and must always
-**degrade gracefully down the ladder (L3 → L2 → L1)** — that's what the kernel
-levers are for:
+**Framing (refined 2026-06-14 — it's a TREE, not strict layers).** mlx-lm is the
+base library; **mlx-optiq and mlx-bun are both optimizations on top of it**
+(optiq = mixed-precision per-layer KV quant, "drop-in for mlx_lm.server", no
+batching; mlx-bun = per-model fused kernels + batched serving). Bit-parity with
+an ancestor is just an **easy correctness test where we overlap one** — not a
+porting goal. The "L1/L2/L3" labels below are **parity anchors / correctness
+checkpoints**, not a strict stack: L1 = "matches mlx-lm (bf16)", L2 = "matches
+optiq (mixed-precision quant)", L3 = "our own optimizations, no ancestor does
+them → no oracle". A combo no ancestor does (e.g. **batched mixed-precision
+serving** — mlx-lm can't do mixed-precision, optiq can't batch) is genuinely new
+territory: gate it by KL + the 6-task quality + benchmarks, never bit-exactness.
+The anchors are still useful — we can always dial back to a bit-exact-vs-ancestor
+config as a correctness checkpoint and build outward.
 
 - **L1 — mlx-lm parity (standard KV).** bf16 KV, **bit-exact vs mlx-lm**. The
   foundation oracle. Path: monolith `Gemma4Model` / `MiniCPM5Model`, `ops.sdpa`,
