@@ -103,6 +103,9 @@ one:
 
 ## CLI
 
+Commands are shown as `bun src/cli.ts <verb>` (runs straight from a
+clone). Once installed/linked, `mlx-bun <verb>` is the identical command.
+
 ```sh
 bun src/cli.ts get mlx-community/gemma-4-12B-it-OptiQ-4bit   # resumable, verified download
 bun src/cli.ts scan                 # index your HF cache into the registry
@@ -225,9 +228,9 @@ preamble prefills once, ever.
 
 Head-to-head against the Python stacks (mlx-lm 0.31.3, mlx-optiq 0.2.1),
 same machine (M4 Pro 24 GB), same day, same HF snapshots, preflight-gated
-clean machine, median-of-N with warmups discarded. Full table with
-per-row provenance:
-[benchmarks/benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md](./benchmarks/benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md).
+clean machine, median-of-N with warmups discarded. Full curated table
+(parity / performance / quality) with per-row provenance:
+[benchmarks/RESULTS.md](./benchmarks/RESULTS.md).
 
 | | mlx-bun | mlx-lm | optiq |
 |---|---|---|---|

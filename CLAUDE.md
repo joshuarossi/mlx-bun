@@ -4,6 +4,17 @@ Read PLAN.md first: phases, exit criteria, and the **Reference
 environment** section (oracle venv, weights paths, measured baselines).
 README.md has the pitch and scope boundaries.
 
+**Doc map:**
+- `STATUS.md` — live handoff: current state + next action (read this for "where are we").
+- `PLAN.md` — durable phase log, exit criteria, findings (the engineering contract).
+- `README.md` — product pitch, quickstart, API surface, scope boundaries.
+- `benchmarks/RESULTS.md` — curated results: parity / performance / quality.
+- `docs/reference/` — server-api, library-api, embedding (user-facing reference).
+- `docs/design/` — design docs (optimization plan, compat CLI surface, parallel slots, this reorg).
+- `docs/investigations/` — investigation write-ups (pi built-in, starter port, lab build).
+- `docs/planning/` — product/vision: PRODUCT_ROADMAP, IDEAS, ResearchTopics, journal.
+- `AGENTS.md` → symlink to this file.
+
 ## Ground rules
 
 - **Never start long-running servers or multi-GB downloads from a
@@ -32,7 +43,7 @@ README.md has the pitch and scope boundaries.
 
 - Bun pinned at ≥ 1.3.14 (upgraded 2026-06-10): `Bun.Image` (native OS
   image codecs incl. HEIC/AVIF) is the decode path for vision inputs —
-  see `src/vision/preprocess.ts`. All 72 tests re-verified post-upgrade.
+  see `src/vision/preprocess.ts`. Full test suite re-verified post-upgrade.
 - `Bun.mmap` panics (SIGTRAP) on files > 4 GB (still true in 1.3.14) —
   use libc mmap via bun:ffi (`src/mmap.ts`).
 - Metal/mlx cannot no-copy-wrap host pointers that aren't page-aligned:

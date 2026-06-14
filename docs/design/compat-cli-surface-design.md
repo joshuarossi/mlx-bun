@@ -1,7 +1,7 @@
 # Compat CLI surface + parity harness — design
 
 Status: design (2026-06-12). Engineering tracking lives in PLAN.md
-Phase 17. UX/DX rationale lives in PRODUCT_ROADMAP.md ("The three
+Phase 17. UX/DX rationale lives in docs/planning/PRODUCT_ROADMAP.md ("The three
 modes"). This doc is the surface contract: every verb, the flag
 vocabulary, how optiq is absorbed, the parity harness, and **the
 matrix of what we still lack**.

@@ -3,6 +3,9 @@
 Working plan for mlx-bun. Each phase has an exit criterion — we don't move
 on until it's met. Status markers: `[ ]` todo, `[~]` in progress, `[x]` done.
 
+> **Current state / what's next lives in [STATUS.md](STATUS.md).** This
+> file is the durable phase log + findings; STATUS.md is the live handoff.
+
 ## Design principles
 
 - **Logit parity is the oracle; optiq-equivalence is the ceiling.**
@@ -455,6 +458,10 @@ safe; `tests/ffi-jit.test.ts` pins the paths past DFG tier-up.
 
 ## NEXT UP (updated 2026-06-10 evening — THE HANDOFF BLOCK)
 
+> **⚠️ ARCHIVED HANDOFF (2026-06-10 / 06-11) — superseded.** Live status
+> is in [STATUS.md](STATUS.md). The three blocks below (NEXT UP /
+> NEXT SESSION PICKUP / SESSION SWEEP) are kept verbatim for history.
+
 State: all three Gemma-4 targets at tier-a/d bit-exact parity
 (including every quantized-KV config, post rope-freqs fix); Phases 4,
 8, 10 done; Phase 5 fully closed (admission control + downloader);
@@ -548,7 +555,7 @@ registry license column. Suite 157/157 at every commit.
 5. **Phase 12 (SigLIP)**: your hold — only if needed.
 6. **Phase 13 (TurboQuant)**: PROMOTED (2026-06-12, Josh) — see the
    Phase 13 header; it's now the most interesting research direction
-   and ties into PRODUCT_ROADMAP.md artifact design.
+   and ties into docs/planning/PRODUCT_ROADMAP.md artifact design.
 
 **Direction debate → DECIDED (2026-06-12): direction (A) first.** Josh
 picked the pi built-in track; see Phase 16 below and
@@ -1275,7 +1282,7 @@ below means context-fit via KV, not weight shrink. It composes with the
 separate model-quantization workflow (Phase 17 matrix), it is not it.
 ~~Sequence last~~ **Re-prioritized
 by Josh (2026-06-12): now ahead of Qwen in interest.** The product
-frame (PRODUCT_ROADMAP.md "Artifact design") changed the value
+frame (docs/planning/PRODUCT_ROADMAP.md "Artifact design") changed the value
 calculus: TurboQuant + sensitivity analysis is the lever for
 device-targeted artifacts ("make a 12B-class model hit 64k context on
 24–32 GB above a decode floor"), not a generic-compression niche.
@@ -2196,7 +2203,7 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       default to the model's generation_config.json, the optiq
       gen_config injection (MiniCPM5 0.9/0.95; Gemma 1.0/64/0.95).
       Chat UI verified live in-browser (streaming, multi-turn,
-      prompt-cache hit on turn 2). Details in journal.md.
+      prompt-cache hit on turn 2). Details in docs/planning/journal.md.
 
 ## Phase 17 — Compat CLI surface + parity harness `[ ]` (2026-06-12)
 
