@@ -2,7 +2,7 @@
 
 Framing, positioning, and vision notes for mlx-bun — the "what is this, really"
 captures. Technical prototype theses live in [ResearchTopics.md](ResearchTopics.md);
-work in flight lives in [PLAN.md](PLAN.md).
+work in flight lives in [PLAN.md](../../PLAN.md).
 
 ---
 

@@ -1,5 +1,9 @@
 # mlx-bun: gemma4.ts decompose & optimize — action plan
 
+> This is the canonical **design/rationale** for the optimization work.
+> Live **status/tracking** (checkboxes, findings) lives in PLAN.md under
+> "Optimization plan Phase A–E".
+
 **Premise (confirmed from the source read):** the current engine sits at
 parity-to-ahead vs mlx-lm on the 12B *while still interpreting the decode
 graph every token through hundreds of `bun:ffi` crossings, uncompiled.* The
