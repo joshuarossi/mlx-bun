@@ -2018,7 +2018,10 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       extension against a stub registerProvider + stub /v1/models
       server. Dogfooded on this machine (detected pi v0.79.1,
       install + remove verified).
-- [x] **P2 — `mlx-bun pi` v1 (subprocess)** (2026-06-12):
+- [x] **P2 — `mlx-bun pi` v1 (subprocess)** (2026-06-12) **— SUPERSEDED &
+      REMOVED 2026-06-14: src/pi-launch.ts is gone; `mlx-bun pi` is the
+      embedded agent (P3) and the user's own pi connects via `harness pi`.
+      History below.**
       src/pi-launch.ts + CLI `pi` case. Reuses a healthy server on
       --port (default 8090) or loads one (--query resolves via
       Registry; errors helpfully on 0/many models); spawns the user's
@@ -2106,16 +2109,50 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       extracted), dlopen of the extracted pack ok. Local dev command:
       package.json bin + `bun run link-cli` symlink (never downloads
       — brew resolves first).
-- [ ] **P3 — embed spike** (via `bun run`, no bundling):
-      createAgentSession full-control + InteractiveMode in-process.
-      Gates: editor latency clean during 12B decode; tok/s within
-      noise; tool round-trip; clean teardown.
-- [~] **P4 — single binary**: pi assets into the Phase 5 compile;
-      `-p`→runPrintMode, `--mode rpc`→runRpcMode. **Web-chat half DONE
-      (2026-06-14, branch web-ui-and-native-lab): the built-in web chat UI
-      rides AgentSession.subscribe() events over a WebSocket
-      (src/pi-web.ts + /ws/chat) with a real pre-execution tool-approval
-      gate.** Remaining: folding pi's assets into the compiled binary.
+- [x] **P3 — embedded terminal** (2026-06-14): `mlx-bun pi` now drives
+      pi's OWN interactive TUI in-process — no requirement that the user
+      install pi (it's a bundled dep). src/pi-terminal.ts builds an
+      AgentSessionRuntime the same way pi's CLI does (createAgentSession
+      Services + …FromServices + createAgentSessionRuntime, per
+      examples/sdk/13-session-runtime.ts) and hands it to the exported
+      `InteractiveMode`; `-p`/`--mode json`→runPrintMode, `--mode rpc`→
+      runRpcMode. Tool approval is pi's own built-in TUI prompt (no custom
+      gate — that's only the web path's WS need). System prompt is a
+      FULLY CUSTOM mlx-bun coding-agent persona (replaces pi's default;
+      Josh's call). Tools = full coding set + the web tools
+      (web_search/web_fetch/weather) + the curated web-research skill.
+      Sessions persist under ~/.mlx-bun/pi (so /resume works), isolated
+      from the user's own ~/.pi. Provider/registry/auth wiring extracted to
+      src/pi-provider.ts and shared by web + terminal so it can't drift.
+      Tests: tests/pi-terminal.test.ts (system prompt + argv→mode parser).
+      **DECISION (Josh, 2026-06-14): NO external-pi launcher.** An earlier
+      cut shipped `mlx-bun pi --external-pi` (spawn the user's own pi). Cut
+      entirely (src/pi-launch.ts + tests/pi-launch.test.ts deleted,
+      probeServer moved to src/harness-pi.ts) — a user who already has pi
+      already knows how to run it, so it was pure duplication. The clean
+      split is: `mlx-bun pi` = the built-in agent (interactive + `-p` +
+      `--mode json/rpc`); the user's OWN pi (full flag surface:
+      --continue/--resume/@file/extensions/themes) connects to the local
+      model via `mlx-bun harness pi` (P1, src/harness-pi.ts — sharpened the
+      same day as the explicit "connect your pi" tool). **GATE STILL OPEN
+      (needs Josh + a TTY + model): the one-process
+      editor-latency-during-12B-decode check and a live interactive tool
+      round-trip — automatable parts are green.**
+- [x] **P4 — single binary**: `-p`→runPrintMode, `--mode rpc`→runRpcMode
+      (done in P3). **Web-chat half** (2026-06-14, branch
+      web-ui-and-native-lab): the built-in web chat UI rides
+      AgentSession.subscribe() events over a WebSocket (src/pi-web.ts +
+      /ws/chat) with a real pre-execution tool-approval gate. **Terminal
+      assets folded into the compiled binary (2026-06-14)**: build-binary.sh
+      now sidecars pi's by-path TUI assets next to the executable
+      (theme/*.json, assets/*.png, export-html/*, package.json,
+      CHANGELOG.md, and pi-tui's native/darwin/.../darwin-modifiers.node),
+      mirroring upstream's copy-binary-assets — pi resolves them at
+      dirname(process.execPath) (config.js isBunBinary branch). The asset
+      smoke (scripts/verify-binary-pi.ts) now also asserts initTheme +
+      the native modifier load; VERIFIED in the compiled bundle
+      ("pi terminal theme assets resolved", "pi-tui native modifier helper
+      loaded").
 - [x] **Lab web UI + native engines** (2026-06-14, branch
       web-ui-and-native-lab): unified hash-routed SPA (src/web/app.html) —
       Chat (pi embed) / Quantize / Fine-tune / Build-Dataset / Status —

@@ -18,20 +18,33 @@
 # resources and spawn `mlx-bun serve` as a sidecar. Signing/notarization
 # recipe: docs/reference/embedding.md.
 #
-# --- pi web-chat assets (Phase 16) -----------------------------------
-# The embedded pi AgentSession (src/pi-web.ts) runs HEADLESS — no TUI. Its
-# JS is bundled by `bun build --compile` automatically; the only runtime
-# asset it resolves *by path* is photon_rs_bg.wasm, and only when the
-# `read` tool is asked to read an image file. pi resolves it relative to
-# process.execPath (the mlx-bun binary's dir), so we sidecar it next to
-# the binary. Everything else pi ships beside its own compiled binary —
-# theme/*.json, assets/*.png, export-html/*, docs/, examples/ — is
-# TUI-only (theme rendering, the /export-html command, etc.) and is never
-# reached by the headless web-chat path, so we intentionally omit it.
-# (Verified: src/pi-web.ts builds the session with noThemes/noSkills/
-# noExtensions; createAgentSession's import graph in sdk.js pulls in no
-# theme/asset/export-html loaders. photon load failure degrades to null,
-# so the wasm is graceful-best-effort, not load-bearing.)
+# --- pi assets (Phase 16) --------------------------------------------
+# pi's JS is bundled by `bun build --compile` automatically; what it
+# resolves *by path* at runtime must ride along beside the binary. For a
+# Bun single-file executable pi computes its package dir as
+# dirname(process.execPath) (config.js getPackageDir, isBunBinary branch),
+# so every asset goes directly in $OUT next to mlx-bun.
+#
+# The headless web-chat embed (src/pi-web.ts) needs only photon_rs_bg.wasm
+# (the `read` tool's image resize). The EMBEDDED TERMINAL (src/pi-terminal.ts
+# -> InteractiveMode) additionally resolves, by path:
+#   theme/*.json            theme rendering (built-in dark/light fallback)
+#   assets/*.png            startup art
+#   export-html/*           the /export command's HTML template + vendor JS
+#   package.json,CHANGELOG.md   version banner + startup changelog
+#   native/.../darwin-modifiers.node   pi-tui native modifier-key detection
+#                           (3rd resolver candidate dirname(execPath)/native;
+#                            degrades gracefully if absent — see
+#                            pi-tui/dist/native-modifiers.js)
+# This mirrors upstream's own `copy-binary-assets` manifest
+# (pi-coding-agent/package.json) — their release binary is built the same
+# way, so each piece is a supported configuration.
+#
+# Bundled skills (src/web/skills/): each SKILL.md is embedded as a text
+# import (src/web/skills.ts) and written to ~/.mlx-bun/skills/ at startup,
+# then loaded via additionalSkillPaths. No bundle asset to sidecar and no
+# build step here — skill loading is plain filesystem reads of the
+# materialized files. noSkills:true still excludes the user's own skills.
 set -eu
 
 OUT="${1:-dist}"
@@ -62,6 +75,53 @@ else
        "not resize (set PHOTON_WASM=<path> to include it)." >&2
 fi
 
+echo "==> bundling pi terminal (TUI) assets"
+# Resolved against process.execPath at runtime (see header). Source layout
+# is the installed pi-coding-agent dist/ + pi-tui native prebuilds.
+PI_DIST="node_modules/@earendil-works/pi-coding-agent/dist"
+PI_ROOT="node_modules/@earendil-works/pi-coding-agent"
+PI_TUI="node_modules/@earendil-works/pi-tui"
+ARCH="$(uname -m)"  # arm64 | x86_64 -> darwin-arm64 / darwin-x64
+case "$ARCH" in
+  arm64) PI_NATIVE_ARCH="darwin-arm64" ;;
+  x86_64) PI_NATIVE_ARCH="darwin-x64" ;;
+  *) PI_NATIVE_ARCH="" ;;
+esac
+
+# Themes (built-in dark/light have a code fallback, but ship them so custom
+# theme reads and the schema resolve).
+if [ -d "$PI_DIST/modes/interactive/theme" ]; then
+  mkdir -p "$OUT/theme"
+  cp -f "$PI_DIST"/modes/interactive/theme/*.json "$OUT/theme/" 2>/dev/null || true
+  echo "    theme/*.json"
+fi
+# Startup art.
+if [ -d "$PI_DIST/modes/interactive/assets" ]; then
+  mkdir -p "$OUT/assets"
+  cp -f "$PI_DIST"/modes/interactive/assets/*.png "$OUT/assets/" 2>/dev/null || true
+  echo "    assets/*.png"
+fi
+# /export HTML template + vendor JS.
+if [ -f "$PI_DIST/core/export-html/template.html" ]; then
+  mkdir -p "$OUT/export-html/vendor"
+  cp -f "$PI_DIST/core/export-html/template.html" "$OUT/export-html/" 2>/dev/null || true
+  cp -f "$PI_DIST"/core/export-html/vendor/*.js "$OUT/export-html/vendor/" 2>/dev/null || true
+  echo "    export-html/{template.html,vendor/*.js}"
+fi
+# Version banner + startup changelog.
+[ -f "$PI_ROOT/package.json" ] && cp -f "$PI_ROOT/package.json" "$OUT/package.json" && echo "    package.json"
+[ -f "$PI_ROOT/CHANGELOG.md" ] && cp -f "$PI_ROOT/CHANGELOG.md" "$OUT/CHANGELOG.md" && echo "    CHANGELOG.md"
+# pi-tui native modifier-key helper (graceful if missing).
+PI_NODE="$PI_TUI/native/darwin/prebuilds/$PI_NATIVE_ARCH/darwin-modifiers.node"
+if [ -n "$PI_NATIVE_ARCH" ] && [ -f "$PI_NODE" ]; then
+  mkdir -p "$OUT/native/darwin/prebuilds/$PI_NATIVE_ARCH"
+  cp -f "$PI_NODE" "$OUT/native/darwin/prebuilds/$PI_NATIVE_ARCH/darwin-modifiers.node"
+  echo "    native/darwin/prebuilds/$PI_NATIVE_ARCH/darwin-modifiers.node"
+else
+  echo "    WARN: pi-tui darwin-modifiers.node not found for $ARCH;" \
+       "native modifier-key detection will degrade (non-fatal)." >&2
+fi
+
 echo "==> bundling dylibs"
 cp -f "$BREW_MLXC" "$OUT/libmlxc.dylib"
 cp -f "$BREW_MLX_DIR/libmlx.dylib" "$OUT/libmlx.dylib"
@@ -86,14 +146,15 @@ echo "==> smoke: binary launches"
 "$OUT/mlx-bun" --help >/dev/null && echo "    --help ok"
 "$OUT/mlx-bun" ls >/dev/null && echo "    ls ok"
 
-echo "==> smoke: pi web-chat assets load (headless, no model/server)"
+echo "==> smoke: pi assets load (headless, no model/server)"
 # Compile the verify script into a sibling binary inside the SAME bundle
 # dir, then run it. Because it's a compiled Bun binary living next to the
 # real one, process.execPath -> $OUT, so pi's by-path asset resolvers
-# (photon wasm, theme/, export-html/, assets/) resolve against the same
-# layout the real binary sees. The script drives createAgentSession far
-# enough to prove the bundled pi SDK + its assets load without a
-# missing-asset crash; a provider/model error is the success signal.
+# (photon wasm, theme/, export-html/, assets/, native/) resolve against the
+# same layout the real binary sees. The script drives createAgentSession +
+# initTheme + the native modifier load far enough to prove the bundled pi
+# SDK + its assets load without a missing-asset crash; a provider/model
+# error is the success signal.
 if [ -f "scripts/verify-binary-pi.ts" ]; then
   bun build --compile scripts/verify-binary-pi.ts \
     --outfile "$OUT/verify-binary-pi" >/dev/null 2>&1
