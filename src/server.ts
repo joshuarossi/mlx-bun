@@ -87,13 +87,13 @@ export interface ServerOptions {
   defaultTemperature?: number;
   defaultTopP?: number;
   defaultTopK?: number;
-  /** Concurrent generation slots (batched serving). Default 1 = today's
-   *  serialized single-queue path (one GPU, batch=1). >1 will load the
-   *  batch scheduler — see docs/design/parallel-slots.md. NOTE (phase S0):
-   *  the knob is plumbed and surfaced but the batched executor is not
-   *  built yet; >1 currently warns and still runs serially. Set via
-   *  `--slots N`. */
-  slots?: number;
+  /** Max concurrent requests batched through the mlx-lm-parity engine
+   *  (`--batch N`). Default 1 = today's serialized single-queue path. >1 opts
+   *  the WHOLE server into the batched engine (continuous batching, B floats
+   *  1..N, bit-parity with mlx-lm B=N) — a mode switch, not a load-dependent
+   *  fallback. See docs/design/parallel-slots.md. NOTE: the batched executor
+   *  is mid-build; until it lands, >1 warns and runs serially. */
+  batch?: number;
 }
 
 export interface ServerContext {
@@ -491,16 +491,15 @@ class StreamDecoder {
 export function createServer(
   ctx: ServerContext, port = 0, serverOptions: ServerOptions = {},
 ): Server<unknown> {
-  // Concurrent slots (phase S0): the knob is real but the batched
-  // executor isn't built yet. slots===1 is the serialized path below;
-  // slots>1 is where the batch scheduler will branch in (S1+, see
-  // docs/design/parallel-slots.md). Until then, >1 warns and runs serial
-  // so the flag is wired end-to-end without changing behavior.
-  const slots = Math.max(1, Math.floor(serverOptions.slots ?? 1));
-  if (slots > 1)
+  // --batch N (mode switch): N===1 is the serialized path below; N>1 routes
+  // the whole server through the mlx-lm-parity batched engine. That engine is
+  // mid-build (the batched forward is oracle-verified; the scheduler isn't
+  // wired yet), so for now N>1 warns and runs serially.
+  const batch = Math.max(1, Math.floor(serverOptions.batch ?? 1));
+  if (batch > 1)
     console.warn(
-      `[slots] --slots ${slots} requested, but batched serving is not implemented yet ` +
-        `(phase S1, docs/design/parallel-slots.md) — running serially (1 in-flight generation).`,
+      `[batch] --batch ${batch} requested, but the batched scheduler isn't wired yet ` +
+        `(docs/design/parallel-slots.md) — running serially (1 in-flight generation).`,
     );
 
   let queue: Promise<unknown> = Promise.resolve();
@@ -846,9 +845,9 @@ export function createServer(
             usable_bytes: admission.usableBytes,
             weights_bytes: ctx.model.weightsBytes,
           },
-          // S0: configured slots vs. what's actually active (batched
-          // executor lands in S1 — docs/design/parallel-slots.md).
-          slots: { configured: slots, active: 1, batched: false },
+          // --batch: configured cap vs. what's actually active (the batched
+          // scheduler is mid-build — docs/design/parallel-slots.md).
+          batch: { configured: batch, active: 1, batched: false },
         });
       }
 
