@@ -312,6 +312,19 @@ describe.skipIf(!optIn || !haveCpm)("batched decode ORACLE parity — CPM L1 vs 
   }, 180_000);
 });
 
+// --- Gemma 12B L1 (bf16 KV) vs mlx-lm B=2 oracle (sliding layers →
+//     BatchRotatingKVCache; short-context/pre-wrap). THE real gate for the
+//     Gemma cell that the KL harness couldn't judge. ---
+describe.skipIf(!optIn || !haveGemma12b)("batched decode ORACLE parity — Gemma 12B L1 vs mlx-lm B=2", () => {
+  test("real batched greedy trajectory == mlx-lm B=2", async () => {
+    const golden = await Bun.file(`${import.meta.dir}/fixtures/batched-golden-gemma12b.json`).json();
+    const got = await realBatchedGreedy(SNAPSHOT, golden.prompts as number[][], golden.steps as number);
+    console.log(`[oracle Gemma12B] mlx-bun: ${JSON.stringify(got)}`);
+    console.log(`[oracle Gemma12B] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
+    expect(got).toEqual(golden.trajectories);
+  }, 240_000);
+});
+
 // --- Gemma 12B: dense, interleaved sliding/full attention; L1 (bf16 KV) ---
 // Short prompts (≪ 1024 window) → pre-wrap, window inactive: validates the
 // monolith Gemma path + base Attention + RotatingKVCache(pre-wrap) batched
