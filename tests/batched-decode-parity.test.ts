@@ -18,7 +18,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { SNAPSHOT, snapshotAvailable } from "./paths";
+import { SNAPSHOT, SNAPSHOT_26B, snapshotAvailable, snapshot26bAvailable } from "./paths";
 import type { Cache } from "../src/model/gemma4-base";
 
 const optIn = process.env.MLX_BUN_TEST_BATCH_DECODE === "1";
@@ -33,6 +33,7 @@ const E4B_BASE =
   `models--mlx-community--gemma-4-e4b-it-OptiQ-4bit/snapshots/` +
   `fcdb12d740cd813634064567fc7cb51159b34253`;
 const haveE4b = existsSync(`${E4B_BASE}/config.json`);
+const haveS26 = await snapshot26bAvailable();
 
 /** Run the batched-decode parity harness for one model. prompts[0] MUST be the
  *  longest (→ leftPad 0, the bit-exact row); others are left-padded. Returns
@@ -340,6 +341,18 @@ describe.skipIf(!optIn || !haveE4b)("batched decode ORACLE parity — Gemma e4b 
     console.log(`[oracle e4b] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
     expect(got).toEqual(golden.trajectories);
   }, 240_000);
+});
+
+// --- Gemma 26B-A4B L1 (bf16 KV) vs mlx-lm B=2 oracle. Exercises the MoE block
+//     (Router / SwitchGLU / Experts) under batching. ---
+describe.skipIf(!optIn || !haveS26)("batched decode ORACLE parity — Gemma 26B L1 vs mlx-lm B=2", () => {
+  test("real batched greedy trajectory == mlx-lm B=2", async () => {
+    const golden = await Bun.file(`${import.meta.dir}/fixtures/batched-golden-26b.json`).json();
+    const got = await realBatchedGreedy(SNAPSHOT_26B, golden.prompts as number[][], golden.steps as number);
+    console.log(`[oracle 26B] mlx-bun: ${JSON.stringify(got)}`);
+    console.log(`[oracle 26B] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
+    expect(got).toEqual(golden.trajectories);
+  }, 300_000);
 });
 
 // --- Gemma 12B: dense, interleaved sliding/full attention; L1 (bf16 KV) ---

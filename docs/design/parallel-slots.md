@@ -198,8 +198,17 @@ So a feature like batched decode (`--slots`) is "done" only when green at
 | CPM (MiniCPM5) | ✅ **oracle-verified** (= mlx-lm B=2) | ☐ quant + unfused-mask | ☐ |
 | Gemma 12B | ✅ **oracle-verified** (= mlx-lm B=2, short-ctx) | ☐ generated + sliding-window | ☐ (gen rope fix) |
 | Gemma e4b | ✅ **oracle-verified** (= mlx-lm B=2, short-ctx) | ☐ generated + same | ☐ (gen rope fix) |
-| Gemma 26B | ☐ + MoE | ☐ generated + MoE | ☐ (gen rope fix) |
+| Gemma 26B | ✅ **oracle-verified** (= mlx-lm B=2, short-ctx) | ☐ generated + MoE | ☐ (gen rope fix) |
 | *(Qwen, future)* | *new path* | *new path* | *new path* |
+
+**🎯 L1 batched decode COMPLETE (2026-06-14d): the entire L1 row is green** —
+all 4 model paths bit-parity with mlx-lm B=2 (CPM full-attn, Gemma 12B
+sliding+full, e4b per-layer-input+KV-share, 26B MoE). Only one per-path fix was
+needed (e4b's `[1,L,…]` per-layer-input hardcode); sliding (RotatingKVCache),
+KV-sharing, and MoE were all already B-generic. Caveat: short-context (pre-wrap)
+— ring-wrap (>window) is the one remaining L1 follow-up. Next rows: **L2**
+(quantized KV → `quantizedSdpaUnfused` + 4-D mask, vs optiq) and **L3** (perf
+kernels under batching, KL+quality).
 
 Harness: `tests/batched-decode-parity.test.ts` has two paths — (a)
 `runBatchedDecodeParity` = the internal-consistency KL check (B=N vs our B=1,
