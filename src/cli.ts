@@ -54,9 +54,9 @@ const SERVER_FLAGS = `Server options:
                             cannot fit are rejected instead of crashing the
                             GPU  [default: machine RAM × 0.75, check-only]
   --prompt-cache <GB>       Prompt (KV) cache byte cap  [default: 2 GB]
-  --slots <n>               Concurrent generation slots  [default: 1].
-                            >1 is plumbed but not yet batched (phase S1);
-                            currently warns and runs serially.
+  --batch <n>               Max concurrent requests batched through the
+                            mlx-lm-parity engine  [default: 1 = serial].
+                            >1 opts the whole server into batched serving.
 
 Model & quality:
   --kv-quant <mode>         KV cache quantization: config (per-layer
@@ -294,14 +294,17 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   if (budgetGB > 0) serverOptions.memoryBudgetBytes = budgetGB * 1e9;
   const pcGB = Number(opt("prompt-cache", "0"));
   if (pcGB > 0) serverOptions.promptCacheBytes = pcGB * 2 ** 30;
-  const slotsRaw = opt("slots");
-  if (slotsRaw !== null) {
-    const n = Number(slotsRaw);
+  // --batch N: max concurrent requests batched through the mlx-lm-parity
+  // engine (N=1 = today's serial path). --decode-concurrency is accepted as
+  // an mlx_lm.server-compatible alias (drop-in).
+  const batchRaw = opt("batch") ?? opt("decode-concurrency");
+  if (batchRaw !== null) {
+    const n = Number(batchRaw);
     if (!Number.isInteger(n) || n < 1) {
-      console.error(`--slots expects an integer >= 1 (got "${slotsRaw}")`);
+      console.error(`--batch expects an integer >= 1 (got "${batchRaw}")`);
       process.exit(1);
     }
-    serverOptions.slots = n;
+    serverOptions.batch = n;
   }
   const kv = opt("kv-quant");
   if (kv === "off") serverOptions.kvQuant = "off";
@@ -346,7 +349,7 @@ function runtimeSummary(o: import("./server").ServerOptions): string {
   return `kv-quant ${kv} · compiled-decode ${lever("MLX_BUN_COMPILED_DECODE", "1") === "1" ? "on" : "off"}` +
     ` · perf-kernel ${perfKernelEnabled() ? "on" : "off"}` +
     (lever("MLX_BUN_FUSED_DECODE", "0") === "1" ? " · fused-decode on" : "") +
-    (o.slots && o.slots > 1 ? ` · slots ${o.slots} (serial until S1)` : "") +
+    (o.batch && o.batch > 1 ? ` · batch ${o.batch}` : "") +
     (o.defaultThinking !== undefined ? ` · thinking ${o.defaultThinking ? "on" : "off"}` : "") +
     (o.defaultTemperature !== undefined ? ` · temp ${o.defaultTemperature}` : "") +
     (o.defaultTopP !== undefined ? ` · top-p ${o.defaultTopP}` : "") +
