@@ -548,8 +548,7 @@ switch (cmd) {
       `${style.green("●")} ${style.bold("serving")} ${m.repoId}`,
       "",
       `API   ${style.url(`http://${shownHost}:${server.port}/v1`)}  ${style.dim("(OpenAI · Anthropic · Responses)")}`,
-      `Web   ${style.url(`http://${shownHost}:${server.port}/`)}  ${style.dim("(status · fit · library)")}`,
-      `Chat  ${style.url(`http://${shownHost}:${server.port}/chat`)}  ${style.dim("(local chat in the browser)")}`,
+      `App   ${style.url(`http://${shownHost}:${server.port}/`)}  ${style.dim("(chat · quantize · finetune · dataset · status)")}`,
       ...(rt.serverOptions.memoryBudgetBytes
         ? [`Mem   ${gb(rt.serverOptions.memoryBudgetBytes)} budget ${style.dim("(admission control on)")}`] : []),
       `Perf  ${style.dim(runtimeSummary(rt.serverOptions))}`,

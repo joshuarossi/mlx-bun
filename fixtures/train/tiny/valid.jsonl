@@ -1,0 +1,2 @@
+{"messages": [{"role": "user", "content": "Greet me."}, {"role": "assistant", "content": "HELLO THERE IT IS GREAT TO MEET YOU."}]}
+{"messages": [{"role": "user", "content": "Name an animal."}, {"role": "assistant", "content": "A DOG IS A LOYAL AND FRIENDLY ANIMAL."}]}
