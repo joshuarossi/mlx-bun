@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mlx-bun Lab — build report</title>
+<style>
+  :root{
+    --bg:#000; --ink:#f5f5f7; --dim:#a1a1a6; --dimmer:#6e6e73;
+    --hairline:rgba(255,255,255,.13); --card:rgba(255,255,255,.045);
+    --card2:rgba(255,255,255,.07);
+    --blue:#0a84ff; --cyan:#64d2ff; --indigo:#5e5ce6; --purple:#bf5af2;
+    --pink:#ff375f; --orange:#ff9f0a; --yellow:#ffd60a; --green:#30d158; --red:#ff453a;
+    --ease:cubic-bezier(.22,.61,.21,1);
+    --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--ink);
+    font:16px/1.65 -apple-system,"SF Pro Text",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased;overflow-x:hidden}
+  .bloom{position:fixed;border-radius:50%;filter:blur(120px);opacity:.5;z-index:-1;pointer-events:none}
+  .b1{width:560px;height:560px;background:radial-gradient(circle,rgba(94,92,230,.5),transparent 70%);top:-160px;left:-120px}
+  .b2{width:620px;height:620px;background:radial-gradient(circle,rgba(255,55,95,.32),transparent 70%);top:380px;right:-200px}
+  .b3{width:680px;height:680px;background:radial-gradient(circle,rgba(48,209,88,.22),transparent 70%);top:1500px;left:-220px}
+  .wrap{max-width:1000px;margin:0 auto;padding:0 24px}
+  .grad{background-clip:text;-webkit-background-clip:text;color:transparent}
+  .g-hero{background-image:linear-gradient(96deg,var(--orange),var(--pink) 34%,var(--purple) 64%,var(--blue))}
+  .g-green{background-image:linear-gradient(96deg,var(--green),var(--cyan))}
+  .g-pink{background-image:linear-gradient(96deg,var(--pink),var(--purple))}
+  .g-blue{background-image:linear-gradient(96deg,var(--cyan),var(--blue))}
+
+  header.hero{padding:120px 0 70px;text-align:center}
+  .eyebrow{font:600 13px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--dim)}
+  h1{font:800 clamp(40px,7vw,76px)/1.04 "SF Pro Display",-apple-system,sans-serif;letter-spacing:-.03em;margin:18px 0}
+  .lede{font-size:clamp(17px,2.2vw,21px);color:var(--dim);max-width:720px;margin:0 auto;line-height:1.5}
+  .meta{margin-top:26px;font:13px var(--mono);color:var(--dimmer)}
+
+  section{padding:54px 0;border-top:1px solid var(--hairline)}
+  h2{font:700 clamp(26px,3.6vw,38px)/1.1 "SF Pro Display",sans-serif;letter-spacing:-.02em;margin-bottom:8px}
+  h2 + .sub{color:var(--dim);margin-bottom:30px;font-size:16px;max-width:760px}
+  h3{font:650 19px "SF Pro Display",sans-serif;letter-spacing:-.01em;margin-bottom:6px}
+
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:38px}
+  .stat{background:var(--card);border:1px solid var(--hairline);border-radius:16px;padding:20px}
+  .stat .n{font:800 30px "SF Pro Display",sans-serif;letter-spacing:-.02em}
+  .stat .l{font-size:12.5px;color:var(--dim);margin-top:3px;line-height:1.35}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+  .card{background:var(--card);border:1px solid var(--hairline);border-radius:18px;padding:24px;transition:border-color .3s var(--ease),transform .3s var(--ease)}
+  .card:hover{border-color:rgba(255,255,255,.28);transform:translateY(-2px)}
+  .card .ic{font-size:22px;margin-bottom:12px}
+  .card p{color:var(--dim);font-size:14.5px;margin-top:6px}
+  .tag{display:inline-block;font:600 11px var(--mono);color:var(--green);background:rgba(48,209,88,.12);
+    border:1px solid rgba(48,209,88,.3);border-radius:999px;padding:2px 9px;margin-top:12px}
+  .tag.warn{color:var(--orange);background:rgba(255,159,10,.12);border-color:rgba(255,159,10,.3)}
+
+  .flow{font:13px var(--mono);color:var(--dim);background:#0b0b0d;border:1px solid var(--hairline);
+    border-radius:16px;padding:22px;white-space:pre;overflow-x:auto;line-height:1.6}
+  .flow b{color:var(--ink)} .flow .k{color:var(--cyan)} .flow .g{color:var(--green)} .flow .p{color:var(--purple)}
+
+  table{width:100%;border-collapse:collapse;font-size:14px;margin-top:6px}
+  th,td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--hairline);vertical-align:top}
+  th{font:600 12px var(--mono);letter-spacing:.04em;text-transform:uppercase;color:var(--dim)}
+  td code,.mono{font:12.5px var(--mono);color:var(--cyan)}
+  td .ok{color:var(--green);font-weight:600}
+  tr:last-child td{border-bottom:none}
+
+  .showcase{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:20px}
+  .term{background:#0b0b0d;border:1px solid var(--hairline);border-radius:16px;overflow:hidden}
+  .term .bar{display:flex;gap:7px;padding:12px 16px;border-bottom:1px solid var(--hairline);align-items:center}
+  .term .bar i{width:11px;height:11px;border-radius:50%;display:inline-block}
+  .term .bar .t{margin-left:8px;font:12px var(--mono);color:var(--dimmer)}
+  .term .body{padding:18px;font:13.5px/1.6 var(--mono);color:var(--ink);white-space:pre-wrap;word-break:break-word;min-height:96px}
+  .lbl{font:600 12px var(--mono);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px}
+
+  .loss{background:var(--card);border:1px solid var(--hairline);border-radius:16px;padding:22px;margin-top:18px}
+  ul.j{list-style:none;margin-top:8px}
+  ul.j li{padding:14px 0;border-bottom:1px solid var(--hairline);display:flex;gap:14px}
+  ul.j li:last-child{border-bottom:none}
+  ul.j .b{flex:0 0 auto;width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:15px;
+    background:var(--card2);border:1px solid var(--hairline)}
+  ul.j .c h4{font:650 15.5px "SF Pro Display",sans-serif;margin-bottom:3px}
+  ul.j .c p{color:var(--dim);font-size:14px}
+  ul.j .c code{font:12px var(--mono);color:var(--cyan)}
+  .note{color:var(--dimmer);font-size:13px;margin-top:18px;line-height:1.55}
+  code.cmd{display:block;background:#0b0b0d;border:1px solid var(--hairline);border-radius:12px;
+    padding:14px 16px;font:13px var(--mono);color:var(--green);margin-top:10px;overflow-x:auto;white-space:pre}
+  footer{padding:60px 0 90px;text-align:center;color:var(--dimmer);font-size:13px;border-top:1px solid var(--hairline)}
+  @media(max-width:760px){.stats{grid-template-columns:repeat(2,1fr)}.showcase{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="bloom b1"></div><div class="bloom b2"></div><div class="bloom b3"></div>
+
+<header class="hero"><div class="wrap">
+  <div class="eyebrow">build report · branch web-ui-and-native-lab</div>
+  <h1>mlx-bun <span class="grad g-hero">Lab</span></h1>
+  <p class="lede">A complete, beautiful web workbench for local AI on Apple silicon —
+  a full pi agent in the browser, plus <b>native</b> Quantize, Fine-tune, and
+  Build-Dataset. No Python anywhere. Every engine is mlx-c through bun:ffi.</p>
+  <p class="meta">M4 Pro · 24 GB · MiniCPM5-1B-OptiQ-4bit · 2026-06-14</p>
+  <div class="stats">
+    <div class="stat"><div class="n grad g-blue">5</div><div class="l">unified sections: Chat · Quantize · Fine-tune · Dataset · Status</div></div>
+    <div class="stat"><div class="n grad g-green">0</div><div class="l">lines of Python — native quantize &amp; LoRA training via mlx-c</div></div>
+    <div class="stat"><div class="n grad g-pink">150+</div><div class="l">new tests, all green (incl. real-model e2e)</div></div>
+    <div class="stat"><div class="n grad g-hero">50+</div><div class="l">new source files across 11 subsystems</div></div>
+  </div>
+</div></header>
+
+<section><div class="wrap">
+  <h2>What shipped</h2>
+  <p class="sub">One self-contained, keynote-styled SPA served from the same binary, backed by four new engines and a shared job system. The status page is kept and folded in.</p>
+  <div class="cards">
+    <div class="card"><div class="ic">💬</div><h3>Chat</h3><p>The full pi coding-agent embedded server-side, streamed to the browser over WebSocket: live tokens, tool calls (read/bash/edit/write/grep/find/ls), steering, and a real pre-execution approval gate for the dangerous tools.</p><span class="tag">pi SDK · verified streaming + tools</span></div>
+    <div class="card"><div class="ic">🧮</div><h3>Quantize</h3><p>Reads a model, quantizes every eligible Linear + embedding via <span class="mono">mlx_quantize</span>, writes a real HF-layout 4/8-bit model dir with <span class="mono">mlx_save_safetensors</span> the existing loader serves unchanged.</p><span class="tag">native · 170 modules → 4.50 bpw</span></div>
+    <div class="card"><div class="ic">🎛️</div><h3>Fine-tune</h3><p>Native LoRA + DPO. <span class="mono">mlx_value_and_grad</span> driven by a bun:ffi closure, hand-rolled AdamW, masked cross-entropy. Saves an adapter the server hot-mounts.</p><span class="tag">native · loss 4.48 → 0.68</span></div>
+    <div class="card"><div class="ic">📦</div><h3>Build Dataset</h3><p>All 13 OptIQ-Lab templates ported to TypeScript — pure-data ones run locally, LLM-driven ones call the server's own loopback. Splits to train/valid JSONL.</p><span class="tag">13 templates · 90/10 split</span></div>
+    <div class="card"><div class="ic">📊</div><h3>Status</h3><p>The existing keynote dashboard, kept and integrated: live memory meters, prompt-cache hit rate, KV-quant split, the fit solver + Apple-silicon SKU matrix, downloads.</p><span class="tag">kept &amp; unified</span></div>
+    <div class="card"><div class="ic">⚙️</div><h3>Job system</h3><p>Shared SQLite-backed jobs with NDJSON-log SSE streaming. GPU jobs run as crash-isolated subprocesses (uncatchable Metal OOM can't take the server down); dataset jobs run in-process.</p><span class="tag">SSE · crash-isolated</span></div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Architecture</h2>
+  <p class="sub">Five sections over one <span class="mono">Bun.serve</span>. The chat WebSocket and the dataset LLM templates both ride the server's own loopback <span class="mono">/v1</span>, so everything serializes through the single generation queue — one GPU, no second path.</p>
+<div class="flow"><b>src/web/app.html</b>  <span class="k">── unified SPA (hash routes #/chat #/quantize #/finetune #/dataset #/status)</span>
+   │
+   ▼
+<b>src/server.ts</b>  <span class="k">── Bun.serve({ fetch, websocket })</span>
+   ├─ <span class="g">/ws/chat</span> .............. src/pi-web.ts   <span class="k">→ embedded pi AgentSession → loopback /v1</span>
+   ├─ <span class="g">/api/dataset/*</span> ........ src/dataset/*  <span class="k">→ jobs (in-process)</span>
+   ├─ <span class="g">/api/quantize/*</span> ....... src/quantize/* <span class="k">→ jobs (GPU subprocess)</span>
+   ├─ <span class="g">/api/finetune/*</span> ....... src/train/*    <span class="k">→ jobs (GPU subprocess)</span>
+   ├─ <span class="g">/api/jobs/:id[/stream]</span> .. src/jobs/*     <span class="k">→ SQLite rows + NDJSON-log SSE</span>
+   └─ <span class="p">/v1/* · /stats · /fit · /library</span>  <span class="k">(unchanged)</span>
+                              │
+                              ▼
+                <b>src/mlx/{ffi,ops,autograd}.ts</b>  <span class="k">→ mlx-c via bun:ffi</span>
+                  <span class="k">mlx_quantize · mlx_save_safetensors · mlx_value_and_grad</span></div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>The headline: <span class="grad g-green">native, no Python</span></h2>
+  <p class="sub">mlx-bun's thesis is that the buggy layer (loading, tokenizing, the training loop, serving) doesn't need Python. The two hardest pieces — weight quantization and gradient training — are now native, proven on a real model.</p>
+
+  <h3 style="margin-top:8px">It actually trains</h3>
+  <p style="color:var(--dim);font-size:14.5px;max-width:780px">A 20-iteration LoRA on a 3-row "always answer in UPPERCASE" fixture, run entirely in Bun/MLX. The base model and the freshly-trained adapter, on a held-out prompt — <i>"Tell me about your day."</i>:</p>
+  <div class="showcase">
+    <div><div class="lbl" style="color:var(--dimmer)">base model (adapter off)</div>
+      <div class="term"><div class="bar"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><span class="t">before</span></div>
+      <div class="body" id="before"></div></div></div>
+    <div><div class="lbl grad g-green">after 20 native LoRA steps</div>
+      <div class="term" style="border-color:rgba(48,209,88,.4)"><div class="bar"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><span class="t">after</span></div>
+      <div class="body grad g-green" id="after" style="font-weight:600"></div></div></div>
+  </div>
+
+  <div class="loss">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:10px">
+      <div class="lbl grad g-blue">training loss · 20 iters</div>
+      <div class="mono" style="color:var(--dim)">4.48 → 0.68 · 4.6 s · 168 adapters mounted</div>
+    </div>
+    <svg id="spark" viewBox="0 0 900 160" preserveAspectRatio="none" style="width:100%;height:160px;margin-top:12px"></svg>
+  </div>
+
+  <div class="cards" style="margin-top:22px">
+    <div class="card"><div class="ic">🧮</div><h3>Quantize, measured</h3>
+      <p>Re-quantized MiniCPM5-1B to uniform 4-bit g64: <b>170 modules</b> → <b>4.50 bits/weight</b>, a <b>0.62 GB</b> model dir written in <b>7.0 s</b>, reopened bit-correctly through the existing loader. Stages: resolving → quantizing → writing.</p>
+      <span class="tag">mlx_quantize + mlx_save_safetensors</span></div>
+    <div class="card"><div class="ic">🔬</div><h3>The autograd spike</h3>
+      <p>Before writing any trainer, a feasibility gate proved <span class="mono">mlx_value_and_grad</span> driven by a <span class="mono">bun:ffi</span> JSCallback closure returns correct gradients (finite-difference &lt; 1e-2) for the LoRA A/B leaves, with the quantized base frozen.</p>
+      <span class="tag">spikes/phase-train-vag.ts · PASS</span></div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Round 2 — the leftover seams, <span class="grad g-pink">ported 1:1</span></h2>
+  <p class="sub">The five "designed-but-not-built" items, finished as faithful ports of the OptIQ / mlx-lm source (open book) — built in parallel on non-overlapping files, then integrated.</p>
+  <div class="cards">
+    <div class="card"><div class="ic">🎚️</div><h3>Mixed-precision quantization</h3><p>OptIQ's sensitivity + greedy-knapsack allocator ported <b>1:1</b> — per-layer bit choices are <b>bit-identical to OptIQ</b> on shared inputs (checked against the Python in the venv). Per-layer KL sensitivity runs on our own graph.</p><span class="tag">170 modules → 80×4-bit + 90×8-bit · 5.19 bpw · 32 s</span></div>
+    <div class="card"><div class="ic">📚</div><h3>Batched (B&gt;1) training</h3><p>Ragged padding + a per-row attention mask through the forward; B=1 stays bit-identical (separate path). Verified: a batched row's loss equals its single-row forward (shape-held) within bf16 noise.</p><span class="tag">B=2 loss↓ + masking parity ✓</span></div>
+    <div class="card"><div class="ic">🤗</div><h3>hf_dataset_import</h3><p>The 13th template — pulls any HF dataset via the datasets-server REST API (config / split / column / label-filter / min-chars / cap), no Python <span class="mono">datasets</span> lib.</p><span class="tag">13/13 templates real</span></div>
+    <div class="card"><div class="ic">⬆️</div><h3>HF push-to-hub</h3><p>Native Hub upload — create repo → LFS preupload → S3 PUT → NDJSON commit — for model, adapter, and dataset repos. Wired into all three wizards + an HF-token settings gear.</p><span class="tag">11 protocol tests ✓ (mock; no live push)</span></div>
+    <div class="card"><div class="ic">📦</div><h3>Single-binary web chat</h3><p>pi's JS is already bundled by <span class="mono">bun build --compile</span>; only the photon wasm is sidecarred. The compiled binary's headless pi session was verified to construct under the binary.</p><span class="tag">+1.8 MB sidecar</span></div>
+  </div>
+  <p class="note">The web UI now exposes all of it: a Uniform/Mixed quantize toggle with a target-bpw slider, live merge/export/push on the fine-tune done step, push on quantize &amp; dataset, and a Hugging-Face token settings gear in the nav.</p>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Verification</h2>
+  <p class="sub">No browser screenshots (per request) — proof is the test suite. Integration tests spin a server up <i>inside the test process</i> and exit; the two real-model runs were explicitly approved.</p>
+  <table>
+    <thead><tr><th>area</th><th>evidence</th><th>result</th></tr></thead>
+    <tbody>
+      <tr><td>Web UI + routes</td><td><code>tests/lab-routes.test.ts</code> — SPA served, dataset build → JSONL, jobs SSE, quantize inspect, <b>real pi chat turn over WebSocket</b></td><td class="ok">7/7 ✓</td></tr>
+      <tr><td>Chat (pi embed)</td><td>WS turn streamed 25+ text deltas, executed a tool, completed; <code>tests/pi-web.test.ts</code> event mapping</td><td class="ok">9/9 ✓</td></tr>
+      <tr><td>Native quantize</td><td><code>MLX_BUN_TEST_QUANTIZE=1</code> e2e — real 4-bit model written + reopened; + 5 unit</td><td class="ok">6/6 ✓</td></tr>
+      <tr><td>Native train</td><td><code>MLX_BUN_TEST_TRAIN=1</code> e2e — loss↓, adapter mounts, output changes; + 19 fast (autograd FD, AdamW, dataset)</td><td class="ok">20/20 ✓</td></tr>
+      <tr><td>Dataset engine</td><td><code>tests/dataset.test.ts</code> — generators, CSV parse, 90/10 split, 13 templates</td><td class="ok">32/32 ✓</td></tr>
+      <tr><td>Job system</td><td><code>tests/jobs.test.ts</code> — lifecycle, GPU lease, <b>subprocess crash isolation</b>, zombie recovery, SSE</td><td class="ok">12/12 ✓</td></tr>
+      <tr><td>No regressions</td><td><code>tests/server.test.ts</code> — existing OpenAI/Anthropic/admission surface after the integration</td><td class="ok">17/17 ✓</td></tr>
+      <tr><td>Types</td><td><code>bunx tsc --noEmit</code> across the whole project</td><td class="ok">clean ✓</td></tr>
+    </tbody>
+  </table>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Open-book ports</h2>
+  <p class="sub">Every engine follows a readable source — the OptIQ-Lab Python in the installed venv and mlx-lm — rather than being invented.</p>
+  <table>
+    <thead><tr><th>our module</th><th>ported from</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/dataset/*</code></td><td><code>optiq/lab/dataset_templates.py</code> — 13 templates, field-for-field</td></tr>
+      <tr><td><code>src/train/{trainer,loss,dataset}.ts</code></td><td><code>optiq/lora/{trainer,dpo,config}.py</code> + mlx-lm <code>default_loss</code> / <code>iterate_batches</code></td></tr>
+      <tr><td><code>src/quantize/*</code></td><td>mlx-lm <code>convert.py</code> rules + the on-disk OptIQ model format (config block, sharding, eligibility)</td></tr>
+      <tr><td><code>src/jobs/*</code></td><td><code>optiq/lab/{jobs,db}.py</code> — job lifecycle + SSE event grammar</td></tr>
+      <tr><td><code>src/pi-web.ts</code></td><td>pi SDK (<code>@earendil-works/pi-coding-agent</code>) <code>examples/sdk/12-full-control.ts</code></td></tr>
+      <tr><td><code>src/web/app.html</code></td><td>OptIQ-Lab wizard UX + mlx-bun's own <code>status-page.html</code> design system</td></tr>
+    </tbody>
+  </table>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Build journal</h2>
+  <p class="sub">How it was built, the decisions, and the bugs found along the way.</p>
+  <ul class="j">
+    <li><div class="b">🔭</div><div class="c"><h4>Plan first, fork the big decision to the user</h4><p>Surfaced the one decision that changed everything — native compute vs. orchestrating the installed Python vs. proxying — and you chose <b>native, no Python</b>. Full pi agent for chat; real tiny runs for verification.</p></div></li>
+    <li><div class="b">🔬</div><div class="c"><h4>Gated the riskiest unknown before building</h4><p>Native training needs autograd through <span class="mono">bun:ffi</span>. A feasibility spike proved <code>mlx_value_and_grad</code> + a JSCallback closure returns correct grads (finite-diff &lt; 1e-2) before a line of trainer code — de-risking the whole subsystem.</p></div></li>
+    <li><div class="b">⚡</div><div class="c"><h4>Parallel sub-agents on non-overlapping files</h4><p>After laying a shared job contract (<code>src/jobs/types.ts</code>), fanned out six subsystems concurrently — jobs, dataset, quantizer, trainer, web SPA, pi embed — each owning its own directory, then integrated <code>server.ts</code>/<code>cli.ts</code> centrally to avoid conflicts.</p></div></li>
+    <li><div class="b">🧱</div><div class="c"><h4>Found: <code>mlx_save_safetensors</code> exists</h4><p>The quantizer needed a safetensors writer; reading the mlx-c header (open book) showed a native writer already exists — no hand-rolled byte layout, eliminating a whole class of dtype/alignment bugs.</p></div></li>
+    <li><div class="b">🛡️</div><div class="c"><h4>Crash isolation by design</h4><p>Async Metal OOM is uncatchable (it std::terminates the process). So GPU jobs run as child <code>mlx-bun</code> subprocesses with a kernel fault boundary; a job that OOMs dies alone and the server survives. Verified with a deliberate-crash test.</p></div></li>
+    <li><div class="b">🐛</div><div class="c"><h4>Bug: LoRA init key shape</h4><p>The first real training run failed — <code>random_normal</code> got a <code>[1,2]</code> key but mlx wants <code>[2]</code>. Reshaped the per-module subkey after slicing the split-keys array. Loss curve immediately worked.</p></div></li>
+    <li><div class="b">🐛</div><div class="c"><h4>Bug: flaky chat test</h4><p>The pi agent sometimes takes a tool-call turn <i>before</i> producing text; the test resolved on the first <code>turn_end</code> and saw no tokens. Fixed to settle on the first turn that actually streams text — the embed was always correct.</p></div></li>
+    <li><div class="b">🔁</div><div class="c"><h4>Test, fix, re-run</h4><p>Each real-model e2e surfaced a small integration gap (a path not resolved, a key shape) — fixed at the source and re-run green, rather than worked around in the test.</p></div></li>
+  </ul>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Run it live</h2>
+  <p class="sub">Screenshots were skipped by request; here's how to see it yourself. The unified app is served from the same binary.</p>
+  <code class="cmd">bun src/cli.ts serve cpm           <span style="color:var(--dimmer)"># serve MiniCPM5-1B; app at http://localhost:8090/</span>
+<span style="color:var(--dimmer)"># then open http://localhost:8090/  →  Chat · Quantize · Fine-tune · Dataset · Status</span></code>
+  <p class="note">Re-run the native engines headless (no server):</p>
+  <code class="cmd">bun scripts/verify-lab.ts                         <span style="color:var(--dimmer)"># quantize + train + dataset, prints evidence</span>
+MLX_BUN_TEST_QUANTIZE=1 bun test tests/quantize.test.ts
+MLX_BUN_TEST_TRAIN=1   bun test tests/train-e2e.test.ts</code>
+  <p class="note">Everything lives on branch <span class="mono">web-ui-and-native-lab</span>. The OptIQ sensitivity+knapsack mixed-precision path, DPO at scale, batched (B&gt;1) training, and HF push-to-hub are designed seams left for follow-ups.</p>
+</div></section>
+
+<footer><div class="wrap">mlx-bun Lab · native MLX inference, quantization &amp; training for Bun on Apple silicon · no Python</div></footer>
+
+<script>
+  const before = "<think>\nOkay, the user is asking about my day. Hmm, I need to clarify my nature first. I";
+  const after  = "MY DAY AHEAD.\nAPPROVE AND PROPERLY END THE DAY.\nAPPROVE AND";
+  document.getElementById("before").textContent = before;
+  document.getElementById("after").textContent = after;
+
+  // loss sparkline
+  const loss = [4.4836,2.7138,2.5195,1.8625,0.8894,4.877,2.2799,1.1992,1.1923,1.4514,1.9102,0.6184,0.9046,0.6076,0.601,0.4917,0.3558,2.4688,0.25,0.6766];
+  const W=900,H=160,pad=14, max=Math.max(...loss), min=Math.min(...loss);
+  const x=i=>pad+i*(W-2*pad)/(loss.length-1);
+  const y=v=>pad+(1-(v-min)/(max-min))*(H-2*pad);
+  const pts=loss.map((v,i)=>`${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const area=`M ${x(0)},${H-pad} L ${pts.split(" ").join(" L ")} L ${x(loss.length-1)},${H-pad} Z`;
+  const svg=document.getElementById("spark");
+  svg.innerHTML=`
+    <defs><linearGradient id="lg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="rgba(100,210,255,.35)"/><stop offset="1" stop-color="rgba(100,210,255,0)"/>
+    </linearGradient></defs>
+    <path d="${area}" fill="url(#lg)"/>
+    <polyline points="${pts}" fill="none" stroke="#64d2ff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    ${loss.map((v,i)=>`<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="2.6" fill="${i===loss.length-1?'#30d158':'#64d2ff'}"/>`).join("")}`;
+</script>
+</body>
+</html>

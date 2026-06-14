@@ -2110,9 +2110,27 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       createAgentSession full-control + InteractiveMode in-process.
       Gates: editor latency clean during 12B decode; tok/s within
       noise; tool round-trip; clean teardown.
-- [ ] **P4 — single binary**: pi assets into the Phase 5 compile;
-      `-p`→runPrintMode, `--mode rpc`→runRpcMode; web chat UI rides
-      AgentSession.subscribe() events.
+- [~] **P4 — single binary**: pi assets into the Phase 5 compile;
+      `-p`→runPrintMode, `--mode rpc`→runRpcMode. **Web-chat half DONE
+      (2026-06-14, branch web-ui-and-native-lab): the built-in web chat UI
+      rides AgentSession.subscribe() events over a WebSocket
+      (src/pi-web.ts + /ws/chat) with a real pre-execution tool-approval
+      gate.** Remaining: folding pi's assets into the compiled binary.
+- [x] **Lab web UI + native engines** (2026-06-14, branch
+      web-ui-and-native-lab): unified hash-routed SPA (src/web/app.html) —
+      Chat (pi embed) / Quantize / Fine-tune / Build-Dataset / Status —
+      backed by NATIVE quantization (src/quantize: mlx_quantize +
+      mlx_save_safetensors → real HF-layout model dir), native LoRA+DPO
+      training (src/train + src/mlx/autograd.ts: mlx_value_and_grad via a
+      bun:ffi JSCallback closure, hand-rolled AdamW), the 13 OptIQ dataset
+      templates (src/dataset), and a shared bun:sqlite job system with
+      NDJSON-log SSE + GPU-leased subprocess isolation (src/jobs). No
+      Python. Real-model e2e (MiniCPM5-1B): requant 170 modules → 4.50 bpw
+      in 7 s; LoRA loss 4.48→0.68 in 4.6 s with a verified behavior change;
+      live pi chat turn over WS. 85+ new tests green, tsc clean, server
+      suite 17/17 (no regressions). Full story:
+      docs/investigations/lab-build-journal.md +
+      archive/mlx-bun-lab-report.html.
 - [x] **First-run starter model**
       (2026-06-12, after the first external tester sat through a 16 GB
       26B download with nothing to use): interim e4b starter shipped
