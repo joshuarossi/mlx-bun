@@ -10,9 +10,10 @@
 // disposed at a time; the allocator cache is cleared every CACHE_CLEAR_EVERY
 // modules so a large model never holds more than a few resident tensors.
 //
-// v1 = uniform affine (every eligible weight gets the same bits/group_size).
-// The mixed-precision (OptiQ sensitivity + knapsack) path is a declared seam:
-// the option fields exist on QuantizeOptions and throw if used — see below.
+// Uniform affine (every eligible weight gets the same bits/group_size) is the
+// default. When `opts.targetBpw` is set, the OptiQ sensitivity-driven
+// mixed-precision path runs: calibration → per-layer KL sensitivity → greedy
+// knapsack → a heterogeneous per-module bit allocation fed to the same writer.
 
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
@@ -21,6 +22,8 @@ import { cpuStream, type MlxArray } from "../mlx/array";
 import { quantize, dequantize } from "../mlx/ops";
 import { Weights } from "../weights";
 import { loadModelConfig, quantFor, type QuantizationConfig } from "../config";
+import { createModel } from "../model/factory";
+import { loadTokenizer } from "../tokenizer";
 import {
   writeShardedSafetensors,
   type NamedTensor,
@@ -31,6 +34,9 @@ import {
   writeQuantizedConfig,
   type PerLayerEntry,
 } from "./config-writer";
+import { loadLlmCalibration } from "./calibration";
+import { analyzeSensitivityExact, type SensitivityResult } from "./sensitivity";
+import { optimizeMixedPrecision } from "./allocator";
 
 /** Quantize the allocator cache this often (in modules processed). */
 const CACHE_CLEAR_EVERY = 16;
@@ -44,18 +50,21 @@ export interface QuantizeOptions {
   /** Quantization scheme; v1 only exercises "affine". */
   mode?: string;
 
-  // --- mixed-precision seam (NOT implemented in v1) ---------------------
-  // Present so the UI / OptiQ port compiles against one option type; setting
-  // targetBpw triggers an explicit "not implemented" throw in quantizeModelDir.
+  // --- mixed-precision (OptiQ sensitivity + knapsack) -------------------
+  // Setting targetBpw switches quantizeModelDir to the mixed path: it loads the
+  // model, runs calibration + per-layer KL sensitivity, knapsacks a per-module
+  // bit allocation, and feeds that heterogeneous map to the same writer.
   /** Target bits-per-weight for sensitivity+knapsack mixed precision. */
   targetBpw?: number;
-  /** Reference dtype for sensitivity scoring (e.g. "bf16"). */
+  /** Reference dtype for sensitivity scoring (e.g. "bf16"). Informational
+   *  only — the native path dequantizes the running model's own weights as
+   *  the self-contained bf16 source. */
   reference?: string;
   /** Candidate bit-widths the knapsack may choose from (e.g. [4, 8]). */
   candidateBits?: number[];
-  /** Calibration data mixture spec for sensitivity scoring. */
-  calibrationMix?: Record<string, number>;
-  /** Number of calibration samples. */
+  /** Calibration data mixture spec ("optiq" or a JSONL path). */
+  calibrationMix?: string;
+  /** Number of calibration samples (forward passes per layer×bit probe). */
   nCalibration?: number;
 }
 
@@ -96,8 +105,11 @@ export function isQuantizable(weightShape: number[], groupSize: number): boolean
 }
 
 /**
- * Quantize a model directory to uniform affine N-bit and write a loadable
- * snapshot to `outDir`.
+ * Quantize a model directory and write a loadable snapshot to `outDir`.
+ *
+ * Uniform affine N-bit by default. When `opts.targetBpw` is set, runs the
+ * OptiQ mixed-precision path (calibration → sensitivity → knapsack) to choose
+ * per-module bit-widths before writing.
  */
 export async function quantizeModelDir(
   srcDir: string,
@@ -105,12 +117,19 @@ export async function quantizeModelDir(
   opts: QuantizeOptions,
   onProgress?: (e: ProgressEvent) => void,
 ): Promise<QuantizeResult> {
-  if (opts.targetBpw !== undefined) {
-    throw new Error("mixed-precision (sensitivity+knapsack) not implemented in v1");
-  }
-  const bits = opts.bits;
   const groupSize = opts.groupSize;
   const mode = opts.mode ?? "affine";
+
+  // Mixed-precision path: derive a per-module bit allocation first, then write.
+  let perLayerBits: Map<string, number> | undefined;
+  let mixedMeta: MixedMeta | undefined;
+  if (opts.targetBpw !== undefined) {
+    const alloc = await computeMixedAllocation(srcDir, opts, onProgress);
+    perLayerBits = alloc.perLayerBits;
+    mixedMeta = alloc.meta;
+  }
+
+  const bits = opts.bits;
 
   mkdirSync(outDir, { recursive: true });
 
@@ -220,24 +239,29 @@ export async function quantizeModelDir(
         continue;
       }
 
+      // Resolve this module's bit-width: the allocator's per-layer choice in
+      // mixed mode, else the uniform `bits`. The allocation map is keyed by
+      // module base path (e.g. "model.layers.0.self_attn.q_proj").
+      const moduleBits = perLayerBits?.get(base) ?? bits;
+
       // Cast to bf16 before quantizing (mx.quantize expects a float weight;
       // bf16 matches the reference dtype and the scales/biases dtype on disk).
       const bf16 = fullWeight.astype(Dtype.bfloat16, cpuStream);
       if (materialized) materialized.dispose();
 
-      const q = quantize(bf16, groupSize, bits, mode, cpuStream);
+      const q = quantize(bf16, groupSize, moduleBits, mode, cpuStream);
       bf16.dispose();
 
       out.push({ name: `${base}.weight`, array: q.packed });
       out.push({ name: `${base}.scales`, array: q.scales });
       out.push({ name: `${base}.biases`, array: q.biases });
 
-      // Account: every element of the original 2D weight is now `bits` bits,
-      // plus 32 bits (bf16 scale + bf16 bias) per group of `groupSize`.
+      // Account: every element of the original 2D weight is now `moduleBits`
+      // bits, plus 32 bits (bf16 scale + bf16 bias) per group of `groupSize`.
       const params = fullShape.reduce((a, b) => a * b, 1);
       quantizedParams += params;
-      quantizedBits += params * bits + (params / groupSize) * AFFINE_GROUP_OVERHEAD_BITS;
-      perLayer.set(base, { bits, groupSize });
+      quantizedBits += params * moduleBits + (params / groupSize) * AFFINE_GROUP_OVERHEAD_BITS;
+      perLayer.set(base, { bits: moduleBits, groupSize });
       nQuantized++;
 
       bumpProgress();
@@ -251,19 +275,59 @@ export async function quantizeModelDir(
 
     const achievedBpw = quantizedParams > 0 ? quantizedBits / quantizedParams : 0;
 
-    // Build + write the config block and sidecar.
-    const block = buildQuantizationBlock({ bits, groupSize, mode }, perLayer);
+    // Default block bits: the uniform `bits` normally; in mixed mode use the
+    // lowest allocated bit-width so the loader's per-module overrides describe
+    // every deviation above the floor.
+    let defaultBits: number = bits;
+    if (perLayerBits && perLayerBits.size > 0) {
+      defaultBits = Math.min(...perLayerBits.values());
+    }
+
+    // Build + write the config block. For uniform mode, let the config writer
+    // emit its standard optiq_metadata.json sidecar. For mixed mode we write a
+    // richer OptiQ-style sidecar ourselves below (method "mixed_precision").
+    const block = buildQuantizationBlock({ bits: defaultBits, groupSize, mode }, perLayer);
     await writeQuantizedConfig(config.raw, outDir, block, {
       srcDir,
-      optiq: {
-        method: "uniform_affine",
-        base_model: srcDir,
-        bits,
-        group_size: groupSize,
-        achieved_bpw: achievedBpw,
-        per_layer_count: nQuantized,
-      },
+      optiq: mixedMeta
+        ? undefined
+        : {
+            method: "uniform_affine",
+            base_model: srcDir,
+            bits,
+            group_size: groupSize,
+            achieved_bpw: achievedBpw,
+            per_layer_count: nQuantized,
+          },
     });
+
+    if (mixedMeta) {
+      await Bun.write(
+        join(outDir, "optiq_metadata.json"),
+        JSON.stringify(
+          {
+            method: "mixed_precision",
+            base_model: srcDir,
+            bits: defaultBits,
+            group_size: groupSize,
+            target_bpw: mixedMeta.targetBpw,
+            achieved_bpw: achievedBpw,
+            candidate_bits: mixedMeta.candidateBits,
+            n_high: mixedMeta.nHigh,
+            n_low: mixedMeta.nLow,
+            per_layer_count: nQuantized,
+            per_layer: Object.fromEntries(
+              [...perLayer].map(([p, e]) => [
+                p,
+                e === false ? false : { bits: e.bits, group_size: e.groupSize },
+              ]),
+            ),
+          },
+          null,
+          2,
+        ),
+      );
+    }
 
     progress("done", `Quantized ${nQuantized} modules → ${outDir}`, 1);
     return { outDir, achievedBpw, nQuantized, write };
@@ -290,4 +354,109 @@ export async function quantizeModelDir(
 /** Pass-through tensor: the lazy mlx array straight from the source weights. */
 function named(weights: Weights, name: string): NamedTensor {
   return { name, array: weights.tensor(name) };
+}
+
+/** Summary of a mixed-precision allocation, for the sidecar + return value. */
+interface MixedMeta {
+  targetBpw: number;
+  candidateBits: number[];
+  nHigh: number;
+  nLow: number;
+  /** Knapsack's own BPW estimate over the analyzed layers (params-weighted,
+   *  no group overhead) — distinct from the writer's achievedBpw. */
+  allocBpw: number;
+}
+
+/**
+ * Run the OptiQ mixed-precision pipeline for `srcDir`:
+ *   load model + tokenizer → calibration → per-layer KL sensitivity →
+ *   greedy knapsack → per-module bit allocation.
+ *
+ * Returns a `Map<modulePath, bits>` keyed by weight-file module base path
+ * (the same key the writer loop uses) plus a metadata summary. Modules not in
+ * the map fall back to the uniform `opts.bits` at write time.
+ */
+async function computeMixedAllocation(
+  srcDir: string,
+  opts: QuantizeOptions,
+  onProgress?: (e: ProgressEvent) => void,
+): Promise<{ perLayerBits: Map<string, number>; meta: MixedMeta }> {
+  const targetBpw = opts.targetBpw!;
+  const groupSize = opts.groupSize;
+  const candidateBits = (opts.candidateBits ?? [4, 8]).slice().sort((a, b) => a - b);
+  const nCalibration = opts.nCalibration ?? 2;
+  const calibrationMix = opts.calibrationMix ?? "optiq";
+
+  const progress = (stage: string, message: string, frac: number) =>
+    onProgress?.({ stage, message, progress: frac });
+
+  progress("sensitivity", "Loading model for sensitivity analysis", 0.0);
+
+  const config = await loadModelConfig(srcDir);
+  const weights = await Weights.open(srcDir);
+  try {
+    const model = createModel(weights, config);
+    const tokenizer = await loadTokenizer(srcDir);
+
+    // Calibration: short sequences keep the per-probe forward memory modest.
+    progress("sensitivity", "Building calibration set", 0.02);
+    const calibrationFn = loadLlmCalibration(tokenizer, {
+      nSamples: nCalibration,
+      seqLen: 128,
+      mix: calibrationMix,
+    });
+    const calIds = calibrationFn();
+
+    // Quantizable linears to probe: the model's LoRA-target linears (attention
+    // + MLP projections), keyed by full module path.
+    const layers = model.loraTargets();
+
+    progress(
+      "sensitivity",
+      `Probing ${layers.size} layers × ${candidateBits.length} bit-widths`,
+      0.05,
+    );
+    const sensitivity: SensitivityResult[] = analyzeSensitivityExact(
+      model,
+      layers,
+      calIds,
+      { candidateBits, groupSize },
+      (done, total, layerName) =>
+        progress(
+          "sensitivity",
+          `Sensitivity ${done}/${total}: ${layerName}`,
+          0.05 + 0.85 * (done / Math.max(total, 1)),
+        ),
+    );
+
+    // Greedy knapsack → per-layer bit allocation.
+    progress("allocating", "Optimizing per-layer bit allocation", 0.92);
+    const opt = optimizeMixedPrecision(sensitivity, {
+      targetBpw,
+      candidateBits,
+      groupSize,
+    });
+
+    const perLayerBits = new Map<string, number>();
+    for (const c of opt.configs) perLayerBits.set(c.layerName, c.bits);
+
+    const meta: MixedMeta = {
+      targetBpw,
+      candidateBits,
+      nHigh: opt.nHighBits,
+      nLow: opt.nLowBits,
+      allocBpw: opt.achievedBpw,
+    };
+
+    progress(
+      "allocating",
+      `Allocated ${opt.nHighBits} high / ${opt.nLowBits} low (alloc bpw ${opt.achievedBpw.toFixed(2)})`,
+      0.95,
+    );
+
+    return { perLayerBits, meta };
+  } finally {
+    weights.dispose();
+    clearCache();
+  }
 }

@@ -19,7 +19,7 @@ import type { ChatTemplate } from "../chat-template";
 import type { Emit } from "../jobs/types";
 import {
   loadSftDataset, iterateSftBatches, loadDpoDataset, iterateDpoBatches,
-  type SftBatch, type DpoBatch,
+  rowLength, type SftBatch, type DpoBatch,
 } from "./dataset";
 import {
   buildTrainableLora, attachForTraining, detachTraining, flatParams,
@@ -183,7 +183,11 @@ async function sftLoop(
     }
   }, params.map((_, i) => i));
 
-  const batches = iterateSftBatches(train, cfg.batchSize, cfg.maxSeqLen, cfg.seed, true);
+  // Pad with the eos id when available (a real sentinel token); padded
+  // positions are excluded from both the loss and attention masks, so the
+  // exact pad value never affects the result — it just must be a valid id.
+  const padId = tok.eosTokenId ?? 0;
+  const batches = iterateSftBatches(train, cfg.batchSize, cfg.maxSeqLen, cfg.seed, true, padId);
   const t0 = Date.now();
 
   try {
@@ -299,7 +303,8 @@ async function dpoLoop(
     }
   }, params.map((_, i) => i));
 
-  const batches = iterateDpoBatches(train, cfg.batchSize, cfg.seed, true);
+  const padId = tok.eosTokenId ?? 0;
+  const batches = iterateDpoBatches(train, cfg.batchSize, cfg.seed, true, padId);
   const t0 = Date.now();
 
   try {

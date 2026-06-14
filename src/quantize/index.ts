@@ -32,4 +32,26 @@ export type {
   OptiqMetadata,
 } from "./config-writer";
 
+// Mixed-precision (OptiQ sensitivity + knapsack) surface.
+export {
+  optimizeMixedPrecision,
+  computeBpw,
+  klReduction,
+  UpgradeHeap,
+} from "./allocator";
+export type {
+  LayerQuantConfig,
+  OptimizationResult,
+  OptimizeMixedPrecisionOptions,
+  UpgradeEntry,
+} from "./allocator";
+
+export { analyzeSensitivityExact, klFromRef } from "./sensitivity";
+export type {
+  SensitivityResult,
+  AnalyzeSensitivityOptions,
+} from "./sensitivity";
+
+export { loadLlmCalibration } from "./calibration";
+
 export { quantizeRunner, inspectModel } from "./job";
