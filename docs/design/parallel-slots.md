@@ -370,6 +370,37 @@ produces B tokens that must route to B independent response streams,
 each with its own `StopSequencer`/tool-call router. Touches
 `server.ts`, `responses.ts`, `anthropic.ts`.
 
+### Concrete plan (the `--batch N` engine, build order — 2026-06-14)
+
+Started: `--batch N` flag landed (renamed from `--slots`; `--decode-concurrency`
+accepted as an mlx_lm.server alias). N=1 → today's serial path; N>1 → the engine
+below. The engine is a **mode** (whole server), not a load-fallback (keeps
+determinism + the drop-in promise).
+
+**Dynamic-B cache ops** (port of mlx-lm's cache methods — the new piece our
+fixed-B verified forward doesn't have):
+- **`merge(perRowCaches)`** — stack N single-row caches into one `[B,H,S,D]`
+  batch, left-pad-aligned (generalizes `realBatchedGreedy`'s assemble).
+- **`filter(keep)`** — slice the B axis to drop finished rows (eviction).
+- **`extend(other)`** — append a freshly-prefilled batch's rows (insertion).
+- mlx-lm's flow: a joining request is **right-padded + prefilled** in a prompt
+  batch, then `finalize()` (dynamic-roll) → left-pad, then `merge`/`extend` into
+  the running generation batch. Our verified attention/mask/RoPE drop straight in.
+
+**Engine loop (Bun-async, NOT Python threads):** an async loop owns the running
+batch. Each iteration: (1) admit waiting+batchable requests up to N (prefill +
+`extend`); (2) one batched decode step (the verified forward); (3) sample
+per-row, push each row's token to its own SSE `ReadableStream` (per-row
+`StopSequencer` + tool parser + sampler); (4) `filter` out rows that hit
+EOS/stop/max-tokens, resolve their streams. HTTP handlers `await` their row's
+stream; no thread, just the event loop + `mx.async_eval` pipelining.
+
+**Build sequence:** (1) dynamic-B cache `merge`/`filter` + a pure unit test, then
+a gated parity test vs an mlx-lm *dynamic* golden (rows join/leave mid-stream);
+(2) the async loop + per-row SSE wired into `createServer` behind `--batch N`;
+(3) `_is_batchable` gate + solo/incompatible → serial fast path + `B×S_max`
+memory admission.
+
 ## Fallbacks (must degrade, never break)
 
 - **Vision** → always solo. Image embeddings + bidirectional mask need
