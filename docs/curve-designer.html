@@ -122,9 +122,14 @@ function evalSpline(sp,u){ const n=sp.X.length;
   let i=sp.segs.length-1; while(i>0&&u<sp.X[i])i--; const s=sp.segs[i]; return s.A+s.B*u+s.C*u*u+s.D*u*u*u; }
 
 // ---- plot mapping ----
-const VBW=460,VBH=360,PL=46,PR=14,PT=14,PB=34,PAD=11; // PAD insets the data so BOTH corner handles sit fully inside the plot (symmetric)
-const px=u=>PL+PAD+(1-u/UMIN)*(VBW-PL-PR-2*PAD), py=u=>PT+PAD+(u/UMIN)*(VBH-PT-PB-2*PAD);
-const uX=mx=>UMIN*(1-(mx-PL-PAD)/(VBW-PL-PR-2*PAD)), uY=my=>UMIN*((my-PT-PAD)/(VBH-PT-PB-2*PAD)), pct=u=>Math.exp(u)*100;
+const VBW=460,VBH=360,PL=46,PR=14,PT=14,PB=34;
+// The AXIS domain extends a margin (AXM nats) BEYOND the control-point domain at
+// BOTH ends, so the two endpoint handles float in clear interior space with
+// symmetric clearance — the bottom one no longer welds to the crowded corner.
+// Points live in [UMIN,0]; the drawn axis spans the wider [AXLO,AXHI].
+const AXM=1.7, AXLO=UMIN-AXM, AXHI=0+AXM, AXSP=AXHI-AXLO;
+const px=u=>PL+(u-AXLO)/AXSP*(VBW-PL-PR), py=u=>PT+(AXHI-u)/AXSP*(VBH-PT-PB);
+const uX=mx=>AXLO+(mx-PL)/(VBW-PL-PR)*AXSP, uY=my=>AXHI-(my-PT)/(VBH-PT-PB)*AXSP, pct=u=>Math.exp(u)*100;
 const TICKS=[100,10,1,0.1,0.01,0.001];
 const PCOL=["#94a3b8","#0891b2","#7c3aed","#2563eb","#94a3b8"]; // endpoint, knee, center, shoulder, endpoint
 
