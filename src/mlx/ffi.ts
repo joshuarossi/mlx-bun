@@ -317,6 +317,13 @@ export function activeMemory(): number {
   return Number(read.u64(p, 0));
 }
 
+export function cacheMemory(): number {
+  const out = new BigUint64Array(1);
+  const p = ptr(out);
+  C.mlx_get_cache_memory(p);
+  return Number(read.u64(p, 0));
+}
+
 export function peakMemory(): number {
   const out = new BigUint64Array(1);
   const p = ptr(out);

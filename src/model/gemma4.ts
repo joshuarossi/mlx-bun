@@ -23,6 +23,7 @@ import type { Weights } from "../weights";
 import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
+import { isExpertTracing, recordRouting } from "../expert-trace";
 
 // The shared, config-independent machinery lives in gemma4-base.ts
 // (Phase B extraction); this file keeps the architecture-specific
@@ -280,9 +281,12 @@ class Router {
   readonly eps: number;
   readonly numExperts: number;
   readonly topK: number;
+  /** Decoder layer index (parsed from the weight prefix) — for E0 tracing. */
+  readonly layerIdx: number;
 
   constructor(weights: Weights, config: ModelConfig, prefix: string) {
     const t = config.text;
+    this.layerIdx = Number(prefix.match(/layers\.(\d+)/)?.[1] ?? -1);
     this.proj = QuantizedLinear.load(weights, `${prefix}.proj`, config);
     // weights.tensor() returns the Weights-owned cached array — do NOT
     // dispose it (a second model over the same Weights would get a dead
@@ -319,6 +323,7 @@ class Router {
     const gathered = ops.takeAxis(this.perExpertScale, indices, 0);
     w = disposing(w, ops.mul(w, gathered));
     gathered.dispose();
+    if (isExpertTracing()) recordRouting(this.layerIdx, indices);
     return { indices, weights: w };
   }
 }
