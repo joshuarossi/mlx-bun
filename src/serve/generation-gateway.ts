@@ -15,16 +15,17 @@
 // the batch (waits for it to empty), then runs solo; queued batchable requests
 // wait for that solo run to finish. (mlx-lm's drain behavior.)
 //
-// v1 batchable gate (the rest → serial): batch>1 AND a full-attention model
-// (no RotatingKVCache — sliding-window dynamic-B is a follow-up) AND no vision
-// AND no LoRA adapters AND no repetition penalty (per-row logits processors are
-// a later refinement) AND no user-fixed seed (reproducibility ⇒ solo, matching
-// mlx-lm's _is_batchable). Temperature / top-p / top-k DO batch (each row samples
-// with its own seed). Prompt-cache prefix reuse is bypassed under batching in v1
-// (cachedTokens = 0).
+// v1 batchable gate (the rest → serial): batch>1 AND bf16 KV (no kv-quant — the
+// batched scheduler runs bf16; mixed-precision-KV batching is the novel-combo
+// L2 follow-up) AND no vision AND no LoRA adapters AND no repetition penalty
+// (per-row logits processors are a later refinement) AND no user-fixed seed
+// (reproducibility ⇒ solo, matching mlx-lm's _is_batchable). Temperature /
+// top-p / top-k DO batch (each row samples with its own seed). Full-attention
+// AND sliding-window (Gemma) models both batch — the scheduler assembles each
+// layer's cache by type. Prompt-cache prefix reuse is bypassed under batching
+// in v1 (cachedTokens = 0).
 
 import { MlxArray } from "../mlx/array";
-import { KVCache } from "../model/gemma4-base";
 import type { RuntimeModel } from "../model/factory";
 import type { GenerateOptions, GenerateStats } from "../generate";
 import { makeSampler, toLogprobs } from "../sampler";
@@ -63,11 +64,12 @@ export interface RequestShape {
   hasRepetitionPenalty: boolean;
   /** The user explicitly set `seed` (reproducibility) — not the random default. */
   userSeed: boolean;
+  /** KV quantization is active (kvConfig/kvBits) — batched is bf16-only in v1. */
+  kvQuant: boolean;
 }
 
 export class GenerationGateway {
   readonly #mutex = new AsyncMutex();
-  readonly #fullAttention: boolean;
   readonly #batch: number;
   #scheduler: BatchScheduler | null = null;
 
@@ -77,14 +79,11 @@ export class GenerationGateway {
     private readonly serialRun: SerialRun,
   ) {
     this.#batch = Math.max(1, Math.floor(batch));
-    // A model is full-attention iff every cache entry is a plain KVCache (no
-    // sliding-window RotatingKVCache). Fresh caches hold no buffers.
-    this.#fullAttention = this.model.makeCache().every((c) => c instanceof KVCache);
   }
 
-  /** True if `--batch N` (N>1) can ever batch on this model. */
+  /** True if `--batch N` (N>1) is on (batchability is then per-request). */
   get batchingEnabled(): boolean {
-    return this.#batch > 1 && this.#fullAttention;
+    return this.#batch > 1;
   }
 
   /** Rows currently decoding in the batch (0 if no scheduler / idle). */
@@ -99,7 +98,8 @@ export class GenerationGateway {
       !shape.hasVision &&
       !shape.hasAdapters &&
       !shape.hasRepetitionPenalty &&
-      !shape.userSeed
+      !shape.userSeed &&
+      !shape.kvQuant
     );
   }
 

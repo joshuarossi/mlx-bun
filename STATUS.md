@@ -5,12 +5,15 @@ exit criteria, and findings live in [PLAN.md](PLAN.md); this file is the
 transient front door that stays current. Product/UX north star:
 [docs/planning/PRODUCT_ROADMAP.md](docs/planning/PRODUCT_ROADMAP.md).
 
-## Current state (2026-06-14) — Phase 18 batched serving LIVE (full-attention), on branch `batch-serving`
+## Current state (2026-06-14) — Phase 18 batched serving LIVE (full + sliding), on branch `batch-serving`
 
-> **`--batch N` now actually serves B>1** for full-attention models (CPM):
-> scheduler + gateway wired into the live server, end-to-end tested. Remaining:
-> Gemma/sliding-window dynamic-B, the `extend` join optimization, prompt-cache
-> reuse under batching, and clean-machine throughput numbers.
+> **`--batch N` now actually serves B>1** for BOTH full-attention (CPM) and
+> sliding-window (Gemma) models: scheduler + gateway wired into the live server,
+> end-to-end tested, sliding-window ring-wrap bit-exact vs mlx-lm. Caveat: these
+> OptiQ models default to **mixed-precision KV quant**, and batched is **bf16-only**
+> (v1) — so run `--kv-quant off` to batch them (kv-quant requests route to serial).
+> Remaining: **batched + kv-quant (L2)** is the headline gap; then the `extend`
+> join optimization, prompt-cache reuse, KV-budget admission, throughput numbers.
 
 > **Resume here:** `git checkout batch-serving` (off `main`; not yet merged).
 > Full design + rationale: `docs/design/parallel-slots.md`. Principles are in
@@ -72,6 +75,18 @@ mlx-lm with zero optimizations — see `benchmarks/RESULTS.md`.
   `tests/batch-serving.test.ts` (ephemeral CPM server, `--batch 2`: /stats
   batched, 3 concurrent completions, streaming fan-out, batched+serial coexist).
   No serial regression: `tests/server.test.ts` 17/17, `server-tools.test.ts` 13/13.
+- **Sliding-window (Gemma) dynamic-B** — `BatchedRotatingCache`
+  (`src/model/batched-rotating.ts`): port of mlx-lm `BatchRotatingKVCache` (shared
+  scalar ring state, per-row offset/leftPad, the ring-wrap rolled `make_mask`),
+  scope-limited to what the scheduler needs (merge / N=1 decode / make_mask /
+  filter / temporalView). Gate: `tests/batched-rotating.test.ts` model-FREE,
+  bit-exact vs mlx-lm across the wrap (`scripts/gen-rotating-golden.py`). Scheduler
+  generalized to per-layer cache types (full→KVCache+wrapper, sliding→rotating
+  cache); fixed a stale-batch-size bug (`#B` must track `filter`). Gemma 12B
+  scheduled greedy == mlx-lm B=2 golden with staggered eviction
+  (`tests/batch-scheduler.test.ts`). Gateway enables sliding-window models;
+  kv-quant requests route to serial (batched is bf16-only — L2 follow-up).
+  `tests/batch-serving.test.ts` adds a Gemma `--batch 2` HTTP case.
 - Oracle tooling: `scripts/gen-batched-golden.py` (needs optiq `register()` to
   load gemma4_unified in mlx-lm; uses mlx-lm `_make_cache`) → fixtures
   `tests/fixtures/batched-golden-*.json`. Real-path validator: `realBatchedGreedy`
@@ -79,17 +94,26 @@ mlx-lm with zero optimizations — see `benchmarks/RESULTS.md`.
   (run: `MLX_BUN_TEST_BATCH_DECODE=1 bun test tests/batched-decode-parity.test.ts`).
 - Earlier (on `main`): P1 parallel-load harness (`scripts/bench-serving-load.ts`).
 
-## Next action — extend the live `--batch N` engine (it serves full-attention B>1)
+## Next action — extend the live `--batch N` engine (serves full-attention AND sliding-window B>1)
 
-The engine is BUILT and LIVE (steps 1, 2a, 2b done — below). Remaining work, in
-rough priority. Gate each with the teacher-forced parity tests; keep `--batch 1`
-(and serial fallback) untouched.
+The engine is BUILT and LIVE for BOTH full-attention (CPM) and sliding-window
+(Gemma) models (steps 1, 2a, 2b, AND sliding-window dynamic-B done — below).
+Remaining work, in rough priority. Gate each with the parity tests; keep
+`--batch 1` (and serial fallback) untouched.
 
-- **Gemma / sliding-window dynamic-B** — the big one. The scheduler is
-  full-attention only (`BatchScheduler.#admit` throws on `RotatingKVCache`;
-  gateway routes sliding-window models to serial). Needs per-row ring-wrap mask
-  + `mergeKVRows`/`filterKVRows` for `RotatingKVCache`, gated against a sliding
-  mlx-lm dynamic golden. Until then `--batch N` only batches CPM-like models.
+- ~~**Gemma / sliding-window dynamic-B**~~ **DONE 2026-06-14** — `BatchedRotatingCache`
+  (`src/model/batched-rotating.ts`, port of mlx-lm `BatchRotatingKVCache`, incl.
+  the ring-wrap rolled mask) gated bit-exact vs mlx-lm model-free
+  (`tests/batched-rotating.test.ts`); scheduler assembles each layer's cache by
+  type (full → KVCache+BatchedDecodeMaskCache, sliding → BatchedRotatingCache);
+  Gemma 12B scheduled greedy trajectories bit-exact vs the mlx-lm B=2 golden with
+  staggered eviction (`tests/batch-scheduler.test.ts`). Gateway enables Gemma.
+- **L2 — batched + kv-quant** — these OptiQ models default to mixed-precision KV
+  quant; batched serving (v1) is **bf16 KV**, so kv-quant requests route to
+  serial (gateway gate; run `--kv-quant off` to batch). Batched quantized KV
+  (`QuantizedKVCache` merge/filter + `quantizedSdpaUnfused` 4-D mask) is the
+  novel-combo follow-up (KL+quality gated — no oracle). This is now the headline
+  gap (without it, batching needs `--kv-quant off` on the default models).
 - **`extend` join op** — today a join RE-MERGES the whole batch (extract all +
   prefill + `mergeKVRows`), O(B·S) per join. mlx-lm keeps the running batch and
   `extend`s the new rows in. Add `extendKVRows` + gate, swap into `#admit`.

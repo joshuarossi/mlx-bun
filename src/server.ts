@@ -559,11 +559,6 @@ export function createServer(
   // above) or the continuous-batching scheduler, keeping the two off the GPU
   // (and shared loraState) at the same time. See src/serve/generation-gateway.ts.
   const gateway = new GenerationGateway(ctx.model, batch, runGeneration);
-  if (batch > 1 && !gateway.batchingEnabled)
-    console.warn(
-      `[batch] --batch ${batch}: this model uses a sliding-window KV cache; batched ` +
-        `serving (v1) is full-attention only — running serially. (docs/design/parallel-slots.md)`,
-    );
 
   // Admission ceiling, resolved once (Phase 5 memoryBudget enforcement).
   // fit() solves max safe context from weights + KV growth + prefill
@@ -613,6 +608,13 @@ export function createServer(
     : typeof serverOptions.kvQuant === "number"
       ? { kvBits: serverOptions.kvQuant, quantizedKvStart: 0 }
     : ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};
+  // Batched serving (v1) runs bf16 KV; kv-quant requests route to serial.
+  if (batch > 1 && (kvScheme.kvConfig?.length || kvScheme.kvBits))
+    console.warn(
+      `[batch] --batch ${batch}: this model uses mixed-precision KV quant by default; ` +
+        `batched serving (v1) runs bf16 KV, so kv-quant requests route to the serial ` +
+        `path. Run with --kv-quant off to batch. (docs/design/parallel-slots.md)`,
+    );
 
   const toOptions = (req: ChatRequest): GenerateOptions & { stopSequences: string[] } => ({
     maxTokens: req.max_completion_tokens ?? req.max_tokens ?? 1024,
@@ -990,6 +992,7 @@ export function createServer(
           hasAdapters: !!options.adapters?.length,
           hasRepetitionPenalty: !!options.repetitionPenalty,
           userSeed: body.seed !== undefined,
+          kvQuant: !!(options.kvConfig?.length || options.kvBits),
         };
         const batched = gateway.willBatch(shape);
 
