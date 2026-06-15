@@ -24,6 +24,13 @@ const MAP_SHARED = 0x1;
 const MAP_PRIVATE = 0x2;
 const MAP_FAILED = 0xffffffffffffffffn;
 
+// madvise advice (macOS <sys/mman.h>). DONTNEED drops clean file-backed
+// pages (they re-fault from the file); FREE_REUSABLE is the Apple-specific
+// lazy-reclaim variant.
+export const MADV_DONTNEED = 4;
+export const MADV_FREE = 5;
+export const MADV_FREE_REUSABLE = 7;
+
 export class MmapFile {
   readonly path: string;
   readonly base: bigint;
@@ -66,6 +73,13 @@ export class MmapFile {
     if (offset + length > this.size) throw new RangeError("view out of range");
     if (length >= 2 ** 32) throw new RangeError("JS views cap at 4 GB");
     return new Uint8Array(toArrayBuffer(this.pointer(offset) as never, 0, length));
+  }
+
+  /** madvise a page-aligned sub-range (offset + length should be page
+   *  multiples). e.g. advise(off, len, MADV_DONTNEED) to release clean
+   *  expert pages back to the OS; they re-fault from the file on next read. */
+  advise(offset: number, length: number, advice: number): number {
+    return Number(libc.madvise(this.base + BigInt(offset), BigInt(length), advice));
   }
 
   unmap(): void {
