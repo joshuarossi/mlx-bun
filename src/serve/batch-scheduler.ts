@@ -72,9 +72,19 @@ interface Row {
   promptTokens: number;
 }
 
+/** Mutual-exclusion lock the scheduler holds for its whole ACTIVE period (first
+ *  admit → batch empties), so a serial-path generation never touches the GPU
+ *  (or shared model state like loraState) while a batch is in flight. acquire()
+ *  resolves to a release fn. Omit for standalone use (e.g. the unit test). */
+export interface ExclusiveLock {
+  acquire(): Promise<() => void>;
+}
+
 export interface BatchSchedulerOptions {
   /** Max rows in the running batch (mlx-lm `--decode-concurrency`). */
   maxBatch: number;
+  /** Held while the batch is active; the serial fallback acquires the same lock. */
+  lock?: ExclusiveLock;
 }
 
 export class BatchScheduler {
@@ -86,9 +96,11 @@ export class BatchScheduler {
   #wake: (() => void) | null = null;
   readonly #maxBatch: number;
   readonly #layerCount: number;
+  readonly #lock: ExclusiveLock | undefined;
 
   constructor(private readonly model: RuntimeModel, opts: BatchSchedulerOptions) {
     this.#maxBatch = Math.max(1, Math.floor(opts.maxBatch));
+    this.#lock = opts.lock;
     this.#layerCount = model.makeCache().length; // fresh caches hold no buffers
   }
 
@@ -116,8 +128,14 @@ export class BatchScheduler {
   }
 
   async #drive(): Promise<void> {
+    // Held for the whole active period (acquired when work appears, released
+    // when the batch empties), so the serial fallback can't run concurrently.
+    let release: (() => void) | null = null;
     try {
       while (true) {
+        if (!release && this.#lock && (this.#pending.length > 0 || this.#running.length > 0))
+          release = await this.#lock.acquire();
+
         // Admit waiting requests into free slots (solo prefill + merge).
         while (this.#pending.length > 0 && this.#running.length < this.#maxBatch) {
           const row = this.#pending.shift()!;
@@ -129,17 +147,26 @@ export class BatchScheduler {
         }
         if (this.#running.length === 0) {
           if (this.#pending.length > 0) continue; // a row finished on admit; loop
-          // Idle: suspend until the next submit wakes us.
+          // Idle: release the lock and suspend until the next submit wakes us.
+          if (release) { release(); release = null; }
           await new Promise<void>((r) => { this.#wake = r; });
           this.#wake = null;
           continue;
         }
-        await this.#step();
+        try {
+          await this.#step();
+        } catch (e) {
+          // A batched forward error is batch-wide and unrecoverable for these
+          // rows — fail them all and clear the batch so the loop goes idle.
+          for (const row of this.#running) row.reject(e);
+          this.#applyFilter([]);
+        }
         // Yield to the event loop so each row's SSE socket flushes between
         // steps (the batched analogue of generate()'s per-token macrotask hop).
         await new Promise<void>((r) => setImmediate(r));
       }
     } finally {
+      if (release) release();
       this.#looping = false;
     }
   }

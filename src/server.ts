@@ -24,6 +24,7 @@ import { Gemma4Model } from "./model/gemma4";
 import { createModel, type RuntimeModel } from "./model/factory";
 import { isMiniCPM5Config, isSupportedModelRecord } from "./model/support";
 import { generate, type GenerateOptions } from "./generate";
+import { GenerationGateway } from "./serve/generation-gateway";
 import {
   ChatTemplate, type ChatMessage, type ToolDefinition,
 } from "./chat-template";
@@ -492,15 +493,11 @@ export function createServer(
   ctx: ServerContext, port = 0, serverOptions: ServerOptions = {},
 ): Server<unknown> {
   // --batch N (mode switch): N===1 is the serialized path below; N>1 routes
-  // the whole server through the mlx-lm-parity batched engine. That engine is
-  // mid-build (the batched forward is oracle-verified; the scheduler isn't
-  // wired yet), so for now N>1 warns and runs serially.
+  // batchable requests through the continuous-batching scheduler (the
+  // GenerationGateway picks the lane). v1 batches full-attention models only;
+  // a sliding-window model falls back to serial (warned once below, after the
+  // gateway resolves full-attention).
   const batch = Math.max(1, Math.floor(serverOptions.batch ?? 1));
-  if (batch > 1)
-    console.warn(
-      `[batch] --batch ${batch} requested, but the batched scheduler isn't wired yet ` +
-        `(docs/design/parallel-slots.md) — running serially (1 in-flight generation).`,
-    );
 
   let queue: Promise<unknown> = Promise.resolve();
   const enqueue = <T>(fn: () => Promise<T>): Promise<T> => {
@@ -557,6 +554,16 @@ export function createServer(
       vision?.imageMask.dispose();
     }
   };
+
+  // The lane picker: routes each request to the serial path (runGeneration,
+  // above) or the continuous-batching scheduler, keeping the two off the GPU
+  // (and shared loraState) at the same time. See src/serve/generation-gateway.ts.
+  const gateway = new GenerationGateway(ctx.model, batch, runGeneration);
+  if (batch > 1 && !gateway.batchingEnabled)
+    console.warn(
+      `[batch] --batch ${batch}: this model uses a sliding-window KV cache; batched ` +
+        `serving (v1) is full-attention only — running serially. (docs/design/parallel-slots.md)`,
+    );
 
   // Admission ceiling, resolved once (Phase 5 memoryBudget enforcement).
   // fit() solves max safe context from weights + KV growth + prefill
@@ -845,9 +852,13 @@ export function createServer(
             usable_bytes: admission.usableBytes,
             weights_bytes: ctx.model.weightsBytes,
           },
-          // --batch: configured cap vs. what's actually active (the batched
-          // scheduler is mid-build — docs/design/parallel-slots.md).
-          batch: { configured: batch, active: 1, batched: false },
+          // --batch: configured cap, whether batching is live for this model,
+          // and rows currently decoding in the batch.
+          batch: {
+            configured: batch,
+            batched: gateway.batchingEnabled,
+            active_rows: gateway.activeRows,
+          },
         });
       }
 
@@ -972,6 +983,16 @@ export function createServer(
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
         }
 
+        // What lane this request takes (vision / adapters / repetition penalty /
+        // a user-fixed seed → serial; everything else batches when --batch N).
+        const shape = {
+          hasVision: !!vision,
+          hasAdapters: !!options.adapters?.length,
+          hasRepetitionPenalty: !!options.repetitionPenalty,
+          userSeed: body.seed !== undefined,
+        };
+        const batched = gateway.willBatch(shape);
+
         if (body.stream) {
           const stream = new ReadableStream<Uint8Array>({
             async start(controller) {
@@ -983,62 +1004,62 @@ export function createServer(
                 choices: [{ index: 0, delta, finish_reason: finish }],
               });
               try {
-                await enqueue(async () => {
-                  send(chunk({ role: "assistant", content: "" }, null));
-                  const router = toolRouter(tools);
-                  const stopper = new StopMatcher(options.stopSequences);
-                  // The decode loop is an unbroken microtask chain (FFI +
-                  // generator resumes) — without a macrotask hop, Bun never
-                  // services the socket and the whole SSE response flushes
-                  // in one burst at the end (found by the Phase 15 harness:
-                  // "687k tok/s decode"). Hopping EVERY token cost ~23%
-                  // decode; rate-limited to ≥25 ms intervals the flush stays
-                  // smooth for any client and the hop hides behind the
-                  // already-dispatched next GPU step.
-                  let lastFlush = performance.now();
-                  const s = await runGeneration(promptIds, options, (token) => {
-                    const text = stopper.push(router.push(token));
-                    if (text) send(chunk({ content: text }, null));
-                    if (stopper.stopped) return false; // halt generation
-                    if (text) {
-                      const now = performance.now();
-                      if (now - lastFlush >= 25) {
-                        lastFlush = now;
-                        return new Promise<void>((r) => setImmediate(r));
-                      }
+                // The gateway owns lane selection + GPU exclusivity; this body
+                // runs per-request (concurrently in batched mode, each writing
+                // its own SSE stream — the per-row fan-out).
+                send(chunk({ role: "assistant", content: "" }, null));
+                const router = toolRouter(tools);
+                const stopper = new StopMatcher(options.stopSequences);
+                // Serial decode is an unbroken microtask chain (FFI + generator
+                // resumes) — without a macrotask hop, Bun never services the
+                // socket and the whole SSE response flushes in one burst at the
+                // end (Phase 15: "687k tok/s decode"). Hopping EVERY token cost
+                // ~23% decode; rate-limited to ≥25 ms keeps the flush smooth and
+                // hides behind the next GPU step. Batched mode doesn't need it —
+                // the scheduler yields to the event loop between steps.
+                let lastFlush = performance.now();
+                const s = await gateway.run(promptIds, options, (token) => {
+                  const text = stopper.push(router.push(token));
+                  if (text) send(chunk({ content: text }, null));
+                  if (stopper.stopped) return false; // halt generation
+                  if (!batched && text) {
+                    const now = performance.now();
+                    if (now - lastFlush >= 25) {
+                      lastFlush = now;
+                      return new Promise<void>((r) => setImmediate(r));
                     }
-                  }, vision);
-                  // a stop match discards everything from the match on,
-                  // including text still held by the decoders
-                  let tail = "";
-                  if (!stopper.stopped) {
-                    tail = stopper.push(router.flush());
-                    if (!stopper.stopped) tail += stopper.flush();
                   }
-                  if (tail) send(chunk({ content: tail }, null));
-                  const toolCalls = router.toolCalls();
-                  if (toolCalls.length) {
-                    send(chunk({
-                      tool_calls: toolCalls.map((tc, i) => ({ index: i, ...tc })),
-                    }, null));
-                  }
-                  const finish = toolCalls.length
-                    ? "tool_calls"
-                    : stopper.stopped ? "stop"
-                    : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
-                  send({
-                    ...chunk({}, finish),
-                    usage: {
-                      prompt_tokens: s.promptTokens,
-                      completion_tokens: s.generatedTokens,
-                      total_tokens: s.promptTokens + s.generatedTokens,
-                      prompt_tokens_details: { cached_tokens: s.cachedTokens },
-                    },
-                  });
-                  // bare sentinel per the OpenAI spec — JSON.stringify would
-                  // quote it and strict SDK clients never see the terminator
-                  controller.enqueue(enc.encode("data: [DONE]\n\n"));
+                }, vision, shape);
+                // a stop match discards everything from the match on,
+                // including text still held by the decoders
+                let tail = "";
+                if (!stopper.stopped) {
+                  tail = stopper.push(router.flush());
+                  if (!stopper.stopped) tail += stopper.flush();
+                }
+                if (tail) send(chunk({ content: tail }, null));
+                const toolCalls = router.toolCalls();
+                if (toolCalls.length) {
+                  send(chunk({
+                    tool_calls: toolCalls.map((tc, i) => ({ index: i, ...tc })),
+                  }, null));
+                }
+                const finish = toolCalls.length
+                  ? "tool_calls"
+                  : stopper.stopped ? "stop"
+                  : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
+                send({
+                  ...chunk({}, finish),
+                  usage: {
+                    prompt_tokens: s.promptTokens,
+                    completion_tokens: s.generatedTokens,
+                    total_tokens: s.promptTokens + s.generatedTokens,
+                    prompt_tokens_details: { cached_tokens: s.cachedTokens },
+                  },
                 });
+                // bare sentinel per the OpenAI spec — JSON.stringify would
+                // quote it and strict SDK clients never see the terminator
+                controller.enqueue(enc.encode("data: [DONE]\n\n"));
               } catch (e) {
                 send({ error: { message: (e as Error).message } });
               } finally {
@@ -1056,14 +1077,14 @@ export function createServer(
         }
 
         try {
-          return await enqueue(async () => {
+          {
             const router = toolRouter(tools);
             const stopper = new StopMatcher(options.stopSequences);
             let content = "";
-            const s = await runGeneration(promptIds, options, (token) => {
+            const s = await gateway.run(promptIds, options, (token) => {
               content += stopper.push(router.push(token));
               if (stopper.stopped) return false; // halt generation
-            }, vision);
+            }, vision, shape);
             if (!stopper.stopped) {
               content += stopper.push(router.flush());
               if (!stopper.stopped) content += stopper.flush();
@@ -1091,7 +1112,7 @@ export function createServer(
                 prompt_tokens_details: { cached_tokens: s.cachedTokens },
               },
             });
-          });
+          }
         } catch (e) {
           return Response.json({ error: { message: (e as Error).message } }, { status: 500 });
         }
