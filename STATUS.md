@@ -66,14 +66,29 @@ goldens; keep `--batch 1` the untouched serial path throughout.
    (`gen-batched-dynamic-golden.py`, rows join/leave) + `realDynamicBatchedGreedy`
    prove `mergeKVRows`/`filterKVRows` drive a real CPM batched decode bit-parity
    with mlx-lm's `BatchKVCache`. See the DONE list above. **NEXT starts at 2.**
-2. **The async scheduler loop** — new module (e.g. `src/serve/batch-scheduler.ts`)
-   wired into `createServer` to replace the serial `enqueue` when
-   `serverOptions.batch > 1`. Bun-async (NO threads): own a running batch; per
-   step → admit waiting+batchable requests (prefill + merge/`extend`) → one
-   batched decode step (verified forward) → sample per-row → push each row's
-   token to its own SSE `ReadableStream` (per-row `StopSequencer` + tool parser +
-   sampler) → `filter` out finished rows. Per-row streaming fan-out touches
-   `server.ts`/`responses.ts`/`anthropic.ts`.
+2. **The async scheduler loop** — split into **2a (core, DONE)** + **2b (wiring,
+   NEXT)**.
+   - **2a — scheduler CORE: DONE 2026-06-14.** `src/serve/batch-scheduler.ts`
+     (`BatchScheduler`): Bun-async detached driver owning one running batch;
+     `submit(req)→Promise<stats>`; per loop iter → admit waiting reqs (solo
+     prefill + emit first token + `mergeKVRows` into the running batch) → one
+     batched decode step (verified forward via `BatchedDecodeMaskCache`) →
+     per-row `sample` + token accounting (EOS terminates w/o emit, onToken=false
+     halts, maxTokens→length) → `filterKVRows` evict finished rows. Gated:
+     `tests/batch-scheduler.test.ts` (`MLX_BUN_TEST_BATCH_DECODE=1`),
+     **teacher-forced** (force each row's solo-greedy trajectory, compare per-row
+     logits to solo via KL — NOT free-running greedy, which measures chaos);
+     covers staggered eviction (3→2→1→0) AND mid-stream join (CPM L1, KL ≤2e-3 ≪
+     1e-2). v1: full-attention only (rotating-cache model throws → serial);
+     greedy/any per-row sampler; join = re-merge (no `extend` yet);
+     `cachedTokens`=0 (no prompt-cache reuse under batching yet).
+   - **2b — WIRE into `createServer`** (NEXT): route `runGeneration` through the
+     scheduler when `serverOptions.batch > 1` for batchable text requests; each
+     request keeps its own onToken closure (per-row `StopMatcher` + tool router +
+     SSE `ReadableStream`), so per-row streaming fan-out falls out for free.
+     Serial fallback for vision / non-full-attention model / (initially) adapters
+     + non-greedy. Must keep batched and serial-fallback off the GPU
+     simultaneously (drain). Touches `server.ts` (mainly); `/stats` active count.
 3. **`_is_batchable` gate** (same model / compatible sampler / no fixed-seed /
    vision / adapter-mismatch → drain to serial) + `B×S_max` memory admission.
 
