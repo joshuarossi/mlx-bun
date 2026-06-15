@@ -2367,6 +2367,145 @@ Two gates before publishing:
       page hero. E2E-verified against a live server (streamed reply,
       live tok/s).
 
+## Phase 19 — Expert offload: single-user MoE residency `[ ]` (2026-06-14)
+
+Stop the inactive experts squatting in RAM. A trained MoE activates ~0.9
+GB/token but we hold the whole 14.09 GB expert pool resident (Phase 6
+measured, gemma-4-26B-A4B → 16.4 GB resident, max ctx ~17.6k, ~0 GB left
+for apps). Single-user task locality (one human, one job for minutes–hours)
+makes per-task residency viable where a multi-tenant server can't. Full
+design + reasoning: `docs/investigations/expert-offload-single-user-moe.md`.
+
+**Mechanism de-risked 2026-06-14** (`scripts/probe-expert-residency.ts`,
+`scripts/probe-mmap-gather.ts`, on the M4 Pro):
+- Disposing MLX *device* buffers does NOT reliably return RAM to the OS (rss
+  flat through dispose+clearCache; `cache_memory` reads 0) ⇒ a fixed device-
+  buffer slot pool is the wrong mechanism (holds less, can't give back).
+- `munmap` of an mmap'd region returns RAM to the OS deterministically (rss
+  −1 GB exact, −2 GB at scale) ⇒ the elastic clean-page substrate.
+- GPU `gather_qmm` reads a quantized expert DIRECTLY from a page-aligned
+  (16 KB) mmap, BIT-EXACT vs resident (max|diff|=0, no NaN, non-zero offset)
+  ⇒ gather straight from the mapping, no device-buffer copy.
+- ⇒ Design: bit-exact transparent offload via page-aligned, mmap-backed
+  expert weights; load = fault-in on demand, evict = `munmap`/`madvise`.
+
+**Mechanism further de-risked 2026-06-14** (`scripts/probe-madvise-eviction.ts`,
+`scripts/probe-footprint.ts`):
+- `gather_qmm` is ROW-LOCAL: madvise(DONTNEED) the whole stacked [E,…] expert
+  tensor, fault back in ONLY the selected experts, GPU gather is BIT-EXACT
+  (max|diff|=0, no NaN, no crash) ⇒ cold experts evictable within one mapping;
+  no subset-tensor / index-remap needed — map the stacked tensor once.
+- CLEAN read-only file-mmap pages cost ~0 `phys_footprint` (the macOS pressure
+  metric = Activity Monitor "Memory"): faulting 1 GB added 0.001 GB. Today's
+  experts are anonymous mlx_load_safetensors COPIES (count in phys_footprint →
+  pressure); loading them as file mmap instead drops the whole ~14 GB pool OUT
+  of pressure → reclaimable buffer cache (warm when RAM free, reclaimed
+  instantly under pressure, re-faulted ~1 ms/expert). Win reframed: not "free
+  ~7 GB" but "phys_footprint → ~core (2–3 GB); the pool becomes reclaimable
+  cache." Apple's result without retraining, just by changing the load path.
+- madvise does NOT move `rss` and barely moves `phys_footprint` here (clean
+  file pages already don't count) — so explicit eviction is a perf hint, not a
+  footprint necessity. munmap definitively drops rss if ever needed.
+- **RESOLVED 2026-06-14** (`scripts/probe-metal-wire.ts`): GPU gather over a
+  128 MB mmap'd quantized expert added **0.0 MB** to phys_footprint across 3×
+  gathers — Metal reads mmap'd file pages as RECLAIMABLE CACHE, does NOT wire
+  them. ⇒ mechanism fully de-risked end to end; the footprint win is
+  confirmed. Remaining is a perf knob, NOT correctness: pin/wire hot experts
+  (faster decode, counts as pressure) vs leave cold reclaimable (low pressure,
+  re-fault stalls) — cf. generate.ts wired-limit. E1 is now pure engineering:
+  offload-ready page-aligned file + switch expert load path to mmap+fromView
+  + measure on real 26B + bit-exact parity gate.
+
+- [ ] **E0 — per-task expert-skew measurement** (make-or-break, pure
+      observation, no offload code): instrument the MoE forward to log
+      per-(layer,expert) routing over real coding / writing / chat sessions
+      → coverage curve (% experts covering 90/95/99% of activations),
+      within-task stability, cross-task set shift. **Josh runs the 26B
+      sessions on a cleared machine.** Gate: hot set small + stable enough
+      to pay. **Tooling built+verified 2026-06-14**: `src/expert-trace.ts`
+      (env `MLX_BUN_EXPERT_TRACE=<path>`, inert by default; one hook in
+      `Router.forward` covers both the hand-written and generated handlers)
+      + `scripts/analyze-expert-trace.ts` (coverage / working-set / cold-
+      load / stability / cross-task / E0 gate). Build green; analyzer smoke-
+      tested on synthetic traces. Awaiting Josh's cleared-machine runs.
+      Per-expert geometry measured: 128 experts × 30 layers, top-8, ~3.94
+      MB/expert, 15.13 GB pool, ~0.92 GB active/token; on-disk reads at
+      4.2–6.6 GB/s warm. **E0 RESULT (scripted, 2026-06-14 —
+      scripts/run-expert-trace.ts over 8 prompts × 3 domains, 26B): gate
+      PASSES all 3.** Experts to cover 90% of activations: coding 51/128
+      (40%), writing 53 (41%), chat 60 (47%) — concentrated but moderate
+      (uniform ≈ 90%). Unique experts touched over ~1.2k tokens: 81–85% of
+      3840 instances (working set ~12–12.6 GB). Within-task stability
+      (hot-set Jaccard, 4 windows) 0.63–0.70 (moderate drift). Cross-task:
+      coding vs writing/chat 0.42/0.44 (specialised), writing vs chat 0.68
+      (similar). READ: bit-exact offload frees ~6–7 GB (resident ~9–10 vs
+      16.4) keeping the 90% hot set + occasional SSD misses for the rare
+      tail; smaller budget = more savings + more misses → that curve is E1's
+      job. Domain prefetch pays for distinct domains (code vs prose).
+      Caveat: scripted ~1.2k-token sessions — a real long focused session
+      may tighten/broaden; re-trace before locking a budget. Traces:
+      /tmp/expert-trace-{coding,writing,chat}.jsonl. **→ greenlight E1.**
+- [~] **E1 — offload-ready file + mmap expert loading** behind
+      `--expert-offload` (default off / inert). **Parity gate: bit-exact vs
+      all-resident** (same gather_qmm, same tokens — overlaps the existing
+      correctness test, not a new oracle).
+   - [x] **E1a — converter DONE 2026-06-14**: `scripts/convert-offload-experts.ts`
+         re-packs expert tensors into a page-aligned `experts.bin` + `manifest.json`
+         (each tensor 16 KB-aligned so the GPU gathers from a clean file mmap).
+         Verified byte-identical + aligned on the real 26B (3 layers → 2.43 GB at
+         `/tmp/expert-offload`; full run = drop `--layers`).
+   - [x] **E1b — load path switched DONE 2026-06-14**: `src/expert-offload.ts`
+         (env `MLX_BUN_EXPERT_OFFLOAD=<dir>`, inert when unset) + a one-line hook
+         in `QuantizedSwitchLinear.load` (gemma4-base.ts) — the expert WEIGHT
+         comes from `MmapFile`+`fromView` at the manifest offset when active,
+         else resident; scales/biases stay resident. Covers monolith + generated
+         paths (shared construction). Build green.
+   - [x] **E1c — measured on the real 26B DONE 2026-06-14** (`scripts/measure-
+         offload.ts`; full 30-layer convert = 15.13 GB, 270/270 tensors
+         aligned + byte-identical): **phys_footprint 17.1 GB (resident) → 4.2 GB
+         (full offload), −12.9 GB**; decode 38.9 → 41.5 tok/s (NOT regressed,
+         ~noise); **BIT-EXACT** (80 tokens identical resident vs offload). A
+         26B-total MoE runs with the memory pressure of a ~4B model, bit-
+         identical, decode unregressed — Apple's outcome on a stock model, no
+         retraining, purely via the load path. CAVEATS: tok/s indicative not
+         quotable (not cleared-machine — dirty-machine rule); "no regression" is
+         a short WARM gen — long / under-pressure runs may surface cold-miss
+         cost (then pin hot experts).
+   - [x] **E1d (CLI productionization) DONE 2026-06-14**: `mlx-bun serve
+         <model> --expert-offload` builds `<model>/.mlx-bun-offload` on first
+         use (reused after via manifest model+size check), activates before
+         `loadContext`, bit-exact runtime from E1c. Split: runtime
+         `src/expert-offload.ts` (activate/array/isOffload) + build
+         `src/expert-offload-build.ts` (`ensureOffloadFile`/`buildOffloadFile`);
+         hooked in `cli.ts` serve after `ensureNative`, before `loadContext`;
+         help + flag-parse (`OURS_BOOL`) registered; dense models warn + skip.
+         Verified: build green, help shows flag, converter 9/9 byte-identical,
+         reuse path hits. (`mlx-bun serve 26B --expert-offload` smoke test =
+         Josh's to run — it starts a server.)
+   - [ ] **E1e (remaining follow-on)**: cleared-machine tok/s → `benchmarks/
+         RESULTS.md`; optional hot-expert pinning if long / under-pressure runs
+         regress; offload scales/biases for the last ~6% (verify BF16-from-mmap
+         GPU read first).
+- [ ] **E2 — domain prefetch** reusing the `/v1/adapters` surface: per-
+      session `domain` hint warms that domain's profiled hot-set; per-user
+      profile learned online (memory flywheel). Still bit-exact (misses
+      fault to SSD). Measure cold-start vs warm latency + switch cost.
+- [ ] **E3 — admit a non-fitting model**: bring up a 35B-A3B-class model
+      under offload on 24 GB; flip Phase 14's "larger hardware only" line;
+      measure the domain-switch warm-up (I/O floor single-digit sec; the
+      30–60 s budget is the conservative upper bound).
+- [ ] **E4 — (optional) pinned mode**: restrict routing to the warm set
+      (skip cold experts) for zero-miss decode → lossy, KL + 6-task quality
+      gated per the optimization-tree rules, default-off flag (never the
+      only path).
+- **Exit criterion**: gemma-4-26B-A4B served bit-exact with resident
+  footprint cut to a measured target (~5–6 GB vs 16.4), machine stays
+  usable, domain-switch cost quantified — promoted into
+  `benchmarks/RESULTS.md`.
+- **Scope boundary**: single-user / single-active-task. Phase 18 slots /
+  multi-tenant loses the locality guarantee → experts stay resident there;
+  keep offload files separate from the batch/slots work.
+
 ## Fit-model calibration status (2026-06-12, second external tester)
 
 The decode prediction is single-point-calibrated on the M4 Pro
