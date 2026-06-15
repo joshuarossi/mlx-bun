@@ -4,34 +4,36 @@
 // iteration-level (continuous) scheduling, not static batching. See
 // docs/design/parallel-slots.md.
 //
-// The numerically-hard parts are already verified primitives:
-//   - the batched FORWARD (BatchedDecodeMaskCache + per-row RoPE/mask) is
-//     bit-parity with mlx-lm B=N across all 4 models (tests/batched-decode-parity);
-//   - the dynamic-B cache ops mergeKVRows / filterKVRows are oracle-verified
-//     against mlx-lm BatchKVCache.merge/.extract/.filter (rows join/leave).
+// The numerically-hard parts are verified primitives:
+//   - the batched FORWARD (per-row RoPE/mask) is bit-parity with mlx-lm B=N
+//     across all 4 models (tests/batched-decode-parity);
+//   - the dynamic-B FULL-attention ops mergeKVRows / filterKVRows match mlx-lm
+//     BatchKVCache (tests/batched-decode-parity), and the SLIDING-window
+//     BatchedRotatingCache (merge/filter/decode/make_mask incl. ring-wrap)
+//     matches mlx-lm BatchRotatingKVCache (tests/batched-rotating).
 // This module is the ORCHESTRATION on top: admission, the step loop, per-row
-// sampling + token accounting, and eviction. Its correctness gate
-// (tests/batch-scheduler.test.ts) checks each row's greedy output equals its
-// solo greedy decode — i.e. batching + the scheduler don't change any row's
-// result.
+// sampling + token accounting, eviction, and assembling each layer's batched
+// cache by type. Gate: tests/batch-scheduler.test.ts (teacher-forced, KL).
 //
-// SCOPE (v1): full-attention models only (every layer a KVCache). Sliding-
-// window (RotatingKVCache) dynamic-B batched decode is a follow-up (ring-wrap
-// per-row mask), so a rotating-cache model throws here and the server routes it
-// to the serial path. Greedy or any per-row `sample` closure is supported; the
-// _is_batchable gate (fixed seed / vision / adapter-mismatch → serial) and KV
-// budget admission live in the server wiring (step 3), not here.
+// Per-layer cache types: a model interleaves full-attention layers (plain
+// KVCache, wrapped per step in a BatchedDecodeMaskCache) and sliding-window
+// layers (a persistent BatchedRotatingCache that is itself the batched cache +
+// mask). Full layers share one leftPad/offset (all rows advance together); the
+// rotating caches self-track per-row leftPad/offset as the ring wraps. The
+// per-row absolute position stays consistent across both (full: offset-leftPad;
+// rot: offsetArr) — see docs/design/parallel-slots.md.
 //
 // Bun-async, NO threads: a single detached driver loop owns the GPU for batched
-// mode. Joins re-merge the whole batch (mergeKVRows on extracted advanced-offset
-// rows + a fresh solo prefill); the keep-the-running-batch `extend` optimization
-// is a later refinement.
+// mode (an ExclusiveLock keeps the serial fallback off the GPU concurrently).
+// Joins re-merge the whole batch; the keep-the-running-batch `extend`
+// optimization is a later refinement.
 
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { clearCache } from "../mlx/ffi";
-import { KVCache } from "../model/gemma4-base";
+import { KVCache, RotatingKVCache, type Cache } from "../model/gemma4-base";
 import { BatchedDecodeMaskCache, mergeKVRows, filterKVRows } from "../model/batched-mask";
+import { BatchedRotatingCache } from "../model/batched-rotating";
 import type { RuntimeModel } from "../model/factory";
 
 /** A token sampler for one row: (logits [1,V], step) → token array [1] on
@@ -47,9 +49,8 @@ export interface BatchRequest {
   sample: RowSampler;
   /** Called per emitted (non-EOS) token, in order. Returning `false` halts this
    *  row (a decoded-text stop sequence fired) — matches generate()'s onToken
-   *  contract. EOS terminates the row WITHOUT an onToken call (mlx-lm/generate
-   *  never emit the EOS token to the consumer). May be async; keep it cheap —
-   *  it runs inline in the step loop and a slow await stalls the whole batch. */
+   *  contract. EOS terminates the row WITHOUT an onToken call. May be async;
+   *  keep it cheap — it runs inline in the step loop. */
   onToken: (token: number) => void | boolean | Promise<void | boolean>;
 }
 
@@ -57,8 +58,7 @@ export interface BatchStats {
   promptTokens: number;
   generatedTokens: number;
   /** Prompt tokens served from a pre-warmed cache. Always 0 in v1 (each row is
-   *  solo-prefilled from scratch; prompt-cache reuse under batching is a later
-   *  refinement). */
+   *  solo-prefilled from scratch; prompt-cache reuse under batching is later). */
   cachedTokens: number;
   finishReason: "stop" | "length";
 }
@@ -72,10 +72,7 @@ interface Row {
   promptTokens: number;
 }
 
-/** Mutual-exclusion lock the scheduler holds for its whole ACTIVE period (first
- *  admit → batch empties), so a serial-path generation never touches the GPU
- *  (or shared model state like loraState) while a batch is in flight. acquire()
- *  resolves to a release fn. Omit for standalone use (e.g. the unit test). */
+/** Held while the batch is active; the serial fallback acquires the same lock. */
 export interface ExclusiveLock {
   acquire(): Promise<() => void>;
 }
@@ -83,28 +80,32 @@ export interface ExclusiveLock {
 export interface BatchSchedulerOptions {
   /** Max rows in the running batch (mlx-lm `--decode-concurrency`). */
   maxBatch: number;
-  /** Held while the batch is active; the serial fallback acquires the same lock. */
   lock?: ExclusiveLock;
 }
 
+type LayerInner = KVCache | BatchedRotatingCache;
+type Row1 = { keys: MlxArray; values: MlxArray };
+
 export class BatchScheduler {
   #running: Row[] = [];
-  #inners: KVCache[] | null = null; // per-layer batched KV; null when empty
-  #leftPad: number[] = [];
+  #inners: LayerInner[] | null = null; // per-layer batched KV; null when empty
+  #fullLeftPad: number[] = []; // per-row padding for FULL layers (rot self-tracks)
   #pending: Row[] = [];
   #looping = false;
   #wake: (() => void) | null = null;
   readonly #maxBatch: number;
-  readonly #layerCount: number;
   readonly #lock: ExclusiveLock | undefined;
+  readonly #kinds: ("full" | "rot")[]; // per-layer attention type
+  readonly #rotMaxSize: number[]; // per-layer sliding window (rot layers only)
 
   constructor(private readonly model: RuntimeModel, opts: BatchSchedulerOptions) {
     this.#maxBatch = Math.max(1, Math.floor(opts.maxBatch));
     this.#lock = opts.lock;
-    this.#layerCount = model.makeCache().length; // fresh caches hold no buffers
+    const proto = model.makeCache(); // fresh caches hold no buffers
+    this.#kinds = proto.map((c) => (c instanceof RotatingKVCache ? "rot" : "full"));
+    this.#rotMaxSize = proto.map((c) => (c instanceof RotatingKVCache ? c.maxSize : 0));
   }
 
-  /** Number of rows currently decoding (for /stats). */
   get activeRows(): number {
     return this.#running.length;
   }
@@ -121,22 +122,19 @@ export class BatchScheduler {
   }
 
   #ensureLoop(): void {
-    if (this.#wake) { this.#wake(); return; } // loop idle — wake it
+    if (this.#wake) { this.#wake(); return; }
     if (this.#looping) return;
     this.#looping = true;
     void this.#drive();
   }
 
   async #drive(): Promise<void> {
-    // Held for the whole active period (acquired when work appears, released
-    // when the batch empties), so the serial fallback can't run concurrently.
     let release: (() => void) | null = null;
     try {
       while (true) {
         if (!release && this.#lock && (this.#pending.length > 0 || this.#running.length > 0))
           release = await this.#lock.acquire();
 
-        // Admit waiting requests into free slots (solo prefill + merge).
         while (this.#pending.length > 0 && this.#running.length < this.#maxBatch) {
           const row = this.#pending.shift()!;
           try {
@@ -146,8 +144,7 @@ export class BatchScheduler {
           }
         }
         if (this.#running.length === 0) {
-          if (this.#pending.length > 0) continue; // a row finished on admit; loop
-          // Idle: release the lock and suspend until the next submit wakes us.
+          if (this.#pending.length > 0) continue;
           if (release) { release(); release = null; }
           await new Promise<void>((r) => { this.#wake = r; });
           this.#wake = null;
@@ -156,13 +153,9 @@ export class BatchScheduler {
         try {
           await this.#step();
         } catch (e) {
-          // A batched forward error is batch-wide and unrecoverable for these
-          // rows — fail them all and clear the batch so the loop goes idle.
           for (const row of this.#running) row.reject(e);
           this.#applyFilter([]);
         }
-        // Yield to the event loop so each row's SSE socket flushes between
-        // steps (the batched analogue of generate()'s per-token macrotask hop).
         await new Promise<void>((r) => setImmediate(r));
       }
     } finally {
@@ -171,43 +164,12 @@ export class BatchScheduler {
     }
   }
 
-  /** A row's full KV as a [1,H,len,D] row pair (offset == valid length). */
-  #soloRow(c: KVCache): { keys: MlxArray; values: MlxArray } {
-    const [keys, values] = c.temporalView();
-    return { keys, values };
-  }
-
-  /** Rebuild the per-layer batched inners from per-layer row lists via mergeKVRows. */
-  #rebuild(getRows: (layer: number) => { keys: MlxArray; values: MlxArray }[]): {
-    inners: KVCache[]; leftPad: number[];
-  } {
-    const L = this.#layerCount;
-    const inners: KVCache[] = [];
-    let leftPad: number[] = [];
-    for (let layer = 0; layer < L; layer++) {
-      const rows = getRows(layer);
-      const merged = mergeKVRows(rows);
-      for (const r of rows) { r.keys.dispose(); r.values.dispose(); }
-      const c = new KVCache();
-      c.restoreState(merged.keys, merged.values, merged.width);
-      inners.push(c);
-      leftPad = merged.leftPad;
-    }
-    return { inners, leftPad };
-  }
-
   /** Solo-prefill a joining request, emit its first token, and (if it survives)
-   *  merge it into the running batch. */
+   *  re-merge it with the running batch (per-layer, by attention type). */
   async #admit(row: Row): Promise<void> {
     const solo = this.model.makeCache();
-    if (solo.some((c) => !(c instanceof KVCache)))
-      throw new Error(
-        "batched serving (v1) supports full-attention models only; this model uses " +
-        "a sliding-window cache (RotatingKVCache) — route to the serial path",
-      );
-    const soloK = solo as KVCache[];
     const ids = ops.fromInt32(row.req.promptIds, [1, row.req.promptIds.length]);
-    const h = this.model.forwardHidden(ids, soloK);
+    const h = this.model.forwardHidden(ids, solo);
     ids.dispose();
     const lg = this.model.logitsFromHidden(h);
     h.dispose();
@@ -221,43 +183,74 @@ export class BatchScheduler {
     row.generated = 1;
     clearCache();
 
-    const stop = await this.#emit(row, tok); // EOS/onToken=false/length → finishes the row
+    const stop = await this.#emit(row, tok);
     if (stop !== "continue") {
-      for (const c of soloK) c.dispose();
+      for (const c of solo) c.dispose();
       this.#finish(row, stop);
       return;
     }
 
-    // Merge the freshly-prefilled row into the running batch.
-    if (this.#running.length === 0) {
-      this.#inners = soloK; // B=1 batch: solo caches ARE the batch (leftPad 0)
-      this.#leftPad = [0];
-      this.#running = [row];
-      return;
-    }
-    const prev = this.#inners!;
-    const prevLeftPad = this.#leftPad;
-    const off = prev[0]!.offset;
-    const built = this.#rebuild((layer) => {
-      const [k0, v0] = prev[layer]!.temporalView(); // [B,H,off,D]
-      const [, H, , D] = k0.shape as [number, number, number, number];
-      const vD = v0.shape[3]!;
-      const rows: { keys: MlxArray; values: MlxArray }[] = [];
-      for (let b = 0; b < this.#running.length; b++) {
-        const pad = prevLeftPad[b]!;
-        rows.push({
-          keys: k0.slice([b, 0, pad, 0], [b + 1, H, off, D]),
-          values: v0.slice([b, 0, pad, 0], [b + 1, H, off, vD]),
-        });
+    // Re-merge the running batch + the new row, layer by layer.
+    const prev = this.#inners;
+    const prevPad = this.#fullLeftPad;
+    const B = this.#running.length;
+    const newInners: LayerInner[] = [];
+    let newFullPad = this.#fullLeftPad;
+    for (let layer = 0; layer < this.#kinds.length; layer++) {
+      const soloC = solo[layer] as KVCache | RotatingKVCache;
+      const [sk, sv] = soloC.temporalView();
+      const newRow: Row1 = { keys: sk, values: sv };
+      if (this.#kinds[layer] === "rot") {
+        const rows: Row1[] = [];
+        const offsets: number[] = [];
+        const prevRot = prev?.[layer] as BatchedRotatingCache | undefined;
+        if (prevRot) {
+          const [k0, v0] = prevRot.temporalView(); // [B,H,valid,D]
+          const [, H, valid, D] = k0.shape as [number, number, number, number];
+          const vD = v0.shape[3]!;
+          for (let b = 0; b < B; b++) {
+            const pad = Math.max(0, prevRot.leftPad[b]!);
+            rows.push({
+              keys: k0.slice([b, 0, pad, 0], [b + 1, H, valid, D]),
+              values: v0.slice([b, 0, pad, 0], [b + 1, H, valid, vD]),
+            });
+            offsets.push(prevRot.offsetArr[b]!);
+          }
+          k0.dispose(); v0.dispose();
+        }
+        rows.push(newRow);
+        offsets.push(soloC.offset);
+        newInners.push(BatchedRotatingCache.merge(rows, offsets, this.#rotMaxSize[layer]!));
+        for (const r of rows) { r.keys.dispose(); r.values.dispose(); }
+      } else {
+        const rows: Row1[] = [];
+        const prevFull = prev?.[layer] as KVCache | undefined;
+        if (prevFull) {
+          const [k0, v0] = prevFull.temporalView(); // [B,H,off,D]
+          const [, H, off, D] = k0.shape as [number, number, number, number];
+          const vD = v0.shape[3]!;
+          for (let b = 0; b < B; b++) {
+            const pad = prevPad[b]!;
+            rows.push({
+              keys: k0.slice([b, 0, pad, 0], [b + 1, H, off, D]),
+              values: v0.slice([b, 0, pad, 0], [b + 1, H, off, vD]),
+            });
+          }
+          k0.dispose(); v0.dispose();
+        }
+        rows.push(newRow);
+        const merged = mergeKVRows(rows);
+        newFullPad = merged.leftPad;
+        const c = new KVCache();
+        c.restoreState(merged.keys, merged.values, merged.width);
+        newInners.push(c);
+        for (const r of rows) { r.keys.dispose(); r.values.dispose(); }
       }
-      k0.dispose(); v0.dispose();
-      rows.push(this.#soloRow(soloK[layer]!));
-      return rows;
-    });
-    for (const c of prev) c.dispose();
-    for (const c of soloK) c.dispose();
-    this.#inners = built.inners;
-    this.#leftPad = built.leftPad;
+    }
+    if (prev) for (const c of prev) c.dispose();
+    for (const c of solo) c.dispose();
+    this.#inners = newInners;
+    this.#fullLeftPad = newFullPad;
     this.#running.push(row);
   }
 
@@ -266,13 +259,15 @@ export class BatchScheduler {
     const rows = this.#running;
     const B = rows.length;
     const inners = this.#inners!;
-    const wrappers = inners.map(
-      (c) => new BatchedDecodeMaskCache(c, B, this.#leftPad, null),
+    // Per-layer forward cache: rot layers use the persistent BatchedRotatingCache
+    // directly; full layers get a fresh BatchedDecodeMaskCache wrapper.
+    const fwd: Cache[] = inners.map((c) =>
+      c instanceof BatchedRotatingCache ? c : new BatchedDecodeMaskCache(c, B, this.#fullLeftPad, null),
     );
     let toks: number[];
     try {
       const ids = ops.fromInt32(rows.map((r) => r.current), [B, 1]);
-      const h = this.model.forwardHidden(ids, wrappers);
+      const h = this.model.forwardHidden(ids, fwd);
       ids.dispose();
       const lg = this.model.logitsFromHidden(h); // [B,1,V]
       h.dispose();
@@ -291,12 +286,12 @@ export class BatchScheduler {
       toks = [...tokArr.toFloat32()].map((x) => Math.round(x));
       tokArr.dispose();
     } finally {
-      for (const w of wrappers) w.releaseRopeArr();
+      // Free the step's RoPE arrays; do NOT dispose (full wrappers would free
+      // their persistent inner; rot caches persist across steps).
+      for (const c of fwd) (c as { releaseRopeArr?: () => void }).releaseRopeArr?.();
     }
     clearCache();
 
-    // Emit per row; collect survivors. (Sequential awaits: onToken callbacks
-    // are cheap microtasks; the GPU step above is the cost.)
     const keep: number[] = [];
     for (let b = 0; b < B; b++) {
       const row = rows[b]!;
@@ -308,10 +303,9 @@ export class BatchScheduler {
     if (keep.length < B) this.#applyFilter(keep);
   }
 
-  /** Account one sampled token for a row. Returns "continue" if the row stays
-   *  alive, else the finish reason. Mirrors generate(): EOS terminates WITHOUT
-   *  an onToken call; otherwise onToken(token) runs and `false` halts; reaching
-   *  maxTokens ends with "length". Advances row.current on continue. */
+  /** Account one sampled token for a row. Mirrors generate(): EOS terminates
+   *  WITHOUT an onToken call; otherwise onToken(token) runs and `false` halts;
+   *  reaching maxTokens ends with "length". Advances row.current on continue. */
   async #emit(row: Row, token: number): Promise<"continue" | "stop" | "length"> {
     if (row.req.eosTokenIds.includes(token)) return "stop";
     const cont = await row.req.onToken(token);
@@ -336,23 +330,27 @@ export class BatchScheduler {
     if (keep.length === 0) {
       for (const c of inners) c.dispose();
       this.#inners = null;
-      this.#leftPad = [];
+      this.#fullLeftPad = [];
       this.#running = [];
       return;
     }
-    const off = inners[0]!.offset;
-    const out: KVCache[] = [];
-    for (let layer = 0; layer < inners.length; layer++) {
-      const [k0, v0] = inners[layer]!.temporalView();
-      const f = filterKVRows(k0, v0, keep);
-      k0.dispose(); v0.dispose();
-      const c = new KVCache();
-      c.restoreState(f.keys, f.values, off);
-      out.push(c);
+    const out: LayerInner[] = [];
+    for (const inner of inners) {
+      if (inner instanceof BatchedRotatingCache) {
+        inner.filter(keep); // in-place (mutates + drops rows + reduces padding)
+        out.push(inner);
+      } else {
+        const [k0, v0] = inner.temporalView();
+        const f = filterKVRows(k0, v0, keep);
+        k0.dispose(); v0.dispose();
+        const c = new KVCache();
+        c.restoreState(f.keys, f.values, inner.offset);
+        out.push(c);
+        inner.dispose();
+      }
     }
-    for (const c of inners) c.dispose();
     this.#inners = out;
-    this.#leftPad = keep.map((i) => this.#leftPad[i]!);
+    this.#fullLeftPad = keep.map((i) => this.#fullLeftPad[i]!);
     this.#running = keep.map((i) => this.#running[i]!);
   }
 

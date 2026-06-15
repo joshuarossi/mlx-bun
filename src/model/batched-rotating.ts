@@ -87,13 +87,16 @@ export class BatchedRotatingCache implements Cache {
   #ropeArr: MlxArray | null = null;
   #ropeForOffset = -1;
   readonly maxSize: number;
-  readonly #B: number;
 
   constructor(maxSize: number, leftPad: number[]) {
     this.maxSize = maxSize;
-    this.#B = leftPad.length;
     this.leftPad = [...leftPad];
     this.offsetArr = leftPad.map((l) => -l);
+  }
+
+  /** Current batch size — tracks filter() (which shrinks the per-row arrays). */
+  get #B(): number {
+    return this.leftPad.length;
   }
 
   /** mlx-lm uses `cache.offset` (the per-row array) for the scalar interface

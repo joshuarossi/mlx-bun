@@ -29,12 +29,21 @@ dynamic-B `mergeKVRows`/`filterKVRows` vs mlx-lm `BatchKVCache.merge`/`.extract`
   predicate. Wired into both `handleChat` call sites → per-row SSE fan-out.
 - End-to-end: `tests/batch-serving.test.ts` (live CPM `--batch 2` server).
 
-Still NOT served: **sliding-window (Gemma) dynamic-B** (ring-wrap per-row mask —
-the scheduler throws on `RotatingKVCache`, gateway routes those models to
-serial). Other follow-ups: the `extend` join op (today joins re-merge), KV-budget
-admission, prompt-cache reuse under batching. Two further pieces deferred as
-separate spikes: **paged KV** (zero-padding-waste allocation) and **batched
-mixed-precision quant serving** (novel territory — no ancestor does it).
+**Sliding-window (Gemma) dynamic-B is now served too** (2026-06-14):
+`BatchedRotatingCache` (`src/model/batched-rotating.ts`, port of mlx-lm
+`BatchRotatingKVCache` incl. the ring-wrap rolled mask) is bit-exact vs mlx-lm
+model-free (`tests/batched-rotating.test.ts`); the scheduler assembles each
+layer's cache by type and Gemma 12B scheduled greedy == the mlx-lm B=2 golden
+with eviction. So `--batch N` batches BOTH CPM and Gemma.
+
+The headline remaining gap is **batched + mixed-precision KV quant (L2)**: these
+OptiQ models default to kv-quant, but batched serving (v1) is **bf16-only**, so
+kv-quant requests route to serial (run `--kv-quant off` to batch). Batched
+quantized-KV (`QuantizedKVCache` merge/filter + `quantizedSdpaUnfused` 4-D mask)
+is novel territory — no ancestor does it (mlx-lm can't mixed-precision, optiq
+can't batch) → KL+quality gated. Other follow-ups: the `extend` join op (today
+joins re-merge), KV-budget admission, prompt-cache reuse under batching, and
+**paged KV** (zero-padding-waste allocation).
 
 ## Why it helps (and when it doesn't)
 
@@ -411,8 +420,9 @@ scenario through `mergeKVRows`/`filterKVRows` and matches all 3 per-row greedy
 trajectories token-for-token (CPM L1). Join = re-merge of extracted advanced-offset
 rows + a fresh solo prefill (proves `mergeKVRows` on non-fresh rows); `extend`
 (keep-the-running-batch optimization, mlx-lm's actual join op) is deferred into
-the scheduler. Added `BatchedDecodeMaskCache.releaseRopeArr()`. Full-attention
-only (CPM); Gemma/sliding dynamic-B is a follow-up.
+the scheduler. Added `BatchedDecodeMaskCache.releaseRopeArr()`. (Originally
+full-attention only; sliding-window `BatchedRotatingCache` landed 2026-06-14 —
+see the STATUS block above.)
 (2) **DONE 2026-06-14** — the async loop + per-row SSE wired into `createServer`
 behind `--batch N`. `BatchScheduler` (`src/serve/batch-scheduler.ts`) is the
 detached driver; `GenerationGateway` (`src/serve/generation-gateway.ts`) picks
