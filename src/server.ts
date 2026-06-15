@@ -15,6 +15,7 @@ import type { Server } from "bun";
 // imports as HTMLBundle (the html loader), but the text attribute makes
 // the runtime value a string — hence the double cast.
 import appHtml from "./web/app.html" with { type: "text" };
+import curveDesignerHtml from "../docs/curve-designer.html" with { type: "text" };
 import pkgJson from "../package.json" with { type: "json" };
 const APP_PAGE = appHtml as unknown as string;
 const pkgVersion = (pkgJson as { version: string }).version;
@@ -25,6 +26,8 @@ import { createModel, type RuntimeModel } from "./model/factory";
 import { isMiniCPM5Config, isSupportedModelRecord } from "./model/support";
 import { generate, type GenerateOptions } from "./generate";
 import type { HlgConfig } from "./sampler";
+import { isMonotone, CURVE_UMIN, type CurveParams } from "./curve-sampler";
+const CURVE_PAGE = curveDesignerHtml as unknown as string;
 import { GenerationGateway } from "./serve/generation-gateway";
 import {
   ChatTemplate, type ChatMessage, type ToolDefinition,
@@ -528,6 +531,19 @@ class StreamDecoder {
   }
 }
 
+// v2 curve designer: CORS-open so a file:// editor can call a localhost engine.
+const CURVE_CORS: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-allow-headers": "content-type",
+};
+/** coherence flag: non-Latin-letter ratio / replacement char / reserved token. */
+function curveJunk(s: string): boolean {
+  const L = s.match(/\p{L}/gu) ?? [];
+  const nonLatin = L.length ? L.filter((c) => !/\p{Script=Latin}/u.test(c)).length / L.length : 0;
+  return nonLatin >= 0.02 || /�/.test(s) || /<unused\d+>/.test(s);
+}
+
 export function createServer(
   ctx: ServerContext, port = 0, serverOptions: ServerOptions = {},
 ): Server<unknown> {
@@ -738,6 +754,10 @@ export function createServer(
         return new Response(APP_PAGE, {
           headers: { "content-type": "text/html; charset=utf-8" },
         });
+      }
+      // v2 HLG Curve Designer — served same-origin so /generate + /signal need no CORS.
+      if (url.pathname === "/curves" && request.method === "GET") {
+        return new Response(CURVE_PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
       }
       if (request.method === "GET" &&
           ["/status", "/chat", "/quantize", "/finetune", "/dataset"].includes(url.pathname)) {
@@ -960,6 +980,74 @@ export function createServer(
         return removed > 0
           ? Response.json({ id, removed_layers: removed })
           : Response.json({ error: { message: `adapter ${id} not mounted` } }, { status: 404 });
+      }
+
+      // ---- Curve Designer: POST /signal {prompt} → next-token histogram over the curve's x-axis ----
+      // One prefill forward; bins the real log-prob distribution so the editor can draw the
+      // signal under the curve (you shape where the tokens actually are).
+      if (url.pathname === "/signal" && request.method === "OPTIONS")
+        return new Response(null, { headers: CURVE_CORS });
+      if (url.pathname === "/signal" && request.method === "POST") {
+        let sbody: { prompt?: string };
+        try { sbody = (await request.json()) as typeof sbody; }
+        catch { return Response.json({ error: "invalid JSON" }, { status: 400, headers: CURVE_CORS }); }
+        let sids = ctx.tokenizer.encode(ctx.template.render([{ role: "user", content: typeof sbody.prompt === "string" ? sbody.prompt : "" }], templateOptionsFor({} as ChatRequest, null)));
+        if (sids[0] === sids[1] && sids[0] === ctx.tokenizer.bosTokenId) sids = sids.slice(1);
+        try {
+          const NB = 80;
+          const result = await enqueue(async () => {
+            const cache = ctx.model.makeCache();
+            try {
+              const logits = ctx.model.forward(sids, cache); // [1, L, V]
+              const [, Ln, V] = logits.shape as [number, number, number];
+              const last = logits.slice([0, Ln - 1, 0], [1, Ln, V]);
+              const f = last.toFloat32(); logits.dispose(); last.dispose();
+              let mx = -Infinity; for (const v of f) if (v > mx) mx = v;
+              let Z = 0; for (const v of f) Z += Math.exp(v - mx); const lse = mx + Math.log(Z);
+              const bins = new Array<number>(NB).fill(0);
+              for (const v of f) { const t = Math.max(0, Math.min(1, (v - lse - CURVE_UMIN) / (-CURVE_UMIN))); const bi = Math.min(NB - 1, Math.floor(t * NB)); bins[bi] = (bins[bi] ?? 0) + 1; }
+              return { bins, vocab: V };
+            } finally { for (const c of cache) c.dispose(); }
+          });
+          return Response.json(result, { headers: CURVE_CORS });
+        } catch (e) {
+          return Response.json({ error: `signal failed: ${(e as Error).message}` }, { status: 500, headers: CURVE_CORS });
+        }
+      }
+
+      // ---- v2 HLG Curve Designer: POST /generate {prompt, curve, n, max_tokens, seed} ----
+      // The drawn log-prob transfer curve REPLACES temperature+softmax entirely
+      // (src/curve-sampler.ts). The browser editor calls this; same curve object the
+      // tool's "Copy values" emits is the one the sampler consumes — one contract.
+      if (url.pathname === "/generate" && request.method === "OPTIONS")
+        return new Response(null, { headers: CURVE_CORS });
+      if (url.pathname === "/generate" && request.method === "POST") {
+        let body: { prompt?: string; curve?: CurveParams; n?: number; max_tokens?: number; seed?: number };
+        try { body = (await request.json()) as typeof body; }
+        catch { return Response.json({ error: "invalid JSON" }, { status: 400, headers: CURVE_CORS }); }
+        const curve = body.curve;
+        if (!Array.isArray(curve?.points) || curve.points.length < 2)
+          return Response.json({ error: "curve needs { points: [{x_pct,y_pct}, …] } with ≥2 control points" }, { status: 400, headers: CURVE_CORS });
+        if (!isMonotone(curve))
+          return Response.json({ error: "curve is not monotone — all segment slopes must be ≥ 0" }, { status: 400, headers: CURVE_CORS });
+        const prompt = typeof body.prompt === "string" ? body.prompt : "";
+        const n = Math.max(1, Math.min(8, Math.floor(Number(body.n) || 3)));
+        const maxTokens = Math.max(1, Math.min(256, Math.floor(Number(body.max_tokens) || 80)));
+        const baseSeed = Number.isFinite(body.seed) ? Number(body.seed) >>> 0 : (Date.now() & 0xffffffff);
+        let ids = ctx.tokenizer.encode(ctx.template.render([{ role: "user", content: prompt }], templateOptionsFor({} as ChatRequest, null)));
+        if (ids[0] === ids[1] && ids[0] === ctx.tokenizer.bosTokenId) ids = ids.slice(1);
+        const samples: { text: string; junk: boolean }[] = [];
+        try {
+          for (let i = 0; i < n; i++) {
+            const toks: number[] = [];
+            await enqueue(() => runGeneration(ids, { curve, seed: baseSeed + i, maxTokens, ...kvScheme }, (t) => { toks.push(t); }));
+            const text = ctx.tokenizer.decode(toks, true).trim();
+            samples.push({ text, junk: curveJunk(text) });
+          }
+        } catch (e) {
+          return Response.json({ error: `generation failed: ${(e as Error).message}` }, { status: 500, headers: CURVE_CORS });
+        }
+        return Response.json({ n, seed: baseSeed, curve, samples }, { headers: CURVE_CORS });
       }
 
       // The chat-completions core, shared by both protocol surfaces:
