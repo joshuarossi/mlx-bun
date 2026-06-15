@@ -14,20 +14,42 @@ scheduler that runs multiple sequences through one forward pass.
 This is a server-path feature — serving speed is the user metric.
 Direct/embedding mode stays batch=1.
 
-## STATUS (2026-06-14) — verified primitive, NOT yet served
+## STATUS (2026-06-14) — LIVE for full-attention models
 
-**The server does not batch yet.** `--slots N` is inert (warns, runs serially);
-the server still processes one generation at a time through the serial promise
-chain. What IS done and oracle-verified is the batched **forward primitive**
-(`BatchedDecodeMaskCache` + the per-layer fixes): a B=N prefill+decode is
-bit-parity with mlx-lm B=N across all 4 models — but it lives only in the test
-harness (`realBatchedGreedy`), not in request handling. So the hard part (are
-the numerics correct?) is answered; the remaining work to actually serve B>1 is
-the **scheduler** (admission queue → running batch → continuous inject/evict →
-per-row SSE fan-out → `_is_batchable` gate → memory admission). That scheduler is
-NOT built. Two further pieces are explicitly deferred as separate spikes: **paged
-KV** (zero-padding-waste allocation) and **batched mixed-precision quant serving**
-(novel territory — no ancestor does it).
+**`--batch N` now serves B>1** for full-attention models (CPM). The numerics
+were proven first (the batched **forward primitive** `BatchedDecodeMaskCache` +
+per-layer fixes = bit-parity with mlx-lm B=N across all 4 models; static-B AND
+dynamic-B `mergeKVRows`/`filterKVRows` vs mlx-lm `BatchKVCache.merge`/`.extract`/
+`.filter`, CPM L1), then the **scheduler** was built and wired in:
+- `BatchScheduler` (`src/serve/batch-scheduler.ts`) — the detached async driver:
+  admission queue → running batch → continuous inject (`mergeKVRows`) / evict
+  (`filterKVRows`) → per-row sample + accounting. Gated teacher-forced (KL).
+- `GenerationGateway` (`src/serve/generation-gateway.ts`) — lane picker +
+  `AsyncMutex` (serial↔batched GPU/`loraState` exclusivity) + the `_is_batchable`
+  predicate. Wired into both `handleChat` call sites → per-row SSE fan-out.
+- End-to-end: `tests/batch-serving.test.ts` (live CPM `--batch 2` server).
+
+**Sliding-window (Gemma) dynamic-B is now served too** (2026-06-14):
+`BatchedRotatingCache` (`src/model/batched-rotating.ts`, port of mlx-lm
+`BatchRotatingKVCache` incl. the ring-wrap rolled mask) is bit-exact vs mlx-lm
+model-free (`tests/batched-rotating.test.ts`); the scheduler assembles each
+layer's cache by type and Gemma 12B scheduled greedy == the mlx-lm B=2 golden
+with eviction. So `--batch N` batches BOTH CPM and Gemma.
+
+**This meets the mlx-lm-parity bar.** mlx-lm's batched path is bf16 (its
+quantized batching is NYI — `BatchRotatingKVCache.to_quantized` raises), so bf16
+continuous batching IS the drop-in. `--batch N` is therefore a bf16 MODE: KV
+quant unset → bf16 (so the batch path engages out of the box, Option B); serial
+default stays mixed-precision (optiq parity); an explicit `--kv-quant` under
+`--batch N` routes those requests to serial (warned).
+
+**Batched + mixed-precision KV quant is NOT a parity gap** — no ancestor does it
+(mlx-lm NYI, optiq no batching), so there's no bit-exact oracle. It's an OPTIONAL
+novel extension: a memory-density win (batching × 4-bit KV compound), gated by
+KL + 6-task quality (per the tree framing), deferred. Other follow-ups (all
+optional polish): the `extend` join op (today joins re-merge), KV-budget
+admission, prompt-cache reuse under batching, and **paged KV** (zero-padding-waste
+allocation).
 
 ## Why it helps (and when it doesn't)
 
@@ -369,6 +391,56 @@ one token to one SSE stream (`server.ts:964,1037`). Batched, each step
 produces B tokens that must route to B independent response streams,
 each with its own `StopSequencer`/tool-call router. Touches
 `server.ts`, `responses.ts`, `anthropic.ts`.
+
+### Concrete plan (the `--batch N` engine, build order — 2026-06-14)
+
+Started: `--batch N` flag landed (renamed from `--slots`; `--decode-concurrency`
+accepted as an mlx_lm.server alias). N=1 → today's serial path; N>1 → the engine
+below. The engine is a **mode** (whole server), not a load-fallback (keeps
+determinism + the drop-in promise).
+
+**Dynamic-B cache ops** (port of mlx-lm's cache methods — the new piece our
+fixed-B verified forward doesn't have):
+- **`merge(perRowCaches)`** — stack N single-row caches into one `[B,H,S,D]`
+  batch, left-pad-aligned (generalizes `realBatchedGreedy`'s assemble).
+- **`filter(keep)`** — slice the B axis to drop finished rows (eviction).
+- **`extend(other)`** — append a freshly-prefilled batch's rows (insertion).
+- mlx-lm's flow: a joining request is **right-padded + prefilled** in a prompt
+  batch, then `finalize()` (dynamic-roll) → left-pad, then `merge`/`extend` into
+  the running generation batch. Our verified attention/mask/RoPE drop straight in.
+
+**Engine loop (Bun-async, NOT Python threads):** an async loop owns the running
+batch. Each iteration: (1) admit waiting+batchable requests up to N (prefill +
+`extend`); (2) one batched decode step (the verified forward); (3) sample
+per-row, push each row's token to its own SSE `ReadableStream` (per-row
+`StopSequencer` + tool parser + sampler); (4) `filter` out rows that hit
+EOS/stop/max-tokens, resolve their streams. HTTP handlers `await` their row's
+stream; no thread, just the event loop + `mx.async_eval` pipelining.
+
+**Build sequence:** (1) **DONE 2026-06-14** — dynamic-B cache `merge`/`filter` +
+a pure unit test, then a gated parity test vs an mlx-lm *dynamic* golden (rows
+join/leave mid-stream). `scripts/gen-batched-dynamic-golden.py` drives mlx-lm's
+real `BatchKVCache.merge`/`.extract`/`.filter` through {A,B}→join C→evict A→{B,C};
+`realDynamicBatchedGreedy` (`tests/batched-decode-parity.test.ts`) runs the same
+scenario through `mergeKVRows`/`filterKVRows` and matches all 3 per-row greedy
+trajectories token-for-token (CPM L1). Join = re-merge of extracted advanced-offset
+rows + a fresh solo prefill (proves `mergeKVRows` on non-fresh rows); `extend`
+(keep-the-running-batch optimization, mlx-lm's actual join op) is deferred into
+the scheduler. Added `BatchedDecodeMaskCache.releaseRopeArr()`. (Originally
+full-attention only; sliding-window `BatchedRotatingCache` landed 2026-06-14 —
+see the STATUS block above.)
+(2) **DONE 2026-06-14** — the async loop + per-row SSE wired into `createServer`
+behind `--batch N`. `BatchScheduler` (`src/serve/batch-scheduler.ts`) is the
+detached driver; `GenerationGateway` (`src/serve/generation-gateway.ts`) picks
+the lane and an `AsyncMutex` keeps serial and batched off the GPU/`loraState`
+together. Both `handleChat` call sites route through `gateway.run`; per-row
+onToken closures give per-row SSE fan-out for free. Gated: `tests/batch-scheduler.test.ts`
+(teacher-forced KL, evict + join) + `tests/batch-serving.test.ts` (live CPM
+server, concurrent + streaming + drain). No serial regression (server 17/17,
+tools 13/13).
+(3) **DONE 2026-06-14** — `_is_batchable` gate is the `GenerationGateway.willBatch`
+predicate (full-attention model + no vision/adapter/repetition-penalty/user-seed
+→ batch; else serial). `B×S_max` memory admission is still TODO.
 
 ## Fallbacks (must degrade, never break)
 

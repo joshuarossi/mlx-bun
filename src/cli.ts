@@ -54,14 +54,18 @@ const SERVER_FLAGS = `Server options:
                             cannot fit are rejected instead of crashing the
                             GPU  [default: machine RAM × 0.75, check-only]
   --prompt-cache <GB>       Prompt (KV) cache byte cap  [default: 2 GB]
-  --slots <n>               Concurrent generation slots  [default: 1].
-                            >1 is plumbed but not yet batched (phase S1);
-                            currently warns and runs serially.
+  --batch <n>               Max concurrent requests batched through the
+                            mlx-lm-parity engine  [default: 1 = serial].
+                            >1 opts the whole server into bf16 continuous
+                            batching (= mlx-lm B=N); see --kv-quant.
 
 Model & quality:
   --kv-quant <mode>         KV cache quantization: config (per-layer
                             kv_config.json when the model ships one), off
-                            (bf16), or 4 / 8 (uniform bits)  [default: config]
+                            (bf16), or 4 / 8 (uniform bits)
+                            [default: config; bf16 under --batch N — the
+                            batched engine is bf16-only, so an explicit
+                            --kv-quant routes those requests to the serial path]
   --thinking <true|false>   Default for the chat template's enable_thinking
                             variable (CPM and other hybrid-reasoning models);
                             a request's chat_template_kwargs overrides it
@@ -70,11 +74,19 @@ Model & quality:
   --top-p <n>               still overrides them, and the browser chat (which
   --top-k <n>               sends none) inherits them
                             [default: the model's generation_config.json]
+  --hlg-sampling on|off     Piecewise tone-curve sampling (HLG): rolls off the
+                            top, boosts the mids, gentles the tail. Gain folds
+                            from --temperature. [default: off]
+                            See docs/design/hlg-sampling.md
+  --hlg-width <nats>        HLG mid-region half-width  [default: 4]
+  --hlg-shoulder <nats>     HLG highlight rolloff scale  [default: 4]
+  --hlg-toe <nats>          HLG shadow rolloff scale  [default: 6]
+  --hlg-pivot-offset <nats> HLG pivot: nats below the top token  [default: 6]
 
 Performance levers (A/B levers; defaults are the measured winners):
   --compiled-decode on|off  Compiled decode graphs  [default: on]
-  --perf-kernel on|off      Fused decode-SDPA Metal kernel  [default: off
-                            until the clean-machine benchmark pass flips it]
+  --perf-kernel on|off      Fused quantized-KV decode-SDPA Metal kernel
+                            (perf side of the compat A/B)  [default: on]
   --fused-decode on|off     Fused-decode experiment lever  [default: off]
   --fused-sdpa on|off       Fused SDPA path  [default: on]
   --force-wire              Wire weights into memory at load
@@ -298,18 +310,22 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   if (budgetGB > 0) serverOptions.memoryBudgetBytes = budgetGB * 1e9;
   const pcGB = Number(opt("prompt-cache", "0"));
   if (pcGB > 0) serverOptions.promptCacheBytes = pcGB * 2 ** 30;
-  const slotsRaw = opt("slots");
-  if (slotsRaw !== null) {
-    const n = Number(slotsRaw);
+  // --batch N: max concurrent requests batched through the mlx-lm-parity
+  // engine (N=1 = today's serial path). --decode-concurrency is accepted as
+  // an mlx_lm.server-compatible alias (drop-in).
+  const batchRaw = opt("batch") ?? opt("decode-concurrency");
+  if (batchRaw !== null) {
+    const n = Number(batchRaw);
     if (!Number.isInteger(n) || n < 1) {
-      console.error(`--slots expects an integer >= 1 (got "${slotsRaw}")`);
+      console.error(`--batch expects an integer >= 1 (got "${batchRaw}")`);
       process.exit(1);
     }
-    serverOptions.slots = n;
+    serverOptions.batch = n;
   }
   const kv = opt("kv-quant");
   if (kv === "off") serverOptions.kvQuant = "off";
-  else if (kv && kv !== "config") {
+  else if (kv === "config") serverOptions.kvQuant = "config";
+  else if (kv) {
     const bits = Number(kv);
     if (![4, 8].includes(bits)) { console.error(`--kv-quant expects config|off|4|8 (got "${kv}")`); process.exit(1); }
     serverOptions.kvQuant = bits;
@@ -340,6 +356,18 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   if (topP !== null) serverOptions.defaultTopP = topP;
   const topK = numFlag("top-k", 0, 1_000_000);
   if (topK !== null) serverOptions.defaultTopK = topK;
+  // HLG sampling — piecewise tone curve on the logprobs (default off). Knobs in
+  // nats; the mid gain folds from --temperature. docs/design/hlg-sampling.md.
+  if (onOff("hlg-sampling") === true) {
+    serverOptions.hlg = {
+      enabled: true,
+      width: numFlag("hlg-width", 0, 100) ?? 4,
+      shoulder: numFlag("hlg-shoulder", 0, 100) ?? 4,
+      toe: numFlag("hlg-toe", 0, 100) ?? 6,
+      pivotOffset: numFlag("hlg-pivot-offset", 0, 100) ?? 6,
+      pivot: "top",
+    };
+  }
   return { port: Number(opt("port", "8090")), serverOptions };
 }
 
@@ -350,7 +378,7 @@ function runtimeSummary(o: import("./server").ServerOptions): string {
   return `kv-quant ${kv} · compiled-decode ${lever("MLX_BUN_COMPILED_DECODE", "1") === "1" ? "on" : "off"}` +
     ` · perf-kernel ${perfKernelEnabled() ? "on" : "off"}` +
     (lever("MLX_BUN_FUSED_DECODE", "0") === "1" ? " · fused-decode on" : "") +
-    (o.slots && o.slots > 1 ? ` · slots ${o.slots} (serial until S1)` : "") +
+    (o.batch && o.batch > 1 ? ` · batch ${o.batch}` : "") +
     (o.defaultThinking !== undefined ? ` · thinking ${o.defaultThinking ? "on" : "off"}` : "") +
     (o.defaultTemperature !== undefined ? ` · temp ${o.defaultTemperature}` : "") +
     (o.defaultTopP !== undefined ? ` · top-p ${o.defaultTopP}` : "") +

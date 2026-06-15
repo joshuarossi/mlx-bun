@@ -1,0 +1,101 @@
+# A/B — model "gemma-4-e4b-it-OptiQ-4bit"   |   3 samples each, maxTokens=90
+# A (default) = the model's recipe, untouched: temp 1 · top_p 0.95 · top_k 64
+# B (HLG)     = full chain: OETF signal shape → OOTF scaling (α=max brightness, γ from L_W).
+
+
+══════════════════════════════════════════════════════════════════════════════
+[creative] Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.
+══════════════════════════════════════════════════════════════════════════════
+
+  ▸ A (default)
+      1. The fog, a thick, woolly blanket that swallowed the beam of his lantern, seemed to press against the glass, and it was through that swirling gray veil that Silas first saw the impossible.
+      2. The sea fog, a thick, soupy thing that seemed to swallow the very sound of the waves, usually brought with it only the familiar smell of salt and damp stone, but this morning, it carried a faint, metallic tang, like old copper mixed with something faintly sweet.
+      3. The relentless, salt-laced fog that clung to the tower like a shroud offered no respite until the silence was broken by a sound that certainly hadn't been the groan of the old lamp mechanism.
+
+  ▸ B-sharp  W5 os18 A.35
+      1. The fog, a thick, clammy blanket that swallowed the beam of the lantern, seemed to press against the glass of the tower, and it was in that suffocating grey that Elias first saw the impossible glint.
+      2. The fog, a thick, clammy blanket that swallowed the beam of the old Fresnel lens, seemed to hold its breath as Silas spotted the impossible glint just beyond the churning grey.
+      3. The fog, a thick, clammy blanket that seemed to swallow the very sound of the waves, was usually his only companion, but tonight, it carried a scent utterly alien—a metallic tang mixed with the faint, sweet perfume of something that shouldn't exist on the desolate coast.
+
+  ▸ B-loose  W7 os13 A.60
+      1. The Lern Aide, onSuccess簿 scuttled through the dense Protective fogatório بالتadier साप्ताहिक, প্রশ্ন করার মতো, until a flickerাবেনевич of unnatural, pale blue light pulsed inulai the asent of the Otherwise uniform grey салусайт الجرس<unused884>.
+      2. The जैसे overtakehouses, a thickolver漏洞 খাওয়ার,ᵛ, shrouded the rocky graisse,ğim, where Silas Continuando had spent the better part of his lifeஅது, and tonight Gif kaj Dough, it Clause a silence so profound it felt like anewdata's帼adolid. uga.
+      3. The fog, a clammy, grey beast clinging Leukemiautas conducteur adorable kiss, had always been a familiar馇 navigateur'圩 to meticulus, solitary粗 lighthouse käper, but todayced it seemed正常的, something elseChoiceItemLayoutProtracted mathed an unnatural, rhythmic pulse against Study lại glass="(286) <unused328>"
+
+══════════════════════════════════════════════════════════════════════════════
+[brainstorm] List five unusual but genuinely useful things you can do with an ordinary paperclip.
+══════════════════════════════════════════════════════════════════════════════
+
+  ▸ A (default)
+      1. Here are five unusual but genuinely useful things you can do with an ordinary paperclip: 1. **Improvised SIM Card Tray Ejector:** Most modern smartphones have a tiny SIM card tray that requires a specific ejection tool. A straightened paperclip is the perfect, readily available makeshift tool for this job. 2. **Precision Cleaning Tool (for electronics/keyboards):** When you have dust, lint, or small debris lodged in
+      2. Here are five unusual but genuinely useful things you can do with an ordinary paperclip: 1. **SIM Card Tray Ejector:** Many modern smartphones require a tiny, specialized tool to pop out the SIM card tray. A straightened-out paperclip, bent slightly on one end, works perfectly as a makeshift and surprisingly effective ejector tool. 2. **Zipper Pull Replacement/Fix:** If the tiny metal pull tab on a jacket
+      3. Here are five unusual but genuinely useful things you can do with an ordinary paperclip: 1. **Emergency SIM Card Ejector:** Many modern smartphones require a small pin to be inserted into a tiny hole on the side of the phone to eject the SIM card tray. A straightened-out paperclip is the perfect, readily available tool for this job. 2. **Precision Unclogging Tool (Small Nozzles/Keys):**
+
+  ▸ B-sharp  W5 os18 A.35
+      1. Here are five unusual but genuinely useful things you can do with an ordinary paperclip: 1. **Emergency SIM Card Ejector:** Many smartphones have a tiny SIM card tray that requires a specific pin-sized tool to open. A straightened paperclip is the perfect, readily available emergency ejector tool. 2. **Miniature Reset Button Pusher:** Electronic devices (routers, modems, gaming consoles) often have a small, recessed
+      2. Here are five unusual but genuinely useful things you can do with an ordinary paperclip: 1. **Emergency SIM Card Ejector Tool:** Many modern smartphones have a tiny SIM card tray that requires a specific pin to eject it. If you don't have the specialized tool, a straightened paperclip is the perfect, readily available substitute. 2. **Miniature Hook/Retrieval Tool:** If you drop a tiny screw, a staple
+      3. Here are five unusual but genuinely useful things you can do with an ordinary paperclip: 1. **Emergency SIM Card Ejector:** Many smartphones have a tiny SIM card tray that requires a specific, small tool to eject it. A straightened-out paperclip is the perfect, readily available emergency tool for this purpose. 2. **Small Zipper Repair/Re-seating Tool:** If a zipper tab comes off or a tiny piece
+
+  ▸ B-loose  W7 os13 A.60
+      1. Here Lern five unusual but genuinely scfileobj things you can do Protective paperclip بالتadier साप्ताहिक Okay প্রশ্ন:Kurs. калистоাবেনевич, can you provide a little consecutivos inhaleulai a quick summary of the key points of the الجرس? Also,tractor,arrant.
+      2. Concerned with overtakehouses, gehabtolver. খাওয়ার ᵛᵉʳˢᵃᵗⁱˡᵉ \*sn Lieu Here are five unusual but結構அது genuinely useful things you kaj Dough with an Clause ordinaryPPT paperclip<unused3161>: 1newdata> **Miniadolid Hook/ Diseñador de EngFIX:** If you｢ தலைமையில் (lead)geist a small즌 tab=?";ainment arouse (like a tinyتباين wire, അമ) or thio (
+      3. HerepopupBackground. Here are الى five unusual but genuinelyutas conducteur adorable kiss, टु, to, to馇 navigateur.圩 to meticuloso, to粗, kä to, to. 1.正常的**迷你 eindeicker**yilda matbuotga chiqarпил. (Miniature **="(miniature"्वा <unused328>"** for small tasks recruendants. You can use it advisor consectetur, to make small,TypeText-based models or simple
+
+══════════════════════════════════════════════════════════════════════════════
+[factual] In one sentence, what causes the seasons on Earth?
+══════════════════════════════════════════════════════════════════════════════
+
+  ▸ A (default)
+      1. The seasons on Earth are primarily caused by the tilt of the Earth's axis as it revolves around the Sun.
+      2. The seasons on Earth are caused by the tilt of the Earth's axis as it revolves around the Sun.
+      3. The seasons on Earth are caused by the tilt of the planet's axis as it revolves around the Sun.
+
+  ▸ B-sharp  W5 os18 A.35
+      1. The seasons on Earth are primarily caused by the tilt of the Earth's axis as it revolves around the Sun.
+      2. The seasons on Earth are primarily caused by the tilt of the Earth's axis as it revolves around the Sun.
+      3. The seasons on Earth are primarily caused by the tilt of the Earth's axis as it revolves around the Sun.
+
+  ▸ B-loose  W7 os13 A.60
+      1. The Lernatitude onSuccess簿 sc runs due to the tilt Protective ofatório بالتadier of Earth প্রশ্ন as it revolves around the SunাবেনевичTruthy.
+      2. The जैसे overtakehouses of the Eartholver are tilted,ᵛcausing varying amounts燎 graisse臤 of sunlight to reach Continuando differentჩევ parts of the planet throughout結構 the year.
+      3. The seasons on Earthrégulate due хуже to the tiltutas conducteur adorable kiss 短 टु the सम्मेलन of the planet navigateur around圩 the meticulou➌ sun粗. kä
+
+══════════════════════════════════════════════════════════════════════════════
+[reasoning] A bat and a ball cost $1.10 in total. The bat costs $1.00 more than the ball. How much does the ball cost? Think step by step, then give the final answer.
+══════════════════════════════════════════════════════════════════════════════
+
+  ▸ A (default)
+      1. Here's a step-by-step solution to the problem: **1. Define Variables:** * Let $B$ be the cost of the bat. * Let $L$ be the cost of the ball. **2. Set Up Equations Based on the Given Information:** * **Total Cost:** The bat and the ball cost \$1.10 in total. $$B + L = 1.
+      2. Here's a step-by-step solution to the problem: **1. Define variables:** * Let $B$ be the cost of the bat. * Let $L$ be the cost of the ball. **2. Set up the equations based on the given information:** * **Equation 1 (Total Cost):** The bat and the ball cost $\$1.10$ in total. $$
+      3. Here's a step-by-step solution to the problem: **1. Define variables:** * Let $B$ be the cost of the bat. * Let $L$ be the cost of the ball. **2. Set up the equations based on the given information:** * **Total Cost:** The bat and the ball cost $\$1.10$ in total. $$B + L =
+
+  ▸ B-sharp  W5 os18 A.35
+      1. Here is the step-by-step solution: **1. Define variables:** Let $B$ be the cost of the bat. Let $L$ be the cost of the ball. **2. Set up the equations based on the given information:** * **Total cost:** The bat and the ball cost \$1.10 in total. $$B + L = 1.10$$
+      2. Here is the step-by-step solution: **1. Define variables:** Let $B$ be the cost of the bat. Let $L$ be the cost of the ball. **2. Set up equations based on the problem description:** * **Equation 1 (Total Cost):** The bat and the ball cost \$1.10 in total. $$B + L = 1.1
+      3. Here is the step-by-step solution: **1. Define variables:** * Let $B$ be the cost of the bat. * Let $L$ be the cost of the ball. **2. Set up the equations based on the problem statement:** * **Equation 1 (Total Cost):** The bat and ball cost $\$1.10$ in total. $$B + L =
+
+  ▸ B-loose  W7 os13 A.60
+      1. Here Lern Aide, let' sc step by step to solve Protective Detective. بالتadier साप्ताहिक. প্রশ্নটি হলো: калиброাবেনевич, başlayan şey batAvl ve consecutivos.ulai bir asent. Otherwise, let салу the الجرس<unused884>ক. tractor.arrant. The question Particularly whore अच😽? ** amigas,Bowl-এর দাম Euclid ফটোগ্রাফ Galleries-显然? avian?कांड república नपु Osaka?** finden Sie heraus wieরিক
+      2. Concerned with overtakehouses, gehabtolverk খাওয়ার ᵛᵉʳ Zweigen graisse Here is the step- Lieu of the solution: **1அது Identify the given information kaj Dough<unused226>es Clause:** * Total cost 下さい = \$newdata. রোহিঙ্গাদের (adolidத்துக்) Disebat * grouseFIX Bat руководит｢ (🥶) Costgeist = Ball즌 Cost +ainment arouse (💰})$, whereتباين is the അമ revivedbat thio.
+      3. Here's the step- الى хуже (step-utas conducteur adorable kiss): टुटेको समस्यालाई馇 गर्ने चरण圩र meticulous रूपRit粗 गर्ने kärya: **Step 1正常的 रूपमा einde problemProtyilda matra deha jaana:** * lại bat="(B insert here) * lại ball="( Cougars insert here" * कुल कीमत = advisor.Individuals insert here உண்மையில்TypeText: * $B
+
+══════════════════════════════════════════════════════════════════════════════
+[continuation] Complete this thought in a vivid, original way: 'The strangest thing about human memory is'
+══════════════════════════════════════════════════════════════════════════════
+
+  ▸ A (default)
+      1. 'The strangest thing about human memory is **how it doesn't archive reality, but rather, a thousand, exquisitely tailored echoes of what *might* have been—a shimmering, unreliable tapestry woven from the scent of old rain, the precise cadence of a forgotten laugh, and the ghosts of alternate decisions.**'
+      2. The strangest thing about human memory is **how it insists on being a fractured, unreliable tapestry woven from the scent of old rain, the ghost echo of a forgotten laughter, and the jarring, luminous clarity of a moment that never actually happened.**
+      3. 'The strangest thing about human memory is **how it acts less like a library and more like a chaotic, improvisational stage director, constantly remixing the archived moments, adding footnotes of what *might* have happened, and muting the truly unremarkable details until the narrative fits the current emotional need.**'
+
+  ▸ B-sharp  W5 os18 A.35
+      1. 'The strangest thing about human memory is **how it doesn't archive reality, but rather, meticulously crafts a museum exhibit of *what we believed* reality was at the time of the experience—a beautiful, unreliable diorama built from the dust of feeling and the ghosts of forgotten details.**'
+      2. 'The strangest thing about human memory is **how it doesn't archive; it *re-weaves*. It's not a perfect, dusty library of moments, but a constantly shifting tapestry, where the vibrant threads of joy are often knotted with the dull grey of forgotten anxiety, and the sharp edges of trauma are softened, sometimes dangerously, into the smooth, polished amber of nostalgia.**'
+      3. 'The strangest thing about human memory is **how it doesn't archive; it *re-weaves*. It’s not a dusty library where you pull a perfect, untouched scroll, but a tapestry constantly being re-threaded by the anxieties of the present, where the vibrant crimson of a forgotten summer afternoon might bleed a nervous, pale grey from the worry of a Monday morning.**'
+
+  ▸ B-loose  W7 os13 A.60
+      1. 'The Aide, the簿 scrawled in the attic dust,atório theadier साप्ताहिक, প্রশ্ন, a flash of a forgottenাবেনевич' başlayan anıların, consecutivos,ulai bir havada asılı kalması;сайт الجرس'in yank治疗tractor sesiarrantan, bir an whore अच😽 एक क्षण, amigas, bir rüyan Euclid ফটোগ্রাফ Galleries'de değil, kendiकांड república नपु Osakacriptors'in derincrucifixরিক
+      2. Concerned with overtakehouses, a kaleidoscopeolver漏洞 খাওয়ার মতোᵛ, a fractured燎原, it insists on the scent Lieu of rain buys on a forgotten Tuesdayஅது, a scent so kajal-soaked Clause-bound, that it drags the ghostnewdata of রোহিঙ্গাদের帼adolid back to Diseñador' grouseFIXED руководители. தலைமையில்.
+      3. 'The strangest thing about الى хуже, human memoryutas conducteur adorable kiss, it doesn't record馇; it *re-we➌s粗* kä's, a shimmering 갈망正常的, unreliable einde of theyilda past, like mittels of a kaleidoscope catching Study light—="(a memory is nottiers<unused328>; it is Cougars)"'s a constant, vibrant, advisor consectetur, each recall a slightly different, more beautiful, or
+
+(done)

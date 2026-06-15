@@ -1,0 +1,223 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HLG Curve Designer</title>
+<style>
+:root{--text:#1f2937;--text2:#475569;--text3:#94a3b8;--bg:#f7f9fc;--card:#fff;--bd:#e2e8f0;
+  --accent:#2563eb;--accent2:#0891b2;--pos:#16a34a;--warn:#d97706;--danger:#dc2626;--grid:#eef2f7;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:13.5px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",ui-sans-serif,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1240px;margin:0 auto;padding:18px 20px 70px}
+.head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+h1{font-size:19px;margin:0;letter-spacing:-.01em}
+.head a.back{font-size:12px;color:var(--accent);text-decoration:none}
+.head .desc{color:var(--text2);font-size:13px}
+.engine{margin-left:auto;display:flex;align-items:center;gap:7px;font-size:12px}
+.engine input{font:12px ui-monospace,Menlo,monospace;border:1px solid var(--bd);border-radius:7px;padding:6px 8px;width:230px;background:var(--card)}
+.engine .dot{width:8px;height:8px;border-radius:50%;background:var(--text3)}
+.engine .dot.ok{background:var(--pos)} .engine .dot.bad{background:var(--danger)}
+.cols{display:grid;grid-template-columns:minmax(440px,1fr) 1fr;gap:18px;align-items:start}
+@media(max-width:920px){.cols{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:14px 16px;box-shadow:0 1px 2px rgba(15,23,42,.04),0 10px 30px -24px rgba(15,23,42,.2)}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--text2);margin:0 0 10px;display:flex;align-items:center;gap:10px}
+svg.plot{width:100%;height:auto;display:block;touch-action:none;cursor:crosshair}
+.slopes{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:10px 0 4px}
+.slopes .s{background:var(--grid);border-radius:9px;padding:6px 8px}
+.slopes .s .k{font-size:9px;text-transform:uppercase;letter-spacing:.03em;color:var(--text3)}
+.slopes .s .v{font-size:14px;font-weight:700;font-variant-numeric:tabular-nums}
+.slopes .s .t{font-size:9.5px}
+.copyrow{display:flex;gap:7px;align-items:center;margin-top:12px}
+.copyrow input{flex:1;font:11px ui-monospace,Menlo,monospace;border:1px solid var(--bd);border-radius:7px;padding:7px 8px;background:var(--grid)}
+button.primary{background:var(--accent);color:#fff;border:0;border-radius:9px;padding:9px 16px;font:700 13px inherit;cursor:pointer}
+button.primary:disabled{opacity:.55;cursor:default}
+button.ghost{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:7px 11px;font:600 12px inherit;color:var(--text2);cursor:pointer}
+.prompt{width:100%;font:13px inherit;border:1px solid var(--bd);border-radius:9px;padding:9px 10px;resize:vertical;min-height:54px;background:var(--card)}
+.pchips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.pchips button{font:600 11px/1 inherit;padding:6px 9px;border:1px solid var(--bd);background:var(--grid);border-radius:7px;cursor:pointer;color:var(--text2)}
+.genrow{display:flex;gap:10px;align-items:center;margin:10px 0;flex-wrap:wrap}
+.genrow .mini{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2)}
+.genrow .mini input{width:56px;font:12px inherit;border:1px solid var(--bd);border-radius:6px;padding:5px 6px}
+.samples{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+.samp{font-size:13.5px;background:var(--grid);border-radius:9px;padding:9px 11px;border-left:3px solid var(--accent);white-space:pre-wrap}
+.samp.junk{border-left-color:var(--danger);background:#fef6f6}
+.samp .tag{font-size:10px;font-weight:700;color:var(--danger);float:right}
+.status{font-size:12px;color:var(--text3);min-height:16px}
+.note{font-size:11.5px;color:var(--text3);margin-top:10px;line-height:1.5}
+</style></head>
+<body><div class="wrap">
+<div class="head">
+  <h1>HLG Curve Designer</h1>
+  <a class="back" href="/" id="backLink" style="display:none">← mlx-bun</a>
+  <span class="desc">Drag the curve over the signal → generate → read prose → adjust.</span>
+  <span class="engine"><span class="dot" id="engdot"></span>engine <input id="engine"></span>
+</div>
+<div class="cols">
+  <div class="card">
+    <h2>Transfer curve <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text3)">x = p_in, y = p_out (log) · diagonal = temperature 1 · the gray histogram is the real next-token signal</span></h2>
+    <svg class="plot" id="plot" viewBox="0 0 460 360"></svg>
+    <div class="slopes" id="slopeReadout"></div>
+    <div id="baselineHint" style="font-size:11.5px;font-weight:600;margin:4px 0 0"></div>
+    <div class="copyrow"><input id="cfgField" readonly><button class="ghost" id="copyBtn">Copy values</button><button class="ghost" id="resetBtn">Reset</button><span id="copyOk" style="color:var(--pos);font-weight:700;font-size:11px"></span></div>
+    <div class="note">Five movable control points; drag any of them (including the corners). It always stays a smooth monotone curve. <b>Above the diagonal</b> raises those tokens, <b>below</b> lowers them; drag a point down over the histogram's tail to gate it.</div>
+  </div>
+  <div class="card">
+    <h2>Generate</h2>
+    <textarea class="prompt" id="prompt">Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.</textarea>
+    <div class="pchips" id="pchips"></div>
+    <div class="genrow">
+      <button class="primary" id="genBtn">Generate</button>
+      <button class="ghost" id="sigBtn">↻ load signal</button>
+      <button class="ghost" id="copyTextBtn" style="display:none">Copy text</button>
+      <span class="mini">N <input id="nSamp" type="number" min="1" max="8" value="4"></span>
+      <span class="mini">seed <input id="seed" type="number" value="100"></span>
+      <span class="status" id="status"></span>
+    </div>
+    <div class="samples" id="samples"></div>
+    <div class="note">Samples are a <b>feel-check</b>, not evidence — easy to overfit. The blind two-judge eval stays the verdict.</div>
+  </div>
+</div>
+
+<script>
+const ln=Math.log;
+const UMIN=ln(1e-6); // bottom-left / plot floor (matches src/curve-sampler.ts CURVE_UMIN)
+const ENGINE_BASE = location.protocol.startsWith("http") ? location.origin : "http://localhost:8090";
+// ---- curve state: 5 movable control points, sorted ascending in p_in ----
+function identityPoints(){ return [{x_pct:1e-4,y_pct:1e-4},{x_pct:0.1,y_pct:0.1},{x_pct:1,y_pct:1},{x_pct:9,y_pct:9},{x_pct:100,y_pct:100}]; }
+let C = { space:"logprob", points:identityPoints(), monotonic:true };
+let SIGNAL=null; // {bins:[], vocab}
+let LAST=null;   // {prompt, curve, samples} of the most recent generation
+const PROMPTS=[
+  "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.",
+  "In one sentence, what causes the seasons on Earth?",
+  "Give one unusual but genuinely plausible use for a paperclip, in a sentence.",
+  "Describe the feeling of a city at 3am in one vivid sentence.",
+];
+
+// ---- math: monotone cubic (PCHIP), IDENTICAL to src/curve-sampler.ts ----
+const Lp=pt=>[ln(Math.max(pt.x_pct,1e-9)/100),ln(Math.max(pt.y_pct,1e-9)/100)];
+function knotArrays(c){ const k=c.points.map(Lp).sort((a,b)=>a[0]-b[0]); return {X:k.map(q=>q[0]),Y:k.map(q=>q[1])}; }
+function secants(c){ const {X,Y}=knotArrays(c),s=[]; for(let i=X.length-1;i>0;i--)s.push((Y[i]-Y[i-1])/(X[i]-X[i-1])); return s; }
+function monotone(c){ return secants(c).every(s=>s>=-1e-12); }
+// identity = every control point on the diagonal ⇒ generate with the model's DEFAULT
+// chat recipe (the real "what you'd get chatting" baseline), not a literal temp-1 curve.
+function isIdentity(c){ return c.points.every(p=>Math.abs(ln(Math.max(p.x_pct,1e-9))-ln(Math.max(p.y_pct,1e-9)))<0.03); }
+function cubicInU(x0,h,y0,y1,m0,m1){ const c0=y0,c1=h*m0,c2=-3*y0-2*h*m0+3*y1-h*m1,c3=2*y0+h*m0-2*y1+h*m1; const s=1/h,s2=s*s,s3=s2*s; let A=c0,B=0,C=0,D=0; B+=c1*s;A+=-c1*s*x0; C+=c2*s2;B+=-2*x0*c2*s2;A+=x0*x0*c2*s2; D+=c3*s3;C+=-3*x0*c3*s3;B+=3*x0*x0*c3*s3;A+=-x0*x0*x0*c3*s3; return {A,B,C,D}; }
+function buildSpline(c){ const {X,Y}=knotArrays(c),n=X.length,D=[];
+  for(let i=0;i<n-1;i++)D.push((Y[i+1]-Y[i])/(X[i+1]-X[i]));
+  const M=new Array(n); M[0]=D[0]; M[n-1]=D[n-2];
+  for(let i=1;i<n-1;i++){ if(D[i-1]*D[i]<=0){M[i]=0;continue;} const h1=X[i]-X[i-1],h2=X[i+1]-X[i],w1=2*h2+h1,w2=h2+2*h1; M[i]=(w1+w2)/(w1/D[i-1]+w2/D[i]); }
+  const segs=[]; for(let i=0;i<n-1;i++)segs.push(cubicInU(X[i],X[i+1]-X[i],Y[i],Y[i+1],M[i],M[i+1])); return {X,Y,M,segs}; }
+function evalSpline(sp,u){ const n=sp.X.length;
+  if(u<sp.X[0])return sp.Y[0]+Math.max(sp.M[0],1)*(u-sp.X[0]);
+  if(u>sp.X[n-1])return sp.Y[n-1]+sp.M[n-1]*(u-sp.X[n-1]);
+  let i=sp.segs.length-1; while(i>0&&u<sp.X[i])i--; const s=sp.segs[i]; return s.A+s.B*u+s.C*u*u+s.D*u*u*u; }
+
+// ---- plot mapping ----
+const VBW=460,VBH=360,PL=46,PR=14,PT=14,PB=34;
+const px=u=>PL+(1-u/UMIN)*(VBW-PL-PR), py=u=>PT+(u/UMIN)*(VBH-PT-PB);
+const uX=mx=>UMIN*(1-(mx-PL)/(VBW-PL-PR)), uY=my=>UMIN*((my-PT)/(VBH-PT-PB)), pct=u=>Math.exp(u)*100;
+const TICKS=[100,10,1,0.1,0.01,0.001];
+const PCOL=["#94a3b8","#0891b2","#7c3aed","#2563eb","#94a3b8"]; // endpoint, knee, center, shoulder, endpoint
+
+function draw(){
+  let s=`<defs><clipPath id="plotclip"><rect x="${PL}" y="${PT}" width="${VBW-PL-PR}" height="${VBH-PT-PB}"/></clipPath></defs>`;
+  // signal histogram (behind)
+  if(SIGNAL&&SIGNAL.bins){ const b=SIGNAL.bins,NB=b.length,maxc=Math.max(...b,1),hz=(VBH-PT-PB)*0.55,base=VBH-PB;
+    for(let i=0;i<NB;i++){ if(!b[i])continue; const x0=px(UMIN*(1-i/NB)),x1=px(UMIN*(1-(i+1)/NB)); const hgt=ln(1+b[i])/ln(1+maxc)*hz;
+      s+=`<rect x="${Math.min(x0,x1)}" y="${base-hgt}" width="${Math.abs(x1-x0)+0.4}" height="${hgt}" fill="var(--text3)" opacity="0.26"/>`; } }
+  for(const p of TICKS){ const u=ln(p/100);
+    s+=`<line x1="${px(u)}" y1="${PT}" x2="${px(u)}" y2="${VBH-PB}" stroke="var(--grid)"/><line x1="${PL}" y1="${py(u)}" x2="${VBW-PR}" y2="${py(u)}" stroke="var(--grid)"/>`;
+    s+=`<text x="${px(u)}" y="${VBH-PB+13}" text-anchor="middle" font-size="8.5" fill="var(--text3)">${p}%</text>`;
+    s+=`<text x="${PL-5}" y="${py(u)+3}" text-anchor="end" font-size="8.5" fill="var(--text3)">${p}%</text>`; }
+  s+=`<text x="${(PL+VBW-PR)/2}" y="${VBH-3}" text-anchor="middle" font-size="10" fill="var(--text2)">p_in  (model's true probability)</text>`;
+  s+=`<line x1="${px(UMIN)}" y1="${py(UMIN)}" x2="${px(0)}" y2="${py(0)}" stroke="var(--text3)" stroke-width="1.4" stroke-dasharray="5 4"/>`;
+  // smooth clipped curve
+  const sp=buildSpline(C); let d="";
+  for(let i=0;i<=240;i++){ const u=UMIN*(1-i/240); const v=Math.max(Math.min(evalSpline(sp,u),0),UMIN*1.25); d+=(i?"L":"M")+px(u).toFixed(1)+" "+py(v).toFixed(1)+" "; }
+  s+=`<g clip-path="url(#plotclip)"><path d="${d}" fill="none" stroke="var(--accent)" stroke-width="2.6"/></g>`;
+  // 5 control points
+  C.points.forEach((p,i)=>{ const u=Lp(p); const col=PCOL[Math.min(i,PCOL.length-1)];
+    s+=`<circle class="kp" data-i="${i}" cx="${px(u[0])}" cy="${py(u[1])}" r="7" fill="${col}" stroke="#fff" stroke-width="2" style="cursor:grab"/>`; });
+  document.getElementById("plot").innerHTML=s;
+  bindDrag(); drawSlopes(); document.getElementById("cfgField").value=cfgJSON();
+  document.getElementById("baselineHint").innerHTML = isIdentity(C)
+    ? '<span style="color:var(--pos)">● identity</span> — Generate uses the model’s <b>default chat recipe</b> (temp + top-p + top-k): the real baseline.'
+    : '<span style="color:var(--accent)">● custom curve</span> — Generate replaces temperature+softmax with your curve.';
+}
+function drawSlopes(){
+  const sc=secants(C); const names=["head","upper-mid","lower-mid","shadows"];
+  const cell=(k,sl)=>{ const t=sl<0.97?"flatten":sl>1.03?"sharpen":"≈ identity", col=sl<0.97?"var(--pos)":sl>1.03?"var(--danger)":"var(--text2)";
+    return `<div class="s"><div class="k">${k}</div><div class="v">${sl.toFixed(2)}</div><div class="t" style="color:${col}">${t}</div></div>`; };
+  document.getElementById("slopeReadout").innerHTML=sc.slice(0,4).map((sl,i)=>cell(names[i]||("seg"+i),sl)).join("");
+}
+
+function clampPoint(i){
+  const P=C.points, lo=i>0?P[i-1]:null, hi=i<P.length-1?P[i+1]:null;
+  P[i].x_pct=Math.max(lo?lo.x_pct*1.03:0.00005, Math.min(hi?hi.x_pct*0.97:100, P[i].x_pct));
+  P[i].y_pct=Math.max(lo?lo.y_pct*1.03:0.00005, Math.min(hi?hi.y_pct*0.97:100, P[i].y_pct));
+}
+function bindDrag(){
+  const svg=document.getElementById("plot");
+  svg.querySelectorAll(".kp").forEach(el=>{
+    el.addEventListener("pointerdown",ev=>{ ev.preventDefault(); el.setPointerCapture(ev.pointerId);
+      const i=+el.dataset.i, rect=svg.getBoundingClientRect();
+      const move=e=>{ const mx=(e.clientX-rect.left)*(VBW/rect.width), my=(e.clientY-rect.top)*(VBH/rect.height);
+        C.points[i].x_pct=Math.min(100,Math.max(0.00005,pct(uX(mx)))); C.points[i].y_pct=Math.min(100,Math.max(0.00005,pct(uY(my)))); clampPoint(i); draw(); };
+      const up=()=>{ try{el.releasePointerCapture(ev.pointerId)}catch(_){}; window.removeEventListener("pointermove",move); window.removeEventListener("pointerup",up); };
+      window.addEventListener("pointermove",move); window.addEventListener("pointerup",up);
+    });
+  });
+}
+function cfgJSON(){ return JSON.stringify({space:"logprob",points:C.points.map(p=>({x_pct:+p.x_pct.toFixed(4),y_pct:+p.y_pct.toFixed(5)})),monotonic:true}); }
+
+// ---- server calls ----
+const engBase=()=>document.getElementById("engine").value.replace(/\/(generate|signal)\/?$/,"");
+async function probe(){ const dot=document.getElementById("engdot");
+  try{ const r=await fetch(engBase()+"/v1"); dot.className="dot "+(r.ok?"ok":"bad"); }catch(_){ dot.className="dot bad"; } }
+async function loadSignal(){
+  const st=document.getElementById("status");
+  try{ const r=await fetch(engBase()+"/signal",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({prompt:document.getElementById("prompt").value})});
+    if(!r.ok)return; const j=await r.json(); SIGNAL=j; draw(); st.textContent="signal loaded ("+(j.vocab||"?")+" tokens)"; setTimeout(()=>{if(st.textContent.startsWith("signal"))st.textContent=""},1800);
+  }catch(_){ /* engine not up — no histogram */ }
+}
+async function generate(){
+  const btn=document.getElementById("genBtn"), st=document.getElementById("status"), out=document.getElementById("samples");
+  if(!monotone(C)){ st.textContent="curve not monotone."; return; }
+  btn.disabled=true; const baseline=isIdentity(C); st.textContent=baseline?"generating (model default)…":"generating…"; out.innerHTML="";
+  const payload={ prompt:document.getElementById("prompt").value,
+    n:Math.max(1,Math.min(8,+document.getElementById("nSamp").value||4)), seed:+document.getElementById("seed").value||100, max_tokens:90,
+    ...(baseline?{default:true}:{curve:JSON.parse(cfgJSON())}) };
+  try{
+    const r=await fetch(engBase()+"/generate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)});
+    const j=await r.json();
+    if(!r.ok){ st.textContent="engine error: "+(j.error||r.status); btn.disabled=false; return; }
+    const tag = j.mode==="default"&&j.recipe ? `model default · T=${j.recipe.temperature} top-p=${j.recipe.topP} top-k=${j.recipe.topK}` : "your curve";
+    st.textContent=`${tag} · ${j.samples.length} samples · seed ${j.seed}`;
+    out.innerHTML=j.samples.map((x,i)=>`<div class="samp${x.junk?" junk":""}">${x.junk?'<span class="tag">JUNK</span>':""}<b>${i+1}.</b> ${esc(x.text)}</div>`).join("");
+    LAST={ prompt:payload.prompt, mode:j.mode, recipe:j.recipe, curve:cfgJSON(), samples:j.samples };
+    document.getElementById("copyTextBtn").style.display="inline";
+  }catch(e){ st.textContent="cannot reach engine — is the server running? "+e.message; }
+  btn.disabled=false;
+}
+function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+// ---- wiring ----
+document.getElementById("engine").value=ENGINE_BASE+"/generate";
+if(location.protocol.startsWith("http")) document.getElementById("backLink").style.display="inline";
+document.getElementById("pchips").innerHTML=PROMPTS.map((p,i)=>`<button data-i="${i}">${p.slice(0,38)}…</button>`).join("");
+document.getElementById("pchips").querySelectorAll("button").forEach(b=>b.addEventListener("click",()=>{document.getElementById("prompt").value=PROMPTS[+b.dataset.i];loadSignal();}));
+document.getElementById("genBtn").addEventListener("click",generate);
+document.getElementById("sigBtn").addEventListener("click",loadSignal);
+document.getElementById("copyTextBtn").addEventListener("click",()=>{ if(!LAST)return;
+  const sampler = LAST.mode==="default"&&LAST.recipe ? "Sampler: model default recipe (T="+LAST.recipe.temperature+", top-p="+LAST.recipe.topP+", top-k="+LAST.recipe.topK+")" : "Curve: "+LAST.curve;
+  const txt="Prompt: "+LAST.prompt+"\n"+sampler+"\n\n"+LAST.samples.map((s,i)=>(i+1)+". "+(s.junk?"[JUNK] ":"")+s.text).join("\n\n");
+  const st=document.getElementById("status"), done=()=>{st.textContent="text copied ✓";setTimeout(()=>{if(st.textContent==="text copied ✓")st.textContent=""},1500);};
+  if(navigator.clipboard)navigator.clipboard.writeText(txt).then(done,done); else { const ta=document.createElement("textarea"); ta.value=txt; document.body.appendChild(ta); ta.select(); try{document.execCommand("copy")}catch(_){}; ta.remove(); done(); } });
+document.getElementById("resetBtn").addEventListener("click",()=>{C.points=identityPoints();draw();});
+document.getElementById("copyBtn").addEventListener("click",()=>{ const f=document.getElementById("cfgField"); f.select();
+  const ok=document.getElementById("copyOk"), done=()=>{ok.textContent="Copied!";setTimeout(()=>ok.textContent="",1500);};
+  if(navigator.clipboard)navigator.clipboard.writeText(f.value).then(done,()=>{document.execCommand("copy");done();}); else {document.execCommand("copy");done();} });
+document.getElementById("engine").addEventListener("change",()=>{probe();loadSignal();});
+document.getElementById("prompt").addEventListener("change",loadSignal);
+draw(); probe(); loadSignal();
+</script>
+</body></html>

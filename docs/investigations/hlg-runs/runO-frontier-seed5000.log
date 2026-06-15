@@ -1,0 +1,15 @@
+# HLG frontier probe — model "gemma-4-e4b-it-OptiQ-4bit"   |   N=10
+# diversity: sbleu-div = 1−self-BLEU (lexical) · emb-div = 1−mean cosine of LM embeddings (semantic) · distinct2.
+# canary-gated (<1% non-Latin). Question: does any clean cell beat the default on EITHER metric?
+
+default              sbleu-div 0.755  emb-div 0.121  distinct2 0.77  junk 0.0%  ← REFERENCE
+
+base (W6 tg15 A.35)  sbleu-div 0.520  emb-div 0.092  distinct2 0.64  junk 0.0%  acceptable
+A=0.01 (loose)       sbleu-div 0.722  emb-div 0.138  distinct2 0.76  junk 0.0%  ★ beats emb
+sM=0.05 (loose)      sbleu-div 0.770  emb-div 0.133  distinct2 0.76  junk 0.0%  ★★ BEATS both
+Lw=10 (loose)        sbleu-div 0.556  emb-div 0.110  distinct2 0.66  junk 0.0%  acceptable
+A.01 × sM.05         sbleu-div 0.747  emb-div 0.141  distinct2 0.76  junk 0.0%  ★ beats emb
+A.01 × sM.05 × Lw10  sbleu-div 0.741  emb-div 0.139  distinct2 0.75  junk 0.0%  ★ beats emb
+
+VERDICT: ★ a clean cell beats the default on a diversity metric — investigate.
+(results → /Users/joshrossi/Code/mlx-bun/docs/investigations/hlg-runs/hlg-frontier.json)

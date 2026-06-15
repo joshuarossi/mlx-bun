@@ -143,7 +143,9 @@ agent CLIs like pi/OpenClaw via their provider config.
   text with streaming hold-back); omitted sampling fields default to
   the model's own `generation_config.json` recipe; usage includes
   `cached_tokens`. Full schemas in
-  [docs/reference/server-api.md](./docs/reference/server-api.md).
+  [docs/reference/server-api.md](./docs/reference/server-api.md); start
+  flags and the `--batch N` compatibility matrix in
+  [docs/reference/server-config.md](./docs/reference/server-config.md).
 - **Tool calling** — pass OpenAI `tools`; each family's native format
   is parsed into `tool_calls` JSON with `finish_reason: "tool_calls"`
   (Gemma 4 `<|tool_call>` sentinel tokens; MiniCPM5

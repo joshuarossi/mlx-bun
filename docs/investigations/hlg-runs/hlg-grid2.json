@@ -1,0 +1,343 @@
+{
+  "model": "gemma-4-e4b-it-OptiQ-4bit",
+  "k": 20,
+  "base": {
+    "window": 6,
+    "shoulderA": 0.35,
+    "sM": 0.7,
+    "targetGap": 15,
+    "refGap": 4,
+    "lw": 1200
+  },
+  "planes": [
+    {
+      "name": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "yKey": "sM",
+      "yVals": [
+        0.2,
+        0.7,
+        2,
+        4
+      ],
+      "xKey": "targetGap",
+      "xVals": [
+        7,
+        8,
+        9,
+        10,
+        11,
+        12
+      ]
+    },
+    {
+      "name": "W sharp edge × A  (does the channel-close move with A?)",
+      "yKey": "shoulderA",
+      "yVals": [
+        1,
+        10,
+        100
+      ],
+      "xKey": "window",
+      "xVals": [
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ]
+    }
+  ],
+  "grid": [
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 0.2,
+      "targetGap": 7,
+      "meanJunk": 0.0024024670109007457
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 0.2,
+      "targetGap": 8,
+      "meanJunk": 0.0013157894736842105
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 0.2,
+      "targetGap": 9,
+      "meanJunk": 0
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 0.2,
+      "targetGap": 10,
+      "meanJunk": 0
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 0.2,
+      "targetGap": 11,
+      "meanJunk": 0
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 0.2,
+      "targetGap": 12,
+      "meanJunk": 0
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 0.7,
+      "targetGap": 7,
+      "meanJunk": 0.24456282327979945
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 0.7,
+      "targetGap": 8,
+      "meanJunk": 0.19681853451251913
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 0.7,
+      "targetGap": 9,
+      "meanJunk": 0.0688070885356468
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 0.7,
+      "targetGap": 10,
+      "meanJunk": 0.0024470899470899468
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 0.7,
+      "targetGap": 11,
+      "meanJunk": 0.003655213615433933
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 0.7,
+      "targetGap": 12,
+      "meanJunk": 0
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 2,
+      "targetGap": 7,
+      "meanJunk": 0.253482259490888
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 2,
+      "targetGap": 8,
+      "meanJunk": 0.2474401492038513
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 2,
+      "targetGap": 9,
+      "meanJunk": 0.26688925466968577
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 2,
+      "targetGap": 10,
+      "meanJunk": 0.22724368068062742
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 2,
+      "targetGap": 11,
+      "meanJunk": 0.15330838763788276
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 2,
+      "targetGap": 12,
+      "meanJunk": 0.10053245039242423
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 4,
+      "targetGap": 7,
+      "meanJunk": 0.25206054305103615
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 4,
+      "targetGap": 8,
+      "meanJunk": 0.25309732786854056
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 4,
+      "targetGap": 9,
+      "meanJunk": 0.2482517160094317
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 4,
+      "targetGap": 10,
+      "meanJunk": 0.24317136475402537
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 4,
+      "targetGap": 11,
+      "meanJunk": 0.239812083744514
+    },
+    {
+      "plane": "target_gap ramp × s_m  (cliff × coupling hub)",
+      "sM": 4,
+      "targetGap": 12,
+      "meanJunk": 0.2019997446003104
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 1,
+      "window": 3,
+      "meanJunk": 0.05811613192388143
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 1,
+      "window": 4,
+      "meanJunk": 0.0580861618939114
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 1,
+      "window": 5,
+      "meanJunk": 0.0013157894736842105
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 1,
+      "window": 6,
+      "meanJunk": 0
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 1,
+      "window": 7,
+      "meanJunk": 0
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 1,
+      "window": 8,
+      "meanJunk": 0
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 1,
+      "window": 9,
+      "meanJunk": 0
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 1,
+      "window": 10,
+      "meanJunk": 0
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 10,
+      "window": 3,
+      "meanJunk": 0.06333991231246282
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 10,
+      "window": 4,
+      "meanJunk": 0.05259607373225461
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 10,
+      "window": 5,
+      "meanJunk": 0.0013157894736842105
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 10,
+      "window": 6,
+      "meanJunk": 0
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 10,
+      "window": 7,
+      "meanJunk": 0
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 10,
+      "window": 8,
+      "meanJunk": 0
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 10,
+      "window": 9,
+      "meanJunk": 0
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 10,
+      "window": 10,
+      "meanJunk": 0
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 100,
+      "window": 3,
+      "meanJunk": 0.25126598273185813
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 100,
+      "window": 4,
+      "meanJunk": 0.24586525547734173
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 100,
+      "window": 5,
+      "meanJunk": 0.26156771064234047
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 100,
+      "window": 6,
+      "meanJunk": 0.16097243758841046
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 100,
+      "window": 7,
+      "meanJunk": 0.05842702422655176
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 100,
+      "window": 8,
+      "meanJunk": 0.002995346586677856
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 100,
+      "window": 9,
+      "meanJunk": 0
+    },
+    {
+      "plane": "W sharp edge × A  (does the channel-close move with A?)",
+      "shoulderA": 100,
+      "window": 10,
+      "meanJunk": 0
+    }
+  ]
+}

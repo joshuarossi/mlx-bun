@@ -5,7 +5,7 @@
 
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
-import { generate } from "../generate";
+import { generate, type GenerateOptions } from "../generate";
 import { ChatTemplate } from "../chat-template";
 import { loadModelConfig, type ModelConfig } from "../config";
 import { Weights } from "../weights";
@@ -66,9 +66,13 @@ export interface GenOpts {
   maxTokens?: number;
   /** Wrap `body` as a single user turn in the chat template (default true). */
   useChat?: boolean;
+  /** Sampling overrides (default greedy). Lets the HLG/diversity evals vary the
+   *  sampler — temperature, top-p/k, seed, hlg — while sharing this prompt path. */
+  sampler?: Partial<Pick<GenerateOptions, "temperature" | "topP" | "topK" | "seed" | "hlg">>;
 }
 
-/** Greedy completion of `body` via the model's real quantized-KV path. */
+/** Complete `body` via the model's real quantized-KV path. Greedy by default;
+ *  pass `opts.sampler` to drive temperature/HLG/etc. */
 export async function generateText(tm: TaskModel, body: string, opts: GenOpts = {}): Promise<string> {
   const maxTokens = opts.maxTokens ?? 256;
   const text = opts.useChat !== false && tm.template
@@ -79,8 +83,9 @@ export async function generateText(tm: TaskModel, body: string, opts: GenOpts = 
   const kv = tm.config.kvQuant?.length ? tm.config.kvQuant : undefined;
   const gen = generate(tm.model, ids, {
     maxTokens,
-    temperature: 0, // greedy — deterministic, same questions both head-to-head arms
+    temperature: 0, // greedy default — deterministic head-to-head arms
     ...(kv ? { kvConfig: kv, quantizedKvStart: 0 } : {}),
+    ...(opts.sampler ?? {}), // overrides temperature when provided
   });
 
   const out: number[] = [];
