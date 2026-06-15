@@ -1,0 +1,388 @@
+{
+  "model": "gemma-4-e4b-it-OptiQ-4bit",
+  "k": 20,
+  "base": {
+    "window": 6,
+    "shoulderA": 0.35,
+    "sM": 0.7,
+    "targetGap": 15,
+    "refGap": 4,
+    "lw": 1200
+  },
+  "zooms": [
+    {
+      "name": "target_gap ramp (base) — sub-unit",
+      "key": "targetGap",
+      "over": {},
+      "values": [
+        7,
+        7.5,
+        8,
+        8.5,
+        9,
+        9.5,
+        10,
+        10.5,
+        11
+      ]
+    },
+    {
+      "name": "W channel-close @ A=100 — sub-unit",
+      "key": "window",
+      "over": {
+        "shoulderA": 100
+      },
+      "values": [
+        6,
+        6.5,
+        7,
+        7.25,
+        7.5,
+        7.75,
+        8,
+        8.5,
+        9
+      ]
+    },
+    {
+      "name": "L_W low wall (γ→0 inversion)",
+      "key": "lw",
+      "over": {},
+      "values": [
+        1.4,
+        1.6,
+        1.8,
+        2,
+        2.3,
+        2.7,
+        3.2,
+        4,
+        6,
+        10
+      ],
+      "gamma": true
+    },
+    {
+      "name": "L_W high wall (γ→2.4 over-sharpen)",
+      "key": "lw",
+      "over": {},
+      "values": [
+        150000,
+        200000,
+        300000,
+        500000,
+        700000,
+        1000000
+      ],
+      "gamma": true
+    }
+  ],
+  "grid": [
+    {
+      "zoom": "target_gap ramp (base) — sub-unit",
+      "key": "targetGap",
+      "value": 7,
+      "gamma": null,
+      "meanJunk": 0.24456282327979945,
+      "maxJunk": 0.4318181818181818,
+      "breakRate": 1
+    },
+    {
+      "zoom": "target_gap ramp (base) — sub-unit",
+      "key": "targetGap",
+      "value": 7.5,
+      "gamma": null,
+      "meanJunk": 0.22452164954945486,
+      "maxJunk": 0.4090909090909091,
+      "breakRate": 1
+    },
+    {
+      "zoom": "target_gap ramp (base) — sub-unit",
+      "key": "targetGap",
+      "value": 8,
+      "gamma": null,
+      "meanJunk": 0.19681853451251913,
+      "maxJunk": 0.5535714285714286,
+      "breakRate": 1
+    },
+    {
+      "zoom": "target_gap ramp (base) — sub-unit",
+      "key": "targetGap",
+      "value": 8.5,
+      "gamma": null,
+      "meanJunk": 0.13733405619367972,
+      "maxJunk": 0.8372093023255814,
+      "breakRate": 0.85
+    },
+    {
+      "zoom": "target_gap ramp (base) — sub-unit",
+      "key": "targetGap",
+      "value": 9,
+      "gamma": null,
+      "meanJunk": 0.0688070885356468,
+      "maxJunk": 0.6744186046511628,
+      "breakRate": 0.7
+    },
+    {
+      "zoom": "target_gap ramp (base) — sub-unit",
+      "key": "targetGap",
+      "value": 9.5,
+      "gamma": null,
+      "meanJunk": 0.05854233213812482,
+      "maxJunk": 0.7727272727272727,
+      "breakRate": 0.5
+    },
+    {
+      "zoom": "target_gap ramp (base) — sub-unit",
+      "key": "targetGap",
+      "value": 10,
+      "gamma": null,
+      "meanJunk": 0.0024470899470899468,
+      "maxJunk": 0.037037037037037035,
+      "breakRate": 0.1
+    },
+    {
+      "zoom": "target_gap ramp (base) — sub-unit",
+      "key": "targetGap",
+      "value": 10.5,
+      "gamma": null,
+      "meanJunk": 0.002339424141749723,
+      "maxJunk": 0.03488372093023256,
+      "breakRate": 0.1
+    },
+    {
+      "zoom": "target_gap ramp (base) — sub-unit",
+      "key": "targetGap",
+      "value": 11,
+      "gamma": null,
+      "meanJunk": 0.003655213615433933,
+      "maxJunk": 0.03488372093023256,
+      "breakRate": 0.15
+    },
+    {
+      "zoom": "W channel-close @ A=100 — sub-unit",
+      "key": "window",
+      "value": 6,
+      "gamma": null,
+      "meanJunk": 0.16097243758841046,
+      "maxJunk": 0.6190476190476191,
+      "breakRate": 0.9
+    },
+    {
+      "zoom": "W channel-close @ A=100 — sub-unit",
+      "key": "window",
+      "value": 6.5,
+      "gamma": null,
+      "meanJunk": 0.08816660696226027,
+      "maxJunk": 0.42857142857142855,
+      "breakRate": 0.9
+    },
+    {
+      "zoom": "W channel-close @ A=100 — sub-unit",
+      "key": "window",
+      "value": 7,
+      "gamma": null,
+      "meanJunk": 0.05842702422655176,
+      "maxJunk": 0.7678571428571429,
+      "breakRate": 0.5
+    },
+    {
+      "zoom": "W channel-close @ A=100 — sub-unit",
+      "key": "window",
+      "value": 7.25,
+      "gamma": null,
+      "meanJunk": 0.050461198587243336,
+      "maxJunk": 0.7678571428571429,
+      "breakRate": 0.35
+    },
+    {
+      "zoom": "W channel-close @ A=100 — sub-unit",
+      "key": "window",
+      "value": 7.5,
+      "gamma": null,
+      "meanJunk": 0.048574950540700275,
+      "maxJunk": 0.88,
+      "breakRate": 0.2
+    },
+    {
+      "zoom": "W channel-close @ A=100 — sub-unit",
+      "key": "window",
+      "value": 7.75,
+      "gamma": null,
+      "meanJunk": 0.0073722988083298555,
+      "maxJunk": 0.07042253521126761,
+      "breakRate": 0.2
+    },
+    {
+      "zoom": "W channel-close @ A=100 — sub-unit",
+      "key": "window",
+      "value": 8,
+      "gamma": null,
+      "meanJunk": 0.002995346586677856,
+      "maxJunk": 0.03529411764705882,
+      "breakRate": 0.1
+    },
+    {
+      "zoom": "W channel-close @ A=100 — sub-unit",
+      "key": "window",
+      "value": 8.5,
+      "gamma": null,
+      "meanJunk": 0,
+      "maxJunk": 0,
+      "breakRate": 0
+    },
+    {
+      "zoom": "W channel-close @ A=100 — sub-unit",
+      "key": "window",
+      "value": 9,
+      "gamma": null,
+      "meanJunk": 0,
+      "maxJunk": 0,
+      "breakRate": 0
+    },
+    {
+      "zoom": "L_W low wall (γ→0 inversion)",
+      "key": "lw",
+      "value": 1.4,
+      "gamma": 0.0013737749848601322,
+      "meanJunk": 0,
+      "maxJunk": 0,
+      "breakRate": 0
+    },
+    {
+      "zoom": "L_W low wall (γ→0 inversion)",
+      "key": "lw",
+      "value": 1.6,
+      "gamma": 0.025730392715488604,
+      "meanJunk": 0,
+      "maxJunk": 0,
+      "breakRate": 0
+    },
+    {
+      "zoom": "L_W low wall (γ→0 inversion)",
+      "key": "lw",
+      "value": 1.8,
+      "gamma": 0.0472144521433886,
+      "meanJunk": 0,
+      "maxJunk": 0,
+      "breakRate": 0
+    },
+    {
+      "zoom": "L_W low wall (γ→0 inversion)",
+      "key": "lw",
+      "value": 2,
+      "gamma": 0.06643259817887204,
+      "meanJunk": 0,
+      "maxJunk": 0,
+      "breakRate": 0
+    },
+    {
+      "zoom": "L_W low wall (γ→0 inversion)",
+      "key": "lw",
+      "value": 2.3,
+      "gamma": 0.09192569112738913,
+      "meanJunk": 0,
+      "maxJunk": 0,
+      "breakRate": 0
+    },
+    {
+      "zoom": "L_W low wall (γ→0 inversion)",
+      "key": "lw",
+      "value": 2.7,
+      "gamma": 0.12117278094677464,
+      "meanJunk": 0,
+      "maxJunk": 0,
+      "breakRate": 0
+    },
+    {
+      "zoom": "L_W low wall (γ→0 inversion)",
+      "key": "lw",
+      "value": 3.2,
+      "gamma": 0.15216299089436047,
+      "meanJunk": 0,
+      "maxJunk": 0,
+      "breakRate": 0
+    },
+    {
+      "zoom": "L_W low wall (γ→0 inversion)",
+      "key": "lw",
+      "value": 4,
+      "gamma": 0.19286519635774435,
+      "meanJunk": 0,
+      "maxJunk": 0,
+      "breakRate": 0
+    },
+    {
+      "zoom": "L_W low wall (γ→0 inversion)",
+      "key": "lw",
+      "value": 6,
+      "gamma": 0.2668235251611304,
+      "meanJunk": 0,
+      "maxJunk": 0,
+      "breakRate": 0
+    },
+    {
+      "zoom": "L_W low wall (γ→0 inversion)",
+      "key": "lw",
+      "value": 10,
+      "gamma": 0.36,
+      "meanJunk": 0,
+      "maxJunk": 0,
+      "breakRate": 0
+    },
+    {
+      "zoom": "L_W high wall (γ→2.4 over-sharpen)",
+      "key": "lw",
+      "value": 150000,
+      "gamma": 2.113958328803386,
+      "meanJunk": 0,
+      "maxJunk": 0,
+      "breakRate": 0
+    },
+    {
+      "zoom": "L_W high wall (γ→2.4 over-sharpen)",
+      "key": "lw",
+      "value": 200000,
+      "gamma": 2.166432598178872,
+      "meanJunk": 0.0013157894736842105,
+      "maxJunk": 0.02631578947368421,
+      "breakRate": 0.05
+    },
+    {
+      "zoom": "L_W high wall (γ→2.4 over-sharpen)",
+      "key": "lw",
+      "value": 300000,
+      "gamma": 2.240390926982258,
+      "meanJunk": 0.0013157894736842105,
+      "maxJunk": 0.02631578947368421,
+      "breakRate": 0.05
+    },
+    {
+      "zoom": "L_W high wall (γ→2.4 over-sharpen)",
+      "key": "lw",
+      "value": 500000,
+      "gamma": 2.333567401821128,
+      "meanJunk": 0.003059975520195838,
+      "maxJunk": 0.03488372093023256,
+      "breakRate": 0.1
+    },
+    {
+      "zoom": "L_W high wall (γ→2.4 over-sharpen)",
+      "key": "lw",
+      "value": 700000,
+      "gamma": 2.394941176805988,
+      "meanJunk": 0.003059975520195838,
+      "maxJunk": 0.03488372093023256,
+      "breakRate": 0.1
+    },
+    {
+      "zoom": "L_W high wall (γ→2.4 over-sharpen)",
+      "key": "lw",
+      "value": 1000000,
+      "gamma": 2.46,
+      "meanJunk": 0.003655213615433933,
+      "maxJunk": 0.03488372093023256,
+      "breakRate": 0.15
+    }
+  ]
+}

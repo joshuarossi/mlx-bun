@@ -74,11 +74,19 @@ Model & quality:
   --top-p <n>               still overrides them, and the browser chat (which
   --top-k <n>               sends none) inherits them
                             [default: the model's generation_config.json]
+  --hlg-sampling on|off     Piecewise tone-curve sampling (HLG): rolls off the
+                            top, boosts the mids, gentles the tail. Gain folds
+                            from --temperature. [default: off]
+                            See docs/design/hlg-sampling.md
+  --hlg-width <nats>        HLG mid-region half-width  [default: 4]
+  --hlg-shoulder <nats>     HLG highlight rolloff scale  [default: 4]
+  --hlg-toe <nats>          HLG shadow rolloff scale  [default: 6]
+  --hlg-pivot-offset <nats> HLG pivot: nats below the top token  [default: 6]
 
 Performance levers (A/B levers; defaults are the measured winners):
   --compiled-decode on|off  Compiled decode graphs  [default: on]
-  --perf-kernel on|off      Fused decode-SDPA Metal kernel  [default: off
-                            until the clean-machine benchmark pass flips it]
+  --perf-kernel on|off      Fused quantized-KV decode-SDPA Metal kernel
+                            (perf side of the compat A/B)  [default: on]
   --fused-decode on|off     Fused-decode experiment lever  [default: off]
   --fused-sdpa on|off       Fused SDPA path  [default: on]
   --force-wire              Wire weights into memory at load`;
@@ -344,6 +352,18 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   if (topP !== null) serverOptions.defaultTopP = topP;
   const topK = numFlag("top-k", 0, 1_000_000);
   if (topK !== null) serverOptions.defaultTopK = topK;
+  // HLG sampling — piecewise tone curve on the logprobs (default off). Knobs in
+  // nats; the mid gain folds from --temperature. docs/design/hlg-sampling.md.
+  if (onOff("hlg-sampling") === true) {
+    serverOptions.hlg = {
+      enabled: true,
+      width: numFlag("hlg-width", 0, 100) ?? 4,
+      shoulder: numFlag("hlg-shoulder", 0, 100) ?? 4,
+      toe: numFlag("hlg-toe", 0, 100) ?? 6,
+      pivotOffset: numFlag("hlg-pivot-offset", 0, 100) ?? 6,
+      pivot: "top",
+    };
+  }
   return { port: Number(opt("port", "8090")), serverOptions };
 }
 
