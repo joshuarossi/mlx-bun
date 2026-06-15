@@ -42,6 +42,14 @@ button.ghost{background:var(--card);border:1px solid var(--bd);border-radius:8px
 .samp .tag{font-size:10px;font-weight:700;color:var(--danger);float:right}
 .status{font-size:12px;color:var(--text3);min-height:16px}
 .note{font-size:11.5px;color:var(--text3);margin-top:10px;line-height:1.5}
+.testcard{border:1px solid var(--bd);border-radius:12px;padding:13px 15px;margin:6px 0;background:linear-gradient(180deg,#f4f8ff,#fff)}
+.testcard .opt{font-size:14px;background:var(--card);border:1px solid var(--bd);border-radius:9px;padding:10px 12px;margin:7px 0;cursor:pointer;display:flex;gap:9px;transition:border-color .12s}
+.testcard .opt:hover{border-color:var(--accent2)}
+.testcard .opt .lab{font-weight:800;color:var(--accent2);flex:none}
+.testcard .opt.picked{border-color:var(--accent2);box-shadow:0 0 0 2px rgba(8,145,178,.15)}
+.testcard .opt .reveal{margin-left:auto;font-size:11px;font-weight:700;flex:none;align-self:center}
+.testcard .q{font-size:12.5px;font-weight:600;margin:4px 0 2px}
+.testcard .verdict{font-size:13px;font-weight:700;margin-top:8px;min-height:18px}
 </style></head>
 <body><div class="wrap">
 <div class="head">
@@ -65,12 +73,14 @@ button.ghost{background:var(--card);border:1px solid var(--bd);border-radius:8px
     <div class="pchips" id="pchips"></div>
     <div class="genrow">
       <button class="primary" id="genBtn">Generate</button>
+      <button class="primary" id="testBtn" style="background:var(--accent2)" title="One sentence from the default recipe, one from your curve — unlabeled. Guess which is which.">Test (blind)</button>
       <button class="ghost" id="sigBtn">↻ load signal</button>
       <button class="ghost" id="copyTextBtn" style="display:none">Copy text</button>
       <span class="mini">N <input id="nSamp" type="number" min="1" max="8" value="4"></span>
       <span class="mini">seed <input id="seed" type="number" value="100"></span>
       <span class="status" id="status"></span>
     </div>
+    <div id="testArea"></div>
     <div class="samples" id="samples"></div>
     <div class="note">Samples are a <b>feel-check</b>, not evidence — easy to overfit. The blind two-judge eval stays the verdict.</div>
   </div>
@@ -112,9 +122,9 @@ function evalSpline(sp,u){ const n=sp.X.length;
   let i=sp.segs.length-1; while(i>0&&u<sp.X[i])i--; const s=sp.segs[i]; return s.A+s.B*u+s.C*u*u+s.D*u*u*u; }
 
 // ---- plot mapping ----
-const VBW=460,VBH=360,PL=46,PR=14,PT=14,PB=34;
-const px=u=>PL+(1-u/UMIN)*(VBW-PL-PR), py=u=>PT+(u/UMIN)*(VBH-PT-PB);
-const uX=mx=>UMIN*(1-(mx-PL)/(VBW-PL-PR)), uY=my=>UMIN*((my-PT)/(VBH-PT-PB)), pct=u=>Math.exp(u)*100;
+const VBW=460,VBH=360,PL=46,PR=14,PT=14,PB=34,PAD=11; // PAD insets the data so BOTH corner handles sit fully inside the plot (symmetric)
+const px=u=>PL+PAD+(1-u/UMIN)*(VBW-PL-PR-2*PAD), py=u=>PT+PAD+(u/UMIN)*(VBH-PT-PB-2*PAD);
+const uX=mx=>UMIN*(1-(mx-PL-PAD)/(VBW-PL-PR-2*PAD)), uY=my=>UMIN*((my-PT-PAD)/(VBH-PT-PB-2*PAD)), pct=u=>Math.exp(u)*100;
 const TICKS=[100,10,1,0.1,0.01,0.001];
 const PCOL=["#94a3b8","#0891b2","#7c3aed","#2563eb","#94a3b8"]; // endpoint, knee, center, shoulder, endpoint
 
@@ -200,12 +210,63 @@ async function generate(){
 }
 function esc(s){ return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
+// ---- blind test: 1 sentence from the default recipe + 1 from the curve, unlabeled, guess which ----
+async function postGen(payload){
+  const r=await fetch(engBase()+"/generate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)});
+  const j=await r.json(); if(!r.ok) throw new Error(j.error||r.status); return j;
+}
+let TESTST=null; // {prompt, opts:[A,B], curveSlot, guessed}
+async function runTest(){
+  const tb=document.getElementById("testBtn"), st=document.getElementById("status"), area=document.getElementById("testArea");
+  if(!monotone(C)){ st.textContent="curve not monotone."; return; }
+  if(isIdentity(C)){ st.textContent="shape the curve first — identity IS the default, nothing to compare."; return; }
+  tb.disabled=true; st.textContent="testing (default vs curve)…"; area.innerHTML="";
+  const prompt=document.getElementById("prompt").value, seed=+document.getElementById("seed").value||100;
+  try{
+    const [d,c]=await Promise.all([
+      postGen({prompt,default:true,n:1,seed,max_tokens:60}),
+      postGen({prompt,curve:JSON.parse(cfgJSON()),n:1,seed:seed+7,max_tokens:60}),
+    ]);
+    const dText=d.samples[0].text, cText=c.samples[0].text, curveFirst=Math.random()<0.5;
+    TESTST={ prompt, opts:[ curveFirst?cText:dText, curveFirst?dText:cText ], curveSlot: curveFirst?0:1, guessed:false };
+    renderTestCard(); st.textContent="blind pair ready — which is your curve?";
+  }catch(e){ st.textContent="test failed: "+e.message; }
+  tb.disabled=false;
+}
+function renderTestCard(){
+  const area=document.getElementById("testArea"), T=TESTST;
+  area.innerHTML=`<div class="testcard">
+    <div class="opt" data-s="0"><span class="lab">A</span><span>${esc(T.opts[0])}</span><span class="reveal" id="rv0"></span></div>
+    <div class="opt" data-s="1"><span class="lab">B</span><span>${esc(T.opts[1])}</span><span class="reveal" id="rv1"></span></div>
+    <div class="q">Which came from <b>your curve</b>? (the other is the model's default recipe)</div>
+    <div style="display:flex;gap:8px"><button class="ghost" data-g="0">It's A</button><button class="ghost" data-g="1">It's B</button><button class="ghost" id="copyPairBtn" style="margin-left:auto">Copy pair (blind)</button></div>
+    <div class="verdict" id="verdict"></div></div>`;
+  area.querySelectorAll("button[data-g]").forEach(b=>b.addEventListener("click",()=>guess(+b.dataset.g)));
+  area.querySelector("#copyPairBtn").addEventListener("click",copyPair);
+}
+function guess(slot){
+  const T=TESTST; if(!T||T.guessed)return; T.guessed=true;
+  document.getElementById("rv"+T.curveSlot).innerHTML='<span style="color:var(--accent2)">← your curve</span>';
+  document.getElementById("rv"+(1-T.curveSlot)).innerHTML='<span style="color:var(--text3)">← model default</span>';
+  document.querySelectorAll(".testcard .opt")[slot].classList.add("picked");
+  document.getElementById("verdict").innerHTML = slot===T.curveSlot
+    ? '<span style="color:var(--pos)">✓ Correct — you picked your curve.</span>'
+    : '<span style="color:var(--danger)">✗ Nope — that was the model default; your curve was '+(T.curveSlot===0?"A":"B")+'.</span>';
+}
+function copyPair(){
+  const T=TESTST; if(!T)return;
+  const txt="Prompt: "+T.prompt+"\n\nA: "+T.opts[0]+"\nB: "+T.opts[1]+"\n\n(one is a custom log-prob sampling curve, the other the model's default recipe — which is which?)";
+  const v=document.getElementById("verdict"), prev=v.innerHTML, done=()=>{v.innerHTML='<span style="color:var(--pos)">pair copied ✓ (blind — paste to a judge)</span>';setTimeout(()=>{v.innerHTML=prev},1700);};
+  if(navigator.clipboard)navigator.clipboard.writeText(txt).then(done,done); else { const ta=document.createElement("textarea"); ta.value=txt; document.body.appendChild(ta); ta.select(); try{document.execCommand("copy")}catch(_){}; ta.remove(); done(); }
+}
+
 // ---- wiring ----
 document.getElementById("engine").value=ENGINE_BASE+"/generate";
 if(location.protocol.startsWith("http")) document.getElementById("backLink").style.display="inline";
 document.getElementById("pchips").innerHTML=PROMPTS.map((p,i)=>`<button data-i="${i}">${p.slice(0,38)}…</button>`).join("");
 document.getElementById("pchips").querySelectorAll("button").forEach(b=>b.addEventListener("click",()=>{document.getElementById("prompt").value=PROMPTS[+b.dataset.i];loadSignal();}));
 document.getElementById("genBtn").addEventListener("click",generate);
+document.getElementById("testBtn").addEventListener("click",runTest);
 document.getElementById("sigBtn").addEventListener("click",loadSignal);
 document.getElementById("copyTextBtn").addEventListener("click",()=>{ if(!LAST)return;
   const sampler = LAST.mode==="default"&&LAST.recipe ? "Sampler: model default recipe (T="+LAST.recipe.temperature+", top-p="+LAST.recipe.topP+", top-k="+LAST.recipe.topK+")" : "Curve: "+LAST.curve;
