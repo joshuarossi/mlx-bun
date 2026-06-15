@@ -17,6 +17,7 @@ import type { Server } from "bun";
 import appHtml from "./web/app.html" with { type: "text" };
 import curveDesignerHtml from "../docs/curve-designer.html" with { type: "text" };
 import pkgJson from "../package.json" with { type: "json" };
+import { readFileSync } from "node:fs";
 const APP_PAGE = appHtml as unknown as string;
 const pkgVersion = (pkgJson as { version: string }).version;
 import { loadModelConfig, type KvQuantSpec } from "./config";
@@ -756,8 +757,12 @@ export function createServer(
         });
       }
       // v2 HLG Curve Designer — served same-origin so /generate + /signal need no CORS.
+      // Read fresh from disk in dev (edits show on reload, no restart); fall back to the
+      // embedded copy when running as the compiled single binary.
       if (url.pathname === "/curves" && request.method === "GET") {
-        return new Response(CURVE_PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
+        let html = CURVE_PAGE;
+        try { html = readFileSync(new URL("../docs/curve-designer.html", import.meta.url), "utf8"); } catch { /* binary: use embedded */ }
+        return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       }
       if (request.method === "GET" &&
           ["/status", "/chat", "/quantize", "/finetune", "/dataset"].includes(url.pathname)) {
@@ -1022,14 +1027,21 @@ export function createServer(
       if (url.pathname === "/generate" && request.method === "OPTIONS")
         return new Response(null, { headers: CURVE_CORS });
       if (url.pathname === "/generate" && request.method === "POST") {
-        let body: { prompt?: string; curve?: CurveParams; n?: number; max_tokens?: number; seed?: number };
+        let body: { prompt?: string; curve?: CurveParams; n?: number; max_tokens?: number; seed?: number; default?: boolean };
         try { body = (await request.json()) as typeof body; }
         catch { return Response.json({ error: "invalid JSON" }, { status: 400, headers: CURVE_CORS }); }
         const curve = body.curve;
-        if (!Array.isArray(curve?.points) || curve.points.length < 2)
-          return Response.json({ error: "curve needs { points: [{x_pct,y_pct}, …] } with ≥2 control points" }, { status: 400, headers: CURVE_CORS });
-        if (!isMonotone(curve))
+        // Identity / no shaped curve → fall back to the model's DEFAULT chat recipe
+        // (temp + top-p + top-k) — the honest "what you'd get chatting" baseline, which
+        // a smooth curve can't replicate (top-p/top-k are hard truncations).
+        const useCurve = body.default !== true && Array.isArray(curve?.points) && curve.points.length >= 2;
+        if (useCurve && !isMonotone(curve!))
           return Response.json({ error: "curve is not monotone — all segment slopes must be ≥ 0" }, { status: 400, headers: CURVE_CORS });
+        const recipe = {
+          temperature: serverOptions.defaultTemperature ?? ctx.genDefaults.temperature ?? 0.7,
+          topP: serverOptions.defaultTopP ?? ctx.genDefaults.topP ?? 0,
+          topK: serverOptions.defaultTopK ?? ctx.genDefaults.topK ?? 0,
+        };
         const prompt = typeof body.prompt === "string" ? body.prompt : "";
         const n = Math.max(1, Math.min(8, Math.floor(Number(body.n) || 3)));
         const maxTokens = Math.max(1, Math.min(256, Math.floor(Number(body.max_tokens) || 80)));
@@ -1040,14 +1052,17 @@ export function createServer(
         try {
           for (let i = 0; i < n; i++) {
             const toks: number[] = [];
-            await enqueue(() => runGeneration(ids, { curve, seed: baseSeed + i, maxTokens, ...kvScheme }, (t) => { toks.push(t); }));
+            const genOpts: GenerateOptions = useCurve
+              ? { curve, seed: baseSeed + i, maxTokens, ...kvScheme }
+              : { temperature: recipe.temperature, topP: recipe.topP, topK: recipe.topK, seed: baseSeed + i, maxTokens, ...kvScheme };
+            await enqueue(() => runGeneration(ids, genOpts, (t) => { toks.push(t); }));
             const text = ctx.tokenizer.decode(toks, true).trim();
             samples.push({ text, junk: curveJunk(text) });
           }
         } catch (e) {
           return Response.json({ error: `generation failed: ${(e as Error).message}` }, { status: 500, headers: CURVE_CORS });
         }
-        return Response.json({ n, seed: baseSeed, curve, samples }, { headers: CURVE_CORS });
+        return Response.json({ mode: useCurve ? "curve" : "default", recipe: useCurve ? undefined : recipe, n, seed: baseSeed, samples }, { headers: CURVE_CORS });
       }
 
       // The chat-completions core, shared by both protocol surfaces:

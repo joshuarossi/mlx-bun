@@ -55,6 +55,7 @@ button.ghost{background:var(--card);border:1px solid var(--bd);border-radius:8px
     <h2>Transfer curve <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text3)">x = p_in, y = p_out (log) · diagonal = temperature 1 · the gray histogram is the real next-token signal</span></h2>
     <svg class="plot" id="plot" viewBox="0 0 460 360"></svg>
     <div class="slopes" id="slopeReadout"></div>
+    <div id="baselineHint" style="font-size:11.5px;font-weight:600;margin:4px 0 0"></div>
     <div class="copyrow"><input id="cfgField" readonly><button class="ghost" id="copyBtn">Copy values</button><button class="ghost" id="resetBtn">Reset</button><span id="copyOk" style="color:var(--pos);font-weight:700;font-size:11px"></span></div>
     <div class="note">Five movable control points; drag any of them (including the corners). It always stays a smooth monotone curve. <b>Above the diagonal</b> raises those tokens, <b>below</b> lowers them; drag a point down over the histogram's tail to gate it.</div>
   </div>
@@ -96,6 +97,9 @@ const Lp=pt=>[ln(Math.max(pt.x_pct,1e-9)/100),ln(Math.max(pt.y_pct,1e-9)/100)];
 function knotArrays(c){ const k=c.points.map(Lp).sort((a,b)=>a[0]-b[0]); return {X:k.map(q=>q[0]),Y:k.map(q=>q[1])}; }
 function secants(c){ const {X,Y}=knotArrays(c),s=[]; for(let i=X.length-1;i>0;i--)s.push((Y[i]-Y[i-1])/(X[i]-X[i-1])); return s; }
 function monotone(c){ return secants(c).every(s=>s>=-1e-12); }
+// identity = every control point on the diagonal ⇒ generate with the model's DEFAULT
+// chat recipe (the real "what you'd get chatting" baseline), not a literal temp-1 curve.
+function isIdentity(c){ return c.points.every(p=>Math.abs(ln(Math.max(p.x_pct,1e-9))-ln(Math.max(p.y_pct,1e-9)))<0.03); }
 function cubicInU(x0,h,y0,y1,m0,m1){ const c0=y0,c1=h*m0,c2=-3*y0-2*h*m0+3*y1-h*m1,c3=2*y0+h*m0-2*y1+h*m1; const s=1/h,s2=s*s,s3=s2*s; let A=c0,B=0,C=0,D=0; B+=c1*s;A+=-c1*s*x0; C+=c2*s2;B+=-2*x0*c2*s2;A+=x0*x0*c2*s2; D+=c3*s3;C+=-3*x0*c3*s3;B+=3*x0*x0*c3*s3;A+=-x0*x0*x0*c3*s3; return {A,B,C,D}; }
 function buildSpline(c){ const {X,Y}=knotArrays(c),n=X.length,D=[];
   for(let i=0;i<n-1;i++)D.push((Y[i+1]-Y[i])/(X[i+1]-X[i]));
@@ -135,6 +139,9 @@ function draw(){
     s+=`<circle class="kp" data-i="${i}" cx="${px(u[0])}" cy="${py(u[1])}" r="7" fill="${col}" stroke="#fff" stroke-width="2" style="cursor:grab"/>`; });
   document.getElementById("plot").innerHTML=s;
   bindDrag(); drawSlopes(); document.getElementById("cfgField").value=cfgJSON();
+  document.getElementById("baselineHint").innerHTML = isIdentity(C)
+    ? '<span style="color:var(--pos)">● identity</span> — Generate uses the model’s <b>default chat recipe</b> (temp + top-p + top-k): the real baseline.'
+    : '<span style="color:var(--accent)">● custom curve</span> — Generate replaces temperature+softmax with your curve.';
 }
 function drawSlopes(){
   const sc=secants(C); const names=["head","upper-mid","lower-mid","shadows"];
@@ -175,16 +182,18 @@ async function loadSignal(){
 async function generate(){
   const btn=document.getElementById("genBtn"), st=document.getElementById("status"), out=document.getElementById("samples");
   if(!monotone(C)){ st.textContent="curve not monotone."; return; }
-  btn.disabled=true; st.textContent="generating…"; out.innerHTML="";
-  const payload={ prompt:document.getElementById("prompt").value, curve:JSON.parse(cfgJSON()),
-    n:Math.max(1,Math.min(8,+document.getElementById("nSamp").value||4)), seed:+document.getElementById("seed").value||100, max_tokens:90 };
+  btn.disabled=true; const baseline=isIdentity(C); st.textContent=baseline?"generating (model default)…":"generating…"; out.innerHTML="";
+  const payload={ prompt:document.getElementById("prompt").value,
+    n:Math.max(1,Math.min(8,+document.getElementById("nSamp").value||4)), seed:+document.getElementById("seed").value||100, max_tokens:90,
+    ...(baseline?{default:true}:{curve:JSON.parse(cfgJSON())}) };
   try{
     const r=await fetch(engBase()+"/generate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(payload)});
     const j=await r.json();
     if(!r.ok){ st.textContent="engine error: "+(j.error||r.status); btn.disabled=false; return; }
-    st.textContent=`${j.samples.length} samples · seed ${j.seed}`;
+    const tag = j.mode==="default"&&j.recipe ? `model default · T=${j.recipe.temperature} top-p=${j.recipe.topP} top-k=${j.recipe.topK}` : "your curve";
+    st.textContent=`${tag} · ${j.samples.length} samples · seed ${j.seed}`;
     out.innerHTML=j.samples.map((x,i)=>`<div class="samp${x.junk?" junk":""}">${x.junk?'<span class="tag">JUNK</span>':""}<b>${i+1}.</b> ${esc(x.text)}</div>`).join("");
-    LAST={ prompt:payload.prompt, curve:cfgJSON(), samples:j.samples };
+    LAST={ prompt:payload.prompt, mode:j.mode, recipe:j.recipe, curve:cfgJSON(), samples:j.samples };
     document.getElementById("copyTextBtn").style.display="inline";
   }catch(e){ st.textContent="cannot reach engine — is the server running? "+e.message; }
   btn.disabled=false;
@@ -199,7 +208,8 @@ document.getElementById("pchips").querySelectorAll("button").forEach(b=>b.addEve
 document.getElementById("genBtn").addEventListener("click",generate);
 document.getElementById("sigBtn").addEventListener("click",loadSignal);
 document.getElementById("copyTextBtn").addEventListener("click",()=>{ if(!LAST)return;
-  const txt="Prompt: "+LAST.prompt+"\nCurve: "+LAST.curve+"\n\n"+LAST.samples.map((s,i)=>(i+1)+". "+(s.junk?"[JUNK] ":"")+s.text).join("\n\n");
+  const sampler = LAST.mode==="default"&&LAST.recipe ? "Sampler: model default recipe (T="+LAST.recipe.temperature+", top-p="+LAST.recipe.topP+", top-k="+LAST.recipe.topK+")" : "Curve: "+LAST.curve;
+  const txt="Prompt: "+LAST.prompt+"\n"+sampler+"\n\n"+LAST.samples.map((s,i)=>(i+1)+". "+(s.junk?"[JUNK] ":"")+s.text).join("\n\n");
   const st=document.getElementById("status"), done=()=>{st.textContent="text copied ✓";setTimeout(()=>{if(st.textContent==="text copied ✓")st.textContent=""},1500);};
   if(navigator.clipboard)navigator.clipboard.writeText(txt).then(done,done); else { const ta=document.createElement("textarea"); ta.value=txt; document.body.appendChild(ta); ta.select(); try{document.execCommand("copy")}catch(_){}; ta.remove(); done(); } });
 document.getElementById("resetBtn").addEventListener("click",()=>{C.points=identityPoints();draw();});
