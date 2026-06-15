@@ -65,6 +65,7 @@ button.ghost{background:var(--card);border:1px solid var(--bd);border-radius:8px
     <div class="genrow">
       <button class="primary" id="genBtn">Generate</button>
       <button class="ghost" id="sigBtn">↻ load signal</button>
+      <button class="ghost" id="copyTextBtn" style="display:none">Copy text</button>
       <span class="mini">N <input id="nSamp" type="number" min="1" max="8" value="4"></span>
       <span class="mini">seed <input id="seed" type="number" value="100"></span>
       <span class="status" id="status"></span>
@@ -82,6 +83,7 @@ const ENGINE_BASE = location.protocol.startsWith("http") ? location.origin : "ht
 function identityPoints(){ return [{x_pct:1e-4,y_pct:1e-4},{x_pct:0.1,y_pct:0.1},{x_pct:1,y_pct:1},{x_pct:9,y_pct:9},{x_pct:100,y_pct:100}]; }
 let C = { space:"logprob", points:identityPoints(), monotonic:true };
 let SIGNAL=null; // {bins:[], vocab}
+let LAST=null;   // {prompt, curve, samples} of the most recent generation
 const PROMPTS=[
   "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.",
   "In one sentence, what causes the seasons on Earth?",
@@ -182,6 +184,8 @@ async function generate(){
     if(!r.ok){ st.textContent="engine error: "+(j.error||r.status); btn.disabled=false; return; }
     st.textContent=`${j.samples.length} samples · seed ${j.seed}`;
     out.innerHTML=j.samples.map((x,i)=>`<div class="samp${x.junk?" junk":""}">${x.junk?'<span class="tag">JUNK</span>':""}<b>${i+1}.</b> ${esc(x.text)}</div>`).join("");
+    LAST={ prompt:payload.prompt, curve:cfgJSON(), samples:j.samples };
+    document.getElementById("copyTextBtn").style.display="inline";
   }catch(e){ st.textContent="cannot reach engine — is the server running? "+e.message; }
   btn.disabled=false;
 }
@@ -194,6 +198,10 @@ document.getElementById("pchips").innerHTML=PROMPTS.map((p,i)=>`<button data-i="
 document.getElementById("pchips").querySelectorAll("button").forEach(b=>b.addEventListener("click",()=>{document.getElementById("prompt").value=PROMPTS[+b.dataset.i];loadSignal();}));
 document.getElementById("genBtn").addEventListener("click",generate);
 document.getElementById("sigBtn").addEventListener("click",loadSignal);
+document.getElementById("copyTextBtn").addEventListener("click",()=>{ if(!LAST)return;
+  const txt="Prompt: "+LAST.prompt+"\nCurve: "+LAST.curve+"\n\n"+LAST.samples.map((s,i)=>(i+1)+". "+(s.junk?"[JUNK] ":"")+s.text).join("\n\n");
+  const st=document.getElementById("status"), done=()=>{st.textContent="text copied ✓";setTimeout(()=>{if(st.textContent==="text copied ✓")st.textContent=""},1500);};
+  if(navigator.clipboard)navigator.clipboard.writeText(txt).then(done,done); else { const ta=document.createElement("textarea"); ta.value=txt; document.body.appendChild(ta); ta.select(); try{document.execCommand("copy")}catch(_){}; ta.remove(); done(); } });
 document.getElementById("resetBtn").addEventListener("click",()=>{C.points=identityPoints();draw();});
 document.getElementById("copyBtn").addEventListener("click",()=>{ const f=document.getElementById("cfgField"); f.select();
   const ok=document.getElementById("copyOk"), done=()=>{ok.textContent="Copied!";setTimeout(()=>ok.textContent="",1500);};
