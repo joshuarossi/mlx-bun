@@ -1,0 +1,51 @@
+# HLG edge-texture zoom — model "gemma-4-e4b-it-OptiQ-4bit"  (mean canary junk%, K=20 seeds)
+# base {"window":6,"shoulderA":0.35,"sM":0.7,"targetGap":15,"refGap":4,"lw":1200} ; sub-unit steps inside the transitions.
+
+
+=== target_gap ramp (base) — sub-unit ===
+  targetGap  mean   max   break   bar
+         7    24%   43%   20/20   ██████████
+       7.5    22%   41%   20/20   █████████
+         8    20%   55%   20/20   ████████
+       8.5    14%   84%   17/20   █████
+         9     7%   67%   14/20   ███
+       9.5     6%   77%   10/20   ██
+        10     0%    4%   2/20   
+      10.5     0%    3%   2/20   
+        11     0%    3%   3/20   
+
+=== W channel-close @ A=100 — sub-unit ===
+  window     mean   max   break   bar
+         6    16%   62%   18/20   ██████
+       6.5     9%   43%   18/20   ████
+         7     6%   77%   10/20   ██
+      7.25     5%   77%   7/20   ██
+       7.5     5%   88%   4/20   ██
+      7.75     1%    7%   4/20   
+         8     0%    4%   2/20   
+       8.5     0%    0%   0/20   
+         9     0%    0%   0/20   
+
+=== L_W low wall (γ→0 inversion) ===
+  lw          γ    mean   max   break   bar
+       1.4  0.00     0%    0%   0/20   
+       1.6  0.03     0%    0%   0/20   
+       1.8  0.05     0%    0%   0/20   
+         2  0.07     0%    0%   0/20   
+       2.3  0.09     0%    0%   0/20   
+       2.7  0.12     0%    0%   0/20   
+       3.2  0.15     0%    0%   0/20   
+         4  0.19     0%    0%   0/20   
+         6  0.27     0%    0%   0/20   
+        10  0.36     0%    0%   0/20   
+
+=== L_W high wall (γ→2.4 over-sharpen) ===
+  lw          γ    mean   max   break   bar
+    150000  2.11     0%    0%   0/20   
+    200000  2.17     0%    3%   1/20   
+    300000  2.24     0%    3%   1/20   
+    500000  2.33     0%    3%   2/20   
+    700000  2.39     0%    3%   2/20   
+   1000000  2.46     0%    3%   3/20   
+
+(done — 34 steps; results → /Users/joshrossi/Code/mlx-bun/docs/investigations/hlg-runs/hlg-edge.json)

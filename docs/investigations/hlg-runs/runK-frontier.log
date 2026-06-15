@@ -1,0 +1,19 @@
+# HLG frontier probe — model "gemma-4-e4b-it-OptiQ-4bit"   |   N=10, diversity = 1 − self-BLEU (divergent region)
+# canary-gated (<1% non-Latin); the question: does any clean cell beat the default?
+
+default     sbleu-div 0.672  distinct2 0.73  junk 0.0%  ← REFERENCE
+
+base (W6 tg15 A.35)  sbleu-div 0.525  distinct2 0.61  junk 0.0%  acceptable
+W=5                  sbleu-div 0.504  distinct2 0.62  junk 0.0%  acceptable
+tg=12                sbleu-div 0.570  distinct2 0.66  junk 0.0%  acceptable
+A=0.20               sbleu-div 0.500  distinct2 0.61  junk 0.0%  acceptable
+sM=1.3               sbleu-div 0.529  distinct2 0.61  junk 0.0%  acceptable
+Lw=50                sbleu-div 0.533  distinct2 0.64  junk 0.0%  acceptable
+tg12 × W8            sbleu-div 0.501  distinct2 0.61  junk 0.0%  acceptable
+tg12 × W5            canary 8.5%  REJECT
+tg12 × A.8           sbleu-div 0.470  distinct2 0.59  junk 0.0%  acceptable
+tg12 × A.2           sbleu-div 0.605  distinct2 0.68  junk 0.0%  acceptable
+tg12 × W5 × A.2      canary 4.1%  REJECT
+
+VERDICT: no clean cell beats the default — finer control, not dominance.
+(results → /Users/joshrossi/Code/mlx-bun/docs/investigations/hlg-runs/hlg-frontier.json)

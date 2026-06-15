@@ -2,11 +2,16 @@
 
 `mlx-bun serve` (or `bun scripts/serve.ts`) exposes an OpenAI-compatible
 HTTP API on one model. The request's `model` field is ignored; the
-loaded model's id is echoed back. Generation is serialized through a
-single queue (one GPU, batch = 1).
+loaded model's id is echoed back. By default generation is serialized
+through a single queue (one GPU, batch = 1); `--batch N` switches the
+server into bf16 continuous batching.
 
-Start flags: `--port 8090`, `--adapter id=dir` (repeatable),
-`--no-kv-quant` | `--kv-bits N`, `--memory-budget GB`.
+For the full set of start flags (`--port`, `--memory-budget`,
+`--prompt-cache`, `--batch`, `--kv-quant`, `--thinking`, sampling
+defaults, and the perf levers) and a compatibility matrix of which
+combinations compose, see [server-config.md](./server-config.md). This
+doc covers the request/response wire format. LoRA adapters are mounted at
+runtime via `POST /v1/adapters` (below), not a start flag.
 
 ## POST /v1/chat/completions
 
@@ -166,15 +171,22 @@ OpenAI SDK speak this now). Oracle: optiq responses shim.
 
 ```jsonc
 {
+  "server": { "owner": "serve" | "pi-session" | "embedded", "model": "...", "started_at": 0 },
   "prompt_cache": { "entries": 0, "bytes": 0, "max_bytes": 0, "hits": 0, "misses": 0 },
   "response_store": { "entries": 0, "bytes": 0, "max_bytes": 33554432, "ttl_ms": 3600000 },
   "kv_quant": { "mode": "mixed (kv_config.json)" | "uniform-kv8" | "bf16",
-                 "layers": { "kv4": 8, "bf16": 40 } },
+                 "layers": { "kv4": 8, "bf16": 40 },
+                 "attention": { "global": 10, "sliding_window": 38 } },
   "admission": {
     "max_safe_context": 0,            // tokens; requests above this 400
     "memory_budget_bytes": null,      // explicit budget, or null (machine default)
     "usable_bytes": 0,
     "weights_bytes": 0
+  },
+  "batch": {
+    "configured": 1,                  // the --batch N value
+    "batched": false,                 // batching enabled (N>1)
+    "active_rows": 0                  // rows currently decoding in the batch
   }
 }
 ```

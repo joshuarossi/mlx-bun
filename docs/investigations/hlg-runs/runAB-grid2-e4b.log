@@ -1,0 +1,18 @@
+# HLG fine 2-D coherence grids — model "gemma-4-e4b-it-OptiQ-4bit"  (cell = mean canary junk%, K=20 seeds)
+# base {"window":6,"shoulderA":0.35,"sM":0.7,"targetGap":15,"refGap":4,"lw":1200} ; fine steps through the cliffs, second knob varied per row.
+
+
+=== target_gap ramp × s_m  (cliff × coupling hub) ===
+sM\targetGap     7     8     9    10    11    12
+0.2           0%    0%    0%    0%    0%    0%
+0.7          24%   20%    7%    0%    0%    0%
+2            25%   25%   27%   23%   15%   10%
+4            25%   25%   25%   24%   24%   20%
+
+=== W sharp edge × A  (does the channel-close move with A?) ===
+shoulderA\window     3     4     5     6     7     8     9    10
+1             6%    6%    0%    0%    0%    0%    0%    0%
+10            6%    5%    0%    0%    0%    0%    0%    0%
+100          25%   25%   26%   16%    6%    0%    0%    0%
+
+(done — 48 cells; results → /Users/joshrossi/Code/mlx-bun/docs/investigations/hlg-runs/hlg-grid2.json)

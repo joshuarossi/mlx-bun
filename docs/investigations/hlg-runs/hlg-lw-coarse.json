@@ -1,0 +1,110 @@
+{
+  "model": "MiniCPM5-1B-OptiQ-4bit",
+  "fine": false,
+  "base": {
+    "window": 6,
+    "shoulderA": 0.35,
+    "sM": 0.7,
+    "targetGap": 15,
+    "refGap": 4
+  },
+  "refDiversity": 0.6774181000192239,
+  "results": [
+    {
+      "lw": 1,
+      "gamma": -0.06000000000000005,
+      "canaryJunk": 0.12213740458015267,
+      "verdict": "REJECT",
+      "diversity": null,
+      "openJunk": null
+    },
+    {
+      "lw": 3,
+      "gamma": 0.1403909269822583,
+      "canaryJunk": 0,
+      "verdict": "ACCEPTABLE",
+      "diversity": 0.6353500734871361,
+      "openJunk": 0
+    },
+    {
+      "lw": 10,
+      "gamma": 0.36,
+      "canaryJunk": 0,
+      "verdict": "ACCEPTABLE",
+      "diversity": 0.5947641252170268,
+      "openJunk": 0
+    },
+    {
+      "lw": 30,
+      "gamma": 0.5603909269822582,
+      "canaryJunk": 0,
+      "verdict": "ACCEPTABLE",
+      "diversity": 0.6137204370350955,
+      "openJunk": 0
+    },
+    {
+      "lw": 100,
+      "gamma": 0.78,
+      "canaryJunk": 0,
+      "verdict": "ACCEPTABLE",
+      "diversity": 0.570215550639172,
+      "openJunk": 0
+    },
+    {
+      "lw": 300,
+      "gamma": 0.9803909269822582,
+      "canaryJunk": 0,
+      "verdict": "ACCEPTABLE",
+      "diversity": 0.5729090440072253,
+      "openJunk": 0
+    },
+    {
+      "lw": 1000,
+      "gamma": 1.2,
+      "canaryJunk": 0,
+      "verdict": "ACCEPTABLE",
+      "diversity": 0.5648894232445489,
+      "openJunk": 0
+    },
+    {
+      "lw": 3000,
+      "gamma": 1.400390926982258,
+      "canaryJunk": 0,
+      "verdict": "ACCEPTABLE",
+      "diversity": 0.5490265876856737,
+      "openJunk": 0
+    },
+    {
+      "lw": 10000,
+      "gamma": 1.6199999999999999,
+      "canaryJunk": 0,
+      "verdict": "ACCEPTABLE",
+      "diversity": 0.5815353816969331,
+      "openJunk": 0
+    },
+    {
+      "lw": 30000,
+      "gamma": 1.8203909269822582,
+      "canaryJunk": 0,
+      "verdict": "ACCEPTABLE",
+      "diversity": 0.5575117996635705,
+      "openJunk": 0
+    },
+    {
+      "lw": 100000,
+      "gamma": 2.04,
+      "canaryJunk": 0,
+      "verdict": "ACCEPTABLE",
+      "diversity": 0.5318523031136199,
+      "openJunk": 0
+    },
+    {
+      "lw": 1000000,
+      "gamma": 2.46,
+      "canaryJunk": 0,
+      "verdict": "ACCEPTABLE",
+      "diversity": 0.5644673568012248,
+      "openJunk": 0
+    }
+  ]
+}

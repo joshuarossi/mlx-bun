@@ -9,7 +9,7 @@ README.md has the pitch and scope boundaries.
 - `PLAN.md` — durable phase log, exit criteria, findings (the engineering contract).
 - `README.md` — product pitch, quickstart, API surface, scope boundaries.
 - `benchmarks/RESULTS.md` — curated results: parity / performance / quality.
-- `docs/reference/` — server-api, library-api, embedding (user-facing reference).
+- `docs/reference/` — server-api, server-config, library-api, embedding (user-facing reference).
 - `docs/design/` — design docs (optimization plan, compat CLI surface, parallel slots, this reorg).
 - `docs/investigations/` — investigation write-ups (pi built-in, starter port, lab build).
 - `docs/planning/` — product/vision: PRODUCT_ROADMAP, IDEAS, ResearchTopics, journal.

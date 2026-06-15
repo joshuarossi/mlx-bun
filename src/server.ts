@@ -24,6 +24,7 @@ import { Gemma4Model } from "./model/gemma4";
 import { createModel, type RuntimeModel } from "./model/factory";
 import { isMiniCPM5Config, isSupportedModelRecord } from "./model/support";
 import { generate, type GenerateOptions } from "./generate";
+import type { HlgConfig } from "./sampler";
 import { GenerationGateway } from "./serve/generation-gateway";
 import {
   ChatTemplate, type ChatMessage, type ToolDefinition,
@@ -98,6 +99,9 @@ export interface ServerOptions {
    *  fallback. See docs/design/parallel-slots.md. NOTE: the batched executor
    *  is mid-build; until it lands, >1 warns and runs serially. */
   batch?: number;
+  /** HLG tone-curve sampling default (set via --hlg-sampling on + sub-knobs).
+   *  A per-request `hlg` object overrides it field-by-field. Off when unset. */
+  hlg?: HlgConfig;
 }
 
 export interface ServerContext {
@@ -222,6 +226,38 @@ interface ChatRequest {
   };
   /** Mounted LoRA adapter selection: "id", "a+b" (stacked), or "none". */
   adapter?: string;
+  /** HLG tone-curve sampling override (per request). Snake_case wire fields,
+   *  merged over the server's --hlg-sampling config. docs/design/hlg-sampling.md. */
+  hlg?: {
+    enabled?: boolean;
+    width?: number;
+    shoulder?: number;
+    toe?: number;
+    pivot_offset?: number;
+  };
+}
+
+/** Per-field default HLG knobs when enabling without specifying them. */
+const HLG_DEFAULTS = { width: 4, shoulder: 4, toe: 6, pivotOffset: 6 } as const;
+
+/** Resolve the effective HLG config: a per-request `hlg` object overrides the
+ *  server's --hlg-sampling default field-by-field. Returns undefined (HLG off)
+ *  unless enabled by the request or the server. */
+function resolveHlg(
+  reqHlg: ChatRequest["hlg"],
+  serverHlg: HlgConfig | undefined,
+): HlgConfig | undefined {
+  const enabled = reqHlg?.enabled ?? serverHlg?.enabled ?? false;
+  if (!enabled) return undefined;
+  const base = serverHlg ?? HLG_DEFAULTS;
+  return {
+    enabled: true,
+    width: reqHlg?.width ?? base.width,
+    shoulder: reqHlg?.shoulder ?? base.shoulder,
+    toe: reqHlg?.toe ?? base.toe,
+    pivotOffset: reqHlg?.pivot_offset ?? base.pivotOffset,
+    pivot: "top",
+  };
 }
 
 interface OpenAIToolCall {
@@ -497,9 +533,11 @@ export function createServer(
 ): Server<unknown> {
   // --batch N (mode switch): N===1 is the serialized path below; N>1 routes
   // batchable requests through the continuous-batching scheduler (the
-  // GenerationGateway picks the lane). v1 batches full-attention models only;
-  // a sliding-window model falls back to serial (warned once below, after the
-  // gateway resolves full-attention).
+  // GenerationGateway picks the lane). Both full-attention (CPM) and
+  // sliding-window (Gemma) models batch — the scheduler assembles each layer's
+  // cache by attention type. Non-batchable requests (vision / adapters /
+  // repetition penalty / user seed / explicit kv-quant) drain to the serial
+  // lane (see GenerationGateway.willBatch).
   const batch = Math.max(1, Math.floor(serverOptions.batch ?? 1));
 
   let queue: Promise<unknown> = Promise.resolve();
@@ -634,6 +672,7 @@ export function createServer(
     topK: req.top_k ?? serverOptions.defaultTopK ?? ctx.genDefaults.topK ?? 0,
     seed: req.seed ?? (Date.now() & 0xffffffff),
     repetitionPenalty: req.repetition_penalty ?? ctx.genDefaults.repetitionPenalty,
+    hlg: resolveHlg(req.hlg, serverOptions.hlg),
     // generate() yields token ids; stop sequences match on decoded text
     // (they can span token boundaries), so the StopMatcher sits at the
     // decode layer below and halts the loop via onToken → false.

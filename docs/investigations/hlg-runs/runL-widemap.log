@@ -1,0 +1,65 @@
+# HLG knob-space map — model "gemma-4-e4b-it-OptiQ-4bit"
+# base: W=6 A=0.35 s_m=0.7 target_gap=15 L_W=1200
+# coherence = max non-Latin% on the factual canary (K=2); ACCEPTABLE < 1%.
+# diversity = distinct-2 over open-ended prompts (K=3), scored only for survivors.
+
+A (default recipe): diversity 0.87  junk 0.0%   ← reference
+
+
+=== W (candidate gate, nats) ===
+  window=    1  canary  4.5%  REJECT     —
+  window=    2  canary  4.5%  REJECT     —
+  window=    3  canary  4.5%  REJECT     —
+  window=    4  canary  8.5%  REJECT     —
+  window=    6  canary  0.0%  ACCEPTABLE div 0.79 (vs 0.87) openjunk 0.0%
+  window=    8  canary  0.0%  ACCEPTABLE div 0.72 (vs 0.87) openjunk 0.0%
+  window=   12  canary  0.0%  ACCEPTABLE div 0.75 (vs 0.87) openjunk 0.0%
+  window=   20  canary  0.0%  ACCEPTABLE div 0.70 (vs 0.87) openjunk 0.0%
+  window=   40  canary  0.0%  ACCEPTABLE div 0.79 (vs 0.87) openjunk 0.0%
+  → ACCEPTABLE range: [6, 40]
+
+=== A (shoulder/confidence) ===
+  shoulderA= 0.01  canary  0.0%  ACCEPTABLE div 0.84 (vs 0.87) openjunk 0.0%
+  shoulderA= 0.05  canary  0.0%  ACCEPTABLE div 0.81 (vs 0.87) openjunk 0.0%
+  shoulderA=  0.2  canary  0.0%  ACCEPTABLE div 0.79 (vs 0.87) openjunk 0.0%
+  shoulderA= 0.35  canary  0.0%  ACCEPTABLE div 0.79 (vs 0.87) openjunk 0.0%
+  shoulderA=  0.7  canary  0.0%  ACCEPTABLE div 0.75 (vs 0.87) openjunk 0.0%
+  shoulderA=    2  canary  0.0%  ACCEPTABLE div 0.73 (vs 0.87) openjunk 0.0%
+  shoulderA=    5  canary  0.0%  ACCEPTABLE div 0.74 (vs 0.87) openjunk 0.0%
+  shoulderA=   20  canary  0.0%  ACCEPTABLE div 0.79 (vs 0.87) openjunk 0.0%
+  shoulderA=  100  canary 44.0%  REJECT     —
+  shoulderA= 1000  canary 44.0%  REJECT     —
+  → ACCEPTABLE range: [0.01, 20]
+
+=== target_gap (sharpness) ===
+  targetGap=    2  canary 22.3%  REJECT     —
+  targetGap=    4  canary 22.3%  REJECT     —
+  targetGap=    6  canary 21.1%  REJECT     —
+  targetGap=   10  canary  3.7%  REJECT     —
+  targetGap=   15  canary  0.0%  ACCEPTABLE div 0.79 (vs 0.87) openjunk 0.0%
+  targetGap=   25  canary  0.0%  ACCEPTABLE div 0.68 (vs 0.87) openjunk 0.0%
+  targetGap=   50  canary  0.0%  ACCEPTABLE div 0.56 (vs 0.87) openjunk 0.0%
+  targetGap=  100  canary  0.0%  ACCEPTABLE div 0.56 (vs 0.87) openjunk 0.0%
+  → ACCEPTABLE range: [15, 100]
+
+=== s_m (mid sharpness) ===
+  sM= 0.05  canary  0.0%  ACCEPTABLE div 0.88 (vs 0.87) openjunk 0.0%
+  sM=  0.2  canary  0.0%  ACCEPTABLE div 0.80 (vs 0.87) openjunk 0.0%
+  sM=  0.5  canary  0.0%  ACCEPTABLE div 0.79 (vs 0.87) openjunk 0.0%
+  sM=  0.7  canary  0.0%  ACCEPTABLE div 0.79 (vs 0.87) openjunk 0.0%
+  sM=  1.5  canary  0.0%  ACCEPTABLE div 0.78 (vs 0.87) openjunk 0.0%
+  sM=    4  canary  4.0%  REJECT     —
+  sM=   12  canary  4.0%  REJECT     —
+  → ACCEPTABLE range: [0.05, 1.5]
+
+=== L_W (global gamma) ===
+  lw=    1  canary 14.4%  REJECT     —
+  lw=   10  canary  0.0%  ACCEPTABLE div 0.80 (vs 0.87) openjunk 0.0%
+  lw=  100  canary  0.0%  ACCEPTABLE div 0.79 (vs 0.87) openjunk 0.0%
+  lw= 1000  canary  0.0%  ACCEPTABLE div 0.78 (vs 0.87) openjunk 0.0%
+  lw=10000  canary  0.0%  ACCEPTABLE div 0.71 (vs 0.87) openjunk 0.0%
+  lw=100000  canary  0.0%  ACCEPTABLE div 0.70 (vs 0.87) openjunk 0.0%
+  lw=1000000  canary  3.5%  REJECT     —
+  → ACCEPTABLE range: [10, 100000]
+
+(done — 41 configs; results → /Users/joshrossi/Code/mlx-bun/docs/investigations/hlg-runs/hlg-map.json)

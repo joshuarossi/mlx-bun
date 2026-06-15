@@ -1,0 +1,86 @@
+{
+  "model": "gemma-4-e4b-it-OptiQ-4bit",
+  "N": 10,
+  "reference": {
+    "sbleu": 0.7546809695639246,
+    "emb": 0.12136846955801817,
+    "d2": 0.7729703451628585,
+    "junk": 0
+  },
+  "dominance": true,
+  "results": [
+    {
+      "name": "base (W6 tg15 A.35)",
+      "over": {},
+      "canaryJunk": 0,
+      "sbleu": 0.5195901989780582,
+      "emb": 0.09224795558066878,
+      "d2": 0.6371700348032079,
+      "junk": 0,
+      "verdict": "acceptable"
+    },
+    {
+      "name": "A=0.01 (loose)",
+      "over": {
+        "shoulderA": 0.01
+      },
+      "canaryJunk": 0,
+      "sbleu": 0.7217647475356881,
+      "emb": 0.1381691980997049,
+      "d2": 0.7599092778348939,
+      "junk": 0,
+      "verdict": "★ beats emb"
+    },
+    {
+      "name": "sM=0.05 (loose)",
+      "over": {
+        "sM": 0.05
+      },
+      "canaryJunk": 0,
+      "sbleu": 0.7702710786696176,
+      "emb": 0.13287383091062793,
+      "d2": 0.7575513538748833,
+      "junk": 0,
+      "verdict": "★★ BEATS both"
+    },
+    {
+      "name": "Lw=10 (loose)",
+      "over": {
+        "lw": 10
+      },
+      "canaryJunk": 0,
+      "sbleu": 0.5555123068361736,
+      "emb": 0.1095044115287212,
+      "d2": 0.6640863402202801,
+      "junk": 0,
+      "verdict": "acceptable"
+    },
+    {
+      "name": "A.01 × sM.05",
+      "over": {
+        "shoulderA": 0.01,
+        "sM": 0.05
+      },
+      "canaryJunk": 0,
+      "sbleu": 0.7465954477438622,
+      "emb": 0.1410434919251719,
+      "d2": 0.7616955465075907,
+      "junk": 0,
+      "verdict": "★ beats emb"
+    },
+    {
+      "name": "A.01 × sM.05 × Lw10",
+      "over": {
+        "shoulderA": 0.01,
+        "sM": 0.05,
+        "lw": 10
+      },
+      "canaryJunk": 0,
+      "sbleu": 0.7414095926628356,
+      "emb": 0.13942094473615174,
+      "d2": 0.7537338673787272,
+      "junk": 0,
+      "verdict": "★ beats emb"
+    }
+  ]
+}
