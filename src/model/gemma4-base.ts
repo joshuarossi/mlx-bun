@@ -13,6 +13,7 @@ import type { Weights } from "../weights";
 import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
+import { expertOffloadArray } from "../expert-offload";
 import {
   fusedDecodeKernelSupported, fusedDecodeSdpa, perfKernelEnabled,
 } from "./fused-decode-kernel";
@@ -1532,8 +1533,12 @@ export class QuantizedSwitchLinear {
       throw new Error(`${path}: expected quantized switch linear (no .scales tensor)`);
     const spec = quantFor(config.quantization, path);
     if (!spec) throw new Error(`${path}: no quant spec`);
+    // Expert WEIGHT (the ~94% of expert bytes) comes from the page-aligned
+    // offload mmap when --expert-offload is active (else resident); scales/
+    // biases stay resident (small). Same bytes either way → bit-exact.
+    const wName = `${path}.weight`;
     return new QuantizedSwitchLinear(
-      weights.tensor(`${path}.weight`),
+      expertOffloadArray(wName) ?? weights.tensor(wName),
       weights.tensor(`${path}.scales`),
       weights.has(`${path}.biases`) ? weights.tensor(`${path}.biases`) : null,
       spec,

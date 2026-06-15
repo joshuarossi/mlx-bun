@@ -89,7 +89,11 @@ Performance levers (A/B levers; defaults are the measured winners):
                             (perf side of the compat A/B)  [default: on]
   --fused-decode on|off     Fused-decode experiment lever  [default: off]
   --fused-sdpa on|off       Fused SDPA path  [default: on]
-  --force-wire              Wire weights into memory at load`;
+  --force-wire              Wire weights into memory at load
+  --expert-offload          MoE only: serve experts from a page-aligned file
+                            mmap (built on first use) — keeps the model out of
+                            memory pressure (phys_footprint ≈ active params),
+                            bit-exact with the resident path`;
 
 const HELP: Record<string, string> = {
   pi: `mlx-bun pi — drop into a coding-agent session on a local model
@@ -603,6 +607,19 @@ switch (cmd) {
     await ensureNative(sNative);
     sNative.done("native runtime ready");
     const { createServer, loadContext } = await import("./server");
+    if (flag("expert-offload")) {
+      if (m.expertsBytes === 0) {
+        console.error(style.dim("--expert-offload ignored: this model has no experts (dense)"));
+      } else {
+        const sOff = step("expert offload");
+        const { ensureOffloadFile } = await import("./expert-offload-build");
+        const { activateExpertOffload } = await import("./expert-offload");
+        // builds <model>/.mlx-bun-offload on first use (~one-time), then reuses
+        const dir = await ensureOffloadFile(m.path, (msg) => sOff.update(msg));
+        activateExpertOffload(dir);
+        sOff.done(`experts mmap'd ${style.dim(dir)} ${style.dim("· phys_footprint ≈ core")}`);
+      }
+    }
     const sLoad = step("loading weights");
     const t0 = performance.now();
     const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes: rt.serverOptions.memoryBudgetBytes });
@@ -821,7 +838,7 @@ switch (cmd) {
       "--compiled-decode", "--perf-kernel", "--fused-decode", "--fused-sdpa", "--thinking",
       "--temperature", "--top-p", "--top-k",
     ]);
-    const OURS_BOOL = new Set(["--force-wire"]);
+    const OURS_BOOL = new Set(["--force-wire", "--expert-offload"]);
     const passthrough: string[] = [];
     for (let i = 1; i < argv.length; i++) {
       const a = argv[i]!;
