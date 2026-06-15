@@ -7,6 +7,7 @@
 import { Dtype } from "./mlx/ffi";
 import { MlxArray } from "./mlx/array";
 import * as ops from "./mlx/ops";
+import { applyCurve, type CurveParams } from "./curve-sampler";
 
 /** Resolved HLG sampling config (the user-facing knobs). The mid gain is NOT
  *  here — it folds from temperature (m = 1/T) when the sampler is built. */
@@ -67,6 +68,10 @@ export interface SamplerOptions {
    *  with the piecewise curve (temperature becomes the mid gain). Off/undefined
    *  ⇒ the plain temperature path, unchanged. docs/design/hlg-sampling.md. */
   hlg?: HlgConfig;
+  /** v2 log-prob transfer-curve sampler. When set, the drawn monotone curve
+   *  REPLACES temperature+softmax entirely (stochastic, seeded) — see
+   *  src/curve-sampler.ts. Identity curve ≡ temperature 1. */
+  curve?: CurveParams;
 }
 
 export interface LogitsProcessorOptions {
@@ -405,7 +410,19 @@ export function applyHlgShaper(lp: MlxArray, opts: HlgShaperParams = {}): MlxArr
 }
 
 export function makeSampler(opts: SamplerOptions = {}): Sampler {
-  const { temperature = 0, topP = 0, topK = 0, seed = 0, hlg } = opts;
+  const { temperature = 0, topP = 0, topK = 0, seed = 0, hlg, curve } = opts;
+
+  // v2 curve sampler: the drawn log-prob transfer curve REPLACES temperature +
+  // softmax. Stochastic and seeded by design (the curve IS the sampling shape),
+  // so it overrides the greedy default — the designer wants variety across N.
+  if (curve) {
+    return (lp, step) => {
+      const shaped = applyCurve(lp, curve);
+      const tok = ops.randomCategorical(shaped, stepKey(seed, step));
+      shaped.dispose();
+      return tok;
+    };
+  }
 
   // Greedy: HLG is a no-op (a monotone curve cannot move the argmax), so the
   // greedy path is untouched whether or not HLG is enabled.
