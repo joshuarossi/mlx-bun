@@ -9,6 +9,7 @@ import {
   closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync,
 } from "node:fs";
 import { join } from "node:path";
+import { isDrafterModelType } from "./model/support";
 
 export interface ModelRecord {
   path: string;
@@ -143,9 +144,11 @@ export class Registry {
     return rows.map(rowToRecord);
   }
 
-  /** Resolve a fuzzy query to exactly one model (error listing candidates otherwise). */
+  /** Resolve a fuzzy query to exactly one model (error listing candidates otherwise).
+   *  Speculative-decoding drafters are companion artifacts, never selectable on
+   *  their own, so they never count as candidates here. */
   resolve(query: string): ModelRecord {
-    const matches = this.list({ query });
+    const matches = this.list({ query }).filter((m) => !isDrafterModelType(m.modelType));
     if (matches.length === 1) return matches[0]!;
     if (matches.length === 0) throw new Error(`no model matching "${query}" — run \`mlx-bun scan\``);
     throw new Error(

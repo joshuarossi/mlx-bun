@@ -1,0 +1,67 @@
+{
+  "model": "/Users/joshrossi/.cache/huggingface/hub/models--mlx-community--MiniCPM5-1B-OptiQ-4bit/snapshots/664aabaed233c653f82716d8dc822234d0091f78",
+  "scenario": {
+    "A": [
+      1,
+      100,
+      200,
+      300,
+      400,
+      500,
+      600
+    ],
+    "B": [
+      1,
+      150,
+      250,
+      350,
+      450
+    ],
+    "C": [
+      1,
+      130,
+      230,
+      330,
+      430,
+      530
+    ],
+    "phase1": 3,
+    "phase2": 3,
+    "phase3": 3,
+    "join_after": 3,
+    "leave_after": 6,
+    "leave_row": 0
+  },
+  "trajectories": {
+    "A": [
+      33,
+      242,
+      37,
+      35,
+      42,
+      33,
+      242
+    ],
+    "B": [
+      96,
+      351,
+      220,
+      1,
+      220,
+      1,
+      220,
+      1,
+      220,
+      1
+    ],
+    "C": [
+      101,
+      242,
+      37,
+      242,
+      37,
+      242,
+      37
+    ]
+  }
+}

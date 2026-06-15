@@ -281,6 +281,192 @@ async function realBatchedGreedy(
   }
 }
 
+/** The DYNAMIC-B gate: drive a real mlx-bun batched decode through a scenario
+ *  where rows JOIN and LEAVE mid-stream, using the continuous-batching cache
+ *  ops mergeKVRows / filterKVRows (src/model/batched-mask.ts). Executes the
+ *  IDENTICAL protocol to scripts/gen-batched-dynamic-golden.py (mlx-lm's
+ *  BatchKVCache.merge / .extract / .filter), so the per-row greedy trajectories
+ *  must match the oracle token-for-token.
+ *
+ *    phase1: {A,B}  (mergeKVRows two solo prefills)
+ *    JOIN C:        (extract live rows from the running batch + prefill C, re-merge)
+ *    phase2: {A,B,C}
+ *    LEAVE A:       (filterKVRows keep=[1,2])
+ *    phase3: {B,C}
+ *
+ *  Full-attention only (CPM): every layer is a KVCache. Sliding/RotatingKVCache
+ *  dynamic-B is a follow-up (same staging as the static oracle rollout).
+ *  Returns the three per-row trajectories keyed A/B/C. */
+async function realDynamicBatchedGreedy(
+  base: string,
+  scn: { A: number[]; B: number[]; C: number[]; phase1: number; phase2: number; phase3: number },
+): Promise<{ A: number[]; B: number[]; C: number[] }> {
+  const { loadModelConfig } = await import("../src/config");
+  const { Weights } = await import("../src/weights");
+  const { createModel } = await import("../src/model/factory");
+  const { MlxArray } = await import("../src/mlx/array");
+  const { clearCache } = await import("../src/mlx/ffi");
+  const { KVCache } = await import("../src/model/gemma4-base");
+  const { BatchedDecodeMaskCache, mergeKVRows, filterKVRows } = await import("../src/model/batched-mask");
+
+  const config = await loadModelConfig(base);
+  const weights = await Weights.open(base);
+  const model = createModel(weights, config);
+
+  type Row = { keys: InstanceType<typeof MlxArray>; values: InstanceType<typeof MlxArray> };
+  const argmaxF = (a: Float32Array): number => {
+    let bi = 0;
+    for (let i = 1; i < a.length; i++) if (a[i]! > a[bi]!) bi = i;
+    return bi;
+  };
+
+  /** Solo (B=1) prefill → per-layer KVCache list + the first greedy token. */
+  const prefill = (prompt: number[]): { inners: InstanceType<typeof KVCache>[]; tok: number } => {
+    const cache = model.makeCache() as InstanceType<typeof KVCache>[];
+    if (cache.some((c) => (c as { maxSize?: number }).maxSize !== undefined))
+      throw new Error("realDynamicBatchedGreedy is full-attention only (sliding dynamic-B is a follow-up)");
+    const ids = MlxArray.fromInt32(Int32Array.from(prompt), [1, prompt.length]);
+    const h = model.forwardHidden(ids, cache);
+    ids.dispose();
+    const lg = model.logitsFromHidden(h);
+    h.dispose();
+    const [, L, V] = lg.shape as [number, number, number];
+    const s = lg.slice([0, L - 1, 0], [1, L, V]);
+    const f = s.toFloat32();
+    s.dispose();
+    lg.dispose();
+    clearCache();
+    return { inners: cache, tok: argmaxF(f) };
+  };
+
+  /** Wrap inners as a left-padded batched cache, forward [B,1], return per-row
+   *  next greedy token. The wrappers delegate KV to the (mutated-in-place)
+   *  inners; they are NOT disposed here (that would free the inners). */
+  const feed = (inners: InstanceType<typeof KVCache>[], leftPad: number[], toks: number[]): number[] => {
+    const B = toks.length;
+    const wrappers = inners.map((c) => new BatchedDecodeMaskCache(c, B, leftPad, null));
+    const tid = MlxArray.fromInt32(Int32Array.from(toks), [B, 1]);
+    const h = model.forwardHidden(tid, wrappers);
+    tid.dispose();
+    const lg = model.logitsFromHidden(h);
+    h.dispose();
+    const [, L, V] = lg.shape as [number, number, number];
+    const out: number[] = [];
+    for (let b = 0; b < B; b++) {
+      const s = lg.slice([b, L - 1, 0], [b + 1, L, V]);
+      const f = s.toFloat32();
+      s.dispose();
+      out.push(argmaxF(f));
+    }
+    lg.dispose();
+    // Free only the per-step rope arrays the wrappers built; keep the inners.
+    for (const w of wrappers) w.releaseRopeArr();
+    clearCache();
+    return out;
+  };
+
+  /** Build a fresh batched-inner KVCache list from per-layer rows via mergeKVRows. */
+  const mergeInners = (
+    getRows: (layer: number) => Row[], L: number,
+  ): { inners: InstanceType<typeof KVCache>[]; leftPad: number[] } => {
+    const inners: InstanceType<typeof KVCache>[] = [];
+    let leftPad: number[] = [];
+    for (let layer = 0; layer < L; layer++) {
+      const rows = getRows(layer);
+      const merged = mergeKVRows(rows);
+      for (const r of rows) { r.keys.dispose(); r.values.dispose(); }
+      const c = new KVCache();
+      c.restoreState(merged.keys, merged.values, merged.width);
+      inners.push(c);
+      leftPad = merged.leftPad;
+    }
+    return { inners, leftPad };
+  };
+
+  /** A solo cache's full KV as a [1,H,len,D] row (offset == true length). */
+  const soloRow = (c: InstanceType<typeof KVCache>): Row => {
+    const [keys, values] = c.temporalView();
+    return { keys, values };
+  };
+
+  try {
+    const L = model.makeCache().length; // layer count (disposed below via prefill caches)
+    const pa = prefill(scn.A);
+    const pb = prefill(scn.B);
+    let { inners, leftPad } = mergeInners(
+      (layer) => [soloRow(pa.inners[layer]!), soloRow(pb.inners[layer]!)], L,
+    );
+    for (const c of [...pa.inners, ...pb.inners]) c.dispose();
+
+    let a = pa.tok, b = pb.tok, c = 0;
+    const trajA = [a], trajB = [b], trajC: number[] = [];
+
+    for (let i = 0; i < scn.phase1; i++) {
+      [a, b] = feed(inners, leftPad, [a, b]) as [number, number];
+      trajA.push(a); trajB.push(b);
+    }
+
+    // JOIN C: prefill C solo, extract the two live rows from the running batch,
+    // re-merge to a 3-row batch (exercises mergeKVRows on advanced-offset rows).
+    const pc = prefill(scn.C);
+    c = pc.tok; trajC.push(c);
+    const prevLeftPad = leftPad;
+    const prevInners = inners;
+    const off = prevInners[0]!.offset;
+    ({ inners, leftPad } = mergeInners((layer) => {
+      const [k0, v0] = prevInners[layer]!.temporalView(); // [2,H,off,D]
+      const [, H, , D] = k0.shape as [number, number, number, number];
+      const vD = v0.shape[3]!;
+      const rows: Row[] = [];
+      for (let r = 0; r < 2; r++) {
+        const pad = prevLeftPad[r]!;
+        rows.push({
+          keys: k0.slice([r, 0, pad, 0], [r + 1, H, off, D]),
+          values: v0.slice([r, 0, pad, 0], [r + 1, H, off, vD]),
+        });
+      }
+      k0.dispose(); v0.dispose();
+      rows.push(soloRow(pc.inners[layer]!)); // C: fresh [1,H,lenC,D]
+      return rows;
+    }, L));
+    for (const ci of [...prevInners, ...pc.inners]) ci.dispose();
+
+    for (let i = 0; i < scn.phase2; i++) {
+      [a, b, c] = feed(inners, leftPad, [a, b, c]) as [number, number, number];
+      trajA.push(a); trajB.push(b); trajC.push(c);
+    }
+
+    // LEAVE A: filterKVRows keep rows [1,2] ({B,C}); surviving rows keep their
+    // KV + left padding unchanged (no min-pad trim — a memory opt, not needed
+    // for correctness; the mask still masks the shared leading padding).
+    const keep = [1, 2];
+    const off2 = inners[0]!.offset;
+    const survInners = inners, survLeftPad = leftPad;
+    const filtered: InstanceType<typeof KVCache>[] = [];
+    for (let layer = 0; layer < L; layer++) {
+      const [k0, v0] = survInners[layer]!.temporalView();
+      const r = filterKVRows(k0, v0, keep);
+      k0.dispose(); v0.dispose();
+      const nc = new KVCache();
+      nc.restoreState(r.keys, r.values, off2);
+      filtered.push(nc);
+    }
+    for (const ci of survInners) ci.dispose();
+    inners = filtered;
+    leftPad = keep.map((i) => survLeftPad[i]!);
+
+    for (let i = 0; i < scn.phase3; i++) {
+      [b, c] = feed(inners, leftPad, [b, c]) as [number, number];
+      trajB.push(b); trajC.push(c);
+    }
+    for (const ci of inners) ci.dispose();
+
+    return { A: trajA, B: trajB, C: trajC };
+  } finally {
+    weights.dispose();
+  }
+}
+
 const PROMPTS = [
   [1, 100, 200, 300, 400, 500, 600], // len 7 → leftPad 0 (bit-exact row)
   [1, 150, 250, 350, 450], // len 5 → leftPad 2
@@ -314,6 +500,20 @@ describe.skipIf(!optIn || !haveCpm)("batched decode ORACLE parity — CPM L1 vs 
     const got = await realBatchedGreedy(CPM_BASE, golden.prompts as number[][], golden.steps as number);
     console.log(`[oracle CPM] mlx-bun: ${JSON.stringify(got)}`);
     console.log(`[oracle CPM] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
+    expect(got).toEqual(golden.trajectories);
+  }, 180_000);
+});
+
+// --- THE DYNAMIC-B GATE: rows JOIN and LEAVE mid-stream. Proves the
+//     continuous-batching cache ops (mergeKVRows / filterKVRows) drive a real
+//     batched decode bit-parity with mlx-lm's BatchKVCache.merge/.extract/.filter.
+//     Oracle: scripts/gen-batched-dynamic-golden.py (oracle venv). ---
+describe.skipIf(!optIn || !haveCpm)("batched decode DYNAMIC-B ORACLE — CPM L1 vs mlx-lm (join/leave)", () => {
+  test("merge/filter dynamic batched greedy == mlx-lm BatchKVCache", async () => {
+    const golden = await Bun.file(`${import.meta.dir}/fixtures/batched-dynamic-golden-cpm.json`).json();
+    const got = await realDynamicBatchedGreedy(CPM_BASE, golden.scenario);
+    console.log(`[dynamic CPM] mlx-bun: ${JSON.stringify(got)}`);
+    console.log(`[dynamic CPM] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
     expect(got).toEqual(golden.trajectories);
   }, 180_000);
 });

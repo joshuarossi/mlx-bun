@@ -1,0 +1,10 @@
+# Real logit calibration — model "gemma-4-e4b-it-OptiQ-4bit"
+# the sampler's knobs are in NATS (logit-difference units). Are they sized for real logits?
+
+tag          vocab  top   ent   │ gap→2  →5   →10   →50  →100 │ #≤6n  #≤8n  #≤15n │ mass1 mass10 mass64 │ top-p#
+arithmetic   262144  28.5     0  │16.1319.0621.4725.8927.43 │    1    1    1 │    1      1      1 │    1
+factual      262144 27.75     0  │ 8.6313.8116.5619.6321.69 │    1    1    5 │    1      1      1 │    1
+opposite     262144 29.25  0.06  │ 5.1311.2513.56 16.5 17.5 │    2    2   23 │0.994      1      1 │    1
+creative     262144 26.88  0.69  │ 1.75    910.9414.4416.06 │    3    4   61 │0.843      1      1 │    2
+
+(exported 4 real distributions → /Users/joshrossi/Code/mlx-bun/docs/investigations/hlg-figs/hlg-logits.js, 6.8 MB)

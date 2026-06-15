@@ -2475,6 +2475,154 @@ two B=1 forwards, bf16 tolerance). This is the teacher-forced gate, already
 green. So S1 shrinks to wiring prefill into serving (S1a) + the genuinely new
 batched-decode path (S1b).
 
+## Phase 19 — HLG sampling (piecewise tone curve on the logits) `[ ]` (2026-06-14)
+
+A new sampling transform inspired by HLG (Hybrid Log-Gamma, the HDR transfer
+function): where temperature is one global slope, HLG is **piecewise** — a
+pivoted toe/gain/shoulder curve on the per-token log-probs that rolls off the
+highlight (top-token dominance), boosts the mids (novelty/local contrast), and
+holds a soft toe on the shadows (suppress the tail smoothly, don't crush the
+blacks). The thesis: temperature *couples* "reduce top dominance" with "inflate
+the tail"; a region-aware tone curve **decouples** them. Post-inference and
+model-agnostic — applies to all four models and both lanes with no per-model
+code. Full design + math in **docs/design/hlg-sampling.md**.
+
+**First sampling feature with NO oracle ancestor** (neither mlx-lm nor optiq
+does this), so it is gated by **KL + quality + diversity, not parity** (see
+three-tier-parity framing). The parity-equivalent safety anchor: the curve is a
+strict generalization of temperature — `gain=1`+rolloff-off ⟹ bit-exact today's
+sampler; rolloff-off+`gain=1/T` ⟹ bit-exact temperature `T`. Greedy
+(`temperature 0`) is a no-op by construction (monotone `g` can't move argmax).
+
+Pieces (sequenced; keep flag-off and greedy paths bit-identical at every step):
+
+- [x] **(1) Pure curve + tests** (2026-06-14) — `applyHlg(lp, params)` +
+      `HlgParams` in `src/sampler.ts` (top-anchored pivot `μ = ℓ_max − c`,
+      piecewise log-toe/linear-mid/log-shoulder, `where`-selected, dispose
+      discipline; no-rolloff regime returns `mulScalar(lp, m)` so the
+      degeneracy is the *same op*, not an approximation). Tests
+      `tests/hlg-sampling.test.ts` (8/8, fast tier, no weights):
+      degeneracy ≡ temperature/identity `max|Δ|=0`, monotone +
+      ranking/argmax preserved, `-inf` masked tokens stay `-inf` (no NaN),
+      shoulder compresses the highlight gap, toe gentles the tail gap. Not
+      wired into `makeSampler` yet — flag-off path byte-identical. Model-level
+      neutrality (real logit vectors, all 4 models, both lanes) lands with the
+      wiring in (2)/(3).
+- [x] **(2) Serial wiring** (2026-06-14) — `--hlg-sampling on|off` (default off)
+      + `--hlg-width/-shoulder/-toe/-pivot-offset` in `serverRuntimeFlags()` (no
+      `--hlg-gain`: the mid gain folds from `--temperature`); `SamplerOptions.hlg`
+      → `makeSampler` calls `applyHlg` (mulScalar in the degenerate path, so the
+      flag-off branch is byte-identical); `ServerOptions.hlg`; per-request `hlg`
+      object on `ChatRequest` merged field-by-field by `resolveHlg` in
+      `toOptions`. Wiring-neutrality tests (pure, no weights): HLG identity-config
+      draws the same tokens as plain temperature; rolloff-on diverges. 10/10
+      green, tsc clean. NOTE: `GenerateOptions.hlg` also reaches the batched
+      gateway's per-row `makeSampler` for free — functionally live there, the
+      explicit batched neutrality test is (3).
+- [ ] **(3) Batched wiring** — pass `hlg` through the per-row sampler in
+      `generation-gateway.ts`; batched neutrality test (per-row logits unchanged
+      vs serial under identity config).
+- [x] **(4) Pivot modes 2 & 3 — runtime + tests** (2026-06-14, brought forward) —
+      `hlgPivotBase()` in `src/sampler.ts` computes all three: `top` (μ = ℓmax −
+      offset), `entropy` (μ = Σp·ℓ = −H, one dot product), `median` (μ = logprob
+      at the 50% cumulative-mass boundary, reusing the sort). `HlgParams`/
+      `HlgConfig.pivot` widened to the union. Tests: each pivot monotone +
+      finite, and the three produce genuinely different curves (14/14 green).
+      The `--hlg-pivot` CLI flag is the only remaining bit (the
+      `scripts/hlg-compare.ts` harness sets pivot via `HlgConfig` directly).
+- **Architecture decision (2026-06-14): HLG is a REPLACEMENT sampler.**
+      `makeSampler` branches `if (hlg.enabled)` → the curve is the whole
+      post-logits step (toe does the tail control), `else` → top-p/top-k +
+      temperature, unchanged. Mutually exclusive — HLG does NOT layer on top of
+      top-p/top-k. `gain` gained an explicit override (`HlgConfig.gain`), still
+      folding from temperature by default, so mid-contrast can be probed while a
+      model's recommended temperature is held fixed. Flag-off path stays
+      byte-identical; the pure `applyHlg` degeneracy gates are unchanged.
+- [ ] **(5) Eval + benchmark** — KL characterization (`evaluateKlSelfFlag`,
+      knob sweep), capability guardrail (`eval.ts capability` e4b + 12B, on vs
+      off — does it dent reasoning/tool-calling?), NEW diversity lens
+      (`src/eval/tasks/diversity.ts`: distinct-n / self-BLEU / cross-sample
+      entropy, HLG vs entropy-matched temperature — the benefit), perf A/B.
+      Set shipped defaults from the sweep; row in benchmarks/RESULTS.md §3.
+- [ ] **(6) Docs** — finalize design doc + investigation write-up
+      (docs/investigations/hlg-sampling-investigation.md), server-config /
+      server-api / README sampling sections, STATUS next-action, memory note.
+
+- **Exit criterion**: neutrality gates bit-exact across all four models and
+  both lanes; capability suite non-regressed (or, if it regresses, shipped
+  default-off with a documented creative/open-ended use-case); a measured
+  diversity gain at matched entropy vs temperature; ~0 decode-tok/s regression
+  with the flag on. Default stays **off** regardless — novel knob, never a
+  silent change to the default sampler.
+
+### Phase 19 findings (2026-06-14) — see docs/investigations/hlg-sampling-investigation.md
+
+Curve in place; HLG finalised as a **replacement sampler** (`if hlg → curve
+else → top_p/top_k/temperature`). Pivot question answered empirically on e4b
+(4 runs, `scripts/hlg-compare.ts`; full transcripts in
+docs/investigations/hlg-runs/):
+- **Pivot = top-anchored.** As a replacement, `top` (μ = ℓmax − c) holds
+  coherence; `entropy` (μ = −H) and `median` (50% mass) collapse to multilingual
+  word-salad — they land μ near the peak on confident distributions, so the
+  whole distribution falls into the (permissive) toe → tail mass ~17× the peak
+  over the 262k vocab → near-uniform. top's 6-nat offset keeps tail mass ~0.4×.
+- **The toe is permissive** ("don't crush the blacks" = lifts the tail toward a
+  floor, not a hard cut), so in replacement mode the pivot offset below the peak
+  governs coherence. Shaping the toe (smaller β_t) is the next calibration step.
+- **distinct-2 rewards garbage** (salad scores ~1.0) → the Piece 5 diversity
+  metric needs a coherence gate (NLL/perplexity), not lexical diversity alone.
+- **Positive signal:** HLG raises open-ended diversity (brainstorm 0.78→0.88,
+  continuation 0.75→0.86) while leaving the confident factual answer at 0.30 —
+  the decoupling appears, mild at default knobs.
+
+**Pass 2 (2026-06-14, full transfer system → the user's exact `HLGShaper`):**
+implemented the literal BT.2100 chain (`applyHlgOetf/Eotf/Pipeline/Shaper`) as a
+full replacement vs the default recipe. Two adaptations the source domain doesn't
+need, both found empirically: **windowed-anchor input** (`x=clamp((ℓ−ℓmax)/W+1,0,1)`
+— min-max over 262k collapses every candidate into the shoulder) and **the toe
+inverted** (cubic suppress, not HLG's √ lift). Result: `HLGShaper` at W=5/os=18 is
+a **working coherent replacement** (vivid, correct, no salad — runF/runG). Four
+orthogonal knobs (`s_m`/`A`/`x_floor`+toe/`L_W`) where temperature gave one, BUT
+the coherent slice is narrow — loosening for diversity tips into garbage (a smooth
+262k tail needs aggressive gating; nothing hard-cuts like top-k).
+
+**Pass 3 (2026-06-15, automated knob map `scripts/hlg-map.ts`) — CONCLUSIVE.** Once
+out_scale is decoupled (auto-derived from a W-independent target gap), the shaper
+is robust across wide W×A basins (the earlier "knife-edge" was that confound).
+Two-stage canary-gated map (coherence → diversity vs the default recipe) across
+all 5 knobs: **no acceptable cell beats the default** (HLG caps ~0.80 distinct-2
+vs default 0.87 at equal zero-junk). Only `W` and `target_gap` matter and both are
+coherence *gates*, not diversity dials; `A`/`s_m`/`L_W` near-inert. Hard tail-cut
+(top_p/top_k) is strictly more diversity-efficient than a smooth gated tail.
+Frontier probe (`scripts/hlg-frontier.ts`, N=10, self-BLEU on the divergent
+region + `target_gap×W`/`×A` interaction corners) is the definitive landing: best
+clean HLG cell **0.605 vs default 0.672** (the sharper metric widens the gap but
+shows the real `target_gap`/`A` diversity gradient distinct-2 hid); and the valid
+ranges are a **coupled manifold, not a box** — `tg12×W5` jointly fails though each
+is clean alone (the interaction the one-at-a-time map structurally can't see).
+That Pass-3 "control, not dominance" verdict was **PREMATURE — overturned in
+Pass 4.** It was a sweep-range + metric artifact: A had only been swept over
+[0.2,0.8] (the dead zone where the shoulder barely engages) on a noisy distinct-2.
+
+**Pass 4 (2026-06-15) — apparent reversal, then a WASH.** Wide-range map (runL:
+every knob breaks somewhere, so each does something; A breaks high ~100, s_m high
+~4) + frontier re-measured at N=10 with self-BLEU + a **semantic embedding metric**
+(mean-pooled LM hidden states) + text verification (runM/runN). At the loose corner
+**A=0.01, s_m=0.05** it *looked like* dominance — self-BLEU 0.783 vs 0.672, text
+verified genuinely diverse and correct. **But the fresh-seed repeat (runO, seed
+5000) did NOT replicate it:** the default's own self-BLEU swung +0.083 across seeds
+(0.672→0.755), at seed 5000 edging above the HLG cell — N=10 variance (~0.08) swamps
+the effect. **Honest final landing: HLG's loose-corner cells are COMPARABLE to the
+default on diversity at equal coherence (within N=10 noise), with at most a small
+consistent embedding edge below the measurement resolution. Neither "dominance" nor
+"negative" survives — a wash at this N; resolving it needs N in the hundreds or a
+real sentence encoder.** A working/coherent/tested sampler (default off); the
+thesis (loosen top + gate tail) is mechanically real but its diversity payoff over
+temp is, at most, within noise. Meta-result: the fresh-seed repeat caught BOTH
+premature verdicts (the Pass-3 "negative" and the Pass-4 "dominance") within one
+run each. Full arc + 15-run trail + hlg-frontier.json + 3 harnesses:
+docs/investigations/hlg-sampling-investigation.md.
+
 ## Publishing decision (2026-06-12, Josh)
 
 Zip-sharing is over — publish properly: **bun/npm first, then brew.**

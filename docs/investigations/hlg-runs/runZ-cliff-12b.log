@@ -1,0 +1,26 @@
+# HLG cliff resolver — model "gemma-4-12B-it-OptiQ-4bit"  (canary junk gradient, K=5 seeds/step)
+# base {"window":6,"shoulderA":0.35,"sM":0.7,"targetGap":15,"refGap":4,"lw":1200} ; unit steps through the steep features, rails dropped.
+
+
+=== target_gap cliff (base: A=0.35, s_m=0.7, W=6) ===
+  targetGap  meanjunk   maxjunk   break-rate   bar
+         7     24%      38%      5/5       ██████████
+         8     17%      23%      5/5       ███████
+         9      4%       8%      5/5       ██
+        10      1%       2%      2/5       
+        11      0%       2%      1/5       
+        12      0%       0%      0/5       
+        13      0%       0%      0/5       
+
+=== W lower edge @ high A (A=100, channel-closing) ===
+  window     meanjunk   maxjunk   break-rate   bar
+         3     26%      39%      5/5       ██████████
+         4     26%      39%      5/5       ██████████
+         5     24%      29%      5/5       ██████████
+         6     18%      33%      5/5       ███████
+         7     13%      49%      5/5       █████
+         8      0%       0%      0/5       
+         9      0%       0%      0/5       
+        10      0%       0%      0/5       
+
+(done — 15 steps; results → /Users/joshrossi/Code/mlx-bun/docs/investigations/hlg-runs/hlg-cliff.json)

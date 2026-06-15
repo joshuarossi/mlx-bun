@@ -15,7 +15,9 @@ import type { Server } from "bun";
 // imports as HTMLBundle (the html loader), but the text attribute makes
 // the runtime value a string — hence the double cast.
 import appHtml from "./web/app.html" with { type: "text" };
+import curveDesignerHtml from "../docs/curve-designer.html" with { type: "text" };
 import pkgJson from "../package.json" with { type: "json" };
+import { readFileSync } from "node:fs";
 const APP_PAGE = appHtml as unknown as string;
 const pkgVersion = (pkgJson as { version: string }).version;
 import { loadModelConfig, type KvQuantSpec } from "./config";
@@ -24,6 +26,10 @@ import { Gemma4Model } from "./model/gemma4";
 import { createModel, type RuntimeModel } from "./model/factory";
 import { isMiniCPM5Config, isSupportedModelRecord } from "./model/support";
 import { generate, type GenerateOptions } from "./generate";
+import type { HlgConfig } from "./sampler";
+import { isMonotone, CURVE_UMIN, type CurveParams } from "./curve-sampler";
+const CURVE_PAGE = curveDesignerHtml as unknown as string;
+import { GenerationGateway } from "./serve/generation-gateway";
 import {
   ChatTemplate, type ChatMessage, type ToolDefinition,
 } from "./chat-template";
@@ -53,10 +59,13 @@ import { makePiWsHandler, type PiWsData } from "./pi-web";
 export interface ServerOptions {
   /** Byte cap for the prompt (KV) cache. Default 2 GB. */
   promptCacheBytes?: number;
-  /** KV quantization override. Default: apply ctx.kvConfig when present
-   *  (mixed per-layer). "off" forces bf16; a number forces uniform bits
+  /** KV quantization override. When unset: apply ctx.kvConfig (mixed
+   *  per-layer) for serial serving, but bf16 under `--batch N` (the batched
+   *  engine is bf16-only — a mode switch, see `batch` below). "config" forces
+   *  the model's kv_config even under batching (those requests then route to
+   *  the serial path); "off" forces bf16; a number forces uniform bits
    *  (group size 64, start 0) ignoring the config file. */
-  kvQuant?: "off" | number;
+  kvQuant?: "off" | "config" | number;
   /** Memory budget for the serving process (admission control — Phase 5).
    *  Requests whose prompt + max_tokens exceed the budget's max safe
    *  context are rejected with 400 instead of crashing the GPU: the OOM
@@ -87,13 +96,16 @@ export interface ServerOptions {
   defaultTemperature?: number;
   defaultTopP?: number;
   defaultTopK?: number;
-  /** Concurrent generation slots (batched serving). Default 1 = today's
-   *  serialized single-queue path (one GPU, batch=1). >1 will load the
-   *  batch scheduler — see docs/design/parallel-slots.md. NOTE (phase S0):
-   *  the knob is plumbed and surfaced but the batched executor is not
-   *  built yet; >1 currently warns and still runs serially. Set via
-   *  `--slots N`. */
-  slots?: number;
+  /** Max concurrent requests batched through the mlx-lm-parity engine
+   *  (`--batch N`). Default 1 = today's serialized single-queue path. >1 opts
+   *  the WHOLE server into the batched engine (continuous batching, B floats
+   *  1..N, bit-parity with mlx-lm B=N) — a mode switch, not a load-dependent
+   *  fallback. See docs/design/parallel-slots.md. NOTE: the batched executor
+   *  is mid-build; until it lands, >1 warns and runs serially. */
+  batch?: number;
+  /** HLG tone-curve sampling default (set via --hlg-sampling on + sub-knobs).
+   *  A per-request `hlg` object overrides it field-by-field. Off when unset. */
+  hlg?: HlgConfig;
 }
 
 export interface ServerContext {
@@ -218,6 +230,38 @@ interface ChatRequest {
   };
   /** Mounted LoRA adapter selection: "id", "a+b" (stacked), or "none". */
   adapter?: string;
+  /** HLG tone-curve sampling override (per request). Snake_case wire fields,
+   *  merged over the server's --hlg-sampling config. docs/design/hlg-sampling.md. */
+  hlg?: {
+    enabled?: boolean;
+    width?: number;
+    shoulder?: number;
+    toe?: number;
+    pivot_offset?: number;
+  };
+}
+
+/** Per-field default HLG knobs when enabling without specifying them. */
+const HLG_DEFAULTS = { width: 4, shoulder: 4, toe: 6, pivotOffset: 6 } as const;
+
+/** Resolve the effective HLG config: a per-request `hlg` object overrides the
+ *  server's --hlg-sampling default field-by-field. Returns undefined (HLG off)
+ *  unless enabled by the request or the server. */
+function resolveHlg(
+  reqHlg: ChatRequest["hlg"],
+  serverHlg: HlgConfig | undefined,
+): HlgConfig | undefined {
+  const enabled = reqHlg?.enabled ?? serverHlg?.enabled ?? false;
+  if (!enabled) return undefined;
+  const base = serverHlg ?? HLG_DEFAULTS;
+  return {
+    enabled: true,
+    width: reqHlg?.width ?? base.width,
+    shoulder: reqHlg?.shoulder ?? base.shoulder,
+    toe: reqHlg?.toe ?? base.toe,
+    pivotOffset: reqHlg?.pivot_offset ?? base.pivotOffset,
+    pivot: "top",
+  };
 }
 
 interface OpenAIToolCall {
@@ -488,20 +532,30 @@ class StreamDecoder {
   }
 }
 
+// v2 curve designer: CORS-open so a file:// editor can call a localhost engine.
+const CURVE_CORS: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-allow-headers": "content-type",
+};
+/** coherence flag: non-Latin-letter ratio / replacement char / reserved token. */
+function curveJunk(s: string): boolean {
+  const L = s.match(/\p{L}/gu) ?? [];
+  const nonLatin = L.length ? L.filter((c) => !/\p{Script=Latin}/u.test(c)).length / L.length : 0;
+  return nonLatin >= 0.02 || /�/.test(s) || /<unused\d+>/.test(s);
+}
+
 export function createServer(
   ctx: ServerContext, port = 0, serverOptions: ServerOptions = {},
 ): Server<unknown> {
-  // Concurrent slots (phase S0): the knob is real but the batched
-  // executor isn't built yet. slots===1 is the serialized path below;
-  // slots>1 is where the batch scheduler will branch in (S1+, see
-  // docs/design/parallel-slots.md). Until then, >1 warns and runs serial
-  // so the flag is wired end-to-end without changing behavior.
-  const slots = Math.max(1, Math.floor(serverOptions.slots ?? 1));
-  if (slots > 1)
-    console.warn(
-      `[slots] --slots ${slots} requested, but batched serving is not implemented yet ` +
-        `(phase S1, docs/design/parallel-slots.md) — running serially (1 in-flight generation).`,
-    );
+  // --batch N (mode switch): N===1 is the serialized path below; N>1 routes
+  // batchable requests through the continuous-batching scheduler (the
+  // GenerationGateway picks the lane). Both full-attention (CPM) and
+  // sliding-window (Gemma) models batch — the scheduler assembles each layer's
+  // cache by attention type. Non-batchable requests (vision / adapters /
+  // repetition penalty / user seed / explicit kv-quant) drain to the serial
+  // lane (see GenerationGateway.willBatch).
+  const batch = Math.max(1, Math.floor(serverOptions.batch ?? 1));
 
   let queue: Promise<unknown> = Promise.resolve();
   const enqueue = <T>(fn: () => Promise<T>): Promise<T> => {
@@ -559,6 +613,11 @@ export function createServer(
     }
   };
 
+  // The lane picker: routes each request to the serial path (runGeneration,
+  // above) or the continuous-batching scheduler, keeping the two off the GPU
+  // (and shared loraState) at the same time. See src/serve/generation-gateway.ts.
+  const gateway = new GenerationGateway(ctx.model, batch, runGeneration);
+
   // Admission ceiling, resolved once (Phase 5 memoryBudget enforcement).
   // fit() solves max safe context from weights + KV growth + prefill
   // transient; the KV term assumes bf16 (a kv-quant scheme stretches the
@@ -602,11 +661,26 @@ export function createServer(
 
   // KV-quant scheme, resolved once: kv_config.json by default (optiq
   // serve's headline behavior), overridable to uniform bits or off.
+  // KV quant scheme. The serial default is the model's mixed-precision config
+  // (optiq parity). But `--batch N` is a bf16 continuous-batching MODE (= mlx-lm
+  // B=N parity), so when KV quant is left UNSET under `--batch N` it defaults to
+  // bf16 — the batch path engages out of the box. An EXPLICIT --kv-quant
+  // (config / bits) is still honored, but those requests then route to the
+  // serial path (batched quantized KV is the L2 follow-up); warned below.
+  const configScheme = ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};
   const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart"> =
     serverOptions.kvQuant === "off" ? {}
+    : serverOptions.kvQuant === "config" ? configScheme
     : typeof serverOptions.kvQuant === "number"
       ? { kvBits: serverOptions.kvQuant, quantizedKvStart: 0 }
-    : ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};
+    : batch > 1 ? {} // unset + batching → bf16 mode (Option B)
+    : configScheme; // unset + serial → optiq-parity mixed-precision default
+  if (batch > 1 && (kvScheme.kvConfig?.length || kvScheme.kvBits))
+    console.warn(
+      `[batch] --batch ${batch} with explicit --kv-quant: batched serving (v1) is ` +
+        `bf16-only, so kv-quant requests route to the serial path (no batching for them). ` +
+        `Omit --kv-quant to batch in bf16. (docs/design/parallel-slots.md)`,
+    );
 
   const toOptions = (req: ChatRequest): GenerateOptions & { stopSequences: string[] } => ({
     maxTokens: req.max_completion_tokens ?? req.max_tokens ?? 1024,
@@ -615,6 +689,7 @@ export function createServer(
     topK: req.top_k ?? serverOptions.defaultTopK ?? ctx.genDefaults.topK ?? 0,
     seed: req.seed ?? (Date.now() & 0xffffffff),
     repetitionPenalty: req.repetition_penalty ?? ctx.genDefaults.repetitionPenalty,
+    hlg: resolveHlg(req.hlg, serverOptions.hlg),
     // generate() yields token ids; stop sequences match on decoded text
     // (they can span token boundaries), so the StopMatcher sits at the
     // decode layer below and halts the loop via onToken → false.
@@ -680,6 +755,14 @@ export function createServer(
         return new Response(APP_PAGE, {
           headers: { "content-type": "text/html; charset=utf-8" },
         });
+      }
+      // v2 HLG Curve Designer — served same-origin so /generate + /signal need no CORS.
+      // Read fresh from disk in dev (edits show on reload, no restart); fall back to the
+      // embedded copy when running as the compiled single binary.
+      if (url.pathname === "/curves" && request.method === "GET") {
+        let html = CURVE_PAGE;
+        try { html = readFileSync(new URL("../docs/curve-designer.html", import.meta.url), "utf8"); } catch { /* binary: use embedded */ }
+        return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       }
       if (request.method === "GET" &&
           ["/status", "/chat", "/quantize", "/finetune", "/dataset"].includes(url.pathname)) {
@@ -846,9 +929,13 @@ export function createServer(
             usable_bytes: admission.usableBytes,
             weights_bytes: ctx.model.weightsBytes,
           },
-          // S0: configured slots vs. what's actually active (batched
-          // executor lands in S1 — docs/design/parallel-slots.md).
-          slots: { configured: slots, active: 1, batched: false },
+          // --batch: configured cap, whether batching is live for this model,
+          // and rows currently decoding in the batch.
+          batch: {
+            configured: batch,
+            batched: gateway.batchingEnabled,
+            active_rows: gateway.activeRows,
+          },
         });
       }
 
@@ -898,6 +985,84 @@ export function createServer(
         return removed > 0
           ? Response.json({ id, removed_layers: removed })
           : Response.json({ error: { message: `adapter ${id} not mounted` } }, { status: 404 });
+      }
+
+      // ---- Curve Designer: POST /signal {prompt} → next-token histogram over the curve's x-axis ----
+      // One prefill forward; bins the real log-prob distribution so the editor can draw the
+      // signal under the curve (you shape where the tokens actually are).
+      if (url.pathname === "/signal" && request.method === "OPTIONS")
+        return new Response(null, { headers: CURVE_CORS });
+      if (url.pathname === "/signal" && request.method === "POST") {
+        let sbody: { prompt?: string };
+        try { sbody = (await request.json()) as typeof sbody; }
+        catch { return Response.json({ error: "invalid JSON" }, { status: 400, headers: CURVE_CORS }); }
+        let sids = ctx.tokenizer.encode(ctx.template.render([{ role: "user", content: typeof sbody.prompt === "string" ? sbody.prompt : "" }], templateOptionsFor({} as ChatRequest, null)));
+        if (sids[0] === sids[1] && sids[0] === ctx.tokenizer.bosTokenId) sids = sids.slice(1);
+        try {
+          const NB = 80;
+          const result = await enqueue(async () => {
+            const cache = ctx.model.makeCache();
+            try {
+              const logits = ctx.model.forward(sids, cache); // [1, L, V]
+              const [, Ln, V] = logits.shape as [number, number, number];
+              const last = logits.slice([0, Ln - 1, 0], [1, Ln, V]);
+              const f = last.toFloat32(); logits.dispose(); last.dispose();
+              let mx = -Infinity; for (const v of f) if (v > mx) mx = v;
+              let Z = 0; for (const v of f) Z += Math.exp(v - mx); const lse = mx + Math.log(Z);
+              const bins = new Array<number>(NB).fill(0);
+              for (const v of f) { const t = Math.max(0, Math.min(1, (v - lse - CURVE_UMIN) / (-CURVE_UMIN))); const bi = Math.min(NB - 1, Math.floor(t * NB)); bins[bi] = (bins[bi] ?? 0) + 1; }
+              return { bins, vocab: V };
+            } finally { for (const c of cache) c.dispose(); }
+          });
+          return Response.json(result, { headers: CURVE_CORS });
+        } catch (e) {
+          return Response.json({ error: `signal failed: ${(e as Error).message}` }, { status: 500, headers: CURVE_CORS });
+        }
+      }
+
+      // ---- v2 HLG Curve Designer: POST /generate {prompt, curve, n, max_tokens, seed} ----
+      // The drawn log-prob transfer curve REPLACES temperature+softmax entirely
+      // (src/curve-sampler.ts). The browser editor calls this; same curve object the
+      // tool's "Copy values" emits is the one the sampler consumes — one contract.
+      if (url.pathname === "/generate" && request.method === "OPTIONS")
+        return new Response(null, { headers: CURVE_CORS });
+      if (url.pathname === "/generate" && request.method === "POST") {
+        let body: { prompt?: string; curve?: CurveParams; n?: number; max_tokens?: number; seed?: number; default?: boolean };
+        try { body = (await request.json()) as typeof body; }
+        catch { return Response.json({ error: "invalid JSON" }, { status: 400, headers: CURVE_CORS }); }
+        const curve = body.curve;
+        // Identity / no shaped curve → fall back to the model's DEFAULT chat recipe
+        // (temp + top-p + top-k) — the honest "what you'd get chatting" baseline, which
+        // a smooth curve can't replicate (top-p/top-k are hard truncations).
+        const useCurve = body.default !== true && Array.isArray(curve?.points) && curve.points.length >= 2;
+        if (useCurve && !isMonotone(curve!))
+          return Response.json({ error: "curve is not monotone — all segment slopes must be ≥ 0" }, { status: 400, headers: CURVE_CORS });
+        const recipe = {
+          temperature: serverOptions.defaultTemperature ?? ctx.genDefaults.temperature ?? 0.7,
+          topP: serverOptions.defaultTopP ?? ctx.genDefaults.topP ?? 0,
+          topK: serverOptions.defaultTopK ?? ctx.genDefaults.topK ?? 0,
+        };
+        const prompt = typeof body.prompt === "string" ? body.prompt : "";
+        const n = Math.max(1, Math.min(8, Math.floor(Number(body.n) || 3)));
+        const maxTokens = Math.max(1, Math.min(256, Math.floor(Number(body.max_tokens) || 80)));
+        const baseSeed = Number.isFinite(body.seed) ? Number(body.seed) >>> 0 : (Date.now() & 0xffffffff);
+        let ids = ctx.tokenizer.encode(ctx.template.render([{ role: "user", content: prompt }], templateOptionsFor({} as ChatRequest, null)));
+        if (ids[0] === ids[1] && ids[0] === ctx.tokenizer.bosTokenId) ids = ids.slice(1);
+        const samples: { text: string; junk: boolean }[] = [];
+        try {
+          for (let i = 0; i < n; i++) {
+            const toks: number[] = [];
+            const genOpts: GenerateOptions = useCurve
+              ? { curve, seed: baseSeed + i, maxTokens, ...kvScheme }
+              : { temperature: recipe.temperature, topP: recipe.topP, topK: recipe.topK, seed: baseSeed + i, maxTokens, ...kvScheme };
+            await enqueue(() => runGeneration(ids, genOpts, (t) => { toks.push(t); }));
+            const text = ctx.tokenizer.decode(toks, true).trim();
+            samples.push({ text, junk: curveJunk(text) });
+          }
+        } catch (e) {
+          return Response.json({ error: `generation failed: ${(e as Error).message}` }, { status: 500, headers: CURVE_CORS });
+        }
+        return Response.json({ mode: useCurve ? "curve" : "default", recipe: useCurve ? undefined : recipe, n, seed: baseSeed, samples }, { headers: CURVE_CORS });
       }
 
       // The chat-completions core, shared by both protocol surfaces:
@@ -973,6 +1138,17 @@ export function createServer(
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
         }
 
+        // What lane this request takes (vision / adapters / repetition penalty /
+        // a user-fixed seed → serial; everything else batches when --batch N).
+        const shape = {
+          hasVision: !!vision,
+          hasAdapters: !!options.adapters?.length,
+          hasRepetitionPenalty: !!options.repetitionPenalty,
+          userSeed: body.seed !== undefined,
+          kvQuant: !!(options.kvConfig?.length || options.kvBits),
+        };
+        const batched = gateway.willBatch(shape);
+
         if (body.stream) {
           const stream = new ReadableStream<Uint8Array>({
             async start(controller) {
@@ -984,62 +1160,62 @@ export function createServer(
                 choices: [{ index: 0, delta, finish_reason: finish }],
               });
               try {
-                await enqueue(async () => {
-                  send(chunk({ role: "assistant", content: "" }, null));
-                  const router = toolRouter(tools);
-                  const stopper = new StopMatcher(options.stopSequences);
-                  // The decode loop is an unbroken microtask chain (FFI +
-                  // generator resumes) — without a macrotask hop, Bun never
-                  // services the socket and the whole SSE response flushes
-                  // in one burst at the end (found by the Phase 15 harness:
-                  // "687k tok/s decode"). Hopping EVERY token cost ~23%
-                  // decode; rate-limited to ≥25 ms intervals the flush stays
-                  // smooth for any client and the hop hides behind the
-                  // already-dispatched next GPU step.
-                  let lastFlush = performance.now();
-                  const s = await runGeneration(promptIds, options, (token) => {
-                    const text = stopper.push(router.push(token));
-                    if (text) send(chunk({ content: text }, null));
-                    if (stopper.stopped) return false; // halt generation
-                    if (text) {
-                      const now = performance.now();
-                      if (now - lastFlush >= 25) {
-                        lastFlush = now;
-                        return new Promise<void>((r) => setImmediate(r));
-                      }
+                // The gateway owns lane selection + GPU exclusivity; this body
+                // runs per-request (concurrently in batched mode, each writing
+                // its own SSE stream — the per-row fan-out).
+                send(chunk({ role: "assistant", content: "" }, null));
+                const router = toolRouter(tools);
+                const stopper = new StopMatcher(options.stopSequences);
+                // Serial decode is an unbroken microtask chain (FFI + generator
+                // resumes) — without a macrotask hop, Bun never services the
+                // socket and the whole SSE response flushes in one burst at the
+                // end (Phase 15: "687k tok/s decode"). Hopping EVERY token cost
+                // ~23% decode; rate-limited to ≥25 ms keeps the flush smooth and
+                // hides behind the next GPU step. Batched mode doesn't need it —
+                // the scheduler yields to the event loop between steps.
+                let lastFlush = performance.now();
+                const s = await gateway.run(promptIds, options, (token) => {
+                  const text = stopper.push(router.push(token));
+                  if (text) send(chunk({ content: text }, null));
+                  if (stopper.stopped) return false; // halt generation
+                  if (!batched && text) {
+                    const now = performance.now();
+                    if (now - lastFlush >= 25) {
+                      lastFlush = now;
+                      return new Promise<void>((r) => setImmediate(r));
                     }
-                  }, vision);
-                  // a stop match discards everything from the match on,
-                  // including text still held by the decoders
-                  let tail = "";
-                  if (!stopper.stopped) {
-                    tail = stopper.push(router.flush());
-                    if (!stopper.stopped) tail += stopper.flush();
                   }
-                  if (tail) send(chunk({ content: tail }, null));
-                  const toolCalls = router.toolCalls();
-                  if (toolCalls.length) {
-                    send(chunk({
-                      tool_calls: toolCalls.map((tc, i) => ({ index: i, ...tc })),
-                    }, null));
-                  }
-                  const finish = toolCalls.length
-                    ? "tool_calls"
-                    : stopper.stopped ? "stop"
-                    : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
-                  send({
-                    ...chunk({}, finish),
-                    usage: {
-                      prompt_tokens: s.promptTokens,
-                      completion_tokens: s.generatedTokens,
-                      total_tokens: s.promptTokens + s.generatedTokens,
-                      prompt_tokens_details: { cached_tokens: s.cachedTokens },
-                    },
-                  });
-                  // bare sentinel per the OpenAI spec — JSON.stringify would
-                  // quote it and strict SDK clients never see the terminator
-                  controller.enqueue(enc.encode("data: [DONE]\n\n"));
+                }, vision, shape);
+                // a stop match discards everything from the match on,
+                // including text still held by the decoders
+                let tail = "";
+                if (!stopper.stopped) {
+                  tail = stopper.push(router.flush());
+                  if (!stopper.stopped) tail += stopper.flush();
+                }
+                if (tail) send(chunk({ content: tail }, null));
+                const toolCalls = router.toolCalls();
+                if (toolCalls.length) {
+                  send(chunk({
+                    tool_calls: toolCalls.map((tc, i) => ({ index: i, ...tc })),
+                  }, null));
+                }
+                const finish = toolCalls.length
+                  ? "tool_calls"
+                  : stopper.stopped ? "stop"
+                  : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
+                send({
+                  ...chunk({}, finish),
+                  usage: {
+                    prompt_tokens: s.promptTokens,
+                    completion_tokens: s.generatedTokens,
+                    total_tokens: s.promptTokens + s.generatedTokens,
+                    prompt_tokens_details: { cached_tokens: s.cachedTokens },
+                  },
                 });
+                // bare sentinel per the OpenAI spec — JSON.stringify would
+                // quote it and strict SDK clients never see the terminator
+                controller.enqueue(enc.encode("data: [DONE]\n\n"));
               } catch (e) {
                 send({ error: { message: (e as Error).message } });
               } finally {
@@ -1057,14 +1233,14 @@ export function createServer(
         }
 
         try {
-          return await enqueue(async () => {
+          {
             const router = toolRouter(tools);
             const stopper = new StopMatcher(options.stopSequences);
             let content = "";
-            const s = await runGeneration(promptIds, options, (token) => {
+            const s = await gateway.run(promptIds, options, (token) => {
               content += stopper.push(router.push(token));
               if (stopper.stopped) return false; // halt generation
-            }, vision);
+            }, vision, shape);
             if (!stopper.stopped) {
               content += stopper.push(router.flush());
               if (!stopper.stopped) content += stopper.flush();
@@ -1092,7 +1268,7 @@ export function createServer(
                 prompt_tokens_details: { cached_tokens: s.cachedTokens },
               },
             });
-          });
+          }
         } catch (e) {
           return Response.json({ error: { message: (e as Error).message } }, { status: 500 });
         }
