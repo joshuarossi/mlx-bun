@@ -36,14 +36,20 @@ model-free (`tests/batched-rotating.test.ts`); the scheduler assembles each
 layer's cache by type and Gemma 12B scheduled greedy == the mlx-lm B=2 golden
 with eviction. So `--batch N` batches BOTH CPM and Gemma.
 
-The headline remaining gap is **batched + mixed-precision KV quant (L2)**: these
-OptiQ models default to kv-quant, but batched serving (v1) is **bf16-only**, so
-kv-quant requests route to serial (run `--kv-quant off` to batch). Batched
-quantized-KV (`QuantizedKVCache` merge/filter + `quantizedSdpaUnfused` 4-D mask)
-is novel territory — no ancestor does it (mlx-lm can't mixed-precision, optiq
-can't batch) → KL+quality gated. Other follow-ups: the `extend` join op (today
-joins re-merge), KV-budget admission, prompt-cache reuse under batching, and
-**paged KV** (zero-padding-waste allocation).
+**This meets the mlx-lm-parity bar.** mlx-lm's batched path is bf16 (its
+quantized batching is NYI — `BatchRotatingKVCache.to_quantized` raises), so bf16
+continuous batching IS the drop-in. `--batch N` is therefore a bf16 MODE: KV
+quant unset → bf16 (so the batch path engages out of the box, Option B); serial
+default stays mixed-precision (optiq parity); an explicit `--kv-quant` under
+`--batch N` routes those requests to serial (warned).
+
+**Batched + mixed-precision KV quant is NOT a parity gap** — no ancestor does it
+(mlx-lm NYI, optiq no batching), so there's no bit-exact oracle. It's an OPTIONAL
+novel extension: a memory-density win (batching × 4-bit KV compound), gated by
+KL + 6-task quality (per the tree framing), deferred. Other follow-ups (all
+optional polish): the `extend` join op (today joins re-merge), KV-budget
+admission, prompt-cache reuse under batching, and **paged KV** (zero-padding-waste
+allocation).
 
 ## Why it helps (and when it doesn't)
 

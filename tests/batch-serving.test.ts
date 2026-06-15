@@ -24,14 +24,15 @@ const CPM_BASE =
 const haveCpm = existsSync(`${CPM_BASE}/config.json`);
 const haveGemma = await snapshotAvailable();
 
-// These OptiQ models ship kv_config.json → mixed-precision KV quant by default;
-// batched serving (v1) is bf16 KV, so the server is started with kvQuant "off"
-// to actually engage the batch path (kv-quant requests route to serial).
+// These OptiQ models ship kv_config.json → mixed-precision KV quant in serial
+// serving, but `--batch N` is a bf16 mode (Option B): with kvQuant unset, the
+// batch path engages in bf16 out of the box. So this server passes ONLY batch
+// (no kvQuant) and still batches.
 describe.skipIf(!optIn || !haveCpm)("--batch N serving (CPM, full-attention)", async () => {
   if (!optIn || !haveCpm) return;
   const { createServer, loadContext } = await import("../src/server");
   const ctx = await loadContext(CPM_BASE, "minicpm5-1b-cpm");
-  const server = createServer(ctx, 0, { batch: 2, kvQuant: "off" });
+  const server = createServer(ctx, 0, { batch: 2 }); // bf16 batched by default under --batch N
   const base = `http://localhost:${server.port}`;
   afterAll(() => server.stop(true));
 
@@ -51,6 +52,20 @@ describe.skipIf(!optIn || !haveCpm)("--batch N serving (CPM, full-attention)", a
     expect(s.batch.configured).toBe(2);
     expect(s.batch.batched).toBe(true);
   });
+
+  test("--batch 2 alone engages the bf16 batch path (Option B), not serial", async () => {
+    // The batched path solo-prefills every row (cachedTokens=0); the serial path
+    // reuses the prompt cache, so an identical repeat would report cached_tokens>0.
+    // cached_tokens===0 on the repeat ⇒ the request went through the scheduler —
+    // i.e. `--batch 2` with kvQuant UNSET defaulted to bf16 and batched.
+    const p = "The quick brown fox jumps over the lazy dog. Continue the story:";
+    const r1 = await chat(req(p));
+    const r2 = await chat(req(p)); // identical prompt → serial would cache-hit
+    expect(r1.status).toBe(200);
+    expect(r2.status).toBe(200);
+    const b2 = (await r2.json()) as any;
+    expect(b2.usage.prompt_tokens_details.cached_tokens).toBe(0);
+  }, 120_000);
 
   test("concurrent requests all complete with coherent output", async () => {
     const prompts = ["Count: one two", "Name a color:", "The capital of France is"];
@@ -94,7 +109,7 @@ describe.skipIf(!optIn || !haveGemma)("--batch N serving (Gemma 12B, sliding-win
   if (!optIn || !haveGemma) return;
   const { createServer, loadContext } = await import("../src/server");
   const ctx = await loadContext(SNAPSHOT, "gemma-4-12b");
-  const server = createServer(ctx, 0, { batch: 2, kvQuant: "off" });
+  const server = createServer(ctx, 0, { batch: 2 }); // bf16 batched by default under --batch N
   const base = `http://localhost:${server.port}`;
   afterAll(() => server.stop(true));
 

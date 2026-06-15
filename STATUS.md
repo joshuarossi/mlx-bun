@@ -9,11 +9,17 @@ transient front door that stays current. Product/UX north star:
 
 > **`--batch N` now actually serves B>1** for BOTH full-attention (CPM) and
 > sliding-window (Gemma) models: scheduler + gateway wired into the live server,
-> end-to-end tested, sliding-window ring-wrap bit-exact vs mlx-lm. Caveat: these
-> OptiQ models default to **mixed-precision KV quant**, and batched is **bf16-only**
-> (v1) — so run `--kv-quant off` to batch them (kv-quant requests route to serial).
-> Remaining: **batched + kv-quant (L2)** is the headline gap; then the `extend`
-> join optimization, prompt-cache reuse, KV-budget admission, throughput numbers.
+> end-to-end tested, sliding-window ring-wrap bit-exact vs mlx-lm. **This meets
+> the mlx-lm-parity target** — mlx-lm's batched path is bf16 (its quantized
+> batching is NYI), so bf16 continuous batching IS the drop-in. `--batch N` is a
+> bf16 MODE: with KV quant unset it defaults to bf16 so the batch path engages
+> out of the box (Option B); the serial default stays mixed-precision (optiq
+> parity). An explicit `--kv-quant` under `--batch N` routes those requests to
+> serial (bf16-only batching — warned). **Batched + mixed-precision KV is NOT a
+> parity gap** — no ancestor does it (mlx-lm NYI, optiq no batching), so it's an
+> optional novel extension (KL-gated, deferred), not required.
+> Remaining (all optional polish): the `extend` join optimization, prompt-cache
+> reuse under batching, KV-budget admission, throughput numbers.
 
 > **Resume here:** `git checkout batch-serving` (off `main`; not yet merged).
 > Full design + rationale: `docs/design/parallel-slots.md`. Principles are in
@@ -108,12 +114,16 @@ Remaining work, in rough priority. Gate each with the parity tests; keep
   type (full → KVCache+BatchedDecodeMaskCache, sliding → BatchedRotatingCache);
   Gemma 12B scheduled greedy trajectories bit-exact vs the mlx-lm B=2 golden with
   staggered eviction (`tests/batch-scheduler.test.ts`). Gateway enables Gemma.
-- **L2 — batched + kv-quant** — these OptiQ models default to mixed-precision KV
-  quant; batched serving (v1) is **bf16 KV**, so kv-quant requests route to
-  serial (gateway gate; run `--kv-quant off` to batch). Batched quantized KV
-  (`QuantizedKVCache` merge/filter + `quantizedSdpaUnfused` 4-D mask) is the
-  novel-combo follow-up (KL+quality gated — no oracle). This is now the headline
-  gap (without it, batching needs `--kv-quant off` on the default models).
+  **`--batch N` defaults KV to bf16** (Option B, `server.ts` kvScheme) so the
+  batch path engages without `--kv-quant off`; gated by the prompt-cache-bypass
+  signal in `tests/batch-serving.test.ts`.
+
+**Not a gap — deferred optional extension:** **batched + mixed-precision KV
+quant** is novel territory (mlx-lm's quantized batching is NYI; optiq doesn't
+batch — no bit-exact oracle). It's a memory-density win (batching + 4-bit KV
+compound), NOT an mlx-lm-parity requirement, so it's KL-gated and deferred. The
+gateway routes explicit-kv-quant requests to serial.
+
 - **`extend` join op** — today a join RE-MERGES the whole batch (extract all +
   prefill + `mergeKVRows`), O(B·S) per join. mlx-lm keeps the running batch and
   `extend`s the new rows in. Add `extendKVRows` + gate, swap into `#admit`.

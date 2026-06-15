@@ -56,12 +56,16 @@ const SERVER_FLAGS = `Server options:
   --prompt-cache <GB>       Prompt (KV) cache byte cap  [default: 2 GB]
   --batch <n>               Max concurrent requests batched through the
                             mlx-lm-parity engine  [default: 1 = serial].
-                            >1 opts the whole server into batched serving.
+                            >1 opts the whole server into bf16 continuous
+                            batching (= mlx-lm B=N); see --kv-quant.
 
 Model & quality:
   --kv-quant <mode>         KV cache quantization: config (per-layer
                             kv_config.json when the model ships one), off
-                            (bf16), or 4 / 8 (uniform bits)  [default: config]
+                            (bf16), or 4 / 8 (uniform bits)
+                            [default: config; bf16 under --batch N — the
+                            batched engine is bf16-only, so an explicit
+                            --kv-quant routes those requests to the serial path]
   --thinking <true|false>   Default for the chat template's enable_thinking
                             variable (CPM and other hybrid-reasoning models);
                             a request's chat_template_kwargs overrides it
@@ -308,7 +312,8 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   }
   const kv = opt("kv-quant");
   if (kv === "off") serverOptions.kvQuant = "off";
-  else if (kv && kv !== "config") {
+  else if (kv === "config") serverOptions.kvQuant = "config";
+  else if (kv) {
     const bits = Number(kv);
     if (![4, 8].includes(bits)) { console.error(`--kv-quant expects config|off|4|8 (got "${kv}")`); process.exit(1); }
     serverOptions.kvQuant = bits;
