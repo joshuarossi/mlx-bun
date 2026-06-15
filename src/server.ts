@@ -54,10 +54,13 @@ import { makePiWsHandler, type PiWsData } from "./pi-web";
 export interface ServerOptions {
   /** Byte cap for the prompt (KV) cache. Default 2 GB. */
   promptCacheBytes?: number;
-  /** KV quantization override. Default: apply ctx.kvConfig when present
-   *  (mixed per-layer). "off" forces bf16; a number forces uniform bits
+  /** KV quantization override. When unset: apply ctx.kvConfig (mixed
+   *  per-layer) for serial serving, but bf16 under `--batch N` (the batched
+   *  engine is bf16-only — a mode switch, see `batch` below). "config" forces
+   *  the model's kv_config even under batching (those requests then route to
+   *  the serial path); "off" forces bf16; a number forces uniform bits
    *  (group size 64, start 0) ignoring the config file. */
-  kvQuant?: "off" | number;
+  kvQuant?: "off" | "config" | number;
   /** Memory budget for the serving process (admission control — Phase 5).
    *  Requests whose prompt + max_tokens exceed the budget's max safe
    *  context are rejected with 400 instead of crashing the GPU: the OOM
@@ -603,17 +606,25 @@ export function createServer(
 
   // KV-quant scheme, resolved once: kv_config.json by default (optiq
   // serve's headline behavior), overridable to uniform bits or off.
+  // KV quant scheme. The serial default is the model's mixed-precision config
+  // (optiq parity). But `--batch N` is a bf16 continuous-batching MODE (= mlx-lm
+  // B=N parity), so when KV quant is left UNSET under `--batch N` it defaults to
+  // bf16 — the batch path engages out of the box. An EXPLICIT --kv-quant
+  // (config / bits) is still honored, but those requests then route to the
+  // serial path (batched quantized KV is the L2 follow-up); warned below.
+  const configScheme = ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};
   const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart"> =
     serverOptions.kvQuant === "off" ? {}
+    : serverOptions.kvQuant === "config" ? configScheme
     : typeof serverOptions.kvQuant === "number"
       ? { kvBits: serverOptions.kvQuant, quantizedKvStart: 0 }
-    : ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};
-  // Batched serving (v1) runs bf16 KV; kv-quant requests route to serial.
+    : batch > 1 ? {} // unset + batching → bf16 mode (Option B)
+    : configScheme; // unset + serial → optiq-parity mixed-precision default
   if (batch > 1 && (kvScheme.kvConfig?.length || kvScheme.kvBits))
     console.warn(
-      `[batch] --batch ${batch}: this model uses mixed-precision KV quant by default; ` +
-        `batched serving (v1) runs bf16 KV, so kv-quant requests route to the serial ` +
-        `path. Run with --kv-quant off to batch. (docs/design/parallel-slots.md)`,
+      `[batch] --batch ${batch} with explicit --kv-quant: batched serving (v1) is ` +
+        `bf16-only, so kv-quant requests route to the serial path (no batching for them). ` +
+        `Omit --kv-quant to batch in bf16. (docs/design/parallel-slots.md)`,
     );
 
   const toOptions = (req: ChatRequest): GenerateOptions & { stopSequences: string[] } => ({
