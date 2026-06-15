@@ -14,23 +14,27 @@ scheduler that runs multiple sequences through one forward pass.
 This is a server-path feature — serving speed is the user metric.
 Direct/embedding mode stays batch=1.
 
-## STATUS (2026-06-14) — verified primitive, NOT yet served
+## STATUS (2026-06-14) — LIVE for full-attention models
 
-**The server does not batch yet.** `--slots N` is inert (warns, runs serially);
-the server still processes one generation at a time through the serial promise
-chain. What IS done and oracle-verified is the batched **forward primitive**
-(`BatchedDecodeMaskCache` + the per-layer fixes): a B=N prefill+decode is
-bit-parity with mlx-lm B=N across all 4 models — but it lives only in the test
-harness (`realBatchedGreedy`), not in request handling. So the hard part (are
-the numerics correct?) is answered — for BOTH static-B and now **dynamic-B**
-(rows joining/leaving mid-stream: `mergeKVRows`/`filterKVRows` are oracle-verified
-against mlx-lm's `BatchKVCache.merge`/`.extract`/`.filter`, CPM L1, 2026-06-14).
-The remaining work to actually serve B>1 is the **scheduler** (admission queue →
-running batch → continuous inject/evict → per-row SSE fan-out → `_is_batchable`
-gate → memory admission). That scheduler is NOT built — the verified inject/evict
-*primitives* live only in the test harness. Two further pieces are explicitly deferred as separate spikes: **paged
-KV** (zero-padding-waste allocation) and **batched mixed-precision quant serving**
-(novel territory — no ancestor does it).
+**`--batch N` now serves B>1** for full-attention models (CPM). The numerics
+were proven first (the batched **forward primitive** `BatchedDecodeMaskCache` +
+per-layer fixes = bit-parity with mlx-lm B=N across all 4 models; static-B AND
+dynamic-B `mergeKVRows`/`filterKVRows` vs mlx-lm `BatchKVCache.merge`/`.extract`/
+`.filter`, CPM L1), then the **scheduler** was built and wired in:
+- `BatchScheduler` (`src/serve/batch-scheduler.ts`) — the detached async driver:
+  admission queue → running batch → continuous inject (`mergeKVRows`) / evict
+  (`filterKVRows`) → per-row sample + accounting. Gated teacher-forced (KL).
+- `GenerationGateway` (`src/serve/generation-gateway.ts`) — lane picker +
+  `AsyncMutex` (serial↔batched GPU/`loraState` exclusivity) + the `_is_batchable`
+  predicate. Wired into both `handleChat` call sites → per-row SSE fan-out.
+- End-to-end: `tests/batch-serving.test.ts` (live CPM `--batch 2` server).
+
+Still NOT served: **sliding-window (Gemma) dynamic-B** (ring-wrap per-row mask —
+the scheduler throws on `RotatingKVCache`, gateway routes those models to
+serial). Other follow-ups: the `extend` join op (today joins re-merge), KV-budget
+admission, prompt-cache reuse under batching. Two further pieces deferred as
+separate spikes: **paged KV** (zero-padding-waste allocation) and **batched
+mixed-precision quant serving** (novel territory — no ancestor does it).
 
 ## Why it helps (and when it doesn't)
 
@@ -409,9 +413,18 @@ rows + a fresh solo prefill (proves `mergeKVRows` on non-fresh rows); `extend`
 (keep-the-running-batch optimization, mlx-lm's actual join op) is deferred into
 the scheduler. Added `BatchedDecodeMaskCache.releaseRopeArr()`. Full-attention
 only (CPM); Gemma/sliding dynamic-B is a follow-up.
-(2) the async loop + per-row SSE wired into `createServer` behind `--batch N`;
-(3) `_is_batchable` gate + solo/incompatible → serial fast path + `B×S_max`
-memory admission.
+(2) **DONE 2026-06-14** — the async loop + per-row SSE wired into `createServer`
+behind `--batch N`. `BatchScheduler` (`src/serve/batch-scheduler.ts`) is the
+detached driver; `GenerationGateway` (`src/serve/generation-gateway.ts`) picks
+the lane and an `AsyncMutex` keeps serial and batched off the GPU/`loraState`
+together. Both `handleChat` call sites route through `gateway.run`; per-row
+onToken closures give per-row SSE fan-out for free. Gated: `tests/batch-scheduler.test.ts`
+(teacher-forced KL, evict + join) + `tests/batch-serving.test.ts` (live CPM
+server, concurrent + streaming + drain). No serial regression (server 17/17,
+tools 13/13).
+(3) **DONE 2026-06-14** — `_is_batchable` gate is the `GenerationGateway.willBatch`
+predicate (full-attention model + no vision/adapter/repetition-penalty/user-seed
+→ batch; else serial). `B×S_max` memory admission is still TODO.
 
 ## Fallbacks (must degrade, never break)
 
