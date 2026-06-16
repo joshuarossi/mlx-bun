@@ -434,6 +434,23 @@ are proven; this is a peak-optimization, not a blocker.
   must bit-match `forwardLayers` (a forward-equivalence check on the 12B/e4b parity
   harness) before trusting the backward.
 
+- **PARITY vs mlx-lm — VERIFIED bit-exact (the correctness oracle).** Ran
+  `mlx_lm.lora`'s actual `default_loss` and `nn.value_and_grad` against ours on the
+  SAME fixed 2048-token input (`scripts/parity-vs-mlxlm.ts`,
+  `scripts/grad-parity-vs-mlxlm.ts`; mlx-lm side in `/tmp/mlxlm-*-parity.py`):
+  - **forward + loss: BIT-EXACT** (our base e4b loss @2048 = mlx-lm's 15.57043457,
+    abs diff 0);
+  - **gradients (FULL value_and_grad = our non-segmented trainer): BIT-EXACT** — dB
+    over all 42 q_proj layers (identical injected A, B=0, rank 8, scale 20) matches
+    mlx-lm 0.000e+0. So mlx-bun's non-segmented training equals mlx-lm's bit-for-bit
+    (loss AND grad), extending the inference logit-parity oracle to training;
+  - **segmented gradients: ~2.3% (bf16-class)** off mlx-lm (q_proj dB) — the
+    donor-KV bf16 non-associativity (above), not a logic bug. So the SEGMENTED path
+    is NOT bit-exact with mlx-lm; it's bf16-class. Both `ops.sdpa` value_and_grads
+    (ours and mlx-lm's) use the same autograd forward, which is why FULL is exact.
+  (Config note: mlx-lm's default LoRA scale is 20.0; mlx-bun's `DEFAULT_TRAIN_CONFIG`
+  is 1.0 — a config difference, not correctness. The chunk runs used 1.0.)
+
 **Trainer side — `SegmentedBackwardGemma4` (to build + validate):** same skeleton as
 the MiniCPM5 `SegmentedBackward`, with TWO additions.
 
