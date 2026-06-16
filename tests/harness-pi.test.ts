@@ -36,7 +36,7 @@ const baseUrl = `http://localhost:${stub.port}/v1`;
 
 describe("renderPiExtension", () => {
   const src = renderPiExtension("http://localhost:9999/v1", [
-    { id: "org/some-model", contextWindow: 65536, maxTokens: 8192 },
+    { id: "org/some-model", contextWindow: 65536, maxTokens: 8192, reasoning: false },
   ]);
 
   it("registers the mlx-bun provider with an openai-completions API", () => {
@@ -65,7 +65,7 @@ describe("renderPiExtension", () => {
 describe("fetchServerModels", () => {
   it("maps /v1/models including context_window", async () => {
     const models = await fetchServerModels(baseUrl);
-    expect(models).toEqual([{ id: "test/model-4bit", contextWindow: 131072, maxTokens: 8192 }]);
+    expect(models).toEqual([{ id: "test/model-4bit", contextWindow: 131072, maxTokens: 8192, reasoning: false }]);
   });
 
   it("returns [] for an unreachable server", async () => {
@@ -77,7 +77,7 @@ describe("fetchServerModels", () => {
 describe("probeServer", () => {
   it("returns models when a server answers /v1/models", async () => {
     expect(await probeServer(baseUrl)).toEqual([
-      { id: "test/model-4bit", contextWindow: 131072, maxTokens: 8192 },
+      { id: "test/model-4bit", contextWindow: 131072, maxTokens: 8192, reasoning: false },
     ]);
   });
 

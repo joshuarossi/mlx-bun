@@ -155,6 +155,9 @@ export const C = dlopen(LIBMLXC_PATH, {
   //  opt group_size, opt bits, mode, sorted_indices, stream)
   mlx_gather_qmm: { args: [P, u64, u64, u64, u64, u64, u64, FFIType.bool, u64, u64, cstring, FFIType.bool, u64], returns: i32 },
   mlx_floor_divide: { args: [P, u64, u64, u64], returns: i32 },
+  // (res, input, weight, stride, padding, dilation, groups, stream) — depthwise
+  // causal conv1d for Qwen3.5 gated-DeltaNet (groups == channels, padding 0).
+  mlx_conv1d: { args: [P, u64, u64, i32, i32, i32, i32, u64], returns: i32 },
   // --- training: autograd (value_and_grad) — proven in spikes/phase-train-vag.ts.
   // mlx_value_and_grad(res: mlx_closure_value_and_grad*, fun: mlx_closure,
   //   argnums: int*, n) → builds a value+grad closure differentiating the
@@ -167,6 +170,9 @@ export const C = dlopen(LIBMLXC_PATH, {
   // --- training: random init (LoRA A ~ normal; B stays zeros)
   // (res, shape*, n, dtype, loc, scale, key may-be-null, stream)
   mlx_random_normal: { args: [P, P, u64, i32, f32, f32, u64, u64], returns: i32 },
+  // (res, low, high, shape*, n, dtype, key may-be-null, stream) — low/high are
+  // scalar mlx_arrays. Used for mlx-lm-faithful LoRA A init (uniform).
+  mlx_random_uniform: { args: [P, u64, u64, P, u64, i32, u64, u64], returns: i32 },
   mlx_random_split_num: { args: [P, u64, i32, u64], returns: i32 },
   // --- training: loss/optimizer elementwise + reductions
   mlx_stop_gradient: { args: [P, u64, u64], returns: i32 },
@@ -191,6 +197,18 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_closure_new_func_payload: { args: [P, P, P], returns: u64 },
   mlx_closure_free: { args: [u64], returns: i32 },
   mlx_closure_apply: { args: [P, u64, u64], returns: i32 },
+  // gradient checkpointing (transforms.h): wrap a closure so its forward
+  // activations are dropped and recomputed during the enclosing backward.
+  // mlx_checkpoint(res: mlx_closure*, fun: mlx_closure) → checkpointed closure.
+  mlx_checkpoint: { args: [P, u64], returns: i32 },
+  // custom_vjp (transforms.h): attach a hand-written backward to a forward whose
+  // primitives have no usable vjp (e.g. a fused metal_kernel). Needed for the L2
+  // flash-attention training op. mlx_custom_vjp(res: mlx_closure*, fun: mlx_closure,
+  //   fun_vjp: mlx_closure_custom). The custom-vjp closure's callback is
+  //   (res*, primals, cotangents, outputs, payload) → status.
+  mlx_custom_vjp: { args: [P, u64, u64], returns: i32 },
+  mlx_closure_custom_new_func_payload: { args: [P, P, P], returns: u64 },
+  mlx_closure_custom_free: { args: [u64], returns: i32 },
   mlx_compile: { args: [P, u64, FFIType.bool], returns: i32 },
   mlx_set_compile_mode: { args: [i32], returns: i32 },
   mlx_vector_array_size: { args: [u64], returns: u64 },

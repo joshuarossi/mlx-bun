@@ -34,6 +34,12 @@ export interface PiProviderOptions {
   maxTokens?: number;
   /** Human-readable model label (e.g. the real repo id). Default: "mlx-bun (local)". */
   name?: string;
+  /** The loaded model has a switchable reasoning channel (server's
+   *  `ctx.template.supportsThinking` — true for any model whose chat template
+   *  gates on enable_thinking: Qwen3.5, MiniCPM5, …). When true Pi engages
+   *  reasoning and sends the on/off switch the server maps to enable_thinking.
+   *  Default false. */
+  reasoning?: boolean;
 }
 
 export interface PiProviderWiring {
@@ -62,7 +68,24 @@ export function buildPiProvider(baseUrl: string, opts: PiProviderOptions = {}): 
         id: PI_LOCAL_MODEL_ID,
         name: opts.name ?? "mlx-bun (local)",
         api: PI_API,
-        reasoning: false,
+        reasoning: opts.reasoning ?? false,
+        // Our local thinking models (Qwen3.5/MiniCPM5) are BINARY: the chat
+        // template's enable_thinking is a boolean, so we expose just off↔on
+        // (not a graded ramp). "qwen-chat-template" makes Pi send the switch as
+        // chat_template_kwargs.enable_thinking — exactly what the server reads;
+        // for that format Pi only checks level≠off, so the "medium" value is a
+        // stand-in for "on" and is otherwise ignored.
+        ...(opts.reasoning
+          ? {
+              thinkingLevelMap: { off: null, medium: null },
+              // pi-ai reads OpenAI-compatible thinking controls from
+              // model.compat, not from a top-level thinkingFormat. This makes
+              // the web/TUI toggle send chat_template_kwargs.enable_thinking
+              // (plus preserve_thinking) instead of unsupported OpenAI
+              // reasoning_effort-only payloads.
+              compat: { thinkingFormat: "qwen-chat-template" as const },
+            }
+          : {}),
         // Declare image capability so pi will carry image content to /v1.
         // Whether the *loaded* model can actually see images is gated at the
         // server (non-vision models 400) and surfaced to the web UI via the

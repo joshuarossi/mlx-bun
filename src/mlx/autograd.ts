@@ -12,7 +12,7 @@
 //   alive on the instance and freed in dispose().
 
 import { JSCallback, ptr, read } from "bun:ffi";
-import { C } from "./ffi";
+import { C, takeMlxError } from "./ffi";
 import { MlxArray } from "./array";
 
 /** A reusable value-and-grad over a JS-built loss graph.
@@ -104,8 +104,13 @@ export class ValueAndGrad {
       C.mlx_vector_array_free(valueVec);
       C.mlx_vector_array_free(gradsVec);
       C.mlx_vector_array_free(inVec);
-      const detail = this.#closureError ? `: ${this.#closureError}` : "";
-      throw new Error(`value_and_grad_apply failed${detail}`);
+      // Surface whichever error fired: a JS throw inside the loss closure
+      // (#closureError) or MLX's own C-level error (takeMlxError) — e.g. a
+      // missing vjp for an op in the forward graph. Discarding the latter
+      // turned an "unsupported gradient" into an opaque failure.
+      const mlxErr = takeMlxError();
+      const detail = this.#closureError ?? mlxErr ?? "";
+      throw new Error(`value_and_grad_apply failed${detail ? `: ${detail}` : ""}`);
     }
 
     // value vector has exactly one entry (the scalar loss).

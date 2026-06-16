@@ -62,6 +62,7 @@ export interface ServerModel {
   id: string;
   contextWindow: number;
   maxTokens: number;
+  reasoning: boolean;
 }
 
 /** Discover models from a running mlx-bun server; [] when unreachable. */
@@ -71,11 +72,12 @@ export async function fetchServerModels(baseUrl: string, timeoutMs = 3000): Prom
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) return [];
-    const body = (await res.json()) as { data?: Array<{ id: string; context_window?: number }> };
+    const body = (await res.json()) as { data?: Array<{ id: string; context_window?: number; reasoning?: boolean }> };
     return (body.data ?? []).map((m) => ({
       id: m.id,
       contextWindow: m.context_window ?? 32768,
       maxTokens: 8192,
+      reasoning: !!m.reasoning,
     }));
   } catch {
     return [];
@@ -114,7 +116,8 @@ export default async function (pi: any) {
         models = data.map((m: any) => ({
           id: ${JSON.stringify(PI_LOCAL_MODEL_ID)},
           name: \`\${m.id} (mlx-bun local)\`,
-          reasoning: false,
+          reasoning: !!m.reasoning,
+          ...(m.reasoning ? { thinkingLevelMap: { off: null, medium: null }, compat: { thinkingFormat: "qwen-chat-template" } } : {}),
           input: ["text"],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           contextWindow: m.context_window ?? 32768,
@@ -138,7 +141,8 @@ function modelEntry(m: ServerModel) {
   return {
     id: PI_LOCAL_MODEL_ID,
     name: `${m.id} (mlx-bun local)`,
-    reasoning: false,
+    reasoning: !!m.reasoning,
+    ...(m.reasoning ? { thinkingLevelMap: { off: null, medium: null }, compat: { thinkingFormat: "qwen-chat-template" } } : {}),
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: m.contextWindow,
