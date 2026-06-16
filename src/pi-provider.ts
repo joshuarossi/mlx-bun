@@ -70,21 +70,12 @@ export function buildPiProvider(baseUrl: string, opts: PiProviderOptions = {}): 
         api: PI_API,
         reasoning: opts.reasoning ?? false,
         // Our local thinking models (Qwen3.5/MiniCPM5) are BINARY: the chat
-        // template's enable_thinking is a boolean, so we expose just off↔on
-        // (not a graded ramp). "qwen-chat-template" makes Pi send the switch as
-        // chat_template_kwargs.enable_thinking — exactly what the server reads;
-        // for that format Pi only checks level≠off, so the "medium" value is a
-        // stand-in for "on" and is otherwise ignored.
+        // template's enable_thinking is a boolean. "qwen-chat-template" makes
+        // Pi send chat_template_kwargs.enable_thinking; pi-ai computes that
+        // boolean from whether the selected level is off or not, so no level
+        // map is needed here (null in thinkingLevelMap means "unsupported").
         ...(opts.reasoning
-          ? {
-              thinkingLevelMap: { off: null, medium: null },
-              // pi-ai reads OpenAI-compatible thinking controls from
-              // model.compat, not from a top-level thinkingFormat. This makes
-              // the web/TUI toggle send chat_template_kwargs.enable_thinking
-              // (plus preserve_thinking) instead of unsupported OpenAI
-              // reasoning_effort-only payloads.
-              compat: { thinkingFormat: "qwen-chat-template" as const },
-            }
+          ? { compat: { thinkingFormat: "qwen-chat-template" as const } }
           : {}),
         // Declare image capability so pi will carry image content to /v1.
         // Whether the *loaded* model can actually see images is gated at the

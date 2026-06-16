@@ -1524,6 +1524,14 @@ controllers.chat = (() => {
     try { return JSON.stringify(args, null, 2); } catch { return String(args); }
   }
 
+  function showAgentError(message) {
+    const m = el("div", "msg assistant", thread());
+    el("div", "who", m).textContent = "local agent";
+    const bubble = el("div", "bubble", m);
+    bubble.innerHTML = '<strong style="color:var(--red)">Agent error</strong><br>' + esc(message || "unknown error");
+    stick(true);
+  }
+
   function endTurn() {
     turnActive = false;
     if (curAssistant) {
@@ -1676,7 +1684,7 @@ controllers.chat = (() => {
       case "tool_end": toolEnd(m.callId, m.ok, m.result); break;
       case "turn_end": finalizeMeta(); endTurn(); break;
       case "queue_update": renderQueue(m); break;
-      case "error": toast(m.message || "agent error", "err"); if (turnActive) endTurn(); break;
+      case "error": showAgentError(m.message || "agent error"); toast(m.message || "agent error", "err"); if (turnActive) endTurn(); break;
     }
   }
 
