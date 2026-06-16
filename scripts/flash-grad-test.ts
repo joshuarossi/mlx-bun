@@ -12,7 +12,7 @@ import * as ops from "../src/mlx/ops";
 import { ValueAndGrad } from "../src/mlx/autograd";
 import { flashAttention } from "../src/model/flash-attention";
 
-const D = Number(process.env.HD ?? 256), T = 64;
+const D = Number(process.env.HD ?? 256), T = Number(process.env.T ?? 64);
 const Hq = Number(process.env.HQ ?? 16), Hkv = Number(process.env.HKV ?? 2);
 const scale = 1 / Math.sqrt(D);
 const mkRand = (shape: number[], seed: number): MlxArray =>

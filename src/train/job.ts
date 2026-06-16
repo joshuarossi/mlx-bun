@@ -33,6 +33,7 @@ interface FinetuneSubmit {
   steps_per_eval?: number;
   weight_decay?: number;
   grad_checkpoint?: boolean;
+  segment_size?: number;
   dpo_beta?: number;
   dpo_warmup_iters?: number;
   dpo_lr_schedule?: "constant" | "cosine";
@@ -63,6 +64,7 @@ function parseConfig(raw: Record<string, unknown>): { modelDir: string; dataDir:
     betas: DEFAULT_TRAIN_CONFIG.betas,
     weightDecay: c.weight_decay ?? DEFAULT_TRAIN_CONFIG.weightDecay,
     gradCheckpoint: c.grad_checkpoint ?? DEFAULT_TRAIN_CONFIG.gradCheckpoint,
+    segmentSize: c.segment_size ?? DEFAULT_TRAIN_CONFIG.segmentSize,
     dpoBeta: c.dpo_beta ?? DEFAULT_TRAIN_CONFIG.dpoBeta,
     dpoWarmupIters: c.dpo_warmup_iters ?? DEFAULT_TRAIN_CONFIG.dpoWarmupIters,
     dpoLrSchedule: c.dpo_lr_schedule ?? DEFAULT_TRAIN_CONFIG.dpoLrSchedule,

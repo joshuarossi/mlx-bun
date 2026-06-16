@@ -17,7 +17,7 @@ import { Weights } from "../src/weights";
 import { createModel } from "../src/model/factory";
 import { loadTokenizer } from "../src/tokenizer";
 import { ChatTemplate } from "../src/chat-template";
-import { peakMemory, resetPeakMemory } from "../src/mlx/ffi";
+import { peakMemory, resetPeakMemory, setMemoryLimit } from "../src/mlx/ffi";
 import { finetuneRunner } from "../src/train/job";
 
 const E4B = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-e4b-it-OptiQ-4bit/snapshots/fcdb12d740cd813634064567fc7cb51159b34253`;
@@ -92,6 +92,10 @@ async function train(seqLen: number): Promise<void> {
     console.log(`wrote ${train3.length} train + ${valid1.length} valid to ${dataDir}`);
   }
 
+  if (process.env.MEM_LIMIT_GB) {
+    const prev = setMemoryLimit(Number(process.env.MEM_LIMIT_GB) * 1e9);
+    console.log(`set memory limit to ${process.env.MEM_LIMIT_GB}GB (was ${(prev / 1e9).toFixed(1)}GB) — forces cache eviction/reuse under the cap`);
+  }
   resetPeakMemory();
   const t0 = performance.now();
   try {

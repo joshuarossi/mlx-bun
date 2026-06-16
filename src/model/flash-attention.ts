@@ -533,7 +533,16 @@ export function flashBackward(
       grid: [nQTiles * bq, Hq, B],
       threadGroup: [bq, 1, 1],
     });
-    return [dq[0]!, dkv[0]!, dkv[1]!];
+    // The dKV kernel emits dK with its (Tkv, D) axes transposed in the buffer
+    // (verified: dK[i][j] == correct[j][i] at T=D, a [Tkv,D]↔[D,Tkv] swap in
+    // general — scripts/flash-dk-debug.ts JS-FIX 0.07% vs autograd). dV is
+    // unaffected. Recover the correct layout: transpose → materialize → reshape.
+    const dkFixed = ops.reshape(
+      ops.contiguous(ops.transposeAxes(dkv[0]!, [0, 1, 3, 2])),
+      [B, Hkv, Tkv, D],
+    );
+    dkv[0]!.dispose();
+    return [dq[0]!, dkFixed, dkv[1]!];
   } finally {
     Dvec.dispose();
     shape.dispose();

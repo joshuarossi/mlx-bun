@@ -792,6 +792,110 @@ export class Gemma4Model {
     return disposing(h, this.finalNorm.forward(h));
   }
 
+  // --- Segmented-backward support (docs/design/segmented-backward-training.md
+  // §4 Phase B). These are ADDITIVE — forwardLayers is untouched. The segmented
+  // driver builds masks + per-layer inputs ONCE, then drives runLayerRange per
+  // segment, threading the KV-shared donor K/V across segment boundaries.
+
+  /** Donor layer indices that KV-sharing sharers reuse (e4b: {22,23} — the last
+   *  donor of each attention type; empty for dense models). Their fetched K/V
+   *  must survive across segment boundaries (saved as detached boundaries). */
+  get reusedDonors(): Set<number> {
+    return new Set(this.previousKvs.filter((d, i) => d !== i));
+  }
+
+  /** Per-layer-type training masks (offset-0, full-sequence, no bidir) — built
+   *  once, shared across all segments. Mirrors forwardLayers' mask construction.
+   *  Caller owns the returned arrays (dispose each mask.arr). */
+  makeTrainingMasks(cache: Cache[], L: number): Map<string, Mask> {
+    const masks = new Map<string, Mask>();
+    for (let i = 0; i < this.numDonors; i++) {
+      const type = this.layers[i]!.layerType;
+      if (!masks.has(type)) {
+        const window = type === "sliding_attention" ? this.windowSize : null;
+        masks.set(type, cache[i]!.makeMask(L, window));
+      }
+    }
+    return masks;
+  }
+
+  /** e2b/e4b training entry: the SCALED input embedding (the first segment
+   *  boundary) plus the per-layer-input tensor [B,L,nLayers,width] (a detached
+   *  boundary, sliced per layer inside runLayerRange). perLayer is null for dense
+   *  models. Caller owns both. */
+  embedForSegmented(ids: MlxArray): { hScaled: MlxArray; perLayer: MlxArray | null } {
+    let h = this.embed.encode(ids);
+    h = disposing(h, ops.mulScalar(h, this.embedScale));
+    const perLayer = this.perLayerWidth > 0 ? this.computePerLayerInputs(ids, h) : null;
+    return { hScaled: h, perLayer };
+  }
+
+  /** Dispose a fetched donor K/V (plain or quantized) — mirrors forwardLayers'
+   *  donor cleanup. */
+  private static disposeSharedKv(s: SharedKv): void {
+    if (s.kind === "plain") {
+      s.keys.dispose();
+      s.values.dispose();
+    } else {
+      for (const t of [s.keys, s.values])
+        for (const a of [t.packed, t.scales, t.biases]) a.dispose();
+    }
+  }
+
+  /** Run decoder layers `[aIdx, bIdx)` on hidden `h`, returning the residual
+   *  stream after the last layer in the range (NO finalNorm) plus the fetched
+   *  K/V of any reused-donor layers in the range (`donorKvOut`, for later
+   *  segments). The input `h` is NEVER disposed (the caller / vjp owns the
+   *  boundary leaf); intra-range hidden intermediates and per-layer slices ARE
+   *  disposed. Non-reused donors' K/V are disposed; reused donors' K/V are
+   *  returned (caller threads + disposes). NOT gradient-checkpointed — the
+   *  segmentation IS the memory strategy.
+   *
+   *  @param masks     per-layer-type masks (makeTrainingMasks), shared, caller-owned.
+   *  @param perLayer  the [B,L,nLayers,width] tensor (caller-owned) or null.
+   *  @param donorKvIn fetched K/V of reused donors from EARLIER segments, keyed
+   *                   by donor layer index (caller-owned; not disposed here). */
+  runLayerRange(
+    h: MlxArray, aIdx: number, bIdx: number, cache: Cache[],
+    masks: Map<string, Mask>, perLayer: MlxArray | null,
+    donorKvIn: Map<number, SharedKv>,
+  ): { h: MlxArray; donorKvOut: Map<number, SharedKv> } {
+    const donorKvOut = new Map<number, SharedKv>();
+    if (aIdx >= bIdx) return { h, donorKvOut };
+    const B = h.shape[0]!;
+    const L = h.shape[1]!;
+    const reused = this.reusedDonors;
+    let cur = h;
+    for (let i = aIdx; i < bIdx; i++) {
+      const layer = this.layers[i]!;
+      const ci = this.cacheIndex[i]!;
+      const isDonor = ci !== -1;
+      let sharedIn: SharedKv | null = null;
+      if (!isDonor) {
+        const donor = this.previousKvs[i]!;
+        sharedIn = donorKvOut.get(donor) ?? donorKvIn.get(donor) ?? null;
+        if (!sharedIn) throw new Error(`runLayerRange: donor ${donor} K/V not available for sharer ${i}`);
+      }
+      let pls: MlxArray | null = null;
+      if (perLayer) {
+        const sl = perLayer.slice([0, 0, i, 0], [B, L, i + 1, this.perLayerWidth]);
+        pls = ops.reshape(sl, [B, L, this.perLayerWidth]);
+        sl.dispose();
+      }
+      const mask = masks.get(layer.layerType)!;
+      const { h: next, shared } = layer.forward(cur, mask, isDonor ? cache[ci]! : null, sharedIn, pls);
+      pls?.dispose();
+      if (i > aIdx) cur.dispose(); // keep the input boundary leaf; drop interiors
+      cur = next;
+      if (isDonor) {
+        if (reused.has(i)) donorKvOut.set(i, shared);
+        else Gemma4Model.disposeSharedKv(shared);
+      }
+      // sharer: `shared` === sharedIn (owned by donorKvIn/Out) — do not dispose.
+    }
+    return { h: cur, donorKvOut };
+  }
+
   /** Run one layer under gradient checkpointing: its interior activations are
    *  dropped and recomputed in the backward pass. The layer's LoRA params, h,
    *  the mask array (if any), pls, and a sharer's donor KV are threaded as
