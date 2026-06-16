@@ -389,22 +389,31 @@ the trainer (Gemma4 path), and validated on the real e4b
   @2048, crash @4096) and claimed "the reference crashes at 4K" — that was WRONG:
   mlx-bun's gradient checkpointing is itself ineffective
   (`[[e4b-lora-training-seqlen-ceiling]]` pt 9), so it is NOT the honest baseline.
-  Running mlx-lm's actual flags (all 42 layers, batch 1, grad-checkpoint):
+  **GROUPING — they differ, and the first table I drew did not match them.**
+  mlx-lm checkpoints PER-LAYER: `grad_checkpoint(model.layers[0])` patches
+  `type(layer).__call__` to wrap every layer in `mx.checkpoint`, i.e. 42 groups of
+  1, fixed (no coarser/finer knob). Ours groups `segmentSize` layers per segment
+  (tunable). The honest, MATCHED-grouping comparison (both per-layer = group of 1,
+  all 42 layers, batch 1):
 
-  | L | mlx-lm, 42 layers | mlx-lm, 16 layers (default) | segmented, 42 layers |
+  | L | mlx-lm (per-layer) | ours segSize=1 (per-layer) | ours segSize=6 |
   |---|---|---|---|
-  | 2048 | 12.84 GB | — | **11.05 GB** |
-  | 4096 | 20.87 GB | — | **16.06 GB** |
-  | 8192 | **OOM** | 25.72 GB | **17.5 GB** (seg2) |
+  | 2048 | 12.84 GB | **8.76 GB** | 11.05 |
+  | 4096 | 20.87 GB | **10.93 GB** | 16.06 |
+  | 8192 | **OOM** (25.72 @16 layers) | **15.29 GB** | 17.5 (seg2) |
 
-  So the honest claim is narrower and still real: **at 8K, mlx-lm OOMs training all
-  42 layers and must drop to 16 trainable layers (25.7 GB); segmented trains all
-  42 at 17.5 GB — more layers at lower peak.** At 2K–4K both train all 42 and
-  segmented is ~15–25% lower, not "half" (that figure came from the broken mlx-bun
-  baseline). Peak is tunable via segment size (the §5 knob; @8192: 32 GB seg6 → 21
-  seg3 → 17.5 seg2). Separately, segmented is essential *within mlx-bun* because
-  mlx-bun's own checkpointing doesn't stream (23 GB @2048 vs mlx-lm's 12.8 GB) —
-  fixing that is orthogonal.
+  So at matched grouping ours is lower at every length, AND at 8K mlx-lm OOMs
+  training all 42 layers (must drop to 16, 25.7 GB) while ours trains all 42.
+  **Two confounds make this not a pure segmentation-vs-checkpoint number, and I
+  have not isolated them:** (1) mlx-lm's `default_loss` materializes the full
+  `[1,L,262144]` logits + their grad (~4 GB @4K), while ours uses response-only CE;
+  (2) ours fully streams the backward (detached per-segment value_and_grads) vs
+  mlx-lm's per-layer checkpoint inside one backward. Both are legitimate mlx-bun
+  choices, but the headline gap is part CE-optimization, part mechanism — not all
+  "segmentation beats checkpointing." (segSize is the peak↔grad-fidelity knob:
+  finer = lower peak but more donor-KV bf16 deviation; §10 grad note.) Separately,
+  mlx-bun's OWN checkpoint is the broken one (23 GB @2048 vs mlx-lm's 12.8) — that's
+  why segmented matters *within* mlx-bun, and fixing it is orthogonal.
 - **Trainer end-to-end** (e4b, SEQ=2048, SEG=4, real chunk data): peak 10 GB,
   active flat (no leak), adapter saved.
 - TWO contiguity fixes were essential: `detachLeaf` must force a row-major copy
