@@ -2,9 +2,11 @@
 
 **Status: Phase A (MiniCPM5) + Phase B (e4b) BOTH WORK — 2026-06-16.** MiniCPM5:
 bit-exact, no leak, chunk-eval 95.10 (beats the 91.70 baseline). e4b: forward
-bit-exact, grads bf16-class, trains at **8K context (17.5 GB) where the full
-backward OOMs (~70 GB)**. §1–8 are the original design dossier; **§9 = Phase A
-results, §10 = Phase B (e4b) results — read those first for current state.**
+bit-exact, grads bf16-class, trains **all 42 layers at 8K (17.5 GB)** where
+`mlx_lm.lora --grad-checkpoint` OOMs trying the same (verified — mlx-lm must drop
+to its default 16 trainable layers, 25.7 GB, to fit 8K). §1–8 are the original
+design dossier; **§9 = Phase A results, §10 = Phase B (e4b) results — read those
+first for current state.**
 
 ## 0. The one-paragraph version
 
@@ -371,20 +373,38 @@ the trainer (Gemma4 path), and validated on the real e4b
   choice; ~1% is bf16-class and fine for LoRA. (The producer's `dh_in` depends on
   `dKV`, so the donor-22 ~0.46% smears thinly across earlier layers — broad but
   small, ~1.4% worst-target.)
-- **Memory — apples-to-apples vs the checkpointed full backward (the memory lever
-  ON: `grad_checkpoint=True`, freshly measured here, ops.sdpa):**
+  - **The error is CONTROLLABLE BY GROUPING, not fixed by nature.** The lever is
+    the SEGMENT CUT — how a donor's sharers distribute across consumer segments —
+    NOT the accumulation dtype. The floor is bit-exact: with all of a donor's
+    sharers in ONE consumer segment (the 1-consumer cut) there is no sum to
+    reorder, 0/258 off. Fewer/larger consumer segments → tighter grad (toward
+    bit-exact) but higher peak; more/smaller → ~1% but lower peak. So if you ever
+    needed it tighter, keep a donor's sharers together (coarser sharer-side cut),
+    trading some peak for fidelity. You almost certainly won't — ~0.5–1% bf16-class
+    is fine for LoRA (CPM5 converged healthily to 95.10) — but the lever exists and
+    it is the cut, not the dtype.
+- **Memory — VERIFIED vs the real reference (`mlx_lm.lora --train --grad-checkpoint`,
+  the way a user trains, oracle venv, freshly measured).** An earlier draft of
+  this doc compared against *mlx-bun's own* checkpointed full backward (22.96 GB
+  @2048, crash @4096) and claimed "the reference crashes at 4K" — that was WRONG:
+  mlx-bun's gradient checkpointing is itself ineffective
+  (`[[e4b-lora-training-seqlen-ceiling]]` pt 9), so it is NOT the honest baseline.
+  Running mlx-lm's actual flags (all 42 layers, batch 1, grad-checkpoint):
 
-  | L | checkpointed full backward | segmented |
-  |---|---|---|
-  | 2048 | **22.96 GB** | **11.05 GB** |
-  | 4096 | **CRASH** (~38 GB, C++/Metal) | **16.06 GB** |
-  | 8192 | CRASH (~70 GB) | **17.5 GB** (seg2) / 21 (seg3) / 32 (seg6) |
+  | L | mlx-lm, 42 layers | mlx-lm, 16 layers (default) | segmented, 42 layers |
+  |---|---|---|---|
+  | 2048 | 12.84 GB | — | **11.05 GB** |
+  | 4096 | 20.87 GB | — | **16.06 GB** |
+  | 8192 | **OOM** | 25.72 GB | **17.5 GB** (seg2) |
 
-  (Segmented @512 = 8.3 GB.) Peak is tunable via segment size (the §5 knob).
-  **e4b trains at 8K where even the checkpointed reference OOMs at 4K** — and at
-  2K segmented is half the checkpointed peak. This is the honest comparison; the
-  prior session also measured optiq's own `train_lora --grad-checkpoint` crashing
-  on e4b at ≥2048 (`[[e4b-lora-training-seqlen-ceiling]]`).
+  So the honest claim is narrower and still real: **at 8K, mlx-lm OOMs training all
+  42 layers and must drop to 16 trainable layers (25.7 GB); segmented trains all
+  42 at 17.5 GB — more layers at lower peak.** At 2K–4K both train all 42 and
+  segmented is ~15–25% lower, not "half" (that figure came from the broken mlx-bun
+  baseline). Peak is tunable via segment size (the §5 knob; @8192: 32 GB seg6 → 21
+  seg3 → 17.5 seg2). Separately, segmented is essential *within mlx-bun* because
+  mlx-bun's own checkpointing doesn't stream (23 GB @2048 vs mlx-lm's 12.8 GB) —
+  fixing that is orthogonal.
 - **Trainer end-to-end** (e4b, SEQ=2048, SEG=4, real chunk data): peak 10 GB,
   active flat (no leak), adapter saved.
 - TWO contiguity fixes were essential: `detachLeaf` must force a row-major copy
