@@ -5,6 +5,24 @@ exit criteria, and findings live in [PLAN.md](PLAN.md); this file is the
 transient front door that stays current. Product/UX north star:
 [docs/planning/PRODUCT_ROADMAP.md](docs/planning/PRODUCT_ROADMAP.md).
 
+## Training — segmented backward, Phase A COMPLETE (2026-06-16, uncommitted on `main`)
+
+Long-context LoRA SFT that streams the backward segment-by-segment so only one
+segment's activations are live — fits where the optiq/mlx-lm reference spikes/crashes.
+**Phase A (MiniCPM5) done + validated:** bit-exact grads vs the full backward
+(relNorm 0.0000% under flash), peak **10.91 → 3.29 GB @2048** (non-seg spikes to
+21–26 GB @4096; seg stays 6–8 GB), **no memory leak**, trains end-to-end through
+`scripts/chunk-finetune.ts` (`SEG=n`). Enable via `TrainConfig.segmentSize` (layers
+per segment; 0 = off). Key files: `src/train/segmented.ts` (`SegmentedBackward`),
+`src/model/minicpm5.ts` (`runLayerRange`), `src/mlx/autograd.ts` (`Vjp` — the
+backward uses `mlx_vjp`, NOT a surrogate-loss `value_and_grad`, which leaked).
+Two findings worth knowing: (a) `ops.sdpa`'s fused-eager forward ≠ its autograd
+forward in bf16 (~0.12%) — use `MLX_BUN_TRAIN_ATTN=flash` for exact segmented grads;
+(b) mlx `eval` doesn't detach, so boundaries are copied to leaves (`fromBytesCopy`).
+Full dossier: [docs/design/segmented-backward-training.md](docs/design/segmented-backward-training.md) §9.
+**Next:** real 300-iter chunk fine-tune + `chunk-eval` quality vs the 91.70 baseline,
+then Phase B (e4b: KV-sharing + per-layer-input + full-attn O(L²) isolation, §5 plan).
+
 ## Active branch (2026-06-15) — `qwen3-5-27b-bringup`: Qwen3.6-27B-OptiQ-4bit port
 
 > **Phase 14 bring-up — BOTH PARITY BARS PASS (2026-06-15, M1 Max).** Target

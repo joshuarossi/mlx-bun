@@ -9,13 +9,18 @@
 // sees it. Base quantized weights are never in argnums — they stay frozen.
 
 import { MlxArray } from "../mlx/array";
-import { clearCache } from "../mlx/ffi";
+import { clearCache, peakMemory, activeMemory, cacheMemory, resetPeakMemory } from "../mlx/ffi";
+
+const MEM_LOG = process.env.MLX_BUN_MEM_LOG === "1";
+const gbStr = (b: number) => `${(b / 1e9).toFixed(2)}GB`;
 import { ValueAndGrad } from "../mlx/autograd";
 import * as ops from "../mlx/ops";
 import { evalAll } from "../mlx/ops";
 import type { RuntimeModel } from "../model/factory";
 import { Gemma4Model, type GradCheckpointCtx } from "../model/gemma4";
+import { MiniCPM5Model } from "../model/minicpm5";
 import { setTrainingAttn } from "../model/flash-attention";
+import { SegmentedBackward, planSegmentsBySize } from "./segmented";
 import type { LoadedTokenizer } from "../tokenizer";
 import type { ChatTemplate } from "../chat-template";
 import type { Emit } from "../jobs/types";
@@ -52,6 +57,13 @@ export interface TrainConfig {
    *  to bound memory at long context (mlx-lm grad_checkpoint; default in optiq).
    *  Numerically identical to off — pure memory↔compute trade. */
   gradCheckpoint: boolean;
+  /** Segmented backward: layers per segment (0 = off). Streams the SFT backward
+   *  segment-by-segment so only one segment's activations are live at a time —
+   *  beats per-layer checkpointing at long context, where naive checkpointing
+   *  holds every layer's recompute activations at once and crashes. B=1 SFT
+   *  only (the responseOnlyCe path); mutually exclusive with gradCheckpoint.
+   *  Numerically identical to off. See docs/design/segmented-backward-training.md. */
+  segmentSize: number;
   // DPO
   dpoBeta: number;
   dpoWarmupIters: number;
@@ -85,6 +97,7 @@ export const DEFAULT_TRAIN_CONFIG: TrainConfig = {
   betas: [0.9, 0.999],
   weightDecay: 0.01,
   gradCheckpoint: false, // default off until validated; flip to true (optiq default) after
+  segmentSize: 0, // default off; >0 enables segmented backward (MiniCPM5 SFT B=1)
 
   dpoBeta: 0.1,
   dpoWarmupIters: 0,
@@ -176,26 +189,46 @@ async function sftLoop(
     (i, p) => writeParam(lora, i, p),
   );
 
+  // Segmented backward: stream the SFT backward segment-by-segment (only one
+  // segment's activations live at a time). Phase A is MiniCPM5 SFT B=1 only;
+  // it replaces the single value_and_grad below and is mutually exclusive with
+  // gradient checkpointing (see docs/design/segmented-backward-training.md).
+  const useSegmented = cfg.segmentSize > 0;
+  if (useSegmented && !(model instanceof MiniCPM5Model))
+    throw new Error("segmented backward (segmentSize > 0) is only wired for MiniCPM5 so far");
+  const segmented = useSegmented
+    ? new SegmentedBackward(
+        model as MiniCPM5Model, lora,
+        planSegmentsBySize((model as MiniCPM5Model).layers.length, cfg.segmentSize),
+      )
+    : null;
+  if (segmented)
+    emit({ type: "stage", stage: "setup", progress: 0.04,
+      message: `segmented backward: ${Math.ceil((model as MiniCPM5Model).layers.length / cfg.segmentSize)} segments of <=${cfg.segmentSize} layers` });
+
   // The value_and_grad loss closure: temporarily swap the differentiated
   // primals into the LoraWeights so the forward graph differentiates them,
   // build the SFT loss against the active batch, then restore the original
   // leaf wrappers (the primal wrappers get disposed by the autograd closure;
-  // the graph already captured their handles).
+  // the graph already captured their handles). Not built on the segmented path
+  // (segmentedSftGrads runs its own per-segment value_and_grads).
   let currentBatch: SftBatch | null = null;
-  const vag = new ValueAndGrad((primals) => {
-    const saved = swapPrimals(lora, primals);
-    try {
-      return sftLoss(model, currentBatch!);
-    } finally {
-      restorePrimals(lora, saved);
-    }
-  }, params.map((_, i) => i));
+  const vag = useSegmented
+    ? null
+    : new ValueAndGrad((primals) => {
+        const saved = swapPrimals(lora, primals);
+        try {
+          return sftLoss(model, currentBatch!);
+        } finally {
+          restorePrimals(lora, saved);
+        }
+      }, params.map((_, i) => i));
 
   // Gradient checkpointing: group each layer's LoRA weights so forwardLayers
   // can thread them as explicit checkpoint inputs (see Gemma4Model.gradCkpt).
   // Checkpoints are created per forward and disposed after each step's backward.
   let ckptCtx: GradCheckpointCtx | null = null;
-  if (cfg.gradCheckpoint && model instanceof Gemma4Model) {
+  if (!useSegmented && cfg.gradCheckpoint && model instanceof Gemma4Model) {
     const byLayer: GradCheckpointCtx["byLayer"] = new Map();
     for (const t of lora.targets) {
       const m = t.modulePath.match(/\.layers\.(\d+)\./);
@@ -207,10 +240,13 @@ async function sftLoop(
     model.gradCkpt = ckptCtx;
   }
 
-  // Training attention: ops.sdpa's dK vjp is wrong, so route the forward
-  // through the validated flash kernel (correct dQ/dK/dV, handles the sliding
-  // window, memory-efficient). Cleared in finally.
-  setTrainingAttn("flash");
+  // Training attention. Default = mlx fused SDPA (ops.sdpa): verified correct
+  // dQ/dK/dV vs a hand-rolled reference (scripts/sdpa-vs-manual.ts: 0.00%) and
+  // fast (one fused kernel). flash is opt-in via MLX_BUN_TRAIN_ATTN=flash for an
+  // O(L) memory backward at very long context, BUT its dK kernel currently has
+  // a bug (~100% off) and is ~30x slower here — so it is NOT the default.
+  // Cleared in finally.
+  if (process.env.MLX_BUN_TRAIN_ATTN === "flash") setTrainingAttn("flash");
 
   // Pad with the eos id when available (a real sentinel token); padded
   // positions are excluded from both the loss and attention masks, so the
@@ -224,14 +260,30 @@ async function sftLoop(
       currentBatch = batches.next().value as SftBatch;
       const tokensThisStep = countResponseTokens(currentBatch);
 
-      const { value, grads } = vag.apply(flatParams(lora));
+      if (MEM_LOG) resetPeakMemory();
+      const { value, grads } = segmented
+        ? segmented.step(currentBatch!)
+        : vag!.apply(flatParams(lora));
+      // Evaluate the loss AND grads in ONE mlx_eval so the backward shares the
+      // forward pass. Evaluating `value` on its own first (e.g. via toFloat32)
+      // materializes then frees the forward, forcing the backward to recompute
+      // and hold ALL layer activations — which silently defeats gradient
+      // checkpointing (verified: separate-eval ~0% memory savings, combined-eval
+      // restores it). Keep this single combined eval before reading either.
+      evalAll([value, ...grads]);
       const lossVal = value.toFloat32()[0]!;
       value.dispose();
 
-      const gradNorm = globalNorm(grads); // also evals grads (runs the recompute)
+      const gradNorm = globalNorm(grads); // grads already materialized above
       opt.step(grads);
       opt.evalState();
-      clearCache();
+      if (MEM_LOG) {
+        const pk = peakMemory(), act = activeMemory(), ch = cacheMemory();
+        clearCache();
+        console.log(`  [mem] step ${step}: PEAK(live)=${gbStr(pk)} active=${gbStr(act)} cache=${gbStr(ch)} -> after clearCache active=${gbStr(activeMemory())}`);
+      } else {
+        clearCache();
+      }
       if (ckptCtx) {
         // Grads are materialized (globalNorm/evalState), so the recompute is
         // done — free this step's checkpoint closures before the next forward.
@@ -265,7 +317,8 @@ async function sftLoop(
     }
   } finally {
     setTrainingAttn(null);
-    vag.dispose();
+    vag?.dispose();
+    segmented?.dispose();
     opt.dispose();
     if (ckptCtx) {
       (model as Gemma4Model).gradCkpt = null;
