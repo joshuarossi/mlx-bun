@@ -19,7 +19,7 @@ import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import type { RuntimeModel } from "../model/factory";
-import { trainForward } from "./forward";
+import { trainForward, trainForwardHidden } from "./forward";
 import { setLoraScale, type TrainableLora } from "./lora-params";
 import {
   rowLength, dpoChosenLength, dpoRejectedLength,
@@ -61,13 +61,63 @@ export function sftLoss(model: RuntimeModel, batch: SftBatch): MlxArray {
 
   let scalar: MlxArray;
   try {
-    const logits = trainForward(model, inputIds, inputValid); // [B, T, V]
-    scalar = maskedCe(logits, batch);
-    logits.dispose();
+    if (B === 1) {
+      // Response-only path: run the forward to hidden states, then apply the
+      // LM head ONLY at supervised positions. Avoids the [1, T, 262k] logits
+      // (+ its grad) — the dominant long-context training-memory term.
+      const h = trainForwardHidden(model, inputIds, inputValid); // [1, T, hidden]
+      scalar = responseOnlyCe(model, h, batch);
+      h.dispose();
+    } else {
+      const logits = trainForward(model, inputIds, inputValid); // [B, T, V]
+      scalar = maskedCe(logits, batch);
+      logits.dispose();
+    }
   } finally {
     inputIds.dispose();
   }
   return scalar;
+}
+
+/** B=1 masked CE that applies the LM head only at the supervised (response)
+ *  span. The supervised input positions are the contiguous range
+ *  [promptLen-1, len-1) (each predicts the next, response, token). The LM head
+ *  is position-independent and prompt positions get zero loss weight, so this
+ *  is numerically identical to maskedCe for B=1 — but it never materializes
+ *  logits at prompt positions. Gradients to prompt-position LoRA params still
+ *  flow: the response hidden states depend on the prompt through causal
+ *  attention, which is fully captured upstream in `h`. */
+function responseOnlyCe(model: RuntimeModel, h: MlxArray, batch: SftBatch): MlxArray {
+  const L = batch.ids[0]!.length;
+  const promptLen = batch.promptLens[0]!;
+  const len = Math.min(rowLength(batch, 0), L);
+  const startT = Math.max(0, promptLen - 1); // first supervised input position
+  const M = (len - 1) - startT; // # supervised positions (predict ids[startT+1 .. len-1])
+  if (M <= 0) throw new Error("sftLoss: no response tokens to supervise");
+
+  // h[:, startT : startT+M, :]  → [1, M, hidden]  (sliceSize is the full output shape)
+  const hidden = h.shape[2]!;
+  const start = MlxArray.fromInt32(new Int32Array([startT]), [1]);
+  const hResp = ops.sliceDynamic(h, start, [1], [1, M, hidden]);
+  const logits = model.logitsFromHidden(hResp); // [1, M, V]
+  const V = logits.shape[2]!;
+  const logits2d = ops.reshape(logits, [M, V]);
+
+  const targetsHost = new Int32Array(M);
+  for (let i = 0; i < M; i++) targetsHost[i] = batch.ids[0]![startT + 1 + i]!;
+  const targets = MlxArray.fromInt32(targetsHost, [M, 1]);
+
+  const lse = ops.logsumexpAxis(logits2d, -1, false); // [M]
+  const gathered = ops.takeAlongAxis(logits2d, targets, -1); // [M, 1]
+  const picked = ops.reshape(gathered, [M]); // [M]
+  const ce = ops.sub(lse, picked); // [M]
+  const ceF = ce.dtype === Dtype.float32 ? ce : ce.astype(Dtype.float32);
+  const sumCe = ops.sumAxis(ceF, 0, false); // scalar
+  const loss = ops.mulScalar(sumCe, 1 / M); // token-mean over the response
+
+  for (const a of [start, hResp, logits, logits2d, targets, lse, gathered, picked, ce, sumCe]) a.dispose();
+  if (ceF !== ce) ceF.dispose();
+  return loss;
 }
 
 /** Build the token-mean masked-CE scalar from batched logits [B, T, V]

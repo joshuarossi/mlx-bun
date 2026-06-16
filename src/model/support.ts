@@ -12,6 +12,16 @@ export function isMiniCPM5Config(config: ModelConfig): boolean {
     t.tieWordEmbeddings === false;
 }
 
+/** Qwen3.5 hybrid gated-DeltaNet family (model_type qwen3_5 / qwen3_5_text).
+ *  Dense MLP only for now — the MoE variant (qwen3_5_moe) is deferred. */
+export function isQwen35Config(config: ModelConfig): boolean {
+  return (config.modelType === "qwen3_5" || config.modelType === "qwen3_5_text") &&
+    !config.text.enableMoeBlock &&
+    config.text.numExperts === 0 &&
+    config.text.linearNumValueHeads > 0 &&
+    config.text.fullAttentionInterval > 0;
+}
+
 /** Speculative-decoding drafters (e.g. `gemma4_assistant`) are companion
  *  artifacts to a target model — Q-only, centroid-head, no standalone LM
  *  head. They are never servable/selectable on their own (the spec path
@@ -24,10 +34,13 @@ export function isDrafterModelType(modelType: string): boolean {
 export function isSupportedModelRecord(modelType: string, repoId = ""): boolean {
   if (isDrafterModelType(modelType)) return false;
   if (modelType.startsWith("gemma4")) return true;
+  // qwen3_5 / qwen3_5_text (dense hybrid). The MoE variant is a separate type.
+  if (modelType === "qwen3_5" || modelType === "qwen3_5_text") return true;
   return modelType === "llama" && repoId.toLowerCase().includes("minicpm5-1b-optiq-4bit");
 }
 
 export function isSupportedModelConfig(config: ModelConfig): boolean {
   if (isDrafterModelType(config.modelType)) return false;
-  return config.modelType.startsWith("gemma4") || isMiniCPM5Config(config);
+  return config.modelType.startsWith("gemma4") || isMiniCPM5Config(config) ||
+    isQwen35Config(config);
 }

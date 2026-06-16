@@ -29,11 +29,11 @@ describe("mapEventToFrames", () => {
     expect(frames).toEqual([{ type: "text_delta", delta: "hi" }]);
   });
 
-  it("maps thinking_delta to text_delta frames (single bubble)", () => {
+  it("maps thinking_delta to separate thinking_delta frames", () => {
     const frames = mapEventToFrames(
       ev({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "hmm" } }),
     );
-    expect(frames).toEqual([{ type: "text_delta", delta: "hmm" }]);
+    expect(frames).toEqual([{ type: "thinking_delta", delta: "hmm" }]);
   });
 
   it("ignores non-delta assistant message events", () => {
@@ -163,6 +163,18 @@ describe("serializeHistory", () => {
     expect(items).toHaveLength(1);
     expect(items[0]?.text).toBe("");
     expect(items[0]?.tools[0]).toEqual({ callId: "c9", name: "weather", args: { location: "NYC" }, result: "" });
+  });
+
+  it("keeps assistant thinking separate from final text", () => {
+    const entries: SessionEntry[] = [
+      mEntry("1", "assistant", [
+        { type: "thinking", thinking: "working it out" },
+        { type: "text", text: "answer" },
+      ]),
+    ];
+    expect(serializeHistory(entries)).toEqual([
+      { role: "assistant", text: "answer", thinking: "working it out", tools: [] },
+    ]);
   });
 });
 

@@ -4,9 +4,10 @@
 // format (lora_a / lora_b tensor names + optiq_lora_config.json + PEFT
 // adapter_config.json).
 //
-// Init follows mlx-lm LoRALinear: A ~ normal(0, 1/sqrt(in)), B = zeros, so the
-// LoRA residual starts at exactly zero (the adapted model == base model at
-// step 0). Trained in f32.
+// Init follows mlx-lm LoRALinear.from_base: A ~ uniform(-1/sqrt(in), 1/sqrt(in)),
+// B = zeros, so the LoRA residual starts at exactly zero (the adapted model ==
+// base model at step 0). Trained in f32. (mlx-lm uses uniform, not normal —
+// matching it keeps L1 training faithful to the parent.)
 
 import { mkdirSync } from "node:fs";
 import { ptr } from "bun:ffi";
@@ -56,7 +57,8 @@ export function buildTrainableLora(
     const subkeyRow = subkeys.slice([i, 0], [i + 1, 2]); // [1,2]
     const subkey = ops.reshape(subkeyRow, [2]);          // mlx wants a [2] key
     subkeyRow.dispose();
-    const a = ops.randomNormal([inF, rank], Dtype.float32, 0, 1 / Math.sqrt(inF), subkey);
+    const aScale = 1 / Math.sqrt(inF);
+    const a = ops.randomUniform([inF, rank], Dtype.float32, -aScale, aScale, subkey);
     subkey.dispose();
     const b = ops.zeros([rank, outF], Dtype.float32);
     targets.push({ modulePath, linear, lw: { a, b, scale, rank } });

@@ -90,6 +90,11 @@ export class Registry {
 
   async scan(hubDir: string = DEFAULT_HUB): Promise<number> {
     if (!existsSync(hubDir)) return 0;
+    // The cache is the source of truth and we only ever INSERT, so reap rows
+    // whose snapshot dir was deleted (else they linger as phantom matches).
+    const prune = this.db.prepare("DELETE FROM models WHERE path = $path");
+    for (const r of this.db.query("SELECT path FROM models").all() as { path: string }[])
+      if (!existsSync(r.path)) prune.run({ $path: r.path });
     let count = 0;
     const upsert = this.db.prepare(`
       INSERT OR REPLACE INTO models VALUES
@@ -141,7 +146,10 @@ export class Registry {
     const rows = this.db
       .query(`SELECT * FROM models ${where} ORDER BY size_bytes ASC`)
       .all(params as never) as Record<string, unknown>[];
-    return rows.map(rowToRecord);
+    // Self-heal: never surface a row whose snapshot dir was deleted out from
+    // under us (scan() reaps these from the DB; this keeps reads correct even
+    // before the next scan).
+    return rows.map(rowToRecord).filter((r) => existsSync(r.path));
   }
 
   /** Resolve a fuzzy query to exactly one model (error listing candidates otherwise).
@@ -149,16 +157,37 @@ export class Registry {
    *  their own, so they never count as candidates here. */
   resolve(query: string): ModelRecord {
     const matches = this.list({ query }).filter((m) => !isDrafterModelType(m.modelType));
-    if (matches.length === 1) return matches[0]!;
     if (matches.length === 0) throw new Error(`no model matching "${query}" — run \`mlx-bun scan\``);
-    throw new Error(
-      `"${query}" is ambiguous:\n` + matches.map((m) => `  ${m.repoId}`).join("\n"),
-    );
+    // The HF cache can hold several revisions of one repo (snapshots/<hash>
+    // dirs), each a registry row. Resolving a repo name must not be "ambiguous"
+    // just because a stale revision lingers — collapse same-repo matches to the
+    // canonical snapshot. Genuinely different repos stay ambiguous.
+    const repos = [...new Set(matches.map((m) => m.repoId))];
+    if (repos.length === 1) return pickCanonicalRevision(matches);
+    throw new Error(`"${query}" is ambiguous:\n` + repos.map((r) => `  ${r}`).join("\n"));
   }
 
   close(): void {
     this.db.close();
   }
+}
+
+/** Of several cached revisions of ONE repo, pick the canonical snapshot: the
+ *  revision refs/main points at, else the most recently scanned (stable
+ *  tie-break on path). Paths are `<hub>/models--<repo>/snapshots/<hash>`. */
+function pickCanonicalRevision(matches: ModelRecord[]): ModelRecord {
+  if (matches.length === 1) return matches[0]!;
+  const root = matches[0]!.path.split("/snapshots/")[0]!;
+  try {
+    const head = readFileSync(join(root, "refs", "main"), "utf8").trim();
+    const onMain = matches.find((m) => m.path.includes(`/snapshots/${head}`));
+    if (onMain) return onMain;
+  } catch {
+    /* no refs/main — fall through to recency */
+  }
+  return [...matches].sort(
+    (a, b) => b.scannedAt - a.scannedAt || (a.path < b.path ? -1 : 1),
+  )[0]!;
 }
 
 function rowToRecord(r: Record<string, unknown>): ModelRecord {

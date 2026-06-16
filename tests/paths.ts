@@ -1,6 +1,21 @@
 // Shared reference-environment paths (see PLAN.md "Reference environment").
 
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
+
+/** Resolve a HF-cache snapshot dir for a repo by globbing snapshots/ for the
+ *  one carrying config.json — so a freshly-downloaded model needs no hardcoded
+ *  commit hash. Returns a non-existent path (availability check → false) until
+ *  the download lands. */
+function hfSnapshot(repoDir: string): string {
+  const base = `${process.env.HOME}/.cache/huggingface/hub/${repoDir}/snapshots`;
+  try {
+    for (const snap of readdirSync(base))
+      if (existsSync(`${base}/${snap}/config.json`)) return `${base}/${snap}`;
+  } catch {
+    /* not downloaded yet */
+  }
+  return `${base}/_unresolved`;
+}
 
 /** A venv is usable only if bin/python resolves to a real file — a venv
  *  whose interpreter symlink dangles (e.g. Homebrew bumped python 3.13→3.14
@@ -38,6 +53,13 @@ export const SNAPSHOT_26B = `${process.env.HOME}/.cache/huggingface/hub/models--
 
 export const SNAPSHOT_MINICPM5 = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--MiniCPM5-1B-OptiQ-4bit/snapshots/664aabaed233c653f82716d8dc822234d0091f78`;
 
+export const SNAPSHOT_QWEN35 = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--Qwen3.6-27B-OptiQ-4bit/snapshots/e9a616f2a388d41a7b7306e079f248825b90071f`;
+
+// Lighter same-architecture (qwen3_5) OptiQ checkpoint: 4-bit, 32 layers, tied
+// head, ships kv_config.json → BOTH parity bars (bf16 vs mlx-lm, mixed vs
+// optiq) on ~4.5 GB. Resolved dynamically so the download needs no hash edit.
+export const SNAPSHOT_QWEN35_4B = hfSnapshot("models--mlx-community--Qwen3.5-4B-OptiQ-4bit");
+
 export async function snapshotAvailable(): Promise<boolean> {
   return Bun.file(`${SNAPSHOT}/config.json`).exists();
 }
@@ -48,4 +70,12 @@ export async function snapshot26bAvailable(): Promise<boolean> {
 
 export async function snapshotMiniCPM5Available(): Promise<boolean> {
   return Bun.file(`${SNAPSHOT_MINICPM5}/config.json`).exists();
+}
+
+export async function snapshotQwen35Available(): Promise<boolean> {
+  return Bun.file(`${SNAPSHOT_QWEN35}/config.json`).exists();
+}
+
+export async function snapshotQwen35_4bAvailable(): Promise<boolean> {
+  return Bun.file(`${SNAPSHOT_QWEN35_4B}/config.json`).exists();
 }

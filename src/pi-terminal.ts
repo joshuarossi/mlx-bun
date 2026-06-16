@@ -95,6 +95,8 @@ export interface RunEmbeddedPiOptions {
   modelLabel?: string;
   /** Context window advertised to pi. Default: DEFAULT_CONTEXT_WINDOW. */
   contextWindow?: number;
+  /** Whether the served model has a switchable thinking channel. */
+  reasoning?: boolean;
   /** Run mode. Default: "interactive". */
   mode?: PiTerminalMode;
   /** Print mode output format ("text" final-only, "json" event stream). */
@@ -123,6 +125,7 @@ export async function runEmbeddedPi(opts: RunEmbeddedPiOptions): Promise<number>
   const { authStorage, modelRegistry, model } = buildPiProvider(opts.baseUrl, {
     contextWindow: opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     name: opts.modelLabel ? `${opts.modelLabel} (mlx-bun local)` : undefined,
+    reasoning: opts.reasoning ?? false,
   });
 
   // Curated skills (web-research, …) written to ~/.mlx-bun/skills and loaded

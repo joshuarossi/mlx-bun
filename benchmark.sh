@@ -19,12 +19,26 @@
 # land in the eval DB (~/.cache/mlx-bun/evals.sqlite) AND
 # benchmarks-h2h-<date>-<host>.md.
 #
-# The clean-machine preflight WARNS rather than refuses (we pass --force):
-# rows measured on a dirty machine are tagged `preflight-failed` (‡ in the
-# report) so the absolute tok/s carries its caveat, while the parity and
-# KL/ratio verdicts — which don't depend on machine state — still stand.
+# We pass --force so preflight WARNS rather than refuses: a multi-hour
+# unattended run must not abort on a transient blip. With the caffeinate
+# assertion above holding the machine awake, preflight should now PASS on
+# its own — the blanket `‡ preflight-failed` tags on past runs were NOT a
+# dirty machine (swap 0, free >90%, zero foreign processes) but the
+# `loadAvg1m > 8` check tripping on the run-queue spike right after a
+# wake-from-sleep. So --force here is a legitimate belt-and-suspenders, not
+# an admission of measuring dirty. Rows are only tagged `‡` if a check
+# genuinely trips; parity and KL/ratio verdicts don't depend on machine
+# state either way.
 set -e
 cd "$(dirname "$0")"
+
+# Keep the Mac awake for the whole pass. macOS idle-sleep keys off HID
+# inactivity, NOT GPU/CPU load, so an unattended run gets slept mid-leg and
+# the suspended process stretches a ~1-2 h pass across many hours (and the
+# post-wake run-queue spike fakes `loadAvg1m > 8` preflight failures). This
+# assertion lives only as long as this script (PID $$) and releases on exit.
+# caffeinate ships with macOS (/usr/bin/caffeinate) — nothing to install.
+caffeinate -dimsu -w $$ &
 
 REPORT="benchmarks-h2h-$(date +%F)-$(hostname -s).md"
 

@@ -97,6 +97,12 @@
     box-shadow:0 0 0 transparent;transition:all .4s}
   .pill.ok .dot{background:var(--green);box-shadow:0 0 11px var(--green)}
   .pill.ok{color:var(--ink)}
+  #chat-think{display:none;cursor:pointer;gap:7px;padding:5px 11px;font-size:12px;user-select:none;-webkit-user-select:none;
+    transition:color .22s var(--ease),border-color .22s var(--ease)}
+  #chat-think .dot{width:7px;height:7px}
+  #chat-think:hover{border-color:rgba(255,255,255,.28)}
+  #chat-think.think-on{color:var(--ink)}
+  #chat-think.think-on .dot{background:var(--blue);box-shadow:0 0 11px var(--blue)}
   .pill.bad .dot{background:var(--red);box-shadow:0 0 11px var(--red)}
   .pill.warn .dot{background:var(--orange);box-shadow:0 0 11px var(--orange)}
   .hf-gear{appearance:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;
@@ -312,6 +318,9 @@
   .msg.assistant .bubble{background:var(--card);border:1px solid var(--hairline)}
   .msg .meta{font-size:11.5px;color:var(--dimmer);font-variant-numeric:tabular-nums}
   .msg .meta b{color:var(--green);font-weight:600}
+  .thinkbox{margin:0 0 12px;border:1px solid rgba(10,132,255,.18);border-radius:12px;background:rgba(10,132,255,.06);overflow:hidden}
+  .thinkbox summary{cursor:pointer;padding:7px 10px;font-size:12px;font-weight:600;color:var(--dim);user-select:none}
+  .thinkbody{padding:0 12px 10px;color:var(--dim);font-size:.92em;white-space:pre-wrap}
   /* markdown-ish rendering inside bubbles */
   .bubble p{margin:0 0 10px}.bubble p:last-child{margin-bottom:0}
   .bubble ul,.bubble ol{margin:0 0 10px;padding-left:22px}
@@ -539,6 +548,7 @@
         <div class="chat-hint">
           <span id="chat-status-line">Enter to send · Shift+Enter for a new line · type while it streams to steer</span>
           <span class="hint-right">
+            <span id="chat-think" class="pill" role="button" tabindex="0" title="Toggle the model's reasoning"><span class="dot"></span>Thinking</span>
             <span id="chat-context" title="Context window in use — auto-compacts before it fills"></span>
             <span id="chat-tps"></span>
           </span>
@@ -1376,10 +1386,15 @@ controllers.chat = (() => {
     const m = el("div", "msg assistant", thread());
     el("div", "who", m).textContent = "local agent";
     const bubble = el("div", "bubble", m);
+    const thinkBox = el("details", "thinkbox", bubble);
+    thinkBox.open = true;
+    el("summary", "", thinkBox).textContent = "Thinking";
+    const thinkBody = el("div", "thinkbody", thinkBox);
+    thinkBox.style.display = "none";
     const textNode = el("span", "atext", bubble);
     const cursor = el("span", "cursor", bubble);
     const meta = el("div", "meta", m);
-    curAssistant = { m, bubble, textNode, cursor, meta, tools: new Map(), text: "", t0: performance.now(), tFirst: 0, tokens: 0 };
+    curAssistant = { m, bubble, thinkBox, thinkBody, textNode, cursor, meta, tools: new Map(), text: "", thinking: "", t0: performance.now(), tFirst: 0, tokens: 0 };
     stick(true);
   }
   function ensureAssistant() { if (!curAssistant) startAssistant(); }
@@ -1391,6 +1406,17 @@ controllers.chat = (() => {
     a.tokens++;
     a.text += delta;
     a.textNode.innerHTML = mdToHtml(a.text);
+    updateTps();
+    if (atBottom()) stick();
+  }
+  function appendThinkingDelta(delta) {
+    ensureAssistant();
+    const a = curAssistant;
+    if (!a.tFirst) a.tFirst = performance.now();
+    a.tokens++;
+    a.thinking += delta;
+    a.thinkBody.textContent = a.thinking;
+    a.thinkBox.style.display = a.thinking.trim() ? "" : "none";
     updateTps();
     if (atBottom()) stick();
   }
@@ -1502,7 +1528,7 @@ controllers.chat = (() => {
     turnActive = false;
     if (curAssistant) {
       curAssistant.cursor.remove();
-      if (!curAssistant.text && curAssistant.tools.size === 0) curAssistant.m.remove();
+      if (!curAssistant.text && !curAssistant.thinking && curAssistant.tools.size === 0) curAssistant.m.remove();
     }
     curAssistant = null;
     $("chat-send").disabled = false;
@@ -1588,6 +1614,11 @@ controllers.chat = (() => {
     const m = el("div", "msg assistant", thread());
     el("div", "who", m).textContent = "local agent";
     const bubble = el("div", "bubble", m);
+    if (item.thinking && item.thinking.trim()) {
+      const tb = el("details", "thinkbox", bubble); tb.open = false;
+      el("summary", "", tb).textContent = "Thinking";
+      el("div", "thinkbody", tb).textContent = item.thinking;
+    }
     if (item.text) { const tn = el("span", "atext", bubble); tn.innerHTML = mdToHtml(item.text); }
     for (const t of (item.tools || [])) {
       const wrap = el("div", "tool ok", bubble);   // collapsed; click to expand
@@ -1628,6 +1659,8 @@ controllers.chat = (() => {
       case "ready":
         $("nav-model").textContent = m.model || activeModelId || "no model"; activeModelId = m.model || activeModelId;
         visionCapable = !!m.vision; updateAttachHint();
+        thinkingCapable = !!m.thinking; updateThinkingToggle();
+        if (thinkingCapable) send({ type: "set_thinking", enabled: thinkingOn });
         // Reconnect: re-open the session we were in (fresh load has none).
         if (pendingResumePath) { send({ type: "open_session", path: pendingResumePath }); pendingResumePath = null; }
         break;
@@ -1636,6 +1669,7 @@ controllers.chat = (() => {
       case "context": renderContext(m); break;
       case "turn_start": turnActive = true; startAssistant(); $("chat-send").disabled = true; $("chat-stop").style.display = "block"; break;
       case "text_delta": appendDelta(m.delta || ""); break;
+      case "thinking_delta": appendThinkingDelta(m.delta || ""); break;
       case "tool_start": toolCard(m.callId, m.tool, m.args); break;
       case "tool_approval_request": approvalCard(m.callId, m.tool, m.args); break;
       case "tool_update": toolUpdate(m.callId, m.chunk || ""); break;
@@ -1650,6 +1684,8 @@ controllers.chat = (() => {
   /* — attachments (files + images) — */
   let attachments = [];       // { id, kind:"image"|"text", name, mimeType, data, text, truncated }
   let visionCapable = false;  // from the `ready` frame; gates image attachments
+  let thinkingCapable = false; // from `ready`; gates the reasoning toggle
+  let thinkingOn = true;       // on/off state for the model's reasoning channel
   let attachSeq = 0;
   const MAX_TEXT_BYTES = 256 * 1024;
   const TEXT_EXTS = /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|ini|cfg|conf|log|xml|html?|css|scss|js|mjs|cjs|ts|tsx|jsx|py|rs|go|java|c|h|cpp|hpp|cc|cs|rb|php|sh|bash|zsh|fish|sql|swift|kt|lua|r|jl|tex|svg|env|gitignore|dockerfile|makefile)$/i;
@@ -1712,6 +1748,14 @@ controllers.chat = (() => {
     const btn = $("chat-attach-btn");
     if (btn) btn.title = visionCapable ? "Attach files or images" : "Attach files (this model can't see images)";
   }
+  function updateThinkingToggle() {
+    const b = $("chat-think");
+    if (!b) return;
+    b.style.display = thinkingCapable ? "inline-flex" : "none"; // only for thinking-capable models
+    b.classList.toggle("think-on", thinkingOn);
+    b.title = thinkingOn ? "Reasoning on — click to answer directly" : "Reasoning off — click to let the model think";
+    b.setAttribute("aria-pressed", String(thinkingOn));
+  }
 
   /* — composer — */
   function submit() {
@@ -1743,6 +1787,9 @@ controllers.chat = (() => {
       $("chat-send").onclick = submit;
       $("chat-new").onclick = newChat;
       $("chat-stop").onclick = () => { send({ type: "abort" }); $("chat-stop").style.display = "none"; };
+      const thinkToggle = () => { thinkingOn = !thinkingOn; updateThinkingToggle(); send({ type: "set_thinking", enabled: thinkingOn }); };
+      $("chat-think").onclick = thinkToggle;
+      $("chat-think").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); thinkToggle(); } });
       const box = $("chat-box");
       box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } });
       box.addEventListener("input", () => { box.style.height = "auto"; box.style.height = Math.min(box.scrollHeight, 200) + "px"; });
