@@ -352,17 +352,39 @@ memory win confirmed, no leak, trains end-to-end through `scripts/chunk-finetune
 the trainer (Gemma4 path), and validated on the real e4b
 (`scripts/segmented-grad-test-e4b.ts`):
 - **Forward bit-exact** vs the full value_and_grad (loss identical at every L).
-- **Grads bit-exact for single-consumer donor reuse** (2-segment split at 24:
-  0/258 targets off). With the natural 7-segment cut the donor K/V grad is
-  **0.97% off — bf16-class, NOT a logic bug**: the donor K/V cotangent is summed
-  across multiple sharer segments and that bf16 accumulation order differs from
-  mlx's (fp32 accumulation diverges MORE — 1.44% — confirming the full backward
-  itself accumulates in bf16). Since the producer's `dh_in` depends on `dKV`, the
-  ~1% smears thinly across all earlier layers. Fine for LoRA training.
-- **Memory (ops.sdpa, segmented-only — the full backward CRASHES at L≥4096):**
-  @512 8.3 GB, @2048 11.0 GB, @4096 **16.1 GB** (full backward ≈38 GB → OOM),
-  @8192 32 GB (seg6) → 21 GB (seg3) → **17.5 GB (seg2)**. Peak is tunable via
-  segment size (the §5 knob). **e4b now trains at 8K where the reference can't.**
+- **Grads: single-consumer donor reuse is BIT-EXACT** (2-segment split at 24:
+  0/258 targets off). With the natural 7-segment cut the donor K/V grad is ~0.97%
+  (relNorm) off the full backward — **bf16 non-associativity, established by
+  discriminating tests (NOT a logic bug, and NOT "irreducible because I must match
+  bf16" — that earlier inference was wrong):**
+  - single-consumer reuse is bit-exact (no sum to reorder);
+  - the error is FLAT in consumer-segment count (1→0%, 2→0.98%, 3→0.97%, 6→0.96%,
+    9→1.16% — jumps once, doesn't compound);
+  - it tracks SUMMAND count, not segment count: donor 22 (sliding, 15 sharers)
+    ≈0.46%, donor 23 (full, 3 sharers) ≈0.000%;
+  - the donor-22 grad is grouping-DEPENDENT (~0.5% moving from a 2- vs 9-consumer
+    split) for BOTH bf16 AND fp32 accumulation — neither is grouping-invariant.
+  fp32 cross-segment accumulation does NOT help (identical at the natural cut,
+  marginally worse at fine cuts): the dominant non-associativity is mlx's
+  WITHIN-vjp bf16 cotangent sum per consumer, which regrouping the sharers
+  changes; only an fp32 forward could remove it. So bf16 is the right (simplest)
+  choice; ~1% is bf16-class and fine for LoRA. (The producer's `dh_in` depends on
+  `dKV`, so the donor-22 ~0.46% smears thinly across earlier layers — broad but
+  small, ~1.4% worst-target.)
+- **Memory — apples-to-apples vs the checkpointed full backward (the memory lever
+  ON: `grad_checkpoint=True`, freshly measured here, ops.sdpa):**
+
+  | L | checkpointed full backward | segmented |
+  |---|---|---|
+  | 2048 | **22.96 GB** | **11.05 GB** |
+  | 4096 | **CRASH** (~38 GB, C++/Metal) | **16.06 GB** |
+  | 8192 | CRASH (~70 GB) | **17.5 GB** (seg2) / 21 (seg3) / 32 (seg6) |
+
+  (Segmented @512 = 8.3 GB.) Peak is tunable via segment size (the §5 knob).
+  **e4b trains at 8K where even the checkpointed reference OOMs at 4K** — and at
+  2K segmented is half the checkpointed peak. This is the honest comparison; the
+  prior session also measured optiq's own `train_lora --grad-checkpoint` crashing
+  on e4b at ≥2048 (`[[e4b-lora-training-seqlen-ceiling]]`).
 - **Trainer end-to-end** (e4b, SEQ=2048, SEG=4, real chunk data): peak 10 GB,
   active flat (no leak), adapter saved.
 - TWO contiguity fixes were essential: `detachLeaf` must force a row-major copy
