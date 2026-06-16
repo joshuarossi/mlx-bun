@@ -87,6 +87,20 @@ export class MlxArray {
     );
   }
 
+  /** Copy raw bytes into a fresh mlx-managed (page-aligned) LEAF array of the
+   *  given dtype/shape. Unlike fromView (which no-copy-wraps the host buffer and
+   *  is unsafe to feed to GPU ops when unaligned), mlx_array_new_data COPIES, so
+   *  the source bytes need not outlive the array and GPU ops are safe. Used to
+   *  detach a value from its computation graph: `MlxArray.fromBytesCopy(
+   *  x.rawBytes(), x.shape, x.dtype)` yields a graph-free leaf with x's exact
+   *  bytes (segmented-backward boundaries — src/train/segmented.ts). */
+  static fromBytesCopy(bytes: Uint8Array, shape: number[], dtype: Dtype): MlxArray {
+    const sb = shapeBuf(shape);
+    return new MlxArray(
+      C.mlx_array_new_data(ptr(bytes), ptr(sb), shape.length, dtype),
+    );
+  }
+
   static fromInt32(data: Int32Array, shape: number[]): MlxArray {
     const sb = shapeBuf(shape);
     return new MlxArray(

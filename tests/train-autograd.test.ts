@@ -9,7 +9,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { MlxArray } from "../src/mlx/array";
-import { ValueAndGrad } from "../src/mlx/autograd";
+import { ValueAndGrad, Vjp } from "../src/mlx/autograd";
 import { add, sub, mul, matmul, reshape, sumAxis, mulScalar } from "../src/mlx/ops";
 
 const ROWS = 4, IN = 8, RANK = 2, OUT = 8;
@@ -117,5 +117,72 @@ describe("ValueAndGrad", () => {
     expect(() => vag.apply([aArr])).toThrow(/boom inside loss/);
     aArr.dispose();
     vag.dispose();
+  });
+});
+
+// Vjp (mlx_vjp) — the segmented-backward backbone (src/train/segmented.ts).
+// For a SCALAR loss with cotangent 1.0, the vjps equal the gradient, so they
+// must match ValueAndGrad. And a vjp returns one cotangent per primal (all of
+// them), unlike ValueAndGrad's selected argnums.
+describe("Vjp", () => {
+  test("scalar-loss vjp (cotangent 1.0) matches ValueAndGrad grads", () => {
+    const aArr = MlxArray.fromFloat32(aData, [IN, RANK]);
+    const bArr = MlxArray.fromFloat32(bData, [RANK, OUT]);
+
+    // Reference grads via ValueAndGrad (argIdx 0,1 = A,B).
+    const vag = new ValueAndGrad((p) => buildLoss(p[0]!, p[1]!, p[2]!, p[3]!), [0, 1]);
+    const ref = vag.apply([aArr, bArr, xConst, yConst]);
+    const refA = ref.grads[0]!.toFloat32();
+    const refB = ref.grads[1]!.toFloat32();
+    ref.value.dispose();
+    ref.grads.forEach((g) => g.dispose());
+    vag.dispose();
+
+    // Vjp of the (scalar) loss with cotangent 1.0 -> vjp per primal [dA,dB,dx,dy].
+    const vjp = new Vjp((p) => [buildLoss(p[0]!, p[1]!, p[2]!, p[3]!)], 1);
+    const one = MlxArray.fromFloat32(new Float32Array([1]), []);
+    const res = vjp.apply([aArr, bArr, xConst, yConst], [one]);
+    expect(res.outputs.length).toBe(1); // f(primals)
+    expect(res.vjps.length).toBe(4); // one per primal
+    expect(res.outputs[0]!.toFloat32()[0]!).toBeCloseTo(eagerLoss(aData, bData), 4);
+
+    const vjA = res.vjps[0]!.toFloat32();
+    const vjB = res.vjps[1]!.toFloat32();
+    for (let i = 0; i < refA.length; i++) expect(vjA[i]!).toBeCloseTo(refA[i]!, 5);
+    for (let i = 0; i < refB.length; i++) expect(vjB[i]!).toBeCloseTo(refB[i]!, 5);
+
+    res.outputs.forEach((o) => o.dispose());
+    res.vjps.forEach((v) => v.dispose());
+    one.dispose();
+    aArr.dispose();
+    bArr.dispose();
+    vjp.dispose();
+  });
+
+  test("vector-output vjp seeds the backward with the cotangent", () => {
+    // f(x) = x .* x (elementwise), cotangent c -> vjp = 2x .* c.
+    const xData2 = det(6, (i) => i - 2.5);
+    const cData = det(6, (i) => 0.1 * (i + 1));
+    const x = MlxArray.fromFloat32(xData2, [6]);
+    const c = MlxArray.fromFloat32(cData, [6]);
+    const vjp = new Vjp((p) => [mul(p[0]!, p[0]!)], 1);
+    const res = vjp.apply([x], [c]);
+    const g = res.vjps[0]!.toFloat32();
+    for (let i = 0; i < 6; i++) expect(g[i]!).toBeCloseTo(2 * xData2[i]! * cData[i]!, 5);
+    res.outputs.forEach((o) => o.dispose());
+    res.vjps.forEach((v) => v.dispose());
+    x.dispose();
+    c.dispose();
+    vjp.dispose();
+  });
+
+  test("closure error surfaces from apply, not a crash", () => {
+    const vjp = new Vjp((_p) => { throw new Error("boom inside vjp"); }, 1);
+    const aArr = MlxArray.fromFloat32(aData, [IN, RANK]);
+    const one = MlxArray.fromFloat32(new Float32Array([1]), [IN, RANK]);
+    expect(() => vjp.apply([aArr], [one])).toThrow(/boom inside vjp/);
+    aArr.dispose();
+    one.dispose();
+    vjp.dispose();
   });
 });

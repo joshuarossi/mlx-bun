@@ -167,6 +167,12 @@ export const C = dlopen(LIBMLXC_PATH, {
   // (value: vector_array*, grads: vector_array*, cls, input: vector_array)
   mlx_closure_value_and_grad_apply: { args: [P, P, u64, u64], returns: i32 },
   mlx_closure_value_and_grad_free: { args: [u64], returns: i32 },
+  // mlx_vjp(outputs: vector_array*, vjps: vector_array*, fun: mlx_closure,
+  //   primals: vector_array, cotangents: vector_array) — reverse-mode AD given an
+  //   explicit cotangent per output. The natural segmented-backward primitive:
+  //   fun = segment forward, cotangent = dh, vjps = [dh_in, ...dLoRA]. No
+  //   surrogate scalar, no value_and_grad closure (see src/train/segmented.ts).
+  mlx_vjp: { args: [P, P, u64, u64, u64], returns: i32 },
   // --- training: random init (LoRA A ~ normal; B stays zeros)
   // (res, shape*, n, dtype, loc, scale, key may-be-null, stream)
   mlx_random_normal: { args: [P, P, u64, i32, f32, f32, u64, u64], returns: i32 },

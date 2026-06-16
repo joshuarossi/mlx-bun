@@ -154,3 +154,114 @@ function vecGet(vec: bigint, i: number): MlxArray {
     throw new Error(`vector_array_get(${i}) failed`);
   return new MlxArray(read.u64(sp, 0));
 }
+
+/** Reverse-mode AD via mlx_vjp: given a function `fn(primals) -> outputs` and a
+ *  cotangent per output, returns the cotangent w.r.t. EVERY primal. This is the
+ *  natural primitive for segmented backward (segment forward + dh -> [dh_in,
+ *  ...dLoRA]) — no surrogate scalar and no value_and_grad closure. Unlike
+ *  ValueAndGrad it returns a vjp for ALL primals (not a selected argnum subset).
+ *
+ *  `fn` must build its output graph from the input arrays in argument order and
+ *  return them (most often a single array). It must not throw; a throw is
+ *  captured and surfaced from apply(). The MlxArrays handed to `fn` are owned by
+ *  mlx — do NOT dispose them. Lifecycle/house-rules mirror ValueAndGrad. */
+export class Vjp {
+  readonly #cb: JSCallback;
+  readonly #closure: bigint;
+  readonly #nOut: number;
+  #closureError: string | null = null;
+  #disposed = false;
+
+  /** @param nOut number of arrays `fn` returns (length of the cotangent list). */
+  constructor(fn: (primals: MlxArray[]) => MlxArray[], nOut = 1) {
+    this.#nOut = nOut;
+    this.#cb = new JSCallback(
+      (outPtr: number, inVec: bigint, _payload: number): number => {
+        try {
+          const n = Number(C.mlx_vector_array_size(inVec));
+          const primals: MlxArray[] = [];
+          for (let i = 0; i < n; i++) {
+            const slot = new BigUint64Array([C.mlx_array_new()]);
+            const sp = ptr(slot);
+            if (C.mlx_vector_array_get(sp, inVec, BigInt(i)) !== 0)
+              throw new Error(`vector_array_get(${i}) failed`);
+            primals.push(new MlxArray(read.u64(sp, 0)));
+          }
+          const outs = fn(primals);
+          const handles = new BigUint64Array(outs.map((o) => o.handle));
+          if (C.mlx_vector_array_set_data(outPtr as never, ptr(handles), BigInt(outs.length)) !== 0)
+            throw new Error("vector_array_set_data failed");
+          for (const p of primals) p.dispose();
+          for (const o of outs) o.dispose();
+          return 0;
+        } catch (e) {
+          this.#closureError = e instanceof Error ? e.message : String(e);
+          return 1;
+        }
+      },
+      { args: ["ptr", "u64", "ptr"], returns: "i32" },
+    );
+    this.#closure = C.mlx_closure_new_func_payload(this.#cb.ptr as never, null, null);
+  }
+
+  /** Run the vjp on `primals` with `cotangents` (one per output of `fn`).
+   *  Returns the outputs (fn(primals)) and one cotangent per primal (in primal
+   *  order). Caller owns all returned arrays. */
+  apply(primals: MlxArray[], cotangents: MlxArray[]): { outputs: MlxArray[]; vjps: MlxArray[] } {
+    if (this.#disposed) throw new Error("Vjp used after dispose");
+    if (cotangents.length !== this.#nOut)
+      throw new Error(`Vjp: expected ${this.#nOut} cotangents, got ${cotangents.length}`);
+    this.#closureError = null;
+
+    const pHandles = new BigUint64Array(primals.map((p) => p.handle));
+    const cHandles = new BigUint64Array(cotangents.map((c) => c.handle));
+    const inVec = C.mlx_vector_array_new_data(ptr(pHandles), BigInt(primals.length));
+    const cotVec = C.mlx_vector_array_new_data(ptr(cHandles), BigInt(cotangents.length));
+
+    const outSlot = new BigUint64Array([C.mlx_vector_array_new()]);
+    const vjpSlot = new BigUint64Array([C.mlx_vector_array_new()]);
+    const st = C.mlx_vjp(ptr(outSlot), ptr(vjpSlot), this.#closure, inVec, cotVec);
+    const outVec = read.u64(ptr(outSlot), 0);
+    const vjpVec = read.u64(ptr(vjpSlot), 0);
+    if (st !== 0) {
+      C.mlx_vector_array_free(outVec);
+      C.mlx_vector_array_free(vjpVec);
+      C.mlx_vector_array_free(inVec);
+      C.mlx_vector_array_free(cotVec);
+      const mlxErr = takeMlxError();
+      const detail = this.#closureError ?? mlxErr ?? "";
+      throw new Error(`mlx_vjp failed${detail ? `: ${detail}` : ""}`);
+    }
+
+    const nVjp = Number(C.mlx_vector_array_size(vjpVec));
+    if (nVjp !== primals.length) {
+      C.mlx_vector_array_free(outVec);
+      C.mlx_vector_array_free(vjpVec);
+      C.mlx_vector_array_free(inVec);
+      C.mlx_vector_array_free(cotVec);
+      throw new Error(`Vjp: expected ${primals.length} vjps, got ${nVjp}`);
+    }
+    const nOut = Number(C.mlx_vector_array_size(outVec));
+    const outputs: MlxArray[] = [];
+    for (let i = 0; i < nOut; i++) outputs.push(vecGet(outVec, i));
+    const vjps: MlxArray[] = [];
+    for (let i = 0; i < nVjp; i++) vjps.push(vecGet(vjpVec, i));
+
+    C.mlx_vector_array_free(outVec);
+    C.mlx_vector_array_free(vjpVec);
+    C.mlx_vector_array_free(inVec);
+    C.mlx_vector_array_free(cotVec);
+    return { outputs, vjps };
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    C.mlx_closure_free(this.#closure);
+    this.#cb.close();
+  }
+
+  [Symbol.dispose](): void {
+    this.dispose();
+  }
+}

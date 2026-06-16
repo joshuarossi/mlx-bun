@@ -19,6 +19,7 @@ import {
   type Cache,
   type Mask,
 } from "./gemma4-base";
+import { flashAttention, getTrainingAttn, flashSupported } from "./flash-attention";
 
 class LlamaAttention {
   readonly qProj: QuantizedLinear;
@@ -81,7 +82,14 @@ class LlamaAttention {
       const [keys, values] = cache.updateAndFetch(k, v);
       k.dispose();
       v.dispose();
-      attn = ops.sdpa(q, keys, values, this.scale, mask.mode, mask.arr);
+      // Training: ops.sdpa's dK vjp is wrong, so route the backward through
+      // the validated flash kernel. MiniCPM5 is full-attention → window 0.
+      const ta = getTrainingAttn();
+      if (ta === "flash" && flashSupported(q) && (mask.mode === "causal" || mask.mode === "array")) {
+        attn = flashAttention(q, keys, values, this.scale, true, 0);
+      } else {
+        attn = ops.sdpa(q, keys, values, this.scale, mask.mode, mask.arr);
+      }
       keys.dispose();
       values.dispose();
     }
@@ -207,16 +215,31 @@ export class MiniCPM5Model {
   }
 
   protected forwardLayers(h0: MlxArray, cache: Cache[]): MlxArray {
-    const L = h0.shape[1]!;
-    const mask = cache[0]!.makeMask(L, null);
-    let h = h0;
-    for (let i = 0; i < this.layers.length; i++) {
-      const next = this.layers[i]!.forward(h, mask, cache[i]!);
-      h.dispose();
-      h = next;
+    const h = this.runLayerRange(h0, 0, this.layers.length, cache);
+    h0.dispose(); // runLayerRange keeps its input alive; we own h0 here
+    return disposing(h, this.finalNorm.forward(h));
+  }
+
+  /** Run decoder layers `[aIdx, bIdx)` on hidden `h`, returning the residual
+   *  stream after the last layer in the range (NO finalNorm). The input `h` is
+   *  NEVER disposed — the caller owns it (for segmented backward `h` is a leaf
+   *  whose lifetime is managed by the autograd closure); intra-range
+   *  intermediates ARE disposed. Building block for `forwardLayers` and the
+   *  segmented-backward training path (docs/design/segmented-backward-training.md).
+   *  MiniCPM5 is plain full-attention with no KV-sharing, so each layer reads
+   *  its own stateless `cache[i]` and a single causal mask. */
+  runLayerRange(h: MlxArray, aIdx: number, bIdx: number, cache: Cache[]): MlxArray {
+    if (aIdx >= bIdx) return h;
+    const L = h.shape[1]!;
+    const mask = cache[aIdx]!.makeMask(L, null);
+    let cur = h;
+    for (let i = aIdx; i < bIdx; i++) {
+      const next = this.layers[i]!.forward(cur, mask, cache[i]!);
+      if (i > aIdx) cur.dispose(); // keep the input boundary leaf; drop interiors
+      cur = next;
     }
     mask.arr?.dispose();
-    return disposing(h, this.finalNorm.forward(h));
+    return cur;
   }
 
   logitsFromHidden(h: MlxArray): MlxArray {
