@@ -2,9 +2,11 @@
 
 **Status: Phase A (MiniCPM5) + Phase B (e4b) BOTH WORK — 2026-06-16.** MiniCPM5:
 bit-exact, no leak, chunk-eval 95.10 (beats the 91.70 baseline). e4b: forward
-bit-exact, grads bf16-class, trains at **8K context (17.5 GB) where the full
-backward OOMs (~70 GB)**. §1–8 are the original design dossier; **§9 = Phase A
-results, §10 = Phase B (e4b) results — read those first for current state.**
+bit-exact, grads bf16-class, trains **all 42 layers at 8K (17.5 GB)** where
+`mlx_lm.lora --grad-checkpoint` OOMs trying the same (verified — mlx-lm must drop
+to its default 16 trainable layers, 25.7 GB, to fit 8K). §1–8 are the original
+design dossier; **§9 = Phase A results, §10 = Phase B (e4b) results — read those
+first for current state.**
 
 ## 0. The one-paragraph version
 
@@ -352,17 +354,66 @@ memory win confirmed, no leak, trains end-to-end through `scripts/chunk-finetune
 the trainer (Gemma4 path), and validated on the real e4b
 (`scripts/segmented-grad-test-e4b.ts`):
 - **Forward bit-exact** vs the full value_and_grad (loss identical at every L).
-- **Grads bit-exact for single-consumer donor reuse** (2-segment split at 24:
-  0/258 targets off). With the natural 7-segment cut the donor K/V grad is
-  **0.97% off — bf16-class, NOT a logic bug**: the donor K/V cotangent is summed
-  across multiple sharer segments and that bf16 accumulation order differs from
-  mlx's (fp32 accumulation diverges MORE — 1.44% — confirming the full backward
-  itself accumulates in bf16). Since the producer's `dh_in` depends on `dKV`, the
-  ~1% smears thinly across all earlier layers. Fine for LoRA training.
-- **Memory (ops.sdpa, segmented-only — the full backward CRASHES at L≥4096):**
-  @512 8.3 GB, @2048 11.0 GB, @4096 **16.1 GB** (full backward ≈38 GB → OOM),
-  @8192 32 GB (seg6) → 21 GB (seg3) → **17.5 GB (seg2)**. Peak is tunable via
-  segment size (the §5 knob). **e4b now trains at 8K where the reference can't.**
+- **Grads: single-consumer donor reuse is BIT-EXACT** (2-segment split at 24:
+  0/258 targets off). With the natural 7-segment cut the donor K/V grad is ~0.97%
+  (relNorm) off the full backward — **bf16 non-associativity, established by
+  discriminating tests (NOT a logic bug, and NOT "irreducible because I must match
+  bf16" — that earlier inference was wrong):**
+  - single-consumer reuse is bit-exact (no sum to reorder);
+  - the error is FLAT in consumer-segment count (1→0%, 2→0.98%, 3→0.97%, 6→0.96%,
+    9→1.16% — jumps once, doesn't compound);
+  - it tracks SUMMAND count, not segment count: donor 22 (sliding, 15 sharers)
+    ≈0.46%, donor 23 (full, 3 sharers) ≈0.000%;
+  - the donor-22 grad is grouping-DEPENDENT (~0.5% moving from a 2- vs 9-consumer
+    split) for BOTH bf16 AND fp32 accumulation — neither is grouping-invariant.
+  fp32 cross-segment accumulation does NOT help (identical at the natural cut,
+  marginally worse at fine cuts): the dominant non-associativity is mlx's
+  WITHIN-vjp bf16 cotangent sum per consumer, which regrouping the sharers
+  changes; only an fp32 forward could remove it. So bf16 is the right (simplest)
+  choice; ~1% is bf16-class and fine for LoRA. (The producer's `dh_in` depends on
+  `dKV`, so the donor-22 ~0.46% smears thinly across earlier layers — broad but
+  small, ~1.4% worst-target.)
+  - **The error is CONTROLLABLE BY GROUPING, not fixed by nature.** The lever is
+    the SEGMENT CUT — how a donor's sharers distribute across consumer segments —
+    NOT the accumulation dtype. The floor is bit-exact: with all of a donor's
+    sharers in ONE consumer segment (the 1-consumer cut) there is no sum to
+    reorder, 0/258 off. Fewer/larger consumer segments → tighter grad (toward
+    bit-exact) but higher peak; more/smaller → ~1% but lower peak. So if you ever
+    needed it tighter, keep a donor's sharers together (coarser sharer-side cut),
+    trading some peak for fidelity. You almost certainly won't — ~0.5–1% bf16-class
+    is fine for LoRA (CPM5 converged healthily to 95.10) — but the lever exists and
+    it is the cut, not the dtype.
+- **Memory — VERIFIED vs the real reference (`mlx_lm.lora --train --grad-checkpoint`,
+  the way a user trains, oracle venv, freshly measured).** An earlier draft of
+  this doc compared against *mlx-bun's own* checkpointed full backward (22.96 GB
+  @2048, crash @4096) and claimed "the reference crashes at 4K" — that was WRONG:
+  mlx-bun's gradient checkpointing is itself ineffective
+  (`[[e4b-lora-training-seqlen-ceiling]]` pt 9), so it is NOT the honest baseline.
+  **GROUPING — they differ, and the first table I drew did not match them.**
+  mlx-lm checkpoints PER-LAYER: `grad_checkpoint(model.layers[0])` patches
+  `type(layer).__call__` to wrap every layer in `mx.checkpoint`, i.e. 42 groups of
+  1, fixed (no coarser/finer knob). Ours groups `segmentSize` layers per segment
+  (tunable). The honest, MATCHED-grouping comparison (both per-layer = group of 1,
+  all 42 layers, batch 1):
+
+  | L | mlx-lm (per-layer) | ours segSize=1 (per-layer) | ours segSize=6 |
+  |---|---|---|---|
+  | 2048 | 12.84 GB | **8.76 GB** | 11.05 |
+  | 4096 | 20.87 GB | **10.93 GB** | 16.06 |
+  | 8192 | **OOM** (25.72 @16 layers) | **15.29 GB** | 17.5 (seg2) |
+
+  So at matched grouping ours is lower at every length, AND at 8K mlx-lm OOMs
+  training all 42 layers (must drop to 16, 25.7 GB) while ours trains all 42.
+  **Two confounds make this not a pure segmentation-vs-checkpoint number, and I
+  have not isolated them:** (1) mlx-lm's `default_loss` materializes the full
+  `[1,L,262144]` logits + their grad (~4 GB @4K), while ours uses response-only CE;
+  (2) ours fully streams the backward (detached per-segment value_and_grads) vs
+  mlx-lm's per-layer checkpoint inside one backward. Both are legitimate mlx-bun
+  choices, but the headline gap is part CE-optimization, part mechanism — not all
+  "segmentation beats checkpointing." (segSize is the peak↔grad-fidelity knob:
+  finer = lower peak but more donor-KV bf16 deviation; §10 grad note.) Separately,
+  mlx-bun's OWN checkpoint is the broken one (23 GB @2048 vs mlx-lm's 12.8) — that's
+  why segmented matters *within* mlx-bun, and fixing it is orthogonal.
 - **Trainer end-to-end** (e4b, SEQ=2048, SEG=4, real chunk data): peak 10 GB,
   active flat (no leak), adapter saved.
 - TWO contiguity fixes were essential: `detachLeaf` must force a row-major copy
@@ -391,6 +442,30 @@ are proven; this is a peak-optimization, not a blocker.
 - **Validate first** (when GPU free): running the full range through `runLayerRange`
   must bit-match `forwardLayers` (a forward-equivalence check on the 12B/e4b parity
   harness) before trusting the backward.
+
+- **PARITY vs mlx-lm — VERIFIED bit-exact (the correctness oracle).** Ran
+  `mlx_lm.lora`'s actual `default_loss` and `nn.value_and_grad` against ours on the
+  SAME fixed 2048-token input (`scripts/parity-vs-mlxlm.ts`,
+  `scripts/grad-parity-vs-mlxlm.ts`; mlx-lm side in `/tmp/mlxlm-*-parity.py`):
+  - **forward + loss:** verified across 6 mask spans (varying promptLen incl. the
+    edges ntoks=2047 and ntoks=1), checking the SUMMATION not just one number:
+    the **denominator** (our `M = (len-1)-max(0,promptLen-1)`) == mlx-lm's
+    `ntoks = mask.sum()` BIT-EXACT on every span; **response-only CE == full-masked
+    CE** on every span (so response-only is a pure memory optimization, not a
+    parity risk); the loss is BIT-EXACT vs mlx-lm on 4/6 spans and **0.5 float32-ulp**
+    (~1e-6, ~5e-5%) on 2 — a logsumexp/reduction f32 non-associativity (full-masked
+    shows the same residual, so it's NOT the response-only summation), far below
+    bf16 and harmless;
+  - **gradients (FULL value_and_grad = our non-segmented trainer): BIT-EXACT** — dB
+    over all 42 q_proj layers (identical injected A, B=0, rank 8, scale 20) matches
+    mlx-lm 0.000e+0. So mlx-bun's non-segmented training equals mlx-lm's bit-for-bit
+    (loss AND grad), extending the inference logit-parity oracle to training;
+  - **segmented gradients: ~2.3% (bf16-class)** off mlx-lm (q_proj dB) — the
+    donor-KV bf16 non-associativity (above), not a logic bug. So the SEGMENTED path
+    is NOT bit-exact with mlx-lm; it's bf16-class. Both `ops.sdpa` value_and_grads
+    (ours and mlx-lm's) use the same autograd forward, which is why FULL is exact.
+  (Config note: mlx-lm's default LoRA scale is 20.0; mlx-bun's `DEFAULT_TRAIN_CONFIG`
+  is 1.0 — a config difference, not correctness. The chunk runs used 1.0.)
 
 **Trainer side — `SegmentedBackwardGemma4` (to build + validate):** same skeleton as
 the MiniCPM5 `SegmentedBackward`, with TWO additions.
