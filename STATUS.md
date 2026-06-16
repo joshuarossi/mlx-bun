@@ -5,6 +5,46 @@ exit criteria, and findings live in [PLAN.md](PLAN.md); this file is the
 transient front door that stays current. Product/UX north star:
 [docs/planning/PRODUCT_ROADMAP.md](docs/planning/PRODUCT_ROADMAP.md).
 
+## Active branch (2026-06-15) — `qwen3-5-27b-bringup`: Qwen3.6-27B-OptiQ-4bit port
+
+> **Phase 14 bring-up — BOTH PARITY BARS PASS (2026-06-15, M1 Max).** Target
+> family = **hybrid gated-DeltaNet** arch (`model_type qwen3_5`): every 4th layer
+> full-attention + the rest linear-attention (Mamba-like), dense MLP. Verified
+> end-to-end on **Qwen3.5-4B-OptiQ-4bit** (~4.5 GB, tied head): per-step logits
+> bit-exact + greedy identical vs **mlx-lm** (bf16 KV) AND vs **mlx-optiq**
+> (mixed-precision per-layer KV). The whole graph — gated-DeltaNet recurrence,
+> gated full-attention, tied head, mixed-KV — is correct on real weights.
+> Remaining: confirm the **27B** both bars (~15 GB, same arch, untied + Hv=48 —
+> lower risk now) + 14f polish (fit/registry columns, chat-template/eos smoke).
+>
+> **Done + verified (model-free, no 15 GB load):**
+> - Config/scaffolding (`config.ts`, `support.ts`, `factory.ts`) — validated on
+>   the real config.json; model detected + supported.
+> - New primitives: `mlx_conv1d` binding + depthwise `ops.conv1d`, `ops.split`,
+>   `ops.softplus`, `ops.silu`. The gated-DeltaNet Metal kernel + `compute_g`
+>   (`src/model/qwen3-delta.ts`) — **BIT-EXACT vs mlx-lm** at the real head
+>   geometry (`tests/qwen-delta.test.ts`); conv1d **bit-exact**
+>   (`tests/qwen-ops.test.ts`).
+> - Model graph (`src/model/qwen3_5.ts`): typechecks; **static weight-name
+>   audit clean (0 missing / 0 unused)**.
+> - Parity harness READY: `scripts/regen-qwen-parity-goldens.ts` (bf16 + mixed)
+>   + `tests/qwen-parity.test.ts` (opt-in `MLX_BUN_TEST_QWEN35=1`).
+>
+> Also supports the lighter same-arch **Qwen3.5-4B-8bit** (32 layers, tied head,
+> no kv_config) — tied embeddings implemented; config + weight-name audit clean.
+> It's the cheap first end-to-end check (bf16 bar only).
+>
+> **Next action:**
+> 1. ✅ DONE — 4B both bars green (`MLX_BUN_TEST_QWEN35_4B=1`).
+> 2. Optional confirmation — 27B both bars (~15 GB):
+>    `bun scripts/regen-qwen-parity-goldens.ts 27b` then
+>    `MLX_BUN_TEST_QWEN35=1 bun test tests/qwen-parity.test.ts`.
+> 3. Commit the branch (Josh-gated); 14f polish (fit/registry, chat-template/eos).
+>
+> **Deferred** (orthogonal to the parity bars; sidecars not downloaded):
+> MTP speculation (`mtp.safetensors`), Qwen3-VL vision, 35B-A3B MoE. See PLAN
+> Phase 14 bring-up for the full findings.
+
 ## Current state (2026-06-15) — merged to `main`: batched serving + expert offload + HLG Curve Designer
 
 > **HLG Curve Designer (NEW, this session).** A v2 replacement sampler — draw a

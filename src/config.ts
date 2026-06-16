@@ -38,6 +38,18 @@ export interface TextConfig {
   numExperts: number;
   topKExperts: number;
   moeIntermediateSize: number;
+  /** Qwen3.5 hybrid (gated-DeltaNet) geometry; 0/false for other families. */
+  linearNumValueHeads: number;
+  linearNumKeyHeads: number;
+  linearKeyHeadDim: number;
+  linearValueHeadDim: number;
+  linearConvKernelDim: number;
+  /** Every `fullAttentionInterval`-th layer is full-attention (Qwen3.5). */
+  fullAttentionInterval: number;
+  /** Qwen3.5 full-attention output gate: q_proj emits 2× and gates the output. */
+  attnOutputGate: boolean;
+  /** Rotary fraction of head_dim (Qwen3.5 full attention: 0.25 → 64 of 256). */
+  partialRotaryFactor: number;
   ropeParameters: Record<string, RopeParams>;
   finalLogitSoftcapping: number | null;
   tieWordEmbeddings: boolean;
@@ -126,6 +138,11 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
   const t = (raw.text_config ?? raw) as Record<string, any>;
   const modelType = raw.model_type;
   const isLlama = modelType === "llama";
+  const isQwen35 = typeof modelType === "string" && modelType.startsWith("qwen3_5");
+  // Qwen3.5 rope_parameters is a flat dict ({type, rope_theta, mrope_section,
+  // partial_rotary_factor}), not the gemma per-attention-type map — and
+  // type "default" means plain partial nn.RoPE (mrope_section ignored for text).
+  const qwenRope = (t.rope_parameters ?? {}) as Record<string, any>;
 
   const text: TextConfig = {
     hiddenSize: t.hidden_size,
@@ -150,18 +167,36 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
     numExperts: t.num_experts ?? 0,
     topKExperts: t.top_k_experts ?? 0,
     moeIntermediateSize: t.moe_intermediate_size ?? 0,
-    ropeParameters: t.rope_parameters
-      ? parseRope(t.rope_parameters)
-      : isLlama
-        ? {
-            full_attention: {
-              ropeTheta: t.rope_theta ?? 10000,
-              ropeType: "default",
-              partialRotaryFactor: 1.0,
-              factor: 1.0,
-            },
-          }
-        : {},
+    linearNumValueHeads: t.linear_num_value_heads ?? 0,
+    linearNumKeyHeads: t.linear_num_key_heads ?? 0,
+    linearKeyHeadDim: t.linear_key_head_dim ?? 0,
+    linearValueHeadDim: t.linear_value_head_dim ?? 0,
+    linearConvKernelDim: t.linear_conv_kernel_dim ?? 0,
+    fullAttentionInterval: t.full_attention_interval ?? 0,
+    attnOutputGate: t.attn_output_gate ?? false,
+    partialRotaryFactor:
+      qwenRope.partial_rotary_factor ?? t.partial_rotary_factor ?? 1.0,
+    ropeParameters: isQwen35
+      ? {
+          full_attention: {
+            ropeTheta: qwenRope.rope_theta ?? t.rope_theta ?? 10000,
+            ropeType: "default",
+            partialRotaryFactor: qwenRope.partial_rotary_factor ?? 1.0,
+            factor: 1.0,
+          },
+        }
+      : t.rope_parameters
+        ? parseRope(t.rope_parameters)
+        : isLlama
+          ? {
+              full_attention: {
+                ropeTheta: t.rope_theta ?? 10000,
+                ropeType: "default",
+                partialRotaryFactor: 1.0,
+                factor: 1.0,
+              },
+            }
+          : {},
     finalLogitSoftcapping: t.final_logit_softcapping ?? null,
     tieWordEmbeddings: t.tie_word_embeddings ?? raw.tie_word_embeddings ?? false,
     bosTokenId: t.bos_token_id ?? raw.bos_token_id,

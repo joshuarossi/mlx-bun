@@ -929,6 +929,7 @@ switch (cmd) {
       baseUrl,
       modelLabel: models[0]!.id,
       contextWindow: models[0]!.contextWindow,
+      reasoning: models[0]!.reasoning,
       mode: parsed.mode,
       printFormat: parsed.printFormat,
       initialMessage: message,

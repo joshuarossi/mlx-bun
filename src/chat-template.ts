@@ -119,11 +119,16 @@ export class ChatTemplate {
   readonly #template: Template;
   readonly #bosToken: string | null;
   readonly #eosToken: string | null;
+  /** True when the template gates reasoning on `enable_thinking` (Qwen3.5,
+   *  MiniCPM5, …) — i.e. the model has a switchable <think> channel the server
+   *  can turn on/off. Drives the reasoning capability advertised to Pi/clients. */
+  readonly supportsThinking: boolean;
 
   private constructor(source: string, bosToken: string | null, eosToken: string | null) {
     this.#template = new Template(source);
     this.#bosToken = bosToken;
     this.#eosToken = eosToken;
+    this.supportsThinking = source.includes("enable_thinking");
   }
 
   static async load(modelDir: string): Promise<ChatTemplate> {

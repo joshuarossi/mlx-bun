@@ -24,7 +24,7 @@ import { loadModelConfig, type KvQuantSpec } from "./config";
 import { Weights } from "./weights";
 import { Gemma4Model } from "./model/gemma4";
 import { createModel, type RuntimeModel } from "./model/factory";
-import { isMiniCPM5Config, isSupportedModelRecord } from "./model/support";
+import { isMiniCPM5Config, isQwen35Config, isSupportedModelRecord } from "./model/support";
 import { generate, type GenerateOptions } from "./generate";
 import type { HlgConfig } from "./sampler";
 import { isMonotone, CURVE_UMIN, type CurveParams } from "./curve-sampler";
@@ -174,12 +174,21 @@ export async function loadContext(
   // generated-specialization dispatch by config fingerprint (Phase C);
   // unmatched configs run the monolith — slow, never broken
   const model = createModel(weights, config);
+  const tokenizer = await loadTokenizer(modelDir);
+  // Generation must stop on the tokenizer's eos_token — the chat turn
+  // terminator (e.g. Qwen <|im_end|> = 248046). Some configs (Qwen3.5-4B)
+  // declare a different eos_token_id in config.json than the chat format
+  // emits, so without this a turn never ends and generation runs away,
+  // hallucinating both sides of the dialogue until max_tokens. mlx-lm stops on
+  // the tokenizer eos; union it in. No-op when already present (Gemma, 27B).
+  if (tokenizer.eosTokenId != null && !config.eosTokenIds.includes(tokenizer.eosTokenId))
+    config.eosTokenIds = [...config.eosTokenIds, tokenizer.eosTokenId];
   return {
     model,
     adapters: new AdapterManager(model),
     kvConfig: config.kvQuant,
     genDefaults: await loadGenSamplingDefaults(modelDir),
-    tokenizer: await loadTokenizer(modelDir),
+    tokenizer,
     template: await ChatTemplate.load(modelDir),
     modelId: modelId ?? modelDir.split("/").filter(Boolean).at(-1)!,
     // A sidecar that fails to load is a capability gap, not a fatal
@@ -228,6 +237,10 @@ interface ChatRequest {
     enable_thinking?: boolean;
     [key: string]: unknown;
   };
+  /** OpenAI reasoning control. For models with a switchable <think> channel
+   *  (Qwen3.5/MiniCPM5) it gates enable_thinking: "none" → off, any level → on.
+   *  This is what Pi sends when the provider advertises reasoning. */
+  reasoning_effort?: "none" | "minimal" | "low" | "medium" | "high";
   /** Mounted LoRA adapter selection: "id", "a+b" (stacked), or "none". */
   adapter?: string;
   /** HLG tone-curve sampling override (per request). Snake_case wire fields,
@@ -477,6 +490,70 @@ export class StopMatcher {
   }
 }
 
+/** Split Qwen-style inline <think>...</think> markup into OpenAI reasoning
+ *  deltas/content. This keeps raw tags out of normal chat text while giving
+ *  pi (TUI + web) proper thinking_delta events. It is streaming-safe: partial
+ *  tag prefixes are held until disambiguated. */
+class ThinkingTagSplitter {
+  #pending = "";
+  #inThinking = false;
+  reasoning = "";
+  content = "";
+
+  constructor(private readonly enabled: boolean) {}
+
+  #safePrefixUntilTag(tag: string): string {
+    const i = this.#pending.indexOf(tag);
+    if (i !== -1) return this.#pending.slice(0, i);
+    let hold = 0;
+    for (let k = Math.min(tag.length - 1, this.#pending.length); k > 0; k--) {
+      if (this.#pending.endsWith(tag.slice(0, k))) { hold = k; break; }
+    }
+    return this.#pending.slice(0, this.#pending.length - hold);
+  }
+
+  push(text: string): { content: string; reasoning: string } {
+    if (!this.enabled) {
+      this.content += text;
+      return { content: text, reasoning: "" };
+    }
+    this.#pending += text;
+    let content = "";
+    let reasoning = "";
+    while (this.#pending) {
+      const tag = this.#inThinking ? "</think>" : "<think>";
+      const i = this.#pending.indexOf(tag);
+      const emit = i === -1 ? this.#safePrefixUntilTag(tag) : this.#pending.slice(0, i);
+      if (!emit && i === -1) break;
+      if (emit) {
+        if (this.#inThinking) reasoning += emit;
+        else content += emit;
+        this.#pending = this.#pending.slice(emit.length);
+      }
+      if (i !== -1 && this.#pending.startsWith(tag)) {
+        this.#pending = this.#pending.slice(tag.length);
+        this.#inThinking = !this.#inThinking;
+        continue;
+      }
+      if (i === -1) break;
+    }
+    this.content += content;
+    this.reasoning += reasoning;
+    return { content, reasoning };
+  }
+
+  flush(): { content: string; reasoning: string } {
+    if (!this.enabled) return { content: "", reasoning: "" };
+    const out = this.#inThinking
+      ? { content: "", reasoning: this.#pending }
+      : { content: this.#pending, reasoning: "" };
+    this.#pending = "";
+    this.content += out.content;
+    this.reasoning += out.reasoning;
+    return out;
+  }
+}
+
 /** OpenAI sends assistant tool_call arguments as JSON strings; the
  *  template renders the object form natively — normalize before render. */
 function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
@@ -699,17 +776,23 @@ export function createServer(
   });
 
   const templateOptionsFor = (req: ChatRequest, tools: ToolDefinition[] | null) => {
-    // Precedence: per-request chat_template_kwargs wins; else the
-    // server-wide --thinking default; else the model's own default
-    // (false for MiniCPM5, otherwise leave the template's default).
-    const requested = req.chat_template_kwargs?.enable_thinking;
+    // Precedence: explicit per-request chat_template_kwargs wins; else the
+    // standard reasoning_effort (the OpenAI field Pi sends — "none" → no
+    // thinking, any level → thinking on); else the server-wide --thinking
+    // default; else the model's own default (false for MiniCPM5, otherwise
+    // leave the template's default). The Anthropic/Responses shims map their
+    // reasoning fields onto reasoning_effort before reaching here.
+    const explicit = req.chat_template_kwargs?.enable_thinking;
+    const effort = req.reasoning_effort;
     return {
       tools,
-      enableThinking: typeof requested === "boolean"
-        ? requested
-        : serverOptions.defaultThinking !== undefined
-          ? serverOptions.defaultThinking
-          : isMiniCPM5Config(ctx.model.config) ? false : undefined,
+      enableThinking: typeof explicit === "boolean"
+        ? explicit
+        : effort !== undefined
+          ? effort !== "none"
+          : serverOptions.defaultThinking !== undefined
+            ? serverOptions.defaultThinking
+            : isMiniCPM5Config(ctx.model.config) ? false : undefined,
     };
   };
 
@@ -721,7 +804,12 @@ export function createServer(
   };
 
   const toolStreamMode = (tools: ToolDefinition[] | null): ToolStreamMode => {
-    if (isMiniCPM5Config(ctx.model.config)) return tools?.length ? "buffered-text" : "plain";
+    // MiniCPM5 and Qwen3.5 emit tool calls as DECODED TEXT (Qwen:
+    // <tool_call><function=name><parameter=…>; both handled by
+    // parseGeneratedToolCalls), not Gemma's token sentinels — so they take the
+    // buffered-text path. Gemma keeps the token-level sentinel path.
+    if (isMiniCPM5Config(ctx.model.config) || isQwen35Config(ctx.model.config))
+      return tools?.length ? "buffered-text" : "plain";
     return "gemma-sentinel";
   };
 
@@ -739,6 +827,7 @@ export function createServer(
       port: () => serverRef.port ?? port,
       contextWindow: ctx.model.config.text.maxPositionEmbeddings,
       vision: !!ctx.vision,
+      thinking: ctx.template.supportsThinking,
     }),
     async fetch(request, server) {
       const url = new URL(request.url);
@@ -953,6 +1042,9 @@ export function createServer(
           data: [{
             id: ctx.modelId, object: "model", created: 0, owned_by: "mlx-bun",
             context_window: ctx.model.config.text.maxPositionEmbeddings,
+            // Capability flags for clients (CLI/external pi) that build a
+            // provider from discovery — `reasoning` gates the thinking toggle.
+            reasoning: ctx.template.supportsThinking,
           }],
         });
       }
@@ -1174,6 +1266,7 @@ export function createServer(
                 send(chunk({ role: "assistant", content: "" }, null));
                 const router = toolRouter(tools);
                 const stopper = new StopMatcher(options.stopSequences);
+                const thinking = new ThinkingTagSplitter(ctx.template.supportsThinking);
                 // Serial decode is an unbroken microtask chain (FFI + generator
                 // resumes) — without a macrotask hop, Bun never services the
                 // socket and the whole SSE response flushes in one burst at the
@@ -1184,9 +1277,11 @@ export function createServer(
                 let lastFlush = performance.now();
                 const s = await gateway.run(promptIds, options, (token) => {
                   const text = stopper.push(router.push(token));
-                  if (text) send(chunk({ content: text }, null));
+                  const parts = thinking.push(text);
+                  if (parts.reasoning) send(chunk({ reasoning: parts.reasoning }, null));
+                  if (parts.content) send(chunk({ content: parts.content }, null));
                   if (stopper.stopped) return false; // halt generation
-                  if (!batched && text) {
+                  if (!batched && (parts.content || parts.reasoning)) {
                     const now = performance.now();
                     if (now - lastFlush >= 25) {
                       lastFlush = now;
@@ -1201,7 +1296,16 @@ export function createServer(
                   tail = stopper.push(router.flush());
                   if (!stopper.stopped) tail += stopper.flush();
                 }
-                if (tail) send(chunk({ content: tail }, null));
+                if (tail) {
+                  const parts = thinking.push(tail);
+                  if (parts.reasoning) send(chunk({ reasoning: parts.reasoning }, null));
+                  if (parts.content) send(chunk({ content: parts.content }, null));
+                }
+                {
+                  const parts = thinking.flush();
+                  if (parts.reasoning) send(chunk({ reasoning: parts.reasoning }, null));
+                  if (parts.content) send(chunk({ content: parts.content }, null));
+                }
                 const toolCalls = router.toolCalls();
                 if (toolCalls.length) {
                   send(chunk({
@@ -1244,14 +1348,26 @@ export function createServer(
           {
             const router = toolRouter(tools);
             const stopper = new StopMatcher(options.stopSequences);
+            const thinking = new ThinkingTagSplitter(ctx.template.supportsThinking);
             let content = "";
+            let reasoning = "";
             const s = await gateway.run(promptIds, options, (token) => {
-              content += stopper.push(router.push(token));
+              const parts = thinking.push(stopper.push(router.push(token)));
+              content += parts.content;
+              reasoning += parts.reasoning;
               if (stopper.stopped) return false; // halt generation
             }, vision, shape);
             if (!stopper.stopped) {
-              content += stopper.push(router.flush());
-              if (!stopper.stopped) content += stopper.flush();
+              let tail = stopper.push(router.flush());
+              if (!stopper.stopped) tail += stopper.flush();
+              const parts = thinking.push(tail);
+              content += parts.content;
+              reasoning += parts.reasoning;
+            }
+            {
+              const parts = thinking.flush();
+              content += parts.content;
+              reasoning += parts.reasoning;
             }
             const toolCalls = router.toolCalls();
             const finish = toolCalls.length
@@ -1265,6 +1381,7 @@ export function createServer(
                 message: {
                   role: "assistant",
                   content: content || (toolCalls.length ? null : ""),
+                  ...(reasoning ? { reasoning } : {}),
                   ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
                 },
                 finish_reason: finish,

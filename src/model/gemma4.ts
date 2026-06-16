@@ -49,11 +49,27 @@ import {
   type Cache,
   type Mask,
   type SharedKv,
+  type LoraWeights,
 } from "./gemma4-base";
 import { fusedGeglu, fusedGeluEnabled, fusedGeluSupported } from "./fused-geglu-kernel";
+import { Checkpoint } from "../mlx/checkpoint";
+import { flashAttention, getTrainingAttn, flashSupported } from "./flash-attention";
+
+/** Optional gradient-checkpointing context for the training forward. When set,
+ *  forwardLayers wraps each layer in a Checkpoint so its interior activations
+ *  are recomputed in the backward pass. `byLayer` maps a layer index to that
+ *  layer's trainable LoRA weights (re-swapped inside the closure so they are
+ *  explicit checkpoint inputs — required because the autograd primals are
+ *  disposed before the recompute). `keepAlive` collects the per-layer
+ *  Checkpoint objects; the trainer disposes them after value_and_grad. */
+export interface GradCheckpointCtx {
+  byLayer: Map<number, LoraWeights[]>;
+  keepAlive: Checkpoint[];
+}
 
 class Attention {
   readonly isSliding: boolean;
+  readonly windowSize: number;
   readonly useKEqV: boolean;
   readonly hasKv: boolean;
   readonly headDim: number;
@@ -76,6 +92,7 @@ class Attention {
     const t = config.text;
     this.hasKv = hasKv;
     this.isSliding = layerType === "sliding_attention";
+    this.windowSize = t.slidingWindow;
     this.headDim = this.isSliding ? t.headDim : t.globalHeadDim;
     this.nHeads = t.numAttentionHeads;
     this.useKEqV = t.attentionKEqV && !this.isSliding;
@@ -216,8 +233,16 @@ class Attention {
     q = disposing(q, this.rope(q, shared.offsetArr ?? shared.offset));
 
     let attn: MlxArray;
+    const ta = getTrainingAttn();
     if (shared.kind === "quant") {
       attn = quantizedSdpa(q, shared.keys, shared.values, 1.0, mask, shared.groupSize, shared.bits);
+    } else if (
+      ta === "flash" && flashSupported(q) && (mask.mode === "causal" || mask.mode === "array")
+    ) {
+      // Training: ops.sdpa's dK vjp is wrong, so use the validated flash kernel.
+      // Full layers → window 0 (pure causal); sliding layers → their window.
+      const window = this.isSliding ? this.windowSize : 0;
+      attn = flashAttention(q, shared.keys, shared.values, 1.0, true, window);
     } else {
       attn = ops.sdpa(q, shared.keys, shared.values, 1.0, mask.mode, mask.arr);
     }
@@ -548,6 +573,9 @@ export class Gemma4Model {
   readonly previousKvs: number[];
   /** layer idx → cache index (donors only; -1 for sharers). */
   readonly cacheIndex: number[];
+  /** Set by the trainer to enable gradient checkpointing in forwardLayers
+   *  (null = off; the non-checkpointed path is untouched). */
+  gradCkpt: GradCheckpointCtx | null = null;
   // e2b/e4b per-layer input machinery
   readonly perLayerEmbed: QuantizedEmbedding | null;
   readonly perLayerModelProjection: QuantizedLinear | null;
@@ -736,9 +764,11 @@ export class Gemma4Model {
         pls.dispose();
         pls = r;
       }
-      const { h: next, shared } = layer.forward(
-        h, masks.get(layer.layerType)!, ci === -1 ? null : cache[ci]!, sharedIn, pls,
-      );
+      const mask = masks.get(layer.layerType)!;
+      const layerCache = ci === -1 ? null : cache[ci]!;
+      const { h: next, shared } = this.gradCkpt
+        ? this.runCheckpointedLayer(i, layer, h, mask, layerCache, sharedIn, pls)
+        : layer.forward(h, mask, layerCache, sharedIn, pls);
       pls?.dispose();
       h.dispose();
       h = next;
@@ -760,6 +790,61 @@ export class Gemma4Model {
     for (const m of masks.values()) m.arr?.dispose();
 
     return disposing(h, this.finalNorm.forward(h));
+  }
+
+  /** Run one layer under gradient checkpointing: its interior activations are
+   *  dropped and recomputed in the backward pass. The layer's LoRA params, h,
+   *  the mask array (if any), pls, and a sharer's donor KV are threaded as
+   *  explicit checkpoint inputs (the closure must be pure and self-contained —
+   *  it re-runs during the backward, and captured autograd primals would be
+   *  stale). A donor layer also emits its fetched K/V as checkpoint outputs so
+   *  the (retained, small) tensors reach the sharer layers downstream. */
+  private runCheckpointedLayer(
+    i: number, layer: DecoderLayer, h: MlxArray, mask: Mask,
+    layerCache: Cache | null, sharedIn: SharedKv | null, pls: MlxArray | null,
+  ): { h: MlxArray; shared: SharedKv | null } {
+    const ctx = this.gradCkpt!;
+    const lws = ctx.byLayer.get(i) ?? [];
+    const isSharer = layerCache === null;
+    const sIn = isSharer && sharedIn && sharedIn.kind === "plain" ? sharedIn : null;
+    const hasMaskArr = mask.arr !== null;
+    const hasPls = pls !== null;
+    const maskMode = mask.mode;
+
+    // Input order: [h, maskArr?, pls?, sharedInK?, sharedInV?, (lora_a, lora_b)*]
+    const inputs: MlxArray[] = [h];
+    if (hasMaskArr) inputs.push(mask.arr!);
+    if (hasPls) inputs.push(pls!);
+    if (sIn) inputs.push(sIn.keys, sIn.values);
+    for (const lw of lws) inputs.push(lw.a, lw.b);
+
+    const ck = new Checkpoint((ins) => {
+      let k = 0;
+      const hIn = ins[k++]!;
+      const mArr = hasMaskArr ? ins[k++]! : null;
+      const plsIn = hasPls ? ins[k++]! : null;
+      const sharedInRebuilt: SharedKv | null = sIn
+        ? { kind: "plain", keys: ins[k++]!, values: ins[k++]!, offset: 0 }
+        : null;
+      const saved = lws.map((lw) => [lw.a, lw.b] as [MlxArray, MlxArray]);
+      for (const lw of lws) { lw.a = ins[k++]!; lw.b = ins[k++]!; }
+      try {
+        const out = layer.forward(hIn, { mode: maskMode, arr: mArr }, layerCache, sharedInRebuilt, plsIn);
+        if (!isSharer && out.shared && out.shared.kind === "plain")
+          return [out.h, out.shared.keys, out.shared.values];
+        return [out.h];
+      } finally {
+        lws.forEach((lw, j) => { lw.a = saved[j]![0]; lw.b = saved[j]![1]; });
+      }
+    });
+    ctx.keepAlive.push(ck);
+
+    const outs = ck.apply(inputs);
+    const shared: SharedKv | null =
+      !isSharer && outs.length === 3
+        ? { kind: "plain", keys: outs[1]!, values: outs[2]!, offset: 0 }
+        : null;
+    return { h: outs[0]!, shared };
   }
 
   /** hidden [1, L, hidden] → softcapped logits [1, L, vocab]. */

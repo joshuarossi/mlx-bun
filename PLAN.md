@@ -1319,6 +1319,123 @@ two-model speculation measured a net loss.
   speculation measured (acceptance + tok/s in the eval DB), shipped as
   default config only where it wins.
 
+### Phase 14 bring-up — Qwen3.6-27B-OptiQ-4bit `[~]` (started 2026-06-15, branch `qwen3-5-27b-bringup`)
+
+First Qwen target picked: `mlx-community/Qwen3.6-27B-OptiQ-4bit` (already in
+the HF cache, 4 shards, ~15 GB). **It is NOT a plain dense Qwen3** — it's the
+hybrid **gated-DeltaNet** architecture (`model_type: qwen3_5`, arch
+`Qwen3_5ForConditionalGeneration`). Architecture verified from config +
+safetensors + the two oracles (mlx-lm `models/qwen3_5.py`, optiq
+`mlx_lm_patches/qwen3_5_text.py`):
+
+- **64 layers, hybrid stack.** Every 4th layer (`full_attention_interval: 4`
+  → indices 3,7,11,…,63 = 16 layers) is `full_attention`; the other 48 are
+  `linear_attention` (gated DeltaNet, Mamba-like recurrent). `layer_types`
+  in config is authoritative.
+- **Dense MLP** (swiglu, intermediate 17408) — no MoE in this checkpoint
+  (`num_experts` absent from text_config). The "27B" is dense params.
+- **Full-attention layer** (`Qwen3NextAttention`): GQA 24 q-heads / 4 kv-heads,
+  head_dim 256; q_proj emits `24*256*2` and splits into queries + **output
+  gate** (`attn_output_gate: true`, `o_proj(out * sigmoid(gate))`); per-head
+  `q_norm`/`k_norm` RMSNorm over head_dim; **partial RoPE dims=64**
+  (`partial_rotary_factor 0.25`, base 1e7, traditional=False). mrope_section
+  is IGNORED — `rope_parameters.type == "default"` takes `nn.RoPE`, not the
+  mrope branch (text-only). Reuses our KVCache/QuantizedKVCache + sdpa.
+- **Linear-attention layer** (`GatedDeltaNet`): separate `in_proj_qkv`
+  (→ key_dim*2+value_dim = 10240), `in_proj_z` (→6144), `in_proj_b`/`in_proj_a`
+  (→48 each); depthwise causal `conv1d` (conv_dim 10240, kernel 4, stored
+  `[10240,4,1]`, bf16 unquantized); `A_log`[48]/`dt_bias`[48] kept float;
+  `RMSNormGated` head_v_dim 128; out_proj. Recurrence = `gated_delta_update`
+  which on GPU uses a **custom Metal kernel** (`gated_delta_step`, non-vec /
+  non-masked variant for B=1). **Bit-exact parity REQUIRES porting that kernel
+  verbatim** (the ops fallback reduces in a different order). Heads: Hk 16
+  / Hv 48, Dk 128 / Dv 128; state `[B,48,128,128]` f32.
+- **Caches:** `make_cache` = `KVCache()` for full layers, `ArraysCache(size=2)`
+  (conv_state + recurrent state) for linear layers. SSM mask = None at B=1.
+- **Sanitize (load-time):** mlx-lm conditionally `+1.0`-shifts all norm weights
+  and moveaxis-es conv1d **only when** `has_mtp_weights or
+  has_unsanitized_conv1d`. For THIS snapshot both are false (conv1d already
+  `[.,.,1]`, no mtp.safetensors downloaded) → **plain RMSNorm, stored weights
+  used as-is, no shift, no moveaxis.** (Replicate the condition defensively.)
+- **Weight prefix:** `language_model.model.layers.N.…`, `language_model.lm_head`.
+- **Per-layer quant** (501-entry map): default 4-bit gs64; embed_tokens 8-bit;
+  several `linear_attn.in_proj_*` 8-bit. Honored by existing per-module
+  `quantFor`.
+
+**Parity bars (Josh):** (1) bf16 KV (KV-quant OFF) → bit-exact vs **mlx-lm**
+`qwen3_5.py` (the VLM `Model` wrapper loads this config; optiq's text facade is
+bit-identical). (2) mixed-precision KV (ON) → bit-exact vs **mlx-optiq**: the
+16 full-attention layers quantized per `kv_config.json` (layers 3,7,…,63 at
+4/8-bit gs64) via the existing `maybeQuantizeKv` + `QuantizedKVCache`.
+
+**Sidecars NOT downloaded** (`mtp.safetensors`, `optiq_vision.safetensors`):
+MTP speculation and Qwen3-VL vision are orthogonal to both parity bars and are
+**deferred** (each needs its own download + parity oracle). 35B-A3B MoE variant
+also deferred.
+
+**Future workstreams (Josh, 2026-06-15 — deferred, after parity):**
+- **Training** (first-class goal — the reason to replicate optiq's training side,
+  not just runtime). `loraTargets()` is wired, but the gated-DeltaNet kernel is
+  **inference-only / non-differentiable**. Training requires porting
+  `gated_delta_ops` (mlx-lm's pure-mlx sequential scan, the `use_kernel=not
+  self.training` fallback) and selecting it under training. cf. the e4b LoRA
+  seq-len ceiling (memory-bound backward) — expect similar constraints.
+- **Optimizations** (perf kernels, compiled decode, fused paths) — same as the
+  gemma path. The per-model file is deliberately structured for the `GENERATED/`
+  specialization route (Qwen35Model exposes `protected forwardLayers`): unroll
+  the 64-layer loop + delete the layer-type/tie branches → a flat DAG for static
+  fusion analysis. The gated-delta kernel stays one opaque fused node
+  (the ops-path training variant would be transparent to the analysis).
+
+Bring-up sub-phases (gate each with the parity tests; B=1 single-stream first):
+- [x] **14a — config + scaffolding** (2026-06-15). `config.ts` parses qwen3_5
+      text_config (linear_* geometry, full_attention_interval, layer_types,
+      attn_output_gate, partialRotaryFactor, rope_theta from the flat
+      rope_parameters; `type:"default"` ⇒ ignore mrope_section); factory /
+      support / registry dispatch for `qwen3_5`/`qwen3_5_text` (MoE variant
+      throws). Validated on the real config.json: 64 layers, interval 4, 24/4
+      heads @256, partial 0.25, base 1e7, linear 16/48 heads @128, conv 4,
+      eos [248046,248044], kv_config = 16 entries on the full-attn indices.
+- [x] **14b — primitives** (2026-06-15). Bound `mlx_conv1d` + depthwise
+      `ops.conv1d` (weight layout `[C,K,1]` confirmed against the stored
+      tensor); `ops.split`, `ops.softplus` (logaddexp(x,0)), `ops.silu`.
+      Ported the `gated_delta_step` Metal kernel verbatim + `compute_g` /
+      `gatedDeltaUpdate` (`src/model/qwen3-delta.ts`; T passed as a 1-element
+      int input to avoid per-length recompiles — numerically identical).
+      `SSMCache` (conv + recurrent state) implementing `Cache`.
+      **Both are model-free BIT-EXACT vs mlx-lm**: `tests/qwen-delta.test.ts`
+      (gated-delta kernel at the real 16/48/128/128 geometry, prefill T=3 +
+      chained decode T=1, `toBe(0)`) and `tests/qwen-ops.test.ts` (depthwise
+      conv1d + silu, bf16-weight). De-risks the hardest piece without the
+      15 GB load.
+- [x] **14c — model graph** (`src/model/qwen3_5.ts`, 2026-06-15): GatedDeltaNet,
+      gated full-attention (q-gate split, q/k-norm, partial RoPE 64, GQA sdpa,
+      `o_proj(out·σ(gate))`), swiglu MLP, hybrid DecoderLayer, model wrapper
+      (embed / 64 layers / norm / lm_head / makeCache→KVCache|SSMCache /
+      forward / loraTargets / generate). Typechecks; **static weight-name
+      audit: 0 missing, 0 unused** (every requested tensor resolves; the only
+      index tensors not requested are the optional `.biases`).
+- [x] **14d — parity, KV OFF** — **PASSED on Qwen3.5-4B-OptiQ-4bit (2026-06-15,
+      M1 Max).** Per-step logits bit-exact (`toBe(0)`) + greedy identical vs
+      stock mlx-lm over 12 steps. Golden gen
+      `scripts/regen-qwen-parity-goldens.ts [27b|4b]`; test
+      `tests/qwen-parity.test.ts` (`MLX_BUN_TEST_QWEN35[_4B]=1`).
+- [x] **14e — parity, KV ON** — **PASSED on Qwen3.5-4B-OptiQ-4bit (2026-06-15,
+      M1 Max).** Mixed-precision KV (per-layer bits over the 8 full-attn layers,
+      SSM layers skipped) bit-exact vs mlx-optiq. optiq's `install_mixed_kv`
+      patch uses per-layer bits keyed by cache index — identical to our
+      `maybeQuantizeKv`. **Both bars green ⇒ the whole qwen3_5 graph
+      (gated-DeltaNet + gated full-attn + tied head + mixed-KV) is correct
+      end-to-end on real weights.**
+- [x] **Tied embeddings** (2026-06-15) — output head reuses
+      `embed_tokens.as_linear` when `tie_word_embeddings` (the 4B is tied; the
+      27B is not). Harness + parity test parameterized for both checkpoints.
+- [ ] **14f — wiring/polish.** LoRA target map DONE (prefixBase
+      `language_model.model`). Remaining: fit/registry capability columns,
+      chat template + eos smoke (no server run), and the **27B both bars**
+      (~15 GB; same arch as the verified 4B but untied + larger geometry +
+      Hv=48 — lower risk now, still worth confirming).
+
 ## Phase 15 — Head-to-head benchmark: mlx-bun vs mlx-lm vs mlx-optiq `[~]`
 (matrix complete 2026-06-10 except leg (c)'s purge-cold rows — see
 findings; results: benchmarks/benchmarks-h2h-2026-06-10.md + README Benchmarks)
@@ -2806,6 +2923,54 @@ latestFor this snapshot) over predicted whenever a benchmark has
 run. Proper fix when it matters: per-chip efficiency table fed by
 cli-bench rows from real machines — the eval DB schema already
 carries everything needed.
+
+## Phase: e4b LoRA training enablement for long-context tasks (2026-06-15)
+
+Goal: fine-tune e4b on lucien's chunking task (data: ~3,400–8,200-token
+SFT examples, B=1, short JSON responses) and measure quality lift on the
+frozen 25-case holdout. Phase 0 smoke (`scripts/ft-chunk-smoke.ts`)
+surfaced that the ported LoRA trainer had never run e4b end-to-end at
+real lengths. Findings + fix:
+
+**Diagnosis (corrects an in-flight wrong theory about attention):**
+- Two fused custom kernels in the forward have no vjp: the perf decode
+  kernel (`MLX_BUN_PERF_KERNEL`) and the GEGLU MLP kernel
+  (`MLX_BUN_FUSED_GELU`). Training MUST disable both (set =0) or backward
+  dies with `[Primitive::vjp] Not implemented for CustomKernel`.
+- Attention is NOT the problem. `makeCache()` returns DENSE caches; only
+  `generate.ts` quantizes them (`toQuantized`). With dense caches the
+  generated e4b model's quantized-signature guard fails → falls back to
+  `Gemma4Model.forwardLayers` → `ops.sdpa`
+  (`mx.fast.scaled_dot_product_attention`, differentiable + flash). So
+  training already uses efficient differentiable attention.
+- The wall is backward MEMORY: (a) full-vocab logits `[1,L,262144]`+grad
+  (~17 GB @8K) and (b) per-layer activations retained across ~28 layers
+  with no gradient checkpointing. Peak 13.7 @512 → 20.5 @1024 → 25.7
+  @1536; 2048 crosses the 32 GB M1 Max ~26.8 GB wired ceiling.
+
+**Spike (mlx-lm + optiq, `…/mlx-lm-example/.venv/.../site-packages`):**
+mlx-lm's tuner = `mx.fast.scaled_dot_product_attention` (built-in vjp) +
+`grad_checkpoint(model.layers[0])` wrapping `__call__` in `mx.checkpoint`
++ a 2048 default seq cap; full logits (no chunking — they cap length
+instead). optiq's fused quantized SDPA is inference-only (no vjp,
+serve-scoped); its `optiq/lora/` training uses the stock differentiable
+forward. So the port target is mlx-lm's tuner, not the inference kernels.
+
+**Fix (port checklist):**
+1. DONE — response-only logits: `responseOnlyCe` applies the LM head only
+   at the supervised span (B=1). Correct (LM head is position-independent;
+   prompt grads still flow via causal attention). Ceiling ~1280→~1792.
+2. DONE (diagnostic) — `autograd.ts` now surfaces `takeMlxError()` instead
+   of swallowing the underlying MLX error.
+3. TODO — gradient checkpointing: bind `mlx_checkpoint` (exported by
+   dist/libmlxc.dylib; `mlx_closure_apply` already bound) and wrap decoder
+   layers in `trainForwardHidden`. Target: a full ~8K example within
+   ~26 GB. This is the remaining unlock for the chunk fine-tune.
+4. TODO — bake "fused kernels off" into the training path so it doesn't
+   rely on env flags; raise trainer default `maxSeqLen` (512 → 8192).
+
+Then resume: bridge (pi → local e4b server) → baseline → fine-tune →
+re-measure on the 25-case holdout.
 
 ## Context / lore
 

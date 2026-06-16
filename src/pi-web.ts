@@ -135,6 +135,10 @@ type ClientMessage =
   | { type: "steer"; text: string; images?: ImageAttachment[] }
   | { type: "abort" }
   | { type: "approval"; callId: string; decision: ApprovalDecision }
+  // Toggle the model's reasoning channel on/off (only meaningful when the
+  // model supports thinking — ready.thinking). Maps to Pi's session thinking
+  // level: "medium" (on) ↔ "off". Pi sends it as enable_thinking to the server.
+  | { type: "set_thinking"; enabled: boolean }
   // Session management (recent-chats sidebar + new chat).
   | { type: "new_session" }
   | { type: "list_sessions" }
@@ -146,9 +150,12 @@ type ClientMessage =
 type ServerMessage =
   // `vision`: whether the loaded model can accept images (drives the UI's
   // image-attach affordance — false on e4b until the SigLIP sidecar lands).
-  | { type: "ready"; model: string; vision: boolean }
+  // `thinking`: whether the model has a switchable reasoning channel (drives
+  // the UI's thinking on/off toggle; false hides it).
+  | { type: "ready"; model: string; vision: boolean; thinking: boolean }
   | { type: "turn_start" }
   | { type: "text_delta"; delta: string }
+  | { type: "thinking_delta"; delta: string }
   | { type: "tool_start"; callId: string; tool: string; args: unknown }
   | { type: "tool_approval_request"; callId: string; tool: string; args: unknown }
   | { type: "tool_update"; callId: string; chunk: unknown }
@@ -179,6 +186,8 @@ export interface HistoryToolItem {
 export interface HistoryItem {
   role: "user" | "assistant";
   text: string;
+  /** Model reasoning/thinking, kept separate from the final answer. */
+  thinking?: string;
   tools: HistoryToolItem[];
 }
 
@@ -206,6 +215,15 @@ function contentText(content: unknown): string {
   return "";
 }
 
+function contentThinking(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((p): p is { type: string; thinking: string } =>
+      !!p && (p as { type?: string }).type === "thinking" && typeof (p as { thinking?: unknown }).thinking === "string")
+    .map((p) => p.thinking)
+    .join("");
+}
+
 /**
  * Turn a session's entries into a flat, browser-renderable transcript.
  *
@@ -229,11 +247,13 @@ export function serializeHistory(entries: readonly SessionEntry[]): HistoryItem[
     } else if (m.role === "assistant") {
       const parts = Array.isArray(m.content) ? (m.content as unknown[]) : [];
       const text = contentText(parts);
+      const thinking = contentThinking(parts);
       const tools: HistoryToolItem[] = parts
         .filter((p): p is { type: string; id?: unknown; name?: unknown; arguments?: unknown } =>
           !!p && (p as { type?: string }).type === "toolCall")
         .map((p) => ({ callId: String(p.id ?? ""), name: String(p.name ?? "tool"), args: p.arguments, result: "" }));
-      if (text.trim() || tools.length > 0) items.push({ role: "assistant", text, tools });
+      if (text.trim() || thinking.trim() || tools.length > 0)
+        items.push({ role: "assistant", text, ...(thinking.trim() ? { thinking } : {}), tools });
     } else if (m.role === "toolResult") {
       const callId = String(m.toolCallId ?? "");
       const result = contentText(m.content);
@@ -291,11 +311,8 @@ export function mapEventToFrames(event: AgentSessionEvent): ServerMessage[] {
       return [{ type: "turn_end" }];
     case "message_update": {
       const ame = event.assistantMessageEvent;
-      if (ame.type === "text_delta" || ame.type === "thinking_delta") {
-        // Stream both ordinary text and thinking as text_delta; the
-        // browser renders a single growing assistant bubble.
-        return [{ type: "text_delta", delta: ame.delta }];
-      }
+      if (ame.type === "text_delta") return [{ type: "text_delta", delta: ame.delta }];
+      if (ame.type === "thinking_delta") return [{ type: "thinking_delta", delta: ame.delta }];
       return [];
     }
     case "tool_execution_start":
@@ -370,7 +387,7 @@ class PiWebSession {
 
   constructor(
     private readonly ws: PiWs,
-    private readonly opts: { port: number | (() => number); modelId: string; contextWindow: number; readOnly: boolean; vision: boolean },
+    private readonly opts: { port: number | (() => number); modelId: string; contextWindow: number; readOnly: boolean; vision: boolean; thinking: boolean },
   ) {}
 
   /** Build the provider, resume the most recent chat, and start streaming. */
@@ -383,7 +400,10 @@ class PiWebSession {
 
     // In-memory auth + registry shared with the terminal embed (pi-provider.ts
     // so the wiring can't drift); built once and reused across session swaps.
-    this.provider = buildPiProvider(baseUrl, { contextWindow: this.opts.contextWindow });
+    this.provider = buildPiProvider(baseUrl, {
+      contextWindow: this.opts.contextWindow,
+      reasoning: this.opts.thinking,
+    });
     mkdirSync(this.sessionDir, { recursive: true });
 
     // Each connection starts its OWN fresh session. A prior continueRecent
@@ -398,7 +418,7 @@ class PiWebSession {
     await this.activate(SessionManager.create(this.cwd, this.sessionDir));
     if (this.disposed) return;
 
-    this.send({ type: "ready", model: this.opts.modelId, vision: this.opts.vision });
+    this.send({ type: "ready", model: this.opts.modelId, vision: this.opts.vision, thinking: this.opts.thinking });
     this.sendHistory();
     await this.sendSessions();
   }
@@ -700,6 +720,11 @@ class PiWebSession {
       case "approval":
         this.resolveApproval(msg.callId, msg.decision);
         return;
+      case "set_thinking":
+        // Pi clamps to the model's available levels; a no-op for models
+        // without a switchable reasoning channel.
+        session.setThinkingLevel(msg.enabled ? "medium" : "off");
+        return;
     }
   }
 
@@ -740,6 +765,9 @@ export function makePiWsHandler(opts: {
   readOnly?: boolean;
   /** Whether the loaded model can accept images (server's ctx.vision != null). */
   vision?: boolean;
+  /** Whether the model has a switchable reasoning channel
+   *  (server's ctx.template.supportsThinking). Drives the thinking toggle. */
+  thinking?: boolean;
 }): WebSocketHandler<PiWsData> {
   const resolved = {
     port: opts.port,
@@ -747,6 +775,7 @@ export function makePiWsHandler(opts: {
     contextWindow: opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     readOnly: opts.readOnly ?? false,
     vision: opts.vision ?? false,
+    thinking: opts.thinking ?? false,
   };
 
   return {
