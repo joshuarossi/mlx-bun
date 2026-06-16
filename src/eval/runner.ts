@@ -43,12 +43,19 @@ export function sampleIndices(total: number, n: number, seed = 42): number[] {
   return idx.slice(0, Math.min(n, total)).sort((a, b) => a - b);
 }
 
+/** Sampler keys an eval arm may force across every task (greedy/HLG/curve). */
+type SamplerArm = Partial<Pick<GenerateOptions, "temperature" | "topP" | "topK" | "seed" | "hlg" | "curve">>;
+
 export interface TaskModel {
   model: RuntimeModel;
   tokenizer: LoadedTokenizer;
   template: ChatTemplate | null;
   config: ModelConfig;
   dir: string;
+  /** When set, FORCES this sampler on every generateText call, overriding the
+   *  task's own (greedy) default — used to run the whole suite under one sampler
+   *  arm (e.g. the v2 curve vs the default chat recipe) for the degradation gate. */
+  samplerOverride?: SamplerArm;
 }
 
 export async function loadTaskModel(query: string): Promise<TaskModel> {
@@ -68,7 +75,7 @@ export interface GenOpts {
   useChat?: boolean;
   /** Sampling overrides (default greedy). Lets the HLG/diversity evals vary the
    *  sampler — temperature, top-p/k, seed, hlg — while sharing this prompt path. */
-  sampler?: Partial<Pick<GenerateOptions, "temperature" | "topP" | "topK" | "seed" | "hlg">>;
+  sampler?: Partial<Pick<GenerateOptions, "temperature" | "topP" | "topK" | "seed" | "hlg" | "curve">>;
 }
 
 /** Complete `body` via the model's real quantized-KV path. Greedy by default;
@@ -86,6 +93,7 @@ export async function generateText(tm: TaskModel, body: string, opts: GenOpts = 
     temperature: 0, // greedy default — deterministic head-to-head arms
     ...(kv ? { kvConfig: kv, quantizedKvStart: 0 } : {}),
     ...(opts.sampler ?? {}), // overrides temperature when provided
+    ...(tm.samplerOverride ?? {}), // arm override wins over the task's own sampler
   });
 
   const out: number[] = [];
