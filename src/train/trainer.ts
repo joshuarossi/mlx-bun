@@ -20,7 +20,7 @@ import type { RuntimeModel } from "../model/factory";
 import { Gemma4Model, type GradCheckpointCtx } from "../model/gemma4";
 import { MiniCPM5Model } from "../model/minicpm5";
 import { setTrainingAttn } from "../model/flash-attention";
-import { SegmentedBackward, planSegmentsBySize } from "./segmented";
+import { SegmentedBackward, SegmentedBackwardGemma4, planSegmentsBySize } from "./segmented";
 import type { LoadedTokenizer } from "../tokenizer";
 import type { ChatTemplate } from "../chat-template";
 import type { Emit } from "../jobs/types";
@@ -194,17 +194,17 @@ async function sftLoop(
   // it replaces the single value_and_grad below and is mutually exclusive with
   // gradient checkpointing (see docs/design/segmented-backward-training.md).
   const useSegmented = cfg.segmentSize > 0;
-  if (useSegmented && !(model instanceof MiniCPM5Model))
-    throw new Error("segmented backward (segmentSize > 0) is only wired for MiniCPM5 so far");
-  const segmented = useSegmented
-    ? new SegmentedBackward(
-        model as MiniCPM5Model, lora,
-        planSegmentsBySize((model as MiniCPM5Model).layers.length, cfg.segmentSize),
-      )
-    : null;
-  if (segmented)
+  let segmented: SegmentedBackward | SegmentedBackwardGemma4 | null = null;
+  if (useSegmented) {
+    if (model instanceof MiniCPM5Model)
+      segmented = new SegmentedBackward(model, lora, planSegmentsBySize(model.layers.length, cfg.segmentSize));
+    else if (model instanceof Gemma4Model)
+      segmented = new SegmentedBackwardGemma4(model, lora, planSegmentsBySize(model.layers.length, cfg.segmentSize));
+    else
+      throw new Error("segmented backward (segmentSize > 0) is only wired for MiniCPM5 and Gemma4");
     emit({ type: "stage", stage: "setup", progress: 0.04,
-      message: `segmented backward: ${Math.ceil((model as MiniCPM5Model).layers.length / cfg.segmentSize)} segments of <=${cfg.segmentSize} layers` });
+      message: `segmented backward: ${Math.ceil(model.layers.length / cfg.segmentSize)} segments of <=${cfg.segmentSize} layers` });
+  }
 
   // The value_and_grad loss closure: temporarily swap the differentiated
   // primals into the LoraWeights so the forward graph differentiates them,
