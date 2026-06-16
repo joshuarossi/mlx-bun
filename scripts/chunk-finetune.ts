@@ -59,6 +59,7 @@ try {
       steps_per_report: 1,
       steps_per_eval: EVAL_EVERY,
       segment_size: SEG,
+      grad_checkpoint: process.env.GRAD_CKPT === "1", // the apples-to-apples memory lever
     },
   );
   const secs = ((performance.now() - t0) / 1000).toFixed(1);

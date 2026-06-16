@@ -122,7 +122,7 @@ export function responseOnlyCe(model: RuntimeModel, h: MlxArray, batch: SftBatch
 
 /** Build the token-mean masked-CE scalar from batched logits [B, T, V]
  *  (T = L-1) and the batch's host ids/boundaries. */
-function maskedCe(logits: MlxArray, batch: SftBatch): MlxArray {
+export function maskedCe(logits: MlxArray, batch: SftBatch): MlxArray {
   const B = batch.ids.length;
   const L = batch.ids[0]!.length;
   const T = L - 1;
