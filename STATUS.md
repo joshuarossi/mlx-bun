@@ -23,8 +23,10 @@ training the same (verified: mlx-lm fits 8K only by dropping to its default 16
 trainable layers, 25.7 GB).** At 2K/4K both train all 42; segmented ~15-25% lower
 (seg 11.0/16.1 vs mlx-lm 12.8/20.9 GB). No leak; adapter saves. NOTE the earlier
 "reference crashes at 4K / ~70 GB" claim was WRONG — it used mlx-bun's OWN
-checkpoint (ineffective, 23 GB @2048) as the baseline, not mlx-lm's. Full results +
-the corrected mlx-lm comparison: docs/design/segmented-backward-training.md §10. Enable via `TrainConfig.segmentSize` (layers
+checkpoint (ineffective, 23 GB @2048) as the baseline, not mlx-lm's. **Handoff
+report (start here): [docs/segmented-backward-handoff.md](docs/segmented-backward-handoff.md)**
+— current state, validated numbers, how to run/train an adapter. Deep dossier:
+docs/design/segmented-backward-training.md §9 (MiniCPM5) / §10 (e4b). Enable via `TrainConfig.segmentSize` (layers
 per segment; 0 = off). Key files: `src/train/segmented.ts` (`SegmentedBackward`),
 `src/model/minicpm5.ts` (`runLayerRange`), `src/mlx/autograd.ts` (`Vjp` — the
 backward uses `mlx_vjp`, NOT a surrogate-loss `value_and_grad`, which leaked).
