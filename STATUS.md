@@ -16,12 +16,15 @@ spikes to 21–26 GB @4096; seg stays 6–8 GB), **no memory leak**. Real 300-it
 peak **6.51 GB** (baseline 25.47 GB), `chunk-eval` **95.10/100** — EXCEEDS the
 non-segmented baseline (91.70). **Phase B (e4b) BUILT + validated:**
 `SegmentedBackwardGemma4` (`src/train/segmented.ts`, wired into the trainer) —
-forward bit-exact, grads bit-exact for single-consumer donor reuse / 0.97%
-bf16-class for the multi-consumer donor-KV accumulation, **trains at 8K context
-(17.5 GB) where the full backward OOMs (~70 GB)**; e4b trainer smoke @2048 = 10 GB,
-no leak, adapter saves. Peak tunable via segment size. Remaining (optimization, not
-a blocker): §5 full-attn isolation planSegments to push @8K toward ~10 GB. Full
-results: docs/design/segmented-backward-training.md §10. Enable via `TrainConfig.segmentSize` (layers
+forward bit-exact, grads bit-exact for single-consumer donor reuse / ~1% bf16-class
+(bf16 non-associativity, grouping-controllable) for the multi-consumer donor-KV sum.
+**Trains all 42 layers at 8K (17.5 GB) where `mlx_lm.lora --grad-checkpoint` OOMs
+training the same (verified: mlx-lm fits 8K only by dropping to its default 16
+trainable layers, 25.7 GB).** At 2K/4K both train all 42; segmented ~15-25% lower
+(seg 11.0/16.1 vs mlx-lm 12.8/20.9 GB). No leak; adapter saves. NOTE the earlier
+"reference crashes at 4K / ~70 GB" claim was WRONG — it used mlx-bun's OWN
+checkpoint (ineffective, 23 GB @2048) as the baseline, not mlx-lm's. Full results +
+the corrected mlx-lm comparison: docs/design/segmented-backward-training.md §10. Enable via `TrainConfig.segmentSize` (layers
 per segment; 0 = off). Key files: `src/train/segmented.ts` (`SegmentedBackward`),
 `src/model/minicpm5.ts` (`runLayerRange`), `src/mlx/autograd.ts` (`Vjp` — the
 backward uses `mlx_vjp`, NOT a surrogate-loss `value_and_grad`, which leaked).
