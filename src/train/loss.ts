@@ -87,7 +87,7 @@ export function sftLoss(model: RuntimeModel, batch: SftBatch): MlxArray {
  *  logits at prompt positions. Gradients to prompt-position LoRA params still
  *  flow: the response hidden states depend on the prompt through causal
  *  attention, which is fully captured upstream in `h`. */
-function responseOnlyCe(model: RuntimeModel, h: MlxArray, batch: SftBatch): MlxArray {
+export function responseOnlyCe(model: RuntimeModel, h: MlxArray, batch: SftBatch): MlxArray {
   const L = batch.ids[0]!.length;
   const promptLen = batch.promptLens[0]!;
   const len = Math.min(rowLength(batch, 0), L);

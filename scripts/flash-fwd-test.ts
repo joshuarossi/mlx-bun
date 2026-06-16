@@ -11,7 +11,7 @@ import { Dtype } from "../src/mlx/ffi";
 import * as ops from "../src/mlx/ops";
 import { flashForward } from "../src/model/flash-attention";
 
-const D = 256, T = 64, Hq = 16, Hkv = 2;
+const D = 256, T = Number(process.env.T ?? 64), Hq = 16, Hkv = 2;
 const mkRand = (shape: number[], seed: number): MlxArray =>
   ops.randomNormal(shape, Dtype.float32, 0, 1, ops.randomKey(BigInt(seed))).astype(Dtype.float16);
 
