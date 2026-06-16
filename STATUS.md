@@ -9,10 +9,16 @@ transient front door that stays current. Product/UX north star:
 
 Long-context LoRA SFT that streams the backward segment-by-segment so only one
 segment's activations are live — fits where the optiq/mlx-lm reference spikes/crashes.
-**Phase A (MiniCPM5) done + validated:** bit-exact grads vs the full backward
-(relNorm 0.0000% under flash), peak **10.91 → 3.29 GB @2048** (non-seg spikes to
-21–26 GB @4096; seg stays 6–8 GB), **no memory leak**, trains end-to-end through
-`scripts/chunk-finetune.ts` (`SEG=n`). Enable via `TrainConfig.segmentSize` (layers
+On PR [#9](https://github.com/joshuarossi/mlx-bun/pull/9) (`segmented-backward-training`).
+**Phase A (MiniCPM5) done + validated + quality-confirmed:** bit-exact grads vs the
+full backward (relNorm 0.0000% under flash), peak **10.91 → 3.29 GB @2048** (non-seg
+spikes to 21–26 GB @4096; seg stays 6–8 GB), **no memory leak**. Real 300-iter run:
+peak **6.51 GB** (baseline 25.47 GB), `chunk-eval` **95.10/100** — EXCEEDS the
+non-segmented baseline (91.70). **Phase B model side validated:** `runLayerRange` on
+`Gemma4Model` is **bit-exact** vs the e4b training forward
+(`scripts/gemma4-runlayerrange-test.ts`), threading per-layer-input + KV-shared
+donors {22,23}. Remaining: build `SegmentedBackwardGemma4` (donor-KV second boundary
+stream, docs §10) → e4b @8K. Enable via `TrainConfig.segmentSize` (layers
 per segment; 0 = off). Key files: `src/train/segmented.ts` (`SegmentedBackward`),
 `src/model/minicpm5.ts` (`runLayerRange`), `src/mlx/autograd.ts` (`Vjp` — the
 backward uses `mlx_vjp`, NOT a surrogate-loss `value_and_grad`, which leaked).

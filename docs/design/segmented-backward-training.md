@@ -328,9 +328,13 @@ boundary drags a whole layer-stack's activations (~0.1 GB per 4-layer segment of
 Phase A (MiniCPM5) is done and production-ready: mechanism bit-exact (flash),
 memory win confirmed, no leak, trains end-to-end through `scripts/chunk-finetune.ts`
 (`SEG=n`). Remaining:
-1. Run the real chunk fine-tune (`SEG=4 SEQ=4096 ITERS=300 bun scripts/chunk-finetune.ts`,
-   ideally `MLX_BUN_TRAIN_ATTN=flash` for exact grads) and confirm `scripts/chunk-eval.ts`
-   quality matches the non-segmented baseline (91.70).
+1. ✅ **DONE** — real 300-iter segmented fine-tune (SEG=4, SEQ=4096, ops.sdpa):
+   **peak 6.51 GB** (non-seg baseline was 25.47 GB), 35.6 min, val loss 0.231→0.189,
+   no leak (active flat at 1.04 GB the whole run). `chunk-eval` on the holdout:
+   **95.10/100** — EXCEEDS the non-segmented baseline (91.70) and the pre-tune
+   baseline (11.89). json/schema/labels/nonempty 100%, anchors 86%. Segmented
+   training produces a quality adapter. Adapter:
+   `~/.cache/mlx-bun-finetunes/minicpm5-chunk-segmented`.
 2. **Phase B (e4b)** with the §5 plan (KV-sharing, per-layer-input, full-attn O(L²)
    isolation). e4b adds `runLayerRange` to `Gemma4Model` with donor-KV /
    per-layer-input boundary threading; the `SegmentedBackward` + vjp machinery and
