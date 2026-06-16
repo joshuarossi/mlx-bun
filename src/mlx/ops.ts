@@ -575,6 +575,27 @@ export function randomNormal(
   );
 }
 
+/** mx.random.uniform(low, high, shape, dtype, key). low/high are scalars.
+ *  Matches mlx-lm LoRALinear A init: uniform(-1/√in, +1/√in). */
+export function randomUniform(
+  shape: number[], dtype: Dtype, low: number, high: number,
+  key: MlxArray | null, s: S = gpuStream,
+): MlxArray {
+  const buf = new Int32Array(shape);
+  const lo = MlxArray.fromFloat32(new Float32Array([low]), []);
+  const hi = MlxArray.fromFloat32(new Float32Array([high]), []);
+  try {
+    return new MlxArray(
+      outArray("random_uniform", (o) =>
+        C.mlx_random_uniform(o, lo.handle, hi.handle, ptr(buf), BigInt(shape.length), dtype, key?.handle ?? 0n, s),
+      ),
+    );
+  } finally {
+    lo.dispose();
+    hi.dispose();
+  }
+}
+
 /** mx.random.split(key, num) → [num, 2] uint32 subkeys. */
 export function randomSplitNum(key: MlxArray, num: number, s: S = gpuStream): MlxArray {
   return new MlxArray(
@@ -627,4 +648,52 @@ export function quantizedMatmulQT(
       ),
     ),
   );
+}
+
+/** nn.Conv1d: input [B, L, C_in], weight [C_out, K, C_in/groups] → [B, L', C_out].
+ *  Depthwise (groups == channels) for the gated-DeltaNet causal conv; the model
+ *  left-pads with the conv-state cache, so padding is 0 here. */
+export function conv1d(
+  input: MlxArray, weight: MlxArray, stride = 1, padding = 0, dilation = 1,
+  groups = 1, s: S = gpuStream,
+): MlxArray {
+  return new MlxArray(
+    outArray("conv1d", (o) =>
+      C.mlx_conv1d(o, input.handle, weight.handle, stride, padding, dilation, groups, s),
+    ),
+  );
+}
+
+/** mx.split(a, indices, axis): split at the given boundary offsets along `axis`
+ *  into N+1 contiguous slices (mirrors numpy/mlx split-by-indices). */
+export function split(a: MlxArray, indices: number[], axis: number): MlxArray[] {
+  const shape = a.shape;
+  const ax = axis < 0 ? shape.length + axis : axis;
+  const dim = shape[ax]!;
+  const bounds = [0, ...indices, dim];
+  const out: MlxArray[] = [];
+  for (let i = 0; i < bounds.length - 1; i++) {
+    const start = shape.map(() => 0);
+    const stop = [...shape];
+    start[ax] = bounds[i]!;
+    stop[ax] = bounds[i + 1]!;
+    out.push(a.slice(start, stop));
+  }
+  return out;
+}
+
+/** nn.softplus: log(1 + exp(x)) == logaddexp(x, 0). */
+export function softplus(a: MlxArray, s: S = gpuStream): MlxArray {
+  const zero = scalarLike(0, a);
+  const r = logaddexp(a, zero, s);
+  zero.dispose();
+  return r;
+}
+
+/** nn.silu: x * sigmoid(x). */
+export function silu(a: MlxArray, s: S = gpuStream): MlxArray {
+  const sig = sigmoid(a, s);
+  const r = mul(a, sig, s);
+  sig.dispose();
+  return r;
 }

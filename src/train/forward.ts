@@ -22,6 +22,41 @@ import * as ops from "../mlx/ops";
 import { createCausalMask, type Cache, type Mask } from "../model/gemma4-base";
 import type { RuntimeModel } from "../model/factory";
 
+/** Stateless cache for the training forward. Training is always a single
+ *  offset-0 full-sequence pass, so `updateAndFetch` is a pure pass-through (no
+ *  buffer, no state mutation) and `makeMask` is the offset-0 causal/windowed
+ *  mask — identical to KVCache at offset 0. The statelessness is REQUIRED for
+ *  gradient checkpointing: mlx_checkpoint re-runs the layer closure during the
+ *  backward recompute, and a stateful (appending) cache would corrupt on the
+ *  second run. */
+export class TrainingCache implements Cache {
+  offset = 0;
+  updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
+    // Return fresh views: the caller disposes its input k/v right after (its
+    // contract with the real KVCache, which returns buffer slices). A
+    // full-range slice is a cheap view node; mlx keeps the source alive
+    // through it, so disposing the inputs is safe.
+    return [k.slice([0, 0, 0, 0], k.shape), v.slice([0, 0, 0, 0], v.shape)];
+  }
+  makeMask(N: number, windowSize: number | null): Mask {
+    if (N === 1) return { mode: "", arr: null };
+    if (windowSize === null || N <= windowSize) return { mode: "causal", arr: null };
+    return { mode: "array", arr: createCausalMask(N, 0, windowSize) };
+  }
+  state(): MlxArray[] {
+    return [];
+  }
+  isTrimmable(): boolean {
+    return true;
+  }
+  trim(_n: number): void {
+    /* offset is pinned at 0 */
+  }
+  dispose(): void {
+    /* owns no arrays */
+  }
+}
+
 /** Run a full-sequence forward for training.
  *  @param ids int32 array [B, L].
  *  @returns logits [B, L, V] (caller owns; dispose when done).
@@ -30,7 +65,7 @@ import type { RuntimeModel } from "../model/factory";
  *  has no padding and the model's stock mask path is used unchanged — the
  *  B=1 result is bit-identical to the original trainer. When some row is
  *  shorter than L, a padding-aware batched mask is injected. */
-export function trainForward(
+export function trainForwardHidden(
   model: RuntimeModel,
   ids: MlxArray,
   validLengths?: number[],
@@ -39,19 +74,45 @@ export function trainForward(
   const needsPadMask =
     validLengths !== undefined && validLengths.some((v) => v < L);
 
-  const realCache = model.makeCache();
-  const cache: Cache[] = needsPadMask
-    ? wrapWithBatchedMask(realCache, B, L, validLengths!)
-    : realCache;
-  try {
-    const h = model.forwardHidden(ids, cache);
-    const logits = model.logitsFromHidden(h);
-    h.dispose();
-    return logits;
-  } finally {
-    for (const c of realCache) c.dispose();
-    if (cache !== realCache) for (const c of cache) (c as BatchedMaskCache).disposeOwnMask();
+  if (needsPadMask) {
+    // B>1 padded path: dense cache wrapped with the per-row padding mask
+    // (unchanged; not yet checkpointed — B=1 is the checkpointing target).
+    const realCache = model.makeCache();
+    const cache = wrapWithBatchedMask(realCache, B, L, validLengths!);
+    try {
+      return model.forwardHidden(ids, cache);
+    } finally {
+      for (const c of realCache) c.dispose();
+      for (const c of cache) (c as BatchedMaskCache).disposeOwnMask();
+    }
   }
+
+  // B=1 / no padding: stateless offset-0 caches (one per donor layer), so the
+  // forward is pure and safe to recompute under gradient checkpointing.
+  const probe = model.makeCache();
+  const cache: Cache[] = probe.map(() => new TrainingCache());
+  for (const c of probe) c.dispose();
+  try {
+    return model.forwardHidden(ids, cache); // [B, L, hidden]
+  } finally {
+    for (const c of cache) c.dispose();
+  }
+}
+
+/** Full-sequence forward returning logits [B, L, V]. Convenience over
+ *  trainForwardHidden + logitsFromHidden. The SFT B=1 path deliberately skips
+ *  this and applies the LM head only at response positions (responseOnlyCe)
+ *  to avoid materializing the [B, L, vocab] logits — the dominant training
+ *  memory term at long context with a 262k vocab. */
+export function trainForward(
+  model: RuntimeModel,
+  ids: MlxArray,
+  validLengths?: number[],
+): MlxArray {
+  const h = trainForwardHidden(model, ids, validLengths);
+  const logits = model.logitsFromHidden(h);
+  h.dispose();
+  return logits;
 }
 
 /** Build the padding-aware additive-style boolean mask for one window type.

@@ -25,9 +25,20 @@ median-of-N with warmups discarded.
 | hash | model |
 |---|---|
 | `664aabaed233` | `MiniCPM5-1B-OptiQ-4bit` (sub-GB starter) |
-| `5b1101065d20` | `gemma-4-e4b-it-OptiQ-4bit` |
-| `dbfd2a779b03` | `gemma-4-12B-it-OptiQ-4bit` |
-| `fcdb12d740cd` | `gemma-4-26B-A4B-it-OptiQ-4bit` (MoE) |
+| `fcdb12d740cd` | `gemma-4-e4b-it-OptiQ-4bit` |
+| `5b1101065d20` | `gemma-4-12B-it-OptiQ-4bit` |
+| `dbfd2a779b03` | `gemma-4-26B-A4B-it-OptiQ-4bit` (MoE) |
+
+> **Legend corrected 2026-06-15.** An earlier revision had the gemma
+> hashes cycled (`5b…`→e4b, `dbfd…`→12B, `fcdb…`→26B). The mapping above is
+> the authoritative one from `tests/paths.ts` (`SNAPSHOT`=`5b…`=12B,
+> `SNAPSHOT_26B`=`dbfd…`=26B) and the e4b snapshot hash used across
+> `tests/*.test.ts` (`fcdb…`=e4b), corroborated by on-disk weight size
+> (e4b 7.0G · 12B 8.4G · 26B 18G). The **Performance** rows below were
+> labeled by the old legend; each gemma row has been relabeled to its true
+> model, re-identified by its gen-peak / steady-RSS fingerprint —
+> e4b≈6.6 GB, 12B≈9.0 GB, 26B≈17.7 GB — which is stable across runs. The
+> row *data* was correct; only the model labels moved.
 
 ---
 
@@ -67,9 +78,9 @@ decode tok/s · TTFT ms · server-ready s · steady RSS GB
 | model | mlx-bun (mixed) | mlx-bun (bf16) | mlx-lm (bf16) | optiq (mixed) |
 |---|---|---|---|---|
 | MiniCPM5-1B | **252.9** · 34 · 0.17 · 1.22 | — | — | 223.6 · 64 · 0.84 · 1.82 |
-| gemma-4-e4b | **25.9** · 85 · 0.38 · 9.46 | — | — | 25.5 · 326 · 1.24 · 9.86 |
-| gemma-4-12B | 54.2 · **45** · 0.47 · 18.25 | **55.0** · 44 · 0.47 | 52.3 · 228 · 0.77 · 4.87 | — |
-| gemma-4-26B | 55.7 · 44 · 0.36 · 7.14 | **57.3** · 48 · 0.36 | 53.5 · 218 · 0.98 · 7.55 | 53.4 · 221 · 0.78 · 7.53 |
+| gemma-4-e4b | 55.7 · 44 · 0.36 · 7.14 | **57.3** · 48 · 0.36 | 53.5 · 218 · 0.98 · 7.55 | 53.4 · 221 · 0.78 · 7.53 |
+| gemma-4-12B | **25.9** · 85 · 0.38 · 9.46 | — | — | 25.5 · 326 · 1.24 · 9.86 |
+| gemma-4-26B | 54.2 · **45** · 0.47 · 18.25 | **55.0** · 44 · 0.47 | 52.3 · 228 · 0.77 · 4.87 | — |
 
 Across every served model: mlx-bun has the fastest decode and the fastest
 TTFT/startup (2–5×), at ~0% server tax vs its own direct engine.
@@ -81,15 +92,15 @@ decode tok/s · prefill tok/s · gen-peak GB
 | model | mlx-bun (bf16) | mlx-bun (mixed) | mlx-lm (bf16) | optiq (mixed) |
 |---|---|---|---|---|
 | MiniCPM5-1B | 268.6 · 1817 · 1.01 | 241.9 · 1651 · 1.01 | **271.0** · 800 · 1.03 | 249.5 · 706 · 1.03 |
-| gemma-4-e4b | **26.0** · 168 · 8.99 | 25.8 · 166 · 8.99 | 25.9 · 141 · 9.10 | 25.7 · 137 · 9.00 |
-| gemma-4-12B | 55.0 · 206 · 17.71 | 53.9 · 208 · 17.71 | **55.6** · 187 · 17.78 | 55.0 · 190 · 17.72 |
-| gemma-4-26B | **57.1** · 304 · 6.61 | 55.7 · 283 · 6.61 | 56.5 · 373 · 6.65 | 56.1 · 368 · 6.65 |
+| gemma-4-e4b | **57.1** · 304 · 6.61 | 55.7 · 283 · 6.61 | 56.5 · 373 · 6.65 | 56.1 · 368 · 6.65 |
+| gemma-4-12B | **26.0** · 168 · 8.99 | 25.8 · 166 · 8.99 | 25.9 · 141 · 9.10 | 25.7 · 137 · 9.00 |
+| gemma-4-26B | 55.0 · 206 · 17.71 | 53.9 · 208 · 17.71 | **55.6** · 187 · 17.78 | 55.0 · 190 · 17.72 |
 
 Direct decode is at parity-to-slightly-behind mlx-lm (the residual host
 overhead per step); prefill leads on the larger models. See PLAN.md
 "Decode gap RESOLVED" for the root-cause/fix history.
 
-### Long context (gemma-4-e4b) — where the gap opens
+### Long context (gemma-4-12B) — where the gap opens
 
 decode tok/s · gen-peak GB
 
@@ -103,8 +114,11 @@ At 64k mlx-bun holds parity with mlx-lm on bf16 while optiq collapses to
 
 ### Attempted but failed (2026-06-14)
 
-- `gemma-4-e4b/optiq/kv=config`: `quantized_matmul` weight/scales
-  shape mismatch (upstream optiq bug; tracked).
+- `gemma-4-12B/optiq/kv=config`: `quantized_matmul` weight/scales
+  shape mismatch (upstream optiq bug; tracked). _(Relabeled from the
+  old-legend name "e4b" = hash `5b…` = 12B; no gen-peak was recorded for
+  this failed run, so the model id here is inferred from the legend, not
+  fingerprinted.)_
 
 ---
 

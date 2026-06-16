@@ -14,6 +14,8 @@ import { ValueAndGrad } from "../mlx/autograd";
 import * as ops from "../mlx/ops";
 import { evalAll } from "../mlx/ops";
 import type { RuntimeModel } from "../model/factory";
+import { Gemma4Model, type GradCheckpointCtx } from "../model/gemma4";
+import { setTrainingAttn } from "../model/flash-attention";
 import type { LoadedTokenizer } from "../tokenizer";
 import type { ChatTemplate } from "../chat-template";
 import type { Emit } from "../jobs/types";
@@ -46,6 +48,10 @@ export interface TrainConfig {
   stepsPerEval: number;
   betas: [number, number];
   weightDecay: number;
+  /** Gradient checkpointing: recompute layer activations in the backward pass
+   *  to bound memory at long context (mlx-lm grad_checkpoint; default in optiq).
+   *  Numerically identical to off — pure memory↔compute trade. */
+  gradCheckpoint: boolean;
   // DPO
   dpoBeta: number;
   dpoWarmupIters: number;
@@ -78,6 +84,8 @@ export const DEFAULT_TRAIN_CONFIG: TrainConfig = {
   stepsPerEval: 50,
   betas: [0.9, 0.999],
   weightDecay: 0.01,
+  gradCheckpoint: false, // default off until validated; flip to true (optiq default) after
+
   dpoBeta: 0.1,
   dpoWarmupIters: 0,
   dpoLrSchedule: "cosine",
@@ -183,6 +191,27 @@ async function sftLoop(
     }
   }, params.map((_, i) => i));
 
+  // Gradient checkpointing: group each layer's LoRA weights so forwardLayers
+  // can thread them as explicit checkpoint inputs (see Gemma4Model.gradCkpt).
+  // Checkpoints are created per forward and disposed after each step's backward.
+  let ckptCtx: GradCheckpointCtx | null = null;
+  if (cfg.gradCheckpoint && model instanceof Gemma4Model) {
+    const byLayer: GradCheckpointCtx["byLayer"] = new Map();
+    for (const t of lora.targets) {
+      const m = t.modulePath.match(/\.layers\.(\d+)\./);
+      if (!m) continue;
+      const li = Number(m[1]);
+      (byLayer.get(li) ?? byLayer.set(li, []).get(li)!).push(t.lw);
+    }
+    ckptCtx = { byLayer, keepAlive: [] };
+    model.gradCkpt = ckptCtx;
+  }
+
+  // Training attention: ops.sdpa's dK vjp is wrong, so route the forward
+  // through the validated flash kernel (correct dQ/dK/dV, handles the sliding
+  // window, memory-efficient). Cleared in finally.
+  setTrainingAttn("flash");
+
   // Pad with the eos id when available (a real sentinel token); padded
   // positions are excluded from both the loss and attention masks, so the
   // exact pad value never affects the result — it just must be a valid id.
@@ -199,10 +228,16 @@ async function sftLoop(
       const lossVal = value.toFloat32()[0]!;
       value.dispose();
 
-      const gradNorm = globalNorm(grads); // also evals grads
+      const gradNorm = globalNorm(grads); // also evals grads (runs the recompute)
       opt.step(grads);
       opt.evalState();
       clearCache();
+      if (ckptCtx) {
+        // Grads are materialized (globalNorm/evalState), so the recompute is
+        // done — free this step's checkpoint closures before the next forward.
+        for (const ck of ckptCtx.keepAlive) ck.dispose();
+        ckptCtx.keepAlive.length = 0;
+      }
 
       if (step % cfg.stepsPerReport === 0 || step === 1) {
         const elapsed = (Date.now() - t0) / 1000;
@@ -220,13 +255,22 @@ async function sftLoop(
       }
 
       if (valid.length > 0 && step % cfg.stepsPerEval === 0) {
+        // Eval is forward-only (no backward), so disable checkpointing for it —
+        // it adds no benefit and a forward-only pass fits without it.
+        if (ckptCtx) (model as Gemma4Model).gradCkpt = null;
         const vLoss = evalSftLoss(model, valid, cfg);
+        if (ckptCtx) (model as Gemma4Model).gradCkpt = ckptCtx;
         emit({ type: "metric", kind: "val", step, loss: vLoss, progress: step / cfg.iters });
       }
     }
   } finally {
+    setTrainingAttn(null);
     vag.dispose();
     opt.dispose();
+    if (ckptCtx) {
+      (model as Gemma4Model).gradCkpt = null;
+      for (const ck of ckptCtx.keepAlive) ck.dispose();
+    }
   }
   return { numIters: cfg.iters };
 }
