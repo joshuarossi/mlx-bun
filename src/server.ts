@@ -764,6 +764,14 @@ export function createServer(
         try { html = readFileSync(new URL("../docs/curve-designer.html", import.meta.url), "utf8"); } catch { /* binary: use embedded */ }
         return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       }
+      if (url.pathname === "/curve-terrain" && request.method === "GET") {
+        try {
+          const html = readFileSync(new URL("../docs/investigations/curve-terrain.html", import.meta.url), "utf8");
+          return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+        } catch {
+          return new Response("curve terrain artifact not found; run scripts/curve-terrain.ts first", { status: 404 });
+        }
+      }
       if (request.method === "GET" &&
           ["/status", "/chat", "/quantize", "/finetune", "/dataset"].includes(url.pathname)) {
         return Response.redirect(`/#${url.pathname}`, 302);

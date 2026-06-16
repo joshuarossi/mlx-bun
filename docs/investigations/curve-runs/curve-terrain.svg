@@ -1,0 +1,42 @@
+<svg viewBox="0 0 980 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="t d" font-family="ui-sans-serif,system-ui,sans-serif">
+<title id="t">Curve terrain map</title>
+<desc id="d">First-pass terrain of custom log-prob curves. X is mid y at one percent, Y is shoulder y at nine percent, Z is rough diversity delta after junk penalty.</desc>
+<rect width="980" height="560" fill="#f7f9fc"/>
+<text x="38" y="42" font-size="22" font-weight="700" fill="#172033">Curve Terrain Map</text>
+<text x="38" y="65" font-size="12.5" fill="#667085">mlx-community/gemma-4-e4b-it-OptiQ-4bit · N=2 · seed=7300 · default diversity 0.803 · score = diversity delta minus junk penalty</text>
+<g transform="translate(250 50)"><path d="M130.0 340.0 L187.5 360.5 L245.0 381.0 L302.5 285.2 " fill="none" stroke="#cbd5e1" stroke-width="1"/><path d="M74.6 315.3 L132.1 340.0 L189.6 360.7 L247.1 327.2 L304.6 276.9 " fill="none" stroke="#cbd5e1" stroke-width="1"/><path d="M23.6 322.2 L81.1 342.7 L138.6 418.5 L196.1 364.9 L253.6 397.3 " fill="none" stroke="#cbd5e1" stroke-width="1"/><path d="M-37.1 235.0 L20.4 255.4 L77.9 300.3 L135.4 324.3 L192.9 343.7 " fill="none" stroke="#cbd5e1" stroke-width="1"/><path d="M-100.0 408.8 L-42.5 364.0 L15.0 348.4 L72.5 318.5 L130.0 339.0 " fill="none" stroke="#cbd5e1" stroke-width="1"/><path d="M130.0 340.0 L74.6 315.3 L23.6 322.2 L-37.1 235.0 L-100.0 408.8 " fill="none" stroke="#cbd5e1" stroke-width="1"/><path d="M187.5 360.5 L132.1 340.0 L81.1 342.7 L20.4 255.4 L-42.5 364.0 " fill="none" stroke="#cbd5e1" stroke-width="1"/><path d="M245.0 381.0 L189.6 360.7 L138.6 418.5 L77.9 300.3 L15.0 348.4 " fill="none" stroke="#cbd5e1" stroke-width="1"/><path d="M302.5 285.2 L247.1 327.2 L196.1 364.9 L135.4 324.3 L72.5 318.5 " fill="none" stroke="#cbd5e1" stroke-width="1"/><path d="M304.6 276.9 L253.6 397.3 L192.9 343.7 L130.0 339.0 " fill="none" stroke="#cbd5e1" stroke-width="1"/><circle cx="-37.1" cy="235.0" r="9.0" fill="rgb(8,145,178)" stroke="white" stroke-width="2">
+  <title>mid=0.5, shoulder=28, diversity=0.999, score=0.196, junk=0.0%</title></circle><circle cx="20.4" cy="255.4" r="9.0" fill="rgb(8,145,178)" stroke="white" stroke-width="2">
+  <title>mid=1, shoulder=28, diversity=0.999, score=0.196, junk=0.0%</title></circle><circle cx="304.6" cy="276.9" r="9.0" fill="rgb(8,145,178)" stroke="white" stroke-width="2">
+  <title>mid=8, shoulder=10, diversity=1.000, score=0.197, junk=0.0%</title></circle><circle cx="302.5" cy="285.2" r="7.8" fill="rgb(17,131,195)" stroke="white" stroke-width="2">
+  <title>mid=4, shoulder=6, diversity=0.922, score=0.119, junk=0.0%</title></circle><circle cx="77.9" cy="300.3" r="8.4" fill="rgb(12,138,187)" stroke="white" stroke-width="2">
+  <title>mid=2, shoulder=28, diversity=0.960, score=0.157, junk=0.0%</title></circle><circle cx="74.6" cy="315.3" r="6.1" fill="rgb(29,111,220)" stroke="white" stroke-width="2">
+  <title>mid=0.5, shoulder=10, diversity=0.806, score=0.003, junk=0.0%</title></circle><circle cx="72.5" cy="318.5" r="9.0" fill="rgb(8,145,178)" stroke="white" stroke-width="2">
+  <title>mid=4, shoulder=50, diversity=1.000, score=0.197, junk=0.0%</title></circle><circle cx="23.6" cy="322.2" r="6.4" fill="rgb(27,115,216)" stroke="white" stroke-width="2">
+  <title>mid=0.5, shoulder=16, diversity=0.825, score=0.022, junk=0.0%</title></circle><circle cx="135.4" cy="324.3" r="8.3" fill="rgb(13,137,188)" stroke="white" stroke-width="2">
+  <title>mid=4, shoulder=28, diversity=0.955, score=0.152, junk=0.0%</title></circle><circle cx="247.1" cy="327.2" r="7.3" fill="rgb(20,125,203)" stroke="white" stroke-width="2">
+  <title>mid=4, shoulder=10, diversity=0.886, score=0.083, junk=0.0%</title></circle><circle cx="130.0" cy="339.0" r="9.0" fill="rgb(8,145,178)" stroke="white" stroke-width="2">
+  <title>mid=8, shoulder=50, diversity=1.000, score=0.197, junk=0.0%</title></circle><circle cx="130.0" cy="340.0" r="5.0" fill="rgb(37,99,235)" stroke="white" stroke-width="2">
+  <title>mid=0.5, shoulder=6, diversity=0.735, score=-0.068, junk=0.0%</title></circle><circle cx="132.1" cy="340.0" r="6.0" fill="rgb(30,110,221)" stroke="white" stroke-width="2">
+  <title>mid=1, shoulder=10, diversity=0.800, score=-0.003, junk=0.0%</title></circle><circle cx="81.1" cy="342.7" r="6.4" fill="rgb(27,115,216)" stroke="white" stroke-width="2">
+  <title>mid=1, shoulder=16, diversity=0.825, score=0.022, junk=0.0%</title></circle><circle cx="192.9" cy="343.7" r="8.3" fill="rgb(13,137,187)" stroke="white" stroke-width="2">
+  <title>mid=8, shoulder=28, diversity=0.956, score=0.153, junk=0.0%</title></circle><circle cx="15.0" cy="348.4" r="7.8" fill="rgb(17,131,195)" stroke="white" stroke-width="2">
+  <title>mid=2, shoulder=50, diversity=0.919, score=0.116, junk=0.0%</title></circle><circle cx="187.5" cy="360.5" r="5.0" fill="rgb(37,99,235)" stroke="white" stroke-width="2">
+  <title>mid=1, shoulder=6, diversity=0.735, score=-0.068, junk=0.0%</title></circle><circle cx="189.6" cy="360.7" r="6.0" fill="rgb(30,110,221)" stroke="white" stroke-width="2">
+  <title>mid=2, shoulder=10, diversity=0.799, score=-0.004, junk=0.0%</title></circle><circle cx="-42.5" cy="364.0" r="6.9" fill="rgb(23,121,208)" stroke="white" stroke-width="2">
+  <title>mid=1, shoulder=50, diversity=0.861, score=0.058, junk=0.0%</title></circle><circle cx="196.1" cy="364.9" r="6.8" fill="rgb(24,120,209)" stroke="white" stroke-width="2">
+  <title>mid=4, shoulder=16, diversity=0.855, score=0.052, junk=0.0%</title></circle><circle cx="245.0" cy="381.0" r="5.0" fill="rgb(37,99,235)" stroke="white" stroke-width="2">
+  <title>mid=2, shoulder=6, diversity=0.735, score=-0.068, junk=0.0%</title></circle><circle cx="253.6" cy="397.3" r="6.5" fill="rgb(26,116,213)" stroke="white" stroke-width="2">
+  <title>mid=8, shoulder=16, diversity=0.836, score=0.033, junk=0.0%</title></circle><circle cx="-100.0" cy="408.8" r="5.3" fill="rgb(35,103,230)" stroke="white" stroke-width="2">
+  <title>mid=0.5, shoulder=50, diversity=0.767, score=-0.047, junk=0.1%</title></circle><circle cx="138.6" cy="418.5" r="5.0" fill="rgb(37,99,235)" stroke="white" stroke-width="2">
+  <title>mid=2, shoulder=16, diversity=0.736, score=-0.067, junk=0.0%</title></circle></g>
+<g transform="translate(38 420)">
+<text x="0" y="0" font-size="14" font-weight="700" fill="#172033">Highest first-pass cells</text><text x="0" y="24" font-size="12.5" fill="#344054">1. mid 8, shoulder 50 · diversity 1.000 · score 0.197 · junk 0.0%</text><text x="0" y="46" font-size="12.5" fill="#344054">2. mid 4, shoulder 50 · diversity 1.000 · score 0.197 · junk 0.0%</text><text x="0" y="68" font-size="12.5" fill="#344054">3. mid 8, shoulder 10 · diversity 1.000 · score 0.197 · junk 0.0%</text><text x="0" y="90" font-size="12.5" fill="#344054">4. mid 1, shoulder 28 · diversity 0.999 · score 0.196 · junk 0.0%</text><text x="0" y="112" font-size="12.5" fill="#344054">5. mid 0.5, shoulder 28 · diversity 0.999 · score 0.196 · junk 0.0%</text></g>
+<g transform="translate(742 420)">
+<rect x="0" y="-18" width="170" height="12" fill="url(#grad)"/>
+<defs><linearGradient id="grad"><stop offset="0" stop-color="#2563eb"/><stop offset="1" stop-color="#0891b2"/></linearGradient></defs>
+<text x="0" y="10" font-size="11.5" fill="#667085">low score</text>
+<text x="112" y="10" font-size="11.5" fill="#667085">high score</text>
+<text x="0" y="34" font-size="11.5" fill="#667085">red points would indicate junk penalty</text>
+</g>
+<text x="526" y="528" text-anchor="middle" font-size="12" fill="#667085">x: mid y@1% · y: shoulder y@9% · z: rough terrain score</text>
+</svg>

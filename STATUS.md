@@ -16,6 +16,10 @@ transient front door that stays current. Product/UX north star:
 > nav tab). Identity falls back to the model's default chat recipe (the honest
 > baseline). Gated by `tests/curve-sampler.test.ts`. Built on the batched-serving
 > + expert-offload work below.
+> **UX bug fixed:** changing curve state (Reset / drag), prompt chips, engine,
+> or a new generation now clears old samples, old blind-test reveal state,
+> `LAST`/`TESTST`, and the visible "Copy text" action so results cannot appear to
+> belong to the wrong prompt/curve.
 >
 > ---
 > **`--batch N` now actually serves B>1** for BOTH full-attention (CPM) and

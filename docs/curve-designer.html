@@ -122,15 +122,14 @@ function evalSpline(sp,u){ const n=sp.X.length;
   let i=sp.segs.length-1; while(i>0&&u<sp.X[i])i--; const s=sp.segs[i]; return s.A+s.B*u+s.C*u*u+s.D*u*u*u; }
 
 // ---- plot mapping ----
-const VBW=460,VBH=360,PL=46,PR=14,PT=14,PB=34;
-// The AXIS domain extends a margin (AXM nats) BEYOND the control-point domain at
-// BOTH ends, so the two endpoint handles float in clear interior space with
-// symmetric clearance — the bottom one no longer welds to the crowded corner.
-// Points live in [UMIN,0]; the drawn axis spans the wider [AXLO,AXHI].
-const AXM=1.7, AXLO=UMIN-AXM, AXHI=0+AXM, AXSP=AXHI-AXLO;
-const px=u=>PL+(u-AXLO)/AXSP*(VBW-PL-PR), py=u=>PT+(AXHI-u)/AXSP*(VBH-PT-PB);
-const uX=mx=>AXLO+(mx-PL)/(VBW-PL-PR)*AXSP, uY=my=>AXHI-(my-PT)/(VBH-PT-PB)*AXSP, pct=u=>Math.exp(u)*100;
-const TICKS=[100,10,1,0.1,0.01,0.001];
+const VBW=460,VBH=360,PL=46,PR=14,PT=14,PB=34, FLOOR=1e-4;
+// The data domain [UMIN,0] maps EXACTLY onto the box, so its corners ARE the data
+// extremes: the first control point lives in the bottom-left corner, the last in
+// the top-right. Dragging an endpoint keeps it welded to the box edge — its X is
+// pinned (see clampPoint) and Y slides along that edge, like a tone-curve endpoint.
+const px=u=>PL+(1-u/UMIN)*(VBW-PL-PR), py=u=>PT+(u/UMIN)*(VBH-PT-PB);
+const uX=mx=>UMIN*(1-(mx-PL)/(VBW-PL-PR)), uY=my=>UMIN*((my-PT)/(VBH-PT-PB)), pct=u=>Math.exp(u)*100;
+const TICKS=[100,10,1,0.1,0.01,0.001,0.0001]; // 0.0001% = UMIN = the box floor/left edge, so the corner is labeled
 const PCOL=["#94a3b8","#0891b2","#7c3aed","#2563eb","#94a3b8"]; // endpoint, knee, center, shoulder, endpoint
 
 function draw(){
@@ -142,7 +141,7 @@ function draw(){
   for(const p of TICKS){ const u=ln(p/100);
     s+=`<line x1="${px(u)}" y1="${PT}" x2="${px(u)}" y2="${VBH-PB}" stroke="var(--grid)"/><line x1="${PL}" y1="${py(u)}" x2="${VBW-PR}" y2="${py(u)}" stroke="var(--grid)"/>`;
     s+=`<text x="${px(u)}" y="${VBH-PB+13}" text-anchor="middle" font-size="8.5" fill="var(--text3)">${p}%</text>`;
-    s+=`<text x="${PL-5}" y="${py(u)+3}" text-anchor="end" font-size="8.5" fill="var(--text3)">${p}%</text>`; }
+    s+=`<text x="${PL-9}" y="${py(u)+3}" text-anchor="end" font-size="8.5" fill="var(--text3)">${p}%</text>`; }
   s+=`<text x="${(PL+VBW-PR)/2}" y="${VBH-3}" text-anchor="middle" font-size="10" fill="var(--text2)">p_in  (model's true probability)</text>`;
   s+=`<line x1="${px(UMIN)}" y1="${py(UMIN)}" x2="${px(0)}" y2="${py(0)}" stroke="var(--text3)" stroke-width="1.4" stroke-dasharray="5 4"/>`;
   // smooth clipped curve
@@ -166,23 +165,33 @@ function drawSlopes(){
 }
 
 function clampPoint(i){
-  const P=C.points, lo=i>0?P[i-1]:null, hi=i<P.length-1?P[i+1]:null;
-  P[i].x_pct=Math.max(lo?lo.x_pct*1.03:0.00005, Math.min(hi?hi.x_pct*0.97:100, P[i].x_pct));
-  P[i].y_pct=Math.max(lo?lo.y_pct*1.03:0.00005, Math.min(hi?hi.y_pct*0.97:100, P[i].y_pct));
+  const P=C.points, n=P.length, lo=i>0?P[i-1]:null, hi=i<n-1?P[i+1]:null;
+  if(i===0) P[i].x_pct=FLOOR;          // first point welded to the LEFT edge of the box
+  else if(i===n-1) P[i].x_pct=100;     // last point welded to the RIGHT edge of the box
+  else P[i].x_pct=Math.max(lo.x_pct*1.03, Math.min(hi.x_pct*0.97, P[i].x_pct));
+  P[i].y_pct=Math.max(lo?lo.y_pct*1.03:FLOOR, Math.min(hi?hi.y_pct*0.97:100, P[i].y_pct));
 }
 function bindDrag(){
   const svg=document.getElementById("plot");
   svg.querySelectorAll(".kp").forEach(el=>{
     el.addEventListener("pointerdown",ev=>{ ev.preventDefault(); el.setPointerCapture(ev.pointerId);
+      clearGeneratedState();
       const i=+el.dataset.i, rect=svg.getBoundingClientRect();
       const move=e=>{ const mx=(e.clientX-rect.left)*(VBW/rect.width), my=(e.clientY-rect.top)*(VBH/rect.height);
-        C.points[i].x_pct=Math.min(100,Math.max(0.00005,pct(uX(mx)))); C.points[i].y_pct=Math.min(100,Math.max(0.00005,pct(uY(my)))); clampPoint(i); draw(); };
+        C.points[i].x_pct=Math.min(100,Math.max(FLOOR,pct(uX(mx)))); C.points[i].y_pct=Math.min(100,Math.max(FLOOR,pct(uY(my)))); clampPoint(i); draw(); };
       const up=()=>{ try{el.releasePointerCapture(ev.pointerId)}catch(_){}; window.removeEventListener("pointermove",move); window.removeEventListener("pointerup",up); };
       window.addEventListener("pointermove",move); window.addEventListener("pointerup",up);
     });
   });
 }
 function cfgJSON(){ return JSON.stringify({space:"logprob",points:C.points.map(p=>({x_pct:+p.x_pct.toFixed(4),y_pct:+p.y_pct.toFixed(5)})),monotonic:true}); }
+function clearGeneratedState(status=""){
+  document.getElementById("samples").innerHTML="";
+  document.getElementById("testArea").innerHTML="";
+  document.getElementById("copyTextBtn").style.display="none";
+  document.getElementById("status").textContent=status;
+  LAST=null; TESTST=null;
+}
 
 // ---- server calls ----
 const engBase=()=>document.getElementById("engine").value.replace(/\/(generate|signal)\/?$/,"");
@@ -196,6 +205,7 @@ async function loadSignal(){
 }
 async function generate(){
   const btn=document.getElementById("genBtn"), st=document.getElementById("status"), out=document.getElementById("samples");
+  clearGeneratedState();
   if(!monotone(C)){ st.textContent="curve not monotone."; return; }
   btn.disabled=true; const baseline=isIdentity(C); st.textContent=baseline?"generating (model default)…":"generating…"; out.innerHTML="";
   const payload={ prompt:document.getElementById("prompt").value,
@@ -226,11 +236,15 @@ async function runTest(){
   if(!monotone(C)){ st.textContent="curve not monotone."; return; }
   if(isIdentity(C)){ st.textContent="shape the curve first — identity IS the default, nothing to compare."; return; }
   tb.disabled=true; st.textContent="testing (default vs curve)…"; area.innerHTML="";
-  const prompt=document.getElementById("prompt").value, seed=+document.getElementById("seed").value||100;
+  const prompt=document.getElementById("prompt").value, fld=+document.getElementById("seed").value||0;
+  // Fresh INDEPENDENT seeds each run, so repeated Tests give a new pair (not the same
+  // two sentences with their A/B position flipped). Combined with the coin flip below
+  // this makes the randomness self-evident — no fixed "curve sentence" to track.
+  const seedD=fld+Math.floor(Math.random()*1e6), seedC=fld+Math.floor(Math.random()*1e6);
   try{
     const [d,c]=await Promise.all([
-      postGen({prompt,default:true,n:1,seed,max_tokens:60}),
-      postGen({prompt,curve:JSON.parse(cfgJSON()),n:1,seed:seed+7,max_tokens:60}),
+      postGen({prompt,default:true,n:1,seed:seedD,max_tokens:60}),
+      postGen({prompt,curve:JSON.parse(cfgJSON()),n:1,seed:seedC,max_tokens:60}),
     ]);
     const dText=d.samples[0].text, cText=c.samples[0].text, curveFirst=Math.random()<0.5;
     TESTST={ prompt, opts:[ curveFirst?cText:dText, curveFirst?dText:cText ], curveSlot: curveFirst?0:1, guessed:false };
@@ -269,7 +283,7 @@ function copyPair(){
 document.getElementById("engine").value=ENGINE_BASE+"/generate";
 if(location.protocol.startsWith("http")) document.getElementById("backLink").style.display="inline";
 document.getElementById("pchips").innerHTML=PROMPTS.map((p,i)=>`<button data-i="${i}">${p.slice(0,38)}…</button>`).join("");
-document.getElementById("pchips").querySelectorAll("button").forEach(b=>b.addEventListener("click",()=>{document.getElementById("prompt").value=PROMPTS[+b.dataset.i];loadSignal();}));
+document.getElementById("pchips").querySelectorAll("button").forEach(b=>b.addEventListener("click",()=>{document.getElementById("prompt").value=PROMPTS[+b.dataset.i];clearGeneratedState();loadSignal();}));
 document.getElementById("genBtn").addEventListener("click",generate);
 document.getElementById("testBtn").addEventListener("click",runTest);
 document.getElementById("sigBtn").addEventListener("click",loadSignal);
@@ -278,12 +292,12 @@ document.getElementById("copyTextBtn").addEventListener("click",()=>{ if(!LAST)r
   const txt="Prompt: "+LAST.prompt+"\n"+sampler+"\n\n"+LAST.samples.map((s,i)=>(i+1)+". "+(s.junk?"[JUNK] ":"")+s.text).join("\n\n");
   const st=document.getElementById("status"), done=()=>{st.textContent="text copied ✓";setTimeout(()=>{if(st.textContent==="text copied ✓")st.textContent=""},1500);};
   if(navigator.clipboard)navigator.clipboard.writeText(txt).then(done,done); else { const ta=document.createElement("textarea"); ta.value=txt; document.body.appendChild(ta); ta.select(); try{document.execCommand("copy")}catch(_){}; ta.remove(); done(); } });
-document.getElementById("resetBtn").addEventListener("click",()=>{C.points=identityPoints();draw();});
+document.getElementById("resetBtn").addEventListener("click",()=>{C.points=identityPoints();draw();clearGeneratedState();});
 document.getElementById("copyBtn").addEventListener("click",()=>{ const f=document.getElementById("cfgField"); f.select();
   const ok=document.getElementById("copyOk"), done=()=>{ok.textContent="Copied!";setTimeout(()=>ok.textContent="",1500);};
   if(navigator.clipboard)navigator.clipboard.writeText(f.value).then(done,()=>{document.execCommand("copy");done();}); else {document.execCommand("copy");done();} });
-document.getElementById("engine").addEventListener("change",()=>{probe();loadSignal();});
-document.getElementById("prompt").addEventListener("change",loadSignal);
+document.getElementById("engine").addEventListener("change",()=>{clearGeneratedState();probe();loadSignal();});
+document.getElementById("prompt").addEventListener("change",()=>{clearGeneratedState();loadSignal();});
 draw(); probe(); loadSignal();
 </script>
 </body></html>
