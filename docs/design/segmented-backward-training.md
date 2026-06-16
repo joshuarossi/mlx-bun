@@ -1,8 +1,10 @@
 # Segmented backward: long-context LoRA training that beats the reference
 
-**Status: Phase A (MiniCPM5) COMPLETE — bit-exact, no leak, trains end-to-end.
-2026-06-16. Phase B (e4b) is next.** §1–8 are the original design dossier; **§9 is
-the Phase-A implementation + results (read it first for current state).**
+**Status: Phase A (MiniCPM5) + Phase B (e4b) BOTH WORK — 2026-06-16.** MiniCPM5:
+bit-exact, no leak, chunk-eval 95.10 (beats the 91.70 baseline). e4b: forward
+bit-exact, grads bf16-class, trains at **8K context (17.5 GB) where the full
+backward OOMs (~70 GB)**. §1–8 are the original design dossier; **§9 = Phase A
+results, §10 = Phase B (e4b) results — read those first for current state.**
 
 ## 0. The one-paragraph version
 
@@ -343,9 +345,40 @@ memory win confirmed, no leak, trains end-to-end through `scripts/chunk-finetune
 
 ---
 
-## 10. Phase B (e4b) design — model side LANDED, trainer side specified (2026-06-16)
+## 10. Phase B (e4b) — BUILT + VALIDATED (2026-06-16)
 
-**Model side DONE** (`src/model/gemma4.ts`, additive — `forwardLayers` untouched):
+**Status: e4b segmented backward works.** `SegmentedBackwardGemma4`
+(`src/train/segmented.ts`) + the model-side `runLayerRange` are done, wired into
+the trainer (Gemma4 path), and validated on the real e4b
+(`scripts/segmented-grad-test-e4b.ts`):
+- **Forward bit-exact** vs the full value_and_grad (loss identical at every L).
+- **Grads bit-exact for single-consumer donor reuse** (2-segment split at 24:
+  0/258 targets off). With the natural 7-segment cut the donor K/V grad is
+  **0.97% off — bf16-class, NOT a logic bug**: the donor K/V cotangent is summed
+  across multiple sharer segments and that bf16 accumulation order differs from
+  mlx's (fp32 accumulation diverges MORE — 1.44% — confirming the full backward
+  itself accumulates in bf16). Since the producer's `dh_in` depends on `dKV`, the
+  ~1% smears thinly across all earlier layers. Fine for LoRA training.
+- **Memory (ops.sdpa, segmented-only — the full backward CRASHES at L≥4096):**
+  @512 8.3 GB, @2048 11.0 GB, @4096 **16.1 GB** (full backward ≈38 GB → OOM),
+  @8192 32 GB (seg6) → 21 GB (seg3) → **17.5 GB (seg2)**. Peak is tunable via
+  segment size (the §5 knob). **e4b now trains at 8K where the reference can't.**
+- **Trainer end-to-end** (e4b, SEQ=2048, SEG=4, real chunk data): peak 10 GB,
+  active flat (no leak), adapter saved.
+- TWO contiguity fixes were essential: `detachLeaf` must force a row-major copy
+  (`ops.contiguous`) — the donor K/V are TRANSPOSED views and `rawBytes` reads
+  the buffer linearly (without this the forward was 4% wrong); and the producer
+  segment outputs contiguous donor K/V to match the row-major cotangent.
+
+**To reach the ~10 GB @8K target** (currently 17.5 GB @8K, seg2): the resting is
+~6.6 GB (e4b weights), so ~3.4 GB transient is the budget. Next is the §5
+full-attention ISOLATION `planSegments` — put each O(L²) full-attn layer
+(5,11,17,23,29,35,41) in its own short segment so it isn't materialized alongside
+sliding-layer activations — plus possibly flash for the full layers (O(L); flash
+crashes on e4b at multi-K today — a separate bug). The mechanism + tunable knob
+are proven; this is a peak-optimization, not a blocker.
+
+**Model side** (`src/model/gemma4.ts`, additive — `forwardLayers` untouched):
 - `runLayerRange(h, aIdx, bIdx, cache, masks, perLayer, donorKvIn) -> {h, donorKvOut}`
   — runs layers `[aIdx,bIdx)`, slices `perLayer` per layer, threads KV-shared
   donors: a sharer reads its donor's K/V from `donorKvIn` (earlier segment) or

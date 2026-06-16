@@ -14,11 +14,14 @@ On PR [#9](https://github.com/joshuarossi/mlx-bun/pull/9) (`segmented-backward-t
 full backward (relNorm 0.0000% under flash), peak **10.91 → 3.29 GB @2048** (non-seg
 spikes to 21–26 GB @4096; seg stays 6–8 GB), **no memory leak**. Real 300-iter run:
 peak **6.51 GB** (baseline 25.47 GB), `chunk-eval` **95.10/100** — EXCEEDS the
-non-segmented baseline (91.70). **Phase B model side validated:** `runLayerRange` on
-`Gemma4Model` is **bit-exact** vs the e4b training forward
-(`scripts/gemma4-runlayerrange-test.ts`), threading per-layer-input + KV-shared
-donors {22,23}. Remaining: build `SegmentedBackwardGemma4` (donor-KV second boundary
-stream, docs §10) → e4b @8K. Enable via `TrainConfig.segmentSize` (layers
+non-segmented baseline (91.70). **Phase B (e4b) BUILT + validated:**
+`SegmentedBackwardGemma4` (`src/train/segmented.ts`, wired into the trainer) —
+forward bit-exact, grads bit-exact for single-consumer donor reuse / 0.97%
+bf16-class for the multi-consumer donor-KV accumulation, **trains at 8K context
+(17.5 GB) where the full backward OOMs (~70 GB)**; e4b trainer smoke @2048 = 10 GB,
+no leak, adapter saves. Peak tunable via segment size. Remaining (optimization, not
+a blocker): §5 full-attn isolation planSegments to push @8K toward ~10 GB. Full
+results: docs/design/segmented-backward-training.md §10. Enable via `TrainConfig.segmentSize` (layers
 per segment; 0 = off). Key files: `src/train/segmented.ts` (`SegmentedBackward`),
 `src/model/minicpm5.ts` (`runLayerRange`), `src/mlx/autograd.ts` (`Vjp` — the
 backward uses `mlx_vjp`, NOT a surrogate-loss `value_and_grad`, which leaked).
