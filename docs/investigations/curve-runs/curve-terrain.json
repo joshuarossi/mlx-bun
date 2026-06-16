@@ -1,0 +1,1179 @@
+{
+  "kind": "curve-terrain-v1",
+  "createdAt": "2026-06-15T21:32:23.548Z",
+  "baseUrl": "http://localhost:8090",
+  "model": "mlx-community/gemma-4-e4b-it-OptiQ-4bit",
+  "n": 2,
+  "seed": 7300,
+  "maxTokens": 48,
+  "axes": {
+    "midY": [
+      0.5,
+      1,
+      2,
+      4,
+      8
+    ],
+    "shoulderY": [
+      6,
+      10,
+      16,
+      28,
+      50
+    ]
+  },
+  "default": {
+    "diversity": 0.8030369796762122,
+    "openJunk": 0,
+    "recipe": {
+      "temperature": 1,
+      "topP": 0.95,
+      "topK": 64
+    },
+    "samples": {
+      "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+        "The fog, a thick, woolen blanket muffling the roar of the North Atlantic, seemed to possess a mind of its own that evening, and when it rolled in, it carried more than just salt spray.",
+        "The fog, a thick, woolen blanket muffling the roar of the Atlantic, usually brought only the monotonous rhythm of the beam sweeping the treacherous coastline, but tonight, something else drifted in with the mist."
+      ],
+      "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+        "Here are a few vivid and original ways to complete that thought, depending on the tone you want to strike:\n\n**Option 1: Poetic and Melancholic** (Focusing on the instability of the past)\n\n> \"",
+        "Here are a few options, depending on the *tone* you want to strike:\n\n**Option 1: Poetic & Illusory (Focus on manipulation)**\n> \"The strangest thing about human memory is that it doesn"
+      ]
+    }
+  },
+  "cells": [
+    {
+      "midY": 0.5,
+      "shoulderY": 6,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 0.5
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 6
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.735042006579431,
+      "distinct2": 0.8557692307692308,
+      "openJunk": 0,
+      "meanLen": 33,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick, woolen blanket muffling the roar of the North Atlantic, seemed to possess a mind of its own that evening, and it was in its uncanny pattern that Silas first saw the light.",
+          "The fog, a thick, woolen blanket muffling the roar of the Atlantic, usually brought only the monotonous rhythm of the beam sweeping the treacherous coastline, but today, something else drifted in with the mist."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the tone you want to strike:\n\n**Option 1: Poetic and Melancholic (Focus on distortion)**\n\n> \"The strangest thing about human",
+          "Here are a few options, depending on the *tone* you want to strike:\n\n**Option 1: Poetic & Illusory (Focus on manipulation)**\n\n> \"The strangest thing about human memory is **how it"
+        ]
+      },
+      "score": -0.06799497309678126
+    },
+    {
+      "midY": 1,
+      "shoulderY": 6,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 1
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 6
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.7350404850550593,
+      "distinct2": 0.8294534412955465,
+      "openJunk": 0,
+      "meanLen": 31,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick, woolen blanket muffling the roar of the ocean, finally dissolved enough for Silas to see the shape bobbing just beyond the beam of the revolving light.",
+          "The fog, a thick, woolen blanket muffling the roar of the Atlantic, usually brought only the monotonous rhythm of the beam sweeping the treacherous coastline, but today, something else drifted with it."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the tone you want to strike:\n\n**Option 1: Poetic and Melancholic (Focus on distortion)**\n\n> \"The strangest thing about human",
+          "Here are a few options, depending on the *tone* you want to strike:\n\n**Option 1: Poetic & Illusory (Focus on manipulation)**\n\n> \"The strangest thing about human memory is **how it"
+        ]
+      },
+      "score": -0.06799649462115298
+    },
+    {
+      "midY": 2,
+      "shoulderY": 6,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 2
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 6
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.735042006493251,
+      "distinct2": 0.8557692307692308,
+      "openJunk": 0,
+      "meanLen": 33.25,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick, woolen blanket muffling the roar of the ocean, finally dissolved enough for Silas to see the shape bobbing just beyond the rhythmic sweep of the lamp's beam.",
+          "The fog, a thick, woolen blanket muffling the roar of the Atlantic, usually brought only the ghosts of distant ships and the screech of gulls, but this morning, it seemed to carry a distinct, unnatural scent of brine and cloves"
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the tone you want to strike:\n\n**Option 1: Poetic and Melancholic (Focus on distortion)**\n\n> \"The strangest thing about human",
+          "Here are a few options, depending on the *tone* you want to strike:\n\n**Option 1: Poetic & Illusory (Focus on manipulation)**\n\n> \"The strangest thing about human memory is **how willingly"
+        ]
+      },
+      "score": -0.06799497318296122
+    },
+    {
+      "midY": 4,
+      "shoulderY": 6,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 4
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 6
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.9218364396543821,
+      "distinct2": 0.9375,
+      "openJunk": 0,
+      "meanLen": 26,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick, silent blanket that swallowed the horizon whole, was not merely atmospheric this evening; it was actively *watching*.",
+          "The fog, a heavy, woolen blanket muffling the roar of the ocean, began to pulse with an uncanny, rhythmic luminescence near the tower's granite base."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the specific tone you want to strike:\n\n**Option 1: Poetic & Melancholic (Focus on Fading/Distortion)**\n\n> \"The",
+          "Here are a few options, depending on the *tone* you want to set (haunting, beautiful, or messy):\n\n**Option 1: (Haunting & Unreliable)**\n> The strangest thing about human memory is"
+        ]
+      },
+      "score": 0.11879945997816987
+    },
+    {
+      "midY": 8,
+      "shoulderY": 6,
+      "valid": false
+    },
+    {
+      "midY": 0.5,
+      "shoulderY": 10,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 0.5
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 10
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.8063750131373082,
+      "distinct2": 0.8890572390572391,
+      "openJunk": 0,
+      "meanLen": 32.75,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick, woolen blanket muffling the roar of the North Atlantic, seemed to possess a mind of its own that evening, and when it finally banked against the tower's narrow lantern room, it brought with it something utterly",
+          "The fog, a thick, woolen shroud that had pressed against the granite tower for three days straight, finally yielded a shape that didn't belong to the sea."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the tone you want to strike:\n\n**Option 1: Poetic and Melancholic** (Focusing on the fragility and shaping power of memory)",
+          "Here are a few options, depending on the *tone* you want to strike:\n\n**Option 1: Poetic & Illusory (Focus on manipulation)**\n> \"The strangest thing about human memory is that it doesn"
+        ]
+      },
+      "score": 0.0033380334610959572
+    },
+    {
+      "midY": 1,
+      "shoulderY": 10,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 1
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 10
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.7996102507913873,
+      "distinct2": 0.8851398601398601,
+      "openJunk": 0,
+      "meanLen": 32.25,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick, woolen blanket muffling the roar of the ocean, finally dissolved enough for Silas to see the shape bobbing just beyond the beam of the revolving light—a glyph, impossibly intricate and not of any earthly craft",
+          "The fog, a thick, woolen shroud that had pressed against the granite tower for three days straight, finally yielded a shape that didn't belong to the sea."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the tone you want to strike:\n\n**Option 1: Poetic and Melancholic** (Focusing on the way memory distorts time)\n\n>",
+          "Here are a few options, depending on the *tone* you want to strike:\n\n**Option 1: Poetic & Illusory (Focus on manipulation)**\n> \"The strangest thing about human memory is that it doesn"
+        ]
+      },
+      "score": -0.003426728884824981
+    },
+    {
+      "midY": 2,
+      "shoulderY": 10,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 2
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 10
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.7993184562032293,
+      "distinct2": 0.8811274509803921,
+      "openJunk": 0,
+      "meanLen": 33.25,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick, woolen blanket muffling the roar of the ocean, finally dissolved enough for Silas to see the shape bobbing just beyond the beam of the revolving light—a glyph, impossibly intricate and not of any earthly craft",
+          "The fog, a thick, woolen blanket muffling the roar of the Atlantic, usually brought only the monotonous rhythm of the beam sweeping the treacherous coastline, but today, something else drifted with it."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the tone you want to strike:\n\n**Option 1: Poetic and Melancholic** (Focusing on fragmentation)\n\n> \"...it’s that",
+          "Here are a few options, depending on the *tone* you want to strike:\n\n**Option 1: Poetic & Illusory (Focus on manipulation)**\n> \"The strangest thing about human memory is that it doesn"
+        ]
+      },
+      "score": -0.0037185234729829597
+    },
+    {
+      "midY": 4,
+      "shoulderY": 10,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 4
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 10
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.8859985049508804,
+      "distinct2": 0.9225628930817611,
+      "openJunk": 0,
+      "meanLen": 29.75,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick, woolen blanket muffling the roar of the ocean, smelled oddly of cinnamon and something metallic when it finally parted just enough for Elias to see what lay bobbing near the rocks.",
+          "The fog, a heavy, woolen blanket muffling the roar of the Atlantic, usually served as a comfortable curtain for Silas, but tonight, it felt strangely inquisitive."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the specific tone you're aiming for:\n\n**Option 1: Focus on Distortion & Fluidity (Poetic/Philosophical)**\n\n> \"The",
+          "Here are a few options, depending on the *tone* you want to strike:\n\n**Poetic/Melancholy:**\n\n> **...how it doesn't capture experience; it spins narratives from the dust motes of what"
+        ]
+      },
+      "score": 0.08296152527466816
+    },
+    {
+      "midY": 8,
+      "shoulderY": 10,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 8
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 10
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.9997133610048354,
+      "distinct2": 0.9435817805383022,
+      "openJunk": 0,
+      "meanLen": 31.75,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick, silent blanket muffling the roar of the ocean, finally dissolved enough for Silas to see it—a perfect, pale ring, bobbing impossibly at the edge of the light's sweeping beam.",
+          "The fog, a relentless, pearlescent blanket pressed against the granite tower, usually muffled the world into a quiet ache, but tonight, it carried a sound that scraped against the deep-set stillness of the keeper’s solitude."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the specific tone you're aiming for:\n\n**Option 1: Focus on Emotional Dissonance (Poetic/Melancholic)**\n\n> \"The",
+          "Here are a few options, depending on the *tone* you want to set (haunting, beautiful, or messy):\n\n**1. Haunting/Unreliable (Focus on Distortion):**\n\n> \"The strangest thing about"
+        ]
+      },
+      "score": 0.1966763813286232
+    },
+    {
+      "midY": 0.5,
+      "shoulderY": 16,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 0.5
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 16
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.8245569982368381,
+      "distinct2": 0.9074074074074074,
+      "openJunk": 0,
+      "meanLen": 30.25,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick and suffocating blanket that swallowed the beam of the old light, carried with it the faintest, most impossible scent of salt and blooming nightshade.",
+          "The fog, a thick, woolen shroud that had pressed against the granite tower for three days straight, finally yielded a shape that didn't belong among the usual drifting debris."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the tone you want to strike:\n\n**Option 1: Surreal & Poetic (Focus on distortion)**\n> \"The strangest thing about human memory is",
+          "Here are a few options, depending on the *tone* you want to strike:\n\n**Option 1: Poetic & Illusory (Focus on manipulation)**\n> \"...how it spins narratives from vapor, lovingly crafting a past"
+        ]
+      },
+      "score": 0.02152001856062591
+    },
+    {
+      "midY": 1,
+      "shoulderY": 16,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 1
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 16
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.8245569979821027,
+      "distinct2": 0.9074074074074074,
+      "openJunk": 0,
+      "meanLen": 29.75,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick and suffocating blanket that swallowed the beam of the old light, carried with it the faintest, unsettling scent of brine and cinnamon.",
+          "The fog, a thick, woolen shroud that had pressed against the granite tower for three days straight, finally yielded a shape that didn't belong among the usual drifting debris."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the tone you want to strike:\n\n**Option 1: Surreal & Poetic (Focus on distortion)**\n> \"The strangest thing about human memory is",
+          "Here are a few options, depending on the *tone* you want to strike:\n\n**Option 1: Poetic & Illusory (Focus on manipulation)**\n> \"...how it spins narratives from vapor, lovingly crafting a ghost"
+        ]
+      },
+      "score": 0.021520018305890454
+    },
+    {
+      "midY": 2,
+      "shoulderY": 16,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 2
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 16
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.7357845140070087,
+      "distinct2": 0.8584905660377358,
+      "openJunk": 0,
+      "meanLen": 30.5,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick and suffocating blanket draped across the restless North Sea, finally seemed to shift, revealing something impossibly bright bobbing just beyond the edge of the lantern's focused beam.",
+          "The fog, a thick, woolen shroud that had pressed against the granite tower for three days straight, finally yielded a shape that didn't belong among the shifting grey."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the tone you want to strike:\n\n**Option 1: Surreal & Poetic (Focus on distortion)**\n> \"The strangest thing about human memory is",
+          "Here are a few options, depending on the *tone* you want to strike:\n\n**Option 1: Poetic & Illusory (Focus on manipulation)**\n> 'The strangest thing about human memory is **how it"
+        ]
+      },
+      "score": -0.06725246566920351
+    },
+    {
+      "midY": 4,
+      "shoulderY": 16,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 4
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 16
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.8547471637982426,
+      "distinct2": 0.9270833333333333,
+      "openJunk": 0,
+      "meanLen": 31.75,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick and suffocating blanket draped across the restless North Sea, smelled not of salt and brine as it usually did, but faintly, unnervingly, of crushed lavender.",
+          "The fog, a heavy, woolen shroud that had pressed against the granite cliffs for three days, finally parted just enough for Silas to see that it wasn't just mist rolling in, but something that bobbed in its sickly grey depths."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the tone you want to strike:\n\n**Option 1: Poetic and Melancholic** (Focusing on fragmentation)\n\n> \"...it’s that",
+          "Here are a few options, depending on the *tone* you want to strike:\n\n**Poetic/Melancholy:**\n\n> **...how it doesn't record reality, but spins beautiful, heartbreaking tapestries of what *"
+        ]
+      },
+      "score": 0.05171018412203032
+    },
+    {
+      "midY": 8,
+      "shoulderY": 16,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 8
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 16
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.8355937314846611,
+      "distinct2": 0.9019607843137255,
+      "openJunk": 0,
+      "meanLen": 33.25,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick and suffocating blanket draped across the restless North Sea, smelled oddly of brine and something metallic when it pressed against the glass of the lantern room.",
+          "The fog that had been clinging to the granite tower like a sodden shroud for the past week finally parted just enough for Silas to see that it wasn't just mist rolling in, but something deliberate bobbing in its center of vast,"
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the kind of tone you want:\n\n**Option 1: Surreal & Poetic (Focus on distortion)**\n> \"The strangest thing about human memory is",
+          "Here are a few options, depending on the *tone* you want to set (haunting, beautiful, or messy):\n\n**1. Haunting/Unreliable (Focus on Distortion):**\n\n> \"The strangest thing about"
+        ]
+      },
+      "score": 0.03255675180844886
+    },
+    {
+      "midY": 0.5,
+      "shoulderY": 28,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 0.5
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 28
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.9993744001798829,
+      "distinct2": 0.9141379310344828,
+      "openJunk": 0,
+      "meanLen": 32,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick and suffocating shroud clinging to the granite tower, finally began to thin just enough to reveal a shape that made Silas freeze mid-sweep.",
+          "The fog, a thick, woolen shroud that had pressed against the granite tower for three days straight, finally yielded a shape unlike any sea beast or drifting debris—a delicate, iridescent glimmer bobbing just beyond the beam of the lamp."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the mood you want to convey:\n\n**Option 1: Focusing on Distortion/Illusion (Eerie/Philosophical)**\n\n> \"...that it doesn",
+          "Here are a few options, depending on the *tone* you want to evoke:\n\n**Option 1: Poetic & Illusory (Focus on distortion)**\n> 'The strangest thing about human memory is **how it"
+        ]
+      },
+      "score": 0.19633742050367065
+    },
+    {
+      "midY": 1,
+      "shoulderY": 28,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 1
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 28
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.9994017966165918,
+      "distinct2": 0.9231175228712174,
+      "openJunk": 0,
+      "meanLen": 31.75,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick and suffocating shroud clinging to the granite tower, finally began to thin just enough to reveal a shape that made Silas freeze mid-sweep.",
+          "The fog, a thick, woolen shroud that had pressed against the granite tower for three days straight, finally yielded a shape unlike any sea beast or drifting debris—a delicate, iridescent glimmer bobbing just beyond the beam of the lamp."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the mood you want to convey:\n\n**Option 1: Focusing on Distortion/Illusion (Eerie/Philosophical)**\n\n> \"...that it doesn",
+          "Here are a few options, depending on the *tone* you want to strike:\n\n**Option 1: Poetic & Illusory (Focus on beauty/fragility)**\n\n> \"The strangest thing about human memory is"
+        ]
+      },
+      "score": 0.19636481694037955
+    },
+    {
+      "midY": 2,
+      "shoulderY": 28,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 2
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 28
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.9602932461181724,
+      "distinct2": 0.9279411764705883,
+      "openJunk": 0,
+      "meanLen": 33.5,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick and suffocating shroud clinging to the granite cliffs, had always been his constant companion, yet this morning, it carried the unsettling scent of brine mixed with something faintly metallic, something utterly out of place.",
+          "The fog that had been clinging to the granite tower like a wet shroud for three days suddenly seemed to thin, not by dissipating, but by parting as if drawn back by an unseen, insistent hand."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the mood you want to convey:\n\n**Option 1: Focusing on Distortion/Illusion (Eerie/Philosophical)**\n\n> \"...that it doesn",
+          "Here are a few options, depending on the *tone* you want to evoke:\n\n**Option 1: Poetic & Illusory (Focus on fragmentation)**\n> 'The strangest thing about human memory is **how it"
+        ]
+      },
+      "score": 0.1572562664419601
+    },
+    {
+      "midY": 4,
+      "shoulderY": 28,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 4
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 28
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.9547316689132591,
+      "distinct2": 0.9310141509433962,
+      "openJunk": 0,
+      "meanLen": 33.25,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick and suffocating shroud clinging to the granite cliffs, swallowed the horizon until old Silas felt as if he were marooned on a small, spinning island of salt spray and isolation.",
+          "The fog that had been clinging to the granite tower like a wet shroud for three days suddenly seemed to thin, not by dissipating, but by parting as if drawn back by an unseen, insistent hand."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the mood you want to convey:\n\n**Option 1: Surreal & Fragile (Focus on distortion)**\n> \"The strangest thing about human memory is",
+          "Here are a few options, depending on the *tone* you want to evoke:\n\n**Poetic/Melancholy:**\n\n> **...how it fabricates ghosts of emotion; we remember the *heat* of a goodbye more"
+        ]
+      },
+      "score": 0.15169468923704688
+    },
+    {
+      "midY": 8,
+      "shoulderY": 28,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 8
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 28
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.9564196688703219,
+      "distinct2": 0.9295350172215844,
+      "openJunk": 0,
+      "meanLen": 33.75,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick and suffocating shroud clinging to the granite cliffs surrounding the light, always felt ancient to Silas, until the morning it coughed up a perfectly round, obsidian sphere where no debris should have been.",
+          "The fog that had been clinging to the granite tower like a sodden shroud seemed to momentarily thicken, parting just enough for him to see the impossible glint of emerald light bobbing in the soupy grey."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the kind of tone you want:\n\n**Option 1: Surreal/Poetic (Focusing on inconsistency)**\n\n> \"The strangest thing about human memory",
+          "Here are a few options, depending on the *tone* you want to set:\n\n**Option 1: Poetic & Illusory (Focus on manipulation)**\n> **\"...it spins narratives like smoke back into shape, making"
+        ]
+      },
+      "score": 0.1533826891941097
+    },
+    {
+      "midY": 0.5,
+      "shoulderY": 50,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 0.5
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 50
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.7668929949210255,
+      "distinct2": 0.8417508417508417,
+      "openJunk": 0.0013297872340425532,
+      "meanLen": 35,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick and suffocating shroud clinging to the granite cliffs, had always been his constant companion, yet this morning, it carried the unsettling scent of brine mixed with something faintly metallic, something utterly out of place.",
+          "The fog, a thick, woolen shroud that had pressed against the granite of the灯 tower for three unforgiving nights, finally conceded a small patch of visibility, revealing something utterly out of place bobbing near the beam’s reach."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "Here are a few vivid and original ways to complete that thought, depending on the mood you want to convey:\n\n**Option 1: Surreal/Dreamlike (Focus on distortion)**\n> \"The strangest thing about human memory is",
+          "Here are a few options, depending on the *tone* you want to evoke:\n\n**Option 1: Poetic & Illusory (Focus on the unpredictable nature)**\n\n> \"The strangest thing about human memory is that"
+        ]
+      },
+      "score": -0.04678228262752719
+    },
+    {
+      "midY": 1,
+      "shoulderY": 50,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 1
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 50
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.8610722190990188,
+      "distinct2": 0.9166666666666667,
+      "openJunk": 0,
+      "meanLen": 35.75,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick and suffocating shroud clinging to the granite cliffs, had always been his constant companion, yet this morning, it carried the unsettling scent of brine mixed with something else—something metallic and strangely sweet.",
+          "The fog that had been a constant, milky blanket around the jagged cliffs for three days seemed to genuinely thin for a moment, revealing something that wasn't rock, or sea-foam-laced mist, but something impossibly smooth and"
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "The strangest thing about human memory is **that it is not a filing cabinet, but a constantly re-sculpting, unreliable dream that we are perpetually re-living in the hazy amber of nostalgia.**\n\nHere are a few alternative",
+          "Here are a few options, depending on the *tone* you want to evoke:\n\n**Option 1: Poetic & Illusory (Focus on the unpredictable nature)**\n\n> \"The strangest thing about human memory is that"
+        ]
+      },
+      "score": 0.05803523942280653
+    },
+    {
+      "midY": 2,
+      "shoulderY": 50,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 2
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 50
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.9190362089221435,
+      "distinct2": 0.9519741399214963,
+      "openJunk": 0,
+      "meanLen": 35,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick and suffocating shroud clinging to the granite cliffs, had always been his constant companion, yet this morning, it carried the unsettling scent of brine mixed with something else—something metallic and profoundly alien.",
+          "The fog that had been a constant, milky companion to Elias on the granite coast suddenly seemed to possess a texture—not damp mist, but something faintly iridescent—as it coiled up to meet the beam of his solitary light."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "The strangest thing about human memory is **that it is not a filing cabinet, but a constantly re-sculpting, unreliable dream; we don't retrieve the past, we possess the *best-guess echo* that our",
+          "Here are a few options, depending on the *tone* you want to evoke:\n\n**Option 1: Poetic & Illusory (Focus on fragmentation)**\n> 'The strangest thing about human memory is **how it"
+        ]
+      },
+      "score": 0.11599922924593131
+    },
+    {
+      "midY": 4,
+      "shoulderY": 50,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 4
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 50
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.9999989962838923,
+      "distinct2": 0.9852941176470589,
+      "openJunk": 0,
+      "meanLen": 34.75,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick and suffocating shroud clinging to the granite cliffs, swallowed the horizon until old Silas felt as if he were marooned not just on the jagged rock, but entirely outside the boundaries of sensible reality.",
+          "The fog that had been a constant, milky presence around the jagged granite cliffs seemed to thin, momentarily parting just enough for Arthur to see the impossible glint of emerald light bobbing in the soupy grey."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "The strangest thing about human memory is **that it is not a filing cabinet, but a constantly re-sculpting, wildly unreliable mirage—a museum of emotional highlights, where the details blur like forgotten dreams, the joyous moments",
+          "Here are a few options, depending on the *tone* you want to evoke:\n\n**Poetic & Ethereal:**\n\n> **...how it doesn't record reality; it spins narratives.** Memories are not perfect footage,"
+        ]
+      },
+      "score": 0.1969620166076801
+    },
+    {
+      "midY": 8,
+      "shoulderY": 50,
+      "valid": true,
+      "curve": {
+        "space": "logprob",
+        "points": [
+          {
+            "x_pct": 0.0001,
+            "y_pct": 0.0001
+          },
+          {
+            "x_pct": 0.1,
+            "y_pct": 0.1
+          },
+          {
+            "x_pct": 1,
+            "y_pct": 8
+          },
+          {
+            "x_pct": 9,
+            "y_pct": 50
+          },
+          {
+            "x_pct": 100,
+            "y_pct": 100
+          }
+        ],
+        "monotonic": true
+      },
+      "canaryJunk": 0,
+      "diversity": 0.9999990280369249,
+      "distinct2": 0.99,
+      "openJunk": 0,
+      "meanLen": 30.5,
+      "samples": {
+        "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.": [
+          "The fog, a thick and silent beast clinging to the lantern's glass, finally seemed to shift, revealing something impossibly bright where only the gray damp had reigned.",
+          "The fog that had been a constant companion to the North Beacon suddenly thickened into a viscous, milk-white curtain that swallowed the familiar silhouette of the rocky coast."
+        ],
+        "Complete this thought in a vivid, original way: 'The strangest thing about human memory is'": [
+          "The strangest thing about human memory is **that it is not a filing cabinet, but a constantly re-sculpting, wildly unreliable mirage—a museum of emotional highlights, where the details blur until the feeling takes the reins,",
+          "Here are a few options, depending on the *tone* you want to evoke:\n\n**Poetic & Ethereal:**\n\n> **...how it doesn't function as an archive, but as a watercolor:** vast and brilliant"
+        ]
+      },
+      "score": 0.19696204836071263
+    }
+  ]
+}
