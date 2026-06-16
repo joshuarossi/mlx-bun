@@ -488,10 +488,17 @@ export class SegmentedBackwardGemma4 {
   }
 
   /** Accumulate a reused-donor K/V cotangent (sum across consuming segments) in
-   *  bf16 — the array dtype, matching how the full backward accumulates (fp32
-   *  here diverges MORE: measured 1.44% vs 0.97%). The residual ~1% on donor
-   *  K/V grads is bf16 non-associativity (this pre-sum's order vs mlx's) — not a
-   *  logic bug (single-consumer is bit-exact) and well within training tolerance.
+   *  bf16. The donor K/V grad ends up ~0.5-1% (relNorm) off the full backward —
+   *  bf16 NON-ASSOCIATIVITY, established (not a logic bug), via:
+   *    - single-consumer reuse is BIT-EXACT (no sum to reorder);
+   *    - the error is flat in consumer-SEGMENT count and tracks SUMMAND count
+   *      (donor 22's 15 sharers ≈0.46%, donor 23's 3 sharers ≈0.000%);
+   *    - it is grouping-DEPENDENT (donor-22 grad moves ~0.5% from a 2- vs
+   *      9-consumer split) for BOTH bf16 AND fp32 accumulation.
+   *  fp32 cross-segment accumulation does NOT fix it (it's identical at the
+   *  natural cut and marginally worse at fine cuts): the dominant term is mlx's
+   *  WITHIN-vjp bf16 cotangent sum per consumer, which regrouping the sharers
+   *  changes — unfixable without an fp32 forward. bf16-class, fine for training.
    *  `dk`/`dv` are detached bf16 leaves; the sum is re-detached. */
   private accumulateDKV(dKV: Map<number, KvPair>, d: number, dk: MlxArray, dv: MlxArray): void {
     const prev = dKV.get(d);

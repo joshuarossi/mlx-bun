@@ -53,7 +53,11 @@ const nLayers = model.layers.length;
 const ranks = resolveRanks(model, { rank: RANK, rankScaling: "by_bits", targetModules: [...DEFAULT_TARGET_MODULES], numLayers: -1 });
 const lora = buildTrainableLora(model, ranks, 1.0, 0);
 attachForTraining(model, lora, "train");
-const ranges = planSegmentsBySize(nLayers, SEG);
+// RANGES env (JSON [[lo,hi],...]) overrides planSegmentsBySize — used to isolate
+// the consumer-segment count (fix the producer, split only the sharers).
+const ranges: [number, number][] = process.env.RANGES
+  ? (JSON.parse(process.env.RANGES) as [number, number][])
+  : planSegmentsBySize(nLayers, SEG);
 console.log(`### layers=${nLayers} lora targets=${lora.targets.length} segments=${ranges.length} reusedDonors=${[...model.reusedDonors]}`);
 
 const ids = Array.from({ length: L }, (_, i) => ((i * 13 + 5) % 4000) + 1);
@@ -109,6 +113,16 @@ for (let i = 0; i < refGrads.length; i++) {
 const relNorm = Math.sqrt(sumDiff2) / (Math.sqrt(sumRef2) || 1);
 const lossRel = Math.abs(refLoss - segLoss) / (Math.abs(refLoss) || 1);
 
+// SEG_DUMP: write the donor-22 k_proj SEG grad (A+B leaves) to a file, so the
+// SAME grad can be compared ACROSS groupings (2 vs 9 consumers). A correct (fp32)
+// sum is grouping-invariant; a lossy (bf16) sum is not.
+if (process.env.SEG_DUMP) {
+  const t = lora.targets.findIndex((x) => x.modulePath.includes("layers.22.self_attn.k_proj"));
+  const g = new Float32Array([...segGrads[t]!, ...segGrads[lora.targets.length + t]!]);
+  await Bun.write(process.env.SEG_DUMP, new Uint8Array(g.buffer));
+  console.log(`### dumped donor-22 k_proj seg-grad (${g.length} els) -> ${process.env.SEG_DUMP}`);
+}
+
 // Per-target breakdown: which LoRA leaves are off? grads are [A0..An, B0..Bn].
 const nt = lora.targets.length;
 const perTarget: { path: string; rel: number }[] = [];
@@ -122,9 +136,22 @@ for (let t = 0; t < nt; t++) {
 }
 perTarget.sort((x, y) => y.rel - x.rel);
 console.log("### worst targets (relNorm):");
-for (const t of perTarget.slice(0, 10)) console.log(`###   ${(t.rel * 100).toFixed(3)}%  ${t.path}`);
+for (const t of perTarget.slice(0, 5)) console.log(`###   ${(t.rel * 100).toFixed(3)}%  ${t.path}`);
 const offCount = perTarget.filter((t) => t.rel > 1e-3).length;
 console.log(`### targets with relNorm > 0.1%: ${offCount}/${nt}`);
+// Donor-K/V targets (22,23 k/v_proj) — the DIRECT recipients of dKV. A real dKV
+// bug should hit these hardest; pure dh-propagation noise would not single them out.
+const donorPaths = [22, 23].flatMap((d) => [`layers.${d}.self_attn.k_proj`, `layers.${d}.self_attn.v_proj`]);
+console.log("### donor-K/V targets (direct dKV recipients):");
+for (const t of perTarget.filter((x) => donorPaths.some((p) => x.path.includes(p))))
+  console.log(`###   ${(t.rel * 100).toFixed(3)}%  ${t.path}`);
+// Consumer-segment count: segments after the producer that hold a sharer of 22/23.
+const segOf = new Map<number, number>();
+ranges.forEach(([lo, hi], k) => { for (let i = lo; i < hi; i++) segOf.set(i, k); });
+const prodSeg = Math.max(segOf.get(22)!, segOf.get(23)!);
+const consSegs = new Set<number>();
+for (let i = model.numDonors; i < nLayers; i++) { const s = segOf.get(i)!; if (s > prodSeg) consSegs.add(s); }
+console.log(`### consumer segments=${consSegs.size}  (producer seg ${prodSeg}, ${ranges.length} total)`);
 console.log(`### grad match (vs full value_and_grad): relNorm=${(relNorm * 100).toFixed(4)}%  maxAbs=${maxAbs.toExponential(3)}`);
 console.log(`### loss rel=${(lossRel * 100).toFixed(6)}%   peak: full ${gb(refPeak)} -> seg ${gb(segPeak)} (saved ${gb(refPeak - segPeak)})`);
 const PASS = ATTN === "flash" ? 1e-3 : 1e-2;
