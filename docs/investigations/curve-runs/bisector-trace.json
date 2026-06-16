@@ -1,0 +1,1393 @@
+{
+  "candidate": "gemma-4-e4b-it-OptiQ-4bit",
+  "refTokens": 80,
+  "prompts": [
+    {
+      "tag": "creative",
+      "text": "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.",
+      "N": 41,
+      "tfMismatch": 0,
+      "nodes": [
+        {
+          "i": 0,
+          "rank2p": 0.0002,
+          "top1p": 0.9998,
+          "conv": 0.125,
+          "cls": "DIVERGE",
+          "forced": "A",
+          "refTok": "The",
+          "branch": " thick, clammy blanket of fog had swallowed the horizon for three days, and it was in the heart of that grey oblivion that Silas first saw the impossible."
+        },
+        {
+          "i": 1,
+          "rank2p": 0.0813,
+          "top1p": 0.6806,
+          "conv": 0.103,
+          "cls": "DIVERGE",
+          "forced": " relentless",
+          "refTok": " fog",
+          "branch": ", salt-laced fog had been a familiar shroud for Elias for twenty years, but this morning, it carried a scent that was decidedly not of the sea."
+        },
+        {
+          "i": 2,
+          "rank2p": 0.0286,
+          "top1p": 0.9473,
+          "conv": 0.105,
+          "cls": "DIVERGE",
+          "forced": " that",
+          "refTok": ",",
+          "branch": " clung to the granite tower was usually a familiar, damp shroud, but this morning, it carried a scent that was distinctly not of salt or sea."
+        },
+        {
+          "i": 3,
+          "rank2p": 0.1964,
+          "top1p": 0.6853,
+          "conv": 0.108,
+          "cls": "DIVERGE",
+          "forced": " thick",
+          "refTok": " a",
+          "branch": " and smelling of salt and ancient secrets, had been his constant companion for twenty years, but this morning, it carried a scent he didn't recognize—a faint, metallic tang mixed with something imposs"
+        },
+        {
+          "i": 4,
+          "rank2p": 0.0615,
+          "top1p": 0.7497,
+          "conv": 0.333,
+          "cls": "partial",
+          "forced": " damp",
+          "refTok": " thick",
+          "branch": ", suffocating blanket that swallowed the beam of the old lantern, usually brought with it the familiar scent of salt and distant trawlers, but tonight, a faint, metallic tang drifted up from the churning"
+        },
+        {
+          "i": 5,
+          "rank2p": 0.095,
+          "top1p": 0.9011,
+          "conv": 0.943,
+          "cls": "reconv",
+          "forced": " and",
+          "refTok": ",",
+          "branch": " suffocating blanket that swallowed the beam of the old lantern, usually brought a comforting silence, but tonight, it carried a sound that was decidedly not the sigh of the sea."
+        },
+        {
+          "i": 6,
+          "rank2p": 0.1372,
+          "top1p": 0.2904,
+          "conv": 0.706,
+          "cls": "reconv",
+          "forced": " woolen",
+          "refTok": " clam",
+          "branch": " blanket that swallowed the beam of the old Fresnel lens, usually brought a comforting silence, but tonight, it carried a sound that was decidedly not the sigh of the sea."
+        },
+        {
+          "i": 7,
+          "rank2p": 0.0001,
+          "top1p": 0.9999,
+          "conv": 0.364,
+          "cls": "partial",
+          "forced": "orous",
+          "refTok": "my",
+          "branch": " blanket that swallowed the beam of the old lantern, usually brought with it the familiar scent of salt and distant trawlers, but tonight, a faint, metallic tang drifted up from the churning grey."
+        },
+        {
+          "i": 8,
+          "rank2p": 0.4539,
+          "top1p": 0.4539,
+          "conv": 0.344,
+          "cls": "partial",
+          "forced": " shroud",
+          "refTok": " blanket",
+          "branch": " that swallowed the beam of the old lantern, usually brought with it the familiar scent of salt and distant trawlers, but tonight, a faint, metallic tang drifted up from the churning grey."
+        },
+        {
+          "i": 9,
+          "rank2p": 0.0344,
+          "top1p": 0.783,
+          "conv": 0.226,
+          "cls": "DIVERGE",
+          "forced": " clinging",
+          "refTok": " that",
+          "branch": " to the granite tower, usually brought only the familiar scent of salt and isolation, but tonight, it carried a faint, metallic tang that prickled the hairs on Silas’s neck."
+        },
+        {
+          "i": 10,
+          "rank2p": 0.1985,
+          "top1p": 0.5395,
+          "conv": 0.1,
+          "cls": "DIVERGE",
+          "forced": " seemed",
+          "refTok": " swallowed",
+          "branch": " to swallow the very sound of the waves, was the usual companion of Silas, but tonight it carried a scent that was utterly wrong—a metallic tang mixed with something faintly like crushed lavender."
+        },
+        {
+          "i": 11,
+          "rank2p": 0.0003,
+          "top1p": 0.9992,
+          "conv": 0.138,
+          "cls": "DIVERGE",
+          "forced": " sound",
+          "refTok": " the",
+          "branch": " and shape, had always been the sea's most reliable companion, but this morning, it carried a scent that was decidedly not salt."
+        },
+        {
+          "i": 12,
+          "rank2p": 0.2146,
+          "top1p": 0.4009,
+          "conv": 0.179,
+          "cls": "DIVERGE",
+          "forced": " horizon",
+          "refTok": " beam",
+          "branch": " whole, usually brought a comforting monotony to Silas’s solitary vigil, but this morning, it carried a scent that was decidedly not of salt and brine."
+        },
+        {
+          "i": 13,
+          "rank2p": 0.0066,
+          "top1p": 0.9814,
+          "conv": 0.259,
+          "cls": "partial",
+          "forced": "'",
+          "refTok": " of",
+          "branch": "s steady sweep, usually brought only the familiar scent of salt and isolation, but tonight, it carried a faint, metallic tang that prickled the hairs on Silas's neck"
+        },
+        {
+          "i": 14,
+          "rank2p": 0.0095,
+          "top1p": 0.973,
+          "conv": 0.692,
+          "cls": "reconv",
+          "forced": " his",
+          "refTok": " the",
+          "branch": " lamp whole, usually brought a comforting silence to the isolated tower, but tonight, it carried a sound that was decidedly not the sigh of the sea."
+        },
+        {
+          "i": 15,
+          "rank2p": 0.1384,
+          "top1p": 0.6202,
+          "conv": 0.72,
+          "cls": "reconv",
+          "forced": " lantern",
+          "refTok": " old",
+          "branch": ", usually brought a comforting silence to the isolated tower, but tonight, it carried a sound that was decidedly not the sigh of the sea."
+        },
+        {
+          "i": 16,
+          "rank2p": 0.2424,
+          "top1p": 0.2424,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " Fresnel",
+          "refTok": " lantern",
+          "branch": " lens, usually brought a comforting silence, but tonight, it carried a sound that was decidedly not the sigh of the sea."
+        },
+        {
+          "i": 17,
+          "rank2p": 0.132,
+          "top1p": 0.861,
+          "conv": 0.609,
+          "cls": "reconv",
+          "forced": " whole",
+          "refTok": ",",
+          "branch": ", usually brought a comforting silence to Silas, but tonight it carried a sound that was decidedly not the sigh of the sea."
+        },
+        {
+          "i": 18,
+          "rank2p": 0.1366,
+          "top1p": 0.1988,
+          "conv": 0.091,
+          "cls": "DIVERGE",
+          "forced": " seemed",
+          "refTok": " usually",
+          "branch": " to press against the glass of the tower, and it was in that suffocating grey that Silas first saw the impossible."
+        },
+        {
+          "i": 19,
+          "rank2p": 0.1668,
+          "top1p": 0.5821,
+          "conv": 0.19,
+          "cls": "DIVERGE",
+          "forced": " offered",
+          "refTok": " brought",
+          "branch": " only the familiar scent of salt and damp stone, but tonight, a faint, metallic tang drifted up from the churning grey."
+        },
+        {
+          "i": 20,
+          "rank2p": 0.3205,
+          "top1p": 0.3631,
+          "conv": 0.2,
+          "cls": "DIVERGE",
+          "forced": " with",
+          "refTok": " a",
+          "branch": " it the familiar scent of salt and distant trawlers, but tonight, a faint, metallic tang drifted up from the churning grey."
+        },
+        {
+          "i": 21,
+          "rank2p": 0.2056,
+          "top1p": 0.2992,
+          "conv": 0.263,
+          "cls": "partial",
+          "forced": " predictable",
+          "refTok": " comforting",
+          "branch": " silence, but tonight, a faint, rhythmic chiming drifted through the swirling grey."
+        },
+        {
+          "i": 22,
+          "rank2p": 0.1595,
+          "top1p": 0.298,
+          "conv": 0.222,
+          "cls": "DIVERGE",
+          "forced": " monotony",
+          "refTok": " silence",
+          "branch": " to Silas’s solitary vigil, but this morning, it carried a scent that was distinctly, unnervingly metallic."
+        },
+        {
+          "i": 23,
+          "rank2p": 0.4067,
+          "top1p": 0.5917,
+          "conv": 0.824,
+          "cls": "reconv",
+          "forced": " to",
+          "refTok": ",",
+          "branch": " Silas, but tonight it carried a sound that was decidedly not the sigh of the sea."
+        },
+        {
+          "i": 24,
+          "rank2p": 0.0059,
+          "top1p": 0.9855,
+          "conv": 0.875,
+          "cls": "reconv",
+          "forced": " yet",
+          "refTok": " but",
+          "branch": " tonight it carried a sound that was decidedly not the sigh of the sea."
+        },
+        {
+          "i": 25,
+          "rank2p": 0.104,
+          "top1p": 0.8704,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " this",
+          "refTok": " tonight",
+          "branch": " morning, it carried a sound that was decidedly not the sigh of the sea."
+        },
+        {
+          "i": 26,
+          "rank2p": 0.4059,
+          "top1p": 0.5906,
+          "conv": 0.929,
+          "cls": "reconv",
+          "forced": " it",
+          "refTok": ",",
+          "branch": " carried a sound that was decidedly not the sigh of the sea."
+        },
+        {
+          "i": 27,
+          "rank2p": 0.1287,
+          "top1p": 0.7407,
+          "conv": 0.077,
+          "cls": "DIVERGE",
+          "forced": " a",
+          "refTok": " it",
+          "branch": " faint, rhythmic tapping echoed from the swirling grey just beyond the tower's reach."
+        },
+        {
+          "i": 28,
+          "rank2p": 0.0514,
+          "top1p": 0.8034,
+          "conv": 0.167,
+          "cls": "DIVERGE",
+          "forced": " brought",
+          "refTok": " carried",
+          "branch": " a sound—a rhythmic, wet clicking that seemed to rise from the churning grey below."
+        }
+      ],
+      "depths": [
+        0,
+        1,
+        2,
+        3,
+        9,
+        10,
+        11,
+        12,
+        18,
+        19,
+        20,
+        22,
+        27,
+        28
+      ],
+      "diverge": 14,
+      "realForks": 10
+    },
+    {
+      "tag": "advice",
+      "text": "My 14-year-old wants to start lifting weights. Is that safe, and how should they begin?",
+      "N": 80,
+      "tfMismatch": 1,
+      "nodes": [
+        {
+          "i": 0,
+          "rank2p": 0.0334,
+          "top1p": 0.8616,
+          "conv": 0.101,
+          "cls": "DIVERGE",
+          "forced": "**",
+          "refTok": "It",
+          "branch": "Disclaimer:** I am an AI, not a medical professional or certified personal trainer. The information provided here is for general guidance only. **It is absolutely crucial that you consult with your pediatrician and a qualified"
+        },
+        {
+          "i": 1,
+          "rank2p": 0.2216,
+          "top1p": 0.7734,
+          "conv": 0.09,
+          "cls": "DIVERGE",
+          "forced": " is",
+          "refTok": "'",
+          "branch": " **generally safe** for a 14-year-old to start lifting weights, provided it is done **correctly, gradually, and with proper supervision.**\n\nWeight training is excellent for teenagers"
+        },
+        {
+          "i": 2,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 0.091,
+          "cls": "DIVERGE",
+          "forced": "Health",
+          "refTok": "s",
+          "branch": " professionals and sports medicine experts generally agree that **yes, it is safe for a 14-year-old to start lifting weights, provided it is done correctly, gradually, and with proper supervision"
+        },
+        {
+          "i": 3,
+          "rank2p": 0.208,
+          "top1p": 0.343,
+          "conv": 0.368,
+          "cls": "partial",
+          "forced": " wonderful",
+          "refTok": " great",
+          "branch": " that your 14-year-old is interested in getting into strength training! Exercise is incredibly beneficial for teenagers, as it supports bone density, muscle development, and overall health.\n\n**The"
+        },
+        {
+          "i": 4,
+          "rank2p": 0.0041,
+          "top1p": 0.9957,
+          "conv": 0.227,
+          "cls": "DIVERGE",
+          "forced": " your",
+          "refTok": " that",
+          "branch": " 14-year-old is interested in getting into strength training! It's a fantastic way to build healthy habits, improve body composition, and increase overall strength.\n\n**The short answer"
+        },
+        {
+          "i": 5,
+          "rank2p": 0.0017,
+          "top1p": 0.9978,
+          "conv": 0.297,
+          "cls": "partial",
+          "forced": " you",
+          "refTok": " your",
+          "branch": "'re thinking about this! Encouraging a 14-year-old to be active and interested in strength training is a positive step.\n\n**The short answer is: Yes, it can"
+        },
+        {
+          "i": 6,
+          "rank2p": 0.0319,
+          "top1p": 0.9328,
+          "conv": 0.082,
+          "cls": "DIVERGE",
+          "forced": " child",
+          "refTok": " ",
+          "branch": " is interested in getting active and building strength! For a 14-year-old, starting a weightlifting routine **can be safe and beneficial**, but it requires a **very careful, gradual"
+        },
+        {
+          "i": 7,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 0.167,
+          "cls": "DIVERGE",
+          "forced": "2",
+          "refTok": "1",
+          "branch": "1-year-old is interested in getting into weightlifting! At 14, their body is going through a lot of changes, so it's important to approach this safely and thoughtfully."
+        },
+        {
+          "i": 8,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 0.113,
+          "cls": "DIVERGE",
+          "forced": "3",
+          "refTok": "4",
+          "branch": "-year-old is interested in getting active and building strength! Starting weightlifting at 14 is **generally safe and can be very beneficial** for physical development, provided it is approached correctly."
+        },
+        {
+          "i": 9,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 0.629,
+          "cls": "reconv",
+          "forced": "th",
+          "refTok": "-",
+          "branch": "-year-old is interested in getting into strength training! It can be incredibly beneficial for their development, building bone density, increasing muscle mass, and improving overall health.\n\n**The short answer is"
+        },
+        {
+          "i": 10,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 0.739,
+          "cls": "reconv",
+          "forced": "Year",
+          "refTok": "year",
+          "branch": "-Old is interested in getting into weightlifting! Exercise is incredibly beneficial for teenagers, as it supports bone density, muscle development, and overall health.\n\n**The short answer is: Yes, it"
+        },
+        {
+          "i": 11,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 0.75,
+          "cls": "reconv",
+          "forced": "old",
+          "refTok": "-",
+          "branch": " is interested in getting into weightlifting! Exercise is incredibly beneficial for teenagers, as it supports bone density, muscle development, and overall health.\n\n**The short answer is: Yes, it can be"
+        },
+        {
+          "i": 12,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 0.761,
+          "cls": "reconv",
+          "forced": "olds",
+          "refTok": "old",
+          "branch": " is interested in getting into weightlifting! Exercise is incredibly beneficial for teenagers, as it supports bone density, muscle development, and overall health.\n\n**The short answer is: Yes, it can be"
+        },
+        {
+          "i": 13,
+          "rank2p": 0.1479,
+          "top1p": 0.851,
+          "conv": 0.03,
+          "cls": "DIVERGE",
+          "forced": " has",
+          "refTok": " is",
+          "branch": " an interest in fitness! Starting to lift weights at that age **can be safe and beneficial**, but it requires a **very careful, gradual, and knowledgeable approach.**\n\nThe key difference between lifting for"
+        },
+        {
+          "i": 14,
+          "rank2p": 0.1062,
+          "top1p": 0.8894,
+          "conv": 0.031,
+          "cls": "DIVERGE",
+          "forced": " showing",
+          "refTok": " interested",
+          "branch": " interest in fitness! Starting to lift weights at that age **can be safe and beneficial**, but it requires a **very careful, gradual, and knowledgeable approach.**\n\nThe key difference between lifting for an"
+        },
+        {
+          "i": 15,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 0.797,
+          "cls": "reconv",
+          "forced": " and",
+          "refTok": " in",
+          "branch": " motivated to start lifting weights! Exercise is incredibly beneficial for teenagers, supporting bone density, muscle development, and overall health.\n\n**The short answer is: Yes, it can be safe, but it"
+        },
+        {
+          "i": 16,
+          "rank2p": 0.3606,
+          "top1p": 0.5247,
+          "conv": 0.063,
+          "cls": "DIVERGE",
+          "forced": " fitness",
+          "refTok": " getting",
+          "branch": "! Starting to lift weights at that age can be beneficial for building strength, bone density, and overall health, but it's crucial to approach it safely and intelligently.\n\n**Disclaimer:** I am"
+        },
+        {
+          "i": 17,
+          "rank2p": 0.3172,
+          "top1p": 0.4072,
+          "conv": 0.048,
+          "cls": "DIVERGE",
+          "forced": " stronger",
+          "refTok": " into",
+          "branch": "! Starting weightlifting at that age can be beneficial for long-term health, bone density, and overall fitness, but **safety and proper technique are the absolute top priorities.**\n\nBecause they are still"
+        },
+        {
+          "i": 18,
+          "rank2p": 0.3143,
+          "top1p": 0.3562,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " weight",
+          "refTok": " weight",
+          "branch": "lifting! Exercise is incredibly beneficial for teenagers, promoting bone density, muscle development, and overall health.\n\n**The short answer is: Yes, it can be safe, but it must be approached with"
+        },
+        {
+          "i": 19,
+          "rank2p": 0.0757,
+          "top1p": 0.9217,
+          "conv": 0.85,
+          "cls": "reconv",
+          "forced": " training",
+          "refTok": "lifting",
+          "branch": "! Exercise is incredibly beneficial for teenagers, as it supports bone density, muscle development, and overall health.\n\n**The short answer is: Yes, it can be safe, but it must be approached"
+        },
+        {
+          "i": 20,
+          "rank2p": 0.0983,
+          "top1p": 0.8232,
+          "conv": 0.898,
+          "cls": "reconv",
+          "forced": ".",
+          "refTok": "!",
+          "branch": " Exercise is incredibly beneficial for teenagers, promoting bone density, muscle development, and overall health.\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme caution"
+        },
+        {
+          "i": 21,
+          "rank2p": 0.1669,
+          "top1p": 0.4004,
+          "conv": 0.345,
+          "cls": "partial",
+          "forced": " It",
+          "refTok": " Exercise",
+          "branch": " can be a fantastic way to build strength, improve body composition, and develop healthy habits.\n\n**The short answer is: Yes, it can be safe, but it absolutely must be approached with caution"
+        },
+        {
+          "i": 22,
+          "rank2p": 0.1114,
+          "top1p": 0.7267,
+          "conv": 0.737,
+          "cls": "reconv",
+          "forced": " at",
+          "refTok": " is",
+          "branch": " that age can be incredibly beneficial for building strong bones, developing coordination, and establishing healthy habits.\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme"
+        },
+        {
+          "i": 23,
+          "rank2p": 0.3148,
+          "top1p": 0.458,
+          "conv": 0.786,
+          "cls": "reconv",
+          "forced": " fantastic",
+          "refTok": " incredibly",
+          "branch": " for teenagers, as it supports bone growth, builds muscle, and improves overall health.\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme caution,"
+        },
+        {
+          "i": 24,
+          "rank2p": 0.2166,
+          "top1p": 0.756,
+          "conv": 0.509,
+          "cls": "reconv",
+          "forced": " important",
+          "refTok": " beneficial",
+          "branch": " for teenagers, as it supports bone density, muscle development, and overall health.\n\n**The short answer is: Yes, it can be safe and very beneficial, but it must be approached with extreme"
+        },
+        {
+          "i": 25,
+          "rank2p": 0.0718,
+          "top1p": 0.8751,
+          "conv": 0.815,
+          "cls": "reconv",
+          "forced": " at",
+          "refTok": " for",
+          "branch": " that age for building strong bones, developing muscle, and improving overall health.\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme caution, proper guidance"
+        },
+        {
+          "i": 26,
+          "rank2p": 0.0883,
+          "top1p": 0.8381,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " adolescents",
+          "refTok": " teenagers",
+          "branch": ", promoting bone density, muscle development, and overall health.\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme caution, proper guidance, and a"
+        },
+        {
+          "i": 27,
+          "rank2p": 0.1749,
+          "top1p": 0.6106,
+          "conv": 0.769,
+          "cls": "reconv",
+          "forced": "—",
+          "refTok": ",",
+          "branch": "it supports bone growth, builds muscle, improves cardiovascular health, and can be a fantastic outlet for stress.\n\n**The short answer is: Yes, it can be safe, but it must be approached"
+        },
+        {
+          "i": 28,
+          "rank2p": 0.2393,
+          "top1p": 0.2712,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " supporting",
+          "refTok": " promoting",
+          "branch": " bone density, muscle development, and overall health.\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme caution, proper guidance, and a focus on"
+        },
+        {
+          "i": 29,
+          "rank2p": 0.0611,
+          "top1p": 0.8439,
+          "conv": 0.84,
+          "cls": "reconv",
+          "forced": " healthy",
+          "refTok": " bone",
+          "branch": " development, building strength, and improving overall well-being.\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme caution, proper guidance, and a"
+        },
+        {
+          "i": 30,
+          "rank2p": 0.1265,
+          "top1p": 0.825,
+          "conv": 0.857,
+          "cls": "reconv",
+          "forced": " health",
+          "refTok": " density",
+          "branch": ", building strength, and improving overall fitness.\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme caution, proper guidance, and a focus on technique"
+        },
+        {
+          "i": 31,
+          "rank2p": 0.0046,
+          "top1p": 0.992,
+          "conv": 0.917,
+          "cls": "reconv",
+          "forced": " (",
+          "refTok": ",",
+          "branch": "which is crucial during growth), building strength, and improving overall health.\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme caution, proper guidance,"
+        },
+        {
+          "i": 32,
+          "rank2p": 0.309,
+          "top1p": 0.4496,
+          "conv": 0.851,
+          "cls": "reconv",
+          "forced": " strength",
+          "refTok": " muscle",
+          "branch": ", and overall health.\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme caution, proper guidance, and a focus on technique over weight.**\n\n"
+        },
+        {
+          "i": 33,
+          "rank2p": 0.0566,
+          "top1p": 0.8851,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " strength",
+          "refTok": " development",
+          "branch": ", and overall health.\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme caution, proper guidance, and a focus on technique over weight.**\n\n"
+        },
+        {
+          "i": 34,
+          "rank2p": 0.0032,
+          "top1p": 0.9967,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " (",
+          "refTok": ",",
+          "branch": "which is natural during puberty), and overall health.\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme caution, proper guidance, and a focus on"
+        },
+        {
+          "i": 35,
+          "rank2p": 0.0557,
+          "top1p": 0.8714,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " coordination",
+          "refTok": " and",
+          "branch": ", and overall health.\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme caution, proper guidance, and a focus on technique over weight.**\n\n"
+        },
+        {
+          "i": 36,
+          "rank2p": 0.0046,
+          "top1p": 0.9857,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " mental",
+          "refTok": " overall",
+          "branch": " health.\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme caution, proper guidance, and a focus on technique over weight.**\n\nHere is a"
+        },
+        {
+          "i": 37,
+          "rank2p": 0.0357,
+          "top1p": 0.9209,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " fitness",
+          "refTok": " health",
+          "branch": ".\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme caution, proper guidance, and a focus on technique over weight.**\n\nHere is a comprehensive"
+        },
+        {
+          "i": 38,
+          "rank2p": 0.0007,
+          "top1p": 0.9989,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " during",
+          "refTok": ".",
+          "branch": " a crucial growth period.\n\n**The short answer is: Yes, it can be safe, but it must be approached with extreme caution, proper guidance, and a focus on technique over weight.**\n\n"
+        },
+        {
+          "i": 39,
+          "rank2p": 0.0529,
+          "top1p": 0.9377,
+          "conv": 0.2,
+          "cls": "DIVERGE",
+          "forced": " However",
+          "refTok": "\n\n",
+          "branch": ", because they are still developing, **safety and proper technique are the absolute top priorities.**\n\nHere is a comprehensive guide on whether it's safe and how they should begin.\n\n---\n\n##"
+        },
+        {
+          "i": 40,
+          "rank2p": 0.2151,
+          "top1p": 0.7509,
+          "conv": 0.179,
+          "cls": "DIVERGE",
+          "forced": "However",
+          "refTok": "**",
+          "branch": ", because they are still developing, **safety and proper technique are the absolute top priorities.** They are not adults, and their bodies are still going through significant changes.\n\nHere is a comprehensive guide on"
+        },
+        {
+          "i": 41,
+          "rank2p": 0.1489,
+          "top1p": 0.6674,
+          "conv": 0.921,
+          "cls": "reconv",
+          "forced": "In",
+          "refTok": "The",
+          "branch": " short: Yes, it can be safe, but it must be approached with extreme caution, proper guidance, and a focus on technique over weight.**\n\nHere is a comprehensive guide on safety, progression,"
+        },
+        {
+          "i": 42,
+          "rank2p": 0.014,
+          "top1p": 0.9784,
+          "conv": 0.784,
+          "cls": "reconv",
+          "forced": " Short",
+          "refTok": " short",
+          "branch": " Answer: Yes, it can be safe, but it must be approached with extreme caution, proper guidance, and a focus on technique over weight.**\n\nBecause they are still developing, the approach needs to"
+        },
+        {
+          "i": 43,
+          "rank2p": 0.0002,
+          "top1p": 0.9996,
+          "conv": 0.306,
+          "cls": "partial",
+          "forced": ",",
+          "refTok": " answer",
+          "branch": " reassuring answer is: Yes, it can be safe, but it absolutely must be approached correctly, slowly, and with proper guidance.**\n\nBecause they are still developing, the focus should **never** be"
+        },
+        {
+          "i": 44,
+          "rank2p": 0.0032,
+          "top1p": 0.9924,
+          "conv": 0.171,
+          "cls": "DIVERGE",
+          "forced": " to",
+          "refTok": " is",
+          "branch": " \"Is it safe?\" is: Yes, it can be very safe and beneficial, *provided it is done correctly, gradually, and with proper supervision.***\n\nThe key difference between lifting weights as"
+        },
+        {
+          "i": 45,
+          "rank2p": 0.0466,
+          "top1p": 0.9359,
+          "conv": 0.971,
+          "cls": "reconv",
+          "forced": " yes",
+          "refTok": ":",
+          "branch": ", it can be safe, but it must be approached with extreme caution, proper guidance, and a focus on technique over weight.**\n\nHere is a comprehensive guide on safety, progression, and how to"
+        },
+        {
+          "i": 46,
+          "rank2p": 0.0004,
+          "top1p": 0.9991,
+          "conv": 0.848,
+          "cls": "reconv",
+          "forced": " It",
+          "refTok": " Yes",
+          "branch": " can be safe and very beneficial, but it must be approached with extreme caution, proper guidance, and a focus on technique over weight.**\n\nHere is a comprehensive guide on safety, progression, and how"
+        },
+        {
+          "i": 47,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 0.219,
+          "cls": "DIVERGE",
+          "forced": " (",
+          "refTok": ",",
+          "branch": "with proper guidance), it can be safe and very beneficial.**\n\nHowever, because they are still developing, the approach needs to be **smart, gradual, and focused on technique over weight.**\n\nHere"
+        },
+        {
+          "i": 48,
+          "rank2p": 0.0028,
+          "top1p": 0.9958,
+          "conv": 0.742,
+          "cls": "reconv",
+          "forced": " weight",
+          "refTok": " it",
+          "branch": "lifting can be safe and very beneficial for a 14-year-old, but it must be approached with extreme caution, proper guidance, and a focus on technique over weight.**\n\nHere"
+        },
+        {
+          "i": 49,
+          "rank2p": 0.2185,
+          "top1p": 0.7625,
+          "conv": 0.967,
+          "cls": "reconv",
+          "forced": " is",
+          "refTok": " can",
+          "branch": " safe, but it must be approached with extreme caution, proper guidance, and a focus on technique over weight.**\n\nHere is a comprehensive guide on safety, progression, and how to get started"
+        },
+        {
+          "i": 50,
+          "rank2p": 0.0036,
+          "top1p": 0.9963,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " absolutely",
+          "refTok": " be",
+          "branch": " be safe, but it must be approached with extreme caution, proper guidance, and a focus on technique over weight.**\n\nHere is a comprehensive guide on safety, progression, and how to"
+        },
+        {
+          "i": 51,
+          "rank2p": 0.0327,
+          "top1p": 0.9568,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " very",
+          "refTok": " safe",
+          "branch": " safe and beneficial, but it must be approached with extreme caution, proper guidance, and a focus on technique over weight.**\n\nHere is a comprehensive guide on safety, progression, and"
+        }
+      ],
+      "depths": [
+        0,
+        1,
+        2,
+        4,
+        6,
+        7,
+        8,
+        13,
+        14,
+        16,
+        17,
+        39,
+        40,
+        44,
+        47
+      ],
+      "diverge": 15,
+      "realForks": 7
+    },
+    {
+      "tag": "factual",
+      "text": "What is the capital of France, and roughly how many people live there?",
+      "N": 62,
+      "tfMismatch": 0,
+      "nodes": [
+        {
+          "i": 0,
+          "rank2p": 0.0004,
+          "top1p": 0.9996,
+          "conv": 0.213,
+          "cls": "DIVERGE",
+          "forced": "I",
+          "refTok": "The",
+          "branch": " can tell you that the capital of France is **Paris**.\n\nAs for the population, I do not have real-time or precise demographic data readily available. However, I can tell you that the"
+        },
+        {
+          "i": 1,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 0.6,
+          "cls": "reconv",
+          "forced": " **",
+          "refTok": " capital",
+          "branch": "capital of France** is **Paris**.\n\nAs for the population, the population of Paris proper is around **2.1 million** people. However, if you consider the larger metropolitan area (the"
+        },
+        {
+          "i": 2,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " city",
+          "refTok": " of",
+          "branch": " of France is **Paris**.\n\nAs for the population, the population of Paris proper is around **2.1 million** people. However, if you consider the larger metropolitan area (the urban area"
+        },
+        {
+          "i": 3,
+          "rank2p": 0.0001,
+          "top1p": 0.9999,
+          "conv": 0.638,
+          "cls": "reconv",
+          "forced": " **",
+          "refTok": " France",
+          "branch": "France** is **Paris**.\n\nAs for the population, the population of Paris proper is around **2.1 million** people. However, if you consider the larger metropolitan area (the urban agglomer"
+        },
+        {
+          "i": 4,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 0.614,
+          "cls": "reconv",
+          "forced": ",",
+          "refTok": " is",
+          "branch": " and the largest city, is **Paris**.\n\nAs for the population, the population of Paris proper is around **2.1 million** people. However, if you consider the larger metropolitan area ("
+        },
+        {
+          "i": 5,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 0.179,
+          "cls": "DIVERGE",
+          "forced": " $\\",
+          "refTok": " **",
+          "branch": "text{Paris}$.\n\nAs for the population, the population of Paris is quite large and can vary depending on whether you are referring to the city proper or the entire metropolitan area. However, as a"
+        },
+        {
+          "i": 6,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " Paris",
+          "refTok": "Paris",
+          "branch": "**.\n\nAs for the population, the population of Paris proper is around **2.1 million** people. However, if you consider the larger metropolitan area (the urban area), the population is significantly"
+        },
+        {
+          "i": 7,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 0.13,
+          "cls": "DIVERGE",
+          "forced": "**,",
+          "refTok": "**.",
+          "branch": " and it has a population of roughly **2.1 million** people (this figure can vary depending on whether you are referring to the city proper or the larger metropolitan area)."
+        },
+        {
+          "i": 8,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": "",
+          "refTok": "\n\n",
+          "branch": "\n\nAs for the population, the population of Paris proper is around **2.1 million** people. However, if you consider the larger metropolitan area (the urban area), the population is significantly higher"
+        },
+        {
+          "i": 9,
+          "rank2p": 0.1591,
+          "top1p": 0.8081,
+          "conv": 0.981,
+          "cls": "reconv",
+          "forced": "Regarding",
+          "refTok": "As",
+          "branch": " the population, the population of Paris proper is around **2.1 million** people. However, if you consider the larger metropolitan area (the urban area), the population is significantly higher, often estimated"
+        },
+        {
+          "i": 10,
+          "rank2p": 0.0012,
+          "top1p": 0.9988,
+          "conv": 0.176,
+          "cls": "DIVERGE",
+          "forced": " a",
+          "refTok": " for",
+          "branch": " city, the population of Paris is quite large, but the population of the entire metropolitan area (the greater Paris region) is significantly higher.\n\n* **City proper (Ville de Paris):** The"
+        },
+        {
+          "i": 11,
+          "rank2p": 0.023,
+          "top1p": 0.976,
+          "conv": 0.56,
+          "cls": "reconv",
+          "forced": " how",
+          "refTok": " the",
+          "branch": " many people live there, the population of Paris proper is around **2.1 million** people. However, if you consider the larger metropolitan area (the urban agglomeration), the population is significantly higher"
+        },
+        {
+          "i": 12,
+          "rank2p": 0.0004,
+          "top1p": 0.9991,
+          "conv": 0.143,
+          "cls": "DIVERGE",
+          "forced": " rough",
+          "refTok": " population",
+          "branch": " population, the city of Paris itself has a population of around **2.1 million** to **2.2 million** people (depending on the exact definition of the city limits used). However,"
+        },
+        {
+          "i": 13,
+          "rank2p": 0.0421,
+          "top1p": 0.9577,
+          "conv": 0.125,
+          "cls": "DIVERGE",
+          "forced": " of",
+          "refTok": ",",
+          "branch": " Paris, it can be tricky to give one single, perfectly accurate number because \"Paris\" can refer to the city proper (the administrative boundaries) or the larger metropolitan area.\n\n* **City Proper"
+        },
+        {
+          "i": 14,
+          "rank2p": 0.1949,
+          "top1p": 0.6803,
+          "conv": 0.213,
+          "cls": "DIVERGE",
+          "forced": " it",
+          "refTok": " the",
+          "branch": "'s important to distinguish between the city proper and the larger metropolitan area.\n\n* **City Proper (Ville de Paris):** The official population of the city of Paris is around **2.1"
+        },
+        {
+          "i": 15,
+          "rank2p": 0.3917,
+          "top1p": 0.5699,
+          "conv": 0.174,
+          "cls": "DIVERGE",
+          "forced": " city",
+          "refTok": " population",
+          "branch": " of Paris itself has a population of around **2.1 million** people (though this number can fluctuate). However, if you are referring to the entire urban area or the greater metropolitan area of Paris"
+        },
+        {
+          "i": 16,
+          "rank2p": 0.0004,
+          "top1p": 0.9991,
+          "conv": 0.422,
+          "cls": "partial",
+          "forced": " *",
+          "refTok": " of",
+          "branch": "of the city of Paris proper* is around **2.1 million** people. However, if you are referring to the larger metropolitan area (the urban agglomeration), the population is significantly higher,"
+        },
+        {
+          "i": 17,
+          "rank2p": 0.1146,
+          "top1p": 0.8471,
+          "conv": 0.477,
+          "cls": "partial",
+          "forced": " **",
+          "refTok": " Paris",
+          "branch": "Paris proper** is around **2.1 million** people. However, if you consider the larger metropolitan area (the *Île-de-France* region), the population is significantly higher,"
+        },
+        {
+          "i": 18,
+          "rank2p": 0.2525,
+          "top1p": 0.4717,
+          "conv": 0.14,
+          "cls": "DIVERGE",
+          "forced": " is",
+          "refTok": " proper",
+          "branch": " quite large and can vary depending on whether you are referring to the city proper (the administrative boundaries of the city) or the larger metropolitan area.\n\n*   **City Proper (Ville de Paris):"
+        },
+        {
+          "i": 19,
+          "rank2p": 0.1315,
+          "top1p": 0.8576,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " (",
+          "refTok": " is",
+          "branch": "the city proper) is around **2.1 million** people. However, if you consider the larger metropolitan area (the urban area), the population is significantly higher, often estimated to be around **"
+        },
+        {
+          "i": 20,
+          "rank2p": 0.104,
+          "top1p": 0.6783,
+          "conv": 0.488,
+          "cls": "partial",
+          "forced": " roughly",
+          "refTok": " around",
+          "branch": " around **2.1 million** people. However, if you consider the larger metropolitan area (the urban agglomeration), the population is significantly higher, often estimated to be around **11 million**"
+        },
+        {
+          "i": 21,
+          "rank2p": 0.0017,
+          "top1p": 0.9981,
+          "conv": 0.475,
+          "cls": "partial",
+          "forced": " ",
+          "refTok": " **",
+          "branch": "2.1 million people. However, if you consider the larger metropolitan area (the urban agglomeration), the population is significantly higher, often estimated to be around **11 million** or more,"
+        },
+        {
+          "i": 22,
+          "rank2p": 0.0001,
+          "top1p": 0.9998,
+          "conv": 0.205,
+          "cls": "DIVERGE",
+          "forced": "8",
+          "refTok": "2",
+          "branch": ".8 million** people (as of recent estimates, though this number can fluctuate). However, if you are referring to the larger metropolitan area (the *Île-de-France* region),"
+        },
+        {
+          "i": 23,
+          "rank2p": 0.033,
+          "top1p": 0.9631,
+          "conv": 0.526,
+          "cls": "reconv",
+          "forced": " million",
+          "refTok": ".",
+          "branch": "** people. However, if you consider the larger metropolitan area (the urban agglomeration), the population is significantly higher, often estimated to be around **11 million** or more."
+        },
+        {
+          "i": 24,
+          "rank2p": 0.0005,
+          "top1p": 0.9993,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": "2",
+          "refTok": "1",
+          "branch": " million** people. However, if you consider the larger metropolitan area (the urban area), the population is significantly higher, often estimated to be around **11 million** or more."
+        },
+        {
+          "i": 25,
+          "rank2p": 0.0534,
+          "top1p": 0.9464,
+          "conv": 0.389,
+          "cls": "partial",
+          "forced": " to",
+          "refTok": " million",
+          "branch": " 2.2 million** people. However, if you consider the larger metropolitan area (the *Île-de-France* region), the population is significantly higher, often estimated to be **"
+        },
+        {
+          "i": 26,
+          "rank2p": 0.0943,
+          "top1p": 0.8951,
+          "conv": 0.829,
+          "cls": "reconv",
+          "forced": " people",
+          "refTok": "**",
+          "branch": "**. However, if you consider the larger metropolitan area (the urban area), the population is significantly higher, often estimated to be around **11 million people** or more, depending on the exact boundaries"
+        },
+        {
+          "i": 27,
+          "rank2p": 0.0446,
+          "top1p": 0.8967,
+          "conv": 0.176,
+          "cls": "DIVERGE",
+          "forced": " to",
+          "refTok": " people",
+          "branch": " **2.2 million** people, though the larger metropolitan area (the *Île-de-France* region) has a population of over **11 million** people."
+        },
+        {
+          "i": 28,
+          "rank2p": 0.1626,
+          "top1p": 0.7286,
+          "conv": 0.606,
+          "cls": "reconv",
+          "forced": " (",
+          "refTok": ".",
+          "branch": "as of recent estimates). However, if you consider the larger metropolitan area (the urban agglomeration), the population is significantly higher, often estimated to be around **11 million** or more."
+        },
+        {
+          "i": 29,
+          "rank2p": 0.0159,
+          "top1p": 0.9837,
+          "conv": 0.25,
+          "cls": "partial",
+          "forced": "\n\n",
+          "refTok": " However",
+          "branch": "However, if you are referring to the larger metropolitan area (the *Île-de-France* region), the population is significantly higher, often cited as being over **11 million** people"
+        },
+        {
+          "i": 30,
+          "rank2p": 0,
+          "top1p": 1,
+          "conv": 0.968,
+          "cls": "reconv",
+          "forced": " if",
+          "refTok": ",",
+          "branch": " you consider the larger metropolitan area (the urban area), the population is significantly higher, often estimated to be around **11 million** or more."
+        },
+        {
+          "i": 31,
+          "rank2p": 0.0158,
+          "top1p": 0.9745,
+          "conv": 0.233,
+          "cls": "DIVERGE",
+          "forced": " the",
+          "refTok": " if",
+          "branch": " larger metropolitan area (the urban area of Paris) has a population of several million more, often cited as being over **11 million** people."
+        },
+        {
+          "i": 32,
+          "rank2p": 0.0001,
+          "top1p": 0.9998,
+          "conv": 0.69,
+          "cls": "reconv",
+          "forced": " we",
+          "refTok": " you",
+          "branch": " consider the larger metropolitan area (the urban agglomeration), the population is significantly higher, often estimated to be around **11 million** or more."
+        },
+        {
+          "i": 33,
+          "rank2p": 0.2588,
+          "top1p": 0.7036,
+          "conv": 0.679,
+          "cls": "reconv",
+          "forced": " are",
+          "refTok": " consider",
+          "branch": " referring to the larger metropolitan area (the urban area of Paris), the population is significantly higher, often estimated to be around **11 million** or more, depending on the exact"
+        },
+        {
+          "i": 34,
+          "rank2p": 0.0001,
+          "top1p": 0.9999,
+          "conv": 0.296,
+          "cls": "partial",
+          "forced": " a",
+          "refTok": " the",
+          "branch": " larger metropolitan area (the *Île-de-France* region), the population is significantly higher, often cited as being over **11 million** people."
+        },
+        {
+          "i": 35,
+          "rank2p": 0.2891,
+          "top1p": 0.5401,
+          "conv": 0.769,
+          "cls": "reconv",
+          "forced": " entire",
+          "refTok": " larger",
+          "branch": " urban area (the *métropole*), the population is significantly higher, often estimated to be around **11 million** or more."
+        },
+        {
+          "i": 36,
+          "rank2p": 0.3637,
+          "top1p": 0.5997,
+          "conv": 0.32,
+          "cls": "partial",
+          "forced": " urban",
+          "refTok": " metropolitan",
+          "branch": " area (the *métropole*), the population is significantly higher, often cited as being over **11 million** people."
+        },
+        {
+          "i": 37,
+          "rank2p": 0,
+          "top1p": 0.9999,
+          "conv": 0.458,
+          "cls": "partial",
+          "forced": " or",
+          "refTok": " area",
+          "branch": " urban area (which is often what people mean when asking about the population of a capital city), the population is significantly higher, often estimated to be **over "
+        },
+        {
+          "i": 38,
+          "rank2p": 0.0464,
+          "top1p": 0.9324,
+          "conv": 0.478,
+          "cls": "partial",
+          "forced": " of",
+          "refTok": " (",
+          "branch": " Paris (which is often what people mean when they ask about the population of the capital), the population is significantly higher, often estimated to be **over "
+        },
+        {
+          "i": 39,
+          "rank2p": 0.23,
+          "top1p": 0.7083,
+          "conv": 0.5,
+          "cls": "reconv",
+          "forced": "which",
+          "refTok": "the",
+          "branch": " is often what people mean when they ask about the population of the capital), the population is significantly higher, often estimated to be **over 11"
+        },
+        {
+          "i": 40,
+          "rank2p": 0.2039,
+          "top1p": 0.3361,
+          "conv": 0.381,
+          "cls": "partial",
+          "forced": " *",
+          "refTok": " urban",
+          "branch": "Île-de-France* region), the population is significantly higher, often cited as being over **11 million** people."
+        },
+        {
+          "i": 41,
+          "rank2p": 0.4812,
+          "top1p": 0.4812,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " agglomer",
+          "refTok": " area",
+          "branch": "ation), the population is significantly higher, often estimated to be around **11 million** or more."
+        },
+        {
+          "i": 42,
+          "rank2p": 0.3499,
+          "top1p": 0.5091,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " of",
+          "refTok": "),",
+          "branch": " Paris), the population is significantly higher, often estimated to be around **11 million** or more."
+        },
+        {
+          "i": 43,
+          "rank2p": 0.0009,
+          "top1p": 0.9982,
+          "conv": 0.278,
+          "cls": "partial",
+          "forced": " it",
+          "refTok": " the",
+          "branch": " is significantly larger, often cited as being over **11 million** people."
+        },
+        {
+          "i": 44,
+          "rank2p": 0.0022,
+          "top1p": 0.9974,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " number",
+          "refTok": " population",
+          "branch": " is significantly higher, often estimated to be around **11 million** or more."
+        },
+        {
+          "i": 45,
+          "rank2p": 0.0009,
+          "top1p": 0.9967,
+          "conv": 0.375,
+          "cls": "partial",
+          "forced": " of",
+          "refTok": " is",
+          "branch": " the Paris metropolitan area is significantly higher, often cited as being around **11 million** people or more, depending on"
+        },
+        {
+          "i": 46,
+          "rank2p": 0.106,
+          "top1p": 0.8877,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " much",
+          "refTok": " significantly",
+          "branch": " higher, often estimated to be around **11 million** or more."
+        },
+        {
+          "i": 47,
+          "rank2p": 0.0331,
+          "top1p": 0.9668,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " larger",
+          "refTok": " higher",
+          "branch": ", often estimated to be around **11 million** or more."
+        },
+        {
+          "i": 48,
+          "rank2p": 0.0005,
+          "top1p": 0.9988,
+          "conv": 0.846,
+          "cls": "reconv",
+          "forced": " and",
+          "refTok": ",",
+          "branch": " can be estimated to be around **11 million** or more, depending on the exact boundaries used for"
+        },
+        {
+          "i": 49,
+          "rank2p": 0.0192,
+          "top1p": 0.9245,
+          "conv": 1,
+          "cls": "reconv",
+          "forced": " usually",
+          "refTok": " often",
+          "branch": " estimated to be around **11 million** or more."
+        }
+      ],
+      "depths": [
+        0,
+        5,
+        7,
+        10,
+        12,
+        13,
+        14,
+        15,
+        18,
+        22,
+        27,
+        31
+      ],
+      "diverge": 12,
+      "realForks": 3
+    }
+  ]
+}
