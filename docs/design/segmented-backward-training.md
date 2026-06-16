@@ -447,8 +447,15 @@ are proven; this is a peak-optimization, not a blocker.
   `mlx_lm.lora`'s actual `default_loss` and `nn.value_and_grad` against ours on the
   SAME fixed 2048-token input (`scripts/parity-vs-mlxlm.ts`,
   `scripts/grad-parity-vs-mlxlm.ts`; mlx-lm side in `/tmp/mlxlm-*-parity.py`):
-  - **forward + loss: BIT-EXACT** (our base e4b loss @2048 = mlx-lm's 15.57043457,
-    abs diff 0);
+  - **forward + loss:** verified across 6 mask spans (varying promptLen incl. the
+    edges ntoks=2047 and ntoks=1), checking the SUMMATION not just one number:
+    the **denominator** (our `M = (len-1)-max(0,promptLen-1)`) == mlx-lm's
+    `ntoks = mask.sum()` BIT-EXACT on every span; **response-only CE == full-masked
+    CE** on every span (so response-only is a pure memory optimization, not a
+    parity risk); the loss is BIT-EXACT vs mlx-lm on 4/6 spans and **0.5 float32-ulp**
+    (~1e-6, ~5e-5%) on 2 — a logsumexp/reduction f32 non-associativity (full-masked
+    shows the same residual, so it's NOT the response-only summation), far below
+    bf16 and harmless;
   - **gradients (FULL value_and_grad = our non-segmented trainer): BIT-EXACT** — dB
     over all 42 q_proj layers (identical injected A, B=0, rank 8, scale 20) matches
     mlx-lm 0.000e+0. So mlx-bun's non-segmented training equals mlx-lm's bit-for-bit
