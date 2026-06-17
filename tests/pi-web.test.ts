@@ -22,6 +22,27 @@ describe("mapEventToFrames", () => {
     expect(mapEventToFrames(ev({ type: "turn_end" }))).toEqual([{ type: "turn_end" }]);
   });
 
+  it("surfaces a turn that ended in error (stopReason 'error') as an error frame, not a silent empty turn", () => {
+    // The Qwen3.5/MiniCPM5 'no messages' bug: a 400'd model request completes the
+    // turn with stopReason 'error' WITHOUT throwing, so the browser otherwise sees
+    // nothing. The mapper must emit a visible error frame ahead of turn_end.
+    const frames = mapEventToFrames(
+      ev({ type: "turn_end", message: { stopReason: "error", errorMessage: "Unexpected message role." } }),
+    );
+    expect(frames).toEqual([
+      { type: "error", message: "Unexpected message role." },
+      { type: "turn_end" },
+    ]);
+  });
+
+  it("falls back to a generic error message when errorMessage is absent", () => {
+    const frames = mapEventToFrames(ev({ type: "turn_end", message: { stopReason: "error" } }));
+    expect(frames).toEqual([
+      { type: "error", message: "the model request failed" },
+      { type: "turn_end" },
+    ]);
+  });
+
   it("maps text_delta assistant events to text_delta frames", () => {
     const frames = mapEventToFrames(
       ev({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hi" } }),

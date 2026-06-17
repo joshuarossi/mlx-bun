@@ -307,8 +307,20 @@ export function mapEventToFrames(event: AgentSessionEvent): ServerMessage[] {
   switch (event.type) {
     case "turn_start":
       return [{ type: "turn_start" }];
-    case "turn_end":
+    case "turn_end": {
+      // A turn can complete with stopReason "error" (e.g. the model request
+      // 400'd) WITHOUT any error being thrown up to the WS message handler, so
+      // it would otherwise vanish — the browser just sees an empty turn ("no
+      // messages"). Surface it as an error frame so the UI can show it.
+      const msg = (event as { message?: { stopReason?: string; errorMessage?: string } }).message;
+      if (msg?.stopReason === "error") {
+        return [
+          { type: "error", message: msg.errorMessage || "the model request failed" },
+          { type: "turn_end" },
+        ];
+      }
       return [{ type: "turn_end" }];
+    }
     case "message_update": {
       const ame = event.assistantMessageEvent;
       if (ame.type === "text_delta") return [{ type: "text_delta", delta: ame.delta }];
