@@ -10,40 +10,46 @@ logits **bit-exact** against the Python reference; served over HTTP the
 **1.8×** mlx-lm at 8k context; cold start → first token of a cached
 prompt in **394 ms**. Full table: [benchmarks](#benchmarks).
 
-## Quickstart
+## Getting started
 
 **You need:** an Apple Silicon Mac (MLX is Metal-only, so macOS only by
-design), [Bun](https://bun.sh) ≥ 1.3.14, and
-[Homebrew](https://brew.sh).
-
-**1. Install the MLX C library and the repo:**
+design) and [Bun](https://bun.sh) ≥ 1.3.14 — that's the whole
+toolchain. No Python, no Homebrew, no native library to install by hand.
 
 ```sh
-brew install mlx-c          # installs libmlxc.dylib + libmlx
-git clone <this repo> && cd mlx-bun
+# 1. Install Bun
+curl -fsSL https://bun.sh/install | bash
+exec $SHELL -l
+
+# 2. Clone, install, link the CLI
+git clone https://github.com/joshuarossi/mlx-bun.git && cd mlx-bun
 bun install
+bun run link-cli                 # adds the `mlx-bun` command — or run `bun src/cli.ts <verb>`
+
+# 3. Run it — that's the whole thing
+mlx-bun
 ```
 
-**2. Get a model.** The built-in downloader is resumable (interrupt it,
-rerun, it continues with a Range request) and checksum-verifies every
-file. It writes the standard Hugging Face cache layout, so models you
-already have are found as-is:
+Bare `mlx-bun` is an alias for `mlx-bun serve`. On its first run, with no
+model named, it does everything for you:
 
-```sh
-bun src/cli.ts get mlx-community/MiniCPM5-1B-OptiQ-4bit
-```
+1. pulls the MLX native runtime (~52 MB) into `~/Library/Caches/mlx-bun/`;
+2. downloads the sub-GB `MiniCPM5-1B` starter and serves it, so you're
+   chatting in well under a minute;
+3. starts downloading `gemma-4-e4b` (the stronger 4B model) in the
+   background — it becomes the default on your next `mlx-bun serve`, on a
+   16 GB+ Mac;
+4. opens the chat UI in your browser at
+   [`http://localhost:8090/#/chat`](http://localhost:8090/#/chat)
+   (pass `--no-open` to skip).
 
-(Models fetched with the HF CLI work too — same cache. Gated repos use
-your existing `hf auth login` token automatically.)
+Want a specific model instead? Name it — `mlx-bun serve e4b` (substring
+match against your downloaded models), grabbing it first with
+`mlx-bun get <repo-id>` if you don't have it. See
+[Supported models](#supported-models) for the full list and what fits
+your machine.
 
-**3. Index your cache and serve:**
-
-```sh
-bun src/cli.ts scan                # index the HF cache into the registry
-bun src/cli.ts serve e4b           # fuzzy-matches the model; default port 8090
-```
-
-**4. Talk to it** (OpenAI-compatible API — any OpenAI client works):
+**Prefer the API?** It's OpenAI-compatible — any OpenAI client works:
 
 ```sh
 curl http://localhost:8090/v1/chat/completions \
@@ -66,8 +72,8 @@ Currently MiniCPM5 plus the Gemma-4 OptiQ quants:
 
 | Model | Download | Fits on | Vision | Notes |
 |---|---|---|---|---|
-| [`mlx-community/MiniCPM5-1B-OptiQ-4bit`](https://huggingface.co/mlx-community/MiniCPM5-1B-OptiQ-4bit) | 0.92 GB | 8 GB | — | Sub-GB starter; bit-exact 100-step oracle parity (bf16 + mixed KV), tool calling + agent loop verified |
-| [`mlx-community/gemma-4-e4b-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-e4b-it-OptiQ-4bit) | 7.0 GB | 16 GB | — | ~54 tok/s; good first model |
+| [`mlx-community/MiniCPM5-1B-OptiQ-4bit`](https://huggingface.co/mlx-community/MiniCPM5-1B-OptiQ-4bit) | 0.92 GB | 8 GB | — | Sub-GB option for 8 GB machines; bit-exact 100-step oracle parity (bf16 + mixed KV), tool calling + agent loop verified |
+| [`mlx-community/gemma-4-e4b-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-e4b-it-OptiQ-4bit) | 7.0 GB | 16 GB | — | **Recommended starter** (16 GB+); ~54 tok/s |
 | [`mlx-community/gemma-4-12B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-12B-it-OptiQ-4bit) | 8.4 GB | 16 GB | ✓ | Vision sidecar + tool calling, both verified end-to-end |
 | [`mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit) | 18 GB | 24 GB | — | MoE (top-8 of 128 experts); ~54 tok/s — the python servers crash loading it on 24 GB |
 
@@ -288,8 +294,10 @@ bun test    # fast tier runs everywhere; model-loaded tests auto-skip
 
 ## Troubleshooting
 
-- **`dlopen` / `libmlxc.dylib` not found** — `brew install mlx-c`; on
-  older setups check `/opt/homebrew/lib` is in your dyld path.
+- **`dlopen` / `libmlxc.dylib` not found** — the MLX runtime
+  auto-downloads on first `serve` into `~/Library/Caches/mlx-bun/`; if a
+  download was interrupted, just rerun `serve` (it resumes). To point at
+  your own copy instead, set `MLX_BUN_LIBMLXC=/path/to/libmlxc.dylib`.
 - **`no models match`** — run `bun src/cli.ts scan` after downloading;
   models must be in the standard HF cache (`~/.cache/huggingface/hub`).
 - **HF download stalls at 0%** — use `bun src/cli.ts get <org/repo>`

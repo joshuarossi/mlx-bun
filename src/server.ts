@@ -856,6 +856,7 @@ export function createServer(
     // resolved lazily — it may be ephemeral until serve() binds).
     websocket: makePiWsHandler({
       port: () => serverRef.port ?? port,
+      modelId: ctx.modelId,
       contextWindow: ctx.model.config.text.maxPositionEmbeddings,
       vision: !!ctx.vision,
       thinking: ctx.template.supportsThinking,
@@ -1084,19 +1085,27 @@ export function createServer(
       // unmount. Mount and unmount go through the generation queue so
       // they never race an in-flight forward pass.
       if (url.pathname === "/v1/adapters/available" && request.method === "GET") {
-        // On-disk adapters that can be mounted (the chat selector's source).
-        // Each is flagged `mounted` so the UI can auto-load-on-select only when
-        // needed. Discovery is intentionally simple (id = dir name); repo-id
-        // compatibility filtering is the follow-up (docs/design/adapters-end-to-end.md §C).
+        // On-disk adapters that can be mounted (the chat selector's source),
+        // FILTERED to ones compatible with the currently-served model — a
+        // MiniCPM5 adapter can't mount on Gemma, so it must not appear in the
+        // picker. Compatibility = the adapter's recorded base repo id matches the
+        // served model (compared on the bare name, lenient about the org); an
+        // adapter with no recorded base is kept (mount validates it). `mounted`
+        // flags ones already loaded so the UI auto-loads on select only if needed.
         const { homedir } = await import("node:os");
         const stores = [
           `${homedir()}/.cache/mlx-bun-finetunes`,
           `${homedir()}/.cache/mlx-bun/adapters`,
         ];
         const mounted = new Set(ctx.adapters.list().map((a) => a.id));
-        const adapters = (await listAvailableAdapters(stores)).map((a) => ({
-          id: a.id, path: a.path, rank: a.rank, scale: a.scale, mounted: mounted.has(a.id),
-        }));
+        const bareName = (s: string) => s.split("/").pop()!.toLowerCase();
+        const servedName = bareName(ctx.modelId);
+        const adapters = (await listAvailableAdapters(stores))
+          .filter((a) => a.baseModel == null || bareName(a.baseModel) === servedName)
+          .map((a) => ({
+            id: a.id, path: a.path, rank: a.rank, scale: a.scale,
+            base_model: a.baseModel, mounted: mounted.has(a.id),
+          }));
         return Response.json({ adapters });
       }
       if (url.pathname === "/v1/adapters" && request.method === "GET") {

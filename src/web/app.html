@@ -105,6 +105,9 @@
   #chat-think.think-on .dot{background:var(--blue);box-shadow:0 0 11px var(--blue)}
   .pill.bad .dot{background:var(--red);box-shadow:0 0 11px var(--red)}
   .pill.warn .dot{background:var(--orange);box-shadow:0 0 11px var(--orange)}
+  #nav-download{color:var(--ink);font-family:var(--mono);font-size:11.5px;font-weight:500}
+  #nav-download .dot{background:var(--orange);box-shadow:0 0 11px var(--orange);animation:dlpulse 1.4s ease-in-out infinite}
+  @keyframes dlpulse{0%,100%{opacity:.4}50%{opacity:1}}
   .hf-gear{appearance:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;
     width:34px;height:34px;border-radius:10px;background:var(--card);border:1px solid var(--hairline);
     color:var(--dim);flex:0 0 auto;transition:color .22s var(--ease),background .22s var(--ease),border-color .22s var(--ease)}
@@ -489,6 +492,7 @@
     </button>
     <span class="model" id="nav-model" title="active model">connecting…</span>
     <span class="pill" id="nav-conn"><span class="dot"></span><span id="nav-conn-text">connecting…</span></span>
+    <span class="pill" id="nav-download" style="display:none" title="A more capable model is downloading in the background"><span class="dot"></span><span id="nav-download-text"></span></span>
   </div>
 </nav>
 
@@ -524,12 +528,12 @@
     <div id="chat-scroll">
       <div id="chat-hello">
         <h1>Local. Private. <span class="grad g-hero">Yours.</span></h1>
-        <p>A full pi agent on this machine — local model, local tools, zero cloud. Every token below is generated here.</p>
+        <p id="chat-hello-sub">A full pi agent on this machine — local model, local tools, zero cloud. Every token below is generated here.</p>
         <div class="chips">
-          <button class="chip" data-q="What can you help me with on this machine?">What can you do?</button>
-          <button class="chip" data-q="List the files in the current directory and summarize the project.">Summarize this project</button>
-          <button class="chip" data-q="Write a haiku about running AI models locally.">Haiku about local AI</button>
-          <button class="chip" data-q="Explain what makes Apple silicon good at running language models.">Why Apple silicon?</button>
+          <button class="chip" data-q="What is mlx-bun and what can it do?">What is mlx-bun?</button>
+          <button class="chip" data-q="How do I load a bigger or different model?">Load a bigger model</button>
+          <button class="chip" data-q="Is this really private? Where does my data go?">Is this private?</button>
+          <button class="chip" data-q="What can you help me with right now?">What can you do?</button>
         </div>
       </div>
       <div id="chat-thread"></div>
@@ -1310,15 +1314,40 @@ function setConn(state, text) {
   p.className = "pill " + (state || "");
   $("nav-conn-text").textContent = text;
 }
+let defaultHelloSub = null;
 async function pollIdentity() {
   try {
-    const m = await fetch("/v1/models").then((r) => r.json());
-    activeModelId = m.data && m.data[0] ? m.data[0].id : null;
+    const [models, dl] = await Promise.all([
+      fetch("/v1/models").then((r) => r.json()),
+      fetch("/downloads").then((r) => r.json()).catch(() => ({ downloads: [] })),
+    ]);
+    activeModelId = models.data && models.data[0] ? models.data[0].id : null;
     $("nav-model").textContent = activeModelId || "no model";
     setConn("ok", "live · localhost");
+    updateDownloadIndicator((dl && dl.downloads) || []);
   } catch {
     $("nav-model").textContent = "server unreachable";
     setConn("bad", "unreachable — retrying");
+  }
+}
+
+/** Surface a background model download — the "bigger model arriving while you
+ *  chat on the starter" case — as a live nav pill plus a download-aware
+ *  greeting in the empty chat state. Hidden when nothing else is downloading. */
+function updateDownloadIndicator(downloads) {
+  const sub = $("chat-hello-sub");
+  if (sub && defaultHelloSub === null) defaultHelloSub = sub.textContent;
+  const incoming = downloads.find((d) => d.state === "active" && d.repoId !== activeModelId);
+  const pill = $("nav-download");
+  if (incoming) {
+    const pct = incoming.totalBytes ? Math.floor((incoming.receivedBytes / incoming.totalBytes) * 100) : 0;
+    const name = incoming.repoId.split("/").pop();
+    $("nav-download-text").textContent = "↓ " + name + " · " + pct + "%";
+    pill.style.display = "";
+    if (sub) sub.textContent = "You're on a small, fast starter model so you can chat right now — a more capable one (" + name + ") is downloading and takes over next launch. Ask me anything, or about mlx-bun itself.";
+  } else {
+    pill.style.display = "none";
+    if (sub && defaultHelloSub !== null) sub.textContent = defaultHelloSub;
   }
 }
 

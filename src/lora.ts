@@ -105,11 +105,37 @@ export interface AvailableAdapter {
   path: string; // absolute adapter dir
   scale: number;
   rank: number | null;
+  /** Base model repo id (org/name) the adapter was trained on, or null if the
+   *  config doesn't record it. Lets the chat selector hide adapters that don't
+   *  fit the served model (a MiniCPM5 adapter can't mount on Gemma). */
+  baseModel: string | null;
+}
+
+/** The base-model repo id an adapter was trained on, from its config's
+ *  source_model / base_model_name_or_path. These are stored as machine-local
+ *  snapshot PATHS (…/models--ORG--NAME/snapshots/HASH), so recover the stable
+ *  repo id (ORG/NAME) from the path; returns null if unrecorded. */
+async function readAdapterBaseRepoId(dir: string): Promise<string | null> {
+  for (const [name, key] of [
+    ["optiq_lora_config.json", "source_model"],
+    ["adapter_config.json", "base_model_name_or_path"],
+  ] as const) {
+    const f = Bun.file(`${dir}/${name}`);
+    if (await f.exists()) {
+      const cfg = (await f.json()) as Record<string, any>;
+      const src = cfg[key];
+      if (typeof src === "string" && src) {
+        const m = src.match(/models--([^/]+)/);
+        return m ? m[1]!.replace(/--/g, "/") : src;
+      }
+    }
+  }
+  return null;
 }
 
 /** Scan adapter stores for mountable adapters: directories holding an adapter
- *  weights file. id = dir basename; scale/rank read from each adapter's config.
- *  Dirs without weights (dataset folders) and unreadable stores are skipped.
+ *  weights file. id = dir basename; scale/rank/baseModel read from each adapter's
+ *  config. Dirs without weights (dataset folders) and unreadable stores are skipped.
  *  Backs GET /v1/adapters/available, which populates the chat adapter selector. */
 export async function listAvailableAdapters(stores: string[]): Promise<AvailableAdapter[]> {
   const out: AvailableAdapter[] = [];
@@ -138,7 +164,8 @@ export async function listAvailableAdapters(stores: string[]): Promise<Available
       } catch {
         // keep defaults if the config is unreadable
       }
-      out.push({ id: e.name, path: dir, scale, rank });
+      const baseModel = await readAdapterBaseRepoId(dir).catch(() => null);
+      out.push({ id: e.name, path: dir, scale, rank, baseModel });
     }
   }
   return out;

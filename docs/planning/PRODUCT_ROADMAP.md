@@ -179,9 +179,63 @@ Expected surfaces:
 - Advanced panel for explicit model/profile overrides.
 - Integration panel for harnesses and external clients.
 
+### Model hot-swap from the UI (candidate)
+
+Let the user switch the served model at runtime — e.g. Gemma e4b →
+MiniCPM5 — from a picker in the web UI, without restarting the server.
+Weight load is cheap (mmap is lazy, load runs on the CPU stream; ~0.5 s
+for a small model), so a swap can feel like changing a setting rather
+than a relaunch. `/library` already enumerates every model on disk with
+a per-machine fit assessment and flags the active one (`serving`), so the
+menu and the "does it fit" data already exist — the missing pieces are a
+swap action and a mutable served context.
+
+Sketch:
+- Today the server is single-model-per-process: `serve()` captures one
+  `ServerContext` as a const in the `Bun.serve` closure. Hot-swap needs a
+  mutable "current context" ref that all handlers and the generation
+  gateway read through.
+- A swap endpoint (e.g. `POST /library/activate`) drains in-flight
+  generations, frees the old model's GPU buffers + KV/prompt caches,
+  `loadContext()`s the target, rebuilds the gateway, then atomically
+  swaps the ref. `/v1/models`, `/status`, and the Pi probe report the new
+  id afterward.
+
+Constraints to honor:
+- On a memory-bound Mac you can't hold two models at once — unload before
+  load. There is an unavoidable brief "swapping…" gap, not an instant
+  switch. Validate fit() before unloading the current model.
+- Load time scales with model size; don't promise instant for large ones.
+- Decide adapter behavior on swap (dropped vs. model-scoped) and surface
+  it. Active LoRA adapters are tied to the base model.
+
 The UI should not hide that this is local. It should make "local" feel
 easy: predictable memory, transparent downloads, offline-capable serving,
 and clear integration instructions.
+
+### The UI must never lag while the AI is busy (candidate, 2026-06-16)
+
+A product guarantee: **the AI may crash, the UI never may** — and the UI
+must stay responsive no matter how hard the model is working. Waiting for
+a *chat reply* is fine and expected (local inference takes time). A laggy
+web UI — slow refreshes, stalled `/status`, a frozen page while an agentic
+pipeline hammers the GPU — is not.
+
+One `mlx-bun` process plays three roles on one event-loop thread: it
+serves the UI, serves the API, and runs the AI. The AI work is synchronous
+blocking GPU/FFI (each `mlx_eval` is atomic and uninterruptible), so it
+starves the loop — worst in the non-streaming path and during prefill,
+where nothing hands a macrotask back. Yielding between tokens helps the
+common case but cannot isolate the UI under sustained load.
+
+Direction (decided: **subprocess**, not worker thread — only address-space
+isolation survives the uncatchable GPU OOM): move the inference runtime
+into its own persistent child process behind the existing
+`GenerationGateway` seam. The main process becomes a pure reactor (UI +
+API + routing, zero MLX calls); one GPU lease serializes all GPU consumers
+(chat, API, quantize, finetune) — reusing the spawn/lease pattern jobs
+already prove. Converges with model hot-swap (model lives off the main
+thread either way). Full design + phasing: `docs/design/runtime-isolation.md`.
 
 ## Harness UX
 
