@@ -35,6 +35,7 @@ import {
 import { resolveRanks, DEFAULT_TARGET_MODULES, type RankScaling } from "./rank";
 import { sftLoss, dpoLoss, dpoRefLogps, dpoMetrics } from "./loss";
 import { AdamW, warmupCosineSchedule } from "./optimizer";
+import { writeFileSync } from "node:fs";
 
 export interface TrainConfig {
   method: "sft" | "dpo";
@@ -64,6 +65,12 @@ export interface TrainConfig {
    *  only (the responseOnlyCe path); mutually exclusive with gradCheckpoint.
    *  Numerically identical to off. See docs/design/segmented-backward-training.md. */
   segmentSize: number;
+  /** Keep ALL eval-step checkpoints (full mountable adapters under
+   *  checkpoints/step-<NNNNN>-val<loss>/) + write metrics.json. Off by default
+   *  so server finetune jobs and tests stay clean; the chunk-finetune script
+   *  turns it on so the best-ON-TASK checkpoint can be chosen by the real eval
+   *  afterward (val is only a proxy — we keep them all and let the eval pick). */
+  saveCheckpoints: boolean;
   // DPO
   dpoBeta: number;
   dpoWarmupIters: number;
@@ -98,6 +105,7 @@ export const DEFAULT_TRAIN_CONFIG: TrainConfig = {
   weightDecay: 0.01,
   gradCheckpoint: false, // default off until validated; flip to true (optiq default) after
   segmentSize: 0, // default off; >0 enables segmented backward (MiniCPM5 SFT B=1)
+  saveCheckpoints: false, // off by default; scripts opt in (keep-all-checkpoints + metrics.json)
 
   dpoBeta: 0.1,
   dpoWarmupIters: 0,
@@ -140,15 +148,68 @@ export async function trainLora(
     baseModel: cfg.baseModel,
   };
 
+  // Keep-ALL-checkpoints + a durable metrics record. At each eval step we
+  // snapshot the adapter to checkpoints/step-<NNNNN>-val<loss>/ — a full,
+  // mountable adapter — so the best-ON-TASK checkpoint can be chosen by the
+  // real eval afterward (val is only a proxy for task quality, so we do NOT
+  // pick for the user). The loss/val trajectory is written to metrics.json so
+  // runs are comparable and survive (the tee'd stdout log is ephemeral). We
+  // wrap `emit` rather than touching the loops: it already streams train/val
+  // metrics, and the live LoRA leaves are the current step's weights at emit
+  // time, so saving here captures exactly that checkpoint.
+  const trainHistory: { step: number; loss: number }[] = [];
+  const valHistory: { step: number; loss: number; checkpoint: string | null }[] = [];
+  const startedAt = Date.now();
+  const collect: Emit = (e) => {
+    if (e.type === "metric" && e.kind === "train") {
+      trainHistory.push({ step: e.step, loss: e.loss });
+    } else if (e.type === "metric" && e.kind === "val") {
+      let checkpoint: string | null = null;
+      if (cfg.saveCheckpoints) {
+        const tag = `step-${String(e.step).padStart(5, "0")}-val${e.loss.toFixed(4)}`;
+        checkpoint = `${cfg.adapterPath}/checkpoints/${tag}`;
+        saveAdapter(lora, checkpoint, saveCfg, appliedRanks);
+        emit({ type: "stage", stage: "checkpoint", progress: e.step / cfg.iters,
+               message: `checkpoint ${tag}` });
+      }
+      valHistory.push({ step: e.step, loss: e.loss, checkpoint });
+    }
+    emit(e);
+  };
+
   try {
     const result =
       cfg.method === "dpo"
-        ? await dpoLoop(model, tok, tmpl, dataDir, cfg, lora, emit)
-        : await sftLoop(model, tok, tmpl, dataDir, cfg, lora, emit);
+        ? await dpoLoop(model, tok, tmpl, dataDir, cfg, lora, collect)
+        : await sftLoop(model, tok, tmpl, dataDir, cfg, lora, collect);
 
     // Final save (last adapter).
     detachTraining(model, lora);
     saveAdapter(lora, cfg.adapterPath, saveCfg, appliedRanks);
+
+    // Durable, structured run record alongside the adapter (only when we kept
+    // checkpoints). Pick the best-val one for convenience, but ship ALL of them
+    // — the real eval decides; val is only a proxy.
+    if (cfg.saveCheckpoints) {
+      let bestVal: { step: number; loss: number; checkpoint: string | null } | null = null;
+      for (const v of valHistory) if (bestVal === null || v.loss < bestVal.loss) bestVal = v;
+      writeFileSync(`${cfg.adapterPath}/metrics.json`, JSON.stringify({
+        config: {
+          method: cfg.method, rank: cfg.rank, scale: cfg.scale,
+          learningRate: cfg.learningRate, maxSeqLen: cfg.maxSeqLen,
+          segmentSize: cfg.segmentSize, iters: cfg.iters,
+          numLayers: cfg.numLayers, baseModel: cfg.baseModel,
+        },
+        wallSeconds: (Date.now() - startedAt) / 1000,
+        peakGb: peakMemory() / 1e9,
+        finalTrainLoss: trainHistory.at(-1)?.loss ?? null,
+        finalValLoss: valHistory.at(-1)?.loss ?? null,
+        bestVal,
+        valTrajectory: valHistory,
+        trainLosses: trainHistory,
+      }, null, 2));
+    }
+
     emit({
       type: "stage",
       stage: "done",
