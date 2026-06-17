@@ -10,7 +10,7 @@
 //   (`y + (scale·z).astype(x.dtype)`), not mount.py's uncast f32 add —
 //   the cast form is what the adapters were trained behind.
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { ptr, read } from "bun:ffi";
 import { MlxArray, cpuStream } from "./mlx/array";
@@ -97,6 +97,51 @@ function adapterWeightsFile(dir: string): string {
     if (existsSync(p)) return p;
   }
   throw new Error(`no adapter weights at ${dir}/adapters.safetensors or adapter_model.safetensors`);
+}
+
+/** A mountable adapter found on disk (not yet mounted). */
+export interface AvailableAdapter {
+  id: string; // directory basename — the handle to mount it under
+  path: string; // absolute adapter dir
+  scale: number;
+  rank: number | null;
+}
+
+/** Scan adapter stores for mountable adapters: directories holding an adapter
+ *  weights file. id = dir basename; scale/rank read from each adapter's config.
+ *  Dirs without weights (dataset folders) and unreadable stores are skipped.
+ *  Backs GET /v1/adapters/available, which populates the chat adapter selector. */
+export async function listAvailableAdapters(stores: string[]): Promise<AvailableAdapter[]> {
+  const out: AvailableAdapter[] = [];
+  const seen = new Set<string>();
+  for (const store of stores) {
+    let entries;
+    try {
+      entries = readdirSync(store, { withFileTypes: true });
+    } catch {
+      continue; // store missing → skip
+    }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const dir = resolve(store, e.name);
+      try {
+        adapterWeightsFile(dir);
+      } catch {
+        continue; // no weights → not an adapter
+      }
+      if (seen.has(dir)) continue;
+      seen.add(dir);
+      let scale = 1;
+      let rank: number | null = null;
+      try {
+        ({ scale, rank } = await readAdapterScale(dir));
+      } catch {
+        // keep defaults if the config is unreadable
+      }
+      out.push({ id: e.name, path: dir, scale, rank });
+    }
+  }
+  return out;
 }
 
 /** Parse an adapter selection spec: "sft" | "sft+dpo" | "sft,dpo"

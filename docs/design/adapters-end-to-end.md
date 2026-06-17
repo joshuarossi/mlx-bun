@@ -79,14 +79,20 @@ Path: `src/web/app.html` (UI) ↔ `/ws/chat` (`src/pi-web.ts`) ↔ in-process Pi
   selected) so the three concepts are visible. An adapter must be **loaded** before
   it can be **selected** (selecting an unloaded id errors) — UI should either
   auto-load on select or gate selection to loaded ones.
-- **Plumb the selection into the request.** Since Pi runs in-process behind
-  `/ws/chat`, the chosen adapter has to reach the payload Pi sends to the model.
-  Two options:
-  1. Register the same `before_provider_request` hook inside `pi-web.ts` and read the
-     selection from the WS session state, or
-  2. Set `adapter` directly on the model call where pi-web constructs it.
-  The WS protocol (`src/pi-web.ts`) needs a new client→server message to carry the
-  selected adapter id(s), and the `ready` message could carry the available list.
+- **Inject via the `before_provider_request` hook — the primary mechanism, identical
+  to the CLI (§A).** `pi-web.ts` ALREADY registers an inline extension this way
+  (`pi.on("tool_call", …)` wired into `createAgentSession`, pi-web.ts:469/605), so
+  `pi.on("before_provider_request", (e) => ({ ...e.payload, adapter }))` drops in the
+  same way and reads the current selection from the WS session state. **No custom
+  provider plumbing, no new model-call wiring.** The hook is the spine for BOTH UIs.
+- **Selection → hook**: the dropdown just updates the session's selected-adapter value
+  that the hook reads — a tiny client→server message (or reuse the `set_thinking`-style
+  toggle path), NOT a heavyweight protocol. Default none → hook returns the payload
+  unchanged → base model.
+- **Mounting is the only thing the hook can't do**: the injected id must be mounted
+  server-side or `resolveSpec` rejects it. Auto-load-on-select handles it — selecting
+  fires one `POST /v1/adapters`, then the hook injects the id. Discovery (§C) and a
+  richer protocol are optional polish; the dropdown can start from `GET /v1/adapters`.
 
 ### C. Server — adapter **discovery** (the missing "available" list)
 

@@ -139,6 +139,10 @@ type ClientMessage =
   // model supports thinking — ready.thinking). Maps to Pi's session thinking
   // level: "medium" (on) ↔ "off". Pi sends it as enable_thinking to the server.
   | { type: "set_thinking"; enabled: boolean }
+  // Select the active LoRA adapter for subsequent turns (null = none/base).
+  // app.html mounts it (POST /v1/adapters) before sending this; the
+  // before_provider_request hook injects it into the provider payload.
+  | { type: "set_adapter"; id: string | null }
   // Session management (recent-chats sidebar + new chat).
   | { type: "new_session" }
   | { type: "list_sessions" }
@@ -371,6 +375,18 @@ export function mapEventToFrames(event: AgentSessionEvent): ServerMessage[] {
 /** Live sessions keyed by their owning WebSocket. */
 const sessions = new Map<PiWs, PiWebSession>();
 
+/** Body of the `before_provider_request` hook: inject the selected LoRA adapter
+ *  into the outgoing provider payload. null/empty selection → return undefined so
+ *  Pi keeps the payload unchanged (base model); Pi replaces the payload only when a
+ *  handler returns a value. Pure + exported for unit testing. */
+export function injectAdapter(
+  payload: Record<string, unknown>,
+  selected: string | null,
+): Record<string, unknown> | undefined {
+  if (!selected) return undefined;
+  return { ...payload, adapter: selected };
+}
+
 /**
  * One browser connection's pi agent. Owns the AgentSession, the event
  * subscription, and the pending tool-approval handshakes.
@@ -381,6 +397,9 @@ class PiWebSession {
   private sessionManager?: SessionManager;
   private unsubscribe?: () => void;
   private disposed = false;
+  /** Active LoRA adapter id for this connection (null = none/base model).
+   *  Read by the before_provider_request hook; set via the set_adapter msg. */
+  private selectedAdapter: string | null = null;
 
   /** Per-connection invariants, built once in start() and reused across
    *  session switches (new chat / resume / fork). */
@@ -462,7 +481,10 @@ class PiWebSession {
       // Replace pi's default coding-agent prompt with our own helpful,
       // eager-assistant persona (see buildWebChatSystemPrompt).
       systemPrompt: buildWebChatSystemPrompt(this.opts.readOnly),
-      extensionFactories: [(pi) => this.installApprovalGate(pi)],
+      extensionFactories: [
+        (pi) => this.installApprovalGate(pi),
+        (pi) => this.installAdapterHook(pi),
+      ],
     });
     await resourceLoader.reload();
 
@@ -598,6 +620,15 @@ class PiWebSession {
     }
     if (wasActive) void this.newSession();
     else void this.sendSessions();
+  }
+
+  /** Register the before_provider_request hook that injects the selected LoRA
+   *  adapter into every provider request (Pi-native adapter control, mirrors the
+   *  CLI extension). Default none = no injection (base model). */
+  private installAdapterHook(pi: ExtensionAPI): void {
+    pi.on("before_provider_request", (event) =>
+      injectAdapter(event.payload as Record<string, unknown>, this.selectedAdapter),
+    );
   }
 
   /** Register the tool_call approval gate on the inline extension. */
@@ -736,6 +767,12 @@ class PiWebSession {
         // Pi clamps to the model's available levels; a no-op for models
         // without a switchable reasoning channel.
         session.setThinkingLevel(msg.enabled ? "medium" : "off");
+        return;
+      case "set_adapter":
+        // Pi-native adapter control: record the selection; the
+        // before_provider_request hook injects it into the outgoing payload.
+        // app.html has already mounted it server-side (POST /v1/adapters).
+        this.selectedAdapter = msg.id;
         return;
     }
   }

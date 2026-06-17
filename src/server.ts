@@ -47,7 +47,7 @@ import {
   responsesToChatBody, translateOpenAiSseToResponses,
   type ResponsesRequest,
 } from "./responses";
-import { AdapterManager } from "./lora";
+import { AdapterManager, listAvailableAdapters } from "./lora";
 import { fit } from "./fit";
 import { setMemoryLimit } from "./mlx/ffi";
 import { VisionTower } from "./vision/embedder";
@@ -1083,6 +1083,22 @@ export function createServer(
       // Adapter admin (port of optiq registry semantics): list / mount /
       // unmount. Mount and unmount go through the generation queue so
       // they never race an in-flight forward pass.
+      if (url.pathname === "/v1/adapters/available" && request.method === "GET") {
+        // On-disk adapters that can be mounted (the chat selector's source).
+        // Each is flagged `mounted` so the UI can auto-load-on-select only when
+        // needed. Discovery is intentionally simple (id = dir name); repo-id
+        // compatibility filtering is the follow-up (docs/design/adapters-end-to-end.md §C).
+        const { homedir } = await import("node:os");
+        const stores = [
+          `${homedir()}/.cache/mlx-bun-finetunes`,
+          `${homedir()}/.cache/mlx-bun/adapters`,
+        ];
+        const mounted = new Set(ctx.adapters.list().map((a) => a.id));
+        const adapters = (await listAvailableAdapters(stores)).map((a) => ({
+          id: a.id, path: a.path, rank: a.rank, scale: a.scale, mounted: mounted.has(a.id),
+        }));
+        return Response.json({ adapters });
+      }
       if (url.pathname === "/v1/adapters" && request.method === "GET") {
         return Response.json({
           adapters: ctx.adapters.list().map((a) => ({
