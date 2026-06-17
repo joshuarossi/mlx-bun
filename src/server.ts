@@ -494,13 +494,21 @@ export class StopMatcher {
  *  deltas/content. This keeps raw tags out of normal chat text while giving
  *  pi (TUI + web) proper thinking_delta events. It is streaming-safe: partial
  *  tag prefixes are held until disambiguated. */
-class ThinkingTagSplitter {
+export class ThinkingTagSplitter {
   #pending = "";
-  #inThinking = false;
+  #inThinking: boolean;
   reasoning = "";
   content = "";
 
-  constructor(private readonly enabled: boolean) {}
+  /** `startInThinking` seeds the parser INSIDE a <think> block. Needed for
+   *  templates (Qwen3.5, MiniCPM5) that prime an OPEN `<think>` in the
+   *  generation prompt when thinking is enabled: the model's output then
+   *  starts mid-reasoning and emits only the closing `</think>`, never an
+   *  opening tag. Without this seed the whole chain-of-thought leaks into
+   *  `content` and the `reasoning` field stays empty. */
+  constructor(private readonly enabled: boolean, startInThinking = false) {
+    this.#inThinking = startInThinking;
+  }
 
   #safePrefixUntilTag(tag: string): string {
     const i = this.#pending.indexOf(tag);
@@ -554,10 +562,29 @@ class ThinkingTagSplitter {
   }
 }
 
+/** True when a rendered prompt ends INSIDE an unclosed `<think>` block — the
+ *  generation prompt primed reasoning (Qwen3.5 / MiniCPM5 with thinking on),
+ *  so the model continues the chain-of-thought and emits only the closing
+ *  `</think>`. Seeds ThinkingTagSplitter so reasoning is split out correctly.
+ *  Thinking-off primes a CLOSED empty block (`<think>\n\n</think>`), and
+ *  no-thinking templates have no `<think>` at all — both return false. */
+export function promptEndsInOpenThink(rendered: string): boolean {
+  const open = rendered.lastIndexOf("<think>");
+  return open !== -1 && open > rendered.lastIndexOf("</think>");
+}
+
 /** OpenAI sends assistant tool_call arguments as JSON strings; the
- *  template renders the object form natively — normalize before render. */
-function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
-  return messages.map((m) => {
+ *  template renders the object form natively — normalize before render.
+ *  Also maps the OpenAI reasoning-model "developer" role to "system": pi-ai
+ *  (and OpenAI's own SDKs) rename the system prompt to `developer` whenever a
+ *  model advertises reasoning, but our chat templates only know
+ *  system/user/assistant/tool and raise "Unexpected message role." otherwise.
+ *  This is exactly why Qwen3.5/MiniCPM5 chat got no messages while Gemma (a
+ *  non-reasoning model, so pi keeps `system`) worked. `developer` IS the
+ *  instruction/system prompt, so the remap is semantics-preserving. */
+export function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((raw) => {
+    const m = raw.role === "developer" ? { ...raw, role: "system" } : raw;
     if (!m.tool_calls) return m;
     return {
       ...m,
@@ -796,11 +823,15 @@ export function createServer(
     };
   };
 
-  const promptIdsFor = (req: ChatRequest, tools: ToolDefinition[] | null): number[] => {
+  const promptIdsFor = (
+    req: ChatRequest,
+    tools: ToolDefinition[] | null,
+  ): { ids: number[]; startInThinking: boolean } => {
     const rendered = ctx.template.render(normalizeMessages(req.messages), templateOptionsFor(req, tools));
     const ids = ctx.tokenizer.encode(rendered);
     // template includes <bos>; tokenizer post-processor also prepends one
-    return ids[0] === ids[1] && ids[0] === ctx.tokenizer.bosTokenId ? ids.slice(1) : ids;
+    const trimmed = ids[0] === ids[1] && ids[0] === ctx.tokenizer.bosTokenId ? ids.slice(1) : ids;
+    return { ids: trimmed, startInThinking: promptEndsInOpenThink(rendered) };
   };
 
   const toolStreamMode = (tools: ToolDefinition[] | null): ToolStreamMode => {
@@ -1183,6 +1214,10 @@ export function createServer(
             m.content.some((p: any) => p.type === "image_url" || p.type === "image"),
         );
         let promptIds: number[];
+        // Whether the prompt primed an open <think> (Qwen3.5/MiniCPM5 thinking
+        // on) so the model's output starts mid-reasoning — seeds the splitter.
+        // Vision is Gemma4-only (no switchable thinking channel), so it's false.
+        let startInThinking = false;
         let vision: Parameters<typeof runGeneration>[3];
         try {
           if (hasImages) {
@@ -1200,7 +1235,9 @@ export function createServer(
             promptIds = vp.ids;
             vision = { embeddings: vp.embeddings, imageMask: vp.imageMask };
           } else {
-            promptIds = promptIdsFor(body, tools);
+            const built = promptIdsFor(body, tools);
+            promptIds = built.ids;
+            startInThinking = built.startInThinking;
           }
         } catch (e) {
           return Response.json(
@@ -1266,7 +1303,7 @@ export function createServer(
                 send(chunk({ role: "assistant", content: "" }, null));
                 const router = toolRouter(tools);
                 const stopper = new StopMatcher(options.stopSequences);
-                const thinking = new ThinkingTagSplitter(ctx.template.supportsThinking);
+                const thinking = new ThinkingTagSplitter(ctx.template.supportsThinking, startInThinking);
                 // Serial decode is an unbroken microtask chain (FFI + generator
                 // resumes) — without a macrotask hop, Bun never services the
                 // socket and the whole SSE response flushes in one burst at the
@@ -1348,7 +1385,7 @@ export function createServer(
           {
             const router = toolRouter(tools);
             const stopper = new StopMatcher(options.stopSequences);
-            const thinking = new ThinkingTagSplitter(ctx.template.supportsThinking);
+            const thinking = new ThinkingTagSplitter(ctx.template.supportsThinking, startInThinking);
             let content = "";
             let reasoning = "";
             const s = await gateway.run(promptIds, options, (token) => {
