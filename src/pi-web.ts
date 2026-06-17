@@ -42,6 +42,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import { createWebTools, WEB_TOOL_NAMES } from "./web-tools";
 import { materializeBundledSkills } from "./web/skills";
 import { buildPiProvider, DEFAULT_CONTEXT_WINDOW, PI_LOCAL_MODEL_ID } from "./pi-provider";
+import { downloadsSnapshot } from "./download";
 
 /**
  * Full toolset the web agent is offered. The built-in coding tools plus our
@@ -76,7 +77,10 @@ const APPROVAL_TIMEOUT_MS = 120_000;
  * talking about them. The capability list is kept honest per `readOnly` so
  * the model never promises an action the approval gate will refuse.
  */
-export function buildWebChatSystemPrompt(readOnly: boolean): string {
+export function buildWebChatSystemPrompt(
+  readOnly: boolean,
+  about?: { modelId?: string; downloadingModel?: string | null },
+): string {
   const capabilities = readOnly
     ? `You have these tools (all used freely, no confirmation needed):
 - web_search — search the web for current, real-world information
@@ -100,13 +104,33 @@ Asks the user for approval first (they stay in control):
 
 Prefer doing the work over describing it — run the search, fetch the page, propose the concrete command or edit and let the user approve it.`;
 
-  return `You are a helpful, capable AI assistant. The model answering runs entirely on the user's own machine via mlx-bun, so the conversation stays local and private. You also have tools that reach the internet (web search, fetching pages, weather) — use them whenever the user needs current or real-world information.
+  const servedModel =
+    about?.modelId && about.modelId !== PI_LOCAL_MODEL_ID ? about.modelId : null;
+  const downloading = about?.downloadingModel ?? null;
+  const modelLine = servedModel
+    ? `\n- The model answering you right now is \`${servedModel}\`.${
+        downloading
+          ? ` It's a small, fast starter so you can chat immediately; a more capable model (\`${downloading}\`) is downloading in the background and becomes the default next time the server starts — the Status tab shows progress.`
+          : ""
+      }`
+    : "";
+
+  const aboutMlxBun = `You're part of mlx-bun and can answer questions about it:
+- mlx-bun runs open LLMs locally on the user's Apple-silicon Mac using Apple's MLX framework on the Bun runtime — no Python, no cloud. This chat stays on the machine; only the explicit web tools below reach the internet.
+- This page is mlx-bun's built-in web app. Tabs across the top: Chat (here), Quantize, Finetune, Dataset, and Status (live memory, prompt-cache, and download info).
+- It serves one model at a time over an OpenAI- and Anthropic-compatible API at \`/v1\`, so other apps and agents can point at this same local server.
+- To change models, the user runs \`mlx-bun serve <name>\` in their terminal, or downloads more with \`mlx-bun get <repo-id>\`.${modelLine}
+- mlx-bun is new and moving fast, so it isn't reliably documented online yet: answer questions about it from what's written here, not from web search. If something isn't covered, say so and point the user to the project's README or the Status tab — don't invent specifics.`;
+
+  return `You are a helpful, capable AI assistant running locally inside mlx-bun.
 
 Be an eager, proactive partner. When a request can be answered or a task moved forward by using your tools, use them right away instead of guessing or asking the user to do it for you. Take initiative: investigate, gather what you need, and follow through to a real result.
 
+${aboutMlxBun}
+
 ${capabilities}
 
-When you don't know something — especially anything current, factual, or time-sensitive — look it up with web_search and web_fetch rather than speculating or relying on stale memory. If a request is genuinely ambiguous, ask one brief clarifying question; otherwise make a sensible choice and proceed. Be honest about what you did and what you found — including mistakes, dead ends, and things you couldn't do.
+When you don't know something — especially anything current, factual, or time-sensitive — look it up with web_search and web_fetch rather than speculating or relying on stale memory (questions about mlx-bun itself are the exception — use the facts above). If a request is genuinely ambiguous, ask one brief clarifying question; otherwise make a sensible choice and proceed. Be honest about what you did and what you found — including mistakes, dead ends, and things you couldn't do.
 
 Keep your responses clear and to the point. Format with Markdown, cite links when you used the web, and show file paths and commands plainly so they're easy to read.`;
 }
@@ -479,8 +503,15 @@ class PiWebSession {
       // memoized, so calling it per build just returns the path. See web/skills.ts.
       additionalSkillPaths: [materializeBundledSkills()],
       // Replace pi's default coding-agent prompt with our own helpful,
-      // eager-assistant persona (see buildWebChatSystemPrompt).
-      systemPrompt: buildWebChatSystemPrompt(this.opts.readOnly),
+      // eager-assistant persona (see buildWebChatSystemPrompt). Pass the
+      // served model id + any in-progress background download so the
+      // loading-screen assistant knows what it is and what's coming.
+      systemPrompt: buildWebChatSystemPrompt(this.opts.readOnly, {
+        modelId: this.opts.modelId,
+        downloadingModel: downloadsSnapshot().find(
+          (d) => d.state === "active" && d.repoId !== this.opts.modelId,
+        )?.repoId ?? null,
+      }),
       extensionFactories: [
         (pi) => this.installApprovalGate(pi),
         (pi) => this.installAdapterHook(pi),

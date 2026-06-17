@@ -19,11 +19,17 @@ import { isSupportedModelRecord } from "./model/support";
 import { perfKernelEnabled } from "./model/fused-decode-kernel";
 
 const argv = process.argv.slice(2);
-const cmd = argv[0];
+// The appliance path: naked `mlx-bun` (or only options, e.g.
+// `mlx-bun --port 9000`) runs `serve` — first run downloads a model and
+// opens the chat UI. `--help`/`--version` and explicit subcommands still win.
+const HELP_VERSION_FLAGS = ["--help", "-h", "--version", "-v"];
+const noSubcommand =
+  !argv[0] || (argv[0].startsWith("-") && !HELP_VERSION_FLAGS.includes(argv[0]));
+const cmd = noSubcommand ? "serve" : argv[0];
 
 const OVERVIEW = `mlx-bun ${pkg.version} — local AI on Apple silicon. One binary, no Python.
 
-Usage: mlx-bun <command> [options]
+Usage: mlx-bun [command] [options]   (no command = serve)
 
 Commands:
   pi         Launch a pi coding-agent session on a local model (the appliance path)
@@ -42,6 +48,7 @@ Options:
   -v, --version  Show version
 
 Examples:
+  mlx-bun                          # download (first run) + serve + open the chat UI
   mlx-bun pi                       # start (download if needed) and chat with an agent
   mlx-bun serve 12B                # serve the 12B; status page at http://localhost:8090/
   mlx-bun get mlx-community/gemma-4-12B-it-OptiQ-4bit`;
@@ -58,6 +65,9 @@ const SERVER_FLAGS = `Server options:
                             mlx-lm-parity engine  [default: 1 = serial].
                             >1 opts the whole server into bf16 continuous
                             batching (= mlx-lm B=N); see --kv-quant.
+  --no-open                 Don't open the chat UI in your browser on start.
+                            By default an interactive terminal opens
+                            http://<host>:<port>/#/chat once the server is up.
 
 Model & quality:
   --kv-quant <mode>         KV cache quantization: config (per-layer
@@ -239,7 +249,7 @@ function printHelp(topic?: string): never {
   process.exit(0);
 }
 
-if (!cmd || cmd === "--help" || cmd === "-h") printHelp();
+if (cmd === "--help" || cmd === "-h") printHelp();
 if (cmd === "--version" || cmd === "-v" || cmd === "version") {
   console.log(`mlx-bun ${pkg.version}`);
   process.exit(0);
@@ -281,6 +291,63 @@ async function ensureNative(s?: import("./tui").Step): Promise<void> {
     },
   });
   if (!s) process.stdout.write("\n");
+}
+
+/** Open the chat UI, reusing an already-open tab on this host:port if there is
+ *  one (Safari / Chrome-family, via AppleScript) instead of spawning a
+ *  duplicate. Falls back to a plain `open` (new tab) for other browsers, or if
+ *  AppleScript is unavailable/blocked. Best-effort and fire-and-forget: any
+ *  failure just means a fresh tab, so it never regresses the plain-open path.
+ *  The first focus attempt may trigger a one-time macOS "control your browser"
+ *  permission prompt; declining it simply falls back to opening a new tab. */
+function openChatUi(url: string, hostPort: string): void {
+  const focus = `on run {theMatch}
+  set chromeApps to {"Google Chrome", "Brave Browser", "Microsoft Edge", "Arc", "Vivaldi", "Chromium"}
+  repeat with appName in chromeApps
+    try
+      if application appName is running then
+        tell application appName
+          repeat with w in windows
+            set i to 0
+            repeat with t in tabs of w
+              set i to i + 1
+              if URL of t contains theMatch then
+                set active tab index of w to i
+                set index of w to 1
+                activate
+                return "ok"
+              end if
+            end repeat
+          end repeat
+        end tell
+      end if
+    end try
+  end repeat
+  try
+    if application "Safari" is running then
+      tell application "Safari"
+        repeat with w in windows
+          repeat with t in tabs of w
+            if URL of t contains theMatch then
+              set current tab of w to t
+              activate
+              return "ok"
+            end if
+          end repeat
+        end repeat
+      end tell
+    end if
+  end try
+  return "miss"
+end run`;
+  void (async () => {
+    try {
+      const p = Bun.spawn(["osascript", "-e", focus, hostPort], { stdout: "pipe", stderr: "ignore", timeout: 8000 });
+      const out = await new Response(p.stdout).text();
+      if ((await p.exited) === 0 && out.trim() === "ok") return; // focused an existing tab
+    } catch { /* osascript missing or automation blocked — fall through to open */ }
+    try { Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" }); } catch { /* best-effort */ }
+  })();
 }
 
 /** Server/runtime flags shared by every mode that loads a model
@@ -586,6 +653,8 @@ switch (cmd) {
   case "serve": {
     const { banner, step, box, style } = await import("./tui");
     banner(pkg.version);
+    if (noSubcommand)
+      console.log(style.dim("  no command given — starting the server · mlx-bun --help for all commands"));
     const rt = serverRuntimeFlags();
     // Friendly collision check before loading gigabytes of weights.
     {
@@ -638,6 +707,14 @@ switch (cmd) {
       "",
       style.dim("agent session:  mlx-bun pi        stop:  Ctrl+C"),
     ]);
+    // Open the chat UI for interactive runs (--no-open, or a non-TTY such as
+    // a piped/headless/benchmark run, skips it). 0.0.0.0/:: bind → localhost
+    // for the browser. Reuses an existing tab on this host:port when possible
+    // (see openChatUi); the URL is printed above either way.
+    if (!flag("no-open") && process.stdout.isTTY) {
+      const browserHost = shownHost === "0.0.0.0" || shownHost === "::" ? "localhost" : shownHost;
+      openChatUi(`http://${browserHost}:${server.port}/#/chat`, `${browserHost}:${server.port}`);
+    }
     break;
   }
 
