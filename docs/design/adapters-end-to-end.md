@@ -153,7 +153,12 @@ per-request `adapter` fields — for an unattended nightly pipeline.
   `minicpm5-chunk-segmented` adapter is the *old* default (rank 16 / scale 1 /
   LR 2e-4 ≈ mlx-lm's scale 20 / LR 1e-5 effective). Flow through
   `DEFAULT_TRAIN_CONFIG` (`src/train/trainer.ts`) → `FinetuneSubmit`/`parseConfig`
-  (`src/train/job.ts`) → the `POST /v1/fit` body (`src/server.ts:1652`).
+  (`src/train/job.ts`) → the `"finetune"` subprocess job (`src/server.ts:1678`,
+  `submitSubprocess(store, "finetune", …)`). NOTE: `GET /fit` is NOT the training
+  submit — it is the memory-fit solver (`src/fit.ts`): it solves weights + KV
+  growth + prefill against this machine's usable memory and returns
+  `{ fits, max_safe_context, predicted_decode_tps }` + a SKU matrix (used by
+  `GET /fit`, serve-time admission, and the model listing).
 - **Adapter storage location**: prefer a dedicated `~/.cache/mlx-bun/adapters/` store
   with repo-id metadata over writing sidecars into the fragile HF snapshot cache.
 
