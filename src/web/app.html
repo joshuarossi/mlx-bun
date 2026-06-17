@@ -548,6 +548,9 @@
         <div class="chat-hint">
           <span id="chat-status-line">Enter to send · Shift+Enter for a new line · type while it streams to steer</span>
           <span class="hint-right">
+            <select id="chat-adapter" class="pill" title="LoRA adapter for this chat (none = base model)">
+              <option value="">no adapter</option>
+            </select>
             <span id="chat-think" class="pill" role="button" tabindex="0" title="Toggle the model's reasoning"><span class="dot"></span>Thinking</span>
             <span id="chat-context" title="Context window in use — auto-compacts before it fills"></span>
             <span id="chat-tps"></span>
@@ -1669,6 +1672,7 @@ controllers.chat = (() => {
         visionCapable = !!m.vision; updateAttachHint();
         thinkingCapable = !!m.thinking; updateThinkingToggle();
         if (thinkingCapable) send({ type: "set_thinking", enabled: thinkingOn });
+        refreshAdapters();
         // Reconnect: re-open the session we were in (fresh load has none).
         if (pendingResumePath) { send({ type: "open_session", path: pendingResumePath }); pendingResumePath = null; }
         break;
@@ -1756,6 +1760,33 @@ controllers.chat = (() => {
     const btn = $("chat-attach-btn");
     if (btn) btn.title = visionCapable ? "Attach files or images" : "Attach files (this model can't see images)";
   }
+  // — LoRA adapter selector. Pi-native: app.html lists + mounts adapters, then
+  //   tells pi-web which one is active; the before_provider_request hook injects
+  //   it into every provider request. Default "" = none (base model). —
+  async function refreshAdapters() {
+    const sel = $("chat-adapter");
+    if (!sel) return;
+    let list = [];
+    try { const d = await api("/v1/adapters/available"); list = (d && d.adapters) || []; } catch {}
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">no adapter</option>' + list.map((a) =>
+      `<option value="${a.id}" data-path="${a.path}">${a.id}${a.rank ? " · r" + a.rank : ""}</option>`).join("");
+    if (cur && list.some((a) => a.id === cur)) sel.value = cur; // keep prior selection
+  }
+  async function onSelectAdapter(sel) {
+    const id = sel.value;
+    if (!id) { send({ type: "set_adapter", id: null }); return; } // none → base model
+    const opt = sel.options[sel.selectedIndex];
+    const path = opt && opt.getAttribute("data-path");
+    if (path) { // auto-load on select; mount() is idempotent server-side
+      const r = await api("/v1/adapters", { method: "POST", body: { id, path } });
+      if (r && (r.error || r.ok === false)) {
+        if (typeof toast === "function") toast("adapter: " + (r.error || "mount failed"), "err");
+        sel.value = ""; send({ type: "set_adapter", id: null }); return;
+      }
+    }
+    send({ type: "set_adapter", id });
+  }
   function updateThinkingToggle() {
     const b = $("chat-think");
     if (!b) return;
@@ -1798,6 +1829,9 @@ controllers.chat = (() => {
       const thinkToggle = () => { thinkingOn = !thinkingOn; updateThinkingToggle(); send({ type: "set_thinking", enabled: thinkingOn }); };
       $("chat-think").onclick = thinkToggle;
       $("chat-think").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); thinkToggle(); } });
+      const adapterSel = $("chat-adapter");
+      if (adapterSel) adapterSel.onchange = () => onSelectAdapter(adapterSel);
+      refreshAdapters();
       const box = $("chat-box");
       box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } });
       box.addEventListener("input", () => { box.style.height = "auto"; box.style.height = Math.min(box.scrollHeight, 200) + "px"; });

@@ -7,6 +7,7 @@ import { describe, expect, it } from "bun:test";
 import type { AgentSessionEvent, SessionEntry, SessionInfo } from "@earendil-works/pi-coding-agent";
 import {
   buildWebChatSystemPrompt,
+  injectAdapter,
   mapEventToFrames,
   serializeHistory,
   toSessionListItems,
@@ -15,6 +16,28 @@ import {
 // Cast helper: the real AgentSessionEvent union is large; we only build
 // the fields mapEventToFrames reads, so narrow via `as`.
 const ev = (e: unknown) => e as AgentSessionEvent;
+
+describe("injectAdapter (before_provider_request hook body)", () => {
+  it("returns undefined when nothing is selected → Pi keeps the payload (base model)", () => {
+    expect(injectAdapter({ model: "x", messages: [] }, null)).toBeUndefined();
+    expect(injectAdapter({ model: "x" }, "")).toBeUndefined();
+  });
+
+  it("injects the adapter field when one is selected, preserving the rest", () => {
+    const out = injectAdapter({ model: "x", messages: [{ role: "user" }], temperature: 0 }, "chunk");
+    expect(out).toEqual({ model: "x", messages: [{ role: "user" }], temperature: 0, adapter: "chunk" });
+  });
+
+  it("overrides a stale adapter field with the current selection", () => {
+    expect(injectAdapter({ model: "x", adapter: "old" }, "new")).toEqual({ model: "x", adapter: "new" });
+  });
+
+  it("does not mutate the input payload", () => {
+    const p: Record<string, unknown> = { model: "x" };
+    injectAdapter(p, "chunk");
+    expect(p).toEqual({ model: "x" });
+  });
+});
 
 describe("mapEventToFrames", () => {
   it("maps turn_start / turn_end to bare frames", () => {
