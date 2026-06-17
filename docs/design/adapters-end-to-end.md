@@ -146,12 +146,19 @@ per-request `adapter` fields — for an unattended nightly pipeline.
   `base_model_name_or_path`). Have the **trainer write the repo id** into the adapter
   config at save time, and match discovery on repo id. Robust across machines and
   snapshots. This is the prerequisite for B's selector and C's `compatible` filter.
-- **mlx-lm-aligned training defaults** (pending, separate task): let users choose
-  `rank / scale / num_layers / learning_rate / dropout` when starting a run, with
-  defaults matching mlx-lm (`num_layers 16, rank 8, scale 20.0, dropout 0.0,
-  LR 1e-5, max_seq 2048, batch 4, iters 1000, grad_checkpoint off`). The current
-  `minicpm5-chunk-segmented` adapter is the *old* default (rank 16 / scale 1 /
-  LR 2e-4 ≈ mlx-lm's scale 20 / LR 1e-5 effective). Flow through
+- **mlx-lm-aligned training defaults** (PARTIALLY DONE): `rank / scale /
+  learning_rate` (plus `seq / segmentSize / iters / save_checkpoints`) are now
+  run-configurable via env on the chunk-finetune script, threaded
+  `chunk-finetune.ts` → `FinetuneSubmit` → `cfg`. In particular **`scale` is now
+  wired end-to-end** (`SCALE` env → submit `scale` → `cfg.scale` →
+  `buildTrainableLora`), and the script defaults to the **mlx-lm-aligned
+  `scale 20 / LR 1e-5`** (== effective `scale 1 / LR 2e-4`). STILL PENDING:
+  surface `num_layers` on the script (already in the submit contract +
+  `TrainConfig`, just no env) and add `dropout` (not in `TrainConfig` yet).
+  Note `DEFAULT_TRAIN_CONFIG` (`src/train/trainer.ts`) stays the conservative
+  library default (`rank 8 / scale 1 / LR 2e-4`); the *script* overrides to the
+  mlx-lm pair. (Older `minicpm5-chunk-segmented` predates this: rank 16 / scale 1
+  / LR 2e-4.) Flow through
   `DEFAULT_TRAIN_CONFIG` (`src/train/trainer.ts`) → `FinetuneSubmit`/`parseConfig`
   (`src/train/job.ts`) → the `"finetune"` subprocess job (`src/server.ts:1678`,
   `submitSubprocess(store, "finetune", …)`). NOTE: `GET /fit` is NOT the training
