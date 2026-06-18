@@ -1,14 +1,27 @@
 ---
 title: Installation
-description: Four ways to install mlx-bun — Homebrew, direct download, bunx, or from source.
+description: Four ways to install mlx-bun — direct download, Homebrew, bunx, or from source.
 ---
-
-import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 You need an **Apple Silicon Mac** (MLX is Metal-only, so macOS only by
 design). There are four ways in — pick whichever fits.
 
-## Homebrew (recommended)
+## Direct download (recommended)
+
+No Homebrew, Bun, or git — just curl the install script. It downloads the
+signed, notarized self-contained binary from the latest release and puts
+`mlx-bun` on your `PATH`:
+
+```sh
+curl -fsSL https://mlx-bun.dev/install.sh | sh
+mlx-bun
+```
+
+The bundle is self-contained (binary + MLX runtime) and notarized, so it runs
+without a Gatekeeper prompt. It installs to `~/.mlx-bun` by default — override
+with `MLX_BUN_INSTALL_DIR`, or pin a release with `MLX_BUN_VERSION=v0.0.4`.
+
+## Homebrew
 
 A self-contained, signed + notarized binary — no toolchain to install by hand:
 
@@ -20,30 +33,6 @@ mlx-bun
 That's the whole thing. The bottle already bundles the MLX native runtime, so
 the only thing the first run fetches is the model. Upgrade later with
 `brew upgrade mlx-bun`.
-
-## Direct download
-
-No Homebrew, Bun, or git — just download the signed, notarized binary:
-
-<Tabs>
-  <TabItem label="install script">
-    ```sh
-    curl -fsSL https://mlx-bun.dev/install.sh | sh
-    mlx-bun
-    ```
-  </TabItem>
-  <TabItem label="tarball">
-    ```sh
-    mkdir mlx-bun && cd mlx-bun
-    curl -fsSL https://github.com/joshuarossi/mlx-bun/releases/latest/download/mlx-bun-arm64.tar.gz | tar xz
-    ./mlx-bun
-    ```
-  </TabItem>
-</Tabs>
-
-The bundle is self-contained (binary + MLX runtime) and notarized, so it runs
-even on a browser download — no Gatekeeper prompt. The tarball variant leaves
-a self-contained folder; symlink `./mlx-bun` into your `PATH` to keep it.
 
 ## bunx (no install)
 
