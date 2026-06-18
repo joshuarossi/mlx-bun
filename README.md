@@ -13,7 +13,7 @@ prompt in **394 ms**. Full table: [benchmarks](#benchmarks).
 ## Getting started
 
 You need an Apple Silicon Mac (MLX is Metal-only, so macOS only by
-design). Two ways in.
+design). Three ways in.
 
 ### Homebrew (recommended)
 
@@ -27,6 +27,19 @@ mlx-bun
 
 That's the whole thing. The bottle already bundles the MLX native
 runtime, so the only thing the first run fetches is the model.
+
+### bunx (no install)
+
+Already have [Bun](https://bun.sh) ≥ 1.3.14? Run it straight from npm,
+nothing to install:
+
+```sh
+bunx mlx-bun
+```
+
+First run fetches the MLX native runtime (~52 MB) and the model into your
+caches, then serves. (Bun only — `npx mlx-bun` under Node exits with a
+"requires Bun" notice by design.)
 
 ### From source
 

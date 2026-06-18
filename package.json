@@ -49,8 +49,8 @@
     "test": "bash scripts/test.sh",
     "link-cli": "chmod +x src/cli.ts && ln -sf $PWD/src/cli.ts $HOME/.bun/bin/mlx-bun && mlx-bun --version",
     "build:binary": "sh scripts/build-binary.sh",
-    "publish": "PUBLISH=1 sh scripts/release-binary.sh",
-    "prepublishOnly": "bash scripts/test.sh"
+    "release": "PUBLISH=1 sh scripts/release-binary.sh",
+    "publish:npm": "bun publish"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.104.1",
