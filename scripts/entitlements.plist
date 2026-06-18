@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the bun-compiled mlx-bun executable.
+  JavaScriptCore JITs, so under the hardened runtime the binary is killed
+  on launch without these two. All bundled dylibs are signed with the SAME
+  Developer ID team, so library validation passes and we do NOT need
+  com.apple.security.cs.disable-library-validation — add it here only if
+  dyld ever rejects a sibling dylib at launch.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+</dict>
+</plist>
