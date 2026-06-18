@@ -1,0 +1,98 @@
+---
+title: mlx-bun
+description: Native MLX inference for Bun on Apple Silicon — a local LLM server (OpenAI/Anthropic-compatible) and TypeScript library. No Python.
+template: splash
+hero:
+  tagline: Run quantized LLMs locally on Apple Silicon from TypeScript. A local LLM server and library — OpenAI- and Anthropic-compatible, bit-exact against the Python reference, no Python in sight.
+  actions:
+    - text: Get started
+      link: /getting-started/installation/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/joshuarossi/mlx-bun
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard, Tabs, TabItem } from '@astrojs/starlight/components';
+
+## One command, then local AI
+
+The fastest way in needs no toolchain at all:
+
+<Tabs>
+  <TabItem label="Homebrew">
+    ```sh
+    brew install joshuarossi/tap/mlx-bun
+    mlx-bun
+    ```
+  </TabItem>
+  <TabItem label="curl">
+    ```sh
+    mkdir mlx-bun && cd mlx-bun
+    curl -fsSL https://mlx-bun.dev/install.sh | sh
+    mlx-bun
+    ```
+  </TabItem>
+  <TabItem label="bunx">
+    ```sh
+    bunx mlx-bun
+    ```
+  </TabItem>
+</Tabs>
+
+Bare `mlx-bun` downloads a small starter model, serves it, and opens a chat
+UI in your browser — you're talking to a local model in under a minute. No
+API key, no Python, nothing phoning home.
+
+## Why it's different
+
+<CardGrid>
+	<Card title="No Python" icon="rocket">
+		The whole runtime is Bun + `mlx-c` over `bun:ffi`. No venv, no sidecar
+		Python server, no segfaults on exit. One binary, one toolchain.
+	</Card>
+	<Card title="Bit-exact" icon="approve-check">
+		Logit parity with mlx-lm is the oracle. The forward pass is held
+		**bit-exact** against the Python reference — every quantized-KV config
+		included.
+	</Card>
+	<Card title="Fastest stack" icon="bars">
+		Served over HTTP it has the **fastest TTFT and startup** of any stack
+		tested (45–90 ms vs Python's 220–330 ms), with near-zero server tax.
+	</Card>
+	<Card title="OpenAI + Anthropic" icon="puzzle">
+		Drop-in `/v1/chat/completions`, Anthropic `/v1/messages`, and OpenAI
+		Responses. Point any SDK — or Claude Code — at a fully local backend.
+	</Card>
+	<Card title="Tools & vision" icon="seti:notebook">
+		Native tool-calling parsed into OpenAI `tool_calls`; image input via
+		native OS codecs (HEIC, AVIF, WebP, …) on vision models.
+	</Card>
+	<Card title="Library-first" icon="seti:typescript">
+		The server is one consumer of a TypeScript API. `import` generation
+		directly into a Bun process, or embed the binary as a Mac-app sidecar.
+	</Card>
+</CardGrid>
+
+## Measured, not vibes
+
+Head-to-head on an M4 Pro (24 GB), same models, same day, against mlx-lm and
+mlx-optiq:
+
+| | mlx-bun | mlx-lm | optiq |
+|---|---|---|---|
+| **TTFT, served (warm)** | **45–90 ms** | 219–224 ms | 222–331 ms |
+| **server start → ready** | **0.36–0.47 s** | 0.76–0.98 s | 0.79–1.00 s |
+| **server tax vs direct decode** | **≈ 0%** | −5…−7% | ≈ 0% |
+
+The honest negatives live in the same table — see [Benchmarks](/about/benchmarks/).
+
+## Keep reading
+
+<CardGrid>
+	<LinkCard title="Installation" href="/getting-started/installation/" description="Four ways in: Homebrew, curl, bunx, or source." />
+	<LinkCard title="Quickstart" href="/getting-started/quickstart/" description="First run, the chat UI, and the OpenAI-compatible API." />
+	<LinkCard title="The HTTP API" href="/guides/http-api/" description="Chat completions, tools, vision, prompt caching, LoRA, and more." />
+	<LinkCard title="CLI reference" href="/reference/cli/" description="Every verb: get, scan, ls, fit, serve, evals." />
+</CardGrid>

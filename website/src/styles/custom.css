@@ -1,0 +1,23 @@
+/* mlx-bun brand — a warm "Metal" amber accent over Starlight's defaults. */
+:root {
+	--sl-color-accent-low: #3a2606;
+	--sl-color-accent: #e8870b;
+	--sl-color-accent-high: #f6c98a;
+	--sl-color-text-accent: #f6a23c;
+}
+:root[data-theme='light'] {
+	--sl-color-accent-low: #fdeccd;
+	--sl-color-accent: #b5650a;
+	--sl-color-accent-high: #5c3406;
+	--sl-color-text-accent: #b5650a;
+}
+
+/* Slightly tighter hero on the splash landing. */
+.hero h1 {
+	letter-spacing: -0.02em;
+}
+
+/* Make inline code in the hero tagline read as a command. */
+.hero .actions a code {
+	font-size: var(--sl-text-sm);
+}

@@ -1,0 +1,100 @@
+---
+title: Installation
+description: Four ways to install mlx-bun — Homebrew, direct download, bunx, or from source.
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+You need an **Apple Silicon Mac** (MLX is Metal-only, so macOS only by
+design). There are four ways in — pick whichever fits.
+
+## Homebrew (recommended)
+
+A self-contained, signed + notarized binary — no toolchain to install by hand:
+
+```sh
+brew install joshuarossi/tap/mlx-bun
+mlx-bun
+```
+
+That's the whole thing. The bottle already bundles the MLX native runtime, so
+the only thing the first run fetches is the model. Upgrade later with
+`brew upgrade mlx-bun`.
+
+## Direct download
+
+No Homebrew, Bun, or git — just download the signed, notarized binary:
+
+<Tabs>
+  <TabItem label="install script">
+    ```sh
+    curl -fsSL https://mlx-bun.dev/install.sh | sh
+    mlx-bun
+    ```
+  </TabItem>
+  <TabItem label="tarball">
+    ```sh
+    mkdir mlx-bun && cd mlx-bun
+    curl -fsSL https://github.com/joshuarossi/mlx-bun/releases/latest/download/mlx-bun-arm64.tar.gz | tar xz
+    ./mlx-bun
+    ```
+  </TabItem>
+</Tabs>
+
+The bundle is self-contained (binary + MLX runtime) and notarized, so it runs
+even on a browser download — no Gatekeeper prompt. The tarball variant leaves
+a self-contained folder; symlink `./mlx-bun` into your `PATH` to keep it.
+
+## bunx (no install)
+
+Already have [Bun](https://bun.sh) ≥ 1.3.14? Run it straight from npm, nothing
+to install:
+
+```sh
+bunx mlx-bun
+```
+
+First run fetches the MLX native runtime (~52 MB) and the model into your
+caches, then serves.
+
+:::note
+mlx-bun is Bun-only by design — `npx mlx-bun` under Node exits with a
+"requires Bun" notice. Use `bunx`.
+:::
+
+## From source
+
+For development, or to use the library from a clone. Needs
+[Bun](https://bun.sh) ≥ 1.3.14 — no Python, no native library to install by
+hand:
+
+```sh
+# 1. Install Bun
+curl -fsSL https://bun.sh/install | bash
+exec $SHELL -l
+
+# 2. Clone, install, link the CLI
+git clone https://github.com/joshuarossi/mlx-bun.git && cd mlx-bun
+bun install
+bun run link-cli      # adds the `mlx-bun` command — or run `bun src/cli.ts <verb>`
+
+# 3. Run it
+mlx-bun
+```
+
+## What happens on first run
+
+Bare `mlx-bun` is an alias for `mlx-bun serve`. With no model named, it does
+everything for you:
+
+1. pulls the MLX native runtime (~52 MB) into `~/Library/Caches/mlx-bun/`
+   (skipped on the Homebrew/direct-download installs — the runtime ships in
+   the bundle);
+2. downloads the sub-GB `MiniCPM5-1B` starter and serves it, so you're chatting
+   in well under a minute;
+3. starts downloading `gemma-4-e4b` (the stronger 4B model) in the background —
+   it becomes the default on your next `mlx-bun serve`, on a 16 GB+ Mac;
+4. opens the chat UI in your browser at `http://localhost:8090/#/chat`
+   (pass `--no-open` to skip).
+
+Next: the [Quickstart](/getting-started/quickstart/).
