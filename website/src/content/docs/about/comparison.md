@@ -59,7 +59,20 @@ faithful to both by design.
 This is the axis mlx-bun is built around. "Bit-exact" means identical token IDs
 and logits to the reference — not "close."
 
-| Model family | vs mlx-lm (bf16, **L1**) | vs mlx-optiq (mixed-precision KV, **L2**) |
+The key thing to understand: mlx-bun has **two reference-faithful modes, and you
+run one at a time** — it does not claim to match both at once.
+
+- **bf16 KV** matches **mlx-lm** bit-for-bit (the L1 oracle).
+- **optiq mixed-precision KV** matches **mlx-optiq** bit-for-bit (the L2 oracle).
+  This is the *typical* quantized setup — and because quantizing the KV cache is
+  a genuinely different computation, it is **not** bit-exact to mlx-lm's bf16.
+  That's by design, not a regression: in this mode optiq is the reference, not
+  mlx-lm.
+
+So read the table per column — in each mode, mlx-bun reproduces *that mode's*
+oracle exactly:
+
+| Model family | bf16 KV → vs mlx-lm (**L1**) | mixed-precision KV → vs mlx-optiq (**L2**) |
 |---|---|---|
 | MiniCPM5-1B | ✅ bit-exact logits | ✅ bit-exact |
 | Gemma-4-12B | ✅ bit-exact logits | ✅ bit-exact |
@@ -70,5 +83,4 @@ and logits to the reference — not "close."
 
 Optional performance kernels (`MLX_BUN_FUSED_GELU`, `MLX_BUN_PERF_KERNEL`, …) are
 a third tier (**L3**): off by default, gated to a small KL tolerance rather than
-bit-exactness. The default serving path is the L2 mixed-precision oracle. See
-[Correctness](/about/correctness/).
+bit-exactness. See [Correctness](/about/correctness/).
