@@ -30,7 +30,18 @@ Request body (OpenAI chat schema; unknown fields ignored):
   "tools": [ /* OpenAI function tools */ ],
   "tool_choice": "auto",         // "none" disables tools
   "chat_template_kwargs": {      // forwarded to the chat template
-    "enable_thinking": false     // MiniCPM5: <think> channel on/off
+    "enable_thinking": false     // MiniCPM5 / Qwen3.5: <think> channel on/off
+  },
+  "reasoning_effort": "medium",  // "none"|"minimal"|"low"|"medium"|"high"
+                                 // gates enable_thinking on Qwen3.5/MiniCPM5:
+                                 // "none" → off, any other level → on.
+                                 // Overrides chat_template_kwargs.enable_thinking.
+  "hlg": {                       // HLG tone-curve sampling (per request).
+    "enabled": true,             // merged over --hlg-sampling server defaults.
+    "width": 4,                  // logit-width of the tone plateau
+    "shoulder": 4,               // top shoulder width
+    "toe": 6,                    // bottom toe width
+    "pivot_offset": 6            // pivot point offset from top
   },
   "adapter": "id"                // LoRA: "id", stacked "a+b", or "none"
 }
@@ -92,12 +103,15 @@ messages; multi-turn prompt prefixes reuse the KV prompt cache
 automatically.
 
 Tool-call parsing is per model family. Gemma 4 uses its native
-`<|tool_call>`…`<tool_call|>` sentinel tokens. MiniCPM5 emits XML in
-decoded text (`<function name="…"><param name="…">…`, CDATA-wrapped
-values supported); content before the tool markup still streams live,
-only the markup is withheld and converted to `tool_calls`. Argument
-values are decoded against the tool's JSON schema (string-typed params
-stay strings); markup that fails to parse falls back to plain content.
+`<|tool_call>`…`<tool_call|>` sentinel tokens. Qwen3.5 emits decoded
+text wrapped in `<tool_call><function=name><parameter=key>value` XML
+equals-style blocks. MiniCPM5 emits XML in decoded text
+(`<function name="…"><param name="…">…`, CDATA-wrapped values
+supported). For both Qwen3.5 and MiniCPM5 content before the tool
+markup still streams live, only the markup is withheld and converted to
+`tool_calls`. Argument values are decoded against the tool's JSON schema
+(string-typed params stay strings); markup that fails to parse falls
+back to plain content.
 
 ### Errors
 
@@ -188,6 +202,90 @@ OpenAI SDK speak this now). Oracle: optiq responses shim.
     "batched": false,                 // batching enabled (N>1)
     "active_rows": 0                  // rows currently decoding in the batch
   }
+}
+```
+
+## GET /library
+
+Returns all models found in the local HuggingFace hub cache (via the
+registry scan), each annotated with a fit assessment for this machine.
+Response is cached for 30 seconds (registry scan + config reads; no
+tensor bytes are read).
+
+```jsonc
+{
+  "models": [{
+    "repo_id": "…",
+    "model_type": "gemma3" | "minicpm5" | "qwen3" | …,
+    "size_bytes": 0,
+    "quant_bits": 4,
+    "vision": false,             // has vision sidecar
+    "supported": true,           // recognized model family
+    "serving": false,            // currently loaded in this server
+    "assessment": {              // null if config unreadable
+      "fits": true,
+      "max_safe_context": 8192,
+      "predicted_decode_tps": 0.0
+    }
+  }]
+}
+```
+
+## GET /downloads
+
+Snapshot of the last 5 model downloads (active, completed, or errored)
+initiated via `mlx-bun download` or the web library panel.
+
+```jsonc
+{
+  "downloads": [{
+    "repo_id": "…",
+    "state": "active" | "done" | "error",
+    "current_file": "model.safetensors" | null,
+    "received_bytes": 0,
+    "total_bytes": 0,
+    "files_done": 0,
+    "files_total": 0,
+    "bytes_per_sec": 0,          // rolling ~5 s window
+    "started_at": 1760000000,
+    "finished_at": null,
+    "error": "…"                 // present on state "error"
+  }]
+}
+```
+
+## GET /fit
+
+Fit assessment for the loaded model on this machine, plus a capability
+matrix across Apple SKUs. Used by the status page. Experts bytes come
+from the registry so MoE active-parameter predictions match the serve
+banner and `mlx-bun fit`. When the eval DB has a real measured decode
+rate for this model snapshot, it is included and takes precedence over
+the prediction.
+
+```jsonc
+{
+  "machine": { "chip": "M4 Pro", "ram_bytes": 0, "bandwidth_gbs": 0.0 },
+  "context_tokens": 8192,          // current admission ceiling
+  "typical_context_tokens": 8192,  // min(8192, context_tokens)
+  "typical_decode_tps": 0.0,       // predicted at typical_context_tokens
+  "measured_decode_tps": null,     // real number from eval DB, or null
+  "measured_at": null,             // unix ms of measurement, or null
+  "report": {
+    "fits": true,
+    "weights_bytes": 0,
+    "kv_bytes": 0,
+    "transient_bytes": 0,
+    "total_bytes": 0,
+    "usable_bytes": 0,
+    "max_safe_context": 8192,
+    "predicted_decode_tps": 0.0
+  },
+  "sku_matrix_ctx": 32768,
+  "sku_matrix": [{
+    "sku": "M4 Pro 24 GB", "ram_gb": 24,
+    "fits": true, "max_context": 32768, "decode_tps": 0.0
+  }]
 }
 ```
 

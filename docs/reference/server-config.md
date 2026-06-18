@@ -25,11 +25,18 @@ the design rationale is in
 | `--prompt-cache` | GB | `2` (≈2e9 bytes) | Byte cap for the prompt (prefix-reuse KV) cache. **Binary GiB (×2³⁰)** on input. `0`/unset ⇒ default; there is no flag to disable the cache outright. |
 | `--batch` | n | `1` (serial) | Max concurrent requests batched through the mlx-lm-parity engine. `>1` switches the **whole server** into bf16 continuous batching — a *mode*, not a load fallback. See [Execution modes](#execution-modes-serial-vs---batch-n). Alias: `--decode-concurrency` (mlx_lm.server drop-in). |
 | `--kv-quant` | `config`\|`off`\|`4`\|`8` | `config` serial / `off`(bf16) under `--batch N` | KV-cache quantization. `config` = per-layer `kv_config.json` (optiq parity); `off` = bf16; `4`/`8` = uniform bits (group 64, start 0). Under `--batch N`, an explicit value routes those requests to the **serial** lane (batched is bf16-only). |
-| `--thinking` | `true`\|`false` | model's own (false for CPM) | Server-wide default for the chat template's `enable_thinking` (MiniCPM5/CPM hybrid reasoning). A request's `chat_template_kwargs.enable_thinking` overrides it. |
+| `--thinking` | `true`\|`false` | model's own (false for CPM) | Server-wide default for the chat template's `enable_thinking` (MiniCPM5/CPM and Qwen3.5 hybrid reasoning). A request's `chat_template_kwargs.enable_thinking` overrides it. |
 | `--temperature` | n ∈ [0,5] | `generation_config.json` | Server-wide sampling default. Per-request `temperature` still wins; the browser chat (sends none) inherits this. |
 | `--top-p` | n ∈ [0,1] | `generation_config.json` | Server-wide top-p default (per-request `top_p` wins). |
 | `--top-k` | n ∈ [0,1e6] | `generation_config.json` | Server-wide top-k default (per-request `top_k` wins). |
-| `--compiled-decode` | on\|off | on | Replay the per-step decode graph in C++ (`MLX_BUN_COMPILED_DECODE`). Bit-exact A/B lever. **Serial lane only** (see note below). |
+| `--no-open` | (bool) | off | Skip the automatic browser open on start. By default an interactive terminal session opens `http://<host>:<port>/#/chat` once the server is ready; pass this flag to suppress it (e.g. headless or non-TTY environments already skip it). |
+| `--hlg-sampling` | `on`\|`off` | off | Piecewise tone-curve (HLG) sampling: rolls off the top-token region, boosts the mids, gentles the tail. The overall gain folds from `--temperature`. See [docs/design/hlg-sampling.md](../design/hlg-sampling.md). |
+| `--hlg-width` | nats | `4` | HLG mid-region half-width (nats). Only meaningful with `--hlg-sampling on`. |
+| `--hlg-shoulder` | nats | `4` | HLG highlight rolloff scale (nats). Only meaningful with `--hlg-sampling on`. |
+| `--hlg-toe` | nats | `6` | HLG shadow rolloff scale (nats). Only meaningful with `--hlg-sampling on`. |
+| `--hlg-pivot-offset` | nats | `6` | HLG pivot point: nats below the top token. Only meaningful with `--hlg-sampling on`. |
+| `--expert-offload` | (bool) | off | **MoE models only.** Serve experts from a page-aligned file mmap (built on first use). Keeps the model out of memory pressure — physical footprint ≈ active params. Ignored with a warning on dense models. Bit-exact with the resident path. |
+| `--compiled-decode` | on\|off | on | Replay the per-step decode graph in C++ (`MLX_BUN_COMPILED_DECODE`). Bit-exact A/B lever. **Serial lane only** (see note below). **Gemma4-dense only** — LoRA, MoE, and non-Gemma4 models (MiniCPM5 / Qwen3.5) run eager; an unsupported step falls back to eager for the rest of that generation. |
 | `--perf-kernel` | on\|off | **on** | Fused quantized-KV decode-SDPA Metal kernel (`MLX_BUN_PERF_KERNEL`), the perf side of the compat A/B. Engages on quantized caches at decode. **Serial lane only.** |
 | `--fused-decode` | on\|off | off | Experimental: tile the quantized decode SDPA (`MLX_BUN_FUSED_DECODE`). **Serial lane only.** |
 | `--fused-sdpa` | on\|off | on | Fused SDPA path for quantized prefill/continuation (inverted env `MLX_BUN_NO_FUSED_SDPA`). **Serial lane only.** |
@@ -40,7 +47,7 @@ winners; flip them to compare. They are set as `MLX_BUN_*` env vars
 before the model loads, so they apply to `mlx-bun pi` too. They affect
 the **serial** decode path (`generate()`); the batched scheduler calls
 `model.forwardHidden` directly and so is unaffected by all of them — see
-[Levers that don't reach the batched lane](#levers-that-dont-reach-the-batched-lane).
+[Levers that don't reach the batched lane](#--batch-n-is-compat-mode--perf-flags-dont-apply-by-design).
 
 > **Note — `--perf-kernel` default.** The code defaults it **on**
 > (`perfKernelEnabled()` returns true unless `MLX_BUN_PERF_KERNEL=0`, and
@@ -129,7 +136,7 @@ concurrently with each other.
 | `--thinking` / `enable_thinking` | ✅ batches (template-render concern, lane-independent) |
 | multi-turn / long prompt | ✅ batches, but **no prompt-cache reuse** (`cached_tokens=0`) |
 
-Both full-attention (CPM) and sliding-window (Gemma) models batch; the
+All three model families — full-attention (CPM), sliding-window (Gemma), and hybrid gated-DeltaNet (Qwen3.5) — batch; the
 scheduler assembles each layer's cache by attention type.
 
 ## Compatibility matrix
@@ -216,7 +223,7 @@ The live config and batch state:
 
 ```jsonc
 {
-  "server":  { "owner": "serve", "model": "...", "started_at": 0 },
+  "server":  { "owner": "serve" | "pi-session" | "embedded", "model": "...", "started_at": 0 },
   "prompt_cache":  { "entries": 0, "bytes": 0, "max_bytes": 2000000000, "hits": 0, "misses": 0 },
   "response_store": { "entries": 0, "bytes": 0, "max_bytes": 33554432, "ttl_ms": 3600000 },
   "kv_quant": {

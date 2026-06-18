@@ -1,6 +1,6 @@
 # Memory system — design sketch
 
-Status: **design** (nothing built yet; capture prerequisite already landed)
+Status: **aspirational — not scheduled; no PLAN.md phase** (nothing built yet; capture prerequisite already landed). Note: `src/jobs/` is the generic background-job runner for quantize/finetune/fit — it is NOT this memory system.
 Owner: assistant layer (pi-web / pi-terminal / web-tools / jobs)
 Default: **off** until the user opts in (vault + schedule are explicit, consented actions)
 

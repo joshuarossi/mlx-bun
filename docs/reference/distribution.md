@@ -54,7 +54,7 @@ and notarized as one artifact.
 This runs [build-binary.sh](../../scripts/build-binary.sh), then:
 - signs every nested Mach-O (dylibs, any `.node`) with the hardened
   runtime, then the executable with the JIT
-  [entitlements](../../scripts/entitlements.plist) (JavaScriptCore JITs —
+  [entitlements](../../packaging/entitlements.plist) (JavaScriptCore JITs —
   without `allow-jit` the binary is killed on launch);
 - notarizes the zipped bundle via `AC_PROFILE` and waits;
 - emits `dist-release/mlx-bun-v<ver>-arm64.tar.gz` (+ `.sha256`) and
@@ -75,19 +75,20 @@ gh release create v0.0.4 dist-release/mlx-bun-v0.0.4-arm64.tar.gz \
 
 ## The tap
 
-Homebrew taps must be a repo named `homebrew-<name>`:
+Homebrew taps must be a repo named `homebrew-<name>`. The canonical tap is
+**`joshuarossi/homebrew-tap`** (Homebrew shorthand: `joshuarossi/tap`).
 
-1. Create a public repo **`joshuarossi/homebrew-mlx-bun`**.
+1. Create a public repo **`joshuarossi/homebrew-tap`** (one-time).
 2. Copy [packaging/homebrew/mlx-bun.rb](../../packaging/homebrew/mlx-bun.rb)
    to `Formula/mlx-bun.rb` in it, updating `version`/`url`/`sha256` from
    the release-script output. Commit and push.
 3. Install:
    ```sh
-   brew install joshuarossi/mlx-bun/mlx-bun
+   brew install joshuarossi/tap/mlx-bun
    mlx-bun --version
    ```
 
-`brew audit --strict --new joshuarossi/mlx-bun/mlx-bun` before pushing
+`brew audit --strict --new joshuarossi/tap/mlx-bun` before pushing
 catches most formula issues; `brew install --build-from-source` +
 `brew test` runs the formula's `test do` locally.
 
@@ -118,4 +119,51 @@ asset and no-ops the tap push if nothing changed.
 Users then upgrade with:
 ```sh
 brew upgrade joshuarossi/tap/mlx-bun
+```
+
+## Direct download (stable URL)
+
+`publish-release.sh` uploads two assets per release: the versioned tarball
+(`mlx-bun-v<ver>-arm64.tar.gz`) **and** a versionless stable copy
+(`mlx-bun-arm64.tar.gz`) pinned to `releases/latest`. This lets the
+first-run onboarding script target a URL that never changes:
+
+```
+https://github.com/joshuarossi/mlx-bun/releases/latest/download/mlx-bun-arm64.tar.gz
+```
+
+One-liner install (for docs / onboarding):
+```sh
+curl -fsSL https://github.com/joshuarossi/mlx-bun/releases/latest/download/mlx-bun-arm64.tar.gz \
+  | tar -xz -C /usr/local/bin mlx-bun
+```
+
+Note: **browser downloads and `curl`-to-file** (e.g. `curl -O ...`) are
+quarantined by Gatekeeper — macOS sets the `com.apple.quarantine` xattr on
+the saved file. The piped one-liner above streams directly to `tar` and
+never writes a quarantined file, so it runs without any Gatekeeper prompt.
+For the browser/curl-to-file path, the notarization ticket resolves the
+Gatekeeper check online; `xattr -d com.apple.quarantine mlx-bun` is the
+manual escape hatch if offline.
+
+## npm / bunx
+
+mlx-bun is published to npm as `mlx-bun` (current: 0.0.4). Install or
+run without a permanent install:
+
+```sh
+# one-off (no install)
+bunx mlx-bun
+
+# permanent global install
+bun install -g mlx-bun
+mlx-bun --version
+```
+
+The npm package wraps the same signed binary via a postinstall download
+step (it does not bundle the ~228 MB dylibs/metallib in the npm tarball
+itself). Publish to npm as part of a release:
+
+```sh
+bun publish   # from repo root; package.json version must already be bumped
 ```

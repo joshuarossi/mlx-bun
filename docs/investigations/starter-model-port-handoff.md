@@ -52,6 +52,22 @@ QK-norm against the oracle, llama has none).
 Josh decides; both tracks are specified below. The shared recipe
 (§2) applies to either.
 
+> **Outcome (2026-06-17, resolved).** Both tracks proceeded as
+> recommended. **Track A (MiniCPM5-1B) was chosen as the publishing
+> gate and shipped** (open question 1 confirmed): `src/model/minicpm5.ts`
+> is live, parity suite green, PLAN.md updated. The starter runs
+> non-thinking (open question 2 confirmed). Weights are kept on disk as a
+> permanent fallback and tour-guide model — not deleted after the big model
+> lands (open question 3 confirmed). Publishing mechanics resolved
+> (open question 4 green-lit): the package is published as
+> `mlx-bun@0.0.4` on npm, installable via `bunx mlx-bun`, and a
+> Homebrew release pipeline (sign/notarize/tap, default tap
+> `joshuarossi/homebrew-tap`) is in place. First-run onboarding
+> (auto-download + browser open) shipped alongside. **Track B
+> (Qwen3.5-0.8B) is underway** as Phase 14 proper on its own clock,
+> with reasoning fixes already merged. All four open questions are
+> resolved; see §6.
+
 ---
 
 ## 1. Machine + reference environment logistics
@@ -308,16 +324,19 @@ isolates the novel machinery so parity bisects cleanly.
 - PLAN.md updated with findings (negative results included — e.g.
   any oracle deviations discovered, like the Phase 11 ones).
 
-## 6. Open questions for Josh
+## 6. Resolved questions
 
-1. **Track A vs B for the gate** — recommendation is A
-   (MiniCPM5) for publishing speed; B proceeds afterward as Phase
-   14 on its own clock. Decide before work starts.
-2. MiniCPM5's hybrid `<think>` mode (the OptiQ page's
-   `enable_thinking` note): starter ships non-thinking — confirm.
-3. Should the starter stay on disk as the permanent "fallback +
-   tour guide" (current plan) or be deleted once the big model
-   lands? (Current code keeps it; ~1 GB.)
-4. Publishing mechanics can proceed in parallel with the port
-   (npm `files` allowlist, un-`private` the package, repo
-   visibility decision for the native pack) — green-light?
+All four questions were resolved by 2026-06-17 (see outcome box above).
+
+1. **Track A vs B for the gate** — **Track A (MiniCPM5-1B) chosen.**
+   `src/model/minicpm5.ts` shipped as the publishing gate; Track B
+   (Qwen3.5-0.8B) is underway as Phase 14 proper on its own clock.
+2. **Thinking mode for the starter** — **Non-thinking confirmed.**
+   The starter runs with thinking disabled; no `<think>` tokens in the
+   first-run flow.
+3. **Keep weights on disk?** — **Yes, kept as permanent fallback + tour
+   guide.** The ~1 GB artifact is not deleted once the big model lands.
+4. **Publishing mechanics green-lit?** — **Yes, shipped.**
+   Package published as `mlx-bun@0.0.4` on npm; installable via
+   `bunx mlx-bun`; Homebrew release pipeline (sign/notarize/tap,
+   default tap `joshuarossi/homebrew-tap`) is in place.
