@@ -13,7 +13,7 @@ class MlxBun < Formula
   homepage "https://github.com/joshuarossi/mlx-bun"
   version "0.0.3"
   url "https://github.com/joshuarossi/mlx-bun/releases/download/v0.0.3/mlx-bun-v0.0.3-arm64.tar.gz"
-  sha256 "REPLACE_WITH_SHA256_FROM_release-binary.sh"
+  sha256 "24ab88612464cb6f7f60348e6aafbb8b0fe40f9274d663a1a7a566c9a5f3189d"
   license "MIT"
 
   # Apple Silicon + Metal only. Bump the macOS floor if MLX needs newer.
