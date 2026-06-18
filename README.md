@@ -15,7 +15,22 @@ faster than the Python servers. Full table: [benchmarks](#benchmarks).
 You need an Apple Silicon Mac (MLX is Metal-only, so macOS only by
 design). Four ways in.
 
-### Homebrew (recommended)
+### Direct download (recommended)
+
+No Homebrew, Bun, or git — just curl the install script. It downloads the
+signed, notarized self-contained binary from the latest release and puts
+`mlx-bun` on your PATH:
+
+```sh
+curl -fsSL https://mlx-bun.dev/install.sh | sh
+mlx-bun
+```
+
+Self-contained (binary + MLX runtime) and notarized, so it runs without a
+Gatekeeper prompt. Installs to `~/.mlx-bun` by default — override with
+`MLX_BUN_INSTALL_DIR`, or pin a release with `MLX_BUN_VERSION=v0.0.4`.
+
+### Homebrew
 
 A self-contained, signed + notarized binary — no toolchain to install by
 hand:
@@ -27,21 +42,6 @@ mlx-bun
 
 That's the whole thing. The bottle already bundles the MLX native
 runtime, so the only thing the first run fetches is the model.
-
-### Direct download
-
-No Homebrew, Bun, or git — just curl the signed, notarized binary:
-
-```sh
-mkdir mlx-bun && cd mlx-bun
-curl -fsSL https://github.com/joshuarossi/mlx-bun/releases/latest/download/mlx-bun-arm64.tar.gz | tar xz
-./mlx-bun
-```
-
-Self-contained (binary + MLX runtime) and notarized, so a browser
-download runs without a Gatekeeper prompt (the ticket is checked online;
-if offline, run `xattr -d com.apple.quarantine mlx-bun` once). Symlink
-`./mlx-bun` into your PATH to keep it on hand.
 
 ### bunx (no install)
 

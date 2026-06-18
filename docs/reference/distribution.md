@@ -126,13 +126,21 @@ brew upgrade joshuarossi/tap/mlx-bun
 `publish-release.sh` uploads two assets per release: the versioned tarball
 (`mlx-bun-v<ver>-arm64.tar.gz`) **and** a versionless stable copy
 (`mlx-bun-arm64.tar.gz`) pinned to `releases/latest`. This lets the
-first-run onboarding script target a URL that never changes:
+install script target a URL that never changes:
 
 ```
 https://github.com/joshuarossi/mlx-bun/releases/latest/download/mlx-bun-arm64.tar.gz
 ```
 
-One-liner install (for docs / onboarding):
+The user-facing install path is the script at
+[`website/public/install.sh`](../../website/public/install.sh) (served at
+`mlx-bun.dev/install.sh`), which resolves that URL, extracts the bundle, and
+links `mlx-bun` onto `PATH`:
+```sh
+curl -fsSL https://mlx-bun.dev/install.sh | sh
+```
+
+Without the script, the same stable URL streams straight to `tar`:
 ```sh
 curl -fsSL https://github.com/joshuarossi/mlx-bun/releases/latest/download/mlx-bun-arm64.tar.gz \
   | tar -xz -C /usr/local/bin mlx-bun
