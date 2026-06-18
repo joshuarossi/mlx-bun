@@ -1,11 +1,20 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import { syncReferenceDocs } from './scripts/sync-reference-docs.mjs';
+
+// Regenerate reference/guide pages from docs/reference/*.md before every
+// dev/build, so the site is always in sync with the source docs.
+const syncDocs = {
+	name: 'sync-reference-docs',
+	hooks: { 'astro:config:setup': () => syncReferenceDocs() },
+};
 
 // https://astro.build/config
 export default defineConfig({
 	site: 'https://mlx-bun.dev',
 	integrations: [
+		syncDocs,
 		starlight({
 			title: 'mlx-bun',
 			description:
@@ -44,6 +53,7 @@ export default defineConfig({
 						{ label: 'CLI', slug: 'reference/cli' },
 						{ label: 'Server API', slug: 'reference/server-api' },
 						{ label: 'Server configuration', slug: 'reference/server-config' },
+						{ label: 'Training & fine-tuning', slug: 'reference/training' },
 					],
 				},
 				{

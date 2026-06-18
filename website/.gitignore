@@ -19,3 +19,10 @@ pnpm-debug.log*
 
 # macOS-specific files
 .DS_Store
+
+# generated from ../docs/reference/ by scripts/sync-reference-docs.mjs — do NOT edit/commit
+src/content/docs/reference/server-api.md
+src/content/docs/reference/server-config.md
+src/content/docs/reference/training.md
+src/content/docs/guides/library.md
+src/content/docs/guides/embedding.md
