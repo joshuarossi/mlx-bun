@@ -93,10 +93,17 @@ echo "$SHA  $TARBALL" > "$OUT_DIR/$TARBALL.sha256"
 echo
 echo "==> done: $OUT_DIR/$TARBALL"
 echo
-echo "Paste into homebrew-mlx-bun/Formula/mlx-bun.rb:"
 echo "  version \"$VERSION\""
 echo "  url     \"https://github.com/joshuarossi/mlx-bun/releases/download/v$VERSION/$TARBALL\""
 echo "  sha256  \"$SHA\""
+
+# Optional one-shot publish: create the GitHub release and sync the tap.
+# `PUBLISH=1 ./scripts/release-binary.sh` does the whole pipeline.
+if [ "${PUBLISH:-0}" = "1" ]; then
+  echo
+  echo "==> PUBLISH=1 -> publishing release + syncing tap"
+  exec ./scripts/publish-release.sh "$VERSION"
+fi
 echo
-echo "Next:"
-echo "  gh release create v$VERSION $OUT_DIR/$TARBALL --title \"mlx-bun v$VERSION\" --notes \"...\""
+echo "Next: ./scripts/publish-release.sh $VERSION   (creates the release + updates the tap)"
+echo "  or: PUBLISH=1 ./scripts/release-binary.sh    next time, to do it all in one shot"
