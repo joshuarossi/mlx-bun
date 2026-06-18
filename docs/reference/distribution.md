@@ -91,8 +91,31 @@ Homebrew taps must be a repo named `homebrew-<name>`:
 catches most formula issues; `brew install --build-from-source` +
 `brew test` runs the formula's `test do` locally.
 
-## Updating
+## Updating (one command)
 
-Per release: bump `version` in `package.json`, run `release-binary.sh`,
-create the `v<ver>` GitHub release, then update `version`/`url`/`sha256`
-in the tap's `Formula/mlx-bun.rb`. Users get it with `brew upgrade`.
+Releases must originate on this Mac (signing + notarization need the
+Developer ID cert + Apple creds), so the publish step is local too — no
+cross-repo CI token to manage, and the tap can't drift out of sync.
+
+Per release:
+
+1. bump `version` in `package.json` and commit;
+2. one shot:
+   ```sh
+   PUBLISH=1 ./scripts/release-binary.sh
+   ```
+   This builds → signs → notarizes → creates the `v<ver>` GitHub release →
+   rewrites `version`/`url`/`sha256` in the tap's `Formula/mlx-bun.rb` and
+   pushes it → mirrors the same fields into
+   [packaging/homebrew/mlx-bun.rb](../../packaging/homebrew/mlx-bun.rb)
+   (left staged — commit it).
+
+Prefer two steps? Run `./scripts/release-binary.sh` to build, eyeball the
+artifact, then `./scripts/publish-release.sh` to publish + sync the tap.
+Both are idempotent: re-running `publish-release.sh` clobbers the release
+asset and no-ops the tap push if nothing changed.
+
+Users then upgrade with:
+```sh
+brew upgrade joshuarossi/tap/mlx-bun
+```
