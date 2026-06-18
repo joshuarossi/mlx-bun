@@ -706,12 +706,31 @@ export class Gemma4Model {
   /** Pre-merged (unscaled) input embeddings → hidden states. Used by the
    *  vision path; `bidir` (bool [L]) marks image tokens, which attend
    *  bidirectionally among themselves (use_bidirectional_attention:
-   *  "vision" — text stays causal). */
-  forwardEmbeddings(embeds: MlxArray, cache: Cache[], bidir: MlxArray | null): MlxArray {
-    if (this.perLayerWidth > 0)
-      throw new Error("vision + per-layer-input models not supported yet");
+   *  "vision" — text stays causal). `ids` ([1, L], the spliced token ids)
+   *  is required for per-layer-input models (e2b/e4b): image-token
+   *  positions get token 0's per-layer embedding, and their vision content
+   *  enters only through the projection term (the merged hidden). Matches
+   *  optiq's frontend: `zeroed = where(text_mask, input_ids, 0)`. */
+  forwardEmbeddings(
+    embeds: MlxArray, cache: Cache[], bidir: MlxArray | null,
+    ids: MlxArray | null = null,
+  ): MlxArray {
     const h = ops.mulScalar(embeds, this.embedScale);
-    return this.forwardLayers(h, cache, bidir, null);
+    if (this.perLayerWidth === 0) return this.forwardLayers(h, cache, bidir, null);
+
+    if (!ids)
+      throw new Error("per-layer-input vision models require token ids");
+    let plIds = ids;
+    if (bidir) {
+      const cond = ops.reshape(bidir, ids.shape);
+      const zero = ops.zeros(ids.shape, ids.dtype);
+      plIds = ops.where(cond, zero, ids);
+      cond.dispose();
+      zero.dispose();
+    }
+    const out = this.forwardLayers(h, cache, bidir, plIds);
+    if (plIds !== ids) plIds.dispose();
+    return out;
   }
 
   /** Consumes h. */

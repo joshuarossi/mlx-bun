@@ -271,6 +271,14 @@ export function exp(a: MlxArray, s: S = gpuStream): MlxArray {
   return new MlxArray(outArray("exp", (o) => C.mlx_exp(o, a.handle, s)));
 }
 
+export function cos(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("cos", (o) => C.mlx_cos(o, a.handle, s)));
+}
+
+export function sin(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("sin", (o) => C.mlx_sin(o, a.handle, s)));
+}
+
 export function neg(a: MlxArray, s: S = gpuStream): MlxArray {
   return new MlxArray(outArray("negative", (o) => C.mlx_negative(o, a.handle, s)));
 }

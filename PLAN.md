@@ -1251,22 +1251,58 @@ Phase 4's "shim later if needed"):
   instead and won't use Claude Code against the local model.
   docs/reference/server-api.md documents both surfaces.
 
-## Phase 12 — SigLIP vision tower `[ ]` (capability — Josh's hold)
+## Phase 12 — SigLIP vision tower `[~]` (e4b DONE 2026-06-17, branch `feat/siglip-vision-sidecar`)
 
 Lights up e2b/e4b/26B-A4B/31B image input. The 12B unified
-(encoder-free) path is done — it was the hard case. **Do after
-optimizations / only if needed**: nothing above depends on it.
+(encoder-free) path was done; **e4b SigLIP now done too.**
 
-- [ ] Port the SigLIP encoder + frontend. Oracle:
-      `optiq/vlm/gemma4/{vision,frontend,image_processing}.py`. Mind
-      the gemma4_text embed_scale pre-division detail (vision features
-      pre-divided; the model re-multiplies — same as the unified path).
-- [ ] Keep the existing pure-JS decode + PIL-port resize approach;
-      resize-free fixtures are bit-exact, the resample impurity stays
-      documented.
-- **Exit criterion**: e4b answers an image question end-to-end;
-  resize-free fixture parity vs the optiq stack (tier a on ids +
-  greedy prefix, as the 12B vision suite does).
+- [x] Port the SigLIP encoder + frontend → `src/vision/siglip.ts`
+      (`SiglipVisionTower`). Oracle: `optiq/vlm/gemma4/{vision,frontend,
+      image_processing,merge}.py`. embed_scale pre-division handled like the
+      unified path (features /embed_scale, the LM re-multiplies). Matched
+      op-for-op INCLUDING optiq's split of decomposed-f32 RMS norm for q/k/v
+      vs fused fast.rms_norm for the block layernorms.
+- [x] Closed the two integration gaps: (a) `forwardEmbeddings` no longer
+      throws for per-layer-input models — threads zeroed image-token ids into
+      the per-layer-input path (e4b/e2b); (b) tower selection by
+      `vision_config.model_type` + **lazy loading** on first image request
+      (`getVisionTower`/`makeVisionLoader` in `server.ts`).
+- [x] Reused the pure-JS decode + PIL-port resize (resize-free fixtures
+      bit-exact; resample impurity unchanged). Patchify/pos/pool precomputed
+      host-side; 2D RoPE built on-device op-for-op with optiq.
+- **Exit criterion → MET (e4b, 2026-06-17):** answers an image question
+  end-to-end (grounded gradient description); resize-free fixture tier-a:
+  spliced ids bit-exact (256 soft tokens), pre-transformer features bit-exact
+  (0.003%), greedy prefix matches, output grounded. Gate
+  `tests/e4b-vision.test.ts`.
+- **Finding — full features ≠ bit-exact vs optiq (~1.0-1.2% rel-RMSE), but EVERY
+  primitive IS bit-exact (NOT a kernel/cross-build issue):** proven model-free
+  (`scripts/op-parity-{dump.py,check.ts}`) that mlx-bun's libmlx and the oracle
+  venv's mlx-metal are BIT-IDENTICAL on this machine for rms_norm, gelu, matmul,
+  clip, cos, sin, the full multidim RoPE, sdpa (no-mask AND array-mask), sdpa
+  padded-vs-unpadded (a no-op), and the 3×3 pool (f32 matmul == optiq einsum).
+  An earlier "fast-SDPA dispatch boundary" claim was WRONG — a bug in the
+  op-test: `toFloat32` mis-read a non-contiguous SDPA output (force
+  `ops.contiguous()` before raw readback). The residual is a **sub-bf16
+  (≈0.0007%/layer) composition non-associativity that ACCUMULATES** (1L 0.0007%,
+  2L 0.02%, 4L 0.14%, 8L 0.20%, 16L 0.68% on bit-exact injected input; embed_vision
+  then amplifies 0.68→1.02%). It's amplified by the encoder's design: **scale=1.0
+  on RMS-normed q/k → q·k ~N(0, head_dim) → sharply peaked softmax**, so tiny
+  roundings flip attention weights and downstream greedy argmaxes. ~0.17% is the
+  patchify input (JS `pixel/127.5-1` vs optiq's two-step f32 `2*(pixel/255-0.5)`).
+  Switching q/k/v norms fast→decomposed (optiq's own choice) dropped 1.46→1.19%.
+  Single images run **unpadded** — bit-identical to optiq's padded+(-1e4)-masked
+  path (verified 100% bit-exact), much cheaper. Toggling the LM flags
+  (FUSED_GELU/PERF_KERNEL/NO_FUSED_SDPA/FUSED_DECODE) did NOT change the greedy.
+- [ ] **TODO(revisit) — drive vision to bit-exact:** every primitive already
+      matches the oracle bit-for-bit; the residual ~1% is full-graph composition
+      order. The codebase's standard (0.0000% on the text models) is reached by
+      matching optiq's EXACT op / lazy-eval / fusion ordering, readable straight
+      from `optiq/vlm/gemma4/{vision,merge}.py`. Left at tier-a for now (grounded,
+      exact ids, greedy prefix — good enough); revisit to align the op order.
+- [ ] **Remaining (not blocking e4b):** audio tower (`audio_tower.*`/
+      `embed_audio.*` also in the sidecar); 26B-A4B / 31B SigLIP (same tower,
+      untested — pick up by config); video frames.
 
 ## Phase 13 — TurboQuant `[ ]` (research path — PROMOTED 2026-06-12)
 

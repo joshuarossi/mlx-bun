@@ -134,6 +134,8 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_slice_update: { args: [P, u64, u64, P, u64, P, u64, P, u64, u64], returns: i32 },
   mlx_zeros: { args: [P, P, u64, i32, u64], returns: i32 },
   mlx_exp: { args: [P, u64, u64], returns: i32 },
+  mlx_cos: { args: [P, u64, u64], returns: i32 },
+  mlx_sin: { args: [P, u64, u64], returns: i32 },
   mlx_negative: { args: [P, u64, u64], returns: i32 },
   mlx_argsort_axis: { args: [P, u64, i32, u64], returns: i32 },
   mlx_argpartition_axis: { args: [P, u64, i32, i32, u64], returns: i32 },

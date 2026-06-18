@@ -119,20 +119,29 @@ export class ChatTemplate {
   readonly #template: Template;
   readonly #bosToken: string | null;
   readonly #eosToken: string | null;
-  /** True when the template gates reasoning on `enable_thinking` AND uses the
-   *  `<think>…</think>` channel our /v1 ThinkingTagSplitter normalizes (Qwen3.5,
-   *  MiniCPM5). Requiring `<think>` excludes models that gate on enable_thinking
-   *  but emit a DIFFERENT reasoning format we don't yet split — e.g. Gemma e4b /
-   *  gpt-oss use a `<|channel>thought…<channel|>` (harmony-style) channel, so
-   *  turning their thinking on leaks the raw markers + reasoning into the answer.
-   *  Drives the reasoning capability advertised to Pi/clients. */
+  /** Which reasoning format the template's `enable_thinking` channel uses, or
+   *  null if the model has no switchable reasoning:
+   *   - "think-tag": `<think>…</think>` text markers (Qwen3.5, MiniCPM5) — split
+   *     from decoded text by ThinkingTagSplitter.
+   *   - "gemma-channel": `<|channel>thought\n…<channel|>` (Gemma 4) — the markers
+   *     are SPECIAL TOKENS stripped at decode, so reasoning is split at the token
+   *     level in ToolAwareStream (gemma-sentinel mode), not from decoded text.
+   *  Drives both the parser path and the reasoning capability advertised to Pi. */
+  readonly thinkingFormat: "think-tag" | "gemma-channel" | null;
+  /** True when the model has a switchable reasoning channel we can parse. */
   readonly supportsThinking: boolean;
 
   private constructor(source: string, bosToken: string | null, eosToken: string | null) {
     this.#template = new Template(source);
     this.#bosToken = bosToken;
     this.#eosToken = eosToken;
-    this.supportsThinking = source.includes("enable_thinking") && source.includes("<think>");
+    const gatesThinking = source.includes("enable_thinking");
+    this.thinkingFormat = gatesThinking && source.includes("<think>")
+      ? "think-tag"
+      : gatesThinking && source.includes("<|channel>")
+        ? "gemma-channel"
+        : null;
+    this.supportsThinking = this.thinkingFormat !== null;
   }
 
   static async load(modelDir: string): Promise<ChatTemplate> {

@@ -286,9 +286,13 @@ async function* generateInner(
         throw new Error("promptEmbeddings cannot be combined with a pre-warmed cache");
       if (needsTokenHistory)
         history = ops.fromInt32(promptTokens, [promptTokens.length]);
+      // e2b/e4b need the spliced token ids to build per-layer inputs
+      // (image positions zeroed inside forwardEmbeddings).
+      const embedIds = ops.fromInt32(promptTokens, [1, promptTokens.length]);
       h0 = model.forwardEmbeddings(
-        options.promptEmbeddings, cache, options.imageMask ?? null,
+        options.promptEmbeddings, cache, options.imageMask ?? null, embedIds,
       );
+      embedIds.dispose();
     } else {
       let pos = cachedTokens;
       while (promptTokens.length - pos > prefillChunkSize) {

@@ -5,6 +5,68 @@ exit criteria, and findings live in [PLAN.md](PLAN.md); this file is the
 transient front door that stays current. Product/UX north star:
 [docs/planning/PRODUCT_ROADMAP.md](docs/planning/PRODUCT_ROADMAP.md).
 
+## Vision — SigLIP sidecar lights up e4b image input (2026-06-17, branch `feat/siglip-vision-sidecar`)
+
+Phase 12 (SigLIP vision tower) BUILT + validated for **gemma-4-e4b**. e4b now
+answers image questions end-to-end (grounded descriptions). The 16-layer SigLIP
+encoder is ported from `optiq/vlm/gemma4/` in **`src/vision/siglip.ts`**
+(`SiglipVisionTower`): patchify → input_proj + 2D pos-embedding → 16× transformer
+blocks (clippable linears with the trained finite clip bounds, manual-f32 q/k/v
+RMS norms, on-device 2D RoPE, fused SDPA scale=1.0, GeGLU) → 3×3 avg-pool →
+MultimodalEmbedder → /embed_scale. Single images run **unpadded** (numerically
+identical to optiq's padded+masked path, verified, but far cheaper).
+
+**Two gaps closed to make it work:**
+1. `Gemma4Model.forwardEmbeddings` used to **throw** for per-layer-input models
+   (e2b/e4b). Now threads the spliced ids (image positions zeroed) into the
+   per-layer-input path — matches optiq's `zeroed = where(text_mask, ids, 0)`.
+2. Tower selection + **lazy loading**: `vision_config.model_type` picks SigLIP
+   (`gemma4_vision`: e2b/e4b/26B/31B) vs the encoder-free tower
+   (`gemma4_unified_vision`: 12B). The tower loads on the **first image
+   request**, not at server start (`getVisionTower`/`makeVisionLoader` in
+   `server.ts`) — text-only sessions never pay for it.
+
+**Works across the fidelity tree.** Vision prefill always falls back to the
+**monolith** adapter (`forwardEmbeddings` → `forwardLayers`; the per-model
+generated adapter returns `super.forwardLayers` when `bidir !== null`), so it's
+adapter-agnostic. Decode flows through the chosen KV path: verified end-to-end on
+**L1** (mlx-lm bf16) AND **L2** (optiq mixed-precision quantized-KV — the default
+`mlx-bun serve`, monolith `quantizedSdpaUnfused` for the bidir prefill, generated
+fused decode), both grounded (`tests/e4b-vision.test.ts`, 3/3). L3 perf flags
+(`FUSED_GELU`/`PERF_KERNEL`/`FUSED_DECODE`) don't change the greedy. The vision
+ENCODER (bf16, no KV cache) is the same across all three paths — its SDPA
+divergence (below) is orthogonal to the KV-path choice.
+
+**Parity (PLAN Phase 12 bar = tier-a ids + greedy prefix): MET.** Spliced prompt
+ids bit-exact (256 soft tokens); pre-transformer features bit-exact (0.003%);
+**ONE encoder layer on bit-exact input is bit-exact (0.0007%)**; greedy prefix
+matches; output grounded. Full 16-layer features land at **~1.0-1.2% rel-RMSE**
+vs optiq. **EVERY primitive is bit-identical** between mlx-bun's libmlx and the
+oracle's mlx-metal on this machine — verified model-free
+(`scripts/op-parity-{dump.py,check.ts}`): rms_norm, gelu, matmul, clip, cos, sin,
+full multidim RoPE, sdpa (no-mask AND array-mask), sdpa padded-vs-unpadded
+(no-op), pool (f32 matmul == optiq einsum). So there is **NO kernel / cross-build
+divergence** (an earlier "fast-SDPA dispatch boundary" claim was a bug in the
+op-test: `toFloat32` mis-read a non-contiguous SDPA output — must
+`ops.contiguous()` before raw readback). The residual is a **sub-bf16
+(≈0.0007%/layer) composition non-associativity that accumulates and is amplified
+by the encoder's design**: scale=1.0 on RMS-normed q/k → q·k ~N(0, head_dim) →
+sharply peaked softmax, so tiny roundings flip attention weights and, downstream,
+greedy argmaxes (~0.17% of it is the patchify input: JS `pixel/127.5-1` vs
+optiq's two-step f32 `2*(pixel/255-0.5)`). Toggling the LM flags
+(`FUSED_GELU`/`PERF_KERNEL`/`NO_FUSED_SDPA`/`FUSED_DECODE`) did NOT change the
+greedy. So the test asserts ids + greedy-prefix + grounded output, not full
+bit-exact greedy.
+**TODO(revisit):** full bit-exact vision IS achievable (it's the bar for the
+rest of the codebase, 0.0000% on the text models) — match optiq's EXACT
+op/lazy-eval/fusion ordering in the full graph, readable straight from
+`optiq/vlm/gemma4/{vision,merge}.py`. Primitives already match bit-for-bit; only
+the full-graph composition order remains. Left at tier-a for now (good enough). Gate: `tests/e4b-vision.test.ts` (golden
+`goldens/e4b-vision.json` ← `scripts/gen-e4b-vision-golden.py`). 12B encoder-free
+path unregressed (`tests/vision.test.ts` 4/4). **Not done:** audio tower (the
+sidecar also carries `audio_tower.*`/`embed_audio.*`); 26B/31B SigLIP (same
+tower, untested); image preprocessing on **resize** paths stays PIL-impure.
+
 ## Training — segmented backward, Phase A COMPLETE (2026-06-16, uncommitted on `main`)
 
 Long-context LoRA SFT that streams the backward segment-by-segment so only one
@@ -319,7 +381,9 @@ These need Josh physically (hardware, downloads, reboots):
    download the first Qwen quant; also the MTP home and a consumer of the
    default-off fused-decode flag.
 4. **Phase 13 — TurboQuant** (promoted research direction).
-5. **Phase 12 — SigLIP vision** (on hold; only if needed).
+5. **Phase 12 — SigLIP vision**: e4b DONE 2026-06-17 (branch
+   `feat/siglip-vision-sidecar`; see the Vision section at the top). Remaining:
+   audio tower + 26B/31B SigLIP.
 6. **`MLX_BUN_PERF_KERNEL` default flip** — gated on the clean-machine pass.
 
 ## Archived handoffs

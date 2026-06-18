@@ -53,6 +53,11 @@ export const SNAPSHOT_26B = `${process.env.HOME}/.cache/huggingface/hub/models--
 
 export const SNAPSHOT_MINICPM5 = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--MiniCPM5-1B-OptiQ-4bit/snapshots/664aabaed233c653f82716d8dc822234d0091f78`;
 
+// Gemma-4 e4b: the SigLIP-vision target (full vision encoder in its
+// optiq_vision.safetensors sidecar, per-layer-input text). Resolved
+// dynamically so the download needs no hash edit.
+export const SNAPSHOT_E4B = hfSnapshot("models--mlx-community--gemma-4-e4b-it-OptiQ-4bit");
+
 export const SNAPSHOT_QWEN35 = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--Qwen3.6-27B-OptiQ-4bit/snapshots/e9a616f2a388d41a7b7306e079f248825b90071f`;
 
 // Lighter same-architecture (qwen3_5) OptiQ checkpoint: 4-bit, 32 layers, tied
@@ -70,6 +75,10 @@ export async function snapshot26bAvailable(): Promise<boolean> {
 
 export async function snapshotMiniCPM5Available(): Promise<boolean> {
   return Bun.file(`${SNAPSHOT_MINICPM5}/config.json`).exists();
+}
+
+export async function snapshotE4bAvailable(): Promise<boolean> {
+  return Bun.file(`${SNAPSHOT_E4B}/config.json`).exists();
 }
 
 export async function snapshotQwen35Available(): Promise<boolean> {
