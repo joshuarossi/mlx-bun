@@ -13,7 +13,7 @@ prompt in **394 ms**. Full table: [benchmarks](#benchmarks).
 ## Getting started
 
 You need an Apple Silicon Mac (MLX is Metal-only, so macOS only by
-design). Three ways in.
+design). Four ways in.
 
 ### Homebrew (recommended)
 
@@ -27,6 +27,20 @@ mlx-bun
 
 That's the whole thing. The bottle already bundles the MLX native
 runtime, so the only thing the first run fetches is the model.
+
+### Direct download
+
+No Homebrew, Bun, or git — just curl the signed, notarized binary:
+
+```sh
+mkdir mlx-bun && cd mlx-bun
+curl -fsSL https://github.com/joshuarossi/mlx-bun/releases/latest/download/mlx-bun-arm64.tar.gz | tar xz
+./mlx-bun
+```
+
+Self-contained (binary + MLX runtime) and notarized, so it runs even on a
+browser download — no Gatekeeper prompt. Symlink `./mlx-bun` into your
+PATH to keep it on hand.
 
 ### bunx (no install)
 
