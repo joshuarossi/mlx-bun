@@ -1,8 +1,10 @@
 # mlx-bun: gemma4.ts decompose & optimize — action plan
 
 > This is the canonical **design/rationale** for the optimization work.
-> Live **status/tracking** (checkboxes, findings) lives in PLAN.md under
-> "Optimization plan Phase A–E".
+> Live **status/tracking** (checkboxes, findings) for Phases A–D lives in
+> PLAN-archive.md; Phase E remains in PLAN.md.
+
+**Status (verified 2026-06-17):** Phases A–D are **DONE** (`[x]` in PLAN-archive.md, all landed 2026-06-10/11). Phase E — per-config fused decode-SDPA kernel — is **in progress** (`[~]` in PLAN.md, started 2026-06-11; fused kernel exists and is quality-gated per PLAN.md Step 4). The body of this doc remains the durable design rationale; completed phase checkboxes and findings live in PLAN-archive.md; Phase E tracking lives in PLAN.md.
 
 **Premise (confirmed from the source read):** the current engine sits at
 parity-to-ahead vs mlx-lm on the 12B *while still interpreting the decode

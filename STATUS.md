@@ -5,7 +5,7 @@ exit criteria, and findings live in [PLAN.md](PLAN.md); this file is the
 transient front door that stays current. Product/UX north star:
 [docs/planning/PRODUCT_ROADMAP.md](docs/planning/PRODUCT_ROADMAP.md).
 
-## Vision — SigLIP sidecar lights up e4b image input (2026-06-17, branch `feat/siglip-vision-sidecar`)
+## Vision — SigLIP sidecar lights up e4b image input (2026-06-17, merged to `main`)
 
 Phase 12 (SigLIP vision tower) BUILT + validated for **gemma-4-e4b**. e4b now
 answers image questions end-to-end (grounded descriptions). The 16-layer SigLIP
@@ -67,16 +67,15 @@ path unregressed (`tests/vision.test.ts` 4/4). **Not done:** audio tower (the
 sidecar also carries `audio_tower.*`/`embed_audio.*`); 26B/31B SigLIP (same
 tower, untested); image preprocessing on **resize** paths stays PIL-impure.
 
-## Training — segmented backward, Phase A COMPLETE (2026-06-16, uncommitted on `main`)
+## Training — segmented backward, Phase A + Phase B BOTH COMPLETE (merged to `main`, PRs #9–11)
 
 Long-context LoRA SFT that streams the backward segment-by-segment so only one
 segment's activations are live — fits where the optiq/mlx-lm reference spikes/crashes.
-On PR [#9](https://github.com/joshuarossi/mlx-bun/pull/9) (`segmented-backward-training`).
-**Phase A (MiniCPM5) done + validated + quality-confirmed:** bit-exact grads vs the
+**Phase A (MiniCPM5) done + validated + quality-confirmed** (PR #9): bit-exact grads vs the
 full backward (relNorm 0.0000% under flash), peak **10.91 → 3.29 GB @2048** (non-seg
 spikes to 21–26 GB @4096; seg stays 6–8 GB), **no memory leak**. Real 300-iter run:
 peak **6.51 GB** (baseline 25.47 GB), `chunk-eval` **95.10/100** — EXCEEDS the
-non-segmented baseline (91.70). **Phase B (e4b) BUILT + validated:**
+non-segmented baseline (91.70). **Phase B (e4b) COMPLETE + merged** (PRs #10–11):
 `SegmentedBackwardGemma4` (`src/train/segmented.ts`, wired into the trainer) —
 forward bit-exact, grads bit-exact for single-consumer donor reuse / ~1% bf16-class
 (bf16 non-associativity, grouping-controllable) for the multi-consumer donor-KV sum.
@@ -86,7 +85,7 @@ trainable layers, 25.7 GB).** At 2K/4K both train all 42; segmented ~15-25% lowe
 (seg 11.0/16.1 vs mlx-lm 12.8/20.9 GB). No leak; adapter saves. NOTE the earlier
 "reference crashes at 4K / ~70 GB" claim was WRONG — it used mlx-bun's OWN
 checkpoint (ineffective, 23 GB @2048) as the baseline, not mlx-lm's. **Handoff
-report (start here): [docs/segmented-backward-handoff.md](docs/segmented-backward-handoff.md)**
+report (start here): [docs/investigations/segmented-backward-handoff.md](docs/investigations/segmented-backward-handoff.md)**
 — current state, validated numbers, how to run/train an adapter. Deep dossier:
 docs/design/segmented-backward-training.md §9 (MiniCPM5) / §10 (e4b). Enable via `TrainConfig.segmentSize` (layers
 per segment; 0 = off). Key files: `src/train/segmented.ts` (`SegmentedBackward`),
@@ -95,11 +94,9 @@ backward uses `mlx_vjp`, NOT a surrogate-loss `value_and_grad`, which leaked).
 Two findings worth knowing: (a) `ops.sdpa`'s fused-eager forward ≠ its autograd
 forward in bf16 (~0.12%) — use `MLX_BUN_TRAIN_ATTN=flash` for exact segmented grads;
 (b) mlx `eval` doesn't detach, so boundaries are copied to leaves (`fromBytesCopy`).
-Full dossier: [docs/design/segmented-backward-training.md](docs/design/segmented-backward-training.md) §9.
-**Next:** real 300-iter chunk fine-tune + `chunk-eval` quality vs the 91.70 baseline,
-then Phase B (e4b: KV-sharing + per-layer-input + full-attn O(L²) isolation, §5 plan).
+Full dossier: [docs/design/segmented-backward-training.md](docs/design/segmented-backward-training.md) §9–10.
 
-## Active branch (2026-06-15) — `qwen3-5-27b-bringup`: Qwen3.6-27B-OptiQ-4bit port
+## Phase 14 bring-up — Qwen3.6-27B-OptiQ-4bit (merged; 27B confirmation Josh-gated)
 
 > **Phase 14 bring-up — BOTH PARITY BARS PASS (2026-06-15, M1 Max).** Target
 > family = **hybrid gated-DeltaNet** arch (`model_type qwen3_5`): every 4th layer
@@ -139,9 +136,35 @@ then Phase B (e4b: KV-sharing + per-layer-input + full-attn O(L²) isolation, §
 > MTP speculation (`mtp.safetensors`), Qwen3-VL vision, 35B-A3B MoE. See PLAN
 > Phase 14 bring-up for the full findings.
 
-## Current state (2026-06-15) — merged to `main`: batched serving + expert offload + HLG Curve Designer
+## Current state (2026-06-17) — merged to `main`: distribution + onboarding + vision + adapters + training
 
-> **HLG Curve Designer (NEW, this session).** A v2 replacement sampler — draw a
+> **Distribution story landed (2026-06-17).** Four install methods now live:
+> direct-download (`install.sh`), **npm 0.0.4** (`bunx mlx-bun` / `npm i -g
+> mlx-bun`), **Homebrew** (sign + notarize + tap auto-sync to
+> `joshuarossi/homebrew-tap`; `brew install joshuarossi/tap/mlx-bun`), and build
+> from source. `bun run publish` is the single-command release pipeline.
+>
+> **First-run onboarding** (commit `47a5d64`): `mlx-bun serve` with no model
+> auto-downloads MiniCPM5, opens the browser, and starts the CPM5 welcome
+> assistant — zero-config first run.
+>
+> **Focus-existing-chat-tab** (commit `472bc6f`): opening a new chat when one is
+> already open focuses the existing tab instead of duplicating.
+>
+> **Adapters end-to-end** (PR #13): web chat selector + CLI `/adapter` command;
+> discovery endpoint + `before_provider_request` injection hook. Scale/lr/
+> checkpoints are run-configurable; `keep-all-checkpoints` + `metrics.json`.
+>
+> **SigLIP vision sidecar** (commit `4625fe5`): see the Vision section above.
+>
+> **Segmented-backward training** (PRs #9–11): see the Training section above.
+>
+> **Qwen3.5/MiniCPM5 reasoning fix** (PR #12): reasoning channel + restore
+> messages fixed in the web UI.
+>
+> ---
+>
+> **HLG Curve Designer** (merged earlier). A v2 replacement sampler — draw a
 > monotone curve in log-probability space and it replaces temperature+softmax
 > (`p_out ∝ exp(curve(log p_in))`); identity ≡ temperature 1. Engine
 > `src/curve-sampler.ts` (PCHIP over N movable control points, on-device), wired
@@ -171,16 +194,17 @@ then Phase B (e4b: KV-sharing + per-layer-input + full-attn O(L²) isolation, §
 > reuse under batching, KV-budget admission, throughput numbers.
 
 - **Active: Phase 18 — concurrent / batched serving (slots)** `[~]`.
-  Latest commit landed batched-decode foundations + the mlx-lm B=N parity
-  oracle (S1b). Batch parity gate = bit-exact vs mlx-lm B=N at the same
-  setting (not vs our own B=1). See PLAN.md Phase 18 + parity oracle
-  notes, and `docs/design/parallel-slots.md`.
+  Scheduler + gateway are live for BOTH full-attention (CPM) and
+  sliding-window (Gemma) models; B=N bit-parity vs mlx-lm achieved for both.
+  Polish items remaining: `extend` join op, prompt-cache reuse under batching,
+  KV-budget admission, throughput numbers. See PLAN.md Phase 18 +
+  `docs/design/parallel-slots.md`.
 - **Just completed: docs/repo reorganization** — benchmark provenance
   consolidated into [benchmarks/RESULTS.md](benchmarks/RESULTS.md)
   (3 sections: parity / performance / quality), planning docs moved under
   `docs/planning/`, root decluttered, AGENTS.md de-duplicated. Plan and
   rationale: [docs/design/docs-reorg-plan.md](docs/design/docs-reorg-plan.md).
-- **Phase 19 — expert offload (single-user MoE residency): spike complete,
+- **Phase 20 — expert offload (single-user MoE residency): spike complete,
   E1 in progress** `[~]`. Mechanism FULLY de-risked (probes all green: GPU
   `gather_qmm` over a page-aligned mmap is bit-exact + row-local; clean
   read-only file-mmap expert pages cost ~0 `phys_footprint` AND Metal does
@@ -201,16 +225,16 @@ then Phase B (e4b: KV-sharing + per-layer-input + full-attn O(L²) isolation, §
   help / converter / reuse); `serve --expert-offload` smoke test is Josh's
   (starts a server). **Resume at E1e**: cleared-machine tok/s + optional
   hot-expert pinning + offload scales/biases (last ~6%). Design + all findings:
-  PLAN Phase 19 +
+  PLAN Phase 20 +
   [docs/investigations/expert-offload-single-user-moe.md](docs/investigations/expert-offload-single-user-moe.md).
-  Probes/tooling: `scripts/probe-{expert-residency,mmap-gather,madvise-eviction,footprint,metal-wire}.ts`,
+  Probes/tooling: `scripts/experiments/probe-{expert-residency,mmap-gather,madvise-eviction,footprint,metal-wire}.ts`,
   `scripts/run-expert-trace.ts`, `scripts/analyze-expert-trace.ts`, `src/expert-trace.ts`.
 
-> **Resume here:** on `main` (merged). The HLG Curve Designer: `mlx-bun serve <model>`
-> → "Curves" tab. Batch-serving + expert-offload remaining work is below.
-> Full design + rationale: `docs/design/parallel-slots.md`. Principles are in
-> auto-loaded memory (drop-in-for-mlx-lm; optimization-tree/parity-as-correctness;
-> per-model/quant specialization; concurrent-serving-slots).
+> **Resume here (2026-06-17):** distribution + onboarding + vision + adapters + training all merged to
+> `main`. Active Phase 18 [~] batching polish (extend join op, prompt-cache reuse
+> under batching, KV-budget admission, throughput numbers). Phase 14 Qwen 27B
+> confirmation is Josh-gated (download). Phase 13 TurboQuant is next research
+> direction. Full design + rationale: `docs/design/parallel-slots.md`.
 
 **Goal: `--batch N` batched serving as a true `mlx_lm.server` drop-in.**
 `--batch N` is a **mode switch** (default 1): N=1 = today's optimized serial
@@ -286,7 +310,7 @@ mlx-lm with zero optimizations — see `benchmarks/RESULTS.md`.
   (run: `MLX_BUN_TEST_BATCH_DECODE=1 bun test tests/batched-decode-parity.test.ts`).
 - Earlier (on `main`): P1 parallel-load harness (`scripts/bench-serving-load.ts`).
 
-## Next action — extend the live `--batch N` engine (serves full-attention AND sliding-window B>1)
+## Next action — Phase 18 batching polish + Phase 14 Qwen 27B confirmation + Phase 13 TurboQuant
 
 The engine is BUILT and LIVE for BOTH full-attention (CPM) and sliding-window
 (Gemma) models (steps 1, 2a, 2b, AND sliding-window dynamic-B done — below).
@@ -381,13 +405,12 @@ These need Josh physically (hardware, downloads, reboots):
    download the first Qwen quant; also the MTP home and a consumer of the
    default-off fused-decode flag.
 4. **Phase 13 — TurboQuant** (promoted research direction).
-5. **Phase 12 — SigLIP vision**: e4b DONE 2026-06-17 (branch
-   `feat/siglip-vision-sidecar`; see the Vision section at the top). Remaining:
-   audio tower + 26B/31B SigLIP.
+5. **Phase 12 — SigLIP vision**: e4b DONE + merged 2026-06-17 (see the Vision
+   section at the top). Remaining: audio tower + 26B/31B SigLIP.
 6. **`MLX_BUN_PERF_KERNEL` default flip** — gated on the clean-machine pass.
 
 ## Archived handoffs
 
-Older dated handoff blocks (2026-06-10 / 06-11) live in PLAN.md under the
+Older dated handoff blocks (2026-06-10 / 06-11) live in PLAN-archive.md under the
 "NEXT UP" / "NEXT SESSION PICKUP" / "SESSION SWEEP" headings, marked as
 superseded. They're kept for history; this file is the current state.

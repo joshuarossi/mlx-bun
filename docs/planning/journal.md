@@ -153,3 +153,164 @@ the what/when (phases, exit criteria); this is the narrative behind it.
   3. **Tool param values were JSON-coerced regardless of schema.** `<param name="path">2025</param>` became the number 2025. Oracle (`_decode_tool_parameter_value` + `_tool_parameter_schema`) keeps string-typed params as raw text. Ported; also made the `<param>` regex CDATA-safe (a `</param>` inside CDATA no longer truncates the value). Unit tests added.
   4. **Sampling ignored the model's `generation_config.json`.** The server hardcoded temp 0.7 / no top-p; optiq serve injects the author-recommended sampling (`optiq/runtime/gen_config.py`) as defaults. Ported: `loadContext` reads `generation_config.json` (MiniCPM5: temp 0.9, top_p 0.95; Gemma: temp 1.0, top_k 64, top_p 0.95) and `toOptions` uses it when the request omits the field. Explicit request values still win. This was the likely "quality" gap on a 1B model.
   - Verification: MiniCPM5 parity (bf16 + mixed-KV) still 100/100 bit-exact; minicpm5-tools, tool-call, chat-template, tools-template, parity (Gemma 12B), server-tools, and server suites all green. Live two-turn agent round-trip (tool call → tool result → final answer) confirmed working in-process.
+
+## 2026-06-16 — Segmented-backward LoRA training (PRs #9–10)
+
+Long-context LoRA training was OOMing: MiniCPM5 @4096 spiked to ~25.5 GB full
+backward because all activations had to stay live simultaneously.  The
+segmented-backward design threads the backward segment-by-segment so only one
+segment's activations are resident at a time.
+
+The key implementation decision was to drive the per-segment backward with
+`mlx_vjp` (a new `Vjp` binding in `autograd.ts`) rather than a surrogate
+`value_and_grad` over a reconstructed loss.  The surrogate path leaked roughly
+one activation buffer per segment per step because mlx `eval` does not detach;
+`mlx_vjp` is explicit about what it differentiates and stops the leak.
+Segment-boundary tensors are materialized as graph-free leaves via
+`fromBytesCopy` for the same reason.
+
+Phase A (MiniCPM5, PR #9) landed first: grads bit-exact vs the full backward
+(relNorm 0.000%), peak 10.91 → 3.29 GB @2048, no leak, trains end-to-end via
+`TrainConfig.segmentSize`.  The default training attention is `ops.sdpa`
+(correct gradients, one fused kernel); `MLX_BUN_TRAIN_ATTN=flash` is an
+opt-in for bit-exact grad comparison against the full backward only, because
+`ops.sdpa` has a pre-existing eager-vs-autograd asymmetry in bf16 (~6%) that
+is unrelated to the segmentation mechanism — the segmented path works
+correctly under either setting.
+
+Phase B (e4b / Gemma4, PR #10) was harder: e4b's KV-shared donor pattern
+means multiple sharer segments reference the same K/V tensors produced by a
+single producer segment, requiring cotangent accumulation across sharers before
+the producer vjp can run.  Implemented `SegmentedBackwardGemma4` with a
+two-boundary stream (per-layer-input + donor K/V) and a multi-output producer
+vjp `[h, donorK, donorV]` with accumulated `[dh, dKV.k, dKV.v]` cotangents.
+Grads are bit-exact for single-consumer donor reuse and 0.97% bf16-class for
+multi-consumer accumulation (confirmed the full backward also sums in bf16, so
+this is order-of-operations noise, not a logic bug).  e4b trains at 8 K context
+(~17.5 GB, segSize=2) where the full backward would OOM (~70 GB).
+
+A contiguity fix was also required: donor K/V are transposed views, so
+`detachLeaf` must row-major-copy them before `rawBytes` reads linearly.
+
+## 2026-06-16 — Qwen3.5 / MiniCPM5 reasoning-channel fix (PR #12)
+
+Two serving-layer bugs left reasoning-capable models unusable in chat:
+
+The first was a role-name mismatch.  pi-ai renames the system role to
+`developer` for reasoning models.  Our chat templates only accepted
+system/user/assistant/tool and returned 400.  The turn completed with
+`stopReason: "error"` without throwing, so the browser saw an empty turn with no
+error shown.  Fix: `normalizeMessages` maps developer→system (genuine OpenAI
+compat — OpenAI itself uses the developer role), and `mapEventToFrames` surfaces
+a `stopReason:"error"` turn as a visible error frame instead of silently
+discarding it.
+
+The second was reasoning leaking into content.  Qwen3.5 and MiniCPM5 templates
+prime an *open* `<think>` tag in the generation prompt, so the model's first
+token is the closing `</think>` — the opening tag never appears in the decoded
+stream.  `ThinkingTagSplitter` was waiting for the open tag before routing
+reasoning content into the OpenAI `reasoning_content` channel, so all of it
+leaked into `content` instead.  Fix: `promptEndsInOpenThink` detects this
+condition and seeds `ThinkingTagSplitter` via `startInThinking` so the splitter
+begins in the reasoning state.
+
+## 2026-06-16 — Adapters end-to-end (PR #13)
+
+The goal was to make LoRA adapter switching a first-class operation in both the
+web chat UI and the Pi CLI, without building a custom protocol — lean on Pi's
+`before_provider_request` hook instead.
+
+Server-side: `GET /v1/adapters/available` scans the two adapter stores
+(`~/.cache/mlx-bun-finetunes`, `~/.cache/mlx-bun/adapters`) and returns
+`{id, path, rank, scale, mounted}` for weight-bearing checkpoints (dataset-only
+dirs are skipped).  `lora.ts` gained `listAvailableAdapters` for the scan and
+base-model detection so the web selector can filter to compatible adapters only.
+
+Pi hook: `pi-web.ts` registers `pi.on("before_provider_request")` to inject the
+per-connection selected adapter into every outgoing provider payload using the
+existing inline-extension pattern.  A `set_adapter` WebSocket message sets the
+selection; default none leaves the payload unchanged so the base model runs.
+
+Web chat: an adapter dropdown was added next to the Thinking pill, populated
+from `/v1/adapters/available` on ready.  Selecting fires an idempotent `POST
+/v1/adapters` then a `set_adapter` WS message.
+
+CLI: `extensions/mlx-bun-adapter.ts` is a shipped Pi extension exposing
+`/adapter <id> | off | list` and the same hook.  Both UIs control adapters
+through Pi; no separate plumbing.
+
+## 2026-06-17 — First-run onboarding UX
+
+The previous startup story required knowing the right model ID, running a
+separate download command, and manually opening a browser.  The new path:
+`mlx-bun serve` (or bare `mlx-bun`) auto-downloads the starter if absent,
+starts the server, and opens the chat UI.  If a localhost tab is already open it
+focuses that tab rather than opening a duplicate (`--no-open` to skip).
+
+The web chat empty state was updated with mlx-bun-centric starter chips and a
+download-aware greeting.  A live background-download pill shows progress.  The
+system prompt briefs the model on mlx-bun and its own identity, with framing
+appropriate to MiniCPM5 being a fast starter while a larger model optionally
+loads in the background.
+
+`chat-template.ts` also tightened `supportsThinking` to require the `<think>`
+channel we actually split, so e4b / harmony-format models no longer leak raw
+reasoning markers into content for users who haven't configured a thinkingFormat.
+
+The runtime-isolation design doc (`docs/design/runtime-isolation.md`) was also
+written this session: inference running in-process on the Bun event loop is a
+known UI-lag footgun when the GPU is busy.  The doc proposes moving inference to
+a subprocess; the work is explicitly deferred (design, not started) — written
+now so the root-cause analysis is available cold.
+
+## 2026-06-17 — SigLIP vision sidecar for gemma-4 e4b
+
+Ported optiq's `vlm/gemma4` SigLIP encoder as `src/vision/siglip.ts`: a 16-layer
+vision transformer with clippable linears (trained clip bounds), manual-f32
+RMS norms on q/k/v, on-device 2D RoPE, fused SDPA at scale=1.0, and GeGLU →
+3×3 avg-pool → `MultimodalEmbedder` → `/embed_scale`.
+
+The tower selection is driven by `vision_config.model_type`: e2b/e4b get
+SigLIP, the 12B gets the existing encoder-free tower.  Lazy loading means
+text-only sessions never pay for it.  `gemma4.ts`'s `forwardEmbeddings` was
+extended to support per-layer-input models (e2b/e4b) — it previously threw for
+that path — threading zeroed image-token ids into the per-layer forward matching
+optiq's `where(text_mask, ids, 0)`.
+
+Parity: every mlx primitive is bit-exact vs the optiq oracle (verified
+model-free via `op-parity-{dump.py,check.ts}` — rms_norm, gelu, matmul, clip,
+cos, sin, full multidim RoPE, sdpa, pool).  The residual ~1% feature divergence
+is sub-bf16 full-graph composition order amplified by the encoder's scale=1.0
+peaked softmax (the topped-out softmax distribution is highly sensitive to small
+pre-softmax shifts in bf16).  The acceptance bar was exact spliced ids + greedy
+prefix + grounded output, which passes.  Driving the residual to zero would
+require matching optiq's exact op ordering across the full encoder; deferred as
+a TODO.
+
+## 2026-06-17 — Distribution: npm, bunx, Homebrew signed/notarized, direct download
+
+The question was how to ship a standalone binary that runs on a user's Mac
+without requiring Bun, Python, or anything else.  We settled on four parallel
+install paths rather than picking one.
+
+**npm / bunx**: `bunx mlx-bun` for users already in the Bun ecosystem.  A
+`publish-release.sh` script and `bun run publish` alias handle the npm side.
+Published as v0.0.4.
+
+**Homebrew**: `scripts/release-binary.sh` builds a standalone binary, signs it
+with a Developer ID (nested Mach-O first, then the executable with JIT
+entitlements from `packaging/entitlements.plist`), notarizes via `AC_PROFILE`, and
+produces a clean tarball + sha256 for the formula.
+`packaging/homebrew/mlx-bun.rb` is the formula source of truth (self-contained
+`libexec` bundle + `bin` symlink; Bun `realpath`s `execPath` so sibling dylibs
+resolve after relocation).  The tap lives at `joshuarossi/homebrew-tap`.
+`scripts/publish-release.sh` auto-syncs the formula sha256 on each release.
+One fix was required: `--disable-library-validation` in the entitlements so
+brew-relocated dylibs load without `CS_RESTRICT` blocking them.
+
+**Direct download**: the notarized tarball passes Gatekeeper even when
+downloaded via browser + Finder (quarantine worst case), so a stable versionless
+URL (`releases/latest/download/mlx-bun-arm64.tar.gz`) is published alongside the
+versioned asset and documented as a one-liner curl install.
+
+**Embedded library**: existing path, unchanged (`docs/reference/embedding.md`).

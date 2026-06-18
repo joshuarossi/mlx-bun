@@ -4,6 +4,19 @@
 (src/ and scripts/ moves — they change import paths / script references
 and need a test run, so deferred to their own pass). Authored 2026-06-14.
 
+**Execution state (verified 2026-06-17):**
+- P0 #1 — **DONE**: `AGENTS.md` is a symlink → `CLAUDE.md`; drift risk resolved.
+- P0 #2 — **DONE**: `benchmarks/RESULTS.md` created; old committed benchmark artifacts `git rm`'d. Root untracked spew (`benchmarks-h2h-2026-06-13-*` etc.) is now cleaned — no untracked report files found at root.
+- P0 #3 — **DONE**: root HTML/md spew cleared (no `benchmarks-h2h-*.md`, `benchmark-report-*.html`, `kernel-fusion-report-*.html`, or `project-review.html` at root).
+- P0 #4 — **DONE**: hardcoded test count removed from CLAUDE.md (no "All 72 tests" present).
+- P1 #5 — **DONE**: `STATUS.md` exists at root.
+- P1 #6 — **DONE**: `docs/planning/` exists with `IDEAS.md`, `PRODUCT_ROADMAP.md`, `ResearchTopics.md`, `journal.md`.
+- P1 #7 — open (optimization_plan.md still lives in docs/design/ as a standalone).
+- P1 #8 — status unknown (archive/ not verified in this pass).
+- P2 #9 — **NOT DONE**: `harness-pi.ts`, `pi-provider.ts`, `pi-terminal.ts`, `pi-web.ts` still live flat in `src/` root (no `src/pi/` subdirectory).
+- P2 #10 — **PARTIALLY DONE**: ~57 one-off research/debug scripts moved to `scripts/experiments/`; production + tooling + bench-* + regen-* + parity-* + gen-model + eval/serve remain at `scripts/` root (the full bench/regen/build split was not applied).
+- P2 #11 — **DONE**: CLI vocabulary reconciled.
+
 **Scope & ethos.** Private repo, single author + agents, MLX-by-identity.
 No OSS/community scaffolding (CONTRIBUTING, issue templates, badges) —
 out of scope by design. **Prefer move / consolidate over delete.** The
@@ -127,7 +140,7 @@ files, not benchmark output. Leave entirely alone.
 | 5 | Add `STATUS.md` (or a pinned top section in PLAN.md) holding only live handoff: current state + next action + blockers. Move PLAN.md's `NEXT UP` / `NEXT SESSION PICKUP` / `SESSION SWEEP` blocks into it. | Separates transient "do this next" from 2,475 lines of durable phase history; gives agents one entry point. |
 | 6 | Create `docs/planning/` and move `PRODUCT_ROADMAP.md`, `IDEAS.md`, `ResearchTopics.md`, `journal.md` under it. Leave only README + PLAN.md (+ STATUS.md) at root. Add a ~6-line "doc map" to README. | Root is currently a 6-file planning thicket; extends the taxonomy that already works in `docs/`. |
 | 7 | Pick one home for the optimization plan: fold `docs/design/optimization_plan.md` into PLAN.md Phase A–E, or have PLAN.md link out to it as canonical. | Two homes for the same plan = drift. |
-| 8 | Resolve the archive overlap: `archive/pi-builtin-investigation.html` duplicates [docs/investigations/pi-builtin-investigation.md](../investigations/pi-builtin-investigation.md). Decide whether `archive/` (tracked; 8 generated HTML files incl. a 374 KB pi-session transcript) should be tracked at all, or moved to an ignored location. Keep the `.md`, drop the duplicate. | Stops committing heavyweight generated HTML; one source per investigation. |
+| 8 | Resolve the archive overlap: `archive/pi-builtin-investigation.html` duplicates [docs/investigations/pi-builtin-investigation.md](../investigations/pi-builtin-investigation.md). Decide whether `archive/` (tracked; 2 HTML files: `mlx-bun-lab-report.html` + `wwdc-mlx-bun.html`) should be tracked at all, or moved to an ignored location. Keep the `.md`, drop the duplicate. | Stops committing heavyweight generated HTML; one source per investigation. |
 
 ## P2 — Polish (optional)
 

@@ -7,12 +7,13 @@ README.md has the pitch and scope boundaries.
 **Doc map:**
 - `STATUS.md` — live handoff: current state + next action (read this for "where are we").
 - `PLAN.md` — durable phase log, exit criteria, findings (the engineering contract).
+- `PLAN-archive.md` — closed-history phases moved out of PLAN.md to keep it scannable.
 - `README.md` — product pitch, quickstart, API surface, scope boundaries.
 - `benchmarks/RESULTS.md` — curated results: parity / performance / quality.
-- `docs/reference/` — server-api, server-config, library-api, embedding (user-facing reference).
-- `docs/design/` — design docs (optimization plan, compat CLI surface, parallel slots, this reorg).
-- `docs/investigations/` — investigation write-ups (pi built-in, starter port, lab build).
-- `docs/planning/` — product/vision: PRODUCT_ROADMAP, IDEAS, ResearchTopics, journal.
+- `docs/reference/` — server-api, server-config, library-api, embedding, distribution, training (user-facing reference).
+- `docs/design/` — optimization_plan, compat-cli-surface-design, parallel-slots, docs-reorg-plan, adapters-end-to-end, hlg-sampling, memory-system, runtime-isolation, segmented-backward-training, tauri-desktop-app.
+- `docs/investigations/` — pi-builtin-investigation, starter-model-port-handoff, lab-build-journal, chunk-finetune-experiment, curve-bisector-routing, expert-offload-single-user-moe, hlg-sampling-investigation, segmented-backward-handoff.
+- `docs/planning/` — product/vision: PRODUCT_ROADMAP, IDEAS, ResearchTopics, journal, chunk-task-roadmap.
 - `AGENTS.md` → symlink to this file.
 
 ## Ground rules
@@ -30,10 +31,11 @@ README.md has the pitch and scope boundaries.
   mlx-lm 0.31.3, mlx-optiq 0.2.1). Run reference scripts with that venv's
   python: `/Users/joshrossi/Code/mlx-lm/.venv/bin/python`.
 - **Every perf claim gets a number on this machine** (M4 Pro, 24 GB,
-  ~273 GB/s). Reference numbers live in benchmarks-h2h-<date>.md
-  (cleared-machine matrix; 12B direct 25.3 vs mlx-lm 25.9 tok/s).
-  Beware: numbers measured on a loaded machine are garbage — use
-  ./benchmark.sh (preflight-gated) for anything quotable.
+  ~273 GB/s). Curated reference numbers live in `benchmarks/RESULTS.md`
+  (parity / performance / quality). `./benchmark.sh` (preflight-gated)
+  writes a dated `benchmarks-h2h-<date>.md` artifact in the working dir
+  during a run — those files are gitignored. Numbers on a loaded machine
+  are garbage; use benchmark.sh for anything quotable.
 - Readable reference source (installed in the oracle venv,
   `site-packages/`): `mlx_lm/models/gemma3.py` and `mlx_lm/server.py`
   for the port targets; `optiq/runtime/fused_quant_sdpa.py` and
@@ -63,3 +65,4 @@ README.md has the pitch and scope boundaries.
   multi-GB KV entries make it an OOM footgun. Ours must be byte-capped.
 - pi integration: `~/.pi/agent/models.json`, provider pattern documented
   there; optiq servers require apiKey starting with `sk-optiq-`.
+- `scripts/experiments/` holds one-off research/debug scripts; production scripts, tooling, bench-*, regen-*, parity-*, gen-model, and eval/serve scripts stay at `scripts/` root.

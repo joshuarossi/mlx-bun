@@ -15,7 +15,7 @@ import type { Server } from "bun";
 // imports as HTMLBundle (the html loader), but the text attribute makes
 // the runtime value a string — hence the double cast.
 import appHtml from "./web/app.html" with { type: "text" };
-import curveDesignerHtml from "../docs/curve-designer.html" with { type: "text" };
+import curveDesignerHtml from "./assets/curve-designer.html" with { type: "text" };
 import pkgJson from "../package.json" with { type: "json" };
 import { readFileSync } from "node:fs";
 const APP_PAGE = appHtml as unknown as string;
@@ -977,7 +977,7 @@ export function createServer(
       // embedded copy when running as the compiled single binary.
       if (url.pathname === "/curves" && request.method === "GET") {
         let html = CURVE_PAGE;
-        try { html = readFileSync(new URL("../docs/curve-designer.html", import.meta.url), "utf8"); } catch { /* binary: use embedded */ }
+        try { html = readFileSync(new URL("./assets/curve-designer.html", import.meta.url), "utf8"); } catch { /* binary: use embedded */ }
         return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       }
       if (url.pathname === "/curve-terrain" && request.method === "GET") {
@@ -985,7 +985,7 @@ export function createServer(
           const html = readFileSync(new URL("../docs/investigations/curve-terrain.html", import.meta.url), "utf8");
           return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
         } catch {
-          return new Response("curve terrain artifact not found; run scripts/curve-terrain.ts first", { status: 404 });
+          return new Response("curve terrain artifact not found; run scripts/experiments/curve-terrain.ts first", { status: 404 });
         }
       }
       if (request.method === "GET" &&

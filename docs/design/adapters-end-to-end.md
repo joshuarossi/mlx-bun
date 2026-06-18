@@ -1,5 +1,16 @@
 # Adapters end-to-end — notes / TODO (2026-06-16)
 
+**Status legend:** ✅ DONE — shipped and verified in code | ⏳ PENDING — not yet implemented
+
+| Section | Status |
+| --- | --- |
+| §A Pi CLI extension (`extensions/mlx-bun-adapter.ts`) | ✅ DONE |
+| §B Web chat adapter selector (`src/web/app.html` + `before_provider_request` hook in `pi-web.ts`) | ✅ DONE |
+| §C `/v1/adapters/available` discovery (`src/server.ts:1182`, `src/lora.ts:139`) | ✅ DONE |
+| §D Overnight training from the web UI — monitor/stream endpoint + UI | ⏳ PENDING |
+| §E `--force-adapter` CLI flag (absent from `src/cli.ts`) | ⏳ PENDING |
+| Repo-id keying written into adapter configs at save time | ⏳ PENDING |
+
 Working notes for wiring trained LoRA adapters through the whole stack: Pi (CLI +
 web), the web Chat page UI, and the server's discovery surface. Captured from the
 2026-06-16 session (serving verified working; pi-extension mechanism confirmed from
@@ -31,16 +42,16 @@ API should let you move an adapter between these states explicitly.
 So **loaded** and **selected** are done. The gap is **available** (discovery) plus
 the two front-ends (Pi extension, web Chat selector).
 
-## TODO
+## Shipped (§A–§C) ✅
 
-### A. Pi CLI/terminal — adapter via extension  *(default none)*
+### A. Pi CLI/terminal — adapter via extension  *(default none)* ✅ DONE
 
-Mechanism (confirmed from the pi docs in-session): a Pi extension using the
-`before_provider_request` hook to inject the field into the outgoing
-OpenAI-compatible payload. `models.json` can't add arbitrary body fields — the hook
-is the right tool.
+Wired a Pi extension using the `before_provider_request` hook to inject the `adapter`
+field into the outgoing OpenAI-compatible payload. `models.json` can't add arbitrary
+body fields — the hook was the right tool.
 
-Create `~/.pi/agent/extensions/mlx-bun-adapter.ts`:
+Shipped as `~/.pi/agent/extensions/mlx-bun-adapter.ts` (copy in-repo + one-liner
+installer):
 
 ```ts
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -60,53 +71,44 @@ export default function (pi: ExtensionAPI) {
 - Selection via `PI_MLX_ADAPTER=chunk pi --provider mlx-bun --model local -p "..."`
   (no native `-p --adapter` flag; unknown CLI flags get rejected). Optional shell
   helper: `pi-chunk() { PI_MLX_ADAPTER=chunk pi --provider mlx-bun --model local -p "$@"; }`.
-- Put it in the global `~/.pi/agent/extensions/` dir so it loads for non-interactive
-  `-p` too. `/reload` to pick it up.
-- **Ship this** as part of mlx-bun (a copy in-repo + a one-liner installer), so users
-  don't hand-write it. Consider also reading the *selected* adapter from a small
-  state file the web UI / a `mlx-bun adapter use <id>` command writes, so CLI and web
-  share one selection.
+- Lives in the global `~/.pi/agent/extensions/` dir so it loads for non-interactive
+  `-p` too. `/reload` picks it up.
+- Also reads the *selected* adapter from a small state file the web UI / a
+  `mlx-bun adapter use <id>` command writes, so CLI and web share one selection.
 
-### B. Web Chat page — selector + load/unload  *(default none)*
+### B. Web Chat page — selector + load/unload  *(default none)* ✅ DONE
 
 Path: `src/web/app.html` (UI) ↔ `/ws/chat` (`src/pi-web.ts`) ↔ in-process Pi ↔ model.
 
 - **Selector** in `app.html`: a dropdown of *available* adapters with **"none"
   selected by default**. Changing it sets the active selection for subsequent
-  messages. Allow multi-select → `"a+b"` (resolveSpec already supports stacking).
+  messages. Multi-select → `"a+b"` (resolveSpec already supports stacking).
 - **Load / unload controls**: buttons that call `POST /v1/adapters` (load) and
-  `DELETE /v1/adapters/:id` (unload). Show each adapter's state (available / loaded /
-  selected) so the three concepts are visible. An adapter must be **loaded** before
-  it can be **selected** (selecting an unloaded id errors) — UI should either
-  auto-load on select or gate selection to loaded ones.
-- **Inject via the `before_provider_request` hook — the primary mechanism, identical
-  to the CLI (§A).** `pi-web.ts` ALREADY registers an inline extension this way
-  (`pi.on("tool_call", …)` wired into `createAgentSession`, pi-web.ts:469/605), so
-  `pi.on("before_provider_request", (e) => ({ ...e.payload, adapter }))` drops in the
-  same way and reads the current selection from the WS session state. **No custom
+  `DELETE /v1/adapters/:id` (unload). Each adapter's state (available / loaded /
+  selected) is shown so the three concepts are visible. Selecting an unloaded adapter
+  auto-loads it (fires `POST /v1/adapters`) before injecting the id.
+- **Injected via the `before_provider_request` hook — identical mechanism to the CLI
+  (§A).** `pi-web.ts` registers the inline extension in `createAgentSession`
+  (pi-web.ts:469/605), so `pi.on("before_provider_request", (e) => ({ ...e.payload,
+  adapter }))` reads the current selection from WS session state. **No custom
   provider plumbing, no new model-call wiring.** The hook is the spine for BOTH UIs.
-- **Selection → hook**: the dropdown just updates the session's selected-adapter value
-  that the hook reads — a tiny client→server message (or reuse the `set_thinking`-style
-  toggle path), NOT a heavyweight protocol. Default none → hook returns the payload
-  unchanged → base model.
-- **Mounting is the only thing the hook can't do**: the injected id must be mounted
-  server-side or `resolveSpec` rejects it. Auto-load-on-select handles it — selecting
-  fires one `POST /v1/adapters`, then the hook injects the id. Discovery (§C) and a
-  richer protocol are optional polish; the dropdown can start from `GET /v1/adapters`.
+- **Selection → hook**: the dropdown updates the session's selected-adapter value via
+  a small client→server message (reusing the `set_thinking`-style toggle path). Default
+  none → hook returns the payload unchanged → base model.
 
-### C. Server — adapter **discovery** (the missing "available" list)
+### C. Server — adapter **discovery** (`GET /v1/adapters/available`) ✅ DONE
 
-- Add a store the server scans for available adapters:
-  - `~/.cache/mlx-bun/adapters/` (the trainer already defaults saves here —
-    `src/server.ts:1653`) and/or a **sidecar next to the model dir**.
-- New endpoint, e.g. `GET /v1/adapters/available` →
+- Scans `~/.cache/mlx-bun-finetunes/` and `~/.cache/mlx-bun/adapters/`
+  (`src/server.ts:1192`) and any sidecar next to the model dir.
+- `GET /v1/adapters/available` (`src/server.ts:1182`, `src/lora.ts:139`) →
   `[{ id, path, source_repo, rank, scale, compatible }]`, where each entry is read
   from the adapter's `optiq_lora_config.json` (`source_model`, `rank`, `scale`).
-- **Filter by the served model.** Today `source_model` is a *machine/snapshot-specific
-  path* (`/Users/joshrossi/.cache/huggingface/.../snapshots/<hash>`), which won't
-  match across machines/snapshots. Key compatibility on the **repo id**
-  (`mlx-community/MiniCPM5-1B-OptiQ-4bit`) instead — see "repo-id keying" below. The
-  server already tracks `repoId` per model; `compatible = adapter.source_repo === served.repoId`.
+- **Filters by the served model** on **repo id**
+  (`mlx-community/MiniCPM5-1B-OptiQ-4bit`) rather than the fragile
+  machine/snapshot-specific path. The server already tracks `repoId` per model;
+  `compatible = adapter.source_repo === served.repoId`.
+
+## TODO (§D–§E)
 
 ### D. Overnight training from the web UI
 
@@ -117,8 +119,10 @@ Training must be fully drivable from the web UI — not just a script.
   (rank / scale / num_layers / LR / dropout / iters / seq / segmentSize — the
   configurable-params task, mlx-lm defaults), **start**, and leave it running.
 - **Monitor**: live loss / iter / ETA, and survives the browser closing (the run is
-  server-side; the page reconnects). `POST /v1/fit` already exists
-  (`src/server.ts:1652`) — needs a status/stream endpoint + a UI.
+  server-side; the page reconnects). The training backend already exists:
+  `POST /api/finetune/submit` (`src/server.ts:1781`). What §D still needs is a
+  status/stream endpoint + the overnight-monitoring UI. (Note: `GET /fit` is the
+  unrelated memory-fit solver in `src/fit.ts` — not a training endpoint.)
 - **Completion**: the finished adapter lands in the store and shows up as *available*
   (state A in the three-state model), ready to load/select or auto-serve.
 - This closes the loop with the chunk-task roadmap: iterate data → train overnight →

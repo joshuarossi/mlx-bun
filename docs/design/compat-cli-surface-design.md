@@ -6,6 +6,8 @@ modes"). This doc is the surface contract: every verb, the flag
 vocabulary, how optiq is absorbed, the parity harness, and **the
 matrix of what we still lack**.
 
+**Update 2026-06-17:** Several items have shipped since the 2026-06-12 snapshot: **LoRA training** is live (`src/train/`, `scripts/chunk-finetune.ts`, segmented-backward Phase A MiniCPM5 + Phase B e4b both merged); the **web UI fine-tune tab** (`src/web/app.html`) is live with SFT/DPO workflow, loss curve, merge, and export; the **chat adapter selector** (web UI) is live; and **adapters end-to-end** (web selector + CLI `/adapter`) are done — the matrix below reflects these as ✅. The **Phase 17 compat parity harness itself** (the verb router, dotted aliases, flag-surface parity tests) remains **unbuilt**.
+
 ## Goal
 
 Design mlx-bun's entire CLI/flag surface from scratch (nothing is
@@ -54,7 +56,7 @@ shared subset; optiq-only features are additive (marked ⊕).
 | `chat` | mlx_lm.chat | engine ✅, web chat ✅; no terminal REPL (`tui.ts` is help-formatting) | build REPL frontend over `generate` |
 | `server` | mlx_lm.server / optiq serve | ✅ `serve` | rename flags; ⊕ `--kv-config`, `--anthropic` honored (default on) |
 | `convert` | mlx_lm.convert + optiq convert | ❌ | quant pipeline; ⊕ `--target-bpw/--candidate-bits/--reference` |
-| `lora` | mlx_lm.lora + optiq lora | serve/hot-swap ✅, train ❌ | `--train/--test`; ⊕ `--rank-scaling by_bits\|by_kl`; `lora info` |
+| `lora` | mlx_lm.lora + optiq lora | serve/hot-swap ✅, train ✅ | `--train/--test`; ⊕ `--rank-scaling by_bits\|by_kl`; `lora info` |
 | `fuse` | mlx_lm.fuse | ❌ | fuse adapters, dequant, GGUF export, upload |
 | `cache_prompt` | mlx_lm.cache_prompt | runtime ✅, CLI ❌ | precompute + save reusable KV cache file |
 | `benchmark` | mlx_lm.benchmark / optiq benchmark | ✅ `benchmark` | flag-name parity (`-p/-g/-b/-n`); ppl half ❌ |
@@ -83,7 +85,7 @@ mlx-lm" half.
 
 ### pi — the built-in agentic coding CLI
 
-(Phase 16; full plan in **docs/pi-builtin-investigation.md**.) pi is an
+(Phase 16; full plan in **docs/investigations/pi-builtin-investigation.md**.) pi is an
 MIT, Bun-native (`bun build --compile`) coding agent — the "CLI
 experience inside our package" that neither Python package has. Two
 commands, one for each audience:
@@ -111,8 +113,8 @@ split.
 The web UI's agent backbone is pi's RPC / `AgentSession.subscribe()`
 event stream (investigation Option 4) — the SAME events drive the
 embedded TUI and the browser, so tool calls / steering / progress come
-for free. Tiles: chat ✅; quantize / fine-tune / training-data gate on
-the capability matrix.
+for free. Tiles: chat ✅; fine-tune ✅ (shipped: SFT/DPO workflow, loss curve, merge,
+export); quantize / training-data gate on the capability matrix.
 
 ## Flag-vocabulary reconciliation (where we currently diverge)
 
@@ -150,7 +152,7 @@ column; the 🟥 column is the capability matrix that fills in behind it.
 | KV-cache quant: bf16 / uniform / **mixed per-layer** (kv_config.json) | `server` (`off`/`N`/`config`) | ✅ | done (Phase 9/10; config.ts reads, generate.ts applies per-layer) |
 | KV sensitivity *profiler* (authors a NEW kv_config.json) | `kv-cache` | 🟥 | model-prep, low pri (shipped artifacts already include one) |
 | TurboQuant — optional extra quant *method* (rotation VQ) | scheme, not a verb | 🟥 | Phase 13 (KV plumbing already exists) |
-| **LoRA / DoRA / full training** | `lora --train` | 🟥 | Training (new phase) |
+| **LoRA / DoRA / full training** | `lora --train` | ✅ | Training (done: Phase A MiniCPM5 + Phase B e4b) |
 | **Sensitivity-aware rank scaling** | `lora --rank-scaling` | 🟥 | Training |
 | **Fuse adapters (+GGUF/upload)** | `fuse` | 🟥 | Training |
 | **lm-eval-harness tasks** | `evaluate` | 🟥 | Eval (new phase) |
@@ -159,7 +161,7 @@ column; the 🟥 column is the capability matrix that fills in behind it.
 | **HF upload** | `upload` | 🟥 | Distribution |
 | **Distributed share** | `share` | 🟥 | Distribution (lowest pri) |
 | **Web UI: quantize** | `lab`/UI | 🟥 | gated on Quantize |
-| **Web UI: fine-tune** | `lab`/UI | 🟥 | gated on Training |
+| **Web UI: fine-tune** | `lab`/UI | ✅ | done (SFT/DPO workflow, loss curve, merge, export) |
 | **Web UI: training-data template + gen** | `lab`/UI | 🟥 | new (no engine dep) |
 | Web UI: chat | `/chat` | ✅ | done (publishing gate 2) |
 | **Native: pi embedded** (`mlx-bun pi`, in-process TUI) | — | ✅ (P3/P4) | Phase 16 (flagship) |
@@ -177,7 +179,7 @@ does. The real capability work splits along two axes:
   optional and not inference plumbing: a *profiler* to author a new
   kv_config.json (model-prep, low pri) and extra methods like TurboQuant
   (Phase 13).
-- **Training**: LoRA/DoRA/full + `fuse`.
+- **Training**: LoRA/DoRA/full training ✅ (shipped); `fuse` verb (adapter merge, GGUF export, upload) 🟥 remaining.
 - **Eval**: harness + `perplexity`.
 - **Distribution**: `upload`/`share`.
 
@@ -221,7 +223,7 @@ correctness diffs need no clean machine.
 3. Inference-time KV quant → already done (bf16 / uniform / mixed
    per-layer via kv_config.json, Phase 9/10). Optional later: a profiler
    to author new configs (low pri) + the TurboQuant method (Phase 13).
-4. Training → `lora --train`/`fuse` + web-UI fine-tune tile.
+4. Training → ✅ `lora --train` + web-UI fine-tune tile (both shipped); remaining: `fuse` verb (adapter merge, GGUF export, upload).
 5. Eval → `evaluate`/`perplexity`.
 6. Distribution → `upload`/`share`.
 7. Web UI training-data tile (independent of engine work).

@@ -1,10 +1,11 @@
 # Homebrew formula for mlx-bun — source of truth.
 #
 # This file lives in the main repo for review/version control. To publish,
-# copy it to the TAP repo at  joshuarossi/homebrew-mlx-bun/Formula/mlx-bun.rb
-# and push. Users then install with:
+# copy it to the TAP repo at  joshuarossi/homebrew-tap/Formula/mlx-bun.rb
+# and push (scripts/publish-release.sh does this automatically). Users then
+# install with:
 #
-#   brew install joshuarossi/mlx-bun/mlx-bun
+#   brew install joshuarossi/tap/mlx-bun
 #
 # After each release, update `version`, `url`, and `sha256` from the values
 # scripts/release-binary.sh prints.

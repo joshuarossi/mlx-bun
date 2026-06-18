@@ -15,8 +15,10 @@ it holds all 42 layers' recompute activations at once, so e4b's training backwar
 spikes to **23 GB live @2048** (resting is only 6.95 GB) and **crashes at 4096+**.
 We proved a fix — **segmented backward** — that forces per-segment streaming:
 forward saves detached boundary activations at segment edges, then backprop runs
-segment-by-segment via a surrogate-loss `value_and_grad`. Only one segment's
-activations are ever live. On an activation-dominated toy it beat per-layer
+segment-by-segment via `mlx_vjp` (the shipped production implementation — see §9.4;
+an earlier surrogate-loss `value_and_grad` approach was tried but leaked ~32 MB/seg/step
+and was replaced). Only one segment's activations are ever live.
+On an activation-dominated toy it beat per-layer
 checkpointing (4.26 vs 5.97 GB) with **bit-exact gradients**. Extrapolated to e4b
 this lands at **~10 GB @8K** — fitting on the 32 GB M1 Max, where the optiq/mlx-lm
 reference cannot (it crashes on e4b @2048+). Next: wire it into the trainer,
@@ -97,12 +99,16 @@ Algorithm:
    small (one [B,L,hidden] per edge) and cheap.
 2. **Compute the loss** from the final hidden (LM head + response-only CE) and its
    gradient w.r.t. the final hidden — this `dh_out` seeds the last layer segment.
-3. **Backward, reverse over segments.** For each segment k (last→first), build a
-   `value_and_grad` over `[boundary_leaf_k, ...segment_LoRA_params]` whose loss is
-   the surrogate `sum(stop_gradient(dh_out) ⊙ segment_forward(boundary_leaf, params))`
-   (the optiq chunked-CE surrogate, generalized to the whole backward). It returns
+3. **Backward, reverse over segments.** For each segment k (last→first), call
+   **`mlx_vjp`** (bound as `Vjp` in `src/mlx/autograd.ts`) over
+   `[boundary_leaf_k, ...segment_LoRA_params]` with cotangent `dh_out`. It returns
    `[dh_in, ...dLoRA_segment]`. `dh_in` becomes `dh_out` for segment k−1; accumulate
-   `dLoRA`. Only segment k's activations are live during its `value_and_grad`.
+   `dLoRA`. Only segment k's activations are live during its vjp.
+   **NOTE:** an earlier design used a surrogate-loss `value_and_grad` here
+   (`sum(stop_grad(dh)⊙segment_forward(...))`). That proved to leak ~32 MB per
+   segment per step (linear, no plateau) and was replaced by `mlx_vjp` in §9.4.
+   The production code uses `Vjp`/`mlx_vjp` throughout — not surrogate-loss
+   `value_and_grad`.
 
 Why it's exact: `d/dx sum(stop_grad(dh)⊙y) = (dy/dx)ᵀ dh = dLoss/dx`, and likewise
 for params — this is reverse-mode AD done in segments. Verified **0.000%** vs the
@@ -140,9 +146,14 @@ quant. The trivial case to validate the machinery on a real model.
 2. **Trainer:** add a `segmented` training path (flag `TrainConfig.segments` or auto;
    gate alongside the existing `gradCheckpoint`). It:
    - runs the segmented forward (save detached boundaries),
-   - computes response-only CE loss + `dFinalHidden` (already memory-bounded),
-   - runs the reverse per-segment surrogate `value_and_grad`, threading the LoRA
-     params for each segment as that `value_and_grad`'s argnums, accumulating grads,
+   - computes response-only CE loss and `dFinalHidden` via a `Vjp` of the loss head
+     with scalar cotangent 1.0 (already memory-bounded),
+   - runs the backward per-segment using **`mlx_vjp`** (`Vjp` in
+     `src/mlx/autograd.ts`): for each segment k (last→first), calls
+     `vjp.apply([boundary_k, ...LoRA_k], [dh_out])` to get `[dh_in, ...dLoRA_k]`,
+     threads `dh_in` as `dh_out` for segment k−1, and accumulates `dLoRA` — no
+     surrogate scalar, no `value_and_grad` (see §9.4 for why that approach leaked
+     ~32 MB/seg/step and was replaced),
    - also handles the embedding + (e4b) per-layer-input grads from the first
      segment's `dh_in`.
 3. **Validate:** grads bit-match the current trainer (response-only CE, same seed);
@@ -232,17 +243,24 @@ returns the split indices + which donor K/V to save, computed from the above.
 - `scripts/ft-chunk-smoke.ts` — e4b train/fwd/infer smoke (GRAD_CKPT, MEM_LIMIT_GB, MLX_BUN_MEM_LOG).
 - `scripts/sdpa-vs-manual.ts`, `scripts/flash-dk-debug.ts`, `scripts/flash-grad-test.ts` — gradient correctness.
 - `scripts/chunk-{eval,finetune,filter}.ts` — the chunk experiment pipeline.
-- `src/train/trainer.ts` — training loop (combined-eval, mem-log, gradCkpt ctx). Add the segmented path here.
+- `src/train/trainer.ts` — training loop (combined-eval, mem-log, gradCkpt ctx); contains the segmented path (`TrainConfig.segmentSize`).
 - `src/train/forward.ts`, `src/train/loss.ts` — training forward + response-only CE.
-- `src/model/gemma4.ts` — e4b model: `forwardLayers`, `runCheckpointedLayer`, `computePerLayerInputs`, KV-sharing (`numDonors`, `previousKvs`, `cacheIndex`), `layer_types`. Add `runLayerRange`.
-- `src/model/minicpm5.ts` — MiniCPM5 (Phase A target).
-- `src/mlx/autograd.ts` (`ValueAndGrad`), `src/mlx/checkpoint.ts` (`Checkpoint`), `src/mlx/ffi.ts` (memory fns, `stopGradient`, `evalAll`).
+- `src/model/gemma4.ts` — e4b model: `forwardLayers`, `runCheckpointedLayer`, `computePerLayerInputs`, KV-sharing (`numDonors`, `previousKvs`, `cacheIndex`), `layer_types`, `runLayerRange` (added for segmented backward).
+- `src/model/minicpm5.ts` — MiniCPM5 (Phase A).
+- `src/mlx/autograd.ts` (`ValueAndGrad`, `Vjp`), `src/mlx/checkpoint.ts` (`Checkpoint`), `src/mlx/ffi.ts` (memory fns, `stopGradient`, `evalAll`, `mlx_vjp`).
 - Memory: `[[e4b-lora-training-seqlen-ceiling]]` (full findings), `[[opssdpa-dk-vjp-bug]]`, `[[three-level-fidelity-tree-model]]`.
 
-## 8. First action on resume
-Phase A step 1: add `runLayerRange` to `MiniCPM5Model`, then a segmented training
+## 8. Original first action (COMPLETED)
+~~Phase A step 1: add `runLayerRange` to `MiniCPM5Model`, then a segmented training
 path in `trainer.ts`, validate bit-exact grads + measure peak on
-`scripts/ft-chunk-smoke.ts`-style MiniCPM5 run. Then Phase B (e4b) with the §5 plan.
+`scripts/ft-chunk-smoke.ts`-style MiniCPM5 run. Then Phase B (e4b) with the §5 plan.~~
+
+**Both Phase A and Phase B are done — see §9 and §10.** The genuine remaining work
+is `planSegments` full-attention isolation for the ~10 GB @8K e4b target: put each
+O(L²) full-attn layer (5,11,17,23,29,35,41) in its own short segment so it isn't
+materialized alongside sliding-layer activations. Currently 17.5 GB @8K (seg2);
+resting is ~6.6 GB, so ~3.4 GB of transient budget remains. The mechanism and tunable
+segmentation knob are proven; this is a peak-optimization step. See §10 close.
 
 ---
 
@@ -339,11 +357,11 @@ memory win confirmed, no leak, trains end-to-end through `scripts/chunk-finetune
    baseline (11.89). json/schema/labels/nonempty 100%, anchors 86%. Segmented
    training produces a quality adapter. Adapter:
    `~/.cache/mlx-bun-finetunes/minicpm5-chunk-segmented`.
-2. **Phase B (e4b)** with the §5 plan (KV-sharing, per-layer-input, full-attn O(L²)
-   isolation). e4b adds `runLayerRange` to `Gemma4Model` with donor-KV /
-   per-layer-input boundary threading; the `SegmentedBackward` + vjp machinery and
-   the §5 segmentation strategy carry over. This is the path to the original goal:
-   e4b @8K under ~10 GB where the optiq/mlx-lm reference crashes.
+2. ✅ **DONE — see §10.** **Phase B (e4b)** with the §5 plan (KV-sharing,
+   per-layer-input, full-attn O(L²) isolation). e4b `runLayerRange` added to
+   `Gemma4Model` with donor-KV / per-layer-input boundary threading;
+   `SegmentedBackwardGemma4` + vjp machinery wired into trainer, validated on real
+   e4b. Full details in §10.
 
 ---
 
@@ -467,42 +485,43 @@ are proven; this is a peak-optimization, not a blocker.
   (Config note: mlx-lm's default LoRA scale is 20.0; mlx-bun's `DEFAULT_TRAIN_CONFIG`
   is 1.0 — a config difference, not correctness. The chunk runs used 1.0.)
 
-**Trainer side — `SegmentedBackwardGemma4` (to build + validate):** same skeleton as
-the MiniCPM5 `SegmentedBackward`, with TWO additions.
+**Trainer side — `SegmentedBackwardGemma4` (BUILT + VALIDATED, `src/train/segmented.ts`):**
+same skeleton as the MiniCPM5 `SegmentedBackward`, with TWO additions — both are
+implemented and verified in the Phase B results above.
 
 (a) **per-layer-input is a pure constant boundary — NO gradient threading.** The
 `per_layer_input_gate` / `per_layer_projection` LoRA live INSIDE the layer (applied
 to the sliced `pls`), so they're differentiated within each segment's vjp normally.
 The `perLayer` tensor itself feeds in as a constant (its grad would flow to the
-embed / `per_layer_model_projection`, neither a LoRA target) — so detach it once and
-slice per segment; discard its cotangent. Easy.
+embed / `per_layer_model_projection`, neither a LoRA target) — detached once and
+sliced per segment; its cotangent is discarded.
 
 (b) **the KV-shared donor K/V is a SECOND boundary stream WITH its own cotangent.**
 The donor's K/V depend on the donor layer's q/k/v LoRA and are attended by every
 sharer, so `dLoss/d(donor LoRA)` gets contributions from the donor's own attention
 AND all sharers. Threading:
 - **Forward (boundary-saving):** when a segment produces a reused donor's K/V
-  (`donorKvOut`), detach it (rope-applied K + V, tiny — ~1 KB/tok) and save as a
-  boundary; later sharer segments pass it in via `donorKvIn`.
+  (`donorKvOut`), it is detached (rope-applied K + V, tiny — ~1 KB/tok) and saved as
+  a boundary; later sharer segments pass it in via `donorKvIn`.
 - **Backward (reverse), two extra pieces:**
-  - keep a cotangent accumulator `dKV[d]` per reused donor d (init zero).
+  - a cotangent accumulator `dKV[d]` per reused donor d (init zero).
   - a SHARER segment's vjp differentiates `[boundary_h, donorK, donorV, ...LoRA]`
     with cotangent `[dh]`; its vjps for `donorK/donorV` are ACCUMULATED into `dKV[d]`.
   - a DONOR segment (produces donor d's K/V) has a MULTI-OUTPUT forward
     `[h_out, donorK, donorV]`; its vjp takes cotangents `[dh, dKV[d].k, dKV[d].v]`
-    (the `Vjp` class already supports nOut>1 + multiple cotangents) and returns
+    (the `Vjp` class supports nOut>1 + multiple cotangents) and returns
     `[dh_in, ...donor LoRA]`. This folds the sharers' gradient back into the donor.
   - donors 22 (sliding) and 23 (full) are each reused by all sharers of their type;
     if both live in one segment, that segment's forward outputs 5 arrays
     `[h, k22, v22, k23, v23]` with 5 cotangents.
-- **Segmentation (the §5 plan):** respect the donor/sharer split at layer 24 and
-  ISOLATE the 7 full-attention layers (5,11,17,23,29,35,41) — each is O(L²) in the
-  backward under ops.sdpa (~1 GB bf16 @8K), so put each full layer in a short
-  segment and group the sliding layers. The natural first cut is the 6-layer
-  `sssssF` period → 7 segments of 6 (one full layer each). `planSegments` from §5
-  returns the split indices + which donor K/V to save.
+- **Segmentation (the §5 plan):** the donor/sharer split at layer 24 is respected and
+  the 7 full-attention layers (5,11,17,23,29,35,41) — each O(L²) in the backward
+  under ops.sdpa (~1 GB bf16 @8K) — are candidates for isolation into short segments;
+  the natural first cut is the 6-layer `sssssF` period → 7 segments of 6 (one full
+  layer each). `planSegments` from §5 returns the split indices + which donor K/V to
+  save. Full-attention ISOLATION for the ~10 GB @8K target remains the next
+  optimization step (currently 17.5 GB @8K, seg2 — see §10 close above).
 
 Everything else (forward boundaries via `detachLeaf`, head vjp with cotangent 1.0,
-reverse `dh` chain, `mlx_vjp` not surrogate) is identical to the MiniCPM5 path.
-Target: e4b @8K ≤ ~10 GB, then `chunk-eval` quality on e4b (the original goal —
-chunk data is mostly 3.4–8.2K, useless at the ≤2K the reference is capped to).
+reverse `dh` chain, `mlx_vjp` not surrogate) is identical to the MiniCPM5 path and
+is verified end-to-end: peak 10 GB @2048, active flat (no leak), adapter saved.
