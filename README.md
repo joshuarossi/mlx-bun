@@ -166,6 +166,7 @@ bun src/cli.ts fit gemma --ctx 32768          # memory contract: fits? max conte
 bun src/cli.ts fit gemma --ctx 8192 --skus    # ...same, across the Apple Silicon lineup
 bun src/cli.ts serve gemma --port 8090        # OpenAI-compatible server
 bun src/cli.ts serve gemma --memory-budget 18 # ...with admission control (GB)
+bun src/cli.ts pi                   # built-in agentic coding CLI (pi's TUI, in-process)
 bun src/cli.ts evals                # recorded benchmark runs
 bun src/cli.ts harness pi           # connect your own pi install to the local server
 ./benchmark.sh                      # head-to-head matrix vs mlx-lm/optiq (reboot first;
@@ -218,8 +219,8 @@ agent CLIs like pi/OpenClaw via their provider config.
   (every Gemma-4 OptiQ repo does), per-layer KV quantization applies
   automatically (full-attention layers; sliding layers stay bf16).
   Measured decode-neutral at 8k on the 12B with KV bytes ÷4 on the
-  quantized layers. `--no-kv-quant` forces bf16; `--kv-bits N` forces
-  uniform bits. Long prefills over quantized caches run a fused
+  quantized layers. `--kv-quant off` forces bf16; `--kv-quant 4|8`
+  forces uniform bits. Long prefills over quantized caches run a fused
   FlashAttention-2 tiling that never materializes the full scores
   matrix (bounded transient; `MLX_BUN_NO_FUSED_SDPA=1` to disable).
   `MLX_BUN_FUSED_DECODE=1` extends the tiling to single-token decode —
@@ -245,23 +246,23 @@ agent CLIs like pi/OpenClaw via their provider config.
 ## Library
 
 The server is one consumer of a library-first API. Published to npm as
-`mlx-bun` (current: 0.0.4); `bunx mlx-bun` runs it without installing.
-To import the library from a clone, use `src/` directly. Full reference:
+`mlx-bun` (current: 0.0.4) — import from the package (`from "mlx-bun"`)
+or `./src/index` in a clone; `bunx mlx-bun` runs the CLI without
+installing. Full reference:
 [docs/reference/library-api.md](./docs/reference/library-api.md). For shipping inside a
 Mac app (Tauri/Electron sidecar), `./scripts/build-binary.sh` produces
 a relocatable single-binary bundle — recipe incl. signing/notarization
 in [docs/reference/embedding.md](./docs/reference/embedding.md).
 
 ```ts
-import { loadModelConfig } from "./src/config";
-import { Weights } from "./src/weights";
-import { Gemma4Model } from "./src/model/gemma4";
-import { generate } from "./src/generate";
-import { loadTokenizer } from "./src/tokenizer";
-import { ChatTemplate } from "./src/chat-template";
+import {
+  createModel,        // dispatches to Gemma4 / MiniCPM5 / Qwen3.5
+  Weights, loadModelConfig, loadTokenizer, ChatTemplate, generate,
+} from "mlx-bun";     // or "./src/index" in a clone
 
 const dir = "/path/to/hf/snapshot";
-const model = new Gemma4Model(await Weights.open(dir), await loadModelConfig(dir));
+const config = await loadModelConfig(dir);
+const model = createModel(await Weights.open(dir), config);  // RuntimeModel
 const tok = await loadTokenizer(dir);
 const template = await ChatTemplate.load(dir);
 
