@@ -1,6 +1,7 @@
 node_modules
 *.local
 .env
+.npmrc
 .DS_Store
 tmp/
 project-review.html
