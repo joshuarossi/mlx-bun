@@ -3,17 +3,24 @@
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   Hardened-runtime entitlements for the bun-compiled mlx-bun executable.
-  JavaScriptCore JITs, so under the hardened runtime the binary is killed
-  on launch without these two. All bundled dylibs are signed with the SAME
-  Developer ID team, so library validation passes and we do NOT need
-  com.apple.security.cs.disable-library-validation — add it here only if
-  dyld ever rejects a sibling dylib at launch.
+
+  - allow-jit / allow-unsigned-executable-memory: JavaScriptCore JITs, so
+    under the hardened runtime the binary is killed on launch without these.
+  - disable-library-validation: REQUIRED for the Homebrew install. brew
+    ad-hoc re-signs bundled dylibs during its relocation pass (stripping
+    our Developer ID team id off libmlxc/libmlx/libjaccl), while leaving
+    the executable Developer-ID signed. Library validation then rejects the
+    team-id mismatch at dlopen ("different Team IDs"). Disabling it lets the
+    signed executable load the ad-hoc'd sibling dylibs. Notarization still
+    passes with this entitlement.
 -->
 <plist version="1.0">
 <dict>
   <key>com.apple.security.cs.allow-jit</key>
   <true/>
   <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
 </dict>
 </plist>
