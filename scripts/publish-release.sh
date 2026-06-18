@@ -35,13 +35,19 @@ SHA="$(shasum -a 256 "$TARPATH" | awk '{print $1}')"
 URL="https://github.com/$REPO/releases/download/v$VERSION/$TARBALL"
 echo "==> version $VERSION  sha $SHA"
 
-# 1. GitHub release: create if absent, else clobber the asset in place.
+# A versionless copy of the same tarball, so the direct-download one-liner
+# can target a STABLE url: releases/latest/download/mlx-bun-<arch>.tar.gz
+# (the versioned asset name changes every release and can't be used there).
+LATEST="mlx-bun-${ARCH}.tar.gz"
+cp -f "$TARPATH" "$OUT_DIR/$LATEST"
+
+# 1. GitHub release: create if absent, else clobber the assets in place.
 if gh release view "v$VERSION" -R "$REPO" >/dev/null 2>&1; then
-  echo "==> release v$VERSION exists; uploading asset (--clobber)"
-  gh release upload "v$VERSION" "$TARPATH" -R "$REPO" --clobber
+  echo "==> release v$VERSION exists; uploading assets (--clobber)"
+  gh release upload "v$VERSION" "$TARPATH" "$OUT_DIR/$LATEST" -R "$REPO" --clobber
 else
   echo "==> creating release v$VERSION"
-  gh release create "v$VERSION" "$TARPATH" -R "$REPO" \
+  gh release create "v$VERSION" "$TARPATH" "$OUT_DIR/$LATEST" -R "$REPO" \
     --title "mlx-bun v$VERSION" --notes "mlx-bun v$VERSION"
 fi
 
