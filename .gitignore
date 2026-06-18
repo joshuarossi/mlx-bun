@@ -13,4 +13,5 @@ reports/
 dist/
 .claude/
 dist-native/
+dist-release/
 docs/investigations/hlg-figs/hlg-logits.js
