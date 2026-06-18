@@ -9,10 +9,17 @@ project-review.html
 # RESULTS.md is the curated, deliberately-tracked record — see benchmarks/RESULTS.md.
 *-report-*.html
 benchmarks-h2h-*
+benchmarks-e4b-flag-matrix-*.json
 benchmarks/lab-verification*.json
 reports/
 dist/
 .claude/
 dist-native/
 dist-release/
-docs/investigations/hlg-figs/hlg-logits.js
+# investigation scratch — regenerable from scripts/experiments/*; the write-ups
+# (docs/investigations/*.md) stay tracked, the raw run data does not.
+docs/investigations/hlg-figs/
+docs/investigations/hlg-runs/*.log
+docs/investigations/hlg-runs/*.json
+docs/investigations/curve-runs/
+docs/investigations/*.html

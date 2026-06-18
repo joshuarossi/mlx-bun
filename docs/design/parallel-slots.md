@@ -1,13 +1,17 @@
 # Parallel slots — configurable batched serving
 
-Status: **design + phasing** (S0 landed; S1+ not started)
+Status: **S0 + S1b SHIPPED** (S2 not started; S3+ deferred)
 Owner: serving layer
-Default: **off** (`--slots 1` = today's serialized path, untouched)
+Default: **off** (`--batch 1` = today's serialized path, untouched)
+
+> **Flag rename note:** This document was drafted with `--slots N` as the design name.
+> The shipped flag is `--batch N` (`--decode-concurrency` accepted as an mlx_lm.server alias).
+> Occurrences of `--slots` in pre-ship text below refer to today's `--batch N`.
 
 ## Goal
 
 Let the server process more than one generation request concurrently,
-gated entirely behind a `--slots N` flag. `N=1` runs exactly what we
+gated entirely behind a `--batch N` flag (originally designed as `--slots N`). `N=1` runs exactly what we
 have today (the serialized promise chain). `N>1` loads a batch
 scheduler that runs multiple sequences through one forward pass.
 
@@ -78,7 +82,7 @@ concurrent ≈ arrival_rate × mean_generation_time).
 
 When it does **not** help: traffic so light that requests never overlap
 in time. Then there's only ever one live sequence and batching is idle
-— which is exactly why `--slots 1` is and stays the default.
+— which is exactly why `--batch 1` is and stays the default.
 
 ## Current code: what's batch=1 and what isn't
 
@@ -98,7 +102,7 @@ Good news: the hot path is already written over a batch dim `B`.
 | `src/generate.ts:295,315,378` | prompt/decode tensors built `[1, L]` / `[1, 1]` |
 | `src/generate.ts:320,235` | `hLast` slice `[1, …]`; `sampleStep` reshape `[1, V]` |
 | `src/generate.ts:247` | sampler history `[1]`, one sampled token/step |
-| `src/model/gemma4.ts:647-653` | per-layer-input reshapes `[1, L, …]` |
+| `src/model/gemma4.ts:647-653` | per-layer-input reshapes `[1, L, …]` *(pre-S1b inventory — this entry was fixed in S1b; e4b per-layer-input is now B-generic)* |
 | `src/model/gemma4-base.ts:210` | **one scalar `offset` per cache, shared across rows** |
 | `src/model/gemma4.ts:174,206` | **scalar RoPE offset** for the whole batch |
 | `src/model/gemma4-base.ts:256` | `makeMask` from that single offset (returns empty mask at N=1) |
@@ -237,7 +241,7 @@ Degradation levers: `--perf-kernel off` / `--fused-* off` drops L3→L2; bf16 KV
 drops L2→L1. Each layer must stand alone and stay reachable (don't-delete-
 optionality as a fallback ladder).
 
-So a feature like batched decode (`--slots`) is "done" only when green at
+So a feature like batched decode (`--batch`) is "done" only when green at
 **every (model × layer)** cell — and each cell may need its own fix:
 
 | Model · path | L1 (bf16 / mlx-lm) | L2 (quant / optiq) | L3 (perf / KL) |
@@ -323,7 +327,7 @@ Batched-decode landmines found by the modes analysis (2026-06-14):
   required), so quant batched decode falls to `quantizedSdpaUnfused` — correct
   but the perf kernel is bypassed (perf debt; a batched-aware fused decode kernel
   is a later item). `quantizedSdpaUnfused` must be validated with a 4-D bool mask.
-- **All cells**: compiled-decode forced off under `--slots>1`; LoRA batches only
+- **All cells**: compiled-decode forced off under `--batch>1`; LoRA batches only
   within one adapter group (else drain).
 
 ## KV memory: dynamic allocation, not static partition
@@ -357,11 +361,12 @@ Budget accounting is total-bytes from day one.
 **Current state (2026-06-14):** the batched *primitive* is **rung 2** —
 one shared `[B, H, S, D]` buffer per layer (`KVCache`/`RotatingKVCache`),
 growing in 256-token steps, width = longest live sequence, left-pad
-"waste" on short rows. But the **budget/admission half of rung 2 is NOT
-built** (no `B × S_max` projection, no KV budget enforcement) — that's
-scheduler work (S2), and the scheduler itself isn't built (`--slots`
-inert). And **rung 3 (paged) is a deferred spike**. So today: rung-2
-*allocation shape*, no *budget control*, not wired into serving.
+"waste" on short rows. Rung-2 allocation IS wired into serving via
+`BatchScheduler` + `GenerationGateway` (S1b SHIPPED). But the
+**budget/admission half of rung 2 is NOT built** (no `B × S_max`
+projection, no KV budget enforcement) — that's scheduler work (S2, NOT
+STARTED). And **rung 3 (paged) is a deferred spike**. So today: rung-2
+*allocation + scheduling wired*, no *budget/admission control* yet.
 
 KV quantization is a force multiplier: 4-bit KV (`generate.ts:67`,
 already supported) is ~4× smaller, so the same budget buys ~4× the slots
@@ -462,34 +467,37 @@ predicate (full-attention model + no vision/adapter/repetition-penalty/user-seed
 
 ## Config surface
 
-- `ServerOptions.slots` (default 1); later `kvBudgetBytes`,
+- `ServerOptions.batch` (default 1); later `kvBudgetBytes`,
   `promptConcurrency`.
-- CLI: `--slots N` (S0); later `--kv-budget <GB>`.
-- `slots === 1` → today's serialized promise chain, untouched.
-  `slots > 1` → scheduler.
+- CLI: `--batch N` (shipped; `--slots N` was the original design name, `--decode-concurrency` accepted as mlx_lm.server alias); later `--kv-budget <GB>`.
+- `batch === 1` → today's serialized promise chain, untouched.
+  `batch > 1` → scheduler.
 
 ## Phasing (incremental, parity-gated)
 
-- **S0 — config seam (DONE).** `--slots N` / `ServerOptions.slots`
+- **S0 — config seam (DONE).** `--slots N` (now shipped as `--batch N`) / `ServerOptions.slots`
   plumbed, validated, surfaced (ready card + `/stats`). `N>1` warns that
   batched execution lands in S1 and runs serially. No behavior change.
-- **S1 — static 2-wide, base model only.** Split by the reuse finding:
+- **S1 — static 2-wide, base model only. (DONE — S1b LIVE as `--batch N`)** Split by the reuse finding:
   - **S1a (prefill)** — reuse the training machinery (`buildBatchedPadMask`
     / `BatchedMaskCache`); wire the serving path to prefill B prompts in one
     forward. Mostly generalization + consolidating the two mask builders.
-  - **S1b (decode)** — the new work: a batched KV cache that grows with
-    per-row offsets, per-row RoPE via the array-offset path, and the per-row
-    `[B,1,1,S]` decode mask (`buildBatchedDecodeMask`, landed 2026-06-14).
-    Plus the B-token-per-step decode loop + per-row stream fan-out.
+  - **S1b (decode) — SHIPPED 2026-06-14.** `BatchScheduler`
+    (`src/serve/batch-scheduler.ts`) + `GenerationGateway`
+    (`src/serve/generation-gateway.ts`) wired into `createServer` behind
+    `--batch N`. L1 oracle-verified for CPM + all 3 Gemmas (full-attn +
+    sliding-window via `BatchedRotatingCache`). Per-row SSE fan-out live.
+    See STATUS block above for details.
   **Teacher-forced gate**: a 2-row batch must produce per-row logits matching
   two solo runs within bf16 tolerance (the train-batch-e2e methodology, now
   applied to decode).
-- **S2 — N-wide + continuous injection/eviction.** Rows retire on EOS;
-  queued requests prefill into freed rows. Dynamic byte-budget admission.
-- **S3+ — paged KV** (custom paged-attention kernel + block manager),
+- **S2 — N-wide + continuous injection/eviction. (NOT STARTED)** Rows retire on EOS;
+  queued requests prefill into freed rows. Dynamic byte-budget admission
+  (`B × S_max` projection, KV budget enforcement) still TODO.
+- **S3+ — paged KV (DEFERRED)** (custom paged-attention kernel + block manager),
   KV-quant under batch, LoRA-group batching.
 
-Every phase ships default-off behind `slots=1`; the serialized path is
+Every phase ships default-off behind `batch=1`; the serialized path is
 never removed (only bypassed).
 
 ## Open questions / to measure

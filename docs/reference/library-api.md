@@ -2,8 +2,9 @@
 
 The HTTP server is one consumer of a library-first API. Everything it
 does — generation, sampling, KV schemes, LoRA, vision, caching, memory
-admission — is importable directly into a Bun process. Not yet
-published to npm; import from `src/`.
+admission — is importable directly into a Bun process. Published as
+`mlx-bun` on npm (0.0.4); `bunx mlx-bun` works out of the box, or
+`import … from "mlx-bun"` for programmatic use.
 
 One rule everywhere: **one generation at a time per process** (one GPU,
 batch=1). The server serializes through a queue; do the same.
@@ -11,17 +12,24 @@ batch=1). The server serializes through a queue; do the same.
 ## Quick start
 
 ```ts
-import { loadModelConfig } from "./src/config";
-import { Weights } from "./src/weights";
-import { Gemma4Model } from "./src/model/gemma4";
-import { loadTokenizer } from "./src/tokenizer";
-import { ChatTemplate } from "./src/chat-template";
-import { generate } from "./src/generate";
+import {
+  loadModelConfig,
+  Weights,
+  createModel,       // dispatches to Gemma4Model / MiniCPM5Model / Qwen35Model
+  loadTokenizer,
+  ChatTemplate,
+  generate,
+} from "mlx-bun";   // or "./src/index" in-repo
 
 const dir = "/path/to/hf-snapshot";          // mlx-bun ls prints these
-const model = new Gemma4Model(await Weights.open(dir), await loadModelConfig(dir));
+const config = await loadModelConfig(dir);
+const model = createModel(await Weights.open(dir), config);   // returns RuntimeModel
 const tok = await loadTokenizer(dir);
 const template = await ChatTemplate.load(dir);
+// Gemma4Model and MiniCPM5Model can still be imported directly from "mlx-bun"
+// if you need the concrete type. Qwen35Model is NOT exported from the public
+// package — use createModel/RuntimeModel (preferred dispatch), or import from
+// "./src/model/qwen35" in-repo.
 
 const ids = tok.encode(template.render([{ role: "user", content: "hi" }]));
 const promptIds = ids[0] === ids[1] && ids[0] === tok.bosTokenId ? ids.slice(1) : ids;
@@ -67,7 +75,7 @@ prompt time), the decode clock from there.
 ## Serving pieces
 
 ```ts
-import { loadContext, createServer } from "./src/server";
+import { loadContext, createServer } from "mlx-bun";
 
 const ctx = await loadContext(dir, "my-model", { memoryBudgetBytes: 12e9 });
 const server = createServer(ctx, 8090, {
@@ -83,6 +91,12 @@ completions, Anthropic `/v1/messages`, OpenAI Responses, adapters, and
 `/stats` — [server-api.md](./server-api.md).
 
 ## Prompt cache (in-process prefix reuse)
+
+> **Note:** `PromptCache`, `AdapterManager`, `saveKvCache`, and
+> `loadKvCache` are **not** re-exported from the public `"mlx-bun"`
+> entry point (`src/index.ts`). Import them from their internal paths
+> as shown below; this is intentional — they are implementation-level
+> pieces rather than stable public API surface.
 
 ```ts
 import { PromptCache } from "./src/prompt-cache";
@@ -102,9 +116,11 @@ under one adapter must not seed another's prefill).
 ```ts
 import { saveKvCache, loadKvCache } from "./src/kv-store";
 saveKvCache("/tmp/prefix.kv", tokens, caches);       // page-aligned file
-const { tokens, caches, mmap } = loadKvCache("/tmp/prefix.kv", model);
+const { tokens, caches, mmap } = loadKvCache("/tmp/prefix.kv", model as Gemma4Model);
 // reload is a zero-copy MAP_PRIVATE mmap straight to the GPU (~1 ms);
 // keep `mmap` referenced as long as the caches live
+// Note: loadKvCache is typed to accept Gemma4Model, but only uses model.layers.length
+// at runtime — a cast from RuntimeModel is safe for any model that has a layers array.
 ```
 
 Quantized caches are not persistable yet (documented gap).
@@ -112,8 +128,7 @@ Quantized caches are not persistable yet (documented gap).
 ## Registry + fit (model discovery and memory math)
 
 ```ts
-import { Registry } from "./src/registry";
-import { fit, skuMatrix } from "./src/fit";
+import { Registry, fit, skuMatrix } from "mlx-bun";
 
 const reg = new Registry();           // bun:sqlite, scans the HF cache
 await reg.scan();
@@ -150,4 +165,4 @@ any amount of switching.
   handler → process death). Use `fit`/admission before generating, not
   try/catch around it.
 - Never read a typed array that native code wrote in a hot path; use
-  the `read.*` helpers (bun#32054 — see PLAN.md Phase 4 findings).
+  the `read.*` helpers (bun#32054 — see PLAN-archive.md Phase 4 findings).

@@ -5,7 +5,7 @@ TypeScript — no Python, no sidecar server, one runtime.
 
 Measured head-to-head on an M4 Pro (24 GB), same models, same day:
 logits **bit-exact** against the Python reference; served over HTTP the
-**fastest stack on every model tested** (TTFT 45–89 ms vs python's
+**fastest stack on every model tested** (TTFT 45–90 ms vs python's
 220–327 ms, zero server overhead vs mlx-lm's −5–6%); prefill up to
 **1.8×** mlx-lm at 8k context; cold start → first token of a cached
 prompt in **394 ms**. Full table: [benchmarks](#benchmarks).
@@ -118,7 +118,7 @@ Currently MiniCPM5 plus the Gemma-4 OptiQ quants:
 | Model | Download | Fits on | Vision | Notes |
 |---|---|---|---|---|
 | [`mlx-community/MiniCPM5-1B-OptiQ-4bit`](https://huggingface.co/mlx-community/MiniCPM5-1B-OptiQ-4bit) | 0.92 GB | 8 GB | — | Sub-GB option for 8 GB machines; bit-exact 100-step oracle parity (bf16 + mixed KV), tool calling + agent loop verified |
-| [`mlx-community/gemma-4-e4b-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-e4b-it-OptiQ-4bit) | 7.0 GB | 16 GB | — | **Recommended starter** (16 GB+); ~54 tok/s |
+| [`mlx-community/gemma-4-e4b-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-e4b-it-OptiQ-4bit) | 7.0 GB | 16 GB | ✓ | **Recommended starter** (16 GB+); ~54 tok/s |
 | [`mlx-community/gemma-4-12B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-12B-it-OptiQ-4bit) | 8.4 GB | 16 GB | ✓ | Vision sidecar + tool calling, both verified end-to-end |
 | [`mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit) | 18 GB | 24 GB | — | MoE (top-8 of 128 experts); ~54 tok/s — the python servers crash loading it on 24 GB |
 
@@ -167,6 +167,7 @@ bun src/cli.ts fit gemma --ctx 8192 --skus    # ...same, across the Apple Silico
 bun src/cli.ts serve gemma --port 8090        # OpenAI-compatible server
 bun src/cli.ts serve gemma --memory-budget 18 # ...with admission control (GB)
 bun src/cli.ts evals                # recorded benchmark runs
+bun src/cli.ts harness pi           # connect your own pi install to the local server
 ./benchmark.sh                      # head-to-head matrix vs mlx-lm/optiq (reboot first;
                                     #   preflight-gated, resumable, writes benchmarks-h2h-<date>.md)
 ```
@@ -243,8 +244,9 @@ agent CLIs like pi/OpenClaw via their provider config.
 
 ## Library
 
-The server is one consumer of a library-first API. Not yet published to
-npm — clone the repo and import from `src/`. Full reference:
+The server is one consumer of a library-first API. Published to npm as
+`mlx-bun` (current: 0.0.4); `bunx mlx-bun` runs it without installing.
+To import the library from a clone, use `src/` directly. Full reference:
 [docs/reference/library-api.md](./docs/reference/library-api.md). For shipping inside a
 Mac app (Tauri/Electron sidecar), `./scripts/build-binary.sh` produces
 a relocatable single-binary bundle — recipe incl. signing/notarization
@@ -303,8 +305,8 @@ prefill→decode allocator-reclaim stall that mlx-lm clears with
 `mx.clear_cache` and bills to prompt time (we billed it to decode);
 after the reference-faithful fix, same-session paired runs put the 12B
 *ahead* at short context (25.1 vs 24.0) and at parity @8k (23.8 vs
-23.9). Clean-machine re-measure pending; e4b retains a ~5% per-step
-host-overhead residual (see PLAN.md "Decode gap RESOLVED"). Served through HTTP — how agents actually use a local
+23.9). e4b retains a ~5% per-step host-overhead residual (see PLAN.md
+"Decode gap RESOLVED"). Served through HTTP — how agents actually use a local
 model — mlx-bun has the fastest decode on e4b and the 26B, and the
 fastest TTFT and startup everywhere by 2–5×. † = cell failed: optiq
 serve produced no output on the 26B (the Metal OOM crash class from
@@ -363,13 +365,17 @@ sampling + serving (tools, vision, prompt cache), registry/fit/KV
 persistence, quantized + mixed-precision KV serving (rotating-cache
 KV-quant included, Phase 9) with fused quantized prefill (Phase 10),
 LoRA hot-swap with per-request selection, resumable verified downloads
-(`mlx-bun get`), memory admission control, and the head-to-head
-benchmark harness, and the decode-gap root-cause fix (clear_cache
+(`mlx-bun get`), memory admission control, the head-to-head
+benchmark harness, the decode-gap root-cause fix (clear_cache
 placement + boundary accounting, 2026-06-11 — 12B now at-or-above
-mlx-lm decode in paired runs). Open: e4b's ~5% host-overhead decode
-residual (Phase 7), Anthropic messages + Responses API (Phase 11),
-SigLIP vision for e4b/26B, Qwen 3.x, the embeddable single-binary
-build.
+mlx-lm decode in paired runs), Anthropic Messages + Responses API
+(`/v1/messages` and `/v1/responses`, Phase 11), SigLIP vision sidecar
+for e4b (commit 4625fe5), the embeddable single-binary build
+(signed + notarized; Homebrew tap + direct-download release pipeline),
+and segmented-backward LoRA training (Phase A+B — SFT/DPO, long-context
+memory reduction; see [training guide](docs/reference/training.md)).
+Open: e4b's ~5% host-overhead decode residual (Phase 7), SigLIP vision
+for 26B, Qwen 3.x.
 
 ## License
 
