@@ -12,7 +12,7 @@ import { MlxArray, cpuStream } from "../mlx/array";
 import { C } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import type { PreprocessedImage } from "./preprocess";
-import { NUM_SOFT_TOKENS } from "./preprocess";
+import { NUM_SOFT_TOKENS, preprocessImage } from "./preprocess";
 
 const cstr = (s: string) => Buffer.from(s + "\0", "utf8");
 
@@ -57,6 +57,10 @@ export class VisionTower {
     }
     C.mlx_map_string_to_array_free(arrMapHandle);
     return self;
+  }
+
+  async preprocess(bytes: Uint8Array): Promise<PreprocessedImage> {
+    return preprocessImage(bytes);
   }
 
   #w(name: string): MlxArray {

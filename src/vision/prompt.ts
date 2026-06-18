@@ -12,8 +12,18 @@ import * as ops from "../mlx/ops";
 import type { Gemma4Model } from "../model/gemma4";
 import type { ChatTemplate, ChatMessage, ToolDefinition } from "../chat-template";
 import type { LoadedTokenizer } from "../tokenizer";
-import type { VisionTower } from "./embedder";
-import { preprocessImage } from "./preprocess";
+
+/** Common contract for both vision towers (encoder-free gemma4_unified in
+ *  ./embedder.ts and the SigLIP encoder in ./siglip.ts): preprocess image
+ *  bytes into a tower-specific representation, then turn it into
+ *  language-space soft tokens [1, softTokens, hidden] (pre-divided by
+ *  embed_scale). The two own different preprocessing, so the tower carries
+ *  its own. */
+export interface VisionEncoder<P extends { softTokens: number } = { softTokens: number }> {
+  preprocess(bytes: Uint8Array): Promise<P>;
+  features(pre: P): MlxArray;
+  dispose?(): void;
+}
 
 export interface VisionPrompt {
   ids: number[];
@@ -83,9 +93,9 @@ async function fetchImageBytes(url: string): Promise<Uint8Array> {
   throw new Error(`unsupported image url scheme: ${url.slice(0, 16)}`);
 }
 
-export async function buildVisionPrompt(
+export async function buildVisionPrompt<P extends { softTokens: number }>(
   model: Gemma4Model,
-  tower: VisionTower,
+  tower: VisionEncoder<P>,
   tokenizer: LoadedTokenizer,
   template: ChatTemplate,
   messages: ChatMessage[],
@@ -97,8 +107,9 @@ export async function buildVisionPrompt(
   let ids = tokenizer.encode(rendered);
   if (ids[0] === ids[1] && ids[0] === tokenizer.bosTokenId) ids = ids.slice(1);
 
-  // preprocess + embed every image (in order of appearance)
-  const pre = await Promise.all(images.map((bytes) => preprocessImage(bytes)));
+  // preprocess + embed every image (in order of appearance), via the
+  // tower's own preprocessing (encoder-free vs SigLIP differ here).
+  const pre = await Promise.all(images.map((bytes) => tower.preprocess(bytes)));
 
   // expand each <|image|> into <boi> + image_token×soft + <eoi>
   const spliced: number[] = [];

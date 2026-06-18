@@ -20,7 +20,7 @@ import pkgJson from "../package.json" with { type: "json" };
 import { readFileSync } from "node:fs";
 const APP_PAGE = appHtml as unknown as string;
 const pkgVersion = (pkgJson as { version: string }).version;
-import { loadModelConfig, type KvQuantSpec } from "./config";
+import { loadModelConfig, type KvQuantSpec, type ModelConfig } from "./config";
 import { Weights } from "./weights";
 import { Gemma4Model } from "./model/gemma4";
 import { createModel, type RuntimeModel } from "./model/factory";
@@ -35,7 +35,8 @@ import {
 } from "./chat-template";
 import { loadTokenizer, type LoadedTokenizer } from "./tokenizer";
 import {
-  parseGeneratedToolCalls, parseToolCalls, TOOL_CALL_END, TOOL_CALL_START,
+  CHANNEL_END, CHANNEL_START, parseGeneratedToolCalls, parseToolCalls,
+  TOOL_CALL_END, TOOL_CALL_START,
 } from "./tool-call";
 import { PromptCache } from "./prompt-cache";
 import {
@@ -51,8 +52,10 @@ import { AdapterManager, listAvailableAdapters } from "./lora";
 import { fit } from "./fit";
 import { setMemoryLimit } from "./mlx/ffi";
 import { VisionTower } from "./vision/embedder";
+import { SiglipVisionTower, parseSiglipConfig } from "./vision/siglip";
 import {
-  buildVisionPrompt, extractImages, type VisionTokenIds,
+  buildVisionPrompt, extractImages,
+  type VisionTokenIds, type VisionEncoder,
 } from "./vision/prompt";
 import { makePiWsHandler, type PiWsData } from "./pi-web";
 
@@ -113,7 +116,14 @@ export interface ServerContext {
   tokenizer: LoadedTokenizer;
   template: ChatTemplate;
   modelId: string;
-  vision: VisionTower | null;
+  /** Lazily-loaded vision tower cache — null until the first image request
+   *  (see `getVisionTower`). The tower (SigLIP ~hundreds of MB, encoder-free
+   *  smaller) is not loaded for text-only sessions. */
+  vision: VisionEncoder | null;
+  /** Loads + selects the vision tower on demand; null when the model has no
+   *  (supported) vision sidecar. Invoked at most once, then cached in
+   *  `vision`. */
+  loadVision: (() => VisionEncoder) | null;
   visionTokenIds: VisionTokenIds;
   adapters: AdapterManager;
   /** Per-layer KV quantization from the repo's kv_config.json (null if
@@ -191,29 +201,53 @@ export async function loadContext(
     tokenizer,
     template: await ChatTemplate.load(modelDir),
     modelId: modelId ?? modelDir.split("/").filter(Boolean).at(-1)!,
-    // A sidecar that fails to load is a capability gap, not a fatal
-    // error: e4b/26B ship SigLIP-format sidecars (Phase 12); only the
-    // 12B's encoder-free format loads today. Serve text-only.
-    // Vision sidecars are a Gemma4 feature; MiniCPM5 never ships one.
-    vision: config.hasVisionSidecar && model instanceof Gemma4Model
-      ? (() => {
-          try {
-            return VisionTower.load(modelDir, model.embedScale, config.text.rmsNormEps);
-          } catch (e) {
-            console.warn(
-              `vision sidecar not loadable (${(e as Error).message}) — ` +
-              `serving text-only (SigLIP sidecars land in Phase 12)`,
-            );
-            return null;
-          }
-        })()
-      : null,
+    // Vision is loaded lazily (getVisionTower) — text-only sessions never
+    // pay for the tower. The loader picks the encoder-free gemma4_unified
+    // (12B) tower vs the SigLIP encoder (e2b/e4b/26B/31B) by the sidecar's
+    // vision_config.model_type. Vision sidecars are a Gemma4 feature;
+    // MiniCPM5 never ships one.
+    vision: null,
+    loadVision: makeVisionLoader(modelDir, model, config),
     visionTokenIds: {
       imageTokenId: (config.raw.image_token_id as number) ?? 258880,
       boiTokenId: (config.raw.boi_token_id as number) ?? 255999,
       eoiTokenId: (config.raw.eoi_token_id as number) ?? 258882,
     },
   };
+}
+
+/** Build the on-demand vision-tower loader, selecting the encoder-free
+ *  (gemma4_unified, 12B) tower vs the SigLIP encoder (gemma4_vision:
+ *  e2b/e4b/26B/31B) by the sidecar's vision_config.model_type. Returns null
+ *  when the model has no usable vision sidecar. */
+function makeVisionLoader(
+  modelDir: string, model: RuntimeModel, config: ModelConfig,
+): (() => VisionEncoder) | null {
+  if (!(config.hasVisionSidecar && model instanceof Gemma4Model)) return null;
+  const vc = config.raw.vision_config as Record<string, any> | undefined;
+  if (vc?.model_type === "gemma4_vision") {
+    const sigCfg = parseSiglipConfig(vc);
+    return () => SiglipVisionTower.load(modelDir, sigCfg, model.embedScale);
+  }
+  // gemma4_unified_vision (or unlabelled): the encoder-free patch embedder.
+  return () => VisionTower.load(modelDir, model.embedScale, config.text.rmsNormEps);
+}
+
+/** Lazily load + cache the vision tower on first use. A sidecar that fails
+ *  to load is a capability gap, not a fatal error: returns null and the
+ *  request is answered with a 400 (the loader is cleared so we don't retry
+ *  a known-bad load every request). */
+function getVisionTower(ctx: ServerContext): VisionEncoder | null {
+  if (ctx.vision) return ctx.vision;
+  if (!ctx.loadVision) return null;
+  try {
+    ctx.vision = ctx.loadVision();
+    return ctx.vision;
+  } catch (e) {
+    console.warn(`vision sidecar not loadable (${(e as Error).message}) — serving text-only`);
+    ctx.loadVision = null;
+    return null;
+  }
 }
 
 interface ChatRequest {
@@ -287,8 +321,9 @@ type ToolStreamMode = "gemma-sentinel" | "plain" | "buffered-text";
 
 /** Routes generated tokens. Gemma uses family-specific sentinel token ids;
  *  MiniCPM5 and other text-template models use decoded-text parsing so
- *  ordinary tokenizer ids like "<" are never swallowed globally. */
-class ToolAwareStream {
+ *  ordinary tokenizer ids like "<" are never swallowed globally. Exported for
+ *  unit tests (gemma-channel reasoning split). */
+export class ToolAwareStream {
   readonly #decoder: StreamDecoder;
   #inTool = false;
   #toolTokens: number[] = [];
@@ -301,6 +336,19 @@ class ToolAwareStream {
   #textToolParseFailed = false;
   readonly toolSegments: number[][] = [];
 
+  /** Gemma reasoning-channel state (gemma-sentinel mode). The model wraps
+   *  chain-of-thought as `<|channel>thought\n…<channel|>` using special tokens
+   *  100/101 that the content decoder strips, so reasoning is captured here at
+   *  the token level. A SEPARATE decoder keeps the reasoning byte-stream's
+   *  incremental state independent of content's. The `thought\n` channel-name
+   *  line is stripped before the reasoning text (per the model's parser spec,
+   *  it sits outside the captured thought). */
+  readonly #channelDecoder: StreamDecoder;
+  #inChannel = false;
+  #channelNamePending = "";
+  #channelNameDone = false;
+  #reasoning = "";
+
   /** Decoded-text markers that open tool markup (oracle: the streaming
    *  parser buffers from `<tool_call`/`<function` on, never the whole
    *  response — content before a tool call still streams live). */
@@ -312,6 +360,27 @@ class ToolAwareStream {
     readonly tools: ToolDefinition[] | null,
   ) {
     this.#decoder = new StreamDecoder(tokenizer, mode !== "buffered-text");
+    this.#channelDecoder = new StreamDecoder(tokenizer, true);
+  }
+
+  /** Feed decoded channel text, stripping the leading `thought\n` name line
+   *  (which may arrive across tokens). Returns the reasoning delta. */
+  #feedChannel(text: string): string {
+    if (this.#channelNameDone) return text;
+    this.#channelNamePending += text;
+    const nl = this.#channelNamePending.indexOf("\n");
+    if (nl === -1) return ""; // still inside the channel-name line
+    this.#channelNameDone = true;
+    const rest = this.#channelNamePending.slice(nl + 1);
+    this.#channelNamePending = "";
+    return rest;
+  }
+
+  /** Drain reasoning captured since the last call (gemma-channel thinking). */
+  takeReasoning(): string {
+    const r = this.#reasoning;
+    this.#reasoning = "";
+    return r;
   }
 
   /** Emit the longest #text prefix that cannot be (the start of) tool
@@ -364,6 +433,25 @@ class ToolAwareStream {
       }
       return "";
     }
+    // Reasoning channel: tokens between <|channel> and <channel|> are thought,
+    // captured to #reasoning (drained via takeReasoning), never content. An
+    // empty block (<|channel>thought\n<channel|>, emitted by larger Gemmas even
+    // with thinking off) yields no reasoning and leaks nothing.
+    if (this.#inChannel) {
+      if (token === CHANNEL_END) {
+        this.#inChannel = false;
+        this.#reasoning += this.#feedChannel(this.#channelDecoder.flush());
+      } else {
+        this.#reasoning += this.#feedChannel(this.#channelDecoder.push(token));
+      }
+      return "";
+    }
+    if (token === CHANNEL_START) {
+      this.#inChannel = true;
+      this.#channelNameDone = false;
+      this.#channelNamePending = "";
+      return "";
+    }
     if (token === TOOL_CALL_START) {
       this.#inTool = true;
       return "";
@@ -391,6 +479,12 @@ class ToolAwareStream {
       const out = this.#text.slice(this.#sent);
       this.#sent = this.#text.length;
       return out;
+    }
+    if (this.#inChannel) {
+      // truncated mid-reasoning (hit max_tokens); surface the partial thought
+      this.#reasoning += this.#feedChannel(this.#channelDecoder.flush());
+      this.#inChannel = false;
+      return "";
     }
     if (this.#inTool && this.#toolTokens.length) {
       // truncated mid-tool-call (hit max_tokens); surface what we have
@@ -858,7 +952,8 @@ export function createServer(
       port: () => serverRef.port ?? port,
       modelId: ctx.modelId,
       contextWindow: ctx.model.config.text.maxPositionEmbeddings,
-      vision: !!ctx.vision,
+      // capability flag — true if a tower is loaded or loadable (lazy)
+      vision: !!(ctx.vision || ctx.loadVision),
       thinking: ctx.template.supportsThinking,
     }),
     async fetch(request, server) {
@@ -1246,15 +1341,18 @@ export function createServer(
         let vision: Parameters<typeof runGeneration>[3];
         try {
           if (hasImages) {
-            if (!ctx.vision)
+            // Loads (and caches) the tower on first image request — text-only
+            // sessions never pay for it.
+            const tower = getVisionTower(ctx);
+            if (!tower)
               return Response.json(
                 { error: { message: "model has no vision sidecar" } }, { status: 400 },
               );
             const { messages, images } = await extractImages(normalizeMessages(body.messages));
-            // ctx.vision is only ever non-null for Gemma4 (sidecar gate
-            // in loadContext), so the narrow is safe here.
+            // The tower is only ever non-null for Gemma4 (sidecar gate in
+            // makeVisionLoader), so the model narrow is safe here.
             const vp = await buildVisionPrompt(
-              ctx.model as Gemma4Model, ctx.vision, ctx.tokenizer, ctx.template,
+              ctx.model as Gemma4Model, tower, ctx.tokenizer, ctx.template,
               messages, images, ctx.visionTokenIds, tools,
             );
             promptIds = vp.ids;
@@ -1328,7 +1426,9 @@ export function createServer(
                 send(chunk({ role: "assistant", content: "" }, null));
                 const router = toolRouter(tools);
                 const stopper = new StopMatcher(options.stopSequences);
-                const thinking = new ThinkingTagSplitter(ctx.template.supportsThinking, startInThinking);
+                // <think>-text splitting is only for text-marker models; gemma's
+                // reasoning is already split at the token level by the router.
+                const thinking = new ThinkingTagSplitter(ctx.template.thinkingFormat === "think-tag", startInThinking);
                 // Serial decode is an unbroken microtask chain (FFI + generator
                 // resumes) — without a macrotask hop, Bun never services the
                 // socket and the whole SSE response flushes in one burst at the
@@ -1338,12 +1438,16 @@ export function createServer(
                 // the scheduler yields to the event loop between steps.
                 let lastFlush = performance.now();
                 const s = await gateway.run(promptIds, options, (token) => {
-                  const text = stopper.push(router.push(token));
+                  const rawContent = router.push(token);
+                  // gemma-channel reasoning, split at the token level by the router
+                  const rReason = router.takeReasoning();
+                  if (rReason) send(chunk({ reasoning: rReason }, null));
+                  const text = stopper.push(rawContent);
                   const parts = thinking.push(text);
                   if (parts.reasoning) send(chunk({ reasoning: parts.reasoning }, null));
                   if (parts.content) send(chunk({ content: parts.content }, null));
                   if (stopper.stopped) return false; // halt generation
-                  if (!batched && (parts.content || parts.reasoning)) {
+                  if (!batched && (parts.content || parts.reasoning || rReason)) {
                     const now = performance.now();
                     if (now - lastFlush >= 25) {
                       lastFlush = now;
@@ -1355,7 +1459,10 @@ export function createServer(
                 // including text still held by the decoders
                 let tail = "";
                 if (!stopper.stopped) {
-                  tail = stopper.push(router.flush());
+                  const flushed = router.flush();
+                  const rReason = router.takeReasoning();
+                  if (rReason) send(chunk({ reasoning: rReason }, null));
+                  tail = stopper.push(flushed);
                   if (!stopper.stopped) tail += stopper.flush();
                 }
                 if (tail) {
@@ -1410,17 +1517,21 @@ export function createServer(
           {
             const router = toolRouter(tools);
             const stopper = new StopMatcher(options.stopSequences);
-            const thinking = new ThinkingTagSplitter(ctx.template.supportsThinking, startInThinking);
+            const thinking = new ThinkingTagSplitter(ctx.template.thinkingFormat === "think-tag", startInThinking);
             let content = "";
             let reasoning = "";
             const s = await gateway.run(promptIds, options, (token) => {
-              const parts = thinking.push(stopper.push(router.push(token)));
+              const rawContent = router.push(token);
+              reasoning += router.takeReasoning(); // gemma-channel thinking
+              const parts = thinking.push(stopper.push(rawContent));
               content += parts.content;
               reasoning += parts.reasoning;
               if (stopper.stopped) return false; // halt generation
             }, vision, shape);
             if (!stopper.stopped) {
-              let tail = stopper.push(router.flush());
+              const flushed = router.flush();
+              reasoning += router.takeReasoning();
+              let tail = stopper.push(flushed);
               if (!stopper.stopped) tail += stopper.flush();
               const parts = thinking.push(tail);
               content += parts.content;
