@@ -12,9 +12,26 @@ prompt in **394 ms**. Full table: [benchmarks](#benchmarks).
 
 ## Getting started
 
-**You need:** an Apple Silicon Mac (MLX is Metal-only, so macOS only by
-design) and [Bun](https://bun.sh) ≥ 1.3.14 — that's the whole
-toolchain. No Python, no Homebrew, no native library to install by hand.
+You need an Apple Silicon Mac (MLX is Metal-only, so macOS only by
+design). Two ways in.
+
+### Homebrew (recommended)
+
+A self-contained, signed + notarized binary — no toolchain to install by
+hand:
+
+```sh
+brew install joshuarossi/tap/mlx-bun
+mlx-bun
+```
+
+That's the whole thing. The bottle already bundles the MLX native
+runtime, so the only thing the first run fetches is the model.
+
+### From source
+
+Needs [Bun](https://bun.sh) ≥ 1.3.14 — no Python, no native library to
+install by hand:
 
 ```sh
 # 1. Install Bun
@@ -33,7 +50,8 @@ mlx-bun
 Bare `mlx-bun` is an alias for `mlx-bun serve`. On its first run, with no
 model named, it does everything for you:
 
-1. pulls the MLX native runtime (~52 MB) into `~/Library/Caches/mlx-bun/`;
+1. pulls the MLX native runtime (~52 MB) into `~/Library/Caches/mlx-bun/`
+   (skipped on the Homebrew install — the runtime ships in the bottle);
 2. downloads the sub-GB `MiniCPM5-1B` starter and serves it, so you're
    chatting in well under a minute;
 3. starts downloading `gemma-4-e4b` (the stronger 4B model) in the
