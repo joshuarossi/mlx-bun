@@ -62,6 +62,15 @@
 body { -webkit-font-smoothing: antialiased; }
 ::selection { background: rgba(10, 132, 255, 0.4); }
 
+/* Light-mode contrast: the neon cyan/green accents are tuned for the black
+   stage and wash out on the light page background. Darken them only where
+   they sit directly on the page (the dark terminal keeps its bright palette). */
+:root[data-theme='light'] .mlx-parity .k,
+:root[data-theme='light'] .mlx-altruns code { color: #0a6fb0; }
+:root[data-theme='light'] .mlx-parity .eq,
+:root[data-theme='light'] .mlx-cmd::before,
+:root[data-theme='light'] .mlx-home table strong { color: #1a8a3c; }
+
 .sl-markdown-content h1,
 .sl-markdown-content h2,
 .sl-markdown-content h3,
@@ -83,7 +92,11 @@ body { -webkit-font-smoothing: antialiased; }
    hide that panel on the home page only (removes the duplicate heading). */
 body:has(.mlx-home) .content-panel:has(> .sl-container > h1#_top) { display: none; }
 
-.mlx-home { position: relative; }
+/* `overflow-x: clip` keeps the ambient bloom (::before, which bleeds -30%
+   past each side) from widening the page and causing horizontal scroll —
+   most visible on mobile. clip (not hidden) avoids a scroll container, so
+   vertical bleed and any sticky behaviour are preserved. */
+.mlx-home { position: relative; overflow-x: clip; }
 
 /* ambient blooms behind the hero (status-page grammar) */
 .mlx-home::before {
@@ -100,6 +113,15 @@ body:has(.mlx-home) .content-panel:has(> .sl-container > h1#_top) { display: non
 	filter: blur(70px);
 }
 .mlx-home > * { position: relative; z-index: 1; }
+
+/* Starlight's markdown flow-spacing (an owl selector) injects margin-top onto
+   block-level children, even nested ones. Our custom layouts space themselves
+   via grid/flex `gap`, so that injected margin does nothing but mis-align
+   flex/grid items on their cross axis (or stagger a grid row). Neutralize it
+   on every custom layout container. */
+.mlx-hero > *,
+.mlx-features > *,
+.mlx-term-bar > * { margin-top: 0; }
 
 .mlx-hero {
 	display: grid;
@@ -160,11 +182,17 @@ body:has(.mlx-home) .content-panel:has(> .sl-container > h1#_top) { display: non
 
 /* ---------- Signature: terminal ---------- */
 .mlx-term {
-	background: var(--card);
-	border: 1px solid var(--hairline);
+	/* Always a dark surface, even under the light theme — the neon prompt
+	   colors are calibrated for a black background. Re-pin the palette locally
+	   so every descendant renders light-on-dark regardless of theme. */
+	--ink: #f5f5f7;
+	--dim: #86868b;
+	--hairline: rgba(255, 255, 255, 0.12);
+	background: #0b0b0c;
+	border: 1px solid rgba(255, 255, 255, 0.1);
 	border-radius: 20px;
 	overflow: hidden;
-	box-shadow: 0 30px 80px -36px rgba(0, 0, 0, 0.8);
+	box-shadow: 0 30px 80px -36px rgba(0, 0, 0, 0.55);
 }
 .mlx-term-bar {
 	display: flex;
@@ -173,11 +201,11 @@ body:has(.mlx-home) .content-panel:has(> .sl-container > h1#_top) { display: non
 	padding: 0.75rem 1.1rem;
 	border-bottom: 1px solid var(--hairline);
 }
-.mlx-term-bar i { width: 11px; height: 11px; border-radius: 50%; background: #3a3a3c; display: inline-block; }
+.mlx-term-bar i { width: 11px; height: 11px; border-radius: 50%; background: #3a3a3c; display: inline-block; flex: none; margin: 0; }
 .mlx-term-bar i:nth-child(1) { background: var(--red, #ff453a); }
 .mlx-term-bar i:nth-child(2) { background: var(--yellow, #ffd60a); }
 .mlx-term-bar i:nth-child(3) { background: var(--green); }
-.mlx-term-bar b { font-family: var(--sl-font-mono); font-size: 0.76rem; font-weight: 500; color: var(--dim); margin-left: auto; }
+.mlx-term-bar b { font-family: var(--sl-font-mono); font-size: 0.76rem; font-weight: 500; color: var(--dim); margin: 0 0 0 auto; }
 .mlx-term-body { padding: 1.2rem 1.3rem 1.5rem; font-family: var(--sl-font-mono); font-size: 0.86rem; line-height: 1.7; color: var(--ink); }
 .mlx-term-body > div { min-height: 1.7em; }
 .mlx-term-body .spacer { height: 0.6rem; min-height: 0; }
