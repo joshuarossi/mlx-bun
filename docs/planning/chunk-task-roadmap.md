@@ -1,7 +1,7 @@
 # Chunk-task quality roadmap (2026-06-17)
 
 Where the MiniCPM5 chunking adapter stands and what raises real segmentation
-quality. Companion to [[chunk-eval-metric-vs-accuracy]] and
+quality. Companion to the chunk-eval metric vs. accuracy finding (score = well-formedness, not gold accuracy) and
 [`docs/investigations/chunk-finetune-experiment.md`](../investigations/chunk-finetune-experiment.md).
 
 ## Where we are

@@ -1,6 +1,6 @@
 # Runtime isolation — the AI may crash, the UI never may
 
-Status: **design** (not started)
+Status: **design** (not started — deferred future work; no scheduled PLAN.md phase)
 Owner: serving layer / runtime
 Default today: inference runs **in-process**, on the server's event-loop
 thread. This doc proposes moving it to a **subprocess**.

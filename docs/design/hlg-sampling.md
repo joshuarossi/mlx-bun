@@ -1,6 +1,6 @@
 # HLG sampling — a piecewise tone curve on the logits
 
-Status: **design + phasing** (no code yet; this doc is the contract)
+Status: **implemented, found neutral, superseded by Curve Designer** — `applyHlg` shipped in `src/sampler.ts`; investigation found HLG a wash vs plain temperature; the Curve Designer (`src/curve-sampler.ts`) is its v2 replacement. See [docs/investigations/hlg-sampling-investigation.md](../investigations/hlg-sampling-investigation.md) for findings. This doc remains as the design rationale.
 Owner: sampling layer (`src/sampler.ts`)
 Default: **off** (`--hlg-sampling off` = today's temperature sampler, untouched)
 
@@ -9,6 +9,12 @@ Default: **off** (`--hlg-sampling off` = today's temperature sampler, untouched)
 > "Phase 19 — HLG sampling". The user-facing flag/param reference lives in
 > [docs/reference/server-config.md](../reference/server-config.md) and
 > [docs/reference/server-api.md](../reference/server-api.md) once shipped.
+
+## Outcome / Retrospective
+
+HLG was implemented through **Piece 2** (pure curve + neutrality tests + serial wiring, `applyHlg` live in `src/sampler.ts`). Evaluation found it **neutral vs plain temperature** — no measurable gain in diversity or quality at matched output entropy. As a result, HLG is **superseded by the Curve Designer** (`src/curve-sampler.ts`), which generalizes the same region-shaping idea with an editable control-point interface and cleaner UX. Full empirical findings are in [docs/investigations/hlg-sampling-investigation.md](../investigations/hlg-sampling-investigation.md).
+
+The sections below (Goal through Correctness) remain as design rationale. Pieces 3–6 of Phasing and the Open Questions were never executed; see the [Phasing](#phasing-the-piece-n-increments) and [Open Questions](#open-questions--risks) sections for historical context.
 
 ## Goal
 
@@ -290,6 +296,8 @@ quality + diversity rather than parity — except for the degeneracy gates, whic
 
 ## Phasing (the "piece N" increments)
 
+> **Historical / superseded.** Pieces 1–2 shipped. Pieces 3–6 were never executed — HLG was evaluated after Piece 2 and found neutral; the feature was superseded by the Curve Designer before Piece 3 began.
+
 1. **Pure curve + neutrality tests** — `applyHlg(lp, params)` in `sampler.ts`,
    top-anchored pivot only; degeneracy + monotonicity tests green across all
    four models. (No flag wired yet — pure, fully-tested function.)
@@ -304,6 +312,8 @@ quality + diversity rather than parity — except for the degeneracy gates, whic
    server-config / server-api / README, and a memory note.
 
 ## Open questions / risks
+
+> **Historical / superseded.** These questions were open at the time of design. HLG evaluation concluded with a neutral verdict before they were answered; the Curve Designer supersedes this path. Questions are preserved as design context.
 
 - **Default knob values** are calibration-pending — set empirically by the
   Piece 5 sweep, not guessed. Initial exploration points: `c ≈ 6`, `w ≈ 4`,
@@ -337,4 +347,4 @@ for it. That a transfer function is standard practice in another domain says
 nothing about whether it helps token sampling — that is decided only by
 measurement (the KL characterization, the capability guardrail, and the
 diversity lens in [Correctness](#correctness--evaluation)). The full empirical
-write-up goes in `docs/investigations/hlg-sampling-investigation.md` once run.
+write-up is in [docs/investigations/hlg-sampling-investigation.md](../investigations/hlg-sampling-investigation.md).

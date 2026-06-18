@@ -25,7 +25,7 @@ IDENTITY="${MLX_BUN_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | 
 NOTARY_PROFILE="${NOTARY_PROFILE:-AC_PROFILE}"
 BUILD_DIR="${BUILD_DIR:-dist}"
 OUT_DIR="${OUT_DIR:-dist-release}"
-ENTITLEMENTS="scripts/entitlements.plist"
+ENTITLEMENTS="packaging/entitlements.plist"
 
 [ -n "$IDENTITY" ] || {
   echo "no 'Developer ID Application' identity in the keychain." >&2

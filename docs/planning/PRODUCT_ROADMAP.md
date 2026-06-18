@@ -72,7 +72,7 @@ verbs and one flag vocabulary, not three separate CLIs:
   serving, latency prediction, the Lab UI) graft onto the mlx-lm spine
   as additive flags and a few new verbs.
 
-### Status (2026-06-12)
+### Status (2026-06-12; compat surface design remains open as of 2026-06-17)
 
 The compat layer does not exist yet: today's commands (`serve`, `fit`,
 `benchmark`, `evals`, `get`/`scan`/`ls`, `pi`, `harness`) are ad-hoc,
@@ -153,14 +153,14 @@ mlx-bun
 
 Likely behavior:
 
-1. Detect the hardware profile.
-2. Pick the recommended runtime profile.
-3. Show the selected model and why it was chosen.
-4. Start or resume the background download.
-5. Start the local server when ready.
-6. Open or serve the built-in chat UI.
-7. Show connection details for OpenAI/Anthropic-compatible clients.
-8. Offer harness setup actions for Pi, Hermes, OpenClaw, and others.
+1. Detect the hardware profile. *(not yet: `recommendedRepoId()` at `src/fit.ts:86` returns `DEFAULT_REPO_ID` unconditionally — device-profile lookup table is unimplemented)*
+2. Pick the recommended runtime profile. *(same caveat as above)*
+3. Show the selected model and why it was chosen. *(not yet: model is printed, rationale is not)*
+4. Start or resume the background download. **Shipped** — auto-download on first run; resumable.
+5. Start the local server when ready. **Shipped.**
+6. Open or serve the built-in chat UI. **Shipped** — browser tab opened automatically; URL printed either way; `--no-open` skips the tab.
+7. Show connection details for OpenAI/Anthropic-compatible clients. **Shipped** — printed at startup.
+8. Offer harness setup actions for Pi, Hermes, OpenClaw, and others. *Partially shipped: `mlx-bun harness pi` configures an existing Pi install; Hermes and OpenClaw adapters do not exist.*
 
 This should feel like an appliance, not a framework tutorial.
 
@@ -212,6 +212,27 @@ Constraints to honor:
 The UI should not hide that this is local. It should make "local" feel
 easy: predictable memory, transparent downloads, offline-capable serving,
 and clear integration instructions.
+
+### SigLIP vision sidecar — image input for gemma e4b (shipped, 2026-06-17)
+
+The Gemma 4 e4b vision encoder (`src/vision/siglip.ts`) is a faithful port
+of the optiq SigLIP tower. It auto-loads on first image input and falls back
+to text-only mode when no image is present, so the chat UI gains image support
+with no startup cost. Features are within ~1% rel-RMSE of the optiq oracle;
+every MLX primitive (rms_norm, gelu, matmul, SDPA, RoPE, pooling) is bit-exact.
+The residual is sub-bf16 floating-point accumulation across the deep encoder,
+not a porting gap. L1/L2/L3 paths all work; vision falls back to the monolith
+path on L1 and L2.
+
+### Adapter web selector and CLI /v1/adapters (shipped)
+
+Trained LoRA adapters can be selected from the chat UI via a per-conversation
+picker (`#chat-adapter` in `src/web/app.html`). The picker lists adapters
+discovered by `GET /v1/adapters/available`, mounts the chosen one via
+`POST /v1/adapters`, and sends a `set_adapter` message to Pi-web so that
+every subsequent turn is routed through the right adapter — including the
+`before_provider_request` hook in `src/pi-web.ts`. Adapters are base-model-scoped
+and dropped on model swap.
 
 ### The UI must never lag while the AI is busy (candidate, 2026-06-16)
 
@@ -413,14 +434,25 @@ reuse across pipeline stages.
 
 ## Open questions
 
-- What exact profile table should ship first?
-- Should no-args open the UI automatically, print a local URL, or both?
-- Which UI stack should be embedded?
-- How much of Pi should be bundled, embedded, or configured externally?
-- What is the minimum first-run UI that feels good enough?
-- What is the right install path: Homebrew, curl installer, GitHub
-  release, or all of the above?
+- What exact profile table should ship first? *(The device-profile lookup
+  table is unimplemented — `recommendedRepoId()` returns `DEFAULT_REPO_ID`
+  for every SKU. The profile shape in this doc is the spec; the research
+  work and the fill remain open.)*
 - How should background downloads interact with server startup and UI
   readiness?
 - How should profile recommendations be versioned as benchmarks improve?
 - When Qwen lands, what evals decide whether it replaces a Gemma default?
+
+### Resolved
+
+- **Should no-args open the UI automatically, print a local URL, or both?**
+  Both: the browser tab is opened automatically on start; the URL is always
+  printed; `--no-open` suppresses the tab without hiding the URL.
+- **Which UI stack should be embedded? / How much of Pi should be bundled?**
+  Resolved by harness-pi + pi-web shipping: the web UI is the bundled
+  `src/web/app.html` chat page talking to Pi via `pi-web.ts`; Pi is
+  configured externally via `mlx-bun harness pi`, or launched embedded via
+  `mlx-bun pi`.
+- **What is the right install path?** All of the above — shipped: npm
+  publish (v0.0.4, `bunx mlx-bun`), Homebrew release pipeline (sign,
+  notarize, `joshuarossi/homebrew-tap`), and GitHub release binary.
