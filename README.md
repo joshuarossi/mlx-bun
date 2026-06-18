@@ -38,9 +38,10 @@ curl -fsSL https://github.com/joshuarossi/mlx-bun/releases/latest/download/mlx-b
 ./mlx-bun
 ```
 
-Self-contained (binary + MLX runtime) and notarized, so it runs even on a
-browser download — no Gatekeeper prompt. Symlink `./mlx-bun` into your
-PATH to keep it on hand.
+Self-contained (binary + MLX runtime) and notarized, so a browser
+download runs without a Gatekeeper prompt (the ticket is checked online;
+if offline, run `xattr -d com.apple.quarantine mlx-bun` once). Symlink
+`./mlx-bun` into your PATH to keep it on hand.
 
 ### bunx (no install)
 
@@ -120,7 +121,7 @@ Currently MiniCPM5, the Gemma-4 OptiQ quants, and Qwen3.5-4B:
 | [`mlx-community/Qwen3.5-4B-OptiQ-4bit`](https://huggingface.co/mlx-community/Qwen3.5-4B-OptiQ-4bit) | 3.1 GB | 8 GB | — | bf16-KV bit-exact parity (vs mlx-lm); thinking + tool calling; ~74 tok/s predicted |
 | [`mlx-community/gemma-4-e4b-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-e4b-it-OptiQ-4bit) | 7.0 GB | 16 GB | ✓ | **Recommended starter** (16 GB+); ~56 tok/s |
 | [`mlx-community/gemma-4-12B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-12B-it-OptiQ-4bit) | 8.4 GB | 16 GB | ✓ | Vision + tool calling, both verified end-to-end |
-| [`mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit) | 18 GB | 24 GB | — | MoE (top-8 of 128 experts); ~54 tok/s — the python servers crash loading it on 24 GB |
+| [`mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit) | 18 GB | 24 GB | — | MoE (top-8 of 128 experts); ~54 tok/s |
 
 Not sure what fits your machine? `bun src/cli.ts fit <model> --ctx 8192`
 gives a deterministic answer (see below). The larger
@@ -171,7 +172,7 @@ bun src/cli.ts pi                   # built-in agentic coding CLI (pi's TUI, in-
 bun src/cli.ts evals                # recorded benchmark runs
 bun src/cli.ts harness pi           # connect your own pi install to the local server
 ./benchmark.sh                      # head-to-head matrix vs mlx-lm/optiq (reboot first;
-                                    #   preflight-gated, resumable, writes benchmarks-h2h-<date>.md)
+                                    #   preflight-gated, resumable, writes benchmarks-h2h-<date>-<host>.md)
 ```
 
 Model arguments are substring queries against the registry (`e4b`,
@@ -194,8 +195,9 @@ agent CLIs like pi/OpenClaw via their provider config.
 - **`POST /v1/chat/completions`** — streaming (SSE) and non-streaming;
   `temperature`, `top_p`, `top_k`, `max_tokens`, `seed`,
   `repetition_penalty`, `stop` (string or array, matched on decoded
-  text with streaming hold-back), `reasoning_effort` (thinking budget on
-  Qwen3.5 / MiniCPM5), and an `hlg` tone-curve sampling override;
+  text with streaming hold-back), `reasoning_effort` (thinking on/off for
+  Qwen3.5 / MiniCPM5 — `none` disables, any level enables), and an `hlg`
+  tone-curve sampling override;
   omitted sampling fields default to the model's own
   `generation_config.json` recipe; usage includes `cached_tokens`.
   Full schemas in
@@ -214,10 +216,11 @@ agent CLIs like pi/OpenClaw via their provider config.
   common token prefix across requests (multi-turn conversations
   re-prefill only the new turn) — automatic, no client changes.
   Entries are adapter-specific when LoRA adapters are in play.
-- **LoRA hot-swap** — mount adapters at startup (`--adapter id=dir`)
-  or at runtime (`POST /v1/adapters`), select per request with the
-  `adapter` body field (`"id"`, stacked `"a+b"`, or `"none"`). The
-  base model never reloads; an unselected adapter costs nothing.
+- **LoRA hot-swap** — mount adapters at runtime (`POST /v1/adapters`)
+  and discover on-disk ones (`GET /v1/adapters/available`), select per
+  request with the `adapter` body field (`"id"`, stacked `"a+b"`, or
+  `"none"`). The base model never reloads; an unselected adapter costs
+  nothing.
 - **Mixed-precision KV** — when the model repo ships `kv_config.json`
   (every Gemma-4 OptiQ repo does), per-layer KV quantization applies
   automatically; the config sets bits per layer for both full-attention
@@ -385,6 +388,13 @@ notarized — Homebrew, direct-download, and npm/bunx).
 **In progress** — `Qwen3.6-27B` bring-up (Phase 14f): same architecture
 as the verified 4B (untied + larger geometry); parity and serving polish
 remain. MTP speculation and Qwen3-VL vision deferred.
+
+**Experimental** — opt-in, default-off, still being hardened: transparent
+expert offload for MoE models (`serve --expert-offload`, Phase 20:
+page-aligned mmap-backed experts, bit-exact — 26B-A4B 17.1→4.2 GB
+resident, decode unregressed); batched serving (`--batch N`, Phase 18:
+continuous-batching bf16 B=N decode, B=2 bit-parity verified for
+MiniCPM5/12B/e4b/26B; throughput polish remains).
 
 **Open** — e4b's ~5% per-step host-overhead decode residual (Phase 7);
 SigLIP vision for 26B.
