@@ -293,59 +293,74 @@ async function ensureNative(s?: import("./tui").Step): Promise<void> {
   if (!s) process.stdout.write("\n");
 }
 
-/** Open the chat UI, reusing an already-open tab on this host:port if there is
- *  one (Safari / Chrome-family, via AppleScript) instead of spawning a
- *  duplicate. Falls back to a plain `open` (new tab) for other browsers, or if
- *  AppleScript is unavailable/blocked. Best-effort and fire-and-forget: any
- *  failure just means a fresh tab, so it never regresses the plain-open path.
- *  The first focus attempt may trigger a one-time macOS "control your browser"
- *  permission prompt; declining it simply falls back to opening a new tab. */
-function openChatUi(url: string, hostPort: string): void {
-  const focus = `on run {theMatch}
-  set chromeApps to {"Google Chrome", "Brave Browser", "Microsoft Edge", "Arc", "Vivaldi", "Chromium"}
-  repeat with appName in chromeApps
-    try
-      if application appName is running then
-        tell application appName
-          repeat with w in windows
-            set i to 0
-            repeat with t in tabs of w
-              set i to i + 1
-              if URL of t contains theMatch then
-                set active tab index of w to i
-                set index of w to 1
-                activate
-                return "ok"
-              end if
-            end repeat
-          end repeat
-        end tell
-      end if
-    end try
-  end repeat
-  try
-    if application "Safari" is running then
-      tell application "Safari"
-        repeat with w in windows
-          repeat with t in tabs of w
-            if URL of t contains theMatch then
-              set current tab of w to t
-              activate
-              return "ok"
-            end if
-          end repeat
+/** AppleScript that focuses the first tab whose URL contains `match` in a
+ *  literal-named browser, returning "ok"/"miss". The app name MUST be a literal
+ *  (not a variable): AppleScript loads an app's scripting dictionary by literal
+ *  name at COMPILE time, so `tell application someVar` can't resolve app-specific
+ *  terms like `active tab index` (fails with -2740). Referencing an uninstalled
+ *  app by literal name is also a compile error a `try` can't catch — hence we
+ *  only ever run a browser's script when pgrep says it's running (= installed). */
+function focusTabScript(app: string, kind: "chromium" | "safari", match: string): string {
+  const m = JSON.stringify(match); // safe AppleScript string literal
+  if (kind === "safari") {
+    return `tell application "${app}"
+      repeat with w in windows
+        repeat with t in tabs of w
+          if URL of t contains ${m} then
+            set current tab of w to t
+            activate
+            return "ok"
+          end if
         end repeat
-      end tell
-    end if
-  end try
-  return "miss"
-end run`;
+      end repeat
+    end tell
+    return "miss"`;
+  }
+  return `tell application "${app}"
+    repeat with w in windows
+      set k to 0
+      repeat with t in tabs of w
+        set k to k + 1
+        if URL of t contains ${m} then
+          set active tab index of w to k
+          set index of w to 1
+          activate
+          return "ok"
+        end if
+      end repeat
+    end repeat
+  end tell
+  return "miss"`;
+}
+
+/** Open the chat UI, reusing an already-open tab on this host:port instead of
+ *  spawning a duplicate. Each browser is scripted via its own literal-named
+ *  AppleScript, run ONLY when pgrep confirms it's running (so the literal `tell`
+ *  always compiles). Falls back to a plain `open` (new tab) when no running
+ *  browser has the tab, for browsers we don't script (e.g. Firefox), or if
+ *  AppleScript is blocked. Best-effort and fire-and-forget: any failure just
+ *  means a fresh tab, so it never regresses the plain-open path. The first focus
+ *  may trigger a one-time macOS "control your browser" permission prompt;
+ *  declining it just falls back to opening a new tab. */
+function openChatUi(url: string, hostPort: string): void {
+  const browsers: Array<{ proc: string; kind: "chromium" | "safari" }> = [
+    { proc: "Google Chrome", kind: "chromium" },
+    { proc: "Arc", kind: "chromium" },
+    { proc: "Brave Browser", kind: "chromium" },
+    { proc: "Microsoft Edge", kind: "chromium" },
+    { proc: "Safari", kind: "safari" },
+  ];
   void (async () => {
-    try {
-      const p = Bun.spawn(["osascript", "-e", focus, hostPort], { stdout: "pipe", stderr: "ignore", timeout: 8000 });
-      const out = await new Response(p.stdout).text();
-      if ((await p.exited) === 0 && out.trim() === "ok") return; // focused an existing tab
-    } catch { /* osascript missing or automation blocked — fall through to open */ }
+    for (const b of browsers) {
+      try {
+        const running = Bun.spawn(["pgrep", "-x", b.proc], { stdout: "ignore", stderr: "ignore" });
+        if ((await running.exited) !== 0) continue; // not running → skip (and don't compile its tell)
+        const script = focusTabScript(b.proc, b.kind, hostPort);
+        const p = Bun.spawn(["osascript", "-e", script], { stdout: "pipe", stderr: "ignore", timeout: 8000 });
+        const out = await new Response(p.stdout).text();
+        if ((await p.exited) === 0 && out.trim() === "ok") return; // focused an existing tab
+      } catch { /* try the next browser */ }
+    }
     try { Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" }); } catch { /* best-effort */ }
   })();
 }
