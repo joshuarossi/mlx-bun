@@ -3,12 +3,12 @@
 Native MLX inference for Bun. Run quantized LLMs on Apple Silicon from
 TypeScript — no Python, no sidecar server, one runtime.
 
-Measured head-to-head on an M4 Pro (24 GB), same models, same day:
-logits **bit-exact** against the Python reference; served over HTTP the
-**fastest stack on every model tested** (TTFT 45–90 ms vs python's
-220–327 ms, zero server overhead vs mlx-lm's −5–6%); prefill up to
-**1.8×** mlx-lm at 8k context; cold start → first token of a cached
-prompt in **394 ms**. Full table: [benchmarks](#benchmarks).
+Measured head-to-head on an M4 Pro (24 GB), same models, same machine
+state: logits **bit-exact** against the Python reference; served over
+HTTP the **fastest stack on every model tested** — fastest decode, plus
+TTFT **34–85 ms** vs python's 218–326 ms at **~0% server overhead**
+(mlx-lm pays −5–6%); server start to ready in **0.17–0.47 s**, 2–5×
+faster than the Python servers. Full table: [benchmarks](#benchmarks).
 
 ## Getting started
 
@@ -82,8 +82,7 @@ model named, it does everything for you:
 2. downloads the sub-GB `MiniCPM5-1B` starter and serves it, so you're
    chatting in well under a minute;
 3. starts downloading `gemma-4-e4b` (the stronger 4B model) in the
-   background — it becomes the default on your next `mlx-bun serve`, on a
-   16 GB+ Mac;
+   background — it becomes the default on your next `mlx-bun serve`;
 4. opens the chat UI in your browser at
    [`http://localhost:8090/#/chat`](http://localhost:8090/#/chat)
    (pass `--no-open` to skip).
@@ -113,18 +112,20 @@ back in responses).
 
 Scope is deliberate: a few model families held to **bit-exact** logit
 parity with the Python reference, rather than dozens held to none.
-Currently MiniCPM5 plus the Gemma-4 OptiQ quants:
+Currently MiniCPM5, the Gemma-4 OptiQ quants, and Qwen3.5-4B:
 
 | Model | Download | Fits on | Vision | Notes |
 |---|---|---|---|---|
 | [`mlx-community/MiniCPM5-1B-OptiQ-4bit`](https://huggingface.co/mlx-community/MiniCPM5-1B-OptiQ-4bit) | 0.92 GB | 8 GB | — | Sub-GB option for 8 GB machines; bit-exact 100-step oracle parity (bf16 + mixed KV), tool calling + agent loop verified |
-| [`mlx-community/gemma-4-e4b-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-e4b-it-OptiQ-4bit) | 7.0 GB | 16 GB | ✓ | **Recommended starter** (16 GB+); ~54 tok/s |
-| [`mlx-community/gemma-4-12B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-12B-it-OptiQ-4bit) | 8.4 GB | 16 GB | ✓ | Vision sidecar + tool calling, both verified end-to-end |
+| [`mlx-community/Qwen3.5-4B-OptiQ-4bit`](https://huggingface.co/mlx-community/Qwen3.5-4B-OptiQ-4bit) | 3.1 GB | 8 GB | — | bf16-KV bit-exact parity (vs mlx-lm); thinking + tool calling; ~74 tok/s predicted |
+| [`mlx-community/gemma-4-e4b-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-e4b-it-OptiQ-4bit) | 7.0 GB | 16 GB | ✓ | **Recommended starter** (16 GB+); ~56 tok/s |
+| [`mlx-community/gemma-4-12B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-12B-it-OptiQ-4bit) | 8.4 GB | 16 GB | ✓ | Vision + tool calling, both verified end-to-end |
 | [`mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit) | 18 GB | 24 GB | — | MoE (top-8 of 128 experts); ~54 tok/s — the python servers crash loading it on 24 GB |
 
 Not sure what fits your machine? `bun src/cli.ts fit <model> --ctx 8192`
-gives a deterministic answer (see below). Qwen 3.x is next on the
-roadmap (see [PLAN.md](./PLAN.md)).
+gives a deterministic answer (see below). The larger
+`Qwen3.6-27B-OptiQ-4bit` is still in bring-up — parity and serving polish
+remain (see [PLAN.md](./PLAN.md)).
 
 ## Why
 
@@ -145,7 +146,7 @@ one:
 - **`bun:ffi`** — lowest-overhead FFI of any JS runtime; binds `mlx-c`
   directly, no node-gyp, no binding compilation.
 - **Lazy native weight loading** — mlx's loader materializes tensors on
-  first use; opening an 8.9 GB model takes milliseconds, and warm
+  first use; opening an 8.4 GB model takes milliseconds, and warm
   restarts are near-instant on cached pages.
 - **`Bun.Image`** — native OS image codecs (HEIC, AVIF, WebP, JPEG, …)
   for the vision path, EXIF auto-orientation included.
@@ -166,6 +167,7 @@ bun src/cli.ts fit gemma --ctx 32768          # memory contract: fits? max conte
 bun src/cli.ts fit gemma --ctx 8192 --skus    # ...same, across the Apple Silicon lineup
 bun src/cli.ts serve gemma --port 8090        # OpenAI-compatible server
 bun src/cli.ts serve gemma --memory-budget 18 # ...with admission control (GB)
+bun src/cli.ts pi                   # built-in agentic coding CLI (pi's TUI, in-process)
 bun src/cli.ts evals                # recorded benchmark runs
 bun src/cli.ts harness pi           # connect your own pi install to the local server
 ./benchmark.sh                      # head-to-head matrix vs mlx-lm/optiq (reboot first;
@@ -192,15 +194,17 @@ agent CLIs like pi/OpenClaw via their provider config.
 - **`POST /v1/chat/completions`** — streaming (SSE) and non-streaming;
   `temperature`, `top_p`, `top_k`, `max_tokens`, `seed`,
   `repetition_penalty`, `stop` (string or array, matched on decoded
-  text with streaming hold-back); omitted sampling fields default to
-  the model's own `generation_config.json` recipe; usage includes
-  `cached_tokens`. Full schemas in
+  text with streaming hold-back), `reasoning_effort` (thinking budget on
+  Qwen3.5 / MiniCPM5), and an `hlg` tone-curve sampling override;
+  omitted sampling fields default to the model's own
+  `generation_config.json` recipe; usage includes `cached_tokens`.
+  Full schemas in
   [docs/reference/server-api.md](./docs/reference/server-api.md); start
   flags and the `--batch N` compatibility matrix in
   [docs/reference/server-config.md](./docs/reference/server-config.md).
 - **Tool calling** — pass OpenAI `tools`; each family's native format
   is parsed into `tool_calls` JSON with `finish_reason: "tool_calls"`
-  (Gemma 4 `<|tool_call>` sentinel tokens; MiniCPM5
+  (Gemma 4 `<|tool_call>` sentinel tokens; MiniCPM5 / Qwen3.5
   `<function name=…>` XML with schema-aware argument decoding);
   `role: "tool"` round-trips, including multi-turn agent loops.
 - **Vision** — `image_url` content parts (data: URLs or http/s), on
@@ -216,10 +220,10 @@ agent CLIs like pi/OpenClaw via their provider config.
   base model never reloads; an unselected adapter costs nothing.
 - **Mixed-precision KV** — when the model repo ships `kv_config.json`
   (every Gemma-4 OptiQ repo does), per-layer KV quantization applies
-  automatically (full-attention layers; sliding layers stay bf16).
-  Measured decode-neutral at 8k on the 12B with KV bytes ÷4 on the
-  quantized layers. `--no-kv-quant` forces bf16; `--kv-bits N` forces
-  uniform bits. Long prefills over quantized caches run a fused
+  automatically; the config sets bits per layer for both full-attention
+  and sliding-window (rotating) layers (Phase 9). Measured decode-neutral
+  at 8k on the 12B with KV bytes ÷4 on the quantized layers. `--kv-quant off` forces bf16; `--kv-quant 4|8`
+  forces uniform bits. Long prefills over quantized caches run a fused
   FlashAttention-2 tiling that never materializes the full scores
   matrix (bounded transient; `MLX_BUN_NO_FUSED_SDPA=1` to disable).
   `MLX_BUN_FUSED_DECODE=1` extends the tiling to single-token decode —
@@ -240,28 +244,30 @@ agent CLIs like pi/OpenClaw via their provider config.
   Codex/Cursor/Continue speak; includes `previous_response_id`
   resumption backed by a TTL + byte-capped store (visible in /stats).
 - **`GET /v1/models`**, **`GET /stats`** (cache hit rates, bytes,
-  active KV scheme, response store), **`GET/POST/DELETE /v1/adapters`**.
+  active KV scheme, response store), **`GET/POST/DELETE /v1/adapters`**,
+  plus **`GET /library`**, **`GET /fit`**, **`GET /downloads`**, and
+  **`GET /v1`** (a self-describing index of every endpoint).
 
 ## Library
 
 The server is one consumer of a library-first API. Published to npm as
-`mlx-bun` (current: 0.0.4); `bunx mlx-bun` runs it without installing.
-To import the library from a clone, use `src/` directly. Full reference:
+`mlx-bun` (current: 0.0.4) — import from the package (`from "mlx-bun"`)
+or `./src/index` in a clone; `bunx mlx-bun` runs the CLI without
+installing. Full reference:
 [docs/reference/library-api.md](./docs/reference/library-api.md). For shipping inside a
 Mac app (Tauri/Electron sidecar), `./scripts/build-binary.sh` produces
 a relocatable single-binary bundle — recipe incl. signing/notarization
 in [docs/reference/embedding.md](./docs/reference/embedding.md).
 
 ```ts
-import { loadModelConfig } from "./src/config";
-import { Weights } from "./src/weights";
-import { Gemma4Model } from "./src/model/gemma4";
-import { generate } from "./src/generate";
-import { loadTokenizer } from "./src/tokenizer";
-import { ChatTemplate } from "./src/chat-template";
+import {
+  createModel,        // dispatches to Gemma4 / MiniCPM5 / Qwen3.5
+  Weights, loadModelConfig, loadTokenizer, ChatTemplate, generate,
+} from "mlx-bun";     // or "./src/index" in a clone
 
 const dir = "/path/to/hf/snapshot";
-const model = new Gemma4Model(await Weights.open(dir), await loadModelConfig(dir));
+const config = await loadModelConfig(dir);
+const model = createModel(await Weights.open(dir), config);  // RuntimeModel
 const tok = await loadTokenizer(dir);
 const template = await ChatTemplate.load(dir);
 
@@ -282,43 +288,44 @@ preamble prefills once, ever.
 ## Benchmarks
 
 Head-to-head against the Python stacks (mlx-lm 0.31.3, mlx-optiq 0.2.1),
-same machine (M4 Pro 24 GB), same day, same HF snapshots, preflight-gated
-clean machine, median-of-N with warmups discarded. Full curated table
-(parity / performance / quality) with per-row provenance:
-[benchmarks/RESULTS.md](./benchmarks/RESULTS.md).
+same machine (M4 Pro 24 GB), same HF snapshots, the 2026-06-14
+cleared-machine run, preflight-gated, median-of-N with warmups
+discarded. Full curated table (parity / performance / quality) with
+per-row provenance: [benchmarks/RESULTS.md](./benchmarks/RESULTS.md).
 
-| | mlx-bun | mlx-lm | optiq |
+**Served (warm)** — how agents actually use a local model.
+decode tok/s · TTFT ms · start s:
+
+| model | mlx-bun | mlx-lm | optiq |
 |---|---|---|---|
-| **TTFT, served (warm)** | **45–90 ms** | 219–224 ms | 222–331 ms |
-| **server start → ready** | **0.36–0.47 s** | 0.76–0.98 s | 0.79–1.00 s |
-| **decode through HTTP** (e4b / 12B / 26B) | **54.5** / 25.2 / **54.9** | 53.5 / — / 52.2 | 53.5 / **25.5** / † |
-| **server tax vs own direct decode** | **≈ 0%** | −5…−7% | ≈ 0% |
-| **direct decode** (engine only) | −1.9…−4.4% vs mlx-lm | baseline | −0.8…−1.2% |
-| **12B decode @8k context** | 23.3 (23.0 kv-mixed) | **24.4** | 23.2 kv-mixed |
+| MiniCPM5-1B | **252.9** · 34 · 0.17 | — | 223.6 · 64 · 0.84 |
+| gemma-4-e4b | **55.7** · 44 · 0.36 | 53.5 · 218 · 0.98 | 53.4 · 221 · 0.78 |
+| gemma-4-12B | **25.9** · 85 · 0.38 | — | 25.5 · 326 · 1.24 |
+| gemma-4-26B | **54.2** · 45 · 0.47 | 52.3 · 228 · 0.77 | — |
 
-Honest negatives, same table: in this matrix our direct decode trailed
-mlx-lm on every model (12B −1.9%, 26B −2.9%, e4b −4.4% at short
-context; the 12B gap grew to −4.5% @8k), and optiq's served 12B edges
-ours by ~1% (25.5 vs 25.2) while paying 3.7× the TTFT. **Post-matrix
-(2026-06-11) the decode gap was root-caused and fixed** — a
-prefill→decode allocator-reclaim stall that mlx-lm clears with
-`mx.clear_cache` and bills to prompt time (we billed it to decode);
-after the reference-faithful fix, same-session paired runs put the 12B
-*ahead* at short context (25.1 vs 24.0) and at parity @8k (23.8 vs
-23.9). e4b retains a ~5% per-step host-overhead residual (see PLAN.md
-"Decode gap RESOLVED"). Served through HTTP — how agents actually use a local
-model — mlx-bun has the fastest decode on e4b and the 26B, and the
-fastest TTFT and startup everywhere by 2–5×. † = cell failed: optiq
-serve produced no output on the 26B (the Metal OOM crash class from
-python's non-lazy load transient — reproduced in isolation; mlx-bun
-and mlx-lm both served the same model from the same machine state).
-One further optiq cell is blocked on an upstream optiq bug; both are
-documented in the results file.
+Across every served model mlx-bun has the fastest decode and the fastest
+TTFT/startup (2–5×), at **~0% server tax** vs its own direct engine —
+mlx-lm pays −5–6%, optiq −1 to −10%.
 
-These numbers are the 2026-06-11 cleared-machine re-run with the
-long-context guard active (every @8k row verified at its requested
-context — an earlier harness bug had fed python @8k baselines
-~31-token prompts; fixed, guarded, and re-measured).
+**Direct (engine only).** Decode is at parity-to-slightly-behind mlx-lm
+(e4b +1.1%, 12B +0.4%, 26B −1.1%, MiniCPM5 −0.9% — within the per-step
+host-overhead residual), and prefill leads on the larger models (12B
+1.2×, 26B 1.1×, MiniCPM5 2.3×; e4b trails at 0.8×). The earlier decode
+deficit was root-caused and fixed (2026-06-11) — a prefill→decode
+allocator-reclaim stall mlx-lm clears with `mx.clear_cache` and bills to
+prompt time; see PLAN.md "Decode gap RESOLVED".
+
+**Long context (12B).** At 16k and 64k mlx-bun holds decode parity with
+mlx-lm on bf16 (16k 23.9 = 23.9; 64k 20.9 = 20.9) while optiq drops to
+21.6 then collapses to 12.3 at 64k; mixed-KV trades ~2 tok/s for ~5 GB
+lower peak.
+
+Two cross-stack served cells are absent: no mlx-lm 12B row, and optiq
+produced no output on the 26B (the Metal-OOM class from python's
+non-lazy load transient — reproduced in isolation; mlx-bun and mlx-lm
+both served it from the same machine state). One further optiq cell
+(12B/kv=config) is blocked on an upstream `quantized_matmul` bug. Both
+are documented in the results file.
 
 ## Correctness
 
@@ -335,8 +342,8 @@ findings). Golden files are regenerated only by explicit scripts
 (`scripts/regen-*.ts`) running the Python oracle.
 
 ```sh
-bun test    # fast tier runs everywhere; model-loaded tests auto-skip
-            # unless the reference snapshot is in your HF cache
+bun test    # fast tier runs everywhere; model-loaded tests run only
+            # when the reference snapshot is in your HF cache
 ```
 
 ## Troubleshooting
@@ -359,23 +366,28 @@ bun test    # fast tier runs everywhere; model-loaded tests auto-skip
 ## Status
 
 Pre-alpha, moving fast. See [PLAN.md](./PLAN.md) for phases, exit
-criteria, measured numbers, and the findings log. Complete: load path,
-bit-exact model port (12B dense / e4b per-layer-input / 26B MoE),
-sampling + serving (tools, vision, prompt cache), registry/fit/KV
-persistence, quantized + mixed-precision KV serving (rotating-cache
-KV-quant included, Phase 9) with fused quantized prefill (Phase 10),
-LoRA hot-swap with per-request selection, resumable verified downloads
-(`mlx-bun get`), memory admission control, the head-to-head
-benchmark harness, the decode-gap root-cause fix (clear_cache
-placement + boundary accounting, 2026-06-11 — 12B now at-or-above
-mlx-lm decode in paired runs), Anthropic Messages + Responses API
-(`/v1/messages` and `/v1/responses`, Phase 11), SigLIP vision sidecar
-for e4b (commit 4625fe5), the embeddable single-binary build
-(signed + notarized; Homebrew tap + direct-download release pipeline),
-and segmented-backward LoRA training (Phase A+B — SFT/DPO, long-context
-memory reduction; see [training guide](docs/reference/training.md)).
-Open: e4b's ~5% host-overhead decode residual (Phase 7), SigLIP vision
-for 26B, Qwen 3.x.
+criteria, measured numbers, and the findings log.
+
+**Complete** — load path; bit-exact model port (MiniCPM5, Qwen3.5-4B,
+e4b per-layer-input, 12B dense, 26B MoE); sampling + serving (tools, vision,
+prompt cache); registry / fit / KV persistence; quantized +
+mixed-precision KV serving (rotating-cache KV-quant, Phase 9) with fused
+quantized prefill (Phase 10); LoRA hot-swap with per-request selection;
+segmented-backward LoRA training (SFT/DPO, long-context memory
+reduction — see [training guide](docs/reference/training.md)); resumable
+verified downloads (`mlx-bun get`); memory admission control; the
+head-to-head benchmark harness; the decode-gap root-cause fix
+(2026-06-11); Anthropic Messages + Responses API (`/v1/messages` and
+`/v1/responses`, Phase 11); SigLIP vision sidecar for e4b
+(commit 4625fe5); the embeddable single-binary build (signed +
+notarized — Homebrew, direct-download, and npm/bunx).
+
+**In progress** — `Qwen3.6-27B` bring-up (Phase 14f): same architecture
+as the verified 4B (untied + larger geometry); parity and serving polish
+remain. MTP speculation and Qwen3-VL vision deferred.
+
+**Open** — e4b's ~5% per-step host-overhead decode residual (Phase 7);
+SigLIP vision for 26B.
 
 ## License
 
