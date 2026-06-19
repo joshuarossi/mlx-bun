@@ -6,16 +6,55 @@ One launcher runs the complete new system — **flash-CCE Metal head** (steel fw
 **falls back and logs** if a precondition isn't met (e.g. a row whose chosen/rejected
 prompts aren't identical → two-forward for that row).
 
-## Command
+## Command — `mlx-bun train` (recommended)
+
+```bash
+mlx-bun train <model> --data <dir>
+```
+- `<model>` is a query or snapshot path (e.g. `e4b`, `MiniCPM5`); omit it to auto-pick.
+- `--data <dir>` is a directory with `train.jsonl` (+ optional `valid.jsonl`); rows are
+  `{"prompt": "...", "chosen": "...", "rejected": "..."}`.
+- The command **auto-detects e4b/Gemma** and sets its required training env flags
+  (`MLX_BUN_PERF_KERNEL=0`, `MLX_BUN_FUSED_GELU=0`) before loading the model — you don't
+  set them yourself. The full stack (flash head + prefix-share + segmented) is on by default.
+- It prints a plan box (dataset counts, format, the resolved knobs), streams per-step loss
+  + peak memory, and saves a **mountable** adapter (`mlx-bun serve <model> --adapter <dir>`).
+- `--dry-run` inspects the dataset and prints the plan without training. `mlx-bun help train`
+  lists every flag.
+
+```bash
+# e4b ORPO on your preference data, checkpointing every 200 steps; run it detached
+nohup mlx-bun train e4b --data ./prefs --iters 1000 --save-every 200 > train.log 2>&1 &
+# resume from a checkpoint (warm-start the LoRA weights)
+mlx-bun train e4b --data ./prefs --resume ~/.cache/mlx-bun/mlx-bun-finetunes/orpo-e4b/checkpoints/step-00200
+```
+
+| flag | default | meaning |
+|---|---|---|
+| `--method` | `orpo` | `sft` · `dpo` · `orpo` |
+| `--iters` | 100 | iterations |
+| `--lr` | orpo 1e-5 · dpo 5e-5 · sft 2e-4 | learning rate (cosine + short warmup) |
+| `--rank` / `--scale` | orpo 16 / 2.0 | LoRA rank (by_bits scaled) / scale |
+| `--seq` | e4b 8192 · cpm 4096 | max sequence length |
+| `--lambda` | 0.1 | ORPO odds-ratio weight |
+| `--seg` | 2 | layers/segment (segmented backward); `--no-segment` to disable |
+| `--save-every` | off | mountable checkpoint every N steps |
+| `--resume <dir>` | — | warm-start LoRA weights from a checkpoint/adapter |
+| `--no-flash` / `--no-prefix` | (on) | drop the flash Metal head / prefix-sharing |
+| `--adapter <dir>` | `~/.cache/mlx-bun/mlx-bun-finetunes/<method>-<model>` | output dir |
+
+> **Long runs:** launch detached from your own shell (`nohup … &`). Foreground is fine for
+> short runs; the command blocks and streams until done.
+
+## The launcher (env-var alternative)
+
+`scripts/train-orpo.ts` is the same stack driven by env vars — handy for scripting:
 
 ```bash
 MODEL=/path/to/snapshot DATA=/path/to/datadir bun scripts/train-orpo.ts
 ```
-- `DATA` is a directory with `train.jsonl` (+ optional `valid.jsonl`); rows are
-  `{"prompt": "...", "chosen": "...", "rejected": "..."}`.
-- The script **auto-detects e4b/Gemma** and sets its required training env flags
-  (`MLX_BUN_PERF_KERNEL=0`, `MLX_BUN_FUSED_GELU=0`) before loading the model — you don't
-  set them yourself.
+- `DATA` is a directory with `train.jsonl` (+ optional `valid.jsonl`).
+- Auto-detects e4b/Gemma and sets the training env flags, same as the CLI.
 
 ### Preconfigured defaults (override via env)
 | env | default | meaning |

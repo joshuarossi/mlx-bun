@@ -17,6 +17,7 @@ import pkg from "../package.json" with { type: "json" };
 import { renderHelp } from "./tui";
 import { isSupportedModelRecord } from "./model/support";
 import { perfKernelEnabled } from "./model/fused-decode-kernel";
+import type { JobEvent } from "./jobs/types";
 
 const argv = process.argv.slice(2);
 // The appliance path: naked `mlx-bun` (or only options, e.g.
@@ -39,6 +40,7 @@ Commands:
   fit        Will a model fit this machine? Memory + speed assessment
   scan       Re-index the Hugging Face cache
   harness    Connect your own pi install to the local mlx-bun server
+  train      Fine-tune a LoRA adapter (SFT / DPO / ORPO) on your data
   benchmark  Measure decode/prefill speed of OUR stack on this machine
   evals      Show recent benchmark runs (all stacks)
   help       Show help for a command (also: mlx-bun <command> --help)
@@ -51,6 +53,7 @@ Examples:
   mlx-bun                          # download (first run) + serve + open the chat UI
   mlx-bun pi                       # start (download if needed) and chat with an agent
   mlx-bun serve 12B                # serve the 12B; status page at http://localhost:8090/
+  mlx-bun train e4b --data ./prefs # ORPO LoRA fine-tune on {prompt,chosen,rejected} data
   mlx-bun get mlx-community/gemma-4-12B-it-OptiQ-4bit`;
 
 const SERVER_FLAGS = `Server options:
@@ -235,6 +238,42 @@ Options:
 
 Table view: when, model, bench kind, KV mode, decode tok/s, TTFT,
 peak memory, commit. Runs are written by ./benchmark.sh.`,
+
+  train: `mlx-bun train — fine-tune a LoRA adapter on your data
+
+Usage: mlx-bun train <model> --data <dir> [options]
+
+  <model>              Model to fine-tune (query or snapshot path; auto-picks
+                       the default model if omitted)
+
+Data: <dir> must contain train.jsonl (+ optional valid.jsonl). Rows are
+  {prompt, chosen, rejected} for dpo/orpo, or {messages|text} for sft.
+
+Options:
+  --data <dir>         Dataset dir with train.jsonl  (required)
+  --method <m>         sft | dpo | orpo  [default: orpo]
+  --adapter <dir>      Output adapter dir
+                       [default: ~/.cache/mlx-bun/mlx-bun-finetunes/<method>-<model>]
+  --iters <n>          Training iterations  [default: 100]
+  --lr <f>             Learning rate  [default: orpo 1e-5 · dpo 5e-5 · sft 2e-4]
+  --rank <n>           LoRA rank  [default: orpo 16 · else 8]
+  --scale <f>          LoRA scale  [default: orpo 2.0 · else 1.0]
+  --seq <n>            Max sequence length  [default: gemma 8192 · else 4096]
+  --batch <n>          Batch size  [default: 1]
+  --lambda <f>         ORPO odds-ratio weight  [default: 0.1]
+  --seg <n>            Layers per segment (segmented backward; orpo default 2)
+  --save-every <n>     Crash-safe mountable checkpoint every n steps
+  --resume <dir>       Warm-start LoRA weights from a checkpoint/adapter dir
+  --no-flash           Disable the flash-CCE Metal head (use the MLX fused head)
+  --no-prefix          Disable prefix-sharing (two-forward branches)
+  --no-segment         Disable the segmented backward (hold all activations)
+  --dry-run            Inspect the dataset + print the resolved plan, don't train
+
+ORPO defaults run the full stack: the [M,vocab]-free flash-CCE head +
+prefix-sharing + segmented backward (each falls back + logs if a row's
+preconditions aren't met). Gemma/e4b sets its required training env flags
+automatically. Adapters are mountable directly (mlx-bun serve --adapter).
+Run long jobs detached from your own shell:  nohup mlx-bun train … &`,
 };
 
 HELP.bench = HELP.benchmark!;
@@ -1066,6 +1105,158 @@ switch (cmd) {
       `launch   ${style.accent("pi --provider mlx-bun")}`,
       `select   ${style.dim("/model inside pi · or scope cycling:")} ${style.accent('pi --models "mlx-bun/*"')}`,
       `undo     ${style.dim("mlx-bun harness pi --remove")}`,
+    ]);
+    break;
+  }
+
+  case "train": {
+    const { banner, step, box, style } = await import("./tui");
+    const query = positional(0) ?? opt("query");
+    const dataDir = opt("data");
+    if (!dataDir) {
+      console.error("usage: mlx-bun train <model> --data <dir>   (see: mlx-bun help train)");
+      process.exit(1);
+    }
+    if (!(await Bun.file(`${dataDir}/train.jsonl`).exists())) {
+      console.error(`no train.jsonl in ${dataDir}`);
+      process.exit(1);
+    }
+    const method = opt("method", "orpo")!;
+    if (method !== "sft" && method !== "dpo" && method !== "orpo") {
+      console.error(`--method must be sft | dpo | orpo (got "${method}")`);
+      process.exit(1);
+    }
+    const isOrpo = method === "orpo";
+    // Validated numeric flag: default if absent, hard-exit on a non-number.
+    const numFlag = (name: string, dflt: number): number => {
+      const v = opt(name);
+      if (v == null) return dflt;
+      const n = Number(v);
+      if (!Number.isFinite(n)) { console.error(`--${name} expects a number (got "${v}")`); process.exit(1); }
+      return n;
+    };
+
+    banner(pkg.version);
+    const sNative = step("native runtime");
+    await ensureNative(sNative);
+    sNative.done("native runtime ready");
+
+    const { m, picked } = await resolveModelAuto(query);
+
+    // Detect Gemma/e4b and set its required training env flags BEFORE the
+    // trainer is imported (perfKernelEnabled / fused-gelu read them lazily at
+    // forward time, so setting them here — like the launcher — takes effect).
+    const isGemma = (await Bun.file(`${m.path}/config.json`).text()).toLowerCase().includes("gemma");
+    if (isGemma) {
+      process.env.MLX_BUN_PERF_KERNEL ??= "0";
+      process.env.MLX_BUN_FUSED_GELU ??= "0";
+    }
+
+    const modelTag = isGemma ? "e4b" : "cpm5";
+    const adapter = opt("adapter") ?? `${process.env.HOME}/.cache/mlx-bun/mlx-bun-finetunes/${method}-${modelTag}`;
+    const iters = numFlag("iters", 100);
+    const seq = numFlag("seq", isGemma ? 8192 : 4096);
+    const seg = flag("no-segment") ? 0 : numFlag("seg", isOrpo ? 2 : 0);
+    const saveEvery = numFlag("save-every", 0);
+    const flashOn = !flag("no-flash");
+    const prefixOn = !flag("no-prefix");
+    const resume = opt("resume") ?? "";
+
+    // Build the snake_case submit record — the exact shape the server hands to
+    // the finetune job runner (src/train/job.ts parseConfig).
+    const cfg: Record<string, unknown> = {
+      model_dir: m.path,
+      data_dir: dataDir,
+      adapter_path: adapter,
+      method,
+      rank: numFlag("rank", isOrpo ? 16 : 8),
+      scale: numFlag("scale", isOrpo ? 2.0 : 1.0),
+      rank_scaling: "by_bits",
+      num_layers: -1,
+      iters,
+      learning_rate: numFlag("lr", isOrpo ? 1e-5 : method === "dpo" ? 5e-5 : 2e-4),
+      max_seq_length: seq,
+      batch_size: numFlag("batch", 1),
+      seed: numFlag("seed", 0),
+      steps_per_report: 1,
+      steps_per_eval: saveEvery > 0 ? saveEvery : 1_000_000,
+      save_checkpoints: saveEvery > 0,
+      segment_size: seg,
+      warm_start_adapter: resume,
+      ...(isOrpo ? {
+        orpo_lambda: numFlag("lambda", 0.1),
+        orpo_lr_schedule: "cosine",
+        orpo_warmup_iters: Math.min(10, Math.floor(iters / 10)),
+        orpo_chunk_size: 512,
+        orpo_flash_ce: flashOn,
+        orpo_fused_ce: !flashOn,
+        orpo_prefix_shared: prefixOn,
+      } : {}),
+    };
+
+    // Pre-flight: dataset counts + detected format (bail before loading the model).
+    const { inspectDataset } = await import("./train/job");
+    const ds = await inspectDataset(dataDir);
+    if (!ds.ok) { console.error(`dataset: ${ds.error}`); process.exit(1); }
+
+    const planLines = [
+      `${style.green("●")} ${style.bold(`train ${method}`)} ${style.dim(`· ${m.repoId}${picked ? " (auto-picked)" : ""}${isGemma ? " · e4b env set" : ""}`)}`,
+      "",
+      `data       ${style.bold(`${ds.n_train} train`)}${ds.n_valid ? ` · ${ds.n_valid} valid` : ""} ${style.dim(`· format ${ds.format}`)}`,
+      `loop       ${style.dim(`iters ${iters} · lr ${cfg.learning_rate} · rank ${cfg.rank} · scale ${cfg.scale} · seq ${seq} · batch ${cfg.batch_size}`)}`,
+    ];
+    if (isOrpo)
+      planLines.push(
+        `head       ${style.dim(flashOn ? "flash-CCE Metal ([M,vocab]-free)" : "MLX fused linear-CE")}`,
+        `stack      ${style.dim(`prefix-share ${prefixOn ? "on" : "off"} · segmented ${seg > 0 ? `${seg}/seg` : "off"} · λ ${cfg.orpo_lambda}`)}`,
+      );
+    else planLines.push(`stack      ${style.dim(`segmented ${seg > 0 ? `${seg}/seg` : "off"}`)}`);
+    if (resume) planLines.push(`warm-start ${style.dim(`from ${resume} (weights only)`)}`);
+    if (saveEvery > 0) planLines.push(`checkpoint ${style.dim(`every ${saveEvery} steps`)}`);
+    planLines.push("", `adapter    ${style.dim(adapter)}`);
+    console.log();
+    box(planLines);
+    console.log();
+
+    if (flag("dry-run")) { console.log(`  ${style.dim("dry run — not training.")}`); break; }
+
+    // Run the finetune job runner IN-PROCESS (foreground), streaming metrics to
+    // the terminal — the same runner the server drives via submitSubprocess.
+    // Run long jobs detached from your own shell:  nohup mlx-bun train … &
+    const { finetuneRunner } = await import("./train/job");
+    const { peakMemory, resetPeakMemory } = await import("./mlx/ffi");
+    const losses: number[] = [];
+    const stepMs: number[] = [];
+    let lastStepT = Date.now();
+    resetPeakMemory();
+    const emit = (e: JobEvent) => {
+      if (e.type === "stage" && e.message) console.log(`  ${style.dim("·")} ${e.message}`);
+      else if (e.type === "metric" && e.kind === "train") {
+        const now = Date.now(); stepMs.push(now - lastStepT); lastStepT = now;
+        losses.push(e.loss);
+        const n = losses.length;
+        if (n <= 3 || n % 10 === 0)
+          console.log(`  step ${n}/${iters}: loss ${style.bold(e.loss.toFixed(4))} ${style.dim(`(${(stepMs[stepMs.length - 1]! / 1000).toFixed(1)}s/step · peak ${gb(peakMemory())})`)}`);
+      }
+    };
+    try {
+      await finetuneRunner(emit, cfg);
+    } catch (err) {
+      console.error(`\n  training failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    const finite = losses.every((l) => Number.isFinite(l));
+    const sorted = stepMs.slice(1).sort((a, b) => a - b);
+    const med = sorted[Math.floor(sorted.length / 2)] ?? stepMs[0] ?? 0;
+    console.log();
+    box([
+      `${style.green("●")} ${style.bold("training complete")} ${style.dim(`· ${losses.length} steps`)}`,
+      "",
+      `loss       ${style.bold(`${losses[0]?.toFixed(4) ?? "—"} → ${losses[losses.length - 1]?.toFixed(4) ?? "—"}`)}${finite ? "" : "  (NON-FINITE!)"}`,
+      `speed      ${style.dim(`${(med / 1000).toFixed(1)}s/step median · peak ${gb(peakMemory())}`)}`,
+      "",
+      `adapter    ${style.bold(adapter)}`,
+      `serve it   ${style.accent(`mlx-bun serve ${m.repoId} --adapter ${adapter}`)}`,
     ]);
     break;
   }

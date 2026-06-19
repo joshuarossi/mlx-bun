@@ -17,17 +17,21 @@ for the long-context memory mechanism.
 
 ## Entry points
 
-There is **no `mlx-bun train` CLI verb.** Training runs as a subprocess job,
-reachable four ways:
+Training is reachable several ways — all of them drive the **same** runner
+(`finetuneRunner` in `src/train/job.ts`):
 
 | Path | How | Use when |
 |---|---|---|
-| **Web UI** | `mlx-bun serve`, open `/finetune` — pick model → dataset → hyperparameters → train; watch live train/val loss; merge/export the adapter | Interactive, the default |
+| **CLI** | `mlx-bun train <model> --data <dir> [options]` — foreground, full ORPO stack on by default; auto-detects e4b/Gemma + sets its env; `--save-every`, `--resume`, `--dry-run`; streams loss to the terminal. `mlx-bun help train` for all flags. Run long jobs detached: `nohup mlx-bun train … &` | **The default for CLI users** |
+| **Web UI** | `mlx-bun serve`, open `/finetune` — pick model → dataset → hyperparameters → train; watch live train/val loss; merge/export the adapter | Interactive, in the browser |
 | **HTTP API** | `POST /api/finetune/submit` (job id + SSE events); `POST /api/finetune/inspect-dataset` to probe a file; `POST /api/finetune/merge` to fold an adapter into base weights | Scripted / remote |
-| **Script** | [`scripts/chunk-finetune.ts`](../../scripts/chunk-finetune.ts) — an env-driven wrapper that calls the runner directly | Repeatable CLI runs |
+| **ORPO launcher** | [`scripts/train-orpo.ts`](../../scripts/train-orpo.ts) — the same stack driven by env vars (`MODEL=`, `DATA=`, `RANK=`, `RESUME=`, …). See [orpo-quickstart](./orpo-quickstart.md) | Env-var scripting |
 | **Shell recipe** | [`scripts/ft-e4b-v2.sh`](../../scripts/ft-e4b-v2.sh) `probe`\|`train` — the actual e4b run we use; sets the required env (see [What we actually run](#what-we-actually-run-the-e4b-recipe)) | Reproducing our e4b fine-tune |
-| **ORPO launcher** | [`scripts/train-orpo.ts`](../../scripts/train-orpo.ts) — preconfigured ORPO with the **full stack on by default** (flash-CCE head + segmented backward + prefix-sharing); auto-detects e4b and sets its env; `RESUME=<dir>` warm-starts. See [orpo-quickstart](./orpo-quickstart.md) | Running an ORPO fine-tune |
 | **Library** | `import { finetuneRunner } from "./src/train/job"` and call it with a config + emitter | Embedding training in your own TS |
+
+The CLI and the launcher run the runner **in-process / foreground** (stream to the
+terminal, `nohup`-able); the Web UI and HTTP API run it as a **subprocess job** (crash
+isolation + a single GPU lease across concurrent server requests).
 
 ### Quick start (HTTP API)
 
