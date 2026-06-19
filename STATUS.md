@@ -5,7 +5,7 @@ exit criteria, and findings live in [PLAN.md](PLAN.md); this file is the
 transient front door that stays current. Product/UX north star:
 [docs/planning/PRODUCT_ROADMAP.md](docs/planning/PRODUCT_ROADMAP.md).
 
-## Current work — Steel flash-CCE ORPO head (2026-06-18)
+## Current work — Steel flash-CCE ORPO head + the ORPO training stack (2026-06-19)
 
 Porting MLX's `steel` quantized GEMM verbatim into the flash-CCE ORPO head + fusing
 the ORPO epilogue, then wiring the whole new system end to end for a CPM5 test run +
@@ -35,11 +35,36 @@ an e4b overnight. **Forward + backward: BOTH done + live + fast + `[M,V]`-free.*
   is BROKEN. Footprint linear in seq (~+1.5 GB/1024 tok). Validated overnight config +
   the full SEQ→peak table are in the handoff doc.
 
-**Remaining:** the **overnight run itself** — `MODEL=<e4b> DATA=<dpo> ITERS=200 bun
-scripts/train-orpo.ts` (full stack on by default; Josh starts it — ground rule). Optional:
-A/B the lossless `MLX_BUN_CCE_BWD_BLOCK_EPS=1e-5` vocab-block skip on real long text.
+- **Warm-start** ✅ `warmStartFromAdapter` (lora-params) + `RESUME=<dir>` on the launcher:
+  continue a run from a checkpoint's LoRA weights (optimizer + LR schedule restart). Insurance
+  for long runs that get interrupted.
+- **Segmented head-sink UAF fixed** ✅ the segmented ORPO classes freed the flash head's
+  `headSink` (lse/blockMax/CustomVjp) *before* the lazy CustomVjp backward read it →
+  use-after-free segfault ~step 100. Fix: `ops.evalAll` the head-VJP roots before the dispose,
+  in all four ORPO segmented classes.
+- **Adapters live in the cache** ✅ launcher defaults `ADAPTER` to
+  `~/.cache/mlx-bun/mlx-bun-finetunes/orpo-<model>` (never the repo; `adapters/` gitignored).
+- **Eval loop (IFEval + UltraFeedback)** — the optiq capability suite is ported
+  (`src/eval/`, datasets exported to `~/.cache/mlx-bun/eval-data/`). Dress-rehearsal result,
+  reported honestly: an 800-step CPM5 ORPO run on UltraFeedback moved **IFEval 22.5% → 22.5%**
+  (flat — general preference data + tiny run is the wrong lever for IFEval; the val loss did
+  drop, so it learned). The real before/after is the **chunk segmenter** scored by boundary/label
+  accuracy vs the Opus/GPT-5.5 gold — see [[training-tracks-are-appliance-components]].
+
+**Remaining / next:**
+- **The big CPM5 UltraFeedback run** — in flight in Josh's terminal (detached `nohup`, lr 5e-5,
+  checkpoint every 200). NOTE: a session-spawned background run got **reaped by the agent runtime
+  at ~47 min** (not a crash/OOM — confirmed via logs); long runs MUST be launched from the user's
+  own shell, not by the agent.
+- **The chunk segmenter** (the load-bearing run): distill Opus/GPT-5.5 segmentation into a local
+  model, scored by boundary/label accuracy — this is what localizes the Lucien synthesis pipeline.
+- **The e4b overnight** — `scripts/train-orpo.ts` full stack at 8192 (Josh runs it — ground rule).
+- Perf follow-up: the optional lossless `MLX_BUN_CCE_BWD_BLOCK_EPS=1e-5` vocab-block skip on real
+  long text.
+
 **→ Quickstart + perf table: [docs/reference/orpo-quickstart.md](docs/reference/orpo-quickstart.md).
-Full plan + gotchas + glossary: [docs/investigations/steel-flash-cce-handoff.md](docs/investigations/steel-flash-cce-handoff.md).**
+Training-flag reference: [docs/reference/training.md](docs/reference/training.md). Full plan +
+gotchas + glossary: [docs/investigations/steel-flash-cce-handoff.md](docs/investigations/steel-flash-cce-handoff.md).**
 
 ## Vision — SigLIP sidecar lights up e4b image input (2026-06-17, merged to `main`)
 
