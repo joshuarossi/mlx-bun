@@ -723,7 +723,12 @@ async function orpoLoop(
   // head term to [chunk,V] alongside the per-segment layer savings. 0 = the
   // full-[M,V] responseOnlyLogpMean head (unchanged). Reuses orpoChunkSize as the
   // token-chunk (default 512), same as the non-segmented path.
-  const segFusedChunk = cfg.orpoFusedCe ? (cfg.orpoChunkSize > 0 ? cfg.orpoChunkSize : 512) : 0;
+  // "flash implies fused": orpoFlashCe alone must still bound the segmented head to
+  // [chunk,V]. The non-prefix segmented class has no flash path, so flash routes
+  // through its fused/checkpoint chunked head (boundedHeadFromHidden) — never the
+  // full-[M,V] responseOnlyLogpMean, which would reintroduce [M,vocab] on e4b.
+  const segUsesFusedHead = cfg.orpoFusedCe || cfg.orpoFlashCe;
+  const segFusedChunk = segUsesFusedHead ? (cfg.orpoChunkSize > 0 ? cfg.orpoChunkSize : 512) : 0;
   // The prefix segmented head gathers response positions then routes per-branch
   // through the [M,V]-free flash/fused head (branchLogpMeanGathered, which takes a
   // ChunkCtx). Its own sink is managed per-step inside the class.

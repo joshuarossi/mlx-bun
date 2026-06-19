@@ -34,7 +34,7 @@ function run(T: number): void {
   const dQref = ops.mulScalar(ops.matmul(dS, k2), scale); // [T,D]
 
   const cmp = (name: string, flash: MlxArray, ref: MlxArray): string => {
-    const a = flash.astype(Dtype.float32).toFloat32(), b = ref.toFloat32();
+    const a = ops.contiguous(flash.astype(Dtype.float32)).toFloat32(), b = ops.contiguous(ref.astype(Dtype.float32)).toFloat32();
     let md = 0, mr = 0;
     for (let i = 0; i < a.length; i++) { md = Math.max(md, Math.abs(a[i]! - b[i]!)); mr = Math.max(mr, Math.abs(b[i]!)); }
     return `${name} rel=${(100 * md / (mr || 1)).toFixed(2)}%`;

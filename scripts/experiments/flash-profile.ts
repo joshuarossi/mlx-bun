@@ -25,10 +25,15 @@ for (const T of [2048]) {
 
   // ops.sdpa fwd + bwd
   time("ops.sdpa fwd", () => [ops.sdpa(q, k, v, scale, "causal")]);
+  // Build the Vjp ONCE outside the timed loop (its construction is not what we're
+  // measuring) and free the forward outputs each rep so only the bwd cost is timed.
+  const sdpaVjp = new Vjp((p) => [ops.sdpa(p[0]!, p[1]!, p[2]!, scale, "causal")], 1);
   time("ops.sdpa fwd+bwd (vjp)", () => {
-    const vjp = new Vjp((p) => [ops.sdpa(p[0]!, p[1]!, p[2]!, scale, "causal")], 1);
-    const r = vjp.apply([q, k, v], [dO]); vjp.dispose(); return r.vjps;
+    const { outputs, vjps } = sdpaVjp.apply([q, k, v], [dO]);
+    for (const o of outputs) o.dispose();
+    return vjps;
   });
+  sdpaVjp.dispose();
 
   // flash fwd, then bwd given the forward's O/L
   time("flash fwd", () => { const [O, L] = flashForward(q, k, v, scale, true); return [O, L]; });

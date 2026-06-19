@@ -44,11 +44,11 @@ const BODY = String.raw`
 `;
 const k = new MetalKernel({ name:"qmm_port", inputNames:["w","x","scales","biases","shp"], outputNames:["y"], source:BODY, header:STEEL_QMM_HEADER, ensureRowContiguous:true });
 const wHost = new Uint32Array(V*WPR).map(()=>(Math.random()*0xffffffff)>>>0);
-const w = MlxArray.fromView(new Uint8Array(wHost.buffer.slice(0)),[V,WPR],Dtype.uint32);
+const w = MlxArray.fromBytesCopy(new Uint8Array(wHost.buffer.slice(0)),[V,WPR],Dtype.uint32);
 const x = MlxArray.fromFloat32(new Float32Array(M*H).map(()=>-0.5+Math.random()),[M,H]);
 const scales = MlxArray.fromFloat32(new Float32Array(V*GR).map(()=>0.01+Math.random()*0.02),[V,GR]);
 const biases = MlxArray.fromFloat32(new Float32Array(V*GR).map(()=>-0.1+Math.random()*0.2),[V,GR]);
-const shp = MlxArray.fromView(new Uint8Array(new Uint32Array([H,V,M]).buffer.slice(0)),[3],Dtype.uint32);
+const shp = MlxArray.fromBytesCopy(new Uint8Array(new Uint32Array([H,V,M]).buffer.slice(0)),[3],Dtype.uint32);
 const [y] = k.apply([w,x,scales,biases,shp],{outputs:[{shape:[M,V],dtype:Dtype.float32}],grid:[(V/32)*128,M/32,1],threadGroup:[128,1,1]});
 const ref = ops.quantizedMatmul(x, w, scales, biases, {bits:BITS, groupSize:GS, mode:"affine"} as any, true);
 evalAll([y, ref]);

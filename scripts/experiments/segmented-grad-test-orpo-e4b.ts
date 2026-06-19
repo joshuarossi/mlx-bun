@@ -151,8 +151,13 @@ for (const t of perTarget.slice(0, 5)) console.log(`###   ${(t.rel * 100).toFixe
 const offCount = perTarget.filter((t) => t.rel > 1e-3).length;
 console.log(`### targets with relNorm > 0.1%: ${offCount}/${nt}`);
 const donorPaths = [22, 23].flatMap((d) => [`layers.${d}.self_attn.k_proj`, `layers.${d}.self_attn.v_proj`]);
+const donorTargets = perTarget.filter((x) => donorPaths.some((p) => x.path.includes(p)));
+// Fail fast: an empty match makes Math.max(...[]) = -Infinity below, which would
+// pass the donor-KV criterion VACUOUSLY (false PASS) — the opposite of validating it.
+if (donorTargets.length === 0)
+  throw new Error("No donor-K/V recipient targets matched (layers 22/23 k/v_proj); cannot validate donor-threading correctness.");
 console.log("### donor-K/V targets (direct dKV recipients):");
-for (const t of perTarget.filter((x) => donorPaths.some((p) => x.path.includes(p))))
+for (const t of donorTargets)
   console.log(`###   ${(t.rel * 100).toFixed(3)}%  ${t.path}`);
 console.log(`### grad match (vs full ORPO value_and_grad): relNorm=${(relNorm * 100).toFixed(4)}%  maxAbs=${maxAbs.toExponential(3)}`);
 console.log(`### loss rel=${(lossRel * 100).toFixed(6)}%   peak: full ${gb(refPeak)} -> seg ${gb(segPeak)} (saved ${gb(refPeak - segPeak)})`);
@@ -169,7 +174,7 @@ console.log(`### loss rel=${(lossRel * 100).toFixed(6)}%   peak: full ${gb(refPe
 //       training path; ops.sdpa is production). The cross-branch grad sum adds a
 //       further ~0.25% (bf16 cancellation when chosen/rejected oppose in L_OR).
 //   The loss ALWAYS matches the full path to ~6 decimals (the forward is exact).
-const donorRel = Math.max(...perTarget.filter((x) => donorPaths.some((p) => x.path.includes(p))).map((x) => x.rel));
+const donorRel = Math.max(...donorTargets.map((x) => x.rel));
 const OVERALL = ATTN === "flash" ? 1.5e-2 : 2.5e-2;
 const DONOR = 5e-3;
 const okDonor = donorRel < DONOR;

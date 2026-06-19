@@ -56,8 +56,10 @@ function relErr(a: MlxArray, ref: MlxArray): number {
 // noise into a fake "growing error"). Vjp gives the exact grads for this dO.
 function gradsOf(attn: (q: MlxArray, k: MlxArray, v: MlxArray) => MlxArray, q: MlxArray, k: MlxArray, v: MlxArray, dO: MlxArray) {
   const vjp = new Vjp((p) => [attn(p[0]!, p[1]!, p[2]!)], 1);
-  const { vjps } = vjp.apply([q, k, v], [dO]);
-  ops.evalAll(vjps); vjp.dispose();
+  const { outputs, vjps } = vjp.apply([q, k, v], [dO]);
+  ops.evalAll([...outputs, ...vjps]);
+  for (const o of outputs) o.dispose(); // forward outputs are owned too — free them so peak GB is real
+  vjp.dispose();
   return vjps;
 }
 
