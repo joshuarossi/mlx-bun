@@ -29,7 +29,7 @@ MODEL=/path/to/snapshot DATA=/path/to/datadir bun scripts/train-orpo.ts
 | `FLASH=0` | (on) | use the MLX fused head instead of the flash Metal head |
 | `PREFIX=0` | (on) | disable prefix-sharing (plain two-forward) |
 | `SEGOFF=1` | (off) | disable the segmented backward (more memory) |
-| `ADAPTER` | `./adapters/orpo-<model>` | output dir |
+| `ADAPTER` | `~/.cache/mlx-bun/mlx-bun-finetunes/orpo-<model>` | output dir (the finetunes cache, not the repo) |
 
 Example — e4b overnight at 8192:
 ```bash
