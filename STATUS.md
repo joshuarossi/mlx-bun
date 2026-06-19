@@ -26,7 +26,12 @@ backward: BOTH done + live + fast + `[M,V]`-free.**
 - **Integration tests** ✅ `tests/train-orpo-fused-ce.test.ts` (`MLX_BUN_TEST_TRAIN=1`,
   6 pass): flash / segmented+flash / prefix+flash / **segmented+prefix+flash** all train
   CPM5 end-to-end, loss decreases. e4b parity: `prefix-shared-segmented-parity-e4b.ts`.
-- **Preconfigured launcher** ✅ `scripts/train-orpo.ts` — full stack on by default,
+- **CLI verb** ✅ `mlx-bun train <model> --data <dir>` (src/cli.ts) — foreground, full ORPO
+  stack on by default, auto-detects e4b/Gemma + sets its env, `--method/--save-every/--resume/
+  --dry-run/--no-flash/--no-prefix/--no-segment`, streams loss + saves a mountable adapter.
+  Drives the **same** `finetuneRunner` the server uses (in-process here; subprocess+GPU-lease
+  there). Smoke-verified on CPM5 (3 steps, flash + prefix + seg). `mlx-bun help train` for flags.
+- **Preconfigured launcher** ✅ `scripts/train-orpo.ts` — the same stack via env vars (scripting),
   auto-detects e4b (sets its env flags), per-row fallback + logging. **Measured e4b @ 8192
   full stack (prompt-dominant): 13.3 GB, ~70 s/step** (prefix-share makes it lighter AND
   faster than segmented+flash alone). See [docs/reference/orpo-quickstart.md](docs/reference/orpo-quickstart.md).
