@@ -16,6 +16,8 @@
 import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import { MetalKernel } from "../mlx/metal-kernel";
+import { CustomVjp } from "../mlx/custom-vjp";
+import * as ops from "../mlx/ops";
 
 /** ON by default: the match-compat kernel is BIT-EXACT with the spelled-out
  *  path (kl --decode = 0 on e4b), so per the bit-parity-floor principle it
@@ -27,6 +29,24 @@ export function fusedGeluEnabled(): boolean {
 
 /** Dispatch counter (a gate test asserts the kernel actually ran). */
 export let fusedGeluCalls = 0;
+
+// Training-mode flag: when set, model GeGLU sites use the DIFFERENTIABLE wrapper
+// (Metal-kernel forward + hand-derived vjp) instead of the plain `fusedGeglu`
+// (a bare CustomKernel with no vjp — feeding it to autograd throws
+// "[Primitive::vjp] Not implemented for CustomKernel"). The differentiable
+// wrapper also recomputes the gelu in the backward from the primal `a` instead
+// of retaining the ~9 forward intermediates, so it lowers the MLP activation
+// memory the backward holds — the dominant resident at long context under
+// ops.sdpa (which never materializes the O(T²) scores). Set by the trainer
+// around the train loop; cleared in its finally. Off → inference behaviour
+// (plain `fusedGeglu`) is byte-for-byte unchanged.
+let _trainingGeglu = false;
+export function setFusedGeluTraining(on: boolean): void {
+  _trainingGeglu = on;
+}
+export function fusedGeluTraining(): boolean {
+  return _trainingGeglu;
+}
 
 // Pointwise: one thread per element. gelu_approx =
 //   0.5 x (1 + tanh(√(2/π)·(x + 0.044715 x³)))  — composed in f32.
@@ -84,4 +104,95 @@ export function fusedGeglu(a: MlxArray, b: MlxArray): MlxArray {
     templateDtypes: { T: a.dtype },
   });
   return out!;
+}
+
+// ---------------------------------------------------------------------------
+// Differentiable wrapper: Metal kernel forward + pure-MLX backward
+// ---------------------------------------------------------------------------
+
+// GELU tanh-approx constants
+const SQRT_2_PI = 0.7978845608028654;
+const C_CUBE = 0.044715;
+
+/** Compute gelu_approx(a) = 0.5 * a * (1 + tanh(sqrt(2/pi) * (a + 0.044715*a^3)))
+ *  and gelu'(a) using the MLX ops layer. All intermediates are disposed
+ *  before returning; caller owns the two returned arrays. */
+function geluAndGrad(a: MlxArray): { gelu: MlxArray; geluGrad: MlxArray } {
+  // a^3 = a * a * a
+  const a2 = ops.mul(a, a);
+  const a3 = ops.mul(a2, a);
+  // inner = a + 0.044715 * a^3
+  const cx3 = ops.mulScalar(a3, C_CUBE);
+  const inner = ops.add(a, cx3);
+  // z = sqrt(2/pi) * inner
+  const z = ops.mulScalar(inner, SQRT_2_PI);
+  // t = tanh(z)
+  const t = ops.tanh(z);
+  // gelu = 0.5 * a * (1 + t)
+  const one = ops.scalarLike(1, a);
+  const t1 = ops.add(one, t);
+  const halfA = ops.mulScalar(a, 0.5);
+  const gelu = ops.mul(halfA, t1);
+
+  // gelu'(a) = 0.5*(1+t) + 0.5*a*(1-t^2)*dz/da
+  // dz/da = sqrt(2/pi) * (1 + 3*0.044715*a^2)
+  // 1 - t^2 = sech^2(z)
+  const halfT1 = ops.mulScalar(t1, 0.5);            // 0.5*(1+t)
+  const t2 = ops.mul(t, t);                         // t^2
+  const sech2 = ops.sub(one, t2);                   // 1 - t^2
+  const halfASech2 = ops.mul(halfA, sech2);         // 0.5*a*(1-t^2)
+  // dz/da
+  const a2scaled = ops.mulScalar(a2, 3 * C_CUBE);   // 3*0.044715*a^2
+  const dzda = ops.add(one, a2scaled);               // 1 + 3*0.044715*a^2
+  const dzdaScaled = ops.mulScalar(dzda, SQRT_2_PI);// sqrt(2/pi)*dz_unnorm
+  // chain: 0.5*a*(1-t^2)*dz/da
+  const chainTerm = ops.mul(halfASech2, dzdaScaled);
+  const geluGrad = ops.add(halfT1, chainTerm);       // 0.5*(1+t) + chain
+
+  // dispose all intermediates
+  for (const arr of [a2, a3, cx3, inner, z, t, one, t1, halfA, halfT1, t2, sech2,
+                      halfASech2, a2scaled, dzda, dzdaScaled, chainTerm]) {
+    arr.dispose();
+  }
+
+  return { gelu, geluGrad };
+}
+
+let _differentiableKernel: CustomVjp | null = null;
+
+function getDifferentiableKernel(): CustomVjp {
+  if (!_differentiableKernel) {
+    _differentiableKernel = new CustomVjp(
+      // forward: use the Metal kernel
+      ([a, b]: MlxArray[]) => [fusedGeglu(a!, b!)],
+      // backward
+      (primals: MlxArray[], cotangents: MlxArray[], _outputs: MlxArray[]) => {
+        const [a, b] = primals as [MlxArray, MlxArray];
+        const [dc] = cotangents as [MlxArray];
+
+        const { gelu, geluGrad } = geluAndGrad(a);
+
+        // grad_b = dc * gelu(a)
+        const grad_b = ops.mul(dc, gelu);
+
+        // grad_a = dc * b * gelu'(a)
+        const dcb = ops.mul(dc, b);
+        const grad_a = ops.mul(dcb, geluGrad);
+
+        gelu.dispose();
+        geluGrad.dispose();
+        dcb.dispose();
+
+        return [grad_a, grad_b];
+      },
+    );
+  }
+  return _differentiableKernel;
+}
+
+/** gelu_approx(a) · b with a hand-derived vjp. Uses the Metal kernel forward,
+ *  MLX-ops backward. For training only (inference uses the non-differentiable
+ *  fusedGeglu). */
+export function fusedGegluDifferentiable(a: MlxArray, b: MlxArray): MlxArray {
+  return getDifferentiableKernel().apply([a, b])[0]!;
 }

@@ -406,7 +406,13 @@ for (uint kj = 0u; kj < n_kv_tiles; ++kj) {
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    if (is_causal && kv_base_row > q_row_global) {
+    // Skip a KV tile only when it is entirely beyond this Q tile's last row
+    // (fully causally masked). The condition is UNIFORM across the threadgroup
+    // (q_tile_idx·BQ is the same for every thread), so the barrier below is hit
+    // by all threads — using the per-thread q_row_global here would diverge the
+    // barrier (undefined behavior). The per-element mask below still handles the
+    // partial diagonal tile.
+    if (is_causal && kv_base_row >= (q_tile_idx * BQ + BQ)) {
         threadgroup_barrier(mem_flags::mem_threadgroup);
         continue;
     }
@@ -533,16 +539,12 @@ export function flashBackward(
       grid: [nQTiles * bq, Hq, B],
       threadGroup: [bq, 1, 1],
     });
-    // The dKV kernel emits dK with its (Tkv, D) axes transposed in the buffer
-    // (verified: dK[i][j] == correct[j][i] at T=D, a [Tkv,D]↔[D,Tkv] swap in
-    // general — scripts/flash-dk-debug.ts JS-FIX 0.07% vs autograd). dV is
-    // unaffected. Recover the correct layout: transpose → materialize → reshape.
-    const dkFixed = ops.reshape(
-      ops.contiguous(ops.transposeAxes(dkv[0]!, [0, 1, 3, 2])),
-      [B, Hkv, Tkv, D],
-    );
-    dkv[0]!.dispose();
-    return [dq[0]!, dkFixed, dkv[1]!];
+    // dK is written by the kernel in the correct [B,Hkv,Tkv,D] layout
+    // (dK_j[d] → [kv_row][d]); no post-transpose. (An earlier "fix" transposed
+    // it on the false belief the buffer was swapped — that transpose is only the
+    // identity at Tkv==D and corrupted dK for Tkv≠D; removed after
+    // scripts/experiments/flash-dkv-debug.ts showed the raw output is correct.)
+    return [dq[0]!, dkv[0]!, dkv[1]!];
   } finally {
     Dvec.dispose();
     shape.dispose();
@@ -607,11 +609,25 @@ export function flashAttention(
 }
 
 // ---------------------------------------------------------------------------
-// Training-attention routing. ops.sdpa's vjp gives a wrong dK (it's an
-// inference op), so the training forward must use a known-correct attention:
-// the flash kernel for causal/full layers (memory-efficient, validated), and a
-// manual materialized SDPA for sliding-window (array-mask) layers. Set by the
-// trainer; null = inference (use ops.sdpa as before).
+// Training-attention routing (opt-in; default null = ops.sdpa).
+//
+// Parity oracle, made explicit:
+//  - DEFAULT (ops.sdpa) is the L1 path: mlx-lm's tuner differentiates the same
+//    mx.fast.scaled_dot_product_attention, so training through it is bit-faithful
+//    to mlx-lm. Exact dQ/dK/dV (finite-difference cross-checked), fast, but
+//    O(L²) backward memory (materializes the score matrix).
+//  - This flash kernel is the L2 path: a port of mlx-optiq's
+//    flash_attention_metal (O(L) backward memory). Its parity oracle is OPTIQ,
+//    not finite differences. Confirmed: optiq's flash dK == ops.sdpa to f16
+//    (scripts/flash-optiq-check.py, rel 0.0%), and mlx-bun's flash == ops.sdpa
+//    (tests/flash-attention.test.ts) ⟹ mlx-bun flash == optiq flash (L2 parity).
+//
+// Two real port bugs were fixed to reach that parity (the original diverged
+// ~100% from optiq on dK): a spurious dK transpose in flashBackward (corrupted
+// dK for Tkv≠D), and a per-thread (divergent) threadgroup_barrier in the dQ
+// causal tile-skip. flash is opt-in (MLX_BUN_TRAIN_ATTN=flash) for memory-bound
+// long context; it is ~30× slower than ops.sdpa. flashSupported gates
+// head_dim/seq; sliding-window (array-mask) layers fall back to manualSdpa.
 // ---------------------------------------------------------------------------
 
 let trainAttnMode: "flash" | "manual" | null = null;

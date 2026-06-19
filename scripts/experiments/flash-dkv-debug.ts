@@ -31,6 +31,7 @@ function run(T: number): void {
   const dS = ops.mul(P, ops.sub(dP, Dv)); // [T,T]
   const dKref = ops.mulScalar(ops.matmul(ops.transposeAxes(dS, [1, 0]), q2), scale); // [T,D]
   const dVref = ops.matmul(ops.transposeAxes(P, [1, 0]), dO2); // [T,D]
+  const dQref = ops.mulScalar(ops.matmul(dS, k2), scale); // [T,D]
 
   const cmp = (name: string, flash: MlxArray, ref: MlxArray): string => {
     const a = flash.astype(Dtype.float32).toFloat32(), b = ref.toFloat32();
@@ -38,7 +39,7 @@ function run(T: number): void {
     for (let i = 0; i < a.length; i++) { md = Math.max(md, Math.abs(a[i]! - b[i]!)); mr = Math.max(mr, Math.abs(b[i]!)); }
     return `${name} rel=${(100 * md / (mr || 1)).toFixed(2)}%`;
   };
-  console.log(`T=${T} (q-tiles=${Math.ceil(T / 32)}, kv-tiles=${Math.ceil(T / 32)}): ${cmp("dK", dK, dKref)}  ${cmp("dV", dV, ops.reshape(dVref, [1, 1, T, D]))}`);
+  console.log(`T=${T} (D=${D}): ${cmp("dQ", dQ, ops.reshape(dQref, [1, 1, T, D]))}  ${cmp("dK", dK, ops.reshape(dKref, [1, 1, T, D]))}  ${cmp("dV", dV, ops.reshape(dVref, [1, 1, T, D]))}`);
 }
 
-for (const T of [8, 16, 32, 33, 48, 64]) run(T);
+for (const T of [32, 64, 96, 128, 256]) run(T);
