@@ -24,11 +24,11 @@ const BODY = String.raw`
   threadgroup_barrier(mem_flags::mem_threadgroup); mma_op.store_result(y+(int64_t)yr*Nn+yc, Nn);
 `;
 const k=new MetalKernel({name:"qmm_sp",inputNames:["w","x","scales","biases","shp"],outputNames:["y"],source:BODY,header:STEEL_QMM_HEADER,ensureRowContiguous:true});
-const w=MlxArray.fromView(new Uint8Array(new Uint32Array(V*WPR).map(()=>(Math.random()*0xffffffff)>>>0).buffer.slice(0)),[V,WPR],Dtype.uint32);
+const w=MlxArray.fromBytesCopy(new Uint8Array(new Uint32Array(V*WPR).map(()=>(Math.random()*0xffffffff)>>>0).buffer.slice(0)),[V,WPR],Dtype.uint32);
 const x=MlxArray.fromFloat32(new Float32Array(M*H).map(()=>-0.5+Math.random()),[M,H]);
 const scales=MlxArray.fromFloat32(new Float32Array(V*GR).map(()=>0.01+Math.random()*0.02),[V,GR]);
 const biases=MlxArray.fromFloat32(new Float32Array(V*GR).map(()=>-0.1+Math.random()*0.2),[V,GR]);
-const shp=MlxArray.fromView(new Uint8Array(new Uint32Array([H,V,M]).buffer.slice(0)),[3],Dtype.uint32);
+const shp=MlxArray.fromBytesCopy(new Uint8Array(new Uint32Array([H,V,M]).buffer.slice(0)),[3],Dtype.uint32);
 const steel=()=>k.apply([w,x,scales,biases,shp],{outputs:[{shape:[M,V],dtype:Dtype.float32}],grid:[(V/32)*128,M/32,1],threadGroup:[128,1,1]})[0]!;
 const ref=()=>ops.quantizedMatmul(x,w,scales,biases,{bits:BITS,groupSize:GS,mode:"affine"} as any,true);
 const time=(label:string,fn:()=>MlxArray)=>{for(let i=0;i<3;i++){const o=fn();evalAll([o]);o.dispose();}const t0=performance.now();for(let i=0;i<10;i++){const o=fn();evalAll([o]);o.dispose();}console.log(`### ${label}: ${((performance.now()-t0)/10).toFixed(0)} ms`);};

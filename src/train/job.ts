@@ -36,6 +36,7 @@ interface FinetuneSubmit {
   rs_lora?: boolean;
   lora_plus_ratio?: number;
   grad_checkpoint?: boolean;
+  mlp_split?: boolean;
   segment_size?: number;
   save_checkpoints?: boolean;
   dpo_beta?: number;
@@ -48,6 +49,7 @@ interface FinetuneSubmit {
   orpo_fused_ce?: boolean;
   orpo_flash_ce?: boolean;
   orpo_prefix_shared?: boolean;
+  warm_start_adapter?: string;
 }
 
 function parseConfig(raw: Record<string, unknown>): { modelDir: string; dataDir: string; cfg: TrainConfig } {
@@ -78,6 +80,7 @@ function parseConfig(raw: Record<string, unknown>): { modelDir: string; dataDir:
     rsLora: c.rs_lora ?? DEFAULT_TRAIN_CONFIG.rsLora,
     loraPlusRatio: c.lora_plus_ratio ?? DEFAULT_TRAIN_CONFIG.loraPlusRatio,
     gradCheckpoint: c.grad_checkpoint ?? DEFAULT_TRAIN_CONFIG.gradCheckpoint,
+    mlpSplit: c.mlp_split ?? DEFAULT_TRAIN_CONFIG.mlpSplit,
     segmentSize: c.segment_size ?? DEFAULT_TRAIN_CONFIG.segmentSize,
     saveCheckpoints: c.save_checkpoints ?? DEFAULT_TRAIN_CONFIG.saveCheckpoints,
     dpoBeta: c.dpo_beta ?? DEFAULT_TRAIN_CONFIG.dpoBeta,
@@ -90,6 +93,7 @@ function parseConfig(raw: Record<string, unknown>): { modelDir: string; dataDir:
     orpoFusedCe: c.orpo_fused_ce ?? DEFAULT_TRAIN_CONFIG.orpoFusedCe,
     orpoFlashCe: c.orpo_flash_ce ?? DEFAULT_TRAIN_CONFIG.orpoFlashCe,
     orpoPrefixShared: c.orpo_prefix_shared ?? DEFAULT_TRAIN_CONFIG.orpoPrefixShared,
+    warmStartAdapter: c.warm_start_adapter ?? DEFAULT_TRAIN_CONFIG.warmStartAdapter,
     adapterPath: c.adapter_path,
     baseModel: c.model_dir,
   };

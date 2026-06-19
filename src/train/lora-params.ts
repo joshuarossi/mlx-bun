@@ -84,6 +84,10 @@ export function warmStartFromAdapter(lora: TrainableLora, dir: string): number {
   const tensors = loadAdapterTensors(file); // caller owns; disposed below
   const adopted = new Set<MlxArray>();
   try {
+    // Two phases so the swap is atomic: validate EVERY target first (throws before
+    // anything is disposed), then dispose+adopt. A mid-loop failure must not leave
+    // lora.targets half-replaced (some checkpoint leaves, some fresh init).
+    const pending: Array<{ t: (typeof lora.targets)[number]; a: MlxArray; b: MlxArray }> = [];
     for (const t of lora.targets) {
       const a = tensors.get(`${t.modulePath}.lora_a`);
       const b = tensors.get(`${t.modulePath}.lora_b`);
@@ -93,6 +97,9 @@ export function warmStartFromAdapter(lora: TrainableLora, dir: string): number {
       if (a.shape[0] !== t.lw.a.shape[0] || a.shape[1] !== t.lw.a.shape[1] ||
           b.shape[0] !== t.lw.b.shape[0] || b.shape[1] !== t.lw.b.shape[1])
         throw new Error(`warm-start: shape mismatch at ${t.modulePath} — the checkpoint's rank/targets must match this run`);
+      pending.push({ t, a, b });
+    }
+    for (const { t, a, b } of pending) {
       t.lw.a.dispose(); t.lw.b.dispose(); // free the fresh random/zero init
       t.lw.a = a; t.lw.b = b;             // adopt the checkpoint weights as the live leaves
       adopted.add(a); adopted.add(b);

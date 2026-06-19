@@ -82,18 +82,18 @@ const BODY = String.raw`
 
 const k = new MetalKernel({ name: "steel_bwd_htile", inputNames: ["w", "x", "scales", "biases", "targets", "lse", "gv", "shp", "capv"], outputNames: ["dh"], source: BODY, header: STEEL_QMM_HEADER, ensureRowContiguous: true });
 const wHost = new Uint32Array(V * WPR).map(() => (Math.random() * 0xffffffff) >>> 0);
-const w = MlxArray.fromView(new Uint8Array(wHost.buffer.slice(0)), [V, WPR], Dtype.uint32);
+const w = MlxArray.fromBytesCopy(new Uint8Array(wHost.buffer.slice(0)), [V, WPR], Dtype.uint32);
 const x = MlxArray.fromFloat32(new Float32Array(M * H).map(() => -0.3 + Math.random() * 0.6), [M, H]);
 const scales = MlxArray.fromFloat32(new Float32Array(V * GR).map(() => 0.02), [V, GR]);
 const biases = MlxArray.fromFloat32(new Float32Array(V * GR).map(() => 0.0), [V, GR]);
 const targets = Array.from({ length: M }, (_, i) => (i * 131 + 7) % V);
-const tgt = MlxArray.fromView(new Uint8Array(new Uint32Array(targets).buffer.slice(0)), [M], Dtype.uint32);
+const tgt = MlxArray.fromBytesCopy(new Uint8Array(new Uint32Array(targets).buffer.slice(0)), [M], Dtype.uint32);
 const spec = { bits: BITS, groupSize: GS, mode: "affine" } as any;
 const refLogits = ops.quantizedMatmul(x, w, scales, biases, spec, true);
 const lseRef = ops.logsumexpAxis(refLogits, -1, false);
 const lse = MlxArray.fromFloat32(lseRef.toFloat32(), [M]);
 const gv = MlxArray.fromFloat32(new Float32Array(M).fill(1), [M]);
-const shp = MlxArray.fromView(new Uint8Array(new Uint32Array([H, V, M]).buffer.slice(0)), [3], Dtype.uint32);
+const shp = MlxArray.fromBytesCopy(new Uint8Array(new Uint32Array([H, V, M]).buffer.slice(0)), [3], Dtype.uint32);
 const capv = MlxArray.fromFloat32(new Float32Array([0]), [1]);
 const [dh] = k.apply([w, x, scales, biases, tgt, lse, gv, shp, capv], { outputs: [{ shape: [M, H], dtype: Dtype.float32 }], grid: [128, 1, Math.ceil(M / 8)], threadGroup: [128, 1, 1] });
 // reference: coeff = onehot − softmax; dh_ref = quantizedMatmul(coeff, W, transpose=false)

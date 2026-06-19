@@ -127,8 +127,12 @@ export function branchLogpMeanGathered(
   const chunkSize = chunk.chunkSize > 0 ? chunk.chunkSize : 512;
   // fusedRespLogpMean requires a RuntimeModel (headQuant); the prefix-shared models
   // (MiniCPM5Model/Gemma4Model) satisfy it. vocabBlock is unused by the flash path.
+  // hResp is the CustomVjp/flash-head PRIMAL — its backward recomputes the head from
+  // it (loss.ts fusedRespLogpMean/makeFlashCceHeadVjp), so it must live until the head
+  // vjp is eval'd. Push it into the sink (disposed post-eval by the caller) instead of
+  // freeing it here, matching responseOnlyLogpMean/fusedLogpMeanFromHidden.
+  chunk.sink.push(hResp);
   const mean = fusedRespLogpMean(model as any, hResp, new Int32Array(targets), chunkSize, chunk.sink, 0, chunk.flash ?? false);
-  hResp.dispose();
   return mean;
 }
 
@@ -177,9 +181,14 @@ export function orpoLossPrefixShared(
   // shared with chosen[0]); rejected[k>=1] from H[P+Rc+k-1].
   const { chosenIdx, rejectedIdx } = prefixGatherIdx(P, Rc, Rr);
 
+  // On the fused/flash head, the gathered hResp (sliced from h) is the backward
+  // recompute primal — keep h alive in the sink until the head vjp is eval'd. The
+  // whole-vocab path builds a normal autograd graph, so h can free immediately.
+  const keepForBwd = !!chunk && (chunk.fused || chunk.flash);
+  if (keepForBwd) chunk!.sink.push(h);
   const lw = branchLogpMeanGathered(model, h, chosenIdx, chosenResp, chunk);
   const lr = branchLogpMeanGathered(model, h, rejectedIdx, rejectedResp, chunk);
-  h.dispose();
+  if (!keepForBwd) h.dispose();
   const loss = orpoLossFromLogps(lw, lr, lambda);
   lw.dispose();
   lr.dispose();
@@ -369,9 +378,13 @@ export function orpoLossPrefixSharedGemma(
   const chosenIdx = Array.from({ length: Rc }, (_, k) => P - 1 + k);
   const rejectedIdx = [P - 1, ...Array.from({ length: Rr - 1 }, (_, k) => P + Rc + k)];
 
+  // Same head-primal lifetime as orpoLossPrefixShared: keep h alive in the sink
+  // through the fused/flash backward recompute; free it now on the whole-vocab path.
+  const keepForBwd = !!chunk && (chunk.fused || chunk.flash);
+  if (keepForBwd) chunk!.sink.push(h);
   const lw = branchLogpMeanGathered(model, h, chosenIdx, chosenResp, chunk);
   const lr = branchLogpMeanGathered(model, h, rejectedIdx, rejectedResp, chunk);
-  h.dispose();
+  if (!keepForBwd) h.dispose();
   const loss = orpoLossFromLogps(lw, lr, lambda);
   lw.dispose();
   lr.dispose();
