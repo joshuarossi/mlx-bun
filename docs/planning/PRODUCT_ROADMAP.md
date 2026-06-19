@@ -19,8 +19,33 @@ provider config before they can try local AI. They should install one
 binary, run one command, wait for one resumable model download, and get a
 working local chat UI plus a local AI server.
 
+The intended first-run shape is product, not demo: start with the tiny
+welcoming model quickly, begin the stronger recommended model download in the
+background, and graduate the user into the best default profile for their
+actual Mac without requiring them to learn the model zoo first.
+
 The runtime can still expose every advanced knob. The default path should
 not require them.
+
+## Four product faces
+
+The same runtime has to support four related but distinct jobs:
+
+1. **Local AI product** — the one-command experience for someone who just wants
+   useful local AI. This path should be opinionated, benchmarked, and boringly
+   reliable.
+2. **Library for app developers** — the embeddable TypeScript/MLX layer for
+   Bun, Tauri, Electron, and desktop tools that want local inference without a
+   Python sidecar.
+3. **AI lab for researchers** — the place where parity, evals, kernels,
+   compiled graphs, ORPO, LoRA adapters, and model experiments can happen in
+   the same stack that serves the result.
+4. **Autonomous background agent runtime** — the always-available local server
+   for scripts, recurring tasks, personal tools, and per-request adapter
+   routing.
+
+These are not separate products. They are one runtime with progressive
+disclosure: appliance defaults at the front, sharp instruments underneath.
 
 ## The three modes (the organizing design law)
 
@@ -83,27 +108,42 @@ reconcile the existing commands into it, and fill the capability matrix
 behind it (convert/quantize, LoRA training, eval/perplexity, fuse,
 cache_prompt, upload/share). Decomposed into phases in PLAN.md.
 
-## Core idea
+## Core idea: finite matrix runtime
 
-The local-AI problem is not continuous for Mac users. People own a small
-set of real Apple Silicon SKUs: 16 GB, 24 GB, 32 GB, 36 GB, 48 GB,
-64 GB, and larger workstation tiers. For each profile, we can research
-and preselect the best known model artifact, context target, KV mode,
-memory budget, and runtime flags.
+The local-AI problem is not continuous for Mac users. MLX means Apple Silicon,
+and Apple ships a finite set of real chip/RAM/bandwidth combinations. The
+supported model universe is also curated. For each physical device profile and
+model snapshot, we can research and preselect the best known model artifact,
+context target, KV mode, memory budget, kernel route, graph route, and runtime
+flags.
 
-That means first-run behavior can be a lookup table, not a wizard or a
-benchmark:
+That means first-run behavior can be a measured lookup table, not a wizard or
+an exploratory benchmark:
 
 ```text
-detect Mac profile
-look up recommended runtime profile
+detect exact Mac profile
+fingerprint the model snapshot
+choose the task mode: chat, vision, tool loop, adapter, training, eval
+look up the measured execution plan
 download/resume the exact model artifact
 start the tuned local server
 open the built-in UI
 show how to connect external tools and harnesses
 ```
 
-The research work feeds the table. The table feeds the user.
+The current `fit` endpoint is the nucleus of this idea: it already reasons over
+real Apple Silicon profiles, model bytes, KV bytes, context, and predicted
+decode. The product version should evolve from "does this fit?" into:
+
+```text
+device profile + model checksum + task mode + live memory pressure
+  -> recommended execution plan
+```
+
+Execution plans can eventually include specialized graph variants, fused kernel
+routes, prompt-cache policy, adapter policy, safe context limits, expected
+decode/TTFT, and user-facing rationale. The research work feeds the table. The
+table feeds the user.
 
 ## Recommended profiles
 
@@ -143,6 +183,31 @@ changes a device-tier decision, unlocks a larger useful context window,
 keeps decode above a user-visible threshold, improves quality at the same
 budget, or prevents failure. Saving memory for its own sake is secondary.
 
+## Specialization strategy
+
+For the curated product path, it is acceptable to trade more work up front for a
+better hot path later. The Mac is known, the model snapshot is known, and the
+task mode is known. That lets us precompute or cache exact plans instead of
+shipping every decision to runtime.
+
+Candidate plan fields:
+
+- Model checksum and architecture fingerprint.
+- Apple Silicon profile: chip, unified memory, bandwidth tier, GPU/CPU shape.
+- Context buckets and fixed-shape cache layouts.
+- Kernel choices: MLX built-ins, MLX fast paths, custom Metal kernels, or
+  eager fallback.
+- Graph choices: eager, compiled exact-shape graph, compiled bucketed graph,
+  or prebuilt graph table.
+- Adapter choices: none, single LoRA, stacked LoRA, task-routed LoRA.
+- Measured results: TTFT, decode tok/s, peak memory, failure envelope.
+
+This is where loop unrolling, branch deletion, static DAG extraction, fused
+kernels, and shape-specialized compiled graphs become product features rather
+than abstract optimizations. They matter when they let the default profile be
+faster, larger, more stable, or better aligned without asking the user to tune
+anything.
+
 ## First-run UX
 
 The no-args command should be the friendly path:
@@ -163,6 +228,29 @@ Likely behavior:
 8. Offer harness setup actions for Pi, Hermes, OpenClaw, and others. *Partially shipped: `mlx-bun harness pi` configures an existing Pi install; Hermes and OpenClaw adapters do not exist.*
 
 This should feel like an appliance, not a framework tutorial.
+
+## Adapter catalog vision
+
+The average user should not have to train adapters to benefit from them. The
+product path can ship or offer a curated catalog of lightweight LoRA adapters:
+assistant, coding, writing, research, planning, personal-ops, and other
+well-scoped modes. A user can install one small adapter and get a better local
+assistant without changing the base model.
+
+Advanced users can still train their own adapters with mlx-bun. The broader
+product loop is:
+
+```text
+curate conversations and task data
+train / ORPO task adapters
+publish small adapter artifacts
+route requests through the right adapter per task
+keep the base model resident
+```
+
+This makes ORPO performance directly product-relevant. If training is cheap and
+repeatable enough, the project can keep improving small local models through
+adapter updates instead of asking every user to download a larger base model.
 
 ## Built-in UI
 

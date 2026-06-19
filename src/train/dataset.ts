@@ -333,7 +333,22 @@ export async function loadDpoDataset(
   maxLength: number,
 ): Promise<DpoExample[]> {
   const rows = await readJsonl(path);
-  return rows.map((r) => encodeDpoRow(r, tok, tmpl, maxLength));
+  const examples = rows.map((r) => encodeDpoRow(r, tok, tmpl, maxLength));
+  // Prompt-masking guard (the classic ORPO/DPO footgun on long-prompt /
+  // short-completion data): a collapsed prompt boundary (promptLen=0 → mask[0]
+  // is 1) means the completion filled the entire window — the NLL/odds-ratio
+  // would then be computed over non-completion tokens and the real signal gets
+  // drowned. Normally the loss is completion-only (mask 0 over the prompt); this
+  // only happens when a completion is itself ≥ max_seq_length. Surface it loudly.
+  let unmasked = 0;
+  for (const ex of examples) if (ex.chosenMask[0] === 1 || ex.rejectedMask[0] === 1) unmasked++;
+  if (unmasked > 0)
+    console.warn(
+      `[dataset] WARNING: ${unmasked}/${examples.length} preference examples have NO prompt boundary ` +
+      `(promptLen=0): the completion is ≥ max_seq_length (${maxLength}), so the loss would include ` +
+      `non-completion tokens. Raise max_seq_length above the completion length so the prompt is masked.`,
+    );
+  return examples;
 }
 
 /** Row length of a DPO branch (port of _make_batch helpers). */
@@ -420,10 +435,10 @@ function makeDpoBatch(rows: DpoExample[], padId: number): DpoBatch {
 // ---------------------------------------------------------------------------
 
 /** Format probe for inspect-dataset: peek the first row's keys. */
-export type DatasetFormat = "messages" | "prompt-completion" | "text" | "dpo" | "unknown";
+export type DatasetFormat = "messages" | "prompt-completion" | "text" | "dpo" | "preference" | "unknown";
 
 export function probeFormat(row: Record<string, unknown>): DatasetFormat {
-  if (typeof row.chosen === "string" && typeof row.rejected === "string") return "dpo";
+  if (typeof row.chosen === "string" && typeof row.rejected === "string") return "preference";
   try {
     return sftRowFormat(row);
   } catch {
