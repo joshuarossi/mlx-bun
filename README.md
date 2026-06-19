@@ -406,8 +406,9 @@ e4b per-layer-input, 12B dense, 26B MoE); sampling + serving (tools, vision,
 prompt cache); registry / fit / KV persistence; quantized +
 mixed-precision KV serving (rotating-cache KV-quant, Phase 9) with fused
 quantized prefill (Phase 10); LoRA hot-swap with per-request selection;
-segmented-backward LoRA training (SFT/DPO, long-context memory
-reduction — see [training guide](docs/reference/training.md)); resumable
+segmented-backward LoRA training (SFT / DPO / ORPO, with an `[M,vocab]`-free
+flash-CCE head + prefix-sharing for long-context preference data — see
+[training guide](docs/reference/training.md)); resumable
 verified downloads (`mlx-bun get`); memory admission control; the
 head-to-head benchmark harness; the decode-gap root-cause fix
 (2026-06-11); Anthropic Messages + Responses API (`/v1/messages` and

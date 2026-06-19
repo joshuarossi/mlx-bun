@@ -1911,6 +1911,43 @@ forward. So the port target is mlx-lm's tuner, not the inference kernels.
 Then resume: bridge (pi → local e4b server) → baseline → fine-tune →
 re-measure on the 25-case holdout.
 
+## Phase: Steel flash-CCE ORPO head + full ORPO training stack `[x]` core / `[~]` runs (2026-06-18/19)
+
+The `[M,V]`-free ORPO head + the long-context machinery, productionized and composed.
+Exit criteria (met): parity vs autograd, integration tests green, e4b fits at 8192.
+
+- **Flash-CCE head — fwd AND bwd in production.** Verbatim MLX `steel` quantized GEMM
+  (`src/train/steel-qmm-header.ts`) + the ORPO epilogue in one Metal kernel, so neither
+  `[M,V]` logits nor a dequantized head touch HBM. Forward `FWD_STEEL_SOURCE` (180 ms);
+  backward `BWD_STEEL_SOURCE`/`bwdSteelKernel` (H-tiled persistent accumulator + vocab-
+  blocking + atomic dh; phase-2 dequant via the fused `QuantizedBlockLoader`). e4b bwd
+  **3687 → 754 ms** (5×, exact), peak **0.93 GB flat @ M=8192**. Parity dh **0.40% e4b /
+  0.28% cpm** (bf16 class). `MLX_BUN_CCE_BWD_NOSTEEL=1` fallback. KEY: a temp-BlockMMA-
+  per-H-tile + lane-local frag accumulation avoided the hairy manual `tile_matmad`.
+- **Prefix-sharing → trainer**, composed with the flash head per branch (0.018% vs
+  whole-vocab), AND with the **segmented backward** for BOTH MiniCPM5
+  (`SegmentedBackwardOrpoPrefix`) and e4b/Gemma4 (`SegmentedBackwardOrpoPrefixGemma4` —
+  donor-KV + logical-window prefix mask threaded through segments; grads 1.7–2.3%, peak
+  30–39% lower). Per-row two-forward fallback on prompt mismatch.
+- **Warm-start** (`warmStartFromAdapter` / `RESUME=`) — continue from a checkpoint's
+  weights (optimizer + schedule restart).
+- **UAF fix** — the segmented ORPO classes freed the flash head's `headSink` before the
+  lazy CustomVjp backward read its lse/blockMax → segfault ~step 100; fixed by
+  `ops.evalAll` on the head-VJP roots before the dispose (all four ORPO segmented classes).
+- **Launcher** `scripts/train-orpo.ts` (full stack default; e4b env auto-set; checkpoints;
+  RESUME). e4b @ 8192 full stack ≈ 13 GB / ~70 s/step (M1 Max dev box) — the historical
+  "e4b OOMs ≥2048" ceiling is broken.
+- **Apple-CCE skips** (coeff filter + blockMax) ported as **opt-in, default OFF**: on the
+  now-fast kernel they're a poor trade (coeff filter cut dh accuracy 0.66→2.7% for ~7%).
+- **Eval** — optiq capability suite + IFEval scorer + UltraFeedback curation. Dress-rehearsal
+  (honest): an 800-step CPM5 UF run left **IFEval flat (22.5%)** — general data + tiny run is the
+  wrong lever; the load-bearing run is the **chunk segmenter** (distill Opus/GPT-5.5
+  segmentation, score boundary/label accuracy vs gold → localizes the Lucien pipeline).
+- **Gotcha** — agent-spawned background runs are reaped by the runtime (~47 min observed,
+  not a crash/OOM); long training MUST be launched detached from the user's own shell.
+- Refs: `docs/investigations/steel-flash-cce-handoff.md`, `docs/reference/orpo-quickstart.md`,
+  `docs/reference/training.md`. `[~]` open: the big CPM5 UF run + the chunk segmenter + e4b overnight.
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the

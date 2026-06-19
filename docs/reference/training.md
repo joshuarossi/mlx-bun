@@ -26,6 +26,7 @@ reachable four ways:
 | **HTTP API** | `POST /api/finetune/submit` (job id + SSE events); `POST /api/finetune/inspect-dataset` to probe a file; `POST /api/finetune/merge` to fold an adapter into base weights | Scripted / remote |
 | **Script** | [`scripts/chunk-finetune.ts`](../../scripts/chunk-finetune.ts) — an env-driven wrapper that calls the runner directly | Repeatable CLI runs |
 | **Shell recipe** | [`scripts/ft-e4b-v2.sh`](../../scripts/ft-e4b-v2.sh) `probe`\|`train` — the actual e4b run we use; sets the required env (see [What we actually run](#what-we-actually-run-the-e4b-recipe)) | Reproducing our e4b fine-tune |
+| **ORPO launcher** | [`scripts/train-orpo.ts`](../../scripts/train-orpo.ts) — preconfigured ORPO with the **full stack on by default** (flash-CCE head + segmented backward + prefix-sharing); auto-detects e4b and sets its env; `RESUME=<dir>` warm-starts. See [orpo-quickstart](./orpo-quickstart.md) | Running an ORPO fine-tune |
 | **Library** | `import { finetuneRunner } from "./src/train/job"` and call it with a config + emitter | Embedding training in your own TS |
 
 ### Quick start (HTTP API)
@@ -114,6 +115,28 @@ Probe a file before submitting: `POST /api/finetune/inspect-dataset` with
   `orpo_lambda`, `orpo_warmup_iters`, `orpo_lr_schedule`. Design + optimization
   roadmap: [orpo-training](../design/orpo-training.md).
 
+The ORPO head + long-context machinery compose into one stack (all B=1), each
+piece independently toggled and each falling back cleanly:
+
+- **`orpo_flash_ce`** — the [M,vocab]-free flash-CCE Metal head (steel GEMM fwd
+  **and** bwd; e4b backward 754 ms, peak 0.93 GB flat at M=8192). Implies the
+  fused head. Falls back to the MLX fused head when the tiling isn't clean.
+- **`segment_size`** — segmented backward (gradient-checkpointed layer
+  activations) for long context; the head is ~free in memory, the activations
+  are the wall.
+- **`orpo_prefix_shared`** — encode the shared prompt once; composes with both
+  the flash head and the segmented backward (MiniCPM5 **and** e4b/Gemma4). Per-row
+  two-forward fallback when chosen/rejected prompts differ.
+- **warm-start** — `scripts/train-orpo.ts RESUME=<adapter-dir>` continues from a
+  checkpoint's weights (optimizer + LR schedule restart).
+
+The one-command way to run all of it is the **ORPO launcher**
+([`scripts/train-orpo.ts`](../../scripts/train-orpo.ts)) — see
+[orpo-quickstart](./orpo-quickstart.md) for the command, the per-model defaults,
+and the measured memory/throughput (e.g. e4b full stack @ 8192 ≈ 13 GB,
+~70 s/step on the M1 Max dev box). Run long jobs detached from your shell
+(`nohup … &`), not as a session-spawned background task.
+
 ## Configuration reference
 
 All fields optional except `model_dir` / `data_dir` / `adapter_path`. Defaults
@@ -148,6 +171,10 @@ are `DEFAULT_TRAIN_CONFIG` (trainer.ts:89).
 | `orpo_lambda` | float >0 | `0.1` | ORPO λ — weights **only** the odds-ratio term; the SFT-NLL term stays unweighted (orpo only) |
 | `orpo_warmup_iters` | int ≥0 | `0` | ORPO LR warmup (orpo only) |
 | `orpo_lr_schedule` | `constant` \| `cosine` | `cosine` | ORPO LR schedule (orpo only) |
+| `orpo_chunk_size` | int | `0` (off) | Token-chunk the response head, bounding the `[M,vocab]` logits to `[chunk,vocab]` (defaults to 512 when a fused head is on). Exact (orpo only) |
+| `orpo_fused_ce` | bool | `false` | Fused linear-CE head: one CustomVjp with an analytic softmax−onehot backward (MLX `quantizedMatmul` both ways) — no autograd through the head, no retained `[M,vocab]`. Exact; `[chunk,vocab]` transient (orpo only) |
+| `orpo_flash_ce` | bool | `false` | Route the fused head through the **flash-CCE Metal kernel** (verbatim MLX steel GEMM + ORPO epilogue, fwd **and** bwd): neither `[M,vocab]` nor a dequantized head touches HBM → `[M,vocab]`-free, fastest on large vocab (e4b bwd 754 ms, 0.93 GB flat @ M=8192). Implies the fused head. The Apple-CCE coeff filter / blockMax skip are opt-in via `MLX_BUN_CCE_BWD_FILTER_EPS` / `_BLOCK_EPS` (default off — exact). B=1 (orpo only) |
+| `orpo_prefix_shared` | bool | `false` | Shared prompt-prefix: one forward over `[prompt; chosen; rejected]` with a block-sparse mask + block-wise RoPE, so the shared prompt is encoded **once** (a big win when the prompt dominates). Falls back to two-forward per row on prompt mismatch. Composes with the flash head and the segmented backward (MiniCPM5 + e4b). B=1 (orpo only) |
 
 ### Environment variables (training)
 
