@@ -34,7 +34,6 @@ import { Gemma4Model } from "../../src/model/gemma4";
 import { ValueAndGrad } from "../../src/mlx/autograd";
 import { evalAll } from "../../src/mlx/ops";
 import { peakMemory, resetPeakMemory, clearCache } from "../../src/mlx/ffi";
-import { setFusedGeluTraining } from "../../src/model/fused-geglu-kernel";
 import { resolveRanks, DEFAULT_TARGET_MODULES } from "../../src/train/rank";
 import {
   buildTrainableLora, attachForTraining, flatParams, disposeLora, type TrainableLora,
@@ -54,8 +53,14 @@ const SEG = Number(process.env.SEG ?? 8);
 const LAMBDA = Number(process.env.LAMBDA ?? 0.1);
 const RANK = Number(process.env.RANK ?? 8);
 const gb = (b: number) => `${(b / 1e9).toFixed(2)} GB`;
-// Match the real e4b training path. FUSED_GELU=0 (required) → spelled GeGLU path.
-if (process.env.MLX_BUN_FUSED_GELU !== "0") setFusedGeluTraining(true);
+// e4b training breaks unless the inference fused kernels are OFF (they have no vjp).
+// ENFORCE the documented preconditions rather than silently running in the wrong mode
+// (which would give a misleading parity verdict). They must be set on the command line —
+// the model modules read them at import, before this point.
+if (process.env.MLX_BUN_PERF_KERNEL !== "0" || process.env.MLX_BUN_FUSED_GELU !== "0") {
+  console.error("prefix-shared-segmented-parity-e4b REQUIRES MLX_BUN_PERF_KERNEL=0 and MLX_BUN_FUSED_GELU=0 on the command line (e4b training breaks otherwise).");
+  process.exit(1);
+}
 
 function swap(l: TrainableLora, p: MlxArray[]): MlxArray[] {
   const n = l.targets.length; const s: MlxArray[] = [];

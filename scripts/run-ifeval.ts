@@ -14,11 +14,27 @@ import { existsSync } from "node:fs";
 import { aggregate, SUPPORTED_INSTRUCTIONS, type IFEvalInstance } from "../src/eval/ifeval";
 
 const args = process.argv.slice(2);
+// Flag parsing that FAILS on a missing/invalid value rather than silently changing the
+// run mode (e.g. `--adapter` with no path → silently runs the base model; `--limit` with
+// no number → NaN → empty run).
+const flagStr = (name: string): string | undefined => {
+  const i = args.indexOf(name);
+  if (i < 0) return undefined;
+  const v = args[i + 1];
+  if (v === undefined || v.startsWith("--")) { console.error(`${name} requires a value`); process.exit(1); }
+  return v;
+};
+const flagNum = (name: string, def: number): number => {
+  const v = flagStr(name);
+  if (v === undefined) return def;
+  const n = Number(v);
+  if (!Number.isFinite(n)) { console.error(`${name} must be a number, got "${v}"`); process.exit(1); }
+  return n;
+};
 const dataPath = args.find((a) => !a.startsWith("--"));
-const adapterDir = args[args.indexOf("--adapter") + 1] && args.includes("--adapter")
-  ? args[args.indexOf("--adapter") + 1] : undefined;
-const limit = args.includes("--limit") ? Number(args[args.indexOf("--limit") + 1]) : Infinity;
-const maxNew = args.includes("--max-new") ? Number(args[args.indexOf("--max-new") + 1]) : 512;
+const adapterDir = flagStr("--adapter");
+const limit = flagNum("--limit", Infinity);
+const maxNew = flagNum("--max-new", 512);
 const MODEL = process.env.MODEL ??
   `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-e4b-it-OptiQ-4bit/snapshots/fcdb12d740cd813634064567fc7cb51159b34253`;
 
