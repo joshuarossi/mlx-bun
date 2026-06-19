@@ -57,4 +57,6 @@ for (const H of [1, 8]) for (const causal of [false, true]) {
   console.log(`  flash vs manualRef:  dQ ${rD(dQ, r.dQ)}  dK ${rD(dK, r.dK)}  dV ${rD(dV, r.dV)}`);
   console.log(`  ops.sdpa vs manualRef: dQ ${rD(vjps[0]!, r.dQ)}  dK ${rD(vjps[1]!, r.dK)}  dV ${rD(vjps[2]!, r.dV)}`);
   console.log(`  flash vs ops.sdpa:   dQ ${rel(dQ, vjps[0]!)}  dK ${rel(dK, vjps[1]!)}  dV ${rel(dV, vjps[2]!)}`);
+  // Free this case's tensors before the next iteration so peak stays per-case, not cumulative.
+  for (const a of [q, k, v, dO, O, L, dQ, dK, dV, r.dQ, r.dK, r.dV, vjps[0]!, vjps[1]!, vjps[2]!]) a.dispose();
 }
