@@ -21,6 +21,45 @@ import {
 } from "./gemma4-base";
 import { flashAttention, getTrainingAttn, flashSupported } from "./flash-attention";
 
+// Shared prompt-prefix plan (lever 7). When set, the attention ropes the
+// concatenated [prompt(P); chosenResp(Rc); rejectedResp(Rr)] sequence
+// BLOCK-WISE — prompt at offset 0, EACH response reset to offset P — instead of
+// the uniform cache.offset. This is what lets one forward over the concat be
+// bit-exact with the two separate [prompt;resp] forwards (each response sees the
+// prompt's RoPE positions, not shifted-by-the-other-response). Set by
+// orpoLossPrefixShared around the forward (single-threaded), cleared after; null
+// → the normal uniform-offset rope (every other forward is untouched). The
+// matching block-sparse attention mask rides in via PrefixSharedCache.makeMask.
+export interface PrefixPlan { P: number; Rc: number; Rr: number }
+let _prefixPlan: PrefixPlan | null = null;
+export function setMiniCpmPrefixPlan(p: PrefixPlan | null): void {
+  _prefixPlan = p;
+}
+
+/** Block-wise RoPE for the prefix-shared concat [prompt; chosen; rejected] along
+ *  the sequence axis (axis 2 of [B,H,T,D]): prompt rotated at offset 0, each
+ *  response at offset P (reset). RoPE is per-token, so roping each contiguous
+ *  block at its scalar offset and concatenating == roping with per-token
+ *  position-ids [0..P-1, P..P+Rc-1, P..P+Rr-1]. Caller disposes the input. */
+function ropeBlocks(x: MlxArray, dims: number, base: number, plan: PrefixPlan): MlxArray {
+  const { P, Rc, Rr } = plan;
+  const [B, H, , D] = x.shape as [number, number, number, number];
+  const blocks: { start: number; len: number; off: number }[] = [
+    { start: 0, len: P, off: 0 },
+    { start: P, len: Rc, off: P },
+    { start: P + Rc, len: Rr, off: P },
+  ].filter((b) => b.len > 0);
+  const parts = blocks.map((b) => {
+    const sl = x.slice([0, 0, b.start, 0], [B, H, b.start + b.len, D]);
+    const r = ops.rope(sl, dims, base, b.off, null);
+    sl.dispose();
+    return r;
+  });
+  const out = ops.concatAxis(parts, 2);
+  for (const p of parts) p.dispose();
+  return out;
+}
+
 class LlamaAttention {
   readonly qProj: QuantizedLinear;
   readonly kProj: QuantizedLinear;
@@ -65,9 +104,11 @@ class LlamaAttention {
     // runs before updateAndFetch, so K and Q share the pre-write offset.
     const offsetArr = cache.ropeOffsetArr;
     const ropeStep = (x: MlxArray): MlxArray =>
-      offsetArr
-        ? ops.ropeDynamic(x, this.headDim, this.ropeBase, offsetArr, null)
-        : ops.rope(x, this.headDim, this.ropeBase, cache.offset, null);
+      _prefixPlan
+        ? ropeBlocks(x, this.headDim, this.ropeBase, _prefixPlan)
+        : offsetArr
+          ? ops.ropeDynamic(x, this.headDim, this.ropeBase, offsetArr, null)
+          : ops.rope(x, this.headDim, this.ropeBase, cache.offset, null);
     q = disposing(q, ropeStep(q));
     k = disposing(k, ropeStep(k));
     let attn: MlxArray;

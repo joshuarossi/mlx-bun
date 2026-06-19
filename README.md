@@ -1,7 +1,15 @@
 # mlx-bun
 
-Native MLX inference for Bun. Run quantized LLMs on Apple Silicon from
-TypeScript — no Python, no sidecar server, one runtime.
+Native MLX inference for Bun, and the beginning of a one-command local AI
+product for Apple Silicon Macs. `mlx-bun` detects the machine, starts a useful
+local assistant, exposes OpenAI/Anthropic-compatible APIs, and gives
+TypeScript apps direct access to MLX without Python or a sidecar server.
+
+The product bet is that local AI on Mac is a finite optimization problem, not
+an infinite configuration maze: Apple ships a known set of chip/RAM/bandwidth
+SKUs, the supported model list is curated, and the task mode is explicit. That
+means defaults can be chosen from measured device × model × mode profiles
+instead of asking every user to become an ML systems engineer.
 
 Measured head-to-head on an M4 Pro (24 GB), same models, same machine
 state: logits **bit-exact** against the Python reference; served over
@@ -108,6 +116,28 @@ curl http://localhost:8090/v1/chat/completions \
 That's it. The server serves the one model it was started with (the
 request's `model` field is ignored and the loaded model id is echoed
 back in responses).
+
+## What mlx-bun is
+
+`mlx-bun` has four faces, all sharing one native runtime:
+
+- **The local AI product** — run `mlx-bun` or `bunx mlx-bun` and get a
+  working local chat UI plus a local server. The default path should feel like
+  an appliance: download the starter model, start chatting quickly, then move
+  to the stronger recommended model as it becomes available.
+- **The app developer library** — embed local MLX inference inside Bun,
+  Tauri, Electron, and other TypeScript applications without running Python in
+  the background.
+- **The AI lab** — keep parity, evals, kernels, LoRA/ORPO training, adapter
+  routing, and performance experiments close to the runtime that will actually
+  serve them.
+- **The background agent runtime** — leave a local OpenAI-compatible endpoint
+  available for scripts, recurring jobs, app integrations, and per-request
+  adapter routing.
+
+The default experience is intentionally opinionated. Power users can override
+models, budgets, KV modes, adapters, and flags; the average user should not
+need to know those knobs exist.
 
 ## Supported models
 

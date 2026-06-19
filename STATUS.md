@@ -5,6 +5,42 @@ exit criteria, and findings live in [PLAN.md](PLAN.md); this file is the
 transient front door that stays current. Product/UX north star:
 [docs/planning/PRODUCT_ROADMAP.md](docs/planning/PRODUCT_ROADMAP.md).
 
+## Current work — Steel flash-CCE ORPO head (2026-06-18)
+
+Porting MLX's `steel` quantized GEMM verbatim into the flash-CCE ORPO head + fusing
+the ORPO epilogue, then wiring the whole new system end to end for a CPM5 test run +
+an e4b overnight. **Forward + backward: BOTH done + live + fast + `[M,V]`-free.**
+- **Forward** ✅ steel GEMM + softcap + online-softmax → logp; default in
+  `flashCceForward`; 180 ms; parity PASS e4b/cpm.
+- **Backward** ✅ **IN PRODUCTION** (`BWD_STEEL_SOURCE`/`bwdSteelKernel`, H-tiled
+  persistent accumulator + vocab-blocking + atomic dh; phase-2 W dequant via MLX's fused
+  `QuantizedBlockLoader`). Parity PASS e4b (dh 0.40%) + cpm (0.28%); **754 ms = 5× the
+  old SG's 3687 ms** (exact); peak **0.928 GB flat @ M=8192**. `MLX_BUN_CCE_BWD_NOSTEEL=1`
+  fallback.
+- **Prefix-sharing** ✅ wired into the trainer (`orpoPrefixShared`), composed with the
+  flash head per branch (matches whole-vocab to 0.018%). **Composes with the segmented
+  backward for BOTH MiniCPM5 (`SegmentedBackwardOrpoPrefix`) AND e4b
+  (`SegmentedBackwardOrpoPrefixGemma4` — donor-KV + logical-position sliding-window prefix
+  mask threaded through segments)** — grads 1.7–2.3% bf16-class, peak 30–39% lower.
+- **Integration tests** ✅ `tests/train-orpo-fused-ce.test.ts` (`MLX_BUN_TEST_TRAIN=1`,
+  6 pass): flash / segmented+flash / prefix+flash / **segmented+prefix+flash** all train
+  CPM5 end-to-end, loss decreases. e4b parity: `prefix-shared-segmented-parity-e4b.ts`.
+- **Preconfigured launcher** ✅ `scripts/train-orpo.ts` — full stack on by default,
+  auto-detects e4b (sets its env flags), per-row fallback + logging. **Measured e4b @ 8192
+  full stack (prompt-dominant): 13.3 GB, ~70 s/step** (prefix-share makes it lighter AND
+  faster than segmented+flash alone). See [docs/reference/orpo-quickstart.md](docs/reference/orpo-quickstart.md).
+
+- **e4b @ 8192** ✅ **PROBED + FITS**: segmented+flash, SEG=2 → peak **16.14 GB** (~16 GB
+  headroom on 32 GB), loss finite + decreasing — the historical "e4b OOMs ≥2048" ceiling
+  is BROKEN. Footprint linear in seq (~+1.5 GB/1024 tok). Validated overnight config +
+  the full SEQ→peak table are in the handoff doc.
+
+**Remaining:** the **overnight run itself** — `MODEL=<e4b> DATA=<dpo> ITERS=200 bun
+scripts/train-orpo.ts` (full stack on by default; Josh starts it — ground rule). Optional:
+A/B the lossless `MLX_BUN_CCE_BWD_BLOCK_EPS=1e-5` vocab-block skip on real long text.
+**→ Quickstart + perf table: [docs/reference/orpo-quickstart.md](docs/reference/orpo-quickstart.md).
+Full plan + gotchas + glossary: [docs/investigations/steel-flash-cce-handoff.md](docs/investigations/steel-flash-cce-handoff.md).**
+
 ## Vision — SigLIP sidecar lights up e4b image input (2026-06-17, merged to `main`)
 
 Phase 12 (SigLIP vision tower) BUILT + validated for **gemma-4-e4b**. e4b now

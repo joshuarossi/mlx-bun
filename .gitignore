@@ -23,3 +23,7 @@ docs/investigations/hlg-runs/*.log
 docs/investigations/hlg-runs/*.json
 docs/investigations/curve-runs/
 docs/investigations/*.html
+# trained adapters/checkpoints (weights, not source) + training run logs
+adapters/
+train.log
+*.train.log

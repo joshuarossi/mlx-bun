@@ -4,7 +4,7 @@ How to fine-tune a served model with LoRA adapters: the entry points, the
 data formats, every config flag, and the methodology behind the knobs.
 
 mlx-bun trains **LoRA adapters** (the base quantized weights stay frozen),
-supports **SFT** and **DPO**, and runs on a single Apple-Silicon GPU. The
+supports **SFT**, **DPO**, and **ORPO**, and runs on a single Apple-Silicon GPU. The
 output is a PEFT-compatible adapter you hot-swap into the server — see
 [adapters-end-to-end](../design/adapters-end-to-end.md) for the serving side
 and [segmented-backward-training](../design/segmented-backward-training.md)
@@ -88,12 +88,12 @@ keys ([`src/train/dataset.ts`](../../src/train/dataset.ts)):
 | `messages` | `{"messages": [{"role","content"}, …]}` | response-only — loss on the final turn, prompt = chat-template render of all prior turns |
 | `prompt-completion` | `{"prompt": "...", "completion": "..."}` | loss on the completion only |
 | `text` | `{"text": "..."}` | full-sequence (no prompt mask) |
-| `dpo` *(method=dpo)* | `{"prompt", "chosen", "rejected"}` | preference loss on chosen vs rejected |
+| `dpo` *(method=dpo or orpo)* | `{"prompt", "chosen", "rejected"}` | preference loss on chosen vs rejected (the same preference format serves both DPO and ORPO) |
 
 Probe a file before submitting: `POST /api/finetune/inspect-dataset` with
 `{"path": "..."}` returns `{ ok, n_train, n_valid, format }`.
 
-## SFT vs DPO
+## SFT vs DPO vs ORPO
 
 - **SFT** (`method: "sft"`, default) — supervised fine-tune; response-only
   cross-entropy. Default LR `2e-4`. For instruction-following, formatting,
@@ -102,6 +102,17 @@ Probe a file before submitting: `POST /api/finetune/inspect-dataset` with
   chosen/rejected pairs; loss `-log σ(β·((π_c − ref_c) − (π_r − ref_r)))`
   with reference log-probs computed at LoRA scale 0. Default LR `5e-5`. Tune
   with `dpo_beta`, `dpo_warmup_iters`, `dpo_lr_schedule`.
+- **ORPO** (`method: "orpo"`) — Odds Ratio Preference Optimization (Hong et
+  al. 2024): a **reference-free** monolithic objective combining the SFT term
+  and a preference term, `L = L_NLL(chosen) + λ·L_OR`, with
+  `L_OR = -log σ(log_odds)` and
+  `log_odds = (ℓ_w − ℓ_r) − (log1mexp(ℓ_w) − log1mexp(ℓ_r))`, where `ℓ` is the
+  **length-normalized** (mean over response tokens) log-prob. Uses the same
+  `{prompt, chosen, rejected}` preference data as DPO but needs **no reference
+  model** (2 forwards/step vs DPO's 4). Default LR `1e-5` (lower than DPO — the
+  loss carries a full SFT NLL term a high LR destabilizes). Tune with
+  `orpo_lambda`, `orpo_warmup_iters`, `orpo_lr_schedule`. Design + optimization
+  roadmap: [orpo-training](../design/orpo-training.md).
 
 ## Configuration reference
 
@@ -110,7 +121,7 @@ are `DEFAULT_TRAIN_CONFIG` (trainer.ts:89).
 
 | Field (API) | Type | Default | Effect |
 |---|---|---|---|
-| `method` | `sft` \| `dpo` | `sft` | Training objective (see above) |
+| `method` | `sft` \| `dpo` \| `orpo` | `sft` | Training objective (see above) |
 | `rank` | int ≥2 | `8` | LoRA rank per adapted linear |
 | `scale` | float >0 | `1.0` | LoRA α (effective update = α·BA) |
 | `rank_scaling` | `constant` \| `by_bits` \| `by_kl` | `by_bits` | Per-layer rank policy (see Methodology) |
@@ -125,12 +136,18 @@ are `DEFAULT_TRAIN_CONFIG` (trainer.ts:89).
 | `steps_per_report` | int >0 | `10` | Emit a train-loss metric every N steps |
 | `steps_per_eval` | int >0 | `50` | Eval on `valid.jsonl` every N steps |
 | `weight_decay` | float ≥0 | `0.01` | AdamW weight decay (β = `[0.9, 0.999]`, fixed) |
+| `lora_dropout` | float [0,1) | `0.0` | LoRA-input dropout (PEFT-style), training-only regularizer for small sets. Recompute-safe (mask keyed by step+layer, so segmented/checkpointed backward reproduces it) |
+| `rs_lora` | bool | `false` | rsLoRA — scale the update by α/√rank instead of α, so `rank_scaling` changes capacity not step size. Recorded in the adapter config; inference applies the same per-layer scale |
+| `lora_plus_ratio` | float ≥1 | `1.0` | LoRA+ — LR multiplier for the B leaves (A stays at base LR). >1 speeds the B-driven early learning (B is zero-init). 1 = off. Wired in the ORPO loop |
 | `grad_checkpoint` | bool | `false` | Recompute layer activations in backward (memory↔compute; bit-identical) |
 | `segment_size` | int | `0` (off) | `>0` enables segmented backward — layers per segment (see below) |
 | `save_checkpoints` | bool | `false` | Save every eval-step checkpoint + write `metrics.json` |
 | `dpo_beta` | float >0 | `0.1` | DPO strength (dpo only) |
 | `dpo_warmup_iters` | int ≥0 | `0` | DPO LR warmup (dpo only) |
 | `dpo_lr_schedule` | `constant` \| `cosine` | `cosine` | DPO LR schedule (dpo only) |
+| `orpo_lambda` | float >0 | `0.1` | ORPO λ — weights **only** the odds-ratio term; the SFT-NLL term stays unweighted (orpo only) |
+| `orpo_warmup_iters` | int ≥0 | `0` | ORPO LR warmup (orpo only) |
+| `orpo_lr_schedule` | `constant` \| `cosine` | `cosine` | ORPO LR schedule (orpo only) |
 
 ### Environment variables (training)
 
@@ -190,11 +207,15 @@ following Unsloth. See [`src/train/lora-params.ts`](../../src/train/lora-params.
 
 ### Rank scaling (`rank_scaling`)
 - `constant` — every target gets `rank`.
-- `by_bits` *(default)* — `rank × (bits / 4)`, clamped ≥2; gives wider
-  adapters to lower-bit (optiq mixed-precision) layers. Needs the model's
-  per-layer bits map.
-- `by_kl` — scales by per-layer KL importance, clamped to [0.5×, 2×]; falls
-  back to `by_bits` if no KL map is present.
+- `by_bits` *(default)* — `rank × (bits / 4)`, clamped ≥2; gives **wider
+  adapters to the more-sensitive (higher-bit) layers** (mixed precision: a
+  4-bit layer gets the base rank, an 8-bit layer 2×). This is optiq's "one
+  sensitivity signal, two optimizations" — the same KL pass that assigns the
+  bits also sets the rank. The per-layer bits are read straight from the loaded
+  model's quant specs (auto-wired; no metadata file needed).
+- `by_kl` — scales by per-layer KL importance, clamped to [0.5×, 2×]; reads the
+  KL values from `optiq_metadata.json` and falls back to `by_bits` if none are
+  recorded.
 
 ### Long-context memory: segmented backward vs gradient checkpointing
 At long `max_seq_length`, activation memory dominates. Two levers:

@@ -177,7 +177,7 @@ describe("iterateDpoBatches", () => {
 
 describe("probeFormat", () => {
   test("identifies dpo / sft shapes", () => {
-    expect(probeFormat({ chosen: "a", rejected: "b", prompt: "p" })).toBe("dpo");
+    expect(probeFormat({ chosen: "a", rejected: "b", prompt: "p" })).toBe("preference");
     expect(probeFormat({ messages: [] })).toBe("messages");
     expect(probeFormat({ prompt: "p", completion: "c" })).toBe("prompt-completion");
     expect(probeFormat({ text: "t" })).toBe("text");
