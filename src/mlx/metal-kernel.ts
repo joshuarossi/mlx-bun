@@ -29,8 +29,16 @@ export interface MetalKernelSpec {
 }
 
 export interface MetalKernelCall {
-  outputs: { shape: number[]; dtype: Dtype }[];
-  grid: [number, number, number];
+  /** Concrete output shapes/dtypes. Provide this OR `outputShapeFn` (the latter
+   *  makes the kernel derive its outputs from the input shapes, like a real MLX
+   *  primitive — required to compose inside an mx.compile'd / shapeless closure,
+   *  where the wrapper must answer "given these input shapes, what comes out?"). */
+  outputs?: { shape: number[]; dtype: Dtype }[];
+  /** Derive output shapes/dtypes from the (current/traced) input shapes. */
+  outputShapeFn?: (inputs: MlxArray[]) => { shape: number[]; dtype: Dtype }[];
+  /** Concrete launch grid, OR derive it from inputs (so it tracks shape under
+   *  compile replay the same way `outputShapeFn` tracks output shapes). */
+  grid: [number, number, number] | ((inputs: MlxArray[]) => [number, number, number]);
   threadGroup: [number, number, number];
   templateInts?: Record<string, number>;
   templateDtypes?: Record<string, Dtype>;
@@ -60,12 +68,18 @@ export class MetalKernel {
     if (this.#disposed) throw new Error("MetalKernel used after dispose");
     const cfg = C.mlx_fast_metal_kernel_config_new();
     try {
-      for (const o of call.outputs) {
+      // Derive outputs + grid from the (current) input shapes when a function is
+      // given — so the SAME kernel object answers correctly for any input shape
+      // during a compile/replay trace, instead of baking in one call's shapes.
+      const outputs = call.outputShapeFn ? call.outputShapeFn(inputs) : call.outputs;
+      if (!outputs) throw new Error("metal_kernel: provide outputs or outputShapeFn");
+      const grid = typeof call.grid === "function" ? call.grid(inputs) : call.grid;
+      for (const o of outputs) {
         const shape = new Int32Array(o.shape);
         if (C.mlx_fast_metal_kernel_config_add_output_arg(cfg, ptr(shape), BigInt(o.shape.length), o.dtype) !== 0)
           throw new Error(`metal_kernel add_output_arg failed: ${takeMlxError() ?? ""}`);
       }
-      C.mlx_fast_metal_kernel_config_set_grid(cfg, call.grid[0], call.grid[1], call.grid[2]);
+      C.mlx_fast_metal_kernel_config_set_grid(cfg, grid[0], grid[1], grid[2]);
       C.mlx_fast_metal_kernel_config_set_thread_group(cfg, call.threadGroup[0], call.threadGroup[1], call.threadGroup[2]);
       if (call.initValue !== undefined)
         C.mlx_fast_metal_kernel_config_set_init_value(cfg, call.initValue);

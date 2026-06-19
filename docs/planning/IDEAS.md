@@ -8,6 +8,35 @@ work in flight lives in [PLAN.md](../../PLAN.md).
 
 ## Positioning: what mlx-bun is becoming
 
+### The finite-matrix local AI appliance
+
+`mlx-bun` can be a local AI product in a way generic LLM runtimes cannot. On
+MLX, the hardware universe is Apple Silicon Macs: a finite list of real shipped
+chip/RAM/bandwidth combinations. The supported model universe is curated, and
+the runtime usually knows the task mode: chat, tool use, vision, eval,
+training, adapter routing, or background automation.
+
+That means the default path can be a table of measured choices instead of a
+pile of user-facing knobs:
+
+```text
+physical Mac SKU + model checksum + task mode -> optimized execution plan
+```
+
+The plan can choose the model, context budget, KV policy, adapter policy,
+kernel route, compile route, and memory envelope before the user has to care.
+The user runs `mlx-bun`; the system gives them the most useful local assistant
+their Mac can comfortably run. Power users still get the stick-shift controls,
+but the product default is curated.
+
+This is also why optimization work belongs in the product vision, not just the
+lab notebook. Loop unrolling, branch deletion, DAG extraction, custom kernels,
+compiled graph tables, Cut Cross Entropy, Liger-style fused heads, and
+ORPO-trained adapters matter when they move a real device/model profile from
+"cute demo" to "leave it running because it is useful."
+
+### Local in the deeper sense
+
 Two phrases that capture the thesis — especially **mlx-bun × Lucien**:
 
 1. **"A truly local model in a deeper sense."**

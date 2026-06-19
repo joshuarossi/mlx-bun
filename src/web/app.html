@@ -702,6 +702,7 @@
           <div class="seg" id="f-method">
             <button data-v="sft" class="on">SFT</button>
             <button data-v="dpo">DPO</button>
+            <button data-v="orpo">ORPO</button>
           </div>
           <div class="hint" id="f-method-hint">Supervised fine-tuning — data is messages or prompt+completion.</div>
         </div>
@@ -713,7 +714,18 @@
           <div class="hpgrid" style="margin-bottom:18px">
             <div class="field"><label>DPO beta (KL strength)</label><input type="number" id="f-beta" value="0.1" step="0.01" min="0.01" max="1"></div>
             <div class="field"><label>LR schedule</label>
-              <select id="f-sched"><option value="cosine">cosine (recommended)</option><option value="constant">constant</option><option value="linear">linear</option></select></div>
+              <select id="f-sched"><option value="cosine">cosine (recommended)</option><option value="constant">constant</option></select></div>
+          </div>
+        </div>
+
+        <div id="f-orpo-extra" style="display:none">
+          <div class="flash warn" style="margin-bottom:18px">
+            <strong>ORPO is reference-free.</strong> One monolithic loss (SFT + odds-ratio), no reference model — half the forwards of DPO. Default LR 1e-5 (lower than DPO: the loss carries a full SFT term). λ weights only the odds-ratio term. Data is {prompt, chosen, rejected}.
+          </div>
+          <div class="hpgrid" style="margin-bottom:18px">
+            <div class="field"><label>ORPO λ (odds-ratio weight)</label><input type="number" id="f-orpo-lambda" value="0.1" step="0.05" min="0.01" max="2"></div>
+            <div class="field"><label>LR schedule</label>
+              <select id="f-orpo-sched"><option value="cosine">cosine (recommended)</option><option value="constant">constant</option></select></div>
           </div>
         </div>
 
@@ -2024,10 +2036,13 @@ controllers.finetune = (() => {
     method = m;
     $("f-method").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.v === m));
     $("f-dpo-extra").style.display = m === "dpo" ? "" : "none";
+    $("f-orpo-extra").style.display = m === "orpo" ? "" : "none";
     $("f-method-hint").textContent = m === "dpo"
       ? "Direct Preference Optimization — data is {prompt, chosen, rejected}."
-      : "Supervised fine-tuning — data is messages or prompt+completion.";
-    if (!lrTouched) $("f-lr").value = m === "dpo" ? 0.00005 : 0.0002;
+      : m === "orpo"
+        ? "Odds Ratio Preference Optimization (reference-free) — data is {prompt, chosen, rejected}."
+        : "Supervised fine-tuning — data is messages or prompt+completion.";
+    if (!lrTouched) $("f-lr").value = m === "dpo" ? 0.00005 : m === "orpo" ? 0.00001 : 0.0002;
   }
 
   function collectHP() {
@@ -2036,11 +2051,12 @@ controllers.finetune = (() => {
       model_dir: $("f-model").value.trim(),
       data_dir: $("f-data").value.trim(),
       method,
-      rank: +$("f-rank").value, scale: +$("f-scale").value, dropout: +$("f-dropout").value,
+      rank: +$("f-rank").value, scale: +$("f-scale").value, lora_dropout: +$("f-dropout").value,
       target_modules: modules, num_layers: +$("f-layers").value, iters: +$("f-iters").value,
       batch_size: +$("f-batch").value, learning_rate: +$("f-lr").value, max_seq_length: +$("f-seq").value,
     };
-    if (method === "dpo") { hp.dpo_beta = +$("f-beta").value; hp.lr_schedule = $("f-sched").value; }
+    if (method === "dpo") { hp.dpo_beta = +$("f-beta").value; hp.dpo_lr_schedule = $("f-sched").value; }
+    if (method === "orpo") { hp.orpo_lambda = +$("f-orpo-lambda").value; hp.orpo_lr_schedule = $("f-orpo-sched").value; }
     return hp;
   }
 

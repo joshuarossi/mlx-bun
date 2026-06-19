@@ -23,6 +23,10 @@ export interface AdamWOptions {
   betas?: [number, number];
   eps?: number;
   weightDecay?: number;
+  /** Optional per-parameter LR multiplier (effective lr for param i is
+   *  `lr · lrScale[i]`). Used for LoRA+ — the B leaves get a higher LR than A.
+   *  Length must match `params`; missing/undefined entries default to 1. */
+  lrScale?: number[];
 }
 
 export class AdamW {
@@ -34,6 +38,7 @@ export class AdamW {
   readonly #b2: number;
   readonly #eps: number;
   readonly #wd: number;
+  readonly #lrScale: number[];
   #lr: number;
   #t = 0;
 
@@ -48,6 +53,7 @@ export class AdamW {
     [this.#b1, this.#b2] = opts.betas ?? [0.9, 0.999];
     this.#eps = opts.eps ?? 1e-8;
     this.#wd = opts.weightDecay ?? 0.01;
+    this.#lrScale = opts.lrScale ?? [];
     // m, v as zeros like each param (handles 0-d params, where ops.zeros's
     // empty shape buffer would trip ptr()).
     this.#m = params.map(zerosLikeF32);
@@ -81,6 +87,7 @@ export class AdamW {
 
     for (let i = 0; i < this.#params.length; i++) {
       const p = this.#params[i]!;
+      const lri = this.#lr * (this.#lrScale[i] ?? 1); // per-param lr (LoRA+)
       const g0 = grads[i]!;
       const g = g0.dtype === Dtype.float32 ? g0 : g0.astype(Dtype.float32);
 
@@ -106,10 +113,10 @@ export class AdamW {
       v0.dispose();
       this.#v[i] = v1;
 
-      // p <- p - lr·wd·p   (decoupled weight decay)
+      // p <- p - lr·wd·p   (decoupled weight decay; per-param lr)
       let pNext = p;
       if (this.#wd !== 0) {
-        const decay = ops.mulScalar(p, this.#lr * this.#wd);
+        const decay = ops.mulScalar(p, lri * this.#wd);
         pNext = ops.sub(p, decay);
         decay.dispose();
       }
@@ -121,7 +128,7 @@ export class AdamW {
       const eps = ops.scalarLike(this.#eps, sqrtV);
       const denom = ops.add(sqrtV, eps);
       const update = ops.div(mHat, denom);
-      const lrUpdate = ops.mulScalar(update, this.#lr);
+      const lrUpdate = ops.mulScalar(update, lri);
       const pFinal = ops.sub(pNext, lrUpdate);
 
       for (const a of [mHat, vHat, sqrtV, eps, denom, update, lrUpdate]) a.dispose();

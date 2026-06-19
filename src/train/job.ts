@@ -17,7 +17,7 @@ interface FinetuneSubmit {
   model_dir: string;
   data_dir: string;
   adapter_path: string;
-  method?: "sft" | "dpo";
+  method?: "sft" | "dpo" | "orpo";
   rank?: number;
   scale?: number;
   rank_scaling?: TrainConfig["rankScaling"];
@@ -32,12 +32,24 @@ interface FinetuneSubmit {
   steps_per_report?: number;
   steps_per_eval?: number;
   weight_decay?: number;
+  lora_dropout?: number;
+  rs_lora?: boolean;
+  lora_plus_ratio?: number;
   grad_checkpoint?: boolean;
+  mlp_split?: boolean;
   segment_size?: number;
   save_checkpoints?: boolean;
   dpo_beta?: number;
   dpo_warmup_iters?: number;
   dpo_lr_schedule?: "constant" | "cosine";
+  orpo_lambda?: number;
+  orpo_warmup_iters?: number;
+  orpo_lr_schedule?: "constant" | "cosine";
+  orpo_chunk_size?: number;
+  orpo_fused_ce?: boolean;
+  orpo_flash_ce?: boolean;
+  orpo_prefix_shared?: boolean;
+  warm_start_adapter?: string;
 }
 
 function parseConfig(raw: Record<string, unknown>): { modelDir: string; dataDir: string; cfg: TrainConfig } {
@@ -55,7 +67,7 @@ function parseConfig(raw: Record<string, unknown>): { modelDir: string; dataDir:
     targetModules: c.target_modules ?? DEFAULT_TRAIN_CONFIG.targetModules,
     numLayers: c.num_layers ?? DEFAULT_TRAIN_CONFIG.numLayers,
     iters: c.iters ?? DEFAULT_TRAIN_CONFIG.iters,
-    learningRate: c.learning_rate ?? (c.method === "dpo" ? 5e-5 : DEFAULT_TRAIN_CONFIG.learningRate),
+    learningRate: c.learning_rate ?? (c.method === "dpo" ? 5e-5 : c.method === "orpo" ? 1e-5 : DEFAULT_TRAIN_CONFIG.learningRate),
     maxSeqLen: c.max_seq_length ?? DEFAULT_TRAIN_CONFIG.maxSeqLen,
     batchSize: c.batch_size ?? DEFAULT_TRAIN_CONFIG.batchSize,
     gradAccumSteps: c.grad_accumulation_steps ?? DEFAULT_TRAIN_CONFIG.gradAccumSteps,
@@ -64,12 +76,24 @@ function parseConfig(raw: Record<string, unknown>): { modelDir: string; dataDir:
     stepsPerEval: c.steps_per_eval ?? DEFAULT_TRAIN_CONFIG.stepsPerEval,
     betas: DEFAULT_TRAIN_CONFIG.betas,
     weightDecay: c.weight_decay ?? DEFAULT_TRAIN_CONFIG.weightDecay,
+    loraDropout: c.lora_dropout ?? DEFAULT_TRAIN_CONFIG.loraDropout,
+    rsLora: c.rs_lora ?? DEFAULT_TRAIN_CONFIG.rsLora,
+    loraPlusRatio: c.lora_plus_ratio ?? DEFAULT_TRAIN_CONFIG.loraPlusRatio,
     gradCheckpoint: c.grad_checkpoint ?? DEFAULT_TRAIN_CONFIG.gradCheckpoint,
+    mlpSplit: c.mlp_split ?? DEFAULT_TRAIN_CONFIG.mlpSplit,
     segmentSize: c.segment_size ?? DEFAULT_TRAIN_CONFIG.segmentSize,
     saveCheckpoints: c.save_checkpoints ?? DEFAULT_TRAIN_CONFIG.saveCheckpoints,
     dpoBeta: c.dpo_beta ?? DEFAULT_TRAIN_CONFIG.dpoBeta,
     dpoWarmupIters: c.dpo_warmup_iters ?? DEFAULT_TRAIN_CONFIG.dpoWarmupIters,
     dpoLrSchedule: c.dpo_lr_schedule ?? DEFAULT_TRAIN_CONFIG.dpoLrSchedule,
+    orpoLambda: c.orpo_lambda ?? DEFAULT_TRAIN_CONFIG.orpoLambda,
+    orpoWarmupIters: c.orpo_warmup_iters ?? DEFAULT_TRAIN_CONFIG.orpoWarmupIters,
+    orpoLrSchedule: c.orpo_lr_schedule ?? DEFAULT_TRAIN_CONFIG.orpoLrSchedule,
+    orpoChunkSize: c.orpo_chunk_size ?? DEFAULT_TRAIN_CONFIG.orpoChunkSize,
+    orpoFusedCe: c.orpo_fused_ce ?? DEFAULT_TRAIN_CONFIG.orpoFusedCe,
+    orpoFlashCe: c.orpo_flash_ce ?? DEFAULT_TRAIN_CONFIG.orpoFlashCe,
+    orpoPrefixShared: c.orpo_prefix_shared ?? DEFAULT_TRAIN_CONFIG.orpoPrefixShared,
+    warmStartAdapter: c.warm_start_adapter ?? DEFAULT_TRAIN_CONFIG.warmStartAdapter,
     adapterPath: c.adapter_path,
     baseModel: c.model_dir,
   };

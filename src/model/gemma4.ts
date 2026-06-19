@@ -51,20 +51,46 @@ import {
   type SharedKv,
   type LoraWeights,
 } from "./gemma4-base";
-import { fusedGeglu, fusedGeluEnabled, fusedGeluSupported } from "./fused-geglu-kernel";
+import { fusedGeglu, fusedGegluDifferentiable, fusedGeluEnabled, fusedGeluSupported, fusedGeluTraining } from "./fused-geglu-kernel";
 import { Checkpoint } from "../mlx/checkpoint";
 import { flashAttention, getTrainingAttn, flashSupported } from "./flash-attention";
 
 /** Optional gradient-checkpointing context for the training forward. When set,
  *  forwardLayers wraps each layer in a Checkpoint so its interior activations
  *  are recomputed in the backward pass. `byLayer` maps a layer index to that
- *  layer's trainable LoRA weights (re-swapped inside the closure so they are
- *  explicit checkpoint inputs — required because the autograd primals are
- *  disposed before the recompute). `keepAlive` collects the per-layer
+ *  layer's trainable LoRA weights, partitioned into the attention sub-block
+ *  (q/k/v/o_proj) and the MLP sub-block (gate/up/down_proj + per-layer gate/
+ *  projection) — re-swapped inside the closure so they are explicit checkpoint
+ *  inputs (required because the autograd primals are disposed before the
+ *  recompute). When `splitMlp` is set, the layer is wrapped in TWO checkpoints
+ *  (attn sub-block + MLP sub-block) with the post-attn residual `hMid` as the
+ *  boundary, so the backward recompute holds `max(attn,MLP)+hMid` instead of the
+ *  whole layer (the intra-layer MLP split, lever 4). `keepAlive` collects the
  *  Checkpoint objects; the trainer disposes them after value_and_grad. */
+export interface LayerLoras {
+  attn: LoraWeights[];
+  mlp: LoraWeights[];
+}
 export interface GradCheckpointCtx {
-  byLayer: Map<number, LoraWeights[]>;
+  byLayer: Map<number, LayerLoras>;
+  splitMlp: boolean;
   keepAlive: Checkpoint[];
+}
+
+// Shared prompt-prefix plan (lever 7, e4b — docs/design/orpo-training.md). When
+// set, Attention ropes the concatenated [prompt(P); chosenResp(Rc); rejectedResp(Rr)]
+// sequence BLOCK-WISE — prompt at offset 0, EACH response reset to logical offset
+// P — instead of the uniform cache.offset, so ONE forward over the concat is
+// bit-exact with the two separate [prompt;resp] forwards (each response sees the
+// prompt's RoPE positions, not shifted-by-the-other-response). The matching
+// block-sparse + LOGICAL-window attention mask rides in via the prefix cache's
+// makeMask (src/train/prefix-shared.ts). Set around the single forward
+// (single-threaded), cleared after; null → the normal uniform-offset rope (every
+// other forward is untouched).
+export interface GemmaPrefixPlan { P: number; Rc: number; Rr: number }
+let _gemmaPrefixPlan: GemmaPrefixPlan | null = null;
+export function setGemmaPrefixPlan(p: GemmaPrefixPlan | null): void {
+  _gemmaPrefixPlan = p;
 }
 
 class Attention {
@@ -161,6 +187,32 @@ class Attention {
       : ops.ropeDynamic(x, this.headDim, this.ropeBase, offset, this.ropeFreqs);
   }
 
+  /** Block-wise RoPE for the prefix-shared concat [prompt; chosen; rejected] along
+   *  the sequence axis (axis 2 of [B,H,T,D]): prompt at offset 0, EACH response
+   *  reset to logical offset P. RoPE is per-token, so roping each contiguous block
+   *  at its scalar offset and concatenating == roping with per-token position-ids
+   *  [0..P-1, P..P+Rc-1, P..P+Rr-1]. Uses this.rope per block so the layer's
+   *  proportional/ropeFreqs + sliding-vs-full geometry applies identically to the
+   *  two-forward path. Caller disposes the input. */
+  ropeBlocks(x: MlxArray, plan: GemmaPrefixPlan): MlxArray {
+    const { P, Rc, Rr } = plan;
+    const [B, H, , D] = x.shape as [number, number, number, number];
+    const blocks = [
+      { start: 0, len: P, off: 0 },
+      { start: P, len: Rc, off: P },
+      { start: P + Rc, len: Rr, off: P },
+    ].filter((b) => b.len > 0);
+    const parts = blocks.map((b) => {
+      const sl = x.slice([0, 0, b.start, 0], [B, H, b.start + b.len, D]);
+      const r = this.rope(sl, b.off);
+      sl.dispose();
+      return r;
+    });
+    const out = ops.concatAxis(parts, 2);
+    for (const p of parts) p.dispose();
+    return out;
+  }
+
   /** Returns the attention output plus the fetched KV (for KV-shared
    *  sharer layers and the speculative drafter). The SharedKv arrays are
    *  owned by the caller (forwardLayers) and disposed after the pass. */
@@ -203,7 +255,9 @@ class Attention {
       const kNormed = this.kNorm!.forward(k);
       const kT = ops.transposeAxes(kNormed, [0, 2, 1, 3]);
       kNormed.dispose();
-      const kRoped = this.rope(kT, offsetArr ?? offset);
+      const kRoped = _gemmaPrefixPlan
+        ? this.ropeBlocks(kT, _gemmaPrefixPlan)
+        : this.rope(kT, offsetArr ?? offset);
       kT.dispose();
 
       const vNormed = this.vNorm!.forward(v);
@@ -230,7 +284,9 @@ class Attention {
     }
 
     q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
-    q = disposing(q, this.rope(q, shared.offsetArr ?? shared.offset));
+    q = disposing(q, _gemmaPrefixPlan
+      ? this.ropeBlocks(q, _gemmaPrefixPlan)
+      : this.rope(q, shared.offsetArr ?? shared.offset));
 
     let attn: MlxArray;
     const ta = getTrainingAttn();
@@ -273,9 +329,12 @@ class MLP {
     const u = this.up.forward(x);
     // Fused GeGLU perf kernel (opt-in, not in a compiled trace): one pass
     // instead of ~9 element-wise kernels. Off → the bit-exact spelled path.
+    // In training mode the differentiable wrapper (kernel forward + hand-derived
+    // vjp) is used so autograd can flow AND the backward recomputes the gelu
+    // from the primal instead of retaining the spelled-out intermediates.
     let h: MlxArray;
     if (fusedGeluEnabled() && !isCompiledTrace() && fusedGeluSupported(g)) {
-      h = fusedGeglu(g, u);
+      h = fusedGeluTraining() ? fusedGegluDifferentiable(g, u) : fusedGeglu(g, u);
       g.dispose();
       u.dispose();
     } else {
@@ -501,24 +560,47 @@ export class DecoderLayer {
     x: MlxArray, mask: Mask, cache: Cache | null,
     sharedIn: SharedKv | null, perLayerInput: MlxArray | null,
   ): { h: MlxArray; shared: SharedKv } {
+    // Composed from the two sub-blocks (the intra-layer min-cut is the post-attn
+    // residual `hMid` [1,T,hidden]). Behaviour is identical to the spelled-out
+    // body; the split lets the checkpoint path rematerialize attn and MLP
+    // separately (peak attn+MLP → max(attn,MLP)+hMid). `forwardMlp` borrows hMid.
+    const { h: hMid, shared } = this.forwardAttn(x, mask, cache, sharedIn);
+    const h = this.forwardMlp(hMid, perLayerInput);
+    hMid.dispose();
+    return { h, shared };
+  }
+
+  /** Attention sub-block: inputNorm → attn → postAttnNorm → residual add.
+   *  Returns the post-attn residual stream `h` [1,T,hidden] (the intra-layer
+   *  boundary) and the attention's fetched/produced K/V (`shared`). `x` is
+   *  borrowed (never disposed). The e4b donor-KV threading lives entirely here. */
+  forwardAttn(
+    x: MlxArray, mask: Mask, cache: Cache | null, sharedIn: SharedKv | null,
+  ): { h: MlxArray; shared: SharedKv } {
     let h = this.inputNorm.forward(x);
     const { out, shared } = this.attn.forward(h, mask, cache, sharedIn);
     h.dispose();
     h = out;
     h = disposing(h, this.postAttnNorm.forward(h));
     h = disposing(h, ops.add(x, h));
+    return { h, shared };
+  }
 
-    const residual = h;
+  /** MLP sub-block: FFN (dense or MoE) + postFfNorm + residual add, then the
+   *  e4b per-layer-input gate and layer scalar. `hMid` (the attn sub-block's
+   *  output) is BORROWED — the caller owns/disposes it (it is the checkpoint
+   *  boundary leaf), so this never disposes it. */
+  forwardMlp(hMid: MlxArray, perLayerInput: MlxArray | null): MlxArray {
     let f: MlxArray;
     if (this.router && this.experts) {
-      // MoE: dense MLP and routed experts as parallel branches off h
+      // MoE: dense MLP and routed experts as parallel branches off hMid
       // (reference DecoderLayer, enable_moe path)
-      let h1 = this.preFfNorm.forward(h);
+      let h1 = this.preFfNorm.forward(hMid);
       h1 = disposing(h1, this.mlp.forward(h1));
       h1 = disposing(h1, this.postFfNorm1!.forward(h1));
 
-      const { indices, weights: topKWeights } = this.router.forward(h);
-      let h2 = this.preFfNorm2!.forward(h);
+      const { indices, weights: topKWeights } = this.router.forward(hMid);
+      let h2 = this.preFfNorm2!.forward(hMid);
       h2 = disposing(h2, this.experts.forward(h2, indices, topKWeights));
       h2 = disposing(h2, this.postFfNorm2!.forward(h2));
       indices.dispose();
@@ -528,20 +610,25 @@ export class DecoderLayer {
       h1.dispose();
       h2.dispose();
     } else {
-      f = this.preFfNorm.forward(h);
+      f = this.preFfNorm.forward(hMid);
       f = disposing(f, this.mlp.forward(f));
     }
     f = disposing(f, this.postFfNorm.forward(f));
-    h = ops.add(residual, f);
-    residual.dispose();
+    let h = ops.add(hMid, f); // hMid borrowed — NOT disposed here
     f.dispose();
 
-    // per-layer input gating (reference gemma4_text DecoderLayer)
+    // per-layer input gating (reference gemma4_text DecoderLayer). gelu(gate)·pli
+    // is the second GeGLU site — fused (differentiable) on the training path, the
+    // bit-exact spelled-out gelu+mul on the inference path (unchanged).
     if (this.perLayerGate && this.perLayerProjection && this.postPerLayerNorm && perLayerInput) {
       const res2 = h;
       let gate = this.perLayerGate.forward(h);
-      gate = disposing(gate, ops.geluApprox(gate));
-      gate = disposing(gate, ops.mul(gate, perLayerInput));
+      if (fusedGeluTraining() && fusedGeluEnabled() && !isCompiledTrace() && fusedGeluSupported(gate)) {
+        gate = disposing(gate, fusedGegluDifferentiable(gate, perLayerInput));
+      } else {
+        gate = disposing(gate, ops.geluApprox(gate));
+        gate = disposing(gate, ops.mul(gate, perLayerInput));
+      }
       gate = disposing(gate, this.perLayerProjection.forward(gate));
       gate = disposing(gate, this.postPerLayerNorm.forward(gate));
       h = ops.add(res2, gate);
@@ -550,7 +637,7 @@ export class DecoderLayer {
     }
 
     if (this.layerScalar) h = disposing(h, ops.mul(h, this.layerScalar));
-    return { h, shared };
+    return h;
   }
 }
 
@@ -927,7 +1014,19 @@ export class Gemma4Model {
     layerCache: Cache | null, sharedIn: SharedKv | null, pls: MlxArray | null,
   ): { h: MlxArray; shared: SharedKv | null } {
     const ctx = this.gradCkpt!;
-    const lws = ctx.byLayer.get(i) ?? [];
+    const ll = ctx.byLayer.get(i) ?? { attn: [], mlp: [] };
+    return ctx.splitMlp
+      ? this.runSplitCheckpointedLayer(layer, h, mask, layerCache, sharedIn, pls, ll, ctx)
+      : this.runSingleCheckpointedLayer(layer, h, mask, layerCache, sharedIn, pls, ll, ctx);
+  }
+
+  /** One Checkpoint over the whole layer (the original path). */
+  private runSingleCheckpointedLayer(
+    layer: DecoderLayer, h: MlxArray, mask: Mask,
+    layerCache: Cache | null, sharedIn: SharedKv | null, pls: MlxArray | null,
+    ll: LayerLoras, ctx: GradCheckpointCtx,
+  ): { h: MlxArray; shared: SharedKv | null } {
+    const lws = [...ll.attn, ...ll.mlp];
     const isSharer = layerCache === null;
     const sIn = isSharer && sharedIn && sharedIn.kind === "plain" ? sharedIn : null;
     const hasMaskArr = mask.arr !== null;
@@ -968,6 +1067,82 @@ export class Gemma4Model {
         ? { kind: "plain", keys: outs[1]!, values: outs[2]!, offset: 0 }
         : null;
     return { h: outs[0]!, shared };
+  }
+
+  /** Intra-layer MLP split (lever 4): TWO checkpoints — the attention sub-block
+   *  (forwardAttn: inputNorm → attn → residual add, threading the donor K/V) and
+   *  the MLP sub-block (forwardMlp: FFN + per-layer gate) — with the post-attn
+   *  residual `hMid` as the boundary. The backward recompute holds only one
+   *  sub-block's activations at a time, dropping per-layer peak from `attn+MLP`
+   *  to `max(attn,MLP)+hMid`. Attn LoRA / pls / donor-KV go to the attn ck; MLP
+   *  LoRA to the MLP ck. */
+  private runSplitCheckpointedLayer(
+    layer: DecoderLayer, h: MlxArray, mask: Mask,
+    layerCache: Cache | null, sharedIn: SharedKv | null, pls: MlxArray | null,
+    ll: LayerLoras, ctx: GradCheckpointCtx,
+  ): { h: MlxArray; shared: SharedKv | null } {
+    const isSharer = layerCache === null;
+    const sIn = isSharer && sharedIn && sharedIn.kind === "plain" ? sharedIn : null;
+    const hasMaskArr = mask.arr !== null;
+    const hasPls = pls !== null;
+    const maskMode = mask.mode;
+    const attnLws = ll.attn;
+    const mlpLws = ll.mlp;
+
+    // --- attn sub-block checkpoint: [h, maskArr?, sharedInK?, sharedInV?, attnLora*]
+    const attnInputs: MlxArray[] = [h];
+    if (hasMaskArr) attnInputs.push(mask.arr!);
+    if (sIn) attnInputs.push(sIn.keys, sIn.values);
+    for (const lw of attnLws) attnInputs.push(lw.a, lw.b);
+
+    const attnCk = new Checkpoint((ins) => {
+      let k = 0;
+      const hIn = ins[k++]!;
+      const mArr = hasMaskArr ? ins[k++]! : null;
+      const sharedInRebuilt: SharedKv | null = sIn
+        ? { kind: "plain", keys: ins[k++]!, values: ins[k++]!, offset: 0 }
+        : null;
+      const saved = attnLws.map((lw) => [lw.a, lw.b] as [MlxArray, MlxArray]);
+      for (const lw of attnLws) { lw.a = ins[k++]!; lw.b = ins[k++]!; }
+      try {
+        const out = layer.forwardAttn(hIn, { mode: maskMode, arr: mArr }, layerCache, sharedInRebuilt);
+        if (!isSharer && out.shared && out.shared.kind === "plain")
+          return [out.h, out.shared.keys, out.shared.values];
+        return [out.h];
+      } finally {
+        attnLws.forEach((lw, j) => { lw.a = saved[j]![0]; lw.b = saved[j]![1]; });
+      }
+    });
+    ctx.keepAlive.push(attnCk);
+    const attnOuts = attnCk.apply(attnInputs);
+    const hMid = attnOuts[0]!;
+    const shared: SharedKv | null =
+      !isSharer && attnOuts.length === 3
+        ? { kind: "plain", keys: attnOuts[1]!, values: attnOuts[2]!, offset: 0 }
+        : null;
+
+    // --- MLP sub-block checkpoint: [hMid, pls?, mlpLora*] -> [hOut]
+    const mlpInputs: MlxArray[] = [hMid];
+    if (hasPls) mlpInputs.push(pls!);
+    for (const lw of mlpLws) mlpInputs.push(lw.a, lw.b);
+
+    const mlpCk = new Checkpoint((ins) => {
+      let k = 0;
+      const hMidIn = ins[k++]!;
+      const plsIn = hasPls ? ins[k++]! : null;
+      const saved = mlpLws.map((lw) => [lw.a, lw.b] as [MlxArray, MlxArray]);
+      for (const lw of mlpLws) { lw.a = ins[k++]!; lw.b = ins[k++]!; }
+      try {
+        return [layer.forwardMlp(hMidIn, plsIn)];
+      } finally {
+        mlpLws.forEach((lw, j) => { lw.a = saved[j]![0]; lw.b = saved[j]![1]; });
+      }
+    });
+    ctx.keepAlive.push(mlpCk);
+    const mlpOuts = mlpCk.apply(mlpInputs);
+    hMid.dispose(); // boundary leaf consumed by the MLP ck (mlx retains it in-graph)
+
+    return { h: mlpOuts[0]!, shared };
   }
 
   /** hidden [1, L, hidden] → softcapped logits [1, L, vocab]. */

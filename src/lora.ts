@@ -37,7 +37,7 @@ export interface AdapterInfo {
  *  materialized mlx arrays. Tensor names come from our header parser;
  *  arrays from mlx's native loader via the proven map-get pattern
  *  (weights.ts). The map and header mmap are freed before returning. */
-function loadAdapterTensors(file: string): Map<string, MlxArray> {
+export function loadAdapterTensors(file: string): Map<string, MlxArray> {
   const sf = SafetensorsFile.open(file);
   const names = [...sf.tensors.keys()];
   sf.mmap.unmap();
@@ -74,18 +74,21 @@ function loadAdapterTensors(file: string): Map<string, MlxArray> {
 }
 
 /** Adapter scale from its config: mlx-lm writes lora_parameters.scale;
- *  PEFT writes lora_alpha + r (scale = alpha / r). Reference: mount.py. */
-async function readAdapterScale(dir: string): Promise<{ scale: number; rank: number | null }> {
+ *  PEFT writes lora_alpha + r (scale = alpha / r). Reference: mount.py.
+ *  `rsLora` (recorded at train time) means the effective per-layer scale is
+ *  α/√rank — the caller divides by √(that layer's rank). */
+async function readAdapterScale(dir: string): Promise<{ scale: number; rank: number | null; rsLora: boolean }> {
   for (const name of ["optiq_lora_config.json", "adapter_config.json"]) {
     const f = Bun.file(`${dir}/${name}`);
     if (await f.exists()) {
       const cfg = (await f.json()) as Record<string, any>;
       const lp = cfg.lora_parameters;
+      const rsLora = Boolean(cfg.rs_lora ?? lp?.rs_lora ?? false);
       if (lp && typeof lp === "object")
-        return { scale: Number(lp.scale ?? 20.0), rank: lp.rank ?? null };
+        return { scale: Number(lp.scale ?? 20.0), rank: lp.rank ?? null, rsLora };
       const alpha = Number(cfg.lora_alpha ?? 16);
       const r = Number(cfg.r ?? 8);
-      return { scale: r ? alpha / r : 1.0, rank: r || null };
+      return { scale: r ? alpha / r : 1.0, rank: r || null, rsLora };
     }
   }
   throw new Error(`no adapter_config.json in ${dir}`);
@@ -200,7 +203,7 @@ export class AdapterManager {
     if (!existsSync(path)) throw new Error(`adapter dir not found: ${path}`);
 
     const weightsFile = adapterWeightsFile(path);
-    const { scale, rank: configRank } = await readAdapterScale(path);
+    const { scale, rank: configRank, rsLora } = await readAdapterScale(path);
     const tensors = loadAdapterTensors(weightsFile);
     const targets = this.#model.loraTargets();
 
@@ -243,7 +246,9 @@ export class AdapterManager {
             `vs base [in ${linear.inFeatures}, out ${linear.outFeatures}]; ` +
             `was this adapter trained for a different base model?`,
           );
-        validated.push({ linear, lw: { a, b, scale, rank } });
+        // rsLoRA: effective per-layer scale is α/√rank (matches training).
+        const effScale = rsLora ? scale / Math.sqrt(rank) : scale;
+        validated.push({ linear, lw: { a, b, scale: effScale, rank } });
       }
       if (validated.length === 0)
         throw new Error(

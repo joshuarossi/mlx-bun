@@ -35,6 +35,42 @@ export interface ResolveRanksOptions {
   klMap?: Record<string, number>;
 }
 
+/** Per-layer bits from the loaded model's quant specs — the authoritative,
+ *  always-present source for `by_bits` scaling (each adapted linear carries its
+ *  own `QuantSpec`, so this reflects the real mixed-precision assignment without
+ *  needing the optiq_metadata.json sidecar). Keyed by the same module paths
+ *  `resolveRanks` iterates, so it drops straight into `opts.bitsMap`. */
+export function bitsMapFromModel(model: RuntimeModel): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [path, linear] of model.loraTargets()) out[path] = linear.spec.bits;
+  return out;
+}
+
+/** Per-layer KL sensitivity from `optiq_metadata.json` (for `by_kl`). Mirrors
+ *  optiq's `read_per_layer_kl`: accepts both the top-level `per_layer` and the
+ *  older `optimization.per_layer` shapes, reads each entry's `kl`. Returns `{}`
+ *  if the sidecar is absent or records no KL (our own quantizer writes `bits`
+ *  but not `kl`), in which case `by_kl` falls back to `by_bits`. */
+export async function readPerLayerKl(modelDir: string): Promise<Record<string, number>> {
+  if (!modelDir) return {};
+  const path = `${modelDir}/optiq_metadata.json`;
+  try {
+    if (!(await Bun.file(path).exists())) return {};
+    const meta = JSON.parse(await Bun.file(path).text()) as Record<string, unknown>;
+    const perLayer = (meta.per_layer ??
+      (meta.optimization as Record<string, unknown> | undefined)?.per_layer ??
+      {}) as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(perLayer)) {
+      if (v && typeof v === "object" && typeof (v as { kl?: unknown }).kl === "number")
+        out[k] = (v as { kl: number }).kl;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /** Resolve a rank per adapted module path. */
 export function resolveRanks(model: RuntimeModel, opts: ResolveRanksOptions): Map<string, number> {
   const targetModules = opts.targetModules ?? DEFAULT_TARGET_MODULES;

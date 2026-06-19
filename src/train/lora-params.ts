@@ -16,6 +16,7 @@ import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import type { RuntimeModel } from "../model/factory";
 import type { LoraWeights, QuantizedLinear } from "../model/gemma4-base";
+import { loadAdapterTensors } from "../lora";
 
 const cstr = (s: string) => Buffer.from(s + "\0", "utf8");
 
@@ -40,6 +41,7 @@ export function buildTrainableLora(
   ranks: Map<string, number>,
   scale: number,
   seed: number,
+  rsLora = false,
 ): TrainableLora {
   const linears = model.loraTargets();
   const key = ops.randomKey(BigInt(seed >>> 0));
@@ -61,21 +63,62 @@ export function buildTrainableLora(
     const a = ops.randomUniform([inF, rank], Dtype.float32, -aScale, aScale, subkey);
     subkey.dispose();
     const b = ops.zeros([rank, outF], Dtype.float32);
-    targets.push({ modulePath, linear, lw: { a, b, scale, rank } });
+    // rsLoRA: α/√rank so per-layer rank scaling changes capacity, not step size.
+    const lwScale = rsLora ? scale / Math.sqrt(rank) : scale;
+    targets.push({ modulePath, linear, lw: { a, b, scale: lwScale, rank } });
   });
   subkeys.dispose();
 
   return { adapterId: "train", scale, targets };
 }
 
+/** Warm-start: overwrite a freshly-built LoRA's A/B leaves with the weights saved in
+ *  `dir/adapters.safetensors` (saveAdapter's `${modulePath}.lora_a/b` names), so a run
+ *  continues from a checkpoint's WEIGHTS. The optimizer state and LR schedule restart —
+ *  Adam re-warms its moments in a few steps — so this is a weights warm-start, not a
+ *  bit-perfect resume. The checkpoint's rank/targets must match this LoRA (shapes are
+ *  checked). MUST be called BEFORE the optimizer is built so it tracks the loaded
+ *  handles. Returns the number of targets loaded. */
+export function warmStartFromAdapter(lora: TrainableLora, dir: string): number {
+  const file = `${dir}/adapters.safetensors`;
+  const tensors = loadAdapterTensors(file); // caller owns; disposed below
+  const adopted = new Set<MlxArray>();
+  try {
+    // Two phases so the swap is atomic: validate EVERY target first (throws before
+    // anything is disposed), then dispose+adopt. A mid-loop failure must not leave
+    // lora.targets half-replaced (some checkpoint leaves, some fresh init).
+    const pending: Array<{ t: (typeof lora.targets)[number]; a: MlxArray; b: MlxArray }> = [];
+    for (const t of lora.targets) {
+      const a = tensors.get(`${t.modulePath}.lora_a`);
+      const b = tensors.get(`${t.modulePath}.lora_b`);
+      if (!a || !b) throw new Error(`warm-start: ${t.modulePath} missing lora_a/lora_b in ${file}`);
+      if (a.dtype !== Dtype.float32 || b.dtype !== Dtype.float32)
+        throw new Error(`warm-start: ${t.modulePath} tensors must be f32`);
+      if (a.shape[0] !== t.lw.a.shape[0] || a.shape[1] !== t.lw.a.shape[1] ||
+          b.shape[0] !== t.lw.b.shape[0] || b.shape[1] !== t.lw.b.shape[1])
+        throw new Error(`warm-start: shape mismatch at ${t.modulePath} — the checkpoint's rank/targets must match this run`);
+      pending.push({ t, a, b });
+    }
+    for (const { t, a, b } of pending) {
+      t.lw.a.dispose(); t.lw.b.dispose(); // free the fresh random/zero init
+      t.lw.a = a; t.lw.b = b;             // adopt the checkpoint weights as the live leaves
+      adopted.add(a); adopted.add(b);
+    }
+  } finally {
+    for (const [, arr] of tensors) if (!adopted.has(arr)) arr.dispose();
+  }
+  return lora.targets.length;
+}
+
 /** Attach the trainable leaves to the model so the forward pass picks them up
  *  via loraState.active. */
 export function attachForTraining(model: RuntimeModel, lora: TrainableLora, adapterId: string): void {
   lora.adapterId = adapterId;
-  for (const t of lora.targets) {
+  lora.targets.forEach((t, i) => {
     (t.linear.adapters ??= new Map()).set(adapterId, t.lw);
     t.linear.loraState = model.loraState;
-  }
+    t.linear.dropoutId = i; // stable per-target key for recompute-safe dropout
+  });
   model.loraState.active = [adapterId];
 }
 
@@ -83,6 +126,8 @@ export function attachForTraining(model: RuntimeModel, lora: TrainableLora, adap
 export function detachTraining(model: RuntimeModel, lora: TrainableLora): void {
   for (const t of lora.targets) t.linear.adapters?.delete(lora.adapterId);
   model.loraState.active = model.loraState.active.filter((x) => x !== lora.adapterId);
+  model.loraState.dropoutRate = 0; // disable training dropout for inference
+  model.loraState.dropoutSeed = null;
 }
 
 /** Set the LoRA scale on every trainable leaf (DPO reference forward uses 0). */
@@ -115,6 +160,9 @@ export interface SaveAdapterConfig {
   numLayers: number;
   method: string;
   baseModel: string;
+  /** rsLoRA: if true the effective per-layer scale is α/√rank (the loader must
+   *  apply the same, so it's recorded in optiq_lora_config.json). */
+  rsLora?: boolean;
 }
 
 /** Save the trained adapter into `dir` in the AdapterManager.mount format:
@@ -156,9 +204,10 @@ export function saveAdapter(
     scale: cfg.scale,
     rank_scaling: cfg.rankScaling,
     method: cfg.method,
+    rs_lora: cfg.rsLora ?? false,
     target_modules: cfg.targetModules,
     num_layers: cfg.numLayers,
-    lora_parameters: { scale: cfg.scale, rank: cfg.rank },
+    lora_parameters: { scale: cfg.scale, rank: cfg.rank, rs_lora: cfg.rsLora ?? false },
     applied_ranks: appliedRanks,
     source_model: cfg.baseModel,
   };
