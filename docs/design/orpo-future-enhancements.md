@@ -4,6 +4,16 @@ Performance-first follow-on ideas for mlx-bun's ORPO trainer, plus a short
 appendix of objective variants that may be useful once the runtime path is
 comfortable.
 
+> **LANDED since this was written (2026-06-19):** the top items here are now in
+> production — **Priority 1 (Cut Cross Entropy / fused linear CE)** and **§1
+> (vocab-axis chunked CE)** shipped as the `[M,vocab]`-free **flash-CCE Metal head**
+> (verbatim MLX steel GEMM, fwd+bwd; `orpo_flash_ce`), and **§3 (prefix sharing in the
+> trainer)** shipped as `orpo_prefix_shared`, composed with the flash head AND the
+> segmented backward for MiniCPM5 **and** e4b. See [training.md](../reference/training.md),
+> [orpo-quickstart.md](../reference/orpo-quickstart.md), and the live record
+> [steel-flash-cce-handoff.md](../investigations/steel-flash-cce-handoff.md). The
+> remaining sections (§2, §4–§9, the objective variants) are still genuinely future.
+
 Product relevance: ORPO is not only a researcher feature. It is the path to
 small, downloadable task adapters that make the default local assistant better
 without forcing every user onto a larger base model. The performance work below

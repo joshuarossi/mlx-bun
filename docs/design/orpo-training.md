@@ -1,13 +1,25 @@
 # ORPO training — design
 
 Plan to add **ORPO** (Odds Ratio Preference Optimization, Hong et al. 2024)
-as a third training `method` alongside `sft` and `dpo`. Status: **implemented
-(naïve correctness path + segmented backward + fused GeGLU vjp).**
+as a third training `method` alongside `sft` and `dpo`. Status: **in production —
+flash-CCE head (steel GEMM fwd+bwd) + prefix-sharing + segmented backward, composed
+(see the STATUS callout below).**
 
 ORPO folds the SFT objective and preference learning into a single
 **reference-free** loss. Because it needs no reference model, it is a *smaller*
 addition than DPO was — it reuses DPO's data format, loader, and batching, and
 runs half the forwards per step.
+
+> **STATUS (2026-06-19) — the ORPO stack is in PRODUCTION.** The flash-CCE head is
+> live in both directions (verbatim MLX **steel** GEMM + ORPO epilogue; `[M,vocab]`-free;
+> e4b backward **754 ms**, peak **0.93 GB flat @ M=8192**; `orpo_flash_ce`), prefix-sharing
+> is trainer-wired (`orpo_prefix_shared`) and **composed with the flash head AND the
+> segmented backward for both MiniCPM5 and e4b/Gemma4**, and adapter **warm-start**
+> (`RESUME=`) landed — all default-on in [`scripts/train-orpo.ts`](../../scripts/train-orpo.ts).
+> The ✅/🔬 entries + optimization log below are the **design/build history**; for the
+> current usage, flags, and numbers see [training.md](../reference/training.md) +
+> [orpo-quickstart.md](../reference/orpo-quickstart.md), and the live engineering record
+> [steel-flash-cce-handoff.md](../investigations/steel-flash-cce-handoff.md).
 
 > Oracle note: neither `mlx_lm` nor `optiq` ships ORPO, so — unlike DPO
 > ([`loss.ts`](../../src/train/loss.ts) ported `optiq/lora/dpo.py`) — ORPO is
@@ -174,11 +186,14 @@ else validates against):**
   over `[prompt; chosen; rejected]` with a block-sparse mask + block-wise RoPE.
   Validated 2026-06-18 — **forward BIT-EXACT** vs the two-forward path, grads in
   the bf16 class (~1.05%), **1.78× fewer token-passes**, peak 5.40 → 3.80 GB. See
-  [lever 7](#ranked-levers-with-our-setup-verdicts) for the full write-up. Not yet
-  wired into `orpoLoop` (the standalone correctness gate); trainer wiring + the
-  e4b port are follow-ons.
-- ⚠️ **e4b prefix-shared port — construction CORRECT, but blocked by e4b's
-  length-sensitivity (2026-06-18).** Ported to Gemma e4b
+  [lever 7](#ranked-levers-with-our-setup-verdicts) for the full write-up.
+  **LANDED (2026-06-19):** wired into the trainer (`orpo_prefix_shared`), composed
+  with the flash-CCE head per branch AND with the segmented backward
+  (`SegmentedBackwardOrpoPrefix`); the e4b port is composed too (next entry).
+- ✅ **e4b prefix-shared port — LANDED + composed with the segmented backward
+  (`SegmentedBackwardOrpoPrefixGemma4`, 2026-06-19); the length-sensitivity below is an
+  accepted numerical caveat for a fine-tune, not a blocker** (seg-vs-non-seg-same-prefix
+  grads match to 1.7–2.3%, loss bit-exact-class). Ported to Gemma e4b
   (`setGemmaPrefixPlan` + block-wise RoPE in [`gemma4.ts`](../../src/model/gemma4.ts)
   `Attention.ropeBlocks`; `blockSparsePrefixMaskGemma` with a LOGICAL-position
   sliding-window cut + `Gemma4PrefixSharedCache` + `orpoLossPrefixSharedGemma` in
