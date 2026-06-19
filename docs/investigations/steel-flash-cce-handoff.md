@@ -6,6 +6,64 @@ coeff + dh) on top — to get **MLX-GEMM speed AND the `[M,V]`-free memory prope
 in one kernel. MLX ships no fused "quantized-matmul + softcap + response-logp" op, so
 we build the composition; the heavy GEMM is theirs, verbatim.
 
+## HANDOFF — current state (2026-06-19): SHIPPED in v0.0.5
+
+The whole ORPO training stack is **merged (PR #16) and released as v0.0.5** — `npm
+i mlx-bun` / `brew install joshuarossi/tap/mlx-bun` (tap formula at 0.0.5, sha verified).
+What shipped: the flash-CCE head (fwd+bwd), prefix-sharing, segmented composition, warm-start,
+the `scripts/train-orpo.ts` launcher, and the IFEval/UltraFeedback eval pieces. Release notes:
+GitHub release v0.0.5. Supported scope = **OptiQ-quantized MiniCPM5 + Gemma-4 (e4b/12B/26B)**.
+
+**Post-merge PR-review fixes (CodeRabbit, commits 890f380 / 63759fa) — read these, they
+caught real bugs:**
+- 🔴 **Prefix-shared head-primal UAF** (`branchLogpMeanGathered`/`orpoLossPrefixShared`): the
+  flash/fused-head CustomVjp PRIMAL (`hResp`, and `h`) was disposed *before* the lazy backward
+  recomputes from it → use-after-free (same class as the segmented `headSink` one). Fix: push
+  primals into the sink (freed post-eval) on the fused/flash path. **Tests passed before only
+  by lazy-eval timing luck** — this was latent. Watch for this pattern anywhere a CustomVjp's
+  primal is freed inline.
+- **Segmented "flash implies fused"** (`trainer.ts` `segFusedChunk`): `orpoFlashCe` alone left
+  the segmented non-prefix fallback on the full `[M,vocab]` head → e4b memory blowup. Now
+  `orpoFusedCe || orpoFlashCe` routes through the bounded chunked head.
+- Warm-start made atomic (validate all targets before disposing any), job payload exposes
+  `warm_start_adapter`/`mlp_split`, script GPU inputs use `fromBytesCopy` (page-align footgun),
+  env-precondition enforcement + flag validation in the probes.
+
+**Warm-start** (`warmStartFromAdapter` / launcher `RESUME=<adapter-dir>`): continue from a
+checkpoint's LoRA weights (optimizer + LR schedule restart). Insurance for interrupted runs.
+
+**The training dress-rehearsal (honest):** a CPM5 UltraFeedback ORPO run (full stack, lr 5e-5)
+reached ~step 4820, **val 1.66 → ~1.50, then plateaued** — expected: UF is open-ended, its loss
+floor is ~1.2-1.5, NOT the 0.3-0.4 you get on a narrow task. **IFEval moved 22.5% → 22.5%
+(flat)** — a real null result: general preference data + a partial run is the wrong lever for
+IFEval. The pipeline learns (val dropped); the metric just isn't the right one. Checkpoints
+every 200 under `./adapters/cpm5-uf-8h/checkpoints/` (best-val ~`step-04200-val1.5008`).
+
+**Gotchas the runs taught us:**
+- **Agent-spawned background runs get REAPED** (~47 min observed; not a crash/OOM — confirmed
+  via logs + `pmset` showed no sleep). **Run long training detached from your OWN shell**
+  (`nohup … &`), never as a session background task.
+- e4b training **requires** `MLX_BUN_PERF_KERNEL=0` + `MLX_BUN_FUSED_GELU=0` (the launcher
+  auto-sets them; the e4b parity probe now enforces them).
+- Adapters live in **`~/.cache/mlx-bun/mlx-bun-finetunes/`** (launcher default), never the repo.
+
+**THE next goal — the chunk segmenter (load-bearing).** UF was the rehearsal; the real run is
+**distilling Opus/GPT-5.5 conversation-segmentation into a local model** (data at
+`~/Code/lucien/benchmark/finetune/chunk-v3/dpo/orpo-curated-*.fixed.jsonl`, `{prompt:[sys,user],
+chosen, rejected}` — already supported by the loader). Score by **boundary/label accuracy vs
+the gold (chunk-eval), NOT val loss** (loss is dominated by low-entropy JSON/UUID tokens). This
+is what localizes the Lucien synthesis pipeline's `chunk-recent` stage (the whole "100% local
+memory" promise). ORPO is ideal here: chosen/rejected share the conversation + are both
+well-formed JSON, so the contrast isolates the segmentation decision, and the gold makes
+pair-ranking + eval objective. The stack is built for it (prefix-share the shared 8k
+conversation once, segment the long context, flash the big vocab). See memory
+[[training-tracks-are-appliance-components]]. After that: the e4b overnight, and the welcome
+assistant (a UF-tuned greeter — system prompt carries the mlx-bun knowledge, not training).
+
+**Run commands:** see [orpo-quickstart](../reference/orpo-quickstart.md) +
+[training.md](../reference/training.md). The full stack is `scripts/train-orpo.ts` (defaults on);
+resume with `RESUME=<ckpt-dir>`; run it detached (`nohup`).
+
 ## TL;DR status
 
 | Piece | State |

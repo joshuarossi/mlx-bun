@@ -8,8 +8,9 @@ transient front door that stays current. Product/UX north star:
 ## Current work — Steel flash-CCE ORPO head + the ORPO training stack (2026-06-19)
 
 Porting MLX's `steel` quantized GEMM verbatim into the flash-CCE ORPO head + fusing
-the ORPO epilogue, then wiring the whole new system end to end for a CPM5 test run +
-an e4b overnight. **Forward + backward: BOTH done + live + fast + `[M,V]`-free.**
+the ORPO epilogue, wiring the whole new system end to end. **SHIPPED in v0.0.5**
+(merged PR #16; `npm i mlx-bun` / `brew install joshuarossi/tap/mlx-bun`). **Forward +
+backward: BOTH done + live + fast + `[M,V]`-free.**
 - **Forward** ✅ steel GEMM + softcap + online-softmax → logp; default in
   `flashCceForward`; 180 ms; parity PASS e4b/cpm.
 - **Backward** ✅ **IN PRODUCTION** (`BWD_STEEL_SOURCE`/`bwdSteelKernel`, H-tiled
@@ -52,12 +53,15 @@ an e4b overnight. **Forward + backward: BOTH done + live + fast + `[M,V]`-free.*
   accuracy vs the Opus/GPT-5.5 gold — see [[training-tracks-are-appliance-components]].
 
 **Remaining / next:**
-- **The big CPM5 UltraFeedback run** — in flight in Josh's terminal (detached `nohup`, lr 5e-5,
-  checkpoint every 200). NOTE: a session-spawned background run got **reaped by the agent runtime
-  at ~47 min** (not a crash/OOM — confirmed via logs); long runs MUST be launched from the user's
-  own shell, not by the agent.
-- **The chunk segmenter** (the load-bearing run): distill Opus/GPT-5.5 segmentation into a local
-  model, scored by boundary/label accuracy — this is what localizes the Lucien synthesis pipeline.
+- **CPM5 UltraFeedback run** — dress-rehearsal, PAUSED at ~step 4820 (val 1.66 → ~1.50 plateau,
+  as expected for open-ended UF; checkpoints every 200 in `./adapters/cpm5-uf-8h/checkpoints/`,
+  best-val ~`step-04200`). Resumable via `RESUME=<ckpt>`. NOTE: a session-spawned background run
+  got **reaped by the agent runtime at ~47 min** (not a crash/OOM — confirmed via logs + `pmset`);
+  long runs MUST be launched detached from the user's OWN shell (`nohup … &`), not by the agent.
+- **The chunk segmenter** (THE load-bearing run): distill Opus/GPT-5.5 conversation-segmentation
+  into a local model (data: `~/Code/lucien/.../chunk-v3/dpo/orpo-curated-*.fixed.jsonl`), scored by
+  **boundary/label accuracy vs gold (chunk-eval), NOT val loss** — this localizes the Lucien
+  synthesis pipeline's `chunk-recent` stage. See [[training-tracks-are-appliance-components]].
 - **The e4b overnight** — `scripts/train-orpo.ts` full stack at 8192 (Josh runs it — ground rule).
 - Perf follow-up: the optional lossless `MLX_BUN_CCE_BWD_BLOCK_EPS=1e-5` vocab-block skip on real
   long text.
