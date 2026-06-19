@@ -19,7 +19,7 @@
 //   FLASH=0  disable the flash head (use fused MLX quantizedMatmul head instead)
 //   PREFIX=0 disable prefix-sharing (plain two-forward branches)
 //   SEGOFF=1 disable the segmented backward (hold all layer activations — more memory)
-//   ADAPTER  output adapter dir         (./adapters/orpo-<model>)
+//   ADAPTER  output adapter dir         (~/.cache/mlx-bun/mlx-bun-finetunes/orpo-<model>)
 
 import { readFileSync, existsSync } from "node:fs";
 import { basename } from "node:path";
@@ -56,7 +56,9 @@ const PREFIX = process.env.PREFIX !== "0";
 const SAVE_EVERY = num("SAVE_EVERY", 0); // >0 → save a mountable checkpoint every N steps (crash-safe)
 const RESUME = process.env.RESUME ?? "";  // path to an adapter/checkpoint dir → warm-start LoRA weights
 const modelName = basename(MODEL.replace(/\/$/, "")).slice(0, 24);
-const ADAPTER = process.env.ADAPTER ?? `./adapters/orpo-${isGemma ? "e4b" : "cpm5"}`;
+// Adapters live in the cache, NOT the repo — alongside the other finetunes
+// (~/.cache/mlx-bun/mlx-bun-finetunes/*). Override with ADAPTER=<dir>.
+const ADAPTER = process.env.ADAPTER ?? `${process.env.HOME}/.cache/mlx-bun/mlx-bun-finetunes/orpo-${isGemma ? "e4b" : "cpm5"}`;
 
 const { loadModelConfig } = await import("../src/config");
 const { Weights } = await import("../src/weights");
