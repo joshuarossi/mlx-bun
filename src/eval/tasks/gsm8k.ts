@@ -38,7 +38,8 @@ const NUM = String.raw`-?[\d,]+\.?\d*`;
 /** Model output → numeric answer string (####, then \boxed{}, then last number). */
 export function extractAnswer(textIn: string): string | null {
   let text = textIn;
-  if (text.includes("</think>")) text = text.split("</think>")[1] ?? text;
+  // Match Python's `split("</think>", 1)[1]`: everything after the FIRST tag.
+  if (text.includes("</think>")) text = text.split("</think>").slice(1).join("</think>");
 
   const hash = text.match(new RegExp(String.raw`####\s*(${NUM})`));
   if (hash) return hash[1]!.replace(/,/g, "").trim();
@@ -63,23 +64,34 @@ function toNum(s: string | null): number | null {
 
 export async function evaluateGsm8k(
   tm: TaskModel,
-  opts: { nSamples?: number; nShots?: number; maxTokens?: number; seed?: number } = {},
+  opts: { nSamples?: number; nShots?: number; maxTokens?: number; seed?: number; frozen?: boolean } = {},
 ): Promise<Gsm8kResult> {
   const nShots = opts.nShots ?? 3;
   const maxTokens = opts.maxTokens ?? 256;
-  const rows = loadJsonl<Gsm8kRow>("gsm8k");
-  const idx = sampleIndices(rows.length, opts.nSamples ?? 200, opts.seed ?? 42);
+
+  // Optiq-parity mode (DEFAULT): score optiq's EXACT 1000 questions (the same data
+  // his published GSM8K used) but through OUR OWN pipeline — our few-shot builder,
+  // our chat template, our scorer. If our number reproduces his, our runtime is
+  // faithful. MLX_BUN_GSM8K_FROZEN=0 falls back to our own sampling of the full set.
+  const useFrozen = opts.frozen ?? (process.env.MLX_BUN_GSM8K_FROZEN !== "0");
+  let rows: Gsm8kRow[];
+  if (useFrozen) {
+    rows = loadJsonl<Gsm8kRow>("gsm8k_optiq_frozen"); // optiq's exact draw; we use {question, answer}
+  } else {
+    const all = loadJsonl<Gsm8kRow>("gsm8k");
+    rows = sampleIndices(all.length, opts.nSamples ?? 1000, opts.seed ?? 42).map((i) => all[i]!);
+  }
 
   let nCorrect = 0;
-  for (let k = 0; k < idx.length; k++) {
-    const item = rows[idx[k]!]!;
+  for (let k = 0; k < rows.length; k++) {
+    const item = rows[k]!;
     const gt = toNum(groundTruth(item.answer));
     const out = await generateText(tm, buildPrompt(item.question, nShots), { maxTokens, useChat: true });
     const pred = toNum(extractAnswer(out));
     if (gt !== null && pred !== null && Math.abs(gt - pred) < 1e-3) nCorrect++;
-    if ((k + 1) % 10 === 0 || k + 1 === idx.length)
-      process.stderr.write(`\r  gsm8k ${k + 1}/${idx.length}  acc=${(nCorrect / (k + 1) * 100).toFixed(1)}%`);
+    if ((k + 1) % 10 === 0 || k + 1 === rows.length)
+      process.stderr.write(`\r  gsm8k ${k + 1}/${rows.length}  acc=${(nCorrect / (k + 1) * 100).toFixed(1)}%`);
   }
   process.stderr.write("\n");
-  return { nCorrect, nTotal: idx.length, accuracy: idx.length ? nCorrect / idx.length : 0 };
+  return { nCorrect, nTotal: rows.length, accuracy: rows.length ? nCorrect / rows.length : 0 };
 }

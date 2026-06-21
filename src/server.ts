@@ -667,18 +667,49 @@ export function promptEndsInOpenThink(rendered: string): boolean {
   return open !== -1 && open > rendered.lastIndexOf("</think>");
 }
 
+/** Concatenate the text of an OpenAI content-part array, ignoring non-text
+ *  parts. Tolerant of the part shapes clients actually send: `{type:"text",
+ *  text}` (OpenAI/pi), `{type:"input_text", text}` (Responses-style), or any
+ *  part carrying a string `text`. */
+function contentPartsToText(parts: Array<Record<string, unknown>>): string {
+  return parts
+    .map((p) => (p && typeof p.text === "string" ? p.text : ""))
+    .join("");
+}
+
+/** True if any content part is an image (so the vision path must keep the
+ *  array form for extractImages). */
+function hasImagePart(parts: Array<Record<string, unknown>>): boolean {
+  return parts.some((p) => p && (p.type === "image" || p.type === "image_url"));
+}
+
 /** OpenAI sends assistant tool_call arguments as JSON strings; the
  *  template renders the object form natively — normalize before render.
- *  Also maps the OpenAI reasoning-model "developer" role to "system": pi-ai
- *  (and OpenAI's own SDKs) rename the system prompt to `developer` whenever a
- *  model advertises reasoning, but our chat templates only know
- *  system/user/assistant/tool and raise "Unexpected message role." otherwise.
- *  This is exactly why Qwen3.5/MiniCPM5 chat got no messages while Gemma (a
- *  non-reasoning model, so pi keeps `system`) worked. `developer` IS the
- *  instruction/system prompt, so the remap is semantics-preserving. */
+ *
+ *  Two more wire-format → template-format fixes, both "match the format the
+ *  model's chat template expects":
+ *
+ *  1. Map the OpenAI reasoning-model "developer" role to "system": pi-ai (and
+ *     OpenAI's own SDKs) rename the system prompt to `developer` whenever a
+ *     model advertises reasoning, but our chat templates only know
+ *     system/user/assistant/tool and raise "Unexpected message role." This is
+ *     why Qwen3.5/MiniCPM5 chat got no messages while Gemma (non-reasoning, so
+ *     pi keeps `system`) worked. `developer` IS the system prompt, so the remap
+ *     is semantics-preserving.
+ *
+ *  2. Flatten text-only content-part arrays to a plain string. pi (and any
+ *     OpenAI multimodal client) sends user content as `[{type:"text",text}]`,
+ *     but non-vision chat templates expect `content` to be a STRING and render
+ *     nothing for an array — so the user's turn silently vanishes and the model
+ *     replies "I don't see any message." Arrays that carry an image part are
+ *     left intact for the vision path (extractImages); only text-only arrays
+ *     are collapsed here, which is a no-op for the vision templates too. */
 export function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
   return messages.map((raw) => {
-    const m = raw.role === "developer" ? { ...raw, role: "system" } : raw;
+    let m = raw.role === "developer" ? { ...raw, role: "system" } : raw;
+    if (Array.isArray(m.content) && !hasImagePart(m.content)) {
+      m = { ...m, content: contentPartsToText(m.content) };
+    }
     if (!m.tool_calls) return m;
     return {
       ...m,
@@ -880,41 +911,59 @@ export function createServer(
         `Omit --kv-quant to batch in bf16. (docs/design/parallel-slots.md)`,
     );
 
-  const toOptions = (req: ChatRequest): GenerateOptions & { stopSequences: string[] } => ({
-    maxTokens: req.max_completion_tokens ?? req.max_tokens ?? 1024,
-    temperature: req.temperature ?? serverOptions.defaultTemperature ?? ctx.genDefaults.temperature ?? 0.7,
-    topP: req.top_p ?? serverOptions.defaultTopP ?? ctx.genDefaults.topP ?? 0,
-    topK: req.top_k ?? serverOptions.defaultTopK ?? ctx.genDefaults.topK ?? 0,
-    seed: req.seed ?? (Date.now() & 0xffffffff),
-    repetitionPenalty: req.repetition_penalty ?? ctx.genDefaults.repetitionPenalty,
-    hlg: resolveHlg(req.hlg, serverOptions.hlg),
-    // generate() yields token ids; stop sequences match on decoded text
-    // (they can span token boundaries), so the StopMatcher sits at the
-    // decode layer below and halts the loop via onToken → false.
-    stopSequences: (typeof req.stop === "string" ? [req.stop] : req.stop ?? [])
-      .filter((s) => typeof s === "string" && s.length > 0),
-    ...kvScheme,
-  });
+  // Effective enable_thinking for a request, with the same precedence the chat
+  // template uses (extracted so sampling and template rendering can't disagree):
+  // explicit chat_template_kwargs.enable_thinking → reasoning_effort ("none" =
+  // off) → server --thinking default → model default (MiniCPM5 → off). undefined
+  // means "not a switchable-thinking model / leave the template default".
+  const resolveEnableThinking = (req: ChatRequest): boolean | undefined => {
+    const explicit = req.chat_template_kwargs?.enable_thinking;
+    if (typeof explicit === "boolean") return explicit;
+    const effort = req.reasoning_effort;
+    if (effort !== undefined) return effort !== "none";
+    if (serverOptions.defaultThinking !== undefined) return serverOptions.defaultThinking;
+    return isMiniCPM5Config(ctx.model.config) ? false : undefined;
+  };
+
+  const toOptions = (req: ChatRequest): GenerateOptions & { stopSequences: string[] } => {
+    // Sampling follows the thinking state — which the web UI's thinking button
+    // drives via enable_thinking. Model authors publish a SINGLE
+    // generation_config temperature (the think-mode value) but recommend a
+    // cooler one for direct, no-think replies (MiniCPM5 card: 0.9 think / 0.7
+    // no-think, top_p 0.95 for both). So with no explicit temperature set, a
+    // no-think turn runs at most NO_THINK_TEMPERATURE while a think turn keeps
+    // the model's hotter configured default. An explicit request/CLI
+    // temperature always wins. top_p is unchanged by mode.
+    const NO_THINK_TEMPERATURE = 0.7;
+    const genTemp = ctx.genDefaults.temperature ?? 0.7;
+    const defaultTemp = resolveEnableThinking(req) === false
+      ? Math.min(genTemp, NO_THINK_TEMPERATURE)
+      : genTemp;
+    return {
+      // A thinking turn emits <think>…</think> AND the answer, so a tight cap
+      // truncates the visible reply. Default very generously (the model's
+      // context is far larger); only an explicit max_tokens narrows it. The
+      // model still stops at its eos_token well before this in normal replies.
+      maxTokens: req.max_completion_tokens ?? req.max_tokens ?? 65_536,
+      temperature: req.temperature ?? serverOptions.defaultTemperature ?? defaultTemp,
+      topP: req.top_p ?? serverOptions.defaultTopP ?? ctx.genDefaults.topP ?? 0,
+      topK: req.top_k ?? serverOptions.defaultTopK ?? ctx.genDefaults.topK ?? 0,
+      seed: req.seed ?? (Date.now() & 0xffffffff),
+      repetitionPenalty: req.repetition_penalty ?? ctx.genDefaults.repetitionPenalty,
+      hlg: resolveHlg(req.hlg, serverOptions.hlg),
+      // generate() yields token ids; stop sequences match on decoded text
+      // (they can span token boundaries), so the StopMatcher sits at the
+      // decode layer below and halts the loop via onToken → false.
+      stopSequences: (typeof req.stop === "string" ? [req.stop] : req.stop ?? [])
+        .filter((s) => typeof s === "string" && s.length > 0),
+      ...kvScheme,
+    };
+  };
 
   const templateOptionsFor = (req: ChatRequest, tools: ToolDefinition[] | null) => {
-    // Precedence: explicit per-request chat_template_kwargs wins; else the
-    // standard reasoning_effort (the OpenAI field Pi sends — "none" → no
-    // thinking, any level → thinking on); else the server-wide --thinking
-    // default; else the model's own default (false for MiniCPM5, otherwise
-    // leave the template's default). The Anthropic/Responses shims map their
-    // reasoning fields onto reasoning_effort before reaching here.
-    const explicit = req.chat_template_kwargs?.enable_thinking;
-    const effort = req.reasoning_effort;
-    return {
-      tools,
-      enableThinking: typeof explicit === "boolean"
-        ? explicit
-        : effort !== undefined
-          ? effort !== "none"
-          : serverOptions.defaultThinking !== undefined
-            ? serverOptions.defaultThinking
-            : isMiniCPM5Config(ctx.model.config) ? false : undefined,
-    };
+    // enableThinking resolution (and its precedence) lives in
+    // resolveEnableThinking so template rendering and sampling stay in sync.
+    return { tools, enableThinking: resolveEnableThinking(req) };
   };
 
   const promptIdsFor = (

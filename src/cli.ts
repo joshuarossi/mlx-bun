@@ -41,6 +41,7 @@ Commands:
   scan       Re-index the Hugging Face cache
   harness    Connect your own pi install to the local mlx-bun server
   train      Fine-tune a LoRA adapter (SFT / DPO / ORPO) on your data
+  memory     Set up + manage your local AI's personal wiki memory
   benchmark  Measure decode/prefill speed of OUR stack on this machine
   evals      Show recent benchmark runs (all stacks)
   help       Show help for a command (also: mlx-bun <command> --help)
@@ -274,9 +275,48 @@ prefix-sharing + segmented backward (each falls back + logs if a row's
 preconditions aren't met). Gemma/e4b sets its required training env flags
 automatically. Adapters are mountable directly (mlx-bun serve --adapter).
 Run long jobs detached from your own shell:  nohup mlx-bun train … &`,
+  memory: `mlx-bun memory — your local AI's personal wiki
+
+Usage: mlx-bun memory <subcommand>
+
+A local, durable memory for the assistant: a wiki of Markdown articles
+(~/.mlx-bun/wiki) it reads to remember your projects, people, and history
+across sessions. It's yours — git-tracked, editable in any tool (Obsidian
+opens it as a vault), and it never leaves the machine. A read-only Reference/
+folder symlinks mlx-bun's own docs into memory on day one. Once set up, it
+loads automatically into every \`mlx-bun pi\` and \`mlx-bun serve\` session.
+
+Subcommands:
+  init, setup        Create the wiki + walk through setup (idempotent);
+                     offers to import an existing vault and install the
+                     nightly synthesis job
+  status             Path, article count, git + schedule state
+  open, browse [article]
+                     Open the wiki, or a specific article, in Obsidian
+                     (falls back to Finder / the default Markdown app)
+  list               List article titles + read-only Reference docs
+  search <query>     Search articles from the terminal
+  toc <article>      Print an article's headings + anchors
+  section <article> <anchor>
+                     Print one article section
+  links <article>    Show resolved outbound + inbound wikilinks
+  read <article>     Print an article (stem, e.g. Archie_Project)
+  synthesize         Run the synthesis pipeline now (--since, --model,
+                     --dry-run). STUBBED — a no-op until M1 lands.
+  schedule           Install the nightly launchd job (--at HH:MM [03:00])
+  unschedule         Remove the nightly launchd job
+
+The read path is live: the assistant reads a wiki you set up by hand or
+import during \`memory init\`. Ask the assistant to "open my memory" or run
+\`mlx-bun memory open\` to browse it in Obsidian/Finder, or
+\`mlx-bun memory open <article>\` to jump to a specific page. Synthesis
+(conversations → articles) is stubbed; scheduling is real, so the nightly
+job is wired and ready and starts producing articles the moment synthesis
+lands.`,
 };
 
 HELP.bench = HELP.benchmark!;
+HELP.setup = HELP.memory!;
 
 function printHelp(topic?: string): never {
   if (topic && HELP[topic]) console.log(renderHelp(HELP[topic]));
@@ -1258,6 +1298,322 @@ switch (cmd) {
       `adapter    ${style.bold(adapter)}`,
       `serve it   ${style.accent(`mlx-bun serve ${m.repoId} --adapter ${adapter}`)}`,
     ]);
+    break;
+  }
+
+  case "memory": {
+    const { style, box, step, banner } = await import("./tui");
+    const {
+      vaultRoot, vaultStatus, setupVault, importArticlesFrom, commitVault,
+      listMemoryDocuments, readArticle, resolveArticlePath, searchArticles,
+      parseToc, extractSection, getArticleLinks,
+    } = await import("./memory/vault");
+    const { installSchedule, removeSchedule, scheduleStatus, parseAt } = await import("./memory/schedule");
+    const root = vaultRoot();
+    const fmtAt = (a: { hour: number; minute: number }) => `${String(a.hour).padStart(2, "0")}:${String(a.minute).padStart(2, "0")}`;
+    const openMemoryTarget = async (targetPath = root): Promise<"obsidian" | "fallback"> => {
+      // For articles, Obsidian's URL handler opens the exact file inside the
+      // vault. For the vault root, `open -a Obsidian <folder>` opens the folder
+      // as a vault. Both fall back to macOS `open` if Obsidian is unavailable.
+      if (targetPath !== root) {
+        const uri = `obsidian://open?path=${encodeURIComponent(targetPath)}`;
+        const byUri = Bun.spawn(["open", uri], { stdout: "ignore", stderr: "ignore" });
+        if ((await byUri.exited) === 0) return "obsidian";
+      } else {
+        const byApp = Bun.spawn(["open", "-a", "Obsidian", root], { stdout: "ignore", stderr: "ignore" });
+        if ((await byApp.exited) === 0) return "obsidian";
+      }
+      const fallback = Bun.spawn(["open", targetPath], { stdout: "ignore", stderr: "ignore" });
+      await fallback.exited;
+      return "fallback";
+    };
+
+    // Words after `memory`, minus flags: [subcommand, ...query].
+    const words = argv.slice(1).filter((a) => !a.startsWith("-"));
+    const sub = (words[0] ?? "status").toLowerCase();
+    const rest = words.slice(1).join(" ").trim();
+
+    // TTY-only line prompt; in a non-interactive shell returns the default so
+    // the wizard degrades to a non-destructive no-op rather than hanging.
+    const ask = async (q: string, dflt = ""): Promise<string> => {
+      if (!process.stdin.isTTY) return dflt;
+      const { createInterface } = await import("node:readline/promises");
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        return ((await rl.question(q)).trim() || dflt);
+      } finally {
+        rl.close();
+      }
+    };
+    const confirmYN = async (q: string, defaultYes: boolean): Promise<boolean> => {
+      const a = (await ask(`${q} ${defaultYes ? "[Y/n]" : "[y/N]"} `)).toLowerCase();
+      if (!a) return defaultYes;
+      return a === "y" || a === "yes";
+    };
+
+    if (sub === "init" || sub === "setup") {
+      banner(pkg.version);
+      box([
+        `${style.accent("●")} ${style.bold("Personal memory for your local AI")}`,
+        "",
+        "A wiki of Markdown articles your local assistant reads to remember",
+        "your projects, people, and history across sessions. It's yours —",
+        `git-tracked at ${style.dim(root)}, editable in any tool, and it`,
+        "never leaves this machine.",
+      ]);
+      const sSetup = step("creating your wiki");
+      const res = await setupVault(root);
+      sSetup.done(res.alreadySetUp ? `already set up ${style.dim(`· ${root}`)}` : `wiki ready ${style.dim(`· ${root}`)}`);
+
+      // Offer to seed from an existing vault (e.g. a lucien ~/Dreaming) so the
+      // assistant has real content to read on day one, before synthesis exists.
+      const { homedir } = await import("node:os");
+      const { join } = await import("node:path");
+      const { readdir } = await import("node:fs/promises");
+      const seedRoot = await ask(
+        `\n  Seed from an existing wiki? Enter its path, or blank to skip ${style.dim(`[${join(homedir(), "Dreaming")}]`)}: `,
+        "",
+      );
+      if (seedRoot) {
+        const srcArticles = join(seedRoot.replace(/^~(?=$|[/\\])/, homedir()), "articles");
+        let count = 0;
+        try { count = (await readdir(srcArticles)).filter((n) => n.endsWith(".md")).length; } catch { count = 0; }
+        if (count === 0) {
+          console.log(style.dim(`  no articles found under ${srcArticles} — skipping import`));
+        } else if (await confirmYN(`  Import ${count} article(s) from ${srcArticles}?`, true)) {
+          const sImp = step(`importing ${count} article(s)`);
+          const imported = await importArticlesFrom(srcArticles, root);
+          await commitVault(root, `Import ${imported.length} article(s) from ${seedRoot}`);
+          sImp.done(`imported ${imported.length} article(s)`);
+        }
+      }
+
+      // Offer to install the nightly synthesis job (a launchd agent). The job
+      // itself is a no-op today (synthesis is stubbed), but installing the
+      // schedule now means it starts producing articles the moment M1 lands —
+      // no reconfiguration. Persistent action → TTY-only, defaults to no.
+      let scheduled: string | null = null;
+      console.log(style.dim(
+        "\n  Synthesis (turning your conversations into articles) isn't implemented yet,\n" +
+        "  but you can install the nightly job now so it runs automatically once it is.",
+      ));
+      if (await confirmYN("  Install the nightly synthesis job (runs in the background)?", false)) {
+        const atRaw = await ask(`    At what time? 24h HH:MM ${style.dim("[03:00]")}: `, "03:00");
+        const sSched = step(`installing nightly job at ${fmtAt(parseAt(atRaw))}`);
+        const r = await installSchedule({ at: atRaw });
+        scheduled = fmtAt(r.at);
+        sSched.done(
+          r.loaded
+            ? `nightly job installed ${style.dim(`· ${scheduled} · ${r.plistPath}`)}`
+            : `plist written ${style.dim(`· ${r.plistPath} · launchctl load failed (load it manually)`)}`,
+        );
+      }
+
+      const st = await vaultStatus(root);
+      console.log();
+      box([
+        `${style.green("●")} ${style.bold("memory is set up")} ${style.dim(`· ${st.articleCount} article(s) · ${st.referenceCount} reference doc(s)`)}`,
+        "",
+        `chat now   ${style.accent("mlx-bun pi")} ${style.dim("— the assistant now reads your memory automatically")}`,
+        `inspect    ${style.accent("mlx-bun memory status")} ${style.dim("·")} ${style.accent("mlx-bun memory search <q>")}`,
+        `browse     ${style.dim(`open ${root} in Obsidian, or any editor`)}`,
+        scheduled
+          ? `nightly    ${style.green("scheduled")} ${style.dim(`· ${scheduled} daily · mlx-bun memory unschedule to undo`)}`
+          : `nightly    ${style.dim("not scheduled · mlx-bun memory schedule to set it up")}`,
+        "",
+        style.dim("Synthesis (conversations → articles) is stubbed for now; the scheduled"),
+        style.dim("job no-ops until it lands. Add or import articles to read meanwhile."),
+      ]);
+      break;
+    }
+
+    if (sub === "status") {
+      const st = await vaultStatus(root);
+      if (!st.exists) {
+        console.log(`no memory wiki yet at ${style.dim(root)}`);
+        console.log(`set one up:  ${style.accent("mlx-bun memory init")}`);
+        break;
+      }
+      const sched = await scheduleStatus();
+      console.log();
+      box([
+        `${style.bold("memory")} ${style.dim(`· ${root}`)}`,
+        "",
+        `articles   ${style.bold(String(st.articleCount))}`,
+        `reference  ${style.bold(String(st.referenceCount))} ${style.dim("read-only docs")}`,
+        `git        ${st.isGitRepo ? style.green("tracked") : style.dim("not a git repo")}`,
+        `synthesis  ${style.dim("stubbed (M1) — not implemented yet")}`,
+        `last run   ${style.dim("not available yet")}`,
+        `nightly    ${
+          sched.installed
+            ? `${sched.loaded ? style.green("scheduled") : style.accent("installed (not loaded)")} ${style.dim(`· ${sched.plistPath}`)}`
+            : style.dim("not scheduled · mlx-bun memory schedule")
+        }`,
+        st.recentArticles.length
+          ? `recent    ${st.recentArticles.slice(0, 5).map((r) => r.article).join(", ")}`
+          : `recent    ${style.dim("none")}`,
+      ]);
+      break;
+    }
+
+    if (sub === "open" || sub === "browse") {
+      const st = await vaultStatus(root);
+      if (!st.exists) {
+        console.log(`no memory wiki yet at ${style.dim(root)}`);
+        console.log(`set one up:  ${style.accent("mlx-bun memory init")}`);
+        break;
+      }
+      let targetPath = root;
+      let label = "memory";
+      if (rest) {
+        try {
+          targetPath = await resolveArticlePath(root, rest);
+          label = rest.endsWith(".md") ? rest.slice(0, -3) : rest;
+        } catch (err) {
+          console.error(err instanceof Error ? err.message : String(err));
+          console.error(`try:  ${style.accent(`mlx-bun memory search ${rest}`)}`);
+          process.exit(1);
+        }
+      }
+      const where = await openMemoryTarget(targetPath);
+      console.log(
+        where === "obsidian"
+          ? `opened ${label} in Obsidian: ${targetPath}`
+          : `opened ${label}: ${targetPath}`,
+      );
+      break;
+    }
+
+    if (sub === "synthesize") {
+      const { runSynthesis } = await import("./memory/pipeline");
+      const dryRun = flag("dry-run");
+      console.log();
+      const summary = await runSynthesis(
+        { since: opt("since") ?? undefined, model: opt("model") ?? undefined, dryRun },
+        (e) => {
+          if (e.type === "stage") console.log(`  ${style.dim("·")} ${e.message}`);
+          else console.log(`  ${e.message}`);
+        },
+      );
+      console.log(style.dim(`\n  ${summary.note}`));
+      break;
+    }
+
+    if (sub === "schedule") {
+      const atRaw = opt("at") ?? "03:00";
+      const r = await installSchedule({ at: atRaw });
+      console.log();
+      box([
+        r.loaded
+          ? `${style.green("●")} ${style.bold("nightly synthesis scheduled")} ${style.dim(`· ${fmtAt(r.at)} daily`)}`
+          : `${style.accent("●")} ${style.bold("plist written, but launchctl load failed")}`,
+        "",
+        `plist      ${style.dim(r.plistPath)}`,
+        `runs       ${style.dim("mlx-bun memory synthesize (a no-op until synthesis lands)")}`,
+        `undo       ${style.accent("mlx-bun memory unschedule")}`,
+      ]);
+      break;
+    }
+
+    if (sub === "unschedule") {
+      const removed = await removeSchedule();
+      console.log(removed ? "nightly synthesis job removed" : "no nightly job was installed");
+      break;
+    }
+
+    if (sub === "list") {
+      const docs = await listMemoryDocuments(root);
+      if (docs.length === 0) { console.log("no articles or reference docs yet"); break; }
+      for (const s of docs) console.log(`  ${s}`);
+      const refs = docs.filter((s) => s.startsWith("Reference/")).length;
+      console.log(style.dim(`\n  ${docs.length - refs} article(s), ${refs} read-only reference doc(s)`));
+      break;
+    }
+
+    if (sub === "search") {
+      if (!rest) { console.error("usage: mlx-bun memory search <query>"); process.exit(1); }
+      const { summaries, hits } = await searchArticles(root, rest, { limit: 12 });
+      if (summaries.length === 0) { console.log(`no articles match "${rest}"`); break; }
+      console.log();
+      for (const s of summaries.slice(0, 15)) {
+        const terms = s.matched_terms?.length ? style.dim(` [${s.matched_terms.join(", ")}]`) : "";
+        console.log(`  ${style.bold(s.article)} ${style.dim(`· ${s.occurrences} hit(s)`)}${terms}`);
+      }
+      if (hits.length) {
+        console.log(style.dim("\n  sample lines:"));
+        for (const h of hits.slice(0, 6)) {
+          const where = h.anchor ? `${h.article}#${h.anchor}` : h.article;
+          console.log(`  ${style.dim(`${where}:${h.line}`)}  ${h.excerpt}`);
+        }
+      }
+      console.log(style.dim(`\n  read one:  mlx-bun memory read ${summaries[0]!.article}`));
+      break;
+    }
+
+    if (sub === "toc") {
+      if (!rest) { console.error("usage: mlx-bun memory toc <article>"); process.exit(1); }
+      try {
+        const { content } = await readArticle(root, rest);
+        const toc = parseToc(content);
+        if (toc.length === 0) { console.log("no headings"); break; }
+        for (const h of toc) console.log(`${"  ".repeat(Math.max(0, h.depth - 1))}- ${h.title}  ${style.dim(`#${h.anchor}`)}`);
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        console.error(`try:  ${style.accent(`mlx-bun memory search ${rest}`)}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    if (sub === "section") {
+      const [article, anchorRaw] = words.slice(1);
+      const anchor = anchorRaw?.replace(/^#/, "");
+      if (!article || !anchor) { console.error("usage: mlx-bun memory section <article> <anchor>"); process.exit(1); }
+      try {
+        const { content } = await readArticle(root, article);
+        const section = extractSection(content, anchor);
+        if (!section) { console.error(`no section #${anchor} in ${article}`); console.error(`try:  ${style.accent(`mlx-bun memory toc ${article}`)}`); process.exit(1); }
+        console.log(section);
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        console.error(`try:  ${style.accent(`mlx-bun memory search ${article}`)}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    if (sub === "links") {
+      if (!rest) { console.error("usage: mlx-bun memory links <article>"); process.exit(1); }
+      try {
+        const { outbound, inbound } = await getArticleLinks(root, rest);
+        console.log(`${style.bold("outbound")}:`);
+        console.log(outbound.length ? outbound.map((s) => `  ${s}`).join("\n") : "  (none)");
+        console.log(`\n${style.bold("inbound")}:`);
+        console.log(inbound.length ? inbound.map((s) => `  ${s}`).join("\n") : "  (none)");
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        console.error(`try:  ${style.accent(`mlx-bun memory search ${rest}`)}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    if (sub === "read") {
+      if (!rest) { console.error("usage: mlx-bun memory read <article>"); process.exit(1); }
+      try {
+        const { content } = await readArticle(root, rest);
+        console.log(content);
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        console.error(`try:  ${style.accent(`mlx-bun memory search ${rest}`)}`);
+        process.exit(1);
+      }
+      break;
+    }
+
+
+    console.error(`unknown: mlx-bun memory ${sub}`);
+    printHelp("memory");
     break;
   }
 

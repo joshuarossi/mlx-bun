@@ -132,42 +132,52 @@ describe("mapEventToFrames", () => {
 });
 
 describe("buildWebChatSystemPrompt", () => {
-  it("frames a helpful, local, eager assistant (not pi's coding-agent default)", () => {
+  it("frames a local mlx-bun assistant (not pi's coding-agent default)", () => {
     const prompt = buildWebChatSystemPrompt(false);
-    expect(prompt).toContain("helpful");
-    expect(prompt).toMatch(/eager|proactive/i);
     expect(prompt).toContain("mlx-bun");
+    expect(prompt).toMatch(/locally|local machine|own .*Mac/i);
     // Must NOT carry over pi's default framing or internal-doc noise.
     expect(prompt).not.toMatch(/operating inside pi/i);
     expect(prompt).not.toMatch(/pi documentation/i);
   });
 
-  it("advertises the full toolset, including approval-gated actions, in normal mode", () => {
+  it("stays concise and directs the model to answer, not greet (the small-model fix)", () => {
     const prompt = buildWebChatSystemPrompt(false);
-    for (const tool of ["read", "grep", "find", "ls", "bash", "edit", "write"]) {
-      expect(prompt).toContain(tool);
-    }
-    expect(prompt).toMatch(/approval/i);
+    // The bloated welcome prompt was ~2.5k chars and drowned a 1B model; the
+    // welcome blurb + two-tool guidance keeps it well under that.
+    expect(prompt.length).toBeLessThan(1300);
+    expect(prompt).toMatch(/answer directly/i);
+    // Explicitly counteract the "Hello! How can I assist you today?" failure.
+    expect(prompt).toMatch(/don'?t open with a (generic )?greeting|just answer/i);
   });
 
-  it("advertises the web-facing tools in both modes", () => {
-    for (const readOnly of [false, true]) {
-      const prompt = buildWebChatSystemPrompt(readOnly);
-      for (const tool of ["web_search", "web_fetch", "weather"]) {
-        expect(prompt).toContain(tool);
-      }
-    }
+  it("carries a short mlx-bun blurb so it can answer product questions from knowledge", () => {
+    const prompt = buildWebChatSystemPrompt(false);
+    expect(prompt).toMatch(/mlx-bun serve/i);
+    expect(prompt).toMatch(/answer questions about mlx-bun directly/i);
   });
 
-  it("describes only non-mutating capabilities in read-only mode", () => {
-    const prompt = buildWebChatSystemPrompt(true);
-    expect(prompt).toMatch(/read-only/i);
-    expect(prompt).toContain("read");
-    expect(prompt).toContain("grep");
+  it("names ONLY the two welcome tools (read + web_search), not the wider toolset", () => {
+    const prompt = buildWebChatSystemPrompt(false);
     expect(prompt).toContain("web_search");
-    // No promise of mutating actions the gate would refuse.
-    expect(prompt).not.toMatch(/\bedit\b/);
-    expect(prompt).not.toMatch(/\bwrite\b/);
+    expect(prompt).toContain("read");
+    // The tools we deliberately don't expose must not be named.
+    expect(prompt).not.toContain("web_fetch");
+    expect(prompt).not.toContain("weather");
+    for (const tool of ["grep", "find", "ls", "bash", "edit", "write"]) {
+      expect(prompt).not.toMatch(new RegExp(`\\b${tool}\\b`));
+    }
+  });
+
+  it("tells the model it has NO tools when none are wired (no false tool promises)", () => {
+    const prompt = buildWebChatSystemPrompt(false, undefined, { hasTools: false });
+    expect(prompt).toMatch(/no tools in this session|answer from your own knowledge/i);
+    expect(prompt).not.toMatch(/web_search/);
+  });
+
+  it("names the served model when one is provided", () => {
+    const prompt = buildWebChatSystemPrompt(false, { modelId: "cpm5" });
+    expect(prompt).toContain("cpm5");
   });
 });
 

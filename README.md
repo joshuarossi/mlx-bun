@@ -134,6 +134,14 @@ back in responses).
 - **The background agent runtime** — leave a local OpenAI-compatible endpoint
   available for scripts, recurring jobs, app integrations, and per-request
   adapter routing.
+- **The local memory layer** — `mlx-bun memory init` creates a git-tracked
+  Markdown wiki at `~/.mlx-bun/wiki`; `Reference/` is seeded with read-only
+  symlinks to mlx-bun's own docs, and the built-in pi agents read both those
+  docs and your articles quietly (`memory_search`, `memory_section`, etc.) and can open it in Obsidian for you
+  (`mlx-bun memory open [article]`). Chat-time memory is read-only; synthesis is
+  the separate writer path. The planned synthesis pipeline uses the same local
+  models with stage-specific LoRA adapters (chunk, bucket, synthesize, edit)
+  trained by the project creator and distributed from Hugging Face.
 
 The default experience is intentionally opinionated. Power users can override
 models, budgets, KV modes, adapters, and flags; the average user should not
