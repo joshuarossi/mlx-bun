@@ -1,0 +1,142 @@
+mlx-bun 0.0.5 — local AI · apple silicon · one binary
+  - native runtime
+  ✓ native runtime ready
+
+  ╭───────────────────────────────────────────────────────────────────────────────────────╮
+  │ ● train orpo · mlx-community/MiniCPM5-1B-OptiQ-4bit                                   │
+  │                                                                                       │
+  │ data       14691 train · 148 valid · format preference                                │
+  │ loop       iters 1000 · lr 0.00001 · rank 16 · scale 2 · seq 4096 · batch 1           │
+  │ head       flash-CCE Metal ([M,vocab]-free)                                           │
+  │ stack      prefix-share on · segmented 2/seg · λ 0.3                                  │
+  │ warm-start from ./adapters/cpm5-uf-8h/checkpoints/step-04200-val1.5008 (weights only) │
+  │ checkpoint every 200 steps                                                            │
+  │                                                                                       │
+  │ adapter    ./adapters/cpm5-uf-resume                                                  │
+  ╰───────────────────────────────────────────────────────────────────────────────────────╯
+
+  · loading model /Users/joshrossi/.cache/huggingface/hub/models--mlx-community--MiniCPM5-1B-OptiQ-4bit/snapshots/fce82a8bc686e854376459a3ab3ed0a8ec4b2e48
+  · resolving ranks
+  · ranks (by_bits): r16×102 r32×66
+  · warm-start: loaded 168 LoRA targets from ./adapters/cpm5-uf-8h/checkpoints/step-04200-val1.5008 (optimizer + LR schedule restart)
+  · loading preference dataset
+  · orpo segmented + prefix-share (MiniCPM5): single concat forward streamed over 12 segments of <=2 layers (two-forward fallback on prompt mismatch)
+  step 1/1000: loss 0.7166 (34.2s/step · peak 1.65 GB)
+  step 2/1000: loss 0.9320 (0.5s/step · peak 1.65 GB)
+  step 3/1000: loss 1.1755 (0.7s/step · peak 1.65 GB)
+  step 10/1000: loss 0.7562 (2.5s/step · peak 2.43 GB)
+  step 20/1000: loss 0.3897 (0.8s/step · peak 2.43 GB)
+  step 30/1000: loss 0.9823 (1.3s/step · peak 2.43 GB)
+  step 40/1000: loss 1.6884 (1.7s/step · peak 2.43 GB)
+  step 50/1000: loss 1.6932 (0.7s/step · peak 2.43 GB)
+  step 60/1000: loss 0.3178 (0.9s/step · peak 2.43 GB)
+  step 70/1000: loss 1.5348 (1.0s/step · peak 2.43 GB)
+  step 80/1000: loss 1.9956 (2.2s/step · peak 2.43 GB)
+  step 90/1000: loss 1.5190 (1.3s/step · peak 2.43 GB)
+  step 100/1000: loss 1.7674 (2.4s/step · peak 2.43 GB)
+  step 110/1000: loss 0.8121 (2.6s/step · peak 2.43 GB)
+  step 120/1000: loss 0.8193 (0.7s/step · peak 2.43 GB)
+  step 130/1000: loss 0.8512 (0.8s/step · peak 2.43 GB)
+  step 140/1000: loss 1.0656 (0.9s/step · peak 2.43 GB)
+  step 150/1000: loss 1.2512 (0.5s/step · peak 2.45 GB)
+  step 160/1000: loss 2.3436 (0.6s/step · peak 2.45 GB)
+  step 170/1000: loss 1.2882 (0.7s/step · peak 2.45 GB)
+  step 180/1000: loss 1.0361 (2.1s/step · peak 2.45 GB)
+  step 190/1000: loss 1.4736 (4.8s/step · peak 2.45 GB)
+  step 200/1000: loss 1.6900 (1.2s/step · peak 2.45 GB)
+  · checkpoint step-00200-val1.6419
+  step 210/1000: loss 1.5478 (1.6s/step · peak 2.45 GB)
+  step 220/1000: loss 1.6650 (1.0s/step · peak 2.45 GB)
+  step 230/1000: loss 0.8451 (0.8s/step · peak 2.45 GB)
+  step 240/1000: loss 3.2778 (2.9s/step · peak 2.45 GB)
+  step 250/1000: loss 2.8643 (4.0s/step · peak 2.45 GB)
+  step 260/1000: loss 1.2347 (0.6s/step · peak 2.45 GB)
+  step 270/1000: loss 1.3072 (1.8s/step · peak 2.45 GB)
+  step 280/1000: loss 2.5022 (2.0s/step · peak 2.46 GB)
+  step 290/1000: loss 1.2101 (1.8s/step · peak 2.46 GB)
+  step 300/1000: loss 1.4698 (2.6s/step · peak 2.46 GB)
+  step 310/1000: loss 2.0013 (1.5s/step · peak 2.46 GB)
+  step 320/1000: loss 0.8340 (1.1s/step · peak 2.46 GB)
+  step 330/1000: loss 1.3912 (1.4s/step · peak 2.46 GB)
+  step 340/1000: loss 1.0951 (1.9s/step · peak 2.46 GB)
+  step 350/1000: loss 1.6476 (0.7s/step · peak 2.46 GB)
+  step 360/1000: loss 2.3869 (1.0s/step · peak 2.46 GB)
+  step 370/1000: loss 0.6694 (1.6s/step · peak 2.62 GB)
+  step 380/1000: loss 0.7894 (1.3s/step · peak 2.62 GB)
+  step 390/1000: loss 2.5646 (1.5s/step · peak 2.62 GB)
+  step 400/1000: loss 3.3522 (3.9s/step · peak 2.62 GB)
+  · checkpoint step-00400-val1.6385
+  step 410/1000: loss 0.7299 (1.6s/step · peak 2.62 GB)
+  step 420/1000: loss 1.9287 (1.0s/step · peak 2.62 GB)
+  step 430/1000: loss 2.6626 (1.2s/step · peak 2.62 GB)
+  step 440/1000: loss 1.7684 (1.4s/step · peak 2.62 GB)
+  step 450/1000: loss 1.9601 (1.0s/step · peak 2.62 GB)
+  step 460/1000: loss 1.0875 (2.0s/step · peak 2.62 GB)
+  step 470/1000: loss 2.6798 (1.9s/step · peak 2.62 GB)
+  step 480/1000: loss 0.3184 (0.8s/step · peak 2.62 GB)
+  step 490/1000: loss 1.5899 (0.7s/step · peak 2.62 GB)
+  step 500/1000: loss 0.3598 (0.8s/step · peak 2.62 GB)
+  step 510/1000: loss 1.5822 (1.0s/step · peak 2.62 GB)
+  step 520/1000: loss 1.5677 (1.9s/step · peak 2.62 GB)
+  step 530/1000: loss 0.9346 (2.7s/step · peak 2.62 GB)
+  step 540/1000: loss 5.0582 (1.0s/step · peak 2.62 GB)
+  step 550/1000: loss 0.8758 (0.7s/step · peak 2.62 GB)
+  step 560/1000: loss 3.0369 (0.5s/step · peak 2.62 GB)
+  step 570/1000: loss 2.9495 (3.4s/step · peak 2.62 GB)
+  step 580/1000: loss 2.1471 (2.4s/step · peak 2.62 GB)
+  step 590/1000: loss 1.4562 (2.9s/step · peak 2.62 GB)
+  step 600/1000: loss 2.9376 (0.8s/step · peak 2.62 GB)
+  · checkpoint step-00600-val1.6354
+  step 610/1000: loss 1.6333 (1.0s/step · peak 2.62 GB)
+  step 620/1000: loss 1.3254 (1.9s/step · peak 2.62 GB)
+  step 630/1000: loss 0.6799 (3.9s/step · peak 2.62 GB)
+  step 640/1000: loss 1.9488 (2.7s/step · peak 2.62 GB)
+  step 650/1000: loss 0.6830 (0.7s/step · peak 2.62 GB)
+  step 660/1000: loss 0.9356 (1.6s/step · peak 2.62 GB)
+  step 670/1000: loss 1.5432 (1.0s/step · peak 2.62 GB)
+  step 680/1000: loss 2.0179 (0.8s/step · peak 2.62 GB)
+  step 690/1000: loss 2.0618 (1.5s/step · peak 2.62 GB)
+  step 700/1000: loss 0.4562 (2.2s/step · peak 2.62 GB)
+  step 710/1000: loss 1.6286 (2.4s/step · peak 2.62 GB)
+  step 720/1000: loss 2.4253 (2.1s/step · peak 2.62 GB)
+  step 730/1000: loss 2.3875 (0.5s/step · peak 2.62 GB)
+  step 740/1000: loss 0.4734 (1.8s/step · peak 2.62 GB)
+  step 750/1000: loss 0.4673 (0.9s/step · peak 2.62 GB)
+  step 760/1000: loss 1.2961 (1.4s/step · peak 2.62 GB)
+  step 770/1000: loss 2.1148 (1.9s/step · peak 2.62 GB)
+  step 780/1000: loss 0.5729 (0.8s/step · peak 2.62 GB)
+  step 790/1000: loss 1.4939 (1.4s/step · peak 2.62 GB)
+  step 800/1000: loss 0.9794 (0.6s/step · peak 2.62 GB)
+  · checkpoint step-00800-val1.6344
+  step 810/1000: loss 1.3330 (1.3s/step · peak 2.62 GB)
+  step 820/1000: loss 0.8247 (1.8s/step · peak 2.62 GB)
+  step 830/1000: loss 1.0701 (1.5s/step · peak 2.62 GB)
+  step 840/1000: loss 0.1159 (2.3s/step · peak 2.62 GB)
+  step 850/1000: loss 1.5095 (0.7s/step · peak 2.62 GB)
+  step 860/1000: loss 0.7194 (0.9s/step · peak 2.62 GB)
+  step 870/1000: loss 1.7324 (2.4s/step · peak 2.62 GB)
+  step 880/1000: loss 2.0905 (2.8s/step · peak 2.62 GB)
+  step 890/1000: loss 1.5758 (1.5s/step · peak 2.62 GB)
+  step 900/1000: loss 0.0784 (0.8s/step · peak 2.62 GB)
+  step 910/1000: loss 0.0605 (0.5s/step · peak 2.62 GB)
+  step 920/1000: loss 1.4854 (2.2s/step · peak 2.62 GB)
+  step 930/1000: loss 1.1089 (2.6s/step · peak 2.62 GB)
+  step 940/1000: loss 1.1358 (1.5s/step · peak 2.62 GB)
+  step 950/1000: loss 1.0901 (0.8s/step · peak 2.62 GB)
+  step 960/1000: loss 2.3935 (3.9s/step · peak 2.62 GB)
+  step 970/1000: loss 1.9870 (0.9s/step · peak 2.62 GB)
+  step 980/1000: loss 2.0614 (4.4s/step · peak 2.62 GB)
+  step 990/1000: loss 1.0759 (0.6s/step · peak 2.62 GB)
+  step 1000/1000: loss 1.0451 (1.2s/step · peak 2.62 GB)
+  · checkpoint step-01000-val1.6348
+  · adapter saved to ./adapters/cpm5-uf-resume
+
+  ╭───────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ● training complete · 1000 steps                                                                  │
+  │                                                                                                   │
+  │ loss       0.7166 → 1.0451                                                                        │
+  │ speed      1.5s/step median · peak 2.62 GB                                                        │
+  │                                                                                                   │
+  │ adapter    ./adapters/cpm5-uf-resume                                                              │
+  │ serve it   mlx-bun serve mlx-community/MiniCPM5-1B-OptiQ-4bit --adapter ./adapters/cpm5-uf-resume │
+  ╰───────────────────────────────────────────────────────────────────────────────────────────────────╯

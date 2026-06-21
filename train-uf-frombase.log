@@ -1,0 +1,7 @@
+### orpo | data=/Users/joshrossi/.cache/mlx-bun/eval-data/uf-cpm5 | iters=14691 lr=0.00001 seq=2048 rank=16 sched=cosine lambda=0.1
+### adapter -> ./adapters/cpm5-uf-frombase | logs -> runs/uf-frombase.{json,csv}
+
+=== orpo RESULT (val = held-out preference) ===
+val acc   : 0.507 (step 500) -> 0.541 (step 14500)
+val margin: 0.1082 -> 0.1269
+logged 1470 train + 29 val rows -> runs/uf-frombase.{json,csv}

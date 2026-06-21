@@ -1,0 +1,136 @@
+# Dynamic λ controller for ORPO (adaptive preference pressure)
+
+**Status:** proposed (design only — not built). **Opened:** 2026-06-20.
+**Surface:** `src/train/loss.ts` (orpoMetrics/orpoLoss), `src/train/trainer.ts`
+(orpoLoop, the λ config), the segmented ORPO classes in `src/train/segmented.ts`.
+
+## Motivation
+
+ORPO's loss is `L = NLL(chosen) + λ·OR`. The two terms learn on different
+timescales, and a **static λ** can't serve both:
+
+- **The SFT/NLL half learns easily** — the model quickly raises `logp(chosen)`
+  (fits the response *style*). Observed live: val loss falls steadily while
+  preference accuracy/margin barely move.
+- **The preference/OR half is hard** — on subtle data (UltraFeedback on a 1B) the
+  model doesn't generalize "which of two plausible answers is better."
+- **Over-weighting OR backfires** via **likelihood displacement**: the model widens
+  the *relative* margin by **crushing `logp(rejected)`** (and sometimes dropping
+  `logp(chosen)` too) rather than genuinely preferring chosen — degrading fluency.
+
+A fixed λ either under-pressures the preference (λ too low → never leans on OR) or
+over-pressures it (λ too high → displacement/degeneration). The hypothesis: an
+**adaptive, displacement-aware λ** — low while SFT learns, ramped once SFT
+saturates, backed off the moment displacement appears — can find a generalization
+regime a static λ sails past. (Static λ tuning was the blunt version we rejected;
+this is the targeted version.)
+
+## Control signals (what we measure)
+
+`orpoMetrics` (`loss.ts:1249`) already computes everything; we just don't surface it:
+
+- **`lw`** = mean `logp(chosen)` (currently folded into `nll = mean(−lw)`).
+- **`lr`** = mean `logp(rejected)` (currently only used inside the odds ratio).
+- **`margin`** = mean log-odds (chosen vs rejected) — already emitted.
+- **`accuracy`** = fraction `lw > lr` — already emitted.
+
+The controller keys on the **decomposition of margin growth**:
+- margin ↑ because **`lw` ↑** → *healthy* (genuinely preferring chosen).
+- margin ↑ because **`lr` ↓** while `lw` flat/falling → *displacement* (the cheat).
+
+So the load-bearing new instrumentation is **surfacing `lw` and `lr` separately**
+per eval (not just `nll`/`margin`).
+
+## The controller (state machine)
+
+Runs at **each val eval** (every `stepsPerEval` steps) — val (`lw`, `lr`) is the
+stable signal; per-step B=1 train metrics are too noisy to control on. Maintains a
+short window of recent val (`lw`, `lr`, margin, accuracy).
+
+```
+state: { phase, lambda, window[] }   # lambda starts at LAMBDA_MIN
+on each val eval (lw, lr, margin, acc):
+  dLw = lw - lw_prev ; dLr = lr - lr_prev
+
+  PHASE 1 — SFT warmup (lambda = LAMBDA_MIN, low):
+    stay while the NLL is still improving (dLw > EPS_SFT, i.e. chosen logp rising).
+    when dLw plateaus (|dLw| < EPS_SFT over K evals) → SFT saturated → PHASE 2.
+
+  PHASE 2 — preference ramp:
+    each eval, lambda += RAMP (cap LAMBDA_MAX), applying OR pressure —
+    AS LONG AS chosen holds: dLw >= -EPS_DISP.
+    if accuracy/margin respond (margin widening with dLw >= 0) → keep ramping.
+    if displacement detected (dLw < -EPS_DISP, i.e. chosen logp dropping, or
+       dLr << 0 with dLw <= 0) → PHASE 3.
+
+  PHASE 3 — displacement backoff:
+    lambda -= BACKOFF (floor LAMBDA_MIN) until chosen recovers (dLw >= 0),
+    then hold (hysteresis) before considering another ramp.
+```
+
+Knobs (all tunable): `LAMBDA_MIN≈0.05`, `LAMBDA_MAX≈0.5`, `RAMP/BACKOFF≈0.05`,
+window `K≈3` evals, `EPS_SFT`/`EPS_DISP` set from the observed val-`lw` noise scale.
+Hysteresis (require K consecutive evals before a phase flip) prevents oscillation.
+
+**Degeneration guard (hard stop):** if `lw` falls below its phase-1 starting value
+by more than a threshold, freeze λ at `LAMBDA_MIN` and log — the model is paying for
+margin with chosen's likelihood, which a backoff alone isn't recovering.
+
+## Wiring
+
+1. **Instrument (small):** add `lw`, `lr` to `orpoMetrics`'s return + the trainer's
+   `metric` emit (train and val). `pref-control.ts` / `metrics.json` log them so the
+   controller (and our plots) can see the decomposition.
+2. **Make λ dynamic:** today `cfg.orpoLambda` is a constant threaded into
+   `orpoLoss(model, batch, cfg.orpoLambda, …)` and **baked into the segmented ORPO
+   classes' constructors** (`new SegmentedBackwardOrpo(model, lora, ranges,
+   cfg.orpoLambda, …)`). Change to a **mutable λ source**:
+   - simplest: a `{ value: number }` box (or a getter) passed instead of the scalar;
+     the loss / segmented step reads `lambdaRef.value` each step.
+   - the segmented classes expose a `setLambda(x)` (or read the ref) so the
+     constructor-baked constant becomes a live field.
+3. **The controller** lives in `orpoLoop` (`trainer.ts`): after each val eval, feed
+   the val (`lw`, `lr`, margin, acc) to `updateLambda(state)` and write the new λ
+   into the ref. Log every λ change (`· λ 0.10 → 0.15 (SFT saturated, ramping)`).
+4. **Off by default:** gate behind a config flag (`orpoLambdaSchedule: "static" |
+   "adaptive"`); static = today's behavior, exact.
+
+## Experiment design (how we validate it)
+
+Head-to-head, **same data / seed / everything else**, on the from-base UF setup:
+- **Arm A:** static λ=0.1 (the current run — the baseline).
+- **Arm B:** adaptive λ (this controller).
+
+Compare:
+- **val accuracy + margin** trajectories (does B clear the noise floor / widen
+  margin where A stalls?);
+- **`lw` trajectory** (does B avoid displacement — `lw` non-decreasing — where a
+  high static λ would crater it?);
+- the **downstream** numbers: Exp-1 capability x2 and Exp-2 win-rate (does B's model
+  actually win more head-to-head?).
+
+Success = B generalizes measurably better (val acc clears ~0.55 with margin lifting,
+and/or Exp-2 win-rate > A's) **without** degeneration (`lw` holds). Null result is
+also informative: "even adaptive λ can't beat the 1B capacity ceiling on UF."
+
+## Open questions / risks
+
+- **Cadence:** controlling on val every `stepsPerEval` may be too coarse (few control
+  steps per run). Option: a cheaper, more frequent "control eval" on a small fixed
+  probe set distinct from the reported val set.
+- **Confounds the replication claim:** an adaptive-λ result is no longer "standard
+  ORPO" — it's our method. Keep Arm A (static 0.1) as the honest paper-replication;
+  Arm B is the "can we do better" research arm. Report both.
+- **Tuning the controller's own knobs** risks the same trap (we'd be tuning a tuner).
+  Mitigate: set EPS thresholds from observed noise scale, not by hand-fitting to one
+  run; validate the controller on the *positive control* (prefer-uppercase) first —
+  it should ramp λ early (SFT saturates fast) and never trip displacement.
+
+## References
+
+- `src/train/loss.ts:1249` `orpoMetrics` (computes `lw`,`lr`,`nll`,`or`,`accuracy`,`margin`).
+- `src/train/trainer.ts` `orpoLoop` (λ config, val emit), `DEFAULT_TRAIN_CONFIG.orpoLambda`.
+- `src/train/segmented.ts` segmented ORPO classes (λ baked in constructor).
+- `scripts/experiments/pref-control.ts` (trajectory logging — extend with `lw`,`lr`).
+- Context: [[opssdpa-dk-vjp-bug]] (validate grads vs autograd), the dynamic-λ
+  discussion + the live from-base UF val trajectory (2026-06-20).
