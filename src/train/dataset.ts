@@ -269,14 +269,22 @@ export function tokenizePair(
   tok: LoadedTokenizer,
   maxLength: number,
 ): { ids: number[]; promptLen: number } {
-  const promptIds = tok.encode(prompt);
-  let fullIds = tok.encode(prompt + response);
+  // A chat template emits a literal BOS, and the tokenizer's post-processor
+  // prepends one too → a duplicate leading BOS. Inference strips it
+  // (server.ts: "template includes <bos>; tokenizer also prepends one"), so
+  // training must match or it learns on a token stream the model never sees.
+  // No-op for raw (untemplated) prompts, which carry a single BOS.
+  const bos = tok.bosTokenId;
+  const dedupeBos = (ids: number[]): number[] =>
+    bos != null && ids.length >= 2 && ids[0] === bos && ids[1] === bos ? ids.slice(1) : ids;
+  const promptIds = dedupeBos(tok.encode(prompt));
+  let fullIds = dedupeBos(tok.encode(prompt + response));
   let promptLen: number;
   if (isPrefix(fullIds, promptIds)) {
     promptLen = promptIds.length;
   } else {
     promptLen = promptIds.length;
-    const responseIds = tok.encode(response);
+    const responseIds = tok.encode(response, false); // no extra BOS mid-stream
     fullIds = [...promptIds, ...responseIds];
   }
   if (fullIds.length > maxLength) {
