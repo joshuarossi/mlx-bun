@@ -87,3 +87,45 @@ describe("normalizeMessages — developer→system remap", () => {
     expect(out.map((m) => m.role)).toEqual(["system", "user", "assistant"]);
   });
 });
+
+describe("normalizeMessages — content-parts flattening", () => {
+  it("flattens an OpenAI text content-parts array to a plain string", () => {
+    // pi (and OpenAI multimodal clients) ALWAYS send user content as a parts
+    // array; a non-vision chat template renders nothing for an array, dropping
+    // the user's turn. Flattening to a string is what makes it render.
+    const out = normalizeMessages([
+      { role: "user", content: [{ type: "text", text: "what's the weather in Tokyo?" }] },
+    ]);
+    expect(out[0]!.content).toBe("what's the weather in Tokyo?");
+  });
+
+  it("concatenates multiple text parts", () => {
+    const out = normalizeMessages([
+      { role: "user", content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] },
+    ]);
+    expect(out[0]!.content).toBe("ab");
+  });
+
+  it("leaves string content untouched", () => {
+    const out = normalizeMessages([{ role: "user", content: "plain string" }]);
+    expect(out[0]!.content).toBe("plain string");
+  });
+
+  it("leaves arrays carrying an image part intact (the vision path needs them)", () => {
+    const content = [
+      { type: "image_url", image_url: { url: "data:image/png;base64,AAA" } },
+      { type: "text", text: "describe this" },
+    ];
+    const out = normalizeMessages([{ role: "user", content }]);
+    expect(Array.isArray(out[0]!.content)).toBe(true);
+    expect(out[0]!.content).toEqual(content);
+  });
+
+  it("flattens the system/developer prompt array too (developer→system + flatten compose)", () => {
+    const out = normalizeMessages([
+      { role: "developer", content: [{ type: "text", text: "be terse" }] },
+    ]);
+    expect(out[0]!.role).toBe("system");
+    expect(out[0]!.content).toBe("be terse");
+  });
+});

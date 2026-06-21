@@ -9,7 +9,7 @@
 // softmax / mixed-4/8-bit-KV error compounds across hops, so it's where the
 // fused-attention kernel (opportunity A) has the most to prove.
 
-import { generateText, type TaskModel } from "../runner";
+import { generateText, loadJsonl, type TaskModel } from "../runner";
 
 const INSTR =
   "You will be given a list of hash assignments and a starting hash. " +
@@ -80,16 +80,45 @@ export interface HashhopResult {
   byHops: Record<number, number>;
 }
 
+interface HashhopFrozen { raw_problem: string; query: string; expected: string }
+
 export async function evaluateHashhop(
   tm: TaskModel,
-  opts: { nPerHop?: number; hopsList?: number[]; chars?: number; maxTokens?: number; seed?: number } = {},
+  opts: { nPerHop?: number; hopsList?: number[]; chars?: number; maxTokens?: number; seed?: number; frozen?: boolean } = {},
 ): Promise<HashhopResult> {
   const nPerHop = opts.nPerHop ?? 25;
   const hopsList = opts.hopsList ?? [1, 2, 3, 4];
-  const chars = opts.chars ?? 12000;
   const maxTokens = opts.maxTokens ?? 32;
-  const rand = mulberry32(opts.seed ?? 42);
 
+  // Optiq-parity mode (DEFAULT): use optiq's EXACT generated problems (his
+  // MultiHopEval samples — seed 42, 25/hop × hops 1-4 = 100, emitted in hop order),
+  // fed through OUR chat template + extractor. Our generator below is a
+  // RECONSTRUCTION producing DIFFERENT problems, so it cannot reproduce optiq's
+  // number — the frozen problems are the only way to match. MLX_BUN_HASHHOP_FROZEN=0
+  // uses our generator.
+  const useFrozen = opts.frozen ?? (process.env.MLX_BUN_HASHHOP_FROZEN !== "0");
+  if (useFrozen) {
+    const rows = loadJsonl<HashhopFrozen>("hashhop_optiq_frozen");
+    const hopCorrect: Record<number, number> = {};
+    let total = 0;
+    let correct = 0;
+    for (let k = 0; k < rows.length; k++) {
+      const item = rows[k]!;
+      const hops = hopsList[Math.floor(k / nPerHop)] ?? 0; // optiq emits in hop order
+      const out = await generateText(tm, item.raw_problem, { maxTokens, useChat: true });
+      if (extractPred(out) === item.expected) { correct++; hopCorrect[hops] = (hopCorrect[hops] ?? 0) + 1; }
+      total++;
+      process.stderr.write(`\r  hashhop ${k + 1}/${rows.length}  acc=${(correct / (k + 1) * 100).toFixed(0)}%`);
+    }
+    process.stderr.write("\n");
+    const byHops: Record<number, number> = {};
+    for (const h of hopsList) byHops[h] = (hopCorrect[h] ?? 0) / nPerHop;
+    return { nTotal: total, nCorrect: correct, accuracy: total ? correct / total : 0, byHops };
+  }
+
+  // Fallback: our own reconstructed generator (produces DIFFERENT problems).
+  const chars = opts.chars ?? 12000;
+  const rand = mulberry32(opts.seed ?? 42);
   const byHops: Record<number, number> = {};
   let total = 0;
   let correct = 0;

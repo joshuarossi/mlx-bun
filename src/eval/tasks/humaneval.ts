@@ -18,7 +18,9 @@ import { join } from "node:path";
 import { generateText, loadJsonl, sampleIndices, type TaskModel } from "../runner";
 
 // Oracle venv python — the same interpreter the Python reference uses.
-const ORACLE_PYTHON = "/Users/joshrossi/Code/mlx-lm/.venv/bin/python";
+// Machine-specific: overridable via MLX_BUN_ORACLE_PYTHON (the committed default is
+// the reference box; other laptops set the env, never re-commit the path).
+const ORACLE_PYTHON = process.env.MLX_BUN_ORACLE_PYTHON ?? "/Users/joshrossi/Code/mlx-lm/.venv/bin/python";
 
 interface HumanevalRow {
   task_id: string;
@@ -144,7 +146,7 @@ const HAS_SANDBOX_EXEC = (() => {
   }
 })();
 
-interface RunResult { ok: boolean; timedOut: boolean }
+interface RunResult { ok: boolean; timedOut: boolean; stderr?: string }
 
 /**
  * Run `program` as a python script in a fresh temp dir, sandboxed if
@@ -183,7 +185,8 @@ function runProgram(program: string, timeoutSec: number, memoryMb: number): RunR
       env,
       timeout: timeoutSec * 1000, // hard wall-clock kill
       killSignal: "SIGKILL",
-      stdio: ["ignore", "ignore", "ignore"],
+      stdio: ["ignore", "ignore", process.env.MLX_BUN_EVAL_DEBUG === "1" ? "pipe" : "ignore"],
+      encoding: "utf8",
     });
 
     // spawnSync sets signal === "SIGKILL" (and status === null) when the
@@ -192,7 +195,7 @@ function runProgram(program: string, timeoutSec: number, memoryMb: number): RunR
       res.signal === "SIGKILL" ||
       (res.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
     const ok = !timedOut && res.status === 0;
-    return { ok, timedOut };
+    return { ok, timedOut, stderr: typeof res.stderr === "string" ? res.stderr : undefined };
   } finally {
     rmSync(sbRoot, { recursive: true, force: true });
   }
@@ -206,13 +209,21 @@ export async function evaluateHumaneval(
     seed?: number;
     timeoutSec?: number;
     memoryMb?: number;
+    frozen?: boolean;
   } = {},
 ): Promise<HumanevalResult> {
   const maxTokens = opts.maxTokens ?? 512;
   const timeoutSec = opts.timeoutSec ?? 10;
   const memoryMb = opts.memoryMb ?? 512;
-  const rows = loadJsonl<HumanevalRow>("humaneval");
-  const idx = sampleIndices(rows.length, opts.nSamples ?? rows.length, opts.seed ?? 42);
+
+  // Optiq-parity mode (DEFAULT): optiq's EXACT 164-problem set (he runs the full
+  // HumanEval test split), scored through OUR pipeline. MLX_BUN_HUMANEVAL_FROZEN=0
+  // reverts to our own copy + optional sampling.
+  const useFrozen = opts.frozen ?? (process.env.MLX_BUN_HUMANEVAL_FROZEN !== "0");
+  const rows = loadJsonl<HumanevalRow>(useFrozen ? "humaneval_optiq_frozen" : "humaneval");
+  const idx = useFrozen
+    ? Array.from({ length: rows.length }, (_, i) => i)
+    : sampleIndices(rows.length, opts.nSamples ?? rows.length, opts.seed ?? 42);
 
   // When a chat template exists, ask the model (instruct-style) for the
   // complete function inside a ```python block — humaneval.py's use_chat
@@ -239,8 +250,19 @@ export async function evaluateHumaneval(
     const completion = truncateCompletion(raw, ex.entry_point);
     const program = buildProgram(ex.prompt, completion, ex.test, ex.entry_point);
 
-    const { ok } = runProgram(program, timeoutSec, memoryMb);
-    if (ok) nPass++;
+    const rr = runProgram(program, timeoutSec, memoryMb);
+    if (rr.ok) nPass++;
+    else if (process.env.MLX_BUN_EVAL_DEBUG === "1") {
+      const err = rr.stderr ?? "";
+      const reason = rr.timedOut ? "TIMEOUT"
+        : completion.trim() === "" ? "EMPTY"
+        : /SyntaxError|IndentationError/.test(err) ? "SYNTAX"
+        : /AssertionError/.test(err) ? "WRONG-ANSWER"
+        : /Error|Exception|Traceback/.test(err) ? "RUNTIME-ERR"
+        : "OTHER";
+      const errSnip = err.trim().split("\n").slice(-1)[0]?.slice(0, 120) ?? "";
+      process.stderr.write(`\n  [FAIL ${ex.entry_point}] ${reason} complen=${completion.length} :: ${errSnip}\n`);
+    }
 
     if ((k + 1) % 5 === 0 || k + 1 === idx.length)
       process.stderr.write(

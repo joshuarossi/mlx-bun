@@ -18,8 +18,8 @@ describe("buildTerminalSystemPrompt", () => {
     // not append, pi's coding-agent prompt).
     expect(prompt).not.toMatch(/operating inside pi/i);
     expect(prompt).not.toMatch(/pi documentation/i);
-    // pi auto-appends the date + cwd, so we must not repeat them.
-    expect(prompt).not.toMatch(/today's date|current date|working directory/i);
+    // Environment metadata is context, not something to report unprompted.
+    expect(prompt).toMatch(/do not report or summarize that metadata/i);
   });
 
   it("advertises the full coding toolset + web tools, and flags approval-gated actions", () => {
@@ -28,6 +28,15 @@ describe("buildTerminalSystemPrompt", () => {
       expect(prompt).toContain(tool);
     }
     expect(prompt).toMatch(/approval/i);
+  });
+
+  it("routes conversation vs real-world questions appropriately", () => {
+    const prompt = buildTerminalSystemPrompt();
+    expect(prompt).toMatch(/ordinary social conversation/i);
+    expect(prompt).toMatch(/answer naturally yourself/i);
+    expect(prompt).toMatch(/real-world facts|current events|recommendations/i);
+    expect(prompt).toMatch(/look it up with web_search\/web_fetch or weather/i);
+    expect(prompt).toMatch(/Do not narrate tool policies or internal workflows/i);
   });
 
   it("names the served model when given a label, and degrades without one", () => {

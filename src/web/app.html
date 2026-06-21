@@ -1431,7 +1431,7 @@ controllers.chat = (() => {
     el("div", "who", m).textContent = "local agent";
     const bubble = el("div", "bubble", m);
     const thinkBox = el("details", "thinkbox", bubble);
-    thinkBox.open = true;
+    thinkBox.open = false; // collapsed by default; the reasoning stays tucked behind "Thinking" — click to expand
     el("summary", "", thinkBox).textContent = "Thinking";
     const thinkBody = el("div", "thinkbody", thinkBox);
     thinkBox.style.display = "none";
@@ -1738,7 +1738,7 @@ controllers.chat = (() => {
   let attachments = [];       // { id, kind:"image"|"text", name, mimeType, data, text, truncated }
   let visionCapable = false;  // from the `ready` frame; gates image attachments
   let thinkingCapable = false; // from `ready`; gates the reasoning toggle
-  let thinkingOn = true;       // on/off state for the model's reasoning channel
+  let thinkingOn = true;       // default on: with tools (read/web_search) the reasoning step gives the small model far better tool judgment (answers math/writing itself, only searches when needed). The thinking box defaults collapsed. Users can toggle it off.
   let attachSeq = 0;
   const MAX_TEXT_BYTES = 256 * 1024;
   const TEXT_EXTS = /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|ini|cfg|conf|log|xml|html?|css|scss|js|mjs|cjs|ts|tsx|jsx|py|rs|go|java|c|h|cpp|hpp|cc|cs|rb|php|sh|bash|zsh|fish|sql|swift|kt|lua|r|jl|tex|svg|env|gitignore|dockerfile|makefile)$/i;
@@ -1854,8 +1854,10 @@ controllers.chat = (() => {
     addUserMsg(text, attachments);
     box.value = ""; box.style.height = "auto";
     const frame = imgs.length ? { text: combined, images: imgs } : { text: combined };
-    if (turnActive) send({ type: "steer", ...frame });   // mid-turn: steer/queue
-    else send({ type: "prompt", ...frame });
+    // A composer submission is always a new user turn. If the model is still
+    // streaming, the server passes it to pi with streamingBehavior:"followUp"
+    // so it becomes the next turn instead of steering/mutating the current one.
+    send({ type: "prompt", ...frame });
     clearAttachments();
   }
   const scroll = () => $("chat-scroll");

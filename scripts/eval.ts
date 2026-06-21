@@ -136,30 +136,34 @@ function recordTask(candidate: string, task: string, label: string, res: TaskOut
 async function runTask(name: string): Promise<void> {
   const candidate = opt("candidate");
   if (!candidate) { console.error(`${name}: --candidate <query|path> is required`); process.exit(1); }
+  const adapter = opt("adapter") ?? undefined;
+  const label = adapter ? `${candidate}+${adapter}` : candidate;
   const nOpt = opt("n");
   const n = nOpt ? Number(nOpt) : undefined;
   const t = GEN_TASKS[name]!;
-  console.log(`[eval/${name}] candidate=${candidate}${n ? `  n=${n}` : ""}`);
-  const tm = await loadTaskModel(candidate);
+  console.log(`[eval/${name}] candidate=${label}${n ? `  n=${n}` : ""}`);
+  const tm = await loadTaskModel(candidate, adapter);
   const res = await t.run(tm, n);
   console.log(`\n${t.label}  ${(res.accuracy * 100).toFixed(1)}%  (${res.nTotal} samples)`);
-  recordTask(candidate, name, t.label, res, tm.dir);
+  recordTask(label, name, t.label, res, tm.dir);
 }
 
 async function runCapability(): Promise<void> {
   const candidate = opt("candidate");
   if (!candidate) { console.error("capability: --candidate <query|path> is required"); process.exit(1); }
+  const adapter = opt("adapter") ?? undefined;
+  const label = adapter ? `${candidate}+${adapter}` : candidate;
   const nOpt = opt("n");
   const n = nOpt ? Number(nOpt) : undefined; // per-task cap (for quick runs); omit → full
-  console.log(`[eval/capability] candidate=${candidate}${n ? `  n=${n}/task` : "  (full)"}`);
-  const tm = await loadTaskModel(candidate);
+  console.log(`[eval/capability] candidate=${label}${n ? `  n=${n}/task` : "  (full)"}`);
+  const tm = await loadTaskModel(candidate, adapter);
 
   const pcts: Partial<Record<TaskName, number>> = {};
   for (const [name, t] of Object.entries(GEN_TASKS)) {
     console.log(`\n=== ${t.label} ===`);
     const res = await t.run(tm, n);
     pcts[t.label] = res.accuracy * 100;
-    recordTask(candidate, name, t.label, res, tm.dir);
+    recordTask(label, name, t.label, res, tm.dir);
   }
 
   const cap = computeCapabilityScore(pcts, diskGbForDir(tm.dir));
@@ -168,7 +172,7 @@ async function runCapability(): Promise<void> {
 
   const db = new QualityDB();
   db.record({
-    modelPath: candidate, commitSha: gitCommit(), task: "capability", config: activeConfig(),
+    modelPath: label, commitSha: gitCommit(), task: "capability", config: activeConfig(),
     nSamples: 0, capabilityScore: cap.score, diskGb: cap.diskGb,
     notes: JSON.stringify(cap.components), machineState: machineStateJson(checkMachine()),
   });

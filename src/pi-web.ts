@@ -23,42 +23,49 @@
 // reason } to deny. Read-only tools (read/grep/find/ls) auto-allow.
 // tool_execution_* events still drive the tool cards (start/update/end).
 
+import { createHash } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import {
-  createAgentSession,
-  DefaultResourceLoader,
+  createAgentSessionFromServices,
+  createAgentSessionRuntime,
+  createAgentSessionServices,
   SessionManager,
   type AgentSession,
   type AgentSessionEvent,
+  type AgentSessionRuntime,
+  type CreateAgentSessionRuntimeFactory,
   type ExtensionAPI,
   type SessionEntry,
   type SessionInfo,
   type ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import { createWebTools, WEB_TOOL_NAMES } from "./web-tools";
-import { materializeBundledSkills } from "./web/skills";
+import { WEB_TOOL_NAMES } from "./web-tools";
+import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "./memory/tools";
+import { buildPiAgentSurface } from "./pi-session";
 import { buildPiProvider, DEFAULT_CONTEXT_WINDOW, PI_LOCAL_MODEL_ID } from "./pi-provider";
 import { downloadsSnapshot } from "./download";
 
-/**
- * Full toolset the web agent is offered. The built-in coding tools plus our
- * outward-facing web tools (web_search/web_fetch/weather). NOTE: pi treats
- * this list as an allowlist (createAgentSession `tools`), so a custom tool's
- * name MUST appear here or it gets filtered out before the model ever sees it.
- */
-const ALL_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", ...WEB_TOOL_NAMES];
 /**
  * Tools that never mutate the user's machine; auto-allowed without a browser
  * round-trip. The web tools make outbound network requests but change nothing
  * locally, so they're auto-allowed too (and remain usable in read-only mode).
  */
-const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", ...WEB_TOOL_NAMES]);
+const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", ...WEB_TOOL_NAMES, ...MEMORY_TOOL_NAMES, ...REFERENCE_TOOL_NAMES]);
 /** Tools that require explicit per-call browser approval. */
 const GATED_TOOLS = new Set(["bash", "edit", "write"]);
+
+/**
+ * The welcome assistant's tool allowlist: exactly `read` (a local file the user
+ * points to) and `web_search` (current/external facts). Both are in
+ * READ_ONLY_TOOLS, so neither triggers the approval gate. Kept to two because a
+ * 1B model over-calls a larger toolset; widen this list (not the system prompt)
+ * to grant more.
+ */
+const WELCOME_TOOLS = ["read", "web_search"] as const;
 
 /** Auto-deny a pending approval after this long with no browser decision. */
 const APPROVAL_TIMEOUT_MS = 120_000;
@@ -67,72 +74,51 @@ const APPROVAL_TIMEOUT_MS = 120_000;
  * System prompt for the web chat assistant.
  *
  * This fully REPLACES pi's default coding-agent prompt (it flows to
- * buildSystemPrompt's `customPrompt` via DefaultResourceLoader.systemPrompt).
- * Replacing rather than appending drops two things we don't want in an
- * end-user chat: the "operating inside pi, a coding agent harness" framing
- * and pi's block of internal documentation paths. pi still auto-appends the
- * current date and working directory, so we don't repeat them here.
+ * buildSystemPrompt's `customPrompt` via DefaultResourceLoader.systemPrompt),
+ * dropping pi's "operating inside a coding-agent harness" framing and its block
+ * of internal documentation paths. pi still auto-appends the current date and
+ * working directory, so we don't repeat them here.
  *
- * Goal: a helpful, eager assistant that actually uses its tools instead of
- * talking about them. The capability list is kept honest per `readOnly` so
- * the model never promises an action the approval gate will refuse.
+ * Deliberately SHORT. The default served model is a ~1B local model; a long,
+ * "make the user feel welcome / here is everything mlx-bun does" prompt made it
+ * fixate on greeting and ignore the user's actual message (verified against the
+ * live server: the same model answers correctly with a short prompt and drowns
+ * with the long one). So: state identity + privacy in one breath, then tell it
+ * plainly to answer what was asked and not to greet or recite capabilities.
  */
+export const WEB_CHAT_PROMPT_VERSION = "2026-06-21-minimal-v1";
+
+export function webChatPromptFingerprint(prompt: string): string {
+  return createHash("sha256").update(prompt).digest("hex").slice(0, 12);
+}
+
 export function buildWebChatSystemPrompt(
   readOnly: boolean,
   about?: { modelId?: string; downloadingModel?: string | null },
+  opts?: { hasTools?: boolean },
 ): string {
-  const capabilities = readOnly
-    ? `You have these tools (all used freely, no confirmation needed):
-- web_search — search the web for current, real-world information
-- web_fetch — fetch a URL and read the page or data behind it
-- weather — get current conditions and a short forecast for any place
-- read — open and read any file
-- ls, find, grep — list directories and search the filesystem by name or content
-
-This is a read-only session: you can look things up and inspect files, but cannot run commands or change anything on disk.`
-    : `You have a real toolset — use it.
-
-Used freely, no confirmation needed:
-- web_search — search the web for current, real-world information (news, prices, docs, anything that changes or that you don't already know)
-- web_fetch — fetch a URL and read the page or data behind it (great as a follow-up to web_search, or when the user gives you a link)
-- weather — get current conditions and a short forecast for any place
-- read, ls, find, grep — open files and search the filesystem
-
-Asks the user for approval first (they stay in control):
-- bash — run shell commands
-- edit, write — modify existing files or create new ones
-
-Prefer doing the work over describing it — run the search, fetch the page, propose the concrete command or edit and let the user approve it.`;
-
   const servedModel =
     about?.modelId && about.modelId !== PI_LOCAL_MODEL_ID ? about.modelId : null;
-  const downloading = about?.downloadingModel ?? null;
-  const modelLine = servedModel
-    ? `\n- The model answering you right now is \`${servedModel}\`.${
-        downloading
-          ? ` It's a small, fast starter so you can chat immediately; a more capable model (\`${downloading}\`) is downloading in the background and becomes the default next time the server starts — the Status tab shows progress.`
-          : ""
-      }`
-    : "";
+  const modelLine = servedModel ? ` You are running on the local model \`${servedModel}\`.` : "";
 
-  const aboutMlxBun = `You're part of mlx-bun and can answer questions about it:
-- mlx-bun runs open LLMs locally on the user's Apple-silicon Mac using Apple's MLX framework on the Bun runtime — no Python, no cloud. This chat stays on the machine; only the explicit web tools below reach the internet.
-- This page is mlx-bun's built-in web app. Tabs across the top: Chat (here), Quantize, Finetune, Dataset, and Status (live memory, prompt-cache, and download info).
-- It serves one model at a time over an OpenAI- and Anthropic-compatible API at \`/v1\`, so other apps and agents can point at this same local server.
-- To change models, the user runs \`mlx-bun serve <name>\` in their terminal, or downloads more with \`mlx-bun get <repo-id>\`.${modelLine}
-- mlx-bun is new and moving fast, so it isn't reliably documented online yet: answer questions about it from what's written here, not from web search. If something isn't covered, say so and point the user to the project's README or the Status tab — don't invent specifics.`;
+  // A concise mlx-bun blurb so the welcome assistant can answer product
+  // questions from its own knowledge (no tool, no fragile cwd-relative reads).
+  // Kept SHORT on purpose — the old multi-paragraph product wall drowned the 1B
+  // model. The blurb + the two key commands cover "what is it / how do I start".
+  const aboutLine = ` mlx-bun runs open LLMs locally with MLX + Bun: a built-in chat, an OpenAI/Anthropic-compatible API, model download and serving, quantization, LoRA fine-tuning, and adapters — all on-device and private. Key commands: \`mlx-bun serve <model>\` to serve one, \`mlx-bun get <repo-id>\` to download one. You already know this, so answer questions about mlx-bun directly.`;
 
-  return `You are a helpful, capable AI assistant running locally inside mlx-bun.
+  // The tool guidance MUST match the session's actual surface (read +
+  // web_search), or the model promises actions it can't take. Naming exactly
+  // those two — and telling it to answer from knowledge first — is what keeps a
+  // small model from reaching for a tool on math/writing/general questions.
+  const hasTools = opts?.hasTools ?? true;
+  const toolsLine = hasTools
+    ? ` Answer directly from your own knowledge whenever you can. Only call a tool when you truly need information you don't have: \`web_search\` for current or external facts (news, current events, prices, latest docs), \`read\` for a specific local file the user points you to. Never use a tool for general questions, explanations, math, or writing — just answer.`
+    : ` You have no tools in this session, so answer from your own knowledge; if something needs current or external data you can't reach, say so briefly instead of pretending to look it up.`;
 
-Be an eager, proactive partner. When a request can be answered or a task moved forward by using your tools, use them right away instead of guessing or asking the user to do it for you. Take initiative: investigate, gather what you need, and follow through to a real result.
+  return `You are mlx-bun's built-in assistant, running entirely on the user's own Apple-silicon Mac — nothing they type leaves the machine.${modelLine}${aboutLine}${toolsLine}
 
-${aboutMlxBun}
-
-${capabilities}
-
-When you don't know something — especially anything current, factual, or time-sensitive — look it up with web_search and web_fetch rather than speculating or relying on stale memory (questions about mlx-bun itself are the exception — use the facts above). If a request is genuinely ambiguous, ask one brief clarifying question; otherwise make a sensible choice and proceed. Be honest about what you did and what you found — including mistakes, dead ends, and things you couldn't do.
-
-Keep your responses clear and to the point. Format with Markdown, cite links when you used the web, and show file paths and commands plainly so they're easy to read.`;
+Respond to what the user actually said, concisely. Don't open with a generic greeting or recite your capabilities unless asked — just answer. If a request is genuinely ambiguous, ask one short clarifying question. Format with Markdown when it helps.`;
 }
 
 /** Per-connection data the server attaches at upgrade time. */
@@ -156,7 +142,6 @@ interface ImageAttachment {
 /** Client -> server frames. */
 type ClientMessage =
   | { type: "prompt"; text: string; images?: ImageAttachment[] }
-  | { type: "steer"; text: string; images?: ImageAttachment[] }
   | { type: "abort" }
   | { type: "approval"; callId: string; decision: ApprovalDecision }
   // Toggle the model's reasoning channel on/off (only meaningful when the
@@ -416,6 +401,7 @@ export function injectAdapter(
  * subscription, and the pending tool-approval handshakes.
  */
 class PiWebSession {
+  private runtime?: AgentSessionRuntime;
   private session?: AgentSession;
   /** SessionManager backing the active AgentSession (disk-persisted). */
   private sessionManager?: SessionManager;
@@ -458,6 +444,7 @@ class PiWebSession {
     this.provider = buildPiProvider(baseUrl, {
       contextWindow: this.opts.contextWindow,
       reasoning: this.opts.thinking,
+      vision: this.opts.vision,
     });
     mkdirSync(this.sessionDir, { recursive: true });
 
@@ -470,7 +457,7 @@ class PiWebSession {
     // its own session on a transient reconnect so a blip doesn't strand it on
     // a blank backend session. Sessions persist to disk in pi's own format —
     // the substrate for the recent-chats sidebar and the nightly memory pipeline.
-    await this.activate(SessionManager.create(this.cwd, this.sessionDir));
+    await this.replaceRuntime(SessionManager.create(this.cwd, this.sessionDir));
     if (this.disposed) return;
 
     this.send({ type: "ready", model: this.opts.modelId, vision: this.opts.vision, thinking: this.opts.thinking });
@@ -478,97 +465,116 @@ class PiWebSession {
     await this.sendSessions();
   }
 
-  /** Build a fresh AgentSession bound to `sm`. A new resource loader per
-   *  build keeps the approval-gate extension cleanly scoped to this session. */
-  private async buildAgentSession(sm: SessionManager): Promise<AgentSession> {
-    const provider = this.provider;
-    if (!provider) throw new Error("provider not initialized");
+  /** Runtime factory used for initial session creation and SDK-managed replacements. */
+  private createRuntimeFactory(): CreateAgentSessionRuntimeFactory {
+    return async ({ cwd, sessionManager, sessionStartEvent }) => {
+      const provider = this.provider;
+      if (!provider) throw new Error("provider not initialized");
 
-    // Inline extension carries the pre-execution approval gate. Registered
-    // via DefaultResourceLoader.extensionFactories so it loads in-process
-    // with no file on disk and no global ~/.pi extension discovery.
-    const resourceLoader = new DefaultResourceLoader({
-      cwd: this.cwd,
-      agentDir: this.agentDir,
-      // Skip user/project resource discovery: the web agent is fully
-      // self-contained and must not inherit the user's pi extensions or
-      // context files. noContextFiles also keeps a stray CLAUDE.md /
-      // AGENTS.md in the launch directory out of the chat.
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      noContextFiles: true,
-      // Our curated skills only (not the user's). materializeBundledSkills is
-      // memoized, so calling it per build just returns the path. See web/skills.ts.
-      additionalSkillPaths: [materializeBundledSkills()],
-      // Replace pi's default coding-agent prompt with our own helpful,
-      // eager-assistant persona (see buildWebChatSystemPrompt). Pass the
-      // served model id + any in-progress background download so the
-      // loading-screen assistant knows what it is and what's coming.
-      systemPrompt: buildWebChatSystemPrompt(this.opts.readOnly, {
+      // Welcome-assistant tool surface: exactly two read-only tools —
+      // `web_search` (current/external facts) and `read` (a local file the user
+      // points to). Both auto-allow (no approval round-trip). We deliberately
+      // do NOT expose web_fetch/weather/bash/edit/write/grep/find/ls: a 1B model
+      // over-calls a big toolset. With thinking ON (the web chat default) it
+      // uses these two appropriately; build the web tools (for the web_search
+      // definition) then restrict the allowlist to the two names below.
+      const surface = await buildPiAgentSurface({ webTools: true, codingTools: false });
+      const webPrompt = buildWebChatSystemPrompt(this.opts.readOnly, {
         modelId: this.opts.modelId,
         downloadingModel: downloadsSnapshot().find(
           (d) => d.state === "active" && d.repoId !== this.opts.modelId,
         )?.repoId ?? null,
-      }),
-      extensionFactories: [
-        (pi) => this.installApprovalGate(pi),
-        (pi) => this.installAdapterHook(pi),
-      ],
-    });
-    await resourceLoader.reload();
+      }, { hasTools: WELCOME_TOOLS.length > 0 }) + surface.memoryHint;
+      if (process.env.MLX_BUN_PI_DEBUG) {
+        console.error(`[pi-web] prompt ${WEB_CHAT_PROMPT_VERSION} sha=${webChatPromptFingerprint(webPrompt)} memory=${surface.memoryEnabled ? "on" : "off"}`);
+      }
+      const services = await createAgentSessionServices({
+        cwd,
+        agentDir: this.agentDir,
+        authStorage: provider.authStorage,
+        modelRegistry: provider.modelRegistry,
+        resourceLoaderOptions: {
+          noExtensions: true,
+          noSkills: true,
+          noPromptTemplates: true,
+          noThemes: true,
+          noContextFiles: true,
+          additionalSkillPaths: surface.skillPaths,
+          systemPrompt: webPrompt,
+          extensionFactories: [
+            (pi) => this.installApprovalGate(pi),
+            (pi) => this.installAdapterHook(pi),
+          ],
+        },
+      });
 
-    const { session } = await createAgentSession({
-      cwd: this.cwd,
-      agentDir: this.agentDir,
-      model: provider.model,
-      modelRegistry: provider.modelRegistry,
-      authStorage: provider.authStorage,
-      resourceLoader,
-      tools: ALL_TOOLS,
-      customTools: createWebTools(),
-      sessionManager: sm,
-    });
-    return session;
+      return {
+        ...(await createAgentSessionFromServices({
+          services,
+          sessionManager,
+          sessionStartEvent,
+          model: provider.model,
+          // Allowlist (not surface.tools): `read` is a pi built-in enabled by
+          // name; `web_search` is the custom tool from surface.customTools. pi
+          // exposes only names in this list, so web_fetch/weather stay defined
+          // but hidden.
+          tools: [...WELCOME_TOOLS],
+          customTools: surface.customTools,
+        })),
+        services,
+        diagnostics: services.diagnostics,
+      };
+    };
   }
 
-  /** Tear down the active session (keeps the socket + provider invariants). */
-  private teardownActive(): void {
+  /** Tear down UI/session bindings owned by this WebSocket. Runtime.dispose()
+   *  owns the AgentSession itself; this method only detaches browser state. */
+  private teardownBindings(): void {
     for (const settle of this.pendingApprovals.values()) settle("deny");
     this.pendingApprovals.clear();
     for (const timer of this.approvalTimers.values()) clearTimeout(timer);
     this.approvalTimers.clear();
     this.unsubscribe?.();
     this.unsubscribe = undefined;
-    try {
-      this.session?.dispose();
-    } catch {
-      // Never let a dispose error escape teardown.
-    }
     this.session = undefined;
     this.sessionManager = undefined;
   }
 
-  /** Swap the active session to `sm`: abort any current turn, build the new
-   *  session, then dispose the old and subscribe the new. Build-before-tear
-   *  so a build failure leaves the current session intact. */
-  private async activate(sm: SessionManager): Promise<void> {
+  /** Bind browser event plumbing to the current runtime.session. */
+  private async bindRuntimeSession(): Promise<void> {
+    const session = this.runtime?.session;
+    if (!session) return;
+    this.unsubscribe?.();
+    this.session = session;
+    this.sessionManager = session.sessionManager;
+    await session.bindExtensions({ mode: "rpc" });
+    this.unsubscribe = session.subscribe((event) => this.onSessionEvent(event));
+    this.sendContextUsage();
+  }
+
+  /** Replace the whole pi runtime with a target SessionManager. Used for the
+   *  initial session and for file-level fork, while open/new use runtime APIs. */
+  private async replaceRuntime(sm: SessionManager): Promise<void> {
     try {
       await this.session?.abort();
     } catch {
       // Old turn may already be done; ignore.
     }
-    const session = await this.buildAgentSession(sm);
+    const next = await createAgentSessionRuntime(this.createRuntimeFactory(), {
+      cwd: this.cwd,
+      agentDir: this.agentDir,
+      sessionManager: sm,
+    });
+    next.setRebindSession(async () => this.bindRuntimeSession());
     if (this.disposed) {
-      session.dispose();
+      await next.dispose();
       return;
     }
-    this.teardownActive();
-    this.session = session;
-    this.sessionManager = sm;
-    this.unsubscribe = session.subscribe((event) => this.onSessionEvent(event));
-    this.sendContextUsage();
+    const previous = this.runtime;
+    this.teardownBindings();
+    this.runtime = next;
+    await this.bindRuntimeSession();
+    if (previous) await previous.dispose();
   }
 
   /** Replay the active session's transcript to the browser (rebuilds thread). */
@@ -609,7 +615,11 @@ class PiWebSession {
 
   /** Start a fresh chat (old one stays on disk, resumable from the sidebar). */
   private async newSession(): Promise<void> {
-    await this.activate(SessionManager.create(this.cwd, this.sessionDir));
+    if (!this.runtime) {
+      await this.replaceRuntime(SessionManager.create(this.cwd, this.sessionDir));
+    } else {
+      await this.runtime.newSession();
+    }
     this.sendHistory();
     await this.sendSessions();
   }
@@ -620,7 +630,8 @@ class PiWebSession {
       this.send({ type: "error", message: "invalid session path" });
       return;
     }
-    await this.activate(SessionManager.open(path, this.sessionDir));
+    if (!this.runtime) await this.replaceRuntime(SessionManager.open(path, this.sessionDir));
+    else await this.runtime.switchSession(path);
     this.sendHistory();
     await this.sendSessions();
   }
@@ -631,7 +642,9 @@ class PiWebSession {
       this.send({ type: "error", message: "invalid session path" });
       return;
     }
-    await this.activate(SessionManager.forkFrom(path, this.cwd, this.sessionDir));
+    // File-level fork is not a runtime primitive, so create the target
+    // SessionManager then replace the runtime through the same SDK factory.
+    await this.replaceRuntime(SessionManager.forkFrom(path, this.cwd, this.sessionDir));
     this.sendHistory();
     await this.sendSessions();
   }
@@ -657,15 +670,19 @@ class PiWebSession {
    *  adapter into every provider request (Pi-native adapter control, mirrors the
    *  CLI extension). Default none = no injection (base model). */
   private installAdapterHook(pi: ExtensionAPI): void {
-    pi.on("before_provider_request", (event) =>
-      injectAdapter(event.payload as Record<string, unknown>, this.selectedAdapter),
-    );
+    pi.on("before_provider_request", (event) => {
+      const payload = event.payload as Record<string, unknown>;
+      return injectAdapter(payload, this.selectedAdapter) ?? payload;
+    });
   }
 
   /** Register the tool_call approval gate on the inline extension. */
   private installApprovalGate(pi: ExtensionAPI): void {
     pi.on("tool_call", async (event: ToolCallEvent) => {
       const tool = event.toolName;
+      if (process.env.MLX_BUN_PI_DEBUG) {
+        console.error(`[pi-web] tool_call ${tool} args=${JSON.stringify(event.input)}`);
+      }
 
       // Read-only tools never need approval.
       if (READ_ONLY_TOOLS.has(tool)) return undefined;
@@ -675,8 +692,8 @@ class PiWebSession {
         return { block: true, reason: "Read-only session: mutating tools are disabled." };
       }
 
-      // Non-gated, non-read-only tools (shouldn't happen with ALL_TOOLS,
-      // but be safe): allow.
+      // Non-gated, non-read-only tools (shouldn't happen with the shared pi
+      // surface, but be safe): allow.
       if (!GATED_TOOLS.has(tool)) return undefined;
 
       const decision = await this.requestApproval(event);
@@ -768,26 +785,24 @@ class PiWebSession {
     }
 
     switch (msg.type) {
-      // Both a new prompt and an explicit steer go through session.prompt() so
-      // that pi's own *atomic* isStreaming check (agent-session prompt(): it
-      // re-checks at call time) decides how to route — never our own external
-      // read, which can be stale in the instant a turn ends. That stale read
-      // was the bug: a message arriving right as a turn finished was sent with
-      // streamingBehavior "steer", injected into the already-ending turn, and
-      // nothing consumed it (a hang). With this routing, an idle session always
-      // runs a normal turn (streamingBehavior is ignored when not streaming),
-      // so a message can't be lost at the turn boundary.
-      case "prompt":
-        // New user message → its own turn. "followUp" = if a turn is still
-        // streaming, queue this as the NEXT turn; if idle, a normal prompt.
-        await session.prompt(msg.text, { streamingBehavior: "followUp", images: toPiImages(msg.images) });
+      // The whole chat is just this: hand the user's message to pi's
+      // AgentSession and let pi run the turn (reply or tool calls, which pi
+      // executes). The ONLY decision we make is the canonical idle-vs-streaming
+      // branch from pi's own prompt() contract (core/agent-session.ts): an idle
+      // session runs a normal turn; if a turn is already streaming (the user
+      // typed again before it finished), the message is queued as a follow-up
+      // so it becomes the next turn instead of being dropped. pi re-checks
+      // isStreaming atomically inside prompt(), so this read can't strand a
+      // message at the turn boundary.
+      case "prompt": {
+        if (process.env.MLX_BUN_PI_DEBUG) {
+          console.error(`[pi-web] prompt text=${JSON.stringify(msg.text.slice(0, 500))} images=${msg.images?.length ?? 0} streaming=${session.isStreaming} adapter=${this.selectedAdapter ?? "base"}`);
+        }
+        const images = toPiImages(msg.images);
+        if (session.isStreaming) await session.prompt(msg.text, { streamingBehavior: "followUp", images });
+        else await session.prompt(msg.text, { images });
         return;
-      case "steer":
-        // Mid-turn steer (user typed while it streamed). "steer" injects into
-        // the live turn; if that turn just ended (same race), pi falls back to
-        // a normal prompt instead of dropping the message.
-        await session.prompt(msg.text, { streamingBehavior: "steer", images: toPiImages(msg.images) });
-        return;
+      }
       case "abort":
         await session.abort();
         return;
@@ -811,7 +826,9 @@ class PiWebSession {
   /** Tear down the session and reject any in-flight approvals. */
   dispose(): void {
     this.disposed = true;
-    this.teardownActive();
+    this.teardownBindings();
+    void this.runtime?.dispose();
+    this.runtime = undefined;
   }
 
   /** Send a frame, swallowing errors on a closed socket. */

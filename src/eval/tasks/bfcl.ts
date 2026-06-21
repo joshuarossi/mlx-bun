@@ -15,6 +15,7 @@
 // of the task — is ported exactly. (See summary for this one note.)
 
 import { generateText, loadJsonl, sampleIndices, type TaskModel } from "../runner";
+import { type ToolDefinition } from "../chat-template";
 
 // ---------------------------------------------------------------------------
 // Data shapes (the merged jsonl: each line = {query, answer}).
@@ -446,29 +447,62 @@ function gtName(gt: Record<string, unknown>): string {
 // Eval loop.
 // ---------------------------------------------------------------------------
 
+// optiq's frozen rows are FLAT (`{**question, ground_truth}`) — the question dict
+// merged with its ground truth — unlike our nested {query, answer} export.
+interface BfclFrozenRow {
+  id: string;
+  question: BfclQuery["question"];
+  function: ToolDef[] | string;
+  ground_truth: BfclAnswer["ground_truth"];
+}
+type BfclItem = { question: BfclQuery["question"]; function: ToolDef[] | string; ground_truth: BfclAnswer["ground_truth"] };
+
 export async function evaluateBfcl(
   tm: TaskModel,
-  opts: { nSamples?: number; maxTokens?: number; seed?: number } = {},
+  opts: { nSamples?: number; maxTokens?: number; seed?: number; frozen?: boolean } = {},
 ): Promise<BfclResult> {
   const maxTokens = opts.maxTokens ?? 512;
-  const rows = loadJsonl<BfclRow>("bfcl");
-  const idx = sampleIndices(rows.length, opts.nSamples ?? 200, opts.seed ?? 42);
+
+  // Optiq-parity mode (DEFAULT): optiq's EXACT 200 BFCL-simple questions, scored
+  // through OUR pipeline. MLX_BUN_BFCL_FROZEN=0 reverts to our copy + sampling.
+  const useFrozen = opts.frozen ?? (process.env.MLX_BUN_BFCL_FROZEN !== "0");
+  let items: BfclItem[];
+  if (useFrozen) {
+    items = loadJsonl<BfclFrozenRow>("bfcl_optiq_frozen").map((r) => ({
+      question: r.question, function: r.function, ground_truth: r.ground_truth,
+    }));
+  } else {
+    const rows = loadJsonl<BfclRow>("bfcl");
+    items = sampleIndices(rows.length, opts.nSamples ?? 200, opts.seed ?? 42).map((i) => ({
+      question: rows[i]!.query.question, function: rows[i]!.query.function, ground_truth: rows[i]!.answer.ground_truth,
+    }));
+  }
 
   let nCorrect = 0;
   let nNoCall = 0;
   let nWrongName = 0;
   let nWrongArgs = 0;
 
-  for (let k = 0; k < idx.length; k++) {
-    const row = rows[idx[k]!]!;
-    const q = row.query;
-    const text = userText(q.question);
-    const tools = wrapToolsForChat(q.function);
-    const prompt = buildPrompt(text, tools);
+  for (let k = 0; k < items.length; k++) {
+    const item = items[k]!;
+    const text = userText(item.question);
+    const tools = wrapToolsForChat(item.function);
 
-    const out = await generateText(tm, prompt, { maxTokens, useChat: true });
+    // optiq's primary path: tools go THROUGH the chat template (the MiniCPM5
+    // template renders them as a `# Tools` system turn). Only fall back to the
+    // textual prompt when there's no chat template — mirrors bfcl.py's try/except.
+    let out: string;
+    if (tm.template) {
+      const rendered = tm.template.render(
+        [{ role: "user", content: text }],
+        { addGenerationPrompt: true, enableThinking: false, tools: tools as ToolDefinition[] },
+      );
+      out = await generateText(tm, rendered, { maxTokens, useChat: false });
+    } else {
+      out = await generateText(tm, buildPrompt(text, tools), { maxTokens, useChat: true });
+    }
     const predicted = extractToolCall(out);
-    const gt = parseGroundTruth(row.answer.ground_truth);
+    const gt = parseGroundTruth(item.ground_truth);
 
     if (predicted === null) {
       nNoCall++;
@@ -480,15 +514,15 @@ export async function evaluateBfcl(
       nCorrect++;
     }
 
-    if ((k + 1) % 10 === 0 || k + 1 === idx.length) {
+    if ((k + 1) % 10 === 0 || k + 1 === items.length) {
       process.stderr.write(
-        `\r  bfcl ${k + 1}/${idx.length}  acc=${((nCorrect / (k + 1)) * 100).toFixed(1)}%`,
+        `\r  bfcl ${k + 1}/${items.length}  acc=${((nCorrect / (k + 1)) * 100).toFixed(1)}%`,
       );
     }
   }
   process.stderr.write("\n");
 
-  const nTotal = idx.length;
+  const nTotal = items.length;
   return {
     nCorrect,
     nTotal,

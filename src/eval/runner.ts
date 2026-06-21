@@ -6,6 +6,7 @@
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
 import { generate, type GenerateOptions } from "../generate";
+import * as ops from "../mlx/ops";
 import { ChatTemplate } from "../chat-template";
 import { loadModelConfig, type ModelConfig } from "../config";
 import { Weights } from "../weights";
@@ -56,17 +57,34 @@ export interface TaskModel {
    *  task's own (greedy) default — used to run the whole suite under one sampler
    *  arm (e.g. the v2 curve vs the default chat recipe) for the degradation gate. */
   samplerOverride?: SamplerArm;
+  /** Mounted-adapter ids to ACTIVATE on every forward/generate. Mounting an adapter
+   *  only stores it on the linears; `loraState.active` is what actually applies it,
+   *  and generation resets it to [] after each call. So generateText re-passes this,
+   *  and direct-forward tasks (MMLU) re-assert it — else the eval silently runs base. */
+  activeAdapters?: string[];
 }
 
-export async function loadTaskModel(query: string): Promise<TaskModel> {
+export async function loadTaskModel(query: string, adapterDir?: string): Promise<TaskModel> {
   const dir = resolveModelDir(query);
   const config = await loadModelConfig(dir);
   const weights = await Weights.open(dir);
   const model = createModel(weights, config);
+  const activeAdapters: string[] = [];
+  if (adapterDir) {
+    // Mount a trained LoRA adapter so the eval measures base+adapter (e.g. the
+    // ORPO-fine-tuned "after" model). NOTE: mount() only STORES the adapter on each
+    // linear — it does NOT activate it. Activation is `loraState.active`; without
+    // setting it the forward runs BASE (bit-identical to no-adapter). So activate it
+    // here for direct-forward tasks; generateText re-passes `activeAdapters` too.
+    const { AdapterManager } = await import("../lora");
+    await new AdapterManager(model).mount("eval-adapter", adapterDir);
+    activeAdapters.push("eval-adapter");
+    model.loraState.active = [...activeAdapters];
+  }
   const tokenizer = await loadTokenizer(dir);
   let template: ChatTemplate | null = null;
   try { template = await ChatTemplate.load(dir); } catch { template = null; }
-  return { model, tokenizer, template, config, dir };
+  return { model, tokenizer, template, config, dir, activeAdapters: activeAdapters.length ? activeAdapters : undefined };
 }
 
 export interface GenOpts {
@@ -76,21 +94,73 @@ export interface GenOpts {
   /** Sampling overrides (default greedy). Lets the HLG/diversity evals vary the
    *  sampler — temperature, top-p/k, seed, hlg — while sharing this prompt path. */
   sampler?: Partial<Pick<GenerateOptions, "temperature" | "topP" | "topK" | "seed" | "hlg" | "curve">>;
+  /** Chat-template `enable_thinking`. Defaults to OFF for eval parity with optiq
+   *  (its capability numbers are non-thinking; e.g. MiniCPM5 IFEval 64.7 is
+   *  non-thinking). Set MLX_BUN_EVAL_THINK=1 or pass true to evaluate thinking mode. */
+  enableThinking?: boolean;
+}
+
+/** Bit-exact greedy decode: raw `model.forward` + argmax loop, which matches mlx-lm
+ *  token-for-token (gen8k: 8000/8000). The product `generate()` decode wrapper
+ *  (forwardHidden/logitsFromHidden + pipelined sampler) diverges from the raw forward
+ *  on near-ties past ~32 tokens, so the EVAL decodes bit-exactly itself rather than
+ *  alter the serving path. Greedy + full-precision KV only. */
+function greedyDecodeBitExact(tm: TaskModel, ids: number[], maxTokens: number): string {
+  if (tm.activeAdapters) tm.model.loraState.active = tm.activeAdapters; // apply the mounted adapter
+  const cache = tm.model.makeCache();
+  try {
+    if (ids.length > 1) tm.model.forward(ids.slice(0, -1), cache).dispose(); // prefill
+    let last = ids[ids.length - 1]!;
+    const eos = new Set(tm.config.eosTokenIds);
+    const out: number[] = [];
+    for (let i = 0; i < maxTokens; i++) {
+      const lg = tm.model.forward([last], cache);
+      const am = ops.argmaxAxis(lg, -1); // GPU argmax (mlx-lm greedy: lowest-index tie-break)
+      lg.dispose();
+      const best = ops.itemUint32(am);
+      am.dispose();
+      if (eos.has(best)) break; // mlx-lm halts on EOS and excludes it from the output
+      out.push(best);
+      last = best;
+    }
+    return tm.tokenizer.decode(out, true);
+  } finally {
+    for (const c of cache) c.dispose();
+  }
 }
 
 /** Complete `body` via the model's real quantized-KV path. Greedy by default;
  *  pass `opts.sampler` to drive temperature/HLG/etc. */
 export async function generateText(tm: TaskModel, body: string, opts: GenOpts = {}): Promise<string> {
   const maxTokens = opts.maxTokens ?? 256;
-  const text = opts.useChat !== false && tm.template
-    ? tm.template.render([{ role: "user", content: body }], { addGenerationPrompt: true })
+  const enableThinking = opts.enableThinking ?? process.env.MLX_BUN_EVAL_THINK === "1";
+  const templated = opts.useChat !== false && tm.template !== null;
+  const text = templated
+    ? tm.template!.render([{ role: "user", content: body }], { addGenerationPrompt: true, enableThinking })
     : body;
-  const ids = tm.tokenizer.encode(text);
+  // The chat template ALREADY emits the BOS; encoding it with add_special_tokens on
+  // would prepend a SECOND BOS (<s><s>…), corrupting generation. Raw bodies (no
+  // template) get the BOS added as normal.
+  const ids = tm.tokenizer.encode(text, /* addSpecialTokens */ !templated);
 
-  const kv = tm.config.kvQuant?.length ? tm.config.kvQuant : undefined;
+  // optiq's PUBLISHED eval generates with a FULL-PRECISION KV cache — its eval calls
+  // plain mlx_lm.generate (kv-quant lives in the serving runtime, not the eval). So
+  // for like-for-like parity we default the eval to UNQUANTIZED KV; MMLU's argmax
+  // path was already unquantized, which is why it matched while generation didn't.
+  // MLX_BUN_EVAL_KV_QUANT=1 generates through the model's quantized KV (serving config).
+  const kv = (process.env.MLX_BUN_EVAL_KV_QUANT === "1" && tm.config.kvQuant?.length)
+    ? tm.config.kvQuant : undefined;
+
+  // Parity default — greedy + full-precision KV + no sampler arm: decode bit-exactly
+  // via the raw forward (matches mlx-lm token-for-token). Sampler arms / kv-quant fall
+  // through to the product generate().
+  if (!kv && !opts.sampler && !tm.samplerOverride) {
+    return greedyDecodeBitExact(tm, ids, maxTokens);
+  }
   const gen = generate(tm.model, ids, {
     maxTokens,
     temperature: 0, // greedy default — deterministic head-to-head arms
+    adapters: tm.activeAdapters ?? [], // per-request activation of the mounted eval-adapter
     ...(kv ? { kvConfig: kv, quantizedKvStart: 0 } : {}),
     ...(opts.sampler ?? {}), // overrides temperature when provided
     ...(tm.samplerOverride ?? {}), // arm override wins over the task's own sampler

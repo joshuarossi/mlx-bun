@@ -35,8 +35,7 @@ import {
   runRpcMode,
   type CreateAgentSessionRuntimeFactory,
 } from "@earendil-works/pi-coding-agent";
-import { createWebTools, WEB_TOOL_NAMES } from "./web-tools";
-import { materializeBundledSkills } from "./web/skills";
+import { buildPiAgentSurface } from "./pi-session";
 import { buildPiProvider, DEFAULT_CONTEXT_WINDOW } from "./pi-provider";
 
 /** How the embedded agent runs. Mirrors pi's CLI appMode. */
@@ -49,8 +48,6 @@ export type PiTerminalMode = "interactive" | "print" | "rpc";
  * sees it. Mutating tools (bash/edit/write) surface pi's own TUI approval
  * prompt at call time — we don't add a gate.
  */
-const ALL_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls", ...WEB_TOOL_NAMES];
-
 /**
  * System prompt for the embedded terminal coding agent.
  *
@@ -70,20 +67,11 @@ export function buildTerminalSystemPrompt(modelLabel?: string): string {
   const model = modelLabel ? `the local model \`${modelLabel}\`` : "a local model";
   return `You are mlx-bun's terminal coding agent — a capable, hands-on pair programmer working alongside the user in their terminal. You run on ${model} entirely on the user's own Apple-silicon Mac via mlx-bun, so the whole session stays local and private; nothing leaves the machine except the explicit web tools below.
 
-You operate inside the user's current project directory and have a real toolset — use it. Prefer doing the work over describing it: open the files, search the tree, run the command, make the edit. Investigate before you answer, and follow through to a working result.
+You operate inside the user's current project directory. Available capabilities when relevant: read-only file inspection (read, ls, find, grep), web search/fetch (web_search, web_fetch), weather, and user-approved local actions (bash, edit, write).
 
-Tools used freely (no confirmation needed):
-- read — open and read any file
-- ls, find, grep — list directories and search the tree by name or content
-- web_search — search the web for current, real-world information (docs, APIs, errors, anything that changes or that you don't already know)
-- web_fetch — fetch a URL and read the page or data behind it (a natural follow-up to web_search, or when the user gives you a link)
-- weather — current conditions and a short forecast for any place
+Use tools in service of helping the user, not as a performance. For ordinary social conversation, answer naturally yourself. For real-world facts, current events, schedules, releases, local information, recommendations, restaurants, movies, prices, travel, docs, or anything likely to have changed, look it up with web_search/web_fetch or weather instead of relying on memory or guessing. For coding tasks, inspect the files, investigate before you answer, and follow through to a working result. When you need to change code or run something, propose the concrete edit or command and let the approval prompt handle consent — don't ask permission in prose first.
 
-Tools that ask the user for approval first (they stay in control — pi shows the prompt, you don't have to ask in prose):
-- bash — run shell commands (build, test, git, scripts)
-- edit, write — modify existing files or create new ones
-
-When you need to change code or run something, just propose the concrete edit or command and let the approval prompt handle consent — don't narrate "I would run…" or ask permission in text. When you hit something you don't know — especially current or version-specific facts — look it up with web_search and web_fetch instead of guessing. If a request is genuinely ambiguous, ask one short clarifying question; otherwise make a sensible choice and proceed.
+Environment metadata such as current date, working directory, model name, and available tools may be provided for context; do not report or summarize that metadata unless the user asks for it or it is directly relevant. Do not narrate tool policies or internal workflows.
 
 Be honest about what you did and what you found, including mistakes, dead ends, and anything you couldn't do. Keep responses tight and skimmable: format with Markdown, show file paths and commands plainly, and cite links when you used the web.`;
 }
@@ -121,6 +109,7 @@ export async function runEmbeddedPi(opts: RunEmbeddedPiOptions): Promise<number>
   const cwd = process.cwd();
   // Own session/settings dir, isolated from any standalone pi install.
   const agentDir = join(homedir(), ".mlx-bun", "pi");
+  const sessionDir = join(agentDir, "sessions", `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`);
 
   const { authStorage, modelRegistry, model } = buildPiProvider(opts.baseUrl, {
     contextWindow: opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
@@ -128,10 +117,10 @@ export async function runEmbeddedPi(opts: RunEmbeddedPiOptions): Promise<number>
     reasoning: opts.reasoning ?? false,
   });
 
-  // Curated skills (web-research, …) written to ~/.mlx-bun/skills and loaded
-  // on top of an otherwise-isolated session. See src/web/skills.ts.
-  const skillsRoot = materializeBundledSkills();
-  const systemPrompt = buildTerminalSystemPrompt(opts.modelLabel);
+  // Shared pi tool/skill surface. Memory is included only when the user has
+  // enabled a vault; if present it remains scoped to user-specific continuity.
+  const surface = await buildPiAgentSurface();
+  const systemPrompt = buildTerminalSystemPrompt(opts.modelLabel) + surface.memoryHint;
 
   // The runtime factory: same shape as pi's own CLI (dist/main.js) and the
   // shipped examples/sdk/13-session-runtime.ts. The same factory is reused by
@@ -154,7 +143,7 @@ export async function runEmbeddedPi(opts: RunEmbeddedPiOptions): Promise<number>
         // AGENTS.md / CLAUDE.md context files (unlike the web chat).
         noContextFiles: false,
         // Our curated skills on top (noSkills above only disables discovery).
-        additionalSkillPaths: [skillsRoot],
+        additionalSkillPaths: surface.skillPaths,
         // Replace pi's default coding-agent prompt with our mlx-bun persona.
         systemPrompt,
       },
@@ -165,15 +154,15 @@ export async function runEmbeddedPi(opts: RunEmbeddedPiOptions): Promise<number>
         sessionManager,
         sessionStartEvent,
         model,
-        tools: ALL_TOOLS,
-        customTools: createWebTools(),
+        tools: surface.tools,
+        customTools: surface.customTools,
       })),
       services,
       diagnostics: services.diagnostics,
     };
   };
 
-  const sessionManager = SessionManager.create(cwd);
+  const sessionManager = SessionManager.create(cwd, sessionDir);
   const runtime = await createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager });
 
   try {

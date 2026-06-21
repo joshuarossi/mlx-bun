@@ -6,7 +6,10 @@
 import { Tokenizer } from "@huggingface/tokenizers";
 
 export interface LoadedTokenizer {
-  encode(text: string): number[];
+  /** Encode text → token ids. `addSpecialTokens` (default true) prepends the BOS;
+   *  pass FALSE for chat-template output, which already emits the BOS as text (else
+   *  you get a corrupting double-BOS `<s><s>…`). */
+  encode(text: string, addSpecialTokens?: boolean): number[];
   decode(ids: number[], skipSpecialTokens?: boolean): string;
   readonly bosTokenId: number | null;
   readonly eosTokenId: number | null;
@@ -28,7 +31,8 @@ export async function loadTokenizer(modelDir: string): Promise<LoadedTokenizer> 
   };
 
   return {
-    encode: (text) => tok.encode(text).ids.map(Number),
+    encode: (text, addSpecialTokens = true) =>
+      tok.encode(text, { add_special_tokens: addSpecialTokens }).ids.map(Number),
     decode: (ids, skipSpecialTokens = false) =>
       // python's decode([]) === ""; the JS lib throws on empty input
       ids.length === 0 ? "" : tok.decode(ids, { skip_special_tokens: skipSpecialTokens }),

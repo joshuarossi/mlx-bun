@@ -67,7 +67,12 @@ function reEscape(s: string): string {
 // \b\w+\b — JS \w is ASCII-ish like Python's default re (no re.UNICODE here).
 function checkLengthWords(response: string, kw: Kw): boolean {
   const n = (response.match(/\b\w+\b/g) ?? []).length;
-  const rel = kwStr(kw, "relation", "at least");
+  // Python `kw.get("relation", "at least")`: the default applies ONLY when the key is
+  // ABSENT — a present-but-None `relation` (as the frozen kwargs supply for letter/
+  // paragraph/capital checks) returns None, and optiq's `"least" in None` RAISES →
+  // _verify_response returns False. Replicate exactly: rel is null → `.includes` throws
+  // below → verifyResponse catches → FAIL. (kwStr's None→default was the leniency.)
+  const rel = ("relation" in kw ? kw["relation"] : "at least") as string;
   const target = kwInt(kw, "num_words", 0);
   return rel.includes("least") ? n >= target : n <= target;
 }
@@ -75,14 +80,24 @@ function checkLengthWords(response: string, kw: Kw): boolean {
 function checkLengthSentences(response: string, kw: Kw): boolean {
   // Python: re.split(r"[.!?]+\s+", response.strip())
   const n = response.trim().split(/[.!?]+\s+/).length;
-  const rel = kwStr(kw, "relation", "at least");
+  // Python `kw.get("relation", "at least")`: the default applies ONLY when the key is
+  // ABSENT — a present-but-None `relation` (as the frozen kwargs supply for letter/
+  // paragraph/capital checks) returns None, and optiq's `"least" in None` RAISES →
+  // _verify_response returns False. Replicate exactly: rel is null → `.includes` throws
+  // below → verifyResponse catches → FAIL. (kwStr's None→default was the leniency.)
+  const rel = ("relation" in kw ? kw["relation"] : "at least") as string;
   const target = kwInt(kw, "num_sentences", 0);
   return rel.includes("least") ? n >= target : n <= target;
 }
 
 function checkLengthParagraphs(response: string, kw: Kw): boolean {
   const n = response.split("\n\n").filter((p) => p.trim()).length;
-  const rel = kwStr(kw, "relation", "at least");
+  // Python `kw.get("relation", "at least")`: the default applies ONLY when the key is
+  // ABSENT — a present-but-None `relation` (as the frozen kwargs supply for letter/
+  // paragraph/capital checks) returns None, and optiq's `"least" in None` RAISES →
+  // _verify_response returns False. Replicate exactly: rel is null → `.includes` throws
+  // below → verifyResponse catches → FAIL. (kwStr's None→default was the leniency.)
+  const rel = ("relation" in kw ? kw["relation"] : "at least") as string;
   const target = kwInt(kw, "num_paragraphs", 0);
   return rel.includes("least") ? n >= target : n <= target;
 }
@@ -101,7 +116,12 @@ function checkKeywordsForbidden(response: string, kw: Kw): boolean {
 
 function checkKeywordFrequency(response: string, kw: Kw): boolean {
   const kwWord = kwStr(kw, "keyword", "").toLowerCase();
-  const rel = kwStr(kw, "relation", "at least");
+  // Python `kw.get("relation", "at least")`: the default applies ONLY when the key is
+  // ABSENT — a present-but-None `relation` (as the frozen kwargs supply for letter/
+  // paragraph/capital checks) returns None, and optiq's `"least" in None` RAISES →
+  // _verify_response returns False. Replicate exactly: rel is null → `.includes` throws
+  // below → verifyResponse catches → FAIL. (kwStr's None→default was the leniency.)
+  const rel = ("relation" in kw ? kw["relation"] : "at least") as string;
   const target = kwInt(kw, "frequency", 0);
   const n = (response.toLowerCase().match(new RegExp(`\\b${reEscape(kwWord)}\\b`, "g")) ?? []).length;
   return rel.includes("least") ? n >= target : n <= target;
@@ -109,7 +129,12 @@ function checkKeywordFrequency(response: string, kw: Kw): boolean {
 
 function checkLetterFrequency(response: string, kw: Kw): boolean {
   const letter = kwStr(kw, "letter", "").toLowerCase();
-  const rel = kwStr(kw, "relation", "at least");
+  // Python `kw.get("relation", "at least")`: the default applies ONLY when the key is
+  // ABSENT — a present-but-None `relation` (as the frozen kwargs supply for letter/
+  // paragraph/capital checks) returns None, and optiq's `"least" in None` RAISES →
+  // _verify_response returns False. Replicate exactly: rel is null → `.includes` throws
+  // below → verifyResponse catches → FAIL. (kwStr's None→default was the leniency.)
+  const rel = ("relation" in kw ? kw["relation"] : "at least") as string;
   // Python: int(kw.get("let_frequency", kw.get("frequency", 0)))
   const target = kw["let_frequency"] !== undefined && kw["let_frequency"] !== null
     ? kwInt(kw, "let_frequency", 0)
@@ -124,7 +149,12 @@ function checkCapitalWordsCount(response: string, kw: Kw): boolean {
   // Python: w.isupper() and len(w) > 1 — str.isupper() requires ≥1 cased char,
   // all cased chars uppercase. Approximate: has a letter, no lowercase letter.
   const n = words.filter((w) => w.length > 1 && /[A-Za-z]/.test(w) && w === w.toUpperCase()).length;
-  const rel = kwStr(kw, "relation", "at least");
+  // Python `kw.get("relation", "at least")`: the default applies ONLY when the key is
+  // ABSENT — a present-but-None `relation` (as the frozen kwargs supply for letter/
+  // paragraph/capital checks) returns None, and optiq's `"least" in None` RAISES →
+  // _verify_response returns False. Replicate exactly: rel is null → `.includes` throws
+  // below → verifyResponse catches → FAIL. (kwStr's None→default was the leniency.)
+  const rel = ("relation" in kw ? kw["relation"] : "at least") as string;
   // Python: int(kw.get("capital_frequency", kw.get("frequency", 0)))
   const target = kw["capital_frequency"] !== undefined && kw["capital_frequency"] !== null
     ? kwInt(kw, "capital_frequency", 0)
@@ -251,11 +281,12 @@ const VERIFIERS = new Map<string, Verifier>([
 /**
  * Verify one response against its instruction list.
  * Returns { pass, unhandled }. An instruction_id with no registered verifier is
- * counted as a FAIL (NOT silently skipped) and recorded in `unhandled`. This is
- * stricter than ifeval.py (which treats unhandled as pass); per the mlx-bun
- * harness rule, anything we cannot port must fail rather than bias high.
+ * treated as a PASS (does not affect `pass`) and only recorded in `unhandled` for
+ * visibility — matching ifeval.py's `continue` policy EXACTLY, so our strict_acc
+ * reproduces optiq's. (Our VERIFIERS map mirrors his `_VERIFIERS` 1:1, so unhandled
+ * is empty for the standard IFEval set anyway; this only matters for parity safety.)
  */
-function verifyResponse(
+export function verifyResponse(
   response: string,
   instructionIds: string[],
   kwargsList: Kw[],
@@ -268,8 +299,7 @@ function verifyResponse(
     const verifier = VERIFIERS.get(iid);
     if (verifier === undefined) {
       unhandled.push(iid);
-      pass = false; // count unported instruction as a failure
-      continue;
+      continue; // ifeval.py: treat an unhandled instruction as PASS (don't touch `pass`)
     }
     try {
       if (!verifier(response, kw)) pass = false;
@@ -281,7 +311,7 @@ function verifyResponse(
 }
 
 /** Loose-mode preprocessing — mirrors ifeval.py `_loose_clean`. */
-function looseClean(response: string): string {
+export function looseClean(response: string): string {
   let s = response.trim();
   // Python: re.sub(r"^(Sure|Here|Of course)[,!.]\s*[^\n]*\n+", "", s, count=1)
   s = s.replace(/^(Sure|Here|Of course)[,!.]\s*[^\n]*\n+/, "");
@@ -293,22 +323,26 @@ function looseClean(response: string): string {
 }
 
 /** Strip a leading thinking block, matching ifeval.py's split on </think>. */
-function stripThinking(response: string): string {
+export function stripThinking(response: string): string {
   const idx = response.indexOf("</think>");
   return idx === -1 ? response : response.slice(idx + "</think>".length);
 }
 
 export async function evaluateIfeval(
   tm: TaskModel,
-  opts: { nSamples?: number; maxTokens?: number; seed?: number } = {},
+  opts: { nSamples?: number; maxTokens?: number; seed?: number; frozen?: boolean } = {},
 ): Promise<IfevalResult> {
   // ifeval.py: max_tokens default 512.
   const maxTokens = opts.maxTokens ?? 512;
   const seed = opts.seed ?? 42;
 
-  const rows = loadJsonl<IfevalRow>("ifeval");
+  // Optiq-parity mode (DEFAULT): score optiq's EXACT prompt set (he runs the full
+  // IFEval split — 541 prompts) through OUR verifiers + OUR chat template.
+  // MLX_BUN_IFEVAL_FROZEN=0 reverts to our own copy + optional sampling.
+  const useFrozen = opts.frozen ?? (process.env.MLX_BUN_IFEVAL_FROZEN !== "0");
+  const rows = loadJsonl<IfevalRow>(useFrozen ? "ifeval_optiq_frozen" : "ifeval");
   const nSamples = opts.nSamples ?? rows.length;
-  const idx = nSamples < rows.length
+  const idx = (!useFrozen && nSamples < rows.length)
     ? sampleIndices(rows.length, nSamples, seed)
     : Array.from({ length: rows.length }, (_, i) => i);
 
@@ -341,7 +375,7 @@ export async function evaluateIfeval(
   if (unhandledCounts.size) {
     const top = [...unhandledCounts.entries()].sort((a, b) => b[1] - a[1]);
     process.stderr.write(
-      "  ifeval unported instruction ids (counted as FAIL): " +
+      "  ifeval unported instruction ids (treated as PASS, per optiq): " +
         top.map(([k, v]) => `${k}(${v})`).join(", ") +
         "\n",
     );

@@ -1,6 +1,6 @@
 ---
 name: web-research
-description: Use when the user asks you to research something, do a deep dive, fact-check a claim, compare options, or answer a question that needs current, accurate, real-world information ("what's the latest on…", prices, releases, news, specs). Gives a rigorous workflow for searching the web, reading primary sources, cross-checking claims, and answering with citations.
+description: Use only when the user asks you to research something, do a deep dive, fact-check a claim, compare options, or answer a question that needs current, accurate, real-world information ("what's the latest on…", prices, releases, news, specs). Do not use for ordinary conversation, ordinary coding tasks, or questions answerable from the current conversation/files.
 ---
 
 # Web Research
@@ -15,6 +15,8 @@ trustworthy, well-sourced answer — not a guess dressed up as one.
   or anything that changes over time.
 - The user wants a thorough or authoritative answer, or asks for sources.
 - A specific claim needs verifying, or you would otherwise be speculating.
+
+Do **not** use this for ordinary conversation that does not require external information. In that case, reply naturally instead of explaining the research workflow.
 
 ## Workflow
 

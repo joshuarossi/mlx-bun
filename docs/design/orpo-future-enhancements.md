@@ -14,6 +14,48 @@ comfortable.
 > [steel-flash-cce-handoff.md](../investigations/steel-flash-cce-handoff.md). The
 > remaining sections (§2, §4–§9, the objective variants) are still genuinely future.
 
+## Deferred levers — queued, do NOT start mid-run (2026-06-19)
+
+Two optimizations identified during the MiniCPM5 UltraFeedback ORPO run. **Both are
+deferred until the active run finishes** — the GPU is fully occupied, so these get
+*measured* later, not "quickly tested" now (a quick probe steals the training GPU).
+
+1. **Expose `--grad-accum` (gradient accumulation).** The machinery already exists —
+   `accumulateStep` (`src/train/trainer.ts:975`) loops `gradAccumSteps` B=1 micro-steps,
+   **averages** their grads (`scale = 1/accumSteps`, line 989), and evals+frees each
+   micro-graph so **peak memory stays flat** (line 1015). It's wired into the ORPO loop
+   (`trainer.ts:837`) but `gradAccumSteps` defaults to 1 and has **no CLI flag**.
+   - **Why it helps us:** ORPO here is hard **B=1** (segmented + prefix-share assume a
+     single stream — `segmented.ts:636` throws on B>1), so every optimizer update is
+     computed from exactly **one** preference pair — the noisiest possible gradient (the
+     per-step loss swinging 0.4↔3.3 is that noise). Grad-accum gives an effective batch of
+     G — averaging G pairs/update, variance ↓ ~1/G, steadier descent, tolerates a higher
+     LR — at **B=1 memory**. It's the *only* way to a bigger effective batch when B>1 is
+     impossible.
+   - **What it is NOT:** not a speedup (G× passes per optimizer update → same total
+     passes, same wall-clock, same data seen); and not a guaranteed win (the prior run
+     converged fine at B=1, val 1.66→1.50). It's a **try-and-measure** lever — expose the
+     flag, A/B G=4/8 judged on **val-margin**, don't assume.
+   - **Note on prefix-share:** the existing `orpo_prefix_shared` is *already* a hand-built
+     batch-of-2-with-shared-prefix (1F + 1B over `[P; Rc; Rr]`, prompt deduped in **both**
+     directions — strictly cheaper than a generic 2-batch's `2F + 2B`). Generic N-way
+     batching would re-duplicate per-pair prefixes and need a block-diagonal mask layer
+     *on top of* the prefix-share mask — high friction, and the payoff is dominated by
+     grad-accum (effective batch, free) + W4A16 (the real GPU bottleneck). Park batching
+     unless a profile ever shows real short-row GPU idle.
+
+2. **W4A16 compute-precision spike.** The head GEMM dequants 4-bit weights into **fp32**
+   and matmuls in fp32 (W4A32); dropping the operands to `half` (fp32 accumulate) attacks
+   the actual bottleneck. Confirmed **compute-bound live** (GPU 100% / BW ~⅓ of 400 on
+   M1 Max). Full plan + parity gating: [w4a16-compute-precision-spike.md](w4a16-compute-precision-spike.md).
+
+**Context — seg vs no-segment A/B (MiniCPM5, seq 4096, same-machine M1 Max):**
+`--no-segment` measured **~1.25 s/step steady @ peak 9.26 GB** vs `--seg 2`
+**~1.58 s/step @ 2.62 GB** — ~20% faster for 3.5× peak memory, **bit-identical output**
+(segmenting is just gradient checkpointing). Dropping the segs removed the recompute (real
+GPU work) → GPU busy but no longer pinned. Fine when memory is spare; the current 3-epoch
+run uses `--no-segment`.
+
 Product relevance: ORPO is not only a researcher feature. It is the path to
 small, downloadable task adapters that make the default local assistant better
 without forcing every user onto a larger base model. The performance work below
