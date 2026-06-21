@@ -1,0 +1,10 @@
+import { readFileSync } from "node:fs";
+import { loadTaskModel, generateText } from "../../src/eval/runner";
+const rows = readFileSync(`${process.env.HOME}/.cache/mlx-bun/eval-data/ifeval_optiq_frozen.jsonl`,"utf8").trim().split("\n").map((l)=>JSON.parse(l));
+const tm = await loadTaskModel("MiniCPM5", "./adapters/cpm5-uf-frombase");
+console.log("activeAdapters:", JSON.stringify(tm.activeAdapters), "| loraState.active:", JSON.stringify(tm.model.loraState.active));
+const resp = await generateText(tm, rows[0].prompt, { maxTokens: 512, useChat: true });
+const base = readFileSync("/tmp/ifeval0-ours.txt","utf8");
+console.log(`adapter len=${resp.length}  base len=${base.length}`);
+console.log(resp !== base ? "✅ adapter response DIFFERS from base — adapter is LIVE" : "❌ IDENTICAL to base — adapter NOT applied (the old bug)");
+console.log("adapter tail:", JSON.stringify(resp.slice(-70)));
