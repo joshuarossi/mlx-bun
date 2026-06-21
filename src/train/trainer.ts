@@ -37,7 +37,7 @@ import { resolveRanks, bitsMapFromModel, readPerLayerKl, DEFAULT_TARGET_MODULES,
 import { sftLoss, dpoLoss, dpoRefLogps, dpoMetrics, orpoLoss, orpoMetrics, type ChunkCtx } from "./loss";
 import { orpoLossPrefixShared, orpoLossPrefixSharedGemma, splitPrefixBatch } from "./prefix-shared";
 import { AdamW, warmupCosineSchedule } from "./optimizer";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, appendFileSync, mkdirSync } from "node:fs";
 
 export interface TrainConfig {
   method: "sft" | "dpo" | "orpo";
@@ -90,6 +90,14 @@ export interface TrainConfig {
    *  turns it on so the best-ON-TASK checkpoint can be chosen by the real eval
    *  afterward (val is only a proxy — we keep them all and let the eval pick). */
   saveCheckpoints: boolean;
+  /** Gradient clipping: scale grads so their global L2 norm ≤ this before the
+   *  optimizer step (0 = off). Standard ORPO/DPO stability guard — without it a
+   *  single high-norm batch makes AdamW take a huge step and the loss diverges. */
+  gradClipNorm: number;
+  /** Cap validation examples evaluated per eval step (0 = all). Val accuracy is
+   *  correct/total over a FIXED subset — bounds the denominator AND the per-eval
+   *  cost (full val over thousands of pairs is minutes each). */
+  valMaxExamples: number;
   // DPO
   dpoBeta: number;
   dpoWarmupIters: number;
@@ -166,6 +174,8 @@ export const DEFAULT_TRAIN_CONFIG: TrainConfig = {
   gradCheckpoint: false, // default off until validated; flip to true (optiq default) after
   segmentSize: 0, // default off; >0 enables segmented backward (MiniCPM5 SFT B=1)
   saveCheckpoints: false, // off by default; scripts opt in (keep-all-checkpoints + metrics.json)
+  gradClipNorm: 1.0, // on by default (standard ORPO/DPO guard); 0 = off
+  valMaxExamples: 256, // fixed val subset → fast, meaningful correct/total
 
   dpoBeta: 0.1,
   dpoWarmupIters: 0,
@@ -269,7 +279,30 @@ export async function trainLora(
   // pick the best-MARGIN checkpoint (overfit shows as train↑ / val-margin flat).
   const valHistory: { step: number; loss: number; margin?: number; accuracy?: number; checkpoint: string | null }[] = [];
   const startedAt = Date.now();
+
+  // Live, append-only metrics stream (the source `mlx-bun train-watch` tails).
+  // Always on — it's the durable per-step record, a few MB at most, single
+  // writer, append-only. The first line is a `meta` record (totals + config) so
+  // a viewer attaching mid-run has the denominators (iters) and run identity
+  // without replaying. Each subsequent line is a metric event + a wall-clock `t`
+  // (ms) so the viewer derives s/step and ETA itself. Best-effort: a logging
+  // failure must never kill a run.
+  mkdirSync(cfg.adapterPath, { recursive: true });
+  const metricsJsonl = `${cfg.adapterPath}/metrics.jsonl`;
+  const writeMetricLine = (o: Record<string, unknown>) => {
+    try { appendFileSync(metricsJsonl, JSON.stringify(o) + "\n"); } catch { /* never throw */ }
+  };
+  try { writeFileSync(metricsJsonl, ""); } catch { /* truncate prior run's stream */ }
+  writeMetricLine({
+    type: "meta", t: startedAt, method: cfg.method, model: cfg.baseModel,
+    iters: cfg.iters, learning_rate: cfg.learningRate, max_seq_length: cfg.maxSeqLen,
+    batch_size: cfg.batchSize, rank: cfg.rank, scale: cfg.scale,
+    orpo_lambda: cfg.method === "orpo" ? cfg.orpoLambda : undefined,
+    adapter_path: cfg.adapterPath,
+  });
+
   const collect: Emit = (e) => {
+    if (e.type === "metric") writeMetricLine({ ...e, t: Date.now() });
     if (e.type === "metric" && e.kind === "train") {
       trainHistory.push({ step: e.step, loss: e.loss });
     } else if (e.type === "metric" && e.kind === "val") {
@@ -467,6 +500,7 @@ async function sftLoop(
       );
 
       const gradNorm = globalNorm(grads); // grads already materialized above
+      clipGradsByNorm(grads, gradNorm, cfg.gradClipNorm);
       opt.step(grads);
       opt.evalState();
       if (MEM_LOG) {
@@ -615,6 +649,7 @@ async function dpoLoop(
       );
 
       const gradNorm = globalNorm(grads);
+      clipGradsByNorm(grads, gradNorm, cfg.gradClipNorm);
       opt.step(grads);
       opt.evalState();
       clearCache();
@@ -853,6 +888,7 @@ async function orpoLoop(
 
       model.loraState.dropoutSeed = null; // metrics/val below run dropout-free
       const gradNorm = globalNorm(grads);
+      clipGradsByNorm(grads, gradNorm, cfg.gradClipNorm);
       opt.step(grads);
       opt.evalState();
       clearCache();
@@ -873,6 +909,8 @@ async function orpoLoop(
           accuracy: m.accuracy,
           margin: m.margin,
           tokens_per_sec: 0,
+          peak_gb: peakMemory() / 1e9,
+          active_gb: activeMemory() / 1e9,
           progress: step / cfg.iters,
           message: `step ${step}/${cfg.iters} loss=${lossVal.toFixed(4)} nll=${m.nll.toFixed(4)} or=${m.or.toFixed(4)} acc=${m.accuracy.toFixed(2)} margin=${m.margin.toFixed(3)}`,
         });
@@ -880,8 +918,12 @@ async function orpoLoop(
       }
 
       if (valid.length > 0 && step % cfg.stepsPerEval === 0) {
+        // Val accuracy is correct/total over a FIXED subset (cap bounds both the
+        // denominator and the per-eval cost). Each val example is a single B=1
+        // pair, so m.accuracy ∈ {0,1} and va sums to the integer correct count.
+        const valSet = cfg.valMaxExamples > 0 ? valid.slice(0, cfg.valMaxExamples) : valid;
         let vl = 0, va = 0, vm = 0, vn = 0;
-        for (const ex of valid) {
+        for (const ex of valSet) {
           const vb: DpoBatch = {
             chosenIds: [ex.chosenIds], rejectedIds: [ex.rejectedIds],
             chosenMask: [ex.chosenMask], rejectedMask: [ex.rejectedMask],
@@ -894,6 +936,8 @@ async function orpoLoop(
           type: "metric", kind: "val", step,
           loss: vn ? vl / vn : 0,
           accuracy: vn ? va / vn : 0,
+          n_correct: Math.round(va),
+          n_total: vn,
           margin: vn ? vm / vn : 0,
           progress: step / cfg.iters,
         });
@@ -1044,6 +1088,20 @@ function globalNorm(grads: MlxArray[]): number {
     p.dispose();
   }
   return Math.sqrt(sumSq);
+}
+
+/** Clip grads in place to a global L2 norm of `maxNorm` (no-op if off or under
+ *  the cap). Scales every grad by maxNorm/normVal and disposes the originals so
+ *  the optimizer takes ownership of the clipped copies. `normVal` is the already-
+ *  computed global norm (avoids a second pass). */
+function clipGradsByNorm(grads: MlxArray[], normVal: number, maxNorm: number): void {
+  if (maxNorm <= 0 || !(normVal > maxNorm)) return;
+  const s = maxNorm / normVal;
+  for (let i = 0; i < grads.length; i++) {
+    const g = grads[i]!;
+    grads[i] = ops.mulScalar(g, s);
+    g.dispose();
+  }
 }
 
 function countResponseTokens(batch: SftBatch): number {

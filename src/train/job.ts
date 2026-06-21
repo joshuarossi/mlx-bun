@@ -39,6 +39,8 @@ interface FinetuneSubmit {
   mlp_split?: boolean;
   segment_size?: number;
   save_checkpoints?: boolean;
+  grad_clip_norm?: number;
+  val_max_examples?: number;
   dpo_beta?: number;
   dpo_warmup_iters?: number;
   dpo_lr_schedule?: "constant" | "cosine";
@@ -83,6 +85,8 @@ function parseConfig(raw: Record<string, unknown>): { modelDir: string; dataDir:
     mlpSplit: c.mlp_split ?? DEFAULT_TRAIN_CONFIG.mlpSplit,
     segmentSize: c.segment_size ?? DEFAULT_TRAIN_CONFIG.segmentSize,
     saveCheckpoints: c.save_checkpoints ?? DEFAULT_TRAIN_CONFIG.saveCheckpoints,
+    gradClipNorm: c.grad_clip_norm ?? DEFAULT_TRAIN_CONFIG.gradClipNorm,
+    valMaxExamples: c.val_max_examples ?? DEFAULT_TRAIN_CONFIG.valMaxExamples,
     dpoBeta: c.dpo_beta ?? DEFAULT_TRAIN_CONFIG.dpoBeta,
     dpoWarmupIters: c.dpo_warmup_iters ?? DEFAULT_TRAIN_CONFIG.dpoWarmupIters,
     dpoLrSchedule: c.dpo_lr_schedule ?? DEFAULT_TRAIN_CONFIG.dpoLrSchedule,

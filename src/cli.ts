@@ -1217,11 +1217,14 @@ switch (cmd) {
       learning_rate: numFlag("lr", isOrpo ? 1e-5 : method === "dpo" ? 5e-5 : 2e-4),
       max_seq_length: seq,
       batch_size: numFlag("batch", 1),
+      grad_accumulation_steps: numFlag("grad-accum", 1),
       seed: numFlag("seed", 0),
       steps_per_report: 1,
       steps_per_eval: saveEvery > 0 ? saveEvery : 1_000_000,
       save_checkpoints: saveEvery > 0,
       segment_size: seg,
+      grad_clip_norm: numFlag("grad-clip", 1.0),
+      val_max_examples: numFlag("val-size", 256),
       warm_start_adapter: resume,
       ...(isOrpo ? {
         orpo_lambda: numFlag("lambda", 0.1),
@@ -1249,6 +1252,7 @@ switch (cmd) {
       planLines.push(
         `head       ${style.dim(flashOn ? "flash-CCE Metal ([M,vocab]-free)" : "MLX fused linear-CE")}`,
         `stack      ${style.dim(`prefix-share ${prefixOn ? "on" : "off"} · segmented ${seg > 0 ? `${seg}/seg` : "off"} · λ ${cfg.orpo_lambda}`)}`,
+        `stability  ${style.dim(`grad-clip ${cfg.grad_clip_norm || "off"} · val-size ${cfg.val_max_examples}${(cfg.grad_accumulation_steps as number) > 1 ? ` · grad-accum ${cfg.grad_accumulation_steps} (eff batch ${(cfg.batch_size as number) * (cfg.grad_accumulation_steps as number)})` : ""}`)}`,
       );
     else planLines.push(`stack      ${style.dim(`segmented ${seg > 0 ? `${seg}/seg` : "off"}`)}`);
     if (resume) planLines.push(`warm-start ${style.dim(`from ${resume} (weights only)`)}`);
@@ -1256,6 +1260,8 @@ switch (cmd) {
     planLines.push("", `adapter    ${style.dim(adapter)}`);
     console.log();
     box(planLines);
+    console.log();
+    console.log(`  ${style.dim("watch live (other tab):")} ${style.accent(`mlx-bun train-watch ${adapter}`)}`);
     console.log();
 
     if (flag("dry-run")) { console.log(`  ${style.dim("dry run — not training.")}`); break; }
@@ -1298,6 +1304,15 @@ switch (cmd) {
       `adapter    ${style.bold(adapter)}`,
       `serve it   ${style.accent(`mlx-bun serve ${m.repoId} --adapter ${adapter}`)}`,
     ]);
+    break;
+  }
+
+  case "train-watch": {
+    // Live mactop-style dashboard for a training run: tails <adapter>/metrics.jsonl.
+    const dir = positional(0) ?? opt("adapter")
+      ?? `${process.env.HOME}/.cache/mlx-bun/mlx-bun-finetunes/orpo-cpm5`;
+    const { runWatch } = await import("./train/watch");
+    await runWatch(dir);
     break;
   }
 
