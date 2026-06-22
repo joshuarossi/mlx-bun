@@ -812,6 +812,43 @@ switch (cmd) {
     break;
   }
 
+  case "gen":
+  case "generate": {
+    // RAW generate — a direct one-shot entry point (no server, no chat UI). The
+    // three entry points (raw / OpenAI API / chat UI) differ only in how params
+    // are POPULATED; here every param is explicit. Decode-path levers mirror
+    // serve so you can pin the route (mlx-lm compat = --perf-kernel off
+    // --fused-sdpa off --compiled-decode off). KV uses the bf16 bit-exact path.
+    const onOff = (name: string): boolean | null => {
+      const v = opt(name); if (v == null) return null;
+      if (v === "on" || v === "1" || v === "true") return true;
+      if (v === "off" || v === "0" || v === "false") return false;
+      console.error(`--${name} expects on|off (got "${v}")`); process.exit(1);
+    };
+    const cd = onOff("compiled-decode"); if (cd !== null) process.env.MLX_BUN_COMPILED_DECODE = cd ? "1" : "0";
+    const pk = onOff("perf-kernel"); if (pk !== null) process.env.MLX_BUN_PERF_KERNEL = pk ? "1" : "0";
+    const fd = onOff("fused-decode"); if (fd !== null) process.env.MLX_BUN_FUSED_DECODE = fd ? "1" : "0";
+    const fs = onOff("fused-sdpa"); if (fs !== null) process.env.MLX_BUN_NO_FUSED_SDPA = fs ? "0" : "1";
+
+    const prompt = opt("prompt") ?? positional(1);
+    if (!prompt) {
+      console.error('usage: mlx-bun generate [query] --prompt "…" [--raw] [--max-tokens N]');
+      console.error('       sampling:  --temperature N --top-p N --top-k N --seed N');
+      console.error('       decode path: --perf-kernel off --fused-sdpa off --compiled-decode off  (= mlx-lm compat)');
+      process.exit(1);
+    }
+    const { loadTaskModel, generateText } = await import("./eval/runner");
+    const tm = await loadTaskModel(positional(0) ?? opt("query") ?? "");
+    const num = (n: string): number | undefined => { const v = opt(n); return v == null ? undefined : Number(v); };
+    const text = await generateText(tm, prompt, {
+      maxTokens: Number(opt("max-tokens", "256")),
+      useChat: !flag("raw"),
+      sampler: { temperature: num("temperature"), topP: num("top-p"), topK: num("top-k"), seed: num("seed") },
+    });
+    process.stdout.write(text.endsWith("\n") ? text : text + "\n");
+    break;
+  }
+
   case "bench":
   case "benchmark": {
     const { banner, step, box, style } = await import("./tui");
