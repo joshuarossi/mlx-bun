@@ -451,10 +451,14 @@ function openChatUi(url: string, hostPort: string): void {
  *  and an explicit per-fork flag (--perf-kernel/--kv-quant/…) overrides the alias.
  *  The tier IS the intent; the forks are the escape hatch. Sets the decode env
  *  levers and returns the kv-quant mode. See docs/design/parity-tier-dag.md.
- *    --l1  mlx-lm bit-exact    (everything off, bf16 KV)
- *    --l2  mlx-optiq bit-exact (= --l1 + mixed-precision quantized KV; SAME plain compute)
- *    --l3  our optimized stack (= --l2 + perf-kernel + fused-sdpa + compiled)
- *  Tiers nest: L1 ⊂ L2 ⊂ L3. `--l1 --kv-quant config` is exactly `--l2`. */
+ *  Each tier is a GUARANTEE about which reference you reproduce bit-for-bit:
+ *    --l1  bit-for-bit IDENTICAL to mlx-lm    — drop-in replacement for mlx-lm
+ *    --l2  bit-for-bit IDENTICAL to mlx-optiq — drop-in replacement for mlx-optiq.
+ *          optiq SHIPS the fused quantized decode (the quant-KV goldens track
+ *          perf-kernel ON), so L2 turns it ON — not the unfused reference.
+ *    --l3  best performance, NO bit-exact guarantee — correct, but gated by KL +
+ *          tests, because mlx-optiq has no analogy for what L3 does.
+ *  L2 ⊂ L3 (L3 = L2 + compiled). L1 is a separate target (bf16, unfused). */
 function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
   const onOff = (name: string): boolean | null => {
     const v = opt(name); if (v == null) return null;
@@ -464,9 +468,9 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
   };
   type Preset = { kv: "off" | "config"; perf: boolean; fusedSdpa: boolean; compiled: boolean; fusedDecode: boolean };
   const TIERS: Record<string, Preset> = {
-    l1: { kv: "off",    perf: false, fusedSdpa: false, compiled: false, fusedDecode: false }, // mlx-lm bf16, plain compute
-    l2: { kv: "config", perf: false, fusedSdpa: false, compiled: false, fusedDecode: false }, // = L1 + quantized KV (still plain compute)
-    l3: { kv: "config", perf: true,  fusedSdpa: true,  compiled: true,  fusedDecode: false }, // + our perf kernels
+    l1: { kv: "off",    perf: false, fusedSdpa: false, compiled: false, fusedDecode: false }, // = mlx-lm bit-for-bit (bf16, unfused)
+    l2: { kv: "config", perf: true,  fusedSdpa: true,  compiled: false, fusedDecode: false }, // = mlx-optiq bit-for-bit (goldens track perf-kernel ON)
+    l3: { kv: "config", perf: true,  fusedSdpa: true,  compiled: true,  fusedDecode: false }, // best perf, KL/test-gated (no optiq analogy)
   };
   const tier = flag("l1") ? "l1" : flag("l2") ? "l2" : flag("l3") ? "l3" : null;
   const p = tier ? TIERS[tier]! : null;
