@@ -352,6 +352,20 @@ function rollingMedian(pts: Pt[], w: number): Pt[] {
   return out;
 }
 
+/** Light trailing mean — smooths the piecewise-constant plateaus a rolling
+ *  median leaves behind (median despikes; this mean removes the "banding" those
+ *  flat runs make in the braille line). */
+function rollingMean(pts: Pt[], w: number): Pt[] {
+  const out: Pt[] = [];
+  let sum = 0;
+  for (let i = 0; i < pts.length; i++) {
+    sum += pts[i]!.y;
+    if (i >= w) sum -= pts[i - w]!.y;
+    out.push({ step: pts[i]!.step, t: pts[i]!.t, y: sum / Math.min(i + 1, w) });
+  }
+  return out;
+}
+
 function minPt(pts: Pt[]): { y: number; step: number } | null {
   if (!pts.length) return null;
   let y = Infinity, step = pts[0]!.step;
@@ -417,13 +431,13 @@ export function renderFrame(st: RunState, cols: number, rows: number): string[] 
   // so the displayed trend is a rolling MEDIAN (robust to those spikes) plus the
   // sparse val-loss markers. The min/rising detector runs on the median — the
   // "loss bottomed out and turned back up" early-stop signal.
-  const lossMed = rollingMedian(st.loss, SMOOTH);
+  const lossMed = rollingMean(rollingMedian(st.loss, SMOOTH), 5); // median despikes, mean de-bands
   const lm = minPt(lossMed);
   const recentLoss = cur(lossMed);
   const rising = !!(lm && lossMed.length > SMOOTH + 5 && lm.step < st.lastStep - SMOOTH
     && recentLoss > lm.y * 1.05);
 
-  const marginMed = rollingMedian(st.margin, SMOOTH);
+  const marginMed = rollingMean(rollingMedian(st.margin, SMOOTH), 5); // median despikes, mean de-bands
 
   // Val accuracy — the metric that matters: of the held-out val set, how many
   // pairs it correctly prefers (chosen > rejected). Sparse (one per eval step),
