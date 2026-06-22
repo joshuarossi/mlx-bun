@@ -8,7 +8,7 @@
 // back into the LoraWeights so the next forward (and the next closure swap)
 // sees it. Base quantized weights are never in argnums — they stay frozen.
 
-import { MlxArray } from "../mlx/array";
+import { MlxArray, pinnedBufferCount } from "../mlx/array";
 import { clearCache, peakMemory, activeMemory, cacheMemory, resetPeakMemory } from "../mlx/ffi";
 
 const MEM_LOG = process.env.MLX_BUN_MEM_LOG === "1";
@@ -911,6 +911,7 @@ async function orpoLoop(
           tokens_per_sec: 0,
           peak_gb: peakMemory() / 1e9,
           active_gb: activeMemory() / 1e9,
+          pinned: pinnedBufferCount(),
           progress: step / cfg.iters,
           message: `step ${step}/${cfg.iters} loss=${lossVal.toFixed(4)} nll=${m.nll.toFixed(4)} or=${m.or.toFixed(4)} acc=${m.accuracy.toFixed(2)} margin=${m.margin.toFixed(3)}`,
         });
