@@ -27,6 +27,19 @@ runs half the forwards per step.
 > torch/numpy reference of the paper/TRL math (see [Parity](#parity)), not a
 > bit-exact upstream port.
 
+> **L3 verification (2026-06-21).** The flash-CCE head has no oracle either, so
+> the "0.28% dh" figure is **fp-reassociation vs the full-logits *proxy*, not an
+> error** (two correct reductions in different orders can't be bit-identical).
+> Correctness is proven by **finite-difference** (`flash-fd-check.ts`) + the math
+> audit — not by matching a reference. The **coeff filter's** synthetic-data cost
+> (0.66→2.7%, from `flash-cce-parity.ts`'s random hidden) is its **worst case**:
+> random logits give a flat softmax, but real outputs are sharply peaked, so
+> filtering the ≈0-softmax tail is near-free — **measure teacher-forced on real
+> hiddens before judging** (it's plausibly a free speedup to enable). Standing L3
+> gates (filter-on-real-data, teacher-forced grad fidelity, end-to-end quality)
+> + the host-buffer pin-leak post-mortem:
+> [orpo-flash-cce-pin-leak.md](../investigations/orpo-flash-cce-pin-leak.md).
+
 ## Implementation status
 
 **Landed (naïve correctness path — the shippable unit + the oracle everything

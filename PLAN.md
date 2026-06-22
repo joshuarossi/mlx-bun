@@ -280,6 +280,36 @@ Ordered by expected payoff on this hardware:
   for quality judgments. Quality-sensitive goldens must use
   chat-templated prompts.
 
+### Flash-CCE / ORPO findings (2026-06-21, L3 pin-leak session)
+
+- **A host-buffer pin leak crashed ORPO training natively** — same
+  `"panic: A C++ exception occurred"` class as the wired-limit finding above, a
+  DIFFERENT cause. `u32()` (flash-cce.ts + model/flash-attention.ts) built tiny
+  kernel-arg arrays with the zero-copy **`fromView`** (pins the host buffer,
+  async unpin from mlx's eval thread) but disposed them before the **lazy** kernel
+  evaluated → pins leaked **+32/step** (proven with `pinnedBufferCount()`; `active`
+  memory dead flat) → a latent use-after-free. **Ran the entire training clean on
+  a 32 GB M1 Max; crashed deterministically on a 24 GB M4 Pro** (tighter memory
+  reuses the freed-but-pinned buffer sooner). Fix: **`fromBytesCopy`** (copy,
+  mlx-owned); hardened `MetalKernel.apply` `ptr()` lifetimes; added a `pinned`
+  canary to the train metric. Post-mortem +
+  [orpo-flash-cce-pin-leak.md](investigations/orpo-flash-cce-pin-leak.md).
+  **Lesson:** `fromView` is only for process-lifetime memory (mmap'd weights);
+  any transient host buffer feeding a lazy op and disposed before eval must COPY.
+- **L3 (mlx-bun originals) has no oracle — verify by finite-difference +
+  teacher-forced, not parity.** mlx-lm/optiq ship no ORPO+CCE training, so the
+  flash-CCE head's "0.28% dh" is **fp-reassociation vs a full-logits proxy, NOT
+  error**. Correctness is proven by `flash-fd-check.ts` (vs numerical ground
+  truth) + the by-hand math audit. The coeff filter's recorded 0.66→2.7% cost is
+  on RANDOM data (flat softmax = its worst case); real outputs are sharply peaked
+  so filtering the ≈0-softmax tail is near-free — must be measured teacher-forced
+  on real hiddens. Standing L3 gates to build:
+  - [ ] **filter-on-real-data** — teacher-forced dh error, coeff filter ON, real
+        model hiddens → decide the filter (likely enable as a free speedup).
+  - [ ] **teacher-forced grad fidelity** — flash vs full-logits `dh` (cosine +
+        relnorm) on real data, as the standing L3 quality regression.
+  - [ ] **end-to-end quality eval** of the completed ORPO run (the real proof).
+
 ## Phase 7 — Kernel experiments (research track) `[ ]`
 
 Only after profiling shows where bytes move unnecessarily.
