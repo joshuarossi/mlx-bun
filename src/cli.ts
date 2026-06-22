@@ -447,6 +447,50 @@ function openChatUi(url: string, hostPort: string): void {
 /** Server/runtime flags shared by every mode that loads a model
  *  (serve, pi). Env levers are set here so they're in place before the
  *  generate/compiled-decode modules read them. */
+/** Resolve the decode ROUTE: a tier alias (--l1/--l2/--l3) sets the whole route,
+ *  and an explicit per-fork flag (--perf-kernel/--kv-quant/…) overrides the alias.
+ *  The tier IS the intent; the forks are the escape hatch. Sets the decode env
+ *  levers and returns the kv-quant mode. See docs/design/parity-tier-dag.md.
+ *    --l1  mlx-lm bit-exact    (everything off, bf16 KV)
+ *    --l2  mlx-optiq bit-exact (= --l1 + mixed-precision quantized KV; SAME plain compute)
+ *    --l3  our optimized stack (= --l2 + perf-kernel + fused-sdpa + compiled)
+ *  Tiers nest: L1 ⊂ L2 ⊂ L3. `--l1 --kv-quant config` is exactly `--l2`. */
+function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
+  const onOff = (name: string): boolean | null => {
+    const v = opt(name); if (v == null) return null;
+    if (v === "on" || v === "1" || v === "true") return true;
+    if (v === "off" || v === "0" || v === "false") return false;
+    console.error(`--${name} expects on|off (got "${v}")`); process.exit(1);
+  };
+  type Preset = { kv: "off" | "config"; perf: boolean; fusedSdpa: boolean; compiled: boolean; fusedDecode: boolean };
+  const TIERS: Record<string, Preset> = {
+    l1: { kv: "off",    perf: false, fusedSdpa: false, compiled: false, fusedDecode: false }, // mlx-lm bf16, plain compute
+    l2: { kv: "config", perf: false, fusedSdpa: false, compiled: false, fusedDecode: false }, // = L1 + quantized KV (still plain compute)
+    l3: { kv: "config", perf: true,  fusedSdpa: true,  compiled: true,  fusedDecode: false }, // + our perf kernels
+  };
+  const tier = flag("l1") ? "l1" : flag("l2") ? "l2" : flag("l3") ? "l3" : null;
+  const p = tier ? TIERS[tier]! : null;
+  const pick = (name: string, base: boolean | undefined): boolean | null => {
+    const ex = onOff(name); return ex !== null ? ex : (base ?? null); // explicit flag wins, else tier preset
+  };
+  const set = (env: string, val: boolean | null, invert = false) => {
+    if (val !== null) process.env[env] = (invert ? !val : val) ? "1" : "0";
+  };
+  set("MLX_BUN_COMPILED_DECODE", pick("compiled-decode", p?.compiled));
+  set("MLX_BUN_PERF_KERNEL", pick("perf-kernel", p?.perf));
+  set("MLX_BUN_FUSED_DECODE", pick("fused-decode", p?.fusedDecode));
+  set("MLX_BUN_NO_FUSED_SDPA", pick("fused-sdpa", p?.fusedSdpa), true); // inverted env
+  const kv = opt("kv-quant"); // explicit --kv-quant overrides the tier
+  if (kv === "off") return { kvQuant: "off" };
+  if (kv === "config") return { kvQuant: "config" };
+  if (kv) {
+    const bits = Number(kv);
+    if (![4, 8].includes(bits)) { console.error(`--kv-quant expects config|off|4|8 (got "${kv}")`); process.exit(1); }
+    return { kvQuant: bits };
+  }
+  return p ? { kvQuant: p.kv } : {};
+}
+
 function serverRuntimeFlags(): { port: number; serverOptions: import("./server").ServerOptions } {
   const onOff = (name: string): boolean | null => {
     const v = opt(name);
@@ -456,14 +500,7 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
     console.error(`--${name} expects on|off (got "${v}")`);
     process.exit(1);
   };
-  const cd = onOff("compiled-decode");
-  if (cd !== null) process.env.MLX_BUN_COMPILED_DECODE = cd ? "1" : "0";
-  const pk = onOff("perf-kernel");
-  if (pk !== null) process.env.MLX_BUN_PERF_KERNEL = pk ? "1" : "0";
-  const fd = onOff("fused-decode");
-  if (fd !== null) process.env.MLX_BUN_FUSED_DECODE = fd ? "1" : "0";
-  const fs = onOff("fused-sdpa");
-  if (fs !== null) process.env.MLX_BUN_NO_FUSED_SDPA = fs ? "0" : "1"; // inverted env
+  const route = applyDecodeRoute(); // --l1/--l2/--l3 tier alias, with per-fork flags overriding
   if (flag("force-wire")) process.env.MLX_BUN_FORCE_WIRE = "1";
 
   const serverOptions: import("./server").ServerOptions = {};
@@ -483,14 +520,7 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
     }
     serverOptions.batch = n;
   }
-  const kv = opt("kv-quant");
-  if (kv === "off") serverOptions.kvQuant = "off";
-  else if (kv === "config") serverOptions.kvQuant = "config";
-  else if (kv) {
-    const bits = Number(kv);
-    if (![4, 8].includes(bits)) { console.error(`--kv-quant expects config|off|4|8 (got "${kv}")`); process.exit(1); }
-    serverOptions.kvQuant = bits;
-  }
+  if (route.kvQuant !== undefined) serverOptions.kvQuant = route.kvQuant;
   const host = opt("host");
   if (host) serverOptions.hostname = host;
   // Server-wide default for the chat template's enable_thinking variable
@@ -819,16 +849,7 @@ switch (cmd) {
     // are POPULATED; here every param is explicit. Decode-path levers mirror
     // serve so you can pin the route (mlx-lm compat = --perf-kernel off
     // --fused-sdpa off --compiled-decode off). KV uses the bf16 bit-exact path.
-    const onOff = (name: string): boolean | null => {
-      const v = opt(name); if (v == null) return null;
-      if (v === "on" || v === "1" || v === "true") return true;
-      if (v === "off" || v === "0" || v === "false") return false;
-      console.error(`--${name} expects on|off (got "${v}")`); process.exit(1);
-    };
-    const cd = onOff("compiled-decode"); if (cd !== null) process.env.MLX_BUN_COMPILED_DECODE = cd ? "1" : "0";
-    const pk = onOff("perf-kernel"); if (pk !== null) process.env.MLX_BUN_PERF_KERNEL = pk ? "1" : "0";
-    const fd = onOff("fused-decode"); if (fd !== null) process.env.MLX_BUN_FUSED_DECODE = fd ? "1" : "0";
-    const fs = onOff("fused-sdpa"); if (fs !== null) process.env.MLX_BUN_NO_FUSED_SDPA = fs ? "0" : "1";
+    applyDecodeRoute(); // --l1/--l2/--l3 + per-fork overrides set the decode env levers (KV stays bf16 via generateText)
 
     const prompt = opt("prompt") ?? positional(1);
     if (!prompt) {
