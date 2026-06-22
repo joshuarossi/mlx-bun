@@ -839,7 +839,8 @@ function makeVocabBlockedHeadVjp(
     const raw = ops.quantizedMatmul(hc, wb.w, wb.scales, wb.biases, head.spec, true); // [Cc, Vb]
     if (cap === null) return { lb: raw, sech2: null };
     const capArr = ops.scalarLike(cap, raw);
-    const th = ops.tanh(ops.div(raw, capArr));
+    const div = ops.div(raw, capArr);
+    const th = ops.tanh(div); div.dispose(); // bind the nested div so its wrapper is freed
     raw.dispose();
     const lb = ops.mul(th, capArr); // cap·tanh(raw/cap)
     const th2 = ops.mul(th, th); th.dispose();
@@ -964,7 +965,10 @@ function makeVocabBlockedHeadVjp(
           const colFlat = ops.arange(v0, v1, 1, Dtype.int32);
           const col = ops.reshape(colFlat, [1, Vb]); colFlat.dispose();
           const tcol = MlxArray.fromInt32(targetsHost.slice(c0, c1), [Cc, 1]);
-          const eqMask = ops.logicalAnd(ops.greaterEqual(col, tcol), ops.greaterEqual(tcol, col));
+          const ge1 = ops.greaterEqual(col, tcol);
+          const ge2 = ops.greaterEqual(tcol, col);
+          const eqMask = ops.logicalAnd(ge1, ge2); // bind the nested compares so their wrappers free
+          ge1.dispose(); ge2.dispose();
           col.dispose(); tcol.dispose();
           const onehot = eqMask.astype(softmax.dtype); eqMask.dispose();
           let g = ops.sub(onehot, softmax); // onehot − softmax  [Cc, Vb]

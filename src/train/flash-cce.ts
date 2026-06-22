@@ -1070,12 +1070,19 @@ export function flashCceForward(
     // reduction is simpler and just as exact.)
     const gMax = ops.maxAxis(bMax, 1, false); // [M]
     const gMaxCol = ops.reshape(gMax, [M, 1]);
-    const shifted = ops.exp(ops.sub(bMax, gMaxCol)); // [M, NBLK]
-    const gSum = ops.sumAxis(ops.mul(bSum, shifted), 1, false); // [M]
-    const lse = ops.add(gMax, ops.log(gSum)); // [M]
+    // Bind every nested intermediate so its MlxArray wrapper gets disposed — a
+    // bare `ops.exp(ops.sub(...))` leaks the inner `sub` (stays live in `active`
+    // until the GC finalizer backstop), and this runs TWICE per step (chosen +
+    // rejected). gMax was also missing from the dispose list below.
+    const sub = ops.sub(bMax, gMaxCol);
+    const shifted = ops.exp(sub); // [M, NBLK]
+    const prod = ops.mul(bSum, shifted);
+    const gSum = ops.sumAxis(prod, 1, false); // [M]
+    const logG = ops.log(gSum);
+    const lse = ops.add(gMax, logG); // [M]
     const tgt = ops.sumAxis(bTgt, 1, false); // [M] (owning block only is nonzero)
     const logp = ops.sub(tgt, lse);
-    for (const a of [gMaxCol, shifted, gSum, tgt]) a.dispose();
+    for (const a of [gMax, gMaxCol, sub, shifted, prod, gSum, logG, tgt]) a.dispose();
     const blockMax = bMax!; bMax = undefined; // hand off to caller (backward block-skip)
     return { logp, lse, blockMax };
   } finally {
