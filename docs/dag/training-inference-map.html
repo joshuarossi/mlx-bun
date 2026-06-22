@@ -9,7 +9,8 @@
 <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
 <style>
   :root { --bg:#0b0f14; --panel:#11161d; --line:#243040; --txt:#cdd9e5; --dim:#7d8aa0;
-          --L1:#2ea043; --L2:#388bfd; --L3:#d29922; --clean:#2ea043; --fixed:#d29922; --info:#6e7b91; --leak:#f85149; }
+          --L1:#2ea043; --L2:#388bfd; --L3:#d29922; --clean:#2ea043; --fixed:#d29922; --info:#6e7b91; --leak:#f85149;
+          --flag:#39c5cf; }
   * { box-sizing:border-box; }
   html,body { margin:0; height:100%; background:var(--bg); color:var(--txt);
               font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -22,12 +23,13 @@
   .seg button.on { background:var(--L2); color:#fff; }
   .seg.v button.on { background:#30363d; color:#fff; }
   .btn { border:1px solid var(--line); }
-  .legend { margin-left:auto; display:flex; gap:13px; color:var(--dim); align-items:center; }
+  .legend { margin-left:auto; display:flex; gap:13px; color:var(--dim); align-items:center; flex-wrap:wrap; }
   .legend span { display:flex; align-items:center; gap:5px; }
   .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+  .dash { width:16px; height:0; border-top:2px dashed var(--flag); display:inline-block; }
   #wrap { display:flex; height:calc(100% - 46px); }
   #cy { flex:1; height:100%; }
-  #side { width:350px; border-left:1px solid var(--line); background:var(--panel);
+  #side { width:360px; border-left:1px solid var(--line); background:var(--panel);
           padding:14px; overflow:auto; }
   #side h2 { margin:0 0 2px; font-size:14px; color:#fff; }
   #side .file { color:var(--L2); font-size:12px; margin-bottom:8px; word-break:break-all; }
@@ -42,10 +44,11 @@
 </head>
 <body>
 <div id="top">
-  <b>mlx-bun map</b>
+  <b>mlx-bun map</b><span style="color:var(--dim);font-size:11px">MiniCPM5-1B</span>
   <div class="seg" id="graph">
     <button data-g="train" class="on">training step</button>
     <button data-g="infer">inference decode</button>
+    <button data-g="load">model load</button>
   </div>
   <div class="seg v" id="mode">
     <button data-m="tier" class="on">parity tier</button>
@@ -58,9 +61,12 @@
 <div id="wrap">
   <div id="cy"></div>
   <div id="side">
-    <h2 id="s-title">Click a node</h2>
+    <h2 id="s-title">Click a node · follow the dashed <span style="color:var(--flag)">flag</span> edges</h2>
     <div class="file" id="s-file"></div>
-    <div class="hint" id="hint">Scroll to zoom (Google-Maps style), drag to pan — out for structure, in for each node's oracle + allocate/free. <b>Parity tier</b> = the lowest layer whose <i>oracle</i> a node matches bit-for-bit: <span style="color:var(--L1)">L1</span> = drop-in for mlx-lm, <span style="color:var(--L2)">L2</span> = drop-in for mlx-optiq, <span style="color:var(--L3)">L3</span> = our originals (no oracle → gated by finite-diff / KL / quality, not parity). A node can only sit in a lower tier if its oracle exists AND it matches bit-exactly; otherwise it bubbles up. Trace a path to see where it leaves the bit-exact floor and enters L3.</div>
+    <div class="hint" id="hint">Scroll to zoom (Google-Maps style), drag to pan — out for structure, in for each node's oracle + allocate/free.
+      <b>Solid edges</b> = the always-taken path. <b><span style="color:var(--flag)">Dashed teal edges</span></b> = a <b>flag bridge</b>: a CLI/env flag that routes you onto a different island (the label is the flag).
+      <b>Parity tier</b> = the lowest layer whose <i>oracle</i> a node matches bit-for-bit: <span style="color:var(--L1)">L1</span> = drop-in for mlx-lm, <span style="color:var(--L2)">L2</span> = drop-in for mlx-optiq, <span style="color:var(--L3)">L3</span> = our originals (no oracle → gated by finite-diff / KL / quality). Parity gates performance: a faster route only sits in a lower tier if its oracle exists AND it matches bit-exactly; otherwise it bubbles up. Trace a path to see where a flag drops you off the bit-exact floor into L3.
+      <b>Scope: MiniCPM5-1B.</b> Per-model specialization means other models route differently — gemma-4 / e4b can take the compiled-decode path (gemma4-only here) and e4b adds a MoE expert-routing handler; a separate map per model is future work.</div>
     <div id="s-body" style="display:none">
       <div class="row"><div class="k">parity tier</div><div class="v"><span class="pill" id="s-tier"></span> &nbsp;<span id="s-oracle" style="color:var(--dim)"></span></div></div>
       <div class="row"><div class="k">memory</div><div class="v"><span class="pill" id="s-status"></span></div></div>
@@ -73,85 +79,186 @@
 </div>
 <script>
 // tier = lowest layer whose ORACLE the node matches bit-for-bit (the gate).
-// t:1 mlx-lm bit-exact · t:2 optiq bit-exact · t:3 ours (no oracle).
-// st = memory: clean (dispose-balanced) · fixed (a leak we found+fixed) · info (transfer/loop).
-const C={L1:'#2ea043',L2:'#388bfd',L3:'#d29922',clean:'#2ea043',fixed:'#d29922',info:'#6e7b91',leak:'#f85149'};
+// t:1 mlx-lm bit-exact · t:2 optiq bit-exact · t:3 ours (no oracle) · t:0 plumbing (no compute / no tier).
+// st = memory: clean (dispose-balanced) · fixed (a leak we found+fixed) · info (transfer/loop) · leak (a real gap).
+const C={L1:'#2ea043',L2:'#388bfd',L3:'#d29922',clean:'#2ea043',fixed:'#d29922',info:'#6e7b91',leak:'#f85149',flag:'#39c5cf'};
 function N(id,label,o){return{data:{id,label,...o}};}
 function E(s,t,o={}){return{data:{id:s+'>'+t,source:s,target:t,...o}};}
+// flag edge: a CLI/env flag is the bridge. `flag` renders as the edge label.
+function F(s,t,flag,o={}){return{data:{id:s+'>'+t,source:s,target:t,flag,cls:'flag',...o}};}
 
 const TRAIN={nodes:[
   N('row','tokenize row',{t:1,orc:'mlx-lm TokenizerWrapper (BOS-dedup matches inference)',st:'clean',
     file:'dataset.ts:266 tokenizePair',alloc:'host token ids (once at startup)',free:'held in RAM'}),
   N('split','splitPrefixBatch',{t:3,orc:'none — prefix-sharing is ours',st:'clean',
     file:'prefix-shared.ts:229',alloc:'P/Rc/Rr index arrays',free:'—',
-    note:'gates on chosen/rejected sharing a byte-identical prompt; else two-forward fallback'}),
+    note:'gates on chosen/rejected sharing a byte-identical prompt; else two-forward fallback. Composes with segmented backward only.'}),
   N('accum','accumulateStep',{t:1,orc:'mean-of-micro-grads (deterministic ref; B=1 pass-through bit-exact)',st:'info',
     file:'trainer.ts:1020',alloc:'(accum>1) scaled-grad accumulators',free:'value + per-micro grads + prior accumulators'}),
   N('fwd','transformer forward · runLayerRange',{t:1,orc:'mlx-lm forward — BIT-EXACT (8192/8192 greedy)',st:'clean',
     file:'segmented.ts:905 / minicpm5.ts:272',alloc:'per-segment boundary (detachLeaf), block-sparse mask',
     free:'layer interiors + mask disposed per segment',
-    note:'THE L1 floor: the forward is a drop-in for mlx-lm. Prefix-share folds 2 forwards → 1 (that fold is L3) but each block bit-matches a separate forward.'}),
+    note:'THE L1 floor: the forward is a drop-in for mlx-lm. Prefix-share folds 2 forwards → 1 (that fold is L3) but each block bit-matches a separate forward. Attention kernel is chosen at the fork below.'}),
+  // --- attention kernel fork (training) ---
+  N('attn-sdpa','attn: ops.sdpa (default)',{t:1,orc:'mlx-autograd matmul/softmax — dQ/dK/dV = 0.00% (ground truth)',st:'clean',
+    file:'sdpa-vs-manual.ts',alloc:'one fused SDPA fwd/bwd',free:'fused',
+    note:'DEFAULT. The correct training attention: a clean check vs mlx-autograd of plain matmul/softmax shows 0.00% on dQ/dK/dV. Only downside: O(seq²) backward memory (fine ≤4096 for a 1B).'}),
+  N('attn-flash','attn: flash (opt-in)',{t:3,orc:'none — vs FA-2 hand-derived ref (which shares the BUG)',st:'leak',
+    file:'flash-attn · MLX_BUN_TRAIN_ATTN=flash',alloc:'O(L) tiled fwd/bwd',free:'tiled',
+    note:'★ BROKEN dK: flash-vs-manual dK = 106.01% (chunk-finetune-experiment.md). The earlier triangulation was fooled by an FA-2 backward ref sharing the flash dK formula. ops.sdpa is correct; flash is opt-in and NOT default — use only for O(L) memory at long context, and it currently mis-trains dK.'}),
   N('norm','finalNorm + prefix gather',{t:3,orc:'finalNorm L1; the prefix-position gather is ours',st:'clean',
     file:'prefix-shared.ts:115',alloc:'hn (norm), gathered hResp [M,H]',free:'hn:841; hResp→headSink (:917)'}),
-  N('ccef','flashCceForward',{t:3,orc:'none — flash-CCE is ours (vs full-logits PROXY: 0.21%, fp-reassoc not error)',st:'fixed',
-    file:'flash-cce.ts:1008',alloc:'in-kernel logits (no [M,V]); LSE-merge temps + gMax',
+  // --- CE / loss-head fork (ORPO) ---
+  N('ce-full','CE head: full-logits (default SFT)',{t:1,orc:'mlx-lm cross-entropy (materialized [M,V])',st:'clean',
+    file:'loss.ts responseOnlyLogpMean',alloc:'full [M,V] logits',free:'after backward',
+    note:'DEFAULT for plain SFT. The other three heads are memory/throughput optimizations selected by config — all converge to the same loss.'}),
+  N('ce-chunk','CE head: token-chunked',{t:3,orc:'vs full-logits (fp-reassoc, not error)',st:'clean',
+    file:'loss.ts (orpoChunkSize>0)',alloc:'[chunk,V] checkpoint',free:'per chunk',
+    note:'opt-in via orpoChunkSize: bounds logits memory to [chunk,V] via Checkpoint.'}),
+  N('ce-fused','CE head: fused linear-CE (CustomVjp)',{t:3,orc:'analytic softmax−onehot backward vs full-logits',st:'clean',
+    file:'loss.ts (orpoFusedCe)',alloc:'no [M,V]; analytic coeff',free:'fused',
+    note:'opt-in via orpoFusedCe: fuses the lm_head matmul + CE with an analytic backward.'}),
+  N('ccef','CE head: flash-CCE (Metal kernel)',{t:3,orc:'none — vs full-logits PROXY 0.21% (fp-reassoc) + finite-diff',st:'fixed',
+    file:'flash-cce.ts:1008 (orpoFlashCe)',alloc:'in-kernel logits (no [M,V]); LSE-merge temps + gMax',
     free:'NOW: every nested intermediate + gMax disposed (1078); lse/logp/blockMax returned',
-    note:'L3 head. Was the active-drift leak: bare ops.exp(ops.sub(...)) dropped the inner wrapper ×2/step → ~0.4 MB/step. Fixed.'}),
-  N('loss','ORPO loss = nll + λ·OR',{t:3,orc:'none — torch/numpy paper ref (Hong 2024); no mlx-lm/optiq op',st:'clean',
-    file:'loss.ts:1228',alloc:'log-odds + softplus temps',free:'all temps; loss scalar returned'}),
-  N('cceb','flashCceBackward → dh',{t:3,orc:'none — vs finite-difference ground truth (the real proof) + 0.28% vs proxy',st:'clean',
-    file:'flash-cce.ts:1108',alloc:'coeff=onehot−softmax, atomic dh accum',free:'dh returned'}),
+    note:'opt-in via orpoFlashCe: Apple-CCE transpiled, vocab-parallel grid, never materializes [M,V]. Was the active-drift leak: bare ops.exp(ops.sub(...)) dropped the inner wrapper ×2/step → ~0.4 MB/step. Fixed.'}),
+  N('loss','ORPO loss = nll + λ·OR  (λ=0.1)',{t:3,orc:'none — torch/numpy paper ref (Hong 2024); no mlx-lm/optiq op',st:'clean',
+    file:'loss.ts:1228',alloc:'log-odds + softplus temps',free:'all temps; loss scalar returned',
+    note:'reference-free: BOTH the NLL (SFT) and odds-ratio (preference) branches get gradients in one pass. λ scales the preference term; a too-high LR saturates the OR margin and silently weakens it.'}),
+  N('cceb','CE backward → dh',{t:3,orc:'none — vs finite-difference ground truth (the real proof) + 0.28% vs proxy',st:'clean',
+    file:'flash-cce.ts:1108',alloc:'coeff = onehot−softmax, atomic dh accum',free:'dh returned'}),
   N('bwd','segmented backward · mlx_vjp',{t:3,orc:'none — vs the monolithic value_and_grad (bf16-class)',st:'clean',
-    file:'segmented.ts:922',alloc:'per-segment dh_in + dA/dB',free:'boundaries disposed as consumed; grads → caller'}),
+    file:'segmented.ts:922',alloc:'per-segment dh_in + dA/dB',free:'boundaries disposed as consumed; grads → caller',
+    note:'B=1 SFT/ORPO only — NOT wired for DPO. Streams segment-by-segment; composes with prefix-sharing.'}),
   N('gnorm','globalNorm',{t:1,orc:'standard L2 norm',st:'clean',
     file:'trainer.ts:1076',alloc:'per-grad square/sum partials',free:'all partials after evalAll'}),
   N('clip','clipGradsByNorm',{t:1,orc:'standard grad clipping (TRL / mlx-lm)',st:'clean',
     file:'trainer.ts:1098',alloc:'(if ‖g‖>max) scaled grads',free:'old grads disposed; clipped → opt.step'}),
-  N('opt','AdamW.step',{t:1,orc:'mlx.optimizers.AdamW (op-for-op port)',st:'clean',
-    file:'optimizer.ts:81',alloc:'new param + m/v moments',free:'old param(138)+m0/v0+intermediates(134)+grads — verified'}),
+  N('opt','AdamW.step (LoRA params only)',{t:1,orc:'mlx.optimizers.AdamW (op-for-op port)',st:'clean',
+    file:'optimizer.ts:81',alloc:'new param + m/v moments',free:'old param(138)+m0/v0+intermediates(134)+grads — verified',
+    note:'updates only the LoRA A/B adapters. Ranks are set once by the sensitivity-aware scheme (see rank.ts: by_bits → 4-bit r16, 8-bit r32; the 7 Unsloth modules).'}),
   N('metrics','orpoMetrics (diagnostic)',{t:3,orc:'none — ORPO nll/or/acc/margin',st:'clean',
     file:'loss.ts:1251',alloc:'two diagnostic forwards',free:'all disposed (1283); runs every step'}),
-],edges:[E('row','split'),E('split','accum'),E('accum','fwd'),E('fwd','norm'),E('norm','ccef'),
-  E('ccef','loss'),E('loss','cceb'),E('cceb','bwd'),E('bwd','gnorm'),E('gnorm','clip'),E('clip','opt'),
+],edges:[
+  E('row','split'),E('split','accum'),E('accum','fwd'),
+  F('fwd','attn-sdpa','default'),F('fwd','attn-flash','TRAIN_ATTN=flash'),
+  E('attn-sdpa','norm'),E('attn-flash','norm'),
+  F('norm','ce-full','default (SFT)'),F('norm','ce-chunk','orpoChunkSize'),F('norm','ce-fused','orpoFusedCe'),F('norm','ccef','orpoFlashCe'),
+  E('ce-full','loss'),E('ce-chunk','loss'),E('ce-fused','loss'),E('ccef','loss'),
+  E('loss','cceb'),E('cceb','bwd'),E('bwd','gnorm'),E('gnorm','clip'),E('clip','opt'),
   E('accum','metrics',{cls:'side'})]};
 
 // det = determinism property (traced 2026-06-22): 'det' deterministic ·
 // 'seed' seed-driven (temp>0) · 'warmup' first-eval-sensitive (the temp-0 bug) · 'na'.
 const INFER={nodes:[
+  // --- three entry points, all converge on generate() ---
+  N('e-cli','entry: mlx-bun gen (CLI)',{t:0,orc:'—',st:'info',det:'det',file:'cli.ts:858',alloc:'—',free:'—',
+    note:'raw generate; no server. KV is always bf16 here (generateText never sets kvBits/kvConfig).'}),
+  N('e-api','entry: POST /v1/chat/completions',{t:0,orc:'—',st:'info',det:'det',file:'server.ts:1373',alloc:'—',free:'—',
+    note:'OpenAI-compatible HTTP. Serial lane respects --kv-quant; the batched lane (--batch N) is bf16-only and routes quant requests serial.'}),
+  N('e-ws','entry: /ws/chat (pi-web UI)',{t:0,orc:'—',st:'info',det:'det',file:'pi-web.ts:921',alloc:'—',free:'—',
+    note:'in-process pi agent over WebSocket; loopback-POSTs to /v1/chat/completions → converges on the API path. The chat UI sampling controls + persona system prompt live here.'}),
   N('prompt','tokenize prompt',{t:1,orc:'mlx-lm tokenizer',st:'clean',det:'det',file:'generate.ts',alloc:'host ids',free:'—'}),
   N('resolve','toOptions · sampling resolve',{t:1,orc:'—',st:'info',det:'det',file:'server.ts:928',alloc:'—',free:'—',
-    note:'temp = thinking-off ? min(genTemp,0.7)=0.7 : genTemp=0.9 · top_p 0.95 · top_k off. seed = Date.now() per request — but UNUSED at temp 0 (argmax). An explicit request temp/top_p/top_k always wins.'}),
+    note:'temp = thinking-off ? 0.7 : 0.9 · top_p 0.95 · top_k off. seed = Date.now() per request — UNUSED at temp 0 (argmax). An explicit request temp/top_p/top_k always wins (chat UI sliders inject these).'}),
   N('prefill','prefill · forwardHidden',{t:1,orc:'mlx-lm prefill — bit-exact logits',st:'clean',det:'warmup',
     file:'generate.ts:280',alloc:'per-chunk ids, hidden h, KV state',free:'ids:301/319; h:303/323',
-    note:'one-shot if prompt<2048 else chunked. forwardHidden is the warmup-sensitive op (see decode forward).'}),
+    note:'one-shot if prompt<2048 else chunked (clears allocator cache per chunk). The prefill SDPA kernel is chosen at the fork below.'}),
+  // --- prefill SDPA fork (only matters under quantized KV) ---
+  N('pf-unfused','prefill SDPA: unfused (ops.sdpa)',{t:1,orc:'mlx-lm SDPA',st:'clean',det:'det',
+    file:'gemma4-base.ts:1521 quantizedSdpaUnfused',alloc:'attn temps',free:'fused',
+    note:'reference path; used when --fused-sdpa off, or bf16 KV, or unsupported config.'}),
+  N('pf-tiled','prefill SDPA: tiled-fused',{t:2,orc:'mlx-optiq tiled fused quant SDPA',st:'clean',det:'det',
+    file:'gemma4-base.ts:1519 quantizedSdpaTiled',alloc:'tiled N-way temps',free:'tiled',
+    note:'--fused-sdpa (default in L2/L3). Tiled fused N-way SDPA for quantized KV at L>1; matches optiq bit-exactly. Conditions: bits∈{4,8}, groupSize∈{32,64,128}, bf16/fp16, causal-safe mask.'}),
   N('first','first logits + sampleStep',{t:1,orc:'mlx-lm sampling',st:'clean',det:'det',
     file:'generate.ts:329',alloc:'logits0, pending token',free:'hLast:325; logits0:329'}),
   N('loop','DECODE LOOP (per token)',{t:1,orc:'—',st:'info',det:'na',file:'generate.ts:360',alloc:'—',free:'—',
-    note:'pipelined; only the chosen uint32 crosses to JS per step'}),
-  N('lfwd','decode forward · forwardHidden',{t:1,orc:'mlx-lm decode',st:'fixed',det:'warmup',
+    note:'pipelined; only the chosen uint32 crosses to JS per step. The decode-forward kernel is chosen at the fork below.'}),
+  // --- decode-forward fork: compiled (gemma4) vs plain ---
+  N('d-compiled','decode fwd: compiled (gemma4 only)',{t:1,orc:'mlx-lm decode — bit-exact replay',st:'clean',det:'det',
+    file:'compiled-decode.ts + generate.ts:353',alloc:'compiled closure (once)',free:'reused',
+    note:'--compiled-decode (default ON, but GEMMA4-ONLY). mx.compile\'d single-token graph replayed in C++ (~30% decode speedup), bit-exact with plain. Disabled if adapters active; falls back mid-gen on unsupported cache state. NOT available for MiniCPM5/MoE.'}),
+  N('lfwd','decode fwd: plain (uncompiled)',{t:1,orc:'mlx-lm decode',st:'fixed',det:'warmup',
     file:'generate.ts:381 / minicpm5.ts',alloc:'per-token q/k/v, rope, attn, logits',free:'logits→sample then :389',
-    note:'★ TEMP-0 NONDETERMINISM LOCUS (traced). compiled-decode is GEMMA4-ONLY (generate.ts:355) → MiniCPM5 runs the PLAIN forward per token. The forward’s first eval differs from later by ~epsilon (MLX/Metal graph warmup) → flips greedy only on LONG outputs (run1 ≠ run2 = run3). Ruled OUT by trace: prompt cache (off, still drifts), compiled-decode (gemma4-only), sampler (argmax). Confirm: diff forwardHidden logits on identical input twice.'}),
-  N('kv','KV append · trim',{t:2,orc:'plain KV L1; quantized KV = optiq (L2)',st:'clean',det:'det',
+    note:'★ TEMP-0 NONDETERMINISM LOCUS. The plain forward\'s first eval differs from later by ~epsilon (MLX/Metal graph warmup) → flips greedy only on LONG outputs (run1 ≠ run2 = run3). MiniCPM5 always lands here (compiled is gemma4-only). FAITHFUL: stock mlx-lm has the same warm≠cold (Δ 0.28). A flag guaranteeing warm==cold would be L3 (no oracle has it).'}),
+  // --- KV fork: bf16 vs quantized ---
+  N('kv-bf16','KV cache: bf16',{t:1,orc:'mlx-lm bf16 KV',st:'clean',det:'det',
     file:'gemma4-base.ts:251',alloc:'keys/values grown in STEP increments',free:'old keys/values disposed each grow/trim',
-    note:'trim(n) = offset -= n (a clean rewind; prompt KV stays bit-intact — NOT the determinism source).'}),
+    note:'--kv-quant off (the L1 floor). Plain bf16 attention via ops.sdpa.'}),
+  N('kv-quant','KV cache: quantized (mixed-precision)',{t:2,orc:'mlx-optiq quantized KV',st:'clean',det:'det',
+    file:'gemma4-base.ts:251 / minicpm5.ts:119',alloc:'quantized keys/values + scales',free:'old disposed each grow/trim',
+    note:'--kv-quant config (per-layer mixed-precision from kv_config.json — the OptiQ/L2 oracle) or 4/8 (uniform). Routes attention into the quantized-SDPA dispatch below. --batch N forces bf16 instead.'}),
   N('maybekv','maybeQuantizeKv',{t:2,orc:'—',st:'info',det:'det',file:'generate.ts:365',alloc:'—',free:'—',
-    note:'no-op unless --kv-quant; if on, re-quantizes KV mid-gen (a real numerics change).'}),
+    note:'no-op unless --kv-quant; if on, re-quantizes KV mid-gen after the start offset (a real numerics change vs bf16).'}),
+  // --- decode SDPA dispatch (quantized KV): 4 routes ---
+  N('sd-unfused','decode SDPA: unfused (ops.sdpa)',{t:1,orc:'mlx-lm SDPA',st:'clean',det:'det',
+    file:'gemma4-base.ts:1521',alloc:'attn temps',free:'fused',
+    note:'reference quantized-decode path; used when --perf-kernel off and --fused-decode off.'}),
+  N('sd-perf','decode SDPA: fused-decode kernel',{t:2,orc:'mlx-optiq (online-softmax kernel; NOT bit-exact to mlx-lm)',st:'clean',det:'det',
+    file:'fused-decode-kernel.ts:13 / gemma4-base.ts:1514',alloc:'custom Metal kernel temps',free:'kernel-owned',
+    note:'--perf-kernel (default in L2/L3). Custom single-token quantized-SDPA Metal kernel matching optiq behavior. Gated: mask=="" & scale==1 & not in a compiled trace & supported config. Disabled inside compiled traces (no output_shapes).'}),
+  N('sd-tiled','decode SDPA: tiled (experimental)',{t:3,orc:'none — gated by measured perf (no oracle win)',st:'clean',det:'det',
+    file:'gemma4-base.ts:1518 (MLX_BUN_FUSED_DECODE)',alloc:'tiled temps',free:'tiled',
+    note:'--fused-decode (default OFF). Tiles the L=1 decode SDPA like prefill; currently ~3% SLOWER on this hardware → a documented default-off lever, not deleted. Directional numbers in bench-fused-decode.ts.'}),
   N('samp','sampleStep · sampler',{t:1,orc:'mlx-lm temp/top-p/top-k (HLG is L3)',st:'clean',det:'seed',
     file:'sampler.ts:412',alloc:'top-p/k/temp/penalty temps',free:'every temp freed; token returned',
-    note:'temp 0 → ops.argmaxAxis (sampler.ts:429) = DETERMINISTIC, seed unused. temp>0 → randomCategorical(stepKey(seed,step)) — seed-driven, and seed=Date.now() varies per request.'}),
+    note:'temp 0 → ops.argmaxAxis (sampler.ts:429) = DETERMINISTIC, seed unused. temp>0 → randomCategorical(stepKey(seed,step)) — seed-driven, seed=Date.now() varies per request.'}),
   N('tok','token → JS (uint32)',{t:1,orc:'—',st:'info',det:'det',file:'generate.ts:394',alloc:'—',free:'cur.dispose:402'}),
   N('eval','asyncEvalAll · pipeline',{t:1,orc:'—',st:'clean',det:'na',file:'generate.ts:390',alloc:'—',free:'evalWith = cache buffers (cache-owned)'}),
   N('done','finally · teardown',{t:1,orc:'—',st:'clean',det:'na',file:'generate.ts:431',alloc:'—',free:'pending; cache.dispose; history.dispose'}),
   N('text','detokenize → text',{t:1,orc:'mlx-lm detokenizer',st:'clean',det:'det',file:'(JS)',alloc:'—',free:'—'}),
-],edges:[E('prompt','resolve'),E('resolve','prefill'),E('prefill','first'),E('first','loop'),E('loop','lfwd'),
-  E('lfwd','kv'),E('kv','maybekv'),E('maybekv','samp'),E('samp','tok'),E('tok','eval'),E('eval','lfwd',{cls:'back'}),
+],edges:[
+  F('e-cli','prompt','CLI'),F('e-ws','e-api','loopback'),F('e-api','prompt','HTTP'),
+  E('prompt','resolve'),E('resolve','prefill'),
+  F('prefill','pf-unfused','--fused-sdpa off / bf16'),F('prefill','pf-tiled','--fused-sdpa on'),
+  E('pf-unfused','first'),E('pf-tiled','first'),
+  E('first','loop'),
+  F('loop','d-compiled','--compiled-decode (gemma4)'),F('loop','lfwd','plain (default · MiniCPM5)'),
+  E('d-compiled','kv-bf16',{cls:'side'}),
+  F('lfwd','kv-bf16','--kv-quant off'),F('lfwd','kv-quant','--kv-quant config/4/8'),
+  E('kv-bf16','samp'),
+  E('kv-quant','maybekv'),
+  F('maybekv','sd-unfused','perf off · fused-decode off'),F('maybekv','sd-perf','--perf-kernel'),F('maybekv','sd-tiled','--fused-decode'),
+  E('sd-unfused','samp'),E('sd-perf','samp'),E('sd-tiled','samp'),
+  E('samp','tok'),E('tok','eval'),E('eval','lfwd',{cls:'back'}),
   E('loop','done',{cls:'side'}),E('done','text')]};
+
+// model load / provenance — the "islands and bridges": which source variant
+// reaches a loadable model, and the missing unquantized-load edge.
+const LOAD={nodes:[
+  N('v-base','openbmb/MiniCPM5-1B-Base (bf16, ~2GB)',{t:0,orc:'—',st:'info',det:'na',file:'(HF: raw base)',alloc:'—',free:'—',
+    note:'the RAW, un-instruct-tuned base. Has plain .weight tensors, NO .scales. The paper\'s ORPO regime starts here — but it cannot be loaded by mlx-bun as-is (see the gap).'}),
+  N('v-sft','MiniCPM5-1B SFT (bf16)',{t:0,orc:'—',st:'info',det:'na',file:'(HF: SFT variant)',alloc:'—',free:'—',
+    note:'SFT-only variant; also unquantized → same load gap until quantized.'}),
+  N('v-instruct','mlx-community/MiniCPM5-1B-OptiQ-4bit',{t:2,orc:'mlx-optiq mixed-precision quant',st:'info',det:'na',file:'(HF: OptiQ instruct)',alloc:'—',free:'—',
+    note:'the INSTRUCT model we serve. Sensitivity-aware mixed 4/8-bit (8-bit on output/gate/final, 4-bit elsewhere; 4.5 bpw, 0.136 KL vs bf16). Ships .scales + optiq_metadata.json → loads directly.'}),
+  N('quantize','quantize → OptiQ (sensitivity-aware)',{t:2,orc:'mlx-optiq convert',st:'info',det:'na',file:'optiq convert (external)',alloc:'—',free:'—',
+    note:'the BRIDGE off the base island: produce a mixed-precision quant with .scales. Then it loads + LoRA/ORPO is QLoRA on the quantized base.'}),
+  N('q-load','QuantizedEmbedding / QuantizedLinear.load',{t:2,orc:'reads .scales (+ .biases) per projection',st:'info',det:'na',
+    file:'minicpm5.ts:220 / gemma4-base.ts:92',alloc:'wrapped quant weights',free:'mmap-backed',
+    note:'HARD-CODED quantized load. QuantizedLinear.load THROWS without a .scales tensor (gemma4-base.ts:93-94). There is no unquantized branch.'}),
+  N('gap','✗ unquantized load — MISSING',{t:3,orc:'none — the path does not exist',st:'leak',det:'na',
+    file:'gemma4-base.ts:92-94 (throws)',alloc:'—',free:'—',
+    note:'★ THE GAP. Feeding the bf16 base to the loader throws "no tensor named model.embed_tokens.scales". mlx-bun\'s MiniCPM5 path is quantized-only. To use the base: quantize it first (the bridge above) OR add an unquantized load path. --l1 does NOT help — it controls the KV cache, not the weight format.'}),
+  N('lora','sensitivity-aware LoRA overlay',{t:2,orc:'port of optiq sensitivity_rank.py',st:'clean',det:'na',
+    file:'rank.ts / lora-params.ts',alloc:'A/B adapters (by_bits ranks)',free:'—',
+    note:'by_bits = rank×(bits/4): 4-bit→r16, 8-bit→r32, on all 7 Unsloth modules; reads optiq_metadata.json. by_kl mode scales by per-layer KL. This IS the optiq overlay — already implemented.'}),
+  N('loaded','loaded model → serve · train',{t:2,orc:'—',st:'clean',det:'na',file:'factory.ts:19 createModel',alloc:'model graph',free:'on teardown',
+    note:'the convergence point: a loadable quantized model that feeds both the inference decode graph and the training step graph.'}),
+],edges:[
+  F('v-base','gap','load bf16',{cls:'gap'}),
+  F('v-base','quantize','quantize'),F('v-sft','quantize','quantize'),
+  E('quantize','q-load'),
+  F('v-instruct','q-load','direct (.scales present)'),
+  E('q-load','lora',{cls:'side'}),E('lora','loaded',{cls:'side'}),
+  E('q-load','loaded')]};
 
 let MODE='tier';
 const tierColor=d=>({1:C.L1,2:C.L2,3:C.L3}[d.t]||C.info);
 const memColor=d=>({clean:C.clean,fixed:C.fixed,info:C.info,leak:C.leak}[d.st]||C.info);
 const detColor=d=>({det:C.clean,seed:C.L2,warmup:C.leak,na:C.info}[d.det]||C.info);
-const cy=cytoscape({container:document.getElementById('cy'),minZoom:0.15,maxZoom:3,wheelSensitivity:0.25,
+const cy=cytoscape({container:document.getElementById('cy'),minZoom:0.12,maxZoom:3,wheelSensitivity:0.25,
   style:[
     {selector:'node',style:{'background-color':d=>MODE==='tier'?tierColor(d.data()):MODE==='det'?detColor(d.data()):memColor(d.data()),
       'label':'data(label)','color':'#0b0f14','font-family':'ui-monospace, Menlo, monospace','font-size':'12px',
@@ -164,11 +271,19 @@ const cy=cytoscape({container:document.getElementById('cy'),minZoom:0.15,maxZoom
     {selector:'edge[cls="side"]',style:{'line-color':'#243040','target-arrow-color':'#243040','line-style':'dashed'}},
     {selector:'edge[cls="back"]',style:{'line-color':C.L2,'target-arrow-color':C.L2,'line-style':'dashed',
       'curve-style':'unbundled-bezier','control-point-distances':[-90],'control-point-weights':[0.5]}},
+    // flag bridges — dashed teal, with the flag name as label
+    {selector:'edge[cls="flag"]',style:{'line-color':C.flag,'target-arrow-color':C.flag,'line-style':'dashed','width':2,
+      'label':'data(flag)','font-size':'9px','font-family':'ui-monospace, Menlo, monospace','color':C.flag,
+      'text-background-color':'#0b0f14','text-background-opacity':0.9,'text-background-padding':'2px','text-rotation':'autorotate'}},
+    // the missing-load gap — red dashed, ✗
+    {selector:'edge[cls="gap"]',style:{'line-color':C.leak,'target-arrow-color':C.leak,'line-style':'dashed','width':2,
+      'label':'data(flag)','font-size':'9px','color':C.leak,'text-background-color':'#0b0f14','text-background-opacity':0.9,
+      'text-background-padding':'2px','text-rotation':'autorotate'}},
   ]});
 function load(g){cy.elements().remove();cy.add(g.nodes);cy.add(g.edges);
-  cy.layout({name:'dagre',rankDir:'TB',nodeSep:28,rankSep:46,padding:30}).run();}
+  cy.layout({name:'dagre',rankDir:'TB',nodeSep:26,rankSep:48,padding:30}).run();}
 function restyle(){cy.style().update();}
-const tierLabel={1:'L1 · mlx-lm',2:'L2 · optiq',3:'L3 · ours'};
+const tierLabel={0:'plumbing',1:'L1 · mlx-lm',2:'L2 · optiq',3:'L3 · ours'};
 function show(d){
   document.getElementById('s-title').textContent=d.label;
   document.getElementById('s-file').textContent=d.file||'';
@@ -177,7 +292,7 @@ function show(d){
   const tp=document.getElementById('s-tier');tp.textContent=tierLabel[d.t]||'—';
   tp.style.background=tierColor(d);tp.style.color=d.t===2?'#fff':'#0b0f14';
   document.getElementById('s-oracle').textContent=d.orc?('gate: '+d.orc):'';
-  const st={clean:['dispose-balanced',C.clean],fixed:['leak — fixed',C.fixed],info:['transfer/loop',C.info],leak:['leak',C.leak]}[d.st]||['',C.info];
+  const st={clean:['dispose-balanced',C.clean],fixed:['leak — fixed',C.fixed],info:['transfer/loop',C.info],leak:['gap / leak',C.leak]}[d.st]||['',C.info];
   const sp=document.getElementById('s-status');sp.textContent=st[0];sp.style.background=st[1];sp.style.color=(d.st==='clean'||d.st==='leak')?'#fff':'#0b0f14';
   const dl={det:['deterministic',C.clean],seed:['seed-driven (temp>0)',C.L2],warmup:['warmup → nondet',C.leak],na:['n/a',C.info]}[d.det]||['—',C.info];
   const dp=document.getElementById('s-det');dp.textContent=dl[0];dp.style.background=dl[1];dp.style.color=d.det==='na'?'#0b0f14':'#fff';
@@ -185,17 +300,19 @@ function show(d){
   document.getElementById('s-free').textContent=d.free||'—';
   document.getElementById('s-note').textContent=d.note||'—';
 }
-const LEG={tier:[['L1 · mlx-lm',C.L1],['L2 · optiq',C.L2],['L3 · ours',C.L3]],
-           mem:[['balanced',C.clean],['leak — fixed',C.fixed],['transfer/loop',C.info]],
+const LEG={tier:[['L1 · mlx-lm',C.L1],['L2 · optiq',C.L2],['L3 · ours',C.L3],['plumbing',C.info]],
+           mem:[['balanced',C.clean],['leak — fixed',C.fixed],['transfer/loop',C.info],['gap',C.leak]],
            det:[['deterministic',C.clean],['seed-driven (temp>0)',C.L2],['warmup → nondet',C.leak],['n/a',C.info]]};
-function legend(){document.getElementById('legend').innerHTML=LEG[MODE].map(([t,c])=>
-  `<span><i class="dot" style="background:${c}"></i>${t}</span>`).join('');}
+function legend(){document.getElementById('legend').innerHTML=
+  '<span><i class="dash"></i>flag bridge</span>'+
+  LEG[MODE].map(([t,c])=>`<span><i class="dot" style="background:${c}"></i>${t}</span>`).join('');}
 cy.on('tap','node',e=>show(e.target.data()));
 document.getElementById('fit').onclick=()=>cy.fit(undefined,40);
 let G='train';
+const GRAPHS={train:TRAIN,infer:INFER,load:LOAD};
 document.querySelectorAll('#graph button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#graph button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
-  G=b.dataset.g;load(G==='train'?TRAIN:INFER);});
+  G=b.dataset.g;load(GRAPHS[G]);});
 document.querySelectorAll('#mode button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#mode button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
   MODE=b.dataset.m;restyle();legend();});
