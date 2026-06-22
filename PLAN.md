@@ -304,8 +304,10 @@ Ordered by expected payoff on this hardware:
   on RANDOM data (flat softmax = its worst case); real outputs are sharply peaked
   so filtering the ≈0-softmax tail is near-free — must be measured teacher-forced
   on real hiddens. Standing L3 gates to build:
-  - [ ] **filter-on-real-data** — teacher-forced dh error, coeff filter ON, real
-        model hiddens → decide the filter (likely enable as a free speedup).
+  - [x] **filter-on-real-data** — DONE (2026-06-22): near-free on REAL targets —
+        eps ~1e-5 = 0.16% dh (under the bf16 floor) for 1.35× backward; the
+        synthetic 21.4% was a random-target artifact. `flash-cce-filter-realdata.ts`.
+        → enable the filter at eps ~1e-5.
   - [ ] **teacher-forced grad fidelity** — flash vs full-logits `dh` (cosine +
         relnorm) on real data, as the standing L3 quality regression.
   - [ ] **end-to-end quality eval** of the completed ORPO run (the real proof).

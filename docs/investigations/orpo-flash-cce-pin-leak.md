@@ -133,17 +133,33 @@ outputs the next-token distribution is **sharply peaked** (low entropy):
 `softmax_v ≈ 0`, so its coeff ≈ 0 and dropping it costs ~nothing — the gradient
 mass is in the target + the handful of high-softmax tokens. **The filter is
 designed exactly for the peaky real-data regime; the synthetic benchmark
-maximizes its apparent cost.** TODO: re-measure the filter's dh error on **real
-hidden states from the model on real text (teacher-forced)** before judging it —
-it is plausibly a near-free speedup that should be turned on.
+maximizes its apparent cost.**
+
+**MEASURED (2026-06-22, `scripts/experiments/flash-cce-filter-realdata.ts`) — the
+hypothesis holds.** On 8629 real response tokens from real examples (real model
+forward, **real next-token targets**; mean P(true token) = 53.9% → genuinely
+peaked), the filter's dh error vs exact:
+
+| eps | dh error | backward speedup |
+|---|---|---|
+| 1e-6 | 0.024% | 1.15× |
+| **1e-5** | **0.162%** (below the 0.33% bf16 floor → indistinguishable) | **1.35×** |
+| 1e-4 | 0.681% | 1.47× |
+| 1e-3 | 1.943% | 1.52× |
+
+The synthetic `REAL=1` test (random targets) showed **21.4% @ 1e-4** — a ~30×
+overstatement, an artifact of the onehot landing on a ~0-softmax random token.
+**Verdict: enable the filter at eps ~1e-5** — free speed (error under the
+reassociation floor) on real data. Re-measure as the model trains (peakedness
+shifts), and always with REAL targets, never synthetic.
 
 ## Standing L3 gates (what to run, since there's no oracle)
 
 Per the project's parity-as-correctness model (bit-exact where an ancestor
 overlaps; KL + quality + benchmarks where it doesn't):
 
-1. **Filter-on-real-data** — teacher-forced dh error with the coeff filter ON,
-   real model hiddens, to decide the filter (likely: enable).
+1. **Filter-on-real-data** — ✅ DONE (above): near-free at eps ~1e-5 on real
+   targets (0.16% dh, 1.35× backward). `flash-cce-filter-realdata.ts`.
 2. **Teacher-forced grad fidelity** — flash head vs full-logits head `dh`
    (gradient cosine + relnorm) on real data, as the standing L3 regression gate
    (replaces the synthetic-data parity number for *quality* claims).
