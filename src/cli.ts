@@ -468,9 +468,18 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
   };
   type Preset = { kv: "off" | "config"; perf: boolean; fusedSdpa: boolean; compiled: boolean; fusedDecode: boolean };
   const TIERS: Record<string, Preset> = {
-    l1: { kv: "off",    perf: false, fusedSdpa: false, compiled: false, fusedDecode: false }, // = mlx-lm bit-for-bit (bf16, unfused)
-    l2: { kv: "config", perf: true,  fusedSdpa: true,  compiled: false, fusedDecode: false }, // = mlx-optiq bit-for-bit (goldens track perf-kernel ON)
-    l3: { kv: "config", perf: true,  fusedSdpa: true,  compiled: true,  fusedDecode: false }, // best perf, KL/test-gated (no optiq analogy)
+    // A tier is the GUARANTEE; within it we default to the FAST kernel that still
+    // holds it, and expose the slow one as an opt-in. compiled-decode is BIT-EXACT
+    // with uncompiled (compiled-decode.test: on==off) → free speed, so it's ON in
+    // EVERY tier (--compiled-decode off is the slow, same-tier opt-in). perf-kernel
+    // + fused-sdpa match OPTIQ (not the unfused reference; fused-sdpa.test) and are
+    // quantized-KV only → they're the L2 bridge, no-ops on L1's bf16. NOTE: for the
+    // DECODE path L2 == L3 — every decode kernel matches mlx-lm OR optiq. L3's real
+    // territory is the no-oracle FEATURES (HLG sampler, expert offload, batched
+    // mixed-precision) gated by KL+tests, which live off this decode axis.
+    l1: { kv: "off",    perf: false, fusedSdpa: false, compiled: true, fusedDecode: false }, // = mlx-lm bit-for-bit (bf16)
+    l2: { kv: "config", perf: true,  fusedSdpa: true,  compiled: true, fusedDecode: false }, // = mlx-optiq bit-for-bit
+    l3: { kv: "config", perf: true,  fusedSdpa: true,  compiled: true, fusedDecode: false }, // best perf (decode == L2 today)
   };
   const tier = flag("l1") ? "l1" : flag("l2") ? "l2" : flag("l3") ? "l3" : null;
   const p = tier ? TIERS[tier]! : null;
