@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>mlx-bun · training + inference map</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
+<style>
+  :root { --bg:#0b0f14; --panel:#11161d; --line:#243040; --txt:#cdd9e5; --dim:#7d8aa0;
+          --L1:#2ea043; --L2:#388bfd; --L3:#d29922; --clean:#2ea043; --fixed:#d29922; --info:#6e7b91; --leak:#f85149; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--txt);
+              font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #top { display:flex; align-items:center; gap:12px; padding:8px 14px; flex-wrap:wrap;
+         border-bottom:1px solid var(--line); background:var(--panel); }
+  #top b { color:#fff; font-size:14px; }
+  .seg { display:flex; gap:2px; background:#0b0f14; border:1px solid var(--line); border-radius:6px; }
+  .seg button, .btn { background:transparent; color:var(--dim); border:0; padding:5px 11px;
+                      cursor:pointer; font:inherit; border-radius:5px; }
+  .seg button.on { background:var(--L2); color:#fff; }
+  .seg.v button.on { background:#30363d; color:#fff; }
+  .btn { border:1px solid var(--line); }
+  .legend { margin-left:auto; display:flex; gap:13px; color:var(--dim); align-items:center; }
+  .legend span { display:flex; align-items:center; gap:5px; }
+  .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+  #wrap { display:flex; height:calc(100% - 46px); }
+  #cy { flex:1; height:100%; }
+  #side { width:350px; border-left:1px solid var(--line); background:var(--panel);
+          padding:14px; overflow:auto; }
+  #side h2 { margin:0 0 2px; font-size:14px; color:#fff; }
+  #side .file { color:var(--L2); font-size:12px; margin-bottom:8px; word-break:break-all; }
+  #side .row { margin:9px 0; }
+  #side .k { color:var(--dim); text-transform:uppercase; font-size:10.5px; letter-spacing:.06em; }
+  #side .v { white-space:pre-wrap; }
+  #side .alloc { color:#e3b341; } #side .free { color:#56d364; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; }
+  .hint { color:var(--dim); margin-top:16px; font-size:12px; }
+  code { color:#e3b341; }
+</style>
+</head>
+<body>
+<div id="top">
+  <b>mlx-bun map</b>
+  <div class="seg" id="graph">
+    <button data-g="train" class="on">training step</button>
+    <button data-g="infer">inference decode</button>
+  </div>
+  <div class="seg v" id="mode">
+    <button data-m="tier" class="on">parity tier</button>
+    <button data-m="mem">memory</button>
+  </div>
+  <button class="btn" id="fit">⤢ fit</button>
+  <div class="legend" id="legend"></div>
+</div>
+<div id="wrap">
+  <div id="cy"></div>
+  <div id="side">
+    <h2 id="s-title">Click a node</h2>
+    <div class="file" id="s-file"></div>
+    <div class="hint" id="hint">Scroll to zoom (Google-Maps style), drag to pan — out for structure, in for each node's oracle + allocate/free. <b>Parity tier</b> = the lowest layer whose <i>oracle</i> a node matches bit-for-bit: <span style="color:var(--L1)">L1</span> = drop-in for mlx-lm, <span style="color:var(--L2)">L2</span> = drop-in for mlx-optiq, <span style="color:var(--L3)">L3</span> = our originals (no oracle → gated by finite-diff / KL / quality, not parity). A node can only sit in a lower tier if its oracle exists AND it matches bit-exactly; otherwise it bubbles up. Trace a path to see where it leaves the bit-exact floor and enters L3.</div>
+    <div id="s-body" style="display:none">
+      <div class="row"><div class="k">parity tier</div><div class="v"><span class="pill" id="s-tier"></span> &nbsp;<span id="s-oracle" style="color:var(--dim)"></span></div></div>
+      <div class="row"><div class="k">memory</div><div class="v"><span class="pill" id="s-status"></span></div></div>
+      <div class="row"><div class="k">allocates</div><div class="v alloc" id="s-alloc"></div></div>
+      <div class="row"><div class="k">frees</div><div class="v free" id="s-free"></div></div>
+      <div class="row"><div class="k">notes</div><div class="v" id="s-note"></div></div>
+    </div>
+  </div>
+</div>
+<script>
+// tier = lowest layer whose ORACLE the node matches bit-for-bit (the gate).
+// t:1 mlx-lm bit-exact · t:2 optiq bit-exact · t:3 ours (no oracle).
+// st = memory: clean (dispose-balanced) · fixed (a leak we found+fixed) · info (transfer/loop).
+const C={L1:'#2ea043',L2:'#388bfd',L3:'#d29922',clean:'#2ea043',fixed:'#d29922',info:'#6e7b91',leak:'#f85149'};
+function N(id,label,o){return{data:{id,label,...o}};}
+function E(s,t,o={}){return{data:{id:s+'>'+t,source:s,target:t,...o}};}
+
+const TRAIN={nodes:[
+  N('row','tokenize row',{t:1,orc:'mlx-lm TokenizerWrapper (BOS-dedup matches inference)',st:'clean',
+    file:'dataset.ts:266 tokenizePair',alloc:'host token ids (once at startup)',free:'held in RAM'}),
+  N('split','splitPrefixBatch',{t:3,orc:'none — prefix-sharing is ours',st:'clean',
+    file:'prefix-shared.ts:229',alloc:'P/Rc/Rr index arrays',free:'—',
+    note:'gates on chosen/rejected sharing a byte-identical prompt; else two-forward fallback'}),
+  N('accum','accumulateStep',{t:1,orc:'mean-of-micro-grads (deterministic ref; B=1 pass-through bit-exact)',st:'info',
+    file:'trainer.ts:1020',alloc:'(accum>1) scaled-grad accumulators',free:'value + per-micro grads + prior accumulators'}),
+  N('fwd','transformer forward · runLayerRange',{t:1,orc:'mlx-lm forward — BIT-EXACT (8192/8192 greedy)',st:'clean',
+    file:'segmented.ts:905 / minicpm5.ts:272',alloc:'per-segment boundary (detachLeaf), block-sparse mask',
+    free:'layer interiors + mask disposed per segment',
+    note:'THE L1 floor: the forward is a drop-in for mlx-lm. Prefix-share folds 2 forwards → 1 (that fold is L3) but each block bit-matches a separate forward.'}),
+  N('norm','finalNorm + prefix gather',{t:3,orc:'finalNorm L1; the prefix-position gather is ours',st:'clean',
+    file:'prefix-shared.ts:115',alloc:'hn (norm), gathered hResp [M,H]',free:'hn:841; hResp→headSink (:917)'}),
+  N('ccef','flashCceForward',{t:3,orc:'none — flash-CCE is ours (vs full-logits PROXY: 0.21%, fp-reassoc not error)',st:'fixed',
+    file:'flash-cce.ts:1008',alloc:'in-kernel logits (no [M,V]); LSE-merge temps + gMax',
+    free:'NOW: every nested intermediate + gMax disposed (1078); lse/logp/blockMax returned',
+    note:'L3 head. Was the active-drift leak: bare ops.exp(ops.sub(...)) dropped the inner wrapper ×2/step → ~0.4 MB/step. Fixed.'}),
+  N('loss','ORPO loss = nll + λ·OR',{t:3,orc:'none — torch/numpy paper ref (Hong 2024); no mlx-lm/optiq op',st:'clean',
+    file:'loss.ts:1228',alloc:'log-odds + softplus temps',free:'all temps; loss scalar returned'}),
+  N('cceb','flashCceBackward → dh',{t:3,orc:'none — vs finite-difference ground truth (the real proof) + 0.28% vs proxy',st:'clean',
+    file:'flash-cce.ts:1108',alloc:'coeff=onehot−softmax, atomic dh accum',free:'dh returned'}),
+  N('bwd','segmented backward · mlx_vjp',{t:3,orc:'none — vs the monolithic value_and_grad (bf16-class)',st:'clean',
+    file:'segmented.ts:922',alloc:'per-segment dh_in + dA/dB',free:'boundaries disposed as consumed; grads → caller'}),
+  N('gnorm','globalNorm',{t:1,orc:'standard L2 norm',st:'clean',
+    file:'trainer.ts:1076',alloc:'per-grad square/sum partials',free:'all partials after evalAll'}),
+  N('clip','clipGradsByNorm',{t:1,orc:'standard grad clipping (TRL / mlx-lm)',st:'clean',
+    file:'trainer.ts:1098',alloc:'(if ‖g‖>max) scaled grads',free:'old grads disposed; clipped → opt.step'}),
+  N('opt','AdamW.step',{t:1,orc:'mlx.optimizers.AdamW (op-for-op port)',st:'clean',
+    file:'optimizer.ts:81',alloc:'new param + m/v moments',free:'old param(138)+m0/v0+intermediates(134)+grads — verified'}),
+  N('metrics','orpoMetrics (diagnostic)',{t:3,orc:'none — ORPO nll/or/acc/margin',st:'clean',
+    file:'loss.ts:1251',alloc:'two diagnostic forwards',free:'all disposed (1283); runs every step'}),
+],edges:[E('row','split'),E('split','accum'),E('accum','fwd'),E('fwd','norm'),E('norm','ccef'),
+  E('ccef','loss'),E('loss','cceb'),E('cceb','bwd'),E('bwd','gnorm'),E('gnorm','clip'),E('clip','opt'),
+  E('accum','metrics',{cls:'side'})]};
+
+const INFER={nodes:[
+  N('prompt','tokenize prompt',{t:1,orc:'mlx-lm tokenizer',st:'clean',file:'generate.ts',alloc:'host ids',free:'—'}),
+  N('prefill','prefill · forwardHidden',{t:1,orc:'mlx-lm prefill — BIT-EXACT logits',st:'clean',
+    file:'generate.ts:280',alloc:'per-chunk ids, hidden h, KV state',free:'ids:301/319; h:303/323; evalAll+clearCache bound transients'}),
+  N('first','logits + sampleStep',{t:1,orc:'mlx-lm sampling (greedy bit-exact; HLG is L3)',st:'clean',
+    file:'generate.ts:329',alloc:'logits0, pending token',free:'hLast:325; logits0:329'}),
+  N('loop','DECODE LOOP (per token)',{t:1,orc:'—',st:'info',file:'generate.ts:360',alloc:'—',free:'—',
+    note:'pipelined; only the chosen uint32 crosses to JS per step'}),
+  N('lfwd','forward (compiled.step / forwardHidden)',{t:1,orc:'mlx-lm decode — compiled replay is BIT-EXACT (compile is impl, not a tier change)',st:'clean',
+    file:'compiled-decode.ts:501 / minicpm5.ts',alloc:'per-token q/k/v, rope, attn, logits; temps',
+    free:'temps finally:501; per-layer disposed; logits→sample then :389',
+    note:'KEY: our compiled-decode is an OPTIMIZATION that still matches the oracle bit-for-bit, so it stays L1. Only things with NO oracle go to L3.'}),
+  N('kv','KV append',{t:2,orc:'plain KV L1; quantized KV = optiq (L2)',st:'clean',
+    file:'gemma4-base.ts:251/440/661',alloc:'keys/values grown in 256-row STEP increments',
+    free:'old keys/values disposed each slice/concat/grow/trim; cache.dispose() at end'}),
+  N('samp','sampleStep · sampler',{t:1,orc:'mlx-lm temp/top-p/top-k (HLG sampler is L3)',st:'clean',
+    file:'sampler.ts',alloc:'top-p/k/temp/penalty temps',free:'every temp tracked + freed; next token returned'}),
+  N('tok','token → JS (uint32)',{t:1,orc:'—',st:'info',file:'generate.ts:394',alloc:'—',free:'cur.dispose:402'}),
+  N('eval','asyncEvalAll · pipeline',{t:1,orc:'—',st:'clean',file:'generate.ts:390',alloc:'—',free:'evalWith = cache buffers (cache-owned)'}),
+  N('done','finally · teardown',{t:1,orc:'—',st:'clean',file:'generate.ts:431',alloc:'—',free:'pending/nextPending; cache.dispose (all KV); history.dispose'}),
+  N('text','detokenize → text',{t:1,orc:'mlx-lm detokenizer',st:'clean',file:'(JS)',alloc:'—',free:'—'}),
+],edges:[E('prompt','prefill'),E('prefill','first'),E('first','loop'),E('loop','lfwd'),E('lfwd','kv'),
+  E('kv','samp'),E('samp','tok'),E('tok','eval'),E('eval','lfwd',{cls:'back'}),E('loop','done',{cls:'side'}),E('done','text')]};
+
+let MODE='tier';
+const tierColor=d=>({1:C.L1,2:C.L2,3:C.L3}[d.t]||C.info);
+const memColor=d=>({clean:C.clean,fixed:C.fixed,info:C.info,leak:C.leak}[d.st]||C.info);
+const cy=cytoscape({container:document.getElementById('cy'),minZoom:0.15,maxZoom:3,wheelSensitivity:0.25,
+  style:[
+    {selector:'node',style:{'background-color':d=>MODE==='tier'?tierColor(d.data()):memColor(d.data()),
+      'label':'data(label)','color':'#0b0f14','font-family':'ui-monospace, Menlo, monospace','font-size':'12px',
+      'font-weight':'600','text-valign':'center','text-halign':'center','shape':'round-rectangle',
+      'width':'label','height':'30','padding':'10px','text-wrap':'wrap','text-max-width':'230px',
+      'border-width':1,'border-color':'#0b0f14'}},
+    {selector:'node:selected',style:{'border-width':3,'border-color':'#fff'}},
+    {selector:'edge',style:{'width':2,'line-color':'#3a4760','target-arrow-color':'#3a4760',
+      'target-arrow-shape':'triangle','curve-style':'bezier'}},
+    {selector:'edge[cls="side"]',style:{'line-color':'#243040','target-arrow-color':'#243040','line-style':'dashed'}},
+    {selector:'edge[cls="back"]',style:{'line-color':C.L2,'target-arrow-color':C.L2,'line-style':'dashed',
+      'curve-style':'unbundled-bezier','control-point-distances':[-90],'control-point-weights':[0.5]}},
+  ]});
+function load(g){cy.elements().remove();cy.add(g.nodes);cy.add(g.edges);
+  cy.layout({name:'dagre',rankDir:'TB',nodeSep:28,rankSep:46,padding:30}).run();}
+function restyle(){cy.style().update();}
+const tierLabel={1:'L1 · mlx-lm',2:'L2 · optiq',3:'L3 · ours'};
+function show(d){
+  document.getElementById('s-title').textContent=d.label;
+  document.getElementById('s-file').textContent=d.file||'';
+  document.getElementById('hint').style.display='none';
+  document.getElementById('s-body').style.display='block';
+  const tp=document.getElementById('s-tier');tp.textContent=tierLabel[d.t]||'—';
+  tp.style.background=tierColor(d);tp.style.color=d.t===2?'#fff':'#0b0f14';
+  document.getElementById('s-oracle').textContent=d.orc?('gate: '+d.orc):'';
+  const st={clean:['dispose-balanced',C.clean],fixed:['leak — fixed',C.fixed],info:['transfer/loop',C.info],leak:['leak',C.leak]}[d.st]||['',C.info];
+  const sp=document.getElementById('s-status');sp.textContent=st[0];sp.style.background=st[1];sp.style.color=(d.st==='clean'||d.st==='leak')?'#fff':'#0b0f14';
+  document.getElementById('s-alloc').textContent=d.alloc||'—';
+  document.getElementById('s-free').textContent=d.free||'—';
+  document.getElementById('s-note').textContent=d.note||'—';
+}
+const LEG={tier:[['L1 · mlx-lm',C.L1],['L2 · optiq',C.L2],['L3 · ours',C.L3]],
+           mem:[['balanced',C.clean],['leak — fixed',C.fixed],['transfer/loop',C.info]]};
+function legend(){document.getElementById('legend').innerHTML=LEG[MODE].map(([t,c])=>
+  `<span><i class="dot" style="background:${c}"></i>${t}</span>`).join('');}
+cy.on('tap','node',e=>show(e.target.data()));
+document.getElementById('fit').onclick=()=>cy.fit(undefined,40);
+let G='train';
+document.querySelectorAll('#graph button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#graph button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  G=b.dataset.g;load(G==='train'?TRAIN:INFER);});
+document.querySelectorAll('#mode button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#mode button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  MODE=b.dataset.m;restyle();legend();});
+legend();load(TRAIN);
+</script>
+</body>
+</html>
