@@ -113,22 +113,25 @@
   #chat-sampling.on{color:var(--ink);border-color:rgba(255,255,255,.28)}
   #chat-sampling.dirty .dot{background:var(--blue);box-shadow:0 0 11px var(--blue)}
   #chat-sampling .dot{width:7px;height:7px}
-  .samplepop{position:absolute;bottom:calc(100% + 9px);right:0;z-index:40;width:260px;
-    background:#141416;border:1px solid var(--hairline);border-radius:13px;padding:13px 14px;
-    box-shadow:0 18px 50px rgba(0,0,0,.6);display:none;
+  .samplepop{position:absolute;bottom:calc(100% + 9px);right:0;z-index:40;width:300px;
+    background:rgba(30,30,34,.98);border:1px solid rgba(255,255,255,.12);border-radius:13px;padding:13px 14px;
+    backdrop-filter:blur(22px) saturate(1.3);-webkit-backdrop-filter:blur(22px) saturate(1.3);
+    box-shadow:0 18px 50px rgba(0,0,0,.7);display:none;
     transform:translateY(4px);opacity:0;transition:opacity .16s var(--ease),transform .16s var(--ease)}
   .samplepop.open{display:block;transform:translateY(0);opacity:1}
   .samplepop h4{font-size:12px;font-weight:600;color:var(--dim);letter-spacing:.02em;
     text-transform:uppercase;margin:0 0 10px}
   .samprow{display:flex;align-items:center;gap:9px;margin:0 0 11px}
   .samprow label{font-size:12.5px;color:var(--ink);width:74px;flex:0 0 auto}
-  .samprow input{width:62px;flex:0 0 auto;font-family:var(--mono);font-size:12px;text-align:right;
-    background:var(--card);border:1px solid var(--hairline);border-radius:8px;color:var(--ink);
-    padding:5px 8px;outline:none;transition:border-color .18s var(--ease)}
-  .samprow input:focus{border-color:var(--blue)}
-  .samprow input.over{border-color:var(--blue);color:var(--ink)}
-  .samprow .rec{font-size:11px;color:var(--dimmer);font-family:var(--mono);flex:1 1 auto;text-align:left}
-  .samprow .rec b{color:var(--dim);font-weight:600}
+  .samprow input[type=range]{flex:1 1 auto;-webkit-appearance:none;appearance:none;height:4px;margin:0;
+    border-radius:3px;background:rgba(255,255,255,.15);outline:none;cursor:pointer}
+  .samprow input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:15px;height:15px;
+    border-radius:50%;background:var(--ink);border:0;box-shadow:0 1px 4px rgba(0,0,0,.5);cursor:pointer;
+    transition:background .15s var(--ease)}
+  .samprow input[type=range]:hover::-webkit-slider-thumb,
+  .samprow input[type=range]:focus::-webkit-slider-thumb{background:var(--blue)}
+  .samp-val{width:40px;flex:0 0 auto;text-align:right;font-family:var(--mono);font-size:12px;color:var(--ink)}
+  .samp-val.auto{color:var(--dimmer)}
   .samppop-foot{display:flex;justify-content:space-between;align-items:center;margin-top:3px}
   .samppop-foot .note{font-size:10.5px;color:var(--dimmer);line-height:1.3;flex:1 1 auto;padding-right:8px}
   .samppop-foot button{appearance:none;cursor:pointer;background:var(--card);border:1px solid var(--hairline);
@@ -589,21 +592,21 @@
                 <h4>Sampling</h4>
                 <div class="samprow">
                   <label for="samp-temp">Temperature</label>
-                  <input id="samp-temp" type="number" step="0.05" min="0" max="2" placeholder="auto" inputmode="decimal">
-                  <span class="rec">rec <b id="samp-temp-rec">0.70</b></span>
+                  <input id="samp-temp" type="range" min="0" max="2" step="0.05" aria-label="Temperature">
+                  <output id="samp-temp-val" class="samp-val auto">0.70</output>
                 </div>
                 <div class="samprow">
                   <label for="samp-topp">top_p</label>
-                  <input id="samp-topp" type="number" step="0.01" min="0" max="1" placeholder="auto" inputmode="decimal">
-                  <span class="rec">rec <b id="samp-topp-rec">0.95</b></span>
+                  <input id="samp-topp" type="range" min="0" max="1" step="0.01" aria-label="top_p">
+                  <output id="samp-topp-val" class="samp-val auto">0.95</output>
                 </div>
                 <div class="samprow">
                   <label for="samp-topk">top_k</label>
-                  <input id="samp-topk" type="number" step="1" min="0" placeholder="auto" inputmode="numeric">
-                  <span class="rec">rec <b id="samp-topk-rec">off</b></span>
+                  <input id="samp-topk" type="range" min="0" max="100" step="1" aria-label="top_k">
+                  <output id="samp-topk-val" class="samp-val auto">off</output>
                 </div>
                 <div class="samppop-foot">
-                  <span class="note">Blank = use the recommended default. Temperature tracks the thinking toggle.</span>
+                  <span class="note">Sliders default to the recommended value — temperature follows the thinking toggle. Reset returns to defaults.</span>
                   <button id="samp-reset" type="button">Reset</button>
                 </div>
               </div>
@@ -1903,52 +1906,53 @@ controllers.chat = (() => {
   }
 
   /* — sampling controls — */
-  // Refresh the displayed recommended values + the input placeholders. The
-  // temperature rec follows the live thinking toggle; an un-overridden field
-  // shows its rec as a greyed placeholder so the user always sees what's in
-  // effect. Called on thinking-toggle flips and on popover open.
-  function refreshSamplingRecs() {
-    const t = recTemp();
-    const set = (id, txt) => { const e = $(id); if (e) e.textContent = txt; };
-    set("samp-temp-rec", t.toFixed(2));
-    set("samp-topp-rec", SAMP_REC.topP.toFixed(2));
-    set("samp-topk-rec", SAMP_REC.topK ? String(SAMP_REC.topK) : "off");
-    const ph = (id, v) => { const e = $(id); if (e && sampling[ph2field(id)] == null) e.placeholder = v; };
-    ph("samp-temp", t.toFixed(2));
-    ph("samp-topp", SAMP_REC.topP.toFixed(2));
-    ph("samp-topk", SAMP_REC.topK ? String(SAMP_REC.topK) : "off");
-  }
-  function ph2field(id) { return id === "samp-temp" ? "temperature" : id === "samp-topp" ? "top_p" : "top_k"; }
+  // Each row is a slider + a live value readout. A field is "auto" (null
+  // override → the server uses its mode-aware default; temperature's default
+  // follows the thinking toggle) until the user drags it, which records an
+  // explicit override. Reset returns every field to auto.
+  const SAMP_FIELDS = [
+    { id: "samp-temp", field: "temperature", valId: "samp-temp-val", rec: () => recTemp(), fmt: (v) => v.toFixed(2) },
+    { id: "samp-topp", field: "top_p", valId: "samp-topp-val", rec: () => SAMP_REC.topP, fmt: (v) => v.toFixed(2) },
+    { id: "samp-topk", field: "top_k", valId: "samp-topk-val", rec: () => SAMP_REC.topK, fmt: (v) => (v >= 1 ? String(Math.round(v)) : "off") },
+  ];
 
-  // Reflect override state on the inputs (blue border when set) and on the
-  // pill (lit dot when any field is overridden).
+  // Sync every slider + readout to current state: an overridden field shows its
+  // set value (bright readout); an auto field shows the recommended value
+  // (dimmed) and tracks it live — e.g. temperature when the thinking toggle
+  // flips. Called on thinking-toggle flips, popover open, and reset.
+  function refreshSamplingRecs() {
+    for (const f of SAMP_FIELDS) {
+      const slider = $(f.id), val = $(f.valId); if (!slider || !val) continue;
+      const over = sampling[f.field];
+      const v = over != null ? over : f.rec();
+      slider.value = String(v);
+      val.textContent = f.fmt(v);
+      val.classList.toggle("auto", over == null);
+    }
+  }
+
+  // User dragged a slider → record the explicit override, brighten the readout,
+  // and push the whole sampling state to the server.
+  function onSlide(f) {
+    const slider = $(f.id); if (!slider) return;
+    const v = Number(slider.value);
+    sampling[f.field] = v;
+    const val = $(f.valId); if (val) { val.textContent = f.fmt(v); val.classList.remove("auto"); }
+    updateSamplingUi();
+    send({ type: "set_sampling", temperature: sampling.temperature, top_p: sampling.top_p, top_k: sampling.top_k });
+  }
+
+  // The pill shows a lit dot whenever any field is overridden.
   function updateSamplingUi() {
-    const mark = (id, field) => { const e = $(id); if (e) e.classList.toggle("over", sampling[field] != null); };
-    mark("samp-temp", "temperature"); mark("samp-topp", "top_p"); mark("samp-topk", "top_k");
     const dirty = sampling.temperature != null || sampling.top_p != null || sampling.top_k != null;
     const pill = $("chat-sampling");
     if (pill) { pill.classList.toggle("dirty", dirty); pill.title = dirty
       ? "Sampling overridden — click to edit or reset" : "Sampling controls (temperature · top_p · top_k)"; }
   }
 
-  // Read one input, store null (blank/invalid → use default) or a clamped
-  // number, then push the whole sampling state to the server.
-  function commitSampling(id, field, lo, hi, intOnly) {
-    const e = $(id); if (!e) return;
-    const raw = e.value.trim();
-    if (raw === "") { sampling[field] = null; }
-    else {
-      let v = intOnly ? parseInt(raw, 10) : parseFloat(raw);
-      if (!Number.isFinite(v)) { sampling[field] = null; e.value = ""; }
-      else { v = Math.min(hi, Math.max(lo, v)); sampling[field] = v; e.value = String(v); }
-    }
-    updateSamplingUi(); refreshSamplingRecs();
-    send({ type: "set_sampling", temperature: sampling.temperature, top_p: sampling.top_p, top_k: sampling.top_k });
-  }
   function resetSampling() {
     sampling.temperature = null; sampling.top_p = null; sampling.top_k = null;
-    for (const id of ["samp-temp", "samp-topp", "samp-topk"]) { const e = $(id); if (e) e.value = ""; }
-    updateSamplingUi(); refreshSamplingRecs();
+    refreshSamplingRecs(); updateSamplingUi();
     send({ type: "set_sampling", temperature: null, top_p: null, top_k: null });
   }
   function initSampling() {
@@ -1967,14 +1971,10 @@ controllers.chat = (() => {
     // Click-away / Escape closes the popover.
     document.addEventListener("click", () => setOpen(false));
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") setOpen(false); });
-    const wire = (id, field, lo, hi, intOnly) => {
-      const e = $(id); if (!e) return;
-      e.addEventListener("change", () => commitSampling(id, field, lo, hi, intOnly));
-      e.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); commitSampling(id, field, lo, hi, intOnly); } });
-    };
-    wire("samp-temp", "temperature", 0, 2, false);
-    wire("samp-topp", "top_p", 0, 1, false);
-    wire("samp-topk", "top_k", 0, 1000000, true);
+    for (const f of SAMP_FIELDS) {
+      const e = $(f.id); if (!e) continue;
+      e.addEventListener("input", () => onSlide(f));
+    }
     const reset = $("samp-reset"); if (reset) reset.onclick = (e) => { e.stopPropagation(); resetSampling(); };
     updateSamplingUi(); refreshSamplingRecs();
   }
