@@ -309,6 +309,22 @@ Ordered by expected payoff on this hardware:
   - [ ] **teacher-forced grad fidelity** — flash vs full-logits `dh` (cosine +
         relnorm) on real data, as the standing L3 quality regression.
   - [ ] **end-to-end quality eval** of the completed ORPO run (the real proof).
+- **Parity-tier DAG → meaningful CLI flags** (roadmap, 2026-06-21). Tag every
+  compute node with its parity tier (L1 mlx-lm / L2 optiq / L3 ours; the ORACLE is
+  the gate — a node bubbles up only when it can't match a lower oracle bit-for-bit;
+  an optimization that DOES match stays low, e.g. compiled-decode is L1). First
+  artifact: a zoomable, tier-tagged map of both stacks at
+  [docs/dag/training-inference-map.html](dag/training-inference-map.html) — shows
+  training as an L1 floor with an L3 island (flash-CCE head + ORPO loss + prefix +
+  segmented), inference as almost all L1. The payoff: **flags are route selectors**,
+  and the tier of a route says whether a flag is an always-on default, a memory/
+  training knob, or a real parity⇄optimization toggle ("what flags push down THAT
+  route") — letting us collapse a growing flat flag list into a few intent switches.
+  Full design + roadmap: [parity-tier-dag.md](design/parity-tier-dag.md).
+  - [ ] derive the DAG from code (queryable; replaces the hand-authored map)
+  - [ ] CI gate: an L1-tagged node must pass bit-exact parity vs mlx-lm or be re-tagged
+  - [ ] shrink the L3 surface (prove provable nodes down to L1/L2)
+  - [ ] rationalize the CLI flag surface from the tier routes
 
 ## Phase 7 — Kernel experiments (research track) `[ ]`
 
