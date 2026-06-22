@@ -1000,7 +1000,8 @@ function makeVocabBlockedHeadVjp(
 /** flash-CCE head as a CustomVjp: forward runs the Metal kernel → Σ logp (stashing
  *  `lse` for the backward, avoiding a forward recompute); backward runs the kernel's
  *  `dh` for unit cotangent then scales by the scalar cotangent `c` (loss = Σ logp →
- *  ∂loss/∂logp_t = c for all t). The coeff filter is on by default in the backward. */
+ *  ∂loss/∂logp_t = c for all t). The coeff filter + vocab-block skip are OFF by
+ *  default (env-gated MLX_BUN_CCE_BWD_*_EPS) — the backward computes the EXACT dh. */
 function makeFlashCceHeadVjp(
   head: HeadQuant, targetsHost: Int32Array, M: number,
   sink: Array<{ dispose(): void }>,
@@ -1031,7 +1032,8 @@ function makeFlashCceHeadVjp(
       const c = cots[0]!;      // [1] = ∂loss/∂(Σ logp); uniform over tokens
       // dh for unit cotangent, then × c (avoids a host read of the cotangent).
       const ones = new Array(M).fill(1) as number[];
-      // filter + block-skip default-on (both approximations the training path accepts).
+      // filter + block-skip are OFF by default (env-gated) → EXACT dh. savedBlockMax is
+      // passed so the lossless vocab-block skip can be enabled via env without re-plumbing.
       const dhUnit = flashCceBackward(hR, fch, targets, savedLse!, ones, undefined, savedBlockMax!); // [M, hidden] f32
       const cM = c.dtype === dhUnit.dtype ? c : c.astype(dhUnit.dtype);
       const dh = ops.mul(dhUnit, cM); // broadcast [M,hidden]·[1]
