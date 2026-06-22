@@ -3,57 +3,41 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>mlx-bun · training + inference map</title>
+<title>mlx-bun · control-flow DAG (MiniCPM5-1B)</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.min.js"></script>
 <style>
-  :root { --bg:#0b0f14; --panel:#11161d; --line:#243040; --txt:#cdd9e5; --dim:#7d8aa0;
-          --L1:#2ea043; --L2:#388bfd; --L3:#d29922; --clean:#2ea043; --fixed:#d29922; --info:#6e7b91; --leak:#f85149;
-          --flag:#39c5cf; }
-  * { box-sizing:border-box; }
-  html,body { margin:0; height:100%; background:var(--bg); color:var(--txt);
-              font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-  #top { display:flex; align-items:center; gap:12px; padding:8px 14px; flex-wrap:wrap;
-         border-bottom:1px solid var(--line); background:var(--panel); }
-  #top b { color:#fff; font-size:14px; }
-  .seg { display:flex; gap:2px; background:#0b0f14; border:1px solid var(--line); border-radius:6px; }
-  .seg button, .btn { background:transparent; color:var(--dim); border:0; padding:5px 11px;
-                      cursor:pointer; font:inherit; border-radius:5px; }
-  .seg button.on { background:var(--L2); color:#fff; }
-  .seg.v button.on { background:#30363d; color:#fff; }
-  .btn { border:1px solid var(--line); }
-  .legend { margin-left:auto; display:flex; gap:13px; color:var(--dim); align-items:center; flex-wrap:wrap; }
-  .legend span { display:flex; align-items:center; gap:5px; }
-  .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
-  .dash { width:16px; height:0; border-top:2px dashed var(--flag); display:inline-block; }
-  #wrap { display:flex; height:calc(100% - 46px); }
-  #cy { flex:1; height:100%; }
-  #side { width:360px; border-left:1px solid var(--line); background:var(--panel);
-          padding:14px; overflow:auto; }
-  #side h2 { margin:0 0 2px; font-size:14px; color:#fff; }
-  #side .file { color:var(--L2); font-size:12px; margin-bottom:8px; word-break:break-all; }
-  #side .row { margin:9px 0; }
-  #side .k { color:var(--dim); text-transform:uppercase; font-size:10.5px; letter-spacing:.06em; }
-  #side .v { white-space:pre-wrap; }
-  #side .alloc { color:#e3b341; } #side .free { color:#56d364; }
-  .pill { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; }
-  .hint { color:var(--dim); margin-top:16px; font-size:12px; }
-  code { color:#e3b341; }
+  :root{--bg:#0b0f14;--panel:#11161d;--line:#243040;--txt:#cdd9e5;--dim:#7d8aa0;--cond:#39c5cf;}
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;}
+  #top{display:flex;align-items:center;gap:12px;padding:8px 14px;flex-wrap:wrap;border-bottom:1px solid var(--line);background:var(--panel);}
+  #top b{color:#fff;font-size:14px;}
+  .seg{display:flex;gap:2px;background:#0b0f14;border:1px solid var(--line);border-radius:6px;}
+  .seg button,.btn{background:transparent;color:var(--dim);border:0;padding:5px 11px;cursor:pointer;font:inherit;border-radius:5px;}
+  .seg button.on{background:#388bfd;color:#fff;}
+  .btn{border:1px solid var(--line);}
+  .legend{margin-left:auto;display:flex;gap:11px;color:var(--dim);align-items:center;flex-wrap:wrap;font-size:11px;}
+  .legend span{display:flex;align-items:center;gap:5px;}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;}
+  .dash{width:15px;border-top:2px dashed var(--cond);display:inline-block;}
+  #wrap{display:flex;height:calc(100% - 46px);}
+  #cy{flex:1;height:100%;}
+  #side{width:340px;border-left:1px solid var(--line);background:var(--panel);padding:14px;overflow:auto;}
+  #side h2{margin:0 0 4px;font-size:14px;color:#fff;}
+  #side .file{color:#388bfd;font-size:12px;word-break:break-all;margin-bottom:8px;}
+  #side .k{color:var(--dim);text-transform:uppercase;font-size:10.5px;letter-spacing:.06em;margin-top:10px;}
+  #side .v{white-space:pre-wrap;}
+  .hint{color:var(--dim);font-size:12px;margin-top:6px;}
+  code{color:#e3b341;}
 </style>
 </head>
 <body>
 <div id="top">
-  <b>mlx-bun map</b><span style="color:var(--dim);font-size:11px">MiniCPM5-1B</span>
+  <b>mlx-bun control-flow DAG</b><span style="color:var(--dim);font-size:11px">MiniCPM5-1B</span>
   <div class="seg" id="graph">
-    <button data-g="train" class="on">training step</button>
-    <button data-g="infer">inference decode</button>
-    <button data-g="load">model load</button>
-  </div>
-  <div class="seg v" id="mode">
-    <button data-m="tier" class="on">parity tier</button>
-    <button data-m="mem">memory</button>
-    <button data-m="det">determinism</button>
+    <button data-g="infer" class="on">inference</button>
+    <button data-g="train">training</button>
   </div>
   <button class="btn" id="fit">⤢ fit</button>
   <div class="legend" id="legend"></div>
@@ -61,262 +45,531 @@
 <div id="wrap">
   <div id="cy"></div>
   <div id="side">
-    <h2 id="s-title">Click a node · follow the dashed <span style="color:var(--flag)">flag</span> edges</h2>
+    <h2 id="s-title">Click a step</h2>
     <div class="file" id="s-file"></div>
-    <div class="hint" id="hint">Scroll to zoom (Google-Maps style), drag to pan — out for structure, in for each node's oracle + allocate/free.
-      <b>Solid edges</b> = the always-taken path. <b><span style="color:var(--flag)">Dashed teal edges</span></b> = a <b>flag bridge</b>: a CLI/env flag that routes you onto a different island (the label is the flag).
-      <b>Parity tier</b> = the lowest layer whose <i>oracle</i> a node matches bit-for-bit: <span style="color:var(--L1)">L1</span> = drop-in for mlx-lm, <span style="color:var(--L2)">L2</span> = drop-in for mlx-optiq, <span style="color:var(--L3)">L3</span> = our originals (no oracle → gated by finite-diff / KL / quality). Parity gates performance: a faster route only sits in a lower tier if its oracle exists AND it matches bit-exactly; otherwise it bubbles up. Trace a path to see where a flag drops you off the bit-exact floor into L3.
-      <b>Scope: MiniCPM5-1B.</b> Per-model specialization means other models route differently — gemma-4 / e4b can take the compiled-decode path (gemma4-only here) and e4b adds a MoE expert-routing handler; a separate map per model is future work.</div>
+    <div class="hint" id="hint">Every node = one actual step the code runs. Solid arrows = the next step in execution order. <b style="color:var(--cond)">Dashed labelled arrows</b> = a branch: the code can go several ways, and the label is the exact condition (flag / variable / check) that takes that edge. Loops are back-edges. Scroll to zoom, drag to pan. Colour = subsystem (legend). Traced from the actual source — file:line on each node.</div>
     <div id="s-body" style="display:none">
-      <div class="row"><div class="k">parity tier</div><div class="v"><span class="pill" id="s-tier"></span> &nbsp;<span id="s-oracle" style="color:var(--dim)"></span></div></div>
-      <div class="row"><div class="k">memory</div><div class="v"><span class="pill" id="s-status"></span></div></div>
-      <div class="row"><div class="k">determinism</div><div class="v"><span class="pill" id="s-det"></span></div></div>
-      <div class="row"><div class="k">allocates</div><div class="v alloc" id="s-alloc"></div></div>
-      <div class="row"><div class="k">frees</div><div class="v free" id="s-free"></div></div>
-      <div class="row"><div class="k">notes</div><div class="v" id="s-note"></div></div>
+      <div class="k">file</div><div class="v" id="s-fileb"></div>
+      <div class="k">subsystem</div><div class="v" id="s-grp"></div>
+      <div class="k">outgoing</div><div class="v" id="s-out"></div>
     </div>
   </div>
 </div>
 <script>
-// tier = lowest layer whose ORACLE the node matches bit-for-bit (the gate).
-// t:1 mlx-lm bit-exact · t:2 optiq bit-exact · t:3 ours (no oracle) · t:0 plumbing (no compute / no tier).
-// st = memory: clean (dispose-balanced) · fixed (a leak we found+fixed) · info (transfer/loop) · leak (a real gap).
-const C={L1:'#2ea043',L2:'#388bfd',L3:'#d29922',clean:'#2ea043',fixed:'#d29922',info:'#6e7b91',leak:'#f85149',flag:'#39c5cf'};
-function N(id,label,o){return{data:{id,label,...o}};}
-function E(s,t,o={}){return{data:{id:s+'>'+t,source:s,target:t,...o}};}
-// flag edge: a CLI/env flag is the bridge. `flag` renders as the edge label.
-function F(s,t,flag,o={}){return{data:{id:s+'>'+t,source:s,target:t,flag,cls:'flag',...o}};}
+// node = [id, label, group, file].  edge = [from, to, condition('' = unconditional)].
+// A node with several edges of different conditions IS a branch point.
+const GRP={ // subsystem → colour
+  drive:'#388bfd', fwd:'#2ea043', layer:'#3fb950', attn:'#d29922', sdpa:'#a371f7',
+  unfused:'#6e7b91', tiled:'#39c5cf', mlp:'#56d364', kv:'#f0883e', samp:'#db61a2',
+  setup:'#6e7b91', loss:'#d29922', seg:'#a371f7', accum:'#388bfd', bwd:'#f85149',
+  norm:'#39c5cf', opt:'#f0883e', metrics:'#db61a2' };
 
-const TRAIN={nodes:[
-  N('row','tokenize row',{t:1,orc:'mlx-lm TokenizerWrapper (BOS-dedup matches inference)',st:'clean',
-    file:'dataset.ts:266 tokenizePair',alloc:'host token ids (once at startup)',free:'held in RAM'}),
-  N('split','splitPrefixBatch',{t:3,orc:'none — prefix-sharing is ours',st:'clean',
-    file:'prefix-shared.ts:229',alloc:'P/Rc/Rr index arrays',free:'—',
-    note:'gates on chosen/rejected sharing a byte-identical prompt; else two-forward fallback. Composes with segmented backward only.'}),
-  N('accum','accumulateStep',{t:1,orc:'mean-of-micro-grads (deterministic ref; B=1 pass-through bit-exact)',st:'info',
-    file:'trainer.ts:1020',alloc:'(accum>1) scaled-grad accumulators',free:'value + per-micro grads + prior accumulators'}),
-  N('fwd','transformer forward · runLayerRange',{t:1,orc:'mlx-lm forward — BIT-EXACT (8192/8192 greedy)',st:'clean',
-    file:'segmented.ts:905 / minicpm5.ts:272',alloc:'per-segment boundary (detachLeaf), block-sparse mask',
-    free:'layer interiors + mask disposed per segment',
-    note:'THE L1 floor: the forward is a drop-in for mlx-lm. Prefix-share folds 2 forwards → 1 (that fold is L3) but each block bit-matches a separate forward. Attention kernel is chosen at the fork below.'}),
-  // --- attention kernel fork (training) ---
-  N('attn-sdpa','attn: ops.sdpa (default)',{t:1,orc:'mlx-autograd matmul/softmax — dQ/dK/dV = 0.00% (ground truth)',st:'clean',
-    file:'sdpa-vs-manual.ts',alloc:'one fused SDPA fwd/bwd',free:'fused',
-    note:'DEFAULT. The correct training attention: a clean check vs mlx-autograd of plain matmul/softmax shows 0.00% on dQ/dK/dV. Only downside: O(seq²) backward memory (fine ≤4096 for a 1B).'}),
-  N('attn-flash','attn: flash (opt-in)',{t:3,orc:'none — vs FA-2 hand-derived ref (which shares the BUG)',st:'leak',
-    file:'flash-attn · MLX_BUN_TRAIN_ATTN=flash',alloc:'O(L) tiled fwd/bwd',free:'tiled',
-    note:'★ BROKEN dK: flash-vs-manual dK = 106.01% (chunk-finetune-experiment.md). The earlier triangulation was fooled by an FA-2 backward ref sharing the flash dK formula. ops.sdpa is correct; flash is opt-in and NOT default — use only for O(L) memory at long context, and it currently mis-trains dK.'}),
-  N('norm','finalNorm + prefix gather',{t:3,orc:'finalNorm L1; the prefix-position gather is ours',st:'clean',
-    file:'prefix-shared.ts:115',alloc:'hn (norm), gathered hResp [M,H]',free:'hn:841; hResp→headSink (:917)'}),
-  // --- CE / loss-head fork (ORPO) ---
-  N('ce-full','CE head: full-logits (default SFT)',{t:1,orc:'mlx-lm cross-entropy (materialized [M,V])',st:'clean',
-    file:'loss.ts responseOnlyLogpMean',alloc:'full [M,V] logits',free:'after backward',
-    note:'DEFAULT for plain SFT. The other three heads are memory/throughput optimizations selected by config — all converge to the same loss.'}),
-  N('ce-chunk','CE head: token-chunked',{t:3,orc:'vs full-logits (fp-reassoc, not error)',st:'clean',
-    file:'loss.ts (orpoChunkSize>0)',alloc:'[chunk,V] checkpoint',free:'per chunk',
-    note:'opt-in via orpoChunkSize: bounds logits memory to [chunk,V] via Checkpoint.'}),
-  N('ce-fused','CE head: fused linear-CE (CustomVjp)',{t:3,orc:'analytic softmax−onehot backward vs full-logits',st:'clean',
-    file:'loss.ts (orpoFusedCe)',alloc:'no [M,V]; analytic coeff',free:'fused',
-    note:'opt-in via orpoFusedCe: fuses the lm_head matmul + CE with an analytic backward.'}),
-  N('ccef','CE head: flash-CCE (Metal kernel)',{t:3,orc:'none — vs full-logits PROXY 0.21% (fp-reassoc) + finite-diff',st:'fixed',
-    file:'flash-cce.ts:1008 (orpoFlashCe)',alloc:'in-kernel logits (no [M,V]); LSE-merge temps + gMax',
-    free:'NOW: every nested intermediate + gMax disposed (1078); lse/logp/blockMax returned',
-    note:'opt-in via orpoFlashCe: Apple-CCE transpiled, vocab-parallel grid, never materializes [M,V]. Was the active-drift leak: bare ops.exp(ops.sub(...)) dropped the inner wrapper ×2/step → ~0.4 MB/step. Fixed.'}),
-  N('loss','ORPO loss = nll + λ·OR  (λ=0.1)',{t:3,orc:'none — torch/numpy paper ref (Hong 2024); no mlx-lm/optiq op',st:'clean',
-    file:'loss.ts:1228',alloc:'log-odds + softplus temps',free:'all temps; loss scalar returned',
-    note:'reference-free: BOTH the NLL (SFT) and odds-ratio (preference) branches get gradients in one pass. λ scales the preference term; a too-high LR saturates the OR margin and silently weakens it.'}),
-  N('cceb','CE backward → dh',{t:3,orc:'none — vs finite-difference ground truth (the real proof) + 0.28% vs proxy',st:'clean',
-    file:'flash-cce.ts:1108',alloc:'coeff = onehot−softmax, atomic dh accum',free:'dh returned'}),
-  N('bwd','segmented backward · mlx_vjp',{t:3,orc:'none — vs the monolithic value_and_grad (bf16-class)',st:'clean',
-    file:'segmented.ts:922',alloc:'per-segment dh_in + dA/dB',free:'boundaries disposed as consumed; grads → caller',
-    note:'B=1 SFT/ORPO only — NOT wired for DPO. Streams segment-by-segment; composes with prefix-sharing.'}),
-  N('gnorm','globalNorm',{t:1,orc:'standard L2 norm',st:'clean',
-    file:'trainer.ts:1076',alloc:'per-grad square/sum partials',free:'all partials after evalAll'}),
-  N('clip','clipGradsByNorm',{t:1,orc:'standard grad clipping (TRL / mlx-lm)',st:'clean',
-    file:'trainer.ts:1098',alloc:'(if ‖g‖>max) scaled grads',free:'old grads disposed; clipped → opt.step'}),
-  N('opt','AdamW.step (LoRA params only)',{t:1,orc:'mlx.optimizers.AdamW (op-for-op port)',st:'clean',
-    file:'optimizer.ts:81',alloc:'new param + m/v moments',free:'old param(138)+m0/v0+intermediates(134)+grads — verified',
-    note:'updates only the LoRA A/B adapters. Ranks are set once by the sensitivity-aware scheme (see rank.ts: by_bits → 4-bit r16, 8-bit r32; the 7 Unsloth modules).'}),
-  N('metrics','orpoMetrics (diagnostic)',{t:3,orc:'none — ORPO nll/or/acc/margin',st:'clean',
-    file:'loss.ts:1251',alloc:'two diagnostic forwards',free:'all disposed (1283); runs every step'}),
-],edges:[
-  E('row','split'),E('split','accum'),E('accum','fwd'),
-  F('fwd','attn-sdpa','default'),F('fwd','attn-flash','TRAIN_ATTN=flash'),
-  E('attn-sdpa','norm'),E('attn-flash','norm'),
-  F('norm','ce-full','default (SFT)'),F('norm','ce-chunk','orpoChunkSize'),F('norm','ce-fused','orpoFusedCe'),F('norm','ccef','orpoFlashCe'),
-  E('ce-full','loss'),E('ce-chunk','loss'),E('ce-fused','loss'),E('ccef','loss'),
-  E('loss','cceb'),E('cceb','bwd'),E('bwd','gnorm'),E('gnorm','clip'),E('clip','opt'),
-  E('accum','metrics',{cls:'side'})]};
+const INFER={ n:[
+ ['n1','generate() entry','drive','generate.ts:168'],
+ ['n2','generateInner() entry','drive','generate.ts:208'],
+ ['n3','? wired-scope: FORCE_WIRE ∨ weights>thresh','drive','generate.ts:175'],
+ ['n4','enter wired scope','drive','generate.ts:200'],
+ ['n5','? adapters?.length','drive','generate.ts:174'],
+ ['n6','set loraState.active','drive','generate.ts:187'],
+ ['n7','makeCache/Sampler/LogitsProcessors','drive','generate.ts:218'],
+ ['n8','maybeQuantizeKv (prefill)','drive','generate.ts:281'],
+ ['n9','? prompt-pos > prefillChunkSize','drive','generate.ts:298'],
+ ['n10','chunked prefill: loop chunk','drive','generate.ts:299'],
+ ['n11','forwardHidden(chunk, cache)','drive','generate.ts:301'],
+ ['n12','evalAll(cache) after chunk','drive','generate.ts:304'],
+ ['n13','clearCache() after chunk','drive','generate.ts:312'],
+ ['n14','? options.promptEmbeddings','drive','generate.ts:284'],
+ ['n15','forwardEmbeddings(...)','drive','generate.ts:292'],
+ ['n16','forwardHidden(lastChunk, cache)','drive','generate.ts:320'],
+ ['n17','? needsTokenHistory init','drive','generate.ts:315'],
+ ['n18','slice last position h0[:,L-1]','drive','generate.ts:324'],
+ ['n19','logitsFromHidden(hLast)','drive','generate.ts:326'],
+ ['n20','sampleStep(logits0, 0)','drive','generate.ts:328'],
+ ['n21','asyncEvalAll([pending])','drive','generate.ts:338'],
+ ['n22','? CompiledDecode.for (env·adapters·gemma4)','drive','generate.ts:352'],
+ ['n23','decode loop: while !stop','drive','generate.ts:360'],
+ ['n24','? generated+1 < maxTokens','drive','generate.ts:364'],
+ ['n25','maybeQuantizeKv (decode)','drive','generate.ts:365'],
+ ['n26','pushHistory(cur)','drive','generate.ts:366'],
+ ['n27','? compiled && supports(cache)','drive','generate.ts:369'],
+ ['n28','compiled.step(cur, cache)','drive','generate.ts:371'],
+ ['n29','catch → compiled=null (fallback)','drive','generate.ts:374'],
+ ['n30','forwardHidden(ids, cache)','drive','generate.ts:383'],
+ ['n31','logitsFromHidden(h)','drive','generate.ts:385'],
+ ['n32','sampleStep(logits, n+1)','drive','generate.ts:388'],
+ ['n33','asyncEvalAll([nextPending,…])','drive','generate.ts:390'],
+ ['n34','itemUint32(cur) sync-read token','drive','generate.ts:394'],
+ ['n35','? first token: prefillMs/tDecode','drive','generate.ts:399'],
+ ['n36','cur.dispose; generated++','drive','generate.ts:402'],
+ ['n37','? nextPending !== null','drive','generate.ts:406'],
+ ['n38','? eosTokenIds.includes(token)','drive','generate.ts:408'],
+ ['n39','yield {token, index}','drive','generate.ts:413'],
+ ['n40','? clearCache every 256','drive','generate.ts:416'],
+ ['n42','stop = true (no next)','drive','generate.ts:418'],
+ ['n43','pending = nextPending','drive','generate.ts:420'],
+ ['n44','stop = true (EOS / done)','drive','generate.ts:411'],
+ ['n45','decodeMs','drive','generate.ts:425'],
+ ['n46','return makeStats()','drive','generate.ts:427'],
+ ['n47','finally: dispose pending/cache/history','drive','generate.ts:432'],
+ ['n49','loraState.active=[] (scope exit)','drive','generate.ts:191'],
+ ['n50','exitWiredScope()','drive','generate.ts:204'],
+ // model forward
+ ['n51','embed.encode(ids)','fwd','minicpm5.ts:250'],
+ ['n52','forwardLayers(h, cache)','fwd','minicpm5.ts:258'],
+ ['n53','runLayerRange(h,0,N,cache)','fwd','minicpm5.ts:259'],
+ ['n54','? makeMask(L) (N==1? offset==0?)','fwd','minicpm5.ts:275'],
+ ['n55','for i in [0,N): layers','fwd','minicpm5.ts:277'],
+ ['n56','layers[i].forward(cur,mask,cache[i])','fwd','minicpm5.ts:278'],
+ ['n57','? dispose(cur) if i>0','fwd','minicpm5.ts:279'],
+ ['n58','mask.arr?.dispose()','fwd','minicpm5.ts:282'],
+ ['n59','finalNorm.forward(h)','fwd','minicpm5.ts:261'],
+ ['n60','lmHead.forward(h) → logits','fwd','minicpm5.ts:287'],
+ // layer
+ ['n61','inputNorm RMSNorm','layer','minicpm5.ts:189'],
+ ['n62','attn.forward(xn,mask,cache)','layer','minicpm5.ts:190'],
+ ['n63','add(x, attnOut) residual','layer','minicpm5.ts:192'],
+ ['n64','postAttnNorm RMSNorm','layer','minicpm5.ts:194'],
+ ['n65','mlp.forward(hn)','layer','minicpm5.ts:195'],
+ ['n66','add(h, mlpOut) residual','layer','minicpm5.ts:197'],
+ // attention
+ ['n67','q_proj quantized_matmul','attn','minicpm5.ts:89'],
+ ['n68','k_proj quantized_matmul','attn','minicpm5.ts:90'],
+ ['n69','v_proj quantized_matmul','attn','minicpm5.ts:91'],
+ ['n70','reshape q [B,L,H,D]','attn','minicpm5.ts:93'],
+ ['n71','reshape k [B,L,Kv,D]','attn','minicpm5.ts:94'],
+ ['n72','reshape v [B,L,Kv,D]','attn','minicpm5.ts:95'],
+ ['n73','transpose q →[B,H,L,D]','attn','minicpm5.ts:97'],
+ ['n74','transpose k','attn','minicpm5.ts:98'],
+ ['n75','transpose v','attn','minicpm5.ts:99'],
+ ['n76','? rope: prefixPlan / offsetArr / static','attn','minicpm5.ts:106'],
+ ['n77','ropeBlocks(q) (prefix)','attn','minicpm5.ts:108'],
+ ['n78','ropeDynamic(q) (offsetArr)','attn','minicpm5.ts:110'],
+ ['n79','rope(q, cache.offset)','attn','minicpm5.ts:111'],
+ ['n80','rope k (same offset)','attn','minicpm5.ts:113'],
+ ['n81','? cache instanceof QuantizedKVCache','attn','minicpm5.ts:115'],
+ ['n82','updateAndFetchQuantized(k,v)','attn','minicpm5.ts:116'],
+ ['n83','quantizedSdpa(q,kq,vq,…)','attn','minicpm5.ts:119'],
+ ['n84','updateAndFetch(k,v) bf16','attn','minicpm5.ts:123'],
+ ['n85','? getTrainingAttn()=="flash"','attn','minicpm5.ts:128'],
+ ['n86','flashAttention(...)','attn','minicpm5.ts:130'],
+ ['n87','ops.sdpa(q,keys,values,…)','attn','minicpm5.ts:132'],
+ ['n88','transpose attn →[B,L,H,D]','attn','minicpm5.ts:138'],
+ ['n89','reshape merged [B,L,H*D]','attn','minicpm5.ts:140'],
+ ['n90','o_proj quantized_matmul','attn','minicpm5.ts:142'],
+ // sdpa dispatch
+ ['n91','? mask=="" && scale==1.0','sdpa','gemma4-base.ts:1514'],
+ ['n92','? perfKernelEnabled()','sdpa','fused-decode-kernel.ts:36'],
+ ['n93','? !isCompiledTrace()','sdpa','gemma4-base.ts:1515'],
+ ['n94','? fusedDecodeKernelSupported','sdpa','gemma4-base.ts:1515'],
+ ['n95','⚙ fusedDecodeSdpa (L=1)','sdpa','gemma4-base.ts:1517'],
+ ['n96','? tile: L>1 ∨ FUSED_DECODE','sdpa','gemma4-base.ts:1518'],
+ ['n97','? fusedSdpaSupported','sdpa','gemma4-base.ts:1519'],
+ ['n98','⚙ quantizedSdpaTiled','sdpa','gemma4-base.ts:1520'],
+ ['n99','quantizedSdpaUnfused','sdpa','gemma4-base.ts:1521'],
+ // unfused internals
+ ['n100','dims [B,H,L,D,KV,nRep,N]','unfused','gemma4-base.ts:1221'],
+ ['n101','? scale !== 1.0','unfused','gemma4-base.ts:1229'],
+ ['n102','mulScalar(q, scale)','unfused','gemma4-base.ts:1229'],
+ ['n103','? nRep > 1 (GQA)','unfused','gemma4-base.ts:1233'],
+ ['n104','reshape q [B,KV,nRep,L,D]','unfused','gemma4-base.ts:1234'],
+ ['n105','expandDims(k.packed,-3)','unfused','gemma4-base.ts:1245'],
+ ['n106','quantizedMatmulQT(q,kᵀ) → scores','unfused','gemma4-base.ts:1251'],
+ ['n107','? mask.mode=="causal"','unfused','gemma4-base.ts:1256'],
+ ['n108','greaterEqual → causal mask','unfused','gemma4-base.ts:1261'],
+ ['n109','? mask.mode=="array"','unfused','gemma4-base.ts:1264'],
+ ['n110','where(mask, scores, -inf)','unfused','gemma4-base.ts:1269'],
+ ['n111','softmaxAxis(scores,-1)','unfused','gemma4-base.ts:1276'],
+ ['n112','quantizedMatmulQT(probs,vᵀ) → out','unfused','gemma4-base.ts:1278'],
+ ['n113','? nRep > 1','unfused','gemma4-base.ts:1279'],
+ ['n114','reshape out [B,H,L,D]','unfused','gemma4-base.ts:1280'],
+ // tiled internals
+ ['n115','dims [B,H,L,D,KV,nRep,N]','tiled','gemma4-base.ts:1304'],
+ ['n116','? scale !== 1.0','tiled','gemma4-base.ts:1312'],
+ ['n117','mulScalar(q, scale)','tiled','gemma4-base.ts:1312'],
+ ['n118','? nRep > 1 (GQA)','tiled','gemma4-base.ts:1317'],
+ ['n119','reshape q [B,KV,nRep,L,D]','tiled','gemma4-base.ts:1318'],
+ ['n120','expandDims(k.packed,-3)','tiled','gemma4-base.ts:1324'],
+ ['n121','? mask.mode=="causal"','tiled','gemma4-base.ts:1340'],
+ ['n122','greaterEqual → causal mask','tiled','gemma4-base.ts:1345'],
+ ['n123','? mask.mode=="array"','tiled','gemma4-base.ts:1348'],
+ ['n124','for n0=0..N step 512 (KV chunks)','tiled','gemma4-base.ts:1378'],
+ ['n125','slice kᵀ.packed chunk','tiled','gemma4-base.ts:1381'],
+ ['n126','slice kᵀ.scales chunk','tiled','gemma4-base.ts:1382'],
+ ['n127','slice kᵀ.biases chunk','tiled','gemma4-base.ts:1383'],
+ ['n128','slice vᵀ.packed chunk','tiled','gemma4-base.ts:1386'],
+ ['n129','quantizedMatmulQT(q,kChunk) → scores','tiled','gemma4-base.ts:1391'],
+ ['n130','? maskChunk dtype bool','tiled','gemma4-base.ts:1397'],
+ ['n131','where(mask, scores, -inf)','tiled','gemma4-base.ts:1399'],
+ ['n132','add(scores, maskChunk) float','tiled','gemma4-base.ts:1402'],
+ ['n133','maxAxis(scores) → chunkMax','tiled','gemma4-base.ts:1409'],
+ ['n134','? oAcc===null (first tile)','tiled','gemma4-base.ts:1410'],
+ ['n135','init rowMax/rowSum/oAcc','tiled','gemma4-base.ts:1411'],
+ ['n136','maximum(rowMax,chunkMax)=newMax','tiled','gemma4-base.ts:1419'],
+ ['n137','exp(rowMax-newMax)=factor','tiled','gemma4-base.ts:1422'],
+ ['n138','exp(scores-newMax)=exps','tiled','gemma4-base.ts:1425'],
+ ['n139','newSum = factor·rowSum + Σexps','tiled','gemma4-base.ts:1428'],
+ ['n140','nextAcc = oAcc·factor + exps·vChunk','tiled','gemma4-base.ts:1436'],
+ ['n141','rowMax/rowSum = new','tiled','gemma4-base.ts:1443'],
+ ['n142','div(oAcc, rowSum) → out','tiled','gemma4-base.ts:1452'],
+ ['n143','? nRep > 1','tiled','gemma4-base.ts:1459'],
+ ['n144','reshape out [B,H,L,D]','tiled','gemma4-base.ts:1460'],
+ // mlp
+ ['n145','gate_proj quantized_matmul','mlp','minicpm5.ts:160'],
+ ['n146','up_proj quantized_matmul','mlp','minicpm5.ts:161'],
+ ['n147','sigmoid(gate)','mlp','minicpm5.ts:162'],
+ ['n148','mul → SiLU (gate·σ(gate))','mlp','minicpm5.ts:163'],
+ ['n149','mul(silu, up)','mlp','minicpm5.ts:166'],
+ ['n150','down_proj quantized_matmul','mlp','minicpm5.ts:169'],
+ // KV bf16
+ ['n151','offset=prev, L=k.shape[2]','kv','gemma4-base.ts:252'],
+ ['n152','? capacity: !keys ∨ prev+L>cap','kv','gemma4-base.ts:254'],
+ ['n153','alloc newK/newV zeros','kv','gemma4-base.ts:257'],
+ ['n154','? cache exists','kv','gemma4-base.ts:260'],
+ ['n155','? prev%STEP!=0 (trim)','kv','gemma4-base.ts:263'],
+ ['n156','slice old, dispose','kv','gemma4-base.ts:264'],
+ ['n157','concat([old,new]) grow','kv','gemma4-base.ts:271'],
+ ['n158','sliceUpdate keys←k','kv','gemma4-base.ts:283'],
+ ['n159','sliceUpdate values←v','kv','gemma4-base.ts:284'],
+ ['n160','slice fetch keys','kv','gemma4-base.ts:290'],
+ ['n161','slice fetch values','kv','gemma4-base.ts:291'],
+ // KV quantized
+ ['n162','prev/L/elPerInt','kv','gemma4-base.ts:443'],
+ ['n163','? capacity (packed)','kv','gemma4-base.ts:446'],
+ ['n164','grow cache (6 comps)','kv','gemma4-base.ts:447'],
+ ['n165','? prev%STEP!=0 (trim)','kv','gemma4-base.ts:448'],
+ ['n166','trimTo (slice 6)','kv','gemma4-base.ts:449'],
+ ['n167','quantize(k) → kq','kv','gemma4-base.ts:467'],
+ ['n168','quantize(v) → vq','kv','gemma4-base.ts:468'],
+ ['n169','write k packed/scales/biases','kv','gemma4-base.ts:479'],
+ ['n175','fetch keys (3 comps)','kv','gemma4-base.ts:488'],
+ ['n176','fetch values (3 comps)','kv','gemma4-base.ts:488'],
+ // sampler
+ ['n177','? curve sampler active','samp','sampler.ts:418'],
+ ['n178','applyCurve(lp, curve)','samp','sampler.ts:420'],
+ ['n179','randomCategorical (curve)','samp','sampler.ts:421'],
+ ['n180','? temperature === 0','samp','sampler.ts:429'],
+ ['n181','argmaxAxis(lp) greedy','samp','sampler.ts:430'],
+ ['n182','? hlg?.enabled','samp','sampler.ts:437'],
+ ['n183','applyHlgShaper','samp','sampler.ts:453'],
+ ['n184','applyHlgPipeline','samp','sampler.ts:454'],
+ ['n185','applyHlgEotf','samp','sampler.ts:454'],
+ ['n186','applyHlgOetf','samp','sampler.ts:455'],
+ ['n187','applyHlg (parametric)','samp','sampler.ts:455'],
+ ['n188','randomCategorical (HLG)','samp','sampler.ts:457'],
+ ['n189','? topP in (0,1)','samp','sampler.ts:467'],
+ ['n190','applyTopP(lp, topP)','samp','sampler.ts:467'],
+ ['n191','? topK > 0','samp','sampler.ts:468'],
+ ['n192','applyTopK(lp, topK)','samp','sampler.ts:468'],
+ ['n193','mulScalar(lp, 1/temp)','samp','sampler.ts:469'],
+ ['n194','randomCategorical (temp)','samp','sampler.ts:471'],
+],e:[
+ ['n1','n2',''],['n2','n3',''],
+ ['n3','n4','FORCE_WIRE ∨ weights>thresh'],['n3','n5','else'],
+ ['n4','n5',''],
+ ['n5','n6','adapters?.length'],['n5','n7','else'],
+ ['n6','n7',''],['n7','n8',''],['n8','n9',''],
+ ['n9','n10','pos > prefillChunkSize'],['n9','n14','else (one-shot)'],
+ ['n10','n11',''],['n11','n51','call forward'],['n11','n12',''],['n12','n13',''],
+ ['n13','n10','more chunks'],['n13','n14','done'],
+ ['n14','n15','promptEmbeddings'],['n14','n16','else'],
+ ['n15','n17',''],['n16','n51','call forward'],['n16','n17',''],
+ ['n17','n18',''],['n18','n19',''],['n19','n60','call lmHead'],['n19','n20',''],['n20','n21',''],['n21','n22',''],['n22','n23',''],
+ ['n23','n24',''],
+ ['n24','n25','generated+1<maxTokens'],['n24','n34','else'],
+ ['n25','n26',''],['n26','n27',''],
+ ['n27','n28','compiled && supports'],['n27','n30','else (uncompiled)'],
+ ['n28','n29','throws'],['n28','n31','ok'],['n29','n30',''],
+ ['n30','n51','call forward'],['n30','n31',''],['n31','n60','call lmHead'],['n31','n32',''],['n32','n33',''],['n33','n34',''],
+ ['n34','n35','first token'],['n34','n36','else'],['n35','n36',''],['n36','n37',''],
+ ['n37','n38','nextPending!=null'],['n37','n42','else'],
+ ['n38','n39','!EOS'],['n38','n44','EOS'],
+ ['n39','n40',''],['n40','n43','nextPending'],['n40','n42','none'],
+ ['n42','n44',''],['n43','n23','loop'],
+ ['n44','n45',''],['n45','n46',''],['n46','n47',''],['n47','n49',''],['n49','n50',''],
+ // forward
+ ['n51','n52',''],['n52','n53',''],['n53','n54',''],['n54','n55',''],
+ ['n55','n56','i<N'],['n56','n57',''],['n57','n55','i++'],['n57','n58','done'],
+ ['n58','n59',''],['n59','n12','return (prefill)'],['n59','n17','return (prefill)'],['n59','n31','return (decode)'],
+ // layer (called by n56)
+ ['n56','n61','call layer'],
+ ['n61','n62',''],['n62','n63',''],['n63','n64',''],['n64','n65',''],['n65','n66',''],
+ // attention (called by n62)
+ ['n62','n67','call attn'],
+ ['n67','n68',''],['n68','n69',''],['n69','n70',''],['n70','n71',''],['n71','n72',''],['n72','n73',''],['n73','n74',''],['n74','n75',''],['n75','n76',''],
+ ['n76','n77','_prefixPlan'],['n76','n78','offsetArr'],['n76','n79','else (static)'],
+ ['n77','n80',''],['n78','n80',''],['n79','n80',''],['n80','n81',''],
+ ['n81','n82','QuantizedKVCache'],['n81','n84','else (bf16)'],
+ ['n82','n83',''],['n83','n88',''],
+ ['n84','n85',''],
+ ['n85','n86','flash & supported'],['n85','n87','else'],
+ ['n86','n88',''],['n87','n88',''],['n88','n89',''],['n89','n90',''],
+ // sdpa dispatch (called by n83)
+ ['n83','n91','call quantizedSdpa'],
+ ['n91','n92','mask=="" & scale==1'],['n91','n96','else'],
+ ['n92','n93','perfKernel'],['n92','n96','else'],
+ ['n93','n94','!compiledTrace'],['n93','n96','else'],
+ ['n94','n95','supported'],['n94','n96','else'],
+ ['n96','n97','tile (L>1 ∨ FUSED_DECODE)'],['n96','n99','else'],
+ ['n97','n98','fusedSdpaSupported'],['n97','n99','else'],
+ // unfused (n99)
+ ['n99','n100','call'],['n100','n101',''],
+ ['n101','n102','scale!=1'],['n101','n103','else'],['n102','n103',''],
+ ['n103','n104','nRep>1'],['n103','n106','else'],['n104','n105',''],['n105','n106',''],
+ ['n106','n107',''],['n107','n108','causal'],['n107','n109','else'],
+ ['n108','n110',''],['n109','n110','array'],['n109','n111','none'],['n110','n111',''],
+ ['n111','n112',''],['n112','n113',''],['n113','n114','nRep>1'],
+ // tiled (n98)
+ ['n98','n115','call'],['n115','n116',''],
+ ['n116','n117','scale!=1'],['n116','n118','else'],['n117','n118',''],
+ ['n118','n119','nRep>1'],['n118','n121','else'],['n119','n120',''],['n120','n121',''],
+ ['n121','n122','causal'],['n121','n123','else'],['n122','n124',''],['n123','n124',''],
+ ['n124','n125','n0<N'],['n125','n126',''],['n126','n127',''],['n127','n128',''],['n128','n129',''],
+ ['n129','n130',''],['n130','n131','bool'],['n130','n132','float'],['n131','n133',''],['n132','n133',''],
+ ['n133','n134',''],['n134','n135','first'],['n134','n136','else'],
+ ['n135','n124','next chunk'],
+ ['n136','n137',''],['n137','n138',''],['n138','n139',''],['n139','n140',''],['n140','n141',''],['n141','n124','next chunk'],
+ ['n124','n142','n0>=N'],['n142','n143',''],['n143','n144','nRep>1'],
+ // mlp (called by n65)
+ ['n65','n145','call mlp'],
+ ['n145','n146',''],['n146','n147',''],['n147','n148',''],['n148','n149',''],['n149','n150',''],
+ // KV bf16 (called by n84)
+ ['n84','n151','call updateAndFetch'],
+ ['n151','n152',''],['n152','n153','grow'],['n152','n158','fits'],
+ ['n153','n154',''],['n154','n155','exists'],['n154','n157','first'],
+ ['n155','n156','prev%STEP!=0'],['n155','n157','aligned'],['n156','n157',''],['n157','n158',''],
+ ['n158','n159',''],['n159','n160',''],['n160','n161',''],
+ // KV quant (called by n82)
+ ['n82','n162','call updateAndFetchQuantized'],
+ ['n162','n163',''],['n163','n164','grow'],['n163','n167','fits'],
+ ['n164','n165',''],['n165','n166','prev%STEP!=0'],['n165','n167','aligned'],['n166','n167',''],
+ ['n167','n168',''],['n168','n169',''],['n169','n175',''],['n175','n176',''],
+ // sampler (called by n20, n32)
+ ['n20','n177','call sampleStep'],['n32','n177','call sampleStep'],
+ ['n177','n178','curve'],['n177','n180','else'],['n178','n179',''],
+ ['n180','n181','temp==0'],['n180','n182','else'],
+ ['n182','n183','shaper'],['n182','n184','pipeline'],['n182','n185','eotf'],['n182','n186','oetf'],['n182','n187','parametric'],['n182','n189','hlg off'],
+ ['n183','n188',''],['n184','n188',''],['n185','n188',''],['n186','n188',''],['n187','n188',''],
+ ['n189','n190','topP'],['n189','n191','else'],['n190','n191',''],
+ ['n191','n192','topK'],['n191','n193','else'],['n192','n193',''],['n193','n194',''],
+]};
 
-// det = determinism property (traced 2026-06-22): 'det' deterministic ·
-// 'seed' seed-driven (temp>0) · 'warmup' first-eval-sensitive (the temp-0 bug) · 'na'.
-const INFER={nodes:[
-  // --- three entry points, all converge on generate() ---
-  N('e-cli','entry: mlx-bun gen (CLI)',{t:0,orc:'—',st:'info',det:'det',file:'cli.ts:858',alloc:'—',free:'—',
-    note:'raw generate; no server. KV is always bf16 here (generateText never sets kvBits/kvConfig).'}),
-  N('e-api','entry: POST /v1/chat/completions',{t:0,orc:'—',st:'info',det:'det',file:'server.ts:1373',alloc:'—',free:'—',
-    note:'OpenAI-compatible HTTP. Serial lane respects --kv-quant; the batched lane (--batch N) is bf16-only and routes quant requests serial.'}),
-  N('e-ws','entry: /ws/chat (pi-web UI)',{t:0,orc:'—',st:'info',det:'det',file:'pi-web.ts:921',alloc:'—',free:'—',
-    note:'in-process pi agent over WebSocket; loopback-POSTs to /v1/chat/completions → converges on the API path. The chat UI sampling controls + persona system prompt live here.'}),
-  N('prompt','tokenize prompt',{t:1,orc:'mlx-lm tokenizer',st:'clean',det:'det',file:'generate.ts',alloc:'host ids',free:'—'}),
-  N('resolve','toOptions · sampling resolve',{t:1,orc:'—',st:'info',det:'det',file:'server.ts:928',alloc:'—',free:'—',
-    note:'temp = thinking-off ? 0.7 : 0.9 · top_p 0.95 · top_k off. seed = Date.now() per request — UNUSED at temp 0 (argmax). An explicit request temp/top_p/top_k always wins (chat UI sliders inject these).'}),
-  N('prefill','prefill · forwardHidden',{t:1,orc:'mlx-lm prefill — bit-exact logits',st:'clean',det:'warmup',
-    file:'generate.ts:280',alloc:'per-chunk ids, hidden h, KV state',free:'ids:301/319; h:303/323',
-    note:'one-shot if prompt<2048 else chunked (clears allocator cache per chunk). The prefill SDPA kernel is chosen at the fork below.'}),
-  // --- prefill SDPA fork (only matters under quantized KV) ---
-  N('pf-unfused','prefill SDPA: unfused (ops.sdpa)',{t:1,orc:'mlx-lm SDPA',st:'clean',det:'det',
-    file:'gemma4-base.ts:1521 quantizedSdpaUnfused',alloc:'attn temps',free:'fused',
-    note:'reference path; used when --fused-sdpa off, or bf16 KV, or unsupported config.'}),
-  N('pf-tiled','prefill SDPA: tiled-fused',{t:2,orc:'mlx-optiq tiled fused quant SDPA',st:'clean',det:'det',
-    file:'gemma4-base.ts:1519 quantizedSdpaTiled',alloc:'tiled N-way temps',free:'tiled',
-    note:'--fused-sdpa (default in L2/L3). Tiled fused N-way SDPA for quantized KV at L>1; matches optiq bit-exactly. Conditions: bits∈{4,8}, groupSize∈{32,64,128}, bf16/fp16, causal-safe mask.'}),
-  N('first','first logits + sampleStep',{t:1,orc:'mlx-lm sampling',st:'clean',det:'det',
-    file:'generate.ts:329',alloc:'logits0, pending token',free:'hLast:325; logits0:329'}),
-  N('loop','DECODE LOOP (per token)',{t:1,orc:'—',st:'info',det:'na',file:'generate.ts:360',alloc:'—',free:'—',
-    note:'pipelined; only the chosen uint32 crosses to JS per step. The decode-forward kernel is chosen at the fork below.'}),
-  // --- decode-forward fork: compiled (gemma4) vs plain ---
-  N('d-compiled','decode fwd: compiled (gemma4 only)',{t:1,orc:'mlx-lm decode — bit-exact replay',st:'clean',det:'det',
-    file:'compiled-decode.ts + generate.ts:353',alloc:'compiled closure (once)',free:'reused',
-    note:'--compiled-decode (default ON, but GEMMA4-ONLY). mx.compile\'d single-token graph replayed in C++ (~30% decode speedup), bit-exact with plain. Disabled if adapters active; falls back mid-gen on unsupported cache state. NOT available for MiniCPM5/MoE.'}),
-  N('lfwd','decode fwd: plain (uncompiled)',{t:1,orc:'mlx-lm decode',st:'fixed',det:'warmup',
-    file:'generate.ts:381 / minicpm5.ts',alloc:'per-token q/k/v, rope, attn, logits',free:'logits→sample then :389',
-    note:'★ TEMP-0 NONDETERMINISM LOCUS. The plain forward\'s first eval differs from later by ~epsilon (MLX/Metal graph warmup) → flips greedy only on LONG outputs (run1 ≠ run2 = run3). MiniCPM5 always lands here (compiled is gemma4-only). FAITHFUL: stock mlx-lm has the same warm≠cold (Δ 0.28). A flag guaranteeing warm==cold would be L3 (no oracle has it).'}),
-  // --- KV fork: bf16 vs quantized ---
-  N('kv-bf16','KV cache: bf16',{t:1,orc:'mlx-lm bf16 KV',st:'clean',det:'det',
-    file:'gemma4-base.ts:251',alloc:'keys/values grown in STEP increments',free:'old keys/values disposed each grow/trim',
-    note:'--kv-quant off (the L1 floor). Plain bf16 attention via ops.sdpa.'}),
-  N('kv-quant','KV cache: quantized (mixed-precision)',{t:2,orc:'mlx-optiq quantized KV',st:'clean',det:'det',
-    file:'gemma4-base.ts:251 / minicpm5.ts:119',alloc:'quantized keys/values + scales',free:'old disposed each grow/trim',
-    note:'--kv-quant config (per-layer mixed-precision from kv_config.json — the OptiQ/L2 oracle) or 4/8 (uniform). Routes attention into the quantized-SDPA dispatch below. --batch N forces bf16 instead.'}),
-  N('maybekv','maybeQuantizeKv',{t:2,orc:'—',st:'info',det:'det',file:'generate.ts:365',alloc:'—',free:'—',
-    note:'no-op unless --kv-quant; if on, re-quantizes KV mid-gen after the start offset (a real numerics change vs bf16).'}),
-  // --- decode SDPA dispatch (quantized KV): 4 routes ---
-  N('sd-unfused','decode SDPA: unfused (ops.sdpa)',{t:1,orc:'mlx-lm SDPA',st:'clean',det:'det',
-    file:'gemma4-base.ts:1521',alloc:'attn temps',free:'fused',
-    note:'reference quantized-decode path; used when --perf-kernel off and --fused-decode off.'}),
-  N('sd-perf','decode SDPA: fused-decode kernel',{t:2,orc:'mlx-optiq (online-softmax kernel; NOT bit-exact to mlx-lm)',st:'clean',det:'det',
-    file:'fused-decode-kernel.ts:13 / gemma4-base.ts:1514',alloc:'custom Metal kernel temps',free:'kernel-owned',
-    note:'--perf-kernel (default in L2/L3). Custom single-token quantized-SDPA Metal kernel matching optiq behavior. Gated: mask=="" & scale==1 & not in a compiled trace & supported config. Disabled inside compiled traces (no output_shapes).'}),
-  N('sd-tiled','decode SDPA: tiled (experimental)',{t:3,orc:'none — gated by measured perf (no oracle win)',st:'clean',det:'det',
-    file:'gemma4-base.ts:1518 (MLX_BUN_FUSED_DECODE)',alloc:'tiled temps',free:'tiled',
-    note:'--fused-decode (default OFF). Tiles the L=1 decode SDPA like prefill; currently ~3% SLOWER on this hardware → a documented default-off lever, not deleted. Directional numbers in bench-fused-decode.ts.'}),
-  N('samp','sampleStep · sampler',{t:1,orc:'mlx-lm temp/top-p/top-k (HLG is L3)',st:'clean',det:'seed',
-    file:'sampler.ts:412',alloc:'top-p/k/temp/penalty temps',free:'every temp freed; token returned',
-    note:'temp 0 → ops.argmaxAxis (sampler.ts:429) = DETERMINISTIC, seed unused. temp>0 → randomCategorical(stepKey(seed,step)) — seed-driven, seed=Date.now() varies per request.'}),
-  N('tok','token → JS (uint32)',{t:1,orc:'—',st:'info',det:'det',file:'generate.ts:394',alloc:'—',free:'cur.dispose:402'}),
-  N('eval','asyncEvalAll · pipeline',{t:1,orc:'—',st:'clean',det:'na',file:'generate.ts:390',alloc:'—',free:'evalWith = cache buffers (cache-owned)'}),
-  N('done','finally · teardown',{t:1,orc:'—',st:'clean',det:'na',file:'generate.ts:431',alloc:'—',free:'pending; cache.dispose; history.dispose'}),
-  N('text','detokenize → text',{t:1,orc:'mlx-lm detokenizer',st:'clean',det:'det',file:'(JS)',alloc:'—',free:'—'}),
-],edges:[
-  F('e-cli','prompt','CLI'),F('e-ws','e-api','loopback'),F('e-api','prompt','HTTP'),
-  E('prompt','resolve'),E('resolve','prefill'),
-  F('prefill','pf-unfused','--fused-sdpa off / bf16'),F('prefill','pf-tiled','--fused-sdpa on'),
-  E('pf-unfused','first'),E('pf-tiled','first'),
-  E('first','loop'),
-  F('loop','d-compiled','--compiled-decode (gemma4)'),F('loop','lfwd','plain (default · MiniCPM5)'),
-  E('d-compiled','kv-bf16',{cls:'side'}),
-  F('lfwd','kv-bf16','--kv-quant off'),F('lfwd','kv-quant','--kv-quant config/4/8'),
-  E('kv-bf16','samp'),
-  E('kv-quant','maybekv'),
-  F('maybekv','sd-unfused','perf off · fused-decode off'),F('maybekv','sd-perf','--perf-kernel'),F('maybekv','sd-tiled','--fused-decode'),
-  E('sd-unfused','samp'),E('sd-perf','samp'),E('sd-tiled','samp'),
-  E('samp','tok'),E('tok','eval'),E('eval','lfwd',{cls:'back'}),
-  E('loop','done',{cls:'side'}),E('done','text')]};
+const TRAIN={ n:[
+ ['t1','step loop begins','setup','trainer.ts:479'],
+ ['t2','per-step dropout seed','setup','trainer.ts:876'],
+ ['t3','enter accumulation loop','accum','trainer.ts:487'],
+ ['t4','fetch micro-batch','accum','trainer.ts:490'],
+ ['t5','? segmentSize > 0','setup','trainer.ts:409'],
+ ['t6','segmented forward start','seg','segmented.ts:196'],
+ ['t7','embed.encode(ids)','seg','segmented.ts:196'],
+ ['t8','detach embedding boundary','seg','segmented.ts:196'],
+ ['t9','for segment k=0..nSeg','seg','segmented.ts:197'],
+ ['t10','runLayerRange[lo:hi] (swap LoRA)','seg','segmented.ts:199'],
+ ['t11','detach output boundary k','seg','segmented.ts:199'],
+ ['t12','? ORPO prefix-shared & segmented','seg','trainer.ts:880'],
+ ['t13','splitPrefixBatch','seg','trainer.ts:881'],
+ ['t14','single forward [P;C;R] block-mask','seg','prefix-shared.ts:159'],
+ ['t15','prefix fallback (two-forward)','seg','trainer.ts:884'],
+ ['t16','non-segmented forward start','accum','trainer.ts:492'],
+ ['t17','value_and_grad: swap primals','accum','trainer.ts:432'],
+ ['t18','? B==1 response-only vs full','loss','loss.ts:123'],
+ ['t19','forwardHidden → [B,T,hid]','fwd','forward.ts:72'],
+ ['t20','embedding forward','fwd','forward.ts:92'],
+ ['t21','layer-stack forward','fwd','forward.ts:92'],
+ ['t22','? MLX_BUN_TRAIN_ATTN=="flash"','fwd','trainer.ts:469'],
+ ['t23','sdpa attention (O(L²) bwd)','fwd','loss.ts:131'],
+ ['t24','flash attention (O(L) bwd)','fwd','trainer.ts:469'],
+ ['t25','final norm','fwd','forward.ts:113'],
+ ['t26','lm-head → logits','fwd','loss.ts:131'],
+ ['t27','? B==1 responseCe vs B>1 maskedCe','loss','loss.ts:123'],
+ ['t28','slice hidden to response span','loss','loss.ts:160'],
+ ['t29','head at response positions','loss','loss.ts:161'],
+ ['t30','gather target logits','loss','loss.ts:170'],
+ ['t31','logsumexp vocab','loss','loss.ts:169'],
+ ['t32','CE = lse - target','loss','loss.ts:172'],
+ ['t33','sum/normalize response CE','loss','loss.ts:174'],
+ ['t34','build response mask [B,T]','loss','loss.ts:233'],
+ ['t35','reshape logits [B*T,V]','loss','loss.ts:251'],
+ ['t36','gather targets','loss','loss.ts:252'],
+ ['t37','logsumexp','loss','loss.ts:256'],
+ ['t38','CE * mask','loss','loss.ts:262'],
+ ['t39','sum masked CE / norm','loss','loss.ts:264'],
+ ['t40','DPO ref logps (scale=0, detach)','loss','loss.ts:361'],
+ ['t41','DPO policy logps','loss','loss.ts:389'],
+ ['t42','logr_c = piC - refC','loss','loss.ts:392'],
+ ['t43','logr_r = piR - refR','loss','loss.ts:393'],
+ ['t44','adv = β(logr_c - logr_r)','loss','loss.ts:394'],
+ ['t45','-logσ(adv) = softplus; mean','loss','loss.ts:399'],
+ ['t46','ORPO chosen logp','loss','loss.ts:1242'],
+ ['t47','? orpoChunkSize > 0','loss','loss.ts:481'],
+ ['t48','? orpoFusedCe ∨ orpoFlashCe','loss','loss.ts:482'],
+ ['t49','chunked head (Checkpoint)','loss','loss.ts:567'],
+ ['t50','fused linear-CE head (CustomVjp)','loss','loss.ts:726'],
+ ['t51','vocab-blocked head','loss','loss.ts:822'],
+ ['t52','flash-CCE Metal head','loss','loss.ts:1009'],
+ ['t53','whole-vocab head (oracle)','loss','loss.ts:1087'],
+ ['t54','ORPO rejected logp','loss','loss.ts:1243'],
+ ['t55','NLL = mean(-ℓw)','loss','loss.ts:1225'],
+ ['t56','log_odds calc','loss','loss.ts:1207'],
+ ['t57','OR = mean softplus(-log_odds)','loss','loss.ts:1228'],
+ ['t58','L = NLL + λ·OR','loss','loss.ts:1231'],
+ ['t59','seg loss-head VJP (cot=1)','seg','segmented.ts:141'],
+ ['t60','seg loss scalar (detached)','seg','segmented.ts:204'],
+ ['t61','seg dh_out = dLoss/dhidden','seg','segmented.ts:205'],
+ ['t62','evalAll([loss, …grads])','accum','trainer.ts:1027'],
+ ['t63','loss scalar toFloat32','accum','trainer.ts:1028'],
+ ['t64','scale grad by 1/accum','accum','trainer.ts:1042'],
+ ['t65','accumulate grad','accum','trainer.ts:1048'],
+ ['t66','dispose checkpoint closures','accum','trainer.ts:496'],
+ ['t67','sum micro losses','accum','trainer.ts:1061'],
+ ['t69','value_and_grad backward','bwd','trainer.ts:492'],
+ ['t70','MLX reverse-mode AD','bwd','trainer.ts:492'],
+ ['t71','restore LoRA leaves','bwd','trainer.ts:436'],
+ ['t72','seg backward: k=nSeg-1..0','bwd','segmented.ts:210'],
+ ['t73','vjp segment k (cot=dh_out)','bwd','segmented.ts:215'],
+ ['t74','scatter per-seg LoRA grads','bwd','segmented.ts:220'],
+ ['t75','dh_in → cotangent for k-1','bwd','segmented.ts:225'],
+ ['t76','dispose boundary k','bwd','segmented.ts:226'],
+ ['t80','globalNorm(grads)','norm','trainer.ts:1076'],
+ ['t81','square each grad','norm','trainer.ts:1078'],
+ ['t82','sum squares, sqrt','norm','trainer.ts:1086'],
+ ['t83','? ‖g‖ > maxNorm','norm','trainer.ts:1099'],
+ ['t84','scale g *= max/‖g‖','norm','trainer.ts:1103'],
+ ['t85','AdamW.step(grads)','opt','trainer.ts:504'],
+ ['t86','t++ step counter','opt','optimizer.ts:84'],
+ ['t87','bias-correct β1^t','opt','optimizer.ts:85'],
+ ['t88','bias-correct β2^t','opt','optimizer.ts:86'],
+ ['t89','for each param i (A,B)','opt','optimizer.ts:88'],
+ ['t90','grad → float32','opt','optimizer.ts:92'],
+ ['t91','m ← β1·m + (1-β1)g','opt','optimizer.ts:95'],
+ ['t92','v ← β2·v + (1-β2)g²','opt','optimizer.ts:105'],
+ ['t93','? weight decay','opt','optimizer.ts:119'],
+ ['t94','m̂ = m/(1-β1^t)','opt','optimizer.ts:125'],
+ ['t95','v̂ = v/(1-β2^t)','opt','optimizer.ts:126'],
+ ['t96','√v̂ + ε','opt','optimizer.ts:127'],
+ ['t97','m̂/(√v̂+ε)','opt','optimizer.ts:130'],
+ ['t98','scale by lr (LoRA+ per-param)','opt','optimizer.ts:131'],
+ ['t99','p = p - lr·update','opt','optimizer.ts:132'],
+ ['t100','writeParam → swap into LoRA','opt','trainer.ts:402'],
+ ['t101','opt.evalState()','opt','trainer.ts:505'],
+ ['t102','clearCache()','metrics','trainer.ts:511'],
+ ['t103','emit step metrics','metrics','trainer.ts:516'],
+ ['t104','? step%report==0 ∨ step==1','metrics','trainer.ts:514'],
+ ['t105','recompute dpo/orpo metrics','metrics','trainer.ts:900'],
+ ['t106','? step%eval==0 & valid>0','metrics','trainer.ts:529'],
+ ['t107','disable grad-ckpt for eval','metrics','trainer.ts:532'],
+ ['t108','loop validation examples','metrics','trainer.ts:554'],
+ ['t109','eval loss per example','metrics','trainer.ts:564'],
+ ['t110','reduce eval (mean/acc/margin)','metrics','trainer.ts:684'],
+ ['t111','re-enable grad-ckpt','metrics','trainer.ts:534'],
+ ['t112','step iteration completes','setup','trainer.ts:538'],
+],e:[
+ ['t1','t2',''],['t2','t3',''],['t3','t4',''],['t4','t5',''],
+ ['t5','t6','segmentSize>0'],['t5','t16','else'],
+ ['t6','t7',''],['t7','t8',''],['t8','t9',''],
+ ['t9','t10','k<nSeg'],['t10','t11',''],['t11','t9','k++'],
+ ['t11','t12','done (ORPO)'],['t11','t59','done (SFT seg)'],
+ ['t12','t13','prefixShared & segmented'],['t12','t59','else'],
+ ['t13','t14','split non-null'],['t13','t15','null (mismatch)'],
+ ['t14','t59',''],['t15','t72',''],
+ ['t16','t17',''],['t17','t18',''],
+ ['t18','t19','B==1'],['t18','t20','full-logits'],
+ ['t19','t20',''],['t20','t21',''],['t21','t22',''],
+ ['t22','t24','flash'],['t22','t23','else'],
+ ['t23','t25',''],['t24','t25',''],['t25','t26',''],
+ ['t19','t27','SFT B==1'],['t26','t27','SFT B>1'],
+ ['t27','t28','B==1'],['t27','t34','B>1'],
+ ['t28','t29',''],['t29','t30',''],['t30','t31',''],['t31','t32',''],['t32','t33',''],
+ ['t34','t35',''],['t35','t36',''],['t36','t37',''],['t37','t38',''],['t38','t39',''],
+ // DPO
+ ['t4','t40','method==dpo'],['t40','t41',''],['t41','t42',''],['t42','t43',''],['t43','t44',''],['t44','t45',''],
+ // ORPO
+ ['t4','t12','method==orpo & prefixShared'],['t12','t46','else'],['t13','t46','null → two-forward'],
+ ['t46','t47',''],
+ ['t47','t48','chunkSize>0'],['t47','t54','batched'],
+ ['t48','t49','neither'],['t48','t50','fused'],['t48','t52','flash'],
+ ['t50','t51','vocabBlock>0'],['t50','t53','else'],
+ ['t49','t54',''],['t51','t54',''],['t52','t54',''],['t53','t54',''],
+ ['t14','t55','prefix-shared done'],['t54','t55',''],
+ ['t55','t56',''],['t56','t57',''],['t57','t58',''],
+ // seg head
+ ['t59','t60',''],['t60','t61',''],
+ // accumulation
+ ['t33','t62','SFT B==1'],['t39','t62','SFT B>1'],['t45','t62','DPO'],['t58','t62','ORPO'],['t60','t62','seg'],
+ ['t62','t63',''],
+ ['t63','t64','accum>1'],['t63','t66','else'],
+ ['t64','t65',''],['t65','t66',''],
+ ['t66','t64','next micro'],['t66','t67','last micro'],
+ // backward
+ ['t62','t69','non-seg'],['t69','t70',''],['t70','t71',''],
+ ['t61','t72','seg'],['t72','t73','k>=0'],['t73','t74',''],['t74','t75',''],['t75','t76',''],['t76','t72','k--'],
+ // norm/clip
+ ['t71','t80',''],['t72','t80','seg done'],['t67','t80','accum done'],
+ ['t80','t81',''],['t81','t82',''],['t82','t83',''],
+ ['t83','t84','‖g‖>max'],['t83','t85','else'],['t84','t85',''],
+ // optimizer
+ ['t85','t86',''],['t86','t87',''],['t87','t88',''],['t88','t89',''],
+ ['t89','t90','i<len'],['t90','t91',''],['t91','t92',''],['t92','t93',''],
+ ['t93','t94','wd>0 / else'],['t94','t95',''],['t95','t96',''],['t96','t97',''],['t97','t98',''],['t98','t99',''],['t99','t100',''],['t100','t89','i++'],
+ ['t89','t101','done'],
+ // metrics
+ ['t101','t102',''],['t102','t103',''],['t103','t104',''],
+ ['t104','t105','report'],['t104','t106','skip'],['t105','t106',''],
+ ['t106','t107','eval'],['t106','t112','skip'],
+ ['t107','t108',''],['t108','t109','ex'],['t109','t108','next'],['t108','t110','done'],['t110','t111',''],['t111','t112',''],
+ ['t112','t1','step++'],
+]};
 
-// model load / provenance — the "islands and bridges": which source variant
-// reaches a loadable model, and the missing unquantized-load edge.
-const LOAD={nodes:[
-  N('v-base','openbmb/MiniCPM5-1B-Base (bf16, ~2GB)',{t:0,orc:'—',st:'info',det:'na',file:'(HF: raw base)',alloc:'—',free:'—',
-    note:'the RAW, un-instruct-tuned base. Has plain .weight tensors, NO .scales. The paper\'s ORPO regime starts here — but it cannot be loaded by mlx-bun as-is (see the gap).'}),
-  N('v-sft','MiniCPM5-1B SFT (bf16)',{t:0,orc:'—',st:'info',det:'na',file:'(HF: SFT variant)',alloc:'—',free:'—',
-    note:'SFT-only variant; also unquantized → same load gap until quantized.'}),
-  N('v-instruct','mlx-community/MiniCPM5-1B-OptiQ-4bit',{t:2,orc:'mlx-optiq mixed-precision quant',st:'info',det:'na',file:'(HF: OptiQ instruct)',alloc:'—',free:'—',
-    note:'the INSTRUCT model we serve. Sensitivity-aware mixed 4/8-bit (8-bit on output/gate/final, 4-bit elsewhere; 4.5 bpw, 0.136 KL vs bf16). Ships .scales + optiq_metadata.json → loads directly.'}),
-  N('quantize','quantize → OptiQ (sensitivity-aware)',{t:2,orc:'mlx-optiq convert',st:'info',det:'na',file:'optiq convert (external)',alloc:'—',free:'—',
-    note:'the BRIDGE off the base island: produce a mixed-precision quant with .scales. Then it loads + LoRA/ORPO is QLoRA on the quantized base.'}),
-  N('q-load','QuantizedEmbedding / QuantizedLinear.load',{t:2,orc:'reads .scales (+ .biases) per projection',st:'info',det:'na',
-    file:'minicpm5.ts:220 / gemma4-base.ts:92',alloc:'wrapped quant weights',free:'mmap-backed',
-    note:'HARD-CODED quantized load. QuantizedLinear.load THROWS without a .scales tensor (gemma4-base.ts:93-94). There is no unquantized branch.'}),
-  N('gap','✗ unquantized load — MISSING',{t:3,orc:'none — the path does not exist',st:'leak',det:'na',
-    file:'gemma4-base.ts:92-94 (throws)',alloc:'—',free:'—',
-    note:'★ THE GAP. Feeding the bf16 base to the loader throws "no tensor named model.embed_tokens.scales". mlx-bun\'s MiniCPM5 path is quantized-only. To use the base: quantize it first (the bridge above) OR add an unquantized load path. --l1 does NOT help — it controls the KV cache, not the weight format.'}),
-  N('lora','sensitivity-aware LoRA overlay',{t:2,orc:'port of optiq sensitivity_rank.py',st:'clean',det:'na',
-    file:'rank.ts / lora-params.ts',alloc:'A/B adapters (by_bits ranks)',free:'—',
-    note:'by_bits = rank×(bits/4): 4-bit→r16, 8-bit→r32, on all 7 Unsloth modules; reads optiq_metadata.json. by_kl mode scales by per-layer KL. This IS the optiq overlay — already implemented.'}),
-  N('loaded','loaded model → serve · train',{t:2,orc:'—',st:'clean',det:'na',file:'factory.ts:19 createModel',alloc:'model graph',free:'on teardown',
-    note:'the convergence point: a loadable quantized model that feeds both the inference decode graph and the training step graph.'}),
-],edges:[
-  F('v-base','gap','load bf16',{cls:'gap'}),
-  F('v-base','quantize','quantize'),F('v-sft','quantize','quantize'),
-  E('quantize','q-load'),
-  F('v-instruct','q-load','direct (.scales present)'),
-  E('q-load','lora',{cls:'side'}),E('lora','loaded',{cls:'side'}),
-  E('q-load','loaded')]};
-
-let MODE='tier';
-const tierColor=d=>({1:C.L1,2:C.L2,3:C.L3}[d.t]||C.info);
-const memColor=d=>({clean:C.clean,fixed:C.fixed,info:C.info,leak:C.leak}[d.st]||C.info);
-const detColor=d=>({det:C.clean,seed:C.L2,warmup:C.leak,na:C.info}[d.det]||C.info);
-const cy=cytoscape({container:document.getElementById('cy'),minZoom:0.12,maxZoom:3,wheelSensitivity:0.25,
+let MODE_G='infer';
+const cy=cytoscape({container:document.getElementById('cy'),minZoom:0.06,maxZoom:3,wheelSensitivity:0.25,
+  autoungrabify:true, boxSelectionEnabled:false, selectionType:'single',
   style:[
-    {selector:'node',style:{'background-color':d=>MODE==='tier'?tierColor(d.data()):MODE==='det'?detColor(d.data()):memColor(d.data()),
-      'label':'data(label)','color':'#0b0f14','font-family':'ui-monospace, Menlo, monospace','font-size':'12px',
-      'font-weight':'600','text-valign':'center','text-halign':'center','shape':'round-rectangle',
-      'width':'label','height':'30','padding':'10px','text-wrap':'wrap','text-max-width':'230px',
-      'border-width':1,'border-color':'#0b0f14'}},
+    {selector:'node',style:{'background-color':d=>GRP[d.data('grp')]||'#6e7b91','label':'data(label)',
+      'color':'#0b0f14','font-family':'ui-monospace, Menlo, monospace','font-size':'11px','font-weight':'600',
+      'text-valign':'center','text-halign':'center','shape':'round-rectangle','width':'label','height':22,
+      'padding':'7px','text-wrap':'wrap','text-max-width':'210px','border-width':1,'border-color':'#0b0f14'}},
+    {selector:'node[branch]',style:{'border-width':2.5,'border-color':'#39c5cf'}},
     {selector:'node:selected',style:{'border-width':3,'border-color':'#fff'}},
-    {selector:'edge',style:{'width':2,'line-color':'#3a4760','target-arrow-color':'#3a4760',
-      'target-arrow-shape':'triangle','curve-style':'bezier'}},
-    {selector:'edge[cls="side"]',style:{'line-color':'#243040','target-arrow-color':'#243040','line-style':'dashed'}},
-    {selector:'edge[cls="back"]',style:{'line-color':C.L2,'target-arrow-color':C.L2,'line-style':'dashed',
-      'curve-style':'unbundled-bezier','control-point-distances':[-90],'control-point-weights':[0.5]}},
-    // flag bridges — dashed teal, with the flag name as label
-    {selector:'edge[cls="flag"]',style:{'line-color':C.flag,'target-arrow-color':C.flag,'line-style':'dashed','width':2,
-      'label':'data(flag)','font-size':'9px','font-family':'ui-monospace, Menlo, monospace','color':C.flag,
-      'text-background-color':'#0b0f14','text-background-opacity':0.9,'text-background-padding':'2px','text-rotation':'autorotate'}},
-    // the missing-load gap — red dashed, ✗
-    {selector:'edge[cls="gap"]',style:{'line-color':C.leak,'target-arrow-color':C.leak,'line-style':'dashed','width':2,
-      'label':'data(flag)','font-size':'9px','color':C.leak,'text-background-color':'#0b0f14','text-background-opacity':0.9,
-      'text-background-padding':'2px','text-rotation':'autorotate'}},
+    {selector:'edge',style:{'width':1.6,'line-color':'#3a4760','target-arrow-color':'#3a4760',
+      'target-arrow-shape':'triangle','curve-style':'bezier','arrow-scale':0.8}},
+    {selector:'edge[cond]',style:{'line-color':'#39c5cf','target-arrow-color':'#39c5cf','line-style':'dashed',
+      'label':'data(cond)','font-size':'8px','font-family':'ui-monospace, Menlo, monospace','color':'#39c5cf',
+      'text-background-color':'#0b0f14','text-background-opacity':0.85,'text-background-padding':'1px','text-rotation':'autorotate'}},
   ]});
-function load(g){cy.elements().remove();cy.add(g.nodes);cy.add(g.edges);
-  cy.layout({name:'dagre',rankDir:'TB',nodeSep:26,rankSep:48,padding:30}).run();}
-function restyle(){cy.style().update();}
-const tierLabel={0:'plumbing',1:'L1 · mlx-lm',2:'L2 · optiq',3:'L3 · ours'};
+
+function build(g){
+  // count outgoing per node to mark branch points (>1 distinct outgoing edge)
+  const out={}; g.e.forEach(([a])=>out[a]=(out[a]||0)+1);
+  const nodes=g.n.map(([id,label,grp,file])=>({data:{id,label,grp,file,branch:out[id]>1?1:undefined}}));
+  const edges=g.e.map(([a,b,c])=>({data:{id:a+'>'+b+(c||''),source:a,target:b,...(c?{cond:c}:{})}}));
+  return {nodes,edges};
+}
+function load(g){const el=build(g);cy.elements().remove();cy.add(el.nodes);cy.add(el.edges);
+  cy.layout({name:'dagre',rankDir:'TB',nodeSep:18,rankSep:30,padding:30}).run();}
+
 function show(d){
   document.getElementById('s-title').textContent=d.label;
   document.getElementById('s-file').textContent=d.file||'';
   document.getElementById('hint').style.display='none';
   document.getElementById('s-body').style.display='block';
-  const tp=document.getElementById('s-tier');tp.textContent=tierLabel[d.t]||'—';
-  tp.style.background=tierColor(d);tp.style.color=d.t===2?'#fff':'#0b0f14';
-  document.getElementById('s-oracle').textContent=d.orc?('gate: '+d.orc):'';
-  const st={clean:['dispose-balanced',C.clean],fixed:['leak — fixed',C.fixed],info:['transfer/loop',C.info],leak:['gap / leak',C.leak]}[d.st]||['',C.info];
-  const sp=document.getElementById('s-status');sp.textContent=st[0];sp.style.background=st[1];sp.style.color=(d.st==='clean'||d.st==='leak')?'#fff':'#0b0f14';
-  const dl={det:['deterministic',C.clean],seed:['seed-driven (temp>0)',C.L2],warmup:['warmup → nondet',C.leak],na:['n/a',C.info]}[d.det]||['—',C.info];
-  const dp=document.getElementById('s-det');dp.textContent=dl[0];dp.style.background=dl[1];dp.style.color=d.det==='na'?'#0b0f14':'#fff';
-  document.getElementById('s-alloc').textContent=d.alloc||'—';
-  document.getElementById('s-free').textContent=d.free||'—';
-  document.getElementById('s-note').textContent=d.note||'—';
+  document.getElementById('s-fileb').textContent=d.file||'';
+  document.getElementById('s-grp').textContent=d.grp||'';
+  const outs=cy.getElementById(d.id).outgoers('edge').map(e=>{
+    const t=e.target().data('label'); const c=e.data('cond'); return c?`• [${c}] → ${t}`:`• → ${t}`;}).join('\n');
+  document.getElementById('s-out').textContent=outs||'(terminal)';
 }
-const LEG={tier:[['L1 · mlx-lm',C.L1],['L2 · optiq',C.L2],['L3 · ours',C.L3],['plumbing',C.info]],
-           mem:[['balanced',C.clean],['leak — fixed',C.fixed],['transfer/loop',C.info],['gap',C.leak]],
-           det:[['deterministic',C.clean],['seed-driven (temp>0)',C.L2],['warmup → nondet',C.leak],['n/a',C.info]]};
-function legend(){document.getElementById('legend').innerHTML=
-  '<span><i class="dash"></i>flag bridge</span>'+
-  LEG[MODE].map(([t,c])=>`<span><i class="dot" style="background:${c}"></i>${t}</span>`).join('');}
 cy.on('tap','node',e=>show(e.target.data()));
 document.getElementById('fit').onclick=()=>cy.fit(undefined,40);
-let G='train';
-const GRAPHS={train:TRAIN,infer:INFER,load:LOAD};
+const LABELS={drive:'generate',fwd:'forward',layer:'layer',attn:'attention',sdpa:'sdpa dispatch',unfused:'unfused sdpa',tiled:'tiled sdpa',mlp:'mlp',kv:'kv cache',samp:'sampler',
+  setup:'setup/loop',loss:'loss head',seg:'segmented',accum:'accum',bwd:'backward',norm:'grad norm/clip',opt:'optimizer',metrics:'metrics/eval'};
+function legend(){
+  const groups = MODE_G==='infer' ? ['drive','fwd','attn','sdpa','tiled','unfused','mlp','kv','samp'] : ['setup','fwd','loss','seg','accum','bwd','norm','opt','metrics'];
+  document.getElementById('legend').innerHTML='<span><i class="dash"></i>branch (condition)</span>'+
+    groups.map(g=>`<span><i class="dot" style="background:${GRP[g]}"></i>${LABELS[g]}</span>`).join('');
+}
 document.querySelectorAll('#graph button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#graph button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
-  G=b.dataset.g;load(GRAPHS[G]);});
-document.querySelectorAll('#mode button').forEach(b=>b.onclick=()=>{
-  document.querySelectorAll('#mode button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
-  MODE=b.dataset.m;restyle();legend();});
-legend();load(TRAIN);
+  MODE_G=b.dataset.g;load(MODE_G==='infer'?INFER:TRAIN);legend();});
+legend();load(INFER);
 </script>
 </body>
 </html>
