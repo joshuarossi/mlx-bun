@@ -1029,6 +1029,16 @@ export function createServer(
         try { html = readFileSync(new URL("./assets/curve-designer.html", import.meta.url), "utf8"); } catch { /* binary: use embedded */ }
         return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
       }
+      // Training/inference DAG map — self-contained cytoscape artifact, served
+      // same-origin so the Routes tab can embed it in an <iframe src="/dag">.
+      if (url.pathname === "/dag" && request.method === "GET") {
+        try {
+          const html = readFileSync(new URL("../docs/dag/training-inference-map.html", import.meta.url), "utf8");
+          return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+        } catch {
+          return new Response("DAG map artifact not found at docs/dag/training-inference-map.html", { status: 404 });
+        }
+      }
       if (url.pathname === "/curve-terrain" && request.method === "GET") {
         try {
           const html = readFileSync(new URL("../docs/investigations/curve-terrain.html", import.meta.url), "utf8");
