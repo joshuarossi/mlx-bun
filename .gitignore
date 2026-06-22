@@ -12,6 +12,7 @@ benchmarks-h2h-*
 benchmarks-e4b-flag-matrix-*.json
 benchmarks/lab-verification*.json
 reports/
+runs/
 dist/
 .claude/
 dist-native/
