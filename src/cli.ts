@@ -469,8 +469,8 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   const serverOptions: import("./server").ServerOptions = {};
   const budgetGB = Number(opt("memory-budget", "0"));
   if (budgetGB > 0) serverOptions.memoryBudgetBytes = budgetGB * 1e9;
-  const pcGB = Number(opt("prompt-cache", "0"));
-  if (pcGB > 0) serverOptions.promptCacheBytes = pcGB * 2 ** 30;
+  const pcRaw = opt("prompt-cache"); // null if absent; an explicit value (incl. 0) wins → `--prompt-cache 0` DISABLES the cache
+  if (pcRaw !== null) serverOptions.promptCacheBytes = Math.max(0, Number(pcRaw)) * 2 ** 30;
   // --batch N: max concurrent requests batched through the mlx-lm-parity
   // engine (N=1 = today's serial path). --decode-concurrency is accepted as
   // an mlx_lm.server-compatible alias (drop-in).
