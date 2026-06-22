@@ -24,6 +24,53 @@ map already shows: an *optimization* that still matches the oracle stays low —
 Only nodes with **no** oracle (flash-CCE) are *forced* to L3. (Background +
 post-mortem: [orpo-flash-cce-pin-leak.md](../investigations/orpo-flash-cce-pin-leak.md).)
 
+## Two axes: parity gates performance
+
+Every optimization has **two independent coordinates**, and conflating them is what
+made the flag surface unreadable:
+
+1. **Parity** — *which reference does it reproduce bit-for-bit?* This sets the
+   **lowest level** it may live in: matches mlx-lm → L1; matches mlx-optiq but not
+   mlx-lm → L2; matches neither → L3 (gated by KL + tests, no oracle).
+2. **Performance** — *is it the fastest correct way?* This sets whether it's the
+   **default (on)** within its level, or a kept-but-**off** opt-in.
+
+**Parity gates performance.** A faster kernel that breaks mlx-lm parity is simply
+*not in L1* — it bubbles up to whatever level its parity allows. You never trade the
+guarantee for speed silently; you change levels, and the user opts in. The level is
+your floor of trust; the default within it is the best way to honor that floor.
+
+### Decision procedure for any new optimization
+
+1. **Measure its parity** (run it both ways, compare — "one flag, one measurement
+   per lever"). The lowest oracle it matches bit-for-bit is its level ceiling.
+2. **Measure its performance** vs that level's current default:
+   - **faster AND holds the guarantee** → it becomes the **default (on)** for that level.
+   - **slower but still correct** → **keep it as a documented default-off flag**
+     (optionality for A/B; never the default, never deleted).
+   - **breaks the guarantee but offers a real tradeoff** (e.g. 2× tok/s at KL
+     0.0015) → an **L3 opt-in**; the user chooses exact vs fast.
+
+Worked examples:
+- *5% less memory, still bit-for-bit with mlx-lm* → **default-on in L1.**
+- *2× tok/s, but KL 0.0015 to mlx-lm* → **L3 opt-in** (user picks exact or 2×).
+- *another way, 3% slower, still correct* → **kept, off in every level.**
+
+### Our decode levers under this rule (today)
+
+| lever | parity | perf | placement |
+|---|---|---|---|
+| `compiled-decode` | bit-exact w/ uncompiled (`compiled-decode.test`) | faster | **default-on, every level** |
+| `perf-kernel` | matches optiq, not mlx-lm (`perf-kernel-oracle.test`) | faster | **default-on from L2** (the L2 bridge) |
+| `fused-sdpa` | matches optiq, not mlx-lm (`fused-sdpa.test`) | faster | **default-on from L2** (the L2 bridge) |
+| `fused-decode` | (would be L3) | ~3% slower (`optimization_plan.md`) | **kept, off everywhere** |
+
+So `--l1/--l2/--l3` is the **parity** axis (the guarantee), and the defaults within
+each tier are the **performance** axis (the fastest kernel that still holds it). For
+the *decode path* L2 == L3 today (every decode kernel matches mlx-lm or optiq); L3's
+real territory is the no-oracle **features** — HLG sampler, expert offload, batched
+mixed-precision — which live off the decode axis and are gated by KL + quality.
+
 ## Why this matters for CLI flags
 
 We are accumulating a **lot** of flags (`--grad-accum`, `--grad-clip`, `--seg`,
