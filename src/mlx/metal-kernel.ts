@@ -67,6 +67,11 @@ export class MetalKernel {
   apply(inputs: MlxArray[], call: MetalKernelCall): MlxArray[] {
     if (this.#disposed) throw new Error("MetalKernel used after dispose");
     const cfg = C.mlx_fast_metal_kernel_config_new();
+    // bun:ffi ptr() does NOT retain its argument, so any JS buffer whose pointer
+    // crosses an FFI call below is anchored here until that call returns —
+    // otherwise GC could free it mid-call (the lifetime class behind the
+    // flash-CCE pin bug). Pure-additive: holds references, changes no logic.
+    const keepAlive: unknown[] = [];
     try {
       // Derive outputs + grid from the (current) input shapes when a function is
       // given — so the SAME kernel object answers correctly for any input shape
@@ -76,6 +81,7 @@ export class MetalKernel {
       const grid = typeof call.grid === "function" ? call.grid(inputs) : call.grid;
       for (const o of outputs) {
         const shape = new Int32Array(o.shape);
+        keepAlive.push(shape);
         if (C.mlx_fast_metal_kernel_config_add_output_arg(cfg, ptr(shape), BigInt(o.shape.length), o.dtype) !== 0)
           throw new Error(`metal_kernel add_output_arg failed: ${takeMlxError() ?? ""}`);
       }
@@ -85,19 +91,26 @@ export class MetalKernel {
         C.mlx_fast_metal_kernel_config_set_init_value(cfg, call.initValue);
       for (const [k, v] of Object.entries(call.templateInts ?? {})) {
         const kb = Buffer.from(k + "\0", "utf8");
+        keepAlive.push(kb);
         C.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, ptr(kb), v);
       }
       for (const [k, v] of Object.entries(call.templateDtypes ?? {})) {
         const kb = Buffer.from(k + "\0", "utf8");
+        keepAlive.push(kb);
         C.mlx_fast_metal_kernel_config_add_template_arg_dtype(cfg, ptr(kb), v);
       }
 
       const handles = new BigUint64Array(inputs.map((a) => a.handle));
+      keepAlive.push(handles);
       const inVec = C.mlx_vector_array_new_data(ptr(handles), BigInt(inputs.length));
       const slot = new BigUint64Array([C.mlx_vector_array_new()]);
+      keepAlive.push(slot);
       const slotPtr = ptr(slot);
       const status = C.mlx_fast_metal_kernel_apply(slotPtr, this.#kernel, inVec, cfg, call.stream ?? gpuStream);
       const outVec = read.u64(slotPtr, 0);
+      // anchor: all ptr()'d JS buffers above are done being read by native code by
+      // this point; touching keepAlive keeps the JIT from freeing them earlier.
+      if (keepAlive.length < 0) throw new Error("unreachable");
       C.mlx_vector_array_free(inVec);
       if (status !== 0) {
         C.mlx_vector_array_free(outVec);
