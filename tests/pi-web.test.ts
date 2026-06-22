@@ -8,6 +8,7 @@ import type { AgentSessionEvent, SessionEntry, SessionInfo } from "@earendil-wor
 import {
   buildWebChatSystemPrompt,
   injectAdapter,
+  injectSampling,
   mapEventToFrames,
   serializeHistory,
   toSessionListItems,
@@ -35,6 +36,33 @@ describe("injectAdapter (before_provider_request hook body)", () => {
   it("does not mutate the input payload", () => {
     const p: Record<string, unknown> = { model: "x" };
     injectAdapter(p, "chunk");
+    expect(p).toEqual({ model: "x" });
+  });
+});
+
+describe("injectSampling (before_provider_request hook body)", () => {
+  it("returns undefined when nothing is overridden → server uses mode-aware defaults", () => {
+    expect(injectSampling({ model: "x" }, undefined)).toBeUndefined();
+    expect(injectSampling({ model: "x" }, {})).toBeUndefined();
+    expect(injectSampling({ model: "x" }, { temperature: null, top_p: null, top_k: null })).toBeUndefined();
+  });
+
+  it("injects only the set numeric fields, preserving the rest", () => {
+    const out = injectSampling({ model: "x", messages: [] }, { temperature: 0.3, top_p: null, top_k: 40 });
+    expect(out).toEqual({ model: "x", messages: [], temperature: 0.3, top_k: 40 });
+  });
+
+  it("treats explicit 0 as a real override (not a falsy skip)", () => {
+    expect(injectSampling({ model: "x" }, { temperature: 0 })).toEqual({ model: "x", temperature: 0 });
+  });
+
+  it("ignores non-finite values", () => {
+    expect(injectSampling({ model: "x" }, { temperature: NaN, top_p: Infinity })).toBeUndefined();
+  });
+
+  it("does not mutate the input payload", () => {
+    const p: Record<string, unknown> = { model: "x" };
+    injectSampling(p, { temperature: 0.5 });
     expect(p).toEqual({ model: "x" });
   });
 });
