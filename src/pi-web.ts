@@ -113,7 +113,7 @@ export function buildWebChatSystemPrompt(
   // small model from reaching for a tool on math/writing/general questions.
   const hasTools = opts?.hasTools ?? true;
   const toolsLine = hasTools
-    ? ` Answer directly from your own knowledge whenever you can. Only call a tool when you truly need information you don't have: \`web_search\` for current or external facts (news, current events, prices, latest docs), \`read\` for a specific local file the user points you to. Never use a tool for general questions, explanations, math, or writing — just answer.`
+    ? ` Answer directly from your own knowledge whenever you can. Only call a tool when you truly need information you don't have: \`web_search\` for current or external facts (news, current events, prices, latest docs), \`read\` for a specific local file the user points you to. Never use a tool for general questions, explanations, math, or writing — just answer. When a tool returns results, pull the answer out of the result text and state it directly — never tell the user to go open the links or check the sources themselves; reading them is your job.`
     : ` You have no tools in this session, so answer from your own knowledge; if something needs current or external data you can't reach, say so briefly instead of pretending to look it up.`;
 
   return `You are mlx-bun's built-in assistant, running entirely on the user's own Apple-silicon Mac — nothing they type leaves the machine.${modelLine}${aboutLine}${toolsLine}
@@ -152,6 +152,12 @@ type ClientMessage =
   // app.html mounts it (POST /v1/adapters) before sending this; the
   // before_provider_request hook injects it into the provider payload.
   | { type: "set_adapter"; id: string | null }
+  // Per-request sampling overrides for subsequent turns. Each field is
+  // optional; null/undefined means "leave it to the server default"
+  // (the mode-aware recommended value resolved in toOptions). A present
+  // numeric value is injected into the provider payload and always wins.
+  // The before_provider_request hook injects whatever is set here.
+  | { type: "set_sampling"; temperature?: number | null; top_p?: number | null; top_k?: number | null }
   // Session management (recent-chats sidebar + new chat).
   | { type: "new_session" }
   | { type: "list_sessions" }
@@ -396,6 +402,43 @@ export function injectAdapter(
   return { ...payload, adapter: selected };
 }
 
+/** Per-request sampling overrides carried on the session and injected into the
+ *  provider payload by the before_provider_request hook. Each field is either a
+ *  user-set override or null/undefined ("use the server's mode-aware default"). */
+export interface SamplingOverrides {
+  temperature?: number | null;
+  top_p?: number | null;
+  top_k?: number | null;
+}
+
+/** Inject the user's sampling overrides into the outgoing chat-completions
+ *  payload (which reaches the server's toOptions, where an explicit
+ *  temperature/top_p/top_k always wins). Only finite numbers are injected; a
+ *  null/undefined/unset field is left off so the server falls back to its
+ *  mode-aware recommended default. Returns undefined when nothing is set so the
+ *  hook can keep the payload unchanged. Pure + exported for unit testing. */
+export function injectSampling(
+  payload: Record<string, unknown>,
+  s: SamplingOverrides | undefined,
+): Record<string, unknown> | undefined {
+  if (!s) return undefined;
+  const out: Record<string, unknown> = { ...payload };
+  let changed = false;
+  if (typeof s.temperature === "number" && Number.isFinite(s.temperature)) {
+    out.temperature = s.temperature;
+    changed = true;
+  }
+  if (typeof s.top_p === "number" && Number.isFinite(s.top_p)) {
+    out.top_p = s.top_p;
+    changed = true;
+  }
+  if (typeof s.top_k === "number" && Number.isFinite(s.top_k)) {
+    out.top_k = s.top_k;
+    changed = true;
+  }
+  return changed ? out : undefined;
+}
+
 /**
  * One browser connection's pi agent. Owns the AgentSession, the event
  * subscription, and the pending tool-approval handshakes.
@@ -410,6 +453,10 @@ class PiWebSession {
   /** Active LoRA adapter id for this connection (null = none/base model).
    *  Read by the before_provider_request hook; set via the set_adapter msg. */
   private selectedAdapter: string | null = null;
+  /** Per-request sampling overrides for this connection (set via set_sampling).
+   *  Read by the before_provider_request hook; unset fields fall back to the
+   *  server's mode-aware recommended defaults. */
+  private sampling: SamplingOverrides = {};
 
   /** Per-connection invariants, built once in start() and reused across
    *  session switches (new chat / resume / fork). */
@@ -671,8 +718,13 @@ class PiWebSession {
    *  CLI extension). Default none = no injection (base model). */
   private installAdapterHook(pi: ExtensionAPI): void {
     pi.on("before_provider_request", (event) => {
-      const payload = event.payload as Record<string, unknown>;
-      return injectAdapter(payload, this.selectedAdapter) ?? payload;
+      let payload = event.payload as Record<string, unknown>;
+      // Layer both injections: adapter selection, then sampling overrides.
+      // Each returns undefined when it has nothing to change, so we keep the
+      // prior payload in that case.
+      payload = injectAdapter(payload, this.selectedAdapter) ?? payload;
+      payload = injectSampling(payload, this.sampling) ?? payload;
+      return payload;
     });
   }
 
@@ -819,6 +871,17 @@ class PiWebSession {
         // before_provider_request hook injects it into the outgoing payload.
         // app.html has already mounted it server-side (POST /v1/adapters).
         this.selectedAdapter = msg.id;
+        return;
+      case "set_sampling":
+        // Record the per-request sampling overrides; the
+        // before_provider_request hook injects any set fields into the
+        // outgoing payload. A null/undefined field clears the override so the
+        // server's mode-aware default applies again.
+        this.sampling = {
+          temperature: msg.temperature ?? null,
+          top_p: msg.top_p ?? null,
+          top_k: msg.top_k ?? null,
+        };
         return;
     }
   }

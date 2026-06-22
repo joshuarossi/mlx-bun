@@ -105,6 +105,36 @@
   #chat-think.think-on .dot{background:var(--blue);box-shadow:0 0 11px var(--blue)}
   .pill.bad .dot{background:var(--red);box-shadow:0 0 11px var(--red)}
   .pill.warn .dot{background:var(--orange);box-shadow:0 0 11px var(--orange)}
+  /* sampling disclosure: a small pill that opens a popover above the composer */
+  #chat-sampling-wrap{position:relative;display:inline-flex}
+  #chat-sampling{cursor:pointer;gap:6px;padding:5px 11px;font-size:12px;user-select:none;-webkit-user-select:none;
+    transition:color .22s var(--ease),border-color .22s var(--ease)}
+  #chat-sampling:hover{border-color:rgba(255,255,255,.28);color:var(--ink)}
+  #chat-sampling.on{color:var(--ink);border-color:rgba(255,255,255,.28)}
+  #chat-sampling.dirty .dot{background:var(--blue);box-shadow:0 0 11px var(--blue)}
+  #chat-sampling .dot{width:7px;height:7px}
+  .samplepop{position:absolute;bottom:calc(100% + 9px);right:0;z-index:40;width:260px;
+    background:#141416;border:1px solid var(--hairline);border-radius:13px;padding:13px 14px;
+    box-shadow:0 18px 50px rgba(0,0,0,.6);display:none;
+    transform:translateY(4px);opacity:0;transition:opacity .16s var(--ease),transform .16s var(--ease)}
+  .samplepop.open{display:block;transform:translateY(0);opacity:1}
+  .samplepop h4{font-size:12px;font-weight:600;color:var(--dim);letter-spacing:.02em;
+    text-transform:uppercase;margin:0 0 10px}
+  .samprow{display:flex;align-items:center;gap:9px;margin:0 0 11px}
+  .samprow label{font-size:12.5px;color:var(--ink);width:74px;flex:0 0 auto}
+  .samprow input{width:62px;flex:0 0 auto;font-family:var(--mono);font-size:12px;text-align:right;
+    background:var(--card);border:1px solid var(--hairline);border-radius:8px;color:var(--ink);
+    padding:5px 8px;outline:none;transition:border-color .18s var(--ease)}
+  .samprow input:focus{border-color:var(--blue)}
+  .samprow input.over{border-color:var(--blue);color:var(--ink)}
+  .samprow .rec{font-size:11px;color:var(--dimmer);font-family:var(--mono);flex:1 1 auto;text-align:left}
+  .samprow .rec b{color:var(--dim);font-weight:600}
+  .samppop-foot{display:flex;justify-content:space-between;align-items:center;margin-top:3px}
+  .samppop-foot .note{font-size:10.5px;color:var(--dimmer);line-height:1.3;flex:1 1 auto;padding-right:8px}
+  .samppop-foot button{appearance:none;cursor:pointer;background:var(--card);border:1px solid var(--hairline);
+    color:var(--dim);border-radius:8px;padding:5px 11px;font-size:11.5px;font-weight:600;flex:0 0 auto;
+    transition:color .18s var(--ease),border-color .18s var(--ease)}
+  .samppop-foot button:hover{color:var(--ink);border-color:rgba(255,255,255,.28)}
   #nav-download{color:var(--ink);font-family:var(--mono);font-size:11.5px;font-weight:500}
   #nav-download .dot{background:var(--orange);box-shadow:0 0 11px var(--orange);animation:dlpulse 1.4s ease-in-out infinite}
   @keyframes dlpulse{0%,100%{opacity:.4}50%{opacity:1}}
@@ -552,6 +582,32 @@
         <div class="chat-hint">
           <span id="chat-status-line">Enter to send · Shift+Enter for a new line · type while it streams to steer</span>
           <span class="hint-right">
+            <span id="chat-sampling-wrap">
+              <span id="chat-sampling" class="pill" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false"
+                    title="Sampling controls (temperature · top_p · top_k)"><span class="dot"></span>Sampling</span>
+              <div id="chat-sampling-pop" class="samplepop" role="dialog" aria-label="Sampling controls">
+                <h4>Sampling</h4>
+                <div class="samprow">
+                  <label for="samp-temp">Temperature</label>
+                  <input id="samp-temp" type="number" step="0.05" min="0" max="2" placeholder="auto" inputmode="decimal">
+                  <span class="rec">rec <b id="samp-temp-rec">0.70</b></span>
+                </div>
+                <div class="samprow">
+                  <label for="samp-topp">top_p</label>
+                  <input id="samp-topp" type="number" step="0.01" min="0" max="1" placeholder="auto" inputmode="decimal">
+                  <span class="rec">rec <b id="samp-topp-rec">0.95</b></span>
+                </div>
+                <div class="samprow">
+                  <label for="samp-topk">top_k</label>
+                  <input id="samp-topk" type="number" step="1" min="0" placeholder="auto" inputmode="numeric">
+                  <span class="rec">rec <b id="samp-topk-rec">off</b></span>
+                </div>
+                <div class="samppop-foot">
+                  <span class="note">Blank = use the recommended default. Temperature tracks the thinking toggle.</span>
+                  <button id="samp-reset" type="button">Reset</button>
+                </div>
+              </div>
+            </span>
             <select id="chat-adapter" class="pill" title="LoRA adapter for this chat (none = base model)">
               <option value="">no adapter</option>
             </select>
@@ -1739,6 +1795,14 @@ controllers.chat = (() => {
   let visionCapable = false;  // from the `ready` frame; gates image attachments
   let thinkingCapable = false; // from `ready`; gates the reasoning toggle
   let thinkingOn = true;       // default on: with tools (read/web_search) the reasoning step gives the small model far better tool judgment (answers math/writing itself, only searches when needed). The thinking box defaults collapsed. Users can toggle it off.
+  // Per-request sampling. Each field is either a user override (a number) or
+  // null = "use the recommended default" (resolved server-side). The recommended
+  // TEMPERATURE tracks the thinking toggle (0.7 off ↔ 0.9 on); top_p/top_k recs
+  // are fixed mirrors of the server defaults (display only). The placeholder in
+  // each input shows the live recommended value when the field isn't overridden.
+  const sampling = { temperature: null, top_p: null, top_k: null };
+  const SAMP_REC = { topP: 0.95, topK: 0 }; // fixed recommended top_p / top_k (server genDefaults)
+  function recTemp() { return thinkingOn ? 0.9 : 0.7; } // mirrors server toOptions defaultTemp
   let attachSeq = 0;
   const MAX_TEXT_BYTES = 256 * 1024;
   const TEXT_EXTS = /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|ini|cfg|conf|log|xml|html?|css|scss|js|mjs|cjs|ts|tsx|jsx|py|rs|go|java|c|h|cpp|hpp|cc|cs|rb|php|sh|bash|zsh|fish|sql|swift|kt|lua|r|jl|tex|svg|env|gitignore|dockerfile|makefile)$/i;
@@ -1835,6 +1899,84 @@ controllers.chat = (() => {
     b.classList.toggle("think-on", thinkingOn);
     b.title = thinkingOn ? "Reasoning on — click to answer directly" : "Reasoning off — click to let the model think";
     b.setAttribute("aria-pressed", String(thinkingOn));
+    refreshSamplingRecs(); // recommended temperature follows the thinking state
+  }
+
+  /* — sampling controls — */
+  // Refresh the displayed recommended values + the input placeholders. The
+  // temperature rec follows the live thinking toggle; an un-overridden field
+  // shows its rec as a greyed placeholder so the user always sees what's in
+  // effect. Called on thinking-toggle flips and on popover open.
+  function refreshSamplingRecs() {
+    const t = recTemp();
+    const set = (id, txt) => { const e = $(id); if (e) e.textContent = txt; };
+    set("samp-temp-rec", t.toFixed(2));
+    set("samp-topp-rec", SAMP_REC.topP.toFixed(2));
+    set("samp-topk-rec", SAMP_REC.topK ? String(SAMP_REC.topK) : "off");
+    const ph = (id, v) => { const e = $(id); if (e && sampling[ph2field(id)] == null) e.placeholder = v; };
+    ph("samp-temp", t.toFixed(2));
+    ph("samp-topp", SAMP_REC.topP.toFixed(2));
+    ph("samp-topk", SAMP_REC.topK ? String(SAMP_REC.topK) : "off");
+  }
+  function ph2field(id) { return id === "samp-temp" ? "temperature" : id === "samp-topp" ? "top_p" : "top_k"; }
+
+  // Reflect override state on the inputs (blue border when set) and on the
+  // pill (lit dot when any field is overridden).
+  function updateSamplingUi() {
+    const mark = (id, field) => { const e = $(id); if (e) e.classList.toggle("over", sampling[field] != null); };
+    mark("samp-temp", "temperature"); mark("samp-topp", "top_p"); mark("samp-topk", "top_k");
+    const dirty = sampling.temperature != null || sampling.top_p != null || sampling.top_k != null;
+    const pill = $("chat-sampling");
+    if (pill) { pill.classList.toggle("dirty", dirty); pill.title = dirty
+      ? "Sampling overridden — click to edit or reset" : "Sampling controls (temperature · top_p · top_k)"; }
+  }
+
+  // Read one input, store null (blank/invalid → use default) or a clamped
+  // number, then push the whole sampling state to the server.
+  function commitSampling(id, field, lo, hi, intOnly) {
+    const e = $(id); if (!e) return;
+    const raw = e.value.trim();
+    if (raw === "") { sampling[field] = null; }
+    else {
+      let v = intOnly ? parseInt(raw, 10) : parseFloat(raw);
+      if (!Number.isFinite(v)) { sampling[field] = null; e.value = ""; }
+      else { v = Math.min(hi, Math.max(lo, v)); sampling[field] = v; e.value = String(v); }
+    }
+    updateSamplingUi(); refreshSamplingRecs();
+    send({ type: "set_sampling", temperature: sampling.temperature, top_p: sampling.top_p, top_k: sampling.top_k });
+  }
+  function resetSampling() {
+    sampling.temperature = null; sampling.top_p = null; sampling.top_k = null;
+    for (const id of ["samp-temp", "samp-topp", "samp-topk"]) { const e = $(id); if (e) e.value = ""; }
+    updateSamplingUi(); refreshSamplingRecs();
+    send({ type: "set_sampling", temperature: null, top_p: null, top_k: null });
+  }
+  function initSampling() {
+    const pill = $("chat-sampling"), pop = $("chat-sampling-pop");
+    if (!pill || !pop) return;
+    const setOpen = (open) => {
+      pop.classList.toggle("open", open);
+      pill.classList.toggle("on", open);
+      pill.setAttribute("aria-expanded", String(open));
+      if (open) refreshSamplingRecs();
+    };
+    const toggle = () => setOpen(!pop.classList.contains("open"));
+    pill.onclick = (e) => { e.stopPropagation(); toggle(); };
+    pill.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
+    pop.addEventListener("click", (e) => e.stopPropagation());
+    // Click-away / Escape closes the popover.
+    document.addEventListener("click", () => setOpen(false));
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") setOpen(false); });
+    const wire = (id, field, lo, hi, intOnly) => {
+      const e = $(id); if (!e) return;
+      e.addEventListener("change", () => commitSampling(id, field, lo, hi, intOnly));
+      e.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); commitSampling(id, field, lo, hi, intOnly); } });
+    };
+    wire("samp-temp", "temperature", 0, 2, false);
+    wire("samp-topp", "top_p", 0, 1, false);
+    wire("samp-topk", "top_k", 0, 1000000, true);
+    const reset = $("samp-reset"); if (reset) reset.onclick = (e) => { e.stopPropagation(); resetSampling(); };
+    updateSamplingUi(); refreshSamplingRecs();
   }
 
   /* — composer — */
@@ -1874,6 +2016,7 @@ controllers.chat = (() => {
       $("chat-think").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); thinkToggle(); } });
       const adapterSel = $("chat-adapter");
       if (adapterSel) adapterSel.onchange = () => onSelectAdapter(adapterSel);
+      initSampling();
       refreshAdapters();
       const box = $("chat-box");
       box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } });
