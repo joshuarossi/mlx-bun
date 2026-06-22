@@ -927,7 +927,13 @@ function fwdKernel(): MetalKernel {
 }
 
 function u32(values: number[]): MlxArray {
-  return MlxArray.fromView(new Uint8Array(new Uint32Array(values).buffer.slice(0)), [values.length], Dtype.uint32);
+  // COPY into an mlx-owned array (fromBytesCopy = mlx_array_new_data), NOT the
+  // pinning fromView. These tiny kernel-arg arrays (shape, targets) feed a LAZY
+  // kernel and are disposed before it evaluates; pinning leaks one host buffer
+  // per call, never released (unbounded `pinned` map + a deferred native
+  // use-after-free under memory pressure — the seg/accum crash). A few-int copy
+  // is free; correctness is not.
+  return MlxArray.fromBytesCopy(new Uint8Array(new Uint32Array(values).buffer), [values.length], Dtype.uint32);
 }
 
 /** Flash-CCE forward: per-token response log-prob [M] (f32) + lse [M] (f32),

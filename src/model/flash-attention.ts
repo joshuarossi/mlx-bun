@@ -29,10 +29,12 @@ function forwardTiles(headDim: number): [number, number] {
   throw new Error(`unsupported head_dim=${headDim}`);
 }
 
-/** uint32 [n] array (matches optiq's shape/causal input dtype). */
+/** uint32 [n] array (matches optiq's shape/causal input dtype). COPY into an
+ *  mlx-owned array (not the pinning fromView) — these tiny kernel-arg arrays are
+ *  disposed before the lazy kernel evaluates; pinning leaks the host buffer per
+ *  call (see flash-cce.ts u32 for the full diagnosis). */
 function u32(values: number[]): MlxArray {
-  const u = new Uint32Array(values);
-  return MlxArray.fromView(new Uint8Array(u.buffer.slice(0)), [values.length], Dtype.uint32);
+  return MlxArray.fromBytesCopy(new Uint8Array(new Uint32Array(values).buffer), [values.length], Dtype.uint32);
 }
 
 // Forward shader — verbatim from optiq flash_attention_metal.py _KERNEL_SOURCE.
