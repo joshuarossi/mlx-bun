@@ -1059,7 +1059,11 @@ export function createServer(
           const { Registry } = await import("./registry");
           const { loadModelConfig } = await import("./config");
           const reg = new Registry();
-          if (reg.list().length === 0) await reg.scan();
+          // Always rescan when (re)building the 30s cache so models that appeared
+          // after boot — fresh downloads AND quants written into the HF cache —
+          // surface on their own. (scan() is INSERT-OR-REPLACE + prunes deleted,
+          // so it's idempotent and cheap for a local cache.)
+          await reg.scan();
           const rows = [];
           for (const m of reg.list()) {
             const supported = isSupportedModelRecord(m.modelType, m.repoId);
@@ -1806,6 +1810,78 @@ export function createServer(
         const { inspectModel } = await import("./quantize");
         return Response.json(await inspectModel(body.model_id ?? ""));
       }
+      // Turn an OS-picked folder into the absolute snapshot path on disk. The
+      // browser can't reveal a filesystem path (security) and the HF cache
+      // stores real bytes in blobs/ with symlinked snapshots — so we resolve by
+      // the folder's NAME (which encodes the repo id), never by reading files.
+      // No upload, no dependence on the cache's symlink layout, and a
+      // just-downloaded model resolves before it's ever been indexed.
+      if ((url.pathname === "/api/quantize/resolve-folder" || url.pathname === "/api/model/resolve-folder") && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as { folder_name?: string; rel_path?: string };
+        const { statSync, readdirSync, readFileSync } = await import("node:fs");
+        const { join } = await import("node:path");
+        const { homedir } = await import("node:os");
+        const hubRoot = process.env.HF_HUB_CACHE
+          ?? (process.env.HF_HOME ? join(process.env.HF_HOME, "hub") : join(homedir(), ".cache/huggingface/hub"));
+        const roots = [hubRoot, join(homedir(), ".cache/mlx-bun")];
+        const hasConfig = (d: string) => { try { return statSync(join(d, "config.json")).isFile(); } catch { return false; } };
+        // basename of the picked folder; the rel path's last-but-one segment is
+        // the <hash> dir if they drilled into a snapshot.
+        const folder = (body.folder_name ?? "").replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? "";
+        const relSegs = (body.rel_path ?? "").replace(/\\/g, "/").split("/").filter(Boolean);
+        const configDir = relSegs.length >= 2 ? relSegs[relSegs.length - 2] : "";
+        const repoIdOf = (modelsDir: string) => modelsDir.slice("models--".length).replaceAll("--", "/");
+        // Pick a repo dir's canonical snapshot: the one refs/main points at, else
+        // the first snapshot that actually has a config.json.
+        const pickSnapshot = (repoDir: string): string | null => {
+          const snaps = join(repoDir, "snapshots");
+          let head = "";
+          try { head = readFileSync(join(repoDir, "refs", "main"), "utf8").trim(); } catch {}
+          if (head && hasConfig(join(snaps, head))) return join(snaps, head);
+          try { for (const h of readdirSync(snaps)) if (hasConfig(join(snaps, h))) return join(snaps, h); } catch {}
+          return null;
+        };
+
+        // (1) HF-cache folder picked — its name IS the repo id.
+        if (folder.startsWith("models--")) {
+          const p = pickSnapshot(join(hubRoot, folder));
+          if (p) return Response.json({ ok: true, path: p, repo_id: repoIdOf(folder) });
+        }
+        // (2) A bare <hash> snapshot folder picked directly (or carried in rel).
+        const hashDir = configDir || folder;
+        if (hashDir) {
+          try {
+            for (const repo of readdirSync(hubRoot)) {
+              if (!repo.startsWith("models--")) continue;
+              const cand = join(hubRoot, repo, "snapshots", hashDir);
+              if (hasConfig(cand)) return Response.json({ ok: true, path: cand, repo_id: repoIdOf(repo) });
+            }
+          } catch {}
+        }
+        // (3) Flat local snapshot under a known root (folder name == model dir).
+        for (const root of roots) {
+          if (folder && hasConfig(join(root, folder))) return Response.json({ ok: true, path: join(root, folder) });
+        }
+        // (4) Registry rescan — last resort (also covers customized cache layouts).
+        const { Registry } = await import("./registry");
+        const reg = new Registry();
+        try {
+          await reg.scan();
+          const all = reg.list();
+          const rec = (folder.startsWith("models--")
+            ? all.find((m) => m.repoId === repoIdOf(folder))
+            : undefined)
+            ?? all.find((m) => m.path.split("/").pop() === hashDir)
+            ?? all.find((m) => m.repoId.split("/").pop() === folder);
+          if (rec) return Response.json({ ok: true, path: rec.path, repo_id: rec.repoId, model_type: rec.modelType });
+        } finally {
+          reg.close();
+        }
+        return Response.json({
+          ok: false,
+          error: "Couldn't locate this folder on disk — paste the path instead.",
+        });
+      }
       if (url.pathname === "/api/quantize/submit" && request.method === "POST") {
         const body = (await request.json().catch(() => ({}))) as {
           model_id?: string; bits?: number; group_size?: number;
@@ -1817,18 +1893,52 @@ export function createServer(
         const store = await ensureJobs();
         const { submitSubprocess } = await import("./jobs");
         const { homedir } = await import("node:os");
+        const { join } = await import("node:path");
+        const { mkdirSync, writeFileSync } = await import("node:fs");
+        const { createHash } = await import("node:crypto");
         const bits = body.bits ?? 4, gs = body.group_size ?? 64;
-        const base = body.model_id.split("/").filter(Boolean).at(-1)!.replace(/[^a-z0-9_.-]/gi, "");
-        // Mixed-precision (sensitivity+knapsack) names the dir by target bpw.
+        // Derive org/name from the source so the quant is named readably (the
+        // source is usually an HF-cache snapshot path whose basename is a hash).
+        const snapMatch = body.model_id.match(/(models--[^/]+)\/snapshots\//);
+        let org = "local", name: string;
+        if (snapMatch) {
+          const parts = snapMatch[1].split("--"); // ["models", org, ...name]
+          org = parts[1] ?? "local";
+          name = parts.slice(2).join("--");
+        } else if (body.model_id.includes("/") && !body.model_id.startsWith("/") && !body.model_id.startsWith("~")) {
+          const seg = body.model_id.split("/"); // a repo id "org/name"
+          org = seg[0]!; name = seg.slice(1).join("-");
+        } else {
+          name = body.model_id.split("/").filter(Boolean).at(-1) ?? "model"; // a bare path
+        }
+        name = (name || "model").replace(/[^a-z0-9_.-]/gi, "");
+        org = (org || "local").replace(/[^a-z0-9_.-]/gi, "");
         const suffix = body.target_bpw ? `mixed-${body.target_bpw}bpw` : `${bits}bit`;
-        const outDir = `${homedir()}/.cache/mlx-bun/quants/${base}-OptiQ-${suffix}`;
+        // Write the quant INTO the HF hub cache as a normal models--org--name/
+        // snapshots/<hash> entry, so the standard registry scan + every other
+        // tool discovers it alongside downloaded models. refs/main makes it a
+        // well-formed cache entry.
+        const quantRepo = `${name}-OptiQ-${suffix}`;
+        const hubRoot = process.env.HF_HUB_CACHE
+          ?? (process.env.HF_HOME ? join(process.env.HF_HOME, "hub") : join(homedir(), ".cache/huggingface/hub"));
+        const repoDir = join(hubRoot, `models--${org}--${quantRepo}`);
+        const snapHash = createHash("sha1").update(`${org}/${quantRepo}`).digest("hex");
+        const outDir = join(repoDir, "snapshots", snapHash);
+        try {
+          mkdirSync(join(repoDir, "refs"), { recursive: true });
+          writeFileSync(join(repoDir, "refs", "main"), snapHash);
+        } catch {}
         const { jobId } = submitSubprocess(store, "quantize", {
           model_id: body.model_id, out_dir: outDir, bits, group_size: gs,
           // forwarded to the mixed-precision path when target_bpw is set
           target_bpw: body.target_bpw, candidate_bits: body.candidate_bits,
           reference: body.reference, calibration_mix: body.calibration_mix,
           n_calibration: body.n_calibration,
-        }, outDir);
+        }, outDir, {
+          // The model is in the HF cache now; drop the Library cache so the next
+          // poll rescans and shows it — no `mlx-bun scan`, no restart.
+          onComplete: () => { libraryCache = null; },
+        });
         return Response.json({ ok: true, job_id: jobId, output_dir: outDir });
       }
 

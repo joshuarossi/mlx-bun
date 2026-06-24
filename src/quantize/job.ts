@@ -52,14 +52,29 @@ export const quantizeRunner: JobRunner = async (emit: Emit, config) => {
 
   const srcDir = resolveSrcDir(config);
 
+  // Mixed-precision (OptiQ sensitivity sweep + knapsack) is triggered by
+  // targetBpw. The server/CLI send these as snake_case in the job config — they
+  // MUST be forwarded into opts or quantizeModelDir silently runs uniform.
+  const targetBpw = config.target_bpw != null ? Number(config.target_bpw) : undefined;
+  const mixed = targetBpw !== undefined;
+
   emit({
     type: "stage",
     stage: "starting",
     progress: 0.01,
-    message: `Quantizing ${srcDir} → ${bits}-bit (g${groupSize})`,
+    message: mixed
+      ? `Quantizing ${srcDir} → mixed ${targetBpw} bpw (OptiQ sensitivity sweep, ~minutes)`
+      : `Quantizing ${srcDir} → ${bits}-bit (g${groupSize})`,
   });
 
-  const opts: QuantizeOptions = { bits, groupSize, mode: String(config.mode ?? "affine") };
+  const opts: QuantizeOptions = {
+    bits, groupSize, mode: String(config.mode ?? "affine"),
+    ...(targetBpw !== undefined ? { targetBpw } : {}),
+    ...(Array.isArray(config.candidate_bits) ? { candidateBits: (config.candidate_bits as number[]).map(Number) } : {}),
+    ...(config.reference ? { reference: String(config.reference) } : {}),
+    ...(config.calibration_mix ? { calibrationMix: String(config.calibration_mix) } : {}),
+    ...(config.n_calibration != null ? { nCalibration: Number(config.n_calibration) } : {}),
+  };
 
   const r = await quantizeModelDir(srcDir, outDir, opts, (e) =>
     emit({ type: "stage", stage: e.stage, progress: e.progress, message: e.message }),

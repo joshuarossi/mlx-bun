@@ -392,8 +392,28 @@ async function computeMixedAllocation(
 
   progress("sensitivity", "Loading model for sensitivity analysis", 0.0);
 
-  const config = await loadModelConfig(srcDir);
-  const weights = await Weights.open(srcDir);
+  // The sensitivity sweep runs FORWARD passes, which need a model the runtime
+  // can load — and mlx-bun's model graph can only load QUANTIZED weights. If the
+  // source is bf16 (unquantized), build a temporary uniform 8-bit baseline
+  // (near-lossless) to probe against. The FINAL weights are still quantized from
+  // the original bf16 source per the allocation (quantizeModelDir reads srcDir),
+  // so fidelity is not capped by the baseline — the baseline only anchors the
+  // per-layer sensitivity (8→4-bit) measurement.
+  const srcConfig = await loadModelConfig(srcDir);
+  let probeDir = srcDir;
+  let tempBaseline: string | null = null;
+  if (!srcConfig.quantization) {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    tempBaseline = mkdtempSync(join(tmpdir(), "mlx-bun-qbaseline-"));
+    progress("sensitivity", "Unquantized source — building an 8-bit baseline for the sweep", 0.0);
+    await quantizeModelDir(srcDir, tempBaseline, { bits: 8, groupSize, mode: "affine" });
+    probeDir = tempBaseline;
+  }
+
+  const config = await loadModelConfig(probeDir);
+  const weights = await Weights.open(probeDir);
   try {
     const model = createModel(weights, config);
     const tokenizer = await loadTokenizer(srcDir);
@@ -458,5 +478,9 @@ async function computeMixedAllocation(
   } finally {
     weights.dispose();
     clearCache();
+    if (tempBaseline) {
+      const { rmSync } = await import("node:fs");
+      rmSync(tempBaseline, { recursive: true, force: true });
+    }
   }
 }
