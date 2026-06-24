@@ -641,10 +641,14 @@
         <p class="lead" style="margin:6px 0 22px;font-size:14.5px">Point at a Hugging Face repo id or a local snapshot path. Inspect first to confirm support and size.</p>
         <div class="field">
           <label>Model id or path</label>
-          <input type="text" id="q-model" placeholder="mlx-community/Qwen3-8B-bf16" autocomplete="off">
-          <div class="hint">Anything on huggingface.co, or an absolute path to a local snapshot.</div>
+          <div id="q-drop">
+            <input type="text" id="q-model" placeholder="mlx-community/Qwen3-8B-bf16" autocomplete="off">
+          </div>
+          <input type="file" id="q-folder" webkitdirectory directory style="display:none">
+          <div class="hint">Anything on huggingface.co, an absolute path to a local snapshot, or <strong>choose / drop a folder</strong> below — we read its <code>config.json</code> and find the snapshot on disk.</div>
         </div>
         <div class="btnrow">
+          <button class="btn ghost" id="q-browse">Choose folder…</button>
           <button class="btn ghost" id="q-inspect">Inspect</button>
         </div>
         <div id="q-inspect-out"></div>
@@ -703,7 +707,7 @@
         <p class="lead" style="margin:6px 0 18px;font-size:14.5px">Your quantized model is written to disk.</p>
         <div class="field"><label>Output directory</label>
           <pre class="logbox" id="q-out" style="max-height:none;margin-top:0"></pre></div>
-        <div class="flash ok">Run <code>mlx-bun scan</code> (or it's auto-picked up on restart) to make this model serveable from the Library.</div>
+        <div class="flash ok">Written to your model cache and registered automatically — it's already serveable from the Library and the model picker.</div>
         <div class="grid g4" style="margin-top:14px">
           <div class="card"><h3>Push to Hugging Face</h3><div class="cap">Publish this quantized model to a Hugging Face repo.</div>
             <div class="btnrow" style="margin-top:14px"><button class="btn ghost sm" id="q-push">Push to HF</button></div>
@@ -731,10 +735,16 @@
         <p class="lead" style="margin:6px 0 22px;font-size:14.5px">The model you're adapting. Point at a local model directory or snapshot path.</p>
         <div class="field">
           <label>Model directory / path</label>
-          <input type="text" id="f-model" placeholder="/abs/path/to/model  or  mlx-community/Qwen3-8B-4bit" autocomplete="off">
-          <div class="hint">An OptiQ quant or any supported local model works.</div>
+          <div id="f-drop">
+            <input type="text" id="f-model" placeholder="/abs/path/to/model  or  mlx-community/Qwen3-8B-4bit" autocomplete="off">
+          </div>
+          <input type="file" id="f-folder" webkitdirectory directory style="display:none">
+          <div class="hint">An OptiQ quant or any supported local model works — type a path/repo id, or <strong>choose / drop a folder</strong> below.</div>
         </div>
-        <div class="btnrow"><button class="btn primary" id="f-next0">Continue</button></div>
+        <div class="btnrow">
+          <button class="btn ghost" id="f-browse">Choose folder…</button>
+          <button class="btn primary" id="f-next0">Continue</button>
+        </div>
       </div>
 
       <!-- step 2: dataset -->
@@ -1105,7 +1115,7 @@ function mdInline(t) {
   // Pull code spans out first (any run of backticks), then escape the rest.
   t = String(t).replace(/(`+)([\s\S]+?)\1/g, (_m, _ticks, c) => {
     codes.push(c.replace(/^ | $/g, ""));
-    return " C" + (codes.length - 1) + " ";
+    return "\u0000C" + (codes.length - 1) + "\u0000";
   });
   let s = esc(t);
   // [text](url "title") — title optional and ignored.
@@ -1123,7 +1133,7 @@ function mdInline(t) {
   // Autolink bare URLs that markdown didn't already wrap.
   s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+[^\s<).,;:!?'"])/g,
     (_m, pre, url) => pre + '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + "</a>");
-  return s.replace(/ C(\d+) /g, (_m, i) => "<code>" + esc(codes[+i]) + "</code>");
+  return s.replace(/\u0000C(\d+)\u0000/g, (_m, i) => "<code>" + esc(codes[+i]) + "</code>");
 }
 
 function mdCodeBlock(lang, code) {
@@ -2086,6 +2096,33 @@ controllers.quantize = (() => {
       }));
   }
 
+  // --- OS folder picker / drag-drop → real on-disk snapshot path ---
+  // The browser can't reveal an absolute path, and the HF cache uses symlinked
+  // snapshots over a blobs/ store — so we DON'T read any files. We only take the
+  // picked folder's NAME (which encodes the repo id) and let the server
+  // reconstruct the snapshot path it owns. No upload, no "config.json" hunt.
+  async function resolveByName(name, relPath) {
+    if (!name && !relPath) return;
+    const out = $("q-inspect-out");
+    out.innerHTML = '<div class="flash"><span class="shimmer">locating on disk…</span></div>';
+    const d = await api("/api/quantize/resolve-folder", { method: "POST", body: { folder_name: name || "", rel_path: relPath || "" } })
+      .catch(() => ({ ok: false, error: "request failed" }));
+    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "could not locate this folder on the server") + "</div>"; return; }
+    $("q-model").value = d.path;
+    inspect();
+  }
+  async function pickFolder() {
+    // Native OS folder dialog with no "upload N files" prompt; we only read the
+    // folder's .name, never its contents.
+    if (window.showDirectoryPicker) {
+      try {
+        const handle = await window.showDirectoryPicker({ id: "mlx-models", mode: "read" });
+        return resolveByName(handle.name);
+      } catch (e) { return; } // user cancelled / denied
+    }
+    $("q-folder").click(); // fallback for browsers without the File System Access API
+  }
+
   async function inspect() {
     const id = $("q-model").value.trim();
     if (!id) { toast("Enter a model id or path first.", "err"); return; }
@@ -2142,6 +2179,26 @@ controllers.quantize = (() => {
       show(0);
       $("q-inspect").onclick = inspect;
       $("q-model").addEventListener("keydown", (e) => { if (e.key === "Enter") inspect(); });
+      // OS folder dialog (native; resolves by folder name, no upload)
+      $("q-browse").onclick = pickFolder;
+      $("q-folder").addEventListener("change", (e) => {
+        const f = e.target.files[0]; e.target.value = "";
+        if (f) resolveByName((f.webkitRelativePath || f.name).split("/")[0], f.webkitRelativePath || "");
+      });
+      // drag a folder onto the box — use the directory entry's NAME (no read)
+      const drop = $("q-drop");
+      const hi = (on) => { drop.style.outline = on ? "2px dashed var(--blue)" : ""; drop.style.outlineOffset = on ? "4px" : ""; };
+      ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); hi(true); }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
+        e.preventDefault(); hi(false);
+        if (ev !== "drop" || !e.dataTransfer) return;
+        for (const it of [...(e.dataTransfer.items || [])]) {
+          const en = it.webkitGetAsEntry && it.webkitGetAsEntry();
+          if (en && en.isDirectory) return resolveByName(en.name);
+        }
+        const f = e.dataTransfer.files && e.dataTransfer.files[0];
+        if (f) resolveByName((f.webkitRelativePath || f.name).split("/")[0]);
+      }));
       seg($("q-bits"), (v) => { bits = +v; $("q-bits-hint").textContent = v === "4"
         ? "4-bit · ~4× smaller than bf16 · the recommended default for local serving."
         : "8-bit · ~2× smaller than bf16 · highest fidelity quant."; });
@@ -2161,7 +2218,7 @@ controllers.quantize = (() => {
    ════════════════════════════════════════════════════════════════════ */
 controllers.finetune = (() => {
   const STEPS = ["Base", "Dataset", "Hyperparams", "Train", "Done"];
-  let step = 0, method = "sft", lrTouched = false, es = null, log = [];
+  let step = 0, method = "sft", lrTouched = false, rankTouched = false, es = null, log = [];
   let datasetOk = false, adapterPath = "";
   const trainPts = [], valPts = [];
 
@@ -2169,6 +2226,23 @@ controllers.finetune = (() => {
     step = n;
     document.querySelectorAll("[data-fstep]").forEach((d) => d.style.display = (+d.dataset.fstep === n) ? "" : "none");
     renderSteps($("f-steps"), STEPS, n);
+  }
+
+  // OS folder picker for the base model — resolve by NAME server-side (no
+  // upload, works with the HF cache's symlinked layout). Mirrors Quantize.
+  async function resolveBaseByName(name, relPath) {
+    if (!name && !relPath) return;
+    const d = await api("/api/model/resolve-folder", { method: "POST", body: { folder_name: name || "", rel_path: relPath || "" } })
+      .catch(() => ({ ok: false, error: "request failed" }));
+    if (!d.ok) { toast(d.error || "could not locate this folder", "err"); return; }
+    $("f-model").value = d.path;
+  }
+  async function pickBaseFolder() {
+    if (window.showDirectoryPicker) {
+      try { const h = await window.showDirectoryPicker({ id: "mlx-models", mode: "read" }); return resolveBaseByName(h.name); }
+      catch (e) { return; }
+    }
+    $("f-folder").click();
   }
 
   async function inspectDataset() {
@@ -2195,6 +2269,8 @@ controllers.finetune = (() => {
         ? "Odds Ratio Preference Optimization (reference-free) — data is {prompt, chosen, rejected}."
         : "Supervised fine-tuning — data is messages or prompt+completion.";
     if (!lrTouched) $("f-lr").value = m === "dpo" ? 0.00005 : m === "orpo" ? 0.00001 : 0.0002;
+    // ORPO's validated LoRA recipe uses rank 16 (vs 8 for SFT); apply unless edited.
+    if (!rankTouched) $("f-rank").value = m === "orpo" ? 16 : 8;
   }
 
   function collectHP() {
@@ -2330,12 +2406,34 @@ controllers.finetune = (() => {
     init() {
       show(0);
       $("f-next0").onclick = () => { if (!$("f-model").value.trim()) { toast("Enter a base model path.", "err"); return; } show(1); };
+      // OS folder dialog for the base model (native; resolves by name, no upload)
+      $("f-browse").onclick = pickBaseFolder;
+      $("f-folder").addEventListener("change", (e) => {
+        const f = e.target.files[0]; e.target.value = "";
+        if (f) resolveBaseByName((f.webkitRelativePath || f.name).split("/")[0], f.webkitRelativePath || "");
+      });
+      {
+        const drop = $("f-drop");
+        const hi = (on) => { drop.style.outline = on ? "2px dashed var(--blue)" : ""; drop.style.outlineOffset = on ? "4px" : ""; };
+        ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); hi(true); }));
+        ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
+          e.preventDefault(); hi(false);
+          if (ev !== "drop" || !e.dataTransfer) return;
+          for (const it of [...(e.dataTransfer.items || [])]) {
+            const en = it.webkitGetAsEntry && it.webkitGetAsEntry();
+            if (en && en.isDirectory) return resolveBaseByName(en.name);
+          }
+          const f = e.dataTransfer.files && e.dataTransfer.files[0];
+          if (f) resolveBaseByName((f.webkitRelativePath || f.name).split("/")[0]);
+        }));
+      }
       $("f-inspect").onclick = inspectDataset;
       $("f-data").addEventListener("keydown", (e) => { if (e.key === "Enter") inspectDataset(); });
       $("f-data").addEventListener("input", () => { datasetOk = false; $("f-next1").disabled = true; $("f-inspect-out").innerHTML = ""; });
       $("f-next1").onclick = () => { if (datasetOk) show(2); };
       $("f-method").querySelectorAll("button").forEach((b) => b.onclick = () => setMethod(b.dataset.v));
       $("f-lr").addEventListener("input", () => { lrTouched = true; });
+      $("f-rank").addEventListener("input", () => { rankTouched = true; });
       document.querySelectorAll("#s-finetune [data-fback]").forEach((b) => b.onclick = () => show(step - 1));
       $("f-submit").onclick = submit;
       $("f-merge-go").onclick = mergeAdapters;

@@ -76,6 +76,49 @@ Hysteresis (require K consecutive evals before a phase flip) prevents oscillatio
 by more than a threshold, freeze λ at `LAMBDA_MIN` and log — the model is paying for
 margin with chosen's likelihood, which a backoff alone isn't recovering.
 
+## Control-theory framing (PID / AIMD) — added 2026-06-23
+
+The phase state-machine above is one instance of a more general and more honest
+frame: **this is closed-loop control.** The **process variable** is the SFT signal
+(NLL / `lw`), the **actuator** is the preference weight (ORPO's λ, *or* SimPO's
+β/γ — the controller is objective-agnostic), and the **control law** is what maps the
+measured degradation back to the actuator. Two laws worth naming:
+
+- **AIMD** (additive-increase / multiplicative-decrease — TCP congestion control):
+  ramp the preference up *gently* while the SFT is healthy, **slam it down hard** the
+  moment degradation ("congestion") appears. Famously robust and forgiving of its own
+  knobs. The PHASE-2 ramp / PHASE-3 backoff is essentially AIMD.
+- **PID** decomposes the response into three terms, each fixing a failure the others
+  can't:
+  - **P (proportional · the level):** how degraded is `lw` *right now* → back off in proportion. (Leaves a steady-state offset.)
+  - **D (derivative · the slope):** is degradation *accelerating* → a **leading indicator** that catches the helping→hurting **inflection before the level rises**, so you pull back *earlier* and leave less damage to heal. **Gotcha:** differentiating a noisy signal amplifies noise → use a *robust* slope (slope of the EMA, or a windowed regression), never raw step deltas. The slope is where most of the value is.
+  - **I (integral · accumulated error):** the "missing letter." P leaves a chronic offset and D ignores it (flat slope at steady-state) → the model can settle hovering with a *small persistent* NLL elevation = quiet permanent SFT damage. I accumulates that residual and drives `lw` **back to its floor**. **Gotcha — integral windup:** if the actuator is pinned (λ at floor) while error persists, the integral piles up and **overshoots** on recovery → needs **anti-windup** (clamp/stop accumulating when saturated).
+
+**Build it incrementally — P → PD → PID** — each term earning its place against an
+*observed* failure of the simpler controller (P oscillates/offsets → add D; chronic
+offset remains → add I with anti-windup). That's both good control practice and an
+**ablation that writes the experimental section**, and it stops us from tuning three
+gains blind.
+
+**Why a controller beats a sweep (the real argument):** the optimal preference
+pressure is **non-stationary** — fragile early (push less), robust late (push more) —
+so **no fixed λ is optimal.** A sweep finds the best *constant*; the controller tracks
+the moving target and finds the best *trajectory*, which strictly dominates. The pitch
+isn't just "one run instead of six," it's "**beats any fixed value** a sweep could
+find." (The displacement backoff is also why this is *more* than auto-tuning — it
+targets the degradation signal directly.)
+
+**Degenerate failure to guard (beyond the §degeneration hard-stop):** if the law backs
+off too eagerly it **collapses the preference term to ~0 → you've trained pure SFT.**
+The AIMD/PID balance must **favor pushing** (aggressive-ish increase, retreat only on
+*confirmed* degradation), and target a small **safety margin below the cliff** rather
+than the absolute max-bearable (the edge is fragile).
+
+**Synergy with the diffusion frontier:** all of this is noise-robustness machinery for
+controlling off a noisy process variable — so it transfers *especially* well to a
+diffusion LM, where the likelihood is a stochastic ELBO (even noisier). See
+[orpo-base-uf-experiment-and-directions.md](../investigations/orpo-base-uf-experiment-and-directions.md) §6.7.
+
 ## Wiring
 
 1. **Instrument (small):** add `lw`, `lr` to `orpoMetrics`'s return + the trainer's

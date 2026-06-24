@@ -149,6 +149,7 @@ interface QueuedSpawn {
   jobId: string;
   entry: string;
   bin: string;
+  onComplete?: (jobId: string, code: number) => void;
 }
 
 let gpuLeaseHolder: string | null = null;
@@ -170,6 +171,9 @@ export interface SubprocessOpts {
   entry?: string;
   /** Override the runtime binary (tests). Defaults to "bun". */
   bin?: string;
+  /** Called on the server (parent) after the child exits — used to invalidate
+   *  caches (e.g. the Library) so a finished quantize surfaces immediately. */
+  onComplete?: (jobId: string, code: number) => void;
 }
 
 /** Create a 'queued' row and either spawn it now (lease free) or leave it
@@ -188,6 +192,7 @@ export function submitSubprocess(
     jobId: row.id,
     entry: opts.entry ?? JOB_ENTRY_PATH,
     bin: opts.bin ?? "bun",
+    onComplete: opts.onComplete,
   };
   if (gpuLeaseHolder === null) {
     spawnNow(item);
@@ -243,6 +248,7 @@ function spawnNow(item: QueuedSpawn): void {
       }
     }
     releaseLease(jobId);
+    try { item.onComplete?.(jobId, code); } catch {}
     drainQueue();
   })();
 }

@@ -60,6 +60,14 @@ function parseConfig(raw: Record<string, unknown>): { modelDir: string; dataDir:
   if (!c.data_dir) throw new Error("finetune job: missing data_dir");
   if (!c.adapter_path) throw new Error("finetune job: missing adapter_path");
 
+  // For ORPO the full L3 stack is the validated production recipe (what the
+  // `mlx-bun train` CLI turns on): flash-CCE head + prefix-sharing + segmented
+  // backward + token-chunked head. DEFAULT_TRAIN_CONFIG keeps them OFF (they're
+  // opt-in for SFT), so default them ON here when method=orpo — an explicit
+  // value from the caller (CLI/API) still wins via ??. finetuneRunner drops the
+  // quantized-head pieces if the base turns out to be unquantized.
+  const isOrpo = (c.method ?? "sft") === "orpo";
+
   const cfg: TrainConfig = {
     ...DEFAULT_TRAIN_CONFIG,
     method: c.method ?? "sft",
@@ -83,7 +91,7 @@ function parseConfig(raw: Record<string, unknown>): { modelDir: string; dataDir:
     loraPlusRatio: c.lora_plus_ratio ?? DEFAULT_TRAIN_CONFIG.loraPlusRatio,
     gradCheckpoint: c.grad_checkpoint ?? DEFAULT_TRAIN_CONFIG.gradCheckpoint,
     mlpSplit: c.mlp_split ?? DEFAULT_TRAIN_CONFIG.mlpSplit,
-    segmentSize: c.segment_size ?? DEFAULT_TRAIN_CONFIG.segmentSize,
+    segmentSize: c.segment_size ?? (isOrpo ? 2 : DEFAULT_TRAIN_CONFIG.segmentSize),
     saveCheckpoints: c.save_checkpoints ?? DEFAULT_TRAIN_CONFIG.saveCheckpoints,
     gradClipNorm: c.grad_clip_norm ?? DEFAULT_TRAIN_CONFIG.gradClipNorm,
     valMaxExamples: c.val_max_examples ?? DEFAULT_TRAIN_CONFIG.valMaxExamples,
@@ -93,10 +101,10 @@ function parseConfig(raw: Record<string, unknown>): { modelDir: string; dataDir:
     orpoLambda: c.orpo_lambda ?? DEFAULT_TRAIN_CONFIG.orpoLambda,
     orpoWarmupIters: c.orpo_warmup_iters ?? DEFAULT_TRAIN_CONFIG.orpoWarmupIters,
     orpoLrSchedule: c.orpo_lr_schedule ?? DEFAULT_TRAIN_CONFIG.orpoLrSchedule,
-    orpoChunkSize: c.orpo_chunk_size ?? DEFAULT_TRAIN_CONFIG.orpoChunkSize,
+    orpoChunkSize: c.orpo_chunk_size ?? (isOrpo ? 512 : DEFAULT_TRAIN_CONFIG.orpoChunkSize),
     orpoFusedCe: c.orpo_fused_ce ?? DEFAULT_TRAIN_CONFIG.orpoFusedCe,
-    orpoFlashCe: c.orpo_flash_ce ?? DEFAULT_TRAIN_CONFIG.orpoFlashCe,
-    orpoPrefixShared: c.orpo_prefix_shared ?? DEFAULT_TRAIN_CONFIG.orpoPrefixShared,
+    orpoFlashCe: c.orpo_flash_ce ?? (isOrpo ? true : DEFAULT_TRAIN_CONFIG.orpoFlashCe),
+    orpoPrefixShared: c.orpo_prefix_shared ?? (isOrpo ? true : DEFAULT_TRAIN_CONFIG.orpoPrefixShared),
     warmStartAdapter: c.warm_start_adapter ?? DEFAULT_TRAIN_CONFIG.warmStartAdapter,
     adapterPath: c.adapter_path,
     baseModel: c.model_dir,
@@ -107,6 +115,18 @@ function parseConfig(raw: Record<string, unknown>): { modelDir: string; dataDir:
 export const finetuneRunner: JobRunner = async (emit, config) => {
   const { modelDir, dataDir, cfg } = parseConfig(config);
 
+  // Gemma/e4b needs these training env flags set BEFORE the model loads — same
+  // as the `mlx-bun train` CLI. The subprocess job path doesn't inherit them
+  // from the server, so without this a web-submitted ORPO/SFT run on Gemma uses
+  // the wrong kernels. ??= so an explicit env (or the CLI) still wins.
+  try {
+    const isGemma = (await Bun.file(`${modelDir}/config.json`).text()).toLowerCase().includes("gemma");
+    if (isGemma) {
+      process.env.MLX_BUN_PERF_KERNEL ??= "0";
+      process.env.MLX_BUN_FUSED_GELU ??= "0";
+    }
+  } catch {}
+
   emit({ type: "stage", stage: "load", progress: 0.01, message: `loading model ${modelDir}` });
 
   const { loadModelConfig } = await import("../config");
@@ -116,6 +136,19 @@ export const finetuneRunner: JobRunner = async (emit, config) => {
   const { ChatTemplate } = await import("../chat-template");
 
   const modelConfig = await loadModelConfig(modelDir);
+
+  // The flash-CCE / fused-CE heads dequantize a QUANTIZED head in-kernel; on an
+  // unquantized (bf16) base they can't run, so fall back to the full-logits head.
+  // (Quantize the base first to get the large-vocab memory win — see the
+  // Quantize tab.)
+  if (cfg.method === "orpo" && !modelConfig.quantization && (cfg.orpoFlashCe || cfg.orpoFusedCe)) {
+    emit({
+      type: "stage", stage: "load",
+      message: "unquantized base — flash/fused-CE head needs a quantized head; using full-logits head",
+    });
+    cfg.orpoFlashCe = false;
+    cfg.orpoFusedCe = false;
+  }
   const weights = await Weights.open(modelDir);
   const model = createModel(weights, modelConfig);
   const tok = await loadTokenizer(modelDir);
