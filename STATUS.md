@@ -5,6 +5,12 @@ exit criteria, and findings live in [PLAN.md](PLAN.md); this file is the
 transient front door that stays current. Product/UX north star:
 [docs/planning/PRODUCT_ROADMAP.md](docs/planning/PRODUCT_ROADMAP.md).
 
+**Current release: v0.0.6** (2026-06-23) — npm + Homebrew + GitHub release all live
+(`brew upgrade joshuarossi/tap/mlx-bun` / `npm i -g mlx-bun` / `bunx mlx-bun`).
+Adds `mlx-bun train` (CLI ORPO/SFT/DPO LoRA), `mlx-bun generate`, the `--l1/--l2/--l3`
+parity-tier aliases, web sampling sliders, mixed-precision quantize, and the
+train-watch dashboard. Notes: https://github.com/joshuarossi/mlx-bun/releases/tag/v0.0.6
+
 ## Current work — Steel flash-CCE ORPO head + the ORPO training stack (2026-06-19)
 
 Porting MLX's `steel` quantized GEMM verbatim into the flash-CCE ORPO head + fusing
