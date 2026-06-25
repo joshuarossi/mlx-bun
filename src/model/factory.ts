@@ -11,11 +11,17 @@ import { configFingerprint } from "./fingerprint";
 import { GENERATED } from "./generated";
 import { MiniCPM5Model } from "./minicpm5";
 import { Qwen35Model } from "./qwen3_5";
-import { isMiniCPM5Config, isQwen35Config } from "./support";
+import { DiffusionGemmaModel } from "./diffusion-gemma";
+import { isDiffusionGemmaConfig, isMiniCPM5Config, isQwen35Config } from "./support";
 
-export type RuntimeModel = Gemma4Model | MiniCPM5Model | Qwen35Model;
+export type RuntimeModel = Gemma4Model | MiniCPM5Model | Qwen35Model | DiffusionGemmaModel;
 
 export function createModel(weights: Weights, config: ModelConfig): RuntimeModel {
+  // DiffusionGemma is non-autoregressive — generate() detects it and routes to
+  // the denoising engine instead of the AR decode loop. It exposes the shared
+  // RuntimeModel surface (config/weightsBytes/loraState/makeCache) with the
+  // AR-only methods as throwing stubs (never called on this model).
+  if (isDiffusionGemmaConfig(config)) return new DiffusionGemmaModel(weights, config);
   if (isMiniCPM5Config(config)) return new MiniCPM5Model(weights, config);
   if (isQwen35Config(config)) return new Qwen35Model(weights, config);
   if (config.modelType === "llama")

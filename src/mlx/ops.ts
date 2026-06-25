@@ -315,6 +315,13 @@ export function cumsum(a: MlxArray, axis: number, s: S = gpuStream): MlxArray {
   );
 }
 
+/** Cumulative maximum along `axis` (inclusive, forward) — mlx.core.cummax. */
+export function cummax(a: MlxArray, axis: number, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("cummax", (o) => C.mlx_cummax(o, a.handle, axis, false, true, s)),
+  );
+}
+
 export function where(cond: MlxArray, x: MlxArray, y: MlxArray, s: S = gpuStream): MlxArray {
   return new MlxArray(
     outArray("where", (o) => C.mlx_where(o, cond.handle, x.handle, y.handle, s)),
@@ -368,6 +375,38 @@ export function greaterEqual(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArr
 
 export function less(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
   return new MlxArray(outArray("less", (o) => C.mlx_less(o, a.handle, b.handle, s)));
+}
+
+export function lessEqual(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("less_equal", (o) => C.mlx_less_equal(o, a.handle, b.handle, s)));
+}
+
+export function logicalNot(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("logical_not", (o) => C.mlx_logical_not(o, a.handle, s)));
+}
+
+export function equal(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("equal", (o) => C.mlx_equal(o, a.handle, b.handle, s)));
+}
+
+/** Reduce-all to a scalar (mlx.core.all). */
+export function allReduce(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("all", (o) => C.mlx_all(o, a.handle, false, s)));
+}
+
+/** any along one axis (mlx.core.any). */
+export function anyAxis(a: MlxArray, axis: number, keepdims: boolean, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("any_axis", (o) => C.mlx_any_axis(o, a.handle, axis, keepdims, s)));
+}
+
+/** Read a 0-d/1-elem boolean array to host (forces eval). */
+export function itemBool(a: MlxArray): boolean {
+  const u = a.astype(Dtype.uint32);
+  try {
+    return itemUint32(u) !== 0;
+  } finally {
+    u.dispose();
+  }
 }
 
 export function logicalAnd(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
@@ -441,6 +480,34 @@ export function sliceUpdateDynamic(
 
 export function randomKey(seed: bigint): MlxArray {
   return new MlxArray(outArray("random_key", (o) => C.mlx_random_key(o, seed)));
+}
+
+/** Set the GLOBAL mlx PRNG seed (mlx.core.random.seed). Calls to randint/etc
+ *  with a null key thread the global key, so seeding then calling in the same
+ *  order as the reference reproduces its draws bit-for-bit. */
+export function randomSeed(seed: bigint): void {
+  if (C.mlx_random_seed(seed) !== 0) throw new Error(`mlx_random_seed failed: ${takeMlxError() ?? ""}`);
+}
+
+/** Uniform integers in [low, high) — mlx.core.random.randint. With key=null it
+ *  uses (and advances) the global key, matching mx.random.randint exactly. */
+export function randint(
+  low: number, high: number, shape: number[], dtype: Dtype,
+  key: MlxArray | null = null, s: S = gpuStream,
+): MlxArray {
+  const buf = new Int32Array(shape);
+  const lo = MlxArray.fromInt32(new Int32Array([low]), []);
+  const hi = MlxArray.fromInt32(new Int32Array([high]), []);
+  try {
+    return new MlxArray(
+      outArray("random_randint", (o) =>
+        C.mlx_random_randint(o, lo.handle, hi.handle, ptr(buf), BigInt(shape.length), dtype, key?.handle ?? 0n, s),
+      ),
+    );
+  } finally {
+    lo.dispose();
+    hi.dispose();
+  }
 }
 
 export function randomCategorical(logits: MlxArray, key: MlxArray | null, s: S = gpuStream): MlxArray {

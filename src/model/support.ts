@@ -31,9 +31,17 @@ export function isDrafterModelType(modelType: string): boolean {
   return modelType.endsWith("_assistant");
 }
 
+/** DiffusionGemma (model_type `diffusion_gemma`): block/masked-diffusion canvas
+ *  model. Non-autoregressive — routed through the diffusion engine, not the AR
+ *  loop. See docs/design/diffusion-gemma-port.md. */
+export function isDiffusionGemmaConfig(config: ModelConfig): boolean {
+  return config.modelType === "diffusion_gemma";
+}
+
 export function isSupportedModelRecord(modelType: string, repoId = ""): boolean {
   if (isDrafterModelType(modelType)) return false;
   if (modelType.startsWith("gemma4")) return true;
+  if (modelType === "diffusion_gemma") return true;
   // qwen3_5 / qwen3_5_text (dense hybrid). The MoE variant is a separate type.
   if (modelType === "qwen3_5" || modelType === "qwen3_5_text") return true;
   return modelType === "llama" && repoId.toLowerCase().includes("minicpm5-1b-optiq-4bit");
@@ -42,5 +50,5 @@ export function isSupportedModelRecord(modelType: string, repoId = ""): boolean 
 export function isSupportedModelConfig(config: ModelConfig): boolean {
   if (isDrafterModelType(config.modelType)) return false;
   return config.modelType.startsWith("gemma4") || isMiniCPM5Config(config) ||
-    isQwen35Config(config);
+    isQwen35Config(config) || isDiffusionGemmaConfig(config);
 }

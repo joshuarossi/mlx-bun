@@ -142,11 +142,17 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_take_along_axis: { args: [P, u64, u64, i32, u64], returns: i32 },
   mlx_put_along_axis: { args: [P, u64, u64, u64, i32, u64], returns: i32 },
   mlx_cumsum: { args: [P, u64, i32, FFIType.bool, FFIType.bool, u64], returns: i32 },
+  mlx_cummax: { args: [P, u64, i32, FFIType.bool, FFIType.bool, u64], returns: i32 },
   mlx_where: { args: [P, u64, u64, u64, u64], returns: i32 },
   mlx_logsumexp_axis: { args: [P, u64, i32, FFIType.bool, u64], returns: i32 },
   mlx_greater_equal: { args: [P, u64, u64, u64], returns: i32 },
   mlx_less: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_less_equal: { args: [P, u64, u64, u64], returns: i32 },
   mlx_logical_and: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_logical_not: { args: [P, u64, u64], returns: i32 },
+  mlx_equal: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_all: { args: [P, u64, FFIType.bool, u64], returns: i32 },
+  mlx_any_axis: { args: [P, u64, i32, FFIType.bool, u64], returns: i32 },
   mlx_random_key: { args: [P, u64], returns: i32 },
   mlx_random_categorical: { args: [P, u64, i32, u64, u64], returns: i32 },
   mlx_astype: { args: [P, u64, i32, u64], returns: i32 },
@@ -181,6 +187,8 @@ export const C = dlopen(LIBMLXC_PATH, {
   // (res, low, high, shape*, n, dtype, key may-be-null, stream) — low/high are
   // scalar mlx_arrays. Used for mlx-lm-faithful LoRA A init (uniform).
   mlx_random_uniform: { args: [P, u64, u64, P, u64, i32, u64, u64], returns: i32 },
+  mlx_random_randint: { args: [P, u64, u64, P, u64, i32, u64, u64], returns: i32 },
+  mlx_random_seed: { args: [u64], returns: i32 },
   mlx_random_split_num: { args: [P, u64, i32, u64], returns: i32 },
   // --- training: loss/optimizer elementwise + reductions
   mlx_stop_gradient: { args: [P, u64, u64], returns: i32 },
