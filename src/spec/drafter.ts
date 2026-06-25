@@ -4,14 +4,23 @@
 //
 // Q-only 4-layer transformer: K/V come from the TARGET's last sliding-
 // and full-attention donor caches at call time; pre/post projections
-// bridge target hidden space (2560) <-> drafter space (256); output via
-// the centroid-clustered head (2048 centroids, top-32 × 128 tokens).
+// bridge target hidden space (backbone) <-> drafter space.
 //
-// Implementation deviation (argmax-equivalent): the reference scatters
-// candidate scores into full-vocab logits initialised to -1e30 and
-// argmaxes; we argmax over the 4096 candidate scores and map through
-// candidate ids directly — same winner, no 262k materialisation. The
-// drafter's numeric details only influence acceptance RATE, never
+// Two output-head variants ship across the Gemma-4 drafter family — we
+// pick by TENSOR PRESENCE, not config (the larger artifacts declare
+// num_centroids in config.json but don't ship the centroid tensors —
+// the field is vestigial):
+//   - CENTROID head (small E2B/E4B drafters, `gemma4_assistant`):
+//     2048 centroids, top-32 × 128 tokens via a precomputed ordering.
+//   - TIED-EMBEDDING head (larger 12B/26B `gemma4_unified_assistant`):
+//     no centroids, no separate lm_head — logits = embed_tokens · h over
+//     the full vocab (the dense form the centroid head approximates).
+//
+// Implementation deviation (centroid path, argmax-equivalent): the
+// reference scatters candidate scores into full-vocab logits initialised
+// to -1e30 and argmaxes; we argmax over the 4096 candidate scores and map
+// through candidate ids directly — same winner, no 262k materialisation.
+// The drafter's numeric details only influence acceptance RATE, never
 // output correctness (the target's verify decides every token).
 
 import type { ModelConfig } from "../config";
@@ -56,10 +65,11 @@ export class GemmaAssistantDrafter {
   readonly vocabPerCentroid: number;
   #w: Weights;
   #blocks: Block[] = [];
+  readonly useCentroids: boolean;
   #prePT: MlxArray; // pre_projection transposed [in, out]
   #postPT: MlxArray;
-  #centroidsT: MlxArray; // [hidden, numCentroids]
-  #ordering: MlxArray;   // [numCentroids, vocabPerCentroid] int32
+  #centroidsT: MlxArray | null = null; // [hidden, numCentroids]
+  #ordering: MlxArray | null = null;   // [numCentroids, vocabPerCentroid] int32
   #embed: MlxArray;      // drafter token embeddings [vocab, hidden]
   #norm: MlxArray;
 
@@ -84,14 +94,20 @@ export class GemmaAssistantDrafter {
     };
     this.#prePT = transposed("pre_projection.weight");
     this.#postPT = transposed("post_projection.weight");
-    this.#centroidsT = transposed("masked_embedding.centroids.weight");
     this.#embed = T("model.embed_tokens.weight");
     this.#norm = T("model.norm.weight");
-    const ord64 = T("masked_embedding.token_ordering");
-    const ord32 = ord64.astype(Dtype.int32);
-    this.#ordering = ops.reshape(ord32, [this.numCentroids, this.vocabPerCentroid]);
-    this.#ordering.eval();
-    ord32.dispose();
+    // Head variant: only the small drafters ship the centroid tensors.
+    // The 12B/26B artifacts ship a tied embed_tokens head instead (their
+    // config still declares num_centroids — ignore it, trust the tensors).
+    this.useCentroids = w.has("masked_embedding.centroids.weight");
+    if (this.useCentroids) {
+      this.#centroidsT = transposed("masked_embedding.centroids.weight");
+      const ord64 = T("masked_embedding.token_ordering");
+      const ord32 = ord64.astype(Dtype.int32);
+      this.#ordering = ops.reshape(ord32, [this.numCentroids, this.vocabPerCentroid]);
+      this.#ordering.eval();
+      ord32.dispose();
+    }
 
     const ropeP = t.rope_parameters ?? {};
     for (let i = 0; i < t.num_hidden_layers; i++) {
@@ -215,41 +231,57 @@ export class GemmaAssistantDrafter {
 
     h = disposing(h, this.#rms(h, this.#norm));
 
-    // centroid decode → drafted token (argmax-equivalent shortcut)
-    const cScores = ops.matmul(h, this.#centroidsT);          // (1,1,2048)
-    const flat = ops.reshape(cScores, [1, this.numCentroids]);
-    cScores.dispose();
-    const neg = ops.neg(flat);
-    flat.dispose();
-    const part = ops.argpartitionAxis(neg, this.topK - 1, -1);
-    neg.dispose();
-    const topIdx = part.slice([0, 0], [1, this.topK]);        // (1, topK)
-    part.dispose();
-    const topFlat = ops.reshape(topIdx, [this.topK]);
-    topIdx.dispose();
-    const candIds = ops.takeAxis(this.#ordering, topFlat, 0); // (topK, vpc) int32
-    topFlat.dispose();
-    const candFlat = ops.reshape(candIds, [this.topK * this.vocabPerCentroid]);
-    candIds.dispose();
-    const candEmb = ops.takeAxis(this.#embed, candFlat, 0);   // (topK*vpc, hidden)
-    const hVec = ops.reshape(h, [this.hidden, 1]);
-    const scores = ops.matmul(candEmb, hVec);                  // (topK*vpc, 1)
-    candEmb.dispose();
-    hVec.dispose();
-    const scoresFlat = ops.reshape(scores, [1, this.topK * this.vocabPerCentroid]);
-    scores.dispose();
-    const am = ops.argmaxAxis(scoresFlat, -1);
-    scoresFlat.dispose();
-    const winner = ops.itemUint32(am);
-    am.dispose();
-    const tokArr = candFlat.slice([winner], [winner + 1]);
-    candFlat.dispose();
-    const tokU32 = tokArr.astype(Dtype.uint32);
-    tokArr.dispose();
-    const token = ops.itemUint32(tokU32);
-    tokU32.dispose();
+    let token: number;
+    if (this.useCentroids) {
+      // centroid decode → drafted token (argmax-equivalent shortcut)
+      const cScores = ops.matmul(h, this.#centroidsT!);         // (1,1,2048)
+      const flat = ops.reshape(cScores, [1, this.numCentroids]);
+      cScores.dispose();
+      const neg = ops.neg(flat);
+      flat.dispose();
+      const part = ops.argpartitionAxis(neg, this.topK - 1, -1);
+      neg.dispose();
+      const topIdx = part.slice([0, 0], [1, this.topK]);        // (1, topK)
+      part.dispose();
+      const topFlat = ops.reshape(topIdx, [this.topK]);
+      topIdx.dispose();
+      const candIds = ops.takeAxis(this.#ordering!, topFlat, 0); // (topK, vpc) int32
+      topFlat.dispose();
+      const candFlat = ops.reshape(candIds, [this.topK * this.vocabPerCentroid]);
+      candIds.dispose();
+      const candEmb = ops.takeAxis(this.#embed, candFlat, 0);   // (topK*vpc, hidden)
+      const hVec = ops.reshape(h, [this.hidden, 1]);
+      const scores = ops.matmul(candEmb, hVec);                  // (topK*vpc, 1)
+      candEmb.dispose();
+      hVec.dispose();
+      const scoresFlat = ops.reshape(scores, [1, this.topK * this.vocabPerCentroid]);
+      scores.dispose();
+      const am = ops.argmaxAxis(scoresFlat, -1);
+      scoresFlat.dispose();
+      const winner = ops.itemUint32(am);
+      am.dispose();
+      const tokArr = candFlat.slice([winner], [winner + 1]);
+      candFlat.dispose();
+      const tokU32 = tokArr.astype(Dtype.uint32);
+      tokArr.dispose();
+      token = ops.itemUint32(tokU32);
+      tokU32.dispose();
+    } else {
+      // tied-embedding head: token = argmax_v (embed[v] · h) over the
+      // full vocab — the dense form the centroid head approximates.
+      const V = this.#embed.shape[0]!;
+      const hVec = ops.reshape(h, [this.hidden, 1]);
+      const scores = ops.matmul(this.#embed, hVec);             // (vocab, 1)
+      hVec.dispose();
+      const scoresFlat = ops.reshape(scores, [1, V]);
+      scores.dispose();
+      const am = ops.argmaxAxis(scoresFlat, -1);
+      scoresFlat.dispose();
+      token = ops.itemUint32(am);
+      am.dispose();
+    }
 
-    const nextHidden = ops.matmul(h, this.#postPT);           // (1,1,2560)
+    const nextHidden = ops.matmul(h, this.#postPT);           // (1,1,backbone)
     h.dispose();
     return { token, nextHidden };
   }
