@@ -65,6 +65,17 @@ export const SNAPSHOT_QWEN35 = `${process.env.HOME}/.cache/huggingface/hub/model
 // optiq) on ~4.5 GB. Resolved dynamically so the download needs no hash edit.
 export const SNAPSHOT_QWEN35_4B = hfSnapshot("models--mlx-community--Qwen3.5-4B-OptiQ-4bit");
 
+// DiffusionGemma-26B-A4B-it: the first non-autoregressive (block-diffusion)
+// model. ~14 GB, OptiQ mixed 4/8-bit. Oracle is mlx-optiq itself (stock
+// mlx-lm/mlx-vlm can't load it). Resolved dynamically — no hash edit on pull.
+export const SNAPSHOT_DIFFUSION = hfSnapshot(
+  "models--mlx-community--diffusiongemma-26B-A4B-it-OptiQ-4bit",
+);
+
+export async function snapshotDiffusionAvailable(): Promise<boolean> {
+  return Bun.file(`${SNAPSHOT_DIFFUSION}/config.json`).exists();
+}
+
 export async function snapshotAvailable(): Promise<boolean> {
   return Bun.file(`${SNAPSHOT}/config.json`).exists();
 }

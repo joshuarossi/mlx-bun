@@ -55,6 +55,8 @@ export interface TextConfig {
   tieWordEmbeddings: boolean;
   bosTokenId: number;
   eosTokenId: number | number[];
+  /** DiffusionGemma: fixed denoising-canvas length (256). Undefined elsewhere. */
+  canvasLength?: number;
 }
 
 export interface QuantSpec {
@@ -132,11 +134,56 @@ export function quantFor(q: QuantizationConfig | null, modulePath: string): Quan
   return spec.mode === "none" ? null : spec;
 }
 
+/** DiffusionGemma's config.json ships only token ids + canvas_length + the
+ *  quant map — the architecture dims live in optiq's `config.py` TextConfig
+ *  defaults (and layer_types / rope_parameters are computed in __post_init__).
+ *  We reproduce those defaults in snake_case so the generic parser below picks
+ *  them up; any field actually present in config.json still overrides. Source:
+ *  optiq/vlm/_mlxvlm/models/diffusion_gemma/config.py. */
+function diffusionGemmaRawDefaults(): Record<string, any> {
+  const numLayers = 30;
+  const pattern = ["sliding_attention", "sliding_attention", "sliding_attention",
+    "sliding_attention", "sliding_attention", "full_attention"];
+  const layer_types = Array.from({ length: numLayers }, (_, i) => pattern[i % pattern.length]);
+  layer_types[numLayers - 1] = "full_attention"; // last forced full
+  return {
+    hidden_size: 2816,
+    num_hidden_layers: numLayers,
+    num_attention_heads: 16,
+    num_key_value_heads: 8,
+    num_global_key_value_heads: 2,
+    head_dim: 256,
+    global_head_dim: 512,
+    intermediate_size: 2112,
+    moe_intermediate_size: 704,
+    hidden_activation: "gelu_pytorch_tanh",
+    rms_norm_eps: 1e-6,
+    vocab_size: 262144,
+    max_position_embeddings: 262144,
+    sliding_window: 1024,
+    layer_types,
+    enable_moe_block: true,
+    num_experts: 128,
+    top_k_experts: 8,
+    final_logit_softcapping: 30.0,
+    tie_word_embeddings: true,
+    bos_token_id: 2,
+    eos_token_id: 1,
+    rope_parameters: {
+      sliding_attention: { rope_type: "default", rope_theta: 10000.0 },
+      full_attention: { rope_type: "proportional", partial_rotary_factor: 0.25, rope_theta: 1000000.0 },
+    },
+  };
+}
+
 export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
   const raw = (await Bun.file(`${modelDir}/config.json`).json()) as Record<string, any>;
-  // Gemma 4 unified nests the LM config; plain text models keep it at top level.
-  const t = (raw.text_config ?? raw) as Record<string, any>;
   const modelType = raw.model_type;
+  const isDiffusion = modelType === "diffusion_gemma";
+  // Gemma 4 unified nests the LM config; plain text models keep it at top level.
+  // DiffusionGemma keeps it flat too, but omits all dims — backfill from defaults.
+  const baseT = (raw.text_config ?? raw) as Record<string, any>;
+  const t = isDiffusion ? { ...diffusionGemmaRawDefaults(), ...baseT } : baseT;
   const isLlama = modelType === "llama";
   const isQwen35 = typeof modelType === "string" && modelType.startsWith("qwen3_5");
   // Qwen3.5 rope_parameters is a flat dict ({type, rope_theta, mrope_section,
@@ -201,6 +248,7 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
     tieWordEmbeddings: t.tie_word_embeddings ?? raw.tie_word_embeddings ?? false,
     bosTokenId: t.bos_token_id ?? raw.bos_token_id,
     eosTokenId: t.eos_token_id ?? raw.eos_token_id,
+    canvasLength: raw.canvas_length ?? t.canvas_length,
   };
 
   let kvQuant: KvQuantSpec[] | null = null;
