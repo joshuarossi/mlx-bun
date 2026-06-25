@@ -23,6 +23,8 @@ const pkgVersion = (pkgJson as { version: string }).version;
 import { loadModelConfig, type KvQuantSpec, type ModelConfig } from "./config";
 import { Weights } from "./weights";
 import { Gemma4Model } from "./model/gemma4";
+import { DiffusionGemmaModel } from "./model/diffusion-gemma";
+import { spliceImageTokens } from "./vision/diffusion-vision";
 import { createModel, type RuntimeModel } from "./model/factory";
 import { isMiniCPM5Config, isQwen35Config, isSupportedModelRecord } from "./model/support";
 import { generate, type GenerateOptions } from "./generate";
@@ -839,6 +841,7 @@ export function createServer(
     } finally {
       vision?.embeddings.dispose();
       vision?.imageMask.dispose();
+      options.visionPixels?.dispose();
     }
   };
 
@@ -1402,8 +1405,33 @@ export function createServer(
         // Vision is Gemma4-only (no switchable thinking channel), so it's false.
         let startInThinking = false;
         let vision: Parameters<typeof runGeneration>[3];
+        let diffusionPixels: import("./mlx/array").MlxArray | null = null;
         try {
-          if (hasImages) {
+          if (hasImages && ctx.model instanceof DiffusionGemmaModel) {
+            // DiffusionGemma image-text-to-text: its OWN dedicated SigLIP tower +
+            // encoder vision merge feed the denoising engine (NOT the AR
+            // forwardEmbeddings path). v1 supports a single image.
+            const dm = ctx.model;
+            if (!dm.visionTower)
+              return Response.json(
+                { error: { message: "this checkpoint has no vision tower" } }, { status: 400 },
+              );
+            const { messages, images } = await extractImages(normalizeMessages(body.messages));
+            if (images.length !== 1)
+              return Response.json(
+                { error: { message: "DiffusionGemma image input supports exactly one image" } },
+                { status: 400 },
+              );
+            const rendered = ctx.template.render(messages, { tools, addGenerationPrompt: true });
+            const rawIds = ctx.tokenizer.encode(rendered, /* addSpecialTokens */ false);
+            const { pixels, softTokens } = await dm.visionTower.preprocess(images[0]!);
+            promptIds = spliceImageTokens(rawIds, [softTokens], {
+              image: ctx.visionTokenIds.imageTokenId,
+              boi: ctx.visionTokenIds.boiTokenId,
+              eoi: ctx.visionTokenIds.eoiTokenId,
+            });
+            diffusionPixels = pixels;
+          } else if (hasImages) {
             // Loads (and caches) the tower on first image request — text-only
             // sessions never pay for it.
             const tower = getVisionTower(ctx);
@@ -1432,6 +1460,7 @@ export function createServer(
           );
         }
         const options = toOptions(body);
+        if (diffusionPixels) options.visionPixels = diffusionPixels;
         // Admission: reject what cannot finish within the memory budget
         // (the GPU OOM it would otherwise hit is uncatchable and kills
         // the process — Phase 6 finding).
@@ -1439,6 +1468,7 @@ export function createServer(
         if (requiredCtx > admission.maxSafeContext) {
           vision?.embeddings.dispose();
           vision?.imageMask.dispose();
+          diffusionPixels?.dispose();
           return Response.json(
             {
               error: {

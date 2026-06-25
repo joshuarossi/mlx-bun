@@ -16,6 +16,8 @@ import {
 import * as ops from "./mlx/ops";
 import { CompiledDecode } from "./model/compiled-decode";
 import { Gemma4Model, KVCache, RotatingKVCache, type Cache } from "./model/gemma4";
+import { DiffusionGemmaModel } from "./model/diffusion-gemma";
+import { diffusionGenerate } from "./diffusion/diffusion-generate";
 import type { RuntimeModel } from "./model/factory";
 import type { KvQuantSpec } from "./config";
 import {
@@ -55,6 +57,10 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
    *  model's LoraState for exactly the duration of this generation —
    *  a plain field, safe because the generation queue is serialized. */
   adapters?: string[];
+  /** DiffusionGemma image-text-to-text: channel-first pixel_values [1,3,H,W].
+   *  When set, `promptTokens` are the spliced (<|image|>-expanded) ids and the
+   *  denoising engine prefills the merged vision features. Caller keeps ownership. */
+  visionPixels?: MlxArray;
 }
 
 /** Port of mlx-lm maybe_quantize_kv_cache + optiq serve's per-layer
@@ -170,12 +176,60 @@ export function generate(
   promptTokens: number[],
   options: GenerateOptions = {},
 ): Generation {
-  let inner = generateInner(model, promptTokens, options);
+  // DiffusionGemma is non-autoregressive: route to the denoising engine instead
+  // of the AR decode loop. Same Generation/GenerateStats contract so the CLI and
+  // server stream it through the existing token machinery.
+  let inner =
+    model instanceof DiffusionGemmaModel
+      ? generateDiffusionInner(model, promptTokens, options)
+      : generateInner(model, promptTokens, options);
   if (options.adapters?.length) inner = adapterScoped(model, options.adapters, inner);
   const wire =
     process.env.MLX_BUN_FORCE_WIRE === "1" ||
     model.weightsBytes > WIRE_THRESHOLD * maxRecommendedWorkingSetSize();
   return new Generation(wire ? wiredScoped(inner) : inner);
+}
+
+/** Non-autoregressive diffusion generation, adapted to the AR Generation
+ *  contract. Runs the denoising engine (its own prefill + canvas loop) and
+ *  streams the emitted tokens. v1: greedy (temperature 0, confidence-threshold
+ *  sampler — the OptiQ default); per-block intra-stream + temperature>0
+ *  (categorical) are follow-ups. */
+async function* generateDiffusionInner(
+  model: DiffusionGemmaModel,
+  promptTokens: number[],
+  options: GenerateOptions,
+): AsyncGenerator<GeneratedToken, GenerateStats> {
+  const t0 = performance.now();
+  const maxTokens = options.maxTokens ?? 256;
+  // A fresh random canvas seed per request unless the caller pins one.
+  const seed =
+    options.seed !== undefined
+      ? BigInt(options.seed)
+      : BigInt(Math.floor(Math.random() * 0x7fffffff));
+  // The shipped checkpoint's tokenizer stops on {1, 106}; union any caller eos.
+  const eos = [...new Set([1, 106, ...(options.eosTokenIds ?? [])])];
+  const result = diffusionGenerate(model, promptTokens, {
+    maxTokens,
+    sampler: "confidence-threshold",
+    temperature: 0,
+    eosTokenIds: eos,
+    seed,
+    visionPixels: options.visionPixels,
+  });
+  const decodeMs = performance.now() - t0;
+  let index = 0;
+  for (const token of result.tokens) yield { token, index: index++ };
+  return {
+    promptTokens: promptTokens.length,
+    cachedTokens: 0,
+    generatedTokens: result.tokens.length,
+    prefillTps: 0,
+    decodeTps: result.tokens.length / Math.max(decodeMs / 1000, 1e-9),
+    prefillMs: 0,
+    decodeMs,
+    cacheTokens: [],
+  };
 }
 
 /** Hold the model's active-adapter list for exactly this generation. */

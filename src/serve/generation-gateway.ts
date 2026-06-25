@@ -27,6 +27,7 @@
 
 import { MlxArray } from "../mlx/array";
 import type { RuntimeModel } from "../model/factory";
+import { DiffusionGemmaModel } from "../model/diffusion-gemma";
 import type { GenerateOptions, GenerateStats } from "../generate";
 import { makeSampler, toLogprobs } from "../sampler";
 import { BatchScheduler } from "./batch-scheduler";
@@ -93,6 +94,9 @@ export class GenerationGateway {
 
   /** Decide whether a request joins the batch or runs serially. */
   willBatch(shape: RequestShape): boolean {
+    // DiffusionGemma is non-autoregressive — the batch scheduler assumes the AR
+    // KV-cache decode path, so it always runs serially through generate().
+    if (this.model instanceof DiffusionGemmaModel) return false;
     return (
       this.batchingEnabled &&
       !shape.hasVision &&
