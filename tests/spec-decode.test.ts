@@ -1,7 +1,12 @@
 // Speculative-decoding parity (slow tier; auto-skips without the e4b
-// pair). THE correctness contract: greedy spec output is token-for-token
-// identical to greedy non-spec decode — exact toBe equality, the same
-// bar as stock decode. Divergence = accept/reject bug, never rounding.
+// pair). Correctness oracle is OPTIQ's spec_generate (the only stack with
+// the assistant drafter); we verified bit-exact output + accept/reject
+// trace vs optiq on this pair (scripts/oracle-spec.py, 2026-06-14). On a
+// TIE-FREE prompt optiq's batched verify == stock greedy, so the toBe-vs-
+// stock check below is a valid stand-in here AND a stronger statement
+// (no oracle dependency in CI). A flip on the tie-free prompt = an
+// accept/reject bug, never rounding. Knife-edge prompts diverge from stock
+// the way optiq does (batched verify) — checked by long prefix, not toBe.
 
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync } from "node:fs";

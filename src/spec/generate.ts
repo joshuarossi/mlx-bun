@@ -1,11 +1,17 @@
 // Speculative decoding loop — port of optiq runtime/spec/runtime.py
 // (γ-draft / verify-in-one-pass / accept-longest-prefix / rollback).
 //
-// Correctness contract: greedy spec output is token-for-token identical
-// to greedy non-spec decode — the verify step re-derives every emitted
-// token with the SAME pick function as the stock path (logprobs argmax
-// over [1, V]); drafts only ever skip target forwards, never change
-// what the target would emit.
+// Correctness oracle: OPTIQ's spec_generate, NOT stock decode. Assistant-
+// drafter speculation is an optiq feature (mlx-lm has only generic
+// two-model spec, and can't drive a KV-borrowing drafter). Both optiq AND
+// mlx-lm BATCH the verify lm-head (one matmul over the whole γ+1 window,
+// then argmax per position) — so neither is bit-exact to stock token-at-
+// a-time decode; they diverge from it at bf16 knife-edges. We do the same
+// (picksBatched): greedy spec is bit-exact to optiq's spec, and agrees
+// with stock only on tie-free prompts (where batched == per-position).
+// An earlier version verified per-position to stay bit-exact to STOCK —
+// that matched no real oracle and cost an extra γ× read of the lm-head
+// weight per step; superseded. See docs/design/spec-decode-larger-targets.md.
 //
 // Limitation (same as the reference): partial-accept rollback requires
 // trimmable caches; RotatingKVCache loses trimability once its ring
@@ -14,7 +20,6 @@
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { Gemma4Model, type Cache } from "../model/gemma4";
-import { toLogprobs } from "../sampler";
 import type { GemmaAssistantDrafter } from "./drafter";
 
 export interface SpecOptions {
@@ -39,12 +44,8 @@ export interface SpecResult {
   stats: SpecStats;
 }
 
-/** The stock path's greedy pick, bit-identical shapes: slice ONE hidden
- *  position [1,1,H], lm-head on it (exactly what generate() does for a
- *  decode step), then logprobs argmax over [1, V]. Computing the lm-head
- *  per position (instead of batched over the verify window) keeps every
- *  pick in the same kernel shapes as stock decode — batched lm-head
- *  rounds differently and flips bf16 knife-edges. */
+/** Single greedy pick from one hidden position [1,1,H] (lm-head + argmax).
+ *  Used for the NON-speculative prefill token (matches stock there). */
 function pickFromHidden(model: Gemma4Model, hidden: MlxArray, pos: number): number {
   const H = hidden.shape[2]!;
   const hSl = hidden.slice([0, pos, 0], [1, pos + 1, H]);
@@ -53,13 +54,34 @@ function pickFromHidden(model: Gemma4Model, hidden: MlxArray, pos: number): numb
   const V = logits.shape[2]!;
   const flat = ops.reshape(logits, [1, V]);
   logits.dispose();
-  const lp = toLogprobs(flat);
+  const am = ops.argmaxAxis(flat, -1);
   flat.dispose();
-  const am = ops.argmaxAxis(lp, -1);
-  lp.dispose();
   const t = ops.itemUint32(am);
   am.dispose();
   return t;
+}
+
+/** optiq-faithful batched verify: ONE lm-head over the whole γ+1 window
+ *  (reads the lm-head weight ONCE, as optiq and mlx-lm both do), then
+ *  argmax per position. This is what makes greedy spec bit-exact to
+ *  optiq's spec_generate. argmax is invariant to the logsumexp shift and
+ *  to the monotone final-logit softcap, so raw-logit argmax here picks the
+ *  same token optiq does. */
+function picksBatched(model: Gemma4Model, hidden: MlxArray, count: number): number[] {
+  const logits = model.logitsFromHidden(hidden); // [1, L, V] — one matmul
+  const V = logits.shape[2]!;
+  const out: number[] = [];
+  for (let k = 0; k < count; k++) {
+    const sl = logits.slice([0, k, 0], [1, k + 1, V]);
+    const flat = ops.reshape(sl, [1, V]);
+    sl.dispose();
+    const am = ops.argmaxAxis(flat, -1);
+    flat.dispose();
+    out.push(ops.itemUint32(am));
+    am.dispose();
+  }
+  logits.dispose();
+  return out;
 }
 
 /** Donor caches: the target's LAST sliding and LAST full cache owners
@@ -163,10 +185,9 @@ export function specGenerate(
       vIds.dispose();
       stats.targetCalls++;
 
-      // 2c. accept the longest matching prefix (per-position lm-head —
-      // see pickFromHidden)
-      const gt: number[] = [];
-      for (let k = 0; k <= gamma; k++) gt.push(pickFromHidden(model, vHidden, k));
+      // 2c. accept the longest matching prefix. Batched verify lm-head
+      // (optiq-faithful — see picksBatched).
+      const gt = picksBatched(model, vHidden, gamma + 1);
       let kAccept = 0;
       while (kAccept < gamma && drafts[kAccept] === gt[kAccept]) kAccept++;
       stats.accepted += kAccept;
