@@ -11,6 +11,7 @@ import { ChatTemplate } from "../chat-template";
 import { loadModelConfig, type ModelConfig } from "../config";
 import { Weights } from "../weights";
 import { createModel, type RuntimeModel } from "../model/factory";
+import { DiffusionGemmaModel } from "../model/diffusion-gemma";
 import { loadTokenizer, type LoadedTokenizer } from "../tokenizer";
 import { resolveModelDir } from "./kl";
 
@@ -153,8 +154,10 @@ export async function generateText(tm: TaskModel, body: string, opts: GenOpts = 
 
   // Parity default — greedy + full-precision KV + no sampler arm: decode bit-exactly
   // via the raw forward (matches mlx-lm token-for-token). Sampler arms / kv-quant fall
-  // through to the product generate().
-  if (!kv && !opts.sampler && !tm.samplerOverride) {
+  // through to the product generate(). DiffusionGemma is non-autoregressive (no AR
+  // forward) — always go through generate(), which routes it to the denoising engine.
+  const isDiffusion = tm.model instanceof DiffusionGemmaModel;
+  if (!isDiffusion && !kv && !opts.sampler && !tm.samplerOverride) {
     return greedyDecodeBitExact(tm, ids, maxTokens);
   }
   const gen = generate(tm.model, ids, {
