@@ -1,0 +1,30 @@
+import { loadModelConfig } from "../../src/config";
+import { Weights } from "../../src/weights";
+import { MiniCPM5Model } from "../../src/model/minicpm5";
+import * as ops from "../../src/mlx/ops";
+import { MlxArray } from "../../src/mlx/array";
+import { Dtype } from "../../src/mlx/ffi";
+import { fusedSwiglu } from "../../src/model/fused-swiglu-kernel";
+const SNAP = "/Users/joshrossi/.cache/huggingface/hub/models--mlx-community--MiniCPM5-1B-OptiQ-4bit/snapshots/664aabaed233c653f82716d8dc822234d0091f78";
+const model = new MiniCPM5Model(await Weights.open(SNAP), await loadModelConfig(SNAP)) as any;
+const LN = Number(process.argv[2] ?? 23);
+let captured: Float32Array | null = null, capShape: number[] = [];
+const mlp = model.layers[LN].mlp;
+const orig = mlp.forward.bind(mlp);
+mlp.forward = (x: MlxArray) => { if (!captured) { captured = x.astype(Dtype.float32).toFloat32(); capShape = x.shape.slice(); } return orig(x); };
+const cache = model.makeCache();
+model.forward([0,608,4894,304,6918,357], cache).dispose();
+mlp.forward = orig;
+let xabs=0; for (const v of captured!) xabs=Math.max(xabs,Math.abs(v));
+console.log(`L${LN} captured x maxAbs=${xabs.toFixed(3)}`);
+const x = MlxArray.fromFloat32(captured!, capShape).astype(Dtype.bfloat16);
+// inspect raw gate & up magnitudes
+const gate = mlp.gate.forward(x), up = mlp.up.forward(x);
+let ga=0,ua=0; for (const v of gate.astype(Dtype.float32).toFloat32()) ga=Math.max(ga,Math.abs(v));
+for (const v of up.astype(Dtype.float32).toFloat32()) ua=Math.max(ua,Math.abs(v));
+console.log(`  raw gate maxAbs=${ga.toFixed(3)}  up maxAbs=${ua.toFixed(3)}`);
+const sig = ops.sigmoid(gate), silu = ops.mul(gate, sig);
+const ref = ops.mul(silu, up).astype(Dtype.float32).toFloat32();
+const fb = fusedSwiglu(x, mlp.gate.w, mlp.gate.scales, mlp.gate.biases, mlp.up.w, mlp.up.scales, mlp.up.biases, mlp.gate.spec).astype(Dtype.float32).toFloat32();
+let maxDiff=0,nan=0,worst=-1; for(let i=0;i<ref.length;i++){if(Number.isNaN(fb[i]!)){nan++;continue;}const d=Math.abs(ref[i]!-fb[i]!);if(d>maxDiff){maxDiff=d;worst=i;}}
+console.log(`  silu maxDiff=${maxDiff.toExponential(3)} NaN=${nan}/${ref.length} worst ref=${ref[worst]?.toFixed(3)} fused=${fb[worst]?.toFixed(3)}`);
