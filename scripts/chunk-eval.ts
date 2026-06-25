@@ -30,7 +30,7 @@ function resolveModel(): string {
 const MODEL = resolveModel();
 const LUCIEN = "/Users/joshrossi/Code/lucien";
 const HOLDOUT = `${LUCIEN}/benchmark/dataset/chunk.json`;
-const TRAIN = `${LUCIEN}/benchmark/finetune/chunk/train.jsonl`;
+const TRAIN = process.env.TRAIN ?? `${LUCIEN}/benchmark/finetune/chunk-v3/train.jsonl`;
 const LIMIT = process.env.LIMIT ? Number(process.env.LIMIT) : 25;
 const MAXTOK = Number(process.env.MAXTOK ?? 1536);
 const ADAPTER = process.env.ADAPTER;

@@ -22,7 +22,7 @@ function resolveModel(): string {
   return `${base}/${readdirSync(base)[0]}`;
 }
 const MODEL = resolveModel();
-const DATA = process.env.DATA ?? "/Users/joshrossi/Code/lucien/benchmark/finetune/chunk";
+const DATA = process.env.DATA ?? "/Users/joshrossi/Code/lucien/benchmark/finetune/chunk-v3";
 const SEQ = Number(process.env.SEQ ?? 8192);
 const ITERS = Number(process.env.ITERS ?? 2);
 const RANK = Number(process.env.RANK ?? 16);

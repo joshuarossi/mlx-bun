@@ -131,20 +131,38 @@ export class ChatTemplate {
   /** True when the model has a switchable reasoning channel we can parse. */
   readonly supportsThinking: boolean;
 
-  private constructor(source: string, bosToken: string | null, eosToken: string | null) {
+  private constructor(
+    source: string,
+    bosToken: string | null,
+    eosToken: string | null,
+    forceNoThinking = false,
+  ) {
     this.#template = new Template(source);
     this.#bosToken = bosToken;
     this.#eosToken = eosToken;
     const gatesThinking = source.includes("enable_thinking");
-    this.thinkingFormat = gatesThinking && source.includes("<think>")
-      ? "think-tag"
-      : gatesThinking && source.includes("<|channel>")
-        ? "gemma-channel"
-        : null;
+    // `forceNoThinking` suppresses the switchable channel even when the template
+    // carries the gemma markers. DiffusionGemma ships the shared gemma-family
+    // template (with the `<|channel>thought…<channel|>` reasoning channel), but
+    // its non-autoregressive canvas decode cannot reliably emit the `<channel|>`
+    // close, so an enabled channel never ends (everything is captured as
+    // reasoning, no answer). The OptiQ reference never enables thinking for this
+    // model — it always renders the template's `default(false)` pre-closed empty
+    // channel and decodes the whole canvas as plain text. We match that.
+    this.thinkingFormat = forceNoThinking
+      ? null
+      : gatesThinking && source.includes("<think>")
+        ? "think-tag"
+        : gatesThinking && source.includes("<|channel>")
+          ? "gemma-channel"
+          : null;
     this.supportsThinking = this.thinkingFormat !== null;
   }
 
-  static async load(modelDir: string): Promise<ChatTemplate> {
+  static async load(
+    modelDir: string,
+    opts: { disableThinking?: boolean } = {},
+  ): Promise<ChatTemplate> {
     const config = (await Bun.file(`${modelDir}/tokenizer_config.json`).json()) as Record<string, any>;
     let source: string | undefined = config.chat_template;
     if (!source) {

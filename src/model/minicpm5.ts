@@ -4,6 +4,7 @@
 import type { ModelConfig } from "../config";
 import type { Weights } from "../weights";
 import { MlxArray } from "../mlx/array";
+import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import {
   argmaxLastPosition,
@@ -16,9 +17,56 @@ import {
   QuantizedLinear,
   quantizedSdpa,
   RMSNorm,
+  isCompiledTrace,
   type Cache,
   type Mask,
 } from "./gemma4-base";
+import {
+  fusedSwiglu,
+  fusedSwigluEnabled,
+  fusedSwigluSupported,
+  swigluMMin,
+  swigluUnderCap,
+} from "./fused-swiglu-kernel";
+import { steelLinear } from "./steel-linear-kernel";
+import { fusedMlp } from "./fused-mlp-kernel";
+
+/** Break the graph at a boundary: contiguous → eval → fresh graph-free leaf — the
+ *  exact primitive the segmented TRAINER uses so MLX never plans across boundaries
+ *  and prior-segment activations are freed (copy of train/segmented.ts detachLeaf). */
+function detachLeaf(a: MlxArray): MlxArray {
+  const c = ops.contiguous(a);
+  c.eval();
+  const leaf = MlxArray.fromBytesCopy(c.rawBytes(), c.shape, c.dtype);
+  c.dispose();
+  a.dispose();
+  return leaf;
+}
+
+/** A quantized projection as OUR steel dispatch when the controlled path is live
+ *  (no adapter, affine, clean tiling, M>1 so it's not a decode GEMV); otherwise
+ *  the normal linear. x is [B,L,H] or [M,H]. */
+function ourLinear(lin: QuantizedLinear, x: MlxArray): MlxArray {
+  const H = x.shape[x.shape.length - 1]!;
+  const M = x.shape.reduce((a, b) => a * b, 1) / H;
+  if (
+    !fusedSwigluEnabled() || isCompiledTrace() || M < swigluMMin() ||
+    lin.adapters != null || lin.biases == null ||
+    (x.dtype !== Dtype.bfloat16 && x.dtype !== Dtype.float16) ||
+    H % 32 !== 0 || lin.spec.groupSize % 32 !== 0
+  ) {
+    return lin.forward(x);
+  }
+  const x2 = x.shape.length === 2 ? x : ops.reshape(x, [M, H]);
+  const y = steelLinear(x2, lin.w, lin.scales, lin.biases, lin.spec);
+  if (x2 !== x) x2.dispose();
+  return x.shape.length === 2
+    ? y
+    : disposing(y, ops.reshape(y, [...x.shape.slice(0, -1), lin.w.shape[0]!]));
+}
+
+/** How often the inference fused path materializes the residual stream (layers). */
+const EVAL_EVERY = Math.max(1, Number(process.env.MLX_BUN_SWIGLU_EVAL_EVERY) || 1);
 import { flashAttention, getTrainingAttn, flashSupported } from "./flash-attention";
 
 // Shared prompt-prefix plan (lever 7). When set, the attention ropes the
@@ -156,7 +204,40 @@ class LlamaMLP {
     this.down = QuantizedLinear.load(weights, `${prefix}.down_proj`, config);
   }
 
-  forward(x: MlxArray): MlxArray {
+  /** MLP. When `residual` (the layer input h) is given AND the fused path applies,
+   *  the kernel computes h + mlp(x) directly — the residual is ABSORBED, so nothing
+   *  stays live across the kernel for MLX's planner to alias (it just runs our one
+   *  dispatch). Otherwise returns mlp(x) and the caller adds the residual. */
+  forward(x: MlxArray, residual?: MlxArray): MlxArray {
+    const H = x.shape[x.shape.length - 1]!;
+    const M = x.shape.reduce((a, b) => a * b, 1) / H;
+    if (
+      residual != null &&
+      fusedSwigluEnabled() && !isCompiledTrace() && M >= swigluMMin() && swigluUnderCap() &&
+      this.gate.adapters == null && this.up.adapters == null && this.down.adapters == null &&
+      this.down.biases != null && this.down.spec.groupSize % 32 === 0 &&
+      fusedSwigluSupported(x, this.gate.spec, this.up.spec, this.gate.biases, this.up.biases)
+    ) {
+      // The WHOLE MLP + residual in ONE kernel — gate+up+silu+down then +h, `hidden`
+      // never materialized, residual absorbed. MLX runs one dispatch; nothing for
+      // its planner to alias → chains across layers with no boundary.
+      const Hin = this.gate.scales.shape[1]! * this.gate.spec.groupSize;
+      const Ho = this.down.w.shape[0]!;
+      const x2 = x.shape.length === 2 ? x : ops.reshape(x, [M, Hin]);
+      const h2 = residual.shape.length === 2 ? residual : ops.reshape(residual, [M, Ho]);
+      const out2 = fusedMlp(
+        x2,
+        this.gate.w, this.gate.scales, this.gate.biases!, this.gate.spec,
+        this.up.w, this.up.scales, this.up.biases!, this.up.spec,
+        this.down.w, this.down.scales, this.down.biases!, this.down.spec,
+        h2,
+      );
+      if (x2 !== x) x2.dispose();
+      if (h2 !== residual) h2.dispose();
+      return x.shape.length === 2
+        ? out2
+        : disposing(out2, ops.reshape(out2, [...x.shape.slice(0, -1), Ho]));
+    }
     const gate = this.gate.forward(x);
     const up = this.up.forward(x);
     const sig = ops.sigmoid(gate);
@@ -166,9 +247,10 @@ class LlamaMLP {
     const hidden = ops.mul(silu, up);
     silu.dispose();
     up.dispose();
-    const out = this.down.forward(hidden);
+    const m = this.down.forward(hidden);
     hidden.dispose();
-    return out;
+    if (residual == null) return m;
+    return disposing(m, ops.add(residual, m));
   }
 }
 
@@ -192,11 +274,10 @@ class LlamaLayer {
     const h = ops.add(x, a);
     a.dispose();
     const hn = this.postAttnNorm.forward(h);
-    const m = this.mlp.forward(hn);
+    // Pass the residual h INTO the MLP so the fused kernel absorbs it (out = h + mlp).
+    const out = this.mlp.forward(hn, h);
     hn.dispose();
-    const out = ops.add(h, m);
     h.dispose();
-    m.dispose();
     return out;
   }
 }
@@ -256,7 +337,15 @@ export class MiniCPM5Model {
   }
 
   protected forwardLayers(h0: MlxArray, cache: Cache[]): MlxArray {
-    const h = this.runLayerRange(h0, 0, this.layers.length, cache);
+    // When the fused SwiGLU path is live, WE own the eval schedule: materialize
+    // each layer's output so the custom kernel sits in a shallow per-layer graph
+    // rather than a 24-deep lazy graph whose buffer planner aliases the kernel's
+    // output (the deep-graph corruption). Training/segmented-backward call
+    // runLayerRange directly and never set this, so autograd is untouched.
+    const h = this.runLayerRange(
+      h0, 0, this.layers.length, cache,
+      fusedSwigluEnabled() && process.env.MLX_BUN_SWIGLU_NOEVAL !== "1",
+    );
     h0.dispose(); // runLayerRange keeps its input alive; we own h0 here
     return disposing(h, this.finalNorm.forward(h));
   }
@@ -269,7 +358,7 @@ export class MiniCPM5Model {
    *  segmented-backward training path (docs/design/segmented-backward-training.md).
    *  MiniCPM5 is plain full-attention with no KV-sharing, so each layer reads
    *  its own stateless `cache[i]` and a single causal mask. */
-  runLayerRange(h: MlxArray, aIdx: number, bIdx: number, cache: Cache[]): MlxArray {
+  runLayerRange(h: MlxArray, aIdx: number, bIdx: number, cache: Cache[], evalPerLayer = false): MlxArray {
     if (aIdx >= bIdx) return h;
     const L = h.shape[1]!;
     const mask = cache[aIdx]!.makeMask(L, null);
@@ -278,6 +367,15 @@ export class MiniCPM5Model {
       const next = this.layers[i]!.forward(cur, mask, cache[i]!);
       if (i > aIdx) cur.dispose(); // keep the input boundary leaf; drop interiors
       cur = next;
+      // Per-layer boundary (segmented-trainer pattern): materialize each layer's
+      // output so MLX never plans across layers — our single-dispatch fused MLP is
+      // the only custom kernel it runs per layer. evalAll (GPU sync, no host copy)
+      // suffices for one kernel/boundary; MLX_BUN_SWIGLU_DETACH=1 forces the
+      // stronger graph-breaking detachLeaf copy.
+      if (evalPerLayer) {
+        if (process.env.MLX_BUN_SWIGLU_DETACH === "1") cur = detachLeaf(cur);
+        else ops.evalAll([cur]);
+      }
     }
     mask.arr?.dispose();
     return cur;
