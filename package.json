@@ -1,6 +1,6 @@
 {
   "name": "mlx-bun",
-  "version": "0.0.6",
+  "version": "0.0.8",
   "description": "Native MLX inference for Bun on Apple Silicon — local LLM server (OpenAI/Anthropic-compatible) and TypeScript library. No Python.",
   "type": "module",
   "license": "MIT",
@@ -58,8 +58,8 @@
     "openai": "^6.42.0"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.79.4",
-    "@earendil-works/pi-ai": "0.79.4",
+    "@earendil-works/pi-coding-agent": "0.80.2",
+    "@earendil-works/pi-ai": "0.80.2",
     "@huggingface/jinja": "^0.5.9",
     "@huggingface/tokenizers": "^0.1.3",
     "fast-png": "^8.0.0",

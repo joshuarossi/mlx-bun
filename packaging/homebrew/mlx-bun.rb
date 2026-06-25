@@ -12,9 +12,9 @@
 class MlxBun < Formula
   desc "Native MLX inference for Bun on Apple Silicon — local LLM server + TS library"
   homepage "https://github.com/joshuarossi/mlx-bun"
-  version "0.0.6"
-  url "https://github.com/joshuarossi/mlx-bun/releases/download/v0.0.6/mlx-bun-v0.0.6-arm64.tar.gz"
-  sha256 "9eb3d157ab1f3ae9f0bedbb78704c5313776915b5e00e33614a9d00dbea7b655"
+  version "0.0.8"
+  url "https://github.com/joshuarossi/mlx-bun/releases/download/v0.0.8/mlx-bun-v0.0.8-arm64.tar.gz"
+  sha256 "552708477ef2149aaff883351a8fb73d255a9e55874e3cff7fd0f30077fbc635"
   license "MIT"
 
   # Apple Silicon + Metal only. Bump the macOS floor if MLX needs newer.
