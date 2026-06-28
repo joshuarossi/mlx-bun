@@ -128,7 +128,7 @@ RECONCILE (infobox-ground-truth consistency) → LINK (cross-link) → WIKIFY (e
    Re-segmenting the first 720 is **low-urgency** (old chunks were valid).
 2b. **WINDOWED SEGMENTATION (the real "size limit" fix).** Measured: a few huge convs produce
    130K–302K-token chunk prompts; the single-pass Metal prefill needs a >20GB buffer and OOMs
-   (`29.5GB > 20.1GB` device cap on 24GB). This is a HARDWARE bound, not a settable context
+   (`29.5GB > 20.1GB` Metal max-buffer cap on this 32GB M1 Max). This is a HARDWARE bound, not a settable context
    window (the model config already allows 262K positions). `chunk.ts` now has a
    `MAX_CHUNK_PROMPT_CHARS` (280K ≈ 70K tok) guard that SKIPS oversized convs (left unchunked)
    instead of crashing. Of 1357 remaining convs, ~94% are ≤100 msgs (fine); only ~a handful are
