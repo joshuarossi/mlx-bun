@@ -72,6 +72,27 @@ Ordered by expected payoff on this hardware:
       e4b single-forward logits BIT-EXACT vs python, 24/24 greedy,
       51.6 tok/s non-spec, multi-model fit predicted 7.91 GB vs 6.83
       measured (over-prediction: transient calibrated on 12B + KV@4k).
+      **12B MEASURED (2026-06-14): γ=1 is a WIN once the verify is fixed.**
+      First pass looked like a net loss at every γ, but that was a
+      WRONG-ORACLE bug: assistant-drafter spec is an OPTIQ feature (mlx-lm
+      can't drive a KV-borrowing drafter), and optiq+mlx-lm both BATCH the
+      verify lm-head. Our port verified PER-POSITION to be bit-exact to
+      STOCK decode — a target no real impl has, re-reading the ~1GB
+      lm-head matrix γ+1×/iter. Fixed (`picksBatched`): one batched verify
+      lm-head, matching optiq. Results flip: γ=1/2/3/4 = 1.09/0.91/0.72/
+      0.56× (was 0.96/0.77/0.67/0.52×; loaded machine, ratios paired),
+      acceptance unchanged 42/29/23/17%. **γ=1 = ~9% WIN on 12B**; γ≥2
+      still loses (heavy drafter: hidden 1024, 16 heads, full-262k tied
+      head every draft step). Now BIT-EXACT to optiq's spec_generate
+      (e4b: identical 48-tok output + identical 60/17/31 trace, via
+      scripts/oracle-spec.py + spec-dump.ts). Also: optiq's INSTALLED
+      runtime can't drive the 12B/26B unified drafters (config picks
+      centroid path, artifact ships none → 0% accept); our tensor-presence
+      tied-head detection works (29%) — we're ahead of optiq there.
+      TODO: clean-machine rerun before quoting; cheaper drafter head to
+      extend the win past γ=1; optional strictVerify flag for the old
+      bit-exact-to-stock behavior. Full write-up:
+      docs/design/spec-decode-larger-targets.md.
 - [x] **Fused sampling** — already satisfied by the Phase 3 design:
       sampling (temp/top-p/top-k/penalties) runs entirely on-GPU; only
       the chosen token id (one uint32) crosses to JS per step; the
