@@ -13,11 +13,9 @@ The Dreaming turns conversations → chunks → entities → **subject articles*
 cross-linked, self-healing personal wiki. It **works end-to-end on real data.**
 
 - **Full-corpus import RESUMED from cursor 720/2096** into `~/.mlx-bun/wiki-full`, on the
-  corrected templating + a new oversized-conv size guard, batching off (serial, ~50h).
+  corrected templating, batching off (serial, ~50h).
 - **Committed + merged to `main`** (the Dreaming pipeline + inference-path rework). tsc 0.
 - Templating fix **VERIFIED live** on real convs (bare prompt + a 40-msg conv → valid chunks).
-- Current open CODE item: **windowed segmentation** for oversized convs (see Next Steps) —
-  a handful of huge conversations OOM the single-pass prefill and are skipped for now.
 
 ## Resume the import
 ```
@@ -126,14 +124,6 @@ RECONCILE (infobox-ground-truth consistency) → LINK (cross-link) → WIKIFY (e
    stage decodes on-distribution (system role present).
 2. **Import is RUNNING** (resumed from 720, serial, corrected templating). Just let it finish.
    Re-segmenting the first 720 is **low-urgency** (old chunks were valid).
-2b. **WINDOWED SEGMENTATION (the real "size limit" fix).** Measured: a few huge convs produce
-   130K–302K-token chunk prompts; the single-pass Metal prefill needs a >20GB buffer and OOMs
-   (`29.5GB > max_buffer_length 20,100,448,256 B (18.7 GiB, verified)` on this 32GB M1 Max). This is a HARDWARE bound, not a settable context
-   window (the model config already allows 262K positions). `chunk.ts` now has a
-   `MAX_CHUNK_PROMPT_CHARS` (280K ≈ 70K tok) guard that SKIPS oversized convs (left unchunked)
-   instead of crashing. Of 1357 remaining convs, ~94% are ≤100 msgs (fine); only ~a handful are
-   affected. PROPER FIX: slide a context-sized window over the conversation, segment each window,
-   stitch boundaries — then re-run `segment` to catch the skipped (still-unchunked) convs.
 3. **After import:** `reindex` → `mlx-bun memory link` → browse `wiki-full` in Obsidian;
    cloud-judge a broad, diverse sample (not just frameworks/gear).
 4. **Promote to the real vault** when satisfied: point `~/.mlx-bun/wiki` at the bootstrapped
