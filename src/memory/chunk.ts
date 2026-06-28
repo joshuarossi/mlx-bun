@@ -87,6 +87,15 @@ Here is the conversation:
 /** The Meta/ policy pages SEGMENT inlines (P1-T7 / B10). Order is stable. */
 const META_POLICY_PAGES = ["Chunking", "Topics_to_Ignore"];
 
+/** Skip convs whose chunk prompt would OOM the Metal prefill. A long enough prompt
+ *  forces a single intermediate buffer past the device max-buffer cap (measured:
+ *  ~130K-token / 519K-char prompt → a 29.5GB alloc > the 20.1GB Metal max on a 24GB
+ *  M-series). ~280K chars ≈ 70K tokens stays safely under that. Oversized convs are
+ *  left UNCHUNKED (chunked_at NULL) so a future WINDOWED segmentation pass can handle
+ *  them — see HANDOFF "windowed segmentation". This is a hardware bound, not a
+ *  context-window setting (the model config allows 262K positions). */
+const MAX_CHUNK_PROMPT_CHARS = 280_000;
+
 /** Wrap a rendered chunk prompt as the trained {system, user} input. */
 export function chunkInput(prompt: string): LocalInput {
   return { system: CHUNK_SYSTEM, user: prompt };
@@ -259,8 +268,15 @@ export async function chunkConversations(
       continue;
     }
 
-    result.attempted++;
     const prompt = promptHead() + formatConversation(c.title ?? "", c.conv, nonEmpty);
+    // Size guard: an oversized prompt OOMs the Metal prefill (29.5GB > 20.1GB cap on
+    // 24GB). Skip it — left UNCHUNKED for a future windowed pass — rather than crash.
+    if (prompt.length > MAX_CHUNK_PROMPT_CHARS) {
+      onEvent?.({ type: "log", stage: "chunk", message: `[${i}/${eligible.length}] ${c.conv}: oversized prompt (${prompt.length} chars) — skipped for windowing` });
+      result.errored++;
+      continue;
+    }
+    result.attempted++;
 
     let response: string;
     try {
