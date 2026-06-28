@@ -5,7 +5,7 @@ exit criteria, and findings live in [PLAN.md](PLAN.md); this file is the
 transient front door that stays current. Product/UX north star:
 [docs/planning/PRODUCT_ROADMAP.md](docs/planning/PRODUCT_ROADMAP.md).
 
-## THE DREAMING (local personal-wiki memory) — ACTIVE 2026-06-28. Full handoff: [reports/dreaming/HANDOFF.md](reports/dreaming/HANDOFF.md)
+## THE DREAMING (local personal-wiki memory) — ACTIVE 2026-06-28. Full handoff: [docs/design/the-dreaming-handoff.md](docs/design/the-dreaming-handoff.md)
 
 Conversations → chunks → entities → **subject articles** → cross-linked, self-healing
 wiki, all local (`src/memory/`). **Works end-to-end on real data.** Staged, chronological,
