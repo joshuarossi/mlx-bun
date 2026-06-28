@@ -5,6 +5,8 @@
 //
 //   bun scripts/render-flag-matrix-report.ts [--in <json>] [--out <html>]
 
+export {}; // make this a module (top-level await + isolated top-level scope)
+
 function opt(name: string, dflt: string): string {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1]! : dflt;

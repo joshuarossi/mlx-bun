@@ -95,7 +95,7 @@ const lse = MlxArray.fromFloat32(lseRef.toFloat32(), [M]);
 const gv = MlxArray.fromFloat32(new Float32Array(M).fill(1), [M]);
 const shp = MlxArray.fromBytesCopy(new Uint8Array(new Uint32Array([H, V, M]).buffer.slice(0)), [3], Dtype.uint32);
 const capv = MlxArray.fromFloat32(new Float32Array([0]), [1]);
-const [dh] = k.apply([w, x, scales, biases, tgt, lse, gv, shp, capv], { outputs: [{ shape: [M, H], dtype: Dtype.float32 }], grid: [128, 1, Math.ceil(M / 8)], threadGroup: [128, 1, 1] });
+const dh = k.apply([w, x, scales, biases, tgt, lse, gv, shp, capv], { outputs: [{ shape: [M, H], dtype: Dtype.float32 }], grid: [128, 1, Math.ceil(M / 8)], threadGroup: [128, 1, 1] })[0]!;
 // reference: coeff = onehot − softmax; dh_ref = quantizedMatmul(coeff, W, transpose=false)
 const lseC = ops.reshape(lseRef, [M, 1]); const sm = ops.exp(ops.sub(refLogits, lseC)); const smH = sm.toFloat32();
 const coeffArr = new Float32Array(M * V); for (let i = 0; i < M; i++) for (let n = 0; n < V; n++) coeffArr[i * V + n] = (targets[i] === n ? 1 : 0) - smH[i * V + n]!;

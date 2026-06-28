@@ -1,6 +1,7 @@
 // curve-temp-grid.ts — the definitive version: sweep the WHOLE temperature axis with
 // fresh seeds (seed is a free variable), and count how often pure temperature produces
 // the curve's sentence or even crosses its fork. Saturating the (temp × seed) grid.
+export {};
 const BASE = "http://localhost:8090";
 const MODEL = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
 const PROMPT = "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.";

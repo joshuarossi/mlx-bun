@@ -140,7 +140,7 @@ async function fwd(seqLen: number): Promise<void> {
   const config = await loadModelConfig(E4B);
   const weights = await Weights.open(E4B);
   const model = createModel(weights, config);
-  console.log(`vocab=${config.vocabSize} → logits buffer ≈ ${gb(seqLen * config.vocabSize * 4)}`);
+  console.log(`vocab=${config.text.vocabSize} → logits buffer ≈ ${gb(seqLen * config.text.vocabSize * 4)}`);
   const data = new Int32Array(seqLen).map((_, i) => (i % 1000) + 1);
   const ids = MlxArray.fromInt32(data, [1, seqLen]);
   resetPeakMemory();

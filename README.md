@@ -284,6 +284,10 @@ agent CLIs like pi/OpenClaw via their provider config.
 - **OpenAI Responses API** (`POST /v1/responses`) — the protocol
   Codex/Cursor/Continue speak; includes `previous_response_id`
   resumption backed by a TTL + byte-capped store (visible in /stats).
+- **OpenAI Embeddings API** (`POST /v1/embeddings`) — when the served
+  model is an embedding model (`mlx-bun serve Qwen3-Embedding-4B-4bit-DWQ`):
+  last-token pooled, L2-normalized vectors, bit-exact vs mlx-lm. Also a
+  one-shot CLI: `mlx-bun embed <model> --text "…"`.
 - **`GET /v1/models`**, **`GET /stats`** (cache hit rates, bytes,
   active KV scheme, response store), **`GET/POST/DELETE /v1/adapters`**,
   plus **`GET /library`**, **`GET /fit`**, **`GET /downloads`**, and

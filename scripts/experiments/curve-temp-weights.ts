@@ -2,6 +2,7 @@
 // Same method as the lighthouse test: pure temperature (top-p/top-k OFF), swept across
 // T and seeds, looking for an exact match to a curve-generated sample. Advice text is
 // far more constrained than creative prose, so temperature may track much further here.
+export {};
 const BASE = "http://localhost:8090";
 const MODEL = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
 const PROMPT = "My 14-year-old wants to start lifting weights. Is that safe, and how should they begin?";

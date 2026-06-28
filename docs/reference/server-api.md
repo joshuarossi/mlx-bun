@@ -177,6 +177,31 @@ OpenAI SDK speak this now). Oracle: optiq responses shim.
   response.completed` (+ `response.function_call_arguments.delta/.done`
   for tool calls).
 
+## POST /v1/embeddings (OpenAI Embeddings API)
+
+Text embeddings, available when the **served model is an embedding model**
+(plain Qwen3 / Qwen3-Embedding) — consistent with the single-model server:
+`mlx-bun serve mlx-community/Qwen3-Embedding-4B-4bit-DWQ`, then POST here. On
+any other served model the route returns `400 invalid_request_error`.
+
+- `input` (string or array of strings), `model` (ignored — the served model
+  is used), and a **non-standard** `instruction` (optional): applies
+  Qwen3-Embedding's query format `Instruct: {instruction}\nQuery:{text}`,
+  which steers *which* similarity axis the geometry reflects. Omit it for
+  plain document embeddings.
+- Pooling is last-token + L2-normalization (the vectors are unit-length);
+  similarity is the dot product. Bit-exact vs the mlx-lm `qwen3` reference
+  (`tests/qwen3-embed-parity.test.ts`).
+- Response: `{ "object": "list", "data": [{ "object": "embedding", "index":
+  0, "embedding": [float…] }, …], "model": "<served id>", "usage": {
+  "prompt_tokens": N, "total_tokens": N } }`. Embedding is a single forward
+  (no decode loop), so it runs inline — not through the generation gateway.
+
+```sh
+curl localhost:8090/v1/embeddings -H 'content-type: application/json' \
+  -d '{"input": ["the cat sat on the mat", "a kitten by the window"]}'
+```
+
 ## GET /v1/models
 
 `{ "object": "list", "data": [{ "id": "<model id>", "object": "model", … }] }`

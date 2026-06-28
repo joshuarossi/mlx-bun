@@ -1,13 +1,15 @@
-// mlx-bun memory — nightly scheduling via launchd.  ✅ REAL (the pipeline it
-// runs is the M1 stub, but install/remove/status here are fully functional).
+// mlx-bun memory — nightly scheduling via launchd.  ✅ REAL — install/remove/
+// status here are fully functional, and the job they run (`mlx-bun memory
+// synthesize`) now drives the real synthesis DAG (create + editorial wikify
+// sweep), not a stub.
 //
 // mlx-bun is macOS/Apple-silicon-only by identity, so launchd is the native
 // choice over crontab: it survives reboot, runs jobs missed while asleep on
 // next wake, and gives clean install/uninstall. `memory schedule` writes
 // ~/Library/LaunchAgents/com.mlx-bun.memory.plist (a StartCalendarInterval that
 // runs `mlx-bun memory synthesize`) and loads it; `unschedule` unloads + removes
-// it. Today that job is a no-op (synthesis is stubbed) — harmless; when M1 lands
-// the same schedule starts producing articles with no reconfiguration.
+// it. That job runs the full synthesis DAG and produces/updates articles on the
+// schedule with no further configuration.
 //
 // See docs/design/memory-system.md → "Scheduling (launchd)".
 

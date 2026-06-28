@@ -17,8 +17,19 @@ import { Weights } from "../src/weights";
 import { createModel } from "../src/model/factory";
 import { loadTokenizer } from "../src/tokenizer";
 import { ChatTemplate } from "../src/chat-template";
-// Imported verbatim from lucien — deterministic anchor validation/repair.
-import { validateChunks } from "/Users/joshrossi/Code/lucien/scripts/chunk-validation.ts";
+// Deterministic anchor validation/repair lives in the sibling `lucien` repo
+// (absolute, machine-specific path). Import it through a NON-LITERAL specifier so
+// this repo's typecheck doesn't pull lucien's source into scope; type the one
+// function we use locally (only `.length` of each field is read below).
+type ValidateChunks = (
+  raw: unknown[],
+  messages: unknown[],
+  conversationUuid: string,
+) => { chunks: unknown[]; repairs: string[] };
+const lucienChunkValidation = "/Users/joshrossi/Code/lucien/scripts/chunk-validation.ts";
+const { validateChunks } = (await import(lucienChunkValidation)) as {
+  validateChunks: ValidateChunks;
+};
 
 const HOME = process.env.HOME!;
 function resolveModel(): string {

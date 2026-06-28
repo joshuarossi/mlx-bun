@@ -4,6 +4,7 @@
 // EXACT match. Same prompt, same RNG (stepKey(seed,step) is shared by both the curve
 // and temperature paths), so a matching temperature would reproduce it token-for-token
 // — iff the curve were equivalent to some temperature. It isn't (it's non-linear).
+export {};
 const BASE = "http://localhost:8090";
 const MODEL = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
 const PROMPT = "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.";
@@ -36,7 +37,7 @@ console.log(`target (${nT.length} chars):\n  "${nT}"\n`);
 // ---- methodology check: reproduce a /generate DEFAULT sample via /v1/chat/completions ----
 console.log("=== methodology check: /generate default  ==  /v1/chat/completions (same recipe+seed) ===");
 const g = await gen(100, { default: true });
-const viaGen = norm(g.samples[0].text);
+const viaGen = norm(g.samples[0]!.text);
 const viaChat = norm(await chat(g.recipe.temperature, 100, g.recipe.topP, g.recipe.topK));
 const ok = viaGen === viaChat;
 console.log(`recipe T=${g.recipe.temperature} top_p=${g.recipe.topP} top_k=${g.recipe.topK}  seed 100`);

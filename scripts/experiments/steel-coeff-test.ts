@@ -50,7 +50,7 @@ const lse=MlxArray.fromFloat32(lseRef.toFloat32(),[M]);
 const gv=MlxArray.fromFloat32(new Float32Array(M).fill(1),[M]);
 const shp=MlxArray.fromView(new Uint8Array(new Uint32Array([H,V,M]).buffer.slice(0)),[3],Dtype.uint32);
 const capv=MlxArray.fromFloat32(new Float32Array([0]),[1]);
-const [coeff]=k.apply([w,x,scales,biases,tgt,lse,gv,shp,capv],{outputs:[{shape:[M,V],dtype:Dtype.float32}],grid:[128, V/32, Math.ceil(M/8)],threadGroup:[128,1,1]});
+const coeff=k.apply([w,x,scales,biases,tgt,lse,gv,shp,capv],{outputs:[{shape:[M,V],dtype:Dtype.float32}],grid:[128, V/32, Math.ceil(M/8)],threadGroup:[128,1,1]})[0]!;
 // ref coeff = onehot − softmax
 const lseC=ops.reshape(lseRef,[M,1]); const sm=ops.exp(ops.sub(refLogits,lseC));
 const refC=sm.toFloat32(); const ch=coeff.toFloat32();

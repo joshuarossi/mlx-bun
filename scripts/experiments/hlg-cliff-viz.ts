@@ -2,6 +2,7 @@
 // model, two panels (target_gap cliff, W lower edge @ A=100). Reveals the two
 // cliff SHAPES the coarse maps hid — target_gap is a graded ramp (position shifts
 // by vocab), W@highA is a sharp edge at ~7.5 (position model-invariant). Emits SVG.
+export {};
 
 type Series = { model: string; color: string; tg: number[]; w: number[] };
 // mean junk % (K=5), runs runY/runZ/runAA.

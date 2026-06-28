@@ -1,5 +1,10 @@
 # Embedding mlx-bun (single-binary sidecar)
 
+> **Not text embeddings.** This page is about *embedding the mlx-bun binary*
+> inside an app. For text-vector embeddings (Qwen3-Embedding, `mlx-bun embed`,
+> `POST /v1/embeddings`), see [server-api.md](./server-api.md#post-v1embeddings-openai-embeddings-api)
+> and [library-api.md](./library-api.md#text-embeddings).
+
 Ship local inference inside a Mac app (Tauri, Electron, or anything
 that can spawn a process) with zero user-visible dependencies: one
 executable + three native libraries, dropped into your app's resources.

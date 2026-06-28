@@ -49,7 +49,7 @@ const x = MlxArray.fromFloat32(new Float32Array(M*H).map(()=>-0.5+Math.random())
 const scales = MlxArray.fromFloat32(new Float32Array(V*GR).map(()=>0.01+Math.random()*0.02),[V,GR]);
 const biases = MlxArray.fromFloat32(new Float32Array(V*GR).map(()=>-0.1+Math.random()*0.2),[V,GR]);
 const shp = MlxArray.fromBytesCopy(new Uint8Array(new Uint32Array([H,V,M]).buffer.slice(0)),[3],Dtype.uint32);
-const [y] = k.apply([w,x,scales,biases,shp],{outputs:[{shape:[M,V],dtype:Dtype.float32}],grid:[(V/32)*128,M/32,1],threadGroup:[128,1,1]});
+const y = k.apply([w,x,scales,biases,shp],{outputs:[{shape:[M,V],dtype:Dtype.float32}],grid:[(V/32)*128,M/32,1],threadGroup:[128,1,1]})[0]!;
 const ref = ops.quantizedMatmul(x, w, scales, biases, {bits:BITS, groupSize:GS, mode:"affine"} as any, true);
 evalAll([y, ref]);
 const yh = y.toFloat32(), rh = ref.toFloat32();

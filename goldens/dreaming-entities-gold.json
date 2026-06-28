@@ -1,0 +1,437 @@
+{
+  "_doc": "Hand-curated entity gold for The Dreaming. Two parts: (1) variantGroups — surface forms that all denote one canonical entity, for the DETERMINISTIC dedup gate (the canonicalize() variant-merge bug; the self-check split 'S5IIX'/'S5 IIX'/'the Panasonic'/'my Lumix S5IIX' into 4 stems). (2) notableEntities — things Josh genuinely engaged with (owned/decided/recurring/opinion), the personal-notability oracle. Grounded by reading ~/Dreaming/articles/*.md and live lucien chunks; NOT derived from bucket-gold (the topic-bin taxonomy this project replaces). See reports/dreaming/gold-curation.md.",
+  "_method": "Curation by reading: ~/Dreaming/articles (Camera_Gear_and_Lenses, Anamorphic_Lens_Adapters, Claude_Code_and_Skills, Bun_and_TypeScript_Tooling, AI_Memory_and_Agent_Systems, Archie_Project, AlphaPoint_Work_and_Politics, Local_LLM_Inference_and_Deployment) + sampled lucien messages (the real surface forms Josh typed). No model used.",
+
+  "variantGroups": [
+    {
+      "canonical": "Panasonic Lumix S5IIX",
+      "kind": "thing",
+      "domain": "photography",
+      "variants": ["S5IIX", "S5IIx", "S5 IIX", "the S5IIx", "Lumix S5IIX", "LUMIX S5IIx", "the Panasonic", "my Lumix S5IIX", "the Lumix", "S5II X"]
+    },
+    {
+      "canonical": "L-Mount",
+      "kind": "standard",
+      "domain": "photography",
+      "variants": ["L-Mount", "L-mount", "L mount", "L Mount", "the L mount", "AF (L Mount)", "L-mount glass"]
+    },
+    {
+      "canonical": "Sigma 150-600",
+      "kind": "thing",
+      "domain": "photography",
+      "variants": ["Sigma 150-600", "Sigma 150-600mm", "the Sigma 150-600", "150-600", "the Sigma", "Sigma 150 600"]
+    },
+    {
+      "canonical": "Lumix 75-300",
+      "kind": "thing",
+      "domain": "photography",
+      "variants": ["Lumix 75-300", "Lumix 75-300mm", "the Lumix 75-300", "75-300", "the 75-300"]
+    },
+    {
+      "canonical": "Sankor 16C",
+      "kind": "thing",
+      "domain": "vintage-optics-anamorphic",
+      "variants": ["Sankor 16C", "Sankor 16-C", "Sankor 16D", "Sankor 16-D", "Sankor", "the Sankor", "16C", "the Sankor adapter", "the 16C"]
+    },
+    {
+      "canonical": "M42 mount",
+      "kind": "standard",
+      "domain": "vintage-optics-anamorphic",
+      "variants": ["M42", "M42 mount", "the M42 mount", "M-42", "M42 primes", "M42 glass"]
+    },
+    {
+      "canonical": "EF mount",
+      "kind": "standard",
+      "domain": "photography",
+      "variants": ["EF", "EF mount", "the EF mount", "EF glass", "Canon EF", "adapted EF"]
+    },
+    {
+      "canonical": "anamorphic adapter",
+      "kind": "thing",
+      "domain": "vintage-optics-anamorphic",
+      "variants": ["anamorphic", "anamorphic adapter", "anamorphic lens", "anamorphics", "anamorphic projection lens", "projection anamorphic", "anamorphic lens adapter"]
+    },
+    {
+      "canonical": "Helios 44-2",
+      "kind": "thing",
+      "domain": "vintage-optics-anamorphic",
+      "variants": ["Helios 44-2", "Helios", "the Helios", "Helios 44", "44-2", "my Helios"]
+    },
+    {
+      "canonical": "Sirui Aurora",
+      "kind": "thing",
+      "domain": "photography",
+      "variants": ["Sirui Aurora", "the Sirui Aurora", "Aurora f/1.4", "Sirui 35mm f/1.4", "the Aurora", "Sirui 35 1.4"]
+    },
+    {
+      "canonical": "Model Context Protocol",
+      "kind": "standard",
+      "domain": "ai-tooling",
+      "variants": ["MCP", "Model Context Protocol", "the MCP protocol", "MCP server", "MCP servers", "an MCP server", "MCP servers and tools"]
+    },
+    {
+      "canonical": "Claude Code",
+      "kind": "project",
+      "domain": "ai-tooling",
+      "variants": ["Claude Code", "Claude Code CLI", "the Claude Code runtime", "claude code", "CC", "Claude Code (CLI)"]
+    },
+    {
+      "canonical": "pi",
+      "kind": "project",
+      "domain": "ai-tooling",
+      "variants": ["pi", "the pi runtime", "pi-web", "pi terminal", "pi-terminal", "OpenClaw", "OpenAI's OpenClaw"]
+    },
+    {
+      "canonical": "mlx-bun",
+      "kind": "project",
+      "domain": "local-inference",
+      "variants": ["mlx-bun", "the mlx-bun project", "mlx-bun runtime", "mlxbun", "mlx bun", "the mlx-bun runtime"]
+    },
+    {
+      "canonical": "MLX",
+      "kind": "standard",
+      "domain": "local-inference",
+      "variants": ["MLX", "mlx", "the MLX framework", "Apple MLX", "Apple's MLX", "MLX framework"]
+    },
+    {
+      "canonical": "AlphaPoint",
+      "kind": "project",
+      "domain": "alphapoint-work",
+      "variants": ["AlphaPoint", "Alpha Point", "AP", "AlphaPoint's", "the company", "AlphaPoint AI Lab"]
+    },
+    {
+      "canonical": "Igor Telyatnikov",
+      "kind": "person",
+      "domain": "alphapoint-work",
+      "variants": ["Igor Telyatnikov", "Igor", "Telyatnikov", "the CEO", "AlphaPoint CEO", "the AlphaPoint CEO"]
+    },
+    {
+      "canonical": "Bambu A1 Mini",
+      "kind": "thing",
+      "domain": "3d-printing",
+      "variants": ["Bambu A1 Mini", "Bambu A1", "the Bambu", "A1 Mini", "Bambu", "the A1 Mini"]
+    },
+    {
+      "canonical": "Archie",
+      "kind": "project",
+      "domain": "alphapoint-work",
+      "variants": ["Archie", "the Archie project", "Archie Project", "Archie platform", "Jim", "the Archie platform"]
+    },
+    {
+      "canonical": "DaVinci Resolve",
+      "kind": "project",
+      "domain": "color-science",
+      "variants": ["DaVinci Resolve", "Resolve", "Davinci Resolve", "DaVinci", "Resolve Studio", "da vinci resolve"]
+    },
+    {
+      "canonical": "Lucien",
+      "kind": "project",
+      "domain": "memory-systems",
+      "variants": ["Lucien", "the Lucien project", "the Lucien skill", "Lucien MCP server", "the Lucien MCP", "lucien"]
+    }
+  ],
+
+  "notableEntities": [
+    {
+      "name": "Panasonic Lumix S5IIX",
+      "kind": "thing",
+      "domain": "photography",
+      "aliases": ["S5IIX", "S5IIx", "S5 IIX", "Lumix S5IIX", "the Panasonic"],
+      "whyNotable": "Owned full-frame body, bought used for $1,645 in Dec 2024 as his first serious camera; called it 'probably the best value you can ever get in a camera' and uses it daily as an anamorphic + video-conference camera (Camera_Gear_and_Lenses.md)."
+    },
+    {
+      "name": "iPhone 15 Pro Max",
+      "kind": "thing",
+      "domain": "photography",
+      "aliases": ["iPhone 15 Pro Max", "the iPhone", "15 Pro Max"],
+      "whyNotable": "Owned; shoots Apple Log on it and treats it as a legitimate production tool, working out its Quad-Bayer sensor, full-frame-equivalent aperture, and ETTR-inversion behavior in detail (Camera_Gear_and_Lenses.md)."
+    },
+    {
+      "name": "L-Mount",
+      "kind": "standard",
+      "domain": "photography",
+      "aliases": ["L-Mount", "L mount", "L-mount glass"],
+      "whyNotable": "The lens mount Josh standardized on; the navigation hub for all his vintage/EF adaptation and recurs across camera conversations (notability.json; Camera_Gear_and_Lenses.md)."
+    },
+    {
+      "name": "M42 mount",
+      "kind": "standard",
+      "domain": "vintage-optics-anamorphic",
+      "aliases": ["M42", "M42 mount", "M42 primes"],
+      "whyNotable": "Legacy mount he deliberately adapts vintage glass from (Helios 44-2, Jupiter-9, Super-Takumars) onto L-Mount; root of the Frankenstein anamorphic chain (Anamorphic_Lens_Adapters.md; notability.json)."
+    },
+    {
+      "name": "EF mount",
+      "kind": "standard",
+      "domain": "photography",
+      "aliases": ["EF", "EF mount", "Canon EF"],
+      "whyNotable": "The other mount he adapts from (adapted EF glass incl. a Canon EF 50mm f/1.2L and telephoto zooms); a recorded decision about which adapters to buy (Camera_Gear_and_Lenses.md; notability.json)."
+    },
+    {
+      "name": "Sigma 150-600",
+      "kind": "thing",
+      "domain": "photography",
+      "aliases": ["Sigma 150-600", "150-600"],
+      "whyNotable": "Chosen as the sane long-reach telephoto pick at ~$600 over pricier alternatives; a recorded decision (notability.json)."
+    },
+    {
+      "name": "Lumix 75-300",
+      "kind": "thing",
+      "domain": "photography",
+      "aliases": ["Lumix 75-300", "75-300"],
+      "whyNotable": "Owned telephoto zoom used for reach before the Sigma decision (notability.json)."
+    },
+    {
+      "name": "Sankor 16C",
+      "kind": "thing",
+      "domain": "vintage-optics-anamorphic",
+      "aliases": ["Sankor 16C", "Sankor", "16C", "Sankor 16-D"],
+      "whyNotable": "Owned projection anamorphic adapter used on the S5IIX for de-squeeze experiments; the centerpiece of the Frankenstein chain (L-Mount → M42 → Helios → clamp → Sankor 16C) (Anamorphic_Lens_Adapters.md; lucien chunk)."
+    },
+    {
+      "name": "Singer 16-D",
+      "kind": "thing",
+      "domain": "vintage-optics-anamorphic",
+      "aliases": ["Singer 16-D", "Singer 16D"],
+      "whyNotable": "Owned; he notes 'I have a Singer 16-D, I think its basically the same thing as the Sankor' — same projection-anamorphic optical design (lucien chunk)."
+    },
+    {
+      "name": "Helios 44-2",
+      "kind": "thing",
+      "domain": "vintage-optics-anamorphic",
+      "aliases": ["Helios 44-2", "Helios", "44-2"],
+      "whyNotable": "Owned M42 taking lens he favors ('i love to take the Helios out'); the cult Helios-plus-anamorphic pairing for swirly bokeh at 58mm (lucien chunk; Anamorphic_Lens_Adapters.md)."
+    },
+    {
+      "name": "Jupiter-9",
+      "kind": "thing",
+      "domain": "vintage-optics-anamorphic",
+      "aliases": ["Jupiter-9", "Jupiter 9", "85mm Jupiter-9"],
+      "whyNotable": "Owned M42 portrait lens he adapts for his anamorphic projection lenses ('I mainly use the Jupiter-9 adapted for my anamorphic projection lenses') (lucien chunk)."
+    },
+    {
+      "name": "Sirui Aurora",
+      "kind": "thing",
+      "domain": "photography",
+      "aliases": ["Sirui Aurora", "the Aurora", "Sirui 35mm f/1.4"],
+      "whyNotable": "35mm f/1.4 he was deciding to buy ('I was going to get the Sirui Aurora') to test 35mm against his strong 50mm attachment (Camera_Gear_and_Lenses.md; lucien chunk)."
+    },
+    {
+      "name": "Sirui Saturn 35mm 1.6x",
+      "kind": "thing",
+      "domain": "vintage-optics-anamorphic",
+      "aliases": ["Sirui Saturn", "Saturn 35mm 1.6x", "Sirui Saturn 35mm 1.6x f/2.9"],
+      "whyNotable": "Owned modern anamorphic lens ('I already have the Sirui Saturn 35mm 1.6'); part of his catalogued lens library (lucien chunk)."
+    },
+    {
+      "name": "Meike 85mm f/1.4",
+      "kind": "thing",
+      "domain": "photography",
+      "aliases": ["Meike 85mm f/1.4", "Meike 85", "the Meike 85"],
+      "whyNotable": "Owned AF L-mount portrait lens (seen mounted with the half-cage rig; listed under his AF (L Mount) glass alongside Meike 35mm f/2 and 50mm f/1.8) (lucien chunk)."
+    },
+    {
+      "name": "OLPF",
+      "kind": "thing",
+      "domain": "photography",
+      "aliases": ["OLPF", "optical low-pass filter", "Kolari rear-mount OLPF"],
+      "whyNotable": "Recurring deliberation: the S5IIX ships with no factory OLPF, so he reasoned through adding a Kolari rear-mount magnetic OLPF as 'a class of filtering the camera fundamentally lacks' (Camera_Gear_and_Lenses.md)."
+    },
+    {
+      "name": "Apple Log",
+      "kind": "standard",
+      "domain": "color-science",
+      "aliases": ["Apple Log", "Apple ProRes Log"],
+      "whyNotable": "Shoots Apple Log on the iPhone; worked out its scene-referred log-into-parabola transfer function, P3-ish gamut, and 10-bit ProRes cap as a strict post-grading source (Camera_Gear_and_Lenses.md)."
+    },
+    {
+      "name": "V-Log",
+      "kind": "standard",
+      "domain": "color-science",
+      "aliases": ["V-Log", "VLog"],
+      "whyNotable": "Shoots V-Log on the S5IIX (~14 stops DR); holds a settled opinion that dual native ISO stays 640/4000 in V-Log and that Live LUT is the only mode treating the camera as film stock (Camera_Gear_and_Lenses.md)."
+    },
+    {
+      "name": "DaVinci Resolve",
+      "kind": "project",
+      "domain": "color-science",
+      "aliases": ["DaVinci Resolve", "Resolve", "DaVinci"],
+      "whyNotable": "His grading tool; hit and reasoned through the Apple ProRAW/.DNG incompatibility when trying to bring an iPhone raw still into Resolve (Camera_Gear_and_Lenses.md)."
+    },
+    {
+      "name": "Bambu A1 Mini",
+      "kind": "thing",
+      "domain": "3d-printing",
+      "aliases": ["Bambu A1 Mini", "Bambu A1", "the Bambu"],
+      "whyNotable": "Owned 3D printer that makes the vintage-optics adapter sourcing problem a 'measure → model → print' workflow; the enabler in his vintage-lens/anamorphic dependency chain (Anamorphic_Lens_Adapters.md)."
+    },
+    {
+      "name": "PETG",
+      "kind": "thing",
+      "domain": "3d-printing",
+      "aliases": ["PETG"],
+      "whyNotable": "Material he prints with regularly; recurring print-settings discussions and a settled opinion on its tradeoffs vs PLA (notability.json)."
+    },
+    {
+      "name": "DIY Variable Diopter Project",
+      "kind": "project",
+      "domain": "vintage-optics-anamorphic",
+      "aliases": ["DIY Variable Diopter Project", "variable diopter", "single-focus module"],
+      "whyNotable": "His 3D-printed single-focus module building an Iscorama-style rig for ~$50 vs commercial units running into the thousands; solves close-focus collapse on the Sankor chain (Anamorphic_Lens_Adapters.md)."
+    },
+    {
+      "name": "Model Context Protocol",
+      "kind": "standard",
+      "domain": "ai-tooling",
+      "aliases": ["MCP", "Model Context Protocol", "MCP server"],
+      "whyNotable": "Recurring topic: integrates MCP servers across Claude runtimes, debugged the Agent SDK not auto-loading MCP servers in Archie's Telegram path, and self-hosts MCP (Claude_Code_and_Skills.md)."
+    },
+    {
+      "name": "Claude Code",
+      "kind": "project",
+      "domain": "ai-tooling",
+      "aliases": ["Claude Code", "Claude Code CLI", "CC"],
+      "whyNotable": "Accumulated config, mental models, skills/hooks/slash-command experimentation; the harness layer his Archie work sits above and the subject of a dedicated article (Claude_Code_and_Skills.md)."
+    },
+    {
+      "name": "pi",
+      "kind": "project",
+      "domain": "ai-tooling",
+      "aliases": ["pi", "pi-web", "pi-terminal", "OpenClaw"],
+      "whyNotable": "Core runtime pillar he drives both UIs through (web + CLI); part of the OpenClaw → pi → Bun convergence thesis he holds about AI tooling (Bun_and_TypeScript_Tooling.md; project memory)."
+    },
+    {
+      "name": "mlx-bun",
+      "kind": "project",
+      "domain": "local-inference",
+      "aliases": ["mlx-bun", "the mlx-bun project"],
+      "whyNotable": "His own Bun-on-FFI MLX runtime — the project this gold serves; built for bit-exact local inference with no Python intermediary (Local_LLM_Inference_and_Deployment.md; Bun_and_TypeScript_Tooling.md)."
+    },
+    {
+      "name": "MLX",
+      "kind": "standard",
+      "domain": "local-inference",
+      "aliases": ["MLX", "Apple MLX"],
+      "whyNotable": "The framework mlx-bun is built on; recurs constantly and he holds strong opinions about its kernels and lazy eval (notability.json; Local_LLM_Inference_and_Deployment.md)."
+    },
+    {
+      "name": "mlx-lm",
+      "kind": "project",
+      "domain": "local-inference",
+      "aliases": ["mlx-lm", "MLX-LM"],
+      "whyNotable": "His logit-parity correctness oracle; the Python reference serving stack mlx-bun is validated bit-for-bit against (Local_LLM_Inference_and_Deployment.md; CLAUDE.md)."
+    },
+    {
+      "name": "OptiQ",
+      "kind": "project",
+      "domain": "local-inference",
+      "aliases": ["OptiQ", "optiq"],
+      "whyNotable": "The MLX serving framework he settled on for quantized-KV attention and the vision sidecar; mlx-bun's L2 fidelity oracle (Local_LLM_Inference_and_Deployment.md)."
+    },
+    {
+      "name": "llama.cpp",
+      "kind": "project",
+      "domain": "local-inference",
+      "aliases": ["llama.cpp", "llamacpp"],
+      "whyNotable": "One of the two Apple-Silicon engines he compared head-to-head, deciding for MLX over llama.cpp for his serving stack — a recorded decision (Local_LLM_Inference_and_Deployment.md)."
+    },
+    {
+      "name": "Bun",
+      "kind": "project",
+      "domain": "dev-stack",
+      "aliases": ["Bun", "the Bun runtime"],
+      "whyNotable": "His preferred JS/TS runtime for all new work; strong opinions on its first-party APIs and the Anthropic/Oven acquisition validating his stack-consolidation thesis (Bun_and_TypeScript_Tooling.md)."
+    },
+    {
+      "name": "TypeScript",
+      "kind": "domain",
+      "domain": "dev-stack",
+      "aliases": ["TypeScript", "TS"],
+      "whyNotable": "Substantive (not taste) opinion against forced static typing for API-consuming code — the 'rhythm method vs condom' argument; works in it only because projects mandate it (Bun_and_TypeScript_Tooling.md)."
+    },
+    {
+      "name": "Postgres",
+      "kind": "thing",
+      "domain": "dev-stack",
+      "aliases": ["Postgres", "PostgreSQL"],
+      "whyNotable": "'The one I'd die on the hill for' — Postgres-only stack thesis (JSONB + GIN + FTS + LISTEN/NOTIFY + pgvector) eating most specialized databases' lunch (Bun_and_TypeScript_Tooling.md)."
+    },
+    {
+      "name": "Archie",
+      "kind": "project",
+      "domain": "alphapoint-work",
+      "aliases": ["Archie", "the Archie project", "Jim"],
+      "whyNotable": "The internal AI agent platform he built at AlphaPoint (Jira as control plane, producer/verifier separation); his primary AI-lab project, demoed to the board (Archie_Project.md; AlphaPoint_Work_and_Politics.md)."
+    },
+    {
+      "name": "Archon",
+      "kind": "project",
+      "domain": "ai-tooling",
+      "aliases": ["Archon", "coleam00"],
+      "whyNotable": "The open-source orchestrator (Cole Medin) Archie is built on; he chose it for its YAML DAG workflows and wrote a custom Jira adapter on top (Archie_Project.md)."
+    },
+    {
+      "name": "Conflict Coach",
+      "kind": "project",
+      "domain": "alphapoint-work",
+      "aliases": ["Conflict Coach", "ConflictCoach"],
+      "whyNotable": "Archie's first end-to-end build (~14,000 lines, 87% autonomous, hosted at conflictcoach.pages.dev); the proof case for the capacity-expansion pitch (Archie_Project.md)."
+    },
+    {
+      "name": "Clarity",
+      "kind": "project",
+      "domain": "alphapoint-work",
+      "aliases": ["Clarity"],
+      "whyNotable": "The v2 Archie system's from-scratch rebuild of Conflict Coach with 0% human-written production code (Archie_Project.md)."
+    },
+    {
+      "name": "Lucien",
+      "kind": "project",
+      "domain": "memory-systems",
+      "aliases": ["Lucien", "the Lucien skill"],
+      "whyNotable": "His built memory system — verbatim conversation store feeding a synthesized wiki via nightly consolidation; the 'invisible memory' skill he iterates toward (AI_Memory_and_Agent_Systems.md; Lucien_Retrieval_and_Evaluation.md)."
+    },
+    {
+      "name": "the Dreaming",
+      "kind": "project",
+      "domain": "memory-systems",
+      "aliases": ["the Dreaming", "Dreaming", "the personal wiki"],
+      "whyNotable": "The personal wiki Lucien produces (~/Dreaming/articles); refined Wikipedia-style with every claim cited back to the source conversation — the north-star artifact of his memory thesis (AI_Memory_and_Agent_Systems.md)."
+    },
+    {
+      "name": "AlphaPoint",
+      "kind": "project",
+      "domain": "alphapoint-work",
+      "aliases": ["AlphaPoint", "AP", "Alpha Point"],
+      "whyNotable": "The crypto-exchange-infrastructure company where Josh works as a cross-functional generalist (~9 years, hired by the founder); the setting for the Archie pitch and his role/comp politics (AlphaPoint_Work_and_Politics.md)."
+    },
+    {
+      "name": "Igor Telyatnikov",
+      "kind": "person",
+      "domain": "alphapoint-work",
+      "aliases": ["Igor Telyatnikov", "Igor", "the CEO"],
+      "whyNotable": "AlphaPoint's CEO; Josh's day-to-day operational-trust relationship (traveled alone with him to El Salvador to start Chivo) and a recurring named colleague (Local_LLM_Inference_and_Deployment.md colleague table; AlphaPoint_Work_and_Politics.md)."
+    },
+    {
+      "name": "Chivo",
+      "kind": "project",
+      "domain": "alphapoint-work",
+      "aliases": ["Chivo", "Chivo and PLSA", "the Chivo project"],
+      "whyNotable": "The contested El Salvador national-wallet account renewal Josh built from zero with the CEO; a recurring high-stakes client engagement (AlphaPoint_Work_and_Politics.md)."
+    },
+    {
+      "name": "Infrasight",
+      "kind": "project",
+      "domain": "alphapoint-work",
+      "aliases": ["Infrasight", "InfraSight"],
+      "whyNotable": "A company in Josh's working orbit, tracked alongside AlphaPoint in his colleague reference (Myles Trachtenberg listed as Infrasight CTO) (Local_LLM_Inference_and_Deployment.md colleague table)."
+    },
+    {
+      "name": "Toyota Production System",
+      "kind": "domain",
+      "domain": "alphapoint-work",
+      "aliases": ["Toyota Production System", "TPS", "Lean/TPS"],
+      "whyNotable": "A recurring thinking lens (jidoka, kanban, andon) he grounds Archie's quality-and-compounding argument and the Mechanical Development Manifesto in (notability.json; Archie_Project.md)."
+    }
+  ]
+}

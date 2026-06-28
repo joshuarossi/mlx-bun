@@ -106,7 +106,7 @@ export interface GenOpts {
  *  (forwardHidden/logitsFromHidden + pipelined sampler) diverges from the raw forward
  *  on near-ties past ~32 tokens, so the EVAL decodes bit-exactly itself rather than
  *  alter the serving path. Greedy + full-precision KV only. */
-function greedyDecodeBitExact(tm: TaskModel, ids: number[], maxTokens: number): string {
+export function greedyDecodeBitExact(tm: TaskModel, ids: number[], maxTokens: number): string {
   if (tm.activeAdapters) tm.model.loraState.active = tm.activeAdapters; // apply the mounted adapter
   const cache = tm.model.makeCache();
   try {
