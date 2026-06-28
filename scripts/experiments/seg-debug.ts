@@ -34,6 +34,7 @@ const config = await loadModelConfig(MODEL);
 const weights = await Weights.open(MODEL);
 const model = createModel(weights, config);
 if (!(model instanceof MiniCPM5Model)) throw new Error("expected MiniCPM5Model");
+const cpm: MiniCPM5Model = model;
 const nLayers = model.layers.length;
 
 const ids = Array.from({ length: SEQ }, (_, i) => ((i * 7 + 3) % 2000) + 1);
@@ -48,7 +49,7 @@ function lossVariant(detach: boolean): number {
   const caches: Cache[] = Array.from({ length: nLayers }, () => new TrainingCache());
   let h = model.embed.encode(inputIds);
   if (detach) { const d = ops.stopGradient(h); h.dispose(); h = d; h.eval(); }
-  const layerOut = model.runLayerRange(h, 0, nLayers, caches);
+  const layerOut = cpm.runLayerRange(h, 0, nLayers, caches);
   h.dispose();
   let lo = layerOut;
   if (detach) { const d = ops.stopGradient(lo); lo.dispose(); lo = d; lo.eval(); }

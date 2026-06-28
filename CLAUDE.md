@@ -11,7 +11,7 @@ README.md has the pitch and scope boundaries.
 - `README.md` — product pitch, quickstart, API surface, scope boundaries.
 - `benchmarks/RESULTS.md` — curated results: parity / performance / quality.
 - `docs/reference/` — server-api, server-config, library-api, embedding, distribution, training, orpo-quickstart (user-facing reference).
-- `docs/design/` — optimization_plan, compat-cli-surface-design, parallel-slots, docs-reorg-plan, adapters-end-to-end, hlg-sampling, memory-system, runtime-isolation, segmented-backward-training, orpo-training, orpo-future-enhancements, tauri-desktop-app.
+- `docs/design/` — optimization_plan, compat-cli-surface-design, parallel-slots, docs-reorg-plan, adapters-end-to-end, hlg-sampling, memory-system, memory-synthesis, runtime-isolation, segmented-backward-training, orpo-training, orpo-future-enhancements, tauri-desktop-app.
 - `docs/investigations/` — pi-builtin-investigation, starter-model-port-handoff, lab-build-journal, chunk-finetune-experiment, curve-bisector-routing, expert-offload-single-user-moe, hlg-sampling-investigation, segmented-backward-handoff, steel-flash-cce-handoff.
 - `docs/planning/` — product/vision: PRODUCT_ROADMAP, IDEAS, ResearchTopics, journal, chunk-task-roadmap.
 - `AGENTS.md` → symlink to this file.

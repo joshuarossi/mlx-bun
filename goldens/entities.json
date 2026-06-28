@@ -1,0 +1,2055 @@
+{
+  "entities": [
+    {
+      "name": "3d printing and printers",
+      "aliases": [
+        "3d printing"
+      ],
+      "sourceTitle": "3D_Printing_and_Printers.md"
+    },
+    {
+      "name": "access to justice advocacy",
+      "aliases": [],
+      "sourceTitle": "Access_to_Justice_Advocacy.md"
+    },
+    {
+      "name": "accounting and double-entry bookkeeping",
+      "aliases": [],
+      "sourceTitle": "Accounting_and_Double-Entry_Bookkeeping.md"
+    },
+    {
+      "name": "affiliate payout script",
+      "aliases": [],
+      "sourceTitle": "Affiliate_Payout_Script.md"
+    },
+    {
+      "name": "ai coding workflow",
+      "aliases": [],
+      "sourceTitle": "AI_Coding_Workflow.md"
+    },
+    {
+      "name": "ai financial analyst mvp",
+      "aliases": [],
+      "sourceTitle": "AI_Financial_Analyst_MVP.md"
+    },
+    {
+      "name": "ai image generation prompts",
+      "aliases": [],
+      "sourceTitle": "AI_Image_Generation_Prompts.md"
+    },
+    {
+      "name": "ai industry and economics",
+      "aliases": [],
+      "sourceTitle": "AI_Industry_and_Economics.md"
+    },
+    {
+      "name": "ai infrastructure theses",
+      "aliases": [],
+      "sourceTitle": "AI_Infrastructure_Theses.md"
+    },
+    {
+      "name": "ai memory and agent systems",
+      "aliases": [],
+      "sourceTitle": "AI_Memory_and_Agent_Systems.md"
+    },
+    {
+      "name": "ai photo culling pipeline",
+      "aliases": [],
+      "sourceTitle": "AI_Photo_Culling_Pipeline.md"
+    },
+    {
+      "name": "ai roleplay and fiction prompts",
+      "aliases": [],
+      "sourceTitle": "AI_Roleplay_and_Fiction_Prompts.md"
+    },
+    {
+      "name": "ai service business plans",
+      "aliases": [],
+      "sourceTitle": "AI_Service_Business_Plans.md"
+    },
+    {
+      "name": "airplay and display protocols",
+      "aliases": [],
+      "sourceTitle": "AirPlay_and_Display_Protocols.md"
+    },
+    {
+      "name": "algorithmic trading strategies",
+      "aliases": [],
+      "sourceTitle": "Algorithmic_Trading_Strategies.md"
+    },
+    {
+      "name": "alphapoint work and politics",
+      "aliases": [
+        "alphapoint"
+      ],
+      "sourceTitle": "AlphaPoint_Work_and_Politics.md"
+    },
+    {
+      "name": "anamorphic lens adapters",
+      "aliases": [],
+      "sourceTitle": "Anamorphic_Lens_Adapters.md"
+    },
+    {
+      "name": "angie creative writing",
+      "aliases": [],
+      "sourceTitle": "Angie_Creative_Writing.md"
+    },
+    {
+      "name": "animal behavior and zoology",
+      "aliases": [],
+      "sourceTitle": "Animal_Behavior_and_Zoology.md"
+    },
+    {
+      "name": "ansible inventory and configuration",
+      "aliases": [],
+      "sourceTitle": "Ansible_Inventory_and_Configuration.md"
+    },
+    {
+      "name": "apex exchange api integration",
+      "aliases": [
+        "apex"
+      ],
+      "sourceTitle": "APEX_Exchange_API_Integration.md"
+    },
+    {
+      "name": "apex web broker b theming",
+      "aliases": [],
+      "sourceTitle": "Apex_Web_Broker_B_Theming.md"
+    },
+    {
+      "name": "api training curriculum",
+      "aliases": [],
+      "sourceTitle": "API_Training_Curriculum.md"
+    },
+    {
+      "name": "apollo moon landings",
+      "aliases": [],
+      "sourceTitle": "Apollo_Moon_Landings.md"
+    },
+    {
+      "name": "apple camera product concept",
+      "aliases": [
+        "apple camera"
+      ],
+      "sourceTitle": "Apple_Camera_Product_Concept.md"
+    },
+    {
+      "name": "apple log explainer video",
+      "aliases": [
+        "\"what is apple log?\""
+      ],
+      "sourceTitle": "Apple_Log_Explainer_Video.md"
+    },
+    {
+      "name": "apple products and announcements",
+      "aliases": [],
+      "sourceTitle": "Apple_Products_and_Announcements.md"
+    },
+    {
+      "name": "archie architecture",
+      "aliases": [],
+      "sourceTitle": "Archie_Architecture.md"
+    },
+    {
+      "name": "archie build runs",
+      "aliases": [],
+      "sourceTitle": "Archie_Build_Runs.md"
+    },
+    {
+      "name": "archie commercialization",
+      "aliases": [],
+      "sourceTitle": "Archie_Commercialization.md"
+    },
+    {
+      "name": "archie lean theory",
+      "aliases": [],
+      "sourceTitle": "Archie_Lean_Theory.md"
+    },
+    {
+      "name": "archie operations",
+      "aliases": [],
+      "sourceTitle": "Archie_Operations.md"
+    },
+    {
+      "name": "archie project",
+      "aliases": [],
+      "sourceTitle": "Archie_Project.md"
+    },
+    {
+      "name": "archie",
+      "aliases": [],
+      "sourceTitle": "Archie.md"
+    },
+    {
+      "name": "arri look emulation workflow",
+      "aliases": [],
+      "sourceTitle": "ARRI_Look_Emulation_Workflow.md"
+    },
+    {
+      "name": "arri riedel and camera industry",
+      "aliases": [],
+      "sourceTitle": "ARRI_Riedel_and_Camera_Industry.md"
+    },
+    {
+      "name": "art, intent, and aesthetics",
+      "aliases": [],
+      "sourceTitle": "Art,_Intent,_and_Aesthetics.md"
+    },
+    {
+      "name": "astronomy and planetary science",
+      "aliases": [],
+      "sourceTitle": "Astronomy_and_Planetary_Science.md"
+    },
+    {
+      "name": "astrophotography",
+      "aliases": [],
+      "sourceTitle": "Astrophotography.md"
+    },
+    {
+      "name": "asynchronous programming models",
+      "aliases": [],
+      "sourceTitle": "Asynchronous_Programming_Models.md"
+    },
+    {
+      "name": "audio embeddings and transcription",
+      "aliases": [],
+      "sourceTitle": "Audio_Embeddings_and_Transcription.md"
+    },
+    {
+      "name": "audio mixing and mastering",
+      "aliases": [],
+      "sourceTitle": "Audio_Mixing_and_Mastering.md"
+    },
+    {
+      "name": "auth0 and jwt token handling",
+      "aliases": [],
+      "sourceTitle": "Auth0_and_JWT_Token_Handling.md"
+    },
+    {
+      "name": "automobile maintenance and repair",
+      "aliases": [],
+      "sourceTitle": "Automobile_Maintenance_and_Repair.md"
+    },
+    {
+      "name": "autonomous sailboat project",
+      "aliases": [],
+      "sourceTitle": "Autonomous_Sailboat_Project.md"
+    },
+    {
+      "name": "baby and family photography",
+      "aliases": [],
+      "sourceTitle": "Baby_and_Family_Photography.md"
+    },
+    {
+      "name": "backend architecture and stacks",
+      "aliases": [],
+      "sourceTitle": "Backend_Architecture_and_Stacks.md"
+    },
+    {
+      "name": "bar exam and legal education",
+      "aliases": [],
+      "sourceTitle": "Bar_Exam_and_Legal_Education.md"
+    },
+    {
+      "name": "battlebots and combat robotics",
+      "aliases": [],
+      "sourceTitle": "BattleBots_and_Combat_Robotics.md"
+    },
+    {
+      "name": "bedding and comforters",
+      "aliases": [],
+      "sourceTitle": "Bedding_and_Comforters.md"
+    },
+    {
+      "name": "bedtime story app",
+      "aliases": [],
+      "sourceTitle": "Bedtime_Story_App.md"
+    },
+    {
+      "name": "bigquery and google cloud data access",
+      "aliases": [],
+      "sourceTitle": "BigQuery_and_Google_Cloud_Data_Access.md"
+    },
+    {
+      "name": "binary tcp protocol implementation",
+      "aliases": [],
+      "sourceTitle": "Binary_TCP_Protocol_Implementation.md"
+    },
+    {
+      "name": "bitcoin and monetary theory",
+      "aliases": [],
+      "sourceTitle": "Bitcoin_and_Monetary_Theory.md"
+    },
+    {
+      "name": "boating licenses and certifications",
+      "aliases": [],
+      "sourceTitle": "Boating_Licenses_and_Certifications.md"
+    },
+    {
+      "name": "book recommendations",
+      "aliases": [],
+      "sourceTitle": "Book_Recommendations.md"
+    },
+    {
+      "name": "bookbinding methods",
+      "aliases": [],
+      "sourceTitle": "Bookbinding_Methods.md"
+    },
+    {
+      "name": "botany and plant biology",
+      "aliases": [],
+      "sourceTitle": "Botany_and_Plant_Biology.md"
+    },
+    {
+      "name": "boxing and combat sports",
+      "aliases": [],
+      "sourceTitle": "Boxing_and_Combat_Sports.md"
+    },
+    {
+      "name": "broadcast engineering and infrastructure",
+      "aliases": [],
+      "sourceTitle": "Broadcast_Engineering_and_Infrastructure.md"
+    },
+    {
+      "name": "brutalism architecture and design",
+      "aliases": [
+        "brutalism"
+      ],
+      "sourceTitle": "Brutalism_Architecture_and_Design.md"
+    },
+    {
+      "name": "bun and typescript tooling",
+      "aliases": [],
+      "sourceTitle": "Bun_and_TypeScript_Tooling.md"
+    },
+    {
+      "name": "c and c++ programming",
+      "aliases": [],
+      "sourceTitle": "C_and_C++_Programming.md"
+    },
+    {
+      "name": "call of duty series",
+      "aliases": [
+        "call of duty"
+      ],
+      "sourceTitle": "Call_of_Duty_Series.md"
+    },
+    {
+      "name": "camera gear and lenses",
+      "aliases": [],
+      "sourceTitle": "Camera_Gear_and_Lenses.md"
+    },
+    {
+      "name": "camera shoe mounts",
+      "aliases": [
+        "cold shoe",
+        "hot shoe"
+      ],
+      "sourceTitle": "Camera_Shoe_Mounts.md"
+    },
+    {
+      "name": "card and digital games",
+      "aliases": [],
+      "sourceTitle": "Card_and_Digital_Games.md"
+    },
+    {
+      "name": "career and identity",
+      "aliases": [],
+      "sourceTitle": "Career_and_Identity.md"
+    },
+    {
+      "name": "categories and representation",
+      "aliases": [],
+      "sourceTitle": "Categories_and_Representation.md"
+    },
+    {
+      "name": "celebrity impressions and mimicry",
+      "aliases": [],
+      "sourceTitle": "Celebrity_Impressions_and_Mimicry.md"
+    },
+    {
+      "name": "chatgpt api web app experiments",
+      "aliases": [],
+      "sourceTitle": "ChatGPT_API_Web_App_Experiments.md"
+    },
+    {
+      "name": "chatgpt desktop work with apps",
+      "aliases": [],
+      "sourceTitle": "ChatGPT_Desktop_Work_with_Apps.md"
+    },
+    {
+      "name": "chess endgames and theory",
+      "aliases": [],
+      "sourceTitle": "Chess_Endgames_and_Theory.md"
+    },
+    {
+      "name": "chess game analysis",
+      "aliases": [
+        "mjrossi"
+      ],
+      "sourceTitle": "Chess_Game_Analysis.md"
+    },
+    {
+      "name": "chivo and plsa",
+      "aliases": [
+        "chivo"
+      ],
+      "sourceTitle": "Chivo_and_PLSA.md"
+    },
+    {
+      "name": "chivo btc rate display audit",
+      "aliases": [],
+      "sourceTitle": "Chivo_BTC_Rate_Display_Audit.md"
+    },
+    {
+      "name": "churches and civic space",
+      "aliases": [],
+      "sourceTitle": "Churches_and_Civic_Space.md"
+    },
+    {
+      "name": "cinematography and color science",
+      "aliases": [],
+      "sourceTitle": "Cinematography_and_Color_Science.md"
+    },
+    {
+      "name": "clarity codebase review",
+      "aliases": [],
+      "sourceTitle": "Clarity_Codebase_Review.md"
+    },
+    {
+      "name": "clash royale strategy",
+      "aliases": [],
+      "sourceTitle": "Clash_Royale_Strategy.md"
+    },
+    {
+      "name": "claude code and skills",
+      "aliases": [],
+      "sourceTitle": "Claude_Code_and_Skills.md"
+    },
+    {
+      "name": "claude on vertex ai",
+      "aliases": [],
+      "sourceTitle": "Claude_on_Vertex_AI.md"
+    },
+    {
+      "name": "coaching and talent evaluation",
+      "aliases": [],
+      "sourceTitle": "Coaching_and_Talent_Evaluation.md"
+    },
+    {
+      "name": "color appearance models",
+      "aliases": [],
+      "sourceTitle": "Color_Appearance_Models.md"
+    },
+    {
+      "name": "color grading post houses",
+      "aliases": [],
+      "sourceTitle": "Color_Grading_Post_Houses.md"
+    },
+    {
+      "name": "color metadata and transfer signaling",
+      "aliases": [],
+      "sourceTitle": "Color_Metadata_and_Transfer_Signaling.md"
+    },
+    {
+      "name": "compilers and language tooling",
+      "aliases": [],
+      "sourceTitle": "Compilers_and_Language_Tooling.md"
+    },
+    {
+      "name": "confined-space survival and life support",
+      "aliases": [],
+      "sourceTitle": "Confined-Space_Survival_and_Life_Support.md"
+    },
+    {
+      "name": "conflict coach product",
+      "aliases": [
+        "clarity",
+        "conflict coach"
+      ],
+      "sourceTitle": "Conflict_Coach_Product.md"
+    },
+    {
+      "name": "consciousness and philosophy of mind",
+      "aliases": [],
+      "sourceTitle": "Consciousness_and_Philosophy_of_Mind.md"
+    },
+    {
+      "name": "consumer computing device recommendations",
+      "aliases": [],
+      "sourceTitle": "Consumer_Computing_Device_Recommendations.md"
+    },
+    {
+      "name": "consumer photo printers",
+      "aliases": [],
+      "sourceTitle": "Consumer_Photo_Printers.md"
+    },
+    {
+      "name": "contact lenses and eye care",
+      "aliases": [
+        "-5.5 diopters"
+      ],
+      "sourceTitle": "Contact_Lenses_and_Eye_Care.md"
+    },
+    {
+      "name": "context degradation research",
+      "aliases": [],
+      "sourceTitle": "Context_Degradation_Research.md"
+    },
+    {
+      "name": "copw stablecoin project",
+      "aliases": [],
+      "sourceTitle": "COPW_Stablecoin_Project.md"
+    },
+    {
+      "name": "corporate boards and directorship",
+      "aliases": [],
+      "sourceTitle": "Corporate_Boards_and_Directorship.md"
+    },
+    {
+      "name": "creator economy and channel acquisitions",
+      "aliases": [],
+      "sourceTitle": "Creator_Economy_and_Channel_Acquisitions.md"
+    },
+    {
+      "name": "cross-origin resource sharing (cors)",
+      "aliases": [],
+      "sourceTitle": "Cross-Origin_Resource_Sharing_(CORS).md"
+    },
+    {
+      "name": "crypto and web3",
+      "aliases": [],
+      "sourceTitle": "Crypto_and_Web3.md"
+    },
+    {
+      "name": "cryptography concepts",
+      "aliases": [],
+      "sourceTitle": "Cryptography_Concepts.md"
+    },
+    {
+      "name": "css wide-gamut color",
+      "aliases": [],
+      "sourceTitle": "CSS_Wide-Gamut_Color.md"
+    },
+    {
+      "name": "culture and memory",
+      "aliases": [],
+      "sourceTitle": "Culture_and_Memory.md"
+    },
+    {
+      "name": "custom vehicle builds and road legality",
+      "aliases": [],
+      "sourceTitle": "Custom_Vehicle_Builds_and_Road_Legality.md"
+    },
+    {
+      "name": "data recovery and disk forensics",
+      "aliases": [],
+      "sourceTitle": "Data_Recovery_and_Disk_Forensics.md"
+    },
+    {
+      "name": "data structures and algorithms",
+      "aliases": [],
+      "sourceTitle": "Data_Structures_and_Algorithms.md"
+    },
+    {
+      "name": "data warehousing and dimensional modeling",
+      "aliases": [],
+      "sourceTitle": "Data_Warehousing_and_Dimensional_Modeling.md"
+    },
+    {
+      "name": "datamoshing",
+      "aliases": [],
+      "sourceTitle": "Datamoshing.md"
+    },
+    {
+      "name": "davinci resolve editing and fusion",
+      "aliases": [],
+      "sourceTitle": "DaVinci_Resolve_Editing_and_Fusion.md"
+    },
+    {
+      "name": "davinci resolve scripting and automation",
+      "aliases": [],
+      "sourceTitle": "DaVinci_Resolve_Scripting_and_Automation.md"
+    },
+    {
+      "name": "dctl color transform development",
+      "aliases": [
+        "davinci color transform language (dctl)"
+      ],
+      "sourceTitle": "DCTL_Color_Transform_Development.md"
+    },
+    {
+      "name": "democratic backsliding and authoritarianism",
+      "aliases": [
+        "democratic backsliding"
+      ],
+      "sourceTitle": "Democratic_Backsliding_and_Authoritarianism.md"
+    },
+    {
+      "name": "dental health and treatment",
+      "aliases": [],
+      "sourceTitle": "Dental_Health_and_Treatment.md"
+    },
+    {
+      "name": "desmos graphing calculator",
+      "aliases": [],
+      "sourceTitle": "Desmos_Graphing_Calculator.md"
+    },
+    {
+      "name": "devops and server operations",
+      "aliases": [],
+      "sourceTitle": "DevOps_and_Server_Operations.md"
+    },
+    {
+      "name": "diet and weight loss",
+      "aliases": [],
+      "sourceTitle": "Diet_and_Weight_Loss.md"
+    },
+    {
+      "name": "diffusion language models",
+      "aliases": [],
+      "sourceTitle": "Diffusion_Language_Models.md"
+    },
+    {
+      "name": "digital hardware design",
+      "aliases": [],
+      "sourceTitle": "Digital_Hardware_Design.md"
+    },
+    {
+      "name": "discord usage and threads",
+      "aliases": [],
+      "sourceTitle": "Discord_Usage_and_Threads.md"
+    },
+    {
+      "name": "display and television technology",
+      "aliases": [],
+      "sourceTitle": "Display_and_Television_Technology.md"
+    },
+    {
+      "name": "diy liquid lens camera project",
+      "aliases": [],
+      "sourceTitle": "DIY_Liquid_Lens_Camera_Project.md"
+    },
+    {
+      "name": "diy variable diopter project",
+      "aliases": [],
+      "sourceTitle": "DIY_Variable_Diopter_Project.md"
+    },
+    {
+      "name": "dogs and working breeds",
+      "aliases": [],
+      "sourceTitle": "Dogs_and_Working_Breeds.md"
+    },
+    {
+      "name": "dolly zoom effect and rigging",
+      "aliases": [
+        "dolly zoom"
+      ],
+      "sourceTitle": "Dolly_Zoom_Effect_and_Rigging.md"
+    },
+    {
+      "name": "drone hardware and automation",
+      "aliases": [],
+      "sourceTitle": "Drone_Hardware_and_Automation.md"
+    },
+    {
+      "name": "drone video marketing business",
+      "aliases": [],
+      "sourceTitle": "Drone_Video_Marketing_Business.md"
+    },
+    {
+      "name": "drone waypoint mission planning",
+      "aliases": [],
+      "sourceTitle": "Drone_Waypoint_Mission_Planning.md"
+    },
+    {
+      "name": "duffel api",
+      "aliases": [],
+      "sourceTitle": "Duffel_API.md"
+    },
+    {
+      "name": "dungeons and dragons campaigns",
+      "aliases": [],
+      "sourceTitle": "Dungeons_and_Dragons_Campaigns.md"
+    },
+    {
+      "name": "ebpf and kernel tracing",
+      "aliases": [
+        "ebpf"
+      ],
+      "sourceTitle": "eBPF_and_Kernel_Tracing.md"
+    },
+    {
+      "name": "el salvador google education plan",
+      "aliases": [],
+      "sourceTitle": "El_Salvador_Google_Education_Plan.md"
+    },
+    {
+      "name": "el salvador life",
+      "aliases": [
+        "san salvador, el salvador"
+      ],
+      "sourceTitle": "El_Salvador_Life.md"
+    },
+    {
+      "name": "el xolo documentary film",
+      "aliases": [],
+      "sourceTitle": "El_Xolo_Documentary_Film.md"
+    },
+    {
+      "name": "el xolo restaurant project",
+      "aliases": [],
+      "sourceTitle": "El_Xolo_Restaurant_Project.md"
+    },
+    {
+      "name": "ella and parenting",
+      "aliases": [
+        "ella"
+      ],
+      "sourceTitle": "Ella_and_Parenting.md"
+    },
+    {
+      "name": "engagement rings and proposals",
+      "aliases": [],
+      "sourceTitle": "Engagement_Rings_and_Proposals.md"
+    },
+    {
+      "name": "english language learning",
+      "aliases": [],
+      "sourceTitle": "English_Language_Learning.md"
+    },
+    {
+      "name": "entropy, cosmology, and the arrow of time",
+      "aliases": [],
+      "sourceTitle": "Entropy,_Cosmology,_and_the_Arrow_of_Time.md"
+    },
+    {
+      "name": "espionage and intelligence tradecraft",
+      "aliases": [],
+      "sourceTitle": "Espionage_and_Intelligence_Tradecraft.md"
+    },
+    {
+      "name": "ethics and moral philosophy",
+      "aliases": [],
+      "sourceTitle": "Ethics_and_Moral_Philosophy.md"
+    },
+    {
+      "name": "etymology and linguistics",
+      "aliases": [],
+      "sourceTitle": "Etymology_and_Linguistics.md"
+    },
+    {
+      "name": "eventure social events startup",
+      "aliases": [],
+      "sourceTitle": "Eventure_Social_Events_Startup.md"
+    },
+    {
+      "name": "evolutionary biology and tree of life",
+      "aliases": [],
+      "sourceTitle": "Evolutionary_Biology_and_Tree_of_Life.md"
+    },
+    {
+      "name": "experimental design and factorial testing",
+      "aliases": [
+        "factorial experimental design"
+      ],
+      "sourceTitle": "Experimental_Design_and_Factorial_Testing.md"
+    },
+    {
+      "name": "exposure tools and zone systems",
+      "aliases": [],
+      "sourceTitle": "Exposure_Tools_and_Zone_Systems.md"
+    },
+    {
+      "name": "family trusts and asset structuring",
+      "aliases": [],
+      "sourceTitle": "Family_Trusts_and_Asset_Structuring.md"
+    },
+    {
+      "name": "film and tv analysis",
+      "aliases": [],
+      "sourceTitle": "Film_and_TV_Analysis.md"
+    },
+    {
+      "name": "film and tv recommendations",
+      "aliases": [],
+      "sourceTitle": "Film_and_TV_Recommendations.md"
+    },
+    {
+      "name": "film burn and light leak effects",
+      "aliases": [
+        "film burn",
+        "light leak"
+      ],
+      "sourceTitle": "Film_Burn_and_Light_Leak_Effects.md"
+    },
+    {
+      "name": "film distribution and industry",
+      "aliases": [],
+      "sourceTitle": "Film_Distribution_and_Industry.md"
+    },
+    {
+      "name": "film formats and film stock",
+      "aliases": [],
+      "sourceTitle": "Film_Formats_and_Film_Stock.md"
+    },
+    {
+      "name": "filmmaking craft and directing",
+      "aliases": [],
+      "sourceTitle": "Filmmaking_Craft_and_Directing.md"
+    },
+    {
+      "name": "fire, smoke, and combustion byproducts",
+      "aliases": [],
+      "sourceTitle": "Fire,_Smoke,_and_Combustion_Byproducts.md"
+    },
+    {
+      "name": "fitness and mobility",
+      "aliases": [],
+      "sourceTitle": "Fitness_and_Mobility.md"
+    },
+    {
+      "name": "flash and speedlight photography",
+      "aliases": [],
+      "sourceTitle": "Flash_and_Speedlight_Photography.md"
+    },
+    {
+      "name": "flowers and floral symbolism",
+      "aliases": [],
+      "sourceTitle": "Flowers_and_Floral_Symbolism.md"
+    },
+    {
+      "name": "folklore and mythology",
+      "aliases": [],
+      "sourceTitle": "Folklore_and_Mythology.md"
+    },
+    {
+      "name": "food and cuisine identification",
+      "aliases": [],
+      "sourceTitle": "Food_and_Cuisine_Identification.md"
+    },
+    {
+      "name": "formula 1 broadcast and commercial structure",
+      "aliases": [],
+      "sourceTitle": "Formula_1_Broadcast_and_Commercial_Structure.md"
+    },
+    {
+      "name": "fragrance and perfumery",
+      "aliases": [
+        "francis kurkdjian",
+        "tom ford private blend"
+      ],
+      "sourceTitle": "Fragrance_and_Perfumery.md"
+    },
+    {
+      "name": "freelance web project pricing",
+      "aliases": [],
+      "sourceTitle": "Freelance_Web_Project_Pricing.md"
+    },
+    {
+      "name": "fusionauth identity platform",
+      "aliases": [
+        "fusionauth"
+      ],
+      "sourceTitle": "FusionAuth_Identity_Platform.md"
+    },
+    {
+      "name": "gain and signal amplification",
+      "aliases": [
+        "gain"
+      ],
+      "sourceTitle": "Gain_and_Signal_Amplification.md"
+    },
+    {
+      "name": "general aviation and private flying",
+      "aliases": [],
+      "sourceTitle": "General_Aviation_and_Private_Flying.md"
+    },
+    {
+      "name": "general health and symptoms",
+      "aliases": [],
+      "sourceTitle": "General_Health_and_Symptoms.md"
+    },
+    {
+      "name": "geography and place facts",
+      "aliases": [],
+      "sourceTitle": "Geography_and_Place_Facts.md"
+    },
+    {
+      "name": "geopolitics and global power",
+      "aliases": [],
+      "sourceTitle": "Geopolitics_and_Global_Power.md"
+    },
+    {
+      "name": "gift ideas and shopping",
+      "aliases": [],
+      "sourceTitle": "Gift_Ideas_and_Shopping.md"
+    },
+    {
+      "name": "git advanced usage",
+      "aliases": [],
+      "sourceTitle": "Git_Advanced_Usage.md"
+    },
+    {
+      "name": "google drive access",
+      "aliases": [],
+      "sourceTitle": "Google_Drive_Access.md"
+    },
+    {
+      "name": "graphic design and typography layout",
+      "aliases": [],
+      "sourceTitle": "Graphic_Design_and_Typography_Layout.md"
+    },
+    {
+      "name": "hair and grooming",
+      "aliases": [],
+      "sourceTitle": "Hair_and_Grooming.md"
+    },
+    {
+      "name": "hardware wearables",
+      "aliases": [
+        "rayneo air 4 pro"
+      ],
+      "sourceTitle": "Hardware_Wearables.md"
+    },
+    {
+      "name": "hdmi signal chain and apple tv output",
+      "aliases": [],
+      "sourceTitle": "HDMI_Signal_Chain_and_Apple_TV_Output.md"
+    },
+    {
+      "name": "hdr photography and gain maps",
+      "aliases": [
+        "high-dynamic-range still photographs"
+      ],
+      "sourceTitle": "HDR_Photography_and_Gain_Maps.md"
+    },
+    {
+      "name": "healthcare data standards",
+      "aliases": [],
+      "sourceTitle": "Healthcare_Data_Standards.md"
+    },
+    {
+      "name": "holography and volumetric display",
+      "aliases": [],
+      "sourceTitle": "Holography_and_Volumetric_Display.md"
+    },
+    {
+      "name": "home media library and apple tv",
+      "aliases": [],
+      "sourceTitle": "Home_Media_Library_and_Apple_TV.md"
+    },
+    {
+      "name": "home server and nas build",
+      "aliases": [],
+      "sourceTitle": "Home_Server_and_NAS_Build.md"
+    },
+    {
+      "name": "household electrical noises",
+      "aliases": [],
+      "sourceTitle": "Household_Electrical_Noises.md"
+    },
+    {
+      "name": "human anatomy and physiology",
+      "aliases": [],
+      "sourceTitle": "Human_Anatomy_and_Physiology.md"
+    },
+    {
+      "name": "idn and punycode",
+      "aliases": [],
+      "sourceTitle": "IDN_and_Punycode.md"
+    },
+    {
+      "name": "image and media file formats",
+      "aliases": [],
+      "sourceTitle": "Image_and_Media_File_Formats.md"
+    },
+    {
+      "name": "immigration and visas",
+      "aliases": [],
+      "sourceTitle": "Immigration_and_Visas.md"
+    },
+    {
+      "name": "information signals and meaning",
+      "aliases": [],
+      "sourceTitle": "Information_Signals_and_Meaning.md"
+    },
+    {
+      "name": "information, signals, and meaning",
+      "aliases": [],
+      "sourceTitle": "Information,_Signals,_and_Meaning.md"
+    },
+    {
+      "name": "intelligence concepts and definitions",
+      "aliases": [],
+      "sourceTitle": "Intelligence_Concepts_and_Definitions.md"
+    },
+    {
+      "name": "international wire transfers and banking",
+      "aliases": [],
+      "sourceTitle": "International_Wire_Transfers_and_Banking.md"
+    },
+    {
+      "name": "internet memes and slang",
+      "aliases": [],
+      "sourceTitle": "Internet_Memes_and_Slang.md"
+    },
+    {
+      "name": "iot and networking protocols",
+      "aliases": [],
+      "sourceTitle": "IoT_and_Networking_Protocols.md"
+    },
+    {
+      "name": "iphone raw video capture",
+      "aliases": [],
+      "sourceTitle": "iPhone_RAW_Video_Capture.md"
+    },
+    {
+      "name": "iptv and scene media sources",
+      "aliases": [],
+      "sourceTitle": "IPTV_and_Scene_Media_Sources.md"
+    },
+    {
+      "name": "jack reacher series analysis",
+      "aliases": [
+        "jack reacher series"
+      ],
+      "sourceTitle": "Jack_Reacher_Series_Analysis.md"
+    },
+    {
+      "name": "javascript and node backend patterns",
+      "aliases": [],
+      "sourceTitle": "JavaScript_and_Node_Backend_Patterns.md"
+    },
+    {
+      "name": "javascript bundle reverse engineering",
+      "aliases": [],
+      "sourceTitle": "JavaScript_Bundle_Reverse_Engineering.md"
+    },
+    {
+      "name": "jira and atlassian workflows",
+      "aliases": [],
+      "sourceTitle": "Jira_and_Atlassian_Workflows.md"
+    },
+    {
+      "name": "karpathy and ai discourse",
+      "aliases": [],
+      "sourceTitle": "Karpathy_and_AI_Discourse.md"
+    },
+    {
+      "name": "kurzgesagt style and animation",
+      "aliases": [
+        "kurzgesagt"
+      ],
+      "sourceTitle": "Kurzgesagt_Style_and_Animation.md"
+    },
+    {
+      "name": "kyc sumsub and compliance",
+      "aliases": [],
+      "sourceTitle": "KYC_SumSub_and_Compliance.md"
+    },
+    {
+      "name": "lambda calculus and computation theory",
+      "aliases": [
+        "lambda calculus"
+      ],
+      "sourceTitle": "Lambda_Calculus_and_Computation_Theory.md"
+    },
+    {
+      "name": "law and legal procedure",
+      "aliases": [],
+      "sourceTitle": "Law_and_Legal_Procedure.md"
+    },
+    {
+      "name": "league of legends and esports",
+      "aliases": [],
+      "sourceTitle": "League_of_Legends_and_Esports.md"
+    },
+    {
+      "name": "league of legends gameplay",
+      "aliases": [],
+      "sourceTitle": "League_of_Legends_Gameplay.md"
+    },
+    {
+      "name": "legal document templates",
+      "aliases": [],
+      "sourceTitle": "Legal_Document_Templates.md"
+    },
+    {
+      "name": "legal profession and law firm structure",
+      "aliases": [
+        "legal profession"
+      ],
+      "sourceTitle": "Legal_Profession_and_Law_Firm_Structure.md"
+    },
+    {
+      "name": "lens mount adaptation",
+      "aliases": [],
+      "sourceTitle": "Lens_Mount_Adaptation.md"
+    },
+    {
+      "name": "lesswrong and rationalist canon",
+      "aliases": [
+        "lesswrong and the rationalist canon"
+      ],
+      "sourceTitle": "LessWrong_and_Rationalist_Canon.md"
+    },
+    {
+      "name": "lexar professional go review video",
+      "aliases": [],
+      "sourceTitle": "Lexar_Professional_Go_Review_Video.md"
+    },
+    {
+      "name": "licensed music for video production",
+      "aliases": [],
+      "sourceTitle": "Licensed_Music_for_Video_Production.md"
+    },
+    {
+      "name": "linear algebra and ml math",
+      "aliases": [],
+      "sourceTitle": "Linear_Algebra_and_ML_Math.md"
+    },
+    {
+      "name": "link aggregation and multi wan",
+      "aliases": [],
+      "sourceTitle": "Link_Aggregation_and_Multi_WAN.md"
+    },
+    {
+      "name": "live video streaming protocols",
+      "aliases": [],
+      "sourceTitle": "Live_Video_Streaming_Protocols.md"
+    },
+    {
+      "name": "llm evaluation and benchmarking",
+      "aliases": [],
+      "sourceTitle": "LLM_Evaluation_and_Benchmarking.md"
+    },
+    {
+      "name": "llm sampling and decoding strategies",
+      "aliases": [],
+      "sourceTitle": "LLM_Sampling_and_Decoding_Strategies.md"
+    },
+    {
+      "name": "load testing and benchmarking",
+      "aliases": [],
+      "sourceTitle": "Load_Testing_and_Benchmarking.md"
+    },
+    {
+      "name": "local llm inference and deployment",
+      "aliases": [],
+      "sourceTitle": "Local_LLM_Inference_and_Deployment.md"
+    },
+    {
+      "name": "logic puzzles and riddles",
+      "aliases": [],
+      "sourceTitle": "Logic_Puzzles_and_Riddles.md"
+    },
+    {
+      "name": "logistics and order fulfillment",
+      "aliases": [],
+      "sourceTitle": "Logistics_and_Order_Fulfillment.md"
+    },
+    {
+      "name": "lucien executive overview",
+      "aliases": [],
+      "sourceTitle": "Lucien_Executive_Overview.md"
+    },
+    {
+      "name": "lucien hosting and product architecture",
+      "aliases": [],
+      "sourceTitle": "Lucien_Hosting_and_Product_Architecture.md"
+    },
+    {
+      "name": "lucien naming and mythology",
+      "aliases": [
+        "dreaming",
+        "lucien"
+      ],
+      "sourceTitle": "Lucien_Naming_and_Mythology.md"
+    },
+    {
+      "name": "lucien packaging and distribution",
+      "aliases": [],
+      "sourceTitle": "Lucien_Packaging_and_Distribution.md"
+    },
+    {
+      "name": "lucien retrieval and evaluation",
+      "aliases": [],
+      "sourceTitle": "Lucien_Retrieval_and_Evaluation.md"
+    },
+    {
+      "name": "lucien synthesis pipeline",
+      "aliases": [],
+      "sourceTitle": "Lucien_Synthesis_Pipeline.md"
+    },
+    {
+      "name": "lucien wiki maintenance",
+      "aliases": [],
+      "sourceTitle": "Lucien_Wiki_Maintenance.md"
+    },
+    {
+      "name": "lut internals and interpolation",
+      "aliases": [],
+      "sourceTitle": "LUT_Internals_and_Interpolation.md"
+    },
+    {
+      "name": "lut sharing platform",
+      "aliases": [
+        "luthub"
+      ],
+      "sourceTitle": "LUT_Sharing_Platform.md"
+    },
+    {
+      "name": "macos usage and troubleshooting",
+      "aliases": [],
+      "sourceTitle": "macOS_Usage_and_Troubleshooting.md"
+    },
+    {
+      "name": "maison francis kurkdjian",
+      "aliases": [],
+      "sourceTitle": "Maison_Francis_Kurkdjian.md"
+    },
+    {
+      "name": "manim video animation",
+      "aliases": [],
+      "sourceTitle": "Manim_Video_Animation.md"
+    },
+    {
+      "name": "market microstructure and order books",
+      "aliases": [
+        "market microstructure"
+      ],
+      "sourceTitle": "Market_Microstructure_and_Order_Books.md"
+    },
+    {
+      "name": "mass driver space launch system",
+      "aliases": [],
+      "sourceTitle": "Mass_Driver_Space_Launch_System.md"
+    },
+    {
+      "name": "materials and manufacturing",
+      "aliases": [],
+      "sourceTitle": "Materials_and_Manufacturing.md"
+    },
+    {
+      "name": "mathematics concepts and terminology",
+      "aliases": [],
+      "sourceTitle": "Mathematics_Concepts_and_Terminology.md"
+    },
+    {
+      "name": "mcp protocol and servers",
+      "aliases": [
+        "model context protocol (mcp)"
+      ],
+      "sourceTitle": "MCP_Protocol_and_Servers.md"
+    },
+    {
+      "name": "meal planning and grocery budgeting",
+      "aliases": [],
+      "sourceTitle": "Meal_Planning_and_Grocery_Budgeting.md"
+    },
+    {
+      "name": "mechanical development manifesto",
+      "aliases": [],
+      "sourceTitle": "Mechanical_Development_Manifesto.md"
+    },
+    {
+      "name": "medical imaging technology",
+      "aliases": [
+        "true-to-life color reproduction"
+      ],
+      "sourceTitle": "Medical_Imaging_Technology.md"
+    },
+    {
+      "name": "meeting sentiment and sales analysis",
+      "aliases": [],
+      "sourceTitle": "Meeting_Sentiment_and_Sales_Analysis.md"
+    },
+    {
+      "name": "mental arithmetic and estimation",
+      "aliases": [],
+      "sourceTitle": "Mental_Arithmetic_and_Estimation.md"
+    },
+    {
+      "name": "mental models and aphorisms",
+      "aliases": [],
+      "sourceTitle": "Mental_Models_and_Aphorisms.md"
+    },
+    {
+      "name": "microphones and audio recording",
+      "aliases": [],
+      "sourceTitle": "Microphones_and_Audio_Recording.md"
+    },
+    {
+      "name": "military aviation and air combat",
+      "aliases": [],
+      "sourceTitle": "Military_Aviation_and_Air_Combat.md"
+    },
+    {
+      "name": "mind maps and knowledge structures",
+      "aliases": [],
+      "sourceTitle": "Mind_Maps_and_Knowledge_Structures.md"
+    },
+    {
+      "name": "mini apps and super app platforms",
+      "aliases": [],
+      "sourceTitle": "Mini_Apps_and_Super_App_Platforms.md"
+    },
+    {
+      "name": "mlx training backward and memory engine",
+      "aliases": [],
+      "sourceTitle": "MLX_Training_Backward_and_Memory_Engine.md"
+    },
+    {
+      "name": "model rocketry pre launch checklists",
+      "aliases": [],
+      "sourceTitle": "Model_Rocketry_Pre_Launch_Checklists.md"
+    },
+    {
+      "name": "model training and post training",
+      "aliases": [],
+      "sourceTitle": "Model_Training_and_Post_Training.md"
+    },
+    {
+      "name": "model un and debate",
+      "aliases": [],
+      "sourceTitle": "Model_UN_and_Debate.md"
+    },
+    {
+      "name": "modular camcorder monitor project",
+      "aliases": [],
+      "sourceTitle": "Modular_Camcorder_Monitor_Project.md"
+    },
+    {
+      "name": "money laundering and financial crime",
+      "aliases": [],
+      "sourceTitle": "Money_Laundering_and_Financial_Crime.md"
+    },
+    {
+      "name": "motorcycles and sport bikes",
+      "aliases": [],
+      "sourceTitle": "Motorcycles_and_Sport_Bikes.md"
+    },
+    {
+      "name": "motorsport and racing",
+      "aliases": [],
+      "sourceTitle": "Motorsport_and_Racing.md"
+    },
+    {
+      "name": "motorsport safety cars and caution procedures",
+      "aliases": [],
+      "sourceTitle": "Motorsport_Safety_Cars_and_Caution_Procedures.md"
+    },
+    {
+      "name": "multimodal llm capabilities",
+      "aliases": [],
+      "sourceTitle": "Multimodal_LLM_Capabilities.md"
+    },
+    {
+      "name": "music genres and scenes",
+      "aliases": [],
+      "sourceTitle": "Music_Genres_and_Scenes.md"
+    },
+    {
+      "name": "music industry rights and business",
+      "aliases": [],
+      "sourceTitle": "Music_Industry_Rights_and_Business.md"
+    },
+    {
+      "name": "music production and sound recreation",
+      "aliases": [],
+      "sourceTitle": "Music_Production_and_Sound_Recreation.md"
+    },
+    {
+      "name": "mysql cli and scripting",
+      "aliases": [],
+      "sourceTitle": "MySQL_CLI_and_Scripting.md"
+    },
+    {
+      "name": "n8n workflow automation",
+      "aliases": [],
+      "sourceTitle": "n8n_Workflow_Automation.md"
+    },
+    {
+      "name": "network security and exfiltration",
+      "aliases": [],
+      "sourceTitle": "Network_Security_and_Exfiltration.md"
+    },
+    {
+      "name": "neural vision camera concept",
+      "aliases": [],
+      "sourceTitle": "Neural_Vision_Camera_Concept.md"
+    },
+    {
+      "name": "neurology and autoimmune conditions",
+      "aliases": [],
+      "sourceTitle": "Neurology_and_Autoimmune_Conditions.md"
+    },
+    {
+      "name": "next.js app development",
+      "aliases": [
+        "luthub"
+      ],
+      "sourceTitle": "Next.js_App_Development.md"
+    },
+    {
+      "name": "nineties music and nostalgia",
+      "aliases": [],
+      "sourceTitle": "Nineties_Music_and_Nostalgia.md"
+    },
+    {
+      "name": "no-loss lottery project",
+      "aliases": [],
+      "sourceTitle": "No-Loss_Lottery_Project.md"
+    },
+    {
+      "name": "no-mistakes agent architecture",
+      "aliases": [
+        "agi-no-mistakes"
+      ],
+      "sourceTitle": "No-Mistakes_Agent_Architecture.md"
+    },
+    {
+      "name": "npm cli usage",
+      "aliases": [
+        "npm"
+      ],
+      "sourceTitle": "npm_CLI_Usage.md"
+    },
+    {
+      "name": "offsite retrospective mini-documentary",
+      "aliases": [],
+      "sourceTitle": "Offsite_Retrospective_Mini-Documentary.md"
+    },
+    {
+      "name": "online course and instructor credibility",
+      "aliases": [],
+      "sourceTitle": "Online_Course_and_Instructor_Credibility.md"
+    },
+    {
+      "name": "onshape and parametric cad",
+      "aliases": [
+        "onshape"
+      ],
+      "sourceTitle": "Onshape_and_Parametric_CAD.md"
+    },
+    {
+      "name": "open source licensing",
+      "aliases": [
+        "2499 dctl"
+      ],
+      "sourceTitle": "Open_Source_Licensing.md"
+    },
+    {
+      "name": "options and derivatives trading",
+      "aliases": [],
+      "sourceTitle": "Options_and_Derivatives_Trading.md"
+    },
+    {
+      "name": "orange county dining and nightlife",
+      "aliases": [],
+      "sourceTitle": "Orange_County_Dining_and_Nightlife.md"
+    },
+    {
+      "name": "paleontology and prehistoric life",
+      "aliases": [],
+      "sourceTitle": "Paleontology_and_Prehistoric_Life.md"
+    },
+    {
+      "name": "panama photo zine",
+      "aliases": [],
+      "sourceTitle": "Panama_Photo_Zine.md"
+    },
+    {
+      "name": "parcheesi rules and strategy",
+      "aliases": [
+        "parcheesi"
+      ],
+      "sourceTitle": "Parcheesi_Rules_and_Strategy.md"
+    },
+    {
+      "name": "password policy and complexity rules",
+      "aliases": [],
+      "sourceTitle": "Password_Policy_and_Complexity_Rules.md"
+    },
+    {
+      "name": "pdf generation and document export",
+      "aliases": [],
+      "sourceTitle": "PDF_Generation_and_Document_Export.md"
+    },
+    {
+      "name": "performance cars and hypercars",
+      "aliases": [],
+      "sourceTitle": "Performance_Cars_and_Hypercars.md"
+    },
+    {
+      "name": "personal agi build project",
+      "aliases": [],
+      "sourceTitle": "Personal_AGI_Build_Project.md"
+    },
+    {
+      "name": "personal finance and investment math",
+      "aliases": [],
+      "sourceTitle": "Personal_Finance_and_Investment_Math.md"
+    },
+    {
+      "name": "personal productivity and calendar",
+      "aliases": [],
+      "sourceTitle": "Personal_Productivity_and_Calendar.md"
+    },
+    {
+      "name": "personal wiki editorial philosophy",
+      "aliases": [],
+      "sourceTitle": "Personal_Wiki_Editorial_Philosophy.md"
+    },
+    {
+      "name": "personality typology and self-assessment",
+      "aliases": [],
+      "sourceTitle": "Personality_Typology_and_Self-Assessment.md"
+    },
+    {
+      "name": "personalized email filtering model",
+      "aliases": [],
+      "sourceTitle": "Personalized_Email_Filtering_Model.md"
+    },
+    {
+      "name": "pharmaceuticals and drug indications",
+      "aliases": [],
+      "sourceTitle": "Pharmaceuticals_and_Drug_Indications.md"
+    },
+    {
+      "name": "photo zine production and publishing",
+      "aliases": [],
+      "sourceTitle": "Photo_Zine_Production_and_Publishing.md"
+    },
+    {
+      "name": "photographic film chemistry",
+      "aliases": [],
+      "sourceTitle": "Photographic_Film_Chemistry.md"
+    },
+    {
+      "name": "photography theory and practice",
+      "aliases": [],
+      "sourceTitle": "Photography_Theory_and_Practice.md"
+    },
+    {
+      "name": "physics and engineering",
+      "aliases": [],
+      "sourceTitle": "Physics_and_Engineering.md"
+    },
+    {
+      "name": "pi editor and cursor harness",
+      "aliases": [
+        "pi"
+      ],
+      "sourceTitle": "Pi_Editor_and_Cursor_Harness.md"
+    },
+    {
+      "name": "pilot script generation",
+      "aliases": [],
+      "sourceTitle": "Pilot_Script_Generation.md"
+    },
+    {
+      "name": "playlist curation requests",
+      "aliases": [],
+      "sourceTitle": "Playlist_Curation_Requests.md"
+    },
+    {
+      "name": "poetic meter and verse forms",
+      "aliases": [],
+      "sourceTitle": "Poetic_Meter_and_Verse_Forms.md"
+    },
+    {
+      "name": "poker and betting theory",
+      "aliases": [],
+      "sourceTitle": "Poker_and_Betting_Theory.md"
+    },
+    {
+      "name": "police organization and ranks",
+      "aliases": [],
+      "sourceTitle": "Police_Organization_and_Ranks.md"
+    },
+    {
+      "name": "political coalitions and factional dynamics",
+      "aliases": [],
+      "sourceTitle": "Political_Coalitions_and_Factional_Dynamics.md"
+    },
+    {
+      "name": "power and ups systems",
+      "aliases": [],
+      "sourceTitle": "Power_and_UPS_Systems.md"
+    },
+    {
+      "name": "preference fine tuning engine",
+      "aliases": [],
+      "sourceTitle": "Preference_Fine_Tuning_Engine.md"
+    },
+    {
+      "name": "printing methods and services",
+      "aliases": [],
+      "sourceTitle": "Printing_Methods_and_Services.md"
+    },
+    {
+      "name": "product management practice",
+      "aliases": [],
+      "sourceTitle": "Product_Management_Practice.md"
+    },
+    {
+      "name": "professional wrestling",
+      "aliases": [],
+      "sourceTitle": "Professional_Wrestling.md"
+    },
+    {
+      "name": "project hail mary analysis",
+      "aliases": [],
+      "sourceTitle": "Project_Hail_Mary_Analysis.md"
+    },
+    {
+      "name": "python environment and packaging",
+      "aliases": [],
+      "sourceTitle": "Python_Environment_and_Packaging.md"
+    },
+    {
+      "name": "python vs javascript",
+      "aliases": [],
+      "sourceTitle": "Python_vs_JavaScript.md"
+    },
+    {
+      "name": "quantum mechanics and relativity",
+      "aliases": [
+        "universal wave function is the complete, objective reality"
+      ],
+      "sourceTitle": "Quantum_Mechanics_and_Relativity.md"
+    },
+    {
+      "name": "raw photo processing software",
+      "aliases": [],
+      "sourceTitle": "Raw_Photo_Processing_Software.md"
+    },
+    {
+      "name": "react native mobile development",
+      "aliases": [],
+      "sourceTitle": "React_Native_Mobile_Development.md"
+    },
+    {
+      "name": "real estate and housing market",
+      "aliases": [],
+      "sourceTitle": "Real_Estate_and_Housing_Market.md"
+    },
+    {
+      "name": "recall.life and don't wake the baby",
+      "aliases": [],
+      "sourceTitle": "Recall.life_and_Don't_Wake_The_Baby.md"
+    },
+    {
+      "name": "recipes and cooking",
+      "aliases": [],
+      "sourceTitle": "Recipes_and_Cooking.md"
+    },
+    {
+      "name": "relationships and social dynamics",
+      "aliases": [],
+      "sourceTitle": "Relationships_and_Social_Dynamics.md"
+    },
+    {
+      "name": "religious history and sociology",
+      "aliases": [],
+      "sourceTitle": "Religious_History_and_Sociology.md"
+    },
+    {
+      "name": "remarketer and order execution",
+      "aliases": [
+        "remarketer"
+      ],
+      "sourceTitle": "Remarketer_and_Order_Execution.md"
+    },
+    {
+      "name": "remote monitoring and device management software",
+      "aliases": [],
+      "sourceTitle": "Remote_Monitoring_and_Device_Management_Software.md"
+    },
+    {
+      "name": "rust programming",
+      "aliases": [],
+      "sourceTitle": "Rust_Programming.md"
+    },
+    {
+      "name": "sales tax and purchase costs",
+      "aliases": [],
+      "sourceTitle": "Sales_Tax_and_Purchase_Costs.md"
+    },
+    {
+      "name": "screen recording and capture",
+      "aliases": [],
+      "sourceTitle": "Screen_Recording_and_Capture.md"
+    },
+    {
+      "name": "self publishing and kdp",
+      "aliases": [],
+      "sourceTitle": "Self_Publishing_and_KDP.md"
+    },
+    {
+      "name": "shell and terminal setup",
+      "aliases": [],
+      "sourceTitle": "Shell_and_Terminal_Setup.md"
+    },
+    {
+      "name": "shipping container boat project",
+      "aliases": [],
+      "sourceTitle": "Shipping_Container_Boat_Project.md"
+    },
+    {
+      "name": "short form video content ideation",
+      "aliases": [],
+      "sourceTitle": "Short_Form_Video_Content_Ideation.md"
+    },
+    {
+      "name": "sims service inventory project",
+      "aliases": [
+        "service inventory management system (sims)"
+      ],
+      "sourceTitle": "SIMS_Service_Inventory_Project.md"
+    },
+    {
+      "name": "small business software stack",
+      "aliases": [],
+      "sourceTitle": "Small_Business_Software_Stack.md"
+    },
+    {
+      "name": "smart tv troubleshooting",
+      "aliases": [],
+      "sourceTitle": "Smart_TV_Troubleshooting.md"
+    },
+    {
+      "name": "software localization and internationalization",
+      "aliases": [],
+      "sourceTitle": "Software_Localization_and_Internationalization.md"
+    },
+    {
+      "name": "software release engineering",
+      "aliases": [],
+      "sourceTitle": "Software_Release_Engineering.md"
+    },
+    {
+      "name": "solar sinter glass fabrication",
+      "aliases": [],
+      "sourceTitle": "Solar_Sinter_Glass_Fabrication.md"
+    },
+    {
+      "name": "solid js force graph visualization",
+      "aliases": [],
+      "sourceTitle": "Solid_js_Force_Graph_Visualization.md"
+    },
+    {
+      "name": "song lyric generation",
+      "aliases": [],
+      "sourceTitle": "Song_Lyric_Generation.md"
+    },
+    {
+      "name": "song lyrics and meaning analysis",
+      "aliases": [],
+      "sourceTitle": "Song_Lyrics_and_Meaning_Analysis.md"
+    },
+    {
+      "name": "spanish jokes and humor",
+      "aliases": [],
+      "sourceTitle": "Spanish_Jokes_and_Humor.md"
+    },
+    {
+      "name": "spanish slang and idioms",
+      "aliases": [],
+      "sourceTitle": "Spanish_Slang_and_Idioms.md"
+    },
+    {
+      "name": "spanish social messages",
+      "aliases": [],
+      "sourceTitle": "Spanish_Social_Messages.md"
+    },
+    {
+      "name": "spanish vocabulary and translation",
+      "aliases": [],
+      "sourceTitle": "Spanish_Vocabulary_and_Translation.md"
+    },
+    {
+      "name": "special operations and modern warfare",
+      "aliases": [],
+      "sourceTitle": "Special_Operations_and_Modern_Warfare.md"
+    },
+    {
+      "name": "sports statistics and trivia",
+      "aliases": [],
+      "sourceTitle": "Sports_Statistics_and_Trivia.md"
+    },
+    {
+      "name": "standardized testing and aptitude",
+      "aliases": [],
+      "sourceTitle": "Standardized_Testing_and_Aptitude.md"
+    },
+    {
+      "name": "stunnel and tls tunneling",
+      "aliases": [],
+      "sourceTitle": "Stunnel_and_TLS_Tunneling.md"
+    },
+    {
+      "name": "supabase and firebase baas",
+      "aliases": [
+        "firebase",
+        "supabase"
+      ],
+      "sourceTitle": "Supabase_and_Firebase_BaaS.md"
+    },
+    {
+      "name": "surrealdb and surrealmcp",
+      "aliases": [
+        "surrealdb",
+        "surrealmcp"
+      ],
+      "sourceTitle": "SurrealDB_and_SurrealMCP.md"
+    },
+    {
+      "name": "surround sound and audio formats",
+      "aliases": [],
+      "sourceTitle": "Surround_Sound_and_Audio_Formats.md"
+    },
+    {
+      "name": "tailwind css",
+      "aliases": [],
+      "sourceTitle": "Tailwind_CSS.md"
+    },
+    {
+      "name": "tattoos and body art",
+      "aliases": [],
+      "sourceTitle": "Tattoos_and_Body_Art.md"
+    },
+    {
+      "name": "tech nerd youtube channel",
+      "aliases": [],
+      "sourceTitle": "Tech_Nerd_YouTube_Channel.md"
+    },
+    {
+      "name": "technical and creative in image making",
+      "aliases": [
+        "creative",
+        "technical"
+      ],
+      "sourceTitle": "Technical_and_Creative_in_Image_Making.md"
+    },
+    {
+      "name": "telemedicine receptionist project",
+      "aliases": [],
+      "sourceTitle": "Telemedicine_Receptionist_Project.md"
+    },
+    {
+      "name": "television calibration and picture settings",
+      "aliases": [],
+      "sourceTitle": "Television_Calibration_and_Picture_Settings.md"
+    },
+    {
+      "name": "tls certificates and openssl",
+      "aliases": [],
+      "sourceTitle": "TLS_Certificates_and_OpenSSL.md"
+    },
+    {
+      "name": "token usage and rate limits",
+      "aliases": [],
+      "sourceTitle": "Token_Usage_and_Rate_Limits.md"
+    },
+    {
+      "name": "tolkien legendarium",
+      "aliases": [],
+      "sourceTitle": "Tolkien_Legendarium.md"
+    },
+    {
+      "name": "tone and gamut mapping",
+      "aliases": [],
+      "sourceTitle": "Tone_and_Gamut_Mapping.md"
+    },
+    {
+      "name": "toyota production system and lean",
+      "aliases": [
+        "toyota production system (tps)"
+      ],
+      "sourceTitle": "Toyota_Production_System_and_Lean.md"
+    },
+    {
+      "name": "trade shows and booth strategy",
+      "aliases": [],
+      "sourceTitle": "Trade_Shows_and_Booth_Strategy.md"
+    },
+    {
+      "name": "transactional email and templating",
+      "aliases": [],
+      "sourceTitle": "Transactional_Email_and_Templating.md"
+    },
+    {
+      "name": "transformer architecture internals",
+      "aliases": [],
+      "sourceTitle": "Transformer_Architecture_Internals.md"
+    },
+    {
+      "name": "travel and logistics",
+      "aliases": [],
+      "sourceTitle": "Travel_and_Logistics.md"
+    },
+    {
+      "name": "treasury and fintech products",
+      "aliases": [],
+      "sourceTitle": "Treasury_and_Fintech_Products.md"
+    },
+    {
+      "name": "tropical threads brand",
+      "aliases": [],
+      "sourceTitle": "Tropical_Threads_Brand.md"
+    },
+    {
+      "name": "truth seeking and epistemics",
+      "aliases": [],
+      "sourceTitle": "Truth_Seeking_and_Epistemics.md"
+    },
+    {
+      "name": "turkey imei phone registration",
+      "aliases": [],
+      "sourceTitle": "Turkey_IMEI_Phone_Registration.md"
+    },
+    {
+      "name": "typography and fonts",
+      "aliases": [],
+      "sourceTitle": "Typography_and_Fonts.md"
+    },
+    {
+      "name": "uber eats api integration",
+      "aliases": [],
+      "sourceTitle": "Uber_Eats_API_Integration.md"
+    },
+    {
+      "name": "ui component libraries and design systems",
+      "aliases": [],
+      "sourceTitle": "UI_Component_Libraries_and_Design_Systems.md"
+    },
+    {
+      "name": "ultimate frisbee",
+      "aliases": [],
+      "sourceTitle": "Ultimate_Frisbee.md"
+    },
+    {
+      "name": "us government and constitutional structure",
+      "aliases": [],
+      "sourceTitle": "US_Government_and_Constitutional_Structure.md"
+    },
+    {
+      "name": "usb power and charging",
+      "aliases": [],
+      "sourceTitle": "USB_Power_and_Charging.md"
+    },
+    {
+      "name": "usb-c and displayport connectivity",
+      "aliases": [],
+      "sourceTitle": "USB-C_and_DisplayPort_Connectivity.md"
+    },
+    {
+      "name": "video and subtitle cli tools",
+      "aliases": [],
+      "sourceTitle": "Video_and_Subtitle_CLI_Tools.md"
+    },
+    {
+      "name": "video codecs and compression",
+      "aliases": [],
+      "sourceTitle": "Video_Codecs_and_Compression.md"
+    },
+    {
+      "name": "video game genres and design",
+      "aliases": [],
+      "sourceTitle": "Video_Game_Genres_and_Design.md"
+    },
+    {
+      "name": "video production rig and workflow",
+      "aliases": [],
+      "sourceTitle": "Video_Production_Rig_and_Workflow.md"
+    },
+    {
+      "name": "videograph channel project",
+      "aliases": [
+        "videograph"
+      ],
+      "sourceTitle": "Videograph_Channel_Project.md"
+    },
+    {
+      "name": "vision and visual perception",
+      "aliases": [],
+      "sourceTitle": "Vision_and_Visual_Perception.md"
+    },
+    {
+      "name": "vistaalta drone company",
+      "aliases": [
+        "vistaalta sv"
+      ],
+      "sourceTitle": "VistaAlta_Drone_Company.md"
+    },
+    {
+      "name": "watches and horology",
+      "aliases": [],
+      "sourceTitle": "Watches_and_Horology.md"
+    },
+    {
+      "name": "web app authentication and oauth",
+      "aliases": [
+        "google as an oauth provider"
+      ],
+      "sourceTitle": "Web_App_Authentication_and_OAuth.md"
+    },
+    {
+      "name": "web crawling and seo standards",
+      "aliases": [
+        "robots.txt",
+        "sitemaps"
+      ],
+      "sourceTitle": "Web_Crawling_and_SEO_Standards.md"
+    },
+    {
+      "name": "web embedding and iframe integration",
+      "aliases": [],
+      "sourceTitle": "Web_Embedding_and_Iframe_Integration.md"
+    },
+    {
+      "name": "webassembly",
+      "aliases": [],
+      "sourceTitle": "WebAssembly.md"
+    },
+    {
+      "name": "webcam and video call setup",
+      "aliases": [],
+      "sourceTitle": "Webcam_and_Video_Call_Setup.md"
+    },
+    {
+      "name": "websockets and realtime protocols",
+      "aliases": [],
+      "sourceTitle": "WebSockets_and_Realtime_Protocols.md"
+    },
+    {
+      "name": "whatsapp mac issues",
+      "aliases": [],
+      "sourceTitle": "WhatsApp_Mac_Issues.md"
+    },
+    {
+      "name": "wireless and cellular network history",
+      "aliases": [],
+      "sourceTitle": "Wireless_and_Cellular_Network_History.md"
+    },
+    {
+      "name": "writing and essays",
+      "aliases": [],
+      "sourceTitle": "Writing_and_Essays.md"
+    },
+    {
+      "name": "youtube api and playlists",
+      "aliases": [],
+      "sourceTitle": "YouTube_API_and_Playlists.md"
+    },
+    {
+      "name": "youtube hdr video upload troubleshooting",
+      "aliases": [],
+      "sourceTitle": "YouTube_HDR_Video_Upload_Troubleshooting.md"
+    }
+  ],
+  "builtFromSha": "973a4ece3a6b9f723fd01100f27e5c26dc7d5b8e"
+}

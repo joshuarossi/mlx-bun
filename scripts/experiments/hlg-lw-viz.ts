@@ -1,6 +1,7 @@
 // Plots the L_W (OOTF γ) sweep as a diversity-vs-γ curve, one line per model.
 // Shows the coherent band, the two walls (γ<0 inversion, γ≳2.4 over-sharpen), the
 // default-diversity reference, and the interior diversity peak near γ≈1. Emits SVG.
+export {};
 
 type Pt = { lw: number; g: number; div: number | null; rej?: boolean };
 type Series = { model: string; color: string; ref: number; pts: Pt[] };

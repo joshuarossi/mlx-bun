@@ -51,6 +51,7 @@ import {
   type ResponsesRequest,
 } from "./responses";
 import { AdapterManager, listAvailableAdapters } from "./lora";
+import { embedMany, isEmbeddingModel } from "./embed";
 import { fit } from "./fit";
 import { setMemoryLimit } from "./mlx/ffi";
 import { VisionTower } from "./vision/embedder";
@@ -1098,6 +1099,39 @@ export function createServer(
         return Response.json({ downloads: downloadsSnapshot() });
       }
 
+      // Memory synthesis progress (P8-T5). The same DAG the nightly launchd job
+      // runs (`mlx-bun memory synthesize`), streamed as Server-Sent Events so the
+      // status page can show live stage/log/done progress. `?dry=1` plans the DAG
+      // without any model call or vault write — the safe wiring-verification path
+      // (the FULL-corpus run is USER-ACTION, P6-T5). GET so EventSource can drive it.
+      if (url.pathname === "/v1/memory/synthesize" && request.method === "GET") {
+        const dryRun = url.searchParams.get("dry") === "1";
+        const { runSynthesis } = await import("./memory/pipeline");
+        const enc = new TextEncoder();
+        const stream = new ReadableStream({
+          async start(controller) {
+            const send = (e: unknown) =>
+              controller.enqueue(enc.encode(`data: ${JSON.stringify(e)}\n\n`));
+            try {
+              const summary = await runSynthesis({ dryRun }, (ev) => send(ev));
+              send({ type: "summary", ...summary });
+              controller.enqueue(enc.encode("data: [DONE]\n\n"));
+            } catch (e) {
+              send({ type: "error", message: (e as Error).message });
+            } finally {
+              controller.close();
+            }
+          },
+        });
+        return new Response(stream, {
+          headers: {
+            "content-type": "text/event-stream",
+            "cache-control": "no-cache",
+            connection: "keep-alive",
+          },
+        });
+      }
+
       if (url.pathname === "/fit" && request.method === "GET") {
         // Fit assessment for the status page: this-machine report at the
         // admission ceiling + the Apple SKU matrix at a fixed 32k.
@@ -1161,7 +1195,7 @@ export function createServer(
           name: "mlx-bun", version: pkgVersion, model: ctx.modelId,
           endpoints: [
             "POST /v1/chat/completions", "POST /v1/messages", "POST /v1/responses",
-            "GET /v1/models", "GET/POST/DELETE /v1/adapters",
+            "POST /v1/embeddings", "GET /v1/models", "GET/POST/DELETE /v1/adapters",
             "GET /stats", "GET /fit", "GET /library", "GET /downloads",
           ],
         });
@@ -1239,6 +1273,46 @@ export function createServer(
             // provider from discovery — `reasoning` gates the thinking toggle.
             reasoning: ctx.template.supportsThinking,
           }],
+        });
+      }
+
+      // OpenAI embeddings API. Works when the SERVED model is an embedding model
+      // (plain Qwen3 / Qwen3-Embedding) — consistent with the single-model server
+      // design: `mlx-bun serve <embedding-model>` to use this. Optional non-standard
+      // `instruction` applies Qwen3-Embedding's query format. Embedding is a pure
+      // forward (no decode loop / gateway), so it runs inline.
+      if (url.pathname === "/v1/embeddings" && request.method === "POST") {
+        if (!isEmbeddingModel(ctx.model))
+          return Response.json({
+            error: {
+              message: `served model "${ctx.modelId}" is not an embedding model; ` +
+                `serve an embedding model (e.g. Qwen3-Embedding) to use /v1/embeddings`,
+              type: "invalid_request_error",
+            },
+          }, { status: 400 });
+        let body: { input?: string | string[]; instruction?: string };
+        try {
+          body = (await request.json()) as typeof body;
+        } catch {
+          return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
+        }
+        const inputs = Array.isArray(body.input) ? body.input : body.input != null ? [body.input] : [];
+        if (inputs.length === 0 || !inputs.every((s) => typeof s === "string"))
+          return Response.json({
+            error: { message: "`input` must be a string or array of strings", type: "invalid_request_error" },
+          }, { status: 400 });
+        const instruction = typeof body.instruction === "string" ? body.instruction : undefined;
+        const results = embedMany(ctx.model, ctx.tokenizer, inputs, instruction);
+        let totalTokens = 0;
+        const data = results.map((r, index) => {
+          totalTokens += r.tokens;
+          return { object: "embedding", index, embedding: Array.from(r.vector) };
+        });
+        return Response.json({
+          object: "list",
+          data,
+          model: ctx.modelId,
+          usage: { prompt_tokens: totalTokens, total_tokens: totalTokens },
         });
       }
 
@@ -1932,7 +2006,7 @@ export function createServer(
         const snapMatch = body.model_id.match(/(models--[^/]+)\/snapshots\//);
         let org = "local", name: string;
         if (snapMatch) {
-          const parts = snapMatch[1].split("--"); // ["models", org, ...name]
+          const parts = snapMatch[1]!.split("--"); // ["models", org, ...name]
           org = parts[1] ?? "local";
           name = parts.slice(2).join("--");
         } else if (body.model_id.includes("/") && !body.model_id.startsWith("/") && !body.model_id.startsWith("~")) {

@@ -1,0 +1,147 @@
+{
+  "version": "1.0.0",
+  "frozen": true,
+  "vault": "~/.mlx-bun/wiki-smoke",
+  "note": "FROZEN P9-T2 north-star acceptance set. Six queries (Q1-Q6) over the SMOKE vault. Each query's intent / expected_points / gold_answer are GROUNDED in the synthesized smoke-vault articles (read them, never parroted) and kept SCHEMATIC: they describe the SHAPE of a correct answer for the cloud judge, never a verbatim string to match. `retrieval.find`/`retrieval.read` are the deterministic FIND -> READ steps (category/type membership + name resolve, then TOC + one section) the read path runs; the model GENERATES the answer from those small reads. Q5 is the 150 KB killer: it must enumerate lenses by FINDING the lens-type members and reading small sections, NEVER by force-dumping a whole article (each read < 2 KB). Q6 is the negative control: no astrophotography article exists, so the only correct behaviour is to say there is nothing on file and invent nothing.",
+  "queries": [
+    {
+      "id": "Q1",
+      "label": "lens-reach",
+      "question": "what's the best lens for really long reach that isn't crazy expensive?",
+      "intent": "Report the user's recorded budget long-reach telephoto conclusion. The telephoto-selection prose names the Sigma 150-600mm (DG OS HSM) as the value pick for reach without the cost ('built like a tank', weather sealed), against the much pricier high-end Canon EF 200-400mm f/4L. A correct answer names the Sigma 150-600 as the sane long-reach-on-a-budget option, optionally contrasts it with the pricier Canon, and invents no lenses or prices.",
+      "expected_points": [
+        "names the Sigma 150-600mm as the long-reach value pick",
+        "frames it as reach without 'crazy expensive' cost (vs a pricier high-end option such as the Canon EF 200-400 f/4L)",
+        "does not fabricate lenses or specifications"
+      ],
+      "gold_answer": "For real reach on a budget the Sigma 150-600mm is the sane pick - it's built like a tank and weather sealed, and far cheaper than high-end glass like the Canon EF 200-400 f/4L.",
+      "negative_control": false,
+      "retrieval": {
+        "find": [
+          { "tool": "memory_category", "params": { "type": "lens" } },
+          { "tool": "memory_resolve", "params": { "surface": "photography" } }
+        ],
+        "read": [
+          { "tool": "memory_read", "params": { "stem": "photography" } },
+          { "tool": "memory_section", "params": { "stem": "photography", "anchor": "telephoto-lens-selection" } }
+        ]
+      }
+    },
+    {
+      "id": "Q2",
+      "label": "camera-why",
+      "question": "why did I pick the S5IIX?",
+      "intent": "Explain why the user chose the Panasonic Lumix S5IIX. Grounded reasons in the article: full-frame sensor; in-body image stabilization (IBIS) that helps handheld manual/vintage lenses; built-in anamorphic desqueeze and open-gate capture (native 3:2 -> up to 3:1) for cinematic video; Panasonic's natural/neutral colour science; that it pairs well with adapted vintage glass like the Helios 44-2; and that it rigs up (Neewer half-cage, XLR adapter). A correct answer cites several of these and confabulates nothing.",
+      "expected_points": [
+        "full-frame sensor",
+        "IBIS helps handheld / manual vintage lenses",
+        "anamorphic desqueeze / open-gate cinematic video",
+        "pairs with adapted vintage glass (e.g. Helios 44-2)"
+      ],
+      "gold_answer": "You picked the S5IIX for its full-frame sensor, IBIS that steadies handheld manual lenses, built-in anamorphic desqueeze / open-gate video, Panasonic's natural colour, and how well it pairs with your adapted vintage glass.",
+      "negative_control": false,
+      "retrieval": {
+        "find": [
+          { "tool": "memory_resolve", "params": { "surface": "the S5IIX" } }
+        ],
+        "read": [
+          { "tool": "memory_read", "params": { "stem": "Panasonic_Lumix_S5IIX" } },
+          { "tool": "memory_section", "params": { "stem": "Panasonic_Lumix_S5IIX", "anchor": "lens-pairing-considerations" } },
+          { "tool": "memory_section", "params": { "stem": "Panasonic_Lumix_S5IIX", "anchor": "camera-body-compatibility" } }
+        ]
+      }
+    },
+    {
+      "id": "Q3",
+      "label": "m42-adaptable",
+      "question": "can I adapt M42 lenses to my setup?",
+      "intent": "Confirm the user can adapt M42-mount lenses. Grounded: M42 glass mounts on the L-Mount body via an M42->L-Mount adapter; the user already adapts the Helios 44-2 (M42) and the Takumar 24mm f/3.5 M42 this way; adapted lenses become fully manual (manual aperture and focus) with focus peaking assisting on the mirrorless body. A correct answer says yes, names the M42->L-Mount adapter path, and does not invent incompatibilities.",
+      "expected_points": [
+        "yes - M42 lenses adapt to the L-Mount body",
+        "via an M42 -> L-Mount mechanical adapter",
+        "adapted lenses are manual focus/aperture (focus peaking assists)",
+        "concrete example: Helios 44-2 / Takumar 24mm M42"
+      ],
+      "gold_answer": "Yes - your M42 glass adapts to the L-Mount body with an M42->L-Mount adapter (it's how you run the Helios 44-2 and the Takumar 24mm); they become manual-focus lenses, with focus peaking helping you nail focus.",
+      "negative_control": false,
+      "retrieval": {
+        "find": [
+          { "tool": "memory_resolve", "params": { "surface": "M42" } },
+          { "tool": "memory_resolve", "params": { "surface": "L-Mount" } }
+        ],
+        "read": [
+          { "tool": "memory_read", "params": { "stem": "L-Mount" } },
+          { "tool": "memory_section", "params": { "stem": "L-Mount", "anchor": "adapting-vintage-lenses" } }
+        ]
+      }
+    },
+    {
+      "id": "Q4",
+      "label": "anamorphic-best",
+      "question": "what's my best anamorphic setup?",
+      "intent": "Describe the user's best anamorphic setup. Grounded: the characterful pick is the Sankor 16C projection adapter paired with the Helios 44-2 (2x horizontal stretch, swirly bokeh, vintage flares) - owned and used for anamorphic, mounted via a clamp/step-up ring; for a fast, simple shoot the Sirui Saturn sets up in ~2 minutes versus the complex projection-lens rig, and the S5IIX's built-in desqueeze previews the stretched image. A correct answer surfaces the Sankor 16C (+Helios) cinematic look and/or the Sirui Saturn quick option, invents no gear.",
+      "expected_points": [
+        "Sankor 16C paired with the Helios 44-2 for the cinematic 2x-stretch / swirly-bokeh look",
+        "Sirui Saturn as the fast (~2 min) simpler alternative to the projection rig",
+        "S5IIX built-in desqueeze previews the stretched image",
+        "no fabricated gear"
+      ],
+      "gold_answer": "Your characterful rig is the Sankor 16C on the Helios 44-2 - 2x stretch with swirly bokeh and vintage flares; when you want fast and simple the Sirui Saturn is up in a couple of minutes, and the S5IIX's built-in desqueeze previews the stretch either way.",
+      "negative_control": false,
+      "retrieval": {
+        "find": [
+          { "tool": "memory_resolve", "params": { "surface": "anamorphic" } },
+          { "tool": "memory_resolve", "params": { "surface": "Sankor" } }
+        ],
+        "read": [
+          { "tool": "memory_section", "params": { "stem": "Sankor_16C", "anchor": "helios-compatibility" } },
+          { "tool": "memory_section", "params": { "stem": "anamorphic_adapter", "anchor": "anamorphic-rig-setup" } }
+        ]
+      }
+    },
+    {
+      "id": "Q5",
+      "label": "list-every-lens",
+      "question": "list every lens I own",
+      "intent": "Enumerate the user's lenses by FINDING the lens-type members and reading small sections - never by dumping one mega-article (the 150 KB / 42x-blob failure this replaces). Grounded inventory (the L-Mount 'Lens Collection Inventory' section plus the type:lens members): the Helios 44-2 (58mm M42), the 50mm f/1.8, the Sankor 16C anamorphic adapter, the vintage M42 set (Super Takumar 24mm, Jupiter-9 85mm, Sears 135mm), and modern AF glass (Sirui 35mm, Meike 35/50/85). A correct answer enumerates several of these. The STRUCTURAL gate: every individual read stays < 2 KB - the whole L-Mount article is never force-read.",
+      "expected_points": [
+        "enumerates multiple of the user's lenses (Helios 44-2, 50mm f/1.8, the M42 set, modern AF primes)",
+        "resolved by lens membership + small section reads, not a single blob dump",
+        "no fabricated lenses"
+      ],
+      "gold_answer": "Your lenses include the Helios 44-2 (58mm M42), a 50mm f/1.8, the Sankor 16C anamorphic adapter, the vintage M42 set (Super Takumar 24mm, Jupiter-9 85mm, Sears 135mm), and modern AF primes (Sirui 35mm, Meike 35/50/85).",
+      "negative_control": false,
+      "retrieval": {
+        "find": [
+          { "tool": "memory_category", "params": { "type": "lens" } },
+          { "tool": "memory_resolve", "params": { "surface": "L-Mount" } }
+        ],
+        "read": [
+          { "tool": "memory_read", "params": { "stem": "L-Mount" } },
+          { "tool": "memory_section", "params": { "stem": "L-Mount", "anchor": "lens-collection-inventory" } },
+          { "tool": "memory_section", "params": { "stem": "50mm_f-1.8", "anchor": "50mm-f-1-8-characteristics" } }
+        ]
+      }
+    },
+    {
+      "id": "Q6",
+      "label": "astrophotography-negative-control",
+      "question": "what's my preferred setup for astrophotography?",
+      "intent": "Negative control. The user has NO astrophotography article and no recorded opinion. The only correct behaviour is to say there is nothing on file - no personal opinion / notes about astrophotography - and to offer generic help, NOT to fabricate a lens, mount, tracker, or stated preference. Any invented astrophotography gear or asserted personal preference is a hallucination failure.",
+      "expected_points": [
+        "states there is no personal opinion / nothing on file about astrophotography",
+        "offers to help generically rather than asserting a personal setup",
+        "fabricates no astrophotography gear or preference"
+      ],
+      "gold_answer": "I don't have anything on file about your astrophotography preferences - you haven't recorded a setup for it. Happy to help you work one out if you'd like.",
+      "negative_control": true,
+      "retrieval": {
+        "find": [
+          { "tool": "memory_resolve", "params": { "surface": "astrophotography" } },
+          { "tool": "memory_category", "params": { "type": "astrophotography" } }
+        ],
+        "read": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,107 @@
+{
+  "_doc": "P1-T5 personal-notability gold set. Engagement-worthy if ANY signal is true (owned/used · decided chose-or-rejected · recurring across >=2 conversations · substantive opinion/conclusion); else DROP as trivia. Reused by P5-T4 ROUTE and P9. Every owned/decided item MUST be KEPT.",
+  "notable": [
+    {
+      "name": "Panasonic Lumix S5IIX",
+      "reason": "Owned full-frame mirrorless body, acquired 2024-12, used daily as a video-conference and anamorphic camera.",
+      "signals": { "owned": true, "decided": true, "recurring": true, "opinion": true }
+    },
+    {
+      "name": "L-Mount",
+      "reason": "The lens mount Josh standardized on; recurs across camera and lens conversations as the navigation hub for adaptation.",
+      "signals": { "owned": false, "decided": true, "recurring": true, "opinion": true }
+    },
+    {
+      "name": "Sigma 150-600",
+      "reason": "Chosen as the sane long-reach telephoto pick at ~$600 over pricier alternatives; a recorded conclusion.",
+      "signals": { "owned": false, "decided": true, "recurring": false, "opinion": true }
+    },
+    {
+      "name": "Sankor 16C",
+      "reason": "Owned anamorphic adapter used on the S5IIX for de-squeeze experiments.",
+      "signals": { "owned": true, "decided": false, "recurring": true, "opinion": true }
+    },
+    {
+      "name": "Lumix 75-300",
+      "reason": "Owned telephoto zoom used for reach before the Sigma decision.",
+      "signals": { "owned": true, "decided": false, "recurring": false, "opinion": false }
+    },
+    {
+      "name": "PETG",
+      "reason": "Material Josh prints with regularly; recurring print-settings discussions and a settled opinion on its tradeoffs vs PLA.",
+      "signals": { "owned": false, "decided": true, "recurring": true, "opinion": true }
+    },
+    {
+      "name": "M42 mount",
+      "reason": "One of the legacy mounts Josh deliberately adapts from onto L-Mount; recurs in the adaptation discussions.",
+      "signals": { "owned": true, "decided": true, "recurring": true, "opinion": false }
+    },
+    {
+      "name": "EF mount",
+      "reason": "The other mount Josh adapts from; a recorded decision about which adapters to buy.",
+      "signals": { "owned": false, "decided": true, "recurring": true, "opinion": false }
+    },
+    {
+      "name": "Toyota Production System",
+      "reason": "A domain Josh returns to across conversations and holds substantive opinions about (jidoka, kanban) as a thinking lens.",
+      "signals": { "owned": false, "decided": false, "recurring": true, "opinion": true }
+    },
+    {
+      "name": "MLX",
+      "reason": "The framework mlx-bun is built on; recurs constantly and Josh holds strong opinions about its kernels and lazy eval.",
+      "signals": { "owned": false, "decided": true, "recurring": true, "opinion": true }
+    }
+  ],
+  "trivia": [
+    {
+      "name": "npm",
+      "reason": "Incidental tool name mentioned in passing while running a command; no engagement.",
+      "signals": { "owned": false, "decided": false, "recurring": false, "opinion": false }
+    },
+    {
+      "name": "localhost",
+      "reason": "Incidental host reference in a URL; not a topic.",
+      "signals": { "owned": false, "decided": false, "recurring": false, "opinion": false }
+    },
+    {
+      "name": "JSON",
+      "reason": "A format named in passing while describing output; no opinion or decision.",
+      "signals": { "owned": false, "decided": false, "recurring": false, "opinion": false }
+    },
+    {
+      "name": "coffee",
+      "reason": "Small-talk mention; not engaged with substantively.",
+      "signals": { "owned": false, "decided": false, "recurring": false, "opinion": false }
+    },
+    {
+      "name": "Tuesday",
+      "reason": "Incidental day reference while scheduling; not a topic.",
+      "signals": { "owned": false, "decided": false, "recurring": false, "opinion": false }
+    },
+    {
+      "name": "the weather",
+      "reason": "Passing small talk; no decision, ownership, or recurring engagement.",
+      "signals": { "owned": false, "decided": false, "recurring": false, "opinion": false }
+    },
+    {
+      "name": "a USB cable",
+      "reason": "Incidental object mentioned once while wiring something up.",
+      "signals": { "owned": false, "decided": false, "recurring": false, "opinion": false }
+    },
+    {
+      "name": "screenshot",
+      "reason": "Incidental action reference; not a subject of engagement.",
+      "signals": { "owned": false, "decided": false, "recurring": false, "opinion": false }
+    },
+    {
+      "name": "the number 42",
+      "reason": "Appeared once as an example value; no substantive engagement.",
+      "signals": { "owned": false, "decided": false, "recurring": false, "opinion": false }
+    },
+    {
+      "name": "a hotel lobby",
+      "reason": "Incidental setting mentioned once in a story; not a topic.",
+      "signals": { "owned": false, "decided": false, "recurring": false, "opinion": false }
+    }
+  ]
+}

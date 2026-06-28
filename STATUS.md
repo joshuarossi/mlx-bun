@@ -5,6 +5,28 @@ exit criteria, and findings live in [PLAN.md](PLAN.md); this file is the
 transient front door that stays current. Product/UX north star:
 [docs/planning/PRODUCT_ROADMAP.md](docs/planning/PRODUCT_ROADMAP.md).
 
+## THE DREAMING (local personal-wiki memory) — ACTIVE 2026-06-28. Full handoff: [reports/dreaming/HANDOFF.md](reports/dreaming/HANDOFF.md)
+
+Conversations → chunks → entities → **subject articles** → cross-linked, self-healing
+wiki, all local (`src/memory/`). **Works end-to-end on real data.** Staged, chronological,
+resumable pipeline (`stages.ts`): segment(our e4b-chunk-300 chunker) → extract → route
+(surface-EVERYTHING, no notability/ownership gate) → create/patch(self-healing, date-aware,
+`## History` for position-evolution) → reconcile → **link**(cross-link: mention + co-occurrence
+→ See-also + `[[wikilinks]]`, 18%→96% See-also, 22.7× edges) → wikify.
+
+- **Full-corpus import STOPPED at cursor 720/2096** (677 articles in `~/.mlx-bun/wiki-full`),
+  **resumable**: `bun scripts/experiments/dreaming-full-run.ts`. Real vault `~/.mlx-bun/wiki` untouched.
+- **In progress:** inference-path rework (`docs/design/memory-inference-path.md`). Template fix
+  done (chunk adapter trained with a **system role**; inference dropped it → now passes {system,user}).
+  **Batching = dead end** (~1.7× SLOWER — scheduler pads heterogeneous prefills). **Load-once via the
+  persistent server** is the real efficiency win for daily use — wire memory generation through it next.
+- **Key corrections this session:** notability = "recurs in your thinking" (surface everything; the
+  ownership gate was fabricated, ripped out); subject-based articles (the one improvement over Lucien);
+  chronological ordering; cross-linking is WIKIFY's job not synthesis; ALL prompts/Meta must be SCHEMATIC
+  (parroting bit 5×). Lucien = read-only oracle. Quality judged by CLOUD JUDGE, never bucket-F1.
+- **Next:** finish inference-path (server load-once) → resume import (~50h serial) → reindex + `memory link`
+  → judge a broad sample → promote to the real vault + nightly daily fold-in. See HANDOFF.md for full detail.
+
 ## DiffusionGemma port — D1–D3 + D5 DONE 2026-06-24. COMPLETE (D4 perf = Josh-gated bench).
 
 **THE WHOLE PORT IS DONE.** DiffusionGemma-26B-A4B-it (first non-autoregressive model) runs in

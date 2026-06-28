@@ -87,8 +87,27 @@ const server = createServer(ctx, 8090, {
 
 `loadContext` refuses models that cannot serve any context within the
 budget (pre-GPU, mmap-only check). The server exposes OpenAI chat
-completions, Anthropic `/v1/messages`, OpenAI Responses, adapters, and
-`/stats` — [server-api.md](./server-api.md).
+completions, Anthropic `/v1/messages`, OpenAI Responses, embeddings,
+adapters, and `/stats` — [server-api.md](./server-api.md).
+
+## Text embeddings
+
+```ts
+import { createModel, loadTokenizer, isEmbeddingModel, embedMany } from "mlx-bun";
+
+const model = createModel(await Weights.open(dir), config); // Qwen3-Embedding
+if (!isEmbeddingModel(model)) throw new Error("not an embedding model");
+const tok = await loadTokenizer(dir);
+
+const [a, b] = embedMany(model, tok, ["the cat sat", "a kitten rested"]);
+// a.vector / b.vector are Float32Array, L2-normalized → dot product = cosine.
+```
+
+`isEmbeddingModel` narrows a `RuntimeModel` to the plain-Qwen3 backbone (the
+only one exposing `embedPooled`: last-token hidden → L2-norm). `embedOne`/
+`embedMany` append the `<|endoftext|>` pooling token and, given an optional
+`instruction`, apply Qwen3-Embedding's query format. Same vectors the CLI
+(`mlx-bun embed`) and `/v1/embeddings` produce — bit-exact vs mlx-lm.
 
 ## Prompt cache (in-process prefix reuse)
 

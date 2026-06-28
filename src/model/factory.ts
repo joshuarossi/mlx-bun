@@ -11,10 +11,11 @@ import { configFingerprint } from "./fingerprint";
 import { GENERATED } from "./generated";
 import { MiniCPM5Model } from "./minicpm5";
 import { Qwen35Model } from "./qwen3_5";
+import { Qwen3Model } from "./qwen3";
 import { DiffusionGemmaModel } from "./diffusion-gemma";
-import { isDiffusionGemmaConfig, isMiniCPM5Config, isQwen35Config } from "./support";
+import { isDiffusionGemmaConfig, isMiniCPM5Config, isQwen35Config, isQwen3Config } from "./support";
 
-export type RuntimeModel = Gemma4Model | MiniCPM5Model | Qwen35Model | DiffusionGemmaModel;
+export type RuntimeModel = Gemma4Model | MiniCPM5Model | Qwen35Model | Qwen3Model | DiffusionGemmaModel;
 
 export function createModel(weights: Weights, config: ModelConfig): RuntimeModel {
   // DiffusionGemma is non-autoregressive — generate() detects it and routes to
@@ -24,6 +25,7 @@ export function createModel(weights: Weights, config: ModelConfig): RuntimeModel
   if (isDiffusionGemmaConfig(config)) return new DiffusionGemmaModel(weights, config);
   if (isMiniCPM5Config(config)) return new MiniCPM5Model(weights, config);
   if (isQwen35Config(config)) return new Qwen35Model(weights, config);
+  if (isQwen3Config(config)) return new Qwen3Model(weights, config);
   if (config.modelType === "llama")
     throw new Error("unsupported llama config: only MiniCPM5-1B-OptiQ-4bit is wired");
   if (config.modelType.startsWith("qwen3_5"))

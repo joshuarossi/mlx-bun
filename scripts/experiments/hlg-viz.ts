@@ -1,6 +1,7 @@
 // Generates an SVG heatmap of the HLG diversity terrain from the measured grids.
 // Two planes side by side; cell colour = diversity (self-BLEU), ✗ = canary broke.
 // Emits raw SVG to stdout (CSS-variable themed) for the visualize widget.
+export {};
 
 type Cell = number | null; // null = canary broke (✗)
 interface Grid { title: string; xLabel: string; yLabel: string; cols: string[]; rows: string[]; cells: Cell[][] }

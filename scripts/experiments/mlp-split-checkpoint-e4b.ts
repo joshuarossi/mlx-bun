@@ -49,6 +49,7 @@ const config = await loadModelConfig(MODEL);
 const weights = await Weights.open(MODEL);
 const model = createModel(weights, config);
 if (!(model instanceof Gemma4Model)) throw new Error("expected Gemma4Model");
+const gm: Gemma4Model = model;
 
 const ranks = resolveRanks(model, { rank: RANK, rankScaling: "by_bits", targetModules: [...DEFAULT_TARGET_MODULES], numLayers: -1 });
 const lora = buildTrainableLora(model, ranks, 1.0, 0);
@@ -69,7 +70,7 @@ const batch: SftBatch = { ids: [ids], promptLens: [Math.floor(L / 2)] };
 
 function gradsWith(label: string, ckpt: "off" | "single" | "split"): { loss: number; grads: Float32Array[]; peak: number } {
   const keepAlive: GradCheckpointCtx["keepAlive"] = [];
-  model.gradCkpt = ckpt === "off" ? null : { byLayer, splitMlp: ckpt === "split", keepAlive };
+  gm.gradCkpt = ckpt === "off" ? null : { byLayer, splitMlp: ckpt === "split", keepAlive };
   clearCache();
   resetPeakMemory();
   const vag = new ValueAndGrad((p) => {
@@ -83,7 +84,7 @@ function gradsWith(label: string, ckpt: "off" | "single" | "split"): { loss: num
   const grads = out.grads.map((g) => g.toFloat32());
   out.value.dispose(); out.grads.forEach((g) => g.dispose()); vag.dispose();
   for (const ck of keepAlive) ck.dispose();
-  model.gradCkpt = null;
+  gm.gradCkpt = null;
   console.log(`### ${label.padEnd(8)} loss=${loss.toFixed(6)}  PEAK=${gb(peak)}`);
   return { loss, grads, peak };
 }

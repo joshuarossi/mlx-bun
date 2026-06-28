@@ -186,6 +186,9 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
   const t = isDiffusion ? { ...diffusionGemmaRawDefaults(), ...baseT } : baseT;
   const isLlama = modelType === "llama";
   const isQwen35 = typeof modelType === "string" && modelType.startsWith("qwen3_5");
+  // Plain Qwen3 (Qwen3ForCausalLM, e.g. Qwen3-Embedding): a flat HF config with
+  // a scalar rope_theta and no rope_parameters map — handled like llama below.
+  const isQwen3 = modelType === "qwen3";
   // Qwen3.5 rope_parameters is a flat dict ({type, rope_theta, mrope_section,
   // partial_rotary_factor}), not the gemma per-attention-type map — and
   // type "default" means plain partial nn.RoPE (mrope_section ignored for text).
@@ -234,7 +237,7 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
         }
       : t.rope_parameters
         ? parseRope(t.rope_parameters)
-        : isLlama
+        : isLlama || isQwen3
           ? {
               full_attention: {
                 ropeTheta: t.rope_theta ?? 10000,

@@ -3,6 +3,7 @@
 // match at the curve's seed" — it's "does this exact sentence appear from PURE temperature
 // at ANY seed?" If it surfaces anywhere in a broad seed search, temperature can produce it.
 // If hundreds of seeds never reach it, the curve put the model where temperature won't go.
+export {};
 const BASE = "http://localhost:8090";
 const MODEL = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
 const PROMPT = "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.";

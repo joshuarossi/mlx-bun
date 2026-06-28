@@ -43,6 +43,7 @@ Commands:
   train      Fine-tune a LoRA adapter (SFT / DPO / ORPO) on your data
   memory     Set up + manage your local AI's personal wiki memory
   benchmark  Measure decode/prefill speed of OUR stack on this machine
+  embed      Text embeddings from a local embedding model (Qwen3-Embedding)
   evals      Show recent benchmark runs (all stacks)
   help       Show help for a command (also: mlx-bun <command> --help)
 
@@ -228,6 +229,28 @@ Options:
 Performance levers (--compiled-decode, --perf-kernel, --fused-decode,
 --fused-sdpa) apply to the run — A/B by running twice.`,
 
+  embed: `mlx-bun embed — text embeddings from a local embedding model
+
+Usage: mlx-bun embed [query] --text "…" [options]
+       echo -e "line one\\nline two" | mlx-bun embed [query]
+
+Embeds text with a local Qwen3-Embedding model (last-token pooled,
+L2-normalized — bit-exact vs mlx-lm). One text per --text, or one per
+line on stdin. Prints one JSON array (the vector) per input line.
+
+  [query]              Embedding model  [default: auto-pick]
+
+Options:
+  --text "…"           Text to embed (omit to read lines from stdin)
+  --instruct "…"       Query instruction (Qwen3-Embedding query format);
+                       steers WHICH similarity axis the geometry reflects.
+                       Omit for plain document embeddings.
+  --json               Emit one OpenAI-style {object:"list",data:[…]} object
+                       instead of bare vector arrays
+
+For a server endpoint use \`mlx-bun serve <embedding-model>\` then
+POST /v1/embeddings.`,
+
   evals: `mlx-bun evals — recent benchmark runs
 
 Usage: mlx-bun evals [options]
@@ -301,8 +324,13 @@ Subcommands:
                      Print one article section
   links <article>    Show resolved outbound + inbound wikilinks
   read <article>     Print an article (stem, e.g. Archie_Project)
-  synthesize         Run the synthesis pipeline now (--since, --model,
-                     --dry-run). STUBBED — a no-op until M1 lands.
+  synthesize         Run the FULL synthesis DAG now (--since, --model,
+                     --dry-run); also: pipeline, all
+  segment | extract | route | synthesize-stage
+                     Run ONE decomposed stage worker (--limit N, --convs a,b).
+                     Each pulls its eligible work from the DB by state, walks
+                     oldest-conversation-first, persists, and exits — resumable,
+                     and runnable as separate concurrent processes on slices.
   schedule           Install the nightly launchd job (--at HH:MM [03:00])
   unschedule         Remove the nightly launchd job
 
@@ -880,6 +908,52 @@ switch (cmd) {
       sampler: { temperature: num("temperature"), topP: num("top-p"), topK: num("top-k"), seed: num("seed") },
     });
     process.stdout.write(text.endsWith("\n") ? text : text + "\n");
+    break;
+  }
+
+  case "embed": {
+    // Raw text embeddings — one-shot, no server. Text from --text, or one per
+    // line on stdin. Uses the same embedPooled path the parity test verifies.
+    const { Weights } = await import("./weights");
+    const { createModel } = await import("./model/factory");
+    const { loadTokenizer } = await import("./tokenizer");
+    const { embedMany, isEmbeddingModel } = await import("./embed");
+
+    let texts: string[];
+    const oneText = opt("text") ?? positional(1);
+    if (oneText != null) {
+      texts = [oneText];
+    } else if (!process.stdin.isTTY) {
+      texts = (await Bun.stdin.text()).split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+    } else {
+      texts = [];
+    }
+    if (texts.length === 0) {
+      console.error('usage: mlx-bun embed [query] --text "…"   (or pipe text, one per line)');
+      console.error('       --instruct "…"  query instruction · --json  OpenAI-style output');
+      process.exit(1);
+    }
+
+    const { m } = await resolveModelAuto(positional(0) ?? opt("query"));
+    const config = await loadModelConfig(m.path);
+    const model = createModel(await Weights.open(m.path), config);
+    if (!isEmbeddingModel(model)) {
+      console.error(`"${m.repoId}" is not an embedding model (need plain Qwen3, e.g. Qwen3-Embedding).`);
+      process.exit(1);
+    }
+    const tok = await loadTokenizer(m.path);
+    const results = embedMany(model, tok, texts, opt("instruct") ?? undefined);
+
+    if (flag("json")) {
+      let total = 0;
+      const data = results.map((r, index) => { total += r.tokens; return { object: "embedding", index, embedding: Array.from(r.vector) }; });
+      process.stdout.write(JSON.stringify({
+        object: "list", data, model: m.repoId,
+        usage: { prompt_tokens: total, total_tokens: total },
+      }) + "\n");
+    } else {
+      for (const r of results) process.stdout.write(JSON.stringify(Array.from(r.vector)) + "\n");
+    }
     break;
   }
 
@@ -1475,13 +1549,14 @@ switch (cmd) {
       }
 
       // Offer to install the nightly synthesis job (a launchd agent). The job
-      // itself is a no-op today (synthesis is stubbed), but installing the
-      // schedule now means it starts producing articles the moment M1 lands —
-      // no reconfiguration. Persistent action → TTY-only, defaults to no.
+      // runs the real synthesis DAG (`mlx-bun memory synthesize`) — create new
+      // entity articles, then the editorial wikify sweep — so installing the
+      // schedule keeps your wiki current automatically. Persistent action →
+      // TTY-only, defaults to no.
       let scheduled: string | null = null;
       console.log(style.dim(
-        "\n  Synthesis (turning your conversations into articles) isn't implemented yet,\n" +
-        "  but you can install the nightly job now so it runs automatically once it is.",
+        "\n  Synthesis (turning your conversations into articles) runs as a nightly job;\n" +
+        "  install it now so your wiki stays current automatically.",
       ));
       if (await confirmYN("  Install the nightly synthesis job (runs in the background)?", false)) {
         const atRaw = await ask(`    At what time? 24h HH:MM ${style.dim("[03:00]")}: `, "03:00");
@@ -1507,8 +1582,8 @@ switch (cmd) {
           ? `nightly    ${style.green("scheduled")} ${style.dim(`· ${scheduled} daily · mlx-bun memory unschedule to undo`)}`
           : `nightly    ${style.dim("not scheduled · mlx-bun memory schedule to set it up")}`,
         "",
-        style.dim("Synthesis (conversations → articles) is stubbed for now; the scheduled"),
-        style.dim("job no-ops until it lands. Add or import articles to read meanwhile."),
+        style.dim("Synthesis (conversations → articles) runs the full DAG: create new entity"),
+        style.dim("articles, then an editorial wikify sweep. Run it now: mlx-bun memory synthesize."),
       ]);
       break;
     }
@@ -1570,7 +1645,70 @@ switch (cmd) {
       break;
     }
 
-    if (sub === "synthesize") {
+    // Independent, chronological, resumable STAGE WORKERS. Each pulls its own
+    // eligible work from the DB by state, processes a bounded batch, persists,
+    // and exits — so a user can run the four as four separate processes on
+    // different slices concurrently (GPU/memory allowing). `synthesize` (below)
+    // remains the FULL DAG; these are its decomposed pieces.
+    if (sub === "segment" || sub === "extract" || sub === "route" || sub === "synthesize-stage" || sub === "stage-synthesize") {
+      const stages = await import("./memory/stages");
+      const { MemoryStore } = await import("./memory/db");
+      const limit = opt("limit") ? parseInt(opt("limit")!, 10) : undefined;
+      const convsRaw = opt("convs");
+      const convIds = convsRaw ? convsRaw.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+      const onEvent = (e: import("./memory/pipeline").SynthesisEvent) => {
+        if (e.type === "stage") console.log(`  ${style.dim("·")} ${e.message}`);
+        else console.log(`  ${e.message}`);
+      };
+      const store = new MemoryStore();
+      console.log();
+      try {
+        if (sub === "segment") {
+          const r = await stages.runSegmentStage(store, { convIds, limit, onEvent });
+          console.log(style.dim(`\n  segment: ${r.valid} segmented, ${r.chunks} chunks, ${r.skipped} skipped, ${r.errored} errored`));
+        } else if (sub === "extract") {
+          const r = await stages.runExtractStage(store, { convIds, limit, onEvent });
+          console.log(style.dim(`\n  extract: ${r.extracted} chunk(s) extracted, ${r.remaining} still pending`));
+        } else if (sub === "route") {
+          const r = await stages.runRouteStage(store, { convIds, onEvent });
+          console.log(style.dim(`\n  route: ${r.decisions.length} entities — ${r.createEligible} create-eligible, ${r.captured.length} captured`));
+        } else {
+          const r = await stages.runSynthesizeStage(store, { root, convIds, limit, onEvent });
+          console.log(style.dim(`\n  synthesize: ${r.created.length} created, ${r.patched.length} patched, ${r.skippedByGate.length} gated`));
+        }
+      } finally {
+        store.close();
+      }
+      break;
+    }
+
+    // CROSS-LINK — the dedicated edge-building stage. Deterministic + idempotent:
+    // inline-link first mentions of other articles + rebuild each ## See also from
+    // mentions + co-occurrence. No model required.
+    if (sub === "link") {
+      const { runLinkStage } = await import("./memory/crosslink");
+      const { MemoryStore } = await import("./memory/db");
+      const limit = opt("limit") ? parseInt(opt("limit")!, 10) : undefined;
+      const store = new MemoryStore();
+      console.log();
+      try {
+        const r = await runLinkStage(store, {
+          root,
+          limit,
+          onEvent: (e) => console.log(e.type === "stage" ? `  ${style.dim("·")} ${e.message}` : `  ${e.message}`),
+        });
+        console.log(
+          style.dim(
+            `\n  link: ${r.linked.length} article(s) linked · ${r.mentionEdges} mention edge(s) · ${r.skippedByGate.length} gated`,
+          ),
+        );
+      } finally {
+        store.close();
+      }
+      break;
+    }
+
+    if (sub === "synthesize" || sub === "pipeline" || sub === "all") {
       const { runSynthesis } = await import("./memory/pipeline");
       const dryRun = flag("dry-run");
       console.log();
@@ -1595,7 +1733,7 @@ switch (cmd) {
           : `${style.accent("●")} ${style.bold("plist written, but launchctl load failed")}`,
         "",
         `plist      ${style.dim(r.plistPath)}`,
-        `runs       ${style.dim("mlx-bun memory synthesize (a no-op until synthesis lands)")}`,
+        `runs       ${style.dim("mlx-bun memory synthesize (full DAG: create + wikify sweep)")}`,
         `undo       ${style.accent("mlx-bun memory unschedule")}`,
       ]);
       break;

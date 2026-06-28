@@ -22,6 +22,13 @@ export function isQwen35Config(config: ModelConfig): boolean {
     config.text.fullAttentionInterval > 0;
 }
 
+/** Plain Qwen3 (model_type `qwen3`, Qwen3ForCausalLM) — a standard dense decoder
+ *  with per-head q/k norm and tied embeddings. Used here as the text-embedding
+ *  backbone (mlx-community Qwen3-Embedding-*). Distinct from the qwen3_5 hybrid. */
+export function isQwen3Config(config: ModelConfig): boolean {
+  return config.modelType === "qwen3";
+}
+
 /** Speculative-decoding drafters (e.g. `gemma4_assistant`) are companion
  *  artifacts to a target model — Q-only, centroid-head, no standalone LM
  *  head. They are never servable/selectable on their own (the spec path
@@ -44,11 +51,12 @@ export function isSupportedModelRecord(modelType: string, repoId = ""): boolean 
   if (modelType === "diffusion_gemma") return true;
   // qwen3_5 / qwen3_5_text (dense hybrid). The MoE variant is a separate type.
   if (modelType === "qwen3_5" || modelType === "qwen3_5_text") return true;
+  if (modelType === "qwen3") return true; // plain Qwen3 (embedding backbone)
   return modelType === "llama" && repoId.toLowerCase().includes("minicpm5-1b-optiq-4bit");
 }
 
 export function isSupportedModelConfig(config: ModelConfig): boolean {
   if (isDrafterModelType(config.modelType)) return false;
   return config.modelType.startsWith("gemma4") || isMiniCPM5Config(config) ||
-    isQwen35Config(config) || isDiffusionGemmaConfig(config);
+    isQwen35Config(config) || isQwen3Config(config) || isDiffusionGemmaConfig(config);
 }

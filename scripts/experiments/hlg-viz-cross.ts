@@ -2,6 +2,7 @@
 // (e4b, 12B = Gemma/262k vocab; CPM5 = Llama/~73k vocab). Each plane is a 4×4
 // clean/broke grid per model, grouped into "replicates across models" (the
 // sharpness cluster) vs "vocab-dependent" (the window axis). Emits raw SVG.
+export {};
 
 type Plane = { name: string; xs: string[]; ys: string[]; xlab: string; ylab: string };
 const PLANES: Record<string, Plane> = {

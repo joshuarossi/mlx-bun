@@ -15,7 +15,7 @@
 // of the task — is ported exactly. (See summary for this one note.)
 
 import { generateText, loadJsonl, sampleIndices, type TaskModel } from "../runner";
-import { type ToolDefinition } from "../chat-template";
+import { type ToolDefinition } from "../../chat-template";
 
 // ---------------------------------------------------------------------------
 // Data shapes (the merged jsonl: each line = {query, answer}).

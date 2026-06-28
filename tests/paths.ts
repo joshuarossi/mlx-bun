@@ -99,3 +99,11 @@ export async function snapshotQwen35Available(): Promise<boolean> {
 export async function snapshotQwen35_4bAvailable(): Promise<boolean> {
   return Bun.file(`${SNAPSHOT_QWEN35_4B}/config.json`).exists();
 }
+
+// Qwen3-Embedding-4B (plain qwen3, 4-bit DWQ): the text-embedding backbone.
+// Oracle is mlx-lm's qwen3 (L1). Resolved dynamically — no hash edit on pull.
+export const SNAPSHOT_QWEN3_EMBED = hfSnapshot("models--mlx-community--Qwen3-Embedding-4B-4bit-DWQ");
+
+export async function snapshotQwen3EmbedAvailable(): Promise<boolean> {
+  return Bun.file(`${SNAPSHOT_QWEN3_EMBED}/config.json`).exists();
+}
