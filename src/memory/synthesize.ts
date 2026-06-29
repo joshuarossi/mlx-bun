@@ -1387,7 +1387,7 @@ async function patchLead(
   const allowDroppedHashes = new Set<string>();
   if (priorMarkers.length) {
     kind = classifyContradiction(
-      await call(buildContradictionClassifierPrompt(currentLead, chunk.text.slice(0, 1400).trim()), { maxTokens: 8 }),
+      await call(buildContradictionClassifierPrompt(currentLead, chunk.text.slice(0, 1400).trim()), { maxTokens: MAX_OUTPUT_TOKENS }),
     );
     if (kind === "error") {
       // A factual fix may drop the wrong value's citation. Permit dropping the
