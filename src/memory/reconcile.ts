@@ -31,12 +31,11 @@ import {
   markerNear,
   upsertHistoryEntry,
 } from "./history";
-import { callLocal } from "./model";
+import { callLocal, MAX_OUTPUT_TOKENS } from "./model";
 import { normalizeArticle } from "./normalize";
 import {
   articleFootnoteState,
   entityStem,
-  MAX_OUTPUT_TOKENS,
   PHYSICAL_SPEC_KEYS,
   referenceDatesByMarker,
   sanitizeLead,

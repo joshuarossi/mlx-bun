@@ -9,7 +9,7 @@
 // ASSIGN_OR_PROPOSE_PROMPT + buildPrompt (assign-to-existing-or-propose-new), but
 // decomposed into bounded single-section yes/no calls instead of one batched
 // JSON object — the same capacity-by-decomposition the CREATE flow uses, and the
-// same {maxTokens:4} parseBinary gate ROUTE's disambiguation rides:
+// same parseBinary gate ROUTE's disambiguation rides:
 //
 //   for each section S of article A (A already matched by ROUTE for this chunk):
 //     "article title + S heading + S's first ~2 sentences + chunk label + 1-line
@@ -28,7 +28,7 @@
 
 import { parseLead } from "./article";
 import type { MemoryStore } from "./db";
-import { callLocal } from "./model";
+import { callLocal, MAX_OUTPUT_TOKENS } from "./model";
 import { parseBinary, parseLines } from "./parse";
 import { extractSection, parseToc, slugifyHeading } from "./vault";
 
@@ -287,7 +287,7 @@ export async function routeSections(
   const matchedAnchors: string[] = [];
   for (const section of candidates) {
     const yes = parseBinary(
-      await call(buildSectionBinaryPrompt(title, section, chunk.gist), { maxTokens: 4 }),
+      await call(buildSectionBinaryPrompt(title, section, chunk.gist), { maxTokens: MAX_OUTPUT_TOKENS }),
     );
     if (yes) matchedAnchors.push(section.anchor);
   }
@@ -296,7 +296,7 @@ export async function routeSections(
   if (matchedAnchors.length === 0 && substantive) {
     const raw = await call(
       buildNewSectionPrompt(title, sections.map((s) => s.heading), chunk.label, chunk.gist),
-      { maxTokens: 16 },
+      { maxTokens: MAX_OUTPUT_TOKENS },
     );
     const named = parseNewSection(raw);
     // Guard against the model echoing an existing heading as its "new" name.

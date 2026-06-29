@@ -63,6 +63,14 @@ export function adapterDirFor(stage: string): string | undefined {
 // Templating — system vs user per stage
 // ---------------------------------------------------------------------------
 
+/** Token budget for EVERY memory model call. A finished answer stops at EOS on
+ *  its own; a maxTokens cap can only ever truncate an UNFINISHED answer — there is
+ *  no case where capping output improves it (a one-word verdict already stops; a
+ *  long section that gets cut is corrupted). This is a single high backstop against
+ *  a pathological non-terminating decode, set far above any real output. Never set
+ *  a per-call cap below this. */
+export const MAX_OUTPUT_TOKENS = 64_000;
+
 /** A stage's model input: a SYSTEM turn (instruction/policy) plus the USER turn
  *  (the content to operate on). `system` is OPTIONAL — when omitted, the stage's
  *  default system (below) is applied; pass it explicitly to override (the chunk

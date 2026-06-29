@@ -32,7 +32,7 @@
 // engagesAsSubject() touch the GPU.
 
 import type { MemoryStore } from "./db";
-import { callLocal } from "./model";
+import { callLocal, MAX_OUTPUT_TOKENS } from "./model";
 import { parseBinary } from "./parse";
 import { EntityResolver, type MatchKind } from "./resolve";
 
@@ -104,7 +104,7 @@ export async function disambiguate(
   const prompt =
     `Is "${surface}" (context: ${label ?? "—"}) the same thing as ` +
     `"${entity}" — ${lead}? Answer yes or no.`;
-  return parseBinary(await callLocal("route", { user: prompt }, { maxTokens: 4 }));
+  return parseBinary(await callLocal("route", { user: prompt }, { maxTokens: MAX_OUTPUT_TOKENS }));
 }
 
 /**
@@ -123,7 +123,7 @@ export async function engagesAsSubject(
     `SUBJECT — a topic, idea, person, project, or thing the user is actually ` +
     `thinking about and discussing — rather than mentioning it only in passing? ` +
     `Answer yes or no.`;
-  return parseBinary(await callLocal("route", { user: prompt }, { maxTokens: 4 }));
+  return parseBinary(await callLocal("route", { user: prompt }, { maxTokens: MAX_OUTPUT_TOKENS }));
 }
 
 // ---- CREATE gate (pure) ----------------------------------------------------
