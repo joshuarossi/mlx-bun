@@ -520,13 +520,13 @@ export async function reconcileContent(article: string, deps: ReconcileDeps = {}
     for (const f of box.fields) {
       if (!isRelationshipKey(f.key)) continue; // world-fact / spec → untouched
       const old = f.value.trim();
-      const reply = await call(buildInfoboxReconcilePrompt(verdict, f.key, f.value), { maxTokens: 48 });
+      const reply = await call(buildInfoboxReconcilePrompt(verdict, f.key, f.value), { maxTokens: MAX_OUTPUT_TOKENS });
       const cleaned = cleanValue(reply, f.key);
       if (cleaned && !/^keep$/i.test(cleaned) && cleaned !== old) {
         next = setInfoboxFieldValue(next, f.key, cleaned);
         refreshedFields.push(f.key);
         const kind = classifyContradiction(
-          await call(buildContradictionClassifierPrompt(old, cleaned), { maxTokens: 8 }),
+          await call(buildContradictionClassifierPrompt(old, cleaned), { maxTokens: MAX_OUTPUT_TOKENS }),
         );
         const earlierMarker = markerNear(prose, old);
         const laterMarker = markerNear(prose, cleaned);
@@ -574,7 +574,7 @@ export async function reconcileContent(article: string, deps: ReconcileDeps = {}
     // hallucination cannot trigger a needless rewrite.
     for (const gt of groundTruthOnly) {
       const detect = cleanValue(
-        await call(buildProseConflictPrompt(passage.label, gt, body), { maxTokens: 24 }),
+        await call(buildProseConflictPrompt(passage.label, gt, body), { maxTokens: MAX_OUTPUT_TOKENS }),
         "",
       );
       if (!detect || /^keep$/i.test(detect) || detect.toLowerCase() === gt.toLowerCase()) continue;
