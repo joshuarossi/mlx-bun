@@ -36,6 +36,7 @@ import { normalizeArticle } from "./normalize";
 import {
   articleFootnoteState,
   entityStem,
+  MAX_OUTPUT_TOKENS,
   PHYSICAL_SPEC_KEYS,
   referenceDatesByMarker,
   sanitizeLead,
@@ -386,7 +387,7 @@ async function reconcileOnePassage(
 
   const before = new Set(markersIn(passage.body));
   const attempt = async (prompt: string): Promise<string> => {
-    const raw = await call(prompt, { maxTokens: 512 });
+    const raw = await call(prompt, { maxTokens: MAX_OUTPUT_TOKENS });
     return dedupeAdjacentMarkers(passage.sanitize(raw)).trim();
   };
   const accept = (x: string): boolean => {
@@ -427,7 +428,7 @@ async function reconcileOnePassageCurrentState(
   if (!passage.body.toLowerCase().includes(superseded.toLowerCase())) return keep; // already clean
 
   const attempt = async (prompt: string): Promise<string> => {
-    const raw = await call(prompt, { maxTokens: 512 });
+    const raw = await call(prompt, { maxTokens: MAX_OUTPUT_TOKENS });
     return dedupeAdjacentMarkers(passage.sanitize(raw)).trim();
   };
   const accept = (x: string): boolean => {

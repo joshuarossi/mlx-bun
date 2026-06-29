@@ -634,6 +634,14 @@ export function countCitedSections(content: string): number {
  *  by tests so the deterministic scaffolding runs with no GPU. */
 export type SynthesisCall = (prompt: string, opts?: { maxTokens?: number }) => Promise<string>;
 
+/** Output budget for every CONTENT-generating call (lead/section/patch/outline/
+ *  infobox/reconcile). Set high enough that the model ALWAYS reaches its natural
+ *  EOS on real output — truncating generated article text is never the better
+ *  option, so this only ever bounds a pathological runaway. (Yes/no and single-
+ *  field classifiers keep their own tight bounds — those are intentional, not
+ *  truncation of content.) */
+export const MAX_OUTPUT_TOKENS = 64_000;
+
 /** Retry instruction when a draft leaks meta/planning/refusal text. */
 const ANTI_LEAK_HINT =
   "Output ONLY the article prose for this section — no preamble, no meta-commentary, no plan, no restating the task.";
@@ -705,7 +713,7 @@ export async function createArticle(
   const { byConv, entries } = buildFootnoteMap(chunks);
 
   // OUTLINE → sections; assign chunks; drop sections that won no chunk.
-  const outline = parseOutline(await call(buildOutlinePrompt(entity, chunks, policy), { maxTokens: 96 }));
+  const outline = parseOutline(await call(buildOutlinePrompt(entity, chunks, policy), { maxTokens: MAX_OUTPUT_TOKENS }));
   const clustered = subClusterChunks(chunks, outline);
   const sections: AssembledSection[] = [];
   const chunkSections: { chunkId: string; anchor: string }[] = [];
@@ -716,7 +724,7 @@ export async function createArticle(
     const body = await draftCleanProse(
       call,
       buildSectionPrompt(entity, title, secChunks, byConv, otherArticles, policy),
-      { maxTokens: 512 },
+      { maxTokens: MAX_OUTPUT_TOKENS },
       (raw) => sanitizeSection(raw, title),
     );
     // A leaky draft survives to "" after one retry — DROP the section (and its
@@ -731,11 +739,11 @@ export async function createArticle(
   const lead = await draftCleanProse(
     call,
     buildLeadPrompt(entity, chunks, byConv, otherArticles, policy),
-    { maxTokens: 192 },
+    { maxTokens: MAX_OUTPUT_TOKENS },
     sanitizeLead,
   );
   const infoboxFields = buildInfoboxFields(
-    await call(buildInfoboxPrompt(entity, kind, chunks, otherArticles, policy), { maxTokens: 192 }),
+    await call(buildInfoboxPrompt(entity, kind, chunks, otherArticles, policy), { maxTokens: MAX_OUTPUT_TOKENS }),
     kind,
     deps.aliases ?? [],
   );
@@ -1067,9 +1075,9 @@ async function draftPatchedProse(
     const body = sanitize(raw);
     return !isLeakyDraft(body) && wants.test(body) ? body : "";
   };
-  const first = clean(await call(prompt, { maxTokens: 512 }));
+  const first = clean(await call(prompt, { maxTokens: MAX_OUTPUT_TOKENS }));
   if (first) return first;
-  return clean(await call(`${prompt}\n\n${PATCH_ANTI_LEAK_HINT} Place the [^${marker}] marker for the new note.`, { maxTokens: 512 }));
+  return clean(await call(`${prompt}\n\n${PATCH_ANTI_LEAK_HINT} Place the [^${marker}] marker for the new note.`, { maxTokens: MAX_OUTPUT_TOKENS }));
 }
 
 /** Draft an integrated SECTION body (sanitized as a section, must place the marker). */
