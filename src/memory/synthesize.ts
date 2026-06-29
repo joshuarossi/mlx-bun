@@ -298,7 +298,7 @@ function buildLeadPrompt(
     `${policy}\n\n${NO_COPY_GUARD}\n\n${WIKILINK_RULES}\n\n${CITATION_RULES}\n\n${DATE_RESOLVE_RULES}\n\n` +
     `${footnoteList(chunks, footnotes)}\n\n` +
     `OTHER ARTICLES (link to these stems only):\n${otherArticles}\n\n` +
-    `Write the LEAD for a personal-wiki article about "${entity}": 2–4 sentences, present tense, naming **${entity}** in bold in the first sentence, describing what it is AND how the user relates to it (owned / used / chose / considered). When the notes disagree, frame the user's CURRENT position from the LATEST-DATED note. Output ONLY the lead prose — no heading, no list, no References.\n\n` +
+    `Write the LEAD for a personal-wiki article about "${entity}": 2–4 sentences, present tense, naming **${entity}** in bold in the first sentence, describing what it is AND how the user relates to it (uses / owns / chose / considered). Write in the THIRD PERSON, Wikipedia-style — NEVER the first person ("I", "my"); refer to the user in the third person ("the user"). When the notes disagree, frame the user's CURRENT position from the LATEST-DATED note. Output ONLY the lead prose — no heading, no list, no References.\n\n` +
     `SOURCE NOTES:\n${sourceDigest(chunks)}\n`
   );
 }
@@ -358,7 +358,7 @@ function buildSectionPrompt(
     `${policy}\n\n${NO_COPY_GUARD}\n\n${WIKILINK_RULES}\n\n${CITATION_RULES}\n\n${DATE_RESOLVE_RULES}\n\n` +
     `${footnoteList(chunks, footnotes)}\n\n` +
     `OTHER ARTICLES (link to these stems only):\n${otherArticles}\n\n` +
-    `Draft ONLY the body of the "${sectionTitle}" section of the article about "${entity}". Neutral, factual prose about the user's relationship to the thing; preserve specifics, and when two sources conflict fold the correction toward the user's LATEST-DATED position. Output ONLY this section's prose — do NOT repeat the "## ${sectionTitle}" heading, do NOT write other sections, do NOT write a References section.\n\n` +
+    `Draft ONLY the body of the "${sectionTitle}" section of the article about "${entity}". Factual prose in the THIRD PERSON, Wikipedia-style — NEVER the first person ("I", "my"); refer to the user in the third person ("the user"). These articles document what the user thinks, so they are NOT neutral: capture the user's positions and opinions accurately. Preserve specifics, and when two sources conflict fold the correction toward the user's LATEST-DATED position. Output ONLY this section's prose — do NOT repeat the "## ${sectionTitle}" heading, do NOT write other sections, do NOT write a References section.\n\n` +
     `SOURCE MATERIAL:\n${sources}\n`
   );
 }
