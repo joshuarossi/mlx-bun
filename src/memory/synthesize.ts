@@ -48,7 +48,7 @@ import {
   classifyContradiction,
   type ContradictionKind,
 } from "./history";
-import { callLocal } from "./model";
+import { callLocal, MAX_OUTPUT_TOKENS } from "./model";
 import { hasStubMarker, normalizeArticle } from "./normalize";
 import { parseLines } from "./parse";
 import { loadMetaPolicy } from "./prompts";
@@ -633,14 +633,6 @@ export function countCitedSections(content: string): number {
 /** Per-stage model call seam (defaults to the local synthesis stage). Injected
  *  by tests so the deterministic scaffolding runs with no GPU. */
 export type SynthesisCall = (prompt: string, opts?: { maxTokens?: number }) => Promise<string>;
-
-/** Output budget for every CONTENT-generating call (lead/section/patch/outline/
- *  infobox/reconcile). Set high enough that the model ALWAYS reaches its natural
- *  EOS on real output — truncating generated article text is never the better
- *  option, so this only ever bounds a pathological runaway. (Yes/no and single-
- *  field classifiers keep their own tight bounds — those are intentional, not
- *  truncation of content.) */
-export const MAX_OUTPUT_TOKENS = 64_000;
 
 /** Retry instruction when a draft leaks meta/planning/refusal text. */
 const ANTI_LEAK_HINT =

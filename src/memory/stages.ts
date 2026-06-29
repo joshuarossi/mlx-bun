@@ -32,7 +32,7 @@ import {
 } from "./cluster";
 import type { MemoryStore } from "./db";
 import { buildEntityPrompt, extractEntities, type ExtractCall } from "./entity";
-import { callLocalBatch } from "./model";
+import { callLocalBatch, MAX_OUTPUT_TOKENS } from "./model";
 import type { SynthesisEvent } from "./pipeline";
 import { loadMetaPolicy } from "./prompts";
 import {
@@ -340,7 +340,7 @@ export async function runExtractStage(
   // the shared resolver folds canonicals in chronological order.
   if (!opts.call && targetIds.length > 1) {
     const inputs = targetIds.map((id) => ({ user: buildEntityPrompt(store.chunkText(id), policy) }));
-    const outputs = await callLocalBatch("entity", inputs, { maxTokens: 128 });
+    const outputs = await callLocalBatch("entity", inputs, { maxTokens: MAX_OUTPUT_TOKENS });
     let extracted = 0;
     for (let i = 0; i < targetIds.length; i++) {
       const out = outputs[i] ?? "";
