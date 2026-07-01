@@ -4,7 +4,7 @@
 import { loadModelConfig } from "../../src/config";
 import { Weights } from "../../src/weights";
 import { MiniCPM5Model } from "../../src/model/minicpm5";
-import { MegakernelRunner } from "../../src/model/megakernel-kernel";
+import { MegakernelRunner } from "./megakernel-kernel";
 import { SNAPSHOT_MINICPM5 } from "../../tests/paths";
 
 const model = new MiniCPM5Model(await Weights.open(SNAPSHOT_MINICPM5), await loadModelConfig(SNAPSHOT_MINICPM5));

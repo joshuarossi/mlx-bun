@@ -5,7 +5,7 @@
 import { loadModelConfig } from "../../src/config";
 import { Weights } from "../../src/weights";
 import { MiniCPM5Model } from "../../src/model/minicpm5";
-import { MegakernelRunner } from "../../src/model/megakernel-kernel";
+import { MegakernelRunner } from "./megakernel-kernel";
 import { argmaxLastPosition } from "../../src/model/gemma4-base";
 import { SNAPSHOT_MINICPM5 } from "../../tests/paths";
 
