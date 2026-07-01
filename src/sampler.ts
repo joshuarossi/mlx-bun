@@ -98,7 +98,7 @@ function negInfLike(a: MlxArray): MlxArray {
 
 /** apply_top_p: keep the smallest set of tokens whose cumulative
  *  probability exceeds top_p; others → -inf. */
-function applyTopP(lp: MlxArray, topP: number): MlxArray {
+export function applyTopP(lp: MlxArray, topP: number): MlxArray {
   const probs = ops.exp(lp);
   const sortedIdx = ops.argsortAxis(lp, -1);
   const sortedProbs = ops.takeAlongAxis(probs, sortedIdx, -1);
@@ -120,7 +120,7 @@ function applyTopP(lp: MlxArray, topP: number): MlxArray {
 }
 
 /** apply_top_k: all but the k highest logprobs → -inf. */
-function applyTopK(lp: MlxArray, topK: number): MlxArray {
+export function applyTopK(lp: MlxArray, topK: number): MlxArray {
   const V = lp.shape[lp.shape.length - 1]!;
   const negLp = ops.neg(lp);
   const part = ops.argpartitionAxis(negLp, topK - 1, -1);

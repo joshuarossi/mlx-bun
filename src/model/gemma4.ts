@@ -663,6 +663,13 @@ export class Gemma4Model {
   /** Set by the trainer to enable gradient checkpointing in forwardLayers
    *  (null = off; the non-checkpointed path is untouched). */
   gradCkpt: GradCheckpointCtx | null = null;
+  /** Optional per-forward hidden-state tap for DSpark's DFlash H_ctx (paper
+   *  Eq 2). null = off → byte-identical forward. `layers`: residual-output
+   *  indices to capture (0..nLayers-1 = post-layer residual; nLayers =
+   *  post-finalNorm). `pos`: if set, capture only [1,1,H] at that seq position
+   *  (live decode); else the full [1,L,H] (offline regen). The caller owns and
+   *  disposes the captured arrays. Additive/read-only → parity untouched. */
+  hiddenTap: { layers: Set<number>; pos?: number; captured: Map<number, MlxArray> } | null = null;
   // e2b/e4b per-layer input machinery
   readonly perLayerEmbed: QuantizedEmbedding | null;
   readonly perLayerModelProjection: QuantizedLinear | null;
@@ -820,6 +827,20 @@ export class Gemma4Model {
     return out;
   }
 
+  /** Store layer `i`'s residual stream `h` ([1,L,H]) if the hidden tap requests
+   *  it. Copies (astype bf16, optional slice) so the loop's `h.dispose()` can't
+   *  free the capture. No-op and no graph ops when the tap is null → the forward
+   *  is byte-identical to an untapped run. (DSpark DFlash H_ctx.) */
+  protected captureLayer(i: number, h: MlxArray): void {
+    const tap = this.hiddenTap;
+    if (!tap || !tap.layers.has(i)) return;
+    const H = h.shape[2]!;
+    const src = tap.pos !== undefined ? h.slice([0, tap.pos, 0], [1, tap.pos + 1, H]) : h;
+    const copy = src.astype(this.embed.scales.dtype); // bf16, matches regen dump dtype
+    if (src !== h) src.dispose();
+    tap.captured.set(i, copy);
+  }
+
   /** Consumes h. */
   protected forwardLayers(
     h0: MlxArray, cache: Cache[], bidir: MlxArray | null, ids: MlxArray | null,
@@ -878,6 +899,7 @@ export class Gemma4Model {
       pls?.dispose();
       h.dispose();
       h = next;
+      this.captureLayer(i, h); // DFlash H_ctx tap (no-op unless hiddenTap set)
       intermediates[i] = shared;
     }
     perLayer?.dispose();
@@ -895,7 +917,9 @@ export class Gemma4Model {
     }
     for (const m of masks.values()) m.arr?.dispose();
 
-    return disposing(h, this.finalNorm.forward(h));
+    h = disposing(h, this.finalNorm.forward(h));
+    this.captureLayer(this.layers.length, h); // post-finalNorm sentinel (index = nLayers)
+    return h;
   }
 
   // --- Segmented-backward support (docs/design/segmented-backward-training.md

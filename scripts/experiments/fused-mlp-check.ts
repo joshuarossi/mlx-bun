@@ -13,9 +13,11 @@ const x=MlxArray.fromFloat32(xs,[6,Hdim]).astype(Dtype.bfloat16);
 for (const L of [0,1,7]) {
   const m=model.layers[L];
   const ref=m.mlp.forward(x).astype(Dtype.float32).toFloat32();   // unfused reference
+  const h0=ops.zeros([6, m.mlp.down.w.shape[0]], x.dtype);        // zero residual: fused outputs h+mlp(x)
   const fb=fusedMlp(x, m.mlp.gate.w,m.mlp.gate.scales,m.mlp.gate.biases,m.mlp.gate.spec,
                        m.mlp.up.w,m.mlp.up.scales,m.mlp.up.biases,m.mlp.up.spec,
-                       m.mlp.down.w,m.mlp.down.scales,m.mlp.down.biases,m.mlp.down.spec).astype(Dtype.float32).toFloat32();
+                       m.mlp.down.w,m.mlp.down.scales,m.mlp.down.biases,m.mlp.down.spec,
+                       h0).astype(Dtype.float32).toFloat32();
   let md=0,nan=0; for(let i=0;i<ref.length;i++){if(Number.isNaN(fb[i]!))nan++;else md=Math.max(md,Math.abs(ref[i]!-fb[i]!));}
   console.log(`L${L} g${m.mlp.gate.spec.bits}/u${m.mlp.up.spec.bits}/d${m.mlp.down.spec.bits}  maxDiff=${md.toExponential(3)} NaN=${nan}/${ref.length}`);
 }

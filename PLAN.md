@@ -179,6 +179,52 @@ Ordered by expected payoff on this hardware:
   best defaults" (see Phase 6), and the MoE landed with bit-exact
   parity in the following session.
 
+### Phase 6 findings (2026-06-30, faithful DFlash — the REAL DSpark)
+
+- The 2026-06-29 build (`module.ts`, single final-hidden tap, 2 layers) was a
+  shortcut that DROPPED the paper's core KV injection — it was never DSpark, and
+  its τ numbers (chunk 1.26, articles 1.16) were meaningless.
+- Built the **faithful** DFlash in parallel `src/spec/dspark/*-dflash.ts`
+  (multi-layer H_ctx, Eq 2–3, injected into every draft layer; 5 layers) +
+  `gemma4.ts` `hiddenTap` (parity-safe multi-layer extraction) + `gemma4-base.ts`
+  `trim(n, bypass)` (spec rollback past the sliding window). v1 kept as baseline;
+  variant-flagged; repo stays at 0 tsc.
+- **Off-by-one bug (both v1 and v2):** the TV loss's p^t target was gathered at
+  hidden `t+k+1` but block position k predicts `x_{t+1+k}` (target dist =
+  `softmax(LM_head(h_{t+k})))`. Shifted one token → every pre-fix τ was trained
+  against the wrong distribution. Fixed in `data-dflash.ts`.
+- **Architecture proven correct** by an overfit test (3 articles, eval-on-same):
+  per-position ~0.75, τ=3.24 — paper-range (0.6–0.9 / 3–4). Width is NOT the
+  ceiling (dDraft 1024 ≈ 2560 both plateau ~0.17 pre-scale).
+- **Two non-architecture gaps to a net speedup:** (1) DATA — 160 articles only
+  generalize to per-pos ~0.17 (paper uses 1.3M×10). (2) TARGET SPEED — the fixed
+  draft overhead amortizes only on a slow target: decode e4b 45.9 / 12b 27.5 /
+  27B ~15 tok/s; even τ≈3 nets ~0.4–0.5× on fast e4b but could be ~2–3× on 27B.
+  **e4b is ~worst-case for spec decode; the 27B agentic workload is the real
+  target.** Design: `docs/design/dspark-speculative-decoding.md`.
+
+### Phase 6 findings (2026-06-29, DSpark drafter)
+
+- **DSpark semi-autoregressive drafter built** (DeepSeek DSpark paper port):
+  a TRAINABLE parallel-backbone + low-rank Markov head + confidence head
+  hanging off frozen e4b, in `src/spec/dspark/` + `scripts/dspark-*`.
+  Distinct from the existing optiq assistant drafter (`spec/drafter.ts`),
+  which is the A/B baseline. Full design: `docs/design/dspark-speculative-decoding.md`.
+- **Decisions:** final-hidden tap (`forwardHidden`, zero model-file changes);
+  2-layer backbone (paper Fig 3: beats 5-layer DFlash); Markov W2 init 0
+  (starts as pure DFlash, τ climbs). Tap point / multi-layer H_ctx / prefix-K/V
+  injection are deferred τ levers.
+- **temp>0 is first-class** (lossless speculative SAMPLING: min(1,p/q) accept +
+  residual norm(relu(p−q)) resample + bonus; p,q share top-p/top-k/temp
+  processing reusing `sampler.ts`). Emit distribution == target p for ANY q —
+  proven statistically in `scripts/dspark-smoke.ts` (maxErr<0.01 over 200k
+  draws). Greedy (temp 0) path reuses the same `picksBatched`/`trim` spine and
+  must match `model.generate` (the deterministic gate).
+- **Status:** code complete, repo typechecks 0, CPU smoke 33/33 (incl. full
+  ValueAndGrad+AdamW step on a stub model). NOT yet run on GPU: data regen,
+  training, the e4b losslessness gate. Same trim-only rollback limitation as
+  the existing spec path (rotating caches lose trimability past the window).
+
 ### Phase 6 findings (2026-06-10, verification session)
 
 - **mx.set_wired_limit is load-bearing for models near the working-set
