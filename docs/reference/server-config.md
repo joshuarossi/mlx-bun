@@ -19,14 +19,14 @@ the design rationale is in
 
 | Flag | Arg | Default | What it does |
 | --- | --- | --- | --- |
-| `--host` | addr | all interfaces | Interface to bind. `127.0.0.1` = loopback only. |
-| `--port` | n | `8090` | Listen port. A pre-flight probe refuses to start if the port is already serving. |
+| `--host` | addr | `127.0.0.1` | Interface to bind. Loopback-only by default (mlx_lm.server parity); pass `--host 0.0.0.0` to expose the server on your network. |
+| `--port` | n | `8080` | Listen port. A pre-flight probe refuses to start if the port is already serving. |
 | `--memory-budget` | GB | machine RAM × 0.75 | Admission ceiling. Requests whose `prompt + max_tokens` exceed the budget's max safe context are **rejected with 400** (`type: memory_admission`) instead of risking an uncatchable GPU OOM. Also caps the mlx allocator (`mlx_set_memory_limit`) as defense in depth. **Decimal GB (×10⁹).** |
 | `--prompt-cache` | GB | `2` (≈2e9 bytes) | Byte cap for the prompt (prefix-reuse KV) cache. **Binary GiB (×2³⁰)** on input. `0`/unset ⇒ default; there is no flag to disable the cache outright. |
-| `--batch` | n | `1` (serial) | Max concurrent requests batched through the mlx-lm-parity engine. `>1` switches the **whole server** into bf16 continuous batching — a *mode*, not a load fallback. See [Execution modes](#execution-modes-serial-vs---batch-n). Alias: `--decode-concurrency` (mlx_lm.server drop-in). |
+| `--batch` | n | `1` (serial) | Max concurrent requests batched through the mlx-lm-parity engine. `>1` switches the **whole server** into bf16 continuous batching — a *mode*, not a load fallback. See [Execution modes](#execution-modes-serial-vs---batch-n). `--decode-concurrency` is accepted for drop-in compatibility, but the semantics differ: in mlx_lm.server it caps per-BatchGenerator decode parallelism (default 32); in mlx-bun it enables continuous batching with this cap (mlx-bun's default is the optimized serial path). |
 | `--kv-quant` | `config`\|`off`\|`4`\|`8` | `config` serial / `off`(bf16) under `--batch N` | KV-cache quantization. `config` = per-layer `kv_config.json` (optiq parity); `off` = bf16; `4`/`8` = uniform bits (group 64, start 0). Under `--batch N`, an explicit value routes those requests to the **serial** lane (batched is bf16-only). |
 | `--thinking` | `true`\|`false` | model's own (false for CPM) | Server-wide default for the chat template's `enable_thinking` (MiniCPM5/CPM and Qwen3.5 hybrid reasoning). A request's `chat_template_kwargs.enable_thinking` overrides it. |
-| `--temperature` | n ∈ [0,5] | `generation_config.json` | Server-wide sampling default. Per-request `temperature` still wins; the browser chat (sends none) inherits this. |
+| `--temperature` | n ∈ [0,5] | `generation_config.json` | Server-wide sampling default. Per-request `temperature` still wins; the browser chat (sends none) inherits this. `--temp` is accepted as an alias (mlx_lm.server compat); explicit `--temperature` wins if both are given. |
 | `--top-p` | n ∈ [0,1] | `generation_config.json` | Server-wide top-p default (per-request `top_p` wins). |
 | `--top-k` | n ∈ [0,1e6] | `generation_config.json` | Server-wide top-k default (per-request `top_k` wins). |
 | `--no-open` | (bool) | off | Skip the automatic browser open on start. By default an interactive terminal session opens `http://<host>:<port>/#/chat` once the server is ready; pass this flag to suppress it (e.g. headless or non-TTY environments already skip it). |
@@ -41,6 +41,9 @@ the design rationale is in
 | `--fused-decode` | on\|off | off | Experimental: tile the quantized decode SDPA (`MLX_BUN_FUSED_DECODE`). **Serial lane only.** |
 | `--fused-sdpa` | on\|off | on | Fused SDPA path for quantized prefill/continuation (inverted env `MLX_BUN_NO_FUSED_SDPA`). **Serial lane only.** |
 | `--force-wire` | (bool) | off | Wire weights into memory for the whole generation (`MLX_BUN_FORCE_WIRE`). Near-ceiling models (e.g. 26B) need it. **Serial lane only.** |
+
+The default host/port (`127.0.0.1:8080`) match `mlx_lm.server`, so running
+mlx-bun alongside the Python reference server needs an explicit `--port`.
 
 The five performance levers are A/B knobs whose defaults are the measured
 winners; flip them to compare. They are set as `MLX_BUN_*` env vars

@@ -119,5 +119,5 @@ probably *can't* be a fork-router by construction; only an entropy reshuffle.
 ```bash
 bun run scripts/bisector-trace.ts      # the map  → curve-runs/bisector-trace.json
 bun run scripts/bisector-route.ts      # the test → curve-runs/bisector-route.json
-bun run scripts/curve-temp-grid.ts     # temp-can't-reproduce (server on :8090)
+bun run scripts/curve-temp-grid.ts     # temp-can't-reproduce (server on :8080)
 ```

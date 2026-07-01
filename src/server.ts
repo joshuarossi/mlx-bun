@@ -86,8 +86,10 @@ export interface ServerOptions {
    *  it). Exposed at /stats.server so other mlx-bun processes can
    *  warn before attaching to a server that may vanish. */
   owner?: "serve" | "pi-session" | "embedded";
-  /** Interface to bind (Bun.serve hostname). Default: Bun's default
-   *  (all interfaces); pass "127.0.0.1" for loopback-only. */
+  /** Interface to bind (Bun.serve hostname). Unset ⇒ Bun's default
+   *  (all interfaces) — embedded/library use. The CLI always passes one:
+   *  "127.0.0.1" (loopback, mlx_lm.server parity) unless --host says
+   *  otherwise. */
   hostname?: string;
   /** Server-wide default for the chat template's `enable_thinking`
    *  variable (MiniCPM5/CPM and other hybrid-reasoning models). A

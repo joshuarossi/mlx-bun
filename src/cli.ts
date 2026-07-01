@@ -5,7 +5,7 @@
 //   mlx-bun scan                          index the HF cache
 //   mlx-bun ls [--vision] [--max-size 10GB] [query]
 //   mlx-bun fit <query> [--ctx 32768] [--skus]
-//   mlx-bun serve [query] [--port 8090] [--memory-budget GB]
+//   mlx-bun serve [query] [--port 8080] [--memory-budget GB]
 //   mlx-bun evals                         recent benchmark runs
 //   mlx-bun harness pi [--base-url <url>] [--remove]   connect your own pi to the local server
 
@@ -54,14 +54,14 @@ Options:
 Examples:
   mlx-bun                          # download (first run) + serve + open the chat UI
   mlx-bun pi                       # start (download if needed) and chat with an agent
-  mlx-bun serve 12B                # serve the 12B; status page at http://localhost:8090/
+  mlx-bun serve 12B                # serve the 12B; status page at http://localhost:8080/
   mlx-bun train e4b --data ./prefs # ORPO LoRA fine-tune on {prompt,chosen,rejected} data
   mlx-bun get mlx-community/gemma-4-12B-it-OptiQ-4bit`;
 
 const SERVER_FLAGS = `Server options:
-  --host <addr>             Interface to bind  [default: all interfaces;
-                            use 127.0.0.1 for loopback-only]
-  --port <n>                Listen port  [default: 8090]
+  --host <addr>             Interface to bind  [default: 127.0.0.1, loopback
+                            only; use 0.0.0.0 to expose on your network]
+  --port <n>                Listen port  [default: 8080]
   --memory-budget <GB>      Admission-control memory budget; requests that
                             cannot fit are rejected instead of crashing the
                             GPU  [default: machine RAM × 0.75, check-only]
@@ -87,7 +87,8 @@ Model & quality:
                             [default: the model's own, false for CPM]
   --temperature <n>         Server-wide sampling defaults; a per-request field
   --top-p <n>               still overrides them, and the browser chat (which
-  --top-k <n>               sends none) inherits them
+  --top-k <n>               sends none) inherits them. --temp is accepted as
+                            an alias for --temperature (mlx_lm.server compat)
                             [default: the model's generation_config.json]
   --hlg-sampling on|off     Piecewise tone-curve sampling (HLG): rolls off the
                             top, boosts the mids, gentles the tail. Gain folds
@@ -200,7 +201,7 @@ local model. (To just chat now with no setup, use \`mlx-bun pi\` — the
 built-in agent.)
 
 Options:
-  --base-url <url>     Server base URL  [default: http://localhost:8090/v1]
+  --base-url <url>     Server base URL  [default: http://localhost:8080/v1]
   --remove             Disconnect (delete the extension)
 
 Installs a small discovery extension into ~/.pi/agent/extensions that
@@ -550,8 +551,11 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   const pcRaw = opt("prompt-cache"); // null if absent; an explicit value (incl. 0) wins → `--prompt-cache 0` DISABLES the cache
   if (pcRaw !== null) serverOptions.promptCacheBytes = Math.max(0, Number(pcRaw)) * 2 ** 30;
   // --batch N: max concurrent requests batched through the mlx-lm-parity
-  // engine (N=1 = today's serial path). --decode-concurrency is accepted as
-  // an mlx_lm.server-compatible alias (drop-in).
+  // engine (N=1 = today's serial path). --decode-concurrency is accepted for
+  // drop-in compatibility with mlx_lm.server, but the semantics differ: there
+  // it caps per-BatchGenerator decode parallelism (default 32); in mlx-bun it
+  // enables continuous batching with this cap (the default is the optimized
+  // serial path).
   const batchRaw = opt("batch") ?? opt("decode-concurrency");
   if (batchRaw !== null) {
     const n = Number(batchRaw);
@@ -562,8 +566,11 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
     serverOptions.batch = n;
   }
   if (route.kvQuant !== undefined) serverOptions.kvQuant = route.kvQuant;
-  const host = opt("host");
-  if (host) serverOptions.hostname = host;
+  // Bind loopback unless asked otherwise (mlx_lm.server parity); --host
+  // 0.0.0.0 is the explicit opt-in for LAN exposure. The chat-UI open and
+  // `mlx-bun pi` attach both go through localhost, so loopback-only is
+  // transparent to them.
+  serverOptions.hostname = opt("host", "127.0.0.1")!;
   // Server-wide default for the chat template's enable_thinking variable
   // (CPM/MiniCPM5 and other hybrid-reasoning models). Unset ⇒ the model's
   // own default (false for MiniCPM5). onOff accepts true|false|on|off|1|0.
@@ -582,7 +589,8 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
     }
     return n;
   };
-  const temp = numFlag("temperature", 0, 5);
+  // --temp is the mlx_lm.server spelling; explicit --temperature wins.
+  const temp = numFlag("temperature", 0, 5) ?? numFlag("temp", 0, 5);
   if (temp !== null) serverOptions.defaultTemperature = temp;
   const topP = numFlag("top-p", 0, 1);
   if (topP !== null) serverOptions.defaultTopP = topP;
@@ -600,7 +608,7 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
       pivot: "top",
     };
   }
-  return { port: Number(opt("port", "8090")), serverOptions };
+  return { port: Number(opt("port", "8080")), serverOptions };
 }
 
 /** One-line summary of the active runtime levers for the ready card. */
@@ -895,7 +903,7 @@ switch (cmd) {
     const prompt = opt("prompt") ?? positional(1);
     if (!prompt) {
       console.error('usage: mlx-bun generate [query] --prompt "…" [--raw] [--max-tokens N]');
-      console.error('       sampling:  --temperature N --top-p N --top-k N --seed N');
+      console.error('       sampling:  --temperature N (alias --temp) --top-p N --top-k N --seed N');
       console.error('       decode path: --perf-kernel off --fused-sdpa off --compiled-decode off  (= mlx-lm compat)');
       process.exit(1);
     }
@@ -905,7 +913,7 @@ switch (cmd) {
     const text = await generateText(tm, prompt, {
       maxTokens: Number(opt("max-tokens", "256")),
       useChat: !flag("raw"),
-      sampler: { temperature: num("temperature"), topP: num("top-p"), topK: num("top-k"), seed: num("seed") },
+      sampler: { temperature: num("temperature") ?? num("temp"), topP: num("top-p"), topK: num("top-k"), seed: num("seed") },
     });
     process.stdout.write(text.endsWith("\n") ? text : text + "\n");
     break;
@@ -1152,7 +1160,7 @@ switch (cmd) {
     const OURS_VAL = new Set([
       "--query", "-q", "--port", "--host", "--memory-budget", "--prompt-cache", "--kv-quant",
       "--compiled-decode", "--perf-kernel", "--fused-decode", "--fused-sdpa", "--thinking",
-      "--temperature", "--top-p", "--top-k",
+      "--temperature", "--temp", "--top-p", "--top-k",
     ]);
     const OURS_BOOL = new Set(["--force-wire", "--expert-offload"]);
     const passthrough: string[] = [];

@@ -3,7 +3,7 @@
 // T and seeds, looking for an exact match to a curve-generated sample. Advice text is
 // far more constrained than creative prose, so temperature may track much further here.
 export {};
-const BASE = "http://localhost:8090";
+const BASE = "http://localhost:8080";
 const MODEL = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
 const PROMPT = "My 14-year-old wants to start lifting weights. Is that safe, and how should they begin?";
 const TARGET = "It is definitely possible and, when approached correctly, **safe and beneficial for a 14-year-old to start weight training.** At this age, their body is going through massive hormonal and physical changes, so the focus absolutely **must be on proper form, building good movement patterns, and injury prevention**, not lifting heavy.\n\nThe goal right now should be to teach them how the muscles move, what a controlled movement feels like, and";

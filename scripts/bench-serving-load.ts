@@ -6,7 +6,7 @@
 // This is a CLIENT — it never starts a server. Point --base-url at an
 // already-running stack (you start it yourself):
 //
-//   mlx-bun:  bun scripts/serve.ts --model <id> --port 8090
+//   mlx-bun:  bun scripts/serve.ts --model <id> --port 8080
 //   mlx-lm:   <venv>/mlx_lm.server --model <path> --port 8091
 //   optiq:    <venv>/optiq serve --model <path> --port 8092
 //
@@ -19,12 +19,12 @@
 // headroom and they're the user-facing starter/recommended models):
 //
 //   # closed-loop concurrency sweep (1,2,4,8,12,16,20 in-flight)
-//   bun scripts/bench-serving-load.ts --base-url http://localhost:8090/v1 \
+//   bun scripts/bench-serving-load.ts --base-url http://localhost:8080/v1 \
 //     --model gemma-4-e4b-it-OptiQ-4bit --mode closed --concurrency 1,2,4,8,12,16,20 \
 //     --requests 40 --max-tokens 128
 //
 //   # open-loop arrival-rate sweep (32 requesters, each at 5/10/15 rpm, 60 s each)
-//   bun scripts/bench-serving-load.ts --base-url http://localhost:8090/v1 \
+//   bun scripts/bench-serving-load.ts --base-url http://localhost:8080/v1 \
 //     --model gemma-4-e4b-it-OptiQ-4bit --mode open --requesters 32 \
 //     --rpm 5,10,15 --duration 60 --max-tokens 128
 //
@@ -386,10 +386,10 @@ async function probeServer(cfg: Config): Promise<void> {
     throw new Error(
       `cannot reach a server at ${cfg.baseUrl} (${(e as Error).message}).\n` +
       `This harness does NOT start servers — start one yourself, e.g.:\n` +
-      `  mlx-bun:  bun scripts/serve.ts --model <id> --port 8090\n` +
+      `  mlx-bun:  bun scripts/serve.ts --model <id> --port 8080\n` +
       `  mlx-lm:   <venv>/mlx_lm.server --model <path> --port 8091\n` +
       `  optiq:    <venv>/optiq serve --model <path> --port 8092\n` +
-      `then re-run with --base-url pointed at it (default http://localhost:8090/v1).`,
+      `then re-run with --base-url pointed at it (default http://localhost:8080/v1).`,
     );
   }
 }
@@ -464,7 +464,7 @@ function parseArgs(argv: string[]): Config {
     s.split(",").map((x) => Number(x.trim())).filter((x) => Number.isFinite(x) && x > 0);
   const mode = (opt("mode", "closed") === "open" ? "open" : "closed") as "closed" | "open";
   return {
-    baseUrl: opt("base-url", process.env.MLX_BUN_BASE_URL ?? "http://localhost:8090/v1").replace(/\/$/, ""),
+    baseUrl: opt("base-url", process.env.MLX_BUN_BASE_URL ?? "http://localhost:8080/v1").replace(/\/$/, ""),
     modelId: opt("model", process.env.MLX_BUN_MODEL ?? ""),
     stack: opt("stack", "mlx-bun"),
     mode,

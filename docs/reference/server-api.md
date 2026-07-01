@@ -130,7 +130,7 @@ All errors are `{ "error": { "message": …, ... } }`.
 
 Anthropic-protocol surface over the same engine — on by default, like
 `optiq serve`. Point any Anthropic-SDK tool at the server
-(`ANTHROPIC_BASE_URL=http://localhost:8090`, any `x-api-key`) — Claude
+(`ANTHROPIC_BASE_URL=http://localhost:8080`, any `x-api-key`) — Claude
 Code works as a client this way.
 
 - `system` (string or text blocks), `messages` with string or
@@ -198,7 +198,7 @@ any other served model the route returns `400 invalid_request_error`.
   (no decode loop), so it runs inline — not through the generation gateway.
 
 ```sh
-curl localhost:8090/v1/embeddings -H 'content-type: application/json' \
+curl localhost:8080/v1/embeddings -H 'content-type: application/json' \
   -d '{"input": ["the cat sat on the mat", "a kitten by the window"]}'
 ```
 
@@ -334,7 +334,7 @@ another adapter's KV.
 {
   "providers": {
     "mlx-bun": {
-      "baseUrl": "http://localhost:8090/v1",
+      "baseUrl": "http://localhost:8080/v1",
       "api": "openai-completions",
       "apiKey": "sk-anything-nonempty",
       "models": [{ "id": "<model id from /v1/models>" }]
@@ -343,5 +343,5 @@ another adapter's KV.
 }
 ```
 
-Any OpenAI SDK works the same way: `baseURL: "http://localhost:8090/v1"`,
+Any OpenAI SDK works the same way: `baseURL: "http://localhost:8080/v1"`,
 any non-empty `apiKey`.

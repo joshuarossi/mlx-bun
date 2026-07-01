@@ -14,7 +14,7 @@ mlx-bun
 
 Bare `mlx-bun` is an alias for `mlx-bun serve`. On a fresh machine it pulls the
 MLX runtime (if not bundled), downloads the sub-GB `MiniCPM5-1B` starter, serves
-it, and opens the chat UI at `http://localhost:8090/#/chat`. You're chatting in
+it, and opens the chat UI at `http://localhost:8080/#/chat`. You're chatting in
 under a minute.
 
 Pass `--no-open` to skip launching the browser.
@@ -24,7 +24,7 @@ Pass `--no-open` to skip launching the browser.
 Name a model and mlx-bun substring-matches it against your downloaded models:
 
 ```sh
-mlx-bun serve e4b --port 8090
+mlx-bun serve e4b --port 8080
 ```
 
 Don't have it yet? Grab it first (resumable, checksum-verified):
@@ -49,7 +49,7 @@ The server is OpenAI-compatible — any OpenAI client works. The request's
 `model` field is ignored; the loaded model is served and echoed back.
 
 ```sh
-curl http://localhost:8090/v1/chat/completions \
+curl http://localhost:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
     "messages": [{"role": "user", "content": "Hello!"}],
@@ -62,7 +62,7 @@ Or with the OpenAI SDK — point `baseURL` at the server and use any non-empty
 
 ```ts
 import OpenAI from "openai";
-const client = new OpenAI({ baseURL: "http://localhost:8090/v1", apiKey: "local" });
+const client = new OpenAI({ baseURL: "http://localhost:8080/v1", apiKey: "local" });
 
 const res = await client.chat.completions.create({
   model: "local",

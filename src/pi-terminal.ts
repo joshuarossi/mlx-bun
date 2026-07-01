@@ -77,7 +77,7 @@ Be honest about what you did and what you found, including mistakes, dead ends, 
 }
 
 export interface RunEmbeddedPiOptions {
-  /** mlx-bun server base URL, e.g. "http://localhost:8090/v1". */
+  /** mlx-bun server base URL, e.g. "http://localhost:8080/v1". */
   baseUrl: string;
   /** Real served model id, used to label the model in the prompt + registry. */
   modelLabel?: string;

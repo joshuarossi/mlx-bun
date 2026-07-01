@@ -57,7 +57,7 @@ export interface PiProviderWiring {
 
 /**
  * Build the in-memory auth + registry and resolve the local model for a pi
- * session pointed at `baseUrl` (e.g. "http://127.0.0.1:8090/v1"). The runtime
+ * session pointed at `baseUrl` (e.g. "http://127.0.0.1:8080/v1"). The runtime
  * key satisfies pi's auth check for our zero-cost local provider; no disk
  * (no models.json, no ~/.pi cross-talk).
  */

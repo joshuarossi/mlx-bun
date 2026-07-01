@@ -5,7 +5,7 @@
 // running /generate endpoint, scores cheap coherence/diversity metrics, and
 // writes a self-contained HTML terrain viewer.
 //
-//   bun scripts/curve-terrain.ts [--base http://localhost:8090] [--n 2]
+//   bun scripts/curve-terrain.ts [--base http://localhost:8080] [--n 2]
 
 import { mkdirSync, writeFileSync } from "node:fs";
 
@@ -14,7 +14,7 @@ function opt(name: string, dflt: string): string {
   return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1]! : dflt;
 }
 
-const BASE_URL = opt("base", "http://localhost:8090").replace(/\/$/, "");
+const BASE_URL = opt("base", "http://localhost:8080").replace(/\/$/, "");
 const N = Math.max(1, Math.min(5, Number(opt("n", "2")) || 2));
 const SEED = Number(opt("seed", "7300")) || 7300;
 const MAX_TOKENS = Math.max(12, Math.min(90, Number(opt("max-tokens", "48")) || 48));

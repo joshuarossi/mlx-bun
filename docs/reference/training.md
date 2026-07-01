@@ -36,7 +36,7 @@ isolation + a single GPU lease across concurrent server requests).
 ### Quick start (HTTP API)
 
 ```bash
-curl -s localhost:8090/api/finetune/submit -X POST -H 'content-type: application/json' -d '{
+curl -s localhost:8080/api/finetune/submit -X POST -H 'content-type: application/json' -d '{
   "model_dir": "/path/to/snapshot",
   "data_dir":  "/path/to/dataset",        // dir with train.jsonl (+ optional valid.jsonl)
   "adapter_path": "/path/to/output-adapter",

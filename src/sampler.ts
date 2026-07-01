@@ -1,8 +1,12 @@
 // Sampling — port of mlx-lm's sample_utils.make_sampler /
-// make_logits_processors (temperature, top-p, top-k, repetition penalty).
+// make_logits_processors (temperature, top-p, top-k, min-p, XTC,
+// repetition/presence/frequency penalties, logit bias).
 // All filtering happens on-device; only the chosen token id crosses to JS.
 // Seeded: each step derives a fresh key from (seed, step) so runs are
-// reproducible without sharing global RNG state.
+// reproducible without sharing global RNG state. (mlx-lm draws XTC's
+// uniform and the categorical from one global stream; we split the
+// per-step key into (xtc, categorical) subkeys instead — deterministic,
+// and the XTC-off path is unchanged.)
 
 import { Dtype } from "./mlx/ffi";
 import { MlxArray } from "./mlx/array";
@@ -63,6 +67,18 @@ export interface SamplerOptions {
   temperature?: number;
   topP?: number;
   topK?: number;
+  /** min-p: keep tokens whose probability ≥ minP · p(top token). mlx-lm's
+   *  `min_p`. Applied after top-p, before XTC/top-k (reference chain order). */
+  minP?: number;
+  /** Minimum number of tokens min-p may never filter out. Default 1. */
+  minTokensToKeep?: number;
+  /** XTC ("exclude top choices"): with this probability per step, drop every
+   *  token above the threshold EXCEPT the least likely of them. */
+  xtcProbability?: number;
+  /** Probability a token must exceed to be an XTC removal candidate. [0, 0.5]. */
+  xtcThreshold?: number;
+  /** Token ids XTC never removes (mlx-lm's server passes EOS + "\n"). */
+  xtcSpecialTokens?: number[];
   seed?: number;
   /** HLG tone-curve sampling. When enabled, replaces temperature's flat slope
    *  with the piecewise curve (temperature becomes the mid gain). Off/undefined
@@ -75,8 +91,19 @@ export interface SamplerOptions {
 }
 
 export interface LogitsProcessorOptions {
+  /** Additive per-token-id logit bias, applied before any penalty
+   *  (mlx-lm's `logit_bias`: {tokenId: bias}). */
+  logitBias?: Record<number, number>;
   repetitionPenalty?: number;
   repetitionContextSize?: number;
+  /** OpenAI-style presence penalty: subtracted ONCE from a token's logit if it
+   *  occurred at all in the recent window. May be negative. */
+  presencePenalty?: number;
+  presenceContextSize?: number;
+  /** OpenAI-style frequency penalty: subtracted once PER OCCURRENCE of the
+   *  token in the recent window. May be negative. */
+  frequencyPenalty?: number;
+  frequencyContextSize?: number;
 }
 
 /** logprobs [1, V] → sampled token array (uint32, shape [1]). */
@@ -128,6 +155,88 @@ export function applyTopK(lp: MlxArray, topK: number): MlxArray {
   const ninf = negInfLike(lp);
   const out = ops.putAlongAxis(lp, maskIdx, ninf, -1);
   for (const a of [negLp, part, maskIdx, ninf]) a.dispose();
+  return out;
+}
+
+/** apply_min_p: mask tokens whose probability is below minP · p(top token).
+ *  Faithful to the reference (mlx-lm 0.31.3 sample_utils.apply_min_p): the
+ *  threshold is computed in log space directly against the max logprob —
+ *  `scaled_min_p = max(lp) + log(minP)` — no full sort; min_tokens_to_keep
+ *  survivors are recovered with an argpartition on the top tail. */
+export function applyMinP(lp: MlxArray, minP: number, minTokensToKeep = 1): MlxArray {
+  if (!(minP >= 0 && minP <= 1))
+    throw new Error(`minP has to be a float in the [0, 1] interval, but is ${minP}`);
+  if (!Number.isInteger(minTokensToKeep) || minTokensToKeep < 1)
+    throw new Error(`minTokensToKeep has to be a positive integer, but is ${minTokensToKeep}`);
+
+  const owned: MlxArray[] = [];
+  const k = <T extends MlxArray>(a: T): T => { owned.push(a); return a; };
+
+  // Mask tokens that have a probability less than max(p) * min_p
+  const top = k(ops.maxAxis(lp, -1, true));
+  const scaledMinP = k(ops.add(top, k(ops.scalarLike(Math.log(minP), top))));
+  let remove = k(ops.less(lp, scaledMinP));
+
+  // Ensure at least min_tokens_to_keep survive the filter
+  if (minTokensToKeep > 1) {
+    const V = lp.shape[lp.shape.length - 1]!;
+    // mx.argpartition(lp, kth=-min_tokens_to_keep): negative kth ≡ V - k
+    const part = k(ops.argpartitionAxis(lp, V - minTokensToKeep, -1));
+    const topIdx = k(part.slice([0, V - minTokensToKeep], [1, V]));
+    const falses = k(ops.zeros([1, minTokensToKeep], Dtype.bool));
+    remove = k(ops.putAlongAxis(remove, topIdx, falses, -1));
+  }
+
+  const ninf = k(negInfLike(lp));
+  const out = ops.where(remove, ninf, lp);
+  for (const a of owned) a.dispose();
+  return out;
+}
+
+/** apply_xtc: with probability xtcProbability, remove every token whose
+ *  probability exceeds the minimum above-threshold probability — i.e. drop
+ *  the top choices, keeping the least likely token that still clears the
+ *  threshold (plus everything below it). Special tokens are never removed.
+ *  `key` seeds the per-step uniform draw (the reference uses the global RNG). */
+export function applyXtc(
+  logits: MlxArray,
+  xtcProbability: number,
+  xtcThreshold: number,
+  xtcSpecialTokens: number[],
+  key: MlxArray | null,
+): MlxArray {
+  if (!(xtcThreshold >= 0 && xtcThreshold <= 0.5))
+    throw new Error(`xtcThreshold has to be a float in the [0, 0.5] interval, but is ${xtcThreshold}`);
+  if (!(xtcProbability >= 0 && xtcProbability <= 1))
+    throw new Error(`xtcProbability has to be a float in the [0, 1] interval, but is ${xtcProbability}`);
+
+  const owned: MlxArray[] = [];
+  const k = <T extends MlxArray>(a: T): T => { owned.push(a); return a; };
+
+  const probs = k(ops.softmaxAxis(logits, -1, false));
+  // mask = probs > min(where(probs > threshold, probs, inf))
+  const thresh = k(ops.scalarLike(xtcThreshold, probs));
+  const above = k(ops.less(thresh, probs)); // probs > threshold
+  const inf = k(ops.scalarLike(Infinity, probs));
+  const aboveProbs = k(ops.where(above, probs, inf));
+  // min(x) = -max(-x) (no min reduction in the ops layer)
+  const minAbove = k(ops.neg(k(ops.maxAxis(k(ops.neg(aboveProbs)), -1, true))));
+  let mask = k(ops.less(minAbove, probs)); // probs > min above-threshold prob
+  if (xtcSpecialTokens.length > 0) {
+    const n = xtcSpecialTokens.length;
+    const idx = k(ops.fromInt32(xtcSpecialTokens, [1, n]));
+    const falses = k(ops.zeros([1, n], Dtype.bool));
+    mask = k(ops.putAlongAxis(mask, idx, falses, -1));
+  }
+
+  // where(uniform() > xtcProbability, logits, where(mask, -inf, logits))
+  const u = k(ops.randomUniform([1], Dtype.float32, 0, 1, key));
+  const pArr = k(ops.scalarLike(xtcProbability, u));
+  const skip = k(ops.less(pArr, u)); // u > xtcProbability → leave logits alone
+  const ninf = k(negInfLike(logits));
+  const culled = k(ops.where(mask, ninf, logits));
+  const out = ops.where(skip, logits, culled);
+  for (const a of owned) a.dispose();
   return out;
 }
 
@@ -410,7 +519,11 @@ export function applyHlgShaper(lp: MlxArray, opts: HlgShaperParams = {}): MlxArr
 }
 
 export function makeSampler(opts: SamplerOptions = {}): Sampler {
-  const { temperature = 0, topP = 0, topK = 0, seed = 0, hlg, curve } = opts;
+  const {
+    temperature = 0, topP = 0, topK = 0, minP = 0, minTokensToKeep = 1,
+    xtcProbability = 0, xtcThreshold = 0, xtcSpecialTokens = [],
+    seed = 0, hlg, curve,
+  } = opts;
 
   // v2 curve sampler: the drawn log-prob transfer curve REPLACES temperature +
   // softmax. Stochastic and seeded by design (the curve IS the sampling shape),
@@ -461,13 +574,29 @@ export function makeSampler(opts: SamplerOptions = {}): Sampler {
     };
   }
 
+  // Filter chain order matches mlx-lm's make_sampler: top_p → min_p → xtc →
+  // top_k, then categorical(logprobs / temperature).
   return (lp, step) => {
     let cur = lp;
     const owned: MlxArray[] = [];
+    let key = stepKey(seed, step);
     if (topP > 0 && topP < 1) { cur = applyTopP(cur, topP); owned.push(cur); }
+    if (minP !== 0) { cur = applyMinP(cur, minP, minTokensToKeep); owned.push(cur); }
+    if (xtcProbability > 0) {
+      // Split the step key: subkey 0 → XTC's uniform, subkey 1 → categorical.
+      const split = ops.randomSplitNum(key, 2);
+      const row0 = split.slice([0, 0], [1, 2]);
+      const row1 = split.slice([1, 0], [2, 2]);
+      const xtcKey = ops.reshape(row0, [2]);
+      key.dispose();
+      key = ops.reshape(row1, [2]);
+      for (const a of [split, row0, row1]) a.dispose();
+      cur = applyXtc(cur, xtcProbability, xtcThreshold, xtcSpecialTokens, xtcKey);
+      owned.push(cur);
+      xtcKey.dispose();
+    }
     if (topK > 0) { cur = applyTopK(cur, topK); owned.push(cur); }
     const scaled = ops.mulScalar(cur, 1 / temperature);
-    const key = stepKey(seed, step);
     const tok = ops.randomCategorical(scaled, key);
     scaled.dispose();
     key.dispose();
@@ -476,18 +605,48 @@ export function makeSampler(opts: SamplerOptions = {}): Sampler {
   };
 }
 
+/** Start of the recent-token window, matching Python's `tokens[-context_size:]`
+ *  slice semantics exactly (context_size 0 ⇒ `[-0:]` ⇒ the WHOLE history). */
+function windowStart(n: number, contextSize: number): number {
+  return contextSize === 0 ? 0 : Math.max(0, n - contextSize);
+}
+
 export function makeLogitsProcessors(opts: LogitsProcessorOptions = {}): LogitsProcessor[] {
   const out: LogitsProcessor[] = [];
-  const { repetitionPenalty, repetitionContextSize = 20 } = opts;
+  const {
+    logitBias,
+    repetitionPenalty, repetitionContextSize = 20,
+    presencePenalty, presenceContextSize = 20,
+    frequencyPenalty, frequencyContextSize = 20,
+  } = opts;
 
-  if (repetitionPenalty && repetitionPenalty !== 0) {
+  // logit_bias first, as in mlx-lm's make_logits_processors. Reference:
+  // `logits.at[:, indices].add(values)` — dict keys are unique, so a
+  // gather → add → put round-trip is exactly equivalent to the scatter-add.
+  const biasIds = logitBias ? Object.keys(logitBias).map(Number) : [];
+  if (logitBias && biasIds.length > 0) {
+    const biasVals = Float32Array.from(biasIds.map((id) => logitBias[id]!));
+    out.push((_tokens, logits) => {
+      const K = biasIds.length;
+      const idx = ops.fromInt32(biasIds, [1, K]);
+      const vals32 = MlxArray.fromFloat32(biasVals, [1, K]);
+      const vals = vals32.astype(logits.dtype);
+      const selected = ops.takeAlongAxis(logits, idx, -1);
+      const biased = ops.add(selected, vals);
+      const updated = ops.putAlongAxis(logits, idx, biased, -1);
+      for (const a of [idx, vals32, vals, selected, biased]) a.dispose();
+      return updated;
+    });
+  }
+
+  if (repetitionPenalty !== undefined && repetitionPenalty !== 0) {
     if (repetitionPenalty < 0)
       throw new Error("repetitionPenalty must be non-negative");
     out.push((tokens, logits) => {
       if (!tokens) return logits;
       const n = tokens.shape[0]!;
       if (n === 0) return logits;
-      const start = Math.max(0, n - repetitionContextSize);
+      const start = windowStart(n, repetitionContextSize);
       const recent = tokens.slice([start], [n]);
       const idx = ops.reshape(recent, [1, n - start]);
       const selected = ops.takeAlongAxis(logits, idx, -1);
@@ -503,6 +662,58 @@ export function makeLogitsProcessors(opts: LogitsProcessorOptions = {}): LogitsP
       return updated;
     });
   }
+
+  // make_presence_penalty: `logits[:, tokens] -= penalty` — a plain
+  // fancy-index assignment, so duplicate occurrences all write the SAME
+  // value (original − penalty): the penalty applies once per distinct token.
+  if (presencePenalty !== undefined && presencePenalty !== 0) {
+    out.push((tokens, logits) => {
+      if (!tokens) return logits;
+      const n = tokens.shape[0]!;
+      if (n === 0) return logits;
+      const start = windowStart(n, presenceContextSize);
+      const recent = tokens.slice([start], [n]);
+      const idx = ops.reshape(recent, [1, n - start]);
+      const selected = ops.takeAlongAxis(logits, idx, -1);
+      const pen = ops.scalarLike(presencePenalty, selected);
+      const penalized = ops.sub(selected, pen);
+      const updated = ops.putAlongAxis(logits, idx, penalized, -1);
+      for (const a of [recent, idx, selected, pen, penalized]) a.dispose();
+      return updated;
+    });
+  }
+
+  // make_frequency_penalty: `logits.at[:, tokens].subtract(penalty)` — a
+  // scatter-subtract that ACCUMULATES over duplicates: each token loses
+  // penalty × (occurrence count in the window). We compute the count per
+  // position ([m,m] equality matrix summed over a row — m ≤ contextSize, tiny)
+  // so every duplicate writes the identical final value and a put_along_axis
+  // reproduces the scatter-accumulate exactly.
+  if (frequencyPenalty !== undefined && frequencyPenalty !== 0) {
+    out.push((tokens, logits) => {
+      if (!tokens) return logits;
+      const n = tokens.shape[0]!;
+      if (n === 0) return logits;
+      const start = windowStart(n, frequencyContextSize);
+      const m = n - start;
+      const recent = tokens.slice([start], [n]);
+      const col = ops.reshape(recent, [m, 1]);
+      const idx = ops.reshape(recent, [1, m]);
+      const eq = ops.equal(col, idx); // [m, m]
+      const counts = ops.sumAxis(eq, -1, false); // [m] occurrences of tokens[i]
+      const countsF = counts.astype(logits.dtype);
+      const countsRow = ops.reshape(countsF, [1, m]);
+      const selected = ops.takeAlongAxis(logits, idx, -1);
+      const pen = ops.scalarLike(frequencyPenalty, selected);
+      const penTotal = ops.mul(countsRow, pen); // penalty × count
+      const penalized = ops.sub(selected, penTotal);
+      const updated = ops.putAlongAxis(logits, idx, penalized, -1);
+      for (const a of [recent, col, idx, eq, counts, countsF, countsRow, selected, pen, penTotal, penalized])
+        a.dispose();
+      return updated;
+    });
+  }
+
   return out;
 }
 

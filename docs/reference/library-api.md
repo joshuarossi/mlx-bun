@@ -78,7 +78,7 @@ prompt time), the decode clock from there.
 import { loadContext, createServer } from "mlx-bun";
 
 const ctx = await loadContext(dir, "my-model", { memoryBudgetBytes: 12e9 });
-const server = createServer(ctx, 8090, {
+const server = createServer(ctx, 8080, {
   promptCacheBytes: 2e9,        // byte-capped LRU (never count-capped)
   kvQuant: undefined,           // default: kv_config.json; "off" | bits
   memoryBudgetBytes: 12e9,      // admission control — the only OOM defense

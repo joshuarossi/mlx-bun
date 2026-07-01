@@ -423,9 +423,9 @@ Examples:
 
 ```sh
 mlx-bun --model gemma-4-12b --context 65536
-mlx-bun serve --no-ui --port 8090
+mlx-bun serve --no-ui --port 8080
 mlx-bun pi --model qwen-profile
-mlx-bun harness pi --base-url http://localhost:8090/v1
+mlx-bun harness pi --base-url http://localhost:8080/v1
 ```
 
 ## Research loop behind the product

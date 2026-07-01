@@ -94,7 +94,7 @@ Spawn the server on app start, point your in-app client at it:
 ```ts
 // Electron main / Tauri sidecar config
 const child = spawn(resourcePath("mlx-bun"), [
-  "serve", "gemma-4-12B", "--port", "8090", "--memory-budget", "12",
+  "serve", "gemma-4-12B", "--port", "8080", "--memory-budget", "12",
 ]);
 // readiness: poll GET /v1/models (start→ready is ~0.4 s warm)
 ```
@@ -118,7 +118,7 @@ The binary includes the resumable verified downloader:
 ```sh
 mlx-bun get mlx-community/gemma-4-12B-it-OptiQ-4bit   # → standard HF cache
 mlx-bun scan                                          # index it
-mlx-bun serve gemma-4-12B --port 8090
+mlx-bun serve gemma-4-12B --port 8080
 ```
 
 Downloads resume across interruption, every blob is checksum-verified
