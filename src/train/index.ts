@@ -14,6 +14,7 @@ export { trainForward, buildBatchedPadMask } from "./forward";
 
 export {
   sftLoss, dpoLoss, dpoRefLogps, dpoMetrics,
+  orpoLoss, orpoMetrics, type SftScope,
 } from "./loss";
 
 export {
@@ -37,6 +38,8 @@ export {
 } from "./trainer";
 
 export { mergeAdapters, type MergeStats } from "./merge";
+
+export { fuseAdapter, type FuseStats, type FuseProgress } from "./fuse";
 
 export { exportAdapter, type ExportManifest } from "./export";
 

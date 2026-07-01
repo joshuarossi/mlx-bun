@@ -109,7 +109,7 @@ export async function writeQuantizedConfig(
 }
 
 /** Copy known aux files (and any `*.model`) from src → out when present. */
-async function copyAuxFiles(srcDir: string, outDir: string): Promise<void> {
+export async function copyAuxFiles(srcDir: string, outDir: string): Promise<void> {
   const seen = new Set<string>();
   for (const f of AUX_FILES) {
     const src = join(srcDir, f);
