@@ -5,7 +5,7 @@ description: Chat completions, tools, vision, prompt caching, LoRA, mixed-precis
 
 `mlx-bun serve` exposes an **OpenAI-compatible** API. Anything that speaks the
 OpenAI protocol can point at it — the OpenAI SDK
-(`baseURL: "http://localhost:8090/v1"`, any non-empty `apiKey`), or agent CLIs
+(`baseURL: "http://localhost:8080/v1"`, any non-empty `apiKey`), or agent CLIs
 via their provider config.
 
 For exhaustive request/response schemas see the
@@ -76,7 +76,7 @@ front is the only defense. The ceiling is visible at `GET /stats`.
 
 - **Anthropic Messages** — `POST /v1/messages` (on by default). Point any
   Anthropic-SDK tool at the server
-  (`ANTHROPIC_BASE_URL=http://localhost:8090`); Claude Code runs against it as a
+  (`ANTHROPIC_BASE_URL=http://localhost:8080`); Claude Code runs against it as a
   fully local backend. Streaming event grammar, native tool_use/tool_result
   mapping, image blocks via the vision path.
 - **OpenAI Responses** — `POST /v1/responses`, the protocol Codex/Cursor/Continue

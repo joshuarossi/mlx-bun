@@ -62,7 +62,7 @@ The window renders the **same page** `mlx-bun serve` serves today
    app exit. One generation runs at a time server-side, so no client
    concurrency to manage.
 3. **Port.** Bind an ephemeral port in Rust, pass it to both the spawn
-   (`--port`) and the webview URL, to avoid 8090 collisions with a
+   (`--port`) and the webview URL, to avoid 8080 collisions with a
    user's own `mlx-bun serve`.
 4. **Readiness gate.** Show a lightweight "starting…/downloading model…"
    splash until `/v1/models` returns 200. Warm start ~0.4s; first-ever
@@ -99,7 +99,7 @@ then `xcrun stapler staple`.
 
 ## Milestones
 
-1. **Spike** — `tauri init` in a new repo; hardcode port 8090; spawn a
+1. **Spike** — `tauri init` in a new repo; hardcode port 8080; spawn a
    locally-built `mlx-bun serve --no-open`; load `/#/chat` in the window;
    `cargo tauri dev`. Proves the wrap end-to-end.
 2. **Robust runtime** — ephemeral port; readiness poll + splash;

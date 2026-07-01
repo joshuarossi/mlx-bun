@@ -93,7 +93,7 @@ model named, it does everything for you:
 3. starts downloading `gemma-4-e4b` (the stronger 4B model) in the
    background — it becomes the default on your next `mlx-bun serve`;
 4. opens the chat UI in your browser at
-   [`http://localhost:8090/#/chat`](http://localhost:8090/#/chat)
+   [`http://localhost:8080/#/chat`](http://localhost:8080/#/chat)
    (pass `--no-open` to skip).
 
 Want a specific model instead? Name it — `mlx-bun serve e4b` (substring
@@ -105,7 +105,7 @@ your machine.
 **Prefer the API?** It's OpenAI-compatible — any OpenAI client works:
 
 ```sh
-curl http://localhost:8090/v1/chat/completions \
+curl http://localhost:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{
     "messages": [{"role": "user", "content": "Hello!"}],
@@ -205,7 +205,7 @@ bun src/cli.ts ls                   # list models (size, params, quant, capabili
 bun src/cli.ts ls --vision --max-size 10GB
 bun src/cli.ts fit gemma --ctx 32768          # memory contract: fits? max context? predicted tok/s
 bun src/cli.ts fit gemma --ctx 8192 --skus    # ...same, across the Apple Silicon lineup
-bun src/cli.ts serve gemma --port 8090        # OpenAI-compatible server
+bun src/cli.ts serve gemma --port 8080        # OpenAI-compatible server
 bun src/cli.ts serve gemma --memory-budget 18 # ...with admission control (GB)
 bun src/cli.ts generate gemma "a haiku about metal shaders"   # raw one-shot generation
 bun src/cli.ts train e4b --data ./pref-data --method orpo     # LoRA fine-tune (SFT/DPO/ORPO)
@@ -232,7 +232,7 @@ measured peaks in the eval DB.
 
 `serve` exposes an OpenAI-compatible API. Anything that speaks the
 OpenAI protocol can point at it — the OpenAI SDK
-(`baseURL: "http://localhost:8090/v1"`, any non-empty `apiKey`), or
+(`baseURL: "http://localhost:8080/v1"`, any non-empty `apiKey`), or
 agent CLIs like pi/OpenClaw via their provider config.
 
 - **`POST /v1/chat/completions`** — streaming (SSE) and non-streaming;
@@ -283,7 +283,7 @@ agent CLIs like pi/OpenClaw via their provider config.
   up front is the only defense. Ceiling visible at `GET /stats`.
 - **Anthropic Messages API** (`POST /v1/messages`, on by default) —
   point any Anthropic-SDK tool at the server
-  (`ANTHROPIC_BASE_URL=http://localhost:8090`); Claude Code runs
+  (`ANTHROPIC_BASE_URL=http://localhost:8080`); Claude Code runs
   against it as a fully local backend. Streaming event grammar, native
   tool_use/tool_result mapping, image blocks via the vision path.
 - **OpenAI Responses API** (`POST /v1/responses`) — the protocol

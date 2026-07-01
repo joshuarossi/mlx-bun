@@ -14,7 +14,7 @@ Start the OpenAI/Anthropic-compatible server. Bare `mlx-bun` is an alias for
 `mlx-bun serve`.
 
 ```sh
-mlx-bun serve gemma --port 8090            # OpenAI-compatible server
+mlx-bun serve gemma --port 8080            # OpenAI-compatible server
 mlx-bun serve gemma --memory-budget 18     # ...with admission control (GB)
 mlx-bun serve e4b --no-open                # don't open the browser chat UI
 ```
@@ -23,7 +23,7 @@ Common flags (full list in [Server configuration](/reference/server-config/)):
 
 | Flag | Effect |
 |---|---|
-| `--port <n>` | Listen port (default 8090) |
+| `--port <n>` | Listen port (default 8080) |
 | `--memory-budget <GB>` | Reject loads/requests that can't fit the budget |
 | `--no-open` | Don't auto-open the chat UI |
 | `--no-kv-quant` / `--kv-bits <n>` | Control mixed-precision KV |

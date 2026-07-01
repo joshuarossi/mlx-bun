@@ -1,6 +1,6 @@
 // Run the OpenAI-compatible server (Josh runs this, not agent sessions):
 //
-//   bun scripts/serve.ts [--model <dir>] [--port 8090]
+//   bun scripts/serve.ts [--model <dir>] [--port 8080]
 //                        [--adapter id=dir]...   (mount LoRA adapters)
 //                        [--no-kv-quant]         (force bf16 KV)
 //                        [--kv-bits N]           (uniform override)
@@ -25,7 +25,7 @@ const arg = (name: string, dflt: string) => {
 };
 
 const modelDir = arg("model", SNAPSHOT);
-const port = Number(arg("port", "8090"));
+const port = Number(arg("port", "8080"));
 const budgetGB = Number(arg("memory-budget", "0"));
 const memoryBudgetBytes = budgetGB > 0 ? budgetGB * 1e9 : undefined;
 

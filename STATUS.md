@@ -49,11 +49,17 @@ file rewritten; flash-attn story reconciled; README/CLAUDE.md doc map refreshed)
    ships. Fix the status text.
 
 **In progress (Josh directive 2026-07-01):** CLI flags/defaults parity with
-`mlx_lm.server` + implement all missing mlx-lm functionality. Known gaps
-(verified vs the oracle venv): no `/v1/completions`, no `/health`, no
-logprobs/min_p/xtc/penalties/logit_bias/role_mapping; port 8090 vs 8080; host
-binds all interfaces vs mlx-lm's loopback; `--decode-concurrency` alias has
-different semantics; no `--temp` alias; `/v1/models` lists only the served model;
+`mlx_lm.server` + implement all missing mlx-lm functionality. Done 2026-07-01:
+default port 8090 → 8080, default host all-interfaces → 127.0.0.1 (loopback,
+`--host 0.0.0.0` = LAN opt-in), `--temp` alias for `--temperature`,
+`--decode-concurrency` semantics documented honestly (accepted for drop-in
+compat; enables continuous batching with that cap, not mlx-lm's
+per-BatchGenerator parallelism). Remaining gaps (verified vs the oracle venv):
+no `/v1/completions`, no `/health`, no
+logprobs/min_p/xtc/penalties/logit_bias/role_mapping; `/v1/models` lists only
+the served model; no serve-time `--adapter-path`/`--draft-model`/
+`--num-draft-tokens`/`--chat-template*`/`--min-p`/`--max-tokens`/`--log-level`/
+`--allowed-origins`/`--prompt-concurrency`/`--prefill-step-size` flags;
 CLI verbs convert/fuse/cache_prompt/evaluate/perplexity/upload/awq/dwq/gptq absent.
 
 ## THE DREAMING (local personal-wiki memory) — ACTIVE. Handoff: [docs/design/the-dreaming-handoff.md](docs/design/the-dreaming-handoff.md)

@@ -5,7 +5,7 @@
 // and temperature paths), so a matching temperature would reproduce it token-for-token
 // — iff the curve were equivalent to some temperature. It isn't (it's non-linear).
 export {};
-const BASE = "http://localhost:8090";
+const BASE = "http://localhost:8080";
 const MODEL = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
 const PROMPT = "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.";
 const TARGET = "The bone-chilling fog, which had been a familiar, suffocating blanket for Elias for countless seasons, suddenly seemed to press against the glass of the lantern room with malevolent intent, and through the swirling grey, an anomaly resolved itself—something neither bird nor piece of wreckage.";

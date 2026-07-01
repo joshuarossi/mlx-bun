@@ -89,7 +89,7 @@ button.ghost{background:var(--card);border:1px solid var(--bd);border-radius:8px
 <script>
 const ln=Math.log;
 const UMIN=ln(1e-6); // bottom-left / plot floor (matches src/curve-sampler.ts CURVE_UMIN)
-const ENGINE_BASE = location.protocol.startsWith("http") ? location.origin : "http://localhost:8090";
+const ENGINE_BASE = location.protocol.startsWith("http") ? location.origin : "http://localhost:8080";
 // ---- curve state: 5 movable control points, sorted ascending in p_in ----
 function identityPoints(){ return [{x_pct:1e-4,y_pct:1e-4},{x_pct:0.1,y_pct:0.1},{x_pct:1,y_pct:1},{x_pct:9,y_pct:9},{x_pct:100,y_pct:100}]; }
 let C = { space:"logprob", points:identityPoints(), monotonic:true };

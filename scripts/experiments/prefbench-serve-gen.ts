@@ -4,11 +4,11 @@
 // runs/<stem>.responses.jsonl that `prefbench.ts judge <stem>` consumes.
 //
 //   bun scripts/experiments/prefbench-serve-gen.ts <mtbench|alpaca> <id1:stem1,id2:stem2,...> [limit]
-//   PORT=8090 MAXTOK=512 bun ... mtbench orpo6000:mt-orpo6000
+//   PORT=8080 MAXTOK=512 bun ... mtbench orpo6000:mt-orpo6000
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 
 const DIR = `${process.env.HOME}/.cache/mlx-bun/eval-data`;
-const PORT = process.env.PORT ?? "8090";
+const PORT = process.env.PORT ?? "8080";
 const MODEL = process.env.SERVE_MODEL ?? "mlx-community/MiniCPM5-1B-OptiQ-4bit";
 const MAXTOK = Number(process.env.MAXTOK ?? "512");
 

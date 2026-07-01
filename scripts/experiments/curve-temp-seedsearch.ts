@@ -4,7 +4,7 @@
 // at ANY seed?" If it surfaces anywhere in a broad seed search, temperature can produce it.
 // If hundreds of seeds never reach it, the curve put the model where temperature won't go.
 export {};
-const BASE = "http://localhost:8090";
+const BASE = "http://localhost:8080";
 const MODEL = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
 const PROMPT = "Write the first sentence of a short story about a lighthouse keeper who discovers something strange in the fog.";
 const TARGET = "The bone-chilling fog, which had been a familiar, suffocating blanket for Elias for countless seasons, suddenly seemed to press against the glass of the lantern room with malevolent intent, and through the swirling grey, an anomaly resolved itself—something neither bird nor piece of wreckage.";

@@ -22,7 +22,7 @@ export const PI_PROVIDER_ID = "mlx-bun";
  *  server still reports the true id in /v1/models and responses. Gives a
  *  clean `mlx-bun/local` handle instead of `mlx-bun/mlx-community/…`. */
 export const PI_LOCAL_MODEL_ID = "local";
-export const DEFAULT_BASE_URL = "http://localhost:8090/v1";
+export const DEFAULT_BASE_URL = "http://localhost:8080/v1";
 
 export function defaultPiExtensionsDir(): string {
   return join(homedir(), ".pi", "agent", "extensions");
