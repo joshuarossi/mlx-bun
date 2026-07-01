@@ -12,7 +12,7 @@ and need a test run, so deferred to their own pass). Authored 2026-06-14.
 - P1 #5 — **DONE**: `STATUS.md` exists at root.
 - P1 #6 — **DONE**: `docs/planning/` exists with `IDEAS.md`, `PRODUCT_ROADMAP.md`, `ResearchTopics.md`, `journal.md`.
 - P1 #7 — open (optimization_plan.md still lives in docs/design/ as a standalone).
-- P1 #8 — status unknown (archive/ not verified in this pass).
+- P1 #8 — **RESOLVED (2026-07-01)**: the duplicate `archive/pi-builtin-investigation.html` is already gone; `archive/` deliberately keeps 2 small demo artifacts (`mlx-bun-lab-report.html`, `wwdc-mlx-bun.html`, 76K total), tracked.
 - P2 #9 — **NOT DONE**: `harness-pi.ts`, `pi-provider.ts`, `pi-terminal.ts`, `pi-web.ts` still live flat in `src/` root (no `src/pi/` subdirectory).
 - P2 #10 — **PARTIALLY DONE**: ~57 one-off research/debug scripts moved to `scripts/experiments/`; production + tooling + bench-* + regen-* + parity-* + gen-model + eval/serve remain at `scripts/` root (the full bench/regen/build split was not applied).
 - P2 #11 — **DONE**: CLI vocabulary reconciled.

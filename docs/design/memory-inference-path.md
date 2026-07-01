@@ -53,7 +53,9 @@ pipeline.
 > the corpus on the corrected on-distribution path is *principled but
 > low-urgency* (old output was already valid in-range; delta is modest).
 
-Status: design / not-yet-built. Owner: memory pipeline.
+*(Original design statement below — superseded; the rework is BUILT, see the
+banner at the top of this file.)*
+
 Scope: the local-model call seam used by every Dreaming stage
 (`src/memory/*` → `callLocal` → `src/eval/runner.ts generateText`). Two
 defects, one rework.

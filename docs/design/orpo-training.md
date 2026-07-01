@@ -260,9 +260,17 @@ intra-layer MLP split, shared prompt-prefix.
 
 $$\mathcal{L}_{ORPO} = \mathcal{L}_{NLL}(y_w) + \lambda \cdot \mathcal{L}_{OR}$$
 
-- $\mathcal{L}_{NLL}(y_w)$ — standard SFT cross-entropy on the **chosen**
-  response (prompt positions masked out), i.e. the negative mean response
-  log-prob $-\ell_w$.
+- $\mathcal{L}_{NLL}(y_w)$ — SFT cross-entropy on the **chosen** response
+  (prompt positions masked out), i.e. the negative mean response log-prob
+  $-\ell_w$.
+  > **Known divergence (2026-07-01 review).** This response-only scope is a
+  > deliberate mlx-bun house convention (SFT/DPO/ORPO all mask the prompt) but
+  > it **differs from the paper's reference implementations**: TRL's
+  > ORPOTrainer and the official xfactlab/orpo both compute the chosen-NLL over
+  > the **full prompt+response** (only padding masked to −100). Our L_SFT gives
+  > zero gradient on prompt-token prediction. Decision pending (match the
+  > reference vs keep + document); until then, loss-curve/parity comparisons vs
+  > TRL/paper ORPO are not apples-to-apples.
 - $\mathcal{L}_{OR} = -\log \sigma(\text{log\_odds})$, the odds-ratio term:
 
 $$\text{log\_odds} = (\ell_w - \ell_r) - \big(\text{log1mexp}(\ell_w) - \text{log1mexp}(\ell_r)\big)$$
@@ -983,8 +991,9 @@ Metal path**. Two openings stand out:
 
 - **Correctness:** the current MLX SOTA, `mlx-lm-lora`, ships a **non-canonical
   ORPO** — it uses `log_sigmoid(chosen_logp − rejected_logp)` and **omits the
-  additive SFT-NLL term** ORPO requires. Our paper-faithful loss (true log-odds
-  + λ·NLL, length-normalized) is *already* more correct than anything shipping.
+  additive SFT-NLL term** ORPO requires. Our loss (true log-odds + λ·NLL,
+  length-normalized; one known scope divergence — see the note under "The
+  objective") is *already* closer to the paper than anything shipping.
   **Do not copy their loss.**
 - **Efficiency:** a **Metal fused/chunked CE + fused LoRA** would be the first
   fused preference loss in the MLX world, on a quantized base, with grad

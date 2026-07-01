@@ -139,9 +139,10 @@ back in responses).
   symlinks to mlx-bun's own docs, and the built-in pi agents read both those
   docs and your articles quietly (`memory_search`, `memory_section`, etc.) and can open it in Obsidian for you
   (`mlx-bun memory open [article]`). Chat-time memory is read-only; synthesis is
-  the separate writer path. The planned synthesis pipeline uses the same local
-  models with stage-specific LoRA adapters (chunk, bucket, synthesize, edit)
-  trained by the project creator and distributed from Hugging Face.
+  the separate writer path: `mlx-bun memory synthesize` runs the built-in local
+  pipeline (segment → extract → route → create/patch → reconcile → link →
+  wikify) that turns your conversations into cross-linked subject articles,
+  using the same local models with a fine-tuned chunking LoRA adapter.
 
 The default experience is intentionally opinionated. Power users can override
 models, budgets, KV modes, adapters, and flags; the average user should not
@@ -206,6 +207,10 @@ bun src/cli.ts fit gemma --ctx 32768          # memory contract: fits? max conte
 bun src/cli.ts fit gemma --ctx 8192 --skus    # ...same, across the Apple Silicon lineup
 bun src/cli.ts serve gemma --port 8090        # OpenAI-compatible server
 bun src/cli.ts serve gemma --memory-budget 18 # ...with admission control (GB)
+bun src/cli.ts generate gemma "a haiku about metal shaders"   # raw one-shot generation
+bun src/cli.ts train e4b --data ./pref-data --method orpo     # LoRA fine-tune (SFT/DPO/ORPO)
+bun src/cli.ts memory init          # git-tracked Markdown wiki at ~/.mlx-bun/wiki
+bun src/cli.ts memory synthesize    # conversations -> cross-linked wiki articles, all local
 bun src/cli.ts pi                   # built-in agentic coding CLI (pi's TUI, in-process)
 bun src/cli.ts evals                # recorded benchmark runs
 bun src/cli.ts harness pi           # connect your own pi install to the local server
