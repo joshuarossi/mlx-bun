@@ -77,7 +77,7 @@ export function loadAdapterTensors(file: string): Map<string, MlxArray> {
  *  PEFT writes lora_alpha + r (scale = alpha / r). Reference: mount.py.
  *  `rsLora` (recorded at train time) means the effective per-layer scale is
  *  α/√rank — the caller divides by √(that layer's rank). */
-async function readAdapterScale(dir: string): Promise<{ scale: number; rank: number | null; rsLora: boolean }> {
+export async function readAdapterScale(dir: string): Promise<{ scale: number; rank: number | null; rsLora: boolean }> {
   for (const name of ["optiq_lora_config.json", "adapter_config.json"]) {
     const f = Bun.file(`${dir}/${name}`);
     if (await f.exists()) {
@@ -94,7 +94,7 @@ async function readAdapterScale(dir: string): Promise<{ scale: number; rank: num
   throw new Error(`no adapter_config.json in ${dir}`);
 }
 
-function adapterWeightsFile(dir: string): string {
+export function adapterWeightsFile(dir: string): string {
   for (const name of ["adapters.safetensors", "adapter_model.safetensors"]) {
     const p = `${dir}/${name}`;
     if (existsSync(p)) return p;

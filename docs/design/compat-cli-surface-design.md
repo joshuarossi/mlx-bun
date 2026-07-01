@@ -55,13 +55,13 @@ shared subset; optiq-only features are additive (marked ⊕).
 | `generate` | mlx_lm.generate | ✅ `generate.ts` (no CLI verb) | wire verb + full flag set |
 | `chat` | mlx_lm.chat | engine ✅, web chat ✅; no terminal REPL (`tui.ts` is help-formatting) | build REPL frontend over `generate` |
 | `server` | mlx_lm.server / optiq serve | ✅ `serve` | rename flags; ⊕ `--kv-config`, `--anthropic` honored (default on) |
-| `convert` | mlx_lm.convert + optiq convert | ❌ | quant pipeline; ⊕ `--target-bpw/--candidate-bits/--reference` |
+| `convert` | mlx_lm.convert + optiq convert | ✅ `convert` (wraps `quantize/quantizer.ts`) | -q/--q-bits/--q-group-size/--mlx-path parity; ⊕ `--target-bpw/--candidate-bits/--calibration-mix/--n-calibration` (mixed precision); no `--dtype`/`--dequantize`/`--upload-repo`/plain non-quantizing convert |
 | `lora` | mlx_lm.lora + optiq lora | serve/hot-swap ✅, train ✅ | `--train/--test`; ⊕ `--rank-scaling by_bits\|by_kl`; `lora info` |
-| `fuse` | mlx_lm.fuse | ❌ | fuse adapters, dequant, GGUF export, upload |
+| `fuse` | mlx_lm.fuse | ✅ `fuse` (`train/fuse.ts`) | --adapter-path/--save-path parity; preserves per-module quant layout; dequant/GGUF/upload not supported (says so, exits 1) |
 | `cache_prompt` | mlx_lm.cache_prompt | runtime ✅, CLI ❌ | precompute + save reusable KV cache file |
 | `benchmark` | mlx_lm.benchmark / optiq benchmark | ✅ `benchmark` | flag-name parity (`-p/-g/-b/-n`); ppl half ❌ |
 | `evaluate` | mlx_lm.evaluate / optiq eval | ❌ (`evals` = our bench viewer) | task harness; ⊕ optiq task names |
-| `perplexity` | mlx_lm.perplexity | ❌ | ppl on HF dataset |
+| `perplexity` | mlx_lm.perplexity | ✅ `perplexity` (`eval/perplexity.ts`) | reference methodology (pack → non-overlapping rows → f32 CE, delta-method SE); data source is a LOCAL .txt/.jsonl, not an HF dataset |
 | `upload` | mlx_lm.upload | ❌ | push MLX dir to HF |
 | `manage` | mlx_lm.manage | ✅ `get`/`scan`/`ls` | add `--delete/--pattern/--scan` parity |
 | `kv-cache` | optiq kv-cache | runtime ✅, profiler ❌ | per-layer sensitivity → `kv_config.json` |
@@ -146,18 +146,18 @@ column; the 🟥 column is the capability matrix that fills in behind it.
 | Precompute prompt cache | `cache_prompt` | 🔌 | Phase 17 |
 | LoRA serve / hot-swap | `lora` (serve) | ✅ | done (Phase 8) |
 | `lora info` reporting | `lora info` | 🔌 | Phase 17 |
-| **HF→MLX convert → new model artifact** | `convert` | 🟥 | Model-quant (new phase) |
-| **Sensitivity / mixed-precision weights** | `convert`, `dynamic_quant` | 🟥 | Model-quant |
+| **HF→MLX convert → new model artifact** | `convert` | ✅ | done (CLI verb over the native quantize pipeline) |
+| **Sensitivity / mixed-precision weights** | `convert`, `dynamic_quant` | ✅ (`convert --target-bpw`) | done via convert; `dynamic_quant` alias 🟥 |
 | **AWQ / DWQ / GPTQ (weights)** | `awq`/`dwq`/`gptq` | 🟥 | Model-quant |
 | KV-cache quant: bf16 / uniform / **mixed per-layer** (kv_config.json) | `server` (`off`/`N`/`config`) | ✅ | done (Phase 9/10; config.ts reads, generate.ts applies per-layer) |
 | KV sensitivity *profiler* (authors a NEW kv_config.json) | `kv-cache` | 🟥 | model-prep, low pri (shipped artifacts already include one) |
 | TurboQuant — optional extra quant *method* (rotation VQ) | scheme, not a verb | 🟥 | Phase 13 (KV plumbing already exists) |
 | **LoRA / DoRA / full training** | `lora --train` | ✅ | Training (done: Phase A MiniCPM5 + Phase B e4b) |
 | **Sensitivity-aware rank scaling** | `lora --rank-scaling` | 🟥 | Training |
-| **Fuse adapters (+GGUF/upload)** | `fuse` | 🟥 | Training |
+| **Fuse adapters (+GGUF/upload)** | `fuse` | ✅ fuse; GGUF/dequant/upload 🟥 | done (fold-into-base, quant layout preserved) |
 | **lm-eval-harness tasks** | `evaluate` | 🟥 | Eval (new phase) |
 | **optiq eval suite (kl/gsm8k/ifeval/bfcl/hashhop…)** | `evaluate` | 🟥 | Eval |
-| **Perplexity** | `perplexity` | 🟥 | Eval |
+| **Perplexity** | `perplexity` | ✅ | done (local text/jsonl datasets) |
 | **HF upload** | `upload` | 🟥 | Distribution |
 | **Distributed share** | `share` | 🟥 | Distribution (lowest pri) |
 | **Web UI: quantize** | `lab`/UI | 🟥 | gated on Quantize |

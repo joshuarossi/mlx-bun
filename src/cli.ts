@@ -41,6 +41,9 @@ Commands:
   scan       Re-index the Hugging Face cache
   harness    Connect your own pi install to the local mlx-bun server
   train      Fine-tune a LoRA adapter (SFT / DPO / ORPO) on your data
+  fuse       Merge a LoRA adapter into the base weights (standalone model)
+  convert    Quantize an HF model into a local MLX snapshot
+  perplexity Perplexity of a model over a local text/JSONL dataset
   memory     Set up + manage your local AI's personal wiki memory
   benchmark  Measure decode/prefill speed of OUR stack on this machine
   embed      Text embeddings from a local embedding model (Qwen3-Embedding)
@@ -307,6 +310,85 @@ prefix-sharing + segmented backward (each falls back + logs if a row's
 preconditions aren't met). Gemma/e4b sets its required training env flags
 automatically. Adapters are mountable directly (mlx-bun serve --adapter).
 Run long jobs detached from your own shell:  nohup mlx-bun train … &`,
+  fuse: `mlx-bun fuse — merge a LoRA adapter into the base weights
+
+Usage: mlx-bun fuse <model-query-or-path> --adapter <dir> [options]
+
+Folds the adapter's low-rank deltas into the base weights and writes a
+standalone, loadable model snapshot (weights + config + tokenizer). A
+quantized base keeps its exact quantization layout: fused modules are
+dequantized, updated, and re-quantized with their own per-module spec.
+
+  <model>              Base model (registry query or a snapshot path);
+                       --model is accepted as the mlx_lm.fuse spelling
+
+Options:
+  --adapter <dir>      Adapter directory (adapters.safetensors +
+                       adapter_config.json). --adapter-path is accepted
+                       as the mlx_lm.fuse alias  [default: adapters]
+  --save-path <dir>    Output model directory  [default: fused_model]
+
+Not supported (mlx_lm.fuse flags we don't implement — the command exits
+with an error rather than guessing): --de-quantize, --export-gguf,
+--gguf-path, --upload-repo.
+
+Serve the result:  mlx-bun serve <save-path>`,
+
+  convert: `mlx-bun convert — quantize an HF model into a local MLX snapshot
+
+Usage: mlx-bun convert --hf-path <repo-or-path> -q [options]
+
+Wraps mlx-bun's native quantize pipeline (the same engine as the web
+/api/quantize). The source may be a local model directory, a downloaded
+model (registry query), or a Hugging Face repo id — an un-downloaded
+repo is fetched first (resumable, verified; can be many GB).
+
+Options:
+  --hf-path <src>      Source model: local path, downloaded model, or HF
+                       repo id (--model is accepted as an alias)
+  --mlx-path <dir>     Output directory  [default: mlx_model; must not
+                       already exist, matching mlx_lm.convert]
+  -q, --quantize       Quantize the model (uniform affine)
+  --q-bits <n>         Bits per weight: 4 or 8  [default: 4]
+  --q-group-size <n>   Quantization group size: 32 or 64  [default: 64]
+
+Mixed precision (the mlx-bun differentiator — OptiQ sensitivity sweep +
+knapsack per-layer bit allocation; implies quantization, no -q needed):
+  --target-bpw <f>     Target bits-per-weight (e.g. 4.5). Runs
+                       calibration → per-layer KL sensitivity → greedy
+                       knapsack; writes per-module bits into config.json
+  --candidate-bits <l> Comma list the knapsack may pick from [default: 4,8]
+  --calibration-mix <m> "optiq" or a JSONL path  [default: optiq]
+  --n-calibration <n>  Calibration samples  [default: 2]
+
+Not supported (mlx_lm.convert flags we don't implement — the command
+exits with an error rather than guessing): --upload-repo (not supported
+yet), --dtype, -d/--dequantize, --q-mode other than affine, and the
+mlx-lm --quant-predicate recipes (use --target-bpw instead). Plain
+non-quantizing conversion is also not supported: pass -q or --target-bpw.`,
+
+  perplexity: `mlx-bun perplexity — perplexity over a local text/JSONL dataset
+
+Usage: mlx-bun perplexity <model-query-or-path> --data-path <file> [options]
+
+mlx_lm.perplexity methodology, exactly: samples are visited in a seeded
+random order, tokenized, concatenated, and cut into NON-OVERLAPPING rows
+of --sequence-length tokens; per batch the model scores rows[:, :-1]
+against rows[:, 1:] in f32 (every position counts); reported as
+ppl = exp(mean CE) ± the delta-method standard error. The one deliberate
+difference: the data source is a LOCAL file (never a Hugging Face
+dataset download).
+
+  <model>              Model (registry query or snapshot path);
+                       --model is accepted as the mlx_lm spelling
+
+Options:
+  --data-path <file>   .jsonl ({"text": …} rows) or plain .txt  (required)
+  --sequence-length <n> Tokens per row  [default: 512]
+  --num-samples <n>    Rows to score (-1 = all available)  [default: 256]
+  --batch-size <n>     Rows per forward  [default: 8]
+  --seed <n>           Sample-shuffle seed  [default: 123]`,
+
   memory: `mlx-bun memory — your local AI's personal wiki
 
 Usage: mlx-bun memory <subcommand>
@@ -1507,6 +1589,270 @@ switch (cmd) {
       ?? `${process.env.HOME}/.cache/mlx-bun/mlx-bun-finetunes/orpo-cpm5`;
     const { runWatch } = await import("./train/watch");
     await runWatch(dir);
+    break;
+  }
+
+  case "fuse": {
+    // mlx_lm.fuse counterpart over our native machinery (src/train/fuse.ts):
+    // fold a LoRA adapter into the base weights → standalone snapshot.
+    const unsupported = ["--de-quantize", "--dequantize", "--export-gguf", "--gguf-path", "--upload-repo"]
+      .filter((f) => argv.includes(f));
+    if (unsupported.length > 0) {
+      console.error(`${unsupported.join(", ")}: not supported (see: mlx-bun help fuse)`);
+      process.exit(1);
+    }
+    const modelArg = positional(0) ?? opt("model");
+    if (!modelArg) {
+      console.error("usage: mlx-bun fuse <model-query-or-path> --adapter <dir> [--save-path <dir>]");
+      process.exit(1);
+    }
+    const adapterDir = opt("adapter") ?? opt("adapter-path") ?? "adapters";
+    const savePath = opt("save-path") ?? "fused_model";
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(adapterDir)) {
+      console.error(`adapter dir not found: ${adapterDir}`);
+      process.exit(1);
+    }
+    let modelDir = modelArg;
+    if (!existsSync(`${modelArg}/config.json`)) {
+      const reg = new Registry();
+      if (reg.list().length === 0) await reg.scan();
+      modelDir = reg.resolve(modelArg).path;
+    }
+    const { banner, step, box, style } = await import("./tui");
+    banner(pkg.version);
+    const sNative = step("native runtime");
+    await ensureNative(sNative);
+    sNative.done("native runtime ready");
+    const s = step(`fusing ${adapterDir} into ${modelDir}`);
+    const { fuseAdapter } = await import("./train");
+    try {
+      const stats = await fuseAdapter(modelDir, adapterDir, savePath, (e) => s.update(e.message));
+      s.done(`fused ${stats.fusedModules} module(s) ${style.dim(`· ${stats.totalTensors} tensors written`)}`);
+      console.log();
+      box([
+        `${style.green("●")} ${style.bold("fuse complete")}`,
+        "",
+        `base      ${style.dim(modelDir)}`,
+        `adapter   ${style.dim(adapterDir)}`,
+        `model     ${style.bold(stats.outDir)}`,
+        ...(stats.skippedAdapterTensors > 0
+          ? [`skipped   ${style.dim(`${stats.skippedAdapterTensors} adapter tensor(s) with no matching base weight`)}`] : []),
+        "",
+        `serve it   ${style.accent(`mlx-bun serve ${stats.outDir}`)}`,
+      ]);
+    } catch (e) {
+      s.fail(`fuse failed: ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    }
+    break;
+  }
+
+  case "convert": {
+    // mlx_lm.convert counterpart over our native quantize pipeline (the same
+    // engine as the web /api/quantize): uniform affine 4/8-bit, or the OptiQ
+    // mixed-precision path via --target-bpw.
+    if (argv.includes("--upload-repo")) {
+      console.error("--upload-repo: not supported yet");
+      process.exit(1);
+    }
+    const unsupported = ["--dtype", "-d", "--dequantize", "--quant-predicate"]
+      .filter((f) => argv.includes(f));
+    if (unsupported.length > 0) {
+      console.error(`${unsupported.join(", ")}: not supported (mixed precision: --target-bpw; see: mlx-bun help convert)`);
+      process.exit(1);
+    }
+    const qMode = opt("q-mode", "affine")!;
+    if (qMode !== "affine") {
+      console.error(`--q-mode ${qMode}: only "affine" is supported`);
+      process.exit(1);
+    }
+    const hfPath = opt("hf-path") ?? opt("model") ?? positional(0);
+    if (!hfPath) {
+      console.error("usage: mlx-bun convert --hf-path <repo-or-path> -q [--q-bits N] [--q-group-size N] [--mlx-path <dir>] [--target-bpw F]");
+      process.exit(1);
+    }
+    const targetBpwRaw = opt("target-bpw");
+    if (!argv.includes("-q") && !argv.includes("--quantize") && targetBpwRaw === null) {
+      console.error("plain (non-quantizing) conversion is not supported yet — pass -q or --target-bpw");
+      process.exit(1);
+    }
+    const targetBpw = targetBpwRaw !== null ? Number(targetBpwRaw) : undefined;
+    if (targetBpwRaw !== null && (!Number.isFinite(targetBpw!) || targetBpw! <= 0)) {
+      console.error(`--target-bpw expects a positive number (got "${targetBpwRaw}")`);
+      process.exit(1);
+    }
+    const qBits = Number(opt("q-bits", "4"));
+    if (qBits !== 4 && qBits !== 8) {
+      console.error(`--q-bits must be 4 or 8 (got "${opt("q-bits")}")`);
+      process.exit(1);
+    }
+    const qGroup = Number(opt("q-group-size", "64"));
+    if (qGroup !== 32 && qGroup !== 64) {
+      console.error(`--q-group-size must be 32 or 64 (got "${opt("q-group-size")}")`);
+      process.exit(1);
+    }
+    const candidateBits = opt("candidate-bits")?.split(",").map((s) => Number(s.trim()));
+    if (candidateBits && candidateBits.some((b) => !Number.isInteger(b) || b < 2 || b > 8)) {
+      console.error(`--candidate-bits expects a comma list of integers in [2, 8] (got "${opt("candidate-bits")}")`);
+      process.exit(1);
+    }
+    const mlxPath = opt("mlx-path", "mlx_model")!;
+    const { existsSync } = await import("node:fs");
+    if (existsSync(mlxPath)) {
+      console.error(`Cannot save to the path ${mlxPath} as it already exists — delete it or pass a fresh --mlx-path.`);
+      process.exit(1);
+    }
+    const { banner, step, box, style } = await import("./tui");
+    banner(pkg.version);
+    const sNative = step("native runtime");
+    await ensureNative(sNative);
+    sNative.done("native runtime ready");
+    // Resolve the source: local dir → itself; downloaded model → registry;
+    // otherwise an HF repo id, downloaded first (the point of the verb).
+    let srcDir = hfPath;
+    if (!existsSync(`${hfPath}/config.json`)) {
+      const reg = new Registry();
+      if (reg.list().length === 0) await reg.scan();
+      try {
+        srcDir = reg.resolve(hfPath).path;
+      } catch (e) {
+        if (!/^[\w.-]+\/[\w.-]+$/.test(hfPath)) {
+          console.error(e instanceof Error ? e.message : String(e));
+          process.exit(1);
+        }
+        const { downloadModel } = await import("./download");
+        const sDl = step(`downloading ${hfPath}`);
+        srcDir = await downloadModel(hfPath, {
+          onProgress: (file, received, total) => {
+            const pct = total ? Math.floor((received / total) * 100) : 0;
+            sDl.update(`${style.bold(hfPath)} ${style.dim(`· ${file} · ${gb(received)} / ${gb(total)} (${pct}%)`)}`);
+          },
+        });
+        sDl.done(`${style.bold(hfPath)} ${style.dim("downloaded · verified")}`);
+        await reg.scan();
+      }
+    }
+    const sQ = step(
+      targetBpw !== undefined
+        ? `quantizing (mixed, target ${targetBpw} bpw — sensitivity sweep, ~minutes)`
+        : `quantizing (${qBits}-bit, group ${qGroup})`,
+    );
+    const { quantizeModelDir } = await import("./quantize");
+    try {
+      const r = await quantizeModelDir(
+        srcDir,
+        mlxPath,
+        {
+          bits: qBits as 4 | 8,
+          groupSize: qGroup as 32 | 64,
+          mode: "affine",
+          ...(targetBpw !== undefined ? { targetBpw } : {}),
+          ...(candidateBits ? { candidateBits } : {}),
+          ...(opt("calibration-mix") ? { calibrationMix: opt("calibration-mix")! } : {}),
+          ...(opt("n-calibration") ? { nCalibration: Number(opt("n-calibration")) } : {}),
+        },
+        (e) => sQ.update(e.message),
+      );
+      sQ.done(`quantized ${r.nQuantized} module(s) ${style.dim(`· ${r.achievedBpw.toFixed(2)} bpw achieved`)}`);
+      console.log();
+      box([
+        `${style.green("●")} ${style.bold("convert complete")}`,
+        "",
+        `source    ${style.dim(srcDir)}`,
+        `model     ${style.bold(r.outDir)} ${style.dim(`· ${gb(r.write.totalSize)}`)}`,
+        `quant     ${style.dim(targetBpw !== undefined ? `mixed ${r.achievedBpw.toFixed(2)} bpw (target ${targetBpw})` : `${qBits}-bit g${qGroup} affine`)}`,
+        "",
+        `serve it   ${style.accent(`mlx-bun serve ${r.outDir}`)}`,
+      ]);
+    } catch (e) {
+      sQ.fail(`convert failed: ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    }
+    break;
+  }
+
+  case "perplexity": {
+    // mlx_lm.perplexity counterpart (methodology reproduced exactly — see
+    // src/eval/perplexity.ts) over a LOCAL dataset file; never downloads data.
+    const modelArg = positional(0) ?? opt("model") ?? opt("query");
+    const dataPath = opt("data-path");
+    if (!modelArg || !dataPath) {
+      console.error("usage: mlx-bun perplexity <model-query-or-path> --data-path <file.txt|file.jsonl> [--sequence-length 512] [--num-samples 256] [--batch-size 8] [--seed 123]");
+      process.exit(1);
+    }
+    const { existsSync } = await import("node:fs");
+    if (!existsSync(dataPath)) {
+      console.error(`data file not found: ${dataPath} (a local .txt or .jsonl — HF datasets are not downloaded)`);
+      process.exit(1);
+    }
+    const intFlag = (name: string, dflt: number, lo: number): number => {
+      const v = Number(opt(name, String(dflt)));
+      if (!Number.isInteger(v) || (v < lo && v !== -1)) {
+        console.error(`--${name} expects an integer >= ${lo} (got "${opt(name)}")`);
+        process.exit(1);
+      }
+      return v;
+    };
+    const seqLen = intFlag("sequence-length", 512, 2);
+    const numSamples = intFlag("num-samples", 256, 1); // -1 = all
+    const batchSize = intFlag("batch-size", 8, 1);
+    const seed = intFlag("seed", 123, 0);
+    const { banner, step, box, style } = await import("./tui");
+    banner(pkg.version);
+    const sNative = step("native runtime");
+    await ensureNative(sNative);
+    sNative.done("native runtime ready");
+    let modelDir = modelArg;
+    if (!existsSync(`${modelArg}/config.json`)) {
+      const reg = new Registry();
+      if (reg.list().length === 0) await reg.scan();
+      modelDir = reg.resolve(modelArg).path;
+    }
+    // Gemma/e4b: same forward env flags the trainer sets (full-sequence pass).
+    if ((await Bun.file(`${modelDir}/config.json`).text()).toLowerCase().includes("gemma")) {
+      process.env.MLX_BUN_PERF_KERNEL ??= "0";
+      process.env.MLX_BUN_FUSED_GELU ??= "0";
+    }
+    const sLoad = step(`loading ${modelDir}`);
+    const { Weights } = await import("./weights");
+    const { createModel } = await import("./model/factory");
+    const { loadTokenizer } = await import("./tokenizer");
+    const { peakMemory, resetPeakMemory } = await import("./mlx/ffi");
+    const config = await loadModelConfig(modelDir);
+    const model = createModel(await Weights.open(modelDir), config);
+    const tok = await loadTokenizer(modelDir);
+    sLoad.done(`model loaded ${style.dim(`· ${modelDir}`)}`);
+
+    const { parseSamples, packRows, evalPpl } = await import("./eval/perplexity");
+    const sData = step(`tokenizing ${dataPath}`);
+    const samples = parseSamples(await Bun.file(dataPath).text(), dataPath);
+    const rows = packRows(
+      samples.map((t) => tok.encode(t)),
+      { sequenceLength: seqLen, numSamples, seed },
+    );
+    if (rows.length === 0) {
+      sData.fail(`dataset too small: fewer than ${seqLen} tokens (need at least one full row)`);
+      process.exit(1);
+    }
+    sData.done(`${rows.length} row(s) × ${seqLen} tokens ${style.dim(`· ${samples.length} sample(s), seed ${seed}`)}`);
+
+    const sEval = step(`evaluating (batch ${batchSize})`);
+    resetPeakMemory();
+    const t0 = performance.now();
+    const r = evalPpl(model, rows, batchSize, (done, total) =>
+      sEval.update(`batch ${done}/${total}`));
+    const seconds = (performance.now() - t0) / 1000;
+    sEval.done(`evaluated ${r.tokens.toLocaleString()} tokens ${style.dim(`in ${seconds.toFixed(1)} s`)}`);
+    console.log();
+    box([
+      `${style.green("●")} ${style.bold("perplexity")} ${style.dim(`· ${modelDir.split("/snapshots/")[0]?.split("/").at(-1) ?? modelDir}`)}`,
+      "",
+      `ppl        ${style.green(style.bold(r.ppl.toFixed(3)))} ${style.dim(`± ${r.standardError.toFixed(3)}`)}`,
+      `mean CE    ${style.bold(r.meanLoss.toFixed(4))} ${style.dim("nats/token")}`,
+      `tokens     ${style.bold(r.tokens.toLocaleString())} ${style.dim(`· ${r.rows} row(s) × ${seqLen}`)}`,
+      `speed      ${style.dim(`${(r.tokens / seconds).toFixed(0)} tok/s · peak ${gb(peakMemory())}`)}`,
+    ]);
     break;
   }
 
