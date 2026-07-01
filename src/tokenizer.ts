@@ -11,6 +11,10 @@ export interface LoadedTokenizer {
    *  you get a corrupting double-BOS `<s><s>…`). */
   encode(text: string, addSpecialTokens?: boolean): number[];
   decode(ids: number[], skipSpecialTokens?: boolean): string;
+  /** Token id → raw vocab token string (mlx-lm's convert_ids_to_tokens —
+   *  the undecoded piece, e.g. "▁Hello", used in logprobs responses).
+   *  Falls back to decode() for ids outside the base vocab (added tokens). */
+  idToToken(id: number): string;
   readonly bosTokenId: number | null;
   readonly eosTokenId: number | null;
 }
@@ -36,6 +40,9 @@ export async function loadTokenizer(modelDir: string): Promise<LoadedTokenizer> 
     decode: (ids, skipSpecialTokens = false) =>
       // python's decode([]) === ""; the JS lib throws on empty input
       ids.length === 0 ? "" : tok.decode(ids, { skip_special_tokens: skipSpecialTokens }),
+    idToToken: (id) =>
+      (tok as unknown as { id_to_token(id: number): string | undefined })
+        .id_to_token(id) ?? tok.decode([id], { skip_special_tokens: false }),
     bosTokenId: idOf("bos_token"),
     eosTokenId: idOf("eos_token"),
   };

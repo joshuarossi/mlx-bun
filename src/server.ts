@@ -27,7 +27,7 @@ import { DiffusionGemmaModel } from "./model/diffusion-gemma";
 import { spliceImageTokens } from "./vision/diffusion-vision";
 import { createModel, type RuntimeModel } from "./model/factory";
 import { isMiniCPM5Config, isQwen35Config, isSupportedModelRecord } from "./model/support";
-import { generate, type GenerateOptions } from "./generate";
+import { generate, type GenerateOptions, type TokenLogprobs } from "./generate";
 import type { HlgConfig } from "./sampler";
 import { isMonotone, CURVE_UMIN, type CurveParams } from "./curve-sampler";
 const CURVE_PAGE = curveDesignerHtml as unknown as string;
@@ -291,6 +291,13 @@ interface ChatRequest {
   presence_context_size?: number;
   frequency_penalty?: number;
   frequency_context_size?: number;
+  /** mlx_lm.server logprobs: `logprobs` is a BOOL (even on /v1/completions —
+   *  not OpenAI's legacy int), `top_logprobs` an int in [0, 11] or the -1
+   *  "unset" sentinel (server.py validates exactly that; OpenAI's cap is 20,
+   *  mlx-lm's is 11 — we copy the reference). Non-stream responses carry
+   *  mlx-lm's logprobs block; stream chunks never do (reference behavior). */
+  logprobs?: boolean;
+  top_logprobs?: number;
   /** OpenAI stop sequences: plain string or array (spec allows up to 4).
    *  Matched on DECODED text, not token ids — see StopMatcher. */
   stop?: string | string[];
@@ -788,6 +795,91 @@ export function parseLogitBias(
   return Object.keys(out).length ? out : undefined;
 }
 
+/** mlx_lm.server's logprobs request validation, copied exactly (server.py
+ *  APIHandler.validate_model_parameters: `_validate("logprobs", bool)` and
+ *  `_validate("top_logprobs", int, min_val=0, max_val=11, whitelist=[-1])`
+ *  with defaults logprobs=False / top_logprobs=-1). Returns the reference's
+ *  error message (→ 400) or null when valid. Note mlx-lm caps top_logprobs
+ *  at 11, not OpenAI's 20 — we mirror the reference. */
+export function validateLogprobsParams(body: {
+  logprobs?: unknown;
+  top_logprobs?: unknown;
+}): string | null {
+  const lp = body.logprobs ?? false;
+  if (typeof lp !== "boolean") return "logprobs must be of type bool";
+  const tl = body.top_logprobs ?? -1;
+  if (typeof tl !== "number" || !Number.isInteger(tl))
+    return "top_logprobs must be of type int";
+  if (tl === -1) return null; // the "unset" whitelist sentinel
+  if (tl < 0) return "top_logprobs must be at least 0";
+  if (tl > 11) return "top_logprobs must be at most 11";
+  return null;
+}
+
+/** Collects per-token logprob info and shapes mlx_lm.server's response block
+ *  (server.py generate_response L1317-1327). NOT OpenAI's shape — entries
+ *  carry token *ids* (and raw vocab token strings in the top-k form), and the
+ *  SAME block is attached under choices[0].logprobs for chat AND text
+ *  completions:
+ *  - top_logprobs > 0 → {content: [{id, token, logprob,
+ *      top_logprobs: [{id, token, logprob}, …]}, …]} — each entry is the
+ *      top-1 candidate merged with its own top-k list (`dict(i[0],
+ *      top_logprobs=i)`); mlx-lm leaves argpartition order unspecified, we
+ *      sort descending, so the entry is deterministically the argmax.
+ *  - logprobs=true (and top_logprobs ≤ 0) → {content: [{id, logprob}, …]}
+ *      with the SAMPLED token's logprob.
+ *  When both are set, only the top_logprobs form is emitted (the reference's
+ *  if/elif). Stream chunks never carry logprobs — mlx-lm's streaming
+ *  generate_response calls pass no token_logprobs/top_tokens. */
+class LogprobsCollector {
+  readonly #tokens: number[] = [];
+  readonly #tokenLogprobs: number[] = [];
+  readonly #topTokens: { id: number; token: string; logprob: number }[][] = [];
+
+  constructor(
+    private readonly wantLogprobs: boolean,
+    private readonly topK: number,
+    private readonly idToToken: (id: number) => string,
+  ) {}
+
+  get active(): boolean {
+    return this.wantLogprobs || this.topK > 0;
+  }
+
+  push(token: number, info?: TokenLogprobs): void {
+    if (!this.active) return;
+    this.#tokens.push(token);
+    if (this.wantLogprobs) this.#tokenLogprobs.push(info?.logprob ?? NaN);
+    if (this.topK > 0)
+      this.#topTokens.push(
+        (info?.top ?? []).map((t) => ({
+          id: t.id,
+          token: this.idToToken(t.id),
+          logprob: t.logprob,
+        })),
+      );
+  }
+
+  /** choices[0].logprobs value, or null when nothing to attach (mirrors the
+   *  reference: the key is omitted entirely for zero collected tokens). */
+  payload(): { content: Record<string, unknown>[] } | null {
+    if (this.#topTokens.length)
+      return {
+        content: this.#topTokens.map((t) =>
+          t.length ? { ...t[0]!, top_logprobs: t } : {},
+        ),
+      };
+    if (this.#tokenLogprobs.length)
+      return {
+        content: this.#tokens.map((id, i) => ({
+          id,
+          logprob: this.#tokenLogprobs[i]!,
+        })),
+      };
+    return null;
+  }
+}
+
 /** Incremental detokenizer: emits the longest stable decoded prefix. */
 class StreamDecoder {
   #ids: number[] = [];
@@ -870,7 +962,7 @@ export function createServer(
   const runGeneration = async (
     promptIds: number[],
     options: GenerateOptions,
-    onToken: (token: number) => void | boolean | Promise<void | boolean>,
+    onToken: (token: number, logprobs?: TokenLogprobs) => void | boolean | Promise<void | boolean>,
     vision?: { embeddings: import("./mlx/array").MlxArray; imageMask: import("./mlx/array").MlxArray },
   ) => {
     // Cache entries are adapter-specific: KV computed under one adapter
@@ -885,7 +977,7 @@ export function createServer(
         ...(vision ? { promptEmbeddings: vision.embeddings, imageMask: vision.imageMask } : {}),
       });
       for await (const t of gen) {
-        if ((await onToken(t.token)) === false) break;
+        if ((await onToken(t.token, t.logprobs)) === false) break;
       }
       const s = gen.stats!; // set on completion AND on early break
       if (vision) {
@@ -1582,6 +1674,10 @@ export function createServer(
       const handleChat = async (body: ChatRequest): Promise<Response> => {
         if (!Array.isArray(body.messages) || body.messages.length === 0)
           return Response.json({ error: { message: "messages required" } }, { status: 400 });
+        // mlx-lm validates logprobs params up front (ValueError → 400)
+        const lpParamError = validateLogprobsParams(body);
+        if (lpParamError)
+          return Response.json({ error: { message: lpParamError } }, { status: 400 });
 
         const id = `chatcmpl-${crypto.randomUUID()}`;
         const created = Math.floor(Date.now() / 1000);
@@ -1694,6 +1790,20 @@ export function createServer(
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
         }
 
+        // logprobs capture: non-stream only — stream chunks never carry
+        // logprobs (mirroring mlx_lm.server, whose streaming generate_response
+        // calls pass no token_logprobs/top_tokens), so streaming requests skip
+        // the capture cost entirely and stay batchable.
+        const wantLogprobs = body.logprobs === true;
+        const topLogprobs =
+          typeof body.top_logprobs === "number" && body.top_logprobs > 0
+            ? body.top_logprobs : 0;
+        const captureLogprobs = !body.stream && (wantLogprobs || topLogprobs > 0);
+        if (captureLogprobs) {
+          options.logprobs = wantLogprobs;
+          options.topLogprobs = topLogprobs;
+        }
+
         // What lane this request takes (vision / adapters / logits processors /
         // a user-fixed seed → serial; everything else batches when --batch N).
         const shape = {
@@ -1706,6 +1816,7 @@ export function createServer(
             options.minP || options.xtcProbability || options.logitBias ||
             options.presencePenalty || options.frequencyPenalty
           ),
+          wantsLogprobs: captureLogprobs,
           userSeed: body.seed !== undefined,
           kvQuant: !!(options.kvConfig?.length || options.kvBits),
         };
@@ -1820,9 +1931,15 @@ export function createServer(
             const router = toolRouter(tools);
             const stopper = new StopMatcher(options.stopSequences);
             const thinking = new ThinkingTagSplitter(ctx.template.thinkingFormat === "think-tag", startInThinking);
+            // mlx-lm collects logprobs across EVERY generated token (reasoning
+            // and tool tokens included), not just visible content — same here.
+            const lpc = captureLogprobs
+              ? new LogprobsCollector(wantLogprobs, topLogprobs, (tid) => ctx.tokenizer.idToToken(tid))
+              : null;
             let content = "";
             let reasoning = "";
-            const s = await gateway.run(promptIds, options, (token) => {
+            const s = await gateway.run(promptIds, options, (token, lpInfo) => {
+              lpc?.push(token, lpInfo);
               const rawContent = router.push(token);
               reasoning += router.takeReasoning(); // gemma-channel thinking
               const parts = thinking.push(stopper.push(rawContent));
@@ -1849,6 +1966,7 @@ export function createServer(
               ? "tool_calls"
               : stopper.stopped ? "stop"
               : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
+            const logprobsBlock = lpc?.payload() ?? null;
             return Response.json({
               id, object: "chat.completion", created, model: ctx.modelId,
               choices: [{
@@ -1859,6 +1977,7 @@ export function createServer(
                   ...(reasoning ? { reasoning } : {}),
                   ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
                 },
+                ...(logprobsBlock ? { logprobs: logprobsBlock } : {}),
                 finish_reason: finish,
               }],
               usage: {
@@ -1907,6 +2026,10 @@ export function createServer(
             },
             { status: 400 },
           );
+        // mlx-lm validates logprobs params up front (ValueError → 400)
+        const lpParamError = validateLogprobsParams(body);
+        if (lpParamError)
+          return Response.json({ error: { message: lpParamError } }, { status: 400 });
         const id = `cmpl-${crypto.randomUUID()}`;
         const created = Math.floor(Date.now() / 1000);
         const promptIds = ctx.tokenizer.encode(body.prompt);
@@ -1943,6 +2066,18 @@ export function createServer(
         } catch (e) {
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
         }
+        // logprobs capture — same mlx-lm block as chat (generate_response is
+        // shared in the reference too); non-stream only, stream chunks never
+        // carry logprobs.
+        const wantLogprobs = body.logprobs === true;
+        const topLogprobs =
+          typeof body.top_logprobs === "number" && body.top_logprobs > 0
+            ? body.top_logprobs : 0;
+        const captureLogprobs = !body.stream && (wantLogprobs || topLogprobs > 0);
+        if (captureLogprobs) {
+          options.logprobs = wantLogprobs;
+          options.topLogprobs = topLogprobs;
+        }
         const shape = {
           hasVision: false,
           hasAdapters: !!options.adapters?.length,
@@ -1951,6 +2086,7 @@ export function createServer(
             options.minP || options.xtcProbability || options.logitBias ||
             options.presencePenalty || options.frequencyPenalty
           ),
+          wantsLogprobs: captureLogprobs,
           userSeed: body.seed !== undefined,
           kvQuant: !!(options.kvConfig?.length || options.kvBits),
         };
@@ -2022,8 +2158,12 @@ export function createServer(
         try {
           const decoder = new StreamDecoder(ctx.tokenizer);
           const stopper = new StopMatcher(options.stopSequences);
+          const lpc = captureLogprobs
+            ? new LogprobsCollector(wantLogprobs, topLogprobs, (tid) => ctx.tokenizer.idToToken(tid))
+            : null;
           let text = "";
-          const s = await gateway.run(promptIds, options, (token) => {
+          const s = await gateway.run(promptIds, options, (token, lpInfo) => {
+            lpc?.push(token, lpInfo);
             text += stopper.push(decoder.push(token));
             if (stopper.stopped) return false; // halt generation
           }, undefined, shape);
@@ -2032,10 +2172,12 @@ export function createServer(
             if (!stopper.stopped) tail += stopper.flush();
             text += tail;
           }
+          const logprobsBlock = lpc?.payload() ?? null;
           return Response.json({
             id, object: "text_completion", created, model: ctx.modelId,
             choices: [{
               index: 0, text,
+              ...(logprobsBlock ? { logprobs: logprobsBlock } : {}),
               finish_reason: finishReason(stopper.stopped, s.generatedTokens),
             }],
             usage: {

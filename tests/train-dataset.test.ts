@@ -33,6 +33,7 @@ function tokenId(w: string): number {
 const stubTok: LoadedTokenizer = {
   encode: (text: string) => text.split(/\s+/).filter(Boolean).map(tokenId),
   decode: (ids: number[]) => ids.join(" "),
+  idToToken: (id: number) => String(id),
   bosTokenId: null,
   eosTokenId: null,
 };
