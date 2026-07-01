@@ -582,14 +582,31 @@ it deterministically — keep the order exactly as below.
    to a named series.
 3. **Infobox** (optional) — a fenced \`\`\`info\` block of \`key: value\` lines (see
    below). Comes before the lead.
-4. **Lead** — a 2–4 sentence relationship abstract: present tense, names the
-   thing in **bold** in the first sentence, and says what it is and how it
-   relates to you (owned/used/chosen/considered), not just a spec definition.
+4. **Lead** — a 2–4 sentence abstract: present tense, names the thing in **bold**
+   in the first sentence, says what it is, and characterizes the user's
+   relationship to it (uses / owns / chose / considered) — written in the THIRD
+   person, not just a spec definition.
 5. **Sections** — \`##\` (and nested \`###\`) sections in natural reading order,
    one sub-topic each.
 6. **\`## See also\`** — bullet list of \`[[wikilinks]]\` to related articles.
 7. **\`## Notes\`** (optional) — \`[^N]\` commentary footnotes.
 8. **\`## References\`** — the \`[^N]:\` definitions. This is ALWAYS the LAST section.
+
+## Voice and scope
+
+Follow Wikipedia's conventions in every respect EXCEPT two deliberate carve-outs:
+
+- **Voice — THIRD PERSON, always.** Write like Wikipedia: never the first person ("I
+  use…", "my pick"). Refer to the user in the third person ("the user uses…",
+  "the user considers…"). The subject of the article is the topic; the article
+  records what the user thinks and does regarding it.
+- **Carve-out 1 — notability.** Wikipedia's notability bar does NOT apply: anything
+  the user discussed is notable enough for an article (see \`Entities.md\`).
+- **Carve-out 2 — neutrality.** Wikipedia's neutral-point-of-view does NOT apply:
+  these articles document the user's OWN positions and opinions. Capture the user's
+  current stance on the topic accurately, including subjective judgments — the goal
+  is to record what the user currently thinks. Everything else (structure, citations,
+  summary style, third-person voice) is standard Wikipedia.
 
 ## Citations / footnotes
 
