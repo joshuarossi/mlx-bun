@@ -54,10 +54,17 @@ default port 8090 → 8080, default host all-interfaces → 127.0.0.1 (loopback,
 `--host 0.0.0.0` = LAN opt-in), `--temp` alias for `--temperature`,
 `--decode-concurrency` semantics documented honestly (accepted for drop-in
 compat; enables continuous batching with that cap, not mlx-lm's
-per-BatchGenerator parallelism). Remaining gaps (verified vs the oracle venv):
-no `/v1/completions`, no `/health`, no
-logprobs/min_p/xtc/penalties/logit_bias/role_mapping; `/v1/models` lists only
-the served model; no serve-time `--adapter-path`/`--draft-model`/
+per-BatchGenerator parallelism); L1-faithful min_p/XTC/presence+frequency
+penalties/logit_bias in the sampler AND wired end-to-end through all three
+protocol surfaces (mlx-lm wire names incl. `*_context_size`; serial-lane-only
+under `--batch N`, v1); `POST /v1/completions` (raw text completion,
+non-stream + SSE, no chat template, mlx-lm's 512 default max_tokens);
+`GET /health` (byte-exact mlx-lm body); `/v1/models` lists served model first
++ all registry-known supported models, `/v1/models/<id>` filter; serve
+`--adapter <dir>` (+ `--adapter-path` alias) mounts at startup and becomes the
+request default (fixes the `mlx-bun train` completion-message inconsistency).
+Tests: tests/server-compat.test.ts. Remaining gaps (verified vs the oracle
+venv): no logprobs/top_logprobs, no role_mapping; no `--draft-model`/
 `--num-draft-tokens`/`--chat-template*`/`--min-p`/`--max-tokens`/`--log-level`/
 `--allowed-origins`/`--prompt-concurrency`/`--prefill-step-size` flags;
 CLI verbs convert/fuse/cache_prompt/evaluate/perplexity/upload/awq/dwq/gptq absent.

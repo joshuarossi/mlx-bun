@@ -50,6 +50,18 @@ export interface AnthropicRequest {
   top_k?: number;
   stop_sequences?: string[];
   stream?: boolean;
+  /** mlx-lm sampler/penalty extensions — not part of the Anthropic protocol,
+   *  accepted as pass-through extras with the same names as our /v1 chat
+   *  surface. Anthropic has NO logit_bias, so none is accepted here. */
+  min_p?: number;
+  xtc_probability?: number;
+  xtc_threshold?: number;
+  repetition_penalty?: number;
+  repetition_context_size?: number;
+  presence_penalty?: number;
+  presence_context_size?: number;
+  frequency_penalty?: number;
+  frequency_context_size?: number;
   tools?: Array<{
     name?: string;
     description?: string;
@@ -167,6 +179,16 @@ export function anthropicToChatBody(body: AnthropicRequest): Record<string, unkn
   if (body.top_k != null) oai.top_k = body.top_k;
   if (body.stop_sequences?.length) oai.stop = body.stop_sequences;
   if (body.stream) oai.stream = true;
+  // mlx-lm sampler/penalty extensions: straight pass-through (same wire names
+  // on the chat surface). No logit_bias — it doesn't exist in this protocol.
+  for (const k of [
+    "min_p", "xtc_probability", "xtc_threshold",
+    "repetition_penalty", "repetition_context_size",
+    "presence_penalty", "presence_context_size",
+    "frequency_penalty", "frequency_context_size",
+  ] as const) {
+    if (body[k] != null) oai[k] = body[k];
+  }
 
   // Client tools only (entries with name + input_schema); server-tool
   // types (web_search etc.) have no local meaning and are dropped.

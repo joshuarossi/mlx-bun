@@ -11,7 +11,9 @@ For the full set of start flags (`--port`, `--memory-budget`,
 defaults, and the perf levers) and a compatibility matrix of which
 combinations compose, see [server-config.md](./server-config.md). This
 doc covers the request/response wire format. LoRA adapters are mounted at
-runtime via `POST /v1/adapters` (below), not a start flag.
+runtime via `POST /v1/adapters` (below), or at startup with
+`serve --adapter <dir>` (which also makes that adapter the default for
+requests that don't select one).
 
 ## POST /v1/chat/completions
 
@@ -25,7 +27,18 @@ Request body (OpenAI chat schema; unknown fields ignored):
   "temperature": 0.7,            // 0 = greedy
   "top_p": 0, "top_k": 0,        // 0 = off
   "seed": 1234,                  // omit for time-derived
+  "min_p": 0.05,                 // min-p sampling (0 = off)
+  "xtc_probability": 0.5,        // XTC sampling: chance per step of dropping
+  "xtc_threshold": 0.1,          //   every token above threshold except the
+                                 //   least likely (EOS + newline exempt,
+                                 //   matching mlx_lm.server)
+  "logit_bias": { "42": -5.0 },  // additive per-token-id logit bias
   "repetition_penalty": 1.1,     // optional
+  "repetition_context_size": 20, // recent-token window (0 = whole history)
+  "presence_penalty": 0.0,       // subtracted once if the token occurred
+  "presence_context_size": 20,   //   in the window (mlx-lm extension)
+  "frequency_penalty": 0.0,      // subtracted per occurrence in the window
+  "frequency_context_size": 20,  //   (mlx-lm extension)
   "stop": "\n\n",                // or ["###", "\n\n"] (spec: up to 4)
   "tools": [ /* OpenAI function tools */ ],
   "tool_choice": "auto",         // "none" disables tools
@@ -118,13 +131,57 @@ back to plain content.
 All errors are `{ "error": { "message": …, ... } }`.
 
 - `400` — malformed JSON, empty `messages`, unknown adapter id, vision
-  request on a model without a sidecar, prompt build failures.
+  request on a model without a sidecar, prompt build failures,
+  non-numeric `logit_bias` keys/values (`logit_bias must be a dict of
+  int to float`, mlx-lm's coercion error).
 - `400` with `"type": "memory_admission"`, `"code":
   "context_over_budget"` — `prompt + max_tokens` exceeds the memory
   budget's max safe context (only when serving with `--memory-budget`;
   the GPU OOM this prevents would kill the process, so it is refused
   up front). Lower `max_tokens` or shorten the prompt; the ceiling is
   visible at `/stats`.
+
+## POST /v1/completions (raw text completion)
+
+`mlx_lm.server`'s text-completion endpoint: **no chat template** — the
+`prompt` string is tokenized directly (the tokenizer's own BOS handling,
+exactly mlx-lm's `tokenizer.encode(request.prompt)`) and the model
+continues it. Same generation gateway, admission control, prompt cache,
+and adapter selection as chat.
+
+```jsonc
+{
+  "prompt": "Once upon a time",  // REQUIRED, string only (token arrays
+                                 // rejected, matching mlx_lm.server)
+  "max_tokens": 512,             // default 512 (mlx_lm.server's default) —
+                                 // NOT the chat lane's generous default
+  "stream": false,
+  "stop": "\n\n",                // string or array, decoded-text matching
+  // plus every sampling/penalty field from /v1/chat/completions:
+  // temperature, top_p, top_k, seed, min_p, xtc_probability,
+  // xtc_threshold, logit_bias, repetition_penalty,
+  // repetition_context_size, presence_penalty, presence_context_size,
+  // frequency_penalty, frequency_context_size, adapter
+}
+```
+
+Response is the OpenAI text-completion object:
+
+```jsonc
+{
+  "id": "cmpl-…", "object": "text_completion", "created": 1760000000,
+  "model": "<loaded model id>",
+  "choices": [{ "index": 0, "text": "…", "finish_reason": "stop" | "length" }],
+  "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+             "prompt_tokens_details": { "cached_tokens": 0 } }
+}
+```
+
+Streaming (`"stream": true`) is SSE: `text_completion` chunks whose
+`choices[0].text` carries the delta; the final chunk carries
+`finish_reason` and `usage` (always attached — mlx-lm gates usage behind
+`stream_options.include_usage`; ours is an additive superset), then
+`data: [DONE]`. There is no `echo` parameter (mlx_lm.server has none).
 
 ## POST /v1/messages (Anthropic Messages API)
 
@@ -141,7 +198,11 @@ Code works as a client this way.
 - `tools` (`{name, description, input_schema}`) map to function tools;
   server-tool types (web_search, …) are dropped silently.
 - `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences`,
-  `stream` as in the Anthropic spec.
+  `stream` as in the Anthropic spec. The mlx-lm sampler/penalty
+  extensions (`min_p`, `xtc_probability`, `xtc_threshold`,
+  `repetition_penalty`, `presence_penalty`, `frequency_penalty` + their
+  `*_context_size` windows) pass through as extras; `logit_bias` does
+  not exist in this protocol and is not accepted here.
 - Response: `{id: "msg_…", type: "message", content: [{type: "text"} |
   {type: "tool_use"}…], stop_reason, usage: {input_tokens,
   output_tokens, cache_read_input_tokens}}` —
@@ -162,7 +223,11 @@ OpenAI SDK speak this now). Oracle: optiq responses shim.
   `function_call_output`), `instructions` (merged with any
   system/developer items into one leading system message),
   `max_output_tokens`, `temperature`, `top_p`, `top_k`, flat
-  `tools`/`tool_choice` (built-in tool types dropped), `stream`.
+  `tools`/`tool_choice` (built-in tool types dropped), `stream`. The
+  mlx-lm sampler/penalty extensions (`min_p`, `xtc_probability`,
+  `xtc_threshold`, `logit_bias`, `repetition_penalty`,
+  `presence_penalty`, `frequency_penalty` + `*_context_size`) pass
+  through as extras.
 - **`previous_response_id` resumption**: pass a prior response id
   instead of resending the conversation; the server splices the stored
   input + output back in (instructions carry forward when omitted).
@@ -204,7 +269,19 @@ curl localhost:8080/v1/embeddings -H 'content-type: application/json' \
 
 ## GET /v1/models
 
-`{ "object": "list", "data": [{ "id": "<model id>", "object": "model", … }] }`
+`{ "object": "list", "data": [{ "id": "<model id>", "object": "model",
+"created": <unix s>, … }] }`
+
+The served model is FIRST (with extra capability fields:
+`context_window`, `reasoning`, `owned_by`), followed by every other
+servable model the local registry knows (mlx-lm scans the HF cache
+here; the registry is that scan, filtered to supported architectures).
+`GET /v1/models/<id>` filters the list to that id — same list shape,
+matching `mlx_lm.server`.
+
+## GET /health
+
+`{"status": "ok"}` — byte-for-byte what `mlx_lm.server` returns.
 
 ## GET /stats
 
@@ -325,6 +402,12 @@ the prediction.
 Select per request with the `adapter` body field. Prompt-cache entries
 are namespaced per adapter spec, so switching adapters never reuses
 another adapter's KV.
+
+`serve --adapter <dir>` (alias `--adapter-path`, mlx_lm.server's
+spelling) mounts an adapter at startup through this same machinery and
+makes it the default for requests that send no `adapter` field; an
+explicit `adapter` (including `"none"`) always wins, and hot-swap via
+these endpoints is unchanged.
 
 ## Client setup: pi
 

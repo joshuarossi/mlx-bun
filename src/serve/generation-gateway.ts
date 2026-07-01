@@ -67,6 +67,13 @@ export interface RequestShape {
   userSeed: boolean;
   /** KV quantization is active (kvConfig/kvBits) — batched is bf16-only in v1. */
   kvQuant: boolean;
+  /** Any of the mlx-lm sampler/processor extensions is active: min_p, XTC,
+   *  logit_bias, presence/frequency penalty. Safe v1: they ALL route to the
+   *  serial lane alongside repetition penalty. min_p/XTC are per-row samplers
+   *  and could batch (the batched lane already builds a per-row sampler);
+   *  keeping them serial until the batched path grows per-row logits
+   *  processors keeps one gate for the whole family. */
+  hasLogitsExtras: boolean;
 }
 
 export class GenerationGateway {
@@ -102,6 +109,7 @@ export class GenerationGateway {
       !shape.hasVision &&
       !shape.hasAdapters &&
       !shape.hasRepetitionPenalty &&
+      !shape.hasLogitsExtras &&
       !shape.userSeed &&
       !shape.kvQuant
     );

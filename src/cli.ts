@@ -75,6 +75,11 @@ const SERVER_FLAGS = `Server options:
                             http://<host>:<port>/#/chat once the server is up.
 
 Model & quality:
+  --adapter <dir>           Mount a LoRA adapter at startup and use it as the
+                            default for requests that don't select one (a
+                            request's \`adapter\` field, incl. "none", wins).
+                            --adapter-path is accepted as the mlx_lm.server
+                            alias. Hot-swap via POST /v1/adapters unchanged.
   --kv-quant <mode>         KV cache quantization: config (per-layer
                             kv_config.json when the model ships one), off
                             (bf16), or 4 / 8 (uniform bits)
@@ -150,9 +155,9 @@ Usage: mlx-bun serve [query] [options]
 
 ${SERVER_FLAGS}
 
-Endpoints: /v1/chat/completions, /v1/messages, /v1/responses, /v1/models,
-/v1/adapters, /stats, /fit, /library, /downloads — status page at /,
-browser chat at /chat`,
+Endpoints: /v1/chat/completions, /v1/completions, /v1/messages, /v1/responses,
+/v1/models, /v1/adapters, /health, /stats, /fit, /library, /downloads —
+status page at /, browser chat at /chat`,
 
   get: `mlx-bun get — download a model from Hugging Face
 
@@ -611,6 +616,32 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   return { port: Number(opt("port", "8080")), serverOptions };
 }
 
+/** `--adapter <dir>` (alias `--adapter-path`, mlx_lm.server's spelling):
+ *  mount a LoRA adapter at startup — the same machinery as POST /v1/adapters —
+ *  and make it the default for requests that don't select one (a request's
+ *  explicit `adapter`, including "none", still wins; hot-swap unchanged).
+ *  This is the flag `mlx-bun train`'s completion message points at. Shared by
+ *  `serve` and the `pi` session server. Exits on a bad adapter — better a
+ *  loud startup failure than silently serving the base model. */
+async function mountStartupAdapter(
+  ctx: import("./server").ServerContext,
+  serverOptions: import("./server").ServerOptions,
+): Promise<void> {
+  const adapterDir = opt("adapter") ?? opt("adapter-path");
+  if (!adapterDir) return;
+  const { step, style } = await import("./tui");
+  const sAdp = step("mounting adapter");
+  try {
+    const adapterId = adapterDir.replace(/\/+$/, "").split("/").pop()!;
+    const info = await ctx.adapters.mount(adapterId, adapterDir);
+    serverOptions.defaultAdapter = info.id;
+    sAdp.done(`adapter ${style.bold(info.id)} ${style.dim(`· ${info.mountedLayers} layers · default for requests (select others via \`adapter\`)`)}`);
+  } catch (e) {
+    sAdp.fail(`adapter mount failed: ${(e as Error).message}`);
+    process.exit(1);
+  }
+}
+
 /** One-line summary of the active runtime levers for the ready card. */
 function runtimeSummary(o: import("./server").ServerOptions): string {
   const kv = o.kvQuant === "off" ? "off" : typeof o.kvQuant === "number" ? `kv${o.kvQuant}` : "config";
@@ -865,8 +896,9 @@ switch (cmd) {
     const sLoad = step("loading weights");
     const t0 = performance.now();
     const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes: rt.serverOptions.memoryBudgetBytes });
-    const server = createServer(ctx, rt.port, { ...rt.serverOptions, owner: "serve" });
     sLoad.done(`weights loaded ${style.dim(`in ${(performance.now() - t0).toFixed(0)} ms`)}`);
+    await mountStartupAdapter(ctx, rt.serverOptions);
+    const server = createServer(ctx, rt.port, { ...rt.serverOptions, owner: "serve" });
     const shownHost = rt.serverOptions.hostname ?? "localhost";
     console.log();
     box([
@@ -1225,6 +1257,7 @@ switch (cmd) {
       const sLoad = step(`loading ${m.repoId}`);
       const t0 = performance.now();
       const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes: rt.serverOptions.memoryBudgetBytes });
+      await mountStartupAdapter(ctx, rt.serverOptions);
       createServer(ctx, port, { ...rt.serverOptions, owner: "pi-session" });
       startedServer = true;
       sLoad.done(`serving ${style.bold(m.repoId)} ${style.dim(`at ${baseUrl} · ready in ${(performance.now() - t0).toFixed(0)} ms`)}`);

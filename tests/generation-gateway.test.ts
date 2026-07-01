@@ -19,6 +19,7 @@ const batchable: RequestShape = {
   hasVision: false,
   hasAdapters: false,
   hasRepetitionPenalty: false,
+  hasLogitsExtras: false,
   userSeed: false,
   kvQuant: false,
 };
@@ -50,6 +51,7 @@ describe("GenerationGateway.willBatch", () => {
     ["hasVision", "vision (offset-0 single-seq prefill + image mask)"],
     ["hasAdapters", "LoRA adapter (single per-generation loraState)"],
     ["hasRepetitionPenalty", "repetition penalty (per-row logits processor)"],
+    ["hasLogitsExtras", "min_p/XTC/logit_bias/presence+frequency penalty (serial-only v1)"],
     ["userSeed", "explicit seed (reproducibility ⇒ solo)"],
     ["kvQuant", "explicit kv-quant (batched is bf16-only in v1)"],
   ];
