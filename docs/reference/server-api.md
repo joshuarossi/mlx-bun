@@ -39,6 +39,13 @@ Request body (OpenAI chat schema; unknown fields ignored):
   "presence_context_size": 20,   //   in the window (mlx-lm extension)
   "frequency_penalty": 0.0,      // subtracted per occurrence in the window
   "frequency_context_size": 20,  //   (mlx-lm extension)
+  "logprobs": false,             // BOOL (mlx_lm.server's type, even on
+                                 //   /v1/completions): return each emitted
+                                 //   token's logprob
+  "top_logprobs": -1,            // int in [0, 11] or -1 = unset (mlx-lm's
+                                 //   validation — its cap is 11, not
+                                 //   OpenAI's 20); k > 0 returns the top-k
+                                 //   (token, logprob) pairs per position
   "stop": "\n\n",                // or ["###", "\n\n"] (spec: up to 4)
   "tools": [ /* OpenAI function tools */ ],
   "tool_choice": "auto",         // "none" disables tools
@@ -101,6 +108,43 @@ Non-streaming response:
 }
 ```
 
+### logprobs / top_logprobs
+
+With `"logprobs": true` and/or `"top_logprobs": k` (1–11), the
+non-streaming response's `choices[0].logprobs` carries
+**`mlx_lm.server`'s block, not OpenAI's** (server.py
+`generate_response`): entries are keyed by token *id*, token strings
+are the raw vocab pieces (`convert_ids_to_tokens` — e.g. `"▁Hello"`),
+and there is no `bytes` field. The same block appears on
+`/v1/completions` (mlx-lm shares the response builder; there is no
+legacy `{tokens, token_logprobs}` text-completion shape).
+
+```jsonc
+// top_logprobs: k > 0 (wins over logprobs when both are set — mlx-lm's if/elif)
+"logprobs": { "content": [
+  { "id": 9906, "token": "▁Hello", "logprob": -0.02,   // = top-1, merged from
+    "top_logprobs": [                                   //   dict(top[0], top_logprobs=top)
+      { "id": 9906, "token": "▁Hello", "logprob": -0.02 },
+      { "id": 13347, "token": "▁Hi", "logprob": -4.1 }   // … k entries, sorted desc
+    ] },
+  // … one entry per generated token (reasoning/tool tokens included)
+] }
+
+// logprobs: true only
+"logprobs": { "content": [ { "id": 9906, "logprob": -0.02 }, … ] }
+```
+
+The distribution matches mlx-lm `generate_step` exactly: full-vocab
+log-softmax of the logits **after** logits processors (logit_bias,
+penalties), **before** the sampler's temperature/top-p/top-k/min-p/XTC
+(mlx_lm/generate.py L409–422). mlx-lm's top-k order is unspecified
+(argpartition); ours is sorted descending — the same set, so the entry
+is deterministically the argmax. Stream chunks never carry logprobs
+(mlx-lm's streaming responses don't either). Requests with logprobs
+run on the serial lane under `--batch N` (like the other mlx-lm
+sampler extensions). Invalid values are rejected with mlx-lm's exact
+messages (see Errors).
+
 Streaming (`"stream": true`) is SSE: `data: <chunk>\n\n` per event,
 terminated by `data: "[DONE]"`. Chunks are `chat.completion.chunk`
 objects whose `choices[0].delta` carries `{role}`, then `{content}`
@@ -133,7 +177,10 @@ All errors are `{ "error": { "message": …, ... } }`.
 - `400` — malformed JSON, empty `messages`, unknown adapter id, vision
   request on a model without a sidecar, prompt build failures,
   non-numeric `logit_bias` keys/values (`logit_bias must be a dict of
-  int to float`, mlx-lm's coercion error).
+  int to float`, mlx-lm's coercion error), invalid logprobs params
+  (mlx-lm's exact validation: `logprobs must be of type bool`,
+  `top_logprobs must be of type int` / `at least 0` / `at most 11`;
+  `top_logprobs: -1` is the accepted "unset" sentinel).
 - `400` with `"type": "memory_admission"`, `"code":
   "context_over_budget"` — `prompt + max_tokens` exceeds the memory
   budget's max safe context (only when serving with `--memory-budget`;
@@ -161,7 +208,10 @@ and adapter selection as chat.
   // temperature, top_p, top_k, seed, min_p, xtc_probability,
   // xtc_threshold, logit_bias, repetition_penalty,
   // repetition_context_size, presence_penalty, presence_context_size,
-  // frequency_penalty, frequency_context_size, adapter
+  // frequency_penalty, frequency_context_size, adapter,
+  // logprobs (BOOL, mlx-lm's type — not OpenAI's legacy int),
+  // top_logprobs (0-11 or -1) — same response block as chat, see
+  // "logprobs / top_logprobs" above (mlx-lm shares the builder)
 }
 ```
 

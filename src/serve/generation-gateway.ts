@@ -28,7 +28,7 @@
 import { MlxArray } from "../mlx/array";
 import type { RuntimeModel } from "../model/factory";
 import { DiffusionGemmaModel } from "../model/diffusion-gemma";
-import type { GenerateOptions, GenerateStats } from "../generate";
+import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate";
 import { makeSampler, toLogprobs } from "../sampler";
 import { BatchScheduler } from "./batch-scheduler";
 
@@ -46,8 +46,13 @@ class AsyncMutex {
 
 export type Vision = { embeddings: MlxArray; imageMask: MlxArray };
 
-/** Per-token sink: returning `false` halts this generation (stop sequence). */
-export type OnToken = (token: number) => void | boolean | Promise<void | boolean>;
+/** Per-token sink: returning `false` halts this generation (stop sequence).
+ *  `logprobs` is only populated on the serial lane when the request asked for
+ *  logprobs capture (GenerateOptions.logprobs / topLogprobs). */
+export type OnToken = (
+  token: number,
+  logprobs?: TokenLogprobs,
+) => void | boolean | Promise<void | boolean>;
 
 /** The serial lane — exactly today's runGeneration (prompt-cache reuse + the
  *  generate() pipeline). The gateway calls it under the mutex. */
@@ -74,6 +79,11 @@ export interface RequestShape {
    *  keeping them serial until the batched path grows per-row logits
    *  processors keeps one gate for the whole family. */
   hasLogitsExtras: boolean;
+  /** The request asked for logprobs/top_logprobs capture. Batch-lane logprobs
+   *  are deferred (the scheduler's per-row sampler doesn't capture or read
+   *  back logprob arrays yet), so these route to the serial lane like the
+   *  other mlx-lm request extensions above. */
+  wantsLogprobs: boolean;
 }
 
 export class GenerationGateway {
@@ -110,6 +120,7 @@ export class GenerationGateway {
       !shape.hasAdapters &&
       !shape.hasRepetitionPenalty &&
       !shape.hasLogitsExtras &&
+      !shape.wantsLogprobs &&
       !shape.userSeed &&
       !shape.kvQuant
     );

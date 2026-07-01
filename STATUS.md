@@ -62,12 +62,28 @@ non-stream + SSE, no chat template, mlx-lm's 512 default max_tokens);
 `GET /health` (byte-exact mlx-lm body); `/v1/models` lists served model first
 + all registry-known supported models, `/v1/models/<id>` filter; serve
 `--adapter <dir>` (+ `--adapter-path` alias) mounts at startup and becomes the
-request default (fixes the `mlx-bun train` completion-message inconsistency).
+request default (fixes the `mlx-bun train` completion-message inconsistency);
+`logprobs`/`top_logprobs` end-to-end on chat + text completions — mlx-lm's
+EXACT semantics (distribution = post-processor pre-truncation log-softmax,
+generate.py L409-422; response = server.py generate_response's id-keyed block,
+NOT OpenAI's; validation bool + int∈[0,11]∪{-1}; stream chunks carry no
+logprobs, faithfully — mlx-lm never emits them when streaming; serial-lane-only
+under `--batch N`; zero-cost when not requested).
 Tests: tests/server-compat.test.ts. Remaining gaps (verified vs the oracle
-venv): no logprobs/top_logprobs, no role_mapping; no `--draft-model`/
+venv): no `--draft-model`/
 `--num-draft-tokens`/`--chat-template*`/`--min-p`/`--max-tokens`/`--log-level`/
 `--allowed-origins`/`--prompt-concurrency`/`--prefill-step-size` flags;
 CLI verbs convert/fuse/cache_prompt/evaluate/perplexity/upload/awq/dwq/gptq absent.
+Deliberately not ported: `role_mapping` (mlx-lm's synthetic "USER:/ASSISTANT:"
+prompt assembly, used ONLY when a tokenizer has no chat template — every
+mlx-bun-supported model ships a real template, so the branch is unreachable
+here). Known adjacent gap: `/v1/responses` logprobs — OpenAI's Responses API has its
+own knob (`include: ["message.output_text.logprobs"]` + `top_logprobs`); the
+optiq shim oracle accepts flat `logprobs`/`top_logprobs` fields and validates
+them (responses_server.py L195-196) but its output translation DROPS the block
+(zero logprobs mentions in responses_shim.py), so no reference emits Responses
+logprobs. Ours doesn't map the fields at all; deferred until a client needs it.
+`/v1/messages` (Anthropic) has no logprobs in the protocol — correctly absent.
 
 ## THE DREAMING (local personal-wiki memory) — ACTIVE. Handoff: [docs/design/the-dreaming-handoff.md](docs/design/the-dreaming-handoff.md)
 

@@ -36,6 +36,34 @@ describe("parseLogitBias (wire coercion)", async () => {
   });
 });
 
+// Fast tier: logprobs param validation is pure (mlx-lm's _validate calls:
+// logprobs bool; top_logprobs int in [0, 11] or the -1 "unset" sentinel).
+describe("validateLogprobsParams (mlx-lm validation)", async () => {
+  const { validateLogprobsParams } = await import("../src/server");
+
+  test("defaults (absent) are valid", () => {
+    expect(validateLogprobsParams({})).toBeNull();
+  });
+
+  test("valid combinations pass", () => {
+    expect(validateLogprobsParams({ logprobs: true })).toBeNull();
+    expect(validateLogprobsParams({ logprobs: false, top_logprobs: 0 })).toBeNull();
+    expect(validateLogprobsParams({ top_logprobs: 11 })).toBeNull();
+    expect(validateLogprobsParams({ top_logprobs: -1 })).toBeNull(); // whitelist sentinel
+  });
+
+  test("mlx-lm's exact rejection messages", () => {
+    expect(validateLogprobsParams({ logprobs: 3 })).toBe("logprobs must be of type bool");
+    expect(validateLogprobsParams({ logprobs: "yes" })).toBe("logprobs must be of type bool");
+    expect(validateLogprobsParams({ top_logprobs: 1.5 })).toBe("top_logprobs must be of type int");
+    expect(validateLogprobsParams({ top_logprobs: "5" })).toBe("top_logprobs must be of type int");
+    expect(validateLogprobsParams({ top_logprobs: -2 })).toBe("top_logprobs must be at least 0");
+    // mlx-lm caps at 11 (server.py max_val=11), not OpenAI's 20
+    expect(validateLogprobsParams({ top_logprobs: 12 })).toBe("top_logprobs must be at most 11");
+    expect(validateLogprobsParams({ top_logprobs: 20 })).toBe("top_logprobs must be at most 11");
+  });
+});
+
 describe.skipIf(!haveWeights)("mlx_lm.server surface compat", async () => {
   if (!haveWeights) return;
   const { createServer, loadContext } = await import("../src/server");
@@ -232,6 +260,167 @@ describe.skipIf(!haveWeights)("mlx_lm.server surface compat", async () => {
     const body = (await res.json()) as any;
     expect(body.object).toBe("text_completion");
     expect(body.choices[0].text.length).toBeGreaterThan(0);
+  }, 120_000);
+
+  // --- logprobs / top_logprobs (mlx_lm.server response block) ---------------
+  // Reference shape (server.py generate_response L1317-1327): NOT OpenAI's —
+  // entries carry token ids; the top-k form is dict(i[0], top_logprobs=i).
+  // Stream chunks never carry logprobs in mlx-lm (its streaming
+  // generate_response calls pass no token_logprobs/top_tokens) — mirrored.
+
+  test("chat non-stream, logprobs only: {id, logprob} entries, finite ≤ 0", async () => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "Say hi." }],
+        max_tokens: 8,
+        temperature: 0,
+        logprobs: true,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    const lp = body.choices[0].logprobs;
+    expect(Array.isArray(lp?.content)).toBe(true);
+    expect(lp.content.length).toBeGreaterThan(0);
+    expect(lp.content.length).toBeLessThanOrEqual(body.usage.completion_tokens);
+    for (const e of lp.content) {
+      expect(Number.isInteger(e.id)).toBe(true);
+      expect(Number.isFinite(e.logprob)).toBe(true);
+      expect(e.logprob).toBeLessThanOrEqual(0);
+      // the logprobs-only form has no token strings / top lists (mlx-lm's elif branch)
+      expect(e.token).toBeUndefined();
+      expect(e.top_logprobs).toBeUndefined();
+    }
+  }, 120_000);
+
+  test("chat non-stream, top_logprobs=5: top-k entries, chosen token is in its own top-k", async () => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "Say hi." }],
+        max_tokens: 8,
+        temperature: 0, // greedy: the sampled token IS the top-1 entry
+        logprobs: true,
+        top_logprobs: 5,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    const lp = body.choices[0].logprobs;
+    expect(Array.isArray(lp?.content)).toBe(true);
+    expect(lp.content.length).toBeGreaterThan(0);
+    for (const e of lp.content) {
+      // entry = dict(top[0], top_logprobs=top) — id/token/logprob + the list
+      expect(Number.isInteger(e.id)).toBe(true);
+      expect(typeof e.token).toBe("string");
+      expect(Number.isFinite(e.logprob)).toBe(true);
+      expect(e.logprob).toBeLessThanOrEqual(0);
+      expect(Array.isArray(e.top_logprobs)).toBe(true);
+      expect(e.top_logprobs.length).toBeGreaterThan(0);
+      expect(e.top_logprobs.length).toBeLessThanOrEqual(5);
+      // sorted descending; entry mirrors the first element
+      const lps = e.top_logprobs.map((t: any) => t.logprob);
+      for (let i = 1; i < lps.length; i++) expect(lps[i - 1]).toBeGreaterThanOrEqual(lps[i]);
+      expect(e.top_logprobs[0].id).toBe(e.id);
+      expect(e.top_logprobs[0].logprob).toBe(e.logprob);
+      // greedy ⇒ the chosen (emitted) token appears among its own top-k
+      expect(e.top_logprobs.some((t: any) => t.id === e.id)).toBe(true);
+      for (const t of e.top_logprobs) {
+        expect(Number.isInteger(t.id)).toBe(true);
+        expect(typeof t.token).toBe("string");
+        expect(t.logprob).toBeLessThanOrEqual(0);
+      }
+    }
+  }, 120_000);
+
+  test("chat stream with logprobs: chunks carry NO logprobs (mirrors mlx_lm.server)", async () => {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "Say hi." }],
+        max_tokens: 8,
+        temperature: 0,
+        stream: true,
+        logprobs: true,
+        top_logprobs: 5,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const { events, chunks } = sse(await res.text());
+    expect(events.at(-1)).toBe("[DONE]");
+    expect(chunks.length).toBeGreaterThan(0);
+    for (const c of chunks) expect(c.choices?.[0]?.logprobs).toBeUndefined();
+  }, 120_000);
+
+  test("/v1/completions with logprobs: same mlx-lm block on the text object", async () => {
+    const res = await fetch(`${base}/v1/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompt: "One two three",
+        max_tokens: 6,
+        temperature: 0,
+        logprobs: true, // BOOL, as mlx_lm.server takes it (not OpenAI's legacy int)
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.object).toBe("text_completion");
+    const lp = body.choices[0].logprobs;
+    expect(Array.isArray(lp?.content)).toBe(true);
+    expect(lp.content.length).toBeGreaterThan(0);
+    for (const e of lp.content) {
+      expect(Number.isInteger(e.id)).toBe(true);
+      expect(e.logprob).toBeLessThanOrEqual(0);
+    }
+  }, 120_000);
+
+  test("out-of-range / mistyped logprobs params → 400 with mlx-lm's message", async () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ top_logprobs: 12 }, "top_logprobs must be at most 11"],
+      [{ top_logprobs: -2 }, "top_logprobs must be at least 0"],
+      [{ top_logprobs: 2.5 }, "top_logprobs must be of type int"],
+      [{ logprobs: 3 }, "logprobs must be of type bool"],
+    ];
+    for (const [fields, msg] of cases) {
+      const res = await fetch(`${base}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hi" }],
+          max_tokens: 4,
+          ...fields,
+        }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as any;
+      expect(body.error.message).toBe(msg);
+      // same validation on /v1/completions
+      const res2 = await fetch(`${base}/v1/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: "hi", max_tokens: 4, ...fields }),
+      });
+      expect(res2.status).toBe(400);
+    }
+    // -1 is mlx-lm's whitelisted "unset" sentinel → accepted
+    const ok = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 4,
+        temperature: 0,
+        top_logprobs: -1,
+      }),
+    });
+    expect(ok.status).toBe(200);
+    const okBody = (await ok.json()) as any;
+    expect(okBody.choices[0].logprobs).toBeUndefined();
   }, 120_000);
 
   // --- serve --adapter wiring (ServerOptions.defaultAdapter) ---------------

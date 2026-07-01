@@ -61,6 +61,25 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
    *  When set, `promptTokens` are the spliced (<|image|>-expanded) ids and the
    *  denoising engine prefills the merged vision features. Caller keeps ownership. */
   visionPixels?: MlxArray;
+  /** Capture each emitted token's log-probability (mlx_lm.server `logprobs`).
+   *  The distribution matches mlx-lm generate_step exactly: full-vocab
+   *  log-softmax of the logits AFTER logits processors, BEFORE the sampler's
+   *  temperature/top-p/top-k/min-p/XTC (generate.py L409-422). Off by default —
+   *  the hot path pays nothing when unset. */
+  logprobs?: boolean;
+  /** Capture the top-k (token id, logprob) pairs per emitted token from the
+   *  same distribution (mlx_lm.server `top_logprobs`). 0/unset = off. */
+  topLogprobs?: number;
+}
+
+/** Per-token logprob info (only present when GenerateOptions requested it). */
+export interface TokenLogprobs {
+  /** logprob of the emitted token (requires options.logprobs). */
+  logprob?: number;
+  /** top-k (id, logprob) pairs, sorted by logprob descending (requires
+   *  options.topLogprobs > 0). mlx-lm leaves argpartition order unspecified;
+   *  sorting is the deterministic reading of the same set. */
+  top?: { id: number; logprob: number }[];
 }
 
 /** Port of mlx-lm maybe_quantize_kv_cache + optiq serve's per-layer
@@ -112,6 +131,8 @@ export interface GenerateStats {
 export interface GeneratedToken {
   token: number;
   index: number;
+  /** Present only when GenerateOptions.logprobs / topLogprobs requested it. */
+  logprobs?: TokenLogprobs;
 }
 
 export class Generation implements AsyncIterable<GeneratedToken> {
@@ -273,6 +294,14 @@ async function* generateInner(
   const processors = makeLogitsProcessors(options);
   const needsTokenHistory = processors.length > 0;
 
+  // logprobs capture (mlx_lm.server semantics — see GenerateOptions.logprobs).
+  // Everything below is gated: when neither flag is set, no extra ops, evals,
+  // or readbacks happen on the hot path.
+  const captureSelLp = options.logprobs === true;
+  const captureTopK =
+    options.topLogprobs && options.topLogprobs > 0 ? options.topLogprobs : 0;
+  const capture = captureSelLp || captureTopK > 0;
+
   const ownsCache = !options.cache;
   const cache = options.cache ?? model.makeCache();
   const cachedTokens = cache[0]!.offset;
@@ -283,16 +312,73 @@ async function* generateInner(
   /** device-side token history (only maintained when processors need it) */
   let history: MlxArray | null = null;
 
-  // logits [1,1,V] → sampled token array [1] (all on-device)
-  const sampleStep = (logits3d: MlxArray, step: number): MlxArray => {
+  /** Device-side logprob capture for one step, computed from the SAME lp the
+   *  sampler saw (post-processors, pre-truncation) — read back lazily with the
+   *  token so decode pipelining is preserved. */
+  interface StepExtras {
+    sel: MlxArray | null; // [1,1] emitted token's logprob
+    topIdx: MlxArray | null; // [1,k] top-k token ids
+    topVals: MlxArray | null; // [1,k] their logprobs
+  }
+  const extrasArrays = (e: StepExtras | null): MlxArray[] =>
+    e ? [e.sel, e.topIdx, e.topVals].filter((a): a is MlxArray => a !== null) : [];
+  const disposeExtras = (e: StepExtras | null): void => {
+    if (e) for (const a of [e.sel, e.topIdx, e.topVals]) a?.dispose();
+  };
+  /** Read extras back to JS (forces eval — they were async-dispatched with the
+   *  token, so this normally just copies) and dispose the device arrays. */
+  const readExtras = (e: StepExtras | null): TokenLogprobs | undefined => {
+    if (!e) return undefined;
+    const out: TokenLogprobs = {};
+    if (e.sel) out.logprob = e.sel.toFloat32()[0]!;
+    if (e.topIdx && e.topVals) {
+      // uint32 ids read via the f32 cast: exact for ids < 2^24 (vocab ≪ 16M)
+      const ids = e.topIdx.toFloat32();
+      const vals = e.topVals.toFloat32();
+      out.top = Array.from(ids, (id, i) => ({ id, logprob: vals[i]! })).sort(
+        (a, b) => b.logprob - a.logprob,
+      );
+    }
+    disposeExtras(e);
+    return out;
+  };
+
+  // logits [1,1,V] → sampled token array [1] (+ optional logprob capture,
+  // all on-device)
+  const sampleStep = (
+    logits3d: MlxArray,
+    step: number,
+  ): { tok: MlxArray; extras: StepExtras | null } => {
     const V = logits3d.shape[2]!;
     let logits = ops.reshape(logits3d, [1, V]);
     for (const p of processors) logits = disposing(logits, p(history, logits));
     const lp = toLogprobs(logits);
     logits.dispose();
     const tok = sampler(lp, step);
+    let extras: StepExtras | null = null;
+    if (capture) {
+      let sel: MlxArray | null = null;
+      let topIdx: MlxArray | null = null;
+      let topVals: MlxArray | null = null;
+      if (captureSelLp) {
+        const idx = ops.reshape(tok, [1, 1]);
+        sel = ops.takeAlongAxis(lp, idx, -1);
+        idx.dispose();
+      }
+      if (captureTopK > 0) {
+        // mlx-lm _format_top_logprobs: argpartition(-logprobs, kth=k-1)[:k]
+        const k = Math.min(captureTopK, V);
+        const negLp = ops.neg(lp);
+        const part = ops.argpartitionAxis(negLp, k - 1, -1);
+        const idxView = part.slice([0, 0], [1, k]);
+        topIdx = ops.contiguous(idxView); // slices are strided views; raw readback needs contiguous
+        topVals = ops.takeAlongAxis(lp, topIdx, -1);
+        for (const a of [negLp, part, idxView]) a.dispose();
+      }
+      extras = { sel, topIdx, topVals };
+    }
     lp.dispose();
-    return tok;
+    return { tok, extras };
   };
 
   const pushHistory = (tok: MlxArray) => {
@@ -317,6 +403,8 @@ async function* generateInner(
   const forwarded: number[] = [];
   let pending: MlxArray | null = null;
   let nextPending: MlxArray | null = null;
+  let pendingExtras: StepExtras | null = null;
+  let nextExtras: StepExtras | null = null;
   let finished = false;
   let threw = false;
   const makeStats = (): GenerateStats => ({
@@ -379,7 +467,9 @@ async function* generateInner(
     h0.dispose();
     const logits0 = model.logitsFromHidden(hLast);
     hLast.dispose();
-    pending = sampleStep(logits0, 0); // token array [1]
+    const s0 = sampleStep(logits0, 0); // token array [1] (+ optional extras)
+    pending = s0.tok;
+    pendingExtras = s0.extras;
     logits0.dispose();
     // mirror mlx-lm generate_step: async-dispatch the first token's
     // compute; the prefill clock keeps running until the token ARRIVES
@@ -389,7 +479,7 @@ async function* generateInner(
     // to prompt_time, not decode — replicated so cross-stack decode
     // tok/s measure the same quantity. The boundary cost is real and
     // scales with prompt length; it belongs to "having prefilled".
-    ops.asyncEvalAll([pending]);
+    ops.asyncEvalAll([pending, ...extrasArrays(pendingExtras)]);
 
     // ---- decode (pipelined) ----
     // Compiled decode (docs/design/optimization_plan.md Phase A): replay the per-step
@@ -413,8 +503,11 @@ async function* generateInner(
     let stop = false;
     while (!stop) {
       const cur = pending!;
+      const curExtras = pendingExtras;
+      pendingExtras = null;
       // build step n+1's graph from the *unread* pending token
       nextPending = null;
+      nextExtras = null;
       if (generated + 1 < maxTokens) {
         maybeQuantizeKv(cache, options);
         pushHistory(cur);
@@ -439,9 +532,11 @@ async function* generateInner(
           logits = model.logitsFromHidden(h);
           h.dispose();
         }
-        nextPending = sampleStep(logits, generated + 1);
+        const sn = sampleStep(logits, generated + 1);
+        nextPending = sn.tok;
+        nextExtras = sn.extras;
         logits.dispose();
-        ops.asyncEvalAll([nextPending, ...evalWith]);
+        ops.asyncEvalAll([nextPending, ...extrasArrays(nextExtras), ...evalWith]);
       }
 
       // sync-read step n's token while n+1 computes
@@ -460,11 +555,17 @@ async function* generateInner(
       if (nextPending !== null) forwarded.push(token);
 
       if (eosTokenIds.includes(token)) {
+        disposeExtras(curExtras);
         nextPending?.dispose();
         nextPending = null;
+        disposeExtras(nextExtras);
+        nextExtras = null;
         stop = true;
       } else {
-        yield { token, index: generated - 1 };
+        // readExtras before the yield: if the consumer breaks at this yield,
+        // the extras are already read and disposed.
+        const logprobs = readExtras(curExtras);
+        yield { token, index: generated - 1, ...(logprobs ? { logprobs } : {}) };
         // mlx-lm generate_step: clear_cache after token 0 (drops the
         // remaining prefill transients) and every 256 tokens after
         if ((generated - 1) % 256 === 0) clearCache();
@@ -473,6 +574,8 @@ async function* generateInner(
         } else {
           pending = nextPending;
           nextPending = null;
+          pendingExtras = nextExtras;
+          nextExtras = null;
         }
       }
     }
@@ -486,6 +589,8 @@ async function* generateInner(
     if (!finished) {
       pending?.dispose();
       nextPending?.dispose();
+      disposeExtras(pendingExtras);
+      disposeExtras(nextExtras);
     }
     if (ownsCache) for (const c of cache) c.dispose();
     history?.dispose();
