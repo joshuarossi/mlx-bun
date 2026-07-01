@@ -29,7 +29,7 @@ README.md has the pitch and scope boundaries.
   conclusions down; don't rely on conversation memory.
 - **Logit parity with mlx-lm is the correctness oracle.** The Python
   reference lives in `/Users/joshrossi/Code/mlx-lm/.venv` (mlx 0.31.2,
-  mlx-lm 0.31.3, mlx-optiq 0.2.1). Run reference scripts with that venv's
+  mlx-lm 0.31.3, mlx-optiq 0.2.4). Run reference scripts with that venv's
   python: `/Users/joshrossi/Code/mlx-lm/.venv/bin/python`.
 - **Every perf claim gets a number on this machine** (M4 Pro, 24 GB,
   ~273 GB/s). Curated reference numbers live in `benchmarks/RESULTS.md`
