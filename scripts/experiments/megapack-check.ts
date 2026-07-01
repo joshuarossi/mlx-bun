@@ -5,7 +5,7 @@
 import { loadModelConfig } from "../../src/config";
 import { Weights } from "../../src/weights";
 import { MiniCPM5Model } from "../../src/model/minicpm5";
-import { packMiniCpm5, type MatLayout } from "../../src/model/megakernel-pack";
+import { packMiniCpm5, type MatLayout } from "./megakernel-pack";
 import { QuantizedLinear } from "../../src/model/gemma4-base";
 import { MlxArray } from "../../src/mlx/array";
 import { Dtype } from "../../src/mlx/ffi";

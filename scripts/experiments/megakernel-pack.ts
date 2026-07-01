@@ -16,10 +16,10 @@
 // Gate: scripts/experiments/megapack-check.ts rebuilds a QuantizedLinear from the
 // sliced buffers and asserts byte-identical ops.quantizedMatmul vs the original.
 
-import { MlxArray } from "../mlx/array";
-import { Dtype } from "../mlx/ffi";
-import type { MiniCPM5Model } from "./minicpm5";
-import type { QuantizedLinear, RMSNorm } from "./gemma4-base";
+import { MlxArray } from "../../src/mlx/array";
+import { Dtype } from "../../src/mlx/ffi";
+import type { MiniCPM5Model } from "../../src/model/minicpm5";
+import type { QuantizedLinear, RMSNorm } from "../../src/model/gemma4-base";
 
 /** One quantized matrix in the packed buffers. Offsets: `wOff` in BYTES into
  *  WBYTES; `sOff`/`bOff` in bf16 ELEMENTS into SCALES/BIASES. N=out, K=in. */

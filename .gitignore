@@ -28,6 +28,9 @@ docs/investigations/*.html
 adapters/
 train.log
 *.train.log
+train-*.log
+*-capability.log
+__pycache__/
 
 # DiffusionGemma large/regenerable golden dumps — the full [1,256,262144] f32
 # logit tensors (256MB each) exceed GitHub's limit, and the per-stage diagnostic

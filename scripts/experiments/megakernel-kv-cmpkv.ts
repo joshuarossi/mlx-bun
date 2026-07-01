@@ -5,7 +5,7 @@
 import { loadModelConfig } from "../../src/config";
 import { Weights } from "../../src/weights";
 import { MiniCPM5Model } from "../../src/model/minicpm5";
-import { MegakernelRunner } from "../../src/model/megakernel-kernel";
+import { MegakernelRunner } from "./megakernel-kernel";
 import { KVCache, RotatingKVCache, QuantizedKVCache, type Cache } from "../../src/model/gemma4-base";
 import * as ops from "../../src/mlx/ops";
 import { Dtype } from "../../src/mlx/ffi";

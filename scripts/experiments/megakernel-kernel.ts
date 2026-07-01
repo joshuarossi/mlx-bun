@@ -18,11 +18,11 @@
 // reference (mirrors fused-mlp-kernel). Gated by teacher-forced agreement + KL
 // (scripts/experiments/megakernel-teacherforced.ts), not bit-exactness.
 
-import { MlxArray } from "../mlx/array";
-import { Dtype } from "../mlx/ffi";
-import { MetalKernel } from "../mlx/metal-kernel";
-import * as ops from "../mlx/ops";
-import type { MiniCPM5Model } from "./minicpm5";
+import { MlxArray } from "../../src/mlx/array";
+import { Dtype } from "../../src/mlx/ffi";
+import { MetalKernel } from "../../src/mlx/metal-kernel";
+import * as ops from "../../src/mlx/ops";
+import type { MiniCPM5Model } from "../../src/model/minicpm5";
 import { packMiniCpm5, type MegaLayout, type MatLayout, type PackedModel } from "./megakernel-pack";
 
 const TGN = 1024;
