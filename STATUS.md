@@ -28,25 +28,25 @@ file rewritten; flash-attn story reconciled; README/CLAUDE.md doc map refreshed)
    TRL's ORPOTrainer, and xfactlab/orpo all compute it over the **full
    prompt+response** (only padding masked). Everything else in the ORPO stack
    (odds-ratio math, signs, λ, normalization, fused-head backward, prefix-share
-   gradients, data path) verified correct against primary sources. **DECISION
-   (Josh): match the reference (add prompt tokens to the NLL term / a
-   `sft-scope` option) or keep response-only deliberately.** Until then,
-   parity claims vs TRL/paper ORPO are not apples-to-apples.
+   gradients, data path) verified correct against primary sources.
+   **DECIDED (Josh, 2026-07-01): add `sft_scope: full|response`, default
+   `full` (paper/TRL-faithful); `response` reproduces old runs.** The odds-ratio
+   ℓ terms stay response-only in BOTH modes (that matches TRL). In progress.
 2. **DSpark τ=3.24 is a teacher-forced proxy** — `evalTau` feeds the Markov head
    ground-truth previous tokens; live decode threads the drafter's own drafts.
    Run `scripts/dspark-measure-dflash.ts` (live τ via `meanAcceptLen`) on the
    overfit checkpoint before the 27B retarget. Architecture itself verified
    faithful (see DSpark section).
-3. **Memory batching default** — `src/memory/model.ts:164` defaults
-   `MLX_BUN_MEMORY_BATCH` to **8**, but batching measured 1.7–1.9× SLOWER for the
-   real extract/chunk workload; docs recommend serial. Flip the default to 1.
+3. ~~**Memory batching default**~~ **DONE 2026-07-01** — `memoryBatchSize()`
+   default flipped 8 → 1 (serial, bit-exact; batching measured 1.7–1.9× slower).
+   Opt back in with `MLX_BUN_MEMORY_BATCH=8`.
 4. **No CI** — the only GitHub workflow deploys the website; nothing runs
    `bunx tsc --noEmit` or `bun test` on push. Add a gate.
 5. **Test gaps** — DPO has zero loss/e2e tests; ORPO fused-CE tests assert only
    "loss decreases" (real grad-parity checks live un-wired in
    `scripts/experiments/`); DSpark smoke tests live outside `tests/`.
-6. **`mlx-bun memory status`** prints "synthesis stubbed (M1)" — false; synthesis
-   ships. Fix the status text.
+6. ~~**`mlx-bun memory status`** stub text~~ **DONE 2026-07-01** — status +
+   help now report synthesis as available (`mlx-bun memory synthesize`).
 
 **In progress (Josh directive 2026-07-01):** CLI flags/defaults parity with
 `mlx_lm.server` + implement all missing mlx-lm functionality. Done 2026-07-01:
