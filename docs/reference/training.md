@@ -81,7 +81,7 @@ differ from the trainer/API defaults in the table below:
 
 The script hard-codes `method=sft`, `batch_size=1`, `steps_per_report=1`, and
 uses the default `ops.sdpa` training attention (set `MLX_BUN_TRAIN_ATTN=flash`
-to override — but flash crashes e4b at multi-K; see Methodology).
+to override — experimental, much slower; see Methodology).
 
 ## Data formats
 
@@ -186,7 +186,7 @@ are `DEFAULT_TRAIN_CONFIG` (trainer.ts:89).
 |---|---|---|---|
 | `MLX_BUN_FUSED_GELU` | **`0` (required for Gemma)** | on | The fused GeGLU is a **CustomKernel with no gradient (vjp)** ([`fused-geglu-kernel.ts`](../../src/model/fused-geglu-kernel.ts)); the Gemma forward uses it ([`gemma4.ts:277`](../../src/model/gemma4.ts)), so a Gemma (e4b/12B/26B) backward fails unless it's off. MiniCPM5 (Llama-arch SwiGLU) never hits it, so the `.ts` script's MiniCPM5 default doesn't need it. |
 | `MLX_BUN_PERF_KERNEL` | **`0` for training** | on | The fused quantized-decode kernel likewise has no vjp. It only fires at decode L=1 (rare in the L>1 training forward), but the e4b recipe sets `0` to be safe. |
-| `MLX_BUN_TRAIN_ATTN` | **leave unset** | unset → `ops.sdpa` | Default `ops.sdpa` **is** mlx's fused flash-attention kernel — the correct, working path. `flash` selects a *different* hand-rolled custom kernel that crashes e4b at multi-K; do not set it. |
+| `MLX_BUN_TRAIN_ATTN` | **leave unset** | unset → `ops.sdpa` | Default `ops.sdpa` **is** mlx's fused flash-attention kernel — the correct, working path. `flash` selects a *different* hand-rolled O(L)-memory kernel: its two port bugs (dK buffer-transpose, dQ divergent causal barrier) are fixed and FD-validated (`tests/flash-attention.test.ts`, T≤256), but it is ~30× slower and the historical e4b ≥2K crash has **not been re-validated at that scale** since the fix — leave unset unless memory-bound and re-verified. |
 | `MLX_BUN_MEM_LOG` | `1` to profile | off | Print per-step peak/active/cache memory |
 
 > Important: the trainer itself ([`trainer.ts`](../../src/train/trainer.ts))
@@ -221,7 +221,7 @@ What the recipe pins (and why it differs from the bare defaults):
 | `RANK` / `SCALE` / `LR` | `16` / `20` / `1e-5` | task-tuned |
 | `ITERS` | `2` (probe) / `900` (train) | ~2 epochs over 450 examples |
 | `MLX_BUN_PERF_KERNEL` / `MLX_BUN_FUSED_GELU` | `0` / `0` | **required** — the fused kernels have no vjp (see env table) |
-| attention | default `ops.sdpa` | mlx's fused flash kernel; **not** `MLX_BUN_TRAIN_ATTN=flash` (that one crashes e4b) |
+| attention | default `ops.sdpa` | mlx's fused flash kernel; **not** `MLX_BUN_TRAIN_ATTN=flash` (~30× slower; e4b ≥2K unvalidated since the kernel fix) |
 
 The two non-negotiables for e4b: **segmented backward** (`SEG>0`, so the
 long-context activations fit) and the **fused kernels off** (so the backward
@@ -265,9 +265,15 @@ At long `max_seq_length`, activation memory dominates. Two levers:
 ### Training attention kernel (`MLX_BUN_TRAIN_ATTN`)
 - **default `ops.sdpa`** — mlx's fused SDPA; correct (0.00% vs autograd),
   O(L²) backward memory. Use this.
-- **`flash`** — opt-in O(L) memory path, but the hand-rolled dK kernel is
-  slow and **crashes e4b at multi-K (≥2K)**; do not use it for e4b LoRA
-  training. Detail in segmented-backward-training §6.
+- **`flash`** — opt-in O(L)-memory path. Its two port bugs (dK
+  buffer-transpose, dQ divergent causal barrier) were **fixed** and
+  FD-validated (`scripts/experiments/flash-fd-check.ts`; regression test
+  `tests/flash-attention.test.ts`, T≤256), but it remains ~30× slower than
+  `ops.sdpa`, and the historical e4b multi-K (≥2K) SIGTRAP has **not been
+  re-validated at that scale since the fix**
+  (`scripts/experiments/segmented-grad-test-e4b.ts` is the repro harness).
+  Prefer the default; treat `flash` as experimental on e4b long context.
+  Detail in segmented-backward-training §6.
 
 ## Outputs
 

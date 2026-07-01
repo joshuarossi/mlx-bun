@@ -360,7 +360,7 @@ Ordered by expected payoff on this hardware:
   reuses the freed-but-pinned buffer sooner). Fix: **`fromBytesCopy`** (copy,
   mlx-owned); hardened `MetalKernel.apply` `ptr()` lifetimes; added a `pinned`
   canary to the train metric. Post-mortem +
-  [orpo-flash-cce-pin-leak.md](investigations/orpo-flash-cce-pin-leak.md).
+  [orpo-flash-cce-pin-leak.md](docs/investigations/orpo-flash-cce-pin-leak.md).
   **Lesson:** `fromView` is only for process-lifetime memory (mmap'd weights);
   any transient host buffer feeding a lazy op and disposed before eval must COPY.
 - **L3 (mlx-bun originals) has no oracle — verify by finite-difference +
@@ -389,7 +389,7 @@ Ordered by expected payoff on this hardware:
   and the tier of a route says whether a flag is an always-on default, a memory/
   training knob, or a real parity⇄optimization toggle ("what flags push down THAT
   route") — letting us collapse a growing flat flag list into a few intent switches.
-  Full design + roadmap: [parity-tier-dag.md](design/parity-tier-dag.md).
+  Full design + roadmap: [parity-tier-dag.md](docs/design/parity-tier-dag.md).
   - [ ] derive the DAG from code (queryable; replaces the hand-authored map)
   - [ ] CI gate: an L1-tagged node must pass bit-exact parity vs mlx-lm or be re-tagged
   - [ ] shrink the L3 surface (prove provable nodes down to L1/L2)
