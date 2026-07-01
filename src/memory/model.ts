@@ -159,10 +159,15 @@ interface MemoryRuntime {
 }
 
 /** Max rows in a memory batch (continuous-batching width). 1 disables batching
- *  (callLocalBatch then loops on the bit-exact greedy fallback). */
+ *  (callLocalBatch then loops on the bit-exact greedy fallback).
+ *  Default 1 (serial): batching measured 1.7-1.9x SLOWER for the real
+ *  extract/chunk workload (heterogeneous prefills pad) and can diverge on
+ *  near-ties — see docs/design/memory-inference-path.md "Verification results".
+ *  Opt back in with MLX_BUN_MEMORY_BATCH=8 if a length-bucketed scheduler
+ *  lands. (Decision: Josh, 2026-07-01.) */
 export function memoryBatchSize(): number {
-  const n = Number(process.env.MLX_BUN_MEMORY_BATCH ?? "8");
-  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 8;
+  const n = Number(process.env.MLX_BUN_MEMORY_BATCH ?? "1");
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
 }
 
 function requireModel(): void {

@@ -104,6 +104,10 @@ export interface ServerOptions {
   defaultTemperature?: number;
   defaultTopP?: number;
   defaultTopK?: number;
+  /** Completion cap when the request omits max_tokens (`--max-tokens`).
+   *  mlx_lm.server's flag; its default there is 512 — ours stays 65,536 so
+   *  thinking traces never truncate. `--max-tokens 512` = mlx-lm behavior. */
+  defaultMaxTokens?: number;
   /** Max concurrent requests batched through the mlx-lm-parity engine
    *  (`--batch N`). Default 1 = today's serialized single-queue path. >1 opts
    *  the WHOLE server into the batched engine (continuous batching, B floats
@@ -1109,7 +1113,7 @@ export function createServer(
       // truncates the visible reply. Default very generously (the model's
       // context is far larger); only an explicit max_tokens narrows it. The
       // model still stops at its eos_token well before this in normal replies.
-      maxTokens: req.max_completion_tokens ?? req.max_tokens ?? 65_536,
+      maxTokens: req.max_completion_tokens ?? req.max_tokens ?? serverOptions.defaultMaxTokens ?? 65_536,
       temperature: req.temperature ?? serverOptions.defaultTemperature ?? defaultTemp,
       topP: req.top_p ?? serverOptions.defaultTopP ?? ctx.genDefaults.topP ?? 0,
       topK: req.top_k ?? serverOptions.defaultTopK ?? ctx.genDefaults.topK ?? 0,
@@ -2043,7 +2047,7 @@ export function createServer(
         // mlx_lm.server's default max_tokens is 512 (its --max-tokens CLI
         // default). The chat lane's very generous default is wrong for raw
         // completion: with no template an EOS may never come.
-        options.maxTokens = body.max_completion_tokens ?? body.max_tokens ?? 512;
+        options.maxTokens = body.max_completion_tokens ?? body.max_tokens ?? serverOptions.defaultMaxTokens ?? 512;
         const requiredCtx = promptIds.length + options.maxTokens;
         if (requiredCtx > admission.maxSafeContext)
           return Response.json(

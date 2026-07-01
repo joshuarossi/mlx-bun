@@ -95,6 +95,9 @@ Model & quality:
   --top-k <n>               sends none) inherits them. --temp is accepted as
                             an alias for --temperature (mlx_lm.server compat)
                             [default: the model's generation_config.json]
+  --max-tokens <n>          Completion cap when a request omits max_tokens
+                            (mlx_lm.server flag; its default is 512 there)
+                            [default: 65536 chat / 512 raw completion]
   --hlg-sampling on|off     Piecewise tone-curve sampling (HLG): rolls off the
                             top, boosts the mids, gentles the tail. Gain folds
                             from --temperature. [default: off]
@@ -344,9 +347,9 @@ The read path is live: the assistant reads a wiki you set up by hand or
 import during \`memory init\`. Ask the assistant to "open my memory" or run
 \`mlx-bun memory open\` to browse it in Obsidian/Finder, or
 \`mlx-bun memory open <article>\` to jump to a specific page. Synthesis
-(conversations → articles) is stubbed; scheduling is real, so the nightly
-job is wired and ready and starts producing articles the moment synthesis
-lands.`,
+(conversations → articles) runs the full local pipeline via
+\`mlx-bun memory synthesize\` (or per-stage: segment/extract/route/
+synthesize-stage/link); the nightly job runs it on a schedule.`,
 };
 
 HELP.bench = HELP.benchmark!;
@@ -601,6 +604,11 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   if (topP !== null) serverOptions.defaultTopP = topP;
   const topK = numFlag("top-k", 0, 1_000_000);
   if (topK !== null) serverOptions.defaultTopK = topK;
+  // mlx_lm.server's --max-tokens: the completion cap when a request omits
+  // max_tokens. Our built-in default stays 65,536 (chat) / 512 (raw text
+  // completion); `--max-tokens 512` reproduces mlx-lm's behavior exactly.
+  const maxTok = numFlag("max-tokens", 1, 10_000_000);
+  if (maxTok !== null) serverOptions.defaultMaxTokens = Math.floor(maxTok);
   // HLG sampling — piecewise tone curve on the logprobs (default off). Knobs in
   // nats; the mid gain folds from --temperature. docs/design/hlg-sampling.md.
   if (onOff("hlg-sampling") === true) {
@@ -1192,7 +1200,7 @@ switch (cmd) {
     const OURS_VAL = new Set([
       "--query", "-q", "--port", "--host", "--memory-budget", "--prompt-cache", "--kv-quant",
       "--compiled-decode", "--perf-kernel", "--fused-decode", "--fused-sdpa", "--thinking",
-      "--temperature", "--temp", "--top-p", "--top-k",
+      "--temperature", "--temp", "--top-p", "--top-k", "--max-tokens",
     ]);
     const OURS_BOOL = new Set(["--force-wire", "--expert-offload"]);
     const passthrough: string[] = [];
@@ -1644,8 +1652,7 @@ switch (cmd) {
         `articles   ${style.bold(String(st.articleCount))}`,
         `reference  ${style.bold(String(st.referenceCount))} ${style.dim("read-only docs")}`,
         `git        ${st.isGitRepo ? style.green("tracked") : style.dim("not a git repo")}`,
-        `synthesis  ${style.dim("stubbed (M1) — not implemented yet")}`,
-        `last run   ${style.dim("not available yet")}`,
+        `synthesis  ${style.green("available")} ${style.dim("· mlx-bun memory synthesize")}`,
         `nightly    ${
           sched.installed
             ? `${sched.loaded ? style.green("scheduled") : style.accent("installed (not loaded)")} ${style.dim(`· ${sched.plistPath}`)}`
