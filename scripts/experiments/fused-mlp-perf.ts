@@ -16,8 +16,9 @@ function bench(M:number){
   let t0=performance.now();
   for(let it=0;it<IT;it++)for(const m of mlps){const g=m.gate.forward(x),u=m.up.forward(x);const s=ops.sigmoid(g),si=ops.mul(g,s);const h=ops.mul(si,u);const o=m.down.forward(h);ops.evalAll([o]);g.dispose();s.dispose();si.dispose();u.dispose();h.dispose();o.dispose();}
   const unf=(performance.now()-t0)/IT;
+  const h0=ops.zeros([M, (mlps[0] as any).down.w.shape[0]], x.dtype);  // zero residual: fused outputs h+mlp(x)
   t0=performance.now();
-  for(let it=0;it<IT;it++)for(const m of mlps){const o=fusedMlp(x,m.gate.w,m.gate.scales,m.gate.biases,m.gate.spec,m.up.w,m.up.scales,m.up.biases,m.up.spec,m.down.w,m.down.scales,m.down.biases,m.down.spec);ops.evalAll([o]);o.dispose();}
+  for(let it=0;it<IT;it++)for(const m of mlps){const o=fusedMlp(x,m.gate.w,m.gate.scales,m.gate.biases,m.gate.spec,m.up.w,m.up.scales,m.up.biases,m.up.spec,m.down.w,m.down.scales,m.down.biases,m.down.spec,h0);ops.evalAll([o]);o.dispose();}
   const fus=(performance.now()-t0)/IT;
   console.log(`M=${String(M).padStart(4)}  unfused=${unf.toFixed(2)}ms  fusedMLP=${fus.toFixed(2)}ms  speedup=${(unf/fus).toFixed(2)}x`);
 }

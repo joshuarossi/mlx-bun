@@ -213,8 +213,11 @@ export interface Cache {
   /** Can `trim(n)` drop the last n tokens? (Ring caches lose trimability
    *  once wrapped.) */
   isTrimmable(): boolean;
-  /** Drop the last n tokens (future writes overwrite them). */
-  trim(n: number): void;
+  /** Drop the last n tokens (future writes overwrite them). `bypass` (default
+   *  false → unchanged behavior) skips the isTrimmable guard for the
+   *  speculative-decode rollback case (trim the last n ≤ γ tips right after a
+   *  >1 concat write); rotating caches then physically shrink the buffer tail. */
+  trim(n: number, bypass?: boolean): void;
   dispose(): void;
 }
 
@@ -749,10 +752,32 @@ export class RotatingKVCache implements Cache {
     return this.offset < this.maxSize;
   }
 
-  trim(n: number): void {
+  trim(n: number, bypass = false): void {
     const k = Math.min(this.offset, n);
+    if (!bypass) {
+      // mlx-lm semantics: only valid pre-wrap (guarded by isTrimmable upstream).
+      this.offset -= k;
+      this.#idx -= k;
+      return;
+    }
+    // Spec-decode rollback after a >1 #updateConcat write: the buffer is in
+    // temporal order with #idx === bufferLen and the newest tokens are the last
+    // rows, so physically slice the last k off and keep #idx === new length.
+    // (Only sound right after a concat write with k ≤ γ — DSpark's only caller.)
     this.offset -= k;
-    this.#idx -= k;
+    if (k > 0 && this.keys && this.values) {
+      const [B, H, S, D] = this.keys.shape as [number, number, number, number];
+      const vD = this.values.shape[3]!;
+      const nk = this.keys.slice([0, 0, 0, 0], [B, H, S - k, D]);
+      const nv = this.values.slice([0, 0, 0, 0], [B, H, S - k, vD]);
+      this.keys.dispose();
+      this.values.dispose();
+      this.keys = nk;
+      this.values = nv;
+      this.#idx = nk.shape[2]!;
+    } else {
+      this.#idx -= k;
+    }
   }
 
   get ringIdx(): number {
@@ -1100,10 +1125,32 @@ export class RotatingQuantizedKVCache implements Cache {
     return this.offset < this.maxSize;
   }
 
-  trim(n: number): void {
+  trim(n: number, bypass = false): void {
     const k = Math.min(this.offset, n);
+    if (!bypass) {
+      this.offset -= k;
+      this.ringIdx -= k;
+      return;
+    }
+    // Spec-decode rollback after a >1 concat write — physically slice the last k
+    // off each (packed, scales, biases) component and keep ringIdx === seqLen.
     this.offset -= k;
-    this.ringIdx -= k;
+    if (k > 0 && this.keys && this.values) {
+      const S = this.#seqLen();
+      const cut = (a: MlxArray): MlxArray => {
+        const [B, H, , D] = a.shape as [number, number, number, number];
+        return a.slice([0, 0, 0, 0], [B, H, S - k, D]);
+      };
+      const nk = mapTriple(this.keys, cut);
+      const nv = mapTriple(this.values, cut);
+      disposeTriple(this.keys);
+      disposeTriple(this.values);
+      this.keys = nk;
+      this.values = nv;
+      this.ringIdx = this.#seqLen();
+    } else {
+      this.ringIdx -= k;
+    }
   }
 
   /** Oracle: to_quantized on an already-quantized rotating cache is

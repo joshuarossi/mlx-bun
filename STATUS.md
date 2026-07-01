@@ -27,6 +27,25 @@ resumable pipeline (`stages.ts`): segment(our e4b-chunk-300 chunker) → extract
 - **Next:** finish inference-path (server load-once) → resume import (~50h serial) → reindex + `memory link`
   → judge a broad sample → promote to the real vault + nightly daily fold-in. See HANDOFF.md for full detail.
 
+## DSpark speculative drafter — FAITHFUL BUILD DONE, architecture proven correct 2026-06-30. Handoff: [docs/investigations/dspark-handoff.md](docs/investigations/dspark-handoff.md) · Design: [docs/design/dspark-speculative-decoding.md](docs/design/dspark-speculative-decoding.md)
+
+Faithful DSpark = DFlash multi-layer KV injection (Eq 2–3) + Markov head +
+confidence head, in `src/spec/dspark/*-dflash.ts` (v1 single-vector `*.ts` kept
+as superseded baseline; both flag-selected). **Architecture proven correct** via
+overfit (3 articles, eval-on-same): per-pos **~0.75**, τ **3.24** = paper-range.
+- **Status:** repo typechecks 0; CPU smoke 16/16 (dflash) + 33/33 (v1). Fixed a
+  real **off-by-one in the p^t/TV target** (was in v1 too → all pre-fix τ bogus).
+  Confirmed: width isn't the ceiling (1024≈2560); parity-safe `hiddenTap`;
+  `trim(n,bypass)` lossless rollback past the sliding window.
+- **Two gaps to a real speedup (not architecture):** (1) DATA — 160 articles →
+  generalizes only to per-pos ~0.17 (overfit proves capacity; paper uses 1.3M×10).
+  (2) TARGET SPEED — decode e4b 45.9 / 12b 27.5 / 27B ~15 tok/s; the fixed draft
+  overhead only amortizes on a SLOW target, so **e4b is ~worst-case; the 27B
+  agentic workload is the real target** (τ≈3 there could net ~2–3× → 15→~35–45).
+- **Next:** retarget to 27B/12b (drafter ports; regen+train there; 27B/32GB is
+  memory-tight), scale data, tighten the draft loop, then RNN head + STS + Alg-1
+  scheduler, then rename dflash→dspark. See handoff.
+
 ## DiffusionGemma port — D1–D3 + D5 DONE 2026-06-24. COMPLETE (D4 perf = Josh-gated bench).
 
 **THE WHOLE PORT IS DONE.** DiffusionGemma-26B-A4B-it (first non-autoregressive model) runs in
