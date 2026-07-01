@@ -121,6 +121,19 @@ export interface ResponsesRequest {
   top_p?: number;
   top_k?: number;
   stream?: boolean;
+  /** mlx-lm sampler/penalty extensions + logit_bias — not part of the
+   *  Responses protocol proper; accepted as pass-through extras with the
+   *  same names as our /v1 chat surface. */
+  min_p?: number;
+  xtc_probability?: number;
+  xtc_threshold?: number;
+  logit_bias?: Record<string, number>;
+  repetition_penalty?: number;
+  repetition_context_size?: number;
+  presence_penalty?: number;
+  presence_context_size?: number;
+  frequency_penalty?: number;
+  frequency_context_size?: number;
   tools?: Array<Record<string, unknown>>;
   tool_choice?: unknown;
 }
@@ -235,6 +248,16 @@ export function responsesToChatBody(body: ResponsesRequest): Record<string, unkn
   if (body.top_p != null) oai.top_p = body.top_p;
   if (body.top_k != null) oai.top_k = body.top_k;
   if (body.stream) oai.stream = true;
+  // mlx-lm sampler/penalty extensions (+ OpenAI logit_bias): straight
+  // pass-through — same wire names on the chat surface.
+  for (const k of [
+    "min_p", "xtc_probability", "xtc_threshold", "logit_bias",
+    "repetition_penalty", "repetition_context_size",
+    "presence_penalty", "presence_context_size",
+    "frequency_penalty", "frequency_context_size",
+  ] as const) {
+    if (body[k] != null) oai[k] = body[k];
+  }
 
   // Flat Responses tool shape → nested chat shape; built-ins
   // (web_search, file_search, mcp, computer_use) dropped silently.

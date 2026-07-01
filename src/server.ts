@@ -114,6 +114,11 @@ export interface ServerOptions {
   /** HLG tone-curve sampling default (set via --hlg-sampling on + sub-knobs).
    *  A per-request `hlg` object overrides it field-by-field. Off when unset. */
   hlg?: HlgConfig;
+  /** Adapter id mounted at startup via `serve --adapter <dir>` (mlx-lm's
+   *  `--adapter-path`). Used when a request sends no `adapter` field; a
+   *  request's explicit `adapter` (including "none") always wins. Hot-swap
+   *  via /v1/adapters is unchanged. */
+  defaultAdapter?: string;
 }
 
 export interface ServerContext {
@@ -265,6 +270,27 @@ interface ChatRequest {
   top_k?: number;
   seed?: number;
   repetition_penalty?: number;
+  /** mlx-lm extension: recent-token window for repetition_penalty
+   *  (default 20; 0 = whole history, Python `[-0:]` semantics). */
+  repetition_context_size?: number;
+  /** min-p sampling (mlx_lm.server's `min_p`): keep tokens whose probability
+   *  is ≥ min_p · p(top token). 0 = off. */
+  min_p?: number;
+  /** XTC sampling (mlx_lm.server names): with probability `xtc_probability`
+   *  per step, remove every token above `xtc_threshold` except the least
+   *  likely of them. EOS + the newline token are always exempt (the server
+   *  injects them as xtc special tokens, matching mlx_lm.server). */
+  xtc_probability?: number;
+  xtc_threshold?: number;
+  /** OpenAI logit_bias: {tokenId: additive bias}. JSON object keys arrive as
+   *  strings; coerced to int keys / float values like mlx-lm (400 on failure). */
+  logit_bias?: Record<string, number>;
+  /** OpenAI presence/frequency penalties + mlx-lm's context-size extensions
+   *  (window of recent tokens the penalty looks at; default 20). */
+  presence_penalty?: number;
+  presence_context_size?: number;
+  frequency_penalty?: number;
+  frequency_context_size?: number;
   /** OpenAI stop sequences: plain string or array (spec allows up to 4).
    *  Matched on DECODED text, not token ids — see StopMatcher. */
   stop?: string | string[];
@@ -292,6 +318,15 @@ interface ChatRequest {
     pivot_offset?: number;
   };
 }
+
+/** POST /v1/completions body (mlx_lm.server's raw text completion — no chat
+ *  template). Sampling/penalty/stop fields are the same names as ChatRequest;
+ *  `prompt` replaces `messages`. mlx_lm.server accepts only a STRING prompt
+ *  (it calls `tokenizer.encode(request.prompt)` directly) — token-array
+ *  prompts are rejected there too, so we match. No `echo` (mlx-lm has none). */
+type TextCompletionRequest = Omit<ChatRequest, "messages" | "tools" | "tool_choice"> & {
+  prompt?: unknown;
+};
 
 /** Per-field default HLG knobs when enabling without specifying them. */
 const HLG_DEFAULTS = { width: 4, shoulder: 4, toe: 6, pivotOffset: 6 } as const;
@@ -732,6 +767,27 @@ export function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
   });
 }
 
+/** Coerce a wire `logit_bias` ({"tokenId": bias}) to numeric keys/values —
+ *  mlx_lm.server's `{int(k): float(v)}` coercion; throws its exact error
+ *  message on anything non-numeric (surfaced as a 400). JSON object keys
+ *  always arrive as strings, hence the coercion. */
+export function parseLogitBias(
+  raw: Record<string, number> | undefined | null,
+): Record<number, number> | undefined {
+  if (raw == null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw))
+    throw new Error("logit_bias must be a dict of int to float");
+  const out: Record<number, number> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    const id = Number(k);
+    const bias = Number(v);
+    if (!Number.isInteger(id) || !Number.isFinite(bias))
+      throw new Error("logit_bias must be a dict of int to float");
+    out[id] = bias;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** Incremental detokenizer: emits the longest stable decoded prefix. */
 class StreamDecoder {
   #ids: number[] = [];
@@ -917,6 +973,17 @@ export function createServer(
         `Omit --kv-quant to batch in bf16. (docs/design/parallel-slots.md)`,
     );
 
+  // XTC never removes EOS or the newline token: mlx_lm.server passes
+  // [tokenizer.eos_token_id, tokenizer.encode("\n")] as xtc_special_tokens.
+  // We pass the flat equivalent — ALL configured EOS ids plus the bare newline
+  // id(s), encoded WITHOUT special tokens (mlx-lm's encode("\n") can drag a
+  // BOS along on some tokenizers; protecting BOS from XTC is a no-op, so the
+  // flat/no-BOS form is behaviorally identical and cleaner).
+  const xtcSpecialTokens = [
+    ...ctx.model.config.eosTokenIds,
+    ...ctx.tokenizer.encode("\n", false),
+  ];
+
   // Effective enable_thinking for a request, with the same precedence the chat
   // template uses (extracted so sampling and template rendering can't disagree):
   // explicit chat_template_kwargs.enable_thinking → reasoning_effort ("none" =
@@ -956,6 +1023,19 @@ export function createServer(
       topK: req.top_k ?? serverOptions.defaultTopK ?? ctx.genDefaults.topK ?? 0,
       seed: req.seed ?? (Date.now() & 0xffffffff),
       repetitionPenalty: req.repetition_penalty ?? ctx.genDefaults.repetitionPenalty,
+      // mlx_lm.server sampling extensions (defaults mirror server.py: min_p /
+      // xtc off, context windows 20). parseLogitBias throws on non-numeric
+      // input — callers surface it as a 400 (mlx-lm's coercion error).
+      minP: req.min_p ?? 0,
+      xtcProbability: req.xtc_probability ?? 0,
+      xtcThreshold: req.xtc_threshold ?? 0,
+      ...(req.xtc_probability ? { xtcSpecialTokens } : {}),
+      logitBias: parseLogitBias(req.logit_bias),
+      repetitionContextSize: req.repetition_context_size ?? 20,
+      presencePenalty: req.presence_penalty ?? 0,
+      presenceContextSize: req.presence_context_size ?? 20,
+      frequencyPenalty: req.frequency_penalty ?? 0,
+      frequencyContextSize: req.frequency_context_size ?? 20,
       hlg: resolveHlg(req.hlg, serverOptions.hlg),
       // generate() yields token ids; stop sequences match on decoded text
       // (they can span token boundaries), so the StopMatcher sits at the
@@ -1196,8 +1276,9 @@ export function createServer(
         return Response.json({
           name: "mlx-bun", version: pkgVersion, model: ctx.modelId,
           endpoints: [
-            "POST /v1/chat/completions", "POST /v1/messages", "POST /v1/responses",
-            "POST /v1/embeddings", "GET /v1/models", "GET/POST/DELETE /v1/adapters",
+            "POST /v1/chat/completions", "POST /v1/completions", "POST /v1/messages",
+            "POST /v1/responses", "POST /v1/embeddings", "GET /v1/models",
+            "GET/POST/DELETE /v1/adapters", "GET /health",
             "GET /stats", "GET /fit", "GET /library", "GET /downloads",
           ],
         });
@@ -1265,16 +1346,51 @@ export function createServer(
         });
       }
 
-      if (url.pathname === "/v1/models" && request.method === "GET") {
+      // mlx_lm.server parity: GET /health → the exact body it writes
+      // ('{"status": "ok"}', note the space) so byte-for-byte health checks pass.
+      if (url.pathname === "/health" && request.method === "GET") {
+        return new Response('{"status": "ok"}', {
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      // GET /v1/models — the served model FIRST (with our capability extras),
+      // then every other servable model the registry knows (mlx-lm scans the
+      // HF cache here; our registry is that scan, filtered to supported
+      // architectures). GET /v1/models/<id> filters to that id — same list
+      // shape, matching mlx_lm.server's handle_models_request.
+      if (
+        (url.pathname === "/v1/models" || url.pathname.startsWith("/v1/models/")) &&
+        request.method === "GET"
+      ) {
+        const filterId = url.pathname.length > "/v1/models/".length - 1
+          ? decodeURIComponent(url.pathname.slice("/v1/models/".length))
+          : null;
+        const created = Math.floor(startedAt / 1000);
+        const data: Array<Record<string, unknown>> = [{
+          id: ctx.modelId, object: "model", created, owned_by: "mlx-bun",
+          context_window: ctx.model.config.text.maxPositionEmbeddings,
+          // Capability flags for clients (CLI/external pi) that build a
+          // provider from discovery — `reasoning` gates the thinking toggle.
+          reasoning: ctx.template.supportsThinking,
+        }];
+        try {
+          const { Registry } = await import("./registry");
+          const reg = new Registry();
+          try {
+            if (reg.list().length === 0) await reg.scan();
+            for (const m of reg.list()) {
+              if (m.repoId === ctx.modelId) continue;
+              if (!isSupportedModelRecord(m.modelType, m.repoId)) continue;
+              data.push({ id: m.repoId, object: "model", created });
+            }
+          } finally {
+            reg.close();
+          }
+        } catch { /* registry unavailable → served model only */ }
         return Response.json({
           object: "list",
-          data: [{
-            id: ctx.modelId, object: "model", created: 0, owned_by: "mlx-bun",
-            context_window: ctx.model.config.text.maxPositionEmbeddings,
-            // Capability flags for clients (CLI/external pi) that build a
-            // provider from discovery — `reasoning` gates the thinking toggle.
-            reasoning: ctx.template.supportsThinking,
-          }],
+          data: filterId ? data.filter((m) => m.id === filterId) : data,
         });
       }
 
@@ -1535,7 +1651,16 @@ export function createServer(
             { status: 400 },
           );
         }
-        const options = toOptions(body);
+        let options: ReturnType<typeof toOptions>;
+        try {
+          options = toOptions(body);
+        } catch (e) {
+          // bad logit_bias (non-numeric keys/values) — mlx-lm's coercion error
+          vision?.embeddings.dispose();
+          vision?.imageMask.dispose();
+          diffusionPixels?.dispose();
+          return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
+        }
         if (diffusionPixels) options.visionPixels = diffusionPixels;
         // Admission: reject what cannot finish within the memory budget
         // (the GPU OOM it would otherwise hit is uncatchable and kills
@@ -1561,18 +1686,26 @@ export function createServer(
           );
         }
         try {
-          const adapterIds = ctx.adapters.resolveSpec(body.adapter);
+          // A request's explicit `adapter` (incl. "none") wins over the
+          // startup default from `serve --adapter <dir>`.
+          const adapterIds = ctx.adapters.resolveSpec(body.adapter ?? serverOptions.defaultAdapter);
           if (adapterIds.length) options.adapters = adapterIds;
         } catch (e) {
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
         }
 
-        // What lane this request takes (vision / adapters / repetition penalty /
+        // What lane this request takes (vision / adapters / logits processors /
         // a user-fixed seed → serial; everything else batches when --batch N).
         const shape = {
           hasVision: !!vision,
           hasAdapters: !!options.adapters?.length,
           hasRepetitionPenalty: !!options.repetitionPenalty,
+          // min_p / XTC / logit_bias / presence+frequency penalties: serial-only
+          // in v1 (see GenerationGateway.RequestShape.hasLogitsExtras).
+          hasLogitsExtras: !!(
+            options.minP || options.xtcProbability || options.logitBias ||
+            options.presencePenalty || options.frequencyPenalty
+          ),
           userSeed: body.seed !== undefined,
           kvQuant: !!(options.kvConfig?.length || options.kvBits),
         };
@@ -1749,6 +1882,172 @@ export function createServer(
           return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
         }
         return handleChat(body);
+      }
+
+      // Raw text completion (mlx_lm.server's /v1/completions, request_type
+      // "text"): NO chat template — the prompt string is tokenized directly
+      // (tokenizer.encode with the tokenizer's own special-token handling,
+      // exactly mlx-lm's `tokenizer.encode(request.prompt)`). Rides the same
+      // GenerationGateway + admission + adapter path as chat; no tool router
+      // or thinking splitter (raw text in, raw text out).
+      if (url.pathname === "/v1/completions" && request.method === "POST") {
+        let body: TextCompletionRequest;
+        try {
+          body = (await request.json()) as TextCompletionRequest;
+        } catch {
+          return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
+        }
+        if (typeof body.prompt !== "string" || body.prompt.length === 0)
+          return Response.json(
+            {
+              error: {
+                message: "prompt (a non-empty string) is required " +
+                  "(token-array prompts are not accepted, matching mlx_lm.server)",
+              },
+            },
+            { status: 400 },
+          );
+        const id = `cmpl-${crypto.randomUUID()}`;
+        const created = Math.floor(Date.now() / 1000);
+        const promptIds = ctx.tokenizer.encode(body.prompt);
+        let options: ReturnType<typeof toOptions>;
+        try {
+          options = toOptions(body as unknown as ChatRequest);
+        } catch (e) {
+          // bad logit_bias (non-numeric keys/values) — mlx-lm's coercion error
+          return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
+        }
+        // mlx_lm.server's default max_tokens is 512 (its --max-tokens CLI
+        // default). The chat lane's very generous default is wrong for raw
+        // completion: with no template an EOS may never come.
+        options.maxTokens = body.max_completion_tokens ?? body.max_tokens ?? 512;
+        const requiredCtx = promptIds.length + options.maxTokens;
+        if (requiredCtx > admission.maxSafeContext)
+          return Response.json(
+            {
+              error: {
+                message:
+                  `request needs ${requiredCtx} tokens of context ` +
+                  `(prompt ${promptIds.length} + max_tokens ${options.maxTokens}) but the ` +
+                  `memory budget caps safe context at ${admission.maxSafeContext} — ` +
+                  `shorten the prompt or lower max_tokens`,
+                type: "memory_admission",
+                code: "context_over_budget",
+              },
+            },
+            { status: 400 },
+          );
+        try {
+          const adapterIds = ctx.adapters.resolveSpec(body.adapter ?? serverOptions.defaultAdapter);
+          if (adapterIds.length) options.adapters = adapterIds;
+        } catch (e) {
+          return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
+        }
+        const shape = {
+          hasVision: false,
+          hasAdapters: !!options.adapters?.length,
+          hasRepetitionPenalty: !!options.repetitionPenalty,
+          hasLogitsExtras: !!(
+            options.minP || options.xtcProbability || options.logitBias ||
+            options.presencePenalty || options.frequencyPenalty
+          ),
+          userSeed: body.seed !== undefined,
+          kvQuant: !!(options.kvConfig?.length || options.kvBits),
+        };
+        const finishReason = (stopped: boolean, generated: number): "stop" | "length" =>
+          stopped ? "stop" : generated >= (options.maxTokens ?? 512) ? "length" : "stop";
+
+        if (body.stream) {
+          const stream = new ReadableStream<Uint8Array>({
+            async start(controller) {
+              const enc = new TextEncoder();
+              const send = (obj: unknown) =>
+                controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
+              const chunk = (text: string, finish: string | null) => ({
+                id, object: "text_completion", created, model: ctx.modelId,
+                choices: [{ index: 0, text, finish_reason: finish }],
+              });
+              try {
+                const decoder = new StreamDecoder(ctx.tokenizer);
+                const stopper = new StopMatcher(options.stopSequences);
+                // ≥25 ms macrotask hop, same reason as the chat lane: keep the
+                // serial decode loop from starving the socket (SSE bursts).
+                let lastFlush = performance.now();
+                const s = await gateway.run(promptIds, options, (token) => {
+                  const text = stopper.push(decoder.push(token));
+                  if (text) send(chunk(text, null));
+                  if (stopper.stopped) return false; // halt generation
+                  if (text) {
+                    const now = performance.now();
+                    if (now - lastFlush >= 25) {
+                      lastFlush = now;
+                      return new Promise<void>((r) => setImmediate(r));
+                    }
+                  }
+                }, undefined, shape);
+                if (!stopper.stopped) {
+                  let tail = stopper.push(decoder.flush());
+                  if (!stopper.stopped) tail += stopper.flush();
+                  if (tail) send(chunk(tail, null));
+                }
+                // final chunk: finish_reason + usage (mlx-lm gates usage behind
+                // stream_options.include_usage; we always attach it, matching
+                // our chat lane — an additive superset OpenAI clients ignore)
+                send({
+                  ...chunk("", finishReason(stopper.stopped, s.generatedTokens)),
+                  usage: {
+                    prompt_tokens: s.promptTokens,
+                    completion_tokens: s.generatedTokens,
+                    total_tokens: s.promptTokens + s.generatedTokens,
+                    prompt_tokens_details: { cached_tokens: s.cachedTokens },
+                  },
+                });
+                controller.enqueue(enc.encode("data: [DONE]\n\n"));
+              } catch (e) {
+                send({ error: { message: (e as Error).message } });
+              } finally {
+                controller.close();
+              }
+            },
+          });
+          return new Response(stream, {
+            headers: {
+              "content-type": "text/event-stream",
+              "cache-control": "no-cache",
+              connection: "keep-alive",
+            },
+          });
+        }
+
+        try {
+          const decoder = new StreamDecoder(ctx.tokenizer);
+          const stopper = new StopMatcher(options.stopSequences);
+          let text = "";
+          const s = await gateway.run(promptIds, options, (token) => {
+            text += stopper.push(decoder.push(token));
+            if (stopper.stopped) return false; // halt generation
+          }, undefined, shape);
+          if (!stopper.stopped) {
+            let tail = stopper.push(decoder.flush());
+            if (!stopper.stopped) tail += stopper.flush();
+            text += tail;
+          }
+          return Response.json({
+            id, object: "text_completion", created, model: ctx.modelId,
+            choices: [{
+              index: 0, text,
+              finish_reason: finishReason(stopper.stopped, s.generatedTokens),
+            }],
+            usage: {
+              prompt_tokens: s.promptTokens,
+              completion_tokens: s.generatedTokens,
+              total_tokens: s.promptTokens + s.generatedTokens,
+              prompt_tokens_details: { cached_tokens: s.cachedTokens },
+            },
+          });
+        } catch (e) {
+          return Response.json({ error: { message: (e as Error).message } }, { status: 500 });
+        }
       }
 
       // Anthropic Messages API (Phase 11) — on by default, mirroring

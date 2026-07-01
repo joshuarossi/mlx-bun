@@ -25,6 +25,7 @@ the design rationale is in
 | `--prompt-cache` | GB | `2` (≈2e9 bytes) | Byte cap for the prompt (prefix-reuse KV) cache. **Binary GiB (×2³⁰)** on input. `0`/unset ⇒ default; there is no flag to disable the cache outright. |
 | `--batch` | n | `1` (serial) | Max concurrent requests batched through the mlx-lm-parity engine. `>1` switches the **whole server** into bf16 continuous batching — a *mode*, not a load fallback. See [Execution modes](#execution-modes-serial-vs---batch-n). `--decode-concurrency` is accepted for drop-in compatibility, but the semantics differ: in mlx_lm.server it caps per-BatchGenerator decode parallelism (default 32); in mlx-bun it enables continuous batching with this cap (mlx-bun's default is the optimized serial path). |
 | `--kv-quant` | `config`\|`off`\|`4`\|`8` | `config` serial / `off`(bf16) under `--batch N` | KV-cache quantization. `config` = per-layer `kv_config.json` (optiq parity); `off` = bf16; `4`/`8` = uniform bits (group 64, start 0). Under `--batch N`, an explicit value routes those requests to the **serial** lane (batched is bf16-only). |
+| `--adapter` | dir | none | Mount a LoRA adapter at startup (same machinery as `POST /v1/adapters`; the adapter id is the directory's basename) and make it the **default** for requests that send no `adapter` field. A request's explicit `adapter` — including `"none"` — always wins, and hot-swap via `/v1/adapters` is unchanged. `--adapter-path` is accepted as the mlx_lm.server-named alias. A bad adapter fails startup loudly rather than silently serving the base model. This is the flag `mlx-bun train`'s completion message points at. |
 | `--thinking` | `true`\|`false` | model's own (false for CPM) | Server-wide default for the chat template's `enable_thinking` (MiniCPM5/CPM and Qwen3.5 hybrid reasoning). A request's `chat_template_kwargs.enable_thinking` overrides it. |
 | `--temperature` | n ∈ [0,5] | `generation_config.json` | Server-wide sampling default. Per-request `temperature` still wins; the browser chat (sends none) inherits this. `--temp` is accepted as an alias (mlx_lm.server compat); explicit `--temperature` wins if both are given. |
 | `--top-p` | n ∈ [0,1] | `generation_config.json` | Server-wide top-p default (per-request `top_p` wins). |
@@ -65,7 +66,9 @@ Most quality knobs can be set per request in the chat body and override
 the server-wide default. Precedence, highest first:
 
 1. explicit request field (`temperature`, `top_p`, `top_k`, `seed`,
-   `repetition_penalty`, `max_tokens`/`max_completion_tokens`, `stop`,
+   `min_p`, `xtc_probability`/`xtc_threshold`, `logit_bias`,
+   `repetition_penalty`, `presence_penalty`/`frequency_penalty` (+ their
+   `*_context_size` windows), `max_tokens`/`max_completion_tokens`, `stop`,
    `chat_template_kwargs.enable_thinking`, `adapter`, `tools`)
 2. the matching `--temperature`/`--top-p`/`--top-k`/`--thinking` server default
 3. the model's `generation_config.json`
@@ -131,6 +134,7 @@ concurrently with each other.
 | vision (image parts) | ❌ serial — needs offset-0 single-seq prefill + bidirectional image mask |
 | LoRA `adapter` (resolves to ≥1) | ❌ serial — `loraState.active` is one per-generation field; per-row adapters unsupported |
 | `repetition_penalty` | ❌ serial — per-row logits processors are a later refinement |
+| `min_p` / `xtc_*` / `logit_bias` / `presence_penalty` / `frequency_penalty` | ❌ serial — one gate for the whole sampler/processor family (safe v1; min_p/XTC are per-row samplers and could batch later) |
 | explicit `seed` | ❌ serial — reproducibility ⇒ solo (matches mlx-lm) |
 | KV quant active (explicit `--kv-quant`) | ❌ serial — batched is bf16-only in v1 |
 | `temperature` / `top_p` / `top_k` | ✅ batches (each row samples with its own seed) |
@@ -160,6 +164,7 @@ inside it per the table above).
 | vision request | ✅ | ✅ via serial lane (in bf16 under Option B) |
 | LoRA `adapter` | ✅ | ✅ via serial lane |
 | `repetition_penalty` | ✅ | ✅ via serial lane |
+| `min_p` / `xtc_*` / `logit_bias` / presence+frequency penalties | ✅ | ✅ via serial lane |
 | `seed` | ✅ | ✅ via serial lane |
 | `tools` / `stop` | ✅ | ✅ (batches) |
 | `--compiled-decode`/`--perf-kernel`/`--fused-*`/`--force-wire` | ✅ (serial perf tree) | **n/a — compat mode, no perf flags by design** |
