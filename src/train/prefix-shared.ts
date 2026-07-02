@@ -28,7 +28,7 @@ import * as ops from "../mlx/ops";
 import { createCausalMask, type Cache, type Mask } from "../model/gemma4-base";
 import { MiniCPM5Model, setMiniCpmPrefixPlan } from "../model/minicpm5";
 import { Gemma4Model, setGemmaPrefixPlan } from "../model/gemma4";
-import { orpoLossFromLogps, fusedRespLogpMean, type ChunkCtx } from "./loss";
+import { orpoLossFromLogps, fusedRespLogpMean, combineFullNll, type ChunkCtx, type SftScope } from "./loss";
 import type { DpoBatch } from "./dataset";
 
 /** A model that can project final-norm hidden states to vocab logits — the only
@@ -147,6 +147,26 @@ export function prefixGatherIdx(P: number, Rc: number, Rr: number): { chosenIdx:
   return { chosenIdx, rejectedIdx };
 }
 
+/** sft_scope:"full" over the prefix-shared concat: the full-scope chosen NLL
+ *  gathers the PROMPT predictions too — hidden position t (t = 0..P-2) predicts
+ *  prompt token t+1 — and combines them with the response mean ℓw:
+ *  NLL_full = -((P-1)·promptMean + Rc·ℓw) / (P-1+Rc). The prompt head routes
+ *  through the same branchLogpMeanGathered tier as the responses (whole-vocab /
+ *  fused / flash), sharing the one concat forward's hiddens. Returns [1]
+ *  (caller owns); lw is NOT disposed. P=1 (no prompt predictions) → -ℓw. */
+export function prefixFullNll(
+  model: LogitProjector, h: MlxArray, promptIds: number[], lw: MlxArray, Rc: number, chunk?: ChunkCtx,
+): MlxArray {
+  const P = promptIds.length;
+  if (P <= 1) return combineFullNll(null, lw, 0, Rc);
+  const promptIdx = Array.from({ length: P - 1 }, (_, k) => k); // H[k] predicts promptIds[k+1]
+  const promptTargets = promptIds.slice(1);
+  const pm = branchLogpMeanGathered(model, h, promptIdx, promptTargets, chunk); // [1]
+  const nllFull = combineFullNll(pm, lw, P - 1, Rc);
+  pm.dispose();
+  return nllFull;
+}
+
 /** ORPO loss via the shared prompt-prefix single forward (MiniCPM5, B=1).
  *  `promptIds` is the shared prefix; `chosenResp`/`rejectedResp` are the response
  *  continuations. Returns the scalar loss (caller owns). Differentiable through
@@ -155,7 +175,7 @@ export function prefixGatherIdx(P: number, Rc: number, Rr: number): { chosenIdx:
 export function orpoLossPrefixShared(
   model: MiniCPM5Model,
   promptIds: number[], chosenResp: number[], rejectedResp: number[],
-  lambda: number, chunk?: ChunkCtx,
+  lambda: number, chunk?: ChunkCtx, sftScope: SftScope = "response",
 ): MlxArray {
   const P = promptIds.length, Rc = chosenResp.length, Rr = rejectedResp.length;
   if (P < 1 || Rc < 1 || Rr < 1) throw new Error("orpoLossPrefixShared: need P,Rc,Rr >= 1");
@@ -188,10 +208,14 @@ export function orpoLossPrefixShared(
   if (keepForBwd) chunk!.sink.push(h);
   const lw = branchLogpMeanGathered(model, h, chosenIdx, chosenResp, chunk);
   const lr = branchLogpMeanGathered(model, h, rejectedIdx, rejectedResp, chunk);
+  // sft_scope:"full": add the prompt predictions (H[0..P-2] → promptIds[1..P-1])
+  // from the SAME concat forward; ℓw/ℓr stay response-only for the odds ratio.
+  const nllFull = sftScope === "full" ? prefixFullNll(model, h, promptIds, lw, Rc, chunk) : null;
   if (!keepForBwd) h.dispose();
-  const loss = orpoLossFromLogps(lw, lr, lambda);
+  const loss = orpoLossFromLogps(lw, lr, lambda, nllFull ?? undefined);
   lw.dispose();
   lr.dispose();
+  nllFull?.dispose();
   return loss;
 }
 
@@ -349,7 +373,7 @@ class Gemma4PrefixSharedCache implements Cache {
 export function orpoLossPrefixSharedGemma(
   model: Gemma4Model,
   promptIds: number[], chosenResp: number[], rejectedResp: number[],
-  lambda: number, chunk?: ChunkCtx,
+  lambda: number, chunk?: ChunkCtx, sftScope: SftScope = "response",
 ): MlxArray {
   const P = promptIds.length, Rc = chosenResp.length, Rr = rejectedResp.length;
   if (P < 1 || Rc < 1 || Rr < 1) throw new Error("orpoLossPrefixSharedGemma: need P,Rc,Rr >= 1");
@@ -384,10 +408,14 @@ export function orpoLossPrefixSharedGemma(
   if (keepForBwd) chunk!.sink.push(h);
   const lw = branchLogpMeanGathered(model, h, chosenIdx, chosenResp, chunk);
   const lr = branchLogpMeanGathered(model, h, rejectedIdx, rejectedResp, chunk);
+  // sft_scope:"full": prompt predictions from the same concat forward (see
+  // orpoLossPrefixShared); ℓw/ℓr stay response-only for the odds ratio.
+  const nllFull = sftScope === "full" ? prefixFullNll(model, h, promptIds, lw, Rc, chunk) : null;
   if (!keepForBwd) h.dispose();
-  const loss = orpoLossFromLogps(lw, lr, lambda);
+  const loss = orpoLossFromLogps(lw, lr, lambda, nllFull ?? undefined);
   lw.dispose();
   lr.dispose();
+  nllFull?.dispose();
   return loss;
 }
 

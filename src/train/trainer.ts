@@ -34,7 +34,7 @@ import {
   saveAdapter, disposeLora, warmStartFromAdapter, type TrainableLora, type SaveAdapterConfig,
 } from "./lora-params";
 import { resolveRanks, bitsMapFromModel, readPerLayerKl, DEFAULT_TARGET_MODULES, type RankScaling } from "./rank";
-import { sftLoss, dpoLoss, dpoRefLogps, dpoMetrics, orpoLoss, orpoMetrics, type ChunkCtx } from "./loss";
+import { sftLoss, dpoLoss, dpoRefLogps, dpoMetrics, orpoLoss, orpoMetrics, type ChunkCtx, type SftScope } from "./loss";
 import { orpoLossPrefixShared, orpoLossPrefixSharedGemma, splitPrefixBatch } from "./prefix-shared";
 import { AdamW, warmupCosineSchedule } from "./optimizer";
 import { writeFileSync, appendFileSync, mkdirSync } from "node:fs";
@@ -134,6 +134,15 @@ export interface TrainConfig {
    *  differ. Composes with orpoFlashCe/orpoFusedCe (each branch routes through the
    *  [M,V]-free head). See src/train/prefix-shared.ts. */
   orpoPrefixShared: boolean;
+  /** ORPO L_SFT scope (`sft_scope`). "full" (default; paper/TRL-faithful):
+   *  the chosen-NLL term is the token-mean cross-entropy over the FULL
+   *  prompt+response (only padding excluded), computed from the same chosen
+   *  forward — matching TRL's ORPOTrainer chosen_nll_loss. "response":
+   *  L_NLL = -ℓw (response-only), bit-exact to pre-sft_scope runs. The
+   *  odds-ratio ℓw/ℓr terms are response-only length-normalized means in BOTH
+   *  modes (that also matches TRL). Applies to every ORPO path (naive /
+   *  chunked / fused / flash / prefix-shared / segmented). orpo only. */
+  sftScope: SftScope;
   /** Warm-start: path to an existing adapter dir (with adapters.safetensors) whose
    *  LoRA weights initialize this run instead of the random/zero init. Continues
    *  training from a checkpoint's weights; the optimizer state and LR schedule restart.
@@ -188,6 +197,7 @@ export const DEFAULT_TRAIN_CONFIG: TrainConfig = {
   orpoFusedCe: false, // default off; true = fused linear-CE head (analytic backward, no [M,vocab])
   orpoFlashCe: false, // default off; true = flash-CCE Metal-kernel head (implies fused)
   orpoPrefixShared: false, // default off; true = shared prompt-prefix single forward (B=1)
+  sftScope: "full", // paper/TRL-faithful chosen-NLL over prompt+response; "response" = pre-2026-07 behavior
   warmStartAdapter: "", // default off; path to an adapter dir to warm-start LoRA weights from
   adapterPath: "adapters",
   baseModel: "",
@@ -298,6 +308,7 @@ export async function trainLora(
     iters: cfg.iters, learning_rate: cfg.learningRate, max_seq_length: cfg.maxSeqLen,
     batch_size: cfg.batchSize, rank: cfg.rank, scale: cfg.scale,
     orpo_lambda: cfg.method === "orpo" ? cfg.orpoLambda : undefined,
+    sft_scope: cfg.method === "orpo" ? cfg.sftScope : undefined,
     adapter_path: cfg.adapterPath,
   });
 
@@ -349,6 +360,7 @@ export async function trainLora(
           segmentSize: cfg.segmentSize, iters: cfg.iters,
           numLayers: cfg.numLayers, baseModel: cfg.baseModel,
           orpoLambda: cfg.method === "orpo" ? cfg.orpoLambda : undefined,
+          sftScope: cfg.method === "orpo" ? cfg.sftScope : undefined,
         },
         wallSeconds: (Date.now() - startedAt) / 1000,
         peakGb: peakMemory() / 1e9,
@@ -780,18 +792,18 @@ async function orpoLoop(
       // plain segmented-ORPO fallback for rows whose chosen/rejected prompts differ
       // (splitPrefixBatch returns null -> two-forward segmented step).
       if (model instanceof MiniCPM5Model) {
-        segmentedOrpoPrefix = new SegmentedBackwardOrpoPrefix(model, lora, ranges, cfg.orpoLambda, segPrefixChunk);
-        segmentedOrpo = new SegmentedBackwardOrpo(model, lora, ranges, cfg.orpoLambda, segFusedChunk);
+        segmentedOrpoPrefix = new SegmentedBackwardOrpoPrefix(model, lora, ranges, cfg.orpoLambda, segPrefixChunk, cfg.sftScope);
+        segmentedOrpo = new SegmentedBackwardOrpo(model, lora, ranges, cfg.orpoLambda, segFusedChunk, cfg.sftScope);
       } else {
-        segmentedOrpoPrefix = new SegmentedBackwardOrpoPrefixGemma4(model as Gemma4Model, lora, ranges, cfg.orpoLambda, segPrefixChunk);
-        segmentedOrpo = new SegmentedBackwardOrpoGemma4(model as Gemma4Model, lora, ranges, cfg.orpoLambda, segFusedChunk);
+        segmentedOrpoPrefix = new SegmentedBackwardOrpoPrefixGemma4(model as Gemma4Model, lora, ranges, cfg.orpoLambda, segPrefixChunk, cfg.sftScope);
+        segmentedOrpo = new SegmentedBackwardOrpoGemma4(model as Gemma4Model, lora, ranges, cfg.orpoLambda, segFusedChunk, cfg.sftScope);
       }
       emit({ type: "stage", stage: "setup", progress: 0.04,
         message: `orpo segmented + prefix-share (${model instanceof Gemma4Model ? "e4b" : "MiniCPM5"}): single concat forward streamed over ${Math.ceil(model.layers.length / cfg.segmentSize)} segments of <=${cfg.segmentSize} layers (two-forward fallback on prompt mismatch)` });
     } else if (model instanceof MiniCPM5Model)
-      segmentedOrpo = new SegmentedBackwardOrpo(model, lora, ranges, cfg.orpoLambda, segFusedChunk);
+      segmentedOrpo = new SegmentedBackwardOrpo(model, lora, ranges, cfg.orpoLambda, segFusedChunk, cfg.sftScope);
     else if (model instanceof Gemma4Model)
-      segmentedOrpo = new SegmentedBackwardOrpoGemma4(model, lora, ranges, cfg.orpoLambda, segFusedChunk);
+      segmentedOrpo = new SegmentedBackwardOrpoGemma4(model, lora, ranges, cfg.orpoLambda, segFusedChunk, cfg.sftScope);
     else
       throw new Error("segmented backward (segmentSize > 0) for ORPO is only wired for MiniCPM5 and Gemma4");
     if (!useSegmentedPrefix) emit({ type: "stage", stage: "setup", progress: 0.04,
@@ -837,12 +849,12 @@ async function orpoLoop(
             const split = splitPrefixBatch(currentBatch!);
             if (split) {
               if (model instanceof MiniCPM5Model)
-                return orpoLossPrefixShared(model, split.promptIds, split.chosenResp, split.rejectedResp, cfg.orpoLambda, chunk);
-              return orpoLossPrefixSharedGemma(model as Gemma4Model, split.promptIds, split.chosenResp, split.rejectedResp, cfg.orpoLambda, chunk);
+                return orpoLossPrefixShared(model, split.promptIds, split.chosenResp, split.rejectedResp, cfg.orpoLambda, chunk, cfg.sftScope);
+              return orpoLossPrefixSharedGemma(model as Gemma4Model, split.promptIds, split.chosenResp, split.rejectedResp, cfg.orpoLambda, chunk, cfg.sftScope);
             }
             notePrefixFallback();
           }
-          return orpoLoss(model, currentBatch!, cfg.orpoLambda, chunk);
+          return orpoLoss(model, currentBatch!, cfg.orpoLambda, chunk, cfg.sftScope);
         } finally {
           restorePrimals(lora, saved);
         }
@@ -897,7 +909,7 @@ async function orpoLoop(
         // Diagnostics recompute the two forwards (like dpoMetrics) — cheap at
         // B=1 (response-only head, no full logits) and gated by stepsPerReport.
         // Reusing the value_and_grad forward is a shared-with-DPO follow-on.
-        const m = orpoMetrics(model, currentBatch!, cfg.orpoLambda);
+        const m = orpoMetrics(model, currentBatch!, cfg.orpoLambda, cfg.sftScope);
         const elapsed = (Date.now() - t0) / 1000;
         emit({
           type: "metric",
@@ -929,7 +941,7 @@ async function orpoLoop(
             chosenIds: [ex.chosenIds], rejectedIds: [ex.rejectedIds],
             chosenMask: [ex.chosenMask], rejectedMask: [ex.rejectedMask],
           };
-          const m = orpoMetrics(model, vb, cfg.orpoLambda);
+          const m = orpoMetrics(model, vb, cfg.orpoLambda, cfg.sftScope);
           vl += m.loss; va += m.accuracy; vm += m.margin; vn++;
           clearCache();
         }

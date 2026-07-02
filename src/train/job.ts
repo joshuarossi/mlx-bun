@@ -51,6 +51,7 @@ interface FinetuneSubmit {
   orpo_fused_ce?: boolean;
   orpo_flash_ce?: boolean;
   orpo_prefix_shared?: boolean;
+  sft_scope?: "full" | "response";
   warm_start_adapter?: string;
 }
 
@@ -67,6 +68,12 @@ function parseConfig(raw: Record<string, unknown>): { modelDir: string; dataDir:
   // value from the caller (CLI/API) still wins via ??. finetuneRunner drops the
   // quantized-head pieces if the base turns out to be unquantized.
   const isOrpo = (c.method ?? "sft") === "orpo";
+
+  // ORPO L_SFT scope: "full" (default; paper/TRL-faithful) | "response"
+  // (pre-2026-07 behavior). Validate here so a typo fails at submit, not mid-run.
+  const sftScope = c.sft_scope ?? DEFAULT_TRAIN_CONFIG.sftScope;
+  if (sftScope !== "full" && sftScope !== "response")
+    throw new Error(`finetune job: sft_scope must be "full" or "response" (got ${JSON.stringify(c.sft_scope)})`);
 
   const cfg: TrainConfig = {
     ...DEFAULT_TRAIN_CONFIG,
@@ -105,6 +112,7 @@ function parseConfig(raw: Record<string, unknown>): { modelDir: string; dataDir:
     orpoFusedCe: c.orpo_fused_ce ?? DEFAULT_TRAIN_CONFIG.orpoFusedCe,
     orpoFlashCe: c.orpo_flash_ce ?? (isOrpo ? true : DEFAULT_TRAIN_CONFIG.orpoFlashCe),
     orpoPrefixShared: c.orpo_prefix_shared ?? (isOrpo ? true : DEFAULT_TRAIN_CONFIG.orpoPrefixShared),
+    sftScope,
     warmStartAdapter: c.warm_start_adapter ?? DEFAULT_TRAIN_CONFIG.warmStartAdapter,
     adapterPath: c.adapter_path,
     baseModel: c.model_dir,

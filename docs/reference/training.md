@@ -112,12 +112,19 @@ Probe a file before submitting: `POST /api/finetune/inspect-dataset` with
   and a preference term, `L = L_NLL(chosen) + λ·L_OR`, with
   `L_OR = -log σ(log_odds)` and
   `log_odds = (ℓ_w − ℓ_r) − (log1mexp(ℓ_w) − log1mexp(ℓ_r))`, where `ℓ` is the
-  **length-normalized** (mean over response tokens) log-prob. Uses the same
+  **length-normalized** (mean over response tokens) log-prob. The SFT term's
+  scope is `sft_scope`: **`full`** (default; paper/TRL-faithful) computes
+  `L_NLL` as the token-mean cross-entropy over the **full prompt+response** of
+  the chosen sequence (only padding excluded — TRL's `chosen_nll_loss`),
+  from the same chosen forward (no extra forward); **`response`** uses
+  `L_NLL = −ℓ_w` (response-only — the pre-2026-07 mlx-bun behavior, kept for
+  reproducing old runs). The odds-ratio `ℓ_w/ℓ_r` stay response-only in **both**
+  modes (that also matches TRL). Uses the same
   `{prompt, chosen, rejected}` preference data as DPO but needs **no reference
   model** (2 forwards/step vs DPO's 4). Default LR `1e-5` (lower than DPO — the
   loss carries a full SFT NLL term a high LR destabilizes). Tune with
-  `orpo_lambda`, `orpo_warmup_iters`, `orpo_lr_schedule`. Design + optimization
-  roadmap: [orpo-training](../design/orpo-training.md).
+  `orpo_lambda`, `orpo_warmup_iters`, `orpo_lr_schedule`, `sft_scope`. Design +
+  optimization roadmap: [orpo-training](../design/orpo-training.md).
 
 The ORPO head + long-context machinery compose into one stack (all B=1), each
 piece independently toggled and each falling back cleanly:
@@ -179,6 +186,7 @@ are `DEFAULT_TRAIN_CONFIG` (trainer.ts:89).
 | `orpo_fused_ce` | bool | `false` | Fused linear-CE head: one CustomVjp with an analytic softmax−onehot backward (MLX `quantizedMatmul` both ways) — no autograd through the head, no retained `[M,vocab]`. Exact; `[chunk,vocab]` transient (orpo only) |
 | `orpo_flash_ce` | bool | `false` | Route the fused head through the **flash-CCE Metal kernel** (verbatim MLX steel GEMM + ORPO epilogue, fwd **and** bwd): neither `[M,vocab]` nor a dequantized head touches HBM → `[M,vocab]`-free, fastest on large vocab (e4b bwd 754 ms, 0.93 GB flat @ M=8192). Implies the fused head. The Apple-CCE coeff filter / blockMax skip are opt-in via `MLX_BUN_CCE_BWD_FILTER_EPS` / `_BLOCK_EPS` (default off — exact). B=1 (orpo only) |
 | `orpo_prefix_shared` | bool | `false` | Shared prompt-prefix: one forward over `[prompt; chosen; rejected]` with a block-sparse mask + block-wise RoPE, so the shared prompt is encoded **once** (a big win when the prompt dominates). Falls back to two-forward per row on prompt mismatch. Composes with the flash head and the segmented backward (MiniCPM5 + e4b). B=1 (orpo only) |
+| `sft_scope` | `full` \| `response` | `full` | Scope of ORPO's chosen-NLL term. `full` (paper/TRL-faithful): token-mean CE over the **full prompt+response** (only padding excluded), from the same chosen forward. `response`: `L_NLL = −ℓ_w` — reproduces pre-2026-07 runs bit-exactly. The odds-ratio `ℓ_w/ℓ_r` are response-only in both modes. Applies to every ORPO path (naive/chunked/fused/flash/prefix/segmented) (orpo only) |
 
 ### Environment variables (training)
 

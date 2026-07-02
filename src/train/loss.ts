@@ -447,16 +447,107 @@ export function dpoMetrics(
 //
 // Reference-FREE: one objective, no reference model (vs DPO's scale-0 ref pass).
 //   L = L_NLL(chosen)  +  λ · L_OR
-//   L_NLL = -mean_response_logp(chosen)                 (the SFT term; unweighted)
+//   L_NLL = the chosen-sequence SFT term (unweighted); scope selected by sft_scope:
+//     "full"     (default in TrainConfig; paper/TRL-faithful): mean cross-entropy
+//                over ALL non-pad supervised positions of the chosen sequence —
+//                prompt AND response (TRL masks only padding to -100 for the
+//                chosen_nll_loss; nn.CrossEntropyLoss reduction="mean").
+//     "response" (the pre-2026-07 mlx-bun behavior, bit-exact): -ℓw, the negative
+//                mean response log-prob.
 //   L_OR  = -log σ(log_odds)
 //   log_odds = (ℓw - ℓr) - (log1mexp(ℓw) - log1mexp(ℓr))
 // where ℓ is the LENGTH-NORMALIZED (mean over response tokens) log-prob — the
-// paper's choice (and TRL's), distinct from DPO's summed seqLogp. Two facts
-// shape the code: (1) ℓw feeds BOTH terms (L_NLL = -ℓw), so the chosen forward
-// does double duty; (2) only 2 forwards/step (chosen + rejected), both with
-// grad, no reference. This is the naïve full-logits oracle path — the chunked /
+// paper's choice (and TRL's), distinct from DPO's summed seqLogp. CRITICAL:
+// ℓw/ℓr stay RESPONSE-ONLY in BOTH sft_scope modes (TRL's get_batch_logps uses
+// prompt-masked labels for the odds ratio; only the NLL term is full-sequence).
+// Two facts shape the code: (1) ℓw feeds BOTH terms (under "full" the chosen
+// forward additionally yields the prompt-position log-probs — same forward, the
+// head just runs over the extended span); (2) only 2 forwards/step (chosen +
+// rejected), both with grad, no reference. The REJECTED branch never needs
+// prompt logps. This is the naïve full-logits oracle path — the chunked /
 // response-only / segmented tiers validate against it (see the design's oracle
 // ladder, docs/design/orpo-training.md).
+
+/** SFT-term scope for ORPO's L_NLL(chosen): "full" = prompt+response token-mean
+ *  CE (paper/TRL-faithful); "response" = -ℓw (the pre-change behavior). The
+ *  odds-ratio ℓ terms are response-only in both modes. */
+export type SftScope = "full" | "response";
+
+/** A contiguous supervised input-position span [startT, startT+M): position t
+ *  predicts token ids[t+1]. The response span comes from the mask; "full" mode
+ *  additionally runs the head over the prompt span {startT: 0, M: respStartT}. */
+export interface HeadSpan { startT: number; M: number }
+
+/** The response span from a DPO-row mask (mask[t+1]==1 ⇔ input position t is
+ *  supervised): first supervised position + count. M<=0 ⇔ no response. */
+export function respSpanFromMask(mask: number[], T: number): HeadSpan {
+  let startT = -1;
+  let M = 0;
+  for (let t = 0; t < T; t++) if (mask[t + 1]) { if (startT < 0) startT = t; M++; }
+  return { startT, M };
+}
+
+/** Length-normalized mean log-prob over the contiguous input-position span
+ *  [s0, s0+n) of `h [1, T, hidden]` (post-finalNorm), scoring targets
+ *  ids[s0+1 .. s0+n]. The span-parameterized generalization of
+ *  responseOnlyLogpMean (same ops); used for the prompt span under
+ *  sft_scope:"full". Whole-vocab autograd head. Returns [1] (caller owns);
+ *  disposes nothing it didn't create. */
+export function spanLogpMeanFromHidden(
+  model: { logitsFromHidden(h: MlxArray): MlxArray },
+  h: MlxArray, // [1, T, hidden] post-finalNorm
+  ids: number[],
+  s0: number,
+  n: number,
+): MlxArray {
+  if (n <= 0) return MlxArray.fromFloat32(new Float32Array([0]), [1]);
+  const hidden = h.shape[2]!;
+  const start = MlxArray.fromInt32(new Int32Array([s0]), [1]);
+  const hSpan = ops.sliceDynamic(h, start, [1], [1, n, hidden]); // [1, n, hidden]
+  const logits = model.logitsFromHidden(hSpan); // [1, n, V]
+  const V = logits.shape[2]!;
+  const logits2d = ops.reshape(logits, [n, V]);
+
+  const targetsHost = new Int32Array(n);
+  for (let i = 0; i < n; i++) targetsHost[i] = ids[s0 + 1 + i]!;
+  const targets = MlxArray.fromInt32(targetsHost, [n, 1]);
+
+  const lse = ops.logsumexpAxis(logits2d, -1, false); // [n]
+  const gathered = ops.takeAlongAxis(logits2d, targets, -1); // [n, 1]
+  const picked = ops.reshape(gathered, [n]); // [n]
+  const logp = ops.sub(picked, lse); // [n] log_softmax at the label
+  const logpF = logp.dtype === Dtype.float32 ? logp : logp.astype(Dtype.float32);
+  const sumLogp = ops.sumAxis(logpF, 0, false); // scalar
+  const meanScalar = ops.mulScalar(sumLogp, 1 / n);
+  const mean = ops.reshape(meanScalar, [1]); // [1]
+
+  for (const a of [start, hSpan, logits, logits2d, targets, lse, gathered, picked, logp, sumLogp, meanScalar]) a.dispose();
+  if (logpF !== logp) logpF.dispose();
+  return mean;
+}
+
+/** Combine the prompt-span mean logp (`promptMean`, over nPrompt positions) and
+ *  the response mean logp (`lw`, over nResp positions) into the FULL-scope chosen
+ *  NLL: `-(nPrompt·promptMean + nResp·lw) / (nPrompt + nResp)` — the token-mean
+ *  CE over all prompt+response supervised positions (nn.CrossEntropyLoss
+ *  reduction="mean" over the label-shifted non-pad positions). Graph-preserving
+ *  (pure ops on the two means), so the head gradient flows to BOTH spans. Does
+ *  NOT dispose promptMean/lw (caller owns); returns [1] (caller owns). */
+export function combineFullNll(
+  promptMean: MlxArray | null,
+  lw: MlxArray,
+  nPrompt: number,
+  nResp: number,
+): MlxArray {
+  if (!promptMean || nPrompt <= 0) return ops.neg(lw); // no prompt predictions → full == response
+  const ps = ops.mulScalar(promptMean, nPrompt); // Σ prompt logp (reconstructed)
+  const rs = ops.mulScalar(lw, nResp); // Σ response logp (reconstructed)
+  const sum = ops.add(ps, rs);
+  const mean = ops.mulScalar(sum, 1 / (nPrompt + nResp));
+  const out = ops.neg(mean);
+  for (const a of [ps, rs, sum, mean]) a.dispose();
+  return out;
+}
 
 /** Per-row LENGTH-NORMALIZED response log-prob for one branch (B>=1): the
  *  summed response logp divided by the per-row response-token count. Pad/prompt
@@ -654,12 +745,11 @@ export function chunkedLogpMeanFromHidden(
   mask: number[],
   chunkSize: number,
   sink: Array<{ dispose(): void }>,
+  span?: HeadSpan, // override the mask-derived response span (sft_scope:"full" prompt span)
 ): MlxArray {
   const L = ids.length;
   const T = L - 1;
-  let startT = -1;
-  let M = 0;
-  for (let t = 0; t < T; t++) if (mask[t + 1]) { if (startT < 0) startT = t; M++; }
+  const { startT, M } = span ?? respSpanFromMask(mask, T);
   if (M <= 0) return MlxArray.fromFloat32(new Float32Array([0]), [1]);
   const hidden = h.shape[2]!;
 
@@ -779,12 +869,11 @@ export function fusedLogpMeanFromHidden(
   sink: Array<{ dispose(): void }>,
   vocabBlock = 0,
   flash = false,
+  span?: HeadSpan, // override the mask-derived response span (sft_scope:"full" prompt span)
 ): MlxArray {
   const L = ids.length;
   const T = L - 1;
-  let startT = -1;
-  let M = 0;
-  for (let t = 0; t < T; t++) if (mask[t + 1]) { if (startT < 0) startT = t; M++; }
+  const { startT, M } = span ?? respSpanFromMask(mask, T);
   if (M <= 0) return MlxArray.fromFloat32(new Float32Array([0]), [1]);
   const hidden = h.shape[2]!;
   const startArr = MlxArray.fromInt32(new Int32Array([startT]), [1]);
@@ -1214,56 +1303,225 @@ function orpoLogOdds(lw: MlxArray, lr: MlxArray): MlxArray {
   return logOdds;
 }
 
+/** The chosen branch under sft_scope:"full" (B=1): ONE forward yields both the
+ *  response-only mean logp ℓw (fed to the odds ratio — computed exactly as the
+ *  "response" path computes it, same span/head) AND the full-scope chosen NLL
+ *  (the head additionally runs over the PROMPT span [0, startT), combined via
+ *  combineFullNll). No third forward: the hidden states already cover the
+ *  prompt. Routes both spans through the same head tier the response path uses
+ *  (flash/fused CustomVjp, Checkpoint token-chunks, or the whole-vocab autograd
+ *  head), so the memory bounds hold for the extended span too. Caller owns both
+ *  returned arrays ([1] each). */
+function chosenLogpMeanAndFullNllB1(
+  model: RuntimeModel,
+  ids: number[],
+  mask: number[],
+  validLen: number,
+  chunk?: ChunkCtx,
+): { lw: MlxArray; nllFull: MlxArray } {
+  const L = ids.length;
+  const T = L - 1;
+  const { startT, M } = respSpanFromMask(mask, T);
+  if (M <= 0)
+    return {
+      lw: MlxArray.fromFloat32(new Float32Array([0]), [1]),
+      nllFull: MlxArray.fromFloat32(new Float32Array([0]), [1]),
+    };
+
+  const inputHost = new Int32Array(T);
+  for (let t = 0; t < T; t++) inputHost[t] = ids[t]!;
+  const inputIds = MlxArray.fromInt32(inputHost, [1, T]);
+  const inputValid = [Math.max(0, Math.min(validLen, L) - 1)];
+  const h = trainForwardHidden(model, inputIds, inputValid); // [1, T, hidden]
+  inputIds.dispose();
+
+  const useFused = !!chunk && chunk.chunkSize > 0 && !!(chunk.fused || chunk.flash);
+  const useChunked = !!chunk && chunk.chunkSize > 0 && !useFused;
+  let lw: MlxArray;
+  let pm: MlxArray | null = null; // prompt-span mean logp (positions [0, startT))
+  if (useFused) {
+    chunk!.sink.push(h); // CustomVjp/flash primal source — alive until post-eval
+    lw = fusedLogpMeanFromHidden(model, h, ids, mask, chunk!.chunkSize, chunk!.sink, 0, chunk!.flash ?? false, { startT, M });
+    if (startT > 0)
+      pm = fusedLogpMeanFromHidden(model, h, ids, mask, chunk!.chunkSize, chunk!.sink, 0, chunk!.flash ?? false, { startT: 0, M: startT });
+  } else if (useChunked) {
+    chunk!.sink.push(h); // Checkpoint input — alive until post-eval
+    lw = chunkedLogpMeanFromHidden(model, h, ids, mask, chunk!.chunkSize, chunk!.sink, { startT, M });
+    if (startT > 0)
+      pm = chunkedLogpMeanFromHidden(model, h, ids, mask, chunk!.chunkSize, chunk!.sink, { startT: 0, M: startT });
+  } else {
+    lw = spanLogpMeanFromHidden(model, h, ids, startT, M);
+    if (startT > 0) pm = spanLogpMeanFromHidden(model, h, ids, 0, startT);
+    h.dispose(); // whole-vocab path builds a normal autograd graph — the loss retains it
+  }
+  const nllFull = combineFullNll(pm, lw, startT, M);
+  pm?.dispose();
+  return { lw, nllFull };
+}
+
+/** The chosen branch under sft_scope:"full" for B>1 (the batched full-logits
+ *  path): one forward, one label-logp pass, then TWO masked reductions —
+ *  per-row response means for ℓw [B] (identical positions/count to the
+ *  "response" path) and the flattened token-mean full NLL over all non-pad
+ *  supervised positions across the batch (nn.CrossEntropyLoss
+ *  reduction="mean"). Caller owns both returned arrays. */
+function chosenLogpMeanAndFullNllBatch(
+  model: RuntimeModel,
+  ids: number[][],
+  mask: number[][],
+  validLen: number[],
+): { lw: MlxArray; nllFull: MlxArray } {
+  const B = ids.length;
+  const L = ids[0]!.length;
+  const T = L - 1;
+  const inputHost = new Int32Array(B * T);
+  for (let b = 0; b < B; b++)
+    for (let t = 0; t < T; t++) inputHost[b * T + t] = ids[b]![t]!;
+  const inputIds = MlxArray.fromInt32(inputHost, [B, T]);
+  const inputValid = validLen.map((v) => Math.max(0, Math.min(v, L) - 1));
+  const logits = trainForward(model, inputIds, inputValid); // [B, T, V]
+  inputIds.dispose();
+  const V = logits.shape[2]!;
+  const N = B * T;
+
+  const targetsHost = new Int32Array(N);
+  const respMaskHost = new Float32Array(N);
+  const fullMaskHost = new Float32Array(N);
+  const respRecip = new Float32Array(B);
+  let fullCount = 0;
+  for (let b = 0; b < B; b++) {
+    const len = Math.min(validLen[b]!, L);
+    let c = 0;
+    for (let t = 0; t < T; t++) {
+      const flat = b * T + t;
+      targetsHost[flat] = ids[b]![t + 1]!;
+      respMaskHost[flat] = mask[b]![t + 1]!; // resp_mask[:, 1:]
+      c += mask[b]![t + 1]!;
+      // full scope: every non-pad supervised position (prompt + response),
+      // i.e. the predicted token ids[t+1] is a real token (t+1 < len).
+      if (t + 1 < len) { fullMaskHost[flat] = 1; fullCount++; }
+    }
+    respRecip[b] = 1 / Math.max(c, 1);
+  }
+
+  const logits2d = ops.reshape(logits, [N, V]);
+  logits.dispose();
+  const targets = MlxArray.fromInt32(targetsHost, [N, 1]);
+  const lse = ops.logsumexpAxis(logits2d, -1, false); // [N]
+  const gathered = ops.takeAlongAxis(logits2d, targets, -1); // [N, 1]
+  const picked = ops.reshape(gathered, [N]); // [N]
+  const logp = ops.sub(picked, lse); // [N] log_softmax at the label
+  const logpF = logp.dtype === Dtype.float32 ? logp : logp.astype(Dtype.float32);
+
+  // ℓw: per-row response length-normalized mean (same as branchLogpMean B>1).
+  const rm = MlxArray.fromFloat32(respMaskHost, [N]);
+  const respMasked = ops.mul(logpF, rm); // [N]
+  const resp2d = ops.reshape(respMasked, [B, T]);
+  const respSum = ops.sumAxis(resp2d, 1, false); // [B]
+  const recipArr = MlxArray.fromFloat32(respRecip, [B]);
+  const lw = ops.mul(respSum, recipArr); // [B]
+
+  // Full NLL: token-mean over ALL non-pad supervised positions, batch-flattened.
+  const fm = MlxArray.fromFloat32(fullMaskHost, [N]);
+  const fullMasked = ops.mul(logpF, fm); // [N]
+  const fullSum = ops.sumAxis(fullMasked, 0, false); // scalar Σ logp
+  const fullMean = ops.mulScalar(fullSum, 1 / Math.max(fullCount, 1));
+  const nllFull = ops.neg(fullMean); // scalar
+
+  for (const a of [logits2d, targets, lse, gathered, picked, logp, rm, respMasked, resp2d, respSum, recipArr, fm, fullMasked, fullSum, fullMean]) a.dispose();
+  if (logpF !== logp) logpF.dispose();
+  return { lw, nllFull };
+}
+
 /** The pure ORPO reduction from the two length-normalized log-probs ([B] each):
- *  `L_NLL + λ·L_OR` with `L_NLL = mean(-ℓw)` (unweighted SFT term) and
- *  `L_OR = mean(softplus(-log_odds))`. Model-free and graph-preserving — the
- *  forwards live in `orpoLoss`, the math (and its grad path) lives here, so the
- *  loss can be unit-tested against a hand reference with synthetic lw/lr. Does
- *  NOT dispose lw/lr (the caller owns them); returns the scalar loss. */
-export function orpoLossFromLogps(lw: MlxArray, lr: MlxArray, lambda: number): MlxArray {
-  const negLw = ops.neg(lw);
-  const nll = ops.meanAll(negLw, false); // scalar  L_NLL = mean(-ℓw)
+ *  `L_NLL + λ·L_OR` with `L_OR = mean(softplus(-log_odds))`. The SFT term:
+ *  when `nllFull` is ABSENT (sft_scope:"response"), `L_NLL = mean(-ℓw)` —
+ *  bit-exact to the pre-sft_scope behavior; when PRESENT (sft_scope:"full"),
+ *  `L_NLL = meanAll(nllFull)`, the separately-computed full-scope chosen NLL
+ *  ([1]/[B]/scalar all reduce correctly). The odds-ratio term uses the
+ *  response-only ℓw/ℓr in BOTH modes (matching TRL). Model-free and
+ *  graph-preserving — the forwards live in `orpoLoss`, the math (and its grad
+ *  path) lives here, so the loss can be unit-tested against a hand reference
+ *  with synthetic lw/lr. Does NOT dispose lw/lr/nllFull (the caller owns them);
+ *  returns the scalar loss. */
+export function orpoLossFromLogps(lw: MlxArray, lr: MlxArray, lambda: number, nllFull?: MlxArray): MlxArray {
+  const negLw = nllFull ? null : ops.neg(lw);
+  const nll = ops.meanAll(nllFull ?? negLw!, false); // scalar  L_NLL
   const logOdds = orpoLogOdds(lw, lr); // [B]
   const negLO = ops.neg(logOdds);
   const orPer = ops.softplus(negLO); // [B]  -log σ(log_odds)
   const orLoss = ops.meanAll(orPer, false); // scalar L_OR
   const lamOr = ops.mulScalar(orLoss, lambda);
   const loss = ops.add(nll, lamOr);
-  for (const a of [negLw, nll, logOdds, negLO, orPer, orLoss, lamOr]) a.dispose();
+  for (const a of [nll, logOdds, negLO, orPer, orLoss, lamOr]) a.dispose();
+  negLw?.dispose();
   return loss;
 }
 
 /** ORPO loss for one preference batch (B>=1). Runs the chosen + rejected policy
  *  forwards (adapter active), reduces via {@link orpoLossFromLogps}. No
- *  reference forward. Returns a scalar MlxArray (caller owns). */
-export function orpoLoss(model: RuntimeModel, batch: DpoBatch, lambda: number, chunk?: ChunkCtx): MlxArray {
+ *  reference forward. `sftScope` selects the L_NLL scope: "response" (default —
+ *  bit-exact to the pre-sft_scope code path) or "full" (paper/TRL-faithful:
+ *  the chosen NLL covers prompt+response, computed from the SAME chosen forward
+ *  — no third forward; the rejected branch is untouched). Returns a scalar
+ *  MlxArray (caller owns). */
+export function orpoLoss(
+  model: RuntimeModel,
+  batch: DpoBatch,
+  lambda: number,
+  chunk?: ChunkCtx,
+  sftScope: SftScope = "response",
+): MlxArray {
   const cLen = chosenLengths(batch);
   const rLen = rejectedLengths(batch);
-  const lw = branchLogpMean(model, batch.chosenIds, batch.chosenMask, cLen, chunk); // [B]
+  let lw: MlxArray;
+  let nllFull: MlxArray | null = null;
+  if (sftScope === "full") {
+    const r = batch.chosenIds.length === 1
+      ? chosenLogpMeanAndFullNllB1(model, batch.chosenIds[0]!, batch.chosenMask[0]!, cLen[0]!, chunk)
+      : chosenLogpMeanAndFullNllBatch(model, batch.chosenIds, batch.chosenMask, cLen);
+    lw = r.lw;
+    nllFull = r.nllFull;
+  } else {
+    lw = branchLogpMean(model, batch.chosenIds, batch.chosenMask, cLen, chunk); // [B]
+  }
   const lr = branchLogpMean(model, batch.rejectedIds, batch.rejectedMask, rLen, chunk); // [B]
-  const loss = orpoLossFromLogps(lw, lr, lambda);
-  // Safe to drop the lw/lr wrappers now — the loss graph retains the underlying
-  // nodes (same pattern as dpoLoss disposing piC/piR before returning).
+  const loss = orpoLossFromLogps(lw, lr, lambda, nllFull ?? undefined);
+  // Safe to drop the lw/lr/nllFull wrappers now — the loss graph retains the
+  // underlying nodes (same pattern as dpoLoss disposing piC/piR before returning).
   lw.dispose();
   lr.dispose();
+  nllFull?.dispose();
   return loss;
 }
 
 /** ORPO diagnostics (no grad): the total loss and its `nll`/`or` split,
  *  preference accuracy (mean of ℓw > ℓr), and reward margin (mean log_odds).
- *  Runs its own two forwards. */
+ *  Runs its own two forwards. `sftScope` selects the reported nll's scope so
+ *  the diagnostic loss matches the training objective ("response" default). */
 export function orpoMetrics(
   model: RuntimeModel,
   batch: DpoBatch,
   lambda: number,
+  sftScope: SftScope = "response",
 ): { loss: number; nll: number; or: number; accuracy: number; margin: number } {
   const cLen = chosenLengths(batch);
   const rLen = rejectedLengths(batch);
-  const lw = branchLogpMean(model, batch.chosenIds, batch.chosenMask, cLen); // [B]
+  let lw: MlxArray;
+  let nllFull: MlxArray | null = null;
+  if (sftScope === "full") {
+    const r = batch.chosenIds.length === 1
+      ? chosenLogpMeanAndFullNllB1(model, batch.chosenIds[0]!, batch.chosenMask[0]!, cLen[0]!)
+      : chosenLogpMeanAndFullNllBatch(model, batch.chosenIds, batch.chosenMask, cLen);
+    lw = r.lw;
+    nllFull = r.nllFull;
+  } else {
+    lw = branchLogpMean(model, batch.chosenIds, batch.chosenMask, cLen); // [B]
+  }
   const lr = branchLogpMean(model, batch.rejectedIds, batch.rejectedMask, rLen); // [B]
 
-  const negLw = ops.neg(lw);
-  const nllArr = ops.meanAll(negLw, false);
+  const negLw = ops.neg(lw); // (diagnostic -ℓw; the nll split uses nllFull under "full")
+  const nllArr = nllFull ? ops.meanAll(nllFull, false) : ops.meanAll(negLw, false);
   const logOdds = orpoLogOdds(lw, lr); // [B]
   const negLO = ops.neg(logOdds);
   const orPer = ops.softplus(negLO);
@@ -1285,5 +1543,6 @@ export function orpoMetrics(
   margin /= loVals.length;
 
   for (const a of [lw, lr, negLw, nllArr, logOdds, negLO, orPer, orArr]) a.dispose();
+  nllFull?.dispose();
   return { loss, nll, or, accuracy: acc, margin };
 }

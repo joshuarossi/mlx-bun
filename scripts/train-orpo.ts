@@ -53,6 +53,14 @@ const SCALE = num("SCALE", 2.0);
 const LAMBDA = num("LAMBDA", 0.1);
 const FLASH = process.env.FLASH !== "0";
 const PREFIX = process.env.PREFIX !== "0";
+// ORPO L_SFT scope: "full" (default; paper/TRL-faithful chosen-NLL over
+// prompt+response) | "response" (the pre-2026-07 response-only behavior).
+const sftScopeEnv = process.env.SFT_SCOPE ?? "full";
+if (sftScopeEnv !== "full" && sftScopeEnv !== "response") {
+  console.error(`SFT_SCOPE must be "full" or "response" (got ${sftScopeEnv})`);
+  process.exit(1);
+}
+const SFT_SCOPE: "full" | "response" = sftScopeEnv as "full" | "response";
 const SAVE_EVERY = num("SAVE_EVERY", 0); // >0 → save a mountable checkpoint every N steps (crash-safe)
 const RESUME = process.env.RESUME ?? "";  // path to an adapter/checkpoint dir → warm-start LoRA weights
 const modelName = basename(MODEL.replace(/\/$/, "")).slice(0, 24);
@@ -79,6 +87,7 @@ console.log(`\n=== ORPO LoRA — ${modelName}${isGemma ? " (e4b: PERF_KERNEL=0 F
 console.log(`head:        ${FLASH ? "flash-CCE Metal (steel fwd+bwd, [M,V]-free)" : "fused linear-CE (MLX quantizedMatmul)"}`);
 console.log(`segmented:   ${SEG > 0 ? `on (${SEG} layers/segment — bounds activation memory)` : "off (all activations resident)"}`);
 console.log(`prefix-share:${PREFIX ? " on (single forward over [prompt; chosen; rejected]; two-forward fallback on prompt mismatch)" : " off (two-forward)"}`);
+console.log(`sft_scope:   ${SFT_SCOPE}${SFT_SCOPE === "full" ? " (paper/TRL-faithful chosen-NLL over prompt+response; SFT_SCOPE=response for the old response-only term)" : " (pre-2026-07 response-only chosen-NLL)"}`);
 console.log(`seq=${SEQ} iters=${ITERS} lr=${LR} rank=${RANK} scale=${SCALE} λ=${LAMBDA}  → ${ADAPTER}`);
 if (RESUME) console.log(`warm-start:  from ${RESUME} (weights only; optimizer + schedule restart)`);
 console.log("");
@@ -97,6 +106,7 @@ await trainLora(model, tok, tmpl, DATA, {
   orpoChunkSize: 512,
   segmentSize: SEG,             // segmented backward (0 = off)
   orpoPrefixShared: PREFIX,     // single concat forward (per-row two-forward fallback)
+  sftScope: SFT_SCOPE,          // SFT_SCOPE=response reproduces pre-2026-07 runs
   warmStartAdapter: RESUME,     // RESUME=<adapter/checkpoint dir> → continue from its weights
   maxSeqLen: SEQ, batchSize: 1, seed: 0,
   stepsPerReport: 1, stepsPerEval: SAVE_EVERY > 0 ? SAVE_EVERY : 1_000_000,
