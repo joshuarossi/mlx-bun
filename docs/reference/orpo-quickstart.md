@@ -37,6 +37,11 @@ mlx-bun train e4b --data ./prefs --resume ~/.cache/mlx-bun/mlx-bun-finetunes/orp
 | `--rank` / `--scale` | orpo 16 / 2.0 | LoRA rank (by_bits scaled) / scale |
 | `--seq` | e4b 8192 · cpm 4096 | max sequence length |
 | `--lambda` | 0.1 | ORPO odds-ratio weight |
+| `--sft-scope` | `full` | ORPO chosen-NLL scope (`sft_scope`): `full` = paper/TRL-faithful prompt+response CE · `response` = response-only, bit-exact to pre-2026-07 runs |
+| `--grad-accum` | 1 | gradient accumulation steps (effective batch = batch × grad-accum at batch-size-1 memory) |
+| `--grad-clip` | 1.0 | gradient-norm clip (0 = off) |
+| `--seed` | 0 | data-shuffle / init seed |
+| `--val-size` | 256 | max validation examples per eval |
 | `--seg` | 2 | layers/segment (segmented backward); `--no-segment` to disable |
 | `--save-every` | off | mountable checkpoint every N steps |
 | `--resume <dir>` | — | warm-start LoRA weights from a checkpoint/adapter |

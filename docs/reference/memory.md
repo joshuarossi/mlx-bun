@@ -38,7 +38,7 @@ mlx-bun memory schedule --at 03:00
 mlx-bun memory unschedule
 ```
 
-`memory synthesize` is currently safe and side-effect-free: it reports that M1 stage bodies are not implemented and writes nothing. In the full flow, `memory init` will be able to offer the HF-hosted memory adapter pack download so synthesis can run locally.
+**`memory synthesize` writes to your vault.** It runs the full local synthesis DAG (segment → extract → route → create/patch → reconcile → link → wikify) and creates/patches articles under `articles/` (git-committed, so every change is reviewable and revertible). `--dry-run` is the safe, no-write mode: it reports what would happen without touching the vault. `--since` and `--model` scope/steer a run. The decomposed stage workers (`segment`/`extract`/`route`/`synthesize-stage`/`link`) run one stage each and are resumable.
 
 ## Agent tools
 
@@ -65,7 +65,7 @@ The first command opens the vault. The second opens one article. Obsidian is pre
 
 ## Synthesis roadmap
 
-M1/M2 will turn saved pi sessions into articles using the local model plus four specialized LoRA adapters trained by Josh from existing Lucien-scale pipeline data and distributed from Hugging Face:
+The pipeline (saved pi sessions → articles) runs today on the local model; the roadmap hardens each stage with four specialized LoRA adapters trained from existing Lucien-scale pipeline data and distributed from Hugging Face:
 
 1. deterministic ingest of saved web/terminal pi session JSONL;
 2. **memory-chunk LoRA** — conversation → topic chunks (already trained as a WIP artifact);
@@ -74,4 +74,4 @@ M1/M2 will turn saved pi sessions into articles using the local model plus four 
 5. **memory-editor LoRA** — candidate article → polished wiki Markdown;
 6. deterministic footnote/wikilink normalization, quality gates, and git commit.
 
-The adapters propose; the pipeline validates and writes. The pipeline writes only `articles/`; `Reference/` is immutable context. Until synthesis lands, memory works with imported/hand-written user articles plus the built-in read-only mlx-bun reference docs.
+The adapters propose; the pipeline validates and writes. The pipeline writes only `articles/`; `Reference/` is immutable context. Synthesis is live today (`mlx-bun memory synthesize` runs the full DAG; the nightly `memory schedule` job runs it automatically); imported/hand-written user articles and the built-in read-only mlx-bun reference docs coexist with synthesized ones.

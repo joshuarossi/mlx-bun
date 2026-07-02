@@ -4,7 +4,7 @@
 //   mlx-bun get <org/repo> [--revision main]   resumable verified download
 //   mlx-bun scan                          index the HF cache
 //   mlx-bun ls [--vision] [--max-size 10GB] [query]
-//   mlx-bun fit <query> [--ctx 32768] [--skus]
+//   mlx-bun fit <query> [--ctx 8192] [--skus]
 //   mlx-bun serve [query] [--port 8080] [--memory-budget GB]
 //   mlx-bun evals                         recent benchmark runs
 //   mlx-bun harness pi [--base-url <url>] [--remove]   connect your own pi to the local server
@@ -41,10 +41,13 @@ Commands:
   scan       Re-index the Hugging Face cache
   harness    Connect your own pi install to the local mlx-bun server
   train      Fine-tune a LoRA adapter (SFT / DPO / ORPO) on your data
+  train-watch Live dashboard for a training run (tails metrics.jsonl)
   fuse       Merge a LoRA adapter into the base weights (standalone model)
   convert    Quantize an HF model into a local MLX snapshot
+  upload     Push a local model directory to the Hugging Face Hub
   perplexity Perplexity of a model over a local text/JSONL dataset
   memory     Set up + manage your local AI's personal wiki memory
+  generate   One-shot raw text generation from a local model (no server)
   benchmark  Measure decode/prefill speed of OUR stack on this machine
   embed      Text embeddings from a local embedding model (Qwen3-Embedding)
   evals      Show recent benchmark runs (all stacks)
@@ -68,11 +71,15 @@ const SERVER_FLAGS = `Server options:
   --memory-budget <GB>      Admission-control memory budget; requests that
                             cannot fit are rejected instead of crashing the
                             GPU  [default: machine RAM × 0.75, check-only]
-  --prompt-cache <GB>       Prompt (KV) cache byte cap  [default: 2 GB]
+  --prompt-cache <GB>       Prompt (KV) cache byte cap  [default: 2 GB;
+                            --prompt-cache 0 disables the cache]
   --batch <n>               Max concurrent requests batched through the
                             mlx-lm-parity engine  [default: 1 = serial].
                             >1 opts the whole server into bf16 continuous
                             batching (= mlx-lm B=N); see --kv-quant.
+                            --decode-concurrency is accepted as the
+                            mlx_lm.server alias (semantics differ; see
+                            docs/reference/server-config.md)
   --no-open                 Don't open the chat UI in your browser on start.
                             By default an interactive terminal opens
                             http://<host>:<port>/#/chat once the server is up.
@@ -96,7 +103,9 @@ Model & quality:
   --temperature <n>         Server-wide sampling defaults; a per-request field
   --top-p <n>               still overrides them, and the browser chat (which
   --top-k <n>               sends none) inherits them. --temp is accepted as
-                            an alias for --temperature (mlx_lm.server compat)
+                            an alias for --temperature (mlx_lm.server compat;
+                            NOTE mlx_lm.server defaults temperature to 0.0 —
+                            pass --temp 0 for its unset-request behavior)
                             [default: the model's generation_config.json]
   --max-tokens <n>          Completion cap when a request omits max_tokens
                             (mlx_lm.server flag; its default is 512 there)
@@ -109,6 +118,14 @@ Model & quality:
   --hlg-shoulder <nats>     HLG highlight rolloff scale  [default: 4]
   --hlg-toe <nats>          HLG shadow rolloff scale  [default: 6]
   --hlg-pivot-offset <nats> HLG pivot: nats below the top token  [default: 6]
+
+Parity tier (sets the whole decode route; a per-fork flag below overrides):
+  --l1                      Bit-for-bit IDENTICAL to mlx-lm (bf16 KV, unfused)
+  --l2                      Bit-for-bit IDENTICAL to mlx-optiq (quantized KV +
+                            fused kernels — optiq's shipping configuration)
+  --l3                      Best performance, no bit-exact oracle (KL + test
+                            gated). No tier given = the per-flag defaults
+                            below, which equal --l3 today.
 
 Performance levers (A/B levers; defaults are the measured winners):
   --compiled-decode on|off  Compiled decode graphs  [default: on]
@@ -154,9 +171,10 @@ Already use pi? Connect your own pi to this local model instead:
 Usage: mlx-bun serve [query] [options]
 
   [query]              Registry query (e.g. "12B", "e4b", a repo substring).
-                       Omitted: serves e4b (the default), else the largest
-                       downloaded model that fits. Fresh install: downloads a
-                       small starter model first, then e4b in the background
+                       --query <q> is accepted for the positional. Omitted:
+                       serves e4b (the default), else the largest downloaded
+                       model that fits. Fresh install: downloads a small
+                       starter model first, then e4b in the background
                        (default on next run).
 
 ${SERVER_FLAGS}
@@ -189,7 +207,7 @@ Options:
 Usage: mlx-bun fit <query> [options]
 
 Options:
-  --ctx <tokens>       Context size to assess  [default: 32768]
+  --ctx <tokens>       Context size to assess  [default: 8192]
   --skus               Also print the Apple silicon SKU matrix
 
 Solves weights + KV growth + prefill transient against wired memory and
@@ -229,7 +247,8 @@ result to the eval DB. For quotable, cross-stack numbers use
 ./benchmark.sh from the repo — it preflight-gates on an idle machine
 and runs the mlx-lm/optiq comparison legs.
 
-  [query]              Model to benchmark  [default: auto-pick]
+  [query]              Model to benchmark (--query <q> is accepted for the
+                       positional)  [default: auto-pick]
 
 Options:
   --tokens <n>         Tokens to decode per run  [default: 256]
@@ -244,13 +263,17 @@ Performance levers (--compiled-decode, --perf-kernel, --fused-decode,
   embed: `mlx-bun embed — text embeddings from a local embedding model
 
 Usage: mlx-bun embed [query] --text "…" [options]
+       mlx-bun embed [query] "…"        (text as a positional)
        echo -e "line one\\nline two" | mlx-bun embed [query]
 
 Embeds text with a local Qwen3-Embedding model (last-token pooled,
 L2-normalized — bit-exact vs mlx-lm). One text per --text, or one per
 line on stdin. Prints one JSON array (the vector) per input line.
 
-  [query]              Embedding model  [default: auto-pick]
+  [query]              Embedding model (--query <q> is accepted for the
+                       positional)  [default: the first downloaded
+                       embedding model; errors with an mlx-bun get
+                       suggestion when none is downloaded]
 
 Options:
   --text "…"           Text to embed (omit to read lines from stdin)
@@ -262,6 +285,33 @@ Options:
 
 For a server endpoint use \`mlx-bun serve <embedding-model>\` then
 POST /v1/embeddings.`,
+
+  generate: `mlx-bun generate — one-shot raw text generation (no server)
+
+Usage: mlx-bun generate [query] --prompt "…" [options]
+       mlx-bun generate [query] "…"          (prompt as a positional)
+
+A direct one-shot entry point: load the model, generate, print, exit —
+no server, no chat UI. By default the prompt is rendered through the
+model's chat template; --raw feeds it verbatim.
+
+  [query]              Model (registry query; --query is accepted for the
+                       positional)  [default: auto-pick]
+
+Options:
+  --prompt "…"         The prompt (or pass it as the positional)
+  --raw                Skip the chat template (verbatim prompt)
+  --max-tokens <n>     Completion cap  [default: 256]
+  --temperature <n>    Sampling temperature (--temp is accepted as an alias)
+  --top-p <n>          Nucleus sampling
+  --top-k <n>          Top-k sampling
+  --seed <n>           Sampler seed (reproducible runs)
+
+Decode-path levers mirror serve: --l1/--l2/--l3 and the per-fork flags
+(--perf-kernel/--fused-sdpa/--compiled-decode/--fused-decode); the KV
+cache itself stays bf16 on this path. mlx-lm compat = --l1.
+
+Aliases: mlx-bun gen`,
 
   evals: `mlx-bun evals — recent benchmark runs
 
@@ -296,7 +346,15 @@ Options:
   --scale <f>          LoRA scale  [default: orpo 2.0 · else 1.0]
   --seq <n>            Max sequence length  [default: gemma 8192 · else 4096]
   --batch <n>          Batch size  [default: 1]
+  --grad-accum <n>     Gradient accumulation steps (effective batch =
+                       batch × grad-accum at batch-size-1 memory)  [default: 1]
+  --grad-clip <f>      Gradient-norm clip (0 = off)  [default: 1.0]
+  --seed <n>           Data-shuffle / init seed  [default: 0]
+  --val-size <n>       Max validation examples per eval  [default: 256]
   --lambda <f>         ORPO odds-ratio weight  [default: 0.1]
+  --sft-scope <s>      ORPO chosen-NLL scope: full (paper/TRL-faithful,
+                       prompt+response) | response (pre-2026-07 runs,
+                       bit-exact)  [default: full]
   --seg <n>            Layers per segment (segmented backward; orpo default 2)
   --save-every <n>     Crash-safe mountable checkpoint every n steps
   --resume <dir>       Warm-start LoRA weights from a checkpoint/adapter dir
@@ -309,7 +367,20 @@ ORPO defaults run the full stack: the [M,vocab]-free flash-CCE head +
 prefix-sharing + segmented backward (each falls back + logs if a row's
 preconditions aren't met). Gemma/e4b sets its required training env flags
 automatically. Adapters are mountable directly (mlx-bun serve --adapter).
-Run long jobs detached from your own shell:  nohup mlx-bun train … &`,
+Run long jobs detached from your own shell:  nohup mlx-bun train … &
+Watch a run live from another tab:  mlx-bun train-watch <adapter-dir>`,
+
+  "train-watch": `mlx-bun train-watch — live dashboard for a training run
+
+Usage: mlx-bun train-watch [adapter-dir]
+
+Tails <adapter-dir>/metrics.jsonl (written by mlx-bun train and the web
+fine-tune tile) and renders a live loss/speed/memory dashboard. Point it
+at the same --adapter directory the training run uses.
+
+  [adapter-dir]        Adapter directory to watch; --adapter <dir> is
+                       accepted for the positional
+                       [default: ~/.cache/mlx-bun/mlx-bun-finetunes/orpo-cpm5]`,
   fuse: `mlx-bun fuse — merge a LoRA adapter into the base weights
 
 Usage: mlx-bun fuse <model-query-or-path> --adapter <dir> [options]
@@ -337,6 +408,7 @@ Serve the result:  mlx-bun serve <save-path>`,
   convert: `mlx-bun convert — quantize an HF model into a local MLX snapshot
 
 Usage: mlx-bun convert --hf-path <repo-or-path> -q [options]
+       mlx-bun convert <repo-or-path> -q [options]   (positional source)
 
 Wraps mlx-bun's native quantize pipeline (the same engine as the web
 /api/quantize). The source may be a local model directory, a downloaded
@@ -345,12 +417,16 @@ repo is fetched first (resumable, verified; can be many GB).
 
 Options:
   --hf-path <src>      Source model: local path, downloaded model, or HF
-                       repo id (--model is accepted as an alias)
+                       repo id (--model and the bare positional are
+                       accepted as aliases)
   --mlx-path <dir>     Output directory  [default: mlx_model; must not
                        already exist, matching mlx_lm.convert]
   -q, --quantize       Quantize the model (uniform affine)
   --q-bits <n>         Bits per weight: 4 or 8  [default: 4]
   --q-group-size <n>   Quantization group size: 32 or 64  [default: 64]
+  --upload-repo <id>   Push the converted model to this Hugging Face repo
+                       after converting (mlx_lm.convert parity; same engine
+                       as \`mlx-bun upload\`, needs a write token)
 
 Mixed precision (the mlx-bun differentiator — OptiQ sensitivity sweep +
 knapsack per-layer bit allocation; implies quantization, no -q needed):
@@ -362,10 +438,30 @@ knapsack per-layer bit allocation; implies quantization, no -q needed):
   --n-calibration <n>  Calibration samples  [default: 2]
 
 Not supported (mlx_lm.convert flags we don't implement — the command
-exits with an error rather than guessing): --upload-repo (not supported
-yet), --dtype, -d/--dequantize, --q-mode other than affine, and the
-mlx-lm --quant-predicate recipes (use --target-bpw instead). Plain
-non-quantizing conversion is also not supported: pass -q or --target-bpw.`,
+exits with an error rather than guessing): --dtype, -d/--dequantize,
+--q-mode other than affine, and the mlx-lm --quant-predicate recipes
+(use --target-bpw instead). Plain non-quantizing conversion is also not
+supported: pass -q or --target-bpw.`,
+
+  upload: `mlx-bun upload — push a local model directory to the Hugging Face Hub
+
+Usage: mlx-bun upload --path <model-dir> --upload-repo <org/repo> [options]
+
+Native push-to-hub, no Python (src/hf-push.ts — the same engine as the
+web UI's push buttons): creates the repo if needed (idempotent), uploads
+weights via the git-LFS batch protocol, and commits. Flag names match
+mlx_lm.upload.
+
+Options:
+  --path <dir>         Local model directory to upload  [default: mlx_model]
+  --upload-repo <id>   Hub repo id, org/name or bare name  (required)
+  --private            Create the repo as private (mlx-bun extension)
+
+Auth: needs a Hugging Face WRITE token, resolved from ~/.mlx-bun/hf.json
+(web UI Settings → Hugging Face), $HF_TOKEN, or ~/.cache/huggingface/token
+(hf auth login). Errors before uploading anything if none is found.
+
+Convert + push in one step:  mlx-bun convert … --upload-repo <org/repo>`,
 
   perplexity: `mlx-bun perplexity — perplexity over a local text/JSONL dataset
 
@@ -380,7 +476,8 @@ difference: the data source is a LOCAL file (never a Hugging Face
 dataset download).
 
   <model>              Model (registry query or snapshot path);
-                       --model is accepted as the mlx_lm spelling
+                       --model (mlx_lm spelling) and --query are accepted
+                       for the positional
 
 Options:
   --data-path <file>   .jsonl ({"text": …} rows) or plain .txt  (required)
@@ -418,10 +515,13 @@ Subcommands:
   synthesize         Run the FULL synthesis DAG now (--since, --model,
                      --dry-run); also: pipeline, all
   segment | extract | route | synthesize-stage
-                     Run ONE decomposed stage worker (--limit N, --convs a,b).
+                     Run ONE decomposed stage worker (--limit N —
+                     segment/extract/synthesize-stage only; --convs a,b).
                      Each pulls its eligible work from the DB by state, walks
                      oldest-conversation-first, persists, and exits — resumable,
                      and runnable as separate concurrent processes on slices.
+  link               Deterministic cross-linking stage: inline-link first
+                     mentions + rebuild ## See also (--limit N; no model)
   schedule           Install the nightly launchd job (--at HH:MM [03:00])
   unschedule         Remove the nightly launchd job
 
@@ -435,6 +535,7 @@ synthesize-stage/link); the nightly job runs it on a schedule.`,
 };
 
 HELP.bench = HELP.benchmark!;
+HELP.gen = HELP.generate!;
 HELP.setup = HELP.memory!;
 
 function printHelp(topic?: string): never {
@@ -1064,7 +1165,26 @@ switch (cmd) {
       process.exit(1);
     }
 
-    const { m } = await resolveModelAuto(positional(0) ?? opt("query"));
+    // Model resolution: an explicit query resolves normally; the no-query
+    // path auto-picks the first DOWNLOADED embedding model (plain Qwen3 —
+    // the record-level equivalent of isEmbeddingModel, which the factory
+    // maps to Qwen3Model). Never the chat default, and never the fresh-
+    // install starter download — a chat model can't embed, so downloading
+    // one here only to fail the isEmbeddingModel check would be a trap.
+    const embedQuery = positional(0) ?? opt("query");
+    let m: import("./registry").ModelRecord;
+    if (embedQuery) {
+      ({ m } = await resolveModelAuto(embedQuery));
+    } else {
+      const reg = new Registry();
+      if (reg.list().length === 0) await reg.scan();
+      const embedder = reg.list().find((r) => r.modelType === "qwen3");
+      if (!embedder) {
+        console.error("no embedding model downloaded — try: mlx-bun get mlx-community/Qwen3-Embedding-4B-4bit-DWQ");
+        process.exit(1);
+      }
+      m = embedder;
+    }
     const config = await loadModelConfig(m.path);
     const model = createModel(await Weights.open(m.path), config);
     if (!isEmbeddingModel(model)) {
@@ -1281,10 +1401,12 @@ switch (cmd) {
     // already run their own pi connect it with `mlx-bun harness pi`.
     const OURS_VAL = new Set([
       "--query", "-q", "--port", "--host", "--memory-budget", "--prompt-cache", "--kv-quant",
+      "--batch", "--decode-concurrency", "--adapter", "--adapter-path",
       "--compiled-decode", "--perf-kernel", "--fused-decode", "--fused-sdpa", "--thinking",
       "--temperature", "--temp", "--top-p", "--top-k", "--max-tokens",
+      "--hlg-sampling", "--hlg-width", "--hlg-shoulder", "--hlg-toe", "--hlg-pivot-offset",
     ]);
-    const OURS_BOOL = new Set(["--force-wire", "--expert-offload"]);
+    const OURS_BOOL = new Set(["--force-wire", "--expert-offload", "--no-open", "--l1", "--l2", "--l3"]);
     const passthrough: string[] = [];
     for (let i = 1; i < argv.length; i++) {
       const a = argv[i]!;
@@ -1443,6 +1565,15 @@ switch (cmd) {
       process.exit(1);
     }
     const isOrpo = method === "orpo";
+    // ORPO chosen-NLL scope (trainer sftScope; job.ts sft_scope). "full" =
+    // paper/TRL-faithful prompt+response CE (the default); "response" =
+    // response-only, bit-exact to pre-2026-07 runs. Validated here so junk
+    // fails fast, before any model resolution or weight loading.
+    const sftScope = opt("sft-scope");
+    if (sftScope !== null && sftScope !== "full" && sftScope !== "response") {
+      console.error(`--sft-scope must be full | response (got "${sftScope}")`);
+      process.exit(1);
+    }
     // Validated numeric flag: default if absent, hard-exit on a non-number.
     const numFlag = (name: string, dflt: number): number => {
       const v = opt(name);
@@ -1502,6 +1633,7 @@ switch (cmd) {
       grad_clip_norm: numFlag("grad-clip", 1.0),
       val_max_examples: numFlag("val-size", 256),
       warm_start_adapter: resume,
+      ...(sftScope ? { sft_scope: sftScope } : {}),
       ...(isOrpo ? {
         orpo_lambda: numFlag("lambda", 0.1),
         orpo_lr_schedule: "cosine",
@@ -1652,9 +1784,28 @@ switch (cmd) {
     // mlx_lm.convert counterpart over our native quantize pipeline (the same
     // engine as the web /api/quantize): uniform affine 4/8-bit, or the OptiQ
     // mixed-precision path via --target-bpw.
-    if (argv.includes("--upload-repo")) {
-      console.error("--upload-repo: not supported yet");
-      process.exit(1);
+    // --upload-repo (mlx_lm.convert parity): push the converted model to the
+    // Hub afterwards, via the same engine as `mlx-bun upload`. The token is
+    // resolved BEFORE any conversion work — failing after minutes of
+    // quantizing because auth is missing would be cruel.
+    const uploadRepo = ((): string | null => {
+      if (!argv.includes("--upload-repo")) return null;
+      const v = opt("upload-repo");
+      if (!v || v.startsWith("-")) {
+        console.error("--upload-repo expects a repo id (org/name)");
+        process.exit(1);
+      }
+      return v;
+    })();
+    let uploadToken: string | null = null;
+    if (uploadRepo) {
+      const { getHfToken } = await import("./hf-push");
+      uploadToken = getHfToken();
+      if (!uploadToken) {
+        console.error("--upload-repo needs a Hugging Face WRITE token and none was found —");
+        console.error("run `hf auth login`, export HF_TOKEN, or save one in the web UI (Settings → Hugging Face).");
+        process.exit(1);
+      }
     }
     const unsupported = ["--dtype", "-d", "--dequantize", "--quant-predicate"]
       .filter((f) => argv.includes(f));
@@ -1765,8 +1916,83 @@ switch (cmd) {
         "",
         `serve it   ${style.accent(`mlx-bun serve ${r.outDir}`)}`,
       ]);
+      if (uploadRepo) {
+        const sUp = step(`uploading ${r.outDir} → ${uploadRepo}`);
+        try {
+          const { uploadFolder } = await import("./hf-push");
+          const up = await uploadFolder(r.outDir, uploadRepo, {
+            repoType: "model",
+            token: uploadToken,
+            commitMessage: "Upload with mlx-bun convert",
+            onProgress: (file, sent, total) =>
+              sUp.update(`${style.bold(uploadRepo)} ${style.dim(`· ${file} · ${gb(sent)} / ${gb(total)}`)}`),
+          });
+          sUp.done(`uploaded ${style.bold(up.url)}`);
+        } catch (e) {
+          sUp.fail(`upload failed: ${e instanceof Error ? e.message : String(e)}`);
+          console.error(`the converted model is intact at ${r.outDir} — retry with: mlx-bun upload --path ${r.outDir} --upload-repo ${uploadRepo}`);
+          process.exit(1);
+        }
+      }
     } catch (e) {
       sQ.fail(`convert failed: ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    }
+    break;
+  }
+
+  case "upload": {
+    // mlx_lm.upload counterpart (same flag names: --path, --upload-repo) over
+    // our native push-to-hub (src/hf-push.ts — the exact engine the web
+    // /api/{quantize,finetune,dataset}/push routes call). Model-free until
+    // the network: everything before uploadFolder is arg + token validation.
+    const dir = opt("path", "mlx_model")!; // mlx_lm.upload's --path default
+    const repo = ((): string | null => {
+      const v = opt("upload-repo");
+      return v && !v.startsWith("-") ? v : null;
+    })();
+    if (!repo) {
+      console.error("usage: mlx-bun upload --path <model-dir> --upload-repo <org/repo> [--private]");
+      process.exit(1);
+    }
+    const { existsSync, statSync } = await import("node:fs");
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) {
+      console.error(`not a directory: ${dir} (pass the model directory via --path)`);
+      process.exit(1);
+    }
+    const { getHfToken, uploadFolder } = await import("./hf-push");
+    const token = getHfToken();
+    if (!token) {
+      console.error("no Hugging Face token found — uploading needs a WRITE token from one of:");
+      console.error("  hf auth login                  (~/.cache/huggingface/token)");
+      console.error("  export HF_TOKEN=hf_…");
+      console.error("  web UI Settings → Hugging Face (~/.mlx-bun/hf.json)");
+      process.exit(1);
+    }
+    const { banner, step, box, style } = await import("./tui");
+    banner(pkg.version);
+    const s = step(`uploading ${dir} → ${repo}`);
+    try {
+      const r = await uploadFolder(dir, repo, {
+        repoType: "model",
+        private: flag("private"),
+        token,
+        commitMessage: "Upload with mlx-bun",
+        onProgress: (file, sent, total) =>
+          s.update(`${style.bold(repo)} ${style.dim(`· ${file} · ${gb(sent)} / ${gb(total)}`)}`),
+      });
+      s.done(`uploaded ${style.bold(repo)}`);
+      console.log();
+      box([
+        `${style.green("●")} ${style.bold("upload complete")}`,
+        "",
+        `source    ${style.dim(dir)}`,
+        `repo      ${style.url(r.url)}${flag("private") ? style.dim(" · private") : ""}`,
+        "",
+        `get it back anywhere:  ${style.accent(`mlx-bun get ${repo}`)}`,
+      ]);
+    } catch (e) {
+      s.fail(`upload failed: ${e instanceof Error ? e.message : String(e)}`);
       process.exit(1);
     }
     break;
@@ -1856,6 +2082,10 @@ switch (cmd) {
     break;
   }
 
+  // `setup` is a true alias for `memory` — same handler, same subcommands
+  // (`mlx-bun setup init` == `mlx-bun memory init`; the handler reads the
+  // subcommand from argv[1] onward, identical for both spellings).
+  case "setup":
   case "memory": {
     const { style, box, step, banner } = await import("./tui");
     const {
@@ -2230,9 +2460,11 @@ switch (cmd) {
     }
 
 
+    // Unknown subcommand: help on stdout, but a FAILURE exit — scripts and
+    // launchd jobs must be able to detect typos (printHelp would exit 0).
     console.error(`unknown: mlx-bun memory ${sub}`);
-    printHelp("memory");
-    break;
+    console.log(renderHelp(HELP.memory!));
+    process.exit(1);
   }
 
   default:

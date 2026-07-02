@@ -55,14 +55,14 @@ shared subset; optiq-only features are additive (marked ⊕).
 | `generate` | mlx_lm.generate | ✅ `generate.ts` (no CLI verb) | wire verb + full flag set |
 | `chat` | mlx_lm.chat | engine ✅, web chat ✅; no terminal REPL (`tui.ts` is help-formatting) | build REPL frontend over `generate` |
 | `server` | mlx_lm.server / optiq serve | ✅ `serve` | rename flags; ⊕ `--kv-config`, `--anthropic` honored (default on) |
-| `convert` | mlx_lm.convert + optiq convert | ✅ `convert` (wraps `quantize/quantizer.ts`) | -q/--q-bits/--q-group-size/--mlx-path parity; ⊕ `--target-bpw/--candidate-bits/--calibration-mix/--n-calibration` (mixed precision); no `--dtype`/`--dequantize`/`--upload-repo`/plain non-quantizing convert |
+| `convert` | mlx_lm.convert + optiq convert | ✅ `convert` (wraps `quantize/quantizer.ts`) | -q/--q-bits/--q-group-size/--mlx-path/--upload-repo parity (upload rides `hf-push.ts`); ⊕ `--target-bpw/--candidate-bits/--calibration-mix/--n-calibration` (mixed precision); no `--dtype`/`--dequantize`/plain non-quantizing convert |
 | `lora` | mlx_lm.lora + optiq lora | serve/hot-swap ✅, train ✅ | `--train/--test`; ⊕ `--rank-scaling by_bits\|by_kl`; `lora info` |
 | `fuse` | mlx_lm.fuse | ✅ `fuse` (`train/fuse.ts`) | --adapter-path/--save-path parity; preserves per-module quant layout; dequant/GGUF/upload not supported (says so, exits 1) |
 | `cache_prompt` | mlx_lm.cache_prompt | runtime ✅, CLI ❌ | precompute + save reusable KV cache file |
 | `benchmark` | mlx_lm.benchmark / optiq benchmark | ✅ `benchmark` | flag-name parity (`-p/-g/-b/-n`); ppl half ❌ |
 | `evaluate` | mlx_lm.evaluate / optiq eval | ❌ (`evals` = our bench viewer) | task harness; ⊕ optiq task names |
 | `perplexity` | mlx_lm.perplexity | ✅ `perplexity` (`eval/perplexity.ts`) | reference methodology (pack → non-overlapping rows → f32 CE, delta-method SE); data source is a LOCAL .txt/.jsonl, not an HF dataset |
-| `upload` | mlx_lm.upload | ❌ | push MLX dir to HF |
+| `upload` | mlx_lm.upload | ✅ `upload` (wraps `hf-push.ts`, the web push engine) | --path/--upload-repo parity; ⊕ `--private`; token from hf.json/$HF_TOKEN/hf auth login |
 | `manage` | mlx_lm.manage | ✅ `get`/`scan`/`ls` | add `--delete/--pattern/--scan` parity |
 | `kv-cache` | optiq kv-cache | runtime ✅, profiler ❌ | per-layer sensitivity → `kv_config.json` |
 | `latency` | optiq latency | ✅ `fit` | alias + `--calibrate` |
@@ -158,7 +158,7 @@ column; the 🟥 column is the capability matrix that fills in behind it.
 | **lm-eval-harness tasks** | `evaluate` | 🟥 | Eval (new phase) |
 | **optiq eval suite (kl/gsm8k/ifeval/bfcl/hashhop…)** | `evaluate` | 🟥 | Eval |
 | **Perplexity** | `perplexity` | ✅ | done (local text/jsonl datasets) |
-| **HF upload** | `upload` | 🟥 | Distribution |
+| **HF upload** | `upload` | ✅ | done (native `hf-push.ts`; also `convert --upload-repo`) |
 | **Distributed share** | `share` | 🟥 | Distribution (lowest pri) |
 | **Web UI: quantize** | `lab`/UI | 🟥 | gated on Quantize |
 | **Web UI: fine-tune** | `lab`/UI | ✅ | done (SFT/DPO workflow, loss curve, merge, export) |
@@ -181,7 +181,7 @@ does. The real capability work splits along two axes:
   (Phase 13).
 - **Training**: LoRA/DoRA/full training ✅ (shipped); `fuse` verb (adapter merge, GGUF export, upload) 🟥 remaining.
 - **Eval**: harness + `perplexity`.
-- **Distribution**: `upload`/`share`.
+- **Distribution**: `upload` ✅ (CLI verb + `convert --upload-repo`); `share` 🟥.
 
 The OptIQ-Lab web-UI tiles gate on these: quantize ← model-quant,
 fine-tune ← training, training-data ← independent, chat ✅.
@@ -225,5 +225,5 @@ correctness diffs need no clean machine.
    to author new configs (low pri) + the TurboQuant method (Phase 13).
 4. Training → ✅ `lora --train` + web-UI fine-tune tile (both shipped); remaining: `fuse` verb (adapter merge, GGUF export, upload).
 5. Eval → `evaluate`/`perplexity`.
-6. Distribution → `upload`/`share`.
+6. Distribution → `upload` ✅ (2026-07-01); `share` remaining.
 7. Web UI training-data tile (independent of engine work).
