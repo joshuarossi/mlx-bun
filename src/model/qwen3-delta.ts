@@ -192,7 +192,10 @@ export class SSMCache implements Cache {
   }
 
   makeMask(_N: number, _windowSize: number | null): Mask {
-    // B=1 single-stream: ssm_mask is None (no left-pad / variable lengths).
+    // ssm_mask is None both single-stream and in the batch lane: rows
+    // solo-prefill UNPADDED at B=1 (state never sees pad tokens), and
+    // batched decode feeds one real token per row — so unlike mlx-lm's
+    // left-padded batch-prefill there is never a pad position to mask.
     return { mode: "", arr: null };
   }
 
@@ -220,5 +223,49 @@ export class SSMCache implements Cache {
     this.recurrent?.dispose();
     this.conv = null;
     this.recurrent = null;
+  }
+
+  // --- batch-lane dynamic-B ops (BatchScheduler only) ----------------------
+  // Both state slots are plain [B, ...] tensors with no temporal axis and no
+  // left-padding, so the batched twins of mergeKVRows/filterKVRows collapse
+  // to B-axis concat/take. `offset` is bookkeeping only for SSM layers (RoPE
+  // reads the FULL-attention caches; the linear-attn forward never reads it),
+  // so merged rows carrying different token counts share the max.
+
+  /** Merge a fully-prefilled solo row into a running batched cache (`prev`
+   *  null ⇒ the solo row becomes the batch). The returned cache owns fresh
+   *  arrays — or, when there is nothing to concat, arrays STOLEN from `solo`
+   *  (nulled there so the scheduler's unconditional dispose of the solo
+   *  caches stays safe). `prev`/`solo` disposal remains the caller's job. */
+  static mergeRows(prev: SSMCache | null, solo: SSMCache): SSMCache {
+    if (!solo.conv || !solo.recurrent)
+      throw new Error("SSMCache.mergeRows: solo row has no state (prefill first)");
+    const out = new SSMCache();
+    if (prev) {
+      if (!prev.conv || !prev.recurrent)
+        throw new Error("SSMCache.mergeRows: batched cache has no state");
+      out.conv = ops.concatAxis([prev.conv, solo.conv], 0);
+      out.recurrent = ops.concatAxis([prev.recurrent, solo.recurrent], 0);
+    } else {
+      out.conv = solo.conv;
+      out.recurrent = solo.recurrent;
+      solo.conv = null;
+      solo.recurrent = null;
+    }
+    out.offset = Math.max(prev?.offset ?? 0, solo.offset);
+    return out;
+  }
+
+  /** Evict rows not in `keep` (ascending row indices), in place. */
+  filter(keep: number[]): void {
+    if (!this.conv || !this.recurrent) return;
+    const idx = ops.fromInt32(keep, [keep.length]);
+    const conv = ops.takeAxis(this.conv, idx, 0);
+    const recurrent = ops.takeAxis(this.recurrent, idx, 0);
+    idx.dispose();
+    this.conv.dispose();
+    this.recurrent.dispose();
+    this.conv = conv;
+    this.recurrent = recurrent;
   }
 }

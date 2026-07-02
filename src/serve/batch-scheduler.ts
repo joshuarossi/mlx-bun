@@ -21,9 +21,12 @@
 // mask). Full layers share one leftPad/offset (all rows advance together); the
 // rotating caches self-track per-row leftPad/offset as the ring wraps. The
 // per-row absolute position stays consistent across both (full: offset-leftPad;
-// rot: offsetArr) — see docs/design/parallel-slots.md. Models whose caches
-// don't support the dynamic-B ops (e.g. Qwen3.5's SSMCache) never reach this
-// scheduler — GenerationGateway.willBatch gates on cache capability.
+// rot: offsetArr) — see docs/design/parallel-slots.md. Hybrid gated-DeltaNet
+// models (Qwen3.5) add "ssm" layers: SSMCache state is plain [B,...] with no
+// temporal axis and no padding (rows solo-prefill unpadded, decode feeds one
+// real token per row), so merge/filter are B-axis concat/take and the cache
+// passes through the step unwrapped (no mask, no per-row RoPE — full layers
+// carry positions). Gate: GenerationGateway.willBatch on cache capability.
 //
 // Engine mechanics (the serial decode loop's hygiene, transplanted —
 // batching-v2-plan step 3):
@@ -57,11 +60,22 @@ import { clearCache } from "../mlx/ffi";
 import { KVCache, RotatingKVCache, type Cache } from "../model/gemma4-base";
 import { BatchedDecodeMaskCache, mergeKVRows, filterKVRows } from "../model/batched-mask";
 import { BatchedRotatingCache } from "../model/batched-rotating";
+import { SSMCache } from "../model/qwen3-delta";
 import type { RuntimeModel } from "../model/factory";
 
 /** Decode-pipeline kill switch (read once at load, like the serial loop's
  *  MLX_BUN_COMPILED_DECODE): 1 ⇒ read each step's tokens synchronously. */
 const NO_PIPELINE = process.env.MLX_BUN_BATCH_NO_PIPELINE === "1";
+
+// NOTE — oMLX-style "adaptive burst decode" (several steps per event-loop
+// yield, omlx/engine_core.py _step_burst) was ported here 2026-07-02 and
+// REFUTED by measurement: on this runtime it REGRESSED cpm5 B=4 aggregate
+// 345→289 tok/s, batch-lane B=1 149→121, and TTFT ~+100 ms (first-token SSE
+// flush waits out the burst budget). Their win exists because each Python
+// step hand-off ping-pongs the GIL with asyncio/uvicorn (~1 ms/token); Bun's
+// setImmediate hop costs microseconds, so bursting here only delays socket
+// flushes. Don't re-add without new evidence — the per-yield step below is
+// the measured optimum (docs/design/batching-perf-path.md P4 notes).
 
 /** A token sampler for one row: (logits [1,V], step) → token array [1] on
  *  device. Greedy is `(l) => ops.argmaxAxis(l, -1)`; richer closures fold in
@@ -127,7 +141,7 @@ export interface BatchSchedulerOptions {
   prefillChunkSize?: number;
 }
 
-type LayerInner = KVCache | BatchedRotatingCache;
+type LayerInner = KVCache | BatchedRotatingCache | SSMCache;
 type Row1 = { keys: MlxArray; values: MlxArray };
 
 export class BatchScheduler {
@@ -146,7 +160,7 @@ export class BatchScheduler {
   readonly #lock: ExclusiveLock | undefined;
   readonly #admissionHeld: (() => boolean) | undefined;
   readonly #prefillChunkSize: number;
-  readonly #kinds: ("full" | "rot")[]; // per-layer attention type
+  readonly #kinds: ("full" | "rot" | "ssm")[]; // per-layer attention type
   readonly #rotMaxSize: number[]; // per-layer sliding window (rot layers only)
 
   constructor(private readonly model: RuntimeModel, opts: BatchSchedulerOptions) {
@@ -155,7 +169,9 @@ export class BatchScheduler {
     this.#admissionHeld = opts.admissionHeld;
     this.#prefillChunkSize = Math.max(1, Math.floor(opts.prefillChunkSize ?? 2048));
     const proto = model.makeCache(); // fresh caches hold no buffers
-    this.#kinds = proto.map((c) => (c instanceof RotatingKVCache ? "rot" : "full"));
+    this.#kinds = proto.map((c) =>
+      c instanceof RotatingKVCache ? "rot" : c instanceof SSMCache ? "ssm" : "full",
+    );
     this.#rotMaxSize = proto.map((c) => (c instanceof RotatingKVCache ? c.maxSize : 0));
     for (const c of proto) c.dispose();
   }
@@ -314,6 +330,16 @@ export class BatchScheduler {
     const newInners: LayerInner[] = [];
     let newFullPad = this.#fullLeftPad;
     for (let layer = 0; layer < this.#kinds.length; layer++) {
+      if (this.#kinds[layer] === "ssm") {
+        // No temporal axis, no left-pad: B-axis concat of the state slots.
+        // mergeRows steals the solo arrays when the batch starts cold, so the
+        // unconditional p.solo dispose below stays safe either way.
+        newInners.push(SSMCache.mergeRows(
+          (prev?.[layer] as SSMCache | undefined) ?? null,
+          p.solo[layer] as SSMCache,
+        ));
+        continue;
+      }
       const soloC = p.solo[layer] as KVCache | RotatingKVCache;
       const [sk, sv] = soloC.temporalView();
       const newRow: Row1 = { keys: sk, values: sv };
@@ -391,10 +417,13 @@ export class BatchScheduler {
     let nextToks: MlxArray | null = null;
     if (anyLive) {
       // Per-layer forward cache: rot layers use the persistent
-      // BatchedRotatingCache directly; full layers get a fresh
-      // BatchedDecodeMaskCache wrapper.
+      // BatchedRotatingCache directly; ssm layers are already [B,...] state
+      // with no padding (no mask, no per-row RoPE — pass through); full
+      // layers get a fresh BatchedDecodeMaskCache wrapper.
       const fwd: Cache[] = inners.map((c) =>
-        c instanceof BatchedRotatingCache ? c : new BatchedDecodeMaskCache(c, B, this.#fullLeftPad, null),
+        c instanceof BatchedRotatingCache || c instanceof SSMCache
+          ? c
+          : new BatchedDecodeMaskCache(c, B, this.#fullLeftPad, null),
       );
       try {
         const ids = this.#pendingToks
@@ -523,6 +552,9 @@ export class BatchScheduler {
     for (const inner of inners) {
       if (inner instanceof BatchedRotatingCache) {
         inner.filter(keep); // in-place (mutates + drops rows + reduces padding)
+        out.push(inner);
+      } else if (inner instanceof SSMCache) {
+        inner.filter(keep); // in-place B-axis take on both state slots
         out.push(inner);
       } else {
         const [k0, v0] = inner.temporalView();

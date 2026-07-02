@@ -57,8 +57,6 @@ describe("GenerationGateway.willBatch", () => {
   const disqualifiers: Array<[keyof RequestShape, string]> = [
     ["hasVision", "vision (offset-0 single-seq prefill + image mask)"],
     ["hasAdapters", "LoRA adapter (single per-generation loraState)"],
-    ["hasRepetitionPenalty", "repetition penalty (per-row logits processor)"],
-    ["hasLogitsExtras", "min_p/XTC/logit_bias/presence+frequency penalty (serial-only v1)"],
     ["wantsLogprobs", "logprobs/top_logprobs capture (serial-only, batch-lane deferred)"],
     ["userSeed", "explicit seed (reproducibility ⇒ solo)"],
     ["kvQuant", "explicit kv-quant (batched is bf16-only in v1)"],
@@ -68,6 +66,18 @@ describe("GenerationGateway.willBatch", () => {
       expect(gateway(2).willBatch({ ...batchable, [flag]: true })).toBe(false);
     });
   }
+
+  // Logits processors BATCH: the per-row sampler folds makeLogitsProcessors
+  // over a per-row device-side token history (generate()'s pushHistory).
+  // Load-bearing beyond opt-in knobs: Qwen3.5 ships a default repetition
+  // penalty in generation_config.json — as serial-only gates these routed
+  // EVERY Qwen3.5 request to the serial lane under --batch N.
+  test("repetition penalty batches (per-row logits processor)", () => {
+    expect(gateway(2).willBatch({ ...batchable, hasRepetitionPenalty: true })).toBe(true);
+  });
+  test("logits extras batch (min_p/XTC/logit_bias/presence+frequency)", () => {
+    expect(gateway(2).willBatch({ ...batchable, hasLogitsExtras: true })).toBe(true);
+  });
 
   test("multiple disqualifiers still serial", () => {
     expect(
@@ -89,19 +99,31 @@ describe("GenerationGateway.willBatch", () => {
   });
 
   // Cache-capability gate (mirrors mlx-lm server.py's all-caches-have-merge
-  // check): the scheduler's dynamic-B ops exist only on KVCache and
-  // RotatingKVCache. A hybrid model (Qwen3.5's SSMCache) must route serial —
-  // before this gate, `--batch N` on Qwen3.5 500'd EVERY batched request
-  // (the scheduler cast SSMCache to KVCache and called a nonexistent
-  // temporalView). See docs/design/batching-v2-plan.md D1.
+  // check): the scheduler's dynamic-B ops exist on KVCache, RotatingKVCache,
+  // and — since batching-perf-path P5 — SSMCache (mergeRows/filter, B-axis
+  // surgery on the conv/recurrent state slots). MLX_BUN_BATCH_SSM=0 is the
+  // kill switch back to the old serial routing.
   describe("cache-capability gate", () => {
-    test("hybrid-cache model (Qwen3.5 SSMCache) never batches — routes serial", () => {
+    test("hybrid-cache model (Qwen3.5 SSMCache) batches (P5 SSM port)", () => {
       const qwen = {
         makeCache: () => [new SSMCache(), new KVCache()], // gated-DeltaNet + full-attn mix
       } as unknown as RuntimeModel;
       const g = new GenerationGateway(qwen, 2, stubSerial);
-      expect(g.batchingEnabled).toBe(true); // the MODE is on…
-      expect(g.willBatch(batchable)).toBe(false); // …but every request is serial-lane
+      expect(g.batchingEnabled).toBe(true);
+      expect(g.willBatch(batchable)).toBe(true);
+    });
+
+    test("MLX_BUN_BATCH_SSM=0 re-gates hybrid models to serial", () => {
+      process.env.MLX_BUN_BATCH_SSM = "0";
+      try {
+        const qwen = {
+          makeCache: () => [new SSMCache(), new KVCache()],
+        } as unknown as RuntimeModel;
+        const g = new GenerationGateway(qwen, 2, stubSerial);
+        expect(g.willBatch(batchable)).toBe(false);
+      } finally {
+        delete process.env.MLX_BUN_BATCH_SSM;
+      }
     });
 
     test("sliding-window models batch (RotatingKVCache is dynamic-B capable)", () => {

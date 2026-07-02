@@ -212,8 +212,17 @@ class Qwen3Attention {
     v = disposing(v, ops.reshape(v, [B, L, this.nKvHeads, this.headDim]));
     v = disposing(v, ops.transposeAxes(v, [0, 2, 1, 3]));
 
-    q = disposing(q, ops.rope(q, this.ropeDims, this.ropeBase, cache.offset, null));
-    k = disposing(k, ops.rope(k, this.ropeDims, this.ropeBase, cache.offset, null));
+    // Batched decode: the scheduler's mask wrapper exposes each row's REAL
+    // position as ropeOffsetArr (rows have different prompt lengths); the
+    // dynamic-offset kernel is the same fast::rope, bit-exact vs the static
+    // form (tests/compile.test.ts). Serial lane: scalar offset, unchanged.
+    const offArr = (cache as { ropeOffsetArr?: MlxArray }).ropeOffsetArr;
+    q = disposing(q, offArr
+      ? ops.ropeDynamic(q, this.ropeDims, this.ropeBase, offArr, null)
+      : ops.rope(q, this.ropeDims, this.ropeBase, cache.offset, null));
+    k = disposing(k, offArr
+      ? ops.ropeDynamic(k, this.ropeDims, this.ropeBase, offArr, null)
+      : ops.rope(k, this.ropeDims, this.ropeBase, cache.offset, null));
 
     let attn: MlxArray;
     if (cache instanceof QuantizedKVCache) {

@@ -35,11 +35,13 @@
 // in v1 (cachedTokens = 0).
 
 import { MlxArray } from "../mlx/array";
+import * as ops from "../mlx/ops";
 import type { RuntimeModel } from "../model/factory";
 import { DiffusionGemmaModel } from "../model/diffusion-gemma";
 import { KVCache, RotatingKVCache } from "../model/gemma4-base";
+import { SSMCache } from "../model/qwen3-delta";
 import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate";
-import { makeSampler, toLogprobs } from "../sampler";
+import { makeSampler, makeLogitsProcessors, toLogprobs } from "../sampler";
 import { BatchScheduler } from "./batch-scheduler";
 
 /** Async mutex: acquire() resolves to a release fn; releases run FIFO. */
@@ -126,13 +128,18 @@ export class GenerationGateway {
 
   /** Cache-capability gate (mirrors mlx-lm server.py's all-caches-have-merge
    *  check): the scheduler's dynamic-B ops (temporalView/merge/filter) exist
-   *  only on KVCache and RotatingKVCache. A hybrid model (Qwen3.5's SSMCache)
-   *  routes serial until the batched-SSM port (batching-v2-plan item h). */
+   *  on KVCache, RotatingKVCache, and SSMCache (hybrid gated-DeltaNet models
+   *  — Qwen3.5 — batch via SSMCache.mergeRows/filter; MLX_BUN_BATCH_SSM=0 is
+   *  the kill switch back to serial routing). */
   #modelCachesBatchable(): boolean {
     if (this.#cacheBatchable === null) {
+      const ssmOk = process.env.MLX_BUN_BATCH_SSM !== "0";
       const proto = this.model.makeCache(); // fresh caches hold no buffers
       this.#cacheBatchable = proto.every(
-        (c) => c instanceof KVCache || c instanceof RotatingKVCache,
+        (c) =>
+          c instanceof KVCache ||
+          c instanceof RotatingKVCache ||
+          (ssmOk && c instanceof SSMCache),
       );
       for (const c of proto) c.dispose();
     }
@@ -146,11 +153,15 @@ export class GenerationGateway {
     if (this.model instanceof DiffusionGemmaModel) return false;
     if (!this.batchingEnabled) return false;
     if (!this.#modelCachesBatchable()) return false;
+    // repetitionPenalty / logits extras (min_p, XTC, logit_bias,
+    // presence/frequency penalties) batch: the per-row sampler folds in the
+    // same makeSampler/makeLogitsProcessors closures the serial lane runs,
+    // over a per-row device-side token history. (Load-bearing beyond opt-in
+    // knobs: some models — Qwen3.5 — ship a default repetition penalty in
+    // generation_config.json, which used to route EVERY request serial.)
     return (
       !shape.hasVision &&
       !shape.hasAdapters &&
-      !shape.hasRepetitionPenalty &&
-      !shape.hasLogitsExtras &&
       !shape.wantsLogprobs &&
       !shape.userSeed &&
       !shape.kvQuant
@@ -187,27 +198,75 @@ export class GenerationGateway {
     vision: Vision | undefined,
     shape: RequestShape,
   ): Promise<GenerateStats> {
-    if (!this.willBatch(shape))
-      return this.runExclusive(() => this.serialRun(promptIds, options, onToken, vision));
+    if (!this.willBatch(shape)) {
+      // Serial decode is an unbroken microtask chain (FFI + generator
+      // resumes): without a periodic macrotask hop the event loop starves for
+      // the WHOLE generation — /stats, /health, and new-connection accepts
+      // stall until the request finishes (measured 2.5 s on a 512-token cpm5
+      // run). Rate-limited to ≥25 ms — the SSE flush hop's budget, ~0.1% of
+      // decode — and applied HERE so every serial caller (streaming or not,
+      // all four API surfaces) is covered. The batch lane needs nothing: its
+      // drive loop yields per step (measured /stats ~8 ms mid-generation).
+      let lastHop = performance.now();
+      const hop = (): Promise<void> => new Promise<void>((r) => setImmediate(r));
+      const hoppingOnToken: OnToken = (token, lp) => {
+        const r = onToken(token, lp);
+        if (r === false) return false;
+        if (performance.now() - lastHop < 25) return r;
+        lastHop = performance.now();
+        if (r instanceof Promise) return r.then((v) => (v === false ? false : hop().then(() => v)));
+        return hop().then(() => r);
+      };
+      return this.runExclusive(() => this.serialRun(promptIds, options, hoppingOnToken, vision));
+    }
 
-    // Per-row sampler, mirroring generate()'s sampleStep (no logits processors:
-    // repetition penalty was excluded by willBatch). Greedy (temperature 0) is
-    // argmax; temp>0 uses this request's own seed → independent per-row RNG.
+    // Per-row sampler, mirroring generate()'s sampleStep: logits processors
+    // (logit_bias / repetition / presence / frequency penalties — the same
+    // device-side closures the serial lane runs) fold in over a per-row token
+    // history seeded with the prompt, then the sampler. Greedy (temperature 0)
+    // is argmax; temp>0 uses this request's own seed → independent per-row RNG.
     const sampler = makeSampler(options);
+    const processors = makeLogitsProcessors(options);
+    // Device-side history (prompt + generated), maintained only when a
+    // processor needs it — generate()'s pushHistory, one per row. The sample
+    // closure is called once per sampled token in order, so extending it
+    // inside the closure keeps history exact.
+    let history: MlxArray | null = null;
+    if (processors.length > 0) history = ops.fromInt32(promptIds, [promptIds.length]);
     const sample = (logits1V: MlxArray, step: number): MlxArray => {
-      const lp = toLogprobs(logits1V);
+      let cur = logits1V; // caller-owned; only intermediates are disposed here
+      for (const p of processors) {
+        const next = p(history, cur);
+        if (cur !== logits1V) cur.dispose();
+        cur = next;
+      }
+      const lp = toLogprobs(cur);
+      if (cur !== logits1V) cur.dispose();
       const tok = sampler(lp, step);
       lp.dispose();
+      if (history) {
+        const t1 = ops.reshape(tok, [1]);
+        const prev = history;
+        history = ops.concatAxis([prev, t1], 0);
+        prev.dispose();
+        t1.dispose();
+      }
       return tok;
     };
 
-    const st = await this.#ensureScheduler().submit({
-      promptIds,
-      maxTokens: options.maxTokens ?? 512,
-      eosTokenIds: options.eosTokenIds ?? this.model.config.eosTokenIds,
-      sample,
-      onToken,
-    });
+    let st;
+    try {
+      st = await this.#ensureScheduler().submit({
+        promptIds,
+        maxTokens: options.maxTokens ?? 512,
+        eosTokenIds: options.eosTokenIds ?? this.model.config.eosTokenIds,
+        sample,
+        onToken,
+      });
+    } finally {
+      history?.dispose();
+      history = null;
+    }
 
     return {
       promptTokens: st.promptTokens,
