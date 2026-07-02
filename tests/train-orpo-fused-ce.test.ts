@@ -168,6 +168,114 @@ describe.skipIf(!optIn || !haveBase)("ORPO fused linear-CE head parity (MiniCPM5
     weights.dispose();
   }, 180_000);
 
+  // Kernel-review backlog #8 gate: the SFT segmented head is [M,V]-bounded
+  // (boundedSftCe — token-chunked Checkpoint recompute instead of the full
+  // [1,M,V] responseOnlyCe inside the head vjp). The gate is a HEAD-LEVEL A/B
+  // on the identical post-finalNorm hidden: at a FULL-COVER chunk (the default
+  // 512 covers this fixture) loss and dh must be BIT-EXACT vs the whole-vocab
+  // responseOnlyCe head — same shapes, same kernels. A tiny chunk is bf16-
+  // CLASS, not bit-exact (quantizedMatmul tiles differently per M — the same
+  // band the ORPO chunked-head tests assert): loss within 0.05, dh relnorm
+  // under 1%.
+  //
+  // NOT compared against a ValueAndGrad over sftLoss: under mlx grad tracing
+  // the FORWARD itself computes differently (fused kernels swap to their
+  // differentiable decompositions — measured 4.4359 plain vs 4.4836 traced on
+  // this fixture), a pre-existing property of every segmented-vs-vag pairing,
+  // orthogonal to the head.
+  test("bounded SFT head: loss + dh bit-exact vs the whole-vocab responseOnlyCe head", async () => {
+    const { loadModelConfig } = await import("../src/config");
+    const { Weights } = await import("../src/weights");
+    const { createModel } = await import("../src/model/factory");
+    const { loadTokenizer } = await import("../src/tokenizer");
+    const { ChatTemplate } = await import("../src/chat-template");
+    const { encodeSftRow } = await import("../src/train/dataset");
+    type SftBatchT = import("../src/train/dataset").SftBatch;
+    const { sftLoss, responseOnlyCe } = await import("../src/train/loss");
+    const { boundedSftCe, SegmentedBackward, planSegmentsBySize } = await import("../src/train/segmented");
+    const { trainForwardHidden } = await import("../src/train/forward");
+    const { Vjp } = await import("../src/mlx/autograd");
+    const { MiniCPM5Model } = await import("../src/model/minicpm5");
+    const { MlxArray } = await import("../src/mlx/array");
+    const { buildTrainableLora, attachForTraining } = await import("../src/train/lora-params");
+    const { resolveRanks } = await import("../src/train/rank");
+    const ops = await import("../src/mlx/ops");
+
+    const config = await loadModelConfig(BASE);
+    const weights = await Weights.open(BASE);
+    const model = createModel(weights, config);
+    if (!(model instanceof MiniCPM5Model)) throw new Error("expected MiniCPM5Model");
+    const tok = await loadTokenizer(BASE);
+    const tmpl = await ChatTemplate.load(BASE);
+
+    const row = JSON.parse(readFileSync("fixtures/train/tiny/train.jsonl", "utf8").split("\n")[1]!);
+    const ex = encodeSftRow(row, tok, tmpl);
+    const batch: SftBatchT = { ids: [ex.ids], promptLens: [ex.promptLen] };
+    const T = ex.ids.length - 1;
+    const ids = ops.fromInt32(ex.ids.slice(0, T), [1, T]);
+
+    // Identical input for both heads: the post-finalNorm hidden as a leaf.
+    const h = trainForwardHidden(model, ids);
+    ops.evalAll([h]);
+    const hn = MlxArray.fromBytesCopy(h.rawBytes(), h.shape, h.dtype);
+    h.dispose(); ids.dispose();
+    const one = MlxArray.fromFloat32(new Float32Array([1]), []);
+
+    type Mlx = import("../src/mlx/array").MlxArray;
+    const headRun = (fn: (p: Mlx) => Mlx): { loss: number; dh: Uint8Array; dhF: Float32Array } => {
+      const vjp = new Vjp((p) => [fn(p[0]!)], 1);
+      const { outputs, vjps } = vjp.apply([hn], [one]);
+      ops.evalAll([outputs[0]!, vjps[0]!]);
+      const loss = outputs[0]!.toFloat32()[0]!;
+      const dh = new Uint8Array(vjps[0]!.rawBytes());
+      const dhF = vjps[0]!.toFloat32();
+      for (const a of [...outputs, ...vjps]) a.dispose();
+      vjp.dispose();
+      return { loss, dh, dhF };
+    };
+
+    const ref = headRun((p) => responseOnlyCe(model, p, batch)); // whole-vocab head
+    for (const chunk of [512, 4]) {
+      const sink: Array<{ dispose(): void }> = [];
+      const got = headRun((p) => boundedSftCe(model, p, batch, sink, chunk));
+      for (const d of sink) d.dispose();
+      expect(got.dh.length).toBe(ref.dh.length);
+      if (chunk >= T) {
+        // full-cover chunk: identical shapes + kernels -> bit-exact loss AND dh
+        expect(got.loss).toBe(ref.loss);
+        let same = true;
+        for (let j = 0; j < ref.dh.length; j++) if (ref.dh[j] !== got.dh[j]) { same = false; break; }
+        expect(same).toBe(true);
+      } else {
+        // tiny chunk: per-M matmul tiling -> bf16-class band (ORPO precedent)
+        expect(Math.abs(got.loss - ref.loss)).toBeLessThan(0.05);
+        let d2 = 0, r2 = 0;
+        for (let j = 0; j < ref.dhF.length; j++) { const d = ref.dhF[j]! - got.dhF[j]!; d2 += d * d; r2 += ref.dhF[j]! * ref.dhF[j]!; }
+        expect(Math.sqrt(d2) / (Math.sqrt(r2) || 1)).toBeLessThan(0.01);
+      }
+    }
+    hn.dispose(); one.dispose();
+
+    // End-to-end sanity: the segmented step's VALUE matches the PLAIN (untraced)
+    // sftLoss — both sides run the fused-kernel forward.
+    const ranks = resolveRanks(model, { rank: 8, rankScaling: "constant" });
+    const lora = buildTrainableLora(model, ranks, 2.0, 321);
+    attachForTraining(model, lora, "train");
+    const plain = sftLoss(model, batch);
+    ops.evalAll([plain]);
+    const seg = new SegmentedBackward(model, lora, planSegmentsBySize(model.layers.length, 8));
+    const got = seg.step(batch);
+    ops.evalAll([got.value, ...got.grads]);
+    expect(got.value.toFloat32()[0]!).toBeCloseTo(plain.toFloat32()[0]!, 4);
+    for (const g of got.grads) {
+      for (const v of g.toFloat32()) expect(Number.isFinite(v)).toBe(true);
+      g.dispose();
+    }
+    got.value.dispose(); plain.dispose();
+    seg.dispose();
+    weights.dispose();
+  }, 240_000);
+
   test("sft_scope: 'response' is bit-identical to the default; 'full' agrees across naive/fused/flash/chunked/prefix/segmented paths", async () => {
     const { loadModelConfig } = await import("../src/config");
     const { Weights } = await import("../src/weights");

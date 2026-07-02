@@ -28,7 +28,7 @@ import * as ops from "../mlx/ops";
 import { createCausalMask, type Cache, type Mask } from "../model/gemma4-base";
 import { MiniCPM5Model, setMiniCpmPrefixPlan } from "../model/minicpm5";
 import { Gemma4Model, setGemmaPrefixPlan } from "../model/gemma4";
-import { orpoLossFromLogps, fusedRespLogpMean, combineFullNll, type ChunkCtx, type SftScope } from "./loss";
+import { orpoLossFromLogps, fusedRespLogpMean, combineFullNll, logitsFromHiddenPadM, type ChunkCtx, type SftScope } from "./loss";
 import type { DpoBatch } from "./dataset";
 
 /** A model that can project final-norm hidden states to vocab logits — the only
@@ -87,7 +87,7 @@ function gatheredLogpMean(model: LogitProjector, h: MlxArray, gatherIdx: number[
   const hSel = ops.takeAxis(h, idxArr, 1); // [1, M, hidden]
   idxArr.dispose();
   if (hSel.shape[2] !== hidden) throw new Error("gatheredLogpMean: hidden mismatch");
-  const logits = model.logitsFromHidden(hSel); // [1, M, V]
+  const logits = logitsFromHiddenPadM(model, hSel); // [1, M, V] (M in {2,3} padded — mlx qmm bug)
   hSel.dispose();
   const V = logits.shape[2]!;
   const logits2d = ops.reshape(logits, [M, V]);

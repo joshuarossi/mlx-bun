@@ -60,8 +60,17 @@ backstop + regression; see kernel-perf-review-2026-07.md ledger).
 Kernel backlog #2 (planSegments full-attn isolation) **REFUTED by measurement
 2026-07-02**: sdpa backward is O(L²) for EVERY layer (~3.5 GB/layer @8K), so
 segment_size is the whole knob — **seg1 = 14.59 GB e4b @8K (+3% time), fits
-the 24 GB M4 Pro today**; next real levers = backlog #8 (head ~3 GB) + O(L)
+the 24 GB M4 Pro today**; next real levers = backlog #8 (head) + O(L)
 attention backward. Evidence: scripts/experiments/seg-isolation-smoke.ts.
+Kernel backlog #8 (bound the SFT segmented head) **LANDED 2026-07-02**:
+boundedSftCe in both SFT segmented classes — head-only A/B at e4b M=6000:
+**16.60 → 6.60 GB** (~10 GB head-vjp transient gone), dh relnorm 0.00000.
+Landing it EXPOSED an **upstream mlx bug** (repro'd on stock 0.31.2):
+quantized_matmul(transpose=false) is WRONG at 2-3 rows → every training
+head's dh was silently wrong for 2-3-token responses/tail-chunks/spans.
+Fixed in mlx-bun (logitsFromHiddenPadM + ops wrapper pad; f32-ground-truth
+gated, chunk-4 dh 0.47→0.006); details in kernel-perf-review-2026-07.md
+"NEW BUG" + research journal. Upstream report = pending task chip.
 
 ## Multi-agent review + cleanup (2026-07-01) — verified state, open decisions
 

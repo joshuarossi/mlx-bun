@@ -56,7 +56,7 @@ import { setGemmaPrefixPlan } from "../model/gemma4";
 import type { Cache, Mask, SharedKv } from "../model/gemma4-base";
 import { TrainingCache } from "./forward";
 import {
-  responseOnlyCe, responseOnlyLogpMean, fusedLogpMeanFromHidden, chunkedLogpMeanFromHidden,
+  responseOnlyLogpMean, fusedLogpMeanFromHidden, chunkedLogpMeanFromHidden,
   orpoLossFromLogps, spanLogpMeanFromHidden, respSpanFromMask, combineFullNll,
   type ChunkCtx, type SftScope, type HeadSpan,
 } from "./loss";
@@ -78,7 +78,36 @@ function boundedHeadFromHidden(
     : chunkedLogpMeanFromHidden(model, h, ids, mask, chunkSize, sink, span);
 }
 import type { TrainableLora } from "./lora-params";
-import { type SftBatch, type DpoBatch } from "./dataset";
+import { rowLength, type SftBatch, type DpoBatch } from "./dataset";
+
+// Token-chunk size for the bounded SFT head (the ORPO paths take theirs from
+// cfg.orpoChunkSize; SFT has no per-run knob, 512 matches the ORPO default).
+const SFT_HEAD_CHUNK = Number(process.env.MLX_BUN_SEG_HEAD_CHUNK ?? "512");
+
+/** [M,V]-bounded response-only CE from post-finalNorm hidden — the SFT
+ *  segmented head (kernel-review backlog #8). Same span arithmetic and
+ *  token-mean reduction as loss.ts responseOnlyCe, but the logits only ever
+ *  exist per token-chunk ([chunk,V] Checkpoint recompute, or the fused
+ *  CustomVjp head via MLX_BUN_SEG_HEAD) instead of the full [1,M,V] + its
+ *  cotangent inside the head vjp. CE = −(mean response logp); per-position
+ *  grads are bit-exact vs the whole-vocab head (chunking is over TOKEN
+ *  positions; each position's full-V lse is computed unchanged — only the
+ *  scalar loss VALUE can differ in fp association across chunks). */
+export function boundedSftCe(
+  model: MiniCPM5Model | Gemma4Model, hn: MlxArray, batch: SftBatch,
+  sink: Array<{ dispose(): void }>, chunkSize = SFT_HEAD_CHUNK,
+): MlxArray {
+  const L = batch.ids[0]!.length;
+  const startT = Math.max(0, batch.promptLens[0]! - 1); // first supervised input position
+  const M = Math.min(rowLength(batch, 0), L) - 1 - startT;
+  if (M <= 0) throw new Error("sftLoss: no response tokens to supervise");
+  const mean = boundedHeadFromHidden(model, hn, batch.ids[0]!, [], chunkSize, sink, { startT, M });
+  const neg = ops.mulScalar(mean, -1); // CE = −(mean logp); exact sign flip
+  mean.dispose();
+  const loss = ops.sumAxis(neg, 0, false); // [1] -> scalar, matches the vjp cotangent `one`
+  neg.dispose();
+  return loss;
+}
 
 /** Split `nLayers` into contiguous `[lo, hi)` ranges of at most `segSize`
  *  layers each (the last range may be shorter). `segSize` is the memory knob:
@@ -145,6 +174,10 @@ export class SegmentedBackward {
   private readonly one: MlxArray; // scalar cotangent 1.0 for the (scalar) head loss
   // Per-step context the (reused) closures read.
   private curBatch: SftBatch | null = null;
+  // Bounded-head per-step transients (chunk slices + Checkpoint/CustomVjp
+  // objects): the head backward recomputes through them, so they are disposed
+  // only AFTER the head vjp's outputs are detached (which forces the eval).
+  private headSink: Array<{ dispose(): void }> = [];
   private disposed = false;
 
   constructor(
@@ -165,11 +198,17 @@ export class SegmentedBackward {
     this.caches = Array.from({ length: this.nLayers }, () => new TrainingCache());
     this.one = MlxArray.fromFloat32(new Float32Array([1]), []); // d(loss)/d(loss) = 1
 
-    // Loss head: vjp of finalNorm + responseOnlyCe over the last boundary leaf.
+    // Loss head: vjp of finalNorm + the [M,V]-BOUNDED response CE over the last
+    // boundary leaf (kernel-review backlog #8: the old responseOnlyCe here
+    // materialized [1,M,V] logits + cotangents inside the head vjp — measured
+    // ~3 GB @8K on e4b, the exact transient the segmentation exists to kill).
+    // CE = −(mean response logp); span and reduction identical to
+    // responseOnlyCe, per-position grads bit-exact (chunking is over token
+    // positions — each position's full-V lse/softmax is computed unchanged).
     // outputs[0] = loss scalar; vjps[0] = dLoss/d(last residual stream) = dh.
     this.headVjp = new Vjp((p) => {
       const hn = model.finalNorm.forward(p[0]!);
-      const loss = responseOnlyCe(model, hn, this.curBatch!);
+      const loss = boundedSftCe(model, hn, this.curBatch!, this.headSink);
       hn.dispose();
       return [loss];
     }, 1);
@@ -229,9 +268,17 @@ export class SegmentedBackward {
       }
 
       // --- 2. Loss head over the last boundary (vjp with cotangent 1.0). ---
+      // The bounded head pushes per-step chunk slices + Checkpoints into
+      // headSink; the head BACKWARD recomputes through them, so materialize
+      // the full head-vjp graph BEFORE freeing the sink (lazy-eval UAF
+      // discipline, same as the ORPO classes).
+      this.headSink = [];
       const head = this.headVjp.apply([boundaries[nSeg]!], [this.one]);
+      ops.evalAll([head.outputs[0]!, head.vjps[0]!]);
       value = detachLeaf(head.outputs[0]!); // scalar loss, detached from the head graph (frees logits)
       dhOut = detachLeaf(head.vjps[0]!); // dLoss / d(last residual stream), graph-free
+      for (const d of this.headSink) d.dispose();
+      this.headSink = [];
       boundaries[nSeg]!.dispose();
       boundaries[nSeg] = null;
 
@@ -263,6 +310,8 @@ export class SegmentedBackward {
     } finally {
       inputIds.dispose();
       this.curBatch = null;
+      for (const d of this.headSink) d.dispose(); // no-op unless the head threw mid-step
+      this.headSink = [];
       dhOut?.dispose();
       for (const b of boundaries) b?.dispose();
       if (!transferred) {
@@ -320,6 +369,8 @@ export class SegmentedBackwardGemma4 {
   private curBatch: SftBatch | null = null;
   private curMasks: Map<string, Mask> | null = null;
   private curPerLayer: MlxArray | null = null;
+  // Bounded-head per-step transients — see SegmentedBackward.headSink.
+  private headSink: Array<{ dispose(): void }> = [];
   private disposed = false;
 
   constructor(
@@ -362,11 +413,11 @@ export class SegmentedBackwardGemma4 {
     this.caches = Array.from({ length: model.numDonors }, () => new TrainingCache());
     this.one = MlxArray.fromFloat32(new Float32Array([1]), []);
 
-    // Loss head (identical to MiniCPM5): finalNorm + responseOnlyCe over the last
+    // Loss head (identical to MiniCPM5): finalNorm + bounded response CE over the last
     // boundary, vjp with cotangent 1.0 -> [loss], [dh].
     this.headVjp = new Vjp((p) => {
       const hn = model.finalNorm.forward(p[0]!);
-      const loss = responseOnlyCe(model, hn, this.curBatch!);
+      const loss = boundedSftCe(model, hn, this.curBatch!, this.headSink);
       hn.dispose();
       return [loss];
     }, 1);
@@ -465,10 +516,16 @@ export class SegmentedBackwardGemma4 {
         segMem(`fwd seg ${k} [${lo},${hi})`);
       }
 
-      // --- 2. Loss head (vjp, cotangent 1.0). ---
+      // --- 2. Loss head (vjp, cotangent 1.0). Bounded-head sink discipline:
+      // materialize the head-vjp graph BEFORE freeing the sink (see the
+      // MiniCPM5 class / ORPO classes — lazy-eval UAF). ---
+      this.headSink = [];
       const head = this.headVjp.apply([boundaries[nSeg]!], [this.one]);
+      ops.evalAll([head.outputs[0]!, head.vjps[0]!]);
       value = detachLeaf(head.outputs[0]!);
       dhOut = detachLeaf(head.vjps[0]!);
+      for (const d of this.headSink) d.dispose();
+      this.headSink = [];
       boundaries[nSeg]!.dispose();
       boundaries[nSeg] = null;
       segMem("head vjp");
@@ -526,6 +583,8 @@ export class SegmentedBackwardGemma4 {
       this.curPerLayer?.dispose();
       this.curPerLayer = null;
       if (this.curMasks) { for (const m of this.curMasks.values()) m.arr?.dispose(); this.curMasks = null; }
+      for (const d of this.headSink) d.dispose(); // no-op unless the head threw mid-step
+      this.headSink = [];
       dhOut?.dispose();
       for (const b of boundaries) b?.dispose();
       for (const kv of donorBnd.values()) { kv.keys.dispose(); kv.values.dispose(); }

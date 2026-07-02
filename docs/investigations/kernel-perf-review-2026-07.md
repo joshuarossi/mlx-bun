@@ -60,6 +60,21 @@ tests/compiled-decode.test.ts, whose e4b block also now uses the dynamic
 snapshot resolver — the old hard-coded hash silently skipped it on this
 machine, which is how the combo went unexercised.
 
+NEW BUG (found 2026-07-02 by the backlog-#8 gate test; FIXED in mlx-bun,
+UPSTREAM in mlx): **mx.quantized_matmul(transpose=false) returns wrong values
+at row count 2 or 3** — relnorm ~0.33-0.39 on our dylib, ~0.98-1.14 on stock
+mlx 0.31.2 (oracle venv repro); M=1 and M>=4 exact, transpose=true exact at
+every M. mlx's autograd computes dh for a transpose=true head qmm via an
+internal transpose=false call at the cotangent's row count, so EVERY training
+head silently produced wrong dh for 2-3-token responses, 2-3-token tail
+chunks, and tiny prompt spans (f32 ground truth: dh relnorm up to 0.99 at the
+affected positions, cos ~0.2). Serving/decode unaffected (transpose=true).
+Fix: (a) loss.ts `logitsFromHiddenPadM` pads differentiated head spans to 4
+rows (pad cotangents are exactly zero) — applied at all seven head sites;
+(b) ops.quantizedMatmul pads direct transpose=false calls (the fused head's
+analytic backward). Verified vs f32-dequant ground truth (chunk-4 dh
+0.47→0.006) + M-sweeps. Worth filing upstream with the 10-line python repro.
+
 ## The ranked optimization backlog (task #12)
 
 1. ~~**[S] Land the coeff filter at eps~1e-5**~~ **LANDED 2026-07-02** — BOTH
@@ -97,8 +112,17 @@ machine, which is how the combo went unexercised.
 6. **[M] Pipeline the batched decode loop + clearCache cadence** — folded into
    the batching-v2 wave (docs/design/batching-v2-plan.md).
 7. **[S] Enable the 26B perf kernel** (open PLAN Phase E box; oracle frozen).
-8. **[S] Bound the SFT segmented head** — replace full-[M,V] responseOnlyCe in
-   the segmented head vjp; ~2-4 GB peak on long-response e4b SFT.
+8. ~~**[S] Bound the SFT segmented head**~~ **LANDED 2026-07-02** — both SFT
+   segmented classes now use boundedSftCe (token-chunked Checkpoint head, the
+   proven ORPO plumbing; MLX_BUN_SEG_HEAD/MLX_BUN_SEG_HEAD_CHUNK knobs).
+   Head-only A/B at e4b M=6000: whole-vocab head 16.60 GB peak vs bounded
+   6.60 GB (**~10 GB head-vjp transient eliminated**), loss identical, dh
+   relnorm 0.00000; head time +45% (Checkpoint recompute, small share of a
+   step). The @8K smoke's short responses were never head-bound (peak set by
+   the per-layer sdpa backward — see #2), so its wall peak moved little; the
+   win is exactly the long-response regime the review named. Gate test:
+   tests/train-orpo-fused-ce.test.ts "bounded SFT head".
+   **Landing this exposed a NEW upstream mlx bug (see ledger below).**
 9. **[S] Segmented-step overhead pass** — detachLeaf single-copy, one evalAll
    barrier/segment, memoize the CPM5 prefix block-sparse mask.
 10. **[M] e4b prefill gap** — profile-first; NOTE: the decode look-again could

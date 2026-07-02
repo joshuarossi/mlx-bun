@@ -138,6 +138,36 @@ export function sftLoss(model: RuntimeModel, batch: SftBatch): MlxArray {
   return scalar;
 }
 
+/** model.logitsFromHidden for TRAINING heads, with the upstream mlx
+ *  quantized_matmul bug worked around: transpose=false returns WRONG values at
+ *  row count 2 or 3 (reproduced on stock mlx 0.31.2; M=1 and M>=4 correct,
+ *  transpose=true correct at every M). mlx's autograd computes dh for a
+ *  transpose=true head qmm via an INTERNAL transpose=false call at the
+ *  cotangent's row count — so any differentiated [M,V] logits with M in {2,3}
+ *  (2-3-token responses, 2-3-token tail chunks, tiny prompt spans) got a
+ *  silently wrong dh (measured relnorm ~0.35-0.99 vs the f32 ground truth).
+ *  Fix: pad the span to 4 rows with zeros and slice the logits back — the pad
+ *  rows' cotangents are exactly zero (slice adjoint), and the internal vjp
+ *  then runs at M=4 where the kernel is correct. */
+export function logitsFromHiddenPadM(
+  model: { logitsFromHidden(h: MlxArray): MlxArray },
+  hSpan: MlxArray, // [1, M, hidden]
+): MlxArray {
+  const M = hSpan.shape[1]!;
+  if (M !== 2 && M !== 3) return model.logitsFromHidden(hSpan);
+  const [B, , H] = hSpan.shape as [number, number, number];
+  const pad = ops.zeros([B, 4 - M, H], hSpan.dtype);
+  const hPad = ops.concatAxis([hSpan, pad], 1);
+  pad.dispose();
+  const lgPad = model.logitsFromHidden(hPad); // [1, 4, V]
+  hPad.dispose();
+  const start = MlxArray.fromInt32(new Int32Array([0]), [1]);
+  const lg = ops.sliceDynamic(lgPad, start, [1], [B, M, lgPad.shape[2]!]);
+  start.dispose();
+  lgPad.dispose();
+  return lg;
+}
+
 /** B=1 masked CE that applies the LM head only at the supervised (response)
  *  span. The supervised input positions are the contiguous range
  *  [promptLen-1, len-1) (each predicts the next, response, token). The LM head
@@ -158,7 +188,7 @@ export function responseOnlyCe(model: RuntimeModel, h: MlxArray, batch: SftBatch
   const hidden = h.shape[2]!;
   const start = MlxArray.fromInt32(new Int32Array([startT]), [1]);
   const hResp = ops.sliceDynamic(h, start, [1], [1, M, hidden]);
-  const logits = model.logitsFromHidden(hResp); // [1, M, V]
+  const logits = logitsFromHiddenPadM(model, hResp); // [1, M, V] (M in {2,3} padded — mlx qmm bug)
   const V = logits.shape[2]!;
   const logits2d = ops.reshape(logits, [M, V]);
 
@@ -198,7 +228,7 @@ export function responseOnlyLogpMean(
   const hidden = h.shape[2]!;
   const start = MlxArray.fromInt32(new Int32Array([startT]), [1]);
   const hResp = ops.sliceDynamic(h, start, [1], [1, M, hidden]); // [1, M, hidden]
-  const logits = model.logitsFromHidden(hResp);                   // [1, M, V]
+  const logits = logitsFromHiddenPadM(model, hResp);              // [1, M, V] (M in {2,3} padded — mlx qmm bug)
   const V = logits.shape[2]!;
   const logits2d = ops.reshape(logits, [M, V]);
 
@@ -504,7 +534,7 @@ export function spanLogpMeanFromHidden(
   const hidden = h.shape[2]!;
   const start = MlxArray.fromInt32(new Int32Array([s0]), [1]);
   const hSpan = ops.sliceDynamic(h, start, [1], [1, n, hidden]); // [1, n, hidden]
-  const logits = model.logitsFromHidden(hSpan); // [1, n, V]
+  const logits = logitsFromHiddenPadM(model, hSpan); // [1, n, V] (n in {2,3} padded — mlx qmm bug)
   const V = logits.shape[2]!;
   const logits2d = ops.reshape(logits, [n, V]);
 
@@ -624,7 +654,7 @@ export function branchLogpMeanB1(
   const hidden = h.shape[2]!;
   const start = MlxArray.fromInt32(new Int32Array([startT]), [1]);
   const hResp = ops.sliceDynamic(h, start, [1], [1, M, hidden]); // [1, M, hidden]
-  const logits = model.logitsFromHidden(hResp); // [1, M, V] — head only on the response span
+  const logits = logitsFromHiddenPadM(model, hResp); // [1, M, V] — head only on the response span (M in {2,3} padded — mlx qmm bug)
   const V = logits.shape[2]!;
   const logits2d = ops.reshape(logits, [M, V]);
 
@@ -698,7 +728,7 @@ function chunkedLogpMeanB1(
 
     const ckpt = new Checkpoint((inp) => {
       const hc = inp[0]!;
-      const logits = model.logitsFromHidden(hc); // [1, Cc, V] — recomputed in backward
+      const logits = logitsFromHiddenPadM(model, hc); // [1, Cc, V] — recomputed in backward (Cc in {2,3} padded — mlx qmm bug)
       const V = logits.shape[2]!;
       const l2 = ops.reshape(logits, [Cc, V]);
       const targets = MlxArray.fromInt32(tHost, [Cc, 1]);
@@ -765,7 +795,7 @@ export function chunkedLogpMeanFromHidden(
     for (let i = 0; i < Cc; i++) tHost[i] = ids[c0 + 1 + i]!;
     const ckpt = new Checkpoint((inp) => {
       const hc = inp[0]!;
-      const logits = model.logitsFromHidden(hc); // [1, Cc, V] — recomputed in backward
+      const logits = logitsFromHiddenPadM(model, hc); // [1, Cc, V] — recomputed in backward (Cc in {2,3} padded — mlx qmm bug)
       const V = logits.shape[2]!;
       const l2 = ops.reshape(logits, [Cc, V]);
       const targets = MlxArray.fromInt32(tHost, [Cc, 1]);

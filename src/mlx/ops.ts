@@ -172,6 +172,32 @@ export function quantizedMatmul(
   x: MlxArray, w: MlxArray, scales: MlxArray, biases: MlxArray | null,
   spec: QuantSpec, transpose = true, s: S = gpuStream,
 ): MlxArray {
+  // UPSTREAM MLX BUG WORKAROUND (found 2026-07-02, reproduced on stock mlx
+  // 0.31.2): quantized_matmul with transpose=false returns WRONG VALUES when
+  // the row count is 2 or 3 (relnorm ~0.3-1.1 vs the dequantized matmul);
+  // M=1 and M>=4 are correct, transpose=true is correct at every M. Pad the
+  // row axis to 4 with zeros and slice the result back. NOTE this wrapper
+  // cannot protect mlx's INTERNAL vjp of a transpose=true qmm (C++ calls the
+  // primitive directly) — training heads pad the span through the head
+  // instead (loss.ts logitsFromHiddenPadM).
+  const rowAxis = x.shape.length - 2;
+  const rows = x.shape[rowAxis]!;
+  if (!transpose && (rows === 2 || rows === 3)) {
+    const padShape = [...x.shape];
+    padShape[rowAxis] = 4 - rows;
+    const pad = zeros(padShape, x.dtype, s);
+    const xPad = concatAxis([x, pad], rowAxis, s);
+    pad.dispose();
+    const yPad = quantizedMatmul(xPad, w, scales, biases, spec, transpose, s);
+    xPad.dispose();
+    const start = MlxArray.fromInt32(new Int32Array([0]), [1]);
+    const outShape = [...yPad.shape];
+    outShape[rowAxis] = rows;
+    const y = sliceDynamic(yPad, start, [rowAxis], outShape, s);
+    start.dispose();
+    yPad.dispose();
+    return y;
+  }
   return new MlxArray(
     outArray("quantized_matmul", (o) =>
       C.mlx_quantized_matmul(
