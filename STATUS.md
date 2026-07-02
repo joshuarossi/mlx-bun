@@ -9,14 +9,11 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 **L2** = mlx-optiq bit-exact parity · **L3** = original optimizations beyond both,
 gated by math checks + KL/quality (not bit-exactness).
 
-**Current release: v0.0.8** (2026-06-24) — npm + Homebrew + GitHub.
+**Current release: v0.0.9** (2026-07-01) — SHIPPED on all channels: GitHub
+release (signed+notarized, full notes), Homebrew tap, npm, site deployed.
+Notes: [docs/planning/release-notes-v0.0.9.md](docs/planning/release-notes-v0.0.9.md).
 
-## SESSION WRAP 2026-07-01 — main is PUSH-READY. Release sequence: `git push` → `bun run release` IN THE SAME SITTING
-
-(The site auto-deploys from the push via GitHub Pages and already documents
-v0.0.9 behavior — binaries must follow immediately or fresh users hit a
-port-8080-docs/port-8090-binary mismatch.) Release notes DRAFT:
-[docs/planning/release-notes-v0.0.9.md](docs/planning/release-notes-v0.0.9.md).
+## SESSION WRAP 2026-07-01 — v0.0.9 released; next actions below
 
 **Landed today (~35 commits, all verified, tsc 0, no Claude trailers):**
 mlx_lm.server drop-in surface complete (endpoints/fields/flags/logprobs,
