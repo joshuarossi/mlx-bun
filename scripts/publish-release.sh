@@ -35,6 +35,23 @@ SHA="$(shasum -a 256 "$TARPATH" | awk '{print $1}')"
 URL="https://github.com/$REPO/releases/download/v$VERSION/$TARBALL"
 echo "==> version $VERSION  sha $SHA"
 
+# Preflight: the site deploys from origin/main on push, while these binaries
+# are built from the LOCAL tree — releasing unpushed code splits the story.
+# (Skip with RELEASE_SKIP_GIT_CHECK=1 for a re-run/hotfix of assets only.)
+if [ "${RELEASE_SKIP_GIT_CHECK:-0}" != "1" ]; then
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "working tree is dirty — commit (or stash) before releasing," >&2
+    echo "or RELEASE_SKIP_GIT_CHECK=1 to override" >&2
+    exit 1
+  fi
+  git fetch -q origin main
+  if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+    echo "local HEAD != origin/main — run \`git push\` first (the site deploys" >&2
+    echo "from the push; binaries must match), or RELEASE_SKIP_GIT_CHECK=1" >&2
+    exit 1
+  fi
+fi
+
 # A versionless copy of the same tarball, so the direct-download one-liner
 # can target a STABLE url: releases/latest/download/mlx-bun-<arch>.tar.gz
 # (the versioned asset name changes every release and can't be used there).
@@ -47,8 +64,18 @@ if gh release view "v$VERSION" -R "$REPO" >/dev/null 2>&1; then
   gh release upload "v$VERSION" "$TARPATH" "$OUT_DIR/$LATEST" -R "$REPO" --clobber
 else
   echo "==> creating release v$VERSION"
-  gh release create "v$VERSION" "$TARPATH" "$OUT_DIR/$LATEST" -R "$REPO" \
-    --title "mlx-bun v$VERSION" --notes "mlx-bun v$VERSION"
+  # Release notes: use docs/planning/release-notes-v<ver>.md when it exists
+  # (write/edit it BEFORE releasing); fall back to the bare title otherwise.
+  NOTES_FILE="docs/planning/release-notes-v$VERSION.md"
+  if [ -f "$NOTES_FILE" ]; then
+    echo "    notes from $NOTES_FILE"
+    gh release create "v$VERSION" "$TARPATH" "$OUT_DIR/$LATEST" -R "$REPO" \
+      --title "mlx-bun v$VERSION" --notes-file "$NOTES_FILE"
+  else
+    echo "    (no $NOTES_FILE — using bare notes; add the file next time)"
+    gh release create "v$VERSION" "$TARPATH" "$OUT_DIR/$LATEST" -R "$REPO" \
+      --title "mlx-bun v$VERSION" --notes "mlx-bun v$VERSION"
+  fi
 fi
 
 # Helper: surgically rewrite the three release-specific fields of a formula.
@@ -79,8 +106,24 @@ fi
 
 # 3. Mirror into the in-repo source of truth (left for you to commit).
 rewrite_formula packaging/homebrew/mlx-bun.rb
+
+# 4. npm — same version, same one-shot (idempotent: skip if already live).
+if [ "$(npm view mlx-bun@"$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
+  echo "==> npm already at $VERSION"
+else
+  echo "==> publishing mlx-bun@$VERSION to npm"
+  bun publish || {
+    echo "npm publish failed — check the auth token (.npmrc / \`npm whoami\`)," >&2
+    echo "then finish with: bun run publish:npm" >&2
+    exit 1
+  }
+fi
+
 echo
-echo "==> done."
+echo "==> done — all channels:"
+echo "    GitHub release  https://github.com/$REPO/releases/tag/v$VERSION"
+echo "    Homebrew tap    brew upgrade joshuarossi/tap/mlx-bun"
+echo "    npm             mlx-bun@$VERSION"
+echo "    site            deploys from the git push (GitHub Pages)"
 echo "    packaging/homebrew/mlx-bun.rb updated — commit it:"
 echo "      git commit -am \"chore(dist): mlx-bun $VERSION\""
-echo "    users get it with: brew upgrade joshuarossi/tap/mlx-bun"
