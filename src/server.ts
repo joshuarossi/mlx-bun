@@ -1259,9 +1259,14 @@ export function createServer(
           // surface on their own. (scan() is INSERT-OR-REPLACE + prunes deleted,
           // so it's idempotent and cheap for a local cache.)
           await reg.scan();
+          const { visionCapable } = await import("./registry");
+          const { supportTier } = await import("./model/support");
           const rows = [];
-          for (const m of reg.list()) {
-            const supported = isSupportedModelRecord(m.modelType, m.repoId);
+          // listCanonical: one row per repo (refs/main) — duplicate snapshots
+          // from upstream re-pushes stay visible only in `ls --all-revisions`.
+          for (const m of reg.listCanonical()) {
+            const tier = supportTier(m.modelType, m.repoId);
+            const supported = tier !== null;
             let assessment = null;
             try {
               const config = await loadModelConfig(m.path);
@@ -1275,7 +1280,7 @@ export function createServer(
             rows.push({
               repo_id: m.repoId, model_type: m.modelType,
               size_bytes: m.sizeBytes, quant_bits: m.quantBits,
-              vision: m.hasVisionSidecar, supported,
+              vision: visionCapable(m), supported, support_tier: tier,
               serving: m.repoId === ctx.modelId,
               assessment,
             });
@@ -1488,7 +1493,8 @@ export function createServer(
           const reg = new Registry();
           try {
             if (reg.list().length === 0) await reg.scan();
-            for (const m of reg.list()) {
+            // Canonical rows only — a repo with N snapshots is ONE model id.
+            for (const m of reg.listCanonical()) {
               if (m.repoId === ctx.modelId) continue;
               if (!isSupportedModelRecord(m.modelType, m.repoId)) continue;
               data.push({ id: m.repoId, object: "model", created });
