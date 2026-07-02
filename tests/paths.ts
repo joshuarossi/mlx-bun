@@ -5,8 +5,8 @@ import { existsSync, readdirSync, realpathSync } from "node:fs";
 /** Resolve a HF-cache snapshot dir for a repo by globbing snapshots/ for the
  *  one carrying config.json — so a freshly-downloaded model needs no hardcoded
  *  commit hash. Returns a non-existent path (availability check → false) until
- *  the download lands. */
-function hfSnapshot(repoDir: string): string {
+ *  the download lands. (Exported for the universal-parity manifest.) */
+export function hfSnapshot(repoDir: string): string {
   const base = `${process.env.HOME}/.cache/huggingface/hub/${repoDir}/snapshots`;
   try {
     for (const snap of readdirSync(base))

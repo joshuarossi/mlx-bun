@@ -111,6 +111,23 @@ export function rope(
   );
 }
 
+/** fast::rope with every knob exposed (traditional + scale), for the
+ *  universal rope factory (rope_utils.initialize_rope port). The plain
+ *  `rope` above stays byte-identical for existing call sites. */
+export function ropeScaled(
+  x: MlxArray, dims: number, traditional: boolean, base: number | null,
+  scale: number, offset: number, freqs: MlxArray | null, s: S = gpuStream,
+): MlxArray {
+  return new MlxArray(
+    outArray("fast_rope", (o) =>
+      C.mlx_fast_rope(
+        o, x.handle, dims, traditional, optFloat(base), scale, offset,
+        freqs?.handle ?? 0n, s,
+      ),
+    ),
+  );
+}
+
 /** fast::rope with the position offset as an ARRAY (int32 scalar) instead
  *  of a baked int — required inside compiled decode graphs, where the
  *  offset changes every step but the graph must not. Same kernel as
@@ -265,6 +282,35 @@ export function geluApprox(x: MlxArray, s: S = gpuStream): MlxArray {
   const out = mul(halfx, t1, s);
   for (const a of [three, x3, cx3, inner, scaled, t, one, t1, halfx]) a.dispose();
   return out;
+}
+
+export function erf(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("erf", (o) => C.mlx_erf(o, a.handle, s)));
+}
+
+/** nn.gelu (PRECISE, erf-based): x · (1 + erf(x/√2)) / 2 — composed exactly
+ *  as mlx's python source (weak scalars promote to x's dtype). Used by the
+ *  gemma-1 gated MLP and starcoder2's plain MLP; distinct from geluApprox
+ *  (gelu_pytorch_tanh). */
+export function geluPrecise(x: MlxArray, s: S = gpuStream): MlxArray {
+  const sqrt2 = scalarLike(Math.sqrt(2), x);
+  const xs = div(x, sqrt2, s); // x / math.sqrt(2) — division, not mul-by-reciprocal
+  const e = erf(xs, s);
+  const one = scalarLike(1, x);
+  const e1 = add(one, e, s);
+  const xe = mul(x, e1, s);
+  const two = scalarLike(2, x);
+  const out = div(xe, two, s); // (...) / 2
+  for (const a of [sqrt2, xs, e, one, e1, xe, two]) a.dispose();
+  return out;
+}
+
+/** mx.addmm(c, a, b): a@b + c fused (α=β=1) — nn.Linear's bias path
+ *  (`mx.addmm(bias, x, weight.T)`). */
+export function addmm(c: MlxArray, a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("addmm", (o) => C.mlx_addmm(o, c.handle, a.handle, b.handle, 1.0, 1.0, s)),
+  );
 }
 
 export function exp(a: MlxArray, s: S = gpuStream): MlxArray {

@@ -87,6 +87,11 @@ export class QuantizedLinear {
     readonly scales: MlxArray,
     readonly biases: MlxArray | null,
     readonly spec: ops.QuantSpec,
+    /** ADDITIVE bias term (`.bias`, mlx nn.QuantizedLinear's optional bias —
+     *  qwen2 qkv, starcoder2, …). Distinct from `biases`, the quantization
+     *  zero-points. Applied after the matmul, before any LoRA residual,
+     *  exactly like mlx's QuantizedLinear.__call__. */
+    readonly bias: MlxArray | null = null,
   ) {}
 
   static load(weights: Weights, path: string, config: ModelConfig): QuantizedLinear {
@@ -99,6 +104,7 @@ export class QuantizedLinear {
       weights.tensor(`${path}.scales`),
       weights.has(`${path}.biases`) ? weights.tensor(`${path}.biases`) : null,
       spec,
+      weights.has(`${path}.bias`) ? weights.tensor(`${path}.bias`) : null,
     );
   }
 
@@ -113,6 +119,9 @@ export class QuantizedLinear {
 
   forward(x: MlxArray): MlxArray {
     let out = ops.quantizedMatmul(x, this.w, this.scales, this.biases, this.spec, true);
+    // Additive bias (mlx QuantizedLinear: `x = x + self["bias"]`), before
+    // the LoRA residual (LoRALinear calls the base linear bias-inclusive).
+    if (this.bias) out = disposing(out, ops.add(out, this.bias));
     // LoRA residual — composition is mlx-lm LoRALinear / optiq apply.py:
     //   y + (scale · ((x @ A) @ B)).astype(x.dtype)
     // (optiq mount.py omits the astype, leaking the f32 residual into the
