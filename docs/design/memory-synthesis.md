@@ -1,5 +1,12 @@
 # Memory synthesis — the local Morpheus (M1 design)
 
+> **SUPERSEDED (2026-07-01)** by
+> [dreaming-nightly-pipeline.md](./dreaming-nightly-pipeline.md). Kept for
+> history. Known-dead parts: embedding-based section-routing and silhouette
+> signals (**no embeddings anywhere in the project**), bucket-as-optional
+> framing, and the periodic-only wikify (RECONCILE/LINK/infobox are nightly
+> stages now).
+
 Status: **design**, 2026-06-26. Companion to [memory-system.md](./memory-system.md)
 (the M0 substrate: vault, read tools, CLI, scheduling — all landed). This doc is
 the M1 design for the **write side**: the synthesis pipeline that turns raw

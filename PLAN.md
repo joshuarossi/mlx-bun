@@ -2094,6 +2094,49 @@ Exit criteria (met): parity vs autograd, integration tests green, e4b fits at 81
 - Refs: `docs/investigations/steel-flash-cce-handoff.md`, `docs/reference/orpo-quickstart.md`,
   `docs/reference/training.md`. `[~]` open: the big CPM5 UF run + the chunk segmenter + e4b overnight.
 
+## Phase: oMLX adoption wave 1 — batching parity + SSD cold tier `[x]` (2026-07-02)
+
+Trigger: Josh found oMLX (github.com/jundot/omlx, Apache 2.0, 17.4k★ in 4.5
+months) and directed a systematic feature adoption. Governing doc:
+**docs/design/omlx-adoption-map.md** (scoreboard + queue + porting
+discipline). Tier ruling: oMLX is NOT an L1/L2 oracle — its stock forwards
+ARE mlx-lm's (our existing L1), its inventions are oracle-less (our L3
+class), its product surface is tier-agnostic serving layer.
+
+- `[x]` **Same-machine head-to-head** (M1 Max, their running server, shared
+  snapshots): single-stream we win e4b + Qwen3.5 + TTFT 3–7× everywhere;
+  they win cpm5 decode +20%. Measurement traps found: their SSE burst
+  streaming inflates naive tok/s ~55% (wall-clock only vs them); their own
+  server log over-reports similarly.
+- `[x]` **Batching parity** (docs/design/batching-perf-path.md): P5 SSM
+  batched path (SSMCache mergeRows/filter, "ssm" scheduler kind, per-row
+  RoPE in qwen3_5; oracle: tests/qwen35-batched-parity.test.ts token-exact
+  vs mlx-lm B=2) + **per-row logits processors batch** (Qwen3.5 ships a
+  default repetition penalty in generation_config.json that silently routed
+  every request serial — the SSM port alone changed nothing over HTTP until
+  this landed). Result at `--batch 4`: cpm5 **349 vs 339 (win)**, e4b −3%,
+  Qwen3.5 −1%, mean TTFT 2–3× better than oMLX under load.
+- `[x]` **Burst decode: BUILT AND REFUTED** — their `_step_burst` amortizes
+  Python GIL ping-pong; faithful port regressed cpm5 B=4 345→289 (Bun has
+  no GIL; bursting only delays SSE flushes). Reverted, breadcrumbed.
+- `[x]` **Footgun fixes**: `--model <path|query>` now a real override in
+  serve/bench (was accepted-but-ignored; auto-pick silently loaded the
+  wrong model — poisoned a bench round); serial-lane event-loop starvation
+  fixed (≥25 ms macrotask hop in the gateway serial branch — /stats went
+  2.5 s → 10–44 ms mid-generation, decode unchanged).
+- `[x]` **SSD KV cold tier** (docs/design/ssd-kv-cold-tier.md): kv-store v2
+  (all five cache kinds incl. quantized + SSM, invalidation metadata,
+  atomic writes), SsdCacheStore (files-are-the-database, mtime LRU,
+  self-quarantine), PromptCache spill/restore + debounced write-behind.
+  **Measured: restart TTFT 12.1 s → 0.24 s** on a 13.7k-token prefix (2% of
+  full prefill, beats oMLX's 1–3 s), **0% decode overhead** (vs their ~20%).
+  Correctness bar: SSD restore ≡ RAM cache-hit output (control-verified;
+  fresh-prefill divergence is the pre-existing prefix-reuse bf16 property).
+- `[~]` Queue (adoption map): structured output, menu bar app, EnginePool
+  model switching, oQ quantization, DFlash serving wiring, vision feature
+  cache, batching P0–P3 refinements (extend-join, vectorized sampling,
+  admission, defaults review).
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the

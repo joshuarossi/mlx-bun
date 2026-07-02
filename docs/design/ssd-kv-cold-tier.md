@@ -1,0 +1,158 @@
+# SSD cold tier for the prompt/KV cache
+
+Status: **LANDED P1–P3 (2026-07-02, same day)** — P4 hardening extras remain.
+
+**Measured (M1 Max, MiniCPM5, 13.7k-token prefix, kv_config quant):**
+- Restart TTFT: **12,083 ms (full prefill) → 236 ms** restored — 2% of full
+  prefill, 13,675 tokens back via a 3 ms zero-copy mmap. Beats oMLX's 1–3 s
+  claim and both exit criteria (<2.5 s, ≤10%).
+- Steady-state decode: **0% overhead** (192.0 vs 192.3 tok/s, flag off/on) —
+  nothing runs on the token loop, as designed (vs oMLX's measured ~20%).
+- Correctness: SSD-restored + trimmed continuation is **identical to the RAM
+  tier's cache-hit output** (control experiment); divergence from a fresh
+  full prefill is the pre-existing bf16 prefix-reuse property both tiers
+  share, not introduced by persistence.
+
+What landed: kv-store v2 (`src/kv-store.ts` — all five cache kinds incl.
+quantized + SSM, invalidation metadata, per-tensor hashes, atomic writes;
+`restoreState` added to both quantized cache classes), `src/ssd-cache.ts`
+(SsdCacheStore per D4), tier integration (`src/prompt-cache.ts` spill hook +
+retain thunks; `src/server.ts` tiered take with post-restore trim,
+debounced write-behind snapshots under the gateway lock, `/stats.ssd_cache`),
+flags `--ssd-cache <dir>` / `--ssd-cache-max <GB>` / `--ssd-cache-verify`.
+Tests: `tests/kv-store.test.ts` (fork-compare token-identical for bf16,
+quantized, SSM), `tests/ssd-cache.test.ts` (restart recovery, quarantine,
+corruption, eviction, supersede). One deviation from the plan below: find()
+returns PARTIAL prefix matches and the server trims after restore
+(divergent-tail conversations — full-entry-only missed the real pattern). Inspired by oMLX's paged SSD cache
+(Apache 2.0 — `omlx/cache/paged_ssd_cache.py`, `boundary_snapshot_store.py`;
+we port ideas, not code — add a `THIRD_PARTY_LICENSES.md` note if any code
+ends up derived). Their headline: coding-agent TTFT 30–90 s → 1–3 s by
+restoring long prefixes from SSD across requests AND restarts. Their
+measured costs (independent tests): ~2–3× cold TTFT and ~20% steady-state
+decode overhead — this design exists to get the win without those costs.
+Flag-gated, off by default.
+
+**Head start**: `src/kv-store.ts` already implements page-aligned KV
+persistence (`MLXBUNKV1`, 16 KiB-aligned tensors) with zero-copy COW mmap
+reload (`MmapFile.open(path, "cow")` → `MlxArray.fromPointer` — exactly
+the Metal page-alignment constraint, proven by expert-offload), including
+mid-rotation `RotatingKVCache` restore (`restoreState`,
+`src/model/gemma4-base.ts:880`). `scripts/experiments/cold-start.ts` is a
+working sub-1 s cold-restore harness. The SSD tier is wiring +
+quantized-cache support + an index/eviction/recovery layer.
+
+## Current state / gaps
+
+- `src/prompt-cache.ts`: byte-capped LRU RAM tier (default 2 GB,
+  `--prompt-cache`), prefix-entry based, adapter-namespaced, serial lane
+  only, race-free under the gateway lock. **A restart loses everything.**
+- `kv-store.ts` gaps: (1) no quantized kinds — `saveKvCache` throws for
+  `QuantizedKVCache`/`RotatingQuantizedKVCache` and neither has
+  `restoreState`, yet serving defaults to the model's `kv_config.json`
+  scheme, so the default production cache can't persist today; quantized
+  state is 6 arrays/layer (packed u32 + scales/biases bf16 × K/V);
+  (2) no invalidation metadata / checksums / atomic writes; (3) latent
+  bug: `loadKvCache` checks `caches.length !== model.layers.length` but
+  `makeCache()` returns donor layers only — wrong for KV-shared e4b
+  (verify in Phase 1).
+- Versioning primitive exists: `configFingerprint`
+  (`src/model/fingerprint.ts`) — sha256 over graph-shaping config incl.
+  `kvQuant`.
+
+## Design decisions
+
+**D1 — Whole-prefix-entry spill, not paged blocks.** oMLX pages for
+multi-user shared-prefix dedup; we are single-user with a prefix-entry
+cache that grows monotonically per conversation. Paging is exactly where
+their overheads come from: per-block SHA256 + save-queue bookkeeping
+*during decode* (their ~20% tax) and block-granular safetensors restore
+with copies (their 2–3× cold TTFT). Ours: **zero work on the token loop**
+(prefix tokens ARE the key), spill/persist only at request boundaries and
+evictions, restore = one zero-copy mmap with lazy page fault-in (~5 GB/s
+NVMe; 2 GB entry ≈ 0.4 s amortized into the first forward). Partial-prefix
+reuse works without paging: restore + `Cache.trim()`. Revisit paging only
+for multi-user batch dedup (v2, out of scope).
+
+**D2 — One store, two tiers.** `PromptCache` grows a cold tier behind the
+same `take`/`put` API:
+- RAM→SSD: `put()`'s evict loop spills (snapshot bytes → async writer →
+  dispose GPU arrays) instead of just disposing.
+- SSD→RAM: `take()` prefers a strictly-longer SSD prefix; restored entry
+  carries its `MmapFile`, unmapped on entry dispose (extensions copy into
+  fresh anonymous buffers via concat-grow anyway).
+- **Restart persistence needs write-behind at request completion**, not
+  just spill-on-evict: after `promptCache.put(...)` in `runGeneration`
+  (`src/server.ts:1019`), a debounced, coalesced-per-ns async snapshot.
+  Byte extraction (the only GPU-thread work) runs on the idle serial lane
+  between requests; file I/O is async. (oMLX's boundary-snapshot idea at
+  whole-entry granularity.)
+
+**D3 — Extend the existing format to `MLXBUNKV2`**, not safetensors
+(safetensors offsets aren't page-aligned; oMLX pays a copy via `mx.load`).
+Add: `"qkv"`/`"rotating-qkv"` kinds (six tensor slots + groupSize/bits;
+slice quantized buffers to `[.., :offset, :]` — don't persist 256-step
+slack), header fields `formatVersion`/`modelId`/`configFingerprint`/`ns`/
+`tokenizerHash`/`createdAt`, per-tensor checksums + header checksum.
+Integrity: header checksum always verified on scan; full verification
+opt-in (`--ssd-cache-verify`) because eager reads destroy lazy fault-in;
+default trusts atomic writes (tmp + fsync + rename). Corrupt/incompatible
+→ delete + log, never fatal. `loadKvCache` becomes model-generic
+(accept `{ makeCache(): Cache[] }`, donor-count check).
+
+**D4 — Files are the database.**
+`<ssd-dir>/<configFingerprint>/<nsHash>/<uuid>.mlxkv`. Startup recovery =
+header-only directory scan → in-memory `SsdIndex`
+(`{ns, tokens, path, bytes, mtimeMs}[]`); tokens live in the header JSON.
+LRU = file mtime (`utimes()` on hit); byte cap enforced at write time by
+oldest-mtime eviction; disk-full → drop write, warn once, keep serving.
+
+**D5 — Flags & interactions.** `--ssd-cache <dir>` +
+`--ssd-cache-max <GiB>` (default 32) → `ServerOptions.ssdCacheDir/MaxBytes`.
+Requires the RAM tier (`--prompt-cache 0` + `--ssd-cache` = startup
+error). `--memory-budget` unchanged (restored caches are clean file-backed
+pages until dirtied; admission already assumes worst-case bf16). `/status`
+gains `ssd: { entries, bytes, max_bytes, restores, spills, restore_ms_last }`.
+v1 is serial-lane only (where `PromptCache` lives); batch-lane interplay is
+docs/design/batching-perf-path.md P3's problem.
+
+## Phases
+
+- **P0 — Baseline bench (½ d)**: `scripts/experiments/ssd-cache-bench.ts`
+  grown from `cold-start.ts`: ≥16k-token prefix on the standard snapshot,
+  kv_config quant active; measure full-prefill TTFT / warm RAM-hit TTFT /
+  steady-state decode. Exit: baseline table committed.
+- **P1 — kv-store v2 (2–3 d, highest uncertainty)**: `restoreState` on
+  both quantized cache classes; all four kinds in save/load; header v2;
+  atomic writes; model-generic load. Exit: round-trip tests all kinds
+  (incl. wrapped ring) + **greedy decode parity** — N tokens continued
+  from a restored cache bit-exact vs never-persisted; `tsc` 0.
+- **P2 — `src/ssd-cache.ts` store (1–2 d)**: `SsdCacheStore
+  { scan, find(prompt, ns), store (async, extraction split from I/O),
+  evictToCap, remove, stats }`. Exit: unit tests — restart recovery,
+  incompatible-fingerprint quarantine, corrupt-header deletion, mtime cap
+  eviction, disk-full soft-fail.
+- **P3 — Tier integration + flags (2–3 d)**: cold tier in `PromptCache`,
+  debounced end-of-request snapshots, CLI/`/status`. **Exit (headline)**:
+  (1) restart TTFT on a 16k prefix **< 2.5 s and ≤ 10% of full-prefill**
+  (beat oMLX's 1–3 s; a true-cold miss runs the unchanged prefill path);
+  (2) steady-state decode overhead **< 2%** vs flag off (vs their ~20%);
+  (3) flag absent ⇒ zero behavior change.
+- **P4 — Hardening + docs (1–2 d)**: kill-during-write crash test,
+  adapter-ns isolation, kv-quant-scheme-change invalidation, README/help,
+  license note. Exit: suite green; on/off × cold/warm/restart matrix
+  recorded.
+
+Total ~7–10 working days.
+
+## Risks
+
+- **mmap lifetime vs mlx laziness**: unmap only in entry `dispose()` after
+  successor state is evaluated; COW mapping already covers buffer donation.
+- **Byte-extraction stall on multi-GB entries**: runs between requests on
+  the idle lane; measure in P3; chunk with yields if needed.
+- **COW dirty-page accounting**: extended restored caches migrate to
+  anonymous memory — probe with `phys_footprint` (expert-offload
+  discipline) before making footprint claims.
+- **Stale-token poisoning**: `configFingerprint` + `tokenizerHash` + ns;
+  chat-template drift degrades to a shorter matched prefix (safe).

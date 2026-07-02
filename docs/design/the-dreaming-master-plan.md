@@ -1,5 +1,15 @@
 # THE DREAMING (LOCAL) — MASTER BUILD PLAN
 
+> **PARTIALLY SUPERSEDED (2026-07-01).** The canonical system design is now
+> [dreaming-nightly-pipeline.md](./dreaming-nightly-pipeline.md); its
+> "Decisions overridden" table lists exactly which statements here are dead.
+> Do NOT execute from this doc alone. In particular: there is **NO notability
+> filter / CREATE gate / trivia PARK** (everything surfaces; `_captured` holds
+> the tail), **buckets are first-class** (not "optional staging, may ship
+> empty"), **no embeddings anywhere** (not even as offline instruments), and
+> the Lucien bucket-F1/Jaccard acceptance gates are model-eval tooling, not
+> system design. The per-task file/port references below remain useful.
+
 *Turn a user's conversations into Wikipedia-style entity articles using local models, cheaply and privately. This document is the complete execution spec: a fresh agent reading ONLY this document can execute every task end-to-end without asking a question. Every decision is made; where a real choice existed it is PICKED with a one-line rationale + fallback. All paths are absolute. All model/adapter/schema strings are exact and verified against the live repo and disk on the build machine (M4 Pro / M1 Max).*
 
 ---

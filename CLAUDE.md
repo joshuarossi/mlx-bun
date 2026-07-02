@@ -11,11 +11,20 @@ README.md has the pitch and scope boundaries.
 - `README.md` — product pitch, quickstart, API surface, scope boundaries.
 - `benchmarks/RESULTS.md` — curated results: parity / performance / quality.
 - `docs/reference/` — cli, server-api, server-config, library-api, embedding, distribution, training, orpo-quickstart, memory, models (user-facing reference).
-- `docs/design/` — adapters-end-to-end, bucketing-stage, compat-cli-surface-design, diffusion-gemma-port, docs-reorg-plan, dspark-speculative-decoding, hlg-sampling, memory-inference-path, memory-synthesis, memory-system, minicpm5-decode-megakernel, optimization_plan, orpo-dynamic-lambda, orpo-future-enhancements, orpo-training, parallel-slots, parity-tier-dag, runtime-isolation, segmented-backward-training, spec-decode-larger-targets, tauri-desktop-app, the-dreaming-handoff, the-dreaming-master-plan, w4a16-compute-precision-spike, write-pipeline-entity.
+- `docs/design/` — adapters-end-to-end, batching-perf-path, bucketing-stage, compat-cli-surface-design, diffusion-gemma-port, docs-reorg-plan, dreaming-nightly-pipeline, dspark-speculative-decoding, hlg-sampling, memory-inference-path, memory-synthesis, memory-system, minicpm5-decode-megakernel, omlx-adoption-map, optimization_plan, orpo-dynamic-lambda, orpo-future-enhancements, orpo-training, parallel-slots, parity-tier-dag, runtime-isolation, segmented-backward-training, spec-decode-larger-targets, ssd-kv-cold-tier, tauri-desktop-app, the-dreaming-handoff, the-dreaming-master-plan, w4a16-compute-precision-spike, write-pipeline-entity.
 - `docs/investigations/` — chunk-finetune-experiment, curve-bisector-routing, decode-roofline-lookagain, dspark-handoff, expert-offload-single-user-moe, hlg-sampling-investigation, kernel-perf-review-2026-07, lab-build-journal, orpo-base-uf-experiment-and-directions, orpo-flash-cce-pin-leak, orpo-uf-testing-handoff, pi-builtin-investigation, segmented-backward-handoff, starter-model-port-handoff, steel-flash-cce-handoff, trainer-validation-experiment.
 - `docs/planning/` — product/vision: PRODUCT_ROADMAP, IDEAS, ResearchTopics, journal, chunk-task-roadmap, curve-sampler-research-plan.
 - (Keep these lists in sync with `ls docs/{reference,design,investigations,planning}/*.md` when adding docs.)
 - `AGENTS.md` → symlink to this file.
+
+**Repo layout (root dirs, one line each — keep this honest):**
+- `src/` code · `tests/` gated + fast suites · `scripts/` production tooling (`scripts/experiments/` = one-off research) · `docs/` see map above · `website/` the site (deploys from main).
+- `goldens/` parity fixtures — `.json` manifests tracked, `.bin` blobs machine-specific + regenerable + UNTRACKED (see goldens/README.md).
+- `fixtures/` small tracked test inputs (images, tiny safetensors) used by the model-free CI suite.
+- `repro/` minimal reproductions for UPSTREAM bug reports (e.g. `bun-ffi-f64/` = Bun FFI float64 bug, ISSUE.md inside); self-contained, not part of the build.
+- `spikes/` tracked one-off feasibility probes (tiny); `archive/` frozen one-off HTML reports.
+- `packaging/` signing entitlements + Homebrew formula source-of-truth; `bin/` the npm launcher; `extensions/` pi provider extension.
+- Untracked working dirs (gitignored, machine-local): `adapters/`, `runs/`, `reports/`, `dist*/`, `node_modules/`, stray bench artifacts.
 
 ## Ground rules
 

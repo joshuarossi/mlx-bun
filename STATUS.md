@@ -9,9 +9,46 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 **L2** = mlx-optiq bit-exact parity · **L3** = original optimizations beyond both,
 gated by math checks + KL/quality (not bit-exactness).
 
-**Current release: v0.0.9** (2026-07-01) — SHIPPED on all channels: GitHub
-release (signed+notarized, full notes), Homebrew tap, npm, site deployed.
-Notes: [docs/planning/release-notes-v0.0.9.md](docs/planning/release-notes-v0.0.9.md).
+**Current release: v0.0.10** (2026-07-02) — batching parity with oMLX
+(`--batch 4` matches/beats on all three shared models), SSD KV cold tier
+(`--ssd-cache`: restart TTFT 12.1 s → 0.24 s, 0% decode overhead), `--model`
+override fix, serial-lane responsiveness fix.
+
+## SESSION WRAP 2026-07-02 — oMLX adoption wave 1; v0.0.10
+
+**The story:** Josh found oMLX (Apache 2.0) → same-machine head-to-head →
+"copy the good parts, benchmarked." Canonical roadmap:
+[docs/design/omlx-adoption-map.md](docs/design/omlx-adoption-map.md)
+(kept/refuted/queue + porting discipline). Full detail in PLAN.md
+"oMLX adoption wave 1" + [docs/design/batching-perf-path.md](docs/design/batching-perf-path.md)
++ [docs/design/ssd-kv-cold-tier.md](docs/design/ssd-kv-cold-tier.md).
+
+**Landed:** Qwen3.5 SSM batched path (token-exact vs mlx-lm B=2 oracle) ·
+per-row logits processors batch (killed the hidden serial route from
+Qwen3.5's default repetition penalty) · `--batch 4` now matches/beats oMLX
+(cpm5 349 vs 339, e4b −3%, Qwen3.5 −1%, TTFT 2–3× better) · burst decode
+built-and-REFUTED (GIL trick, doesn't transfer to Bun; reverted with
+breadcrumb) · SSD KV cold tier P1–P3 (kv-store v2 all five cache kinds,
+SsdCacheStore, PromptCache spill/restore, write-behind; 13.7k-prefix
+restart 0.24 s, 0% decode tax) · `--model` real override in serve/bench ·
+serial-lane macrotask hop (/stats 2.5 s → 10–44 ms mid-generation) ·
+`MLX_BUN_LANE_DEBUG=1` breadcrumb.
+
+**Next actions, ranked:**
+1. Structured output (`response_format` JSON-schema) — adoption map #1,
+   biggest remaining API hole; we own the sampler loop.
+2. Menu bar app (SwiftUI + signed binary as sidecar) — adoption map #2,
+   Josh wants it; /Applications/oMLX.app is the structural reference.
+3. Batching refinements (batching-perf-path P0–P3: extend-join, vectorized
+   sampling, admission, `--batch 4` default review) + P4 device-side step
+   chaining (the cpm5 single-stream −20% counter).
+4. SSD tier P4 hardening (kill-mid-write e2e, adapter-ns isolation e2e,
+   scheme-flip invalidation e2e).
+5. oQ-style quantization spike in `convert` (eval-gated; arXiv-lens).
+6. Repo hygiene: goldens/.bin no longer tracked going forward (see
+   "Goldens hygiene" in docs/design/docs-reorg-plan.md addendum); the
+   one-time history rewrite (LFS or filter-repo) is a Josh go/no-go —
+   both laptops must re-clone after.
 
 ## SESSION WRAP 2026-07-01 — v0.0.9 released; next actions below
 
