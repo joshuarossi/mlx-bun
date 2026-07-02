@@ -264,7 +264,7 @@ local model. (To just chat now with no setup, use \`mlx-bun pi\` — the
 built-in agent.)
 
 Options:
-  --base-url <url>     Server base URL  [default: http://localhost:8080/v1]
+  --base-url <url>     Server base URL  [default: http://127.0.0.1:8080/v1]
   --remove             Disconnect (delete the extension)
 
 Installs a small discovery extension into ~/.pi/agent/extensions that
@@ -1607,7 +1607,7 @@ switch (cmd) {
 
     const rt = serverRuntimeFlags();
     const port = rt.port;
-    const baseUrl = `http://localhost:${port}/v1`;
+    const baseUrl = `http://127.0.0.1:${port}/v1`;
     const { probeServer } = await import("./harness-pi");
     let models = await probeServer(baseUrl);
     let startedServer = false;
@@ -1622,7 +1622,7 @@ switch (cmd) {
         console.log(style.dim("  (stop it or use --port <other> to start a fresh server with these flags)"));
       }
       try {
-        const stats = await (await fetch(`http://localhost:${port}/stats`)).json() as
+        const stats = await (await fetch(`http://127.0.0.1:${port}/stats`)).json() as
           { server?: { owner?: string } };
         if (stats.server?.owner === "pi-session") {
           console.log("note: that server belongs to another `mlx-bun pi` session and ends when it does —");
@@ -1667,11 +1667,15 @@ switch (cmd) {
     if (parsed.mode === "interactive")
       console.log(`launching mlx-bun pi (model ${models[0]!.id}) — /help for commands, double-Ctrl+C to exit`);
     restoreStdout();
+    if (parsed.ignored.length)
+      console.log(style.dim(`  ignoring pi flags: ${parsed.ignored.join(", ")}`));
     const code = await runEmbeddedPi({
       baseUrl,
       modelLabel: models[0]!.id,
       contextWindow: models[0]!.contextWindow,
       reasoning: models[0]!.reasoning,
+      vision: models[0]!.vision,
+      verbose: parsed.verbose,
       mode: parsed.mode,
       printFormat: parsed.printFormat,
       initialMessage: message,
