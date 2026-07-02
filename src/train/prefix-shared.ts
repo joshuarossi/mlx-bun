@@ -63,17 +63,40 @@ export function blockSparseMask(P: number, Rc: number, Rr: number): MlxArray {
  *  MiniCPM5's runLayerRange calls makeMask once and disposes the returned arr. */
 export class PrefixSharedCache implements Cache {
   offset = 0;
-  constructor(private readonly P: number, private readonly Rc: number, private readonly Rr: number) {}
+  constructor(
+    private readonly P: number, private readonly Rc: number, private readonly Rr: number,
+    // Step-shared mask memo (kernel-review backlog #9): the [T,T] block-sparse
+    // mask is IDENTICAL for every layer, segment forward, and backward
+    // recompute of a step, but each runLayerRange call rebuilt it from its
+    // elementwise ops (2·nSeg+ rebuilds per step in the segmented prefix
+    // class). With a memo it is built once; makeMask hands out cheap slice
+    // VIEWS (consumers dispose their view — runLayerRange does), and the
+    // first cache disposed frees the memo. Use prefixSharedCaches() to build
+    // a memo-sharing batch.
+    private readonly memo?: { mask: MlxArray | null },
+  ) {}
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
     return [k.slice([0, 0, 0, 0], k.shape), v.slice([0, 0, 0, 0], v.shape)];
   }
   makeMask(_N: number, _windowSize: number | null): Mask {
-    return { mode: "array", arr: blockSparseMask(this.P, this.Rc, this.Rr) };
+    if (!this.memo) return { mode: "array", arr: blockSparseMask(this.P, this.Rc, this.Rr) };
+    if (!this.memo.mask) this.memo.mask = blockSparseMask(this.P, this.Rc, this.Rr);
+    const m = this.memo.mask;
+    return { mode: "array", arr: m.slice([0, 0], m.shape) };
   }
   state(): MlxArray[] { return []; }
   isTrimmable(): boolean { return true; }
   trim(_n: number): void { /* offset pinned at 0 */ }
-  dispose(): void { /* owns no arrays */ }
+  dispose(): void {
+    if (this.memo?.mask) { this.memo.mask.dispose(); this.memo.mask = null; }
+  }
+}
+
+/** One PrefixSharedCache per layer, all sharing a single block-sparse-mask
+ *  memo for the step (see the constructor note). */
+export function prefixSharedCaches(nLayers: number, P: number, Rc: number, Rr: number): Cache[] {
+  const memo: { mask: MlxArray | null } = { mask: null };
+  return Array.from({ length: nLayers }, () => new PrefixSharedCache(P, Rc, Rr, memo));
 }
 
 /** Length-normalized mean log-prob over the predictions at hidden positions
@@ -185,7 +208,7 @@ export function orpoLossPrefixShared(
   concat.set(chosenResp, P);
   concat.set(rejectedResp, P + Rc);
   const ids = MlxArray.fromInt32(concat, [1, T]);
-  const caches: Cache[] = model.layers.map(() => new PrefixSharedCache(P, Rc, Rr));
+  const caches: Cache[] = prefixSharedCaches(model.layers.length, P, Rc, Rr);
 
   let h: MlxArray;
   setMiniCpmPrefixPlan({ P, Rc, Rr });
@@ -230,7 +253,7 @@ export function prefixSharedLogps(
   const concat = new Int32Array(T);
   concat.set(promptIds, 0); concat.set(chosenResp, P); concat.set(rejectedResp, P + Rc);
   const ids = MlxArray.fromInt32(concat, [1, T]);
-  const caches: Cache[] = model.layers.map(() => new PrefixSharedCache(P, Rc, Rr));
+  const caches: Cache[] = prefixSharedCaches(model.layers.length, P, Rc, Rr);
   setMiniCpmPrefixPlan({ P, Rc, Rr });
   let h: MlxArray;
   try { h = model.forwardHidden(ids, caches); }

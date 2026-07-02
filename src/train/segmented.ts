@@ -60,7 +60,7 @@ import {
   orpoLossFromLogps, spanLogpMeanFromHidden, respSpanFromMask, combineFullNll,
   type ChunkCtx, type SftScope, type HeadSpan,
 } from "./loss";
-import { PrefixSharedCache, prefixGatherIdx, branchLogpMeanGathered, blockSparsePrefixMaskGemma, prefixFullNll } from "./prefix-shared";
+import { prefixSharedCaches, prefixGatherIdx, branchLogpMeanGathered, blockSparsePrefixMaskGemma, prefixFullNll } from "./prefix-shared";
 
 // Experiment toggle: which bounded head to use inside the segmented mlx_vjp.
 // "checkpoint" = per-chunk Checkpoint recompute (bounds memory under nesting);
@@ -137,16 +137,30 @@ export function planSegmentsBySize(nLayers: number, segSize: number): [number, n
  *  stack's activations alive. Copying the bytes into a fresh leaf frees that
  *  graph. The leaf is a valid differentiable input for the per-segment vag. */
 function detachLeaf(a: MlxArray): MlxArray {
-  // Force a row-major copy first: `rawBytes` reads the underlying buffer
-  // linearly, so a NON-contiguous input (e.g. a transposed donor K/V view) would
-  // be byte-scrambled. `ops.contiguous` is a no-op for already-contiguous arrays
+  // Force a row-major copy first: the buffer is read linearly, so a
+  // NON-contiguous input (e.g. a transposed donor K/V view) would be
+  // byte-scrambled. `ops.contiguous` is a no-op for already-contiguous arrays
   // (hidden boundaries) and materializes row-major for strided views.
+  // detachCopy = ONE mlx→mlx copy (backlog #9: the old
+  // fromBytesCopy(rawBytes()) route was two copies via the JS heap).
   const c = ops.contiguous(a);
-  c.eval();
-  const leaf = MlxArray.fromBytesCopy(c.rawBytes(), c.shape, c.dtype);
+  const leaf = c.detachCopy();
   c.dispose();
   a.dispose();
   return leaf;
+}
+
+/** Batch detach: ONE evalAll barrier for the whole set (backlog #9 — each
+ *  per-array eval was a separate blocking GPU drain; a segment's vjp returns
+ *  dh + 2·consumed-donors + 2·targets arrays, so the per-segment sync count
+ *  collapses from ~2+2n to 1), then one mlx→mlx copy each. Disposes inputs. */
+function detachLeaves(arrs: MlxArray[]): MlxArray[] {
+  const cs = arrs.map((a) => ops.contiguous(a));
+  ops.evalAll(cs);
+  const leaves = cs.map((c) => c.detachCopy());
+  for (const c of cs) c.dispose();
+  for (const a of arrs) a.dispose();
+  return leaves;
 }
 
 /** Layer index a target's modulePath belongs to, or -1 (e.g. embedding/head). */
@@ -292,13 +306,15 @@ export class SegmentedBackward {
         res.outputs[0]!.dispose(); // segment output — unused (only its vjp matters)
         // vjps[0] = dh_in (grad w.r.t. this segment's input boundary) -> dh_out
         // for segment k-1; the rest scatter into the global flat vector. Detach
-        // each to a graph-free leaf (eval doesn't detach; keeps peak bounded).
+        // to graph-free leaves (eval doesn't detach; keeps peak bounded) — ONE
+        // barrier for the segment's whole vjp set.
+        const leaves = detachLeaves(res.vjps);
         idxs.forEach((j, s) => {
-          grads[j] = detachLeaf(res.vjps[1 + 2 * s]!); // dA
-          grads[n + j] = detachLeaf(res.vjps[1 + 2 * s + 1]!); // dB
+          grads[j] = leaves[1 + 2 * s]!; // dA
+          grads[n + j] = leaves[1 + 2 * s + 1]!; // dB
         });
         dhOut!.dispose(); // consumed as this segment's cotangent
-        dhOut = detachLeaf(res.vjps[0]!);
+        dhOut = leaves[0]!;
         boundaries[k]!.dispose();
         boundaries[k] = null;
       }
@@ -550,17 +566,17 @@ export class SegmentedBackwardGemma4 {
         const res = this.segVjps[k]!.apply(primals, cots);
         for (const o of res.outputs) o.dispose();
 
-        // vjps[0] = dh_in; then (dk,dv) per consumed donor; then (da,db) per LoRA.
-        const newDh = detachLeaf(res.vjps[0]!);
+        // vjps[0] = dh_in; then (dk,dv) per consumed donor; then (da,db) per
+        // LoRA — detached in ONE barrier (backlog #9).
+        const leaves = detachLeaves(res.vjps);
+        const newDh = leaves[0]!;
         cons.forEach((d, ci) => {
-          const dk = detachLeaf(res.vjps[1 + 2 * ci]!);
-          const dv = detachLeaf(res.vjps[1 + 2 * ci + 1]!);
-          this.accumulateDKV(dKV, d, dk, dv);
+          this.accumulateDKV(dKV, d, leaves[1 + 2 * ci]!, leaves[1 + 2 * ci + 1]!);
         });
         const base = 1 + 2 * cons.length;
         idxs.forEach((j, s) => {
-          grads[j] = detachLeaf(res.vjps[base + 2 * s]!);
-          grads[n + j] = detachLeaf(res.vjps[base + 2 * s + 1]!);
+          grads[j] = leaves[base + 2 * s]!;
+          grads[n + j] = leaves[base + 2 * s + 1]!;
         });
 
         dh.dispose();
@@ -812,12 +828,13 @@ export class SegmentedBackwardOrpo {
         for (const j of idxs) params.push(lora.targets[j]!.lw.a, lora.targets[j]!.lw.b);
         const res = this.segVjps[k]!.apply(params, [dhC!]);
         res.outputs[0]!.dispose();
+        const leaves = detachLeaves(res.vjps); // one barrier (backlog #9)
         idxs.forEach((j, s) => {
-          gradsC[j] = detachLeaf(res.vjps[1 + 2 * s]!); // dA
-          gradsC[n + j] = detachLeaf(res.vjps[1 + 2 * s + 1]!); // dB
+          gradsC[j] = leaves[1 + 2 * s]!; // dA
+          gradsC[n + j] = leaves[1 + 2 * s + 1]!; // dB
         });
         dhC!.dispose();
-        dhC = detachLeaf(res.vjps[0]!);
+        dhC = leaves[0]!;
         bndC[k]!.dispose(); bndC[k] = null;
       }
       dhC!.dispose(); dhC = null; // embedding grad, discarded (no LoRA on embed)
@@ -829,12 +846,13 @@ export class SegmentedBackwardOrpo {
         for (const j of idxs) params.push(lora.targets[j]!.lw.a, lora.targets[j]!.lw.b);
         const res = this.segVjps[k]!.apply(params, [dhR!]);
         res.outputs[0]!.dispose();
+        const leaves = detachLeaves(res.vjps); // one barrier (backlog #9)
         idxs.forEach((j, s) => {
-          gradsR[j] = detachLeaf(res.vjps[1 + 2 * s]!); // dA
-          gradsR[n + j] = detachLeaf(res.vjps[1 + 2 * s + 1]!); // dB
+          gradsR[j] = leaves[1 + 2 * s]!; // dA
+          gradsR[n + j] = leaves[1 + 2 * s + 1]!; // dB
         });
         dhR!.dispose();
-        dhR = detachLeaf(res.vjps[0]!);
+        dhR = leaves[0]!;
         bndR[k]!.dispose(); bndR[k] = null;
       }
       dhR!.dispose(); dhR = null; // embedding grad, discarded
@@ -999,7 +1017,7 @@ export class SegmentedBackwardOrpoPrefix {
     this.headSink = [];
     this.curChunk = this.chunkCtx ? { ...this.chunkCtx, sink: this.headSink } : undefined;
     // One prefix cache per layer (captures P/Rc/Rr; makeMask -> block-sparse mask).
-    this.curCaches = model.layers.map(() => new PrefixSharedCache(P, Rc, Rr));
+    this.curCaches = prefixSharedCaches(model.layers.length, P, Rc, Rr);
 
     const nSeg = ranges.length;
     const concat = new Int32Array(T);
@@ -1044,12 +1062,13 @@ export class SegmentedBackwardOrpoPrefix {
         for (const j of idxs) params.push(lora.targets[j]!.lw.a, lora.targets[j]!.lw.b);
         const res = this.segVjps[k]!.apply(params, [dhOut!]);
         res.outputs[0]!.dispose();
+        const leaves = detachLeaves(res.vjps); // one barrier (backlog #9)
         idxs.forEach((j, s) => {
-          grads[j] = detachLeaf(res.vjps[1 + 2 * s]!); // dA
-          grads[n + j] = detachLeaf(res.vjps[1 + 2 * s + 1]!); // dB
+          grads[j] = leaves[1 + 2 * s]!; // dA
+          grads[n + j] = leaves[1 + 2 * s + 1]!; // dB
         });
         dhOut!.dispose();
-        dhOut = detachLeaf(res.vjps[0]!);
+        dhOut = leaves[0]!;
         boundaries[k]!.dispose(); boundaries[k] = null;
       }
       // Segment-0 dh_in = grad w.r.t. the embedding output (no LoRA on embed) — drop.
@@ -1319,16 +1338,15 @@ export class SegmentedBackwardOrpoGemma4 {
         const res = this.segVjps[k]!.apply(primals, cots);
         for (const o of res.outputs) o.dispose();
 
-        const newDh = detachLeaf(res.vjps[0]!);
+        const leaves = detachLeaves(res.vjps); // one barrier (backlog #9)
+        const newDh = leaves[0]!;
         cons.forEach((d, ci) => {
-          const dk = detachLeaf(res.vjps[1 + 2 * ci]!);
-          const dv = detachLeaf(res.vjps[1 + 2 * ci + 1]!);
-          this.accumulateDKV(dKV, d, dk, dv);
+          this.accumulateDKV(dKV, d, leaves[1 + 2 * ci]!, leaves[1 + 2 * ci + 1]!);
         });
         const base = 1 + 2 * cons.length;
         idxs.forEach((j, s) => {
-          grads[j] = detachLeaf(res.vjps[base + 2 * s]!);
-          grads[n + j] = detachLeaf(res.vjps[base + 2 * s + 1]!);
+          grads[j] = leaves[base + 2 * s]!;
+          grads[n + j] = leaves[base + 2 * s + 1]!;
         });
 
         dh.dispose();
@@ -1750,16 +1768,15 @@ export class SegmentedBackwardOrpoPrefixGemma4 {
         const res = this.segVjps[k]!.apply(primals, cots);
         for (const o of res.outputs) o.dispose();
 
-        const newDh = detachLeaf(res.vjps[0]!);
+        const leaves = detachLeaves(res.vjps); // one barrier (backlog #9)
+        const newDh = leaves[0]!;
         cons.forEach((d, ci) => {
-          const dk = detachLeaf(res.vjps[1 + 2 * ci]!);
-          const dv = detachLeaf(res.vjps[1 + 2 * ci + 1]!);
-          this.accumulateDKV(dKV, d, dk, dv);
+          this.accumulateDKV(dKV, d, leaves[1 + 2 * ci]!, leaves[1 + 2 * ci + 1]!);
         });
         const base = 1 + 2 * cons.length;
         idxs.forEach((j, s) => {
-          grads[j] = detachLeaf(res.vjps[base + 2 * s]!);
-          grads[n + j] = detachLeaf(res.vjps[base + 2 * s + 1]!);
+          grads[j] = leaves[base + 2 * s]!;
+          grads[n + j] = leaves[base + 2 * s + 1]!;
         });
 
         dh.dispose();

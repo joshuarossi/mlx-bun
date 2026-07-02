@@ -140,8 +140,16 @@ analytic backward). Verified vs f32-dequant ground truth (chunk-4 dh
    win is exactly the long-response regime the review named. Gate test:
    tests/train-orpo-fused-ce.test.ts "bounded SFT head".
    **Landing this exposed a NEW upstream mlx bug (see ledger below).**
-9. **[S] Segmented-step overhead pass** — detachLeaf single-copy, one evalAll
-   barrier/segment, memoize the CPM5 prefix block-sparse mask.
+9. ~~**[S] Segmented-step overhead pass**~~ **LANDED 2026-07-02** — all three
+   fixes: MlxArray.detachCopy (ONE mlx→mlx copy; the old rawBytes+
+   fromBytesCopy route was two copies via the JS heap), detachLeaves (ONE
+   evalAll barrier per segment's whole vjp set, applied in all six segmented
+   backward loops), and a step-shared block-sparse-mask memo for the CPM5
+   prefix classes (prefixSharedCaches — makeMask hands out slice views).
+   Gate: loss + grads BYTE-IDENTICAL on CPM5-SFT / CPM5-ORPO-prefix / e4b-SFT
+   fixed steps. Step time (short-seq fixtures, M1 Max): CPM5 ORPO-prefix
+   238→158 ms (−34%), e4b SFT 2065→1272 ms (−38%); e4b @8K flat (GPU-bound,
+   as predicted) with peak unchanged (14.49 GB).
 10. **[M] e4b prefill gap** — profile-first; NOTE: the decode look-again could
     NOT reproduce RESULTS.md's 304-vs-373 row on the M1 Max (no eval-DB
     backing) — re-bench on the M4 Pro before building anything.

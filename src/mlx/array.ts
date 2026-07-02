@@ -108,6 +108,27 @@ export class MlxArray {
     );
   }
 
+  /** Graph-free LEAF with this array's exact bytes — ONE copy, straight from
+   *  the (evaluated) mlx buffer into a fresh mlx-owned array, no JS-heap
+   *  intermediate (`fromBytesCopy(rawBytes())` is TWO copies: device→JS heap
+   *  →new leaf). mlx_array_new_data copies synchronously, so the source only
+   *  has to outlive this call. The buffer is read LINEARLY — the caller must
+   *  pass a row-major contiguous array (ops.contiguous first for views), same
+   *  contract as rawBytes. Segmented-backward boundary detach hot path. */
+  detachCopy(): MlxArray {
+    this.eval();
+    const dt = this.dtype;
+    const p =
+      dt === Dtype.float32 ? C.mlx_array_data_float32(this.handle)
+      : dt === Dtype.float16 ? C.mlx_array_data_float16(this.handle)
+      : dt === Dtype.bfloat16 ? C.mlx_array_data_bfloat16(this.handle)
+      : dt === Dtype.uint32 ? C.mlx_array_data_uint32(this.handle)
+      : null;
+    if (p === null) throw new Error(`detachCopy: unsupported dtype ${this.dtypeName}`);
+    const sb = shapeBuf(this.shape);
+    return new MlxArray(C.mlx_array_new_data(p as never, ptr(sb), this.ndim, dt));
+  }
+
   get handle(): MlxHandle {
     if (this.#disposed) throw new Error("MlxArray used after dispose");
     return this.#handle;
