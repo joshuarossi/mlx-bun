@@ -10,9 +10,9 @@ README.md has the pitch and scope boundaries.
 - `PLAN-archive.md` — closed-history phases moved out of PLAN.md to keep it scannable.
 - `README.md` — product pitch, quickstart, API surface, scope boundaries.
 - `benchmarks/RESULTS.md` — curated results: parity / performance / quality.
-- `docs/reference/` — server-api, server-config, library-api, embedding, distribution, training, orpo-quickstart, memory (user-facing reference).
+- `docs/reference/` — server-api, server-config, library-api, embedding, distribution, training, orpo-quickstart, memory, models (user-facing reference).
 - `docs/design/` — adapters-end-to-end, bucketing-stage, compat-cli-surface-design, diffusion-gemma-port, docs-reorg-plan, dspark-speculative-decoding, hlg-sampling, memory-inference-path, memory-synthesis, memory-system, minicpm5-decode-megakernel, optimization_plan, orpo-dynamic-lambda, orpo-future-enhancements, orpo-training, parallel-slots, parity-tier-dag, runtime-isolation, segmented-backward-training, spec-decode-larger-targets, tauri-desktop-app, the-dreaming-handoff, the-dreaming-master-plan, w4a16-compute-precision-spike, write-pipeline-entity.
-- `docs/investigations/` — chunk-finetune-experiment, curve-bisector-routing, dspark-handoff, expert-offload-single-user-moe, hlg-sampling-investigation, lab-build-journal, orpo-base-uf-experiment-and-directions, orpo-flash-cce-pin-leak, orpo-uf-testing-handoff, pi-builtin-investigation, segmented-backward-handoff, starter-model-port-handoff, steel-flash-cce-handoff, trainer-validation-experiment.
+- `docs/investigations/` — chunk-finetune-experiment, curve-bisector-routing, decode-roofline-lookagain, dspark-handoff, expert-offload-single-user-moe, hlg-sampling-investigation, kernel-perf-review-2026-07, lab-build-journal, orpo-base-uf-experiment-and-directions, orpo-flash-cce-pin-leak, orpo-uf-testing-handoff, pi-builtin-investigation, segmented-backward-handoff, starter-model-port-handoff, steel-flash-cce-handoff, trainer-validation-experiment.
 - `docs/planning/` — product/vision: PRODUCT_ROADMAP, IDEAS, ResearchTopics, journal, chunk-task-roadmap.
 - (Keep these lists in sync with `ls docs/{reference,design,investigations,planning}/*.md` when adding docs.)
 - `AGENTS.md` → symlink to this file.
