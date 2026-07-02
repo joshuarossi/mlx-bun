@@ -84,9 +84,15 @@ short-seq steps −34% (CPM5 prefix) / −38% (e4b SFT), @8K flat.
 26B gather-qmm **PROFILED 2026-07-02** (roofline item 2): the ~4 ms gap is
 mx.gather_qmm's missing M=1 fast path (compute-bound at ~99 GB/s vs qmv's
 ~180; upstream-reproduced). Layout + dispatch-merge candidates both refuted
-by measurement; identified fix = custom Metal gather-qmv kernel (~+18-20%
-26B decode, fused-decode-v2-class effort) — new L3 kernel candidate.
-Evidence: scripts/experiments/moe-expert-read-profile.ts.
+by measurement. The custom gather-qmv kernel was then BUILT (correct on all
+three dispatch patterns) and **SHELVED on decisive numbers**: five structural
+variants all slower than gather_qmm (best 12.5 vs 8-10 ms), and
+mx.fast.metal_kernel's ~60-95 µs/dispatch fixed cost in dependent chains eats
+the ~4 ms prize at 90 dispatches/step. Routes forward: upstream mlx
+gather_qmm M=1 specialization (primary; pairs with the qmm M=2/3 bug report)
+or a fused whole-MLP kernel (60 dispatches/step) in a dedicated session.
+Evidence: scripts/experiments/moe-expert-read-profile.ts,
+moe-qmv-kernel.ts (post-mortem in header), moe-qmv-parity.ts.
 
 ## Multi-agent review + cleanup (2026-07-01) — verified state, open decisions
 

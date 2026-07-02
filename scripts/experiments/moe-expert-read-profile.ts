@@ -195,6 +195,27 @@ const mergedChain = (sorted: boolean) => (): MlxArray => {
   return h;
 };
 
+// ---- arm F: the custom gather-qmv Metal kernel (src/model/moe-qmv-kernel.ts) ----
+import { moeQmvDecode } from "./moe-qmv-kernel";
+const qmvChain = (): MlxArray => {
+  let h = randArr([1, HID]);
+  for (let l = 0; l < LAYERS; l++) {
+    const s = sets[l % COPIES]!;
+    const idxI = idxFor(l, false);
+    const idx = ops.reshape(idxI, [TOPK]).astype(Dtype.uint32);
+    idxI.dispose();
+    const xg = moeQmvDecode(h, s.gate.packed, s.gate.scales, s.gate.biases, idx, TOPK, MOE, HID, SPEC.bits, SPEC.groupSize); // [8, MOE]
+    const xu = moeQmvDecode(h, s.up.packed, s.up.scales, s.up.biases, idx, TOPK, MOE, HID, SPEC.bits, SPEC.groupSize);
+    const act = ops.mul(ops.geluApprox(xg), xu); // [8, MOE]
+    const xd = moeQmvDecode(act, s.down.packed, s.down.scales, s.down.biases, idx, TOPK, HID, MOE, SPEC.bits, SPEC.groupSize); // [8, HID]
+    const summed = ops.sumAxis(xd, 0, false);
+    const hn = ops.mulScalar(ops.reshape(summed, [1, HID]), 1 / TOPK);
+    for (const a of [h, idx, xg, xu, act, xd, summed]) a.dispose();
+    h = hn;
+  }
+  return h;
+};
+
 const expertBytes = perLayer * LAYERS;
 const msA = time(moeChain(false));
 console.log(`A  gather_qmm chain (unsorted)     : ${msA.toFixed(2)} ms/step  ~${gb(expertBytes, msA)} GB/s over expert bytes`);
@@ -208,5 +229,7 @@ const msC = time(routerChain);
 console.log(`C  router chain ×30 alone          : ${msC.toFixed(2)} ms/step`);
 const msE = time(mergedChain(false));
 console.log(`E  gate+up MERGED (2 gqmm/layer)   : ${msE.toFixed(2)} ms/step  ~${gb(expertBytes, msE)} GB/s  (${(msA - msE).toFixed(2)} ms vs A)`);
+const msF = time(qmvChain);
+console.log(`F  CUSTOM gather-qmv kernel        : ${msF.toFixed(2)} ms/step  ~${gb(expertBytes, msF)} GB/s  (${(msA - msF).toFixed(2)} ms vs A)`);
 console.log(`### gather-vs-dense gap = ${(msA - msB).toFixed(2)} ms/step; router = ${msC.toFixed(2)} ms; merge saves ${(msA - msE).toFixed(2)} ms`);
 routerW.packed.dispose(); routerW.scales.dispose(); routerW.biases.dispose();

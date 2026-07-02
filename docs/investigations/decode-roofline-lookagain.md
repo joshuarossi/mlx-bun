@@ -242,11 +242,22 @@ is suspect, profile on the other laptop before building anything.**
    kernel's ~180 on identical bytes; upstream python mlx 0.31.2 reproduces
    6.18 vs 4.01 ms) — it lacks a qmv-class fast path, so each per-expert
    [1,2816]→[704] product runs on mostly-idle GEMM tiles. The router chain
-   adds a secondary ~1.6–2.6 ms of tiny-op dispatches. The remaining fix is a
-   KERNEL: a custom Metal gather-qmv (our MetalKernel infra + the
-   fused-decode qdot pattern; indices read device-side) for ~3.5–4 ms/tok ≈
-   **+18–20% 26B decode @600** — or an upstream gather_qmm M=1
-   specialization. Effort: the same class as the fused-decode v2 kernel.
+   adds a secondary ~1.6–2.6 ms of tiny-op dispatches.
+   **Custom-kernel attempt (same day): built, correct, SHELVED.** A gather-qmv
+   Metal kernel (scripts/experiments/moe-qmv-kernel.ts + moe-qmv-parity.ts)
+   passes bounded-divergence on all three 26B dispatch patterns, but five
+   structural variants (occupancy/staging/bank-conflict/mask-trick sweeps —
+   post-mortem table in the kernel header) all measure SLOWER than gather_qmm
+   (best 12.5 vs 8–10 ms on the 30-layer chain), and the killer measurement is
+   structural: **mx.fast.metal_kernel dispatches cost ~60–95 µs each in a
+   dependent chain, nearly independent of the work inside** — at 3
+   dispatches/layer × 30 layers that fixed cost alone eats the entire ~4 ms
+   prize. Remaining routes, in order: (a) UPSTREAM — give mlx's gather_qmm an
+   M=1 qmv-class path in C++ (no dispatch overhead; natural companion to the
+   quantized_matmul M=2/3 bug report), (b) a fused whole-MLP kernel (gate+up+
+   gelu in one dispatch, down in a second → 60 dispatches/step) with a
+   qmv-class body — a dedicated fused-decode-v2-style session starting from
+   the post-mortem map.
 3. **e4b GPU overhead (1.8–3.7 ms):** dispatch-count reduction on the
    per-layer-input machinery (the ~1–2 MiB gate/proj GEMVs and altup
    elementwise chains; batch the 42 per-layer gate GEMVs into one [42·width]
