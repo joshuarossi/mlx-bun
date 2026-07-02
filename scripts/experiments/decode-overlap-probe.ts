@@ -97,9 +97,20 @@ function buildStep(cur: MlxArray, cache: Cache[]): MlxArray {
   return next;
 }
 
-type Arm = "baseline" | "serial" | "spin-build" | "spin-pre" | "spin-post" | `chain-${number}`;
+type Arm =
+  | "baseline" | "serial" | "spin-build" | "spin-pre" | "spin-post"
+  | `chain-${number}`
+  // The DIRECT removal arms: what does decode cost when the per-step host
+  // graph build is actually taken OUT of the loop?
+  //   prebuilt      build all STEPS graphs up front (chained through the lazy
+  //                 argmax outputs — identical graph structure to production),
+  //                 then dispatch+read per step with zero interleaved build.
+  //                 Headline = run-only ms/tok (the "host build is free" world).
+  //   prebuilt-1buf same, but ALL steps in one evalAll — additionally removes
+  //                 the per-step dispatch boundaries; the absolute GPU floor.
+  | "prebuilt" | "prebuilt-1buf";
 
-function run(armName: Arm): { msTok: number; graph: number; dispatch: number; read: number; tokens: number[] } {
+function run(armName: Arm): { msTok: number; graph: number; dispatch: number; read: number; tokens: number[]; note?: string } {
   const cache = model.makeCache();
   let pending = prefill(cache);
   const tokens: number[] = [];
@@ -107,6 +118,55 @@ function run(armName: Arm): { msTok: number; graph: number; dispatch: number; re
   const dispatchMs: number[] = [];
   const readMs: number[] = [];
   const chainK = armName.startsWith("chain-") ? Number(armName.slice(6)) : 1;
+
+  if (armName === "prebuilt" || armName === "prebuilt-1buf") {
+    // Remove the work: all host graph building happens HERE, before the GPU
+    // clock starts. The run loop below does no graph construction at all.
+    const tBuild0 = performance.now();
+    const steps: MlxArray[] = [];
+    let cur: MlxArray = pending;
+    for (let s = 0; s < STEPS; s++) {
+      const next = buildStep(cur, cache);
+      steps.push(next);
+      cur = next;
+    }
+    const buildMs = performance.now() - tBuild0;
+    const tRun = performance.now();
+    if (armName === "prebuilt-1buf") {
+      ops.evalAll(steps);
+      tokens.push(ops.itemUint32(pending));
+      for (const s of steps) tokens.push(ops.itemUint32(s));
+    } else {
+      // production-shaped pipelined dispatch+read, minus the build
+      ops.asyncEvalAll([steps[0]!]);
+      tokens.push(ops.itemUint32(pending));
+      for (let i = 0; i < STEPS; i++) {
+        const t0 = performance.now();
+        if (i + 1 < STEPS) ops.asyncEvalAll([steps[i + 1]!]);
+        const t1 = performance.now();
+        tokens.push(ops.itemUint32(steps[i]!));
+        const t2 = performance.now();
+        graphMs.push(0);
+        dispatchMs.push(t1 - t0);
+        readMs.push(t2 - t1);
+      }
+    }
+    const runMs = performance.now() - tRun;
+    pending.dispose();
+    for (const s of steps) s.dispose();
+    for (const c of cache) c.dispose();
+    clearCache();
+    const med0 = (a: number[]): number =>
+      a.length ? a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)]! : 0;
+    return {
+      msTok: runMs / STEPS,
+      graph: 0,
+      dispatch: med0(dispatchMs),
+      read: med0(readMs),
+      tokens,
+      note: `build ${buildMs.toFixed(0)}ms up-front (${(buildMs / STEPS).toFixed(2)}/tok); incl. build ${((buildMs + runMs) / STEPS).toFixed(2)} ms/tok`,
+    };
+  }
 
   const tDecode = performance.now();
   if (chainK > 1) {
@@ -191,7 +251,7 @@ function run(armName: Arm): { msTok: number; graph: number; dispatch: number; re
 // warmup pass (materialize weights + shape-compile kernels)
 run("baseline");
 
-const arms: Arm[] = ["baseline", "serial", "spin-build", "spin-pre", "spin-post", "chain-2", "chain-3", "baseline"];
+const arms: Arm[] = ["baseline", "serial", "spin-build", "spin-pre", "spin-post", "chain-2", "chain-3", "prebuilt", "prebuilt-1buf", "baseline"];
 const ref: number[] = [];
 console.log(`### decode-overlap-probe  model=${config.modelType} ctx=${promptIds.length} steps=${STEPS} spin=${SPIN}ms`);
 console.log(`arm        | ms/tok | graph | dispatch | read  | Δ vs baseline | tokens`);
@@ -201,7 +261,7 @@ for (const a of arms) {
   if (a === "baseline" && ref.length === 0) { ref.push(...r.tokens); base = r.msTok; }
   const same = r.tokens.length === ref.length && r.tokens.every((t, i) => t === ref[i]);
   console.log(
-    `${a.padEnd(10)} | ${r.msTok.toFixed(2).padStart(6)} | ${r.graph.toFixed(2).padStart(5)} | ${r.dispatch.toFixed(2).padStart(8)} | ${r.read.toFixed(3).padStart(5)} | ${(r.msTok - base >= 0 ? "+" : "") + (r.msTok - base).toFixed(2).padStart(5)} ms | ${same ? "IDENTICAL" : "DIVERGED"}`,
+    `${a.padEnd(13)} | ${r.msTok.toFixed(2).padStart(6)} | ${r.graph.toFixed(2).padStart(5)} | ${r.dispatch.toFixed(2).padStart(8)} | ${r.read.toFixed(3).padStart(5)} | ${(r.msTok - base >= 0 ? "+" : "") + (r.msTok - base).toFixed(2).padStart(5)} ms | ${same ? "IDENTICAL" : "DIVERGED"}${r.note ? `   [${r.note}]` : ""}`,
   );
 }
 weights.dispose();

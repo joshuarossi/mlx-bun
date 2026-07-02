@@ -256,27 +256,35 @@ is suspect, profile on the other laptop before building anything.**
 ## 7. The overlap spike (2026-07-02) — fix 1b REFUTED; §4(c) decomposition corrected
 
 Fix 1b asked: can the host graph build hide under the GPU (build-two-ahead /
-off-thread dispatch)? `decode-overlap-probe.ts` answers by INJECTING a known
-host busy-wait at each point of the pipelined loop and seeing what surfaces in
-wall time — the disambiguation the 3-way split above could not make, because
-"dispatch = full GPU step (serial)" and "dispatch = gpu − graph (overlapped)"
-produce the same three numbers.
+off-thread dispatch)? `decode-overlap-probe.ts` answers two ways — the
+decisive one is DIRECT REMOVAL: take the per-step host build out of the loop
+entirely (pre-build all N step graphs up front, chained through the lazy
+argmax outputs — identical graph structure to production — then run
+dispatch+read with zero interleaved build) and see if decode gets faster.
 
 M1 Max, greedy, uncompiled, all arms token-IDENTICAL to baseline:
 
 | arm | CPM5 @132 (spin 2 ms) | e4b @600 (spin 4 ms) |
 |---|---|---|
-| baseline (pipelined) | 3.94 ms/tok (graph 0.77, dispatch 3.14) | 18.25→17.82 across passes (graph ~3–4, dispatch ~14) |
-| serial (evalAll, no pipeline) | **+1.47 ms** | — |
-| spin-build / spin-pre / spin-post | **+0.24–0.30 ms** (not +2) | **+0.6–1.2 ms** (not +4) |
-| chain-2 / chain-3 (deeper pipeline) | ±0.01 ms | −0.5 (== pass drift) |
+| baseline (pipelined) | 4.05 ms/tok (graph 0.86, dispatch 3.13) | 19.02→18.06 across passes (graph ~3.3–3.6, dispatch ~14) |
+| **prebuilt (host build REMOVED)** | **4.11 (+0.07)** | **19.03 (+0.01)** |
+| prebuilt-1buf (also no per-step dispatch boundaries) | 4.33 | 19.73 |
+| serial (evalAll, no pipeline) | **+1.75 ms** | **+3.36 ms** |
+| spin-build / spin-pre / spin-post (+W injected host work) | **+0.4 ms** (not +2) | **+1.0–1.4 ms** (not +4) |
+| chain-2 / chain-3 (deeper pipeline) | ±0.01 ms | +0.02 / −0.96 (== pass drift) |
 
-- Injected host work is ABSORBED (dispatch shrinks 3.14→1.43 exactly as
-  `gpu − host` predicts): the GPU is busy with step n while the host builds
-  step n+1. **The build already overlaps; wall = GPU step time.**
-- The serial anchor costs MORE than the build itself (+1.47 vs 0.77): the
-  pipelined loop hides the build AND the per-step launch gap. The loop shape
-  is already right; mlx-lm's identical shape gets the identical hiding.
+- **Removing the work gains nothing**: with the entire 0.9 ms (CPM5) /
+  3.6 ms (e4b) per-token build lifted out of the loop, decode speed is
+  unchanged (+0.07 / +0.01 ms, inside pass-to-pass drift). Even the one-buffer
+  floor — no host work AND no per-step dispatch boundaries — is no faster.
+  **The build already overlaps; wall = GPU step time.**
+- The injection arms agree from the other direction: extra host work is
+  ABSORBED (dispatch shrinks 3.13→1.6 exactly as `gpu − host` predicts) — the
+  GPU is busy with step n while the host builds step n+1.
+- The serial anchor costs MORE than the build itself (CPM5 +1.75 vs 0.86;
+  e4b +3.36 vs 3.6): the pipelined loop hides the build AND the per-step
+  launch gap. The loop shape is already right; mlx-lm's identical shape gets
+  the identical hiding.
 - Deeper pipelining (chain-2/3) buys exactly nothing — there is no residual
   host term to hide.
 
@@ -302,8 +310,9 @@ M1 Max, greedy, uncompiled, all arms token-IDENTICAL to baseline:
   either reading; 26B's 3.7 ms graph ≪ its ~18 ms step has the same slack).
 
 ## Probes added (scripts/experiments/, tsc-clean)
-- `decode-overlap-probe.ts` — spin-injection + serial-anchor + chain-depth
-  arms for the overlap question (§7).
+- `decode-overlap-probe.ts` — direct-removal (prebuilt / prebuilt-1buf) +
+  spin-injection + serial-anchor + chain-depth arms for the overlap question
+  (§7).
 - `decode-roofline-bw.ts` — machine bandwidth: raw read, decode-shaped qmv
   GEMV (multi-copy, one-eval chaining), bf16 GEMV, dispatch chain.
 - `decode-roofline-step.ts` — factory-generic pipelined decode split
