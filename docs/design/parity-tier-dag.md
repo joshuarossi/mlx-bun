@@ -61,15 +61,23 @@ Worked examples:
 | lever | parity | perf | placement |
 |---|---|---|---|
 | `compiled-decode` | bit-exact w/ uncompiled (`compiled-decode.test`) | faster | **default-on, every level** |
-| `perf-kernel` | matches optiq, not mlx-lm (`perf-kernel-oracle.test`) | faster | **default-on from L2** (the L2 bridge) |
-| `fused-sdpa` | matches optiq, not mlx-lm (`fused-sdpa.test`) | faster | **default-on from L2** (the L2 bridge) |
+| `perf-kernel` | **envelope-gated, no bit-exact oracle** — mlx-bun-original kernel; gate is ≥56/64 teacher-forced argmax vs *our own* frozen compat trajectory (`perf-kernel-oracle.test`, `freeze-perf-oracle.ts`), and the optiq kv-quant goldens track the **stock unfused L=1 decode** (`regen-kvq-goldens.ts`) | faster | **L3 / explicit opt-in only** (off in bare `--l2`; on in `--l3` and the no-tier default) |
+| `fused-sdpa` | matches optiq bit-for-bit, not mlx-lm (`fused-sdpa.test` tier-a goldens) | faster | **default-on from L2** (the L2 bridge) |
 | `fused-decode` | (would be L3) | ~3% slower (`optimization_plan.md`) | **kept, off everywhere** |
 
 So `--l1/--l2/--l3` is the **parity** axis (the guarantee), and the defaults within
-each tier are the **performance** axis (the fastest kernel that still holds it). For
-the *decode path* L2 == L3 today (every decode kernel matches mlx-lm or optiq); L3's
-real territory is the no-oracle **features** — HLG sampler, expert offload, batched
+each tier are the **performance** axis (the fastest kernel that still holds it). On
+the *decode path* L2 and L3 now differ by exactly one node — the perf kernel (bare
+`--l2` = the optiq-golden composition: fused N-tiled prefill + stock unfused L=1
+decode; `--l3` adds the envelope-gated fused decode kernel). L3's remaining
+territory is the no-oracle **features** — HLG sampler, expert offload, batched
 mixed-precision — which live off the decode axis and are gated by KL + quality.
+
+> History: commit `f1bf5cc` put the perf kernel in the L2 preset claiming
+> "perf-kernel-oracle.test asserts the fused kernel == the frozen optiq goldens".
+> Both halves were wrong — that golden is frozen from mlx-bun's own compat engine,
+> and the gate is argmax-agreement, not equality — so 2026-07-01 restored the tier
+> rule: the bare tier is the guarantee; perf kernels are opt-ins within it.
 
 ## Why this matters for CLI flags
 

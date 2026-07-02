@@ -53,6 +53,33 @@ describe("StopMatcher (decoded-text stop sequences)", async () => {
   });
 });
 
+// Fast tier: default-seed entropy — pure logic, no weights needed.
+describe("nextDefaultSeed (per-request default-seed entropy)", async () => {
+  const { nextDefaultSeed } = await import("../src/server");
+
+  test("same-millisecond calls yield distinct uint32 seeds", () => {
+    // Regression for the batch-lane collision: two default-seed requests in
+    // the same ms used to share Date.now() & 0xffffffff and sample
+    // identically. All calls inside one ms must now differ.
+    let seeds: number[] = [];
+    for (let attempt = 0; attempt < 10 && seeds.length < 2; attempt++) {
+      seeds = [];
+      const t0 = Date.now();
+      do {
+        seeds.push(nextDefaultSeed());
+      } while (Date.now() === t0 && seeds.length < 64);
+      if (Date.now() !== t0) seeds.pop(); // last one may have crossed the boundary
+    }
+    expect(seeds.length).toBeGreaterThanOrEqual(2); // at least two landed in one ms
+    expect(new Set(seeds).size).toBe(seeds.length);
+    for (const s of seeds) {
+      expect(Number.isInteger(s)).toBe(true);
+      expect(s).toBeGreaterThanOrEqual(0);
+      expect(s).toBeLessThanOrEqual(0xffffffff);
+    }
+  });
+});
+
 describe.skipIf(!haveWeights)("openai-compatible server", async () => {
   if (!haveWeights) return;
   const { createServer, loadContext } = await import("../src/server");

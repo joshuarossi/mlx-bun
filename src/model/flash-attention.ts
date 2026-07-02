@@ -649,8 +649,10 @@ export function flashSupported(q: MlxArray): boolean {
 }
 
 /** Materialized differentiable attention (matmul → mask → softmax → matmul),
- *  GQA-aware. The correct-vjp fallback for masks flash doesn't take (sliding
- *  window) and for any case where ops.sdpa's broken dK can't be used. O(L²) —
+ *  GQA-aware. A correct-vjp fallback for shapes/masks the flash kernel doesn't
+ *  take. (ops.sdpa's dK vjp is CORRECT — FD-verified, the training default;
+ *  the old "broken dK" note here predated the flash-kernel root-cause: the
+ *  bugs were flash's own dK transpose + dQ barrier, both fixed.) O(L²) —
  *  pair with gradient checkpointing. */
 export function manualSdpa(q: MlxArray, k: MlxArray, v: MlxArray, scale: number, mask: Mask): MlxArray {
   const [B, Hq, T, Dh] = q.shape as [number, number, number, number];

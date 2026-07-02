@@ -82,13 +82,22 @@ export interface TokenLogprobs {
   top?: { id: number; logprob: number }[];
 }
 
-/** Port of mlx-lm maybe_quantize_kv_cache + optiq serve's per-layer
- *  patched variant (incl. patch_rotating_to_quantized: rotating caches
- *  convert too — Phase 9). kvConfig overrides kvBits, matching optiq's
- *  --kv-config precedence; shipped kv_config.json files list
- *  full-attention layers only, so rotating quantization engages through
- *  uniform kvBits (like optiq --kv-bits) or a config that names sliding
- *  layers. */
+/** Port of mlx-lm maybe_quantize_kv_cache + BOTH halves of optiq serve's
+ *  per-layer patched variant (incl. patch_rotating_to_quantized: rotating
+ *  caches convert too — Phase 9):
+ *  - per-layer bits/group_size selection (kvConfig overrides kvBits,
+ *    matching optiq's --kv-config precedence; shipped kv_config.json
+ *    files list full-attention layers only, so rotating quantization
+ *    engages through uniform kvBits — like optiq --kv-bits — or a config
+ *    that names sliding layers), and
+ *  - STREAMING conversion (optiq streaming_kv_quant / serve.py
+ *    patched_maybe_quantize): eval each layer's quantized triples and
+ *    clear the buffer pool before building the next layer's conversion.
+ *    Lazily batching every layer's toQuantized into one eval pins ALL
+ *    layers' bf16 K/V as graph inputs alongside ALL quantized outputs —
+ *    the exact transient optiq's fix kills (16.35 → 7.60 GB at 32k on a
+ *    24 GB Mac). Numerics untouched: same quantize math, only the eval
+ *    ordering is forced (tests/kv-quant.test.ts, tests/rotating-kvq.test.ts). */
 export function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void {
   const { kvBits, kvConfig } = options;
   if (!kvBits && !kvConfig?.length) return;
@@ -106,10 +115,16 @@ export function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void 
     if (c.offset === 0) continue;
     if (byLayer) {
       const e = byLayer.get(i);
-      if (e) cache[i] = c.toQuantized(e.groupSize, e.bits);
+      if (!e) continue;
+      cache[i] = c.toQuantized(e.groupSize, e.bits);
     } else {
       cache[i] = c.toQuantized(options.kvGroupSize ?? 64, kvBits!);
     }
+    // Streaming half: materialize THIS layer's conversion now so its bf16
+    // source (already released by toQuantized) frees before the next layer
+    // converts — the transient stays ~one layer, not the whole cache.
+    ops.evalAll(cache[i]!.state());
+    clearCache();
   }
 }
 
@@ -519,8 +534,11 @@ async function* generateInner(
             logits = r.logits;
             evalWith = r.evalWith;
           } catch (e) {
-            // growth done by a partial prepare is benign for the
-            // uncompiled path (updateAndFetch re-checks capacity)
+            // Safe to re-forward the SAME token below: a failed step is
+            // transactional — segmented mode stages ring adopts and rolls
+            // back committed js-layer writes on throw (see #stepSegmented),
+            // and buffer growth done by a partial prepare is benign for the
+            // uncompiled path (updateAndFetch re-checks capacity).
             compiled = null;
             console.warn(`compiled decode disabled for this generation: ${e}`);
           }

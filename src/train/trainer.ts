@@ -478,14 +478,40 @@ async function sftLoop(
   // dQ-causal-barrier bugs were fixed; FD-validated in
   // scripts/experiments/flash-fd-check.ts), though ~30× slower than ops.sdpa.
   // Cleared in finally.
-  if (process.env.MLX_BUN_TRAIN_ATTN === "flash") setTrainingAttn("flash");
+  //
+  // GEMMA GUARD (same convention as the PERF_KERNEL/FUSED_GELU sanitization in
+  // cli.ts / job.ts, but enforced at the trainer): e4b on this path SIGTRAPed
+  // (uncatchable native crash) at multi-K sequence lengths (>=2K, reproduced in
+  // scripts/experiments/segmented-grad-test-e4b.ts; docs/reference/training.md)
+  // and has NOT been re-validated at that scale since the two kernel fixes —
+  // the regression tests stop at T<=256. cli.ts even defaults e4b seq to 8192,
+  // so a stale `export MLX_BUN_TRAIN_ATTN=flash` from a MiniCPM5 experiment
+  // would otherwise ride silently into a crash mid-run. Refuse it for Gemma
+  // until the >=2K re-validation lands; MiniCPM5 stays allowed.
+  if (process.env.MLX_BUN_TRAIN_ATTN === "flash") {
+    if (model instanceof Gemma4Model)
+      throw new Error(
+        "MLX_BUN_TRAIN_ATTN=flash is disabled for Gemma models: e4b SIGTRAPs on this " +
+          "path at seq >= 2048 (docs/reference/training.md) and it has not been " +
+          "re-validated at that scale since the kernel fixes. Unset MLX_BUN_TRAIN_ATTN " +
+          "(ops.sdpa, the default, is exact and ~30x faster) or train MiniCPM5.",
+      );
+    emit({ type: "stage", stage: "setup", progress: 0.045,
+      message: "training attention: hand-rolled flash kernel (MLX_BUN_TRAIN_ATTN=flash; O(L) memory, ~30x slower than ops.sdpa)" });
+    setTrainingAttn("flash");
+  }
 
   // Pad with the eos id when available (a real sentinel token); padded
   // positions are excluded from both the loss and attention masks, so the
   // exact pad value never affects the result — it just must be a valid id.
   const padId = tok.eosTokenId ?? 0;
   const batches = iterateSftBatches(train, cfg.batchSize, cfg.maxSeqLen, cfg.seed, true, padId);
-  const t0 = Date.now();
+  // tokens/sec follows mlx-lm's tuner convention: accumulate the response-token
+  // count across the REPORT WINDOW and divide by the window's own wall time
+  // (validation time excluded) — not one step's count extrapolated over the
+  // whole run, which jumps ~10x step-to-step on variable-length data.
+  let windowTokens = 0;
+  let windowStart = Date.now();
 
   try {
     for (let step = 1; step <= cfg.iters; step++) {
@@ -495,12 +521,11 @@ async function sftLoop(
       // when 1). afterMicroEval frees each micro-batch's gradient-checkpoint
       // closures right after its backward so they don't pile up across
       // accumulation.
-      let tokensThisStep = 0;
       const { loss: lossVal, grads } = accumulateStep(
         cfg.gradAccumSteps,
         () => {
           currentBatch = batches.next().value as SftBatch;
-          tokensThisStep += countResponseTokens(currentBatch);
+          windowTokens += countResponseTokens(currentBatch);
           return segmented ? segmented.step(currentBatch!) : vag!.apply(flatParams(lora));
         },
         ckptCtx
@@ -524,7 +549,7 @@ async function sftLoop(
       }
 
       if (step % cfg.stepsPerReport === 0 || step === 1) {
-        const elapsed = (Date.now() - t0) / 1000;
+        const elapsed = (Date.now() - windowStart) / 1000;
         emit({
           type: "metric",
           kind: "train",
@@ -532,19 +557,31 @@ async function sftLoop(
           loss: lossVal,
           grad_norm: gradNorm,
           learning_rate: opt.lr,
-          tokens_per_sec: elapsed > 0 ? (step * tokensThisStep) / elapsed : 0,
+          tokens_per_sec: elapsed > 0 ? windowTokens / elapsed : 0,
           progress: step / cfg.iters,
           message: `step ${step}/${cfg.iters} loss=${lossVal.toFixed(4)}`,
         });
+        windowTokens = 0;
+        windowStart = Date.now();
       }
 
       if (valid.length > 0 && step % cfg.stepsPerEval === 0) {
         // Eval is forward-only (no backward), so disable checkpointing for it —
         // it adds no benefit and a forward-only pass fits without it.
         if (ckptCtx) (model as Gemma4Model).gradCkpt = null;
-        const vLoss = evalSftLoss(model, valid, cfg);
+        const tVal = Date.now();
+        const { loss: vLoss, used, skipped } = evalSftLoss(model, valid, cfg);
         if (ckptCtx) (model as Gemma4Model).gradCkpt = ckptCtx;
-        emit({ type: "metric", kind: "val", step, loss: vLoss, progress: step / cfg.iters });
+        // A silently-shrinking val set must be visible: rows whose supervised
+        // span is empty after truncation are skipped BY DESIGN (mlx-lm drops
+        // them at dataset build time) — report how many, and over what n the
+        // mean was taken. Any other per-row failure now rethrows (see
+        // evalSftLoss).
+        emit({ type: "metric", kind: "val", step, loss: vLoss, progress: step / cfg.iters,
+          val_rows_used: used, val_rows_skipped: skipped,
+          ...(skipped > 0 ? { message: `val loss over ${used} rows (${skipped} skipped: no response tokens to supervise)` } : {}) });
+        // validation wall time is not training throughput — keep it out of the window
+        windowStart += Date.now() - tVal;
       }
     }
   } finally {
@@ -560,13 +597,16 @@ async function sftLoop(
   return { numIters: cfg.iters };
 }
 
-function evalSftLoss(model: RuntimeModel, valid: ReturnType<typeof Array.prototype.slice>, cfg: TrainConfig): number {
+function evalSftLoss(
+  model: RuntimeModel, valid: ReturnType<typeof Array.prototype.slice>, cfg: TrainConfig,
+): { loss: number; used: number; skipped: number } {
   let total = 0;
   let n = 0;
+  let skipped = 0;
   for (const ex of valid as { ids: number[]; promptLen: number }[]) {
     let ids = ex.ids;
     let promptLen = ex.promptLen;
-    if (ids.length < 2) continue;
+    if (ids.length < 2) { skipped++; continue; }
     if (ids.length > cfg.maxSeqLen) {
       ids = ids.slice(0, cfg.maxSeqLen);
       promptLen = Math.min(promptLen, Math.max(0, ids.length - 1));
@@ -577,12 +617,18 @@ function evalSftLoss(model: RuntimeModel, valid: ReturnType<typeof Array.prototy
       total += loss.toFloat32()[0]!;
       loss.dispose();
       n++;
-    } catch {
-      // skip examples with no response tokens
+    } catch (e) {
+      // ONLY the empty-supervision row is skippable (a truncated row whose
+      // response fell entirely past maxSeqLen — mlx-lm drops these at dataset
+      // build). Everything else (MLX OOM/shape/vjp errors surface as catchable
+      // JS Errors via the ffi handler) must rethrow: swallowing them silently
+      // reduces the val set to its easy rows and reports a plausible loss.
+      if (e instanceof Error && e.message === "sftLoss: no response tokens to supervise") skipped++;
+      else throw e;
     }
     clearCache();
   }
-  return n > 0 ? total / n : 0;
+  return { loss: n > 0 ? total / n : 0, used: n, skipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -1117,10 +1163,16 @@ function clipGradsByNorm(grads: MlxArray[], normVal: number, maxNorm: number): v
   }
 }
 
+/** Supervised (response) tokens across ALL rows of the batch — the count
+ *  tokens/sec is reported over (mlx-lm's n_tokens counts every row too). */
 function countResponseTokens(batch: SftBatch): number {
-  const promptLen = batch.promptLens[0]!;
-  const len = batch.ids[0]!.length;
-  return Math.max(0, len - Math.max(promptLen, 1));
+  let total = 0;
+  for (let r = 0; r < batch.ids.length; r++) {
+    const promptLen = batch.promptLens[r]!;
+    const len = batch.ids[r]!.length;
+    total += Math.max(0, len - Math.max(promptLen, 1));
+  }
+  return total;
 }
 
 async function fileExists(path: string): Promise<boolean> {

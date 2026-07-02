@@ -723,12 +723,16 @@ const BWD_SG_SOURCE = String.raw`
   }
 `;
 
-// Apple-CCE coeff filter epsilon (phase-2 per-tile skip). DEFAULT OFF ("0") — the
-// Apple-production shortcut skips vocab tiles whose whole coeff block < eps, which gave
-// the OLD (slow, phase-2-dominated) SG kernel ~3.5×. On the steel kernel — whose phase-2
-// is now QuantizedBlockLoader-fast — it is a BAD trade: measured e4b M=512 REAL it cut dh
-// accuracy 0.66%→2.7% for only ~7% speedup (the win was already captured by the fast
-// dequant). Opt in with MLX_BUN_CCE_BWD_FILTER_EPS=1e-5 only on genuinely peaked data.
+// Apple-CCE coeff filter epsilon (phase-2 per-tile skip). DEFAULT OFF ("0") today —
+// no production path sets the env — but the VERDICT is measured and positive: the old
+// 0.66%→2.7% dh-accuracy scare was on RANDOM targets (flat softmax, the filter's
+// worst case — see PLAN.md "filter-on-real-data"); the real-data gate
+// (scripts/experiments/flash-cce-filter-realdata.ts, commit 3d259ef, 2026-06-22)
+// measured eps 1e-5 = 0.16% dh (under the bf16 floor) for a 1.35× faster backward,
+// and PLAN.md's recorded decision is "enable the filter at eps ~1e-5". (The ~3.5×
+// figure floating around older notes was the retired SG kernel, not steel.) Flipping
+// the default is the open backlog item; until then opt in with
+// MLX_BUN_CCE_BWD_FILTER_EPS=1e-5 on real (peaked) training data.
 const BWD_FILTER_EPS = process.env.MLX_BUN_CCE_BWD_FILTER_EPS ?? "0";
 // blockMax vocab-block early-exit eps (skip whole cold (token-block,vocab-block) programs
 // — attacks BOTH phases). DEFAULT OFF ("0"). It is LOSSLESS when it fires (only skips
@@ -1005,6 +1009,22 @@ function fwdSteelKernel(gs: number, bits: number): MetalKernel {
   return k;
 }
 
+// One-time dispatch-route warnings. A failed tiling guard silently reroutes the
+// whole flash head onto the legacy kernels (~5× slower class: e4b M=512 backward
+// 754 → 3687+ ms) with no observable signal — the exact "forward passes are
+// flag-gated, verify in code" hazard. Name the failed guard once per route so a
+// new model port that misses steel is visible in the training log.
+const _steelFallbackWarned = new Set<string>();
+function warnSteelFallback(which: "forward" | "backward", detail: string, fallback: string): void {
+  if (_steelFallbackWarned.has(which)) return;
+  _steelFallbackWarned.add(which);
+  console.warn(
+    `[flash-cce] ${which}: steel kernel guard failed (${detail}) — dispatching the ` +
+      `${fallback} instead (~5x-slower class). If this model should be steel-capable, ` +
+      `check the tiling guards in flash-cce.ts.`,
+  );
+}
+
 export function flashCceForward(
   hResp: MlxArray, head: FlashCceHead, targets: number[],
 ): { logp: MlxArray; lse: MlxArray; blockMax: MlxArray } {
@@ -1039,6 +1059,15 @@ export function flashCceForward(
   const blockV0 = Math.ceil(V / NBLK);
   const useSteel = process.env.MLX_BUN_CCE_NOSTEEL !== "1" && H % 32 === 0 && V % 32 === 0 && blockV0 % 32 === 0;
   const useSimd = !useSteel && USE_SIMDGROUP_FWD && H % SG_BD === 0;
+  if (!useSteel && process.env.MLX_BUN_CCE_NOSTEEL !== "1") {
+    // NOTE blockV0 = ceil(V/NBLK) can violate %32 even when V%32==0 (e.g. V=50304)
+    const fails = [
+      H % 32 !== 0 ? `H%32!=0 (H=${H})` : null,
+      V % 32 !== 0 ? `V%32!=0 (V=${V})` : null,
+      blockV0 % 32 !== 0 ? `blockV0%32!=0 (blockV0=${blockV0}, V=${V}, NBLK=${NBLK})` : null,
+    ].filter(Boolean).join(", ");
+    warnSteelFallback("forward", fails, useSimd ? "simdgroup kernel" : "scalar/lane kernel");
+  }
   const useLane = !useSteel && !useSimd && process.env.MLX_BUN_CCE_LANE === "1" && WPR % 32 === 0;
   const kernel = useSteel ? fwdSteelKernel(GS, head.bits) : useSimd ? fwdSgKernel() : useLane ? fwdLaneKernel() : fwdKernel();
   const tokTile = useSteel ? STEEL_BM : useSimd ? SG_BB : BLOCK_B;
@@ -1103,10 +1132,11 @@ export function flashCceForward(
  *  (no atomics). Caller owns the result. */
 export function flashCceBackward(
   hResp: MlxArray, head: FlashCceHead, targets: number[], lse: MlxArray, cot: number[],
-  // Apple-CCE coeff filter eps. Default ON (BWD_FILTER_EPS) for the ORPO training
-  // path — a pretrained model's softmax is peaked, so skipping near-zero-coeff rows
-  // is near-lossless and ~3.5× faster. Pass "0" for exact gradients (the parity gate
-  // does this, since synthetic-flat softmax has no negligible rows to skip).
+  // Apple-CCE coeff filter eps. Defaults to BWD_FILTER_EPS, which is OFF ("0")
+  // unless MLX_BUN_CCE_BWD_FILTER_EPS is set — exact gradients by default. The
+  // measured real-data case FOR enabling it (eps 1e-5 = 0.16% dh, 1.35×; PLAN.md
+  // "filter-on-real-data") is a pending default flip — see BWD_FILTER_EPS's note.
+  // Pass "0" explicitly for guaranteed-exact (the parity gate does).
   filterEps: string = BWD_FILTER_EPS,
   // The forward's `blockMax [M, NBLK]` enables the vocab-block early exit (skips
   // whole cold programs — attacks phase 1). Omit (or set blockEps "0") for exact.
@@ -1119,7 +1149,10 @@ export function flashCceBackward(
   const GS = head.groupSize;
   const WPR = head.w.shape[1]!;
   if (H > H_MAX) throw new Error(`flashCceBackward: hidden ${H} > H_MAX ${H_MAX}`);
-  if (H % TG !== 0) throw new Error(`flashCceBackward: hidden ${H} not divisible by TG ${TG}`);
+  // NOTE: H % TG is a LEGACY-SCALAR-kernel requirement only (it owns DPER = H/TG
+  // dims per thread — floor division, so a remainder would leave dims silently
+  // zero). The steel/simdgroup kernels have their own (weaker) guards below; the
+  // throw is applied only when dispatch actually lands on the scalar kernel.
 
   const hF = hResp.dtype === Dtype.float32 ? hResp : hResp.astype(Dtype.float32);
   const scF = head.scales.dtype === Dtype.float32 ? head.scales : head.scales.astype(Dtype.float32);
@@ -1133,10 +1166,12 @@ export function flashCceBackward(
 
   // STEEL is the DEFAULT (verbatim MLX BlockMMA GEMM for both phases, [M,V]-free) when
   // the tiling is clean (H,V,blockV all %32 AND H % HTw for the H-tiled accumulator).
-  // MLX_BUN_CCE_BWD_NOSTEEL=1 falls back to the old kernels. The steel backward now
-  // carries the SAME Apple-CCE skips as the SG kernel — coeff filter (phase-2 per-tile)
-  // + blockMax vocab-block early exit (whole-program) — both compiled out at eps=0
-  // (exact, the parity gate) and default-on for training (peaked softmax → ~all vocab cold).
+  // MLX_BUN_CCE_BWD_NOSTEEL=1 falls back to the old kernels. The steel backward carries
+  // the SAME Apple-CCE skips as the SG kernel — coeff filter (phase-2 per-tile) +
+  // blockMax vocab-block early exit (whole-program) — both compiled out at eps=0.
+  // BOTH skips are OFF by default (the envs default "0", nothing in production sets
+  // them): exact gradients unless explicitly opted in. Enabling the coeff filter at
+  // ~1e-5 is the measured-and-decided pending flip (PLAN.md "filter-on-real-data").
   const blockV0 = Math.ceil(V / NBLK);
   // HTw == group_size for the phase-2 QuantizedBlockLoader (one group per H-tile); needs
   // H % GS == 0 (always, GR*GS=H) and GS % 32 == 0 (TNv = GS/32 frags per H-tile integral).
@@ -1144,6 +1179,26 @@ export function flashCceBackward(
   // simdgroup_matrix phase-2 GEMM is the next tier (5512→3913 ms, 1.41×) when the H
   // tiling is clean; MLX_BUN_CCE_BWD_SCALAR=1 forces the float4 scalar kernel.
   const useSg = !useSteel && process.env.MLX_BUN_CCE_BWD_SCALAR !== "1" && H % (SGN * 8) === 0 && H % SG_BD === 0;
+  if (!useSteel && process.env.MLX_BUN_CCE_BWD_NOSTEEL !== "1") {
+    // NOTE blockV0 = ceil(V/NBLK) can violate %32 even when V%32==0 (e.g. V=50304)
+    const fails = [
+      H % 32 !== 0 ? `H%32!=0 (H=${H})` : null,
+      V % 32 !== 0 ? `V%32!=0 (V=${V})` : null,
+      blockV0 % 32 !== 0 ? `blockV0%32!=0 (blockV0=${blockV0}, V=${V}, NBLK=${NBLK})` : null,
+      H % GS !== 0 ? `H%GS!=0 (H=${H}, GS=${GS})` : null,
+      GS % 32 !== 0 ? `GS%32!=0 (GS=${GS})` : null,
+    ].filter(Boolean).join(", ");
+    warnSteelFallback("backward", fails, useSg ? "simdgroup kernel" : "scalar kernel");
+  }
+  // Legacy scalar kernel: each thread owns DPER = H/TG dims (floor) — a remainder
+  // would leave the last H%TG dims silently zero, so it hard-requires H % TG == 0.
+  // Only enforced when dispatch actually lands there (steel/SG have weaker guards).
+  if (!useSteel && !useSg && H % TG !== 0)
+    throw new Error(
+      `flashCceBackward: hidden ${H} not divisible by TG ${TG} — required by the legacy ` +
+        `scalar kernel, which is the selected route because the steel/simdgroup tiling ` +
+        `guards also failed for this shape (see the [flash-cce] warning above).`,
+    );
   // Block-skip is on (either kernel) only when blockMax is supplied AND blockEps>0 (the
   // kernel reads it as an extra input). The coeff filter needs no extra input (just eps).
   const useBlockSkip = (useSteel || useSg) && blockMax != null && Number.parseFloat(blockEps) > 0;

@@ -295,7 +295,14 @@ class Attention {
     } else if (
       ta === "flash" && flashSupported(q) && (mask.mode === "causal" || mask.mode === "array")
     ) {
-      // Training: ops.sdpa's dK vjp is wrong, so use the validated flash kernel.
+      // Training, OPT-IN flash path (MLX_BUN_TRAIN_ATTN=flash) for O(L)-memory
+      // long context. NOTE the default (ops.sdpa, below) is the CORRECT and
+      // verified route: its dQ/dK/dV vjps are exact (finite-difference checked;
+      // it's what mlx-lm's tuner differentiates). The two historical bugs were
+      // in THIS flash kernel (spurious dK transpose, divergent dQ barrier),
+      // both fixed and gated by tests/flash-attention.test.ts vs the ops.sdpa
+      // oracle — see flash-attention.ts's routing comment. Flash also remains
+      // Gemma-guarded in the trainer (e4b >=2K SIGTRAP not yet re-validated).
       // Full layers → window 0 (pure causal); sliding layers → their window.
       const window = this.isSliding ? this.windowSize : 0;
       attn = flashAttention(q, shared.keys, shared.values, 1.0, true, window);
