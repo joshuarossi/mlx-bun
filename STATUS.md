@@ -54,8 +54,9 @@ in docs/planning/curve-sampler-research-plan.md).
 7. Dynamic-λ controller build (docs/design/orpo-dynamic-lambda.md).
 8. fit-as-recommender; memory-docs banner pass + `mlx-bun route` verb
    (docs/planning/memory-docs-and-dag-plan.md); DSpark live-τ.
-Open kernel bug (deferred, file was owned): FUSED_DECODE×compiled-decode
-trace-freeze — docs/investigations/kernel-perf-review-2026-07.md "STILL OPEN".
+~~Open kernel bug: FUSED_DECODE×compiled-decode trace-freeze~~ **FIXED
+2026-07-02** (reproduced on e4b, combo now refuses to compile + throw
+backstop + regression; see kernel-perf-review-2026-07.md ledger).
 
 ## Multi-agent review + cleanup (2026-07-01) — verified state, open decisions
 

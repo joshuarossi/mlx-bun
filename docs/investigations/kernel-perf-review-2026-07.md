@@ -47,11 +47,18 @@ evalSftLoss error swallowing · tokens_per_sec metric · inverted comments
 (gemma4.ts:298, flash-cce filter trio) · silent steel fallback (now warns;
 H%128 throw narrowed) · flash-attn test blindness.
 
-STILL OPEN: **FUSED_DECODE=1 inside whole-graph compiled decode** bakes the
-tile loop at trace-time N — q-cat adapters grow N per step under shapeless
-replay, so the newest KV rows are silently never attended (gemma4-base.ts
-quantizedSdpaTiled; deferred for file-ownership at fix time — guard the combo
-or make the tile loop trace-safe).
+FIXED 2026-07-02: **FUSED_DECODE=1 inside whole-graph compiled decode** baked
+the tile loop at trace-time N — q-cat adapters grow N per step under shapeless
+replay, so the newest KV rows were silently never attended. REPRODUCED on e4b
+(42 layers traced tile=true at N=17; diverges within 3 tokens then
+repetition-loops). The 12B was never affected — its segmented form runs concat
+layers as uncompiled js layers. Fix: generate() refuses to compile under
+MLX_BUN_FUSED_DECODE=1 (explicit opt-in wins, like LoRA/MoE) + quantizedSdpa
+throws if the tiled path is ever selected inside a trace (lands in the
+transactional fallback, never silent). Regression in
+tests/compiled-decode.test.ts, whose e4b block also now uses the dynamic
+snapshot resolver — the old hard-coded hash silently skipped it on this
+machine, which is how the combo went unexercised.
 
 ## The ranked optimization backlog (task #12)
 

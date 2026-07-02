@@ -1572,8 +1572,22 @@ export function quantizedSdpa(
   )
     return fusedDecodeSdpa(q, kq, vq, groupSize, bits);
   const tile = q.shape[2]! > 1 || process.env.MLX_BUN_FUSED_DECODE === "1";
-  if (tile && fusedSdpaSupported(q, mask, groupSize, bits))
+  if (tile && fusedSdpaSupported(q, mask, groupSize, bits)) {
+    // The N-tiled loop CANNOT be traced: its tile count and slice extents
+    // bake at trace-time N, so under shapeless replay a growing (concat-
+    // phase) quantized cache's newest rows are silently never attended —
+    // reproduced on e4b (whole-graph form, FUSED_DECODE=1: diverges within
+    // 3 tokens, then repetition-loops). generate() refuses to compile when
+    // MLX_BUN_FUSED_DECODE=1; this throw is the backstop for any other
+    // compiled caller — it lands in the trace's transactional fallback
+    // instead of producing silently wrong attention.
+    if (isCompiledTrace())
+      throw new Error(
+        "quantizedSdpaTiled inside a compiled trace: the tile loop bakes trace-time N " +
+          "(growing KV rows would be silently dropped) — run this generation uncompiled",
+      );
     return quantizedSdpaTiled(q, kq, vq, scale, mask, groupSize, bits);
+  }
   return quantizedSdpaUnfused(q, kq, vq, scale, mask, groupSize, bits);
 }
 
