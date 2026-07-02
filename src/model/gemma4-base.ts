@@ -590,6 +590,15 @@ export class QuantizedKVCache implements Cache {
     this.offset = Math.max(0, this.offset - n);
   }
 
+  /** Adopt persisted state (takes ownership of the triples' arrays) —
+   *  the quantized twin of KVCache.restoreState (kv-store persistence). */
+  restoreState(keys: ops.QuantizedTensor, values: ops.QuantizedTensor, offset: number): void {
+    this.dispose();
+    this.keys = keys;
+    this.values = values;
+    this.offset = offset;
+  }
+
   dispose(): void {
     for (const a of this.state()) a.dispose();
     this.keys = this.values = null;
@@ -1160,6 +1169,16 @@ export class RotatingQuantizedKVCache implements Cache {
     } else {
       this.ringIdx -= k;
     }
+  }
+
+  /** Adopt persisted state (takes ownership of the triples' arrays) —
+   *  ring order as-laid-out, ringIdx carried with it (kv-store persistence). */
+  restoreState(keys: ops.QuantizedTensor, values: ops.QuantizedTensor, offset: number, idx: number): void {
+    this.dispose();
+    this.keys = keys;
+    this.values = values;
+    this.offset = offset;
+    this.ringIdx = idx;
   }
 
   /** Oracle: to_quantized on an already-quantized rotating cache is

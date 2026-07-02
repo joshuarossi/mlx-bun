@@ -73,4 +73,196 @@ describe.skipIf(!haveWeights || !haveGoldens)("kv-cache persistence", async () =
     loaded.mmap.unmap();
     rmSync(dir, { recursive: true, force: true });
   }, 240_000);
+
+  // v2: the serving DEFAULT is kv_config quantization — those caches must
+  // round-trip too (qkv on full layers + rotating-qkv on sliding layers).
+  // Fork-compare: save mid-generation, continue in memory AND from the
+  // reloaded file — greedy ids must match token-for-token.
+  test("quantized (kv_config) save → load → continuation is token-identical", async () => {
+    const { maybeQuantizeKv } = await import("../src/generate");
+    const { MlxArray } = await import("../src/mlx/array");
+    const { clearCache } = await import("../src/mlx/ffi");
+    expect(config.kvQuant?.length).toBeGreaterThan(0); // 12B ships kv_config.json
+
+    const argmaxLast = (lg: InstanceType<typeof MlxArray>): number => {
+      const [, L, V] = lg.shape as [number, number, number];
+      const s = lg.slice([0, L - 1, 0], [1, L, V]);
+      const f = s.toFloat32();
+      s.dispose();
+      let bi = 0;
+      for (let i = 1; i < f.length; i++) if (f[i]! > f[bi]!) bi = i;
+      return bi;
+    };
+    const stepGreedy = (caches: import("../src/model/gemma4-base").Cache[], tok: number): number => {
+      const tid = MlxArray.fromInt32(Int32Array.from([tok]), [1, 1]);
+      const h = model.forwardHidden(tid, caches);
+      tid.dispose();
+      const lg = model.logitsFromHidden(h);
+      h.dispose();
+      const next = argmaxLast(lg);
+      lg.dispose();
+      return next;
+    };
+
+    const caches = model.makeCache();
+    const ids = ops.fromInt32(golden.prompt_ids, [1, golden.prompt_ids.length]);
+    const h = model.forwardHidden(ids, caches);
+    ids.dispose();
+    const lg = model.logitsFromHidden(h);
+    h.dispose();
+    let tok = argmaxLast(lg);
+    lg.dispose();
+    maybeQuantizeKv(caches, { kvConfig: config.kvQuant! });
+    // advance a few quantized steps so the saved state is mid-generation
+    for (let i = 0; i < 4; i++) tok = stepGreedy(caches, tok);
+    ops.evalAll(caches.flatMap((c) => c.state()));
+
+    const dirQ = mkdtempSync(join(tmpdir(), "mlx-bun-kvq-"));
+    const file = join(dirQ, "prefix.mlxkv");
+    saveKvCache(file, golden.prompt_ids, caches, { modelId: "gemma-12b-test" });
+    const kinds = new Set(readKvHeader(file).caches.map((c) => c.kind));
+    expect(kinds.has("qkv")).toBe(true);
+    expect(kinds.has("rotating-qkv")).toBe(true);
+
+    // fork A: continue in memory
+    const memIds: number[] = [];
+    let a = tok;
+    for (let i = 0; i < 8; i++) { a = stepGreedy(caches, a); memIds.push(a); }
+    for (const c of caches) c.dispose();
+    clearCache();
+
+    // fork B: continue from the reloaded file (verify=true exercises hashes)
+    const loaded = loadKvCache(file, model, { verify: true });
+    const diskIds: number[] = [];
+    let b = tok;
+    for (let i = 0; i < 8; i++) { b = stepGreedy(loaded.caches, b); diskIds.push(b); }
+    expect(diskIds).toEqual(memIds);
+    for (const c of loaded.caches) c.dispose();
+    loaded.mmap.unmap();
+    rmSync(dirQ, { recursive: true, force: true });
+  }, 300_000);
+});
+
+// SSM (Qwen3.5 hybrid): conv/recurrent state + full-attention KV round-trip.
+const QWEN_BASE =
+  `${process.env.HOME}/.cache/huggingface/hub/` +
+  `models--mlx-community--Qwen3.5-4B-OptiQ-4bit/snapshots/` +
+  `6676059ab512d8b2be6c126d20bc651a4278fc4b`;
+const { existsSync } = await import("node:fs");
+
+describe.skipIf(!existsSync(`${QWEN_BASE}/config.json`))("kv-cache persistence — SSM (Qwen3.5)", () => {
+  test("ssm save → load → continuation is token-identical", async () => {
+    const { loadModelConfig } = await import("../src/config");
+    const { Weights } = await import("../src/weights");
+    const { createModel } = await import("../src/model/factory");
+    const { saveKvCache, loadKvCache, readKvHeader } = await import("../src/kv-store");
+    const { MlxArray } = await import("../src/mlx/array");
+    const ops = await import("../src/mlx/ops");
+
+    const config = await loadModelConfig(QWEN_BASE);
+    const weights = await Weights.open(QWEN_BASE);
+    const model = createModel(weights, config);
+    try {
+      const argmaxLast = (lg: InstanceType<typeof MlxArray>): number => {
+        const [, L, V] = lg.shape as [number, number, number];
+        const s = lg.slice([0, L - 1, 0], [1, L, V]);
+        const f = s.toFloat32();
+        s.dispose();
+        let bi = 0;
+        for (let i = 1; i < f.length; i++) if (f[i]! > f[bi]!) bi = i;
+        return bi;
+      };
+      const stepGreedy = (caches: import("../src/model/gemma4-base").Cache[], tok: number): number => {
+        const tid = MlxArray.fromInt32(Int32Array.from([tok]), [1, 1]);
+        const h = model.forwardHidden(tid, caches);
+        tid.dispose();
+        const lg = model.logitsFromHidden(h);
+        h.dispose();
+        const next = argmaxLast(lg);
+        lg.dispose();
+        return next;
+      };
+
+      const prompt = [1, 100, 200, 300, 400, 500, 600];
+      const caches = model.makeCache();
+      const ids = ops.fromInt32(prompt, [1, prompt.length]);
+      const h = model.forwardHidden(ids, caches);
+      ids.dispose();
+      const lg = model.logitsFromHidden(h);
+      h.dispose();
+      let tok = argmaxLast(lg);
+      lg.dispose();
+      for (let i = 0; i < 2; i++) tok = stepGreedy(caches, tok);
+      ops.evalAll(caches.flatMap((c) => c.state()));
+
+      const dir = mkdtempSync(join(tmpdir(), "mlx-bun-kvssm-"));
+      const file = join(dir, "prefix.mlxkv");
+      saveKvCache(file, prompt, caches);
+      const kinds = new Set(readKvHeader(file).caches.map((c) => c.kind));
+      expect(kinds.has("ssm")).toBe(true);
+      expect(kinds.has("kv")).toBe(true);
+
+      const memIds: number[] = [];
+      let a = tok;
+      for (let i = 0; i < 6; i++) { a = stepGreedy(caches, a); memIds.push(a); }
+      for (const c of caches) c.dispose();
+
+      const loaded = loadKvCache(file, model, { verify: true });
+      const diskIds: number[] = [];
+      let b = tok;
+      for (let i = 0; i < 6; i++) { b = stepGreedy(loaded.caches, b); diskIds.push(b); }
+      expect(diskIds).toEqual(memIds);
+      for (const c of loaded.caches) c.dispose();
+      loaded.mmap.unmap();
+      rmSync(dir, { recursive: true, force: true });
+    } finally {
+      weights.dispose();
+    }
+  }, 300_000);
+});
+
+// Integrity + atomicity: no model needed — hand-built caches.
+describe("kv-store v2 integrity", () => {
+  test("header hash catches corruption; metadata mismatches reject; writes are atomic", async () => {
+    const { saveKvCache, loadKvCache, readKvHeader } = await import("../src/kv-store");
+    const { KVCache } = await import("../src/model/gemma4-base");
+    const { Dtype } = await import("../src/mlx/ffi");
+    const ops = await import("../src/mlx/ops");
+    const { openSync, writeSync, closeSync, readdirSync } = await import("node:fs");
+
+    const mk = (): InstanceType<typeof KVCache> => {
+      const c = new KVCache();
+      const k = ops.zeros([1, 2, 4, 8], Dtype.bfloat16);
+      const v = ops.zeros([1, 2, 4, 8], Dtype.bfloat16);
+      c.restoreState(k, v, 4);
+      return c;
+    };
+    const stub = { makeCache: () => [mk(), mk()] };
+    const dir = mkdtempSync(join(tmpdir(), "mlx-bun-kvi-"));
+    const file = join(dir, "x.mlxkv");
+    const caches = [mk(), mk()];
+    saveKvCache(file, [1, 2, 3, 4], caches, {
+      modelId: "stub", configFingerprint: "fp-a", tokenizerHash: "tk-a", ns: "",
+    });
+    for (const c of caches) c.dispose();
+
+    // atomic: no .tmp orphan after a successful save
+    expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+
+    // metadata guards
+    const okLoad = loadKvCache(file, stub, { configFingerprint: "fp-a", tokenizerHash: "tk-a" });
+    expect(okLoad.tokens).toEqual([1, 2, 3, 4]);
+    for (const c of okLoad.caches) c.dispose();
+    okLoad.mmap.unmap();
+    expect(() => loadKvCache(file, stub, { configFingerprint: "fp-B" })).toThrow(/configFingerprint/);
+    expect(() => loadKvCache(file, { makeCache: () => [mk()] })).toThrow(/cached layers/);
+
+    // header corruption: flip a byte inside the JSON region
+    const fd = openSync(file, "r+");
+    writeSync(fd, new Uint8Array([0x7a]), 0, 1, 30);
+    closeSync(fd);
+    expect(() => readKvHeader(file)).toThrow(/hash mismatch|not an mlx-bun/);
+
+    rmSync(dir, { recursive: true, force: true });
+  });
 });

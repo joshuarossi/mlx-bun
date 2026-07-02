@@ -41,6 +41,8 @@ import {
   TOOL_CALL_END, TOOL_CALL_START,
 } from "./tool-call";
 import { PromptCache } from "./prompt-cache";
+import { SsdCacheStore } from "./ssd-cache";
+import { configFingerprint } from "./model/fingerprint";
 import {
   anthropicToChatBody, chatJsonToAnthropic, translateOpenAiSse,
   type AnthropicRequest,
@@ -123,6 +125,16 @@ export interface ServerOptions {
    *  request's explicit `adapter` (including "none") always wins. Hot-swap
    *  via /v1/adapters is unchanged. */
   defaultAdapter?: string;
+  /** SSD cold tier for the prompt/KV cache (`--ssd-cache <dir>`): prefix
+   *  KV survives RAM eviction AND server restarts — the coding-agent
+   *  long-context TTFT win (docs/design/ssd-kv-cold-tier.md). Off unless
+   *  a directory is given. Serial lane only (where the prompt cache lives). */
+  ssdCacheDir?: string;
+  /** Byte cap for the SSD tier (default 32 GiB). */
+  ssdCacheMaxBytes?: number;
+  /** Verify every tensor hash on restore (`--ssd-cache-verify`) — reads all
+   *  bytes eagerly, defeating lazy fault-in; integrity paranoia only. */
+  ssdCacheVerify?: boolean;
 }
 
 export interface ServerContext {
@@ -976,7 +988,63 @@ export function createServer(
   // lane (see GenerationGateway.willBatch).
   const batch = Math.max(1, Math.floor(serverOptions.batch ?? 1));
 
-  const promptCache = new PromptCache(serverOptions.promptCacheBytes ?? 2e9);
+  // KV-quant scheme, resolved once: kv_config.json by default (optiq
+  // serve's headline behavior), overridable to uniform bits or off.
+  // KV quant scheme. The serial default is the model's mixed-precision config
+  // (optiq parity). But `--batch N` is a bf16 continuous-batching MODE (= mlx-lm
+  // B=N parity), so when KV quant is left UNSET under `--batch N` it defaults to
+  // bf16 — the batch path engages out of the box. An EXPLICIT --kv-quant
+  // (config / bits) is still honored, but those requests then route to the
+  // serial path (batched quantized KV is the L2 follow-up); warned below.
+  const configScheme = ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};
+  const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart"> =
+    serverOptions.kvQuant === "off" ? {}
+    : serverOptions.kvQuant === "config" ? configScheme
+    : typeof serverOptions.kvQuant === "number"
+      ? { kvBits: serverOptions.kvQuant, quantizedKvStart: 0 }
+    : batch > 1 ? {} // unset + batching → bf16 mode (Option B)
+    : configScheme; // unset + serial → optiq-parity mixed-precision default
+  if (batch > 1 && (kvScheme.kvConfig?.length || kvScheme.kvBits))
+    console.warn(
+      `[batch] --batch ${batch} with explicit --kv-quant: batched serving (v1) is ` +
+        `bf16-only, so kv-quant requests route to the serial path (no batching for them). ` +
+        `Omit --kv-quant to batch in bf16. (docs/design/parallel-slots.md)`,
+    );
+
+  // SSD cold tier (docs/design/ssd-kv-cold-tier.md): prefix KV survives RAM
+  // eviction and restarts. Compatibility key = configFingerprint (graph
+  // shape) + the EFFECTIVE kv scheme (flags pick bf16 vs config vs uniform
+  // on the same model — restored caches must match what serving produces) +
+  // tokenizer hash (ids must keep meaning the same text).
+  let ssdStore: SsdCacheStore | null = null;
+  if (serverOptions.ssdCacheDir) {
+    if ((serverOptions.promptCacheBytes ?? 2e9) <= 0)
+      throw new Error("--ssd-cache requires the RAM prompt cache (--prompt-cache 0 disables it)");
+    const schemeKey = kvScheme.kvBits
+      ? `kv${kvScheme.kvBits}`
+      : kvScheme.kvConfig?.length ? "config" : "bf16";
+    const tokJson = readFileSync(`${ctx.model.config.modelDir}/tokenizer.json`);
+    ssdStore = new SsdCacheStore({
+      dir: serverOptions.ssdCacheDir,
+      maxBytes: serverOptions.ssdCacheMaxBytes ?? 32 * 2 ** 30,
+      configFingerprint: `${configFingerprint(ctx.model.config)}-${schemeKey}`,
+      tokenizerHash: Bun.hash(tokJson).toString(16),
+      modelId: ctx.modelId,
+      verify: serverOptions.ssdCacheVerify,
+    });
+    const recovered = ssdStore.scan();
+    console.log(
+      `[ssd-cache] ${serverOptions.ssdCacheDir} — ${recovered} entr${recovered === 1 ? "y" : "ies"} recovered, ` +
+      `${(ssdStore.totalBytes / 2 ** 30).toFixed(2)} GiB of ${(ssdStore.maxBytes / 2 ** 30).toFixed(0)} GiB cap`,
+    );
+  }
+
+  const promptCache = new PromptCache(
+    serverOptions.promptCacheBytes ?? 2e9,
+    // RAM eviction spills to the cold tier (whole-prefix entries, no work
+    // on the token loop — the spill runs at eviction time only).
+    ssdStore ? (entry) => { ssdStore!.store(entry.tokens, entry.caches, entry.ns); } : null,
+  );
   // Responses-API store for previous_response_id resumption (Phase 11):
   // TTL + byte-capped LRU, port of optiq/response_store.py. Pairs with
   // the prompt cache: a resumed conversation re-renders the same prefix,
@@ -1001,7 +1069,31 @@ export function createServer(
     // Cache entries are adapter-specific: KV computed under one adapter
     // must never seed another's (or the base's) prefill.
     const cacheNs = options.adapters?.join("+") ?? "";
-    const entry = vision ? null : promptCache.take(promptIds, cacheNs);
+    let entry = vision ? null : promptCache.take(promptIds, cacheNs);
+    // Cold tier: restore from SSD when it has a STRICTLY longer usable
+    // prefix than RAM offered (zero-copy COW mmap; pages fault in lazily
+    // during the continuation prefill). The restored entry carries an
+    // unmap thunk that PromptCache runs after its caches are disposed.
+    if (!vision && ssdStore) {
+      const ssdHit = ssdStore.find(promptIds, cacheNs);
+      if (ssdHit && ssdHit.prefixLen > (entry?.tokens.length ?? 0)) {
+        const loaded = ssdStore.restore(ssdHit.entry, ctx.model);
+        if (loaded) {
+          const trimNeeded = loaded.tokens.length - ssdHit.prefixLen;
+          if (trimNeeded > 0 && !loaded.caches.every((c) => c.isTrimmable())) {
+            // Divergent tail on an untrimmable kind (ring post-wrap, SSM):
+            // this file can't seed the prompt — fall back to the RAM hit.
+            for (const c of loaded.caches) c.dispose();
+            loaded.mmap.unmap();
+          } else {
+            if (trimNeeded > 0) for (const c of loaded.caches) c.trim(trimNeeded);
+            if (entry) promptCache.put(entry.tokens, entry.caches, cacheNs, entry.retain); // return the RAM hit untouched
+            entry = { tokens: loaded.tokens.slice(0, ssdHit.prefixLen), caches: loaded.caches,
+              ns: cacheNs, retain: () => loaded.mmap.unmap() };
+          }
+        }
+      }
+    }
     const caches = entry?.caches ?? ctx.model.makeCache();
     try {
       const gen = generate(ctx.model, promptIds, {
@@ -1016,17 +1108,42 @@ export function createServer(
       if (vision) {
         for (const c of caches) c.dispose();
       } else {
-        promptCache.put(s.cacheTokens, caches, cacheNs);
+        promptCache.put(s.cacheTokens, caches, cacheNs, entry?.retain);
+        scheduleSsdSnapshot(s.cacheTokens, cacheNs);
       }
       return s;
     } catch (e) {
       for (const c of caches) c.dispose();
+      entry?.retain?.();
       throw e;
     } finally {
       vision?.embeddings.dispose();
       vision?.imageMask.dispose();
       options.visionPixels?.dispose();
     }
+  };
+
+  // Write-behind persistence (restart survival — the oMLX boundary-snapshot
+  // idea at whole-entry granularity, spill-on-evict alone can't survive a
+  // clean exit): after a request completes, snapshot its still-RAM-resident
+  // entry to SSD off the request path. Debounced + coalesced per namespace —
+  // an agent hammering one conversation persists the settled state once
+  // things go quiet, not every turn. Runs under the gateway lock (byte
+  // extraction must not race a generation mutating the entry); if the entry
+  // was evicted (already spilled) or extended (a newer schedule pending)
+  // meanwhile, findExact misses and nothing is written.
+  const ssdPending = new Map<string, ReturnType<typeof setTimeout>>();
+  const scheduleSsdSnapshot = (tokens: number[], ns: string): void => {
+    if (!ssdStore || tokens.length === 0) return;
+    const prev = ssdPending.get(ns);
+    if (prev) clearTimeout(prev);
+    ssdPending.set(ns, setTimeout(() => {
+      ssdPending.delete(ns);
+      void gateway.runExclusive(async () => {
+        const e = promptCache.findExact(tokens, ns);
+        if (e) ssdStore!.store(e.tokens, e.caches, ns);
+      }).catch(() => { /* cold tier is best-effort */ });
+    }, 1000));
   };
 
   // The lane picker: routes each request to the serial path (runGeneration,
@@ -1075,28 +1192,8 @@ export function createServer(
     return jobStore;
   };
 
-  // KV-quant scheme, resolved once: kv_config.json by default (optiq
-  // serve's headline behavior), overridable to uniform bits or off.
-  // KV quant scheme. The serial default is the model's mixed-precision config
-  // (optiq parity). But `--batch N` is a bf16 continuous-batching MODE (= mlx-lm
-  // B=N parity), so when KV quant is left UNSET under `--batch N` it defaults to
-  // bf16 — the batch path engages out of the box. An EXPLICIT --kv-quant
-  // (config / bits) is still honored, but those requests then route to the
-  // serial path (batched quantized KV is the L2 follow-up); warned below.
-  const configScheme = ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};
-  const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart"> =
-    serverOptions.kvQuant === "off" ? {}
-    : serverOptions.kvQuant === "config" ? configScheme
-    : typeof serverOptions.kvQuant === "number"
-      ? { kvBits: serverOptions.kvQuant, quantizedKvStart: 0 }
-    : batch > 1 ? {} // unset + batching → bf16 mode (Option B)
-    : configScheme; // unset + serial → optiq-parity mixed-precision default
-  if (batch > 1 && (kvScheme.kvConfig?.length || kvScheme.kvBits))
-    console.warn(
-      `[batch] --batch ${batch} with explicit --kv-quant: batched serving (v1) is ` +
-        `bf16-only, so kv-quant requests route to the serial path (no batching for them). ` +
-        `Omit --kv-quant to batch in bf16. (docs/design/parallel-slots.md)`,
-    );
+  // (kvScheme is resolved earlier, above the prompt-cache construction —
+  // the SSD tier's compatibility fingerprint folds the effective scheme in.)
 
   // XTC never removes EOS or the newline token: mlx_lm.server passes
   // [tokenizer.eos_token_id, tokenizer.encode("\n")] as xtc_special_tokens.
@@ -1442,6 +1539,17 @@ export function createServer(
             hits: promptCache.hits,
             misses: promptCache.misses,
           },
+          ...(ssdStore ? {
+            ssd_cache: {
+              dir: serverOptions.ssdCacheDir,
+              entries: ssdStore.entries,
+              bytes: ssdStore.totalBytes,
+              max_bytes: ssdStore.maxBytes,
+              restores: ssdStore.stats.restores,
+              spills: ssdStore.stats.spills,
+              restore_ms_last: Math.round(ssdStore.stats.restoreMsLast),
+            },
+          } : {}),
           response_store: {
             entries: responseStore.size,
             bytes: responseStore.totalBytes,
@@ -1867,6 +1975,8 @@ export function createServer(
           kvQuant: !!(options.kvConfig?.length || options.kvBits),
         };
         const batched = gateway.willBatch(shape);
+        if (process.env.MLX_BUN_LANE_DEBUG === "1")
+          console.error(`[lane] batched=${batched} shape=${JSON.stringify(shape)} t=${Date.now() % 100000}`);
 
         if (body.stream) {
           const stream = new ReadableStream<Uint8Array>({

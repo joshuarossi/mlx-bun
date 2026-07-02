@@ -1,23 +1,38 @@
 // KV-cache persistence: save prompt caches to disk, reload zero-copy.
+// The serialization core of the SSD cold tier (docs/design/ssd-kv-cold-tier.md).
 //
 // File layout (every tensor PAGE-ALIGNED — the Phase 1 corollary: files
 // we write can be mmap'd and handed to the GPU without copies):
-//   [magic "MLXBUNKV1\n"][u32 LE header length][JSON header][padding]
+//   [magic "MLXBUNKV2\n"][u32 LE header length][u32 LE dataStart]
+//   [u64 LE header hash][JSON header][padding]
 //   [tensor data at 16 KiB-aligned offsets]
-// Header: { tokens, caches: [{ kind, offset, idx?, maxSize?, dtype,
-//           kShape, vShape, kOffset, vOffset }] }
+// Header: { formatVersion, modelId, configFingerprint, ns, tokenizerHash,
+//           createdAt, tokens, caches: [{ kind, offset, idx?, maxSize?,
+//           groupSize?, bits?, tensors: [{ off, bytes, shape, dtype, hash }] }] }
+//
+// v2 over v1: quantized cache kinds (the serving DEFAULT is kv_config
+// quantization, which v1 could not persist), SSM kind (Qwen3.5 hybrid),
+// invalidation metadata (configFingerprint covers the kv-quant scheme;
+// tokenizerHash guards vocab drift; ns = adapter spec), per-tensor hashes
+// (verified opt-in — eager verification would defeat lazy page fault-in),
+// a header hash (always verified — cheap), and atomic tmp+fsync+rename
+// writes. v1 files are not migrated: nothing shipped wrote them (the
+// format was test/experiment-only) — they read as "not a v2 file" and the
+// SSD tier deletes-and-regenerates.
 //
 // Reload mmaps copy-on-write (MAP_PRIVATE): if mlx ever donates one of
 // these buffers, writes hit private pages, never the file.
 
-import { openSync, writeSync, closeSync } from "node:fs";
+import { openSync, writeSync, readSync, closeSync, fsyncSync, renameSync, rmSync } from "node:fs";
 import { MmapFile } from "./mmap";
 import { MlxArray } from "./mlx/array";
 import type { Dtype } from "./mlx/ffi";
 import * as ops from "./mlx/ops";
 import {
-  type Cache, KVCache, RotatingKVCache, Gemma4Model,
-} from "./model/gemma4";
+  type Cache, KVCache, RotatingKVCache,
+  QuantizedKVCache, RotatingQuantizedKVCache,
+} from "./model/gemma4-base";
+import { SSMCache } from "./model/qwen3-delta";
 
 /** Contiguous raw bytes of (possibly a view of) an array. */
 function contiguousBytes(a: MlxArray): Uint8Array {
@@ -27,120 +42,184 @@ function contiguousBytes(a: MlxArray): Uint8Array {
   return bytes;
 }
 
-const MAGIC = "MLXBUNKV1\n";
+const MAGIC = "MLXBUNKV2\n";
 const ALIGN = 16384;
+/** magic + u32 headerLen + u32 dataStart + u64 headerHash */
+const PREFIX_LEN = MAGIC.length + 4 + 4 + 8;
 
-interface CacheHeaderEntry {
-  kind: "kv" | "rotating";
-  offset: number;
-  idx?: number;
-  maxSize?: number;
+const hash64 = (bytes: Uint8Array): string => Bun.hash(bytes).toString(16);
+
+export type CacheKind = "kv" | "rotating" | "qkv" | "rotating-qkv" | "ssm";
+
+interface TensorSlot {
+  off: number;
+  bytes: number;
+  shape: number[];
   dtype: number;
-  kShape: number[];
-  vShape: number[];
-  kOffset: number;
-  vOffset: number;
-  kBytes: number;
-  vBytes: number;
+  hash: string;
 }
 
-export interface KvFileHeader {
+export interface CacheHeaderEntry {
+  kind: CacheKind;
+  offset: number;
+  /** rotating variants: ring write index */
+  idx?: number;
+  /** rotating variants: window size */
+  maxSize?: number;
+  /** quantized variants */
+  groupSize?: number;
+  bits?: number;
+  /** kv/rotating: [k, v] · qkv/rotating-qkv: [kPacked, kScales, kBiases,
+   *  vPacked, vScales, vBiases] · ssm: [conv, recurrent] */
+  tensors: TensorSlot[];
+}
+
+export interface KvSaveMeta {
+  modelId?: string;
+  /** configFingerprint(config) — covers every graph-shaping field incl.
+   *  the kv-quant scheme, so a scheme flip invalidates naturally. */
+  configFingerprint?: string;
+  /** Adapter namespace (PromptCache ns — adapters joined with "+"). */
+  ns?: string;
+  /** sha256 of tokenizer.json: identical ids must mean identical text. */
+  tokenizerHash?: string;
+}
+
+export interface KvFileHeader extends KvSaveMeta {
+  formatVersion: 2;
+  createdAt: number;
   tokens: number[];
   caches: CacheHeaderEntry[];
 }
 
 const alignUp = (n: number) => Math.ceil(n / ALIGN) * ALIGN;
 
-export function saveKvCache(path: string, tokens: number[], caches: Cache[]): void {
+/** Snapshot one cache into header entry + blobs. Quantized full caches are
+ *  sliced to the live [.., :offset, :] region (token axis — quantization
+ *  groups run along the FEATURE dim, so a sequence-axis cut never splits a
+ *  group); rotating caches persist the whole ring as-laid-out with ringIdx. */
+function snapshotCache(c: Cache, dataOffset: number): { entry: CacheHeaderEntry; blobs: Uint8Array[]; next: number } {
+  const slots: TensorSlot[] = [];
+  const blobs: Uint8Array[] = [];
+  let cursor = dataOffset;
+  const push = (a: MlxArray, disposeAfter: boolean): void => {
+    const bytes = contiguousBytes(a);
+    const off = alignUp(cursor);
+    slots.push({ off, bytes: bytes.length, shape: a.shape, dtype: a.dtype, hash: hash64(bytes) });
+    blobs.push(bytes);
+    cursor = off + bytes.length;
+    if (disposeAfter) a.dispose();
+  };
+  const liveSlice = (a: MlxArray, upTo: number): MlxArray => {
+    const [B, H, , D] = a.shape as [number, number, number, number];
+    return a.slice([0, 0, 0, 0], [B, H, upTo, D]);
+  };
+  const pushTriple = (t: ops.QuantizedTensor, upTo: number | null): void => {
+    for (const a of [t.packed, t.scales, t.biases]) {
+      if (upTo === null) push(a, false);
+      else push(liveSlice(a, upTo), true);
+    }
+  };
+
+  let entry: CacheHeaderEntry;
+  if (c instanceof RotatingQuantizedKVCache) {
+    if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
+    pushTriple(c.keys, null);
+    pushTriple(c.values, null);
+    entry = { kind: "rotating-qkv", offset: c.offset, idx: c.ringIdx, maxSize: c.maxSize,
+      groupSize: c.groupSize, bits: c.bits, tensors: slots };
+  } else if (c instanceof QuantizedKVCache) {
+    if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
+    pushTriple(c.keys, c.offset);
+    pushTriple(c.values, c.offset);
+    entry = { kind: "qkv", offset: c.offset, groupSize: c.groupSize, bits: c.bits, tensors: slots };
+  } else if (c instanceof RotatingKVCache) {
+    if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
+    push(c.keys, false);
+    push(c.values, false);
+    entry = { kind: "rotating", offset: c.offset, idx: c.ringIdx, maxSize: c.maxSize, tensors: slots };
+  } else if (c instanceof SSMCache) {
+    if (!c.conv || !c.recurrent) throw new Error("cannot persist an empty cache");
+    push(c.conv, false);
+    push(c.recurrent, false);
+    entry = { kind: "ssm", offset: c.offset, tensors: slots };
+  } else if (c instanceof KVCache) {
+    if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
+    push(liveSlice(c.keys, c.offset), true);
+    push(liveSlice(c.values, c.offset), true);
+    entry = { kind: "kv", offset: c.offset, tensors: slots };
+  } else {
+    throw new Error("unknown cache type");
+  }
+  return { entry, blobs, next: cursor };
+}
+
+/** Persist `caches` (+ the exact token prefix they encode) to `path`.
+ *  ATOMIC: written to `<path>.tmp`, fsync'd, renamed — a crash mid-write
+ *  leaves only a .tmp orphan (ignored + reaped by SsdCacheStore.scan). */
+export function saveKvCache(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {}): void {
   const entries: CacheHeaderEntry[] = [];
   const blobs: Uint8Array[] = [];
-
-  // compact each cache to its live region and snapshot bytes
   let dataOffset = 0; // relative; rebased after header is sized
   for (const c of caches) {
-    let keys: MlxArray;
-    let values: MlxArray;
-    let kind: "kv" | "rotating";
-    let idx: number | undefined;
-    let maxSize: number | undefined;
-    if (c instanceof RotatingKVCache) {
-      kind = "rotating";
-      idx = c.ringIdx;
-      maxSize = c.maxSize;
-      if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
-      keys = c.keys;
-      values = c.values;
-    } else if (c instanceof KVCache) {
-      kind = "kv";
-      if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
-      // store only the live [.., :offset, :] region
-      const [B, H, , D] = c.keys.shape as [number, number, number, number];
-      const vD = c.values.shape[3]!;
-      keys = c.keys.slice([0, 0, 0, 0], [B, H, c.offset, D]);
-      values = c.values.slice([0, 0, 0, 0], [B, H, c.offset, vD]);
-    } else {
-      throw new Error("unknown cache type");
-    }
-
-    const kBytesArr = contiguousBytes(keys);
-    const vBytesArr = contiguousBytes(values);
-    const kOffset = alignUp(dataOffset);
-    const vOffset = alignUp(kOffset + kBytesArr.length);
-    dataOffset = vOffset + vBytesArr.length;
-
-    entries.push({
-      kind, offset: c.offset, idx, maxSize,
-      dtype: keys.dtype,
-      kShape: keys.shape, vShape: values.shape,
-      kOffset, vOffset,
-      kBytes: kBytesArr.length, vBytes: vBytesArr.length,
-    });
-    blobs.push(kBytesArr, vBytesArr);
-    if (c instanceof KVCache) {
-      keys.dispose();
-      values.dispose();
-    }
+    const s = snapshotCache(c, dataOffset);
+    entries.push(s.entry);
+    blobs.push(...s.blobs);
+    dataOffset = s.next;
   }
 
-  const header: KvFileHeader = { tokens, caches: entries };
+  const header: KvFileHeader = {
+    formatVersion: 2, createdAt: Date.now(), ...meta, tokens, caches: entries,
+  };
   const headerJson = new TextEncoder().encode(JSON.stringify(header));
-  const dataStart = alignUp(MAGIC.length + 8 + headerJson.length);
+  const dataStart = alignUp(PREFIX_LEN + headerJson.length);
 
-  const fd = openSync(path, "w");
+  const tmp = `${path}.tmp`;
+  const fd = openSync(tmp, "w");
   try {
     const pre = new Uint8Array(dataStart);
     pre.set(new TextEncoder().encode(MAGIC), 0);
     const dv = new DataView(pre.buffer);
     dv.setUint32(MAGIC.length, headerJson.length, true);
     dv.setUint32(MAGIC.length + 4, dataStart, true);
-    pre.set(headerJson, MAGIC.length + 8);
+    dv.setBigUint64(MAGIC.length + 8, BigInt(Bun.hash(headerJson)), true);
+    pre.set(headerJson, PREFIX_LEN);
     writeSync(fd, pre, 0, pre.length, 0);
 
     let blobIdx = 0;
-    for (const e of entries) {
-      writeSync(fd, blobs[blobIdx]!, 0, e.kBytes, dataStart + e.kOffset);
-      writeSync(fd, blobs[blobIdx + 1]!, 0, e.vBytes, dataStart + e.vOffset);
-      blobIdx += 2;
-    }
-  } finally {
+    for (const e of entries)
+      for (const slot of e.tensors)
+        writeSync(fd, blobs[blobIdx++]!, 0, slot.bytes, dataStart + slot.off);
+    fsyncSync(fd);
+  } catch (err) {
     closeSync(fd);
+    try { rmSync(tmp, { force: true }); } catch {}
+    throw err;
   }
+  closeSync(fd);
+  renameSync(tmp, path);
 }
 
-/** Read only the header (cheap — for prefix matching across many files). */
+/** Read only the header (cheap — for prefix matching across many files).
+ *  Always verifies the header hash; throws on any structural mismatch. */
 export function readKvHeader(path: string): KvFileHeader & { dataStart: number } {
   const fd = openSync(path, "r");
   try {
-    const head = new Uint8Array(MAGIC.length + 8);
-    require("node:fs").readSync(fd, head, 0, head.length, 0);
+    const head = new Uint8Array(PREFIX_LEN);
+    readSync(fd, head, 0, head.length, 0);
     if (new TextDecoder().decode(head.subarray(0, MAGIC.length)) !== MAGIC)
-      throw new Error(`${path}: not an mlx-bun KV cache file`);
+      throw new Error(`${path}: not an mlx-bun KV v2 cache file`);
     const dv = new DataView(head.buffer);
     const len = dv.getUint32(MAGIC.length, true);
     const dataStart = dv.getUint32(MAGIC.length + 4, true);
+    const expectHash = dv.getBigUint64(MAGIC.length + 8, true);
     const body = new Uint8Array(len);
-    require("node:fs").readSync(fd, body, 0, len, MAGIC.length + 8);
+    readSync(fd, body, 0, len, PREFIX_LEN);
+    if (BigInt(Bun.hash(body)) !== expectHash)
+      throw new Error(`${path}: header hash mismatch (truncated or corrupt)`);
     const header = JSON.parse(new TextDecoder().decode(body)) as KvFileHeader;
+    if (header.formatVersion !== 2)
+      throw new Error(`${path}: unsupported formatVersion ${header.formatVersion}`);
     return { ...header, dataStart };
   } finally {
     closeSync(fd);
@@ -149,37 +228,100 @@ export function readKvHeader(path: string): KvFileHeader & { dataStart: number }
 
 export interface LoadedKvCache {
   tokens: number[];
+  header: KvFileHeader;
   caches: Cache[];
   /** Keep referenced as long as the caches live. */
   mmap: MmapFile;
 }
 
-export function loadKvCache(path: string, model: Gemma4Model): LoadedKvCache {
+export interface KvLoadExpect {
+  /** Reject on metadata mismatch (pass what the server is running). */
+  configFingerprint?: string;
+  tokenizerHash?: string;
+  ns?: string;
+  /** Verify every tensor hash (reads all bytes — defeats lazy fault-in;
+   *  off by default, `--ssd-cache-verify`). */
+  verify?: boolean;
+}
+
+/** Reload zero-copy. `model` is anything with makeCache() — the entry count
+ *  is validated against the DONOR cache list (model.layers.length was wrong
+ *  for KV-shared models like e4b, whose makeCache() returns donors only). */
+export function loadKvCache(
+  path: string,
+  model: { makeCache(): Cache[] },
+  expect: KvLoadExpect = {},
+): LoadedKvCache {
   const header = readKvHeader(path);
+  for (const key of ["configFingerprint", "tokenizerHash", "ns"] as const) {
+    if (expect[key] !== undefined && header[key] !== expect[key])
+      throw new Error(`${path}: ${key} mismatch (file ${header[key]}, expected ${expect[key]})`);
+  }
+  const proto = model.makeCache();
+  const cacheCount = proto.length;
+  for (const c of proto) c.dispose();
+  if (header.caches.length !== cacheCount)
+    throw new Error(`${path}: ${header.caches.length} cached layers but model has ${cacheCount}`);
+
   const mmap = MmapFile.open(path, "cow");
   const dataStart = header.dataStart;
+  const arr = (slot: TensorSlot): MlxArray => {
+    if (expect.verify) {
+      const view = mmap.view(dataStart + slot.off, slot.bytes);
+      if (hash64(view) !== slot.hash) {
+        mmap.unmap();
+        throw new Error(`${path}: tensor hash mismatch at offset ${slot.off}`);
+      }
+    }
+    return MlxArray.fromPointer(mmap.pointer(dataStart + slot.off), slot.shape, slot.dtype as Dtype);
+  };
+  const triple = (slots: TensorSlot[], at: number): ops.QuantizedTensor =>
+    ({ packed: arr(slots[at]!), scales: arr(slots[at + 1]!), biases: arr(slots[at + 2]!) });
 
   const caches: Cache[] = [];
-  for (const e of header.caches) {
-    const keys = MlxArray.fromPointer(
-      mmap.pointer(dataStart + e.kOffset), e.kShape, e.dtype as Dtype,
-    );
-    const values = MlxArray.fromPointer(
-      mmap.pointer(dataStart + e.vOffset), e.vShape, e.dtype as Dtype,
-    );
-    if (e.kind === "rotating") {
-      const c = new RotatingKVCache(e.maxSize!);
-      c.restoreState(keys, values, e.offset, e.idx!);
-      caches.push(c);
-    } else {
-      const c = new KVCache();
-      c.restoreState(keys, values, e.offset);
-      caches.push(c);
+  try {
+    for (const e of header.caches) {
+      const t = e.tensors;
+      switch (e.kind) {
+        case "kv": {
+          const c = new KVCache();
+          c.restoreState(arr(t[0]!), arr(t[1]!), e.offset);
+          caches.push(c);
+          break;
+        }
+        case "rotating": {
+          const c = new RotatingKVCache(e.maxSize!);
+          c.restoreState(arr(t[0]!), arr(t[1]!), e.offset, e.idx!);
+          caches.push(c);
+          break;
+        }
+        case "qkv": {
+          const c = new QuantizedKVCache(e.groupSize!, e.bits!);
+          c.restoreState(triple(t, 0), triple(t, 3), e.offset);
+          caches.push(c);
+          break;
+        }
+        case "rotating-qkv": {
+          const c = new RotatingQuantizedKVCache(e.maxSize!, e.groupSize!, e.bits!);
+          c.restoreState(triple(t, 0), triple(t, 3), e.offset, e.idx!);
+          caches.push(c);
+          break;
+        }
+        case "ssm": {
+          const c = new SSMCache();
+          c.conv = arr(t[0]!);
+          c.recurrent = arr(t[1]!);
+          c.offset = e.offset;
+          caches.push(c);
+          break;
+        }
+        default:
+          throw new Error(`${path}: unknown cache kind ${(e as { kind: string }).kind}`);
+      }
     }
+  } catch (err) {
+    for (const c of caches) c.dispose();
+    throw err;
   }
-  if (caches.length !== model.layers.length)
-    throw new Error(
-      `${path}: ${caches.length} cached layers but model has ${model.layers.length}`,
-    );
-  return { tokens: header.tokens, caches, mmap };
+  return { tokens: header.tokens, header, caches, mmap };
 }
