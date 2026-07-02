@@ -799,6 +799,23 @@ export function parseLogitBias(
   return Object.keys(out).length ? out : undefined;
 }
 
+/** Default seed for a request that didn't pin one. `Date.now()` alone is NOT
+ *  request-unique: under `--batch N` the batch lane serves ONLY default-seed
+ *  requests (explicit-seed requests route serial, see GenerationGateway.willBatch),
+ *  so two identical prompts arriving in the same millisecond would share a seed
+ *  and — with per-row RNG keyed as stepKey(seed, generatedCount) — produce
+ *  byte-identical completions, silently collapsing best-of-N diversity. Mix a
+ *  per-process Weyl counter (golden-ratio increment, period 2^32) into the
+ *  timestamp so every call yields a distinct uint32 within any given ms.
+ *  Determinism contract unchanged: reproducibility is only promised for an
+ *  EXPLICIT request seed (`req.seed ?? nextDefaultSeed()` — explicit wins,
+ *  byte-identical to before); a default seed is fresh entropy per request. */
+let seedWeyl = 0;
+export function nextDefaultSeed(): number {
+  seedWeyl = (seedWeyl + 0x9e3779b9) >>> 0;
+  return ((Date.now() & 0xffffffff) ^ seedWeyl) >>> 0;
+}
+
 /** mlx_lm.server's logprobs request validation, copied exactly (server.py
  *  APIHandler.validate_model_parameters: `_validate("logprobs", bool)` and
  *  `_validate("top_logprobs", int, min_val=0, max_val=11, whitelist=[-1])`
@@ -1117,7 +1134,7 @@ export function createServer(
       temperature: req.temperature ?? serverOptions.defaultTemperature ?? defaultTemp,
       topP: req.top_p ?? serverOptions.defaultTopP ?? ctx.genDefaults.topP ?? 0,
       topK: req.top_k ?? serverOptions.defaultTopK ?? ctx.genDefaults.topK ?? 0,
-      seed: req.seed ?? (Date.now() & 0xffffffff),
+      seed: req.seed ?? nextDefaultSeed(),
       repetitionPenalty: req.repetition_penalty ?? ctx.genDefaults.repetitionPenalty,
       // mlx_lm.server sampling extensions (defaults mirror server.py: min_p /
       // xtc off, context windows 20). parseLogitBias throws on non-numeric

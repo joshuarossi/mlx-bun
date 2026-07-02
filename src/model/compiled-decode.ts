@@ -590,6 +590,29 @@ export class CompiledDecode {
     const evalWith: MlxArray[] = [];
     let carried = cur; // seg 0 consumes the token array; later, hidden state
     let carriedOwned = false; // cur belongs to the caller
+    // Mid-step failure safety (a later segment's closure.apply can throw at
+    // first trace AFTER earlier layers already advanced): the step must be
+    // TRANSACTIONAL, or the caller's uncompiled re-forward of the same token
+    // double-writes the committed layers (+1 offset skew forever, silently
+    // corrupted attention). Two mechanisms, chosen by what each phase allows:
+    //  - ring segments: adoptDecodeStep is a pure host-side handle swap with
+    //    no reader between here and step end (each cache is read only by its
+    //    own layer, inside the closure that produced the update), so the
+    //    adopts are STAGED and committed only once every segment and js layer
+    //    has succeeded. On failure the staged buffers are disposed and the
+    //    ring caches are exactly at their pre-step state (prepareDecodeStep's
+    //    growth/trim/rotate bookkeeping is benign for the uncompiled path —
+    //    the same invariant #stepWhole and generate.ts's fallback rely on).
+    //  - js (concat) layers: layer.forward commits via the cache's real
+    //    updateAndFetch mid-loop, so on failure the commit is ROLLED BACK by
+    //    reverting offset (and ring index) — trim(1) semantics. The written
+    //    KV row beyond the reverted offset is dead data the re-forward
+    //    overwrites at the same position (updateAndFetch writes at offset/
+    //    ringIdx), so post-recovery state equals a single clean write. This
+    //    holds for the post-wrap quantized-under-perf-kernel case too: the
+    //    in-place S=1 write slot is re-derived from the reverted ringIdx.
+    const stagedAdopts: { c: AnyCache; bufs: MlxArray[] }[] = [];
+    const committedJs: { c: AnyCache; offsetBefore: number }[] = [];
     try {
       for (let s = 0; s < segs.length; s++) {
         const { from, to } = segs[s]!;
@@ -636,17 +659,14 @@ export class CompiledDecode {
           carried = outs[0]!;
           carriedOwned = true;
           // ring updates are ancestors of the carried hidden state (the
-          // in-graph fetch reads the updated buffer): no eval roots
+          // in-graph fetch reads the updated buffer): no eval roots. The
+          // host-side adoption is deferred to the end of the step (see above).
           let oi = 1;
           for (let i = from; i < to; i++) {
             const c = anyCaches[i]!;
-            if (c instanceof RotatingQuantizedKVCache) {
-              c.adoptDecodeStep(outs.slice(oi, oi + 6));
-              oi += 6;
-            } else {
-              (c as RotatingKVCache).adoptDecodeStep(outs[oi]!, outs[oi + 1]!);
-              oi += 2;
-            }
+            const width = c instanceof RotatingQuantizedKVCache ? 6 : 2;
+            stagedAdopts.push({ c, bufs: outs.slice(oi, oi + width) });
+            oi += width;
           }
         }
         if (s < jsLayers.length) {
@@ -655,6 +675,7 @@ export class CompiledDecode {
           const c = anyCaches[li]!;
           const window = layer.layerType === "sliding_attention" ? this.model.windowSize : null;
           const mask = c.makeMask(1, window); // N=1 → mode ""
+          committedJs.push({ c, offsetBefore: c.offset });
           const { h: next, shared } = layer.forward(carried, mask, c, null, null);
           if (carriedOwned) carried.dispose();
           carried = next;
@@ -663,6 +684,20 @@ export class CompiledDecode {
           mask.arr?.dispose();
         }
       }
+      // every segment and js layer succeeded — commit the staged ring adopts
+      for (const { c, bufs } of stagedAdopts) {
+        if (c instanceof RotatingQuantizedKVCache) c.adoptDecodeStep(bufs);
+        else (c as RotatingKVCache).adoptDecodeStep(bufs[0]!, bufs[1]!);
+      }
+    } catch (e) {
+      // unwind: free staged (never-adopted) ring buffers and the owned hidden
+      // state, and revert the js layers' committed writes, so the caller's
+      // uncompiled re-forward of this token starts from the pre-step state.
+      for (const { bufs } of stagedAdopts) for (const b of bufs) b.dispose();
+      for (const { c, offsetBefore } of committedJs)
+        if (c.offset > offsetBefore) c.trim(c.offset - offsetBefore);
+      if (carriedOwned) carried.dispose();
+      throw e;
     } finally {
       for (const t of stepTemps) t.dispose();
     }

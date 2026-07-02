@@ -122,15 +122,18 @@ Model & quality:
 Parity tier (sets the whole decode route; a per-fork flag below overrides):
   --l1                      Bit-for-bit IDENTICAL to mlx-lm (bf16 KV, unfused)
   --l2                      Bit-for-bit IDENTICAL to mlx-optiq (quantized KV +
-                            fused kernels — optiq's shipping configuration)
+                            fused prefill SDPA, stock unfused decode — the
+                            optiq-golden composition; perf-kernel stays OFF)
   --l3                      Best performance, no bit-exact oracle (KL + test
-                            gated). No tier given = the per-flag defaults
-                            below, which equal --l3 today.
+                            gated; adds the envelope-gated perf kernel).
+                            No tier given = the per-flag defaults below,
+                            which equal --l3 today.
 
 Performance levers (A/B levers; defaults are the measured winners):
   --compiled-decode on|off  Compiled decode graphs  [default: on]
-  --perf-kernel on|off      Fused quantized-KV decode-SDPA Metal kernel
-                            (perf side of the compat A/B)  [default: on]
+  --perf-kernel on|off      Fused quantized-KV decode-SDPA Metal kernel —
+                            NOT bit-exact, envelope-gated (an L3 lever; the
+                            perf side of the compat A/B)  [default: on]
   --fused-decode on|off     Fused-decode experiment lever  [default: off]
   --fused-sdpa on|off       Fused SDPA path  [default: on]
   --force-wire              Wire weights into memory at load
@@ -308,8 +311,10 @@ Options:
   --seed <n>           Sampler seed (reproducible runs)
 
 Decode-path levers mirror serve: --l1/--l2/--l3 and the per-fork flags
-(--perf-kernel/--fused-sdpa/--compiled-decode/--fused-decode); the KV
-cache itself stays bf16 on this path. mlx-lm compat = --l1.
+(--perf-kernel/--fused-sdpa/--compiled-decode/--fused-decode/--kv-quant).
+The tier's KV scheme applies here too (--l2/--l3 = the model's kv_config,
+same tokens as serve); with no tier/--kv-quant the KV cache stays bf16
+(the bit-exact mlx-lm greedy path). mlx-lm compat = --l1.
 
 Aliases: mlx-bun gen`,
 
@@ -674,11 +679,16 @@ function openChatUi(url: string, hostPort: string): void {
  *  Each tier is a GUARANTEE about which reference you reproduce bit-for-bit:
  *    --l1  bit-for-bit IDENTICAL to mlx-lm    — drop-in replacement for mlx-lm
  *    --l2  bit-for-bit IDENTICAL to mlx-optiq — drop-in replacement for mlx-optiq.
- *          optiq SHIPS the fused quantized decode (the quant-KV goldens track
- *          perf-kernel ON), so L2 turns it ON — not the unfused reference.
+ *          The optiq-golden decode composition (scripts/regen-kvq-goldens.ts) is
+ *          fused N-tiled SDPA for L>1 + STOCK unfused L=1 decode, so L2 = fused-sdpa
+ *          ON, perf-kernel OFF. The perf kernel is an mlx-bun ORIGINAL Metal kernel,
+ *          envelope-gated (≥56/64 teacher-forced argmax vs OUR OWN frozen compat
+ *          trajectory, tests/perf-kernel-oracle.test.ts) — an L3 node, never the
+ *          bare-L2 default. (Commit f1bf5cc put it in L2 claiming the goldens track
+ *          it; they don't — reverted 2026-07-01 with the evidence above.)
  *    --l3  best performance, NO bit-exact guarantee — correct, but gated by KL +
  *          tests, because mlx-optiq has no analogy for what L3 does.
- *  L2 ⊂ L3 (L3 = L2 + compiled). L1 is a separate target (bf16, unfused). */
+ *  L2 ⊂ L3 (L3 = L2 + perf kernel). L1 is a separate target (bf16, unfused). */
 function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
   const onOff = (name: string): boolean | null => {
     const v = opt(name); if (v == null) return null;
@@ -691,15 +701,18 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
     // A tier is the GUARANTEE; within it we default to the FAST kernel that still
     // holds it, and expose the slow one as an opt-in. compiled-decode is BIT-EXACT
     // with uncompiled (compiled-decode.test: on==off) → free speed, so it's ON in
-    // EVERY tier (--compiled-decode off is the slow, same-tier opt-in). perf-kernel
-    // + fused-sdpa match OPTIQ (not the unfused reference; fused-sdpa.test) and are
-    // quantized-KV only → they're the L2 bridge, no-ops on L1's bf16. NOTE: for the
-    // DECODE path L2 == L3 — every decode kernel matches mlx-lm OR optiq. L3's real
-    // territory is the no-oracle FEATURES (HLG sampler, expert offload, batched
-    // mixed-precision) gated by KL+tests, which live off this decode axis.
+    // EVERY tier (--compiled-decode off is the slow, same-tier opt-in). fused-sdpa
+    // matches OPTIQ bit-for-bit (tier-a goldens, fused-sdpa.test) and is
+    // quantized-KV only → it's the L2 bridge, a no-op on L1's bf16. perf-kernel is
+    // NOT: it's an original flash-decoding kernel, envelope-gated against our own
+    // frozen trajectory (perf-kernel-oracle.test) — bare --l2 must ship the
+    // optiq-golden decode composition (stock unfused L=1), so perf-kernel is
+    // L3/explicit-only (--perf-kernel on opts a tier into it by choice). This is
+    // the decode-axis difference between L2 and L3; L3 also owns the no-oracle
+    // FEATURES (HLG sampler, expert offload, batched mixed-precision).
     l1: { kv: "off",    perf: false, fusedSdpa: false, compiled: true, fusedDecode: false }, // = mlx-lm bit-for-bit (bf16)
-    l2: { kv: "config", perf: true,  fusedSdpa: true,  compiled: true, fusedDecode: false }, // = mlx-optiq bit-for-bit
-    l3: { kv: "config", perf: true,  fusedSdpa: true,  compiled: true, fusedDecode: false }, // best perf (decode == L2 today)
+    l2: { kv: "config", perf: false, fusedSdpa: true,  compiled: true, fusedDecode: false }, // = mlx-optiq bit-for-bit
+    l3: { kv: "config", perf: true,  fusedSdpa: true,  compiled: true, fusedDecode: false }, // best perf (envelope-gated decode)
   };
   const tier = flag("l1") ? "l1" : flag("l2") ? "l2" : flag("l3") ? "l3" : null;
   const p = tier ? TIERS[tier]! : null;
@@ -1119,23 +1132,38 @@ switch (cmd) {
     // RAW generate — a direct one-shot entry point (no server, no chat UI). The
     // three entry points (raw / OpenAI API / chat UI) differ only in how params
     // are POPULATED; here every param is explicit. Decode-path levers mirror
-    // serve so you can pin the route (mlx-lm compat = --perf-kernel off
-    // --fused-sdpa off --compiled-decode off). KV uses the bf16 bit-exact path.
-    applyDecodeRoute(); // --l1/--l2/--l3 + per-fork overrides set the decode env levers (KV stays bf16 via generateText)
+    // serve so you can pin the route (mlx-lm compat = --l1).
+    // --l1/--l2/--l3 + per-fork overrides set the decode env levers; the
+    // returned KV scheme is applied below so `generate --l2` runs the same
+    // quantized-KV route (and produces the same tokens) as `serve --l2`.
+    const route = applyDecodeRoute();
 
     const prompt = opt("prompt") ?? positional(1);
     if (!prompt) {
       console.error('usage: mlx-bun generate [query] --prompt "…" [--raw] [--max-tokens N]');
       console.error('       sampling:  --temperature N (alias --temp) --top-p N --top-k N --seed N');
-      console.error('       decode path: --perf-kernel off --fused-sdpa off --compiled-decode off  (= mlx-lm compat)');
+      console.error('       decode path: --l1 (= mlx-lm compat) / --l2 / --l3, or per-fork flags');
       process.exit(1);
     }
     const { loadTaskModel, generateText } = await import("./eval/runner");
     const tm = await loadTaskModel(positional(0) ?? opt("query") ?? "");
+    // Resolve the tier/--kv-quant KV scheme exactly the way serve does
+    // (server.ts kvScheme): "config" = the model's kv_config.json (absent →
+    // bf16, same silent fallback as serve), N = uniform bits from decode
+    // start. Unset (no tier, no --kv-quant) keeps generate's historical
+    // default: bf16 bit-exact greedy (generateText's parity path).
+    const kvScheme =
+      route.kvQuant === "off" ? {}
+      : route.kvQuant === "config"
+        ? (tm.config.kvQuant?.length ? { kvConfig: tm.config.kvQuant } : {})
+      : typeof route.kvQuant === "number"
+        ? { kvBits: route.kvQuant, quantizedKvStart: 0 }
+      : undefined;
     const num = (n: string): number | undefined => { const v = opt(n); return v == null ? undefined : Number(v); };
     const text = await generateText(tm, prompt, {
       maxTokens: Number(opt("max-tokens", "256")),
       useChat: !flag("raw"),
+      ...(kvScheme !== undefined ? { kvScheme } : {}),
       sampler: { temperature: num("temperature") ?? num("temp"), topP: num("top-p"), topK: num("top-k"), seed: num("seed") },
     });
     process.stdout.write(text.endsWith("\n") ? text : text + "\n");

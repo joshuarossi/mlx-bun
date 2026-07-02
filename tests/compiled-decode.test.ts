@@ -155,6 +155,50 @@ describe.skipIf(!haveWeights)("compiled decode parity (12B)", async () => {
       expect(maxDiff).toBe(0); // bit-exact: compile must not change numerics
     }
   }, 240_000);
+
+  test("mid-step segment trace failure: recovery matches the never-compiled trajectory", async () => {
+    // Force a LATER segment's closure.apply to throw on the first decode
+    // step — AFTER segment 0 produced its (staged) ring updates and the
+    // first js (growing) layer committed its real KV write. That is the
+    // double-write hazard: without #stepSegmented's transactional unwind
+    // (staged ring adopts + js-write rollback), generate()'s uncompiled
+    // re-forward of the SAME token writes the committed layers twice and
+    // every subsequent token attends misaligned KV. The recovered
+    // generation must be identical to a never-compiled run.
+    //
+    // Config notes: uniform kv8 + PERF_KERNEL=0 gives ring-phase compiled
+    // segments (under the perf kernel every quantized layer is a js layer)
+    // and a closure key no other case in this file uses — the forced
+    // failure marks that key broken for the rest of the process by design.
+    const { CompiledFunction } = await import("../src/mlx/compile");
+    const extra = { kvBits: 8, kvGroupSize: 64, quantizedKvStart: 0 };
+    const prevPerf = process.env.MLX_BUN_PERF_KERNEL;
+    process.env.MLX_BUN_PERF_KERNEL = "0";
+    const origApply = CompiledFunction.prototype.apply;
+    let segmentApplies = 0;
+    let forcedThrows = 0;
+    // Segment closures carry [carried, ropeOff, ...ring slots] — >10 inputs;
+    // the embed/logits stubs carry 2. Throw on the SECOND real segment apply.
+    CompiledFunction.prototype.apply = function (inputs) {
+      if (inputs.length > 10 && ++segmentApplies === 2) {
+        forcedThrows++;
+        throw new Error("forced mid-step trace failure (test)");
+      }
+      return origApply.call(this, inputs);
+    };
+    try {
+      const recovered = await trajectory(LONG, true, extra);
+      expect(forcedThrows).toBe(1); // the failure actually fired mid-step
+      CompiledFunction.prototype.apply = origApply;
+      const clean = await trajectory(LONG, false, extra);
+      expect(recovered.length).toBeGreaterThan(4);
+      expect(recovered).toEqual(clean);
+    } finally {
+      CompiledFunction.prototype.apply = origApply;
+      if (prevPerf === undefined) delete process.env.MLX_BUN_PERF_KERNEL;
+      else process.env.MLX_BUN_PERF_KERNEL = prevPerf;
+    }
+  }, 240_000);
 });
 
 describe.skipIf(!have4b)("compiled decode parity (e4b: per-layer input + KV sharing)", async () => {

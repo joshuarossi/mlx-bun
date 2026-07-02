@@ -99,6 +99,11 @@ export interface GenOpts {
    *  (its capability numbers are non-thinking; e.g. MiniCPM5 IFEval 64.7 is
    *  non-thinking). Set MLX_BUN_EVAL_THINK=1 or pass true to evaluate thinking mode. */
   enableThinking?: boolean;
+  /** Explicit KV-quant scheme (cli `generate --l2/--l3/--kv-quant`, resolved with
+   *  serve's semantics). Overrides the MLX_BUN_EVAL_KV_QUANT env default; an empty
+   *  object forces bf16. When it names quantized KV, generation runs the product
+   *  generate() path (same tokens as `serve` with the same scheme). */
+  kvScheme?: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart">;
 }
 
 /** Bit-exact greedy decode: raw `model.forward` + argmax loop, which matches mlx-lm
@@ -148,23 +153,27 @@ export async function generateText(tm: TaskModel, body: string, opts: GenOpts = 
   // plain mlx_lm.generate (kv-quant lives in the serving runtime, not the eval). So
   // for like-for-like parity we default the eval to UNQUANTIZED KV; MMLU's argmax
   // path was already unquantized, which is why it matched while generation didn't.
-  // MLX_BUN_EVAL_KV_QUANT=1 generates through the model's quantized KV (serving config).
-  const kv = (process.env.MLX_BUN_EVAL_KV_QUANT === "1" && tm.config.kvQuant?.length)
-    ? tm.config.kvQuant : undefined;
+  // MLX_BUN_EVAL_KV_QUANT=1 generates through the model's quantized KV (serving
+  // config); an explicit opts.kvScheme (cli generate's resolved tier route) wins.
+  const envKv: GenOpts["kvScheme"] | undefined =
+    (process.env.MLX_BUN_EVAL_KV_QUANT === "1" && tm.config.kvQuant?.length)
+      ? { kvConfig: tm.config.kvQuant, quantizedKvStart: 0 } : undefined;
+  const kvScheme = opts.kvScheme ?? envKv;
+  const kvActive = !!(kvScheme && (kvScheme.kvBits || kvScheme.kvConfig?.length));
 
   // Parity default — greedy + full-precision KV + no sampler arm: decode bit-exactly
   // via the raw forward (matches mlx-lm token-for-token). Sampler arms / kv-quant fall
   // through to the product generate(). DiffusionGemma is non-autoregressive (no AR
   // forward) — always go through generate(), which routes it to the denoising engine.
   const isDiffusion = tm.model instanceof DiffusionGemmaModel;
-  if (!isDiffusion && !kv && !opts.sampler && !tm.samplerOverride) {
+  if (!isDiffusion && !kvActive && !opts.sampler && !tm.samplerOverride) {
     return greedyDecodeBitExact(tm, ids, maxTokens);
   }
   const gen = generate(tm.model, ids, {
     maxTokens,
     temperature: 0, // greedy default — deterministic head-to-head arms
     adapters: tm.activeAdapters ?? [], // per-request activation of the mounted eval-adapter
-    ...(kv ? { kvConfig: kv, quantizedKvStart: 0 } : {}),
+    ...(kvActive ? kvScheme : {}),
     ...(opts.sampler ?? {}), // overrides temperature when provided
     ...(tm.samplerOverride ?? {}), // arm override wins over the task's own sampler
   });
