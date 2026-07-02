@@ -1,8 +1,49 @@
 # Dynamic λ controller for ORPO (adaptive preference pressure)
 
 **Status:** proposed (design only — not built). **Opened:** 2026-06-20.
+**Reaffirmed + reframed by Josh 2026-07-01** (see "The band framing" below).
 **Surface:** `src/train/loss.ts` (orpoMetrics/orpoLoss), `src/train/trainer.ts`
 (orpoLoop, the λ config), the segmented ORPO classes in `src/train/segmented.ts`.
+
+## The band framing (Josh, 2026-07-01 — the product statement)
+
+> "Vary the lambda term based on the loss or another signal — maintain the
+> interest inside a band: learn preference HARDER while you are still able to
+> stay coherent. A self-stabilizing AND self-discovering hyperparameter, which
+> optimizes the training to get as much preference as possible while not
+> resulting in degeneracy."
+
+That is the controller's contract in one sentence: **λ is not a hyperparameter
+to tune, it is a process variable to control** — push preference pressure to
+the maximum the model can currently bear (self-discovering), retreat on
+confirmed coherence damage (self-stabilizing), and hold the system inside the
+healthy band rather than at a fixed point. Everything below (phases, AIMD/PID,
+displacement decomposition) is the mechanism for that contract.
+
+**Interplay with `sft_scope` (landed 2026-07-01):** the default chosen-NLL is
+now full prompt+response. The controller's displacement signal must key on the
+**response-only `lw`** (which `orpoMetrics` computes for the odds ratio in both
+modes) — full-scope NLL mixes prompt modeling into the level and would mask a
+crushed `logp(chosen-response)`. Instrument both, control on response-only.
+
+## Paper lens (2026-07-01): is this citable?
+
+Closest prior: **β-DPO (arXiv 2407.08639)** — dynamic β for DPO, calibrated
+per-batch from the reward gap. Ours differs on three axes worth claiming:
+(1) **closed-loop trajectory control** (a controller tracking a non-stationary
+optimum across the run) vs per-batch heuristic calibration; (2) the control
+signal is **displacement-aware** — the (dLw, dLr) decomposition targets the
+known ORPO/DPO failure mode directly (cf. likelihood displacement,
+arXiv 2410.08847 "Unintentional Unalignment"); (3) **objective-agnostic**
+actuator (ORPO λ, SimPO β/γ). The incremental P→PD→PID build IS the ablation
+section. The claim to stake: *"the optimal preference pressure is
+non-stationary, so a controller strictly dominates any fixed λ a sweep can
+find — and a displacement-aware control law finds the coherence cliff without
+a priori knowledge of it."* Referees will demand: ≥2 datasets, ≥2 model sizes,
+the static-λ sweep as the baseline family (the controller must beat the BEST
+constant, not λ=0.1), seeds, and the positive-control sanity run this doc
+already specifies. Workshop/arXiv-preprint tier as a single-model study;
+main-track needs the multi-model sweep.
 
 ## Motivation
 

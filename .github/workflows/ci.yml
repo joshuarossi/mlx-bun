@@ -1,0 +1,49 @@
+# CI gate — closes review finding #4 (2026-07-01): nothing previously ran
+# typecheck or tests on push; the "tsc 0" standing rule was agent-discipline only.
+#
+# Two jobs:
+#  - typecheck: the hard gate (repo rule: zero tolerated errors, incl. scripts/).
+#  - tests: the model-FREE subset on an Apple Silicon runner (macos-14 = M1,
+#    Metal available; mlx-c via brew). Tests that need downloaded checkpoints
+#    are env-gated in-repo (MLX_BUN_TEST_*) and stay local-only by design —
+#    parity vs the oracle venv can't run here. Extend the list as suites prove
+#    runner-stable; keep it green, not aspirational.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  typecheck:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - run: bunx tsc --noEmit
+
+  tests-model-free:
+    runs-on: macos-14
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: brew install mlx-c
+      - run: bun install --frozen-lockfile
+      # Model-free suites: pure math/logic + synthetic-checkpoint smokes.
+      # No downloads, no cached-model dependencies, no oracle venv.
+      - run: >
+          bun test
+          tests/sampling-params.test.ts
+          tests/cli-upload.test.ts
+          tests/universal-archs.test.ts
+          tests/universal-rope.test.ts
+          tests/universal-smoke.test.ts
+          tests/curve-sampler.test.ts
+          tests/train-rank.test.ts
+          tests/train-dataset.test.ts
