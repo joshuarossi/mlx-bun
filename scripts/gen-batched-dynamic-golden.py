@@ -22,6 +22,12 @@
 # The mlx-bun side (tests/batched-decode-parity.test.ts, realDynamicBatchedGreedy)
 # executes the IDENTICAL protocol with our primitives. Greedy argmax, so the
 # comparison is exact per-row token trajectories.
+#
+# The oracle is MACHINE-SPECIFIC (greedy argmax over bf16 batched logits flips
+# per-GPU — see PLAN.md "machine-specific goldens"), so the committed golden is
+# resolved via tests/goldens.ts: write <out> to
+# goldens/batched-dynamic-golden-cpm.json on the reference box (apple-m4-pro),
+# or goldens/<machine-key>/batched-dynamic-golden-cpm.json elsewhere.
 import sys, json
 from optiq.mlx_lm_patches._register import register
 register()  # maps gemma4_unified -> mlx-lm gemma4 (harmless for MiniCPM5/llama)
@@ -32,7 +38,7 @@ from mlx_lm.models.cache import make_prompt_cache, BatchKVCache
 MODEL = sys.argv[1] if len(sys.argv) > 1 else \
     "/Users/joshrossi/.cache/huggingface/hub/models--mlx-community--MiniCPM5-1B-OptiQ-4bit/snapshots/664aabaed233c653f82716d8dc822234d0091f78"
 OUT = sys.argv[2] if len(sys.argv) > 2 else \
-    "tests/fixtures/batched-dynamic-golden-cpm.json"
+    "/tmp/batched-dynamic-golden-cpm.json"  # copy into the goldens layer (header)
 
 # Scenario (must match realDynamicBatchedGreedy on the mlx-bun side). Prompt A
 # is the longest so the initial merge gives it leftPad 0. C is the joiner.

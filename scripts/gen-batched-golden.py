@@ -9,6 +9,13 @@
 # step to <out>.f32 + a JSON manifest, for bit-exact comparison from mlx-bun.
 #
 # This is the L1-batched gate's oracle: mlx-bun B=2 must match mlx-lm B=2.
+#
+# The oracle is MACHINE-SPECIFIC (greedy argmax over bf16 batched logits flips
+# per-GPU — same metallib split as the logit goldens, PLAN.md "machine-specific
+# goldens"). Committed goldens go through tests/goldens.ts: trim the manifest
+# (drop the abs-path logits fields, keep prompts/left_padding/steps/
+# trajectories) into goldens/batched-golden-<model>.json on the reference box
+# (apple-m4-pro), or goldens/<machine-key>/ elsewhere.
 import sys, json, struct
 # OptiQ's patch maps gemma4_unified -> mlx-lm's gemma4 classes so mlx-lm can
 # LOAD the OptiQ-repacked Gemma (must run before importing mlx_lm). Harmless

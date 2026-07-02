@@ -1043,6 +1043,22 @@ change, consistent with Phase 6).
     tests and everything else pass. The bit-exact bar therefore holds on the
     reference machine; off it, document the ≤1-ulp-ish toolchain delta rather
     than chase it. Benchmarking is unaffected.
+  - **Recurrence (fixed 2026-07-01): the batched oracles bypassed the layer.**
+    The 2026-06-14 batched-serving fixtures (`batched-golden-{cpm,gemma12b,
+    e4b,26b}.json`, `batched-dynamic-golden-cpm.json`) were committed flat in
+    `tests/fixtures/` and read directly — M4 Pro-generated, never green on the
+    M1 Max (bisect verdict: no code regression; mlx-lm regenerated on the M1
+    Max reproduces mlx-bun token-for-token). Same class as above: greedy argmax
+    over bf16 batched logits is per-GPU. Fix: moved them to `goldens/` as the
+    reference set, tests resolve via `goldenAt()`, and the divergent ones on
+    this box (e4b, 26b, dynamic-cpm; cpm + gemma12b statics happen to match)
+    got `goldens/apple-m1-max/` overrides. Separately, the batch-scheduler
+    Gemma test's exact-equality vs that golden was machine-LUCKY even on the
+    M4 Pro — the scheduler's merged-solo-prefill and the golden's padded
+    one-shot prefill have different reduction orders — so it was converted to
+    the teacher-forced KL/argmax gate the CPM scheduler case uses (Gemma bound
+    5e-1, justified in tests/batch-scheduler.test.ts; a per-machine
+    protocol-oracle gen script is the noted tighter alternative).
 
 ## Open questions
 
@@ -1599,7 +1615,8 @@ Phasing (each default-off behind `slots=1`, serialized path never removed):
             AND decode → batch-prefill → greedy decode). Its per-row trajectory ==
             mlx-lm B=2 EXACTLY (both rows incl. left-padded, 8 steps). CPM L1
             batched is bit-parity with mlx-lm's batch mode. Fixture committed
-            (tests/fixtures/batched-golden-cpm.json).
+            (goldens/batched-golden-cpm.json — machine-layered via
+            tests/goldens.ts since 2026-07-01).
           - [x] **Gemma 12B L1 ORACLE-VERIFIED 2026-06-14d**: realBatchedGreedy ==
             mlx-lm B=2 EXACTLY (both rows incl. left-padded; sliding layers via
             RotatingKVCache→BatchRotatingKVCache; short-context). The "KL 0.26
