@@ -11,6 +11,7 @@ via their provider config.
 For exhaustive request/response schemas see the
 [Server API reference](/reference/server-api/); for start flags and the
 `--batch` matrix see [Server configuration](/reference/server-config/).
+Coming from `mlx_lm.server`? See [Drop-in for mlx-lm](/guides/drop-in-mlx-lm/).
 
 ## Chat completions
 
@@ -47,7 +48,7 @@ client changes. Entries are adapter-specific when LoRA adapters are in play.
 
 ## LoRA hot-swap
 
-Mount adapters at startup (`--adapter id=dir`) or at runtime
+Mount adapters at startup (`--adapter <dir>`) or at runtime
 (`POST /v1/adapters`), and select per request with the `adapter` body field
 (`"id"`, stacked `"a+b"`, or `"none"`). The base model never reloads; an
 unselected adapter costs nothing.
@@ -59,7 +60,8 @@ per-layer KV quantization applies automatically — full-attention layers
 quantized, sliding layers kept bf16. Measured decode-neutral at 8k on the 12B,
 with KV bytes ÷4 on the quantized layers.
 
-- `--no-kv-quant` forces bf16; `--kv-bits N` forces uniform bits.
+- `--kv-quant off` forces bf16; `--kv-quant 4|8` forces uniform bits
+  (default `--kv-quant config` follows the model's `kv_config.json`).
 - Long prefills over quantized caches run a fused FlashAttention-2 tiling that
   never materializes the full scores matrix (`MLX_BUN_NO_FUSED_SDPA=1` to
   disable).
@@ -81,9 +83,24 @@ front is the only defense. The ceiling is visible at `GET /stats`.
   mapping, image blocks via the vision path.
 - **OpenAI Responses** — `POST /v1/responses`, the protocol Codex/Cursor/Continue
   speak; `previous_response_id` resumption backed by a TTL + byte-capped store.
+- **OpenAI completions** *(v0.0.9)* — `POST /v1/completions`, the legacy raw
+  text-completion protocol (what `mlx_lm.server` clients also speak).
+- **OpenAI Embeddings** *(v0.0.9)* — `POST /v1/embeddings` when the served
+  model is an embedding model: last-token pooled, L2-normalized vectors,
+  bit-exact vs mlx-lm.
+
+*(v0.0.9)* Chat and raw completions also support `logprobs` /
+`top_logprobs`, matching `mlx_lm.server`.
 
 ## Status & introspection
 
 - **`GET /v1/models`** — the loaded model.
-- **`GET /stats`** — cache hit rates, bytes, active KV scheme, response store.
-- **`GET/POST/DELETE /v1/adapters`** — manage LoRA adapters.
+- **`GET /stats`** — cache hit rates, bytes, active KV scheme, response store,
+  the admission-control ceiling.
+- **`GET/POST/DELETE /v1/adapters`** — manage LoRA adapters;
+  `GET /v1/adapters/available` discovers on-disk ones.
+- **`GET /fit`** — the deterministic memory contract for the loaded model.
+- **`GET /library`** — every downloaded model with capabilities and tiers.
+- **`GET /downloads`** — progress of in-flight downloads.
+- **`GET /health`** *(v0.0.9)* — liveness probe.
+- **`GET /`** — the status page; the browser chat UI lives at `/chat`.

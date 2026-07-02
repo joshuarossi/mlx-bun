@@ -1,9 +1,38 @@
 # mlx-bun
 
+**One command, chatting in under a minute** — a fully local AI on your
+Apple Silicon Mac's GPU, no Python, no API key:
+
+```sh
+curl -fsSL https://mlx-bun.dev/install.sh | sh
+mlx-bun
+```
+
+Docs: **[mlx-bun.dev](https://mlx-bun.dev)**
+
 Native MLX inference for Bun, and the beginning of a one-command local AI
 product for Apple Silicon Macs. `mlx-bun` detects the machine, starts a useful
 local assistant, exposes OpenAI/Anthropic-compatible APIs, and gives
 TypeScript apps direct access to MLX without Python or a sidecar server.
+
+Six goals, in one binary:
+
+1. **A drop-in replacement for `mlx_lm.server`** — same port, endpoints,
+   request fields, and flags; stop the Python server, start `mlx-bun serve`,
+   the same curl works ([site guide](https://mlx-bun.dev/guides/drop-in-mlx-lm/)).
+2. **A TypeScript library** — embed MLX generation in Bun/Tauri/Electron apps,
+   or ship it as a signed single-binary sidecar
+   ([library](./docs/reference/library-api.md), [embedding](./docs/reference/embedding.md)).
+3. **Bit-exact, fast, and memory-honest** — logit parity with the Python
+   reference as the correctness oracle, measured speed wins, and a
+   deterministic `fit` memory contract ([benchmarks](#benchmarks),
+   [correctness](#correctness)).
+4. **One command, under a minute** — the appliance path above; the default
+   experience needs zero configuration ([getting started](#getting-started)).
+5. **A personal memory** — a local, git-tracked wiki your assistant reads and
+   (via local synthesis) writes ([memory](#personal-memory)).
+6. **An AI lab** — training, speculative decoding, and sampling research kept
+   next to the runtime that serves them ([the lab](#the-lab)).
 
 The product bet is that local AI on Mac is a finite optimization problem, not
 an infinite configuration maze: Apple ships a known set of chip/RAM/bandwidth
@@ -36,7 +65,7 @@ mlx-bun
 
 Self-contained (binary + MLX runtime) and notarized, so it runs without a
 Gatekeeper prompt. Installs to `~/.mlx-bun` by default — override with
-`MLX_BUN_INSTALL_DIR`, or pin a release with `MLX_BUN_VERSION=v0.0.4`.
+`MLX_BUN_INSTALL_DIR`, or pin a release with `MLX_BUN_VERSION=v0.0.8`.
 
 ### Homebrew
 
@@ -117,9 +146,13 @@ That's it. The server serves the one model it was started with (the
 request's `model` field is ignored and the loaded model id is echoed
 back in responses).
 
+Longer walkthrough on the site:
+[Installation](https://mlx-bun.dev/getting-started/installation/) and
+[Quickstart](https://mlx-bun.dev/getting-started/quickstart/).
+
 ## What mlx-bun is
 
-`mlx-bun` has four faces, all sharing one native runtime:
+`mlx-bun` has several faces, all sharing one native runtime:
 
 - **The local AI product** — run `mlx-bun` or `bunx mlx-bun` and get a
   working local chat UI plus a local server. The default path should feel like
@@ -128,25 +161,56 @@ back in responses).
 - **The app developer library** — embed local MLX inference inside Bun,
   Tauri, Electron, and other TypeScript applications without running Python in
   the background.
-- **The AI lab** — keep parity, evals, kernels, LoRA/ORPO training, adapter
-  routing, and performance experiments close to the runtime that will actually
-  serve them.
 - **The background agent runtime** — leave a local OpenAI-compatible endpoint
   available for scripts, recurring jobs, app integrations, and per-request
   adapter routing.
-- **The local memory layer** — `mlx-bun memory init` creates a git-tracked
-  Markdown wiki at `~/.mlx-bun/wiki`; `Reference/` is seeded with read-only
-  symlinks to mlx-bun's own docs, and the built-in pi agents read both those
-  docs and your articles quietly (`memory_search`, `memory_section`, etc.) and can open it in Obsidian for you
-  (`mlx-bun memory open [article]`). Chat-time memory is read-only; synthesis is
-  the separate writer path: `mlx-bun memory synthesize` runs the built-in local
-  pipeline (segment → extract → route → create/patch → reconcile → link →
-  wikify) that turns your conversations into cross-linked subject articles,
-  using the same local models with a fine-tuned chunking LoRA adapter.
+- **The local memory layer** and **the AI lab** — each gets its own section
+  below.
 
 The default experience is intentionally opinionated. Power users can override
 models, budgets, KV modes, adapters, and flags; the average user should not
 need to know those knobs exist.
+
+## Personal memory
+
+`mlx-bun memory init` creates a git-tracked Markdown wiki at
+`~/.mlx-bun/wiki`; `Reference/` is seeded with read-only symlinks to
+mlx-bun's own docs, and the built-in pi agents read both those docs and your
+articles quietly (`memory_search`, `memory_section`, etc.) and can open it in
+Obsidian for you (`mlx-bun memory open [article]`). Chat-time memory is
+read-only; synthesis is the separate writer path: `mlx-bun memory synthesize`
+runs the built-in local pipeline (segment → extract → route → create/patch →
+reconcile → link → wikify) that turns your conversations into cross-linked
+subject articles, using the same local models with a fine-tuned chunking LoRA
+adapter.
+
+It's your data in your format: plain Markdown, git history, editable in any
+tool, never leaves the machine. Reference:
+[docs/reference/memory.md](./docs/reference/memory.md); synthesis design:
+[docs/design/memory-synthesis.md](./docs/design/memory-synthesis.md); on the
+site: [Personal memory](https://mlx-bun.dev/guides/memory/).
+
+## The lab
+
+Parity, evals, kernels, training, and sampling research live next to the
+runtime that serves them:
+
+- **LoRA fine-tuning on your Mac** (SFT / DPO / ORPO) — `mlx-bun train
+  <model> --data <dir>`, with a flash-CCE Metal head, segmented backward, and
+  prefix-sharing so long-context preference training fits laptop memory;
+  watch runs live with `mlx-bun train-watch`
+  ([training](./docs/reference/training.md),
+  [quickstart](./docs/reference/orpo-quickstart.md)).
+- **The curve designer** — HLG tone-curve sampling with an interactive
+  designer in the server UI at `/curves`
+  ([design](./docs/design/hlg-sampling.md)).
+- **Speculative decoding research (DSpark)** — a KV-injection drafter
+  ([design](./docs/design/dspark-speculative-decoding.md)).
+- The full research trail — including dead ends — is tracked in
+  [docs/design/](./docs/design/) and
+  [docs/investigations/](./docs/investigations/).
+
+On the site: [The lab](https://mlx-bun.dev/about/lab/).
 
 ## Supported models
 
@@ -165,7 +229,9 @@ Currently MiniCPM5, the Gemma-4 OptiQ quants, and Qwen3.5-4B:
 Not sure what fits your machine? `bun src/cli.ts fit <model> --ctx 8192`
 gives a deterministic answer (see below). The larger
 `Qwen3.6-27B-OptiQ-4bit` is still in bring-up — parity and serving polish
-remain (see [PLAN.md](./PLAN.md)).
+remain (see [PLAN.md](./PLAN.md)). Downloading, cache layout, and reclaiming
+disk: [docs/reference/models.md](./docs/reference/models.md); on the site:
+[Choosing a model](https://mlx-bun.dev/getting-started/models/).
 
 ## Why
 
@@ -227,6 +293,9 @@ headers, KV bytes/token from the config (sliding-window layers capped,
 MoE active-expert bytes for decode), calibrated prefill transient, and
 the machine's wired-memory ceiling. Predictions are recorded next to
 measured peaks in the eval DB.
+
+Every verb, with flags: [docs/reference/cli.md](./docs/reference/cli.md);
+on the site: [CLI reference](https://mlx-bun.dev/reference/cli/).
 
 ## HTTP API
 
@@ -298,10 +367,15 @@ agent CLIs like pi/OpenClaw via their provider config.
   plus **`GET /library`**, **`GET /fit`**, **`GET /downloads`**, and
   **`GET /v1`** (a self-describing index of every endpoint).
 
+Guide with examples on the site:
+[The HTTP API](https://mlx-bun.dev/guides/http-api/); coming from
+`mlx_lm.server`:
+[Drop-in for mlx-lm](https://mlx-bun.dev/guides/drop-in-mlx-lm/).
+
 ## Library
 
 The server is one consumer of a library-first API. Published to npm as
-`mlx-bun` (current: 0.0.4) — import from the package (`from "mlx-bun"`)
+`mlx-bun` (current: 0.0.8) — import from the package (`from "mlx-bun"`)
 or `./src/index` in a clone; `bunx mlx-bun` runs the CLI without
 installing. Full reference:
 [docs/reference/library-api.md](./docs/reference/library-api.md). For shipping inside a
@@ -334,6 +408,9 @@ console.log(gen.stats); // prompt/decode tok/s, cached tokens, ...
 KV caches can be persisted to disk (page-aligned files that reload as
 zero-copy GPU-safe mmaps — see `src/kv-store.ts`) so a standard agent
 preamble prefills once, ever.
+
+On the site: [Using the library](https://mlx-bun.dev/guides/library/) and
+[Embedding in a Mac app](https://mlx-bun.dev/guides/embedding/).
 
 ## Benchmarks
 
@@ -377,6 +454,9 @@ both served it from the same machine state). One further optiq cell
 (12B/kv=config) is blocked on an upstream `quantized_matmul` bug. Both
 are documented in the results file.
 
+On the site (with the honest negatives spelled out):
+[Benchmarks](https://mlx-bun.dev/about/benchmarks/).
+
 ## Correctness
 
 Logit parity with mlx-lm (same weights, Python reference) is the
@@ -395,6 +475,9 @@ findings). Golden files are regenerated only by explicit scripts
 bun test    # fast tier runs everywhere; model-loaded tests run only
             # when the reference snapshot is in your HF cache
 ```
+
+On the site: [Correctness](https://mlx-bun.dev/about/correctness/) and
+[How it compares](https://mlx-bun.dev/about/comparison/).
 
 ## Troubleshooting
 

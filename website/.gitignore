@@ -24,5 +24,9 @@ pnpm-debug.log*
 src/content/docs/reference/server-api.md
 src/content/docs/reference/server-config.md
 src/content/docs/reference/training.md
+src/content/docs/reference/cli.md
 src/content/docs/guides/library.md
 src/content/docs/guides/embedding.md
+src/content/docs/guides/memory.md
+src/content/docs/guides/model-management.md
+src/content/docs/guides/fine-tuning-quickstart.md

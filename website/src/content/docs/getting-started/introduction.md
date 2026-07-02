@@ -30,8 +30,9 @@ rewritten in any runtime without losing speed — and Bun is the right one.
 ## Deliberate scope
 
 mlx-bun supports a **few model families held to bit-exact logit parity** with
-the Python reference, rather than dozens held to none. Currently MiniCPM5 plus
-the Gemma-4 OptiQ quants — see [Choosing a model](/getting-started/models/).
+the Python reference, rather than dozens held to none. Currently MiniCPM5, the
+Gemma-4 OptiQ quants, and Qwen3.5 — see
+[Choosing a model](/getting-started/models/).
 
 ## Requirements
 
