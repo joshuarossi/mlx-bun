@@ -1,16 +1,22 @@
 // FAST: the --batch N lane picker (GenerationGateway.willBatch) — no model
-// load. willBatch is pure over (batchingEnabled, RequestShape); it never
-// touches the model, so a stub stands in. This gates the compatibility matrix
-// in docs/reference/server-config.md: which request shapes batch and which
-// drain to the serial lane. The scheduler's NUMERICS are gated separately
-// (tests/batch-scheduler.test.ts); this gates the ROUTING decision.
+// load. willBatch is pure over (batchingEnabled, cache capability,
+// RequestShape); the only model surface it touches is makeCache() (the
+// capability gate — fresh caches hold no buffers), so a stub stands in. This
+// gates the compatibility matrix in docs/reference/server-config.md: which
+// request shapes batch and which drain to the serial lane. The scheduler's
+// NUMERICS are gated separately (tests/batch-scheduler.test.ts); this gates
+// the ROUTING decision.
 
 import { describe, expect, test } from "bun:test";
 import { GenerationGateway, type RequestShape } from "../src/serve/generation-gateway";
+import { KVCache, RotatingKVCache } from "../src/model/gemma4-base";
+import { SSMCache } from "../src/model/qwen3-delta";
 import type { RuntimeModel } from "../src/model/factory";
 
-// willBatch reads neither the model nor the serialRun, so stubs are safe.
-const stubModel = {} as unknown as RuntimeModel;
+// willBatch reads only makeCache() off the model (the capability gate) and
+// never the serialRun, so stubs are safe. The default stub models a
+// full-attention model (all-KVCache — batch-capable).
+const stubModel = { makeCache: () => [new KVCache()] } as unknown as RuntimeModel;
 const stubSerial = (async () => ({}) as never) as never;
 const gateway = (batch: number) => new GenerationGateway(stubModel, batch, stubSerial);
 
@@ -80,5 +86,30 @@ describe("GenerationGateway.willBatch", () => {
   test("sampler knobs (temp/top-p/top-k/stop/tools) are not disqualifiers", () => {
     // None of them appear in RequestShape, so an all-clear shape stays batchable.
     expect(gateway(2).willBatch(batchable)).toBe(true);
+  });
+
+  // Cache-capability gate (mirrors mlx-lm server.py's all-caches-have-merge
+  // check): the scheduler's dynamic-B ops exist only on KVCache and
+  // RotatingKVCache. A hybrid model (Qwen3.5's SSMCache) must route serial —
+  // before this gate, `--batch N` on Qwen3.5 500'd EVERY batched request
+  // (the scheduler cast SSMCache to KVCache and called a nonexistent
+  // temporalView). See docs/design/batching-v2-plan.md D1.
+  describe("cache-capability gate", () => {
+    test("hybrid-cache model (Qwen3.5 SSMCache) never batches — routes serial", () => {
+      const qwen = {
+        makeCache: () => [new SSMCache(), new KVCache()], // gated-DeltaNet + full-attn mix
+      } as unknown as RuntimeModel;
+      const g = new GenerationGateway(qwen, 2, stubSerial);
+      expect(g.batchingEnabled).toBe(true); // the MODE is on…
+      expect(g.willBatch(batchable)).toBe(false); // …but every request is serial-lane
+    });
+
+    test("sliding-window models batch (RotatingKVCache is dynamic-B capable)", () => {
+      const gemma = {
+        makeCache: () => [new KVCache(), new RotatingKVCache(1024)],
+      } as unknown as RuntimeModel;
+      const g = new GenerationGateway(gemma, 2, stubSerial);
+      expect(g.willBatch(batchable)).toBe(true);
+    });
   });
 });

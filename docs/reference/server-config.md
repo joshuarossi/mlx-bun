@@ -141,14 +141,33 @@ concurrently with each other.
 | `min_p` / `xtc_*` / `logit_bias` / `presence_penalty` / `frequency_penalty` | ❌ serial — one gate for the whole sampler/processor family (safe v1; min_p/XTC are per-row samplers and could batch later) |
 | explicit `seed` | ❌ serial — reproducibility ⇒ solo (matches mlx-lm) |
 | KV quant active (explicit `--kv-quant`) | ❌ serial — batched is bf16-only in v1 |
+| hybrid-cache model (Qwen3.5 gated-DeltaNet) | ❌ serial — model-level cache-capability gate (see below) |
 | `temperature` / `top_p` / `top_k` | ✅ batches (each row samples with its own seed) |
 | `stop` sequences | ✅ batches (per-row `StopMatcher` in the onToken closure) |
 | `tools` / `tool_choice` | ✅ batches (per-row tool router; decode-layer parse) |
 | `--thinking` / `enable_thinking` | ✅ batches (template-render concern, lane-independent) |
 | multi-turn / long prompt | ✅ batches, but **no prompt-cache reuse** (`cached_tokens=0`) |
 
-All three model families — full-attention (CPM), sliding-window (Gemma), and hybrid gated-DeltaNet (Qwen3.5) — batch; the
-scheduler assembles each layer's cache by attention type.
+Full-attention (CPM) and sliding-window (Gemma) models batch — the
+scheduler assembles each layer's cache by attention type. Hybrid
+gated-DeltaNet models (Qwen3.5) **route serial**: their `SSMCache` has no
+dynamic-B merge/filter, so the gateway's cache-capability gate (the
+mirror of mlx-lm server.py's all-caches-have-`merge` check) sends every
+request down the serial lane with the standard drain behavior. A batched
+SSM path is planned (mlx-lm's `ArraysCache` is the oracle) — see
+[batching-v2-plan.md](../design/batching-v2-plan.md) item (h).
+
+A non-batchable request **drains** the batch: while it waits, the
+scheduler stops admitting new rows, finishes the running ones, and
+releases the GPU so the serial request runs (mlx-lm's `drain_batch`);
+admission then resumes. So a steady stream of batchable traffic cannot
+starve a serial-lane request.
+
+`--batch N` is a **mode switch, not a load-dependent fallback**:
+auto-batching "when >1 request arrives" was considered and rejected —
+an idle vs. loaded server would produce different numerics for the same
+request, breaking determinism and the drop-in-for-`mlx_lm.server`
+promise.
 
 ## Compatibility matrix
 
