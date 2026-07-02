@@ -22,7 +22,10 @@ export const PI_PROVIDER_ID = "mlx-bun";
  *  server still reports the true id in /v1/models and responses. Gives a
  *  clean `mlx-bun/local` handle instead of `mlx-bun/mlx-community/…`. */
 export const PI_LOCAL_MODEL_ID = "local";
-export const DEFAULT_BASE_URL = "http://localhost:8080/v1";
+// 127.0.0.1 (the server's actual default bind), not "localhost": the generated
+// extension runs under the USER'S pi (node/jiti, not Bun), so don't depend on
+// how that runtime's resolver maps localhost.
+export const DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1";
 
 export function defaultPiExtensionsDir(): string {
   return join(homedir(), ".pi", "agent", "extensions");
@@ -63,22 +66,34 @@ export interface ServerModel {
   contextWindow: number;
   maxTokens: number;
   reasoning: boolean;
+  vision: boolean;
 }
 
-/** Discover models from a running mlx-bun server; [] when unreachable. */
+/** Discover the SERVED model from a running mlx-bun server; [] when
+ *  unreachable. /v1/models lists the served model first (the only row
+ *  carrying the capability extras: context_window/reasoning/vision) and then
+ *  every other servable model in the registry — those are things `mlx-bun
+ *  serve` COULD run, not models this server answers for, so they must not be
+ *  registered with pi. */
 export async function fetchServerModels(baseUrl: string, timeoutMs = 3000): Promise<ServerModel[]> {
   try {
     const res = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) return [];
-    const body = (await res.json()) as { data?: Array<{ id: string; context_window?: number; reasoning?: boolean }> };
-    return (body.data ?? []).map((m) => ({
-      id: m.id,
-      contextWindow: m.context_window ?? 32768,
+    const body = (await res.json()) as {
+      data?: Array<{ id: string; context_window?: number; reasoning?: boolean; vision?: boolean }>;
+    };
+    const rows = body.data ?? [];
+    const served = rows.find((m) => m.context_window !== undefined) ?? rows[0];
+    if (!served) return [];
+    return [{
+      id: served.id,
+      contextWindow: served.context_window ?? 32768,
       maxTokens: 8192,
-      reasoning: !!m.reasoning,
-    }));
+      reasoning: !!served.reasoning,
+      vision: !!served.vision,
+    }];
   } catch {
     return [];
   }
@@ -113,16 +128,22 @@ export default async function (pi: any) {
     if (res.ok) {
       const { data } = await res.json();
       if (Array.isArray(data) && data.length > 0) {
-        models = data.map((m: any) => ({
+        // The SERVED model is the row with the capability extras (first);
+        // the rest are servable-but-not-served registry entries.
+        const served = data.find((m: any) => m.context_window !== undefined) ?? data[0];
+        models = [{
           id: ${JSON.stringify(PI_LOCAL_MODEL_ID)},
-          name: \`\${m.id} (mlx-bun local)\`,
-          reasoning: !!m.reasoning,
-          ...(m.reasoning ? { compat: { thinkingFormat: "qwen-chat-template" } } : {}),
-          input: ["text"],
+          name: \`\${served.id} (mlx-bun local)\`,
+          reasoning: !!served.reasoning,
+          compat: {
+            supportsDeveloperRole: false,
+            ...(served.reasoning ? { thinkingFormat: "qwen-chat-template" } : {}),
+          },
+          input: served.vision ? ["text", "image"] : ["text"],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: m.context_window ?? 32768,
+          contextWindow: served.context_window ?? 32768,
           maxTokens: 8192,
-        }));
+        }];
       }
     }
   } catch {}
@@ -142,8 +163,13 @@ function modelEntry(m: ServerModel) {
     id: PI_LOCAL_MODEL_ID,
     name: `${m.id} (mlx-bun local)`,
     reasoning: !!m.reasoning,
-    ...(m.reasoning ? { compat: { thinkingFormat: "qwen-chat-template" } } : {}),
-    input: ["text"],
+    // Kept aligned with buildPiProvider (src/pi-provider.ts): the system
+    // prompt must arrive as `system`, not `developer`.
+    compat: {
+      supportsDeveloperRole: false,
+      ...(m.reasoning ? { thinkingFormat: "qwen-chat-template" } : {}),
+    },
+    input: m.vision ? ["text", "image"] : ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: m.contextWindow,
     maxTokens: m.maxTokens,

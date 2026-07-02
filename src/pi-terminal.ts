@@ -85,6 +85,9 @@ export interface RunEmbeddedPiOptions {
   contextWindow?: number;
   /** Whether the served model has a switchable thinking channel. */
   reasoning?: boolean;
+  /** Whether the served model accepts images (server's vision capability —
+   *  /v1/models `vision`). MUST match the real model: see PiProviderOptions. */
+  vision?: boolean;
   /** Run mode. Default: "interactive". */
   mode?: PiTerminalMode;
   /** Print mode output format ("text" final-only, "json" event stream). */
@@ -115,6 +118,7 @@ export async function runEmbeddedPi(opts: RunEmbeddedPiOptions): Promise<number>
     contextWindow: opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     name: opts.modelLabel ? `${opts.modelLabel} (mlx-bun local)` : undefined,
     reasoning: opts.reasoning ?? false,
+    vision: opts.vision ?? false,
   });
 
   // Shared pi tool/skill surface. Memory is included only when the user has
@@ -202,6 +206,11 @@ export interface ParsedPiArgs {
   printFormat: "text" | "json";
   /** Joined free-text message (the trailing words / `-p <text>`). */
   message?: string;
+  /** pi's verbose startup banner (interactive only). */
+  verbose: boolean;
+  /** Unknown flags that were dropped (with their values) — callers should
+   *  warn so `--resume`-style pi flags don't fail silently. */
+  ignored: string[];
 }
 
 /**
@@ -222,32 +231,44 @@ export function parsePiArgs(passthrough: string[], isStdinPiped: boolean): Parse
   let print = false;
   let rpc = false;
   let json = false;
+  let verbose = false;
   const words: string[] = [];
+  const ignored: string[] = [];
   for (let i = 0; i < passthrough.length; i++) {
     const a = passthrough[i]!;
     if (a === "-p" || a === "--print") {
       print = true;
     } else if (a === "--json") {
       json = true;
+    } else if (a === "--verbose") {
+      verbose = true;
     } else if (a === "--mode") {
       const m = passthrough[++i];
       if (m === "rpc") rpc = true;
       else if (m === "json") { print = true; json = true; }
       else if (m === "text") print = true;
     } else if (a.startsWith("-")) {
-      // Unknown flag for the built-in agent: ignore it (the full pi flag
-      // surface lives in the user's own pi via `mlx-bun harness pi`). Don't
-      // treat it as message text.
-      continue;
+      // Unknown flag for the built-in agent: drop it AND its value (the full
+      // pi flag surface lives in the user's own pi via `mlx-bun harness pi`).
+      // Without the value-swallow, `mlx-bun pi --resume abc123` started a
+      // chat with the message "abc123". A following token that looks like
+      // another flag is not a value, so it isn't consumed.
+      const next = passthrough[i + 1];
+      if (next !== undefined && !next.startsWith("-")) {
+        ignored.push(`${a} ${next}`);
+        i++;
+      } else {
+        ignored.push(a);
+      }
     } else {
       words.push(a);
     }
   }
   const message = words.length > 0 ? words.join(" ") : undefined;
   const printFormat = json ? "json" : "text";
-  if (rpc) return { mode: "rpc", printFormat: "text", message };
+  if (rpc) return { mode: "rpc", printFormat: "text", message, verbose, ignored };
   // `-p`/`--mode` request print; piped stdin makes a bare invocation one-shot
   // too, matching pi's own CLI (it reads stdin → switches to print mode).
-  if (print || isStdinPiped) return { mode: "print", printFormat, message };
-  return { mode: "interactive", printFormat, message };
+  if (print || isStdinPiped) return { mode: "print", printFormat, message, verbose, ignored };
+  return { mode: "interactive", printFormat, message, verbose, ignored };
 }

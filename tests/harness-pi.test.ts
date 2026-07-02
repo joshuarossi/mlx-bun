@@ -12,20 +12,28 @@ import {
   probeServer,
   removePiExtension,
   renderPiExtension,
+  DEFAULT_BASE_URL,
   PI_EXTENSION_FILENAME,
 } from "../src/harness-pi";
 
 const tmp = mkdtempSync(join(tmpdir(), "mlx-bun-harness-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
-// Stub of the mlx-bun /v1/models surface.
+// Stub of the mlx-bun /v1/models surface: the SERVED model first (the only
+// row with the capability extras), then other servable registry models —
+// the real server lists the whole registry, and only the first row is a
+// model this server actually answers for.
 const stub = Bun.serve({
   port: 0,
   fetch(req) {
     if (new URL(req.url).pathname === "/v1/models") {
       return Response.json({
         object: "list",
-        data: [{ id: "test/model-4bit", object: "model", created: 0, owned_by: "mlx-bun", context_window: 131072 }],
+        data: [
+          { id: "test/model-4bit", object: "model", created: 0, owned_by: "mlx-bun", context_window: 131072, reasoning: false, vision: true },
+          { id: "other/registry-model-a", object: "model", created: 0 },
+          { id: "other/registry-model-b", object: "model", created: 0 },
+        ],
       });
     }
     return new Response("not found", { status: 404 });
@@ -36,7 +44,7 @@ const baseUrl = `http://localhost:${stub.port}/v1`;
 
 describe("renderPiExtension", () => {
   const src = renderPiExtension("http://localhost:9999/v1", [
-    { id: "org/some-model", contextWindow: 65536, maxTokens: 8192, reasoning: false },
+    { id: "org/some-model", contextWindow: 65536, maxTokens: 8192, reasoning: false, vision: false },
   ]);
 
   it("registers the mlx-bun provider with an openai-completions API", () => {
@@ -56,16 +64,33 @@ describe("renderPiExtension", () => {
     expect(src).toContain("m.context_window");
   });
 
+  it("emits supportsDeveloperRole:false everywhere (aligned with buildPiProvider)", () => {
+    // Baked fallback (JSON) and the live-discovery template must both carry
+    // the compat flag — our chat templates only know system, not developer.
+    expect(src).toContain('"supportsDeveloperRole": false'); // baked JSON
+    expect(src).toContain("supportsDeveloperRole: false"); // live template
+  });
+
   it("is self-contained (no imports — pi loads it with jiti)", () => {
     expect(src).not.toContain("import ");
     expect(src).toContain("export default async function");
   });
 });
 
+describe("DEFAULT_BASE_URL", () => {
+  it("targets 127.0.0.1 (the server's default bind), not localhost", () => {
+    // The generated extension runs under the user's pi (node/jiti, not Bun);
+    // don't depend on that runtime's localhost resolution.
+    expect(DEFAULT_BASE_URL).toBe("http://127.0.0.1:8080/v1");
+  });
+});
+
 describe("fetchServerModels", () => {
-  it("maps /v1/models including context_window", async () => {
+  it("keeps ONLY the served model from a multi-row /v1/models (registry rows dropped)", async () => {
     const models = await fetchServerModels(baseUrl);
-    expect(models).toEqual([{ id: "test/model-4bit", contextWindow: 131072, maxTokens: 8192, reasoning: false }]);
+    expect(models).toEqual([
+      { id: "test/model-4bit", contextWindow: 131072, maxTokens: 8192, reasoning: false, vision: true },
+    ]);
   });
 
   it("returns [] for an unreachable server", async () => {
@@ -75,9 +100,9 @@ describe("fetchServerModels", () => {
 });
 
 describe("probeServer", () => {
-  it("returns models when a server answers /v1/models", async () => {
+  it("returns the served model when a server answers /v1/models", async () => {
     expect(await probeServer(baseUrl)).toEqual([
-      { id: "test/model-4bit", contextWindow: 131072, maxTokens: 8192, reasoning: false },
+      { id: "test/model-4bit", contextWindow: 131072, maxTokens: 8192, reasoning: false, vision: true },
     ]);
   });
 
@@ -87,7 +112,7 @@ describe("probeServer", () => {
 });
 
 describe("installPiExtension / removePiExtension", () => {
-  it("installs into the extensions dir, baking discovered models", async () => {
+  it("installs into the extensions dir, baking only the served model", async () => {
     const result = await installPiExtension(baseUrl, tmp);
     expect(result.path).toBe(join(tmp, PI_EXTENSION_FILENAME));
     expect(result.serverReachable).toBe(true);
@@ -95,6 +120,7 @@ describe("installPiExtension / removePiExtension", () => {
     const written = readFileSync(result.path, "utf8");
     expect(written).toContain("test/model-4bit"); // real model in `name`; id is stable "local"
     expect(written).toContain('"contextWindow": 131072');
+    expect(written).not.toContain("other/registry-model"); // servable ≠ served
   });
 
   it("installs with an empty fallback when the server is down", async () => {
@@ -112,7 +138,7 @@ describe("installPiExtension / removePiExtension", () => {
 });
 
 describe("generated extension behaves like pi would run it", () => {
-  it("registers live-discovered models when the server is up", async () => {
+  it("registers exactly ONE model (the served one) despite a multi-row /v1/models", async () => {
     const dir = join(tmp, "exec");
     const { path } = await installPiExtension(baseUrl, dir);
     const mod = await import(path);
@@ -122,13 +148,16 @@ describe("generated extension behaves like pi would run it", () => {
     const [id, cfg] = calls[0]!;
     expect(id).toBe("mlx-bun");
     expect(cfg.api).toBe("openai-completions");
-    expect(cfg.models).toEqual([
+    expect(cfg.models).toHaveLength(1); // the old bug: one duplicate "local" per registry row
+    expect(cfg.models[0]).toEqual(
       expect.objectContaining({
         id: "local",
         name: "test/model-4bit (mlx-bun local)",
         contextWindow: 131072,
+        input: ["text", "image"], // vision:true on the served row
+        compat: expect.objectContaining({ supportsDeveloperRole: false }),
       }),
-    ]);
+    );
   });
 });
 

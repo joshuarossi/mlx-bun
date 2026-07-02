@@ -26,7 +26,7 @@ import { Gemma4Model } from "./model/gemma4";
 import { DiffusionGemmaModel } from "./model/diffusion-gemma";
 import { spliceImageTokens } from "./vision/diffusion-vision";
 import { createModel, type RuntimeModel } from "./model/factory";
-import { isMiniCPM5Config, isQwen35Config, isSupportedModelRecord } from "./model/support";
+import { isMiniCPM5Config, isSupportedModelRecord } from "./model/support";
 import { generate, type GenerateOptions, type TokenLogprobs } from "./generate";
 import type { HlgConfig } from "./sampler";
 import { isMonotone, CURVE_UMIN, type CurveParams } from "./curve-sampler";
@@ -368,7 +368,23 @@ interface OpenAIToolCall {
   function: { name: string; arguments: string };
 }
 
-type ToolStreamMode = "gemma-sentinel" | "plain" | "buffered-text";
+export type ToolStreamMode = "gemma-sentinel" | "plain" | "buffered-text";
+
+/** Pick the stream router for a model family. The token-id sentinel router is
+ *  Gemma-4-ONLY: ids 48/49 (<|tool_call>/<tool_call|>) and 100/101
+ *  (<|channel>/<channel|>) are special tokens of that tokenizer family
+ *  (src/tool-call.ts). On every other tokenizer — MiniCPM5, Qwen3/3.5, and
+ *  the Tier-0 generics (llama, qwen2, phi3, …) — those ids are ordinary
+ *  low-id vocab, so the sentinel router would silently swallow output into a
+ *  phantom tool/reasoning segment. Everyone else parses tool calls from
+ *  decoded text (buffered-text; parseGeneratedToolCalls covers the
+ *  OpenAI-JSON <tool_call>, Qwen <function=…>, and MiniCPM5 <function name=…>
+ *  shapes) when tools are present, and streams plain otherwise. Models whose
+ *  markup isn't covered fail soft: the markup stays in content. */
+export function selectToolStreamMode(modelType: string, hasTools: boolean): ToolStreamMode {
+  if (modelType.startsWith("gemma4")) return "gemma-sentinel";
+  return hasTools ? "buffered-text" : "plain";
+}
 
 /** Routes generated tokens. Gemma uses family-specific sentinel token ids;
  *  MiniCPM5 and other text-template models use decoded-text parsing so
@@ -1172,15 +1188,11 @@ export function createServer(
     return { ids: trimmed, startInThinking: promptEndsInOpenThink(rendered) };
   };
 
-  const toolStreamMode = (tools: ToolDefinition[] | null): ToolStreamMode => {
-    // MiniCPM5 and Qwen3.5 emit tool calls as DECODED TEXT (Qwen:
-    // <tool_call><function=name><parameter=…>; both handled by
-    // parseGeneratedToolCalls), not Gemma's token sentinels — so they take the
-    // buffered-text path. Gemma keeps the token-level sentinel path.
-    if (isMiniCPM5Config(ctx.model.config) || isQwen35Config(ctx.model.config))
-      return tools?.length ? "buffered-text" : "plain";
-    return "gemma-sentinel";
-  };
+  const toolStreamMode = (tools: ToolDefinition[] | null): ToolStreamMode =>
+    // Gemma-4 keeps the token-level sentinel path; every other family
+    // (MiniCPM5, Qwen3/3.5, Tier-0 generics) emits tool calls as DECODED TEXT
+    // — see selectToolStreamMode for why sentinel ids must stay family-gated.
+    selectToolStreamMode(ctx.model.config.modelType, !!tools?.length);
 
   const toolRouter = (tools: ToolDefinition[] | null): ToolAwareStream =>
     new ToolAwareStream(ctx.tokenizer, toolStreamMode(tools), tools);
@@ -1485,8 +1497,11 @@ export function createServer(
           id: ctx.modelId, object: "model", created, owned_by: "mlx-bun",
           context_window: ctx.model.config.text.maxPositionEmbeddings,
           // Capability flags for clients (CLI/external pi) that build a
-          // provider from discovery — `reasoning` gates the thinking toggle.
+          // provider from discovery — `reasoning` gates the thinking toggle,
+          // `vision` the image input declaration (tower loaded or lazily
+          // loadable; same signal the web embed uses).
           reasoning: ctx.template.supportsThinking,
+          vision: !!(ctx.vision || ctx.loadVision),
         }];
         try {
           const { Registry } = await import("./registry");

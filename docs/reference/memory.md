@@ -6,7 +6,7 @@ Core rule:
 
 > Chat agents read memory articles. `mlx-bun memory synthesize` is the only writer.
 
-The current release includes the vault, read path, Obsidian open flow, and scheduler. Synthesis is scaffolded but still a no-op M1 stub. The planned synthesis engine uses the same local models you chat with, switched into an editorial pipeline with stage-specific LoRA adapters.
+The current release includes the vault, read path, Obsidian open flow, scheduler, and a live synthesis engine: `mlx-bun memory synthesize` runs the full local DAG (and the nightly job runs it on a schedule). Synthesis uses the same local models you chat with, switched into an editorial pipeline; stage-specific LoRA adapters are the hardening roadmap below.
 
 ## Storage
 
@@ -50,7 +50,7 @@ Both `mlx-bun pi` and the web chat expose these read-only tools:
 - `memory_section`
 - `memory_links`
 - `memory_list` — user articles plus read-only `Reference/*` docs
-- `memory_status` — vault path, setup state, article count, git state, last-synthesis placeholder, schedule state, recent changed articles
+- `memory_status` — vault path, setup state, article count, git state, last synthesis run (from the vault's git log), schedule state, recent changed articles
 
 The tools are always registered. If no vault exists, they return a setup message instead of disappearing. Search/read results prefixed with `Reference/` are mlx-bun docs, not user memory articles.
 

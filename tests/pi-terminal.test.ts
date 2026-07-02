@@ -50,39 +50,56 @@ describe("buildTerminalSystemPrompt", () => {
 describe("parsePiArgs", () => {
   const TTY = false; // stdin is a TTY (not piped)
   const PIPE = true; // stdin is piped
+  /** Baseline result fields shared by most expectations. */
+  const base = { verbose: false, ignored: [] as string[] };
 
   it("defaults to interactive with no args", () => {
-    expect(parsePiArgs([], TTY)).toEqual({ mode: "interactive", printFormat: "text", message: undefined });
+    expect(parsePiArgs([], TTY)).toEqual({ mode: "interactive", printFormat: "text", message: undefined, ...base });
   });
 
   it("treats trailing words as an interactive first-turn message", () => {
-    expect(parsePiArgs(["hello", "there"], TTY)).toEqual({ mode: "interactive", printFormat: "text", message: "hello there" });
+    expect(parsePiArgs(["hello", "there"], TTY)).toEqual({ mode: "interactive", printFormat: "text", message: "hello there", ...base });
   });
 
   it("-p / --print → one-shot text print with the prompt", () => {
-    expect(parsePiArgs(["-p", "summarize"], TTY)).toEqual({ mode: "print", printFormat: "text", message: "summarize" });
-    expect(parsePiArgs(["--print", "summarize", "this"], TTY)).toEqual({ mode: "print", printFormat: "text", message: "summarize this" });
+    expect(parsePiArgs(["-p", "summarize"], TTY)).toEqual({ mode: "print", printFormat: "text", message: "summarize", ...base });
+    expect(parsePiArgs(["--print", "summarize", "this"], TTY)).toEqual({ mode: "print", printFormat: "text", message: "summarize this", ...base });
   });
 
   it("--mode json (and --json) → print json", () => {
-    expect(parsePiArgs(["--mode", "json", "do", "x"], TTY)).toEqual({ mode: "print", printFormat: "json", message: "do x" });
-    expect(parsePiArgs(["--json", "-p", "q"], TTY)).toEqual({ mode: "print", printFormat: "json", message: "q" });
+    expect(parsePiArgs(["--mode", "json", "do", "x"], TTY)).toEqual({ mode: "print", printFormat: "json", message: "do x", ...base });
+    expect(parsePiArgs(["--json", "-p", "q"], TTY)).toEqual({ mode: "print", printFormat: "json", message: "q", ...base });
   });
 
   it("--mode rpc → rpc (never reads stdin as a message)", () => {
-    expect(parsePiArgs(["--mode", "rpc"], TTY)).toEqual({ mode: "rpc", printFormat: "text", message: undefined });
+    expect(parsePiArgs(["--mode", "rpc"], TTY)).toEqual({ mode: "rpc", printFormat: "text", message: undefined, ...base });
     // rpc wins even if stdin is piped (it's the JSONL channel).
-    expect(parsePiArgs(["--mode", "rpc"], PIPE)).toEqual({ mode: "rpc", printFormat: "text", message: undefined });
+    expect(parsePiArgs(["--mode", "rpc"], PIPE)).toEqual({ mode: "rpc", printFormat: "text", message: undefined, ...base });
   });
 
   it("piped stdin makes a bare invocation one-shot print (like pi's CLI)", () => {
-    expect(parsePiArgs([], PIPE)).toEqual({ mode: "print", printFormat: "text", message: undefined });
-    expect(parsePiArgs(["extra", "words"], PIPE)).toEqual({ mode: "print", printFormat: "text", message: "extra words" });
+    expect(parsePiArgs([], PIPE)).toEqual({ mode: "print", printFormat: "text", message: undefined, ...base });
+    expect(parsePiArgs(["extra", "words"], PIPE)).toEqual({ mode: "print", printFormat: "text", message: "extra words", ...base });
   });
 
-  it("ignores unknown flags (full pi surface lives in the user's own pi)", () => {
-    // --continue is a pi flag the built-in agent doesn't implement; it must
-    // not be swallowed into the message text, and the run stays interactive.
-    expect(parsePiArgs(["--continue", "hi"], TTY)).toEqual({ mode: "interactive", printFormat: "text", message: "hi" });
+  it("--verbose is recognized (pi's verbose startup banner)", () => {
+    expect(parsePiArgs(["--verbose"], TTY)).toEqual({ mode: "interactive", printFormat: "text", message: undefined, verbose: true, ignored: [] });
+    expect(parsePiArgs(["--verbose", "hi"], TTY)).toEqual({ mode: "interactive", printFormat: "text", message: "hi", verbose: true, ignored: [] });
+  });
+
+  it("drops an unknown flag AND its value — never leaks the value as message text", () => {
+    // `mlx-bun pi --resume abc123` used to start a chat with message "abc123".
+    expect(parsePiArgs(["--resume", "abc123"], TTY)).toEqual({
+      mode: "interactive", printFormat: "text", message: undefined, verbose: false, ignored: ["--resume abc123"],
+    });
+    // An unknown flag followed by a flag consumes only itself; known flags
+    // after it still apply.
+    expect(parsePiArgs(["--continue", "-p", "q"], TTY)).toEqual({
+      mode: "print", printFormat: "text", message: "q", verbose: false, ignored: ["--continue"],
+    });
+    // A trailing unknown flag with nothing after it consumes only itself.
+    expect(parsePiArgs(["--continue"], TTY)).toEqual({
+      mode: "interactive", printFormat: "text", message: undefined, verbose: false, ignored: ["--continue"],
+    });
   });
 });

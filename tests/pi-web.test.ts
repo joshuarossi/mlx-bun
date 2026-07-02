@@ -12,7 +12,9 @@ import {
   mapEventToFrames,
   serializeHistory,
   toSessionListItems,
+  webChatToolAllowlist,
 } from "../src/pi-web";
+import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "../src/memory/tools";
 
 // Cast helper: the real AgentSessionEvent union is large; we only build
 // the fields mapEventToFrames reads, so narrow via `as`.
@@ -206,6 +208,29 @@ describe("buildWebChatSystemPrompt", () => {
   it("names the served model when one is provided", () => {
     const prompt = buildWebChatSystemPrompt(false, { modelId: "cpm5" });
     expect(prompt).toContain("cpm5");
+  });
+});
+
+describe("webChatToolAllowlist", () => {
+  it("is exactly the two welcome tools when memory is off", () => {
+    expect(webChatToolAllowlist(false)).toEqual(["read", "web_search"]);
+  });
+
+  it("includes every memory + reference tool when memory is enabled", () => {
+    // The surface's memoryHint and the bundled memory skill instruct the
+    // model to call these; pi treats `tools` as an allowlist, so leaving
+    // them out made every memory call fail in the web chat.
+    const allow = webChatToolAllowlist(true);
+    expect(allow).toContain("read");
+    expect(allow).toContain("web_search");
+    for (const t of MEMORY_TOOL_NAMES) expect(allow).toContain(t);
+    for (const t of REFERENCE_TOOL_NAMES) expect(allow).toContain(t);
+  });
+
+  it("never widens beyond read-only tools (no bash/edit/write/web_fetch)", () => {
+    for (const t of ["bash", "edit", "write", "web_fetch", "weather", "grep", "find", "ls"]) {
+      expect(webChatToolAllowlist(true)).not.toContain(t);
+    }
   });
 });
 
