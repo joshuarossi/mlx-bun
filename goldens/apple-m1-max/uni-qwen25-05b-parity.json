@@ -1,0 +1,35 @@
+{
+ "model": "mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+ "snapshot": "/Users/joshrossi/.cache/huggingface/hub/models--mlx-community--Qwen2.5-0.5B-Instruct-4bit/snapshots/a5339a4131f135d0fdc6a5c8b5bbed2753bbe0f3",
+ "model_type": "qwen2",
+ "mode": "bf16",
+ "prompt": "The capital of France is",
+ "prompt_ids": [
+  785,
+  6722,
+  315,
+  9625,
+  374
+ ],
+ "greedy_ids": [
+  12095,
+  13,
+  1084,
+  374,
+  279,
+  7772,
+  3283,
+  304,
+  279,
+  1879,
+  13,
+  1084
+ ],
+ "logit_steps": 12,
+ "vocab_size": 151936,
+ "oracle": {
+  "mlx": "0.31.2",
+  "mlx_lm": "0.31.3",
+  "machine": "arm64"
+ }
+}
