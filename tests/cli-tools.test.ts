@@ -75,10 +75,10 @@ describe("cli tool verbs — arg plumbing (model-free)", () => {
     expect(out).toContain("adapter dir not found");
   });
 
-  test("convert: --upload-repo says not supported yet", async () => {
-    const { code, out } = await runCli(["convert", "--hf-path", "x", "-q", "--upload-repo", "org/x"]);
+  test("convert: --upload-repo without a value errors (it's a supported flag now)", async () => {
+    const { code, out } = await runCli(["convert", "--hf-path", "x", "-q", "--upload-repo"]);
     expect(code).toBe(1);
-    expect(out).toContain("--upload-repo: not supported yet");
+    expect(out).toContain("--upload-repo expects a repo id");
   });
 
   test("convert: --dtype / --dequantize / --quant-predicate refused", async () => {

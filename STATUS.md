@@ -74,11 +74,21 @@ generate.py L409-422; response = server.py generate_response's id-keyed block,
 NOT OpenAI's; validation bool + int∈[0,11]∪{-1}; stream chunks carry no
 logprobs, faithfully — mlx-lm never emits them when streaming; serial-lane-only
 under `--batch N`; zero-cost when not requested).
-Tests: tests/server-compat.test.ts. Remaining gaps (verified vs the oracle
-venv): no `--draft-model`/
-`--num-draft-tokens`/`--chat-template*`/`--min-p`/`--max-tokens`/`--log-level`/
+Tests: tests/server-compat.test.ts. Also done 2026-07-01: `fuse`/`convert`/
+`perplexity` verbs, server `--max-tokens`; `upload` verb (mlx_lm.upload
+--path/--upload-repo parity over native `src/hf-push.ts`, + `convert
+--upload-repo` runs the push after converting; tests/cli-upload.test.ts);
+`--sft-scope full|response` on `mlx-bun train` (CLI spelling for the trainer's
+`sft_scope`); 14-finding CLI audit applied (fit --ctx help→8192 = code, embed
+no-query auto-picks a downloaded embedding model instead of a chat starter,
+pi flag-strip covers --batch/--adapter/--hlg-*/--no-open/--l1-3, `setup` is a
+true `memory` alias + unknown memory subcommands exit 1, --l1/--l2/--l3 +
+generate + train-watch documented in help, doc lies fixed in memory.md /
+server-config.md). Remaining gaps (verified vs the oracle venv): no
+`--draft-model`/
+`--num-draft-tokens`/`--chat-template*`/`--min-p`/`--log-level`/
 `--allowed-origins`/`--prompt-concurrency`/`--prefill-step-size` flags;
-CLI verbs convert/fuse/cache_prompt/evaluate/perplexity/upload/awq/dwq/gptq absent.
+CLI verbs cache_prompt/evaluate/awq/dwq/gptq absent.
 Deliberately not ported: `role_mapping` (mlx-lm's synthetic "USER:/ASSISTANT:"
 prompt assembly, used ONLY when a tokenizer has no chat template — every
 mlx-bun-supported model ships a real template, so the branch is unreachable
