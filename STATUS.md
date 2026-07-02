@@ -23,15 +23,20 @@ untracked; megakernel → `scripts/experiments/`; orphan worktree removed;
 file rewritten; flash-attn story reconciled; README/CLAUDE.md doc map refreshed).
 
 **Confirmed findings, still open (ranked):**
-1. **ORPO L_SFT scope divergence** — our SFT/NLL term is **response-only**
-   (`src/train/loss.ts:1225` via `branchLogpMean*`); the paper (arXiv 2403.07691),
-   TRL's ORPOTrainer, and xfactlab/orpo all compute it over the **full
-   prompt+response** (only padding masked). Everything else in the ORPO stack
-   (odds-ratio math, signs, λ, normalization, fused-head backward, prefix-share
-   gradients, data path) verified correct against primary sources.
-   **DECIDED (Josh, 2026-07-01): add `sft_scope: full|response`, default
-   `full` (paper/TRL-faithful); `response` reproduces old runs.** The odds-ratio
-   ℓ terms stay response-only in BOTH modes (that matches TRL). In progress.
+1. ~~**ORPO L_SFT scope divergence**~~ **DONE 2026-07-01** — `sft_scope:
+   full|response` landed across every ORPO path (naive/chunked/fused/flash /
+   prefix-shared / all four segmented classes), **default `full`**
+   (paper/TRL-faithful: chosen-NLL = token-mean CE over the full
+   prompt+response, only padding excluded, from the same chosen forward);
+   `response` reproduces old runs bit-exactly (regression-pinned in
+   `tests/train-orpo.test.ts`). The odds-ratio ℓ terms stay response-only in
+   BOTH modes (matches TRL). Config: TrainConfig `sftScope` / job `sft_scope` /
+   `SFT_SCOPE=` env in `scripts/train-orpo.ts`. Cross-path full-scope parity +
+   an sftLoss(promptLen=1) oracle wired in `tests/train-orpo-fused-ce.test.ts`.
+   Docs: `docs/design/orpo-training.md` (“The objective” — resolved note),
+   `docs/reference/training.md` (config table + ORPO section). Remaining: the
+   one-line `--sft-scope` CLI flag in `src/cli.ts` (file owned by another
+   workstream at land time).
 2. **DSpark τ=3.24 is a teacher-forced proxy** — `evalTau` feeds the Markov head
    ground-truth previous tokens; live decode threads the drafter's own drafts.
    Run `scripts/dspark-measure-dflash.ts` (live τ via `meanAcceptLen`) on the

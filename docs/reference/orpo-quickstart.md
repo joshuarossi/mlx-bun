@@ -65,6 +65,7 @@ MODEL=/path/to/snapshot DATA=/path/to/datadir bun scripts/train-orpo.ts
 | `LR` | 1e-5 | learning rate (cosine + short warmup) |
 | `RANK` / `SCALE` | 16 / 2.0 | LoRA rank (by_bits scaled) / scale |
 | `LAMBDA` | 0.1 | ORPO odds-ratio weight |
+| `SFT_SCOPE` | `full` | chosen-NLL scope: `full` (paper/TRL-faithful, prompt+response) · `response` (pre-2026-07 response-only, reproduces old runs) |
 | `FLASH=0` | (on) | use the MLX fused head instead of the flash Metal head |
 | `PREFIX=0` | (on) | disable prefix-sharing (plain two-forward) |
 | `SEGOFF=1` | (off) | disable the segmented backward (more memory) |

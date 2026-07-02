@@ -42,8 +42,12 @@ import type { Gemma4Model } from "../model/gemma4";
 import { setGemmaPrefixPlan } from "../model/gemma4";
 import type { Cache, Mask, SharedKv } from "../model/gemma4-base";
 import { TrainingCache } from "./forward";
-import { responseOnlyCe, responseOnlyLogpMean, fusedLogpMeanFromHidden, chunkedLogpMeanFromHidden, orpoLossFromLogps, type ChunkCtx } from "./loss";
-import { PrefixSharedCache, prefixGatherIdx, branchLogpMeanGathered, blockSparsePrefixMaskGemma } from "./prefix-shared";
+import {
+  responseOnlyCe, responseOnlyLogpMean, fusedLogpMeanFromHidden, chunkedLogpMeanFromHidden,
+  orpoLossFromLogps, spanLogpMeanFromHidden, respSpanFromMask, combineFullNll,
+  type ChunkCtx, type SftScope, type HeadSpan,
+} from "./loss";
+import { PrefixSharedCache, prefixGatherIdx, branchLogpMeanGathered, blockSparsePrefixMaskGemma, prefixFullNll } from "./prefix-shared";
 
 // Experiment toggle: which bounded head to use inside the segmented mlx_vjp.
 // "checkpoint" = per-chunk Checkpoint recompute (bounds memory under nesting);
@@ -54,11 +58,11 @@ import { PrefixSharedCache, prefixGatherIdx, branchLogpMeanGathered, blockSparse
 const SEG_HEAD = process.env.MLX_BUN_SEG_HEAD ?? "checkpoint";
 function boundedHeadFromHidden(
   model: MiniCPM5Model | Gemma4Model, h: MlxArray, ids: number[], mask: number[],
-  chunkSize: number, sink: Array<{ dispose(): void }>,
+  chunkSize: number, sink: Array<{ dispose(): void }>, span?: HeadSpan,
 ): MlxArray {
   return SEG_HEAD === "fused"
-    ? fusedLogpMeanFromHidden(model, h, ids, mask, chunkSize, sink)
-    : chunkedLogpMeanFromHidden(model, h, ids, mask, chunkSize, sink);
+    ? fusedLogpMeanFromHidden(model, h, ids, mask, chunkSize, sink, 0, false, span)
+    : chunkedLogpMeanFromHidden(model, h, ids, mask, chunkSize, sink, span);
 }
 import type { TrainableLora } from "./lora-params";
 import { type SftBatch, type DpoBatch } from "./dataset";
@@ -582,6 +586,7 @@ export class SegmentedBackwardOrpo {
     private readonly ranges: [number, number][],
     private readonly lambda: number,
     private readonly fusedChunkSize = 0,
+    private readonly sftScope: SftScope = "response",
   ) {
     this.nLayers = model.layers.length;
     const lastHi = ranges[ranges.length - 1]?.[1] ?? 0;
@@ -609,9 +614,26 @@ export class SegmentedBackwardOrpo {
       const lr = cs > 0 // [1]
         ? boundedHeadFromHidden(model, hnR, this.curRejectedIds!, this.curRejectedMask!, cs, this.headSink)
         : responseOnlyLogpMean(model, hnR, this.curRejectedIds!, this.curRejectedMask!);
+      // sft_scope:"full": the chosen head additionally runs over the PROMPT span
+      // [0, startT) of the SAME hnC (same tier: bounded or whole-vocab), and the
+      // full-scope chosen NLL replaces mean(-ℓw). The prompt-position gradient
+      // rides into this vjp's dh_chosen automatically (the loss graph includes
+      // the prompt-span head). ℓw/ℓr stay response-only for the odds ratio.
+      let nllFull: MlxArray | null = null;
+      if (this.sftScope === "full") {
+        const { startT, M } = respSpanFromMask(this.curChosenMask!, this.curChosenIds!.length - 1);
+        let pm: MlxArray | null = null;
+        if (M > 0 && startT > 0)
+          pm = cs > 0
+            ? boundedHeadFromHidden(model, hnC, this.curChosenIds!, this.curChosenMask!, cs, this.headSink, { startT: 0, M: startT })
+            : spanLogpMeanFromHidden(model, hnC, this.curChosenIds!, 0, startT);
+        nllFull = combineFullNll(pm, lw, M > 0 ? startT : 0, M);
+        pm?.dispose();
+      }
       hnC.dispose(); hnR.dispose();
-      const loss = orpoLossFromLogps(lw, lr, this.lambda);
+      const loss = orpoLossFromLogps(lw, lr, this.lambda, nllFull ?? undefined);
       lw.dispose(); lr.dispose();
+      nllFull?.dispose();
       return [loss];
     }, 1);
 
@@ -801,6 +823,7 @@ export class SegmentedBackwardOrpoPrefix {
   private curP = 0;
   private curRc = 0;
   private curRr = 0;
+  private curPromptIds: number[] | null = null;
   private curChosenResp: number[] | null = null;
   private curRejectedResp: number[] | null = null;
   private curChunk: ChunkCtx | undefined = undefined;
@@ -816,6 +839,7 @@ export class SegmentedBackwardOrpoPrefix {
     private readonly ranges: [number, number][],
     private readonly lambda: number,
     private readonly chunkCtx?: ChunkCtx,
+    private readonly sftScope: SftScope = "response",
   ) {
     this.nLayers = model.layers.length;
     const lastHi = ranges[ranges.length - 1]?.[1] ?? 0;
@@ -838,9 +862,16 @@ export class SegmentedBackwardOrpoPrefix {
       const { chosenIdx, rejectedIdx } = prefixGatherIdx(this.curP, this.curRc, this.curRr);
       const lw = branchLogpMeanGathered(model, hn, chosenIdx, this.curChosenResp!, this.curChunk);
       const lr = branchLogpMeanGathered(model, hn, rejectedIdx, this.curRejectedResp!, this.curChunk);
+      // sft_scope:"full": prompt predictions (H[0..P-2] → prompt[1..P-1]) from the
+      // same concat hiddens; the gather's takeAxis vjp scatter-adds the prompt
+      // cotangent into dh alongside the responses'. ℓw/ℓr stay response-only.
+      const nllFull = this.sftScope === "full"
+        ? prefixFullNll(model, hn, this.curPromptIds!, lw, this.curRc, this.curChunk)
+        : null;
       hn.dispose();
-      const loss = orpoLossFromLogps(lw, lr, this.lambda);
+      const loss = orpoLossFromLogps(lw, lr, this.lambda, nllFull ?? undefined);
       lw.dispose(); lr.dispose();
+      nllFull?.dispose();
       return [loss];
     }, 1);
 
@@ -873,6 +904,7 @@ export class SegmentedBackwardOrpoPrefix {
     if (P < 1 || Rc < 1 || Rr < 1) throw new Error("SegmentedBackwardOrpoPrefix: need P,Rc,Rr >= 1");
     const T = P + Rc + Rr;
     this.curP = P; this.curRc = Rc; this.curRr = Rr;
+    this.curPromptIds = promptIds;
     this.curChosenResp = chosenResp; this.curRejectedResp = rejectedResp;
     // Per-step chunk ctx pointing the head's CustomVjp/slice disposables at this
     // step's headSink (the flash/fused head recompute runs during headVjp.apply;
@@ -942,7 +974,7 @@ export class SegmentedBackwardOrpoPrefix {
       inputIds.dispose();
       for (const c of this.curCaches) c.dispose();
       this.curCaches = [];
-      this.curChosenResp = this.curRejectedResp = null;
+      this.curPromptIds = this.curChosenResp = this.curRejectedResp = null;
       for (const d of this.headSink) d.dispose();
       this.headSink = [];
       dhOut?.dispose();
@@ -1024,6 +1056,7 @@ export class SegmentedBackwardOrpoGemma4 {
     private readonly ranges: [number, number][],
     private readonly lambda: number,
     private readonly fusedChunkSize = 0,
+    private readonly sftScope: SftScope = "response",
   ) {
     this.nLayers = model.layers.length;
     const lastHi = ranges[ranges.length - 1]?.[1] ?? 0;
@@ -1072,9 +1105,23 @@ export class SegmentedBackwardOrpoGemma4 {
       const lr = cs > 0
         ? boundedHeadFromHidden(this.model, hnR, this.curRejectedIds!, this.curRejectedMask!, cs, this.headSink)
         : responseOnlyLogpMean(this.model, hnR, this.curRejectedIds!, this.curRejectedMask!);
+      // sft_scope:"full": prompt-span head over the same hnC (see
+      // SegmentedBackwardOrpo); ℓw/ℓr stay response-only for the odds ratio.
+      let nllFull: MlxArray | null = null;
+      if (this.sftScope === "full") {
+        const { startT, M } = respSpanFromMask(this.curChosenMask!, this.curChosenIds!.length - 1);
+        let pm: MlxArray | null = null;
+        if (M > 0 && startT > 0)
+          pm = cs > 0
+            ? boundedHeadFromHidden(this.model, hnC, this.curChosenIds!, this.curChosenMask!, cs, this.headSink, { startT: 0, M: startT })
+            : spanLogpMeanFromHidden(this.model, hnC, this.curChosenIds!, 0, startT);
+        nllFull = combineFullNll(pm, lw, M > 0 ? startT : 0, M);
+        pm?.dispose();
+      }
       hnC.dispose(); hnR.dispose();
-      const loss = orpoLossFromLogps(lw, lr, this.lambda);
+      const loss = orpoLossFromLogps(lw, lr, this.lambda, nllFull ?? undefined);
       lw.dispose(); lr.dispose();
+      nllFull?.dispose();
       return [loss];
     }, 1);
 
@@ -1394,6 +1441,7 @@ export class SegmentedBackwardOrpoPrefixGemma4 {
   private curP = 0;
   private curRc = 0;
   private curRr = 0;
+  private curPromptIds: number[] | null = null;
   private curChosenResp: number[] | null = null;
   private curRejectedResp: number[] | null = null;
   private curChunk: ChunkCtx | undefined = undefined;
@@ -1408,6 +1456,7 @@ export class SegmentedBackwardOrpoPrefixGemma4 {
     private readonly ranges: [number, number][],
     private readonly lambda: number,
     private readonly chunkCtx?: ChunkCtx,
+    private readonly sftScope: SftScope = "response",
   ) {
     this.nLayers = model.layers.length;
     const lastHi = ranges[ranges.length - 1]?.[1] ?? 0;
@@ -1455,9 +1504,15 @@ export class SegmentedBackwardOrpoPrefixGemma4 {
       const { chosenIdx, rejectedIdx } = prefixGatherIdx(this.curP, this.curRc, this.curRr);
       const lw = branchLogpMeanGathered(model, hn, chosenIdx, this.curChosenResp!, this.curChunk);
       const lr = branchLogpMeanGathered(model, hn, rejectedIdx, this.curRejectedResp!, this.curChunk);
+      // sft_scope:"full": prompt predictions from the same concat hiddens (see
+      // SegmentedBackwardOrpoPrefix); ℓw/ℓr stay response-only.
+      const nllFull = this.sftScope === "full"
+        ? prefixFullNll(model, hn, this.curPromptIds!, lw, this.curRc, this.curChunk)
+        : null;
       hn.dispose();
-      const loss = orpoLossFromLogps(lw, lr, this.lambda);
+      const loss = orpoLossFromLogps(lw, lr, this.lambda, nllFull ?? undefined);
       lw.dispose(); lr.dispose();
+      nllFull?.dispose();
       return [loss];
     }, 1);
 
@@ -1525,6 +1580,7 @@ export class SegmentedBackwardOrpoPrefixGemma4 {
     if (P < 1 || Rc < 1 || Rr < 1) throw new Error("SegmentedBackwardOrpoPrefixGemma4: need P,Rc,Rr >= 1");
     const T = P + Rc + Rr;
     this.curP = P; this.curRc = Rc; this.curRr = Rr;
+    this.curPromptIds = promptIds;
     this.curChosenResp = chosenResp; this.curRejectedResp = rejectedResp;
     this.headSink = [];
     this.curChunk = this.chunkCtx ? { ...this.chunkCtx, sink: this.headSink } : undefined;
@@ -1640,7 +1696,7 @@ export class SegmentedBackwardOrpoPrefixGemma4 {
       this.curPerLayer?.dispose();
       this.curPerLayer = null;
       if (this.curMasks) { for (const m of this.curMasks.values()) m.arr?.dispose(); this.curMasks = null; }
-      this.curChosenResp = this.curRejectedResp = null;
+      this.curPromptIds = this.curChosenResp = this.curRejectedResp = null;
       for (const d of this.headSink) d.dispose();
       this.headSink = [];
       dhOut?.dispose();

@@ -260,17 +260,38 @@ intra-layer MLP split, shared prompt-prefix.
 
 $$\mathcal{L}_{ORPO} = \mathcal{L}_{NLL}(y_w) + \lambda \cdot \mathcal{L}_{OR}$$
 
-- $\mathcal{L}_{NLL}(y_w)$ — SFT cross-entropy on the **chosen** response
-  (prompt positions masked out), i.e. the negative mean response log-prob
-  $-\ell_w$.
-  > **Known divergence (2026-07-01 review).** This response-only scope is a
-  > deliberate mlx-bun house convention (SFT/DPO/ORPO all mask the prompt) but
-  > it **differs from the paper's reference implementations**: TRL's
-  > ORPOTrainer and the official xfactlab/orpo both compute the chosen-NLL over
-  > the **full prompt+response** (only padding masked to −100). Our L_SFT gives
-  > zero gradient on prompt-token prediction. Decision pending (match the
-  > reference vs keep + document); until then, loss-curve/parity comparisons vs
-  > TRL/paper ORPO are not apples-to-apples.
+- $\mathcal{L}_{NLL}(y_w)$ — the SFT cross-entropy on the **chosen** sequence.
+  Scope is selected by **`sft_scope`** (TrainConfig `sftScope`, default
+  **`full`**):
+  - **`full`** (default; paper/TRL-faithful): the token-mean cross-entropy over
+    **all non-pad supervised positions — prompt AND response** (label-shifted;
+    `nn.CrossEntropyLoss reduction="mean"`), exactly TRL ORPOTrainer's
+    `chosen_nll_loss` (labels = input ids with only padding masked to −100) and
+    xfactlab/orpo's `outputs_pos.loss`. Computed from the **same chosen
+    forward** (no extra forward): the head additionally runs over the prompt
+    span and the two span means combine as
+    $\text{NLL}_{full} = -\frac{(P{-}1)\,\text{pm} + M\,\ell_w}{(P{-}1)+M}$
+    (`combineFullNll`, `src/train/loss.ts`).
+  - **`response`**: $-\ell_w$, the negative mean response log-prob — the
+    pre-2026-07 mlx-bun behavior (the house convention of masking the prompt),
+    kept **bit-exact** for reproducing older runs.
+
+  > **Resolved (2026-07-01).** The review found the then-hardcoded
+  > response-only scope diverged from the reference implementations (TRL /
+  > xfactlab/orpo supervise the full prompt+response, only padding masked).
+  > Decision (Josh): `sft_scope: full | response`, **default `full`** — loss
+  > curves are apples-to-apples with TRL/paper ORPO by default; `response`
+  > reproduces old runs. The odds-ratio $\ell_w/\ell_r$ terms stay
+  > **response-only length-normalized means in BOTH modes** — that also matches
+  > TRL (its `get_batch_logps` uses prompt-masked labels for the odds ratio;
+  > only the NLL term is full-sequence). Implemented across every ORPO path
+  > (naive / chunked / fused / flash-CCE / prefix-shared / all four segmented
+  > classes): the span-parameterized heads run once over the prompt span and
+  > once over the response span (disjoint — no token headed twice), keeping
+  > $\ell_w$ bit-identical to the `response` path. Cross-path full-scope parity
+  > + an independent oracle (full NLL ≙ `sftLoss` with `promptLen=1`, bf16
+  > class) are wired in `tests/train-orpo-fused-ce.test.ts`; loss-math units +
+  > exact response-scope regression pins in `tests/train-orpo.test.ts`.
 - $\mathcal{L}_{OR} = -\log \sigma(\text{log\_odds})$, the odds-ratio term:
 
 $$\text{log\_odds} = (\ell_w - \ell_r) - \big(\text{log1mexp}(\ell_w) - \text{log1mexp}(\ell_r)\big)$$

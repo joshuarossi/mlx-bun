@@ -95,6 +95,161 @@ describe.skipIf(!optIn || !haveBase)("ORPO fused linear-CE head parity (MiniCPM5
     weights.dispose();
   }, 180_000);
 
+  test("sft_scope: 'response' is bit-identical to the default; 'full' agrees across naive/fused/flash/chunked/prefix/segmented paths", async () => {
+    const { loadModelConfig } = await import("../src/config");
+    const { Weights } = await import("../src/weights");
+    const { createModel } = await import("../src/model/factory");
+    const { loadTokenizer } = await import("../src/tokenizer");
+    const { ChatTemplate } = await import("../src/chat-template");
+    const { buildTrainableLora, attachForTraining } = await import("../src/train/lora-params");
+    const { resolveRanks } = await import("../src/train/rank");
+    const { encodeDpoRow } = await import("../src/train/dataset");
+    const { orpoLoss, orpoMetrics, sftLoss } = await import("../src/train/loss");
+    const { orpoLossPrefixShared, splitPrefixBatch } = await import("../src/train/prefix-shared");
+    const { SegmentedBackwardOrpo, SegmentedBackwardOrpoPrefix, planSegmentsBySize } = await import("../src/train/segmented");
+    const { MiniCPM5Model } = await import("../src/model/minicpm5");
+    const { evalAll } = await import("../src/mlx/ops");
+
+    const config = await loadModelConfig(BASE);
+    const weights = await Weights.open(BASE);
+    const model = createModel(weights, config);
+    if (!(model instanceof MiniCPM5Model)) throw new Error("test base must be MiniCPM5");
+    const tok = await loadTokenizer(BASE);
+    const tmpl = await ChatTemplate.load(BASE);
+
+    const ranks = resolveRanks(model, { rank: 8, rankScaling: "constant" });
+    const lora = buildTrainableLora(model, ranks, 2.0, 123);
+    attachForTraining(model, lora, "train");
+
+    const row = JSON.parse(readFileSync("fixtures/train/tiny/dpo.jsonl", "utf8").split("\n")[0]!);
+    const ex = encodeDpoRow(row, tok, tmpl, 256);
+    const batch: DpoBatch = {
+      chosenIds: [ex.chosenIds], rejectedIds: [ex.rejectedIds],
+      chosenMask: [ex.chosenMask], rejectedMask: [ex.rejectedMask],
+    };
+    const lambda = 0.1;
+
+    const lossOf = (scope: "full" | "response", chunk?: { chunkSize: number; fused?: boolean; flash?: boolean }): number => {
+      const sink: Array<{ dispose(): void }> = [];
+      const l = orpoLoss(model, batch, lambda, chunk ? { ...chunk, sink } : undefined, scope);
+      evalAll([l]);
+      const v = l.toFloat32()[0]!;
+      l.dispose();
+      for (const d of sink) d.dispose();
+      return v;
+    };
+
+    // --- 'response' scope is BIT-IDENTICAL to the pre-sft_scope default path. ---
+    const respDefault = lossOf("response"); // == orpoLoss without the arg (same default)
+    const respAgain = (() => {
+      const l = orpoLoss(model, batch, lambda); // no sftScope arg at all
+      evalAll([l]);
+      const v = l.toFloat32()[0]!;
+      l.dispose();
+      return v;
+    })();
+    expect(respAgain).toBe(respDefault); // exact: identical graph, deterministic
+
+    // --- 'full' naive: finite, and actually different (the prompt NLL counts). ---
+    const fullNaive = lossOf("full");
+    expect(Number.isFinite(fullNaive)).toBe(true);
+    expect(Math.abs(fullNaive - respDefault)).toBeGreaterThan(1e-4);
+
+    // --- Independent NLL oracle: full-scope chosen NLL == SFT masked CE with
+    // promptLen=1 on the chosen row (supervise every non-pad prediction). ---
+    const mFull = orpoMetrics(model, batch, lambda, "full");
+    const mResp = orpoMetrics(model, batch, lambda, "response");
+    const sftRef = (() => {
+      const l = sftLoss(model, { ids: [ex.chosenIds], promptLens: [1] });
+      evalAll([l]);
+      const v = l.toFloat32()[0]!;
+      l.dispose();
+      return v;
+    })();
+    // Same positions, same token-mean — but the full path heads the prompt and
+    // response as TWO span slices (keeping ℓw bit-identical to the response
+    // path) while sftLoss heads one [0,len-1) slice; the quantized head matmul
+    // tiles differently per slice shape and logp is bf16 (1 ULP at |logp|≈12 is
+    // 0.0625), so the agreement is bf16-class — the file's established 0.05 bar,
+    // not f32-exact. Measured diff here: ~0.0096 on an NLL of ~5.14.
+    expect(Math.abs(mFull.nll - sftRef)).toBeLessThan(0.05);
+    expect(mFull.or).toBeCloseTo(mResp.or, 4); // odds ratio unchanged by the scope
+    expect(fullNaive).toBeCloseTo(mFull.nll + lambda * mFull.or, 4);
+
+    // --- 'full' across head tiers (same tolerances as the response-scope parity). ---
+    expect(Math.abs(lossOf("full", { chunkSize: 8, fused: true }) - fullNaive)).toBeLessThan(0.05);
+    expect(Math.abs(lossOf("full", { chunkSize: 4 }) - fullNaive)).toBeLessThan(0.05); // Checkpoint chunked
+    expect(Math.abs(lossOf("full", { chunkSize: 4096, fused: true }) - fullNaive)).toBeLessThan(0.05); // single-chunk fused
+    expect(Math.abs(lossOf("full", { chunkSize: 4096, fused: true, flash: true }) - fullNaive)).toBeLessThan(0.05); // flash-CCE
+
+    // --- 'full' through prefix-sharing (one concat forward, prompt gathered). ---
+    const split = splitPrefixBatch(batch);
+    expect(split).not.toBeNull();
+    const prefixFull = (() => {
+      const l = orpoLossPrefixShared(model, split!.promptIds, split!.chosenResp, split!.rejectedResp, lambda, undefined, "full");
+      evalAll([l]);
+      const v = l.toFloat32()[0]!;
+      l.dispose();
+      return v;
+    })();
+    // The prefix-shared forward carries a PRE-EXISTING bf16-class offset vs the
+    // two-forward path with the training LoRA attached (measured ~0.055 on the
+    // RESPONSE-scope loss, i.e. in code this change didn't touch — per-position
+    // logp is bf16, and the concat attends over T=P+Rc+Rr key slots vs P+R).
+    // So assert (a) a coarse absolute bound, and (b) the tight, meaningful one:
+    // the SCOPE DELTA (full − response) — which isolates exactly the new
+    // prompt-NLL term — agrees between prefix and two-forward (measured 0.011).
+    const prefixResp = (() => {
+      const l = orpoLossPrefixShared(model, split!.promptIds, split!.chosenResp, split!.rejectedResp, lambda, undefined, "response");
+      evalAll([l]);
+      const v = l.toFloat32()[0]!;
+      l.dispose();
+      return v;
+    })();
+    expect(Math.abs(prefixResp - respDefault)).toBeLessThan(0.15); // pre-existing bf16 offset class
+    expect(Math.abs(prefixFull - fullNaive)).toBeLessThan(0.15);
+    expect(Math.abs((prefixFull - prefixResp) - (fullNaive - respDefault))).toBeLessThan(0.05);
+
+    // --- 'full' through the segmented backward (two-branch AND prefix). The head
+    // VJP now includes the prompt-span contributions; the VALUE must agree with
+    // the naive full loss, and the grads must be finite. ---
+    const ranges = planSegmentsBySize(model.layers.length, 8);
+    const seg = new SegmentedBackwardOrpo(model, lora, ranges, lambda, 0, "full");
+    const segRes = seg.step(batch);
+    evalAll([segRes.value, ...segRes.grads]);
+    expect(Math.abs(segRes.value.toFloat32()[0]! - fullNaive)).toBeLessThan(0.05);
+    let gradNormSq = 0;
+    let allFinite = true;
+    for (const g of segRes.grads) {
+      for (const v of g.toFloat32()) {
+        if (!Number.isFinite(v)) allFinite = false;
+        gradNormSq += v * v;
+      }
+      g.dispose();
+    }
+    expect(allFinite).toBe(true);
+    expect(gradNormSq).toBeGreaterThan(0); // the backward actually produced signal
+    segRes.value.dispose();
+    seg.dispose();
+
+    const segPrefix = new SegmentedBackwardOrpoPrefix(model, lora, ranges, lambda, undefined, "full");
+    const spRes = segPrefix.stepPrefix(split!.promptIds, split!.chosenResp, split!.rejectedResp);
+    evalAll([spRes.value, ...spRes.grads]);
+    // Compare against the NON-segmented prefix full loss (same forward layout —
+    // isolates the segmented streaming, not the prefix bf16 offset).
+    expect(Math.abs(spRes.value.toFloat32()[0]! - prefixFull)).toBeLessThan(0.05);
+    let spFinite = true;
+    for (const g of spRes.grads) {
+      for (const v of g.toFloat32()) if (!Number.isFinite(v)) spFinite = false;
+      g.dispose();
+    }
+    expect(spFinite).toBe(true);
+    spRes.value.dispose();
+    segPrefix.dispose();
+
+    weights.dispose();
+  }, 300_000);
+
   test("fused training backward runs (CustomVjp analytic recompute + sink disposal) and improves loss", async () => {
     const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
