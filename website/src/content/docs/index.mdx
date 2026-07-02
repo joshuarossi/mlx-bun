@@ -58,8 +58,8 @@ import { LinkCard, CardGrid } from '@astrojs/starlight/components';
   </div>
   <div class="mlx-feature">
     <p class="lbl">Protocols</p>
-    <h3>OpenAI + Anthropic</h3>
-    <p>Drop-in chat completions, Anthropic Messages, and OpenAI Responses. Point any SDK — or Claude Code — at a fully local backend.</p>
+    <h3>Drop-in for mlx_lm.server</h3>
+    <p>Same port, endpoints, and request fields — plus Anthropic Messages and OpenAI Responses. Point any SDK, or Claude Code, at a local backend.</p>
   </div>
   <div class="mlx-feature">
     <p class="lbl">Multimodal</p>
@@ -70,6 +70,16 @@ import { LinkCard, CardGrid } from '@astrojs/starlight/components';
     <p class="lbl">Shape</p>
     <h3>Library-first</h3>
     <p>The server is one consumer of a TypeScript API. Import generation into a Bun process, or embed the binary as a Mac-app sidecar.</p>
+  </div>
+  <div class="mlx-feature">
+    <p class="lbl">Memory</p>
+    <h3>Personal memory</h3>
+    <p>A local, git-tracked Markdown wiki your assistant reads for durable context — yours, editable in Obsidian, never leaves the machine.</p>
+  </div>
+  <div class="mlx-feature">
+    <p class="lbl">The lab</p>
+    <h3>An open playground</h3>
+    <p>LoRA/ORPO fine-tuning on your Mac, speculative decoding research, and an interactive sampling-curve designer at <code>/curves</code>.</p>
   </div>
 </div>
 
@@ -91,6 +101,8 @@ The honest negatives are in the same table — see [Benchmarks](/about/benchmark
 	<LinkCard title="Installation" href="/getting-started/installation/" description="Four ways in: Homebrew, curl, bunx, or source." />
 	<LinkCard title="Quickstart" href="/getting-started/quickstart/" description="First run, the chat UI, and the OpenAI-compatible API." />
 	<LinkCard title="The HTTP API" href="/guides/http-api/" description="Chat completions, tools, vision, prompt caching, LoRA." />
+	<LinkCard title="Personal memory" href="/guides/memory/" description="A local wiki your assistant reads — durable, git-tracked, yours." />
+	<LinkCard title="The lab" href="/about/lab/" description="Fine-tuning, speculative decoding, and the curve designer." />
 	<LinkCard title="How it compares" href="/about/comparison/" description="Where mlx-bun sits next to mlx-lm and mlx-optiq." />
 </CardGrid>
 

@@ -8,6 +8,9 @@ on:
     branches: [main]
     paths:
       - 'website/**'
+      # Five+ site pages are generated from docs/reference/*.md at build
+      # time — edits there must redeploy the site too.
+      - 'docs/reference/**'
       - '.github/workflows/deploy-site.yml'
   workflow_dispatch:
 

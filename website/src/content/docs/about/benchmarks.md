@@ -3,9 +3,10 @@ title: Benchmarks
 description: Head-to-head numbers against the Python MLX stacks, with the honest negatives.
 ---
 
-Head-to-head against the Python stacks (mlx-lm 0.31.3, mlx-optiq 0.2.1), same
-machine (M4 Pro, 24 GB), same day, same Hugging Face snapshots, preflight-gated
-clean machine, median-of-N with warmups discarded.
+Head-to-head against the Python stacks (mlx-lm 0.31.3, mlx-optiq 0.2.1 — the
+versions installed at measurement time; the reference venv has since moved to
+mlx-optiq 0.2.4), same machine (M4 Pro, 24 GB), same day, same Hugging Face
+snapshots, preflight-gated clean machine, median-of-N with warmups discarded.
 
 The curated table (parity / performance / quality) with per-row provenance lives
 in [benchmarks/RESULTS.md](https://github.com/joshuarossi/mlx-bun/blob/main/benchmarks/RESULTS.md).
@@ -32,8 +33,10 @@ TTFT.
 prefill→decode allocator-reclaim stall that mlx-lm clears with `mx.clear_cache`
 and bills to prompt time (we billed it to decode). After the reference-faithful
 fix, same-session paired runs put the 12B *ahead* at short context (25.1 vs
-24.0) and at parity @8k (23.8 vs 23.9). A clean-machine re-measure is pending;
-e4b retains a ~5% per-step host-overhead residual.
+24.0) and at parity @8k (23.8 vs 23.9). A clean-machine re-measure is still
+pending as of 2026-07 (it will also pick up the newer mlx-optiq 0.2.4) — until
+it lands, the numbers on this page stand as measured; e4b retains a ~5%
+per-step host-overhead residual.
 
 Served through HTTP — how agents actually use a local model — mlx-bun has the
 fastest decode on e4b and the 26B, and the fastest TTFT and startup everywhere
