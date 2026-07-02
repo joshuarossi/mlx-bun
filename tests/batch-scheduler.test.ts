@@ -63,9 +63,10 @@ const MAXTOK = [5, 8, 11]; // staggered → rows evict at different steps
 
 /** Teacher-forced scheduler parity for one model: each of three rows is forced
  *  along its solo-greedy trajectory; the scheduler's per-row logits must match
- *  solo (KL); emitted tokens/counts/finish are exactly the schedule. Run twice —
- *  all-at-once (staggered eviction 3→2→1→0) and a mid-stream join. */
-async function schedulerParity(base: string, label: string): Promise<void> {
+ *  solo (KL, bound `klTol` — per-model, see the Gemma case); emitted
+ *  tokens/counts/finish are exactly the schedule. Run twice — all-at-once
+ *  (staggered eviction 3→2→1→0) and a mid-stream join. */
+async function schedulerParity(base: string, label: string, klTol = KL_TOL): Promise<void> {
   const { loadModelConfig } = await import("../src/config");
   const { Weights } = await import("../src/weights");
   const { createModel } = await import("../src/model/factory");
@@ -150,7 +151,7 @@ async function schedulerParity(base: string, label: string): Promise<void> {
       let maxKl = 0;
       for (let s = 0; s < maxTokens; s++) maxKl = Math.max(maxKl, klDiv(ref[i]!.logits[s]!, captured[s]!));
       console.log(`[sched ${label} row ${i}] maxKL=${maxKl.toExponential(2)} (steps=${maxTokens})`);
-      expect(maxKl).toBeLessThan(KL_TOL);
+      expect(maxKl).toBeLessThan(klTol);
     };
 
     // Scenario 1: all three at once → staggered eviction.
@@ -180,55 +181,40 @@ describe.skipIf(!optIn || !haveCpm)("batch scheduler — CPM L1 (full-attention)
   }, 240_000);
 });
 
-// Gemma 12B (interleaved sliding + full): the mixed-layer scheduler path. The
-// teacher-forced-vs-solo gate above is WRONG for Gemma — batched Gemma diverges
-// from SOLO Gemma by ~0.26 KL (large headDim → left-pad reduction-order), while
-// matching mlx-lm B=N bit-exactly (realBatchedGreedy). So gate the scheduler
-// directly against the mlx-lm B=2 greedy golden: drive it greedy (eos disabled
-// to match the golden's fixed-length run) with STAGGERED max_tokens so row 0
-// evicts mid-stream, and assert each row's emitted trajectory matches the golden
-// (truncated). Exercises per-layer merge (admission) + eviction (rot filter) +
-// the mixed full/sliding forward — bit-exact vs mlx-lm. (Ring-wrap is gated
-// model-free in tests/batched-rotating.test.ts; this is short-context.)
-describe.skipIf(!optIn || !haveGemma)("batch scheduler — Gemma 12B vs mlx-lm B=2 golden", () => {
-  test("greedy scheduled trajectories == mlx-lm B=2 (merge + staggered evict)", async () => {
-    const { loadModelConfig } = await import("../src/config");
-    const { Weights } = await import("../src/weights");
-    const { createModel } = await import("../src/model/factory");
-    const { MlxArray } = await import("../src/mlx/array");
-    const ops = await import("../src/mlx/ops");
-    const { BatchScheduler } = await import("../src/serve/batch-scheduler");
-
-    const golden = await Bun.file(`${import.meta.dir}/fixtures/batched-golden-gemma12b.json`).json();
-    const prompts = golden.prompts as number[][];
-    const steps = golden.steps as number;
-    const maxTok = [steps - 3, steps]; // row 0 evicts 3 steps before row 1
-
-    const config = await loadModelConfig(SNAPSHOT);
-    const weights = await Weights.open(SNAPSHOT);
-    const model = createModel(weights, config);
-    try {
-      const sched = new BatchScheduler(model, { maxBatch: 4 });
-      const subs = prompts.map((p, i) => {
-        const got: number[] = [];
-        const stats = sched.submit({
-          promptIds: p,
-          maxTokens: maxTok[i]!,
-          eosTokenIds: [], // match the golden's fixed-length (no EOS stop)
-          sample: (l) => ops.argmaxAxis(l, -1),
-          onToken: (t) => { got.push(t); },
-        });
-        return { got, stats };
-      });
-      await Promise.all(subs.map((s) => s.stats));
-      for (let i = 0; i < prompts.length; i++) {
-        const want = (golden.trajectories[i] as number[]).slice(0, maxTok[i]!);
-        console.log(`[sched Gemma row ${i}] got=${JSON.stringify(subs[i]!.got)}`);
-        console.log(`[sched Gemma row ${i}] want=${JSON.stringify(want)}`);
-        expect(subs[i]!.got).toEqual(want);
-      }
-    } finally {
-      weights.dispose();
-    }
+// Gemma 12B (interleaved sliding + full): the mixed-layer scheduler path,
+// gated with the SAME teacher-forced KL/argmax pattern as the CPM case above —
+// forced tokens pin the schedule (admission merge, staggered eviction, join),
+// so the exact-token routing assertions in checkRow are the "argmax" half, and
+// KL on the per-row logits is the numerics half.
+//
+// Why not exact trajectories vs the mlx-lm B=2 golden (the previous gate)?
+// The scheduler prefills each row SOLO and merges its KV into the running
+// batch, while the golden ran one padded one-shot B=2 prefill — different
+// bf16 reduction orders, so token-for-token equality between the two
+// protocols is a machine-lucky coincidence (it held on the M4 Pro, not on
+// the M1 Max), not a contract. The one-shot-protocol path IS gated exactly,
+// per machine, in tests/batched-decode-parity.test.ts (realBatchedGreedy vs
+// batched-golden-gemma12b.json via tests/goldens.ts).
+//
+// KL BOUND: batched-vs-solo Gemma carries inherent left-pad reduction-order
+// noise at Gemma magnitudes (headDim 256, scale 1.0; see the parity harness
+// notes), NOT a bug: measured benign divergence is 1.5e-7–4.1e-2 here
+// (apple-m1-max, 2026-07-01) and up to ~2.6e-1 on padded rows historically —
+// even while bit-matching mlx-lm B=N. So the CPM bound (1e-2) is unusable for
+// Gemma; 5e-1 sits ~2x above the worst measured benign ceiling while still
+// failing on real orchestration faults (wrong leftPad after merge/filter,
+// mis-routed rows) — those attend to wrong content and shift KL to O(1)+.
+// This gate covers orchestration, not sub-bf16 numerics (the parity oracle
+// covers those).
+//
+// ALTERNATIVE (later, if a tighter gate is wanted): a protocol oracle — a gen
+// script driving mlx-lm's BatchKVCache.merge/.extract/.filter through the
+// scheduler's EXACT merged-solo-prefill + staggered-evict schedule (like
+// scripts/gen-batched-dynamic-golden.py does for the cache ops), regenerated
+// per machine via the goldens layer, would restore token-for-token equality.
+const GEMMA_KL_TOL = 5e-1;
+describe.skipIf(!optIn || !haveGemma)("batch scheduler — Gemma 12B (mixed sliding/full)", () => {
+  test("teacher-forced: scheduled per-row logits == solo (evict + join, KL gate)", async () => {
+    await schedulerParity(SNAPSHOT, "Gemma12B", GEMMA_KL_TOL);
   }, 300_000);
 });

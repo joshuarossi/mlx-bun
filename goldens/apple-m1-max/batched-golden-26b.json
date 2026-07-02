@@ -1,0 +1,50 @@
+{
+  "source": "mlx-lm B=2 batched decode (via optiq register + _make_cache) \u2014 scripts/gen-batched-golden.py (apple-m1-max regen 2026-07-01)",
+  "model": "gemma-4-26B-A4B-it-OptiQ-4bit (MoE)",
+  "kv": "bf16 (L1)",
+  "prompts": [
+    [
+      1,
+      100,
+      200,
+      300,
+      400,
+      500,
+      600
+    ],
+    [
+      1,
+      150,
+      250,
+      350,
+      450
+    ]
+  ],
+  "left_padding": [
+    0,
+    2
+  ],
+  "steps": 8,
+  "trajectories": [
+    [
+      563,
+      711,
+      4346,
+      3487,
+      236761,
+      107,
+      1390,
+      107
+    ],
+    [
+      569,
+      569,
+      569,
+      569,
+      569,
+      569,
+      759,
+      569
+    ]
+  ]
+}

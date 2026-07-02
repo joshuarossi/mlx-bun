@@ -19,6 +19,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { SNAPSHOT, SNAPSHOT_26B, snapshotAvailable, snapshot26bAvailable } from "./paths";
+import { goldenAt } from "./goldens";
 import type { Cache } from "../src/model/gemma4-base";
 
 const optIn = process.env.MLX_BUN_TEST_BATCH_DECODE === "1";
@@ -209,7 +210,10 @@ async function runBatchedDecodeParity(
  *  (BatchedDecodeMaskCache handles BOTH the prefill mask at offset 0 and the
  *  per-step decode mask + per-row RoPE) → batch-prefill → greedy batch-decode.
  *  Mirrors mlx-lm's BatchKVCache flow, so its per-row greedy trajectory is the
- *  thing compared bit-for-bit against the mlx-lm B=N oracle (tests/fixtures). */
+ *  thing compared bit-for-bit against the mlx-lm B=N oracle. Oracle goldens are
+ *  MACHINE-SPECIFIC (greedy argmax over bf16 batched logits flips per-GPU, same
+ *  metallib split as the logit goldens) — resolved via tests/goldens.ts:
+ *  goldens/<name> is the reference set, goldens/<machine>/<name> overrides. */
 async function realBatchedGreedy(
   base: string, prompts: number[][], steps: number,
 ): Promise<number[][]> {
@@ -496,7 +500,7 @@ describe.skipIf(!optIn || !haveCpm)("batched decode parity — CPM L1 (bf16)", (
 //     from scripts/gen-batched-golden.py (run in the oracle venv). ---
 describe.skipIf(!optIn || !haveCpm)("batched decode ORACLE parity — CPM L1 vs mlx-lm B=2", () => {
   test("real batched greedy trajectory == mlx-lm B=2", async () => {
-    const golden = await Bun.file(`${import.meta.dir}/fixtures/batched-golden-cpm.json`).json();
+    const golden = await goldenAt("batched-golden-cpm.json").json();
     const got = await realBatchedGreedy(CPM_BASE, golden.prompts as number[][], golden.steps as number);
     console.log(`[oracle CPM] mlx-bun: ${JSON.stringify(got)}`);
     console.log(`[oracle CPM] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
@@ -510,7 +514,7 @@ describe.skipIf(!optIn || !haveCpm)("batched decode ORACLE parity — CPM L1 vs 
 //     Oracle: scripts/gen-batched-dynamic-golden.py (oracle venv). ---
 describe.skipIf(!optIn || !haveCpm)("batched decode DYNAMIC-B ORACLE — CPM L1 vs mlx-lm (join/leave)", () => {
   test("merge/filter dynamic batched greedy == mlx-lm BatchKVCache", async () => {
-    const golden = await Bun.file(`${import.meta.dir}/fixtures/batched-dynamic-golden-cpm.json`).json();
+    const golden = await goldenAt("batched-dynamic-golden-cpm.json").json();
     const got = await realDynamicBatchedGreedy(CPM_BASE, golden.scenario);
     console.log(`[dynamic CPM] mlx-bun: ${JSON.stringify(got)}`);
     console.log(`[dynamic CPM] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
@@ -523,7 +527,7 @@ describe.skipIf(!optIn || !haveCpm)("batched decode DYNAMIC-B ORACLE — CPM L1 
 //     Gemma cell that the KL harness couldn't judge. ---
 describe.skipIf(!optIn || !haveGemma12b)("batched decode ORACLE parity — Gemma 12B L1 vs mlx-lm B=2", () => {
   test("real batched greedy trajectory == mlx-lm B=2", async () => {
-    const golden = await Bun.file(`${import.meta.dir}/fixtures/batched-golden-gemma12b.json`).json();
+    const golden = await goldenAt("batched-golden-gemma12b.json").json();
     const got = await realBatchedGreedy(SNAPSHOT, golden.prompts as number[][], golden.steps as number);
     console.log(`[oracle Gemma12B] mlx-bun: ${JSON.stringify(got)}`);
     console.log(`[oracle Gemma12B] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
@@ -535,7 +539,7 @@ describe.skipIf(!optIn || !haveGemma12b)("batched decode ORACLE parity — Gemma
 //     embeddings (the [1,L,…] hardcode → made B-generic) + KV-sharing. ---
 describe.skipIf(!optIn || !haveE4b)("batched decode ORACLE parity — Gemma e4b L1 vs mlx-lm B=2", () => {
   test("real batched greedy trajectory == mlx-lm B=2", async () => {
-    const golden = await Bun.file(`${import.meta.dir}/fixtures/batched-golden-e4b.json`).json();
+    const golden = await goldenAt("batched-golden-e4b.json").json();
     const got = await realBatchedGreedy(E4B_BASE, golden.prompts as number[][], golden.steps as number);
     console.log(`[oracle e4b] mlx-bun: ${JSON.stringify(got)}`);
     console.log(`[oracle e4b] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
@@ -547,7 +551,7 @@ describe.skipIf(!optIn || !haveE4b)("batched decode ORACLE parity — Gemma e4b 
 //     (Router / SwitchGLU / Experts) under batching. ---
 describe.skipIf(!optIn || !haveS26)("batched decode ORACLE parity — Gemma 26B L1 vs mlx-lm B=2", () => {
   test("real batched greedy trajectory == mlx-lm B=2", async () => {
-    const golden = await Bun.file(`${import.meta.dir}/fixtures/batched-golden-26b.json`).json();
+    const golden = await goldenAt("batched-golden-26b.json").json();
     const got = await realBatchedGreedy(SNAPSHOT_26B, golden.prompts as number[][], golden.steps as number);
     console.log(`[oracle 26B] mlx-bun: ${JSON.stringify(got)}`);
     console.log(`[oracle 26B] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
