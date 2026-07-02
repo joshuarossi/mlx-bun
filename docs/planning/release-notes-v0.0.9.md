@@ -90,3 +90,33 @@ overturning a load-bearing performance assumption.
   ran on push.
 - Repo hygiene: scratch artifacts untracked, megakernel research relocated,
   STATUS.md rewritten as a true current-state front door, doc map regenerated.
+
+## Late additions (landed after the first draft)
+
+- **Batching engine v2 (steps 1–3):** Qwen3.5/SSM models no longer fail under
+  `--batch` (capability gate + serial drain); per-row failure containment; no
+  serial-lane starvation; pipelined batched decode + sane cache cadence; the
+  huge admit transient fixed; all GPU work under one lock.
+- **Model management:** `ls` deduplicates to one row per repo (snapshot
+  history via `ls --all-revisions`); new `mlx-bun gc` reclaims superseded
+  snapshots (24.7 GB found on the dev machine) with a safety guard for
+  unique files; `get` accepts substring queries; download lockfile, streamed
+  resume verification, gated-repo auth hints; vision capability detected from
+  config (the unified-vision 12B now shows `vision`). New doc:
+  docs/reference/models.md.
+- **Pi integration:** web-chat memory tools actually callable; `harness pi`
+  registers exactly the served model; tool-calling fixed for Tier-0 generic
+  models (Gemma sentinels no longer applied to non-Gemma tokenizers); vision
+  advertised to pi; `mlx-bun pi` no longer leaks unknown flags into the first
+  message.
+- **Website + README:** six-goals restructure, drop-in guide, memory guide,
+  the lab page, full CLI reference from a tracked source; deploy now triggers
+  on reference-doc edits. NOTE the release sequence: push and publish in the
+  same sitting — the site deploys from the push.
+- **Test infra:** batched-serving goldens are machine-keyed (the M1-Max
+  "failures" were M4-Pro fixtures; all code exonerated — mlx-lm reproduces
+  mlx-bun token-for-token per machine); CI gate (typecheck + model-free tests).
+- **Research (the lab):** decode-roofline re-measurement overturned the "at
+  the floor" assumption (docs/investigations/decode-roofline-lookagain.md);
+  curve-sampler distinctness theorem + witness numbers + preregistered
+  protocol (docs/planning/curve-sampler-research-plan.md).

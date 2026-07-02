@@ -9,9 +9,50 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 **L2** = mlx-optiq bit-exact parity · **L3** = original optimizations beyond both,
 gated by math checks + KL/quality (not bit-exactness).
 
-**Current release: v0.0.8** (2026-06-24) — npm + Homebrew + GitHub. Everything
-below the DiffusionGemma port (the Dreaming, DSpark, this cleanup) is **unreleased**;
-consider cutting v0.0.9 once the compat work lands.
+**Current release: v0.0.8** (2026-06-24) — npm + Homebrew + GitHub.
+
+## SESSION WRAP 2026-07-01 — main is PUSH-READY. Release sequence: `git push` → `bun run publish` IN THE SAME SITTING
+
+(The site auto-deploys from the push via GitHub Pages and already documents
+v0.0.9 behavior — binaries must follow immediately or fresh users hit a
+port-8080-docs/port-8090-binary mismatch.) Release notes DRAFT:
+[docs/planning/release-notes-v0.0.9.md](docs/planning/release-notes-v0.0.9.md).
+
+**Landed today (~35 commits, all verified, tsc 0, no Claude trailers):**
+mlx_lm.server drop-in surface complete (endpoints/fields/flags/logprobs,
+L1-faithful sampler ports) · verbs: fuse/convert/perplexity/upload/gc ·
+ORPO `sft_scope` (paper/TRL-faithful default; `response` bit-exact pinned) ·
+Tier-0 generic models (UniversalDense, 11 archs; llama/qwen2/gemma2 verified
+bit-exact) · 12+1 kernel-review bug fixes incl. the **--l2 tier restoration**
+(perf kernel demoted to --l3 — envelope-gated, evidence in 381382c) ·
+batching v2 steps 1–3 (capability gate, containment, drain, pipelining) ·
+registry canonical dedupe + gc (~24.7GB found; NOT deleted — see task
+notes on the 12B vision-weights decision + tests/paths.ts pins first) ·
+pi integration 10 fixes (generics tool-calling, memory tools, harness) ·
+website+README six-goals pass (23 pages; deploy release-gated) · CI gate ·
+batched goldens machine-keyed (the "regression" was M4-Pro fixtures; ALL
+code exonerated, 11/11 green) · decode-roofline look-again (**the floor
+claim was wrong** — only the 12B is at the wall; docs/investigations/
+decode-roofline-lookagain.md) · curve-sampler distinctness THEOREM + witness
+(TV 0.11–0.19 at forks unreachable by any truncation sampler; old "wash"
+verdict invalidated — it measured the wrong sampler; preregistered protocol
+in docs/planning/curve-sampler-research-plan.md).
+
+**Next actions, ranked (each has a tracked plan):**
+1. Josh: push + publish v0.0.9 (sequence above), then optionally `gc --yes`
+   after the 12B-vision decision + test-pin updates.
+2. Kernel backlog #1 — flip the measured 1.35× coeff filter
+   (docs/investigations/kernel-perf-review-2026-07.md) + the decode
+   graph-build-overlap spike (the roofline doc's top fix).
+3. Web-UI fix wave (docs/planning/web-ui-pass-plan.md — 6 bugs, landing order inside).
+4. Batching steps 4–10 (docs/design/batching-v2-plan.md).
+5. serve --draft-model + remaining verbs (docs/design/mlx-lm-tool-parity-plan.md).
+6. Curve H2/H3 preregistered run (docs/planning/curve-sampler-research-plan.md).
+7. Dynamic-λ controller build (docs/design/orpo-dynamic-lambda.md).
+8. fit-as-recommender; memory-docs banner pass + `mlx-bun route` verb
+   (docs/planning/memory-docs-and-dag-plan.md); DSpark live-τ.
+Open kernel bug (deferred, file was owned): FUSED_DECODE×compiled-decode
+trace-freeze — docs/investigations/kernel-perf-review-2026-07.md "STILL OPEN".
 
 ## Multi-agent review + cleanup (2026-07-01) — verified state, open decisions
 
