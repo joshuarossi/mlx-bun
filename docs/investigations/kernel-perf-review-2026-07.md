@@ -93,8 +93,13 @@ or make the tile loop trace-safe).
 The review's framing assumed the megakernel post-mortem's "M=1 decode is at
 the floor". The follow-up investigation (docs/investigations/
 decode-roofline-lookagain.md) OVERTURNED that: only the 12B is at the wall
-(~92-93% of measured roofline); CPM5 58-64%, e4b 64-70%, 26B 60-62%, with the
-host JS graph build as the #1 recoverable term. Its ranked fixes (CPM5
-compiled-decode port; build-ahead graph overlap spike; 26B gather-qmm
-bandwidth; e4b dispatch batching) COMPOSE with the backlog above and should be
-sequenced first where they overlap.
+(~92-93% of measured roofline); CPM5 58-64%, e4b 64-70%, 26B 60-62%.
+**2026-07-02 second correction (lookagain §7):** the "host JS graph build =
+#1 recoverable term" part of that verdict was itself wrong — the overlap
+spike (decode-overlap-probe.ts, spin-injection + serial anchor) proved the
+pipelined loop ALREADY hides the build; wall = GPU step time. The lookagain's
+host-side fixes (1a–1d: CPM5 compiled-decode port, build-ahead spike, SharedKv
+segmented-compile, 12B concat-phase compile) are refuted or de-prioritized;
+its GPU-side fixes (26B gather-qmm bandwidth, e4b dispatch batching, CPM5
+KV-path, backlog #4 contiguity, spec decode) are now the ENTIRE recoverable
+gap and still compose with the backlog above.

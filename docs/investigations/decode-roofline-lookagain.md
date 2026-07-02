@@ -1,5 +1,11 @@
 # Decode perf "look again" — adversarial re-exam of the M=1 floor claim (2026-07-01)
 
+> **2026-07-02 CORRECTION — the host-graph-tax claim is itself overturned; see
+> §7.** The fix-plan items 1a–1d were built on "host graph build is serial with
+> the GPU"; the overlap spike (decode-overlap-probe.ts) shows the pipelined loop
+> ALREADY hides the build. The §3 wall times and %-of-roofline stand; the
+> §4(b)/(c) decomposition does not — the whole gap is GPU-side.
+
 **Machine:** Apple M1 Max, 32 GB (MacBookPro18,2), `sysctl` verified. All eval-DB
 rows are also M1 Max — same box. **All numbers below are directional (session,
 loaded-machine caveat); quotable numbers remain benchmark.sh-gated.** GPU idle
@@ -247,7 +253,57 @@ is suspect, profile on the other laptop before building anything.**
    bandwidth wall (weight read shared across K tokens) — unchanged priority,
    now with the roofline to prove why nothing else can.
 
+## 7. The overlap spike (2026-07-02) — fix 1b REFUTED; §4(c) decomposition corrected
+
+Fix 1b asked: can the host graph build hide under the GPU (build-two-ahead /
+off-thread dispatch)? `decode-overlap-probe.ts` answers by INJECTING a known
+host busy-wait at each point of the pipelined loop and seeing what surfaces in
+wall time — the disambiguation the 3-way split above could not make, because
+"dispatch = full GPU step (serial)" and "dispatch = gpu − graph (overlapped)"
+produce the same three numbers.
+
+M1 Max, greedy, uncompiled, all arms token-IDENTICAL to baseline:
+
+| arm | CPM5 @132 (spin 2 ms) | e4b @600 (spin 4 ms) |
+|---|---|---|
+| baseline (pipelined) | 3.94 ms/tok (graph 0.77, dispatch 3.14) | 18.25→17.82 across passes (graph ~3–4, dispatch ~14) |
+| serial (evalAll, no pipeline) | **+1.47 ms** | — |
+| spin-build / spin-pre / spin-post | **+0.24–0.30 ms** (not +2) | **+0.6–1.2 ms** (not +4) |
+| chain-2 / chain-3 (deeper pipeline) | ±0.01 ms | −0.5 (== pass drift) |
+
+- Injected host work is ABSORBED (dispatch shrinks 3.14→1.43 exactly as
+  `gpu − host` predicts): the GPU is busy with step n while the host builds
+  step n+1. **The build already overlaps; wall = GPU step time.**
+- The serial anchor costs MORE than the build itself (+1.47 vs 0.77): the
+  pipelined loop hides the build AND the per-step launch gap. The loop shape
+  is already right; mlx-lm's identical shape gets the identical hiding.
+- Deeper pipelining (chain-2/3) buys exactly nothing — there is no residual
+  host term to hide.
+
+**Corrections to this doc:**
+- §4(c) "host JS loop — the single biggest NON-physics term" is WRONG as an
+  additive claim. The "host graph ms" column was measured as time-in-JS-calls,
+  but that window runs concurrently with the GPU; "GPU ms" (= the dispatch
+  wait) is `gpu − graph`, so summing them reconstructs the wall without any
+  recoverable host term. The true GPU step time ≈ the measured wall itself.
+- §6.1a (CPM5 CompiledDecode "+20–25%"): premise gone. Any compiled-decode win
+  is GPU-side (fewer/denser dispatches from C++ replay), not host removal —
+  re-bill as profile-first, expected small. This also re-explains §4(d):
+  e4b @600 compiled wall 18.9→18.1 means compiled made the GPU ~0.8 ms faster
+  (net of concat tax), not "host −2.4, GPU +1.7".
+- §6.1b (this spike): answered, REFUTED — nothing to build.
+- §6.1c/1d (SharedKv segmented-compile plumbing ~L effort, 12B concat-phase
+  compile): the host-tax share of their billing is gone; only GPU-side effects
+  remain. De-prioritize pending a GPU-side profile.
+- §6 items 2 (26B expert reads), 3 (e4b dispatch count), 4 (backlog #4
+  contiguity), 5 (CPM5 KV-path), 6 (spec decode) are UNAFFECTED — they were
+  always GPU-side, and they are now the entire recoverable gap.
+- 12B/26B not re-probed (structurally the same loop; 12B was at-wall under
+  either reading; 26B's 3.7 ms graph ≪ its ~18 ms step has the same slack).
+
 ## Probes added (scripts/experiments/, tsc-clean)
+- `decode-overlap-probe.ts` — spin-injection + serial-anchor + chain-depth
+  arms for the overlap question (§7).
 - `decode-roofline-bw.ts` — machine bandwidth: raw read, decode-shaped qmv
   GEMV (multi-copy, one-eval chaining), bf16 GEMV, dispatch chain.
 - `decode-roofline-step.ts` — factory-generic pipelined decode split

@@ -41,8 +41,12 @@ in docs/planning/curve-sampler-research-plan.md).
 2. ~~Kernel backlog #1 — flip the measured 1.35× coeff filter~~ **DONE
    2026-07-02** (both skips default 1e-5; combined backward **1.71× CPM5 /
    3.16× e4b** vs exact, fidelity-gated — see kernel-perf-review-2026-07.md
-   backlog #1). Remaining from this slot: the decode graph-build-overlap
-   spike (the roofline doc's top fix).
+   backlog #1). The decode graph-build-overlap spike also ran (2026-07-02):
+   **REFUTED** — the pipelined loop already hides the host build (wall = GPU
+   step time; spin-injection proof in decode-roofline-lookagain.md §7), so the
+   roofline doc's host-side fixes 1a–1d are dead and the recoverable decode
+   gap is entirely GPU-side (26B expert reads, e4b dispatch count, CPM5
+   KV-path, kernel backlog #4, spec decode).
 3. Web-UI fix wave (docs/planning/web-ui-pass-plan.md — 6 bugs, landing order inside).
 4. Batching steps 4–10 (docs/design/batching-v2-plan.md).
 5. serve --draft-model + remaining verbs (docs/design/mlx-lm-tool-parity-plan.md).
