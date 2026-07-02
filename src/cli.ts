@@ -1667,8 +1667,10 @@ switch (cmd) {
     if (parsed.mode === "interactive")
       console.log(`launching mlx-bun pi (model ${models[0]!.id}) — /help for commands, double-Ctrl+C to exit`);
     restoreStdout();
-    if (parsed.ignored.length)
+    if (parsed.ignored.length) {
+      const { style } = await import("./tui");
       console.log(style.dim(`  ignoring pi flags: ${parsed.ignored.join(", ")}`));
+    }
     const code = await runEmbeddedPi({
       baseUrl,
       modelLabel: models[0]!.id,
