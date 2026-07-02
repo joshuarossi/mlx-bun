@@ -1,0 +1,36 @@
+{
+ "model": "mlx-community/gemma-2-2b-it-4bit",
+ "snapshot": "/Users/joshrossi/.cache/huggingface/hub/models--mlx-community--gemma-2-2b-it-4bit/snapshots/2c715097ff9c081a6ac1e5cd239e2ac756b5bd99",
+ "model_type": "gemma2",
+ "mode": "bf16",
+ "prompt": "The capital of France is",
+ "prompt_ids": [
+  2,
+  651,
+  6037,
+  576,
+  6081,
+  603
+ ],
+ "greedy_ids": [
+  5231,
+  29437,
+  168428,
+  235248,
+  108,
+  107,
+  1,
+  1,
+  1,
+  107,
+  1,
+  1
+ ],
+ "logit_steps": 12,
+ "vocab_size": 256000,
+ "oracle": {
+  "mlx": "0.31.2",
+  "mlx_lm": "0.31.3",
+  "machine": "arm64"
+ }
+}
