@@ -11,7 +11,7 @@ gated by math checks + KL/quality (not bit-exactness).
 
 **Current release: v0.0.8** (2026-06-24) — npm + Homebrew + GitHub.
 
-## SESSION WRAP 2026-07-01 — main is PUSH-READY. Release sequence: `git push` → `bun run publish` IN THE SAME SITTING
+## SESSION WRAP 2026-07-01 — main is PUSH-READY. Release sequence: `git push` → `bun run release` IN THE SAME SITTING
 
 (The site auto-deploys from the push via GitHub Pages and already documents
 v0.0.9 behavior — binaries must follow immediately or fresh users hit a
