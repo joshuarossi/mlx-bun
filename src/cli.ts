@@ -37,6 +37,7 @@ Commands:
   serve      Start the OpenAI/Anthropic-compatible server + status page
   get        Download a model from Hugging Face (resumable, verified)
   ls         List downloaded models
+  gc         Reclaim superseded model snapshots + dead blobs from the HF cache
   fit        Will a model fit this machine? Memory + speed assessment
   scan       Re-index the Hugging Face cache
   harness    Connect your own pi install to the local mlx-bun server
@@ -188,22 +189,52 @@ status page at /, browser chat at /chat`,
 
   get: `mlx-bun get — download a model from Hugging Face
 
-Usage: mlx-bun get <org/repo> [options]
+Usage: mlx-bun get <org/repo | substring> [options]
+
+  <org/repo>           Full repo id (e.g. mlx-community/gemma-4-12B-it-OptiQ-4bit)
+  <substring>          No "/" = a registry query over already-downloaded repos
+                       (e.g. \`mlx-bun get 12B\` re-gets/refreshes the match)
 
 Options:
   --revision <rev>     Git revision  [default: main]
 
 Resumable (Range requests against partial blobs) and verified (sha256
 for LFS blobs). Re-running after an interruption continues where it
-stopped. Uses HF_TOKEN / hf auth login credentials when present.`,
+stopped. Uses HF_TOKEN / hf auth login credentials when present.
+When upstream pushed a new revision, the previous snapshot stays on
+disk — \`mlx-bun gc\` reclaims it.`,
 
   ls: `mlx-bun ls — list downloaded models
 
 Usage: mlx-bun ls [query] [options]
 
+One row per repo (the canonical revision: refs/main). The HF cache keeps
+a snapshot dir per downloaded revision — superseded ones are hidden here
+and reclaimed by \`mlx-bun gc\`.
+
 Options:
-  --vision             Only models with a vision sidecar
-  --max-size <size>    Filter by weight size (e.g. 10GB, 800MB)`,
+  --vision             Only vision-capable models (SigLIP sidecar or the
+                       unified encoder-free tower)
+  --max-size <size>    Filter by weight size (e.g. 10GB, 800MB)
+  --all-revisions      One row per cached snapshot (canonical marked *)`,
+
+  gc: `mlx-bun gc — reclaim superseded snapshots + dead blobs
+
+Usage: mlx-bun gc [options]
+
+Every \`get\` that follows an upstream push creates a NEW
+snapshots/<commit> dir; the old one (and any blobs only it references)
+stays on disk forever. gc keeps the snapshots refs/* point at, deletes
+the rest, then deletes blobs no surviving snapshot links to.
+
+Without --yes it only prints what would be deleted (per-repo reclaim).
+
+Options:
+  --yes                Actually delete (destructive; default prints only)
+  --dry-run            Print the plan and never delete, even with --yes
+  --force              Also prune superseded snapshots that contain files
+                       the canonical revision lacks (normally skipped with
+                       a warning — deleting them loses the only copy)`,
 
   fit: `mlx-bun fit — will this model fit on this machine?
 
@@ -935,13 +966,33 @@ function parseSize(s: string): number {
 
 switch (cmd) {
   case "get": {
-    const repoId = positional(0);
-    if (!repoId || !repoId.includes("/")) {
-      console.error("usage: mlx-bun get <org/repo> [--revision main]");
+    let repoId = positional(0);
+    if (!repoId) {
+      console.error("usage: mlx-bun get <org/repo | substring> [--revision main]");
       process.exit(1);
+    }
+    if (!repoId.includes("/")) {
+      // No org/name — treat it as a registry query over already-downloaded
+      // repos (re-get/refresh, e.g. `mlx-bun get 12B` after an upstream push).
+      try {
+        const regQ = new Registry();
+        if (regQ.list().length === 0) await regQ.scan();
+        repoId = regQ.resolve(repoId).repoId;
+      } catch (e) {
+        console.error((e as Error).message);
+        console.error(`usage: mlx-bun get <org/repo> [--revision main] — or a substring of a downloaded repo (try \`mlx-bun ls ${repoId}\`)`);
+        process.exit(1);
+      }
     }
     const { downloadModel } = await import("./download");
     const { step, style } = await import("./tui");
+    const { join: joinPath, basename } = await import("node:path");
+    const { readdirSync, existsSync } = await import("node:fs");
+    const { DEFAULT_HUB, planRepoGc } = await import("./registry");
+    const repoDir = joinPath(DEFAULT_HUB, `models--${repoId.replaceAll("/", "--")}`);
+    const priorSnapshots = existsSync(joinPath(repoDir, "snapshots"))
+      ? readdirSync(joinPath(repoDir, "snapshots"))
+      : [];
     const s = step(`downloading ${repoId}`);
     const snap = await downloadModel(repoId, {
       revision: opt("revision", "main")!,
@@ -955,6 +1006,18 @@ switch (cmd) {
     const reg = new Registry();
     await reg.scan();
     sScan.done(`registry updated ${style.dim(`· ${snap}`)}`);
+    // Upstream pushed a new revision → this get created a NEW snapshots/<sha>
+    // dir; the old one stays on disk (that's how ~25 GB of dead blobs pile
+    // up). Say so, with what `gc` would get back.
+    if (priorSnapshots.length > 0 && !priorSnapshots.includes(basename(snap))) {
+      const plan = planRepoGc(repoDir);
+      const note = plan.skippedSnapshots.length > 0
+        ? " (a previous snapshot has files this revision lacks — gc will warn; --force to prune it)"
+        : "";
+      console.log(style.dim(
+        `  previous revision kept on disk — \`mlx-bun gc\` reclaims ~${gb(plan.reclaimBytes)}${note}`,
+      ));
+    }
     break;
   }
 
@@ -971,43 +1034,125 @@ switch (cmd) {
     const reg = new Registry();
     if ((reg.list().length ?? 0) === 0) await reg.scan();
     const maxSize = opt("max-size");
-    const models = reg.list({
+    const allRevisions = flag("all-revisions");
+    const lsFilter = {
       vision: flag("vision") ? true : undefined,
       maxBytes: maxSize ? parseSize(maxSize) : undefined,
       query: positional(0),
-    });
+    };
+    // One row per repo by default: the HF cache keeps a snapshots/<commit>
+    // dir per downloaded revision, and re-getting after an upstream push
+    // strands the old one — those are duplicates, not separate models.
+    // --all-revisions shows the per-snapshot truth (canonical marked *).
+    const models = allRevisions ? reg.list(lsFilter) : reg.listCanonical(lsFilter);
     if (models.length === 0) {
       console.log("no models match (try `mlx-bun scan`)");
       break;
     }
+    const { visionCapable } = await import("./registry");
+    const { supportTier } = await import("./model/support");
+    const canonicalPaths = new Set(reg.listCanonical(lsFilter).map((m) => m.path));
+    const capabilities = (m: (typeof models)[number]) => {
+      const tier = supportTier(m.modelType, m.repoId);
+      return [
+        tier ? `supported (${tier})` : `unsupported (${m.modelType})`,
+        visionCapable(m) ? "vision" : null,
+        m.hasToolTemplate ? "tools" : null,
+        m.hasKvConfig ? "kv-quant" : null,
+      ].filter(Boolean).join(" · ");
+    };
     const { table, style, h1 } = await import("./tui");
     h1("library");
     console.log();
     table(
       [
         { header: "model", paint: (c) => style.bold(c) },
-        { header: "size", align: "right" },
-        { header: "params", align: "right" },
+        ...(allRevisions ? [{ header: "revision" }] : []),
+        { header: "size", align: "right" as const },
+        { header: "params", align: "right" as const },
         { header: "quant" },
-        { header: "license", paint: (c) => style.dim(c) },
-        { header: "capabilities", paint: (c) => style.dim(c) },
+        { header: "license", paint: (c: string) => style.dim(c) },
+        { header: "capabilities", paint: (c: string) => style.dim(c) },
       ],
       models.map((m) => [
         m.repoId,
+        ...(allRevisions
+          ? [`${(m.path.split("/snapshots/")[1] ?? "").slice(0, 12)}${canonicalPaths.has(m.path) ? " *" : ""}`]
+          : []),
         gb(m.sizeBytes),
         m.paramCount ? `${(m.paramCount / 1e9).toFixed(1)}B` : "?",
         m.quantBits ? `${m.quantBits}-bit g${m.quantGroupSize}` : "full",
         m.license ?? "?",
-        [
-          isSupportedModelRecord(m.modelType, m.repoId) ? "supported" : `unsupported (${m.modelType})`,
-          m.hasVisionSidecar ? "vision" : null,
-          m.hasToolTemplate ? "tools" : null,
-          m.hasKvConfig ? "kv-quant" : null,
-        ].filter(Boolean).join(" · "),
+        capabilities(m),
       ]),
     );
     console.log();
-    console.log(style.dim(`  ${models.length} model(s) · mlx-bun fit <query> for a memory assessment`));
+    if (allRevisions) {
+      console.log(style.dim(
+        `  ${models.length} snapshot(s) · * = canonical (refs/main) · superseded snapshots: \`mlx-bun gc\``,
+      ));
+    } else {
+      console.log(style.dim(`  ${models.length} model(s) · mlx-bun fit <query> for a memory assessment`));
+    }
+    break;
+  }
+
+  case "gc": {
+    const { planGc, executeGc, DEFAULT_HUB } = await import("./registry");
+    const { table, style, h1 } = await import("./tui");
+    const force = flag("force");
+    const plans = planGc(DEFAULT_HUB, { force }).filter(
+      (p) => p.pruneSnapshots.length || p.skippedSnapshots.length || p.deadBlobs.length,
+    );
+    h1("gc — superseded snapshots + dead blobs");
+    console.log();
+    if (plans.length === 0) {
+      console.log("  nothing to reclaim — every snapshot is referenced by refs/*");
+      break;
+    }
+    table(
+      [
+        { header: "repo", paint: (c) => style.bold(c) },
+        { header: "keep", align: "right" },
+        { header: "prune", align: "right" },
+        { header: "skip", align: "right" },
+        { header: "reclaims", align: "right" },
+      ],
+      plans.map((p) => [
+        p.repoId,
+        String(p.keepSnapshots.length),
+        String(p.pruneSnapshots.length),
+        String(p.skippedSnapshots.length),
+        gb(p.reclaimBytes),
+      ]),
+    );
+    console.log();
+    for (const p of plans) {
+      for (const s of p.skippedSnapshots) {
+        const rev = (s.path.split("/snapshots/")[1] ?? s.path).slice(0, 12);
+        console.log(style.accent(
+          `  WARNING ${p.repoId}@${rev}: superseded snapshot has files the canonical revision lacks — skipped.`,
+        ));
+        console.log(style.dim(`    only copy of: ${s.extraFiles.join(", ")}`));
+        console.log(style.dim("    deleting it loses those files — rerun with --force if that's intended."));
+      }
+    }
+    const totalReclaim = plans.reduce((a, p) => a + p.reclaimBytes, 0);
+    const totalSnaps = plans.reduce((a, p) => a + p.pruneSnapshots.length, 0);
+    const totalBlobs = plans.reduce((a, p) => a + p.deadBlobs.length, 0);
+    console.log(
+      `  total: ${totalSnaps} snapshot(s), ${totalBlobs} blob(s), ${style.bold(gb(totalReclaim))}`,
+    );
+    if (flag("dry-run") || !flag("yes")) {
+      console.log(style.dim("  nothing deleted — rerun with --yes to delete (destructive)."));
+      break;
+    }
+    const res = executeGc(plans);
+    console.log(
+      `  deleted ${res.snapshots} snapshot(s) + ${res.blobs} blob(s) — reclaimed ${style.bold(gb(res.reclaimedBytes))}`,
+    );
+    const reg = new Registry();
+    await reg.scan(); // reap deleted snapshots from the registry
     break;
   }
 
