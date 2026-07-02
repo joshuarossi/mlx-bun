@@ -42,3 +42,8 @@ goldens/diffusion/enc-*.bin
 goldens/diffusion/dec-*.bin
 goldens/diffusion/l0-*.bin
 goldens/diffusion/vision-*.bin
+
+# Golden .bin fixtures are MACHINE-SPECIFIC regenerable artifacts (scripts/regen-*
+# + the oracle venv) — never tracked (they bloated history to 179 MB; the JSON
+# manifests/trajectories stay tracked). See goldens/README.md.
+goldens/**/*.bin
