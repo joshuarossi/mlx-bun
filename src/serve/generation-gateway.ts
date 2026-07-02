@@ -11,13 +11,22 @@
 // queue). One AsyncMutex enforces it: a serial run holds it for its duration;
 // the scheduler holds it for its whole active period (first admit → batch
 // empties). So batched requests run concurrently with EACH OTHER (the point),
-// but never alongside a serial-lane generation. A non-batchable request drains
-// the batch (waits for it to empty), then runs solo; queued batchable requests
-// wait for that solo run to finish. (mlx-lm's drain behavior.)
+// but never alongside a serial-lane generation. A non-batchable request DRAINS
+// the batch: while any serial-lane request is waiting, the scheduler stops
+// admitting new rows (admissionHeld), finishes the running ones, and releases
+// the mutex; the serial request runs solo, then kick() resumes admission.
+// (mlx-lm's drain_batch semantics — without this, sustained batchable traffic
+// starves the serial lane forever.) Non-generation GPU/model-state work (the
+// curve endpoints, adapter mount/unmount) goes through runExclusive() so there
+// is exactly ONE mutual-exclusion domain.
 //
-// v1 batchable gate (the rest → serial): batch>1 AND bf16 KV (no kv-quant — the
-// batched scheduler runs bf16; mixed-precision-KV batching is the novel-combo
-// L2 follow-up) AND no vision AND no LoRA adapters AND no repetition penalty
+// v1 batchable gate (the rest → serial): batch>1 AND every model cache is a
+// dynamic-B-capable type (KVCache | RotatingKVCache — mirrors mlx-lm
+// server.py's all-caches-have-merge check; Qwen3.5's SSMCache has no
+// merge/filter/temporalView, so hybrid models route serial until the ArraysCache
+// port — batching-v2-plan item h) AND bf16 KV (no kv-quant — the batched
+// scheduler runs bf16; mixed-precision-KV batching is the novel-combo L2
+// follow-up) AND no vision AND no LoRA adapters AND no repetition penalty
 // (per-row logits processors are a later refinement) AND no user-fixed seed
 // (reproducibility ⇒ solo, matching mlx-lm's _is_batchable). Temperature /
 // top-p / top-k DO batch (each row samples with its own seed). Full-attention
@@ -28,6 +37,7 @@
 import { MlxArray } from "../mlx/array";
 import type { RuntimeModel } from "../model/factory";
 import { DiffusionGemmaModel } from "../model/diffusion-gemma";
+import { KVCache, RotatingKVCache } from "../model/gemma4-base";
 import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate";
 import { makeSampler, toLogprobs } from "../sampler";
 import { BatchScheduler } from "./batch-scheduler";
@@ -90,6 +100,11 @@ export class GenerationGateway {
   readonly #mutex = new AsyncMutex();
   readonly #batch: number;
   #scheduler: BatchScheduler | null = null;
+  /** Serial-lane requests waiting for / holding the mutex. While > 0 the
+   *  scheduler pauses admission (drain) so they can't be starved. */
+  #serialWaiters = 0;
+  /** Lazy, memoized: can this model's caches do the dynamic-B ops? */
+  #cacheBatchable: boolean | null = null;
 
   constructor(
     private readonly model: RuntimeModel,
@@ -109,13 +124,29 @@ export class GenerationGateway {
     return this.#scheduler?.activeRows ?? 0;
   }
 
+  /** Cache-capability gate (mirrors mlx-lm server.py's all-caches-have-merge
+   *  check): the scheduler's dynamic-B ops (temporalView/merge/filter) exist
+   *  only on KVCache and RotatingKVCache. A hybrid model (Qwen3.5's SSMCache)
+   *  routes serial until the batched-SSM port (batching-v2-plan item h). */
+  #modelCachesBatchable(): boolean {
+    if (this.#cacheBatchable === null) {
+      const proto = this.model.makeCache(); // fresh caches hold no buffers
+      this.#cacheBatchable = proto.every(
+        (c) => c instanceof KVCache || c instanceof RotatingKVCache,
+      );
+      for (const c of proto) c.dispose();
+    }
+    return this.#cacheBatchable;
+  }
+
   /** Decide whether a request joins the batch or runs serially. */
   willBatch(shape: RequestShape): boolean {
     // DiffusionGemma is non-autoregressive — the batch scheduler assumes the AR
     // KV-cache decode path, so it always runs serially through generate().
     if (this.model instanceof DiffusionGemmaModel) return false;
+    if (!this.batchingEnabled) return false;
+    if (!this.#modelCachesBatchable()) return false;
     return (
-      this.batchingEnabled &&
       !shape.hasVision &&
       !shape.hasAdapters &&
       !shape.hasRepetitionPenalty &&
@@ -124,6 +155,27 @@ export class GenerationGateway {
       !shape.userSeed &&
       !shape.kvQuant
     );
+  }
+
+  /** Run `fn` with exclusive ownership of the GPU + shared model state (the
+   *  serial lane's lock). THE single mutual-exclusion domain: the serial
+   *  generation path, the curve /generate + /signal endpoints, and adapter
+   *  mount/unmount all come through here, so nothing runs concurrently with
+   *  batched decode steps (or with each other). Registers as a serial waiter
+   *  so the scheduler drains (stops admitting) until `fn` has run. */
+  async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    this.#serialWaiters++;
+    try {
+      const release = await this.#mutex.acquire();
+      try {
+        return await fn();
+      } finally {
+        release();
+      }
+    } finally {
+      this.#serialWaiters--;
+      if (this.#serialWaiters === 0) this.#scheduler?.kick(); // resume admission
+    }
   }
 
   /** Run one generation on the appropriate lane. onToken is invoked per emitted
@@ -135,14 +187,8 @@ export class GenerationGateway {
     vision: Vision | undefined,
     shape: RequestShape,
   ): Promise<GenerateStats> {
-    if (!this.willBatch(shape)) {
-      const release = await this.#mutex.acquire();
-      try {
-        return await this.serialRun(promptIds, options, onToken, vision);
-      } finally {
-        release();
-      }
-    }
+    if (!this.willBatch(shape))
+      return this.runExclusive(() => this.serialRun(promptIds, options, onToken, vision));
 
     // Per-row sampler, mirroring generate()'s sampleStep (no logits processors:
     // repetition penalty was excluded by willBatch). Greedy (temperature 0) is
@@ -177,6 +223,9 @@ export class GenerationGateway {
       this.#scheduler = new BatchScheduler(this.model, {
         maxBatch: this.#batch,
         lock: { acquire: () => this.#mutex.acquire() },
+        // Drain: pause admission while any serial-lane request waits; the
+        // runExclusive finally-block kick()s the loop back awake.
+        admissionHeld: () => this.#serialWaiters > 0,
       });
     return this.#scheduler;
   }

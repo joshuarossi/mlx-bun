@@ -960,13 +960,6 @@ export function createServer(
   // lane (see GenerationGateway.willBatch).
   const batch = Math.max(1, Math.floor(serverOptions.batch ?? 1));
 
-  let queue: Promise<unknown> = Promise.resolve();
-  const enqueue = <T>(fn: () => Promise<T>): Promise<T> => {
-    const run = queue.then(fn, fn);
-    queue = run.catch(() => {});
-    return run;
-  };
-
   const promptCache = new PromptCache(serverOptions.promptCacheBytes ?? 2e9);
   // Responses-API store for previous_response_id resumption (Phase 11):
   // TTL + byte-capped LRU, port of optiq/response_store.py. Pairs with
@@ -974,8 +967,11 @@ export function createServer(
   // so its KV prefill is already cached.
   const responseStore = new ResponseStore();
 
-  /** Run one generation with prompt-cache reuse. Must be called inside
-   *  the queue. onToken returning `false` halts generation early (stop
+  /** Run one generation with prompt-cache reuse. Must be called under the
+   *  gateway's exclusive lock — the gateway invokes it on the serial lane;
+   *  the curve /generate endpoint wraps it in gateway.runExclusive. (The old
+   *  `enqueue` promise queue is gone; the gateway's AsyncMutex is THE lock.)
+   *  onToken returning `false` halts generation early (stop
    *  sequence fired); the cache snapshot stays valid and is still kept.
    *  Vision requests bypass the prompt cache: image tokens are
    *  identical placeholder ids, so prefix matching across different
@@ -1592,7 +1588,10 @@ export function createServer(
         if (!body.id || !body.path)
           return Response.json({ error: { message: "id and path required" } }, { status: 400 });
         try {
-          const info = await enqueue(() => ctx.adapters.mount(body.id!, body.path!));
+          // Under the gateway lock: mount/unmount mutate the shared adapter
+          // registry (unmount disposes arrays a running generation could still
+          // hold) — one mutual-exclusion domain with generation (D3).
+          const info = await gateway.runExclusive(() => ctx.adapters.mount(body.id!, body.path!));
           return Response.json({
             id: info.id, mounted_layers: info.mountedLayers,
             rank: info.rank, scale: info.scale,
@@ -1603,7 +1602,7 @@ export function createServer(
       }
       if (url.pathname.startsWith("/v1/adapters/") && request.method === "DELETE") {
         const id = decodeURIComponent(url.pathname.slice("/v1/adapters/".length));
-        const removed = await enqueue(async () => ctx.adapters.unmount(id));
+        const removed = await gateway.runExclusive(async () => ctx.adapters.unmount(id));
         return removed > 0
           ? Response.json({ id, removed_layers: removed })
           : Response.json({ error: { message: `adapter ${id} not mounted` } }, { status: 404 });
@@ -1622,7 +1621,10 @@ export function createServer(
         if (sids[0] === sids[1] && sids[0] === ctx.tokenizer.bosTokenId) sids = sids.slice(1);
         try {
           const NB = 80;
-          const result = await enqueue(async () => {
+          // gateway.runExclusive: this raw forward must not run concurrently
+          // with batched decode steps or a serial generation (GPU + shared
+          // model state are single-owner — D3, one lock).
+          const result = await gateway.runExclusive(async () => {
             const cache = ctx.model.makeCache();
             try {
               const logits = ctx.model.forward(sids, cache); // [1, L, V]
@@ -1677,7 +1679,9 @@ export function createServer(
             const genOpts: GenerateOptions = useCurve
               ? { curve, seed: baseSeed + i, maxTokens, ...kvScheme }
               : { temperature: recipe.temperature, topP: recipe.topP, topK: recipe.topK, seed: baseSeed + i, maxTokens, ...kvScheme };
-            await enqueue(() => runGeneration(ids, genOpts, (t) => { toks.push(t); }));
+            // runExclusive: runGeneration touches the GPU + prompt cache, so
+            // it needs the gateway lock (this endpoint bypasses gateway.run).
+            await gateway.runExclusive(() => runGeneration(ids, genOpts, (t) => { toks.push(t); }));
             const text = ctx.tokenizer.decode(toks, true).trim();
             samples.push({ text, junk: curveJunk(text) });
           }

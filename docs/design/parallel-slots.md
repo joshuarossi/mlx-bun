@@ -18,6 +18,16 @@ scheduler that runs multiple sequences through one forward pass.
 This is a server-path feature — serving speed is the user metric.
 Direct/embedding mode stays batch=1.
 
+> **v2 execution plan:** this document remains the PRIMITIVE-design record
+> (masks, caches, lanes). The living gap/debt plan and sequencing for the
+> batching engine is [batching-v2-plan.md](batching-v2-plan.md). Landed from
+> it (2026-07-01, steps 1–3): cache-capability gate (hybrid/SSM models route
+> serial), slice-before-head admit, ONE lock domain (curve `/generate`,
+> `/signal`, adapter mount/unmount via `gateway.runExclusive`), per-row
+> onToken failure containment, drain-on-serial-waiter (no starvation), and
+> the engine-hygiene transplant (pipelined decode via asyncEval, clearCache
+> 1/256 steps, chunked admit prefill interleaved with decode steps).
+
 ## STATUS (2026-06-14) — LIVE for full-attention models
 
 **`--batch N` now serves B>1** for full-attention models (CPM). The numerics
