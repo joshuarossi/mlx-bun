@@ -71,6 +71,13 @@ head's dh was silently wrong for 2-3-token responses/tail-chunks/spans.
 Fixed in mlx-bun (logitsFromHiddenPadM + ops wrapper pad; f32-ground-truth
 gated, chunk-4 dh 0.47→0.006); details in kernel-perf-review-2026-07.md
 "NEW BUG" + research journal. Upstream report = pending task chip.
+Kernel backlog #3 (head auto-dispatch by M) **LANDED 2026-07-02**
+(MLX_BUN_FLASH_MIN_M=1024; fresh crossover sweep — the filter flip made
+flash faster at long M too). Kernel backlog #4 (fused-decode activeN)
+**built, gated byte-identical, then REFUTED end-to-end and REVERTED**
+(12B kv4 interleaved A/B: 0.94 @8k / 0.97 @22k — the fetch-view copies
+never applied to the KV=1 full-attn shape; evidence in
+scripts/experiments/fused-decode-activen-ab.ts).
 
 ## Multi-agent review + cleanup (2026-07-01) — verified state, open decisions
 

@@ -110,8 +110,19 @@ analytic backward). Verified vs f32-dequant ground truth (chunk-4 dh
    top of its memory win. CPM5: fused faster at every M — flash stays a pure
    memory lever there (≥1024 honors the caller's intent). Dispatch proven by
    bit-identical-to-fused loss in tests/train-orpo-fused-ce.test.ts.
-4. **[S] Fused decode full-capacity KV buffers + activeN** — kills 6
-   ensureRowContiguous copies/layer/step; 1-3% @8k, ~4× that at 32k.
+4. ~~**[S] Fused decode full-capacity KV buffers + activeN**~~ **REFUTED BY
+   MEASUREMENT 2026-07-02** — the variant was built (an int32 activeN input,
+   capacity-strided rows, fetch attaches full buffers), gated BYTE-IDENTICAL
+   on all three recorded dispatch shapes and perf-oracle-green — and then
+   measured SLOWER end-to-end: interleaved in-process A/B on the 12B uniform
+   kv4 (tokens identical across arms, M1 Max) gave 24.64 vs 26.18 tok/s @8k
+   (0.94) and 23.07 vs 23.83 @22k (0.97) — the "~4× at 32k" scaling is
+   refuted too. Two holes in the estimate: the 12B's full-attention dispatch
+   shape is KV=1 (H16 D512), where the fetch view is a CONTIGUOUS PREFIX and
+   the six-copies model never applied; and kernel-only micro-A/Bs proved
+   unstable (±50% run-to-run) — the numbers behind "1-3%" were never
+   end-to-end. REVERTED; evidence + re-application recipe:
+   scripts/experiments/fused-decode-activen-ab.ts.
 5. **[M] Collapse per-token host syncs in the spec/DSpark loop** — ~2γ+1
    round-trips → ~2 per verify cycle; directly attacks DSpark's fixed draft
    overhead.
