@@ -101,9 +101,15 @@ analytic backward). Verified vs f32-dequant ground truth (chunk-4 dh
    also measured no-effect (watermark is live memory). Real next levers: the
    head vjp's ~3 GB [M,V] spike (backlog #8) and an O(L)-memory attention
    backward (the flash-attention track).
-3. **[S] Auto-dispatch the training head by M** — exact fused QM head for
-   short-M (~1.9×: 481 ms vs 934 ms at e4b M=512), flash only when memory
-   demands; both heads already share the fusedRespLogpMean interface.
+3. ~~**[S] Auto-dispatch the training head by M**~~ **LANDED 2026-07-02** —
+   fusedRespLogpMean routes requested-flash batches with M <
+   MLX_BUN_FLASH_MIN_M (default 1024) to the exact fused head. Fresh crossover
+   sweep (head-dispatch-sweep.ts, M1 Max — the review's 1.9× @M=512 was
+   pre-filter-flip): fused wins e4b M=64 1.6× / M=512 1.13×, tie @1024; the
+   #1-flip made flash FASTER at long M too (e4b ≥2048; 8K 10.7 vs 13.2 s) on
+   top of its memory win. CPM5: fused faster at every M — flash stays a pure
+   memory lever there (≥1024 honors the caller's intent). Dispatch proven by
+   bit-identical-to-fused loss in tests/train-orpo-fused-ce.test.ts.
 4. **[S] Fused decode full-capacity KV buffers + activeN** — kills 6
    ensureRowContiguous copies/layer/step; 1-3% @8k, ~4× that at 32k.
 5. **[M] Collapse per-token host syncs in the spec/DSpark loop** — ~2γ+1

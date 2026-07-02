@@ -1188,8 +1188,19 @@ export function fusedRespLogpMean(
   // Vocab-blocked (full CCE) path: even [chunk,V] never materializes — only
   // [chunk,vocabBlock]. Otherwise the whole-vocab analytic head below.
   const vb = vocabBlock > 0 && vocabBlock < V ? vocabBlock : 0;
+  // Auto-dispatch by M (kernel backlog #3; measured 2026-07-02 on the M1 Max,
+  // scripts/experiments/head-dispatch-sweep.ts): the fused QM head is FASTER
+  // at short M (e4b M=64 1.6×, M=512 1.13×; CPM5 faster at EVERY M) — the
+  // flash head's win is residency, plus time at long M on e4b (M≥2048 after
+  // the 2026-07-02 filter/blockMax flip; 8K: 10.7 vs 13.2 s). So a
+  // requested-flash batch with M below MLX_BUN_FLASH_MIN_M (default 1024, the
+  // e4b time-tie point where flash's memory win takes over) takes the EXACT
+  // fused head instead — short rows get the faster exact head for free.
+  // MLX_BUN_FLASH_MIN_M=0 always honors flash (the pre-dispatch behavior).
+  const flashMinM = Number(process.env.MLX_BUN_FLASH_MIN_M ?? "1024");
+  const useFlash = flash && (flashMinM <= 0 || M >= flashMinM);
   let op: CustomVjp;
-  if (flash) {
+  if (useFlash) {
     op = makeFlashCceHeadVjp(head, targetsHost, M, sink);
   } else if (vb > 0) {
     op = makeVocabBlockedHeadVjp(head, targetsHost, M, hidden, chunk, vb);

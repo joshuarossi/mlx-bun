@@ -132,6 +132,11 @@ piece independently toggled and each falling back cleanly:
 - **`orpo_flash_ce`** — the [M,vocab]-free flash-CCE Metal head (steel GEMM fwd
   **and** bwd; e4b backward 754 ms, peak 0.93 GB flat at M=8192). Implies the
   fused head. Falls back to the MLX fused head when the tiling isn't clean.
+  **Auto-dispatch by M** (2026-07-02): batches with M below `MLX_BUN_FLASH_MIN_M`
+  (default 1024) take the exact MLX fused head instead — it is faster at short
+  M (e4b M=64 1.6×, M=512 1.13×; CPM5 at every M), while flash wins memory
+  everywhere and time at long M on e4b (M≥2048; 8K: 10.7 vs 13.2 s with the
+  filter/blockMax defaults). `MLX_BUN_FLASH_MIN_M=0` always honors flash.
 - **`segment_size`** — segmented backward (gradient-checkpointed layer
   activations) for long context; the head is ~free in memory, the activations
   are the wall.
@@ -184,7 +189,7 @@ are `DEFAULT_TRAIN_CONFIG` (trainer.ts:89).
 | `orpo_lr_schedule` | `constant` \| `cosine` | `cosine` | ORPO LR schedule (orpo only) |
 | `orpo_chunk_size` | int | `0` (off) | Token-chunk the response head, bounding the `[M,vocab]` logits to `[chunk,vocab]` (defaults to 512 when a fused head is on). Exact (orpo only) |
 | `orpo_fused_ce` | bool | `false` | Fused linear-CE head: one CustomVjp with an analytic softmax−onehot backward (MLX `quantizedMatmul` both ways) — no autograd through the head, no retained `[M,vocab]`. Exact; `[chunk,vocab]` transient (orpo only) |
-| `orpo_flash_ce` | bool | `false` | Route the fused head through the **flash-CCE Metal kernel** (verbatim MLX steel GEMM + ORPO epilogue, fwd **and** bwd): neither `[M,vocab]` nor a dequantized head touches HBM → `[M,vocab]`-free, fastest on large vocab (e4b bwd 754 ms, 0.93 GB flat @ M=8192). Implies the fused head. The Apple-CCE coeff filter / blockMax skip are opt-in via `MLX_BUN_CCE_BWD_FILTER_EPS` / `_BLOCK_EPS` (default off — exact). B=1 (orpo only) |
+| `orpo_flash_ce` | bool | `false` | Route the fused head through the **flash-CCE Metal kernel** (verbatim MLX steel GEMM + ORPO epilogue, fwd **and** bwd): neither `[M,vocab]` nor a dequantized head touches HBM → `[M,vocab]`-free (e4b 0.93 GB flat @ M=8192). Implies the fused head. The Apple-CCE coeff filter + blockMax skip default ON at 1e-5 (2026-07-02; combined bwd 1.71× CPM5 / 3.16× e4b vs exact — `MLX_BUN_CCE_BWD_FILTER_EPS=0` / `_BLOCK_EPS=0` restore exact). Batches with M < `MLX_BUN_FLASH_MIN_M` (default 1024) auto-take the exact fused head (faster at short M; `=0` always honors flash). B=1 (orpo only) |
 | `orpo_prefix_shared` | bool | `false` | Shared prompt-prefix: one forward over `[prompt; chosen; rejected]` with a block-sparse mask + block-wise RoPE, so the shared prompt is encoded **once** (a big win when the prompt dominates). Falls back to two-forward per row on prompt mismatch. Composes with the flash head and the segmented backward (MiniCPM5 + e4b). B=1 (orpo only) |
 | `sft_scope` | `full` \| `response` | `full` | Scope of ORPO's chosen-NLL term. `full` (paper/TRL-faithful): token-mean CE over the **full prompt+response** (only padding excluded), from the same chosen forward. `response`: `L_NLL = −ℓ_w` — reproduces pre-2026-07 runs bit-exactly. The odds-ratio `ℓ_w/ℓ_r` are response-only in both modes. Applies to every ORPO path (naive/chunked/fused/flash/prefix/segmented) (orpo only). CLI spelling: `mlx-bun train … --sft-scope full\|response` |
 
