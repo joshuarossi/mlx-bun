@@ -231,12 +231,22 @@ is suspect, profile on the other laptop before building anything.**
    1d. **12B short-context: compile the concat phase too** (or accept 1b as
        the fix). The current segmented form compiles nothing below the 1024
        window and never compiles the 8 full-attention layers. ~+9% @600.
-2. **26B GPU overhead (~4 ms/tok over floor):** profile gather-qmm expert
-   reads (each expert slice ~3.3 MiB → the ~180 GB/s small-buffer regime);
-   candidates: expert-contiguous layout so 8 experts read as fewer/larger
-   spans, the open perf-kernel enablement (review #7, +1–3%), router-chain op
-   fusion. Potential **+15–25% 26B decode** if expert reads reach big-GEMV
-   bandwidth. Effort M (profile first).
+2. **26B GPU overhead (~4 ms/tok over floor):** ~~profile gather-qmm expert
+   reads~~ **PROFILED 2026-07-02** (moe-expert-read-profile.ts, exact 26B
+   shapes; real decode @600 re-measured 21.0–22.6 ms/tok ✓). The gap is real
+   and located, but BOTH cheap candidates are refuted: expert-contiguous
+   layout does nothing (a chain with ONE expert repeated ×8 — 1/8 the unique
+   bytes — runs at the same speed: not bandwidth/locality-bound), and merging
+   gate+up stacks to cut dispatches is SLOWER (9.6 vs 8.1 ms). Root cause:
+   **mx.gather_qmm at M=1 is compute-bound** (~99 GB/s effective vs the qmv
+   kernel's ~180 on identical bytes; upstream python mlx 0.31.2 reproduces
+   6.18 vs 4.01 ms) — it lacks a qmv-class fast path, so each per-expert
+   [1,2816]→[704] product runs on mostly-idle GEMM tiles. The router chain
+   adds a secondary ~1.6–2.6 ms of tiny-op dispatches. The remaining fix is a
+   KERNEL: a custom Metal gather-qmv (our MetalKernel infra + the
+   fused-decode qdot pattern; indices read device-side) for ~3.5–4 ms/tok ≈
+   **+18–20% 26B decode @600** — or an upstream gather_qmm M=1
+   specialization. Effort: the same class as the fused-decode v2 kernel.
 3. **e4b GPU overhead (1.8–3.7 ms):** dispatch-count reduction on the
    per-layer-input machinery (the ~1–2 MiB gate/proj GEMVs and altup
    elementwise chains; batch the 42 per-layer gate GEMVs into one [42·width]

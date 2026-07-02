@@ -78,6 +78,15 @@ flash faster at long M too). Kernel backlog #4 (fused-decode activeN)
 (12B kv4 interleaved A/B: 0.94 @8k / 0.97 @22k — the fetch-view copies
 never applied to the KV=1 full-attn shape; evidence in
 scripts/experiments/fused-decode-activen-ab.ts).
+Kernel backlog #9 (segmented-step overhead) **LANDED 2026-07-02**: single-copy
+detach + one barrier/segment + prefix-mask memo — grads BYTE-IDENTICAL,
+short-seq steps −34% (CPM5 prefix) / −38% (e4b SFT), @8K flat.
+26B gather-qmm **PROFILED 2026-07-02** (roofline item 2): the ~4 ms gap is
+mx.gather_qmm's missing M=1 fast path (compute-bound at ~99 GB/s vs qmv's
+~180; upstream-reproduced). Layout + dispatch-merge candidates both refuted
+by measurement; identified fix = custom Metal gather-qmv kernel (~+18-20%
+26B decode, fused-decode-v2-class effort) — new L3 kernel candidate.
+Evidence: scripts/experiments/moe-expert-read-profile.ts.
 
 ## Multi-agent review + cleanup (2026-07-01) — verified state, open decisions
 
