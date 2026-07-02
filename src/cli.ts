@@ -9,6 +9,8 @@
 //   mlx-bun evals                         recent benchmark runs
 //   mlx-bun harness pi [--base-url <url>] [--remove]   connect your own pi to the local server
 
+import { existsSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { Registry } from "./registry";
 import { loadModelConfig } from "./config";
 import { fit, skuMatrix, thisMachine } from "./fit";
@@ -66,6 +68,10 @@ Examples:
   mlx-bun get mlx-community/gemma-4-12B-it-OptiQ-4bit`;
 
 const SERVER_FLAGS = `Server options:
+  --model <path|query>      Explicit model override (mlx_lm.server spelling):
+                            a directory containing config.json loads from that
+                            path; anything else resolves like the positional
+                            query. Wins over the positional and auto-pick.
   --host <addr>             Interface to bind  [default: 127.0.0.1, loopback
                             only; use 0.0.0.0 to expose on your network]
   --port <n>                Listen port  [default: 8080]
@@ -74,6 +80,14 @@ const SERVER_FLAGS = `Server options:
                             GPU  [default: machine RAM × 0.75, check-only]
   --prompt-cache <GB>       Prompt (KV) cache byte cap  [default: 2 GB;
                             --prompt-cache 0 disables the cache]
+  --ssd-cache <dir>         SSD cold tier for the prompt cache: prefix KV
+                            spills to disk on eviction and persists across
+                            restarts (long-context agent TTFT drops from a
+                            full re-prefill to a zero-copy mmap restore).
+                            Off unless set.
+  --ssd-cache-max <GB>      SSD tier byte cap  [default: 32 GB]
+  --ssd-cache-verify        Verify tensor hashes on every restore (reads all
+                            bytes eagerly — integrity paranoia only)
   --batch <n>               Max concurrent requests batched through the
                             mlx-lm-parity engine  [default: 1 = serial].
                             >1 opts the whole server into bf16 continuous
@@ -285,6 +299,9 @@ and runs the mlx-lm/optiq comparison legs.
                        positional)  [default: auto-pick]
 
 Options:
+  --model <path|query> Explicit model override: a directory containing
+                       config.json loads from that path; anything else
+                       resolves like the positional query. Wins over both.
   --tokens <n>         Tokens to decode per run  [default: 256]
   --runs <n>           Runs (median reported)  [default: 3]
   --prompt-tokens <n>  Pad the prompt to ~n tokens (long-context decode)
@@ -785,6 +802,14 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   if (budgetGB > 0) serverOptions.memoryBudgetBytes = budgetGB * 1e9;
   const pcRaw = opt("prompt-cache"); // null if absent; an explicit value (incl. 0) wins → `--prompt-cache 0` DISABLES the cache
   if (pcRaw !== null) serverOptions.promptCacheBytes = Math.max(0, Number(pcRaw)) * 2 ** 30;
+  // SSD cold tier (docs/design/ssd-kv-cold-tier.md) — off unless a dir is given.
+  const ssdDir = opt("ssd-cache");
+  if (ssdDir !== null) {
+    serverOptions.ssdCacheDir = ssdDir;
+    const maxRaw = opt("ssd-cache-max");
+    if (maxRaw !== null) serverOptions.ssdCacheMaxBytes = Math.max(1, Number(maxRaw)) * 2 ** 30;
+    if (flag("ssd-cache-verify")) serverOptions.ssdCacheVerify = true;
+  }
   // --batch N: max concurrent requests batched through the mlx-lm-parity
   // engine (N=1 = today's serial path). --decode-concurrency is accepted for
   // drop-in compatibility with mlx_lm.server, but the semantics differ: there
@@ -893,8 +918,21 @@ function runtimeSummary(o: import("./server").ServerOptions): string {
 
 /** Shared model resolution: explicit query wins; otherwise e4b (the default
  *  model everywhere) if it's downloaded, else the largest supported model that
- *  fits this machine. Downloads the recommended model first on a fresh install. */
+ *  fits this machine. Downloads the recommended model first on a fresh install.
+ *  A query that is a DIRECTORY containing config.json loads directly via
+ *  scanSnapshot (no registry dependency) — the `--model <path>` bench/CI shape. */
 async function resolveModelAuto(query: string | null): Promise<{ m: import("./registry").ModelRecord; picked: boolean }> {
+  if (query && existsSync(join(query, "config.json"))) {
+    const { scanSnapshot } = await import("./registry");
+    const dir = resolve(query);
+    // Recover the repo id from an HF-cache path (…/models--org--name/snapshots/<rev>);
+    // otherwise the directory basename is the display id.
+    const hf = /models--([^/]+)--([^/]+)\/snapshots\//.exec(dir);
+    const repoId = hf ? `${hf[1]}/${hf[2]}` : basename(dir);
+    const m = await scanSnapshot(dir, repoId);
+    if (!m) throw new Error(`${dir} has config.json but no weights (*.safetensors)`);
+    return { m, picked: false };
+  }
   const reg = new Registry();
   if (reg.list().length === 0) await reg.scan();
   if (query) return { m: reg.resolve(query), picked: false };
@@ -1220,7 +1258,12 @@ switch (cmd) {
         process.exit(1);
       }
     }
-    const { m, picked } = await resolveModelAuto(positional(0) ?? opt("query"));
+    // --model <path-or-query> is the explicit override (mlx_lm.server's
+    // spelling — previously accepted-but-IGNORED here, which silently
+    // auto-picked the wrong model). A directory with config.json loads
+    // straight from that path; anything else resolves like the positional
+    // fuzzy query. Precedence: --model > positional > --query > auto-pick.
+    const { m, picked } = await resolveModelAuto(opt("model") ?? positional(0) ?? opt("query"));
     const sFit = step("assessing fit");
     const config = await loadModelConfig(m.path);
     const report = fit(config, m.sizeBytes, 8192, undefined, undefined, m.expertsBytes);
@@ -1385,7 +1428,7 @@ switch (cmd) {
     const { banner, step, box, style } = await import("./tui");
     banner(pkg.version);
     serverRuntimeFlags(); // env levers (--compiled-decode, --perf-kernel, ...) apply to the run
-    const { m, picked } = await resolveModelAuto(positional(0) ?? opt("query"));
+    const { m, picked } = await resolveModelAuto(opt("model") ?? positional(0) ?? opt("query"));
     const tokens = Number(opt("tokens", "256"));
     const runs = Number(opt("runs", "3"));
     const promptTokens = Number(opt("prompt-tokens", "0"));
@@ -1573,13 +1616,14 @@ switch (cmd) {
     // (src/pi-terminal.ts) — pi is bundled, nothing to install. Users who
     // already run their own pi connect it with `mlx-bun harness pi`.
     const OURS_VAL = new Set([
-      "--query", "-q", "--port", "--host", "--memory-budget", "--prompt-cache", "--kv-quant",
+      "--query", "-q", "--model", "--port", "--host", "--memory-budget", "--prompt-cache",
+      "--ssd-cache", "--ssd-cache-max", "--kv-quant",
       "--batch", "--decode-concurrency", "--adapter", "--adapter-path",
       "--compiled-decode", "--perf-kernel", "--fused-decode", "--fused-sdpa", "--thinking",
       "--temperature", "--temp", "--top-p", "--top-k", "--max-tokens",
       "--hlg-sampling", "--hlg-width", "--hlg-shoulder", "--hlg-toe", "--hlg-pivot-offset",
     ]);
-    const OURS_BOOL = new Set(["--force-wire", "--expert-offload", "--no-open", "--l1", "--l2", "--l3"]);
+    const OURS_BOOL = new Set(["--force-wire", "--expert-offload", "--no-open", "--ssd-cache-verify", "--l1", "--l2", "--l3"]);
     const passthrough: string[] = [];
     for (let i = 1; i < argv.length; i++) {
       const a = argv[i]!;

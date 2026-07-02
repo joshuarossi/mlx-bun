@@ -465,7 +465,10 @@ function visionConfigTypeOf(config: Record<string, any>): string | null {
   return typeof vt === "string" && vt.endsWith("_vision") ? vt : null;
 }
 
-async function scanSnapshot(dir: string, repoId: string): Promise<ModelRecord | null> {
+/** Build a ModelRecord straight from a snapshot directory (also the scan()
+ *  workhorse). Exported for explicit-path loads (`serve --model <dir>`),
+ *  which must not depend on the registry DB having scanned that dir. */
+export async function scanSnapshot(dir: string, repoId: string): Promise<ModelRecord | null> {
   const configPath = join(dir, "config.json");
   if (!existsSync(configPath)) return null;
 
