@@ -15,7 +15,10 @@
 // Files download sequentially (decode is bandwidth-bound, the network
 // rarely is; resumability matters more than parallelism here).
 
-import { mkdirSync, existsSync, statSync, createWriteStream, renameSync, rmSync, symlinkSync, readFileSync } from "node:fs";
+import {
+  mkdirSync, existsSync, statSync, createWriteStream, renameSync, rmSync,
+  symlinkSync, readFileSync, openSync, closeSync, readSync, writeSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { DEFAULT_HUB } from "./registry";
 
@@ -54,6 +57,63 @@ export function hfToken(): string | null {
   }
 }
 
+/** 401/403 almost always means a gated/private repo, not a broken network —
+ *  say so instead of leaving the user staring at a bare status code. */
+function authHint(status: number): string {
+  return status === 401 || status === 403
+    ? " — gated repo? run `hf auth login` or set HF_TOKEN"
+    : "";
+}
+
+// --- download lockfile -----------------------------------------------------
+// Two writers on one blob (a foreground `mlx-bun get` racing the server's
+// background auto-download) both append to the same .incomplete file and
+// corrupt it. An O_EXCL .lock beside the .incomplete serializes them; a lock
+// older than LOCK_STALE_MS (crashed owner) or whose pid is gone is stolen.
+
+const LOCK_STALE_MS = 60 * 60 * 1000; // ~1 h: longer than any sane blob fetch
+
+function lockIsStale(lockPath: string): boolean {
+  try {
+    const st = statSync(lockPath);
+    if (Date.now() - st.mtimeMs > LOCK_STALE_MS) return true;
+    const pid = Number(readFileSync(lockPath, "utf8").split("\n")[0]);
+    if (Number.isFinite(pid) && pid > 0) {
+      try { process.kill(pid, 0); } catch { return true; } // owner is gone
+    }
+    return false;
+  } catch {
+    return true; // unreadable/vanished — treat as stale, O_EXCL still arbitrates
+  }
+}
+
+/** Take `<blobPath>.lock` (O_EXCL). Returns a release fn, or throws the
+ *  friendly "another download in progress" error when live-held. */
+function acquireLock(blobPath: string, name: string): () => void {
+  const lockPath = `${blobPath}.lock`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(lockPath, "wx");
+      writeSync(fd, `${process.pid}\n${new Date().toISOString()}\n`);
+      closeSync(fd);
+      return () => { try { rmSync(lockPath, { force: true }); } catch {} };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      if (lockIsStale(lockPath)) {
+        try { rmSync(lockPath, { force: true }); } catch {}
+        continue; // one retry after stealing
+      }
+      let holder = "";
+      try { holder = ` (pid ${readFileSync(lockPath, "utf8").split("\n")[0]})`; } catch {}
+      throw new Error(
+        `another download of ${name} is in progress${holder} — ` +
+        `wait for it to finish, or delete ${lockPath} if you're sure it isn't`,
+      );
+    }
+  }
+  throw new Error(`could not acquire ${lockPath}`);
+}
+
 /** git blob identity: sha1("blob <size>\0" + content) — what blobId is. */
 export function gitBlobSha1(bytes: Uint8Array): string {
   const hasher = new Bun.CryptoHasher("sha1");
@@ -73,7 +133,10 @@ export async function listRepoFiles(
     headers: token ? { authorization: `Bearer ${token}` } : {},
   });
   if (!res.ok)
-    throw new Error(`HF API ${res.status} for ${repoId}@${revision}: ${(await res.text()).slice(0, 200)}`);
+    throw new Error(
+      `HF API ${res.status} for ${repoId}@${revision}: ${(await res.text()).slice(0, 200)}` +
+      authHint(res.status),
+    );
   const body = (await res.json()) as {
     sha: string;
     siblings: { rfilename: string; size?: number; blobId?: string; lfs?: { oid: string; size: number } }[];
@@ -116,6 +179,21 @@ export async function downloadOne(
   expected: { size: number; sha256?: string; sha1?: string; name: string },
   onProgress?: DownloadOptions["onProgress"],
 ): Promise<void> {
+  // Serialize concurrent writers (foreground get vs background auto-download)
+  // on this blob — both appending to one .incomplete corrupts it.
+  const release = acquireLock(blobPath, expected.name);
+  try {
+    await downloadOneLocked(url, token, blobPath, expected, onProgress);
+  } finally {
+    release();
+  }
+}
+
+async function downloadOneLocked(
+  url: string, token: string | null, blobPath: string,
+  expected: { size: number; sha256?: string; sha1?: string; name: string },
+  onProgress?: DownloadOptions["onProgress"],
+): Promise<void> {
   const partPath = `${blobPath}.incomplete`;
   let offset = existsSync(partPath) ? statSync(partPath).size : 0;
   if (offset > expected.size) {
@@ -124,14 +202,27 @@ export async function downloadOne(
   }
 
   // Streaming verification — resume re-hashes the existing prefix so the
-  // final digest always covers every byte on disk.
+  // final digest always covers every byte on disk. Chunked reads: a resumed
+  // multi-GB blob must not be materialized as one allocation.
   const sha256 = new Bun.CryptoHasher("sha256");
   const sha1 = new Bun.CryptoHasher("sha1");
   sha1.update(`blob ${expected.size}\0`);
   if (offset > 0) {
-    const existing = await Bun.file(partPath).arrayBuffer();
-    sha256.update(existing);
-    sha1.update(existing);
+    const fd = openSync(partPath, "r");
+    try {
+      const buf = Buffer.alloc(8 * 2 ** 20);
+      let pos = 0;
+      while (pos < offset) {
+        const n = readSync(fd, buf, 0, Math.min(buf.length, offset - pos), pos);
+        if (n <= 0) break;
+        const chunk = buf.subarray(0, n);
+        sha256.update(chunk);
+        sha1.update(chunk);
+        pos += n;
+      }
+    } finally {
+      closeSync(fd);
+    }
   }
 
   if (offset < expected.size) {
@@ -139,10 +230,10 @@ export async function downloadOne(
     if (res.status === 200 && offset > 0) {
       // server ignored Range — start the file (and hashes) over
       rmSync(partPath);
-      return downloadOne(url, token, blobPath, expected, onProgress);
+      return downloadOneLocked(url, token, blobPath, expected, onProgress);
     }
     if (res.status !== 200 && res.status !== 206)
-      throw new Error(`download failed (${res.status}) for ${expected.name}`);
+      throw new Error(`download failed (${res.status}) for ${expected.name}${authHint(res.status)}`);
     const out = createWriteStream(partPath, { flags: offset > 0 ? "a" : "w" });
     try {
       for await (const chunk of res.body as ReadableStream<Uint8Array>) {
