@@ -95,6 +95,79 @@ describe.skipIf(!optIn || !haveBase)("ORPO fused linear-CE head parity (MiniCPM5
     weights.dispose();
   }, 180_000);
 
+  // The L3 standing gate (PLAN.md "teacher-forced grad fidelity"): the flash-CCE
+  // backward dh — at the PRODUCTION defaults (coeff filter + blockMax skip ON at
+  // 1e-5 since 2026-07-02) — must match the full-logits autograd dh on peaked
+  // (teacher-forced) hiddens. A kernel/logic bug shifts dh by O(100%); the honest
+  // fp-reassociation + filter residual measured on real data is <1% relnorm at
+  // cosine ≥0.9999 (scripts/experiments/flash-cce-filter-realdata.ts), so the 5%
+  // bar has a wide margin without tolerating structural breakage.
+  test("flash-CCE backward dh matches full-logits autograd dh at production defaults (teacher-forced fidelity)", async () => {
+    const { loadModelConfig } = await import("../src/config");
+    const { Weights } = await import("../src/weights");
+    const { createModel } = await import("../src/model/factory");
+    const { MiniCPM5Model } = await import("../src/model/minicpm5");
+    const ops = await import("../src/mlx/ops");
+    const { MlxArray } = await import("../src/mlx/array");
+    const { Dtype } = await import("../src/mlx/ffi");
+    const { Vjp } = await import("../src/mlx/autograd");
+    const { flashCceForward, flashCceBackward } = await import("../src/train/flash-cce");
+
+    const config = await loadModelConfig(BASE);
+    const weights = await Weights.open(BASE);
+    const model = createModel(weights, config);
+    if (!(model instanceof MiniCPM5Model)) throw new Error("expected MiniCPM5Model");
+    const H = config.text.hiddenSize, V = config.text.vocabSize;
+    const lh = model.lmHead;
+    const head = { w: lh.w, scales: lh.scales, biases: lh.biases!, bits: lh.spec.bits, groupSize: lh.spec.groupSize, softcap: null };
+
+    // Teacher-forced regime: a REAL forward over in-vocab ids yields genuinely
+    // peaked next-token distributions (the regime the filter defaults assume).
+    const M = 256;
+    const idData = Array.from({ length: M }, (_, i) => (i * 2659 + 13) % V);
+    const ids = ops.fromInt32(idData, [1, M]);
+    const h3 = model.forwardHidden(ids, model.makeCache());
+    const hResp = ops.reshape(h3, [M, H]);
+    ops.evalAll([hResp]);
+    const targets = idData.map((_, i) => idData[(i + 1) % M]!);
+
+    // Reference: full-logits autograd dh for loss = Σ_t logp_t (unit cotangent).
+    const vjp = new Vjp((primals) => {
+      const l2 = ops.reshape(model.logitsFromHidden(ops.reshape(primals[0]!, [1, M, H])), [M, V]);
+      const lse = ops.logsumexpAxis(l2, -1, false);
+      const tgt = MlxArray.fromInt32(new Int32Array(targets), [M, 1]);
+      const logp = ops.sub(ops.reshape(ops.takeAlongAxis(l2, tgt, -1), [M]), lse);
+      return [ops.reshape(ops.sumAxis(logp.astype(Dtype.float32), 0, false), [1])];
+    });
+    const one = MlxArray.fromFloat32(new Float32Array([1]), [1]);
+    const { outputs, vjps } = vjp.apply([hResp], [one]);
+    const dhFull = vjps[0]!.astype(Dtype.float32);
+    ops.evalAll([dhFull]);
+    const fullF = dhFull.toFloat32();
+
+    // Flash dh at the production defaults (filter + block skip at their defaults).
+    const fwd = flashCceForward(hResp, head, targets);
+    ops.evalAll([fwd.lse, fwd.blockMax]);
+    const dh = flashCceBackward(hResp, head, targets, fwd.lse, new Array(M).fill(1), undefined, fwd.blockMax);
+    ops.evalAll([dh]);
+    const flashF = dh.toFloat32();
+
+    let dot = 0, na = 0, nb = 0, d2 = 0;
+    for (let i = 0; i < M * H; i++) {
+      const a = fullF[i]!, b = flashF[i]!;
+      dot += a * b; na += a * a; nb += b * b;
+      const d = a - b; d2 += d * d;
+    }
+    const cosine = dot / (Math.sqrt(na * nb) || 1);
+    const relnorm = Math.sqrt(d2) / (Math.sqrt(na) || 1);
+    expect(cosine).toBeGreaterThan(0.999);
+    expect(relnorm).toBeLessThan(0.05);
+
+    for (const a of [ids, h3, hResp, one, dhFull, dh, fwd.logp, fwd.lse, fwd.blockMax, ...outputs, ...vjps]) a.dispose();
+    vjp.dispose();
+    weights.dispose();
+  }, 180_000);
+
   test("sft_scope: 'response' is bit-identical to the default; 'full' agrees across naive/fused/flash/chunked/prefix/segmented paths", async () => {
     const { loadModelConfig } = await import("../src/config");
     const { Weights } = await import("../src/weights");

@@ -723,24 +723,28 @@ const BWD_SG_SOURCE = String.raw`
   }
 `;
 
-// Apple-CCE coeff filter epsilon (phase-2 per-tile skip). DEFAULT OFF ("0") today —
-// no production path sets the env — but the VERDICT is measured and positive: the old
+// Apple-CCE coeff filter epsilon (phase-2 per-tile skip). DEFAULT ON at 1e-5
+// (flipped 2026-07-02 — the kernel-perf-review backlog #1 flip). The old
 // 0.66%→2.7% dh-accuracy scare was on RANDOM targets (flat softmax, the filter's
 // worst case — see PLAN.md "filter-on-real-data"); the real-data gate
-// (scripts/experiments/flash-cce-filter-realdata.ts, commit 3d259ef, 2026-06-22)
-// measured eps 1e-5 = 0.16% dh (under the bf16 floor) for a 1.35× faster backward,
-// and PLAN.md's recorded decision is "enable the filter at eps ~1e-5". (The ~3.5×
-// figure floating around older notes was the retired SG kernel, not steel.) Flipping
-// the default is the open backlog item; until then opt in with
-// MLX_BUN_CCE_BWD_FILTER_EPS=1e-5 on real (peaked) training data.
-const BWD_FILTER_EPS = process.env.MLX_BUN_CCE_BWD_FILTER_EPS ?? "0";
+// (scripts/experiments/flash-cce-filter-realdata.ts) measured, on REAL chunk-ORPO
+// data (M1 Max, 2026-07-02): CPM5 eps 1e-5 = 0.343% dh for 1.41×; e4b = 0.158% dh
+// for 1.70× — and the teacher-forced full-logits fidelity shows the filter's added
+// error is far below the flash-vs-full fp-reassociation scatter that already
+// exists (CPM5 0.850→0.913% relnorm, e4b 1.207→1.220%, cosine ≥0.99993 both).
+// (The ~3.5× figure floating around older notes was the retired SG kernel, not
+// steel.) MLX_BUN_CCE_BWD_FILTER_EPS=0 restores exact gradients — eps "0"
+// compiles the filter OUT (#if CCE_BWD_FILTER 0), the identical pre-flip kernel.
+const BWD_FILTER_EPS = process.env.MLX_BUN_CCE_BWD_FILTER_EPS ?? "1e-5";
 // blockMax vocab-block early-exit eps (skip whole cold (token-block,vocab-block) programs
-// — attacks BOTH phases). DEFAULT OFF ("0"). It is LOSSLESS when it fires (only skips
-// blocks whose max prob < eps AND which lack the target → ~0 contribution), so it is the
-// SAFE skip; but it only pays off on genuinely peaked real text where whole 8192-vocab
-// blocks go cold (the M=512 synthetic probe found nothing cold → pure overhead). Opt in
-// with MLX_BUN_CCE_BWD_BLOCK_EPS=1e-5 for long real-text training; needs blockMax supplied.
-const BWD_BLOCK_EPS = process.env.MLX_BUN_CCE_BWD_BLOCK_EPS ?? "0";
+// — attacks BOTH phases). DEFAULT ON at 1e-5 (flipped 2026-07-02). It is ~LOSSLESS when
+// it fires (only skips blocks whose max prob < eps AND which lack the target → ~0
+// contribution). The M=512 synthetic probe found nothing cold (pure overhead), but the
+// real-data gate proved real text DOES go cold: alone it's 1.23× (CPM5) / 2.02× (e4b)
+// at ≤0.004% dh; COMBINED with the coeff filter at 1e-5/1e-5 the backward is 1.71×
+// (CPM5) / 3.16× (e4b) vs exact. Fires only when the caller supplies blockMax (the
+// production head does); MLX_BUN_CCE_BWD_BLOCK_EPS=0 disables (compiled out).
+const BWD_BLOCK_EPS = process.env.MLX_BUN_CCE_BWD_BLOCK_EPS ?? "1e-5";
 const _bwdSgKernels = new Map<string, MetalKernel>();
 function bwdSgKernel(dimTiles: number, filterEps: string, blockEps: string): MetalKernel {
   const filterOn = Number.parseFloat(filterEps) > 0 ? 1 : 0;
@@ -1132,14 +1136,13 @@ export function flashCceForward(
  *  (no atomics). Caller owns the result. */
 export function flashCceBackward(
   hResp: MlxArray, head: FlashCceHead, targets: number[], lse: MlxArray, cot: number[],
-  // Apple-CCE coeff filter eps. Defaults to BWD_FILTER_EPS, which is OFF ("0")
-  // unless MLX_BUN_CCE_BWD_FILTER_EPS is set — exact gradients by default. The
-  // measured real-data case FOR enabling it (eps 1e-5 = 0.16% dh, 1.35×; PLAN.md
-  // "filter-on-real-data") is a pending default flip — see BWD_FILTER_EPS's note.
-  // Pass "0" explicitly for guaranteed-exact (the parity gate does).
+  // Apple-CCE coeff filter eps. Defaults to BWD_FILTER_EPS — ON at 1e-5 since
+  // 2026-07-02 (real-data gates in BWD_FILTER_EPS's note). Pass "0" explicitly
+  // for guaranteed-exact gradients (the parity gate does).
   filterEps: string = BWD_FILTER_EPS,
   // The forward's `blockMax [M, NBLK]` enables the vocab-block early exit (skips
-  // whole cold programs — attacks phase 1). Omit (or set blockEps "0") for exact.
+  // whole cold programs — attacks BOTH phases); ON at 1e-5 by default when
+  // blockMax is supplied. Omit blockMax (or set blockEps "0") for exact.
   blockMax?: MlxArray, blockEps: string = BWD_BLOCK_EPS,
 ): MlxArray {
   const M = hResp.shape[0]!;
@@ -1169,9 +1172,9 @@ export function flashCceBackward(
   // MLX_BUN_CCE_BWD_NOSTEEL=1 falls back to the old kernels. The steel backward carries
   // the SAME Apple-CCE skips as the SG kernel — coeff filter (phase-2 per-tile) +
   // blockMax vocab-block early exit (whole-program) — both compiled out at eps=0.
-  // BOTH skips are OFF by default (the envs default "0", nothing in production sets
-  // them): exact gradients unless explicitly opted in. Enabling the coeff filter at
-  // ~1e-5 is the measured-and-decided pending flip (PLAN.md "filter-on-real-data").
+  // BOTH skips default ON at 1e-5 (2026-07-02 flip; measured gates in the
+  // BWD_FILTER_EPS / BWD_BLOCK_EPS notes). MLX_BUN_CCE_BWD_{FILTER,BLOCK}_EPS=0
+  // restores exact gradients (identical pre-flip kernels).
   const blockV0 = Math.ceil(V / NBLK);
   // HTw == group_size for the phase-2 QuantizedBlockLoader (one group per H-tile); needs
   // H % GS == 0 (always, GR*GS=H) and GS % 32 == 0 (TNv = GS/32 frags per H-tile integral).

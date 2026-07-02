@@ -38,9 +38,11 @@ in docs/planning/curve-sampler-research-plan.md).
 **Next actions, ranked (each has a tracked plan):**
 1. Josh: push + publish v0.0.9 (sequence above), then optionally `gc --yes`
    after the 12B-vision decision + test-pin updates.
-2. Kernel backlog #1 — flip the measured 1.35× coeff filter
-   (docs/investigations/kernel-perf-review-2026-07.md) + the decode
-   graph-build-overlap spike (the roofline doc's top fix).
+2. ~~Kernel backlog #1 — flip the measured 1.35× coeff filter~~ **DONE
+   2026-07-02** (both skips default 1e-5; combined backward **1.71× CPM5 /
+   3.16× e4b** vs exact, fidelity-gated — see kernel-perf-review-2026-07.md
+   backlog #1). Remaining from this slot: the decode graph-build-overlap
+   spike (the roofline doc's top fix).
 3. Web-UI fix wave (docs/planning/web-ui-pass-plan.md — 6 bugs, landing order inside).
 4. Batching steps 4–10 (docs/design/batching-v2-plan.md).
 5. serve --draft-model + remaining verbs (docs/design/mlx-lm-tool-parity-plan.md).

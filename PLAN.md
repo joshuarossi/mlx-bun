@@ -375,8 +375,22 @@ Ordered by expected payoff on this hardware:
         eps ~1e-5 = 0.16% dh (under the bf16 floor) for 1.35× backward; the
         synthetic 21.4% was a random-target artifact. `flash-cce-filter-realdata.ts`.
         → enable the filter at eps ~1e-5.
-  - [ ] **teacher-forced grad fidelity** — flash vs full-logits `dh` (cosine +
-        relnorm) on real data, as the standing L3 quality regression.
+  - [x] **DEFAULT FLIPPED (2026-07-02)** — coeff filter AND blockMax skip both
+        default 1e-5 (`flash-cce.ts` BWD_FILTER_EPS/BWD_BLOCK_EPS; env=0 restores
+        exact). Re-measured on the M1 Max with REAL chunk-ORPO data
+        (`flash-cce-filter-realdata.ts`, now also E4B=1 + blockEps sweep +
+        full-logits fidelity): filter@1e-5 = CPM5 0.343%/1.41×, e4b 0.158%/1.70×;
+        blockMax skip alone ≤0.004% dh at 1.23×/2.02× (real text DOES go cold —
+        the old M=512 synthetic "nothing cold" was an artifact); COMBINED 1e-5/1e-5
+        = **1.71× (CPM5) / 3.16× (e4b)** backward vs exact. Note: run-to-run dh is
+        NOT byte-stable at any eps (atomic-add reassociation) — "eps=0 exact"
+        means the identical pre-flip kernel (filter compiled out), not byte-replay.
+  - [x] **teacher-forced grad fidelity** — DONE (2026-07-02): flash (at production
+        defaults) vs full-logits autograd `dh`: cosine ≥0.99993, relnorm CPM5
+        0.913% / e4b 1.220% — the filter adds ~nothing over the pre-existing
+        flash-vs-full fp-reassociation (0.850%/1.207% at eps=0). Standing
+        regression: `tests/train-orpo-fused-ce.test.ts` "teacher-forced fidelity"
+        (cos>0.999, relnorm<5% vs Vjp full-logits reference).
   - [ ] **end-to-end quality eval** of the completed ORPO run (the real proof).
 - **Parity-tier DAG → meaningful CLI flags** (roadmap, 2026-06-21). Tag every
   compute node with its parity tier (L1 mlx-lm / L2 optiq / L3 ours; the ORACLE is

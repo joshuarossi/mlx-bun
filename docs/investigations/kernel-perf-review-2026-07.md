@@ -12,7 +12,7 @@ area reviews + full mechanisms): `reports/kernel-perf-review-2026-07-01.json`
   vendored MLX steel machinery, exact-by-default backward with autograd + FD
   parity — marred by decision drift: the PLAN-decided 1.35× filter win was
   never landed and the in-code comments argued three contradictory positions
-  (comments fixed 2026-07-01; the FLIP itself is still backlog #1).
+  (comments fixed 2026-07-01; the FLIP LANDED 2026-07-02 — see backlog #1).
 - **Training flash-attention kernel**: faithful port with exemplary post-bug
   discipline, correctly opt-in — but it copies a naive oracle (~30× slower)
   and its tests covered none of the production configs (extended 2026-07-01:
@@ -55,10 +55,18 @@ or make the tile loop trace-safe).
 
 ## The ranked optimization backlog (task #12)
 
-1. **[S] Land the coeff filter at eps~1e-5** (+ measure blockMax skip on real
-   data) — 1.35× ORPO head backward, ALREADY MEASURED
-   (flash-cce-filter-realdata.ts, PLAN.md "filter-on-real-data"); gates:
-   E4B=1 rerun + teacher-forced grad fidelity + eps=0 byte-identical.
+1. ~~**[S] Land the coeff filter at eps~1e-5**~~ **LANDED 2026-07-02** — BOTH
+   skips default 1e-5 (coeff filter + blockMax block skip; env=0 restores exact).
+   All gates run on the M1 Max with real chunk-ORPO data
+   (flash-cce-filter-realdata.ts, extended: E4B=1 + blockEps sweep + Vjp
+   full-logits fidelity): filter CPM5 0.343%/1.41×, e4b 0.158%/1.70×; blockMax
+   skip ~lossless (≤0.004%) and real text DOES go cold (the synthetic probe was
+   the artifact) — **combined 1.71× (CPM5) / 3.16× (e4b)**; teacher-forced
+   fidelity cosine ≥0.99993, filter adds ≤0.07% over the eps=0 reassociation
+   floor (standing test in tests/train-orpo-fused-ce.test.ts). The "eps=0
+   byte-identical" gate resolved structurally: eps=0 compiles the identical
+   pre-flip kernel, but run-to-run dh is never byte-stable (atomic-add
+   reassociation) — byte-replay was the wrong spelling of that gate.
 2. **[M] planSegments full-attention isolation** — e4b@8K ~17.5→10 GB;
    unblocks 8K training on the 24 GB M4 Pro.
 3. **[S] Auto-dispatch the training head by M** — exact fused QM head for
