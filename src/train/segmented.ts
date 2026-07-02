@@ -36,7 +36,20 @@
 
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
+import { peakMemory } from "../mlx/ffi";
 import { Vjp } from "../mlx/autograd";
+
+// MLX_BUN_SEG_MEM_LOG=1: log the within-step peak after each phase of the
+// segmented step (forward+boundaries / head vjp / each segment backward).
+// The trainer resets the peak at step start (MLX_BUN_MEM_LOG=1), so the phase
+// where the monotone peak JUMPS is where the step's memory actually lives.
+// (This is how the backlog-#2 refutation below was measured. An inter-segment
+// clearCache was also tried and had NO effect — the watermark is live memory,
+// not allocator cache retention.)
+const SEG_MEM = process.env.MLX_BUN_SEG_MEM_LOG === "1";
+const segMem = (label: string): void => {
+  if (SEG_MEM) console.log(`  [seg-mem] ${label}: peak=${(peakMemory() / 1e9).toFixed(2)} GB`);
+};
 import { MiniCPM5Model, setMiniCpmPrefixPlan } from "../model/minicpm5";
 import type { Gemma4Model } from "../model/gemma4";
 import { setGemmaPrefixPlan } from "../model/gemma4";
@@ -76,6 +89,18 @@ export function planSegmentsBySize(nLayers: number, segSize: number): [number, n
   for (let lo = 0; lo < nLayers; lo += segSize) ranges.push([lo, Math.min(lo + segSize, nLayers)]);
   return ranges;
 }
+
+// NOTE (2026-07-02, kernel-review backlog #2 REFUTED BY MEASUREMENT): a
+// "full-attention isolation" planner (singleton segments for e4b's 7 full
+// layers) was built and A/B'd @8K — ZERO peak win (18.09 vs 18.02 GB). The
+// design §5 premise is false: mlx's sdpa BACKWARD materializes the O(L²)
+// scores for EVERY layer (~3.5 GB/layer @8K on e4b — sliding's window is just
+// an additive mask; measured: sliding pair +7.1 GB ≈ sliding+full +7.15). The
+// worst segment is set by LAYER COUNT alone, so segSize IS the whole knob:
+// segment_size 1 measures 14.59 GB @8K (+3% step time) vs 17.5 @seg2. Below
+// that needs the [M,V]-bounded SFT head (backlog #8, ~3 GB head-vjp spike)
+// and/or an O(L)-memory attention backward. Evidence:
+// scripts/experiments/seg-isolation-smoke.ts + MLX_BUN_SEG_MEM_LOG=1 probes.
 
 /** Detach `a` into a graph-free LEAF holding its exact (evaluated) bytes, then
  *  dispose `a`. mlx retains the upstream graph after `eval`, so a segment
@@ -437,6 +462,7 @@ export class SegmentedBackwardGemma4 {
         for (const [d, kv] of donorKvOut)
           if (!produces[k]!.includes(d) && kv.kind === "plain") { kv.keys.dispose(); kv.values.dispose(); }
         boundaries.push(detachLeaf(h));
+        segMem(`fwd seg ${k} [${lo},${hi})`);
       }
 
       // --- 2. Loss head (vjp, cotangent 1.0). ---
@@ -445,6 +471,7 @@ export class SegmentedBackwardGemma4 {
       dhOut = detachLeaf(head.vjps[0]!);
       boundaries[nSeg]!.dispose();
       boundaries[nSeg] = null;
+      segMem("head vjp");
 
       // --- 3. Backward, reverse over segments (vjp, cotangents dh + dKV). ---
       for (let k = nSeg - 1; k >= 0; k--) {
@@ -488,6 +515,7 @@ export class SegmentedBackwardGemma4 {
         }
         boundaries[k]!.dispose();
         boundaries[k] = null;
+        segMem(`bwd seg ${k} [${ranges[k]![0]},${ranges[k]![1]})`);
       }
 
       transferred = true;

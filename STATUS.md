@@ -57,6 +57,11 @@ in docs/planning/curve-sampler-research-plan.md).
 ~~Open kernel bug: FUSED_DECODE×compiled-decode trace-freeze~~ **FIXED
 2026-07-02** (reproduced on e4b, combo now refuses to compile + throw
 backstop + regression; see kernel-perf-review-2026-07.md ledger).
+Kernel backlog #2 (planSegments full-attn isolation) **REFUTED by measurement
+2026-07-02**: sdpa backward is O(L²) for EVERY layer (~3.5 GB/layer @8K), so
+segment_size is the whole knob — **seg1 = 14.59 GB e4b @8K (+3% time), fits
+the 24 GB M4 Pro today**; next real levers = backlog #8 (head ~3 GB) + O(L)
+attention backward. Evidence: scripts/experiments/seg-isolation-smoke.ts.
 
 ## Multi-agent review + cleanup (2026-07-01) — verified state, open decisions
 

@@ -184,6 +184,21 @@ quant. The trivial case to validate the machinery on a real model.
 
 ## 5. The segmentation strategy (the part to get right)
 
+> **2026-07-02 CORRECTION — this section's cost model is WRONG, measured.**
+> The full-attention isolation planner was built and A/B'd @8K on real chunk
+> rows (scripts/experiments/seg-isolation-smoke.ts, MLX_BUN_SEG_MEM_LOG=1
+> phase probes): ZERO peak win (18.09 vs 18.02 GB seg2). The premise "sliding
+> layers are O(L·window) in the backward" is false — mlx's sdpa BACKWARD
+> materializes the O(L²) scores for EVERY layer (~3.5 GB/layer @8K e4b; the
+> sliding window is only an additive mask; a sliding PAIR costs +7.1 GB ≈
+> sliding+full's +7.15). The worst segment is therefore set by LAYER COUNT
+> alone and `segment_size` is the whole knob: **seg1 = 14.59 GB @8K, +3% step
+> time, loss identical — fits the 24 GB M4 Pro today.** The head vjp adds
+> ~3 GB (full-[M,V] responseOnlyCe — kernel-review backlog #8). Going below
+> ~14 GB needs that head fix plus an O(L)-memory attention backward (flash
+> track), not smarter segmentation. Section kept for the (still-correct)
+> donor/boundary constraints; ignore its sliding-vs-full peak arithmetic.
+
 NOT a naive "divide by N". Compute the split points from the model:
 
 **Constraints & inputs (all readable from the model/config):**

@@ -74,8 +74,18 @@ machine, which is how the combo went unexercised.
    byte-identical" gate resolved structurally: eps=0 compiles the identical
    pre-flip kernel, but run-to-run dh is never byte-stable (atomic-add
    reassociation) — byte-replay was the wrong spelling of that gate.
-2. **[M] planSegments full-attention isolation** — e4b@8K ~17.5→10 GB;
-   unblocks 8K training on the 24 GB M4 Pro.
+2. ~~**[M] planSegments full-attention isolation**~~ **REFUTED BY MEASUREMENT
+   2026-07-02** — built, A/B'd @8K on real chunk rows: ZERO peak win (18.09 vs
+   18.02 GB; scripts/experiments/seg-isolation-smoke.ts + MLX_BUN_SEG_MEM_LOG
+   phase probes). The §5 cost-model premise is false: mlx's sdpa BACKWARD
+   materializes O(L²) scores for EVERY layer (~3.5 GB/layer @8K e4b — the
+   sliding window is just an additive mask; sliding pair +7.1 GB ≈ full+sliding
+   +7.15). Worst segment = layer count alone, so **segment_size is the whole
+   knob: seg1 measures 14.59 GB @8K (+3% step time, loss identical) — which
+   DOES fit the 24 GB M4 Pro today, no code needed.** Inter-segment clearCache
+   also measured no-effect (watermark is live memory). Real next levers: the
+   head vjp's ~3 GB [M,V] spike (backlog #8) and an O(L)-memory attention
+   backward (the flash-attention track).
 3. **[S] Auto-dispatch the training head by M** — exact fused QM head for
    short-M (~1.9×: 481 ms vs 934 ms at e4b M=512), flash only when memory
    demands; both heads already share the fusedRespLogpMean interface.

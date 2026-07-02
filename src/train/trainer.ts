@@ -389,6 +389,16 @@ export async function trainLora(
 }
 
 // ---------------------------------------------------------------------------
+// Segment planning: uniform planSegmentsBySize only. A full-attention
+// ISOLATION planner (kernel-review backlog #2 / segmented-backward-training.md
+// §5) was built and A/B-measured 2026-07-02: ZERO peak win — mlx's sdpa
+// backward is O(L²) for EVERY layer (~3.5 GB/layer @8K e4b), sliding included,
+// so the worst segment is set by layer count alone and segment_size is the
+// whole knob (seg1 = 14.59 GB @8K, +3% step time — fits the 24 GB M4 Pro).
+// Evidence: scripts/experiments/seg-isolation-smoke.ts; note in segmented.ts.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // SFT loop
 // ---------------------------------------------------------------------------
 
@@ -421,14 +431,14 @@ async function sftLoop(
   const useSegmented = cfg.segmentSize > 0;
   let segmented: SegmentedBackward | SegmentedBackwardGemma4 | null = null;
   if (useSegmented) {
-    if (model instanceof MiniCPM5Model)
-      segmented = new SegmentedBackward(model, lora, planSegmentsBySize(model.layers.length, cfg.segmentSize));
-    else if (model instanceof Gemma4Model)
-      segmented = new SegmentedBackwardGemma4(model, lora, planSegmentsBySize(model.layers.length, cfg.segmentSize));
-    else
+    if (!(model instanceof MiniCPM5Model) && !(model instanceof Gemma4Model))
       throw new Error("segmented backward (segmentSize > 0) is only wired for MiniCPM5 and Gemma4");
+    const ranges = planSegmentsBySize(model.layers.length, cfg.segmentSize);
+    segmented = model instanceof MiniCPM5Model
+      ? new SegmentedBackward(model, lora, ranges)
+      : new SegmentedBackwardGemma4(model, lora, ranges);
     emit({ type: "stage", stage: "setup", progress: 0.04,
-      message: `segmented backward: ${Math.ceil(model.layers.length / cfg.segmentSize)} segments of <=${cfg.segmentSize} layers` });
+      message: `segmented backward: ${ranges.length} segments of <=${cfg.segmentSize} layers` });
   }
 
   // The value_and_grad loss closure: temporarily swap the differentiated
@@ -832,6 +842,8 @@ async function orpoLoop(
   let segmentedOrpo: SegmentedBackwardOrpo | SegmentedBackwardOrpoGemma4 | null = null;
   let segmentedOrpoPrefix: SegmentedBackwardOrpoPrefix | SegmentedBackwardOrpoPrefixGemma4 | null = null;
   if (useSegmented) {
+    if (!(model instanceof MiniCPM5Model) && !(model instanceof Gemma4Model))
+      throw new Error("segmented backward (segmentSize > 0) for ORPO is only wired for MiniCPM5 and Gemma4");
     const ranges = planSegmentsBySize(model.layers.length, cfg.segmentSize);
     if (useSegmentedPrefix) {
       // The composed prefix-shared segmented backward (MiniCPM5 or Gemma4/e4b), plus a
@@ -845,15 +857,13 @@ async function orpoLoop(
         segmentedOrpo = new SegmentedBackwardOrpoGemma4(model as Gemma4Model, lora, ranges, cfg.orpoLambda, segFusedChunk, cfg.sftScope);
       }
       emit({ type: "stage", stage: "setup", progress: 0.04,
-        message: `orpo segmented + prefix-share (${model instanceof Gemma4Model ? "e4b" : "MiniCPM5"}): single concat forward streamed over ${Math.ceil(model.layers.length / cfg.segmentSize)} segments of <=${cfg.segmentSize} layers (two-forward fallback on prompt mismatch)` });
+        message: `orpo segmented + prefix-share (${model instanceof Gemma4Model ? "e4b" : "MiniCPM5"}): single concat forward streamed over ${ranges.length} segments of <=${cfg.segmentSize} layers (two-forward fallback on prompt mismatch)` });
     } else if (model instanceof MiniCPM5Model)
       segmentedOrpo = new SegmentedBackwardOrpo(model, lora, ranges, cfg.orpoLambda, segFusedChunk, cfg.sftScope);
-    else if (model instanceof Gemma4Model)
-      segmentedOrpo = new SegmentedBackwardOrpoGemma4(model, lora, ranges, cfg.orpoLambda, segFusedChunk, cfg.sftScope);
     else
-      throw new Error("segmented backward (segmentSize > 0) for ORPO is only wired for MiniCPM5 and Gemma4");
+      segmentedOrpo = new SegmentedBackwardOrpoGemma4(model as Gemma4Model, lora, ranges, cfg.orpoLambda, segFusedChunk, cfg.sftScope);
     if (!useSegmentedPrefix) emit({ type: "stage", stage: "setup", progress: 0.04,
-      message: `orpo segmented backward: ${Math.ceil(model.layers.length / cfg.segmentSize)} segments of <=${cfg.segmentSize} layers${segFusedChunk > 0 ? ` + fused linear-CE head (${segFusedChunk}/chunk)` : ""}` });
+      message: `orpo segmented backward: ${ranges.length} segments of <=${cfg.segmentSize} layers${segFusedChunk > 0 ? ` + fused linear-CE head (${segFusedChunk}/chunk)` : ""}` });
   }
 
   // Token-chunked head (non-segmented path only): the per-chunk checkpoints are
