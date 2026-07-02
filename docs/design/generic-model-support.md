@@ -1,6 +1,12 @@
 # Generic model support — run anything mlx-lm runs
 
-**Status: design proposal (2026-07-01). Nothing here is built.**
+**Status: Phase 1 + 1.5 BUILT (2026-07-01, commit 9bd9f1b)** — `src/model/universal/`
+(UniversalDense + descriptor table for 11 archs, rope factory bit-exact vs oracle
+fixtures, DenseLinear/bf16 checkpoints, weight audit, dispatch ladder in
+factory/support, manifest-driven parity harness). Parity gates light per-model
+once the small checkpoints are downloaded (`scripts/regen-universal-goldens.ts` →
+`MLX_BUN_TEST_UNIVERSAL=1`). Phases 2 (UniversalMoE), 3 (SSM/MLA one-offs),
+4 (`mlx-bun port` scaffold) remain design.
 
 Direction (Josh): *"we should be able to run any model that mlx-lm can run.
 Run any model generically; for the specific models we target, optimize them
