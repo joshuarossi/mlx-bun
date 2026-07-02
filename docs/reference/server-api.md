@@ -323,7 +323,7 @@ curl localhost:8080/v1/embeddings -H 'content-type: application/json' \
 "created": <unix s>, … }] }`
 
 The served model is FIRST (with extra capability fields:
-`context_window`, `reasoning`, `owned_by`), followed by every other
+`context_window`, `reasoning`, `vision`, `owned_by`), followed by every other
 servable model the local registry knows (mlx-lm scans the HF cache
 here; the registry is that scan, filtered to supported architectures).
 `GET /v1/models/<id>` filters the list to that id — same list shape,
@@ -461,13 +461,29 @@ these endpoints is unchanged.
 
 ## Client setup: pi
 
-`~/.pi/agent/models.json`:
+The supported one-command path:
+
+```bash
+mlx-bun harness pi            # install; then: pi --provider mlx-bun
+mlx-bun harness pi --remove   # undo
+```
+
+It writes a self-contained extension to
+`~/.pi/agent/extensions/mlx-bun-provider.ts` that registers the `mlx-bun`
+provider with live discovery: at pi startup it fetches `/v1/models` from the
+running server, so the stable `mlx-bun/local` model handle always resolves to
+whatever the server is actually serving (context window, reasoning, and
+vision capability included), and never goes stale across model swaps. The
+model list baked at install time is only the fallback for when the server is
+down.
+
+Manual fallback — `~/.pi/agent/models.json`:
 
 ```jsonc
 {
   "providers": {
     "mlx-bun": {
-      "baseUrl": "http://localhost:8080/v1",
+      "baseUrl": "http://127.0.0.1:8080/v1",
       "api": "openai-completions",
       "apiKey": "sk-anything-nonempty",
       "models": [{ "id": "<model id from /v1/models>" }]
@@ -476,5 +492,9 @@ these endpoints is unchanged.
 }
 ```
 
-Any OpenAI SDK works the same way: `baseURL: "http://localhost:8080/v1"`,
+Note the manual route bakes a concrete model id, which goes stale when you
+serve a different model — the staleness `harness pi`'s `local` id exists to
+solve.
+
+Any OpenAI SDK works the same way: `baseURL: "http://127.0.0.1:8080/v1"`,
 any non-empty `apiKey`.

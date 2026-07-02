@@ -548,16 +548,37 @@ const memoryListTool = defineTool({
   },
 });
 
+/** Last synthesis-pipeline write to the vault, from its git log (every
+ *  pipeline write commits with a "memory: …" message — synthesize.ts,
+ *  reconcile.ts, wikify.ts, stages.ts). null when the vault has no git repo
+ *  or no synthesis commit yet. */
+async function lastSynthesisCommit(root: string): Promise<{ date: string; subject: string } | null> {
+  try {
+    const proc = Bun.spawn(
+      ["git", "log", "-1", "--grep=^memory: ", "--format=%cI\t%s"],
+      { cwd: root, stdout: "pipe", stderr: "ignore" },
+    );
+    const out = (await new Response(proc.stdout).text()).trim();
+    if ((await proc.exited) !== 0 || !out) return null;
+    const tab = out.indexOf("\t");
+    if (tab === -1) return null;
+    return { date: out.slice(0, tab), subject: out.slice(tab + 1) };
+  } catch {
+    return null;
+  }
+}
+
 const memoryStatusTool = defineTool({
   name: "memory_status",
   label: "Memory Status",
   description:
-    "Show read-only status for the user's memory: vault path, setup state, article count, git state, and nightly schedule state. Use when the user asks whether memory is on or where it lives.",
+    "Show read-only status for the user's memory: vault path, setup state, article count, git state, last synthesis run, and nightly schedule state. Use when the user asks whether memory is on or where it lives.",
   parameters: Type.Object({}),
   execute: async () => {
     try {
       const st = await vaultStatus();
       const sched = await scheduleStatus();
+      const last = st.isGitRepo ? await lastSynthesisCommit(st.root) : null;
       const recent = st.recentArticles.length
         ? st.recentArticles.slice(0, 5).map((r) => `  - ${r.article} (${new Date(r.mtimeMs).toISOString()})`).join("\n")
         : "  - (none)";
@@ -568,8 +589,8 @@ const memoryStatusTool = defineTool({
         `- articles: ${st.articleCount}`,
         `- read-only references: ${st.referenceCount}`,
         `- git: ${st.isGitRepo ? "tracked" : "not tracked"}`,
-        `- last synthesis: not available yet (M1 synthesis is stubbed)`,
-        `- synthesis: M1 stub (manual/nightly writes are not implemented yet)`,
+        `- last synthesis: ${last ? `${last.date} (${last.subject})` : "no synthesis run recorded yet"}`,
+        "- synthesis: available — `mlx-bun memory synthesize` runs the full local pipeline (conversations → articles); the nightly job runs it automatically when scheduled",
         `- nightly: ${sched.installed ? (sched.loaded ? "scheduled" : "installed but not loaded") : "not scheduled"}`,
         sched.installed ? `- launchd plist: ${sched.plistPath}` : "- setup command: mlx-bun memory init",
         "- recent changed articles:",

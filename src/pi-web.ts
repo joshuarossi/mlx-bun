@@ -67,6 +67,21 @@ const GATED_TOOLS = new Set(["bash", "edit", "write"]);
  */
 const WELCOME_TOOLS = ["read", "web_search"] as const;
 
+/**
+ * The web chat session's tool allowlist: the two welcome tools, plus the
+ * memory/reference read tools whenever the surface has memory enabled. The
+ * system prompt (surface.memoryHint) and the bundled memory skill instruct
+ * the model to call memory_resolve/memory_read/… — pi treats `tools` as an
+ * allowlist, so leaving them out makes every such call fail. All additions
+ * are in READ_ONLY_TOOLS (no approval round-trip).
+ */
+export function webChatToolAllowlist(memoryEnabled: boolean): string[] {
+  return [
+    ...WELCOME_TOOLS,
+    ...(memoryEnabled ? [...MEMORY_TOOL_NAMES, ...REFERENCE_TOOL_NAMES] : []),
+  ];
+}
+
 /** Auto-deny a pending approval after this long with no browser decision. */
 const APPROVAL_TIMEOUT_MS = 120_000;
 
@@ -564,8 +579,10 @@ class PiWebSession {
           // Allowlist (not surface.tools): `read` is a pi built-in enabled by
           // name; `web_search` is the custom tool from surface.customTools. pi
           // exposes only names in this list, so web_fetch/weather stay defined
-          // but hidden.
-          tools: [...WELCOME_TOOLS],
+          // but hidden. Memory/reference tools ride along when the surface has
+          // memory enabled — the prompt + memory skill advertise them, so they
+          // must be callable (webChatToolAllowlist).
+          tools: webChatToolAllowlist(surface.memoryEnabled),
           customTools: surface.customTools,
         })),
         services,
