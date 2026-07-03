@@ -87,7 +87,17 @@ function wasmQueue<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-let cachedTokenizerInfo: { path: string; info: XTokenizerInfo } | null = null;
+let cachedTokenizerInfo: {
+  path: string;
+  info: XTokenizerInfo;
+  /** F4: ONE compiler per TokenizerInfo, cached for the process lifetime.
+   *  xgrammar's GrammarCompiler carries an internal compilation cache
+   *  (cacheEnabled defaults true), so agentic clients replaying the same
+   *  JSON schema hit a cached grammar instead of paying a full
+   *  schema→grammar compile per request. Both are vocab-structural.
+   *  Controllers get ownsCompiler=false and never dispose it. */
+  compiler: XGrammarCompiler;
+} | null = null;
 
 /** Extract the ordered vocab array + detect xgrammar vocab type from
  *  tokenizer.json (the same data src/tokenizer.ts already loads).
@@ -123,15 +133,25 @@ function loadVocab(tokenizerJsonPath: string): {
   return { vocab, vocabType, prependSpace: vocabType === "byte_level" };
 }
 
-/** Get (cached) xgrammar TokenizerInfo for a tokenizer.json path. */
-async function getTokenizerInfo(tokenizerJsonPath: string): Promise<XTokenizerInfo> {
-  if (cachedTokenizerInfo?.path === tokenizerJsonPath) return cachedTokenizerInfo.info;
+/** Get (cached) xgrammar TokenizerInfo + its process-lifetime compiler for a
+ *  tokenizer.json path. On a path change (model switch) the old pair is
+ *  disposed before the new one is built. */
+async function getTokenizerInfo(
+  tokenizerJsonPath: string,
+): Promise<{ info: XTokenizerInfo; compiler: XGrammarCompiler }> {
+  if (cachedTokenizerInfo?.path === tokenizerJsonPath) return cachedTokenizerInfo;
+  const prev = cachedTokenizerInfo;
   const { vocab, vocabType, prependSpace } = loadVocab(tokenizerJsonPath);
   const info = await wasmQueue(() =>
     xgrammar.TokenizerInfo.createTokenizerInfo(vocab, vocabType, prependSpace, vocab.length),
   );
-  cachedTokenizerInfo = { path: tokenizerJsonPath, info };
-  return info;
+  const compiler = await wasmQueue(() => xgrammar.GrammarCompiler.createGrammarCompiler(info));
+  cachedTokenizerInfo = { path: tokenizerJsonPath, info, compiler };
+  if (prev) {
+    prev.compiler.dispose();
+    prev.info.dispose();
+  }
+  return cachedTokenizerInfo;
 }
 
 /** Vocab size the matcher masks against (config.vocab_size, may exceed the
@@ -192,7 +212,12 @@ export class GrammarController {
     for (let id = 0; id < V; id++) {
       const word = id >>> 5;
       const bit = id & 31;
-      const valid = (this.readyMask[word]! >>> bit) & 1;
+      // F3: V is the model's logit width (config.vocab_size, may exceed the
+      // tokenizer vocab via padding); the matcher's mask has the TOKENIZER's
+      // width. Padded ids beyond the mask are never valid — mask them
+      // explicitly rather than relying on undefined>>>bit coercing to 0.
+      const w = word < this.readyMask.length ? this.readyMask[word]! : 0;
+      const valid = (w >>> bit) & 1;
       maskArr[id] = valid ? 0 : -Infinity;
     }
     const mask = MlxArray.fromFloat32(maskArr, [1, V]).astype(logits.dtype);
@@ -262,8 +287,7 @@ export async function compileGrammarRequest(
   // Each xgrammar WASM call rides wasmQueue individually (NOT a body-level
   // wrap — prime() calls wasmQueue internally, so a body-level wrap would
   // deadlock reentrantly). Individual calls serialize without nesting.
-  const info = await getTokenizerInfo(tokenizerJsonPath);
-  const compiler = await wasmQueue(() => xgrammar.GrammarCompiler.createGrammarCompiler(info));
+  const { info, compiler } = await getTokenizerInfo(tokenizerJsonPath);
   let compiled: XCompiledGrammar | null = null;
   let degradeHint: string | null = null;
 
@@ -299,9 +323,23 @@ export async function compileGrammarRequest(
         break;
       }
       case "choice": {
-        const opts = resolved.choices
-          .map((c) => `"${c.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`)
-          .join(" | ");
+        // F6: escape everything an EBNF string literal can't hold bare.
+        // \n\r\t have named escapes; any other control char has no EBNF
+        // spelling — throw into the degrade path (prompt injection +
+        // Warning header), never a 500.
+        const esc = (c: string) => {
+          const body = c
+            .replace(/\\/g, "\\\\")
+            .replace(/"/g, '\\"')
+            .replace(/\n/g, "\\n")
+            .replace(/\r/g, "\\r")
+            .replace(/\t/g, "\\t");
+          // eslint-disable-next-line no-control-regex
+          if (/[\x00-\x1f]/.test(body))
+            throw new Error("guided_choice: unsupported control character in choice");
+          return `"${body}"`;
+        };
+        const opts = resolved.choices.map(esc).join(" | ");
         const g = await wasmQueue(() => xgrammar.Grammar.fromEBNF(`root ::= ${opts}`));
         compiled = await wasmQueue(() => compiler.compileGrammar(g));
         g.dispose();
@@ -315,7 +353,9 @@ export async function compileGrammarRequest(
 
   if (!compiled) {
     if (!degradeHint) degradeHint = resolved.degradeDescription ?? "grammar compile failed";
-    compiler.dispose();
+    // The compiler is the cached per-TokenizerInfo instance (F4) — a failed
+    // compile must NOT dispose it; the WASM abort is catchable and the
+    // compiler state survives (verified in tests/grammar.test.ts).
     return null;
   }
 
@@ -330,7 +370,7 @@ export async function compileGrammarRequest(
     xgrammar.GrammarMatcher.createGrammarMatcher(compiled!, undefined, true),
   );
   const vocabSize = effectiveVocabSize(tokenizer, configVocabSize) || info.getVocabSize();
-  const controller = new GrammarController(matcher, compiled, compiler, true, vocabSize);
+  const controller = new GrammarController(matcher, compiled, compiler, false, vocabSize);
   await controller.prime();
   return { controller, degradeHint };
 }
