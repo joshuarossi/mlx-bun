@@ -106,8 +106,14 @@ or shelved with numbers — ledger:
    holds the 5 differing files; regen recipe in the test header). 11/11 on
    both chips; the local-oracle match also re-proves the runtime bit-exact
    per chip.
-   **Open: Phase D** — extend-join (+ grammar-churn test), vectorized
-   homogeneous sampling, `projectKvBytes` + `--kv-budget` admission.
+   **Phase D: KV-budget admission LANDED 2026-07-03** — `--kv-budget <GB>`
+   caps the batch's aggregate projected KV (prompt+max_tokens per row,
+   window-capped via fit's kvBytesAt): over-budget joiners QUEUE (FIFO)
+   until rows evict, never OOM; a request over the budget alone rejects
+   with an actionable error; `/stats.batch` gains
+   pending_rows/kv_bytes/kv_budget_bytes. Gated:
+   tests/batch-kv-budget.test.ts. **Still open in D:** extend-join
+   (+ grammar-churn test) + vectorized homogeneous sampling.
    Debug lever: `MLX_BUN_GRAMMAR_DEBUG=1` (per-step scheduler trace).
 3. **Menu bar app** (SwiftUI + signed binary as sidecar) — adoption map #2,
    Josh wants it; /Applications/oMLX.app is the structural reference.

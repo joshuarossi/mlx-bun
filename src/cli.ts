@@ -78,6 +78,11 @@ const SERVER_FLAGS = `Server options:
   --memory-budget <GB>      Admission-control memory budget; requests that
                             cannot fit are rejected instead of crashing the
                             GPU  [default: machine RAM × 0.75, check-only]
+  --kv-budget <GB>          Aggregate KV budget across concurrent batch rows
+                            (decimal GB): joiners whose projected KV
+                            (prompt + max_tokens) would exceed it queue until
+                            rows finish; a request over the budget alone is
+                            rejected. Off unless set.
   --prompt-cache <GB>       Prompt (KV) cache byte cap  [default: 2 GB;
                             --prompt-cache 0 disables the cache]
   --ssd-cache <dir>         SSD cold tier for the prompt cache: prefix KV
@@ -807,6 +812,9 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   const serverOptions: import("./server").ServerOptions = {};
   const budgetGB = Number(opt("memory-budget", "0"));
   if (budgetGB > 0) serverOptions.memoryBudgetBytes = budgetGB * 1e9;
+  // Aggregate KV budget across batch rows (batching-perf-path P3 admission).
+  const kvBudgetGB = Number(opt("kv-budget", "0"));
+  if (kvBudgetGB > 0) serverOptions.kvBudgetBytes = kvBudgetGB * 1e9;
   const pcRaw = opt("prompt-cache"); // null if absent; an explicit value (incl. 0) wins → `--prompt-cache 0` DISABLES the cache
   if (pcRaw !== null) serverOptions.promptCacheBytes = Math.max(0, Number(pcRaw)) * 2 ** 30;
   // SSD cold tier (docs/design/ssd-kv-cold-tier.md) — off unless a dir is given.
@@ -1643,7 +1651,7 @@ switch (cmd) {
     // (src/pi-terminal.ts) — pi is bundled, nothing to install. Users who
     // already run their own pi connect it with `mlx-bun harness pi`.
     const OURS_VAL = new Set([
-      "--query", "-q", "--model", "--port", "--host", "--memory-budget", "--prompt-cache",
+      "--query", "-q", "--model", "--port", "--host", "--memory-budget", "--kv-budget", "--prompt-cache",
       "--ssd-cache", "--ssd-cache-max", "--kv-quant",
       "--batch", "--decode-concurrency", "--adapter", "--adapter-path",
       "--draft-model", "--num-draft-tokens",

@@ -1,7 +1,10 @@
 # Grammar × spec decode × batching — integration plan + feature-matrix benchmark
 
 Status: **Phases A, B, C, E EXECUTED 2026-07-03** (same day as the plan);
-Phase D open (extend-join, vectorized sampling, KV-budget admission).
+Phase D: **KV-budget admission LANDED 2026-07-03** (`--kv-budget`,
+aggregate projection gate in the scheduler, queue-don't-OOM, oversized
+rejects; `/stats.batch.{pending_rows,kv_bytes,kv_budget_bytes}`;
+tests/batch-kv-budget.test.ts); extend-join + vectorized sampling open.
 Execution log at the bottom of this doc. Successor plan tying together
 three workstreams so they compose deliberately instead of colliding:
 

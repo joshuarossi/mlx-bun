@@ -63,6 +63,7 @@ import { BatchedRotatingCache } from "../model/batched-rotating";
 import { SSMCache } from "../model/qwen3-delta";
 import type { RuntimeModel } from "../model/factory";
 import type { GrammarController } from "../grammar";
+import { kvBytesAt } from "../fit";
 
 /** Decode-pipeline kill switch (read once at load, like the serial loop's
  *  MLX_BUN_COMPILED_DECODE): 1 ⇒ read each step's tokens synchronously. */
@@ -147,6 +148,14 @@ export interface BatchSchedulerOptions {
   admissionHeld?: () => boolean;
   /** Joiner prefill chunk length (default 2048, the serial loop's constant). */
   prefillChunkSize?: number;
+  /** Aggregate KV-byte budget across all running rows (batching-perf-path
+   *  P3 admission, via `--kv-budget`). A joiner whose PROJECTED KV
+   *  (kvBytesAt(config, prompt + maxTokens), sliding window already capped)
+   *  would push the batch's projected total over this ceiling WAITS in the
+   *  queue (FIFO, head-of-line — no starvation, no reorder) until rows
+   *  evict. A request that can NEVER fit (over budget alone, empty batch)
+   *  is rejected instead of deadlocking. Unset = unlimited (v1 behavior). */
+  kvBudgetBytes?: number;
 }
 
 type LayerInner = KVCache | BatchedRotatingCache | SSMCache;
@@ -168,6 +177,7 @@ export class BatchScheduler {
   readonly #lock: ExclusiveLock | undefined;
   readonly #admissionHeld: (() => boolean) | undefined;
   readonly #prefillChunkSize: number;
+  readonly #kvBudgetBytes: number | undefined;
   readonly #kinds: ("full" | "rot" | "ssm")[]; // per-layer attention type
   readonly #rotMaxSize: number[]; // per-layer sliding window (rot layers only)
 
@@ -176,6 +186,7 @@ export class BatchScheduler {
     this.#lock = opts.lock;
     this.#admissionHeld = opts.admissionHeld;
     this.#prefillChunkSize = Math.max(1, Math.floor(opts.prefillChunkSize ?? 2048));
+    this.#kvBudgetBytes = opts.kvBudgetBytes;
     const proto = model.makeCache(); // fresh caches hold no buffers
     this.#kinds = proto.map((c) =>
       c instanceof RotatingKVCache ? "rot" : c instanceof SSMCache ? "ssm" : "full",
@@ -186,6 +197,48 @@ export class BatchScheduler {
 
   get activeRows(): number {
     return this.#running.length;
+  }
+
+  get pendingRows(): number {
+    return this.#pending.length + (this.#prefill ? 1 : 0);
+  }
+
+  /** Projected KV bytes of one row at its worst case (full prompt + full
+   *  completion; the sliding-window term is window-capped by kvBytesAt). */
+  #rowKvBytes(row: Row): number {
+    return kvBytesAt(this.model.config, row.promptTokens + row.req.maxTokens);
+  }
+
+  /** Projected aggregate KV of everything admitted (running + mid-prefill). */
+  get projectedKvBytes(): number {
+    let total = this.#running.reduce((a, r) => a + this.#rowKvBytes(r), 0);
+    if (this.#prefill) total += this.#rowKvBytes(this.#prefill.row);
+    return total;
+  }
+
+  get kvBudgetBytes(): number | undefined {
+    return this.#kvBudgetBytes;
+  }
+
+  /** KV-budget admission for the queue head. True = admit now. A candidate
+   *  that cannot fit even alone is rejected here (never deadlocks the
+   *  queue); one that fits alone but not alongside the current batch waits. */
+  #kvAdmits(candidate: Row): boolean {
+    if (this.#kvBudgetBytes === undefined) return true;
+    const need = this.#rowKvBytes(candidate);
+    if (need > this.#kvBudgetBytes && this.#running.length === 0 && !this.#prefill) {
+      this.#pending.shift();
+      candidate.reject(
+        new Error(
+          `kv budget: request needs ~${(need / 1e9).toFixed(2)} GB KV ` +
+            `(prompt ${candidate.promptTokens} + max_tokens ${candidate.req.maxTokens}), ` +
+            `over --kv-budget ${(this.#kvBudgetBytes / 1e9).toFixed(2)} GB — ` +
+            `lower max_tokens or raise the budget`,
+        ),
+      );
+      return false;
+    }
+    return this.projectedKvBytes + need <= this.#kvBudgetBytes;
   }
 
   /** Submit a request; resolves when its row finishes (EOS, stop, or length). */
@@ -233,7 +286,8 @@ export class BatchScheduler {
         // Start at most one joiner prefill (drain-aware); it advances one
         // chunk per iteration, interleaved with the decode step below.
         if (!this.#prefill && !held &&
-            this.#pending.length > 0 && this.#running.length < this.#maxBatch)
+            this.#pending.length > 0 && this.#running.length < this.#maxBatch &&
+            this.#kvAdmits(this.#pending[0]!))
           this.#prefill = { row: this.#pending.shift()!, solo: this.model.makeCache(), pos: 0 };
 
         if (this.#prefill) {
@@ -255,7 +309,9 @@ export class BatchScheduler {
         // still interleave: a mid-prefill joiner leaves #prefill non-null, so
         // the loop falls through to run a decode step between chunks.
         if (this.#prefill === null && !held &&
-            this.#pending.length > 0 && this.#running.length < this.#maxBatch)
+            this.#pending.length > 0 && this.#running.length < this.#maxBatch &&
+            (this.#kvBudgetBytes === undefined ||
+              this.projectedKvBytes + this.#rowKvBytes(this.#pending[0]!) <= this.#kvBudgetBytes))
           continue;
 
         if (this.#running.length > 0) {

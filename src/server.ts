@@ -70,6 +70,12 @@ import { makePiWsHandler, type PiWsData } from "./pi-web";
 export interface ServerOptions {
   /** Byte cap for the prompt (KV) cache. Default 2 GB. */
   promptCacheBytes?: number;
+  /** Aggregate KV-byte budget across concurrently-admitted batch rows
+   *  (`--kv-budget`, batching-perf-path P3). Joiners whose projected KV
+   *  (prompt + max_tokens, window-capped) would exceed it QUEUE until rows
+   *  evict; a request over the budget alone is rejected. Unset = no
+   *  aggregate cap (per-request admission via memoryBudget still applies). */
+  kvBudgetBytes?: number;
   /** KV quantization override. When unset: apply ctx.kvConfig (mixed
    *  per-layer) for serial serving, but bf16 under `--batch N` (the batched
    *  engine is bf16-only — a mode switch, see `batch` below). "config" forces
@@ -1271,7 +1277,9 @@ export function createServer(
   // The lane picker: routes each request to the serial path (runGeneration,
   // above) or the continuous-batching scheduler, keeping the two off the GPU
   // (and shared loraState) at the same time. See src/serve/generation-gateway.ts.
-  const gateway = new GenerationGateway(ctx.model, batch, runGeneration);
+  const gateway = new GenerationGateway(ctx.model, batch, runGeneration, {
+    kvBudgetBytes: serverOptions.kvBudgetBytes,
+  });
 
   // Admission ceiling, resolved once (Phase 5 memoryBudget enforcement).
   // fit() solves max safe context from weights + KV growth + prefill
@@ -1716,6 +1724,9 @@ export function createServer(
             configured: batch,
             batched: gateway.batchingEnabled,
             active_rows: gateway.activeRows,
+            pending_rows: gateway.pendingRows,
+            kv_bytes: gateway.kvBytes.projected,
+            kv_budget_bytes: gateway.kvBytes.budget,
           },
         });
       }

@@ -126,6 +126,7 @@ export class GenerationGateway {
     private readonly model: RuntimeModel,
     batch: number,
     private readonly serialRun: SerialRun,
+    private readonly opts: { kvBudgetBytes?: number } = {},
   ) {
     this.#batch = Math.max(1, Math.floor(batch));
   }
@@ -138,6 +139,19 @@ export class GenerationGateway {
   /** Rows currently decoding in the batch (0 if no scheduler / idle). */
   get activeRows(): number {
     return this.#scheduler?.activeRows ?? 0;
+  }
+
+  /** Queued + mid-prefill rows waiting behind the batch (0 when idle). */
+  get pendingRows(): number {
+    return this.#scheduler?.pendingRows ?? 0;
+  }
+
+  /** Projected aggregate KV bytes of admitted rows / the --kv-budget cap. */
+  get kvBytes(): { projected: number; budget: number | null } {
+    return {
+      projected: this.#scheduler?.projectedKvBytes ?? 0,
+      budget: this.#scheduler?.kvBudgetBytes ?? this.opts.kvBudgetBytes ?? null,
+    };
   }
 
   /** Cache-capability gate (mirrors mlx-lm server.py's all-caches-have-merge
@@ -332,6 +346,7 @@ export class GenerationGateway {
     if (!this.#scheduler)
       this.#scheduler = new BatchScheduler(this.model, {
         maxBatch: this.#batch,
+        kvBudgetBytes: this.opts.kvBudgetBytes,
         lock: { acquire: () => this.#mutex.acquire() },
         // Drain: pause admission while any serial-lane request waits; the
         // runExclusive finally-block kick()s the loop back awake.
