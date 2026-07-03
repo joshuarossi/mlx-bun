@@ -11,6 +11,7 @@ project-review.html
 benchmarks-h2h-*
 benchmarks-e4b-flag-matrix-*.json
 benchmarks-feature-matrix-*
+benchmarks-modes-*
 benchmarks/lab-verification*.json
 reports/
 runs/
