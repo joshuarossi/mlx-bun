@@ -28,11 +28,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: withastro/action@v3
         with:
           path: ./website
-          node-version: 22
+          node-version: 24
 
   deploy:
     needs: build
