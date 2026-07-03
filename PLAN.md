@@ -2133,16 +2133,16 @@ class), its product surface is tier-agnostic serving layer.
   Correctness bar: SSD restore ≡ RAM cache-hit output (control-verified;
   fresh-prefill divergence is the pre-existing prefix-reuse bf16 property).
 - `[x]` **Structured output / grammar-constrained decoding** — built on
-  branch `feat/structured-output` (2026-07-02, unmerged as of 2026-07-03):
+  branch `feat/structured-output` (2026-07-02), merged to main 2026-07-03:
   `@mlc-ai/web-xgrammar` (WASM, the same engine oMLX uses) per-step token
   bitmask at the sampler; full `response_format`/`guided_*` surface on chat
   + text completions; serial AND batched lanes (B0 routing + B1 per-row
   matchers + wasmQueue); L2-verified vs oMLX (byte-identical content);
   degrade path (prompt injection + Warning header, never 500); kill
   switches MLX_BUN_GRAMMAR=0 / MLX_BUN_GRAMMAR_BATCH=0. Design + review +
-  follow-up plan: docs/design/structured-output.md (on the branch). Open:
-  merge, B2 model-gated batch tests + bench, F4–F7 follow-ups (compiler
-  cache, real regex, choice escaping, thinking-model structural tags).
+  follow-up plan: docs/design/structured-output.md. Open: B2 model-gated
+  batch tests + bench, F4–F7 follow-ups (compiler cache, real regex,
+  choice escaping, thinking-model structural tags).
 - `[~]` Queue (adoption map): menu bar app, EnginePool
   model switching, oQ quantization, DFlash serving wiring, vision feature
   cache, batching P0–P3 refinements (extend-join, vectorized sampling,

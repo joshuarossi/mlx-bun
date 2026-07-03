@@ -29,6 +29,7 @@ the upstream algorithm and is a derivative work of the original.
 | `@huggingface/tokenizers` | Apache-2.0 | Pure-JS tokenizer (tokenizer.json) |
 | `@huggingface/jinja` | MIT | Chat-template rendering |
 | `fast-png` | MIT | PNG decode (raw pixels for the vision path) |
+| `@mlc-ai/web-xgrammar` | Apache-2.0 | Grammar-constrained decoding (WASM build of [xgrammar](https://github.com/mlc-ai/xgrammar) by the MLC-ai team). `response_format` / `guided_grammar` / `guided_regex` / `guided_choice` compile to a GrammarMatcher whose per-step token bitmask masks invalid logits (`src/grammar.ts`). Idea ported from oMLX (`api/grammar.py`), same engine, WASM-packaged. |
 
 Run `bun pm licenses` (or inspect `node_modules/*/LICENSE`) for the full
 text of each npm dependency's license, including transitive ones.

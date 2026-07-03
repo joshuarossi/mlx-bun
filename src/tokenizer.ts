@@ -17,6 +17,16 @@ export interface LoadedTokenizer {
   idToToken(id: number): string;
   readonly bosTokenId: number | null;
   readonly eosTokenId: number | null;
+  /** Absolute path to tokenizer.json (the model snapshot dir's copy). Set by
+   *  loadTokenizer; read by src/grammar.ts to build the xgrammar TokenizerInfo
+   *  (vocab extraction + vocab-type detection for constrained decoding). */
+  readonly tokenizerJsonPath?: string;
+  /** config.json vocab_size, may exceed the tokenizer vocab length when the
+   *  embedding is padded to a power-of-two / 256. Read by src/grammar.ts to
+   *  size the logit bitmask against the model's logit width, not the
+   *  tokenizer's. Set by the server when it loads config; not set by the
+   *  bare loadTokenizer() helper (callers that need it pass modelDir + config). */
+  vocabSize?: number;
 }
 
 export async function loadTokenizer(modelDir: string): Promise<LoadedTokenizer> {
@@ -45,5 +55,6 @@ export async function loadTokenizer(modelDir: string): Promise<LoadedTokenizer> 
         .id_to_token(id) ?? tok.decode([id], { skip_special_tokens: false }),
     bosTokenId: idOf("bos_token"),
     eosTokenId: idOf("eos_token"),
+    tokenizerJsonPath: `${modelDir}/tokenizer.json`,
   };
 }

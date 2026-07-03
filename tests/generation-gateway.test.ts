@@ -29,6 +29,7 @@ const batchable: RequestShape = {
   wantsLogprobs: false,
   userSeed: false,
   kvQuant: false,
+  hasGrammar: false,
 };
 
 describe("GenerationGateway.willBatch", () => {
@@ -77,6 +78,32 @@ describe("GenerationGateway.willBatch", () => {
   });
   test("logits extras batch (min_p/XTC/logit_bias/presence+frequency)", () => {
     expect(gateway(2).willBatch({ ...batchable, hasLogitsExtras: true })).toBe(true);
+  });
+
+  // Grammar (B1): per-row matchers make it batchable by default; the kill
+  // switch MLX_BUN_GRAMMAR_BATCH=0 forces the B0 serial fallback (A/B lever,
+  // house style). Degrade-path requests have NO controller (hasGrammar=false)
+  // and stay batchable regardless.
+  test("grammar batches by default (B1 per-row matchers)", () => {
+    const prev = process.env.MLX_BUN_GRAMMAR_BATCH;
+    delete process.env.MLX_BUN_GRAMMAR_BATCH;
+    try {
+      expect(gateway(2).willBatch({ ...batchable, hasGrammar: true })).toBe(true);
+    } finally {
+      if (prev !== undefined) process.env.MLX_BUN_GRAMMAR_BATCH = prev;
+    }
+  });
+  test("MLX_BUN_GRAMMAR_BATCH=0 forces grammar to serial (B0 fallback)", () => {
+    const prev = process.env.MLX_BUN_GRAMMAR_BATCH;
+    process.env.MLX_BUN_GRAMMAR_BATCH = "0";
+    try {
+      expect(gateway(2).willBatch({ ...batchable, hasGrammar: true })).toBe(false);
+      // degrade-path (no controller) still batches:
+      expect(gateway(2).willBatch({ ...batchable, hasGrammar: false })).toBe(true);
+    } finally {
+      if (prev !== undefined) process.env.MLX_BUN_GRAMMAR_BATCH = prev;
+      else delete process.env.MLX_BUN_GRAMMAR_BATCH;
+    }
   });
 
   test("multiple disqualifiers still serial", () => {

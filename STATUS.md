@@ -16,6 +16,9 @@ batching parity with oMLX (`--batch 4` matches/beats on all three shared
 models), SSD KV cold tier (`--ssd-cache`: restart TTFT 12.1 s → 0.24 s, 0%
 decode overhead), `--model` real override in serve/bench, serial-lane
 responsiveness fix (/stats 2.5 s → 10–44 ms mid-generation).
+**In-tree version: 0.0.11, UNRELEASED** — structured output merged
+2026-07-03 (next-action #1 below); `bun run release` ships it (also
+updates the Homebrew formula, which still points at v0.0.10).
 
 **Repo state:** main == origin/main, tree clean, tsc 0. CI is live
 (`.github/workflows/ci.yml`: hygiene gate + typecheck + model-free tests —
@@ -39,33 +42,32 @@ or shelved with numbers — ledger:
 
 ## Next actions, ranked
 
-1. **Structured output** (`response_format` JSON-schema) — **BUILT on branch
-   `feat/structured-output` (2026-07-02, 8 commits); MERGE IT.** Nothing on
-   main yet; the worktree it lived in is gone (merge/rebase from origin).
-   Adoption map #1. What's on the branch (verified against the code + tests
-   re-run green on this box 2026-07-03, 27/27 model-free grammar+gateway):
-   `@mlc-ai/web-xgrammar` (WASM, Apache-2.0 — the same xgrammar oMLX uses) →
-   per-step token-bitmask grammar-constrained decoding on
-   `/v1/chat/completions` + `/v1/completions`; full `response_format`
-   (json_object/json_schema) + `guided_grammar`/`guided_regex`/
-   `guided_choice`/`structured_outputs` surface; L2-verified vs oMLX
-   (byte-identical content through the real chat template); oMLX-parity
-   degrade path (system-prompt injection + Warning header, never 500).
-   Serial AND batched lanes: B0 `hasGrammar` routing + B1 per-row matchers
-   driven by the scheduler's read-before-build `#stepGrammar`, plus a
-   module-level wasmQueue serializing ALL xgrammar WASM calls (the
-   single-threaded instance corrupts under concurrent fills). Kill switches
-   `MLX_BUN_GRAMMAR=0` / `MLX_BUN_GRAMMAR_BATCH=0`. Design + serial-code
-   review + batch plan + XGrammar-2 addendum: docs/design/structured-output.md
-   (on the branch). **Open after merge:** B2 model-gated scheduler tests +
-   bench (mixed batch, all-grammar B=4 with four different schemas, churn,
-   mid-JSON truncation); follow-ups F4 compiler cache per TokenizerInfo
-   (agentic schema replay), F5 real regex support (WASM has no `fromRegex`;
-   today only the regex∩EBNF subset), F6 `guided_choice` control-char
-   escaping, F7 structural tags for thinking models (Qwen3.5 `<think>`),
-   U1/U2 engine upgrades (rebuild WASM from current xgrammar main / native
-   TVM-FFI). Merge note: the branch also edits STATUS.md in the pre-rewrite
-   format — resolve by keeping main's version (this entry supersedes it).
+1. **Structured output follow-ups** — the feature itself **MERGED to main
+   2026-07-03** (was branch `feat/structured-output`, deleted after merge;
+   adoption map #1 closed). `@mlc-ai/web-xgrammar` (WASM, Apache-2.0 — the
+   same xgrammar oMLX uses) → per-step token-bitmask grammar-constrained
+   decoding on `/v1/chat/completions` + `/v1/completions`; full
+   `response_format` (json_object/json_schema) + `guided_grammar`/
+   `guided_regex`/`guided_choice`/`structured_outputs` surface; L2-verified
+   vs oMLX (byte-identical content through the real chat template);
+   oMLX-parity degrade path (system-prompt injection + Warning header,
+   never 500). Serial AND batched lanes: B0 `hasGrammar` routing + B1
+   per-row matchers driven by the scheduler's read-before-build
+   `#stepGrammar`, plus a module-level wasmQueue serializing ALL xgrammar
+   WASM calls (the single-threaded instance corrupts under concurrent
+   fills). Kill switches `MLX_BUN_GRAMMAR=0` / `MLX_BUN_GRAMMAR_BATCH=0`.
+   Grammar+gateway tests 27/27 green on this box 2026-07-03 (model-free).
+   Design + serial-code review + batch plan + XGrammar-2 addendum:
+   [docs/design/structured-output.md](docs/design/structured-output.md).
+   **Remaining:** B2 model-gated scheduler tests + bench (mixed batch,
+   all-grammar B=4 with four different schemas, churn, mid-JSON
+   truncation); F4 compiler cache per TokenizerInfo (agentic schema
+   replay); F5 real regex support (WASM has no `fromRegex`; today only the
+   regex∩EBNF subset); F6 `guided_choice` control-char escaping; F7
+   structural tags for thinking models (Qwen3.5 `<think>`);
+   whitespace-format parity vs oMLX (version skew, not correctness); U1/U2
+   engine upgrades (rebuild WASM from current xgrammar main / native
+   TVM-FFI).
 2. **Menu bar app** (SwiftUI + signed binary as sidecar) — adoption map #2,
    Josh wants it; /Applications/oMLX.app is the structural reference.
 3. **Batching refinements** — batching-perf-path P0–P3 (extend-join,
