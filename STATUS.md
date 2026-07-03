@@ -59,30 +59,43 @@ or shelved with numbers — ledger:
    Grammar+gateway tests 27/27 green on this box 2026-07-03 (model-free).
    Design + serial-code review + batch plan + XGrammar-2 addendum:
    [docs/design/structured-output.md](docs/design/structured-output.md).
-   **Remaining:** B2 model-gated scheduler tests + bench (mixed batch,
-   all-grammar B=4 with four different schemas, churn, mid-JSON
-   truncation); F4 compiler cache per TokenizerInfo (agentic schema
-   replay); F5 real regex support (WASM has no `fromRegex`; today only the
-   regex∩EBNF subset); F6 `guided_choice` control-char escaping; F7
-   structural tags for thinking models (Qwen3.5 `<think>`);
-   whitespace-format parity vs oMLX (version skew, not correctness); U1/U2
-   engine upgrades (rebuild WASM from current xgrammar main / native
-   TVM-FFI).
-2. **Menu bar app** (SwiftUI + signed binary as sidecar) — adoption map #2,
+   **Remaining work is now sequenced in the integration plan below**
+   (B2+F4 = its Phase A; F5/F7 structural tags + U1/U2 parked with
+   triggers).
+2. **Grammar × spec × batching integration + feature-matrix benchmark**
+   — THE canonical sequencing for the next wave:
+   [docs/design/grammar-spec-batching-integration.md](docs/design/grammar-spec-batching-integration.md)
+   (2026-07-03). Composition matrix: grammar batches (shipped), spec
+   routes serial via `hasDraft` (upstream parity), grammar+spec = the
+   novel constrained verify walk (no oracle → L3 gates). Phases:
+   **A** structured-output debt (B2 tests + F4 compiler cache) →
+   **B** `serve --draft-model` two-model serial lane (executes
+   mlx-lm-tool-parity-plan §7; lays `DraftSource`) →
+   **C** grammar×spec constrained verify walk (drafter free-running v1;
+   drafter-masking via `rollBack` only if acceptance demands —
+   flag-and-try-both) →
+   **D** batching P0 + KV-budget admission (parallel with B/C) →
+   **E** `bench-serving-load.ts` grown into the six-cell feature matrix
+   (aggregate tok/s, TTFT p50/p95, acceptance, grammar overhead %, 100%
+   schema conformance as a hard gate; eval-DB + RESULTS.md
+   "composition" table; clean-machine run Josh-gated).
+3. **Menu bar app** (SwiftUI + signed binary as sidecar) — adoption map #2,
    Josh wants it; /Applications/oMLX.app is the structural reference.
-3. **Batching refinements** — batching-perf-path P0–P3 (extend-join,
-   vectorized sampling, admission, `--batch 4` default review) + P4
-   device-side step chaining (the cpm5 single-stream −20% counter).
+4. **Batching remainder not in the integration plan** — P1 quantized KV at
+   B>1 + P2 perf kernel at B>1 (sized by the Phase E matrix first), P3
+   prompt-cache/adapters/default-review tail, P4 device-side step chaining
+   (the cpm5 single-stream −20% counter).
    [docs/design/batching-perf-path.md](docs/design/batching-perf-path.md);
    older queue: batching-v2-plan steps 4–10.
-4. **SSD tier P4 hardening** — kill-mid-write e2e, adapter-ns isolation e2e,
+5. **SSD tier P4 hardening** — kill-mid-write e2e, adapter-ns isolation e2e,
    scheme-flip invalidation e2e.
    [docs/design/ssd-kv-cold-tier.md](docs/design/ssd-kv-cold-tier.md).
-5. **oQ-style quantization spike** in `convert` (eval-gated; arXiv-lens).
-6. **Web-UI fix wave** — 6 bugs, landing order in
+6. **oQ-style quantization spike** in `convert` (eval-gated; arXiv-lens).
+7. **Web-UI fix wave** — 6 bugs, landing order in
    [docs/planning/web-ui-pass-plan.md](docs/planning/web-ui-pass-plan.md).
-7. **serve `--draft-model` + remaining compat verbs** (cache_prompt,
-   evaluate, awq/dwq/gptq; flags: --chat-template*, --min-p, --log-level,
+8. **Remaining compat verbs/flags** (`--draft-model` itself is now
+   integration-plan Phase B; still open: cache_prompt, evaluate,
+   awq/dwq/gptq; flags: --chat-template*, --min-p, --log-level,
    --allowed-origins, --prompt-concurrency, --prefill-step-size) —
    [docs/design/mlx-lm-tool-parity-plan.md](docs/design/mlx-lm-tool-parity-plan.md).
 9. **Curve sampler H2/H3 preregistered run**
