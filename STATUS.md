@@ -52,14 +52,10 @@ or shelved with numbers — ledger:
 4. **SSD tier P4 hardening** — kill-mid-write e2e, adapter-ns isolation e2e,
    scheme-flip invalidation e2e.
    [docs/design/ssd-kv-cold-tier.md](docs/design/ssd-kv-cold-tier.md).
-5. **Upstream mlx bug reports** (pending task chips): quantized_matmul
-   transpose=false wrong at M=2–3 rows (repro'd on stock 0.31.2; we ship a
-   pad workaround) + gather_qmm missing M=1 fast path (the 26B ~4 ms/step
-   decode gap — custom kernel built then shelved on decisive numbers).
-6. **oQ-style quantization spike** in `convert` (eval-gated; arXiv-lens).
-7. **Web-UI fix wave** — 6 bugs, landing order in
+5. **oQ-style quantization spike** in `convert` (eval-gated; arXiv-lens).
+6. **Web-UI fix wave** — 6 bugs, landing order in
    [docs/planning/web-ui-pass-plan.md](docs/planning/web-ui-pass-plan.md).
-8. **serve `--draft-model` + remaining compat verbs** (cache_prompt,
+7. **serve `--draft-model` + remaining compat verbs** (cache_prompt,
    evaluate, awq/dwq/gptq; flags: --chat-template*, --min-p, --log-level,
    --allowed-origins, --prompt-concurrency, --prefill-step-size) —
    [docs/design/mlx-lm-tool-parity-plan.md](docs/design/mlx-lm-tool-parity-plan.md).
@@ -96,8 +92,11 @@ kernel-review closeout (details + evidence in
 - **#1 LANDED**: coeff filter + blockMax skip default ON at 1e-5 — combined
   backward 1.71× CPM5 / 3.16× e4b vs exact, fidelity-gated.
 - **#8 LANDED**: boundedSftCe — e4b M=6000 head 16.60 → 6.60 GB, dh relnorm
-  0.0. Landing it exposed the upstream qmm M=2–3 bug (next-actions #5);
-  workaround shipped (logitsFromHiddenPadM).
+  0.0. Landing it exposed the upstream qmm M=2–3 correctness bug;
+  workaround shipped (logitsFromHiddenPadM) — resolved, nothing pending.
+  (The adjacent small-M perf cliff is already tracked upstream as
+  ml-explore/mlx#3553, with qmv_wide merged post-0.31.2 — re-measure the
+  pad workaround + small-M paths on the next mlx bump.)
 - **#3 LANDED**: head auto-dispatch by M (MLX_BUN_FLASH_MIN_M=1024).
 - **#9 LANDED**: segmented-step overhead — grads byte-identical, short-seq
   steps −34/−38%, @8K flat.
@@ -167,8 +166,10 @@ agentic workload is the real payoff, not e4b). Not wired into serve/CLI.
   section above). Full report local at `reports/project-review-2026-07-01.md`.
 - **26B gather-qmm profile** (2026-07-02): gap = mx.gather_qmm's missing M=1
   fast path; custom gather-qmv kernel built, correct, SHELVED on decisive
-  numbers (dispatch fixed-cost eats the prize). Routes forward = upstream
-  report or fused whole-MLP kernel. Evidence in `scripts/experiments/`.
+  numbers (dispatch fixed-cost eats the prize). Upstream is already on the
+  small-M path (mlx#3553 + qmv_wide merged, gather_qqmm in flight); our only
+  remaining route is a fused whole-MLP kernel in a dedicated session.
+  Evidence in `scripts/experiments/`.
 - **DiffusionGemma-26B port COMPLETE** · **MiniCPM5
   megakernel SHELVED** · vision SigLIP e4b, segmented backward, distribution,
   adapters e2e, expert offload E1 — all merged; history in PLAN/PLAN-archive.
