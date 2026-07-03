@@ -50,10 +50,15 @@ serial-lane macrotask hop (/stats 2.5 s → 10–44 ms mid-generation) ·
    phased cleanup (docs/design/repo-cleanup-plan.md) landed A + B-gate +
    D2 + D3 on 2026-07-02: `repro/`+`spikes/` → `lab/`, `archive/` →
    `docs/archive/`, root strays cleared, `scripts/check-hygiene.ts` binary-
-   in-git + docs-map gate wired into test.sh + CI. Remaining: B2 adapter
-   `.safetensors` untrack (Josh-gated — needs a confirmed bit-exact regen
-   trainer), D1 (no closed <17 phases to archive yet), and the one-time
-   history rewrite C (Josh go/no-go — both laptops must re-clone after).
+   in-git + docs-map gate wired into test.sh + CI. **Phase C history rewrite
+   EXECUTED 2026-07-02** (Josh go): `.git` 182 MB → **20 MB**, 497
+   historical goldens `.bin` stripped, HEAD tree bit-identical, tags
+   remapped, force-pushed; M1 Max reset + gc'd; backup tarball at
+   `~/mlx-bun-mirror-backup-2026-07-02.tar.gz`. Remaining: M4 Pro
+   one-line reset (`git fetch --tags --force --prune && git reset --hard
+   origin/main`), then delete the tarball; B2 adapter `.safetensors`
+   untrack (Josh-gated — needs a confirmed bit-exact regen trainer); D1
+   (no closed <17 phases to archive yet).
 
 ## SESSION WRAP 2026-07-01 — v0.0.9 released; next actions below
 

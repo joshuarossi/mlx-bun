@@ -67,28 +67,55 @@ with a guardrail so the mess can't re-form, not just a one-time sweep.
 - Exit: `git ls-files | grep -E '\.(bin|safetensors|dylib)$'` returns only
   allowlisted entries; the gate enforces it forever.
 
-## Phase C — history rewrite (the 179 MB) — JOSH GO/NO-GO
+## Phase C — history rewrite (the 179 MB) — DONE 2026-07-02 (Josh go)
+
+Executed 2026-07-02 on Josh's explicit go. Result: `.git` **182 MB →
+20 MB**. Notes on what actually ran (vs the sketch below):
+
+- C1: dry-run `--analyze` confirmed goldens `.bin` = the entire bloat.
+  Actual invocation, narrower than sketched (no size threshold needed):
+  `git filter-repo --invert-paths --path-glob 'goldens/*.bin'
+  --path-glob 'goldens/*/*.bin'` — both globs needed because git
+  pathspec `**` doesn't span the flat + one-deep layout; covers all 497
+  historical blobs. Verified pre-push: 343 commits in/out, HEAD tree
+  bit-identical to original, zero `.bin` left anywhere in goldens
+  history, tags remapped.
+- C2: force-pushed main + branches + tags. Mirror backup at
+  `~/mlx-bun-mirror-backup-2026-07-02.tar.gz` (143 MB) — delete once
+  both boxes verified. M1 Max done: fetch --force + reset --hard,
+  surviving branches remapped, stale agent-session worktrees/branches
+  deleted (Josh: only main matters), stray `refs/codex`/`refs/original`
+  pruned, reflog expired, gc'd to 20 MB. **M4 Pro remaining (Josh)**:
+  `git fetch origin --tags --force --prune && git reset --hard
+  origin/main` (or fresh clone).
+- C3: `v0.0.10` resolves; release assets untouched (they live outside
+  git history); hygiene gate green; regen path proven live —
+  `bun scripts/regen-fused-sdpa-goldens.ts` rewrote
+  `goldens/apple-m1-max/fused-sdpa.{json,bin}`. The full suite could not
+  be run from the executing session (tooling restriction); run it once
+  per box as the final check.
 
 One-time, destructive-by-design, ~15 min total. Preconditions: BOTH
 laptops fully pushed (verify `git log origin/main..HEAD` empty on each);
 no open PRs; a fresh `git clone --mirror` tarball kept as belt-and-
 suspenders until both machines are re-cloned.
 
-- `[ ]` **C1. rewrite**: `git filter-repo --strip-blobs-bigger-than 200K
+- `[x]` **C1. rewrite**: `git filter-repo --strip-blobs-bigger-than 200K
   --path-glob 'goldens/**/*.bin' --invert-paths` (exact invocation to be
   dry-run first with `--analyze`; target: drop all historical goldens
   `.bin` while keeping every text file's history intact).
-- `[ ]` **C2. force-push** `main` (+ tags), re-clone on BOTH laptops
+- `[x]` **C2. force-push** `main` (+ tags), re-clone on BOTH laptops
   (M1 Max + M4 Pro), re-link local-only assets (nothing tracked is lost —
   the blobs being dropped are regenerable and already untracked at HEAD).
-- `[ ]` **C3. verify**: `du -sh .git` (expect ~15–25 MB), `bash
+- `[x]` **C3. verify**: `du -sh .git` (expect ~15–25 MB), `bash
   scripts/test.sh` green, one `scripts/regen-*` smoke to prove the regen
   path, tag `v0.0.10` still resolves + release assets untouched (GitHub
   releases store assets outside git history).
 - NOT doing LFS: 290 MB of churning machine-specific artifacts is exactly
   what LFS quotas punish, and the regen scripts make the artifacts
   reproducible — a fixture server is overkill for a two-laptop project.
-- Exit: fresh clone < 30 MB; both laptops on the rewritten history.
+- Exit: fresh clone < 30 MB ✓ (20 MB); M1 Max on rewritten history ✓;
+  M4 Pro pending its one-line reset (see notes above).
 
 ## Phase D — docs debt (follow-the-map, 1–2 h, independent) — gate DONE 2026-07-02
 
@@ -120,5 +147,5 @@ suspenders until both machines are re-cloned.
 
 A and D anytime (safe, agent-executable solo) — DONE 2026-07-02. B gate
 DONE 2026-07-02 (B2 adapter-untrack deferred to Josh — see B2 finding).
-C only on Josh's explicit go, with both laptops synced the same day —
-it's the only step that can't be un-shipped.
+C executed 2026-07-02 on Josh's explicit go — only remaining tail is the
+M4 Pro reset + deleting the backup tarball once both boxes are green.
