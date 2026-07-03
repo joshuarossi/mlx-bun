@@ -120,6 +120,26 @@ or shelved with numbers — ledger:
    Josh's priority ranking: spec×prompt-cache composition (parity-plan
    §7.6) then prompt-cache-under-batching (perf-path P3) — the disk-cache
    track. Debug lever: `MLX_BUN_GRAMMAR_DEBUG=1`.
+   **Spec-decode sources (Josh directive 2026-07-04): DSpark is the GOAL
+   drafter.** The Llama 3B+1B pair exists ONLY as the L1 oracle cell
+   (mlx-lm can only speculate two-model, so proving the serve loop
+   token-exact required that shape). Product path behind the SAME
+   `--draft-model` seam (parity-plan §7.9): (1) near-term
+   **AssistantSource** — the optiq KV-borrowing gemma assistant drafters
+   (e4b + 12B artifacts downloaded, `src/spec/drafter.ts` bit-exact vs
+   optiq; 12B γ=1 ≈ 1.09× measured) wrapped as a DraftSource (L2 oracle =
+   optiq spec_generate); (2) the goal **DflashSource = DSpark** (L3,
+   KL-gated) — blocked on its research milestones, NOT serve wiring:
+   27B/12B retarget (regen+train), data scale (~thousands vs 160),
+   draft-loop tightening (docs/investigations/dspark-handoff.md).
+   **Benchmarks built 2026-07-03/04:** `scripts/bench-modes.ts` (mode
+   matrix: TTFT/prefill/decode/agg/peak-mem across l1/l2/l3, kv4/8,
+   nocompile, batch2/4, conc-4 queueing baseline, grammar cells,
+   cache-ram/cache-ssd multi-turn agent cells, spec via --draft; model is
+   a param, default e4b) + docs/reference/features-matrix.md (the full
+   option inventory). e4b loaded-machine shape: cold long-TTFT ~2.0 s →
+   **cache-ram 125 ms / cache-ssd 231 ms**; batch4 agg 111.6 t/s vs
+   serial-conc4 52.4 (TTFT p50 302 ms vs 3.8 s).
 3. **Menu bar app** (SwiftUI + signed binary as sidecar) — adoption map #2,
    Josh wants it; /Applications/oMLX.app is the structural reference.
 4. **Batching remainder not in the integration plan** — P1 quantized KV at
