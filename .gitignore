@@ -47,3 +47,8 @@ goldens/diffusion/vision-*.bin
 # + the oracle venv) — never tracked (they bloated history to 179 MB; the JSON
 # manifests/trajectories stay tracked). See goldens/README.md.
 goldens/**/*.bin
+
+# Adapter test fixtures: bytes live outside git (repo-cleanup-plan.md B2 —
+# scripts/fetch-test-fixtures.sh; shas pinned there). Training data/config
+# for them stay tracked in fixtures/adapters/.
+fixtures/adapters/*/adapters.safetensors

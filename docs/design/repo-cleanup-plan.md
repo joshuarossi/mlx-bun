@@ -12,6 +12,31 @@ point), and independently shippable.
 Principle: the hygiene discipline IS the product edge — every phase ends
 with a guardrail so the mess can't re-form, not just a one-time sweep.
 
+## What can actually be lost? Nothing. (Read this before re-litigating.)
+
+Every binary this plan untracks or purges survives in MULTIPLE independent
+places, so "we might lose the goldens/fixtures" is not a reason to stall:
+
+1. **Both dev laptops' working trees** — `git rm --cached` and `.gitignore`
+   never touch disk; the files sit exactly where they were.
+2. **Git history** — until Phase C runs, every previously-committed byte is
+   still in `.git` and recoverable with `git show <rev>:<path>`.
+3. **The Phase-C mirror backup** — `scripts/history-rewrite.sh` refuses to
+   rewrite before writing `~/mlx-bun-history-backup-<date>.tar` (a full
+   pre-rewrite mirror, kept forever). Even after the purge, every historical
+   blob is one `tar -x` away.
+4. **Regen scripts** — goldens regenerate from `scripts/regen-*` + the
+   oracle venv; the universal-rope fixtures from their gen script.
+5. **Pinned-hash fetch** — the two LoRA adapter fixtures are sha256-pinned
+   in `scripts/fetch-test-fixtures.sh`, sourced from the `test-fixtures-v1`
+   GitHub release (one command to create — see the script header) or
+   either laptop.
+
+And no test can break: every suite that reads a binary fixture gates on
+FILE PRESENCE and skips cleanly when it's absent (goldens via
+tests/goldens.ts, LoRA via `haveAdapters`, universal-rope via its own
+check). Untracked ≠ deleted ≠ unrunnable.
+
 ## Phase A — root consolidation (30 min, zero risk) — DONE 2026-07-02
 
 - `[x]` **A1. `lab/`**: `git mv repro lab/repro && git mv spikes lab/spikes`.
@@ -35,7 +60,7 @@ with a guardrail so the mess can't re-form, not just a one-time sweep.
   (README/PLAN/STATUS/CLAUDE + configs), and gitignored working dirs. Every
   tracked root entry appears in the CLAUDE.md layout map.
 
-## Phase B — tracked-content policy + guardrail (1 h) — gate DONE 2026-07-02
+## Phase B — tracked-content policy + guardrail (1 h) — DONE 2026-07-02 (B2 closed same day)
 
 - `[x]` **B1. Binary-in-git gate**: `scripts/check-hygiene.ts` — FAILS on
   any tracked file that is (a) >1 MB, or (b) matches `*.bin|*.safetensors|
@@ -57,6 +82,13 @@ with a guardrail so the mess can't re-form, not just a one-time sweep.
     do not churn (the goldens-bloat problem was *churning* artifacts). This
     is a deliberate allowlist exception, not the default `fixtures/ ≤ 2 MB`
     policy.
+  - **CLOSED later the same day**: untracked + gitignored after pinning the
+    bytes by sha256 in `scripts/fetch-test-fixtures.sh` (fetch from the
+    `test-fixtures-v1` release / either laptop / pre-rewrite history; the
+    gated LoRA test skips cleanly when absent — verified). The regen-
+    ambiguity concern was real but orthogonal: preservation is by pinned
+    original bytes, not by retraining. Allowlist entry removed; gate green
+    with ZERO multi-MB binaries tracked.
 - `[x]` **B3. tests/ binary audit**: 27 tracked `.bin` under
   `tests/fixtures/universal-rope/` (4–8 KB each, ~108 KB total). All are
   model-free CI-load-bearing bit-exact oracle fixtures (used by
@@ -94,6 +126,12 @@ Executed 2026-07-02 on Josh's explicit go. Result: `.git` **182 MB →
   `goldens/apple-m1-max/fused-sdpa.{json,bin}`. The full suite could not
   be run from the executing session (tooling restriction); run it once
   per box as the final check.
+
+**Now ONE COMMAND**: `scripts/history-rewrite.sh` (dry-run by default,
+`MLX_BUN_REWRITE_GO=1` to execute) — it enforces every precondition below,
+writes the permanent mirror backup first, purges goldens `.bin` + the
+adapter safetensors from history, force-pushes, and prints the re-clone
+steps for the other laptop.
 
 One-time, destructive-by-design, ~15 min total. Preconditions: BOTH
 laptops fully pushed (verify `git log origin/main..HEAD` empty on each);

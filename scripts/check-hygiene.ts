@@ -58,11 +58,11 @@ interface AllowEntry {
 // it is NOT a churning machine-specific artifact — those belong under a
 // regen script + gitignore, like goldens/**.bin.
 const ALLOW: AllowEntry[] = [
-  {
-    glob: "fixtures/adapters/*/adapters.safetensors",
-    maxBytes: 7_000_000,
-    why: "Stable one-time-trained LoRA adapter INPUTS for the opt-in MLX_BUN_TEST_LORA hot-swap test (also requires the e4b base). Trained once (2026-06-10); not churning. Reproducible from tracked data + adapter_config.json; the bit-exact regen trainer-of-record is TBD with Josh (see docs/design/repo-cleanup-plan.md B2).",
-  },
+  // fixtures/adapters/*/adapters.safetensors: UNTRACKED 2026-07-02 (the last
+  // multi-MB binaries in the index). Bytes are pinned by sha256 in
+  // scripts/fetch-test-fixtures.sh (sources: the test-fixtures-v1 release /
+  // either dev laptop / git history until the Phase-C rewrite); the gated
+  // LoRA test skips cleanly when the files are absent. Plan B2 is CLOSED.
   {
     glob: "tests/fixtures/qwen-delta-golden.json",
     maxBytes: 1_200_000,
