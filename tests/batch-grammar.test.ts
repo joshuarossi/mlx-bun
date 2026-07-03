@@ -245,6 +245,35 @@ describe.skipIf(!optIn || !haveCpm)("batch lane × grammar (B2 gates, CPM)", () 
     expect(sib.stats.generatedTokens).toBe(10);
   }, 240_000);
 
+  // REGRESSION (found by the feature-matrix conformance gate, 2026-07-03): a
+  // grammar row joining while another grammar row is MID-DECODE triggers
+  // #mergeJoiner → #flushPipeline, which emitted the pending tokens without
+  // advancing the matchers — the running row's mask went one token stale and
+  // its output turned invalid (e.g. `{ " "name": ...`). The B=4 test above
+  // misses it because simultaneous submits all admit before stepping begins;
+  // the stagger below forces the mid-decode join.
+  test("grammar joiner mid-decode keeps the running grammar row conformant", async () => {
+    const gw = makeGateway();
+    const schemaA = {
+      type: "object",
+      properties: { title: { type: "string" }, year: { type: "number" } },
+      required: ["title", "year"],
+    };
+    const gA = await compileFor(jsonSchemaReq("a", schemaA));
+    const pA = runOne(gw, "Describe a film.", { grammar: gA, maxTokens: 48 });
+    await new Promise((r) => setTimeout(r, 150)); // A is decoding now
+    // Joiner uses guided_choice — a whitespace-free grammar, so CPM's
+    // whitespace-stall mode (structured-output.md known gaps) can't muddy
+    // the regression signal. It still joins as a live grammar row.
+    const gB = await compileFor({ guidedChoice: ["paris", "tokyo"] });
+    const pB = runOne(gw, "Pick a city:", { grammar: gB, maxTokens: 48 });
+    const [a, b] = await Promise.all([pA, pB]);
+    const pa = JSON.parse(a.text); // throws = the stale-mask bug is back
+    expect(typeof pa.title).toBe("string");
+    expect(typeof pa.year).toBe("number");
+    expect(["paris", "tokyo"]).toContain(b.text.trim());
+  }, 240_000);
+
   // Prefill-terminated row: single-char choices mean ANY valid first token
   // completes the grammar — the row must emit its one token and finish
   // without ever merging into the running batch (the scheduler's

@@ -40,6 +40,7 @@ import type { RuntimeModel } from "../model/factory";
 import { DiffusionGemmaModel } from "../model/diffusion-gemma";
 import { KVCache, RotatingKVCache } from "../model/gemma4-base";
 import { SSMCache } from "../model/qwen3-delta";
+import { UniversalDenseModel } from "../model/universal/dense";
 import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate";
 import { makeSampler, makeLogitsProcessors, toLogprobs } from "../sampler";
 import { BatchScheduler } from "./batch-scheduler";
@@ -146,6 +147,21 @@ export class GenerationGateway {
    *  the kill switch back to serial routing). */
   #modelCachesBatchable(): boolean {
     if (this.#cacheBatchable === null) {
+      // Tier-0 universal models route SERIAL under --batch: their attention
+      // applies RoPE with the scalar cache.offset (universal/dense.ts), so a
+      // left-padded batch with UNEQUAL row lengths decodes the shorter rows
+      // at the longest row's positions — garbage logits for every joiner
+      // (found 2026-07-03 via the feature-matrix conformance gate: batched
+      // Llama grammar joiners emitted junk; plain batches only survive when
+      // all rows happen to be the same length). CPM/Gemma/Qwen3.5 carry the
+      // per-row ropeOffsetArr fix (S1b.1) and stay batchable; the universal
+      // port + an mlx-lm B=2 parity golden for a Tier-0 arch is the tracked
+      // follow-up (per-model-cell validation discipline — no cell is trusted
+      // until gated).
+      if (this.model instanceof UniversalDenseModel) {
+        this.#cacheBatchable = false;
+        return this.#cacheBatchable;
+      }
       const ssmOk = process.env.MLX_BUN_BATCH_SSM !== "0";
       const proto = this.model.makeCache(); // fresh caches hold no buffers
       this.#cacheBatchable = proto.every(

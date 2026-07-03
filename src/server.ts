@@ -2233,6 +2233,7 @@ export function createServer(
                     completion_tokens: s.generatedTokens,
                     total_tokens: s.promptTokens + s.generatedTokens,
                     prompt_tokens_details: { cached_tokens: s.cachedTokens },
+                    ...(s.spec ? { speculation: s.spec } : {}),
                   },
                 });
                 // bare sentinel per the OpenAI spec — JSON.stringify would
@@ -2314,6 +2315,7 @@ export function createServer(
                 completion_tokens: s.generatedTokens,
                 total_tokens: s.promptTokens + s.generatedTokens,
                 prompt_tokens_details: { cached_tokens: s.cachedTokens },
+                    ...(s.spec ? { speculation: s.spec } : {}),
               },
             }, grammarWarning ? { headers: { Warning: grammarWarning } } : undefined);
           }
@@ -2488,6 +2490,7 @@ export function createServer(
                     completion_tokens: s.generatedTokens,
                     total_tokens: s.promptTokens + s.generatedTokens,
                     prompt_tokens_details: { cached_tokens: s.cachedTokens },
+                    ...(s.spec ? { speculation: s.spec } : {}),
                   },
                 });
                 controller.enqueue(enc.encode("data: [DONE]\n\n"));
@@ -2538,6 +2541,7 @@ export function createServer(
               completion_tokens: s.generatedTokens,
               total_tokens: s.promptTokens + s.generatedTokens,
               prompt_tokens_details: { cached_tokens: s.cachedTokens },
+                    ...(s.spec ? { speculation: s.spec } : {}),
             },
           }, textGrammarWarning ? { headers: { Warning: textGrammarWarning } } : undefined);
         } catch (e) {

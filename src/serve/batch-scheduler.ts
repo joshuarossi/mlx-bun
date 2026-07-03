@@ -530,6 +530,17 @@ export class BatchScheduler {
     this.#pendingToks = null;
     const toks = [...prev.toFloat32()].map((x) => Math.round(x));
     prev.dispose();
+    // Grammar rows: the flushed tokens are EMITTED below, so their matchers
+    // must advance here — #stepGrammar's accept only covers tokens it reads
+    // from a live pending array, and after this flush it cold-starts (no
+    // accept). Skipping this left the matcher one token behind its stream on
+    // every mid-decode join → one-step-stale masks → invalid output (found
+    // by the feature-matrix conformance gate, 2026-07-03; the fill fired
+    // here is awaited by the next #stepGrammar's ready()).
+    for (let b = 0; b < this.#running.length && b < toks.length; b++) {
+      const g = this.#running[b]!.req.grammar;
+      if (g && !g.isTerminated) g.accept(toks[b]!);
+    }
     await this.#emitRows(toks);
   }
 
@@ -554,6 +565,8 @@ export class BatchScheduler {
     const prev = this.#pendingToks;
     const prevVals: number[] =
       prev ? [...prev.toFloat32()].map((x) => Math.round(x)) : [];
+    if (process.env.MLX_BUN_GRAMMAR_DEBUG === "1")
+      console.log(`[sg] B=${B} prevVals=${JSON.stringify(prevVals)} current=${JSON.stringify(rows.map((r) => r.current))} sampled=${JSON.stringify(rows.map((r) => r.sampled))}`);
 
     // (2) accept() per live grammar row — fires that row's async bitmask fill.
     for (let b = 0; b < B && prevVals.length; b++) {

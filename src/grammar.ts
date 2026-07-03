@@ -36,20 +36,29 @@ import * as ops from "./mlx/ops";
 import type { LoadedTokenizer } from "./tokenizer";
 
 /** The request shape — the union of every structured-output field name across
- *  the OpenAI/oMLX/vLLM API surfaces. resolveGrammarRequest() normalizes them. */
+ *  the OpenAI/oMLX/vLLM API surfaces. BOTH spellings are accepted: the wire
+ *  protocol is snake_case (the server passes the raw request body — this was
+ *  a live bug until 2026-07-03: only camelCase was read, so response_format
+ *  over HTTP silently no-op'd; caught by the feature-matrix benchmark's
+ *  conformance gate); library callers use camelCase. */
 export interface GrammarRequest {
   /** OpenAI response_format. {type:"json_object"} | {type:"json_schema",
    *  json_schema:{name,schema,strict?}} | {type:"text"} (text = no-op). */
   responseFormat?: unknown;
+  response_format?: unknown;
   /** vLLM/oMLX: raw EBNF/LARK grammar string. */
   guidedGrammar?: string;
+  guided_grammar?: string;
   /** vLLM/oMLX: regex — compiled to a grammar via xgrammar's RegexToEBNF. */
   guidedRegex?: string;
+  guided_regex?: string;
   /** vLLM/oMLX: restrict output to one of these strings (enum). */
   guidedChoice?: string[];
+  guided_choice?: string[];
   /** vLLM/oMLX: a JSON schema object directly (alias for response_format's
    *  json_schema.schema). */
   structuredOutputs?: unknown;
+  structured_outputs?: unknown;
 }
 
 /** A compiled grammar ready to mask logits. Null when the request asks for no
@@ -408,23 +417,30 @@ function resolveGrammarRequest(req: GrammarRequest):
     | { kind: "choice"; choices: string[]; degradeDescription: string }
   )
   | null {
+  // Normalize the two spellings first (wire = snake_case, library = camel).
+  const guidedGrammar = req.guidedGrammar ?? req.guided_grammar;
+  const guidedRegex = req.guidedRegex ?? req.guided_regex;
+  const guidedChoice = req.guidedChoice ?? req.guided_choice;
+  const structuredOutputs = req.structuredOutputs ?? req.structured_outputs;
+  const responseFormat = req.responseFormat ?? req.response_format;
+
   // Precedence mirrors oMLX's _effective_guided_grammar / _compile_grammar:
   // explicit grammar > response_format json_schema > json_object > regex >
   // choice > structured_outputs. text / unset → null (no constraint).
-  if (req.guidedGrammar) {
+  if (guidedGrammar) {
     return {
       kind: "grammar",
-      ebnf: req.guidedGrammar,
+      ebnf: guidedGrammar,
       degradeDescription: "guided_grammar",
     };
   }
 
-  const rf = req.responseFormat;
+  const rf = responseFormat;
   if (rf && typeof rf === "object") {
     const type = (rf as { type?: string }).type;
     if (type === "json_schema") {
       const js = (rf as { json_schema?: { schema?: unknown; strict?: boolean } }).json_schema;
-      const schema = js?.schema ?? req.structuredOutputs;
+      const schema = js?.schema ?? structuredOutputs;
       if (schema) {
         return {
           kind: "json_schema",
@@ -439,23 +455,23 @@ function resolveGrammarRequest(req: GrammarRequest):
     // type === "text" → no constraint (OpenAI: text = free-form)
   }
 
-  if (req.structuredOutputs && typeof req.structuredOutputs === "object") {
+  if (structuredOutputs && typeof structuredOutputs === "object") {
     // structured_outputs as a bare schema object (oMLX alias)
     return {
       kind: "json_schema",
-      schema: req.structuredOutputs,
+      schema: structuredOutputs,
       degradeDescription: "structured_outputs",
     };
   }
 
-  if (req.guidedRegex) {
-    return { kind: "regex", regex: req.guidedRegex, degradeDescription: "guided_regex" };
+  if (guidedRegex) {
+    return { kind: "regex", regex: guidedRegex, degradeDescription: "guided_regex" };
   }
 
-  if (req.guidedChoice && req.guidedChoice.length > 0) {
+  if (guidedChoice && guidedChoice.length > 0) {
     return {
       kind: "choice",
-      choices: req.guidedChoice,
+      choices: guidedChoice,
       degradeDescription: "guided_choice",
     };
   }

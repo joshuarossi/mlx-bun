@@ -10,6 +10,7 @@ project-review.html
 *-report-*.html
 benchmarks-h2h-*
 benchmarks-e4b-flag-matrix-*.json
+benchmarks-feature-matrix-*
 benchmarks/lab-verification*.json
 reports/
 runs/
