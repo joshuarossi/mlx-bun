@@ -249,9 +249,15 @@ clean-machine run is queued in STATUS Josh-gated.
   (2) `#flushPipeline` didn't advance matchers → stale masks on mid-decode
   joins (regression test added); (3) **UniversalDenseModel batched RoPE
   uses the scalar cache.offset** → uneven-row batches decode joiners at
-  wrong positions — latent for ALL Tier-0 archs since v0.0.9, now gated
-  serial under `--batch` (task chip: port ropeOffsetArr + Llama B=2
-  golden). Lesson, per [[per-model-quant-specialization]]: the gateway's
+  wrong positions — latent for ALL Tier-0 archs since v0.0.9. **Fixed
+  same day**: `UniversalRope.applyDynamic` (+ `ops.ropeScaledDynamic`)
+  routes the wrapper's per-row `ropeOffsetArr`; gated **token-exact vs
+  mlx-lm B=2 on Llama-3.2-3B** — static uneven rows AND the dynamic
+  join/leave protocol (tests/batched-decode-parity.test.ts "Llama 3B
+  Tier-0"). Plain full-attention universal archs now batch; maskArray
+  (gemma2-family, pad-blind causal mask in forwardLayers) and
+  sliding-window universal archs remain serial (unvalidated cells).
+  Lesson, per [[per-model-quant-specialization]]: the gateway's
   capability gate admitted a model family no batched-parity suite ever
   validated.
 

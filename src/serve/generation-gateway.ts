@@ -147,19 +147,19 @@ export class GenerationGateway {
    *  the kill switch back to serial routing). */
   #modelCachesBatchable(): boolean {
     if (this.#cacheBatchable === null) {
-      // Tier-0 universal models route SERIAL under --batch: their attention
-      // applies RoPE with the scalar cache.offset (universal/dense.ts), so a
-      // left-padded batch with UNEQUAL row lengths decodes the shorter rows
-      // at the longest row's positions — garbage logits for every joiner
-      // (found 2026-07-03 via the feature-matrix conformance gate: batched
-      // Llama grammar joiners emitted junk; plain batches only survive when
-      // all rows happen to be the same length). CPM/Gemma/Qwen3.5 carry the
-      // per-row ropeOffsetArr fix (S1b.1) and stay batchable; the universal
-      // port + an mlx-lm B=2 parity golden for a Tier-0 arch is the tracked
-      // follow-up (per-model-cell validation discipline — no cell is trusted
-      // until gated).
+      // Tier-0 universal models: batchable for PLAIN full-attention archs
+      // only. The 2026-07-03 uneven-row bug (scalar-offset RoPE decoded
+      // padded rows at wrong positions) is fixed via
+      // UniversalRope.applyDynamic + ropeOffsetArr and GATED token-exact vs
+      // mlx-lm B=2 on Llama-3.2-3B (static + dynamic join/leave,
+      // tests/batched-decode-parity.test.ts "Llama 3B Tier-0"). The
+      // maskArray archs (gemma2-family: forwardLayers builds a pad-blind
+      // causal mask) and sliding-window universal archs remain UNVALIDATED
+      // cells → serial, per the per-model-cell discipline.
       if (this.model instanceof UniversalDenseModel) {
-        this.#cacheBatchable = false;
+        const a = this.model.args;
+        this.#cacheBatchable =
+          !a.maskArray && !a.layerTypes?.includes("sliding_attention");
         return this.#cacheBatchable;
       }
       const ssmOk = process.env.MLX_BUN_BATCH_SSM !== "0";

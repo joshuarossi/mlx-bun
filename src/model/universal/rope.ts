@@ -49,30 +49,42 @@ export class UniversalRope {
   ) {}
 
   apply(x: MlxArray, offset: number): MlxArray {
-    let input = x;
-    let scaled: MlxArray | null = null;
-    if (this.preScaleAlways || this.preScale !== 1.0) {
-      // x[..., :dims] = preScale * x[..., :dims] (weak-scalar mul)
-      const D = x.shape[x.shape.length - 1]!;
-      if (this.dims === D) {
-        scaled = ops.mulScalar(x, this.preScale);
-      } else {
-        const start = x.shape.map(() => 0);
-        const stop = [...x.shape];
-        stop[stop.length - 1] = this.dims;
-        const head = x.slice(start, stop);
-        const headScaled = ops.mulScalar(head, this.preScale);
-        head.dispose();
-        scaled = ops.sliceUpdate(x, headScaled, start, stop);
-        headScaled.dispose();
-      }
-      input = scaled;
-    }
+    const input = this.#preScaled(x);
     const out = ops.ropeScaled(
-      input, this.dims, this.traditional, this.base, this.scale, offset, this.freqs,
+      input ?? x, this.dims, this.traditional, this.base, this.scale, offset, this.freqs,
     );
-    scaled?.dispose();
+    input?.dispose();
     return out;
+  }
+
+  /** Per-row array-offset variant (batched decode under left-padding: each
+   *  row's REAL position rides an int32 [B] array — the scalar offset would
+   *  mis-position every padded row by its pad amount). Same math as
+   *  `apply`; only the offset spelling differs. */
+  applyDynamic(x: MlxArray, offsetArr: MlxArray): MlxArray {
+    const input = this.#preScaled(x);
+    const out = ops.ropeScaledDynamic(
+      input ?? x, this.dims, this.traditional, this.base, this.scale, offsetArr, this.freqs,
+    );
+    input?.dispose();
+    return out;
+  }
+
+  /** x[..., :dims] = preScale * x[..., :dims] (weak-scalar mul); null when
+   *  no pre-scale applies (caller uses x unchanged). */
+  #preScaled(x: MlxArray): MlxArray | null {
+    if (!(this.preScaleAlways || this.preScale !== 1.0)) return null;
+    const D = x.shape[x.shape.length - 1]!;
+    if (this.dims === D) return ops.mulScalar(x, this.preScale);
+    const start = x.shape.map(() => 0);
+    const stop = [...x.shape];
+    stop[stop.length - 1] = this.dims;
+    const head = x.slice(start, stop);
+    const headScaled = ops.mulScalar(head, this.preScale);
+    head.dispose();
+    const scaled = ops.sliceUpdate(x, headScaled, start, stop);
+    headScaled.dispose();
+    return scaled;
   }
 
   dispose(): void {
@@ -87,6 +99,9 @@ export class NoRope extends UniversalRope {
   }
   override apply(x: MlxArray, _offset: number): MlxArray {
     // Return an owned copy-view so callers can dispose uniformly.
+    return x.slice(x.shape.map(() => 0), [...x.shape]);
+  }
+  override applyDynamic(x: MlxArray, _offsetArr: MlxArray): MlxArray {
     return x.slice(x.shape.map(() => 0), [...x.shape]);
   }
 }

@@ -140,8 +140,18 @@ class UniversalAttention {
     k = disposing(k, ops.transposeAxes(k, [0, 2, 1, 3]));
     v = disposing(v, ops.transposeAxes(v, [0, 2, 1, 3]));
 
-    q = disposing(q, this.rope.apply(q, cache.offset));
-    k = disposing(k, this.rope.apply(k, cache.offset));
+    // Batched decode: the scheduler's mask wrapper exposes each row's REAL
+    // position as ropeOffsetArr (rows have different prompt lengths under
+    // left-padding; the scalar offset would mis-position every padded row by
+    // its pad amount — the 2026-07-03 uneven-batch bug). Serial lane: scalar
+    // offset, byte-identical to before (the S1b.1 pattern, cf. qwen3_5.ts).
+    const offArr = (cache as { ropeOffsetArr?: MlxArray }).ropeOffsetArr;
+    q = disposing(q, offArr
+      ? this.rope.applyDynamic(q, offArr)
+      : this.rope.apply(q, cache.offset));
+    k = disposing(k, offArr
+      ? this.rope.applyDynamic(k, offArr)
+      : this.rope.apply(k, cache.offset));
 
     const [keys, values] = cache.updateAndFetch(k, v);
     k.dispose();

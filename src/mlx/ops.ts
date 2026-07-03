@@ -147,6 +147,25 @@ export function ropeDynamic(
   );
 }
 
+/** Array-offset fast::rope with every knob exposed (traditional + scale) —
+ *  the dynamic twin of `ropeScaled`, for the universal rope factory's
+ *  batched-decode path (per-row [B] offsets under left-padding). Same
+ *  kernel as `ropeDynamic`; static/dynamic bit-exactness is asserted in
+ *  tests/compile.test.ts. */
+export function ropeScaledDynamic(
+  x: MlxArray, dims: number, traditional: boolean, base: number | null,
+  scale: number, offset: MlxArray, freqs: MlxArray | null, s: S = gpuStream,
+): MlxArray {
+  return new MlxArray(
+    outArray("fast_rope_dynamic", (o) =>
+      C.mlx_fast_rope_dynamic(
+        o, x.handle, dims, traditional, optFloat(base), scale, offset.handle,
+        freqs?.handle ?? 0n, s,
+      ),
+    ),
+  );
+}
+
 export function sdpa(
   q: MlxArray, k: MlxArray, v: MlxArray, scale: number,
   maskMode: "" | "causal" | "array", maskArr: MlxArray | null = null,

@@ -91,8 +91,16 @@ or shelved with numbers — ledger:
    one-token-stale masks on every mid-decode join (regression test added);
    (3) **UniversalDenseModel batching decodes uneven rows at wrong RoPE
    positions** (scalar `cache.offset`, no per-row offsets) — LATENT for all
-   Tier-0 archs since v0.0.9, now routed serial under `--batch` until the
-   `ropeOffsetArr` port + an mlx-lm B=2 golden land (task chip filed).
+   Tier-0 archs since v0.0.9. **FIXED same day**: per-row RoPE ported
+   (`UniversalRope.applyDynamic` + `ops.ropeScaledDynamic`), **gated
+   token-exact vs mlx-lm B=2 on Llama-3.2-3B** (static uneven rows AND
+   dynamic join/leave; goldens `batched-golden-llama32-3b.json` +
+   `batched-dynamic-golden-llama32-3b.json`). Plain full-attention
+   universal archs now BATCH (Llama matrix smoke: batch2 1.7× serial agg,
+   TTFT 765→162 ms); maskArray (gemma2-family) + sliding universal archs
+   stay serial (unvalidated cells). Separate finding, chip filed:
+   tests/universal-rope.test.ts fixtures are machine-specific (5 fail on
+   M4 Pro, CI/M1 green — the batched-goldens incident's failure class).
    **Open: Phase D** — extend-join (+ grammar-churn test), vectorized
    homogeneous sampling, `projectKvBytes` + `--kv-budget` admission.
    Debug lever: `MLX_BUN_GRAMMAR_DEBUG=1` (per-step scheduler trace).

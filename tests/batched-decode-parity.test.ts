@@ -35,6 +35,18 @@ const E4B_BASE =
   `fcdb12d740cd813634064567fc7cb51159b34253`;
 const haveE4b = existsSync(`${E4B_BASE}/config.json`);
 const haveS26 = await snapshot26bAvailable();
+// Tier-0 universal cell (UniversalDenseModel, llama arch). Snapshot hash-free
+// resolution — any downloaded revision with weights qualifies.
+const LLAMA3B_BASE = ((): string => {
+  const base = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--Llama-3.2-3B-Instruct-4bit/snapshots`;
+  try {
+    const { readdirSync } = require("node:fs") as typeof import("node:fs");
+    for (const s of readdirSync(base))
+      if (existsSync(`${base}/${s}/model.safetensors`)) return `${base}/${s}`;
+  } catch { /* not downloaded */ }
+  return `${base}/_unresolved`;
+})();
+const haveLlama3b = existsSync(`${LLAMA3B_BASE}/config.json`);
 
 /** Run the batched-decode parity harness for one model. prompts[0] MUST be the
  *  longest (→ leftPad 0, the bit-exact row); others are left-padded. Returns
@@ -520,6 +532,32 @@ describe.skipIf(!optIn || !haveCpm)("batched decode DYNAMIC-B ORACLE — CPM L1 
     console.log(`[dynamic CPM] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
     expect(got).toEqual(golden.trajectories);
   }, 180_000);
+});
+
+// --- Tier-0 UNIVERSAL cell (Llama-3.2-3B, UniversalDenseModel): the gate
+//     that lifts the 2026-07-03 serial-only routing. The uneven-length rows
+//     (leftPad 0 / 2) are exactly the failing case — the scalar-offset RoPE
+//     decoded padded rows at wrong positions; the fix routes per-row
+//     positions through UniversalRope.applyDynamic (ropeOffsetArr). Both the
+//     static B=2 protocol AND the dynamic join/leave protocol (a joiner
+//     mid-stream = the staggered-join production shape) must be
+//     token-for-token vs mlx-lm. Oracles: scripts/gen-batched-golden.py +
+//     gen-batched-dynamic-golden.py with the Llama snapshot. ---
+describe.skipIf(!optIn || !haveLlama3b)("batched decode ORACLE parity — Llama 3B Tier-0 vs mlx-lm B=2", () => {
+  test("real batched greedy trajectory == mlx-lm B=2 (uneven rows)", async () => {
+    const golden = await goldenAt("batched-golden-llama32-3b.json").json();
+    const got = await realBatchedGreedy(LLAMA3B_BASE, golden.prompts as number[][], golden.steps as number);
+    console.log(`[oracle Llama3B] mlx-bun: ${JSON.stringify(got)}`);
+    console.log(`[oracle Llama3B] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
+    expect(got).toEqual(golden.trajectories);
+  }, 240_000);
+  test("dynamic join/leave == mlx-lm BatchKVCache (the staggered-join case)", async () => {
+    const golden = await goldenAt("batched-dynamic-golden-llama32-3b.json").json();
+    const got = await realDynamicBatchedGreedy(LLAMA3B_BASE, golden.scenario);
+    console.log(`[dynamic Llama3B] mlx-bun: ${JSON.stringify(got)}`);
+    console.log(`[dynamic Llama3B] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
+    expect(got).toEqual(golden.trajectories);
+  }, 240_000);
 });
 
 // --- Gemma 12B L1 (bf16 KV) vs mlx-lm B=2 oracle (sliding layers →

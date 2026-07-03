@@ -1,0 +1,67 @@
+{
+  "model": "/Users/joshrossi/.cache/huggingface/hub/models--mlx-community--Llama-3.2-3B-Instruct-4bit/snapshots/7f0dc925e0d0afb0322d96f9255cfddf2ba5636e",
+  "scenario": {
+    "A": [
+      1,
+      100,
+      200,
+      300,
+      400,
+      500,
+      600
+    ],
+    "B": [
+      1,
+      150,
+      250,
+      350,
+      450
+    ],
+    "C": [
+      1,
+      130,
+      230,
+      330,
+      430,
+      530
+    ],
+    "phase1": 3,
+    "phase2": 3,
+    "phase3": 3,
+    "join_after": 3,
+    "leave_after": 6,
+    "leave_row": 0
+  },
+  "trajectories": {
+    "A": [
+      3,
+      311,
+      1893,
+      264,
+      502,
+      734,
+      430
+    ],
+    "B": [
+      1122,
+      198,
+      9,
+      220,
+      150,
+      250,
+      350,
+      450,
+      1122,
+      198
+    ],
+    "C": [
+      1727,
+      82,
+      2401,
+      16454,
+      62,
+      18207,
+      1
+    ]
+  }
+}
