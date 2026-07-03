@@ -206,7 +206,6 @@ async function benchModel(model: string) {
     );
     if (V - rej.length < 50) tightCount.add(i);
     if (!mW.acceptToken(walkIds[i]!) || mW.isTerminated()) break;
-    mask.dispose?.();
   }
   if (fills.length === 0) throw new Error("real walk produced no samples");
   console.log(
