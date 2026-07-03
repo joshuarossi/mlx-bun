@@ -36,6 +36,15 @@ README.md has the pitch and scope boundaries.
   the marker, record decisions in PLAN.md (e.g. the Phase 0 pivot
   decision). PLAN.md is the durable state between sessions — write
   conclusions down; don't rely on conversation memory.
+- **Docs land WITH the feature, reference docs included.** A change to the
+  served surface (flags, request/response fields, lane routing, defaults)
+  updates the user-facing mirror in the SAME commit: server-config.md,
+  server-api.md, cli.md, README as applicable — not just STATUS and the
+  design doc next to the code. Reference-doc drift is the observed failure
+  mode (2026-07-03 sweep: structured output was undocumented in
+  server-api.md, cli.md lacked three flags, README pinned dead versions).
+  Avoid literal version strings in prose; the docs-map hygiene gate checks
+  file coverage, not content — content accuracy is this rule.
 - **Logit parity with mlx-lm is the correctness oracle.** The Python
   reference lives in `/Users/joshrossi/Code/mlx-lm/.venv` (mlx 0.31.2,
   mlx-lm 0.31.3, mlx-optiq 0.2.4). Run reference scripts with that venv's
