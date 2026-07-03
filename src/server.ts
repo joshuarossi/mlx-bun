@@ -28,6 +28,9 @@ import { spliceImageTokens } from "./vision/diffusion-vision";
 import { createModel, type RuntimeModel } from "./model/factory";
 import { isMiniCPM5Config, isSupportedModelRecord } from "./model/support";
 import { generate, type GenerateOptions, type TokenLogprobs } from "./generate";
+import {
+  compileGrammarRequest, grammarEnabled, type GrammarRequest,
+} from "./grammar";
 import type { HlgConfig } from "./sampler";
 import { isMonotone, CURVE_UMIN, type CurveParams } from "./curve-sampler";
 const CURVE_PAGE = curveDesignerHtml as unknown as string;
@@ -340,6 +343,20 @@ interface ChatRequest {
     toe?: number;
     pivot_offset?: number;
   };
+  /** OpenAI structured output: {type:"json_object"} | {type:"json_schema",
+   *  json_schema:{name,schema,strict?}} | {type:"text"}. Enforced at the
+   *  sampler via xgrammar token-bitmasks (src/grammar.ts). L2-class (oMLX
+   *  oracle). On compile failure, degrades to a system-prompt injection +
+   *  Warning header (oMLX parity), never 500. */
+  response_format?: unknown;
+  /** vLLM/oMLX grammar aliases (all compiled via xgrammar): raw EBNF/LARK
+   *  grammar, regex, enum choice, and a bare JSON-schema object. Precedence
+   *  (guided_grammar > json_schema > json_object > structured_outputs >
+   *  guided_regex > guided_choice) mirrors oMLX _effective_guided_grammar. */
+  guided_grammar?: string;
+  guided_regex?: string;
+  guided_choice?: string[];
+  structured_outputs?: unknown;
 }
 
 /** POST /v1/completions body (mlx_lm.server's raw text completion — no chat
@@ -850,6 +867,33 @@ export function nextDefaultSeed(): number {
  *  with defaults logprobs=False / top_logprobs=-1). Returns the reference's
  *  error message (→ 400) or null when valid. Note mlx-lm caps top_logprobs
  *  at 11, not OpenAI's 20 — we mirror the reference. */
+/** Build a degrade-path system-prompt instruction for JSON output, mirroring
+ *  oMLX's api.tool_calling.build_json_system_prompt (used when xgrammar
+ *  compile fails — the response_format degrades to prompt injection rather
+ *  than a 500, oMLX parity). Returns null for {type:"text"} / unset. */
+export function degradeJsonSystemPrompt(body: ChatRequest): string | null {
+  const rf = body.response_format as { type?: string; json_schema?: { name?: string; description?: string; schema?: unknown } } | undefined;
+  if (!rf || typeof rf !== "object") return null;
+  const type = rf.type ?? "text";
+  if (type === "text") return null;
+  if (type === "json_object") {
+    return "You must respond with valid JSON only. " +
+      "Do not include any explanation or text outside the JSON object.";
+  }
+  if (type === "json_schema") {
+    const spec = rf.json_schema ?? {};
+    const schema = spec.schema ?? body.structured_outputs ?? {};
+    const name = spec.name ?? "response";
+    const description = spec.description ?? "";
+    let prompt = `You must respond with valid JSON matching the '${name}' schema.`;
+    if (description) prompt += ` ${description}`;
+    prompt += `\n\nJSON Schema:\n\`\`\`json\n${JSON.stringify(schema, null, 2)}\n\`\`\`\n\n` +
+      "Respond with only the JSON object, no additional text or explanation.";
+    return prompt;
+  }
+  return null;
+}
+
 export function validateLogprobsParams(body: {
   logprobs?: unknown;
   top_logprobs?: unknown;
@@ -1266,6 +1310,24 @@ export function createServer(
         .filter((s) => typeof s === "string" && s.length > 0),
       ...kvScheme,
     };
+  };
+
+  /** Compile a grammar controller from the request's structured-output fields
+   *  (response_format / guided_* / structured_outputs). Returns null when no
+   *  constraint is requested OR when compile failed (degrade path). On degrade,
+   *  `degradeHint` carries a human description for the system-prompt injection
+   *  + Warning header (oMLX parity — never 500). Honors MLX_BUN_GRAMMAR=0. */
+  const compileGrammarForRequest = async (
+    req: ChatRequest,
+  ): Promise<{ controller: import("./grammar").GrammarController | null; degradeHint: string | null }> => {
+    if (!grammarEnabled()) return { controller: null, degradeHint: null };
+    const r = await compileGrammarRequest(
+      req as GrammarRequest,
+      ctx.tokenizer,
+      ctx.model.config.text.vocabSize,
+    );
+    if (!r) return { controller: null, degradeHint: null };
+    return { controller: r.controller, degradeHint: r.degradeHint };
   };
 
   const templateOptionsFor = (req: ChatRequest, tools: ToolDefinition[] | null) => {
@@ -1848,6 +1910,31 @@ export function createServer(
         let startInThinking = false;
         let vision: Parameters<typeof runGeneration>[3];
         let diffusionPixels: import("./mlx/array").MlxArray | null = null;
+        // Grammar-constrained decoding (src/grammar.ts). Compile BEFORE prompt
+        // rendering: on the degrade path (compile failed but a constraint was
+        // requested) inject a system message instructing valid JSON so the
+        // model still best-efforts schema-conformant output (oMLX parity —
+        // _compile_grammar_for_request returning None + build_json_system_prompt).
+        let grammarCtrl: import("./grammar").GrammarController | null = null;
+        let grammarWarning: string | null = null;
+        const grammarReq =
+          body.response_format != null || !!body.guided_grammar ||
+          !!body.guided_regex || !!body.guided_choice?.length ||
+          body.structured_outputs != null;
+        if (grammarReq) {
+          const g = await compileGrammarForRequest(body);
+          grammarCtrl = g.controller;
+          if (!g.controller && g.degradeHint) {
+            grammarWarning = `grammar not enforced: ${g.degradeHint} — falling back to prompt injection`;
+            body = {
+              ...body,
+              messages: [
+                { role: "system", content: degradeJsonSystemPrompt(body) },
+                ...body.messages,
+              ],
+            };
+          }
+        }
         try {
           if (hasImages && ctx.model instanceof DiffusionGemmaModel) {
             // DiffusionGemma image-text-to-text: its OWN dedicated SigLIP tower +
@@ -1912,6 +1999,9 @@ export function createServer(
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
         }
         if (diffusionPixels) options.visionPixels = diffusionPixels;
+        // Attach the compiled grammar controller (null when no constraint /
+        // degrade — generate() runs the unmasked fast pipelined loop).
+        if (grammarCtrl) options.grammar = grammarCtrl;
         // Admission: reject what cannot finish within the memory budget
         // (the GPU OOM it would otherwise hit is uncatchable and kills
         // the process — Phase 6 finding).
@@ -2078,6 +2168,7 @@ export function createServer(
               "content-type": "text/event-stream",
               "cache-control": "no-cache",
               connection: "keep-alive",
+              ...(grammarWarning ? { Warning: grammarWarning } : {}),
             },
           });
         }
@@ -2142,7 +2233,7 @@ export function createServer(
                 total_tokens: s.promptTokens + s.generatedTokens,
                 prompt_tokens_details: { cached_tokens: s.cachedTokens },
               },
-            });
+            }, grammarWarning ? { headers: { Warning: grammarWarning } } : undefined);
           }
         } catch (e) {
           return Response.json({ error: { message: (e as Error).message } }, { status: 500 });
@@ -2195,6 +2286,22 @@ export function createServer(
         } catch (e) {
           // bad logit_bias (non-numeric keys/values) — mlx-lm's coercion error
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
+        }
+        // Grammar-constrained decoding on raw completions too (response_format /
+        // guided_* / structured_outputs). The degrade path for /v1/completions
+        // has no chat template to inject a system message into, so a degrade
+        // only emits the Warning header (no prompt injection) — documented gap
+        // vs the chat lane, which mirrors oMLX's text-completions behavior.
+        let textGrammarWarning: string | null = null;
+        const textGrammarReq =
+          body.response_format != null || !!body.guided_grammar ||
+          !!body.guided_regex || !!body.guided_choice?.length ||
+          body.structured_outputs != null;
+        if (textGrammarReq) {
+          const g = await compileGrammarForRequest(body as unknown as ChatRequest);
+          if (g.controller) options.grammar = g.controller;
+          else if (g.degradeHint)
+            textGrammarWarning = `grammar not enforced: ${g.degradeHint} — no prompt injection on /v1/completions`;
         }
         // mlx_lm.server's default max_tokens is 512 (its --max-tokens CLI
         // default). The chat lane's very generous default is wrong for raw
@@ -2307,6 +2414,7 @@ export function createServer(
               "content-type": "text/event-stream",
               "cache-control": "no-cache",
               connection: "keep-alive",
+              ...(textGrammarWarning ? { Warning: textGrammarWarning } : {}),
             },
           });
         }
@@ -2342,7 +2450,7 @@ export function createServer(
               total_tokens: s.promptTokens + s.generatedTokens,
               prompt_tokens_details: { cached_tokens: s.cachedTokens },
             },
-          });
+          }, textGrammarWarning ? { headers: { Warning: textGrammarWarning } } : undefined);
         } catch (e) {
           return Response.json({ error: { message: (e as Error).message } }, { status: 500 });
         }

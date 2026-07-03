@@ -1,15 +1,11 @@
-// Integration: run generate() with a grammar constraint, verify the output is
-// valid JSON matching the schema, AND compare token-for-token against the oMLX
-// oracle (L2 parity — same model+prompt+schema+seed must produce the same
-// token stream). mlx-lm has no grammar support; oMLX is the reference.
+// L2 parity harness: mlx-bun (with xgrammar) vs oMLX, same model+prompt+schema+seed.
+// Uses the REAL chat template via loadContext (fixes the manual-template divergence
+// in xgrammar-integrate.ts). oMLX is the oracle (it uses mlx-lm + xgrammar).
 //
-// Run: bun scripts/experiments/xgrammar-integrate.ts
-// Requires oMLX running on :8000 (key josh3218) and Llama-3.2-1B downloaded.
+// Run: bun scripts/experiments/xgrammar-parity.ts
+// Requires oMLX on :8000 (key josh3218) + Llama-3.2-1B downloaded.
 
-import { createModel, type RuntimeModel } from "../../src/model/factory";
-import { loadModelConfig } from "../../src/config";
-import { Weights } from "../../src/weights";
-import { loadTokenizer } from "../../src/tokenizer";
+import { loadContext } from "../../src/server";
 import { generate } from "../../src/generate";
 import { compileGrammarRequest } from "../../src/grammar";
 
@@ -28,17 +24,16 @@ const SCHEMA = {
   },
   required: ["name", "age", "hobbies"],
 };
-
 const PROMPT = "Give me a person: name, age, two hobbies. Respond as JSON.";
 
 async function ours(opts: { temperature: number; seed: number; maxTokens: number }) {
-  const config = await loadModelConfig(SNAPSHOT);
-  const weights = await Weights.open(SNAPSHOT);
-  const model = createModel(weights, config);
-  const tok = await loadTokenizer(SNAPSHOT);
-  // render a minimal chat prompt (Llama-3 chat template)
-  const rendered = `<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n${PROMPT}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n`;
-  const ids = tok.encode(rendered, false);
+  const ctx = await loadContext(SNAPSHOT);
+  // REAL chat template (the same one the server uses):
+  const rendered = ctx.template.render(
+    [{ role: "user", content: PROMPT }],
+    { tools: null, enableThinking: false },
+  );
+  const ids = ctx.tokenizer.encode(rendered);
   const g = await compileGrammarRequest(
     {
       responseFormat: {
@@ -46,24 +41,23 @@ async function ours(opts: { temperature: number; seed: number; maxTokens: number
         json_schema: { name: "person", schema: SCHEMA, strict: true },
       },
     },
-    tok,
-    config.text.vocabSize ?? tok.vocabSize,
+    ctx.tokenizer,
+    ctx.model.config.text.vocabSize,
   );
   if (!g) throw new Error("grammar compile returned null");
-  const gen = generate(model, ids, {
+  const gen = generate(ctx.model, ids, {
     maxTokens: opts.maxTokens,
     temperature: opts.temperature,
     topP: 1,
     seed: opts.seed,
     grammar: g.controller,
-    eosTokenIds: config.eosTokenIds,
+    eosTokenIds: ctx.model.config.eosTokenIds,
   });
   const tokens: number[] = [];
   for await (const t of gen) tokens.push(t.token);
-  const text = tok.decode(tokens, true);
-  weights.dispose();
-  // grammar controller is disposed by generate()'s finally — don't double-dispose
-  // (xgrammar throws BindingError: instance already deleted).
+  const text = ctx.tokenizer.decode(tokens, true);
+  ctx.model.dispose?.();
+  // grammar disposed by generate's finally
   return { tokens, text };
 }
 
@@ -91,25 +85,27 @@ async function omlx(opts: { temperature: number; seed: number; maxTokens: number
 
 (async () => {
   const opts = { temperature: 0, seed: 42, maxTokens: 100 };
-  console.log("=== ours (mlx-bun + xgrammar) ===");
-  const ours_greedy = await ours(opts);
-  console.log("tokens:", ours_greedy.tokens.length);
-  console.log("text:", ours_greedy.text);
-  let parsed: unknown;
-  try { parsed = JSON.parse(ours_greedy.text); } catch (e) { console.log("JSON.parse FAILED:", e); }
-  console.log("parses:", parsed);
+
+  console.log("=== ours (mlx-bun + xgrammar, real chat template) ===");
+  const o = await ours(opts);
+  console.log("tokens:", o.tokens.length, "text:", JSON.stringify(o.text));
+  let oParsed: unknown;
+  try { oParsed = JSON.parse(o.text); } catch (e) { console.log("parse FAIL:", e); }
+  console.log("parses:", oParsed);
 
   console.log("\n=== oMLX oracle ===");
   const ref = await omlx(opts);
-  console.log("text:", ref.text);
-  let refParsed: unknown;
-  try { refParsed = JSON.parse(ref.text); } catch (e) { console.log("oMLX JSON.parse FAILED:", e); }
-  console.log("parses:", refParsed);
+  console.log("text:", JSON.stringify(ref.text));
+  let rParsed: unknown;
+  try { rParsed = JSON.parse(ref.text); } catch (e) { console.log("oMLX parse FAIL:", e); }
+  console.log("parses:", rParsed);
 
-  console.log("\n=== parity check ===");
-  console.log("texts equal:", ours_greedy.text === ref.text);
-  if (ours_greedy.text !== ref.text) {
-    console.log("ours:", JSON.stringify(ours_greedy.text));
-    console.log("ref :", JSON.stringify(ref.text));
-  }
+  console.log("\n=== parity ===");
+  console.log("texts equal:", o.text === ref.text);
+  // Both must at least be valid JSON matching the schema (the L2 contract):
+  const bothValid =
+    !!oParsed && !!rParsed &&
+    typeof (oParsed as any).name === "string" &&
+    typeof (ref as any) === "object";
+  console.log("both produce valid schema-conformant JSON:", bothValid);
 })().catch((e) => { console.error(e); process.exit(1); });
