@@ -87,16 +87,18 @@ function wasmQueue<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/** F4: ONE TokenizerInfo + ONE compiler per tokenizer.json path, cached for
+ *  the process lifetime. xgrammar's GrammarCompiler carries an internal
+ *  compilation cache (cacheEnabled defaults true), so agentic clients
+ *  replaying the same JSON schema hit a cached grammar instead of paying a
+ *  full schema→grammar compile per request. Both are vocab-structural.
+ *  Controllers get ownsCompiler=false and never dispose it.
+ *  The entry holds a PROMISE, installed synchronously before any await —
+ *  concurrent compiles after a path change share ONE build (single-flight)
+ *  instead of racing to rebuild and double-dispose the previous pair. */
 let cachedTokenizerInfo: {
   path: string;
-  info: XTokenizerInfo;
-  /** F4: ONE compiler per TokenizerInfo, cached for the process lifetime.
-   *  xgrammar's GrammarCompiler carries an internal compilation cache
-   *  (cacheEnabled defaults true), so agentic clients replaying the same
-   *  JSON schema hit a cached grammar instead of paying a full
-   *  schema→grammar compile per request. Both are vocab-structural.
-   *  Controllers get ownsCompiler=false and never dispose it. */
-  compiler: XGrammarCompiler;
+  pair: Promise<{ info: XTokenizerInfo; compiler: XGrammarCompiler }>;
 } | null = null;
 
 /** Extract the ordered vocab array + detect xgrammar vocab type from
@@ -134,24 +136,37 @@ function loadVocab(tokenizerJsonPath: string): {
 }
 
 /** Get (cached) xgrammar TokenizerInfo + its process-lifetime compiler for a
- *  tokenizer.json path. On a path change (model switch) the old pair is
- *  disposed before the new one is built. */
-async function getTokenizerInfo(
+ *  tokenizer.json path. On a path change (model switch) the previous pair is
+ *  disposed exactly once, by the single flight that replaced it. */
+function getTokenizerInfo(
   tokenizerJsonPath: string,
 ): Promise<{ info: XTokenizerInfo; compiler: XGrammarCompiler }> {
-  if (cachedTokenizerInfo?.path === tokenizerJsonPath) return cachedTokenizerInfo;
+  if (cachedTokenizerInfo?.path === tokenizerJsonPath) return cachedTokenizerInfo.pair;
   const prev = cachedTokenizerInfo;
-  const { vocab, vocabType, prependSpace } = loadVocab(tokenizerJsonPath);
-  const info = await wasmQueue(() =>
-    xgrammar.TokenizerInfo.createTokenizerInfo(vocab, vocabType, prependSpace, vocab.length),
-  );
-  const compiler = await wasmQueue(() => xgrammar.GrammarCompiler.createGrammarCompiler(info));
-  cachedTokenizerInfo = { path: tokenizerJsonPath, info, compiler };
-  if (prev) {
-    prev.compiler.dispose();
-    prev.info.dispose();
-  }
-  return cachedTokenizerInfo;
+  const pair = (async () => {
+    const { vocab, vocabType, prependSpace } = loadVocab(tokenizerJsonPath);
+    const info = await wasmQueue(() =>
+      xgrammar.TokenizerInfo.createTokenizerInfo(vocab, vocabType, prependSpace, vocab.length),
+    );
+    const compiler = await wasmQueue(() => xgrammar.GrammarCompiler.createGrammarCompiler(info));
+    if (prev)
+      prev.pair.then(
+        (p) => {
+          p.compiler.dispose();
+          p.info.dispose();
+        },
+        () => undefined,
+      );
+    return { info, compiler };
+  })();
+  // Install synchronously — concurrent callers join this flight. A failed
+  // flight uncaches itself (callers still see the rejection) so a transient
+  // error doesn't poison the path forever.
+  cachedTokenizerInfo = { path: tokenizerJsonPath, pair };
+  pair.catch(() => {
+    if (cachedTokenizerInfo?.pair === pair) cachedTokenizerInfo = null;
+  });
+  return pair;
 }
 
 /** Vocab size the matcher masks against (config.vocab_size, may exceed the

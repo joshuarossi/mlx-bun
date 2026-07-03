@@ -132,6 +132,23 @@ discipline (`MLX_BUN_PERF_KERNEL`, `MLX_BUN_COMPILED_DECODE`, …).
   picks indented (ours) vs compact (oMLX). Content is byte-identical; both
   are valid JSON. A subtle version-skew (WASM 0.1.27 vs native 0.2.0) /
   logit detail at whitespace steps. Not a correctness issue.
+  - **Whitespace STALL mode** (observed 2026-07-03, B2 bring-up): unlimited
+    whitespace means a whitespace-degenerate model can greedily emit
+    whitespace until max_tokens (CPM5-1B base + raw prompt + a boolean
+    value → tab loop after the colon, 96/96 tokens, no value emitted). Same
+    exposure as oMLX (same default); chat-tuned models rarely hit it. If it
+    bites in practice the knob is `anyWhitespace=false` (compact
+    separators) or a whitespace-run cap — default-off, oMLX parity stays
+    the default.
+- **B2 batch gates: LANDED 2026-07-03** (`tests/batch-grammar.test.ts`,
+  `MLX_BUN_TEST_BATCH_DECODE=1`, CPM): all-grammar B=4 four-schemas
+  cross-bleed gate, mixed-batch sibling byte-match (pinned schedule),
+  early-termination + churn + joiner, mid-JSON max_tokens truncation,
+  prefill-terminated row never merges. Bring-up also hardened the F4 cache
+  (single-flight rebuild on tokenizer switch — concurrent compiles were
+  double-disposing the previous compiler). Still open from B2: the bench
+  (all-grammar vs all-free at `--batch 4`) — now part of the Phase E
+  feature-matrix benchmark (grammar-spec-batching-integration.md).
 - **Batched lane.** LANDED (B1, 2026-07-02). The WASM build has no
   `BatchGrammarMatcher`; the batched lane (`--batch N`) uses N individual
   per-row matchers driven by the scheduler's `#stepGrammar` (read-before-build:
