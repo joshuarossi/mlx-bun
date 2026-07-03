@@ -29,6 +29,8 @@ the design rationale is in
 | `--batch` | n | `1` (serial) | Max concurrent requests batched through the mlx-lm-parity engine. `>1` switches the **whole server** into bf16 continuous batching — a *mode*, not a load fallback. See [Execution modes](#execution-modes-serial-vs---batch-n). `--decode-concurrency` is accepted for drop-in compatibility, but the semantics differ: in mlx_lm.server it caps per-BatchGenerator decode parallelism (default 32); in mlx-bun it enables continuous batching with this cap (mlx-bun's default is the optimized serial path). |
 | `--kv-quant` | `config`\|`off`\|`4`\|`8` | `config` serial / `off`(bf16) under `--batch N` | KV-cache quantization. `config` = per-layer `kv_config.json` (optiq parity); `off` = bf16; `4`/`8` = uniform bits (group 64, start 0). Under `--batch N`, an explicit value routes those requests to the **serial** lane (batched is bf16-only). |
 | `--adapter` | dir | none | Mount a LoRA adapter at startup (same machinery as `POST /v1/adapters`; the adapter id is the directory's basename) and make it the **default** for requests that send no `adapter` field. A request's explicit `adapter` — including `"none"` — always wins, and hot-swap via `/v1/adapters` is unchanged. `--adapter-path` is accepted as the mlx_lm.server-named alias. A bad adapter fails startup loudly rather than silently serving the base model. This is the flag `mlx-bun train`'s completion message points at. |
+| `--draft-model` | path/query | none | **Speculative decoding** (mlx_lm.server parity): a smaller same-tokenizer model drafts tokens the main model verifies in one forward — exact results (L1: token-for-token vs mlx-lm's speculative path), faster decode when drafts land. Resolves like the main model. Tokenizer-family mismatch fails startup (upstream silently accepts ~0%). Mounting a draft routes **every** request to the serial lane (upstream `is_batchable = draft is None`). Pays on slow targets (12B+); fast small models lose to the draft overhead. Composes with structured output (the constrained verify walk). Prompt-cache reuse is bypassed on the spec path (v1). Telemetry: `usage.speculation` (`drafted`/`accepted`/`targetCalls`). |
+| `--num-draft-tokens` | n | `3` | Drafts per verify round (mlx_lm.server's default; `mlx_lm.generate`'s is 2). |
 | `--thinking` | `true`\|`false` | model's own (false for CPM) | Server-wide default for the chat template's `enable_thinking` (MiniCPM5/CPM and Qwen3.5 hybrid reasoning). A request's `chat_template_kwargs.enable_thinking` overrides it. |
 | `--temperature` | n ∈ [0,5] | `generation_config.json` | Server-wide sampling default. Per-request `temperature` still wins; the browser chat (sends none) inherits this. `--temp` is accepted as an alias (mlx_lm.server compat); explicit `--temperature` wins if both are given. **Migration note:** mlx_lm.server's `--temp` *default* is `0.0` (unset-temperature requests are greedy there); mlx-bun falls back to the model's `generation_config.json`, then `0.7` — pass `--temp 0` for mlx-lm's behavior. |
 | `--top-p` | n ∈ [0,1] | `generation_config.json` | Server-wide top-p default (per-request `top_p` wins). |
@@ -140,25 +142,26 @@ concurrently with each other.
 | --- | --- |
 | vision (image parts) | ❌ serial — needs offset-0 single-seq prefill + bidirectional image mask |
 | LoRA `adapter` (resolves to ≥1) | ❌ serial — `loraState.active` is one per-generation field; per-row adapters unsupported |
-| `repetition_penalty` | ❌ serial — per-row logits processors are a later refinement |
-| `min_p` / `xtc_*` / `logit_bias` / `presence_penalty` / `frequency_penalty` | ❌ serial — one gate for the whole sampler/processor family (safe v1; min_p/XTC are per-row samplers and could batch later) |
+| `logprobs` / `top_logprobs` | ❌ serial — the batched sampler doesn't capture logprob arrays yet |
 | explicit `seed` | ❌ serial — reproducibility ⇒ solo (matches mlx-lm) |
 | KV quant active (explicit `--kv-quant`) | ❌ serial — batched is bf16-only in v1 |
-| hybrid-cache model (Qwen3.5 gated-DeltaNet) | ❌ serial — model-level cache-capability gate (see below) |
+| `--draft-model` mounted | ❌ serial, server-wide — speculation is a B=1 latency mode (upstream `is_batchable = draft is None`) |
+| `repetition_penalty` / `min_p` / `xtc_*` / `logit_bias` / presence+frequency penalties | ✅ batches — per-row logits processors over a per-row device-side history (since 2026-07-02; some models — Qwen3.5 — ship a *default* repetition penalty, which used to route everything serial) |
+| structured output (`response_format` / `guided_*`) | ✅ batches — per-row grammar matchers driven by the scheduler (`MLX_BUN_GRAMMAR_BATCH=0` forces serial) |
 | `temperature` / `top_p` / `top_k` | ✅ batches (each row samples with its own seed) |
 | `stop` sequences | ✅ batches (per-row `StopMatcher` in the onToken closure) |
 | `tools` / `tool_choice` | ✅ batches (per-row tool router; decode-layer parse) |
 | `--thinking` / `enable_thinking` | ✅ batches (template-render concern, lane-independent) |
 | multi-turn / long prompt | ✅ batches, but **no prompt-cache reuse** (`cached_tokens=0`) |
 
-Full-attention (CPM) and sliding-window (Gemma) models batch — the
-scheduler assembles each layer's cache by attention type. Hybrid
-gated-DeltaNet models (Qwen3.5) **route serial**: their `SSMCache` has no
-dynamic-B merge/filter, so the gateway's cache-capability gate (the
-mirror of mlx-lm server.py's all-caches-have-`merge` check) sends every
-request down the serial lane with the standard drain behavior. A batched
-SSM path is planned (mlx-lm's `ArraysCache` is the oracle) — see
-[batching-v2-plan.md](../design/batching-v2-plan.md) item (h).
+**Which models batch:** full-attention (CPM), sliding-window (Gemma),
+hybrid gated-DeltaNet (Qwen3.5 — the SSM batched path, token-exact vs the
+mlx-lm B=2 oracle, landed 2026-07-02; `MLX_BUN_BATCH_SSM=0` reverts it to
+serial routing), and **plain full-attention Tier-0 universal archs**
+(Llama etc. — per-row RoPE gated token-exact vs mlx-lm B=2, 2026-07-03).
+Still serial by the model-level capability gate: gemma2-family and
+sliding-window *universal* archs (unvalidated cells) and DiffusionGemma
+(non-autoregressive).
 
 A non-batchable request **drains** the batch: while it waits, the
 scheduler stops admitting new rows, finishes the running ones, and
@@ -193,6 +196,8 @@ inside it per the table above).
 | `min_p` / `xtc_*` / `logit_bias` / presence+frequency penalties | ✅ | ✅ via serial lane |
 | `seed` | ✅ | ✅ via serial lane |
 | `tools` / `stop` | ✅ | ✅ (batches) |
+| structured output (`response_format`/`guided_*`) | ✅ (mask in the decode loop) | ✅ (batches; per-row matchers) |
+| `--draft-model` | ✅ spec decode (grammar composes) | ⚠️ mounts, but routes **every** request serial — spec and batching are different modes |
 | `--compiled-decode`/`--perf-kernel`/`--fused-*`/`--force-wire` | ✅ (serial perf tree) | **n/a — compat mode, no perf flags by design** |
 
 ### `--batch N` is compat mode — perf flags don't apply by design
@@ -231,7 +236,9 @@ know them:
 
 1. **Prompt cache bypassed.** Batched requests solo-prefill every row;
    `cached_tokens=0`. Wiring `PromptCache` into the scheduler is a
-   follow-up.
+   follow-up. (The **spec path bypasses it too** — a `--draft-model`
+   server re-prefills every request; the target+draft cache-entry
+   composition is designed in mlx-lm-tool-parity-plan §7.6, not built.)
 2. **Admission is per-request, not aggregate.** `--memory-budget` checks
    each request against single-sequence max-safe-context, but N
    concurrent rows can collectively exceed the budget (the `B×S_max`
@@ -250,6 +257,76 @@ know them:
 5. **`extend` join not yet used.** A joining request re-merges the whole
    batch (O(B·S)); mlx-lm's keep-the-running-batch `extend` is a later
    optimization (numerically equivalent).
+
+## Fidelity tiers and the decode route (`--l1` / `--l2` / `--l3`)
+
+The tiers are **correctness contracts**, and each flag is an alias for a
+decode-route preset (`applyDecodeRoute()` in [src/cli.ts](../../src/cli.ts));
+any per-fork flag (`--kv-quant`, `--perf-kernel`, `--compiled-decode`,
+`--fused-sdpa`, `--fused-decode`) overrides its tier's preset.
+
+| Tier | Contract | KV | Kernels | Verified against |
+| --- | --- | --- | --- | --- |
+| `--l1` | mlx-lm **bit-for-bit** | bf16 | compiled-decode | mlx-lm goldens (per machine) |
+| `--l2` | mlx-optiq **bit-for-bit** | mixed-precision (`kv_config.json`) | + fused-SDPA (matches optiq exactly) | optiq goldens |
+| `--l3` | fastest; envelope-gated | as L2 | + the flash perf-kernel | frozen-trajectory envelope + KL — **not** bit-exact |
+| *(none)* | **= the L2 composition** | `config` when the model ships one, else bf16 | compiled + fused-SDPA | — |
+
+Compiled-decode is on in **every** tier (proven bit-exact with uncompiled —
+free speed, not a fidelity trade). The only thing `--l3` adds today is the
+perf kernel.
+
+**Where each feature sits:** batching = L1-class (mlx-lm B=N parity);
+speculative decoding = L1-class (token-for-token vs mlx-lm's spec path);
+structured output = L2-class (oMLX oracle; masking doesn't touch the
+numerics of valid tokens, so it composes with any tier); grammar × spec
+together, HLG sampling, expert offload, and (future) batched quantized KV
+= L3-class — no ancestor runtime does them, so they're gated by
+validity/KL/quality instead of bit-parity.
+
+## Performance characteristics & recipes
+
+Reference numbers are from this project's dev machines (loaded-machine
+numbers are directional only; `benchmarks/RESULTS.md` holds the quotable
+set, and `scripts/bench-feature-matrix.ts` measures the six composition
+cells in one run).
+
+- **Serial is the fastest single stream** — prompt cache, mixed-precision
+  KV, compiled decode. The batch lane at ONE live row is ~25% slower
+  (cpm5 ~149 vs 193 tok/s: no prompt cache, no kv-quant, wrapper
+  overhead), which is why serial stays the default.
+- **`--batch N` wins under concurrency** — cpm5 `--batch 4`: ~349 tok/s
+  aggregate vs ~173 serial-queued, TTFT 2–3× better; Llama-3B at just
+  B=2: 1.7× aggregate, TTFT 765→162 ms.
+- **Spec pays only on slow targets.** One accepted draft = one skipped
+  target forward, so value scales with target step cost: 12B ≈ 1.09× at
+  γ=1 (measured); fast small targets LOSE (e4b 0.78×; 3B smoke: spec
+  61.5 vs serial 81.5 tok/s). Draft for 12B+, skip below.
+- **Structured output is ~free** (<1% serial; the batch lane drops to
+  read-before-build scheduling while a grammar row is live — bounded,
+  ~0.1 ms/step class).
+- **`--ssd-cache` has 0% decode overhead** — pure TTFT/restart win; no
+  reason to leave it off on a persistent server.
+
+**Recipes:**
+
+- *Single-user agent/chat (the default use):*
+  `mlx-bun serve <model> --ssd-cache <dir>` — L2 serial, prompt cache +
+  SSD tier. On 12B+ add `--draft-model <small-same-tokenizer>`. Max
+  decode speed, accepting the envelope gate: `--l3`.
+- *Several clients at once (throughput):*
+  `mlx-bun serve <model> --batch 4 --ssd-cache <dir>` — don't set
+  `--kv-quant` (it would just un-batch everything), don't mount a draft.
+- *Reproducibility:* `--l1` (≡ mlx-lm), `--l1 --batch N` (≡ mlx-lm B=N),
+  bare / `--l2` (≡ optiq).
+- *Memory-tight big model:* serial + `--kv-quant config|4|8` +
+  `--memory-budget <GB>` + `--ssd-cache <dir>`; MoE adds
+  `--expert-offload`. Inherently the serial recipe until batched
+  quantized KV lands.
+
+**The two exclusions to remember:** batching ⊕ kv-quant (batch is bf16 by
+contract; the resolver is the KL-gated L3 follow-up) and spec ⊕ prompt
+cache (v1 bypass; the §7.6 composition is the fix).
 
 ## Observability — `GET /stats`
 

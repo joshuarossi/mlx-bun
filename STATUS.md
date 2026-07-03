@@ -212,7 +212,17 @@ agentic workload is the real payoff, not e4b). Not wired into serve/CLI.
 
 ## Josh-gated (needs hardware / downloads / own shell)
 
-1. **M4 Pro post-rewrite reset** + delete the mirror backup tarball (see
+1. **Fresh clean-machine benchmark** (reboot + `sudo purge` first):
+   - `./benchmark.sh --redo` — the standing h2h rows.
+   - The NEW composition matrix, per model (writes
+     `benchmarks-feature-matrix-<date>.md`):
+     `bun scripts/bench-feature-matrix.ts --model <cpm5-snapshot> --batch 4`
+     (real batch cells), same for e4b; for spec cells the Llama pair works
+     today (`--model <3B-snapshot> --draft <1B-snapshot>`), and the 12B
+     needs a small same-tokenizer gemma draft (or the assistant drafter
+     once it's behind --draft-model, parity-plan §7.9).
+     Promote quotable rows to benchmarks/RESULTS.md "composition".
+2. **M4 Pro post-rewrite reset** + delete the mirror backup tarball (see
    "Where we are"). One line, then both boxes are on rewritten history.
 2. **Phase 14 — Qwen3.6-27B confirmation** (~15 GB download):
    `bun scripts/regen-qwen-parity-goldens.ts 27b` then
