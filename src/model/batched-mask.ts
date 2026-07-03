@@ -190,6 +190,43 @@ export function mergeKVRows(
   return { keys, values, leftPad, width };
 }
 
+/** mlx-lm `BatchKVCache.extend`: append ONE new right-justified row to an
+ *  existing batched [B,H,S,D] buffer WITHOUT re-extracting the running rows
+ *  (the O(B·S) slice storm mergeKVRows pays on a join). Pad whichever side
+ *  is narrower on the LEFT to the common width, then a single B-axis concat.
+ *  Existing rows' left-pads grow by the batch-side pad (they never shrink —
+ *  mlx-lm extend semantics; the decode mask covers pads either way).
+ *  Caller owns the result; inputs are not disposed. */
+export function extendKVRows(
+  keys: MlxArray, values: MlxArray, leftPad: number[],
+  row: { keys: MlxArray; values: MlxArray },
+): { keys: MlxArray; values: MlxArray; leftPad: number[]; width: number } {
+  const S = keys.shape[2]!;
+  const Lr = row.keys.shape[2]!;
+  const width = Math.max(S, Lr);
+  const padTo = (a: MlxArray, pad: number): MlxArray => {
+    if (pad === 0) return a.slice([0, 0, 0, 0], a.shape as number[]); // fresh full view
+    const [B, H, , D] = a.shape as [number, number, number, number];
+    const z = ops.zeros([B, H, pad, D], a.dtype);
+    const out = ops.concatAxis([z, a], 2);
+    z.dispose();
+    return out;
+  };
+  const bk = padTo(keys, width - S);
+  const bv = padTo(values, width - S);
+  const rk = padTo(row.keys, width - Lr);
+  const rv = padTo(row.values, width - Lr);
+  const outK = ops.concatAxis([bk, rk], 0);
+  const outV = ops.concatAxis([bv, rv], 0);
+  for (const a of [bk, bv, rk, rv]) a.dispose();
+  return {
+    keys: outK,
+    values: outV,
+    leftPad: [...leftPad.map((p) => p + (width - S)), width - Lr],
+    width,
+  };
+}
+
 /** mlx-lm `filter`: keep only `keep` (sorted row indices) along the batch
  *  axis — eviction of finished sequences from a batched [B,H,S,D] buffer.
  *  Caller owns the result; inputs are not disposed. */

@@ -58,7 +58,7 @@ import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { clearCache } from "../mlx/ffi";
 import { KVCache, RotatingKVCache, type Cache } from "../model/gemma4-base";
-import { BatchedDecodeMaskCache, mergeKVRows, filterKVRows } from "../model/batched-mask";
+import { BatchedDecodeMaskCache, mergeKVRows, extendKVRows, filterKVRows } from "../model/batched-mask";
 import { BatchedRotatingCache } from "../model/batched-rotating";
 import { SSMCache } from "../model/qwen3-delta";
 import type { RuntimeModel } from "../model/factory";
@@ -455,28 +455,45 @@ export class BatchScheduler {
         newInners.push(BatchedRotatingCache.merge(rows, offsets, this.#rotMaxSize[layer]!));
         for (const r of rows) { r.keys.dispose(); r.values.dispose(); }
       } else {
-        const rows: Row1[] = [];
         const prevFull = prev?.[layer] as KVCache | undefined;
-        if (prevFull) {
+        if (prevFull && process.env.MLX_BUN_BATCH_EXTEND !== "0") {
+          // extend-join (mlx-lm BatchKVCache.extend semantics, P0): append
+          // the new right-justified row to the running buffer in ONE pad +
+          // ONE concat — no per-row extraction. Existing pads grow, never
+          // shrink (the re-merge below re-normalizes them instead; both are
+          // masked, both token-exact vs their mlx-lm protocol twin).
+          // MLX_BUN_BATCH_EXTEND=0 = the O(B·S) re-merge, kill switch/A-B.
           const [k0, v0] = prevFull.temporalView(); // [B,H,off,D]
-          const [, H, off, D] = k0.shape as [number, number, number, number];
-          const vD = v0.shape[3]!;
-          for (let b = 0; b < B; b++) {
-            const pad = prevPad[b]!;
-            rows.push({
-              keys: k0.slice([b, 0, pad, 0], [b + 1, H, off, D]),
-              values: v0.slice([b, 0, pad, 0], [b + 1, H, off, vD]),
-            });
-          }
+          const ext = extendKVRows(k0, v0, prevPad, newRow);
           k0.dispose(); v0.dispose();
+          newFullPad = ext.leftPad;
+          const c = new KVCache();
+          c.restoreState(ext.keys, ext.values, ext.width);
+          newInners.push(c);
+          newRow.keys.dispose(); newRow.values.dispose();
+        } else {
+          const rows: Row1[] = [];
+          if (prevFull) {
+            const [k0, v0] = prevFull.temporalView(); // [B,H,off,D]
+            const [, H, off, D] = k0.shape as [number, number, number, number];
+            const vD = v0.shape[3]!;
+            for (let b = 0; b < B; b++) {
+              const pad = prevPad[b]!;
+              rows.push({
+                keys: k0.slice([b, 0, pad, 0], [b + 1, H, off, D]),
+                values: v0.slice([b, 0, pad, 0], [b + 1, H, off, vD]),
+              });
+            }
+            k0.dispose(); v0.dispose();
+          }
+          rows.push(newRow);
+          const merged = mergeKVRows(rows);
+          newFullPad = merged.leftPad;
+          const c = new KVCache();
+          c.restoreState(merged.keys, merged.values, merged.width);
+          newInners.push(c);
+          for (const r of rows) { r.keys.dispose(); r.values.dispose(); }
         }
-        rows.push(newRow);
-        const merged = mergeKVRows(rows);
-        newFullPad = merged.leftPad;
-        const c = new KVCache();
-        c.restoreState(merged.keys, merged.values, merged.width);
-        newInners.push(c);
-        for (const r of rows) { r.keys.dispose(); r.values.dispose(); }
       }
     }
     if (prev) for (const c of prev) c.dispose();

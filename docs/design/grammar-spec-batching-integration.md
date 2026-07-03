@@ -1,10 +1,9 @@
 # Grammar × spec decode × batching — integration plan + feature-matrix benchmark
 
-Status: **Phases A, B, C, E EXECUTED 2026-07-03** (same day as the plan);
-Phase D: **KV-budget admission LANDED 2026-07-03** (`--kv-budget`,
-aggregate projection gate in the scheduler, queue-don't-OOM, oversized
-rejects; `/stats.batch.{pending_rows,kv_bytes,kv_budget_bytes}`;
-tests/batch-kv-budget.test.ts); extend-join + vectorized sampling open.
+Status: **ALL PHASES EXECUTED** (A/B/C/E 2026-07-03; D completed
+2026-07-04: KV-budget admission + vectorized homogeneous sampling +
+extend-join, each oracle/A-B gated — see the execution log). Remaining
+follow-ups live in "Later / parked" with their triggers.
 Execution log at the bottom of this doc. Successor plan tying together
 three workstreams so they compose deliberately instead of colliding:
 
@@ -263,6 +262,27 @@ clean-machine run is queued in STATUS Josh-gated.
   Lesson, per [[per-model-quant-specialization]]: the gateway's
   capability gate admitted a model family no batched-parity suite ever
   validated.
+
+### Phase D completion (2026-07-04)
+
+- **KV-budget admission** — `--kv-budget <GB>`: aggregate projected-KV gate
+  in the scheduler (queue-don't-OOM, oversized-alone rejects,
+  `/stats.batch.{pending_rows,kv_bytes,kv_budget_bytes}`;
+  tests/batch-kv-budget.test.ts).
+- **Vectorized homogeneous sampling** — all-plain-greedy batches sample via
+  ONE log-softmax+argmax over [B,V]; gateway flags `plainGreedy`; BIT-equal
+  A/B vs the per-row path (`MLX_BUN_BATCH_VEC_SAMPLE=0` kill switch;
+  tests/batch-vec-sample.test.ts).
+- **Extend-join** — `extendKVRows` (mlx-lm `BatchKVCache.extend` semantics:
+  one pad + one B-axis concat, running rows untouched, pads grow) replaces
+  the O(B·S) re-merge for full-attention layers in `#mergeJoiner`
+  (`MLX_BUN_BATCH_EXTEND=0` = re-merge). **Own oracle** (extend's pad
+  layout ≠ re-merge's): scripts/gen-batched-extend-golden.py →
+  token-for-token on CPM AND Llama-3B (tests/batched-decode-parity.test.ts
+  "EXTEND-JOIN ORACLE"); full scheduler suite incl. the grammar-churn join
+  test green through the extend path AND the kill-switch path.
+  Rotating-layer extend (Gemma joins re-merge their sliding layers, extend
+  their full layers) is a follow-up.
 
 ## Risks
 

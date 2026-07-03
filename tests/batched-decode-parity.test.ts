@@ -316,6 +316,7 @@ async function realBatchedGreedy(
 async function realDynamicBatchedGreedy(
   base: string,
   scn: { A: number[]; B: number[]; C: number[]; phase1: number; phase2: number; phase3: number },
+  joinOp: "merge" | "extend" = "merge",
 ): Promise<{ A: number[]; B: number[]; C: number[] }> {
   const { loadModelConfig } = await import("../src/config");
   const { Weights } = await import("../src/weights");
@@ -323,7 +324,7 @@ async function realDynamicBatchedGreedy(
   const { MlxArray } = await import("../src/mlx/array");
   const { clearCache } = await import("../src/mlx/ffi");
   const { KVCache } = await import("../src/model/gemma4-base");
-  const { BatchedDecodeMaskCache, mergeKVRows, filterKVRows } = await import("../src/model/batched-mask");
+  const { BatchedDecodeMaskCache, mergeKVRows, extendKVRows, filterKVRows } = await import("../src/model/batched-mask");
 
   const config = await loadModelConfig(base);
   const weights = await Weights.open(base);
@@ -429,22 +430,43 @@ async function realDynamicBatchedGreedy(
     const prevLeftPad = leftPad;
     const prevInners = inners;
     const off = prevInners[0]!.offset;
-    ({ inners, leftPad } = mergeInners((layer) => {
-      const [k0, v0] = prevInners[layer]!.temporalView(); // [2,H,off,D]
-      const [, H, , D] = k0.shape as [number, number, number, number];
-      const vD = v0.shape[3]!;
-      const rows: Row[] = [];
-      for (let r = 0; r < 2; r++) {
-        const pad = prevLeftPad[r]!;
-        rows.push({
-          keys: k0.slice([r, 0, pad, 0], [r + 1, H, off, D]),
-          values: v0.slice([r, 0, pad, 0], [r + 1, H, off, vD]),
-        });
+    if (joinOp === "extend") {
+      // extend-join (mlx-lm BatchKVCache.extend protocol): the running
+      // buffer stays in place, C appends; pads grow, never shrink. Oracle:
+      // scripts/gen-batched-extend-golden.py.
+      const extInners: InstanceType<typeof KVCache>[] = [];
+      let extPad: number[] = [];
+      for (let layer = 0; layer < L; layer++) {
+        const [k0, v0] = prevInners[layer]!.temporalView();
+        const row = soloRow(pc.inners[layer]!);
+        const ext = extendKVRows(k0, v0, prevLeftPad, row);
+        k0.dispose(); v0.dispose();
+        row.keys.dispose(); row.values.dispose();
+        const nc = new KVCache();
+        nc.restoreState(ext.keys, ext.values, ext.width);
+        extInners.push(nc);
+        extPad = ext.leftPad;
       }
-      k0.dispose(); v0.dispose();
-      rows.push(soloRow(pc.inners[layer]!)); // C: fresh [1,H,lenC,D]
-      return rows;
-    }, L));
+      inners = extInners;
+      leftPad = extPad;
+    } else {
+      ({ inners, leftPad } = mergeInners((layer) => {
+        const [k0, v0] = prevInners[layer]!.temporalView(); // [2,H,off,D]
+        const [, H, , D] = k0.shape as [number, number, number, number];
+        const vD = v0.shape[3]!;
+        const rows: Row[] = [];
+        for (let r = 0; r < 2; r++) {
+          const pad = prevLeftPad[r]!;
+          rows.push({
+            keys: k0.slice([r, 0, pad, 0], [r + 1, H, off, D]),
+            values: v0.slice([r, 0, pad, 0], [r + 1, H, off, vD]),
+          });
+        }
+        k0.dispose(); v0.dispose();
+        rows.push(soloRow(pc.inners[layer]!)); // C: fresh [1,H,lenC,D]
+        return rows;
+      }, L));
+    }
     for (const ci of [...prevInners, ...pc.inners]) ci.dispose();
 
     for (let i = 0; i < scn.phase2; i++) {
@@ -532,6 +554,30 @@ describe.skipIf(!optIn || !haveCpm)("batched decode DYNAMIC-B ORACLE — CPM L1 
     console.log(`[dynamic CPM] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
     expect(got).toEqual(golden.trajectories);
   }, 180_000);
+});
+
+// --- THE EXTEND-JOIN GATE (batching-perf-path P0 / integration-plan Phase D):
+//     the join appends the new row to the running buffer (extendKVRows) instead
+//     of extracting + re-merging every row. Different pad layout than re-merge
+//     (pads never shrink), so it has its OWN mlx-lm oracle:
+//     scripts/gen-batched-extend-golden.py (BatchKVCache.extend protocol). ---
+describe.skipIf(!optIn || !haveCpm)("batched decode EXTEND-JOIN ORACLE — CPM vs mlx-lm extend", () => {
+  test("extend-join dynamic greedy == mlx-lm BatchKVCache.extend", async () => {
+    const golden = await goldenAt("batched-extend-golden-cpm.json").json();
+    const got = await realDynamicBatchedGreedy(CPM_BASE, golden.scenario, "extend");
+    console.log(`[extend CPM] mlx-bun: ${JSON.stringify(got)}`);
+    console.log(`[extend CPM] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
+    expect(got).toEqual(golden.trajectories);
+  }, 180_000);
+});
+describe.skipIf(!optIn || !haveLlama3b)("batched decode EXTEND-JOIN ORACLE — Llama 3B vs mlx-lm extend", () => {
+  test("extend-join dynamic greedy == mlx-lm BatchKVCache.extend", async () => {
+    const golden = await goldenAt("batched-extend-golden-llama32-3b.json").json();
+    const got = await realDynamicBatchedGreedy(LLAMA3B_BASE, golden.scenario, "extend");
+    console.log(`[extend Llama3B] mlx-bun: ${JSON.stringify(got)}`);
+    console.log(`[extend Llama3B] mlx-lm:  ${JSON.stringify(golden.trajectories)}`);
+    expect(got).toEqual(golden.trajectories);
+  }, 240_000);
 });
 
 // --- Tier-0 UNIVERSAL cell (Llama-3.2-3B, UniversalDenseModel): the gate

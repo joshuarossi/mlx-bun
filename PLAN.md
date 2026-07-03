@@ -2179,8 +2179,11 @@ serial (upstream parity); grammar+spec = the novel constrained verify walk
   projection gate (queue-don't-OOM, oversized-alone rejects,
   /stats.batch.{pending_rows,kv_bytes,kv_budget_bytes};
   tests/batch-kv-budget.test.ts).
-- `[ ]` **Phase D remainder** — extend-join (+ grammar-churn test),
-  vectorized homogeneous sampling.
+- `[x]` **Phase D remainder (2026-07-04)** — vectorized homogeneous
+  sampling (BIT-equal A/B, kill switch) + extend-join (mlx-lm
+  BatchKVCache.extend semantics, own oracle golden, token-for-token on
+  CPM + Llama; grammar-churn join test green through the extend path;
+  rotating-layer extend deferred).
 - Also: universal-rope oracle fixtures machine-keyed (M1-Max flat set +
   per-machine overrides; tests/universal-rope.test.ts header has the regen
   recipe); docs truth pass (server-config.md tiers/composition/recipes).

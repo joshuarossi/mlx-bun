@@ -106,15 +106,20 @@ or shelved with numbers — ledger:
    holds the 5 differing files; regen recipe in the test header). 11/11 on
    both chips; the local-oracle match also re-proves the runtime bit-exact
    per chip.
-   **Phase D: KV-budget admission LANDED 2026-07-03** — `--kv-budget <GB>`
-   caps the batch's aggregate projected KV (prompt+max_tokens per row,
-   window-capped via fit's kvBytesAt): over-budget joiners QUEUE (FIFO)
-   until rows evict, never OOM; a request over the budget alone rejects
-   with an actionable error; `/stats.batch` gains
-   pending_rows/kv_bytes/kv_budget_bytes. Gated:
-   tests/batch-kv-budget.test.ts. **Still open in D:** extend-join
-   (+ grammar-churn test) + vectorized homogeneous sampling.
-   Debug lever: `MLX_BUN_GRAMMAR_DEBUG=1` (per-step scheduler trace).
+   **Phase D COMPLETE 2026-07-04** — all three items landed and gated:
+   `--kv-budget` aggregate KV admission (queue-don't-OOM, oversized
+   rejects, /stats.batch fields; tests/batch-kv-budget.test.ts);
+   vectorized homogeneous sampling (one argmax over [B,V] for all-greedy
+   batches, BIT-equal A/B vs per-row, MLX_BUN_BATCH_VEC_SAMPLE=0 switch;
+   tests/batch-vec-sample.test.ts); extend-join (extendKVRows = mlx-lm
+   BatchKVCache.extend semantics, one pad+concat per join instead of the
+   O(B·S) re-merge, MLX_BUN_BATCH_EXTEND=0 switch; own oracle
+   scripts/gen-batched-extend-golden.py — token-for-token on CPM + Llama;
+   rotating-layer extend is a follow-up, Gemma joins re-merge sliding
+   layers only). **The integration plan is fully executed.** Next per
+   Josh's priority ranking: spec×prompt-cache composition (parity-plan
+   §7.6) then prompt-cache-under-batching (perf-path P3) — the disk-cache
+   track. Debug lever: `MLX_BUN_GRAMMAR_DEBUG=1`.
 3. **Menu bar app** (SwiftUI + signed binary as sidecar) — adoption map #2,
    Josh wants it; /Applications/oMLX.app is the structural reference.
 4. **Batching remainder not in the integration plan** — P1 quantized KV at

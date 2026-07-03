@@ -13,7 +13,7 @@ Llama) now batch** — per-row RoPE ported (`UniversalRope.applyDynamic`)
 and gated token-exact vs mlx-lm B=2
 (tests/batched-decode-parity.test.ts "Llama 3B Tier-0"); maskArray +
 sliding universal archs stay serial (unvalidated cells). Rest PLANNED —
-still open in P0: extend-join, vectorized sampling.
+P0 COMPLETED 2026-07-04: extend-join (full-attention; own mlx-lm extend oracle) + vectorized all-greedy sampling (BIT-equal A/B).
 
 **Headline result (M1 Max 32 GB, loaded machine, 4 concurrent × 128 tok,
 median of 3, wall-clock aggregate; oMLX 0.4.5.dev1, same OptiQ snapshots):**
@@ -144,9 +144,15 @@ Two more gap sources specific to the benchmark:
   tool and stays one. Clean-machine run remains Josh-gated.
 - Land `extend` join (full-attention twin + `BatchedRotatingCache.extend`);
   oracle: extend `scripts/gen-batched-dynamic-golden.py` (mlx-lm `extend`).
-  **Still open.**
+  **LANDED 2026-07-04** for full-attention layers (`extendKVRows`,
+  mlx-lm `BatchKVCache.extend` semantics; own oracle
+  `scripts/gen-batched-extend-golden.py`, token-for-token CPM + Llama;
+  `MLX_BUN_BATCH_EXTEND=0` = re-merge). `BatchedRotatingCache.extend`
+  (sliding layers on Gemma joins) remains open.
 - Vectorize the homogeneous-sampler fast path in `#step` (all-greedy →
-  one `ops.argmaxAxis` on `[B,V]`); mixed rows keep the loop. **Still open.**
+  one `ops.argmaxAxis` on `[B,V]`); mixed rows keep the loop. **LANDED
+  2026-07-04** (BIT-equal A/B, `MLX_BUN_BATCH_VEC_SAMPLE=0`;
+  tests/batch-vec-sample.test.ts).
 - Exit: gated suites unchanged; B=4 baseline recorded; joins not O(B·S).
 
 ### P1 — Quantized KV at B>1  [M–L, 1–1.5 wk]

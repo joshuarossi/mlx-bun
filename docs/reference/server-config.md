@@ -239,13 +239,13 @@ know them:
    follow-up. (The **spec path bypasses it too** — a `--draft-model`
    server re-prefills every request; the target+draft cache-entry
    composition is designed in mlx-lm-tool-parity-plan §7.6, not built.)
-2. **Admission is per-request, not aggregate.** `--memory-budget` checks
-   each request against single-sequence max-safe-context, but N
-   concurrent rows can collectively exceed the budget (the `B×S_max`
-   KV-budget admission is TODO). With a tight budget and several
-   large-context requests, the allocator cap is the only backstop — and
-   a true GPU OOM here is uncatchable. Size the budget with headroom for
-   N rows, or keep N small.
+2. **Aggregate admission is opt-in.** `--memory-budget` checks each
+   request against single-sequence max-safe-context; the AGGREGATE cap
+   across N concurrent rows is `--kv-budget <GB>` (landed 2026-07-03):
+   over-budget joiners queue until rows finish, a request over the budget
+   alone rejects. Without `--kv-budget`, N large-context rows can still
+   collectively exceed memory (uncatchable GPU OOM) — set it when running
+   `--batch N` near the machine's limit.
 3. **Short-context only.** Verified pre-ring-wrap (rows < the 1024
    sliding window). Long-context (context > window) batched decode is a
    separate validation.
@@ -254,9 +254,12 @@ know them:
    shortcoming). Going further — batched + mixed-precision KV quant — is
    novel territory with no mlx-lm/optiq oracle, so it's a deferred,
    KL-gated extension.
-5. **`extend` join not yet used.** A joining request re-merges the whole
-   batch (O(B·S)); mlx-lm's keep-the-running-batch `extend` is a later
-   optimization (numerically equivalent).
+5. **`extend` join (landed 2026-07-03).** A joining request appends to
+   the running batch's full-attention KV in one pad+concat (mlx-lm
+   `BatchKVCache.extend` semantics, token-exact vs its oracle);
+   `MLX_BUN_BATCH_EXTEND=0` reverts to the old whole-batch re-merge
+   (numerically equivalent, O(B·S)). Sliding-window layers still re-merge
+   on join (rotating-extend is a follow-up).
 
 ## Fidelity tiers and the decode route (`--l1` / `--l2` / `--l3`)
 
