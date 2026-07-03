@@ -37,10 +37,10 @@ contracts (parity-tier-dag.md); oMLX is a Python appliance ON mlx-lm:
 
 ### Queue (roughly by leverage; ★ = Josh explicitly wants)
 1. **Structured output / JSON-schema constrained decoding** (`api/grammar.py`)
-   — serving layer. The biggest API-surface hole vs both oMLX and agent
-   frameworks. We own the sampler loop; a token-mask grammar engine slots
-   beside the existing sampler extensions. Serial lane first, batch lane
-   via the per-row processor fold (already built).
+   — serving layer. **LANDED 2026-07-02** (branch `feat/structured-output`):
+   `@mlc-ai/web-xgrammar` (WASM) on `/v1/chat/completions` + `/v1/completions`;
+   full `response_format`/`guided_*` surface; L2-verified vs oMLX (byte-identical
+   content). See [docs/design/structured-output.md](structured-output.md).
 2. **★ Menu bar app** (`apps/omlx-mac/`, native SwiftUI + Sparkle) — product
    layer. Their repo is the structural reference; our signed/notarized
    single binary is the sidecar. Supersedes tauri-desktop-app.md's Electron
