@@ -1801,3 +1801,178 @@ gateway routes explicit-kv-quant requests to serial.
 - Deferred spikes: paged KV (zero-waste alloc); batched mixed-precision serving
   (novel — no oracle). KV memory today = rung-2 contiguous shape, no budget yet.
 
+
+---
+
+# Archived from STATUS.md on 2026-07-02 — superseded session wraps
+
+Moved out of STATUS.md when it was condensed to current-state-only. Verbatim below.
+
+## SESSION WRAP 2026-07-01 — v0.0.9 released; next actions below
+
+**Landed today (~35 commits, all verified, tsc 0, no Claude trailers):**
+mlx_lm.server drop-in surface complete (endpoints/fields/flags/logprobs,
+L1-faithful sampler ports) · verbs: fuse/convert/perplexity/upload/gc ·
+ORPO `sft_scope` (paper/TRL-faithful default; `response` bit-exact pinned) ·
+Tier-0 generic models (UniversalDense, 11 archs; llama/qwen2/gemma2 verified
+bit-exact) · 12+1 kernel-review bug fixes incl. the **--l2 tier restoration**
+(perf kernel demoted to --l3 — envelope-gated, evidence in 381382c) ·
+batching v2 steps 1–3 (capability gate, containment, drain, pipelining) ·
+registry canonical dedupe + gc (~24.7GB found; NOT deleted — see task
+notes on the 12B vision-weights decision + tests/paths.ts pins first) ·
+pi integration 10 fixes (generics tool-calling, memory tools, harness) ·
+website+README six-goals pass (23 pages; deploy release-gated) · CI gate ·
+batched goldens machine-keyed (the "regression" was M4-Pro fixtures; ALL
+code exonerated, 11/11 green) · decode-roofline look-again (**the floor
+claim was wrong** — only the 12B is at the wall; docs/investigations/
+decode-roofline-lookagain.md) · curve-sampler distinctness THEOREM + witness
+(TV 0.11–0.19 at forks unreachable by any truncation sampler; old "wash"
+verdict invalidated — it measured the wrong sampler; preregistered protocol
+in docs/planning/curve-sampler-research-plan.md).
+
+**Next actions, ranked (each has a tracked plan):**
+1. Josh: push + publish v0.0.9 (sequence above), then optionally `gc --yes`
+   after the 12B-vision decision + test-pin updates.
+2. ~~Kernel backlog #1 — flip the measured 1.35× coeff filter~~ **DONE
+   2026-07-02** (both skips default 1e-5; combined backward **1.71× CPM5 /
+   3.16× e4b** vs exact, fidelity-gated — see kernel-perf-review-2026-07.md
+   backlog #1). The decode graph-build-overlap spike also ran (2026-07-02):
+   **REFUTED** — the pipelined loop already hides the host build (wall = GPU
+   step time; spin-injection proof in decode-roofline-lookagain.md §7), so the
+   roofline doc's host-side fixes 1a–1d are dead and the recoverable decode
+   gap is entirely GPU-side (26B expert reads, e4b dispatch count, CPM5
+   KV-path, kernel backlog #4, spec decode).
+3. Web-UI fix wave (docs/planning/web-ui-pass-plan.md — 6 bugs, landing order inside).
+4. Batching steps 4–10 (docs/design/batching-v2-plan.md).
+5. serve --draft-model + remaining verbs (docs/design/mlx-lm-tool-parity-plan.md).
+6. Curve H2/H3 preregistered run (docs/planning/curve-sampler-research-plan.md).
+7. Dynamic-λ controller build (docs/design/orpo-dynamic-lambda.md).
+8. fit-as-recommender; memory-docs banner pass + `mlx-bun route` verb
+   (docs/planning/memory-docs-and-dag-plan.md); DSpark live-τ.
+~~Open kernel bug: FUSED_DECODE×compiled-decode trace-freeze~~ **FIXED
+2026-07-02** (reproduced on e4b, combo now refuses to compile + throw
+backstop + regression; see kernel-perf-review-2026-07.md ledger).
+Kernel backlog #2 (planSegments full-attn isolation) **REFUTED by measurement
+2026-07-02**: sdpa backward is O(L²) for EVERY layer (~3.5 GB/layer @8K), so
+segment_size is the whole knob — **seg1 = 14.59 GB e4b @8K (+3% time), fits
+the 24 GB M4 Pro today**; next real levers = backlog #8 (head) + O(L)
+attention backward. Evidence: scripts/experiments/seg-isolation-smoke.ts.
+Kernel backlog #8 (bound the SFT segmented head) **LANDED 2026-07-02**:
+boundedSftCe in both SFT segmented classes — head-only A/B at e4b M=6000:
+**16.60 → 6.60 GB** (~10 GB head-vjp transient gone), dh relnorm 0.00000.
+Landing it EXPOSED an **upstream mlx bug** (repro'd on stock 0.31.2):
+quantized_matmul(transpose=false) is WRONG at 2-3 rows → every training
+head's dh was silently wrong for 2-3-token responses/tail-chunks/spans.
+Fixed in mlx-bun (logitsFromHiddenPadM + ops wrapper pad; f32-ground-truth
+gated, chunk-4 dh 0.47→0.006); details in kernel-perf-review-2026-07.md
+"NEW BUG" + research journal. Upstream report = pending task chip.
+Kernel backlog #3 (head auto-dispatch by M) **LANDED 2026-07-02**
+(MLX_BUN_FLASH_MIN_M=1024; fresh crossover sweep — the filter flip made
+flash faster at long M too). Kernel backlog #4 (fused-decode activeN)
+**built, gated byte-identical, then REFUTED end-to-end and REVERTED**
+(12B kv4 interleaved A/B: 0.94 @8k / 0.97 @22k — the fetch-view copies
+never applied to the KV=1 full-attn shape; evidence in
+scripts/experiments/fused-decode-activen-ab.ts).
+Kernel backlog #9 (segmented-step overhead) **LANDED 2026-07-02**: single-copy
+detach + one barrier/segment + prefix-mask memo — grads BYTE-IDENTICAL,
+short-seq steps −34% (CPM5 prefix) / −38% (e4b SFT), @8K flat.
+26B gather-qmm **PROFILED 2026-07-02** (roofline item 2): the ~4 ms gap is
+mx.gather_qmm's missing M=1 fast path (compute-bound at ~99 GB/s vs qmv's
+~180; upstream-reproduced). Layout + dispatch-merge candidates both refuted
+by measurement. The custom gather-qmv kernel was then BUILT (correct on all
+three dispatch patterns) and **SHELVED on decisive numbers**: five structural
+variants all slower than gather_qmm (best 12.5 vs 8-10 ms), and
+mx.fast.metal_kernel's ~60-95 µs/dispatch fixed cost in dependent chains eats
+the ~4 ms prize at 90 dispatches/step. Routes forward: upstream mlx
+gather_qmm M=1 specialization (primary; pairs with the qmm M=2/3 bug report)
+or a fused whole-MLP kernel (60 dispatches/step) in a dedicated session.
+Evidence: scripts/experiments/moe-expert-read-profile.ts,
+moe-qmv-kernel.ts (post-mortem in header), moe-qmv-parity.ts.
+
+## Multi-agent review + cleanup (2026-07-01) — verified state, open decisions
+
+Two adversarially-verified review workflows (13 agents) swept the whole repo; the
+full report is local at `reports/project-review-2026-07-01.md` (gitignored). What
+landed the same day: repo hygiene sweep (scratch logs/example.ts/pycache/runs
+untracked; megakernel → `scripts/experiments/`; orphan worktree removed;
+`fix/section-synthesis` third-person-voice fix **merged**), docs truth pass (this
+file rewritten; flash-attn story reconciled; README/CLAUDE.md doc map refreshed).
+
+**Confirmed findings, still open (ranked):**
+1. ~~**ORPO L_SFT scope divergence**~~ **DONE 2026-07-01** — `sft_scope:
+   full|response` landed across every ORPO path (naive/chunked/fused/flash /
+   prefix-shared / all four segmented classes), **default `full`**
+   (paper/TRL-faithful: chosen-NLL = token-mean CE over the full
+   prompt+response, only padding excluded, from the same chosen forward);
+   `response` reproduces old runs bit-exactly (regression-pinned in
+   `tests/train-orpo.test.ts`). The odds-ratio ℓ terms stay response-only in
+   BOTH modes (matches TRL). Config: TrainConfig `sftScope` / job `sft_scope` /
+   `SFT_SCOPE=` env in `scripts/train-orpo.ts`. Cross-path full-scope parity +
+   an sftLoss(promptLen=1) oracle wired in `tests/train-orpo-fused-ce.test.ts`.
+   Docs: `docs/design/orpo-training.md` (“The objective” — resolved note),
+   `docs/reference/training.md` (config table + ORPO section). Remaining: the
+   one-line `--sft-scope` CLI flag in `src/cli.ts` (file owned by another
+   workstream at land time).
+2. **DSpark τ=3.24 is a teacher-forced proxy** — `evalTau` feeds the Markov head
+   ground-truth previous tokens; live decode threads the drafter's own drafts.
+   Run `scripts/dspark-measure-dflash.ts` (live τ via `meanAcceptLen`) on the
+   overfit checkpoint before the 27B retarget. Architecture itself verified
+   faithful (see DSpark section).
+3. ~~**Memory batching default**~~ **DONE 2026-07-01** — `memoryBatchSize()`
+   default flipped 8 → 1 (serial, bit-exact; batching measured 1.7–1.9× slower).
+   Opt back in with `MLX_BUN_MEMORY_BATCH=8`.
+4. **No CI** — the only GitHub workflow deploys the website; nothing runs
+   `bunx tsc --noEmit` or `bun test` on push. Add a gate.
+5. **Test gaps** — DPO has zero loss/e2e tests; ORPO fused-CE tests assert only
+   "loss decreases" (real grad-parity checks live un-wired in
+   `scripts/experiments/`); DSpark smoke tests live outside `tests/`.
+6. ~~**`mlx-bun memory status`** stub text~~ **DONE 2026-07-01** — status +
+   help now report synthesis as available (`mlx-bun memory synthesize`).
+
+**In progress (Josh directive 2026-07-01):** CLI flags/defaults parity with
+`mlx_lm.server` + implement all missing mlx-lm functionality. Done 2026-07-01:
+default port 8090 → 8080, default host all-interfaces → 127.0.0.1 (loopback,
+`--host 0.0.0.0` = LAN opt-in), `--temp` alias for `--temperature`,
+`--decode-concurrency` semantics documented honestly (accepted for drop-in
+compat; enables continuous batching with that cap, not mlx-lm's
+per-BatchGenerator parallelism); L1-faithful min_p/XTC/presence+frequency
+penalties/logit_bias in the sampler AND wired end-to-end through all three
+protocol surfaces (mlx-lm wire names incl. `*_context_size`; serial-lane-only
+under `--batch N`, v1); `POST /v1/completions` (raw text completion,
+non-stream + SSE, no chat template, mlx-lm's 512 default max_tokens);
+`GET /health` (byte-exact mlx-lm body); `/v1/models` lists served model first
++ all registry-known supported models, `/v1/models/<id>` filter; serve
+`--adapter <dir>` (+ `--adapter-path` alias) mounts at startup and becomes the
+request default (fixes the `mlx-bun train` completion-message inconsistency);
+`logprobs`/`top_logprobs` end-to-end on chat + text completions — mlx-lm's
+EXACT semantics (distribution = post-processor pre-truncation log-softmax,
+generate.py L409-422; response = server.py generate_response's id-keyed block,
+NOT OpenAI's; validation bool + int∈[0,11]∪{-1}; stream chunks carry no
+logprobs, faithfully — mlx-lm never emits them when streaming; serial-lane-only
+under `--batch N`; zero-cost when not requested).
+Tests: tests/server-compat.test.ts. Also done 2026-07-01: `fuse`/`convert`/
+`perplexity` verbs, server `--max-tokens`; `upload` verb (mlx_lm.upload
+--path/--upload-repo parity over native `src/hf-push.ts`, + `convert
+--upload-repo` runs the push after converting; tests/cli-upload.test.ts);
+`--sft-scope full|response` on `mlx-bun train` (CLI spelling for the trainer's
+`sft_scope`); 14-finding CLI audit applied (fit --ctx help→8192 = code, embed
+no-query auto-picks a downloaded embedding model instead of a chat starter,
+pi flag-strip covers --batch/--adapter/--hlg-*/--no-open/--l1-3, `setup` is a
+true `memory` alias + unknown memory subcommands exit 1, --l1/--l2/--l3 +
+generate + train-watch documented in help, doc lies fixed in memory.md /
+server-config.md). Remaining gaps (verified vs the oracle venv): no
+`--draft-model`/
+`--num-draft-tokens`/`--chat-template*`/`--min-p`/`--log-level`/
+`--allowed-origins`/`--prompt-concurrency`/`--prefill-step-size` flags;
+CLI verbs cache_prompt/evaluate/awq/dwq/gptq absent.
+Deliberately not ported: `role_mapping` (mlx-lm's synthetic "USER:/ASSISTANT:"
+prompt assembly, used ONLY when a tokenizer has no chat template — every
+mlx-bun-supported model ships a real template, so the branch is unreachable
+here). Known adjacent gap: `/v1/responses` logprobs — OpenAI's Responses API has its
+own knob (`include: ["message.output_text.logprobs"]` + `top_logprobs`); the
+optiq shim oracle accepts flat `logprobs`/`top_logprobs` fields and validates
+them (responses_server.py L195-196) but its output translation DROPS the block
+(zero logprobs mentions in responses_shim.py), so no reference emits Responses
+logprobs. Ours doesn't map the fields at all; deferred until a client needs it.
+`/v1/messages` (Anthropic) has no logprobs in the protocol — correctly absent.
+
