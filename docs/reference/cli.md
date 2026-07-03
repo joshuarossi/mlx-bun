@@ -34,9 +34,12 @@ Common flags (full list in [server-config.md](server-config.md)):
 | `--host <addr>` | Interface to bind (default `127.0.0.1`, loopback only; `0.0.0.0` to expose) |
 | `--port <n>` | Listen port (default 8080) |
 | `--memory-budget <GB>` | Reject loads/requests that can't fit the budget |
+| `--kv-budget <GB>` | Aggregate KV budget across concurrent batch rows: over-budget joiners queue until rows finish; a request over the budget alone is rejected (off unless set) |
 | `--kv-quant config\|off\|4\|8` | KV cache quantization: per-layer `kv_config.json`, bf16, or uniform bits (default `config`) |
 | `--adapter <dir>` | Mount a LoRA adapter at startup (`--adapter-path` accepted as the mlx_lm.server alias) |
-| `--batch <n>` | Continuous-batched bf16 serving (default 1 = serial) |
+| `--draft-model <path\|query>` | Speculative decoding (mlx_lm.server parity): a smaller same-tokenizer model drafts, the main model verifies — exact results, faster decode when drafts land. Serial lane only: with `--batch N` a mounted draft routes every request serial |
+| `--num-draft-tokens <n>` | Drafts per verify round (default 3) |
+| `--batch <n>` | Continuous-batched bf16 serving, mlx-lm B=N parity (default 1 = serial) |
 | `--temperature` / `--top-p` / `--top-k` / `--max-tokens` | Server-wide sampling defaults (per-request fields still win) |
 | `--l1` / `--l2` / `--l3` | Parity tier: bit-exact to mlx-lm / bit-exact to mlx-optiq / best performance |
 | `--no-open` | Don't auto-open the chat UI |

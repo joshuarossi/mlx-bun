@@ -49,7 +49,9 @@ export interface GrammarRequest {
   /** vLLM/oMLX: raw EBNF/LARK grammar string. */
   guidedGrammar?: string;
   guided_grammar?: string;
-  /** vLLM/oMLX: regex — compiled to a grammar via xgrammar's RegexToEBNF. */
+  /** vLLM/oMLX: regex. Compiled via `root ::= <regex>` EBNF embedding, so
+   *  only the regex∩EBNF subset works (the F5 gap — real regex→EBNF or
+   *  structural-tag RegexFormat is the tracked fix, structured-output.md). */
   guidedRegex?: string;
   guided_regex?: string;
   /** vLLM/oMLX: restrict output to one of these strings (enum). */

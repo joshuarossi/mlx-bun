@@ -27,7 +27,7 @@ contracts (parity-tier-dag.md); oMLX is a Python appliance ON mlx-lm:
 ### Ported, kept (benchmarked wins)
 | Feature | Theirs | Ours | Result |
 | --- | --- | --- | --- |
-| Continuous batching parity | scheduler on mlx-lm BatchGenerator | `--batch N` lane + P5 SSM port + per-row logits processors (2026-07-02) | cpm5 345 vs 339 (win), e4b −3%, Qwen3.5 −1%, TTFT 2–3× better (batching-perf-path.md) |
+| Continuous batching parity | scheduler on mlx-lm BatchGenerator | `--batch N` lane + P5 SSM port + per-row logits processors (2026-07-02); since: grammar under batching, `--kv-budget` admission, Tier-0 universal (Llama) per-row RoPE (2026-07-03) | cpm5 345 vs 339 (win), e4b −3%, Qwen3.5 −1%, TTFT 2–3× better (batching-perf-path.md) |
 | SSD KV cold tier | `cache/paged_ssd_cache.py` (content-hashed blocks) | `src/ssd-cache.ts` + kv-store v2 (whole-entry spill, zero-copy mmap) | restart TTFT 12.1s→0.24s vs their 1–3s; 0% decode overhead vs their ~20% (ssd-kv-cold-tier.md) |
 
 ### Ported, refuted (do not re-add without new evidence)
@@ -37,10 +37,14 @@ contracts (parity-tier-dag.md); oMLX is a Python appliance ON mlx-lm:
 
 ### Queue (roughly by leverage; ★ = Josh explicitly wants)
 1. **Structured output / JSON-schema constrained decoding** (`api/grammar.py`)
-   — serving layer. **LANDED 2026-07-02** (branch `feat/structured-output`):
+   — serving layer. **LANDED 2026-07-02, MERGED to main 2026-07-03** (branch
+   `feat/structured-output` deleted after merge):
    `@mlc-ai/web-xgrammar` (WASM) on `/v1/chat/completions` + `/v1/completions`;
-   full `response_format`/`guided_*` surface; L2-verified vs oMLX (byte-identical
-   content). See [docs/design/structured-output.md](structured-output.md).
+   full `response_format`/`guided_*` surface, serial AND batched lanes;
+   L2-verified vs oMLX (byte-identical
+   content). See [docs/design/structured-output.md](structured-output.md);
+   follow-up debt sequenced in
+   [grammar-spec-batching-integration.md](grammar-spec-batching-integration.md).
 2. **★ Menu bar app** (`apps/omlx-mac/`, native SwiftUI + Sparkle) — product
    layer. Their repo is the structural reference; our signed/notarized
    single binary is the sidecar. Supersedes tauri-desktop-app.md's Electron
@@ -56,7 +60,11 @@ contracts (parity-tier-dag.md); oMLX is a Python appliance ON mlx-lm:
 5. **DFlash serving wiring** (`engine/dflash.py` + their published -DFlash
    drafts) — L3-class; unblocks DSpark (docs/design/dspark-speculative-decoding.md).
    Their integration pattern: separate engine class, ctx-length fallback
-   routing, tape-replay cache rollback.
+   routing, tape-replay cache rollback. *Note: serve-time speculative
+   decoding itself LANDED 2026-07-03 (`serve --draft-model`, two-model
+   serial lane, 48/48 token-for-token vs mlx-lm's spec path —
+   grammar-spec-batching-integration.md Phase B); DFlash/DSpark would slot
+   behind the same `DraftSource` seam.*
 6. **Vision feature cache** (`cache/vision_feature_cache.py`) — serving
    layer; encoder features for repeated-image agent turns. Natural sibling
    of the SSD tier (same keying discipline).

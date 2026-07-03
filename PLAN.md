@@ -2148,6 +2148,43 @@ class), its product surface is tier-agnostic serving layer.
   cache, batching P0–P3 refinements (extend-join, vectorized sampling,
   admission, defaults review).
 
+## Grammar × spec × batching integration (2026-07-03)
+
+One session executed docs/design/grammar-spec-batching-integration.md
+(planned the same day). Composition contract: grammar batches; spec routes
+serial (upstream parity); grammar+spec = the novel constrained verify walk
+(no oracle → validity + equivalence gates).
+
+- `[x]` **Phase A** — B2 batch-grammar gates (tests/batch-grammar.test.ts)
+  + F4 per-TokenizerInfo compiler cache (single-flight) + F6/F3.
+- `[x]` **Phase B** — `serve --draft-model`/`--num-draft-tokens`
+  (src/spec/{source,two-model,serve-loop}.ts; parity-plan §7 executed).
+  **L1 gate: 48/48 token-for-token vs mlx-lm's speculative path** (Llama
+  3B+1B, scripts/oracle-spec-two-model.py). Ring-wrap degrades pre-pollution;
+  prompt-cache bypassed v1 (composition = §7.6 follow-up).
+- `[x]` **Phase C** — grammar×spec constrained verify walk (mask rides the
+  accept walk; matcher advances on emitted tokens only, no rollback).
+  Gates: 100% validity + 12/12 token-identical to grammar-only serial.
+- `[x]` **Phase E** — scripts/bench-feature-matrix.ts (six composition
+  cells, hard conformance gate, usage.speculation telemetry). **Its first
+  smoke run caught three real bugs**: snake_case wire fields never reached
+  the grammar resolver (structured output was dead over HTTP since it
+  landed); #flushPipeline didn't advance matchers (stale masks on
+  mid-decode joins); UniversalDenseModel batched RoPE used the scalar
+  offset (uneven-row batches decoded joiners at wrong positions — latent
+  for all Tier-0 archs since v0.0.9; fixed via UniversalRope.applyDynamic,
+  gated token-exact vs mlx-lm B=2 on Llama-3.2-3B, gateway batch gate
+  lifted for plain full-attention universal archs).
+- `[x]` **Phase D (admission slice)** — `--kv-budget` aggregate KV
+  projection gate (queue-don't-OOM, oversized-alone rejects,
+  /stats.batch.{pending_rows,kv_bytes,kv_budget_bytes};
+  tests/batch-kv-budget.test.ts).
+- `[ ]` **Phase D remainder** — extend-join (+ grammar-churn test),
+  vectorized homogeneous sampling.
+- Also: universal-rope oracle fixtures machine-keyed (M1-Max flat set +
+  per-machine overrides; tests/universal-rope.test.ts header has the regen
+  recipe); docs truth pass (server-config.md tiers/composition/recipes).
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the

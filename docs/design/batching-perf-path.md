@@ -1,6 +1,19 @@
 # Batching perf path — promote continuous batching out of compat mode
 
-Status: P5 + two gate fixes LANDED (2026-07-02, same day); rest PLANNED.
+Status: P5 + two gate fixes LANDED (2026-07-02, same day). Since then
+(2026-07-03, executed via grammar-spec-batching-integration.md Phases D/E):
+the **P3 KV-budget admission slice LANDED** (`--kv-budget` aggregate
+projection gate, queue-don't-OOM,
+`/stats.batch.{pending_rows,kv_bytes,kv_budget_bytes}`,
+tests/batch-kv-budget.test.ts) and the **P0 bench harness LANDED** as
+`scripts/bench-feature-matrix.ts` (the six-cell composition matrix;
+`scripts/bench-serving-load.ts` stays a client-only stack-vs-stack tool).
+Also 2026-07-03: **Tier-0 universal models (plain full-attention, e.g.
+Llama) now batch** — per-row RoPE ported (`UniversalRope.applyDynamic`)
+and gated token-exact vs mlx-lm B=2
+(tests/batched-decode-parity.test.ts "Llama 3B Tier-0"); maskArray +
+sliding universal archs stay serial (unvalidated cells). Rest PLANNED —
+still open in P0: extend-join, vectorized sampling.
 
 **Headline result (M1 Max 32 GB, loaded machine, 4 concurrent × 128 tok,
 median of 3, wall-clock aggregate; oMLX 0.4.5.dev1, same OptiQ snapshots):**
@@ -69,7 +82,9 @@ decode, per-row eviction (`filterKVRows` / `BatchedRotatingCache.filter`),
 per-row failure containment, drain-on-serial-waiter, `clearCache` every
 256 steps. Bit-parity with mlx-lm B=N verified at B=2 across all 4 model
 paths (`tests/batched-decode-parity.test.ts`, `tests/batched-rotating.test.ts`,
-`tests/batch-scheduler.test.ts`).
+`tests/batch-scheduler.test.ts`) — plus, since 2026-07-03, Tier-0
+universal plain-full-attention archs (Llama 3B, token-exact vs mlx-lm B=2;
+see header).
 
 `src/serve/generation-gateway.ts` (`GenerationGateway.willBatch`) routes;
 one `AsyncMutex` is the GPU/`loraState` exclusion domain. The batch lane
@@ -89,10 +104,9 @@ is deliberately compat mode: it calls `model.forwardHidden` /
 
 Two more gap sources specific to the benchmark:
 
-- **Qwen3.5 never batches at all**: `SSMCache` (`src/model/qwen3-delta.ts`)
-  has no merge/filter, so the capability gate routes every request serial.
-  The Qwen3.5 concurrency loss is pure serial queueing. mlx-lm batches
-  Mamba-family state via `ArraysCache` — oracle exists.
+- **Qwen3.5 never batches at all** — **FIXED by P5 (2026-07-02, header
+  item 1)**: `SSMCache.mergeRows`/`filter` landed; Qwen3.5 batches
+  token-exact vs mlx-lm B=2.
 - Joins re-merge the whole batch (O(B·S) slice storm, `#mergeJoiner`)
   instead of mlx-lm's `extend`.
 
@@ -123,13 +137,16 @@ Two more gap sources specific to the benchmark:
 ## 3. Phases
 
 ### P0 — Baseline + engine quick wins (no new numerics)  [S–M, 2–4 days]
-- Write `scripts/bench-serving-load.ts` (N concurrent vs live server,
-  aggregate tok/s + TTFT p50/p95). Re-measure vs oMLX **with `--batch 4`
-  actually on** to size the true engine gap vs the serial-queueing gap.
+- Bench harness — **DONE 2026-07-03**: landed as
+  `scripts/bench-feature-matrix.ts` (six-cell composition matrix over live
+  SSE, TTFT p50/p95 + aggregate tok/s; integration-plan Phase E).
+  `scripts/bench-serving-load.ts` exists as the client-only stack-vs-stack
+  tool and stays one. Clean-machine run remains Josh-gated.
 - Land `extend` join (full-attention twin + `BatchedRotatingCache.extend`);
   oracle: extend `scripts/gen-batched-dynamic-golden.py` (mlx-lm `extend`).
+  **Still open.**
 - Vectorize the homogeneous-sampler fast path in `#step` (all-greedy →
-  one `ops.argmaxAxis` on `[B,V]`); mixed rows keep the loop.
+  one `ops.argmaxAxis` on `[B,V]`); mixed rows keep the loop. **Still open.**
 - Exit: gated suites unchanged; B=4 baseline recorded; joins not O(B·S).
 
 ### P1 — Quantized KV at B>1  [M–L, 1–1.5 wk]
@@ -154,9 +171,12 @@ Two more gap sources specific to the benchmark:
   fallback matrix only and close honestly.
 
 ### P3 — Admission, prompt cache, adapters, defaults  [M–L, 1–1.5 wk]
-- KV-budget admission: `projectKvBytes(model, promptLen, maxTokens)`
-  beside `fit()`; `--kv-budget`, `--prompt-concurrency`;
-  `/stats.batch.{pending_rows,kv_bytes,kv_budget_bytes}`.
+- KV-budget admission — **LANDED 2026-07-03** (integration-plan Phase D):
+  `--kv-budget <GB>` caps the batch's aggregate projected KV
+  (prompt+max_tokens per row, window-capped); over-budget joiners QUEUE
+  (FIFO), never OOM; a single request over the budget alone rejects with
+  an actionable error; `/stats.batch.{pending_rows,kv_bytes,kv_budget_bytes}`;
+  gated by tests/batch-kv-budget.test.ts. `--prompt-concurrency` still open.
 - Prompt-cache reuse under batching: `take` at admit, forward uncached
   tail; on finish/evict `extract(row)` → solo caches → `put`. Quantized
   entries are non-trimmable mid-group — match on full-prefix or STEP

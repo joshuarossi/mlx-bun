@@ -3,11 +3,13 @@
 The HTTP server is one consumer of a library-first API. Everything it
 does — generation, sampling, KV schemes, LoRA, vision, caching, memory
 admission — is importable directly into a Bun process. Published as
-`mlx-bun` on npm (0.0.4); `bunx mlx-bun` works out of the box, or
+`mlx-bun` on npm; `bunx mlx-bun` works out of the box, or
 `import … from "mlx-bun"` for programmatic use.
 
-One rule everywhere: **one generation at a time per process** (one GPU,
-batch=1). The server serializes through a queue; do the same.
+One rule everywhere: **one generation at a time per process** (one GPU).
+The server serializes through a queue (or, under `--batch N`, its
+continuous-batching scheduler — a server-lane feature, not a library
+surface); direct library callers must do the same.
 
 ## Quick start
 

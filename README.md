@@ -321,6 +321,12 @@ agent CLIs like pi/OpenClaw via their provider config.
   (Gemma 4 `<|tool_call>` sentinel tokens; MiniCPM5 / Qwen3.5
   `<function name=…>` XML with schema-aware argument decoding);
   `role: "tool"` round-trips, including multi-turn agent loops.
+- **Structured output** — `response_format` (JSON mode / JSON schema),
+  plus the vLLM/oMLX aliases `guided_grammar`, `guided_regex`,
+  `guided_choice`, and `structured_outputs`, enforced by
+  grammar-constrained decoding (xgrammar) on chat and raw completions,
+  serial and batched lanes alike; a grammar that fails to compile
+  degrades to prompt injection (oMLX parity) instead of an error.
 - **Vision** — `image_url` content parts (data: URLs or http/s), on
   models with the vision sidecar. PNG, JPEG, HEIC, AVIF, WebP, TIFF,
   GIF, BMP via native OS codecs.
@@ -344,6 +350,12 @@ agent CLIs like pi/OpenClaw via their provider config.
   `MLX_BUN_FUSED_DECODE=1` extends the tiling to single-token decode —
   experimental, default off (measured ~4% slower on Gemma @8k kv8;
   kept for model families where it may win).
+- **Speculative decoding** — `serve --draft-model <path|query>`
+  (mlx_lm.server parity; `--num-draft-tokens`, default 3): a smaller
+  same-tokenizer model drafts, the main model verifies — exact results,
+  faster decode when drafts land; pays on 12B-class targets, not small
+  fast models. Serial lane only — with `--batch N` a mounted draft
+  routes every request serial, like mlx_lm.server.
 - **Memory admission control** — `--memory-budget <GB>` refuses to load
   a model that can't serve within the budget and rejects requests whose
   `prompt + max_tokens` exceed the budget's max safe context with a 400
@@ -375,7 +387,7 @@ Guide with examples on the site:
 ## Library
 
 The server is one consumer of a library-first API. Published to npm as
-`mlx-bun` (current: 0.0.8) — import from the package (`from "mlx-bun"`)
+`mlx-bun` — import from the package (`from "mlx-bun"`)
 or `./src/index` in a clone; `bunx mlx-bun` runs the CLI without
 installing. Full reference:
 [docs/reference/library-api.md](./docs/reference/library-api.md). For shipping inside a
@@ -524,9 +536,13 @@ remain. MTP speculation and Qwen3-VL vision deferred.
 **Experimental** — opt-in, default-off, still being hardened: transparent
 expert offload for MoE models (`serve --expert-offload`, Phase 20:
 page-aligned mmap-backed experts, bit-exact — 26B-A4B 17.1→4.2 GB
-resident, decode unregressed); batched serving (`--batch N`, Phase 18:
-continuous-batching bf16 B=N decode, B=2 bit-parity verified for
-MiniCPM5/12B/e4b/26B; throughput polish remains).
+resident, decode unregressed); batched serving (`--batch N`, default 1 =
+serial; Phase 18: continuous-batching bf16 decode at mlx-lm B=N parity,
+B=2 bit-parity verified for MiniCPM5/12B/e4b/26B; sampler extras,
+repetition penalty, and grammar-constrained requests batch; Qwen3.5's
+SSM caches batch, as do plain full-attention Tier-0 archs (e.g. Llama) —
+gemma2-family / sliding-window universal archs and DiffusionGemma route
+serial).
 
 **Open** — e4b's ~5% per-step host-overhead decode residual (Phase 7);
 SigLIP vision for 26B.

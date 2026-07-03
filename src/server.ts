@@ -2137,14 +2137,15 @@ export function createServer(
           options.topLogprobs = topLogprobs;
         }
 
-        // What lane this request takes (vision / adapters / logits processors /
-        // a user-fixed seed → serial; everything else batches when --batch N).
+        // What lane this request takes (vision / adapters / logprobs / seed /
+        // explicit kv-quant / a mounted draft → serial; sampler extras,
+        // repetition penalty, and grammar all BATCH — see willBatch).
         const shape = {
           hasVision: !!vision,
           hasAdapters: !!options.adapters?.length,
           hasRepetitionPenalty: !!options.repetitionPenalty,
-          // min_p / XTC / logit_bias / presence+frequency penalties: serial-only
-          // in v1 (see GenerationGateway.RequestShape.hasLogitsExtras).
+          // Informational since 2026-07-02: per-row logits processors batch;
+          // willBatch no longer gates on these fields.
           hasLogitsExtras: !!(
             options.minP || options.xtcProbability || options.logitBias ||
             options.presencePenalty || options.frequencyPenalty
@@ -2153,7 +2154,8 @@ export function createServer(
           userSeed: body.seed !== undefined,
           kvQuant: !!(options.kvConfig?.length || options.kvBits),
           // grammarCtrl is null on the degrade path (prompt injection) —
-          // those stay batchable. A real controller means per-row matchers.
+          // those stay batchable. A real controller batches via per-row
+          // matchers (MLX_BUN_GRAMMAR_BATCH=0 forces it serial).
           hasGrammar: !!grammarCtrl,
           hasDraft: !!ctx.draft,
         };

@@ -1,6 +1,17 @@
 # Batching v2 — state map, debt, and the gap plan
 
-Status: **PLAN** (written 2026-07-01, read-only audit — no code changed)
+Status: **PLAN, largely EXECUTED** (written 2026-07-01 as a read-only
+audit; §1's state map is that day's snapshot). Landed since: steps 1–3
+(hotfix bundle, failure/fairness, engine hygiene — 2026-07-01); step 8
+SSM batched path (2026-07-02, superseded by batching-perf-path.md P5 —
+token-exact vs mlx-lm B=2); step 5 KV-budget admission (2026-07-03,
+executed as grammar-spec-batching-integration.md Phase D:
+`--kv-budget`, queue-don't-OOM, `/stats.batch` fields,
+tests/batch-kv-budget.test.ts — the `--prompt-concurrency` half still
+open); step 7's e1+e3 (min_p/XTC + penalties/logit_bias batch via
+per-row logits processors, 2026-07-02, batching-perf-path.md header
+item 2; e2 logprobs still routes serial). Still open: step 4 (extend
+join), step 6 (prompt-cache reuse), 7's e2, 9 (rolling), 10 (deferred).
 Scope: the `--batch N` continuous-batching engine (`src/serve/batch-scheduler.ts`,
 `src/serve/generation-gateway.ts`, `src/model/batched-mask.ts`,
 `src/model/batched-rotating.ts`, the `server.ts` wiring).
@@ -178,6 +189,9 @@ endpoints silently don't participate in. Specific debt, ranked:
   (mirror mlx-lm server.py:371-374) in `willBatch` — batchable iff every
   `makeCache()` element is `KVCache | RotatingKVCache` — plus the doc
   correction. The real SSM batch path is item (h), later. *(confidence 95)*
+  **RESOLVED**: gate landed 2026-07-01; the full SSM batch path landed
+  2026-07-02 (batching-perf-path.md P5) — server-config's Qwen3.5 claim is
+  true again.
 
 - **D2 — `#admit` materializes full-prompt logits.**
   batch-scheduler.ts:173-174 runs `logitsFromHidden(h)` on the **whole**
@@ -498,14 +512,14 @@ step a gate.
 
 | # | Item | Effort | Test gate | Notes |
 | --- | --- | --- | --- | --- |
-| 1 | **Hotfix bundle**: D2 slice-before-head; D1 capability gate + server-config.md correction; D3 route curve/`/signal`(/adapter-unmount) through `gateway.runExclusive`; stale comment server.ts:960 | **S** | gated batch suites unchanged; fast suite; new unit: willBatch(Qwen)=false | no numerics change anywhere |
-| 2 | **D5/D6 failure + fairness**: per-row onToken containment (evict row, keep batch); `#admit` try/finally; drain-on-serial-waiter | **S–M** | new gated test: throwing onToken evicts one row, siblings complete; drain test (serial completes under sustained batchable load) | mlx-lm `remove` semantics |
-| 3 | **(d) engine hygiene**: chunked+interleaved admit, pipelined decode, clearCache cadence | **M** | KL suite + mlx-lm goldens UNCHANGED; bench-serving-load A/B (clean machine, Josh-gated for quotables) | closes perf-review backlog #6 |
-| 4 | **(a) `BatchedKVCache` + `extend`** (full + rotating) | **M** | extended dynamic golden (mlx-lm `extend` driven); existing suites green | new files only — no gemma4-base.ts conflict |
-| 5 | **(c) KV-budget admission + `--prompt-concurrency`** | **M** | projection unit tests; gated queueing test; `/stats` fields | depends on 3 (interleaved admit) for prompt-concurrency semantics |
-| 6 | **(b) prompt-cache reuse under batching** | **M–L** | `cached_tokens>0` gated test; warm==cold row parity; serial suite | depends on 4 (`extract`) + 5 (byte interplay) |
-| 7 | **(e) gate widening**: e1 min_p/XTC (S) → e2 logprobs (M) → e3 penalties/logit_bias (M) | **S+M+M** | per-feature: batched==serial teacher-forced/deterministic-seed tests | e1 waits for the seed fix to merge |
-| 8 | **(h) SSM batched path** (Qwen3.5) | **M–L** | mlx-lm B=N golden for a Qwen3.5 model (ArraysCache oracle) | un-does the item-1 gate for Qwen; doc row flips back |
+| 1 | ✅ **DONE 2026-07-01** — **Hotfix bundle**: D2 slice-before-head; D1 capability gate + server-config.md correction; D3 route curve/`/signal`(/adapter-unmount) through `gateway.runExclusive`; stale comment server.ts:960 | **S** | gated batch suites unchanged; fast suite; new unit: willBatch(Qwen)=false | no numerics change anywhere |
+| 2 | ✅ **DONE 2026-07-01** — **D5/D6 failure + fairness**: per-row onToken containment (evict row, keep batch); `#admit` try/finally; drain-on-serial-waiter | **S–M** | new gated test: throwing onToken evicts one row, siblings complete; drain test (serial completes under sustained batchable load) | mlx-lm `remove` semantics |
+| 3 | ✅ **DONE 2026-07-01** — **(d) engine hygiene**: chunked+interleaved admit, pipelined decode, clearCache cadence | **M** | KL suite + mlx-lm goldens UNCHANGED; bench-serving-load A/B (clean machine, Josh-gated for quotables) | closes perf-review backlog #6 |
+| 4 | **(a) `BatchedKVCache` + `extend`** (full + rotating) — **still open** | **M** | extended dynamic golden (mlx-lm `extend` driven); existing suites green | new files only — no gemma4-base.ts conflict |
+| 5 | ✅ **DONE 2026-07-03** (admission half; `--prompt-concurrency` still open) — **(c) KV-budget admission** — executed as grammar-spec-batching-integration.md Phase D | **M** | projection unit tests; gated queueing test (tests/batch-kv-budget.test.ts); `/stats` fields | depends on 3 (interleaved admit) for prompt-concurrency semantics |
+| 6 | **(b) prompt-cache reuse under batching** — **still open** | **M–L** | `cached_tokens>0` gated test; warm==cold row parity; serial suite | depends on 4 (`extract`) + 5 (byte interplay) |
+| 7 | **(e) gate widening**: ✅ e1 min_p/XTC + e3 penalties/logit_bias **DONE 2026-07-02** (per-row logits processors, batching-perf-path.md header item 2); e2 logprobs **still open** (routes serial) | **S+M+M** | per-feature: batched==serial teacher-forced/deterministic-seed tests | e1 waits for the seed fix to merge |
+| 8 | ✅ **DONE 2026-07-02** — **(h) SSM batched path** (Qwen3.5) — landed as batching-perf-path.md P5, token-exact vs mlx-lm B=2 | **M–L** | mlx-lm B=N golden for a Qwen3.5 model (ArraysCache oracle) | un-does the item-1 gate for Qwen; doc row flips back |
 | 9 | **(g) docs pass** | **S** | doc-vs-code re-audit (this file's §1 as the checklist) | rolling — update per landing, final sweep here |
 | 10 | **(f) quantized-KV batched** | **L** | KL + 6-task + density benchmark — design doc first | DEFERRED — needs a concrete density case |
 

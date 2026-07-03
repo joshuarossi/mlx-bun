@@ -1,6 +1,8 @@
 # Parallel slots — configurable batched serving
 
-Status: **S0 + S1b SHIPPED** (S2 not started; S3+ deferred)
+Status: **S0 + S1b + S2 SHIPPED** (S2's continuous inject/evict shipped
+with the scheduler; its byte-budget admission half landed 2026-07-03 as
+`--kv-budget`; S3+ deferred)
 Owner: serving layer
 Default: **off** (`--batch 1` = today's serialized path, untouched)
 
@@ -27,6 +29,16 @@ Direct/embedding mode stays batch=1.
 > onToken failure containment, drain-on-serial-waiter (no starvation), and
 > the engine-hygiene transplant (pipelined decode via asyncEval, clearCache
 > 1/256 steps, chunked admit prefill interleaved with decode steps).
+> Landed since: **SSM batched path** (Qwen3.5 batches, token-exact vs
+> mlx-lm B=2 — 2026-07-02, batching-perf-path.md P5); **per-row logits
+> processors** (repetition/presence/frequency penalties + logit_bias +
+> min_p/XTC batch — 2026-07-02, same doc); **grammar under batching** (B1
+> per-row matchers — structured-output.md); **KV-budget admission**
+> (`--kv-budget`, queue-don't-OOM, `/stats.batch` fields — 2026-07-03,
+> grammar-spec-batching-integration.md Phase D); **Tier-0 universal
+> coverage** (plain full-attention archs, e.g. Llama, batch via per-row
+> RoPE, token-exact vs mlx-lm B=2 — 2026-07-03, same doc's execution log;
+> maskArray + sliding universal archs stay serial).
 
 ## STATUS (2026-06-14) — LIVE for full-attention models
 
@@ -62,8 +74,8 @@ default stays mixed-precision (optiq parity); an explicit `--kv-quant` under
 novel extension: a memory-density win (batching × 4-bit KV compound), gated by
 KL + 6-task quality (per the tree framing), deferred. Other follow-ups (all
 optional polish): the `extend` join op (today joins re-merge), KV-budget
-admission, prompt-cache reuse under batching, and **paged KV** (zero-padding-waste
-allocation).
+admission (**LANDED 2026-07-03** — `--kv-budget`), prompt-cache reuse under
+batching, and **paged KV** (zero-padding-waste allocation).
 
 ## Why it helps (and when it doesn't)
 
@@ -376,8 +388,9 @@ growing in 256-token steps, width = longest live sequence, left-pad
 `BatchScheduler` + `GenerationGateway` (S1b SHIPPED). But the
 **budget/admission half of rung 2 is NOT built** (no `B × S_max`
 projection, no KV budget enforcement) — that's scheduler work (S2, NOT
-STARTED). And **rung 3 (paged) is a deferred spike**. So today: rung-2
-*allocation + scheduling wired*, no *budget/admission control* yet.
+STARTED). *(Since LANDED 2026-07-03: `--kv-budget` aggregate projection
+gate in the scheduler — grammar-spec-batching-integration.md Phase D.)*
+And **rung 3 (paged) is a deferred spike**.
 
 KV quantization is a force multiplier: 4-bit KV (`generate.ts:67`,
 already supported) is ~4× smaller, so the same budget buys ~4× the slots
@@ -456,7 +469,10 @@ server, concurrent + streaming + drain). No serial regression (server 17/17,
 tools 13/13).
 (3) **DONE 2026-06-14** — `_is_batchable` gate is the `GenerationGateway.willBatch`
 predicate (full-attention model + no vision/adapter/repetition-penalty/user-seed
-→ batch; else serial). `B×S_max` memory admission is still TODO.
+→ batch; else serial). *(The predicate has since widened: repetition
+penalty + logits extras now batch via per-row processors, 2026-07-02.)*
+`B×S_max` memory admission is still TODO — **DONE 2026-07-03**
+(`--kv-budget`, see the v2-plan pointer above).
 
 ## Fallbacks (must degrade, never break)
 
@@ -478,9 +494,9 @@ predicate (full-attention model + no vision/adapter/repetition-penalty/user-seed
 
 ## Config surface
 
-- `ServerOptions.batch` (default 1); later `kvBudgetBytes`,
-  `promptConcurrency`.
-- CLI: `--batch N` (shipped; `--slots N` was the original design name, `--decode-concurrency` accepted as mlx_lm.server alias); later `--kv-budget <GB>`.
+- `ServerOptions.batch` (default 1); `kvBudgetBytes` (shipped 2026-07-03);
+  later `promptConcurrency`.
+- CLI: `--batch N` (shipped; `--slots N` was the original design name, `--decode-concurrency` accepted as mlx_lm.server alias); `--kv-budget <GB>` (shipped 2026-07-03).
 - `batch === 1` → today's serialized promise chain, untouched.
   `batch > 1` → scheduler.
 
@@ -502,9 +518,11 @@ predicate (full-attention model + no vision/adapter/repetition-penalty/user-seed
   **Teacher-forced gate**: a 2-row batch must produce per-row logits matching
   two solo runs within bf16 tolerance (the train-batch-e2e methodology, now
   applied to decode).
-- **S2 — N-wide + continuous injection/eviction. (NOT STARTED)** Rows retire on EOS;
-  queued requests prefill into freed rows. Dynamic byte-budget admission
-  (`B × S_max` projection, KV budget enforcement) still TODO.
+- **S2 — N-wide + continuous injection/eviction. (DONE)** Rows retire on EOS;
+  queued requests prefill into freed rows (shipped with the scheduler).
+  Dynamic byte-budget admission landed 2026-07-03 as `--kv-budget`
+  (aggregate projection gate, queue-don't-OOM —
+  grammar-spec-batching-integration.md Phase D).
 - **S3+ — paged KV (DEFERRED)** (custom paged-attention kernel + block manager),
   KV-quant under batch, LoRA-group batching.
 

@@ -63,6 +63,11 @@ Request body (OpenAI chat schema; unknown fields ignored):
     "toe": 6,                    // bottom toe width
     "pivot_offset": 6            // pivot point offset from top
   },
+  "response_format":             // structured output (grammar-constrained
+    { "type": "json_object" },   //   decoding) — also guided_grammar,
+                                 //   guided_regex, guided_choice,
+                                 //   structured_outputs; see "Structured
+                                 //   output" below
   "adapter": "id"                // LoRA: "id", stacked "a+b", or "none"
 }
 ```
@@ -103,10 +108,25 @@ Non-streaming response:
   }],
   "usage": {
     "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
-    "prompt_tokens_details": { "cached_tokens": 0 }   // prompt-cache reuse
+    "prompt_tokens_details": { "cached_tokens": 0 },  // prompt-cache reuse
+    "speculation": {               // only when serving with --draft-model
+      "drafted": 0,                //   draft tokens proposed
+      "accepted": 0,               //   drafts accepted by the verify step
+      "targetCalls": 0             //   target-model forward calls
+    }
   }
 }
 ```
+
+Speculative decoding is a **server-level mode** (`serve --draft-model`);
+there is no per-request draft field. The `speculation` usage extension
+appears on chat and text completions alike, non-streaming and on the
+final stream chunk. Spec-eligible requests are text-only on base weights
+(no adapter, no logprobs capture, bf16 KV); ineligible ones decode
+normally and omit the field. The spec path bypasses the prompt cache
+(`cached_tokens` 0), and while a draft is mounted every request routes
+through the serial lane (mlx_lm.server parity: `is_batchable = draft is
+None`) — speculation and `--batch N` are different modes.
 
 ### logprobs / top_logprobs
 
@@ -170,6 +190,47 @@ markup still streams live, only the markup is withheld and converted to
 (string-typed params stay strings); markup that fails to parse falls
 back to plain content.
 
+### Structured output (grammar-constrained decoding)
+
+Both `/v1/chat/completions` and `/v1/completions` accept the
+OpenAI/oMLX/vLLM structured-output fields (snake_case on the wire):
+
+```jsonc
+{
+  "response_format":              // OpenAI: {type:"json_object"} = any valid
+    { "type": "json_schema",      //   JSON; {type:"json_schema"} constrains
+      "json_schema": {            //   to the schema; {type:"text"} = no-op
+        "name": "…", "schema": { /* JSON schema */ }, "strict": true } },
+  "guided_grammar": "root ::= …", // raw EBNF grammar string (vLLM/oMLX)
+  "guided_regex": "[A-Z][a-z]*",  // regex — the regex∩EBNF subset ONLY
+                                  //   (classes, |, *, +, ?, parens);
+                                  //   regex-only syntax (\d, ., anchors)
+                                  //   hits the degrade path — a known gap
+  "guided_choice": ["yes", "no"], // output is exactly one of these strings
+  "structured_outputs": { /* … */ } // bare JSON schema (oMLX/vLLM alias)
+}
+```
+
+Precedence when several are set mirrors oMLX: `guided_grammar` >
+`response_format` json_schema > json_object > `structured_outputs` >
+`guided_regex` > `guided_choice`.
+
+Enforcement is a per-step token bitmask at the sampler (xgrammar):
+invalid next tokens are masked to −inf **after** the logits processors,
+so valid-token numerics are untouched. Generation halts as soon as the
+grammar is satisfied (e.g. the closing `}` of a complete JSON object)
+with `finish_reason: "stop"`. Works on both lanes — serial and
+`--batch N` (per-row matchers).
+
+Degrade path — a grammar that fails to compile is never rejected (no
+400/500): chat prepends a system message instructing valid JSON output
+(schema included when one was given) and the response carries a
+`Warning` header (`grammar not enforced: …`); `/v1/completions` has no
+chat template to inject into, so it emits the `Warning` header only.
+`MLX_BUN_GRAMMAR=0` disables the feature entirely (the fields are
+ignored: no enforcement, no injection, no Warning). Design and fidelity
+notes: [structured-output.md](../design/structured-output.md).
+
 ### Errors
 
 All errors are `{ "error": { "message": …, ... } }`.
@@ -211,7 +272,12 @@ and adapter selection as chat.
   // frequency_penalty, frequency_context_size, adapter,
   // logprobs (BOOL, mlx-lm's type — not OpenAI's legacy int),
   // top_logprobs (0-11 or -1) — same response block as chat, see
-  // "logprobs / top_logprobs" above (mlx-lm shares the builder)
+  // "logprobs / top_logprobs" above (mlx-lm shares the builder),
+  // response_format / guided_grammar / guided_regex / guided_choice /
+  // structured_outputs — structured output, same semantics and
+  // precedence as chat (see "Structured output" above); the degrade
+  // path here emits the Warning header only (no template to inject a
+  // system prompt into)
 }
 ```
 
@@ -224,6 +290,7 @@ Response is the OpenAI text-completion object:
   "choices": [{ "index": 0, "text": "…", "finish_reason": "stop" | "length" }],
   "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
              "prompt_tokens_details": { "cached_tokens": 0 } }
+             // + "speculation" under --draft-model, as on chat
 }
 ```
 
@@ -352,7 +419,10 @@ matching `mlx_lm.server`.
   "batch": {
     "configured": 1,                  // the --batch N value
     "batched": false,                 // batching enabled (N>1)
-    "active_rows": 0                  // rows currently decoding in the batch
+    "active_rows": 0,                 // rows currently decoding in the batch
+    "pending_rows": 0,                // queued + mid-prefill rows waiting
+    "kv_bytes": 0,                    // projected aggregate KV bytes of admitted rows
+    "kv_budget_bytes": null           // --kv-budget cap, or null (uncapped)
   }
 }
 ```
