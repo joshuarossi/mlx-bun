@@ -21,8 +21,17 @@
 //    cachedTokens=0). mlx-lm composes spec with its LRU prompt cache
 //    (target+draft caches per entry); wiring that through our PromptCache +
 //    SSD tier is a tracked follow-up in the integration plan, not silently
-//    absent. Grammar+spec is Phase C: the per-position verify sampling below
-//    takes a maskHook so the constrained walk plugs in without a rewrite.
+//    absent.
+//
+// Grammar × spec (Phase C, the constrained verify walk — novel: NO runtime
+// serves both; mlx-lm has no grammar, oMLX no spec): the drafter runs FREE
+// (drafts are proposals; a grammar-invalid draft is simply rejected at
+// verify), and the grammar mask rides the per-position accept walk in
+// samplePos — mask before sample, matcher advances on emitted tokens only,
+// so rejected drafts never touch grammar state and no matcher rollback is
+// needed. Grammar termination mid-burst truncates the round (the all--inf
+// guarantee). Gates (no oracle): greedy grammar+spec ≡ greedy grammar-only
+// long-prefix + 100% schema validity (tests/spec-serve.test.ts).
 //
 // Emission discipline: tokens flow through the caller's onToken ONE AT A
 // TIME, in order (bursts of ≤ n+1 per round) — the server's stop-sequence
@@ -80,14 +89,28 @@ export async function specServeRun(
   };
 
   /** Sample ONE verify position from a [1,V] logits row: processors →
-   *  (Phase C: grammar mask hook goes here) → log-softmax → sampler.
+   *  grammar mask (Phase C: the constrained verify walk — the mask has the
+   *  final say, same ordering as serial sampleStep and the batch closure) →
+   *  log-softmax → sampler. The GRAMMAR walk is inherently sequential: the
+   *  mask at position i reflects every token emitted before it, so this
+   *  awaits the matcher's async fill (fired by the previous accept) before
+   *  masking, samples, then advances the matcher — the matcher only ever
+   *  moves on tokens that are (about to be) EMITTED, which is what makes
+   *  rollback-free v1 correct: rejected DRAFTS never touch grammar state.
    *  Appends the sampled token to the processor history. */
-  const samplePos = (logits1V: MlxArray, step: number): number => {
+  const grammar = options.grammar;
+  const samplePos = async (logits1V: MlxArray, step: number): Promise<number> => {
     let cur = logits1V;
     for (const p of processors) {
       const next = p(history, cur);
       if (cur !== logits1V) cur.dispose();
       cur = next;
+    }
+    if (grammar && !grammar.isTerminated) {
+      await grammar.ready();
+      const masked = grammar.applyMask(cur);
+      if (cur !== logits1V) cur.dispose();
+      cur = masked;
     }
     const lp = toLogprobs(cur);
     if (cur !== logits1V) cur.dispose();
@@ -95,6 +118,9 @@ export async function specServeRun(
     lp.dispose();
     const tok = ops.itemUint32(tokArr);
     tokArr.dispose();
+    // Advance the matcher on the emitted token (fires the next async fill).
+    // EOS is never content and never grammar-valid — don't feed it.
+    if (grammar && !eos.includes(tok)) grammar.accept(tok);
     if (history) {
       const t1 = ops.fromInt32([tok], [1]);
       const prev = history;
@@ -144,7 +170,7 @@ export async function specServeRun(
 
     // ---- token 0 ----
     const tDecode = performance.now();
-    let pending = samplePos(lastLogits!, 0);
+    let pending = await samplePos(lastLogits!, 0);
     lastLogits!.dispose();
     lastLogits = null;
     if (eos.includes(pending)) {
@@ -152,7 +178,12 @@ export async function specServeRun(
       return stats;
     }
     stats.generatedTokens++;
-    if ((await onToken(pending)) === false || stats.generatedTokens >= maxTokens) {
+    if (
+      (await onToken(pending)) === false ||
+      stats.generatedTokens >= maxTokens ||
+      // grammar satisfied at token 0 (a 1-token grammar) — finish "stop"
+      grammar?.isTerminated
+    ) {
       stats.decodeMs = performance.now() - tDecode;
       return stats;
     }
@@ -173,13 +204,14 @@ export async function specServeRun(
         const flat = ops.reshape(lg, [1, V]);
         lg.dispose();
         extras.targetCalls++;
-        const tok = samplePos(flat, stats.generatedTokens);
+        const tok = await samplePos(flat, stats.generatedTokens);
         flat.dispose();
         clearCache();
         if (eos.includes(tok)) break;
         stats.generatedTokens++;
         pending = tok;
         if ((await onToken(tok)) === false) break;
+        if (grammar?.isTerminated) break; // grammar closed — finish "stop"
         continue;
       }
 
@@ -225,14 +257,18 @@ export async function specServeRun(
       let sawEos = false;
       let halted = false;
       const emitted: number[] = [];
+      let grammarDone = false;
       for (let i = 0; i <= n; i++) {
         const row = logitsRow(vLogits, i);
-        const tok = samplePos(row, stats.generatedTokens + emitted.length);
+        const tok = await samplePos(row, stats.generatedTokens + emitted.length);
         row.dispose();
         if (i < n && tok === drafts[i]) {
           kAccept++;
           emitted.push(tok);
           if (eos.includes(tok)) { sawEos = true; break; }
+          // grammar termination mid-burst truncates the round — nothing may
+          // be sampled past a satisfied grammar (the all--inf guarantee).
+          if (grammar?.isTerminated) { grammarDone = true; break; }
           if (stats.generatedTokens + emitted.length >= maxTokens) break;
           continue;
         }
@@ -240,6 +276,7 @@ export async function specServeRun(
         correction = tok;
         if (!eos.includes(tok)) emitted.push(tok);
         else sawEos = true;
+        if (grammar?.isTerminated) grammarDone = true;
         break;
       }
       vLogits.dispose();
@@ -252,7 +289,7 @@ export async function specServeRun(
         if ((await onToken(tok)) === false) { halted = true; break; }
         if (stats.generatedTokens >= maxTokens) break;
       }
-      if (sawEos || halted || stats.generatedTokens >= maxTokens) break decode;
+      if (sawEos || halted || grammarDone || stats.generatedTokens >= maxTokens) break decode;
 
       // (e) roll back the rejected suffix on the target (the pre-round gate
       // guarantees trimmability here)

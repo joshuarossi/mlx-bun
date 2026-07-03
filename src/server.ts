@@ -1171,14 +1171,13 @@ export function createServer(
     // decode through the verify loop; the rest fall through to the normal
     // serial path (never wrong results, just no speedup — logged once per
     // combination class would be noise, so silent). Eligibility v1:
-    // text-only, base weights, no grammar (Phase C wires the constrained
-    // walk), no logprobs capture, bf16 KV. Prompt-cache reuse is bypassed
-    // on the spec path v1 (see src/spec/serve-loop.ts header).
+    // text-only, base weights, no logprobs capture, bf16 KV. Grammar
+    // COMPOSES (Phase C constrained verify walk — see the serve-loop.ts
+    // header). Prompt-cache reuse is bypassed on the spec path v1.
     if (
       ctx.draft &&
       !vision &&
       !options.adapters?.length &&
-      !options.grammar &&
       !options.logprobs &&
       !options.kvBits &&
       !options.kvConfig

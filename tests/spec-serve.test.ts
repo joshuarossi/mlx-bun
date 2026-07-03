@@ -122,6 +122,82 @@ describe.skipIf(!optIn || !TARGET || !DRAFT)("serve --draft-model (two-model spe
     }
   }, 600_000);
 
+  // ---- Phase C: grammar × spec (the constrained verify walk) ----
+  // No runtime anywhere serves both, so there is no oracle. Gates:
+  // (1) VALIDITY — every grammar+spec output parses + conforms (hard
+  //     invariant of the mask, trajectory-independent);
+  // (2) EQUIVALENCE — greedy grammar+spec reproduces greedy grammar-only
+  //     serial generate() (exact-match acceptance means spec must retrace
+  //     the masked-greedy stream, modulo batched-verify-head knife-edges —
+  //     long-prefix gate, same standard as the spec-vs-stock gate below);
+  // (3) early termination (guided_choice) finishes cleanly mid-spec.
+  test("grammar × spec: valid JSON, equivalent to grammar-only, choice terminates", async () => {
+    const { model, weights, tok, provider } = await setup();
+    const { specServeRun } = await import("../src/spec/serve-loop");
+    const { generate } = await import("../src/generate");
+    const { compileGrammarRequest } = await import("../src/grammar");
+    try {
+      const schema = {
+        type: "object",
+        properties: {
+          color: { type: "string", enum: ["red", "green", "blue"] },
+          count: { type: "number" },
+        },
+        required: ["color", "count"],
+      };
+      const req = {
+        responseFormat: { type: "json_schema", json_schema: { name: "thing", schema } },
+      };
+      const ids = tok.encode("Describe a colored thing as JSON.");
+      const MAX = 64;
+
+      // grammar + spec
+      const g1 = (await compileGrammarRequest(req, tok, model.config.text.vocabSize))!.controller;
+      const specToks: number[] = [];
+      const st = await specServeRun(model, provider, 3, ids, {
+        maxTokens: MAX, temperature: 0, grammar: g1,
+      }, (t) => { specToks.push(t); });
+      const specText = tok.decode(specToks, true);
+      const parsed = JSON.parse(specText); // (1) validity — throws = gate fails
+      expect(["red", "green", "blue"]).toContain(parsed.color);
+      expect(typeof parsed.count).toBe("number");
+      expect(st.generatedTokens).toBeLessThan(MAX); // grammar terminated the stream
+      expect(st.spec!.drafted).toBeGreaterThan(0);
+      console.log(
+        `[spec×grammar] ${JSON.stringify(specText)} — accepted ${st.spec!.accepted}/${st.spec!.drafted} drafts`,
+      );
+
+      // (2) grammar-only serial reference (same controller config, fresh instance)
+      const g2 = (await compileGrammarRequest(req, tok, model.config.text.vocabSize))!.controller;
+      const refToks: number[] = [];
+      const caches = model.makeCache();
+      try {
+        const gen = generate(model, ids, { maxTokens: MAX, temperature: 0, grammar: g2, cache: caches });
+        for await (const t of gen) refToks.push(t.token);
+      } finally {
+        for (const c of caches) c.dispose();
+      }
+      let common = 0;
+      while (common < Math.min(specToks.length, refToks.length) && specToks[common] === refToks[common]) common++;
+      console.log(`[spec×grammar] shared prefix with grammar-only serial: ${common}/${Math.min(specToks.length, refToks.length)}`);
+      expect(common).toBeGreaterThanOrEqual(Math.min(12, Math.min(specToks.length, refToks.length)));
+
+      // (3) guided_choice terminates early through the spec loop
+      const g3 = (await compileGrammarRequest(
+        { guidedChoice: ["affirmative", "negative"] }, tok, model.config.text.vocabSize,
+      ))!.controller;
+      const choiceToks: number[] = [];
+      const stC = await specServeRun(model, provider, 3, tok.encode("Is water wet? Answer:"), {
+        maxTokens: 16, temperature: 0, grammar: g3,
+      }, (t) => { choiceToks.push(t); });
+      expect(["affirmative", "negative"]).toContain(tok.decode(choiceToks, true).trim());
+      expect(stC.generatedTokens).toBeLessThan(16);
+    } finally {
+      provider.dispose();
+      weights.dispose();
+    }
+  }, 600_000);
+
   test("long-prefix agreement vs non-spec generate()", async () => {
     const { model, weights, tok, provider } = await setup();
     const { specServeRun } = await import("../src/spec/serve-loop");
