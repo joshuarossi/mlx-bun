@@ -1,9 +1,11 @@
 # CI gate — closes review finding #4 (2026-07-01): nothing previously ran
 # typecheck or tests on push; the "tsc 0" standing rule was agent-discipline only.
 #
-# Two jobs:
+# Jobs:
+#  - hygiene:   the "mess can't re-form" guarantee — binary/large-file
+#               allowlist + docs-map coverage (scripts/check-hygiene.ts).
 #  - typecheck: the hard gate (repo rule: zero tolerated errors, incl. scripts/).
-#  - tests: the model-FREE subset on an Apple Silicon runner (macos-14 = M1,
+#  - tests:     the model-FREE subset on an Apple Silicon runner (macos-14 = M1,
 #    Metal available; mlx-c via brew). Tests that need downloaded checkpoints
 #    are env-gated in-repo (MLX_BUN_TEST_*) and stay local-only by design —
 #    parity vs the oracle venv can't run here. Extend the list as suites prove
@@ -15,8 +17,18 @@ on:
   pull_request:
 
 jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun scripts/check-hygiene.ts
+
   typecheck:
     runs-on: macos-14
+    needs: hygiene
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

@@ -2,7 +2,7 @@
 
 > https://github.com/oven-sh/bun/issues/32054 (filed 2026-06-10).
 > Repro confirmed on Bun 1.3.3 and 1.3.14 (latest), macOS arm64.
-> Supporting experiments live in `repro/bun-ffi-f64/` in this repo; the
+> Supporting experiments live in `lab/repro/bun-ffi-f64/` in this repo; the
 > standalone files referenced below are `issue/repro.c` and
 > `issue/repro.ts`.
 

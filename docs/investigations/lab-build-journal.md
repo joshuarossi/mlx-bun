@@ -1,7 +1,7 @@
 # Build journal — mlx-bun Lab (web UI + native quantize/train/dataset + pi web chat)
 
 *Branch `web-ui-and-native-lab`, 2026-06-13/14. Visual summary:
-[archive/mlx-bun-lab-report.html](../../archive/mlx-bun-lab-report.html). Evidence
+[archive/mlx-bun-lab-report.html](../../docs/archive/mlx-bun-lab-report.html). Evidence
 artifact: `benchmarks/lab-verification.json` (regenerable, gitignored — produced by
 `scripts/verify-lab.ts`).*
 
@@ -22,7 +22,7 @@ page. Compute is **native Bun/MLX (no Python)** per Josh's decision.
 
 2. **Gate the riskiest unknown first.** Native LoRA needs autograd across the
    FFI boundary. Rather than discover mid-build that it's infeasible, the first
-   thing built was `spikes/phase-train-vag.ts`: a tiny LoRA-shaped loss
+   thing built was `lab/spikes/phase-train-vag.ts`: a tiny LoRA-shaped loss
    (`mean((x + (x@A)@B − y)²)`) differentiated by `mlx_value_and_grad` through a
    `bun:ffi` JSCallback closure, checked against central finite differences.
    **PASS (<1e-2), exactly 2 grads returned (base frozen).** Only then was the

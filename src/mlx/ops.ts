@@ -402,7 +402,7 @@ export function where(cond: MlxArray, x: MlxArray, y: MlxArray, s: S = gpuStream
 
 // arange is built host-side and uploaded. The original mlx_arange binding
 // broke once the calling path got JIT-optimized; a standalone repro
-// (repro/bun-ffi-f64/) traced the root cause to a Bun bug: after DFG
+// (lab/repro/bun-ffi-f64/) traced the root cause to a Bun bug: after DFG
 // tier-up, typed-array reads following a bun:ffi call return stale values
 // (the JIT eliminates the load across the native call). Not f64 marshaling
 // — args reach C intact. See PLAN.md Phase 4 findings. Large constant

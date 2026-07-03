@@ -1,6 +1,6 @@
 // Native autograd via mlx-c value_and_grad over a JS loss closure.
 //
-// Encapsulates the exact FFI lifecycle proven in spikes/phase-train-vag.ts:
+// Encapsulates the exact FFI lifecycle proven in lab/spikes/phase-train-vag.ts:
 //   JS loss closure (JSCallback) → mlx_closure_new_func_payload →
 //   mlx_value_and_grad → mlx_closure_value_and_grad_apply → read grads.
 //
@@ -45,7 +45,7 @@ export class ValueAndGrad {
           // Read the primals out of the input vector_array. mlx_vector_array_get
           // returns a fresh (ref-counted) handle, so disposing the wrapper
           // afterward is correct — it drops our reference, not mlx's graph
-          // reference (proven in spikes/phase-train-vag.ts).
+          // reference (proven in lab/spikes/phase-train-vag.ts).
           const n = Number(C.mlx_vector_array_size(inVec));
           const primals: MlxArray[] = [];
           for (let i = 0; i < n; i++) {

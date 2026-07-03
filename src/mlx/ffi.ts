@@ -169,7 +169,7 @@ export const C = dlopen(LIBMLXC_PATH, {
   // (res, input, weight, stride, padding, dilation, groups, stream) — depthwise
   // causal conv1d for Qwen3.5 gated-DeltaNet (groups == channels, padding 0).
   mlx_conv1d: { args: [P, u64, u64, i32, i32, i32, i32, u64], returns: i32 },
-  // --- training: autograd (value_and_grad) — proven in spikes/phase-train-vag.ts.
+  // --- training: autograd (value_and_grad) — proven in lab/spikes/phase-train-vag.ts.
   // mlx_value_and_grad(res: mlx_closure_value_and_grad*, fun: mlx_closure,
   //   argnums: int*, n) → builds a value+grad closure differentiating the
   //   selected inputs of `fun` (a mlx_closure_new_func_payload over a JS loss).
@@ -329,7 +329,7 @@ export const NULL_HANDLE = 0n;
 // RULE: never read a typed array that a bun:ffi call wrote through a
 // pointer — once the calling function is DFG-compiled, the JIT eliminates
 // the load across the native call and `buf[i]` returns stale values
-// (repro/bun-ffi-f64/ISSUE.md; PLAN.md Phase 4 findings). Out-param slots
+// (lab/repro/bun-ffi-f64/ISSUE.md; PLAN.md Phase 4 findings). Out-param slots
 // must be read back with bun:ffi `read.*` (verified safe). Initializing the
 // slot via the typed-array *constructor* is fine: that store happens in
 // host code the JIT can't elide.

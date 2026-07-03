@@ -1,4 +1,4 @@
-// Regression guard for the Bun DFG stale-read bug (repro/bun-ffi-f64/
+// Regression guard for the Bun DFG stale-read bug (lab/repro/bun-ffi-f64/
 // ISSUE.md): typed-array reads after a bun:ffi call return stale values
 // once the calling function is DFG-compiled (~6-20k invocations). All
 // out-param readbacks must go through bun:ffi read.* (outArray,
@@ -57,7 +57,7 @@ describe("bun:ffi out-param reads survive DFG tier-up", () => {
   // reverted outArray went stale inside bun:test — the loop bodies here
   // carry extra host calls (array alloc/eval/dispose) that apparently
   // block the load elimination; the minimal standalone repro
-  // (repro/bun-ffi-f64/) is the authoritative demonstration. So this test
+  // (lab/repro/bun-ffi-f64/) is the authoritative demonstration. So this test
   // asserts the read.* path stays correct past tier-up and counts/logs
   // naive out[0] staleness as evidence if a future Bun/codegen shape
   // makes it bite here; it is NOT proof the naive read would be safe.

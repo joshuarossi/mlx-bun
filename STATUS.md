@@ -46,9 +46,14 @@ serial-lane macrotask hop (/stats 2.5 s → 10–44 ms mid-generation) ·
    scheme-flip invalidation e2e).
 5. oQ-style quantization spike in `convert` (eval-gated; arXiv-lens).
 6. Repo hygiene: goldens/.bin no longer tracked going forward (see
-   "Goldens hygiene" in docs/design/docs-reorg-plan.md addendum); the
-   one-time history rewrite (LFS or filter-repo) is a Josh go/no-go —
-   both laptops must re-clone after.
+   "Goldens hygiene" in docs/design/docs-reorg-plan.md addendum). The
+   phased cleanup (docs/design/repo-cleanup-plan.md) landed A + B-gate +
+   D2 + D3 on 2026-07-02: `repro/`+`spikes/` → `lab/`, `archive/` →
+   `docs/archive/`, root strays cleared, `scripts/check-hygiene.ts` binary-
+   in-git + docs-map gate wired into test.sh + CI. Remaining: B2 adapter
+   `.safetensors` untrack (Josh-gated — needs a confirmed bit-exact regen
+   trainer), D1 (no closed <17 phases to archive yet), and the one-time
+   history rewrite C (Josh go/no-go — both laptops must re-clone after).
 
 ## SESSION WRAP 2026-07-01 — v0.0.9 released; next actions below
 

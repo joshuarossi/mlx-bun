@@ -12,10 +12,10 @@ The load-bearing question for the whole project.
       RoPE / RMSNorm fast ops, dtype support (bf16), stream/device handles,
       lazy-eval control (`mlx_eval`), external-buffer array creation.
 - [x] Smoke test: `bun:ffi` opens libmlxc, creates two arrays, adds them
-      on GPU, reads result back. (`spikes/phase0-smoke.ts` — PASS.)
+      on GPU, reads result back. (`lab/spikes/phase0-smoke.ts` — PASS.)
 - [x] Memory-management spike: wrapper class with explicit `.dispose()` +
       `FinalizationRegistry` backstop; confirm no leaks under a tight
-      alloc loop (watch wired memory). (`spikes/phase0-memory.ts` — 2000
+      alloc loop (watch wired memory). (`lab/spikes/phase0-memory.ts` — 2000
       alloc/add/eval/dispose iterations, mlx active memory returns to
       baseline exactly; registry backstop freed 50/50 dropped handles.)
 - **Exit criterion:** documented yes/no per critical symbol. → **All
@@ -249,7 +249,7 @@ The load-bearing question for the whole project.
 ### Phase 4 findings (2026-06-10)
 
 - **bun:ffi + JIT corruption — root cause found (2026-06-10)**: not f64
-  marshaling. A standalone repro (`repro/bun-ffi-f64/`, confirmed on Bun
+  marshaling. A standalone repro (`lab/repro/bun-ffi-f64/`, confirmed on Bun
   1.3.3 and 1.3.14) proves that after DFG tier-up (~6–20k iterations of
   the calling function), **typed-array reads following a bun:ffi call
   return stale values** — the DFG eliminates the load across the native
@@ -262,7 +262,7 @@ The load-bearing question for the whole project.
   bun:ffi `read.*` instead.** `outArray`'s fresh-buffer handle read is
   the same risk class (store-to-load forwarding) — needs hardening.
   Filed upstream: https://github.com/oven-sh/bun/issues/32054
-  (`repro/bun-ffi-f64/ISSUE.md` is the local copy). The arange
+  (`lab/repro/bun-ffi-f64/ISSUE.md` is the local copy). The arange
   host-side workaround stays (it removed the offending read path).
 - **Out-param read hardening (2026-06-10)**: audited every JS read of
   memory a bun:ffi call wrote; all out-param readbacks now go through

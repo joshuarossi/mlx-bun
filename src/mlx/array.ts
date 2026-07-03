@@ -1,6 +1,6 @@
 // MlxArray: ownership wrapper around an mlx_array handle.
 // Explicit .dispose() is the contract; a FinalizationRegistry backstop
-// frees leaked handles on GC (verified in spikes/phase0-memory.ts).
+// frees leaked handles on GC (verified in lab/spikes/phase0-memory.ts).
 
 import { JSCallback, ptr, toArrayBuffer } from "bun:ffi";
 import { C, Dtype, DTYPE_NAMES, type MlxHandle, optInt, outArray, takeMlxError } from "./ffi";
@@ -138,7 +138,7 @@ export class MlxArray {
     return Number(C.mlx_array_ndim(this.handle));
   }
 
-  // NOTE on the DFG stale-read bug (repro/bun-ffi-f64/ISSUE.md): the
+  // NOTE on the DFG stale-read bug (lab/repro/bun-ffi-f64/ISSUE.md): the
   // toArrayBuffer readbacks below (shape/rawBytes/toFloat32) are safe.
   // The hazard is reading a *pre-existing* typed array after an FFI call
   // wrote through its pointer — the JIT forwards a stale value from before

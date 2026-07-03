@@ -1,6 +1,6 @@
 // FAST: native autograd (ValueAndGrad) finite-difference check.
 //
-// Mirrors spikes/phase-train-vag.ts but exercises the encapsulated
+// Mirrors lab/spikes/phase-train-vag.ts but exercises the encapsulated
 // ValueAndGrad class: a LoRA-shaped loss
 //   loss = mean( (x + (x@A)@B - y)^2 )
 // differentiated w.r.t. A [in,rank] and B [rank,out] only (x, y frozen).

@@ -12,6 +12,11 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# Hygiene gate (the "mess can't re-form" guarantee — binary/large-file
+# allowlist + docs-map coverage). Fail fast before any test runs.
+printf '== hygiene gate ==\n'
+bun scripts/check-hygiene.ts || exit 1
+
 FILES=(tests/*.test.ts)
 N=${#FILES[@]}
 HALF=$((N / 2))

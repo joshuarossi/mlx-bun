@@ -1262,7 +1262,7 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       styling without a model load. First brick of the web UI surface
       (the chat page lands with P4's event plumbing). v2 same day
       (Josh: "make it look AWESOME"): rebuilt in the keynote
-      aesthetic (archive/wwdc-mlx-bun.html grammar — black stage, gradient
+      aesthetic (docs/archive/wwdc-mlx-bun.html grammar — black stage, gradient
       hero, blooms, hairline cards) + new `GET /fit` endpoint
       (this-machine FitReport at the admission ceiling + Apple SKU
       matrix @32k, same conservative stance as admission) rendered as
@@ -1361,7 +1361,7 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       live pi chat turn over WS. 85+ new tests green, tsc clean, server
       suite 17/17 (no regressions). Full story:
       docs/investigations/lab-build-journal.md +
-      archive/mlx-bun-lab-report.html.
+      docs/archive/mlx-bun-lab-report.html.
 - [x] **First-run starter model**
       (2026-06-12, after the first external tester sat through a 16 GB
       26B download with nothing to use): interim e4b starter shipped
@@ -2145,3 +2145,24 @@ segfault on ctrl-C, a PIL-shaped missing dependency, a repo-id-vs-path
 crash in the vision engine, and an OOM-by-prompt-cache footgun — none of
 them GPU problems. The thesis of this project is that the layer with all
 the bugs is also the layer that doesn't need Python.
+
+## Repo hygiene cleanup (2026-07-02)
+
+Landed the phased cleanup (docs/design/repo-cleanup-plan.md): Phase A
+(`repro/`+`spikes/` → `lab/`, `archive/` → `docs/archive/`, root strays
+cleared), Phase B gate (`scripts/check-hygiene.ts` — binary-in-git +
+docs-map coverage, wired into `scripts/test.sh` + CI `hygiene` job),
+D2 (already gitignored), D3 (docs-map drift caught + fixed). Findings:
+- **B2:** `fixtures/adapters/{upper,french}/adapters.safetensors` (6.6 MB
+each) KEPT tracked on the gate's explicit allowlist — stable one-time-
+trained LoRA adapter inputs (not churning), opt-in weight-gated test only.
+Untrack deferred to Josh pending a confirmed bit-exact regen trainer
+(adapter_config.json is ambiguous between optiq `lora train` and mlx-lm).
+- **B3:** 27 `tests/fixtures/universal-rope/*.bin` (4–8 KB) +
+`qwen-delta-golden.json` (1.08 MB text) STAY — model-free CI-load-bearing,
+regen scripts exist.
+- **D1:** no `[x]`/CLOSED phases <17 in PLAN.md to archive; phases 6 & 16
+have all boxes checked but carry a deliberate `[~]` — reclassify is Josh's
+call. oMLX (closed) + Phase 19 are newer than 17, stay.
+- **C (history rewrite):** still Josh go/no-go — both laptops re-clone
+after. The gate now prevents re-formation regardless.
