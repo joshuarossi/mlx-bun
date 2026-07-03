@@ -65,6 +65,28 @@ export interface CompiledGrammarResult {
 
 /** xgrammar TokenizerInfo is expensive to build (it decodes every vocab id).
  *  Cache one per tokenizer.json path — it's vocab-structural, not per-request. */
+/** Module-level serializer for ALL xgrammar WASM calls. The WASM instance is
+ *  single-threaded; CONCURRENT async calls corrupt emscripten's binding
+ *  layer (BindingError: Expected null or instance of VectorInt, got an
+ *  instance of VectorInt — reproduced in tests/grammar.test.ts B1 test, which
+ *  fires 4 overlapping compiles + fills). Under `--batch N` the scheduler
+ *  fires N accept()s (each kicks an async fill) then awaits ready() on all;
+ *  and the server compiles grammar for concurrent requests. Without
+ *  serialization the overlapping WASM calls crash. This queue keeps the
+ *  async-overlap API (fills still overlap GPU compute — the queue only
+ *  serializes the CPU-side WASM calls, each 0.004–0.19 ms) while ensuring
+ *  only ONE xgrammar call is in flight at a time. Both the compile path
+ *  (compileGrammarRequest) and the fill path (prime/accept) ride it. */
+let wasmChain: Promise<unknown> = Promise.resolve();
+function wasmQueue<T>(fn: () => Promise<T>): Promise<T> {
+  const run = wasmChain.then(fn, fn); // run regardless of prior success/failure
+  wasmChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 let cachedTokenizerInfo: { path: string; info: XTokenizerInfo } | null = null;
 
 /** Extract the ordered vocab array + detect xgrammar vocab type from
@@ -105,8 +127,8 @@ function loadVocab(tokenizerJsonPath: string): {
 async function getTokenizerInfo(tokenizerJsonPath: string): Promise<XTokenizerInfo> {
   if (cachedTokenizerInfo?.path === tokenizerJsonPath) return cachedTokenizerInfo.info;
   const { vocab, vocabType, prependSpace } = loadVocab(tokenizerJsonPath);
-  const info = await xgrammar.TokenizerInfo.createTokenizerInfo(
-    vocab, vocabType, prependSpace, vocab.length,
+  const info = await wasmQueue(() =>
+    xgrammar.TokenizerInfo.createTokenizerInfo(vocab, vocabType, prependSpace, vocab.length),
   );
   cachedTokenizerInfo = { path: tokenizerJsonPath, info };
   return info;
@@ -154,7 +176,7 @@ export class GrammarController {
 
   /** Precompute the step-0 mask. Must be awaited before the first applyMask(). */
   async prime(): Promise<void> {
-    this.readyMask = await this.matcher.getNextTokenBitmask();
+    this.readyMask = await wasmQueue(() => this.matcher.getNextTokenBitmask());
   }
 
   /** Apply the ready bitmask to logits [1, V]. Invalid token ids → -inf.
@@ -196,9 +218,9 @@ export class GrammarController {
       this.terminated = true;
       return;
     }
-    this.pending = (async () => {
-      this.readyMask = await this.matcher.getNextTokenBitmask();
-    })();
+    this.pending = wasmQueue(() => this.matcher.getNextTokenBitmask()).then((m) => {
+      this.readyMask = m;
+    });
   }
 
   /** Await the mask precompute fired by accept(). Should be called before the
@@ -237,37 +259,42 @@ export async function compileGrammarRequest(
   const resolved = resolveGrammarRequest(req);
   if (!resolved) return null;
 
+  // Each xgrammar WASM call rides wasmQueue individually (NOT a body-level
+  // wrap — prime() calls wasmQueue internally, so a body-level wrap would
+  // deadlock reentrantly). Individual calls serialize without nesting.
   const info = await getTokenizerInfo(tokenizerJsonPath);
-  const compiler = await xgrammar.GrammarCompiler.createGrammarCompiler(info);
+  const compiler = await wasmQueue(() => xgrammar.GrammarCompiler.createGrammarCompiler(info));
   let compiled: XCompiledGrammar | null = null;
   let degradeHint: string | null = null;
 
   try {
     switch (resolved.kind) {
       case "json_object":
-        compiled = await compiler.compileBuiltinJSONGrammar();
+        compiled = await wasmQueue(() => compiler.compileBuiltinJSONGrammar());
         break;
       case "json_schema": {
         const s = resolved.schema;
-        compiled = await compiler.compileJSONSchema(
-          typeof s === "string" ? s : JSON.stringify(s),
-          resolved.anyWhitespace ?? true,
-          resolved.indent,
-          resolved.separators,
-          resolved.strict ?? true,
+        compiled = await wasmQueue(() =>
+          compiler.compileJSONSchema(
+            typeof s === "string" ? s : JSON.stringify(s),
+            resolved.anyWhitespace ?? true,
+            resolved.indent,
+            resolved.separators,
+            resolved.strict ?? true,
+          ),
         );
         break;
       }
       case "grammar": {
-        const g = await xgrammar.Grammar.fromEBNF(resolved.ebnf, resolved.rootRule);
-        compiled = await compiler.compileGrammar(g);
+        const g = await wasmQueue(() => xgrammar.Grammar.fromEBNF(resolved.ebnf, resolved.rootRule));
+        compiled = await wasmQueue(() => compiler.compileGrammar(g));
         g.dispose();
         break;
       }
       case "regex": {
         const ebnf = `root ::= ${resolved.regex}`;
-        const g = await xgrammar.Grammar.fromEBNF(ebnf);
-        compiled = await compiler.compileGrammar(g);
+        const g = await wasmQueue(() => xgrammar.Grammar.fromEBNF(ebnf));
+        compiled = await wasmQueue(() => compiler.compileGrammar(g));
         g.dispose();
         break;
       }
@@ -275,8 +302,8 @@ export async function compileGrammarRequest(
         const opts = resolved.choices
           .map((c) => `"${c.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`)
           .join(" | ");
-        const g = await xgrammar.Grammar.fromEBNF(`root ::= ${opts}`);
-        compiled = await compiler.compileGrammar(g);
+        const g = await wasmQueue(() => xgrammar.Grammar.fromEBNF(`root ::= ${opts}`));
+        compiled = await wasmQueue(() => compiler.compileGrammar(g));
         g.dispose();
         break;
       }
@@ -299,8 +326,8 @@ export async function compileGrammarRequest(
   //  an all-rejected (all--inf) mask after the grammar closes (which would
   //  make greedy argmax return a garbage token id like 0 that the matcher
   //  then rejects, looping until max_tokens).
-  const matcher = await xgrammar.GrammarMatcher.createGrammarMatcher(
-    compiled, undefined, true,
+  const matcher = await wasmQueue(() =>
+    xgrammar.GrammarMatcher.createGrammarMatcher(compiled!, undefined, true),
   );
   const vocabSize = effectiveVocabSize(tokenizer, configVocabSize) || info.getVocabSize();
   const controller = new GrammarController(matcher, compiled, compiler, true, vocabSize);

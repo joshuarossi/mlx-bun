@@ -91,6 +91,13 @@ export interface RequestShape {
    *  keeping them serial until the batched path grows per-row logits
    *  processors keeps one gate for the whole family. */
   hasLogitsExtras: boolean;
+  /** A grammar controller compiled for this request (response_format /
+   *  guided_*). Degrade-path requests (compile failed → prompt injection)
+   *  have NO controller and stay batchable — the injection already happened
+   *  at the prompt level. B0 routes grammar to serial; B1 makes it batchable
+   *  (per-row matchers), with MLX_BUN_GRAMMAR_BATCH=0 forcing the B0 serial
+   *  fallback as the A/B + kill switch. */
+  hasGrammar: boolean;
   /** The request asked for logprobs/top_logprobs capture. Batch-lane logprobs
    *  are deferred (the scheduler's per-row sampler doesn't capture or read
    *  back logprob arrays yet), so these route to the serial lane like the
@@ -164,7 +171,11 @@ export class GenerationGateway {
       !shape.hasAdapters &&
       !shape.wantsLogprobs &&
       !shape.userSeed &&
-      !shape.kvQuant
+      !shape.kvQuant &&
+      // Grammar: B1 makes it batchable (per-row matchers) unless the kill
+      // switch forces serial. MLX_BUN_GRAMMAR_BATCH=0 = B0 behavior (serial),
+      // the A/B + kill lever for the new code, house style.
+      !(shape.hasGrammar && process.env.MLX_BUN_GRAMMAR_BATCH === "0")
     );
   }
 
@@ -240,6 +251,15 @@ export class GenerationGateway {
         if (cur !== logits1V) cur.dispose();
         cur = next;
       }
+      // Grammar mask (B1): after the standard processors, before the sampler —
+      // same "grammar has the final say" ordering as serial sampleStep.
+      // Precondition: the scheduler has awaited ready() before invoking this
+      // closure (the mask for this step is materialized). applyMask is sync.
+      if (options.grammar) {
+        const masked = options.grammar.applyMask(cur);
+        if (cur !== logits1V) cur.dispose();
+        cur = masked;
+      }
       const lp = toLogprobs(cur);
       if (cur !== logits1V) cur.dispose();
       const tok = sampler(lp, step);
@@ -262,10 +282,18 @@ export class GenerationGateway {
         eosTokenIds: options.eosTokenIds ?? this.model.config.eosTokenIds,
         sample,
         onToken,
+        // B1: pass the per-row grammar controller through. The scheduler drives
+        // accept/ready/terminate; this gateway OWNS disposal (finally below)
+        // across resolve, reject, eviction, and the whole-batch-drop error path.
+        ...(options.grammar ? { grammar: options.grammar } : {}),
       });
     } finally {
       history?.dispose();
       history = null;
+      // The controller's WASM matcher/compiled-grammar are per-request; free
+      // them on every exit path. (generate()'s finally does this on the serial
+      // lane; the batch lane owns it here since the scheduler never does.)
+      options.grammar?.dispose();
     }
 
     return {

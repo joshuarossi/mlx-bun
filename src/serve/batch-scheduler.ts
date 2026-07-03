@@ -62,6 +62,7 @@ import { BatchedDecodeMaskCache, mergeKVRows, filterKVRows } from "../model/batc
 import { BatchedRotatingCache } from "../model/batched-rotating";
 import { SSMCache } from "../model/qwen3-delta";
 import type { RuntimeModel } from "../model/factory";
+import type { GrammarController } from "../grammar";
 
 /** Decode-pipeline kill switch (read once at load, like the serial loop's
  *  MLX_BUN_COMPILED_DECODE): 1 ⇒ read each step's tokens synchronously. */
@@ -95,6 +96,13 @@ export interface BatchRequest {
    *  THIS row only (its submit promise rejects; siblings continue). May be
    *  async; keep it cheap — it runs inline in the step loop. */
   onToken: (token: number) => void | boolean | Promise<void | boolean>;
+  /** Grammar controller for this row (B1: per-row matchers). When set, the
+   *  scheduler drives it: `accept()` after each emitted token (fires the async
+   *  bitmask fill), `await ready()` before the row's next sample (the sample
+   *  closure applies `applyMask`). Termination (grammar satisfied) is an
+   *  additional per-row stop source. The gateway OWNS disposal (finally around
+   *  submit()); the scheduler uses but never owns. Null on the degrade path. */
+  grammar?: GrammarController;
 }
 
 export interface BatchStats {
@@ -308,6 +316,22 @@ export class BatchScheduler {
     p.row.generated = 1;
     clearCache(); // drop the prefill transients (serial's token-0 clear)
 
+    // Grammar (B1): the mask0 was applied inside the sample closure (the
+    // controller is primed at compile). After reading token 0, advance the
+    // matcher — fires the async fill for the NEXT step, overlapping the merge
+    // below. If the grammar is already satisfied at token 0 (a 1-token grammar,
+    // e.g. guided_choice landing on a single-token option), emit + finish("stop")
+    // WITHOUT merging into the batch — the row never joins #running.
+    if (p.row.req.grammar) {
+      p.row.req.grammar.accept(tok);
+      if (p.row.req.grammar.isTerminated) {
+        const stop = await this.#emit(p.row, tok);
+        for (const c of p.solo) c.dispose();
+        this.#finish(p.row, stop === "continue" ? "stop" : stop);
+        return true;
+      }
+    }
+
     const stop = await this.#emit(p.row, tok);
     if (stop !== "continue") {
       for (const c of p.solo) c.dispose();
@@ -414,6 +438,23 @@ export class BatchScheduler {
     // A row is live if it still needs tokens sampled; a row whose pending
     // unread token is its last (sampled == maxTokens) only awaits emission.
     const anyLive = rows.some((r) => r.sampled < r.req.maxTokens);
+    // Grammar (B1): if any row has a LIVE grammar controller (not terminated,
+    // still sampling), take the read-before-build shape — the matcher's
+    // acceptToken needs the token id as a JS number, so the previous step's
+    // [B] token array is read back NOW (before building the next graph),
+    // accept()ed per row (firing async fills that overlap the forward), then
+    // ready() is awaited before this step's sample. This is the serial loop's
+    // grammar resolution transplanted to the batch. Batches with NO live
+    // grammar row keep the pipelined path byte-identical (zero cost when
+    // unused). The trade: while a grammar row is live the batch runs
+    // effectively NO_PIPELINE (readback no longer overlaps GPU compute) —
+    // bounded by the readback (~0.1 ms) + fills (0.004–0.19 ms/row, overlapped
+    // with the graph build). Serial grammar pays the identical trade today.
+    const hasLiveGrammar = anyLive && rows.some(
+      (r) => r.req.grammar && !r.req.grammar.isTerminated,
+    );
+    if (hasLiveGrammar) return this.#stepGrammar();
+
     let nextToks: MlxArray | null = null;
     if (anyLive) {
       // Per-layer forward cache: rot layers use the persistent
@@ -492,6 +533,104 @@ export class BatchScheduler {
     await this.#emitRows(toks);
   }
 
+  /** The read-before-build decode step for batches with ≥1 live grammar row
+   *  (B1). Mirrors the serial loop's grammar resolution: read the previous
+   *  step's [B] tokens NOW (acceptToken needs JS numbers), accept() per row
+   *  (fires async fills), build the forward graph (fills overlap), await
+   *  ready(), sample per live row (the closure applies applyMask), then emit
+   *  the values read in step 1 — no second readback. Terminated grammar rows
+   *  keep their [B] slot through the forward (placeholder, not sampled) and
+   *  finish("stop") in #emitRows. On a cold start (first step after prefill)
+   *  there is no pending array to read; the prefill already accepted token 0
+   *  and fired the fill, so we just await ready() + sample. */
+  async #stepGrammar(): Promise<void> {
+    const rows = this.#running;
+    const B = rows.length;
+    const inners = this.#inners!;
+
+    // (1) Read the pending [B] token array (host copy for accept). The device
+    //     array is kept for the forward input below; disposed after sampling.
+    //     Cold start: pendingToks null → prevVals empty (prefill handled tok0).
+    const prev = this.#pendingToks;
+    const prevVals: number[] =
+      prev ? [...prev.toFloat32()].map((x) => Math.round(x)) : [];
+
+    // (2) accept() per live grammar row — fires that row's async bitmask fill.
+    for (let b = 0; b < B && prevVals.length; b++) {
+      const g = rows[b]!.req.grammar;
+      if (g && !g.isTerminated) g.accept(prevVals[b]!);
+    }
+
+    let nextToks: MlxArray | null = null;
+    const anyLive = rows.some((r) => r.sampled < r.req.maxTokens);
+    if (anyLive) {
+      const fwd: Cache[] = inners.map((c) =>
+        c instanceof BatchedRotatingCache || c instanceof SSMCache
+          ? c
+          : new BatchedDecodeMaskCache(c, B, this.#fullLeftPad, null),
+      );
+      try {
+        // (3) Build the forward graph (host-side; the fills overlap it).
+        const ids = prev
+          ? ops.reshape(prev, [B, 1]) // feed the unread tokens (device array)
+          : ops.fromInt32(rows.map((r) => r.current), [B, 1]); // pipeline cold
+        const h = this.model.forwardHidden(ids, fwd);
+        ids.dispose();
+        const lg = this.model.logitsFromHidden(h); // [B,1,V]
+        h.dispose();
+        const V = lg.shape[2]!;
+
+        // (4) await ready() on every live grammar row — the fills fired in (2)
+        //     overlapped the graph build above. Usually already resolved.
+        const liveGrammar = rows.filter(
+          (r) => r.req.grammar && !r.req.grammar.isTerminated,
+        );
+        if (liveGrammar.length)
+          await Promise.all(liveGrammar.map((r) => r.req.grammar!.ready()));
+
+        // (5) Sample per live row (the closure applies applyMask after the
+        //     logits processors). Terminated grammar rows + length-doomed rows
+        //     take a placeholder (one harmless KV write, then evicted).
+        const sampled: MlxArray[] = [];
+        for (let b = 0; b < B; b++) {
+          const row = rows[b]!;
+          if (
+            row.sampled >= row.req.maxTokens ||
+            row.req.grammar?.isTerminated
+          ) {
+            sampled.push(ops.fromInt32([0], [1]));
+            continue;
+          }
+          const rl = lg.slice([b, 0, 0], [b + 1, 1, V]);
+          const rl2 = ops.reshape(rl, [1, V]);
+          rl.dispose();
+          sampled.push(row.req.sample(rl2, row.sampled));
+          row.sampled++;
+          rl2.dispose();
+        }
+        lg.dispose();
+        nextToks = ops.concatAxis(sampled, 0); // [B]
+        for (const t of sampled) t.dispose();
+        ops.asyncEvalAll([nextToks]);
+      } finally {
+        for (const c of fwd)
+          (c as { releaseRopeArr?: () => void }).releaseRopeArr?.();
+      }
+    }
+    this.#steps++;
+    if (this.#steps % 256 === 0) clearCache();
+
+    // The device array `prev` has now fed the forward + been read for accept;
+    // dispose it and install the new pending array. On cold start prev is null.
+    prev?.dispose();
+    this.#pendingToks = nextToks;
+
+    // (6) Emit the values read in (1) — no second readback. Terminated grammar
+    //     rows finish("stop") via #emit's isTerminated check; the filter evicts.
+    //     Cold start: prevVals empty (prefill emitted tok0) → nothing to emit.
+    if (prevVals.length) await this.#emitRows(prevVals);
+  }
+
   /** Emit one read-back token per running row; evict finished rows. A row's
    *  onToken throwing rejects THAT row and evicts it — siblings continue. */
   async #emitRows(toks: number[]): Promise<void> {
@@ -521,6 +660,10 @@ export class BatchScheduler {
     if (row.req.eosTokenIds.includes(token)) return "stop";
     const cont = await row.req.onToken(token);
     if (cont === false) return "stop";
+    // Grammar termination: the matcher is satisfied (e.g. closing `}` accepted).
+    // The final token has been delivered via onToken above; halt with "stop" so
+    // the row finishes + evicts rather than sampling into an all--inf mask.
+    if (row.req.grammar?.isTerminated) return "stop";
     if (row.generated >= row.req.maxTokens) return "length";
     row.current = token;
     return "continue";

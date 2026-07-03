@@ -550,12 +550,22 @@ async function* generateInner(
       // and await the async mask precompute — which overlaps the GPU forward
       // dispatched just below. This trades the readback/forward overlap for
       // correctness (the mask for step n+1 must reflect token n). Non-grammar
-      // requests keep the fast pipelined loop untouched. Only needed when a
-      // next step will actually be built (generated+1 < maxTokens).
-      if (options.grammar && generated + 1 < maxTokens) {
+      // requests keep the fast pipelined loop untouched.
+      //
+      // F1 fix (batched-lane plan): always eager-read `grammarTok` when
+      // grammar is on, even at the max_tokens boundary — the emitted token
+      // reuses it unconditionally. The OLD code gated the READ on
+      // generated+1 < maxTokens but emitted grammarTok regardless, so the LAST
+      // iteration skipped the refresh and emitted a stale/garbage token (the
+      // previous step's token, or -1 when max_tokens=1) → truncated JSON ended
+      // on a corrupted token + cacheTokens recorded the wrong id. Now only
+      // accept()/ready() (which prepare the NEXT step's mask) are gated.
+      if (options.grammar) {
         grammarTok = ops.itemUint32(cur);
-        options.grammar.accept(grammarTok);
-        await options.grammar.ready();
+        if (generated + 1 < maxTokens) {
+          options.grammar.accept(grammarTok);
+          await options.grammar.ready();
+        }
       }
       // build step n+1's graph from the *unread* pending token
       nextPending = null;

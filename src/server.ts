@@ -2063,6 +2063,9 @@ export function createServer(
           wantsLogprobs: captureLogprobs,
           userSeed: body.seed !== undefined,
           kvQuant: !!(options.kvConfig?.length || options.kvBits),
+          // grammarCtrl is null on the degrade path (prompt injection) —
+          // those stay batchable. A real controller means per-row matchers.
+          hasGrammar: !!grammarCtrl,
         };
         const batched = gateway.willBatch(shape);
         if (process.env.MLX_BUN_LANE_DEBUG === "1")
@@ -2303,6 +2306,9 @@ export function createServer(
           else if (g.degradeHint)
             textGrammarWarning = `grammar not enforced: ${g.degradeHint} — no prompt injection on /v1/completions`;
         }
+        // Mirrors the chat lane: a real controller (not the degrade path)
+        // shapes the request for per-row grammar batching.
+        const textGrammarCtrl = options.grammar ?? null;
         // mlx_lm.server's default max_tokens is 512 (its --max-tokens CLI
         // default). The chat lane's very generous default is wrong for raw
         // completion: with no template an EOS may never come.
@@ -2352,6 +2358,9 @@ export function createServer(
           wantsLogprobs: captureLogprobs,
           userSeed: body.seed !== undefined,
           kvQuant: !!(options.kvConfig?.length || options.kvBits),
+          // /v1/completions grammar (textGrammarCtrl). Same null-on-degrade
+          // contract as the chat lane.
+          hasGrammar: !!textGrammarCtrl,
         };
         const finishReason = (stopped: boolean, generated: number): "stop" | "length" =>
           stopped ? "stop" : generated >= (options.maxTokens ?? 512) ? "length" : "stop";

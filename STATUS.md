@@ -49,7 +49,11 @@ serial-lane macrotask hop (/stats 2.5 s → 10–44 ms mid-generation) ·
    500; xgrammar abort is catchable). Kill switch `MLX_BUN_GRAMMAR=0`.
    Perf: 0.004–0.19 ms/fill (nanosecond, real walk) <1% decode. Design:
    [docs/design/structured-output.md](docs/design/structured-output.md).
-   **Open:** batched lane (serial-only under `--batch`); structural tags for
+   **Open:** batched lane — review found "serial-only under `--batch`" was
+   NOT enforced (grammar requests batch UNCONSTRAINED + leak the controller;
+   finding F2) plus a serial max_tokens-boundary token bug (F1); review +
+   plan (B0 stopgaps → B1 per-row matchers → B2 gates) appended to
+   docs/design/structured-output.md. Also open: structural tags for
    thinking models; whitespace-format parity (version-skew, not correctness).
 2. **Menu bar app** (SwiftUI + Sparkle) — adoption map #2, Josh wants it;
    `/Applications/oMLX.app` is the structural reference. The existing

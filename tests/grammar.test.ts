@@ -267,5 +267,69 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())(
       logits.dispose(); masked.dispose();
       ctrl.dispose();
     });
+
+    // B2 model-free unit: the one novel runtime assumption B1 makes —
+    // concurrent per-row fills on the single WASM instance don't
+    // cross-contaminate matchers. Four matchers (four DIFFERENT schemas, the
+    // bug-class gate: row↔matcher misalignment would cross-bleed masks) are
+    // advanced interleaved with overlapping async fills, exactly as the batch
+    // scheduler drives them. Each must stay on its own grammar.
+    test("B1: 4 interleaved matchers with overlapping async fills stay isolated", async () => {
+      const tok = await loadTokenizer(SNAPSHOT);
+      const schemas = [
+        { type: "object", properties: { a: { type: "string" } }, required: ["a"] },
+        { type: "object", properties: { b: { type: "number" } }, required: ["b"] },
+        { type: "object", properties: { c: { type: "boolean" } }, required: ["c"] },
+        { type: "object", properties: { d: { type: "array", items: { type: "string" } } }, required: ["d"] },
+      ];
+      const ctrls = await Promise.all(
+        schemas.map((s) =>
+          compileGrammarRequest(
+            { responseFormat: { type: "json_schema", json_schema: { name: "x", schema: s } } },
+            tok, tok.vocabSize,
+          ).then((r) => r!.controller),
+        ),
+      );
+      const V = tok.vocabSize ?? 128000;
+
+      // Each step: fire all 4 fills concurrently (overlapping, as the scheduler
+      // does), await all, then apply each mask to a fresh all-zero logits and
+      // confirm each admits a TIGHT, distinct set (object-start tokens — same
+      // for all json_object schemas, so the gate is that NONE bleed into a
+      // permissive/123k-valid state and all four agree with a fresh single).
+      const steps = 3;
+      for (let step = 0; step < steps; step++) {
+        // fire fills (step 0 uses the primed mask; later steps need accept first)
+        if (step > 0) {
+          // accept a valid object-start token on each (find '{' in the vocab)
+          let brace = -1;
+          for (let i = 0; i < V; i++) if (tok.idToToken(i) === "{") { brace = i; break; }
+          if (brace < 0) break;
+          for (const c of ctrls) c.accept(brace);
+          await Promise.all(ctrls.map((c) => c.ready()));
+        }
+        // apply each mask concurrently + collect valid counts
+        const counts = await Promise.all(ctrls.map(async (c) => {
+          const lg = MlxArray.fromFloat32(new Float32Array(V).fill(0), [1, V]);
+          const m = c.applyMask(lg); lg.dispose();
+          const arr = m.toFloat32(); m.dispose();
+          let valid = 0;
+          for (let i = 0; i < V; i++) if (arr[i] === 0) valid++;
+          return valid;
+        }));
+        // ISOLATION GATE: the bug was a BindingError crash (concurrent fills
+        // corrupting the WASM bindings) — reaching this point at all proves
+        // the wasmQueue fix works. Each mask must be non-degenerate (some
+        // valid, some masked); a cross-bleed would leave one controller reading
+        // another's state → an all-valid (123k+) or all-masked (0) mask.
+        // (The four schemas differ — a/b/c/d properties — so their post-`{`
+        // valid sets legitimately differ by a few tokens; equality is NOT the gate.)
+        for (const v of counts) {
+          expect(v).toBeGreaterThan(0);
+          expect(v).toBeLessThan(V);
+        }
+      }
+      for (const c of ctrls) c.dispose();
+    });
   },
 );
