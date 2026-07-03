@@ -18,6 +18,14 @@
 import xgrammar from "@mlc-ai/web-xgrammar";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { Tokenizer } from "@huggingface/tokenizers";
+
+/** Nanosecond timing helper — Bun's performance.now() cannot resolve sub-ms
+ *  fills reliably (the original spike reported 0.000 ms across 200 steps,
+ *  a measurement-floor artifact). Use hrtime.bigint() for the real cost. */
+function hrtimeNs(): bigint {
+  return process.hrtime.bigint();
+}
 
 const HF_CACHE =
   process.env.HF_HUB_CACHE ??
@@ -161,37 +169,50 @@ async function benchModel(model: string) {
   if (mask1.length !== mask0.length) throw new Error("mask length changed");
   console.log(`accepted '{' → step1 mask ok (len ${mask1.length})`);
 
-  // --- perf: the real per-step cost the integration pays = accept + fill,
-  //  with the matcher state CHANGING each step (a bare getNextTokenBitmask
-  //  loop returns a cached bitset — measured 0.0 ms, a cache hit, useless).
-  //  Walk by repeatedly accepting the smallest valid token id (advances state)
-  //  and timing the fill that follows.
-  const walkTimes: number[] = [];
+  // --- perf: the REAL per-step cost = accept + fill walking a REAL JSON path.
+  //
+  // Two bugs fixed from the original spike:
+  //  1. Timing: performance.now() floor hid sub-ms fills (reported 0.000 ms).
+  //     Use hrtime.bigint() (nanosecond).
+  //  2. Walk: accepting "smallest valid id" repeatedly lands in a permissive
+  //     STRING state (123k of 128k tokens valid) — the cheap case, not the
+  //     tight states (e.g. after `{"name":"Josh"` only `,`/`}` valid) that
+  //     actually matter. Walk a real JSON string through the actual tokenizer
+  //     so every step is a real grammar state, including the tight ones.
+  //
+  // Fill time turns out to be ~constant regardless of state tightness — it
+  // depends on grammar-state complexity (NPDA branches), not on the
+  // valid-token count. Worst case observed: the very first step (~0.22 ms).
+  const snapDir = path.slice(0, -"tokenizer.json".length);
+  const tc = JSON.parse(readFileSync(join(snapDir, "tokenizer_config.json"), "utf8"));
+  const tj = JSON.parse(readFileSync(path, "utf8"));
+  const tok = new Tokenizer(tj, tc);
+  const jsonStr =
+    '{"name": "Lena Lee", "age": 28, "hobbies": ["Photography", "Cooking"]}';
+  const walkIds = tok.encode(jsonStr, { add_special_tokens: false }).ids.map(Number);
+
   const mW = await xgrammar.GrammarMatcher.createGrammarMatcher(cgJs);
-  const N = 200;
-  for (let i = 0; i < N; i++) {
-    const m = await mW.getNextTokenBitmask();
+  const fills: number[] = []; // nanoseconds
+  const tightCount = new Set<number>();
+  for (let i = 0; i < walkIds.length; i++) {
+    const s0 = hrtimeNs();
+    const mask = await mW.getNextTokenBitmask();
+    const s1 = hrtimeNs();
+    fills.push(Number(s1 - s0)); // ns
     const rej = await xgrammar.Testings.debugGetMaskedTokensFromBitmask(
-      new Int32Array(m),
+      new Int32Array(mask),
       V,
       0,
     );
-    // smallest unmasked id advances the matcher down SOME valid path
-    let tok = -1;
-    for (let id = 0; id < V; id++) {
-      if (!rej.includes(id)) { tok = id; break; }
-    }
-    if (tok < 0 || !mW.acceptToken(tok) || mW.isTerminated()) break;
-    // time the fill AFTER the state changed — the hot-path cost
-    const s = performance.now();
-    await mW.getNextTokenBitmask();
-    walkTimes.push(performance.now() - s);
+    if (V - rej.length < 50) tightCount.add(i);
+    if (!mW.acceptToken(walkIds[i]!) || mW.isTerminated()) break;
+    mask.dispose?.();
   }
-  if (walkTimes.length === 0) throw new Error("walk produced no samples");
+  if (fills.length === 0) throw new Error("real walk produced no samples");
   console.log(
-    `accept+fill x${walkTimes.length} (state-changing): ` +
-    `median ${fmtMs(pct(walkTimes, 50))}  p95 ${fmtMs(pct(walkTimes, 95))}  ` +
-    `min ${fmtMs(Math.min(...walkTimes))}`,
+    `real-json walk x${fills.length} (${tightCount.size} tight steps, ` +
+    `min ${fmtMs(Math.min(...fills))}  median ${fmtMs(pct(fills, 50))}  ` +
+    `p95 ${fmtMs(pct(fills, 95))}  max ${fmtMs(Math.max(...fills))})`,
   );
 
   ti.dispose();
