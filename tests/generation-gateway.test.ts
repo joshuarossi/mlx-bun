@@ -30,6 +30,7 @@ const batchable: RequestShape = {
   userSeed: false,
   kvQuant: false,
   hasGrammar: false,
+  hasDraft: false,
 };
 
 describe("GenerationGateway.willBatch", () => {
@@ -92,6 +93,13 @@ describe("GenerationGateway.willBatch", () => {
     } finally {
       if (prev !== undefined) process.env.MLX_BUN_GRAMMAR_BATCH = prev;
     }
+  });
+  // serve --draft-model: a mounted draft routes EVERY request serial —
+  // upstream parity (mlx_lm.server: is_batchable = draft is None). Spec is a
+  // B=1 latency mode; batching is a throughput mode (integration plan).
+  test("hasDraft routes serial (spec is serial-lane-only)", () => {
+    expect(gateway(2).willBatch({ ...batchable, hasDraft: true })).toBe(false);
+    expect(gateway(2).willBatch({ ...batchable, hasDraft: false })).toBe(true);
   });
   test("MLX_BUN_GRAMMAR_BATCH=0 forces grammar to serial (B0 fallback)", () => {
     const prev = process.env.MLX_BUN_GRAMMAR_BATCH;

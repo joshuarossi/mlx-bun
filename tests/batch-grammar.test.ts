@@ -72,7 +72,7 @@ describe.skipIf(!optIn || !haveCpm)("batch lane × grammar (B2 gates, CPM)", () 
   const SHAPE = {
     hasVision: false, hasAdapters: false, hasRepetitionPenalty: false,
     userSeed: false, kvQuant: false, hasLogitsExtras: false,
-    wantsLogprobs: false,
+    wantsLogprobs: false, hasDraft: false,
   };
 
   /** Run one request through the gateway's batch lane; collect the stream. */

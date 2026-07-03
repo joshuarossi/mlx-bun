@@ -163,6 +163,14 @@ export interface ServerContext {
    *  optiq serve injects these as server defaults (gen_config.py);
    *  explicit request fields always win. */
   genDefaults: GenSamplingDefaults;
+  /** Speculative decoding (`serve --draft-model`, mlx_lm.server parity).
+   *  Server-level: when set, EVERY request routes to the serial lane
+   *  (upstream: is_batchable = draft is None) and spec-eligible ones decode
+   *  through src/spec/serve-loop.ts. null = no draft configured. */
+  draft?: {
+    provider: import("./spec/source").DraftProvider;
+    numDraftTokens: number;
+  } | null;
 }
 
 export interface GenSamplingDefaults {
@@ -191,7 +199,16 @@ async function loadGenSamplingDefaults(modelDir: string): Promise<GenSamplingDef
 
 export async function loadContext(
   modelDir: string, modelId?: string,
-  opts: { memoryBudgetBytes?: number } = {},
+  opts: {
+    memoryBudgetBytes?: number;
+    /** Snapshot dir of a draft model for speculative decoding
+     *  (`--draft-model`). Loaded alongside the target; the pair must share
+     *  a tokenizer family (hard check below — upstream's silent-garbage
+     *  mode on mismatched tokenizers isn't worth inheriting). */
+    draftModelDir?: string;
+    /** Drafts per round (`--num-draft-tokens`, mlx_lm.server default 3). */
+    numDraftTokens?: number;
+  } = {},
 ): Promise<ServerContext> {
   const config = await loadModelConfig(modelDir);
   const weights = await Weights.open(modelDir);
@@ -222,7 +239,47 @@ export async function loadContext(
   // the tokenizer eos; union it in. No-op when already present (Gemma, 27B).
   if (tokenizer.eosTokenId != null && !config.eosTokenIds.includes(tokenizer.eosTokenId))
     config.eosTokenIds = [...config.eosTokenIds, tokenizer.eosTokenId];
+
+  // Speculative decoding: load the draft model (mlx_lm.server --draft-model).
+  let draft: ServerContext["draft"] = null;
+  if (opts.draftModelDir) {
+    const { TwoModelProvider } = await import("./spec/two-model");
+    const provider = await TwoModelProvider.load(opts.draftModelDir, config.text.vocabSize);
+    // Tokenizer-family hard check: exact-token-match acceptance is only
+    // meaningful when both models tokenize identically. Vocab-size mismatch
+    // is a warning (upstream parity, inside TwoModelProvider.load); a probe
+    // string that ENCODES differently means different tokenizer families —
+    // refuse instead of silently accepting ~0% of drafts.
+    const draftTok = await loadTokenizer(opts.draftModelDir);
+    const probe = "The 3 quick brown foxes jumped över the lazy dog?! 🦊";
+    if (
+      JSON.stringify(tokenizer.encode(probe)) !== JSON.stringify(draftTok.encode(probe))
+    ) {
+      provider.dispose();
+      throw new Error(
+        `--draft-model tokenizer differs from the target's (probe string encodes ` +
+          `differently) — speculation needs the same tokenizer family`,
+      );
+    }
+    if (opts.memoryBudgetBytes) {
+      const targetBytes = [...weights.shards.files.values()].reduce((a, f) => a + f.mmap.size, 0);
+      // Draft weights shrink the target's envelope. Draft KV is not modeled
+      // (small relative to its weights at serve contexts); admission stays
+      // approximately conservative via the combined-weights term.
+      const report = fit(config, targetBytes + provider.weightsBytes, 1, undefined, undefined, 0, opts.memoryBudgetBytes);
+      if (report.maxSafeContext < 1) {
+        provider.dispose();
+        throw new Error(
+          `target + draft do not fit the memory budget (draft adds ` +
+            `${(provider.weightsBytes / 1e9).toFixed(2)} GB)`,
+        );
+      }
+    }
+    draft = { provider, numDraftTokens: Math.max(1, opts.numDraftTokens ?? 3) };
+  }
+
   return {
+    draft,
     model,
     adapters: new AdapterManager(model),
     kvConfig: config.kvQuant,
@@ -1110,6 +1167,28 @@ export function createServer(
     onToken: (token: number, logprobs?: TokenLogprobs) => void | boolean | Promise<void | boolean>,
     vision?: { embeddings: import("./mlx/array").MlxArray; imageMask: import("./mlx/array").MlxArray },
   ) => {
+    // Speculative decoding (serve --draft-model): spec-ELIGIBLE requests
+    // decode through the verify loop; the rest fall through to the normal
+    // serial path (never wrong results, just no speedup — logged once per
+    // combination class would be noise, so silent). Eligibility v1:
+    // text-only, base weights, no grammar (Phase C wires the constrained
+    // walk), no logprobs capture, bf16 KV. Prompt-cache reuse is bypassed
+    // on the spec path v1 (see src/spec/serve-loop.ts header).
+    if (
+      ctx.draft &&
+      !vision &&
+      !options.adapters?.length &&
+      !options.grammar &&
+      !options.logprobs &&
+      !options.kvBits &&
+      !options.kvConfig
+    ) {
+      const { specServeRun } = await import("./spec/serve-loop");
+      return specServeRun(
+        ctx.model, ctx.draft.provider, ctx.draft.numDraftTokens,
+        promptIds, options, onToken,
+      );
+    }
     // Cache entries are adapter-specific: KV computed under one adapter
     // must never seed another's (or the base's) prefill.
     const cacheNs = options.adapters?.join("+") ?? "";
@@ -2066,6 +2145,7 @@ export function createServer(
           // grammarCtrl is null on the degrade path (prompt injection) —
           // those stay batchable. A real controller means per-row matchers.
           hasGrammar: !!grammarCtrl,
+          hasDraft: !!ctx.draft,
         };
         const batched = gateway.willBatch(shape);
         if (process.env.MLX_BUN_LANE_DEBUG === "1")
@@ -2361,6 +2441,7 @@ export function createServer(
           // /v1/completions grammar (textGrammarCtrl). Same null-on-degrade
           // contract as the chat lane.
           hasGrammar: !!textGrammarCtrl,
+          hasDraft: !!ctx.draft,
         };
         const finishReason = (stopped: boolean, generated: number): "stop" | "length" =>
           stopped ? "stop" : generated >= (options.maxTokens ?? 512) ? "length" : "stop";

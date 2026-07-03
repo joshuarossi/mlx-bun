@@ -103,6 +103,12 @@ export interface RequestShape {
    *  back logprob arrays yet), so these route to the serial lane like the
    *  other mlx-lm request extensions above. */
   wantsLogprobs: boolean;
+  /** A draft model is configured (serve --draft-model). Server-level and
+   *  upstream-parity: mlx_lm.server sets is_batchable = (draft is None), so
+   *  every request routes serial while a draft is mounted — speculation is a
+   *  B=1 latency optimization, batching a throughput one; they are different
+   *  modes by design (grammar-spec-batching-integration.md). */
+  hasDraft: boolean;
 }
 
 export class GenerationGateway {
@@ -172,6 +178,7 @@ export class GenerationGateway {
       !shape.wantsLogprobs &&
       !shape.userSeed &&
       !shape.kvQuant &&
+      !shape.hasDraft &&
       // Grammar: B1 makes it batchable (per-row matchers) unless the kill
       // switch forces serial. MLX_BUN_GRAMMAR_BATCH=0 = B0 behavior (serial),
       // the A/B + kill lever for the new code, house style.

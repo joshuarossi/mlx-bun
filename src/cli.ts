@@ -105,6 +105,13 @@ Model & quality:
                             request's \`adapter\` field, incl. "none", wins).
                             --adapter-path is accepted as the mlx_lm.server
                             alias. Hot-swap via POST /v1/adapters unchanged.
+  --draft-model <query>     Speculative decoding: a smaller same-tokenizer
+                            model drafts tokens the main model verifies
+                            (mlx_lm.server parity; exact results, faster
+                            decode when drafts land). Serial lane only —
+                            with --batch N a mounted draft routes every
+                            request serial, like mlx_lm.server.
+  --num-draft-tokens <n>    Drafts per verify round  [default: 3]
   --kv-quant <mode>         KV cache quantization: config (per-layer
                             kv_config.json when the model ships one), off
                             (bf16), or 4 / 8 (uniform bits)
@@ -1285,10 +1292,30 @@ switch (cmd) {
         sOff.done(`experts mmap'd ${style.dim(dir)} ${style.dim("· phys_footprint ≈ core")}`);
       }
     }
+    // Speculative decoding (mlx_lm.server parity): --draft-model <path|query>
+    // resolves like the main model; --num-draft-tokens defaults to 3 (the
+    // server's default upstream — mlx_lm.generate's is 2). Serial-lane-only:
+    // with --batch N, a mounted draft routes every request serial (upstream
+    // is_batchable = draft is None).
+    const draftQuery = opt("draft-model");
+    let draftModelDir: string | undefined;
+    if (draftQuery !== null) {
+      const { m: dm } = await resolveModelAuto(draftQuery);
+      draftModelDir = dm.path;
+    }
+    const numDraftRaw = opt("num-draft-tokens");
+    const numDraftTokens = numDraftRaw !== null ? Number(numDraftRaw) : undefined;
+    if (numDraftTokens !== undefined && (!Number.isInteger(numDraftTokens) || numDraftTokens < 1)) {
+      console.error(`--num-draft-tokens expects an integer >= 1 (got "${numDraftRaw}")`);
+      process.exit(1);
+    }
     const sLoad = step("loading weights");
     const t0 = performance.now();
-    const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes: rt.serverOptions.memoryBudgetBytes });
-    sLoad.done(`weights loaded ${style.dim(`in ${(performance.now() - t0).toFixed(0)} ms`)}`);
+    const ctx = await loadContext(m.path, m.repoId, {
+      memoryBudgetBytes: rt.serverOptions.memoryBudgetBytes,
+      ...(draftModelDir ? { draftModelDir, numDraftTokens } : {}),
+    });
+    sLoad.done(`weights loaded ${style.dim(`in ${(performance.now() - t0).toFixed(0)} ms`)}${draftModelDir ? style.dim(` · draft: ${draftModelDir.split("/").filter(Boolean).at(-1)}`) : ""}`);
     await mountStartupAdapter(ctx, rt.serverOptions);
     const server = createServer(ctx, rt.port, { ...rt.serverOptions, owner: "serve" });
     const shownHost = rt.serverOptions.hostname ?? "localhost";
@@ -1619,6 +1646,7 @@ switch (cmd) {
       "--query", "-q", "--model", "--port", "--host", "--memory-budget", "--prompt-cache",
       "--ssd-cache", "--ssd-cache-max", "--kv-quant",
       "--batch", "--decode-concurrency", "--adapter", "--adapter-path",
+      "--draft-model", "--num-draft-tokens",
       "--compiled-decode", "--perf-kernel", "--fused-decode", "--fused-sdpa", "--thinking",
       "--temperature", "--temp", "--top-p", "--top-k", "--max-tokens",
       "--hlg-sampling", "--hlg-width", "--hlg-shoulder", "--hlg-toe", "--hlg-pivot-offset",

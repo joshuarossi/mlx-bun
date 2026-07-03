@@ -149,6 +149,8 @@ export interface GenerateStats {
    *  decoded token that was forwarded, including a trailing EOS the
    *  pipeline forwarded before reading it). For PromptCache.put(). */
   cacheTokens: number[];
+  /** Speculative-decoding telemetry (serve --draft-model path only). */
+  spec?: { drafted: number; accepted: number; targetCalls: number };
 }
 
 export interface GeneratedToken {

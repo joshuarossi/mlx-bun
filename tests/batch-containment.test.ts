@@ -99,6 +99,7 @@ describe.skipIf(!optIn || !haveCpm)("batch containment + drain (CPM)", async () 
       hasVision: false, hasAdapters: false, hasRepetitionPenalty: false,
       hasLogitsExtras: false, wantsLogprobs: false, userSeed: false, kvQuant: false,
       hasGrammar: false,
+  hasDraft: false,
     };
     const opts = { maxTokens: 4, temperature: 0, eosTokenIds: [] };
 
