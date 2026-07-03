@@ -98,9 +98,14 @@ or shelved with numbers — ledger:
    `batched-dynamic-golden-llama32-3b.json`). Plain full-attention
    universal archs now BATCH (Llama matrix smoke: batch2 1.7× serial agg,
    TTFT 765→162 ms); maskArray (gemma2-family) + sliding universal archs
-   stay serial (unvalidated cells). Separate finding, chip filed:
-   tests/universal-rope.test.ts fixtures are machine-specific (5 fail on
-   M4 Pro, CI/M1 green — the batched-goldens incident's failure class).
+   stay serial (unvalidated cells). Related finding, FIXED same day:
+   tests/universal-rope.test.ts fixtures were machine-specific (generated
+   on the M1 Max per manifest.json's oracle stamp; 5 failed bit-exactness
+   on the M4 Pro) — now machine-keyed like the goldens layer (flat set =
+   m1-max reference for CI, `tests/fixtures/universal-rope/apple-m4-pro/`
+   holds the 5 differing files; regen recipe in the test header). 11/11 on
+   both chips; the local-oracle match also re-proves the runtime bit-exact
+   per chip.
    **Open: Phase D** — extend-join (+ grammar-churn test), vectorized
    homogeneous sampling, `projectKvBytes` + `--kv-budget` admission.
    Debug lever: `MLX_BUN_GRAMMAR_DEBUG=1` (per-step scheduler trace).

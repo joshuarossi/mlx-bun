@@ -12,17 +12,35 @@
 #
 # CPU-side-cheap (tiny tensors, no downloads). Bit-exactness expectation:
 # same machine, elementwise ops are cross-build deterministic (see the
-# SigLIP op-parity finding); regen here if a future machine disagrees.
+# SigLIP op-parity finding). The GPU-computed artifacts (freq tables,
+# rope outputs) are MACHINE-SPECIFIC (f32 pow / fast_rope differ across
+# chips — found 2026-07-03: the flat set was generated on the M1 Max and
+# fails bit-exactness on the M4 Pro, the batched-goldens failure class).
+# The INPUTS are deterministic host math and identical everywhere.
+#
+# Layout (mirrors tests/goldens.ts): the FLAT set is the reference
+# (apple-m1-max, per manifest.json's oracle stamp — also what CI's M1
+# runners resolve); per-machine overrides live in a subdir named by the
+# machine key. Regenerate for a disagreeing machine with:
+#
+#   .../python scripts/gen-universal-rope-fixtures.py <machine-key>
+#
+# e.g. `... gen-universal-rope-fixtures.py apple-m4-pro` (the key from
+# tests/goldens.ts goldenMachine()). tests/universal-rope.test.ts resolves
+# <dir>/<machine-key>/<file> first, then the flat file.
 
 import json
 import os
 import platform
+import sys
 
 import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm.models.rope_utils import initialize_rope
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "tests", "fixtures", "universal-rope")
+if len(sys.argv) > 1:
+    OUT = os.path.join(OUT, sys.argv[1])
 os.makedirs(OUT, exist_ok=True)
 
 B, H, L = 1, 2, 8

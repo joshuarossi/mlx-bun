@@ -7,6 +7,15 @@
 // tables, pre-rope input scales (yarn mscale / su scale), and full rope
 // outputs at two offsets, for default / linear / llama3 / yarn / longrope
 // / traditional-partial. Skips cleanly if fixtures are absent.
+//
+// MACHINE-KEYED (2026-07-03): the GPU-computed artifacts (freq tables, one
+// traditional-mode output) are chip-specific — the flat set is the
+// apple-m1-max reference (green on CI's M1 runners); a machine that
+// disagrees gets an override subdir of just the differing files
+// (tests/fixtures/universal-rope/<machine-key>/, resolution below —
+// mirrors tests/goldens.ts). Regen for a new machine:
+//   <oracle-venv>/python scripts/gen-universal-rope-fixtures.py <machine-key>
+// then prune files identical to the flat set.
 
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
@@ -20,6 +29,7 @@ import {
   UniversalRope,
   type RopeScalingConfig,
 } from "../src/model/universal/rope";
+import { goldenMachine } from "./goldens";
 
 const FIX = "tests/fixtures/universal-rope";
 const haveFixtures = existsSync(`${FIX}/manifest.json`);
@@ -40,7 +50,10 @@ interface RopeCase {
 }
 
 async function f32(name: string): Promise<Float32Array> {
-  return new Float32Array(await Bun.file(`${FIX}/${name}`).arrayBuffer());
+  // Per-machine override first (chip-specific GPU artifacts), flat fallback.
+  const keyed = `${FIX}/${goldenMachine()}/${name}`;
+  const path = existsSync(keyed) ? keyed : `${FIX}/${name}`;
+  return new Float32Array(await Bun.file(path).arrayBuffer());
 }
 
 function expectBitExact(ours: Float32Array, ref: Float32Array, label: string): void {
