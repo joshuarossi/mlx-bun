@@ -24,6 +24,7 @@ import {
   makeLogitsProcessors, makeSampler,
   type LogitsProcessorOptions, type SamplerOptions, toLogprobs,
 } from "./sampler";
+import type { GrammarController } from "./grammar";
 
 export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions {
   maxTokens?: number;
@@ -70,6 +71,13 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   /** Capture the top-k (token id, logprob) pairs per emitted token from the
    *  same distribution (mlx_lm.server `top_logprobs`). 0/unset = off. */
   topLogprobs?: number;
+  /** Grammar-constrained decoding (src/grammar.ts): a compiled GrammarController
+   *  that masks invalid tokens to -inf each step. L2-class (oMLX oracle). When
+   *  set, the decode loop takes a slightly different shape: it eager-reads the
+   *  token id (acceptToken needs a JS number, which the pipelined loop defers),
+   *  advances the matcher, and awaits the async mask precompute (which overlaps
+   *  the GPU forward). Non-grammar requests keep the fast pipelined loop. */
+  grammar?: GrammarController;
 }
 
 /** Per-token logprob info (only present when GenerateOptions requested it). */
@@ -367,6 +375,10 @@ async function* generateInner(
     const V = logits3d.shape[2]!;
     let logits = ops.reshape(logits3d, [1, V]);
     for (const p of processors) logits = disposing(logits, p(history, logits));
+    // Grammar mask (src/grammar.ts): apply AFTER the standard processors so the
+    // grammar has the final say on validity (a -inf'd token stays -inf through
+    // log-softmax). Off (no grammar) = zero cost — the branch is unset.
+    if (options.grammar) logits = disposing(logits, options.grammar.applyMask(logits));
     const lp = toLogprobs(logits);
     logits.dispose();
     const tok = sampler(lp, step);
@@ -524,14 +536,34 @@ async function* generateInner(
         ? CompiledDecode.for(model as Gemma4Model)
         : null;
     let stop = false;
+    /** Token id read eagerly at the top of the loop for grammar (reused for
+     *  the yield, avoiding a second readback). -1 when grammar is off — the
+     *  pipelined path keeps its deferred itemUint32 below. */
+    let grammarTok = -1;
     while (!stop) {
       const cur = pending!;
       const curExtras = pendingExtras;
       pendingExtras = null;
+      // Grammar advance (src/grammar.ts): acceptToken needs the token id as a
+      // JS number, which the pipelined loop defers (it operates on device
+      // arrays). So grammar requests eager-read cur here, advance the matcher,
+      // and await the async mask precompute — which overlaps the GPU forward
+      // dispatched just below. This trades the readback/forward overlap for
+      // correctness (the mask for step n+1 must reflect token n). Non-grammar
+      // requests keep the fast pipelined loop untouched. Only needed when a
+      // next step will actually be built (generated+1 < maxTokens).
+      if (options.grammar && generated + 1 < maxTokens) {
+        grammarTok = ops.itemUint32(cur);
+        options.grammar.accept(grammarTok);
+        await options.grammar.ready();
+      }
       // build step n+1's graph from the *unread* pending token
       nextPending = null;
       nextExtras = null;
-      if (generated + 1 < maxTokens) {
+      // When the grammar has terminated (a complete valid JSON/schema
+      // accepted), there are no valid tokens left — skip building the next
+      // step so the sampler never sees an all--inf distribution.
+      if (generated + 1 < maxTokens && !options.grammar?.isTerminated) {
         maybeQuantizeKv(cache, options);
         pushHistory(cur);
         let logits: MlxArray | null = null;
@@ -566,7 +598,9 @@ async function* generateInner(
       }
 
       // sync-read step n's token while n+1 computes
-      const token = ops.itemUint32(cur);
+      // sync-read step n's token while n+1 computes (grammar already read it
+      // eagerly above — reuse to avoid a second GPU sync)
+      const token = options.grammar ? grammarTok : ops.itemUint32(cur);
       if (generated === 0) {
         // first token arrived: prompt clock stops, decode clock starts
         // (mlx-lm stream_generate's n==0 clock swap; the first token is
@@ -619,6 +653,11 @@ async function* generateInner(
       disposeExtras(nextExtras);
     }
     if (ownsCache) for (const c of cache) c.dispose();
+    // The grammar controller owns native WASM state (GrammarMatcher +
+    // TokenizerInfo cache) — dispose on every exit path (normal, early break,
+    // throw). TokenizerInfo itself is process-cached (vocab-structural), so
+    // only the per-request matcher/compiled are freed here.
+    options.grammar?.dispose();
     history?.dispose();
     if (!finished && !threw) {
       // forced early return (consumer break at a yield): still report

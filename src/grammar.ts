@@ -292,7 +292,16 @@ export async function compileGrammarRequest(
     return null;
   }
 
-  const matcher = await xgrammar.GrammarMatcher.createGrammarMatcher(compiled);
+  // terminateWithoutStopToken=true: the matcher terminates as soon as the
+  //  grammar is SATISFIED (e.g. the closing `}` of a complete JSON), not only
+  //  when the model emits a stop token. This is what oMLX does — generation
+  //  halts once the structured output is complete, so the sampler never faces
+  //  an all-rejected (all--inf) mask after the grammar closes (which would
+  //  make greedy argmax return a garbage token id like 0 that the matcher
+  //  then rejects, looping until max_tokens).
+  const matcher = await xgrammar.GrammarMatcher.createGrammarMatcher(
+    compiled, undefined, true,
+  );
   const vocabSize = effectiveVocabSize(tokenizer, configVocabSize) || info.getVocabSize();
   const controller = new GrammarController(matcher, compiled, compiler, true, vocabSize);
   await controller.prime();
