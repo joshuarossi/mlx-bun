@@ -106,13 +106,14 @@ interface ReqResult {
   speculation?: { drafted: number; accepted: number };
 }
 
-async function oneRequest(port: number, prompt: string, grammar: boolean, maxtok: number, nonce: string): Promise<ReqResult> {
+type Msg = { role: string; content: string };
+async function oneRequest(port: number, prompt: string | Msg[], grammar: boolean, maxtok: number, nonce: string): Promise<ReqResult> {
   const t0 = performance.now();
   const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      messages: [{ role: "user", content: `[ref ${nonce}] ${prompt}` }],
+      messages: Array.isArray(prompt) ? prompt : [{ role: "user", content: `[ref ${nonce}] ${prompt}` }],
       max_tokens: maxtok, temperature: 0, stream: true,
       stream_options: { include_usage: true },
       ...(grammar ? GRAMMAR_BODY : {}),
@@ -166,6 +167,13 @@ interface Cell {
   concurrency: number;
   grammar?: boolean;
   needsDraft?: boolean;
+  /** Cache-hit cells: "ram" = warm prompt cache (2 GB, same prompt reused);
+   *  "ssd" = tiny RAM cache so the entry spills to the SSD tier, then the
+   *  repeat restores from disk (zero-copy mmap + tail prefill). Both use
+   *  the SAME prompt across requests (no nonce) and a populate request
+   *  before measuring — TTFT here is the "respond to a cached request"
+   *  number (the oMLX headline metric). Long workload only. */
+  cache?: "ram" | "ssd";
 }
 const L1 = { MLX_BUN_COMPILED_DECODE: "1", MLX_BUN_PERF_KERNEL: "0", MLX_BUN_NO_FUSED_SDPA: "1", MLX_BUN_FUSED_DECODE: "0" };
 const L2 = { MLX_BUN_COMPILED_DECODE: "1", MLX_BUN_PERF_KERNEL: "0", MLX_BUN_NO_FUSED_SDPA: "0", MLX_BUN_FUSED_DECODE: "0" };
@@ -183,6 +191,8 @@ const ALL_CELLS: Cell[] = [
   { name: "batch4",              env: L2, kvQuant: undefined, batch: 4, concurrency: 4 },
   { name: "serial-grammar",      env: L2, kvQuant: "config", batch: 1, concurrency: 1, grammar: true },
   { name: "batch4-grammar",      env: L2, kvQuant: undefined, batch: 4, concurrency: 4, grammar: true },
+  { name: "cache-ram",           env: L2, kvQuant: "config", batch: 1, concurrency: 1, cache: "ram" },
+  { name: "cache-ssd",           env: L2, kvQuant: "config", batch: 1, concurrency: 1, cache: "ssd" },
   { name: "spec",                env: L2, kvQuant: "config", batch: 1, concurrency: 1, needsDraft: true },
   { name: "spec-grammar",        env: L2, kvQuant: "config", batch: 1, concurrency: 1, grammar: true, needsDraft: true },
 ];
@@ -222,16 +232,28 @@ for (const cell of ALL_CELLS.filter(want)) {
   for (const [k, v] of Object.entries(cell.env)) process.env[k] = v;
   // spec cells mount the draft; others run without
   ctx.draft = cell.needsDraft && draftProvider ? { provider: draftProvider, numDraftTokens: 3 } : null;
+  const ssdDir = `/tmp/mlx-bun-bench-ssd-${process.pid}`;
   const server = createServer(ctx, 0, {
     owner: "embedded", hostname: "127.0.0.1", batch: cell.batch,
     ...(cell.kvQuant !== undefined ? { kvQuant: cell.kvQuant } : {}),
-    promptCacheBytes: 0, // no reuse — every TTFT is a cold prefill
+    // cache cells NEED the cache; everything else measures cold TTFT
+    ...(cell.cache === "ram"
+      ? {}
+      : cell.cache === "ssd"
+        ? { promptCacheBytes: 1, ssdCacheDir: ssdDir } // ~zero RAM cap → put spills to SSD
+        : { promptCacheBytes: 0 }),
   });
   const port = server.port!;
 
   for (const [wname, prompt, maxtok] of workloads) {
+    if (cell.cache && wname !== "long" && !QUICK) continue; // cache pays on long prefixes
     const useGrammar = cell.grammar === true;
-    const p = useGrammar ? GRAMMAR_PROMPT : prompt;
+    // grammar cells embed the workload's context so "long" stays long
+    const p = useGrammar
+      ? (wname === "long" ? LOREM.repeat(45) + "\n\n" + GRAMMAR_PROMPT : GRAMMAR_PROMPT)
+      : prompt;
+    // cache cells reuse ONE prompt (a fixed nonce) so repeats HIT the cache
+    const fixedNonce = cell.cache ? `cached${cell.name}` : null;
     try {
       // warmup (kernel compilation, template caches) — not measured
       await oneRequest(port, p, useGrammar, 8, `warm${nonce++}`);
@@ -242,10 +264,37 @@ for (const cell of ALL_CELLS.filter(want)) {
       let prefillSum = 0, prefillN = 0;
       let bestAgg = 0;
       let drafted = 0, accepted = 0, checked = 0;
+      if (cell.cache) {
+        // The agent pattern the caches exist for: a sequential conversation
+        // where every turn's prompt EXTENDS the cached prefix (prefix hit,
+        // no trimming — quantized entries can't trim mid-group and never
+        // need to here). Turn 1 (cold, populates) is not measured; each
+        // measured turn appends the last reply + a new user line, so TTFT =
+        // cache restore + new-suffix prefill. cache-ssd's ~zero RAM cap
+        // evicts+spills the entry after every turn, so each measured turn
+        // restores from DISK (zero-copy mmap) — the restart-survival number.
+        const convo: Msg[] = [{ role: "user", content: `[c ${fixedNonce}] ${p}` }];
+        const first = await oneRequest(port, convo, useGrammar, maxtok, fixedNonce!);
+        convo.push({ role: "assistant", content: first.content });
+        if (cell.cache === "ssd") await new Promise((r) => setTimeout(r, 2000));
+        for (let r = 0; r < REPEATS; r++) {
+          convo.push({ role: "user", content: `Add one more short sentence (${r}).` });
+          const t0 = performance.now();
+          const x = await oneRequest(port, convo, useGrammar, Math.min(32, maxtok), "unused");
+          const wall = performance.now() - t0;
+          convo.push({ role: "assistant", content: x.content });
+          ttfts.push(x.ttftMs);
+          if (x.tokens > 1 && x.wallMs > x.ttftMs) decodes.push(((x.tokens - 1) / (x.wallMs - x.ttftMs)) * 1000);
+          if (x.promptTokens > 0 && x.ttftMs > 0) { prefillSum += (x.promptTokens / x.ttftMs) * 1000; prefillN++; }
+          bestAgg = Math.max(bestAgg, (x.tokens / wall) * 1000);
+          if (cell.cache === "ssd") await new Promise((r) => setTimeout(r, 1200));
+        }
+      } else
       for (let r = 0; r < REPEATS; r++) {
         const t0 = performance.now();
         const results = await Promise.all(
-          Array.from({ length: cell.concurrency }, () => oneRequest(port, p, useGrammar, maxtok, `n${nonce++}`)),
+          Array.from({ length: cell.concurrency }, () =>
+            oneRequest(port, p, useGrammar, maxtok, fixedNonce ?? `n${nonce++}`)),
         );
         const wall = performance.now() - t0;
         const toks = results.reduce((a, x) => a + x.tokens, 0);
