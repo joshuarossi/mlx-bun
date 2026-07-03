@@ -132,9 +132,15 @@ discipline (`MLX_BUN_PERF_KERNEL`, `MLX_BUN_COMPILED_DECODE`, …).
   picks indented (ours) vs compact (oMLX). Content is byte-identical; both
   are valid JSON. A subtle version-skew (WASM 0.1.27 vs native 0.2.0) /
   logit detail at whitespace steps. Not a correctness issue.
-- **Batched lane.** See "Serial review + batched-lane plan" below — the
-  claim "serial-lane-only under `--batch`" was NOT enforced in code
-  (review finding F2); the plan's B0 fixes that, B1 wires per-row matchers.
+- **Batched lane.** LANDED (B1, 2026-07-02). The WASM build has no
+  `BatchGrammarMatcher`; the batched lane (`--batch N`) uses N individual
+  per-row matchers driven by the scheduler's `#stepGrammar` (read-before-build:
+  read pending [B] tokens, accept per row, build forward, await ready, sample,
+  emit). Terminated rows finish + evict before their slot is sampled again
+  (the all-`-inf` guarantee, per row). `MLX_BUN_GRAMMAR_BATCH=0` forces serial
+  fallback. A module-level `wasmQueue` serializes ALL xgrammar WASM calls — the
+  single-threaded WASM instance corrupts under concurrent fills/compiles
+  (BindingError, caught by the B2 test).
 - **Structural tags for thinking models.** `compileStructuralTag` (permissive
   during `<think>`, constraining only the output) is supported by xgrammar
   but NOT YET WIRED. oMLX wraps the grammar in a structural tag when

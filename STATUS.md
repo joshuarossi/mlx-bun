@@ -49,12 +49,14 @@ serial-lane macrotask hop (/stats 2.5 s → 10–44 ms mid-generation) ·
    500; xgrammar abort is catchable). Kill switch `MLX_BUN_GRAMMAR=0`.
    Perf: 0.004–0.19 ms/fill (nanosecond, real walk) <1% decode. Design:
    [docs/design/structured-output.md](docs/design/structured-output.md).
-   **Open:** batched lane — review found "serial-only under `--batch`" was
-   NOT enforced (grammar requests batch UNCONSTRAINED + leak the controller;
-   finding F2) plus a serial max_tokens-boundary token bug (F1); review +
-   plan (B0 stopgaps → B1 per-row matchers → B2 gates) appended to
-   docs/design/structured-output.md. Also open: structural tags for
-   thinking models; whitespace-format parity (version-skew, not correctness).
+   **Batched lane LANDED** (B0 stopgaps + B1 per-row matchers + a module-level
+   wasmQueue that serializes ALL xgrammar WASM calls — the single-threaded WASM
+   instance corrupts under concurrent fills/compiles, BindingError, caught by
+   the B2 test). `MLX_BUN_GRAMMAR_BATCH=0` forces serial fallback. 72/72
+   model-free tests pass.
+   **Open:** structural tags for thinking models (F7); whitespace-format
+   parity (version-skew, not correctness); model-gated scheduler tests (B2:
+   mixed batch, all-grammar B=4 four schemas, churn, truncation) + bench (Josh-gated).
 2. **Menu bar app** (SwiftUI + Sparkle) — adoption map #2, Josh wants it;
    `/Applications/oMLX.app` is the structural reference. The existing
    signed/notarized `mlx-bun` binary IS the sidecar (no new signing needed —
