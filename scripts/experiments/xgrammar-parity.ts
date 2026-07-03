@@ -56,8 +56,7 @@ async function ours(opts: { temperature: number; seed: number; maxTokens: number
   const tokens: number[] = [];
   for await (const t of gen) tokens.push(t.token);
   const text = ctx.tokenizer.decode(tokens, true);
-  ctx.model.dispose?.();
-  // grammar disposed by generate's finally
+  // grammar disposed by generate's finally; ctx.model lifecycle owned by ctx
   return { tokens, text };
 }
 

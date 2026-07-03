@@ -35,10 +35,26 @@ serial-lane macrotask hop (/stats 2.5 s → 10–44 ms mid-generation) ·
 `MLX_BUN_LANE_DEBUG=1` breadcrumb.
 
 **Next actions, ranked:**
-1. Structured output (`response_format` JSON-schema) — adoption map #1,
-   biggest remaining API hole; we own the sampler loop.
-2. Menu bar app (SwiftUI + signed binary as sidecar) — adoption map #2,
-   Josh wants it; /Applications/oMLX.app is the structural reference.
+1. ~~Structured output (`response_format` JSON-schema)~~ **DONE 2026-07-02**
+   (branch `feat/structured-output`, worktree `mlx-bun-structured-output`):
+   `@mlc-ai/web-xgrammar` (WASM, Apache-2.0) → grammar-constrained decoding
+   on `/v1/chat/completions` + `/v1/completions`. Full surface: `response_format`
+   (json_object/json_schema), `guided_grammar` (EBNF), `guided_regex`,
+   `guided_choice`, `structured_outputs` — oMLX/vLLM parity. Engine = same
+   xgrammar oMLX uses, WASM-packaged (no native build). Per-step bitmask
+   masks invalid logits; `terminateWithoutStopToken=true` halts on grammar
+   completion. L2-verified vs oMLX: byte-identical content (John Doe/32/
+   Gardening+Photography) through the real chat template; both valid JSON.
+   Degrade path (system-prompt injection + Warning header, oMLX parity, never
+   500; xgrammar abort is catchable). Kill switch `MLX_BUN_GRAMMAR=0`.
+   Perf: 0.004–0.19 ms/fill (nanosecond, real walk) <1% decode. Design:
+   [docs/design/structured-output.md](docs/design/structured-output.md).
+   **Open:** batched lane (serial-only under `--batch`); structural tags for
+   thinking models; whitespace-format parity (version-skew, not correctness).
+2. **Menu bar app** (SwiftUI + Sparkle) — adoption map #2, Josh wants it;
+   `/Applications/oMLX.app` is the structural reference. The existing
+   signed/notarized `mlx-bun` binary IS the sidecar (no new signing needed —
+   `build-binary.sh` already documents "spawn mlx-bun serve as a sidecar").
 3. Batching refinements (batching-perf-path P0–P3: extend-join, vectorized
    sampling, admission, `--batch 4` default review) + P4 device-side step
    chaining (the cpm5 single-stream −20% counter).
