@@ -62,23 +62,40 @@ or shelved with numbers — ledger:
    **Remaining work is now sequenced in the integration plan below**
    (B2+F4 = its Phase A; F5/F7 structural tags + U1/U2 parked with
    triggers).
-2. **Grammar × spec × batching integration + feature-matrix benchmark**
-   — THE canonical sequencing for the next wave:
-   [docs/design/grammar-spec-batching-integration.md](docs/design/grammar-spec-batching-integration.md)
-   (2026-07-03). Composition matrix: grammar batches (shipped), spec
-   routes serial via `hasDraft` (upstream parity), grammar+spec = the
-   novel constrained verify walk (no oracle → L3 gates). Phases:
-   **A** structured-output debt (B2 tests + F4 compiler cache) →
-   **B** `serve --draft-model` two-model serial lane (executes
-   mlx-lm-tool-parity-plan §7; lays `DraftSource`) →
-   **C** grammar×spec constrained verify walk (drafter free-running v1;
-   drafter-masking via `rollBack` only if acceptance demands —
-   flag-and-try-both) →
-   **D** batching P0 + KV-budget admission (parallel with B/C) →
-   **E** `bench-serving-load.ts` grown into the six-cell feature matrix
-   (aggregate tok/s, TTFT p50/p95, acceptance, grammar overhead %, 100%
-   schema conformance as a hard gate; eval-DB + RESULTS.md
-   "composition" table; clean-machine run Josh-gated).
+2. **Grammar × spec × batching integration** — plan:
+   [docs/design/grammar-spec-batching-integration.md](docs/design/grammar-spec-batching-integration.md).
+   **Phases A, B, C, E EXECUTED 2026-07-03** (same session as the plan):
+   **A** ✅ B2 batch-grammar gates (`tests/batch-grammar.test.ts`,
+   `MLX_BUN_TEST_BATCH_DECODE=1`) + F4 per-TokenizerInfo compiler cache
+   (single-flight) + F6/F3.
+   **B** ✅ `serve --draft-model` / `--num-draft-tokens` (two-model spec,
+   serial lane, `DraftSource` seam): **L1 GATE PASSED — 48/48
+   token-for-token vs mlx-lm's speculative path** (Llama 3B target + 1B
+   draft, 65% acceptance; oracle `scripts/oracle-spec-two-model.py`; tests
+   `tests/spec-serve.test.ts`, `MLX_BUN_TEST_SPEC_SERVE=1`). `hasDraft`
+   routes all requests serial under `--batch` (upstream parity); ring-wrap
+   degrades to plain decode pre-pollution; prompt-cache reuse bypassed v1.
+   **C** ✅ grammar×spec constrained verify walk (drafter free-running, mask
+   rides the accept walk, matcher advances on emitted tokens only — no
+   rollback): valid + 12/12 token-identical to grammar-only serial.
+   **E** ✅ harness: `scripts/bench-feature-matrix.ts` (six cells over live
+   SSE; TTFT p50/p95, agg tok/s, acceptance, 100%-conformance HARD gate;
+   `usage.speculation` telemetry). Smoke-run green end-to-end on Llama
+   3B+1B. **Clean-machine run for RESULTS.md "composition" = Josh-gated**
+   (use CPM/e4b for real batch cells — see the Tier-0 note below).
+   **The conformance gate found 3 real bugs in one smoke run** (all fixed):
+   (1) `response_format`/`guided_*` were DEAD over HTTP — the resolver read
+   only camelCase, the server passes snake_case (pre-existing since the
+   feature landed; both spellings now accepted); (2) `#flushPipeline`
+   emitted pending tokens without advancing grammar matchers →
+   one-token-stale masks on every mid-decode join (regression test added);
+   (3) **UniversalDenseModel batching decodes uneven rows at wrong RoPE
+   positions** (scalar `cache.offset`, no per-row offsets) — LATENT for all
+   Tier-0 archs since v0.0.9, now routed serial under `--batch` until the
+   `ropeOffsetArr` port + an mlx-lm B=2 golden land (task chip filed).
+   **Open: Phase D** — extend-join (+ grammar-churn test), vectorized
+   homogeneous sampling, `projectKvBytes` + `--kv-budget` admission.
+   Debug lever: `MLX_BUN_GRAMMAR_DEBUG=1` (per-step scheduler trace).
 3. **Menu bar app** (SwiftUI + signed binary as sidecar) — adoption map #2,
    Josh wants it; /Applications/oMLX.app is the structural reference.
 4. **Batching remainder not in the integration plan** — P1 quantized KV at

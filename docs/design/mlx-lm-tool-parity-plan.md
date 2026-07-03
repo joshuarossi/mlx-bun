@@ -324,7 +324,17 @@ follow-on if we build the shared capture instrumentation anyway.
 
 ## 7. `serve --draft-model` / `--num-draft-tokens` (speculative decoding at serve time)
 
-This is the concrete, hand-to-an-implementer plan.
+> **BUILT 2026-07-03** as grammar-spec-batching-integration.md Phase B —
+> `src/spec/{source,two-model,serve-loop}.ts`, flags in cli.ts, `hasDraft`
+> routing, fit admission, `usage.speculation` telemetry. **L1 gate passed:
+> 48/48 token-for-token vs mlx_lm's speculative path** (Llama 3B+1B,
+> `scripts/oracle-spec-two-model.py`, `tests/spec-serve.test.ts`). Grammar
+> composes (Phase C constrained verify walk). v1 deviations: prompt-cache
+> reuse bypassed on the spec path; ring-wrap degrades to plain decode
+> (pre-pollution gate) instead of raising. §7.9's assistant/DSpark sources
+> remain open behind the same `DraftSource` seam.
+
+This was the concrete, hand-to-an-implementer plan (kept for the record).
 
 ### What mlx_lm.server does (read: `server.py`, `generate.py`)
 

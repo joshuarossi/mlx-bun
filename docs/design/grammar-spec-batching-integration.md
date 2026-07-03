@@ -1,7 +1,9 @@
 # Grammar × spec decode × batching — integration plan + feature-matrix benchmark
 
-Status: PLANNED (2026-07-03). Successor plan tying together three
-workstreams so they compose deliberately instead of colliding:
+Status: **Phases A, B, C, E EXECUTED 2026-07-03** (same day as the plan);
+Phase D open (extend-join, vectorized sampling, KV-budget admission).
+Execution log at the bottom of this doc. Successor plan tying together
+three workstreams so they compose deliberately instead of colliding:
 
 - **Structured output** — SHIPPED on main (serial + batched lanes;
   docs/design/structured-output.md). Open debt: B2 model-gated batch
@@ -219,6 +221,39 @@ clean-machine run is queued in STATUS Josh-gated.
   mlx-lm-tool-parity-plan §7.9; DSpark stays research until 27B
   retrain + data scale (dspark-handoff.md).
 - **Spec inside the batch lane** — research question, not scheduled.
+
+## Execution log (2026-07-03)
+
+- **Phase A** ✅ — B2 gates in `tests/batch-grammar.test.ts` (all five
+  scenarios + a sixth found later, below); F4 compiler cache went through a
+  bring-up fix (single-flight rebuild — concurrent compiles after a
+  tokenizer switch double-disposed the previous compiler); F6, F3 landed.
+- **Phase B** ✅ — `serve --draft-model`/`--num-draft-tokens`;
+  `src/spec/{source,two-model,serve-loop}.ts`. **L1 gate: 48/48
+  token-for-token vs mlx-lm spec** (Llama 3B+1B greedy, 65% acceptance,
+  `scripts/oracle-spec-two-model.py`). Deviations as designed (ring-wrap
+  degrades pre-pollution via an offset+n+1 gate — upstream's post-hoc check
+  would already have polluted the ring; prompt cache bypassed v1).
+- **Phase C** ✅ — the constrained verify walk in `samplePos`; gates green
+  (100% validity; 12/12 token-identical to grammar-only serial; choice
+  terminates mid-spec). Drafter-masking flag NOT built (acceptance 6/15 on
+  a tight schema — usable; revisit only if Phase E's clean run says so).
+- **Phase E** ✅ (harness) — `scripts/bench-feature-matrix.ts` (the planned
+  bench-serving-load extension became its own script: that file already
+  exists as a client-only stack-vs-stack tool and stays one). Six cells
+  green end-to-end on Llama 3B+1B; `usage.speculation` telemetry on all
+  four API usage blocks. Clean-machine run for RESULTS.md is Josh-gated.
+- **The conformance gate paid for the whole phase in one smoke run** —
+  three real bugs: (1) snake_case wire fields never reached the grammar
+  resolver (structured output was DEAD over HTTP since it landed);
+  (2) `#flushPipeline` didn't advance matchers → stale masks on mid-decode
+  joins (regression test added); (3) **UniversalDenseModel batched RoPE
+  uses the scalar cache.offset** → uneven-row batches decode joiners at
+  wrong positions — latent for ALL Tier-0 archs since v0.0.9, now gated
+  serial under `--batch` (task chip: port ropeOffsetArr + Llama B=2
+  golden). Lesson, per [[per-model-quant-specialization]]: the gateway's
+  capability gate admitted a model family no batched-parity suite ever
+  validated.
 
 ## Risks
 
