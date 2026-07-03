@@ -318,6 +318,14 @@ export class GenerationGateway {
         maxTokens: options.maxTokens ?? 512,
         eosTokenIds: options.eosTokenIds ?? this.model.config.eosTokenIds,
         sample,
+        // Vectorized-sampling eligibility: mirrors makeSampler's greedy branch
+        // (temperature 0, no curve override) with nothing per-row in the way
+        // (no processors, no grammar mask).
+        plainGreedy:
+          (options.temperature ?? 0) === 0 &&
+          !options.curve &&
+          processors.length === 0 &&
+          !options.grammar,
         onToken,
         // B1: pass the per-row grammar controller through. The scheduler drives
         // accept/ready/terminate; this gateway OWNS disposal (finally below)

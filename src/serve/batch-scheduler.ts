@@ -64,6 +64,7 @@ import { SSMCache } from "../model/qwen3-delta";
 import type { RuntimeModel } from "../model/factory";
 import type { GrammarController } from "../grammar";
 import { kvBytesAt } from "../fit";
+import { toLogprobs } from "../sampler";
 
 /** Decode-pipeline kill switch (read once at load, like the serial loop's
  *  MLX_BUN_COMPILED_DECODE): 1 ⇒ read each step's tokens synchronously. */
@@ -97,6 +98,14 @@ export interface BatchRequest {
    *  THIS row only (its submit promise rejects; siblings continue). May be
    *  async; keep it cheap — it runs inline in the step loop. */
   onToken: (token: number) => void | boolean | Promise<void | boolean>;
+  /** The row's sampler is PLAIN GREEDY (temperature 0, no curve) with no
+   *  logits processors and no grammar — set by the gateway when true. Lets
+   *  the scheduler take the vectorized sampling fast path (ONE
+   *  log-softmax+argmax over [B,V] instead of B slice/sample/concat graphs)
+   *  when EVERY live row qualifies. Numerically identical per row
+   *  (row-independent ops, same per-row shapes); the per-row closure path
+   *  is the fallback and the MLX_BUN_BATCH_VEC_SAMPLE=0 kill switch. */
+  plainGreedy?: boolean;
   /** Grammar controller for this row (B1: per-row matchers). When set, the
    *  scheduler drives it: `accept()` after each emitted token (fires the async
    *  bitmask fill), `await ready()` before the row's next sample (the sample
@@ -531,25 +540,46 @@ export class BatchScheduler {
         const lg = this.model.logitsFromHidden(h); // [B,1,V]
         h.dispose();
         const V = lg.shape[2]!;
-        const sampled: MlxArray[] = [];
-        for (let b = 0; b < B; b++) {
-          const row = rows[b]!;
-          if (row.sampled >= row.req.maxTokens) {
-            // Length-doomed row: evicted right after the emission below ever
-            // uses this slot as input — placeholder keeps the [B] alignment.
-            sampled.push(ops.fromInt32([0], [1]));
-            continue;
+        // Vectorized homogeneous sampling (batching-perf-path P0): when every
+        // LIVE row is plain greedy, one log-softmax+argmax over [B,V] replaces
+        // B slice/sample/concat graphs. Per-row identical math (row-independent
+        // ops, same per-row shapes — argmax over log-softmax mirrors the
+        // closure's toLogprobs→argmax exactly, tie behavior included). Doomed
+        // rows get a real argmax instead of the placeholder 0 — equally
+        // harmless (the slot is filtered before it is ever emitted; its only
+        // use is one KV write on the row's own, about-to-evict row).
+        const vecOk =
+          process.env.MLX_BUN_BATCH_VEC_SAMPLE !== "0" &&
+          rows.every((r) => r.sampled >= r.req.maxTokens || r.req.plainGreedy);
+        if (vecOk) {
+          const flat = ops.reshape(lg, [B, V]);
+          lg.dispose();
+          const lp = toLogprobs(flat);
+          flat.dispose();
+          nextToks = ops.argmaxAxis(lp, -1); // [B]
+          lp.dispose();
+          for (const row of rows) if (row.sampled < row.req.maxTokens) row.sampled++;
+        } else {
+          const sampled: MlxArray[] = [];
+          for (let b = 0; b < B; b++) {
+            const row = rows[b]!;
+            if (row.sampled >= row.req.maxTokens) {
+              // Length-doomed row: evicted right after the emission below ever
+              // uses this slot as input — placeholder keeps the [B] alignment.
+              sampled.push(ops.fromInt32([0], [1]));
+              continue;
+            }
+            const rl = lg.slice([b, 0, 0], [b + 1, 1, V]);
+            const rl2 = ops.reshape(rl, [1, V]);
+            rl.dispose();
+            sampled.push(row.req.sample(rl2, row.sampled));
+            row.sampled++;
+            rl2.dispose();
           }
-          const rl = lg.slice([b, 0, 0], [b + 1, 1, V]);
-          const rl2 = ops.reshape(rl, [1, V]);
-          rl.dispose();
-          sampled.push(row.req.sample(rl2, row.sampled));
-          row.sampled++;
-          rl2.dispose();
+          lg.dispose();
+          nextToks = ops.concatAxis(sampled, 0); // [B]
+          for (const t of sampled) t.dispose();
         }
-        lg.dispose();
-        nextToks = ops.concatAxis(sampled, 0); // [B]
-        for (const t of sampled) t.dispose();
         ops.asyncEvalAll([nextToks]); // dispatch; read NEXT iteration
       } finally {
         // Free the step's RoPE arrays; do NOT dispose (full wrappers would free
