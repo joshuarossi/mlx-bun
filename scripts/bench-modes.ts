@@ -85,7 +85,8 @@ const LOREM =
   "katabatic winds funneling down the glacier after sunset, and the strange dry thunderstorms of late summer " +
   "that started fires no rain followed to put out. ";
 const SHORT_PROMPT = "Write a short paragraph about mountain weather and how it changes with altitude.";
-const LONG_PROMPT = LOREM.repeat(45) + "\n\nSummarize the key weather patterns described above.";
+const LONG_PROMPT = LOREM.repeat(45) + "\n\nSummarize the key weather patterns described above.";  // ~2k tokens
+const XL_PROMPT = LOREM.repeat(90) + "\n\nSummarize the key weather patterns described above.";    // ~4k tokens
 const SCHEMA = {
   type: "object",
   properties: {
@@ -222,7 +223,11 @@ let weightsGB = 0;
 const want = (c: Cell) => (CELLS.includes("all") || CELLS.includes(c.name)) && (!c.needsDraft || !!DRAFT);
 const workloads: [string, string, number][] = QUICK
   ? [["short", SHORT_PROMPT, MAXTOK]]
-  : [["short", SHORT_PROMPT, MAXTOK], ["long", LONG_PROMPT, Math.min(64, MAXTOK)]];
+  : [
+      ["short", SHORT_PROMPT, MAXTOK],
+      ["long", LONG_PROMPT, Math.min(64, MAXTOK)],   // ~2k-token prefix
+      ["xl", XL_PROMPT, Math.min(64, MAXTOK)],       // ~4k-token prefix
+    ];
 
 const rows: CellRow[] = [];
 let nonce = 0;
@@ -246,11 +251,13 @@ for (const cell of ALL_CELLS.filter(want)) {
   const port = server.port!;
 
   for (const [wname, prompt, maxtok] of workloads) {
-    if (cell.cache && wname !== "long" && !QUICK) continue; // cache pays on long prefixes
+    if (cell.cache && wname === "short" && !QUICK) continue; // cache pays on long prefixes
     const useGrammar = cell.grammar === true;
     // grammar cells embed the workload's context so "long" stays long
     const p = useGrammar
-      ? (wname === "long" ? LOREM.repeat(45) + "\n\n" + GRAMMAR_PROMPT : GRAMMAR_PROMPT)
+      ? (wname === "long" ? LOREM.repeat(45) + "\n\n" + GRAMMAR_PROMPT
+        : wname === "xl" ? LOREM.repeat(90) + "\n\n" + GRAMMAR_PROMPT
+        : GRAMMAR_PROMPT)
       : prompt;
     // cache cells reuse ONE prompt (a fixed nonce) so repeats HIT the cache
     const fixedNonce = cell.cache ? `cached${cell.name}` : null;
