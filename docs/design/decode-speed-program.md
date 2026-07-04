@@ -57,14 +57,41 @@ grammar composition, and `usage.speculation` telemetry ALL landed
   (docs/investigations/dspark-handoff.md). Slots in as `DflashSource`,
   L3/KL-gated.
 
-### 2. mlx bump — free upstream wins  [expected: 26B decode, small-M everywhere]
+### 2. mlx bump — narrow 26B / spec-decode wins, NOT a general decode lever  [main-only, from-source]
 
-Pinned at mlx 0.31.2. Upstream has since merged `qmv_wide` and has
-`gather_qmm` M=1 work in flight — aimed exactly at the 26B MoE's profiled
-~4 ms/step gap we root-caused to their missing fast path (mlx#3553; see
-STATUS kernel-review closeout). Bump, re-run the parity suites + this
-benchmark, re-measure the qmm-pad workaround. Cheapest possible win;
-gate = every L1/L2 golden still green (machine-keyed regen where needed).
+Pinned at mlx 0.31.2 — still the newest *released* mlx (and newest on
+PyPI). All the decode-relevant work is UNRELEASED on mlx `main`; there is
+no nightly wheel, so a bump means building mlx + mlx-c from source AND
+running the oracle (mlx-lm / optiq — no released version targets mlx >
+0.31.2) on an unvalidated combination. That oracle validity is the real
+cost, NOT golden regen (regenerating goldens is the verification, not a
+gate). Upstream refs below are all in `ml-explore/mlx`, full-URL'd — a bare
+`#NNNN` in this repo resolves to our own tracker (a 404), not theirs.
+
+What `main` actually has (confirmed against the PR pages):
+- [ml-explore/mlx#3485](https://github.com/ml-explore/mlx/pull/3485)
+  `GatherQMM::output_shapes` — merged 2026-05-29, zero numeric change. THE
+  prize: resolves the `src/generate.ts` blocker that keeps 26B MoE decode
+  uncompiled → unblocks CompiledDecode over the MoE (attacks the 26B host
+  term).
+- [ml-explore/mlx#3764](https://github.com/ml-explore/mlx/pull/3764)
+  `qmv_wide` — merged 2026-06-26. Small-M (≈2–8) quant matvec; helps
+  SPEC-DECODE verify + batching, NOT single-stream M=1 and NOT the gather /
+  MoE path. Becomes the default for M≈2–8 → re-baseline batched goldens.
+  This is why the bump pairs with lever 1, not standalone.
+
+What `main` does NOT have (corrects the prior note):
+[ml-explore/mlx#3553](https://github.com/ml-explore/mlx/issues/3553) is an
+OPEN issue (the problem report), NOT a merged fix, and `qmv_wide` is not
+wired into the gather path. There is NO `gather_qmm` M=1 qmv-class fast
+path upstream — the 26B M=1 compute-bound gap (~4 ms/step) is ours to close
+(the shelved moe-qmv-kernel; roofline #2). Probable no-op:
+[ml-explore/mlx#3120](https://github.com/ml-explore/mlx/pull/3120) (split-K
+small-M quant matmul) was in mlx HEAD 2026-03-21, before the 0.31.2 tag —
+likely already ours; confirm before counting it.
+
+Sequence: land this WITH lever 1 (speculation), where #3485 + #3764 both
+pay off — not as a standalone "faster decode" move it isn't.
 
 ### 3. Quantization quality-per-bit — fewer bytes IS more tok/s  [expected ~10–15%]
 
