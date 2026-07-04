@@ -15,7 +15,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { nativePackDir } from "../native-pack";
 
-const { ptr: P, i32, u64, f32, cstring } = FFIType;
+const { ptr: P, i32, u64, f32, f64, cstring } = FFIType;
 
 /** libmlxc resolution, in order: explicit env override → next to the
  *  executable (the `bun build --compile` sidecar layout, where
@@ -142,6 +142,7 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_negative: { args: [P, u64, u64], returns: i32 },
   mlx_argsort_axis: { args: [P, u64, i32, u64], returns: i32 },
   mlx_argpartition_axis: { args: [P, u64, i32, i32, u64], returns: i32 },
+  mlx_arange: { args: [P, f64, f64, f64, i32, u64], returns: i32 },
   mlx_take_along_axis: { args: [P, u64, u64, i32, u64], returns: i32 },
   mlx_put_along_axis: { args: [P, u64, u64, u64, i32, u64], returns: i32 },
   mlx_cumsum: { args: [P, u64, i32, FFIType.bool, FFIType.bool, u64], returns: i32 },

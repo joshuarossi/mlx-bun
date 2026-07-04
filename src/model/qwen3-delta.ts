@@ -22,6 +22,7 @@
 import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import { MetalKernel } from "../mlx/metal-kernel";
+import { CompiledFunction } from "../mlx/compile";
 import * as ops from "../mlx/ops";
 import type { Cache, Mask } from "./gemma4-base";
 
@@ -118,21 +119,33 @@ function getKernel(): MetalKernel {
 /** compute_g: exp(-exp(A_log_f32) * softplus(a + dt_bias)). Output is f32
  *  (the f32 exp(A_log) promotes the bf16 softplus term) — the kernel reads g
  *  as float, so this dtype is load-bearing. */
+let _computeGFn: CompiledFunction | null = null;
 export function computeG(aLog: MlxArray, a: MlxArray, dtBias: MlxArray): MlxArray {
-  const aLogF = aLog.astype(Dtype.float32);
-  const expA = ops.exp(aLogF); // f32 [Hv]
-  aLogF.dispose();
-  const negExpA = ops.neg(expA); // f32 [Hv]
-  expA.dispose();
-  const adt = ops.add(a, dtBias); // bf16 [B,S,Hv]
-  const sp = ops.softplus(adt); // bf16 [B,S,Hv]
-  adt.dispose();
-  const prod = ops.mul(negExpA, sp); // f32 [B,S,Hv]
-  negExpA.dispose();
-  sp.dispose();
-  const g = ops.exp(prod); // f32 [B,S,Hv]
-  prod.dispose();
-  return g;
+  // mlx-lm gated_delta.py: `@partial(mx.compile, shapeless=True) compute_g` — the
+  // WHOLE chain (exp/neg/softplus/mul/exp) is ONE fused kernel there, not five
+  // separate dispatches. Traced once, replayed.
+  if (!_computeGFn) {
+    _computeGFn = new CompiledFunction((inp) => {
+      const aL = inp[0]!, aa = inp[1]!, dt = inp[2]!;
+      const aLogF = aL.astype(Dtype.float32);
+      const expA = ops.exp(aLogF); aLogF.dispose();
+      const negExpA = ops.neg(expA); expA.dispose();
+      const adt = ops.add(aa, dt);
+      // mlx nn.softplus(x) = mx.logaddexp(x, 0), where 0 is a weak Python int
+      // (no cast node). ops.softplus builds the 0 via scalarLike (fromFloat32 →
+      // f32→bf16 AsType). Build the 0 at adt's dtype from raw bytes so there is
+      // no cast — matching mlx's graph exactly.
+      const zbytes = adt.dtype === Dtype.float32
+        ? new Uint8Array([0, 0, 0, 0])
+        : new Uint8Array([0, 0]);
+      const zero = MlxArray.fromBytesCopy(zbytes, [], adt.dtype);
+      const sp = ops.logaddexp(adt, zero); adt.dispose(); zero.dispose();
+      const prod = ops.mul(negExpA, sp); negExpA.dispose(); sp.dispose();
+      const g = ops.exp(prod); prod.dispose();
+      return [g];
+    });
+  }
+  return _computeGFn.apply([aLog, a, dtBias])[0]!;
 }
 
 /** gated_delta_update (use_kernel path): returns [y, newState].

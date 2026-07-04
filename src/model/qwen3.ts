@@ -25,7 +25,7 @@ import {
   type Mask,
 } from "./gemma4-base";
 
-class Qwen3Attention {
+export class Qwen3Attention {
   readonly qProj: QuantizedLinear;
   readonly kProj: QuantizedLinear;
   readonly vProj: QuantizedLinear;
@@ -92,7 +92,7 @@ class Qwen3Attention {
   }
 }
 
-class Qwen3MLP {
+export class Qwen3MLP {
   readonly gate: QuantizedLinear;
   readonly up: QuantizedLinear;
   readonly down: QuantizedLinear;
@@ -119,7 +119,7 @@ class Qwen3MLP {
   }
 }
 
-class Qwen3Layer {
+export class Qwen3Layer {
   readonly attn: Qwen3Attention;
   readonly mlp: Qwen3MLP;
   readonly inputNorm: RMSNorm;

@@ -8,6 +8,18 @@ tier levers can't buy short-context decode speed. Faster means one of
 four physical moves. Each lever below has evidence, an expected win, and
 a trigger; pick them up in order.
 
+**LANDED 2026-07-04 (correcting "no waste left" for CPM5):** CPM5 decode
+carried one real, non-physics waste — an UNFUSED swiglu (`sigmoid`+`mul`+`mul`
+= 3 kernels/layer × 24). Porting mlx-lm's `@partial(mx.compile) swiglu`
+(activations.py → `compiledSwiglu` in minicpm5.ts, M=1 decode, kill-switch
+`MLX_BUN_COMPILED_SWIGLU=0`) fused it to one `CV2ISigmoid…` kernel and moved
+CPM5 **250.5 → 264.4 tok/s (+5.5%), to parity/ahead of mlx-lm (260.3)** —
+bit-identical tokens. The win was per-dispatch host+encode tax (48 ops/token),
+NOT the ~0.9% elementwise GPU time the Xcode capture showed; that's also why
+CompiledDecode was 0% (it replays the same unfused graph). See §4 and
+[[cpm5-decode-parity-investigation]]. The bandwidth-wall framing holds for the
+*matmul* path; small-elementwise fusion is the exception it missed.
+
 The physics: decode tok/s ≈ bandwidth ÷ bytes-touched-per-token
 (M4 Pro ~273 GB/s). To go faster: read the bytes ONCE for several tokens
 (speculation, batching), read FEWER bytes (quantization), SKIP reads
@@ -103,10 +115,29 @@ bpw at equal KL ≈ +10–15% decode with zero kernel work. Gate: perplexity
 
 ### 4. Host-side residuals  [expected 2–8% on affected models]
 
-- **e4b ~5% per-step host overhead** (Phase 7 residual; dispatch count).
-- **GeneratedMiniCPM5 + fused SwiGLU MLP** — CPM5 still runs the loop
-  monolith; the deferred generate-and-fuse win ([[cpm5-generate-and-fuse]]
-  memory + steel-qmm-header.ts drop-in).
+- **CPM5 unfused swiglu — LANDED (+5.5% decode, 2026-07-04).** `compiledSwiglu`
+  (minicpm5.ts) `mx.compile`s `silu(gate)*up` → one kernel at decode (M=1),
+  cutting 48 dispatches/token. Proof the ~5% residual was dispatch tax, not GPU
+  time. The exact-copy `FaithfulMiniCPM5` fuses it for ALL shapes like mlx-lm's
+  non-M-gated `@mx.compile` (autograd-safe, Vjp maxDiff==0), which makes its
+  per-token kernel SET byte-identical to mlx-lm's (24==24, verified via parseable
+  **xctrace shader-list diff**); the M=1 gate leaves prefill unfused (extra
+  `vn_Sigmoid`+`vvn_Multiply`, ~0.7% there). Whether to widen production's gate
+  is an optimization for AFTER the FaithfulMiniCPM5 A/B lands a verdict. The same
+  standalone `sigmoid/silu + mul` pattern likely costs ~5% on other models' MLPs
+  (gemma/qwen) — audit and give each an `mx.compile` helper.
+- **e4b ~5% per-step host overhead** (Phase 7 residual; dispatch count) —
+  now a prime suspect for the SAME unfused-elementwise cause; try the
+  compiledSwiglu treatment on its MLP.
+- **FaithfulMiniCPM5 exact-copy backend — BUILT (2026-07-04).**
+  `src/model/minicpm5-faithful.ts`, `MLX_BUN_CPM5_FAITHFUL=1` in `createModel`:
+  an op-for-op copy of mlx-lm's llama.py + activations.py, swappable against our
+  optimized `MiniCPM5Model` through the same generate()/eval path. Bit-exact to
+  the golden (tests/minicpm5-faithful-parity), dispatched-kernel set verified
+  identical to mlx-lm's. The A/B reference — prove identical, THEN compare
+  performance, THEN optimize. Debranching alone buys ~0% (host JS conditionals
+  hidden by the GPU-bound pipeline); its analysis produced the matmul-fusion
+  non-lever below.
 - **P4 device-side step chaining** — depth-k chained step graphs, one
   host sync per k tokens (batching-perf-path P4; the oMLX burst-decode
   REFUTATION does not apply — this attacks OUR FFI/readback cost, a
@@ -121,7 +152,13 @@ Megakernels at M=1 (bandwidth floor: ceiling ~1.78× CPM5, achieved 0.94×
 — multi-token amortization is required, which is levers 1/batching);
 oMLX-style burst decode (refuted for Bun); fused-decode activeN (refuted
 end-to-end on 12B, reverted); host graph-build overlap (already hidden by
-the pipelined loop — spin-injection proof in decode-roofline-lookagain).
+the pipelined loop — spin-injection proof in decode-roofline-lookagain);
+**QKV / gate-up matmul fusion at M=1** (CPM5 2026-07-04: q/k/v blocked by
+OptiQ mixed precision — v_proj 8-bit vs q/k 4-bit; gate/up fusible in 18/24
+layers but the speed-ceiling version is ~2% SLOWER — matmul dispatches are
+bandwidth-hidden, and a concatenated `[2I]` qmv is less efficient at M=1
+than two `[I]`. Contrast the swiglu win: that fuses ELEMENTWISE ops, which
+are dispatch-bound. Don't re-litigate matmul fusion for single-stream).
 
 ## Sequence
 

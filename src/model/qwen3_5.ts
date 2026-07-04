@@ -14,6 +14,7 @@ import type { Weights } from "../weights";
 import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
+import { CompiledFunction } from "../mlx/compile";
 import {
   argmaxLastPosition,
   disposeTriple,
@@ -32,8 +33,77 @@ import { gatedDeltaUpdate, SSMCache } from "./qwen3-delta";
 
 const PREFIX = "language_model";
 
+// ── Compiled activations (faithful path) ────────────────────────────────────
+// The oracle (mlx_lm/models/activations.py + qwen3_next.py) wraps BOTH swiglu
+// activations in `@partial(mx.compile, shapeless=True)`. Our default forward
+// runs them UNFUSED (standalone ops.silu + ops.mul), which dispatches a
+// different kernel set and pays the per-op host tax. FaithfulQwen35 flips the
+// layers to these compiled closures so the dispatched kernel set matches the
+// oracle op-for-op. Traced once (shapeless), replayed thereafter. Autograd-safe
+// (mx.compile threads VJP through the traced graph) — proven in the scratchpad
+// grad harness. `compiledSwiglu` is exported so the parity test can assert the
+// closure exists and the faithful MLP actually uses it.
+
+/** activations.py: `@mx.compile def swiglu(gate, x): return nn.silu(gate) * x`.
+ *  nn.silu(g) == g * sigmoid(g); mx.compile fuses sigmoid+mul+mul → one kernel. */
+let _swigluClosure: CompiledFunction | null = null;
+export function compiledSwiglu(gate: MlxArray, up: MlxArray): MlxArray {
+  if (!_swigluClosure) {
+    _swigluClosure = new CompiledFunction((inputs) => {
+      const g = inputs[0]!, u = inputs[1]!;
+      const sig = ops.sigmoid(g);
+      const silu = ops.mul(g, sig); sig.dispose();
+      const out = ops.mul(silu, u); silu.dispose();
+      return [out];
+    });
+  }
+  return _swigluClosure.apply([gate, up])[0]!;
+}
+
+/** qwen3_next.py `_precise_swiglu(h, gate, x)`:
+ *    gate = nn.silu(gate.astype(f32)); x = x.astype(f32); (gate*x).astype(h.dtype)
+ *  Used by Qwen3NextRMSNormGated. Inputs: (h=hidden for the out dtype, gate=z,
+ *  x=rms_norm(hidden)). mx.compile fuses the two casts + silu + mul + cast. */
+let _preciseSwigluClosure: CompiledFunction | null = null;
+export function compiledPreciseSwiglu(h: MlxArray, gate: MlxArray, x: MlxArray): MlxArray {
+  if (!_preciseSwigluClosure) {
+    _preciseSwigluClosure = new CompiledFunction((inputs) => {
+      const hh = inputs[0]!, g = inputs[1]!, xx = inputs[2]!;
+      const gf = g.astype(Dtype.float32);
+      const sig = ops.sigmoid(gf);
+      const silu = ops.mul(gf, sig); gf.dispose(); sig.dispose();
+      const xf = xx.astype(Dtype.float32);
+      const prod = ops.mul(silu, xf); silu.dispose(); xf.dispose();
+      const out = prod.astype(hh.dtype); prod.dispose();
+      return [out];
+    });
+  }
+  return _preciseSwigluClosure.apply([h, gate, x])[0]!;
+}
+
+/** mlx.nn.silu is `@partial(mx.compile, shapeless=True) def silu(x): x*sigmoid(x)`
+ *  — a COMPILED kernel, not a standalone sigmoid+mul. Used for the conv
+ *  activation `nn.silu(conv1d(...))`, matching mlx-lm's fused BV2ISigmoid…_V_. */
+let _siluClosure: CompiledFunction | null = null;
+export function compiledSilu(x: MlxArray): MlxArray {
+  if (!_siluClosure) {
+    _siluClosure = new CompiledFunction((inputs) => {
+      const xx = inputs[0]!;
+      const sig = ops.sigmoid(xx);
+      const out = ops.mul(xx, sig); sig.dispose(); // x * sigmoid(x)
+      return [out];
+    });
+  }
+  return _siluClosure.apply([x])[0]!;
+}
+
+// NOTE: the attention output gate is `self.o_proj(output * mx.sigmoid(gate))`
+// INLINE in mlx-lm (qwen3_next.py) — NOT @mx.compile. It is intentionally kept
+// as a standalone sigmoid + multiply in Qwen3Attention.forward so the dispatched
+// kernel set matches the reference; there is no compiled-output-gate helper.
+
 /** Gated-DeltaNet linear-attention layer (mlx-lm GatedDeltaNet). */
-class GatedDeltaNet {
+export class GatedDeltaNet {
   readonly inProjQkv: QuantizedLinear;
   readonly inProjZ: QuantizedLinear;
   readonly inProjB: QuantizedLinear;
@@ -51,6 +121,9 @@ class GatedDeltaNet {
   readonly keyDim: number;
   readonly valueDim: number;
   readonly convKernel: number;
+  /** FaithfulQwen35 sets this to route the RMSNormGated activation through the
+   *  oracle's compiled `_precise_swiglu` instead of the unfused ops path. */
+  useCompiledActivation = false;
 
   constructor(weights: Weights, config: ModelConfig, prefix: string) {
     const t = config.text;
@@ -99,7 +172,7 @@ class GatedDeltaNet {
 
     const conv = ops.conv1d(convInput, this.convWeight, 1, 0, 1, convDim);
     convInput.dispose();
-    const convOut = ops.silu(conv); // [B,S,convDim]
+    const convOut = compiledSilu(conv); // nn.silu (mx.compile), matches mlx-lm
     conv.dispose();
 
     const [qFlat, kFlat, vFlat] = ops.split(
@@ -144,22 +217,16 @@ class GatedDeltaNet {
 
   private rmsNormGated(hidden: MlxArray, gate: MlxArray): MlxArray {
     const xn = ops.rmsNorm(hidden, this.normWeight, this.eps); // bf16
-    const gf = gate.astype(Dtype.float32);
-    const sg = ops.silu(gf); // silu(z) in f32
-    gf.dispose();
-    const xf = xn.astype(Dtype.float32);
+    // Oracle: _precise_swiglu(hidden, gate, xn) — ALWAYS one @mx.compile kernel
+    // (matches mlx-lm; no unfused silu+mul+cast).
+    const res = compiledPreciseSwiglu(hidden, gate, xn);
     xn.dispose();
-    const prod = ops.mul(sg, xf);
-    sg.dispose();
-    xf.dispose();
-    const res = prod.astype(hidden.dtype);
-    prod.dispose();
     return res;
   }
 }
 
 /** Full (softmax) attention with output gate + q/k norm + partial RoPE. */
-class Qwen3Attention {
+export class Qwen3Attention {
   readonly qProj: QuantizedLinear;
   readonly kProj: QuantizedLinear;
   readonly vProj: QuantizedLinear;
@@ -244,23 +311,28 @@ class Qwen3Attention {
 
     const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
     attn.dispose();
-    let merged = ops.reshape(attnT, [B, L, -1]);
+    const merged = ops.reshape(attnT, [B, L, -1]);
     attnT.dispose();
-    // Output gate: o_proj(output * sigmoid(gate)).
-    const sg = ops.sigmoid(gate);
+    // qwen3_next.py:158  return self.o_proj(output * mx.sigmoid(gate))
+    // INLINE, not @mx.compile — copy the exact ops.
+    const sig = ops.sigmoid(gate);
     gate.dispose();
-    merged = disposing(merged, ops.mul(merged, sg));
-    sg.dispose();
-    const out = this.oProj.forward(merged);
+    const gated = ops.mul(merged, sig);
     merged.dispose();
+    sig.dispose();
+    const out = this.oProj.forward(gated);
+    gated.dispose();
     return out;
   }
 }
 
-class Qwen3MLP {
+export class Qwen3MLP {
   readonly gate: QuantizedLinear;
   readonly up: QuantizedLinear;
   readonly down: QuantizedLinear;
+  /** FaithfulQwen35 sets this to run the oracle's compiled `swiglu` instead of
+   *  the unfused ops.silu + ops.mul path. */
+  useCompiledActivation = false;
 
   constructor(weights: Weights, config: ModelConfig, prefix: string) {
     this.gate = QuantizedLinear.load(weights, `${prefix}.gate_proj`, config);
@@ -271,10 +343,10 @@ class Qwen3MLP {
   forward(x: MlxArray): MlxArray {
     const g = this.gate.forward(x);
     const u = this.up.forward(x);
-    const silu = ops.silu(g);
+    // Oracle: down_proj(swiglu(gate_proj(x), up_proj(x))) — swiglu ALWAYS compiled
+    // (mlx-lm's @mx.compile swiglu; no unfused silu+mul, matches its kernel set).
+    const hidden = compiledSwiglu(g, u);
     g.dispose();
-    const hidden = ops.mul(silu, u);
-    silu.dispose();
     u.dispose();
     const out = this.down.forward(hidden);
     hidden.dispose();
@@ -282,7 +354,7 @@ class Qwen3MLP {
   }
 }
 
-class Qwen3Layer {
+export class Qwen3Layer {
   readonly isLinear: boolean;
   readonly linearAttn: GatedDeltaNet | null = null;
   readonly selfAttn: Qwen3Attention | null = null;

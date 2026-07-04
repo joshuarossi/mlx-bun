@@ -45,6 +45,15 @@ REPORT="benchmarks-h2h-$(date +%F)-$(hostname -s).md"
 # Comparisons 1 & 2 (vs mlx-lm and vs optiq, direct + server arenas).
 bun scripts/bench-h2h.ts all --force "$@"
 
+# Comparison 0 — faithful-base optimization matrix. The parity base
+# (MLX_BUN_FAITHFUL=1, byte-identical to mlx-lm) vs each of our old
+# optimizations layered on individually vs the shipped default vs mlx-lm, per
+# model. This is the "what should the serving default be" table. Direct arena
+# (spawns the mlx-lm python; no servers). cpm5 + e4b + 12B.
+echo ""
+echo "=== comparison 0: faithful-base optimization matrix (parity base + layered opts vs mlx-lm) ==="
+bun scripts/bench-faithful-matrix.ts --tokens 256 --models cpm5,e4b,12B
+
 # Comparison 3 (our perf vs our compat: KL + similar scores). Paired and
 # in-process, so meaningful right after the matrix; records eval-DB rows the
 # unified report reads. e4b (default) + 12B.

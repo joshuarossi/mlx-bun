@@ -30,6 +30,7 @@ import {
 } from "./fused-swiglu-kernel";
 import { steelLinear } from "./steel-linear-kernel";
 import { fusedMlp } from "./fused-mlp-kernel";
+import { CompiledFunction } from "../mlx/compile";
 
 /** Break the graph at a boundary: contiguous → eval → fresh graph-free leaf — the
  *  exact primitive the segmented TRAINER uses so MLX never plans across boundaries
@@ -65,6 +66,25 @@ function ourLinear(lin: QuantizedLinear, x: MlxArray): MlxArray {
     : disposing(y, ops.reshape(y, [...x.shape.slice(0, -1), lin.w.shape[0]!]));
 }
 
+/** Verbatim port of mlx_lm/models/activations.py:
+ *    `@partial(mx.compile, shapeless=True) def swiglu(gate, x): return nn.silu(gate) * x`
+ *  mx.compile fuses sigmoid + mul + mul into ONE kernel (mlx-lm's decode
+ *  `CV2ISigmoid…Multiply`) instead of our three separate dispatches. Traced
+ *  once, replayed thereafter. Used on the decode (M=1) path only. */
+let _swigluClosure: CompiledFunction | null = null;
+export function compiledSwiglu(gate: MlxArray, up: MlxArray): MlxArray {
+  if (!_swigluClosure) {
+    _swigluClosure = new CompiledFunction((inputs) => {
+      const g = inputs[0]!, u = inputs[1]!;              // nn.silu(gate) * x
+      const sig = ops.sigmoid(g);
+      const silu = ops.mul(g, sig); sig.dispose();
+      const out = ops.mul(silu, u); silu.dispose();
+      return [out];
+    });
+  }
+  return _swigluClosure.apply([gate, up])[0]!;
+}
+
 /** How often the inference fused path materializes the residual stream (layers). */
 const EVAL_EVERY = Math.max(1, Number(process.env.MLX_BUN_SWIGLU_EVAL_EVERY) || 1);
 import { flashAttention, getTrainingAttn, flashSupported } from "./flash-attention";
@@ -82,6 +102,11 @@ export interface PrefixPlan { P: number; Rc: number; Rr: number }
 let _prefixPlan: PrefixPlan | null = null;
 export function setMiniCpmPrefixPlan(p: PrefixPlan | null): void {
   _prefixPlan = p;
+}
+/** True while a block-wise prefix-shared RoPE plan is active (ORPO forward).
+ *  The generated debranched fast path must fall back to the monolith then. */
+export function miniCpmPrefixPlanActive(): boolean {
+  return _prefixPlan != null;
 }
 
 /** Block-wise RoPE for the prefix-shared concat [prompt; chosen; rejected] along
@@ -108,7 +133,7 @@ function ropeBlocks(x: MlxArray, dims: number, base: number, plan: PrefixPlan): 
   return out;
 }
 
-class LlamaAttention {
+export class LlamaAttention {
   readonly qProj: QuantizedLinear;
   readonly kProj: QuantizedLinear;
   readonly vProj: QuantizedLinear;
@@ -193,7 +218,7 @@ class LlamaAttention {
   }
 }
 
-class LlamaMLP {
+export class LlamaMLP {
   readonly gate: QuantizedLinear;
   readonly up: QuantizedLinear;
   readonly down: QuantizedLinear;
@@ -240,13 +265,23 @@ class LlamaMLP {
     }
     const gate = this.gate.forward(x);
     const up = this.up.forward(x);
-    const sig = ops.sigmoid(gate);
-    const silu = ops.mul(gate, sig);
-    gate.dispose();
-    sig.dispose();
-    const hidden = ops.mul(silu, up);
-    silu.dispose();
-    up.dispose();
+    // Decode (M=1): fuse silu·up into one kernel (mlx_lm activations.py swiglu).
+    // Plain sigmoid+mul+mul otherwise (M>1 prefill/training, or inside a compile
+    // trace) — identical math either way. MLX_BUN_COMPILED_SWIGLU=0 disables.
+    let hidden: MlxArray;
+    if (M === 1 && !isCompiledTrace() && process.env.MLX_BUN_COMPILED_SWIGLU !== "0") {
+      hidden = compiledSwiglu(gate, up);
+      gate.dispose();
+      up.dispose();
+    } else {
+      const sig = ops.sigmoid(gate);
+      const silu = ops.mul(gate, sig);
+      gate.dispose();
+      sig.dispose();
+      hidden = ops.mul(silu, up);
+      silu.dispose();
+      up.dispose();
+    }
     const m = this.down.forward(hidden);
     hidden.dispose();
     if (residual == null) return m;
@@ -254,7 +289,7 @@ class LlamaMLP {
   }
 }
 
-class LlamaLayer {
+export class LlamaLayer {
   readonly attn: LlamaAttention;
   readonly mlp: LlamaMLP;
   readonly inputNorm: RMSNorm;

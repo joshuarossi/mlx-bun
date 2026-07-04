@@ -43,10 +43,39 @@ export function sigmoid(a: MlxArray, s: S = gpuStream): MlxArray {
   return new MlxArray(outArray("sigmoid", (o) => C.mlx_sigmoid(o, a.handle, s)));
 }
 
-/** Scalar constant with the same dtype as `like` (python weak-scalar semantics). */
+/** f32 → bf16 truncation with round-to-nearest-even, returning the 2
+ *  little-endian bytes of the bf16 value. Matches mlx's
+ *  `static_cast<bfloat16_t>(float)` bit-for-bit so a host-built bf16 scalar is
+ *  numerically identical to `f32_scalar.astype(bf16)` — just without the GPU
+ *  Copy (astype) kernel. */
+function bf16Bytes(value: number): Uint8Array {
+  const fb = new Float32Array([value]);
+  const bits = new Uint32Array(fb.buffer)[0]!;
+  let hi16: number;
+  if (((bits >>> 23) & 0xff) === 0xff) {
+    // inf / nan: keep the high 16 bits, and keep a NaN a (quiet) NaN.
+    hi16 = (bits >>> 16) & 0xffff;
+    if ((bits & 0x7fffff) !== 0) hi16 |= 0x40;
+  } else {
+    const roundingBias = 0x7fff + ((bits >>> 16) & 1); // round to nearest even
+    hi16 = ((bits + roundingBias) >>> 16) & 0xffff;
+  }
+  return new Uint8Array([hi16 & 0xff, (hi16 >>> 8) & 0xff]);
+}
+
+/** Scalar constant with the same dtype as `like` (python weak-scalar semantics).
+ *  Built HOST-SIDE at the target dtype — mlx's own scalar→array path constructs
+ *  a bf16/f32 constant directly, so `scalar * bf16_array` is a single multiply.
+ *  Going through an f32 leaf + GPU `.astype(bf16)` (the old path) emits a
+ *  separate Copy kernel (`v_copy…`) that the reference never dispatches. */
 export function scalarLike(value: number, like: MlxArray): MlxArray {
+  if (like.dtype === Dtype.float32)
+    return MlxArray.fromFloat32(new Float32Array([value]), []);
+  if (like.dtype === Dtype.bfloat16)
+    return MlxArray.fromBytesCopy(bf16Bytes(value), [], Dtype.bfloat16);
+  // f16 / other float dtypes: keep the astype path (rare here; no bit-exact JS
+  // converter written for them yet).
   const f = MlxArray.fromFloat32(new Float32Array([value]), []);
-  if (like.dtype === Dtype.float32) return f;
   const cast = f.astype(like.dtype);
   f.dispose();
   return cast;
@@ -311,21 +340,35 @@ export function pow(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
   return new MlxArray(outArray("power", (o) => C.mlx_power(o, a.handle, b.handle, s)));
 }
 
-/** nn.gelu_approx: 0.5 x (1 + tanh(√(2/π) (x + 0.044715 x³))) — composed
- *  exactly as mlx's python source: x**3 is mx.power (NOT x·x·x — they
- *  round differently in bf16), scalars promote weakly to x's dtype. */
+/** nn.gelu_approx: 0.5 * x * (1 + tanh(√(2/π) * (x + 0.044715 * x³))) — composed
+ *  exactly as mlx's python source, INCLUDING operand order: x**3 is mx.power
+ *  (NOT x·x·x — they round differently in bf16), and every scalar·array product
+ *  puts the SCALAR FIRST (`0.5 * x`, not `x * 0.5`). Multiply is commutative so
+ *  this is bit-identical, but it makes the compiled geglu graph's operand string
+ *  (`Multiply(C, V)`) match the oracle's fused kernel exactly. Scalars promote
+ *  weakly to x's dtype. */
 export function geluApprox(x: MlxArray, s: S = gpuStream): MlxArray {
-  const three = scalarLike(3, x);
-  const x3 = pow(x, three, s);
-  const cx3 = mulScalar(x3, 0.044715, s);
-  const inner = add(x, cx3, s);
-  const scaled = mulScalar(inner, Math.sqrt(2 / Math.PI), s);
+  // EXACT copy of mlx's graph for
+  //   0.5 * x * (1 + tanh(√(2/π) * (x + 0.044715 * x**3)))
+  // as dumped via mx.export_to_dot. mlx's `__rmul__`/`__radd__` canonicalize
+  // every `scalar OP array` to `array OP scalar`, so every commutative product/
+  // sum below is ARRAY-FIRST, constant-second (NOT scalar-first). Build order
+  // follows Python left-to-right (`0.5 * x` first). Same libmlx compiles this to
+  // the identical fused kernel.
+  const cHalf = scalarLike(0.5, x);
+  const halfx = mul(x, cHalf, s);                           // Multiply(x, 0.5)
+  const cThree = scalarLike(3, x);
+  const x3 = pow(x, cThree, s);                             // Power(x, 3)
+  const cCoef = scalarLike(0.044715, x);
+  const cx3 = mul(x3, cCoef, s);                            // Multiply(x**3, 0.044715)
+  const inner = add(x, cx3, s);                             // Add(x, cx3)
+  const cSqrt = scalarLike(Math.sqrt(2 / Math.PI), x);
+  const scaled = mul(inner, cSqrt, s);                      // Multiply(inner, √(2/π))
   const t = tanh(scaled, s);
-  const one = scalarLike(1, x);
-  const t1 = add(one, t, s);
-  const halfx = mulScalar(x, 0.5, s);
-  const out = mul(halfx, t1, s);
-  for (const a of [three, x3, cx3, inner, scaled, t, one, t1, halfx]) a.dispose();
+  const cOne = scalarLike(1, x);
+  const t1 = add(t, cOne, s);                               // Add(tanh, 1)
+  const out = mul(halfx, t1, s);                            // Multiply(halfx, 1+tanh)
+  for (const a of [cHalf, halfx, cThree, x3, cCoef, cx3, inner, cSqrt, scaled, t, cOne, t1]) a.dispose();
   return out;
 }
 
@@ -437,13 +480,18 @@ export function arange(start: number, stop: number, step: number, dtype: Dtype, 
   const cached = arangeCache.get(key);
   if (cached) return cached.slice([0], [n], s);
 
-  const data = new Int32Array(n);
-  for (let i = 0; i < n; i++) data[i] = start + i * step;
-  let arr = MlxArray.fromInt32(data, [n]);
-  if (dtype !== Dtype.int32) {
-    const cast = arr.astype(dtype, s);
-    arr.dispose();
-    arr = cast;
+  let arr: MlxArray;
+  if (dtype === Dtype.int32) {
+    // host-built int32 leaf (the Bun-f64-FFI-safe path — see note above).
+    const data = new Int32Array(n);
+    for (let i = 0; i < n; i++) data[i] = start + i * step;
+    arr = MlxArray.fromInt32(data, [n]);
+  } else {
+    // Native mlx Arange in the target dtype — matches mlx's `Arange` op exactly.
+    // The old `fromInt32 → .astype(dtype)` emitted a phantom int32→float Copy
+    // (an AsType the oracle never dispatches — e.g. the proportional-RoPE freq
+    // exponents). Integer start/step passed as doubles are exact.
+    arr = new MlxArray(outArray("arange", (o) => C.mlx_arange(o, start, stop, step, dtype, s)));
   }
   if (n >= ARANGE_CACHE_MIN) {
     arangeCache.set(key, arr);

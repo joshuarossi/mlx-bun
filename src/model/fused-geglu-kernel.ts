@@ -18,13 +18,16 @@ import { Dtype } from "../mlx/ffi";
 import { MetalKernel } from "../mlx/metal-kernel";
 import { CustomVjp } from "../mlx/custom-vjp";
 import * as ops from "../mlx/ops";
+import { faithfulMode, flagOn } from "../faithful";
 
 /** ON by default: the match-compat kernel is BIT-EXACT with the spelled-out
  *  path (kl --decode = 0 on e4b), so per the bit-parity-floor principle it
  *  ships on — every optimization we can keep while staying bit-exact.
  *  MLX_BUN_FUSED_GELU=0 opts out (e.g. the compile arm of the A/B). */
 export function fusedGeluEnabled(): boolean {
-  return process.env.MLX_BUN_FUSED_GELU !== "0";
+  // Defaults ON normally, OFF in the faithful base (which uses mlx-lm's
+  // @mx.compile geglu via compiledGeglu); either way an explicit flag wins.
+  return flagOn("MLX_BUN_FUSED_GELU", !faithfulMode());
 }
 
 /** Dispatch counter (a gate test asserts the kernel actually ran). */

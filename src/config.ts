@@ -38,6 +38,13 @@ export interface TextConfig {
   numExperts: number;
   topKExperts: number;
   moeIntermediateSize: number;
+  /** Qwen3-MoE sparse-block gating (qwen3_moe): a layer is MoE unless it is
+   *  in `mlpOnlyLayers` and `(idx+1) % decoderSparseStep == 0` selects it.
+   *  `normTopkProb` renormalizes the top-k gate weights. Defaults are inert
+   *  for non-qwen3_moe families. */
+  decoderSparseStep: number;
+  mlpOnlyLayers: number[];
+  normTopkProb: boolean;
   /** Qwen3.5 hybrid (gated-DeltaNet) geometry; 0/false for other families. */
   linearNumValueHeads: number;
   linearNumKeyHeads: number;
@@ -215,8 +222,12 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
     numKvSharedLayers: t.num_kv_shared_layers ?? 0,
     enableMoeBlock: t.enable_moe_block ?? false,
     numExperts: t.num_experts ?? 0,
-    topKExperts: t.top_k_experts ?? 0,
+    // gemma4 uses `top_k_experts`; qwen3_moe uses `num_experts_per_tok`.
+    topKExperts: t.top_k_experts ?? t.num_experts_per_tok ?? 0,
     moeIntermediateSize: t.moe_intermediate_size ?? 0,
+    decoderSparseStep: t.decoder_sparse_step ?? 1,
+    mlpOnlyLayers: t.mlp_only_layers ?? [],
+    normTopkProb: t.norm_topk_prob ?? false,
     linearNumValueHeads: t.linear_num_value_heads ?? 0,
     linearNumKeyHeads: t.linear_num_key_heads ?? 0,
     linearKeyHeadDim: t.linear_key_head_dim ?? 0,

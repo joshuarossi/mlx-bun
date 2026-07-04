@@ -225,11 +225,22 @@ class UniversalAttention {
   }
 }
 
-class UniversalMLP {
+/** swiglu(gate, up) = nn.silu(gate) * up as ONE call — the whole activation,
+ *  not just silu. FaithfulUniversalDense swaps in the `@mx.compile` version
+ *  (dense-faithful.ts::compiledSwiglu) to fuse it into mlx-lm's single kernel;
+ *  null (default) keeps the L1-verified uncompiled composition. */
+export type SwigluFn = (gate: MlxArray, up: MlxArray) => MlxArray;
+
+export class UniversalMLP {
   readonly gate: AnyLinear | null;
   readonly up: AnyLinear | null;
   readonly gateUp: AnyLinear | null;
   readonly down: AnyLinear;
+  /** Injectable fused swiglu (silu(gate)*up). Only consumed for the
+   *  swiglu / fused_swiglu kinds; geglu/geglu_approx/gelu_mlp are unaffected
+   *  (the oracle does NOT @mx.compile those — gemma/gemma2/starcoder2 use a
+   *  plain nn.gelu composition). */
+  swigluFn: SwigluFn | null = null;
 
   constructor(
     weights: Weights,
@@ -278,6 +289,18 @@ class UniversalMLP {
       up = this.up!.forward(x);
     }
 
+    // swiglu / fused_swiglu with the compiled activation live: silu(gate)*up
+    // is ONE fused call (mlx-lm's `@mx.compile swiglu`), matching the oracle
+    // kernel set exactly. Faithful path only; the default fn is null.
+    if (this.swigluFn && (this.kind === "swiglu" || this.kind === "fused_swiglu")) {
+      const hidden = this.swigluFn(gate, up);
+      gate.dispose();
+      up.dispose();
+      const out = this.down.forward(hidden);
+      hidden.dispose();
+      return out;
+    }
+
     let act: MlxArray;
     if (this.kind === "geglu") {
       act = ops.geluPrecise(gate); // gemma-1: nn.gelu (erf)
@@ -299,7 +322,7 @@ class UniversalMLP {
   }
 }
 
-class UniversalLayer {
+export class UniversalLayer {
   readonly attn: UniversalAttention;
   readonly mlp: UniversalMLP;
   /** pre/gemma2/glm4: input_layernorm. post (olmo2): unused (null). */

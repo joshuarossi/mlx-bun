@@ -54,6 +54,72 @@ import {
 import { fusedGeglu, fusedGegluDifferentiable, fusedGeluEnabled, fusedGeluSupported, fusedGeluTraining } from "./fused-geglu-kernel";
 import { Checkpoint } from "../mlx/checkpoint";
 import { flashAttention, getTrainingAttn, flashSupported } from "./flash-attention";
+import { CompiledFunction } from "../mlx/compile";
+import { faithfulMode } from "../faithful";
+
+/** Verbatim port of mlx_lm/models/gemma4_text.py:
+ *    `@partial(mx.compile, shapeless=True) def geglu(gate, x): return nn.gelu_approx(gate) * x`
+ *  The oracle @mx.compile's this and uses it for EVERY MLP shape (dense MLP
+ *  __call__ line 114, and the SwitchGLU GeGLU activation line 149-150). Our
+ *  default MLP runs the SAME math UNFUSED (standalone ops.geluApprox + ops.mul),
+ *  a different dispatched kernel set + the per-op host tax the MiniCPM5 swiglu
+ *  fix measured at ~5%. This closure fuses geluApprox's ~9 element-wise ops + the
+ *  final mul into one traced-once/replayed graph, matching the oracle's kernel
+ *  set. `geluApprox` is composed op-for-op from the same primitives as the
+ *  oracle's nn.gelu_approx (0.5·x·(1+tanh(√(2/π)(x+0.044715·x³)))), so the
+ *  compiled graph is the oracle's geglu graph. Autograd-safe (verified: the vjp
+ *  through this closure is bit-identical to the plain composition). */
+/** When true, MLP.forward / SwitchGLU.forward route the geglu activation through
+ *  the compiled closure (matching the oracle's @mx.compile geglu) instead of the
+ *  spelled-out ops.geluApprox+ops.mul. Off by default → the existing byte-exact
+ *  path is untouched; FaithfulGemma4 sets it (within the plain envelope) around a
+ *  forward. A module-level toggle (mirrors setMiniCpmPrefixPlan) because MLP is
+ *  constructed per-layer and holds no model back-reference — and this keeps the
+ *  ONE compiled geglu closure shared across every layer's MLP. */
+let _faithfulGeglu = false;
+export function setFaithfulGeglu(on: boolean): void {
+  _faithfulGeglu = on;
+}
+export function faithfulGegluActive(): boolean {
+  return _faithfulGeglu || faithfulMode();
+}
+
+let _gegluClosure: CompiledFunction | null = null;
+export function compiledGeglu(gate: MlxArray, up: MlxArray): MlxArray {
+  if (!_gegluClosure) {
+    _gegluClosure = new CompiledFunction((inputs) => {
+      const g = inputs[0]!, u = inputs[1]!; // nn.gelu_approx(gate) * x
+      const act = ops.geluApprox(g);
+      const out = ops.mul(act, u); act.dispose();
+      return [out];
+    });
+  }
+  return _gegluClosure.apply([gate, up])[0]!;
+}
+
+/** gemma4_text.py `@partial(mx.compile) def logit_softcap(softcap, x):
+ *    return mx.tanh(x / softcap) * softcap`
+ *  The oracle fuses divide+tanh+multiply into ONE kernel; our default
+ *  `logitSoftcap` runs them UNFUSED (standalone div + tanh + mul → a separate
+ *  `vn_Tanh` + `vsn_Divide`). Keyed by cap so the softcap is baked as a graph
+ *  constant (matching the oracle's weak-scalar → the `…Divide…Tanh…Multiply…_VC_`
+ *  kernel). Used on the faithful path (matches mlx-lm's dispatched kernel set). */
+const _softcapClosures = new Map<number, CompiledFunction>();
+export function compiledLogitSoftcap(x: MlxArray, cap: number): MlxArray {
+  let fn = _softcapClosures.get(cap);
+  if (!fn) {
+    fn = new CompiledFunction((inputs) => {
+      const xx = inputs[0]!;                    // tanh(x / softcap) * softcap
+      const capArr = ops.scalarLike(cap, xx);
+      const scaled = ops.div(xx, capArr);
+      const t = ops.tanh(scaled); scaled.dispose();
+      const out = ops.mul(t, capArr); t.dispose(); capArr.dispose();
+      return [out];
+    });
+    _softcapClosures.set(cap, fn);
+  }
+  return fn.apply([x])[0]!;
+}
 
 /** Optional gradient-checkpointing context for the training forward. When set,
  *  forwardLayers wraps each layer in a Checkpoint so its interior activations
@@ -344,6 +410,12 @@ class MLP {
       h = fusedGeluTraining() ? fusedGegluDifferentiable(g, u) : fusedGeglu(g, u);
       g.dispose();
       u.dispose();
+    } else if (faithfulGegluActive() && !isCompiledTrace()) {
+      // Oracle geglu(gate_proj(x), up_proj(x)): @mx.compile'd gelu_approx·mul in
+      // one kernel set (gemma4-faithful path). Autograd-safe → covers training.
+      h = compiledGeglu(g, u);
+      g.dispose();
+      u.dispose();
     } else {
       const act = ops.geluApprox(g);
       g.dispose();
@@ -464,12 +536,21 @@ class SwitchGLU {
     const xUp = this.up.forward(h, idx, doSort);
     const xGate = this.gate.forward(h, idx, doSort);
     h.dispose();
-    // GeGLU activation: gelu_approx(gate) · up (same composition as MLP)
-    const act = ops.geluApprox(xGate);
-    xGate.dispose();
-    const mid = ops.mul(act, xUp);
-    act.dispose();
-    xUp.dispose();
+    // GeGLU activation: gelu_approx(gate) · up (same composition as MLP). The
+    // oracle SwitchGLU uses the SAME @mx.compile'd geglu (activation=GeGLU(),
+    // switch_layers.py) → faithful path routes through the shared closure.
+    let mid: MlxArray;
+    if (faithfulGegluActive() && !isCompiledTrace()) {
+      mid = compiledGeglu(xGate, xUp);
+      xGate.dispose();
+      xUp.dispose();
+    } else {
+      const act = ops.geluApprox(xGate);
+      xGate.dispose();
+      mid = ops.mul(act, xUp);
+      act.dispose();
+      xUp.dispose();
+    }
     let y = this.down.forward(mid, idx, doSort);
     mid.dispose();
     if (idx !== indices) idx.dispose();
@@ -1180,7 +1261,10 @@ export class Gemma4Model {
   logitsFromHidden(h: MlxArray): MlxArray {
     let logits = this.embed.asLinear(h);
     const softcap = this.config.text.finalLogitSoftcapping;
-    if (softcap !== null) logits = disposing(logits, logitSoftcap(logits, softcap));
+    if (softcap !== null)
+      logits = disposing(logits, faithfulGegluActive() && !isCompiledTrace()
+        ? compiledLogitSoftcap(logits, softcap)   // fused, matches @mx.compile logit_softcap
+        : logitSoftcap(logits, softcap));
     return logits;
   }
 

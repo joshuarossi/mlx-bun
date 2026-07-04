@@ -54,3 +54,4 @@ goldens/**/*.bin
 # scripts/fetch-test-fixtures.sh; shas pinned there). Training data/config
 # for them stay tracked in fixtures/adapters/.
 fixtures/adapters/*/adapters.safetensors
+bench-faithful-matrix-*

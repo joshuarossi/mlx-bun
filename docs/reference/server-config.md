@@ -90,7 +90,7 @@ These ride all three protocol surfaces (`/v1/chat/completions`,
 ## Environment levers
 
 The CLI flags above set these; you can also export them directly (e.g.
-for `bun scripts/serve.ts` or paired A/B harnesses). One has no CLI flag.
+for `bun scripts/serve.ts` or paired A/B harnesses). Three have no CLI flag.
 
 | Env var | CLI flag | Default | Effect |
 | --- | --- | --- | --- |
@@ -99,6 +99,8 @@ for `bun scripts/serve.ts` or paired A/B harnesses). One has no CLI flag.
 | `MLX_BUN_FUSED_DECODE` | `--fused-decode` | off (`==="1"`) | Tile quantized decode SDPA. |
 | `MLX_BUN_NO_FUSED_SDPA` | `--fused-sdpa` (inverted) | fused on | `=1` forces the stock unfused SDPA everywhere. |
 | `MLX_BUN_FUSED_GELU` | *(none)* | on (`!=="0"`) | Fused GeGLU MLP kernel. Bit-exact, so it stays on both lanes; env-only opt-out. |
+| `MLX_BUN_COMPILED_SWIGLU` | *(none)* | on (`!=="0"`) | `mx.compile`'d SwiGLU (`silu(gate)·up` → one kernel) on MiniCPM5 decode (M=1), porting mlx-lm's `activations.py`. Bit-exact (passes the exact logit-parity gate), both lanes; env-only opt-out. +5.5% CPM5 decode. |
+| `MLX_BUN_CPM5_FAITHFUL` | *(none)* | off (`==="1"`) | Swap the MiniCPM5 backend to `FaithfulMiniCPM5` — an exact op-for-op copy of mlx-lm's `llama.py` + `activations.py` (`src/model/minicpm5-faithful.ts`), selected in `createModel`. Bit-exact to the golden; an A/B reference for comparing our optimized `MiniCPM5Model` against a verbatim mlx-lm reproduction. Falls back to the monolith outside the plain-llama envelope. |
 | `MLX_BUN_FORCE_WIRE` | `--force-wire` | off (`==="1"`) | Wire weights for the generation. |
 
 ## Execution modes: serial vs. `--batch N`

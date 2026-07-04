@@ -30,6 +30,15 @@ export function isQwen3Config(config: ModelConfig): boolean {
   return config.modelType === "qwen3";
 }
 
+/** Qwen3-MoE (model_type `qwen3_moe`, Qwen3MoeForCausalLM) — plain-qwen3
+ *  attention (per-head q/k norm, GQA, RoPE) with a sparse MoE FFN
+ *  (gate Linear -> precise softmax -> top-k -> renormalize -> SwitchGLU experts
+ *  with compiled swiglu). Distinct from the qwen3 embedding backbone and the
+ *  qwen3_5 gated-DeltaNet hybrid. */
+export function isQwen3MoeConfig(config: ModelConfig): boolean {
+  return config.modelType === "qwen3_moe";
+}
+
 /** Speculative-decoding drafters (e.g. `gemma4_assistant`) are companion
  *  artifacts to a target model — Q-only, centroid-head, no standalone LM
  *  head. They are never servable/selectable on their own (the spec path
@@ -57,6 +66,7 @@ export function supportTier(modelType: string, repoId = ""): "targeted" | "gener
   // qwen3_5 / qwen3_5_text (dense hybrid). The MoE variant is a separate type.
   if (modelType === "qwen3_5" || modelType === "qwen3_5_text") return "targeted";
   if (modelType === "qwen3") return "targeted"; // plain Qwen3 (embedding backbone)
+  if (modelType === "qwen3_moe") return "targeted"; // Qwen3-MoE (sparse experts)
   if (modelType === "llama" && repoId.toLowerCase().includes("minicpm5-1b-optiq-4bit"))
     return "targeted";
   // Tier-0 generic fallback: the universal-dense descriptor table.
@@ -72,7 +82,8 @@ export function isSupportedModelConfig(config: ModelConfig): boolean {
   if (isDrafterModelType(config.modelType)) return false;
   if (
     config.modelType.startsWith("gemma4") || isMiniCPM5Config(config) ||
-    isQwen35Config(config) || isQwen3Config(config) || isDiffusionGemmaConfig(config)
+    isQwen35Config(config) || isQwen3Config(config) || isQwen3MoeConfig(config) ||
+    isDiffusionGemmaConfig(config)
   ) return true;
   // Generic tier: an arch descriptor exists for this model_type (and its
   // config parses — a malformed config is unsupported, not a crash).

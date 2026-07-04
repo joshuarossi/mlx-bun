@@ -89,15 +89,18 @@ export class MetalKernel {
       C.mlx_fast_metal_kernel_config_set_thread_group(cfg, call.threadGroup[0], call.threadGroup[1], call.threadGroup[2]);
       if (call.initValue !== undefined)
         C.mlx_fast_metal_kernel_config_set_init_value(cfg, call.initValue);
-      for (const [k, v] of Object.entries(call.templateInts ?? {})) {
-        const kb = Buffer.from(k + "\0", "utf8");
-        keepAlive.push(kb);
-        C.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, ptr(kb), v);
-      }
+      // Dtypes-first, then ints, to MATCH mlx's own specialization-name order
+      // (mlx-lm's gated_delta_step passes [("InT",…),("StT",…),("Dk",…),…]).
+      // Order affects only the generated name/cache-key, not binding (named args).
       for (const [k, v] of Object.entries(call.templateDtypes ?? {})) {
         const kb = Buffer.from(k + "\0", "utf8");
         keepAlive.push(kb);
         C.mlx_fast_metal_kernel_config_add_template_arg_dtype(cfg, ptr(kb), v);
+      }
+      for (const [k, v] of Object.entries(call.templateInts ?? {})) {
+        const kb = Buffer.from(k + "\0", "utf8");
+        keepAlive.push(kb);
+        C.mlx_fast_metal_kernel_config_add_template_arg_int(cfg, ptr(kb), v);
       }
 
       const handles = new BigUint64Array(inputs.map((a) => a.handle));
