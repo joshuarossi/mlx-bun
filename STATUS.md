@@ -120,6 +120,22 @@ or shelved with numbers — ledger:
    Josh's priority ranking: spec×prompt-cache composition (parity-plan
    §7.6) then prompt-cache-under-batching (perf-path P3) — the disk-cache
    track. Debug lever: `MLX_BUN_GRAMMAR_DEBUG=1`.
+   **FINDING (2026-07-04, 12B mode-matrix): the prompt cache MISSES on
+   multi-turn 12B traffic** — turn-2 TTFT 8.9 s (full re-prefill) instead
+   of ~200 ms. Mechanism (verified in prompt-cache.ts take()): at context
+   > sliding window the rotating rings have WRAPPED (untrimmable, and
+   quantized full layers can't trim mid-group), so a hit requires an
+   EXACT prefix extension — but clients send the assistant reply back as
+   TEXT, and any decode→encode roundtrip drift (12B markdown/whitespace)
+   diverges by a token → trim needed → impossible → total miss. e4b hits
+   only because its replies happened to roundtrip exactly. This gates the
+   whole disk-cache track's value on the flagship model; candidate fix =
+   an additional prompt-boundary entry snapshot (chip filed). The
+   12B/e4b mode-matrix results live in benchmarks-modes-2026-07-03/04.md
+   (local artifacts); headline 12B: decode pinned ~24 t/s in EVERY tier
+   (the wall), prefill ~260 t/s (M4 Pro compute-bound), batch4 agg 2×,
+   grammar cells need a truncation-vs-nonconformance distinction in the
+   bench (order-dependent FAILs reproduce as PASS in isolation).
    **Spec-decode sources (Josh directive 2026-07-04): DSpark is the GOAL
    drafter.** The Llama 3B+1B pair exists ONLY as the L1 oracle cell
    (mlx-lm can only speculate two-model, so proving the serve loop
