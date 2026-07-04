@@ -140,26 +140,38 @@ or shelved with numbers — ledger:
    option inventory). e4b loaded-machine shape: cold long-TTFT ~2.0 s →
    **cache-ram 125 ms / cache-ssd 231 ms**; batch4 agg 111.6 t/s vs
    serial-conc4 52.4 (TTFT p50 302 ms vs 3.8 s).
-3. **Menu bar app** (SwiftUI + signed binary as sidecar) — adoption map #2,
+3. **Decode-speed program** — THE ranked path to faster tokens, written
+   for pickup: [docs/design/decode-speed-program.md](docs/design/decode-speed-program.md)
+   (2026-07-04). Baseline decode is at the bandwidth wall (mode-matrix
+   confirmed the roofline); the levers, in order: **1a AssistantSource**
+   (gemma assistant drafter behind `--draft-model`; artifacts downloaded,
+   L2 oracle, 12B γ=1 ≈ 1.09× already measured) → **2 mlx bump**
+   (qmv_wide merged upstream + gather_qmm M=1 in flight = the 26B fix;
+   re-run parity + bench-modes) → **3 oQ quant spike** (~3.5 bpw at equal
+   KL ≈ +10–15% decode) → **1b cheaper drafter head** → **1c DSpark**
+   (the GOAL drafter, ~2–3× on 27B; blocked on its research milestones,
+   not serve wiring) + §4 host residuals as filler. Scoreboard =
+   `scripts/bench-modes.ts` after each lever.
+4. **Menu bar app** (SwiftUI + signed binary as sidecar) — adoption map #2,
    Josh wants it; /Applications/oMLX.app is the structural reference.
-4. **Batching remainder not in the integration plan** — P1 quantized KV at
+5. **Batching remainder not in the integration plan** — P1 quantized KV at
    B>1 + P2 perf kernel at B>1 (sized by the Phase E matrix first), P3
    prompt-cache/adapters/default-review tail, P4 device-side step chaining
    (the cpm5 single-stream −20% counter).
    [docs/design/batching-perf-path.md](docs/design/batching-perf-path.md);
    older queue: batching-v2-plan steps 4–10.
-5. **SSD tier P4 hardening** — kill-mid-write e2e, adapter-ns isolation e2e,
+6. **SSD tier P4 hardening** — kill-mid-write e2e, adapter-ns isolation e2e,
    scheme-flip invalidation e2e.
    [docs/design/ssd-kv-cold-tier.md](docs/design/ssd-kv-cold-tier.md).
-6. **oQ-style quantization spike** in `convert` (eval-gated; arXiv-lens).
-7. **Web-UI fix wave** — 6 bugs, landing order in
+7. **oQ-style quantization spike** in `convert` (eval-gated; arXiv-lens).
+8. **Web-UI fix wave** — 6 bugs, landing order in
    [docs/planning/web-ui-pass-plan.md](docs/planning/web-ui-pass-plan.md).
-8. **Remaining compat verbs/flags** (`--draft-model` itself is now
+9. **Remaining compat verbs/flags** (`--draft-model` itself is now
    integration-plan Phase B; still open: cache_prompt, evaluate,
    awq/dwq/gptq; flags: --chat-template*, --min-p, --log-level,
    --allowed-origins, --prompt-concurrency, --prefill-step-size) —
    [docs/design/mlx-lm-tool-parity-plan.md](docs/design/mlx-lm-tool-parity-plan.md).
-9. **Curve sampler H2/H3 preregistered run**
+10. **Curve sampler H2/H3 preregistered run**
    ([docs/planning/curve-sampler-research-plan.md](docs/planning/curve-sampler-research-plan.md))
    · **dynamic-λ controller** ([docs/design/orpo-dynamic-lambda.md](docs/design/orpo-dynamic-lambda.md))
    · fit-as-recommender + memory-docs banner pass + `mlx-bun route` verb
