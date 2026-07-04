@@ -34,6 +34,21 @@ grammar composition, and `usage.speculation` telemetry ALL landed
 - **1b. Cheaper drafter head** — the 262k tied-embedding argmax every
   draft step dominates γ≥2 cost; capping/approximating it extends the win
   past γ=1 (same doc, "remaining levers").
+- **1d. Grammar-aware speculation (Josh's insight, 2026-07-04)** — the
+  grammar mask collapses the drafting problem on structured output:
+  (i) **jump-forward** — when the mask admits exactly ONE token
+  (structural JSON runs), emit it with NO forward at all and fold it into
+  the next verify window as a pre-accepted draft (zero-cost tokens,
+  20–40% of dense-schema output); (ii) **constrained drafting** — mask
+  the drafter too (matcher `rollBack` on rejection, the flagged
+  MLX_BUN_SPEC_GRAMMAR_DRAFT lever): our own matrix measured acceptance
+  DROP 51%→29% under grammar with a blind drafter — constrained drafting
+  flips that to ~1.0 on structural spans; (iii) **grammar-pruned draft
+  TREES** — a DSpark token tree's branching factor collapses under a
+  tight mask, concentrating the budget on content positions
+  (XGrammar-2's `traverse_draft_tree`, the U2 trigger in
+  structured-output.md). Agent output is majority-structural: this turns
+  speculation near-deterministic exactly where agents spend tokens.
 - **1c. DSpark (THE goal drafter)** — DFlash KV-injection, architecture
   verified (overfit τ=3.24, paper-range). Blockers are research, not
   serve wiring: 27B/12B retarget (regen+train, Josh's shell), data scale

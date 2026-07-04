@@ -157,6 +157,69 @@ function snapshotCache(c: Cache, dataOffset: number): { entry: CacheHeaderEntry;
 /** Persist `caches` (+ the exact token prefix they encode) to `path`.
  *  ATOMIC: written to `<path>.tmp`, fsync'd, renamed — a crash mid-write
  *  leaves only a .tmp orphan (ignored + reaped by SsdCacheStore.scan). */
+/** Zero-copy in-memory clone of a cache list at its CURRENT state — new
+ *  cache instances holding slice VIEWS of the live tensors (mlx arrays are
+ *  immutable: continued generation replaces the source caches' internal
+ *  arrays, it never mutates the shared buffers, so views are stable).
+ *  Built for the prompt-boundary prompt-cache snapshot (multi-turn agent
+ *  traffic: the reply's decode→encode roundtrip drift makes prompt+gen
+ *  entries untrimmable at context > sliding window — a prompt-only entry
+ *  is ALWAYS an exact prefix of the next turn, immune to drift). Must be
+ *  called while the caches hold EXACTLY the state to snapshot (post-wrap
+ *  rings cannot be rewound later). Same per-kind dispatch as
+ *  snapshotCache/loadKvCache. */
+export function cloneKvCaches(caches: Cache[]): Cache[] {
+  const view = (a: MlxArray): MlxArray => a.slice(a.shape.map(() => 0), [...a.shape]);
+  const liveView = (a: MlxArray, upTo: number): MlxArray => {
+    const [B, H, , D] = a.shape as [number, number, number, number];
+    return a.slice([0, 0, 0, 0], [B, H, upTo, D]);
+  };
+  const tripleView = (t: ops.QuantizedTensor, upTo: number | null): ops.QuantizedTensor => ({
+    packed: upTo === null ? view(t.packed) : liveView(t.packed, upTo),
+    scales: upTo === null ? view(t.scales) : liveView(t.scales, upTo),
+    biases: upTo === null ? view(t.biases) : liveView(t.biases, upTo),
+  });
+  const out: Cache[] = [];
+  try {
+    for (const c of caches) {
+      if (c instanceof RotatingQuantizedKVCache) {
+        if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
+        const n = new RotatingQuantizedKVCache(c.maxSize, c.groupSize, c.bits);
+        n.restoreState(tripleView(c.keys, null), tripleView(c.values, null), c.offset, c.ringIdx);
+        out.push(n);
+      } else if (c instanceof QuantizedKVCache) {
+        if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
+        const n = new QuantizedKVCache(c.groupSize, c.bits);
+        n.restoreState(tripleView(c.keys, c.offset), tripleView(c.values, c.offset), c.offset);
+        out.push(n);
+      } else if (c instanceof RotatingKVCache) {
+        if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
+        const n = new RotatingKVCache(c.maxSize);
+        n.restoreState(view(c.keys), view(c.values), c.offset, c.ringIdx);
+        out.push(n);
+      } else if (c instanceof SSMCache) {
+        if (!c.conv || !c.recurrent) throw new Error("cannot clone an empty cache");
+        const n = new SSMCache();
+        n.conv = view(c.conv);
+        n.recurrent = view(c.recurrent);
+        n.offset = c.offset;
+        out.push(n);
+      } else if (c instanceof KVCache) {
+        if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
+        const n = new KVCache();
+        n.restoreState(liveView(c.keys, c.offset), liveView(c.values, c.offset), c.offset);
+        out.push(n);
+      } else {
+        throw new Error("cloneKvCaches: unknown cache type");
+      }
+    }
+  } catch (err) {
+    for (const c of out) c.dispose();
+    throw err;
+  }
+  return out;
+}
+
 export function saveKvCache(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {}): void {
   const entries: CacheHeaderEntry[] = [];
   const blobs: Uint8Array[] = [];

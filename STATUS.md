@@ -120,17 +120,28 @@ or shelved with numbers — ledger:
    Josh's priority ranking: spec×prompt-cache composition (parity-plan
    §7.6) then prompt-cache-under-batching (perf-path P3) — the disk-cache
    track. Debug lever: `MLX_BUN_GRAMMAR_DEBUG=1`.
-   **FINDING (2026-07-04, 12B mode-matrix): the prompt cache MISSES on
-   multi-turn 12B traffic** — turn-2 TTFT 8.9 s (full re-prefill) instead
-   of ~200 ms. Mechanism (verified in prompt-cache.ts take()): at context
-   > sliding window the rotating rings have WRAPPED (untrimmable, and
-   quantized full layers can't trim mid-group), so a hit requires an
-   EXACT prefix extension — but clients send the assistant reply back as
-   TEXT, and any decode→encode roundtrip drift (12B markdown/whitespace)
-   diverges by a token → trim needed → impossible → total miss. e4b hits
-   only because its replies happened to roundtrip exactly. This gates the
-   whole disk-cache track's value on the flagship model; candidate fix =
-   an additional prompt-boundary entry snapshot (chip filed). The
+   **FOUND + FIXED (2026-07-04): the multi-turn prompt-cache miss.**
+   12B turn-2 TTFT was 8.9 s (full re-prefill): at context > sliding
+   window a hit requires an EXACT prefix (wrapped rings + quantized
+   groups can't trim), and TWO drift sources break exactness — the
+   assistant reply's decode→encode roundtrip, AND the template's
+   generation PRIMER (12B ends prompts with `<|channel>thought` tokens
+   the next turn's render never contains; found via token-level probe).
+   **The fix: stable-boundary snapshot** — promptIdsFor probes the
+   re-render (conversation + a fake reply) for the stable prefix;
+   generate() gains `snapshotAt`/`onPrefillDone` (prefill splits at the
+   boundary, fires while caches hold exactly that prefix);
+   `cloneKvCaches` (kv-store.ts) makes zero-copy view clones of all five
+   cache kinds; the server re-puts the boundary entry on every
+   substantial request (take() CONSUMES entries, so hits must re-seed
+   the next turn). **Measured: 12B turn-2 TTFT 9.0 s → 447 ms (2k) /
+   19.2 s → 461 ms (4k)**; e4b intact; server-compat + grammar +
+   spec-serve suites green. **Follow-up (open):** the bench's cache-ssd
+   CELL still misses on 12B (RAM cap=1 forces every turn through disk;
+   spill writes the files, e4b restores them, 12B doesn't — suspect
+   find/restore on its mixed rotating-quantized entries); real-world SSD
+   flow (normal RAM cap + restart survival) benefits from the boundary
+   entries via ordinary spill. The
    12B/e4b mode-matrix results live in benchmarks-modes-2026-07-03/04.md
    (local artifacts); headline 12B: decode pinned ~24 t/s in EVERY tier
    (the wall), prefill ~260 t/s (M4 Pro compute-bound), batch4 agg 2×,

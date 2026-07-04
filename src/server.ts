@@ -28,6 +28,7 @@ import { spliceImageTokens } from "./vision/diffusion-vision";
 import { createModel, type RuntimeModel } from "./model/factory";
 import { isMiniCPM5Config, isSupportedModelRecord } from "./model/support";
 import { generate, type GenerateOptions, type TokenLogprobs } from "./generate";
+import { cloneKvCaches } from "./kv-store";
 import {
   compileGrammarRequest, grammarEnabled, type GrammarRequest,
 } from "./grammar";
@@ -1223,10 +1224,37 @@ export function createServer(
       }
     }
     const caches = entry?.caches ?? ctx.model.makeCache();
+    // Prompt-boundary snapshot (the multi-turn agent fix, 2026-07-04): the
+    // prompt+gen entry put() below is UNTRIMMABLE at context > sliding
+    // window (wrapped rings) and under quantized KV (mid-group), so any
+    // decode→encode roundtrip drift in the reply the client sends back
+    // turns the next turn into a total miss (measured: 12B turn-2 TTFT
+    // 8.9 s instead of ~0.2 s). A prompt-ONLY entry is always an exact
+    // prefix of the next turn's rendering regardless of reply drift.
+    // Zero-copy (cloneKvCaches = slice views); only for substantial cold
+    // prefills, where the re-prefill it saves is worth an extra entry.
+    const boundary = Math.min(options.snapshotAt ?? promptIds.length, promptIds.length);
+    // Re-snapshot on EVERY substantial request whose stable boundary extends
+    // past the cached prefix — take() CONSUMES the entry it hands to this
+    // generation, so a hit destroys the boundary entry the NEXT turn needs;
+    // the clone is zero-copy views, so re-putting is ~free.
+    const snapshotBoundary =
+      !vision && boundary >= 256 && boundary > (entry?.tokens.length ?? 0);
     try {
       const gen = generate(ctx.model, promptIds, {
         ...options,
         cache: caches,
+        ...(snapshotBoundary
+          ? {
+              onPrefillDone: () => {
+                try {
+                  promptCache.put(promptIds.slice(0, boundary), cloneKvCaches(caches), cacheNs);
+                } catch (e) {
+                  console.warn(`prompt-boundary snapshot skipped: ${(e as Error).message}`);
+                }
+              },
+            }
+          : {}),
         ...(vision ? { promptEmbeddings: vision.embeddings, imageMask: vision.imageMask } : {}),
       });
       for await (const t of gen) {
@@ -1425,12 +1453,33 @@ export function createServer(
   const promptIdsFor = (
     req: ChatRequest,
     tools: ToolDefinition[] | null,
-  ): { ids: number[]; startInThinking: boolean } => {
-    const rendered = ctx.template.render(normalizeMessages(req.messages), templateOptionsFor(req, tools));
+  ): { ids: number[]; startInThinking: boolean; stableLen: number } => {
+    const opts = templateOptionsFor(req, tools);
+    const rendered = ctx.template.render(normalizeMessages(req.messages), opts);
     const ids = ctx.tokenizer.encode(rendered);
     // template includes <bos>; tokenizer post-processor also prepends one
     const trimmed = ids[0] === ids[1] && ids[0] === ctx.tokenizer.bosTokenId ? ids.slice(1) : ids;
-    return { ids: trimmed, startInThinking: promptEndsInOpenThink(rendered) };
+    // STABLE cache boundary: the prompt's tail is a generation primer (e.g.
+    // 12B's `<|channel>thought` tokens) that the NEXT turn's re-render does
+    // not contain — a cache entry ending there can never prefix-match again
+    // once the rings wrap. Probe by rendering this conversation as if a
+    // reply existed; the common prefix is what every future turn preserves.
+    let stableLen = trimmed.length;
+    try {
+      const probe = ctx.tokenizer.encode(
+        ctx.template.render(
+          [...normalizeMessages(req.messages), { role: "assistant", content: "x" }],
+          opts,
+        ),
+      );
+      const probeTrimmed =
+        probe[0] === probe[1] && probe[0] === ctx.tokenizer.bosTokenId ? probe.slice(1) : probe;
+      let i = 0;
+      const n = Math.min(trimmed.length, probeTrimmed.length);
+      while (i < n && trimmed[i] === probeTrimmed[i]) i++;
+      stableLen = i;
+    } catch { /* probe is best-effort; full boundary is the fallback */ }
+    return { ids: trimmed, startInThinking: promptEndsInOpenThink(rendered), stableLen };
   };
 
   const toolStreamMode = (tools: ToolDefinition[] | null): ToolStreamMode =>
@@ -1993,6 +2042,7 @@ export function createServer(
             m.content.some((p: any) => p.type === "image_url" || p.type === "image"),
         );
         let promptIds: number[];
+        let stableLen: number | null = null;
         // Whether the prompt primed an open <think> (Qwen3.5/MiniCPM5 thinking
         // on) so the model's output starts mid-reasoning — seeds the splitter.
         // Vision is Gemma4-only (no switchable thinking channel), so it's false.
@@ -2070,6 +2120,7 @@ export function createServer(
             const built = promptIdsFor(body, tools);
             promptIds = built.ids;
             startInThinking = built.startInThinking;
+            stableLen = built.stableLen;
           }
         } catch (e) {
           return Response.json(
@@ -2080,6 +2131,9 @@ export function createServer(
         let options: ReturnType<typeof toOptions>;
         try {
           options = toOptions(body);
+          // stable cache boundary for the prompt-boundary snapshot (chat
+          // prompts end in a generation primer the next turn won't contain)
+          if (stableLen !== null) options.snapshotAt = stableLen;
         } catch (e) {
           // bad logit_bias (non-numeric keys/values) — mlx-lm's coercion error
           vision?.embeddings.dispose();

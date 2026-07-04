@@ -30,6 +30,17 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   maxTokens?: number;
   eosTokenIds?: number[];
   prefillChunkSize?: number;
+  /** Fired once during prefill, at `snapshotAt` tokens (default: the full
+   *  prompt) and BEFORE any further KV is written — the one moment the
+   *  caches hold exactly that prefix (post-wrap rings can't be rewound
+   *  later). The server's prompt-boundary cache snapshot hangs here. */
+  onPrefillDone?: () => void;
+  /** Token count at which onPrefillDone fires (the STABLE cache boundary —
+   *  chat prompts end in a generation primer, e.g. 12B's thought-channel
+   *  tokens, that the NEXT turn's re-render does not contain; snapshotting
+   *  there would make the entry untrimmable-and-divergent). Prefill is
+   *  split at this index when it falls mid-prompt. */
+  snapshotAt?: number;
   /** Pre-warmed KV caches (e.g. from the prompt cache). cache[0].offset
    *  prompt tokens are treated as already prefilled; only the suffix is
    *  forwarded. Caller keeps ownership — generate() will not dispose. */
@@ -466,6 +477,28 @@ async function* generateInner(
       embedIds.dispose();
     } else {
       let pos = cachedTokens;
+      // Stable-boundary snapshot: prefill up to snapshotAt first (plain
+      // chunks, no logits), fire the hook while the caches hold exactly
+      // that prefix, then continue with the remainder below. Splitting here
+      // changes chunk shapes only for requests that opted in — the same
+      // numerics class as a prompt-cache-hit continuation prefill.
+      const snapAt = options.onPrefillDone && options.snapshotAt !== undefined
+        ? Math.min(Math.max(options.snapshotAt, cachedTokens), promptTokens.length)
+        : promptTokens.length;
+      if (snapAt > pos && snapAt < promptTokens.length) {
+        while (pos < snapAt) {
+          const chunk = promptTokens.slice(pos, Math.min(pos + prefillChunkSize, snapAt));
+          const ids = ops.fromInt32(chunk, [1, chunk.length]);
+          const h = model.forwardHidden(ids, cache);
+          ids.dispose();
+          h.dispose();
+          ops.evalAll(cache.flatMap((c) => c.state()));
+          maybeQuantizeKv(cache, options);
+          clearCache();
+          pos += chunk.length;
+        }
+        options.onPrefillDone?.();
+      }
       while (promptTokens.length - pos > prefillChunkSize) {
         const chunk = promptTokens.slice(pos, pos + prefillChunkSize);
         const ids = ops.fromInt32(chunk, [1, chunk.length]);
@@ -491,6 +524,8 @@ async function* generateInner(
       h0 = model.forwardHidden(ids0, cache);
       ids0.dispose();
     }
+    if (options.snapshotAt === undefined || options.snapshotAt >= promptTokens.length)
+      options.onPrefillDone?.();
     const [, L0, H] = h0.shape as [number, number, number];
     const hLast = h0.slice([0, L0 - 1, 0], [1, L0, H]);
     h0.dispose();
