@@ -28,6 +28,24 @@ current local-inference Pareto frontier in this space:
 | throughput | higher | batched aggregate tok/s (bench-serving-load) |
 | intelligence | higher | frozen eval suite (MMLU/GSM8K/IFEval/HumanEval/BFCL/HashHop, evals.sqlite) |
 
+**THE CONTRACT (Josh, 2026-07-05, the sentence that governs everything):
+we are a drop-in replacement for mlx-lm — the original oracle — and the
+contract is on the OUTPUT: we must produce the SAME BITS as mlx-lm.** How
+the bits are produced (storage layout, kernels, scheduling, batching
+structure, engine, language) is unconstrained implementation space — the
+space we compete in. Corollaries:
+- Bit-PRESERVING implementation work (compiled decode, pipelining, batched
+  buffers, paged KV, readback plumbing) needs no oracle *implementation*,
+  no tier, and no Lab — its acceptance test is the existing bit-exact
+  output gate. Never say "we can't build X because there's no oracle for
+  X" when X is an implementation: the oracle is the OUTPUT, and it exists.
+- Bit-CHANGING output work (new quant schemes, original math kernels, new
+  samplers) is what the scheme→oracle map and the Lab govern.
+- "Faithful" (kernel-set identity) is the easiest ROUTE to same-bits —
+  same libmlx graph ⇒ same kernels ⇒ same bits — not the contract itself.
+  The one genuine constraint bit-exactness imposes on implementations is
+  math/reduction order (the perf kernel died exactly there).
+
 Two consequences drive everything below:
 
 - **The baseline must be even and proven before optimizing.** We now have it:
@@ -45,13 +63,17 @@ Two consequences drive everything below:
 
 ## 2. Survey — what the other engines got right (and wrong for us)
 
-- **mlx-lm** (`server.py`/`generate.py`): the L1 oracle. Its server is
-  **concurrency-driven by default** — it auto-creates a `BatchGenerator`
-  (decode-concurrency cap 32, prefill concurrency, chunked
-  `prefill_step_size`) and routes any batchable request into it; only
-  non-batchable requests (draft models etc.) serve sequentially. There is no
-  "batching mode" flag — the cap is the only knob. Uniform KV quant only;
-  count-capped prompt cache (the OOM footgun we already fixed by byte-capping).
+- **mlx-lm** (`server.py`/`generate.py`): the original oracle and THE
+  drop-in target — and the project most similar to ours: it spans layers
+  1+2+3(+4), shipping the reference graphs, native bf16 + uniform 4/8-bit
+  quantized KV (`QuantizedKVCache`/`--kv-bits` — layer 2 is theirs too),
+  the batched engine, and the server. Its server is **concurrency-driven
+  by default** — it auto-creates a `BatchGenerator` (decode-concurrency
+  cap 32, prefill concurrency, chunked `prefill_step_size`) and routes any
+  batchable request into it; only non-batchable requests (draft models
+  etc.) serve sequentially. There is no "batching mode" flag — the cap is
+  the only knob. Count-capped prompt cache (the OOM footgun we already
+  fixed by byte-capping); no quantization on the batched path.
   → **Adopt: the concurrency-driven default is our drop-in-parity behavior.**
 - **vLLM**: continuous batching + PagedAttention — the KV cache is block-paged
   with a block table per sequence, which is what makes batching, long context,
