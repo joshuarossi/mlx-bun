@@ -40,7 +40,24 @@ mkdirSync(OUT, { recursive: true });
 const MAX_TOKENS = 48;
 const LOGIT_STEPS = 4;
 
-const existing = (await goldenAt("kv-quant.json").json()) as { prompt_ids: number[] };
+// --model <snapshot dir> --name <suffix>: generate the golden for another
+// model (Phase 3.1 needs a cpm5 golden — its kv_config is all-full-attention,
+// the P1 batchable set). Default: the 12B reference snapshot, original names.
+const argOf = (n: string): string | null => {
+  const i = process.argv.indexOf(`--${n}`);
+  return i > -1 ? process.argv[i + 1]! : null;
+};
+const MODEL = argOf("model") ?? SNAPSHOT;
+const NAME = argOf("name"); // e.g. "cpm" → mixed-kv-cpm.json + mixedkv-cpm-logits-step*.bin
+const JSON_NAME = NAME ? `mixed-kv-${NAME}.json` : "mixed-kv.json";
+const BIN_PREFIX = NAME ? `mixedkv-${NAME}-logits-step` : "mixedkv-logits-step";
+
+// Prompt ids: the default (12B) reuses kv-quant.json's ids for cross-scheme
+// comparability; other models tokenize the standard essay prompt themselves
+// (ids are tokenizer-specific).
+const existing = NAME
+  ? { prompt_ids: [] as number[] }
+  : ((await goldenAt("kv-quant.json").json()) as { prompt_ids: number[] });
 
 const py = `
 import sys, json
@@ -56,6 +73,7 @@ ids = json.loads(sys.argv[2])
 max_tokens = int(sys.argv[3])
 logit_steps = int(sys.argv[4])
 outdir = sys.argv[5]
+bin_prefix = sys.argv[6]
 
 with open(f"{snap}/kv_config.json") as f:
     entries = json.load(f)
@@ -67,8 +85,14 @@ model, tokenizer = load(snap)
 cache = make_prompt_cache(model)
 
 def dump(last, step):
-    with open(f"{outdir}/mixedkv-logits-step{step}.bin", "wb") as f:
+    with open(f"{outdir}/{bin_prefix}{step}.bin", "wb") as f:
         f.write(bytes(memoryview(last)))
+
+if not ids:
+    ids = tokenizer.apply_chat_template(
+        [{"role": "user", "content": "Write a detailed essay about the history of computing, starting with mechanical calculators."}],
+        tokenize=True, add_generation_prompt=True,
+    )
 
 # 1. bf16 prefill (the hook skips empty caches)
 logits = model(mx.array([ids]), cache=cache)
@@ -102,8 +126,8 @@ print(json.dumps({
 `;
 
 const proc = Bun.spawn(
-  [ORACLE_PYTHON, "-c", py, SNAPSHOT, JSON.stringify(existing.prompt_ids),
-   String(MAX_TOKENS), String(LOGIT_STEPS), OUT],
+  [ORACLE_PYTHON, "-c", py, MODEL, JSON.stringify(existing.prompt_ids),
+   String(MAX_TOKENS), String(LOGIT_STEPS), OUT, BIN_PREFIX],
   { stdout: "pipe", stderr: "pipe", cwd: import.meta.dir + "/.." },
 );
 const [out, err, code] = await Promise.all([
@@ -112,5 +136,5 @@ const [out, err, code] = await Promise.all([
   proc.exited,
 ]);
 if (code !== 0) throw new Error(`oracle failed (${code}):\n${err.slice(-2000)}`);
-await Bun.write(`${OUT}/mixed-kv.json`, JSON.stringify(JSON.parse(out)));
-console.log(`wrote ${OUT}/mixed-kv.json + mixedkv-logits-step*.bin`);
+await Bun.write(`${OUT}/${JSON_NAME}`, JSON.stringify(JSON.parse(out)));
+console.log(`wrote ${OUT}/${JSON_NAME} + ${BIN_PREFIX}*.bin`);

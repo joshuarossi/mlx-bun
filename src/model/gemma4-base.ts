@@ -596,6 +596,21 @@ export class QuantizedKVCache implements Cache {
     this.offset = offset;
   }
 
+  /** Chronological (K, V) triples sliced to offset — the quantized twin of
+   *  KVCache.temporalView (batched merge/extend/filter reads). Caller owns
+   *  the returned views. */
+  temporalView(): [ops.QuantizedTensor, ops.QuantizedTensor] {
+    if (!this.keys || !this.values) throw new Error("cache is empty");
+    const cut = (t: ops.QuantizedTensor): ops.QuantizedTensor => {
+      const f = (a: MlxArray): MlxArray => {
+        const [b, h, , d] = a.shape as [number, number, number, number];
+        return a.slice([0, 0, 0, 0], [b, h, this.offset, d]);
+      };
+      return { packed: f(t.packed), scales: f(t.scales), biases: f(t.biases) };
+    };
+    return [cut(this.keys), cut(this.values)];
+  }
+
   dispose(): void {
     for (const a of this.state()) a.dispose();
     this.keys = this.values = null;
@@ -1335,6 +1350,14 @@ export function quantizedSdpaUnfused(
     for (const a of [qIdx, kIdx, qCol, kRow]) a.dispose();
   } else if (mask.mode === "array") {
     maskArr = mask.arr;
+    // Batched padding masks are [B,1,L,S] (buildBatchedDecodeMask). When GQA
+    // reshaped the scores to 5-D [B,KV,nRep,L,S], trailing-dim broadcasting
+    // would misalign the mask's B with KV — insert the unit axis explicitly:
+    // [B,1,1,L,S] broadcasts correctly over (KV, nRep).
+    if (maskArr && maskArr.ndim === 4 && nRep > 1) {
+      maskArr = ops.expandDims(maskArr, 1);
+      ownsMask = true;
+    }
   }
   if (maskArr) {
     const ninf = ops.scalarLike(FINFO_MIN[scores.dtype] ?? -3.4e38, scores);

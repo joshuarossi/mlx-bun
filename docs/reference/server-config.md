@@ -27,7 +27,7 @@ the design rationale is in
 | `--ssd-cache-max` | GB | `32` | SSD tier byte cap (binary GiB); oldest-mtime entries evicted at the cap. |
 | `--ssd-cache-verify` | (bool) | off | Verify every tensor hash on restore. Reads all bytes eagerly (defeats lazy page fault-in) — integrity paranoia only; the header hash is always verified. |
 | `--batch` | n | `1` (serial) | Max concurrent requests batched through the mlx-lm-parity engine. `>1` switches the **whole server** into bf16 continuous batching — a *mode*, not a load fallback. See [Execution modes](#execution-modes-serial-vs---batch-n). `--decode-concurrency` is accepted for drop-in compatibility, but the semantics differ: in mlx_lm.server it caps per-BatchGenerator decode parallelism (default 32); in mlx-bun it enables continuous batching with this cap (mlx-bun's default is the optimized serial path). |
-| `--kv-quant` | `config`\|`off`\|`4`\|`8` | `off` (bf16) | KV-cache quantization. **Default flipped to bf16 2026-07-05** (naked = L1): quantized KV measured 5–20% slower decode than bf16 at ≤16k on every model — on mlx-lm too — so it pays only in **memory headroom** (e.g. ~1.3 GB on the 12B @16k) and is an explicit opt-in (`--kv-quant …` or `--l2`, whose preset passes `config`). `off` = bf16 (L1). `4`/`8` = **uniform** bits (group 64, start 0) — the scheme mlx-lm exposes as `--kv-bits`/`--kv-group-size`/`--quantized-kv-start`. In the L1 kernel set (`--l1 --kv-quant 8` = fused-sdpa off) our unfused quantized SDPA is **op-for-op identical** to mlx-lm's `quantized_scaled_dot_product_attention`, so uniform-quant is **bit-exact L1** (the fused-sdpa-ON path is optiq-aligned). `config` = **per-layer mixed-precision** from `kv_config.json` — optiq-only, no mlx-lm analog → **L2**. Under `--batch N`, an explicit value routes those requests to the **serial** lane (batched is bf16-only). |
+| `--kv-quant` | `config`\|`off`\|`4`\|`8` | `off` (bf16) | KV-cache quantization. **Default flipped to bf16 2026-07-05** (naked = L1): quantized KV measured 5–20% slower decode than bf16 at ≤16k on every model — on mlx-lm too — so it pays only in **memory headroom** (e.g. ~1.3 GB on the 12B @16k) and is an explicit opt-in (`--kv-quant …` or `--l2`, whose preset passes `config`). `off` = bf16 (L1). `4`/`8` = **uniform** bits (group 64, start 0) — the scheme mlx-lm exposes as `--kv-bits`/`--kv-group-size`/`--quantized-kv-start`. In the L1 kernel set (`--l1 --kv-quant 8` = fused-sdpa off) our unfused quantized SDPA is **op-for-op identical** to mlx-lm's `quantized_scaled_dot_product_attention`, so uniform-quant is **bit-exact L1** (the fused-sdpa-ON path is optiq-aligned). `config` = **per-layer mixed-precision** from `kv_config.json` — optiq-only, no mlx-lm analog → **L2**. Under `--batch N`, a per-layer `config` scheme whose layers are ALL full-attention (e.g. MiniCPM5's) **batches** — the scheduler applies the mixed scheme per row, gated bit-exact per row vs the optiq composition (`tests/batched-kv-quant-parity.test.ts`, Phase 3.1 — a composition no other stack ships). Uniform `4`/`8` and configs naming rotating layers (gemma) still route those requests serial. |
 | `--adapter` | dir | none | Mount a LoRA adapter at startup (same machinery as `POST /v1/adapters`; the adapter id is the directory's basename) and make it the **default** for requests that send no `adapter` field. A request's explicit `adapter` — including `"none"` — always wins, and hot-swap via `/v1/adapters` is unchanged. `--adapter-path` is accepted as the mlx_lm.server-named alias. A bad adapter fails startup loudly rather than silently serving the base model. This is the flag `mlx-bun train`'s completion message points at. |
 | `--draft-model` | path/query | none | **Speculative decoding** (mlx_lm.server parity): a smaller same-tokenizer model drafts tokens the main model verifies in one forward — exact results (L1: token-for-token vs mlx-lm's speculative path), faster decode when drafts land. Resolves like the main model. Tokenizer-family mismatch fails startup (upstream silently accepts ~0%). Mounting a draft routes **every** request to the serial lane (upstream `is_batchable = draft is None`). Pays on slow targets (12B+); fast small models lose to the draft overhead. Composes with structured output (the constrained verify walk). Prompt-cache reuse is bypassed on the spec path (v1). Telemetry: `usage.speculation` (`drafted`/`accepted`/`targetCalls`). |
 | `--num-draft-tokens` | n | `3` | Drafts per verify round (mlx_lm.server's default; `mlx_lm.generate`'s is 2). |
@@ -131,7 +131,9 @@ bf16 continuous batching **is** the drop-in:
 - **KV quant unset ⇒ bf16** so the batch path engages out of the box
   ("Option B" — and since 2026-07-05 bf16 is the serial default too).
 - **Explicit `--kv-quant config|4|8` ⇒** those requests route to the
-  serial lane (batched is bf16-only; a startup warning is printed). With
+  serial lane for the still-serial compositions — uniform bits, or a config
+  naming rotating layers (a startup warning is printed for uniform). An
+  all-full-attention `config` scheme batches (Phase 3.1). With
   an explicit `--kv-quant`, *every* request carries a quant scheme, so
   **nothing batches** — `--batch N --kv-quant config` is effectively
   serial-with-quant. Omit `--kv-quant` to actually batch.
@@ -151,7 +153,7 @@ concurrently with each other.
 | LoRA `adapter` (resolves to ≥1) | ❌ serial — `loraState.active` is one per-generation field; per-row adapters unsupported |
 | `logprobs` / `top_logprobs` | ❌ serial — the batched sampler doesn't capture logprob arrays yet |
 | explicit `seed` | ❌ serial — reproducibility ⇒ solo (matches mlx-lm) |
-| KV quant active (explicit `--kv-quant`) | ❌ serial — batched is bf16-only in v1 |
+| KV quant active (explicit `--kv-quant`) | ✅ batches for all-full-attention `config` schemes (Phase 3.1: per-row bit-exact vs the optiq composition); uniform bits / rotating-layer configs → serial |
 | `--draft-model` mounted | ❌ serial, server-wide — speculation is a B=1 latency mode (upstream `is_batchable = draft is None`) |
 | `repetition_penalty` / `min_p` / `xtc_*` / `logit_bias` / presence+frequency penalties | ✅ batches — per-row logits processors over a per-row device-side history (since 2026-07-02; some models — Qwen3.5 — ship a *default* repetition penalty, which used to route everything serial) |
 | structured output (`response_format` / `guided_*`) | ✅ batches — per-row grammar matchers driven by the scheduler (`MLX_BUN_GRAMMAR_BATCH=0` forces serial) |
@@ -256,8 +258,11 @@ know them:
 3. **Short-context only.** Verified pre-ring-wrap (rows < the 1024
    sliding window). Long-context (context > window) batched decode is a
    separate validation.
-4. **bf16 only — by contract.** mlx-lm's batched path *is* bf16, so
-   bf16-only batching is exactly what mlx-lm-parity means (not a
+4. **bf16 by default — by contract; mixed-KV batching beyond it.**
+   mlx-lm's batched path *is* bf16, so bf16 batching is exactly what
+   mlx-lm-parity means. Phase 3.1 adds batched per-layer MIXED KV for
+   all-full-attention configs — a beyond-mlx-lm composition, verified
+   per row against the optiq oracle instead (not a
    shortcoming). Going further — batched + mixed-precision KV quant — is
    novel territory with no mlx-lm/optiq oracle, so it's a deferred,
    KL-gated extension.

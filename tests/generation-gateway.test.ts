@@ -19,6 +19,13 @@ import type { RuntimeModel } from "../src/model/factory";
 const stubModel = { makeCache: () => [new KVCache()] } as unknown as RuntimeModel;
 const stubSerial = (async () => ({}) as never) as never;
 const gateway = (batch: number) => new GenerationGateway(stubModel, batch, stubSerial);
+/** N-layer all-full-attention stub (Phase 3.1 kv-batchability probes). */
+const fullModel = (n: number) =>
+  ({ makeCache: () => Array.from({ length: n }, () => new KVCache()) }) as unknown as RuntimeModel;
+/** Layer 0 rotating, layer 1 full — a config naming layer 0 must stay serial. */
+const mixedModel = () =>
+  ({ makeCache: () => [new RotatingKVCache(1024), new KVCache()] }) as unknown as RuntimeModel;
+const serialRunStub = stubSerial;
 
 // The all-clear shape: nothing that would force the serial lane.
 const batchable: RequestShape = {
@@ -61,13 +68,37 @@ describe("GenerationGateway.willBatch", () => {
     ["hasAdapters", "LoRA adapter (single per-generation loraState)"],
     ["wantsLogprobs", "logprobs/top_logprobs capture (serial-only, batch-lane deferred)"],
     ["userSeed", "explicit seed (reproducibility ⇒ solo)"],
-    ["kvQuant", "explicit kv-quant (batched is bf16-only in v1)"],
+    ["kvQuant", "kv-quant with NO scheme threaded (would silently drop the quantization)"],
   ];
   for (const [flag, why] of disqualifiers) {
     test(`${flag} drains to serial — ${why}`, () => {
       expect(gateway(2).willBatch({ ...batchable, [flag]: true })).toBe(false);
     });
   }
+
+  // Phase 3.1: a kv-quant request BATCHES when the gateway carries a
+  // batchable scheme — a per-layer kvConfig whose every configured layer is
+  // a plain full-attention KVCache in the model probe. Uniform kvBits stays
+  // serial (touches rotating layers), as does a config naming a rotating
+  // layer's index.
+  test("kvQuant BATCHES with an all-full-attention kvConfig scheme", () => {
+    const g = new GenerationGateway(fullModel(4), 2, serialRunStub, {
+      kvScheme: { kvConfig: [0, 1, 2, 3].map((layerIdx) => ({ layerIdx, bits: 4, groupSize: 64 })) },
+    });
+    expect(g.willBatch({ ...batchable, kvQuant: true })).toBe(true);
+  });
+  test("kvQuant stays serial for uniform kvBits", () => {
+    const g = new GenerationGateway(fullModel(4), 2, serialRunStub, {
+      kvScheme: { kvBits: 8 },
+    });
+    expect(g.willBatch({ ...batchable, kvQuant: true })).toBe(false);
+  });
+  test("kvQuant stays serial when the config names a rotating layer", () => {
+    const g = new GenerationGateway(mixedModel(), 2, serialRunStub, {
+      kvScheme: { kvConfig: [{ layerIdx: 0, bits: 4, groupSize: 64 }] },
+    });
+    expect(g.willBatch({ ...batchable, kvQuant: true })).toBe(false);
+  });
 
   // Logits processors BATCH: the per-row sampler folds makeLogitsProcessors
   // over a per-row device-side token history (generate()'s pushHistory).

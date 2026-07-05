@@ -51,6 +51,22 @@ optimized model → + mixed-precision KV → + LoRA → + spec decode → +
 structured output → × sampling — all STACKABLE on one engine, no lane
 routing.
 
+**Phase 3.1 P1 LANDED same day — BATCHED MIXED-PRECISION KV (first on this
+stack; neither mlx-lm nor optiq compose them, live-proven earlier today):**
+src/model/batched-quant.ts (quantized merge/extend/filter over triples +
+BatchedQuantDecodeMaskCache), scheduler converts each joiner's solo caches
+at the SERIAL chunk boundaries (rows bit-exact vs serial `--kv-quant
+config` by construction), gateway kv-batchability memo (all-full-attention
+kvConfig batches — cpm5; uniform bits / rotating-layer configs — gemma —
+stay serial = milestone 2; a scheme-less gateway REFUSES to batch kv-quant
+requests rather than silently dropping quantization, the optiq bug class).
+Gates green: B=1 through the scheduler BIT-EXACT vs the cpm5 optiq golden
+(new golden: regen-mixed-kv-goldens.ts --model <cpm5> --name cpm); B=2
+dynamic join — unpadded row BIT-EXACT vs solo every step, padded row within
+the calibrated 5e-2 envelope (bf16 same-harness ~9e-3 baseline). E2E:
+`--batch 2 --kv-quant config` on cpm5 → /stats active_rows 2, coherent
+output, 240 tok/s aggregate for two concurrent streams.
+
 **Phase 2 DECODE GAP CLOSED same day:** the batch lane's B=1 tax was two
 bugs — `toFloat32()` on the pipeline register enqueued an astype BEHIND
 the just-dispatched next step (full-step stall per token; fixed with

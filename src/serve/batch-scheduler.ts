@@ -57,8 +57,12 @@
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { clearCache } from "../mlx/ffi";
-import { KVCache, RotatingKVCache, type Cache } from "../model/gemma4-base";
+import { KVCache, QuantizedKVCache, RotatingKVCache, type Cache } from "../model/gemma4-base";
 import { BatchedDecodeMaskCache, mergeKVRows, extendKVRows, filterKVRows } from "../model/batched-mask";
+import {
+  BatchedQuantDecodeMaskCache, extendQuantRows, filterQuantRows, mergeQuantRows,
+} from "../model/batched-quant";
+import type { KvQuantSpec } from "../config";
 import { BatchedRotatingCache } from "../model/batched-rotating";
 import { SSMCache } from "../model/qwen3-delta";
 import type { RuntimeModel } from "../model/factory";
@@ -179,9 +183,19 @@ export interface BatchSchedulerOptions {
    *  evict. A request that can NEVER fit (over budget alone, empty batch)
    *  is rejected instead of deadlocking. Unset = unlimited (v1 behavior). */
   kvBudgetBytes?: number;
+  /** Per-layer mixed-precision KV scheme (kv_config.json entries) — Phase
+   *  3.1 batched quantized KV. Server-wide constant (one scheme per server
+   *  lifetime), so it lives here at construction, not on BatchRequest.
+   *  P1 scope: only layers whose cache is a plain full-attention KVCache
+   *  convert; the GATEWAY admits batching only when every configured
+   *  layerIdx is such a layer (rotating/uniform stay serial). Each joiner's
+   *  solo prefill converts at the SAME chunk boundaries as the serial
+   *  maybeQuantizeKv, so a row's quantized bytes are bit-exact vs serial
+   *  `--kv-quant config` by construction (the L2-oracle composition rule). */
+  kvConfig?: KvQuantSpec[];
 }
 
-type LayerInner = KVCache | BatchedRotatingCache | SSMCache;
+type LayerInner = KVCache | QuantizedKVCache | BatchedRotatingCache | SSMCache;
 type Row1 = { keys: MlxArray; values: MlxArray };
 
 export class BatchScheduler {
@@ -203,6 +217,8 @@ export class BatchScheduler {
   readonly #kvBudgetBytes: number | undefined;
   readonly #kinds: ("full" | "rot" | "ssm")[]; // per-layer attention type
   readonly #rotMaxSize: number[]; // per-layer sliding window (rot layers only)
+  /** layerIdx → mixed-precision spec (Phase 3.1); null = bf16 batch (v1). */
+  readonly #kvByLayer: Map<number, KvQuantSpec> | null;
 
   constructor(private readonly model: RuntimeModel, opts: BatchSchedulerOptions) {
     this.#maxBatch = Math.max(1, Math.floor(opts.maxBatch));
@@ -214,6 +230,9 @@ export class BatchScheduler {
     this.#kinds = proto.map((c) =>
       c instanceof RotatingKVCache ? "rot" : c instanceof SSMCache ? "ssm" : "full",
     );
+    this.#kvByLayer = opts.kvConfig?.length
+      ? new Map(opts.kvConfig.map((e) => [e.layerIdx, e]))
+      : null;
     this.#rotMaxSize = proto.map((c) => (c instanceof RotatingKVCache ? c.maxSize : 0));
     for (const c of proto) c.dispose();
   }
@@ -355,6 +374,28 @@ export class BatchScheduler {
     }
   }
 
+  /** Per-layer mixed-precision conversion of a joiner's SOLO caches — the
+   *  scheduler-side mirror of the serial maybeQuantizeKv (generate.ts): same
+   *  per-layer map, same skip rules (empty cache, already quantized), same
+   *  streaming discipline (evalAll the converted layer's state so the bf16
+   *  source frees before the next layer converts). Called at every prefill
+   *  chunk boundary AND once before merge, exactly where the serial loop
+   *  calls maybeQuantizeKv — that placement is what makes a row's quantized
+   *  bytes bit-exact vs serial `--kv-quant config`. P1: plain KVCache
+   *  layers only (the gateway guarantees the config maps only to those). */
+  #quantizeSolo(solo: Cache[]): void {
+    if (!this.#kvByLayer) return;
+    for (let i = 0; i < solo.length; i++) {
+      const e = this.#kvByLayer.get(i);
+      const c = solo[i]!;
+      if (!e || !(c instanceof KVCache) || c.offset === 0) continue;
+      const q = c.toQuantized(e.groupSize, e.bits);
+      solo[i] = q;
+      ops.evalAll(q.state());
+      clearCache();
+    }
+  }
+
   /** Advance a joiner's solo prefill by one chunk. Non-final chunks forward +
    *  eval the cache and return false (the caller interleaves a decode step).
    *  The final chunk samples token 0, emits it, and — if the row survives —
@@ -368,6 +409,7 @@ export class BatchScheduler {
       ids.dispose();
       h.dispose(); // logits never computed for non-final chunks
       ops.evalAll(p.solo.flatMap((c) => c.state()));
+      this.#quantizeSolo(p.solo); // serial converts at every chunk boundary
       clearCache(); // serial prefill's per-chunk clear (generate.ts)
       p.pos += this.#prefillChunkSize;
       return false;
@@ -417,6 +459,9 @@ export class BatchScheduler {
       this.#finish(p.row, stop);
       return true;
     }
+    // Serial order: token 0 sampled from the unconverted final-chunk logits,
+    // THEN the caches convert (before decode step 1 == before the merge).
+    this.#quantizeSolo(p.solo);
     await this.#mergeJoiner(p);
     return true;
   }
@@ -441,6 +486,56 @@ export class BatchScheduler {
           (prev?.[layer] as SSMCache | undefined) ?? null,
           p.solo[layer] as SSMCache,
         ));
+        continue;
+      }
+      if (p.solo[layer] instanceof QuantizedKVCache) {
+        // Phase 3.1 — quantized full layer: same merge/extend shapes as the
+        // bf16 branch below, over (packed, scales, biases) triples. The solo
+        // row was converted by #quantizeSolo with the serial ops, so its
+        // bytes already bit-match serial `--kv-quant config`; this branch
+        // only re-arranges rows along the batch axis.
+        const qSolo = p.solo[layer] as QuantizedKVCache;
+        const [qk, qv] = qSolo.temporalView();
+        const qRow = { keys: qk, values: qv };
+        const dispose3 = (t: { packed: MlxArray; scales: MlxArray; biases: MlxArray }) => {
+          t.packed.dispose(); t.scales.dispose(); t.biases.dispose();
+        };
+        const prevQ = prev?.[layer] as QuantizedKVCache | undefined;
+        if (prevQ && process.env.MLX_BUN_BATCH_EXTEND !== "0") {
+          const [k0, v0] = prevQ.temporalView();
+          const ext = extendQuantRows(k0, v0, prevPad, qRow);
+          dispose3(k0); dispose3(v0);
+          newFullPad = ext.leftPad;
+          const c = new QuantizedKVCache(qSolo.groupSize, qSolo.bits);
+          c.restoreState(ext.keys, ext.values, ext.width);
+          newInners.push(c);
+        } else {
+          const rows: { keys: typeof qk; values: typeof qv }[] = [];
+          if (prevQ) {
+            const [k0, v0] = prevQ.temporalView(); // [B,H,off,*]
+            const S = k0.packed.shape[2]!;
+            for (let b = 0; b < B; b++) {
+              const pad = prevPad[b]!;
+              const cutRow = (t: typeof k0): typeof k0 => ({
+                packed: t.packed.slice([b, 0, pad, 0], [b + 1, t.packed.shape[1]!, S, t.packed.shape[3]!]),
+                scales: t.scales.slice([b, 0, pad, 0], [b + 1, t.scales.shape[1]!, S, t.scales.shape[3]!]),
+                biases: t.biases.slice([b, 0, pad, 0], [b + 1, t.biases.shape[1]!, S, t.biases.shape[3]!]),
+              });
+              rows.push({ keys: cutRow(k0), values: cutRow(v0) });
+            }
+            dispose3(k0); dispose3(v0);
+          }
+          rows.push(qRow);
+          const merged = mergeQuantRows(rows);
+          newFullPad = merged.leftPad;
+          const c = new QuantizedKVCache(qSolo.groupSize, qSolo.bits);
+          c.restoreState(merged.keys, merged.values, merged.width);
+          newInners.push(c);
+          for (const r of rows) { dispose3(r.keys); dispose3(r.values); }
+        }
+        // qRow views are disposed via the rows loop above or here for extend
+        if (prevQ && process.env.MLX_BUN_BATCH_EXTEND !== "0") { dispose3(qRow.keys); dispose3(qRow.values); }
+        else if (!prevQ) { /* disposed in the rows loop */ }
         continue;
       }
       const soloC = p.solo[layer] as KVCache | RotatingKVCache;
@@ -574,7 +669,9 @@ export class BatchScheduler {
       const fwd: Cache[] = inners.map((c) =>
         c instanceof BatchedRotatingCache || c instanceof SSMCache || unpadded
           ? c
-          : new BatchedDecodeMaskCache(c, B, this.#fullLeftPad, null),
+          : c instanceof QuantizedKVCache
+            ? new BatchedQuantDecodeMaskCache(c, B, this.#fullLeftPad)
+            : new BatchedDecodeMaskCache(c, B, this.#fullLeftPad, null),
       );
       try {
         const ids = this.#pendingToks
@@ -719,7 +816,9 @@ export class BatchScheduler {
       const fwd: Cache[] = inners.map((c) =>
         c instanceof BatchedRotatingCache || c instanceof SSMCache || unpadded
           ? c
-          : new BatchedDecodeMaskCache(c, B, this.#fullLeftPad, null),
+          : c instanceof QuantizedKVCache
+            ? new BatchedQuantDecodeMaskCache(c, B, this.#fullLeftPad)
+            : new BatchedDecodeMaskCache(c, B, this.#fullLeftPad, null),
       );
       try {
         // (3) Build the forward graph (host-side; the fills overlap it).
@@ -851,6 +950,14 @@ export class BatchScheduler {
       } else if (inner instanceof SSMCache) {
         inner.filter(keep); // in-place B-axis take on both state slots
         out.push(inner);
+      } else if (inner instanceof QuantizedKVCache) {
+        const [k0, v0] = inner.temporalView();
+        const f = filterQuantRows(k0, v0, keep);
+        for (const t of [k0, v0]) { t.packed.dispose(); t.scales.dispose(); t.biases.dispose(); }
+        const c = new QuantizedKVCache(inner.groupSize, inner.bits);
+        c.restoreState(f.keys, f.values, inner.offset);
+        out.push(c);
+        inner.dispose();
       } else {
         const [k0, v0] = inner.temporalView();
         const f = filterKVRows(k0, v0, keep);

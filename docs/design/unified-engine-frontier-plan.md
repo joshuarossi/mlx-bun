@@ -17,7 +17,10 @@ Lab where optimization experiments live until they earn defaults.
    - **multi-model switching** (oracle: optiq per-request switching / oMLX
      EnginePool) — ❌ missing today; the newest backlog item (layer 4).
    - **mixed-precision KV cache** (oracle: optiq) — ✅ serial, bit-exact;
-     ❌ under batching → Phase 3.1.
+     ✅ **under batching for all-full-attention configs (LANDED 2026-07-05
+     — Phase 3.1 P1: cpm5 end-to-end, per-row bit-exact vs the optiq
+     composition; no other stack ships this)**; rotating-layer configs
+     (gemma) = milestone 2.
    - **prefix sharing** (oracle: vLLM/SGLang) — ⚠️ whole-prefix reuse only;
      true cross-request sharing (one system prompt's KV, N rows) missing.
    - **prompt caching** (oracle: mlx-lm's LRUPromptCache) — ✅ byte-capped
@@ -577,11 +580,22 @@ speed):
   (TTFT: serial hits the cache on repeat prompts, batch re-prefills —
   e4b 126 vs 54 ms, 12B 246 vs 82 ms), then GATE-B1-SPEED ≥99% on all
   three + GATE-B1-PARITY (bit-exact vs L1 goldens) + B=2 goldens intact.
-- **Phase 3 — composition**: quantized KV under batching (B=1-row
-  batched-quant bit-exact vs serial kv-config — the gate batching-perf-path
-  already names), then prompt-cache reuse for batched rows, then chunked
-  prefill interleaving. Gate per feature: parity + no aggregate-throughput
-  regression at B=4.
+- **Phase 3 — composition**: quantized KV under batching — **P1 LANDED
+  2026-07-05**: src/model/batched-quant.ts (merge/extend/filter over
+  triples + BatchedQuantDecodeMaskCache), scheduler solo-conversion at the
+  serial chunk boundaries, gateway kv-batchability memo (all-full-attention
+  kvConfig batches; uniform/rotating stays serial; scheme-less gateway
+  refuses — never silently drop quantization, the optiq bug class). Gates
+  green: B=1 through the scheduler BIT-EXACT vs the cpm5 optiq golden
+  (decode steps, maxDiff 0); B=2 dynamic join — unpadded row BIT-EXACT vs
+  solo at every step, padded row within the calibrated envelope (5e-2;
+  bf16 same-harness shows ~9e-3 — the pre-existing reduction-order noise,
+  amplified by grid snapping; scripts/experiments/batched-quant-kl-profile
+  .ts). E2E: --batch 2 --kv-quant config on cpm5 = /stats active_rows 2,
+  400 tok @ 240 tok/s aggregate, coherent output. NEXT: milestone 2
+  (batched rotating-quant for gemma configs), prompt-cache reuse for
+  batched rows, chunked prefill interleaving. Gate per feature: parity +
+  no aggregate-throughput regression at B=4.
 - **Phase 4 — the frontier program opens** (§7 order).
 
 ## 9. Decisions log (was: open questions)

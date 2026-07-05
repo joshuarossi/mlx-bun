@@ -1110,11 +1110,16 @@ export function createServer(
     : typeof serverOptions.kvQuant === "number"
       ? { kvBits: serverOptions.kvQuant, quantizedKvStart: 0 }
     : {}; // unset → bf16 (L1 default; quantized KV is opt-in)
-  if (batch > 1 && (kvScheme.kvConfig?.length || kvScheme.kvBits))
+  // Phase 3.1: kvConfig whose layers are all full-attention BATCHES (the
+  // scheduler applies the mixed scheme per row); uniform kvBits and configs
+  // touching rotating layers still route those requests serial. The warning
+  // only fires for the still-serial compositions.
+  if (batch > 1 && kvScheme.kvBits)
     console.warn(
-      `[batch] --batch ${batch} with explicit --kv-quant: batched serving (v1) is ` +
-        `bf16-only, so kv-quant requests route to the serial path (no batching for them). ` +
-        `Omit --kv-quant to batch in bf16. (docs/design/parallel-slots.md)`,
+      `[batch] --batch ${batch} with uniform --kv-quant ${kvScheme.kvBits}: uniform ` +
+        `quantized KV is serial-only (it touches rotating layers) — those requests ` +
+        `won't batch. Use --kv-quant config for batched mixed-precision KV, or omit ` +
+        `--kv-quant to batch in bf16. (docs/design/unified-engine-frontier-plan.md)`,
     );
 
   // SSD cold tier (docs/design/ssd-kv-cold-tier.md): prefix KV survives RAM
@@ -1305,6 +1310,11 @@ export function createServer(
   // (and shared loraState) at the same time. See src/serve/generation-gateway.ts.
   const gateway = new GenerationGateway(ctx.model, batch, runGeneration, {
     kvBudgetBytes: serverOptions.kvBudgetBytes,
+    // Phase 3.1: the server-wide scheme travels to the gateway once; the
+    // gateway batches kv-quant requests when the scheme is the batchable
+    // kvConfig/full-attention composition (see #kvBatchable) and the
+    // scheduler applies it — otherwise those requests route serial as before.
+    kvScheme,
   });
 
   // Admission ceiling, resolved once (Phase 5 memoryBudget enforcement).
