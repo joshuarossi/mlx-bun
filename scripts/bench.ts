@@ -3,8 +3,13 @@
 //
 //   bun scripts/bench.ts [--tokens 600] [--baseline] [--model <query>]
 //                        [--prompt-tokens N] [--kv off|config|<bits>]
+//                        [--baseline-kv config|<bits>]
 //
 // --baseline runs the Python reference (mlx_lm.generate) instead of ours.
+// --baseline-kv selects the reference's KV scheme: config = optiq per-layer
+//   mixed-precision (L2 oracle); <bits> (e.g. 8) = STOCK mlx-lm uniform quantized
+//   KV (mlx-lm's native maybe_quantize_kv_cache — register() only remaps
+//   model_type, so no optiq kernel is involved). Omitted = bf16 (L1 oracle).
 // --model resolves a registry query (default: the 12B oracle snapshot).
 
 import { ORACLE_PYTHON, SNAPSHOT } from "../tests/paths";
@@ -39,12 +44,11 @@ const PROMPT_TOKENS_EARLY = ptIdxEarly > -1 ? Number(process.argv[ptIdxEarly + 1
 
 if (process.argv.includes("--baseline")) {
   // --baseline-kv config → optiq's per-layer mixed-precision KV patch
-  // (install_mixed_kv + kv args), i.e. the "optiq direct" engine row.
+  // (install_mixed_kv, the "optiq direct" / L2 row). --baseline-kv <bits> →
+  // STOCK mlx-lm uniform quantized KV (no optiq patch, the L1-eligible scheme).
   const blKvIdx = process.argv.indexOf("--baseline-kv");
-  const kvCfgPath =
-    blKvIdx > -1 && process.argv[blKvIdx + 1] === "config"
-      ? `${MODEL_PATH}/kv_config.json`
-      : "";
+  const blKv = blKvIdx > -1 ? process.argv[blKvIdx + 1] ?? "" : "";
+  const kvCfgPath = blKv === "config" ? `${MODEL_PATH}/kv_config.json` : "";
   const py = `
 import sys, time
 import mlx.core as mx
@@ -69,12 +73,17 @@ prompt = tokenizer.apply_chat_template(
 )
 extra = {}
 kvcfg = sys.argv[4] if len(sys.argv) > 4 else ""
-if kvcfg:
+blkv = sys.argv[6] if len(sys.argv) > 6 else ""   # "" | "config" | "<bits>"
+if blkv == "config":
     from optiq.serve import _load_kv_config, install_mixed_kv
     install_mixed_kv(_load_kv_config(kvcfg), 0)
     # non-None kv_bits makes the quantize hook run; the patched hook
     # ignores it and uses the per-layer map (optiq serve behavior)
     extra = dict(kv_bits=8, kv_group_size=64, quantized_kv_start=0)
+elif blkv.isdigit():
+    # STOCK mlx-lm uniform quantized KV — no optiq install_mixed_kv, so this is
+    # mlx-lm's native maybe_quantize_kv_cache (register() only remaps model_type).
+    extra = dict(kv_bits=int(blkv), kv_group_size=64, quantized_kv_start=0)
 # generation-only peak: python load() materializes non-lazily and its
 # transient otherwise dominates peak_memory (constant 9.84 GB on the 12B
 # at every context — a load figure, not a serving one)
@@ -88,7 +97,7 @@ print(f"peak mem: {last.peak_memory:.2f} GB")
 `;
   const proc = Bun.spawn(
     [ORACLE_PYTHON, "-c", py, MODEL_PATH, PROMPT, String(MAX_TOKENS), kvCfgPath,
-     String(PROMPT_TOKENS_EARLY)],
+     String(PROMPT_TOKENS_EARLY), blKv],
     { stdout: "inherit", stderr: "pipe" },
   );
   const code = await proc.exited;

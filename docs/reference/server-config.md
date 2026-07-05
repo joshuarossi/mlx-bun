@@ -27,7 +27,7 @@ the design rationale is in
 | `--ssd-cache-max` | GB | `32` | SSD tier byte cap (binary GiB); oldest-mtime entries evicted at the cap. |
 | `--ssd-cache-verify` | (bool) | off | Verify every tensor hash on restore. Reads all bytes eagerly (defeats lazy page fault-in) — integrity paranoia only; the header hash is always verified. |
 | `--batch` | n | `1` (serial) | Max concurrent requests batched through the mlx-lm-parity engine. `>1` switches the **whole server** into bf16 continuous batching — a *mode*, not a load fallback. See [Execution modes](#execution-modes-serial-vs---batch-n). `--decode-concurrency` is accepted for drop-in compatibility, but the semantics differ: in mlx_lm.server it caps per-BatchGenerator decode parallelism (default 32); in mlx-bun it enables continuous batching with this cap (mlx-bun's default is the optimized serial path). |
-| `--kv-quant` | `config`\|`off`\|`4`\|`8` | `config` serial / `off`(bf16) under `--batch N` | KV-cache quantization. `config` = per-layer `kv_config.json` (optiq parity); `off` = bf16; `4`/`8` = uniform bits (group 64, start 0). Under `--batch N`, an explicit value routes those requests to the **serial** lane (batched is bf16-only). |
+| `--kv-quant` | `config`\|`off`\|`4`\|`8` | `config` serial / `off`(bf16) under `--batch N` | KV-cache quantization. `off` = bf16 (L1). `4`/`8` = **uniform** bits (group 64, start 0) — the scheme mlx-lm exposes as `--kv-bits`/`--kv-group-size`/`--quantized-kv-start`. In the L1 kernel set (`--l1 --kv-quant 8` = fused-sdpa off) our unfused quantized SDPA is **op-for-op identical** to mlx-lm's `quantized_scaled_dot_product_attention`, so uniform-quant is **bit-exact L1** (the fused-sdpa-ON path is optiq-aligned). `config` = **per-layer mixed-precision** from `kv_config.json` — optiq-only, no mlx-lm analog → **L2**. Under `--batch N`, an explicit value routes those requests to the **serial** lane (batched is bf16-only). |
 | `--adapter` | dir | none | Mount a LoRA adapter at startup (same machinery as `POST /v1/adapters`; the adapter id is the directory's basename) and make it the **default** for requests that send no `adapter` field. A request's explicit `adapter` — including `"none"` — always wins, and hot-swap via `/v1/adapters` is unchanged. `--adapter-path` is accepted as the mlx_lm.server-named alias. A bad adapter fails startup loudly rather than silently serving the base model. This is the flag `mlx-bun train`'s completion message points at. |
 | `--draft-model` | path/query | none | **Speculative decoding** (mlx_lm.server parity): a smaller same-tokenizer model drafts tokens the main model verifies in one forward — exact results (L1: token-for-token vs mlx-lm's speculative path), faster decode when drafts land. Resolves like the main model. Tokenizer-family mismatch fails startup (upstream silently accepts ~0%). Mounting a draft routes **every** request to the serial lane (upstream `is_batchable = draft is None`). Pays on slow targets (12B+); fast small models lose to the draft overhead. Composes with structured output (the constrained verify walk). Prompt-cache reuse is bypassed on the spec path (v1). Telemetry: `usage.speculation` (`drafted`/`accepted`/`targetCalls`). |
 | `--num-draft-tokens` | n | `3` | Drafts per verify round (mlx_lm.server's default; `mlx_lm.generate`'s is 2). |
@@ -284,6 +284,16 @@ overrides its tier's preset.
 Compiled-decode is on in **every** tier (proven bit-exact with uncompiled —
 free speed, not a fidelity trade). The only thing `--l3` adds today is the
 perf kernel.
+
+**KV precision is a separate axis from the tier's kernels.** Each tier row shows its
+*default* KV scheme, but KV is not what defines the tier. mlx-lm supports **uniform**
+quantized KV (`--kv-bits`), and `--l1 --kv-quant 8` is a **bit-exact L1** config: with
+fused-sdpa off (the L1 default) our quantized decode runs `quantizedSdpaUnfused`,
+which is op-for-op identical to mlx-lm's `quantized_scaled_dot_product_attention`
+(`mlx_lm/models/base.py`) — same `mx.quantized_matmul` ×2 + `mx.softmax(precise=True)`
++ `where(…, finfo.min)`. bf16 is just the simplest L1 default. The **fused / N-tiled**
+quantized path (fused-sdpa ON — naked default and `--l2`) is the **optiq**-aligned
+one. Only the **per-layer mixed-precision** `config` scheme is optiq-only (→ L2).
 
 **Where each feature sits:** batching = L1-class (mlx-lm B=N parity);
 speculative decoding = L1-class (token-for-token vs mlx-lm's spec path);

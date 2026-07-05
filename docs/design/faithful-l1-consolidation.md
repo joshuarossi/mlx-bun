@@ -79,7 +79,7 @@ bit-exact-by-construction with no flag. That is the pattern to generalize.
 | Flag | Default | Diverges from mlx-lm? | Notes |
 |---|---|---|---|
 | `MLX_BUN_PERF_KERNEL` | **ON** | **yes** — original kernel, not bit-exact | fires only on quantized KV; output-changing → L3-only |
-| kv-quant (config) | **ON** for OptiQ | n/a (mlx-lm has no analog) | output-changing → L2/L3 only; L1 must be bf16 |
+| kv-quant | **config** for OptiQ | uniform=mlx-lm has it; mixed=optiq-only | off (bf16)=L1; uniform 4\|8=L1 in the L1 set (unfused SDPA == mlx-lm base.py); config (mixed)=L2 |
 | `MLX_BUN_COMPILED_DECODE` | ON | no (whole-decode fusion, bit-exact) | structural; off in faithful preset |
 | `MLX_BUN_FUSED_GELU` | ON | **yes** — custom metal geglu ≠ compiled geglu | output-changing vs mlx-lm dispatch |
 | `MLX_BUN_FUSED_DECODE` | off | yes | L>1 only |
@@ -114,7 +114,18 @@ The whole flag pile collapses to one distinction, verified in-source 2026-07-04:
     math lib"*; F32 variant *"NOT bit-exact → L3"*. Default off.
   - `fused-decode-kernel.ts` (`PERF_KERNEL`): online-softmax, envelope-gated, quant-KV
     only. Not bit-exact by construction.
-- **kv-quant** has no mlx-lm analog → it's the L1↔L2 boundary, not a kernel.
+- **kv-quant** is a cache-precision axis, not a kernel, and it is NOT a clean
+  L1↔L2 boundary. **off (bf16) → L1**. **uniform `4|8` → L1** in the L1 kernel set
+  (`--l1 --kv-quant 8` = fused-sdpa off + perf off): mlx-bun's `quantizedSdpaUnfused`
+  (gemma4-base.ts) is **op-for-op identical** to mlx-lm's
+  `quantized_scaled_dot_product_attention` (`mlx_lm/models/base.py` — same
+  `mx.quantized_matmul` ×2 + `mx.softmax(precise=True)` + `where(…, finfo.min)` +
+  `queries *= scale`), and mlx-lm exposes exactly this scheme via `--kv-bits`. So
+  uniform-quant is **bit-exact L1 by construction** (a uniform-kv logit golden would
+  confirm the measured number; `bench.ts --baseline-kv 8` runs the stock-mlx-lm side
+  for the perf comparison). The FUSED / N-tiled prefill path (fused-sdpa ON — the
+  naked default and `--l2`) is the **optiq-aligned** one, not mlx-lm. **config
+  (per-layer mixed-precision) → L2** (optiq-only; mlx-lm has no per-layer analog).
 
 **Decision table (serve decode flags):**
 
@@ -129,7 +140,7 @@ The whole flag pile collapses to one distinction, verified in-source 2026-07-04:
 | `MLX_BUN_FUSED_SWIGLU`(`_F32`) | **yes** (exp/f32) | **OFF** | off (unproven) | competes w/ faithful swiglu |
 | `MLX_BUN_PERF_KERNEL` | **yes** (online softmax) | **OFF** | on w/ kv-quant | unrelated original |
 | `MLX_BUN_FUSED_DECODE` | **yes** | **OFF** | off | unrelated experiment |
-| `--kv-quant` | n/a (no oracle) | **off/bf16** | config (=L2) | cache axis, not kernel |
+| `--kv-quant` | off=L1; uniform `4\|8`=L1 in the L1 set (unfused SDPA==mlx-lm); config=L2 | **off (bf16)**, uniform ok | config | cache axis, not kernel (see kv note above) |
 | `MLX_BUN_FAITHFUL` | — | **delete** | delete | illegal 2nd bundle → flags |
 | `MLX_BUN_CPM5_FAITHFUL` | no | fold into `--l1` | — | A/B tool; likely retire |
 
