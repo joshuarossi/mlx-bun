@@ -229,13 +229,22 @@ TurboQuant artifacts. `src/ssd-cache.ts` is the seed to generalize.
 
 ### The batching workload (Josh, 2026-07-05)
 
-The motivating case is AGENTIC FAN-OUT: one user running many concurrent
-agents against the same server. Consequences: concurrency-driven batching
-(agents don't coordinate arrivals); **prefix sharing gains priority**
-(agents share long system prompts — the one-shared-KV-prefix × N rows
-case); per-slot adapters become a real want (different agents, different
-specializations). "Single-user" in this project means single-user,
-many-agents.
+The motivating case is THE USER'S AGENT HARNESS: someone points pi / a
+Claude-Code-style coding agent at their local server and spins up
+SUB-AGENTS to work different parts of a project. Serial, each agent queues
+behind all the others — the Nth agent's first token waits for N−1 full
+generations and every agent's loop stalls. Batched, 4–8 agents decode
+simultaneously: each stream is somewhat slower, but nobody waits, every
+agent starts instantly, and the fleet's wall-clock collapses (cpm5: 345
+aggregate at B=4 vs 267 solo → four jobs finish in ~3.1×T with zero queue
+latency, vs 4×T serial with the last agent idle through three
+generations). That is the entire reason a single-person laptop runtime
+carries a continuous-batching engine. Consequences: concurrency-driven
+batching (sub-agents don't coordinate arrivals); **prefix sharing gains
+priority** (sub-agents share long system prompts — one shared KV prefix ×
+N rows); per-slot adapters (different agents, different specializations);
+and batching × quantized KV first (agent fleets want long contexts).
+"Single-user" in this project means single-user, many-agents.
 
 ### Layer responsibilities (the contract, 2026-07-05)
 
