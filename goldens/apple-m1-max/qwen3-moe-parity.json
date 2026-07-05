@@ -1,0 +1,28 @@
+{
+ "snapshot": "/Users/joshrossi/.cache/huggingface/hub/models--mlx-community--Qwen3-30B-A3B-Thinking-2507-4bit/snapshots/699f19ff41a0a67c3383feddecc7a7aaef0dc00b",
+ "mode": "bf16",
+ "prompt": "The capital of France is",
+ "prompt_ids": [
+  785,
+  6722,
+  315,
+  9625,
+  374
+ ],
+ "greedy_ids": [
+  12095,
+  13,
+  3555,
+  374,
+  279,
+  6722,
+  315,
+  17689,
+  1939,
+  32313,
+  11,
+  279
+ ],
+ "logit_steps": 12,
+ "vocab_size": 151936
+}

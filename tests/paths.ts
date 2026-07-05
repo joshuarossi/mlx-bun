@@ -100,6 +100,17 @@ export async function snapshotQwen35_4bAvailable(): Promise<boolean> {
   return Bun.file(`${SNAPSHOT_QWEN35_4B}/config.json`).exists();
 }
 
+// Qwen3-30B-A3B (qwen3_moe, 4-bit): the MoE parity target for the faithful
+// Qwen3MoeModel port. Oracle is stock mlx-lm's qwen3_moe (L1). No kv_config
+// (not an OptiQ checkpoint), so only the bf16-KV bar applies.
+export const SNAPSHOT_QWEN3_MOE = hfSnapshot(
+  "models--mlx-community--Qwen3-30B-A3B-Thinking-2507-4bit",
+);
+
+export async function snapshotQwen3MoeAvailable(): Promise<boolean> {
+  return Bun.file(`${SNAPSHOT_QWEN3_MOE}/config.json`).exists();
+}
+
 // Qwen3-Embedding-4B (plain qwen3, 4-bit DWQ): the text-embedding backbone.
 // Oracle is mlx-lm's qwen3 (L1). Resolved dynamically — no hash edit on pull.
 export const SNAPSHOT_QWEN3_EMBED = hfSnapshot("models--mlx-community--Qwen3-Embedding-4B-4bit-DWQ");

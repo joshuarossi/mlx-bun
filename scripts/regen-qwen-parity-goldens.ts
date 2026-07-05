@@ -1,6 +1,9 @@
 // Regenerate Qwen3.5-architecture parity goldens from the mlx-lm / OptiQ oracle.
 //
-//   bun scripts/regen-qwen-parity-goldens.ts [27b|4b]   (default: 27b)
+//   bun scripts/regen-qwen-parity-goldens.ts [27b|4b|moe]   (default: 27b)
+//
+// moe = Qwen3-30B-A3B (qwen3_moe, plain 4-bit, no kv_config → bf16 bar only),
+// the parity target for the faithful Qwen3MoeModel port.
 //
 // Per parity bar (mixed-KV is generated only when the checkpoint ships
 // kv_config.json — the 4B does not):
@@ -17,15 +20,21 @@
 
 import { existsSync, mkdirSync } from "node:fs";
 import { goldenOutDir } from "../tests/goldens";
-import { ORACLE_PYTHON, SNAPSHOT_QWEN35, SNAPSHOT_QWEN35_4B } from "../tests/paths";
+import {
+  ORACLE_PYTHON,
+  SNAPSHOT_QWEN3_MOE,
+  SNAPSHOT_QWEN35,
+  SNAPSHOT_QWEN35_4B,
+} from "../tests/paths";
 
 const MODELS: Record<string, { snapshot: string; prefix: string }> = {
   "27b": { snapshot: SNAPSHOT_QWEN35, prefix: "qwen35" },
   "4b": { snapshot: SNAPSHOT_QWEN35_4B, prefix: "qwen35-4b" },
+  moe: { snapshot: SNAPSHOT_QWEN3_MOE, prefix: "qwen3-moe" },
 };
 const key = (process.argv[2] ?? "27b").toLowerCase();
 const sel = MODELS[key];
-if (!sel) throw new Error(`unknown model key ${key} (use 27b | 4b)`);
+if (!sel) throw new Error(`unknown model key ${key} (use 27b | 4b | moe)`);
 
 const OUT = goldenOutDir();
 mkdirSync(OUT, { recursive: true });
@@ -72,7 +81,6 @@ for step in range(steps):
     y = mx.array([[tok]])
 
 print(json.dumps({
-    "model": "mlx-community/Qwen3.6-27B-OptiQ-4bit",
     "snapshot": snap, "mode": mode, "prompt": prompt,
     "prompt_ids": ids, "greedy_ids": greedy, "logit_steps": steps,
     "vocab_size": int(last.shape[0]),
