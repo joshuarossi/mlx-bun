@@ -183,11 +183,20 @@ badge with teeth, and the badge list is the marketing claim.
    effective scheme), admission budgets. *Responsibility: requests, not
    tensors.*
 
-**Composition truth (2026-07-05, source-verified to the line):** "does
-mixed-precision KV work with batched requests?" — optiq serve 0.2.15 as
-shipped: **NO** (install_mixed_kv hooks stream_generate, the serial path;
-mlx_lm.server 0.31.3 contains zero quantization in its 1,904 lines and
-BatchKVCache has no to_quantized — batchable requests decode bf16). mlx-bun
+**Composition truth (2026-07-05, source-verified to the line AND
+empirically proven live):** "does mixed-precision KV work with batched
+requests?" — optiq serve as shipped: **NO** (install_mixed_kv hooks
+stream_generate, the serial path; mlx_lm.server 0.31.3 contains zero
+quantization in its 1,904 lines and BatchKVCache has no to_quantized —
+batchable requests decode bf16). **Live 2×2 proof** (optiq serve, cpm5,
+9,132-token prompt, 128-tok decode, fresh server per arm; seeded requests
+route serial per mlx-lm's `_is_batchable`): batched path decode is
+IDENTICAL with and without --kv-config (120.5 vs 120.6 tok/s — the config
+is inert there), while the serial path drops 148.7 → 32.7 tok/s when the
+mixed hook engages (4.5× slower at this context in the shipped python
+pipeline). So optiq's composed reality today: batched requests silently
+bf16; quantized requests pay a heavy serial penalty. Phase 3.1's batched
+mixed-KV at full engine decode speed is an uncontested frontier point. mlx-bun
 today: **NO** (willBatch routes shape.kvQuant serial). mlx-bun after Phase
 3.1: **YES — the build**, and a first on this stack. In layer terms the
 limitation is purely layer 2: the quantized schemes only have single-row
