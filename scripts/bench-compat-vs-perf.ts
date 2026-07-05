@@ -138,7 +138,10 @@ for (const CTX of CONTEXTS) {
 // Both arms run the SAME real prompt and are teacher-forced down compat's
 // greedy path, so the only variable is the perf kernel. KL is over the full
 // vocab softmax and is machine-independent — a real verdict on any machine.
-const KL_STEPS = SMOKE ? 4 : 24;
+// 96 steps ≈ a real paragraph of decode: 24 was too thin a sample for a
+// PASS/WARN verdict (the 12B WARN keyed off ONE outlier step among 24) and
+// each step is just one single-token forward + a vocab-sized readback.
+const KL_STEPS = SMOKE ? 4 : 96;
 // Heuristic gate: perf's online-softmax kernels perturb logits at the ~1e-4
 // nats level; flag anything materially above that for a human look.
 const KL_MEAN_OK = 5e-3;

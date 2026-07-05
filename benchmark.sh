@@ -73,7 +73,7 @@ echo "=== fused-decode paired A/B (12B @8k kv8: tiled vs stock decode) ==="
 bun scripts/bench-fused-decode.ts
 echo ""
 echo "=== perf-kernel paired A/B (12B serve kv_config: compat vs perf-mode Metal kernel) ==="
-echo "    compat (MLX_BUN_PERF_KERNEL=0, bit-parity, the vs-python config) vs perf-mode (=1, default; ref 1.02-1.04)"
+echo "    compat (MLX_BUN_PERF_KERNEL=0, bit-parity, the DEFAULT since 2026-07-05) vs perf-mode (=1, L3 opt-in)"
 bun scripts/bench-perf-kernel.ts
 echo ""
 echo "=== compiled-decode paired A/B (12B @8k, e4b @600/@8k, serve kv_config) ==="

@@ -5,6 +5,16 @@
 //   - cold page cache: prefill timer dominated by SSD page-in
 // The harness refuses to record headline numbers when checks fail;
 // the state snapshot is stored in every eval-DB row either way.
+//
+// LIMITS of this instrument (2026-07-05 finding): the snapshot is taken
+// BETWEEN legs, when the bench process has exited and memory is quiet —
+// free_pct reads a near-constant ~92% on an otherwise-idle box and load1m
+// sat under every threshold while a 40-minute mid-pass slow window cut
+// decode rates ~40% across every stack. Preflight ok ≠ clean measurements
+// and preflight-failed ≠ dirty ones (the 07-04 pass was ‡-tagged yet
+// stable). The DIRECT quality signal is per-cell run spread — see the
+// run-stability policy in scripts/bench-h2h.ts (SPREAD_TOL retries +
+// `unstable`/`stabilized` tags). Preflight remains the coarse pre-gate.
 
 export interface MachineState {
   swapUsedMB: number;
@@ -77,21 +87,30 @@ export function checkMachine(limits: PreflightLimits = {}): MachineState {
   if (loadAvg1m > 8)
     problems.push(`1-min load ${loadAvg1m.toFixed(1)} — post-boot indexing still running; wait a minute`);
 
-  // big foreign processes (rss in KB from ps)
+  // big foreign processes: high RSS *or* high CPU (pcpu + rss in KB from
+  // ps). The CPU arm is the 2026-07-05 lesson: Apple's
+  // knowledgeconstructiond (Apple Intelligence indexing) burned 87% CPU
+  // with a tiny RSS during the pass's 40-min slow window — a background
+  // ML workload the RSS-only check could never flag. CPU is bursty, so
+  // one clean sample doesn't prove absence (the run-spread stability
+  // policy in bench-h2h.ts is the direct signal); a hot sample here is
+  // still a cheap early warning.
   const SELF_PATTERN = /(bun|\.venv\/bin\/python|mlx_lm|optiq)/;
   const SYSTEM_PATTERN = /(kernel_task|WindowServer|launchd|mds|spotlight)/i;
+  const BIG_CPU_PCT = 50;
   const bigProcesses: { rssMB: number; command: string }[] = [];
-  for (const line of sh(["ps", "axo", "rss=,command="]).split("\n")) {
-    const m = line.match(/^\s*(\d+)\s+(.*)$/);
+  for (const line of sh(["ps", "axo", "pcpu=,rss=,command="]).split("\n")) {
+    const m = line.match(/^\s*([\d.]+)\s+(\d+)\s+(.*)$/);
     if (!m) continue;
-    const rssMB = Number(m[1]) / 1024;
-    const command = m[2]!.slice(0, 80);
-    if (rssMB < bigRss) continue;
+    const cpuPct = Number(m[1]);
+    const rssMB = Number(m[2]) / 1024;
+    const command = m[3]!.slice(0, 80);
+    if (rssMB < bigRss && cpuPct < BIG_CPU_PCT) continue;
     if (SELF_PATTERN.test(command) || SYSTEM_PATTERN.test(command)) continue;
-    bigProcesses.push({ rssMB: Math.round(rssMB), command });
+    bigProcesses.push({ rssMB: Math.round(rssMB), command: cpuPct >= BIG_CPU_PCT ? `${command} (${cpuPct.toFixed(0)}% cpu)` : command });
   }
   for (const p of bigProcesses)
-    problems.push(`big process resident: ${p.rssMB} MB — ${p.command}`);
+    problems.push(`big process: ${p.rssMB} MB — ${p.command}`);
 
   return {
     swapUsedMB, freePercent, cpuSpeedLimit, gpuWiredLimitMB, loadAvg1m,

@@ -83,7 +83,24 @@ if blkv == "config":
 elif blkv.isdigit():
     # STOCK mlx-lm uniform quantized KV — no optiq install_mixed_kv, so this is
     # mlx-lm's native maybe_quantize_kv_cache (register() only remaps model_type).
+    # One patch is unavoidable on gemma: stock mlx-lm raises
+    # NotImplementedError("RotatingKVCache Quantization NYI") for sliding
+    # layers (verified 2026-07-05 — this silently dropped the e4b/12B kv8
+    # oracle cells from the faithful matrix). optiq's
+    # patch_rotating_to_quantized supplies only the rotating CACHE class;
+    # the attention kernel stays mlx-lm's own. No-op for models without
+    # rotating caches (cpm5).
+    from optiq.runtime.kv.rotating import patch_rotating_to_quantized
+    patch_rotating_to_quantized()
     extra = dict(kv_bits=int(blkv), kv_group_size=64, quantized_kv_start=0)
+# Warmup (1 token over an 8-token prompt, discarded) — SAME convention as
+# the JS path below: first-call Metal kernel compile otherwise lands in
+# prompt_tps. Invisible at 16k prompts (amortized to nothing: both stacks
+# measured ~188 tok/s) but it dominated SHORT prompts — the 2026-07-05
+# report's "816 vs 397" cpm5 prefill was compile-exclusion vs
+# compile-inclusion, not an engine difference.
+for _ in stream_generate(model, tokenizer, prompt[:8], max_tokens=1):
+    pass
 # generation-only peak: python load() materializes non-lazily and its
 # transient otherwise dominates peak_memory (constant 9.84 GB on the 12B
 # at every context — a load figure, not a serving one)

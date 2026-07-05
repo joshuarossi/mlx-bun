@@ -105,6 +105,19 @@ async function run(model: string, cell: Cell): Promise<Row | null> {
   return { cell: cell.name, decode: +decode, prefill: +prefill, peak: +peak, kv, baseline: !!cell.baseline };
 }
 
+// Rows land in the eval DB too (stack=mlx-bun for our cells, mlx-lm for the
+// oracle cells) so bench-h2h.ts `table` renders this matrix as Comparison 0
+// in the unified report — before 2026-07-05 these results lived only in
+// stdout + a loose md, invisible in the report benchmark.sh promises.
+const { EvalDB, gitCommit } = await import("../src/evaldb");
+const { checkMachine, machineStateJson } = await import("../src/preflight");
+const { Registry } = await import("../src/registry");
+const evalDb = new EvalDB();
+const commitSha = gitCommit();
+const machineState = machineStateJson(checkMachine());
+const registry = new Registry();
+if (registry.list().length === 0) await registry.scan();
+
 const lines: string[] = [`# L1 kernel matrix (${TOKENS} decode tok${PROMPT_TOKENS ? `, ${PROMPT_TOKENS}-tok prompt` : ""})\n`];
 for (const key of MODEL_KEYS) {
   const query = MODELS[key] ?? key;
@@ -114,7 +127,19 @@ for (const key of MODEL_KEYS) {
   for (const cell of cells) {
     console.log(`  running ${cell.name}…`);
     const r = await run(query, cell);
-    if (r) { rows.push(r); console.log(`    decode ${r.decode} · prefill ${r.prefill} · peak ${r.peak} GB`); }
+    if (r) {
+      rows.push(r);
+      console.log(`    decode ${r.decode} · prefill ${r.prefill} · peak ${r.peak} GB`);
+      evalDb.record({
+        modelPath: registry.resolve(query).path, commitSha, stack: cell.baseline ? "mlx-lm" : "mlx-bun",
+        promptTokens: Number(PROMPT_TOKENS) || 0, generatedTokens: Number(TOKENS),
+        prefillTps: r.prefill, decodeTps: r.decode, peakBytes: Math.round(r.peak * 1e9),
+        machineState,
+        // cell= LAST (names contain spaces) — bench-h2h parses
+        // /model=(\S+) kv=(\S+) baseline=(\d) cell=(.+)$/
+        notes: `bench-faithful-matrix model=${key} kv=${r.kv} baseline=${cell.baseline ? 1 : 0} cell=${cell.name}`,
+      });
+    }
   }
   lines.push(`## ${key}\n`);
   lines.push(`| config | kv | decode tok/s | vs mlx-lm | prefill tok/s | peak GB |`);

@@ -224,7 +224,39 @@ async function directRun(c: DirectCell, tokens: number, promptTokens?: number): 
   };
 }
 
-interface Agg { decode: number[]; prefill: number[]; peak: number[]; prompt: number }
+interface Agg { samples: { decode: number; prefill: number; peak: number }[]; prompt: number }
+
+// --- run-stability policy ---------------------------------------------------
+// Interference on a personal machine is ONE-SIDED: a background process can
+// only make a run slower, never faster. So when a cell's runs disagree, the
+// consistent FAST cluster is the machine's true capability and the slow runs
+// are contamination. The 2026-07-05 pass proved the failure mode: a slow
+// window (07:39–08:17) flipped mid-round, our mixed@16k median caught
+// [15.1,15.1,24.6] while optiq caught [13.6,23.5,23.5] — the report printed
+// a fabricated 0.64× regression that the previous night's pass (1.05×)
+// refutes. Policy: if a cell's runs spread past SPREAD_TOL, run extra rounds
+// until the top-3 runs agree within STABLE_TOL (record median of that
+// cluster, tagged `stabilized`); if they never converge, record the median
+// of everything tagged `unstable` — rendered ~ and the pair verdict withheld.
+const STABLE_TOL = 1.05;
+const MAX_EXTRA_ROUNDS = 3;
+
+const decodes = (a: Agg) => a.samples.map((s) => s.decode);
+const top3 = (a: Agg) =>
+  [...a.samples].sort((x, y) => y.decode - x.decode).slice(0, Math.min(3, a.samples.length));
+const spreadOf = (xs: number[]) => Math.max(...xs) / Math.min(...xs);
+const top3Stable = (a: Agg) => spreadOf(top3(a).map((s) => s.decode)) <= STABLE_TOL;
+const needsRetry = (a: Agg) =>
+  a.samples.length > 1 && spreadOf(decodes(a)) > SPREAD_TOL && !top3Stable(a);
+
+/** Which samples represent the machine, and the note tag that says how. */
+function robustPick(a: Agg): { picked: Agg["samples"]; tag: string } {
+  if (a.samples.length <= 1 || spreadOf(decodes(a)) <= SPREAD_TOL)
+    return { picked: a.samples, tag: "" };
+  if (top3Stable(a))
+    return { picked: top3(a), tag: ` stabilized used-top3of${a.samples.length}` };
+  return { picked: a.samples, tag: ` unstable spread=${spreadOf(decodes(a)).toFixed(2)}` };
+}
 
 async function directLeg(
   cells: DirectCell[], runs: number, machineState: string,
@@ -268,28 +300,59 @@ async function directLeg(
         console.log(`  [warmup] ${key}: ${res.decodeTps.toFixed(1)} tok/s (discarded)`);
         continue;
       }
-      const a = agg.get(key) ?? { decode: [], prefill: [], peak: [], prompt: res.promptTokens };
-      a.decode.push(res.decodeTps);
-      a.prefill.push(res.prefillTps);
-      a.peak.push(res.peakGB);
+      const a = agg.get(key) ?? { samples: [], prompt: res.promptTokens };
+      a.samples.push({ decode: res.decodeTps, prefill: res.prefillTps, peak: res.peakGB });
       agg.set(key, a);
       console.log(`  [run ${r}/${runs}] ${key}: ${res.decodeTps.toFixed(1)} tok/s decode`);
     }
   }
+
+  // Stability retries (see run-stability policy above): only cells whose
+  // runs disagree re-run, interleaved, so a mid-pass machine-state flip gets
+  // a chance to resolve into a consistent fast cluster instead of shipping a
+  // mixed-state median as a headline.
+  for (let extra = 1; extra <= MAX_EXTRA_ROUNDS; extra++) {
+    const shaky = todo.filter((c) => {
+      const a = agg.get(cellKey(c));
+      return !failed.has(cellKey(c)) && a && needsRetry(a);
+    });
+    if (shaky.length === 0) break;
+    for (const c of shaky) {
+      const key = cellKey(c);
+      try {
+        const res = await directRun(c, o.tokens, o.promptTokens);
+        agg.get(key)!.samples.push({ decode: res.decodeTps, prefill: res.prefillTps, peak: res.peakGB });
+        console.log(`  [stability retry ${extra}/${MAX_EXTRA_ROUNDS}] ${key}: ${res.decodeTps.toFixed(1)} tok/s decode`);
+      } catch (e) {
+        // keep what we have — the cell records from its existing runs
+        console.error(`  [stability retry ${extra}] ${key} failed: ${failureLine((e as Error).message)}`);
+        break;
+      }
+    }
+  }
+
   for (const c of todo) {
     const key = cellKey(c);
     if (failed.has(key)) continue;
     const a = agg.get(key)!;
-    console.log(`  ${key}: decode ${fmt(a.decode)} | prefill ${fmt(a.prefill, 0)} | peak ${Math.max(...a.peak).toFixed(2)} GB`);
+    const { picked, tag } = robustPick(a);
+    const dec = picked.map((s) => s.decode);
+    const pre = picked.map((s) => s.prefill);
+    console.log(
+      `  ${key}: decode ${fmt(dec)} | prefill ${fmt(pre, 0)} | ` +
+      `peak ${Math.max(...a.samples.map((s) => s.peak)).toFixed(2)} GB${tag ? ` [${tag.trim()}]` : ""}`,
+    );
     db.record({
       modelPath: c.m.path, commitSha: commit, stack: c.stack,
       promptTokens: a.prompt, generatedTokens: o.tokens,
-      prefillTps: median(a.prefill), decodeTps: median(a.decode),
-      peakBytes: Math.round(Math.max(...a.peak) * 1e9),
+      prefillTps: median(pre), decodeTps: median(dec),
+      // peak stays max over ALL runs — a contaminated run's peak is still a
+      // real high-water mark of the allocation pattern, not a speed artifact
+      peakBytes: Math.round(Math.max(...a.samples.map((s) => s.peak)) * 1e9),
       machineState,
       notes: `h2h-direct median-of-${runs} kv=${c.kv}` +
         `${o.promptTokens ? ` ctxreq=${o.promptTokens} ctx=${a.prompt}` : ""} ` +
-        `decode[${list(a.decode)}]${o.forceNote ? " preflight-failed" : ""}`,
+        `decode[${list(decodes(a))}]${tag}${o.forceNote ? " preflight-failed" : ""}`,
     });
   }
 }
@@ -397,7 +460,9 @@ async function startServer(c: ServerCell, port: number): Promise<ManagedServer> 
   let cmdline: string[];
   if (c.stack === "mlx-bun") {
     cmdline = ["bun", "scripts/serve.ts", "--model", c.m.path, "--port", String(port)];
-    if (c.kv === "off") cmdline.push("--no-kv-quant");
+    // explicit either way — the serve default flipped to bf16 (naked = L1,
+    // 2026-07-05), so kv=config cells must ASK for the mixed scheme
+    cmdline.push(c.kv === "off" ? "--no-kv-quant" : "--kv-config");
   } else if (c.stack === "mlx-lm") {
     cmdline = [`${VENV}/mlx_lm.server`, "--model", c.m.path, "--port", String(port)];
   } else {
@@ -461,6 +526,28 @@ async function serverLeg(
         `decode ${res.decodeTps.toFixed(1)} tok/s (tok=${res.usedUsage ? "usage" : "chunks"})`,
       );
     }
+    // Same stability policy as the direct leg (see run-stability policy):
+    // the server is already up, so extra requests are nearly free.
+    for (let extra = 1; extra <= MAX_EXTRA_ROUNDS &&
+         spreadOf(decodes) > SPREAD_TOL &&
+         spreadOf([...decodes].sort((a, b) => b - a).slice(0, 3)) > STABLE_TOL; extra++) {
+      const res = await serverRequest(srv.base, c.m.repoId, tokens);
+      ttfts.push(res.ttftMs);
+      decodes.push(res.decodeTps);
+      console.log(`  [stability retry ${extra}/${MAX_EXTRA_ROUNDS}] ${key}: decode ${res.decodeTps.toFixed(1)} tok/s`);
+    }
+    const allDecodes = [...decodes];
+    let stabilityTag = "";
+    if (decodes.length > 1 && spreadOf(decodes) > SPREAD_TOL) {
+      const fast3 = [...decodes].sort((a, b) => b - a).slice(0, 3);
+      if (spreadOf(fast3) <= STABLE_TOL) {
+        stabilityTag = ` stabilized used-top3of${decodes.length}`;
+        decodes.length = 0;
+        decodes.push(...fast3);
+      } else {
+        stabilityTag = ` unstable spread=${spreadOf(decodes).toFixed(2)}`;
+      }
+    }
     const rssFinal = rssMB(srv.proc.pid);
     const growthMB = rssAfterWarm > 0 && rssFinal > 0 ? rssFinal - rssAfterWarm : NaN;
     console.log(
@@ -477,7 +564,7 @@ async function serverLeg(
       notes: `h2h-server median-of-${runs} kv=${c.kv} ttft_ms=${median(ttfts).toFixed(0)} ` +
         `ready_ms=${srv.readyMs.toFixed(0)} rss_growth_mb=${Number.isNaN(growthMB) ? "?" : growthMB.toFixed(0)} ` +
         `tok=${anyChunkFallback ? "chunks" : "usage"} ` +
-        `ttft[${list(ttfts, 0)}] decode[${list(decodes)}]` +
+        `ttft[${list(ttfts, 0)}] decode[${list(allDecodes)}]${stabilityTag}` +
         `${forceNote ? " preflight-failed" : ""}`,
     });
   } finally {
@@ -487,11 +574,26 @@ async function serverLeg(
 
 // --- table ---------------------------------------------------------------
 
+// host alone is ambiguous — Josh's MacBooks share the hostname, so a row
+// must carry chip + RAM to be attributable to a machine.
 function machineOf(r: Record<string, any>): string {
   try {
     const ms = JSON.parse(String(r.machine_state ?? "{}"));
-    return ms.host ?? "?";
+    const host = ms.host ?? "?";
+    if (!ms.chip) return host;
+    const chip = String(ms.chip).replace(/^Apple /, "");
+    return ms.ram_gb ? `${host} (${chip}, ${ms.ram_gb}GB)` : `${host} (${chip})`;
   } catch { return "?"; }
+}
+
+/** Human model name from a hub snapshot path: the snapshot BASENAME is a
+ *  content hash (unreadable in a report) — recover the repo name from the
+ *  `models--<org>--<name>` hub segment; fall back to the basename for
+ *  non-hub paths. */
+function modelNameOf(modelPath: string): string {
+  const hub = modelPath.match(/models--[^/]+--([^/]+)/);
+  if (hub) return hub[1]!;
+  return modelPath.split("/").filter(Boolean).at(-1) ?? modelPath;
 }
 
 // leg label: server | direct | direct@<N>k (from the REQUESTED context
@@ -507,7 +609,17 @@ interface Cell {
   modelPath: string; model: string; stack: string; leg: string; kv: "off" | "config";
   decode: number; spread: string; prefill: number; ttft?: string; ready?: string;
   mem: number; growth?: string; tokSrc?: string; machine: string; commit: string; dirty: boolean;
+  /** Run spread exceeded SPREAD_TOL and retries never converged (or the row
+   *  predates retries and its recorded run list is wide) — the recorded
+   *  median mixes machine states, so a pair verdict from it is withheld. */
+  unstable: boolean;
 }
+
+/** A cell whose recorded runs span more than this ratio (max/min) mixed two
+ *  machine states — the 2026-07-05 pass proved medians from such runs
+ *  fabricate regressions (mixed@16k read 0.64× vs optiq from a mid-pass
+ *  slow window; the previous night's clean pass read 1.05×). */
+const SPREAD_TOL = 1.15;
 
 function parseCell(r: Record<string, any>): Cell {
   const notes = String(r.notes);
@@ -515,9 +627,14 @@ function parseCell(r: Record<string, any>): Cell {
     .split(",").map(Number).filter((x) => !Number.isNaN(x));
   // mlx-lm has no mixed-KV mode: normalize so early mislabeled rows dedupe
   const kv = (r.stack === "mlx-lm" ? "off" : notes.match(/ kv=(\w+)/)?.[1] ?? "off") as "off" | "config";
+  // explicit tag from the retry logic wins; legacy rows (no tag) are judged
+  // by their recorded run list so old wide medians don't render as clean
+  const unstable = / unstable/.test(notes) ||
+    (!/ stabilized/.test(notes) && decodeRuns.length > 1 &&
+      Math.max(...decodeRuns) / Math.min(...decodeRuns) > SPREAD_TOL);
   return {
     modelPath: String(r.model_path),
-    model: String(r.model_path).split("/").filter(Boolean).at(-1)!.slice(0, 14),
+    model: modelNameOf(String(r.model_path)),
     stack: String(r.stack), leg: legOf(notes), kv,
     decode: Number(r.decode_tps),
     spread: decodeRuns.length > 1
@@ -531,6 +648,7 @@ function parseCell(r: Record<string, any>): Cell {
     tokSrc: notes.match(/tok=(\w+)/)?.[1],
     machine: machineOf(r), commit: String(r.commit_sha ?? "?"),
     dirty: / preflight-failed/.test(notes),
+    unstable,
   };
 }
 
@@ -552,8 +670,13 @@ function pairSection(
     const other = cells.get(`${mp}|${leg}|${otherStack}|${otherKv}`);
     if (!ours || !other) continue;
     any = true;
-    const speedup = other.decode > 0 ? (ours.decode / other.decode).toFixed(2) + "×" : "—";
-    const dag = (c: Cell) => (c.tokSrc === "chunks" ? "†" : "") + (c.dirty ? "‡" : "");
+    // a pair with an unstable side gets NO speedup verdict — a median that
+    // mixed machine states beside one that didn't reads as a regression/win
+    // that a re-run erases. The ~-tagged cells say which side to re-run.
+    const shaky = ours.unstable || other.unstable;
+    const speedup = shaky ? "—~" : other.decode > 0 ? (ours.decode / other.decode).toFixed(2) + "×" : "—";
+    const dag = (c: Cell) =>
+      (c.tokSrc === "chunks" ? "†" : "") + (c.dirty ? "‡" : "") + (c.unstable ? "~" : "");
     const pf = (c: Cell) => (c.prefill ? c.prefill.toFixed(0) : "—");
     lines.push(
       `| ${ours.model} | ${leg} | ${ours.decode.toFixed(1)}${dag(ours)} | ` +
@@ -595,7 +718,7 @@ function renderTable(sinceTs: number): string {
   out.push(
     "## Comparison 2 — mlx-bun vs optiq (mixed kv_config) — requirement: bit parity",
     "",
-    "Mixed-KV bit parity is currently verified ours-fast vs ours-monolith (`tests/generated-parity.test.ts`). A direct optiq mixed-KV logit golden is NOT yet generated — see the gap note at the foot. Numbers below are speed only.",
+    "Mixed-KV bit parity is verified against the DIRECT optiq mixed-KV golden (`tests/mixed-kv-parity.test.ts`, per-step logits bit-exact) plus ours-fast vs ours-monolith (`tests/generated-parity.test.ts`). Numbers below are speed only.",
     "",
   );
   const s2 = pairSection(cells, "optiq", "config", "config");
@@ -616,7 +739,7 @@ function renderTable(sinceTs: number): string {
     if (notes.startsWith("bench-compat-vs-perf-kl")) { klRows.set(String(r.model_path), r); continue; }
     const m = notes.match(/arm=(\w+) ctx=(\d+)/);
     if (!m) continue;
-    const key = `${String(r.model_path).split("/").filter(Boolean).at(-1)}|${m[2]}`;
+    const key = `${modelNameOf(String(r.model_path))}|${m[2]}`;
     const e = arms.get(key) ?? {};
     (e as any)[m[1]!] = r;
     arms.set(key, e);
@@ -632,7 +755,7 @@ function renderTable(sinceTs: number): string {
       const cd = Number(e.compat.decode_tps), pd = Number(e.perf.decode_tps);
       const ratio = cd > 0 ? (pd / cd).toFixed(2) + "×" : "—";
       out.push(
-        `| ${model.slice(0, 14)} | ${ctx} | ${cd.toFixed(1)} | ${pd.toFixed(1)} | ${ratio} | ` +
+        `| ${model} | ${ctx} | ${cd.toFixed(1)} | ${pd.toFixed(1)} | ${ratio} | ` +
         `${(Number(e.compat.peak_bytes) / 1e9).toFixed(2)} | ${(Number(e.perf.peak_bytes) / 1e9).toFixed(2)} |`,
       );
     }
@@ -646,13 +769,107 @@ function renderTable(sinceTs: number): string {
       const max = n.match(/klMaxNats=([\d.eE+-]+)/)?.[1] ?? "?";
       const tm = n.match(/tokenMatchPct=([\d.]+)/)?.[1] ?? "?";
       const v = n.match(/verdict=(\w+)/)?.[1] ?? "?";
-      const model = mp.split("/").filter(Boolean).at(-1)!.slice(0, 14);
-      out.push(`- \`${model}\`: KL mean ${mean} / max ${max} nats, greedy token-match ${tm}% → **${v}**`);
+      const steps = n.match(/steps=(\d+)/)?.[1] ?? "?";
+      const model = modelNameOf(mp);
+      out.push(`- \`${model}\`: KL mean ${mean} / max ${max} nats over ${steps} steps, greedy token-match ${tm}% → **${v}**`);
     }
     out.push("");
   }
   if (!arms.size && !klRows.size)
     out.push("_no perf-vs-compat rows in this window — run `bun scripts/bench-compat-vs-perf.ts`._", "");
+
+  // --- Comparison 0: L1 kernel matrix (faithful default ± each kernel) -----
+  // benchmark.sh runs bench-faithful-matrix.ts between the h2h legs; its
+  // rows must land HERE or the "one report" claim is false (the 2026-07-05
+  // pass buried the its-levers-earn-nothing finding in stdout).
+  const fm = db.db
+    .query("SELECT * FROM runs WHERE ts >= ? AND notes LIKE 'bench-faithful-matrix%' ORDER BY ts ASC")
+    .all(sinceTs) as Record<string, any>[];
+  const fmCells = new Map<string, Record<string, any>>(); // latest wins
+  for (const r of fm) {
+    const m = String(r.notes).match(/model=(\S+) kv=(\S+) baseline=(\d) cell=(.+)$/);
+    if (m) fmCells.set(`${m[1]}|${m[2]}|${m[4]}`, r);
+  }
+  if (fmCells.size) {
+    out.push(
+      "## Comparison 0 — L1 kernel matrix (faithful default ± each kernel, vs mlx-lm per kv scheme)",
+      "",
+    );
+    const byModel = new Map<string, { key: string; r: Record<string, any> }[]>();
+    for (const [key, r] of fmCells) {
+      const model = key.split("|")[0]!;
+      (byModel.get(model) ?? byModel.set(model, []).get(model)!).push({ key, r });
+    }
+    for (const [model, rows] of [...byModel.entries()].sort()) {
+      out.push(`**${model}**`, "", "| config | kv | decode tok/s | vs mlx-lm | prefill tok/s | peak GB |", "|---|---|---|---|---|---|");
+      for (const { key, r } of rows) {
+        const [, kv, cell] = key.split("|") as [string, string, string];
+        const isBaseline = / baseline=1 /.test(String(r.notes));
+        const oracle = rows.find(({ key: k, r: or }) =>
+          k.split("|")[1] === kv && / baseline=1 /.test(String(or.notes)))?.r;
+        const ratio = !isBaseline && oracle && Number(oracle.decode_tps) > 0
+          ? `${(Number(r.decode_tps) / Number(oracle.decode_tps)).toFixed(2)}×` : "—";
+        out.push(
+          `| ${cell} | ${kv === "off" ? "bf16" : `q${kv}`} | ${Number(r.decode_tps).toFixed(1)} | ${ratio} | ` +
+          `${Number(r.prefill_tps).toFixed(0)} | ${(Number(r.peak_bytes) / 1e9).toFixed(2)} |`,
+        );
+      }
+      out.push("");
+    }
+  }
+
+  // --- Lever A/Bs (paired, in-process — the flag-default evidence) ---------
+  const LEVERS: { bench: string; off: string; on: string }[] = [
+    { bench: "bench-perf-kernel", off: "compat", on: "kernel" },
+    { bench: "bench-fused-decode", off: "stock", on: "tiled" },
+    { bench: "bench-compiled-decode", off: "uncompiled", on: "compiled" },
+    { bench: "bench-fused-prefill", off: "off", on: "on" },
+  ];
+  const abRows: string[] = [];
+  for (const lv of LEVERS) {
+    const rows = db.db
+      .query(`SELECT * FROM runs WHERE ts >= ? AND notes LIKE '${lv.bench} %' ORDER BY ts ASC`)
+      .all(sinceTs) as Record<string, any>[];
+    // latest wins per (model, ctx, kv, arm)
+    const byArm = new Map<string, Record<string, any>>();
+    for (const r of rows) {
+      const n = String(r.notes);
+      if (/ SMOKE/.test(n)) continue;
+      const arm = n.match(/(?:decode-arm|fused)=(\w+)/)?.[1];
+      const ctx = n.match(/ctx=(\d+)/)?.[1];
+      const kv = n.match(/kv=?(\S+)/)?.[1];
+      if (!arm || !ctx) continue;
+      byArm.set(`${String(r.model_path)}|${ctx}|${kv}|${arm}`, r);
+    }
+    const pairs = new Set<string>();
+    for (const k of byArm.keys()) pairs.add(k.split("|").slice(0, 3).join("|"));
+    for (const p of [...pairs].sort()) {
+      const off = byArm.get(`${p}|${lv.off}`);
+      const on = byArm.get(`${p}|${lv.on}`);
+      if (!off || !on) continue;
+      const [mp, ctx, kv] = p.split("|") as [string, string, string];
+      const dOff = Number(off.decode_tps), dOn = Number(on.decode_tps);
+      const pOff = Number(off.prefill_tps), pOn = Number(on.prefill_tps);
+      const dr = dOff > 0 ? `${(dOn / dOff).toFixed(2)}×` : "—";
+      const pr = pOff > 0 && pOn > 0 ? `${(pOn / pOff).toFixed(2)}×` : "—";
+      abRows.push(
+        `| ${lv.bench.replace("bench-", "")} | ${modelNameOf(mp)} | ${ctx} | ${kv} | ` +
+        `${dOff.toFixed(1)} | ${dOn.toFixed(1)} | ${dr} | ${pr} |`,
+      );
+    }
+  }
+  if (abRows.length) {
+    out.push(
+      "## Lever A/Bs (paired, in-process) — what each optional kernel buys",
+      "",
+      "Ratios are machine-noise-robust (arms alternate in one process); >1.00× = lever ON wins.",
+      "",
+      "| lever | model | ctx | kv | off tok/s | on tok/s | decode on/off | prefill on/off |",
+      "|---|---|---|---|---|---|---|---|",
+      ...abRows,
+      "",
+    );
+  }
 
   // --- raw appendix --------------------------------------------------------
   out.push(
@@ -671,7 +888,7 @@ function renderTable(sinceTs: number): string {
     const mem = c.mem ? c.mem.toFixed(2) : "";
     out.push(
       `| ${c.model} | ${c.stack} | ${c.leg} | ${kvLabel} | ` +
-      `${c.decode.toFixed(1)}${c.tokSrc === "chunks" ? "†" : ""}${c.dirty ? "‡" : ""} | ${c.spread} | ` +
+      `${c.decode.toFixed(1)}${c.tokSrc === "chunks" ? "†" : ""}${c.dirty ? "‡" : ""}${c.unstable ? "~" : ""} | ${c.spread} | ` +
       `${c.prefill ? c.prefill.toFixed(0) : "—"} | ${c.ttft ?? "—"} | ` +
       `${c.ready ? (Number(c.ready) / 1000).toFixed(2) : "—"} | ` +
       `${!isServer && mem ? mem : "—"} | ${isServer && mem ? mem : "—"} | ` +
@@ -684,7 +901,14 @@ function renderTable(sinceTs: number): string {
     footer.push("† decode rate from SSE chunk counting (server sent no usage) — underestimates if tokens coalesce per delta.");
   if (sorted.some((c) => c.dirty))
     footer.push("‡ measured on a machine that failed preflight (`--force`) — absolute tok/s is indicative, not quotable; ratios and KL are still valid.");
-  footer.push("Gap: comparison 2 has no optiq mixed-KV logit golden yet — generate one (optiq `install_mixed_kv` in `scripts/regen-parity-goldens.ts`) to make it a bit-parity verdict, not just a speed pairing.");
+  if (sorted.some((c) => c.unstable))
+    footer.push(
+      `~ UNSTABLE: run spread > ${((SPREAD_TOL - 1) * 100).toFixed(0)}% and retries never converged on a ` +
+      "consistent fast cluster — the median mixes machine states. Re-run this cell (`--redo`) before " +
+      "quoting it; pair verdicts touching it are withheld. (Preflight ‡ does NOT predict this — the " +
+      "2026-07-05 pass was preflight-clean yet had a 40-min slow window; spread is the direct signal.)",
+    );
+  footer.push("Comparison 2 bit parity: direct optiq mixed-KV golden verified by `tests/mixed-kv-parity.test.ts` (producer: `scripts/regen-mixed-kv-goldens.ts` — bf16 prefill → per-layer quantize → stock unfused decode, logits bit-exact). Numbers above are the speed pairing on top of that verdict.");
   if (footer.length) out.push("", ...footer);
   if (failures.length) {
     out.push("", "## attempted but failed", "");
@@ -773,13 +997,24 @@ if (cmd === "client") {
   process.exit(0);
 }
 
+// One header for BOTH writers ("all" and "table --out") — benchmark.sh's
+// final `table --out` re-render used to drop the machine line, so the
+// shipped report said only a hostname that both of Josh's MacBooks share.
+function reportDoc(table: string): string {
+  const ramGB = Math.round(totalmem() / 2 ** 30);
+  return `# mlx-bun head-to-head (${new Date().toISOString().slice(0, 10)}, commit ${commit})\n\n` +
+    `Machine: **${HOST}** — ${CHIP}, ${ramGB} GB unified. One machine per file;\n` +
+    `cross-machine comparisons go through the per-row machine column.\n\n` +
+    `${toolchainLine}\n\n${table}\n`;
+}
+
 if (cmd === "table") {
   const since = new Date(opt("since", new Date().toISOString().slice(0, 10))).getTime();
   const out = renderTable(since);
   console.log(out);
   const file = opt("out", "");
   if (file) {
-    await Bun.write(file, `# mlx-bun head-to-head (${new Date().toISOString().slice(0, 10)})\n\n${toolchainLine}\n\n${out}\n`);
+    await Bun.write(file, reportDoc(out));
     console.log(`\nwrote ${file}`);
   }
   process.exit(0);
@@ -907,12 +1142,7 @@ if (cmd === "all") {
   const out = `benchmarks-h2h-${new Date().toISOString().slice(0, 10)}-${HOST}.md`;
   const table = renderTable(startedAt - RESUME_WINDOW_MS);
   console.log(`\n=== results (incl. resumed cells from this window) ===\n${table}`);
-  const ramGB = Math.round(totalmem() / 2 ** 30);
-  await Bun.write(out,
-    `# mlx-bun head-to-head (${new Date().toISOString().slice(0, 10)}, commit ${commit})\n\n` +
-    `Machine: **${HOST}** — ${CHIP}, ${ramGB} GB unified. One machine per file;\n` +
-    `cross-machine comparisons go through the per-row machine column.\n\n` +
-    `${toolchainLine}\n\n${table}\n`);
+  await Bun.write(out, reportDoc(table));
   console.log(`\nwrote ${out} — this pass took ${(Date.now() - startedAt) / 60000 | 0} min`);
   process.exit(0);
 }
