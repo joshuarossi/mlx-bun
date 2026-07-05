@@ -41,7 +41,7 @@ Common flags (full list in [server-config.md](server-config.md)):
 | `--num-draft-tokens <n>` | Drafts per verify round (default 3) |
 | `--batch <n>` | Continuous-batched bf16 serving, mlx-lm B=N parity (default 1 = serial) |
 | `--temperature` / `--top-p` / `--top-k` / `--max-tokens` | Server-wide sampling defaults (per-request fields still win) |
-| `--l1` / `--l2` / `--l3` | Parity tier alias: bit-exact to mlx-lm / bit-exact to mlx-optiq / best performance. **No tier = `--l1`** (the default since 2026-07-05 — output-changing levers are opt-in until they beat the L1 baseline in a paired A/B). Each expands to per-fork flags (`--compiled-decode`, `--compiled-activations`, `--perf-kernel`, `--fused-gelu`, `--fused-sdpa`, `--fused-decode`, `--kv-quant`); a fork flag overrides one. See [server-config.md](server-config.md#fidelity-tiers-and-the-decode-route---l1----l2----l3). |
+| `--l1` / `--l2` | Parity tier alias: bit-exact to mlx-lm / bit-exact to mlx-optiq. **No tier = `--l1`** (the default since 2026-07-05 — output-changing levers are opt-in until they beat the L1 baseline in a paired A/B). Each expands to per-fork flags (`--compiled-decode`, `--compiled-activations`, `--fused-sdpa`, `--kv-quant`); a fork flag overrides one. `--l3` was removed 2026-07-05 and now errors (the Lab replaces it — [unified-engine-frontier-plan.md](../design/unified-engine-frontier-plan.md)). See [server-config.md](server-config.md#fidelity-tiers-and-the-decode-route---l1----l2). |
 | `--no-open` | Don't auto-open the chat UI |
 
 Endpoints: `/v1/chat/completions`, `/v1/completions`, `/v1/messages`,
@@ -76,7 +76,7 @@ mlx-bun harness pi --remove     # disconnect
 
 Load the model, generate, print, exit — no server. Renders through the chat
 template by default; `--raw` feeds the prompt verbatim. Sampling and
-decode-path levers mirror `serve` (`--temperature`, `--seed`, `--l1/--l2/--l3`,
+decode-path levers mirror `serve` (`--temperature`, `--seed`, `--l1/--l2`,
 `--kv-quant`, …).
 
 ```sh

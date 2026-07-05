@@ -1,10 +1,10 @@
 #!/bin/sh
-# Head-to-head benchmark — the one-shot entry point. Runs all THREE
-# comparisons across BOTH arenas (direct + server) and writes ONE report
-# sectioned by comparison:
+# Head-to-head benchmark — the one-shot entry point. Runs the comparisons
+# across BOTH arenas (direct + server) and writes ONE report sectioned by
+# comparison:
+#   0. L1 kernel matrix   (faithful default - each)   — the baseline holds
 #   1. mlx-bun vs mlx-lm  (bf16 KV, no mixed quant)   — requirement: bit parity
 #   2. mlx-bun vs optiq   (mixed kv_config)           — requirement: bit parity
-#   3. mlx-bun perf vs mlx-bun compat (same engine)   — requirement: low KL + similar scores
 #
 #   1. Reboot. Open nothing else (no browser). [only needed for quotable
 #      ABSOLUTE tok/s — parity (1,2) and KL/ratios (3) are valid dirty too]
@@ -46,44 +46,28 @@ REPORT="benchmarks-h2h-$(date +%F)-$(hostname -s).md"
 bun scripts/bench-h2h.ts all --force "$@"
 
 # Comparison 0 — L1 kernel matrix. The faithful compiled-activation kernels are
-# now the DEFAULT; this measures what removing each faithful kernel costs and what
-# the L3 custom kernels add on top, all vs mlx-lm, per model. Confirms the L1
-# default is at/above mlx-lm. Direct arena (spawns the mlx-lm python; no servers).
-# cpm5 + e4b + 12B.
+# the DEFAULT; this measures what removing each faithful kernel costs, all vs
+# mlx-lm, per model. Confirms the L1 default is at/above mlx-lm. Direct arena
+# (spawns the mlx-lm python; no servers). cpm5 + e4b + 12B.
 echo ""
-echo "=== comparison 0: L1 kernel matrix (faithful default ± each kernel vs mlx-lm) ==="
+echo "=== comparison 0: L1 kernel matrix (faithful default - each kernel vs mlx-lm) ==="
 bun scripts/bench-faithful-matrix.ts --tokens 256 --models cpm5,e4b,12B
 
-# Comparison 3 (our perf vs our compat: KL + similar scores). Paired and
-# in-process, so meaningful right after the matrix; records eval-DB rows the
-# unified report reads. e4b (default) + 12B.
-echo ""
-echo "=== comparison 3: perf vs compat (e4b, then 12B) — KL + tok/s ratios ==="
-bun scripts/bench-compat-vs-perf.ts --model gemma-4-e4b-it-OptiQ-4bit
-bun scripts/bench-compat-vs-perf.ts --model gemma-4-12B-it-OptiQ-4bit
-
-# Fused-path A/Bs (decide the MLX_BUN_NO_FUSED_SDPA and MLX_BUN_FUSED_DECODE
-# defaults). Paired/in-process; each records eval-DB rows.
+# Kill-switch A/Bs (bit-exact levers: confirm the fast default still wins).
+# Paired/in-process; each records eval-DB rows the unified report reads.
 echo ""
 echo "=== fused-prefill A/B (12B @8k kv8: fused vs stock transient + tok/s) ==="
 bun scripts/bench-fused-prefill.ts
 MLX_BUN_NO_FUSED_SDPA=1 bun scripts/bench-fused-prefill.ts
 echo ""
-echo "=== fused-decode paired A/B (12B @8k kv8: tiled vs stock decode) ==="
-bun scripts/bench-fused-decode.ts
-echo ""
-echo "=== perf-kernel paired A/B (12B serve kv_config: compat vs perf-mode Metal kernel) ==="
-echo "    compat (MLX_BUN_PERF_KERNEL=0, bit-parity, the DEFAULT since 2026-07-05) vs perf-mode (=1, L3 opt-in)"
-bun scripts/bench-perf-kernel.ts
-echo ""
 echo "=== compiled-decode paired A/B (12B @8k, e4b @600/@8k, serve kv_config) ==="
 echo "    cleared-machine confirmation of the mx.compile lever (dirty-paired ref: e4b +5.2% @600)"
 bun scripts/bench-compiled-decode.ts
 
-# Re-render the unified, sectioned report so it INCLUDES comparison 3's rows
-# (bench-h2h all wrote it before those rows existed).
+# Re-render the unified, sectioned report so it INCLUDES the rows written
+# after bench-h2h all's own render.
 echo ""
-echo "=== rendering unified report (3 comparisons) -> $REPORT ==="
+echo "=== rendering unified report -> $REPORT ==="
 bun scripts/bench-h2h.ts table --out "$REPORT"
 echo ""
 echo "benchmark pass complete — $REPORT + eval-DB rows written."

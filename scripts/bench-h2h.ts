@@ -724,60 +724,6 @@ function renderTable(sinceTs: number): string {
   const s2 = pairSection(cells, "optiq", "config", "config");
   out.push(...(s2.length ? s2 : ["_no mlx-bun/optiq mixed pairs in this window._"]), "");
 
-  // --- Comparison 3: our perf vs our compat (KL + scores) ------------------
-  const cvp = db.db
-    .query("SELECT * FROM runs WHERE ts >= ? AND notes LIKE 'bench-compat-vs-perf%' ORDER BY ts ASC")
-    .all(sinceTs) as Record<string, any>[];
-  out.push(
-    "## Comparison 3 — mlx-bun perf vs compat (same engine) — requirement: low KL + similar scores",
-    "",
-  );
-  const arms = new Map<string, { compat?: Record<string, any>; perf?: Record<string, any> }>();
-  const klRows = new Map<string, Record<string, any>>();
-  for (const r of cvp) {
-    const notes = String(r.notes);
-    if (notes.startsWith("bench-compat-vs-perf-kl")) { klRows.set(String(r.model_path), r); continue; }
-    const m = notes.match(/arm=(\w+) ctx=(\d+)/);
-    if (!m) continue;
-    const key = `${modelNameOf(String(r.model_path))}|${m[2]}`;
-    const e = arms.get(key) ?? {};
-    (e as any)[m[1]!] = r;
-    arms.set(key, e);
-  }
-  if (arms.size) {
-    out.push(
-      "| model | ctx | compat tok/s | perf tok/s | perf/compat | compat peak GB | perf peak GB |",
-      "|---|---|---|---|---|---|---|",
-    );
-    for (const [key, e] of [...arms.entries()].sort()) {
-      const [model, ctx] = key.split("|") as [string, string];
-      if (!e.compat || !e.perf) continue;
-      const cd = Number(e.compat.decode_tps), pd = Number(e.perf.decode_tps);
-      const ratio = cd > 0 ? (pd / cd).toFixed(2) + "×" : "—";
-      out.push(
-        `| ${model} | ${ctx} | ${cd.toFixed(1)} | ${pd.toFixed(1)} | ${ratio} | ` +
-        `${(Number(e.compat.peak_bytes) / 1e9).toFixed(2)} | ${(Number(e.perf.peak_bytes) / 1e9).toFixed(2)} |`,
-      );
-    }
-    out.push("");
-  }
-  if (klRows.size) {
-    out.push("Quality (perf logits vs compat logits, teacher-forced; machine-independent):", "");
-    for (const [mp, r] of [...klRows.entries()].sort()) {
-      const n = String(r.notes);
-      const mean = n.match(/klMeanNats=([\d.eE+-]+)/)?.[1] ?? "?";
-      const max = n.match(/klMaxNats=([\d.eE+-]+)/)?.[1] ?? "?";
-      const tm = n.match(/tokenMatchPct=([\d.]+)/)?.[1] ?? "?";
-      const v = n.match(/verdict=(\w+)/)?.[1] ?? "?";
-      const steps = n.match(/steps=(\d+)/)?.[1] ?? "?";
-      const model = modelNameOf(mp);
-      out.push(`- \`${model}\`: KL mean ${mean} / max ${max} nats over ${steps} steps, greedy token-match ${tm}% → **${v}**`);
-    }
-    out.push("");
-  }
-  if (!arms.size && !klRows.size)
-    out.push("_no perf-vs-compat rows in this window — run `bun scripts/bench-compat-vs-perf.ts`._", "");
-
   // --- Comparison 0: L1 kernel matrix (faithful default ± each kernel) -----
   // benchmark.sh runs bench-faithful-matrix.ts between the h2h legs; its
   // rows must land HERE or the "one report" claim is false (the 2026-07-05
@@ -820,8 +766,6 @@ function renderTable(sinceTs: number): string {
 
   // --- Lever A/Bs (paired, in-process — the flag-default evidence) ---------
   const LEVERS: { bench: string; off: string; on: string }[] = [
-    { bench: "bench-perf-kernel", off: "compat", on: "kernel" },
-    { bench: "bench-fused-decode", off: "stock", on: "tiled" },
     { bench: "bench-compiled-decode", off: "uncompiled", on: "compiled" },
     { bench: "bench-fused-prefill", off: "off", on: "on" },
   ];
@@ -860,9 +804,9 @@ function renderTable(sinceTs: number): string {
   }
   if (abRows.length) {
     out.push(
-      "## Lever A/Bs (paired, in-process) — what each optional kernel buys",
+      "## Kill-switch A/Bs (paired, in-process) — the fast bit-exact default still wins",
       "",
-      "Ratios are machine-noise-robust (arms alternate in one process); >1.00× = lever ON wins.",
+      "Ratios are machine-noise-robust (arms alternate in one process); >1.00× = the ON default wins.",
       "",
       "| lever | model | ctx | kv | off tok/s | on tok/s | decode on/off | prefill on/off |",
       "|---|---|---|---|---|---|---|---|",

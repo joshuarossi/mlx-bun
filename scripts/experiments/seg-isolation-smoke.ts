@@ -22,8 +22,6 @@ import { finetuneRunner } from "../../src/train/job";
 
 // e4b LoRA training standing env (see memory/e4b notes): the perf kernel and
 // fused GeGLU are inference-side and must be off for training.
-process.env.MLX_BUN_PERF_KERNEL = "0";
-process.env.MLX_BUN_FUSED_GELU = "0";
 process.env.MLX_BUN_MEM_LOG = "1";
 
 const HOME = process.env.HOME!;

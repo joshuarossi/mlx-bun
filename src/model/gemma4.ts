@@ -51,7 +51,6 @@ import {
   type SharedKv,
   type LoraWeights,
 } from "./gemma4-base";
-import { fusedGeglu, fusedGegluDifferentiable, fusedGeluEnabled, fusedGeluSupported, fusedGeluTraining } from "./fused-geglu-kernel";
 import { Checkpoint } from "../mlx/checkpoint";
 import { flashAttention, getTrainingAttn, flashSupported } from "./flash-attention";
 import { CompiledFunction } from "../mlx/compile";
@@ -395,17 +394,8 @@ class MLP {
   forward(x: MlxArray): MlxArray {
     const g = this.gate.forward(x);
     const u = this.up.forward(x);
-    // Fused GeGLU perf kernel (opt-in, not in a compiled trace): one pass
-    // instead of ~9 element-wise kernels. Off → the bit-exact spelled path.
-    // In training mode the differentiable wrapper (kernel forward + hand-derived
-    // vjp) is used so autograd can flow AND the backward recomputes the gelu
-    // from the primal instead of retaining the spelled-out intermediates.
     let h: MlxArray;
-    if (fusedGeluEnabled() && !isCompiledTrace() && fusedGeluSupported(g)) {
-      h = fusedGeluTraining() ? fusedGegluDifferentiable(g, u) : fusedGeglu(g, u);
-      g.dispose();
-      u.dispose();
-    } else if (compiledGegluActive() && !isCompiledTrace()) {
+    if (compiledGegluActive() && !isCompiledTrace()) {
       // Oracle geglu(gate_proj(x), up_proj(x)): @mx.compile'd gelu_approx·mul in
       // one kernel set (the default; = mlx-lm). Autograd-safe → covers training.
       h = compiledGeglu(g, u);
@@ -701,17 +691,12 @@ export class DecoderLayer {
     f.dispose();
 
     // per-layer input gating (reference gemma4_text DecoderLayer). gelu(gate)·pli
-    // is the second GeGLU site — fused (differentiable) on the training path, the
-    // bit-exact spelled-out gelu+mul on the inference path (unchanged).
+    // is the second GeGLU site — the bit-exact spelled-out gelu+mul.
     if (this.perLayerGate && this.perLayerProjection && this.postPerLayerNorm && perLayerInput) {
       const res2 = h;
       let gate = this.perLayerGate.forward(h);
-      if (fusedGeluTraining() && fusedGeluEnabled() && !isCompiledTrace() && fusedGeluSupported(gate)) {
-        gate = disposing(gate, fusedGegluDifferentiable(gate, perLayerInput));
-      } else {
-        gate = disposing(gate, ops.geluApprox(gate));
-        gate = disposing(gate, ops.mul(gate, perLayerInput));
-      }
+      gate = disposing(gate, ops.geluApprox(gate));
+      gate = disposing(gate, ops.mul(gate, perLayerInput));
       gate = disposing(gate, this.perLayerProjection.forward(gate));
       gate = disposing(gate, this.postPerLayerNorm.forward(gate));
       h = ops.add(res2, gate);

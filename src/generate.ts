@@ -558,16 +558,8 @@ async function* generateInner(
     // 0.6.0, and shapeless replay re-infers the whole tape whenever the
     // growing attention windows change shape (= every step). Remove this
     // when upstream implements GatherQMM::output_shapes.
-    // MLX_BUN_FUSED_DECODE=1 (the N-tiled fused decode experiment) cannot
-    // compose with compiled decode: the tile loop's bounds bake at trace-time
-    // N, so growing quantized caches silently stop attending their newest
-    // rows under shapeless replay (kernel-perf-review 2026-07; reproduced on
-    // e4b). The explicit opt-in wins over the default optimization — same
-    // policy as LoRA and MoE below. quantizedSdpa also throws on the combo
-    // as a backstop.
     let compiled =
       flagOn("MLX_BUN_COMPILED_DECODE", true) &&
-      process.env.MLX_BUN_FUSED_DECODE !== "1" &&
       !options.adapters?.length &&
       model.config.modelType.startsWith("gemma4") &&
       !model.config.text.enableMoeBlock

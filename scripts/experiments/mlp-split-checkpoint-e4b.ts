@@ -7,8 +7,6 @@
 //
 //   L=512 bun scripts/experiments/mlp-split-checkpoint-e4b.ts
 //
-// Run WITHOUT MLX_BUN_FUSED_GELU=0 (fused training on, to exercise the fused
-// CustomVjp nested inside the Checkpoint). MLX_BUN_PERF_KERNEL=0 still required.
 
 import { readdirSync } from "node:fs";
 import { loadModelConfig } from "../../src/config";
@@ -22,7 +20,6 @@ import { resolveRanks, DEFAULT_TARGET_MODULES } from "../../src/train/rank";
 import {
   buildTrainableLora, attachForTraining, flatParams, disposeLora, type TrainableLora,
 } from "../../src/train/lora-params";
-import { setFusedGeluTraining } from "../../src/model/fused-geglu-kernel";
 import { sftLoss } from "../../src/train/loss";
 import type { SftBatch } from "../../src/train/dataset";
 import type { MlxArray } from "../../src/mlx/array";
@@ -33,7 +30,6 @@ const MODEL = process.env.MODEL ?? `${base}/${readdirSync(base)[0]}`;
 const L = Number(process.env.L ?? 512);
 const RANK = Number(process.env.RANK ?? 8);
 const gb = (b: number) => `${(b / 1e9).toFixed(2)} GB`;
-setFusedGeluTraining(true);
 
 function swap(l: TrainableLora, p: MlxArray[]): MlxArray[] {
   const n = l.targets.length; const s: MlxArray[] = [];

@@ -19,8 +19,6 @@ import { MlxArray } from "../../src/mlx/array";
 import { Vjp } from "../../src/mlx/autograd";
 import { fusedRespLogpMean } from "../../src/train/loss";
 
-process.env.MLX_BUN_PERF_KERNEL = "0";
-process.env.MLX_BUN_FUSED_GELU = "0";
 
 const HOME = process.env.HOME!;
 const E4B = process.env.E4B === "1";

@@ -122,9 +122,10 @@ export); quantize / training-data gate on the capability matrix.
   + `--quantized-kv-start` (keep `--kv-quant` as a deprecated alias).
 - `serve --prompt-cache` → mlx-lm's `--prompt-cache-size` (entries) +
   `--prompt-cache-bytes` (our byte-cap is already the right model).
-- Our runtime levers (`--compiled-decode`, `--perf-kernel`,
-  `--fused-decode`, `--fused-sdpa`, `--force-wire`) have no mlx-lm
-  equivalent → keep, these are stick-shift flags.
+- Our runtime levers (`--compiled-decode`, `--compiled-activations`,
+  `--fused-sdpa`, `--force-wire`) have no mlx-lm equivalent → keep, these
+  are stick-shift flags. (`--perf-kernel` and `--fused-decode` were deleted
+  2026-07-05 — docs/design/unified-engine-frontier-plan.md §6.)
 - Adopt mlx-lm's sampling names verbatim: `--temp`, `--top-p`,
   `--top-k`, `--min-p`, `--max-tokens/-m`, `--seed`, `--xtc-*`.
 

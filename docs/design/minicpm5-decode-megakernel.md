@@ -15,8 +15,9 @@ The inference forward composes per-op MLX nodes (`quantized_matmul`, `sdpa`, …
 We tried to insert our own fused `fast.metal_kernel`s (steel `BlockMMA` GEMM) into
 that forward to fuse+speed it up. **Confirmed dead end:** MLX's lazy buffer planner
 corrupts *chained* `BlockMMA` custom kernels (nondeterministic NaN/garbage/crash) —
-the pointwise `fused-gelu` chains fine, ours do not, and ≥2 of ours in one lazy
-graph corrupt. The only robust fixes are (a) a per-kernel eval boundary (24 syncs/
+the pointwise `fused-gelu` kernel chained fine (that kernel has since been deleted,
+2026-07-05, in favor of the compiled activations — unified-engine-frontier-plan.md
+§6), ours did not, and ≥2 of ours in one lazy graph corrupt. The only robust fixes are (a) a per-kernel eval boundary (24 syncs/
 forward → net **slower**, 0.5–0.8×), or (b) **don't give the planner anything to
 chain: one resident kernel for the whole forward.** This plan builds (b).
 
@@ -48,9 +49,11 @@ miracle. The *architectural* win (no corruption, fully ours) is the point.
    entire MiniCPM5 decode forward in **one** `MetalKernel.apply` dispatch.
 2. **Correctness gate (L1, bf16 KV):** teacher-forced greedy trajectory matches
    `goldens/minicpm5-parity.json` — argmax agreement **≥ 98/100**, mean per-step
-   logit maxDiff small (this is an L3 path: ~1–2 bf16 ULP/op accumulating; it will
-   NOT be bit-exact, gate by teacher-forced agreement + KL like
-   `tests/perf-kernel-oracle.test.ts`, threshold ≥ 56/64-style). DETERMINISTIC
+   logit maxDiff small (this is a no-oracle Lab-gated path: ~1–2 bf16 ULP/op
+   accumulating; it will NOT be bit-exact, gate by teacher-forced agreement + KL —
+   the frozen-trajectory envelope method of the old `tests/perf-kernel-oracle.test.ts`,
+   threshold ≥ 56/64-style; that test was deleted 2026-07-05 with its kernel, but
+   the methodology stands on its own). DETERMINISTIC
    across runs (no nondeterminism — that was the corruption signature).
 3. **Perf gate:** decode tok/s ≥ the serial baseline on a paired same-process A/B
    (`scripts/experiments/` style). Not slower. (Stretch: measurably faster.)
@@ -383,7 +386,7 @@ q-level / group-min-max boundary and flips a level → a full quant-step dequant
 amplified 9.7e-4 → 1.38e-2. **NOT a quant bug — the megakernel's intrinsic ~1-ULP GEMV
 difference amplified by quant discontinuity. 93/100 is the L2 ceiling (as 97/100 is L1's);
 bit-exact L2 would need a bit-exact GEMV, defeating qmv4.** Gate L2 by KL + agreement
-(L3 class), not the bit-exact golden. Scripts: `megakernel-kv-{cmpkv,cmpl1,perstep}.ts`.
+(no-oracle, Lab class), not the bit-exact golden. Scripts: `megakernel-kv-{cmpkv,cmpl1,perstep}.ts`.
 **Increment 2b — MEMORY win (later):** bit-pack `q` into uint32 (flat KPACK/VPACK,
 per-layer literal offsets) to actually shrink 4-bit KV. Same logits as 2a. Deferred.
 **Build on the GENERATED kernel** (`genSourceMt`, `MLX_BUN_MEGAKERNEL_GEN`): the
@@ -404,8 +407,10 @@ teacher-forced agreement + KL. Defer until L1 solid (L1 IS solid — parity, Pha
 per-step `forwardHidden→logitsFromHidden` at decode (M=1) only; prefill unchanged.
 Guard: bf16 KV (L1) only, no adapters, no vision. Add `--megakernel` CLI flag.
 **Gate:** `bun test tests/minicpm5-*.test.ts` green (off); a new
-`tests/minicpm5-megakernel.test.ts` (teacher-forced gate, env-gated like
-`tests/perf-kernel-oracle.test.ts`); paired decode tok/s A/B logged. Update
+`tests/minicpm5-megakernel.test.ts` (teacher-forced gate, env-gated in the pattern
+of the old `tests/perf-kernel-oracle.test.ts` — deleted 2026-07-05 with its kernel,
+unified-engine-frontier-plan.md §6; the envelope-gate methodology stands on its
+own); paired decode tok/s A/B logged. Update
 `STATUS.md` + `benchmarks/RESULTS.md` (preflight-gated `benchmark.sh` for the
 quotable number — `[[dirty-machine-numbers-are-garbage]]`).
 
@@ -425,7 +430,7 @@ catch any divergence the moment it's introduced, not 24 layers + a quant step do
 Steps: (1) copy mlx `quantized.h` GEMV kernels INCLUDING the per-(bits,M,N,K) dispatch
 (`qmv_fast`/`qmv`/`qmv_quad`), `rms_norm`, `rope`, `sdpa`; (2) per-op maxDiff-0 harness
 before fusing; (3) analyze the single fused file; (4) optimize with the harness as a
-regression gate. This megakernel was built L3-first (KL-gated, NOT bit-exact by design),
+regression gate. This megakernel was built no-oracle-first (Lab-style, KL-gated, NOT bit-exact by design),
 so its 1-ULP/op drift is within contract — bit-exact is a focused REBUILD, not a patch
 (and may cost qmv4's speed if mlx's real 4-bit kernel is the slower qmv_quad).
 
@@ -438,8 +443,8 @@ so its 1-ULP/op drift is within contract — bit-exact is a focused REBUILD, not
   param. Bake dims as `templateInts` / read `x_shape[0]`, don't pass a runtime
   `shape` input array (extra lazy nodes).
 - **Match the reference's bf16 rounding op-for-op** (round to `T` at each boundary) —
-  `metal::precise::exp`/`tanh` are the only residual vs the reference; that's L3 and
-  fine. Do NOT compute everything in f32 then round once (drifts).
+  `metal::precise::exp`/`tanh` are the only residual vs the reference; that's
+  no-oracle (Lab-gated) territory and fine. Do NOT compute everything in f32 then round once (drifts).
 - **`atomicOutputs:true` + `initValue:0`** for any atomic-accumulated output.
 - **GQA:** 16 q-heads, 2 kv-heads, `nRep=8` → q-head `h` reads kv-head `h/8`.
 - **`rope_theta=5e6`, not 10000.** scale `=128^-0.5`. No MiniCPM residual scaling.

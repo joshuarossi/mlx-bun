@@ -21,7 +21,7 @@
 // DIVERGENCES (why this isn't a line-for-line port):
 //   1. Our classifier C is the QUANTIZED head (4/8-bit affine). Apple loads C
 //      dense (bf16); we keep the in-Metal dequant for `tl.dot` (the qdot pattern
-//      from src/model/fused-decode-kernel.ts). This is the one substantive change.
+//      from mlx's quantized.h qdot pattern). This is the one substantive change.
 //   2. The head is FROZEN (not a LoRA target) → we need only dE (=dh), NOT dC.
 //   3. The LSE cross-vocab-block merge is done in cheap MLX ops on per-block
 //      partials, not Metal atomic-logaddexp spinlocks (simpler, same result).
@@ -289,7 +289,7 @@ const FWD_SG_SOURCE = String.raw`
 // memory each step (coalesced). The lane-partial dots reduce with simd_sum. The
 // threadgroup's 4 simdgroups process 4 rows in parallel; BLOCK_B tokens amortize
 // the dequant (each row dequantized once, reused across tokens). Same coalesced
-// pattern as fused-decode-kernel.ts. h is passed TRANSPOSED [H, M].
+// pattern as mlx's quantized.h qdot. h is passed TRANSPOSED [H, M].
 const SGN = TG / 32; // simdgroups per threadgroup (4)
 const FWD_LANE_SOURCE = String.raw`
   const uint tokBlk = threadgroup_position_in_grid.z;

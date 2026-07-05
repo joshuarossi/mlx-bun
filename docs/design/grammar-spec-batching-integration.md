@@ -101,8 +101,9 @@ weights + KV.
 ### Phase C — grammar × spec: the constrained verify walk  [M, ~1 wk]
 
 Novel territory — **no oracle serves grammar+spec** (mlx-lm has no
-grammar; oMLX has no spec). L3-class gating per the parity-tier
-contract: equivalence + validity gates, not bit-parity to an ancestor.
+grammar; oMLX has no spec). No-oracle (Lab-class) gating per the
+parity-tier contract: equivalence + validity gates, not bit-parity to an
+ancestor.
 
 Design (v1 = verify-side masking, drafter free-running):
 
@@ -159,9 +160,10 @@ doesn't collide with B/C's serial-loop work:
    pushes B=4 × long prompts on 24 GB). Prompt-cache-under-batching,
    adapters, and the default flip stay in batching-perf-path P3.
 
-P1 (quantized KV at B>1) and P2 (perf kernel at B>1) are NOT in this
-plan's critical path — they're the next wave after the matrix benchmark
-exists, and the benchmark is exactly what will size their payoff.
+P1 (quantized KV at B>1) is NOT in this plan's critical path — it's the
+next wave after the matrix benchmark exists, and the benchmark is exactly
+what will size its payoff. (P2 — perf kernel at B>1 — is OBSOLETE: the
+kernel was deleted 2026-07-05, docs/design/unified-engine-frontier-plan.md §6.)
 
 ### Phase E — the feature-matrix benchmark  [S–M, 3–4 days]
 
@@ -215,8 +217,8 @@ clean-machine run is queued in STATUS Josh-gated.
   (B≫8, spec+grammar draft-tree masking via `traverse_draft_tree`, or
   compile time visible despite F4). Phase C's v1 walk deliberately
   avoids needing it.
-- **Batching P1/P2** (quant-KV + perf kernel at B>1) — next wave, sized
-  by the matrix.
+- **Batching P1** (quant-KV at B>1) — next wave, sized by the matrix.
+  (P2, perf kernel at B>1, is obsolete — kernel deleted 2026-07-05.)
 - **P4 device-side step chaining** — orthogonal serial-decode work; the
   matrix's serial baselines will show its headroom.
 - **Assistant/DSpark sources behind `--draft-model`** —

@@ -35,13 +35,8 @@ if (!existsSync(`${DATA}/train.jsonl`)) { console.error(`no train.jsonl in ${DAT
 
 // Detect e4b/Gemma family from the raw config (cheap — no kernel imports yet) and set
 // its required training env flags BEFORE the heavy dynamic imports below read them.
-// `??=` so an explicitly-set env always wins.
 const rawCfg = JSON.parse(readFileSync(`${MODEL}/config.json`, "utf8"));
 const isGemma = JSON.stringify(rawCfg).toLowerCase().includes("gemma");
-if (isGemma) {
-  process.env.MLX_BUN_PERF_KERNEL ??= "0"; // e4b training: disable the inference perf kernels
-  process.env.MLX_BUN_FUSED_GELU ??= "0";  // (the training-mode fused GeGLU is enabled by the trainer)
-}
 
 const num = (k: string, d: number) => (process.env[k] != null ? Number(process.env[k]) : d);
 const SEQ = num("SEQ", isGemma ? 8192 : 4096);
@@ -83,7 +78,7 @@ const model = createModel(weights, config);
 const tok = await loadTokenizer(MODEL);
 const tmpl = await ChatTemplate.load(MODEL);
 
-console.log(`\n=== ORPO LoRA — ${modelName}${isGemma ? " (e4b: PERF_KERNEL=0 FUSED_GELU=0)" : ""} ===`);
+console.log(`\n=== ORPO LoRA — ${modelName} ===`);
 console.log(`head:        ${FLASH ? "flash-CCE Metal (steel fwd+bwd, [M,V]-free)" : "fused linear-CE (MLX quantizedMatmul)"}`);
 console.log(`segmented:   ${SEG > 0 ? `on (${SEG} layers/segment — bounds activation memory)` : "off (all activations resident)"}`);
 console.log(`prefix-share:${PREFIX ? " on (single forward over [prompt; chosen; rejected]; two-forward fallback on prompt mismatch)" : " off (two-forward)"}`);

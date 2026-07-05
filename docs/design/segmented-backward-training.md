@@ -249,8 +249,9 @@ returns the split indices + which donor K/V to save, computed from the above.
 - The chunk data needs ≥4096 (median 4092; 0% ≤2048; 98% ≤8192). Success = e4b
   trains at 8192 ≤ ~10 GB AND the chunk eval (`scripts/chunk-eval.ts`) shows a
   quality delta on e4b like MiniCPM5's.
-- Training requires `MLX_BUN_PERF_KERNEL=0 MLX_BUN_FUSED_GELU=0` (those fused
-  CustomKernels have no vjp).
+- Training needs no env-flag sanitization (the no-vjp fused CustomKernels that
+  once required `MLX_BUN_PERF_KERNEL=0 MLX_BUN_FUSED_GELU=0` were deleted
+  2026-07-05; see docs/design/unified-engine-frontier-plan.md §6).
 - MLX `Date.now()`/random caveats don't apply here; standard determinism via seed.
 
 ## 7. Key files

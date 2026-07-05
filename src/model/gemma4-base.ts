@@ -14,9 +14,6 @@ import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import { expertOffloadArray } from "../expert-offload";
-import {
-  fusedDecodeKernelSupported, fusedDecodeSdpa, perfKernelEnabled,
-} from "./fused-decode-kernel";
 
 export type MaskMode = "" | "causal";
 export interface Mask {
@@ -1568,38 +1565,19 @@ function fusedSdpaSupported(q: MlxArray, mask: Mask, groupSize: number, bits: nu
 /** Quantized-cache SDPA dispatch: L > 1 (prefill/continuation) with a
  *  supported config goes through the N-tiled fused path; decode (L = 1)
  *  and unsupported configs stay on the stock unfused port. Exported for
- *  the dispatch-gate tests.
- *
- *  MLX_BUN_FUSED_DECODE=1 (NEXT UP 1b experiment): tile decode too,
- *  matching optiq's wrapper, which has no L gate — its serving decode
- *  over quantized caches runs N tiles per step, and Phase 15 measured
- *  its kv-mixed decode tax @8k as ~free where ours is ~3%. Off by
- *  default until a cleared-machine A/B shows it pays; directional
- *  numbers via scripts/bench-fused-decode.ts. */
+ *  the dispatch-gate tests. */
 export function quantizedSdpa(
   q: MlxArray, kq: ops.QuantizedTensor, vq: ops.QuantizedTensor,
   scale: number, mask: Mask, groupSize: number, bits: number,
 ): MlxArray {
-  // Perf mode (Phase E): the fused decode kernel takes supported L=1
-  // dispatches. NOT bit-exact (online softmax) — gated against the
-  // frozen perf oracle; compat (MLX_BUN_PERF_KERNEL=0) stays the -O0
-  // reference. Never inside a compiled trace: CustomKernel has no
-  // output_shapes, so it cannot live in a (shapeless) closure.
-  if (
-    mask.mode === "" && scale === 1.0 && perfKernelEnabled() &&
-    !isCompiledTrace() && fusedDecodeKernelSupported(q, bits, groupSize)
-  )
-    return fusedDecodeSdpa(q, kq, vq, groupSize, bits);
-  const tile = q.shape[2]! > 1 || process.env.MLX_BUN_FUSED_DECODE === "1";
+  const tile = q.shape[2]! > 1;
   if (tile && fusedSdpaSupported(q, mask, groupSize, bits)) {
     // The N-tiled loop CANNOT be traced: its tile count and slice extents
     // bake at trace-time N, so under shapeless replay a growing (concat-
-    // phase) quantized cache's newest rows are silently never attended —
-    // reproduced on e4b (whole-graph form, FUSED_DECODE=1: diverges within
-    // 3 tokens, then repetition-loops). generate() refuses to compile when
-    // MLX_BUN_FUSED_DECODE=1; this throw is the backstop for any other
-    // compiled caller — it lands in the trace's transactional fallback
-    // instead of producing silently wrong attention.
+    // phase) quantized cache's newest rows are silently never attended.
+    // This throw is the backstop for any compiled caller — it lands in the
+    // trace's transactional fallback instead of producing silently wrong
+    // attention.
     if (isCompiledTrace())
       throw new Error(
         "quantizedSdpaTiled inside a compiled trace: the tile loop bakes trace-time N " +

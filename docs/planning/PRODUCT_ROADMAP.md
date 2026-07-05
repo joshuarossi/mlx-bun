@@ -171,7 +171,6 @@ Each profile should eventually carry:
   kv: "mixed",
   memoryBudgetBytes: "...",
   compiledDecode: true,
-  perfKernel: false,
   expectedDecodeTps: 30,
   expectedTtftMs: 100,
   label: "Recommended for this Mac",
@@ -309,8 +308,8 @@ to text-only mode when no image is present, so the chat UI gains image support
 with no startup cost. Features are within ~1% rel-RMSE of the optiq oracle;
 every MLX primitive (rms_norm, gelu, matmul, SDPA, RoPE, pooling) is bit-exact.
 The residual is sub-bf16 floating-point accumulation across the deep encoder,
-not a porting gap. L1/L2/L3 paths all work; vision falls back to the monolith
-path on L1 and L2.
+not a porting gap. The L1 and L2 paths both work; vision falls back to the
+monolith path on L1 and L2.
 
 ### Adapter web selector and CLI /v1/adapters (shipped)
 

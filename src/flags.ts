@@ -1,7 +1,7 @@
 // Generic on/off resolver for the per-fork decode flags (--compiled-decode,
-// --compiled-activations, --perf-kernel, …). An explicit "1"/"0" in the env
+// --compiled-activations, --fused-sdpa, …). An explicit "1"/"0" in the env
 // always wins; otherwise the caller's `defaultOn` applies. The tier aliases
-// (--l1/--l2/--l3, applyDecodeRoute in cli.ts) set the env vars; model code
+// (--l1/--l2, applyDecodeRoute in cli.ts) set the env vars; model code
 // reads them through this helper so a hand-set flag and a tier preset resolve
 // identically.
 

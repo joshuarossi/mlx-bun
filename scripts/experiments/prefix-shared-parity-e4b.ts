@@ -30,7 +30,6 @@ import { Gemma4Model } from "../../src/model/gemma4";
 import { ValueAndGrad } from "../../src/mlx/autograd";
 import { evalAll } from "../../src/mlx/ops";
 import { peakMemory, resetPeakMemory, clearCache } from "../../src/mlx/ffi";
-import { setFusedGeluTraining } from "../../src/model/fused-geglu-kernel";
 import { resolveRanks, DEFAULT_TARGET_MODULES } from "../../src/train/rank";
 import {
   buildTrainableLora, attachForTraining, flatParams, disposeLora, type TrainableLora,
@@ -55,7 +54,6 @@ const NOGRAD = process.env.GRAD !== "1"; // default forward-only (cheap); GRAD=1
 const gb = (b: number) => `${(b / 1e9).toFixed(2)} GB`;
 // Match the real e4b training path: fused-GeGLU differentiable wrapper ON (same
 // for BOTH paths, so it cancels in the parity). FUSED_GELU=0 to use the spelled path.
-if (process.env.FUSED_GELU !== "0") setFusedGeluTraining(true);
 
 function swap(l: TrainableLora, p: MlxArray[]): MlxArray[] {
   const n = l.targets.length; const s: MlxArray[] = [];

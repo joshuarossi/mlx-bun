@@ -19,7 +19,6 @@ import { ValueAndGrad } from "../../src/mlx/autograd";
 import { evalAll } from "../../src/mlx/ops";
 import * as ops from "../../src/mlx/ops";
 import { peakMemory, resetPeakMemory, clearCache } from "../../src/mlx/ffi";
-import { setFusedGeluTraining } from "../../src/model/fused-geglu-kernel";
 import { resolveRanks, DEFAULT_TARGET_MODULES } from "../../src/train/rank";
 import {
   buildTrainableLora, attachForTraining, flatParams, disposeLora, type TrainableLora,
@@ -40,7 +39,6 @@ const CHUNK = Number(process.env.CHUNK ?? 128);
 const VBLOCK = Number(process.env.VBLOCK ?? 0); // >0 = vocab-blocked online-softmax (full CCE: [chunk,Vblock] peak)
 const RANK = Number(process.env.RANK ?? 8);
 const gb = (b: number) => `${(b / 1e9).toFixed(2)} GB`;
-if (process.env.FUSED_GELU !== "0") setFusedGeluTraining(true); // same for both paths
 
 function swap(l: TrainableLora, p: MlxArray[]): MlxArray[] {
   const n = l.targets.length; const s: MlxArray[] = [];

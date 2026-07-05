@@ -6,10 +6,8 @@
 // segment; its grads must match the NON-segmented e4b prefix-share path
 // (orpoLossPrefixSharedGemma) within the e4b bf16 band, at LOWER peak memory.
 //
-//   MLX_BUN_PERF_KERNEL=0 MLX_BUN_FUSED_GELU=0 \
 //     P=256 RC=64 RR=80 SEG=8 bun scripts/experiments/prefix-shared-segmented-parity-e4b.ts
 //
-// REQUIRES MLX_BUN_PERF_KERNEL=0 + MLX_BUN_FUSED_GELU=0 (e4b training breaks
 // otherwise). e4b weights are ~7 GB; keep the prefix SMALL (P=256 default; P=512
 // stays well under ~20 GB) — probes are capped and freed per path.
 //
@@ -53,14 +51,6 @@ const SEG = Number(process.env.SEG ?? 8);
 const LAMBDA = Number(process.env.LAMBDA ?? 0.1);
 const RANK = Number(process.env.RANK ?? 8);
 const gb = (b: number) => `${(b / 1e9).toFixed(2)} GB`;
-// e4b training breaks unless the inference fused kernels are OFF (they have no vjp).
-// ENFORCE the documented preconditions rather than silently running in the wrong mode
-// (which would give a misleading parity verdict). They must be set on the command line —
-// the model modules read them at import, before this point.
-if (process.env.MLX_BUN_PERF_KERNEL !== "0" || process.env.MLX_BUN_FUSED_GELU !== "0") {
-  console.error("prefix-shared-segmented-parity-e4b REQUIRES MLX_BUN_PERF_KERNEL=0 and MLX_BUN_FUSED_GELU=0 on the command line (e4b training breaks otherwise).");
-  process.exit(1);
-}
 
 function swap(l: TrainableLora, p: MlxArray[]): MlxArray[] {
   const n = l.targets.length; const s: MlxArray[] = [];

@@ -98,7 +98,7 @@ so a stale snapshot never makes a repo "ambiguous":
   row per repo** (the canonical revision). `--all-revisions` shows the
   per-snapshot truth with the canonical marked `*`. Capabilities column
   labels the support tier: `supported (targeted)` (dedicated forward,
-  L2/L3 paths) vs `supported (generic)` (Tier-0 universal module).
+  L2/opt-in paths) vs `supported (generic)` (Tier-0 universal module).
 - **`fit` / `serve` / `train` / … (single-model verbs)** — `resolve()`:
   the query must match exactly one **repo**; multiple cached revisions of
   that repo collapse to the canonical snapshot (refs/main, else most

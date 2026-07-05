@@ -81,6 +81,9 @@ oracle exactly:
 | Qwen3.5 (dense) | ✅ bit-exact logits | ✅ bit-exact |
 | Vision (SigLIP, e4b) | — | ⚠️ ~1% RMSE (greedy-faithful, not yet bit-exact) |
 
-Optional performance kernels (`MLX_BUN_FUSED_GELU`, `MLX_BUN_PERF_KERNEL`, …) are
-a third tier (**L3**): off by default, gated to a small KL tolerance rather than
-bit-exactness. See [Correctness](/about/correctness/).
+Every shipped lever stays inside one of these two guarantees: `--kv-quant
+config` selects the L2 composition, and the kill switches
+(`--compiled-decode`, `--compiled-activations`, `--fused-sdpa`) are bit-exact
+A/B toggles within a tier, not fidelity trades. Output-changing experiments
+live in the Lab — env-flag gated, off by default, kept only until one beats
+the L1 baseline in a paired A/B. See [Correctness](/about/correctness/).

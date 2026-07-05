@@ -20,7 +20,6 @@ import type { RuntimeModel } from "../model/factory";
 import { Gemma4Model, type GradCheckpointCtx } from "../model/gemma4";
 import { MiniCPM5Model } from "../model/minicpm5";
 import { setTrainingAttn } from "../model/flash-attention";
-import { setFusedGeluTraining } from "../model/fused-geglu-kernel";
 import { SegmentedBackward, SegmentedBackwardGemma4, SegmentedBackwardOrpo, SegmentedBackwardOrpoGemma4, SegmentedBackwardOrpoPrefix, SegmentedBackwardOrpoPrefixGemma4, planSegmentsBySize } from "./segmented";
 import type { LoadedTokenizer } from "../tokenizer";
 import type { ChatTemplate } from "../chat-template";
@@ -260,7 +259,6 @@ export async function trainLora(
   // autograd flows and the backward recomputes the gelu from the primal instead
   // of retaining the spelled-out intermediates. No-op for non-Gemma models.
   // Cleared in the finally below.
-  setFusedGeluTraining(true);
 
   const saveCfg: SaveAdapterConfig = {
     rank: cfg.rank,
@@ -383,7 +381,6 @@ export async function trainLora(
     });
     return { adapterPath: cfg.adapterPath, appliedRanks, numIters: result.numIters };
   } finally {
-    setFusedGeluTraining(false);
     disposeLora(lora);
   }
 }
@@ -489,7 +486,7 @@ async function sftLoop(
   // scripts/experiments/flash-fd-check.ts), though ~30× slower than ops.sdpa.
   // Cleared in finally.
   //
-  // GEMMA GUARD (same convention as the PERF_KERNEL/FUSED_GELU sanitization in
+  // GEMMA GUARD (same convention as the launcher's env sanitization in
   // cli.ts / job.ts, but enforced at the trainer): e4b on this path SIGTRAPed
   // (uncatchable native crash) at multi-K sequence lengths (>=2K, reproduced in
   // scripts/experiments/segmented-grad-test-e4b.ts; docs/reference/training.md)

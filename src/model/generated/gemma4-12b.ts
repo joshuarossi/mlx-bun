@@ -24,9 +24,6 @@ import {
   type Mask,
   type SharedKv,
 } from "../gemma4-base";
-import {
-  fusedDecodeKernelSupported, fusedDecodeSdpa, perfKernelEnabled,
-} from "../fused-decode-kernel";
 import { Gemma4Model, type DecoderLayer } from "../gemma4";
 
 export const FINGERPRINT = "9f812d2eb461fcbe";
@@ -73,9 +70,7 @@ function donorSlidQuantG64B4VScal(layer: DecoderLayer, x: MlxArray, mask: Mask, 
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
   // dispatch-site constants: bits=4 group_size=64 nRep=2 head_dim=256
-  const attn = perfKernelEnabled() && mask.mode === "" && fusedDecodeKernelSupported(q, 4, 64)
-    ? fusedDecodeSdpa(q, kq, vq, 64, 4)
-    : (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+  const attn = L > 1 && fusedSdpaRuntimeOk(q, mask)
       ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 4)
       : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 4);
   q.dispose();
@@ -129,9 +124,7 @@ function donorSlidQuantG64B8VScal(layer: DecoderLayer, x: MlxArray, mask: Mask, 
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
   // dispatch-site constants: bits=8 group_size=64 nRep=2 head_dim=256
-  const attn = perfKernelEnabled() && mask.mode === "" && fusedDecodeKernelSupported(q, 8, 64)
-    ? fusedDecodeSdpa(q, kq, vq, 64, 8)
-    : (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+  const attn = L > 1 && fusedSdpaRuntimeOk(q, mask)
       ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 8)
       : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 8);
   q.dispose();
@@ -182,9 +175,7 @@ function donorFullQuantG64B4KeqVScal(layer: DecoderLayer, x: MlxArray, mask: Mas
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
   // dispatch-site constants: bits=4 group_size=64 nRep=16 head_dim=512
-  const attn = perfKernelEnabled() && mask.mode === "" && fusedDecodeKernelSupported(q, 4, 64)
-    ? fusedDecodeSdpa(q, kq, vq, 64, 4)
-    : (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+  const attn = L > 1 && fusedSdpaRuntimeOk(q, mask)
       ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 4)
       : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 4);
   q.dispose();

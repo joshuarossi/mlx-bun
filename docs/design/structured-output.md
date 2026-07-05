@@ -111,7 +111,7 @@ WASM state is intact, and a later good grammar still compiles (verified in
 
 `MLX_BUN_GRAMMAR=0` disables grammar compilation entirely (requests degrade
 to prompt injection). Matches the project's envelope-gated kill-switch
-discipline (`MLX_BUN_PERF_KERNEL`, `MLX_BUN_COMPILED_DECODE`, …).
+discipline (`MLX_BUN_COMPILED_DECODE`, `MLX_BUN_NO_FUSED_SDPA`, …).
 
 ## Tests
 

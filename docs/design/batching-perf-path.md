@@ -69,7 +69,9 @@ the 2026-07-02 oMLX report (Claude artifact) and `~/.omlx` bench scripts.
 Design stance: the batch lane grows the **same parity-tier DAG as the
 serial lane** (docs/design/parity-tier-dag.md). `--l1 --batch N` stays
 bit-exact mlx-lm-B=N compat mode forever (the oracle checkpoint); the
-default/`--l3` batch path becomes the optimized one. `--batch` remains a
+default batch path becomes the optimized one. (`--l3` was deleted
+2026-07-05 — docs/design/unified-engine-frontier-plan.md §6; output-changing
+experiments are now env-flag Lab items.) `--batch` remains a
 mode switch, not a load fallback.
 
 ## 1. Current state
@@ -96,8 +98,8 @@ is deliberately compat mode: it calls `model.forwardHidden` /
 | Lever | Serial mechanism | Why batch can't use it today |
 | --- | --- | --- |
 | Quantized KV (`kv_config`) | `maybeQuantizeKv` (`src/generate.ts:101`) | `QuantizedKVCache` (`src/model/gemma4-base.ts:419`) has no dynamic-B ops (no merge/filter/extend/temporalView over the packed/scales/biases triples); `willBatch` hard-gates `kvQuant` → serial |
-| Perf-kernel fused decode SDPA | dispatched from `quantizedSdpa` (`gemma4-base.ts:1560`) | kernel M=1-specialized: `fused-decode-kernel.ts:262` rejects `B !== 1 \|\| L !== 1`, and requires empty mask (batched decode needs per-row left-pad validity) |
-| Fused N-tiled SDPA (`--fused-decode`) | `quantizedSdpaTiled` | needs 2-D mask; batched masks are 4-D `[B,1,1,S]` (`buildBatchedDecodeMask`); quantized-only anyway |
+| ~~Perf-kernel fused decode SDPA~~ | ~~dispatched from `quantizedSdpa`~~ | **DELETED 2026-07-05** (kernel + `--perf-kernel` removed; unified-engine-frontier-plan.md §6) — no longer a lever, batched or serial |
+| ~~Fused N-tiled SDPA (`--fused-decode`)~~ | ~~`quantizedSdpaTiled`~~ | **DELETED 2026-07-05** (measured 1.00×; unified-engine-frontier-plan.md §6) |
 | Compiled decode | `CompiledDecode.for()` (`generate.ts:518-525`) | trace is `[1,1]`; B changes every join/evict |
 | Prompt-cache prefix reuse | `PromptCache.take/put` in `runGeneration` | bypassed by design in v1; every batched row solo-prefills (`cachedTokens: 0`) |
 | Vectorized sampling | n/a | `#step` samples per row (B slice+sample+concat graphs per token) |
@@ -110,7 +112,7 @@ Two more gap sources specific to the benchmark:
 - Joins re-merge the whole batch (O(B·S) slice storm, `#mergeJoiner`)
   instead of mlx-lm's `extend`.
 
-## 2. Gap analysis: quantized KV + fused kernels at B>1
+## 2. Gap analysis: quantized KV at B>1
 
 - `QuantizedKVCache` already stores `[B,H,S,D']` triples; missing is
   dynamic-B surgery. New `src/model/batched-quant.ts`:
@@ -127,11 +129,9 @@ Two more gap sources specific to the benchmark:
 - Correctness fallback: `quantizedSdpaUnfused` (`gemma4-base.ts:1273`) is
   already B-generic with `mask.mode === "array"`; needs the batched mask
   broadcast as `[B,1,1,1,N]` for the 5-D GQA score reshape.
-- Perf kernel at B>1: (1) drop the `B !== 1` gate (keep `L !== 1`);
-  (2) grid gains a B axis (`[TG_THREADS, H·B, G]`), `SCORE_ROW` offsets
-  index `((b·KV + kv)·N + n)`; (3) replace the empty-mask requirement with
-  a per-row `leftPad` int32 `[B]` input — each row's n-loop starts at
-  `max(blockStart, leftPad[b])`, so pad bytes are never read.
+- ~~Perf kernel at B>1~~ — OBSOLETE: the perf kernel was deleted 2026-07-05
+  (unified-engine-frontier-plan.md §6); `quantizedSdpaUnfused` is the
+  quant-batched path, full stop.
 - RoPE per-row positions already solved (`ropeOffsetArr`, the S1b.1 fix).
 
 ## 3. Phases
@@ -167,14 +167,12 @@ Two more gap sources specific to the benchmark:
   (3) KL vs batched-bf16 ≤ serial quant-vs-bf16 KL; 6-task eval unchanged;
   (4) `--l1 --batch N` suites untouched.
 
-### P2 — Perf kernel at B>1 + fallback matrix  [M, ~1 wk]
-- Kernel edits per §2; dispatch when every row supported, else unfused.
-- Fallback matrix documented in server-config.md.
-- Batched frozen-oracle envelope (B=2/4 `freeze-perf-oracle` variant,
-  ≥56/64 per row, `tests/perf-kernel-oracle.test.ts` pattern).
-- Exit: dispatch counter proves engagement; envelope green; measured
-  uplift at B=4 vs P1 unfused on a clean machine; if <5%, ship the
-  fallback matrix only and close honestly.
+### P2 — Perf kernel at B>1 + fallback matrix  [OBSOLETE — kernel deleted 2026-07-05]
+The perf kernel (and `--perf-kernel` / its frozen-oracle tests) was deleted
+2026-07-05 (unified-engine-frontier-plan.md §6): it never beat the L1
+baseline in a paired A/B, so there is nothing to port to B>1. The planned
+"batched frozen-oracle envelope" gate is obsolete with it. Quant-batched
+decode stays on `quantizedSdpaUnfused` (P1).
 
 ### P3 — Admission, prompt cache, adapters, defaults  [M–L, 1–1.5 wk]
 - KV-budget admission — **LANDED 2026-07-03** (integration-plan Phase D):
@@ -230,17 +228,16 @@ Two more gap sources specific to the benchmark:
   (per-row fold; Qwen3.5's default repetition penalty had been routing every
   request serial). Exit numbers in the header table.
 
-Ordering: P1→P2 strictly ordered; P4 and P5 independent (P5 first if the
-Qwen3.5 headline matters most). Total ~5–6 wk serial, ~4 wk with P4/P5
+Ordering: P4 and P5 independent (P5 first if the Qwen3.5 headline matters
+most); P2 dropped (kernel deleted). Total ~4–5 wk serial, ~3 wk with P4/P5
 parallel.
 
 ## 4. Risks
 
 - **No external oracle for quant-batched** — mitigated by the P1 parity
   ladder; `--l1 --batch N` stays the always-reachable bit-exact checkpoint.
-- **Metal kernel at B>1**: leftPad start-index never touches pad bytes;
-  no atomics (deterministic); gate = batched frozen-oracle envelope +
-  dispatch assertions + A/B vs unfused.
+- ~~Metal kernel at B>1~~ — risk retired with P2 (perf kernel deleted
+  2026-07-05).
 - **Memory**: B× quant caches + prompt cache + weights on 24 GB — P3
   admission is the backstop; mirror mlx-lm's
   `trim_to(total − activeBatchBytes)` so LRU and live batch share one

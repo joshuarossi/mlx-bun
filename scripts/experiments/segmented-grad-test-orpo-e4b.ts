@@ -25,7 +25,6 @@ import {
   buildTrainableLora, attachForTraining, flatParams, disposeLora, type TrainableLora,
 } from "../../src/train/lora-params";
 import { setTrainingAttn } from "../../src/model/flash-attention";
-import { setFusedGeluTraining } from "../../src/model/fused-geglu-kernel";
 import { orpoLoss } from "../../src/train/loss";
 import { SegmentedBackwardOrpoGemma4, planSegmentsBySize } from "../../src/train/segmented";
 import type { DpoBatch } from "../../src/train/dataset";
@@ -44,7 +43,6 @@ if (ATTN === "flash") setTrainingAttn("flash");
 // Match the real training path: fused GeGLU (differentiable wrapper) ON, so this
 // also exercises the fused CustomVjp nested inside the segmented mlx_vjp. Opt out
 // with FUSED_GELU=0 to compare against the spelled-out path.
-if (process.env.FUSED_GELU !== "0") setFusedGeluTraining(true);
 
 function swap(l: TrainableLora, p: MlxArray[]): MlxArray[] {
   const n = l.targets.length; const s: MlxArray[] = [];

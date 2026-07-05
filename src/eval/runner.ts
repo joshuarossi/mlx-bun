@@ -99,7 +99,7 @@ export interface GenOpts {
    *  (its capability numbers are non-thinking; e.g. MiniCPM5 IFEval 64.7 is
    *  non-thinking). Set MLX_BUN_EVAL_THINK=1 or pass true to evaluate thinking mode. */
   enableThinking?: boolean;
-  /** Explicit KV-quant scheme (cli `generate --l2/--l3/--kv-quant`, resolved with
+  /** Explicit KV-quant scheme (cli `generate --l2/--kv-quant`, resolved with
    *  serve's semantics). Overrides the MLX_BUN_EVAL_KV_QUANT env default; an empty
    *  object forces bf16. When it names quantized KV, generation runs the product
    *  generate() path (same tokens as `serve` with the same scheme). */

@@ -34,7 +34,7 @@ outdir = sys.argv[1]
 # (name, B, KV, n_rep, L, N, D, group_size, bits, scale, mask, seed)
 # N > 2*512 exercises multi-tile + a partial final tile; N > L is a
 # continuation (offset = N - L > 0), the scenario this path exists for.
-# kv8-decode is L=1 with mask=None — the MLX_BUN_FUSED_DECODE
+# kv8-decode is L=1 with mask=None — the tiled-decode
 # experiment's shape (optiq's wrapper tiles decode; no L gate there).
 CASES = [
     ("kv8", 1, 1, 4, 128, 1153, 64, 64, 8, 0.125, "causal", 7),

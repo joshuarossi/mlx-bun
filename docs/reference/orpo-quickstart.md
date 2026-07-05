@@ -14,9 +14,9 @@ mlx-bun train <model> --data <dir>
 - `<model>` is a query or snapshot path (e.g. `e4b`, `MiniCPM5`); omit it to auto-pick.
 - `--data <dir>` is a directory with `train.jsonl` (+ optional `valid.jsonl`); rows are
   `{"prompt": "...", "chosen": "...", "rejected": "..."}`.
-- The command **auto-detects e4b/Gemma** and sets its required training env flags
-  (`MLX_BUN_PERF_KERNEL=0`, `MLX_BUN_FUSED_GELU=0`) before loading the model — you don't
-  set them yourself. The full stack (flash head + prefix-share + segmented) is on by default.
+- The full stack (flash head + prefix-share + segmented) is on by default. No env-flag
+  setup is needed for any model (the old Gemma training-flag requirement is gone —
+  the no-vjp kernels were deleted 2026-07-05).
 - It prints a plan box (dataset counts, format, the resolved knobs), streams per-step loss
   + peak memory, and saves a **mountable** adapter (`mlx-bun serve <model> --adapter <dir>`).
 - `--dry-run` inspects the dataset and prints the plan without training. `mlx-bun help train`
@@ -59,7 +59,6 @@ mlx-bun train e4b --data ./prefs --resume ~/.cache/mlx-bun/mlx-bun-finetunes/orp
 MODEL=/path/to/snapshot DATA=/path/to/datadir bun scripts/train-orpo.ts
 ```
 - `DATA` is a directory with `train.jsonl` (+ optional `valid.jsonl`).
-- Auto-detects e4b/Gemma and sets the training env flags, same as the CLI.
 
 ### Preconfigured defaults (override via env)
 | env | default | meaning |

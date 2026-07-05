@@ -2016,9 +2016,11 @@ surfaced that the ported LoRA trainer had never run e4b end-to-end at
 real lengths. Findings + fix:
 
 **Diagnosis (corrects an in-flight wrong theory about attention):**
-- Two fused custom kernels in the forward have no vjp: the perf decode
+- Two fused custom kernels in the forward had no vjp: the perf decode
   kernel (`MLX_BUN_PERF_KERNEL`) and the GEGLU MLP kernel
-  (`MLX_BUN_FUSED_GELU`). Training MUST disable both (set =0) or backward
+  (`MLX_BUN_FUSED_GELU`) — BOTH DELETED 2026-07-05 (Phase 1 of
+  unified-engine-frontier-plan.md; training needs no flag sanitization
+  now). Historical: training had to disable both (set =0) or backward
   dies with `[Primitive::vjp] Not implemented for CustomKernel`.
 - Attention is NOT the problem. `makeCache()` returns DENSE caches; only
   `generate.ts` quantizes them (`toQuantized`). With dense caches the
@@ -2227,8 +2229,23 @@ own kv8 trails its bf16; it buys memory headroom only, ~1.3 GB on 12B @16k).
   layers — bench.ts's `--baseline-kv <bits>` now applies optiq's
   `patch_rotating_to_quantized` (cache class only; the attention kernel stays
   mlx-lm's; no-op on cpm5). Verified: e4b kv8 oracle cell runs.
-- Open: e4b perf-kernel regression root-cause (why does the kernel that
-  helps 12B hurt e4b?); cpm5 vs optiq mixed ~3–6% gap; 12B KL-max outlier.
+- **Phase 1 deletion pass EXECUTED 2026-07-05** (same day): fused-decode,
+  fused-gelu, fused-swiglu (+fused-mlp/steel-linear), the perf kernel + its
+  frozen-oracle scaffolding, FaithfulMiniCPM5, and `--l3` (hard error now)
+  all deleted per Josh ("we will end up redoing all the work we have
+  currently done given that we now have a different starting point"). The
+  e4b perf-kernel regression root-cause is MOOT (kernel deleted); a future
+  flash-decode kernel re-derives from the L1 baseline in the Lab.
+- **Phase 0 measured the batch-lane B=1 gap** (M1 Max, median-of-5,
+  identical SSE measurement both lanes): cpm5 281→129 (0.46×), e4b
+  62→45 (0.72×), 12B 30→26 (0.86×) — a CONSTANT ~4–6 ms/step host tax
+  (model-size-independent → host, not GPU; cpm5 has no compiled decode so
+  that's not the story). mlx-lm's own BatchGenerator B=1 tax is 3.3%
+  (paired A/B, cpm5) — the unified design is proven achievable. Prime
+  suspects: per-layer per-step BatchedDecodeMaskCache mask rebuild (24
+  layers × ~8 device nodes/step on cpm5), per-token emit path. Phase 2
+  worklist in unified-engine-frontier-plan.md §8.
+- Open: cpm5 vs optiq mixed ~3–6% gap; 12B KL-max outlier.
 
 ## Context / lore
 

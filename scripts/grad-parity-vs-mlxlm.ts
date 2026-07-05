@@ -4,7 +4,7 @@
 // the (bit-exact) base forward, dA=0, and dB = scale·(x@A)^T @ dOut is fully
 // determined by matched quantities — so our dB must match mlx-lm's if our grad
 // path matches theirs. Tests our FULL value_and_grad AND the segmented path.
-//   MLX_BUN_PERF_KERNEL=0 MLX_BUN_FUSED_GELU=0 bun scripts/grad-parity-vs-mlxlm.ts
+//   bun scripts/grad-parity-vs-mlxlm.ts
 
 import { readFileSync, readdirSync } from "node:fs";
 import { loadModelConfig } from "../src/config";

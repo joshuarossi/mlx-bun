@@ -346,12 +346,10 @@ agent CLIs like pi/OpenClaw via their provider config.
   (measured 5–20% at ≤16k, on mlx-lm's uniform scheme too) for KV bytes
   ÷4 on the quantized layers — reach for it when context, not speed, is
   the constraint. The default KV cache is bf16 (the mlx-lm-parity L1
-  route); `--kv-quant 4|8` selects uniform bits instead. Long prefills over quantized caches run a fused
-  FlashAttention-2 tiling that never materializes the full scores
-  matrix (bounded transient; `MLX_BUN_NO_FUSED_SDPA=1` to disable).
-  `MLX_BUN_FUSED_DECODE=1` extends the tiling to single-token decode —
-  experimental, default off (measured ~4% slower on Gemma @8k kv8;
-  kept for model families where it may win).
+  route); `--kv-quant 4|8` selects uniform bits instead. Long prefills
+  over quantized caches run a fused FlashAttention-2 tiling that never
+  materializes the full scores matrix (bounded transient;
+  `MLX_BUN_NO_FUSED_SDPA=1` to disable).
 - **Speculative decoding** — `serve --draft-model <path|query>`
   (mlx_lm.server parity; `--num-draft-tokens`, default 3): a smaller
   same-tokenizer model drafts, the main model verifies — exact results,

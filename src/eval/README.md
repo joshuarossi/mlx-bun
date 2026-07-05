@@ -36,8 +36,8 @@ repo rule: free-running greedy "measures chaos").
 # drift gate on an existing non-bit-exact lever (validates the harness today):
 bun scripts/eval.ts kl --candidate e4b
 
-# once a fused kernel is wired for e4b, its drift vs compat:
-bun scripts/eval.ts kl --candidate e4b --self MLX_BUN_PERF_KERNEL --ref-value 0 --cand-value 1
+# self-arm A/B on an output-affecting lever (fused-sdpa on vs off):
+bun scripts/eval.ts kl --candidate e4b --self MLX_BUN_NO_FUSED_SDPA --ref-value 1 --cand-value 0
 
 # optiq-style absolute drift vs a reference model:
 bun scripts/eval.ts kl --candidate e4b --reference <bf16-or-4bit-id>
@@ -55,9 +55,10 @@ the throughput `runs` table). Each row records the active perf levers
 
 - **M0 (done):** KL drift gate + capability score + `quality_runs` DB + CLI.
 - **M0b (done):** *serving-path* KL (`evaluateKlServingDecode` in `kl.ts`,
-  `bun scripts/eval.ts kl --decode`). Validated: identical arms → KL 0;
-  `MLX_BUN_FUSED_DECODE` tiled-decode → KL 0.27 (real drift on the quantized
-  path). Motivation below — the compat KL couldn't see it:
+  `bun scripts/eval.ts kl --decode`). Validated at the time: identical arms →
+  KL 0; the since-deleted `MLX_BUN_FUSED_DECODE` tiled-decode → KL 0.27 (real
+  drift on the quantized path — the lever was removed 2026-07-05, but the
+  validation stands). Motivation below — the compat KL couldn't see it:
   The compat `forward()` path with `makeCache()` uses **plain bf16 caches**. That is wrong
   twice over: (1) e4b's KV is **per-layer mixed 4-bit/8-bit** (group 64, from
   `kv_config.json` → `config.kvQuant`; 8-bit layers 3,4,9,10,11,14, 4-bit
@@ -67,7 +68,7 @@ the throughput `runs` table). Each row records the active perf levers
   caches, then `cache[i] = c.toQuantized(e.groupSize, e.bits)` per
   `config.kvQuant` (the logic already at `generate.ts:68-86`), so the
   teacher-forced prefill runs the real mixed-4/8-bit quantized path and the
-  perf levers (NO_FUSED_SDPA, perf-kernel) actually bite.
+  perf levers (NO_FUSED_SDPA) actually bite.
 - **M1 (done):** all six capability tasks ported + runtime-validated, plus
   `capability` aggregation and the `smoketest` (KL + GSM8K-50) gate. Datasets
   exported by `scripts/eval/export-datasets.py` → `~/.cache/mlx-bun/eval-data/`.

@@ -50,8 +50,6 @@ function activeConfig(): Record<string, string> {
   const lever = (k: string, d: string) => process.env[k] ?? d;
   return {
     compiledDecode: lever("MLX_BUN_COMPILED_DECODE", "1"),
-    perfKernel: lever("MLX_BUN_PERF_KERNEL", "1"),
-    fusedDecode: lever("MLX_BUN_FUSED_DECODE", "0"),
     noFusedSdpa: lever("MLX_BUN_NO_FUSED_SDPA", "0"),
   };
 }
@@ -75,7 +73,7 @@ async function runKl(): Promise<void> {
   if (decode) {
     // serving-path (M0b): teacher-forced quantized DECODE. Default lever is
     // the one that actually bites in decode today (tiled vs unfused SDPA).
-    const flag = opt("self", "MLX_BUN_FUSED_DECODE")!;
+    const flag = opt("self", "MLX_BUN_NO_FUSED_SDPA")!;
     const refValue = opt("ref-value", "0")!;
     const candValue = opt("cand-value", "1")!;
     const decodeSteps = Number(opt("decode-steps", "32"));

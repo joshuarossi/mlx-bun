@@ -83,6 +83,14 @@ one scope-fix + one hub table + reading order**, all cheap and link-stable:
 
 ## B. The DAG view (docs/dag/training-inference-map.html + parity-tier-dag.md)
 
+> **2026-07-05 annotation:** the Phase-1 deletion pass
+> ([unified-engine-frontier-plan.md §6](../design/unified-engine-frontier-plan.md))
+> deleted the perf-kernel, fused-decode, and fused-swiglu/geglu kernels and
+> removed `--l3` as a product mode (output-changing experiments are Lab items
+> now). The `perfKernelEnabled()` / `fusedDecodeSdpa` / `fusedSwiglu` route
+> predicates referenced in this section (and the map's n92/n95 branches) no
+> longer exist in the code; treat those mentions as the pre-deletion snapshot.
+
 ### B.1 What exists today
 
 - **parity-tier-dag.md** — the framework doc. **Already refreshed 2026-07-01**:
@@ -133,14 +141,14 @@ Keep it hand-authored, make it honest:
 **B3.2 Runtime route explainer (recommended first "derive from code" step,
 ~1 day).** Josh's ask is literally "for each model and config, how it is
 actually running" — the cheapest ground-truth answer is not static analysis
-but a CLI verb, e.g. `mlx-bun route <model> [--l1|--l2|--l3] [--kv-quant …]`,
+but a CLI verb, e.g. `mlx-bun route <model> [--l1|--l2] [--kv-quant …]`,
 that:
 - runs `applyDecodeRoute()` (cli.ts:723 — the TIERS preset table is already a
   machine-readable matrix), loads **config only** (no weights),
-- evaluates the actual exported predicates (`perfKernelEnabled`,
-  `fusedDecodeKernelSupported`, `fusedSwiglu/GeluEnabled+Supported`,
-  `NO_FUSED_SDPA`, `CompiledDecode.for` eligibility, kv-quant resolution,
-  factory ladder selection),
+- evaluates the actual exported predicates (`NO_FUSED_SDPA`,
+  `CompiledDecode.for` eligibility, kv-quant resolution, factory ladder
+  selection — the old perf-kernel/fused-decode/fused-swiglu predicates were
+  deleted 2026-07-05),
 - prints the resolved route as a tree/JSON: which model class, which sdpa
   path, which kernels, which tier each hop sits in, and **which flag would
   change each hop**.
@@ -164,7 +172,8 @@ What "derive the DAG from code" concretely means here:
   generator fails if a tagged node vanished (renames get caught).
 - **CI gate**: a workflow step asserts every **L1-tagged** node names an
   `oracleTest` file that exists and passes (`bun test <file>`); an L1 node
-  without a passing bit-exact test fails CI or must be re-tagged L3. This is
+  without a passing bit-exact test fails CI or must be re-tagged no-oracle
+  (Lab-gated). This is
   PLAN's "the oracle is the gate becomes a check" box — and it composes with
   STATUS finding #4 (no CI at all): land the `tsc + bun test` gate first,
   hang the L1-tag check off it.

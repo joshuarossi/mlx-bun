@@ -1,6 +1,5 @@
 // Gradient-accumulation verification (correctness + flat peak memory).
 //
-//   MLX_BUN_PERF_KERNEL=0 MLX_BUN_FUSED_GELU=0 \
 //     bun scripts/experiments/parity-gradaccum.ts
 //
 // Two properties, checked against the REAL trainer over the on-disk

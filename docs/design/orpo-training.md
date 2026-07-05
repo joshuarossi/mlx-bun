@@ -23,11 +23,11 @@ runs half the forwards per step.
 
 > Oracle note: neither `mlx_lm` nor `optiq` ships ORPO, so — unlike DPO
 > ([`loss.ts`](../../src/train/loss.ts) ported `optiq/lora/dpo.py`) — ORPO is
-> an **L3 mlx-bun original**. Correctness is anchored to a standalone
+> a **no-oracle mlx-bun original (Lab-class)**. Correctness is anchored to a standalone
 > torch/numpy reference of the paper/TRL math (see [Parity](#parity)), not a
 > bit-exact upstream port.
 
-> **L3 verification (2026-06-21).** The flash-CCE head has no oracle either, so
+> **No-oracle (Lab-gated) verification (2026-06-21).** The flash-CCE head has no oracle either, so
 > the "0.28% dh" figure is **fp-reassociation vs the full-logits *proxy*, not an
 > error** (two correct reductions in different orders can't be bit-identical).
 > Correctness is proven by **finite-difference** (`flash-fd-check.ts`) + the math
@@ -35,7 +35,7 @@ runs half the forwards per step.
 > (0.66→2.7%, from `flash-cce-parity.ts`'s random hidden) is its **worst case**:
 > random logits give a flat softmax, but real outputs are sharply peaked, so
 > filtering the ≈0-softmax tail is near-free — **measure teacher-forced on real
-> hiddens before judging** (it's plausibly a free speedup to enable). Standing L3
+> hiddens before judging** (it's plausibly a free speedup to enable). Standing Lab
 > gates (filter-on-real-data, teacher-forced grad fidelity, end-to-end quality)
 > + the host-buffer pin-leak post-mortem:
 > [orpo-flash-cce-pin-leak.md](../investigations/orpo-flash-cce-pin-leak.md).
@@ -68,11 +68,13 @@ else validates against):**
   [`scripts/experiments/parity-orpo.ts`](../../scripts/experiments/parity-orpo.ts):
   10/10 checks pass — scalar loss, log1mexp stability, gradient checks (finite
   differences vs autograd) at B=1 and B=3, edge cases.
-- ✅ `fusedGegluDifferentiable` in
-  [`src/model/fused-geglu-kernel.ts`](../../src/model/fused-geglu-kernel.ts):
-  `CustomVjp`-backed version with hand-derived backward (grad\_b = dc·gelu(a),
-  grad\_a = dc·b·gelu'(a)); tested in
-  [`tests/fused-geglu-vjp.test.ts`](../../tests/fused-geglu-vjp.test.ts).
+- ✅ `fusedGegluDifferentiable` in `src/model/fused-geglu-kernel.ts`
+  (**kernel DELETED 2026-07-05** in the Phase-1 deletion pass —
+  [unified-engine-frontier-plan.md §6](unified-engine-frontier-plan.md);
+  the compiled activations are the only geglu now, bit-exact, and training
+  needs no flag sanitization): `CustomVjp`-backed version with hand-derived
+  backward (grad\_b = dc·gelu(a), grad\_a = dc·b·gelu'(a)); was tested in
+  `tests/fused-geglu-vjp.test.ts` (deleted with it).
 - ✅ **Fused GeGLU wired into the e4b training path.** A training-mode flag
   (`setFusedGeluTraining`, set by the trainer around the loop, cleared in its
   finally) makes BOTH Gemma GeGLU sites — the MLP (`gelu(gate)·up`) and the
@@ -92,10 +94,11 @@ else validates against):**
   to the closed form at tol 0.05 in the vjp test). Composes with the segmented
   path (the fused `CustomVjp` nests inside the segmented `mlx_vjp`: segmented ORPO
   still PASSES with fused on, peak 11.25 GB full → 7.58 GB segmented). Unit guard
-  ([`tests/fused-geglu-vjp.test.ts`](../../tests/fused-geglu-vjp.test.ts)): the
+  (`tests/fused-geglu-vjp.test.ts`, deleted with the kernel): the
   flag toggles and the differentiable forward bit-matches the plain kernel.
-  Training still needs `MLX_BUN_PERF_KERNEL=0` (a separate no-vjp perf kernel —
-  its own follow-on).
+  (Historical: training at the time also needed `MLX_BUN_PERF_KERNEL=0` — that
+  perf kernel was likewise deleted 2026-07-05, so no training flag sanitization
+  remains.)
 - ✅ `responseOnlyLogpMean` helper in `loss.ts` (post-finalNorm h → mean response
   logp; used by the ORPO head VJP).
 - ✅ `SegmentedBackwardOrpo` in
@@ -520,7 +523,7 @@ tier below it, bottoming out at the math reference above:
 
 ## Memory & speed optimization
 
-ORPO has no upstream bit-exact oracle (L3 original), which gives us latitude to
+ORPO has no upstream bit-exact oracle (a no-oracle original, Lab-class), which gives us latitude to
 optimize the runtime aggressively as long as we stay self-consistent with a
 naïve reference (see [Parity](#parity)). This section is the result of a
 dedicated research spike across three areas — activation/segmentation memory,
@@ -568,7 +571,7 @@ GB** at this vocab scale. This **subsumes our current `responseOnlyCe` trick**
     LoRA-factored head backward (`∇A`, `∇B`) falls out per chunk — Apple's CCE
     has no LoRA path, so even adopting it would mean deriving this ourselves.
     Exact in forward and backward; no Metal kernel required. Reserve a
-    `mx.fast.metal_kernel` flash-CCE as an **L3 speed tier** only if per-chunk
+    `mx.fast.metal_kernel` flash-CCE as a **Lab speed experiment** only if per-chunk
     logits are still too large in practice.
 
 > ✅ **LANDED + validated (2026-06-18) — `fusedLogpMeanB1` in
@@ -640,7 +643,7 @@ GB** at this vocab scale. This **subsumes our current `responseOnlyCe` trick**
 > token-chunks (which free fine). Forcing an eval mid-chain breaks autodiff (a
 > 35 GB blowup). **Conclusion:** the CCE residency bound (`[chunk,Vblock]` peak) is
 > unreachable in pure MLX; it requires a `mx.fast.metal_kernel` with the vocab loop
-> INSIDE the kernel (the L3 flash-CCE tier). The pure-MLX implementation is kept as
+> INSIDE the kernel (the flash-CCE Lab kernel). The pure-MLX implementation is kept as
 > a **validated correctness reference** for that kernel and is **gated off** (not
 > wired to a trainer knob — it would only raise peak). So: token-chunking
 > (`orpo_chunk_size`) + the analytic fused head (`orpo_fused_ce`) are the usable
@@ -649,8 +652,8 @@ GB** at this vocab scale. This **subsumes our current `responseOnlyCe` trick**
 > 🔬 **flash-CCE Metal kernel — PROTOTYPED + working, scaling-limited at largest
 > vocab (2026-06-18).** [`src/train/flash-cce.ts`](../../src/train/flash-cce.ts):
 > `mx.fast.metal_kernel` forward (`logp` + `lse`) and backward (`dh`) that compute
-> logits in-kernel from the quantized head (in-Metal 4/8-bit affine dequant via the
-> qdot pattern from [`fused-decode-kernel.ts`](../../src/model/fused-decode-kernel.ts)),
+> logits in-kernel from the quantized head (in-Metal 4/8-bit affine dequant via
+> mlx's `quantized.h` qdot pattern — the deleted fused-decode kernel used the same),
 > online softmax across vocab, target capture, softcap + sech², so the vocab loop
 > lives INSIDE the kernel — neither `[M,V]` nor a dequantized `[V,hidden]` head
 > touches HBM. **Validated** ([`scripts/experiments/flash-cce-parity.ts`](../../scripts/experiments/flash-cce-parity.ts)):
@@ -710,8 +713,8 @@ GB** at this vocab scale. This **subsumes our current `responseOnlyCe` trick**
 >   knob (the existing `orpo_chunk_size` stays the token-axis tier; the two
 >   compose — token-chunk the M response rows, vocab-chunk each row's head). It
 >   replaces the per-chunk `logitsFromHidden` (which materializes `[Cc, V]`) with
->   the tiled engine below, wrapped in a single `CustomVjp` (our
->   [`fused-geglu-kernel.ts`](../../src/model/fused-geglu-kernel.ts) pattern: a
+>   the tiled engine below, wrapped in a single `CustomVjp` (the pattern the
+>   since-deleted `fused-geglu-kernel.ts` established: a
 >   `mx.custom_function` with a hand `.vjp`, validated against `mx.vjp`/autograd —
 >   never a hand formula, per the standing rule).
 > - **Explicit VJP inputs** `(hC [M,hidden], baseW, scales, biases, [loraA, loraB
@@ -952,7 +955,7 @@ for custom fused Metal kernels. Both apply to **forward and backward**.
    already fused both directions. (Note: `sdpa` forward only — its backward is
    the custom-kernel target in Tier 1.)
 
-**Tier 1 — custom fused fwd+bwd Metal kernels (the cutting-edge; L3 originals):**
+**Tier 1 — custom fused fwd+bwd Metal kernels (the cutting-edge; no-oracle originals, Lab-gated):**
 3. **Fused linear + log-softmax + gather loss (CCE/Liger-style) — THE moat.**
    Lever 1 of the memory plan as a single kernel: fuse the (quantized,
    vocab-chunked) head matmul + `logsumexp` + target gather so the `[T, 262k]`
@@ -968,14 +971,15 @@ for custom fused Metal kernels. Both apply to **forward and backward**.
    memory instead of today's O(L²). High value because it removes the term
    segmentation is currently compensating for. (FA3's extra tricks are
    Hopper-specific; mirror FA2 on Metal.)
-5. **Fused GeGLU/SwiGLU with a vjp.** We already have a fused-GeGLU *forward*
-   kernel ([`fused-geglu-kernel.ts`](../../src/model/fused-geglu-kernel.ts))
-   **disabled in training because it has no gradient** (the
-   `MLX_BUN_FUSED_GELU=0` constraint). The backward math is known (Liger): for
+5. **Fused GeGLU/SwiGLU with a vjp.** (The custom fused-GeGLU/SwiGLU kernels
+   were **DELETED 2026-07-05** — compiled activations own the fusion win
+   bit-exactly; see
+   [unified-engine-frontier-plan.md §6](unified-engine-frontier-plan.md). Kept
+   here as the backward-math record.) The backward math is known (Liger): for
    `c = act(a)⊙b`, save `a`,`b`, recompute the activation — `db = dc·act(a)`,
-   `da = dc·b·act'(a)`. Writing this `.vjp` re-enables the kernel in training —
-   doubly valuable since the MLP intermediate is our **dominant resident tensor**
-   (the intra-layer split target, lever 4).
+   `da = dc·b·act'(a)`. This `.vjp` was written and validated before the
+   deletion; the memory angle still matters since the MLP intermediate is our
+   **dominant resident tensor** (the intra-layer split target, lever 4).
 6. **Fused dequant-GEMM + LoRA epilogue (+ manual backward).** MLX's
    `quantized_matmul` already fuses dequant into the *base* GEMM; the missing
    piece is folding the LoRA epilogue `scale·(x@A)@B` into that kernel and a
@@ -1021,9 +1025,9 @@ Metal path**. Two openings stand out:
   checkpointing / segmented backward. Other gaps nobody fills: cached DPO
   reference log-probs, a concatenated/prefix-shared chosen+rejected forward.
 
-These fused kernels are **L3 originals** (mlx-bun's own tier) — validated
+These fused kernels are **no-oracle originals (Lab-gated)** — validated
 against the naïve path via the [oracle ladder](#parity), consistent with the
-three-level fidelity model.
+fidelity model (external-oracle tiers L1/L2 plus the no-oracle Lab class).
 
 ## Model coverage, quantization, batching, dropout
 
@@ -1181,8 +1185,8 @@ Runbook (the generate/train steps are yours to run — they're long / download):
 2. **Baseline:** `MODEL=<e4b> bun scripts/run-ifeval.ts ifeval.jsonl` → record.
 3. **Fit check:** `MODEL=<e4b> CHUNK=512 bun scripts/bench-orpo.ts` to confirm
    the config fits 24 GB (e4b's 262k vocab makes the chunked head matter).
-4. **Train ORPO** (e4b is Gemma → set the no-vjp kernels off):
-   `MLX_BUN_FUSED_GELU=0 MLX_BUN_PERF_KERNEL=0` + `method:"orpo"`,
+4. **Train ORPO** (no env-flag sanitization needed — the no-vjp kernels were
+   deleted 2026-07-05): `method:"orpo"`,
    `learning_rate 1e-5`, `orpo_lambda 0.1`, `orpo_chunk_size 512`,
    `max_seq_length ~1024`, `rank 16`. ⚠️ Segmented backward for ORPO is
    **MiniCPM5-only** today (`SegmentedBackwardOrpoGemma4` is a follow-on), so

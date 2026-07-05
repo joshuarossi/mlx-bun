@@ -234,54 +234,58 @@ base library; **mlx-optiq and mlx-bun are both optimizations on top of it**
 (optiq = mixed-precision per-layer KV quant, "drop-in for mlx_lm.server", no
 batching; mlx-bun = per-model fused kernels + batched serving). Bit-parity with
 an ancestor is just an **easy correctness test where we overlap one** — not a
-porting goal. The "L1/L2/L3" labels below are **parity anchors / correctness
+porting goal. The "L1/L2" labels below are **parity anchors / correctness
 checkpoints**, not a strict stack: L1 = "matches mlx-lm (bf16)", L2 = "matches
-optiq (mixed-precision quant)", L3 = "our own optimizations, no ancestor does
-them → no oracle". A combo no ancestor does (e.g. **batched mixed-precision
+optiq (mixed-precision quant)"; beyond them is the no-oracle **Lab** class ("our
+own optimizations, no ancestor does them → no oracle" — formerly labeled "L3";
+the `--l3` product tier was deleted 2026-07-05,
+docs/design/unified-engine-frontier-plan.md §6). A combo no ancestor does (e.g. **batched mixed-precision
 serving** — mlx-lm can't do mixed-precision, optiq can't batch) is genuinely new
 territory: gate it by KL + the 6-task quality + benchmarks, never bit-exactness.
 The anchors are still useful — we can always dial back to a bit-exact-vs-ancestor
 config as a correctness checkpoint and build outward.
 
 - **L1 — mlx-lm parity (standard KV).** bf16 KV, **bit-exact vs mlx-lm**. The
-  foundation oracle. Path: monolith `Gemma4Model` / `MiniCPM5Model`, `ops.sdpa`,
-  perf kernels off.
+  foundation oracle (and, since 2026-07-05, the naked default). Path: monolith
+  `Gemma4Model` / `MiniCPM5Model`, `ops.sdpa`.
 - **L2 — mlx-optiq parity (mixed-precision KV quant).** quant/mixed KV,
-  **bit-exact vs optiq**. Path: `QuantizedKVCache` + `quantizedSdpa` *unfused*
-  (`MLX_BUN_PERF_KERNEL=0`).
-- **L3 — our perf mode.** generated unrolled handlers + fused/perf kernels;
-  **deliberately beyond the oracle — there is NO bit-exact reference for L3**, by
-  design (these optimizations go past what mlx-lm/optiq do). The gate is **KL vs
-  the compatible upstream + the 6 eval-task mean (`src/eval/tasks/`) + perf
-  numbers** — never bit-exactness. Path: generated handler, perf-kernel +
-  fused-sdpa + fused-gelu on (the defaults). compiled-decode is inert here
-  (CustomKernel has no `output_shapes`) — a compat/benchmark artifact, not a
-  production mode. **L3's freedom is bounded by graceful degradation**: it may
-  diverge only because L2/L1 stay reachable and provably bit-exact.
+  **bit-exact vs optiq**. Path: `QuantizedKVCache` + `quantizedSdpa` (fused-sdpa
+  follows `--kv-quant`: on for `config` — the optiq golden composition; off →
+  *unfused* for uniform/bf16).
+- **L3 — DELETED as a product mode 2026-07-05**
+  (docs/design/unified-engine-frontier-plan.md §6): no output-changing kernel
+  (perf-kernel, fused-decode, fused-gelu) beat the L1 baseline in a paired A/B,
+  so the kernels were deleted and `--l3` hard-errors. Its no-oracle territory is
+  now the **Lab**: output-changing experiments are env-flag items with a bench +
+  expiry, gated by **KL vs the compatible upstream + the 6 eval-task mean
+  (`src/eval/tasks/`) + perf numbers** — never bit-exactness — until one earns
+  promotion.
 
-Degradation levers: `--perf-kernel off` / `--fused-* off` drops L3→L2; bf16 KV
-drops L2→L1. Each layer must stand alone and stay reachable (don't-delete-
+Degradation lever: bf16 KV drops L2→L1. The surviving kill switches
+(`--compiled-decode`, `--compiled-activations`, `--fused-sdpa`) are per-kernel
+escapes. Each layer must stand alone and stay reachable (don't-delete-
 optionality as a fallback ladder).
 
 So a feature like batched decode (`--batch`) is "done" only when green at
 **every (model × layer)** cell — and each cell may need its own fix:
 
-| Model · path | L1 (bf16 / mlx-lm) | L2 (quant / optiq) | L3 (perf / KL) |
+| Model · path | L1 (bf16 / mlx-lm) | L2 (quant / optiq) | ~~L3~~ (tier deleted 2026-07-05) |
 | --- | --- | --- | --- |
-| CPM (MiniCPM5) | ✅ **oracle-verified** (= mlx-lm B=2) | ☐ quant + unfused-mask | ☐ |
-| Gemma 12B | ✅ **oracle-verified** (= mlx-lm B=2, short-ctx) | ☐ generated + sliding-window | ☐ (gen rope fix) |
-| Gemma e4b | ✅ **oracle-verified** (= mlx-lm B=2, short-ctx) | ☐ generated + same | ☐ (gen rope fix) |
-| Gemma 26B | ✅ **oracle-verified** (= mlx-lm B=2, short-ctx) | ☐ generated + MoE | ☐ (gen rope fix) |
-| *(Qwen, future)* | *new path* | *new path* | *new path* |
+| CPM (MiniCPM5) | ✅ **oracle-verified** (= mlx-lm B=2) | ☐ quant + unfused-mask | — |
+| Gemma 12B | ✅ **oracle-verified** (= mlx-lm B=2, short-ctx) | ☐ generated + sliding-window | — |
+| Gemma e4b | ✅ **oracle-verified** (= mlx-lm B=2, short-ctx) | ☐ generated + same | — |
+| Gemma 26B | ✅ **oracle-verified** (= mlx-lm B=2, short-ctx) | ☐ generated + MoE | — |
+| *(Qwen, future)* | *new path* | *new path* | — |
 
 **🎯 L1 batched decode COMPLETE (2026-06-14d): the entire L1 row is green** —
 all 4 model paths bit-parity with mlx-lm B=2 (CPM full-attn, Gemma 12B
 sliding+full, e4b per-layer-input+KV-share, 26B MoE). Only one per-path fix was
 needed (e4b's `[1,L,…]` per-layer-input hardcode); sliding (RotatingKVCache),
 KV-sharing, and MoE were all already B-generic. Caveat: short-context (pre-wrap)
-— ring-wrap (>window) is the one remaining L1 follow-up. Next rows: **L2**
-(quantized KV → `quantizedSdpaUnfused` + 4-D mask, vs optiq) and **L3** (perf
-kernels under batching, KL+quality).
+— ring-wrap (>window) is the one remaining L1 follow-up. Next row: **L2**
+(quantized KV → `quantizedSdpaUnfused` + 4-D mask, vs optiq). (The former
+"L3: perf kernels under batching" row is void — those kernels were deleted
+2026-07-05, docs/design/unified-engine-frontier-plan.md §6.)
 
 Harness: `tests/batched-decode-parity.test.ts` has two paths — (a)
 `runBatchedDecodeParity` = the internal-consistency KL check (B=N vs our B=1,
@@ -341,15 +345,15 @@ Batched-decode landmines found by the modes analysis (2026-06-14):
   breaks; plus KV-sharing (sharer `SharedKv`).
 - **Gemmas**: `RotatingKVCache` sliding-window ring — per-row decode mask + ring
   write (the hard one). 26B adds MoE (`GatherQMM`/`SwitchGLU`) batched routing.
-- **Generated handlers (L3, all 3 Gemmas)** repeat the K/Q rope timing trap —
+- **Generated handlers (all 3 Gemmas)** repeat the K/Q rope timing trap —
   they read `cache.ropeOffsetArr` twice around `updateAndFetch`
   (generated/gemma4-12b.ts:63 & :74). The fix goes in the GENERATOR
   `scripts/gen-model.ts`, then regenerate (the files are DO-NOT-EDIT).
-- **Quant + batched**: the `[B,1,N,S]` array mask disqualifies the fused decode
-  kernel (`mask.mode===""` required) and the tiled path (2-D causal-equiv
-  required), so quant batched decode falls to `quantizedSdpaUnfused` — correct
-  but the perf kernel is bypassed (perf debt; a batched-aware fused decode kernel
-  is a later item). `quantizedSdpaUnfused` must be validated with a 4-D bool mask.
+- **Quant + batched**: quant batched decode goes through `quantizedSdpaUnfused`
+  — correct. (The old "perf kernel bypassed under batching" debt is resolved by
+  deletion: the perf/fused-decode kernels were deleted 2026-07-05,
+  docs/design/unified-engine-frontier-plan.md §6 — no batched-aware fused decode
+  kernel is planned.) `quantizedSdpaUnfused` must be validated with a 4-D bool mask.
 - **All cells**: compiled-decode forced off under `--batch>1`; LoRA batches only
   within one adapter group (else drain).
 
@@ -375,7 +379,7 @@ most" fidelity and cost:
    concurrent rows per GB. This is what "dynamically allocate based on
    who needs it most" actually means. Cost: a custom attention kernel +
    a block manager. Feasible — the project already ships custom Metal
-   kernels (`src/mlx/metal-kernel.ts`, `src/model/fused-decode-kernel.ts`).
+   kernel infrastructure (`src/mlx/metal-kernel.ts`).
 
 Plan: ship rung 2 (S1–S2) for the throughput win + dynamic admission
 with no new kernel; build rung 3 (S3+) as the memory-density upgrade.

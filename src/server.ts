@@ -1100,7 +1100,7 @@ export function createServer(
   // 2026-07-05 with the naked-=-L1 default): quantized KV measured 5–20%
   // SLOWER decode than bf16 at ≤16k on every model — on mlx-lm too (its
   // kv8 oracle trails its own bf16) — so it pays only in memory headroom
-  // and must be an explicit opt-in (--kv-quant config|4|8, or --l2/--l3
+  // and must be an explicit opt-in (--kv-quant config|4|8, or --l2
   // whose presets pass it explicitly). The CLI always passes kvQuant now;
   // this fallback is the library-user default and matches the CLI's.
   const configScheme = ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};

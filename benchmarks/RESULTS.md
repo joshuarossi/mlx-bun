@@ -67,9 +67,9 @@ Two comparison axes: **vs the oracles**, and **our optimized path vs our
 own bit-exact compat path** (does an optimization beat the baseline it
 diverges from). Within mlx-bun, `bf16` is the L1-compatible path and
 `mixed` is the L2-compatible path; both are bit-exact, so the bf16↔mixed
-delta is the first "our-vs-our" axis. L3 perf-kernel / fused-decode rows
-(non-bit-exact, default-off) land here once measured under the
-teacher-forced gate — none recorded yet.
+delta is the first "our-vs-our" axis. Lab experiment rows (no external
+oracle; KL/eval-gated) land here once one beats the L1 baseline in a
+paired A/B — none recorded yet (the 2026-07-05 candidates were deleted).
 
 ### Served (warm) — the path agents actually use
 
@@ -133,7 +133,7 @@ holding ±5% on the 6-test mean."*
   upstream.
 - **KL divergence** — optimized vs compatible token distribution.
 
-_No L3 quality runs recorded yet._ The perf kernels (`--perf-kernel`,
-`MLX_BUN_FUSED_DECODE`) ship default-off; this section is the home for
-their quality measurements when they're promoted. See
-`docs/design/optimization_plan.md` and PLAN.md Phase 7.
+_No Lab quality runs recorded yet._ This section is the home for a Lab
+experiment's quality measurements when it's promoted (the bar:
+paired-A/B win vs L1 on a stable pass + KL PASS — see
+docs/design/unified-engine-frontier-plan.md §6-7).

@@ -9,8 +9,8 @@ This is the *what-exists* view; per-flag detail lives in
 **Lanes:** `serial` = the default single-queue path; `batch` = the
 `--batch N` continuous-batching engine (bf16 compat mode, mlx-lm B=N
 parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
-· L3 = no external oracle, gated by envelope/KL/validity (see
-[server-config.md → Fidelity tiers](server-config.md#fidelity-tiers-and-the-decode-route---l1----l2----l3)).
+· Lab = no external oracle; KL/eval-gated experiments (see
+[server-config.md → Fidelity tiers](server-config.md#fidelity-tiers-and-the-decode-route---l1----l2)).
 
 ## Serving & performance
 
@@ -23,16 +23,14 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | Continuous batching (mlx-lm B=N parity) | **off** (serial) | batch | L1 | `--batch <n>` |
 | Prompt cache (prefix KV reuse) | on, 2 GB | serial | — | `--prompt-cache <GB>` (0 = off) |
 | **SSD KV cold tier** (cache survives eviction + restarts) | off | serial | — | `--ssd-cache <dir>` (+ `-max`, `-verify`) |
-| Mixed-precision KV (`kv_config.json`, optiq's scheme) | **off** — opt-in (default flipped to bf16 2026-07-05; quantized KV trades 5–20% decode for memory headroom) | serial | L2 | `--kv-quant config\|off\|4\|8`, `--l2`/`--l3` |
+| Mixed-precision KV (`kv_config.json`, optiq's scheme) | **off** — opt-in (default flipped to bf16 2026-07-05; quantized KV trades 5–20% decode for memory headroom) | serial | L2 | `--kv-quant config\|off\|4\|8`, `--l2` |
 | Compiled decode (bit-exact graph replay) | on, every tier | serial | L1/L2 | `--compiled-decode on\|off` |
 | Compiled activations (faithful geglu/swiglu — mlx-lm's `@mx.compile`) | **on**, every tier | both | L1 | `--compiled-activations on\|off` |
 | Fused SDPA (optiq-exact quantized-KV attention) | follows `--kv-quant`: on for `config`, off for uniform/bf16 | serial | L2 | `--fused-sdpa on\|off` |
-| Custom fused-gelu Metal kernel (single-pass; not bit-exact vs mlx-lm) | **off** | serial | L3 | `--fused-gelu on` |
-| Flash perf-kernel (envelope-gated decode) | **off** | serial | L3 | `--l3` / `--perf-kernel on` |
 | **Speculative decoding** (two-model, mlx-lm parity) | off | serial (forces all-serial) | L1 | `--draft-model <path\|query>`, `--num-draft-tokens` |
 | Memory admission (refuse what can't fit; never GPU-OOM) | on (RAM × 0.75) | both | — | `--memory-budget <GB>` |
 | Aggregate KV admission for batch rows (queue, don't OOM) | off | batch | — | `--kv-budget <GB>` |
-| Expert offload (MoE cold experts on mmap) | off | serial | L3 | `--expert-offload` |
+| Expert offload (MoE cold experts on mmap) | off | serial | Lab | `--expert-offload` |
 | Extend-join (O(1) batch admission) | on | batch | L1 (own oracle) | `MLX_BUN_BATCH_EXTEND=0` |
 | Vectorized greedy batch sampling | on | batch | bit-equal A/B | `MLX_BUN_BATCH_VEC_SAMPLE=0` |
 
@@ -42,7 +40,7 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | --- | --- | --- | --- | --- |
 | **Structured output** (`response_format` json_object/json_schema) | on | both | L2 (oMLX) | request field; `MLX_BUN_GRAMMAR=0` kills |
 | `guided_grammar` (EBNF) / `guided_regex`¹ / `guided_choice` / `structured_outputs` | on | both | L2 | request fields |
-| Structured output × speculative decoding | on (when both active) | serial | L3 (validity+equivalence) | — |
+| Structured output × speculative decoding | on (when both active) | serial | Lab (validity+equivalence) | — |
 | Tool calling (Gemma sentinel / CPM+Qwen XML) + `role:"tool"` loops | on | both | — | request `tools` |
 | Vision (`image_url` parts; PNG/JPEG/HEIC/AVIF/WebP/TIFF/GIF/BMP) | on (models with a tower) | serial | L1/L2 | — |
 | LoRA adapters (mount at start / hot-swap at runtime) | off | serial | — | `--adapter <dir>`, `POST /v1/adapters` |
@@ -51,7 +49,7 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | Fixed `seed` reproducibility | off | serial (routes solo) | — | request field |
 | Thinking-mode control (hybrid-reasoning models) | model default | both | — | `--thinking`, `chat_template_kwargs` |
 | Stop sequences / streaming / usage accounting | on | both | — | request fields |
-| HLG tone-curve sampling | off | serial | L3 | `--hlg-sampling on` |
+| HLG tone-curve sampling | off | serial | Lab | `--hlg-sampling on` |
 | Spec-decode telemetry (`usage.speculation`) | on with a draft | serial | — | — |
 
 ## Model coverage (per-model validated cells — no generic path is trusted untested)

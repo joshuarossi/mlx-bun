@@ -166,7 +166,8 @@ future-proof empty table only.
 - **Stage 2 — train `memory-bucket` LoRA, only if Stage 0/1 miss.** Data from lucien.db, one
   example per (chunk, candidate-bucket) binary decision (gold = belongs?), shortlist regime =
   serve regime. Recipe = `chunk-finetune.ts` (sft, rank 16, lr 1e-5, seq 8192,
-  `MLX_BUN_PERF_KERNEL=0 MLX_BUN_FUSED_GELU=0`, no train-flash); adapter →
+  no train-flash; no env-flag sanitization needed since the 2026-07-05 kernel
+  deletions); adapter →
   `~/.cache/mlx-bun/adapters/memory-bucket`; pick checkpoints by the F1 judge, not val loss.
   **GPU-gated.**
 

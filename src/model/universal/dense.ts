@@ -1,7 +1,7 @@
 // UniversalDense — the Tier-0 config-driven dense llama-family module
 // (docs/design/generic-model-support.md §3.1). One module, shaped exactly
 // like qwen3.ts, with every arch delta selected by the UniversalArgs
-// descriptor (archs.ts). Monolith path only: no perf kernels, no compiled
+// descriptor (archs.ts). Monolith path only: no compiled
 // decode, no kv-quant — slow, never broken. The bar is L1 bit-exactness
 // vs mlx-lm on this machine's GPU (tests/universal-parity.test.ts).
 //

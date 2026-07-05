@@ -3,7 +3,7 @@
 // checks BOTH the loss (vs mlx-lm default_loss) AND the denominator: our
 // responseOnlyCe divides by M = (len-1) - max(0, promptLen-1); mlx-lm divides by
 // ntoks = mask.sum(). Reads /tmp/parity_multi.json (from mlxlm-loss-multi.py).
-//   MLX_BUN_PERF_KERNEL=0 MLX_BUN_FUSED_GELU=0 bun scripts/parity-vs-mlxlm.ts
+//   bun scripts/parity-vs-mlxlm.ts
 
 import { readFileSync, readdirSync } from "node:fs";
 import { loadModelConfig } from "../src/config";

@@ -15,7 +15,6 @@
 // read per-generation so they flip without reloading:
 //   serial-l1            bf16 KV, no fused-sdpa       (mlx-lm bit-exact composition)
 //   serial-l2            config KV + fused-sdpa       (the shipped default)
-//   serial-l3            l2 + perf kernel             (fast, envelope-gated)
 //   serial-l2-nocompile  l2 with compiled-decode OFF  (isolates compile's win)
 //   serial-kv4/kv8       uniform-quant KV             (memory/speed trade)
 //   serial-conc4         serial lane, 4 concurrent    (the queueing baseline)
@@ -176,14 +175,12 @@ interface Cell {
    *  number (the oMLX headline metric). Long workload only. */
   cache?: "ram" | "ssd";
 }
-const L1 = { MLX_BUN_COMPILED_DECODE: "1", MLX_BUN_PERF_KERNEL: "0", MLX_BUN_NO_FUSED_SDPA: "1", MLX_BUN_FUSED_DECODE: "0" };
-const L2 = { MLX_BUN_COMPILED_DECODE: "1", MLX_BUN_PERF_KERNEL: "0", MLX_BUN_NO_FUSED_SDPA: "0", MLX_BUN_FUSED_DECODE: "0" };
-const L3 = { ...L2, MLX_BUN_PERF_KERNEL: "1" };
+const L1 = { MLX_BUN_COMPILED_DECODE: "1", MLX_BUN_NO_FUSED_SDPA: "1" };
+const L2 = { MLX_BUN_COMPILED_DECODE: "1", MLX_BUN_NO_FUSED_SDPA: "0" };
 
 const ALL_CELLS: Cell[] = [
   { name: "serial-l1",           env: L1, kvQuant: "off",    batch: 1, concurrency: 1 },
   { name: "serial-l2",           env: L2, kvQuant: "config", batch: 1, concurrency: 1 },
-  { name: "serial-l3",           env: L3, kvQuant: "config", batch: 1, concurrency: 1 },
   { name: "serial-l2-nocompile", env: { ...L2, MLX_BUN_COMPILED_DECODE: "0" }, kvQuant: "config", batch: 1, concurrency: 1 },
   { name: "serial-kv4",          env: L2, kvQuant: 4,        batch: 1, concurrency: 1 },
   { name: "serial-kv8",          env: L2, kvQuant: 8,        batch: 1, concurrency: 1 },

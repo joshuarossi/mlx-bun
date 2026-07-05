@@ -4,8 +4,7 @@
 // GELU / fused SDPA / perf kernels are ON by default — the L3 path, NOT optiq's
 // reference). Run twice:
 //   bun scripts/diag-e4b-greedy.ts                                   # default (perf) path
-//   MLX_BUN_FUSED_GELU=0 MLX_BUN_PERF_KERNEL=0 MLX_BUN_NO_FUSED_SDPA=1 \
-//     MLX_BUN_FUSED_DECODE=0 MLX_BUN_COMPILED_DECODE=0 \
+//   MLX_BUN_NO_FUSED_SDPA=1 MLX_BUN_COMPILED_DECODE=0 \
 //     bun scripts/diag-e4b-greedy.ts                                 # reference path
 import { loadModelConfig } from "../../src/config";
 import { Weights } from "../../src/weights";
@@ -19,8 +18,7 @@ import { generate } from "../../src/generate";
 const E4B = process.argv[2]
   ?? `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-e4b-it-OptiQ-4bit/snapshots/fcdb12d740cd813634064567fc7cb51159b34253`;
 
-const flags = ["MLX_BUN_FUSED_GELU", "MLX_BUN_PERF_KERNEL", "MLX_BUN_NO_FUSED_SDPA",
-  "MLX_BUN_FUSED_DECODE", "MLX_BUN_COMPILED_DECODE"];
+const flags = ["MLX_BUN_NO_FUSED_SDPA", "MLX_BUN_COMPILED_DECODE"];
 console.log("flags:", flags.map((f) => `${f}=${process.env[f] ?? "(unset)"}`).join(" "));
 
 const golden = await Bun.file("goldens/e4b-vision.json").json();

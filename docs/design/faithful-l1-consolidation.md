@@ -1,5 +1,10 @@
 # Faithful → L1: consolidating the "match mlx-lm" path
 
+> **2026-07-05 addendum:** the Phase-1 deletion pass executed —
+> fused-gelu/fused-swiglu/perf-kernel/fused-decode/CPM5_FAITHFUL deleted, `--l3`
+> removed ([unified-engine-frontier-plan.md §6](unified-engine-frontier-plan.md)).
+> The flag tables below are the historical decision record.
+
 **Status:** PLANNED (2026-07-04). Written after the 2026-07-04 audit of the
 `MLX_BUN_FAITHFUL` work (commit `fd8ff5f`). The faithful kernels are correct and
 proven byte-identical to mlx-lm — but they were wired as a *parallel base-preset

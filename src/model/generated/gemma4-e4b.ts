@@ -88,7 +88,7 @@ function donorSlidQuantG64B4VPliScal(layer: DecoderLayer, x: MlxArray, mask: Mas
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
   // dispatch-site constants: bits=4 group_size=64 nRep=4 head_dim=256
-  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+  const attn = L > 1 && fusedSdpaRuntimeOk(q, mask)
     ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 4)
     : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 4);
   q.dispose();
@@ -151,7 +151,7 @@ function donorSlidQuantG64B8VPliScal(layer: DecoderLayer, x: MlxArray, mask: Mas
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
   // dispatch-site constants: bits=8 group_size=64 nRep=4 head_dim=256
-  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+  const attn = L > 1 && fusedSdpaRuntimeOk(q, mask)
     ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 8)
     : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 8);
   q.dispose();
@@ -214,7 +214,7 @@ function donorFullQuantG64B4VPliScal(layer: DecoderLayer, x: MlxArray, mask: Mas
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
   // dispatch-site constants: bits=4 group_size=64 nRep=4 head_dim=512
-  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+  const attn = L > 1 && fusedSdpaRuntimeOk(q, mask)
     ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 4)
     : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 4);
   q.dispose();
@@ -277,7 +277,7 @@ function donorFullQuantG64B8VPliScal(layer: DecoderLayer, x: MlxArray, mask: Mas
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
   // dispatch-site constants: bits=8 group_size=64 nRep=4 head_dim=512
-  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+  const attn = L > 1 && fusedSdpaRuntimeOk(q, mask)
     ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 8)
     : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 8);
   q.dispose();
@@ -340,7 +340,7 @@ function donorSlidQuantG64B4VPliScalExp(layer: DecoderLayer, x: MlxArray, mask: 
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
   // dispatch-site constants: bits=4 group_size=64 nRep=4 head_dim=256
-  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+  const attn = L > 1 && fusedSdpaRuntimeOk(q, mask)
     ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 4)
     : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 4);
   q.dispose();
@@ -403,7 +403,7 @@ function donorFullQuantG64B4VPliScalExp(layer: DecoderLayer, x: MlxArray, mask: 
   q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
   q = disposing(q, a.rope(q, cache.ropeOffsetArr ?? offset));
   // dispatch-site constants: bits=4 group_size=64 nRep=4 head_dim=512
-  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+  const attn = L > 1 && fusedSdpaRuntimeOk(q, mask)
     ? quantizedSdpaTiled(q, kq, vq, 1.0, mask, 64, 4)
     : quantizedSdpaUnfused(q, kq, vq, 1.0, mask, 64, 4);
   q.dispose();
@@ -449,7 +449,7 @@ function sharerSlidQuantG64B4VPliScal(layer: DecoderLayer, x: MlxArray, mask: Ma
   q = disposing(q, a.rope(q, shared.offsetArr ?? shared.offset));
   if (shared.kind !== "quant") throw new Error("generated sharer expected quant shared KV");
   // dispatch-site constants: bits=4 group_size=64 nRep=4 head_dim=256
-  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+  const attn = L > 1 && fusedSdpaRuntimeOk(q, mask)
     ? quantizedSdpaTiled(q, shared.keys, shared.values, 1.0, mask, 64, 4)
     : quantizedSdpaUnfused(q, shared.keys, shared.values, 1.0, mask, 64, 4);
   q.dispose();
@@ -494,7 +494,7 @@ function sharerFullQuantG64B4VPliScal(layer: DecoderLayer, x: MlxArray, mask: Ma
   q = disposing(q, a.rope(q, shared.offsetArr ?? shared.offset));
   if (shared.kind !== "quant") throw new Error("generated sharer expected quant shared KV");
   // dispatch-site constants: bits=4 group_size=64 nRep=4 head_dim=512
-  const attn = (L > 1 || process.env.MLX_BUN_FUSED_DECODE === "1") && fusedSdpaRuntimeOk(q, mask)
+  const attn = L > 1 && fusedSdpaRuntimeOk(q, mask)
     ? quantizedSdpaTiled(q, shared.keys, shared.values, 1.0, mask, 64, 4)
     : quantizedSdpaUnfused(q, shared.keys, shared.values, 1.0, mask, 64, 4);
   q.dispose();

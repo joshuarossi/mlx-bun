@@ -5,9 +5,10 @@ exit criteria, and findings live in [PLAN.md](PLAN.md); superseded session
 summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 [docs/planning/PRODUCT_ROADMAP.md](docs/planning/PRODUCT_ROADMAP.md).
 
-**Fidelity tiers (the governing contract):** **L1** = mlx-lm bit-exact parity ·
-**L2** = mlx-optiq bit-exact parity · **L3** = original optimizations beyond both,
-gated by math checks + KL/quality (not bit-exactness).
+**Fidelity contract:** **L1** = mlx-lm bit-exact parity (the naked default) ·
+**L2** = mlx-optiq bit-exact parity (mixed-KV composition) · **Lab** = original
+optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
+the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
 ## Where we are (2026-07-05)
 
@@ -20,7 +21,7 @@ paired A/B**: fused-decode 1.00×, fused-gelu +0–1%, the perf arm
 quantized KV 5–20% slower decode than bf16 at ≤16k on BOTH stacks. So:
 `applyDecodeRoute` now defaults the tier to l1 (bf16 KV, perf-kernel
 default flipped OFF in code, serve/library kv default bf16); every
-non-faithful kernel is opt-in via `--l2`/`--l3`/per-fork flags, and the
+non-faithful kernel is opt-in via `--l2`/per-fork flags, and the
 L1 baseline is the base future optimizations must beat (paired A/B) to
 earn a default. Prior perf work is untrusted until re-proven against it.
 Docs updated same session: server-config.md, cli.md, features-matrix.md,
@@ -34,6 +35,21 @@ sections now render into the unified report, python-baseline prefill
 warmup (the "816 vs 397" cpm5 prefill was compile-inclusion asymmetry),
 KL verdict 24→96 steps, preflight high-CPU foreign-process check
 (knowledgeconstructiond at 87% CPU was the likely slow-window culprit).
+
+**Phase 1 deletion pass EXECUTED 2026-07-05** (unified-engine-frontier-plan
+§6, all committed same day): deleted fused-decode, fused-gelu, fused-swiglu
+(+ fused-mlp/steel-linear satellites), the perf kernel + frozen-oracle
+scaffolding (tests, freeze script, tracked goldens), FaithfulMiniCPM5 +
+MLX_BUN_CPM5_FAITHFUL, and `--l3` as a product mode (now a hard error
+pointing at the plan; the Lab replaces it). Training needs NO flag
+sanitization anymore. Surviving surface: `--kv-quant` (the one performance
+trade-off) + `--l1`/`--l2` + bit-exact kill switches. Phase 0 measured the
+batch-lane B=1 gap (cpm5 0.46×, e4b 0.72×, 12B 0.86× of serial — constant
+~4–6 ms/step host tax; prime suspect: per-layer per-step mask rebuild) —
+the Phase 2 closure worklist. The composition North Star (Josh): server →
+optimized model → + mixed-precision KV → + LoRA → + spec decode → +
+structured output → × sampling — all STACKABLE on one engine, no lane
+routing.
 
 ## Where we were (2026-07-02)
 
@@ -53,8 +69,9 @@ via `MLX_BUN_COMPILED_GEGLU`, default on); the custom non-bit-exact fused-gelu
 Metal kernel is now opt-in. `--l1` is a pure, hand-reproducible alias (added
 `--compiled-activations` + `--fused-gelu` forks, wired into the tier presets).
 `MLX_BUN_FAITHFUL` and the four unwired `Faithful*` subclasses were DELETED
-(`src/faithful.ts`→`src/flags.ts`); `FaithfulMiniCPM5` kept as the one A/B
-reference. Factory no longer detours gemma through the monolith. Bit-exact vs
+(`src/faithful.ts`→`src/flags.ts`); `FaithfulMiniCPM5` was kept as the A/B
+reference then retired 2026-07-05 (Phase 1). Factory no longer detours gemma
+through the monolith. Bit-exact vs
 mlx-lm re-verified (universal/generated/gemma/cpm5 parity, tsc 0). Plan +
 decision table: [docs/design/faithful-l1-consolidation.md](docs/design/faithful-l1-consolidation.md).
 Open: live qwen3-dense parity (needs a box with Qwen3-Embedding) + clean-machine
@@ -222,9 +239,10 @@ or shelved with numbers — ledger:
 4. **Menu bar app** (SwiftUI + signed binary as sidecar) — adoption map #2,
    Josh wants it; /Applications/oMLX.app is the structural reference.
 5. **Batching remainder not in the integration plan** — P1 quantized KV at
-   B>1 + P2 perf kernel at B>1 (sized by the Phase E matrix first), P3
+   B>1 (P2 perf-kernel-at-B>1 is OBSOLETE — kernel deleted 2026-07-05), P3
    prompt-cache/adapters/default-review tail, P4 device-side step chaining
-   (the cpm5 single-stream −20% counter).
+   (the cpm5 single-stream −20% counter). Superseded by the unified-engine
+   plan's Phase 2/3 (docs/design/unified-engine-frontier-plan.md).
    [docs/design/batching-perf-path.md](docs/design/batching-perf-path.md);
    older queue: batching-v2-plan steps 4–10.
 6. **SSD tier P4 hardening** — kill-mid-write e2e, adapter-ns isolation e2e,

@@ -18,7 +18,6 @@ import { EvalDB } from "./evaldb";
 import pkg from "../package.json" with { type: "json" };
 import { renderHelp } from "./tui";
 import { isSupportedModelRecord } from "./model/support";
-import { perfKernelEnabled } from "./model/fused-decode-kernel";
 import type { JobEvent } from "./jobs/types";
 
 const argv = process.argv.slice(2);
@@ -151,32 +150,21 @@ Model & quality:
 Parity tier (an ALIAS for the per-fork flags below; each expands to the fastest
 set of forks that still holds the guarantee — a per-fork flag overrides one):
   --l1                      Bit-for-bit IDENTICAL to mlx-lm (bf16 KV, compiled
-                            activations — the faithful @mx.compile kernels)
+                            activations — the faithful @mx.compile kernels).
+                            No tier given = --l1 (decided 2026-07-05: the L1
+                            faithful kernels match mlx-lm 1.00x on every model;
+                            anything output-changing must beat that baseline in
+                            a paired A/B to earn a default).
   --l2                      Bit-for-bit IDENTICAL to mlx-optiq (quantized KV +
                             fused prefill SDPA, stock unfused decode — the
-                            optiq-golden composition; perf-kernel stays OFF)
-  --l3                      Best performance, no bit-exact oracle (KL + test
-                            gated; adds the envelope-gated perf kernel).
-                            No tier given = --l1 (decided 2026-07-05: the L1
-                            faithful kernels match mlx-lm 1.00x on every model
-                            and no output-changing lever has beaten that
-                            baseline in a paired A/B yet — each stays opt-in
-                            until it does).
+                            optiq-golden composition)
 
-Performance levers (A/B levers; the naked default is the L1 set):
+Kill switches (bit-exact A/B levers — each selects a slower same-parity path):
   --compiled-decode on|off  Compiled decode graphs  [default: on]
   --compiled-activations on|off
                             Compiled geglu/swiglu (mlx-lm's @mx.compile kernel —
                             bit-exact AND fewer dispatches). off = the uncompiled
                             composition (same parity, slower)  [default: on]
-  --perf-kernel on|off      Fused quantized-KV decode-SDPA Metal kernel —
-                            NOT bit-exact, envelope-gated (an L3 lever; the
-                            perf side of the compat A/B)  [default: off —
-                            regressed e4b 0.62-0.93x in the 2026-07-05 pass]
-  --fused-gelu on|off       Custom fused-geglu Metal kernel (one pass) — NOT
-                            bit-exact vs mlx-lm (pow/tanh math-lib residual), an
-                            L3 lever  [default: off]
-  --fused-decode on|off     Fused-decode experiment lever  [default: off]
   --fused-sdpa on|off       Fused SDPA path (quantized KV only)  [default:
                             follows --kv-quant — on for config (the optiq
                             composition), off for uniform 4/8 (the mlx-lm
@@ -338,8 +326,8 @@ Options:
   --kv-quant <mode>    config | off | 4 | 8  [default: off, the
                        historical baseline]
 
-Performance levers (--compiled-decode, --perf-kernel, --fused-decode,
---fused-sdpa) apply to the run — A/B by running twice.`,
+Kill switches (--compiled-decode, --compiled-activations, --fused-sdpa)
+apply to the run — A/B by running twice.`,
 
   embed: `mlx-bun embed — text embeddings from a local embedding model
 
@@ -388,9 +376,9 @@ Options:
   --top-k <n>          Top-k sampling
   --seed <n>           Sampler seed (reproducible runs)
 
-Decode-path levers mirror serve: --l1/--l2/--l3 and the per-fork flags
-(--perf-kernel/--fused-sdpa/--compiled-decode/--fused-decode/--kv-quant).
-The tier's KV scheme applies here too (--l2/--l3 = the model's kv_config,
+Decode-path levers mirror serve: --l1/--l2 and the per-fork flags
+(--fused-sdpa/--compiled-decode/--compiled-activations/--kv-quant).
+The tier's KV scheme applies here too (--l2 = the model's kv_config,
 same tokens as serve); with no tier/--kv-quant the KV cache stays bf16
 (the bit-exact mlx-lm greedy path). mlx-lm compat = --l1.
 
@@ -750,23 +738,20 @@ function openChatUi(url: string, hostPort: string): void {
 /** Server/runtime flags shared by every mode that loads a model
  *  (serve, pi). Env levers are set here so they're in place before the
  *  generate/compiled-decode modules read them. */
-/** Resolve the decode ROUTE: a tier alias (--l1/--l2/--l3) sets the whole route,
- *  and an explicit per-fork flag (--perf-kernel/--kv-quant/…) overrides the alias.
- *  The tier IS the intent; the forks are the escape hatch. Sets the decode env
- *  levers and returns the kv-quant mode. See docs/design/parity-tier-dag.md.
+/** Resolve the decode ROUTE: a tier alias (--l1/--l2) sets the whole route,
+ *  and an explicit per-fork flag (--kv-quant/--fused-sdpa/…) overrides the
+ *  alias. Sets the decode env levers and returns the kv-quant mode. See
+ *  docs/design/parity-tier-dag.md + unified-engine-frontier-plan.md.
  *  Each tier is a GUARANTEE about which reference you reproduce bit-for-bit:
  *    --l1  bit-for-bit IDENTICAL to mlx-lm    — drop-in replacement for mlx-lm
- *    --l2  bit-for-bit IDENTICAL to mlx-optiq — drop-in replacement for mlx-optiq.
- *          The optiq-golden decode composition (scripts/regen-kvq-goldens.ts) is
- *          fused N-tiled SDPA for L>1 + STOCK unfused L=1 decode, so L2 = fused-sdpa
- *          ON, perf-kernel OFF. The perf kernel is an mlx-bun ORIGINAL Metal kernel,
- *          envelope-gated (≥56/64 teacher-forced argmax vs OUR OWN frozen compat
- *          trajectory, tests/perf-kernel-oracle.test.ts) — an L3 node, never the
- *          bare-L2 default. (Commit f1bf5cc put it in L2 claiming the goldens track
- *          it; they don't — reverted 2026-07-01 with the evidence above.)
- *    --l3  best performance, NO bit-exact guarantee — correct, but gated by KL +
- *          tests, because mlx-optiq has no analogy for what L3 does.
- *  L2 ⊂ L3 (L3 = L2 + perf kernel). L1 is a separate target (bf16, unfused). */
+ *          (bf16 KV; THE naked default since 2026-07-05)
+ *    --l2  bit-for-bit IDENTICAL to mlx-optiq — drop-in replacement for
+ *          mlx-optiq: quantized KV per kv_config.json + fused N-tiled SDPA for
+ *          L>1 + STOCK unfused L=1 decode (the optiq-golden composition,
+ *          scripts/regen-kvq-goldens.ts + regen-mixed-kv-goldens.ts).
+ *  There is no --l3: output-changing experiments live in the Lab (env flags
+ *  with a bench + expiry) until one beats the L1 baseline in a paired A/B —
+ *  docs/design/unified-engine-frontier-plan.md §6-7. */
 function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
   const onOff = (name: string): boolean | null => {
     const v = opt(name); if (v == null) return null;
@@ -774,7 +759,15 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
     if (v === "off" || v === "0" || v === "false") return false;
     console.error(`--${name} expects on|off (got "${v}")`); process.exit(1);
   };
-  type Preset = { kv: "off" | "config"; perf: boolean; fusedSdpa: boolean; compiled: boolean; fusedDecode: boolean; compiledAct: boolean; fusedGelu: boolean };
+  if (flag("l3")) {
+    console.error(
+      "--l3 was removed 2026-07-05: no output-changing kernel beat the L1 baseline " +
+      "in a paired A/B, so the tier had no content. Use --l2 for the optiq route, " +
+      "or the Lab (docs/design/unified-engine-frontier-plan.md) for experiments.",
+    );
+    process.exit(1);
+  }
+  type Preset = { kv: "off" | "config"; fusedSdpa: boolean; compiled: boolean; compiledAct: boolean };
   const TIERS: Record<string, Preset> = {
     // A tier is the GUARANTEE; within it we default to the FAST kernel that still
     // holds it, and expose the slow one as an opt-in. compiled-decode is BIT-EXACT
@@ -784,25 +777,18 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
     // → same kernel, bit-exact AND faster → ON in every tier (--compiled-activations
     // off is the slower same-parity opt-in). fused-sdpa matches OPTIQ bit-for-bit
     // (tier-a goldens, fused-sdpa.test) and is quantized-KV only → it's the L2 bridge,
-    // a no-op on L1's bf16. perf-kernel and the custom fused-gelu Metal kernel are NOT
-    // bit-exact (perf-kernel = original flash-decode online softmax; fused-gelu =
-    // pow/tanh math-lib residual vs mlx-lm) → OFF in L1/L2, L3/explicit-only opt-ins
-    // (--perf-kernel on / --fused-gelu on opt a tier into them by choice). L3 also owns
-    // the no-oracle FEATURES (HLG sampler, expert offload, batched mixed-precision).
-    l1: { kv: "off",    perf: false, fusedSdpa: false, compiled: true, fusedDecode: false, compiledAct: true, fusedGelu: false }, // = mlx-lm bit-for-bit (bf16)
-    l2: { kv: "config", perf: false, fusedSdpa: true,  compiled: true, fusedDecode: false, compiledAct: true, fusedGelu: false }, // = mlx-optiq bit-for-bit
-    l3: { kv: "config", perf: true,  fusedSdpa: true,  compiled: true, fusedDecode: false, compiledAct: true, fusedGelu: false }, // best perf (envelope-gated decode)
+    // a no-op on L1's bf16.
+    l1: { kv: "off",    fusedSdpa: false, compiled: true, compiledAct: true }, // = mlx-lm bit-for-bit (bf16)
+    l2: { kv: "config", fusedSdpa: true,  compiled: true, compiledAct: true }, // = mlx-optiq bit-for-bit
   };
   // NAKED DEFAULT = L1 (decided 2026-07-05): with no tier flag you get the
   // mlx-lm bit-for-bit route. The 2026-07-05 benchmark pass showed the L1
-  // faithful kernel set matches mlx-lm 1.00× on every model while the
-  // output-changing levers earn nothing (fused-decode 1.00×, fused-gelu
-  // +0-1%) or actively regress (perf arm 0.62–0.93× on e4b; quantized KV
-  // costs 5–20% decode at ≤16k on BOTH stacks and pays only in memory).
-  // Until a lever beats this baseline in a paired A/B it stays opt-in:
-  // --l2/--l3 or the per-fork flags are the escape hatches, and the L1
-  // baseline is the base all future optimization is measured against.
-  const tier = flag("l1") ? "l1" : flag("l2") ? "l2" : flag("l3") ? "l3" : "l1";
+  // faithful kernel set matches mlx-lm 1.00× on every model while every
+  // output-changing lever failed to beat it in a paired A/B (the losers were
+  // deleted the same day — Phase 1 of unified-engine-frontier-plan.md).
+  // Quantized KV costs 5–20% decode at ≤16k on BOTH stacks and pays only in
+  // memory/context headroom → explicit opt-in (--kv-quant / --l2).
+  const tier = flag("l2") ? "l2" : "l1";
   const p = TIERS[tier]!;
   const kv = opt("kv-quant"); // explicit --kv-quant overrides the tier
   const pick = (name: string, base: boolean | undefined): boolean | null => {
@@ -817,15 +803,12 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
   // — the bit-exact L1-eligible scheme). --fused-sdpa still overrides either.
   const fusedSdpaBase = kv === "config" ? true : kv != null ? false : p.fusedSdpa;
   set("MLX_BUN_COMPILED_DECODE", pick("compiled-decode", p.compiled));
-  set("MLX_BUN_PERF_KERNEL", pick("perf-kernel", p.perf));
-  set("MLX_BUN_FUSED_DECODE", pick("fused-decode", p.fusedDecode));
   set("MLX_BUN_NO_FUSED_SDPA", pick("fused-sdpa", fusedSdpaBase), true); // inverted env
   // Compiled activations (the faithful geglu/swiglu — mlx-lm's @mx.compile kernel).
   // One fork drives both env vars; qwen3/qwen3.5/universal compile unconditionally,
   // so this toggles gemma geglu + minicpm5 swiglu (the only unfused-capable sites).
   set("MLX_BUN_COMPILED_GEGLU", pick("compiled-activations", p.compiledAct));
   set("MLX_BUN_COMPILED_SWIGLU", pick("compiled-activations", p.compiledAct));
-  set("MLX_BUN_FUSED_GELU", pick("fused-gelu", p.fusedGelu)); // custom L3 metal geglu (not bit-exact)
   if (kv === "off") return { kvQuant: "off" };
   if (kv === "config") return { kvQuant: "config" };
   if (kv) {
@@ -845,7 +828,7 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
     console.error(`--${name} expects on|off (got "${v}")`);
     process.exit(1);
   };
-  const route = applyDecodeRoute(); // --l1/--l2/--l3 tier alias, with per-fork flags overriding
+  const route = applyDecodeRoute(); // --l1/--l2 tier alias, with per-fork flags overriding
   if (flag("force-wire")) process.env.MLX_BUN_FORCE_WIRE = "1";
 
   const serverOptions: import("./server").ServerOptions = {};
@@ -961,10 +944,7 @@ function runtimeSummary(o: import("./server").ServerOptions): string {
   const kv = o.kvQuant === "off" ? "off" : typeof o.kvQuant === "number" ? `kv${o.kvQuant}` : "config";
   const lever = (env: string, dflt: string) => process.env[env] ?? dflt;
   return `kv-quant ${kv} · compiled-decode ${lever("MLX_BUN_COMPILED_DECODE", "1") === "1" ? "on" : "off"}` +
-    ` · perf-kernel ${perfKernelEnabled() ? "on" : "off"}` +
     (lever("MLX_BUN_COMPILED_GEGLU", "1") === "0" ? " · compiled-activations off" : "") +
-    (lever("MLX_BUN_FUSED_GELU", "0") === "1" ? " · fused-gelu on" : "") +
-    (lever("MLX_BUN_FUSED_DECODE", "0") === "1" ? " · fused-decode on" : "") +
     (o.batch && o.batch > 1 ? ` · batch ${o.batch}` : "") +
     (o.defaultThinking !== undefined ? ` · thinking ${o.defaultThinking ? "on" : "off"}` : "") +
     (o.defaultTemperature !== undefined ? ` · temp ${o.defaultTemperature}` : "") +
@@ -1397,7 +1377,7 @@ switch (cmd) {
     // three entry points (raw / OpenAI API / chat UI) differ only in how params
     // are POPULATED; here every param is explicit. Decode-path levers mirror
     // serve so you can pin the route (mlx-lm compat = --l1).
-    // --l1/--l2/--l3 + per-fork overrides set the decode env levers; the
+    // --l1/--l2 + per-fork overrides set the decode env levers; the
     // returned KV scheme is applied below so `generate --l2` runs the same
     // quantized-KV route (and produces the same tokens) as `serve --l2`.
     const route = applyDecodeRoute();
@@ -1406,7 +1386,7 @@ switch (cmd) {
     if (!prompt) {
       console.error('usage: mlx-bun generate [query] --prompt "…" [--raw] [--max-tokens N]');
       console.error('       sampling:  --temperature N (alias --temp) --top-p N --top-k N --seed N');
-      console.error('       decode path: --l1 (= mlx-lm compat) / --l2 / --l3, or per-fork flags');
+      console.error('       decode path: --l1 (= mlx-lm compat, the default) / --l2, or per-fork flags');
       process.exit(1);
     }
     const { loadTaskModel, generateText } = await import("./eval/runner");
@@ -1503,7 +1483,7 @@ switch (cmd) {
   case "benchmark": {
     const { banner, step, box, style } = await import("./tui");
     banner(pkg.version);
-    serverRuntimeFlags(); // env levers (--compiled-decode, --perf-kernel, ...) apply to the run
+    serverRuntimeFlags(); // env levers (--compiled-decode, --fused-sdpa, ...) apply to the run
     const { m, picked } = await resolveModelAuto(opt("model") ?? positional(0) ?? opt("query"));
     const tokens = Number(opt("tokens", "256"));
     const runs = Number(opt("runs", "3"));
@@ -1696,7 +1676,7 @@ switch (cmd) {
       "--ssd-cache", "--ssd-cache-max", "--kv-quant",
       "--batch", "--decode-concurrency", "--adapter", "--adapter-path",
       "--draft-model", "--num-draft-tokens",
-      "--compiled-decode", "--perf-kernel", "--fused-decode", "--fused-sdpa", "--thinking",
+      "--compiled-decode", "--compiled-activations", "--fused-sdpa", "--thinking",
       "--temperature", "--temp", "--top-p", "--top-k", "--max-tokens",
       "--hlg-sampling", "--hlg-width", "--hlg-shoulder", "--hlg-toe", "--hlg-pivot-offset",
     ]);
@@ -1890,14 +1870,7 @@ switch (cmd) {
 
     const { m, picked } = await resolveModelAuto(query);
 
-    // Detect Gemma/e4b and set its required training env flags BEFORE the
-    // trainer is imported (perfKernelEnabled / fused-gelu read them lazily at
-    // forward time, so setting them here — like the launcher — takes effect).
     const isGemma = (await Bun.file(`${m.path}/config.json`).text()).toLowerCase().includes("gemma");
-    if (isGemma) {
-      process.env.MLX_BUN_PERF_KERNEL ??= "0";
-      process.env.MLX_BUN_FUSED_GELU ??= "0";
-    }
 
     const modelTag = isGemma ? "e4b" : "cpm5";
     const adapter = opt("adapter") ?? `${process.env.HOME}/.cache/mlx-bun/mlx-bun-finetunes/${method}-${modelTag}`;
@@ -2334,11 +2307,6 @@ switch (cmd) {
       const reg = new Registry();
       if (reg.list().length === 0) await reg.scan();
       modelDir = reg.resolve(modelArg).path;
-    }
-    // Gemma/e4b: same forward env flags the trainer sets (full-sequence pass).
-    if ((await Bun.file(`${modelDir}/config.json`).text()).toLowerCase().includes("gemma")) {
-      process.env.MLX_BUN_PERF_KERNEL ??= "0";
-      process.env.MLX_BUN_FUSED_GELU ??= "0";
     }
     const sLoad = step(`loading ${modelDir}`);
     const { Weights } = await import("./weights");

@@ -54,13 +54,11 @@ echo "### mode=$MODE  model=e4b  seq=$SEQ seg=$SEG iters=$ITERS rank=$RANK scale
 echo "### data=$DATA"
 echo "### adapter=$ADAPTER"
 
-# Required env: PERF_KERNEL/FUSED_GELU off (no vjp). Attention left at the default
+# Attention left at the default
 # ops.sdpa — mlx's FUSED flash-attention kernel (the right, working path). Do NOT
 # set MLX_BUN_TRAIN_ATTN=flash: that is the hand-rolled custom kernel, which
 # crashes on e4b at multi-K (see header note). sdpa is what the validated e4b run
 # used.
-MLX_BUN_PERF_KERNEL=0 \
-MLX_BUN_FUSED_GELU=0 \
 MODEL="$MODEL" \
 DATA="$DATA" \
 SEQ="$SEQ" \

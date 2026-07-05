@@ -197,17 +197,14 @@ are `DEFAULT_TRAIN_CONFIG` (trainer.ts:89).
 
 | Env var | Set for training | Default | Why |
 |---|---|---|---|
-| `MLX_BUN_FUSED_GELU` | **`0` (required for Gemma)** | on | The fused GeGLU is a **CustomKernel with no gradient (vjp)** ([`fused-geglu-kernel.ts`](../../src/model/fused-geglu-kernel.ts)); the Gemma forward uses it ([`gemma4.ts:277`](../../src/model/gemma4.ts)), so a Gemma (e4b/12B/26B) backward fails unless it's off. MiniCPM5 (Llama-arch SwiGLU) never hits it, so the `.ts` script's MiniCPM5 default doesn't need it. |
-| `MLX_BUN_PERF_KERNEL` | **`0` for training** | on | The fused quantized-decode kernel likewise has no vjp. It only fires at decode L=1 (rare in the L>1 training forward), but the e4b recipe sets `0` to be safe. |
 | `MLX_BUN_TRAIN_ATTN` | **leave unset** | unset → `ops.sdpa` | Default `ops.sdpa` **is** mlx's fused flash-attention kernel — the correct, working path. `flash` selects a *different* hand-rolled O(L)-memory kernel: its two port bugs (dK buffer-transpose, dQ divergent causal barrier) are fixed and FD-validated (`tests/flash-attention.test.ts`, T≤256), but it is ~30× slower and the historical e4b ≥2K crash has **not been re-validated at that scale** since the fix — leave unset unless memory-bound and re-verified. |
 | `MLX_BUN_MEM_LOG` | `1` to profile | off | Print per-step peak/active/cache memory |
 
-> Important: the trainer itself ([`trainer.ts`](../../src/train/trainer.ts))
-> only reads `MLX_BUN_TRAIN_ATTN` and `MLX_BUN_MEM_LOG` — but the **model
-> forward** it runs reads `MLX_BUN_FUSED_GELU` / `MLX_BUN_PERF_KERNEL`. The
-> trainer does **not** disable those itself, so **the caller must** export
-> them. The [e4b recipe](#what-we-actually-run-the-e4b-recipe) does this; if
-> you train a Gemma model by hand, set `MLX_BUN_FUSED_GELU=0` yourself.
+> Training needs **no flag sanitization**: the old requirement to export
+> `MLX_BUN_FUSED_GELU=0` / `MLX_BUN_PERF_KERNEL=0` (the no-vjp custom
+> kernels) is gone — those kernels and their env vars were deleted
+> 2026-07-05 ([unified-engine-frontier-plan.md](../design/unified-engine-frontier-plan.md)).
+> Exporting them in an old recipe is harmless but does nothing.
 
 ## What we actually run (the e4b recipe)
 
@@ -215,7 +212,7 @@ Everything above is the full surface (*what you can do*). In practice the
 fine-tune we run is [`scripts/ft-e4b-v2.sh`](../../scripts/ft-e4b-v2.sh):
 e4b (gemma-4-e4b-it-OptiQ-4bit, pinned snapshot) on the lucien `chunk-v2-500`
 curated set (450 train convs) through the segmented-backward trainer. It wraps
-`chunk-finetune.ts` with the e4b-required env and a two-step workflow:
+`chunk-finetune.ts` with a two-step workflow:
 
 ```bash
 scripts/ft-e4b-v2.sh probe   # 2-iter memory/stability check (~1 min) — RUN FIRST
@@ -233,12 +230,10 @@ What the recipe pins (and why it differs from the bare defaults):
 | `SEG` | `4` | **segmented backward**, 4 layers/segment — so 8K-ctx activations fit |
 | `RANK` / `SCALE` / `LR` | `16` / `20` / `1e-5` | task-tuned |
 | `ITERS` | `2` (probe) / `900` (train) | ~2 epochs over 450 examples |
-| `MLX_BUN_PERF_KERNEL` / `MLX_BUN_FUSED_GELU` | `0` / `0` | **required** — the fused kernels have no vjp (see env table) |
 | attention | default `ops.sdpa` | mlx's fused flash kernel; **not** `MLX_BUN_TRAIN_ATTN=flash` (~30× slower; e4b ≥2K unvalidated since the kernel fix) |
 
-The two non-negotiables for e4b: **segmented backward** (`SEG>0`, so the
-long-context activations fit) and the **fused kernels off** (so the backward
-has gradients). Always run `probe` before `train`.
+The non-negotiable for e4b: **segmented backward** (`SEG>0`, so the
+long-context activations fit). Always run `probe` before `train`.
 
 ## Methodology
 

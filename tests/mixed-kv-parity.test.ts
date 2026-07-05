@@ -20,13 +20,6 @@ const haveWeights = await snapshotAvailable();
 const goldenFile = goldenAt("mixed-kv.json");
 const haveGoldens = await goldenFile.exists();
 
-// Pin the parity composition regardless of ambient env: the golden decodes
-// through the STOCK unfused quantized SDPA; the perf kernel (envelope-gated,
-// not bit-exact — default off since 2026-07-05) and the tiled-decode
-// experiment both dispatch exactly at L=1 quantized decode and would break
-// the bit-exact bar if leaked in via env.
-process.env.MLX_BUN_PERF_KERNEL = "0";
-process.env.MLX_BUN_FUSED_DECODE = "0";
 
 describe.skipIf(!haveWeights || !haveGoldens)("mixed-KV (kv_config) parity vs optiq golden", async () => {
   if (!haveWeights || !haveGoldens) return;

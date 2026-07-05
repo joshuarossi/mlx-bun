@@ -1,7 +1,7 @@
 // L1 bit-exact check (mlx-bun side): step-0 masked-CE loss on a fixed batch.
 // B=0 / no adapter → loss is the base model's masked CE, init-independent.
 // Run with kernels OFF for the L1 (mlx-lm-compat) forward:
-//   MLX_BUN_PERF_KERNEL=0 MLX_BUN_FUSED_GELU=0 bun scripts/verify-loss-parity.ts
+//   bun scripts/verify-loss-parity.ts
 // then: .venv/bin/python scripts/verify-loss-parity.py  (reads the same ids)
 
 import { writeFileSync } from "node:fs";

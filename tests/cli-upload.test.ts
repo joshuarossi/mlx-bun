@@ -213,7 +213,8 @@ describe("cli-audit help routing", () => {
 
   test("serve help documents the parity tiers", async () => {
     const { out } = await runCli(["help", "serve"]);
-    for (const t of ["--l1", "--l2", "--l3"]) expect(out).toContain(t);
+    for (const t of ["--l1", "--l2"]) expect(out).toContain(t);
+    expect(out).not.toContain("--l3"); // removed 2026-07-05 (the Lab replaces it)
   });
 });
 

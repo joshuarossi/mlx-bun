@@ -67,7 +67,7 @@ grammar composition, and `usage.speculation` telemetry ALL landed
   (thousands of on-distribution generations vs 160), draft-loop
   tightening. At τ≈3 on the 27B agent workload: **~15 → ~35–45 tok/s**
   (docs/investigations/dspark-handoff.md). Slots in as `DflashSource`,
-  L3/KL-gated.
+  no-oracle/KL-gated (a Lab item).
 
 ### 2. mlx bump — narrow 26B / spec-decode wins, NOT a general decode lever  [main-only, from-source]
 
@@ -123,28 +123,30 @@ bpw at equal KL ≈ +10–15% decode with zero kernel work. Gate: perplexity
   per-token kernel SET byte-identical to mlx-lm's (24==24, verified via parseable
   **xctrace shader-list diff**); the M=1 gate leaves prefill unfused (extra
   `vn_Sigmoid`+`vvn_Multiply`, ~0.7% there). Whether to widen production's gate
-  is an optimization for AFTER the FaithfulMiniCPM5 A/B lands a verdict. The same
+  was deferred until the FaithfulMiniCPM5 A/B landed a verdict (it did — see the
+  retired note below). The same
   standalone `sigmoid/silu + mul` pattern likely costs ~5% on other models' MLPs
   (gemma/qwen) — audit and give each an `mx.compile` helper.
 - **e4b ~5% per-step host overhead** (Phase 7 residual; dispatch count) —
   now a prime suspect for the SAME unfused-elementwise cause; try the
   compiledSwiglu treatment on its MLP.
-- **FaithfulMiniCPM5 exact-copy backend — BUILT (2026-07-04).**
-  `src/model/minicpm5-faithful.ts`, `MLX_BUN_CPM5_FAITHFUL=1` in `createModel`:
-  an op-for-op copy of mlx-lm's llama.py + activations.py, swappable against our
-  optimized `MiniCPM5Model` through the same generate()/eval path. Bit-exact to
-  the golden (tests/minicpm5-faithful-parity), dispatched-kernel set verified
-  identical to mlx-lm's. The A/B reference — prove identical, THEN compare
-  performance, THEN optimize. Debranching alone buys ~0% (host JS conditionals
-  hidden by the GPU-bound pipeline); its analysis produced the matmul-fusion
-  non-lever below.
+- **FaithfulMiniCPM5 exact-copy backend — BUILT (2026-07-04; retired
+  2026-07-05 — the default IS the faithful path; file deleted along with
+  `MLX_BUN_CPM5_FAITHFUL`, unified-engine-frontier-plan.md §6).** Was
+  `src/model/minicpm5-faithful.ts`: an op-for-op copy of mlx-lm's llama.py +
+  activations.py, swappable against our optimized `MiniCPM5Model` through the
+  same generate()/eval path. Bit-exact to the golden, dispatched-kernel set
+  verified identical to mlx-lm's. The A/B reference — prove identical, THEN
+  compare performance, THEN optimize. Debranching alone buys ~0% (host JS
+  conditionals hidden by the GPU-bound pipeline); its analysis produced the
+  matmul-fusion non-lever below.
 - **P4 device-side step chaining** — depth-k chained step graphs, one
   host sync per k tokens (batching-perf-path P4; the oMLX burst-decode
   REFUTATION does not apply — this attacks OUR FFI/readback cost, a
   different mechanism).
-- **Perf-kernel default flip** — still gated on a clean-machine
-  benchmark run (the mode matrix shows it ~neutral on e4b short; judge on
-  12B long + clean box before flipping anything).
+- ~~**Perf-kernel default flip**~~ — OBSOLETE: the perf kernel was DELETED
+  2026-07-05 (regressed e4b 0.62–0.93× in the paired A/B; only win 12B@16k
+  +6% with a KL WARN — unified-engine-frontier-plan.md §6).
 
 ### Non-levers (measured, don't re-litigate without new evidence)
 

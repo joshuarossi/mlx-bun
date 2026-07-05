@@ -33,7 +33,6 @@
 import { MlxArray } from "../mlx/array";
 import { CompiledFunction } from "../mlx/compile";
 import * as ops from "../mlx/ops";
-import { perfKernelEnabled } from "./fused-decode-kernel";
 import {
   Gemma4Model,
   KVCache,
@@ -208,10 +207,7 @@ function slotDesc(c: AnyCache, plan: DecodeStepPlan): SlotDesc {
  *  inside quantizedSdpa's dispatch). Offsets/capacities don't — they're
  *  array values or shapeless dims. */
 function closureKey(descs: SlotDesc[]): string {
-  const flags =
-    `fd=${process.env.MLX_BUN_FUSED_DECODE === "1" ? 1 : 0}` +
-    `,nf=${process.env.MLX_BUN_NO_FUSED_SDPA === "1" ? 1 : 0}` +
-    `,pk=${perfKernelEnabled() ? 1 : 0}`;
+  const flags = `nf=${process.env.MLX_BUN_NO_FUSED_SDPA === "1" ? 1 : 0}`;
   return descs.map((d) => `${d.kind}:${d.groupSize}:${d.bits}`).join(",") + "|" + flags;
 }
 
@@ -272,12 +268,8 @@ function makeTraceFn(model: Gemma4Model, descs: SlotDesc[]) {
 /** Non-mutating phase check (segmented mode decides layer placement
  *  BEFORE any cache bookkeeping runs). Mirrors prepareDecodeStep's
  *  outcome: rotating caches go ring once the next write lands at or past
- *  the window; everything else grows. Under the perf kernel, quantized
- *  layers run as JS layers regardless — the CustomKernel primitive has
- *  no output_shapes and cannot live inside a compiled closure. */
+ *  the window; everything else grows. */
 function decodePhase(c: AnyCache): "concat" | "ring" {
-  if (perfKernelEnabled() && (c instanceof QuantizedKVCache || c instanceof RotatingQuantizedKVCache))
-    return "concat";
   if (c instanceof RotatingKVCache || c instanceof RotatingQuantizedKVCache)
     return c.offset + 1 < c.maxSize ? "concat" : "ring";
   return "concat";
@@ -563,9 +555,7 @@ export class CompiledDecode {
       anyCaches
         .map((c, i) => (phases[i] === "ring" ? `${slotDesc(c, plans[i]!).kind}:${slotDesc(c, plans[i]!).groupSize}:${slotDesc(c, plans[i]!).bits}` : "js"))
         .join(",") +
-      `|fd=${process.env.MLX_BUN_FUSED_DECODE === "1" ? 1 : 0}` +
-      `,nf=${process.env.MLX_BUN_NO_FUSED_SDPA === "1" ? 1 : 0}` +
-      `,pk=${perfKernelEnabled() ? 1 : 0}`;
+      `|nf=${process.env.MLX_BUN_NO_FUSED_SDPA === "1" ? 1 : 0}`;
     if (this.#broken.has(key)) throw new Error(`compiled decode: known-broken closure ${key}`);
 
     let closures = this.#segClosures.get(key);
@@ -608,8 +598,7 @@ export class CompiledDecode {
     //    reverting offset (and ring index) — trim(1) semantics. The written
     //    KV row beyond the reverted offset is dead data the re-forward
     //    overwrites at the same position (updateAndFetch writes at offset/
-    //    ringIdx), so post-recovery state equals a single clean write. This
-    //    holds for the post-wrap quantized-under-perf-kernel case too: the
+    //    ringIdx), so post-recovery state equals a single clean write; the
     //    in-place S=1 write slot is re-derived from the reverted ringIdx.
     const stagedAdopts: { c: AnyCache; bufs: MlxArray[] }[] = [];
     const committedJs: { c: AnyCache; offsetBefore: number }[] = [];

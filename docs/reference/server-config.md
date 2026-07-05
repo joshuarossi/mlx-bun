@@ -27,7 +27,7 @@ the design rationale is in
 | `--ssd-cache-max` | GB | `32` | SSD tier byte cap (binary GiB); oldest-mtime entries evicted at the cap. |
 | `--ssd-cache-verify` | (bool) | off | Verify every tensor hash on restore. Reads all bytes eagerly (defeats lazy page fault-in) — integrity paranoia only; the header hash is always verified. |
 | `--batch` | n | `1` (serial) | Max concurrent requests batched through the mlx-lm-parity engine. `>1` switches the **whole server** into bf16 continuous batching — a *mode*, not a load fallback. See [Execution modes](#execution-modes-serial-vs---batch-n). `--decode-concurrency` is accepted for drop-in compatibility, but the semantics differ: in mlx_lm.server it caps per-BatchGenerator decode parallelism (default 32); in mlx-bun it enables continuous batching with this cap (mlx-bun's default is the optimized serial path). |
-| `--kv-quant` | `config`\|`off`\|`4`\|`8` | `off` (bf16) | KV-cache quantization. **Default flipped to bf16 2026-07-05** (naked = L1): quantized KV measured 5–20% slower decode than bf16 at ≤16k on every model — on mlx-lm too — so it pays only in **memory headroom** (e.g. ~1.3 GB on the 12B @16k) and is an explicit opt-in (`--kv-quant …` or `--l2`/`--l3`, whose presets pass `config`). `off` = bf16 (L1). `4`/`8` = **uniform** bits (group 64, start 0) — the scheme mlx-lm exposes as `--kv-bits`/`--kv-group-size`/`--quantized-kv-start`. In the L1 kernel set (`--l1 --kv-quant 8` = fused-sdpa off) our unfused quantized SDPA is **op-for-op identical** to mlx-lm's `quantized_scaled_dot_product_attention`, so uniform-quant is **bit-exact L1** (the fused-sdpa-ON path is optiq-aligned). `config` = **per-layer mixed-precision** from `kv_config.json` — optiq-only, no mlx-lm analog → **L2**. Under `--batch N`, an explicit value routes those requests to the **serial** lane (batched is bf16-only). |
+| `--kv-quant` | `config`\|`off`\|`4`\|`8` | `off` (bf16) | KV-cache quantization. **Default flipped to bf16 2026-07-05** (naked = L1): quantized KV measured 5–20% slower decode than bf16 at ≤16k on every model — on mlx-lm too — so it pays only in **memory headroom** (e.g. ~1.3 GB on the 12B @16k) and is an explicit opt-in (`--kv-quant …` or `--l2`, whose preset passes `config`). `off` = bf16 (L1). `4`/`8` = **uniform** bits (group 64, start 0) — the scheme mlx-lm exposes as `--kv-bits`/`--kv-group-size`/`--quantized-kv-start`. In the L1 kernel set (`--l1 --kv-quant 8` = fused-sdpa off) our unfused quantized SDPA is **op-for-op identical** to mlx-lm's `quantized_scaled_dot_product_attention`, so uniform-quant is **bit-exact L1** (the fused-sdpa-ON path is optiq-aligned). `config` = **per-layer mixed-precision** from `kv_config.json` — optiq-only, no mlx-lm analog → **L2**. Under `--batch N`, an explicit value routes those requests to the **serial** lane (batched is bf16-only). |
 | `--adapter` | dir | none | Mount a LoRA adapter at startup (same machinery as `POST /v1/adapters`; the adapter id is the directory's basename) and make it the **default** for requests that send no `adapter` field. A request's explicit `adapter` — including `"none"` — always wins, and hot-swap via `/v1/adapters` is unchanged. `--adapter-path` is accepted as the mlx_lm.server-named alias. A bad adapter fails startup loudly rather than silently serving the base model. This is the flag `mlx-bun train`'s completion message points at. |
 | `--draft-model` | path/query | none | **Speculative decoding** (mlx_lm.server parity): a smaller same-tokenizer model drafts tokens the main model verifies in one forward — exact results (L1: token-for-token vs mlx-lm's speculative path), faster decode when drafts land. Resolves like the main model. Tokenizer-family mismatch fails startup (upstream silently accepts ~0%). Mounting a draft routes **every** request to the serial lane (upstream `is_batchable = draft is None`). Pays on slow targets (12B+); fast small models lose to the draft overhead. Composes with structured output (the constrained verify walk). Prompt-cache reuse is bypassed on the spec path (v1). Telemetry: `usage.speculation` (`drafted`/`accepted`/`targetCalls`). |
 | `--num-draft-tokens` | n | `3` | Drafts per verify round (mlx_lm.server's default; `mlx_lm.generate`'s is 2). |
@@ -43,28 +43,29 @@ the design rationale is in
 | `--hlg-toe` | nats | `6` | HLG shadow rolloff scale (nats). Only meaningful with `--hlg-sampling on`. |
 | `--hlg-pivot-offset` | nats | `6` | HLG pivot point: nats below the top token. Only meaningful with `--hlg-sampling on`. |
 | `--expert-offload` | (bool) | off | **MoE models only.** Serve experts from a page-aligned file mmap (built on first use). Keeps the model out of memory pressure — physical footprint ≈ active params. Ignored with a warning on dense models. Bit-exact with the resident path. |
-| `--l1` | (bool) | — | **Parity tier ALIAS:** bit-for-bit IDENTICAL to mlx-lm (bf16 KV, compiled activations — the faithful `@mx.compile` geglu/swiglu — no perf kernel, no custom fused-gelu). Expands to the fastest set of per-fork flags that still holds the guarantee; any explicit per-fork flag (`--kv-quant`/`--perf-kernel`/`--compiled-activations`/…) overrides one. See [docs/design/faithful-l1-consolidation.md](../design/faithful-l1-consolidation.md) and [parity-tier-dag.md](../design/parity-tier-dag.md). |
-| `--l2` | (bool) | — | **Parity tier preset:** bit-for-bit IDENTICAL to mlx-optiq (quantized KV per `kv_config.json` + fused N-tiled prefill SDPA + **stock unfused decode** — the composition the optiq goldens track, `scripts/regen-kvq-goldens.ts`). The perf kernel stays **off**: it is envelope-gated, not bit-exact (see `--l3`), and opting into it (`--l2 --perf-kernel on`) is an explicit choice that leaves the bare-tier guarantee. |
-| `--l3` | (bool) | — | **Parity tier preset:** best performance, no bit-exact oracle (KL + test gated). On the decode path L3 = L2 + the envelope-gated perf kernel; L3 also owns the no-oracle features (HLG sampler, expert offload). **No tier given ⇒ `--l1`** (decided 2026-07-05: the L1 faithful kernel set matches mlx-lm 1.00× on every model and no output-changing lever has beaten that baseline in a paired A/B — each is opt-in until it does). |
+| `--l1` | (bool) | — | **Parity tier ALIAS:** bit-for-bit IDENTICAL to mlx-lm (bf16 KV, compiled decode + compiled activations — the faithful `@mx.compile` geglu/swiglu). **No tier given ⇒ `--l1`** (decided 2026-07-05: the L1 faithful kernel set matches mlx-lm 1.00× on every model and no output-changing lever has beaten that baseline in a paired A/B — each is opt-in until it does). Expands to the fastest set of per-fork flags that still holds the guarantee; any explicit per-fork flag (`--kv-quant`/`--fused-sdpa`/`--compiled-decode`/`--compiled-activations`) overrides one. See [docs/design/faithful-l1-consolidation.md](../design/faithful-l1-consolidation.md) and [parity-tier-dag.md](../design/parity-tier-dag.md). |
+| `--l2` | (bool) | — | **Parity tier preset:** bit-for-bit IDENTICAL to mlx-optiq (quantized KV per `kv_config.json` + fused N-tiled prefill SDPA + **stock unfused decode** — the composition the optiq goldens track, `scripts/regen-kvq-goldens.ts`). |
 | `--compiled-decode` | on\|off | on | Replay the per-step decode graph in C++ (`MLX_BUN_COMPILED_DECODE`). Bit-exact A/B lever. **Serial lane only** (see note below). **Gemma4-dense only** — LoRA, MoE, and non-Gemma4 models (MiniCPM5 / Qwen3.5) run eager; an unsupported step falls back to eager for the rest of that generation. |
 | `--compiled-activations` | on\|off | on | Route the geglu/swiglu activation through mlx-lm's `@mx.compile` closure (`MLX_BUN_COMPILED_GEGLU` + `MLX_BUN_COMPILED_SWIGLU`) — the **faithful** kernel: same libmlx graph as mlx-lm → **bit-exact** AND one dispatch instead of ~9. `off` = the uncompiled composition (same L1 parity, slower). Toggles gemma geglu + MiniCPM5 swiglu; qwen3/qwen3.5/universal compile unconditionally. |
-| `--perf-kernel` | on\|off | **off** | Fused quantized-KV decode-SDPA Metal kernel (`MLX_BUN_PERF_KERNEL`), the perf side of the compat A/B. **Not bit-exact** — envelope-gated (≥56/64 teacher-forced argmax vs the frozen compat trajectory, `tests/perf-kernel-oracle.test.ts`), so it is an **L3 lever**: on in `--l3` only, **off by default and in bare `--l1`/`--l2`** (flipped 2026-07-05 — the perf arm measured 0.62–0.93× vs compat on e4b at every context; its one win, 12B @16k +6%, came with a KL WARN). Engages on quantized caches at decode. **Serial lane only.** |
-| `--fused-gelu` | on\|off | **off** | Custom single-pass fused-geglu Metal kernel (`MLX_BUN_FUSED_GELU`). Bit-exact with our uncompiled path but **NOT vs mlx-lm** (pow/tanh math-lib residual) → an **L3 lever**, off in `--l1`/`--l2`. The default gemma geglu is `--compiled-activations` (which IS bit-exact vs mlx-lm). Gemma only. |
-| `--fused-decode` | on\|off | off | Experimental: tile the quantized decode SDPA (`MLX_BUN_FUSED_DECODE`). **Serial lane only.** |
 | `--fused-sdpa` | on\|off | follows `--kv-quant` | Fused SDPA path for quantized prefill/continuation (inverted env `MLX_BUN_NO_FUSED_SDPA`). Defaults to the composition its oracle uses: **on** under `--kv-quant config` (the optiq-golden composition), **off** under uniform `4`/`8` (mlx-lm's `quantized_scaled_dot_product_attention`, the bit-exact L1-eligible scheme) and bf16 (no-op there). **Serial lane only.** |
 | `--force-wire` | (bool) | off | Wire weights into memory for the whole generation (`MLX_BUN_FORCE_WIRE`). Near-ceiling models (e.g. 26B) need it. **Serial lane only.** |
 
 The default host/port (`127.0.0.1:8080`) match `mlx_lm.server`, so running
 mlx-bun alongside the Python reference server needs an explicit `--port`.
 
-The performance levers are A/B knobs; **the naked default is the L1 set**
-(2026-07-05 decision: an output-changing lever earns a default only by
-beating the L1 faithful baseline in a paired A/B, and none has yet — the
-2026-07-05 pass measured fused-decode at 1.00×, fused-gelu at +0–1%, the
-perf arm at 0.62–0.93× on e4b, and quantized KV 5–20% *slower* decode
-than bf16 at ≤16k on both stacks). Flip them to compare. They are set as
-`MLX_BUN_*` env vars before the model loads, so they apply to
-`mlx-bun pi` too. They affect the **serial** decode path (`generate()`);
+The remaining levers are bit-exact A/B knobs; **the naked default is the
+L1 set** (2026-07-05 decision: an output-changing lever earns a default
+only by beating the L1 faithful baseline in a paired A/B, and none did —
+the 2026-07-05 pass measured the custom fused-decode at 1.00×, fused-gelu
+at +0–1%, the flash perf-kernel at 0.62–0.93× on e4b, and quantized KV
+5–20% *slower* decode than bf16 at ≤16k on both stacks; those losing
+kernels and their flags were **deleted** the same day — Phase 1 of
+[unified-engine-frontier-plan.md](../design/unified-engine-frontier-plan.md).
+New output-changing experiments live in the **Lab**: env-flagged, with a
+bench + expiry, until one beats the L1 baseline in a paired A/B). Flip
+the survivors to compare. They are set as `MLX_BUN_*` env vars before the
+model loads, so they apply to `mlx-bun pi` too. They affect the
+**serial** decode path (`generate()`);
 the batched scheduler calls `model.forwardHidden` directly and so is
 unaffected by all of them — see
 [Levers that don't reach the batched lane](#--batch-n-is-compat-mode--perf-flags-dont-apply-by-design).
@@ -90,25 +91,28 @@ These ride all three protocol surfaces (`/v1/chat/completions`,
 ## Environment levers
 
 The CLI flags above set these; you can also export them directly (e.g.
-for `bun scripts/serve.ts` or paired A/B harnesses). Three have no CLI flag.
+for `bun scripts/serve.ts` or paired A/B harnesses).
 
 | Env var | CLI flag | Default | Effect |
 | --- | --- | --- | --- |
 | `MLX_BUN_COMPILED_DECODE` | `--compiled-decode` | on (`!=="0"`) | Compiled decode graph replay. |
-| `MLX_BUN_PERF_KERNEL` | `--perf-kernel` | on (`!=="0"`) | Fused quantized-KV decode kernel (not bit-exact; perf A/B). |
-| `MLX_BUN_FUSED_DECODE` | `--fused-decode` | off (`==="1"`) | Tile quantized decode SDPA. |
-| `MLX_BUN_NO_FUSED_SDPA` | `--fused-sdpa` (inverted) | fused on | `=1` forces the stock unfused SDPA everywhere. |
+| `MLX_BUN_NO_FUSED_SDPA` | `--fused-sdpa` (inverted) | follows `--kv-quant` | `=1` forces the stock unfused SDPA everywhere. |
 | `MLX_BUN_COMPILED_GEGLU` | `--compiled-activations` | on (`!=="0"`) | Gemma geglu via mlx-lm's `@mx.compile` closure — the faithful default (bit-exact vs mlx-lm, one kernel). `=0` → uncompiled composition (same parity, slower). |
 | `MLX_BUN_COMPILED_SWIGLU` | `--compiled-activations` | on (`!=="0"`) | `mx.compile`'d SwiGLU (`silu(gate)·up` → one kernel) on MiniCPM5 decode (M=1), porting mlx-lm's `activations.py`. Bit-exact (passes the exact logit-parity gate), both lanes. +5.5% CPM5 decode. (qwen3/qwen3.5/universal compile swiglu unconditionally, independent of this flag.) |
-| `MLX_BUN_FUSED_GELU` | `--fused-gelu` | **off** (`==="1"`) | Custom single-pass fused-geglu Metal kernel. Bit-exact vs our uncompiled path but NOT vs mlx-lm (pow/tanh math-lib residual) → L3 opt-in. The bit-exact gemma default is `MLX_BUN_COMPILED_GEGLU`. |
-| `MLX_BUN_CPM5_FAITHFUL` | *(none)* | off (`==="1"`) | Swap the MiniCPM5 backend to `FaithfulMiniCPM5` — an exact op-for-op copy of mlx-lm's `llama.py` + `activations.py` (`src/model/minicpm5-faithful.ts`), selected in `createModel`. Bit-exact to the golden; an A/B reference for comparing our optimized `MiniCPM5Model` against a verbatim mlx-lm reproduction. Falls back to the monolith outside the plain-llama envelope. |
 | `MLX_BUN_FORCE_WIRE` | `--force-wire` | off (`==="1"`) | Wire weights for the generation. |
+
+(`MLX_BUN_PERF_KERNEL`, `MLX_BUN_FUSED_GELU`, `MLX_BUN_FUSED_DECODE`,
+`MLX_BUN_FUSED_SWIGLU*`, and `MLX_BUN_CPM5_FAITHFUL` were deleted
+2026-07-05 with their kernels — see
+[unified-engine-frontier-plan.md](../design/unified-engine-frontier-plan.md);
+exporting them now does nothing.)
 
 ## Execution modes: serial vs. `--batch N`
 
 `--batch 1` (default) is the serialized single-queue path: one GPU, one
-generation at a time, prompt-cache prefix reuse, mixed-precision KV by
-default. Untouched and unconditional.
+generation at a time, prompt-cache prefix reuse, bf16 KV by default
+(quantized KV is the `--kv-quant` / `--l2` opt-in). Untouched and
+unconditional.
 
 `--batch N` (N>1) opts the **whole server** into a continuous-batching
 engine that is **bit-parity with `mlx_lm.server` at `B=N`**. It is a
@@ -125,7 +129,7 @@ Because mlx-lm's batched path is bf16 (its quantized batching is NYI),
 bf16 continuous batching **is** the drop-in:
 
 - **KV quant unset ⇒ bf16** so the batch path engages out of the box
-  ("Option B"). The serial default stays mixed-precision (optiq parity).
+  ("Option B" — and since 2026-07-05 bf16 is the serial default too).
 - **Explicit `--kv-quant config|4|8` ⇒** those requests route to the
   serial lane (batched is bf16-only; a startup warning is printed). With
   an explicit `--kv-quant`, *every* request carries a quant scheme, so
@@ -188,7 +192,7 @@ inside it per the table above).
 | --- | --- | --- |
 | `--kv-quant config`/`4`/`8` | ✅ applied to all requests | ⚠️ applied, but forces **all** requests to the serial lane (no batching) |
 | `--kv-quant off` | ✅ bf16 | ✅ bf16 (same as the implicit batch default) |
-| *(kv-quant unset)* | mixed-precision `config` | **bf16** (Option B) — incl. serial-lane fallback requests |
+| *(kv-quant unset)* | bf16 (the L1 default) | **bf16** (Option B) — incl. serial-lane fallback requests |
 | `--memory-budget` | ✅ per-request admission | ✅ per-request admission — but **not aggregate** across rows (see limitations) |
 | `--prompt-cache` | ✅ prefix reuse | ⚠️ bypassed for batched requests (`cached_tokens=0`); serial-lane requests still reuse |
 | `--temperature`/`--top-p`/`--top-k` | ✅ | ✅ (per-row) |
@@ -201,7 +205,7 @@ inside it per the table above).
 | `tools` / `stop` | ✅ | ✅ (batches) |
 | structured output (`response_format`/`guided_*`) | ✅ (mask in the decode loop) | ✅ (batches; per-row matchers) |
 | `--draft-model` | ✅ spec decode (grammar composes) | ⚠️ mounts, but routes **every** request serial — spec and batching are different modes |
-| `--compiled-decode`/`--perf-kernel`/`--fused-*`/`--force-wire` | ✅ (serial perf tree) | **n/a — compat mode, no perf flags by design** |
+| `--compiled-decode`/`--fused-sdpa`/`--force-wire` | ✅ (serial decode route) | **n/a — compat mode, no perf flags by design** |
 
 ### `--batch N` is compat mode — perf flags don't apply by design
 
@@ -214,23 +218,23 @@ model through `forwardHidden`/`logitsFromHidden` directly (not
 optional, parity-breaking ones. Flagging the batched lane would defeat
 the guarantee, so it's intentionally not wired.
 
-- **`--perf-kernel` / `--fused-decode` / `--compiled-decode`** — never
-  engage in the batched lane. They diverge from the -O0 reference (or, for
-  the quantized-KV kernels, are moot since batched is bf16). They're the
-  L3 perf row, a separate KL-gated path — see the validation matrix in
-  [parallel-slots.md](../design/parallel-slots.md).
+- **`--compiled-decode` / `--fused-sdpa`** — never engage in the batched
+  lane. Compiled decode is a serial-lane `generate()` mechanism, and the
+  fused quantized-KV SDPA is moot since batched is bf16. See the
+  validation matrix in [parallel-slots.md](../design/parallel-slots.md).
 - **`--force-wire`** — doesn't wire (the scheduler bypasses `generate()`'s
   wired scope). A model that needs wiring for speed (e.g. 26B: 8.6 → 32.3
   tok/s wired) runs at mlx-lm-equivalent unwired speed under `--batch N`;
   in practice such a model has no headroom for B>1 KV anyway.
-- **Always-on bit-exact kernels still run.** Fused GeGLU is bit-exact with
-  the spelled-out MLP, so it stays on in both lanes without breaking
+- **Always-on bit-exact kernels still run.** The compiled activations
+  (mlx-lm's own `@mx.compile` geglu/swiglu) are bit-exact with the
+  spelled-out MLP, so they stay on in both lanes without breaking
   parity — "compat mode" means *no parity-breaking optionality*, not
   -O0.
 
-The serial lane is where the perf/optimization tree lives: `--perf-kernel`
-/ `--fused-*` / `--compiled-decode` engage there, and the
-mixed-precision-KV (optiq) default applies there.
+The serial lane is where the decode route lives: `--compiled-decode` /
+`--fused-sdpa` / `--kv-quant` (and the `--l2` optiq composition) engage
+there.
 
 ## Known limitations under `--batch N`
 
@@ -264,24 +268,30 @@ know them:
    (numerically equivalent, O(B·S)). Sliding-window layers still re-merge
    on join (rotating-extend is a follow-up).
 
-## Fidelity tiers and the decode route (`--l1` / `--l2` / `--l3`)
+## Fidelity tiers and the decode route (`--l1` / `--l2`)
 
 The tiers are **correctness contracts**, and each flag is an alias for a
 decode-route preset (`applyDecodeRoute()` in [src/cli.ts](../../src/cli.ts));
-any per-fork flag (`--kv-quant`, `--perf-kernel`, `--compiled-decode`,
-`--compiled-activations`, `--fused-gelu`, `--fused-sdpa`, `--fused-decode`)
+any per-fork flag (`--kv-quant`, `--compiled-decode`,
+`--compiled-activations`, `--fused-sdpa`)
 overrides its tier's preset.
 
 | Tier | Contract | KV | Kernels | Verified against |
 | --- | --- | --- | --- | --- |
 | `--l1` | mlx-lm **bit-for-bit** | bf16 | compiled-decode + compiled activations (faithful geglu/swiglu) | mlx-lm goldens (per machine) |
 | `--l2` | mlx-optiq **bit-for-bit** | mixed-precision (`kv_config.json`) | + fused-SDPA (matches optiq exactly) | optiq goldens |
-| `--l3` | fastest; envelope-gated | as L2 | + the flash perf-kernel | frozen-trajectory envelope + KL — **not** bit-exact |
-| *(none)* | **= the L2 composition** | `config` when the model ships one, else bf16 | compiled + fused-SDPA | — |
+| *(none)* | **= `--l1`** | bf16 | compiled-decode + compiled activations | mlx-lm goldens |
 
 Compiled-decode is on in **every** tier (proven bit-exact with uncompiled —
-free speed, not a fidelity trade). The only thing `--l3` adds today is the
-perf kernel.
+free speed, not a fidelity trade).
+
+**There is no `--l3` tier anymore** (removed 2026-07-05; passing `--l3`
+errors out with a pointer). The tier had no content: every kernel it
+gated lost its paired A/B against the L1 baseline and was deleted. Its
+role is replaced by the **Lab** — output-changing experiments run as env
+flags with a bench + expiry, and one graduates only by beating the L1
+baseline in a paired A/B. See
+[docs/design/unified-engine-frontier-plan.md](../design/unified-engine-frontier-plan.md).
 
 **KV precision is a separate axis from the tier's kernels.** Each tier row shows its
 *default* KV scheme, but KV is not what defines the tier. mlx-lm supports **uniform**
@@ -290,16 +300,17 @@ fused-sdpa off (the L1 default) our quantized decode runs `quantizedSdpaUnfused`
 which is op-for-op identical to mlx-lm's `quantized_scaled_dot_product_attention`
 (`mlx_lm/models/base.py`) — same `mx.quantized_matmul` ×2 + `mx.softmax(precise=True)`
 + `where(…, finfo.min)`. bf16 is just the simplest L1 default. The **fused / N-tiled**
-quantized path (fused-sdpa ON — naked default and `--l2`) is the **optiq**-aligned
-one. Only the **per-layer mixed-precision** `config` scheme is optiq-only (→ L2).
+quantized path (fused-sdpa ON — the `--kv-quant config` / `--l2` composition) is the
+**optiq**-aligned one. Only the **per-layer mixed-precision** `config` scheme is
+optiq-only (→ L2).
 
 **Where each feature sits:** batching = L1-class (mlx-lm B=N parity);
 speculative decoding = L1-class (token-for-token vs mlx-lm's spec path);
 structured output = L2-class (oMLX oracle; masking doesn't touch the
 numerics of valid tokens, so it composes with any tier); grammar × spec
 together, HLG sampling, expert offload, and (future) batched quantized KV
-= L3-class — no ancestor runtime does them, so they're gated by
-validity/KL/quality instead of bit-parity.
+are **no-oracle (Lab-gated)** — no ancestor runtime does them, so they're
+gated by validity/KL/quality instead of bit-parity.
 
 ## Performance characteristics & recipes
 
@@ -328,21 +339,20 @@ cells in one run).
 **Recipes:**
 
 - *Single-user agent/chat (the default use):*
-  `mlx-bun serve <model> --ssd-cache <dir>` — L2 serial, prompt cache +
-  SSD tier. On 12B+ add `--draft-model <small-same-tokenizer>`. Max
-  decode speed, accepting the envelope gate: `--l3`.
+  `mlx-bun serve <model> --ssd-cache <dir>` — L1 serial, prompt cache +
+  SSD tier. On 12B+ add `--draft-model <small-same-tokenizer>`.
 - *Several clients at once (throughput):*
   `mlx-bun serve <model> --batch 4 --ssd-cache <dir>` — don't set
   `--kv-quant` (it would just un-batch everything), don't mount a draft.
-- *Reproducibility:* `--l1` (≡ mlx-lm), `--l1 --batch N` (≡ mlx-lm B=N),
-  bare / `--l2` (≡ optiq).
+- *Reproducibility:* bare / `--l1` (≡ mlx-lm), `--l1 --batch N`
+  (≡ mlx-lm B=N), `--l2` (≡ optiq).
 - *Memory-tight big model:* serial + `--kv-quant config|4|8` +
   `--memory-budget <GB>` + `--ssd-cache <dir>`; MoE adds
   `--expert-offload`. Inherently the serial recipe until batched
   quantized KV lands.
 
 **The two exclusions to remember:** batching ⊕ kv-quant (batch is bf16 by
-contract; the resolver is the KL-gated L3 follow-up) and spec ⊕ prompt
+contract; the resolver is a Lab-gated follow-up) and spec ⊕ prompt
 cache (v1 bypass; the §7.6 composition is the fix).
 
 ## Observability — `GET /stats`

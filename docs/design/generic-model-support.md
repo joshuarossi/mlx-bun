@@ -22,10 +22,10 @@ This doc generalizes that shape to the whole mlx-lm zoo:
 - **Tier-0 GENERIC** — one config-driven "universal" module per architecture
   *family* (dense llama-family first, MoE second). Runs any covered checkpoint
   at **L1 parity** (bit-exact vs mlx-lm on this machine's GPU). Monolith path
-  only: no perf kernels, no compiled decode, no kv-quant. Slow, never broken.
+  only: no compiled decode, no kv-quant. Slow, never broken.
 - **Tier-1 TARGETED** — a model *graduates*: dedicated/generated forward,
-  optiq-quant **L2** parity, **L3** original kernels, benchmark entries.
-  Exactly what gemma4 / minicpm5 / qwen3_5 already are.
+  optiq-quant **L2** parity, Lab experiments where warranted, benchmark
+  entries. Exactly what gemma4 / minicpm5 / qwen3_5 already are.
 
 The fidelity contract is unchanged (three-level tree): **L1 = mlx-lm
 bit-exact is the gate for ANY new model**, generic or targeted. A model the
@@ -337,8 +337,11 @@ vs a dedicated path that's worth the maintenance (number in
    `Gemma4Model` specifically — generalizing it to emit from
    `UniversalDense` is Phase 4 work, and *optional*: hand ports are proven
    and cheap ("faithful port took ~1 hr, not the huge effort claimed").
-3. **L3 kernels**: fused decode / compiled decode / kv-quant / flash paths,
-   each behind its existing flag, each frozen-oracle-gated.
+3. **Perf levers**: compiled decode / kv-quant / fused-sdpa, each behind its
+   existing flag. (The former "L3 kernels" step — fused decode / flash paths
+   with frozen-oracle gates — was deleted 2026-07-05; output-changing
+   experiments are now Lab items, see
+   [unified-engine-frontier-plan.md §6](unified-engine-frontier-plan.md).)
 4. RESULTS.md + docs entries; `mlx-bun models` label flips to `targeted`.
 
 Nothing about graduation removes the generic path — it stays as the

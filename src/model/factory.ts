@@ -10,7 +10,6 @@ import { Gemma4Model } from "./gemma4";
 import { configFingerprint } from "./fingerprint";
 import { GENERATED } from "./generated";
 import { MiniCPM5Model } from "./minicpm5";
-import { FaithfulMiniCPM5 } from "./minicpm5-faithful";
 import { Qwen35Model } from "./qwen3_5";
 import { Qwen3Model } from "./qwen3";
 import { Qwen3MoeModel } from "./qwen3-moe";
@@ -33,21 +32,15 @@ export function createModel(weights: Weights, config: ModelConfig): RuntimeModel
   // RuntimeModel surface (config/weightsBytes/loraState/makeCache) with the
   // AR-only methods as throwing stubs (never called on this model).
   if (isDiffusionGemmaConfig(config)) return new DiffusionGemmaModel(weights, config);
-  if (isMiniCPM5Config(config)) {
-    // MLX_BUN_CPM5_FAITHFUL=1 swaps in the exact op-for-op mlx-lm copy (A/B
-    // reference); default is our optimized MiniCPM5Model.
-    return process.env.MLX_BUN_CPM5_FAITHFUL === "1"
-      ? new FaithfulMiniCPM5(weights, config)
-      : new MiniCPM5Model(weights, config);
-  }
+  if (isMiniCPM5Config(config)) return new MiniCPM5Model(weights, config);
   if (isQwen35Config(config)) return new Qwen35Model(weights, config);
   if (isQwen3MoeConfig(config)) return new Qwen3MoeModel(weights, config);
   if (isQwen3Config(config)) return new Qwen3Model(weights, config);
   // 2. gemma4*: fingerprint-matched generated specialization, else monolith.
   //    Always prefer the model-specific generated file when its config
   //    fingerprint matches — the parity regime is selected by the OUTPUT-changing
-  //    flags (perf-kernel, kv-quant), which the generated forward already gates,
-  //    NOT by detouring an optimized model through the generic monolith.
+  //    flags (kv-quant), which the generated forward already gates, NOT by
+  //    detouring an optimized model through the generic monolith.
   if (config.modelType.startsWith("gemma4")) {
     const cls = GENERATED.get(configFingerprint(config)) ?? Gemma4Model;
     return new cls(weights, config);

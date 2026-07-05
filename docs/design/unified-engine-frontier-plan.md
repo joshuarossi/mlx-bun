@@ -222,16 +222,37 @@ inside one engine — a fast path, not a second lane), falling back to the
 general batched step at B≥2. Same public machinery, no gateway routing rules,
 no feature×lane matrix.
 
-**Feature composition targets** (the point of unification — kill the
-"batching OR performance" choice):
-1. Quantized KV under batching (one active scheme per server, not
-   per-request) — the agent-fan-out-with-long-context composition.
-2. Prompt cache / prefix reuse for batched rows (vLLM/SGLang-style prefix
-   sharing is the long-term shape; whole-entry reuse first).
-3. Spec decode in the engine (serial-only today; drafts per slot later —
-   DFlash/DSpark slot behind the same seam).
-4. Chunked prefill interleaved with decode (vLLM policy) so a 16k prefill
-   doesn't stall running streams.
+**COMPOSITION IS THE PRODUCT (Josh, 2026-07-05).** The goal state, verbatim
+intent: *"you start with the server, it serves an optimized version of the
+model, you add on top of that mixed-precision quantized KV cache, as well as
+LoRA adapters, and you add on top of that DSpark speculative decoding, and
+structured output potentially, and then you also can switch the sampling
+method and values."* Every serving capability is a STACKABLE layer on one
+engine — never a lane-routing condition, never mutually exclusive. The
+current gateway is the anti-pattern: `willBatch` routes vision / adapters /
+logprobs / seeds / kv-quant / drafts to a different lane, which is exactly
+the "batching OR performance" choice being killed.
+
+The composition matrix the unified engine must satisfy (each row = a layer;
+any subset of rows must stack):
+
+| layer | today | end state |
+|---|---|---|
+| optimized per-model graph | ✅ both lanes | ✅ (fingerprint-routed, unchanged) |
+| mixed-precision quantized KV | serial only | one active scheme per server, applies at any B |
+| LoRA adapters (hot-swap, per-request select) | serial only (compiled decode also skips them) | per-slot adapter state in the batched step |
+| speculative decoding (two-model today, DSpark next) | serial only, forces ALL requests serial | per-slot drafting behind the `DraftSource` seam |
+| structured output (grammar) | ✅ both lanes (B1 per-row matchers) | ✅ (already composes; keep the conformance gate) |
+| sampling method + values (temp/top-p/top-k/min-p/XTC/penalties/HLG/seed) | per-row samplers batch; seeds force serial | fully per-row, seeds included |
+| prompt cache / SSD tier | serial only | prefix reuse for batched rows |
+
+Ordering (by value): quantized KV under batching first (the
+agent-fan-out-with-long-context composition), then prompt cache, then
+adapters, then spec decode per slot, then chunked prefill interleaving
+(vLLM policy) so a 16k prefill doesn't stall running streams.
+`scripts/bench-modes.ts` is already the composition scoreboard (its cell
+matrix spans kv × batch × grammar × cache × spec) — every layer added to
+the batched engine gets a cell there and a parity gate.
 
 ## 5. Fidelity: per-SCHEME oracles (fixes "L1 can't oracle mixed")
 
@@ -269,7 +290,8 @@ debugging: `MLX_BUN_COMPILED_DECODE=0`, `MLX_BUN_COMPILED_GEGLU=0`,
 script and expiry — §7). Kill switches are bit-exact by definition (they
 select a slower same-parity path); anything output-changing is Lab.
 
-**Deleted** (2026-07-05 evidence, one funeral each):
+**Deleted — EXECUTED 2026-07-05** (one funeral each; ~50 files touched, 23
+deleted, suite green):
 - `--fused-decode` / `MLX_BUN_FUSED_DECODE` — 1.00×, forces uncompiled,
   silent-wrongness footgun. Delete kernel path + flag + backstop throw.
 - `--fused-gelu` / `MLX_BUN_FUSED_GELU` + `MLX_BUN_FUSED_SWIGLU` — +0–1%;
@@ -285,8 +307,14 @@ select a slower same-parity path); anything output-changing is Lab.
   L1 baseline in the Lab under the §7.4 program, not resurrected.
 - `MLX_BUN_CPM5_FAITHFUL` + `FaithfulMiniCPM5` — the default IS the faithful
   path now; the A/B reference served its purpose.
-- `--l3` as a product mode — the Lab replaces it. `--l1`/`--l2` demote to
-  documented bench/test aliases.
+- `--l3` as a product mode — the Lab replaces it; the flag now hard-errors
+  with a pointer here. `--l1`/`--l2` stay as documented aliases.
+- Also deleted with the fused-swiglu family: `fused-mlp-kernel.ts` and
+  `steel-linear-kernel.ts` (only reachable through the deleted gates) and
+  the ~17 `scripts/experiments/swiglu-*`/geglu/steel one-off scripts.
+- Training flag sanitization (`MLX_BUN_PERF_KERNEL=0` / `MLX_BUN_FUSED_GELU=0`
+  in trainers/launchers/recipes) — obsolete; the no-vjp kernels it guarded
+  against no longer exist.
 
 **Lab lifecycle rule** (the anti-flag-pile law): every Lab experiment ships
 with (a) a hypothesis stated in frontier-axis terms, (b) a paired A/B bench
@@ -322,9 +350,23 @@ speed):
 
 ## 8. Migration phases (each with a hard gate)
 
-- **Phase 0 — measure the gap** (no code): stable-pass bench of the batched
-  lane at B=1/2/4 vs serial on cpm5/e4b/12B (the 149-vs-267 number is one
-  model, one day). Output: the closure worklist.
+- **Phase 0 — measure the gap** — **DONE 2026-07-05** (M1 Max, same server
+  harness both lanes, median-of-5, bf16 KV):
+
+  | model | serial B=1 | batch-lane B=1 | ratio | extra host ms/token | TTFT serial→batch |
+  |---|---|---|---|---|---|
+  | cpm5 | 281.4 tok/s | 128.8 | 0.46× | +4.2 ms | 44 → 55 ms |
+  | e4b  | 62.1 | 44.9 | 0.72× | +6.2 ms | 54 → 121 ms |
+  | 12B  | 29.8 | 25.6 | 0.86× | +5.5 ms | 82 → 251 ms |
+
+  The overhead is a roughly CONSTANT ~4–6 ms per decode step, independent of
+  model size → per-step host tax, not GPU work. cpm5 (which never uses
+  compiled decode) pays it too, so compiled-decode's absence is not the
+  story. Suspects (in dispatch-site order): the `setImmediate` macrotask hop
+  per drive-loop iteration, per-step per-layer `BatchedDecodeMaskCache`
+  construction + mask materialization at B=1 (serial passes caches bare with
+  an empty mask), and the per-token emit path. TTFT gap = solo-prefill +
+  merge + admission hops. Closure worklist = profile these three, in order.
 - **Phase 1 — the deletion pass** (§6): dead kernels, flag surface, docs,
   Lab scaffolding (move perf-kernel + its bench + oracle tests). Gate: full
   suite green; naked defaults byte-identical to today's L1 route.

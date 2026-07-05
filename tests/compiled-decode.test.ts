@@ -15,7 +15,7 @@ const haveWeights = await snapshotAvailable();
 
 // Dynamic snapshot (paths.ts hfSnapshot) — the old hard-coded hash silently
 // skipped this whole block on any machine with a different snapshot, which is
-// how the FUSED_DECODE×compiled trace-freeze went unexercised.
+// how a since-fixed trace-freeze bug went unexercised.
 const E4B_SNAPSHOT = SNAPSHOT_E4B;
 const have4b = await Bun.file(`${E4B_SNAPSHOT}/config.json`).exists();
 
@@ -169,14 +169,11 @@ describe.skipIf(!haveWeights)("compiled decode parity (12B)", async () => {
     // every subsequent token attends misaligned KV. The recovered
     // generation must be identical to a never-compiled run.
     //
-    // Config notes: uniform kv8 + PERF_KERNEL=0 gives ring-phase compiled
-    // segments (under the perf kernel every quantized layer is a js layer)
-    // and a closure key no other case in this file uses — the forced
-    // failure marks that key broken for the rest of the process by design.
+    // Config notes: uniform kv8 gives ring-phase compiled segments and a
+    // closure key no other case in this file uses — the forced failure
+    // marks that key broken for the rest of the process by design.
     const { CompiledFunction } = await import("../src/mlx/compile");
     const extra = { kvBits: 8, kvGroupSize: 64, quantizedKvStart: 0 };
-    const prevPerf = process.env.MLX_BUN_PERF_KERNEL;
-    process.env.MLX_BUN_PERF_KERNEL = "0";
     const origApply = CompiledFunction.prototype.apply;
     let segmentApplies = 0;
     let forcedThrows = 0;
@@ -198,8 +195,6 @@ describe.skipIf(!haveWeights)("compiled decode parity (12B)", async () => {
       expect(recovered).toEqual(clean);
     } finally {
       CompiledFunction.prototype.apply = origApply;
-      if (prevPerf === undefined) delete process.env.MLX_BUN_PERF_KERNEL;
-      else process.env.MLX_BUN_PERF_KERNEL = prevPerf;
     }
   }, 240_000);
 });
@@ -239,20 +234,6 @@ describe.skipIf(!have4b)("compiled decode parity (e4b: per-layer input + KV shar
     ["kv_config mixed", { kvConfig: config.kvQuant!, quantizedKvStart: 0 }],
   ] as const) {
     test(`greedy trajectory identical: ${name}`, async () => {
-      // This test measures GRAPH-REPLAY FIDELITY: the compiled trace must
-      // reproduce the uncompiled graph's result op-for-op. That only holds
-      // when both sides run the SAME kernels. The perf kernel
-      // (MLX_BUN_PERF_KERNEL, default OFF since 2026-07-05) is deliberately NOT bit-exact
-      // (fused online softmax — reordered reductions, traded for speed) and
-      // cannot live inside a compiled trace (CustomKernel has no
-      // output_shapes). So with it on, the uncompiled path runs the custom
-      // kernel for quantized layers while the compiled path falls back to
-      // stock SDPA, and the trajectories legitimately diverge. Pin it off
-      // here; the kernel's quality-vs-stock bar is covered separately by
-      // fused-decode-kernel.test.ts (maxDiff < 0.02) and
-      // perf-kernel-oracle.test.ts (teacher-forced agreement >= 56/64).
-      const prevPerfKernel = process.env.MLX_BUN_PERF_KERNEL;
-      process.env.MLX_BUN_PERF_KERNEL = "0";
       const collect = async (compiled: boolean): Promise<number[]> => {
         process.env.MLX_BUN_COMPILED_DECODE = compiled ? "1" : "0";
         try {
@@ -264,62 +245,13 @@ describe.skipIf(!have4b)("compiled decode parity (e4b: per-layer input + KV shar
           delete process.env.MLX_BUN_COMPILED_DECODE;
         }
       };
-      try {
-        const before = CompiledDecode.stepsExecuted;
-        const on = await collect(true);
-        const compiledSteps = CompiledDecode.stepsExecuted - before;
-        const off = await collect(false);
-        expect(on.length).toBeGreaterThan(4);
-        expect(on).toEqual(off);
-        expect(compiledSteps).toBeGreaterThanOrEqual(on.length - 1);
-      } finally {
-        if (prevPerfKernel === undefined) delete process.env.MLX_BUN_PERF_KERNEL;
-        else process.env.MLX_BUN_PERF_KERNEL = prevPerfKernel;
-      }
-    }, 240_000);
-  }
-
-  // Regression (kernel-perf-review 2026-07 "STILL OPEN", fixed 2026-07-02):
-  // MLX_BUN_FUSED_DECODE=1 routes L=1 through the N-tiled fused path, whose
-  // tile loop bakes trace-time N. e4b's whole-graph compiled form puts growing
-  // (concat-phase) quantized caches INSIDE the closure (TraceConcatQuant), so
-  // under shapeless replay the newest KV rows were silently never attended —
-  // reproduced pre-fix: divergence within 3 tokens, then a repetition loop.
-  // (The 12B's segmented form was never affected: concat layers run as
-  // uncompiled js layers between segments.) The combo must not compile: the
-  // explicit opt-in wins over the default optimization, like LoRA/MoE, and
-  // the trajectory must match the uncompiled fused path exactly.
-  test("MLX_BUN_FUSED_DECODE=1 + kv4 growing caches: compiled decode is bypassed, trajectory identical", async () => {
-    const prevFd = process.env.MLX_BUN_FUSED_DECODE;
-    const prevPerf = process.env.MLX_BUN_PERF_KERNEL;
-    process.env.MLX_BUN_FUSED_DECODE = "1";
-    process.env.MLX_BUN_PERF_KERNEL = "0";
-    const extra = { kvBits: 4, kvGroupSize: 64, quantizedKvStart: 0 };
-    const collect = async (compiled: boolean): Promise<number[]> => {
-      process.env.MLX_BUN_COMPILED_DECODE = compiled ? "1" : "0";
-      try {
-        const out: number[] = [];
-        const gen = generate(model, prompt, { maxTokens: 24, temperature: 0, ...extra });
-        for await (const t of gen) out.push(t.token);
-        return out;
-      } finally {
-        delete process.env.MLX_BUN_COMPILED_DECODE;
-      }
-    };
-    try {
       const before = CompiledDecode.stepsExecuted;
       const on = await collect(true);
       const compiledSteps = CompiledDecode.stepsExecuted - before;
       const off = await collect(false);
       expect(on.length).toBeGreaterThan(4);
       expect(on).toEqual(off);
-      // the combo is unsupported: compiled decode must have stayed OFF
-      expect(compiledSteps).toBe(0);
-    } finally {
-      if (prevFd === undefined) delete process.env.MLX_BUN_FUSED_DECODE;
-      else process.env.MLX_BUN_FUSED_DECODE = prevFd;
-      if (prevPerf === undefined) delete process.env.MLX_BUN_PERF_KERNEL;
-      else process.env.MLX_BUN_PERF_KERNEL = prevPerf;
-    }
-  }, 240_000);
+      expect(compiledSteps).toBeGreaterThanOrEqual(on.length - 1);
+    }, 240_000);
+  }
 });

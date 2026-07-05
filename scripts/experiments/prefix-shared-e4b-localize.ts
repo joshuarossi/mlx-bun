@@ -15,7 +15,6 @@ import { loadModelConfig } from "../../src/config";
 import { Weights } from "../../src/weights";
 import { createModel } from "../../src/model/factory";
 import { Gemma4Model } from "../../src/model/gemma4";
-import { setFusedGeluTraining } from "../../src/model/fused-geglu-kernel";
 import { resolveRanks, DEFAULT_TARGET_MODULES } from "../../src/train/rank";
 import { buildTrainableLora, attachForTraining } from "../../src/train/lora-params";
 import { prefixForwardHiddenGemma } from "../../src/train/prefix-shared";
@@ -29,7 +28,6 @@ const MODEL = process.env.MODEL ?? `${base}/${readdirSync(base)[0]}`;
 const P = Number(process.env.P ?? 200);
 const RC = Number(process.env.RC ?? 64);
 const RR = Number(process.env.RR ?? 80);
-if (process.env.FUSED_GELU !== "0") setFusedGeluTraining(true);
 
 const config = await loadModelConfig(MODEL);
 const weights = await Weights.open(MODEL);

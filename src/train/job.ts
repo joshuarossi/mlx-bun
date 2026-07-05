@@ -130,8 +130,6 @@ export const finetuneRunner: JobRunner = async (emit, config) => {
   try {
     const isGemma = (await Bun.file(`${modelDir}/config.json`).text()).toLowerCase().includes("gemma");
     if (isGemma) {
-      process.env.MLX_BUN_PERF_KERNEL ??= "0";
-      process.env.MLX_BUN_FUSED_GELU ??= "0";
     }
   } catch {}
 

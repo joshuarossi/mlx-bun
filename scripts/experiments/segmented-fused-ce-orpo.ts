@@ -19,7 +19,6 @@ import { MiniCPM5Model } from "../../src/model/minicpm5";
 import { Gemma4Model } from "../../src/model/gemma4";
 import { evalAll } from "../../src/mlx/ops";
 import { peakMemory, resetPeakMemory, clearCache } from "../../src/mlx/ffi";
-import { setFusedGeluTraining } from "../../src/model/fused-geglu-kernel";
 import { resolveRanks, DEFAULT_TARGET_MODULES } from "../../src/train/rank";
 import { buildTrainableLora, attachForTraining, disposeLora } from "../../src/train/lora-params";
 import { SegmentedBackwardOrpo, SegmentedBackwardOrpoGemma4, planSegmentsBySize } from "../../src/train/segmented";
@@ -39,7 +38,6 @@ const CHUNK = Number(process.env.CHUNK ?? 256);
 const RANK = Number(process.env.RANK ?? 8);
 const LAMBDA = Number(process.env.LAMBDA ?? 0.1);
 const gb = (b: number) => `${(b / 1e9).toFixed(2)} GB`;
-if (process.env.FUSED_GELU !== "0") setFusedGeluTraining(true);
 
 console.log(`### segmented-fused-ce-orpo  model=${E4B ? "e4b" : "MiniCPM5"} L=${L} seg=${SEG} chunk=${CHUNK} rank=${RANK}`);
 const config = await loadModelConfig(MODEL);

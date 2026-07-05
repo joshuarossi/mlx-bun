@@ -5,7 +5,7 @@
 //
 // One row = one (model, config) measured on one task (or the aggregate
 // "capability" / "kl" rows). `config_json` records the perf levers that
-// were active (compile / fused-decode / perf-kernel) so a row is
+// were active (compile / fused-sdpa / kv-quant) so a row is
 // self-describing: which arm of the head-to-head produced this number.
 
 import { Database } from "bun:sqlite";
@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS quality_runs (
   model_path TEXT NOT NULL,
   commit_sha TEXT,
   task TEXT NOT NULL,            -- 'kl' | 'gsm8k' | 'mmlu' | ... | 'capability'
-  config_json TEXT NOT NULL,     -- {compile,fusedDecode,perfKernel,...} active levers
+  config_json TEXT NOT NULL,     -- {compile,fusedSdpa,kvQuant,...} active levers
   n_samples INTEGER NOT NULL,
   -- task accuracy (percent 0-100); null for kl-only rows
   pct REAL,

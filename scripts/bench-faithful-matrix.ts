@@ -1,6 +1,6 @@
-// L1 kernel matrix — the faithful (compiled-activation) kernels are now the DEFAULT,
-// so this measures what removing each faithful kernel COSTS, and what the L3 custom
-// kernels ADD on top, all vs the mlx-lm oracle.
+// L1 kernel matrix — the faithful (compiled-activation) kernels are the DEFAULT,
+// so this measures what removing each faithful kernel COSTS, all vs the mlx-lm
+// oracle.
 //
 //   bun scripts/bench-faithful-matrix.ts [--tokens 128] [--prompt-tokens N]
 //       [--models cpm5,e4b,12B]
@@ -11,13 +11,12 @@
 //   - L1 default (faithful) (compiled geglu/swiglu + compiled-decode — our default)
 //   - − compiled-decode     (cost of dropping the whole-step compile; gemma)
 //   - − compiled activations (cost of the uncompiled geglu/swiglu composition)
-//   - + custom fused-gelu    (does the L3 Metal geglu beat compiled-geglu?; gemma)
 //   UNIFORM KV8 (vs STOCK mlx-lm --kv-bits 8 — a bit-exact L1 config):
 //   - mlx-lm (uniform kv8)  (bench.ts --baseline-kv 8, stock mlx-lm quantized KV)
 //   - L1 uniform kv8        (our --kv-quant 8 with fused-sdpa OFF → quantizedSdpaUnfused,
 //     which is op-for-op identical to mlx-lm's quantized_scaled_dot_product_attention
 //     in base.py — so this is a same-algorithm apples-to-apples perf comparison).
-// (the fused/N-tiled quantized path + perf-kernel are optiq-aligned L2/L3 — bench-modes.ts.)
+// (the fused/N-tiled quantized path is the optiq-aligned L2 — bench-modes.ts.)
 // Prints decode/prefill tok-s + peak mem + the decode ratio vs the same-kv oracle.
 // Uses bench.ts's DIRECT arena (spawns the mlx-lm python reference; starts no
 // servers). NOT preflight-gated — treat absolutes as indicative on a loaded machine;
@@ -43,8 +42,8 @@ const MODELS: Record<string, string> = {
   qwen9b: "Qwen3.5-9B-OptiQ-4bit",
 };
 
-// gemma-only optimizations (the generated forward / custom geglu / compiled
-// decode / perf kernel are gemma-scoped). For non-gemma models these cells
+// gemma-only optimizations (the generated forward / compiled decode are
+// gemma-scoped). For non-gemma models these cells
 // equal the faithful base, so we skip them to keep the run lean + the table clean.
 const GEMMA_KEYS = new Set(["e4b", "12B", "26B"]);
 
@@ -61,7 +60,6 @@ const CELLS: Cell[] = [
   { name: "L1 default (faithful)", env: {} },
   { name: "− compiled-decode", env: { MLX_BUN_COMPILED_DECODE: "0" }, gemmaOnly: true },
   { name: "− compiled activations", env: { MLX_BUN_COMPILED_GEGLU: "0", MLX_BUN_COMPILED_SWIGLU: "0" } },
-  { name: "+ custom fused-gelu (L3)", env: { MLX_BUN_FUSED_GELU: "1" }, gemmaOnly: true },
   { name: "mlx-lm (oracle, uniform kv8)", baseline: true, kv: "8" },
   // L1 quantized config: fused-sdpa OFF → our quantizedSdpaUnfused, which is
   // op-for-op identical to mlx-lm's quantized_scaled_dot_product_attention
@@ -85,8 +83,7 @@ async function run(model: string, cell: Cell): Promise<Row | null> {
     stdout: "pipe", stderr: "pipe",
     // Start from a clean slate each cell so a prior config's env can't leak.
     env: { ...process.env, MLX_BUN_COMPILED_DECODE: "", MLX_BUN_COMPILED_GEGLU: "",
-           MLX_BUN_COMPILED_SWIGLU: "", MLX_BUN_FUSED_GELU: "", MLX_BUN_PERF_KERNEL: "",
-           MLX_BUN_FUSED_DECODE: "", MLX_BUN_NO_FUSED_SDPA: "", ...(cell.env ?? {}) },
+           MLX_BUN_COMPILED_SWIGLU: "", MLX_BUN_NO_FUSED_SDPA: "", ...(cell.env ?? {}) },
   });
   const [out, err, code] = await Promise.all([
     new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
