@@ -209,6 +209,31 @@ graph file, bit-exact parity goldens vs the scheme oracle, h2h bench entry at
 ≥1.00× vs mlx-lm, eval-suite scores recorded. "Optimized and verified" is a
 badge with teeth, and the badge list is the marketing claim.
 
+### Layer 0 — the SSD spill substrate (Josh, 2026-07-05)
+
+Every stage that tried it found the same result: **it is almost always
+faster to cache to SSD and mmap it back than to regenerate, and spilling
+lets RAM be used as a cache instead of the only tier.** Three independent
+implementations already prove the pattern: the SSD KV cold tier (restart
+TTFT 12.1 s → 0.24 s, 0% decode overhead), MoE expert offload (page-aligned
+mmap, phys footprint ≈ active params), and the byte-capped prompt cache.
+Decision: extract the pattern into ONE generic substrate — content-addressed
+keys (model fingerprint + scheme + adapter + producer version), zero-copy
+mmap restore, byte-capped LRU eviction, corruption self-quarantine — that
+layers 1/2/4 consume. Future clients: vision encoder features (oMLX
+adoption-map #6), compiled xgrammar grammars, quantized-conversion results,
+TurboQuant artifacts. `src/ssd-cache.ts` is the seed to generalize.
+
+### The batching workload (Josh, 2026-07-05)
+
+The motivating case is AGENTIC FAN-OUT: one user running many concurrent
+agents against the same server. Consequences: concurrency-driven batching
+(agents don't coordinate arrivals); **prefix sharing gains priority**
+(agents share long system prompts — the one-shared-KV-prefix × N rows
+case); per-slot adapters become a real want (different agents, different
+specializations). "Single-user" in this project means single-user,
+many-agents.
+
 ### Layer responsibilities (the contract, 2026-07-05)
 
 1. **Model graph** — one forward step given hidden + caches; attention
