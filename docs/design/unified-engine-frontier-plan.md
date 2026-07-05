@@ -272,6 +272,20 @@ optiq where optiq reaches (KV) and against the eval suite where no oracle
 exists (weights). `--l1/--l2` survive as *bench/test vocabulary* for the
 first three rows; they stop being user-facing product modes.
 
+**Composition rule (Josh, 2026-07-05): a composition inherits its scheme's
+oracle.** Batching, prompt cache, spec decode, adapters — none of them
+change a scheme's numerics, so composing them with a scheme verifies
+against THAT SCHEME'S oracle, per row. Batched bf16 anchored to mlx-lm
+(B=N token-exact goldens); batched mixed-KV anchors to the L2 oracle the
+same way: copy optiq's per-row quantization mechanics (`install_mixed_kv`'s
+per-layer map + streaming `to_quantized` + RotatingQuantizedKVCache — our
+serial `maybeQuantizeKv` is already the verified op-for-op copy), then
+gate on per-row bit-exactness against it (row cache contents; B=1 through
+the engine vs the mixed-KV golden; B>1 trajectories at the standing
+long-prefix bar). Do NOT invent Lab-style KL/teacher-forced gates for a
+composition of an oracle-backed scheme — the Lab is only for schemes with
+no oracle at all (new quant methods, original kernels).
+
 ## 6. The flag surface (end state — every flag with its reason)
 
 User-facing serve/generate flags after the deletion pass:
