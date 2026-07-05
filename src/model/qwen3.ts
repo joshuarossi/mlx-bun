@@ -24,6 +24,7 @@ import {
   type Cache,
   type Mask,
 } from "./gemma4-base";
+import { compiledSwiglu } from "./minicpm5";
 
 export class Qwen3Attention {
   readonly qProj: QuantizedLinear;
@@ -106,12 +107,12 @@ export class Qwen3MLP {
   forward(x: MlxArray): MlxArray {
     const gate = this.gate.forward(x);
     const up = this.up.forward(x);
-    const sig = ops.sigmoid(gate);
-    const silu = ops.mul(gate, sig);
+    // Oracle (mlx_lm/models/qwen3.py MLP): down_proj(swiglu(gate_proj(x), up_proj(x)))
+    // where swiglu is the `@mx.compile` closure (silu(gate)*up). Compiled = the
+    // same libmlx kernel mlx-lm dispatches (L1-faithful) AND fuses the three
+    // standalone ops into one dispatch. Bit-identical to the old unfused path.
+    const hidden = compiledSwiglu(gate, up);
     gate.dispose();
-    sig.dispose();
-    const hidden = ops.mul(silu, up);
-    silu.dispose();
     up.dispose();
     const out = this.down.forward(hidden);
     hidden.dispose();

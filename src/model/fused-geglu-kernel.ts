@@ -18,16 +18,15 @@ import { Dtype } from "../mlx/ffi";
 import { MetalKernel } from "../mlx/metal-kernel";
 import { CustomVjp } from "../mlx/custom-vjp";
 import * as ops from "../mlx/ops";
-import { faithfulMode, flagOn } from "../faithful";
+import { flagOn } from "../flags";
 
-/** ON by default: the match-compat kernel is BIT-EXACT with the spelled-out
- *  path (kl --decode = 0 on e4b), so per the bit-parity-floor principle it
- *  ships on — every optimization we can keep while staying bit-exact.
- *  MLX_BUN_FUSED_GELU=0 opts out (e.g. the compile arm of the A/B). */
+/** OFF by default (explicit opt-in): this custom Metal geglu is bit-exact with
+ *  OUR spelled-out path (kl --decode = 0 on e4b) but NOT with mlx-lm — it carries a
+ *  pow/tanh math-lib residual vs mlx-lm's `@mx.compile` geglu, so it is an L3 perf
+ *  lever, not an L1 kernel. The default geglu is `compiledGeglu` (gemma4.ts), which
+ *  IS bit-exact to mlx-lm. `MLX_BUN_FUSED_GELU=1` opts into this single-pass kernel. */
 export function fusedGeluEnabled(): boolean {
-  // Defaults ON normally, OFF in the faithful base (which uses mlx-lm's
-  // @mx.compile geglu via compiledGeglu); either way an explicit flag wins.
-  return flagOn("MLX_BUN_FUSED_GELU", !faithfulMode());
+  return flagOn("MLX_BUN_FUSED_GELU", false);
 }
 
 /** Dispatch counter (a gate test asserts the kernel actually ran). */

@@ -20,6 +20,20 @@ responsiveness fix (/stats 2.5 s → 10–44 ms mid-generation).
 2026-07-03 (next-action #1 below); `bun run release` ships it (also
 updates the Homebrew formula, which still points at v0.0.10).
 
+**Faithful→L1 consolidation (2026-07-04, branch `faithful-decode-parity`,
+uncommitted):** the faithful (`@mx.compile` geglu/swiglu) kernels are now the
+DEFAULT for every model (qwen3/qwen3.5/universal compile unconditionally; gemma
+via `MLX_BUN_COMPILED_GEGLU`, default on); the custom non-bit-exact fused-gelu
+Metal kernel is now opt-in. `--l1` is a pure, hand-reproducible alias (added
+`--compiled-activations` + `--fused-gelu` forks, wired into the tier presets).
+`MLX_BUN_FAITHFUL` and the four unwired `Faithful*` subclasses were DELETED
+(`src/faithful.ts`→`src/flags.ts`); `FaithfulMiniCPM5` kept as the one A/B
+reference. Factory no longer detours gemma through the monolith. Bit-exact vs
+mlx-lm re-verified (universal/generated/gemma/cpm5 parity, tsc 0). Plan +
+decision table: [docs/design/faithful-l1-consolidation.md](docs/design/faithful-l1-consolidation.md).
+Open: live qwen3-dense parity (needs a box with Qwen3-Embedding) + clean-machine
+bench numbers (`./benchmark.sh --redo`).
+
 **Repo state:** main == origin/main, tree clean, tsc 0. CI is live
 (`.github/workflows/ci.yml`: hygiene gate + typecheck + model-free tests —
 the 2026-07-01 review's "no CI" finding is closed). The Phase C git history

@@ -43,11 +43,13 @@ the design rationale is in
 | `--hlg-toe` | nats | `6` | HLG shadow rolloff scale (nats). Only meaningful with `--hlg-sampling on`. |
 | `--hlg-pivot-offset` | nats | `6` | HLG pivot point: nats below the top token. Only meaningful with `--hlg-sampling on`. |
 | `--expert-offload` | (bool) | off | **MoE models only.** Serve experts from a page-aligned file mmap (built on first use). Keeps the model out of memory pressure — physical footprint ≈ active params. Ignored with a warning on dense models. Bit-exact with the resident path. |
-| `--l1` | (bool) | — | **Parity tier preset:** bit-for-bit IDENTICAL to mlx-lm (bf16 KV, unfused SDPA, no perf kernel). Sets the whole decode route; any explicit per-fork flag (`--kv-quant`/`--perf-kernel`/…) overrides the preset. See [docs/design/parity-tier-dag.md](../design/parity-tier-dag.md). |
+| `--l1` | (bool) | — | **Parity tier ALIAS:** bit-for-bit IDENTICAL to mlx-lm (bf16 KV, compiled activations — the faithful `@mx.compile` geglu/swiglu — no perf kernel, no custom fused-gelu). Expands to the fastest set of per-fork flags that still holds the guarantee; any explicit per-fork flag (`--kv-quant`/`--perf-kernel`/`--compiled-activations`/…) overrides one. See [docs/design/faithful-l1-consolidation.md](../design/faithful-l1-consolidation.md) and [parity-tier-dag.md](../design/parity-tier-dag.md). |
 | `--l2` | (bool) | — | **Parity tier preset:** bit-for-bit IDENTICAL to mlx-optiq (quantized KV per `kv_config.json` + fused N-tiled prefill SDPA + **stock unfused decode** — the composition the optiq goldens track, `scripts/regen-kvq-goldens.ts`). The perf kernel stays **off**: it is envelope-gated, not bit-exact (see `--l3`), and opting into it (`--l2 --perf-kernel on`) is an explicit choice that leaves the bare-tier guarantee. |
 | `--l3` | (bool) | — | **Parity tier preset:** best performance, no bit-exact oracle (KL + test gated). On the decode path L3 = L2 + the envelope-gated perf kernel; L3 also owns the no-oracle features (HLG sampler, expert offload). No tier given ⇒ the per-flag defaults below, which equal `--l3`. |
 | `--compiled-decode` | on\|off | on | Replay the per-step decode graph in C++ (`MLX_BUN_COMPILED_DECODE`). Bit-exact A/B lever. **Serial lane only** (see note below). **Gemma4-dense only** — LoRA, MoE, and non-Gemma4 models (MiniCPM5 / Qwen3.5) run eager; an unsupported step falls back to eager for the rest of that generation. |
+| `--compiled-activations` | on\|off | on | Route the geglu/swiglu activation through mlx-lm's `@mx.compile` closure (`MLX_BUN_COMPILED_GEGLU` + `MLX_BUN_COMPILED_SWIGLU`) — the **faithful** kernel: same libmlx graph as mlx-lm → **bit-exact** AND one dispatch instead of ~9. `off` = the uncompiled composition (same L1 parity, slower). Toggles gemma geglu + MiniCPM5 swiglu; qwen3/qwen3.5/universal compile unconditionally. |
 | `--perf-kernel` | on\|off | **on** | Fused quantized-KV decode-SDPA Metal kernel (`MLX_BUN_PERF_KERNEL`), the perf side of the compat A/B. **Not bit-exact** — envelope-gated (≥56/64 teacher-forced argmax vs the frozen compat trajectory, `tests/perf-kernel-oracle.test.ts`), so it is an **L3 lever**: on in `--l3`/no-tier default, **off in bare `--l1`/`--l2`**. Engages on quantized caches at decode. **Serial lane only.** |
+| `--fused-gelu` | on\|off | **off** | Custom single-pass fused-geglu Metal kernel (`MLX_BUN_FUSED_GELU`). Bit-exact with our uncompiled path but **NOT vs mlx-lm** (pow/tanh math-lib residual) → an **L3 lever**, off in `--l1`/`--l2`. The default gemma geglu is `--compiled-activations` (which IS bit-exact vs mlx-lm). Gemma only. |
 | `--fused-decode` | on\|off | off | Experimental: tile the quantized decode SDPA (`MLX_BUN_FUSED_DECODE`). **Serial lane only.** |
 | `--fused-sdpa` | on\|off | on | Fused SDPA path for quantized prefill/continuation (inverted env `MLX_BUN_NO_FUSED_SDPA`). **Serial lane only.** |
 | `--force-wire` | (bool) | off | Wire weights into memory for the whole generation (`MLX_BUN_FORCE_WIRE`). Near-ceiling models (e.g. 26B) need it. **Serial lane only.** |
@@ -98,8 +100,9 @@ for `bun scripts/serve.ts` or paired A/B harnesses). Three have no CLI flag.
 | `MLX_BUN_PERF_KERNEL` | `--perf-kernel` | on (`!=="0"`) | Fused quantized-KV decode kernel (not bit-exact; perf A/B). |
 | `MLX_BUN_FUSED_DECODE` | `--fused-decode` | off (`==="1"`) | Tile quantized decode SDPA. |
 | `MLX_BUN_NO_FUSED_SDPA` | `--fused-sdpa` (inverted) | fused on | `=1` forces the stock unfused SDPA everywhere. |
-| `MLX_BUN_FUSED_GELU` | *(none)* | on (`!=="0"`) | Fused GeGLU MLP kernel. Bit-exact, so it stays on both lanes; env-only opt-out. |
-| `MLX_BUN_COMPILED_SWIGLU` | *(none)* | on (`!=="0"`) | `mx.compile`'d SwiGLU (`silu(gate)·up` → one kernel) on MiniCPM5 decode (M=1), porting mlx-lm's `activations.py`. Bit-exact (passes the exact logit-parity gate), both lanes; env-only opt-out. +5.5% CPM5 decode. |
+| `MLX_BUN_COMPILED_GEGLU` | `--compiled-activations` | on (`!=="0"`) | Gemma geglu via mlx-lm's `@mx.compile` closure — the faithful default (bit-exact vs mlx-lm, one kernel). `=0` → uncompiled composition (same parity, slower). |
+| `MLX_BUN_COMPILED_SWIGLU` | `--compiled-activations` | on (`!=="0"`) | `mx.compile`'d SwiGLU (`silu(gate)·up` → one kernel) on MiniCPM5 decode (M=1), porting mlx-lm's `activations.py`. Bit-exact (passes the exact logit-parity gate), both lanes. +5.5% CPM5 decode. (qwen3/qwen3.5/universal compile swiglu unconditionally, independent of this flag.) |
+| `MLX_BUN_FUSED_GELU` | `--fused-gelu` | **off** (`==="1"`) | Custom single-pass fused-geglu Metal kernel. Bit-exact vs our uncompiled path but NOT vs mlx-lm (pow/tanh math-lib residual) → L3 opt-in. The bit-exact gemma default is `MLX_BUN_COMPILED_GEGLU`. |
 | `MLX_BUN_CPM5_FAITHFUL` | *(none)* | off (`==="1"`) | Swap the MiniCPM5 backend to `FaithfulMiniCPM5` — an exact op-for-op copy of mlx-lm's `llama.py` + `activations.py` (`src/model/minicpm5-faithful.ts`), selected in `createModel`. Bit-exact to the golden; an A/B reference for comparing our optimized `MiniCPM5Model` against a verbatim mlx-lm reproduction. Falls back to the monolith outside the plain-llama envelope. |
 | `MLX_BUN_FORCE_WIRE` | `--force-wire` | off (`==="1"`) | Wire weights for the generation. |
 
@@ -268,11 +271,12 @@ know them:
 The tiers are **correctness contracts**, and each flag is an alias for a
 decode-route preset (`applyDecodeRoute()` in [src/cli.ts](../../src/cli.ts));
 any per-fork flag (`--kv-quant`, `--perf-kernel`, `--compiled-decode`,
-`--fused-sdpa`, `--fused-decode`) overrides its tier's preset.
+`--compiled-activations`, `--fused-gelu`, `--fused-sdpa`, `--fused-decode`)
+overrides its tier's preset.
 
 | Tier | Contract | KV | Kernels | Verified against |
 | --- | --- | --- | --- | --- |
-| `--l1` | mlx-lm **bit-for-bit** | bf16 | compiled-decode | mlx-lm goldens (per machine) |
+| `--l1` | mlx-lm **bit-for-bit** | bf16 | compiled-decode + compiled activations (faithful geglu/swiglu) | mlx-lm goldens (per machine) |
 | `--l2` | mlx-optiq **bit-for-bit** | mixed-precision (`kv_config.json`) | + fused-SDPA (matches optiq exactly) | optiq goldens |
 | `--l3` | fastest; envelope-gated | as L2 | + the flash perf-kernel | frozen-trajectory envelope + KL — **not** bit-exact |
 | *(none)* | **= the L2 composition** | `config` when the model ships one, else bf16 | compiled + fused-SDPA | — |

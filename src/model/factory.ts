@@ -18,7 +18,6 @@ import { DiffusionGemmaModel } from "./diffusion-gemma";
 import { UniversalDenseModel } from "./universal/dense";
 import { genericArgsFor, GENERIC_MODEL_TYPES, remapModelType } from "./universal/archs";
 import { isDiffusionGemmaConfig, isMiniCPM5Config, isQwen35Config, isQwen3Config, isQwen3MoeConfig } from "./support";
-import { faithfulMode } from "../faithful";
 
 export type RuntimeModel =
   | Gemma4Model | MiniCPM5Model | Qwen35Model | Qwen3Model | Qwen3MoeModel
@@ -45,12 +44,12 @@ export function createModel(weights: Weights, config: ModelConfig): RuntimeModel
   if (isQwen3MoeConfig(config)) return new Qwen3MoeModel(weights, config);
   if (isQwen3Config(config)) return new Qwen3Model(weights, config);
   // 2. gemma4*: fingerprint-matched generated specialization, else monolith.
-  //    The faithful base forces the monolith (per-op, mlx-lm-matching decode);
-  //    the generated forward is our L3 fast path, layered back on when not faithful.
+  //    Always prefer the model-specific generated file when its config
+  //    fingerprint matches — the parity regime is selected by the OUTPUT-changing
+  //    flags (perf-kernel, kv-quant), which the generated forward already gates,
+  //    NOT by detouring an optimized model through the generic monolith.
   if (config.modelType.startsWith("gemma4")) {
-    const cls = faithfulMode()
-      ? Gemma4Model
-      : (GENERATED.get(configFingerprint(config)) ?? Gemma4Model);
+    const cls = GENERATED.get(configFingerprint(config)) ?? Gemma4Model;
     return new cls(weights, config);
   }
   // 3. Generic Tier-0 fallback: the universal-dense descriptor table

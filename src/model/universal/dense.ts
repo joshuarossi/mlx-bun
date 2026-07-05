@@ -28,6 +28,7 @@ import {
   type Mask,
 } from "../gemma4-base";
 import { genericArgsFor, type UniversalArgs } from "./archs";
+import { compiledSwiglu } from "../minicpm5";
 import { initializeRope, NoRope, phi3SuRope, UniversalRope } from "./rope";
 import {
   loadEmbedding,
@@ -226,9 +227,10 @@ class UniversalAttention {
 }
 
 /** swiglu(gate, up) = nn.silu(gate) * up as ONE call — the whole activation,
- *  not just silu. FaithfulUniversalDense swaps in the `@mx.compile` version
- *  (dense-faithful.ts::compiledSwiglu) to fuse it into mlx-lm's single kernel;
- *  null (default) keeps the L1-verified uncompiled composition. */
+ *  not just silu. Defaults to the `@mx.compile` version (compiledSwiglu) — the
+ *  same libmlx kernel mlx-lm dispatches (L1-faithful), bit-identical to the old
+ *  uncompiled composition but one dispatch instead of three. Set to null to force
+ *  the uncompiled path (the slower same-parity opt-in). */
 export type SwigluFn = (gate: MlxArray, up: MlxArray) => MlxArray;
 
 export class UniversalMLP {
@@ -236,11 +238,11 @@ export class UniversalMLP {
   readonly up: AnyLinear | null;
   readonly gateUp: AnyLinear | null;
   readonly down: AnyLinear;
-  /** Injectable fused swiglu (silu(gate)*up). Only consumed for the
-   *  swiglu / fused_swiglu kinds; geglu/geglu_approx/gelu_mlp are unaffected
-   *  (the oracle does NOT @mx.compile those — gemma/gemma2/starcoder2 use a
-   *  plain nn.gelu composition). */
-  swigluFn: SwigluFn | null = null;
+  /** Fused swiglu (silu(gate)*up), default = the oracle's `@mx.compile` closure.
+   *  Only consumed for the swiglu / fused_swiglu kinds; geglu/geglu_approx/gelu_mlp
+   *  are unaffected (the oracle does NOT @mx.compile those — gemma/gemma2/starcoder2
+   *  use a plain nn.gelu composition). Set to null for the uncompiled composition. */
+  swigluFn: SwigluFn | null = compiledSwiglu;
 
   constructor(
     weights: Weights,
@@ -289,9 +291,9 @@ export class UniversalMLP {
       up = this.up!.forward(x);
     }
 
-    // swiglu / fused_swiglu with the compiled activation live: silu(gate)*up
-    // is ONE fused call (mlx-lm's `@mx.compile swiglu`), matching the oracle
-    // kernel set exactly. Faithful path only; the default fn is null.
+    // swiglu / fused_swiglu run silu(gate)*up as ONE fused call (mlx-lm's
+    // `@mx.compile swiglu`), matching the oracle kernel set exactly. This is the
+    // default (swigluFn = compiledSwiglu); null forces the uncompiled composition.
     if (this.swigluFn && (this.kind === "swiglu" || this.kind === "fused_swiglu")) {
       const hidden = this.swigluFn(gate, up);
       gate.dispose();

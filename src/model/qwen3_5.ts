@@ -33,16 +33,15 @@ import { gatedDeltaUpdate, SSMCache } from "./qwen3-delta";
 
 const PREFIX = "language_model";
 
-// ── Compiled activations (faithful path) ────────────────────────────────────
+// ── Compiled activations ─────────────────────────────────────────────────────
 // The oracle (mlx_lm/models/activations.py + qwen3_next.py) wraps BOTH swiglu
-// activations in `@partial(mx.compile, shapeless=True)`. Our default forward
-// runs them UNFUSED (standalone ops.silu + ops.mul), which dispatches a
-// different kernel set and pays the per-op host tax. FaithfulQwen35 flips the
-// layers to these compiled closures so the dispatched kernel set matches the
-// oracle op-for-op. Traced once (shapeless), replayed thereafter. Autograd-safe
-// (mx.compile threads VJP through the traced graph) — proven in the scratchpad
-// grad harness. `compiledSwiglu` is exported so the parity test can assert the
-// closure exists and the faithful MLP actually uses it.
+// activations in `@partial(mx.compile, shapeless=True)`. We match it: every
+// activation site below (the MLP swiglu, the RMSNormGated `_precise_swiglu`, and
+// the conv `nn.silu`) runs through a compiled closure unconditionally, so the
+// dispatched kernel set matches the oracle op-for-op (= mlx-lm, bit-exact). Traced
+// once (shapeless), replayed thereafter; autograd-safe (mx.compile threads VJP
+// through the traced graph). `compiledSwiglu` is exported so the parity test can
+// assert the closure exists and the MLP actually uses it.
 
 /** activations.py: `@mx.compile def swiglu(gate, x): return nn.silu(gate) * x`.
  *  nn.silu(g) == g * sigmoid(g); mx.compile fuses sigmoid+mul+mul → one kernel. */
@@ -121,9 +120,6 @@ export class GatedDeltaNet {
   readonly keyDim: number;
   readonly valueDim: number;
   readonly convKernel: number;
-  /** FaithfulQwen35 sets this to route the RMSNormGated activation through the
-   *  oracle's compiled `_precise_swiglu` instead of the unfused ops path. */
-  useCompiledActivation = false;
 
   constructor(weights: Weights, config: ModelConfig, prefix: string) {
     const t = config.text;
@@ -330,9 +326,6 @@ export class Qwen3MLP {
   readonly gate: QuantizedLinear;
   readonly up: QuantizedLinear;
   readonly down: QuantizedLinear;
-  /** FaithfulQwen35 sets this to run the oracle's compiled `swiglu` instead of
-   *  the unfused ops.silu + ops.mul path. */
-  useCompiledActivation = false;
 
   constructor(weights: Weights, config: ModelConfig, prefix: string) {
     this.gate = QuantizedLinear.load(weights, `${prefix}.gate_proj`, config);

@@ -20,7 +20,7 @@ import { DiffusionGemmaModel } from "./model/diffusion-gemma";
 import { diffusionGenerate } from "./diffusion/diffusion-generate";
 import type { RuntimeModel } from "./model/factory";
 import type { KvQuantSpec } from "./config";
-import { faithfulMode, flagOn } from "./faithful";
+import { flagOn } from "./flags";
 import {
   makeLogitsProcessors, makeSampler,
   type LogitsProcessorOptions, type SamplerOptions, toLogprobs,
@@ -566,7 +566,7 @@ async function* generateInner(
     // policy as LoRA and MoE below. quantizedSdpa also throws on the combo
     // as a backstop.
     let compiled =
-      flagOn("MLX_BUN_COMPILED_DECODE", !faithfulMode()) &&
+      flagOn("MLX_BUN_COMPILED_DECODE", true) &&
       process.env.MLX_BUN_FUSED_DECODE !== "1" &&
       !options.adapters?.length &&
       model.config.modelType.startsWith("gemma4") &&

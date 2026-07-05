@@ -25,7 +25,9 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | **SSD KV cold tier** (cache survives eviction + restarts) | off | serial | — | `--ssd-cache <dir>` (+ `-max`, `-verify`) |
 | Mixed-precision KV (`kv_config.json`, optiq default) | **on** when the model ships one | serial | L2 | `--kv-quant config\|off\|4\|8` |
 | Compiled decode (bit-exact graph replay) | on, every tier | serial | L1/L2 | `--compiled-decode on\|off` |
+| Compiled activations (faithful geglu/swiglu — mlx-lm's `@mx.compile`) | **on**, every tier | both | L1 | `--compiled-activations on\|off` |
 | Fused SDPA (optiq-exact quantized-KV attention) | on (no-op on bf16) | serial | L2 | `--fused-sdpa on\|off` |
+| Custom fused-gelu Metal kernel (single-pass; not bit-exact vs mlx-lm) | **off** | serial | L3 | `--fused-gelu on` |
 | Flash perf-kernel (envelope-gated decode) | **off** | serial | L3 | `--l3` / `--perf-kernel on` |
 | **Speculative decoding** (two-model, mlx-lm parity) | off | serial (forces all-serial) | L1 | `--draft-model <path\|query>`, `--num-draft-tokens` |
 | Memory admission (refuse what can't fit; never GPU-OOM) | on (RAM × 0.75) | both | — | `--memory-budget <GB>` |

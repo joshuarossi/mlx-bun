@@ -41,7 +41,7 @@ Common flags (full list in [server-config.md](server-config.md)):
 | `--num-draft-tokens <n>` | Drafts per verify round (default 3) |
 | `--batch <n>` | Continuous-batched bf16 serving, mlx-lm B=N parity (default 1 = serial) |
 | `--temperature` / `--top-p` / `--top-k` / `--max-tokens` | Server-wide sampling defaults (per-request fields still win) |
-| `--l1` / `--l2` / `--l3` | Parity tier: bit-exact to mlx-lm / bit-exact to mlx-optiq / best performance |
+| `--l1` / `--l2` / `--l3` | Parity tier alias: bit-exact to mlx-lm / bit-exact to mlx-optiq / best performance. Each expands to per-fork flags (`--compiled-decode`, `--compiled-activations`, `--perf-kernel`, `--fused-gelu`, `--fused-sdpa`, `--fused-decode`, `--kv-quant`); a fork flag overrides one. See [server-config.md](server-config.md#fidelity-tiers-and-the-decode-route---l1----l2----l3). |
 | `--no-open` | Don't auto-open the chat UI |
 
 Endpoints: `/v1/chat/completions`, `/v1/completions`, `/v1/messages`,

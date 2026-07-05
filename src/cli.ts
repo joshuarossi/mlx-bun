@@ -146,8 +146,10 @@ Model & quality:
   --hlg-toe <nats>          HLG shadow rolloff scale  [default: 6]
   --hlg-pivot-offset <nats> HLG pivot: nats below the top token  [default: 6]
 
-Parity tier (sets the whole decode route; a per-fork flag below overrides):
-  --l1                      Bit-for-bit IDENTICAL to mlx-lm (bf16 KV, unfused)
+Parity tier (an ALIAS for the per-fork flags below; each expands to the fastest
+set of forks that still holds the guarantee — a per-fork flag overrides one):
+  --l1                      Bit-for-bit IDENTICAL to mlx-lm (bf16 KV, compiled
+                            activations — the faithful @mx.compile kernels)
   --l2                      Bit-for-bit IDENTICAL to mlx-optiq (quantized KV +
                             fused prefill SDPA, stock unfused decode — the
                             optiq-golden composition; perf-kernel stays OFF)
@@ -158,9 +160,16 @@ Parity tier (sets the whole decode route; a per-fork flag below overrides):
 
 Performance levers (A/B levers; defaults are the measured winners):
   --compiled-decode on|off  Compiled decode graphs  [default: on]
+  --compiled-activations on|off
+                            Compiled geglu/swiglu (mlx-lm's @mx.compile kernel —
+                            bit-exact AND fewer dispatches). off = the uncompiled
+                            composition (same parity, slower)  [default: on]
   --perf-kernel on|off      Fused quantized-KV decode-SDPA Metal kernel —
                             NOT bit-exact, envelope-gated (an L3 lever; the
                             perf side of the compat A/B)  [default: on]
+  --fused-gelu on|off       Custom fused-geglu Metal kernel (one pass) — NOT
+                            bit-exact vs mlx-lm (pow/tanh math-lib residual), an
+                            L3 lever  [default: off]
   --fused-decode on|off     Fused-decode experiment lever  [default: off]
   --fused-sdpa on|off       Fused SDPA path  [default: on]
   --force-wire              Wire weights into memory at load
@@ -756,23 +765,24 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
     if (v === "off" || v === "0" || v === "false") return false;
     console.error(`--${name} expects on|off (got "${v}")`); process.exit(1);
   };
-  type Preset = { kv: "off" | "config"; perf: boolean; fusedSdpa: boolean; compiled: boolean; fusedDecode: boolean };
+  type Preset = { kv: "off" | "config"; perf: boolean; fusedSdpa: boolean; compiled: boolean; fusedDecode: boolean; compiledAct: boolean; fusedGelu: boolean };
   const TIERS: Record<string, Preset> = {
     // A tier is the GUARANTEE; within it we default to the FAST kernel that still
     // holds it, and expose the slow one as an opt-in. compiled-decode is BIT-EXACT
     // with uncompiled (compiled-decode.test: on==off) → free speed, so it's ON in
-    // EVERY tier (--compiled-decode off is the slow, same-tier opt-in). fused-sdpa
-    // matches OPTIQ bit-for-bit (tier-a goldens, fused-sdpa.test) and is
-    // quantized-KV only → it's the L2 bridge, a no-op on L1's bf16. perf-kernel is
-    // NOT: it's an original flash-decoding kernel, envelope-gated against our own
-    // frozen trajectory (perf-kernel-oracle.test) — bare --l2 must ship the
-    // optiq-golden decode composition (stock unfused L=1), so perf-kernel is
-    // L3/explicit-only (--perf-kernel on opts a tier into it by choice). This is
-    // the decode-axis difference between L2 and L3; L3 also owns the no-oracle
-    // FEATURES (HLG sampler, expert offload, batched mixed-precision).
-    l1: { kv: "off",    perf: false, fusedSdpa: false, compiled: true, fusedDecode: false }, // = mlx-lm bit-for-bit (bf16)
-    l2: { kv: "config", perf: false, fusedSdpa: true,  compiled: true, fusedDecode: false }, // = mlx-optiq bit-for-bit
-    l3: { kv: "config", perf: true,  fusedSdpa: true,  compiled: true, fusedDecode: false }, // best perf (envelope-gated decode)
+    // EVERY tier (--compiled-decode off is the slow, same-tier opt-in). compiled
+    // ACTIVATIONS (geglu/swiglu) go through the SAME libmlx as mlx-lm's `@mx.compile`
+    // → same kernel, bit-exact AND faster → ON in every tier (--compiled-activations
+    // off is the slower same-parity opt-in). fused-sdpa matches OPTIQ bit-for-bit
+    // (tier-a goldens, fused-sdpa.test) and is quantized-KV only → it's the L2 bridge,
+    // a no-op on L1's bf16. perf-kernel and the custom fused-gelu Metal kernel are NOT
+    // bit-exact (perf-kernel = original flash-decode online softmax; fused-gelu =
+    // pow/tanh math-lib residual vs mlx-lm) → OFF in L1/L2, L3/explicit-only opt-ins
+    // (--perf-kernel on / --fused-gelu on opt a tier into them by choice). L3 also owns
+    // the no-oracle FEATURES (HLG sampler, expert offload, batched mixed-precision).
+    l1: { kv: "off",    perf: false, fusedSdpa: false, compiled: true, fusedDecode: false, compiledAct: true, fusedGelu: false }, // = mlx-lm bit-for-bit (bf16)
+    l2: { kv: "config", perf: false, fusedSdpa: true,  compiled: true, fusedDecode: false, compiledAct: true, fusedGelu: false }, // = mlx-optiq bit-for-bit
+    l3: { kv: "config", perf: true,  fusedSdpa: true,  compiled: true, fusedDecode: false, compiledAct: true, fusedGelu: false }, // best perf (envelope-gated decode)
   };
   const tier = flag("l1") ? "l1" : flag("l2") ? "l2" : flag("l3") ? "l3" : null;
   const p = tier ? TIERS[tier]! : null;
@@ -786,6 +796,12 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
   set("MLX_BUN_PERF_KERNEL", pick("perf-kernel", p?.perf));
   set("MLX_BUN_FUSED_DECODE", pick("fused-decode", p?.fusedDecode));
   set("MLX_BUN_NO_FUSED_SDPA", pick("fused-sdpa", p?.fusedSdpa), true); // inverted env
+  // Compiled activations (the faithful geglu/swiglu — mlx-lm's @mx.compile kernel).
+  // One fork drives both env vars; qwen3/qwen3.5/universal compile unconditionally,
+  // so this toggles gemma geglu + minicpm5 swiglu (the only unfused-capable sites).
+  set("MLX_BUN_COMPILED_GEGLU", pick("compiled-activations", p?.compiledAct));
+  set("MLX_BUN_COMPILED_SWIGLU", pick("compiled-activations", p?.compiledAct));
+  set("MLX_BUN_FUSED_GELU", pick("fused-gelu", p?.fusedGelu)); // custom L3 metal geglu (not bit-exact)
   const kv = opt("kv-quant"); // explicit --kv-quant overrides the tier
   if (kv === "off") return { kvQuant: "off" };
   if (kv === "config") return { kvQuant: "config" };
@@ -923,6 +939,8 @@ function runtimeSummary(o: import("./server").ServerOptions): string {
   const lever = (env: string, dflt: string) => process.env[env] ?? dflt;
   return `kv-quant ${kv} · compiled-decode ${lever("MLX_BUN_COMPILED_DECODE", "1") === "1" ? "on" : "off"}` +
     ` · perf-kernel ${perfKernelEnabled() ? "on" : "off"}` +
+    (lever("MLX_BUN_COMPILED_GEGLU", "1") === "0" ? " · compiled-activations off" : "") +
+    (lever("MLX_BUN_FUSED_GELU", "0") === "1" ? " · fused-gelu on" : "") +
     (lever("MLX_BUN_FUSED_DECODE", "0") === "1" ? " · fused-decode on" : "") +
     (o.batch && o.batch > 1 ? ` · batch ${o.batch}` : "") +
     (o.defaultThinking !== undefined ? ` · thinking ${o.defaultThinking ? "on" : "off"}` : "") +

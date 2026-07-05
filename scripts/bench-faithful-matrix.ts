@@ -1,19 +1,21 @@
-// Faithful-base optimization matrix — the "which of our old optimizations still
-// buys anything on top of the mlx-lm-parity base" benchmark.
+// L1 kernel matrix — the faithful (compiled-activation) kernels are now the DEFAULT,
+// so this measures what removing each faithful kernel COSTS, and what the L3 custom
+// kernels ADD on top, all vs the mlx-lm oracle.
 //
 //   bun scripts/bench-faithful-matrix.ts [--tokens 128] [--prompt-tokens N]
 //       [--models cpm5,e4b,12B]
 //
-// For each model it runs, back-to-back on the same machine state:
-//   - mlx-lm            (the parity oracle, via bench.ts --baseline)
-//   - faithful base     (MLX_BUN_FAITHFUL=1 — proven byte-identical to mlx-lm)
-//   - faithful + each of our optimizations layered on individually
-//   - default           (our current shipped perf path)
-// and prints decode/prefill tok-s + peak mem + the decode ratio vs mlx-lm, so the
-// serving default can be chosen from data. Uses bench.ts's DIRECT arena (spawns
-// the mlx-lm python reference; starts no servers). NOT preflight-gated — treat
-// absolutes as indicative on a loaded machine; the RATIOS are fair since every
-// cell for a model runs back-to-back.
+// For each model it runs, back-to-back on the same machine state (bf16 KV throughout
+// — kv-quant/perf-kernel are the separate L2/L3 axis, measured by bench-modes.ts):
+//   - mlx-lm                (the parity oracle, via bench.ts --baseline)
+//   - L1 default (faithful) (compiled geglu/swiglu + compiled-decode — our default)
+//   - − compiled-decode     (cost of dropping the whole-step compile; gemma)
+//   - − compiled activations (cost of the uncompiled geglu/swiglu composition)
+//   - + custom fused-gelu    (does the L3 Metal geglu beat compiled-geglu?; gemma)
+// and prints decode/prefill tok-s + peak mem + the decode ratio vs mlx-lm. Uses
+// bench.ts's DIRECT arena (spawns the mlx-lm python reference; starts no servers).
+// NOT preflight-gated — treat absolutes as indicative on a loaded machine; the
+// RATIOS are fair since every cell for a model runs back-to-back.
 
 export {}; // module marker (enables top-level await)
 
@@ -40,17 +42,15 @@ const MODELS: Record<string, string> = {
 // equal the faithful base, so we skip them to keep the run lean + the table clean.
 const GEMMA_KEYS = new Set(["e4b", "12B", "26B"]);
 
-// mlx-bun configs. `env` overrides layer onto the faithful base; the flag set
-// explicitly always wins over the FAITHFUL-derived default (see src/faithful.ts).
+// mlx-bun configs. `env` overrides layer onto the default (which is now the faithful
+// L1 kernel set); an explicitly-set flag ("1"/"0") always wins over the code default.
 interface Cell { name: string; baseline?: boolean; env?: Record<string, string>; gemmaOnly?: boolean }
 const CELLS: Cell[] = [
   { name: "mlx-lm (oracle)", baseline: true },
-  { name: "faithful base (=mlx-lm)", env: { MLX_BUN_FAITHFUL: "1" } },
-  { name: "faithful +compiled-decode", env: { MLX_BUN_FAITHFUL: "1", MLX_BUN_COMPILED_DECODE: "1" }, gemmaOnly: true },
-  { name: "faithful +geglu-kernel", env: { MLX_BUN_FAITHFUL: "1", MLX_BUN_FUSED_GELU: "1" }, gemmaOnly: true },
-  { name: "faithful +perf-kernel", env: { MLX_BUN_FAITHFUL: "1", MLX_BUN_PERF_KERNEL: "1" }, gemmaOnly: true },
-  { name: "faithful +fused-decode", env: { MLX_BUN_FAITHFUL: "1", MLX_BUN_FUSED_DECODE: "1" }, gemmaOnly: true },
-  { name: "default (shipped perf path)", env: {} },
+  { name: "L1 default (faithful)", env: {} },
+  { name: "− compiled-decode", env: { MLX_BUN_COMPILED_DECODE: "0" }, gemmaOnly: true },
+  { name: "− compiled activations", env: { MLX_BUN_COMPILED_GEGLU: "0", MLX_BUN_COMPILED_SWIGLU: "0" } },
+  { name: "+ custom fused-gelu (L3)", env: { MLX_BUN_FUSED_GELU: "1" }, gemmaOnly: true },
 ];
 
 interface Row { cell: string; decode: number; prefill: number; peak: number }
@@ -63,9 +63,9 @@ async function run(model: string, cell: Cell): Promise<Row | null> {
   const proc = Bun.spawn(args, {
     stdout: "pipe", stderr: "pipe",
     // Start from a clean slate each cell so a prior config's env can't leak.
-    env: { ...process.env, MLX_BUN_FAITHFUL: "", MLX_BUN_COMPILED_DECODE: "",
-           MLX_BUN_FUSED_GELU: "", MLX_BUN_PERF_KERNEL: "", MLX_BUN_FUSED_DECODE: "",
-           ...(cell.env ?? {}) },
+    env: { ...process.env, MLX_BUN_COMPILED_DECODE: "", MLX_BUN_COMPILED_GEGLU: "",
+           MLX_BUN_COMPILED_SWIGLU: "", MLX_BUN_FUSED_GELU: "", MLX_BUN_PERF_KERNEL: "",
+           MLX_BUN_FUSED_DECODE: "", ...(cell.env ?? {}) },
   });
   const [out, err, code] = await Promise.all([
     new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
@@ -84,7 +84,7 @@ async function run(model: string, cell: Cell): Promise<Row | null> {
   return { cell: cell.name, decode: +decode, prefill: +prefill, peak: +peak };
 }
 
-const lines: string[] = [`# Faithful-base optimization matrix (${TOKENS} decode tok${PROMPT_TOKENS ? `, ${PROMPT_TOKENS}-tok prompt` : ""})\n`];
+const lines: string[] = [`# L1 kernel matrix (${TOKENS} decode tok${PROMPT_TOKENS ? `, ${PROMPT_TOKENS}-tok prompt` : ""})\n`];
 for (const key of MODEL_KEYS) {
   const query = MODELS[key] ?? key;
   console.log(`\n=== ${key} (${query}) ===`);
