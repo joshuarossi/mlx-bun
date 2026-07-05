@@ -28,23 +28,29 @@ current local-inference Pareto frontier in this space:
 | throughput | higher | batched aggregate tok/s (bench-serving-load) |
 | intelligence | higher | frozen eval suite (MMLU/GSM8K/IFEval/HumanEval/BFCL/HashHop, evals.sqlite) |
 
-**THE CONTRACT (Josh, 2026-07-05, the sentence that governs everything):
-we are a drop-in replacement for mlx-lm — the original oracle — and the
-contract is on the OUTPUT: we must produce the SAME BITS as mlx-lm.** How
-the bits are produced (storage layout, kernels, scheduling, batching
-structure, engine, language) is unconstrained implementation space — the
-space we compete in. Corollaries:
-- Bit-PRESERVING implementation work (compiled decode, pipelining, batched
-  buffers, paged KV, readback plumbing) needs no oracle *implementation*,
-  no tier, and no Lab — its acceptance test is the existing bit-exact
-  output gate. Never say "we can't build X because there's no oracle for
-  X" when X is an implementation: the oracle is the OUTPUT, and it exists.
-- Bit-CHANGING output work (new quant schemes, original math kernels, new
-  samplers) is what the scheme→oracle map and the Lab govern.
-- "Faithful" (kernel-set identity) is the easiest ROUTE to same-bits —
-  same libmlx graph ⇒ same kernels ⇒ same bits — not the contract itself.
-  The one genuine constraint bit-exactness imposes on implementations is
-  math/reduction order (the perf kernel died exactly there).
+**THE CONTRACT (Josh, 2026-07-05):** two rules, and they compose:
+
+1. **The drop-in promise: we must produce the SAME BITS as mlx-lm** — the
+   original oracle. How the bits are produced (storage, kernels,
+   scheduling, engine, language) is the space we compete in.
+2. **The oracle for ANYTHING is whoever already does that thing.** Want
+   mlx-lm's decode → mlx-lm is the oracle. Want optiq's mixed KV → optiq.
+   Want vLLM's paged attention → **vLLM is the oracle**: read their
+   implementation, copy what they did, verify against them, then optimize.
+   This is the standing house method (FaithfulMiniCPM5 = copy mlx-lm;
+   mixed KV = copy optiq; batching = copy BatchGenerator; SSD tier = copy
+   oMLX). Never frame a capability someone ships as oracle-less. "No
+   oracle" means NOBODY does the thing — genuine research — and that, and
+   only that, is what the Lab is for.
+
+Verification form follows the oracle's framework: same-framework oracles
+(mlx-lm, optiq — same libmlx) admit bit-exact gates; cross-framework
+oracles (vLLM — CUDA/PyTorch) anchor the ALGORITHM and behavior (block
+semantics, sharing correctness, utilization), while rule 1 still binds the
+final output bits in the default regime. "Faithful" kernel-set identity is
+the easiest route to same-bits, not the contract; the one constraint
+bit-exactness puts on implementations is math/reduction order (the perf
+kernel died exactly there).
 
 Two consequences drive everything below:
 
