@@ -195,6 +195,27 @@ export class MlxArray {
     return new Uint8Array(toArrayBuffer(p!, 0, this.nbytes)).slice();
   }
 
+  /** Read back an INTEGER array without enqueueing a cast kernel: eval +
+   *  direct buffer read for uint32/int32. A cast (`astype`) is a NEW op that
+   *  queues BEHIND everything already dispatched on the GPU stream — on the
+   *  batched decode hot path, reading the pipeline register via toFloat32
+   *  stalled the "overlapped" token read for a FULL step of GPU work every
+   *  token (the core of the Phase-0 B=1 gap; unified-engine plan Phase 2).
+   *  Non-integer dtypes fall back to the rounded float readback. */
+  toIntTokens(): number[] {
+    if (this.dtype === Dtype.uint32) {
+      this.eval();
+      const p = C.mlx_array_data_uint32(this.handle);
+      return [...new Uint32Array(toArrayBuffer(p!, 0, this.size * 4))];
+    }
+    if (this.dtype === Dtype.int32) {
+      this.eval();
+      const p = C.mlx_array_data_int32(this.handle);
+      return [...new Int32Array(toArrayBuffer(p!, 0, this.size * 4))];
+    }
+    return [...this.toFloat32()].map((x) => Math.round(x));
+  }
+
   /** Read back as float32 (casts on GPU if needed, then copies out). */
   toFloat32(): Float32Array {
     const src = this.dtype === Dtype.float32 ? this : this.astype(Dtype.float32);

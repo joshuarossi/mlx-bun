@@ -70,6 +70,20 @@ import { toLogprobs } from "../sampler";
  *  MLX_BUN_COMPILED_DECODE): 1 ⇒ read each step's tokens synchronously. */
 const NO_PIPELINE = process.env.MLX_BUN_BATCH_NO_PIPELINE === "1";
 
+/** Per-step phase timing (MLX_BUN_BATCH_STEP_TRACE=1, debug-only): where a
+ *  decode step's wall time goes — graph BUILD+dispatch (host), the pipelined
+ *  READ of the previous step's tokens (GPU wait), row EMIT (onToken/SSE), and
+ *  the GAP between consecutive steps (drive-loop + everything else). Sums
+ *  print via `stepTraceReport()` (the b1 profile experiment calls it). */
+const STEP_TRACE = process.env.MLX_BUN_BATCH_STEP_TRACE === "1";
+const STEP_T = { t0: 0, lastEnd: 0, build: 0, read: 0, emit: 0, gap: 0, n: 0 };
+export function stepTraceReport(): string {
+  const per = (x: number) => (STEP_T.n ? (x / STEP_T.n).toFixed(3) : "0");
+  const s = `steps=${STEP_T.n} build=${per(STEP_T.build)}ms read=${per(STEP_T.read)}ms emit=${per(STEP_T.emit)}ms gap=${per(STEP_T.gap)}ms (per step)`;
+  STEP_T.t0 = STEP_T.lastEnd = STEP_T.build = STEP_T.read = STEP_T.emit = STEP_T.gap = STEP_T.n = 0;
+  return s;
+}
+
 // NOTE — oMLX-style "adaptive burst decode" (several steps per event-loop
 // yield, omlx/engine_core.py _step_burst) was ported here 2026-07-02 and
 // REFUTED by measurement: on this runtime it REGRESSED cpm5 B=4 aggregate
@@ -513,6 +527,11 @@ export class BatchScheduler {
    *  step; filter drops the row (mlx-lm behaves identically). Length-finished
    *  rows are known in advance and are NOT sampled (placeholder slot). */
   async #step(): Promise<void> {
+    if (STEP_TRACE) {
+      const now = performance.now();
+      if (STEP_T.lastEnd) STEP_T.gap += now - STEP_T.lastEnd;
+      STEP_T.t0 = now;
+    }
     const rows = this.#running;
     const B = rows.length;
     const inners = this.#inners!;
@@ -542,9 +561,18 @@ export class BatchScheduler {
       // Per-layer forward cache: rot layers use the persistent
       // BatchedRotatingCache directly; ssm layers are already [B,...] state
       // with no padding (no mask, no per-row RoPE — pass through); full
-      // layers get a fresh BatchedDecodeMaskCache wrapper.
+      // layers get a fresh BatchedDecodeMaskCache wrapper — UNLESS no row
+      // has left padding. UNPADDED FAST PATH (unified-engine plan Phase 2,
+      // the B=1 case above all): with every leftPad 0 the wrapper's two
+      // jobs vanish — the padding mask (KVCache.makeMask(1) is the empty
+      // mask, exactly the serial loop's) and the per-row rope positions
+      // (every row sits at the shared scalar offset). The bare cache then
+      // dispatches the SAME per-step graph serial builds; the wrapper
+      // otherwise costs a host mask build + ~8 device nodes PER FULL LAYER
+      // PER TOKEN (the Phase-0 constant ~4–6 ms/step host tax at B=1).
+      const unpadded = this.#fullLeftPad.every((p) => p === 0);
       const fwd: Cache[] = inners.map((c) =>
-        c instanceof BatchedRotatingCache || c instanceof SSMCache
+        c instanceof BatchedRotatingCache || c instanceof SSMCache || unpadded
           ? c
           : new BatchedDecodeMaskCache(c, B, this.#fullLeftPad, null),
       );
@@ -606,6 +634,7 @@ export class BatchScheduler {
     }
     this.#steps++;
     if (this.#steps % 256 === 0) clearCache(); // serial's cadence, not per-step
+    if (STEP_TRACE) STEP_T.build += performance.now() - STEP_T.t0;
 
     // Read + emit the PREVIOUS step's tokens while the new step computes.
     const prev = this.#pendingToks;
@@ -619,10 +648,15 @@ export class BatchScheduler {
       return;
     }
     if (prev) {
-      const toks = [...prev.toFloat32()].map((x) => Math.round(x));
+      const tRead = STEP_TRACE ? performance.now() : 0;
+      const toks = prev.toIntTokens();
       prev.dispose();
+      if (STEP_TRACE) STEP_T.read += performance.now() - tRead;
+      const tEmit = STEP_TRACE ? performance.now() : 0;
       await this.#emitRows(toks); // also filters #pendingToks on eviction
+      if (STEP_TRACE) { STEP_T.emit += performance.now() - tEmit; STEP_T.n++; }
     }
+    if (STEP_TRACE) STEP_T.lastEnd = performance.now();
   }
 
   /** Read out the pipeline register (if any): emit its tokens and evict
@@ -631,7 +665,7 @@ export class BatchScheduler {
     const prev = this.#pendingToks;
     if (!prev) return;
     this.#pendingToks = null;
-    const toks = [...prev.toFloat32()].map((x) => Math.round(x));
+    const toks = prev.toIntTokens();
     prev.dispose();
     // Grammar rows: the flushed tokens are EMITTED below, so their matchers
     // must advance here — #stepGrammar's accept only covers tokens it reads
@@ -667,7 +701,7 @@ export class BatchScheduler {
     //     Cold start: pendingToks null → prevVals empty (prefill handled tok0).
     const prev = this.#pendingToks;
     const prevVals: number[] =
-      prev ? [...prev.toFloat32()].map((x) => Math.round(x)) : [];
+      prev ? prev.toIntTokens() : [];
     if (process.env.MLX_BUN_GRAMMAR_DEBUG === "1")
       console.log(`[sg] B=${B} prevVals=${JSON.stringify(prevVals)} current=${JSON.stringify(rows.map((r) => r.current))} sampled=${JSON.stringify(rows.map((r) => r.sampled))}`);
 
@@ -680,8 +714,10 @@ export class BatchScheduler {
     let nextToks: MlxArray | null = null;
     const anyLive = rows.some((r) => r.sampled < r.req.maxTokens);
     if (anyLive) {
+      // Unpadded fast path — same rule as #step (bare caches == serial graph).
+      const unpadded = this.#fullLeftPad.every((p) => p === 0);
       const fwd: Cache[] = inners.map((c) =>
-        c instanceof BatchedRotatingCache || c instanceof SSMCache
+        c instanceof BatchedRotatingCache || c instanceof SSMCache || unpadded
           ? c
           : new BatchedDecodeMaskCache(c, B, this.#fullLeftPad, null),
       );
@@ -838,7 +874,7 @@ export class BatchScheduler {
   }
 
   #readToken(t: MlxArray): number {
-    const v = Math.round(t.toFloat32()[0]!);
+    const v = t.toIntTokens()[0]!;
     t.dispose();
     return v;
   }

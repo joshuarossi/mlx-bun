@@ -51,6 +51,20 @@ optimized model → + mixed-precision KV → + LoRA → + spec decode → +
 structured output → × sampling — all STACKABLE on one engine, no lane
 routing.
 
+**Phase 2 DECODE GAP CLOSED same day:** the batch lane's B=1 tax was two
+bugs — `toFloat32()` on the pipeline register enqueued an astype BEHIND
+the just-dispatched next step (full-step stall per token; fixed with
+`MlxArray.toIntTokens()` raw reads), and per-layer per-step mask/rope
+wrapper churn (fixed with the unpadded fast path: bare caches = the
+serial graph). B=1 through the batch lane: cpm5 129→264 (in-process
+ratio 0.994), e4b 45→57.6 (0.93, remainder = compiled decode), 12B
+25.6→29.7 (1.00). Suite 1045/0 green; batched oracles 11/11 (the CPM
+extend-join golden failure PRE-EXISTS — stash-proven). `--batch` default
+flip to 32 stays GATED on Phase-3 items: prompt cache for batched rows
+(the TTFT gap is cache hits vs re-prefill) + compiled decode at B=1
+(e4b's last 7%). Quantized KV under batching = Phase 3.1, a full build
+(zero quantized support in the batched machinery today).
+
 ## Where we were (2026-07-02)
 
 **Current release: v0.0.10** (2026-07-02, shipped on all channels) —

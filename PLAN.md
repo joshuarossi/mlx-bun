@@ -2245,7 +2245,21 @@ own kv8 trails its bf16; it buys memory headroom only, ~1.3 GB on 12B @16k).
   suspects: per-layer per-step BatchedDecodeMaskCache mask rebuild (24
   layers × ~8 device nodes/step on cpm5), per-token emit path. Phase 2
   worklist in unified-engine-frontier-plan.md §8.
-- Open: cpm5 vs optiq mixed ~3–6% gap; 12B KL-max outlier.
+- **Phase 2 decode gap CLOSED 2026-07-05**: the B=1 batch-lane tax was
+  (1) `toFloat32()` readback of the pipeline register — the astype queued
+  BEHIND the next step's dispatched graph, stalling the pipelined read a
+  full GPU step per token (fix: `MlxArray.toIntTokens()` raw int reads;
+  general rule: readbacks in pipelined loops must not CREATE ops); and
+  (2) per-layer per-step BatchedDecodeMaskCache churn (fix: unpadded fast
+  path — bare caches dispatch the serial graph). B=1: cpm5 129→264
+  (0.994 in-process), e4b 45→57.6 (0.93), 12B 25.6→29.7 (1.00).
+  Instrumentation: MLX_BUN_BATCH_STEP_TRACE=1 + scripts/experiments/
+  batch-b1-step-profile.ts. `--batch` 32 default stays gated (plan §8).
+- Open: cpm5 vs optiq mixed ~3–6% gap; 12B KL-max outlier; CPM
+  extend-join oracle test fails PRE-EXISTINGLY on this M1 Max
+  (batched-decode-parity, stash-proven unrelated to Phase 2) — regen the
+  golden or root-cause; e4b compiled-decode-at-B=1 (last 7%); prompt
+  cache for batched rows (TTFT).
 
 ## Context / lore
 

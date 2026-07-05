@@ -57,6 +57,7 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_array_data_float16: { args: [u64], returns: P },
   mlx_array_data_bfloat16: { args: [u64], returns: P },
   mlx_array_data_uint32: { args: [u64], returns: P },
+  mlx_array_data_int32: { args: [u64], returns: P },
   mlx_array_item_float32: { args: [P, u64], returns: i32 },
   // streams
   mlx_default_gpu_stream_new: { args: [], returns: u64 },

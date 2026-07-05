@@ -370,10 +370,33 @@ speed):
 - **Phase 1 — the deletion pass** (§6): dead kernels, flag surface, docs,
   Lab scaffolding (move perf-kernel + its bench + oracle tests). Gate: full
   suite green; naked defaults byte-identical to today's L1 route.
-- **Phase 2 — engine unification**: scheduler owns everything; B=1 fast path
-  = today's pipelined/compiled step; gateway routing rules deleted; `--batch`
-  → `--max-concurrency` (default 32, mlx-lm parity). Gates: `GATE-B1-SPEED`,
-  `GATE-B1-PARITY`, B=2 goldens still token-exact, TTFT within 5% at B=1.
+- **Phase 2 — engine unification** — **DECODE GAP CLOSED 2026-07-05.** The
+  ~4–6 ms/step host tax decomposed into exactly two bugs, both fixed:
+  1. **The pipelined token read enqueued an `astype` kernel** —
+     `prev.toFloat32()` on the int token array created a NEW cast op that
+     queued BEHIND the entire just-dispatched next step on the GPU stream,
+     stalling the "overlapped" read for a FULL step of GPU work every
+     token (this alone was the bulk of the gap; zero host/GPU overlap,
+     proven by NO_PIPELINE ≈ pipelined). Fix: `MlxArray.toIntTokens()` —
+     eval + raw uint32/int32 buffer read, no cast (mirrors serial's
+     `itemUint32`).
+  2. **Per-layer per-step mask/rope wrapper churn**: `#step` rebuilt a
+     `BatchedDecodeMaskCache` + array mask for every full layer every
+     token even when no row had left padding. Fix: the unpadded fast path —
+     bare caches (KVCache.makeMask(1) = the empty mask, scalar rope) →
+     the batch step dispatches the SAME graph the serial loop builds.
+
+  Measured after (B=1 through the batch lane, same SSE harness as Phase 0):
+  cpm5 129→**264** (serial 281 SSE / in-process ratio **0.994**), e4b
+  45→**57.6** (0.93 — remainder = compiled decode, serial-only today),
+  12B 25.6→**29.7** (**1.00**). Batched parity oracles green (11/11
+  applicable; the CPM extend-join golden failure PRE-EXISTS this work —
+  proven by stash/rerun — and is logged as an open item).
+  **Remaining before the `--batch` 32 default flip**: compiled decode
+  inside the B=1 step (e4b's last 7%), prompt cache for batched rows
+  (TTFT: serial hits the cache on repeat prompts, batch re-prefills —
+  e4b 126 vs 54 ms, 12B 246 vs 82 ms), then GATE-B1-SPEED ≥99% on all
+  three + GATE-B1-PARITY (bit-exact vs L1 goldens) + B=2 goldens intact.
 - **Phase 3 — composition**: quantized KV under batching (B=1-row
   batched-quant bit-exact vs serial kv-config — the gate batching-perf-path
   already names), then prompt-cache reuse for batched rows, then chunked
