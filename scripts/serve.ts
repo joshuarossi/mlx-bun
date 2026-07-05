@@ -2,13 +2,16 @@
 //
 //   bun scripts/serve.ts [--model <dir>] [--port 8080]
 //                        [--adapter id=dir]...   (mount LoRA adapters)
-//                        [--no-kv-quant]         (force bf16 KV)
+//                        [--kv-config]           (per-layer mixed KV, kv_config.json)
+//                        [--no-kv-quant]         (bf16 KV — the default, explicit)
 //                        [--kv-bits N]           (uniform override)
 //                        [--memory-budget GB]    (admission control)
 //
-// Mixed-precision KV is ON by default when the repo ships kv_config.json
-// (optiq serve's headline behavior; full-attention layers only until
-// Phase 9 — sliding layers stay bf16 either way).
+// bf16 KV is the DEFAULT (naked = L1, decided 2026-07-05: quantized KV
+// measured 5-20% slower decode at ≤16k and pays only in memory headroom).
+// --kv-config opts into the per-layer mixed scheme (optiq serve's
+// headline behavior; full-attention layers only — sliding layers stay
+// bf16 either way).
 //
 // --memory-budget refuses to load models whose weights can't serve
 // within the budget, rejects requests whose prompt + max_tokens exceed
@@ -44,14 +47,17 @@ for (let i = 0; i < process.argv.length; i++) {
 
 const kvQuant = process.argv.includes("--no-kv-quant")
   ? ("off" as const)
-  : process.argv.includes("--kv-bits")
-    ? Number(arg("kv-bits", "8"))
-    : undefined;
+  : process.argv.includes("--kv-config")
+    ? ("config" as const)
+    : process.argv.includes("--kv-bits")
+      ? Number(arg("kv-bits", "8"))
+      : undefined; // server default = bf16 (L1)
 
 const server = createServer(ctx, port, { kvQuant, memoryBudgetBytes });
-const kvDesc = kvQuant === "off" ? "bf16"
-  : kvQuant ? `uniform kv${kvQuant}`
-  : ctx.kvConfig?.length ? "mixed (kv_config.json)" : "bf16 (no kv_config)";
+const kvDesc = kvQuant === "config"
+  ? (ctx.kvConfig?.length ? "mixed (kv_config.json)" : "bf16 (no kv_config in repo)")
+  : typeof kvQuant === "number" ? `uniform kv${kvQuant}`
+  : "bf16";
 console.log(`KV cache: ${kvDesc}`);
 if (memoryBudgetBytes) console.log(`memory budget: ${budgetGB} GB (admission control on)`);
 console.log(`mlx-bun serving ${ctx.modelId} at http://localhost:${server.port}/v1 (ready in ${(performance.now() - t0).toFixed(0)} ms)`);

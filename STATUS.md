@@ -9,7 +9,33 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 **L2** = mlx-optiq bit-exact parity · **L3** = original optimizations beyond both,
 gated by math checks + KL/quality (not bit-exactness).
 
-## Where we are (2026-07-02)
+## Where we are (2026-07-05)
+
+**Naked default = `--l1` (DECIDED 2026-07-05, uncommitted):** the full h2h
+pass (benchmarks-h2h-2026-07-05, M1 Max 32GB) confirmed the L1 faithful
+kernel set at exact speed parity with mlx-lm (1.00× cpm5/e4b/12B, decode
+AND at-16k) while **no output-changing lever beat that baseline in a
+paired A/B**: fused-decode 1.00×, fused-gelu +0–1%, the perf arm
+0.62–0.93× on e4b (its one win, 12B @16k +6%, carried a KL WARN), and
+quantized KV 5–20% slower decode than bf16 at ≤16k on BOTH stacks. So:
+`applyDecodeRoute` now defaults the tier to l1 (bf16 KV, perf-kernel
+default flipped OFF in code, serve/library kv default bf16); every
+non-faithful kernel is opt-in via `--l2`/`--l3`/per-fork flags, and the
+L1 baseline is the base future optimizations must beat (paired A/B) to
+earn a default. Prior perf work is untrusted until re-proven against it.
+Docs updated same session: server-config.md, cli.md, features-matrix.md,
+README, faithful-l1-consolidation.md (superseding note).
+**Benchmark harness hardened same session** (the 2026-07-05 report's
+0.64×-vs-optiq "regression" was a mid-pass slow-window artifact —
+refuted by the 07-04 pass's 1.05×): run-spread stability retries +
+`unstable`/`stabilized` tags (pair verdicts withheld on unstable cells),
+readable model names, chip/RAM machine labels, comparison-0 + lever-A/B
+sections now render into the unified report, python-baseline prefill
+warmup (the "816 vs 397" cpm5 prefill was compile-inclusion asymmetry),
+KL verdict 24→96 steps, preflight high-CPU foreign-process check
+(knowledgeconstructiond at 87% CPU was the likely slow-window culprit).
+
+## Where we were (2026-07-02)
 
 **Current release: v0.0.10** (2026-07-02, shipped on all channels) —
 batching parity with oMLX (`--batch 4` matches/beats on all three shared

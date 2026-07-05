@@ -23,10 +23,10 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | Continuous batching (mlx-lm B=N parity) | **off** (serial) | batch | L1 | `--batch <n>` |
 | Prompt cache (prefix KV reuse) | on, 2 GB | serial | — | `--prompt-cache <GB>` (0 = off) |
 | **SSD KV cold tier** (cache survives eviction + restarts) | off | serial | — | `--ssd-cache <dir>` (+ `-max`, `-verify`) |
-| Mixed-precision KV (`kv_config.json`, optiq default) | **on** when the model ships one | serial | L2 | `--kv-quant config\|off\|4\|8` |
+| Mixed-precision KV (`kv_config.json`, optiq's scheme) | **off** — opt-in (default flipped to bf16 2026-07-05; quantized KV trades 5–20% decode for memory headroom) | serial | L2 | `--kv-quant config\|off\|4\|8`, `--l2`/`--l3` |
 | Compiled decode (bit-exact graph replay) | on, every tier | serial | L1/L2 | `--compiled-decode on\|off` |
 | Compiled activations (faithful geglu/swiglu — mlx-lm's `@mx.compile`) | **on**, every tier | both | L1 | `--compiled-activations on\|off` |
-| Fused SDPA (optiq-exact quantized-KV attention) | on (no-op on bf16) | serial | L2 | `--fused-sdpa on\|off` |
+| Fused SDPA (optiq-exact quantized-KV attention) | follows `--kv-quant`: on for `config`, off for uniform/bf16 | serial | L2 | `--fused-sdpa on\|off` |
 | Custom fused-gelu Metal kernel (single-pass; not bit-exact vs mlx-lm) | **off** | serial | L3 | `--fused-gelu on` |
 | Flash perf-kernel (envelope-gated decode) | **off** | serial | L3 | `--l3` / `--perf-kernel on` |
 | **Speculative decoding** (two-model, mlx-lm parity) | off | serial (forces all-serial) | L1 | `--draft-model <path\|query>`, `--num-draft-tokens` |

@@ -339,12 +339,14 @@ agent CLIs like pi/OpenClaw via their provider config.
   request with the `adapter` body field (`"id"`, stacked `"a+b"`, or
   `"none"`). The base model never reloads; an unselected adapter costs
   nothing.
-- **Mixed-precision KV** — when the model repo ships `kv_config.json`
-  (every Gemma-4 OptiQ repo does), per-layer KV quantization applies
-  automatically; the config sets bits per layer for both full-attention
-  and sliding-window (rotating) layers (Phase 9). Measured decode-neutral
-  at 8k on the 12B with KV bytes ÷4 on the quantized layers. `--kv-quant off` forces bf16; `--kv-quant 4|8`
-  forces uniform bits. Long prefills over quantized caches run a fused
+- **Mixed-precision KV** — opt in with `--kv-quant config` when the model
+  repo ships `kv_config.json` (every Gemma-4 OptiQ repo does): per-layer
+  KV quantization with bits set per layer for both full-attention and
+  sliding-window (rotating) layers (Phase 9). It trades decode speed
+  (measured 5–20% at ≤16k, on mlx-lm's uniform scheme too) for KV bytes
+  ÷4 on the quantized layers — reach for it when context, not speed, is
+  the constraint. The default KV cache is bf16 (the mlx-lm-parity L1
+  route); `--kv-quant 4|8` selects uniform bits instead. Long prefills over quantized caches run a fused
   FlashAttention-2 tiling that never materializes the full scores
   matrix (bounded transient; `MLX_BUN_NO_FUSED_SDPA=1` to disable).
   `MLX_BUN_FUSED_DECODE=1` extends the tiling to single-token decode —

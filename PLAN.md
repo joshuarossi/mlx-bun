@@ -2188,6 +2188,48 @@ serial (upstream parity); grammar+spec = the novel constrained verify walk
   per-machine overrides; tests/universal-rope.test.ts header has the regen
   recipe); docs truth pass (server-config.md tiers/composition/recipes).
 
+## Decision: naked default = --l1; levers must beat the baseline (2026-07-05, Josh)
+
+The 2026-07-05 h2h pass (M1 Max 32GB) delivered the "true baseline" the
+faithful→L1 consolidation was building toward: **the L1 faithful kernel set
+is at exact decode parity with mlx-lm on every model** (comparison 0:
+1.00× cpm5/e4b/12B; comparison 1: 1.00–1.07×), and **no output-changing
+lever beat it in a paired A/B** — fused-decode 1.00×, fused-gelu +0–1%,
+perf arm 0.62–0.93× on e4b (only win 12B @16k +6%, with a KL WARN),
+quantized KV 5–20% slower decode than bf16 at ≤16k on BOTH stacks (mlx-lm's
+own kv8 trails its bf16; it buys memory headroom only, ~1.3 GB on 12B @16k).
+
+- Decision (Josh): **naked = `--l1`**; prior perf-optimization work is
+  untrusted until re-proven; the L1 baseline is the base all future
+  optimization is measured against.
+- Implemented: `applyDecodeRoute` defaults the tier to l1; `perfKernelEnabled`
+  code default flipped OFF; serve/library kv default bf16 (`scripts/serve.ts`
+  gained `--kv-config`); explicit `--kv-quant` picks its oracle's composition
+  (config→fused sdpa, uniform→unfused = mlx-lm's algorithm). Docs updated in
+  the same session (server-config/cli/features-matrix/README + superseding
+  note in faithful-l1-consolidation.md).
+- The bar for any lever to earn a default back: paired A/B win vs L1 on a
+  stable pass (no `unstable` tag), plus KL PASS if output-changing.
+- Same session: benchmark harness hardened — run-spread stability retries
+  (the 0.64×-vs-optiq "regression" was a mid-pass slow-window artifact;
+  07-04's clean pass measured 1.05×), readable model names, chip/RAM machine
+  labels, comparison-0 + lever-A/B report sections, python-baseline prefill
+  warmup (prefill convention now symmetric), KL 24→96 steps, preflight
+  high-CPU foreign-process check.
+- Comparison-2 golden gap CLOSED same session: `scripts/regen-mixed-kv-goldens.ts`
+  (bf16 prefill → per-layer quantize incl. rotating → stock unfused decode,
+  mirroring optiq's install_mixed_kv semantics = our maybeQuantizeKv) +
+  `tests/mixed-kv-parity.test.ts` — per-step logits BIT-EXACT (maxDiff 0)
+  + 48-token greedy prefix, green on first run.
+- Also fixed same session: the faithful-matrix e4b/12B uniform-kv8 ORACLE
+  cells were silently missing because STOCK mlx-lm raises
+  `NotImplementedError("RotatingKVCache Quantization NYI")` on gemma sliding
+  layers — bench.ts's `--baseline-kv <bits>` now applies optiq's
+  `patch_rotating_to_quantized` (cache class only; the attention kernel stays
+  mlx-lm's; no-op on cpm5). Verified: e4b kv8 oracle cell runs.
+- Open: e4b perf-kernel regression root-cause (why does the kernel that
+  helps 12B hurt e4b?); cpm5 vs optiq mixed ~3–6% gap; 12B KL-max outlier.
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the

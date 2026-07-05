@@ -242,7 +242,7 @@ describe.skipIf(!have4b)("compiled decode parity (e4b: per-layer input + KV shar
       // This test measures GRAPH-REPLAY FIDELITY: the compiled trace must
       // reproduce the uncompiled graph's result op-for-op. That only holds
       // when both sides run the SAME kernels. The perf kernel
-      // (MLX_BUN_PERF_KERNEL, default on) is deliberately NOT bit-exact
+      // (MLX_BUN_PERF_KERNEL, default OFF since 2026-07-05) is deliberately NOT bit-exact
       // (fused online softmax — reordered reductions, traded for speed) and
       // cannot live inside a compiled trace (CustomKernel has no
       // output_shapes). So with it on, the uncompiled path runs the custom

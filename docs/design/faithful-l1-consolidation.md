@@ -31,6 +31,18 @@ selection system.
 fastest / most-intelligent / most-memory-efficient, no parity worries. The user who
 needs the mlx-lm drop-in guarantee reads the docs and passes `--l1`.
 
+> **SUPERSEDED 2026-07-05 — naked default is now `--l1`.** The full h2h pass
+> (benchmarks-h2h-2026-07-05, M1 Max 32GB) showed the L1 faithful kernel set at
+> exact speed parity with mlx-lm (1.00×) on cpm5/e4b/12B while every
+> output-changing lever failed to beat it in a paired A/B: fused-decode 1.00×,
+> fused-gelu +0–1%, the perf arm 0.62–0.93× on e4b (its one win, 12B @16k +6%,
+> carried a KL WARN), and quantized KV 5–20% slower decode than bf16 at ≤16k on
+> BOTH stacks (mlx-lm's own kv8 trails its bf16). "Best experience" and "L1"
+> turned out to be the same thing today. Decision: naked = the l1 preset
+> (`applyDecodeRoute` defaults the tier), quantized KV and every non-faithful
+> kernel are opt-in (`--l2`/`--l3`/per-fork flags), and the L1 baseline is the
+> base all future optimization must beat in a paired A/B to earn a default.
+
 **`--l1/--l2/--l3` are pure ALIASES, not modes.** Each expands to a fixed set of the
 individual per-fork flags — [`applyDecodeRoute`, cli.ts:752](../../src/cli.ts) just
 `set()`s env vars, and a per-fork flag overrides the alias. Two invariants follow,

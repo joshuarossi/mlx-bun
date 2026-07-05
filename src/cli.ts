@@ -120,9 +120,11 @@ Model & quality:
   --kv-quant <mode>         KV cache quantization: config (per-layer
                             kv_config.json when the model ships one), off
                             (bf16), or 4 / 8 (uniform bits)
-                            [default: config; bf16 under --batch N — the
-                            batched engine is bf16-only, so an explicit
-                            --kv-quant routes those requests to the serial path]
+                            [default: off — quantized KV measured 5-20% slower
+                            decode than bf16 at ≤16k (on mlx-lm too); it buys
+                            memory headroom, so opt in when context is tight.
+                            The batched engine (--batch N) is bf16-only: an
+                            explicit --kv-quant routes those requests serial]
   --thinking <true|false>   Default for the chat template's enable_thinking
                             variable (CPM and other hybrid-reasoning models);
                             a request's chat_template_kwargs overrides it
@@ -155,10 +157,13 @@ set of forks that still holds the guarantee — a per-fork flag overrides one):
                             optiq-golden composition; perf-kernel stays OFF)
   --l3                      Best performance, no bit-exact oracle (KL + test
                             gated; adds the envelope-gated perf kernel).
-                            No tier given = the per-flag defaults below,
-                            which equal --l3 today.
+                            No tier given = --l1 (decided 2026-07-05: the L1
+                            faithful kernels match mlx-lm 1.00x on every model
+                            and no output-changing lever has beaten that
+                            baseline in a paired A/B yet — each stays opt-in
+                            until it does).
 
-Performance levers (A/B levers; defaults are the measured winners):
+Performance levers (A/B levers; the naked default is the L1 set):
   --compiled-decode on|off  Compiled decode graphs  [default: on]
   --compiled-activations on|off
                             Compiled geglu/swiglu (mlx-lm's @mx.compile kernel —
@@ -166,12 +171,16 @@ Performance levers (A/B levers; defaults are the measured winners):
                             composition (same parity, slower)  [default: on]
   --perf-kernel on|off      Fused quantized-KV decode-SDPA Metal kernel —
                             NOT bit-exact, envelope-gated (an L3 lever; the
-                            perf side of the compat A/B)  [default: on]
+                            perf side of the compat A/B)  [default: off —
+                            regressed e4b 0.62-0.93x in the 2026-07-05 pass]
   --fused-gelu on|off       Custom fused-geglu Metal kernel (one pass) — NOT
                             bit-exact vs mlx-lm (pow/tanh math-lib residual), an
                             L3 lever  [default: off]
   --fused-decode on|off     Fused-decode experiment lever  [default: off]
-  --fused-sdpa on|off       Fused SDPA path  [default: on]
+  --fused-sdpa on|off       Fused SDPA path (quantized KV only)  [default:
+                            follows --kv-quant — on for config (the optiq
+                            composition), off for uniform 4/8 (the mlx-lm
+                            composition) and bf16]
   --force-wire              Wire weights into memory at load
   --expert-offload          MoE only: serve experts from a page-aligned file
                             mmap (built on first use) — keeps the model out of
@@ -784,25 +793,39 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
     l2: { kv: "config", perf: false, fusedSdpa: true,  compiled: true, fusedDecode: false, compiledAct: true, fusedGelu: false }, // = mlx-optiq bit-for-bit
     l3: { kv: "config", perf: true,  fusedSdpa: true,  compiled: true, fusedDecode: false, compiledAct: true, fusedGelu: false }, // best perf (envelope-gated decode)
   };
-  const tier = flag("l1") ? "l1" : flag("l2") ? "l2" : flag("l3") ? "l3" : null;
-  const p = tier ? TIERS[tier]! : null;
+  // NAKED DEFAULT = L1 (decided 2026-07-05): with no tier flag you get the
+  // mlx-lm bit-for-bit route. The 2026-07-05 benchmark pass showed the L1
+  // faithful kernel set matches mlx-lm 1.00× on every model while the
+  // output-changing levers earn nothing (fused-decode 1.00×, fused-gelu
+  // +0-1%) or actively regress (perf arm 0.62–0.93× on e4b; quantized KV
+  // costs 5–20% decode at ≤16k on BOTH stacks and pays only in memory).
+  // Until a lever beats this baseline in a paired A/B it stays opt-in:
+  // --l2/--l3 or the per-fork flags are the escape hatches, and the L1
+  // baseline is the base all future optimization is measured against.
+  const tier = flag("l1") ? "l1" : flag("l2") ? "l2" : flag("l3") ? "l3" : "l1";
+  const p = TIERS[tier]!;
+  const kv = opt("kv-quant"); // explicit --kv-quant overrides the tier
   const pick = (name: string, base: boolean | undefined): boolean | null => {
     const ex = onOff(name); return ex !== null ? ex : (base ?? null); // explicit flag wins, else tier preset
   };
   const set = (env: string, val: boolean | null, invert = false) => {
     if (val !== null) process.env[env] = (invert ? !val : val) ? "1" : "0";
   };
-  set("MLX_BUN_COMPILED_DECODE", pick("compiled-decode", p?.compiled));
-  set("MLX_BUN_PERF_KERNEL", pick("perf-kernel", p?.perf));
-  set("MLX_BUN_FUSED_DECODE", pick("fused-decode", p?.fusedDecode));
-  set("MLX_BUN_NO_FUSED_SDPA", pick("fused-sdpa", p?.fusedSdpa), true); // inverted env
+  // Explicit --kv-quant picks the composition its ORACLE uses: config (the
+  // optiq mixed scheme) runs optiq's fused SDPA (the L2 golden composition);
+  // uniform 4/8 runs UNFUSED (mlx-lm's quantized_scaled_dot_product_attention
+  // — the bit-exact L1-eligible scheme). --fused-sdpa still overrides either.
+  const fusedSdpaBase = kv === "config" ? true : kv != null ? false : p.fusedSdpa;
+  set("MLX_BUN_COMPILED_DECODE", pick("compiled-decode", p.compiled));
+  set("MLX_BUN_PERF_KERNEL", pick("perf-kernel", p.perf));
+  set("MLX_BUN_FUSED_DECODE", pick("fused-decode", p.fusedDecode));
+  set("MLX_BUN_NO_FUSED_SDPA", pick("fused-sdpa", fusedSdpaBase), true); // inverted env
   // Compiled activations (the faithful geglu/swiglu — mlx-lm's @mx.compile kernel).
   // One fork drives both env vars; qwen3/qwen3.5/universal compile unconditionally,
   // so this toggles gemma geglu + minicpm5 swiglu (the only unfused-capable sites).
-  set("MLX_BUN_COMPILED_GEGLU", pick("compiled-activations", p?.compiledAct));
-  set("MLX_BUN_COMPILED_SWIGLU", pick("compiled-activations", p?.compiledAct));
-  set("MLX_BUN_FUSED_GELU", pick("fused-gelu", p?.fusedGelu)); // custom L3 metal geglu (not bit-exact)
-  const kv = opt("kv-quant"); // explicit --kv-quant overrides the tier
+  set("MLX_BUN_COMPILED_GEGLU", pick("compiled-activations", p.compiledAct));
+  set("MLX_BUN_COMPILED_SWIGLU", pick("compiled-activations", p.compiledAct));
+  set("MLX_BUN_FUSED_GELU", pick("fused-gelu", p.fusedGelu)); // custom L3 metal geglu (not bit-exact)
   if (kv === "off") return { kvQuant: "off" };
   if (kv === "config") return { kvQuant: "config" };
   if (kv) {
@@ -810,7 +833,7 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
     if (![4, 8].includes(bits)) { console.error(`--kv-quant expects config|off|4|8 (got "${kv}")`); process.exit(1); }
     return { kvQuant: bits };
   }
-  return p ? { kvQuant: p.kv } : {};
+  return { kvQuant: p.kv };
 }
 
 function serverRuntimeFlags(): { port: number; serverOptions: import("./server").ServerOptions } {

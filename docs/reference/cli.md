@@ -35,13 +35,13 @@ Common flags (full list in [server-config.md](server-config.md)):
 | `--port <n>` | Listen port (default 8080) |
 | `--memory-budget <GB>` | Reject loads/requests that can't fit the budget |
 | `--kv-budget <GB>` | Aggregate KV budget across concurrent batch rows: over-budget joiners queue until rows finish; a request over the budget alone is rejected (off unless set) |
-| `--kv-quant config\|off\|4\|8` | KV cache quantization: per-layer `kv_config.json`, bf16, or uniform bits (default `config`) |
+| `--kv-quant config\|off\|4\|8` | KV cache quantization: per-layer `kv_config.json`, bf16, or uniform bits (default `off` — quantized KV trades 5–20% decode speed for memory headroom, so it's opt-in) |
 | `--adapter <dir>` | Mount a LoRA adapter at startup (`--adapter-path` accepted as the mlx_lm.server alias) |
 | `--draft-model <path\|query>` | Speculative decoding (mlx_lm.server parity): a smaller same-tokenizer model drafts, the main model verifies — exact results, faster decode when drafts land. Serial lane only: with `--batch N` a mounted draft routes every request serial |
 | `--num-draft-tokens <n>` | Drafts per verify round (default 3) |
 | `--batch <n>` | Continuous-batched bf16 serving, mlx-lm B=N parity (default 1 = serial) |
 | `--temperature` / `--top-p` / `--top-k` / `--max-tokens` | Server-wide sampling defaults (per-request fields still win) |
-| `--l1` / `--l2` / `--l3` | Parity tier alias: bit-exact to mlx-lm / bit-exact to mlx-optiq / best performance. Each expands to per-fork flags (`--compiled-decode`, `--compiled-activations`, `--perf-kernel`, `--fused-gelu`, `--fused-sdpa`, `--fused-decode`, `--kv-quant`); a fork flag overrides one. See [server-config.md](server-config.md#fidelity-tiers-and-the-decode-route---l1----l2----l3). |
+| `--l1` / `--l2` / `--l3` | Parity tier alias: bit-exact to mlx-lm / bit-exact to mlx-optiq / best performance. **No tier = `--l1`** (the default since 2026-07-05 — output-changing levers are opt-in until they beat the L1 baseline in a paired A/B). Each expands to per-fork flags (`--compiled-decode`, `--compiled-activations`, `--perf-kernel`, `--fused-gelu`, `--fused-sdpa`, `--fused-decode`, `--kv-quant`); a fork flag overrides one. See [server-config.md](server-config.md#fidelity-tiers-and-the-decode-route---l1----l2----l3). |
 | `--no-open` | Don't auto-open the chat UI |
 
 Endpoints: `/v1/chat/completions`, `/v1/completions`, `/v1/messages`,

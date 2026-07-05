@@ -1096,22 +1096,20 @@ export function createServer(
   // lane (see GenerationGateway.willBatch).
   const batch = Math.max(1, Math.floor(serverOptions.batch ?? 1));
 
-  // KV-quant scheme, resolved once: kv_config.json by default (optiq
-  // serve's headline behavior), overridable to uniform bits or off.
-  // KV quant scheme. The serial default is the model's mixed-precision config
-  // (optiq parity). But `--batch N` is a bf16 continuous-batching MODE (= mlx-lm
-  // B=N parity), so when KV quant is left UNSET under `--batch N` it defaults to
-  // bf16 — the batch path engages out of the box. An EXPLICIT --kv-quant
-  // (config / bits) is still honored, but those requests then route to the
-  // serial path (batched quantized KV is the L2 follow-up); warned below.
+  // KV-quant scheme, resolved once. UNSET now means bf16 (flipped
+  // 2026-07-05 with the naked-=-L1 default): quantized KV measured 5–20%
+  // SLOWER decode than bf16 at ≤16k on every model — on mlx-lm too (its
+  // kv8 oracle trails its own bf16) — so it pays only in memory headroom
+  // and must be an explicit opt-in (--kv-quant config|4|8, or --l2/--l3
+  // whose presets pass it explicitly). The CLI always passes kvQuant now;
+  // this fallback is the library-user default and matches the CLI's.
   const configScheme = ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};
   const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart"> =
     serverOptions.kvQuant === "off" ? {}
     : serverOptions.kvQuant === "config" ? configScheme
     : typeof serverOptions.kvQuant === "number"
       ? { kvBits: serverOptions.kvQuant, quantizedKvStart: 0 }
-    : batch > 1 ? {} // unset + batching → bf16 mode (Option B)
-    : configScheme; // unset + serial → optiq-parity mixed-precision default
+    : {}; // unset → bf16 (L1 default; quantized KV is opt-in)
   if (batch > 1 && (kvScheme.kvConfig?.length || kvScheme.kvBits))
     console.warn(
       `[batch] --batch ${batch} with explicit --kv-quant: batched serving (v1) is ` +

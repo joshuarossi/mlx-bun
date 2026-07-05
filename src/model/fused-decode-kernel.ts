@@ -26,8 +26,10 @@ import { Dtype } from "../mlx/ffi";
 import { MetalKernel } from "../mlx/metal-kernel";
 import * as ops from "../mlx/ops";
 
-/** Perf-mode lever: DEFAULT ON (2026-06-11 cleared-machine pass, ~1.02x @8k)
- *  — but an L3/explicit-only lever, OFF in the bare --l2 tier. This is an
+/** Perf-mode lever: DEFAULT OFF (flipped 2026-07-05; the 2026-06-11 pass
+ *  measured ~1.02x @8k on the 12B, but the 2026-07-05 pass measured
+ *  0.62–0.93× on e4b at every context — see perfKernelEnabled below).
+ *  An L3/explicit-only lever, OFF in the bare --l2 tier. This is an
  *  mlx-bun ORIGINAL kernel, NOT a port of optiq's fused decode, and the
  *  quantized-KV parity goldens do NOT track it: the optiq-golden decode
  *  composition is stock UNFUSED L=1 (scripts/regen-kvq-goldens.ts — the fused
@@ -41,7 +43,12 @@ import * as ops from "../mlx/ops";
  *  optimizations stay on either way — this lever only toggles the
  *  parity-breaking decode kernel.) */
 export function perfKernelEnabled(): boolean {
-  return process.env.MLX_BUN_PERF_KERNEL !== "0";
+  // Default OFF (flipped 2026-07-05): the perf arm measured 0.62–0.93× vs
+  // compat on e4b at every context and its only win (12B @16k, +6%) came
+  // with a KL WARN. An output-changing kernel must BEAT the L1 baseline in
+  // a paired A/B to earn a default; this one doesn't yet. Opt in with
+  // --perf-kernel on / --l3 (MLX_BUN_PERF_KERNEL=1).
+  return process.env.MLX_BUN_PERF_KERNEL === "1";
 }
 
 /** Dispatch counter (the oracle gate asserts the kernel actually ran). */
