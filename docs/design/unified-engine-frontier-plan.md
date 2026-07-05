@@ -80,23 +80,77 @@ Two consequences drive everything below:
 
 ## 3. The architecture (four layers, each with one job)
 
+```mermaid
+flowchart TB
+    subgraph clients["CLIENTS"]
+        direction LR
+        PI["Pi agent<br/>chat UI + terminal"]
+        CLI["mlx-bun CLI<br/>generate · eval · train"]
+        API["any OpenAI client"]
+        LIB["TS/Bun library import"]
+    end
+    subgraph surface["SERVING SURFACE — src/server.ts"]
+        V1["OpenAI /v1 API"]
+        ADMIT["admission control<br/>--memory-budget · --kv-budget"]
+    end
+    subgraph engine["ENGINE — one loop (Phase 2: concurrency IS the batch size)"]
+        SCHED["continuous-batching scheduler<br/>--batch N = cap (default 32 after B=1 gate)"]
+        B1["B=1 fast path<br/>pipelined + compiled step (today's serial loop)"]
+        BN["B>=2 batched step<br/>extend-join · bit-exact vs mlx-lm at same composition"]
+        FEAT["shared, implemented ONCE: prompt cache ·<br/>SSD KV tier · spec decode · grammar"]
+    end
+    subgraph models["MODEL LAYER — fingerprint-routed, NEVER flag-routed"]
+        OPT["optimized-verified graphs<br/>gemma4 12B/e4b/26B · MiniCPM5 · Qwen3/3.5"]
+        UNI["universal graph — any HF model, best effort"]
+    end
+    subgraph numerics["NUMERICS / KV SCHEMES — per-scheme oracles"]
+        BF["bf16 (default) — oracle: mlx-lm"]
+        UKV["uniform kv 4/8 — oracle: mlx-lm --kv-bits"]
+        MKV["mixed kv_config — oracle: mlx-optiq"]
+        LAB["LAB: TurboQuant · mixed-bpw weights ·<br/>new kernels — KL + eval gates"]
+    end
+    HW["libmlx (Metal) via bun:ffi — the only runtime link"]
+    PI --> V1
+    CLI --> V1
+    API --> V1
+    LIB --> SCHED
+    V1 --> ADMIT --> SCHED
+    SCHED -->|1 active| B1
+    SCHED -->|2+ active| BN
+    SCHED -.-> FEAT
+    B1 --> OPT
+    BN --> OPT
+    B1 --> UNI
+    BN --> UNI
+    OPT --> BF
+    OPT --> UKV
+    OPT --> MKV
+    UNI --> BF
+    MKV -.-> LAB
+    BF --> HW
+    UKV --> HW
+    MKV --> HW
 ```
-┌─ Serving surface ──────────────────────────────────────────────┐
-│ OpenAI /v1 API · Pi (chat/CLI) · web UI · MCP                   │
-├─ Engine (ONE loop) ────────────────────────────────────────────┤
-│ Continuous-batching scheduler; a lone request = batch of 1.     │
-│ Admission (memory budget, kv-budget), prompt cache, SSD tier,   │
-│ spec decode, grammar — implemented ONCE, apply to every request.│
-├─ Model layer ──────────────────────────────────────────────────┤
-│ Universal graph: ANY HF model, best effort (the wide funnel).   │
-│ Optimized-verified graphs: per-model custom files (gemma4-12b/  │
-│ e4b, minicpm5, qwen3.5, …), selected by config fingerprint —    │
-│ never by flags — each with parity goldens + bench entries.      │
-├─ Numerics / KV schemes ────────────────────────────────────────┤
-│ bf16 (default) · uniform 4/8 · mixed per-layer (kv_config) ·    │
-│ future: TurboQuant, oQ-style weights. Each scheme has an oracle │
-│ or a Lab gate (§5).                                             │
-└────────────────────────────────────────────────────────────────┘
+
+How a model becomes servable, and the promotion path:
+
+```mermaid
+flowchart LR
+    Q["mlx-bun serve QUERY"] --> REG["registry (local HF cache)"]
+    REG -->|not downloaded| GET["mlx-bun get"]
+    GET --> REG
+    REG --> FP["config.json fingerprint"]
+    FP -->|optimized-verified| OPTF["custom graph for THAT model"]
+    FP -->|anything else| UNIF["universal graph"]
+```
+
+```mermaid
+flowchart LR
+    A["runs on universal"] --> B["custom per-model graph<br/>(port the oracle's exact ops)"]
+    B --> C["bit-exact goldens vs scheme oracle"]
+    C --> D["h2h bench >= 1.00x mlx-lm, stable pass"]
+    D --> E["OPTIMIZED-VERIFIED badge"]
+    E -.-> F["Lab experiments on top<br/>paired A/B + expiry"]
 ```
 
 **The model-layer philosophy (Josh's, verbatim intent):** the universal layer
