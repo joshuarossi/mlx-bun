@@ -241,6 +241,32 @@ obligation — KV under adapter A ≠ base KV, so the prompt cache keys by
 adapter (the SSD tier already does). When placing a feature, name its
 component at each layer and each component's gate.
 
+**Sampling's placement (and the debranching invariant).** The model
+graph's contract ENDS AT LOGITS. Sampling is *specified* at layer 4 (the
+request's params become a per-row sampler closure) and *executed* at
+layer 3 (each step, on each row's [1,V] slice; vectorized when all-greedy)
+— it never enters layer 1. This is the load-bearing placement behind the
+layer-1 debranching goal (Josh: the generated file pre-decides all ops and
+shapes; the path is a serial line with no branchable checks): everything
+per-request-variable is either POST-GRAPH (sampling, grammar masks, stop
+logic) or DATA the fixed graph consumes (adapter weights, caches). Mixed
+adapter/no-adapter batches stay branch-free via vLLM's Punica/SGMV pattern
+— every row runs the adapter math, non-adapter rows at scale 0; data, not
+control flow (vLLM = the oracle for per-slot LoRA batching). Debranching
+backlog: the per-token runtime checks still in generated files (`L > 1`,
+`fusedSdpaRuntimeOk`) are per-GENERATION-decidable → hoist them out of the
+token path; compiled decode already achieves the fully-debranched line
+dynamically (trace once, replay).
+
+**The option surface IS the four layers.** Users adjust: (1) how the model
+graph works — universal vs optimized file, compiled decode, future
+unrolled/fused variants; (2) how the quantization works — weights bpw,
+KV scheme, future TurboQuant; (3) how the scheduler works — concurrency
+cap, KV budget, prefill chunking, spec policy; (4) the serving surface —
+endpoints, adapters, structured output, sampling defaults, caches,
+multi-model. Flags, help text, and reference docs should be ARRANGED in
+these four groups.
+
 **Composition truth (2026-07-05, source-verified to the line AND
 empirically proven live):** "does mixed-precision KV work with batched
 requests?" — optiq serve as shipped: **NO** (install_mixed_kv hooks
