@@ -5,6 +5,26 @@ after the naked-=-L1 decision). This is the design that makes the library
 "make sense": one engine, one honest flag surface, per-scheme oracles, and a
 Lab where optimization experiments live until they earn defaults.
 
+## 0. The goals (Josh, 2026-07-05 — the two-part product)
+
+1. **A drop-in replacement for mlx-lm: support EVERYTHING they do, with
+   bit-exact parity.** This is the default. Parity is only DEFINED over
+   outputs mlx-lm can produce — you cannot ask for "mlx-lm's bits under
+   mixed-precision KV" because mlx-lm cannot output anything under it.
+2. **Beyond mlx-lm — features you opt into by deliberately trading the
+   parity guarantee for something you value MORE**, each answering to its
+   own oracle (whoever already ships it):
+   - **multi-model switching** (oracle: optiq per-request switching / oMLX
+     EnginePool) — ❌ missing today; the newest backlog item (layer 4).
+   - **mixed-precision KV cache** (oracle: optiq) — ✅ serial, bit-exact;
+     ❌ under batching → Phase 3.1.
+   - **prefix sharing** (oracle: vLLM/SGLang) — ⚠️ whole-prefix reuse only;
+     true cross-request sharing (one system prompt's KV, N rows) missing.
+   - **prompt caching** (oracle: mlx-lm's LRUPromptCache) — ✅ byte-capped
+     + SSD cold tier beyond anyone; ❌ batched rows → Phase 3.2.
+   - **structured outputs** (oracle: oMLX/xgrammar) — ✅ serial + batched,
+     byte-identical vs oMLX; composes with spec decode.
+
 Supersedes: batching-v2-plan.md's standing decision that `--batch N` is a
 mode switch (reversal documented in §4, with the new rationale — the old
 rejection's determinism argument is answered, not ignored). Builds on:
