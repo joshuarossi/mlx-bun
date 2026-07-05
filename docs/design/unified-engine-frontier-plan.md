@@ -161,6 +161,45 @@ graph file, bit-exact parity goldens vs the scheme oracle, h2h bench entry at
 ≥1.00× vs mlx-lm, eval-suite scores recorded. "Optimized and verified" is a
 badge with teeth, and the badge list is the marketing claim.
 
+### Layer responsibilities (the contract, 2026-07-05)
+
+1. **Model graph** — one forward step given hidden + caches; attention
+   dispatches on the CACHE TYPE it is handed (bf16 → ops.sdpa, quantized →
+   quantizedSdpa); shape-generic in B; selected by fingerprint, never flags.
+   *Responsibility: numerics of a step, for any B, for whatever cache it's
+   given.*
+2. **KV scheme (cache classes)** — the memory format and its semantics:
+   bf16 / uniform / mixed per-layer; conversion timing (bf16 prefill →
+   quantize populated rows — the optiq hook semantics); in batched form the
+   multi-row layout (padding, per-row rope, merge/extract/extend/filter).
+   *Responsibility: the scheme PER ROW — a row's bytes and math identical
+   solo or batched. This is where each scheme's oracle binds.*
+3. **Engine (scheduler)** — rows: admission, solo prefill, join/merge, the
+   step loop, per-row sampling, eviction, pipelining, the concurrency cap.
+   Never implements scheme math; calls layer-2 operations.
+   *Responsibility: how many rows and when — never what a row's bytes mean.*
+4. **Serving surface** — endpoints, per-request features (adapters,
+   grammar, sampling, spec policy), prompt cache (keyed fingerprint +
+   effective scheme), admission budgets. *Responsibility: requests, not
+   tensors.*
+
+**Composition truth (2026-07-05, source-verified to the line):** "does
+mixed-precision KV work with batched requests?" — optiq serve 0.2.15 as
+shipped: **NO** (install_mixed_kv hooks stream_generate, the serial path;
+mlx_lm.server 0.31.3 contains zero quantization in its 1,904 lines and
+BatchKVCache has no to_quantized — batchable requests decode bf16). mlx-bun
+today: **NO** (willBatch routes shape.kvQuant serial). mlx-bun after Phase
+3.1: **YES — the build**, and a first on this stack. In layer terms the
+limitation is purely layer 2: the quantized schemes only have single-row
+implementations, so layer 3 has nothing to call — not an engine limitation,
+not a model limitation. Phase 3.1 = give layer 2 batched quantized caches
+(copy the serial per-row ops that already bit-match optiq), teach layer 3 to
+call them at join/evict, hand layer 1 what it already dispatches on, then
+delete `shape.kvQuant` from willBatch — that deletion IS the feature.
+Bonus finding from the same review: optiq's Mac-safe concurrency default is
+**8** (they warn mlx-lm's 32 OOMs unified memory under burst) — adopt 8 as
+the `--batch` default, superseding the earlier 32.
+
 ## 4. The engine: concurrency IS the batch size
 
 **Decision (Josh, 2026-07-05): batching is determined by how many concurrent
