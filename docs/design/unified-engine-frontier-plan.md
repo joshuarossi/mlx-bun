@@ -231,6 +231,16 @@ badge with teeth, and the badge list is the marketing claim.
    effective scheme), admission budgets. *Responsibility: requests, not
    tensors.*
 
+**Features decompose ALONG the layers (that's the model working, not
+leaking).** Per-request LoRA is the worked example: layer 1 = the math (a
+parameterization — `Wx + scale·B(Ax)` — oracle-gated vs mlx-lm's tuner);
+layer 3 = the policy (which rows run which adapter; today one active
+adapter per batch, per-slot adapters are the matrix item); layer 4 = the
+surface (`adapter` field, mount/hot-swap, discovery); plus one sideways
+obligation — KV under adapter A ≠ base KV, so the prompt cache keys by
+adapter (the SSD tier already does). When placing a feature, name its
+component at each layer and each component's gate.
+
 **Composition truth (2026-07-05, source-verified to the line AND
 empirically proven live):** "does mixed-precision KV work with batched
 requests?" — optiq serve as shipped: **NO** (install_mixed_kv hooks
@@ -446,9 +456,18 @@ speed):
    imatrix as prior art. Gate: perplexity + frozen 6-task eval at equal bpw.
    The purest beyond-the-frontier play we know: same memory, more
    intelligence. (arXiv-lens candidate.)
-2. **TurboQuant KV** (Josh) — next-gen KV quantization; slots into the §5
-   Lab row (no external oracle → KL + eval + long-context retrieval gates).
-   Composes with §4's batched-quantized-KV target.
+2. **TurboQuant KV** (Josh) — ORTHOGONAL to mixed precision and composes
+   with it: mixed precision is the ALLOCATION axis (how many bits per
+   transformer layer, optiq's sensitivity map), TurboQuant is the
+   QUANTIZER axis (how a given bit budget encodes each K/V vector, within
+   a layer — rotation-based, online, calibration-free). Composition =
+   sensitivity allocation × better quantizer: more fidelity at the same
+   KV bytes. Architecture: a layer-2 cache format + a layer-1 attention
+   kernel keyed by cache type (same shape as optiq's scheme). Oracle: the
+   paper + its reference implementation anchor the ALGORITHM (read them
+   first, per the oracle rule); the output is genuinely novel (no serving
+   stack ships it) → eval-suite gates. Composes with Phase 3.1's batched
+   quantized buffers.
 3. **Speculative decoding depth** — DFlash/DSpark behind the existing
    `DraftSource` seam; decode tok/s at zero quality cost when drafts land.
 4. **Per-model graph work from the baseline** — the optimized-verified
