@@ -1,6 +1,22 @@
 # SSD cold tier for the prompt/KV cache
 
 Status: **LANDED P1–P3 (2026-07-02, same day)** — P4 hardening extras remain.
+**Layer-0 upgrade (2026-07-05, unified-engine plan):** D2 finished properly —
+the two-tier take/restore/trim dance moved INSIDE `PromptCache.take()`
+(structural `ColdTier` interface; the server binds SsdCacheStore + model into
+it), so EVERY consumer tiers automatically: the serial lane's hand-rolled
+block in runGeneration is gone, and the BATCH SCHEDULER restores prefixes
+from disk at admission (gated end-to-end: tests/batch-scheduler.test.ts
+"SSD tier through the batch lane"). `PromptCache.onPut` drives the debounced
+write-behind snapshot for both lanes' puts. NEW: **idle demotion**
+(`--ssd-demote-idle`, default 300 s with the tier on) — entries unused past
+the threshold spill to disk and free their GPU arrays; RAM drains between
+agent bursts while prefixes stay reachable via zero-copy restore. The sweep
+runs only when the gateway is fully idle (a runExclusive would otherwise
+drain a live batch). Rationale (Josh): prefill is the cost being avoided —
+12B prefill is 168 tok/s, so a 30k agent context is ~3 min of GPU compute vs
+a ~1 s NVMe restore; SSD-vs-RAM (40×) is the wrong comparison, SSD-vs-
+recompute (50–180×, growing with context) is the real one.
 
 **Measured (M1 Max, MiniCPM5, 13.7k-token prefix, kv_config quant):**
 - Restart TTFT: **12,083 ms (full prefill) → 236 ms** restored — 2% of full

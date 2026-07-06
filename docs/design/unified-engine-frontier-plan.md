@@ -674,6 +674,23 @@ speed):
   ROT_KEEP/ROT_DROP/ROT_IDX bisection) and gemma-twin-b1-repro.ts
   (TWIN_MASK/TWIN_ROPE toggles — rope isolated in two runs once the
   B=1 repro existed).
+- **Layer 0 — the SSD tier becomes a property of the store (LANDED
+  2026-07-05)**: PromptCache gains a structural ColdTier and runs the
+  two-tier take (RAM peek vs cold find → zero-copy restore + trim)
+  INSIDE take(), so the batch scheduler restores prefixes from disk at
+  admission with zero scheduler changes (gated E2E on cpm5: demote →
+  disk → batch-lane restore, cached=prompt−1, KL 1.5e-3); onPut drives
+  the write-behind snapshot for both lanes; NEW idle demotion
+  (--ssd-demote-idle, default 300 s with the tier) spills idle entries
+  and FREES their GPU memory — RAM drains between agent bursts, every
+  prefix stays reachable. Also fixes a latent flaw: the old serial flow
+  trimmed the RAM entry before deciding the SSD copy won. The economics
+  (Josh): the SSD competes with RECOMPUTE, not RAM — 12B prefill 168
+  tok/s ⇒ a 30k agent context is ~3 min of prefill vs ~1 s of NVMe
+  restore, and the ratio grows with context. Follow-ups noted: extract
+  the generic blob-store mechanics (fingerprint dirs, atomic writes,
+  scan/recovery, LRU cap) for a second client when one lands (adapters,
+  expert offload); memory-pressure-triggered demotion (vs idle-only).
 - **Phase 4 — the frontier program opens** (§7 order).
 
 ## 9. Decisions log (was: open questions)

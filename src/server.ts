@@ -142,6 +142,11 @@ export interface ServerOptions {
   ssdCacheDir?: string;
   /** Byte cap for the SSD tier (default 32 GiB). */
   ssdCacheMaxBytes?: number;
+  /** Idle-demotion threshold in seconds (`--ssd-demote-idle`): prompt-cache
+   *  entries unused this long spill to the SSD tier and free their GPU
+   *  memory (Layer 0 — RAM drains between bursts, prefixes stay reachable
+   *  via zero-copy restore). Default 300 when the tier is on; 0 disables. */
+  ssdDemoteIdleSec?: number;
   /** Verify every tensor hash on restore (`--ssd-cache-verify`) — reads all
    *  bytes eagerly, defeating lazy fault-in; integrity paranoia only. */
   ssdCacheVerify?: boolean;
@@ -1150,11 +1155,33 @@ export function createServer(
     );
   }
 
+  // Layer 0 (unified-engine plan): the cold tier is bound INTO the prompt
+  // cache — take() itself tiers over it, so the batch scheduler and every
+  // other consumer get SSD restores through the same API; eviction AND
+  // idle demotion spill into it.
+  const coldTier = ssdStore
+    ? {
+        find: (prompt: number[], ns: string) => {
+          const h = ssdStore!.find(prompt, ns);
+          return h ? { prefixLen: h.prefixLen, handle: h.entry } : null;
+        },
+        restore: (handle: unknown) => {
+          const loaded = ssdStore!.restore(handle as import("./ssd-cache").SsdIndexEntry, ctx.model);
+          return loaded
+            ? { tokens: loaded.tokens, caches: loaded.caches, retain: () => loaded.mmap.unmap() }
+            : null;
+        },
+        store: (tokens: number[], caches: import("./model/gemma4").Cache[], ns: string) => {
+          ssdStore!.store(tokens, caches, ns);
+        },
+      }
+    : null;
   const promptCache = new PromptCache(
     serverOptions.promptCacheBytes ?? 2e9,
     // RAM eviction spills to the cold tier (whole-prefix entries, no work
     // on the token loop — the spill runs at eviction time only).
     ssdStore ? (entry) => { ssdStore!.store(entry.tokens, entry.caches, entry.ns); } : null,
+    coldTier,
   );
   // Responses-API store for previous_response_id resumption (Phase 11):
   // TTL + byte-capped LRU, port of optiq/response_store.py. Pairs with
@@ -1201,31 +1228,9 @@ export function createServer(
     // Cache entries are adapter-specific: KV computed under one adapter
     // must never seed another's (or the base's) prefill.
     const cacheNs = options.adapters?.join("+") ?? "";
-    let entry = vision ? null : promptCache.take(promptIds, cacheNs);
-    // Cold tier: restore from SSD when it has a STRICTLY longer usable
-    // prefix than RAM offered (zero-copy COW mmap; pages fault in lazily
-    // during the continuation prefill). The restored entry carries an
-    // unmap thunk that PromptCache runs after its caches are disposed.
-    if (!vision && ssdStore) {
-      const ssdHit = ssdStore.find(promptIds, cacheNs);
-      if (ssdHit && ssdHit.prefixLen > (entry?.tokens.length ?? 0)) {
-        const loaded = ssdStore.restore(ssdHit.entry, ctx.model);
-        if (loaded) {
-          const trimNeeded = loaded.tokens.length - ssdHit.prefixLen;
-          if (trimNeeded > 0 && !loaded.caches.every((c) => c.isTrimmable())) {
-            // Divergent tail on an untrimmable kind (ring post-wrap, SSM):
-            // this file can't seed the prompt — fall back to the RAM hit.
-            for (const c of loaded.caches) c.dispose();
-            loaded.mmap.unmap();
-          } else {
-            if (trimNeeded > 0) for (const c of loaded.caches) c.trim(trimNeeded);
-            if (entry) promptCache.put(entry.tokens, entry.caches, cacheNs, entry.retain); // return the RAM hit untouched
-            entry = { tokens: loaded.tokens.slice(0, ssdHit.prefixLen), caches: loaded.caches,
-              ns: cacheNs, retain: () => loaded.mmap.unmap() };
-          }
-        }
-      }
-    }
+    // Both tiers in one call (Layer 0): take() prefers a strictly-longer
+    // SSD prefix, restores it zero-copy, and trims — see PromptCache.take.
+    const entry = vision ? null : promptCache.take(promptIds, cacheNs);
     const caches = entry?.caches ?? ctx.model.makeCache();
     // Prompt-boundary snapshot (the multi-turn agent fix, 2026-07-04): the
     // prompt+gen entry put() below is UNTRIMMABLE at context > sliding
@@ -1267,8 +1272,9 @@ export function createServer(
       if (vision) {
         for (const c of caches) c.dispose();
       } else {
+        // put() fires onPut → the debounced write-behind SSD snapshot
+        // (wired below), covering the batch lane's puts too.
         promptCache.put(s.cacheTokens, caches, cacheNs, entry?.retain);
-        scheduleSsdSnapshot(s.cacheTokens, cacheNs);
       }
       return s;
     } catch (e) {
@@ -1304,6 +1310,29 @@ export function createServer(
       }).catch(() => { /* cold tier is best-effort */ });
     }, 1000));
   };
+  // Every put() — serial lane AND batch scheduler — schedules the snapshot
+  // (Layer 0: batch-lane entries survive restarts too, not just evictions).
+  promptCache.onPut = (tokens, ns) => scheduleSsdSnapshot(tokens, ns);
+
+  // Idle demotion (Layer 0): entries unused for --ssd-demote-idle seconds
+  // spill to SSD and free their GPU memory — the RAM tier drains between
+  // bursts while every prefix stays reachable (take() restores via
+  // zero-copy mmap). Swept only when the engine is TRULY idle: the
+  // runExclusive below registers as a serial waiter, which would DRAIN a
+  // running batch, so the activity check guards it (a momentary exclusive
+  // grab of an idle engine is free). 0 disables.
+  const demoteIdleMs = (serverOptions.ssdDemoteIdleSec ?? (ssdStore ? 300 : 0)) * 1000;
+  let demoteTimer: ReturnType<typeof setInterval> | null = null;
+  if (ssdStore && demoteIdleMs > 0) {
+    demoteTimer = setInterval(() => {
+      if (gateway.activeRows > 0 || gateway.pendingRows > 0) return;
+      void gateway.runExclusive(async () => {
+        const n = promptCache.demoteIdle(demoteIdleMs);
+        if (n > 0) console.log(`[ssd-cache] demoted ${n} idle entr${n === 1 ? "y" : "ies"} to disk`);
+      }).catch(() => {});
+    }, Math.max(30_000, demoteIdleMs / 4));
+    demoteTimer.unref?.();
+  }
 
   // The lane picker: routes each request to the serial path (runGeneration,
   // above) or the continuous-batching scheduler, keeping the two off the GPU
@@ -1758,6 +1787,7 @@ export function createServer(
               restores: ssdStore.stats.restores,
               spills: ssdStore.stats.spills,
               restore_ms_last: Math.round(ssdStore.stats.restoreMsLast),
+              demotions: promptCache.demotions,
             },
           } : {}),
           response_store: {

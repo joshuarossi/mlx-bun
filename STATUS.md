@@ -51,6 +51,15 @@ optimized model → + mixed-precision KV → + LoRA → + spec decode → +
 structured output → × sampling — all STACKABLE on one engine, no lane
 routing.
 
+**Layer 0 LANDED same day — THE SSD TIER IS NOW A PROPERTY OF THE STORE:**
+tiering moved inside PromptCache.take() (ColdTier interface; server binds
+SsdCacheStore+model) → the BATCH LANE restores prefixes from disk at
+admission (gated E2E); onPut fires the write-behind for both lanes; idle
+demotion (--ssd-demote-idle, default 300 s with --ssd-cache) spills idle
+entries and frees their GPU memory — RAM drains between agent bursts,
+prefixes stay reachable via zero-copy mmap. Economics: SSD competes with
+RECOMPUTE not RAM (12B: 30k context ≈ 3 min prefill vs ~1 s restore).
+
 **Phase 3 milestone 2 LANDED same day — BATCHED ROTATING-QUANTIZED KV
 (gemma's kv_config now batches; every shipped kv_config does):**
 BatchedRotatingQuantCache (src/model/batched-rotating-quant.ts) = the

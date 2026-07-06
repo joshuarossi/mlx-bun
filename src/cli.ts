@@ -90,6 +90,10 @@ const SERVER_FLAGS = `Server options:
                             full re-prefill to a zero-copy mmap restore).
                             Off unless set.
   --ssd-cache-max <GB>      SSD tier byte cap  [default: 32 GB]
+  --ssd-demote-idle <sec>   Demote prompt-cache entries idle this long to the
+                            SSD tier, freeing their GPU memory (prefixes stay
+                            reachable via zero-copy restore). 0 disables.
+                            [default: 300 when --ssd-cache is on]
   --ssd-cache-verify        Verify tensor hashes on every restore (reads all
                             bytes eagerly — integrity paranoia only)
   --batch <n>               Max concurrent requests batched through the
@@ -846,6 +850,8 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
     const maxRaw = opt("ssd-cache-max");
     if (maxRaw !== null) serverOptions.ssdCacheMaxBytes = Math.max(1, Number(maxRaw)) * 2 ** 30;
     if (flag("ssd-cache-verify")) serverOptions.ssdCacheVerify = true;
+    const demoteRaw = opt("ssd-demote-idle");
+    if (demoteRaw !== null) serverOptions.ssdDemoteIdleSec = Math.max(0, Number(demoteRaw));
   }
   // --batch N: max concurrent requests batched through the mlx-lm-parity
   // engine (N=1 = today's serial path). --decode-concurrency is accepted for
@@ -1673,7 +1679,7 @@ switch (cmd) {
     // already run their own pi connect it with `mlx-bun harness pi`.
     const OURS_VAL = new Set([
       "--query", "-q", "--model", "--port", "--host", "--memory-budget", "--kv-budget", "--prompt-cache",
-      "--ssd-cache", "--ssd-cache-max", "--kv-quant",
+      "--ssd-cache", "--ssd-cache-max", "--ssd-demote-idle", "--kv-quant",
       "--batch", "--decode-concurrency", "--adapter", "--adapter-path",
       "--draft-model", "--num-draft-tokens",
       "--compiled-decode", "--compiled-activations", "--fused-sdpa", "--thinking",

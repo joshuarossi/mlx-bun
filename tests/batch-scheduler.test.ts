@@ -287,6 +287,90 @@ describe.skipIf(!optIn || !haveCpm)("batch scheduler — prompt-cache reuse (Pha
   }, 240_000);
 });
 
+// Layer 0: the batch lane restores prefixes FROM DISK through the same
+// PromptCache.take() (tiering lives inside the store — unified-engine plan).
+// Request 1 puts its entry; demoteIdle() spills it to a real SsdCacheStore
+// and frees the GPU arrays; request 2 with the same prompt restores via
+// zero-copy mmap at ADMISSION and suffix-prefills — cachedTokens reported,
+// logits within the CPM bound.
+describe.skipIf(!optIn || !haveCpm)("batch scheduler — SSD tier through the batch lane (Layer 0)", () => {
+  test("demoted entry restores from disk at admission", async () => {
+    const { BatchScheduler } = await import("../src/serve/batch-scheduler");
+    const { PromptCache } = await import("../src/prompt-cache");
+    type ColdTier = import("../src/prompt-cache").ColdTier;
+    const { SsdCacheStore } = await import("../src/ssd-cache");
+    const { configFingerprint } = await import("../src/model/fingerprint");
+    const { mkdtempSync, rmSync, readFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { model, weights, MlxArray, soloGreedy } = await openHarness(CPM_BASE);
+    const eos = model.config.eosTokenIds;
+    const dir = mkdtempSync(join(tmpdir(), "mlxbun-ssd-batch-"));
+    try {
+      const store = new SsdCacheStore({
+        dir, maxBytes: 8 * 2 ** 30,
+        configFingerprint: `${configFingerprint(model.config)}-bf16`,
+        tokenizerHash: Bun.hash(readFileSync(`${CPM_BASE}/tokenizer.json`)).toString(16),
+        modelId: "cpm5-test",
+      });
+      const cold: ColdTier = {
+        find: (prompt, ns) => {
+          const h = store.find(prompt, ns);
+          return h ? { prefixLen: h.prefixLen, handle: h.entry } : null;
+        },
+        restore: (handle) => {
+          const loaded = store.restore(handle as never, model);
+          return loaded
+            ? { tokens: loaded.tokens, caches: loaded.caches, retain: () => loaded.mmap.unmap() }
+            : null;
+        },
+        store: (tokens, caches, ns) => { store.store(tokens, caches, ns); },
+      };
+      const pc = new PromptCache(1e12, null, cold);
+      const sched = new BatchScheduler(model, { maxBatch: 2, promptCache: pc });
+
+      const prompt = PROMPTS[0]!;
+      const MAX = 5;
+      const ref = soloGreedy(prompt, MAX);
+      const run = () => {
+        const captured: Float32Array[] = [];
+        const got: number[] = [];
+        const stats = sched.submit({
+          promptIds: prompt, maxTokens: MAX, eosTokenIds: eos,
+          sample: (l, step) => {
+            captured[step] = l.toFloat32();
+            return MlxArray.fromInt32(Int32Array.from([ref.tokens[step]!]), [1]);
+          },
+          onToken: (t) => { got.push(t); },
+        });
+        return { captured, got, stats };
+      };
+
+      const st1 = await run().stats;
+      expect(st1.cachedTokens).toBe(0);
+      expect(pc.size).toBe(1);
+      expect(pc.demoteIdle(0)).toBe(1); // spill to DISK, free the GPU arrays
+      expect(pc.size).toBe(0);
+      expect(store.entries).toBe(1);
+
+      const r2 = run();
+      const st2 = await r2.stats;
+      expect(st2.cachedTokens).toBe(prompt.length - 1); // restored from disk
+      expect(store.stats.restores).toBe(1);
+      expect(r2.got).toEqual(ref.tokens.slice(0, MAX));
+      expect(argmaxF(r2.captured[0]!)).toBe(ref.tokens[0]!);
+      let maxKl = 0;
+      for (let s = 1; s < MAX; s++) maxKl = Math.max(maxKl, klDiv(ref.logits[s]!, r2.captured[s]!));
+      console.log(`[sched ssd-hit] maxKL=${maxKl.toExponential(2)} cached=${st2.cachedTokens}`);
+      expect(maxKl).toBeLessThan(KL_TOL);
+      pc.clear();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      weights.dispose();
+    }
+  }, 240_000);
+});
+
 // Compiled decode at B=1 (adopt-don't-copy keeps the lone row's caches
 // serial-class, so CompiledDecode.supports passes and the scheduler replays
 // the serial engine's compiled step). Free-running greedy through the batch
