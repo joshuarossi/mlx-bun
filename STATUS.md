@@ -51,6 +51,15 @@ optimized model → + mixed-precision KV → + LoRA → + spec decode → +
 structured output → × sampling — all STACKABLE on one engine, no lane
 routing.
 
+**PREFIX SHARING v1 LANDED same day:** PromptCache.take() serves
+NON-CONSUMING zero-copy clones (ref-counted mmap retain); put() supersedes
+prefix-ancestors + duplicates (trimmable-only, so boundary snapshots
+survive). N agents / new sessions sharing a system prompt reuse ONE
+prefill without cannibalizing each other's entries (the old consume-and-
+trim flaw). Real-model gate: B served from A's entry, A's next turn still
+full-hits. v1 = compute sharing + durability; single physical prefix
+across concurrent rows = the paged-KV frontier item.
+
 **`--batch` DEFAULT FLIPPED 1→8 same day (Josh's call):** every gate met —
 a lone request through the unified engine is the serial engine (bits,
 speed, TTFT, prompt+SSD cache), so the cap only matters under real

@@ -287,6 +287,76 @@ describe.skipIf(!optIn || !haveCpm)("batch scheduler — prompt-cache reuse (Pha
   }, 240_000);
 });
 
+// PREFIX SHARING (2026-07-05): take() serves zero-copy CLONES and leaves
+// the donor intact. The scenario that used to break: agent A's conversation
+// entry gets matched by agent B's shared-system-prompt request — the old
+// consume-and-trim take DESTROYED A's entry to serve B. Now B clones the
+// shared prefix, A's later turn still hits its FULL entry, and B's logits
+// stay within the cache-hit bound vs its own solo run.
+describe.skipIf(!optIn || !haveCpm)("batch scheduler — prefix sharing (real model)", () => {
+  test("shared system prefix serves B without cannibalizing A's entry", async () => {
+    const { BatchScheduler } = await import("../src/serve/batch-scheduler");
+    const { PromptCache } = await import("../src/prompt-cache");
+    const { model, weights, MlxArray, soloGreedy } = await openHarness(CPM_BASE);
+    const eos = model.config.eosTokenIds;
+    try {
+      const SYS = [1, 100, 200, 300, 400, 500, 600]; // the shared "system prompt"
+      const promptA = [...SYS, 800];
+      const promptB = [...SYS, 900];
+      const MAX = 5;
+      const refA = soloGreedy(promptA, MAX);
+      const refB = soloGreedy(promptB, MAX);
+      const pc = new PromptCache(1e12); // real cloneKvCaches
+      const sched = new BatchScheduler(model, { maxBatch: 2, promptCache: pc });
+
+      const run = (prompt: number[], ref: { tokens: number[]; logits: Float32Array[] }, maxTokens = MAX) => {
+        const captured: Float32Array[] = [];
+        const got: number[] = [];
+        const stats = sched.submit({
+          promptIds: prompt, maxTokens, eosTokenIds: eos,
+          sample: (l, step) => {
+            captured[step] = l.toFloat32();
+            return MlxArray.fromInt32(Int32Array.from([ref.tokens[step]!]), [1]);
+          },
+          onToken: (t) => { got.push(t); },
+        });
+        return { captured, got, stats };
+      };
+
+      // Agent A establishes the entry (SYS+qA+fed, 12 tokens).
+      const stA = await run(promptA, refA).stats;
+      expect(stA.cachedTokens).toBe(0);
+      expect(pc.size).toBe(1);
+
+      // Agent B shares only SYS — served from a CLONE of A's entry.
+      const rB = run(promptB, refB);
+      const stB = await rB.stats;
+      expect(stB.cachedTokens).toBe(SYS.length); // the shared prefix
+      expect(rB.got).toEqual(refB.tokens.slice(0, MAX));
+      expect(argmaxF(rB.captured[0]!)).toBe(refB.tokens[0]!);
+      let maxKl = 0;
+      for (let s = 1; s < MAX; s++) maxKl = Math.max(maxKl, klDiv(refB.logits[s]!, rB.captured[s]!));
+      console.log(`[sched share] B maxKL=${maxKl.toExponential(2)} cachedB=${stB.cachedTokens}`);
+      expect(maxKl).toBeLessThan(KL_TOL);
+      expect(pc.size).toBe(2); // A's entry SURVIVED B's borrow + B's entry
+
+      // A's next turn: continuation of ITS OWN conversation — full entry hit
+      // (the cannibalization regression: this used to be a 7-token hit at
+      // best, because B's borrow trimmed A's entry down to SYS).
+      const aEntryLen = promptA.length + (MAX - 1); // prompt + fed
+      const promptA2 = [...promptA, ...refA.tokens.slice(0, MAX), 5, 5, 5];
+      const refA2 = soloGreedy(promptA2, 3);
+      const rA2 = run(promptA2, refA2, 3);
+      const stA2 = await rA2.stats;
+      expect(stA2.cachedTokens).toBe(aEntryLen); // FULL entry, not just SYS
+      expect(pc.size).toBe(2); // A2's put superseded A's ancestor entry
+      pc.clear();
+    } finally {
+      weights.dispose();
+    }
+  }, 300_000);
+});
+
 // Layer 0: the batch lane restores prefixes FROM DISK through the same
 // PromptCache.take() (tiering lives inside the store — unified-engine plan).
 // Request 1 puts its entry; demoteIdle() spills it to a real SsdCacheStore

@@ -4,10 +4,15 @@
 // entries is an OOM footgun. Ours accounts bytes (sum of KV array bytes
 // per entry) and evicts least-recently-used until under the cap.
 //
-// Usage pattern (single generation queue, so take/reinsert is race-free):
-//   const hit = cache.take(promptIds);     // longest strict-prefix match
+// Usage pattern (single generation queue, so take/put is race-free):
+//   const hit = cache.take(promptIds);   // longest-prefix match → CLONES
 //   generate(model, promptIds, { cache: hit?.caches ?? fresh })
-//   cache.put([...promptIds, ...generated], caches);  // extended entry
+//   cache.put([...promptIds, ...generated], caches, ns, hit?.retain);
+// take() is NON-CONSUMING (prefix sharing): it serves zero-copy clones and
+// leaves the donor entry in place — N agents sharing a system prompt all
+// clone from one donor, one prefill; put() supersedes same-ns
+// prefix-ancestors (when the new entry is trimmable) so a conversation
+// stays one entry, not one per turn.
 //
 // TIERING (Layer 0, unified-engine plan): when a ColdTier is attached,
 // take() itself runs the two-tier dance — RAM peek vs cold find, restore
@@ -20,6 +25,33 @@
 // snapshot for both lanes.
 
 import type { Cache } from "./model/gemma4";
+import { cloneKvCaches } from "./kv-store";
+
+/** Reference-counted release: wraps an entry's `retain` (e.g. an mmap
+ *  unmap) so DONOR + CLONES can each hold a share — the underlying hook
+ *  runs once, after the LAST holder releases. Prefix sharing hands out
+ *  zero-copy VIEWS of a donor's buffers; if the donor's unmap ran while a
+ *  clone still referenced the mapped pages, the clone would read freed
+ *  memory. */
+function makeSharedRetain(retain: (() => void) | undefined): { acquire(): () => void } {
+  let count = 0;
+  let released = false;
+  return {
+    acquire() {
+      count++;
+      let mine = false;
+      return () => {
+        if (mine) return; // idempotent per share
+        mine = true;
+        count--;
+        if (count === 0 && !released) {
+          released = true;
+          retain?.();
+        }
+      };
+    },
+  };
+}
 
 /** The cold (SSD) tier the RAM cache tiers over. Structural — this module
  *  never imports ssd-cache (which imports us); the server binds
@@ -63,9 +95,19 @@ export function commonPrefixLength(a: number[], b: number[]): number {
   return i;
 }
 
+interface EntryRecord {
+  entry: PromptCacheEntry;
+  bytes: number;
+  lastUsed: number;
+  lastUsedMs: number;
+  /** Ref-counted retain: the donor holds one share (entry.retain); every
+   *  clone handed out by take() holds another. */
+  share: { acquire(): () => void };
+}
+
 export class PromptCache {
   readonly maxBytes: number;
-  #entries: { entry: PromptCacheEntry; bytes: number; lastUsed: number; lastUsedMs: number }[] = [];
+  #entries: EntryRecord[] = [];
   #clock = 0;
   hits = 0;
   misses = 0;
@@ -80,14 +122,19 @@ export class PromptCache {
    *  write-behind SSD snapshot here so BOTH lanes' entries persist. */
   onPut: ((tokens: number[], ns: string) => void) | null = null;
 
+  /** Zero-copy view cloner — injectable so model-free tests can stub it. */
+  readonly #clone: (caches: Cache[]) => Cache[];
+
   constructor(
     maxBytes: number,
     spill: ((entry: PromptCacheEntry) => void) | null = null,
     cold: ColdTier | null = null,
+    clone: (caches: Cache[]) => Cache[] = cloneKvCaches,
   ) {
     this.maxBytes = maxBytes;
     this.#spill = spill;
     this.#cold = cold;
+    this.#clone = clone;
   }
 
   #disposeEntry(entry: PromptCacheEntry, spillFirst: boolean): void {
@@ -112,9 +159,13 @@ export class PromptCache {
   }
 
   /** Find the entry with the longest usable common prefix of `prompt`
-   *  across BOTH tiers, remove/restore it, trim its caches to that prefix
-   *  if needed (and possible), and hand over ownership (caller must put()
-   *  it back — possibly extended — or dispose it, honoring `retain`).
+   *  across BOTH tiers and serve it NON-CONSUMINGLY (prefix sharing,
+   *  2026-07-05): the caller receives zero-copy CLONES trimmed to the
+   *  matched prefix (plus a ref-counted retain share); the donor entry
+   *  stays in the cache, ready for the next agent/session with the same
+   *  prefix. The caller owns the returned caches — dispose them or put()
+   *  an extended entry (which supersedes prefix-ancestors), honoring
+   *  `retain` either way.
    *
    *  Usable prefix = common prefix capped at prompt.length - 1 (at least
    *  one token must be forwarded to produce logits). Entries longer than
@@ -171,13 +222,27 @@ export class PromptCache {
     }
 
     if (bestIdx === -1) return null;
-    const { entry } = this.#entries.splice(bestIdx, 1)[0]!;
-    const trimNeeded = entry.tokens.length - bestLen;
-    if (trimNeeded > 0) {
-      for (const c of entry.caches) c.trim(trimNeeded);
-      entry.tokens = entry.tokens.slice(0, bestLen);
-    }
-    return entry;
+    // PREFIX SHARING (non-consuming serve): the caller gets zero-copy
+    // CLONES of the donor's caches, trimmed to the matched prefix; the
+    // donor stays in the cache untouched, ready to serve the next agent /
+    // session with the same prefix. Safe because mlx cache updates are
+    // FUNCTIONAL (updateAndFetch reassigns fresh arrays; buffer donation
+    // only fires at refcount 1, and the donor always holds a ref), so a
+    // clone extending itself can never mutate the donor's bytes. The old
+    // consume-and-trim semantics CANNIBALIZED donors: agent B borrowing
+    // agent A's 2k system prompt destroyed A's 10k entry to do it.
+    const rec = this.#entries[bestIdx]!;
+    rec.lastUsed = ++this.#clock;
+    rec.lastUsedMs = Date.now();
+    const clones = this.#clone(rec.entry.caches);
+    const trimNeeded = rec.entry.tokens.length - bestLen;
+    if (trimNeeded > 0) for (const c of clones) c.trim(trimNeeded);
+    return {
+      tokens: rec.entry.tokens.slice(0, bestLen),
+      caches: clones,
+      ns,
+      retain: rec.share.acquire(),
+    };
   }
 
   /** Longest usable prefix length available for `prompt` WITHOUT taking
@@ -216,7 +281,31 @@ export class PromptCache {
       this.#disposeEntry(entry, true);
       return;
     }
-    this.#entries.push({ entry, bytes, lastUsed: ++this.#clock, lastUsedMs: Date.now() });
+    // The donor's retain becomes ref-counted so take()'s clones can hold
+    // shares; the entry's own retain is the donor's share.
+    const share = makeSharedRetain(retain);
+    entry.retain = share.acquire();
+    const rec: EntryRecord = { entry, bytes, lastUsed: ++this.#clock, lastUsedMs: Date.now(), share };
+    this.#entries.push(rec);
+    // SUPERSEDE prefix-ancestors (the SSD store's rule, brought to RAM —
+    // prefix sharing would otherwise grow an entry per turn): same-ns
+    // entries whose tokens are a prefix of the new entry are redundant
+    // and disposed WITHOUT spill (the new entry serves their prefixes and
+    // its own write-behind persists them) — but ONLY when the new entry's
+    // caches are all trimmable. An untrimmable new entry (wrapped ring)
+    // can only serve exact-length matches, so shorter ancestors — e.g.
+    // the prompt-boundary snapshot that makes drifted multi-turn agents
+    // hit — must survive.
+    if (caches.every((c) => c.isTrimmable())) {
+      for (const old of [...this.#entries]) {
+        if (old === rec || old.entry.ns !== ns) continue;
+        // Ancestors AND exact duplicates (equal tokens) are redundant.
+        if (old.entry.tokens.length > tokens.length) continue;
+        if (commonPrefixLength(old.entry.tokens, tokens) !== old.entry.tokens.length) continue;
+        this.#entries = this.#entries.filter((r) => r !== old);
+        this.#disposeEntry(old.entry, false);
+      }
+    }
     while (this.totalBytes > this.maxBytes && this.#entries.length > 1) {
       let lruIdx = 0;
       for (let i = 1; i < this.#entries.length; i++)

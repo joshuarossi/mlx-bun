@@ -691,6 +691,27 @@ speed):
   the generic blob-store mechanics (fingerprint dirs, atomic writes,
   scan/recovery, LRU cap) for a second client when one lands (adapters,
   expert offload); memory-pressure-triggered demotion (vs idle-only).
+- **Prefix sharing v1 (LANDED 2026-07-05)**: PromptCache.take() is
+  NON-CONSUMING — a hit serves zero-copy CLONES (cloneKvCaches views,
+  trimmed to the matched prefix, retain ref-counted so a demoted/evicted
+  donor can never unmap pages a clone still reads) and the donor entry
+  stays put. Safe by mlx's functional cache updates (updateAndFetch
+  reassigns fresh arrays; donation needs refcount 1 and the donor holds a
+  ref), so clones can never mutate donors. put() supersedes same-ns
+  prefix-ancestors AND exact duplicates when the new entry is trimmable
+  (untrimmable extensions preserve their prompt-boundary snapshots — the
+  drift-proof server). This kills the CANNIBALIZATION flaw: agent B
+  borrowing agent A's 2k system prompt used to consume-and-trim A's 10k
+  entry to serve it. Gates: 22 unit tests (donor persistence, clone
+  independence, supersede rules, ref-count ordering) + real-model
+  scheduler gate: B served from A's entry (cached=|SYS|, KL 1.8e-3), A's
+  NEXT TURN still hits its full entry. New-session and restart sharing
+  fall out of the (already non-consuming) SSD tier. **Scope, honestly**:
+  v1 shares the COMPUTE (one prefill serves N agents) and the durability;
+  concurrent batch rows still hold separate physical KV copies — one
+  shared physical prefix across rows is the paged/block-KV frontier item
+  (§9.4), and per §9.5 the disk tier's whole-entry duplication of shared
+  prefixes is the block-granularity revisit trigger.
 - **Phase 4 — the frontier program opens** (§7 order).
 
 ## 9. Decisions log (was: open questions)
