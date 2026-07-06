@@ -9,6 +9,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { PromptCache } from "../src/prompt-cache";
+import type { PromptCacheEntry } from "../src/prompt-cache";
 import type { Cache } from "../src/model/gemma4";
 
 function stubCache(
@@ -403,6 +404,16 @@ describe("PromptCache — Layer 0 tiering", () => {
     expect(d.count).toBe(0);
   });
 
+  test("clear() never spills (shutdown must not rewrite the cold tier)", () => {
+    const cold = fakeCold();
+    const { pc } = mkTiered(cold);
+    const d = { count: 0 };
+    pc.put([1, 2], [stubCache(10, d)]);
+    pc.clear();
+    expect(cold.stored).toEqual([]); // dispose-only path
+    expect(d.count).toBe(1);
+  });
+
   test("onPut fires per put with tokens+ns; its exceptions are contained", () => {
     const { pc } = mk();
     const d = { count: 0 };
@@ -411,5 +422,125 @@ describe("PromptCache — Layer 0 tiering", () => {
     pc.put([1, 2], [stubCache(10, d)], "nsA");
     expect(puts).toEqual([[[1, 2], "nsA"]]);
     expect(pc.size).toBe(1); // the throw did not unwind the put
+  });
+});
+
+// ---- Non-blocking spill (spillOwned sink, 2026-07-06) ----------------------
+//
+// The write-behind contract: eviction/demotion hands the sink OWNED
+// zero-copy clones (the cache's own #clone, run BEFORE the donor is
+// disposed) + copied tokens; the SERVER chains storeAsync -> dispose on
+// ssdWriteChain, off the generation lock. These tests stand in for the
+// server: the recorded spill's caches stay alive until the test "write"
+// settles and disposes them.
+
+/** Recording async sink: captures each owned spill; settle() plays the
+ *  server's chain settling (storeAsync done → dispose the clones). */
+function recordingSink() {
+  const spills: { tokens: number[]; ns: string; caches: Cache[] }[] = [];
+  return {
+    spills,
+    sink: {
+      spillOwned: (e: PromptCacheEntry) => {
+        spills.push({ tokens: e.tokens, ns: e.ns, caches: e.caches });
+      },
+    },
+    settle() { for (const s of spills) for (const c of s.caches) c.dispose(); },
+  };
+}
+
+describe("PromptCache — non-blocking spill (spillOwned)", () => {
+  test("eviction produces exactly one owned spill with the right tokens; write settles later", () => {
+    const rec = recordingSink();
+    const cloneTrims: number[] = [];
+    const cloneDisposed = { count: 0 };
+    const pc = new PromptCache(100, rec.sink, null, stubClone(cloneTrims, cloneDisposed));
+    const d1 = { count: 0 }, d2 = { count: 0 }, d3 = { count: 0 };
+    pc.put([1, 10], [stubCache(40, d1)], "nsA");
+    pc.put([2], [stubCache(40, d2)]);
+    pc.put([3], [stubCache(40, d3)]); // over cap → evicts LRU [1, 10]
+
+    expect(rec.spills).toHaveLength(1);
+    expect(rec.spills[0]!.tokens).toEqual([1, 10]);
+    expect(rec.spills[0]!.ns).toBe("nsA");
+    expect(d1.count).toBe(1); // donor's GPU arrays disposed immediately
+    expect(cloneDisposed.count).toBe(0); // ... but the owned clones outlive it
+    rec.settle(); // the async write finishes → clones dispose promptly
+    expect(cloneDisposed.count).toBe(1);
+    expect(pc.size).toBe(2);
+  });
+
+  test("demoteIdle frees the entry immediately; the owned clones dispose when the write settles", () => {
+    const rec = recordingSink();
+    const cold = fakeCold();
+    const cloneTrims: number[] = [];
+    const cloneDisposed = { count: 0 };
+    const pc = new PromptCache(1e9, rec.sink, cold.tier, stubClone(cloneTrims, cloneDisposed));
+    const d = { count: 0 };
+    const t0 = Date.now();
+    pc.put([1, 2, 3], [stubCache(10, d)]);
+
+    expect(pc.demoteIdle(60_000, t0 + 120_000)).toBe(1);
+    expect(pc.size).toBe(0);
+    expect(d.count).toBe(1); // entry freed IMMEDIATELY (demotion's purpose)
+    expect(cold.stored).toEqual([]); // spillOwned wins over the cold.store fallback
+    expect(rec.spills.map((s) => s.tokens)).toEqual([[1, 2, 3]]);
+    expect(cloneDisposed.count).toBe(0); // clones pin buffers only until the write
+    rec.settle();
+    expect(cloneDisposed.count).toBe(1);
+  });
+
+  test("sink throwing synchronously degrades to no-spill without unwinding; cache disposes the clones", () => {
+    const cloneTrims: number[] = [];
+    const cloneDisposed = { count: 0 };
+    const pc = new PromptCache(
+      100,
+      { spillOwned: () => { throw new Error("disk full"); } },
+      null,
+      stubClone(cloneTrims, cloneDisposed),
+    );
+    const d1 = { count: 0 }, d2 = { count: 0 };
+    pc.put([1], [stubCache(40, d1)]);
+    pc.put([2], [stubCache(80, d2)]); // over cap → evict [1]; the spill throws
+    expect(pc.size).toBe(1); // eviction completed anyway
+    expect(d1.count).toBe(1);
+    expect(cloneDisposed.count).toBe(1); // orphaned clones reclaimed by the cache
+  });
+
+  test("clone failure also degrades to no-spill (eviction proceeds)", () => {
+    const rec = recordingSink();
+    const pc = new PromptCache(100, rec.sink, null, () => { throw new Error("no clone"); });
+    const d1 = { count: 0 }, d2 = { count: 0 };
+    pc.put([1], [stubCache(40, d1)]);
+    pc.put([2], [stubCache(80, d2)]);
+    expect(rec.spills).toEqual([]);
+    expect(d1.count).toBe(1);
+    expect(pc.size).toBe(1);
+  });
+
+  test("clear() never routes through the spill sink", () => {
+    const rec = recordingSink();
+    const cloneDisposed = { count: 0 };
+    const pc = new PromptCache(1e9, rec.sink, null, stubClone([], cloneDisposed));
+    const d = { count: 0 };
+    pc.put([1], [stubCache(10, d)]);
+    pc.put([2], [stubCache(10, d)]);
+    pc.clear();
+    expect(rec.spills).toEqual([]);
+    expect(cloneDisposed.count).toBe(0); // nothing was even cloned
+    expect(d.count).toBe(2);
+  });
+
+  test("legacy bare-function spill keeps the synchronous live-entry contract", () => {
+    const seen: { tokens: number[]; caches: Cache[] }[] = [];
+    const pc = new PromptCache(100, (e) => { seen.push({ tokens: e.tokens, caches: e.caches }); });
+    const d1 = { count: 0 }, d2 = { count: 0 };
+    const live = [stubCache(40, d1)];
+    pc.put([1], live);
+    pc.put([2], [stubCache(80, d2)]); // evicts [1]
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.tokens).toEqual([1]);
+    expect(seen[0]!.caches).toBe(live); // the LIVE caches, not clones
+    expect(d1.count).toBe(1); // disposed AFTER the sync spill returned
   });
 });

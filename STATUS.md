@@ -10,7 +10,23 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
-## Where we are (2026-07-06)
+## Where we are (2026-07-06, round 2 — finish-the-list)
+
+**Everything on the open list is closed** (PLAN.md "finish-the-list"
+phase; suite 1127/0, parity suites green on every change): e4b long-ctx
+prefill at parity via the causal-mask fidelity fix (makeMask now hands
+mlx the string "causal" for windowless multi-token chunks at any offset,
+matching mlx-lm cache.py:114-125 — 872 vs 877 post-fix, was 845-862 vs
+878); incremental tokenizer encode (16-59x on conversation appends,
+exact via seam verification); SSM per-row extraction for Qwen3.5
+hybrids; the last JS-callback buffer dtor eliminated (fromView →
+native dtor + explicit JS-thread unpin); eviction-spill and demoteIdle
+non-blocking (SpillSink clones + storeAsync chain); Phase-2 host-tax
+worklist audited down to three real items (12B KL-max outlier, CPM
+extend-join golden regen, padded-B>1 mask rebuild pending a
+forced-padding A/B). Final full h2h: benchmarks-serve-2026-07-06e.
+
+## Where we were (2026-07-06, round 1)
 
 **Serve-bench defect sweep (2026-07-06, this session):** the 07-06 serve
 h2h (valid — quiet machine) surfaced five defects; a 20-agent verified

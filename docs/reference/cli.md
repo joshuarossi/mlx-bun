@@ -39,7 +39,7 @@ Common flags (full list in [server-config.md](server-config.md)):
 | `--adapter <dir>` | Mount a LoRA adapter at startup (`--adapter-path` accepted as the mlx_lm.server alias) |
 | `--draft-model <path\|query>` | Speculative decoding (mlx_lm.server parity): a smaller same-tokenizer model drafts, the main model verifies — exact results, faster decode when drafts land. Serial lane only: with `--batch N` a mounted draft routes every request serial |
 | `--num-draft-tokens <n>` | Drafts per verify round (default 3) |
-| `--batch <n>` | Continuous-batched bf16 serving, mlx-lm B=N parity (default 1 = serial) |
+| `--batch <n>` | Continuous-batched serving cap, mlx-lm B=N parity (default 8; `--batch 1` pins the serial path) |
 | `--temperature` / `--top-p` / `--top-k` / `--max-tokens` | Server-wide sampling defaults (per-request fields still win) |
 | `--l1` / `--l2` | Parity tier alias: bit-exact to mlx-lm / bit-exact to mlx-optiq. **No tier = `--l1`** (the default since 2026-07-05 — output-changing levers are opt-in until they beat the L1 baseline in a paired A/B). Each expands to per-fork flags (`--compiled-decode`, `--compiled-activations`, `--fused-sdpa`, `--kv-quant`); a fork flag overrides one. `--l3` was removed 2026-07-05 and now errors (the Lab replaces it — [unified-engine-frontier-plan.md](../design/unified-engine-frontier-plan.md)). See [server-config.md](server-config.md#fidelity-tiers-and-the-decode-route---l1----l2). |
 | `--no-open` | Don't auto-open the chat UI |

@@ -50,12 +50,25 @@ export function isExpertOffload(): boolean {
 /** Zero-copy mmap-backed array for `name` if offload is active and the tensor
  *  is in the manifest; else null. The converter aligns every tensor to 16 KB
  *  and the mmap base is page-aligned, so the pointer is page-aligned —
- *  required for the GPU to gather from it. */
+ *  required for the GPU to gather from it.
+ *
+ *  Lifetime: these arrays are created ONCE at model load
+ *  (QuantizedSwitchLinear.load, gemma4-base.ts) and live as model weights;
+ *  every decode's gather_qmm references them, so GPU command buffers retain
+ *  the mlx buffer past any dispose and mlx may drop the LAST reference on
+ *  the Metal completion thread. That's why this must be fromPointer (native
+ *  free(NULL) dtor — safe from any thread), NOT the old fromView JSCallback
+ *  pin (the 2026-07-06 deadlock class). The memory contract is trivially
+ *  met: `mm` is module-level and never unmapped — the mapping owns the
+ *  bytes for the process (clean file-backed pages, ~0 phys_footprint). */
 export function expertOffloadArray(name: string): MlxArray | null {
   if (!mm || !manifest) return null;
   const e = manifest.get(name);
   if (!e) return null;
-  return MlxArray.fromView(mm.view(e.offset, e.length), e.shape, SAFETENSORS_TO_MLX[e.dtype]);
+  // Bounds check the whole tensor (pointer() only checks the start).
+  if (e.offset + e.length > mm.size)
+    throw new Error(`expert-offload: ${name} [${e.offset}, +${e.length}) exceeds ${mm.path} (${mm.size} B)`);
+  return MlxArray.fromPointer(mm.pointer(e.offset), e.shape, SAFETENSORS_TO_MLX[e.dtype]);
 }
 
 if (process.env.MLX_BUN_EXPERT_OFFLOAD) activateExpertOffload(process.env.MLX_BUN_EXPERT_OFFLOAD);

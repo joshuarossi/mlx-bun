@@ -1306,14 +1306,15 @@ export class BatchScheduler {
   #extractAndPut(b: number, row: Row): void {
     if (!this.#promptCache || !row.merged || row.fedTainted) return;
     if (row.promptTokens < 256) return;
-    const caches = this.#extractRowCaches(b);
+    const tokens = [...row.req.promptIds, ...row.fed];
+    const caches = this.#extractRowCaches(b, tokens.length);
     if (!caches) return;
     // Materialize the owned copies without stalling the in-flight step (the
     // slices depend on this step's KV writes): async — the batched source
     // buffers free once the copies land, instead of being pinned by a lazy
     // graph inside an idle cache entry.
     ops.asyncEvalAll(caches.flatMap((c) => c.state()));
-    this.#putOrDispose(caches, [...row.req.promptIds, ...row.fed]);
+    this.#putOrDispose(caches, tokens);
   }
 
   /** Row `b` of every layer as OWNED serial-class caches, or null when a
@@ -1323,14 +1324,19 @@ export class BatchScheduler {
    *  tests/batched-rotating-quant) and each extract is a pure slice+copy of
    *  those bytes (tests/batched-extract), so an extracted row's bytes ==
    *  the solo run's. */
-  #extractRowCaches(b: number): Cache[] | null {
+  #extractRowCaches(b: number, expectTokens: number): Cache[] | null {
     const out: Cache[] = [];
     for (const inner of this.#inners!) {
       let c: Cache | null;
       if (inner instanceof BatchedRotatingQuantCache) c = inner.extractRow(b);
       else if (inner instanceof BatchedRotatingCache) c = inner.extractRow(b);
+      else if (inner instanceof SSMCache)
+        // Coverage gate: recurrent state is UNTRIMMABLE, so an entry is only
+        // valid when the row's own advance count equals the [promptIds+fed]
+        // key EXACTLY (a mismatched entry would silently corrupt every future
+        // exact-hit). Defensive — a miss here means the fed accounting broke.
+        c = inner.conv && inner.rowOffset(b) === expectTokens ? inner.extractRow(b) : null;
       else if (
-        inner instanceof SSMCache || // offset is max-shared bookkeeping — no per-row entry key
         inner instanceof RotatingQuantizedKVCache || // adopted serial state never
         inner instanceof RotatingKVCache //     coexists with a merged row (defensive)
       )

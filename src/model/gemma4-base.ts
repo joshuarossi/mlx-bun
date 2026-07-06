@@ -303,9 +303,16 @@ export class KVCache implements Cache {
 
   makeMask(N: number, windowSize: number | null): Mask {
     if (N === 1) return { mode: "", arr: null };
-    if (this.offset === 0 && windowSize === null) return { mode: "causal", arr: null };
-    if (this.offset === 0 && windowSize !== null && N <= windowSize)
-      return { mode: "causal", arr: null };
+    // Windowless multi-token chunks get the STRING "causal" at ANY offset —
+    // mlx-lm cache.py:114-125 create_attention_mask does exactly this, and
+    // mx.fast SDPA aligns the string bottom-right, i.e. the same values as
+    // our materialized matrix. Shipping the array instead (the old
+    // offset>0 branch) forced a materialize-and-add mask path: a bool
+    // [N, offset+N] built PER CHUNK and read by every full-attention layer
+    // — the e4b 16k prefill gap vs mlx-lm (2026-07-06b, hd=512 layers
+    // where the fallback dispatch can't block-skip an array mask).
+    if (windowSize === null) return { mode: "causal", arr: null };
+    if (this.offset === 0 && N <= windowSize) return { mode: "causal", arr: null };
     return { mode: "array", arr: createCausalMask(N, this.offset, windowSize) };
   }
 
@@ -505,14 +512,13 @@ export class QuantizedKVCache implements Cache {
 
   makeMask(N: number, windowSize: number | null): Mask {
     if (N === 1) return { mode: "", arr: null };
-    if (this.offset === 0 && (windowSize === null || N <= windowSize))
+    // Same rule as KVCache.makeMask (mlx-lm cache.py:114-125): windowless
+    // multi-token chunks are the string "causal" at any offset. The old
+    // causalEquivalent escape hatch existed precisely because this case
+    // used to ship an array; only windowed continuations materialize now.
+    if (windowSize === null || (this.offset === 0 && N <= windowSize))
       return { mode: "causal", arr: null };
-    return {
-      mode: "array",
-      arr: createCausalMask(N, this.offset, windowSize),
-      // a windowless continuation mask is exactly mlx-lm's "causal"
-      causalEquivalent: windowSize === null,
-    };
+    return { mode: "array", arr: createCausalMask(N, this.offset, windowSize) };
   }
 
   /** Compiled decode: growth half of updateAndFetchQuantized (L=1),

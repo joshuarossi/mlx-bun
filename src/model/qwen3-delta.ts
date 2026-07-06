@@ -198,6 +198,19 @@ export class SSMCache implements Cache {
   conv: MlxArray | null = null;
   recurrent: MlxArray | null = null;
   offset = 0;
+  /** Per-row token coverage (batch lane only; null on serial B=1 caches,
+   *  where `offset` IS the row's count). mlx-lm's ArraysCache tracks no
+   *  offset at all (cache.py:594-722) — per-sequence coverage is the
+   *  server's bookkeeping; ours lives here because prompt-cache put()
+   *  keys on EXACT coverage (#putOrDispose offset === tokens.length) and
+   *  merged rows carry different totals. Seeded by mergeRows, advanced in
+   *  lockstep by advance(), row-filtered by filter(). */
+  offsets: number[] | null = null;
+
+  /** Row `i`'s own token coverage (per-row when batched, `offset` serial). */
+  rowOffset(i: number): number {
+    return this.offsets ? this.offsets[i]! : this.offset;
+  }
 
   /** Linear-attn layers don't go through the KV update path. */
   updateAndFetch(): [MlxArray, MlxArray] {
@@ -214,6 +227,10 @@ export class SSMCache implements Cache {
 
   advance(n: number): void {
     this.offset += n;
+    // Batched rows step together (one forward advances every row), so the
+    // per-row counts move in lockstep; they DIFFER only in their merge-time
+    // seeds (each row's prompt length).
+    if (this.offsets) for (let i = 0; i < this.offsets.length; i++) this.offsets[i]! += n;
   }
 
   state(): MlxArray[] {
@@ -243,7 +260,8 @@ export class SSMCache implements Cache {
   // left-padding, so the batched twins of mergeKVRows/filterKVRows collapse
   // to B-axis concat/take. `offset` is bookkeeping only for SSM layers (RoPE
   // reads the FULL-attention caches; the linear-attn forward never reads it),
-  // so merged rows carrying different token counts share the max.
+  // so merged rows carrying different token counts share the max; the exact
+  // per-row counts live in `offsets` (extraction's coverage key).
 
   /** Merge a fully-prefilled solo row into a running batched cache (`prev`
    *  null ⇒ the solo row becomes the batch). The returned cache owns fresh
@@ -266,6 +284,9 @@ export class SSMCache implements Cache {
       solo.recurrent = null;
     }
     out.offset = Math.max(prev?.offset ?? 0, solo.offset);
+    // Seed per-row coverage: an adopted serial `prev` (offsets null) is one
+    // row whose exact count is its scalar offset.
+    out.offsets = [...(prev ? prev.offsets ?? [prev.offset] : []), solo.offset];
     return out;
   }
 
@@ -280,5 +301,32 @@ export class SSMCache implements Cache {
     this.recurrent.dispose();
     this.conv = conv;
     this.recurrent = recurrent;
+    if (this.offsets) this.offsets = keep.map((i) => this.offsets![i]!);
+  }
+
+  /** Row `i` as a fresh SERIAL cache — port of mlx-lm ArraysCache.extract
+   *  (cache.py:673-676: `cache.cache = [c[idx : idx + 1] for c in self.cache]`,
+   *  a B-axis slice of every state slot). Ours are OWNED contiguous copies
+   *  (the entry outlives the batch; the batched buffers must free when the
+   *  batch moves on — same rule as extractKVRow, batched-mask.ts). Offset =
+   *  the row's OWN coverage, not the shared max. */
+  extractRow(i: number): SSMCache {
+    if (!this.conv || !this.recurrent)
+      throw new Error("SSMCache.extractRow: empty cache");
+    const cut = (a: MlxArray): MlxArray => {
+      const lo = a.shape.map(() => 0);
+      lo[0] = i;
+      const hi = [...a.shape];
+      hi[0] = i + 1;
+      const view = a.slice(lo, hi);
+      const own = ops.contiguous(view);
+      view.dispose();
+      return own;
+    };
+    const out = new SSMCache();
+    out.conv = cut(this.conv);
+    out.recurrent = cut(this.recurrent);
+    out.offset = this.rowOffset(i);
+    return out;
   }
 }

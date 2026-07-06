@@ -68,6 +68,27 @@ export interface ColdTier {
   store(tokens: number[], caches: Cache[], ns: string): void;
 }
 
+/** Spill sink for eviction/demotion (write-behind, 2026-07-06).
+ *
+ *  `spillOwned` (preferred, NON-BLOCKING): the cache hands the sink an
+ *  entry it OWNS — zero-copy CLONES of the caches (made via the same
+ *  injectable cloner take() uses, BEFORE the donor is disposed; entries
+ *  are immutable so the clones stay consistent forever) plus a copy of
+ *  the tokens. The sink must dispose entry.caches when done, on BOTH
+ *  fulfill and reject paths (the server chains storeAsync -> dispose on
+ *  ssdWriteChain). A sink that throws SYNCHRONOUSLY has not taken
+ *  ownership — the cache disposes the clones and the spill degrades to
+ *  a no-op; eviction/demotion never unwinds.
+ *
+ *  `spillSync` (fallback): called with the LIVE entry about to be
+ *  disposed; must finish reading before returning. This is the old
+ *  contract — a full synchronous serialize+write under the generation
+ *  lock — kept for tests and simple embedders. */
+export interface SpillSink {
+  spillOwned?: (entry: PromptCacheEntry) => void;
+  spillSync?: (entry: PromptCacheEntry) => void;
+}
+
 export interface PromptCacheEntry {
   tokens: number[];
   caches: Cache[];
@@ -112,10 +133,11 @@ export class PromptCache {
   hits = 0;
   misses = 0;
   demotions = 0;
-  /** Cold-tier spill hook: called with an entry ABOUT to be evicted (still
-   *  alive — the hook may serialize its caches); the cache disposes it after.
-   *  Failures are the hook's problem; eviction proceeds regardless. */
-  readonly #spill: ((entry: PromptCacheEntry) => void) | null;
+  /** Cold-tier spill sinks (see SpillSink): spillOwned gets clones and
+   *  runs the write off-lock; spillSync gets the live entry inline.
+   *  Failures are the sink's problem; eviction proceeds regardless. */
+  readonly #spillOwned: ((entry: PromptCacheEntry) => void) | null;
+  readonly #spillSync: ((entry: PromptCacheEntry) => void) | null;
   /** Optional cold tier: take() tiers over it, demoteIdle() spills into it. */
   readonly #cold: ColdTier | null;
   /** Fired after every successful put() — the server hangs its debounced
@@ -127,24 +149,49 @@ export class PromptCache {
 
   constructor(
     maxBytes: number,
-    spill: ((entry: PromptCacheEntry) => void) | null = null,
+    // Bare function = legacy sync spill (tests, simple embedders).
+    spill: SpillSink | ((entry: PromptCacheEntry) => void) | null = null,
     cold: ColdTier | null = null,
     clone: (caches: Cache[]) => Cache[] = cloneKvCaches,
   ) {
     this.maxBytes = maxBytes;
-    this.#spill = spill;
+    this.#spillOwned = typeof spill === "function" ? null : spill?.spillOwned ?? null;
+    this.#spillSync = typeof spill === "function" ? spill : spill?.spillSync ?? null;
     this.#cold = cold;
     this.#clone = clone;
   }
 
   #disposeEntry(entry: PromptCacheEntry, spillFirst: boolean): void {
     if (spillFirst) {
-      const spill =
-        this.#spill ??
-        (this.#cold
-          ? (e: PromptCacheEntry) => this.#cold!.store(e.tokens, e.caches, e.ns)
-          : null);
-      if (spill) try { spill(entry); } catch {}
+      if (this.#spillOwned) {
+        // NON-BLOCKING spill: clone BEFORE disposing (clones are zero-copy
+        // views of the live arrays) and hand ownership to the sink, which
+        // flushes off the generation lock. The underlying GPU buffers stay
+        // alive until the sink disposes the clones — for demoteIdle that
+        // means the memory is freed one bounded write-chain hop later, not
+        // instantly; acceptable because the chain is serial and each write
+        // disposes its clones on settle (fulfill AND reject).
+        // Retain contract: entry.retain still runs below, possibly while
+        // the clones are in flight — safe because cold-restored entries'
+        // backing mmaps are process-pinned (retainMmapForProcess,
+        // 2026-07-06 hang fix), so retain no longer unmaps anything the
+        // clones could alias.
+        let clones: Cache[] | null = null;
+        try {
+          clones = this.#clone(entry.caches);
+          this.#spillOwned({ tokens: [...entry.tokens], caches: clones, ns: entry.ns });
+        } catch {
+          // Failure degrades to no-spill; eviction/demotion never unwinds.
+          if (clones) for (const c of clones) try { c.dispose(); } catch {}
+        }
+      } else {
+        const spill =
+          this.#spillSync ??
+          (this.#cold
+            ? (e: PromptCacheEntry) => this.#cold!.store(e.tokens, e.caches, e.ns)
+            : null);
+        if (spill) try { spill(entry); } catch {}
+      }
     }
     for (const c of entry.caches) c.dispose();
     entry.retain?.();
@@ -338,7 +385,9 @@ export class PromptCache {
    *  next take() restores it via zero-copy mmap (~0.25 s for a 13.7k-token
    *  entry, vs a 12 s re-prefill) — but between bursts the RAM tier drains
    *  toward empty, returning unified memory to the system. Caller must
-   *  hold the generation lock (entries' arrays are disposed here). No-op
+   *  hold the generation lock (entries' arrays are disposed here) — with
+   *  a spillOwned sink the lock covers only the zero-copy clone; the
+   *  write runs off-lock and the buffers free when it settles. No-op
    *  without a cold tier — demotion without a place to demote TO would
    *  just be data loss. Returns entries demoted. */
   demoteIdle(idleMs: number, now = Date.now()): number {

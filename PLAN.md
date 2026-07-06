@@ -2257,11 +2257,22 @@ own kv8 trails its bf16; it buys memory headroom only, ~1.3 GB on 12B @16k).
   (0.994 in-process), e4b 45→57.6 (0.93), 12B 25.6→29.7 (1.00).
   Instrumentation: MLX_BUN_BATCH_STEP_TRACE=1 + scripts/experiments/
   batch-b1-step-profile.ts. `--batch` 32 default stays gated (plan §8).
-- Open: cpm5 vs optiq mixed ~3–6% gap; 12B KL-max outlier; CPM
-  extend-join oracle test fails PRE-EXISTINGLY on this M1 Max
-  (batched-decode-parity, stash-proven unrelated to Phase 2) — regen the
-  golden or root-cause; e4b compiled-decode-at-B=1 (last 7%); prompt
-  cache for batched rows (TTFT).
+- Open (AUDITED 2026-07-06 against benchmarks-serve-2026-07-06b at real
+  HTTP defaults — most items closed since written):
+  - CLOSED: e4b compiled-decode-at-B=1 and prompt cache for batched rows
+    — decode batch/serial now cpm5 266.0/263.8, e4b 61.2/61.2, 12B
+    29.7/29.2, unified-vs-pin parity probes token-identical on all three;
+    `--batch` default is 8 (server.ts:1136).
+  - REWORDED: "cpm5 vs optiq mixed 3-6%" -> no HTTP optiq-mixed oracle
+    exists (kv-quant inert upstream, lab/repro/optiq-mixed-kv-inert);
+    mixed compares vs our own bf16 + script-path goldens.
+  - STILL OPEN: 12B KL-max outlier; CPM extend-join golden regen
+    (pre-existing); padded-B>1 per-step mask rebuild remains BY DESIGN
+    (batch-scheduler #step padded branch) — unmeasured at B>1, likely
+    amortized; measure via a forced-padding agg A/B before building a
+    step-stable mask cache. Batch-lane warm/ctx-repeat TTFT deltas from
+    06b were re-measured post-write-behind/encode-memo fixes: batched ~=
+    serial (261/277 vs 252/257 ms @11k) — no admission tax remains.
 
 ## Phase: serve-bench defect sweep — cache invariant + FFI deadlock `[x]` (2026-07-06)
 
@@ -2378,6 +2389,57 @@ adversarial re-read of every cited line) + fixes, all landed together.
   the rep-0-behind-the-flush tax is gone (498→277ms; rep-0 ≈ rep-1).
   Eviction-spill and demoteIdle still use the sync store (they already run
   at eviction/idle time, not on the request path).
+
+## Phase: finish-the-list — prefill parity, incremental encode, SSM extract, FFI safety, async persistence `[x]` (2026-07-06)
+
+Six parallel tracks (dynamic workflow: 2 investigations + 4 worktree
+implementations), integrated + verified same day (suite 1127/0; parity
+suites green on every change).
+
+- `[x]` **e4b long-ctx prefill gap CLOSED — causal-mask fidelity fix.**
+  Root cause (confidence 1.0, op-for-op): on every prefill chunk after
+  the first, KVCache/QuantizedKVCache.makeMask shipped a MATERIALIZED
+  bool [N, offset+N] mask where mlx-lm hands the string "causal"
+  (cache.py:114-125) — engaging only multi-chunk, worst on e4b's
+  hd=512 full-attention layers (fallback dispatch can't block-skip an
+  array mask). Fix: windowless multi-token chunks return mode "causal"
+  at ANY offset; windowed/batched keep arrays. This is the FAITHFUL
+  port (matches mlx-lm's kernel dispatch), value-identical (bottom-right
+  causal), and bit-exact by the golden suites. Paired result (06d):
+  e4b prefill@ctx 872 vs mlx-lm 877 (was 862 vs 878; batched arm was
+  845) — parity within spread.
+- `[x]` **Incremental tokenizer encode** (append-only conversations):
+  no per-token offsets in @huggingface/tokenizers 0.1.3, so boundaries
+  are recovered by decoding token TAILS (endsWith check, U+FFFD-safe
+  backoff); splice = cached prefix + suffix encode with a K=32-token
+  seam VERIFICATION window — any mismatch falls back to full encode
+  (exact by construction). Guards: specials must be prefix-only
+  (post_processor structural check), clean_up_tokenization_spaces
+  forced off in offset decodes. Measured: 15.9x (cpm5) / 58.8x (e4b)
+  vs full re-encode on a ~10-11.5k base + ~250-char append.
+- `[x]` **SSM per-row extraction** (Qwen3.5 hybrids): SSMCache gains
+  per-row offsets through mergeRows/advance/filter + extractRow(i)
+  (port of mlx-lm ArraysCache.extract, cache.py:673-676, owned
+  contiguous copies); scheduler refusal lifted with the coverage gate
+  kept (rowOffset must equal promptIds+fed length or the row refuses).
+- `[x]` **fromView JSCallback dtor eliminated** (last of the deadlock
+  class): expert-offload switched to fromPointer over its
+  process-lifetime mmap (the pinned JS view never owned the memory —
+  MmapFile.view is an alias); fromView keeps a GC-root pin but hands
+  mlx the native free(NULL) dtor; release is explicit + JS-thread-only
+  (unpinHostBuffer). No JS-callback buffer dtor remains in the repo.
+- `[x]` **Eviction-spill + demoteIdle non-blocking**: PromptCache takes
+  a SpillSink — spillOwned receives OWNED zero-copy clones (made
+  before dispose) and the server chains storeAsync on ssdWriteChain;
+  demoteIdle still frees GPU memory one bounded write-chain hop later
+  (documented tradeoff). Legacy sync spill kept for embedders/tests.
+- `[x]` **Phase-2 host-tax worklist audited** (see the updated Open
+  bullet in the 07-05 phase): compiled-decode-at-B=1 + batched prompt
+  cache CLOSED by 06b evidence; the optiq-mixed item reworded (no HTTP
+  oracle); still open: 12B KL-max outlier, CPM extend-join golden
+  regen, padded-B>1 mask rebuild (measure via forced-padding A/B
+  first). Stale "serial is default" comments fixed (cli.ts/server.ts);
+  cli.md --batch default corrected to 8.
 
 ## Context / lore
 

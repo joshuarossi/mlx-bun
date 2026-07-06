@@ -126,9 +126,9 @@ export interface ServerOptions {
    *  thinking traces never truncate. `--max-tokens 512` = mlx-lm behavior. */
   defaultMaxTokens?: number;
   /** Max concurrent requests batched through the mlx-lm-parity engine
-   *  (`--batch N`). Default 1 = today's serialized single-queue path. >1 opts
-   *  the WHOLE server into the batched engine (continuous batching, B floats
-   *  1..N, bit-parity with mlx-lm B=N) — a mode switch, not a load-dependent
+   *  (`--batch N`). Default 8 (continuous batching, B floats 1..N,
+   *  bit-parity with mlx-lm B=N); `--batch 1` pins the serialized
+   *  single-queue path — a mode switch, not a load-dependent
    *  fallback. See docs/design/parallel-slots.md. NOTE: the batched executor
    *  is mid-build; until it lands, >1 warns and runs serially. */
   batch?: number;
@@ -1223,9 +1223,28 @@ export function createServer(
     : null;
   const promptCache = new PromptCache(
     promptCacheCap,
-    // RAM eviction spills to the cold tier (whole-prefix entries, no work
-    // on the token loop — the spill runs at eviction time only).
-    ssdStore ? (entry) => { ssdStore!.store(entry.tokens, entry.caches, entry.ns); } : null,
+    // RAM eviction AND idle demotion spill to the cold tier NON-BLOCKING
+    // (2026-07-06, same contract as the write-behind snapshot below): the
+    // cache hands us OWNED zero-copy clones + copied tokens (made under
+    // the generation lock — microseconds; entries are immutable so the
+    // clones stay consistent), and the flush chains onto the serial
+    // ssdWriteChain -> storeAsync (yields between tensors) -> dispose the
+    // clones on BOTH settle paths (that dispose is what actually frees
+    // the demoted GPU memory — bounded by the chain). ssdWriteChain is
+    // declared with the snapshot scheduler below; safe to close over here
+    // because spills only fire at put()/demoteIdle time, long after init.
+    ssdStore
+      ? {
+          spillOwned: (entry) => {
+            ssdWriteChain = ssdWriteChain
+              .then(() => ssdStore!.storeAsync(entry.tokens, entry.caches, entry.ns))
+              .then(
+                () => { for (const c of entry.caches) c.dispose(); },
+                () => { for (const c of entry.caches) c.dispose(); },
+              );
+          },
+        }
+      : null,
     coldTier,
   );
   // Responses-API store for previous_response_id resumption (Phase 11):
@@ -1397,7 +1416,9 @@ export function createServer(
   // Idle demotion (Layer 0): entries unused for --ssd-demote-idle seconds
   // spill to SSD and free their GPU memory — the RAM tier drains between
   // bursts while every prefix stays reachable (take() restores via
-  // zero-copy mmap). Swept only when the engine is TRULY idle: the
+  // zero-copy mmap). The exclusive section below covers only the sweep's
+  // zero-copy clone + dispose (spillOwned above); the SSD write itself
+  // runs off-lock on ssdWriteChain. Swept only when the engine is TRULY idle: the
   // runExclusive below registers as a serial waiter, which would DRAIN a
   // running batch, so the activity check guards it (a momentary exclusive
   // grab of an idle engine is free). 0 disables.

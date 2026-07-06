@@ -876,8 +876,8 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   // engine (N=1 = today's serial path). --decode-concurrency is accepted for
   // drop-in compatibility with mlx_lm.server, but the semantics differ: there
   // it caps per-BatchGenerator decode parallelism (default 32); in mlx-bun it
-  // enables continuous batching with this cap (the default is the optimized
-  // serial path).
+  // caps continuous batching (default 8; `--batch 1` pins the serial path —
+  // the unified engine is bit-parity with it and costs ~nothing at B=1).
   const batchRaw = opt("batch") ?? opt("decode-concurrency");
   if (batchRaw !== null) {
     const n = Number(batchRaw);

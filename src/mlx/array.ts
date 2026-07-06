@@ -2,7 +2,7 @@
 // Explicit .dispose() is the contract; a FinalizationRegistry backstop
 // frees leaked handles on GC (verified in lab/spikes/phase0-memory.ts).
 
-import { JSCallback, dlopen, ptr, toArrayBuffer } from "bun:ffi";
+import { dlopen, ptr, toArrayBuffer } from "bun:ffi";
 import { C, Dtype, DTYPE_NAMES, type MlxHandle, optInt, outArray, takeMlxError } from "./ffi";
 import type { SafetensorsDtype } from "../safetensors";
 
@@ -24,9 +24,9 @@ export const SAFETENSORS_TO_MLX: Record<SafetensorsDtype, Dtype> = {
 
 // --- zero-copy pinning ---------------------------------------------------
 // Buffers handed to mlx via new_data_managed_payload must outlive the mlx
-// array. We pin the JS view in a map keyed by a payload id; the shared dtor
-// callback unpins when mlx drops its last reference. threadsafe: mlx may
-// release buffers from its eval thread.
+// array. fromView pins the JS view in this map (a GC root, nothing more);
+// release is EXPLICIT and JS-thread-only via unpinHostBuffer() — never an
+// mlx dtor. See the hazard note below.
 
 const pinned = new Map<number, Uint8Array>();
 let nextPinId = 1;
@@ -34,22 +34,19 @@ let nextPinId = 1;
 // HAZARD (root cause of the 2026-07-06 restart-restore hang): mlx releases
 // buffer Data wherever the LAST shared_ptr drops — often the Metal
 // COMPLETION thread (gpu::eval retains buffers until the command buffer
-// finishes). A JSCallback dtor invoked from that thread deadlocks when the
-// JS thread is inside a blocking FFI eval (completion waits on JS, JS waits
-// on completion) and SIGTRAPs mid-GC. So: only fromView — whose buffers
-// need real unpin bookkeeping — may use this callback, and its callers must
-// guarantee their arrays are never released from a GPU completion (today:
-// expert-offload only). fromPointer uses a NATIVE no-op dtor below.
-const unpinCallback = new JSCallback(
-  (payloadId: number) => { pinned.delete(payloadId); },
-  { args: ["u64"], returns: "void", threadsafe: true },
-);
+// finishes, i.e. past dispose()). A bun:ffi JSCallback dtor invoked from
+// that thread deadlocks when the JS thread is inside a blocking FFI eval
+// (completion waits on JS, JS waits on completion) and SIGTRAPs mid-GC.
+// So NO array here ever gets a JS dtor: fromPointer AND fromView both hand
+// mlx the native no-op dtor below (payload 0), and host-buffer lifetime is
+// the CALLER's contract, released only from the JS thread (unpinHostBuffer)
+// or never (process-lifetime mmaps: expert-offload, kv-store).
 
-// Native no-op dtor for fromPointer: payload is always 0, and libc
-// free(NULL) is defined to do nothing — a dtor mlx can safely call from ANY
-// thread. The pointed-to memory's lifetime is the CALLER's contract
-// (weight mmaps live for the process; restored KV mmaps are kept mapped for
-// the process too — see kv-store.ts). The address comes via dlsym because
+// Native no-op dtor: payload is always 0, and libc free(NULL) is defined to
+// do nothing — a dtor mlx can safely call from ANY thread. The pointed-to
+// memory's lifetime is the CALLER's contract (weight mmaps live for the
+// process; restored KV mmaps are kept mapped for the process too — see
+// kv-store.ts retainMmapForProcess). The address comes via dlsym because
 // bun:ffi's symbol .ptr returns the pointer bit-cast to float64
 // (lab/repro/bun-ffi-f64) — passing that back truncates to NULL.
 const libcDlsym = dlopen("/usr/lib/libSystem.B.dylib", {
@@ -58,7 +55,7 @@ const libcDlsym = dlopen("/usr/lib/libSystem.B.dylib", {
 const FREE_NAME = Buffer.from("free\0");
 const RTLD_DEFAULT = 0xfffffffffffffffen;
 const freeFnAddr = Number(libcDlsym.symbols.dlsym(RTLD_DEFAULT, ptr(FREE_NAME)));
-if (!freeFnAddr) throw new Error("dlsym(free) failed — fromPointer needs a native no-op dtor");
+if (!freeFnAddr) throw new Error("dlsym(free) failed — zero-copy arrays need a native no-op dtor");
 
 export function pinnedBufferCount(): number {
   return pinned.size;
@@ -74,22 +71,47 @@ export class MlxArray {
   #handle: MlxHandle;
   #disposed = false;
   #token = {};
+  #pinId = 0; // fromView only: key into the pinned-view map (0 = no pin)
 
   constructor(handle: MlxHandle) {
     this.#handle = handle;
     registry.register(this, handle, this.#token);
   }
 
-  /** Zero-copy: wrap an existing buffer (e.g. an mmap view). The view is
-   *  pinned until mlx releases it. */
+  /** Zero-copy: wrap an existing JS buffer. The view is pinned (GC-rooted)
+   *  in a process-side map; mlx gets the NATIVE no-op dtor (free(NULL)) —
+   *  never a JS callback, so the last release may happen on the Metal
+   *  completion thread without deadlock (see hazard note above). Buffer
+   *  lifetime is therefore the CALLER's contract:
+   *   - mmap-backed views (toArrayBuffer aliases): the mapping owns the
+   *     memory; prefer fromPointer, which skips the pin entirely.
+   *   - JS-heap buffers: the pin keeps the buffer alive; call
+   *     unpinHostBuffer() only after a JS-side sync point proves mlx is
+   *     done with it (everything depending on the array evaluated AND the
+   *     array disposed), or never (process-lifetime, e.g. short scripts). */
   static fromView(view: Uint8Array, shape: number[], dtype: Dtype): MlxArray {
     const sb = shapeBuf(shape);
     const id = nextPinId++;
     pinned.set(id, view);
     const handle = C.mlx_array_new_data_managed_payload(
-      ptr(view), ptr(sb), shape.length, dtype, id, unpinCallback.ptr,
+      ptr(view), ptr(sb), shape.length, dtype, 0, freeFnAddr,
     );
-    return new MlxArray(handle);
+    const arr = new MlxArray(handle);
+    arr.#pinId = id;
+    return arr;
+  }
+
+  /** Release the GC root fromView placed on this array's host buffer.
+   *  JS-thread-only by construction (it's a plain method) — this is the
+   *  replacement for the deadlocking JSCallback unpin dtor. Idempotent;
+   *  no-op for non-fromView arrays. Caller contract: only call once mlx can
+   *  no longer touch the buffer (see fromView doc), or when the memory is
+   *  owned elsewhere (an mmap kept mapped past every use). */
+  unpinHostBuffer(): void {
+    if (this.#pinId !== 0) {
+      pinned.delete(this.#pinId);
+      this.#pinId = 0;
+    }
   }
 
   /** Zero-copy: wrap a raw pointer (e.g. into an mmap'd weight shard or a
