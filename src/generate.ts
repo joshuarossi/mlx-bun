@@ -497,6 +497,10 @@ async function* generateInner(
           maybeQuantizeKv(cache, options);
           clearCache();
           pos += chunk.length;
+          // Macrotask yield between chunks (runtime-isolation.md Phase 1):
+          // each chunk is a synchronous multi-hundred-ms FFI eval; without
+          // this the event loop serves no I/O for the WHOLE prefill.
+          await new Promise<void>((r) => setImmediate(r));
         }
         options.onPrefillDone?.();
       }
@@ -516,6 +520,8 @@ async function* generateInner(
         // gap's main term).
         clearCache();
         pos += prefillChunkSize;
+        // Macrotask yield between chunks (runtime-isolation.md Phase 1).
+        await new Promise<void>((r) => setImmediate(r));
       }
       if (needsTokenHistory) {
         history = ops.fromInt32(promptTokens, [promptTokens.length]);
