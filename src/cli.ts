@@ -96,6 +96,12 @@ const SERVER_FLAGS = `Server options:
                             [default: 300 when --ssd-cache is on]
   --ssd-cache-verify        Verify tensor hashes on every restore (reads all
                             bytes eagerly — integrity paranoia only)
+  --isolate                 Run the inference engine as a CHILD process and
+                            keep this process a pure UI/API proxy — the UI
+                            stays instant under GPU load and survives engine
+                            crashes (respawned). /ws/chat not proxied yet.
+  --unix <path>             (internal) listen on a unix socket instead of a
+                            TCP port — the engine half of --isolate.
   --batch <n>               Max concurrent requests decoded together
                             [default: 8]. A LONE request runs the exact
                             serial engine (same bits, same speed); the cap
@@ -844,6 +850,11 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   if (kvBudgetGB > 0) serverOptions.kvBudgetBytes = kvBudgetGB * 1e9;
   const pcRaw = opt("prompt-cache"); // null if absent; an explicit value (incl. 0) wins → `--prompt-cache 0` DISABLES the cache
   if (pcRaw !== null) serverOptions.promptCacheBytes = Math.max(0, Number(pcRaw)) * 2 ** 30;
+  // Engine-child mode (runtime-isolation.md): listen on a unix socket
+  // instead of TCP — the isolated parent proxies here. Internal flag,
+  // spawned by --isolate; usable directly for socket-level integration.
+  const unixRaw = opt("unix");
+  if (unixRaw !== null) serverOptions.unixSocket = unixRaw;
   // SSD cold tier (docs/design/ssd-kv-cold-tier.md) — off unless a dir is given.
   const ssdDir = opt("ssd-cache");
   if (ssdDir !== null) {
@@ -1291,7 +1302,7 @@ switch (cmd) {
       console.log(style.dim("  no command given — starting the server · mlx-bun --help for all commands"));
     const rt = serverRuntimeFlags();
     // Friendly collision check before loading gigabytes of weights.
-    {
+    if (!rt.serverOptions.unixSocket) {
       const { probeServer } = await import("./harness-pi");
       const running = await probeServer(`http://localhost:${rt.port}/v1`);
       if (running) {
@@ -1300,6 +1311,35 @@ switch (cmd) {
         console.error("NOTE: a second server is a second model in memory — check `mlx-bun fit` first.");
         process.exit(1);
       }
+    }
+    // Runtime isolation (--isolate, runtime-isolation.md): THIS process
+    // becomes a pure reactor — it binds the TCP port and reverse-proxies to
+    // an engine CHILD (the full server on a unix socket, spawned from the
+    // same argv minus parent-only flags). Zero MLX calls in the parent: the
+    // UI stays instant under any GPU load, and an engine crash respawns
+    // without taking the session down.
+    if (flag("isolate")) {
+      const { startProxyServer, engineArgv, defaultSocketPath } = await import("./serve/isolate");
+      const sock = defaultSocketPath();
+      // Re-spawn ourselves: compiled binary = execPath alone (argv[1] is a
+      // $bunfs virtual path); dev = bun + the script path.
+      const selfArgv = process.argv[1] && !process.argv[1].includes("$bunfs")
+        ? [process.execPath, process.argv[1]]
+        : [process.execPath];
+      const { engine } = startProxyServer({
+        port: rt.port,
+        ...(rt.serverOptions.hostname ? { hostname: rt.serverOptions.hostname } : {}),
+        engine: { argv: [...selfArgv, ...engineArgv(process.argv.slice(2), sock)], socketPath: sock },
+      });
+      const shownHost0 = rt.serverOptions.hostname ?? "localhost";
+      console.log(style.dim(`  isolated mode: engine child starting (socket ${sock})`));
+      console.log(`  ${style.green("●")} ${style.bold("proxy up")} http://${shownHost0}:${rt.port} ${style.dim("· engine loading behind it")}`);
+      const onExit = () => { engine.stop(); process.exit(0); };
+      process.on("SIGINT", onExit);
+      process.on("SIGTERM", onExit);
+      await engine.ready;
+      console.log(`  ${style.green("●")} ${style.bold("engine ready")} ${style.dim(`pid ${engine.pid}`)}`);
+      await new Promise(() => {}); // serve until killed
     }
     // --model <path-or-query> is the explicit override (mlx_lm.server's
     // spelling — previously accepted-but-IGNORED here, which silently
@@ -1680,14 +1720,14 @@ switch (cmd) {
     // already run their own pi connect it with `mlx-bun harness pi`.
     const OURS_VAL = new Set([
       "--query", "-q", "--model", "--port", "--host", "--memory-budget", "--kv-budget", "--prompt-cache",
-      "--ssd-cache", "--ssd-cache-max", "--ssd-demote-idle", "--kv-quant",
+      "--ssd-cache", "--ssd-cache-max", "--ssd-demote-idle", "--kv-quant", "--unix",
       "--batch", "--decode-concurrency", "--adapter", "--adapter-path",
       "--draft-model", "--num-draft-tokens",
       "--compiled-decode", "--compiled-activations", "--fused-sdpa", "--thinking",
       "--temperature", "--temp", "--top-p", "--top-k", "--max-tokens",
       "--hlg-sampling", "--hlg-width", "--hlg-shoulder", "--hlg-toe", "--hlg-pivot-offset",
     ]);
-    const OURS_BOOL = new Set(["--force-wire", "--expert-offload", "--no-open", "--ssd-cache-verify", "--l1", "--l2", "--l3"]);
+    const OURS_BOOL = new Set(["--force-wire", "--expert-offload", "--no-open", "--ssd-cache-verify", "--l1", "--l2", "--l3", "--isolate"]);
     const passthrough: string[] = [];
     for (let i = 1; i < argv.length; i++) {
       const a = argv[i]!;

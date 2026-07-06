@@ -712,6 +712,25 @@ speed):
   shared physical prefix across rows is the paged/block-KV frontier item
   (§9.4), and per §9.5 the disk tier's whole-entry duplication of shared
   prefixes is the block-granularity revisit trigger.
+- **Runtime isolation P1 (LANDED 2026-07-05, opt-in `--isolate`)**: the
+  engine child = the ENTIRE existing server on a unix domain socket; the
+  parent = a thin reverse proxy (src/serve/isolate.ts) — zero MLX calls,
+  crash isolation (502 + auto-respawn with crash-loop backoff), abort
+  propagation, GET-retry across respawn. Decision recorded in
+  runtime-isolation.md: proxy-the-whole-server instead of the original
+  gateway-as-IPC-client sketch (grammar WASM/vision arrays/sampler
+  closures don't serialize; the inter-process API is the /v1 surface
+  itself — no second protocol). Measured paired (M1 Max, cpm5): proxied
+  197.2 vs direct 197.9 tok/s (−0.4%, noise), TTFT +2 ms, SSE per-token
+  granularity preserved (96 reads/96 tokens), parent 0.6 ms mid-decode
+  (criterion <50 ms). Gates: tests/isolate-proxy.test.ts (model-free fake
+  engine: passthrough, granularity, abort, crash→respawn) +
+  tests/isolate-e2e.test.ts (real cpm5 child). Prefill chunk loops also
+  gained macrotask yields (the last isolation-Phase-1 item). Not proxied
+  v1: /ws/chat (501). NEXT: P2 = child-per-model pool — multi-model
+  switching by SPAWN-OVERLAP (new child loads while the old one serves;
+  drain → demote-to-SSD → park; route by the request `model` field);
+  P3 = GPU-lease unification with quantize/finetune jobs.
 - **Phase 4 — the frontier program opens** (§7 order).
 
 ## 9. Decisions log (was: open questions)

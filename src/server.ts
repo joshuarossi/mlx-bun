@@ -98,6 +98,11 @@ export interface ServerOptions {
    *  it). Exposed at /stats.server so other mlx-bun processes can
    *  warn before attaching to a server that may vanish. */
   owner?: "serve" | "pi-session" | "embedded";
+  /** Listen on a UNIX DOMAIN SOCKET instead of a TCP port — the engine-
+   *  child mode of the isolation architecture (runtime-isolation.md): the
+   *  parent process reverse-proxies HTTP to this socket. Stale socket
+   *  files are unlinked before bind. When set, `hostname`/port are ignored. */
+  unixSocket?: string;
   /** Interface to bind (Bun.serve hostname). Unset ⇒ Bun's default
    *  (all interfaces) — embedded/library use. The CLI always passes one:
    *  "127.0.0.1" (loopback, mlx_lm.server parity) unless --host says
@@ -1540,9 +1545,18 @@ export function createServer(
   const toolRouter = (tools: ToolDefinition[] | null): ToolAwareStream =>
     new ToolAwareStream(ctx.tokenizer, toolStreamMode(tools), tools);
 
+  if (serverOptions.unixSocket) {
+    try { require("node:fs").unlinkSync(serverOptions.unixSocket); } catch {}
+  }
+  // Bun's types make unix/port mutually exclusive variants that a spread
+  // union can't prove — runtime accepts either; cast once at the call.
   serverRef = Bun.serve({
-    port,
-    ...(serverOptions.hostname ? { hostname: serverOptions.hostname } : {}),
+    ...(serverOptions.unixSocket
+      ? ({ unix: serverOptions.unixSocket } as unknown as Record<string, never>)
+      : {
+          port,
+          ...(serverOptions.hostname ? { hostname: serverOptions.hostname } : {}),
+        }),
     idleTimeout: 0,
     // Web chat rides pi's AgentSession events over a WebSocket; the embedded
     // pi provider points back at THIS server's own loopback /v1 (port

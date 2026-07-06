@@ -51,6 +51,15 @@ optimized model → + mixed-precision KV → + LoRA → + spec decode → +
 structured output → × sampling — all STACKABLE on one engine, no lane
 routing.
 
+**RUNTIME ISOLATION P1 LANDED same day (opt-in `--isolate`):** engine =
+the whole server on a unix socket (child), parent = pure reverse proxy —
+zero MLX calls, instant UI under any GPU load, crash → 502 + respawn.
+Measured paired: −0.4% tok/s (noise), +2 ms TTFT, per-token SSE
+granularity preserved, parent 0.6 ms mid-decode. The inter-process API is
+the /v1 surface itself (decision in runtime-isolation.md — deviates from
+the original gateway-IPC sketch). NEXT: P2 child-per-model pool =
+multi-model switching by spawn-overlap (task #14).
+
 **PREFIX SHARING v1 LANDED same day:** PromptCache.take() serves
 NON-CONSUMING zero-copy clones (ref-counted mmap retain); put() supersedes
 prefix-ancestors + duplicates (trimmable-only, so boundary snapshots

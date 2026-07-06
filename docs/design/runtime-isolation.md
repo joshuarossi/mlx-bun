@@ -1,9 +1,25 @@
 # Runtime isolation — the AI may crash, the UI never may
 
-Status: **design** (not started — deferred future work; no scheduled PLAN.md phase)
+Status: **P1 LANDED 2026-07-05** (opt-in `--isolate`; default flip after
+bake). Phase 1 (yields) fully landed same day (the gateway onToken hop
+existed; prefill chunk yields added). **ARCHITECTURE DECISION (2026-07-05,
+deviates from the IPC sketch below):** the engine child is the ENTIRE
+existing server on a unix domain socket; the parent is a thin reverse
+proxy (src/serve/isolate.ts). Rationale: the gateway-as-IPC-client cut
+would serialize grammar controllers (WASM), vision embeddings (GPU
+arrays), sampler closures, and prompt-cache hooks over a message protocol
+— weeks of re-plumbing; HTTP-over-UDS reuses the whole serving stack
+verbatim, streams SSE for free, and cancellation is abort propagation.
+The inter-process API is the existing /v1 surface — no second protocol.
+**Measured (M1 Max, cpm5, paired)**: proxied 197.2 vs direct 197.9 tok/s
+(−0.4%, noise), TTFT +2 ms, SSE per-token granularity preserved (96 reads
+/ 96 tokens), parent answers in 0.6 ms mid-decode (criterion: <50 ms),
+child kill → 502 + respawn (gated model-free + E2E:
+tests/isolate-proxy.test.ts, tests/isolate-e2e.test.ts). Not proxied yet:
+/ws/chat (501 + pointer). P2 = child-per-model pool (multi-model switch by
+spawn-overlap); P3 = GPU-lease unification. The original design follows.
 Owner: serving layer / runtime
-Default today: inference runs **in-process**, on the server's event-loop
-thread. This doc proposes moving it to a **subprocess**.
+Default today: inference runs in-process unless `--isolate` is passed.
 
 ## Goal
 
