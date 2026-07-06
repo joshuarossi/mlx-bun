@@ -3,7 +3,12 @@
 // body passthrough, SSE chunk granularity, abort propagation, crash/respawn.
 // Spawned by tests/isolate-proxy.test.ts with SOCK in the environment.
 
-const sock = process.argv[2] ?? process.env.SOCK!;
+const flagVal = (name: string): string | null => {
+  const i = process.argv.indexOf(name);
+  return i > -1 ? process.argv[i + 1]! : null;
+};
+const sock = flagVal("--unix") ?? process.argv[2] ?? process.env.SOCK!;
+const model = flagVal("--model") ?? "default-model";
 try { require("node:fs").unlinkSync(sock); } catch {}
 
 let lastForeverAborted: boolean | null = null;
@@ -13,6 +18,16 @@ Bun.serve({
   async fetch(req) {
     const url = new URL(req.url);
     if (url.pathname === "/health") return Response.json({ ok: true, pid: process.pid });
+    if (url.pathname === "/whoami") return Response.json({ model, pid: process.pid });
+    if (url.pathname === "/v1/chat/completions" && req.method === "POST") {
+      const body = await req.json() as { model?: string };
+      return Response.json({ served_by: model, requested: body.model ?? null });
+    }
+    if (url.pathname === "/admin/drain" && req.method === "POST") {
+      // Cross-process observability for eviction tests.
+      require("node:fs").writeFileSync(`${sock}.drained`, model);
+      return Response.json({ drained: true });
+    }
     if (url.pathname === "/echo") {
       const body = await req.text();
       return Response.json({

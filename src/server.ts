@@ -1846,6 +1846,21 @@ export function createServer(
 
       // mlx_lm.server parity: GET /health → the exact body it writes
       // ('{"status": "ok"}', note the space) so byte-for-byte health checks pass.
+      // Engine-mode admin (unix-socket children only — never exposed on
+      // TCP): drain = quiesce the gateway + demote the whole prompt cache
+      // to the SSD tier. The pool calls this before evicting a model
+      // child, so its state survives the eviction losslessly.
+      if (
+        serverOptions.unixSocket &&
+        url.pathname === "/admin/drain" &&
+        request.method === "POST"
+      ) {
+        await gateway.runExclusive(async () => {
+          promptCache.demoteIdle(0);
+        });
+        return Response.json({ drained: true, demotions: promptCache.demotions });
+      }
+
       if (url.pathname === "/health" && request.method === "GET") {
         return new Response('{"status": "ok"}', {
           headers: { "content-type": "application/json" },

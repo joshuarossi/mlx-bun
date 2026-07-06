@@ -51,6 +51,13 @@ optimized model → + mixed-precision KV → + LoRA → + spec decode → +
 structured output → × sampling — all STACKABLE on one engine, no lane
 routing.
 
+**MULTI-MODEL SWITCHING LANDED same day (isolation P2, task #14):**
+child-per-model pool under --isolate — route by exact /v1/models id,
+spawn-overlap switch (old model serves while the new loads), lossless LRU
+eviction (drain → demote prompt cache to SSD → exit). Measured: switch
+1.5 s, switch-back 1.2 s with cached_tokens 103/104 — conversations
+survive model eviction. --model-pool N keeps N engines hot.
+
 **RUNTIME ISOLATION P1 LANDED same day (opt-in `--isolate`):** engine =
 the whole server on a unix socket (child), parent = pure reverse proxy —
 zero MLX calls, instant UI under any GPU load, crash → 502 + respawn.

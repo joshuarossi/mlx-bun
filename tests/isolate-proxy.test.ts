@@ -10,7 +10,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { startProxyServer, engineArgv, type EngineChild } from "../src/serve/isolate";
+import { startProxyServer, engineArgv, engineArgvForModel, type EngineChild } from "../src/serve/isolate";
+import { existsSync, rmSync } from "node:fs";
 
 const FIXTURE = new URL("./fixtures/fake-engine.ts", import.meta.url).pathname;
 const sock = join(tmpdir(), `mlxbun-test-engine-${process.pid}.sock`);
@@ -112,4 +113,79 @@ describe("isolate proxy (fake engine)", () => {
     }
     expect(ok).toBe(true);
   }, 20_000);
+});
+
+describe("engineArgvForModel", () => {
+  test("strips model selectors + positional, pins --model, keeps engine flags", () => {
+    expect(engineArgvForModel(
+      ["serve", "cpm5", "--isolate", "--batch", "4", "--model", "old", "--ssd-cache", "/t", "--port", "9090"],
+      "/s.sock", "/models/real",
+    )).toEqual(["serve", "--batch", "4", "--ssd-cache", "/t", "--model", "/models/real", "--unix", "/s.sock"]);
+  });
+  test("bare auto-pick invocation (no subcommand token) gains serve", () => {
+    expect(engineArgvForModel(["--isolate"], "/s.sock", "/m"))
+      .toEqual(["serve", "--model", "/m", "--unix", "/s.sock"]);
+  });
+});
+
+describe("model pool (fake engines)", () => {
+  const sockFor = (id: string) => join(tmpdir(), `mlxbun-pool-${process.pid}-${id}.sock`);
+  const mkPool = (poolMax: number) => {
+    const resolve = (q: string) =>
+      q === "model-a" ? { repoId: "model-a", path: "/models/a" } :
+      q === "model-b" ? { repoId: "model-b", path: "/models/b" } : null;
+    const selfArgv = [process.execPath, "run", FIXTURE];
+    const rawArgs = ["serve", "some-query", "--batch", "2"];
+    const started = startProxyServer({
+      port: 0,
+      engine: {
+        argv: [...selfArgv, ...engineArgvForModel(rawArgs, sockFor("model-a"), "/models/a")],
+        socketPath: sockFor("model-a"),
+        readyTimeoutMs: 15_000,
+      },
+      pool: {
+        rawArgs, selfArgv, poolMax, resolve,
+        defaultKey: "model-a",
+        socketFor: sockFor,
+      },
+    });
+    cleanup.push(() => { started.pool?.stopAll(); started.engine.stop(); started.server.stop(true); });
+    return { base: `http://localhost:${started.server.port}`, ...started };
+  };
+  const ask = async (base: string, model?: string) => {
+    const r = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [], ...(model ? { model } : {}) }),
+    });
+    return await r.json() as { served_by: string; requested: string | null };
+  };
+
+  test("routes by model field; unknown/absent ride the default (drop-in)", async () => {
+    const { base } = mkPool(2);
+    expect((await ask(base)).served_by).toBe("/models/a");
+    expect((await ask(base, "gpt-4")).served_by).toBe("/models/a"); // ignored, like mlx-lm
+    expect((await ask(base, "model-a")).served_by).toBe("/models/a");
+    const b = await ask(base, "model-b"); // spawn-overlap: second child
+    expect(b.served_by).toBe("/models/b");
+    const eng = await (await fetch(`${base}/engine`)).json() as { pool: { resident: string[] } };
+    expect(eng.pool.resident.sort()).toEqual(["model-a", "model-b"]);
+  }, 30_000);
+
+  test("pool cap 1: switching drains + demotes + evicts the old model, and back again", async () => {
+    const { base } = mkPool(1);
+    const drainMarker = `${sockFor("model-a")}.drained`;
+    rmSync(drainMarker, { force: true });
+    expect((await ask(base, "model-a")).served_by).toBe("/models/a");
+
+    expect((await ask(base, "model-b")).served_by).toBe("/models/b"); // switch
+    // eviction ran: model-a got /admin/drain (marker) and left the pool
+    for (let i = 0; i < 20 && !existsSync(drainMarker); i++)
+      await new Promise((r) => setTimeout(r, 100));
+    expect(existsSync(drainMarker)).toBe(true);
+    const eng = await (await fetch(`${base}/engine`)).json() as { pool: { resident: string[] } };
+    expect(eng.pool.resident).toEqual(["model-b"]);
+
+    // ... and switching BACK respawns model-a (state would restore from SSD)
+    expect((await ask(base, "model-a")).served_by).toBe("/models/a");
+  }, 30_000);
 });

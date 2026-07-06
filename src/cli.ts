@@ -100,6 +100,13 @@ const SERVER_FLAGS = `Server options:
                             keep this process a pure UI/API proxy — the UI
                             stays instant under GPU load and survives engine
                             crashes (respawned). /ws/chat not proxied yet.
+                            Requests naming another model (exact /v1/models
+                            id) spawn/route to THAT model's engine child.
+  --model-pool <n>          With --isolate: max RESIDENT model engines
+                            [default: 1]. Over the cap, the least-recently-
+                            used engine drains, demotes its caches to the
+                            SSD tier, and exits — switching back respawns
+                            it with all state restored from disk.
   --unix <path>             (internal) listen on a unix socket instead of a
                             TCP port — the engine half of --isolate.
   --batch <n>               Max concurrent requests decoded together
@@ -1319,22 +1326,56 @@ switch (cmd) {
     // UI stays instant under any GPU load, and an engine crash respawns
     // without taking the session down.
     if (flag("isolate")) {
-      const { startProxyServer, engineArgv, defaultSocketPath } = await import("./serve/isolate");
+      const { startProxyServer, engineArgvForModel, defaultSocketPath } = await import("./serve/isolate");
       const sock = defaultSocketPath();
       // Re-spawn ourselves: compiled binary = execPath alone (argv[1] is a
       // $bunfs virtual path); dev = bun + the script path.
       const selfArgv = process.argv[1] && !process.argv[1].includes("$bunfs")
         ? [process.execPath, process.argv[1]]
         : [process.execPath];
-      const { engine } = startProxyServer({
+      const rawArgs = process.argv.slice(2);
+      // Resolve the DEFAULT model in the parent (registry lookup — no
+      // weights load) so the pool has its key and the child gets a pinned
+      // --model path instead of re-running fuzzy resolution.
+      const { m: m0 } = await resolveModelAuto(opt("model") ?? positional(0) ?? opt("query"));
+      // STRICT resolver for the pool (P2): only EXACT /v1/models ids
+      // switch models. Fuzzy matching here would hijack drop-in clients
+      // that send model:"gpt-4"-style strings (which must keep today's
+      // ignored-field semantics and ride the default engine).
+      const { Registry } = await import("./registry");
+      const poolResolve = (query: string): { repoId: string; path: string } | null => {
+        if (query === m0.repoId) return { repoId: m0.repoId, path: m0.path };
+        try {
+          const reg = new Registry();
+          try {
+            const hit = reg.listCanonical().find((r) => r.repoId === query);
+            return hit ? { repoId: hit.repoId, path: hit.path } : null;
+          } finally {
+            reg.close();
+          }
+        } catch {
+          return null;
+        }
+      };
+      const poolMaxRaw = opt("model-pool");
+      const poolMax = Math.max(1, Number(poolMaxRaw ?? 1) || 1);
+      const { engine, pool } = startProxyServer({
         port: rt.port,
         ...(rt.serverOptions.hostname ? { hostname: rt.serverOptions.hostname } : {}),
-        engine: { argv: [...selfArgv, ...engineArgv(process.argv.slice(2), sock)], socketPath: sock },
+        engine: {
+          argv: [...selfArgv, ...engineArgvForModel(rawArgs, sock, m0.path)],
+          socketPath: sock,
+        },
+        pool: {
+          rawArgs, selfArgv, poolMax,
+          resolve: poolResolve,
+          defaultKey: m0.repoId,
+        },
       });
       const shownHost0 = rt.serverOptions.hostname ?? "localhost";
       console.log(style.dim(`  isolated mode: engine child starting (socket ${sock})`));
-      console.log(`  ${style.green("●")} ${style.bold("proxy up")} http://${shownHost0}:${rt.port} ${style.dim("· engine loading behind it")}`);
-      const onExit = () => { engine.stop(); process.exit(0); };
+      console.log(`  ${style.green("●")} ${style.bold("proxy up")} http://${shownHost0}:${rt.port} ${style.dim(`· ${m0.repoId} loading behind it · model pool ${poolMax}`)}`);
+      const onExit = () => { pool?.stopAll(); engine.stop(); process.exit(0); };
       process.on("SIGINT", onExit);
       process.on("SIGTERM", onExit);
       await engine.ready;

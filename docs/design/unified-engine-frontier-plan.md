@@ -731,6 +731,23 @@ speed):
   switching by SPAWN-OVERLAP (new child loads while the old one serves;
   drain → demote-to-SSD → park; route by the request `model` field);
   P3 = GPU-lease unification with quantize/finetune jobs.
+- **Runtime isolation P2 — CHILD-PER-MODEL POOL (LANDED 2026-07-05; task
+  #14 multi-model switching)**: ModelPool in src/serve/isolate.ts — LRU
+  residency over engine children (--model-pool, default 1), request
+  routing by the JSON `model` field on the generation endpoints (STRICT
+  exact-/v1/models-id resolution: fuzzy strings like "gpt-4" keep
+  mlx-lm's ignored-field drop-in semantics), spawn-overlap switching (the
+  new model health-gates while the old serves), and graceful lossless
+  eviction: POST /admin/drain (engine-mode-only endpoint: gateway
+  quiesce + demoteIdle(0) → the whole prompt cache to that model's SSD
+  fingerprint dir) then exit. engineArgvForModel pins --model per child.
+  **Measured (M1 Max, cpm5⇄qwen0.8b, pool 1): switch 1.5 s · switch-back
+  1.2 s · cached_tokens 103/104 on return** — the conversation's KV
+  survived full model eviction and restored from disk instead of
+  re-prefilling (tests/isolate-switch-e2e.test.ts). Model-free pool gates
+  (routing, drop-in ignore, cap-1 drain→demote→evict→respawn):
+  tests/isolate-proxy.test.ts. Defaults unaffected: without --isolate no
+  pool code exists in the request path.
 - **Phase 4 — the frontier program opens** (§7 order).
 
 ## 9. Decisions log (was: open questions)
