@@ -695,11 +695,23 @@ speed):
 
 ## 9. Decisions log (was: open questions)
 
-1. **Cap default 32** (Josh 2026-07-05) — lands with Phase 2 (see §4 timing
-   note); kv-budget admission keeps it safe on small boxes.
+1. **Cap default 8 — FLIPPED 2026-07-05** (Josh; earlier "32" note
+   superseded by the sub-agents rationale, 4–8 agents + optiq's Mac-safe
+   8). Landed after Phase 3 met every gate: lone-request = serial engine
+   (bits + speed + TTFT + prompt/SSD cache), quantized compositions
+   batch. `--batch 1` pins strict arrival-independent numerics;
+   kv-budget admission keeps 8 safe on small boxes.
 2. **Flag stays `--batch`** — no rename; semantics become the cap;
    `--batch 1` = force-serial pin.
 3. **Perf kernel: deleted in Phase 1** (§6) — the optimization program
    re-derives from the L1 baseline; no resurrection.
 4. Still open: PagedAttention-style block KV — Phase 3 follow-up or its own
    design doc when prefix sharing under batching becomes the bottleneck.
+5. **Prefix sharing scope (Josh 2026-07-05)**: sharing must extend to the
+   DISK tier too — the whole-entry cold store duplicates a shared system
+   prompt across N agent conversations (blocks would dedupe; that is the
+   revisit trigger for block granularity). First-class use cases beyond
+   concurrent rows: SPINNING UP A NEW SESSION (fresh conversation, same
+   system prompt → instant prefix) and SERVER RESTART (re-attach without
+   re-prefill) — the shared prefix should be a durable object, not a
+   property of any one conversation's entry.

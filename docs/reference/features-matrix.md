@@ -20,10 +20,10 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | Raw text completions (`/v1/completions`) | on | both | — | — |
 | Anthropic Messages (`/v1/messages`) | on | both | — | — |
 | OpenAI Responses shim (`/v1/responses`) | on | both | — | — |
-| Continuous batching (mlx-lm B=N parity) | **off** (serial) | batch | L1 | `--batch <n>` |
+| Continuous batching (mlx-lm B=N parity) | **on** — cap 8 (default flipped 2026-07-05; a lone request runs the exact serial engine, so the cap engages only under real concurrency; `--batch 1` pins serial) | batch | L1 | `--batch <n>` |
 | Prompt cache (prefix KV reuse) | on, 2 GB | serial | — | `--prompt-cache <GB>` (0 = off) |
 | **SSD KV cold tier** (cache survives eviction + restarts) | off | serial | — | `--ssd-cache <dir>` (+ `-max`, `-verify`) |
-| Mixed-precision KV (`kv_config.json`, optiq's scheme) | **off** — opt-in (default flipped to bf16 2026-07-05; quantized KV trades 5–20% decode for memory headroom) | serial + **batch** (all-full-attention configs, Phase 3.1 — per-row bit-exact vs the optiq composition; rotating-layer configs and uniform bits stay serial) | L2 | `--kv-quant config\|off\|4\|8`, `--l2` |
+| Mixed-precision KV (`kv_config.json`, optiq's scheme) | **off** — opt-in (default flipped to bf16 2026-07-05; quantized KV trades 5–20% decode for memory headroom) | serial + **batch** (per-layer configs batch on every shipped model — full-attention layers Phase 3.1, rotating layers milestone 2; uniform bits stay serial) | L2 | `--kv-quant config\|off\|4\|8`, `--l2` |
 | Compiled decode (bit-exact graph replay) | on, every tier | serial | L1/L2 | `--compiled-decode on\|off` |
 | Compiled activations (faithful geglu/swiglu — mlx-lm's `@mx.compile`) | **on**, every tier | both | L1 | `--compiled-activations on\|off` |
 | Fused SDPA (optiq-exact quantized-KV attention) | follows `--kv-quant`: on for `config`, off for uniform/bf16 | serial | L2 | `--fused-sdpa on\|off` |

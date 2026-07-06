@@ -96,10 +96,11 @@ const SERVER_FLAGS = `Server options:
                             [default: 300 when --ssd-cache is on]
   --ssd-cache-verify        Verify tensor hashes on every restore (reads all
                             bytes eagerly — integrity paranoia only)
-  --batch <n>               Max concurrent requests batched through the
-                            mlx-lm-parity engine  [default: 1 = serial].
-                            >1 opts the whole server into bf16 continuous
-                            batching (= mlx-lm B=N); see --kv-quant.
+  --batch <n>               Max concurrent requests decoded together
+                            [default: 8]. A LONE request runs the exact
+                            serial engine (same bits, same speed); the cap
+                            engages only when concurrent requests arrive
+                            (agent fan-out). 1 pins strict serial.
                             --decode-concurrency is accepted as the
                             mlx_lm.server alias (semantics differ; see
                             docs/reference/server-config.md)

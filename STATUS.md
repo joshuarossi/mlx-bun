@@ -51,6 +51,11 @@ optimized model → + mixed-precision KV → + LoRA → + spec decode → +
 structured output → × sampling — all STACKABLE on one engine, no lane
 routing.
 
+**`--batch` DEFAULT FLIPPED 1→8 same day (Josh's call):** every gate met —
+a lone request through the unified engine is the serial engine (bits,
+speed, TTFT, prompt+SSD cache), so the cap only matters under real
+concurrency (the sub-agents workload). `--batch 1` pins strict serial.
+
 **Layer 0 LANDED same day — THE SSD TIER IS NOW A PROPERTY OF THE STORE:**
 tiering moved inside PromptCache.take() (ColdTier interface; server binds
 SsdCacheStore+model) → the BATCH LANE restores prefixes from disk at

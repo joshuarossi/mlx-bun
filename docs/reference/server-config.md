@@ -27,7 +27,7 @@ the design rationale is in
 | `--ssd-cache-max` | GB | `32` | SSD tier byte cap (binary GiB); oldest-mtime entries evicted at the cap. |
 | `--ssd-cache-verify` | (bool) | off | Verify every tensor hash on restore. Reads all bytes eagerly (defeats lazy page fault-in) — integrity paranoia only; the header hash is always verified. |
 | `--ssd-demote-idle` | sec | `300` (with `--ssd-cache`) | Idle demotion (Layer 0): prompt-cache entries unused this long spill to the SSD tier and **free their GPU memory** — unified memory drains between agent bursts while every prefix stays reachable (the next hit restores via zero-copy mmap, ~0.25 s for a 13.7k-token entry vs a 12 s re-prefill). Swept only when the engine is fully idle (never drains a running batch). `0` disables. |
-| `--batch` | n | `1` (serial) | Max concurrent requests batched through the mlx-lm-parity engine. `>1` switches the **whole server** into bf16 continuous batching — a *mode*, not a load fallback. See [Execution modes](#execution-modes-serial-vs---batch-n). `--decode-concurrency` is accepted for drop-in compatibility, but the semantics differ: in mlx_lm.server it caps per-BatchGenerator decode parallelism (default 32); in mlx-bun it enables continuous batching with this cap (mlx-bun's default is the optimized serial path). |
+| `--batch` | n | `8` | Max concurrent requests decoded together. **Default flipped 1→8 (2026-07-05)** after GATE-B1-SPEED: a LONE request through the unified engine IS the serial engine — adopted serial-class caches, compiled decode, prompt cache + SSD restore, byte-identical output, 0.992–0.996 paired decode ratios — so the cap only changes behavior when concurrent requests actually arrive (the agentic sub-agent workload: 4–8 coding agents against one local server). `--batch 1` pins strict serial (arrival-independent numerics). See [Execution modes](#execution-modes-serial-vs---batch-n). `--decode-concurrency` is accepted for drop-in compatibility (mlx_lm.server's cap, default 32). |
 | `--kv-quant` | `config`\|`off`\|`4`\|`8` | `off` (bf16) | KV-cache quantization. **Default flipped to bf16 2026-07-05** (naked = L1): quantized KV measured 5–20% slower decode than bf16 at ≤16k on every model — on mlx-lm too — so it pays only in **memory headroom** (e.g. ~1.3 GB on the 12B @16k) and is an explicit opt-in (`--kv-quant …` or `--l2`, whose preset passes `config`). `off` = bf16 (L1). `4`/`8` = **uniform** bits (group 64, start 0) — the scheme mlx-lm exposes as `--kv-bits`/`--kv-group-size`/`--quantized-kv-start`. In the L1 kernel set (`--l1 --kv-quant 8` = fused-sdpa off) our unfused quantized SDPA is **op-for-op identical** to mlx-lm's `quantized_scaled_dot_product_attention`, so uniform-quant is **bit-exact L1** (the fused-sdpa-ON path is optiq-aligned). `config` = **per-layer mixed-precision** from `kv_config.json` — optiq-only, no mlx-lm analog → **L2**. Under `--batch N`, a per-layer `config` scheme **batches** — full-attention layers since Phase 3.1 (MiniCPM5), rotating/sliding layers since milestone 2 (gemma's whole kv_config), so every shipped `kv_config.json` now batches. The scheduler applies the mixed scheme per row, gated bit-exact per row vs the serial composition (`tests/batched-kv-quant-parity.test.ts` — compositions no other stack ships). Uniform `4`/`8` still routes those requests serial (quantizedKvStart threshold semantics). |
 | `--adapter` | dir | none | Mount a LoRA adapter at startup (same machinery as `POST /v1/adapters`; the adapter id is the directory's basename) and make it the **default** for requests that send no `adapter` field. A request's explicit `adapter` — including `"none"` — always wins, and hot-swap via `/v1/adapters` is unchanged. `--adapter-path` is accepted as the mlx_lm.server-named alias. A bad adapter fails startup loudly rather than silently serving the base model. This is the flag `mlx-bun train`'s completion message points at. |
 | `--draft-model` | path/query | none | **Speculative decoding** (mlx_lm.server parity): a smaller same-tokenizer model drafts tokens the main model verifies in one forward — exact results (L1: token-for-token vs mlx-lm's speculative path), faster decode when drafts land. Resolves like the main model. Tokenizer-family mismatch fails startup (upstream silently accepts ~0%). Mounting a draft routes **every** request to the serial lane (upstream `is_batchable = draft is None`). Pays on slow targets (12B+); fast small models lose to the draft overhead. Composes with structured output (the constrained verify walk). Prompt-cache reuse is bypassed on the spec path (v1). Telemetry: `usage.speculation` (`drafted`/`accepted`/`targetCalls`). |
@@ -111,34 +111,34 @@ exporting them now does nothing.)
 
 ## Execution modes: serial vs. `--batch N`
 
-`--batch 1` (default) is the serialized single-queue path: one GPU, one
-generation at a time, prompt-cache prefix reuse, bf16 KV by default
-(quantized KV is the `--kv-quant` / `--l2` opt-in). Untouched and
-unconditional.
+Batching is **concurrency-driven** (default cap 8, flipped 2026-07-05): a
+lone request runs the exact serial engine — its caches are ADOPTED
+serial-class objects, compiled decode replays, the prompt cache and SSD
+tier serve it — and only a second concurrent request causes a batch
+layout to exist. "How many requests you send" is the batching decision;
+the flag is just the cap.
 
-`--batch N` (N>1) opts the **whole server** into a continuous-batching
-engine that is **bit-parity with `mlx_lm.server` at `B=N`**. It is a
-*mode switch*, not a load-dependent fallback (results must not depend on
-concurrency).
+`--batch 1` pins the strict serialized single-queue path: one generation
+at a time, arrival-independent numerics (a request's bits never depend on
+what else was in flight). Pin it for golden regeneration and
+reproducibility work. Note the trade is real but small: batched rows
+carry bf16 left-pad reduction-order noise vs their solo runs (calibrated
+per model in the gated suites) — a request that never shares a step is
+bit-identical either way.
 
-Parity is the guarantee, so the batched lane runs in **compat mode**: it
-exposes **none** of the serial lane's perf flags and runs the plain
-bit-exact forward — the same path mlx-lm runs, never the optional
-parity-breaking kernels. This is the mechanism of the guarantee, not a
-missing feature (see
-[compat mode](#--batch-n-is-compat-mode--perf-flags-dont-apply-by-design)).
-Because mlx-lm's batched path is bf16 (its quantized batching is NYI),
-bf16 continuous batching **is** the drop-in:
+The batched engine is **bit-parity with `mlx_lm.server` at `B=N`** per
+row for bf16, and per-row oracle-gated for the quantized compositions
+(Phase 3.1 + milestone 2 — compositions mlx-lm does not ship):
 
-- **KV quant unset ⇒ bf16** so the batch path engages out of the box
-  ("Option B" — and since 2026-07-05 bf16 is the serial default too).
-- **Explicit `--kv-quant config|4|8` ⇒** those requests route to the
-  serial lane for the still-serial compositions — uniform bits, or a config
-  naming rotating layers (a startup warning is printed for uniform). An
-  `config` scheme batches (Phase 3.1 + milestone 2). With
-  an explicit `--kv-quant`, *every* request carries a quant scheme, so
-  uniform bits (`--kv-quant 4|8`) those requests run serial; per-layer
-  `config` batches on every shipped model incl. gemma (milestone 2).
+- **KV quant unset ⇒ bf16** — the batch path engages out of the box
+  (bf16 is the serial default too, since 2026-07-05).
+- **`--kv-quant config`** (per-layer mixed precision) **batches** on
+  every shipped model — full-attention layers since Phase 3.1 (cpm5),
+  rotating layers since milestone 2 (gemma) — applied per row, gated
+  bit-exact/KL-0 for unpadded rows vs the serial composition.
+- **`--kv-quant 4|8`** (uniform bits) routes those requests to the
+  serial lane (quantizedKvStart threshold semantics; a startup warning
+  is printed).
 
 ### The lane picker (`GenerationGateway.willBatch`)
 

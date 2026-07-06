@@ -1099,7 +1099,14 @@ export function createServer(
   // cache by attention type. Non-batchable requests (vision / adapters /
   // repetition penalty / user seed / explicit kv-quant) drain to the serial
   // lane (see GenerationGateway.willBatch).
-  const batch = Math.max(1, Math.floor(serverOptions.batch ?? 1));
+  // DEFAULT 8 (flipped 2026-07-05, Josh's call, after GATE-B1-SPEED): a
+  // lone request through the batch lane IS the serial engine (adopted
+  // serial-class caches, compiled decode, prompt cache + SSD restore;
+  // 0.992-0.996 paired decode ratios, byte-identical output), so the cap
+  // only changes behavior when concurrent requests actually arrive — the
+  // agentic sub-agent workload. --batch 1 pins strict serial for
+  // arrival-independent numerics. 8 = optiq's Mac-safe concurrency.
+  const batch = Math.max(1, Math.floor(serverOptions.batch ?? 8));
 
   // KV-quant scheme, resolved once. UNSET now means bf16 (flipped
   // 2026-07-05 with the naked-=-L1 default): quantized KV measured 5–20%

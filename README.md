@@ -536,8 +536,10 @@ remain. MTP speculation and Qwen3-VL vision deferred.
 **Experimental** — opt-in, default-off, still being hardened: transparent
 expert offload for MoE models (`serve --expert-offload`, Phase 20:
 page-aligned mmap-backed experts, bit-exact — 26B-A4B 17.1→4.2 GB
-resident, decode unregressed); batched serving (`--batch N`, default 1 =
-serial; Phase 18: continuous-batching bf16 decode at mlx-lm B=N parity,
+resident, decode unregressed); batched serving (`--batch N`, default 8
+since 2026-07-05 — a lone request runs the exact serial engine, so the cap
+engages only under real concurrency, e.g. coding sub-agents; `--batch 1`
+pins strict serial; Phase 18: continuous-batching bf16 decode at mlx-lm B=N parity,
 B=2 bit-parity verified for MiniCPM5/12B/e4b/26B; sampler extras,
 repetition penalty, and grammar-constrained requests batch; Qwen3.5's
 SSM caches batch, as do plain full-attention Tier-0 archs (e.g. Llama) —
