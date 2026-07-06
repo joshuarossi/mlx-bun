@@ -1315,6 +1315,11 @@ export function createServer(
     // kvConfig/full-attention composition (see #kvBatchable) and the
     // scheduler applies it — otherwise those requests route serial as before.
     kvScheme,
+    // Phase 3.2: batch-lane prompt-cache reuse — joiners take() the longest
+    // usable prefix (multi-turn chat TTFT under --batch N); never-merged
+    // lone rows put() back on finish. Vision/adapter requests never batch,
+    // so the serial lane's bypass rules are preserved by routing.
+    promptCache,
   });
 
   // Admission ceiling, resolved once (Phase 5 memoryBudget enforcement).

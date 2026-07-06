@@ -31,8 +31,9 @@
 // (reproducibility ⇒ solo, matching mlx-lm's _is_batchable). Temperature /
 // top-p / top-k DO batch (each row samples with its own seed). Full-attention
 // AND sliding-window (Gemma) models both batch — the scheduler assembles each
-// layer's cache by type. Prompt-cache prefix reuse is bypassed under batching
-// in v1 (cachedTokens = 0).
+// layer's cache by type. Prompt-cache prefix reuse works on the batch lane
+// too (Phase 3.2): joiners take() at admission; never-merged lone rows put()
+// back on finish (merged rows' KV is not extracted — their entries age out).
 
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
@@ -44,7 +45,7 @@ import { UniversalDenseModel } from "../model/universal/dense";
 import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate";
 import type { KvQuantSpec } from "../config";
 import { makeSampler, makeLogitsProcessors, toLogprobs } from "../sampler";
-import { BatchScheduler } from "./batch-scheduler";
+import { BatchScheduler, type RowPromptCache } from "./batch-scheduler";
 
 /** Async mutex: acquire() resolves to a release fn; releases run FIFO. */
 class AsyncMutex {
@@ -137,6 +138,11 @@ export class GenerationGateway {
       /** The server-wide KV scheme (server.ts kvScheme) — threaded to the
        *  scheduler at construction when batchable (Phase 3.1). */
       kvScheme?: { kvBits?: number; kvConfig?: KvQuantSpec[] };
+      /** The server's prompt cache (Phase 3.2): batch-lane joiners take()
+       *  the longest usable prefix at admission; never-merged rows put()
+       *  back on finish. Safe to share with the serial lane — both use it
+       *  only inside this gateway's mutual-exclusion domain. */
+      promptCache?: RowPromptCache;
     } = {},
   ) {
     this.#batch = Math.max(1, Math.floor(batch));
@@ -403,6 +409,7 @@ export class GenerationGateway {
         // merge as quantized triples). Only threaded when the scheme
         // passed #kvBatchable — otherwise those requests never reach here.
         kvConfig: this.#kvBatchable() ? this.opts.kvScheme?.kvConfig : undefined,
+        promptCache: this.opts.promptCache,
         lock: { acquire: () => this.#mutex.acquire() },
         // Drain: pause admission while any serial-lane request waits; the
         // runExclusive finally-block kick()s the loop back awake.

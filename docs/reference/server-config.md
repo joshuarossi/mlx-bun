@@ -65,9 +65,10 @@ New output-changing experiments live in the **Lab**: env-flagged, with a
 bench + expiry, until one beats the L1 baseline in a paired A/B). Flip
 the survivors to compare. They are set as `MLX_BUN_*` env vars before the
 model loads, so they apply to `mlx-bun pi` too. They affect the
-**serial** decode path (`generate()`);
-the batched scheduler calls `model.forwardHidden` directly and so is
-unaffected by all of them — see
+**serial** decode path (`generate()`); the batched scheduler calls
+`model.forwardHidden` directly and is unaffected by all of them except
+`--compiled-decode`, which also covers a lone batch-lane request (Phase
+3.2) — see
 [Levers that don't reach the batched lane](#--batch-n-is-compat-mode--perf-flags-dont-apply-by-design).
 
 ## Per-request overrides
@@ -161,7 +162,7 @@ concurrently with each other.
 | `stop` sequences | ✅ batches (per-row `StopMatcher` in the onToken closure) |
 | `tools` / `tool_choice` | ✅ batches (per-row tool router; decode-layer parse) |
 | `--thinking` / `enable_thinking` | ✅ batches (template-render concern, lane-independent) |
-| multi-turn / long prompt | ✅ batches, but **no prompt-cache reuse** (`cached_tokens=0`) |
+| multi-turn / long prompt | ✅ batches **with prompt-cache reuse** (Phase 3.2): a joiner restores the longest usable cached prefix and prefills only the suffix (`cached_tokens` reported); a request that finishes without ever sharing the batch puts its caches back. A row that merges with others is not re-put (its entry ages out) — heavy concurrency reduces hit rate, never correctness |
 
 **Which models batch:** full-attention (CPM), sliding-window (Gemma),
 hybrid gated-DeltaNet (Qwen3.5 — the SSM batched path, token-exact vs the
@@ -196,18 +197,19 @@ inside it per the table above).
 | `--kv-quant off` | ✅ bf16 | ✅ bf16 (same as the implicit batch default) |
 | *(kv-quant unset)* | bf16 (the L1 default) | **bf16** (Option B) — incl. serial-lane fallback requests |
 | `--memory-budget` | ✅ per-request admission | ✅ per-request admission — but **not aggregate** across rows (see limitations) |
-| `--prompt-cache` | ✅ prefix reuse | ⚠️ bypassed for batched requests (`cached_tokens=0`); serial-lane requests still reuse |
+| `--prompt-cache` | ✅ prefix reuse | ✅ prefix reuse on BOTH lanes (Phase 3.2): batch joiners `take()` at admission; lone never-merged rows `put()` back on finish (merged rows' entries age out) |
 | `--temperature`/`--top-p`/`--top-k` | ✅ | ✅ (per-row) |
 | `--thinking` | ✅ | ✅ |
 | vision request | ✅ | ✅ via serial lane (in bf16 under Option B) |
 | LoRA `adapter` | ✅ | ✅ via serial lane |
-| `repetition_penalty` | ✅ | ✅ via serial lane |
-| `min_p` / `xtc_*` / `logit_bias` / presence+frequency penalties | ✅ | ✅ via serial lane |
+| `repetition_penalty` | ✅ | ✅ (batches — per-row logits processors, since 2026-07-02) |
+| `min_p` / `xtc_*` / `logit_bias` / presence+frequency penalties | ✅ | ✅ (batches — same per-row processors) |
 | `seed` | ✅ | ✅ via serial lane |
 | `tools` / `stop` | ✅ | ✅ (batches) |
 | structured output (`response_format`/`guided_*`) | ✅ (mask in the decode loop) | ✅ (batches; per-row matchers) |
 | `--draft-model` | ✅ spec decode (grammar composes) | ⚠️ mounts, but routes **every** request serial — spec and batching are different modes |
-| `--compiled-decode`/`--fused-sdpa`/`--force-wire` | ✅ (serial decode route) | **n/a — compat mode, no perf flags by design** |
+| `--compiled-decode` | ✅ (serial decode route) | ✅ at **B=1 only** (Phase 3.2): a lone request's adopted serial-class caches replay the same compiled step, same kill switch; B>1 steps run the plain graph |
+| `--fused-sdpa`/`--force-wire` | ✅ (serial decode route) | **n/a — compat mode, no perf flags by design** |
 
 ### `--batch N` is compat mode — perf flags don't apply by design
 
@@ -220,9 +222,13 @@ model through `forwardHidden`/`logitsFromHidden` directly (not
 optional, parity-breaking ones. Flagging the batched lane would defeat
 the guarantee, so it's intentionally not wired.
 
-- **`--compiled-decode` / `--fused-sdpa`** — never engage in the batched
-  lane. Compiled decode is a serial-lane `generate()` mechanism, and the
-  fused quantized-KV SDPA is moot since batched is bf16. See the
+- **`--compiled-decode`** — engages at **B=1 only** (Phase 3.2,
+  adopt-don't-copy): a lone request's caches stay serial-class, so the
+  scheduler replays the serial engine's compiled step — bit-exact by the
+  same gate, `MLX_BUN_COMPILED_DECODE=0` is the same kill switch. The
+  moment a second row joins, steps run the plain batched graph.
+- **`--fused-sdpa`** — never engages in the batched lane (the fused
+  quantized-KV SDPA is an L2 serial-lane composition). See the
   validation matrix in [parallel-slots.md](../design/parallel-slots.md).
 - **`--force-wire`** — doesn't wire (the scheduler bypasses `generate()`'s
   wired scope). A model that needs wiring for speed (e.g. 26B: 8.6 → 32.3

@@ -86,7 +86,11 @@ const gotB: Float32Array[] = [];
 const reqA = { ...mk(refA.toks, gotA), promptIds: promptA };
 const reqB = { ...mk(refB.toks, gotB, gotA), promptIds: promptB };
 const pa = sched.submit(reqA);
-await new Promise((r) => setTimeout(r, 50));
+// JOIN_AT=K pins the join deterministically: B submits once A has produced
+// K logits (default: the old 50 ms wall-clock race).
+const joinAt = Number(process.env.JOIN_AT ?? 0);
+if (joinAt > 0) while (gotA.length < joinAt) await new Promise((r) => setTimeout(r, 2));
+else await new Promise((r) => setTimeout(r, 50));
 const pb = sched.submit(reqB);
 await Promise.all([pa, pb]);
 clearCache();

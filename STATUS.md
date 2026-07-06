@@ -51,6 +51,29 @@ optimized model → + mixed-precision KV → + LoRA → + spec decode → +
 structured output → × sampling — all STACKABLE on one engine, no lane
 routing.
 
+**Phase 3.2 LANDED same day — LONE-REQUEST = SERIAL (adopt-don't-copy +
+compiled decode at B=1 + prompt cache on the batch lane):** a row joining
+an EMPTY batch now ADOPTS its solo caches as the inners (pointer handoff —
+the merge copy runs only when a second row joins; the merge learned to
+treat an adopted serial RotatingKVCache as its first row). Because the
+lone row's caches stay serial-class, (a) the scheduler replays the serial
+engine's CompiledDecode step at B=1 (same runner/traces/kill switch;
+gate: free-running greedy == serial generate() token-for-token on 12B,
+stepsExecuted advancing), and (b) prompt-cache take()/put() works on the
+batch lane (joiners restore the longest usable prefix at admission —
+multi-turn chat TTFT; never-merged rows put back with exact prompt+fed
+accounting; merged rows' entries age out, v1 gap noted in the plan).
+**GATE-B1-SPEED decode met on all three (apple-m1-max, paired in-process
+A/B): cpm5 0.996 · e4b 0.992 (was 0.93) · 12B 0.993.** All gated suites
+green; full suite green PER-FILE (monolithic bun test can jetsam on a
+busy 32GB box — largestProcess=bun, pre-existing; per-file loop is the
+gate). Gate-2 padded-row KL proven JOIN-STEP dependent (grid-snap bin
+flips; K=6→3.5e-2 vs K=7→1.5e-1, identical on pre-3.2 main, bf16 flat)
+— the test now pins the join step. Docs: server-config.md rows for
+prompt-cache/compiled-decode under --batch updated + website sync run.
+`--batch` default flip to 8: decode+TTFT gates now met; awaiting Josh's
+call after milestone 2 (batched rotating-quant).
+
 **Phase 3.1 P1 LANDED same day — BATCHED MIXED-PRECISION KV (first on this
 stack; neither mlx-lm nor optiq compose them, live-proven earlier today):**
 src/model/batched-quant.ts (quantized merge/extend/filter over triples +
@@ -75,11 +98,10 @@ wrapper churn (fixed with the unpadded fast path: bare caches = the
 serial graph). B=1 through the batch lane: cpm5 129→264 (in-process
 ratio 0.994), e4b 45→57.6 (0.93, remainder = compiled decode), 12B
 25.6→29.7 (1.00). Suite 1045/0 green; batched oracles 11/11 (the CPM
-extend-join golden failure PRE-EXISTS — stash-proven). `--batch` default
-flip to 32 stays GATED on Phase-3 items: prompt cache for batched rows
-(the TTFT gap is cache hits vs re-prefill) + compiled decode at B=1
-(e4b's last 7%). Quantized KV under batching = Phase 3.1, a full build
-(zero quantized support in the batched machinery today).
+extend-join golden failure PRE-EXISTS — stash-proven). The Phase-3 gate
+items named here (prompt cache for batched rows, compiled decode at B=1)
+both LANDED in Phase 3.2 above; quantized KV under batching landed as
+Phase 3.1 above.
 
 ## Where we were (2026-07-02)
 

@@ -56,7 +56,10 @@
 
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
-import { clearCache } from "../mlx/ffi";
+import { clearCache, Dtype } from "../mlx/ffi";
+import { flagOn } from "../flags";
+import { CompiledDecode } from "../model/compiled-decode";
+import type { Gemma4Model } from "../model/gemma4";
 import { KVCache, QuantizedKVCache, RotatingKVCache, type Cache } from "../model/gemma4-base";
 import { BatchedDecodeMaskCache, mergeKVRows, extendKVRows, filterKVRows } from "../model/batched-mask";
 import {
@@ -136,10 +139,25 @@ export interface BatchRequest {
 export interface BatchStats {
   promptTokens: number;
   generatedTokens: number;
-  /** Prompt tokens served from a pre-warmed cache. Always 0 in v1 (each row is
-   *  solo-prefilled from scratch; prompt-cache reuse under batching is later). */
+  /** Prompt tokens served from the prompt cache (Phase 3.2): a joiner's solo
+   *  prefill starts from the longest usable cached prefix, exactly like the
+   *  serial lane's runGeneration take(). 0 on a cold prefill. */
   cachedTokens: number;
   finishReason: "stop" | "length";
+}
+
+/** The slice of PromptCache the scheduler drives (structural — the server's
+ *  PromptCache satisfies it). take() on admission (any joiner: a restored
+ *  prefix + suffix prefill is byte-safe whether the row later merges or
+ *  not); put() only for rows that finish NEVER-MERGED (adopted lone rows,
+ *  Phase 3.2) — their caches are pristine serial state with exact
+ *  offset==tokens accounting. Merged rows' KV lives interleaved in the
+ *  batched buffers and is not extracted in v1. */
+export interface RowPromptCache {
+  take(prompt: number[], ns?: string): {
+    tokens: number[]; caches: Cache[]; retain?: () => void;
+  } | null;
+  put(tokens: number[], caches: Cache[], ns?: string, retain?: () => void): void;
 }
 
 interface Row {
@@ -150,6 +168,17 @@ interface Row {
   generated: number; // tokens emitted so far (incl. a terminating EOS)
   sampled: number; // sample() calls so far (leads `generated` by 1 in-pipeline)
   promptTokens: number;
+  /** Prompt tokens restored from the prompt cache at admission (stats). */
+  cachedTokens: number;
+  /** Generated tokens whose KV actually entered the cache (fed as a step
+   *  input) — serial generate()'s `forwarded` list. promptIds+fed is the
+   *  exact token coverage of the row's caches, the put() entry key. Only
+   *  trustworthy for never-merged rows (a doomed slot at B≥2 can feed a
+   *  placeholder), which is the only place it is read. */
+  fed: number[];
+  /** Ever merged into a multi-row batch (or poisoned by a reject): its KV
+   *  is interleaved in batched buffers — never a put() candidate. */
+  merged: boolean;
 }
 
 /** A joiner mid-prefill: `pos` prompt tokens are already in `solo`. Advanced
@@ -158,6 +187,9 @@ interface PrefillState {
   row: Row;
   solo: Cache[];
   pos: number;
+  /** Release hook carried by an SSD-restored prompt-cache entry (must run
+   *  only after `solo`/the adopted caches are disposed — see PromptCacheEntry). */
+  retain?: () => void;
 }
 
 /** Held while the batch is active; the serial fallback acquires the same lock. */
@@ -193,9 +225,21 @@ export interface BatchSchedulerOptions {
    *  maybeQuantizeKv, so a row's quantized bytes are bit-exact vs serial
    *  `--kv-quant config` by construction (the L2-oracle composition rule). */
   kvConfig?: KvQuantSpec[];
+  /** Prompt-cache hook (Phase 3.2): admission take()s the longest usable
+   *  prefix into the joiner's solo caches (suffix-only prefill — the
+   *  multi-turn chat TTFT path); rows that finish never-merged put() their
+   *  caches back. Adapter requests never reach the batch lane, so the
+   *  namespace is always "" here. Runs under the gateway mutex domain, so
+   *  take/put never race the serial lane's use of the same cache. */
+  promptCache?: RowPromptCache;
 }
 
-type LayerInner = KVCache | QuantizedKVCache | BatchedRotatingCache | SSMCache;
+type LayerInner =
+  | KVCache
+  | QuantizedKVCache
+  | BatchedRotatingCache
+  | RotatingKVCache // adopted lone-row state only (see #mergeJoiner adopt)
+  | SSMCache;
 type Row1 = { keys: MlxArray; values: MlxArray };
 
 export class BatchScheduler {
@@ -215,10 +259,21 @@ export class BatchScheduler {
   readonly #admissionHeld: (() => boolean) | undefined;
   readonly #prefillChunkSize: number;
   readonly #kvBudgetBytes: number | undefined;
+  readonly #promptCache: RowPromptCache | undefined;
+  /** Retain hook of the currently-ADOPTED row's cache entry (at most one:
+   *  only a lone adopted row holds un-copied entry caches). Runs after the
+   *  adopted caches are disposed, or transfers back on put(). */
+  #adoptedRetain: (() => void) | null = null;
   readonly #kinds: ("full" | "rot" | "ssm")[]; // per-layer attention type
   readonly #rotMaxSize: number[]; // per-layer sliding window (rot layers only)
   /** layerIdx → mixed-precision spec (Phase 3.1); null = bf16 batch (v1). */
   readonly #kvByLayer: Map<number, KvQuantSpec> | null;
+  /** Compiled decode runner for the B=1 serial-class case (Phase 3.2) —
+   *  same eligibility gate as generate.ts (gemma dense, kill switch
+   *  MLX_BUN_COMPILED_DECODE); adapters never reach the batch lane. Set
+   *  to null permanently on a failed step (serial disables per
+   *  generation; the scheduler is one long-lived "generation"). */
+  #compiled: CompiledDecode | null;
 
   constructor(private readonly model: RuntimeModel, opts: BatchSchedulerOptions) {
     this.#maxBatch = Math.max(1, Math.floor(opts.maxBatch));
@@ -226,6 +281,7 @@ export class BatchScheduler {
     this.#admissionHeld = opts.admissionHeld;
     this.#prefillChunkSize = Math.max(1, Math.floor(opts.prefillChunkSize ?? 2048));
     this.#kvBudgetBytes = opts.kvBudgetBytes;
+    this.#promptCache = opts.promptCache;
     const proto = model.makeCache(); // fresh caches hold no buffers
     this.#kinds = proto.map((c) =>
       c instanceof RotatingKVCache ? "rot" : c instanceof SSMCache ? "ssm" : "full",
@@ -235,6 +291,12 @@ export class BatchScheduler {
       : null;
     this.#rotMaxSize = proto.map((c) => (c instanceof RotatingKVCache ? c.maxSize : 0));
     for (const c of proto) c.dispose();
+    this.#compiled =
+      flagOn("MLX_BUN_COMPILED_DECODE", true) &&
+      model.config.modelType.startsWith("gemma4") &&
+      !model.config.text.enableMoeBlock
+        ? CompiledDecode.for(model as Gemma4Model)
+        : null;
   }
 
   get activeRows(): number {
@@ -289,6 +351,7 @@ export class BatchScheduler {
       this.#pending.push({
         req, resolve, reject,
         current: 0, generated: 0, sampled: 0, promptTokens: req.promptIds.length,
+        cachedTokens: 0, fed: [], merged: false,
       });
       this.#ensureLoop();
     });
@@ -329,8 +392,17 @@ export class BatchScheduler {
         // chunk per iteration, interleaved with the decode step below.
         if (!this.#prefill && !held &&
             this.#pending.length > 0 && this.#running.length < this.#maxBatch &&
-            this.#kvAdmits(this.#pending[0]!))
-          this.#prefill = { row: this.#pending.shift()!, solo: this.model.makeCache(), pos: 0 };
+            this.#kvAdmits(this.#pending[0]!)) {
+          const row = this.#pending.shift()!;
+          // Prompt-cache reuse (Phase 3.2): start the solo prefill from the
+          // longest usable cached prefix — the serial lane's take(), same
+          // semantics (entry ownership transfers; put back or dispose).
+          const hit = this.#promptCache?.take(row.req.promptIds) ?? null;
+          if (hit) row.cachedTokens = hit.tokens.length;
+          this.#prefill = hit
+            ? { row, solo: hit.caches, pos: hit.tokens.length, retain: hit.retain }
+            : { row, solo: this.model.makeCache(), pos: 0 };
+        }
 
         if (this.#prefill) {
           const p = this.#prefill;
@@ -341,6 +413,7 @@ export class BatchScheduler {
             // the running batch.
             this.#prefill = null;
             for (const c of p.solo) c.dispose();
+            p.retain?.();
             p.row.reject(e);
           }
         }
@@ -362,8 +435,9 @@ export class BatchScheduler {
           } catch (e) {
             // A forward/sampling error can't be attributed to one row — drop
             // the batch. (A row's onToken error is contained in #emitRows.)
+            // dropOnly: mid-step caches may be inconsistent — never put().
             for (const row of this.#running) row.reject(e);
-            this.#applyFilter([]);
+            this.#applyFilter([], true);
           }
         }
         await new Promise<void>((r) => setImmediate(r));
@@ -447,7 +521,9 @@ export class BatchScheduler {
       p.row.req.grammar.accept(tok);
       if (p.row.req.grammar.isTerminated) {
         const stop = await this.#emit(p.row, tok);
-        for (const c of p.solo) c.dispose();
+        // Token 0 was sampled but never fed — the caches cover exactly the
+        // prompt, a clean prompt-only entry (put-or-dispose).
+        this.#putOrDispose(p.solo, p.row.req.promptIds, p.retain);
         this.#finish(p.row, stop === "continue" ? "stop" : stop);
         return true;
       }
@@ -455,7 +531,7 @@ export class BatchScheduler {
 
     const stop = await this.#emit(p.row, tok);
     if (stop !== "continue") {
-      for (const c of p.solo) c.dispose();
+      this.#putOrDispose(p.solo, p.row.req.promptIds, p.retain);
       this.#finish(p.row, stop);
       return true;
     }
@@ -471,6 +547,24 @@ export class BatchScheduler {
    *  first so the row set is settled and the next step starts cold. */
   async #mergeJoiner(p: PrefillState): Promise<void> {
     await this.#flushPipeline();
+
+    // ADOPT, don't copy (unified-engine plan Phase 3.2): a row joining an
+    // EMPTY batch keeps its solo caches as the batch inners — a pointer
+    // handoff, zero bytes moved (the old path ran the full merge machinery
+    // to produce a byte-identical [1,...] copy). The copy now happens only
+    // when a SECOND row joins and a genuinely new layout must exist. The
+    // prize beyond the saved copy: the lone row's caches stay SERIAL-CLASS
+    // (KVCache / RotatingKVCache / QuantizedKVCache), so the B=1 step is
+    // literally the serial graph, and compiled decode + prompt-cache
+    // take/put become possible for it. The rot branch below knows how to
+    // treat an adopted RotatingKVCache as the merge's first row.
+    if (!this.#inners) {
+      this.#inners = p.solo as LayerInner[];
+      this.#fullLeftPad = [0];
+      this.#adoptedRetain = p.retain ?? null;
+      this.#running.push(p.row);
+      return;
+    }
 
     const prev = this.#inners;
     const prevPad = this.#fullLeftPad;
@@ -544,7 +638,16 @@ export class BatchScheduler {
       if (this.#kinds[layer] === "rot") {
         const rows: Row1[] = [];
         const offsets: number[] = [];
-        const prevRot = prev?.[layer] as BatchedRotatingCache | undefined;
+        const prevC = prev?.[layer];
+        if (prevC instanceof RotatingKVCache) {
+          // Adopted lone row (Phase 3.2): a plain serial rotating cache —
+          // its chronological view is the merge's first row, same as a
+          // fresh solo (pad 0 by definition).
+          const [k0, v0] = prevC.temporalView();
+          rows.push({ keys: k0, values: v0 });
+          offsets.push(prevC.offset);
+        }
+        const prevRot = prevC instanceof BatchedRotatingCache ? prevC : undefined;
         if (prevRot) {
           const [k0, v0] = prevRot.temporalView(); // [B,H,valid,D]
           const [, H, valid, D] = k0.shape as [number, number, number, number];
@@ -606,7 +709,16 @@ export class BatchScheduler {
       }
     }
     if (prev) for (const c of prev) c.dispose();
+    // An adopted row's entry-backed arrays are gone after the prev dispose;
+    // run its retain now. The joiner's likewise after its solo dispose.
+    this.#adoptedRetain?.();
+    this.#adoptedRetain = null;
     for (const c of p.solo) c.dispose();
+    p.retain?.();
+    // Every row in a REAL merge has its KV interleaved in batched buffers —
+    // no longer prompt-cache put() candidates.
+    for (const r of this.#running) r.merged = true;
+    p.row.merged = true;
     this.#inners = newInners;
     this.#fullLeftPad = newFullPad;
     this.#running.push(p.row);
@@ -653,6 +765,10 @@ export class BatchScheduler {
 
     let nextToks: MlxArray | null = null;
     if (anyLive) {
+      // Fed-token accounting (prompt-cache put): a COLD step feeds each
+      // row's `current` (values known now); a pipelined step feeds the
+      // pending array, whose values are pushed at the read below.
+      if (!this.#pendingToks) for (const r of rows) r.fed.push(r.current);
       // Per-layer forward cache: rot layers use the persistent
       // BatchedRotatingCache directly; ssm layers are already [B,...] state
       // with no padding (no mask, no per-row RoPE — pass through); full
@@ -666,21 +782,60 @@ export class BatchScheduler {
       // otherwise costs a host mask build + ~8 device nodes PER FULL LAYER
       // PER TOKEN (the Phase-0 constant ~4–6 ms/step host tax at B=1).
       const unpadded = this.#fullLeftPad.every((p) => p === 0);
-      const fwd: Cache[] = inners.map((c) =>
-        c instanceof BatchedRotatingCache || c instanceof SSMCache || unpadded
-          ? c
-          : c instanceof QuantizedKVCache
-            ? new BatchedQuantDecodeMaskCache(c, B, this.#fullLeftPad)
-            : new BatchedDecodeMaskCache(c, B, this.#fullLeftPad, null),
-      );
+      // Compiled decode at B=1 (Phase 3.2): after adopt-don't-copy, a lone
+      // row's caches are SERIAL-CLASS, so the serial engine's compiled step
+      // replays the same C++ graph here — closing the batch lane's last
+      // B=1 host-tax gap (e4b's ~7%). Guards: gemma dense (constructor),
+      // serial-class caches (supports — a merged batch's BatchedRotating
+      // layers fail it), unpadded, and a uint32 pipeline register (the
+      // trace signature; per-row int32 samplers take the graph path).
+      // Grammar batches use #stepGrammar and stay on the graph path.
+      let lg: MlxArray | null = null;
+      let evalWith: MlxArray[] = [];
+      if (
+        this.#compiled && B === 1 && unpadded &&
+        (!this.#pendingToks || this.#pendingToks.dtype === Dtype.uint32) &&
+        CompiledDecode.supports(inners as Cache[])
+      ) {
+        let cur = this.#pendingToks;
+        let owned = false;
+        if (!cur) {
+          const i = ops.fromInt32([rows[0]!.current], [1]);
+          cur = i.astype(Dtype.uint32);
+          i.dispose();
+          owned = true;
+        }
+        try {
+          const r = this.#compiled.step(cur, inners as Cache[]);
+          lg = r.logits; // [1,1,V]
+          evalWith = r.evalWith;
+        } catch (e) {
+          // A failed step is transactional (see generate.ts) — safe to
+          // re-forward the same token on the graph path below.
+          this.#compiled = null;
+          console.warn(`batch lane: compiled decode disabled: ${e}`);
+        } finally {
+          if (owned) cur.dispose();
+        }
+      }
+      let fwd: Cache[] | null = null;
       try {
-        const ids = this.#pendingToks
-          ? ops.reshape(this.#pendingToks, [B, 1]) // feed the unread tokens
-          : ops.fromInt32(rows.map((r) => r.current), [B, 1]); // pipeline cold
-        const h = this.model.forwardHidden(ids, fwd);
-        ids.dispose();
-        const lg = this.model.logitsFromHidden(h); // [B,1,V]
-        h.dispose();
+        if (!lg) {
+          fwd = inners.map((c) =>
+            c instanceof BatchedRotatingCache || c instanceof SSMCache || unpadded
+              ? c
+              : c instanceof QuantizedKVCache
+                ? new BatchedQuantDecodeMaskCache(c, B, this.#fullLeftPad)
+                : new BatchedDecodeMaskCache(c, B, this.#fullLeftPad, null),
+          );
+          const ids = this.#pendingToks
+            ? ops.reshape(this.#pendingToks, [B, 1]) // feed the unread tokens
+            : ops.fromInt32(rows.map((r) => r.current), [B, 1]); // pipeline cold
+          const h = this.model.forwardHidden(ids, fwd);
+          ids.dispose();
+          lg = this.model.logitsFromHidden(h); // [B,1,V]
+          h.dispose();
+        }
         const V = lg.shape[2]!;
         // Vectorized homogeneous sampling (batching-perf-path P0): when every
         // LIVE row is plain greedy, one log-softmax+argmax over [B,V] replaces
@@ -722,11 +877,13 @@ export class BatchScheduler {
           nextToks = ops.concatAxis(sampled, 0); // [B]
           for (const t of sampled) t.dispose();
         }
-        ops.asyncEvalAll([nextToks]); // dispatch; read NEXT iteration
+        // dispatch; read NEXT iteration. evalWith: the compiled step's
+        // cache-update nodes must ride the same async_eval (generate.ts).
+        ops.asyncEvalAll([nextToks, ...evalWith]);
       } finally {
         // Free the step's RoPE arrays; do NOT dispose (full wrappers would free
         // their persistent inner; rot caches persist across steps).
-        for (const c of fwd) (c as { releaseRopeArr?: () => void }).releaseRopeArr?.();
+        if (fwd) for (const c of fwd) (c as { releaseRopeArr?: () => void }).releaseRopeArr?.();
       }
     }
     this.#steps++;
@@ -748,6 +905,8 @@ export class BatchScheduler {
       const tRead = STEP_TRACE ? performance.now() : 0;
       const toks = prev.toIntTokens();
       prev.dispose();
+      // These values were the step's forward input (fed) iff a forward ran.
+      if (anyLive) for (let b = 0; b < B; b++) rows[b]!.fed.push(toks[b]!);
       if (STEP_TRACE) STEP_T.read += performance.now() - tRead;
       const tEmit = STEP_TRACE ? performance.now() : 0;
       await this.#emitRows(toks); // also filters #pendingToks on eviction
@@ -811,6 +970,9 @@ export class BatchScheduler {
     let nextToks: MlxArray | null = null;
     const anyLive = rows.some((r) => r.sampled < r.req.maxTokens);
     if (anyLive) {
+      // Fed-token accounting (prompt-cache put) — mirror of #step's.
+      if (prev) for (let b = 0; b < B; b++) rows[b]!.fed.push(prevVals[b]!);
+      else for (const r of rows) r.fed.push(r.current);
       // Unpadded fast path — same rule as #step (bare caches == serial graph).
       const unpadded = this.#fullLeftPad.every((p) => p === 0);
       const fwd: Cache[] = inners.map((c) =>
@@ -896,6 +1058,7 @@ export class BatchScheduler {
         disp = await this.#emit(row, toks[b]!);
       } catch (e) {
         row.reject(e); // containment: this row only (mlx-lm `remove`)
+        row.merged = true; // poison: a rejected row is never put() back
         continue; // not kept → evicted by the filter below
       }
       if (disp === "continue") keep.push(b);
@@ -924,17 +1087,54 @@ export class BatchScheduler {
     row.resolve({
       promptTokens: row.promptTokens,
       generatedTokens: row.generated,
-      cachedTokens: 0,
+      cachedTokens: row.cachedTokens,
       finishReason: reason,
     });
   }
 
+  /** Finish-time disposition of serial-class caches covering exactly
+   *  `tokens`: put() into the prompt cache when the hook is present and the
+   *  offset lines up (defensive — a mismatch means the accounting is wrong
+   *  and the entry would corrupt future hits), else dispose. `retain` rides
+   *  along per the PromptCacheEntry contract (runs after dispose). */
+  #putOrDispose(caches: Cache[], tokens: number[], retain?: () => void): void {
+    if (this.#promptCache) {
+      const withOff = caches.find(
+        (c) => typeof (c as { offset?: unknown }).offset === "number",
+      ) as { offset: number } | undefined;
+      if (withOff && withOff.offset === tokens.length) {
+        this.#promptCache.put(tokens, caches, "", retain);
+        return;
+      }
+    }
+    for (const c of caches) c.dispose();
+    retain?.();
+  }
+
   /** Evict rows not in `keep` (sorted ascending) from the batched KV and the
    *  pipeline register. */
-  #applyFilter(keep: number[]): void {
+  #applyFilter(keep: number[], dropOnly = false): void {
     const inners = this.#inners!;
     if (keep.length === 0) {
-      for (const c of inners) c.dispose();
+      // Prompt-cache put (Phase 3.2): a lone NEVER-MERGED row's inners are
+      // its adopted serial-class caches, covering exactly prompt+fed — hand
+      // them back to the cache instead of disposing. dropOnly (the batch-
+      // drop error path) and merged/poisoned rows dispose as before.
+      const solo =
+        !dropOnly && this.#running.length === 1 && !this.#running[0]!.merged
+          ? this.#running[0]!
+          : null;
+      if (solo) {
+        this.#putOrDispose(
+          inners as Cache[],
+          [...solo.req.promptIds, ...solo.fed],
+          this.#adoptedRetain ?? undefined,
+        );
+      } else {
+        for (const c of inners) c.dispose();
+        this.#adoptedRetain?.();
+      }
+      this.#adoptedRetain = null;
       this.#inners = null;
       this.#fullLeftPad = [];
       this.#running = [];

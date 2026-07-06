@@ -66,24 +66,25 @@ const MAXTOK = [5, 8, 11]; // staggered → rows evict at different steps
  *  solo (KL, bound `klTol` — per-model, see the Gemma case); emitted
  *  tokens/counts/finish are exactly the schedule. Run twice — all-at-once
  *  (staggered eviction 3→2→1→0) and a mid-stream join. */
-async function schedulerParity(base: string, label: string, klTol = KL_TOL): Promise<void> {
+const argmaxF = (a: Float32Array): number => {
+  let bi = 0;
+  for (let i = 1; i < a.length; i++) if (a[i]! > a[bi]!) bi = i;
+  return bi;
+};
+
+/** Model + the solo-greedy reference harness (shared by the parity gate and
+ *  the Phase-3.2 gates below). Caller owns disposal via `weights`. */
+async function openHarness(base: string) {
   const { loadModelConfig } = await import("../src/config");
   const { Weights } = await import("../src/weights");
   const { createModel } = await import("../src/model/factory");
   const { MlxArray } = await import("../src/mlx/array");
   const { clearCache } = await import("../src/mlx/ffi");
-  const { BatchScheduler } = await import("../src/serve/batch-scheduler");
 
   const config = await loadModelConfig(base);
   const weights = await Weights.open(base);
   const model = createModel(weights, config);
-  const eos = model.config.eosTokenIds;
 
-  const argmaxF = (a: Float32Array): number => {
-    let bi = 0;
-    for (let i = 1; i < a.length; i++) if (a[i]! > a[bi]!) bi = i;
-    return bi;
-  };
   const lastRowLogits = (lg: InstanceType<typeof MlxArray>): Float32Array => {
     const [, L, V] = lg.shape as [number, number, number];
     const s = lg.slice([0, L - 1, 0], [1, L, V]);
@@ -121,6 +122,13 @@ async function schedulerParity(base: string, label: string, klTol = KL_TOL): Pro
       for (const c of cache) c.dispose();
     }
   };
+  return { model, weights, MlxArray, soloGreedy };
+}
+
+async function schedulerParity(base: string, label: string, klTol = KL_TOL): Promise<void> {
+  const { BatchScheduler } = await import("../src/serve/batch-scheduler");
+  const { model, weights, MlxArray, soloGreedy } = await openHarness(base);
+  const eos = model.config.eosTokenIds;
 
   try {
     const ref = PROMPTS.map((p) => soloGreedy(p, STEPS));
@@ -216,5 +224,114 @@ const GEMMA_KL_TOL = 5e-1;
 describe.skipIf(!optIn || !haveGemma)("batch scheduler — Gemma 12B (mixed sliding/full)", () => {
   test("teacher-forced: scheduled per-row logits == solo (evict + join, KL gate)", async () => {
     await schedulerParity(SNAPSHOT, "Gemma12B", GEMMA_KL_TOL);
+  }, 300_000);
+});
+
+// ---- Phase 3.2 gates -------------------------------------------------------
+
+// Prompt-cache reuse on the batch lane: request 1 finishes never-merged →
+// put() (entry covers prompt+fed exactly); request 2 with the same prompt
+// take()s the longest usable prefix (prompt.length-1, the take() cap) and
+// suffix-prefills. Teacher-forced; step 0 is argmax-anchored (the restored
+// row's token-0 logits come from a 1-token continuation forward — the same
+// GEMV-vs-GEMM convention the serial cache-hit path carries), later steps
+// KL-gated at the CPM bound.
+describe.skipIf(!optIn || !haveCpm)("batch scheduler — prompt-cache reuse (Phase 3.2)", () => {
+  test("put() on never-merged finish; second request restores the prefix", async () => {
+    const { BatchScheduler } = await import("../src/serve/batch-scheduler");
+    const { PromptCache } = await import("../src/prompt-cache");
+    const { model, weights, MlxArray, soloGreedy } = await openHarness(CPM_BASE);
+    const eos = model.config.eosTokenIds;
+    try {
+      const prompt = PROMPTS[0]!;
+      const MAX = 5;
+      const ref = soloGreedy(prompt, MAX);
+      for (let s = 0; s < MAX; s++)
+        if (eos.includes(ref.tokens[s]!)) throw new Error(`row EOSes at step ${s} — pick a longer prompt`);
+      const pc = new PromptCache(512e6);
+      const sched = new BatchScheduler(model, { maxBatch: 2, promptCache: pc });
+      const run = () => {
+        const captured: Float32Array[] = [];
+        const got: number[] = [];
+        const stats = sched.submit({
+          promptIds: prompt, maxTokens: MAX, eosTokenIds: eos,
+          sample: (l, step) => {
+            captured[step] = l.toFloat32();
+            return MlxArray.fromInt32(Int32Array.from([ref.tokens[step]!]), [1]);
+          },
+          onToken: (t) => { got.push(t); },
+        });
+        return { captured, got, stats };
+      };
+      const r1 = run();
+      const st1 = await r1.stats;
+      expect(st1.cachedTokens).toBe(0);
+      expect(st1.finishReason).toBe("length");
+      expect(pc.size).toBe(1); // never-merged finish put the entry back
+      expect(pc.totalBytes).toBeGreaterThan(0);
+
+      const r2 = run();
+      const st2 = await r2.stats;
+      expect(st2.cachedTokens).toBe(prompt.length - 1); // longest usable prefix
+      expect(r2.got).toEqual(ref.tokens.slice(0, MAX));
+      expect(argmaxF(r2.captured[0]!)).toBe(ref.tokens[0]!); // step-0 anchor
+      let maxKl = 0;
+      for (let s = 1; s < MAX; s++) maxKl = Math.max(maxKl, klDiv(ref.logits[s]!, r2.captured[s]!));
+      console.log(`[sched cache-hit] maxKL=${maxKl.toExponential(2)} cached=${st2.cachedTokens}`);
+      expect(maxKl).toBeLessThan(KL_TOL);
+      expect(pc.size).toBe(1); // the hit was re-put (extended entry)
+      pc.clear();
+    } finally {
+      weights.dispose();
+    }
+  }, 240_000);
+});
+
+// Compiled decode at B=1 (adopt-don't-copy keeps the lone row's caches
+// serial-class, so CompiledDecode.supports passes and the scheduler replays
+// the serial engine's compiled step). Free-running greedy through the batch
+// lane must equal the REAL serial engine (generate()) token-for-token —
+// GATE-B1 equivalence — and the CompiledDecode.stepsExecuted counter must
+// advance, proving the compiled path actually engaged in the scheduler.
+describe.skipIf(!optIn || !haveGemma)("batch scheduler — compiled decode at B=1 (Phase 3.2)", () => {
+  test("lone adopted row replays the compiled step; greedy == serial generate()", async () => {
+    const { BatchScheduler } = await import("../src/serve/batch-scheduler");
+    const { CompiledDecode } = await import("../src/model/compiled-decode");
+    const { generate } = await import("../src/generate");
+    const { toLogprobs } = await import("../src/sampler");
+    const ops = await import("../src/mlx/ops");
+    const { model, weights } = await openHarness(SNAPSHOT);
+    const eos = model.config.eosTokenIds;
+    try {
+      const prompt = PROMPTS[0]!;
+      const MAX = 8;
+      // Serial reference: the real engine (same GEMV prefill convention,
+      // same compiled decode) — the thing B=1 must be indistinguishable from.
+      const serialToks: number[] = [];
+      const gen = generate(model, prompt, { maxTokens: MAX, cache: model.makeCache(), eosTokenIds: eos });
+      for await (const t of gen) serialToks.push(t.token);
+
+      const before = CompiledDecode.stepsExecuted;
+      const sched = new BatchScheduler(model, { maxBatch: 2 });
+      const got: number[] = [];
+      const st = await sched.submit({
+        promptIds: prompt, maxTokens: MAX, eosTokenIds: eos, plainGreedy: true,
+        sample: (l) => {
+          const lp = toLogprobs(l);
+          const t = ops.argmaxAxis(lp, -1);
+          lp.dispose();
+          return t;
+        },
+        onToken: (t) => { got.push(t); },
+      });
+      const compiledSteps = CompiledDecode.stepsExecuted - before;
+      console.log(`[sched compiled-b1] compiledSteps=${compiledSteps} serial=${JSON.stringify(serialToks)} batch=${JSON.stringify(got)}`);
+      expect(got).toEqual(serialToks);
+      expect(st.generatedTokens).toBe(serialToks.length);
+      expect(compiledSteps).toBeGreaterThanOrEqual(MAX - 2);
+      expect(CompiledDecode.unexpectedRetraces).toBe(0);
+    } finally {
+      weights.dispose();
+    }
   }, 300_000);
 });

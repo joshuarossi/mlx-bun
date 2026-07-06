@@ -4,7 +4,8 @@
 // prints per-step wall breakdowns. cpm5 (no rot layers, no compiled decode)
 // isolates the scheduler/step overhead from everything model-specific.
 //
-//   bun scripts/experiments/batch-b1-step-profile.ts [--tokens 128]
+//   bun scripts/experiments/batch-b1-step-profile.ts [--tokens 128] [--model <registry name>]
+// (--model defaults to cpm5; gemma names exercise the Phase-3.2 compiled-B1 path)
 
 import { Registry } from "../../src/registry";
 import { loadModelConfig } from "../../src/config";
@@ -25,7 +26,7 @@ const TOKENS = Number(arg("--tokens", "128"));
 
 const reg = new Registry();
 if (reg.list().length === 0) await reg.scan();
-const dir = reg.resolve("MiniCPM5-1B-OptiQ-4bit").path;
+const dir = reg.resolve(arg("--model", "MiniCPM5-1B-OptiQ-4bit")).path;
 const config = await loadModelConfig(dir);
 const weights = await Weights.open(dir);
 const model = createModel(weights, config);

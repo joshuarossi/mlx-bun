@@ -605,6 +605,44 @@ speed):
   (batched rotating-quant for gemma configs), prompt-cache reuse for
   batched rows, chunked prefill interleaving. Gate per feature: parity +
   no aggregate-throughput regression at B=4.
+- **Phase 3.2 — lone-request = serial (LANDED 2026-07-05)**, three moves:
+  1. **Adopt-don't-copy**: a row joining an EMPTY batch keeps its solo
+     caches as the inners (pointer handoff; the merge copy now runs only
+     when a second row actually joins — incl. a new merge branch that
+     treats an adopted serial RotatingKVCache as the first row). The
+     lone row's caches stay SERIAL-CLASS, which unlocks the next two.
+  2. **Compiled decode at B=1**: the scheduler replays the serial
+     engine's CompiledDecode step when B=1 ∧ unpadded ∧
+     supports(inners) ∧ uint32 pipeline register (same runner, same
+     traces, same MLX_BUN_COMPILED_DECODE kill switch; falls back +
+     disables on error like generate()). Gate: free-running greedy B=1
+     == serial generate() token-for-token on 12B with
+     CompiledDecode.stepsExecuted advancing (tests/batch-scheduler).
+  3. **Prompt cache on the batch lane**: joiners take() the longest
+     usable prefix at admission (suffix-only prefill — multi-turn chat
+     TTFT); rows finishing NEVER-MERGED put() back (exact prompt+fed
+     accounting, offset-checked; reject/batch-drop paths poisoned; SSD
+     retain hooks ride every disposal path). Gate: second identical
+     request reports cached_tokens=prompt-1, step-0 argmax anchored,
+     KL≤1e-2 (tests/batch-scheduler "prompt-cache reuse").
+  **Measured (apple-m1-max/32GB, paired in-process A/B, best-of):
+  B=1-through-batch-lane / serial = cpm5 0.996, e4b 0.992 (was 0.93 —
+  compiled closed the last 7%), 12B 0.993 → GATE-B1-SPEED decode met on
+  all three.** All gated suites green (scheduler CPM+12B, quant gates 1+2,
+  full per-file model-free suite 0 fail).
+  Findings: (a) gate 2's padded-row KL is JOIN-STEP dependent (grid-snap
+  bin flips compound: K=5→4.5e-2, 6→3.5e-2, 7→1.5e-1, 8→1.3e-1; bf16
+  ≤9e-3 at every K; identical on pre-3.2 main; extend vs re-merge
+  byte-identical) — the gate now PINS the join step and calibrates there;
+  padded-row KL is an envelope, the contract is the unpadded row's
+  bit-exactness + model-free triple-surgery byte-identity. (b) v1 gap:
+  an entry take()n by a row that later MERGES is consumed, not re-put —
+  fix is a zero-copy view snapshot at merge (serial's boundary-snapshot
+  trick); noted for milestone 2. (c) monolithic `bun test` can jetsam on
+  a busy 32GB box (largestProcess=bun) — per-file loop is the fallback
+  gate; not a repo defect.
+  **Remaining before the `--batch` default flip (Josh's call)**:
+  milestone 2 batched rotating-quant, then flip.
 - **Phase 4 — the frontier program opens** (§7 order).
 
 ## 9. Decisions log (was: open questions)
