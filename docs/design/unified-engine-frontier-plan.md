@@ -643,6 +643,37 @@ speed):
   gate; not a repo defect.
   **Remaining before the `--batch` default flip (Josh's call)**:
   milestone 2 batched rotating-quant, then flip.
+- **Phase 3 milestone 2 — batched ROTATING-quantized KV (LANDED
+  2026-07-05)**: src/model/batched-rotating-quant.ts —
+  BatchedRotatingQuantCache subclasses RotatingQuantizedKVCache (attention
+  dispatch untouched) and runs the mlx-lm BatchRotatingKVCache ring
+  mechanics over (packed, scales, biases) triples; RotatingQuantizedKVCache
+  gains temporalView(); scheduler #quantizeSolo converts rotating layers
+  (maybeQuantizeKv dispatch) and #mergeJoiner grows a rot-quant twin
+  branch; gateway #kvBatchable accepts configs naming rotating layers →
+  **gemma's whole kv_config batches** (every shipped kv_config now does).
+  Gates: model-free byte-identity per row vs the serial oracle through
+  ring wrap, B=1+B=2+filter (tests/batched-rotating-quant.test.ts); gemma
+  12B B=2 dynamic join through the real scheduler — unpadded row KL-0 at
+  EVERY step, padded row ≤4e-3 (tests/batched-kv-quant-parity.test.ts).
+  **Findings (hard-won, 2026-07-05)**: (a) THE ROPE-ARRAY STEP-STABILITY
+  CONTRACT — a batched cache's ropeOffsetArr must be STABLE within a
+  decode step and refresh only at releaseRopeArr(): the monolith CAPTURES
+  it pre-update and ropes Q post-update (in-update dispose = use-after-
+  dispose), while the GENERATED specializations RE-READ it for Q
+  post-update (in-update refresh = K and Q roped one position apart →
+  O(10) KL garbage). (b) GENERATED-FILE GUARDS ACCEPT BATCHED SUBCLASSES:
+  the generated forwards' per-layer `instanceof` cache guards pass any
+  batched cache that subclasses a serial class — an all-quant gemma batch
+  therefore decodes through the GENERATED fast path (a feature — B=1
+  twin proved BIT-EXACT through it — but a contract: batched caches must
+  behave serially under re-reads). This is why the bug only appeared when
+  EVERY layer was configured: one bf16 layer anywhere fails the guard and
+  drops to the monolith. Diagnosis artifacts:
+  scripts/experiments/gemma-rotquant-kl-profile.ts (CONFIG_FILTER/
+  ROT_KEEP/ROT_DROP/ROT_IDX bisection) and gemma-twin-b1-repro.ts
+  (TWIN_MASK/TWIN_ROPE toggles — rope isolated in two runs once the
+  B=1 repro existed).
 - **Phase 4 — the frontier program opens** (§7 order).
 
 ## 9. Decisions log (was: open questions)

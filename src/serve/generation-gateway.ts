@@ -206,12 +206,13 @@ export class GenerationGateway {
     return this.#cacheBatchable;
   }
 
-  /** Phase 3.1: the server's kv scheme batches iff it is a per-layer
-   *  kvConfig (the L2 mixed scheme) whose every configured layer is a plain
-   *  full-attention KVCache in this model — those are the layers
-   *  BatchedQuantDecodeMaskCache + the scheduler's quantized merge/extend/
-   *  filter cover. Uniform kvBits (touches rotating layers via the serial
-   *  no-byLayer path) and configs naming rotating/SSM layers stay serial. */
+  /** Phase 3.1 + milestone 2: the server's kv scheme batches iff it is a
+   *  per-layer kvConfig (the L2 mixed scheme) whose every configured layer
+   *  is a full-attention KVCache (BatchedQuantDecodeMaskCache + quantized
+   *  merge/extend/filter) or a rotating RotatingKVCache
+   *  (BatchedRotatingQuantCache — milestone 2, gemma's kv_config). Uniform
+   *  kvBits (quantizedKvStart threshold semantics via the serial no-byLayer
+   *  path) and configs naming SSM layers stay serial. */
   #kvBatchable(): boolean {
     if (this.#kvSchemeBatchable === null) {
       const scheme = this.opts.kvScheme;
@@ -222,12 +223,12 @@ export class GenerationGateway {
         // exact composition bug optiq serve ships). Route serial.
         this.#kvSchemeBatchable = false;
       } else if (scheme.kvBits || !scheme.kvConfig?.length) {
-        this.#kvSchemeBatchable = false; // uniform bits: serial in P1
+        this.#kvSchemeBatchable = false; // uniform bits: serial
       } else {
         const proto = this.model.makeCache();
         this.#kvSchemeBatchable = scheme.kvConfig.every(
-          (e) => proto[e.layerIdx] instanceof KVCache &&
-                 !(proto[e.layerIdx] instanceof RotatingKVCache),
+          (e) => proto[e.layerIdx] instanceof KVCache ||
+                 proto[e.layerIdx] instanceof RotatingKVCache,
         );
         for (const c of proto) c.dispose();
       }

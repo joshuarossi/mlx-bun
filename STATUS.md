@@ -51,6 +51,23 @@ optimized model → + mixed-precision KV → + LoRA → + spec decode → +
 structured output → × sampling — all STACKABLE on one engine, no lane
 routing.
 
+**Phase 3 milestone 2 LANDED same day — BATCHED ROTATING-QUANTIZED KV
+(gemma's kv_config now batches; every shipped kv_config does):**
+BatchedRotatingQuantCache (src/model/batched-rotating-quant.ts) = the
+mlx-lm batched-ring mechanics over quantized triples, subclassing
+RotatingQuantizedKVCache so the L1 attention dispatch is untouched; the
+scheduler converts rotating layers at the serial boundaries and merges
+rot-quant twins; the gateway accepts rotating-layer configs. Gates:
+model-free per-row byte-identity vs the serial oracle through ring wrap;
+gemma 12B B=2 join through the real scheduler — unpadded row KL-0 at
+EVERY step, padded ≤4e-3. Two hard-won contracts recorded in the plan:
+a batched cache's ropeOffsetArr must be STEP-STABLE (refresh only in
+releaseRopeArr — the monolith captures-then-uses-late, the GENERATED
+files re-read post-update), and generated-file instanceof guards ACCEPT
+batched subclasses — an all-quant gemma batch decodes through the
+generated fast path (bit-exact, proven at B=1), which is also why the
+bug hid whenever any single layer stayed bf16.
+
 **Phase 3.2 LANDED same day — LONE-REQUEST = SERIAL (adopt-don't-copy +
 compiled decode at B=1 + prompt cache on the batch lane):** a row joining
 an EMPTY batch now ADOPTS its solo caches as the inners (pointer handoff —

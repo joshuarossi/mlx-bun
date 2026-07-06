@@ -1193,6 +1193,25 @@ export class RotatingQuantizedKVCache implements Cache {
     this.ringIdx = idx;
   }
 
+  /** Chronological (K, V) triples cut to the valid window — the quantized
+   *  twin of RotatingKVCache.temporalView (batched merge reads, Phase 3
+   *  milestone 2). Caller owns the returned views. */
+  temporalView(): [ops.QuantizedTensor, ops.QuantizedTensor] {
+    if (!this.keys || !this.values) throw new Error("cache is empty");
+    const valid = Math.min(this.offset, this.maxSize);
+    const cutValid = (t: ops.QuantizedTensor): ops.QuantizedTensor =>
+      mapTriple(t, (a) => {
+        const [B, H, , D] = a.shape as [number, number, number, number];
+        return a.slice([0, 0, 0, 0], [B, H, valid, D]);
+      });
+    const tk = this.#temporalOrder(this.keys);
+    const tv = this.#temporalOrder(this.values);
+    const out: [ops.QuantizedTensor, ops.QuantizedTensor] = [cutValid(tk), cutValid(tv)];
+    disposeTriple(tk);
+    disposeTriple(tv);
+    return out;
+  }
+
   /** Oracle: to_quantized on an already-quantized rotating cache is
    *  idempotent. */
   toQuantized(): RotatingQuantizedKVCache {

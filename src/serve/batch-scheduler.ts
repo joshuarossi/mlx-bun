@@ -60,11 +60,15 @@ import { clearCache, Dtype } from "../mlx/ffi";
 import { flagOn } from "../flags";
 import { CompiledDecode } from "../model/compiled-decode";
 import type { Gemma4Model } from "../model/gemma4";
-import { KVCache, QuantizedKVCache, RotatingKVCache, type Cache } from "../model/gemma4-base";
+import {
+  KVCache, QuantizedKVCache, RotatingKVCache, RotatingQuantizedKVCache, type Cache,
+} from "../model/gemma4-base";
 import { BatchedDecodeMaskCache, mergeKVRows, extendKVRows, filterKVRows } from "../model/batched-mask";
 import {
   BatchedQuantDecodeMaskCache, extendQuantRows, filterQuantRows, mergeQuantRows,
+  type QuantRow,
 } from "../model/batched-quant";
+import { BatchedRotatingQuantCache } from "../model/batched-rotating-quant";
 import type { KvQuantSpec } from "../config";
 import { BatchedRotatingCache } from "../model/batched-rotating";
 import { SSMCache } from "../model/qwen3-delta";
@@ -238,7 +242,9 @@ type LayerInner =
   | KVCache
   | QuantizedKVCache
   | BatchedRotatingCache
+  | BatchedRotatingQuantCache // rot layer under a kv_config scheme (milestone 2)
   | RotatingKVCache // adopted lone-row state only (see #mergeJoiner adopt)
+  | RotatingQuantizedKVCache // adopted lone-row state, quantized rot layer
   | SSMCache;
 type Row1 = { keys: MlxArray; values: MlxArray };
 
@@ -462,7 +468,12 @@ export class BatchScheduler {
     for (let i = 0; i < solo.length; i++) {
       const e = this.#kvByLayer.get(i);
       const c = solo[i]!;
-      if (!e || !(c instanceof KVCache) || c.offset === 0) continue;
+      if (!e || c.offset === 0) continue;
+      // Milestone 2: rotating layers convert too — RotatingKVCache.
+      // toQuantized → RotatingQuantizedKVCache, exactly maybeQuantizeKv's
+      // dispatch (generate.ts). Converted caches don't match either class
+      // (the four cache classes are siblings), so re-conversion never fires.
+      if (!(c instanceof KVCache || c instanceof RotatingKVCache)) continue;
       const q = c.toQuantized(e.groupSize, e.bits);
       solo[i] = q;
       ops.evalAll(q.state());
@@ -635,6 +646,49 @@ export class BatchScheduler {
       const soloC = p.solo[layer] as KVCache | RotatingKVCache;
       const [sk, sv] = soloC.temporalView();
       const newRow: Row1 = { keys: sk, values: sv };
+      if (this.#kinds[layer] === "rot" && p.solo[layer] instanceof RotatingQuantizedKVCache) {
+        // Milestone 2 — QUANTIZED rotating layer: the solo row converted at
+        // the serial boundaries (#quantizeSolo), so its ring bytes are the
+        // serial oracle's; this branch re-arranges temporal triples across
+        // the batch axis (the bf16 rot merge over triples).
+        const qSolo = p.solo[layer] as RotatingQuantizedKVCache;
+        const [qk, qv] = qSolo.temporalView();
+        const rows: QuantRow[] = [];
+        const offsets: number[] = [];
+        const dispose3 = (t: QuantRow) => {
+          t.keys.packed.dispose(); t.keys.scales.dispose(); t.keys.biases.dispose();
+          t.values.packed.dispose(); t.values.scales.dispose(); t.values.biases.dispose();
+        };
+        const prevC = prev?.[layer];
+        if (prevC instanceof BatchedRotatingQuantCache) {
+          const [k0, v0] = prevC.temporalView(); // [B,H,valid,*] triples, temporal
+          const valid = k0.packed.shape[2]!;
+          for (let b = 0; b < B; b++) {
+            const pad = Math.max(0, prevC.leftPad[b]!);
+            const cutRow = (t: typeof k0): typeof k0 => ({
+              packed: t.packed.slice([b, 0, pad, 0], [b + 1, t.packed.shape[1]!, valid, t.packed.shape[3]!]),
+              scales: t.scales.slice([b, 0, pad, 0], [b + 1, t.scales.shape[1]!, valid, t.scales.shape[3]!]),
+              biases: t.biases.slice([b, 0, pad, 0], [b + 1, t.biases.shape[1]!, valid, t.biases.shape[3]!]),
+            });
+            rows.push({ keys: cutRow(k0), values: cutRow(v0) });
+            offsets.push(prevC.offsetArr[b]!);
+          }
+          for (const t of [k0, v0]) { t.packed.dispose(); t.scales.dispose(); t.biases.dispose(); }
+        } else if (prevC instanceof RotatingQuantizedKVCache) {
+          // Adopted lone row (Phase 3.2 adopt): its chronological triples
+          // are the merge's first row, pad 0 by definition.
+          const [k0, v0] = prevC.temporalView();
+          rows.push({ keys: k0, values: v0 });
+          offsets.push(prevC.offset);
+        }
+        rows.push({ keys: qk, values: qv });
+        offsets.push(qSolo.offset);
+        newInners.push(BatchedRotatingQuantCache.merge(
+          rows, offsets, this.#rotMaxSize[layer]!, qSolo.groupSize, qSolo.bits,
+        ));
+        for (const r of rows) dispose3(r);
+        continue;
+      }
       if (this.#kinds[layer] === "rot") {
         const rows: Row1[] = [];
         const offsets: number[] = [];
@@ -795,6 +849,10 @@ export class BatchScheduler {
       if (
         this.#compiled && B === 1 && unpadded &&
         (!this.#pendingToks || this.#pendingToks.dtype === Dtype.uint32) &&
+        // A filtered-to-one BATCHED rot-quant cache subclasses the serial
+        // class (so supports() passes) but carries batched ring state —
+        // exclude it; only truly-adopted serial caches replay compiled.
+        !inners.some((c) => c instanceof BatchedRotatingQuantCache) &&
         CompiledDecode.supports(inners as Cache[])
       ) {
         let cur = this.#pendingToks;
@@ -822,7 +880,8 @@ export class BatchScheduler {
       try {
         if (!lg) {
           fwd = inners.map((c) =>
-            c instanceof BatchedRotatingCache || c instanceof SSMCache || unpadded
+            c instanceof BatchedRotatingCache || c instanceof BatchedRotatingQuantCache ||
+            c instanceof SSMCache || unpadded
               ? c
               : c instanceof QuantizedKVCache
                 ? new BatchedQuantDecodeMaskCache(c, B, this.#fullLeftPad)
@@ -976,7 +1035,8 @@ export class BatchScheduler {
       // Unpadded fast path — same rule as #step (bare caches == serial graph).
       const unpadded = this.#fullLeftPad.every((p) => p === 0);
       const fwd: Cache[] = inners.map((c) =>
-        c instanceof BatchedRotatingCache || c instanceof SSMCache || unpadded
+        c instanceof BatchedRotatingCache || c instanceof BatchedRotatingQuantCache ||
+            c instanceof SSMCache || unpadded
           ? c
           : c instanceof QuantizedKVCache
             ? new BatchedQuantDecodeMaskCache(c, B, this.#fullLeftPad)
@@ -1147,6 +1207,13 @@ export class BatchScheduler {
       if (inner instanceof BatchedRotatingCache) {
         inner.filter(keep); // in-place (mutates + drops rows + reduces padding)
         out.push(inner);
+      } else if (inner instanceof BatchedRotatingQuantCache) {
+        inner.filter(keep); // in-place B-axis take on all six components
+        out.push(inner);
+      } else if (inner instanceof RotatingQuantizedKVCache || inner instanceof RotatingKVCache) {
+        // Adopted lone-row state exists only at B=1, where the only filter
+        // is the keep=[] dispose-all handled above — unreachable.
+        throw new Error("applyFilter: adopted serial rotating cache cannot be row-filtered");
       } else if (inner instanceof SSMCache) {
         inner.filter(keep); // in-place B-axis take on both state slots
         out.push(inner);

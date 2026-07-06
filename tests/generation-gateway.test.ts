@@ -76,11 +76,11 @@ describe("GenerationGateway.willBatch", () => {
     });
   }
 
-  // Phase 3.1: a kv-quant request BATCHES when the gateway carries a
-  // batchable scheme — a per-layer kvConfig whose every configured layer is
-  // a plain full-attention KVCache in the model probe. Uniform kvBits stays
-  // serial (touches rotating layers), as does a config naming a rotating
-  // layer's index.
+  // Phase 3.1 + milestone 2: a kv-quant request BATCHES when the gateway
+  // carries a batchable scheme — a per-layer kvConfig whose every configured
+  // layer is a full-attention KVCache (3.1) or rotating RotatingKVCache
+  // (milestone 2: BatchedRotatingQuantCache — gemma's kv_config). Uniform
+  // kvBits stays serial (quantizedKvStart threshold semantics).
   test("kvQuant BATCHES with an all-full-attention kvConfig scheme", () => {
     const g = new GenerationGateway(fullModel(4), 2, serialRunStub, {
       kvScheme: { kvConfig: [0, 1, 2, 3].map((layerIdx) => ({ layerIdx, bits: 4, groupSize: 64 })) },
@@ -93,11 +93,11 @@ describe("GenerationGateway.willBatch", () => {
     });
     expect(g.willBatch({ ...batchable, kvQuant: true })).toBe(false);
   });
-  test("kvQuant stays serial when the config names a rotating layer", () => {
+  test("kvQuant BATCHES when the config names a rotating layer (milestone 2)", () => {
     const g = new GenerationGateway(mixedModel(), 2, serialRunStub, {
       kvScheme: { kvConfig: [{ layerIdx: 0, bits: 4, groupSize: 64 }] },
     });
-    expect(g.willBatch({ ...batchable, kvQuant: true })).toBe(false);
+    expect(g.willBatch({ ...batchable, kvQuant: true })).toBe(true);
   });
 
   // Logits processors BATCH: the per-row sampler folds makeLogitsProcessors
