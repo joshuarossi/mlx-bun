@@ -115,6 +115,7 @@ interface ReqResult {
   cachedTokens: number;
   genTokens: number;
   usedUsage: boolean;
+  text: string;
 }
 
 /** One streamed chat completion; timings from the byte stream, token counts
@@ -123,6 +124,7 @@ interface ReqResult {
  *  stack's prompt cache must not help. */
 async function timedRequest(
   base: string, content: string, maxTokens: number, apiKey?: string, modelId = "bench",
+  bodyExtra: Record<string, unknown> = {},
 ): Promise<ReqResult> {
   const t0 = performance.now();
   const r = await fetch(`${base}/v1/chat/completions`, {
@@ -135,6 +137,7 @@ async function timedRequest(
       model: modelId, stream: true, max_tokens: maxTokens, temperature: 0,
       messages: [{ role: "user", content }],
       stream_options: { include_usage: true },
+      ...bodyExtra,
     }),
   });
   if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 300)}`);
@@ -144,6 +147,7 @@ async function timedRequest(
   let tFirst = 0;
   let tLast = 0;
   let chunkTokens = 0;
+  let text = "";
   interface Usage {
     prompt_tokens?: number;
     completion_tokens?: number;
@@ -169,6 +173,7 @@ async function timedRequest(
         if (!tFirst) tFirst = now;
         tLast = now;
         chunkTokens++;
+        text += delta.content ?? delta.reasoning ?? "";
       }
       if (j.usage && typeof j.usage.completion_tokens === "number") usage = j.usage;
     }
@@ -182,6 +187,7 @@ async function timedRequest(
     decodeTps: genTokens > 1 && dt > 0 ? ((genTokens - 1) * 1000) / dt : 0,
     promptTokens, cachedTokens, genTokens,
     usedUsage: usage !== null,
+    text,
   };
 }
 
@@ -221,6 +227,23 @@ function fillerPrompt(targetTokens: number, nonce: string, charsPerTok = 3.6): s
 interface CellResult {
   cell: Cell;
   readyMs: number;
+  /** Deterministic-output sample (fixed prompt, temp 0, 64 tok): the
+   *  cross-arm BIT-PARITY probe — same model, same prompt, greedy ⇒ the
+   *  text must be IDENTICAL across stacks of the same scheme. Also
+   *  carries prompt_tokens (template-parity check: a token-count mismatch
+   *  means the stacks rendered different prompts). */
+  parityText: string;
+  parityPromptTokens: number;
+  /** mlx-bun arms only: the same probe with enable_thinking pinned ON —
+   *  lets the report separate ENGINE parity from our documented
+   *  template-default divergence (--thinking false for CPM while the
+   *  model's own template defaults on, which mlx-lm inherits). */
+  parityAltText: string | null;
+  parityAltPromptTokens: number;
+  /** Peak resident-set of the SERVER PROCESS sampled over the whole cell
+   *  (MB). RSS undercounts GPU-shared allocations — comparable across
+   *  arms, labeled, and the growth/leak signal. */
+  peakRssMB: number;
   decodeTps: number[];
   decodeTag: string;
   ttftColdMs: number[];
@@ -244,11 +267,30 @@ async function runCell(c: Cell, port: number, withContext: boolean): Promise<Cel
   const modelId = MODELS[c.model]!.path;
   const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
   const base = `http://127.0.0.1:${port}`;
+  // Peak-RSS sampler: runs for the cell's whole life (500 ms cadence).
+  let peakRssMB = 0;
+  const rssTimer = setInterval(() => {
+    const r = Bun.spawnSync(["ps", "-o", "rss=", "-p", String(proc.pid)]);
+    const mb = r.exitCode === 0 ? Number(r.stdout.toString().trim()) / 1024 : 0;
+    if (mb > peakRssMB) peakRssMB = mb;
+  }, 500);
   try {
     const readyMs = await waitReady(base, apiKey, 600_000);
 
     // warmup (compile/trace/page-fault-in — discarded; same for all arms)
     await timedRequest(base, "Warmup: say hello.", 32, apiKey, modelId);
+
+    // PARITY PROBE: fixed prompt, temperature 0, 64 tokens. Deterministic
+    // greedy on the same model ⇒ stacks of the same KV scheme must emit
+    // IDENTICAL text (the drop-in contract, verified over HTTP on real
+    // defaults). Compared across arms at report time.
+    const PARITY_PROMPT = "List the first eight prime numbers, then briefly explain what makes a number prime.";
+    const parity = await timedRequest(base, PARITY_PROMPT, 64, apiKey, modelId);
+    let parityAlt: ReqResult | null = null;
+    if (c.arm.startsWith("mlx-bun")) {
+      parityAlt = await timedRequest(base, PARITY_PROMPT, 64, apiKey, modelId,
+        { chat_template_kwargs: { enable_thinking: true } });
+    }
 
     // DECODE (short prompt; nonce so no arm's prefix cache distorts ttft
     // bookkeeping — decode rate itself is cache-independent)
@@ -332,6 +374,10 @@ async function runCell(c: Cell, port: number, withContext: boolean): Promise<Cel
 
     return {
       cell: c, readyMs,
+      parityText: parity.text, parityPromptTokens: parity.promptTokens,
+      parityAltText: parityAlt?.text ?? null,
+      parityAltPromptTokens: parityAlt?.promptTokens ?? 0,
+      peakRssMB,
       decodeTps: decodePicked, decodeTag,
       ttftColdMs, prefill1kTps,
       ttftWarmMs: warm.ttftMs, warmCachedTokens: warm.cachedTokens,
@@ -340,6 +386,7 @@ async function runCell(c: Cell, port: number, withContext: boolean): Promise<Cel
       aggPerStream: aggResults.reduce((a, r) => a + r.decodeTps, 0) / aggResults.length,
     };
   } finally {
+    clearInterval(rssTimer);
     proc.kill();
     await Promise.race([proc.exited, Bun.sleep(5000)]);
     try { proc.kill(9); } catch { /* already gone */ }
@@ -392,7 +439,7 @@ async function main(): Promise<void> {
         const res = await runCell(c, 8971, withContext);
         results.push(res);
         console.log(
-          `  ready ${(res.readyMs / 1000).toFixed(1)}s · decode ${median(res.decodeTps).toFixed(1)} tok/s ${res.decodeTag} · ` +
+          `  ready ${(res.readyMs / 1000).toFixed(1)}s · rssPeak ${res.peakRssMB.toFixed(0)}MB · decode ${median(res.decodeTps).toFixed(1)} tok/s ${res.decodeTag} · ` +
           `ttft ${median(res.ttftColdMs).toFixed(0)}ms cold / ${res.ttftWarmMs.toFixed(0)}ms warm (cached ${res.warmCachedTokens}) · ` +
           (res.ctx ? `ctx@${res.ctx.promptTokens} prefill ${res.ctx.prefillTps.toFixed(0)} tok/s decode ${median(res.ctx.decodeTps).toFixed(1)} tok/s · ` : "") +
           `agg×${AGG_STREAMS} ${res.aggTps.toFixed(1)} tok/s`,
@@ -410,7 +457,7 @@ async function main(): Promise<void> {
           notes: `serve-h2h arm=${arm} ttft_cold=${median(res.ttftColdMs).toFixed(0)} ttft_warm=${res.ttftWarmMs.toFixed(0)} ` +
             `warm_cached=${res.warmCachedTokens} agg${AGG_STREAMS}=${res.aggTps.toFixed(1)} agg_per=${res.aggPerStream.toFixed(1)} ` +
             (res.ctx ? `ctx=${res.ctx.promptTokens} ctx_ttft=${res.ctx.ttftMs.toFixed(0)} ctx_decode=${median(res.ctx.decodeTps).toFixed(1)} ctx_rep_ttft=${res.ctx.cachedRepeatTtftMs.toFixed(0)} ` : "") +
-            `ready_ms=${res.readyMs.toFixed(0)} ${res.decodeTag}`.trim(),
+            `ready_ms=${res.readyMs.toFixed(0)} rss_peak_mb=${res.peakRssMB.toFixed(0)} ${res.decodeTag}`.trim(),
         });
       } catch (e) {
         console.log(`  FAILED: ${(e as Error).message.slice(0, 200)}`);
@@ -431,12 +478,52 @@ async function main(): Promise<void> {
     const rows = results.filter((r) => r.cell.model === model);
     if (!rows.length) continue;
     lines.push(`## ${MODELS[model]!.label}`, ``);
-    lines.push(`| arm | decode tok/s | ttft cold ms | ttft warm ms (cached) | prefill@1k tok/s | ctx tok | prefill@ctx tok/s | decode@ctx tok/s | ctx repeat ttft ms | agg×${AGG_STREAMS} tok/s | ready s |`);
-    lines.push(`|---|---|---|---|---|---|---|---|---|---|---|`);
+    lines.push(`| arm | decode tok/s | ttft cold ms | ttft warm ms (cached) | prefill@1k tok/s | ctx tok | prefill@ctx tok/s | decode@ctx tok/s | ctx repeat ttft ms | agg×${AGG_STREAMS} tok/s | peak RSS MB | ready s |`);
+    lines.push(`|---|---|---|---|---|---|---|---|---|---|---|---|`);
     for (const r of rows) {
-      lines.push(`| ${r.cell.arm}${r.decodeTag ? ` (${r.decodeTag})` : ""} | ${median(r.decodeTps).toFixed(1)} | ${median(r.ttftColdMs).toFixed(0)} | ${r.ttftWarmMs.toFixed(0)} (${r.warmCachedTokens}) | ${median(r.prefill1kTps).toFixed(0)} | ${r.ctx?.promptTokens ?? "—"} | ${r.ctx ? r.ctx.prefillTps.toFixed(0) : "—"} | ${r.ctx ? median(r.ctx.decodeTps).toFixed(1) : "—"} | ${r.ctx ? r.ctx.cachedRepeatTtftMs.toFixed(0) : "—"} | ${r.aggTps.toFixed(1)} | ${(r.readyMs / 1000).toFixed(1)} |`);
+      lines.push(`| ${r.cell.arm}${r.decodeTag ? ` (${r.decodeTag})` : ""} | ${median(r.decodeTps).toFixed(1)} | ${median(r.ttftColdMs).toFixed(0)} | ${r.ttftWarmMs.toFixed(0)} (${r.warmCachedTokens}) | ${median(r.prefill1kTps).toFixed(0)} | ${r.ctx?.promptTokens ?? "—"} | ${r.ctx ? r.ctx.prefillTps.toFixed(0) : "—"} | ${r.ctx ? median(r.ctx.decodeTps).toFixed(1) : "—"} | ${r.ctx ? r.ctx.cachedRepeatTtftMs.toFixed(0) : "—"} | ${r.aggTps.toFixed(1)} | ${r.peakRssMB.toFixed(0)} | ${(r.readyMs / 1000).toFixed(1)} |`);
     }
     lines.push(``);
+    // BIT-PARITY verdicts: same model + fixed prompt + greedy ⇒ stacks of
+    // the same KV scheme must emit identical text; prompt_tokens equality
+    // additionally proves the chat templates rendered identically.
+    const arm = (a: Arm) => rows.find((r) => r.cell.arm === a);
+    const pairs: Array<[Arm, Arm, string]> = [
+      ["mlx-bun", "mlx-lm", "bf16 drop-in (vs mlx-lm)"],
+      ["mlx-bun", "mlx-bun-serial", "unified engine vs --batch 1 pin"],
+      ["mlx-bun-mixed", "optiq-mixed", "mixed-KV (vs optiq)"],
+    ];
+    const verdicts: string[] = [];
+    for (const [a, b, label] of pairs) {
+      const ra = arm(a), rb = arm(b);
+      if (!ra || !rb) continue;
+      if (ra.parityText === rb.parityText && ra.parityPromptTokens === rb.parityPromptTokens) {
+        verdicts.push(`- **parity ✓** ${label}: 64 greedy tokens identical (prompt_tokens ${ra.parityPromptTokens} both)`);
+        continue;
+      }
+      // Template defaults may differ BY DESIGN (--thinking false for CPM
+      // vs the template's own on-default, which mlx-lm inherits). Retry
+      // the comparison with our thinking-pinned probe: matching there =
+      // engine parity under matched templates.
+      if (ra.parityAltText !== null &&
+          ra.parityAltText === rb.parityText &&
+          ra.parityAltPromptTokens === rb.parityPromptTokens) {
+        verdicts.push(
+          `- **parity ✓ (engine)** ${label}: identical with enable_thinking pinned on ` +
+          `(prompt_tokens ${rb.parityPromptTokens} both). Default renders differ BY DESIGN: ` +
+          `our --thinking default is off for this model (documented), theirs follows the template.`,
+        );
+        continue;
+      }
+      let i = 0;
+      while (i < Math.min(ra.parityText.length, rb.parityText.length) && ra.parityText[i] === rb.parityText[i]) i++;
+      const tmplOk = ra.parityPromptTokens === rb.parityPromptTokens;
+      verdicts.push(
+        `- **parity ✗** ${label}: ${tmplOk ? "" : `prompt_tokens ${ra.parityPromptTokens} vs ${rb.parityPromptTokens} (TEMPLATE DRIFT); `}` +
+        `diverged at char ${i}: …\`${ra.parityText.slice(Math.max(0, i - 20), i + 20)}\` vs …\`${rb.parityText.slice(Math.max(0, i - 20), i + 20)}\``,
+      );
+    }
+    if (verdicts.length) lines.push(...verdicts, ``);
   }
   if (failures.length) {
     lines.push(`## failures`, ``);
