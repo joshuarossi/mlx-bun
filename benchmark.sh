@@ -18,10 +18,11 @@
 #   ./benchmark.sh --skip-context      drop the long-context leg (fastest)
 #   ./benchmark.sh --context 8192      shorter context leg
 #
-# ENGINE PASS (opt-in, slow — kernel-level questions): in-process direct
-# legs (gen-peak memory, kernel parity vs the python oracles) + the
+# ENGINE PASS (--engine, ADDITIVE — runs AFTER the serve pass in the same
+# invocation; slow — kernel-level questions): in-process direct legs
+# (gen-peak memory, kernel parity vs the python oracles) + the
 # faithful-kernel matrix + kill-switch A/Bs:
-#   ./benchmark.sh --engine
+#   ./benchmark.sh --with-serial --engine    everything, one run
 #
 # Quotable ABSOLUTE numbers need a quiet machine (reboot, nothing open).
 # Ratios/parity survive a dirty machine; rows carry machine-state labels
