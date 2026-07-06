@@ -31,7 +31,9 @@
 // remain in bench-h2h.ts / benchmark.sh --engine — different question
 // (kernel parity), different tool.
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { EvalDB, gitCommit } from "../src/evaldb";
 
 const VENV = `${process.env.HOME}/Code/mlx-lm/.venv/bin`;
@@ -86,17 +88,18 @@ function snapshotOf(repoDir: string): string {
 type Arm = "mlx-bun" | "mlx-bun-serial" | "mlx-bun-mixed" | "mlx-lm" | "optiq-mixed";
 interface Cell { model: string; arm: Arm }
 
-function cmdlineFor(c: Cell, port: number): string[] | null {
+function cmdlineFor(c: Cell, port: number, ssdDir?: string): string[] | null {
   const m = MODELS[c.model]!;
   const kvCfg = `${m.path}/kv_config.json`;
+  const ssd = ssdDir ? ["--ssd-cache", ssdDir] : [];
   switch (c.arm) {
-    case "mlx-bun": // THE drop-in arm: real CLI, real defaults
-      return ["bun", CLI, "serve", "--model", m.path, "--port", String(port), "--no-open"];
+    case "mlx-bun": // THE drop-in arm: real CLI, real defaults (+ SSD tier for the restart leg)
+      return ["bun", CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", ...ssd];
     case "mlx-bun-serial":
-      return ["bun", CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--batch", "1"];
+      return ["bun", CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--batch", "1", ...ssd];
     case "mlx-bun-mixed":
       if (!existsSync(kvCfg)) return null;
-      return ["bun", CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--kv-quant", "config"];
+      return ["bun", CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--kv-quant", "config", ...ssd];
     case "mlx-lm":
       return [PY, "-m", "mlx_lm.server", "--model", m.path, "--port", String(port)];
     case "optiq-mixed":
@@ -244,6 +247,14 @@ interface CellResult {
    *  (MB). RSS undercounts GPU-shared allocations — comparable across
    *  arms, labeled, and the growth/leak signal. */
   peakRssMB: number;
+  /** COLD START: launch → FIRST generated token (ready + the first
+   *  request's TTFT, which pays page fault-in / trace warmup — the number
+   *  a user launching the server actually feels). */
+  coldStartMs: number;
+  /** RESTART STORY (ctx leg only): kill the server, respawn, re-send the
+   *  long-context prompt ONCE. Ours restores the prefix from the SSD tier
+   *  (Layer 0); stacks without persistence re-prefill from scratch. */
+  restart: null | { readyMs: number; ctxTtftMs: number; cachedTokens: number };
   decodeTps: number[];
   decodeTag: string;
   ttftColdMs: number[];
@@ -258,15 +269,16 @@ interface CellResult {
   aggPerStream: number;
 }
 
-async function runCell(c: Cell, port: number, withContext: boolean): Promise<CellResult> {
-  const cmd = cmdlineFor(c, port)!;
+async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: string): Promise<CellResult> {
+  const cmd = cmdlineFor(c, port, ssdDir)!;
   const apiKey = c.arm === "optiq-mixed" ? "sk-optiq-bench" : undefined;
   // mlx_lm.server LOADS the request's model field as a repo id when it
   // doesn't match — send the real path so every stack serves the model it
   // was started with (ours ignores unknown ids; theirs would download).
   const modelId = MODELS[c.model]!.path;
-  const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
+  let proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
   const base = `http://127.0.0.1:${port}`;
+  let restart: CellResult["restart"] = null;
   // Peak-RSS sampler: runs for the cell's whole life (500 ms cadence).
   let peakRssMB = 0;
   const rssTimer = setInterval(() => {
@@ -277,8 +289,11 @@ async function runCell(c: Cell, port: number, withContext: boolean): Promise<Cel
   try {
     const readyMs = await waitReady(base, apiKey, 600_000);
 
-    // warmup (compile/trace/page-fault-in — discarded; same for all arms)
-    await timedRequest(base, "Warmup: say hello.", 32, apiKey, modelId);
+    // First request = the true cold-start tail (page fault-in, compile
+    // traces): its TTFT is RECORDED (launch→first-token = ready + this),
+    // then it doubles as the warmup for the steady-state legs.
+    const first = await timedRequest(base, "Warmup: say hello.", 32, apiKey, modelId);
+    const coldStartMs = readyMs + first.ttftMs;
 
     // PARITY PROBE: fixed prompt, temperature 0, 64 tokens. Deterministic
     // greedy on the same model ⇒ stacks of the same KV scheme must emit
@@ -359,6 +374,24 @@ async function runCell(c: Cell, port: number, withContext: boolean): Promise<Cel
         decodeTps: decodeAtCtx,
         cachedRepeatTtftMs,
       };
+      // RESTART STORY: kill + respawn the SAME server, re-send the same
+      // long-context prompt once. mlx-bun restores the prefix from the SSD
+      // tier (Layer 0, --ssd-cache); stacks without persistence pay the
+      // full re-prefill — the honest side-by-side of restart survival.
+      // Give the write-behind snapshot (debounced 1 s) a beat to land.
+      await Bun.sleep(2500);
+      proc.kill();
+      await Promise.race([proc.exited, Bun.sleep(5000)]);
+      try { proc.kill(9); } catch { /* gone */ }
+      await Bun.sleep(1000);
+      proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
+      const readyMs2 = await waitReady(base, apiKey, 600_000);
+      const afterRestart = await timedRequest(base, prompt, 8, apiKey, modelId);
+      restart = {
+        readyMs: readyMs2,
+        ctxTtftMs: afterRestart.ttftMs,
+        cachedTokens: afterRestart.cachedTokens,
+      };
     }
 
     // AGGREGATE: 4 concurrent short generations (the sub-agents number).
@@ -373,7 +406,7 @@ async function runCell(c: Cell, port: number, withContext: boolean): Promise<Cel
     const aggTokens = aggResults.reduce((a, r) => a + r.genTokens, 0);
 
     return {
-      cell: c, readyMs,
+      cell: c, readyMs, coldStartMs, restart,
       parityText: parity.text, parityPromptTokens: parity.promptTokens,
       parityAltText: parityAlt?.text ?? null,
       parityAltPromptTokens: parityAlt?.promptTokens ?? 0,
@@ -435,11 +468,15 @@ async function main(): Promise<void> {
       if (!cmdlineFor(c, 0)) { console.log(`[skip] ${model}/${arm} — not applicable`); continue; }
       const key = `${model}/${arm}`;
       console.log(`=== ${key} ===`);
+      const ssdDir = arm.startsWith("mlx-bun")
+        ? mkdtempSync(join(tmpdir(), "mlxbun-bench-ssd-"))
+        : undefined;
       try {
-        const res = await runCell(c, 8971, withContext);
+        const res = await runCell(c, 8971, withContext, ssdDir);
         results.push(res);
         console.log(
-          `  ready ${(res.readyMs / 1000).toFixed(1)}s · rssPeak ${res.peakRssMB.toFixed(0)}MB · decode ${median(res.decodeTps).toFixed(1)} tok/s ${res.decodeTag} · ` +
+          `  ready ${(res.readyMs / 1000).toFixed(1)}s · coldStart ${(res.coldStartMs / 1000).toFixed(1)}s · rssPeak ${res.peakRssMB.toFixed(0)}MB · decode ${median(res.decodeTps).toFixed(1)} tok/s ${res.decodeTag} · ` +
+          (res.restart ? `restartCtxTtft ${res.restart.ctxTtftMs.toFixed(0)}ms (cached ${res.restart.cachedTokens}) · ` : "") +
           `ttft ${median(res.ttftColdMs).toFixed(0)}ms cold / ${res.ttftWarmMs.toFixed(0)}ms warm (cached ${res.warmCachedTokens}) · ` +
           (res.ctx ? `ctx@${res.ctx.promptTokens} prefill ${res.ctx.prefillTps.toFixed(0)} tok/s decode ${median(res.ctx.decodeTps).toFixed(1)} tok/s · ` : "") +
           `agg×${AGG_STREAMS} ${res.aggTps.toFixed(1)} tok/s`,
@@ -457,11 +494,15 @@ async function main(): Promise<void> {
           notes: `serve-h2h arm=${arm} ttft_cold=${median(res.ttftColdMs).toFixed(0)} ttft_warm=${res.ttftWarmMs.toFixed(0)} ` +
             `warm_cached=${res.warmCachedTokens} agg${AGG_STREAMS}=${res.aggTps.toFixed(1)} agg_per=${res.aggPerStream.toFixed(1)} ` +
             (res.ctx ? `ctx=${res.ctx.promptTokens} ctx_ttft=${res.ctx.ttftMs.toFixed(0)} ctx_decode=${median(res.ctx.decodeTps).toFixed(1)} ctx_rep_ttft=${res.ctx.cachedRepeatTtftMs.toFixed(0)} ` : "") +
-            `ready_ms=${res.readyMs.toFixed(0)} rss_peak_mb=${res.peakRssMB.toFixed(0)} ${res.decodeTag}`.trim(),
+            `ready_ms=${res.readyMs.toFixed(0)} cold_start_ms=${res.coldStartMs.toFixed(0)} rss_peak_mb=${res.peakRssMB.toFixed(0)} ` +
+            (res.restart ? `restart_ctx_ttft=${res.restart.ctxTtftMs.toFixed(0)} restart_cached=${res.restart.cachedTokens} ` : "") +
+            `${res.decodeTag}`.trim(),
         });
       } catch (e) {
         console.log(`  FAILED: ${(e as Error).message.slice(0, 200)}`);
         failures.push({ cell: key, error: (e as Error).message.slice(0, 300) });
+      } finally {
+        if (ssdDir) rmSync(ssdDir, { recursive: true, force: true });
       }
     }
   }
@@ -478,10 +519,10 @@ async function main(): Promise<void> {
     const rows = results.filter((r) => r.cell.model === model);
     if (!rows.length) continue;
     lines.push(`## ${MODELS[model]!.label}`, ``);
-    lines.push(`| arm | decode tok/s | ttft cold ms | ttft warm ms (cached) | prefill@1k tok/s | ctx tok | prefill@ctx tok/s | decode@ctx tok/s | ctx repeat ttft ms | agg×${AGG_STREAMS} tok/s | peak RSS MB | ready s |`);
-    lines.push(`|---|---|---|---|---|---|---|---|---|---|---|---|`);
+    lines.push(`| arm | decode tok/s | ttft cold ms | ttft warm ms (cached) | prefill@1k tok/s | ctx tok | prefill@ctx tok/s | decode@ctx tok/s | ctx repeat ttft ms | restart ctx ttft ms (cached) | agg×${AGG_STREAMS} tok/s | peak RSS MB | cold start s | ready s |`);
+    lines.push(`|---|---|---|---|---|---|---|---|---|---|---|---|---|---|`);
     for (const r of rows) {
-      lines.push(`| ${r.cell.arm}${r.decodeTag ? ` (${r.decodeTag})` : ""} | ${median(r.decodeTps).toFixed(1)} | ${median(r.ttftColdMs).toFixed(0)} | ${r.ttftWarmMs.toFixed(0)} (${r.warmCachedTokens}) | ${median(r.prefill1kTps).toFixed(0)} | ${r.ctx?.promptTokens ?? "—"} | ${r.ctx ? r.ctx.prefillTps.toFixed(0) : "—"} | ${r.ctx ? median(r.ctx.decodeTps).toFixed(1) : "—"} | ${r.ctx ? r.ctx.cachedRepeatTtftMs.toFixed(0) : "—"} | ${r.aggTps.toFixed(1)} | ${r.peakRssMB.toFixed(0)} | ${(r.readyMs / 1000).toFixed(1)} |`);
+      lines.push(`| ${r.cell.arm}${r.decodeTag ? ` (${r.decodeTag})` : ""} | ${median(r.decodeTps).toFixed(1)} | ${median(r.ttftColdMs).toFixed(0)} | ${r.ttftWarmMs.toFixed(0)} (${r.warmCachedTokens}) | ${median(r.prefill1kTps).toFixed(0)} | ${r.ctx?.promptTokens ?? "—"} | ${r.ctx ? r.ctx.prefillTps.toFixed(0) : "—"} | ${r.ctx ? median(r.ctx.decodeTps).toFixed(1) : "—"} | ${r.ctx ? r.ctx.cachedRepeatTtftMs.toFixed(0) : "—"} | ${r.restart ? `${r.restart.ctxTtftMs.toFixed(0)} (${r.restart.cachedTokens})` : "—"} | ${r.aggTps.toFixed(1)} | ${r.peakRssMB.toFixed(0)} | ${(r.coldStartMs / 1000).toFixed(1)} | ${(r.readyMs / 1000).toFixed(1)} |`);
     }
     lines.push(``);
     // BIT-PARITY verdicts: same model + fixed prompt + greedy ⇒ stacks of
