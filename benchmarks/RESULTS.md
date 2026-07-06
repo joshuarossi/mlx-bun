@@ -61,6 +61,21 @@ optiq's reference (`tests/fused-sdpa.test.ts`).
 
 ---
 
+## Methodology change (2026-07-05)
+
+The primary benchmark is now **`./benchmark.sh` → `scripts/bench-serve.ts`**:
+real servers on real paths — the mlx-bun arms spawn the ACTUAL CLI at its
+actual defaults (the old harness used a bench-local wrapper, since deleted),
+and every metric arrives over HTTP as a user would see it. One server per
+cell yields: decode tok/s, cold TTFT (~1k, nonce-busted), warm/cached TTFT
+(each stack's own prompt cache), prefill tok/s, long-context
+prefill/TTFT/decode (ONE measured prefill; decode sampled on 64 tokens),
+aggregate tok/s at 4 concurrent streams, and load→ready time. Context
+lengths are recorded from usage.prompt_tokens (measured, not requested).
+Engine-level questions (in-process kernel parity, gen-peak memory,
+kill-switch A/Bs) live behind `./benchmark.sh --engine`. Numbers below this
+note predate the redesign; the next quiet-machine pass supersedes them.
+
 ## 2. Performance — like-for-like numbers
 
 Two comparison axes: **vs the oracles**, and **our optimized path vs our

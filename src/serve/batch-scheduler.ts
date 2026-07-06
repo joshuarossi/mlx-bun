@@ -258,6 +258,7 @@ export class BatchScheduler {
    *  pipeline register. Filtered/disposed alongside the batched KV. */
   #pendingToks: MlxArray | null = null;
   #steps = 0; // decode-step counter (clearCache cadence)
+  #lastHop = 0; // last macrotask yield (B=1 fast-path rate limiting)
   #looping = false;
   #wake: (() => void) | null = null;
   readonly #maxBatch: number;
@@ -446,6 +447,20 @@ export class BatchScheduler {
             this.#applyFilter([], true);
           }
         }
+        // The per-step macrotask hop exists so joiners/admin interleave at
+        // token granularity. With ONE row and an empty queue there is
+        // nobody to interleave — rate-limit the hop to the serial loop's
+        // 25 ms cadence (identical responsiveness budget; generate()'s
+        // hoppingOnToken does exactly this). This was the B=1 drive-loop
+        // tax: one setImmediate round-trip per token ≈ the 0.4–0.8% gap
+        // vs pure serial (paired-measured 2026-07-05).
+        if (
+          this.#running.length === 1 && this.#pending.length === 0 &&
+          !this.#prefill && this.#admissionHeld?.() !== true &&
+          performance.now() - this.#lastHop < 25
+        )
+          continue;
+        this.#lastHop = performance.now();
         await new Promise<void>((r) => setImmediate(r));
       }
     } finally {

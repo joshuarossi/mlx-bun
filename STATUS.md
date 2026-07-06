@@ -51,6 +51,23 @@ optimized model → + mixed-precision KV → + LoRA → + spec decode → +
 structured output → × sampling — all STACKABLE on one engine, no lane
 routing.
 
+**BENCHMARK HARNESS REDESIGNED same day (Josh: "run the correct things in
+the correct ways"):** scripts/bench-serve.ts is the primary pass — REAL
+CLI at REAL defaults (the scripts/serve.ts wrapper is deleted; bench-h2h's
+legacy server leg repointed at the CLI too), one server per cell serving
+ALL metrics over HTTP: decode (stability policy), cold/warm-cached TTFT,
+prefill, long-context via ONE prefill + 64-token decode samples (never
+"generate 16k to measure 16k"), agg×4 concurrent, ready-time. Context
+recorded from measured usage.prompt_tokens. Oracle venv's console scripts
+have STALE SHEBANGS (venv was moved) — python arms now invoke via the venv
+python. benchmark.sh: default = serve pass (~15-30 min); --engine = the
+old in-process kernel/memory/A-B matrix. Dirty-box smoke (NOT quotable):
+all four arms work; warm TTFT 26 ms (ours) vs 108 ms (mlx-lm) at equal
+cached tokens; agg×4 271 vs 185. NEXT QUIET-MACHINE RUN IS THE ARBITER —
+including defaults-vs-defaults decode and the B=1 hop-fix verification
+(cpm5 1.012 / 12B 1.005 paired post-fix; e4b reading unresolved on the
+throttled box).
+
 **MULTI-MODEL SWITCHING LANDED same day (isolation P2, task #14):**
 child-per-model pool under --isolate — route by exact /v1/models id,
 spawn-overlap switch (old model serves while the new loads), lossless LRU

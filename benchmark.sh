@@ -1,73 +1,61 @@
 #!/bin/sh
-# Head-to-head benchmark — the one-shot entry point. Runs the comparisons
-# across BOTH arenas (direct + server) and writes ONE report sectioned by
-# comparison:
-#   0. L1 kernel matrix   (faithful default - each)   — the baseline holds
-#   1. mlx-bun vs mlx-lm  (bf16 KV, no mixed quant)   — requirement: bit parity
-#   2. mlx-bun vs optiq   (mixed kv_config)           — requirement: bit parity
+# The one-shot benchmark entry point — REDESIGNED 2026-07-05 ("run the
+# correct things in the correct ways, record what we care about").
 #
-#   1. Reboot. Open nothing else (no browser). [only needed for quotable
-#      ABSOLUTE tok/s — parity (1,2) and KL/ratios (3) are valid dirty too]
-#   2. ./benchmark.sh            (cpm/e4b/12B matrix; 26B skipped by default)
-#      ./benchmark.sh --with-26b (include the 26B MoE — much slower)
-#      ./benchmark.sh --redo     (ignore recent rows; force every cell
-#                                 fresh — REQUIRED after engine changes,
-#                                 or the resume window silently re-renders
-#                                 stale rows as "results")
+# DEFAULT PASS (~15-30 min): scripts/bench-serve.ts — real servers, real
+# paths, real defaults. The mlx-bun arms spawn the ACTUAL CLI; mlx-lm and
+# optiq run their real servers; every metric arrives over HTTP as a user
+# would see it. One server per cell serves ALL its metrics:
+#   decode tok/s (spread/stability policy) · TTFT cold (~1k, nonce-busted)
+#   · TTFT warm/cached (the prompt-cache story) · prefill tok/s ·
+#   long-context prefill/TTFT/decode (ONE prefill, decode sampled on 64
+#   tokens — never "generate 16k to measure 16k") · aggregate tok/s at 4
+#   concurrent streams (the sub-agents number) · load→ready time.
 #
-# Strictly sequential: each measured leg is its own fresh process. Results
-# land in the eval DB (~/.cache/mlx-bun/evals.sqlite) AND
-# benchmarks-h2h-<date>-<host>.md.
+#   ./benchmark.sh                     cpm5 + e4b + 12B, all arms
+#   ./benchmark.sh --models cpm5,12B   subset
+#   ./benchmark.sh --with-serial       add the --batch 1 pinned arm
+#   ./benchmark.sh --skip-context      drop the long-context leg (fastest)
+#   ./benchmark.sh --context 8192      shorter context leg
 #
-# We pass --force so preflight WARNS rather than refuses: a multi-hour
-# unattended run must not abort on a transient blip. With the caffeinate
-# assertion above holding the machine awake, preflight should now PASS on
-# its own — the blanket `‡ preflight-failed` tags on past runs were NOT a
-# dirty machine (swap 0, free >90%, zero foreign processes) but the
-# `loadAvg1m > 8` check tripping on the run-queue spike right after a
-# wake-from-sleep. So --force here is a legitimate belt-and-suspenders, not
-# an admission of measuring dirty. Rows are only tagged `‡` if a check
-# genuinely trips; parity and KL/ratio verdicts don't depend on machine
-# state either way.
+# ENGINE PASS (opt-in, slow — kernel-level questions): in-process direct
+# legs (gen-peak memory, kernel parity vs the python oracles) + the
+# faithful-kernel matrix + kill-switch A/Bs:
+#   ./benchmark.sh --engine
+#
+# Quotable ABSOLUTE numbers need a quiet machine (reboot, nothing open).
+# Ratios/parity survive a dirty machine; rows carry machine-state labels
+# either way. Results: eval DB (~/.cache/mlx-bun/evals.sqlite) + a dated
+# markdown report in the working dir (gitignored).
 set -e
 cd "$(dirname "$0")"
 
-# Keep the Mac awake for the whole pass. macOS idle-sleep keys off HID
-# inactivity, NOT GPU/CPU load, so an unattended run gets slept mid-leg and
-# the suspended process stretches a ~1-2 h pass across many hours (and the
-# post-wake run-queue spike fakes `loadAvg1m > 8` preflight failures). This
-# assertion lives only as long as this script (PID $$) and releases on exit.
-# caffeinate ships with macOS (/usr/bin/caffeinate) — nothing to install.
+# Keep the Mac awake for the whole pass (idle-sleep keys off HID, not GPU).
 caffeinate -dimsu -w $$ &
 
-REPORT="benchmarks-h2h-$(date +%F)-$(hostname -s).md"
+if [ "$1" = "--engine" ]; then
+  shift
+  REPORT="benchmarks-engine-$(date +%F)-$(hostname -s).md"
+  echo "=== engine pass: direct legs (in-process, gen-peak, oracle parity) ==="
+  bun scripts/bench-h2h.ts direct --force "$@"
+  echo ""
+  echo "=== L1 kernel matrix (faithful default - each kernel vs mlx-lm) ==="
+  bun scripts/bench-faithful-matrix.ts --tokens 256 --models cpm5,e4b,12B
+  echo ""
+  echo "=== fused-prefill A/B ==="
+  bun scripts/bench-fused-prefill.ts
+  MLX_BUN_NO_FUSED_SDPA=1 bun scripts/bench-fused-prefill.ts
+  echo ""
+  echo "=== compiled-decode paired A/B ==="
+  bun scripts/bench-compiled-decode.ts
+  echo ""
+  echo "=== rendering engine report -> $REPORT ==="
+  bun scripts/bench-h2h.ts table --out "$REPORT"
+  echo "engine pass complete — $REPORT + eval-DB rows written."
+  exit 0
+fi
 
-# Comparisons 1 & 2 (vs mlx-lm and vs optiq, direct + server arenas).
-bun scripts/bench-h2h.ts all --force "$@"
-
-# Comparison 0 — L1 kernel matrix. The faithful compiled-activation kernels are
-# the DEFAULT; this measures what removing each faithful kernel costs, all vs
-# mlx-lm, per model. Confirms the L1 default is at/above mlx-lm. Direct arena
-# (spawns the mlx-lm python; no servers). cpm5 + e4b + 12B.
+# Default: the product-level serve pass.
+bun scripts/bench-serve.ts all "$@"
 echo ""
-echo "=== comparison 0: L1 kernel matrix (faithful default - each kernel vs mlx-lm) ==="
-bun scripts/bench-faithful-matrix.ts --tokens 256 --models cpm5,e4b,12B
-
-# Kill-switch A/Bs (bit-exact levers: confirm the fast default still wins).
-# Paired/in-process; each records eval-DB rows the unified report reads.
-echo ""
-echo "=== fused-prefill A/B (12B @8k kv8: fused vs stock transient + tok/s) ==="
-bun scripts/bench-fused-prefill.ts
-MLX_BUN_NO_FUSED_SDPA=1 bun scripts/bench-fused-prefill.ts
-echo ""
-echo "=== compiled-decode paired A/B (12B @8k, e4b @600/@8k, serve kv_config) ==="
-echo "    cleared-machine confirmation of the mx.compile lever (dirty-paired ref: e4b +5.2% @600)"
-bun scripts/bench-compiled-decode.ts
-
-# Re-render the unified, sectioned report so it INCLUDES the rows written
-# after bench-h2h all's own render.
-echo ""
-echo "=== rendering unified report -> $REPORT ==="
-bun scripts/bench-h2h.ts table --out "$REPORT"
-echo ""
-echo "benchmark pass complete — $REPORT + eval-DB rows written."
+echo "serve pass complete. Engine-level questions: ./benchmark.sh --engine"

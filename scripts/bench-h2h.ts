@@ -459,10 +459,11 @@ interface ManagedServer { proc: ReturnType<typeof Bun.spawn>; base: string; read
 async function startServer(c: ServerCell, port: number): Promise<ManagedServer> {
   let cmdline: string[];
   if (c.stack === "mlx-bun") {
-    cmdline = ["bun", "scripts/serve.ts", "--model", c.m.path, "--port", String(port)];
-    // explicit either way — the serve default flipped to bf16 (naked = L1,
-    // 2026-07-05), so kv=config cells must ASK for the mixed scheme
-    cmdline.push(c.kv === "off" ? "--no-kv-quant" : "--kv-config");
+    // THE REAL CLI (2026-07-05 harness audit: scripts/serve.ts was a
+    // bench-local wrapper that silently diverged from what users run —
+    // deleted; bench-serve.ts is the primary server harness now).
+    cmdline = ["bun", "src/cli.ts", "serve", "--model", c.m.path, "--port", String(port), "--no-open"];
+    cmdline.push("--kv-quant", c.kv === "off" ? "off" : "config");
   } else if (c.stack === "mlx-lm") {
     cmdline = [`${VENV}/mlx_lm.server`, "--model", c.m.path, "--port", String(port)];
   } else {

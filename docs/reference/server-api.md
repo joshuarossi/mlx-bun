@@ -1,6 +1,6 @@
 # Server API
 
-`mlx-bun serve` (or `bun scripts/serve.ts`) exposes an OpenAI-compatible
+`mlx-bun serve` exposes an OpenAI-compatible
 HTTP API on one model. The request's `model` field is ignored; the
 loaded model's id is echoed back. By default generation is serialized
 through a single queue (one GPU, batch = 1); `--batch N` switches the

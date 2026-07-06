@@ -95,7 +95,7 @@ These ride all three protocol surfaces (`/v1/chat/completions`,
 ## Environment levers
 
 The CLI flags above set these; you can also export them directly (e.g.
-for `bun scripts/serve.ts` or paired A/B harnesses).
+for paired A/B harnesses).
 
 | Env var | CLI flag | Default | Effect |
 | --- | --- | --- | --- |
