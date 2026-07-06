@@ -3,8 +3,8 @@
 # matters (redesigned 2026-07-05; the separate "engine pass" is gone — its
 # questions are answered from the same cells):
 #
-#   Per model × arm (mlx-bun@defaults · mlx-lm · mlx-bun-mixed ·
-#   optiq-mixed · [--with-serial: mlx-bun --batch 1]):
+#   Per model × arm (mlx-bun@defaults · mlx-bun --batch 1 [the control
+#   arm — --no-serial skips] · mlx-lm · mlx-bun-mixed · optiq-mixed):
 #     decode tok/s (spread/stability policy) · TTFT cold (~1k, nonce-
 #     busted) · TTFT warm/cached (each stack's own prompt cache) · prefill
 #     tok/s · long-context prefill/TTFT/decode (ONE measured prefill;
@@ -19,7 +19,7 @@
 #     report; failures are diagnosed with the divergence offset.
 #
 #   ./benchmark.sh                     cpm5 + e4b + 12B, all arms
-#   ./benchmark.sh --with-serial      add the --batch 1 pinned arm
+#   ./benchmark.sh --no-serial        skip the --batch 1 control arm
 #   ./benchmark.sh --models cpm5,12B  subset
 #   ./benchmark.sh --skip-context     drop the long-context leg
 #   ./benchmark.sh --context 8192     shorter context leg

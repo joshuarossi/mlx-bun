@@ -24,7 +24,7 @@
 //    as a footer instead of silently vanishing from the matrix.
 //
 //   bun scripts/bench-serve.ts all [--models cpm5,e4b,12B] [--context 16384]
-//                                  [--tokens 192] [--with-serial] [--skip-context]
+//                                  [--tokens 192] [--no-serial] [--skip-context]
 //                                  [--arms mlx-bun,mlx-lm,...] [--out report.md]
 //
 // Engine-level legs (in-process kernels, gen-peak memory, kill-switch A/Bs)
@@ -449,8 +449,12 @@ async function main(): Promise<void> {
     }
     return true;
   });
-  let arms: Arm[] = ["mlx-bun", "mlx-lm", "mlx-bun-mixed", "optiq-mixed"];
-  if (flag("with-serial")) arms.splice(1, 0, "mlx-bun-serial");
+  // mlx-bun-serial (--batch 1) is the CONTROL arm — it anchors both the
+  // pure serial-vs-serial column against mlx-lm and the unified-engine-
+  // vs-pinned-serial consistency check (perf + bit parity) that validates
+  // the batch-8 default. Controls run by default; --no-serial skips it.
+  let arms: Arm[] = ["mlx-bun", "mlx-bun-serial", "mlx-lm", "mlx-bun-mixed", "optiq-mixed"];
+  if (flag("no-serial")) arms = arms.filter((a) => a !== "mlx-bun-serial");
   const armsRaw = opt("arms", "");
   if (armsRaw) arms = armsRaw.split(",") as Arm[];
   const withContext = !flag("skip-context");
