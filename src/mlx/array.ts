@@ -2,7 +2,7 @@
 // Explicit .dispose() is the contract; a FinalizationRegistry backstop
 // frees leaked handles on GC (verified in lab/spikes/phase0-memory.ts).
 
-import { JSCallback, ptr, toArrayBuffer } from "bun:ffi";
+import { JSCallback, dlopen, ptr, toArrayBuffer } from "bun:ffi";
 import { C, Dtype, DTYPE_NAMES, type MlxHandle, optInt, outArray, takeMlxError } from "./ffi";
 import type { SafetensorsDtype } from "../safetensors";
 
@@ -31,10 +31,34 @@ export const SAFETENSORS_TO_MLX: Record<SafetensorsDtype, Dtype> = {
 const pinned = new Map<number, Uint8Array>();
 let nextPinId = 1;
 
+// HAZARD (root cause of the 2026-07-06 restart-restore hang): mlx releases
+// buffer Data wherever the LAST shared_ptr drops — often the Metal
+// COMPLETION thread (gpu::eval retains buffers until the command buffer
+// finishes). A JSCallback dtor invoked from that thread deadlocks when the
+// JS thread is inside a blocking FFI eval (completion waits on JS, JS waits
+// on completion) and SIGTRAPs mid-GC. So: only fromView — whose buffers
+// need real unpin bookkeeping — may use this callback, and its callers must
+// guarantee their arrays are never released from a GPU completion (today:
+// expert-offload only). fromPointer uses a NATIVE no-op dtor below.
 const unpinCallback = new JSCallback(
   (payloadId: number) => { pinned.delete(payloadId); },
   { args: ["u64"], returns: "void", threadsafe: true },
 );
+
+// Native no-op dtor for fromPointer: payload is always 0, and libc
+// free(NULL) is defined to do nothing — a dtor mlx can safely call from ANY
+// thread. The pointed-to memory's lifetime is the CALLER's contract
+// (weight mmaps live for the process; restored KV mmaps are kept mapped for
+// the process too — see kv-store.ts). The address comes via dlsym because
+// bun:ffi's symbol .ptr returns the pointer bit-cast to float64
+// (lab/repro/bun-ffi-f64) — passing that back truncates to NULL.
+const libcDlsym = dlopen("/usr/lib/libSystem.B.dylib", {
+  dlsym: { args: ["u64", "ptr"], returns: "u64" },
+});
+const FREE_NAME = Buffer.from("free\0");
+const RTLD_DEFAULT = 0xfffffffffffffffen;
+const freeFnAddr = Number(libcDlsym.symbols.dlsym(RTLD_DEFAULT, ptr(FREE_NAME)));
+if (!freeFnAddr) throw new Error("dlsym(free) failed — fromPointer needs a native no-op dtor");
 
 export function pinnedBufferCount(): number {
   return pinned.size;
@@ -68,13 +92,18 @@ export class MlxArray {
     return new MlxArray(handle);
   }
 
-  /** Zero-copy: wrap a raw pointer (e.g. into an mmap'd weight shard).
-   *  The caller guarantees the memory outlives the array — weight mmaps
-   *  live for the process, so the dtor is a no-op unpin of id 0. */
+  /** Zero-copy: wrap a raw pointer (e.g. into an mmap'd weight shard or a
+   *  restored KV file). The caller guarantees the memory outlives EVERY mlx
+   *  reference to the array — including GPU command buffers that retain the
+   *  buffer past dispose() — i.e. mmaps backing these arrays stay mapped for
+   *  the process. The dtor is free(NULL) (payload 0): native + no-op, so
+   *  mlx may run it from the Metal completion thread without touching the
+   *  JS runtime (the old JSCallback dtor deadlocked serving / SIGTRAPed
+   *  under GC when that thread held the last reference — 2026-07-06). */
   static fromPointer(dataPtr: number, shape: number[], dtype: Dtype): MlxArray {
     const sb = shapeBuf(shape);
     const handle = C.mlx_array_new_data_managed_payload(
-      dataPtr, ptr(sb), shape.length, dtype, 0, unpinCallback.ptr,
+      dataPtr, ptr(sb), shape.length, dtype, 0, freeFnAddr,
     );
     return new MlxArray(handle);
   }

@@ -24,7 +24,7 @@
 
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
-import type { Cache, Mask } from "./gemma4-base";
+import { RotatingKVCache, type Cache, type Mask } from "./gemma4-base";
 
 const STEP = 256;
 
@@ -227,6 +227,51 @@ export class BatchedRotatingCache implements Cache {
       return cut;
     };
     return [order(this.keys), order(this.values)];
+  }
+
+  /** mlx-lm `BatchRotatingKVCache.extract` (models/cache.py:1417): row `i`
+   *  as a fresh SERIAL RotatingKVCache — de-rolled to temporal order (the
+   *  oracle's roll(-_idx) when rotated), left padding stripped
+   *  (`max(0, left_padding[idx])` — post-wrap pads go negative), OWNED
+   *  contiguous copies. `offset` = the row's absolute position (may exceed
+   *  the buffer: wrapped rings have evicted tokens); ring idx = the new
+   *  buffer length — temporal order ⇔ write head at the end, exactly the
+   *  oracle's `cache._idx = cache.keys.shape[2]`. Bit-exact vs a solo run:
+   *  merge/decode/filter keep each row's ring bytes identical to the serial
+   *  cache's (tests/batched-rotating) and this is a pure slice+copy. */
+  extractRow(i: number): RotatingKVCache | null {
+    if (!this.keys || !this.values) return null;
+    const pad = Math.max(0, this.leftPad[i]!);
+    const valid = Math.min(this.#offset, this.maxSize);
+    const cut = (a: MlxArray): MlxArray => {
+      const [, H, Sbuf, D] = a.shape as [number, number, number, number];
+      const row = a.slice([i, 0, 0, 0], [i + 1, H, Sbuf, D]);
+      // temporal order — same three cases as temporalView, single row.
+      let t: MlxArray;
+      if (this.#idx === Sbuf) {
+        t = row;
+      } else if (this.#idx < this.#offset) {
+        const tail = row.slice([0, 0, this.#idx, 0], [1, H, Sbuf, D]);
+        const head = row.slice([0, 0, 0, 0], [1, H, this.#idx, D]);
+        t = ops.concatAxis([tail, head], 2);
+        tail.dispose();
+        head.dispose();
+        row.dispose();
+      } else {
+        t = row.slice([0, 0, 0, 0], [1, H, this.#idx, D]);
+        row.dispose();
+      }
+      const cutV = t.slice([0, 0, pad, 0], [1, H, valid, D]);
+      t.dispose();
+      const own = ops.contiguous(cutV);
+      cutV.dispose();
+      return own;
+    };
+    const c = new RotatingKVCache(this.maxSize);
+    const k = cut(this.keys);
+    const v = cut(this.values);
+    c.restoreState(k, v, this.offsetArr[i]!, k.shape[2]!);
+    return c;
   }
 
   /** Keep only `keep` rows along the batch axis (eviction). */

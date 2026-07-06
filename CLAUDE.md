@@ -47,7 +47,7 @@ README.md has the pitch and scope boundaries.
   file coverage, not content — content accuracy is this rule.
 - **Logit parity with mlx-lm is the correctness oracle.** The Python
   reference lives in `/Users/joshrossi/Code/mlx-lm/.venv` (mlx 0.31.2,
-  mlx-lm 0.31.3, mlx-optiq 0.2.4). Run reference scripts with that venv's
+  mlx-lm 0.31.3, mlx-optiq 0.2.15). Run reference scripts with that venv's
   python: `/Users/joshrossi/Code/mlx-lm/.venv/bin/python`.
 - **Every perf claim gets a number on this machine** (M4 Pro, 24 GB,
   ~273 GB/s). Curated reference numbers live in `benchmarks/RESULTS.md`
@@ -80,8 +80,25 @@ README.md has the pitch and scope boundaries.
   runtime treats `--model` as a filesystem path in places).
 - The OptiQ vision sidecar (`optiq_vision.safetensors`, bf16, ~105 MB)
   auto-enables in optiq serve when present; needs pillow in Python land.
-- mlx-lm's prompt cache is count-capped (10 entries), not byte-capped —
-  multi-GB KV entries make it an OOM footgun. Ours must be byte-capped.
+- mlx-lm's server prompt cache is byte-capped now (as of the pinned
+  oracle, mlx-lm 0.31.3): `LRUPromptCache` in `models/cache.py` takes
+  `max_size` (default 10) AND `max_bytes`, evicting through a typed LRU
+  (`CacheOrder`, assistant/user/system deques); `--prompt-cache-bytes`
+  trims to budget in server.py. The old "count-capped only" OOM footgun
+  is fixed upstream — the lesson stands: ours must be byte-capped.
+- NEVER hand mlx a buffer dtor that calls into JS (bun:ffi JSCallback):
+  mlx releases the last `array::Data` ref from the **Metal completion
+  thread** (gpu::eval retains buffers until the command buffer completes,
+  i.e. past dispose()), and a JS callback there deadlocks serving or
+  SIGTRAPs mid-GC (2026-07-06 restart-restore hang). Use a native dtor
+  (`dlsym(free)` + payload 0) and pin backing mmaps for the process.
+  Related: bun:ffi symbol `.ptr` returns the address BIT-CAST TO FLOAT64
+  (lab/repro/bun-ffi-f64) — resolve function addresses via dlsym.
+- mlx-lm's TokenizerWrapper injects `enable_thinking=True` by default for
+  thinking-capable models (`tokenizer_utils.py` `apply_chat_template`:
+  `kwargs["enable_thinking"] = self.has_thinking` when the caller didn't
+  set it) — a standing hazard for any cross-stack parity/bench prompt:
+  pin `enable_thinking` explicitly or the rendered prompts drift.
 - pi integration: `~/.pi/agent/models.json`, provider pattern documented
   there; optiq servers require apiKey starting with `sk-optiq-`.
 - `scripts/experiments/` holds one-off research/debug scripts; production scripts, tooling, bench-*, regen-*, parity-*, gen-model, and eval/serve scripts stay at `scripts/` root.

@@ -10,7 +10,75 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
-## Where we are (2026-07-05)
+## Where we are (2026-07-06)
+
+**Serve-bench defect sweep (2026-07-06, this session):** the 07-06 serve
+h2h (valid — quiet machine) surfaced five defects; a 20-agent verified
+investigation reduced them to root causes and the fixes landed together:
+
+- **FFI deadlock/crash (the "cpm5 serial timeout" — a real product bug):**
+  `MlxArray.fromPointer` registered a bun:ffi JSCallback as the mlx buffer
+  dtor; mlx releases the LAST Data reference from the **Metal completion
+  thread** (gpu::eval retains buffers until the command buffer finishes),
+  and a JS callback invoked there deadlocks serving (completion waits on
+  JS, JS blocked in `mlx_async_eval`) or SIGTRAPs mid-GC. Repro'd
+  deterministically (SSD-restored KV + streamed request), fixed with a
+  native no-op dtor (`dlsym(free)`, payload 0) + process-lifetime pinning
+  of restore mmaps (eager unmap-after-dispose was unsound — mlx can hold
+  pages past dispose). `fromView` (expert-offload only) still carries the
+  JSCallback — flagged hazard. NOTE: bun:ffi symbol `.ptr` returns the
+  address bit-cast to float64 (lab/repro/bun-ffi-f64) — use dlsym.
+- **Gemma prompt cache dead / restart-0 (one invariant, three tiers):**
+  mlx-lm guarantees a trim-free `prompt[:-1]` entry for every request
+  (insert_segments' last-token split) and makes insert+fetch
+  untrimmability-aware; we had that in one tier of three. Landed: serial
+  boundary cap `min(stableLen, len-1)` + `snapshotAt` plumbed so the hook
+  fires mid-prefill (A1); batch-lane boundary snapshot via a
+  chunk-split at the boundary (A5 — fixes 12B batched 84s ctx repeat);
+  SSD supersede trimmability guard + usability-aware `find()` +
+  header-derived trimmable flag (A2/A4); write-behind debounce keyed by
+  ns+length so the final put can't cancel the boundary write (A3);
+  unconditional exact-duplicate dedupe in RAM `put()` (A6); loud logs on
+  every silent-degrade path (A8). Unit-tested (prompt-cache/ssd-cache).
+- **RSS:** `saveKvCache` streams per-tensor now (format v3, fixed-width
+  hashes; v2 files self-invalidate) — the write-behind no longer spikes
+  RSS by the whole entry (A7). Prompt-cache default cap is now
+  8 GB flat (Josh's call), overridable via `--prompt-cache`.
+- **Bench harness (B1-B4):** per-phase AbortSignal budgets scaled from
+  measured tps (the two vanished arms were Bun's implicit 300s fetch
+  timeout), phase-tagged failures that keep measured cells, child stderr
+  tails, /v1/completions engine-parity probe + pinned `enable_thinking`
+  chat probe (template drift no longer renders as fake "diverged at char
+  0"), per-leg RSS attribution.
+- **Mixed-KV "prefill loss to optiq" was FAKE — and the arm is now off
+  the default bench:** LIVE-verified (runtime spies + a crash repro):
+  optiq serve's KV-quant is inert on mlx-lm 0.31.3's batched path (all
+  seedless requests = bf16), and seeding is NOT a workaround — a seeded
+  request quantizes into the shared prompt cache and the next batchable
+  request crashes the worker (`QuantizedKVCache does not yet support
+  batching with history`). So the optiq-mixed HTTP arm just re-benchmarks
+  mlx-lm bf16; it's removed from the default arm set (resurrectable via
+  --arms). Mixed-KV perf compares mlx-bun-mixed vs mlx-bun; correctness
+  stays on script-driven optiq goldens (the L2 oracle, which DOES
+  quantize). lab/repro/optiq-mixed-kv-inert has the upstream ISSUE draft
+  (one open question flagged: which converter fires on the seeded path).
+  Our ~33% mixed-vs-own-bf16 long-prefill cost is scheme-intrinsic
+  (lever: upstream quantized_matmul split-K). RESULTS.md annotated.
+  Also learned: `ps` RSS is BLIND to python-mlx KV memory (measured flat
+  through a 12k prefill) — never use RSS as a quant/memory signal for
+  the python arms.
+- **Rerun DONE same day (benchmarks-serve-2026-07-06b + 06c splice):**
+  all fixes verified at full scale — e4b warm 80ms/657 (was 1346/4), 12B
+  batched ctx repeat 705ms (was 84.4s), gemma restarts restore in full,
+  decode leads mlx-lm 14-33% across models, agg×4 up to 2.4×. 12B
+  mlx-lm baseline mystery solved: plain mlx_lm.server can't load
+  gemma4_unified (worker dies, HTTP zombies) — baseline runs via optiq
+  register() bf16 now. Prompt-cache default 8 GB (Josh). Follow-ups:
+  batched-lane per-row cache extract under real concurrency (PLAN);
+  /v1 leading-whitespace surface diffs vs mlx-lm; kv-quant RSS tripwire
+  false-positive on 1B models.
+
+## Where we were (2026-07-05)
 
 **Naked default = `--l1` (DECIDED 2026-07-05, uncommitted):** the full h2h
 pass (benchmarks-h2h-2026-07-05, M1 Max 32GB) confirmed the L1 faithful

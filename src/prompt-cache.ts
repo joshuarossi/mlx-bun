@@ -205,7 +205,13 @@ export class PromptCache {
           const trimNeeded = loaded.tokens.length - hit.prefixLen;
           if (trimNeeded > 0 && !loaded.caches.every((c) => c.isTrimmable())) {
             // Divergent tail on an untrimmable kind: this file can't seed
-            // the prompt — fall back to the RAM candidate.
+            // the prompt — fall back to the RAM candidate. Loud: this used
+            // to be the silent 84 s "restore-then-re-prefill" path (the
+            // whole cold tier degrading with zero observables, 2026-07-06).
+            console.warn(
+              `[prompt-cache] cold entry unusable: ${loaded.tokens.length} tokens, ` +
+              `needs trim ${trimNeeded} but untrimmable (wrapped ring/SSM) — re-prefilling`,
+            );
             for (const c of loaded.caches) c.dispose();
             loaded.retain();
           } else {
@@ -287,8 +293,20 @@ export class PromptCache {
     entry.retain = share.acquire();
     const rec: EntryRecord = { entry, bytes, lastUsed: ++this.#clock, lastUsedMs: Date.now(), share };
     this.#entries.push(rec);
-    // SUPERSEDE prefix-ancestors (the SSD store's rule, brought to RAM —
-    // prefix sharing would otherwise grow an entry per turn): same-ns
+    // Exact duplicates (equal tokens) are redundant REGARDLESS of
+    // trimmability — the new entry serves exactly the matches the old one
+    // did (mlx-lm's trie replaces in place). Without this, every gemma ctx
+    // repeat left another full-size wrapped-ring entry behind (measured
+    // ~0.4 GB retained per repeat on the 12B bench).
+    for (const old of [...this.#entries]) {
+      if (old === rec || old.entry.ns !== ns) continue;
+      if (old.entry.tokens.length !== tokens.length) continue;
+      if (commonPrefixLength(old.entry.tokens, tokens) !== tokens.length) continue;
+      this.#entries = this.#entries.filter((r) => r !== old);
+      this.#disposeEntry(old.entry, false);
+    }
+    // SUPERSEDE strict prefix-ancestors (the SSD store's rule, brought to
+    // RAM — prefix sharing would otherwise grow an entry per turn): same-ns
     // entries whose tokens are a prefix of the new entry are redundant
     // and disposed WITHOUT spill (the new entry serves their prefixes and
     // its own write-behind persists them) — but ONLY when the new entry's
@@ -299,8 +317,7 @@ export class PromptCache {
     if (caches.every((c) => c.isTrimmable())) {
       for (const old of [...this.#entries]) {
         if (old === rec || old.entry.ns !== ns) continue;
-        // Ancestors AND exact duplicates (equal tokens) are redundant.
-        if (old.entry.tokens.length > tokens.length) continue;
+        if (old.entry.tokens.length >= tokens.length) continue;
         if (commonPrefixLength(old.entry.tokens, tokens) !== old.entry.tokens.length) continue;
         this.#entries = this.#entries.filter((r) => r !== old);
         this.#disposeEntry(old.entry, false);

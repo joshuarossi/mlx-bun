@@ -17,7 +17,7 @@
 
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
-import { createCausalMask, type Cache, type Mask } from "./gemma4-base";
+import { createCausalMask, KVCache, type Cache, type Mask } from "./gemma4-base";
 
 /** Padding-aware key-validity mask for batched DECODE with left-padded rows.
  *
@@ -225,6 +225,30 @@ export function extendKVRows(
     leftPad: [...leftPad.map((p) => p + (width - S)), width - Lr],
     width,
   };
+}
+
+/** mlx-lm `BatchKVCache.extract` (models/cache.py:1080): pull row `i` out of
+ *  a batched full-attention cache into a fresh SERIAL KVCache — the row slice
+ *  past its left padding, materialized as an OWNED contiguous copy (extraction
+ *  outlives the batch; the source buffers are about to be filter()ed or
+ *  disposed). `leftPad` is the scheduler's per-row padding for this row (full
+ *  layers share one offset; the scheduler owns the pad list). Bit-exact vs a
+ *  solo run by construction: merge/extend/filter are byte-preserving per row
+ *  (tests/batched-decode-parity, tests/batched-extract) and this is a pure
+ *  slice+copy of those bytes. Off the hot decode path. */
+export function extractKVRow(cache: KVCache, leftPad: number, i: number): KVCache {
+  if (!cache.keys || !cache.values) throw new Error("extractKVRow: empty cache");
+  const S = cache.offset; // valid columns (buffer may be STEP-padded past it)
+  const cut = (a: MlxArray): MlxArray => {
+    const [, H, , D] = a.shape as [number, number, number, number];
+    const view = a.slice([i, 0, leftPad, 0], [i + 1, H, S, D]);
+    const own = ops.contiguous(view);
+    view.dispose();
+    return own;
+  };
+  const out = new KVCache();
+  out.restoreState(cut(cache.keys), cut(cache.values), S - leftPad);
+  return out;
 }
 
 /** mlx-lm `filter`: keep only `keep` (sorted row indices) along the batch

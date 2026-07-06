@@ -63,14 +63,15 @@ import type { Gemma4Model } from "../model/gemma4";
 import {
   KVCache, QuantizedKVCache, RotatingKVCache, RotatingQuantizedKVCache, type Cache,
 } from "../model/gemma4-base";
-import { BatchedDecodeMaskCache, mergeKVRows, extendKVRows, filterKVRows } from "../model/batched-mask";
+import { BatchedDecodeMaskCache, mergeKVRows, extendKVRows, extractKVRow, filterKVRows } from "../model/batched-mask";
 import {
-  BatchedQuantDecodeMaskCache, extendQuantRows, filterQuantRows, mergeQuantRows,
+  BatchedQuantDecodeMaskCache, extendQuantRows, extractQuantRow, filterQuantRows, mergeQuantRows,
   type QuantRow,
 } from "../model/batched-quant";
 import { BatchedRotatingQuantCache } from "../model/batched-rotating-quant";
 import type { KvQuantSpec } from "../config";
 import { BatchedRotatingCache } from "../model/batched-rotating";
+import { cloneKvCaches } from "../kv-store";
 import { SSMCache } from "../model/qwen3-delta";
 import type { RuntimeModel } from "../model/factory";
 import type { GrammarController } from "../grammar";
@@ -138,6 +139,13 @@ export interface BatchRequest {
    *  additional per-row stop source. The gateway OWNS disposal (finally around
    *  submit()); the scheduler uses but never owns. Null on the degrade path. */
   grammar?: GrammarController;
+  /** Stable cache boundary from the server's template probe (the serial
+   *  lane's options.snapshotAt): the prompt prefix the NEXT turn's render
+   *  preserves. The scheduler snapshots a trim-free prompt-cache entry at
+   *  min(this, promptIds.length-1) during the solo prefill — the oracle
+   *  invariant (mlx-lm insert_segments) that gives wrapped-ring models a
+   *  reuse path. Absent = still capped at promptIds.length-1. */
+  snapshotAt?: number;
 }
 
 export interface BatchStats {
@@ -153,10 +161,11 @@ export interface BatchStats {
 /** The slice of PromptCache the scheduler drives (structural — the server's
  *  PromptCache satisfies it). take() on admission (any joiner: a restored
  *  prefix + suffix prefill is byte-safe whether the row later merges or
- *  not); put() only for rows that finish NEVER-MERGED (adopted lone rows,
- *  Phase 3.2) — their caches are pristine serial state with exact
- *  offset==tokens accounting. Merged rows' KV lives interleaved in the
- *  batched buffers and is not extracted in v1. */
+ *  not). put() paths: rows that finish NEVER-MERGED (adopted lone rows,
+ *  Phase 3.2) hand their pristine serial caches over zero-copy; rows that
+ *  finish INSIDE a multi-row batch get their KV EXTRACTED per row into
+ *  fresh serial caches first (mlx-lm server.py:872 extract_cache — the
+ *  cross-request reuse concurrent agents live on). */
 export interface RowPromptCache {
   take(prompt: number[], ns?: string): {
     tokens: number[]; caches: Cache[]; retain?: () => void;
@@ -176,12 +185,23 @@ interface Row {
   cachedTokens: number;
   /** Generated tokens whose KV actually entered the cache (fed as a step
    *  input) — serial generate()'s `forwarded` list. promptIds+fed is the
-   *  exact token coverage of the row's caches, the put() entry key. Only
-   *  trustworthy for never-merged rows (a doomed slot at B≥2 can feed a
-   *  placeholder), which is the only place it is read. */
+   *  exact token coverage of the row's caches, the put() entry key.
+   *  PER-ROW EXACT for every row: pushes are gated on the pending
+   *  register's per-slot real/placeholder flags (#pendingReal), so a
+   *  doomed slot's placeholder is never recorded — and if one ever DID
+   *  feed a forward, `fedTainted` flips instead (see #step's read). */
   fed: number[];
+  /** A placeholder slot value fed this row's KV (junk token in the cache):
+   *  the coverage key is no longer derivable — extraction refuses.
+   *  Structurally unreachable today (a doomed row always evicts at the
+   *  emit that follows its placeholder, filtering the slot before the
+   *  next forward; cold steps never contain doomed rows because a flush
+   *  emits every in-flight token) — this flag makes `fed` provably exact
+   *  instead of resting on that timing chain. */
+  fedTainted: boolean;
   /** Ever merged into a multi-row batch (or poisoned by a reject): its KV
-   *  is interleaved in batched buffers — never a put() candidate. */
+   *  is interleaved in batched buffers — a finish put() must EXTRACT the
+   *  row (#extractRowCaches) rather than adopt the inners. */
   merged: boolean;
 }
 
@@ -194,6 +214,10 @@ interface PrefillState {
   /** Release hook carried by an SSD-restored prompt-cache entry (must run
    *  only after `solo`/the adopted caches are disposed — see PromptCacheEntry). */
   retain?: () => void;
+  /** Pending boundary-snapshot position: #prefillChunk splits its chunking
+   *  exactly here, clones + put()s the trim-free prefix entry, then nulls
+   *  it. null = no snapshot for this row (short prompt / cached past it). */
+  snapAt: number | null;
 }
 
 /** Held while the batch is active; the serial fallback acquires the same lock. */
@@ -257,6 +281,11 @@ export class BatchScheduler {
   /** Sampled-but-unread token array [B], aligned with #running — the decode
    *  pipeline register. Filtered/disposed alongside the batched KV. */
   #pendingToks: MlxArray | null = null;
+  /** Per-slot flags for #pendingToks: true = a REAL sampled token of that
+   *  row's stream; false = a doomed/terminated row's placeholder (fed-token
+   *  accounting must skip it — see Row.fed/fedTainted). Filtered/cleared in
+   *  lockstep with the register. */
+  #pendingReal: boolean[] | null = null;
   #steps = 0; // decode-step counter (clearCache cadence)
   #lastHop = 0; // last macrotask yield (B=1 fast-path rate limiting)
   #looping = false;
@@ -358,7 +387,7 @@ export class BatchScheduler {
       this.#pending.push({
         req, resolve, reject,
         current: 0, generated: 0, sampled: 0, promptTokens: req.promptIds.length,
-        cachedTokens: 0, fed: [], merged: false,
+        cachedTokens: 0, fed: [], fedTainted: false, merged: false,
       });
       this.#ensureLoop();
     });
@@ -406,9 +435,22 @@ export class BatchScheduler {
           // semantics (entry ownership transfers; put back or dispose).
           const hit = this.#promptCache?.take(row.req.promptIds) ?? null;
           if (hit) row.cachedTokens = hit.tokens.length;
+          // Boundary snapshot (the serial lane's A1, ported): a trim-free
+          // strict-prefix entry at min(stableLen, len-1) for every
+          // substantial cold prefill — same gates as runGeneration
+          // (>= 256 tokens, extends past the cached prefix). Without this
+          // the batch lane's ONLY entry was the untrimmable [prompt+gen]
+          // finish-time put — a total ctx-repeat miss once rings wrap
+          // (12B batched 84 s vs serial 0.4 s, 2026-07-06).
+          const len = row.req.promptIds.length;
+          const boundary = Math.min(row.req.snapshotAt ?? len, len - 1);
+          const snapAt =
+            this.#promptCache && boundary >= 256 && boundary > (hit?.tokens.length ?? 0)
+              ? boundary
+              : null;
           this.#prefill = hit
-            ? { row, solo: hit.caches, pos: hit.tokens.length, retain: hit.retain }
-            : { row, solo: this.model.makeCache(), pos: 0 };
+            ? { row, solo: hit.caches, pos: hit.tokens.length, retain: hit.retain, snapAt }
+            : { row, solo: this.model.makeCache(), pos: 0, snapAt };
         }
 
         if (this.#prefill) {
@@ -502,6 +544,33 @@ export class BatchScheduler {
    *  merges it into the running batch; returns true (admission complete). */
   async #prefillChunk(p: PrefillState): Promise<boolean> {
     const prompt = p.row.req.promptIds;
+    // Boundary-snapshot chunking (mirrors generate.ts's snapshotAt split):
+    // chunk edges land EXACTLY on snapAt so the clone is taken while the
+    // caches hold precisely that prefix — slicing tokens against caches at
+    // any other offset would store corrupt entries. The extra split only
+    // changes chunk shapes for opted-in rows: the same numerics class as a
+    // prompt-cache-hit continuation prefill (GEMV/GEMM reduction order).
+    if (p.snapAt !== null && p.pos < p.snapAt) {
+      const end = Math.min(p.pos + this.#prefillChunkSize, p.snapAt);
+      const chunk = prompt.slice(p.pos, end);
+      const ids = ops.fromInt32(chunk, [1, chunk.length]);
+      const h = this.model.forwardHidden(ids, p.solo);
+      ids.dispose();
+      h.dispose();
+      ops.evalAll(p.solo.flatMap((c) => c.state()));
+      this.#quantizeSolo(p.solo); // serial converts at every chunk boundary
+      clearCache();
+      p.pos = end;
+      if (p.pos === p.snapAt) {
+        try {
+          this.#promptCache!.put(prompt.slice(0, p.snapAt), cloneKvCaches(p.solo));
+        } catch (e) {
+          console.warn(`batch-lane boundary snapshot skipped: ${(e as Error).message}`);
+        }
+        p.snapAt = null;
+      }
+      return false;
+    }
     if (prompt.length - p.pos > this.#prefillChunkSize) {
       const chunk = prompt.slice(p.pos, p.pos + this.#prefillChunkSize);
       const ids = ops.fromInt32(chunk, [1, chunk.length]);
@@ -833,10 +902,12 @@ export class BatchScheduler {
     if (hasLiveGrammar) return this.#stepGrammar();
 
     let nextToks: MlxArray | null = null;
+    let nextReal: boolean[] | null = null;
     if (anyLive) {
       // Fed-token accounting (prompt-cache put): a COLD step feeds each
-      // row's `current` (values known now); a pipelined step feeds the
-      // pending array, whose values are pushed at the read below.
+      // row's `current` (values known now, always a real emitted token); a
+      // pipelined step feeds the pending array, whose values are pushed at
+      // the read below gated on the per-slot real flags.
       if (!this.#pendingToks) for (const r of rows) r.fed.push(r.current);
       // Per-layer forward cache: rot layers use the persistent
       // BatchedRotatingCache directly; ssm layers are already [B,...] state
@@ -922,6 +993,10 @@ export class BatchScheduler {
         const vecOk =
           process.env.MLX_BUN_BATCH_VEC_SAMPLE !== "0" &&
           rows.every((r) => r.sampled >= r.req.maxTokens || r.req.plainGreedy);
+        // Doomed slots hold placeholders (vec path: a real argmax value,
+        // equally not part of the row's stream) — flag them so the fed
+        // accounting at the read stays per-row exact.
+        nextReal = rows.map((r) => r.sampled < r.req.maxTokens);
         if (vecOk) {
           const flat = ops.reshape(lg, [B, V]);
           lg.dispose();
@@ -966,7 +1041,9 @@ export class BatchScheduler {
 
     // Read + emit the PREVIOUS step's tokens while the new step computes.
     const prev = this.#pendingToks;
+    const prevReal = this.#pendingReal;
     this.#pendingToks = nextToks;
+    this.#pendingReal = nextReal;
     // Kill switch / A-B lever (house style, cf. MLX_BUN_COMPILED_DECODE=0):
     // MLX_BUN_BATCH_NO_PIPELINE=1 reads THIS step's tokens synchronously —
     // set from process start `prev` is always null, so the flush below IS the
@@ -980,7 +1057,13 @@ export class BatchScheduler {
       const toks = prev.toIntTokens();
       prev.dispose();
       // These values were the step's forward input (fed) iff a forward ran.
-      if (anyLive) for (let b = 0; b < B; b++) rows[b]!.fed.push(toks[b]!);
+      // Placeholder slots are excluded from `fed` — and taint their row if
+      // they ever fed (see Row.fedTainted; structurally unreachable today).
+      if (anyLive)
+        for (let b = 0; b < B; b++) {
+          if (!prevReal || prevReal[b]) rows[b]!.fed.push(toks[b]!);
+          else rows[b]!.fedTainted = true;
+        }
       if (STEP_TRACE) STEP_T.read += performance.now() - tRead;
       const tEmit = STEP_TRACE ? performance.now() : 0;
       await this.#emitRows(toks); // also filters #pendingToks on eviction
@@ -995,6 +1078,7 @@ export class BatchScheduler {
     const prev = this.#pendingToks;
     if (!prev) return;
     this.#pendingToks = null;
+    this.#pendingReal = null; // flushed values never fed — nothing to account
     const toks = prev.toIntTokens();
     prev.dispose();
     // Grammar rows: the flushed tokens are EMITTED below, so their matchers
@@ -1042,10 +1126,17 @@ export class BatchScheduler {
     }
 
     let nextToks: MlxArray | null = null;
+    let nextReal: boolean[] | null = null;
     const anyLive = rows.some((r) => r.sampled < r.req.maxTokens);
     if (anyLive) {
-      // Fed-token accounting (prompt-cache put) — mirror of #step's.
-      if (prev) for (let b = 0; b < B; b++) rows[b]!.fed.push(prevVals[b]!);
+      // Fed-token accounting (prompt-cache put) — mirror of #step's read:
+      // real slots push, a placeholder that fed taints its row.
+      const prevReal = this.#pendingReal;
+      if (prev)
+        for (let b = 0; b < B; b++) {
+          if (!prevReal || prevReal[b]) rows[b]!.fed.push(prevVals[b]!);
+          else rows[b]!.fedTainted = true;
+        }
       else for (const r of rows) r.fed.push(r.current);
       // Unpadded fast path — same rule as #step (bare caches == serial graph).
       const unpadded = this.#fullLeftPad.every((p) => p === 0);
@@ -1080,6 +1171,9 @@ export class BatchScheduler {
         //     logits processors). Terminated grammar rows + length-doomed rows
         //     take a placeholder (one harmless KV write, then evicted).
         const sampled: MlxArray[] = [];
+        nextReal = rows.map(
+          (r) => r.sampled < r.req.maxTokens && !r.req.grammar?.isTerminated,
+        );
         for (let b = 0; b < B; b++) {
           const row = rows[b]!;
           if (
@@ -1112,6 +1206,7 @@ export class BatchScheduler {
     // dispose it and install the new pending array. On cold start prev is null.
     prev?.dispose();
     this.#pendingToks = nextToks;
+    this.#pendingReal = nextReal;
 
     // (6) Emit the values read in (1) — no second readback. Terminated grammar
     //     rows finish("stop") via #emit's isTerminated check; the filter evicts.
@@ -1125,6 +1220,7 @@ export class BatchScheduler {
     const rows = this.#running;
     const B = rows.length;
     const keep: number[] = [];
+    const done: { b: number; row: Row }[] = []; // clean finishes (stop/length)
     for (let b = 0; b < B; b++) {
       const row = rows[b]!;
       row.generated++;
@@ -1134,12 +1230,26 @@ export class BatchScheduler {
       } catch (e) {
         row.reject(e); // containment: this row only (mlx-lm `remove`)
         row.merged = true; // poison: a rejected row is never put() back
+        row.fedTainted = true;
         continue; // not kept → evicted by the filter below
       }
       if (disp === "continue") keep.push(b);
-      else this.#finish(row, disp);
+      else {
+        done.push({ b, row });
+        this.#finish(row, disp);
+      }
     }
-    if (keep.length < B) this.#applyFilter(keep);
+    if (keep.length < B) {
+      // Per-row prompt-cache extraction (mlx-lm server.py:864-880 →
+      // BatchGenerator.extract_cache): a MERGED row's KV lives interleaved
+      // in the batched inners, so it is pulled out into fresh serial caches
+      // BEFORE filter() mutates them. Never-merged lone rows skip this —
+      // #applyFilter's keep=[] path put()s their adopted caches zero-copy.
+      // Rejected rows aren't in `done`; the whole-batch error path calls
+      // #applyFilter(dropOnly) directly and never reaches here.
+      for (const { b, row } of done) this.#extractAndPut(b, row);
+      this.#applyFilter(keep);
+    }
   }
 
   /** Account one sampled token for a row. Mirrors generate(): EOS terminates
@@ -1186,6 +1296,57 @@ export class BatchScheduler {
     retain?.();
   }
 
+  /** Extract a finishing MERGED row's KV into fresh serial caches and put()
+   *  them keyed by [promptIds + fed] — the batch-lane mirror of mlx-lm
+   *  server.py:872 (extract_cache → prompt_cache.insert_cache). Gates:
+   *  promptTokens >= 256 (the boundary-snapshot substantiality gate,
+   *  server.ts) and an exact coverage key (!fedTainted). Refusal
+   *  (#extractRowCaches null) just disposes-by-omission — the row's KV dies
+   *  with the filter, exactly the pre-extraction behavior. */
+  #extractAndPut(b: number, row: Row): void {
+    if (!this.#promptCache || !row.merged || row.fedTainted) return;
+    if (row.promptTokens < 256) return;
+    const caches = this.#extractRowCaches(b);
+    if (!caches) return;
+    // Materialize the owned copies without stalling the in-flight step (the
+    // slices depend on this step's KV writes): async — the batched source
+    // buffers free once the copies land, instead of being pinned by a lazy
+    // graph inside an idle cache entry.
+    ops.asyncEvalAll(caches.flatMap((c) => c.state()));
+    this.#putOrDispose(caches, [...row.req.promptIds, ...row.fed]);
+  }
+
+  /** Row `b` of every layer as OWNED serial-class caches, or null when a
+   *  layer kind can't be extracted (then the caller drops the row's KV as
+   *  before). Bit-exactness: merge/extend/filter/decode are byte-preserving
+   *  per row (tests/batched-decode-parity, tests/batched-rotating,
+   *  tests/batched-rotating-quant) and each extract is a pure slice+copy of
+   *  those bytes (tests/batched-extract), so an extracted row's bytes ==
+   *  the solo run's. */
+  #extractRowCaches(b: number): Cache[] | null {
+    const out: Cache[] = [];
+    for (const inner of this.#inners!) {
+      let c: Cache | null;
+      if (inner instanceof BatchedRotatingQuantCache) c = inner.extractRow(b);
+      else if (inner instanceof BatchedRotatingCache) c = inner.extractRow(b);
+      else if (
+        inner instanceof SSMCache || // offset is max-shared bookkeeping — no per-row entry key
+        inner instanceof RotatingQuantizedKVCache || // adopted serial state never
+        inner instanceof RotatingKVCache //     coexists with a merged row (defensive)
+      )
+        c = null;
+      else if (inner instanceof QuantizedKVCache)
+        c = inner.keys ? extractQuantRow(inner, this.#fullLeftPad[b]!, b) : null;
+      else c = inner.keys ? extractKVRow(inner, this.#fullLeftPad[b]!, b) : null;
+      if (!c) {
+        for (const d of out) d.dispose();
+        return null;
+      }
+      out.push(c);
+    }
+    return out;
+  }
+
   /** Evict rows not in `keep` (sorted ascending) from the batched KV and the
    *  pipeline register. */
   #applyFilter(keep: number[], dropOnly = false): void {
@@ -1194,7 +1355,9 @@ export class BatchScheduler {
       // Prompt-cache put (Phase 3.2): a lone NEVER-MERGED row's inners are
       // its adopted serial-class caches, covering exactly prompt+fed — hand
       // them back to the cache instead of disposing. dropOnly (the batch-
-      // drop error path) and merged/poisoned rows dispose as before.
+      // drop error path) and poisoned rows dispose as before; MERGED rows'
+      // KV was already extracted per row in #emitRows (owned copies), so
+      // disposing the batched inners here is safe either way.
       const solo =
         !dropOnly && this.#running.length === 1 && !this.#running[0]!.merged
           ? this.#running[0]!
@@ -1215,6 +1378,7 @@ export class BatchScheduler {
       this.#running = [];
       this.#pendingToks?.dispose();
       this.#pendingToks = null;
+      this.#pendingReal = null;
       return;
     }
     const out: LayerInner[] = [];
@@ -1260,6 +1424,7 @@ export class BatchScheduler {
       this.#pendingToks.dispose();
       this.#pendingToks = next;
     }
+    if (this.#pendingReal) this.#pendingReal = keep.map((i) => this.#pendingReal![i]!);
   }
 
   #readToken(t: MlxArray): number {

@@ -13,6 +13,22 @@ const { KVCache } = await import("../src/model/gemma4-base");
 const { Dtype } = await import("../src/mlx/ffi");
 const ops = await import("../src/mlx/ops");
 
+const { RotatingKVCache } = await import("../src/model/gemma4-base");
+
+/** A WRAPPED ring (offset past the window): untrimmable by the mlx-lm rule. */
+const mkWrappedCaches = (window = 4, offset = 8) => {
+  const mk = () => {
+    const c = new RotatingKVCache(window);
+    c.restoreState(
+      ops.zeros([1, 2, window, 8], Dtype.bfloat16),
+      ops.zeros([1, 2, window, 8], Dtype.bfloat16),
+      offset, 0,
+    );
+    return c;
+  };
+  return [mk(), mk()];
+};
+
 const mkCaches = (offset = 4) => {
   const mk = () => {
     const c = new KVCache();
@@ -149,6 +165,47 @@ describe("SsdCacheStore", () => {
     writeFileSync(join(nsDir, "orphan.mlxkv.tmp"), "junk");
     s.scan();
     expect(readdirSync(nsDir)).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // 2026-07-06 restart-survival fixes: the untrimmable [prompt+gen] entry
+  // must neither delete nor outrank the boundary snapshot — the only file
+  // a wrapped-ring model can actually restore from.
+  test("untrimmable longer store leaves the boundary snapshot; find prefers the usable file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ssd-"));
+    const s = new SsdCacheStore(OPTS(dir));
+    const boundary = mkCaches(4); // trimmable prompt-only snapshot [1,2,3,4]
+    expect(s.store([1, 2, 3, 4], boundary)).toBe(true);
+    for (const c of boundary) c.dispose();
+    const wrapped = mkWrappedCaches(); // [prompt+gen], rings wrapped
+    expect(s.store([1, 2, 3, 4, 5, 6], wrapped)).toBe(true);
+    for (const c of wrapped) c.dispose();
+    expect(s.entries).toBe(2); // ancestor SURVIVED the untrimmable supersede
+
+    // Exact prompt replay [1,2,3,4,5]: the wrapped file matches 4 tokens but
+    // needs a 2-token trim it cannot do — find must return the boundary file.
+    const hit = s.find([1, 2, 3, 4, 5], "");
+    expect(hit?.entry.tokens).toEqual([1, 2, 3, 4]);
+    expect(hit?.prefixLen).toBe(4);
+
+    // ...and the usability flag survives a restart scan (header-derived).
+    const s2 = new SsdCacheStore(OPTS(dir));
+    expect(s2.scan()).toBe(2);
+    const hit2 = s2.find([1, 2, 3, 4, 5], "");
+    expect(hit2?.entry.tokens).toEqual([1, 2, 3, 4]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("exact-duplicate store replaces the file regardless of trimmability", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ssd-"));
+    const s = new SsdCacheStore(OPTS(dir));
+    const a = mkWrappedCaches();
+    expect(s.store([7, 8, 9], a)).toBe(true);
+    for (const c of a) c.dispose();
+    const b = mkWrappedCaches();
+    expect(s.store([7, 8, 9], b)).toBe(true);
+    for (const c of b) c.dispose();
+    expect(s.entries).toBe(1);
     rmSync(dir, { recursive: true, force: true });
   });
 });

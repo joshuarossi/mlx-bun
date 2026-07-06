@@ -32,7 +32,9 @@ on until it's met. Status markers: `[ ]` todo, `[~]` in progress, `[x]` done.
 
 - Machine: MacBook Pro, M4 Pro, 24 GB unified (~273 GB/s), macOS 26.6.
 - Python oracle: `/Users/joshrossi/Code/mlx-lm/.venv` — mlx 0.31.2,
-  mlx-lm 0.31.3, mlx-optiq 0.2.1, pillow. No source code in that dir;
+  mlx-lm 0.31.3, mlx-optiq 0.2.15 (upgraded from 0.2.4 on 2026-07-06;
+  mixed-KV goldens regenerated and byte-identical across the bump —
+  the script-path oracle is stable), pillow. No source code in that dir;
   it's just the venv + `serve-gemma.sh` (working reference server,
   run it directly — don't start servers from agent sessions).
 - Oracle weights: gemma-4-12B-it-OptiQ-4bit at
@@ -2260,6 +2262,122 @@ own kv8 trails its bf16; it buys memory headroom only, ~1.3 GB on 12B @16k).
   (batched-decode-parity, stash-proven unrelated to Phase 2) — regen the
   golden or root-cause; e4b compiled-decode-at-B=1 (last 7%); prompt
   cache for batched rows (TTFT).
+
+## Phase: serve-bench defect sweep — cache invariant + FFI deadlock `[x]` (2026-07-06)
+
+The 2026-07-06 serve h2h (M1 Max 32GB, quiet machine — numbers VALID)
+surfaced five defects. Multi-agent verified investigation (20 agents,
+adversarial re-read of every cited line) + fixes, all landed together.
+
+- `[x]` **FFI dtor deadlock (product bug, was "cpm5 serial timeout"):**
+  fromPointer's JSCallback dtor ran on the Metal completion thread when it
+  held the last Data ref → serving deadlock (completion↔JS mutual wait) or
+  SIGTRAP mid-GC. Deterministic repro: SSD-restored KV + streamed request.
+  Fix: native `dlsym(free)` no-op dtor + restore mmaps pinned for the
+  process (`retainMmapForProcess` — eager unmap-after-dispose is unsound;
+  mlx holds buffers until command-buffer completion). Verified: stream,
+  forced-GC, and full-sequence repros all pass (188-194 ms restored TTFT,
+  9060/9061 cached). LESSON (hard-won): never hand mlx a dtor that can
+  call into JS; bun:ffi symbol `.ptr` is the f64-bit-cast bug — dlsym.
+  OPEN HAZARD: fromView still uses the JSCallback (expert-offload only).
+- `[x]` **The one cache invariant, ported to all three tiers** (mlx-lm
+  oracle: insert_segments' prompt[:-1] split, generate.py:1645-48; guarded
+  supersede cache.py:1721; shorter-prefix fallback cache.py:1690-92):
+  A1 serial boundary = min(stableLen, len-1) + snapshotAt into generate()
+  (tokens/caches offset match or corruption); A5 batch-lane boundary
+  snapshot (chunk-split at boundary + clone/put; fixes 12B batched 84.4s
+  ctx repeat vs serial 0.4s); A2 SSD supersede trimmability guard; A4 SSD
+  usability-aware find (header-derived trimmable flag); A3 debounce key
+  ns+len; A6 exact-dup dedupe regardless of trimmability; A8 loud logs on
+  cold-reject/restore-fail/oversize. Root causes: e4b warm hit was 4
+  tokens because EVERY reusable entry needed a ≥1-token trim and e4b's
+  wrapped 512-window rings refuse trims (the 4 = the chat-header prefix of
+  a short earlier entry); stableLen==len degeneracy (e4b template tail
+  survives the probe render) made the old snapshot a full-prompt entry.
+- `[x]` **saveKvCache streams (format v3)**: fixed-width hashes → header
+  sized before data; one tensor materialized at a time (was: whole entry
+  as host blobs — the ~390MB RSS spike the bench's 500ms sampler caught).
+  v2 files self-invalidate (machine-local). Prompt-cache default cap now
+  8 GB flat (Josh's call; was a flat 2 GB anti-OOM reflex from June 10).
+- `[x]` **Bench harness B1-B4** (bench-serve.ts): per-phase abort budgets
+  (arms died to Bun's implicit 300s fetch timeout), phase-tagged failures
+  keep measured cells, stderr tails, /v1/completions parity probe +
+  pinned enable_thinking (mlx-lm's TokenizerWrapper injects
+  enable_thinking=has_thinking — template drift rendered as fake engine
+  divergence), optiq-mixed single-stream legs seeded, per-leg RSS.
+- `[x]` **optiq serve mixed-KV oracle was silently bf16 — arm dropped
+  from the default bench.** Runtime-proven with spies (zero quantize
+  calls across an 11.9k seedless request) + a live crash repro: seeding
+  routes to _serve_single which DOES quantize, the entry lands in the
+  shared LRUPromptCache, and the next batchable request kills the worker
+  (`_merge_caches: QuantizedKVCache does not yet support batching with
+  history`). So the HTTP arm = mlx-lm bf16 re-benchmarked → removed from
+  default arms (Josh's call; `--arms ...,optiq-mixed` resurrects it).
+  Mixed-KV perf = mlx-bun-mixed vs mlx-bun; correctness = script-driven
+  optiq goldens (which DO quantize — the L2 oracle stands).
+  lab/repro/optiq-mixed-kv-inert: ISSUE.md (3 defects; one open question
+  — the seeded path quantized through NEITHER spied hook, so the exact
+  converter needs one more instrumented pass before filing) + repro.py.
+  Also measured: `ps` RSS is blind to python-mlx KV memory — never an
+  observable for the python arms. Our mixed-KV long-prefill cost (~33%
+  vs own bf16) is scheme-intrinsic; lever is upstream quantized_matmul
+  split-K.
+- `[x]` **Per-row cache extract LANDED (same day):** rows finishing
+  inside a multi-row batch get their KV extracted into fresh serial
+  caches and put() back (oracle: mlx-lm server.py:864-880
+  extract_cache → BatchKVCache.extract cache.py:1080-86 /
+  BatchRotatingKVCache.extract cache.py:1417-34, copied per kind:
+  extractKVRow, extractQuantRow, BatchedRotating(Quant)Cache.extractRow
+  — left-pad stripped, rings de-rolled to temporal order, owned
+  contiguous copies, asyncEval'd off the pipeline). Row.fed made
+  PROVABLY exact via #pendingReal per-slot flags + fedTainted (a
+  placeholder that ever fed refuses extraction — was a fragile timing
+  chain). SSM/hybrid layers refuse (per-row offset not derivable —
+  unchanged dispose). Gates: merged + !tainted + promptTokens ≥ 256.
+  Byte-equality unit tests vs solo replay through ring wrap
+  (tests/batched-extract.test.ts) + LIVE: 4 concurrent merged rows on
+  cpm5 → every repeat 413/414 cached at ~100ms (was cold re-prefill);
+  e4b concurrent + repeats served by boundary snapshots (wrapped-ring
+  extracted entries serve EXTENSIONS/multi-turn, not shorter repeats).
+- `[x]` **Rerun gate PASSED** (benchmarks-serve-2026-07-06b, same day):
+  e4b warm 80ms/657 cached (was 1346ms/4; mlx-lm 259ms); 12B batched ctx
+  repeat 705ms (was 84.4s); gemma restart restores in full (e4b 925ms/
+  15975, 12B 3617ms/15794 — mlx-lm pays 20-89s re-prefill); cpm5 RSS
+  2077→1822MB; every mlx-bun cell green. BONUS root cause: the 12B
+  mlx-lm arm's repeated silent death = `Model type gemma4_unified not
+  supported` — plain mlx_lm.server can't load 12B AT ALL (zombie HTTP
+  front hid it); baseline now launches via optiq register() bf16
+  (needsOptiqRegister in bench-serve.ts), measured in the 06c solo rerun
+  and spliced. New follow-ups: /v1 leading-whitespace surface diffs vs
+  mlx-lm (cpm5 completion leading space, e4b chat leading newline —
+  matched-prompt probes, token-identical); kv-quant RSS tripwire
+  false-positive on 1B models.
+- `[x]` **ctx-repeat gap vs mlx-lm CLOSED** (was 484/705ms vs their 400):
+  the stableLen probe re-rendered + re-encoded the WHOLE conversation on
+  every request (~150ms at 16k; our JS encode is ~90ms/9.6k tokens vs
+  Rust ~15ms). Fixed: probe is peek-gated AND its primer length memoized
+  per template mode (special tokens break BPE merges across the turn
+  delimiter, so the primer is content-independent; wrong stableLen is a
+  quality knob, not correctness — any prefix ≤ len-1 is a valid
+  snapshot). Measured after (12B @11k): serial repeat 244ms, batched
+  500ms. FOLLOW-THROUGH same day: (a) exact-input encode memo in
+  loadTokenizer (repeat encode 95.8ms → 0.0ms; LRU 16 entries / 2M chars,
+  ≥4k-char inputs); (b) the "~250ms batch-lane overhead" was
+  MISATTRIBUTION — instrumented breadcrumbs show batched ≈ serial
+  (261/277 vs 252/257ms; anatomy: take 0.7ms · graph build 7ms · token-0
+  GPU eval ~190ms · merge 10ms) once the async write-behind + memo were
+  live; the earlier 500ms had the sync flush blocking rep-1. Both lanes
+  are now GPU-eval-bound on the repeat path (~190ms 4-token forward over
+  11k restored KV) vs mlx-lm's 400ms. Remaining tokenizer levers
+  (documented in tokenizer.ts): incremental suffix encode, native port.
+- `[x]` **SSD write-behind is now NON-BLOCKING** (Josh's persistence-layer
+  design): the gateway lock is held only for findExact + cloneKvCaches
+  (zero-copy snapshot, entries immutable → consistent forever); the flush
+  runs off-lock via storeAsync/saveKvCacheAsync (shared v3 generator core,
+  event-loop yield after every tensor), writes chained serially. Measured:
+  the rep-0-behind-the-flush tax is gone (498→277ms; rep-0 ≈ rep-1).
+  Eviction-spill and demoteIdle still use the sync store (they already run
+  at eviction/idle time, not on the request path).
 
 ## Context / lore
 

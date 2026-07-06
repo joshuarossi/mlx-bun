@@ -107,6 +107,30 @@ export function extendQuantRows(
   };
 }
 
+/** Quantized twin of extractKVRow (mlx-lm BatchKVCache.extract,
+ *  models/cache.py:1080, over triples): pull row `i` past its left padding
+ *  into a fresh SERIAL QuantizedKVCache with OWNED contiguous copies.
+ *  Token-axis slicing is byte-safe because quantization packs along
+ *  HEAD_DIM (file header) — a row's quantized bytes come out exactly as
+ *  the serial oracle wrote them. */
+export function extractQuantRow(
+  cache: QuantizedKVCache, leftPad: number, i: number,
+): QuantizedKVCache {
+  if (!cache.keys || !cache.values) throw new Error("extractQuantRow: empty cache");
+  const S = cache.offset;
+  const cut = (t: ops.QuantizedTensor): ops.QuantizedTensor =>
+    tripleMap(t, (a) => {
+      const [, H, , D] = a.shape as [number, number, number, number];
+      const view = a.slice([i, 0, leftPad, 0], [i + 1, H, S, D]);
+      const own = ops.contiguous(view);
+      view.dispose();
+      return own;
+    });
+  const out = new QuantizedKVCache(cache.groupSize, cache.bits);
+  out.restoreState(cut(cache.keys), cut(cache.values), S - leftPad);
+  return out;
+}
+
 /** Quantized twin of filterKVRows: keep `keep` rows along the batch axis.
  *  Caller owns the result; inputs are not disposed. */
 export function filterQuantRows(

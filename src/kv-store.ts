@@ -20,6 +20,12 @@
 // format was test/experiment-only) — they read as "not a v2 file" and the
 // SSD tier deletes-and-regenerates.
 //
+// v3 over v2: fixed-width (zero-padded 16-hex) tensor hashes, which let the
+// writer STREAM — header sized up front, tensors materialized/hashed/written
+// one at a time, header patched in last (peak host transient = one tensor,
+// not the whole entry). Same magic; v2 files read as unsupported and the
+// SSD tier deletes-and-regenerates (machine-local, cheap).
+//
 // Reload mmaps copy-on-write (MAP_PRIVATE): if mlx ever donates one of
 // these buffers, writes hit private pages, never the file.
 
@@ -47,7 +53,10 @@ const ALIGN = 16384;
 /** magic + u32 headerLen + u32 dataStart + u64 headerHash */
 const PREFIX_LEN = MAGIC.length + 4 + 4 + 8;
 
-const hash64 = (bytes: Uint8Array): string => Bun.hash(bytes).toString(16);
+// Fixed-width (16 hex chars): the v3 streaming writer sizes the header
+// BEFORE materializing any tensor bytes, so hash strings must not change
+// the header's byte length when the real values replace the placeholders.
+const hash64 = (bytes: Uint8Array): string => Bun.hash(bytes).toString(16).padStart(16, "0");
 
 export type CacheKind = "kv" | "rotating" | "qkv" | "rotating-qkv" | "ssm";
 
@@ -86,7 +95,7 @@ export interface KvSaveMeta {
 }
 
 export interface KvFileHeader extends KvSaveMeta {
-  formatVersion: 2;
+  formatVersion: 3;
   createdAt: number;
   tokens: number[];
   caches: CacheHeaderEntry[];
@@ -94,21 +103,26 @@ export interface KvFileHeader extends KvSaveMeta {
 
 const alignUp = (n: number) => Math.ceil(n / ALIGN) * ALIGN;
 
-/** Snapshot one cache into header entry + blobs. Quantized full caches are
- *  sliced to the live [.., :offset, :] region (token axis — quantization
- *  groups run along the FEATURE dim, so a sequence-axis cut never splits a
- *  group); rotating caches persist the whole ring as-laid-out with ringIdx. */
-function snapshotCache(c: Cache, dataOffset: number): { entry: CacheHeaderEntry; blobs: Uint8Array[]; next: number } {
+/** Snapshot one cache into header entry + LAZY tensor sources (v3 streaming
+ *  writer: sizes/shapes are metadata, bytes materialize ONE tensor at a
+ *  time at write — the old all-blobs-up-front path doubled RSS by the whole
+ *  entry, ~390 MB for a 16k cpm5 entry, on every write-behind). Quantized
+ *  full caches are sliced to the live [.., :offset, :] region (token axis —
+ *  quantization groups run along the FEATURE dim, so a sequence-axis cut
+ *  never splits a group); rotating caches persist the whole ring
+ *  as-laid-out with ringIdx. Slice handles are lazy graph nodes (no GPU
+ *  materialization until rawBytes at write time). */
+interface TensorSource { arr: MlxArray; disposeAfter: boolean }
+function snapshotCache(c: Cache, dataOffset: number): { entry: CacheHeaderEntry; sources: TensorSource[]; next: number } {
   const slots: TensorSlot[] = [];
-  const blobs: Uint8Array[] = [];
+  const sources: TensorSource[] = [];
   let cursor = dataOffset;
+  const HASH_PLACEHOLDER = "0".repeat(16); // fixed-width; patched at write
   const push = (a: MlxArray, disposeAfter: boolean): void => {
-    const bytes = contiguousBytes(a);
     const off = alignUp(cursor);
-    slots.push({ off, bytes: bytes.length, shape: a.shape, dtype: a.dtype, hash: hash64(bytes) });
-    blobs.push(bytes);
-    cursor = off + bytes.length;
-    if (disposeAfter) a.dispose();
+    slots.push({ off, bytes: a.nbytes, shape: a.shape, dtype: a.dtype, hash: HASH_PLACEHOLDER });
+    sources.push({ arr: a, disposeAfter });
+    cursor = off + a.nbytes;
   };
   const liveSlice = (a: MlxArray, upTo: number): MlxArray => {
     const [B, H, , D] = a.shape as [number, number, number, number];
@@ -151,7 +165,7 @@ function snapshotCache(c: Cache, dataOffset: number): { entry: CacheHeaderEntry;
   } else {
     throw new Error("unknown cache type");
   }
-  return { entry, blobs, next: cursor };
+  return { entry, sources, next: cursor };
 }
 
 /** Persist `caches` (+ the exact token prefix they encode) to `path`.
@@ -220,47 +234,89 @@ export function cloneKvCaches(caches: Cache[]): Cache[] {
   return out;
 }
 
-export function saveKvCache(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {}): void {
+/** Shared v3 writer core, one `yield` after each tensor write. The sync
+ *  wrapper drains it in a tight loop; the async wrapper awaits a macrotask
+ *  between yields so the EVENT LOOP KEEPS SERVING while a multi-hundred-MB
+ *  entry flushes (the write-behind persistence contract: durability never
+ *  blocks a request). try/finally still runs on early generator close. */
+function* saveKvCacheSteps(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta): Generator<void, void, void> {
+  // Plan pass: header entries + lazy tensor sources, NO bytes materialized.
   const entries: CacheHeaderEntry[] = [];
-  const blobs: Uint8Array[] = [];
+  const sources: TensorSource[] = [];
   let dataOffset = 0; // relative; rebased after header is sized
-  for (const c of caches) {
-    const s = snapshotCache(c, dataOffset);
-    entries.push(s.entry);
-    blobs.push(...s.blobs);
-    dataOffset = s.next;
-  }
-
-  const header: KvFileHeader = {
-    formatVersion: 2, createdAt: Date.now(), ...meta, tokens, caches: entries,
-  };
-  const headerJson = new TextEncoder().encode(JSON.stringify(header));
-  const dataStart = alignUp(PREFIX_LEN + headerJson.length);
-
-  const tmp = `${path}.tmp`;
-  const fd = openSync(tmp, "w");
   try {
-    const pre = new Uint8Array(dataStart);
-    pre.set(new TextEncoder().encode(MAGIC), 0);
-    const dv = new DataView(pre.buffer);
-    dv.setUint32(MAGIC.length, headerJson.length, true);
-    dv.setUint32(MAGIC.length + 4, dataStart, true);
-    dv.setBigUint64(MAGIC.length + 8, BigInt(Bun.hash(headerJson)), true);
-    pre.set(headerJson, PREFIX_LEN);
-    writeSync(fd, pre, 0, pre.length, 0);
+    for (const c of caches) {
+      const s = snapshotCache(c, dataOffset);
+      entries.push(s.entry);
+      sources.push(...s.sources);
+      dataOffset = s.next;
+    }
 
-    let blobIdx = 0;
-    for (const e of entries)
-      for (const slot of e.tensors)
-        writeSync(fd, blobs[blobIdx++]!, 0, slot.bytes, dataStart + slot.off);
-    fsyncSync(fd);
-  } catch (err) {
+    // Header size is final NOW: hashes are fixed-width placeholders that get
+    // patched in place (same byte length) after the data pass computes them.
+    const header: KvFileHeader = {
+      formatVersion: 3, createdAt: Date.now(), ...meta, tokens, caches: entries,
+    };
+    const headerLen = new TextEncoder().encode(JSON.stringify(header)).length;
+    const dataStart = alignUp(PREFIX_LEN + headerLen);
+
+    const tmp = `${path}.tmp`;
+    const fd = openSync(tmp, "w");
+    try {
+      // Data pass: materialize → hash → write → drop, ONE tensor at a time.
+      // Peak host transient = the largest single tensor, not the whole entry
+      // (the old all-blobs-first path spiked RSS by the full entry size on
+      // every write-behind snapshot — ~390 MB for a 16k cpm5 entry).
+      let srcIdx = 0;
+      for (const e of entries) {
+        for (const slot of e.tensors) {
+          const src = sources[srcIdx++]!;
+          const bytes = contiguousBytes(src.arr);
+          if (bytes.length !== slot.bytes)
+            throw new Error(`tensor byte-length drift: planned ${slot.bytes}, got ${bytes.length}`);
+          slot.hash = hash64(bytes);
+          writeSync(fd, bytes, 0, bytes.length, dataStart + slot.off);
+          if (src.disposeAfter) { src.arr.dispose(); src.disposeAfter = false; }
+          yield;
+        }
+      }
+
+      // Header pass: real hashes in, byte length unchanged by construction.
+      const headerJson = new TextEncoder().encode(JSON.stringify(header));
+      if (headerJson.length !== headerLen)
+        throw new Error(`header length drift: planned ${headerLen}, got ${headerJson.length}`);
+      const pre = new Uint8Array(dataStart);
+      pre.set(new TextEncoder().encode(MAGIC), 0);
+      const dv = new DataView(pre.buffer);
+      dv.setUint32(MAGIC.length, headerJson.length, true);
+      dv.setUint32(MAGIC.length + 4, dataStart, true);
+      dv.setBigUint64(MAGIC.length + 8, BigInt(Bun.hash(headerJson)), true);
+      pre.set(headerJson, PREFIX_LEN);
+      writeSync(fd, pre, 0, pre.length, 0);
+      fsyncSync(fd);
+    } catch (err) {
+      closeSync(fd);
+      try { rmSync(tmp, { force: true }); } catch {}
+      throw err;
+    }
     closeSync(fd);
-    try { rmSync(tmp, { force: true }); } catch {}
-    throw err;
+    renameSync(tmp, path);
+  } finally {
+    // Slices created in the plan pass are ours to free on EVERY path.
+    for (const s of sources) if (s.disposeAfter) s.arr.dispose();
   }
-  closeSync(fd);
-  renameSync(tmp, path);
+}
+
+export function saveKvCache(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {}): void {
+  for (const _ of saveKvCacheSteps(path, tokens, caches, meta)) { /* drain */ }
+}
+
+/** Non-blocking variant: yields the event loop after every tensor write so
+ *  serving interleaves with the flush. Caller owns `caches` lifetime for
+ *  the duration (pass zero-copy clones, dispose after). */
+export async function saveKvCacheAsync(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {}): Promise<void> {
+  for (const _ of saveKvCacheSteps(path, tokens, caches, meta))
+    await new Promise<void>((r) => setImmediate(r));
 }
 
 /** Read only the header (cheap — for prefix matching across many files).
@@ -281,7 +337,7 @@ export function readKvHeader(path: string): KvFileHeader & { dataStart: number }
     if (BigInt(Bun.hash(body)) !== expectHash)
       throw new Error(`${path}: header hash mismatch (truncated or corrupt)`);
     const header = JSON.parse(new TextDecoder().decode(body)) as KvFileHeader;
-    if (header.formatVersion !== 2)
+    if (header.formatVersion !== 3)
       throw new Error(`${path}: unsupported formatVersion ${header.formatVersion}`);
     return { ...header, dataStart };
   } finally {
@@ -295,6 +351,18 @@ export interface LoadedKvCache {
   caches: Cache[];
   /** Keep referenced as long as the caches live. */
   mmap: MmapFile;
+}
+
+/** Process-lifetime keepalive for restore mmaps. Eager unmap-after-dispose
+ *  is UNSOUND: mlx GPU command buffers retain the wrapped buffers until
+ *  completion — past dispose() — and with fromPointer's native no-op dtor
+ *  there is no release signal to unmap on. Clean MAP_PRIVATE file-backed
+ *  pages cost address space, not RAM (the OS reclaims them under pressure;
+ *  an unlinked-but-mapped file stays valid), so serving pins each restored
+ *  mapping here for the life of the process. */
+const retainedMmaps = new Set<MmapFile>();
+export function retainMmapForProcess(mmap: MmapFile): void {
+  retainedMmaps.add(mmap);
 }
 
 export interface KvLoadExpect {

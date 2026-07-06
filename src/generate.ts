@@ -107,9 +107,10 @@ export interface TokenLogprobs {
  *  caches convert too — Phase 9):
  *  - per-layer bits/group_size selection (kvConfig overrides kvBits,
  *    matching optiq's --kv-config precedence; shipped kv_config.json
- *    files list full-attention layers only, so rotating quantization
- *    engages through uniform kvBits — like optiq --kv-bits — or a config
- *    that names sliding layers), and
+ *    files cover EVERY cache-owning layer, sliding ones included —
+ *    verified 12B 48/48, 26B 30/30, e4b 24/24 distinct caches — so
+ *    rotating quantization engages straight from the config; uniform
+ *    kvBits — like optiq --kv-bits — reaches them too), and
  *  - STREAMING conversion (optiq streaming_kv_quant / serve.py
  *    patched_maybe_quantize): eval each layer's quantized triples and
  *    clear the buffer pool before building the next layer's conversion.

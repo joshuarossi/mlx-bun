@@ -90,12 +90,38 @@ paired A/B — none recorded yet (the 2026-07-05 candidates were deleted).
 
 decode tok/s · TTFT ms · server-ready s · steady RSS GB
 
-| model | mlx-bun (mixed) | mlx-bun (bf16) | mlx-lm (bf16) | optiq (mixed) |
+| model | mlx-bun (mixed) | mlx-bun (bf16) | mlx-lm (bf16) | optiq (mixed)† |
 |---|---|---|---|---|
 | MiniCPM5-1B | **252.9** · 34 · 0.17 · 1.22 | — | — | 223.6 · 64 · 0.84 · 1.82 |
 | gemma-4-e4b | 55.7 · 44 · 0.36 · 7.14 | **57.3** · 48 · 0.36 | 53.5 · 218 · 0.98 · 7.55 | 53.4 · 221 · 0.78 · 7.53 |
 | gemma-4-12B | **25.9** · 85 · 0.38 · 9.46 | — | — | 25.5 · 326 · 1.24 · 9.86 |
 | gemma-4-26B | 54.2 · **45** · 0.47 · 18.25 | **55.0** · 44 · 0.47 | 52.3 · 228 · 0.77 · 4.87 | — |
+
+† **The served `optiq (mixed)` cells are effectively bf16** — optiq's
+KV-quant patch is inert on mlx-lm 0.31.3's batched server path:
+`install_mixed_kv` hooks `mlx_lm.generate.maybe_quantize_kv_cache` and
+`mlx_lm.server.stream_generate`, but the server routes every *seedless*
+text chat request through `BatchGenerator`, which calls neither hook, and
+the h2h harness's server requests carry no `seed`. See
+`lab/repro/optiq-mixed-kv-inert/` for the mechanism + repro. The data
+fingerprint agrees: e4b optiq-mixed served 53.4 tok/s · 7.53 GB RSS ≡
+mlx-lm bf16's 53.5 · 7.55. Same caveat applies to any serve-mode
+optiq-mixed cell in raw `benchmarks-serve-*` artifacts dated ≤ 2026-07-06.
+The **Direct** and **Long context** optiq (mixed) rows below DID measure
+real quantized-KV execution (the legs passed `kv_bits=8` straight into
+`mlx_lm.generate.stream_generate` — old `bench.ts --baseline-kv config` —
+so the 64k collapse and the lower peaks are genuine quantized-KV
+behavior), but a second installer defect means the scheme was **uniform
+8-bit, not the per-layer map**: `install_mixed_kv`'s hook patch lands on
+the `generate` *function* that shadows `mlx_lm.generate` in mlx-lm's
+package namespace, never on the module, so mlx-lm's stock uniform
+`maybe_quantize_kv_cache` is what ran (empirically proven in the repro
+dir). Read "optiq (mixed)" in those two tables as "optiq (uniform kv8)".
+mlx-bun (mixed) columns are unaffected — our engine implements the
+per-layer scheme natively — and the L2 parity goldens stay valid: every
+`regen-*` oracle script applies the scheme explicitly (direct per-layer
+`to_quantized`, or calling optiq's patched hook by name), never through
+the dead serve-path indirection.
 
 Across every served model: mlx-bun has the fastest decode and the fastest
 TTFT/startup (2–5×), at ~0% server tax vs its own direct engine.

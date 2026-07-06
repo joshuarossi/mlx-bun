@@ -232,6 +232,50 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
     return [order(this.keys), order(this.values)];
   }
 
+  /** Quantized twin of BatchedRotatingCache.extractRow (mlx-lm
+   *  BatchRotatingKVCache.extract, models/cache.py:1417, over triples):
+   *  row `i` as a fresh SERIAL RotatingQuantizedKVCache — de-rolled to
+   *  temporal order, left padding stripped, OWNED contiguous copies;
+   *  offset = the row's absolute position, ringIdx = the new buffer length
+   *  (the oracle's `cache._idx = cache.keys.shape[2]`). Token-axis slicing
+   *  is byte-safe (packing along HEAD_DIM — file header); per-row byte
+   *  identity vs the serial oracle is the class invariant
+   *  (tests/batched-rotating-quant), extraction is a pure slice+copy. */
+  extractRow(i: number): RotatingQuantizedKVCache | null {
+    if (!this.keys || !this.values) return null;
+    const pad = Math.max(0, this.leftPad[i]!);
+    const valid = Math.min(this.offset, this.maxSize);
+    const cut = (t: ops.QuantizedTensor): ops.QuantizedTensor =>
+      mapTriple(t, (a) => {
+        const [, H, Sbuf, D] = a.shape as [number, number, number, number];
+        const row = a.slice([i, 0, 0, 0], [i + 1, H, Sbuf, D]);
+        let tt: MlxArray;
+        if (this.ringIdx === Sbuf) {
+          tt = row;
+        } else if (this.ringIdx < this.offset) {
+          const tail = row.slice([0, 0, this.ringIdx, 0], [1, H, Sbuf, D]);
+          const head = row.slice([0, 0, 0, 0], [1, H, this.ringIdx, D]);
+          tt = ops.concatAxis([tail, head], 2);
+          tail.dispose();
+          head.dispose();
+          row.dispose();
+        } else {
+          tt = row.slice([0, 0, 0, 0], [1, H, this.ringIdx, D]);
+          row.dispose();
+        }
+        const cutV = tt.slice([0, 0, pad, 0], [1, H, valid, D]);
+        tt.dispose();
+        const own = ops.contiguous(cutV);
+        cutV.dispose();
+        return own;
+      });
+    const c = new RotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits);
+    const k = cut(this.keys);
+    const v = cut(this.values);
+    c.restoreState(k, v, this.offsetArr[i]!, k.packed.shape[2]!);
+    return c;
+  }
+
   /** Keep only `keep` rows along the batch axis (eviction), in place. */
   filter(keep: number[]): void {
     if (this.keys && this.values) {

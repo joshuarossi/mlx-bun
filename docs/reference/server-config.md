@@ -22,7 +22,7 @@ the design rationale is in
 | `--host` | addr | `127.0.0.1` | Interface to bind. Loopback-only by default (mlx_lm.server parity); pass `--host 0.0.0.0` to expose the server on your network. |
 | `--port` | n | `8080` | Listen port. A pre-flight probe refuses to start if the port is already serving. |
 | `--memory-budget` | GB | machine RAM × 0.75 | Admission ceiling. Requests whose `prompt + max_tokens` exceed the budget's max safe context are **rejected with 400** (`type: memory_admission`) instead of risking an uncatchable GPU OOM. Also caps the mlx allocator (`mlx_set_memory_limit`) as defense in depth. **Decimal GB (×10⁹).** |
-| `--prompt-cache` | GB | `2` | RAM prefix-KV cache (byte-capped LRU; `0` disables). **PREFIX SHARING (2026-07-05): serves are NON-CONSUMING** — a hit hands out zero-copy clones and leaves the donor entry intact, so N agents (or a brand-new session) sharing a system prompt all reuse ONE prefill without destroying each other's conversation entries (the old consume-and-trim take cannibalized the donor). Extended entries supersede their prefix-ancestors (when trimmable), so a conversation stays one entry. Works on BOTH lanes and tiers over the SSD store (Layer 0). |
+| `--prompt-cache` | GB | `8` | RAM prefix-KV cache (byte-capped LRU; `0` disables). **PREFIX SHARING (2026-07-05): serves are NON-CONSUMING** — a hit hands out zero-copy clones and leaves the donor entry intact, so N agents (or a brand-new session) sharing a system prompt all reuse ONE prefill without destroying each other's conversation entries (the old consume-and-trim take cannibalized the donor). Extended entries supersede their prefix-ancestors (when trimmable), so a conversation stays one entry. Works on BOTH lanes and tiers over the SSD store (Layer 0). |
 | `--isolate` | (bool) | off | Runtime isolation ([runtime-isolation.md](../design/runtime-isolation.md)): the inference engine runs as a CHILD process on a unix socket; this process stays a pure UI/API reverse proxy — instant under any GPU load, survives engine crashes (auto-respawn, in-flight requests get a clean 502). Measured cost ≈0 (−0.4% tok/s, +2 ms TTFT, per-token SSE granularity preserved). `/ws/chat` is not proxied yet (501). `/engine` reports child pid/restarts. |
 | `--model-pool` | n | `1` | With `--isolate`: max RESIDENT model engines. Requests naming another model (**exact `/v1/models` id** — fuzzy strings keep mlx-lm's ignored-field semantics) spawn/route to that model's own engine child (SPAWN-OVERLAP: the new model loads while the old one keeps serving; nobody's stream is interrupted). Over the cap, the LRU engine drains, **demotes its prompt cache to the SSD tier**, and exits — switching back respawns it with state restored from disk. Measured (M1 Max, cpm5⇄qwen0.8b, pool 1): switch 1.5 s, switch-back 1.2 s with `cached_tokens` 103/104 — the conversation survived the eviction. |
 | `--ssd-cache` | dir | off | SSD cold tier under the prompt cache ([docs/design/ssd-kv-cold-tier.md](../design/ssd-kv-cold-tier.md)): prefix KV spills to disk on RAM eviction AND idle demotion, is snapshotted after requests settle (debounced 1 s), and **survives restarts** — a long-context agent re-attach restores via zero-copy mmap instead of re-prefilling (measured 13.7k-token prefix: 12 s → 0.24 s TTFT; 0% decode overhead). Entries are keyed by model fingerprint **+ effective kv scheme** + tokenizer hash + adapter ns; incompatible/corrupt files self-quarantine. **Layer 0 (2026-07-05): the tiering lives inside PromptCache.take(), so BOTH lanes restore from disk — batch-scheduler joiners included — and every put (batch rows too) schedules the write-behind snapshot.** Requires the RAM cache. |
@@ -349,6 +349,19 @@ cells in one run).
   ~0.1 ms/step class).
 - **`--ssd-cache` has 0% decode overhead** — pure TTFT/restart win; no
   reason to leave it off on a persistent server.
+- **Quantized-KV prefill pays a scheme-intrinsic tax at long context** —
+  chunked prefill converts each chunk's KV at the chunk boundary, so
+  every later chunk attends against the already-quantized prefix
+  (quantize-on-write; the same streaming conversion optiq serve uses —
+  `maybeQuantizeKv` in `src/generate.ts` is the port). That cost is by
+  design, not an implementation gap: ~30% prefill throughput vs bf16 at
+  ~16k where the config quantizes every cache (the 1B starter measured
+  −33% in the 2026-07-06 serve pass), single-digit % on the
+  sliding-window gemmas (rotating caches stay window-bounded). The lever
+  is upstream — mlx's `quantized_matmul` kernels (the split-K work,
+  [ml-explore/mlx#3120](https://github.com/ml-explore/mlx/pull/3120);
+  status in [decode-speed-program.md](../design/decode-speed-program.md)
+  lever 2) — not this codebase.
 
 **Recipes:**
 

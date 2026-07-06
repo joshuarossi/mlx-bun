@@ -368,6 +368,41 @@ describe("PromptCache — Layer 0 tiering", () => {
     expect(d.count).toBe(0);
   });
 
+  // The oracle invariant (2026-07-06 gemma cache fixes): a trim-free
+  // STRICT-PREFIX entry is the only reuse path an untrimmable (wrapped
+  // ring) model has — an exact repeat must hit it with zero trims.
+  test("untrimmable strict-prefix entry serves an exact repeat without trims", () => {
+    const { pc, cloneTrims } = mk();
+    const d = { count: 0 };
+    const prompt = Array.from({ length: 600 }, (_, i) => i);
+    // the boundary snapshot: prompt[:-1], untrimmable (rings already wrapped)
+    pc.put(prompt.slice(0, 599), [stubCache(10, d, false)]);
+    const hit = pc.take(prompt); // exact repeat of the full prompt
+    expect(hit?.tokens).toHaveLength(599); // prompt.length-1 — no trim needed
+    expect(cloneTrims).toEqual([]);
+    expect(pc.size).toBe(1);
+  });
+
+  test("exact-duplicate put replaces the old entry even when untrimmable", () => {
+    const { pc } = mk();
+    const d1 = { count: 0 };
+    const d2 = { count: 0 };
+    pc.put([1, 2, 3], [stubCache(10, d1, false)]);
+    pc.put([1, 2, 3], [stubCache(10, d2, false)]); // same tokens, wrapped rings
+    expect(pc.size).toBe(1); // no duplicate accumulation (12B ctx-repeat leak)
+    expect(d1.count).toBe(1);
+    expect(d2.count).toBe(0);
+  });
+
+  test("untrimmable longer put leaves the boundary snapshot in place", () => {
+    const { pc } = mk();
+    const d = { count: 0 };
+    pc.put([1, 2, 3, 4], [stubCache(10, d, true)]); // boundary (prompt-only)
+    pc.put([1, 2, 3, 4, 5, 6], [stubCache(10, d, false)]); // [prompt+gen], wrapped
+    expect(pc.size).toBe(2); // ancestor survives — it is the only reusable form
+    expect(d.count).toBe(0);
+  });
+
   test("onPut fires per put with tokens+ns; its exceptions are contained", () => {
     const { pc } = mk();
     const d = { count: 0 };

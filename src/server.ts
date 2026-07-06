@@ -28,7 +28,7 @@ import { spliceImageTokens } from "./vision/diffusion-vision";
 import { createModel, type RuntimeModel } from "./model/factory";
 import { isMiniCPM5Config, isSupportedModelRecord } from "./model/support";
 import { generate, type GenerateOptions, type TokenLogprobs } from "./generate";
-import { cloneKvCaches } from "./kv-store";
+import { cloneKvCaches, retainMmapForProcess } from "./kv-store";
 import {
   compileGrammarRequest, grammarEnabled, type GrammarRequest,
 } from "./grammar";
@@ -69,7 +69,7 @@ import {
 import { makePiWsHandler, type PiWsData } from "./pi-web";
 
 export interface ServerOptions {
-  /** Byte cap for the prompt (KV) cache. Default 2 GB. */
+  /** Byte cap for the prompt (KV) cache. Default 8 GB. */
   promptCacheBytes?: number;
   /** Aggregate KV-byte budget across concurrently-admitted batch rows
    *  (`--kv-budget`, batching-perf-path P3). Joiners whose projected KV
@@ -510,9 +510,9 @@ export class ToolAwareStream {
    *  chain-of-thought as `<|channel>thought\n…<channel|>` using special tokens
    *  100/101 that the content decoder strips, so reasoning is captured here at
    *  the token level. A SEPARATE decoder keeps the reasoning byte-stream's
-   *  incremental state independent of content's. The `thought\n` channel-name
-   *  line is stripped before the reasoning text (per the model's parser spec,
-   *  it sits outside the captured thought). */
+   *  incremental state independent of content's. The `thought` channel-name
+   *  word is stripped before the reasoning text (mlx-lm's think-start marker
+   *  is `<|channel>thought`; the "\n" after it is reasoning content). */
   readonly #channelDecoder: StreamDecoder;
   #inChannel = false;
   #channelNamePending = "";
@@ -533,15 +533,20 @@ export class ToolAwareStream {
     this.#channelDecoder = new StreamDecoder(tokenizer, true);
   }
 
-  /** Feed decoded channel text, stripping the leading `thought\n` name line
-   *  (which may arrive across tokens). Returns the reasoning delta. */
+  /** Feed decoded channel text, stripping the leading `thought` channel-name
+   *  word (which may arrive across tokens). Returns the reasoning delta.
+   *  mlx-lm parity: its think-start marker is exactly `<|channel>thought`
+   *  (tokenizer_utils.py `_infer_thinking`) and only the MARKER tokens get
+   *  their text blanked (server.py `_process_control_tokens`) — the "\n"
+   *  after the name is an ordinary generated token, so it is the FIRST byte
+   *  of the reasoning stream and must be kept, not swallowed with the name. */
   #feedChannel(text: string): string {
     if (this.#channelNameDone) return text;
     this.#channelNamePending += text;
     const nl = this.#channelNamePending.indexOf("\n");
-    if (nl === -1) return ""; // still inside the channel-name line
+    if (nl === -1) return ""; // still inside the channel-name word
     this.#channelNameDone = true;
-    const rest = this.#channelNamePending.slice(nl + 1);
+    const rest = this.#channelNamePending.slice(nl); // keep the "\n" (mlx-lm does)
     this.#channelNamePending = "";
     return rest;
   }
@@ -606,7 +611,8 @@ export class ToolAwareStream {
     // Reasoning channel: tokens between <|channel> and <channel|> are thought,
     // captured to #reasoning (drained via takeReasoning), never content. An
     // empty block (<|channel>thought\n<channel|>, emitted by larger Gemmas even
-    // with thinking off) yields no reasoning and leaks nothing.
+    // with thinking off) yields only the "\n" as reasoning (mlx-lm parity) and
+    // leaks nothing into content.
     if (this.#inChannel) {
       if (token === CHANNEL_END) {
         this.#inChannel = false;
@@ -1047,19 +1053,35 @@ class LogprobsCollector {
   }
 }
 
-/** Incremental detokenizer: emits the longest stable decoded prefix. */
-class StreamDecoder {
+/** Incremental detokenizer: emits the longest stable decoded prefix.
+ *
+ *  Byte parity with mlx-lm's streaming detokenizers (the drop-in contract is
+ *  rendered BYTES, not just token ids): for BPE/ByteLevel tokenizers
+ *  (tokenizer.trimsLeadingSpace) mlx-lm drops ONE leading " " at the start of
+ *  the generated sequence (tokenizer_utils.py BPEStreamingDetokenizer
+ *  `_maybe_trim_space`) which our full-sequence decode keeps — trim it here.
+ *  SPM decode already matches (see LoadedTokenizer.trimsLeadingSpace).
+ *  Exported for unit tests (serve-detok mlx-lm byte parity). */
+export class StreamDecoder {
   #ids: number[] = [];
   #emitted = "";
+  readonly #trimLeadingSpace: boolean;
 
   constructor(
     readonly tokenizer: LoadedTokenizer,
     readonly skipSpecialTokens = true,
-  ) {}
+  ) {
+    this.#trimLeadingSpace = tokenizer.trimsLeadingSpace === true;
+  }
+
+  #decode(): string {
+    const full = this.tokenizer.decode(this.#ids, this.skipSpecialTokens);
+    return this.#trimLeadingSpace && full.startsWith(" ") ? full.slice(1) : full;
+  }
 
   push(token: number): string {
     this.#ids.push(token);
-    const full = this.tokenizer.decode(this.#ids, this.skipSpecialTokens);
+    const full = this.#decode();
     // hold back a trailing replacement char (partial multi-byte sequence)
     const stable = full.endsWith("�") ? full.slice(0, -1) : full;
     if (!stable.startsWith(this.#emitted)) {
@@ -1074,7 +1096,7 @@ class StreamDecoder {
   }
 
   flush(): string {
-    const full = this.tokenizer.decode(this.#ids, this.skipSpecialTokens);
+    const full = this.#decode();
     const delta = full.slice(this.#emitted.length);
     this.#emitted = full;
     return delta;
@@ -1144,9 +1166,16 @@ export function createServer(
   // shape) + the EFFECTIVE kv scheme (flags pick bf16 vs config vs uniform
   // on the same model — restored caches must match what serving produces) +
   // tokenizer hash (ids must keep meaning the same text).
+  // RAM prompt-cache cap: 8 GB default (Josh's call, 2026-07-06). The old
+  // flat 2e9 was an anti-OOM reflex sized for a 1B model in 24 GB — a
+  // single full-context 12B entry is ~0.6 GB, so it silently shrank to
+  // "three entries" on big models. 8 GB holds a dozen 12B contexts; idle
+  // entries still demote to SSD and LRU eviction bounds pressure.
+  // --prompt-cache <GB> overrides; 0 disables.
+  const promptCacheCap = serverOptions.promptCacheBytes ?? 8e9;
   let ssdStore: SsdCacheStore | null = null;
   if (serverOptions.ssdCacheDir) {
-    if ((serverOptions.promptCacheBytes ?? 2e9) <= 0)
+    if (promptCacheCap <= 0)
       throw new Error("--ssd-cache requires the RAM prompt cache (--prompt-cache 0 disables it)");
     const schemeKey = kvScheme.kvBits
       ? `kv${kvScheme.kvBits}`
@@ -1179,9 +1208,13 @@ export function createServer(
         },
         restore: (handle: unknown) => {
           const loaded = ssdStore!.restore(handle as import("./ssd-cache").SsdIndexEntry, ctx.model);
-          return loaded
-            ? { tokens: loaded.tokens, caches: loaded.caches, retain: () => loaded.mmap.unmap() }
-            : null;
+          if (!loaded) return null;
+          // Deferred unmap (2026-07-06 hang fix): the mapping stays pinned
+          // for the process — see retainMmapForProcess. retain stays in the
+          // entry contract as a no-op so callers' dispose ordering is
+          // unchanged.
+          retainMmapForProcess(loaded.mmap);
+          return { tokens: loaded.tokens, caches: loaded.caches, retain: () => {} };
         },
         store: (tokens: number[], caches: import("./model/gemma4").Cache[], ns: string) => {
           ssdStore!.store(tokens, caches, ns);
@@ -1189,7 +1222,7 @@ export function createServer(
       }
     : null;
   const promptCache = new PromptCache(
-    serverOptions.promptCacheBytes ?? 2e9,
+    promptCacheCap,
     // RAM eviction spills to the cold tier (whole-prefix entries, no work
     // on the token loop — the spill runs at eviction time only).
     ssdStore ? (entry) => { ssdStore!.store(entry.tokens, entry.caches, entry.ns); } : null,
@@ -1253,11 +1286,16 @@ export function createServer(
     // prefix of the next turn's rendering regardless of reply drift.
     // Zero-copy (cloneKvCaches = slice views); only for substantial cold
     // prefills, where the re-prefill it saves is worth an extra entry.
-    const boundary = Math.min(options.snapshotAt ?? promptIds.length, promptIds.length);
+    // The oracle invariant (mlx-lm insert_segments): a trim-free STRICT
+    // prefix of the prompt exists for EVERY substantial request — cap the
+    // boundary at len-1 so even a stableLen == len prompt (e4b: the
+    // template tail survives the probe render) snapshots prompt[:-1]. An
+    // exact repeat then matches with trimNeeded == 0, bypassing
+    // isTrimmable() entirely — the only reuse path a wrapped ring has.
+    const boundary = Math.min(options.snapshotAt ?? promptIds.length, promptIds.length - 1);
     // Re-snapshot on EVERY substantial request whose stable boundary extends
-    // past the cached prefix — take() CONSUMES the entry it hands to this
-    // generation, so a hit destroys the boundary entry the NEXT turn needs;
-    // the clone is zero-copy views, so re-putting is ~free.
+    // past the cached prefix; the clone is zero-copy views, so re-putting
+    // is ~free.
     const snapshotBoundary =
       !vision && boundary >= 256 && boundary > (entry?.tokens.length ?? 0);
     try {
@@ -1266,6 +1304,12 @@ export function createServer(
         cache: caches,
         ...(snapshotBoundary
           ? {
+              // snapshotAt MUST travel with the hook: generate() splits the
+              // prefill at exactly this many tokens and fires the hook while
+              // the caches hold exactly that prefix — putting boundary
+              // tokens against caches at any other offset is silent KV
+              // corruption.
+              snapshotAt: boundary,
               onPrefillDone: () => {
                 try {
                   promptCache.put(promptIds.slice(0, boundary), cloneKvCaches(caches), cacheNs);
@@ -1309,16 +1353,40 @@ export function createServer(
   // extraction must not race a generation mutating the entry); if the entry
   // was evicted (already spilled) or extended (a newer schedule pending)
   // meanwhile, findExact misses and nothing is written.
+  // Keyed by ns AND entry length: a sub-second final [prompt+gen] put must
+  // not cancel the pending boundary-snapshot write (they are DIFFERENT
+  // entries; for wrapped-ring models the boundary file is the only one a
+  // restart can use). Same-length reschedules still coalesce; stale keys
+  // self-clean at fire time (findExact misses once the RAM tier superseded
+  // the entry, so nothing extra is written).
+  //
+  // NON-BLOCKING (2026-07-06, the write-behind persistence contract): the
+  // gateway lock is held only for a zero-copy SNAPSHOT (findExact +
+  // cloneKvCaches — microseconds; entries are immutable so the clones are
+  // consistent forever). The flush itself runs OFF the lock via
+  // storeAsync, yielding the event loop between tensors, and writes chain
+  // serially so two multi-hundred-MB flushes never overlap. Before this,
+  // a ctx repeat that landed during the cold entry's flush queued behind
+  // ~0.5 s of synchronous serialization (measured: rep-0 vs rep-1 delta).
   const ssdPending = new Map<string, ReturnType<typeof setTimeout>>();
+  let ssdWriteChain: Promise<void> = Promise.resolve();
   const scheduleSsdSnapshot = (tokens: number[], ns: string): void => {
     if (!ssdStore || tokens.length === 0) return;
-    const prev = ssdPending.get(ns);
+    const key = `${ns}|${tokens.length}`;
+    const prev = ssdPending.get(key);
     if (prev) clearTimeout(prev);
-    ssdPending.set(ns, setTimeout(() => {
-      ssdPending.delete(ns);
+    ssdPending.set(key, setTimeout(() => {
+      ssdPending.delete(key);
       void gateway.runExclusive(async () => {
         const e = promptCache.findExact(tokens, ns);
-        if (e) ssdStore!.store(e.tokens, e.caches, ns);
+        if (!e) return null;
+        return { tokens: e.tokens, caches: cloneKvCaches(e.caches) };
+      }).then((snap) => {
+        if (!snap) return;
+        ssdWriteChain = ssdWriteChain
+          .then(() => ssdStore!.storeAsync(snap.tokens, snap.caches, ns))
+          .then(() => { for (const c of snap.caches) c.dispose(); },
+                () => { for (const c of snap.caches) c.dispose(); });
       }).catch(() => { /* cold tier is best-effort */ });
     }, 1000));
   };
@@ -1507,17 +1575,38 @@ export function createServer(
   const promptIdsFor = (
     req: ChatRequest,
     tools: ToolDefinition[] | null,
-  ): { ids: number[]; startInThinking: boolean; stableLen: number } => {
+  ): { ids: number[]; startInThinking: boolean } => {
     const opts = templateOptionsFor(req, tools);
     const rendered = ctx.template.render(normalizeMessages(req.messages), opts);
     const ids = ctx.tokenizer.encode(rendered);
     // template includes <bos>; tokenizer post-processor also prepends one
     const trimmed = ids[0] === ids[1] && ids[0] === ctx.tokenizer.bosTokenId ? ids.slice(1) : ids;
-    // STABLE cache boundary: the prompt's tail is a generation primer (e.g.
-    // 12B's `<|channel>thought` tokens) that the NEXT turn's re-render does
-    // not contain — a cache entry ending there can never prefix-match again
-    // once the rings wrap. Probe by rendering this conversation as if a
-    // reply existed; the common prefix is what every future turn preserves.
+    return { ids: trimmed, startInThinking: promptEndsInOpenThink(rendered) };
+  };
+
+  /** STABLE cache boundary: the prompt's tail is a generation primer (e.g.
+   *  12B's `<|channel>thought` tokens) that the NEXT turn's re-render does
+   *  not contain — a cache entry ending there can never prefix-match again
+   *  once the rings wrap. Probe by rendering this conversation as if a
+   *  reply existed; the common prefix is what every future turn preserves.
+   *  The probe is EXPENSIVE (a second full render + encode — ~150 ms at
+   *  16k with our tokenizer; 30-50% of the 12B ctx-repeat TTFT,
+   *  2026-07-06b), but the PRIMER LENGTH it measures is constant per
+   *  template mode: the divergence sits after a special-token turn
+   *  delimiter, and special tokens break BPE merges, so message content
+   *  can't shift it. So the full probe runs ONCE per mode and later
+   *  requests pay a subtraction. (A wrong boundary is a QUALITY knob, not
+   *  a correctness one — any prefix ≤ len-1 is a valid snapshot point.) */
+  const primerLenByMode = new Map<string, number>();
+  const stableLenFor = (
+    req: ChatRequest,
+    tools: ToolDefinition[] | null,
+    trimmed: number[],
+  ): number => {
+    const opts = templateOptionsFor(req, tools);
+    const mode = `${opts.enableThinking}|${!!tools?.length}`;
+    const primer = primerLenByMode.get(mode);
+    if (primer !== undefined) return Math.max(0, trimmed.length - primer);
     let stableLen = trimmed.length;
     try {
       const probe = ctx.tokenizer.encode(
@@ -1532,8 +1621,13 @@ export function createServer(
       const n = Math.min(trimmed.length, probeTrimmed.length);
       while (i < n && trimmed[i] === probeTrimmed[i]) i++;
       stableLen = i;
+      // Memoize the mode's primer length (sanity-capped: a "primer" longer
+      // than 64 tokens means the probe diverged for content reasons —
+      // don't generalize that).
+      const p = trimmed.length - stableLen;
+      if (p >= 0 && p <= 64) primerLenByMode.set(mode, p);
     } catch { /* probe is best-effort; full boundary is the fallback */ }
-    return { ids: trimmed, startInThinking: promptEndsInOpenThink(rendered), stableLen };
+    return stableLen;
   };
 
   const toolStreamMode = (tools: ToolDefinition[] | null): ToolStreamMode =>
@@ -2199,7 +2293,7 @@ export function createServer(
             const built = promptIdsFor(body, tools);
             promptIds = built.ids;
             startInThinking = built.startInThinking;
-            stableLen = built.stableLen;
+            stableLen = -1; // marker: chat path, probe lazily below
           }
         } catch (e) {
           return Response.json(
@@ -2210,9 +2304,18 @@ export function createServer(
         let options: ReturnType<typeof toOptions>;
         try {
           options = toOptions(body);
-          // stable cache boundary for the prompt-boundary snapshot (chat
-          // prompts end in a generation primer the next turn won't contain)
-          if (stableLen !== null) options.snapshotAt = stableLen;
+          // Stable cache boundary for the prompt-boundary snapshot (chat
+          // prompts end in a generation primer the next turn won't contain).
+          // The probe costs a second full render+encode (~150 ms at 16k), so
+          // run it ONLY when a snapshot can actually be taken: the cache
+          // must not already hold the strict prefix (warm repeats peek at
+          // len-1 → skip; the snapshot gate needs boundary > cached prefix).
+          if (stableLen !== null) {
+            const cachePeek = promptCache.peekPrefixLen(
+              promptIds, options.adapters?.join("+") ?? "");
+            if (cachePeek < promptIds.length - 1)
+              options.snapshotAt = stableLenFor(body, tools, promptIds);
+          }
         } catch (e) {
           // bad logit_bias (non-numeric keys/values) — mlx-lm's coercion error
           vision?.embeddings.dispose();

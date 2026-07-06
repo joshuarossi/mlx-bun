@@ -82,7 +82,7 @@ const SERVER_FLAGS = `Server options:
                             (prompt + max_tokens) would exceed it queue until
                             rows finish; a request over the budget alone is
                             rejected. Off unless set.
-  --prompt-cache <GB>       Prompt (KV) cache byte cap  [default: 2 GB;
+  --prompt-cache <GB>       Prompt (KV) cache byte cap  [default: 8 GB;
                             --prompt-cache 0 disables the cache]
   --ssd-cache <dir>         SSD cold tier for the prompt cache: prefix KV
                             spills to disk on eviction and persists across

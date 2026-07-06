@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { commonPrefixLength } from "./prompt-cache";
 import {
-  saveKvCache, loadKvCache, readKvHeader,
+  saveKvCache, saveKvCacheAsync, loadKvCache, readKvHeader,
   type KvSaveMeta, type KvLoadExpect, type LoadedKvCache,
 } from "./kv-store";
 import type { Cache } from "./model/gemma4-base";
@@ -32,7 +32,24 @@ export interface SsdIndexEntry {
   tokens: number[];
   bytes: number;
   mtimeMs: number;
+  /** Whether every serialized cache can trim (derived from kinds+state at
+   *  store/scan time). An untrimmable entry (wrapped ring, SSM) can only
+   *  seed prompts it matches WITHOUT a trim — find() must not prefer it
+   *  over a shorter usable one (the 2026-07-06 restart-0 defect: the
+   *  [prompt+gen] file always won, always got rejected after restore). */
+  trimmable: boolean;
 }
+
+/** Trimmability from a file header alone (mirror of the live caches'
+ *  isTrimmable(): kv/qkv always trim; rotating kinds only pre-wrap
+ *  (offset < maxSize); ssm never). Keep in sync with gemma4-base/qwen3-delta. */
+const headerTrimmable = (caches: { kind: string; offset: number; maxSize?: number }[]): boolean =>
+  caches.every((c) =>
+    c.kind === "kv" || c.kind === "qkv"
+      ? true
+      : c.kind === "rotating" || c.kind === "rotating-qkv"
+        ? c.offset < (c.maxSize ?? 0)
+        : false);
 
 export interface SsdStoreOptions {
   dir: string;
@@ -101,6 +118,7 @@ export class SsdCacheStore {
           const st = statSync(path);
           this.#index.push({
             path, ns: h.ns ?? "", tokens: h.tokens, bytes: st.size, mtimeMs: st.mtimeMs,
+            trimmable: headerTrimmable(h.caches),
           });
         } catch {
           try { rmSync(path, { force: true }); } catch {}
@@ -110,13 +128,15 @@ export class SsdCacheStore {
     return this.#index.length;
   }
 
-  /** Best stored entry for `prompt` in `ns`: the longest common prefix
-   *  (capped at prompt.length−1 — at least one token must forward). An
-   *  entry LONGER than the matched prefix is still returned (the divergent-
-   *  tail pattern: same long context, different question) — the caller
-   *  trims after restore when every cache kind is trimmable, and falls
-   *  back to a fresh prefill when not (ring post-wrap, SSM). Pure index
-   *  lookup; no I/O. */
+  /** Best USABLE stored entry for `prompt` in `ns`: the longest common
+   *  prefix (capped at prompt.length−1 — at least one token must forward).
+   *  An entry LONGER than the matched prefix is returned only when it can
+   *  actually seed the prompt: the divergent tail must be trimmable after
+   *  restore. Untrimmable entries (ring post-wrap, SSM) that would need a
+   *  trim are SKIPPED here — before this gate, the big [prompt+gen] file
+   *  always outranked the usable boundary snapshot, got restored, and was
+   *  thrown away by take()'s backstop (the 2026-07-06 restart-0 + wasted
+   *  84 s restore-then-re-prefill path). Pure index lookup; no I/O. */
   find(prompt: number[], ns = ""): { entry: SsdIndexEntry; prefixLen: number } | null {
     let best: SsdIndexEntry | null = null;
     let bestLen = 0;
@@ -124,6 +144,7 @@ export class SsdCacheStore {
       if (e.ns !== ns) continue;
       const p = Math.min(commonPrefixLength(e.tokens, prompt), prompt.length - 1);
       if (p === 0 || p <= bestLen) continue;
+      if (e.tokens.length - p > 0 && !e.trimmable) continue;
       bestLen = p;
       best = e;
     }
@@ -147,7 +168,10 @@ export class SsdCacheStore {
       this.stats.restores++;
       this.stats.restoreMsLast = performance.now() - t0;
       return loaded;
-    } catch {
+    } catch (err) {
+      // Loud: a failed restore silently degraded to a full re-prefill for
+      // a month before the 2026-07-06 bench made it observable.
+      console.warn(`[ssd-cache] restore failed, dropping ${entry.path}: ${(err as Error).message}`);
       this.remove(entry.path);
       return null;
     }
@@ -165,35 +189,78 @@ export class SsdCacheStore {
     const path = join(dir, `${randomUUID()}.mlxkv`);
     try {
       mkdirSync(dir, { recursive: true });
-      const meta: KvSaveMeta = {
-        modelId: this.#opts.modelId,
-        configFingerprint: this.#opts.configFingerprint,
-        tokenizerHash: this.#opts.tokenizerHash,
-        ns,
-      };
-      saveKvCache(path, tokens, caches, meta);
-      const st = statSync(path);
-      if (st.size > this.#opts.maxBytes) {
-        rmSync(path, { force: true });
-        return false;
-      }
-      // Supersede shadowed ancestors of this prefix (same ns).
+      saveKvCache(path, tokens, caches, this.#meta(ns));
+      return this.#indexStored(path, tokens, caches, ns);
+    } catch (err) {
+      return this.#storeFailed(path, err);
+    }
+  }
+
+  /** Non-blocking store (the write-behind persistence path): same file,
+   *  index, and supersede semantics as store(), but the tensor flush
+   *  yields the event loop between tensors so serving interleaves.
+   *  Caller passes zero-copy CLONES it owns (a consistent snapshot no
+   *  matter what the live entry does meanwhile) and disposes them after. */
+  async storeAsync(tokens: number[], caches: Cache[], ns = ""): Promise<boolean> {
+    const dir = join(this.#root, nsHash(ns));
+    const path = join(dir, `${randomUUID()}.mlxkv`);
+    try {
+      mkdirSync(dir, { recursive: true });
+      await saveKvCacheAsync(path, tokens, caches, this.#meta(ns));
+      return this.#indexStored(path, tokens, caches, ns);
+    } catch (err) {
+      return this.#storeFailed(path, err);
+    }
+  }
+
+  #meta(ns: string): KvSaveMeta {
+    return {
+      modelId: this.#opts.modelId,
+      configFingerprint: this.#opts.configFingerprint,
+      tokenizerHash: this.#opts.tokenizerHash,
+      ns,
+    };
+  }
+
+  #indexStored(path: string, tokens: number[], caches: Cache[], ns: string): boolean {
+    const st = statSync(path);
+    if (st.size > this.#opts.maxBytes) {
+      rmSync(path, { force: true });
+      console.warn(`[ssd-cache] entry not stored: ${st.size} bytes exceeds the ${this.#opts.maxBytes}-byte cap`);
+      return false;
+    }
+    const trimmable = caches.every((c) => c.isTrimmable());
+    // Exact duplicates (same tokens) are replaced regardless of
+    // trimmability — the new file serves exactly the old one's matches.
+    for (const e of [...this.#index]) {
+      if (e.ns !== ns || e.tokens.length !== tokens.length) continue;
+      if (commonPrefixLength(e.tokens, tokens) === tokens.length) this.remove(e.path);
+    }
+    // Supersede shadowed ancestors of this prefix (same ns) — ONLY when
+    // the new entry can serve their prefixes (all caches trimmable; the
+    // same guard as PromptCache.put()). An untrimmable [prompt+gen]
+    // entry deleting the boundary snapshot was the gemma restart-0
+    // defect (2026-07-06): the only restorable file died the moment the
+    // unrestorable one landed.
+    if (trimmable) {
       for (const e of [...this.#index]) {
         if (e.ns !== ns || e.tokens.length >= tokens.length) continue;
         if (commonPrefixLength(e.tokens, tokens) === e.tokens.length) this.remove(e.path);
       }
-      this.#index.push({ path, ns, tokens, bytes: st.size, mtimeMs: Date.now() });
-      this.stats.spills++;
-      this.evictToCap();
-      return true;
-    } catch (err) {
-      try { rmSync(path, { force: true }); rmSync(`${path}.tmp`, { force: true }); } catch {}
-      if (!this.#warnedWriteFailure) {
-        this.#warnedWriteFailure = true;
-        console.warn(`[ssd-cache] store failed (disk full or unwritable?) — cold tier disabled for this entry: ${(err as Error).message}`);
-      }
-      return false;
     }
+    this.#index.push({ path, ns, tokens, bytes: st.size, mtimeMs: Date.now(), trimmable });
+    this.stats.spills++;
+    this.evictToCap();
+    return true;
+  }
+
+  #storeFailed(path: string, err: unknown): boolean {
+    try { rmSync(path, { force: true }); rmSync(`${path}.tmp`, { force: true }); } catch {}
+    if (!this.#warnedWriteFailure) {
+      this.#warnedWriteFailure = true;
+      console.warn(`[ssd-cache] store failed (disk full or unwritable?) — cold tier disabled for this entry: ${(err as Error).message}`);
+    }
+    return false;
   }
 
   /** Enforce the byte cap: unlink oldest-mtime entries until under it. */

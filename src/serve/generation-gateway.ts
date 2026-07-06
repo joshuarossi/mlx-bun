@@ -381,6 +381,9 @@ export class GenerationGateway {
         // accept/ready/terminate; this gateway OWNS disposal (finally below)
         // across resolve, reject, eviction, and the whole-batch-drop error path.
         ...(options.grammar ? { grammar: options.grammar } : {}),
+        // Stable cache boundary → the scheduler's trim-free prompt-prefix
+        // snapshot (same invariant as the serial lane's snapshotAt).
+        ...(options.snapshotAt !== undefined ? { snapshotAt: options.snapshotAt } : {}),
       });
     } finally {
       history?.dispose();
