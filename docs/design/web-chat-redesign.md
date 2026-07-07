@@ -597,6 +597,15 @@ tour, not a search bar — presence.
 - **Choreography:** the spotlight lands *while* the explanation streams
   ("it's right here —" and the highlight appears), not as a report
   afterwards.
+- **Never hijack (hard constraint).** The worst tour UX is blocking the
+  screen when the user wants to DO something. The spotlight is an overlay,
+  never a modal: it traps no focus, blocks no clicks (the highlighted
+  control stays clickable *through* it), auto-dismisses in seconds, and
+  any user input dismisses it instantly. Navigation only happens when the
+  user asked to be taken somewhere — never uninvited mid-task. The agent
+  is a hand pointing, not a hand on the wheel; there is never a state the
+  user has to escape from. (Same rule already governs approval cards —
+  inline and non-blocking, §6.5.)
 
 Mechanism — three tools plus one client loop, no screenshots, no vision
 model in the loop:
