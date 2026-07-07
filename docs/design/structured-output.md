@@ -136,10 +136,11 @@ discipline (`MLX_BUN_COMPILED_DECODE`, `MLX_BUN_NO_FUSED_SDPA`, …).
     whitespace means a whitespace-degenerate model can greedily emit
     whitespace until max_tokens (CPM5-1B base + raw prompt + a boolean
     value → tab loop after the colon, 96/96 tokens, no value emitted). Same
-    exposure as oMLX (same default); chat-tuned models rarely hit it. If it
-    bites in practice the knob is `anyWhitespace=false` (compact
-    separators) or a whitespace-run cap — default-off, oMLX parity stays
-    the default.
+    exposure as oMLX (same default); chat-tuned models rarely hit it.
+    The knob LANDED 2026-07-07 (it bit tests/batch-grammar.test.ts on the
+    M1 Max — 96/96 tabs after a key): `json_schema.any_whitespace: false`
+    compiles compact separators (no whitespace choice points). Default-off,
+    oMLX parity stays the default; server-api.md documents the field.
 - **B2 batch gates: LANDED 2026-07-03** (`tests/batch-grammar.test.ts`,
   `MLX_BUN_TEST_BATCH_DECODE=1`, CPM): all-grammar B=4 four-schemas
   cross-bleed gate, mixed-batch sibling byte-match (pinned schedule),

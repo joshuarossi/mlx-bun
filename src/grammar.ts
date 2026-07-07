@@ -441,13 +441,26 @@ function resolveGrammarRequest(req: GrammarRequest):
   if (rf && typeof rf === "object") {
     const type = (rf as { type?: string }).type;
     if (type === "json_schema") {
-      const js = (rf as { json_schema?: { schema?: unknown; strict?: boolean } }).json_schema;
+      const js = (rf as {
+        json_schema?: {
+          schema?: unknown;
+          strict?: boolean;
+          any_whitespace?: boolean;
+          anyWhitespace?: boolean;
+        };
+      }).json_schema;
       const schema = js?.schema ?? structuredOutputs;
       if (schema) {
         return {
           kind: "json_schema",
           schema,
           strict: js?.strict,
+          // Whitespace-stall escape hatch (structured-output.md known gaps):
+          // any_whitespace=false compiles the schema with xgrammar's compact
+          // separators — no whitespace choice points, so a whitespace-
+          // degenerate base model can't greedily tab-loop to max_tokens.
+          // Default stays true (oMLX parity: model-chosen formatting).
+          anyWhitespace: js?.any_whitespace ?? js?.anyWhitespace,
           degradeDescription: "response_format json_schema",
         };
       }

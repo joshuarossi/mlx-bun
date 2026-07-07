@@ -104,8 +104,20 @@ describe.skipIf(!optIn || !haveCpm)("batch lane × grammar (B2 gates, CPM)", () 
     properties: { [key]: type },
     required: [key],
   });
+  // any_whitespace:false (compact separators) throughout this file: these
+  // gates cover SCHEDULER orchestration (row↔matcher alignment, eviction,
+  // joins), and unlimited-whitespace schemas sit on a machine-specific greedy
+  // knife-edge — CPM base + raw prompt can tab-loop after a key until
+  // max_tokens (whitespace-stall mode, structured-output.md known gaps;
+  // reproduced on M1 Max 2026-07-07: 96/96 tabs after `"beta"`). Compact
+  // grammars have no whitespace choice points, making conformance genuinely
+  // trajectory-independent as the header claims. Default-whitespace masks
+  // stay covered by the serial-lane grammar suites.
   const jsonSchemaReq = (name: string, schema: object) => ({
-    responseFormat: { type: "json_schema", json_schema: { name, schema } },
+    responseFormat: {
+      type: "json_schema",
+      json_schema: { name, schema, any_whitespace: false },
+    },
   });
 
   // THE bug-class gate: four rows, four DIFFERENT schemas, decoding
