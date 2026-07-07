@@ -120,6 +120,14 @@ const SERVER_FLAGS = `Server options:
   --no-open                 Don't open the chat UI in your browser on start.
                             By default an interactive terminal opens
                             http://<host>:<port>/#/chat once the server is up.
+  --allow-private-media     Let image_url/audio_url content parts fetch from
+                            private/loopback/link-local hosts (NAS, another
+                            LAN box). Blocked by default: a request's URL is
+                            attacker-controlled input, and the default keeps
+                            the server from being steered at cloud metadata
+                            or LAN-internal services (SSRF). data: URLs are
+                            always fine; the 10 s timeout and 64 MB response
+                            cap apply either way.
 
 Model & quality:
   --adapter <dir>           Mount a LoRA adapter at startup and use it as the
@@ -871,6 +879,10 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   };
   const route = applyDecodeRoute(); // --l1/--l2 tier alias, with per-fork flags overriding
   if (flag("force-wire")) process.env.MLX_BUN_FORCE_WIRE = "1";
+  // Remote image_url/audio_url media fetches block private/loopback/link-
+  // local destinations by default (SSRF — src/media-fetch.ts); this is the
+  // LAN-hosts escape hatch.
+  if (flag("allow-private-media")) process.env.MLX_BUN_ALLOW_PRIVATE_MEDIA = "1";
 
   const serverOptions: import("./server").ServerOptions = {};
   const budgetGB = Number(opt("memory-budget", "0"));
