@@ -93,6 +93,14 @@ export interface ServerOptions {
    *  <bits>]` sets this instead of kvQuant). Solo-only in v1 — see
    *  GenerationGateway's explicit refusal. */
   turboQuant?: TurboQuantScheme;
+  /** OPTIONAL paged KV cache (`--paged-kv`, docs/design/paged-kv-cache.md):
+   *  vLLM-style block-pool storage for full-attention layers,
+   *  gather-to-contiguous before the stock SDPA. Default off (unset = the
+   *  plain KVCache path, byte-identical). v1 scope: serial batch=1,
+   *  Gemma4-family, bf16 — startup refuses `--batch N>1`, `--kv-quant`,
+   *  turbo, and `--draft-model` combinations; paged requests bypass the
+   *  prompt cache and run uncompiled. Gated bit-exact vs the plain path. */
+  pagedKv?: { blockSize?: number };
   /** Memory budget for the serving process (admission control — Phase 5).
    *  Requests whose prompt + max_tokens exceed the budget's max safe
    *  context are rejected with 400 instead of crashing the GPU: the OOM
@@ -1429,6 +1437,41 @@ export function createServer(
           `(docs/design/turboquant-kv.md) — use --kv-quant config|4|8 or omit it`,
       );
   }
+  // Paged KV v1 (docs/design/paged-kv-cache.md): explicit refusals, not
+  // silent downgrades — the incompatible combos would otherwise degrade
+  // quietly (batch: paged caches can't merge; kv-quant: the swap would
+  // drop the scheme, the exact composition bug the kvQuant gate above
+  // exists to prevent; draft: the spec lane assumes serial-class caches).
+  if (serverOptions.pagedKv) {
+    if (batch > 1)
+      throw new Error(
+        `--paged-kv is serial-only in v1 — add --batch 1 (got --batch ${batch}). ` +
+          `Batched paging is the follow-up PR (docs/design/paged-kv-cache.md).`,
+      );
+    if (kvScheme.kvBits || kvScheme.kvConfig?.length || kvScheme.turboQuant)
+      throw new Error(
+        `--paged-kv is bf16-only in v1 — omit --kv-quant (quantized paged ` +
+          `blocks are a documented follow-up, docs/design/paged-kv-cache.md).`,
+      );
+    if (ctx.draft)
+      throw new Error(
+        `--paged-kv cannot combine with --draft-model in v1 ` +
+          `(docs/design/paged-kv-cache.md non-goals).`,
+      );
+    if (!ctx.model.config.modelType.startsWith("gemma4"))
+      throw new Error(
+        `--paged-kv v1 supports Gemma4-family models only ` +
+          `(this model: ${ctx.model.config.modelType}) — docs/design/paged-kv-cache.md.`,
+      );
+    const bs = serverOptions.pagedKv.blockSize;
+    if (bs !== undefined && (!Number.isInteger(bs) || bs <= 0))
+      throw new Error(`--paged-kv-block-size must be a positive integer (got ${bs})`);
+    if (serverOptions.ssdCacheDir)
+      console.warn(
+        "[paged-kv] --ssd-cache has no effect: paged requests bypass the prompt " +
+          "cache (v1 non-goal), so nothing reaches the SSD tier.",
+      );
+  }
 
   // SSD cold tier (docs/design/ssd-kv-cold-tier.md): prefix KV survives RAM
   // eviction and restarts. Compatibility key = configFingerprint (graph
@@ -1556,7 +1599,10 @@ export function createServer(
       !options.logprobs &&
       !options.kvBits &&
       !options.kvConfig &&
-      !options.turboQuant
+      !options.turboQuant &&
+      // Belt: --paged-kv + --draft-model is refused at createServer; this
+      // keeps the spec lane paged-free even for programmatic callers.
+      !options.pagedKv
     ) {
       const { specServeRun } = await import("./spec/serve-loop");
       return specServeRun(
@@ -1567,9 +1613,19 @@ export function createServer(
     // Cache entries are adapter-specific: KV computed under one adapter
     // must never seed another's (or the base's) prefill.
     const cacheNs = options.adapters?.join("+") ?? "";
+    // Paged-KV request scope (docs/design/paged-kv-cache.md): media
+    // prompts (bidir overlay) and LoRA-adapter requests are v1 non-goals —
+    // they run the PLAIN cache path even under --paged-kv (scope the flag
+    // per request, never 400). Effective value computed ONCE so the
+    // prompt-cache bypass below and the generate() options can't disagree.
+    const pagedKv = vision || options.adapters?.length ? undefined : options.pagedKv;
+    // Paged requests bypass the prompt cache entirely (v1 non-goal:
+    // PagedKVCache has no cloneKvCaches/restore path — the vision
+    // precedent). Fresh caches per request, disposed on completion.
+    const skipPromptCache = Boolean(vision || pagedKv);
     // Both tiers in one call (Layer 0): take() prefers a strictly-longer
     // SSD prefix, restores it zero-copy, and trims — see PromptCache.take.
-    const entry = vision ? null : promptCache.take(promptIds, cacheNs);
+    const entry = skipPromptCache ? null : promptCache.take(promptIds, cacheNs);
     const caches = entry?.caches ?? ctx.model.makeCache();
     // Prompt-boundary snapshot (the multi-turn agent fix, 2026-07-04): the
     // prompt+gen entry put() below is UNTRIMMABLE at context > sliding
@@ -1591,10 +1647,11 @@ export function createServer(
     // past the cached prefix; the clone is zero-copy views, so re-putting
     // is ~free.
     const snapshotBoundary =
-      !vision && boundary >= 256 && boundary > (entry?.tokens.length ?? 0);
+      !skipPromptCache && boundary >= 256 && boundary > (entry?.tokens.length ?? 0);
     try {
       const gen = generate(ctx.model, promptIds, {
         ...options,
+        pagedKv, // request-scoped (undefined strips the server-wide flag)
         cache: caches,
         ...(snapshotBoundary
           ? {
@@ -1625,7 +1682,9 @@ export function createServer(
         if ((await onToken(t.token, t.logprobs)) === false) break;
       }
       const s = gen.stats!; // set on completion AND on early break
-      if (vision) {
+      if (skipPromptCache) {
+        // Vision and paged-KV requests own their caches for exactly one
+        // generation (paged: v1 non-goal — no PromptCache integration).
         for (const c of caches) c.dispose();
       } else {
         // put() fires onPut → the debounced write-behind SSD snapshot
@@ -1893,6 +1952,9 @@ export function createServer(
       stopSequences: (typeof req.stop === "string" ? [req.stop] : req.stop ?? [])
         .filter((s) => typeof s === "string" && s.length > 0),
       ...kvScheme,
+      // Paged KV is a server-wide mode like the kv scheme above (v1:
+      // serial bf16 gemma4 — the createServer refusals hold the invariants).
+      ...(serverOptions.pagedKv ? { pagedKv: serverOptions.pagedKv } : {}),
     };
   };
 
