@@ -37,7 +37,7 @@ user judges a local chat app by, we match or beat the best current
 implementation, or we make a written skip decision with a substrate reason.
 The acceptance test: nobody ever says "I miss how Ollama / LM Studio /
 Open WebUI / optiq had X." The axis-by-axis requirement table lives in
-[web-chat-beat-matrix.md](web-chat-beat-matrix.md) (11 axes, 112 capability
+[web-chat-beat-matrix.md](web-chat-beat-matrix.md) (12 axes, 116 capability
 rows, each MATCH / BEAT / SKIP-with-reason) — it is the coverage checklist
 every phase below is planned against. *(An earlier draft of this section
 framed the bet as "don't chase Open WebUI's breadth or LM Studio's polish";
@@ -558,6 +558,49 @@ permission dialog into a legible, reviewable log — the natural trust story
 for a single-user local product that structurally doesn't need Open WebUI's
 sandbox theater.
 
+### 6.6 The app-aware assistant (added 2026-07-06)
+
+The chat agent can see and act on the app it lives in. Verified against the
+full beat matrix: **no product in the surveyed field has this** (matrix
+Axis 12). Reference implementation proven in-house on the same pi SDK:
+`~/Code/PortfolioManager`.
+
+Mechanism — three tools plus one client loop, no screenshots, no vision
+model in the loop:
+
+1. **See**: on route change the web app pushes a structured `uiSnapshot`
+   (visible interactive elements + labeled regions as
+   `{ref, label, role, selector}`, ~120-element cap, agent chrome
+   excluded) as a `context` WS frame; a `get_current_app_context` tool
+   returns it. The screenshot→upload→"what am I looking at" round-trip
+   disappears because the app narrates itself, locally.
+2. **Navigate**: `navigate_app` validated against a curated route catalog
+   (`data-spotlight` anchors + route map, PortfolioManager's
+   `ui-catalog.json` pattern) → `ui_navigate` frame → the browser routes.
+   "Take me to Quantize" literally clicks the tab. Reversible, no approval
+   needed.
+3. **Point**: `spotlight_ui` locates a control by ref/label/catalog-id,
+   optionally navigates first, and highlights it with a hint popover
+   (hand-rolled backdrop-cutout overlay in our tokens, ~80 lines —
+   no vendored tour library needed), auto-dismissing.
+
+Why it's ours to win: (a) our web chat IS a pi agent over WS — the port is
+mechanical (`pi-web.ts` tools + two frames + a snapshot builder in the
+app); (b) it resolves the Developer-toggle discoverability tension §8
+creates — hidden capability becomes conversationally discoverable ("can
+this make a smaller model?" → reveal, navigate, spotlight); (c) the
+escalation nobody else can ship: approval-gated `ui_act` tools (fill this
+form, start this job) rendered through the §6.5 approval-card trust
+surface — guided *actions* with visible allow/deny, where PortfolioManager
+deliberately stops at navigate+point and generic computer-use agents act
+with no in-app trust model at all; (d) with the memory vault, "take me to
+that adapter I trained last week" actually resolves.
+
+Scope guard: the snapshot never includes cross-origin content; the three
+tools live on the pi-web bridge only (never the OpenAI/Anthropic API
+surface); `ui_act` is Phase 5 and requires the Phase-2 approval surface
+first.
+
 ---
 
 ## 7. Tech-stack & architecture decision
@@ -691,7 +734,12 @@ Status / Curves / Routes) behind a single top-level split:
 This is not hiding capability — it's matching disclosure to audience. A
 user who never intends to quantize a model should never see that tab; a
 developer flips one switch once and gets everything, including the existing
-tabs completely unchanged in their internal design. Status's RAM/KV "Memory"
+tabs completely unchanged in their internal design. The app-aware assistant
+(§6.6) is the escape hatch that makes the collapse safe: hidden capability
+stays conversationally discoverable — "can this make a smaller model?" and
+the agent reveals the Developer tabs, navigates, and spotlights the control,
+so progressive disclosure never becomes buried capability (risk #4's
+strongest mitigation). Status's RAM/KV "Memory"
 card keeps its current meaning (system memory) — the personal-memory vault
 gets its own distinctly-named panel (§5.5) precisely to avoid the homonym
 confusion the audit flagged.
@@ -875,6 +923,14 @@ Each item names its matrix axis.)
   opt-in per-turn confidence overlay.
 - HLG tone-curve controls folded into the main chat composer (currently
   disconnected, only reachable via the standalone Curve Designer page).
+- **App-aware assistant v1** (§6.6, matrix Axis 12): `uiSnapshot` context
+  push on route change, `get_current_app_context` + `navigate_app` +
+  `spotlight_ui` tools on the pi-web bridge, curated route/anchor catalog,
+  hand-rolled spotlight overlay. Small (~a few hundred lines, pattern
+  proven in `~/Code/PortfolioManager` on the same pi SDK) — pull forward
+  into Phase 3 if that phase lands light; it belongs here thematically
+  (trust: the agent shows you where things are instead of describing
+  blind).
 
 ### Phase 5 — Stretch differentiators (ongoing, pick 1-2 per quarter after Phase 4)
 
@@ -903,6 +959,13 @@ The next tier of unmistakable bets:
 - Mermaid diagram rendering (matrix Axis 2 — add if the code-heavy audience
   demands it; completed-block hook makes it cheap to slot in).
 - Vector upgrade to chat-with-files RAG (BM25 v1 → `src/embed.ts` hybrid).
+- **Approval-gated `ui_act` tools** (§6.6 escalation): the app-aware
+  assistant graduates from navigate+point to fill-this-form /
+  start-this-job, every action rendered through the approval-card gate
+  with argument preview — guided actions with a visible trust surface,
+  which neither PortfolioManager (stops at navigate+point) nor generic
+  computer-use agents (act with no in-app trust model) ship. Requires
+  Phase 2's approval surface + Phase 4's v1.
 
 ---
 
@@ -964,7 +1027,7 @@ The next tier of unmistakable bets:
    pattern) so the "off switch" is never more than one click from the
    panel that shows the most.
 8. **(Added 2026-07-06) The superset doctrine balloons scope until nothing
-   ships.** Matching 112 matrix rows is a quarter-plus of work; the
+   ships.** Matching 116 matrix rows is a quarter-plus of work; the
    original wedge-only framing failed by conceding too much, and the
    correction can fail by attempting everything at once. Mitigation: the
    phases stay independently shippable and strictly ordered

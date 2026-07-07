@@ -221,6 +221,28 @@ Verdict legend:
 
 ---
 
+## Axis 12 — App-aware assistant (added 2026-07-06, from the PortfolioManager evaluation)
+
+The chat agent can see and act on the app it lives in — a structured DOM
+snapshot (no screenshots, no vision round-trip), agent-driven navigation,
+and element spotlighting. Verified against every other axis: **no product
+in the surveyed field has any of this** — the nearest neighbors are generic
+browser-automation agents (wrong tool, heavyweight) and static product
+tours (not conversational). Reference implementation:
+`~/Code/PortfolioManager` (`server/src/agent/{ui-catalog,portfolio-tools}.ts`,
+`client/src/lib/{ui-snapshot,spotlight,resolve-spotlight}.ts`,
+`ui-catalog.json`) — same pi SDK as our `src/pi-web.ts`, so the port is
+mechanical.
+
+| Capability | Best today | Verdict | What beating them concretely requires | Backend status |
+|---|---|---|---|---|
+| Agent sees the live UI (structured snapshot, not pixels) | Nobody in the field; PortfolioManager (private) proves the mechanism: on route change the browser pushes a `uiSnapshot` of visible interactive elements + labeled regions ({ref, label, role, selector}, ~120-element cap, agent chrome excluded) as a WS `context` frame; a `get_current_app_context` tool returns it | BEAT | Add the snapshot builder to the web app + a `context` ClientMessage + the read tool in `pi-web.ts`. Snapshot is DOM-derived (a11y-tree-like) — kills the screenshot→upload→describe round-trip entirely, locally, with no vision model in the loop | new build (small; pattern proven in-house) |
+| Agent navigates the app for you ("take me to Quantize" → it clicks the tab) | Nobody; PortfolioManager's `navigate_app` validates against a curated `ui-catalog.json` route map → `ui_navigate` WS frame → browser routes | BEAT | Catalog our routes (incl. Developer-toggle views) + the tool + frame. Navigation is reversible and safe — no approval needed. Synergy: resolves the Developer-toggle discoverability tension (§8) — hidden tabs become conversationally discoverable | new build (small) |
+| Agent spotlights a control with a hint ("the source-model field is here") | Nobody; PortfolioManager's `spotlight_ui` locates by ref/label/selector/catalog-id, optionally navigates first, highlights via overlay + popover, auto-dismisses | BEAT | Curated `data-spotlight` anchors on stable controls + a hand-rolled overlay (backdrop cutout + popover, ~80 lines, matches our tokens — no need to vendor driver.js). The agent answers "how do I X here?" by pointing at the actual screen | new build (small) |
+| Approval-gated agent UI actions (fill this form, start this job) | Nobody — PortfolioManager deliberately stops at navigate+point; generic computer-use agents act but with no in-app trust surface | BEAT (stretch) | Route `ui_act` tools (set field, submit job) through the EXISTING approval-card gate (`installApprovalGate`) so guided actions render as visible allow/deny cards with argument preview — the trust model no browser-automation layer has. Phase 5; requires the approval surface from Phase 2 to be live first | new build (moderate; approval gate exists) |
+
+---
+
 ## The 10 beats
 
 Ranked by (visible wow) × (structural defensibility) — the ten rows where
@@ -281,3 +303,9 @@ equal.
     server-side indexing has a cost model we don't have locally. Demo:
     search a phrase buried in the middle of a months-old conversation and
     jump straight to it.
+11. **The app-aware assistant (Axis 12 — added 2026-07-06).** Nobody's
+    local chat agent can see the app it lives in; on onboarding wow alone
+    this ranks top-3. Demo: ask "how do I make a smaller model?" — the
+    assistant answers from the live screen, reveals the Developer tabs,
+    navigates to Quantize, and spotlights the source-model field, with
+    zero screenshots taken.
