@@ -190,3 +190,25 @@ _No Lab quality runs recorded yet._ This section is the home for a Lab
 experiment's quality measurements when it's promoted (the bar:
 paired-A/B win vs L1 on a stable pass + KL PASS — see
 docs/design/unified-engine-frontier-plan.md §6-7).
+
+### TurboQuant KV quality-vs-bpw (2026-07-06, M1 Max 32 GB, MiniCPM5-1B)
+
+Opt-in memory/context scheme (`--kv-quant turbo[:k<bits>v<bits>]`), not a
+speed lever. Teacher-forced serving-decode KL vs bf16 KV (8×128 tokens, 32
+decode steps, `scripts/eval-turboquant-curve.ts`); affine rows same harness:
+
+| scheme | effective KV bits | KV compression | mean KL vs bf16 |
+|---|---|---|---|
+| uniform kv8 (g64) | 8.50 | 1.88× | 0.00246 |
+| turbo k8v8 | 8.75 | 1.83× | 0.00214 |
+| turbo k8v4 | 6.75 | 2.37× | 0.00936 |
+| **turbo k8v3 (default)** | **6.25** | **2.56×** | **0.0325** |
+| uniform kv4 (g64) | 4.50 | 3.56× | 0.0516 |
+| turbo k4v3 | 4.25 | 3.76× | 0.0622 |
+| turbo k4v2 | 3.75 | 4.27× | 0.205 |
+
+Read: turbo k8v3 beats uniform kv4's KL at 2.56× compression; k4v3 is
+on-curve with affine at matched bits; 2-bit values are the cliff (matches
+the TurboQuant paper's law). Codec is bit-exact vs the vendored vllm-metal
+reference (goldens/turboquant.json); details in
+docs/design/turboquant-kv.md.

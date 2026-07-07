@@ -26,7 +26,7 @@ import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import { Registry } from "../registry";
 import { Weights } from "../weights";
-import { loadModelConfig, type ModelConfig } from "../config";
+import { loadModelConfig, type ModelConfig, type TurboQuantScheme } from "../config";
 import { createModel, type RuntimeModel } from "../model/factory";
 import { loadTokenizer, type LoadedTokenizer } from "../tokenizer";
 import { maybeQuantizeKv } from "../generate";
@@ -223,10 +223,14 @@ function klScalar(p: Float32Array, q: Float32Array): number {
 }
 
 /** Prefill (bf16) → quantize → teacher-forced decode; return per-step logit
- *  distributions for the last `tokens.length - prefillLen` positions. */
+ *  distributions for the last `tokens.length - prefillLen` positions.
+ *  `kvOverride` replaces the default kvConfig-from-model-config scheme when
+ *  given — the seam evaluateKlKvArm uses to run a TurboQuant (or bf16-null)
+ *  arm instead of the env-flag self-flip. */
 function decodeArm(
   model: RuntimeModel, config: ModelConfig, tokens: number[], prefillLen: number,
   flag: string, value: string,
+  kvOverride?: Parameters<typeof maybeQuantizeKv>[1],
 ): Float32Array[] {
   const prev = process.env[flag];
   process.env[flag] = value;
@@ -237,7 +241,10 @@ function decodeArm(
       lp.dispose();
       // quantize the populated caches (mixed 4/8 per kv_config) — exactly
       // what generate() does between prefill and decode.
-      maybeQuantizeKv(cache, { kvConfig: config.kvQuant ?? undefined, quantizedKvStart: 0 });
+      maybeQuantizeKv(
+        cache,
+        kvOverride ?? { kvConfig: config.kvQuant ?? undefined, quantizedKvStart: 0 },
+      );
       const out: Float32Array[] = [];
       for (let i = prefillLen; i < tokens.length; i++) {
         const logits = model.forward([tokens[i]!], cache); // [1,1,V] quantized decode
@@ -290,5 +297,54 @@ export async function evaluateKlServingDecode(opts: {
     nPrompts: perPrompt.length, seqLen, meanKl: agg.mean, medianKl: agg.median, p95Kl: agg.p95,
     elapsedSec: (Date.now() - t0) / 1000,
     refLabel: `serving-decode self:${opts.flag}=${opts.refValue}→${opts.candValue} (${decodeSteps} steps)`,
+  };
+}
+
+/** KV-scheme A/B on the teacher-forced serving-decode path: bf16 baseline
+ *  (no kvOverride) vs an explicit KV scheme (e.g. TurboQuant), same model /
+ *  same prompts / same weight load — the quality-vs-bpw curve gate
+ *  (scripts/eval-turboquant-curve.ts). Unlike evaluateKlServingDecode (env-flag
+ *  self-flip), the two arms differ by an actual GenerateOptions kv scheme
+ *  object, so this is the seam for schemes that aren't env-lever-shaped. */
+export async function evaluateKlKvArm(opts: {
+  candidate: string;
+  /** Undefined ⇒ bf16 (no quantization). */
+  candidateScheme?: { turboQuant?: TurboQuantScheme; kvBits?: number; kvConfig?: ModelConfig["kvQuant"] };
+  prompts: string[];
+  nPrompts?: number;
+  seqLen?: number;
+  decodeSteps?: number;
+}): Promise<KLResult> {
+  const t0 = Date.now();
+  const n = opts.nPrompts ?? 64;
+  const seqLen = opts.seqLen ?? 256;
+  const decodeSteps = opts.decodeSteps ?? 32;
+  const { model, tokenizer, config } = await loadRunnable(opts.candidate);
+  const tokenized = prepPrompts(opts.prompts, tokenizer, seqLen, n);
+  const noopFlag = "MLX_BUN_EVAL_KV_ARM_NOOP"; // decodeArm always flips a flag; this one is inert
+  const refKv = {}; // bf16: maybeQuantizeKv no-ops with no kvBits/kvConfig/turboQuant
+  const candKv = opts.candidateScheme
+    ? { ...opts.candidateScheme, quantizedKvStart: 0, kvConfig: opts.candidateScheme.kvConfig ?? undefined }
+    : {};
+
+  const perPrompt: Float32Array[] = [];
+  for (const tokens of tokenized) {
+    if (tokens.length < 2) continue;
+    const prefillLen = Math.max(1, tokens.length - decodeSteps);
+    const refSteps = decodeArm(model, config, tokens, prefillLen, noopFlag, "0", refKv);
+    const candSteps = decodeArm(model, config, tokens, prefillLen, noopFlag, "0", candKv);
+    const m = Math.min(refSteps.length, candSteps.length);
+    const kls = new Float32Array(m);
+    for (let s = 0; s < m; s++) kls[s] = klScalar(refSteps[s]!, candSteps[s]!);
+    perPrompt.push(kls);
+  }
+
+  const agg = aggregate(perPrompt);
+  return {
+    nPrompts: perPrompt.length, seqLen, meanKl: agg.mean, medianKl: agg.median, p95Kl: agg.p95,
+    elapsedSec: (Date.now() - t0) / 1000,
+    refLabel: opts.candidateScheme?.turboQuant
+      ? `bf16 vs turbo k${opts.candidateScheme.turboQuant.kBits}v${opts.candidateScheme.turboQuant.vBits} (${decodeSteps} steps)`
+      : `bf16 vs kv-scheme (${decodeSteps} steps)`,
   };
 }

@@ -254,6 +254,8 @@ export class MlxArray {
       : dt === Dtype.float16 ? C.mlx_array_data_float16(this.handle)
       : dt === Dtype.bfloat16 ? C.mlx_array_data_bfloat16(this.handle)
       : dt === Dtype.uint32 ? C.mlx_array_data_uint32(this.handle)
+      : dt === Dtype.uint8 ? C.mlx_array_data_uint8(this.handle)
+      : dt === Dtype.int8 ? C.mlx_array_data_int8(this.handle)
       : null;
     if (p === null) throw new Error(`rawBytesView: unsupported dtype ${this.dtypeName}`);
     return new Uint8Array(toArrayBuffer(p!, 0, this.nbytes));

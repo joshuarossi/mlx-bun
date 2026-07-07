@@ -103,7 +103,7 @@ export interface GenOpts {
    *  serve's semantics). Overrides the MLX_BUN_EVAL_KV_QUANT env default; an empty
    *  object forces bf16. When it names quantized KV, generation runs the product
    *  generate() path (same tokens as `serve` with the same scheme). */
-  kvScheme?: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart">;
+  kvScheme?: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart" | "turboQuant">;
 }
 
 /** Bit-exact greedy decode: raw `model.forward` + argmax loop, which matches mlx-lm
@@ -159,7 +159,7 @@ export async function generateText(tm: TaskModel, body: string, opts: GenOpts = 
     (process.env.MLX_BUN_EVAL_KV_QUANT === "1" && tm.config.kvQuant?.length)
       ? { kvConfig: tm.config.kvQuant, quantizedKvStart: 0 } : undefined;
   const kvScheme = opts.kvScheme ?? envKv;
-  const kvActive = !!(kvScheme && (kvScheme.kvBits || kvScheme.kvConfig?.length));
+  const kvActive = !!(kvScheme && (kvScheme.kvBits || kvScheme.kvConfig?.length || kvScheme.turboQuant));
 
   // Parity default — greedy + full-precision KV + no sampler arm: decode bit-exactly
   // via the raw forward (matches mlx-lm token-for-token). Sampler arms / kv-quant fall

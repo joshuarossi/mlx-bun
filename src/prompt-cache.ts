@@ -24,7 +24,7 @@
 // reachable); onPut lets the server schedule its debounced write-behind
 // snapshot for both lanes.
 
-import type { Cache } from "./model/gemma4";
+import { TurboQuantKVCache, type Cache } from "./model/gemma4";
 import { cloneKvCaches } from "./kv-store";
 
 /** Reference-counted release: wraps an entry's `retain` (e.g. an mmap
@@ -104,7 +104,16 @@ export interface PromptCacheEntry {
 
 function cacheBytes(caches: Cache[]): number {
   let total = 0;
-  for (const c of caches) for (const a of c.state()) total += a.nbytes;
+  for (const c of caches) {
+    const state = c.state();
+    for (const a of state) total += a.nbytes;
+    // Most Cache kinds' state() returns their own live-owned arrays (safe
+    // to just read), but TurboQuantKVCache allocates fresh trimmed slice
+    // views per call (kv-store.ts snapshotCache/cloneKvCaches contract) —
+    // those must be disposed here or they leak (see generate.ts
+    // evalCacheState for the same hazard on the prefill path).
+    if (c instanceof TurboQuantKVCache) for (const a of state) a.dispose();
+  }
   return total;
 }
 

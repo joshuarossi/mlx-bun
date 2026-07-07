@@ -58,6 +58,8 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_array_data_bfloat16: { args: [u64], returns: P },
   mlx_array_data_uint32: { args: [u64], returns: P },
   mlx_array_data_int32: { args: [u64], returns: P },
+  mlx_array_data_uint8: { args: [u64], returns: P },
+  mlx_array_data_int8: { args: [u64], returns: P },
   mlx_array_item_float32: { args: [P, u64], returns: i32 },
   // streams
   mlx_default_gpu_stream_new: { args: [], returns: u64 },
@@ -262,6 +264,16 @@ export const C = dlopen(LIBMLXC_PATH, {
   // GPU trace capture (Phase E step 2: size the prize before the kernel)
   mlx_metal_start_capture: { args: [cstring], returns: i32 },
   mlx_metal_stop_capture: { args: [], returns: i32 },
+  // TurboQuant KV codec (Phase 13): FWHT rotation + per-group affine/Lloyd-Max
+  // (res, a, opt scale, stream) — 1/sqrt(dim) normalization when scale is null.
+  mlx_hadamard_transform: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_min_axis: { args: [P, u64, i32, FFIType.bool, u64], returns: i32 },
+  mlx_round: { args: [P, u64, i32, u64], returns: i32 },
+  mlx_greater: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_bitwise_and: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_bitwise_or: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_left_shift: { args: [P, u64, u64, u64], returns: i32 },
+  mlx_right_shift: { args: [P, u64, u64, u64], returns: i32 },
 }).symbols;
 
 export type MlxHandle = bigint;

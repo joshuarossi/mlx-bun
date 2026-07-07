@@ -12,7 +12,7 @@
 import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { Registry } from "./registry";
-import { loadModelConfig } from "./config";
+import { loadModelConfig, parseTurboQuantScheme, type TurboQuantScheme } from "./config";
 import { fit, skuMatrix, thisMachine } from "./fit";
 import { EvalDB } from "./evaldb";
 import pkg from "../package.json" with { type: "json" };
@@ -143,12 +143,17 @@ Model & quality:
                             DSpark pins to its trained block width]
   --kv-quant <mode>         KV cache quantization: config (per-layer
                             kv_config.json when the model ships one), off
-                            (bf16), or 4 / 8 (uniform bits)
+                            (bf16), 4 / 8 (uniform bits), or turbo[:k<bits>v
+                            <bits>] (rotation-based TurboQuant — default
+                            k8v3; kBits in {2,4,5,8}, vBits in {2,3,4,5,8};
+                            docs/design/turboquant-kv.md)
                             [default: off — quantized KV measured 5-20% slower
                             decode than bf16 at ≤16k (on mlx-lm too); it buys
                             memory headroom, so opt in when context is tight.
                             The batched engine (--batch N) is bf16-only: an
-                            explicit --kv-quant routes those requests serial]
+                            explicit --kv-quant routes those requests serial.
+                            turbo is solo-only in v1 (full-attention layers
+                            only; sliding-window layers stay bf16)]
   --thinking <true|false>   Default for the chat template's enable_thinking
                             variable (CPM and other hybrid-reasoning models);
                             a request's chat_template_kwargs overrides it
@@ -348,8 +353,8 @@ Options:
   --tokens <n>         Tokens to decode per run  [default: 256]
   --runs <n>           Runs (median reported)  [default: 3]
   --prompt-tokens <n>  Pad the prompt to ~n tokens (long-context decode)
-  --kv-quant <mode>    config | off | 4 | 8  [default: off, the
-                       historical baseline]
+  --kv-quant <mode>    config | off | 4 | 8 | turbo[:k<bits>v<bits>]
+                       [default: off, the historical baseline]
 
 Kill switches (--compiled-decode, --compiled-activations, --fused-sdpa)
 apply to the run — A/B by running twice.`,
@@ -777,7 +782,7 @@ function openChatUi(url: string, hostPort: string): void {
  *  There is no --l3: output-changing experiments live in the Lab (env flags
  *  with a bench + expiry) until one beats the L1 baseline in a paired A/B —
  *  docs/design/unified-engine-frontier-plan.md §6-7. */
-function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
+function applyDecodeRoute(): { kvQuant?: "off" | "config" | number; turboQuant?: TurboQuantScheme } {
   const onOff = (name: string): boolean | null => {
     const v = opt(name); if (v == null) return null;
     if (v === "on" || v === "1" || v === "true") return true;
@@ -837,8 +842,19 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number } {
   if (kv === "off") return { kvQuant: "off" };
   if (kv === "config") return { kvQuant: "config" };
   if (kv) {
+    // TurboQuant (docs/design/turboquant-kv.md): a distinct axis from the
+    // affine kvQuant above — dequantize-on-fetch, stock unfused ops.sdpa,
+    // no kvQuant value at all (mutually exclusive with kvBits/kvConfig).
+    let turboQuant: TurboQuantScheme | null;
+    try {
+      turboQuant = parseTurboQuantScheme(kv);
+    } catch (e) {
+      console.error((e as Error).message);
+      process.exit(1);
+    }
+    if (turboQuant) return { turboQuant };
     const bits = Number(kv);
-    if (![4, 8].includes(bits)) { console.error(`--kv-quant expects config|off|4|8 (got "${kv}")`); process.exit(1); }
+    if (![4, 8].includes(bits)) { console.error(`--kv-quant expects config|off|4|8|turbo (got "${kv}")`); process.exit(1); }
     return { kvQuant: bits };
   }
   return { kvQuant: p.kv };
@@ -895,6 +911,7 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
     serverOptions.batch = n;
   }
   if (route.kvQuant !== undefined) serverOptions.kvQuant = route.kvQuant;
+  if (route.turboQuant !== undefined) serverOptions.turboQuant = route.turboQuant;
   // Bind loopback unless asked otherwise (mlx_lm.server parity); --host
   // 0.0.0.0 is the explicit opt-in for LAN exposure. The chat-UI open and
   // `mlx-bun pi` attach both go through localhost, so loopback-only is
@@ -973,7 +990,8 @@ async function mountStartupAdapter(
 
 /** One-line summary of the active runtime levers for the ready card. */
 function runtimeSummary(o: import("./server").ServerOptions): string {
-  const kv = o.kvQuant === "off" ? "off" : typeof o.kvQuant === "number" ? `kv${o.kvQuant}` : "config";
+  const kv = o.turboQuant ? `turbo-k${o.turboQuant.kBits}v${o.turboQuant.vBits}`
+    : o.kvQuant === "off" ? "off" : typeof o.kvQuant === "number" ? `kv${o.kvQuant}` : "config";
   const lever = (env: string, dflt: string) => process.env[env] ?? dflt;
   return `kv-quant ${kv} · compiled-decode ${lever("MLX_BUN_COMPILED_DECODE", "1") === "1" ? "on" : "off"}` +
     (lever("MLX_BUN_COMPILED_GEGLU", "1") === "0" ? " · compiled-activations off" : "") +
@@ -1499,7 +1517,8 @@ switch (cmd) {
     // start. Unset (no tier, no --kv-quant) keeps generate's historical
     // default: bf16 bit-exact greedy (generateText's parity path).
     const kvScheme =
-      route.kvQuant === "off" ? {}
+      route.turboQuant ? { turboQuant: route.turboQuant, quantizedKvStart: 0 }
+      : route.kvQuant === "off" ? {}
       : route.kvQuant === "config"
         ? (tm.config.kvQuant?.length ? { kvConfig: tm.config.kvQuant } : {})
       : typeof route.kvQuant === "number"
@@ -1620,7 +1639,16 @@ switch (cmd) {
     const rendered = template.render([{ role: "user", content: userMsg }]);
     const ids = tok.encode(rendered);
     const promptIds = ids[0] === ids[1] && ids[0] === tok.bosTokenId ? ids.slice(1) : ids;
-    const kvOptions = kvMode === "config"
+    let turboScheme: TurboQuantScheme | null;
+    try {
+      turboScheme = parseTurboQuantScheme(kvMode);
+    } catch (e) {
+      console.error((e as Error).message);
+      process.exit(1);
+    }
+    const kvOptions = turboScheme
+      ? { turboQuant: turboScheme, quantizedKvStart: 0 }
+      : kvMode === "config"
       ? (() => {
           if (!config.kvQuant?.length) { console.error("model has no kv_config.json (--kv-quant config)"); process.exit(1); }
           return { kvConfig: config.kvQuant };
@@ -1674,7 +1702,7 @@ switch (cmd) {
       `decode    ${style.green(style.bold(`${median(decodes).toFixed(1)} tok/s`))} ${style.dim(`median of ${runs} · [${decodes.map((d) => d.toFixed(1)).join(", ")}]`)}`,
       `prefill   ${style.bold(`${median(prefills).toFixed(0)} tok/s`)} ${style.dim(`· ${lastStats.promptTokens} prompt tokens`)}`,
       `peak mem  ${style.bold(gb(peak))} ${style.dim("(generation only)")}`,
-      `levers    ${style.dim(runtimeSummary({ kvQuant: kvMode === "off" ? "off" : kvMode === "config" ? undefined : Number(kvMode) }))}`,
+      `levers    ${style.dim(runtimeSummary(turboScheme ? { turboQuant: turboScheme } : { kvQuant: kvMode === "off" ? "off" : kvMode === "config" ? undefined : Number(kvMode) }))}`,
       "",
       style.dim("recorded to the eval DB — see mlx-bun evals"),
     ]);

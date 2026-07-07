@@ -785,7 +785,12 @@ rename. **Josh-gated GPU:** data scale + **12B retarget** + train + live-τ
 2. **Phase 14 — Qwen3.6-27B confirmation** (~15 GB download):
    `bun scripts/regen-qwen-parity-goldens.ts 27b` then
    `MLX_BUN_TEST_QWEN35=1 bun test tests/qwen-parity.test.ts`.
-3. **Phase 13 — TurboQuant** (promoted research direction).
+3. ~~**Phase 13 — TurboQuant**~~ **v1 LANDED 2026-07-06** — `--kv-quant
+   turbo[:k<bits>v<bits>]`, oracle = vllm-metal (vendored, bit-exact codec
+   goldens), quality-vs-bpw curve gate passed on MiniCPM5-1B (k8v3 = 6.25
+   effective bits @ KL 0.0325, beats uniform kv4). See PLAN.md Phase 13 +
+   docs/design/turboquant-kv.md. Remaining follow-ups are non-goals recorded
+   there (fused kernel, rotating layers, batching, QJL).
 4. **Vision remainder** — audio tower + 26B/31B SigLIP (e4b + 12B live).
 5. **e4b ORPO overnight** + resuming the CPM5 UF run (own-shell `nohup`).
 

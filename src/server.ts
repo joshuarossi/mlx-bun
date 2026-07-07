@@ -20,7 +20,7 @@ import pkgJson from "../package.json" with { type: "json" };
 import { readFileSync } from "node:fs";
 const APP_PAGE = appHtml as unknown as string;
 const pkgVersion = (pkgJson as { version: string }).version;
-import { loadModelConfig, type KvQuantSpec, type ModelConfig } from "./config";
+import { loadModelConfig, type KvQuantSpec, type ModelConfig, type TurboQuantScheme } from "./config";
 import { Weights } from "./weights";
 import { Gemma4Model } from "./model/gemma4";
 import { DiffusionGemmaModel } from "./model/diffusion-gemma";
@@ -84,6 +84,11 @@ export interface ServerOptions {
    *  the serial path); "off" forces bf16; a number forces uniform bits
    *  (group size 64, start 0) ignoring the config file. */
   kvQuant?: "off" | "config" | number;
+  /** TurboQuant scheme (docs/design/turboquant-kv.md): a separate axis from
+   *  kvQuant above, mutually exclusive with it (`--kv-quant turbo[:k<bits>v
+   *  <bits>]` sets this instead of kvQuant). Solo-only in v1 — see
+   *  GenerationGateway's explicit refusal. */
+  turboQuant?: TurboQuantScheme;
   /** Memory budget for the serving process (admission control — Phase 5).
    *  Requests whose prompt + max_tokens exceed the budget's max safe
    *  context are rejected with 400 instead of crashing the GPU: the OOM
@@ -1224,8 +1229,9 @@ export function createServer(
   // whose presets pass it explicitly). The CLI always passes kvQuant now;
   // this fallback is the library-user default and matches the CLI's.
   const configScheme = ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};
-  const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart"> =
-    serverOptions.kvQuant === "off" ? {}
+  const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart" | "turboQuant"> =
+    serverOptions.turboQuant ? { turboQuant: serverOptions.turboQuant, quantizedKvStart: 0 }
+    : serverOptions.kvQuant === "off" ? {}
     : serverOptions.kvQuant === "config" ? configScheme
     : typeof serverOptions.kvQuant === "number"
       ? { kvBits: serverOptions.kvQuant, quantizedKvStart: 0 }
@@ -1240,6 +1246,14 @@ export function createServer(
         `quantized KV is serial-only (it touches rotating layers) — those requests ` +
         `won't batch. Use --kv-quant config for batched mixed-precision KV, or omit ` +
         `--kv-quant to batch in bf16. (docs/design/unified-engine-frontier-plan.md)`,
+    );
+  // TurboQuant is solo-only in v1 (novel cache class, not batchable by
+  // construction — see GenerationGateway#modelCachesBatchable/willBatch).
+  if (batch > 1 && kvScheme.turboQuant)
+    console.warn(
+      `[batch] --batch ${batch} with --kv-quant turbo: TurboQuant is serial-only in v1 ` +
+        `— those requests won't batch. Omit --kv-quant to batch in bf16. ` +
+        `(docs/design/turboquant-kv.md)`,
     );
 
   // SSD cold tier (docs/design/ssd-kv-cold-tier.md): prefix KV survives RAM
@@ -1258,7 +1272,9 @@ export function createServer(
   if (serverOptions.ssdCacheDir) {
     if (promptCacheCap <= 0)
       throw new Error("--ssd-cache requires the RAM prompt cache (--prompt-cache 0 disables it)");
-    const schemeKey = kvScheme.kvBits
+    const schemeKey = kvScheme.turboQuant
+      ? `turbo-k${kvScheme.turboQuant.kBits}v${kvScheme.turboQuant.vBits}`
+      : kvScheme.kvBits
       ? `kv${kvScheme.kvBits}`
       : kvScheme.kvConfig?.length ? "config" : "bf16";
     const tokJson = readFileSync(`${ctx.model.config.modelDir}/tokenizer.json`);
@@ -1998,7 +2014,13 @@ export function createServer(
         const layerTypes = ctx.model.config.text.layerTypes;
         const kvLayers: Record<string, number> = {};
         let kvMode = "bf16";
-        if (kvScheme.kvBits) {
+        if (kvScheme.turboQuant) {
+          // v1: full-attention layers only (sliding-window stays bf16 —
+          // docs/design/turboquant-kv.md non-goal).
+          const fullAttn = layerTypes.filter((l) => l !== "sliding_attention").length;
+          kvMode = `turbo k${kvScheme.turboQuant.kBits}v${kvScheme.turboQuant.vBits}`;
+          kvLayers[`turbo-k${kvScheme.turboQuant.kBits}v${kvScheme.turboQuant.vBits}`] = fullAttn;
+        } else if (kvScheme.kvBits) {
           kvMode = `uniform-kv${kvScheme.kvBits}`;
           kvLayers[`kv${kvScheme.kvBits}`] = layerTypes.length;
         } else if (kvScheme.kvConfig) {
@@ -2518,6 +2540,7 @@ export function createServer(
           wantsLogprobs: captureLogprobs,
           userSeed: body.seed !== undefined,
           kvQuant: !!(options.kvConfig?.length || options.kvBits),
+          turboQuant: !!options.turboQuant,
           // grammarCtrl is null on the degrade path (prompt injection) —
           // those stay batchable. A real controller batches via per-row
           // matchers (MLX_BUN_GRAMMAR_BATCH=0 forces it serial).
@@ -2817,6 +2840,7 @@ export function createServer(
           wantsLogprobs: captureLogprobs,
           userSeed: body.seed !== undefined,
           kvQuant: !!(options.kvConfig?.length || options.kvBits),
+          turboQuant: !!options.turboQuant,
           // /v1/completions grammar (textGrammarCtrl). Same null-on-degrade
           // contract as the chat lane.
           hasGrammar: !!textGrammarCtrl,
