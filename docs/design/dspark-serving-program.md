@@ -36,16 +36,17 @@ quantization must answer is PRESERVATION: do we still get that number at
 never compression for its own sake — it's cutting the drafter's cost 4×
 WITHOUT making it terrible at predicting tokens.
 
-**Sensitivity is MEASURED, never guessed (Josh):** the acceptance A/B is a
-one-number oracle, so the per-tensor sensitivity map is an experiment, not
-an argument — quantize ONE tensor group at a time (rest bf16), run the A/B,
-tabulate (~10 groups × one cheap run each; Phase 1e). Allocation decisions
-(which tensors get more bits) come from that table. Hypotheses the table
-will test, recorded for falsification only: lm_head is argmax-proximal
-(noise lands on the exact-match logits); the γ-block chains one flipped
-draft into all deeper positions; layers are norm/residual-buffered; embed
-is gather-only. Phase 1.5 (fine-tune) is an OPTIONAL UPSIDE lever on top of
-the workable baseline, not a premise that acceptance is broken.
+**Sensitivity is MEASURED, never guessed — and THE TOOL ALREADY EXISTS
+(Josh): optiq's sensitivity method** (mlx-optiq.com/docs/sensitivity —
+per-group simulate-quant → KL vs reference on a curated calibration mix →
+greedy knapsack allocation to target BPW, emitted as a quant predicate).
+Phase 1e adopts it for the drafter rather than inventing anything; the
+drafter's target-hiddens-in forward even makes it cheaper (cached hiddens →
+no 12B in the sweep loop). Allocation comes from the measured table;
+hypotheses (lm_head argmax-proximal, chain compounding, buffered layers)
+are recorded for falsification only. Phase 1.5 (fine-tune) is an OPTIONAL
+UPSIDE lever on top of the workable baseline, not a premise that acceptance
+is broken.
 
 **And TurboQuant's role, stated right (Josh): TQ is the better-quant-at-
 EQUAL-bits instrument — the preservation tool, not a compression ladder.**
@@ -117,13 +118,24 @@ mlx-native group quantization, no research dependency.
   acceptance drop ≤ 3 points absolute AND wall-clock strictly improves;
   record both. If 4-bit alone flips spec past serial — say so loudly in the
   handoff, that's the headline.
-- [ ] **1e. The MEASURED sensitivity map** (only if 1d bleeds acceptance —
-  or run anyway, it's ~10 cheap runs): quantize one tensor group at a time
-  (rest bf16) — {lm_head, embed, markov_w1, markov_w2, fc, per-layer
-  attn, per-layer mlp, conf} — one acceptance A/B each. Output: the
-  sensitivity TABLE that drives all mixed-precision allocation (5b′) and
-  falsifies/confirms the recorded hypotheses. `dspark-quantize-drafter.ts`
-  takes an `--only <group>` flag to make this a loop, not a project.
+- [ ] **1e. The MEASURED sensitivity map — ADOPT OPTIQ'S METHOD, don't
+  invent** (mlx-optiq.com/docs/sensitivity; source readable in the oracle
+  venv's `site-packages/optiq`). Their loop, verbatim: reference logits on
+  calibration data → simulate-quantize ONE group (quantize→dequantize
+  round-trip) → KL divergence on the full output distribution → restore →
+  next (group, bits); then their greedy knapsack (max KL-reduction per
+  extra bit) allocates to a target BPW. **Applied to the drafter it gets
+  CHEAPER than optiq's own runs**: the drafter isn't mlx_lm-loadable
+  (its forward needs target hiddens), so `optiq convert` can't run on it
+  directly — but that same fact removes the 12B from the loop entirely.
+  Cache tapped hiddens ONCE over an optiq-style 6-domain calibration mix
+  (our PATH-B shard format stores exactly this), then the whole sweep is
+  drafter-forward-only KL: 3B × ~10 groups × candidate bits = minutes.
+  The knapsack's output config gets ONE end-to-end acceptance A/B (1c
+  harness) as confirmation — KL is the search signal, acceptance is the
+  ship gate. Their protected-tensor defaults (lm_head/embed highest bits,
+  first/last blocks) are noted as the static prior their own exact method
+  exists to replace — we run the exact method; the drafter is small.
 
 ## Phase 1.5 — acceptance upside (OPTIONAL; the baseline is already workable)
 
@@ -252,6 +264,12 @@ bpw), not deeper compression.
   margin becomes headroom for lower rungs. Only AFTER TQ-4 ≥ affine-4:
   the lower-bpw ladder (3.5 / 3.0 / 2.5) → acceptance-per-byte curve,
   knee adopted (dont-delete-optionality for the rest).
+- [ ] **5b″. TQ enters the 1e knapsack as candidate SCHEMES**, not a
+  separate framework: candidate set {affine-4, affine-8, TQ-4, TQ-3.5,…}
+  per group, measured KL cost each, same greedy allocation to target BPW —
+  optiq's method generalizes over schemes unchanged. The final mixed
+  artifact may be TQ-where-sensitive / affine-where-not, all from the
+  table.
 - [ ] **5b′. PER-TENSOR MIXED PRECISION rungs** (Josh, 2026-07-07). The
   intuition "only 5 layers = few knobs" undercounts: the drafter's mass is
   ~10 TENSOR GROUPS, and two of them are 58% of the bytes — `lm_head`
