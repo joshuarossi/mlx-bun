@@ -1077,6 +1077,10 @@ async function api(path, opts) {
   const text = await r.text();
   let data;
   try { data = text ? JSON.parse(text) : {}; } catch { data = { ok: false, error: text.slice(0, 400) || ("HTTP " + r.status) }; }
+  // OpenAI-envelope errors are {error:{message,…}} — unwrap to a string so
+  // callers can concatenate without printing "[object Object]".
+  if (data && data.error && typeof data.error === "object")
+    data.error = data.error.message || JSON.stringify(data.error).slice(0, 400);
   if (!r.ok && data.ok === undefined) data = { ok: false, error: data.error || data.message || ("HTTP " + r.status) };
   return data;
 }
@@ -1086,7 +1090,7 @@ async function api(path, opts) {
  * Server → client line protocol (JSON per `data:` line):
  *   {type:"log",  line}
  *   {type:"stage", stage, progress, message, output_dir?, adapter_path?}
- *   {type:"metric", kind:"train"|"val", step, loss, lr?, tps?, progress?, message?}
+ *   {type:"metric", kind:"train"|"val", step, loss, learning_rate?, tokens_per_sec?, progress?, message?}
  *   {type:"done"}  {type:"failed", error}
  * Returns the EventSource so callers can .close().
  */
@@ -1680,8 +1684,12 @@ controllers.chat = (() => {
   function renderQueue(q) {
     const bar = $("chat-queue");
     const parts = [];
-    if (q.steering) parts.push('<span class="qtag">steering: <b>' + esc(String(q.steering).slice(0, 60)) + "</b></span>");
-    if (q.followUp) parts.push('<span class="qtag">queued: <b>' + esc(String(q.followUp).slice(0, 60)) + "</b></span>");
+    // steering/followUp are arrays (pi-web queue_update) — an empty array is
+    // truthy, so gate on .length; show the latest steering note and one pill
+    // per queued follow-up.
+    const steering = q.steering || [];
+    if (steering.length) parts.push('<span class="qtag">steering: <b>' + esc(String(steering[steering.length - 1]).slice(0, 60)) + "</b></span>");
+    for (const f of q.followUp || []) parts.push('<span class="qtag">queued: <b>' + esc(String(f).slice(0, 60)) + "</b></span>");
     bar.innerHTML = parts.join("");
     bar.style.display = parts.length ? "flex" : "none";
   }
@@ -1845,7 +1853,7 @@ controllers.chat = (() => {
   async function addFiles(files) {
     for (const f of files) {
       if (f.type.startsWith("image/")) {
-        if (!visionCapable) { toast("This model can't see images — switch to the 12B for vision.", "err"); continue; }
+        if (!visionCapable) { toast("This model can't see images — serve a vision-capable model (look for the vision tag in the Library).", "err"); continue; }
         try { attachments.push({ id: ++attachSeq, kind: "image", name: f.name || "image", mimeType: f.type, data: await readDataUrl(f) }); }
         catch { toast("Couldn't read " + (f.name || "image"), "err"); }
       } else if (isTextFile(f)) {
@@ -1895,7 +1903,7 @@ controllers.chat = (() => {
     try { const d = await api("/v1/adapters/available"); list = (d && d.adapters) || []; } catch {}
     const cur = sel.value;
     sel.innerHTML = '<option value="">no adapter</option>' + list.map((a) =>
-      `<option value="${a.id}" data-path="${a.path}">${a.id}${a.rank ? " · r" + a.rank : ""}</option>`).join("");
+      `<option value="${esc(a.id)}" data-path="${esc(a.path)}">${esc(a.id)}${a.rank ? " · r" + esc(a.rank) : ""}</option>`).join("");
     if (cur && list.some((a) => a.id === cur)) sel.value = cur; // keep prior selection
   }
   async function onSelectAdapter(sel) {
@@ -2132,12 +2140,14 @@ controllers.quantize = (() => {
     const d = await api("/api/quantize/inspect", { method: "POST", body: { model_id: id } }).catch(() => ({ ok: false, error: "request failed" }));
     btn.disabled = false;
     if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "could not inspect this model") + "</div>"; return; }
-    const supported = d.support === "supported" || d.support === true || d.support === "ok";
-    const cls = supported ? "ok" : (d.support === "untested" ? "warn" : "err");
+    // inspectModel returns support: boolean (src/quantize/job.ts); size_gb
+    // can be 0 when a direct path bypasses the registry — hide it then.
+    const supported = d.support === true;
+    const cls = supported ? "ok" : "err";
     out.innerHTML =
       '<div class="flash ' + cls + '"><strong>' + esc(d.arch || d.model_id || id) + "</strong>" +
-      (d.size_gb != null ? " · " + esc(d.size_gb) + " GB" : "") +
-      " · " + (supported ? "supported" : esc(d.support || "unknown architecture")) + "</div>" +
+      (d.size_gb ? " · " + (+d.size_gb).toFixed(2) + " GB" : "") +
+      " · " + (supported ? "supported" : "not quantizable") + "</div>" +
       '<div class="btnrow"><button class="btn primary" id="q-continue">Continue</button></div>';
     $("q-continue").onclick = () => show(1);
   }
@@ -2314,8 +2324,8 @@ controllers.finetune = (() => {
           trainPts.push({ step: e.step, loss: e.loss });
           $("f-step").textContent = num(e.step);
           $("f-loss").textContent = e.loss != null ? e.loss.toFixed(4) : "—";
-          if (e.lr != null) $("f-curlr").textContent = e.lr.toExponential(2);
-          if (e.tps != null) $("f-curtps").textContent = e.tps.toFixed(1);
+          if (e.learning_rate != null) $("f-curlr").textContent = e.learning_rate.toExponential(2);
+          if (e.tokens_per_sec != null) $("f-curtps").textContent = e.tokens_per_sec.toFixed(1);
           if (e.progress != null) { const p = Math.round(e.progress * 100); $("f-bar").style.width = p + "%"; $("f-pct").textContent = p + "%"; }
           if (e.message) $("f-msg").textContent = e.message;
         }

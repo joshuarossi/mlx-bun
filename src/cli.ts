@@ -35,7 +35,7 @@ Usage: mlx-bun [command] [options]   (no command = serve)
 
 Commands:
   pi         Launch a pi coding-agent session on a local model (the appliance path)
-  serve      Start the OpenAI/Anthropic-compatible server + status page
+  serve      Start the OpenAI/Anthropic-compatible server + web app
   get        Download a model from Hugging Face (resumable, verified)
   ls         List downloaded models
   gc         Reclaim superseded model snapshots + dead blobs from the HF cache
@@ -62,7 +62,7 @@ Options:
 Examples:
   mlx-bun                          # download (first run) + serve + open the chat UI
   mlx-bun pi                       # start (download if needed) and chat with an agent
-  mlx-bun serve 12B                # serve the 12B; status page at http://localhost:8080/
+  mlx-bun serve 12B                # serve the 12B; web app at http://localhost:8080/
   mlx-bun train e4b --data ./prefs # ORPO LoRA fine-tune on {prompt,chosen,rejected} data
   mlx-bun get mlx-community/gemma-4-12B-it-OptiQ-4bit`;
 
@@ -270,7 +270,7 @@ ${SERVER_FLAGS}
 
 Endpoints: /v1/chat/completions, /v1/completions, /v1/messages, /v1/responses,
 /v1/models, /v1/adapters, /health, /stats, /fit, /library, /downloads —
-status page at /, browser chat at /chat`,
+web app at / (lands on chat) — /chat, /status, /quantize, /finetune, /dataset deep-link its views`,
 
   get: `mlx-bun get — download a model from Hugging Face
 
@@ -1089,7 +1089,7 @@ async function resolveModelAuto(query: string | null): Promise<{ m: import("./re
     await reg.scan();
     if (recRepo !== starterRepo) {
       console.log(`  ${style.dim(`downloading ${recRepo} (recommended for this Mac) in the background —`)}`);
-      console.log(`  ${style.dim("it becomes the default next run · progress on the status page (/downloads) · resumable")}`);
+      console.log(`  ${style.dim("it becomes the default next run · progress in the web app's Status view · resumable")}`);
       downloadModel(recRepo)
         .then(async () => {
           await new Registry().scan();
