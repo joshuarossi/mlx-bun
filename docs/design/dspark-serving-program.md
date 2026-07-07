@@ -29,6 +29,17 @@ has its own gate; the drafter-quantization thesis
 quant) the SAFEST: drafter numerics only move acceptance, never correctness,
 so the entire quality gate is one acceptance A/B.
 
+**THE OBJECTIVE, stated right (Josh, 2026-07-07): the point of a drafter is
+to predict tokens, not to be small.** speedup = τ·t_target/(t_draft+t_verify)
+— and our broken term is the NUMERATOR: 26–33% acceptance is a
+distribution-shift symptom (drafter trained on bf16 target hiddens, we feed
+it OptiQ-4bit hiddens), not a capability ceiling. The cost levers (Phases
+1–3) are necessary but subordinate: they set the size/speed point at which
+acceptance is then MAXIMIZED — quantization allocation, mixed-precision
+choices, and the fine-tune below all optimize acceptance-at-cost, never
+bytes for their own sake. A cheaper drafter that still predicts at 26% is
+just a cheaper bad predictor.
+
 ## Phase 0 — baseline + attribution (no code; Josh's shell for GPU runs)
 
 The scoreboard everything else is measured against. All directional runs
@@ -90,6 +101,37 @@ mlx-native group quantization, no research dependency.
   acceptance drop ≤ 3 points absolute AND wall-clock strictly improves;
   record both. If 4-bit alone flips spec past serial — say so loudly in the
   handoff, that's the headline.
+
+## Phase 1.5 — ACCEPTANCE RECOVERY (the τ phase — likely the biggest lever)
+
+The numerator work. Our 26–33% vs their bf16-target numbers is
+distribution shift with a known mechanism; every point of acceptance
+recovered multiplies ALL the cost work below.
+
+- [ ] **1.5a. Adaptation fine-tune on OUR target's hiddens** — their
+  checkpoint as init (the expensive pretraining is done; this is short
+  distribution adaptation, not their 10-epoch/38 TB run). The data comes
+  from OUR stack by construction: tap `[5,17,29,41,46]` hidden dumps from
+  the OptiQ-4bit 12B over on-distribution generations (the PATH-B regen
+  tooling extracts exactly this). OPEN DESIGN (resolve first): where the
+  gradient runs — (a) export our tapped-hidden shards into DeepSpec's
+  torch trainer format and fine-tune with THEIR code (MIT; least new code,
+  needs a torch box/venv and a shard-format bridge), vs (b) a training
+  path for the deepspec module in our stack (autograd through the port —
+  more work, fully local). Gate: acceptance A/B (1c harness) pre/post
+  fine-tune on held-out prompts; expected: a large chunk of the
+  bf16-vs-OptiQ gap closes.
+- [ ] **1.5b. Confidence-threshold activation** — at 26% acceptance the
+  scheduler is finally in its design regime: sweep the raw threshold
+  (their knob) and/or our calibrated thresholds; objective =
+  tokens-per-second, not τ (pruning doomed positions trades a little τ
+  for less wasted draft+verify work). Free: no code, the machinery
+  shipped in PR #19.
+- [ ] **1.5c. Quantify the target-fidelity axis** (measurement, not a
+  build): acceptance vs target quant — e.g. the same drafter against a
+  higher-fidelity 12B variant if one fits (mixed/8-bit tap-layer
+  experiments), to split "drafter needs adapting" from "target hiddens
+  are too degraded". Informs whether 1.5a alone suffices.
 
 ## Phase 2 — tighten `draftBlock` (replay the proven tightening)
 
@@ -190,9 +232,14 @@ customer — aggressive bpw, one-number gate.
   lm_head + 3-bit markov_w2 + 4-bit layers; 2-bit embed variants; k_proj
   (2 M params) 8-bit for free. The ~10-group space is small enough for a
   near-exhaustive sweep through the SAME one-number harness — unlike
-  sensitivity search on a full model. Sized honestly: second-order after
-  uniform 4-bit (~1.8 → ~1.3 GB resident, ~20% less read/round) — a
-  ladder rung, never a blocker.
+  sensitivity search on a full model. **Allocation objective (the point):
+  MAXIMIZE ACCEPTANCE AT A FIXED BYTE BUDGET, not minimize bytes** — the
+  sweep also runs the other direction: at the wall-clock-winning size,
+  which tensors deserve MORE bits to recover prediction quality (e.g.
+  8-bit lm_head + 3-bit embed may beat uniform-4 at equal bytes). Sized
+  honestly on the cost axis: second-order after uniform 4-bit — a ladder
+  rung, never a blocker; its acceptance-side upside is measured, not
+  assumed.
 - [ ] **5c.** If TurboQuant wins: fold the recipe into 4b's UX (the
   conversion the server offers is the TurboQuant one).
 
@@ -216,11 +263,18 @@ customer — aggressive bpw, one-number gate.
 0a (oracle gate, Josh: venv+GPU) ──┐
 0b (γ sweep, Josh: GPU)  ──────────┼─→ 1a→1b→1c→1d (quant baseline; 1d Josh GPU)
 0c (attribution, Josh: GPU) ───────┘        │
+                                            ├─→ 1.5 (ACCEPTANCE RECOVERY: the
+                                            │    τ phase — fine-tune on our
+                                            │    target's hiddens + threshold
+                                            │    sweep; 1.5a design first)
                                             ├─→ 2a-2c (tightening; CPU-gated)
 3a-3b (generator tap; parallel anytime) ────┤
                                             └─→ 4 (UX, needs 0–3 data)
 TurboQuant merge ─→ 5a-5c (reuses 1c harness) ─→ 6 (clean machine, Josh)
 ```
+Priority note: if forced to order by expected value, 1.5 (numerator) likely
+beats everything in 2–3 (denominator) — cost work amortizes better at every
+extra point of acceptance.
 
 Code phases (1a/1b/2/3/4-impl) are agent-runnable sessions; every GPU
 measurement is Josh's shell. Nothing except Phase 5 waits on TurboQuant —
@@ -231,7 +285,12 @@ Phases 0–4 can land first so TurboQuant drops into a finished harness.
 1. Spec wall-clock ≥ 1.3× serial on 12B at the recommended config,
    clean-machine paired — or a written verdict that it can't be reached and
    why (with the config left as a characterized default-off lever).
-2. The acceptance-per-byte curve exists (TurboQuant vs 4-bit vs bf16).
-3. The serving surface is documented, defaults decided per-pair and
+2. **Acceptance recovered and understood**: the OptiQ-shift gap is measured
+   (1.5c), the adaptation fine-tune's recovery is measured (1.5a), and the
+   shipped drafter's acceptance is the best achieved at its cost point —
+   the drafter predicts tokens; small was never the goal.
+3. The acceptance-per-byte curve exists (TurboQuant vs 4-bit vs mixed vs
+   bf16), with acceptance-at-fixed-budget allocation swept (5b′).
+4. The serving surface is documented, defaults decided per-pair and
    recorded, and a fresh `mlx-bun get` → serve → speedup flow works without
    reading any design doc.
