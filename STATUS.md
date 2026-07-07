@@ -631,8 +631,10 @@ design in [docs/design/audio-input-plan.md](docs/design/audio-input-plan.md).
 stack-arg ABI bug — see CLAUDE.md hard-won facts +
 lab/repro/bun-ffi-stack-args), §3.3 semantics resolved (audio strictly
 causal), fixtures + oracle goldens live (speech greedy = token-perfect
-transcription). Next action: A1 — src/audio/decode.ts (WAV→16 kHz mono)
-+ src/audio/features.ts (USM mel port) gated on the T0 mel goldens.
+transcription). Next action: A2 — src/audio/conformer.ts (SSCP + 12 Conformer blocks +
+clipped linears from the sidecar) gated on the T1 embed goldens. A1 DONE:
+mel port is 1-ulp-f32 from the oracle (the numpy f32 Hann window is baked
+in as the spec — see PLAN.md A1).
 
 ### Batched serving — engine live, wave-1 upgraded
 

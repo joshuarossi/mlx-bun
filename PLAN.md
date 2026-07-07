@@ -2500,10 +2500,21 @@ same splice/merge seams, same parity-tier ladder.
       RESOLVED in the design doc: audio strictly causal (audio presence
       disables the vision bidir overlay), per-layer ids zero the mm
       union, USM params are fixed defaults, boa/eoa splice-side.
-- [ ] **A1 decode + features** — `src/audio/decode.ts` (WAV→16 kHz mono,
-      afconvert fallback), `src/audio/features.ts` (USM mel, verbatim
-      port). Exit: T0 model-free gates green (mel tolerance; soft-token
-      count + spliced ids EXACT).
+- [x] **A1 decode + features** (2026-07-07) — `src/audio/decode.ts`
+      (RIFF/WAVE PCM16/24/32/f32, mean mixdown, linear resample; PCM16
+      /32768 = the oracle scaling) + `src/audio/features.ts` (USM mel
+      port: pad-to-128-multiple, 160-zero semicausal left pad, 321-frame
+      unfold, f32 Hann product, f64 rfft512, transformers-semantics HTK
+      filter bank, log+1e-3 floor). KEY FINDING: numpy builds the Hann
+      window in float32 and its vectorized f32 cos differs from
+      fround(Math.cos) by 1 ulp — that ulp log-amplifies to ~4.5e-4 in
+      quiet mel bins, so the oracle's exact 320 f32 window values are
+      BAKED into features.ts as the spec (with regen one-liner). With
+      them the port hits maxDiff = 1 ulp f32 (4.77e-7) vs the T0 mel
+      goldens — gated at 1e-5 in tests/audio-features.test.ts (7 tests,
+      model-free; golden-presence-gated per goldens/README.md). Soft
+      tokens + frame counts exact (40/159, 67/267). afconvert transcode
+      + spliced-ids exactness land with A3/A4 where those layers exist.
 - [ ] **A2 tower** — `src/audio/conformer.ts` (SSCP + 12 Conformer blocks
       + clipped linears + embed_audio, bf16, from the vision sidecar).
       Exit: T1 rel-RMSE gate vs oracle tower output.
