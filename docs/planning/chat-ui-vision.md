@@ -1,0 +1,50 @@
+# The mlx-bun chat surface: a vision
+
+*Draft vision, product/design lead pass — 2026-07-06. Bold stance: reimagine the chat surface from scratch. Companion to the market research and current-state audit that produced it; see `docs/planning/web-ui-pass-plan.md` for the tactical bug list and `docs/design/adapters-end-to-end.md` / `docs/design/memory-system.md` for the backend contracts this vision assumes.*
+
+## The feeling
+
+Open mlx-bun and it should feel like sitting down with someone who already knows you — not a search box you interrogate, not a terminal you configure, not a dashboard you administer. Every other local-AI chat UI (Open WebUI, LM Studio, Jan, Ollama's app) is, underneath the polish, the **same product**: a stateless request/response window in front of a model file. They compete on how many knobs they expose. We are not building a better knob panel. We are building the only chat surface where "it remembers what I told it three weeks ago, and it's faster than the thing it's replacing" is literally, verifiably true — and where the UI's job is to make that trust legible turn by turn, not assert it in marketing copy.
+
+`src/web/app.html` has already solved the hard infrastructure problem (streaming, tool-calls, sessions, steering) and completely missed the product problem: memory is invisible, LoRA routing is a bare `<select>`, and the first thing a new user sees is marketing copy about privacy with zero proof of personalization on screen. The redesign's job is not "add more tabs." It's: collapse the surface to what a person actually touches every day (chat), and make the three things nobody else can build — memory that becomes weights, routed adapters, an engine fast enough to show its work — into things you can *see happen*.
+
+## Five things that make this unmistakably not-Open-WebUI
+
+**1. Memory has a face, and it's a citation, not a settings toggle.**
+Every competitor's "memory" (ChatGPT, AnythingLLM, Odysseus) is a flat fact-list re-injected into a system prompt — legible after the fact, invisible during the conversation. We already run `memory_search`/`memory_read` silently on every turn (`src/memory/tools.ts`, wired into `webChatToolAllowlist`) and render them with the same generic wrench icon as `bash`. Instead: when a memory tool fires, render a distinct, quieter card — a small "📖 Photography" chip inline with the response — that expands on click to show the exact vault section that grounded that sentence. No context dump, no "as an AI with access to your notes" narration, just a footnote that proves the flywheel is real. This costs almost nothing: the event stream already distinguishes memory calls; we just have to stop rendering them like `bash`.
+
+**2. Adapters are personas you route to, not files you pick.**
+Nobody else has hot-swappable LoRA adapters with adapter-namespaced KV — not LM Studio, not Ollama, not Msty (whose "Persona Studio" is prompt-only). We already have `/v1/adapters`, three-tier state, and per-request injection; the UI throws it away on a `<select>` full of raw filenames. Instead: a **persona rail** above the composer, one pill per named persona (adapter + system prompt + tool allowlist + memory scope bundled, a richer Ollama Modelfile), each with a one-line specialty, a resident/cold dot, and RAM cost on hover. Switching shows a "new context segment" micro-transition (genuine, not cosmetic — that's what adapter-namespaced KV means), and a Msty-style split-compare fires one prompt at two personas side by side to *prove* the adapter earns its keep.
+
+**3. Speed is a HUD, not a footnote.**
+Today tok/s is a dim gray number after the message finishes. Every other local tool either hides serving mechanics (Open WebUI) or shows only tok/s (Ollama `ps`, LM Studio). We control the whole stack down to spec-decode and batch slots. A persistent strip near the composer: live tok/s *during* the stream, TTFT, a context-fullness ring, and a lane badge — "draft+verify (dspark)" vs "batched ×3" vs "serial" — since mlx-lm's own architecture treats these as mutually exclusive lanes and users should see which one they're in. An internal engineering decision becomes a felt, screenshot-able proof point.
+
+**4. Tool-calls are a code-review hunk, not a permission dialog.**
+We already have per-call approve/deny in `pi-web.ts` with a diff-style card; Jan and LM Studio validate the pattern (inline, non-blocking, argument-editable), nobody's pushed it further. Ours should feel like reviewing a PR: syntax-highlighted args, a blast-radius line ("will write 40 lines to `src/foo.ts`"), three-state approval (once / always-this-session / deny) persisted to disk so it survives restarts (Claude Desktop and Cowork visibly get this wrong), and read-only tools pre-approved by default so fatigue only hits tools that deserve scrutiny.
+
+**5. The whole thing installs to a felt "it knows me" moment in under a minute.**
+Every competitor's onboarding ends at "chat works." Ours ends at "chat works, and it already asked, gently, whether it can start learning from you." First run: pick a hardware-fit-scored starter model, land in chat, and the hero screen's first chip isn't "what is mlx-bun?" — it's a dismissible memory-consent card ("Let mlx-bun remember what matters across chats? Nightly, local, git-tracked, editable any time.") where a philosophy statement used to be. Say yes and the vault seeds; say no and it never mentions it again — the one screen where "local-to-you" becomes an action instead of a claim.
+
+## Making the differentiators tangible, in one line each
+
+**Privacy** = a one-click "Temporary chat" pill, honestly stronger than ChatGPT/Claude's (theirs retains 30 days server-side; ours touches no third party, ever) — stated once in a tooltip, otherwise proven by the UI's total silence about accounts or "sync." **Memory** = the citation chips plus a **Memory panel** (slide-over, not a 6th tab): vault search, per-article git-diff so a user can *watch* an article self-correct, and a nightly synthesis changelog — the mechanism shown, not asserted. **LoRA routing** = the persona rail plus a routing table in settings (which surface defaults to which persona) with the three-tier lifecycle (available/loaded/selected) shown honestly, RAM cost visible before it's spent. **Speed** = the always-on HUD plus a Benchmark strip in Status (live prefill/decode tok/s, TTFT, peak RSS, spec-decode acceptance rate, cold-start — macMLX's pattern, extended with what only dspark can show). **Local tools** = the code-review-hunk approval cards plus a curated first-run toolset (file read, web fetch, our own `memory_search`) so day one isn't a JSON config exercise.
+
+## Concrete screens
+
+**Layout.** Kill the 7-tab flat nav. One primary surface (Chat), with Quantize / Fine-tune / Build Dataset / Curves / Routes / Status collapsed behind a single **Developer** toggle (LM Studio's User/Power-User/Developer pattern, flattened to two states). A new user's day-one mental model: sidebar, thread, composer, persona rail, speed HUD — not seven tabs including a fine-tuning dashboard before they've sent one message.
+
+**Sidebar.** Full-text session search (not just title — unlike Claude's well-known gap), and a real mobile treatment: a slide-over drawer behind a hamburger, not today's "delete the sidebar at 760px with no replacement."
+
+**Thread.** Actions that don't exist today: copy on any assistant message, edit-and-resend that forks non-destructively with an inline `< 1/2 >` branch switcher (a linear toggle, not a tree — both cloud incumbents prove that's the right ceiling), regenerate, and "regenerate with a different persona." Streaming gets fixed architecturally: block-level memoization (only the live tail re-parses) instead of today's `innerHTML = mdToHtml(fullText)` on every token — O(n²) over a response, and the thing most likely to make a spec-decode-accelerated model *feel* slow because the frontend can't keep up with its own backend. Code fences get real syntax highlighting; math gets KaTeX — both zero today.
+
+**Composer.** Autosize textarea, file/image attach (existing), a persona pill, live steering (existing — keep it), and the sampling popover expanded from three sliders to the full server-supported set (min_p, XTC, penalties, logit_bias) behind an "Advanced" disclosure — closing a plain parity gap against the mlx-lm oracle.
+
+**Memory & model switching.** A slide-over Memory panel (vault search, git-diff per article, synthesis changelog) plus a vault-status chip in the composer, and a real model switcher — today's `#nav-model` is a read-only label with no click handler, an odd miss given the pitch is fast tier-switching between e4b/12B/26B.
+
+**Tool-call display.** Inline, non-blocking approval cards (Jan's pattern) with argument diffs, blast-radius text, three-tier persistence, and pre-approved read-only defaults.
+
+## What we deliberately do not build
+
+No Channels or multi-user/Slack-style shared spaces (Open WebUI's most enterprise-flavored feature) — mlx-bun is single-user by identity. No RBAC, org admin, or plugin marketplace — there is no "org" to administer. No general-purpose no-code agent-flow canvas (AnythingLLM's Agent Flows, Msty's Turnstiles) — if one ever justifies itself, scope it to the memory/synthesis pipeline, not general automation. No speech-to-speech voice mode as a v1 commitment — it would visibly disappoint next to Advanced Voice Mode if half-built; an honest stretch goal, not table stakes. No paid cloud escalation tier (Ollama Cloud) — any "bigger model" story stays local (dspark spec-decode against a larger local target). No email/calendar/document-suite bloat (Odysseus), even reframed as "memory feeders," until the core loop is airtight. And no sandbox-theater for a shell tool we can't actually sandbox — if we ship tool execution, we say plainly it runs on your machine with your permissions.
+
+The through-line: every screen either makes local-to-you *provable* or it doesn't ship. Speed you can see. Memory you can read and correct. Adapters you can name, compare, and trust. Everything else is Open WebUI's problem to solve, not ours.
