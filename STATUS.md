@@ -715,6 +715,17 @@ agentic workload is the real payoff, not e4b). Not wired into serve/CLI.
 
 ## Josh-gated (needs hardware / downloads / own shell)
 
+0. **Audio A5 closeout** (branch `josh/audio-input`, PLAN "audio input"):
+   - Quiet-machine bench cells → RESULTS.md: audio tower ms, TTFT delta
+     vs text-only, RSS delta with the tower loaded (the serve test's e4b
+     load+transcribe round trip was ~2.3 s on a loaded box — directional
+     only, don't quote).
+   - 12B audio cell: rebuild its sidecar via optiq `build_vision_sidecar`
+     (selective download pulls only the audio shards; the local 12B
+     sidecar holds 1 audio tensor) → then regen 12B audio goldens and
+     clone the e4b test cells (per-model doctrine: every cell validates
+     or defers explicitly).
+
 1. **Fresh clean-machine benchmark** (reboot + `sudo purge` first):
    - `./benchmark.sh --redo` — the standing h2h rows.
    - The NEW composition matrix, per model (writes
