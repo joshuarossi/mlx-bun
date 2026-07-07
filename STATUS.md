@@ -88,11 +88,19 @@ incl. step 0); generated-parity's compiled-lane dispatch count is now 1
 Pre-existing failures on this box, NOT this change (stash-proven at
 baseline): kv-quant.test.ts ×3 + parity.test.ts (stale machine goldens —
 regen chip spawned), batch-grammar B=4 (chip spawned), batched extend-join
-oracle (known). Spec-decode serve lane (opt-in, draft-mounted) still uses
-the old convention — its oracle `speculative_generate_step._prefill`
-drains `while y.size > 1` the same way; re-anchor separately when that
-lane is next touched. Goldens on the M4 Pro reference box need the same
-regen when work moves there.
+oracle (known). Spec-decode serve lane re-anchor: **DONE 2026-07-07 on
+`feat/dspark-spec-decode`** — and its oracle's true shape turned out to be
+MORE than tail-split: `speculative_generate_step` drains BOTH models to
+len−1 with **no separate step-0 at all** (the un-drained last prompt token
+heads the first verify window; an L=1 step-0 is still ulp-different from
+the (1+γ)-window GEMM head and flipped a knife-edge). The live gate also
+caught a pre-existing bug: an EOS accepted AS A DRAFT leaked through
+onToken as content. Both fixed; gated 4/4 token-for-token vs the oracle
+venv (templated prompts, γ∈{2,3}, pinned in tests/spec-serve.test.ts "L1
+knife-edge"); the optiq-oracled standalone `specGenerate` deliberately
+keeps full-prompt prefill (per-scheme-oracle doctrine — optiq's own
+convention, read from the installed source). Goldens on the M4 Pro
+reference box need the same regen when work moves there.
 
 ## Where we were (2026-07-07 — cpm5 completion-probe parity closed)
 
@@ -703,14 +711,83 @@ untouched.
 a broad sample → promote to the real vault + nightly fold-in. Handoff:
 [docs/design/the-dreaming-handoff.md](docs/design/the-dreaming-handoff.md).
 
-### DSpark speculative drafter — faithful build verified; research-only
+### DSpark speculative drafter — PAPER CODE-COMPLETE + SERVE-INTEGRATED + DEEPSPEC ORACLE (2026-07-06); download-gated payoff
 
-Architecture verified faithful end-to-end (2026-07-01 adversarial review).
-**Caveat:** the τ=3.24 overfit proof is a teacher-forced proxy — run
-`scripts/dspark-measure-dflash.ts` (live τ) before trusting it. Two gaps to
-a real speedup: DATA (160 articles → per-pos ~0.17) and TARGET (the 27B
-agentic workload is the real payoff, not e4b). Not wired into serve/CLI.
-**Next:** live-τ → retarget 27B/12b → scale data. Handoff:
+**Phase 3 (same session): DeepSeek open-sourced DSpark** (DeepSpec, MIT +
+trained drafters incl. `dspark_gemma4_12b_block7` FOR OUR 12B TARGET) — so
+DSpark now has a real oracle ("if someone did it, there is already an
+oracle"). Two audit agents verified our build vs the paper (arXiv:2607.05147)
++ source: our loss/backbone/Markov/confidence match the paper EXACTLY; our
+scheduler matches the RELEASED reference (paper Alg-1/STS = their unreleased
+production layer); our Elman RNN differs from the paper's gated cell (kept as
+variant). **Their module is a different architecture** — ported faithfully
+(`src/spec/dspark/deepspec-module.ts`, copy-verbatim w/ source citations;
+k≡v single-KV attention, scale 1.0, partial RoPE 0.25, layer_scalar, softcap,
+incremental context-KV cache), wired behind the seam
+(`src/spec/deepspec-source.ts`, kind auto-detect on the `Gemma4DSparkModel`
+config stamp), reviewed (7 findings fixed: bf16 sampling fidelity, conf-head
+leak+precision, ~+4.8 GB transpose-copy memory, 3 silent-wrongness guards).
+Enablers fixed along the way: generated gemma forwards now fall back to the
+monolith when hiddenTap is set (they never captured — 12B tapping would have
+thrown; generator patched too), and the seam accepts d=0 (DeepSpec ℓ=0 = plain
+tapped step). Oracle scripts staged (temp-0 RNG-free trace: `scripts/
+oracle-dspark-deepspec.py` → `scripts/dspark-deepspec-compare.ts`). Real 12B
+tap layers `[5,17,29,41,46]` adopted (our guess superseded). **PATH A RAN
+2026-07-07 (post-merge): τ ≈ 2.8 (2.7× fewer target forwards, losslessness
+holding) but wall-clock −3.4× — the 6.9 GB bf16 drafter's own tax. The
+follow-up program is fully planned:
+[docs/design/dspark-serving-program.md](docs/design/dspark-serving-program.md)
+(drafter quantization — 4-bit baseline then TurboQuant as its lowest-risk
+first customer — + draftBlock tightening + generated-forward tap + the
+serving-UX/defaults pass; Josh picks up at TurboQuant merge, only Phase 5
+actually waits for it).**
+
+**Phase 2 (same session): every remaining paper component LANDED** via a
+multi-agent build + adversarial review — Alg-1 confidence-scheduled
+draft-length pruning (variable-length `DraftSource.draft()` contract, serve
+loop verifies over the returned length; activation is checkpoint-driven so
+uncalibrated checkpoints are unchanged), STS calibration §3.2.1
+(`src/spec/dspark/calibration.ts` + `scripts/dspark-calibrate.ts`), the RNN
+sequential head Eq 6 (`--seq-head rnn`, init-equivalent to Markov; ⚠
+design-doc-faithful shape, paper PDF absent — flagged in code, as is the STS
+estimator), the tightened draft loop (on-device token chaining, deferred conf
+reads, `collectLogits:false` on serve; bit-identity pinned in
+tests/dspark-infer-loop.test.ts), and the `dspark` variant rename + central
+loader. A second adversarial-review wave (17 agents) confirmed 13 findings —
+1 real logic bug (sample-path pruning misaligned tokens/conf/draftLogits →
+OOB in verifySampling; found independently by all 3 reviewers) + 12
+leak-shaped (inline-slice orphans, try-body locals invisible to finally,
+calibration NaN poisoning) — ALL FIXED same session with regression checks
+(the leak shapes are now a memory: [[mlx-inline-slice-leak-pattern]]).
+Final gate: tsc 0 · smoke 22/22 · 84/84 across dspark+spec+server suites
+(incl. real-weights; the grammar suite's `Aborted()` line is pre-existing
+xgrammar WASM teardown noise, stash-proven). **All that remains is the GPU
+recipe** (regen→train→calibrate→measure on 12B):
+docs/investigations/dspark-handoff.md.
+
+Architecture verified faithful (2026-07-01 review; overfit τ=3.24). **Phase 1
+(this session, branch `feat/dspark-spec-decode`):** DSpark + the optiq Gemma
+`-assistant` drafter are now serve-loadable behind `--draft-model` — the
+`DraftSource` seam was extended for KV-borrowing sources (target donor-KV /
+anchor-hidden / tapped H_ctx), provider kind is auto-detected (`dspark.json` →
+DSpark, `*_assistant` → assistant, else two-model; `--draft-kind` overrides),
+and the server pins `--num-draft-tokens` to a DSpark checkpoint's trained
+γ. tsc-green, CPU smoke 16/16. **AssistantSource VERIFIED ON REAL WEIGHTS**
+(`tests/spec-serve-assistant.test.ts`, e4b + assistant drafter, auto-gated):
+serve-loop spec output is TOKEN-IDENTICAL to non-spec greedy for γ=1,2,3
+(losslessness) + telemetry populates — the extended seam is proven end-to-end
+(both providers share it). Ships a real ~1.09× γ=1 win with NO training. The
+Phase-1 code was adversarially reviewed (multi-agent workflow) and 5
+leak-on-exception bugs fixed (round/prefill scratch-tensor disposal on throw,
+forwardMaybeTap partial-capture leak, DflashProvider.dispose). DSpark-source
+correctness stays model-gated (needs a trained checkpoint — Josh's GPU).
+Design + seam contract:
+[docs/design/dspark-speculative-decoding.md](docs/design/dspark-speculative-decoding.md),
+[[dspark-seam-kv-borrowing]].
+**Remaining (this plan):** paper components (confidence-scheduled draft-length
+pruning / STS calibration / RNN head), loop tightening, `dflash`→`dspark`
+rename. **Josh-gated GPU:** data scale + **12B retarget** + train + live-τ
+(27B is memory-infeasible to train on 24 GB — kept dim-generic). Handoff:
 [docs/investigations/dspark-handoff.md](docs/investigations/dspark-handoff.md).
 
 ## Josh-gated (needs hardware / downloads / own shell)
@@ -741,7 +818,12 @@ agentic workload is the real payoff, not e4b). Not wired into serve/CLI.
 2. **Phase 14 — Qwen3.6-27B confirmation** (~15 GB download):
    `bun scripts/regen-qwen-parity-goldens.ts 27b` then
    `MLX_BUN_TEST_QWEN35=1 bun test tests/qwen-parity.test.ts`.
-3. **Phase 13 — TurboQuant** (promoted research direction).
+3. ~~**Phase 13 — TurboQuant**~~ **v1 LANDED 2026-07-06** — `--kv-quant
+   turbo[:k<bits>v<bits>]`, oracle = vllm-metal (vendored, bit-exact codec
+   goldens), quality-vs-bpw curve gate passed on MiniCPM5-1B (k8v3 = 6.25
+   effective bits @ KL 0.0325, beats uniform kv4). See PLAN.md Phase 13 +
+   docs/design/turboquant-kv.md. Remaining follow-ups are non-goals recorded
+   there (fused kernel, rotating layers, batching, QJL).
 4. **Vision remainder** — audio tower + 26B/31B SigLIP (e4b + 12B live).
 5. **e4b ORPO overnight** + resuming the CPM5 UF run (own-shell `nohup`).
 

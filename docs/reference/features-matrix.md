@@ -24,10 +24,11 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | Prompt cache (prefix KV reuse) | on, 2 GB | serial | — | `--prompt-cache <GB>` (0 = off) |
 | **SSD KV cold tier** (cache survives eviction + restarts) | off | serial | — | `--ssd-cache <dir>` (+ `-max`, `-verify`) |
 | Mixed-precision KV (`kv_config.json`, optiq's scheme) | **off** — opt-in (default flipped to bf16 2026-07-05; quantized KV trades 5–20% decode for memory headroom) | serial + **batch** (per-layer configs batch on every shipped model — full-attention layers Phase 3.1, rotating layers milestone 2; uniform bits stay serial) | L2 | `--kv-quant config\|off\|4\|8`, `--l2` |
+| **TurboQuant KV** (rotation-based: affine keys + FWHT/Lloyd-Max values) | off — opt-in ([turboquant-kv.md](../design/turboquant-kv.md); v1 dequantize-on-fetch, full-attention layers only, no speed claim) | serial only (solo-only, unconditionally) | Lab (codec is oracle-backed vs vllm-metal; the cache class is unvalidated) | `--kv-quant turbo[:k<bits>v<bits>]` (default `k8v3`) |
 | Compiled decode (bit-exact graph replay) | on, every tier | serial | L1/L2 | `--compiled-decode on\|off` |
 | Compiled activations (faithful geglu/swiglu — mlx-lm's `@mx.compile`) | **on**, every tier | both | L1 | `--compiled-activations on\|off` |
 | Fused SDPA (optiq-exact quantized-KV attention) | follows `--kv-quant`: on for `config`, off for uniform/bf16 | serial | L2 | `--fused-sdpa on\|off` |
-| **Speculative decoding** (two-model, mlx-lm parity) | off | serial (forces all-serial) | L1 | `--draft-model <path\|query>`, `--num-draft-tokens` |
+| **Speculative decoding** (auto-detected drafter: two-model = mlx-lm parity/L1, Gemma `-assistant` = optiq/L2, DSpark local = L3, DeepSpec released = DeepSpec-reference oracle) | off | serial (forces all-serial) | per-drafter oracle | `--draft-model <path\|query>`, `--draft-kind`, `--num-draft-tokens` |
 | Memory admission (refuse what can't fit; never GPU-OOM) | on (RAM × 0.75) | both | — | `--memory-budget <GB>` |
 | Aggregate KV admission for batch rows (queue, don't OOM) | off | batch | — | `--kv-budget <GB>` |
 | Expert offload (MoE cold experts on mmap) | off | serial | Lab | `--expert-offload` |

@@ -36,6 +36,7 @@ const batchable: RequestShape = {
   wantsLogprobs: false,
   userSeed: false,
   kvQuant: false,
+  turboQuant: false,
   hasGrammar: false,
   hasDraft: false,
 };
@@ -69,6 +70,7 @@ describe("GenerationGateway.willBatch", () => {
     ["wantsLogprobs", "logprobs/top_logprobs capture (serial-only, batch-lane deferred)"],
     ["userSeed", "explicit seed (reproducibility ⇒ solo)"],
     ["kvQuant", "kv-quant with NO scheme threaded (would silently drop the quantization)"],
+    ["turboQuant", "TurboQuant is solo-only in v1, unconditionally (docs/design/turboquant-kv.md)"],
   ];
   for (const [flag, why] of disqualifiers) {
     test(`${flag} drains to serial — ${why}`, () => {
@@ -98,6 +100,17 @@ describe("GenerationGateway.willBatch", () => {
       kvScheme: { kvConfig: [{ layerIdx: 0, bits: 4, groupSize: 64 }] },
     });
     expect(g.willBatch({ ...batchable, kvQuant: true })).toBe(true);
+  });
+
+  // Unlike kvQuant (which can be partially batchable via a full-attention-only
+  // kvConfig), turboQuant is UNCONDITIONALLY solo-only in v1 — no kvScheme
+  // makes it batchable (TurboQuantKVCache is a novel Cache, never merge/
+  // filter/temporalView-capable).
+  test("turboQuant stays serial regardless of the gateway's kvScheme", () => {
+    const g = new GenerationGateway(fullModel(4), 2, serialRunStub, {
+      kvScheme: { kvConfig: [0, 1, 2, 3].map((layerIdx) => ({ layerIdx, bits: 4, groupSize: 64 })) },
+    });
+    expect(g.willBatch({ ...batchable, turboQuant: true })).toBe(false);
   });
 
   // Logits processors BATCH: the per-row sampler folds makeLogitsProcessors

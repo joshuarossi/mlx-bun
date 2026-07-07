@@ -84,6 +84,37 @@ export interface KvQuantSpec {
   groupSize: number;
 }
 
+/** TurboQuant scheme (docs/design/turboquant-kv.md): rotation-based KV
+ *  quantization, a distinct axis from the uniform/per-layer affine kvQuant
+ *  above (composes with it in principle; v1 ships as a standalone CLI-only
+ *  runtime lever, same class as uniform kvBits — see
+ *  src/generate.ts maybeQuantizeKv). Valid kBits: {2,4,5,8}; vBits:
+ *  {2,3,4,5,8} (docs/design/turboquant-kv.md's supported Lloyd-Max tables). */
+export interface TurboQuantScheme {
+  kBits: number;
+  vBits: number;
+}
+
+export const TURBOQUANT_VALID_KBITS = [2, 4, 5, 8] as const;
+export const TURBOQUANT_VALID_VBITS = [2, 3, 4, 5, 8] as const;
+
+/** Parse `turbo` / `turbo:k<bits>v<bits>` (default k8v3). Returns null for
+ *  non-turbo strings (caller falls through to the uniform/config parser);
+ *  throws Error with a user-facing message for a malformed turbo spec. */
+export function parseTurboQuantScheme(raw: string): TurboQuantScheme | null {
+  if (raw !== "turbo" && !raw.startsWith("turbo:")) return null;
+  if (raw === "turbo") return { kBits: 8, vBits: 3 };
+  const m = /^turbo:k(\d+)v(\d+)$/.exec(raw);
+  if (!m) throw new Error(`--kv-quant turbo spec must look like "turbo:k<bits>v<bits>" (got "${raw}")`);
+  const kBits = Number(m[1]);
+  const vBits = Number(m[2]);
+  if (!(TURBOQUANT_VALID_KBITS as readonly number[]).includes(kBits))
+    throw new Error(`--kv-quant turbo: kBits must be one of ${TURBOQUANT_VALID_KBITS.join(",")} (got ${kBits})`);
+  if (!(TURBOQUANT_VALID_VBITS as readonly number[]).includes(vBits))
+    throw new Error(`--kv-quant turbo: vBits must be one of ${TURBOQUANT_VALID_VBITS.join(",")} (got ${vBits})`);
+  return { kBits, vBits };
+}
+
 export interface ModelConfig {
   modelDir: string;
   modelType: string;

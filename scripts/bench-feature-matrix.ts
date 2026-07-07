@@ -184,8 +184,18 @@ async function runCell(port: number, name: string, grammar: boolean): Promise<Ce
 }
 
 // ---------------------------------------------------------------------------
-const { loadContext, createServer } = await import("../src/server");
-const { TwoModelProvider } = await import("../src/spec/two-model");
+const { loadContext, createServer, detectDraftKind } = await import("../src/server");
+
+/** Load the draft provider by artifact kind — the SAME dispatch the server
+ *  runs (dspark.json → DSpark, *_assistant config → assistant, else a full
+ *  two-model draft), so every drafter kind benches through its real path. */
+async function loadDraftProvider(dir: string, targetVocabSize: number) {
+  const kind = await detectDraftKind(dir);
+  if (kind === "dspark") return (await import("../src/spec/dflash-source")).DflashProvider.load(dir);
+  if (kind === "deepspec") return (await import("../src/spec/deepspec-source")).DeepspecProvider.load(dir);
+  if (kind === "assistant") return (await import("../src/spec/assistant-source")).AssistantProvider.load(dir);
+  return (await import("../src/spec/two-model")).TwoModelProvider.load(dir, targetVocabSize);
+}
 
 console.log(`loading ${MODEL} ...`);
 const ctx = await loadContext(MODEL, undefined, {});
@@ -211,7 +221,7 @@ if (want("batch") || want("batch+grammar")) {
 // group 3: spec (batch=1 + draft) — skipped without --draft
 if (DRAFT && (want("spec") || want("spec+grammar"))) {
   console.log(`loading draft ${DRAFT} ...`);
-  const provider = await TwoModelProvider.load(DRAFT, ctx.model.config.text.vocabSize);
+  const provider = await loadDraftProvider(DRAFT, ctx.model.config.text.vocabSize);
   ctx.draft = { provider, numDraftTokens: Number(args["num-draft-tokens"] ?? 3) };
   const server = createServer(ctx, 0, { owner: "embedded", hostname: "127.0.0.1" });
   if (want("spec")) rows.push(await runCell(server.port!, "spec", false));

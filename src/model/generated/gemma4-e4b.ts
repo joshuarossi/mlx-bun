@@ -612,7 +612,12 @@ export class GeneratedGemma4 extends Gemma4Model {
   protected override forwardLayers(
     h0: MlxArray, cache: Cache[], bidir: MlxArray | null, ids: MlxArray | null,
   ): MlxArray {
-    if (bidir !== null || ids === null || !this.#matches(cache))
+    // hiddenTap (DSpark H_ctx capture) lives in the monolith's forwardLayers —
+    // this unrolled forward never calls captureLayer, so a tapped call MUST
+    // fall back or the spec path silently captures nothing and throws. Tapped
+    // forwards are only the spec path's prefill/verify; the monolith is the
+    // bit-exact reference, so this is correct-but-unspecialized.
+    if (bidir !== null || ids === null || this.hiddenTap !== null || !this.#matches(cache))
       return super.forwardLayers(h0, cache, bidir, ids);
     generatedForwardUses++;
     const L = h0.shape[1]!;

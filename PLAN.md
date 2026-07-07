@@ -475,7 +475,49 @@ Lights up e2b/e4b/26B-A4B/31B image input. The 12B unified
       `embed_audio.*` also in the sidecar); 26B-A4B / 31B SigLIP (same tower,
       untested — pick up by config); video frames.
 
-## Phase 13 — TurboQuant `[ ]` (research path — PROMOTED 2026-06-12)
+## Phase 13 — TurboQuant `[x]` v1 LANDED 2026-07-06 (research path — PROMOTED 2026-06-12)
+
+**v1 shipped** (multi-agent build, this worktree): design doc
+`docs/design/turboquant-kv.md` is the contract. Findings that reframed the
+phase, from the research fan-out:
+
+- **Two unrelated "TurboQuants" exist.** The paper (arXiv:2504.19874) is a
+  dense-QR-rotation theory quantizer; the shipping variant is
+  **vllm-metal's** (`vllm_metal/attention/caches/turboquant.py`) — optiq's
+  config layer is lifted verbatim from it (byte-identical CENTROIDS_3BIT,
+  matching op signatures in optiq cache_state.py). **vllm-metal is the
+  oracle** ("the oracle is whoever ships it"); its pure-MLX Python reference
+  is vendored at `lab/repro/vllm-metal-turboquant/` and drives bit-exact
+  goldens via the oracle venv (`scripts/regen-turboquant-goldens.ts` →
+  `goldens/turboquant.json` + generated `src/mlx/turboquant-tables.ts`).
+  Keys are NOT rotated (docs page upstream is wrong vs its own source);
+  only values get sign-flip FWHT → per-32-group RMS → Lloyd-Max.
+- **What landed:** codec `src/mlx/turboquant-ops.ts` (bit-exact vs vendored
+  reference on 8 golden vectors incl. adversarial rows; fp32-upcast fix for
+  the bf16 production path caught by adversarial review + prove-by-removal
+  tests); `TurboQuantKVCache` (gemma4-base.ts, dequantize-on-fetch, NOT a
+  KVCache subclass → auto solo-only + generated-file fallback); kv-store
+  spill/restore + prompt-cache clone; `--kv-quant turbo[:k<bits>v<bits>]`
+  (default k8v3) through generate/serve/eval; gateway solo-refusal; docs
+  rows (cli/server-config/features-matrix). Rotating (sliding-window)
+  layers stay bf16 in v1 — one-time warning, verified live on e4b.
+- **Exit criterion MET — quality-vs-bpw curve on MiniCPM5-1B**
+  (`scripts/eval-turboquant-curve.ts`, teacher-forced serving-decode KL vs
+  bf16, 8×128 tokens, 32 steps, M1 Max 32 GB):
+  k8v8 8.75 bits→KL 0.0021 · k8v4 6.75→0.0094 · k8v3 6.25→0.0325 ·
+  k8v2 5.75→0.175 · k4v3 4.25→0.062 · k4v2 3.75→0.205. Shape matches the
+  paper's law (v-bits dominate, ~4^-b decay, cliff at v2); 3-bit codec MSE
+  lands in the paper's D_mse≈0.03 band. Same-harness affine baselines:
+  uniform kv8 8.5 bits→0.0025 (turbo k8v8 ties at 8.75), uniform kv4
+  4.5→0.052 (turbo k4v3 0.062 at 4.25 — on-curve). Turbo's value: NEW
+  operating points (6.25/5.75/3.75 bits) between affine kv8 and kv4 —
+  k8v3 at 2.56× KV compression beats uniform kv4's KL.
+- **v1 non-goals recorded in the design doc:** fused quantized-SDPA kernel
+  (deferred-InvFWHT trick), rotating-layer support, batched turbo, QJL
+  residual stage. No speed claims — dequant-on-fetch is a memory/context
+  feature, opt-in like all output-changing levers.
+
+### Phase 13 original scope note (kept for history)
 
 Rotation-based vector quantization. Oracle:
 `optiq/runtime/mtp/turboquant.py`. **Confirmed from source (2026-06-12):

@@ -36,7 +36,7 @@ describe.skipIf(!optIn || !haveCpm)("batch scheduler — vectorized greedy sampl
     const tok = await loadTokenizer(CPM_BASE);
     const SHAPE = {
       hasVision: false, hasAdapters: false, hasRepetitionPenalty: false,
-      userSeed: false, kvQuant: false, hasLogitsExtras: false,
+      userSeed: false, kvQuant: false, turboQuant: false, hasLogitsExtras: false,
       wantsLogprobs: false, hasGrammar: false, hasDraft: false,
     };
     const PROMPTS = [

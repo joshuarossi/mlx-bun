@@ -122,6 +122,50 @@ describe.skipIf(!optIn || !TARGET || !DRAFT)("serve --draft-model (two-model spe
     }
   }, 600_000);
 
+  // ---- L1 knife-edge pin (2026-07-07 prefill re-anchor) ----
+  // These two TEMPLATED prompts × γ∈{2,3} are the cells that caught BOTH
+  // re-anchor bugs: (a) the spec lane's prefill had to adopt the oracle's
+  // true shape — drain BOTH models to len-1, NO separate step-0; the last
+  // prompt token heads the first verify window (an L=1 step-0 is still
+  // ulp-different from the (1+γ)-window GEMM head and flipped the γ=2 haiku
+  // at its EOS draw); (b) an EOS accepted AS A DRAFT leaked through onToken
+  // as content. Requires the oracle venv — skipped cleanly without it.
+  test.skipIf(!existsSync(ORACLE_PY))(
+    "L1 knife-edge: templated prompts token-for-token vs mlx-lm spec (γ=2,3)",
+    async () => {
+      const { model, weights, tok, provider } = await setup();
+      const { ChatTemplate } = await import("../src/chat-template");
+      const { specServeRun } = await import("../src/spec/serve-loop");
+      const template = await ChatTemplate.load(TARGET!);
+      try {
+        for (const gamma of [2, 3]) {
+          for (const p of [
+            "Write a haiku about compilers.", // the knife-edge (EOS-as-accepted-draft)
+            "List the planets of the solar system in order from the Sun.",
+          ]) {
+            const raw = tok.encode(template.render([{ role: "user", content: p }]));
+            const ids = raw[0] === raw[1] && raw[0] === tok.bosTokenId ? raw.slice(1) : raw;
+            const ours: number[] = [];
+            await specServeRun(model, provider, gamma, ids, { maxTokens: 48, temperature: 0 }, (t) => {
+              ours.push(t);
+            });
+            const proc = Bun.spawnSync(
+              [ORACLE_PY, "scripts/oracle-spec-two-model.py", TARGET!, DRAFT!, String(gamma), "48", JSON.stringify(ids)],
+              { cwd: `${import.meta.dir}/..`, env: { ...process.env, HF_HUB_DISABLE_XET: "1" } },
+            );
+            const oracle = JSON.parse(proc.stdout.toString().trim().split("\n").at(-1)!).tokens as number[];
+            expect(ours).toEqual(oracle);
+          }
+        }
+        console.log("[spec-serve] knife-edge pin: 4/4 cells token-for-token");
+      } finally {
+        provider.dispose();
+        weights.dispose();
+      }
+    },
+    900_000,
+  );
+
   // ---- Phase C: grammar × spec (the constrained verify walk) ----
   // No runtime anywhere serves both, so there is no oracle. Gates:
   // (1) VALIDITY — every grammar+spec output parses + conforms (hard

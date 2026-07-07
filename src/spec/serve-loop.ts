@@ -42,6 +42,7 @@
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { clearCache } from "../mlx/ffi";
+import { flagOn } from "../flags";
 import type { RuntimeModel } from "../model/factory";
 import type { Cache } from "../model/gemma4";
 import type { GenerateOptions, GenerateStats } from "../generate";
@@ -50,6 +51,47 @@ import type { OnToken } from "../serve/generation-gateway";
 import type { DraftProvider } from "./source";
 
 const PREFILL_CHUNK = 2048;
+
+/** Run one target forward, and when `tapLayers` is set (⟹ a Gemma4 target — a
+ *  DSpark-style source), also return the captured multi-layer context
+ *  [1,L,m*H] (tapLayers concatenated on the feature axis; index nLayers is the
+ *  post-finalNorm sentinel). Non-tapping sources get ctxML=null and never
+ *  touch model.hiddenTap. Mirrors generate-dflash.ts forwardTapped. */
+function forwardMaybeTap(
+  model: RuntimeModel,
+  ids: MlxArray,
+  caches: Cache[],
+  tapLayers: number[] | undefined,
+): { hidden: MlxArray; ctxML: MlxArray | null } {
+  if (!tapLayers) return { hidden: model.forwardHidden(ids, caches), ctxML: null };
+  const m = model as unknown as {
+    hiddenTap: { layers: Set<number>; captured: Map<number, MlxArray> } | null;
+  };
+  const cap = new Map<number, MlxArray>();
+  m.hiddenTap = { layers: new Set(tapLayers), captured: cap };
+  let hidden: MlxArray | null = null;
+  try {
+    hidden = model.forwardHidden(ids, caches);
+    const perLayer = tapLayers.map((li) => {
+      const a = cap.get(li);
+      if (!a) throw new Error(`spec tap: layer ${li} not captured`);
+      return a;
+    });
+    const ctxML = ops.concatAxis(perLayer, 2); // [1,L,m*H]
+    for (const [, a] of cap) a.dispose();
+    cap.clear(); // consumed — the finally must not double-dispose
+    const out = { hidden, ctxML };
+    hidden = null; // ownership returned to the caller
+    return out;
+  } finally {
+    // On any throw (forward mid-capture, missing layer, concat), free the
+    // partially-captured tap tensors and the orphaned hidden. On success both
+    // are already gone (cap cleared, hidden nulled).
+    hidden?.dispose();
+    for (const [, a] of cap) a.dispose();
+    m.hiddenTap = null;
+  }
+}
 
 export interface SpecServeExtras {
   drafted: number;
@@ -72,7 +114,24 @@ export async function specServeRun(
   const gamma = Math.max(1, numDraftTokens);
 
   const caches: Cache[] = model.makeCache();
-  const source = provider.open({ sampler });
+  const source = provider.open({ sampler, target: { model, caches } });
+  const tapLayers = source.tapLayers;
+  // Target final hidden [1,1,H] at the anchor position — the assistant source
+  // borrows it for its first draft step of each round; two-model/dflash ignore
+  // it. Retained across rounds, disposed in finally.
+  let anchorHidden: MlxArray | null = null;
+  // Round/prefill scratch tensors, hoisted so the finally disposes them on ANY
+  // throw mid-round/prefill (grammar WASM reject, awaited onToken reject, a GPU
+  // error). Each is nulled the instant its in-body disposal or ownership
+  // transfer runs, so the finally never double-frees. (A serve endpoint hits
+  // these throw seams per request; a try-body local would leak GPU memory.)
+  let lastLogits: MlxArray | null = null;
+  let prefillCtx: MlxArray | null = null;
+  const ctxParts: MlxArray[] = []; // per-chunk tapped context (DSpark only)
+  let vHidden: MlxArray | null = null;
+  let vCtxML: MlxArray | null = null;
+  let vLogits: MlxArray | null = null;
+  let roundRow: MlxArray | null = null; // the in-flight verify/continuation row
   // Device-side token history for the logits processors (repetition/presence/
   // frequency penalties, logit_bias) — generate()'s pushHistory discipline.
   let history: MlxArray | null =
@@ -142,50 +201,124 @@ export async function specServeRun(
   };
 
   try {
-    // ---- prefill (both models, chunked) ----
+    // ---- prefill (target, chunked; optionally tapped for DSpark), then seed
+    // the source. Order: the source's prefill needs the tapped context that the
+    // target prefill produces, so target-first (two-model's own draft prefill
+    // and the assistant no-op are order-independent). ----
+    //
+    // Oracle prefill convention (re-anchored 2026-07-07 after PR #18; then
+    // corrected to the SPEC oracle's true shape after a live gate vs
+    // speculative_generate_step still flipped a knife-edge): mlx-lm's
+    // speculative path drains BOTH models to len-1 (`_prefill: while y.size >
+    // 1`) and has NO separate step-0 at all — the un-drained last prompt
+    // token HEADS THE FIRST VERIFY WINDOW ([lastPromptToken, ...drafts]),
+    // and the first emitted token is that window's position-0 sample
+    // (generate.py:578-618). A separate L=1 step-0 (the serial-lane
+    // convention) is ulp-different from the (1+γ)-window GEMM head and still
+    // flips near-ties. So under the flag: drain to len-1, pending = the last
+    // prompt token, straight into the rounds. Gated live: 4/4 token-for-token
+    // vs the oracle venv (γ∈{2,3} × 2 prompts, incl. the knife-edge cell).
+    // MLX_BUN_PREFILL_TAIL_SPLIT=0 reverts to the legacy full-chunk + sampled
+    // token0 shape (kill switch; also the 1-token-prompt degenerate path).
+    //
+    // Seam interaction: the tapped seed covers rows 0..len-2 only — the last
+    // prompt token's row arrives via the FIRST verify round's vCtxML (it is
+    // that round's anchor row, which commit() appends) — so context sources
+    // stay in exact lockstep, and DSpark's round-1 anchor IS the last prompt
+    // token at position len-1, matching DeepSpec's reference loop. The
+    // assistant source's first-round anchor hidden = "the hidden that
+    // produced pending" = position len-2, the last drain chunk's final row.
     const t0 = performance.now();
-    source.prefill(promptIds);
-    let lastLogits: MlxArray | null = null;
-    for (let off = 0; off < promptIds.length; off += PREFILL_CHUNK) {
-      const chunk = promptIds.slice(off, off + PREFILL_CHUNK);
-      const ids = ops.fromInt32(chunk, [1, chunk.length]);
-      const h = model.forwardHidden(ids, caches);
-      ids.dispose();
-      if (off + PREFILL_CHUNK >= promptIds.length) {
-        const L = h.shape[1]!;
-        const H = h.shape[2]!;
-        const hLast = h.slice([0, L - 1, 0], [1, L, H]);
-        const lg = model.logitsFromHidden(hLast);
-        hLast.dispose();
-        const V = lg.shape[lg.shape.length - 1]!;
-        lastLogits = ops.reshape(lg, [1, V]);
-        lg.dispose();
+    const tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
+    const oracleShape = tailSplit && promptIds.length > 1;
+    if (oracleShape) {
+      let pos = 0;
+      const end = promptIds.length - 1; // last prompt token NEVER prefilled
+      while (pos < end) {
+        const n = Math.min(PREFILL_CHUNK, end - pos);
+        const chunk = promptIds.slice(pos, pos + n);
+        const ids = ops.fromInt32(chunk, [1, chunk.length]);
+        const { hidden: h, ctxML } = forwardMaybeTap(model, ids, caches, tapLayers);
+        ids.dispose();
+        if (ctxML) ctxParts.push(ctxML);
+        if (pos + n >= end) {
+          const L = h.shape[1]!;
+          const H = h.shape[2]!;
+          anchorHidden = h.slice([0, L - 1, 0], [1, L, H]); // position len-2
+        }
+        h.dispose(); // logits never computed during the drain
+        clearCache();
+        pos += n;
       }
-      h.dispose();
-      clearCache();
+    } else {
+      // Legacy shape: full chunked prefill (final chunk included), token0
+      // sampled from the last position below.
+      for (let off = 0; off < promptIds.length; off += PREFILL_CHUNK) {
+        const chunk = promptIds.slice(off, off + PREFILL_CHUNK);
+        const ids = ops.fromInt32(chunk, [1, chunk.length]);
+        const { hidden: h, ctxML } = forwardMaybeTap(model, ids, caches, tapLayers);
+        ids.dispose();
+        if (ctxML) ctxParts.push(ctxML);
+        if (off + PREFILL_CHUNK >= promptIds.length) {
+          const L = h.shape[1]!;
+          const H = h.shape[2]!;
+          anchorHidden = h.slice([0, L - 1, 0], [1, L, H]); // [1,1,H], retained
+          const lg = model.logitsFromHidden(anchorHidden);
+          const V = lg.shape[lg.shape.length - 1]!;
+          lastLogits = ops.reshape(lg, [1, V]);
+          lg.dispose();
+        }
+        h.dispose();
+        clearCache();
+      }
     }
     extras.targetCalls++;
+    // Seed the source: two-model prefills its own draft cache; DSpark seeds
+    // H_ctx from the tapped prompt context (ownership transfers to prefill);
+    // the assistant is a no-op.
+    if (tapLayers) {
+      if (ctxParts.length === 1) prefillCtx = ctxParts[0]!;
+      else if (ctxParts.length > 1) {
+        prefillCtx = ops.concatAxis(ctxParts, 1); // [1,Lp,m*H]
+        for (const p of ctxParts) p.dispose();
+      }
+      ctxParts.length = 0; // parts consumed (transferred as prefillCtx or disposed)
+      source.prefill(promptIds, prefillCtx ?? undefined); // takes ownership of prefillCtx
+      prefillCtx = null; // ownership transferred
+    } else {
+      source.prefill(promptIds);
+    }
     stats.prefillMs = performance.now() - t0;
     stats.prefillTps = (promptIds.length / Math.max(stats.prefillMs, 1e-6)) * 1000;
 
-    // ---- token 0 ----
+    // ---- first pending token ----
+    // Oracle shape: pending = the UNPROCESSED last prompt token — never
+    // emitted (it's prompt), it heads the first verify window; the first
+    // generated token is that window's position-0 sample, inside the walk.
+    // Legacy shape: sample + emit token0 from the prefill logits (old
+    // convention, kill-switch / 1-token prompts).
     const tDecode = performance.now();
-    let pending = await samplePos(lastLogits!, 0);
-    lastLogits!.dispose();
-    lastLogits = null;
-    if (eos.includes(pending)) {
-      stats.decodeMs = performance.now() - tDecode;
-      return stats;
-    }
-    stats.generatedTokens++;
-    if (
-      (await onToken(pending)) === false ||
-      stats.generatedTokens >= maxTokens ||
-      // grammar satisfied at token 0 (a 1-token grammar) — finish "stop"
-      grammar?.isTerminated
-    ) {
-      stats.decodeMs = performance.now() - tDecode;
-      return stats;
+    let pending: number;
+    if (oracleShape) {
+      pending = promptIds[promptIds.length - 1]!;
+    } else {
+      pending = await samplePos(lastLogits!, 0);
+      lastLogits!.dispose();
+      lastLogits = null;
+      if (eos.includes(pending)) {
+        stats.decodeMs = performance.now() - tDecode;
+        return stats;
+      }
+      stats.generatedTokens++;
+      if (
+        (await onToken(pending)) === false ||
+        stats.generatedTokens >= maxTokens ||
+        // grammar satisfied at token 0 (a 1-token grammar) — finish "stop"
+        grammar?.isTerminated
+      ) {
+        stats.decodeMs = performance.now() - tDecode;
+        return stats;
+      }
     }
 
     let feed: number[] = [pending];
@@ -201,11 +334,12 @@ export async function specServeRun(
         const lg = model.logitsFromHidden(h);
         h.dispose();
         const V = lg.shape[lg.shape.length - 1]!;
-        const flat = ops.reshape(lg, [1, V]);
+        roundRow = ops.reshape(lg, [1, V]);
         lg.dispose();
         extras.targetCalls++;
-        const tok = await samplePos(flat, stats.generatedTokens);
-        flat.dispose();
+        const tok = await samplePos(roundRow, stats.generatedTokens);
+        roundRow.dispose();
+        roundRow = null;
         clearCache();
         if (eos.includes(tok)) break;
         stats.generatedTokens++;
@@ -236,17 +370,30 @@ export async function specServeRun(
         continue;
       }
 
-      // (a) draft n tokens (request sampler, mlx-lm parity)
-      const drafts = source.draft(feed, n, stats.generatedTokens);
-      extras.drafted += n;
+      // (a) draft UP TO n tokens (request sampler, mlx-lm parity). The return
+      // length d is authoritative — DSpark's confidence scheduler may prune the
+      // block short (source.ts contract; never zero). The assistant source
+      // borrows the target's anchor hidden; two-model/dflash ignore it.
+      const drafts = source.draft(feed, n, stats.generatedTokens, anchorHidden ?? undefined);
+      const d = drafts.length;
+      if (d < 0 || d > n) throw new Error(`DraftSource returned ${d} drafts (contract: 0..${n})`);
+      // d === 0 (a confidence scheduler skipping the round, DeepSpec ℓ=0
+      // semantics) needs NO special case: the verify window degenerates to
+      // [pending] alone, the accept walk to the single bonus position, commit
+      // to a 0-accept round (tapped sources still grow context by the anchor
+      // row — lockstep with the target cache).
+      extras.drafted += d;
 
-      // (b) ONE target forward over [pending, ...drafts]
-      const vIds = ops.fromInt32([pending, ...drafts], [1, n + 1]);
-      const vHidden = model.forwardHidden(vIds, caches);
+      // (b) ONE target forward over [pending, ...drafts] (optionally tapped for
+      // DSpark's H_ctx). vHidden is retained past the accept walk: its slice at
+      // the emitted position is the next round's anchor hidden.
+      const vIds = ops.fromInt32([pending, ...drafts], [1, d + 1]);
+      const ft = forwardMaybeTap(model, vIds, caches, tapLayers);
+      vHidden = ft.hidden;
+      vCtxML = ft.ctxML;
       vIds.dispose();
       extras.targetCalls++;
-      const vLogits = model.logitsFromHidden(vHidden); // batched lm-head, ONE matmul
-      vHidden.dispose();
+      vLogits = model.logitsFromHidden(vHidden); // batched lm-head, ONE matmul
 
       // (c) per-position accept walk: sample the target at each position,
       // accept while it reproduces the draft. Sampling is sequential because
@@ -258,14 +405,20 @@ export async function specServeRun(
       let halted = false;
       const emitted: number[] = [];
       let grammarDone = false;
-      for (let i = 0; i <= n; i++) {
-        const row = logitsRow(vLogits, i);
-        const tok = await samplePos(row, stats.generatedTokens + emitted.length);
-        row.dispose();
-        if (i < n && tok === drafts[i]) {
+      for (let i = 0; i <= d; i++) {
+        roundRow = logitsRow(vLogits!, i);
+        const tok = await samplePos(roundRow, stats.generatedTokens + emitted.length);
+        roundRow.dispose();
+        roundRow = null;
+        if (i < d && tok === drafts[i]) {
           kAccept++;
-          emitted.push(tok);
+          // EOS is never content — even when it arrives as an ACCEPTED DRAFT
+          // (the correction/bonus branch below always excluded it; this
+          // branch pushed-then-broke, leaking the EOS through onToken —
+          // caught by the 2026-07-07 live oracle gate: streams were
+          // bit-identical, ours emitted one extra "content" token: <|eot_id|>).
           if (eos.includes(tok)) { sawEos = true; break; }
+          emitted.push(tok);
           // grammar termination mid-burst truncates the round — nothing may
           // be sampled past a satisfied grammar (the all--inf guarantee).
           if (grammar?.isTerminated) { grammarDone = true; break; }
@@ -279,7 +432,8 @@ export async function specServeRun(
         if (grammar?.isTerminated) grammarDone = true;
         break;
       }
-      vLogits.dispose();
+      vLogits!.dispose();
+      vLogits = null;
       extras.accepted += kAccept;
       clearCache();
 
@@ -289,16 +443,32 @@ export async function specServeRun(
         if ((await onToken(tok)) === false) { halted = true; break; }
         if (stats.generatedTokens >= maxTokens) break;
       }
-      if (sawEos || halted || grammarDone || stats.generatedTokens >= maxTokens) break decode;
+      const stop = sawEos || halted || grammarDone || stats.generatedTokens >= maxTokens;
 
-      // (e) roll back the rejected suffix on the target (the pre-round gate
-      // guarantees trimmability here)
-      if (kAccept < n) for (const c of caches) c.trim(n - kAccept);
-      source.commit(n, kAccept);
+      // (e) roll back the rejected suffix + commit to the source (skipped on
+      // stop — the target caches are about to be disposed). commit takes
+      // ownership of vCtxML (DSpark grows H_ctx by the accepted window; the
+      // others ignore it). The next anchor = the target hidden at the emitted
+      // position (the assistant borrows it; generate.ts:230 pattern — the slice
+      // outlives its parent's dispose).
+      if (!stop) {
+        if (kAccept < d) for (const c of caches) c.trim(d - kAccept);
+        source.commit(d, kAccept, vCtxML ?? undefined); // takes ownership of vCtxML
+        vCtxML = null;
+        const H = vHidden!.shape[2]!;
+        anchorHidden?.dispose();
+        anchorHidden = vHidden!.slice([0, kAccept, 0], [1, kAccept + 1, H]); // [1,1,H]
+      } else {
+        vCtxML?.dispose();
+        vCtxML = null;
+      }
+      vHidden!.dispose();
+      vHidden = null;
+      if (stop) break decode;
 
       // (f) chain: mlx-lm's re-feed rule (generate.py:645-648)
       const emit = correction!; // non-null: the walk always sets it unless it broke on EOS/max inside accepts
-      if (kAccept === n) feed = [drafts[n - 1]!, emit];
+      if (d > 0 && kAccept === d) feed = [drafts[d - 1]!, emit]; // d=0 has no last draft to re-feed
       else feed = [emit];
       pending = emit;
     }
@@ -309,6 +479,16 @@ export async function specServeRun(
       : 0;
     return stats;
   } finally {
+    // Dispose whatever a mid-round/prefill throw left live (each is nulled the
+    // instant its normal disposal or ownership transfer ran, so no double-free).
+    anchorHidden?.dispose();
+    lastLogits?.dispose();
+    prefillCtx?.dispose();
+    for (const p of ctxParts) p.dispose();
+    vLogits?.dispose();
+    roundRow?.dispose();
+    vHidden?.dispose();
+    vCtxML?.dispose();
     for (const c of caches) c.dispose();
     source.dispose();
     history?.dispose();

@@ -20,7 +20,7 @@ import pkgJson from "../package.json" with { type: "json" };
 import { readFileSync } from "node:fs";
 const APP_PAGE = appHtml as unknown as string;
 const pkgVersion = (pkgJson as { version: string }).version;
-import { loadModelConfig, type KvQuantSpec, type ModelConfig } from "./config";
+import { loadModelConfig, type KvQuantSpec, type ModelConfig, type TurboQuantScheme } from "./config";
 import { Weights } from "./weights";
 import { Gemma4Model } from "./model/gemma4";
 import { DiffusionGemmaModel } from "./model/diffusion-gemma";
@@ -86,6 +86,11 @@ export interface ServerOptions {
    *  the serial path); "off" forces bf16; a number forces uniform bits
    *  (group size 64, start 0) ignoring the config file. */
   kvQuant?: "off" | "config" | number;
+  /** TurboQuant scheme (docs/design/turboquant-kv.md): a separate axis from
+   *  kvQuant above, mutually exclusive with it (`--kv-quant turbo[:k<bits>v
+   *  <bits>]` sets this instead of kvQuant). Solo-only in v1 — see
+   *  GenerationGateway's explicit refusal. */
+  turboQuant?: TurboQuantScheme;
   /** Memory budget for the serving process (admission control — Phase 5).
    *  Requests whose prompt + max_tokens exceed the budget's max safe
    *  context are rejected with 400 instead of crashing the GPU: the OOM
@@ -210,6 +215,28 @@ export interface GenSamplingDefaults {
   repetitionPenalty?: number;
 }
 
+export type DraftKind = "dspark" | "deepspec" | "assistant" | "two-model";
+
+/** Detect the draft artifact's kind so the right provider is loaded. All four
+ *  providers share ONE serve loop (src/spec/serve-loop.ts). Exported for the
+ *  bench harness (scripts/bench-feature-matrix.ts) — one detection, no drift. */
+export async function detectDraftKind(dir: string): Promise<DraftKind> {
+  if (await Bun.file(`${dir}/dspark.json`).exists()) return "dspark"; // our trained module
+  try {
+    const cfg = (await Bun.file(`${dir}/config.json`).json()) as {
+      model_type?: string;
+      architectures?: string[];
+    };
+    // DeepSeek's released DSpark drafters (DeepSpec reference): no
+    // dspark.json, plain HF config stamped Gemma4DSparkModel.
+    if (cfg.architectures?.[0] === "Gemma4DSparkModel") return "deepspec";
+    if (String(cfg.model_type ?? "").includes("assistant")) return "assistant";
+  } catch {
+    // no/unreadable config → fall through to a full second model
+  }
+  return "two-model";
+}
+
 async function loadGenSamplingDefaults(modelDir: string): Promise<GenSamplingDefaults> {
   const file = Bun.file(`${modelDir}/generation_config.json`);
   if (!(await file.exists())) return {};
@@ -238,6 +265,10 @@ export async function loadContext(
     draftModelDir?: string;
     /** Drafts per round (`--num-draft-tokens`, mlx_lm.server default 3). */
     numDraftTokens?: number;
+    /** Draft-provider kind override (`--draft-kind`); auto-detected from the
+     *  draft artifact when absent (dspark.json → dspark; *_assistant config →
+     *  assistant; otherwise two-model). */
+    draftKind?: DraftKind;
   } = {},
 ): Promise<ServerContext> {
   const config = await loadModelConfig(modelDir);
@@ -270,26 +301,52 @@ export async function loadContext(
   if (tokenizer.eosTokenId != null && !config.eosTokenIds.includes(tokenizer.eosTokenId))
     config.eosTokenIds = [...config.eosTokenIds, tokenizer.eosTokenId];
 
-  // Speculative decoding: load the draft model (mlx_lm.server --draft-model).
+  // Speculative decoding: load the draft (mlx_lm.server --draft-model). The
+  // draft artifact's KIND selects the provider — all three share ONE serve
+  // loop (src/spec/serve-loop.ts): dspark.json → DSpark (KV-injected), a
+  // *_assistant config → the optiq KV-borrowing Gemma drafter, otherwise a
+  // full second model (mlx-lm parity). `--draft-kind` overrides the detect.
   let draft: ServerContext["draft"] = null;
   if (opts.draftModelDir) {
-    const { TwoModelProvider } = await import("./spec/two-model");
-    const provider = await TwoModelProvider.load(opts.draftModelDir, config.text.vocabSize);
-    // Tokenizer-family hard check: exact-token-match acceptance is only
-    // meaningful when both models tokenize identically. Vocab-size mismatch
-    // is a warning (upstream parity, inside TwoModelProvider.load); a probe
-    // string that ENCODES differently means different tokenizer families —
-    // refuse instead of silently accepting ~0% of drafts.
-    const draftTok = await loadTokenizer(opts.draftModelDir);
-    const probe = "The 3 quick brown foxes jumped över the lazy dog?! 🦊";
-    if (
-      JSON.stringify(tokenizer.encode(probe)) !== JSON.stringify(draftTok.encode(probe))
-    ) {
-      provider.dispose();
-      throw new Error(
-        `--draft-model tokenizer differs from the target's (probe string encodes ` +
-          `differently) — speculation needs the same tokenizer family`,
-      );
+    const dir = opts.draftModelDir;
+    const kind = opts.draftKind ?? (await detectDraftKind(dir));
+    let provider: import("./spec/source").DraftProvider;
+    let numDraftTokens = Math.max(1, opts.numDraftTokens ?? 3);
+    if (kind === "dspark") {
+      const { DflashProvider } = await import("./spec/dflash-source");
+      const p = await DflashProvider.load(dir);
+      provider = p;
+      // Pin to the trained block width — the serve loop must never ask for
+      // more positions than the DSpark block was trained for (n ≤ cfg.gamma).
+      numDraftTokens = Math.max(1, Math.min(opts.numDraftTokens ?? p.gamma, p.gamma));
+    } else if (kind === "deepspec") {
+      const { DeepspecProvider } = await import("./spec/deepspec-source");
+      const p = await DeepspecProvider.load(dir);
+      provider = p;
+      // Same pin, from their config's block_size (e.g. 7 for the released
+      // dspark_gemma4_12b_block7).
+      numDraftTokens = Math.max(1, Math.min(opts.numDraftTokens ?? p.gamma, p.gamma));
+    } else if (kind === "assistant") {
+      const { AssistantProvider } = await import("./spec/assistant-source");
+      provider = await AssistantProvider.load(dir);
+    } else {
+      const { TwoModelProvider } = await import("./spec/two-model");
+      provider = await TwoModelProvider.load(dir, config.text.vocabSize);
+      // Tokenizer-family hard check — two-model ONLY (it ships its own
+      // tokenizer). Exact-token-match acceptance is meaningful only when both
+      // models tokenize identically; a probe that ENCODES differently means
+      // different families — refuse instead of silently accepting ~0% of
+      // drafts. The KV-borrowing drafters share the target's tokenization by
+      // construction, so this check does not apply to them.
+      const draftTok = await loadTokenizer(dir);
+      const probe = "The 3 quick brown foxes jumped över the lazy dog?! 🦊";
+      if (JSON.stringify(tokenizer.encode(probe)) !== JSON.stringify(draftTok.encode(probe))) {
+        provider.dispose();
+        throw new Error(
+          `--draft-model tokenizer differs from the target's (probe string encodes ` +
+            `differently) — speculation needs the same tokenizer family`,
+        );
+      }
     }
     if (opts.memoryBudgetBytes) {
       const targetBytes = [...weights.shards.files.values()].reduce((a, f) => a + f.mmap.size, 0);
@@ -305,7 +362,7 @@ export async function loadContext(
         );
       }
     }
-    draft = { provider, numDraftTokens: Math.max(1, opts.numDraftTokens ?? 3) };
+    draft = { provider, numDraftTokens };
   }
 
   return {
@@ -1236,8 +1293,17 @@ export function createServer(
   // whose presets pass it explicitly). The CLI always passes kvQuant now;
   // this fallback is the library-user default and matches the CLI's.
   const configScheme = ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};
-  const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart"> =
-    serverOptions.kvQuant === "off" ? {}
+  // Mutually exclusive by contract (GenerateOptions.turboQuant doc): a
+  // programmatic caller setting both gets turboQuant — say so, like the
+  // other risky-combination warnings below.
+  if (serverOptions.turboQuant && serverOptions.kvQuant && serverOptions.kvQuant !== "off")
+    console.warn(
+      `[kv-quant] both turboQuant and --kv-quant ${serverOptions.kvQuant} are set; ` +
+        `turboQuant wins (they are mutually exclusive).`,
+    );
+  const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart" | "turboQuant"> =
+    serverOptions.turboQuant ? { turboQuant: serverOptions.turboQuant, quantizedKvStart: 0 }
+    : serverOptions.kvQuant === "off" ? {}
     : serverOptions.kvQuant === "config" ? configScheme
     : typeof serverOptions.kvQuant === "number"
       ? { kvBits: serverOptions.kvQuant, quantizedKvStart: 0 }
@@ -1252,6 +1318,14 @@ export function createServer(
         `quantized KV is serial-only (it touches rotating layers) — those requests ` +
         `won't batch. Use --kv-quant config for batched mixed-precision KV, or omit ` +
         `--kv-quant to batch in bf16. (docs/design/unified-engine-frontier-plan.md)`,
+    );
+  // TurboQuant is solo-only in v1 (novel cache class, not batchable by
+  // construction — see GenerationGateway#modelCachesBatchable/willBatch).
+  if (batch > 1 && kvScheme.turboQuant)
+    console.warn(
+      `[batch] --batch ${batch} with --kv-quant turbo: TurboQuant is serial-only in v1 ` +
+        `— those requests won't batch. Omit --kv-quant to batch in bf16. ` +
+        `(docs/design/turboquant-kv.md)`,
     );
 
   // SSD cold tier (docs/design/ssd-kv-cold-tier.md): prefix KV survives RAM
@@ -1270,7 +1344,9 @@ export function createServer(
   if (serverOptions.ssdCacheDir) {
     if (promptCacheCap <= 0)
       throw new Error("--ssd-cache requires the RAM prompt cache (--prompt-cache 0 disables it)");
-    const schemeKey = kvScheme.kvBits
+    const schemeKey = kvScheme.turboQuant
+      ? `turbo-k${kvScheme.turboQuant.kBits}v${kvScheme.turboQuant.vBits}`
+      : kvScheme.kvBits
       ? `kv${kvScheme.kvBits}`
       : kvScheme.kvConfig?.length ? "config" : "bf16";
     const tokJson = readFileSync(`${ctx.model.config.modelDir}/tokenizer.json`);
@@ -2021,7 +2097,13 @@ export function createServer(
         const layerTypes = ctx.model.config.text.layerTypes;
         const kvLayers: Record<string, number> = {};
         let kvMode = "bf16";
-        if (kvScheme.kvBits) {
+        if (kvScheme.turboQuant) {
+          // v1: full-attention layers only (sliding-window stays bf16 —
+          // docs/design/turboquant-kv.md non-goal).
+          const fullAttn = layerTypes.filter((l) => l !== "sliding_attention").length;
+          kvMode = `turbo k${kvScheme.turboQuant.kBits}v${kvScheme.turboQuant.vBits}`;
+          kvLayers[`turbo-k${kvScheme.turboQuant.kBits}v${kvScheme.turboQuant.vBits}`] = fullAttn;
+        } else if (kvScheme.kvBits) {
           kvMode = `uniform-kv${kvScheme.kvBits}`;
           kvLayers[`kv${kvScheme.kvBits}`] = layerTypes.length;
         } else if (kvScheme.kvConfig) {
@@ -2614,6 +2696,7 @@ export function createServer(
           wantsLogprobs: captureLogprobs,
           userSeed: body.seed !== undefined,
           kvQuant: !!(options.kvConfig?.length || options.kvBits),
+          turboQuant: !!options.turboQuant,
           // grammarCtrl is null on the degrade path (prompt injection) —
           // those stay batchable. A real controller batches via per-row
           // matchers (MLX_BUN_GRAMMAR_BATCH=0 forces it serial).
@@ -2913,6 +2996,7 @@ export function createServer(
           wantsLogprobs: captureLogprobs,
           userSeed: body.seed !== undefined,
           kvQuant: !!(options.kvConfig?.length || options.kvBits),
+          turboQuant: !!options.turboQuant,
           // /v1/completions grammar (textGrammarCtrl). Same null-on-degrade
           // contract as the chat lane.
           hasGrammar: !!textGrammarCtrl,

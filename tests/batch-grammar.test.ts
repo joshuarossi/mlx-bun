@@ -71,7 +71,7 @@ describe.skipIf(!optIn || !haveCpm)("batch lane × grammar (B2 gates, CPM)", () 
 
   const SHAPE = {
     hasVision: false, hasAdapters: false, hasRepetitionPenalty: false,
-    userSeed: false, kvQuant: false, hasLogitsExtras: false,
+    userSeed: false, kvQuant: false, turboQuant: false, hasLogitsExtras: false,
     wantsLogprobs: false, hasDraft: false,
   };
 

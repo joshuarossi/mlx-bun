@@ -15,11 +15,11 @@ import {
 } from "./mlx/ffi";
 import * as ops from "./mlx/ops";
 import { CompiledDecode } from "./model/compiled-decode";
-import { Gemma4Model, KVCache, RotatingKVCache, type Cache } from "./model/gemma4";
+import { Gemma4Model, KVCache, RotatingKVCache, TurboQuantKVCache, type Cache } from "./model/gemma4";
 import { DiffusionGemmaModel } from "./model/diffusion-gemma";
 import { diffusionGenerate } from "./diffusion/diffusion-generate";
 import type { RuntimeModel } from "./model/factory";
-import type { KvQuantSpec } from "./config";
+import type { KvQuantSpec, TurboQuantScheme } from "./config";
 import { flagOn } from "./flags";
 import {
   makeLogitsProcessors, makeSampler,
@@ -73,6 +73,14 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   /** Convert once a cache's offset reaches this (uniform-kvBits default
    *  5000 = mlx-lm; kvConfig default 0 = optiq serve). */
   quantizedKvStart?: number;
+  /** TurboQuant scheme (docs/design/turboquant-kv.md): rotation-based KV
+   *  quantization, a CLI-only runtime lever in the same class as uniform
+   *  kvBits (mutually exclusive with kvBits/kvConfig — maybeQuantizeKv
+   *  checks kvBits/kvConfig first, so set at most one). Full-attention
+   *  KVCache layers convert via TurboQuantKVCache.fromKVCache;
+   *  RotatingKVCache (sliding-window) layers stay bf16 in v1 — a one-time
+   *  warning names the limitation, never a throw. */
+  turboQuant?: TurboQuantScheme;
   /** Mounted LoRA adapter ids to apply (resolved/validated by
    *  AdapterManager.resolveSpec). Residuals sum in order. Set on the
    *  model's LoraState for exactly the duration of this generation —
@@ -110,6 +118,21 @@ export interface TokenLogprobs {
   top?: { id: number; logprob: number }[];
 }
 
+/** Materialize every cache's state at a prefill chunk boundary. Unlike
+ *  KVCache/QuantizedKVCache/RotatingKVCache, TurboQuantKVCache.state()
+ *  allocates FRESH trimmed slice views on every call (required by its
+ *  snapshotCache/cloneKvCaches callers in kv-store.ts, which already
+ *  dispose them) rather than returning its own live-owned arrays — so
+ *  this chokepoint must dispose that cache kind's state() output itself,
+ *  or the views leak (unreferenced past this call, only reclaimed by the
+ *  FinalizationRegistry backstop on GC of the tiny JS wrapper). */
+export function evalCacheState(cache: Cache[]): void {
+  const turboState = cache.flatMap((c) => (c instanceof TurboQuantKVCache ? c.state() : []));
+  const liveState = cache.flatMap((c) => (c instanceof TurboQuantKVCache ? [] : c.state()));
+  ops.evalAll([...turboState, ...liveState]);
+  for (const a of turboState) a.dispose();
+}
+
 /** Port of mlx-lm maybe_quantize_kv_cache + BOTH halves of optiq serve's
  *  per-layer patched variant (incl. patch_rotating_to_quantized: rotating
  *  caches convert too — Phase 9):
@@ -128,7 +151,11 @@ export interface TokenLogprobs {
  *    24 GB Mac). Numerics untouched: same quantize math, only the eval
  *    ordering is forced (tests/kv-quant.test.ts, tests/rotating-kvq.test.ts). */
 export function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void {
-  const { kvBits, kvConfig } = options;
+  const { kvBits, kvConfig, turboQuant } = options;
+  if (turboQuant) {
+    maybeTurboQuantizeKv(cache, turboQuant, options.quantizedKvStart ?? 0);
+    return;
+  }
   if (!kvBits && !kvConfig?.length) return;
   const start = options.quantizedKvStart ?? (kvConfig?.length ? 0 : 5000);
   const byLayer = kvConfig?.length
@@ -153,6 +180,41 @@ export function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void 
     // source (already released by toQuantized) frees before the next layer
     // converts — the transient stays ~one layer, not the whole cache.
     ops.evalAll(cache[i]!.state());
+    clearCache();
+  }
+}
+
+/** Emitted once per process: RotatingKVCache (sliding-window) layers are a
+ *  documented v1 non-goal (docs/design/turboquant-kv.md) — they stay bf16
+ *  rather than throwing, so mixed full-attention/sliding-window models (e.g.
+ *  Gemma) still serve correctly under --kv-quant turbo. */
+let warnedTurboRotating = false;
+
+/** TurboQuant conversion chokepoint (mirrors the uniform/config branch
+ *  above): only plain full-attention KVCache instances convert, via
+ *  TurboQuantKVCache.fromKVCache — RotatingKVCache stays bf16 (warn once,
+ *  never throw). Same offset===0 skip-empty-cache rule as the affine path. */
+function maybeTurboQuantizeKv(cache: Cache[], scheme: TurboQuantScheme, start: number): void {
+  for (let i = 0; i < cache.length; i++) {
+    const c = cache[i]!;
+    if (c instanceof RotatingKVCache) {
+      if (!warnedTurboRotating) {
+        warnedTurboRotating = true;
+        console.warn(
+          "[turbo-quant] sliding-window (RotatingKVCache) layers stay bf16 in v1 " +
+          "(full-attention only) — docs/design/turboquant-kv.md.",
+        );
+      }
+      continue;
+    }
+    if (!(c instanceof KVCache) || c.offset < start || c.offset === 0) continue;
+    const tq = TurboQuantKVCache.fromKVCache(c, scheme.kBits, scheme.vBits);
+    cache[i] = tq;
+    // state() allocates fresh trimmed slice views for this cache kind
+    // (see evalCacheState) — dispose after materializing, or they leak.
+    const state = tq.state();
+    ops.evalAll(state);
+    for (const a of state) a.dispose();
     clearCache();
   }
 }
@@ -503,7 +565,7 @@ async function* generateInner(
           const h = model.forwardHidden(ids, cache);
           ids.dispose();
           h.dispose();
-          ops.evalAll(cache.flatMap((c) => c.state()));
+          evalCacheState(cache);
           maybeQuantizeKv(cache, options);
           clearCache();
           pos += chunk.length;
@@ -537,7 +599,7 @@ async function* generateInner(
         const h = model.forwardHidden(ids, cache);
         ids.dispose();
         h.dispose(); // logits never computed for non-final chunks
-        ops.evalAll(cache.flatMap((c) => c.state()));
+        evalCacheState(cache);
         maybeQuantizeKv(cache, options);
         // mlx-lm _prefill clears the allocator cache after every chunk;
         // without this, prefill transients pile up in the buffer cache
