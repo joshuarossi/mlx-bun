@@ -30,18 +30,34 @@ wedge, and today the UI hides it: the backend (`src/pi-web.ts`, `src/memory/tool
 `src/lora.ts`, `src/server.ts`) already implements most of it; the 2737-line
 `src/web/app.html` shows almost none of it.
 
-**The strategic bet:** ship "best-in-class local-AI chat" not by chasing
-feature parity with Open WebUI's breadth or LM Studio's polish, but by
-making three things visible that no competitor's architecture allows them to
-show: (1) memory that graduates from raw context into trained weights (a
-"memory LoRA"), with a vault you can open, search, and watch self-heal after
-a correction; (2) LoRA routing as a legible per-surface decision, not a
-Python-API-only mechanism (optiq built the engine, never the UI; LM Studio's
-own bug tracker confirms adapter hot-swap is unsupported industry-wide); (3)
-serving speed and tool trust as ambient, always-on proof — tok/s, TTFT,
-which lane is active (serial / spec-decode / batched), and exactly what a
-tool call touched on disk — because we control the whole stack from Metal
-kernel to composer pixel and nobody else surveyed does.
+**The strategic bet (revised 2026-07-06):** best-in-class is a **superset,
+not a wedge**. The goal is the single best UI for macOS local AI, period —
+so the qualification round is conceding *nothing*: for every capability a
+user judges a local chat app by, we match or beat the best current
+implementation, or we make a written skip decision with a substrate reason.
+The acceptance test: nobody ever says "I miss how Ollama / LM Studio /
+Open WebUI / optiq had X." The axis-by-axis requirement table lives in
+[web-chat-beat-matrix.md](web-chat-beat-matrix.md) (11 axes, 112 capability
+rows, each MATCH / BEAT / SKIP-with-reason) — it is the coverage checklist
+every phase below is planned against. *(An earlier draft of this section
+framed the bet as "don't chase Open WebUI's breadth or LM Studio's polish";
+that conflated where the moat is with what to build, and is reversed.)*
+
+**On top of that conceded-nothing surface**, we stack the three things no
+competitor's architecture allows them to show: (1) memory with a vault you
+can open, search, and watch self-heal after a correction — today that is
+git-tracked articles + nightly synthesis (real, shipped); the "graduates
+into a trained memory LoRA" rung is roadmap, not current capability (the
+adapter runtime exists, the memory fine-tunes don't yet — the UI must never
+claim it before it ships); (2) LoRA routing as a legible per-surface
+decision, not a Python-API-only mechanism (optiq built the engine, never
+the UI; LM Studio's own bug tracker confirms adapter hot-swap is
+unsupported industry-wide); (3) serving speed and tool trust as ambient,
+always-on proof — tok/s, TTFT, which lane is active (serial / spec-decode /
+batched), and exactly what a tool call touched on disk — because we control
+the whole stack from Metal kernel to composer pixel and nobody else
+surveyed does. The differentiators are the reason to *switch*; they are
+never an excuse for a missing table stake.
 
 **The pragmatic constraint:** almost none of this requires new backend
 capability. Session fork, tool approval, adapter-scoped KV, the memory tool
@@ -212,26 +228,44 @@ parity as a mode**: `--batch N` / flag-free paths must keep matching
 mlx-lm's outputs exactly, because "drop-in replacement, losing nothing" is
 a standing product promise (see MEMORY.md), not just a chat-UI concern.
 
-**How we beat Open WebUI / LM Studio for a personal local user:** we don't
-out-broaden Open WebUI (Channels, RBAC, Functions/Pipelines are enterprise
-plumbing a single-user product doesn't need) and we don't out-polish LM
-Studio's closed-source Electron app on raw chrome. We win by being the only
-one of the two whose memory is **weight-level** (a nightly-synthesized LoRA,
-not a context-window fact list with a hard cap) and whose adapter routing is
-**real** (LM Studio has zero adapter concept; Open WebUI is backend-agnostic
-and structurally cannot see adapters at all). Both of those are already true
-at the engine level — the redesign's job is to make them visible, legible,
-and trustworthy in the UI, which neither competitor's architecture permits
-them to do even if they wanted to.
+**How we beat Open WebUI / LM Studio (revised):** by conceding nothing and
+then stacking what they can't copy. Concretely, per the
+[beat matrix](web-chat-beat-matrix.md): we MATCH every table stake a user
+would miss — system prompts/presets, document chat with citations, in-app
+model browse/download (optiq's Hub flow, plus a real `/fit` verdict per row
+that optiq lacks), sandboxed HTML canvas, per-message sampling, session
+auto-titling, export, shortcuts, themes, mobile — and we skip only where the
+engine lacks the substrate (image generation, voice), in writing. The two
+exceptions we deliberately don't chase: Open WebUI's multi-tenant enterprise
+plumbing (Channels, RBAC) — wrong shape for a single-user local product, a
+scope decision rather than a gap — and cloud-scale voice. THEN the wedge:
+we're the only surface whose memory is **weight-level-capable** (git-tracked
+vault + nightly synthesis today, memory-LoRA rung on the roadmap — not a
+context-window fact list with a hard cap) and whose adapter routing is
+**real** (LM Studio has zero adapter concept; Open WebUI is
+backend-agnostic and structurally cannot see adapters at all). Both are
+already true at the engine level — the redesign's job is to make them
+visible, legible, and trustworthy, which neither competitor's architecture
+permits even if they wanted to.
+
+*(Caveat: the Odysseus row above rests on the research agent's public-web
+identification — Cookbook recommender / Skills / Observer-Reflector memory /
+SSRF CVEs. If that isn't the Odysseus meant, that row needs a re-run;
+nothing else in this doc depends on it.)*
 
 ---
 
 ## 4. Design principles
 
-1. **Memory-first, not memory-eventually.** Every screen decision defaults
-   toward making the vault/LoRA flywheel visible over adding generic chatbot
-   chrome. If a feature doesn't reinforce "this gets more yours over time,"
-   it's table stakes, not a differentiator — build it cheaply, don't gold-plate it.
+1. **Concede nothing; differentiate on top.** The beat matrix
+   ([web-chat-beat-matrix.md](web-chat-beat-matrix.md)) is the coverage
+   contract: every capability row is MATCHed, BEATen, or SKIPped in writing
+   with a substrate reason — never silently absent. Within that, the
+   memory/LoRA flywheel gets the design attention (it's the reason to
+   switch), but "it's just table stakes" is never a reason a table stake
+   ships worse than the best competitor's version. The test for every
+   release: would a daily LM Studio / Open WebUI / optiq-Lab user miss
+   anything? If yes, that gap has a name and a written decision.
 2. **Show, don't assert.** Privacy, speed, and memory are all *provable*
    locally (no network egress, real tok/s, an inspectable git-tracked vault).
    Every one of these claims gets a UI element that proves it, not prose
@@ -316,7 +350,7 @@ CLI step.
 - Editing a user message creates a lightweight sibling with a `< 1/2 >`
   toggle above it — the ChatGPT/Claude convention users already have muscle
   memory for. **Do not** build a full tree-view graph in this phase (real
-  effort neither incumbent bothered to ship); a tree view is a Phase 4
+  effort neither incumbent bothered to ship); a tree view is a Phase 5
   stretch differentiator (see §6, and note both cloud incumbents ship only
   the linear toggle — a from-scratch tree view is a genuine, buildable gap
   we can claim later, not a launch requirement).
@@ -410,7 +444,7 @@ currently-vanishing sidebar (`app.html:345`) with a slide-over drawer
 triggered by a hamburger — nothing fancier needed for v1.
 
 A lightweight **persona/bundle** concept (system prompt + adapter selection
-+ tool allowlist + memory scope, saved and nameable) is a Phase 4 item (see
++ tool allowlist + memory scope, saved and nameable) is a Phase 5 item (see
 §6) — not required for the core redesign, but the composer/settings data
 model should be shaped so a "save this as a named bundle" action is a
 thin layer on top, not a re-architecture.
@@ -444,11 +478,14 @@ and folding image/doc attach into the unified `#` retrieval gesture (§5.2).
 ### 5.11 Artifacts / code
 
 Fenced-code rendering gets a copy button (already exists) plus syntax
-highlighting (§5.3). A full Artifacts/Canvas side-panel is explicitly **not**
-a Phase 1-3 item (see §6 non-goals) — both cloud incumbents' own experience
-(OpenAI partially walked Canvas back in May 2026 for the common case) argues
-for opt-in-by-heuristic (auto-open above ~10 lines of code / high fence
-density) as a stretch goal, not a launch requirement.
+highlighting (§5.3). **Canvas v1 — fenced HTML rendered in a sandboxed
+iframe with a view-source toggle — is a Phase 3 item** (optiq Lab ships
+exactly this today; "I miss optiq's Canvas" is a disallowed outcome). The
+full Artifacts/Canvas *side-panel* (persistent, versioned,
+highlight-to-scope-edit) stays a Phase 5 stretch — both cloud incumbents'
+own experience (OpenAI partially walked Canvas back in May 2026 for the
+common case) argues for opt-in-by-heuristic (auto-open above ~10 lines of
+code / high fence density), not a mandatory pane.
 
 ---
 
@@ -557,6 +594,30 @@ everything.** Do not migrate to React/Svelte/a SPA framework. Reasoning:
   into the one file the server ships. This preserves every runtime
   constraint (self-contained, no CSP-breaking externals) while making the
   source tree navigable.
+  **The split's primary payoff is the typed contract, not navigability**
+  (amended 2026-07-06): once the inline script is TypeScript, it imports
+  `ServerMessage`/`ClientMessage` from `src/pi-web.ts` and the job-stream /
+  API response shapes from their source modules — and the single largest
+  empirical bug class disappears at compile time. Look at what Phase 0
+  actually fixed: `e.lr` vs `e.learning_rate`, array-truthiness on a WS
+  frame, a response-shape mismatch, a dead string-enum — every one is
+  contract drift between untyped inline JS and typed TS, and every one
+  becomes a build error after the split. **Scheduled: the split is Phase 2's
+  first work item** — before the memory panel and routing table add major
+  new surface to the monolith, not after.
+- **Frontend regression harness** (amended 2026-07-06 — this repo
+  oracle-gates everything else; the UI can't be the one untested surface):
+  (a) formalize the inline-script syntax check (extract `<script>`,
+  `new Function()` it) as a test/hygiene-gate step instead of an ad-hoc
+  command; (b) a `tests/web-app.test.ts` DOM-level unit file (happy-dom or
+  equivalent) covering the pure client functions — `splitBlocks`/streaming
+  memoization (streamed-then-finalized output must equal one-shot
+  `mdToHtml` on a fixture corpus: the renderer's own parity oracle),
+  `renderQueue`, `api()` error unwrapping, esc() discipline on
+  interpolation sites; (c) post-split, type-checking the frontend modules
+  in the same `tsc --noEmit` pass as the server. Playwright-class
+  end-to-end stays out of scope until there's a model-free server stub to
+  drive it against.
 - **Inline, self-hosted Shiki (or a lighter alternative) and KaTeX** as
   vendored, no-CDN assets bundled at build time — a real dependency-weight
   tradeoff against the "no build, no CDN" constraint, but justified because
@@ -571,7 +632,7 @@ everything.** Do not migrate to React/Svelte/a SPA framework. Reasoning:
 no bespoke UI" (`docs/design/tauri-desktop-app.md:50-51`). Keep that
 contract — every feature in this plan ships to both surfaces for free by
 construction, since nothing here depends on a browser-only API. The one
-Tauri-specific opportunity (deferred to Phase 4, not required): a global
+Tauri-specific opportunity (deferred to Phase 5, not required): a global
 hotkey + floating companion window (mirroring ChatGPT macOS's Option+Space
 and mlx-serve's Ctrl-Space quick-launcher) — a concrete way for the desktop
 wrap to earn native-app status instead of being a browser tab in a frame,
@@ -647,7 +708,10 @@ bugs fixed as part of the IA move (§9 Phase 1).
 Each phase is independently shippable and includes the relevant tactical
 fixes from `docs/planning/web-ui-pass-plan.md` by number. Ordered by
 effort/reward, starting with free wins, ending with differentiator
-features.
+features. The [beat matrix](web-chat-beat-matrix.md) is the coverage
+checklist across all phases: at any release point, every matrix row is
+either shipped, in a scheduled phase below, or a written SKIP — a MATCH row
+with none of those three states is a planning bug.
 
 ### Phase 0 — Bug fixes, one UI-only PR (no server changes, ~2-3 days)
 
@@ -705,11 +769,36 @@ strip, and the gc plan/execute endpoints (#9):
 - `role="log" aria-live="polite"` on the thread, focus-trap/Escape on
   popovers.
 
-### Phase 2 — Memory surface + adapter routing table (2-3 weeks)
+### Phase 2 — Module split, memory surface + adapter routing table (2-3 weeks)
 
 The two headline differentiators, now that rendering is fixed and settings
-have room:
+have room — preceded by the structural fix that keeps the growing surface
+honest:
 
+- **Module split FIRST** (§7, amended): split `app.html` into
+  build-concatenated `src/web/*.ts` modules (one served file unchanged at
+  runtime) so the frontend imports `ServerMessage`/`ClientMessage` from
+  `src/pi-web.ts` and job/API shapes from their source modules — the
+  Phase-0 bug class (contract drift) becomes a compile error before the
+  memory panel and routing table add major new surface. Ship the frontend
+  regression harness (§7) in the same pass: formalized script-syntax gate,
+  `tests/web-app.test.ts` over the pure client functions (streaming
+  memoization vs. one-shot `mdToHtml` parity fixtures, `renderQueue`,
+  `api()` unwrapping), frontend modules in the same `tsc --noEmit` pass.
+- **Per-chat system prompt** (beat matrix Axis 4 — table stakes in every
+  competitor, currently impossible: the web chat's prompt is hardcoded in
+  `buildPiAgentSurface`/`buildWebChatSystemPrompt`): an editable
+  system-prompt field per session, layered over the built-in surface prompt,
+  carried on the WS session; **presets v1** (named system-prompt + sampling
+  bundle, saved locally) shaped so Phase 5's persona bundles (adapter +
+  tools + memory scope) are a thin extension.
+- **Session auto-titling** (Axis 11): v1 derives from the first user
+  message; model-generated titles optional and never queued ahead of real
+  turns.
+- **Vault-init endpoint** (§5.1 prerequisite): the first-run consent card
+  creates the vault from the web UI — needs a thin
+  `POST /api/memory/init` wrapping what `mlx-bun memory init` does in the
+  CLI (today it's CLI-only and invisible to non-terminal users).
 - Memory REST wrappers (prerequisite, server-side — see §2.3 caveat):
   `GET /api/memory/status|list|search|article` + a git log/diff read,
   thin delegating wrappers over `src/memory/vault.ts` / `tools.ts`
@@ -735,7 +824,47 @@ have room:
   `web-ui-pass-plan.md` #17 (Routes 404 in compiled binary) and #19 (Curves
   nav highlight) as part of this move.
 
-### Phase 3 — Trust & speed differentiators (1-2 weeks)
+### Phase 3 — Concede nothing: the table-stakes sweep (2-3 weeks)
+
+(Added 2026-07-06 under the superset doctrine — the beat-matrix MATCH rows
+a daily LM Studio / Open WebUI / optiq-Lab user would immediately miss.
+Each item names its matrix axis.)
+
+- **Chat-with-files RAG v1** (Axis 5): attach-and-answer over attached
+  documents with `[n]` citation markers + a sources panel — optiq Lab's
+  BM25 dependency-free bar is the v1 target; we have `src/embed.ts` for a
+  vector upgrade later, but don't block v1 on it. Extend the unified `#`
+  mention (Phase 2) so files and vault articles are one retrieval gesture.
+- **Model Hub** (Axis 3): in-app browse (published quants / HF search /
+  local) → download with progress → one-click load-to-server + new-chat,
+  session-preserving hot-swap — optiq's Hub flow, PLUS the `/fit`
+  hardware-verdict column per row that optiq lacks. "Install to chat under
+  a minute" stops dead-ending at the CLI.
+- **Canvas v1** (Axis 2): fenced-HTML blocks rendered in a sandboxed
+  iframe with a view-source toggle (optiq's shipped pattern; the full
+  Artifacts side-panel stays Phase 5).
+- **Per-message sampling scope** (Axis 4): apply-to-next-turn-only option
+  in the sampling popover (optiq's per-message temp/max-tokens/thinking
+  granularity), on top of the session-level overrides from Phase 1.
+- **Self-healing tool-call loop** (Axis 7): investigate what the pi SDK
+  already retries; add format-aware malformed-call repair (we own the
+  per-model parsers in `src/tool-call.ts`), consecutive-duplicate dedup, a
+  retry budget, and a loop cap with force-finish — small local models
+  malform calls more than cloud frontiers, so this matters more here than
+  it does for optiq.
+- **Stop kills tool subprocesses** (Axis 1): verify/wire abort through the
+  pi tool layer so Stop ends running bash/web-fetch work, not just the
+  token stream.
+- **Chat export** (Axis 10): Markdown/plain-text per session; portable
+  JSON export/import (sessions are already local JSON on disk).
+- **Command palette** (Axis 10, `Cmd/Ctrl+K`): new chat / session search /
+  model + adapter switch / thinking toggle / theme.
+- **Full-text session search** (Axis 10 BEAT): body search, not
+  title-only — no cloud indexing-cost excuse applies locally.
+- **PWA installability** (Axis 10): manifest + shell service worker
+  (installability + instant shell, explicitly not offline chat).
+
+### Phase 4 — Trust & speed differentiators (1-2 weeks)
 
 - "Temporary chat" pill — provably never written to disk.
 - Per-session disk-touch tally (files read/written this session) as a
@@ -747,9 +876,9 @@ have room:
 - HLG tone-curve controls folded into the main chat composer (currently
   disconnected, only reachable via the standalone Curve Designer page).
 
-### Phase 4 — Stretch differentiators (ongoing, pick 1-2 per quarter after Phase 3)
+### Phase 5 — Stretch differentiators (ongoing, pick 1-2 per quarter after Phase 4)
 
-Not required for "best-in-class" but the next tier of unmistakable bets:
+The next tier of unmistakable bets:
 
 - Full conversation tree view (not just linear `< 1/2 >` toggle) — a
   genuine gap neither ChatGPT nor Claude has shipped natively.
@@ -763,8 +892,17 @@ Not required for "best-in-class" but the next tier of unmistakable bets:
   `docs/design/adapters-end-to-end.md` §D, currently PENDING.
 - Tauri-specific: global hotkey + floating companion window with instant
   screenshot capture (vision pipeline already exists).
-- Opt-in-by-heuristic Artifacts/Canvas panel for long code/HTML blocks with
-  highlight-to-scope-edit.
+- Opt-in-by-heuristic Artifacts/Canvas side-panel for long code/HTML blocks
+  with highlight-to-scope-edit (Canvas v1 iframe ships in Phase 3).
+- MCP client support (beat matrix Axis 7 — table stakes for 2026 agentic
+  chat per Open WebUI/LM Studio/Jan; moderate-large build behind the
+  existing tool plumbing, scheduled here rather than silently absent).
+- Skills-style self-evolving procedural memory (Odysseus's pattern; large
+  separate system, matrix SKIP-for-v1 — revisit once the memory panel has
+  usage data).
+- Mermaid diagram rendering (matrix Axis 2 — add if the code-heavy audience
+  demands it; completed-block hook makes it cheap to slot in).
+- Vector upgrade to chat-with-files RAG (BM25 v1 → `src/embed.ts` hybrid).
 
 ---
 
@@ -825,3 +963,21 @@ Not required for "best-in-class" but the next tier of unmistakable bets:
    with the existing pause/reset actions (already a good ChatGPT/Claude
    pattern) so the "off switch" is never more than one click from the
    panel that shows the most.
+8. **(Added 2026-07-06) The superset doctrine balloons scope until nothing
+   ships.** Matching 112 matrix rows is a quarter-plus of work; the
+   original wedge-only framing failed by conceding too much, and the
+   correction can fail by attempting everything at once. Mitigation: the
+   phases stay independently shippable and strictly ordered
+   (fundamentals → structure → table-stakes sweep → trust/speed →
+   stretch); within Phase 3 the sweep is ordered by "what would a daily
+   competitor user miss first"; the matrix's shipped/scheduled/SKIP states
+   are re-audited at each phase boundary rather than renegotiated
+   mid-phase.
+9. **(Added 2026-07-06) The untested, untyped frontend erodes as it
+   grows.** Phase 0's bug class (contract drift between inline JS and
+   typed TS) recurs with every new surface until the module split lands.
+   Mitigation: the split + frontend regression harness are Phase 2's
+   FIRST work item (§7), before the memory panel and routing table add
+   the next thousand lines; until then, every new WS frame or API shape
+   consumed by `app.html` gets a line in `tests/pi-web.test.ts` proving
+   the producing side's contract.
