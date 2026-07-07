@@ -71,12 +71,14 @@ describe.skipIf(!haveWeights)("generated 12B vs monolith", async () => {
     expect(a).toEqual(b);
     // Under compiled decode the per-step path is CompiledDecode's; and
     // since 583c8c8 (OptiQ mixed-KV: empty caches stay bf16 so the first
-    // prefill matches the oracle), the prefill rides the bf16 monolith —
-    // the generated quantized fast path declines it (#matches requires
-    // quantized caches). So in the serve+compiled scenario the generated
-    // forwardLayers is bypassed entirely. Full generated coverage is the
-    // uncompiled test below.
-    expect(usedGenerated).toBe(0);
+    // prefill matches the oracle), the prefill CHUNKS ride the bf16
+    // monolith — the generated quantized fast path declines them
+    // (#matches requires quantized caches). Since the prefill tail-split
+    // fix (2026-07-07) the caches convert at the len-1 boundary and
+    // step 0 is an L=1 forward on the QUANTIZED caches (the oracle _step
+    // convention) — the generated fast path accepts exactly that one
+    // forward. Full generated coverage is the uncompiled test below.
+    expect(usedGenerated).toBe(1);
   }, 240_000);
 
   test("greedy trajectories identical, uncompiled (full generated coverage)", async () => {

@@ -2,9 +2,11 @@
 // oracle golden (slow tier) — closes the comparison-2 gap: before this,
 // mixed-KV was verified ours-fast vs ours-monolith and against the UNIFORM
 // kv4 golden; goldens/mixed-kv.json is produced by the optiq-side composition
-// itself (scripts/regen-mixed-kv-goldens.ts: bf16 prefill → per-layer
-// quantize of the populated caches, rotating included → stock unfused
-// quantized decode — the same semantics as our maybeQuantizeKv).
+// itself (scripts/regen-mixed-kv-goldens.ts: bf16 prefill of ids[:-1] →
+// per-layer quantize of the populated caches, rotating included → L=1
+// step-0 forward of the last prompt token → stock unfused quantized decode
+// — the oracle serve-loop geometry our maybeQuantizeKv + tail-split prefill
+// copy, re-anchored 2026-07-07).
 //
 // Same two-tier bar as kv-quant.test.ts: per-step logits BIT-EXACT
 // (teacher-forced down the golden trajectory so knife-edge argmax ties can't
@@ -54,12 +56,17 @@ describe.skipIf(!haveWeights || !haveGoldens)("mixed-KV (kv_config) parity vs op
       return maxDiff;
     };
 
-    // step 0: bf16 prefill output (the mixed hook skips empty caches)
-    let l = model.forward(golden.prompt_ids, cache);
+    // Tail-split composition (2026-07-07, mirrors the regen script and the
+    // oracle serve loop): bf16 prefill of ids[:-1], convert the populated
+    // caches per kv_config, then step-0 logits from an L=1 forward of the
+    // last prompt token (its KV lands in the quantized caches).
+    const ids = golden.prompt_ids;
+    const head = model.forward(ids.slice(0, -1), cache);
+    head.dispose();
+    maybeQuantizeKv(cache, kvOpts);
+    let l = model.forward([ids[ids.length - 1]!], cache);
     expect(await maxDiffAt(0, l)).toBe(0);
     l.dispose();
-    // populated caches convert per kv_config — mirrors the oracle exactly
-    maybeQuantizeKv(cache, kvOpts);
     // steps 1..3: decode reads the quantized caches (stock unfused L=1)
     for (let step = 1; step < golden.logit_steps; step++) {
       l = model.forward([golden.mixed[step - 1]!], cache);
