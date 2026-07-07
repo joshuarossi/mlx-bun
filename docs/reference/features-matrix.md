@@ -56,6 +56,7 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | Stop sequences / streaming / usage accounting | on | both | — | request fields |
 | HLG tone-curve sampling | off | serial | Lab | `--hlg-sampling on` |
 | Spec-decode telemetry (`usage.speculation`) | on with a draft | serial | — | — |
+| Per-turn lane telemetry (`usage.lane`: serial / serial+spec / batched) | on | both | — | — |
 
 ## Model coverage (per-model validated cells — no generic path is trusted untested)
 

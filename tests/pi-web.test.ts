@@ -3,18 +3,22 @@
 // AgentSessionEvents to the browser WS protocol. No live AgentSession,
 // no server, no model (those run in integration once routes are wired).
 
-import { describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import type { AgentSessionEvent, SessionEntry, SessionInfo } from "@earendil-works/pi-coding-agent";
 import {
   buildWebChatSystemPrompt,
+  deepestLeafFrom,
+  findLastUserMessageEntry,
   injectAdapter,
   injectSampling,
   mapEventToFrames,
   serializeHistory,
   toSessionListItems,
+  userMessageSiblings,
   webChatToolAllowlist,
 } from "../src/pi-web";
 import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "../src/memory/tools";
+import { clearLaneRegistry, recordLane } from "../src/serve/lane-registry";
 
 // Cast helper: the real AgentSessionEvent union is large; we only build
 // the fields mapEventToFrames reads, so narrow via `as`.
@@ -67,9 +71,69 @@ describe("injectSampling (before_provider_request hook body)", () => {
     injectSampling(p, { temperature: 0.5 });
     expect(p).toEqual({ model: "x" });
   });
+
+  // web-ui-pass-plan.md #8: the full mlx_lm.server sampler extension set, not
+  // just temperature/top_p/top_k.
+  it("injects every extended sampling field (min_p/XTC/penalties/seed)", () => {
+    const out = injectSampling(
+      { model: "x" },
+      {
+        min_p: 0.05,
+        xtc_probability: 0.5,
+        xtc_threshold: 0.1,
+        repetition_penalty: 1.1,
+        repetition_context_size: 40,
+        presence_penalty: 0.2,
+        frequency_penalty: 0.3,
+        seed: 1234,
+      },
+    );
+    expect(out).toEqual({
+      model: "x",
+      min_p: 0.05,
+      xtc_probability: 0.5,
+      xtc_threshold: 0.1,
+      repetition_penalty: 1.1,
+      repetition_context_size: 40,
+      presence_penalty: 0.2,
+      frequency_penalty: 0.3,
+      seed: 1234,
+    });
+  });
+
+  it("treats null on any extended field as clearing that override (not injected)", () => {
+    expect(
+      injectSampling(
+        { model: "x" },
+        {
+          min_p: null, xtc_probability: null, xtc_threshold: null,
+          repetition_penalty: null, repetition_context_size: null,
+          presence_penalty: null, frequency_penalty: null, seed: null,
+        },
+      ),
+    ).toBeUndefined();
+  });
+
+  it("mixes base and extended fields independently", () => {
+    const out = injectSampling(
+      { model: "x" },
+      { temperature: null, top_p: 0.9, min_p: 0.05, seed: null },
+    );
+    expect(out).toEqual({ model: "x", top_p: 0.9, min_p: 0.05 });
+  });
+
+  it("treats explicit 0 on an extended field as a real override", () => {
+    expect(injectSampling({ model: "x" }, { repetition_penalty: 0, seed: 0 })).toEqual({
+      model: "x", repetition_penalty: 0, seed: 0,
+    });
+  });
 });
 
 describe("mapEventToFrames", () => {
+  beforeEach(() => {
+    clearLaneRegistry();
+  });
+
   it("maps turn_start / turn_end to bare frames", () => {
     expect(mapEventToFrames(ev({ type: "turn_start" }))).toEqual([{ type: "turn_start" }]);
     expect(mapEventToFrames(ev({ type: "turn_end" }))).toEqual([{ type: "turn_end" }]);
@@ -94,6 +158,57 @@ describe("mapEventToFrames", () => {
       { type: "error", message: "the model request failed" },
       { type: "turn_end" },
     ]);
+  });
+
+  // docs/design/web-chat-redesign.md §2.3 caveat / risk #5: the lane badge must
+  // be server-driven, correlated via the lane registry keyed by the
+  // AssistantMessage's responseId — never inferred client-side.
+  describe("turn_end lane correlation (risk #5: server-driven, never guessed)", () => {
+    it("attaches the recorded lane when the message's responseId is known to the registry", () => {
+      recordLane("chatcmpl-abc123", "batched");
+      const frames = mapEventToFrames(
+        ev({ type: "turn_end", message: { responseId: "chatcmpl-abc123" } }),
+      );
+      expect(frames).toEqual([{ type: "turn_end", lane: "batched" }]);
+    });
+
+    it("omits lane when no responseId is present on the message (never guesses)", () => {
+      const frames = mapEventToFrames(ev({ type: "turn_end", message: {} }));
+      expect(frames).toEqual([{ type: "turn_end" }]);
+    });
+
+    it("omits lane when the responseId is present but unknown to the registry", () => {
+      const frames = mapEventToFrames(
+        ev({ type: "turn_end", message: { responseId: "chatcmpl-never-recorded" } }),
+      );
+      expect(frames).toEqual([{ type: "turn_end" }]);
+    });
+
+    it("carries the lane alongside the error frame on an errored turn", () => {
+      recordLane("chatcmpl-err1", "serial+spec");
+      const frames = mapEventToFrames(
+        ev({
+          type: "turn_end",
+          message: { stopReason: "error", errorMessage: "boom", responseId: "chatcmpl-err1" },
+        }),
+      );
+      expect(frames).toEqual([
+        { type: "error", message: "boom" },
+        { type: "turn_end", lane: "serial+spec" },
+      ]);
+    });
+
+    it("distinguishes serial / serial+spec / batched lanes by id", () => {
+      recordLane("a", "serial");
+      recordLane("b", "serial+spec");
+      recordLane("c", "batched");
+      expect(mapEventToFrames(ev({ type: "turn_end", message: { responseId: "a" } })))
+        .toEqual([{ type: "turn_end", lane: "serial" }]);
+      expect(mapEventToFrames(ev({ type: "turn_end", message: { responseId: "b" } })))
+        .toEqual([{ type: "turn_end", lane: "serial+spec" }]);
+      expect(mapEventToFrames(ev({ type: "turn_end", message: { responseId: "c" } })))
+        .toEqual([{ type: "turn_end", lane: "batched" }]);
+    });
   });
 
   it("maps text_delta assistant events to text_delta frames", () => {
@@ -251,7 +366,7 @@ describe("serializeHistory", () => {
       { type: "model_change", id: "5", parentId: null, timestamp: "t", provider: "x", modelId: "y" } as unknown as SessionEntry,
     ];
     expect(serializeHistory(entries)).toEqual([
-      { role: "user", text: "hello", tools: [] },
+      { role: "user", text: "hello", tools: [], entryId: "1" },
       { role: "assistant", text: "hi! searching", tools: [{ callId: "c1", name: "web_search", args: { query: "mlx" }, result: "top result" }] },
       { role: "assistant", text: "found it", tools: [] },
     ]);
@@ -259,7 +374,7 @@ describe("serializeHistory", () => {
 
   it("accepts string content and drops empty / non-message entries", () => {
     const entries: SessionEntry[] = [mEntry("1", "user", ""), mEntry("2", "user", "  real  ")];
-    expect(serializeHistory(entries)).toEqual([{ role: "user", text: "  real  ", tools: [] }]);
+    expect(serializeHistory(entries)).toEqual([{ role: "user", text: "  real  ", tools: [], entryId: "2" }]);
   });
 
   it("keeps an assistant message that is only tool calls (no text)", () => {
@@ -282,6 +397,87 @@ describe("serializeHistory", () => {
     expect(serializeHistory(entries)).toEqual([
       { role: "assistant", text: "answer", thinking: "working it out", tools: [] },
     ]);
+  });
+});
+
+// Message actions (plan §5.2): regenerate / edit-and-resend-as-sibling.
+// Both features are built on findLastUserMessageEntry (locate the resend
+// target + its original content) and userMessageSiblings (the `< i/n >`
+// toggle's data). deepestLeafFrom is the pure "walk to a branch's own tip"
+// helper used by switch_sibling in PiWebSession (src/pi-web.ts).
+describe("findLastUserMessageEntry", () => {
+  it("returns undefined for entries with no user message", () => {
+    const entries: SessionEntry[] = [mEntry("1", "assistant", [{ type: "text", text: "hi" }])];
+    expect(findLastUserMessageEntry(entries)).toBeUndefined();
+  });
+
+  it("finds the LAST user message (not the first), extracting text and parentId", () => {
+    const entries: SessionEntry[] = [
+      { ...mEntry("1", "user", "first"), parentId: null } as SessionEntry,
+      { ...mEntry("2", "assistant", [{ type: "text", text: "reply 1" }]), parentId: "1" } as SessionEntry,
+      { ...mEntry("3", "user", "second"), parentId: "2" } as SessionEntry,
+    ];
+    expect(findLastUserMessageEntry(entries)).toEqual({ id: "3", parentId: "2", text: "second", images: [] });
+  });
+
+  it("extracts both text and images from a content-parts array", () => {
+    const entries: SessionEntry[] = [
+      {
+        ...mEntry("1", "user", [
+          { type: "text", text: "look at this" },
+          { type: "image", data: "AAAA", mimeType: "image/png" },
+        ]),
+        parentId: null,
+      } as SessionEntry,
+    ];
+    expect(findLastUserMessageEntry(entries)).toEqual({
+      id: "1", parentId: null, text: "look at this",
+      images: [{ type: "image", data: "AAAA", mimeType: "image/png" }],
+    });
+  });
+});
+
+describe("userMessageSiblings", () => {
+  it("returns undefined when the queried entryId doesn't exist", () => {
+    const entries: SessionEntry[] = [{ ...mEntry("1", "user", "a"), parentId: null } as SessionEntry];
+    expect(userMessageSiblings(entries, "missing")).toBeUndefined();
+  });
+
+  it("a message with no siblings reports index 1 of 1", () => {
+    const entries: SessionEntry[] = [{ ...mEntry("1", "user", "a"), parentId: null } as SessionEntry];
+    expect(userMessageSiblings(entries, "1")).toEqual({ parentId: null, siblingIds: ["1"], index: 1 });
+  });
+
+  it("groups siblings sharing the same parentId in append order, distinct from unrelated user messages", () => {
+    const entries: SessionEntry[] = [
+      { ...mEntry("root", "user", "turn 1"), parentId: null } as SessionEntry,
+      { ...mEntry("a1", "assistant", [{ type: "text", text: "reply" }]), parentId: "root" } as SessionEntry,
+      // Three edits of the SAME message (siblings under "a1"):
+      { ...mEntry("edit1", "user", "second message v1"), parentId: "a1" } as SessionEntry,
+      { ...mEntry("edit2", "user", "second message v2"), parentId: "a1" } as SessionEntry,
+      { ...mEntry("edit3", "user", "second message v3"), parentId: "a1" } as SessionEntry,
+    ];
+    expect(userMessageSiblings(entries, "edit2")).toEqual({
+      parentId: "a1", siblingIds: ["edit1", "edit2", "edit3"], index: 2,
+    });
+    // The root message (different parent) is its own singleton group.
+    expect(userMessageSiblings(entries, "root")).toEqual({ parentId: null, siblingIds: ["root"], index: 1 });
+  });
+});
+
+describe("deepestLeafFrom", () => {
+  it("returns the starting id when it has no children (already a leaf)", () => {
+    expect(deepestLeafFrom("a", () => [])).toBe("a");
+  });
+
+  it("walks down following the LAST child at each level", () => {
+    const tree: Record<string, string[]> = {
+      a: ["b1", "b2"], // b2 is the most-recently-appended child
+      b2: ["c1"],
+      c1: [],
+    };
+    const getChildren = (id: string) => (tree[id] ?? []).map((cid) => mEntry(cid, "assistant", "") as SessionEntry);
+    expect(deepestLeafFrom("a", getChildren)).toBe("c1");
   });
 });
 

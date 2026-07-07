@@ -48,6 +48,7 @@ import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "./memory/tools";
 import { buildPiAgentSurface } from "./pi-session";
 import { buildPiProvider, DEFAULT_CONTEXT_WINDOW, PI_LOCAL_MODEL_ID } from "./pi-provider";
 import { downloadsSnapshot } from "./download";
+import { getLane, type Lane } from "./serve/lane-registry";
 
 /**
  * Tools that never mutate the user's machine; auto-allowed without a browser
@@ -172,13 +173,48 @@ type ClientMessage =
   // (the mode-aware recommended value resolved in toOptions). A present
   // numeric value is injected into the provider payload and always wins.
   // The before_provider_request hook injects whatever is set here.
-  | { type: "set_sampling"; temperature?: number | null; top_p?: number | null; top_k?: number | null }
+  | {
+      type: "set_sampling";
+      temperature?: number | null;
+      top_p?: number | null;
+      top_k?: number | null;
+      min_p?: number | null;
+      xtc_probability?: number | null;
+      xtc_threshold?: number | null;
+      repetition_penalty?: number | null;
+      repetition_context_size?: number | null;
+      presence_penalty?: number | null;
+      frequency_penalty?: number | null;
+      seed?: number | null;
+    }
   // Session management (recent-chats sidebar + new chat).
   | { type: "new_session" }
   | { type: "list_sessions" }
   | { type: "open_session"; path: string }
   | { type: "fork_session"; path: string }
-  | { type: "delete_session"; path: string };
+  | { type: "delete_session"; path: string }
+  // Message actions (plan §5.2). All three navigate the session's leaf
+  // pointer via AgentSession.navigateTree() then re-prompt — a sibling
+  // branch in the SAME session file, never a new one (see the helpers above
+  // findLastUserMessageEntry for the full rationale). Regenerate re-sends the
+  // last user message's original content verbatim; edit_resend re-sends it
+  // with edited text (images preserved); switch_sibling moves the active
+  // leaf to a previously-created sibling (an earlier edit/regeneration)
+  // without sending anything new.
+  | { type: "regenerate" }
+  | { type: "edit_resend"; text: string }
+  | { type: "switch_sibling"; entryId: string };
+
+/** Model-author recommended sampling (generation_config.json, server-CLI
+ *  overrides applied) — sent once on `ready` so the sampling popover can show
+ *  per-model defaults instead of one hardcoded shape (web-ui-pass-plan.md
+ *  #14). A field is null when neither the model nor the server configured one
+ *  (the built-in fallback in toOptions still applies server-side). */
+export interface ReadyGenDefaults {
+  temperature: number | null;
+  topP: number | null;
+  topK: number | null;
+}
 
 /** Server -> client frames. */
 type ServerMessage =
@@ -190,7 +226,7 @@ type ServerMessage =
   // provider declaration — clients use it instead of probing for a 400.
   // `thinking`: whether the model has a switchable reasoning channel (drives
   // the UI's thinking on/off toggle; false hides it).
-  | { type: "ready"; model: string; vision: boolean; audio: boolean; thinking: boolean }
+  | { type: "ready"; model: string; vision: boolean; audio: boolean; thinking: boolean; genDefaults: ReadyGenDefaults }
   | { type: "turn_start" }
   | { type: "text_delta"; delta: string }
   | { type: "thinking_delta"; delta: string }
@@ -198,11 +234,25 @@ type ServerMessage =
   | { type: "tool_approval_request"; callId: string; tool: string; args: unknown }
   | { type: "tool_update"; callId: string; chunk: unknown }
   | { type: "tool_end"; callId: string; ok: boolean; result: unknown }
-  | { type: "turn_end" }
+  // `lane`: the serving lane the just-finished turn ran on (serial /
+  // serial+spec / batched), correlated via the lane registry keyed by the
+  // AssistantMessage's responseId (the pi SDK's own usage parsing drops
+  // custom fields — see src/serve/lane-registry.ts). Absent when the turn
+  // produced no assistant message with a responseId (e.g. an aborted turn
+  // before any model call) — never guessed client-side (risk #5).
+  | { type: "turn_end"; lane?: Lane }
   | { type: "queue_update"; steering: readonly string[]; followUp: readonly string[] }
   // Replay a session's transcript (rebuilds the thread); and the sidebar list.
   | { type: "history"; items: HistoryItem[] }
   | { type: "sessions"; items: SessionListItem[]; activePath?: string }
+  // Sibling group for the LAST user message (edit-and-resend's `< i/n >`
+  // toggle, plan §5.2). Sent after every history rebuild and after a
+  // completed turn. `count` <= 1 means no toggle to show (the common case:
+  // no edits/regenerations yet). `entryId` is the currently-active sibling's
+  // id; `siblingIds` is the full ordered group so the client can resolve
+  // "previous/next" locally and send switch_sibling with a concrete id
+  // (never inferred/guessed — the server is the source of truth for order).
+  | { type: "siblings"; entryId?: string; index: number; count: number; siblingIds: string[] }
   // Context-window usage indicator. tokens/percent are null right after a
   // compaction until the next assistant reply (pi can't estimate yet).
   | { type: "context"; tokens: number | null; contextWindow: number; percent: number | null }
@@ -227,6 +277,11 @@ export interface HistoryItem {
   /** Model reasoning/thinking, kept separate from the final answer. */
   thinking?: string;
   tools: HistoryToolItem[];
+  /** Session entry id (user items only). Lets the browser correlate "the
+   *  last user message" in the replayed thread with the `siblings` frame's
+   *  entryId, so it knows which DOM node gets the edit/sibling-toggle UI
+   *  (plan §5.2). Undefined for assistant items — they aren't fork targets. */
+  entryId?: string;
 }
 
 /** A row in the recent-chats sidebar, derived from pi's SessionInfo. */
@@ -281,7 +336,7 @@ export function serializeHistory(entries: readonly SessionEntry[]): HistoryItem[
     if (!m) continue;
     if (m.role === "user") {
       const text = contentText(m.content);
-      if (text.trim()) items.push({ role: "user", text, tools: [] });
+      if (text.trim()) items.push({ role: "user", text, tools: [], entryId: entry.id });
     } else if (m.role === "assistant") {
       const parts = Array.isArray(m.content) ? (m.content as unknown[]) : [];
       const text = contentText(parts);
@@ -313,6 +368,102 @@ export function serializeHistory(entries: readonly SessionEntry[]): HistoryItem[
 function toPiImages(images?: ImageAttachment[]): ImageContent[] | undefined {
   if (!images || images.length === 0) return undefined;
   return images.map((i) => ({ type: "image", data: i.data, mimeType: i.mimeType }));
+}
+
+// ---- Message actions: regenerate / edit-and-resend (pure helpers) ----
+//
+// Both features reuse ONE pi SDK primitive: AgentSession.navigateTree(entryId)
+// on a user-message entry moves the session's leaf pointer to that entry's
+// PARENT (without deleting anything) and returns the message's own text in
+// `editorText`. Calling session.prompt(...) right after appends a NEW child
+// under that same parent — i.e. a sibling of the original message, in the
+// SAME session file. This is exactly "regenerate" (re-send the identical
+// content) and "edit-and-resend" (re-send edited content) without any
+// file-level fork/session spam (plan §5.2's explicit constraint).
+//
+// navigateTree's own editorText is TEXT-ONLY (pi's editor-reopen use case
+// doesn't carry images). We extract the full original `content` ourselves
+// (text + images) from the entry directly so regenerate/edit-resend don't
+// silently drop image attachments — a small improvement over what the SDK
+// primitive alone would give us.
+
+/** One user message entry as found by findLastUserMessageEntry/userMessageSiblings. */
+export interface UserMessageEntryInfo {
+  id: string;
+  parentId: string | null;
+  text: string;
+  images: ImageContent[];
+}
+
+/** Extract {text, images} from a user message's raw `content` field
+ *  (string | (TextContent|ImageContent)[]). Pure. */
+function extractUserContent(content: unknown): { text: string; images: ImageContent[] } {
+  if (typeof content === "string") return { text: content, images: [] };
+  if (Array.isArray(content)) {
+    const text = contentText(content);
+    const images = (content as unknown[])
+      .filter((p): p is { type: string; data: string; mimeType: string } =>
+        !!p && (p as { type?: string }).type === "image" &&
+        typeof (p as { data?: unknown }).data === "string" && typeof (p as { mimeType?: unknown }).mimeType === "string")
+      .map((p) => ({ type: "image" as const, data: p.data, mimeType: p.mimeType }));
+    return { text, images };
+  }
+  return { text: "", images: [] };
+}
+
+/** Find the LAST user-message entry in a session's entries (in append order).
+ *  Used by both `regenerate` (re-send it as-is) and as the sibling group's
+ *  anchor for `edit_resend` (always edits the last user message — plan §5.2
+ *  scopes this to the last message, not any earlier one). Pure. */
+export function findLastUserMessageEntry(entries: readonly SessionEntry[]): UserMessageEntryInfo | undefined {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (!e || e.type !== "message") continue;
+    const m = (e as { message?: { role?: string; content?: unknown } }).message;
+    if (m?.role !== "user") continue;
+    const { text, images } = extractUserContent(m.content);
+    return { id: e.id, parentId: e.parentId, text, images };
+  }
+  return undefined;
+}
+
+/** Sibling group (edit history) for a user message: every user-message entry
+ *  sharing the same parentId, in append order, plus the 1-based index of
+ *  `entryId` within that group. Drives the browser's `< i/n >` toggle. Pure. */
+export interface SiblingGroup {
+  parentId: string | null;
+  siblingIds: string[];
+  index: number; // 1-based position of the queried entryId within siblingIds
+}
+
+export function userMessageSiblings(entries: readonly SessionEntry[], entryId: string): SiblingGroup | undefined {
+  const target = entries.find((e) => e.id === entryId);
+  if (!target) return undefined;
+  const parentId = target.parentId;
+  const siblingIds = entries
+    .filter((e): e is SessionEntry & { type: "message" } =>
+      e.type === "message" && e.parentId === parentId &&
+      (e as { message?: { role?: string } }).message?.role === "user")
+    .map((e) => e.id);
+  const index = siblingIds.indexOf(entryId) + 1;
+  if (index === 0) return undefined;
+  return { parentId, siblingIds, index };
+}
+
+/** Walk DOWN from an entry to the deepest descendant, always following the
+ *  MOST RECENTLY APPENDED child at each level (last in getChildren's
+ *  insertion order) — i.e. "what would this branch show if it were the
+ *  active leaf". Used by `switch_sibling` to resolve a sibling's own leaf
+ *  (which may itself have further edits/regenerations under it) rather than
+ *  just landing on the sibling's own root entry. Pure given a children-lookup
+ *  function so it's unit-testable without a live SessionManager. */
+export function deepestLeafFrom(fromId: string, getChildren: (parentId: string) => SessionEntry[]): string {
+  let cur = fromId;
+  for (;;) {
+    const children = getChildren(cur);
+    if (children.length === 0) return cur;
+    cur = children[children.length - 1]!.id;
+  }
 }
 
 /** Map pi's SessionInfo[] to sidebar rows, newest first. */
@@ -350,14 +501,20 @@ export function mapEventToFrames(event: AgentSessionEvent): ServerMessage[] {
       // 400'd) WITHOUT any error being thrown up to the WS message handler, so
       // it would otherwise vanish — the browser just sees an empty turn ("no
       // messages"). Surface it as an error frame so the UI can show it.
-      const msg = (event as { message?: { stopReason?: string; errorMessage?: string } }).message;
+      const msg = (event as { message?: { stopReason?: string; errorMessage?: string; responseId?: string } }).message;
+      // Lane correlation (docs/design/web-chat-redesign.md §2.3 caveat / risk
+      // #5): the pi SDK's AssistantMessage.responseId is the chat-completion
+      // response's own `id` (chatcmpl-…), which server.ts records against the
+      // lane the moment it decides one. Looked up here — never inferred — so
+      // a mismatch or absence just omits the field rather than guessing.
+      const lane = msg?.responseId ? getLane(msg.responseId) : undefined;
       if (msg?.stopReason === "error") {
         return [
           { type: "error", message: msg.errorMessage || "the model request failed" },
-          { type: "turn_end" },
+          { type: "turn_end", ...(lane ? { lane } : {}) },
         ];
       }
-      return [{ type: "turn_end" }];
+      return [{ type: "turn_end", ...(lane ? { lane } : {}) }];
     }
     case "message_update": {
       const ame = event.assistantMessageEvent;
@@ -423,16 +580,35 @@ export function injectAdapter(
 
 /** Per-request sampling overrides carried on the session and injected into the
  *  provider payload by the before_provider_request hook. Each field is either a
- *  user-set override or null/undefined ("use the server's mode-aware default"). */
+ *  user-set override or null/undefined ("use the server's mode-aware default").
+ *  Field names match the server's ChatRequest wire names (not toOptions' camelCase)
+ *  since these are injected directly into the outgoing chat-completions payload. */
 export interface SamplingOverrides {
   temperature?: number | null;
   top_p?: number | null;
   top_k?: number | null;
+  min_p?: number | null;
+  xtc_probability?: number | null;
+  xtc_threshold?: number | null;
+  repetition_penalty?: number | null;
+  repetition_context_size?: number | null;
+  presence_penalty?: number | null;
+  frequency_penalty?: number | null;
+  seed?: number | null;
 }
+
+/** Every SamplingOverrides field name, in wire order — the single source of
+ *  truth `injectSampling` and the `set_sampling` handler both walk, so a new
+ *  field only needs adding here + the interface above. */
+const SAMPLING_FIELDS = [
+  "temperature", "top_p", "top_k", "min_p", "xtc_probability", "xtc_threshold",
+  "repetition_penalty", "repetition_context_size", "presence_penalty",
+  "frequency_penalty", "seed",
+] as const satisfies readonly (keyof SamplingOverrides)[];
 
 /** Inject the user's sampling overrides into the outgoing chat-completions
  *  payload (which reaches the server's toOptions, where an explicit
- *  temperature/top_p/top_k always wins). Only finite numbers are injected; a
+ *  request field always wins). Only finite numbers are injected; a
  *  null/undefined/unset field is left off so the server falls back to its
  *  mode-aware recommended default. Returns undefined when nothing is set so the
  *  hook can keep the payload unchanged. Pure + exported for unit testing. */
@@ -443,17 +619,12 @@ export function injectSampling(
   if (!s) return undefined;
   const out: Record<string, unknown> = { ...payload };
   let changed = false;
-  if (typeof s.temperature === "number" && Number.isFinite(s.temperature)) {
-    out.temperature = s.temperature;
-    changed = true;
-  }
-  if (typeof s.top_p === "number" && Number.isFinite(s.top_p)) {
-    out.top_p = s.top_p;
-    changed = true;
-  }
-  if (typeof s.top_k === "number" && Number.isFinite(s.top_k)) {
-    out.top_k = s.top_k;
-    changed = true;
+  for (const field of SAMPLING_FIELDS) {
+    const v = s[field];
+    if (typeof v === "number" && Number.isFinite(v)) {
+      out[field] = v;
+      changed = true;
+    }
   }
   return changed ? out : undefined;
 }
@@ -494,7 +665,10 @@ class PiWebSession {
 
   constructor(
     private readonly ws: PiWs,
-    private readonly opts: { port: number | (() => number); modelId: string; contextWindow: number; readOnly: boolean; vision: boolean; audio: boolean; thinking: boolean },
+    private readonly opts: {
+      port: number | (() => number); modelId: string; contextWindow: number; readOnly: boolean;
+      vision: boolean; audio: boolean; thinking: boolean; genDefaults: ReadyGenDefaults;
+    },
   ) {}
 
   /** Build the provider, resume the most recent chat, and start streaming. */
@@ -526,7 +700,10 @@ class PiWebSession {
     await this.replaceRuntime(SessionManager.create(this.cwd, this.sessionDir));
     if (this.disposed) return;
 
-    this.send({ type: "ready", model: this.opts.modelId, vision: this.opts.vision, audio: this.opts.audio, thinking: this.opts.thinking });
+    this.send({
+      type: "ready", model: this.opts.modelId, vision: this.opts.vision, audio: this.opts.audio,
+      thinking: this.opts.thinking, genDefaults: this.opts.genDefaults,
+    });
     this.sendHistory();
     await this.sendSessions();
   }
@@ -645,10 +822,35 @@ class PiWebSession {
     if (previous) await previous.dispose();
   }
 
-  /** Replay the active session's transcript to the browser (rebuilds thread). */
+  /** Replay the active session's transcript to the browser (rebuilds thread).
+   *  Always followed by sendSiblings(): the sibling group for "the last user
+   *  message" is a derived view of the same entries and goes stale under
+   *  exactly the same conditions history does (new session, switch, fork). */
   private sendHistory(): void {
     const entries = this.sessionManager?.getEntries() ?? [];
     this.send({ type: "history", items: serializeHistory(entries) });
+    this.sendSiblings();
+  }
+
+  /** Push the sibling-group info for the current last-user-message (drives
+   *  the browser's `< i/n >` edit toggle). Called by sendHistory() and after
+   *  each completed turn, since either can change which message is "last" or
+   *  how many siblings it has. */
+  private sendSiblings(): void {
+    const entries = this.sessionManager?.getEntries() ?? [];
+    const last = findLastUserMessageEntry(entries);
+    if (!last) {
+      this.send({ type: "siblings", index: 0, count: 0, siblingIds: [] });
+      return;
+    }
+    const group = userMessageSiblings(entries, last.id);
+    this.send({
+      type: "siblings",
+      entryId: last.id,
+      index: group?.index ?? 1,
+      count: group?.siblingIds.length ?? 1,
+      siblingIds: group?.siblingIds ?? [last.id],
+    });
   }
 
   /** Push current context-window usage to the browser (for the indicator). */
@@ -732,6 +934,92 @@ class PiWebSession {
     }
     if (wasActive) void this.newSession();
     else void this.sendSessions();
+  }
+
+  /** Move the session leaf to `entryId`'s parent via navigateTree, then
+   *  re-prompt with {text, images}. This is the shared mechanism behind
+   *  regenerate and edit_resend: navigateTree does NOT delete the old
+   *  message/reply (they stay on disk as a sibling branch), and pi resyncs
+   *  agent.state.messages from the new leaf internally, so the next
+   *  session.prompt() call appends cleanly. Returns false (and sends an
+   *  error frame) if the entry can't be found or a turn is already
+   *  streaming (mirrors prompt()'s own idle precondition — regenerate/edit
+   *  are not queueable follow-ups, unlike a normal composer submit). */
+  private async resendFrom(entryId: string, text: string, images: ImageContent[]): Promise<boolean> {
+    const session = this.session;
+    if (!session) {
+      this.send({ type: "error", message: "session not ready" });
+      return false;
+    }
+    if (session.isStreaming) {
+      this.send({ type: "error", message: "wait for the current reply to finish first" });
+      return false;
+    }
+    if (!text.trim()) {
+      this.send({ type: "error", message: "message text can't be empty" });
+      return false;
+    }
+    await session.navigateTree(entryId);
+    await session.prompt(text, images.length ? { images } : {});
+    return true;
+  }
+
+  /** Regenerate: re-send the last user message's ORIGINAL content verbatim
+   *  as a new sibling branch. Works after abort/stop too — an aborted turn
+   *  still leaves the triggering user message entry in place to find. */
+  private async regenerate(): Promise<void> {
+    const entries = this.sessionManager?.getEntries() ?? [];
+    const last = findLastUserMessageEntry(entries);
+    if (!last) {
+      this.send({ type: "error", message: "no message to regenerate" });
+      return;
+    }
+    await this.resendFrom(last.id, last.text, last.images);
+  }
+
+  /** Edit-and-resend: re-send the LAST user message with edited text (plan
+   *  §5.2 scopes editing to the last message only — the `< i/n >` toggle is
+   *  a linear sibling list, not a tree view). Original images are preserved
+   *  since editing text shouldn't silently drop an attachment. */
+  private async editResend(text: string): Promise<void> {
+    const entries = this.sessionManager?.getEntries() ?? [];
+    const last = findLastUserMessageEntry(entries);
+    if (!last) {
+      this.send({ type: "error", message: "no message to edit" });
+      return;
+    }
+    await this.resendFrom(last.id, text, last.images);
+  }
+
+  /** Switch the active leaf to a previously-created sibling (an earlier
+   *  edit/regeneration of the last user message) WITHOUT sending anything
+   *  new — pure navigation. Walks down to that sibling's own deepest
+   *  descendant (its assistant reply, if any) so the replayed history shows
+   *  that branch's actual conversation, not just the bare user message. */
+  private switchSibling(entryId: string): void {
+    const sm = this.sessionManager;
+    const session = this.session;
+    if (!sm || !session) {
+      this.send({ type: "error", message: "session not ready" });
+      return;
+    }
+    if (session.isStreaming) {
+      this.send({ type: "error", message: "wait for the current reply to finish first" });
+      return;
+    }
+    const entry = sm.getEntry(entryId);
+    if (!entry) {
+      this.send({ type: "error", message: "message not found" });
+      return;
+    }
+    const leaf = deepestLeafFrom(entryId, (parentId) => sm.getChildren(parentId));
+    sm.branch(leaf);
+    // Mirror what AgentSession.navigateTree() does internally after moving
+    // the leaf: resync agent.state.messages from the new leaf's path so the
+    // in-memory agent state and the persisted leaf pointer never diverge.
+    session.agent.state.messages = sm.buildSessionContext().messages;
+    this.sendHistory();
+    this.sendContextUsage();
   }
 
   /** Register the before_provider_request hook that injects the selected LoRA
@@ -826,6 +1114,9 @@ class PiWebSession {
     if (event.type === "turn_end") {
       void this.sendSessions();
       this.sendContextUsage();
+      // A completed turn (including regenerate/edit_resend's re-prompt) can
+      // change the last user message's sibling count/index.
+      this.sendSiblings();
     }
   }
 
@@ -897,12 +1188,31 @@ class PiWebSession {
         // Record the per-request sampling overrides; the
         // before_provider_request hook injects any set fields into the
         // outgoing payload. A null/undefined field clears the override so the
-        // server's mode-aware default applies again.
+        // server's mode-aware default applies again. The full mlx_lm.server
+        // sampler extension set (min_p/XTC/penalty families/seed), not just
+        // temperature/top_p/top_k (web-ui-pass-plan.md #8).
         this.sampling = {
           temperature: msg.temperature ?? null,
           top_p: msg.top_p ?? null,
           top_k: msg.top_k ?? null,
+          min_p: msg.min_p ?? null,
+          xtc_probability: msg.xtc_probability ?? null,
+          xtc_threshold: msg.xtc_threshold ?? null,
+          repetition_penalty: msg.repetition_penalty ?? null,
+          repetition_context_size: msg.repetition_context_size ?? null,
+          presence_penalty: msg.presence_penalty ?? null,
+          frequency_penalty: msg.frequency_penalty ?? null,
+          seed: msg.seed ?? null,
         };
+        return;
+      case "regenerate":
+        await this.regenerate();
+        return;
+      case "edit_resend":
+        await this.editResend(msg.text);
+        return;
+      case "switch_sibling":
+        this.switchSibling(msg.entryId);
         return;
     }
   }
@@ -938,6 +1248,7 @@ class PiWebSession {
  * @param opts.contextWindow  Context window advertised to pi. Default: 32768.
  *                            Source: ctx.model.config.text.maxPositionEmbeddings.
  * @param opts.readOnly       When true, bash/edit/write are denied outright.
+ * @param opts.genDefaults    Model-author sampling defaults, sent once on `ready`.
  */
 export function makePiWsHandler(opts: {
   port: number | (() => number);
@@ -953,6 +1264,10 @@ export function makePiWsHandler(opts: {
   /** Whether the model has a switchable reasoning channel
    *  (server's ctx.template.supportsThinking). Drives the thinking toggle. */
   thinking?: boolean;
+  /** Model-author sampling defaults (generation_config.json + server-CLI
+   *  overrides), sent once on the `ready` frame. Default: all-null (the
+   *  sampling popover falls back to its own hardcoded shape). */
+  genDefaults?: ReadyGenDefaults;
 }): WebSocketHandler<PiWsData> {
   const resolved = {
     port: opts.port,
@@ -962,6 +1277,7 @@ export function makePiWsHandler(opts: {
     vision: opts.vision ?? false,
     audio: opts.audio ?? false,
     thinking: opts.thinking ?? false,
+    genDefaults: opts.genDefaults ?? { temperature: null, topP: null, topK: null },
   };
 
   return {

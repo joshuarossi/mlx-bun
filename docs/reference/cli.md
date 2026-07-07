@@ -138,7 +138,9 @@ mlx-bun ls --all-revisions          # one row per cached snapshot
 ### `gc` — reclaim disk
 
 Delete superseded snapshots and the blobs only they reference. Prints the plan
-by default; `--yes` actually deletes.
+by default; `--yes` actually deletes. Same planner (`src/registry.ts`
+`planGc`/`executeGc`) also backs `GET /api/gc/plan` / `POST /api/gc/execute`
+on a running `serve` — see [server-api.md](server-api.md#get-apigcplan--post-apigcexecute).
 
 ```sh
 mlx-bun gc          # dry-run: what would be reclaimed

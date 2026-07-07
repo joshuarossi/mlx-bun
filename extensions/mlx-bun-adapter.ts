@@ -51,7 +51,10 @@ export default function (pi: ExtensionAPI) {
       let ids: string[] = [];
       try {
         const d = await jget("/v1/adapters/available");
-        ids = (d.adapters || []).map((a: any) => a.id);
+        // The endpoint returns EVERY on-disk adapter with a `compatible`
+        // flag (older servers pre-filtered and omit the flag — treat
+        // missing as compatible). Don't offer ones that can't mount.
+        ids = (d.adapters || []).filter((a: any) => a.compatible !== false).map((a: any) => a.id);
       } catch {
         /* server down → just offer the verbs */
       }
@@ -67,7 +70,7 @@ export default function (pi: ExtensionAPI) {
           const avail = (await jget("/v1/adapters/available")).adapters || [];
           const loaded = new Set(((await jget("/v1/adapters")).adapters || []).map((m: any) => m.id));
           const lines = avail.map(
-            (x: any) => `  ${x.id === selected ? "●" : "○"} ${x.id}${loaded.has(x.id) ? " (loaded)" : ""}`,
+            (x: any) => `  ${x.id === selected ? "●" : "○"} ${x.id}${loaded.has(x.id) ? " (loaded)" : ""}${x.compatible === false ? " (incompatible with served model)" : ""}`,
           );
           ctx.ui.notify(`adapters (active: ${selected ?? "none"}):\n${lines.join("\n") || "  (none found)"}`, "info");
         } catch (e: any) {
@@ -88,6 +91,10 @@ export default function (pi: ExtensionAPI) {
         const match = avail.find((x: any) => x.id === a);
         if (!match) {
           ctx.ui.notify(`unknown adapter "${a}" — try /adapter list`, "error");
+          return;
+        }
+        if (match.compatible === false) {
+          ctx.ui.notify(`adapter "${a}" was trained for ${match.base_model ?? "a different model"} — not compatible with the currently-served model`, "error");
           return;
         }
         const r = await jpost("/v1/adapters", { id: a, path: match.path });

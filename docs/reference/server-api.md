@@ -168,6 +168,12 @@ Non-streaming response:
   "usage": {
     "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
     "prompt_tokens_details": { "cached_tokens": 0 },  // prompt-cache reuse
+    "lane": "serial",              // "serial" | "serial+spec" | "batched" —
+                                    //   which execution lane served THIS
+                                    //   request (GenerationGateway.willBatch
+                                    //   + whether a draft actually contributed
+                                    //   accepted tokens). Chat completions
+                                    //   only (streaming: final usage chunk).
     "speculation": {               // only when a draft source is mounted
       "drafted": 0,                //   draft tokens proposed
       "accepted": 0,               //   drafts accepted by the verify step
@@ -176,6 +182,13 @@ Non-streaming response:
   }
 }
 ```
+
+`usage.lane` is server-driven, never client-inferred (the web chat's perf-strip
+lane badge reads it, not a heuristic): `"batched"` when `--batch N` picked up
+the request, `"serial+spec"` when a mounted draft source actually
+contributed accepted draft tokens to this reply, `"serial"` otherwise. It
+rides the SAME usage block on both streaming (final chunk before `[DONE]`) and
+non-streaming responses.
 
 Speculative decoding is a **server-level mode** (`serve --draft-model`,
 or the model-free `serve --draft-kind ngram`, which mounts no draft
@@ -458,10 +471,44 @@ curl localhost:8080/v1/embeddings -H 'content-type: application/json' \
 `{ "object": "list", "data": [{ "id": "<model id>", "object": "model",
 "created": <unix s>, … }] }`
 
-The served model is FIRST (with extra capability fields:
-`context_window`, `reasoning`, `vision`, `audio`, `owned_by`), followed by
-every other servable model the local registry knows (mlx-lm scans the HF
-cache here; the registry is that scan, filtered to supported architectures).
+The served model is FIRST, with extra capability fields:
+
+```jsonc
+{
+  "id": "<served model id>", "object": "model", "created": 0,
+  "owned_by": "mlx-bun",
+  "context_window": 32768,
+  "reasoning": false,           // switchable thinking channel (gates the
+                                 //   web chat's thinking toggle)
+  "vision": false,               // image input accepted (tower loaded or
+                                 //   lazily loadable)
+  "audio": false,                // input_audio content parts accepted
+                                 //   (tower loaded or lazily loadable)
+  "gen_defaults": {              // model-author sampling defaults
+    "temperature": 0.7,          //   (generation_config.json, with any
+    "top_p": 0.95,               //   --temperature/--top-p/--top-k server
+    "top_k": 0                   //   override applied); null when neither
+                                 //   the model nor the server set one
+  }
+}
+```
+
+Followed by every other servable model the local registry knows (mlx-lm
+scans the HF cache here; the registry is that scan, filtered to supported
+architectures, one row per repo via `listCanonical()` — duplicate snapshots
+from upstream re-pushes are not separate entries):
+
+```jsonc
+{ "id": "<repo id>", "object": "model", "created": 0,
+  "vision": false,               // visionCapable(): sidecar OR encoder-free
+                                 //   unified vision config
+  "tier": "targeted" | "generic" // supportTier(): dedicated/generated forward
+                                 //   ("targeted") vs the Tier-0 universal
+                                 //   module ("generic"); entries with no tier
+                                 //   (unsupported) are filtered out entirely
+}
+```
+
 `GET /v1/models/<id>` filters the list to that id — same list shape,
 matching `mlx_lm.server`.
 
@@ -521,9 +568,13 @@ tensor bytes are read).
     "model_type": "gemma3" | "minicpm5" | "qwen3" | …,
     "size_bytes": 0,
     "quant_bits": 4,
-    "vision": false,             // vision-capable (sidecar or unified tower)
+    "vision": false,             // visionCapable(): sidecar OR encoder-free
+                                 //   unified vision config (not sidecar-only)
     "audio": false,              // audio-capable (audio_config + sidecar audio-tower tensors)
-    "supported": true,           // recognized model family
+    "supported": true,           // supportTier() !== null (recognized family)
+    "support_tier": "targeted" | "generic" | null,  // dedicated/generated
+                                 //   forward vs the Tier-0 universal module;
+                                 //   null only when supported is false
     "serving": false,            // currently loaded in this server
     "assessment": {              // null if config unreadable
       "fits": true,
@@ -533,6 +584,50 @@ tensor bytes are read).
   }]
 }
 ```
+
+One row per repo (`listCanonical()`; duplicate snapshots from upstream
+re-pushes surface only via the CLI's `mlx-bun ls --all-revisions`).
+
+## GET /api/gc/plan · POST /api/gc/execute
+
+Reclaim disk from superseded snapshots + orphaned blobs in the local HF
+cache — the web-UI equivalent of `mlx-bun gc` (thin wrappers over
+`src/registry.ts`'s `planGc`/`executeGc`; same planner the CLI uses). Every
+downloaded revision the HF cache keeps a `snapshots/<commit>` dir for; a
+snapshot no `refs/*` points at is superseded and, once no surviving snapshot
+symlinks to a blob, that blob is dead too. Loopback-served admin routes, no
+separate auth (same bind as every other `/api/*` route).
+
+`GET /api/gc/plan` — read-only (config.json + safetensors index reads only,
+no tensor bytes, no deletion):
+
+```jsonc
+{
+  "ok": true,
+  "superseded": [{
+    "repo_id": "…",
+    "prune_snapshots": 1,        // unreferenced, safe to delete
+    "skipped_snapshots": 0,      // unreferenced but hold files the kept
+                                 //   revision lacks — needs --force via the
+                                 //   CLI to actually prune; not deletable here
+    "dead_blobs": 3,
+    "reclaim_bytes": 0
+  }],
+  "reclaim_bytes": 0             // sum across every repo
+}
+```
+
+`POST /api/gc/execute` with body `{"yes": true}` — deletes exactly what a
+fresh plan would show (recomputed at execute time, not the caller's stale
+plan); `{"yes": true}` is required or the request 400s, mirroring the CLI's
+`--yes` gate so a stray call can't delete anything by accident:
+
+```jsonc
+{ "ok": true, "snapshots": 1, "blobs": 3, "reclaimed_bytes": 0 }
+```
+
+Errors follow the same `{ "ok": false, "error": "…" }` shape as the other
+`/api/*` job routes.
 
 ## GET /downloads
 
@@ -595,6 +690,15 @@ the prediction.
 ## Adapters (LoRA hot-swap)
 
 - `GET /v1/adapters` — `{ adapters: [{ id, path, rank, scale, size_bytes, mounted_layers }] }`
+  — currently-mounted adapters only.
+- `GET /v1/adapters/available` — `{ adapters: [{ id, path, rank, scale,
+  base_model, mounted, compatible }] }` — every adapter found on disk
+  (`~/.cache/mlx-bun-finetunes`, `~/.cache/mlx-bun/adapters`), unfiltered.
+  `compatible` is true when the adapter's recorded base model matches the
+  currently-served model (compared by bare repo name) or the adapter
+  recorded no base at all; `mounted` is true when it's already loaded.
+  The web chat's adapter chip uses `compatible` to gray out entries it
+  won't let you select rather than hiding them.
 - `POST /v1/adapters` — `{ "id": "...", "path": "/dir" }`; mounts
   through the generation queue (never races a forward pass). 400 on
   shape/compat mismatch — validation is all-or-nothing.

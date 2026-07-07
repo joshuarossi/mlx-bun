@@ -21,6 +21,7 @@
     --dimmer:#515154;
     --hairline:rgba(255,255,255,.14);
     --hairline-soft:rgba(255,255,255,.07);
+    --hairline-strong:rgba(255,255,255,.28);
     --card:rgba(255,255,255,.045);
     --card-hover:rgba(255,255,255,.08);
     --card-2:rgba(255,255,255,.025);
@@ -30,6 +31,43 @@
     --ease:cubic-bezier(.22,.61,.21,1);
     --nav-h:60px;
     --mono:"SF Mono",ui-monospace,Menlo,Monaco,monospace;
+    /* bloom radial-gradient stop opacities — separate tokens so the light
+       theme can dial them down (the gradient identity/positions/colors stay
+       identical, only intensity changes — plan §7 "keep the gradient identity") */
+    --bloom-a:.13; --bloom-b:.16; --bloom-c:.10;
+    --overlay-scrim:rgba(0,0,0,.55);
+    --overlay-panel:rgba(22,22,24,.96);
+    --popover-panel:rgba(30,30,34,.98);
+    /* Code/log/tool-output surfaces (pre blocks, .logbox, edit textarea)
+       deliberately stay dark-chrome in BOTH themes — the conventional
+       "code block keeps its own dark surface" pattern (GitHub, VS Code
+       light themes, etc.), so monospace content keeps consistent contrast
+       regardless of the surrounding chat theme. */
+    --code-bg:rgba(0,0,0,.45); --code-bg-soft:rgba(0,0,0,.32); --code-ink:#f5f5f7;
+    --nav-bg:rgba(0,0,0,.62);
+    --scrollbar-thumb:rgba(255,255,255,.12); --scrollbar-thumb-hover:rgba(255,255,255,.22);
+  }
+  /* ─── light theme: tasteful equivalents, same gradient identity ───
+     Applied via [data-theme="light"] on <html> (explicit user choice,
+     persisted to localStorage) OR by prefers-color-scheme:light when the
+     user's choice is "auto" (default — see initTheme()). */
+  [data-theme="light"]{
+    --bg:#f4f4f6;
+    --ink:#1d1d1f;
+    --dim:#6e6e73;
+    --dimmer:#a1a1a6;
+    --hairline:rgba(0,0,0,.12);
+    --hairline-soft:rgba(0,0,0,.06);
+    --hairline-strong:rgba(0,0,0,.28);
+    --card:rgba(0,0,0,.035);
+    --card-hover:rgba(0,0,0,.065);
+    --card-2:rgba(0,0,0,.02);
+    --bloom-a:.09; --bloom-b:.10; --bloom-c:.07;
+    --overlay-scrim:rgba(0,0,0,.28);
+    --overlay-panel:rgba(255,255,255,.97);
+    --popover-panel:rgba(255,255,255,.98);
+    --nav-bg:rgba(255,255,255,.72);
+    --scrollbar-thumb:rgba(0,0,0,.14); --scrollbar-thumb-hover:rgba(0,0,0,.26);
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%}
@@ -42,11 +80,11 @@
   ::selection{background:rgba(10,132,255,.4)}
   .num{font-variant-numeric:tabular-nums}
   code,.mono{font-family:var(--mono)}
-  code{font-size:.86em;background:rgba(255,255,255,.08);padding:2px 8px;border-radius:6px}
+  code{font-size:.86em;background:rgba(127,127,127,.16);padding:2px 8px;border-radius:6px}
   a{color:inherit}
   ::-webkit-scrollbar{width:10px;height:10px}
-  ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:6px;border:2px solid transparent;background-clip:content-box}
-  ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.22);background-clip:content-box}
+  ::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb);border-radius:6px;border:2px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-thumb-hover);background-clip:content-box}
   ::-webkit-scrollbar-track{background:transparent}
 
   /* gradient text helpers (lifted from status/chat pages) */
@@ -60,11 +98,20 @@
   /* ─── ambient blooms behind everything ─── */
   .bloom{position:fixed;inset:-25%;pointer-events:none;z-index:0;
     background:
-      radial-gradient(55vw 42vh at 12% 6%, rgba(255,159,10,.13), transparent 68%),
-      radial-gradient(60vw 48vh at 88% 24%, rgba(94,92,230,.16), transparent 68%),
-      radial-gradient(50vw 40vh at 30% 96%, rgba(10,132,255,.10), transparent 68%);
+      radial-gradient(55vw 42vh at 12% 6%, rgba(255,159,10,var(--bloom-a)), transparent 68%),
+      radial-gradient(60vw 48vh at 88% 24%, rgba(94,92,230,var(--bloom-b)), transparent 68%),
+      radial-gradient(50vw 40vh at 30% 96%, rgba(10,132,255,var(--bloom-c)), transparent 68%);
     filter:blur(74px);
     transition:opacity 1.2s var(--ease);
+  }
+  /* Ambient bloom is a slow continuous drift, gated behind
+     prefers-reduced-motion (plan §7): with no explicit opacity set inline
+     by the route dimmer, it just sits static — no keyframe loop to begin
+     with, so the only "animation" to guard is the opacity transition
+     above, which is a one-shot per-route dim, not a decorative loop. The
+     shimmer/pulse/blink loops below are the actual ambient animations. */
+  @media (prefers-reduced-motion:reduce){
+    .bloom{transition:none}
   }
 
   /* ═══════════════════ top navigation ═══════════════════ */
@@ -72,13 +119,23 @@
     position:fixed;top:0;left:0;right:0;height:var(--nav-h);z-index:50;
     display:flex;align-items:center;gap:18px;padding:0 22px;
     border-bottom:1px solid var(--hairline);
-    background:rgba(0,0,0,.62);backdrop-filter:saturate(180%) blur(22px);
+    background:var(--nav-bg);backdrop-filter:saturate(180%) blur(22px);
     -webkit-backdrop-filter:saturate(180%) blur(22px);
   }
   nav .brand{font-size:18px;font-weight:700;letter-spacing:-.02em;text-decoration:none;
     white-space:nowrap;flex:0 0 auto}
   nav .tabs{display:flex;gap:2px;flex:1 1 auto;overflow-x:auto;scrollbar-width:none}
   nav .tabs::-webkit-scrollbar{display:none}
+  /* Scroll-edge fades (2026-07-06 jank fix): the tab row scrolls with its
+     scrollbar hidden, so a clipped "Build Datase" read as broken/overlapped.
+     JS (updateTabFades) toggles .fade-r/.fade-l per scroll position so a
+     soft fade signals "more tabs this way" only when actually clipped. */
+  nav .tabs.fade-r{-webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 34px),transparent);
+    mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 34px),transparent)}
+  nav .tabs.fade-l{-webkit-mask-image:linear-gradient(90deg,transparent,#000 34px,#000);
+    mask-image:linear-gradient(90deg,transparent,#000 34px,#000)}
+  nav .tabs.fade-l.fade-r{-webkit-mask-image:linear-gradient(90deg,transparent,#000 34px,#000 calc(100% - 34px),transparent);
+    mask-image:linear-gradient(90deg,transparent,#000 34px,#000 calc(100% - 34px),transparent)}
   nav .tab{
     appearance:none;background:none;border:none;cursor:pointer;
     color:var(--dim);font:600 14px/1 inherit;letter-spacing:-.01em;
@@ -100,7 +157,7 @@
   #chat-think{display:none;cursor:pointer;gap:7px;padding:5px 11px;font-size:12px;user-select:none;-webkit-user-select:none;
     transition:color .22s var(--ease),border-color .22s var(--ease)}
   #chat-think .dot{width:7px;height:7px}
-  #chat-think:hover{border-color:rgba(255,255,255,.28)}
+  #chat-think:hover{border-color:var(--hairline-strong)}
   #chat-think.think-on{color:var(--ink)}
   #chat-think.think-on .dot{background:var(--blue);box-shadow:0 0 11px var(--blue)}
   .pill.bad .dot{background:var(--red);box-shadow:0 0 11px var(--red)}
@@ -109,14 +166,15 @@
   #chat-sampling-wrap{position:relative;display:inline-flex}
   #chat-sampling{cursor:pointer;gap:6px;padding:5px 11px;font-size:12px;user-select:none;-webkit-user-select:none;
     transition:color .22s var(--ease),border-color .22s var(--ease)}
-  #chat-sampling:hover{border-color:rgba(255,255,255,.28);color:var(--ink)}
-  #chat-sampling.on{color:var(--ink);border-color:rgba(255,255,255,.28)}
+  #chat-sampling:hover{border-color:var(--hairline-strong);color:var(--ink)}
+  #chat-sampling.on{color:var(--ink);border-color:var(--hairline-strong)}
   #chat-sampling.dirty .dot{background:var(--blue);box-shadow:0 0 11px var(--blue)}
   #chat-sampling .dot{width:7px;height:7px}
   .samplepop{position:absolute;bottom:calc(100% + 9px);right:0;z-index:40;width:300px;
-    background:rgba(30,30,34,.98);border:1px solid rgba(255,255,255,.12);border-radius:13px;padding:13px 14px;
+    max-height:min(70vh,560px);overflow-y:auto;
+    background:var(--popover-panel);border:1px solid var(--hairline);border-radius:13px;padding:13px 14px;
     backdrop-filter:blur(22px) saturate(1.3);-webkit-backdrop-filter:blur(22px) saturate(1.3);
-    box-shadow:0 18px 50px rgba(0,0,0,.7);display:none;
+    box-shadow:0 18px 50px rgba(0,0,0,.35);display:none;
     transform:translateY(4px);opacity:0;transition:opacity .16s var(--ease),transform .16s var(--ease)}
   .samplepop.open{display:block;transform:translateY(0);opacity:1}
   .samplepop h4{font-size:12px;font-weight:600;color:var(--dim);letter-spacing:.02em;
@@ -132,27 +190,76 @@
   .samprow input[type=range]:focus::-webkit-slider-thumb{background:var(--blue)}
   .samp-val{width:40px;flex:0 0 auto;text-align:right;font-family:var(--mono);font-size:12px;color:var(--ink)}
   .samp-val.auto{color:var(--dimmer)}
+  .samp-num{width:74px;flex:0 0 auto;text-align:right;background:var(--card);border:1px solid var(--hairline);
+    border-radius:6px;color:var(--ink);font-family:var(--mono);font-size:11.5px;padding:3px 6px}
+  .samp-num.auto{color:var(--dimmer)}
   .samppop-foot{display:flex;justify-content:space-between;align-items:center;margin-top:3px}
   .samppop-foot .note{font-size:10.5px;color:var(--dimmer);line-height:1.3;flex:1 1 auto;padding-right:8px}
   .samppop-foot button{appearance:none;cursor:pointer;background:var(--card);border:1px solid var(--hairline);
     color:var(--dim);border-radius:8px;padding:5px 11px;font-size:11.5px;font-weight:600;flex:0 0 auto;
     transition:color .18s var(--ease),border-color .18s var(--ease)}
-  .samppop-foot button:hover{color:var(--ink);border-color:rgba(255,255,255,.28)}
+  .samppop-foot button:hover{color:var(--ink);border-color:var(--hairline-strong)}
+  /* Advanced sampling disclosure — collapsed by default, same visual language
+     as the primary rows so it doesn't read as a separate control system. */
+  .samp-adv{margin:2px 0 12px}
+  .samp-adv > summary{cursor:pointer;font-size:11.5px;font-weight:600;color:var(--dim);letter-spacing:.02em;
+    text-transform:uppercase;list-style:none;padding:2px 0 8px;user-select:none;-webkit-user-select:none}
+  .samp-adv > summary::-webkit-details-marker{display:none}
+  .samp-adv > summary::before{content:"▸ ";display:inline-block;transition:transform .15s var(--ease)}
+  .samp-adv[open] > summary::before{transform:rotate(90deg)}
+  .samp-adv > summary:hover{color:var(--ink)}
+  .samp-adv .seed-row{display:flex;align-items:center;gap:9px;margin:0 0 4px}
+  .samp-adv .seed-row label{font-size:12.5px;color:var(--ink);width:74px;flex:0 0 auto}
+  .samp-adv .seed-row input[type=text]{flex:1 1 auto;background:var(--card);border:1px solid var(--hairline);
+    border-radius:6px;color:var(--ink);font-family:var(--mono);font-size:12px;padding:5px 8px}
+  .samp-adv .seed-row input[type=text]::placeholder{color:var(--dimmer)}
   #nav-download{color:var(--ink);font-family:var(--mono);font-size:11.5px;font-weight:500}
   #nav-download .dot{background:var(--orange);box-shadow:0 0 11px var(--orange);animation:dlpulse 1.4s ease-in-out infinite}
   @keyframes dlpulse{0%,100%{opacity:.4}50%{opacity:1}}
-  .hf-gear{appearance:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;
+  .hf-gear,.icon-btn{appearance:none;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;
     width:34px;height:34px;border-radius:10px;background:var(--card);border:1px solid var(--hairline);
     color:var(--dim);flex:0 0 auto;transition:color .22s var(--ease),background .22s var(--ease),border-color .22s var(--ease)}
-  .hf-gear:hover{color:var(--ink);background:var(--card-hover);border-color:rgba(255,255,255,.28)}
+  .hf-gear:hover,.icon-btn:hover{color:var(--ink);background:var(--card-hover);border-color:var(--hairline-strong)}
   .hf-gear.saved{color:var(--green);border-color:rgba(48,209,88,.4)}
+
+  /* mobile drawer hamburger — chat route only, hidden ≥760px via the
+     media query beside #chat-sidebar above */
+  #chat-hamburger{align-items:center;justify-content:center;gap:3px}
+
+  /* theme toggle: 3-way auto/dark/light segmented control, nav-pill sized */
+  #theme-toggle{display:inline-flex;border:1px solid var(--hairline);border-radius:10px;overflow:hidden;flex:0 0 auto}
+  #theme-toggle button{appearance:none;cursor:pointer;background:transparent;border:none;color:var(--dim);
+    padding:0 9px;height:34px;font-size:13px;line-height:1;transition:color .18s var(--ease),background .18s var(--ease)}
+  #theme-toggle button:not(:last-child){border-right:1px solid var(--hairline)}
+  #theme-toggle button:hover{color:var(--ink);background:var(--card-hover)}
+  #theme-toggle button.active{color:var(--ink);background:var(--card-hover)}
+  #theme-toggle button:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
+
+  /* ─── keyboard shortcut sheet (Cmd/Ctrl+/) ─── */
+  #shortcut-overlay{position:fixed;inset:0;z-index:210;display:none;align-items:flex-start;justify-content:center;
+    background:var(--overlay-scrim);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);padding:calc(var(--nav-h) + 24px) 20px 20px}
+  #shortcut-overlay.open{display:flex;animation:fade .2s var(--ease)}
+  #shortcut-modal{width:min(480px,100%);max-height:min(76vh,620px);overflow-y:auto;background:var(--overlay-panel);
+    border:1px solid var(--hairline);border-radius:20px;padding:22px 26px;box-shadow:0 30px 80px rgba(0,0,0,.35)}
+  .sk-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  .sk-title{font-size:18px;font-weight:700;letter-spacing:-.02em}
+  .sk-close{appearance:none;background:none;border:none;cursor:pointer;color:var(--dim);font-size:16px;
+    width:30px;height:30px;border-radius:8px;transition:color .2s,background .2s}
+  .sk-close:hover{color:var(--ink);background:var(--card-hover)}
+  .sk-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:8px 0;
+    border-bottom:1px solid var(--hairline-soft)}
+  .sk-row:last-child{border-bottom:none}
+  .sk-desc{font-size:13.5px;color:var(--ink)}
+  .sk-keys{display:flex;gap:5px;flex:0 0 auto}
+  .sk-key{font:600 11.5px var(--mono);color:var(--ink);background:var(--card);border:1px solid var(--hairline);
+    border-radius:6px;padding:3px 8px;min-width:20px;text-align:center}
 
   /* ─── HF settings overlay ─── */
   #hf-overlay{position:fixed;inset:0;z-index:200;display:none;align-items:flex-start;justify-content:center;
-    background:rgba(0,0,0,.55);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);padding:calc(var(--nav-h) + 24px) 20px 20px}
+    background:var(--overlay-scrim);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);padding:calc(var(--nav-h) + 24px) 20px 20px}
   #hf-overlay.open{display:flex;animation:fade .3s var(--ease)}
-  #hf-modal{width:min(460px,100%);background:rgba(22,22,24,.96);border:1px solid var(--hairline);border-radius:20px;
-    padding:24px 26px;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+  #hf-modal{width:min(460px,100%);background:var(--overlay-panel);border:1px solid var(--hairline);border-radius:20px;
+    padding:24px 26px;box-shadow:0 30px 80px rgba(0,0,0,.35)}
   .hf-modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
   .hf-modal-title{font-size:20px;font-weight:700;letter-spacing:-.02em}
   .hf-modal-sub{font-size:13.5px;color:var(--dim);margin-bottom:20px;line-height:1.5}
@@ -190,7 +297,19 @@
   [data-reveal]{opacity:0;transform:translateY(22px);
     transition:opacity .8s var(--ease),transform .8s var(--ease);transition-delay:calc(var(--d,0)*1ms)}
   .lit [data-reveal]{opacity:1;transform:none}
-  @media (prefers-reduced-motion:reduce){[data-reveal]{transition:none;opacity:1;transform:none}*{scroll-behavior:auto}}
+  @media (prefers-reduced-motion:reduce){
+    [data-reveal]{transition:none;opacity:1;transform:none}
+    *{scroll-behavior:auto}
+    /* Ambient/decorative infinite-loop animations (plan §7): shimmer
+       skeleton sweep, download-pulse dot, streaming cursor blink, running-
+       tool status dot. These loop forever by design and carry no state —
+       freezing them (not hiding) keeps the element visible+legible without
+       motion. One-shot transitions (fade-in on route change, toast slide-in,
+       popover open) are left alone; they're brief and convey state change,
+       not ambient decoration. */
+    #nav-download .dot,.shimmer,.cursor,.tool.running .sdot{animation:none!important}
+    .shimmer{color:inherit!important;background:var(--card)}
+  }
 
   /* ─── cards ─── */
   .grid{display:grid;gap:14px}
@@ -293,8 +412,8 @@
     background:linear-gradient(90deg,var(--cyan),var(--blue));transition:width .5s var(--ease)}
   .progressbar.green i{background:linear-gradient(90deg,#a8ff9e,var(--green))}
   .progmeta{display:flex;justify-content:space-between;font-size:12.5px;color:var(--dim);margin-top:8px}
-  .logbox{margin-top:18px;background:rgba(0,0,0,.42);border:1px solid var(--hairline-soft);border-radius:14px;
-    padding:14px 16px;max-height:340px;overflow-y:auto;font:11.5px/1.55 var(--mono);color:var(--dim);white-space:pre-wrap;word-break:break-word}
+  .logbox{margin-top:18px;background:var(--code-bg-soft);border:1px solid var(--hairline-soft);border-radius:14px;
+    padding:14px 16px;max-height:340px;overflow-y:auto;font:11.5px/1.55 var(--mono);color:rgba(245,245,247,.7);white-space:pre-wrap;word-break:break-word}
   .logbox:empty::before{content:"waiting for output…";color:var(--dimmer)}
 
   /* shimmer skeletons */
@@ -305,8 +424,8 @@
   /* toasts */
   #toasts{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:100;
     display:flex;flex-direction:column;gap:10px;align-items:center;pointer-events:none}
-  .toast{background:rgba(30,30,32,.92);backdrop-filter:blur(20px);border:1px solid var(--hairline);
-    border-radius:13px;padding:12px 18px;font-size:14px;font-weight:500;box-shadow:0 16px 50px rgba(0,0,0,.6);
+  .toast{background:var(--overlay-panel);backdrop-filter:blur(20px);border:1px solid var(--hairline);
+    border-radius:13px;padding:12px 18px;font-size:14px;font-weight:500;box-shadow:0 16px 50px rgba(0,0,0,.35);
     animation:toastIn .4s var(--ease);max-width:min(560px,90vw)}
   .toast.err{border-color:rgba(255,69,58,.5)}
   .toast.ok{border-color:rgba(48,209,88,.5)}
@@ -328,10 +447,18 @@
     background:var(--card);border:1px solid var(--hairline);color:var(--ink);font-size:13.5px;font-weight:600;
     transition:background .15s,border-color .15s}
   #chat-new:hover{background:var(--card-hover);border-color:rgba(10,132,255,.5)}
+  /* Session search — trivial client-side substring filter over titles
+     (plan §5.7 / §9 Phase 1 item 4). No server change: SessionListItem
+     carries no preview text today, so title-only is the honest scope. */
+  #chat-sess-search{width:100%;background:var(--card);border:1px solid var(--hairline);border-radius:10px;
+    color:var(--ink);font-size:12.5px;padding:8px 11px;outline:none;transition:border-color .2s}
+  #chat-sess-search:focus{border-color:rgba(10,132,255,.5)}
+  #chat-sess-search::placeholder{color:var(--dimmer)}
   .sesslist{display:flex;flex-direction:column;gap:2px;margin-top:4px}
   .sess{position:relative;padding:9px 50px 9px 11px;border-radius:10px;cursor:pointer;border:1px solid transparent}
   .sess:hover{background:var(--card)}
   .sess.active{background:var(--card);border-color:var(--hairline)}
+  .sess.sess-hidden{display:none}
   .sess .stitle{font-size:13px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .sess .smeta{font-size:11px;color:var(--dim);margin-top:2px;display:flex;gap:5px;align-items:center;white-space:nowrap}
   .sess .sbtn{position:absolute;top:7px;width:20px;height:20px;border:none;background:transparent;color:var(--dim);
@@ -342,7 +469,26 @@
   .sess .sfork:hover{background:var(--card-hover);color:var(--ink);opacity:1}
   .sess .sdel:hover{background:rgba(255,69,58,.18);color:var(--red);opacity:1}
   .sessempty{color:var(--dim);font-size:12px;padding:8px 11px;line-height:1.5}
-  @media (max-width:760px){#chat-sidebar{display:none}}
+
+  /* ─── mobile drawer (plan §5.7/§7/§9 Phase 1): the sidebar becomes a
+     slide-over panel on narrow viewports instead of vanishing outright. ─── */
+  #chat-hamburger{display:none}
+  @media (max-width:760px){
+    #chat-hamburger{display:inline-flex}
+    #chat-sidebar{
+      position:fixed;top:var(--nav-h);bottom:0;left:0;width:min(84vw,320px);z-index:120;
+      border-right:1px solid var(--hairline);
+      transform:translateX(-100%);transition:transform .28s var(--ease);
+      box-shadow:0 0 0 rgba(0,0,0,0);
+    }
+    #chat-sidebar.drawer-open{transform:translateX(0);box-shadow:24px 0 60px rgba(0,0,0,.45)}
+    #chat-drawer-backdrop{display:none;position:fixed;inset:var(--nav-h) 0 0 0;z-index:110;
+      background:var(--overlay-scrim);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+    #chat-drawer-backdrop.open{display:block;animation:fade .2s var(--ease)}
+  }
+  @media (max-width:760px) and (prefers-reduced-motion:reduce){
+    #chat-sidebar{transition:none}
+  }
   #chat-scroll{flex:1;overflow-y:auto}
   #chat-thread{max-width:840px;margin:0 auto;padding:30px 22px 16px;display:flex;flex-direction:column;gap:18px}
   .msg{display:flex;flex-direction:column;gap:6px;max-width:90%}
@@ -354,6 +500,29 @@
   .msg.assistant .bubble{background:var(--card);border:1px solid var(--hairline)}
   .msg .meta{font-size:11.5px;color:var(--dimmer);font-variant-numeric:tabular-nums}
   .msg .meta b{color:var(--green);font-weight:600}
+  /* Message actions (plan §5.2): a quiet hover/focus row under each message,
+     same visual language as the code-block copy button (.cbcopy) — dim by
+     default, brightens on hover, never shouts. Kept visible via :focus-within
+     too so keyboard users can tab to the buttons without hovering. */
+  .msg-actions{display:flex;gap:6px;opacity:0;transition:opacity .15s;margin-top:2px}
+  .msg:hover .msg-actions,.msg:focus-within .msg-actions,.msg-actions.pinned{opacity:1}
+  .msg.user .msg-actions{align-self:flex-end}
+  .maction{font:11px/1 var(--mono);color:var(--dim);background:transparent;border:1px solid var(--hairline);
+    border-radius:6px;padding:4px 9px;cursor:pointer;transition:color .15s,border-color .15s}
+  .maction:hover{color:var(--ink);border-color:var(--dim)}
+  .maction:disabled{opacity:.4;cursor:default}
+  .maction:disabled:hover{color:var(--dim);border-color:var(--hairline)}
+  /* Edit-and-resend as sibling branch: ChatGPT/Claude's `< i/n >` linear
+     toggle (plan §5.2 explicitly rules out a tree view this phase). Only
+     rendered on the LAST user message, and only when count > 1. */
+  .sib-toggle{display:flex;align-items:center;gap:5px;font:11px/1 var(--mono);color:var(--dimmer)}
+  .sib-toggle button{background:transparent;border:1px solid var(--hairline);border-radius:6px;color:var(--dim);
+    cursor:pointer;padding:2px 7px;line-height:1.4}
+  .sib-toggle button:hover:not(:disabled){color:var(--ink);border-color:var(--dim)}
+  .sib-toggle button:disabled{opacity:.35;cursor:default}
+  .msg-edit-box{width:100%;box-sizing:border-box;background:var(--card-2);border:1px solid var(--hairline);
+    border-radius:10px;padding:9px 11px;color:var(--ink);font:inherit;line-height:1.5;resize:vertical;min-height:44px}
+  .msg-edit-actions{display:flex;gap:8px;margin-top:6px;justify-content:flex-end}
   .thinkbox{margin:0 0 12px;border:1px solid rgba(10,132,255,.18);border-radius:12px;background:rgba(10,132,255,.06);overflow:hidden}
   .thinkbox summary{cursor:pointer;padding:7px 10px;font-size:12px;font-weight:600;color:var(--dim);user-select:none}
   .thinkbody{padding:0 12px 10px;color:var(--dim);font-size:.92em;white-space:pre-wrap}
@@ -363,10 +532,10 @@
   .bubble li{margin:3px 0}
   .bubble strong{font-weight:700;color:var(--ink)}
   .bubble em{font-style:italic}
-  .bubble code{font-family:var(--mono);font-size:.86em;background:rgba(255,255,255,.10);padding:2px 7px;border-radius:6px}
-  .bubble pre{background:rgba(0,0,0,.45);border:1px solid var(--hairline-soft);border-radius:12px;
+  .bubble code{font-family:var(--mono);font-size:.86em;background:rgba(127,127,127,.18);padding:2px 7px;border-radius:6px}
+  .bubble pre{background:var(--code-bg);color:var(--code-ink);border:1px solid var(--hairline-soft);border-radius:12px;
     padding:13px 15px;overflow-x:auto;margin:10px 0;font:12.5px/1.6 var(--mono)}
-  .bubble pre code{background:none;padding:0;font-size:inherit}
+  .bubble pre code{background:none;padding:0;font-size:inherit;color:inherit}
   .bubble h1,.bubble h2,.bubble h3,.bubble h4,.bubble h5,.bubble h6{font-weight:700;margin:14px 0 7px;letter-spacing:-.01em;line-height:1.3}
   .bubble h1{font-size:1.28em}.bubble h2{font-size:1.16em}.bubble h3{font-size:1.06em}
   .bubble h4,.bubble h5,.bubble h6{font-size:1em;color:var(--dim)}
@@ -383,12 +552,12 @@
   .bubble table.md-table{width:100%;border-collapse:collapse;font-size:.92em}
   .bubble table.md-table th,.bubble table.md-table td{border:1px solid var(--hairline-soft);padding:6px 11px;text-align:left}
   .bubble table.md-table th{background:rgba(255,255,255,.05);font-weight:600;color:var(--ink)}
-  .bubble .codeblock{margin:11px 0;border:1px solid var(--hairline-soft);border-radius:12px;overflow:hidden;background:rgba(0,0,0,.45)}
+  .bubble .codeblock{margin:11px 0;border:1px solid var(--hairline-soft);border-radius:12px;overflow:hidden;background:var(--code-bg);color:var(--code-ink)}
   .bubble .cbhead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 9px 5px 13px;background:rgba(255,255,255,.04);border-bottom:1px solid var(--hairline-soft)}
-  .bubble .cblang{font:11px/1 var(--mono);color:var(--dim);letter-spacing:.02em}
-  .bubble .cbcopy{font:11px/1 var(--mono);color:var(--dim);background:transparent;border:1px solid var(--hairline);border-radius:6px;padding:4px 10px;cursor:pointer;transition:color .15s,border-color .15s}
-  .bubble .cbcopy:hover{color:var(--ink);border-color:var(--dim)}
-  .bubble .codeblock pre{margin:0;border:none;border-radius:0;background:transparent}
+  .bubble .cblang{font:11px/1 var(--mono);color:rgba(245,245,247,.65);letter-spacing:.02em}
+  .bubble .cbcopy{font:11px/1 var(--mono);color:rgba(245,245,247,.65);background:transparent;border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 10px;cursor:pointer;transition:color .15s,border-color .15s}
+  .bubble .cbcopy:hover{color:var(--code-ink);border-color:rgba(255,255,255,.4)}
+  .bubble .codeblock pre{margin:0;border:none;border-radius:0;background:transparent;color:inherit}
   .cursor{display:inline-block;width:8px;height:17px;vertical-align:-3px;border-radius:2px;
     background:linear-gradient(180deg,var(--pink),var(--purple));animation:blink 1s steps(2) infinite}
   @keyframes blink{50%{opacity:0}}
@@ -412,8 +581,8 @@
   .tool.open .tbody{display:block}
   .tool .blk{margin-bottom:10px}.tool .blk:last-child{margin-bottom:0}
   .tool .blbl{font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dimmer);margin-bottom:5px}
-  .tool pre{background:rgba(0,0,0,.4);border-radius:9px;padding:10px 12px;overflow-x:auto;
-    font:12px/1.55 var(--mono);color:var(--dim);white-space:pre-wrap;word-break:break-word;max-height:260px;overflow-y:auto}
+  .tool pre{background:var(--code-bg-soft);border-radius:9px;padding:10px 12px;overflow-x:auto;
+    font:12px/1.55 var(--mono);color:rgba(245,245,247,.7);white-space:pre-wrap;word-break:break-word;max-height:260px;overflow-y:auto}
 
   /* approval dialog */
   .approval{margin:12px 0;border:1px solid rgba(255,159,10,.45);border-radius:16px;overflow:hidden;
@@ -424,7 +593,7 @@
   .approval .ahead .at{font-weight:700;font-size:14px}
   .approval .ahead .as{font:12px var(--mono);color:var(--orange);margin-left:auto}
   .approval .abody{padding:13px 16px}
-  .approval pre{background:rgba(0,0,0,.45);border-radius:10px;padding:12px 14px;overflow-x:auto;
+  .approval pre{background:var(--code-bg);color:var(--code-ink);border-radius:10px;padding:12px 14px;overflow-x:auto;
     font:12.5px/1.6 var(--mono);white-space:pre-wrap;word-break:break-word;max-height:280px;overflow-y:auto}
   .approval .diffadd{color:var(--green)}
   .approval .diffdel{color:var(--red)}
@@ -440,11 +609,11 @@
   #chat-hello .chips{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:28px}
   .chip{border:1px solid var(--hairline);background:var(--card);color:var(--dim);border-radius:999px;
     padding:9px 16px;font-size:13.5px;cursor:pointer;transition:all .25s var(--ease)}
-  .chip:hover{color:var(--ink);border-color:rgba(255,255,255,.32);background:var(--card-hover)}
+  .chip:hover{color:var(--ink);border-color:var(--hairline-strong);background:var(--card-hover)}
 
   /* chat composer */
   #chat-foot{flex:0 0 auto;border-top:1px solid var(--hairline);padding:14px 22px 16px;
-    background:rgba(0,0,0,.4);backdrop-filter:blur(16px)}
+    background:var(--card-2);backdrop-filter:blur(16px)}
   .composer{max-width:840px;margin:0 auto}
   .queuebar{display:none;max-width:840px;margin:0 auto 10px;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--dim)}
   .queuebar .qtag{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--hairline);
@@ -462,9 +631,36 @@
   #chat-stop{display:none;background:var(--card);border:1px solid var(--hairline);color:var(--ink);
     border-radius:14px;height:50px;padding:0 20px;font:600 14px inherit;cursor:pointer}
   #chat-stop:hover{background:var(--card-hover)}
-  .chat-hint{max-width:840px;margin:8px auto 0;font-size:11.5px;color:var(--dimmer);display:flex;justify-content:space-between;gap:10px}
-  .chat-hint .hint-right{display:flex;gap:12px;align-items:center}
-  #chat-context{font:11px/1 var(--mono);letter-spacing:.01em;white-space:nowrap}
+  /* Wrap + shrink rules (2026-07-06 jank fix): without flex-wrap/min-width:0
+     the right pill cluster overflowed past the viewport edge at tablet
+     widths ("no adapter" clipped). The status line ellipsizes first; the
+     pills wrap to a second row before anything leaves the screen. */
+  .chat-hint{max-width:840px;margin:8px auto 0;font-size:11.5px;color:var(--dimmer);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .chat-hint #chat-status-line{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chat-hint .hint-right{display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:flex-end;min-width:0}
+  /* Native <select> in .pill clothes: reset the UA appearance and draw our
+     own chevron — the stock arrow collided with the label text ("no adaptɘr"
+     glyph pile-up), and long adapter ids now ellipsize instead of overflow. */
+  #chat-adapter{appearance:none;-webkit-appearance:none;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    padding-right:27px;cursor:pointer;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath d='M1 1l3 3 3-3' fill='none' stroke='%23909098' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 11px center}
+  /* perf strip — always-visible, quiet: replaces the old bare #chat-tps text
+     with tok/s + TTFT + context-fill + (server-driven only) a lane badge. */
+  #chat-perf{max-width:840px;margin:8px auto 0;display:flex;align-items:center;gap:14px;
+    font:11px/1 var(--mono);letter-spacing:.01em;color:var(--dimmer);flex-wrap:wrap}
+  #chat-perf .pf-item{white-space:nowrap}
+  #chat-perf .pf-item b{color:var(--ink);font-weight:600}
+  #chat-perf .pf-lane{display:none;align-items:center;gap:5px;border:1px solid var(--hairline);
+    border-radius:999px;padding:2px 9px;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em}
+  #chat-perf .pf-lane .dot{width:6px;height:6px;border-radius:50%;background:var(--dimmer)}
+  #chat-perf .pf-lane.serial .dot{background:var(--dim)}
+  #chat-perf .pf-lane.spec .dot{background:var(--blue);box-shadow:0 0 8px var(--blue)}
+  #chat-perf .pf-lane.batched .dot{background:var(--green);box-shadow:0 0 8px var(--green)}
+  /* adapter chip — upgraded presentation over the bare <select>: current
+     selection + specialty line, options grayed by /v1/adapters/available's
+     compatible flag rather than hidden outright. */
+  #chat-adapter option:disabled{color:var(--dimmer);font-style:italic}
   /* attach (+) button + attachment chips */
   #chat-attach-btn{flex:0 0 auto;width:50px;height:50px;border-radius:14px;background:var(--card);
     border:1px solid var(--hairline);color:var(--ink);font-size:23px;line-height:1;cursor:pointer;transition:background .15s,border-color .15s}
@@ -485,7 +681,10 @@
 
   /* loss chart */
   .chartcard{margin-top:20px}
-  .chart-wrap{position:relative;background:rgba(0,0,0,.32);border:1px solid var(--hairline-soft);border-radius:14px;padding:14px;margin-top:6px}
+  /* the chart's SVG gridlines are hardcoded white-on-dark (drawChart()), so
+     the wrap keeps the always-dark code-panel surface for contrast rather
+     than following the chat theme — same rationale as .bubble pre above. */
+  .chart-wrap{position:relative;background:var(--code-bg-soft);border:1px solid var(--hairline-soft);border-radius:14px;padding:14px;margin-top:6px}
   .chart-legend{display:flex;gap:18px;font-size:12px;color:var(--dim);margin-bottom:8px}
   .chart-legend .lg{display:inline-flex;align-items:center;gap:7px}
   .chart-legend .sw{width:14px;height:3px;border-radius:2px}
@@ -493,23 +692,50 @@
   .chart-stats .cs b{display:block;font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:3px}
   .chart-stats .cs span{font-size:20px;font-weight:700;letter-spacing:-.02em}
 
+  /* Tablet band (2026-07-06 jank fix): with 7 tabs + hamburger + shortcuts +
+     theme toggle + gear + conn pill, the tab row overflows well above the
+     900px cutoff — tighten tab padding first so fewer widths need the
+     scroll-fade at all. */
+  @media (max-width:1160px){
+    nav{gap:12px}
+    nav .tab{padding:8px 9px;font-size:13px}
+  }
   @media (max-width:900px){
     .hpgrid{grid-template-columns:1fr}
     nav .model{display:none}
     .wrap{padding:34px 18px 100px}
     nav{gap:12px;padding:0 16px}
+    /* Icon-only theme toggle a bit earlier than 560px — the nav is already
+       tight here (hamburger + shortcuts + toggle + hf-gear + conn pill) and
+       "Auto" as a text label isn't worth the horizontal cost at this width. */
+    #theme-toggle button{padding:0 7px;font-size:15px}
+    #theme-toggle .tt-label{display:none}
   }
   @media (max-width:560px){
     nav .brand{font-size:16px}
     nav .tab{padding:8px 10px;font-size:13px}
+    nav .right{gap:6px}
+    .icon-btn,.hf-gear{width:30px;height:30px}
   }
 </style>
+<!-- Vendored syntax-highlighting theme (src/web/vendor/hljs-theme.css, hand-derived
+     from the design tokens above — see that file's header). No CDN; served by
+     src/server.ts alongside this page. -->
+<link rel="stylesheet" href="/assets/hljs.css">
 </head>
 <body>
 <div class="bloom" id="bloom"></div>
 
 <!-- ═══════════════════ TOP NAV ═══════════════════ -->
 <nav>
+  <!-- Mobile drawer trigger — chat route only (CSS keeps it hidden ≥760px
+       and JS keeps it hidden off the chat route, since there is no
+       sidebar to open elsewhere). aria-controls/expanded kept in sync by
+       the drawer open/close functions. -->
+  <button class="icon-btn" id="chat-hamburger" title="Open recent chats" aria-label="Open recent chats"
+          aria-controls="chat-sidebar" aria-expanded="false">
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+  </button>
   <a class="brand grad g-hero" href="#/chat">mlx-bun</a>
   <div class="tabs" id="tabs">
     <a class="tab" href="#/chat" data-tab="chat">Chat</a>
@@ -521,6 +747,18 @@
     <a class="tab" href="#/routes" data-tab="routes">Routes</a>
   </div>
   <div class="right">
+    <button class="icon-btn" id="nav-shortcuts" title="Keyboard shortcuts (Cmd/Ctrl+/)" aria-label="Keyboard shortcuts"
+            aria-haspopup="dialog" aria-controls="shortcut-overlay" aria-expanded="false">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"></rect><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12"></path></svg>
+    </button>
+    <!-- 3-way theme toggle (plan §7): auto follows prefers-color-scheme,
+         dark/light are explicit user overrides — all persisted to
+         localStorage by setTheme() below. -->
+    <div id="theme-toggle" role="group" aria-label="Theme">
+      <button type="button" data-theme-choice="auto" title="Match system theme" aria-label="Auto theme"><span class="tt-label">Auto</span></button>
+      <button type="button" data-theme-choice="dark" title="Dark theme" aria-label="Dark theme">🌙</button>
+      <button type="button" data-theme-choice="light" title="Light theme" aria-label="Light theme">☀️</button>
+    </div>
     <button class="hf-gear" id="nav-hf" title="Hugging Face token settings" aria-label="Hugging Face settings">
       <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
     </button>
@@ -532,9 +770,9 @@
 
 <!-- ═══════════════════ HF SETTINGS OVERLAY ═══════════════════ -->
 <div id="hf-overlay">
-  <div id="hf-modal">
+  <div id="hf-modal" role="dialog" aria-modal="true" aria-labelledby="hf-modal-title-el">
     <div class="hf-modal-head">
-      <div class="hf-modal-title">Hugging Face</div>
+      <div class="hf-modal-title" id="hf-modal-title-el">Hugging Face</div>
       <button class="hf-close" id="hf-close" aria-label="Close">✕</button>
     </div>
     <p class="hf-modal-sub" id="hf-state">Checking for a saved token…</p>
@@ -550,12 +788,33 @@
   </div>
 </div>
 
+<!-- ═══════════════════ KEYBOARD SHORTCUT SHEET ═══════════════════ -->
+<div id="shortcut-overlay">
+  <div id="shortcut-modal" role="dialog" aria-modal="true" aria-labelledby="sk-modal-title">
+    <div class="sk-head">
+      <div class="sk-title" id="sk-modal-title">Keyboard shortcuts</div>
+      <button class="sk-close" id="sk-close" aria-label="Close">✕</button>
+    </div>
+    <div class="sk-row"><span class="sk-desc">Show this shortcut sheet</span><span class="sk-keys"><span class="sk-key" id="sk-mod-label">⌘</span><span class="sk-key">/</span></span></div>
+    <div class="sk-row"><span class="sk-desc">New chat</span><span class="sk-keys"><span class="sk-key sk-mod"></span><span class="sk-key">Shift</span><span class="sk-key">O</span></span></div>
+    <div class="sk-row"><span class="sk-desc">Focus the composer</span><span class="sk-keys"><span class="sk-key">Shift</span><span class="sk-key">Esc</span></span></div>
+    <div class="sk-row"><span class="sk-desc">Copy last response</span><span class="sk-keys"><span class="sk-key sk-mod"></span><span class="sk-key">Shift</span><span class="sk-key">C</span></span></div>
+    <div class="sk-row"><span class="sk-desc">Send message</span><span class="sk-keys"><span class="sk-key">Enter</span></span></div>
+    <div class="sk-row"><span class="sk-desc">New line in composer</span><span class="sk-keys"><span class="sk-key">Shift</span><span class="sk-key">Enter</span></span></div>
+    <div class="sk-row"><span class="sk-desc">Close popover / drawer / sheet</span><span class="sk-keys"><span class="sk-key">Esc</span></span></div>
+  </div>
+</div>
+
+<!-- Mobile drawer backdrop (chat sidebar only — see #chat-sidebar CSS) -->
+<div id="chat-drawer-backdrop"></div>
+
 <div id="app">
 
   <!-- ═══════════════════ CHAT ═══════════════════ -->
   <section data-route="chat" id="s-chat">
     <aside id="chat-sidebar">
       <button id="chat-new" title="Start a new chat (or type /new)">＋&nbsp; New chat</button>
+      <input type="search" id="chat-sess-search" placeholder="Search chats…" aria-label="Search chats" autocomplete="off">
       <div id="chat-sessions" class="sesslist"></div>
     </aside>
     <div id="chat-main">
@@ -570,7 +829,13 @@
           <button class="chip" data-q="What can you help me with right now?">What can you do?</button>
         </div>
       </div>
-      <div id="chat-thread"></div>
+      <!-- aria-live is a coarse approximation: it announces at the container
+           level (whole finished messages / completed blocks), not per-token
+           on the live tail — announcing every streamed delta would spam a
+           screen reader with one interruption per token. aria-atomic=false
+           so only the newly-appended content is announced, not the whole
+           growing thread each time. -->
+      <div id="chat-thread" role="log" aria-live="polite" aria-atomic="false"></div>
     </div>
     <div id="chat-foot">
       <div class="queuebar" id="chat-queue"></div>
@@ -579,7 +844,11 @@
         <div class="inputrow">
           <button id="chat-attach-btn" class="iconbtn" title="Attach files or images" aria-label="Attach files">＋</button>
           <input type="file" id="chat-file-input" multiple style="display:none">
-          <textarea id="chat-box" rows="1" placeholder="Message the local agent…  (Enter to send · Shift+Enter for newline)"></textarea>
+          <!-- Keep the placeholder SHORT: the Enter/Shift+Enter hint lives in
+               the chat-hint line below (and the Cmd+/ sheet). A long
+               placeholder wraps to two lines at tablet widths inside this
+               single-row box and clips against the border (2026-07-06 jank). -->
+          <textarea id="chat-box" rows="1" placeholder="Message the local agent…"></textarea>
           <button id="chat-stop" title="Abort the current turn">Stop</button>
           <button id="chat-send">Send</button>
         </div>
@@ -606,8 +875,50 @@
                   <input id="samp-topk" type="range" min="0" max="100" step="1" aria-label="top_k">
                   <output id="samp-topk-val" class="samp-val auto">off</output>
                 </div>
+                <details class="samp-adv" id="samp-advanced">
+                  <summary>Advanced</summary>
+                  <div class="samprow">
+                    <label for="samp-minp">min_p</label>
+                    <input id="samp-minp" type="range" min="0" max="0.5" step="0.01" aria-label="min_p">
+                    <output id="samp-minp-val" class="samp-val auto">off</output>
+                  </div>
+                  <div class="samprow">
+                    <label for="samp-xtcp">XTC prob</label>
+                    <input id="samp-xtcp" type="range" min="0" max="1" step="0.01" aria-label="XTC probability">
+                    <output id="samp-xtcp-val" class="samp-val auto">off</output>
+                  </div>
+                  <div class="samprow">
+                    <label for="samp-xtct">XTC thresh</label>
+                    <input id="samp-xtct" type="range" min="0" max="1" step="0.01" aria-label="XTC threshold">
+                    <output id="samp-xtct-val" class="samp-val auto">off</output>
+                  </div>
+                  <div class="samprow">
+                    <label for="samp-reppen">repetition</label>
+                    <input id="samp-reppen" type="range" min="1" max="2" step="0.01" aria-label="repetition penalty">
+                    <output id="samp-reppen-val" class="samp-val auto">off</output>
+                  </div>
+                  <div class="samprow">
+                    <label for="samp-repctx">rep. window</label>
+                    <input id="samp-repctx" type="range" min="0" max="1024" step="16" aria-label="repetition context size">
+                    <output id="samp-repctx-val" class="samp-val auto">off</output>
+                  </div>
+                  <div class="samprow">
+                    <label for="samp-prespen">presence</label>
+                    <input id="samp-prespen" type="range" min="-2" max="2" step="0.05" aria-label="presence penalty">
+                    <output id="samp-prespen-val" class="samp-val auto">off</output>
+                  </div>
+                  <div class="samprow">
+                    <label for="samp-freqpen">frequency</label>
+                    <input id="samp-freqpen" type="range" min="-2" max="2" step="0.05" aria-label="frequency penalty">
+                    <output id="samp-freqpen-val" class="samp-val auto">off</output>
+                  </div>
+                  <div class="seed-row">
+                    <label for="samp-seed">seed</label>
+                    <input id="samp-seed" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="random" aria-label="seed">
+                  </div>
+                </details>
                 <div class="samppop-foot">
-                  <span class="note">Sliders default to the recommended value — temperature follows the thinking toggle. Reset returns to defaults.</span>
+                  <span class="note" id="samp-foot-note">Sliders default to this model's recommended values — temperature also follows the thinking toggle. Reset returns everything to defaults.</span>
                   <button id="samp-reset" type="button">Reset</button>
                 </div>
               </div>
@@ -616,9 +927,23 @@
               <option value="">no adapter</option>
             </select>
             <span id="chat-think" class="pill" role="button" tabindex="0" title="Toggle the model's reasoning"><span class="dot"></span>Thinking</span>
-            <span id="chat-context" title="Context window in use — auto-compacts before it fills"></span>
-            <span id="chat-tps"></span>
           </span>
+        </div>
+        <!-- Perf strip: replaces the old bare #chat-tps dim text (plan §5.2,
+             §6.4) with tok/s, TTFT, context-fill, and a server-driven lane
+             badge, always visible (not a popover) — "speed is ambient, not a
+             stat you look up". Context-fill absorbs the old #chat-context
+             span's job (single source of the "how full is my context"
+             reading, no longer duplicated between the hint row and here). -->
+        <div id="chat-perf">
+          <span class="pf-item" id="pf-tps" title="Decode speed for the current/last turn"></span>
+          <span class="pf-item" id="pf-ttft" title="Time to first token"></span>
+          <span class="pf-item" id="pf-fill" title="Context window in use — auto-compacts before it fills"></span>
+          <!-- Lane badge: server-driven only (never client-inferred, plan §2.3
+               risk #5). Hidden until a turn_end frame actually carries `lane`
+               (wave-1 backend work landed the field — src/serve/lane-registry.ts,
+               pi-web.ts turn_end — so this fills in for real turns, not a stub). -->
+          <span class="pf-lane" id="pf-lane"><span class="dot"></span><span id="pf-lane-label"></span></span>
         </div>
       </div>
     </div>
@@ -796,6 +1121,14 @@
             <div class="field"><label>ORPO λ (odds-ratio weight)</label><input type="number" id="f-orpo-lambda" value="0.1" step="0.05" min="0.01" max="2"></div>
             <div class="field"><label>LR schedule</label>
               <select id="f-orpo-sched"><option value="cosine">cosine (recommended)</option><option value="constant">constant</option></select></div>
+          </div>
+          <div class="field" style="margin-bottom:18px">
+            <label>SFT scope</label>
+            <div class="seg" id="f-orpo-scope">
+              <button data-v="full" class="on">full</button>
+              <button data-v="response">response</button>
+            </div>
+            <div class="hint">full = paper/TRL chosen-NLL over the whole sequence; response = pre-2026-07 response-only.</div>
           </div>
         </div>
 
@@ -1042,6 +1375,16 @@
 
 <div id="toasts"></div>
 
+<!-- Vendored syntax highlighter (src/web/vendor/hljs.js — highlight.js core +
+     a curated language set, BSD-3-Clause, see that file's header). `defer`
+     means this loads/executes at DOMContentLoaded, which happens well before
+     any real highlighting call (those only fire later, on streamed content
+     or history replay) — the main inline script below runs synchronously
+     first, but it only *calls* highlightIn() from async event handlers, so
+     ordering here is safe in practice. highlightIn() still guards with
+     `typeof hljs !== "undefined"` for the case this tag is ever stripped or
+     the asset 404s. No CDN; served by src/server.ts at /assets/hljs.js. -->
+<script defer src="/assets/hljs.js"></script>
 <script>
 /* ════════════════════════════════════════════════════════════════════
    SHARED HELPERS
@@ -1141,9 +1484,13 @@ function mdInline(t) {
 }
 
 function mdCodeBlock(lang, code) {
+  // language-<lang> on <code> is the de-facto convention hljs's own
+  // language-detection-from-class reads (see highlightIn() below); an empty
+  // fence info string just omits the class and highlightIn() skips it.
+  const langClass = lang ? ' class="language-' + esc(lang) + '"' : "";
   return '<div class="codeblock"><div class="cbhead"><span class="cblang">' + esc(lang || "") +
     '</span><button class="cbcopy" type="button">Copy</button></div>' +
-    "<pre><code>" + esc(code) + "</code></pre></div>";
+    "<pre><code" + langClass + ">" + esc(code) + "</code></pre></div>";
 }
 
 function mdTableSep(s) { return /^[\s|:-]+$/.test(s) && /-/.test(s) && /\|/.test(s); }
@@ -1241,6 +1588,207 @@ function mdToHtml(src) {
   return html;
 }
 
+/* ────────────────────────────────────────────────────────────────────
+   STREAMING BLOCK MEMOIZATION  (plan §5.3, §2.2 #7)
+   ────────────────────────────────────────────────────────────────────
+   Naively doing `textNode.innerHTML = mdToHtml(fullText)` on every token
+   is O(n²) over a response: every delta re-parses and re-renders the
+   *entire* message from scratch, and innerHTML-replace also blows away
+   and recreates every DOM node (losing e.g. text selection) each time.
+
+   The fix, ported from the Streamdown/t3.chat "block memoization"
+   pattern into this vanilla renderer: split accumulated text at stable
+   block boundaries (blank lines; a fenced code block counts as one
+   block and only becomes "stable" once its closing fence has arrived).
+   Every block except the last is done streaming and gets parsed with
+   mdToHtml exactly ONCE — its DOM node is then left completely alone.
+   Only the last ("live tail") block gets re-parsed on each delta, and
+   even that is throttled to once per animation frame so a burst of
+   fast tokens (e.g. spec-decode) coalesces into one reflow instead of
+   one per token.
+
+   INVARIANT (this is the correctness test for this whole scheme): the
+   memoized incremental render must be pixel-for-pixel/byte-for-byte
+   identical to a single `mdToHtml(fullText)` pass once the message is
+   complete. We guarantee this by (a) never touching a block's DOM once
+   it's marked done, using the same mdToHtml on that exact substring
+   that a full pass would have used, and (b) doing one full non-
+   memoized mdToHtml(fullText) pass at turn-end (see finishStreaming
+   below) to paper over any edge case where incremental block splitting
+   disagrees with whole-text parsing (e.g. a list that only "closes"
+   because a later blank line arrives, or a paragraph the tail-block
+   join glued differently than the full parse would). That final pass
+   is the ground truth; the incremental renders are a fast-path
+   approximation of it while streaming is in flight. */
+
+/** Split text into blocks at blank lines. A fenced code block (opened by
+ *  a ``` or ~~~ fence) is always kept as a single block and is only
+ *  "closed" (safe to memoize) once its matching closing fence has been
+ *  seen — while the fence is still open we keep extending the same
+ *  block on every call, exactly like mdToHtml's own fence scanner does.
+ *  Returns [{text, done}]; every element except possibly the last has
+ *  done:true (the last block is "done" too if the text itself ends
+ *  with a blank line — i.e. the block truly can't grow anymore given
+ *  what's arrived so far). */
+function splitBlocks(src) {
+  const lines = String(src).replace(/\r\n?/g, "\n").split("\n");
+  const blocks = [];
+  let buf = [], i = 0;
+  const flush = (done) => { if (buf.length) { blocks.push({ text: buf.join("\n"), done }); buf = []; } };
+
+  while (i < lines.length) {
+    const ln = lines[i];
+    const fence = ln.match(/^\s*(`{3,}|~{3,})/);
+    if (fence) {
+      // A fence starts a code block: flush whatever came before it as its
+      // own (done) block, then greedily consume lines until the matching
+      // closing fence — the whole fenced region is one block.
+      flush(true);
+      const tick = fence[1][0];
+      const closeRe = new RegExp("^\\s*" + (tick === "`" ? "`{3,}" : "~{3,}") + "\\s*$");
+      buf.push(ln); i++;
+      let closed = false;
+      while (i < lines.length) {
+        buf.push(lines[i]);
+        if (closeRe.test(lines[i])) { closed = true; i++; break; }
+        i++;
+      }
+      flush(closed); // still-open fence -> not done; more deltas may extend it
+      continue;
+    }
+    if (ln.trim() === "") { flush(true); i++; continue; }
+    buf.push(ln); i++;
+  }
+  // Trailing buffered lines with no closing blank line yet: this is the
+  // live tail, not done — it may still grow on the next delta.
+  flush(false);
+  return blocks;
+}
+
+/**
+ * Incrementally (re)render an accumulated markdown string into `container`
+ * using block memoization. `state` is a small cache object stashed on the
+ * caller (e.g. `a.blockState`) shaped `{ blocks: [{text, done, node}] }`,
+ * created fresh per message. Completed blocks whose text hasn't changed
+ * since last render are left untouched (their DOM node is reused as-is);
+ * only new/changed/live-tail blocks get an mdToHtml call.
+ *
+ * Completed block nodes get `class="md-block done"` and, once rendered,
+ * have any fenced code inside them run through highlightIn() (syntax
+ * highlighting only ever touches finished blocks — never the streaming
+ * live tail, to avoid re-highlighting on every token).
+ */
+function renderBlocksIncremental(container, text, state) {
+  const next = splitBlocks(text);
+  const prev = state.blocks || [];
+
+  for (let k = 0; k < next.length; k++) {
+    const nb = next[k];
+    const pb = prev[k];
+    if (pb && pb.done && pb.text === nb.text && pb.node) {
+      // Unchanged completed block: reuse the existing node untouched.
+      nb.node = pb.node;
+      continue;
+    }
+    // (Re)render this block. Reuse the DOM node in place if one already
+    // exists at this index (keeps node identity stable across re-renders
+    // of the live tail instead of thrashing the DOM), otherwise create it.
+    const node = pb && pb.node ? pb.node : document.createElement("div");
+    node.className = "md-block" + (nb.done ? " done" : "");
+    node.innerHTML = mdToHtml(nb.text);
+    nb.node = node;
+    if (!node.parentNode) container.appendChild(node);
+    if (nb.done) highlightIn(node);
+  }
+  // Drop any now-stale trailing nodes (text shrank — shouldn't normally
+  // happen during streaming, but keep the DOM honest if it ever does).
+  for (let k = next.length; k < prev.length; k++) {
+    if (prev[k].node && prev[k].node.parentNode) prev[k].node.remove();
+  }
+  state.blocks = next;
+}
+
+/** rAF-throttled scheduler: coalesces many deltas arriving within one
+ *  animation frame into a single re-render (block-memoized text, or the
+ *  plain-text thinking channel). Each assistant message gets its own
+ *  scheduler instance (created per-message in startAssistant) so the
+ *  pending-frame flag is scoped to that message rather than shared
+ *  global state. The wrapped `render` fn is called with no args on the
+ *  next frame; calling the returned `schedule()` again before that frame
+ *  fires is a no-op (a render is already queued). */
+/* ────────────────────────────────────────────────────────────────────
+   SYNTAX HIGHLIGHTING (plan §5.3/§7)
+   ────────────────────────────────────────────────────────────────────
+   Vendored highlight.js (src/web/vendor/hljs.js, no CDN — see that file's
+   header) applied to fenced code blocks. mdCodeBlock() above stamps
+   `class="language-<fence-info-string>"` onto the <code> element when the
+   fence declares one (```ts, ```python, …); highlight.js reads that class
+   itself (its own `language-xxx` convention), so no lookup table is needed
+   here — an empty/unrecognized language just falls through to hljs's
+   plaintext handling.
+
+   Called from exactly three places, matching the plan's "block completion
+   + final full-render pass" instruction:
+     1. renderBlocksIncremental(), only on blocks freshly marked `done`
+        (the live streaming tail is never highlighted — that would mean
+        re-highlighting on every token, the same O(n²) shape the block-
+        memoization pass just fixed).
+     2. finishStreaming(), the end-of-turn full mdToHtml pass (ground truth
+        — catches any block whose "done" transition happened without a
+        fresh render, e.g. the last block if it ends exactly on a blank line).
+     3. renderAssistantStatic(), for replayed history.
+   Idempotent via hljs's own `data-highlighted` marker (set on the <code>
+   element after its first highlightElement() call) — highlightElement()
+   itself throws "Element previously highlighted" if called twice on the
+   same node without clearing that marker, so we check for it explicitly
+   rather than relying on the library to no-op. */
+function highlightIn(container) {
+  if (typeof hljs === "undefined" || !container) return;
+  const blocks = container.querySelectorAll("pre code");
+  for (const block of blocks) {
+    if (block.dataset.highlighted) continue; // already done — idempotent
+    // Skip auto-detect on huge blocks: hljs's language guesser runs every
+    // registered grammar against the text, which is fine for a fenced
+    // ```lang block (single grammar) but expensive with no declared
+    // language on a very large block. A declared language always runs
+    // (fixed grammar, no guessing), regardless of size.
+    const hasLang = /\blanguage-/.test(block.className);
+    if (!hasLang && block.textContent.length > 20_000) continue;
+    try { hljs.highlightElement(block); } catch { /* leave as plain text */ }
+  }
+}
+
+/** rAF-throttled scheduler: coalesces many deltas arriving within one
+ *  animation frame into a single re-render (block-memoized text, or the
+ *  plain-text thinking channel). Each assistant message gets its own
+ *  scheduler instance (created per-message in startAssistant) so the
+ *  pending-frame flag is scoped to that message rather than shared
+ *  global state. The wrapped `render` fn is called with no args on the
+ *  next frame; calling the returned `schedule()` again before that frame
+ *  fires is a no-op (a render is already queued). */
+/** rAF-throttle `render` so a burst of calls within one frame collapses into
+ *  a single DOM update. `shouldStick`/`doStick` (both optional) let a caller
+ *  autoscroll correctly across the coalesced burst: `shouldStick` is sampled
+ *  fresh at the START of each queued frame (i.e. right before `render` runs,
+ *  against whatever scrollHeight the LAST completed render left behind —
+ *  never the stale pre-burst height a synchronous caller-side check would
+ *  see), and `doStick` runs immediately after `render` grows the DOM in that
+ *  same frame, so the pin decision and the scroll it acts on are always the
+ *  correct before/after pair regardless of how many calls got coalesced. */
+function makeFrameScheduler(render, shouldStick, doStick) {
+  let queued = false;
+  return function schedule() {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      const stickAfter = shouldStick ? shouldStick() : false;
+      render();
+      if (stickAfter && doStick) doStick();
+    });
+  };
+}
+
 /** Render a step indicator into a container. names[], current index. */
 function renderSteps(container, names, cur) {
   container.innerHTML = names.map((n, i) => {
@@ -1266,8 +1814,10 @@ async function refreshHfGear() {
 }
 
 /* — the nav settings modal — */
+let hfOverlayTrap = null; // set by initHfSettings() below
 function openHfSettings() {
   const ov = $("hf-overlay"); ov.classList.add("open");
+  if (hfOverlayTrap) hfOverlayTrap.capture();
   $("hf-token-input").value = ""; $("hf-settings-msg").innerHTML = "";
   $("hf-state").textContent = "Checking for a saved token…";
   api("/api/settings/hf-token").then((d) => {
@@ -1278,7 +1828,10 @@ function openHfSettings() {
   }).catch(() => { $("hf-state").textContent = "Could not reach the server."; });
   setTimeout(() => $("hf-token-input").focus(), 50);
 }
-function closeHfSettings() { $("hf-overlay").classList.remove("open"); }
+function closeHfSettings() {
+  $("hf-overlay").classList.remove("open");
+  if (hfOverlayTrap) hfOverlayTrap.restore();
+}
 
 async function saveHfToken() {
   const token = $("hf-token-input").value.trim();
@@ -1361,9 +1914,174 @@ async function pushToHub(panel, { kind, job_id, source_path }) {
   $("hf-save").onclick = saveHfToken;
   $("hf-overlay").addEventListener("click", (e) => { if (e.target === $("hf-overlay")) closeHfSettings(); });
   $("hf-token-input").addEventListener("keydown", (e) => { if (e.key === "Enter") saveHfToken(); });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("hf-overlay").classList.contains("open")) closeHfSettings(); });
+  // Escape is handled globally by closeTopOverlay (plan §7 item 5 — one
+  // Escape mechanism for every popover/overlay, not a bespoke one per modal).
+  hfOverlayTrap = trapFocus($("hf-overlay"), () => $("hf-overlay").classList.contains("open"));
   refreshHfGear();
 })();
+
+/* ════════════════════════════════════════════════════════════════════
+   POPOVER / OVERLAY A11Y SWEEP (plan §7 item 5)
+   A single reusable focus-trap: Tab/Shift+Tab cycle within the container
+   while `isOpen()` is true, and focus returns to whatever triggered the
+   overlay when it closes. Applied uniformly to the HF modal, the
+   shortcut sheet, the sampling popover, and the drawer — one mechanism,
+   not four bespoke ones.
+   ════════════════════════════════════════════════════════════════════ */
+function trapFocus(container, isOpen) {
+  let lastFocused = null;
+  const focusables = () => [...container.querySelectorAll(
+    'a[href],button:not([disabled]),textarea,input:not([disabled]),select,[tabindex]:not([tabindex="-1"])'
+  )].filter((el) => el.offsetParent !== null || el === document.activeElement);
+  container.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab" || !isOpen()) return;
+    const items = focusables();
+    if (!items.length) return;
+    const first = items[0], last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+  return {
+    /** Call right before opening: remembers the trigger to restore focus to. */
+    capture() { lastFocused = document.activeElement; },
+    /** Call right after closing. */
+    restore() { if (lastFocused && lastFocused.focus) lastFocused.focus(); lastFocused = null; },
+  };
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   THEME (plan §7): auto/dark/light, persisted, honors prefers-color-scheme
+   when the choice is "auto" (the default). Ambient bloom/shimmer already
+   respect prefers-reduced-motion via CSS above — this only handles color.
+   ════════════════════════════════════════════════════════════════════ */
+const THEME_KEY = "mlxbun.theme"; // "auto" | "dark" | "light"
+const themeMedia = window.matchMedia("(prefers-color-scheme: light)");
+
+function effectiveTheme(choice) {
+  if (choice === "dark" || choice === "light") return choice;
+  return themeMedia.matches ? "light" : "dark";
+}
+function applyTheme(choice) {
+  document.documentElement.setAttribute("data-theme", effectiveTheme(choice));
+  document.querySelectorAll("#theme-toggle button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.themeChoice === choice));
+}
+function setTheme(choice) {
+  localStorage.setItem(THEME_KEY, choice);
+  applyTheme(choice);
+}
+(function initTheme() {
+  const saved = localStorage.getItem(THEME_KEY) || "auto";
+  applyTheme(saved);
+  document.querySelectorAll("#theme-toggle button").forEach((b) =>
+    b.addEventListener("click", () => setTheme(b.dataset.themeChoice)));
+  // Live-follow the OS when the user's choice is "auto" (default).
+  themeMedia.addEventListener("change", () => {
+    if ((localStorage.getItem(THEME_KEY) || "auto") === "auto") applyTheme("auto");
+  });
+})();
+
+/* ════════════════════════════════════════════════════════════════════
+   KEYBOARD SHORTCUT SHEET (Cmd/Ctrl+/) + global bindings (plan §7)
+   ════════════════════════════════════════════════════════════════════ */
+const skTrap = trapFocus($("shortcut-overlay"), () => $("shortcut-overlay").classList.contains("open"));
+function openShortcutSheet() {
+  skTrap.capture();
+  $("shortcut-overlay").classList.add("open");
+  $("nav-shortcuts").setAttribute("aria-expanded", "true");
+  setTimeout(() => $("sk-close").focus(), 30);
+}
+function closeShortcutSheet() {
+  $("shortcut-overlay").classList.remove("open");
+  $("nav-shortcuts").setAttribute("aria-expanded", "false");
+  skTrap.restore();
+}
+(function initShortcutSheet() {
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  document.querySelectorAll("#sk-mod-label, .sk-mod").forEach((e) => { e.textContent = isMac ? "⌘" : "Ctrl"; });
+  $("nav-shortcuts").onclick = () => {
+    $("shortcut-overlay").classList.contains("open") ? closeShortcutSheet() : openShortcutSheet();
+  };
+  $("sk-close").onclick = closeShortcutSheet;
+  $("shortcut-overlay").addEventListener("click", (e) => { if (e.target === $("shortcut-overlay")) closeShortcutSheet(); });
+})();
+
+/* ════════════════════════════════════════════════════════════════════
+   MOBILE DRAWER (plan §5.7/§7/§9 Phase 1 item 1) — chat sidebar becomes a
+   slide-over on narrow viewports instead of vanishing outright. Chat-route
+   only: the hamburger button is CSS-hidden ≥760px and JS-hidden off /chat
+   (router() below), so open/close are only ever reachable when relevant.
+   ════════════════════════════════════════════════════════════════════ */
+const drawerTrap = trapFocus($("chat-sidebar"), () => $("chat-sidebar").classList.contains("drawer-open"));
+function openDrawer() {
+  drawerTrap.capture();
+  $("chat-sidebar").classList.add("drawer-open");
+  $("chat-drawer-backdrop").classList.add("open");
+  $("chat-hamburger").setAttribute("aria-expanded", "true");
+  setTimeout(() => { const s = $("chat-sess-search"); if (s) s.focus(); }, 30);
+}
+function closeDrawer() {
+  $("chat-sidebar").classList.remove("drawer-open");
+  $("chat-drawer-backdrop").classList.remove("open");
+  $("chat-hamburger").setAttribute("aria-expanded", "false");
+  drawerTrap.restore();
+}
+(function initDrawer() {
+  $("chat-hamburger").onclick = () => {
+    $("chat-sidebar").classList.contains("drawer-open") ? closeDrawer() : openDrawer();
+  };
+  $("chat-drawer-backdrop").addEventListener("click", closeDrawer);
+})();
+
+/** Any open popover/drawer/sheet this Escape binding knows how to close,
+ *  checked in a fixed priority order (most-recently-opened-ish first).
+ *  Returns true if it closed something, so callers can stop there. */
+function closeTopOverlay() {
+  if ($("shortcut-overlay").classList.contains("open")) { closeShortcutSheet(); return true; }
+  if ($("hf-overlay").classList.contains("open")) { closeHfSettings(); return true; }
+  const samplePop = $("chat-sampling-pop");
+  if (samplePop && samplePop.classList.contains("open") && samplingPopoverClose) { samplingPopoverClose(); return true; }
+  if ($("chat-sidebar").classList.contains("drawer-open")) { closeDrawer(); return true; }
+  return false;
+}
+
+document.addEventListener("keydown", (e) => {
+  const mod = e.metaKey || e.ctrlKey;
+  // Cmd/Ctrl+/ — shortcut sheet. Not a browser-reserved combo.
+  if (mod && e.key === "/") { e.preventDefault(); $("shortcut-overlay").classList.contains("open") ? closeShortcutSheet() : openShortcutSheet(); return; }
+  // Cmd/Ctrl+Shift+O — new chat. (Ctrl+Shift+O is free in every major
+  // browser; Cmd+Shift+O has no macOS Safari/Chrome reservation either.)
+  if (mod && e.shiftKey && (e.key === "O" || e.key === "o")) {
+    if (currentRoute() !== "chat") return; // no-op off the chat route
+    e.preventDefault();
+    controllers.chat.newChat && controllers.chat.newChat();
+    return;
+  }
+  // Cmd/Ctrl+Shift+C — copy last response. Reuses the wave-3 copy action.
+  if (mod && e.shiftKey && (e.key === "C" || e.key === "c")) {
+    if (currentRoute() !== "chat") return;
+    e.preventDefault();
+    controllers.chat.copyLastResponse && controllers.chat.copyLastResponse();
+    return;
+  }
+  // Shift+Escape — focus the composer (skipped while already typing
+  // somewhere else that isn't the composer, so it doesn't steal focus
+  // from e.g. the HF token field — but Escape's own overlay-close below
+  // still fires first via closeTopOverlay for the "any open thing" case).
+  if (e.shiftKey && e.key === "Escape") {
+    if (currentRoute() !== "chat") return;
+    e.preventDefault();
+    $("chat-box").focus();
+    return;
+  }
+  // Escape alone — close whatever overlay is open, with focus restored to
+  // its trigger. Never shadows a plain Escape when nothing is open (e.g.
+  // the composer's own Escape-to-cancel-edit keeps working, since
+  // closeTopOverlay simply returns false and this handler does nothing else).
+  if (e.key === "Escape" && !e.shiftKey && !mod) {
+    closeTopOverlay();
+  }
+});
 
 /* ════════════════════════════════════════════════════════════════════
    ROUTER  — toggles section[data-route]; lazily inits each controller.
@@ -1394,8 +2112,26 @@ function router() {
   document.querySelectorAll("nav .tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === route));
   // dim the ambient bloom slightly in the chat workspace so text reads cleanly
   $("bloom").style.opacity = route === "chat" ? "0.55" : "1";
+  // The mobile drawer hamburger only makes sense on /chat (it opens the
+  // recent-chats sidebar, which only exists there) — CSS already hides it
+  // ≥760px; this hides it off-route regardless of viewport width.
+  $("chat-hamburger").style.display = route === "chat" ? "" : "none";
+  if (route !== "chat") closeDrawer();
 }
 window.addEventListener("hashchange", router);
+
+/* Nav-tab scroll-edge fades (2026-07-06 jank fix): the tab row scrolls with
+   its scrollbar hidden, so overflow read as clipped/broken text. Toggle
+   .fade-r/.fade-l so the CSS mask signals "more this way" only when true. */
+function updateTabFades() {
+  const t = $("tabs");
+  const over = t.scrollWidth - t.clientWidth > 1;
+  t.classList.toggle("fade-r", over && t.scrollLeft + t.clientWidth < t.scrollWidth - 1);
+  t.classList.toggle("fade-l", over && t.scrollLeft > 1);
+}
+$("tabs").addEventListener("scroll", updateTabFades, { passive: true });
+window.addEventListener("resize", updateTabFades);
+updateTabFades();
 
 /* ════════════════════════════════════════════════════════════════════
    GLOBAL CONNECTION PILL + MODEL ID  (polled lightly, always on)
@@ -1443,6 +2179,11 @@ function updateDownloadIndicator(downloads) {
   }
 }
 
+/** Set by controllers.chat's initSampling() once the popover exists; let
+ *  closeTopOverlay's global Escape sweep close it without a second,
+ *  divergent Escape listener living inside the controller. */
+let samplingPopoverClose = null;
+
 /* ════════════════════════════════════════════════════════════════════
    CHAT CONTROLLER  — full pi agent over WebSocket /ws/chat
    ════════════════════════════════════════════════════════════════════ */
@@ -1486,8 +2227,130 @@ controllers.chat = (() => {
     else if (s === "error") line.textContent = "connection error — retrying";
   }
 
+  /* — message actions: copy / regenerate / edit-and-resend (plan §5.2) —
+   *  Only the LAST assistant message gets "regenerate" and only the LAST
+   *  user message gets "edit" + the sibling `< i/n >` toggle. Both "last"
+   *  pointers are tracked module-side and re-derived whenever a `history`
+   *  frame rebuilds #chat-thread wholesale (see renderHistory/endTurn below).
+   *  Regenerate/edit-resend re-prompt on a new sibling branch WITHOUT a
+   *  `history` frame (resendFrom in pi-web.ts), so their click handlers below
+   *  drop the stale lastAssistantMsgEl (and, for edit, update the surviving
+   *  user bubble's text) themselves before the new reply streams in. */
+  let lastUserMsgEl = null;   // the <div class="msg user"> for the last user message
+  let lastUserEntryId = null; // its session entryId (from history/siblings frames)
+  let siblingInfo = { entryId: null, index: 0, count: 0, siblingIds: [] };
+  let lastAssistantMsgEl = null; // the <div class="msg assistant"> eligible for regenerate
+
+  /** Append a hover/focus action row to a message element. `text` is the
+   *  RAW SOURCE (markdown for assistant, plain for user) — never innerHTML —
+   *  so Copy puts back exactly what the model said / the user typed. */
+  function addMsgActions(m, text, opts) {
+    opts = opts || {};
+    const row = el("div", "msg-actions", m);
+    const copyBtn = el("button", "maction", row);
+    copyBtn.type = "button"; copyBtn.textContent = "Copy";
+    copyBtn.addEventListener("click", () => {
+      if (!navigator.clipboard) return;
+      navigator.clipboard.writeText(text || "").then(() => {
+        copyBtn.textContent = "Copied"; setTimeout(() => { copyBtn.textContent = "Copy"; }, 1200);
+      }).catch(() => {});
+    });
+    if (opts.regenerate) {
+      const btn = el("button", "maction", row);
+      btn.type = "button"; btn.textContent = "Regenerate";
+      btn.title = "Re-run this reply (keeps the old one on disk as a branch)";
+      btn.addEventListener("click", () => {
+        if (turnActive) return;
+        if (!send({ type: "regenerate" })) { toast("Not connected to the agent yet.", "err"); return; }
+        // The server re-prompts on a new sibling branch — it does not send a
+        // `history` frame for this (see resendFrom in pi-web.ts), so the old
+        // reply would otherwise linger above the new one as it streams in.
+        // Drop it now; startAssistant() appends the fresh reply right after.
+        if (lastAssistantMsgEl) { lastAssistantMsgEl.remove(); lastAssistantMsgEl = null; }
+      });
+    }
+    if (opts.edit) {
+      const btn = el("button", "maction", row);
+      btn.type = "button"; btn.textContent = "Edit";
+      btn.title = "Edit and resend — keeps the original as a numbered branch";
+      btn.addEventListener("click", () => startEditLast(m));
+    }
+    return row;
+  }
+
+  /** Render (or clear) the `< i/n >` sibling toggle above the last user
+   *  message. Rebuilt whenever a `siblings` frame arrives or the thread is
+   *  rebuilt. Hidden entirely when count <= 1 (the common no-edits case). */
+  function renderSiblingToggle() {
+    if (!lastUserMsgEl) return;
+    let box = lastUserMsgEl.querySelector(".sib-toggle");
+    if (siblingInfo.count <= 1 || siblingInfo.entryId !== lastUserEntryId) {
+      if (box) box.remove();
+      return;
+    }
+    if (!box) {
+      box = el("div", "sib-toggle", null);
+      lastUserMsgEl.insertBefore(box, lastUserMsgEl.firstChild);
+    }
+    const { index, count } = siblingInfo;
+    box.innerHTML =
+      '<button class="sib-prev" type="button" ' + (index <= 1 ? "disabled" : "") + '>&lt;</button>' +
+      '<span>' + index + '/' + count + '</span>' +
+      '<button class="sib-next" type="button" ' + (index >= count ? "disabled" : "") + '>&gt;</button>';
+    box.querySelector(".sib-prev").onclick = () => switchSiblingDir(-1);
+    box.querySelector(".sib-next").onclick = () => switchSiblingDir(1);
+  }
+  function switchSiblingDir(delta) {
+    // siblingInfo.siblingIds is the full ordered group from the server's
+    // `siblings` frame (never inferred client-side); index is 1-based.
+    const ids = siblingInfo.siblingIds || [];
+    const target = ids[siblingInfo.index - 1 + delta];
+    if (!target) return;
+    send({ type: "switch_sibling", entryId: target });
+  }
+
+  /** Turn the last user message bubble into an inline editor. Cancel restores
+   *  the original text view; Send fires edit_resend, updates the surviving
+   *  user bubble to the edited text in place, and drops the stale assistant
+   *  reply — the server re-prompts on a new sibling branch without sending a
+   *  `history` frame (see resendFrom in pi-web.ts), so the old reply/text
+   *  would otherwise linger next to the new one as it streams in. */
+  function startEditLast(m) {
+    if (turnActive) return;
+    const bubble = m.querySelector(".bubble");
+    const textEl = bubble.querySelector(".msg-text");
+    if (!textEl) return;
+    const original = textEl.textContent;
+    const box = document.createElement("textarea");
+    box.className = "msg-edit-box";
+    box.value = original;
+    const actions = el("div", "msg-edit-actions", null);
+    const cancelBtn = el("button", "btn ghost sm", actions);
+    cancelBtn.type = "button"; cancelBtn.textContent = "Cancel";
+    const sendBtn = el("button", "btn primary sm", actions);
+    sendBtn.type = "button"; sendBtn.textContent = "Send";
+    textEl.replaceWith(box);
+    box.after(actions);
+    box.focus(); box.setSelectionRange(box.value.length, box.value.length);
+    const restore = () => { box.replaceWith(textEl); actions.remove(); };
+    cancelBtn.onclick = restore;
+    sendBtn.onclick = () => {
+      const text = box.value.trim();
+      if (!text) return;
+      if (!send({ type: "edit_resend", text })) { toast("Not connected to the agent yet.", "err"); return; }
+      textEl.textContent = text;
+      box.replaceWith(textEl); actions.remove();
+      if (lastAssistantMsgEl) { lastAssistantMsgEl.remove(); lastAssistantMsgEl = null; }
+    };
+    box.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.preventDefault(); restore(); }
+      else if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendBtn.onclick(); }
+    });
+  }
+
   /* — message + tool DOM construction — */
-  function addUserMsg(text, atts) {
+  function addUserMsg(text, atts, opts) {
+    opts = opts || {};
     const m = el("div", "msg user", thread());
     el("div", "who", m).textContent = "you";
     const bubble = el("div", "bubble", m);
@@ -1503,6 +2366,12 @@ controllers.chat = (() => {
       }
     }
     if (text) el("div", "msg-text", bubble).textContent = text;
+    if (opts.isLast) {
+      lastUserMsgEl = m;
+      lastUserEntryId = opts.entryId || null;
+      addMsgActions(m, text, { edit: true });
+      renderSiblingToggle();
+    }
     stick(true);
   }
   function startAssistant() {
@@ -1518,7 +2387,25 @@ controllers.chat = (() => {
     const textNode = el("span", "atext", bubble);
     const cursor = el("span", "cursor", bubble);
     const meta = el("div", "meta", m);
-    curAssistant = { m, bubble, thinkBox, thinkBody, textNode, cursor, meta, tools: new Map(), text: "", thinking: "", t0: performance.now(), tFirst: 0, tokens: 0 };
+    curAssistant = {
+      m, bubble, thinkBox, thinkBody, textNode, cursor, meta, tools: new Map(),
+      text: "", thinking: "", t0: performance.now(), tFirst: 0, tokens: 0,
+      // Block-memoization state (see renderBlocksIncremental) for the main
+      // markdown text stream, plus a shared rAF scheduler so a burst of
+      // deltas within one frame (e.g. spec-decode emitting several tokens
+      // back-to-back) collapses into a single re-render instead of one per
+      // token. The thinking channel is plain text (no markdown — see
+      // appendThinkingDelta), so it only needs the textContent set
+      // throttled, not block splitting; it gets its own scheduler since
+      // both channels can stream concurrently (interleaved thinking/text).
+      blockState: { blocks: [] },
+    };
+    curAssistant.scheduleText = makeFrameScheduler(
+      () => renderBlocksIncremental(curAssistant.textNode, curAssistant.text, curAssistant.blockState),
+      atBottom, stick);
+    curAssistant.scheduleThinking = makeFrameScheduler(
+      () => { curAssistant.thinkBody.textContent = curAssistant.thinking; },
+      atBottom, stick);
     stick(true);
   }
   function ensureAssistant() { if (!curAssistant) startAssistant(); }
@@ -1529,9 +2416,17 @@ controllers.chat = (() => {
     if (!a.tFirst) a.tFirst = performance.now();
     a.tokens++;
     a.text += delta;
-    a.textNode.innerHTML = mdToHtml(a.text);
+    // Block-memoized + rAF-throttled render (see renderBlocksIncremental):
+    // only the live tail block re-parses per delta; completed blocks are
+    // never touched again. A final full mdToHtml pass runs at turn-end
+    // (finishStreaming) to guarantee the streamed result is byte-identical
+    // to a non-streaming render. Autoscroll is handled INSIDE the scheduler
+    // (its shouldStick/doStick args) — not here — because the render itself
+    // is rAF-deferred: checking atBottom() synchronously at this point would
+    // measure scrollHeight from before the queued render grows it, which
+    // desyncs autoscroll once several deltas land within one frame.
+    a.scheduleText();
     updateTps();
-    if (atBottom()) stick();
   }
   function appendThinkingDelta(delta) {
     ensureAssistant();
@@ -1539,10 +2434,13 @@ controllers.chat = (() => {
     if (!a.tFirst) a.tFirst = performance.now();
     a.tokens++;
     a.thinking += delta;
-    a.thinkBody.textContent = a.thinking;
     a.thinkBox.style.display = a.thinking.trim() ? "" : "none";
+    // Plain text (no markdown here), but still rAF-throttled: a long
+    // thinking trace can otherwise do one textContent-set per token.
+    // Autoscroll: see the comment in appendDelta above — handled inside the
+    // scheduler, not with a synchronous atBottom() check here.
+    a.scheduleThinking();
     updateTps();
-    if (atBottom()) stick();
   }
 
   /* tool card lifecycle */
@@ -1656,11 +2554,48 @@ controllers.chat = (() => {
     stick(true);
   }
 
+  /** Turn-end finalization for the streamed text channel: replace the
+   *  block-memoized incremental render with ONE full non-memoized
+   *  mdToHtml(fullText) pass. This is the acceptance test for block
+   *  memoization — whatever the incremental path did while streaming,
+   *  the final DOM must match exactly what a plain, non-streaming
+   *  render of the same text would have produced. Cheap (happens once
+   *  per turn, not per token) and removes any residual "done" block
+   *  wrappers so the settled message's markup matches replayed history
+   *  (renderAssistantStatic / renderHistory), which also call mdToHtml
+   *  directly on the full string. */
+  function finishStreaming(a) {
+    if (!a) return;
+    a.textNode.innerHTML = mdToHtml(a.text);
+    highlightIn(a.textNode);
+    a.thinkBody.textContent = a.thinking;
+  }
+
+  /** Demote the previously-"last" assistant message: only ONE message ever
+   *  shows Regenerate (plan §5.2 scopes it to the last assistant turn). */
+  function clearRegenerateAffordance() {
+    if (!lastAssistantMsgEl) return;
+    const row = lastAssistantMsgEl.querySelector(".msg-actions");
+    const btn = row && [...row.querySelectorAll(".maction")].find((b) => b.textContent === "Regenerate");
+    if (btn) btn.remove();
+  }
+
   function endTurn() {
     turnActive = false;
     if (curAssistant) {
+      finishStreaming(curAssistant);
       curAssistant.cursor.remove();
-      if (!curAssistant.text && !curAssistant.thinking && curAssistant.tools.size === 0) curAssistant.m.remove();
+      if (!curAssistant.text && !curAssistant.thinking && curAssistant.tools.size === 0) {
+        curAssistant.m.remove();
+      } else {
+        // A settled assistant reply becomes the new regenerate target.
+        // Works after abort/stop too — a partial reply still gets the
+        // action row, and the server resolves regenerate from the session's
+        // last user message regardless of whether this reply finished.
+        clearRegenerateAffordance();
+        addMsgActions(curAssistant.m, curAssistant.text, { regenerate: true });
+        lastAssistantMsgEl = curAssistant.m;
+      }
     }
     curAssistant = null;
     $("chat-send").disabled = false;
@@ -1668,10 +2603,19 @@ controllers.chat = (() => {
     renderQueue({});
   }
 
+  // Perf strip (plan §5.2/§6.4): tok/s + TTFT update live during streaming;
+  // context-fill is driven separately by the `context` frame (renderContext).
+  // All client-computed from data the composer already has — the lane badge
+  // is the only server-driven field (see renderLane / the turn_end handler).
   function updateTps() {
     const a = curAssistant; if (!a) return;
     const secs = (performance.now() - (a.tFirst || a.t0)) / 1000;
-    if (a.tokens > 1 && secs > 0) $("chat-tps").innerHTML = "<b style='color:var(--green)'>" + (a.tokens / secs).toFixed(1) + " tok/s</b>";
+    if (a.tokens > 1 && secs > 0) {
+      const tps = $("pf-tps"); if (tps) tps.innerHTML = "<b style='color:var(--green)'>" + (a.tokens / secs).toFixed(1) + " tok/s</b>";
+    }
+    if (a.tFirst) {
+      const ttft = $("pf-ttft"); if (ttft) ttft.textContent = "TTFT " + Math.round(a.tFirst - a.t0) + "ms";
+    }
   }
   function finalizeMeta() {
     const a = curAssistant; if (!a) return;
@@ -1679,6 +2623,20 @@ controllers.chat = (() => {
     if (a.tokens > 1 && secs > 0)
       a.meta.innerHTML = "<b>" + (a.tokens / secs).toFixed(1) + " tok/s</b> · " + a.tokens +
         " tokens · first token " + Math.round((a.tFirst - a.t0)) + "ms";
+  }
+  // Lane badge (plan §5.2/§6.4, risk #5): server-driven only, from the
+  // turn_end frame's optional `lane` field (src/serve/lane-registry.ts +
+  // pi-web.ts). Absent on turns that never resolved a lane (aborted before
+  // any model call) — the badge just stays hidden rather than guessing.
+  const LANE_LABEL = { serial: "serial", "serial+spec": "spec-decode active", batched: "batched" };
+  const LANE_CLASS = { serial: "serial", "serial+spec": "spec", batched: "batched" };
+  function renderLane(lane) {
+    const el = $("pf-lane"), label = $("pf-lane-label");
+    if (!el || !label) return;
+    if (!lane) { el.style.display = "none"; return; }
+    el.className = "pf-lane " + (LANE_CLASS[lane] || "");
+    label.textContent = LANE_LABEL[lane] || lane;
+    el.style.display = "inline-flex";
   }
 
   function renderQueue(q) {
@@ -1702,11 +2660,11 @@ controllers.chat = (() => {
     return String(n);
   }
   function renderContext(m) {
-    const node = $("chat-context");
+    const node = $("pf-fill");
     if (!node || !m.contextWindow) return;
     const pct = m.percent;
     const pctStr = pct == null ? "" : " (" + Math.round(pct) + "%)";
-    node.textContent = "Context " + fmtTok(m.tokens) + " / " + fmtTok(m.contextWindow) + pctStr;
+    node.textContent = "ctx " + fmtTok(m.tokens) + "/" + fmtTok(m.contextWindow) + pctStr;
     node.style.color = pct == null ? "var(--dimmer)" : pct >= 85 ? "var(--orange)" : pct >= 70 ? "var(--yellow)" : "var(--dimmer)";
   }
 
@@ -1724,14 +2682,22 @@ controllers.chat = (() => {
   function newChat() {
     if (!send({ type: "new_session" })) { toast("Not connected to the agent yet.", "err"); return; }
     $("chat-box").focus();
+    closeDrawer(); // a fresh chat is the natural "I'm done browsing" signal on mobile
   }
 
+  // Kept so the session-search filter (plan §5.7/§9 Phase 1 item 4) can
+  // re-apply itself after every `sessions` frame without the server
+  // knowing search exists at all — trivial, local, title-only substring
+  // match (SessionListItem carries no preview text today).
+  let lastSessionItems = [];
   function renderSessions(items, activePath) {
+    lastSessionItems = items || [];
     const box = $("chat-sessions");
     if (!items || !items.length) { box.innerHTML = '<div class="sessempty">No saved chats yet. Your conversations are saved locally here.</div>'; return; }
     box.innerHTML = "";
     for (const s of items) {
       const row = el("div", "sess" + (s.path === activePath ? " active" : ""), box);
+      row.dataset.title = (s.title || "New chat").toLowerCase();
       row.innerHTML =
         '<div class="stitle">' + esc(s.title || "New chat") + '</div>' +
         '<div class="smeta"><span>' + esc(relTime(s.modified)) + '</span>' +
@@ -1739,14 +2705,39 @@ controllers.chat = (() => {
           (s.forked ? '<span>· forked</span>' : '') + '</div>' +
         '<button class="sbtn sfork" title="New chat from here">⑂</button>' +
         '<button class="sbtn sdel" title="Delete chat">✕</button>';
-      row.addEventListener("click", () => send({ type: "open_session", path: s.path }));
+      row.addEventListener("click", () => { send({ type: "open_session", path: s.path }); closeDrawer(); });
       row.querySelector(".sfork").addEventListener("click", (e) => { e.stopPropagation(); send({ type: "fork_session", path: s.path }); });
       row.querySelector(".sdel").addEventListener("click", (e) => { e.stopPropagation(); send({ type: "delete_session", path: s.path }); });
     }
+    applySessSearch();
   }
 
-  /** Render a finished assistant turn from replayed history (no streaming). */
-  function renderAssistantStatic(item) {
+  /** Client-side substring filter over session titles (no server round
+   *  trip). Re-applied after every re-render since #chat-sessions is
+   *  rebuilt wholesale on each `sessions` frame. */
+  function applySessSearch() {
+    const input = $("chat-sess-search");
+    const q = input ? input.value.trim().toLowerCase() : "";
+    const rows = $("chat-sessions").querySelectorAll(".sess");
+    let anyVisible = false;
+    rows.forEach((row) => {
+      const match = !q || (row.dataset.title || "").includes(q);
+      row.classList.toggle("sess-hidden", !match);
+      if (match) anyVisible = true;
+    });
+    let empty = $("chat-sessions").querySelector(".sess-search-empty");
+    if (q && !anyVisible && lastSessionItems.length) {
+      if (!empty) { empty = el("div", "sessempty sess-search-empty", $("chat-sessions")); }
+      empty.textContent = "No chats match “" + q + "”.";
+    } else if (empty) {
+      empty.remove();
+    }
+  }
+
+  /** Render a finished assistant turn from replayed history (no streaming).
+   *  `opts.isLast` attaches the Regenerate action (plan §5.2: last turn only). */
+  function renderAssistantStatic(item, opts) {
+    opts = opts || {};
     const m = el("div", "msg assistant", thread());
     el("div", "who", m).textContent = "local agent";
     const bubble = el("div", "bubble", m);
@@ -1755,7 +2746,7 @@ controllers.chat = (() => {
       el("summary", "", tb).textContent = "Thinking";
       el("div", "thinkbody", tb).textContent = item.thinking;
     }
-    if (item.text) { const tn = el("span", "atext", bubble); tn.innerHTML = mdToHtml(item.text); }
+    if (item.text) { const tn = el("span", "atext", bubble); tn.innerHTML = mdToHtml(item.text); highlightIn(tn); }
     for (const t of (item.tools || [])) {
       const wrap = el("div", "tool ok", bubble);   // collapsed; click to expand
       wrap.innerHTML =
@@ -1770,6 +2761,10 @@ controllers.chat = (() => {
         '</div>';
       wrap.querySelector(".thead").addEventListener("click", () => wrap.classList.toggle("open"));
     }
+    if (item.text) {
+      addMsgActions(m, item.text, { regenerate: !!opts.isLast });
+      if (opts.isLast) lastAssistantMsgEl = m;
+    }
   }
 
   /** Authoritative thread rebuild from a server `history` frame. */
@@ -1780,12 +2775,15 @@ controllers.chat = (() => {
     $("chat-stop").style.display = "none";
     renderQueue({});
     thread().innerHTML = "";
+    lastUserMsgEl = null; lastAssistantMsgEl = null;
     if (!items || !items.length) { $("chat-hello").style.display = ""; return; }
     $("chat-hello").style.display = "none";
-    for (const it of items) {
-      if (it.role === "user") addUserMsg(it.text);
-      else renderAssistantStatic(it);
-    }
+    const lastUserIdx = items.map((it) => it.role).lastIndexOf("user");
+    const lastAssistantIdx = items.map((it) => it.role).lastIndexOf("assistant");
+    items.forEach((it, i) => {
+      if (it.role === "user") addUserMsg(it.text, null, { isLast: i === lastUserIdx, entryId: it.entryId });
+      else renderAssistantStatic(it, { isLast: i === lastAssistantIdx });
+    });
     stick(true);
   }
 
@@ -1796,6 +2794,10 @@ controllers.chat = (() => {
         $("nav-model").textContent = m.model || activeModelId || "no model"; activeModelId = m.model || activeModelId;
         visionCapable = !!m.vision; updateAttachHint();
         thinkingCapable = !!m.thinking; updateThinkingToggle();
+        // Per-model recommended sampling (generation_config.json, server-CLI
+        // overrides applied) — replaces the old hardcoded SAMP_REC shape.
+        genDefaults = m.genDefaults || { temperature: null, topP: null, topK: null };
+        refreshSamplingRecs();
         if (thinkingCapable) send({ type: "set_thinking", enabled: thinkingOn });
         refreshAdapters();
         // Reconnect: re-open the session we were in (fresh load has none).
@@ -1804,6 +2806,13 @@ controllers.chat = (() => {
       case "history": renderHistory(m.items); break;
       case "sessions": currentSessionPath = m.activePath || null; renderSessions(m.items, m.activePath); break;
       case "context": renderContext(m); break;
+      // Sibling group for the last user message (edit-and-resend's `< i/n >`
+      // toggle, plan §5.2) — see renderSiblingToggle/switchSiblingDir.
+      case "siblings":
+        siblingInfo = { entryId: m.entryId || null, index: m.index, count: m.count, siblingIds: m.siblingIds || [] };
+        lastUserEntryId = siblingInfo.entryId;
+        renderSiblingToggle();
+        break;
       case "turn_start": turnActive = true; startAssistant(); $("chat-send").disabled = true; $("chat-stop").style.display = "block"; break;
       case "text_delta": appendDelta(m.delta || ""); break;
       case "thinking_delta": appendThinkingDelta(m.delta || ""); break;
@@ -1811,7 +2820,7 @@ controllers.chat = (() => {
       case "tool_approval_request": approvalCard(m.callId, m.tool, m.args); break;
       case "tool_update": toolUpdate(m.callId, m.chunk || ""); break;
       case "tool_end": toolEnd(m.callId, m.ok, m.result); break;
-      case "turn_end": finalizeMeta(); endTurn(); break;
+      case "turn_end": finalizeMeta(); renderLane(m.lane); endTurn(); break;
       case "queue_update": renderQueue(m); break;
       case "error": showAgentError(m.message || "agent error"); toast(m.message || "agent error", "err"); if (turnActive) endTurn(); break;
     }
@@ -1824,13 +2833,26 @@ controllers.chat = (() => {
   let thinkingCapable = false; // from `ready`; gates the reasoning toggle
   let thinkingOn = true;       // default on: with tools (read/web_search) the reasoning step gives the small model far better tool judgment (answers math/writing itself, only searches when needed). The thinking box defaults collapsed. Users can toggle it off.
   // Per-request sampling. Each field is either a user override (a number) or
-  // null = "use the recommended default" (resolved server-side). The recommended
-  // TEMPERATURE tracks the thinking toggle (0.7 off ↔ 0.9 on); top_p/top_k recs
-  // are fixed mirrors of the server defaults (display only). The placeholder in
-  // each input shows the live recommended value when the field isn't overridden.
-  const sampling = { temperature: null, top_p: null, top_k: null };
-  const SAMP_REC = { topP: 0.95, topK: 0 }; // fixed recommended top_p / top_k (server genDefaults)
-  function recTemp() { return thinkingOn ? 0.9 : 0.7; } // mirrors server toOptions defaultTemp
+  // null = "use the recommended default" (resolved server-side). Recommended
+  // values come from the `ready` frame's genDefaults (per-model, sourced from
+  // generation_config.json server-side) — replacing the old hardcoded
+  // MiniCPM5-shaped SAMP_REC (web-ui-pass-plan.md #14). Temperature's
+  // recommendation additionally tracks the thinking toggle when the model's
+  // own genDefaults didn't specify one (mirrors server toOptions' fallback).
+  // Fields with no meaningful "recommended" number (penalties, XTC, seed) show
+  // "off" when unset — there's no dimmed live value to track for those.
+  const sampling = {
+    temperature: null, top_p: null, top_k: null, min_p: null,
+    xtc_probability: null, xtc_threshold: null, repetition_penalty: null,
+    repetition_context_size: null, presence_penalty: null, frequency_penalty: null,
+    seed: null,
+  };
+  // Populated from the `ready` frame (ReadyGenDefaults); null entries fall
+  // back to the built-in constants below until a ready frame arrives.
+  let genDefaults = { temperature: null, topP: null, topK: null };
+  function recTemp() { return genDefaults.temperature != null ? genDefaults.temperature : (thinkingOn ? 0.9 : 0.7); }
+  function recTopP() { return genDefaults.topP != null ? genDefaults.topP : 0.95; }
+  function recTopK() { return genDefaults.topK != null ? genDefaults.topK : 0; }
   let attachSeq = 0;
   const MAX_TEXT_BYTES = 256 * 1024;
   const TEXT_EXTS = /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|ini|cfg|conf|log|xml|html?|css|scss|js|mjs|cjs|ts|tsx|jsx|py|rs|go|java|c|h|cpp|hpp|cc|cs|rb|php|sh|bash|zsh|fish|sql|swift|kt|lua|r|jl|tex|svg|env|gitignore|dockerfile|makefile)$/i;
@@ -1895,15 +2917,26 @@ controllers.chat = (() => {
   }
   // — LoRA adapter selector. Pi-native: app.html lists + mounts adapters, then
   //   tells pi-web which one is active; the before_provider_request hook injects
-  //   it into every provider request. Default "" = none (base model). —
+  //   it into every provider request. Default "" = none (base model). Still a
+  //   single-select <select> this phase (the full three-state routing table is
+  //   Phase 2) — the presentation upgrade here is showing every adapter found
+  //   on disk (not just ones that fit the served model) with incompatible
+  //   entries grayed via the `compatible` flag /v1/adapters/available now
+  //   returns, each with a title explaining why it's unusable right now. —
   async function refreshAdapters() {
     const sel = $("chat-adapter");
     if (!sel) return;
     let list = [];
     try { const d = await api("/v1/adapters/available"); list = (d && d.adapters) || []; } catch {}
     const cur = sel.value;
-    sel.innerHTML = '<option value="">no adapter</option>' + list.map((a) =>
-      `<option value="${esc(a.id)}" data-path="${esc(a.path)}">${esc(a.id)}${a.rank ? " · r" + esc(a.rank) : ""}</option>`).join("");
+    sel.innerHTML = '<option value="">no adapter</option>' + list.map((a) => {
+      const label = esc(a.id) + (a.rank ? " · r" + esc(a.rank) : "") + (a.mounted ? " · mounted" : "");
+      if (a.compatible) return `<option value="${esc(a.id)}" data-path="${esc(a.path)}">${label}</option>`;
+      const why = a.base_model
+        ? `trained for ${esc(a.base_model)}, not the currently-served model`
+        : "not compatible with the currently-served model";
+      return `<option value="${esc(a.id)}" disabled title="${why}">${label} (incompatible)</option>`;
+    }).join("");
     if (cur && list.some((a) => a.id === cur)) sel.value = cur; // keep prior selection
   }
   async function onSelectAdapter(sel) {
@@ -1919,6 +2952,9 @@ controllers.chat = (() => {
       }
     }
     send({ type: "set_adapter", id });
+    // Adapter-namespaced KV means a swap can never reuse the outgoing
+    // adapter's cache — make that concrete instead of implicit (plan §5.2).
+    toast("adapter mounted — new turns start a fresh KV segment", "ok");
   }
   function updateThinkingToggle() {
     const b = $("chat-think");
@@ -1932,19 +2968,35 @@ controllers.chat = (() => {
 
   /* — sampling controls — */
   // Each row is a slider + a live value readout. A field is "auto" (null
-  // override → the server uses its mode-aware default; temperature's default
-  // follows the thinking toggle) until the user drags it, which records an
-  // explicit override. Reset returns every field to auto.
+  // override → the server uses its mode-aware default; temperature/top_p/top_k
+  // recommendations come from genDefaults, resolved per-model) until the user
+  // drags it, which records an explicit override. Reset returns every field to
+  // auto. The three primary fields have a live "rec" (a meaningful recommended
+  // number always shown dimmed); the Advanced fields have no natural default
+  // number to display, so they just show "off" until overridden.
   const SAMP_FIELDS = [
     { id: "samp-temp", field: "temperature", valId: "samp-temp-val", rec: () => recTemp(), fmt: (v) => v.toFixed(2) },
-    { id: "samp-topp", field: "top_p", valId: "samp-topp-val", rec: () => SAMP_REC.topP, fmt: (v) => v.toFixed(2) },
-    { id: "samp-topk", field: "top_k", valId: "samp-topk-val", rec: () => SAMP_REC.topK, fmt: (v) => (v >= 1 ? String(Math.round(v)) : "off") },
+    { id: "samp-topp", field: "top_p", valId: "samp-topp-val", rec: () => recTopP(), fmt: (v) => v.toFixed(2) },
+    { id: "samp-topk", field: "top_k", valId: "samp-topk-val", rec: () => recTopK(), fmt: (v) => (v >= 1 ? String(Math.round(v)) : "off") },
   ];
+  // Advanced fields: no meaningful "recommended" number — auto just reads "off".
+  const SAMP_ADV_FIELDS = [
+    { id: "samp-minp", field: "min_p", valId: "samp-minp-val", fmt: (v) => v.toFixed(2) },
+    { id: "samp-xtcp", field: "xtc_probability", valId: "samp-xtcp-val", fmt: (v) => v.toFixed(2) },
+    { id: "samp-xtct", field: "xtc_threshold", valId: "samp-xtct-val", fmt: (v) => v.toFixed(2) },
+    { id: "samp-reppen", field: "repetition_penalty", valId: "samp-reppen-val", fmt: (v) => v.toFixed(2) },
+    { id: "samp-repctx", field: "repetition_context_size", valId: "samp-repctx-val", fmt: (v) => String(Math.round(v)) },
+    { id: "samp-prespen", field: "presence_penalty", valId: "samp-prespen-val", fmt: (v) => v.toFixed(2) },
+    { id: "samp-freqpen", field: "frequency_penalty", valId: "samp-freqpen-val", fmt: (v) => v.toFixed(2) },
+  ];
+  const SAMP_SLIDER_FIELDS = SAMP_FIELDS.concat(SAMP_ADV_FIELDS);
 
   // Sync every slider + readout to current state: an overridden field shows its
-  // set value (bright readout); an auto field shows the recommended value
-  // (dimmed) and tracks it live — e.g. temperature when the thinking toggle
-  // flips. Called on thinking-toggle flips, popover open, and reset.
+  // set value (bright readout); an auto primary field shows the recommended
+  // value (dimmed) and tracks it live — e.g. temperature when the thinking
+  // toggle flips; an auto Advanced field just shows "off". Also syncs the seed
+  // text input. Called on thinking-toggle flips, ready-frame arrival, popover
+  // open, and reset.
   function refreshSamplingRecs() {
     for (const f of SAMP_FIELDS) {
       const slider = $(f.id), val = $(f.valId); if (!slider || !val) continue;
@@ -1954,6 +3006,15 @@ controllers.chat = (() => {
       val.textContent = f.fmt(v);
       val.classList.toggle("auto", over == null);
     }
+    for (const f of SAMP_ADV_FIELDS) {
+      const slider = $(f.id), val = $(f.valId); if (!slider || !val) continue;
+      const over = sampling[f.field];
+      slider.value = String(over != null ? over : slider.min);
+      val.textContent = over != null ? f.fmt(over) : "off";
+      val.classList.toggle("auto", over == null);
+    }
+    const seedInput = $("samp-seed");
+    if (seedInput) seedInput.value = sampling.seed != null ? String(sampling.seed) : "";
   }
 
   // User dragged a slider → record the explicit override, brighten the readout,
@@ -1964,42 +3025,64 @@ controllers.chat = (() => {
     sampling[f.field] = v;
     const val = $(f.valId); if (val) { val.textContent = f.fmt(v); val.classList.remove("auto"); }
     updateSamplingUi();
-    send({ type: "set_sampling", temperature: sampling.temperature, top_p: sampling.top_p, top_k: sampling.top_k });
+    pushSampling();
+  }
+  function onSeedInput() {
+    const input = $("samp-seed"); if (!input) return;
+    const raw = input.value.trim();
+    sampling.seed = raw === "" ? null : Number(raw);
+    if (sampling.seed != null && !Number.isFinite(sampling.seed)) sampling.seed = null;
+    updateSamplingUi();
+    pushSampling();
+  }
+  function pushSampling() {
+    send({ type: "set_sampling", ...sampling });
   }
 
   // The pill shows a lit dot whenever any field is overridden.
   function updateSamplingUi() {
-    const dirty = sampling.temperature != null || sampling.top_p != null || sampling.top_k != null;
+    const dirty = Object.values(sampling).some((v) => v != null);
     const pill = $("chat-sampling");
     if (pill) { pill.classList.toggle("dirty", dirty); pill.title = dirty
-      ? "Sampling overridden — click to edit or reset" : "Sampling controls (temperature · top_p · top_k)"; }
+      ? "Sampling overridden — click to edit or reset" : "Sampling controls (temperature · top_p · top_k · Advanced)"; }
   }
 
   function resetSampling() {
-    sampling.temperature = null; sampling.top_p = null; sampling.top_k = null;
+    for (const k of Object.keys(sampling)) sampling[k] = null;
     refreshSamplingRecs(); updateSamplingUi();
-    send({ type: "set_sampling", temperature: null, top_p: null, top_k: null });
+    pushSampling();
   }
   function initSampling() {
     const pill = $("chat-sampling"), pop = $("chat-sampling-pop");
     if (!pill || !pop) return;
+    const trap = trapFocus(pop, () => pop.classList.contains("open"));
     const setOpen = (open) => {
+      const was = pop.classList.contains("open");
+      if (open === was) return;
+      if (open) trap.capture();
       pop.classList.toggle("open", open);
       pill.classList.toggle("on", open);
       pill.setAttribute("aria-expanded", String(open));
       if (open) refreshSamplingRecs();
+      else trap.restore();
     };
+    // Exposed so the global Escape sweep (closeTopOverlay) can close this
+    // popover uniformly instead of keeping a second Escape listener.
+    samplingPopoverClose = () => setOpen(false);
     const toggle = () => setOpen(!pop.classList.contains("open"));
     pill.onclick = (e) => { e.stopPropagation(); toggle(); };
     pill.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
     pop.addEventListener("click", (e) => e.stopPropagation());
-    // Click-away / Escape closes the popover.
+    // Click-away closes the popover (Escape is handled globally, see
+    // closeTopOverlay — kept out of this listener to avoid a second,
+    // divergent Escape path).
     document.addEventListener("click", () => setOpen(false));
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape") setOpen(false); });
-    for (const f of SAMP_FIELDS) {
+    for (const f of SAMP_SLIDER_FIELDS) {
       const e = $(f.id); if (!e) continue;
       e.addEventListener("input", () => onSlide(f));
     }
+    const seedInput = $("samp-seed");
+    if (seedInput) seedInput.addEventListener("input", onSeedInput);
     const reset = $("samp-reset"); if (reset) reset.onclick = (e) => { e.stopPropagation(); resetSampling(); };
     updateSamplingUi(); refreshSamplingRecs();
   }
@@ -2018,7 +3101,10 @@ controllers.chat = (() => {
     if (!connected) { toast("Not connected to the agent yet — reconnecting.", "err"); return; }
     const imgs = attachments.filter((a) => a.kind === "image").map((a) => ({ data: a.data, mimeType: a.mimeType }));
     const combined = buildMessageText(text);
-    addUserMsg(text, attachments);
+    // entryId isn't known yet (assigned server-side); the next `siblings`
+    // frame (sent on turn_end) backfills it via renderSiblingToggle's
+    // entryId-mismatch check, same as a fresh page load's history replay.
+    addUserMsg(text, attachments, { isLast: true });
     box.value = ""; box.style.height = "auto";
     const frame = imgs.length ? { text: combined, images: imgs } : { text: combined };
     // A composer submission is always a new user turn. If the model is still
@@ -2030,6 +3116,16 @@ controllers.chat = (() => {
   const scroll = () => $("chat-scroll");
   const atBottom = () => scroll().scrollHeight - scroll().scrollTop - scroll().clientHeight < 90;
   function stick(force) { if (force || atBottom()) scroll().scrollTop = scroll().scrollHeight; }
+
+  /** Cmd/Ctrl+Shift+C (plan §7): reuses the exact per-message Copy button
+   *  (addMsgActions) on the last assistant message rather than duplicating
+   *  its clipboard logic — a synthetic click keeps the "Copied" flash
+   *  feedback consistent with the mouse path. */
+  function copyLastResponse() {
+    if (!lastAssistantMsgEl) { toast("No response to copy yet.", "err"); return; }
+    const btn = lastAssistantMsgEl.querySelector(".msg-actions .maction");
+    if (btn) btn.click();
+  }
 
   return {
     init() {
@@ -2043,6 +3139,8 @@ controllers.chat = (() => {
       if (adapterSel) adapterSel.onchange = () => onSelectAdapter(adapterSel);
       initSampling();
       refreshAdapters();
+      const sessSearch = $("chat-sess-search");
+      if (sessSearch) sessSearch.addEventListener("input", applySessSearch);
       const box = $("chat-box");
       box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } });
       box.addEventListener("input", () => { box.style.height = "auto"; box.style.height = Math.min(box.scrollHeight, 200) + "px"; });
@@ -2079,8 +3177,26 @@ controllers.chat = (() => {
         }).catch(() => {});
       });
     },
-    enter() { if (!ws || ws.readyState > 1) connect(); $("chat-box").focus(); },
+    enter() {
+      if (!ws || ws.readyState > 1) connect();
+      $("chat-box").focus();
+      // Refresh the adapter list on every chat enter (web-ui-pass-plan.md
+      // #15's staleness half): a training job that completed while the user
+      // was elsewhere, or a manual drop into the adapters directory, should
+      // show up without needing a full page reload. Cheap (one GET) and the
+      // list is short.
+      refreshAdapters();
+    },
     leave() { /* keep WS warm; closing on every nav would drop in-flight turns */ },
+    // Exposed so the finetune controller can refresh the chat adapter chip
+    // immediately when a training job finishes, instead of waiting for the
+    // user to navigate back to Chat (which would also refresh it via enter()).
+    refreshAdapters,
+    // Exposed for the global keyboard-shortcut sweep (plan §7): Cmd/Ctrl+Shift+O
+    // and Cmd/Ctrl+Shift+C, bound at document level so they work regardless
+    // of which control has focus while on the chat route.
+    newChat,
+    copyLastResponse,
   };
 })();
 
@@ -2182,7 +3298,13 @@ controllers.quantize = (() => {
       failed: (e) => { $("q-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "quantize failed", "err"); es && es.close(); },
     });
   }
-  function finish() { $("q-bar").style.width = "100%"; $("q-pct").textContent = "100%"; es && es.close(); show(3); }
+  function finish() {
+    $("q-bar").style.width = "100%"; $("q-pct").textContent = "100%"; es && es.close(); show(3);
+    // web-ui-pass-plan.md #3: the server invalidates its /library cache the
+    // instant this job completes (server.ts onComplete) — pull the fresh
+    // list right away instead of waiting for Status's own 15s poll.
+    if (controllers.status && controllers.status.refreshLibrary) controllers.status.refreshLibrary();
+  }
 
   return {
     init() {
@@ -2294,7 +3416,14 @@ controllers.finetune = (() => {
       batch_size: +$("f-batch").value, learning_rate: +$("f-lr").value, max_seq_length: +$("f-seq").value,
     };
     if (method === "dpo") { hp.dpo_beta = +$("f-beta").value; hp.dpo_lr_schedule = $("f-sched").value; }
-    if (method === "orpo") { hp.orpo_lambda = +$("f-orpo-lambda").value; hp.orpo_lr_schedule = $("f-orpo-sched").value; }
+    if (method === "orpo") {
+      hp.orpo_lambda = +$("f-orpo-lambda").value; hp.orpo_lr_schedule = $("f-orpo-sched").value;
+      // web-ui-pass-plan.md #7: sft_scope only makes sense for ORPO's
+      // monolithic loss (the SFT term needs a scope); default matches the
+      // segmented control's default ("full", paper/TRL chosen-NLL).
+      const scopeBtn = $("f-orpo-scope").querySelector("button.on");
+      hp.sft_scope = (scopeBtn && scopeBtn.dataset.v) || "full";
+    }
     return hp;
   }
 
@@ -2349,6 +3478,11 @@ controllers.finetune = (() => {
     $("f-exp-base").value = base;
     $("f-exp-adapter").value = adapterPath;
     show(4);
+    // web-ui-pass-plan.md #15 staleness half: the new adapter is on disk now —
+    // refresh the chat adapter chip immediately rather than waiting for the
+    // user to navigate to Chat (enter() also refreshes, this just removes the
+    // wait for the common case of finishing a run and going straight to try it).
+    if (controllers.chat && controllers.chat.refreshAdapters) controllers.chat.refreshAdapters();
   }
 
   async function mergeAdapters() {
@@ -2442,6 +3576,8 @@ controllers.finetune = (() => {
       $("f-data").addEventListener("input", () => { datasetOk = false; $("f-next1").disabled = true; $("f-inspect-out").innerHTML = ""; });
       $("f-next1").onclick = () => { if (datasetOk) show(2); };
       $("f-method").querySelectorAll("button").forEach((b) => b.onclick = () => setMethod(b.dataset.v));
+      $("f-orpo-scope").querySelectorAll("button").forEach((b) => b.onclick = () =>
+        $("f-orpo-scope").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b)));
       $("f-lr").addEventListener("input", () => { lrTouched = true; });
       $("f-rank").addEventListener("input", () => { rankTouched = true; });
       document.querySelectorAll("#s-finetune [data-fback]").forEach((b) => b.onclick = () => show(step - 1));
@@ -2569,8 +3705,14 @@ controllers.dataset = (() => {
    STATUS CONTROLLER  — ported dashboard (poll /stats + /v1/models + /fit + /library + /downloads)
    ════════════════════════════════════════════════════════════════════ */
 controllers.status = (() => {
-  let timer = null, fitLoaded = false;
+  let timer = null, libTimer = null, fitLoaded = false;
   const dlRates = {};
+  // Library staleness (web-ui-pass-plan.md #3): /library is server-cached for
+  // 30s, but the client used to fetch it exactly once per page load
+  // (gated on `fitLoaded`) — a quantize job finishing, a fresh download
+  // landing, or a manual drop into the HF cache never showed up without a
+  // hard reload. Poll it independently on a ~15s cadence while this view is
+  // visible (started in enter()/stopped in leave(), same as the main tick).
 
   async function tick() {
     try {
@@ -2669,10 +3811,17 @@ controllers.status = (() => {
         else if (!m.supported) status = '<span style="color:var(--dimmer)">unsupported (' + esc(m.model_type) + ")</span>";
         else if (a && a.fits) status = '<span style="color:var(--green);font-weight:600">fits</span>';
         else status = '<span style="color:var(--red);font-weight:600">too big</span>';
+        // web-ui-pass-plan.md #20: max_safe_context is meaningful whenever
+        // it's > 0, even when `fits` is false at the library's default 8192
+        // probe context — e.g. a model that doesn't fit at 8192 tokens but
+        // does fit at a smaller context still gets a real number here rather
+        // than an uninformative "—". predicted_decode_tps stays gated on
+        // `fits` since it's only computed for the fitting case server-side.
+        const safeCtx = m.supported && a && a.max_safe_context > 0 ? num(a.max_safe_context) : "—";
         return "<tr" + (m.serving ? ' class="you"' : "") + "><td>" + esc(m.repo_id) +
           (m.vision ? ' · <span style="color:var(--dim)">vision</span>' : "") +
           '</td><td class="num">' + gb(m.size_bytes) + "</td><td>" + status + "</td>" +
-          '<td class="num">' + (m.supported && a && a.fits ? num(a.max_safe_context) : "—") + "</td>" +
+          '<td class="num">' + safeCtx + "</td>" +
           '<td class="num">' + (m.supported && a && a.fits ? a.predicted_decode_tps.toFixed(0) + " tok/s" : "—") + "</td></tr>";
       }).join("");
   }
@@ -2730,8 +3879,22 @@ controllers.status = (() => {
       requestAnimationFrame(() => page.classList.add("lit"));
       page.classList.add("lit");
     },
-    enter() { tick(); timer = setInterval(tick, 2000); },
-    leave() { clearInterval(timer); timer = null; },
+    enter() {
+      tick();
+      timer = setInterval(tick, 2000);
+      loadLibrary();
+      libTimer = setInterval(loadLibrary, 15_000);
+    },
+    leave() {
+      clearInterval(timer); timer = null;
+      clearInterval(libTimer); libTimer = null;
+    },
+    // Exposed so a quantize job's `done` event (this same controller's own
+    // quantize flow, see controllers.quantize below) can force an immediate
+    // refresh instead of waiting up to 15s — the server invalidates its
+    // /library cache the moment the job completes (server.ts onComplete),
+    // so an immediate re-fetch is guaranteed fresh, not a race.
+    refreshLibrary: loadLibrary,
   };
 })();
 
