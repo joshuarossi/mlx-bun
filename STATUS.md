@@ -631,10 +631,11 @@ design in [docs/design/audio-input-plan.md](docs/design/audio-input-plan.md).
 stack-arg ABI bug — see CLAUDE.md hard-won facts +
 lab/repro/bun-ffi-stack-args), §3.3 semantics resolved (audio strictly
 causal), fixtures + oracle goldens live (speech greedy = token-perfect
-transcription). Next action: A4 — server wiring (input_audio content parts, lazy tower,
-serial-lane routing) + reference docs in the SAME commit. A0-A3 DONE; the
-whole offline path is ORACLE-EXACT: full greedy stream + decoded text match
-token-for-token on both fixtures (tests/e4b-audio.test.ts). A1 DONE:
+transcription). A0-A4 DONE — audio is SERVED on e4b: live HTTP transcription matches the
+oracle golden EXACTLY, mixed image+audio grounds on both media, serial-lane
+isolation proven, docs shipped in the same commit. Remaining: A5 (quotable
+bench cells need a QUIET machine — Josh-gated; 12B audio cell needs a
+sidecar rebuild via optiq build_vision_sidecar — download, Josh-gated). A1 DONE:
 mel port is 1-ulp-f32 from the oracle (the numpy f32 Hann window is baked
 in as the spec — see PLAN.md A1).
 

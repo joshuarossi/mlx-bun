@@ -14,6 +14,14 @@
 export const AUDIO_SAMPLE_RATE = 16_000;
 export const AUDIO_MS_PER_TOKEN = 40;
 export const AUDIO_SEQ_LENGTH = 750; // 30 s cap, matches the oracle processor
+/** Raw-speech truncation bound — the oracle feature extractor's default
+ *  (audio_feature_extractor.py __call__: truncation=True,
+ *  max_length=480_000 → `w[:max_length]`, i.e. 30 s at 16 kHz) applied
+ *  BEFORE feature extraction. Mirrored in decodeAudio so a >30 s clip
+ *  yields exactly the capped 750 soft tokens AND the matching mel frame
+ *  count — the prompt builder hard-checks that the tower's output length
+ *  equals the splice's soft-token count. */
+export const AUDIO_MAX_SAMPLES = 30 * AUDIO_SAMPLE_RATE; // 480_000
 
 export interface DecodedWav {
   samples: Float32Array; // mono
@@ -110,8 +118,10 @@ export function resampleTo16k(samples: Float32Array, sampleRate: number): Float3
   return out;
 }
 
-/** WAV bytes → mono 16 kHz float samples (the feature-extractor input). */
+/** WAV bytes → mono 16 kHz float samples (the feature-extractor input),
+ *  truncated at 30 s exactly like the oracle (AUDIO_MAX_SAMPLES). */
 export function decodeAudio(bytes: Uint8Array): Float32Array {
   const { samples, sampleRate } = decodeWav(bytes);
-  return resampleTo16k(samples, sampleRate);
+  const s = resampleTo16k(samples, sampleRate);
+  return s.length > AUDIO_MAX_SAMPLES ? s.subarray(0, AUDIO_MAX_SAMPLES) : s;
 }

@@ -330,6 +330,11 @@ agent CLIs like pi/OpenClaw via their provider config.
 - **Vision** — `image_url` content parts (data: URLs or http/s), on
   models with the vision sidecar. PNG, JPEG, HEIC, AVIF, WebP, TIFF,
   GIF, BMP via native OS codecs.
+- **Audio input** — `input_audio` content parts (base64 WAV, plus
+  `audio` / `audio_url` aliases), on models whose sidecar ships the
+  audio tower (gemma-4 e4b). WAV decoded natively; mp3, m4a, FLAC, ogg,
+  AIFF via CoreAudio. Up to 30 s per clip; images and audio mix in one
+  message — a capability neither mlx-lm nor optiq serves.
 - **Prompt caching** — a byte-capped LRU KV cache reuses the longest
   common token prefix across requests (multi-turn conversations
   re-prefill only the new turn) — automatic, no client changes.

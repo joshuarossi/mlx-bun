@@ -63,9 +63,11 @@ import { setMemoryLimit } from "./mlx/ffi";
 import { VisionTower } from "./vision/embedder";
 import { SiglipVisionTower, parseSiglipConfig } from "./vision/siglip";
 import {
-  buildVisionPrompt, extractImages,
-  type VisionTokenIds, type VisionEncoder,
+  buildMultimodalPrompt, buildVisionPrompt, extractAudio, extractImages,
+  type AudioTokenIds, type VisionTokenIds, type VisionEncoder,
 } from "./vision/prompt";
+import { AudioTower, parseAudioConfig } from "./audio/conformer";
+import { ensureWav } from "./audio/transcode";
 import { makePiWsHandler, type PiWsData } from "./pi-web";
 
 export interface ServerOptions {
@@ -171,6 +173,17 @@ export interface ServerContext {
    *  `vision`. */
   loadVision: (() => VisionEncoder) | null;
   visionTokenIds: VisionTokenIds;
+  /** Lazily-loaded Conformer audio tower — null until the first audio
+   *  request (see `getAudioTower`). Same sidecar file as vision
+   *  (optiq_vision.safetensors), separate tower; text-only sessions never
+   *  pay for it. */
+  audio: AudioTower | null;
+  /** Loads the audio tower on demand; null when the model can't do audio
+   *  (no `audio_config` in config.json or no sidecar). No flags — audio
+   *  auto-enables exactly like vision. */
+  loadAudio: (() => AudioTower) | null;
+  /** null when the model has no `audio_config` (audio-incapable). */
+  audioTokenIds: AudioTokenIds | null;
   adapters: AdapterManager;
   /** Per-layer KV quantization from the repo's kv_config.json (null if
    *  absent). Applied by default — optiq serve's headline behavior;
@@ -316,6 +329,17 @@ export async function loadContext(
       boiTokenId: (config.raw.boi_token_id as number) ?? 255999,
       eoiTokenId: (config.raw.eoi_token_id as number) ?? 258882,
     },
+    // Audio mirrors vision: lazy tower from the same sidecar, loaded on the
+    // first audio request only (docs/design/audio-input-plan.md A4).
+    audio: null,
+    loadAudio: makeAudioLoader(modelDir, model, config),
+    audioTokenIds: config.raw.audio_config
+      ? {
+          audioTokenId: (config.raw.audio_token_id as number) ?? 258881,
+          boaTokenId: (config.raw.boa_token_id as number) ?? 256000,
+          eoaTokenId: (config.raw.eoa_token_id as number) ?? 258883,
+        }
+      : null,
   };
 }
 
@@ -349,6 +373,40 @@ function getVisionTower(ctx: ServerContext): VisionEncoder | null {
   } catch (e) {
     console.warn(`vision sidecar not loadable (${(e as Error).message}) — serving text-only`);
     ctx.loadVision = null;
+    return null;
+  }
+}
+
+/** Build the on-demand audio-tower loader (gemma-4 Conformer, A4 of
+ *  docs/design/audio-input-plan.md). Auto-enables — no flags — when
+ *  config.json carries an `audio_config` AND the optiq_vision.safetensors
+ *  sidecar exists (the audio tensors ship in the same sidecar as vision).
+ *  Returns null when the model can't do audio (no audio_config: 26B-A4B,
+ *  DiffusionGemma, bf16 assistants — architectural, not a porting gap). */
+function makeAudioLoader(
+  modelDir: string, model: RuntimeModel, config: ModelConfig,
+): (() => AudioTower) | null {
+  if (!(config.hasVisionSidecar && config.raw.audio_config && model instanceof Gemma4Model))
+    return null;
+  const audioCfg = parseAudioConfig(config.raw.audio_config as Record<string, any>);
+  return () => AudioTower.load(modelDir, audioCfg, model.embedScale);
+}
+
+/** Lazily load + cache the audio tower on first use. Unlike vision's
+ *  warn-and-continue (text-only degrade is correct for requests WITHOUT
+ *  images), this is only ever consulted for requests WITH audio — the
+ *  caller turns null into an explicit 400, never a silent text-only
+ *  degrade. A failed load (e.g. a stub sidecar carrying no audio tensors,
+ *  the local 12B state) is not retried every request. */
+function getAudioTower(ctx: ServerContext): AudioTower | null {
+  if (ctx.audio) return ctx.audio;
+  if (!ctx.loadAudio) return null;
+  try {
+    ctx.audio = ctx.loadAudio();
+    return ctx.audio;
+  } catch (e) {
+    console.warn(`audio sidecar not loadable (${(e as Error).message})`);
+    ctx.loadAudio = null;
     return null;
   }
 }
@@ -853,10 +911,15 @@ function contentPartsToText(parts: Array<Record<string, unknown>>): string {
     .join("");
 }
 
-/** True if any content part is an image (so the vision path must keep the
- *  array form for extractImages). */
-function hasImagePart(parts: Array<Record<string, unknown>>): boolean {
-  return parts.some((p) => p && (p.type === "image" || p.type === "image_url"));
+/** True if any content part is media — image OR audio — so the multimodal
+ *  path must keep the array form for extractImages/extractAudio. */
+function hasMediaPart(parts: Array<Record<string, unknown>>): boolean {
+  return parts.some(
+    (p) =>
+      p &&
+      (p.type === "image" || p.type === "image_url" ||
+        p.type === "audio" || p.type === "input_audio" || p.type === "audio_url"),
+  );
 }
 
 /** OpenAI sends assistant tool_call arguments as JSON strings; the
@@ -877,13 +940,14 @@ function hasImagePart(parts: Array<Record<string, unknown>>): boolean {
  *     OpenAI multimodal client) sends user content as `[{type:"text",text}]`,
  *     but non-vision chat templates expect `content` to be a STRING and render
  *     nothing for an array — so the user's turn silently vanishes and the model
- *     replies "I don't see any message." Arrays that carry an image part are
- *     left intact for the vision path (extractImages); only text-only arrays
- *     are collapsed here, which is a no-op for the vision templates too. */
+ *     replies "I don't see any message." Arrays that carry a media part
+ *     (image or audio) are left intact for the multimodal path
+ *     (extractImages/extractAudio); only text-only arrays are collapsed
+ *     here, which is a no-op for the vision templates too. */
 export function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
   return messages.map((raw) => {
     let m = raw.role === "developer" ? { ...raw, role: "system" } : raw;
-    if (Array.isArray(m.content) && !hasImagePart(m.content)) {
+    if (Array.isArray(m.content) && !hasMediaPart(m.content)) {
       m = { ...m, content: contentPartsToText(m.content) };
     }
     if (!m.tool_calls) return m;
@@ -1290,14 +1354,18 @@ export function createServer(
    *  `enqueue` promise queue is gone; the gateway's AsyncMutex is THE lock.)
    *  onToken returning `false` halts generation early (stop
    *  sequence fired); the cache snapshot stays valid and is still kept.
-   *  Vision requests bypass the prompt cache: image tokens are
-   *  identical placeholder ids, so prefix matching across different
-   *  images would false-hit. */
+   *  Media (vision/audio embeddings-prefill) requests bypass the prompt
+   *  cache: soft tokens are identical placeholder ids, so prefix matching
+   *  across different images/clips would false-hit. */
   const runGeneration = async (
     promptIds: number[],
     options: GenerateOptions,
     onToken: (token: number, logprobs?: TokenLogprobs) => void | boolean | Promise<void | boolean>,
-    vision?: { embeddings: import("./mlx/array").MlxArray; imageMask: import("./mlx/array").MlxArray },
+    vision?: {
+      embeddings: import("./mlx/array").MlxArray;
+      imageMask?: import("./mlx/array").MlxArray;
+      multimodalMask?: import("./mlx/array").MlxArray;
+    },
   ) => {
     // Speculative decoding (serve --draft-model): spec-ELIGIBLE requests
     // decode through the verify loop; the rest fall through to the normal
@@ -1369,7 +1437,13 @@ export function createServer(
               },
             }
           : {}),
-        ...(vision ? { promptEmbeddings: vision.embeddings, imageMask: vision.imageMask } : {}),
+        ...(vision
+          ? {
+              promptEmbeddings: vision.embeddings,
+              ...(vision.imageMask ? { imageMask: vision.imageMask } : {}),
+              ...(vision.multimodalMask ? { multimodalMask: vision.multimodalMask } : {}),
+            }
+          : {}),
       });
       for await (const t of gen) {
         if ((await onToken(t.token, t.logprobs)) === false) break;
@@ -1389,7 +1463,8 @@ export function createServer(
       throw e;
     } finally {
       vision?.embeddings.dispose();
-      vision?.imageMask.dispose();
+      vision?.imageMask?.dispose();
+      vision?.multimodalMask?.dispose();
       options.visionPixels?.dispose();
     }
   };
@@ -2291,6 +2366,14 @@ export function createServer(
           (m) => Array.isArray(m.content) &&
             m.content.some((p: any) => p.type === "image_url" || p.type === "image"),
         );
+        // Same shapes extractAudio accepts: OpenAI-canonical input_audio plus
+        // optiq's audio / audio_url aliases (audio-input-plan.md §3.2).
+        const hasAudio = body.messages.some(
+          (m) => Array.isArray(m.content) &&
+            m.content.some(
+              (p: any) => p.type === "input_audio" || p.type === "audio" || p.type === "audio_url",
+            ),
+        );
         let promptIds: number[];
         let stableLen: number | null = null;
         // Whether the prompt primed an open <think> (Qwen3.5/MiniCPM5 thinking
@@ -2325,7 +2408,63 @@ export function createServer(
           }
         }
         try {
-          if (hasImages && ctx.model instanceof DiffusionGemmaModel) {
+          if (hasAudio) {
+            // Audio (and MIXED image+audio) input — A4 of
+            // docs/design/audio-input-plan.md. One buildMultimodalPrompt call
+            // splices both media kinds in document order. A request WITH
+            // audio on a model whose tower is unavailable is an explicit 400
+            // — never a silent text-only degrade (that leniency is only for
+            // requests without the media, getVisionTower's contract).
+            const audioTower = getAudioTower(ctx);
+            if (!audioTower || !ctx.audioTokenIds)
+              return Response.json(
+                {
+                  error: {
+                    message:
+                      `model ${ctx.modelId} has no audio tower — audio input needs ` +
+                      `a model whose config.json carries audio_config and whose ` +
+                      `sidecar ships the audio tensors (e.g. gemma-4 e4b OptiQ)`,
+                  },
+                },
+                { status: 400 },
+              );
+            let visionSide:
+              | { tower: VisionEncoder; tokenIds: VisionTokenIds }
+              | undefined;
+            if (hasImages) {
+              const tower = getVisionTower(ctx);
+              if (!tower)
+                return Response.json(
+                  { error: { message: "model has no vision sidecar" } }, { status: 400 },
+                );
+              visionSide = { tower, tokenIds: ctx.visionTokenIds };
+            }
+            const { messages: withAudioParts, images } =
+              await extractImages(normalizeMessages(body.messages));
+            const { messages, audio } = await extractAudio(withAudioParts);
+            // Non-WAV containers (mp3/m4a/flac/ogg/aiff/…) transcode to
+            // 16 kHz WAV via CoreAudio; RIFF bytes pass through untouched.
+            // Failures throw into the prompt-build 400 below.
+            const wavs = await Promise.all(audio.map(ensureWav));
+            // The towers are only ever non-null for Gemma4 (loader gates).
+            const mp = await buildMultimodalPrompt(
+              ctx.model as Gemma4Model,
+              {
+                ...(visionSide ? { vision: visionSide } : {}),
+                audio: { tower: audioTower, tokenIds: ctx.audioTokenIds },
+              },
+              ctx.tokenizer, ctx.template, messages, images, wavs, tools,
+            );
+            promptIds = mp.ids;
+            // bidirMask is null whenever audio is present (§3.3 Q1: mixed
+            // prompts run fully causal); the union mask does the per-layer
+            // id zeroing either way.
+            vision = {
+              embeddings: mp.embeddings,
+              ...(mp.bidirMask ? { imageMask: mp.bidirMask } : {}),
+              multimodalMask: mp.multimodalMask,
+            };
+          } else if (hasImages && ctx.model instanceof DiffusionGemmaModel) {
             // DiffusionGemma image-text-to-text: its OWN dedicated SigLIP tower +
             // encoder vision merge feed the denoising engine (NOT the AR
             // forwardEmbeddings path). v1 supports a single image.
@@ -2396,7 +2535,8 @@ export function createServer(
         } catch (e) {
           // bad logit_bias (non-numeric keys/values) — mlx-lm's coercion error
           vision?.embeddings.dispose();
-          vision?.imageMask.dispose();
+          vision?.imageMask?.dispose();
+          vision?.multimodalMask?.dispose();
           diffusionPixels?.dispose();
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
         }
@@ -2410,7 +2550,8 @@ export function createServer(
         const requiredCtx = promptIds.length + (options.maxTokens ?? 1024);
         if (requiredCtx > admission.maxSafeContext) {
           vision?.embeddings.dispose();
-          vision?.imageMask.dispose();
+          vision?.imageMask?.dispose();
+          vision?.multimodalMask?.dispose();
           diffusionPixels?.dispose();
           return Response.json(
             {
@@ -2433,6 +2574,10 @@ export function createServer(
           const adapterIds = ctx.adapters.resolveSpec(body.adapter ?? serverOptions.defaultAdapter);
           if (adapterIds.length) options.adapters = adapterIds;
         } catch (e) {
+          vision?.embeddings.dispose();
+          vision?.imageMask?.dispose();
+          vision?.multimodalMask?.dispose();
+          diffusionPixels?.dispose();
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
         }
 
@@ -2450,9 +2595,12 @@ export function createServer(
           options.topLogprobs = topLogprobs;
         }
 
-        // What lane this request takes (vision / adapters / logprobs / seed /
-        // explicit kv-quant / a mounted draft → serial; sampler extras,
-        // repetition penalty, and grammar all BATCH — see willBatch).
+        // What lane this request takes (vision/audio media / adapters /
+        // logprobs / seed / explicit kv-quant / a mounted draft → serial;
+        // sampler extras, repetition penalty, and grammar all BATCH — see
+        // willBatch). `vision` is the embeddings-prefill payload for BOTH
+        // media kinds, so hasVision routes audio serial too — batching is a
+        // mode, not a fallback, and batched audio has no oracle (§3.2).
         const shape = {
           hasVision: !!vision,
           hasAdapters: !!options.adapters?.length,

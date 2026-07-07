@@ -43,6 +43,7 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | Structured output × speculative decoding | on (when both active) | serial | Lab (validity+equivalence) | — |
 | Tool calling (Gemma sentinel / CPM+Qwen XML) + `role:"tool"` loops | on | both | — | request `tools` |
 | Vision (`image_url` parts; PNG/JPEG/HEIC/AVIF/WebP/TIFF/GIF/BMP) | on (models with a tower) | serial | L1/L2 | — |
+| **Audio input** (`input_audio`/`audio`/`audio_url` parts; WAV native, mp3/m4a/flac/ogg/aiff via CoreAudio; ≤30 s / 750 tokens per clip; mixes with images) | on (models with `audio_config` + sidecar tower: e4b) | serial³ | L2 (greedy stream EXACT vs the optiq internal model) | — |
 | LoRA adapters (mount at start / hot-swap at runtime) | off | serial | — | `--adapter <dir>`, `POST /v1/adapters` |
 | Sampling: temperature / top-p / top-k / min-p / XTC / logit_bias / presence+frequency+repetition penalties | per-request | both | L1 (mlx-lm-faithful) | request fields / server defaults |
 | `logprobs` / `top_logprobs` (mlx-lm semantics) | off | serial | L1 | request fields |
@@ -57,7 +58,7 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | Family | Serial | Batch | Notes |
 | --- | --- | --- | --- |
 | MiniCPM5 (cpm5) | ✅ L1/L2 | ✅ | the starter model |
-| Gemma 4 (1B/e4b/12B/26B, + vision e4b/12B) | ✅ L1/L2 | ✅ | sliding+full interleaved; MoE 26B |
+| Gemma 4 (1B/e4b/12B/26B, + vision e4b/12B, + audio e4b) | ✅ L1/L2 | ✅ | sliding+full interleaved; MoE 26B |
 | Qwen3.5 (gated-DeltaNet hybrid) | ✅ L1 | ✅ (SSM path) | `MLX_BUN_BATCH_SSM=0` reverts |
 | DiffusionGemma-26B (non-autoregressive) | ✅ (own engine) | — serial always | first bit-exact non-AR port |
 | Tier-0 universal (llama/qwen2/qwen3/olmo2/…, 11 archs) | ✅ L1 | ✅ plain full-attention archs² | gemma2-family/sliding universal → serial |
@@ -73,6 +74,7 @@ model registry + `fit` planner + `gc` · HF `upload`. See
 ---
 ¹ `guided_regex` accepts the regex∩EBNF subset today (no `\d`/anchors — those degrade to prompt injection); real regex support is tracked.
 ² Gated token-exact vs mlx-lm B=2 (static + dynamic join/leave) on Llama-3.2-3B.
+³ Audio is a capability neither ancestor SERVES: mlx-lm strips the audio tower at load and 400s non-text parts; optiq ships the full machinery but never wires it into its serve frontend — mlx-bun exposes it. Serial lane by design (embeddings prefill; batched audio has no oracle → novel-territory gates would apply), prompt cache skipped.
 
 Composition rules and exclusions (what combines with what):
 [server-config.md → Compatibility matrix](server-config.md#compatibility-matrix).

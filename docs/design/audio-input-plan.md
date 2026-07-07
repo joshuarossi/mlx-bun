@@ -1,6 +1,7 @@
 # Audio input — design & implementation plan (gemma-4 audio tower)
 
-Status: **PLANNED** (survey done 2026-07-06, no code yet).
+Status: **A0–A4 DONE** (2026-07-07: served end to end on e4b, oracle-EXACT
+greedy offline AND over HTTP; A5 bench + 12B coverage open).
 Scope: audio **understanding** — audio-in, text-out through the chat API.
 TTS / STT-as-an-endpoint / STS stay out of scope (see
 docs/design/omlx-adoption-map.md); §5 lists non-goals explicitly.
@@ -289,11 +290,37 @@ cells (tower ms, TTFT delta vs text-only, peak RSS delta) and lands in
   script — no tail-split gap). `tests/e4b-audio.test.ts`.
 
 **Phase A4 — serve + docs**
-- [ ] `src/server.ts` audio branch, lazy tower, serial-lane routing,
-      mixed image+audio request handled
-- [ ] server-api.md / features-matrix.md / README same commit; Anthropic
-      endpoint 400 documented
-- Exit: T3 curl e2e; docs-map hygiene green.
+- [x] `src/server.ts` audio branch, lazy tower, serial-lane routing,
+      mixed image+audio request handled. `hasAudio` detection over the
+      three part shapes; `makeAudioLoader`/`getAudioTower` mirror vision
+      (same sidecar, zero flags, auto-enable on `audio_config` +
+      sidecar) — but a request WITH audio on a towerless model is an
+      explicit 400 naming the model, never a silent text-only degrade.
+      The gateway's `Vision` payload generalized to
+      `{embeddings, imageMask?, multimodalMask?}` (bidirMask stays null
+      whenever audio is present, §3.3 Q1); `shape.hasVision = !!payload`
+      routes every media request serial and skips the prompt cache —
+      verified live: `/stats` batch.submitted_rows stays 0 for audio
+      while a concurrent text request advances it (batch default 8).
+      Non-WAV containers (mp3/m4a/flac/ogg/aiff) transcode via
+      `afconvert` (src/audio/transcode.ts, RIFF-sniffed content-based
+      passthrough, temp files under os.tmpdir(), clear 400 on failure);
+      >30 s clips truncate at 480 000 samples in decodeAudio — the
+      oracle feature extractor's own default (truncation=True,
+      max_length=480_000) verified in audio_feature_extractor.py:302.
+      /v1/messages (Anthropic) rejects smuggled audio blocks with a 400
+      pointing to the OpenAI endpoint (protocol has no audio block).
+- [x] server-api.md (schema + curl + caps + 400s + lane note) /
+      features-matrix.md (audio row + footnote: mlx-lm strips it, optiq
+      never serves it — we expose it) / README capability line, same
+      change set; Anthropic endpoint 400 documented.
+- Exit: T3 green — `tests/e4b-audio-serve.test.ts`
+      (MLX_BUN_TEST_AUDIO_SERVE=1): base64 WAV over
+      /v1/chat/completions returns the EXACT golden transcription
+      ("The quick brown fox jumps over the lazy dog.", 83 prompt /
+      11 completion tokens); m4a transcode path transcribes; malformed
+      part, undecodable bytes, and Anthropic audio block all 400.
+      docs-map hygiene green. ✅ 2026-07-07
 
 **Phase A5 — bench + coverage**
 - [ ] benchmark.sh cells → RESULTS.md (tower ms, TTFT delta, RSS delta)

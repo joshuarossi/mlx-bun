@@ -2544,10 +2544,27 @@ same splice/merge seams, same parity-tier ladder.
       astype→div mirrors it literally. promptEmbeddings prefill is
       single-shot (matches the oracle script; tail-split applies only to
       the token-id path). 17/17 across audio+vision suites, tsc clean.
-- [ ] **A4 serve + docs** — server.ts `input_audio`/`audio`/`audio_url`
-      parts, lazy tower, serial-lane routing, mixed image+audio;
-      server-api.md + features-matrix.md + README in the SAME commit.
-      Exit: T3 curl e2e; docs-map hygiene green.
+- [x] **A4 serve + docs** (2026-07-07) — server.ts audio branch (hasAudio
+      over `input_audio`/`audio`/`audio_url`, lazy getAudioTower from the
+      same sidecar, ZERO new flags), mixed image+audio via one
+      buildMultimodalPrompt call, afconvert transcode
+      (src/audio/transcode.ts, content-based RIFF sniff first), 30 s
+      truncation mirroring the oracle (480k samples BEFORE features —
+      keeps the 750-token splice consistent), Anthropic endpoint 400s
+      audio blocks with an OpenAI pointer. Serial-lane isolation PROVEN
+      non-vacuously (batch.submitted_rows stayed 0 across an audio
+      request while a concurrent text request advanced it); media
+      requests skip prompt cache + spec decode. T3: gated serve test
+      (MLX_BUN_TEST_AUDIO_SERVE=1) 5/5 — live HTTP transcription is
+      EXACTLY the golden string; m4a→CoreAudio transcode transcribes;
+      malformed parts → 400. Three bugs found in passing:
+      normalizeMessages silently ATE audio-bearing content arrays
+      (hasMediaPart fix was load-bearing), a pre-existing
+      vision-embeddings leak on the adapter-resolve 400 path, and
+      afconvert cannot ENCODE mp3 (decode-only — test fixture is m4a).
+      Docs in the same commit: server-api.md, features-matrix.md,
+      README. 41/41 across audio+vision+anthropic suites; tsc + hygiene
+      green.
 - [ ] **A5 bench + coverage** — benchmark.sh cells (tower ms, TTFT delta,
       RSS delta) → RESULTS.md; 12B audio cell (sidecar rebuild via optiq
       `build_vision_sidecar` — local 12B sidecar has 1 audio tensor);

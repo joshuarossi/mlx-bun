@@ -150,6 +150,19 @@ export function anthropicToChatBody(body: AnthropicRequest): Record<string, unkn
             content: flattenText(block.content),
           });
           break;
+        case "audio":
+        case "input_audio":
+        case "audio_url":
+          // The Anthropic Messages protocol has no audio input block type.
+          // Reject loudly (the server maps this throw to a 400
+          // invalid_request_error) instead of silently dropping the clip —
+          // the model answering as if no audio was sent is worse than an
+          // error. Audio is served on the OpenAI surface.
+          throw new Error(
+            `"${block.type}" content blocks are not part of the Anthropic ` +
+              `Messages protocol — send audio to the OpenAI endpoint ` +
+              `/v1/chat/completions as an input_audio content part`,
+          );
         default:
           if (block.text) textParts.push(block.text);
       }
