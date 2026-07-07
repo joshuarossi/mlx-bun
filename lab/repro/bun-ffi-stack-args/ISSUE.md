@@ -1,6 +1,7 @@
-# Bun GitHub issue — DRAFT (not yet filed)
+# Bun GitHub issue — FILED as oven-sh/bun#33672
 
-> Found 2026-07-07 while binding `mlx_conv2d` (11 args) for the gemma-4
+> https://github.com/oven-sh/bun/issues/33672 (filed 2026-07-07).
+> Found while binding `mlx_conv2d` (11 args) for the gemma-4
 > audio tower. Repro confirmed on Bun 1.3.14, macOS arm64.
 > Standalone repro: `repro.c` + `repro.ts` in this directory
 > (`cc -dynamiclib -o repro.dylib repro.c && bun repro.ts`).
