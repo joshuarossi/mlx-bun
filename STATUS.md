@@ -194,6 +194,30 @@ while busy, bounded by the chain). Final vs-mlx-lm decode@ctx numbers
 need the quiet-machine bench rerun (loadavg was ~4–7 throughout; a
 residual genuine kernel gap at 16k is not excluded — xctrace on quiet).
 
+## Parallel thread: web chat redesign (2026-07-06/07, branch feat/web-chat-phase2)
+
+[docs/design/web-chat-redesign.md](docs/design/web-chat-redesign.md) is the
+working UI plan (supersedes web-ui-pass-plan.md; revised 2026-07-06 to the
+**superset doctrine** — concede nothing, differentiate on top — with
+[web-chat-beat-matrix.md](docs/design/web-chat-beat-matrix.md) (12 axes,
+116 rows, MATCH/BEAT/SKIP) as the coverage contract, §6.6 the app-aware
+assistant, and principle 9: the bar for done is perfect visual polish).
+
+**Phase 0 AND Phase 1 are done + visually QA'd on this branch.** Phase 1
+(004544f): block-memoized streaming render (streamed ≡ one-shot, fixture-
+verified) + vendored hljs; per-turn `lane` on usage + lane-registry →
+live perf strip (verified live: "230 tok/s · TTFT 292ms · BATCHED");
+full sampling popover w/ per-model defaults; message actions (copy/
+regenerate/edit-as-sibling on pi navigateTree, < i/n > toggle); mobile
+drawer, light theme, Cmd+/ sheet, session search; gc endpoints;
+/v1/models tier+vision+gen_defaults; /v1/adapters/available returns all
+w/ compatible flag (pi extension updated to match). Visual QA on the
+running app at 375/768/1024/1280 both themes (0c601d2) fixed: empty
+Auto-toggle sliver, conn-pill clip, tabs flex-shrinking to zero on
+phones, translucent --code-bg washing out light-theme code. Next: Phase 2
+(plan §9 — module split + typed frontend FIRST, then memory REST wrappers
++ panel, adapter routing table, system prompt/presets, auto-titles v2).
+
 ## Where we were (2026-07-07 — 12B completion-probe parity closed: prefill tail split)
 
 **The 12B completion-probe parity ✗ (07-07 bench @3d56676, diverged at
