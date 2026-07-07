@@ -215,7 +215,6 @@ describe("TurboQuantKVCache — kv-store persistence roundtrip", () => {
     expect(afterState).toEqual(beforeState);
 
     for (const c of loaded.caches) c.dispose();
-    loaded.mmap.unmap();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -269,7 +268,6 @@ describe("TurboQuantKVCache — kv-store persistence roundtrip", () => {
     expect(loaded.caches[1]!.offset).toBe(6);
 
     for (const c of loaded.caches) c.dispose();
-    loaded.mmap.unmap();
     rmSync(dir, { recursive: true, force: true });
   });
 });

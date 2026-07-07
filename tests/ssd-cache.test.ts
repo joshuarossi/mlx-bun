@@ -229,7 +229,6 @@ describe("SsdCacheStore", () => {
     const loaded = s2.restore(hit!.entry, tqModel);
     expect(loaded).not.toBeNull();
     for (const c of loaded!.caches) c.dispose();
-    loaded!.mmap.unmap();
     rmSync(dir, { recursive: true, force: true });
   });
 
