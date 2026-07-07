@@ -40,7 +40,7 @@ why it's nasty to diagnose.
 `repro.c` echoes all 11 arguments back through the out-pointer; `repro.ts`
 calls it with distinct values and diffs. On Bun 1.3.14 / macOS arm64:
 
-```
+```text
 got : 111,222,2,3,4,5,6,7,0,8
 want: 111,222,2,3,4,5,6,7,8,999
 CORRUPTED (bug present)

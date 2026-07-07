@@ -115,8 +115,10 @@ try:
         add_generation_prompt=True, tokenize=False, enable_thinking=False,
     )
     TMPL_KW["enable_thinking"] = False
-except Exception:
-    pass
+except Exception as e:
+    # A failed probe means the golden may render WITHOUT the explicit pin
+    # the header documents — make that visible instead of silent.
+    print(f"note: enable_thinking probe failed ({e!r}); leaving unset", file=sys.stderr)
 
 boa_str = tok.convert_ids_to_tokens(BOA_TOKEN_ID)    # "<|audio>"
 audio_str = tok.convert_ids_to_tokens(AUDIO_TOKEN_ID)  # "<|audio|>"

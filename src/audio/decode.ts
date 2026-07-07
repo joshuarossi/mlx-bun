@@ -58,12 +58,18 @@ export function decodeWav(bytes: Uint8Array): DecodedWav {
     const size = v.getUint32(o + 4, true);
     const body = o + 8;
     if (id === "fmt ") {
+      // the reads below reach body+16 (base fields) / body+26 (extensible)
+      if (size < 16 || body + 16 > bytes.length)
+        throw new Error("WAV: truncated fmt chunk");
       let format = v.getUint16(body, true);
       const channels = v.getUint16(body + 2, true);
       const sampleRate = v.getUint32(body + 4, true);
       const bits = v.getUint16(body + 14, true);
-      if (format === WAVE_FORMAT_EXTENSIBLE && size >= 40)
+      if (format === WAVE_FORMAT_EXTENSIBLE) {
+        if (size < 40 || body + 26 > bytes.length)
+          throw new Error("WAV: truncated WAVE_FORMAT_EXTENSIBLE fmt chunk");
         format = v.getUint16(body + 24, true); // first 2 bytes of SubFormat GUID
+      }
       fmt = { format, channels, sampleRate, bits };
     } else if (id === "data") {
       dataOff = body;

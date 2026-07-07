@@ -41,7 +41,11 @@ export async function transcodeToWav(bytes: Uint8Array): Promise<Uint8Array> {
       ["afconvert", "-f", "WAVE", "-d", "LEI16@16000", inPath, outPath],
       { stdout: "ignore", stderr: "pipe" },
     );
+    // ≤30 s clips convert in well under a second — a hung afconvert must
+    // not pin the request forever. kill() → nonzero exit → the 400 below.
+    const killer = setTimeout(() => proc.kill(), 30_000);
     const exit = await proc.exited;
+    clearTimeout(killer);
     if (exit !== 0) {
       const err = (await new Response(proc.stderr).text()).trim();
       throw new Error(
