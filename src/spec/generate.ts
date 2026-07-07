@@ -139,7 +139,14 @@ export function specGenerate(
   let vHidden: MlxArray | null = null;
 
   try {
-    // 1. prefill
+    // 1. prefill — FULL-prompt single forward, deliberately. Per-oracle
+    // convention (2026-07-07 re-anchor): mlx-lm's speculative path drains to
+    // len-1 with no step-0 (the SERVE loop, whose oracle it is, now mirrors
+    // that — src/spec/serve-loop.ts); THIS loop's oracle is optiq
+    // spec_generate, which prefills the whole prompt in one forward and
+    // samples token0 from it (runtime/spec/runtime.py:162-170, read from the
+    // installed oracle venv) — the 2026-06-14 bit-exact gate was established
+    // against exactly that shape. Do not tail-split here.
     const t0 = performance.now();
     const ids = ops.fromInt32(promptTokens, [1, promptTokens.length]);
     prefillH = model.forwardHidden(ids, caches);

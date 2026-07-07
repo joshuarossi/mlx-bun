@@ -42,6 +42,7 @@
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { clearCache } from "../mlx/ffi";
+import { flagOn } from "../flags";
 import type { RuntimeModel } from "../model/factory";
 import type { Cache } from "../model/gemma4";
 import type { GenerateOptions, GenerateStats } from "../generate";
@@ -204,24 +205,72 @@ export async function specServeRun(
     // the source. Order: the source's prefill needs the tapped context that the
     // target prefill produces, so target-first (two-model's own draft prefill
     // and the assistant no-op are order-independent). ----
+    //
+    // Oracle prefill convention (re-anchored 2026-07-07 after PR #18; then
+    // corrected to the SPEC oracle's true shape after a live gate vs
+    // speculative_generate_step still flipped a knife-edge): mlx-lm's
+    // speculative path drains BOTH models to len-1 (`_prefill: while y.size >
+    // 1`) and has NO separate step-0 at all — the un-drained last prompt
+    // token HEADS THE FIRST VERIFY WINDOW ([lastPromptToken, ...drafts]),
+    // and the first emitted token is that window's position-0 sample
+    // (generate.py:578-618). A separate L=1 step-0 (the serial-lane
+    // convention) is ulp-different from the (1+γ)-window GEMM head and still
+    // flips near-ties. So under the flag: drain to len-1, pending = the last
+    // prompt token, straight into the rounds. Gated live: 4/4 token-for-token
+    // vs the oracle venv (γ∈{2,3} × 2 prompts, incl. the knife-edge cell).
+    // MLX_BUN_PREFILL_TAIL_SPLIT=0 reverts to the legacy full-chunk + sampled
+    // token0 shape (kill switch; also the 1-token-prompt degenerate path).
+    //
+    // Seam interaction: the tapped seed covers rows 0..len-2 only — the last
+    // prompt token's row arrives via the FIRST verify round's vCtxML (it is
+    // that round's anchor row, which commit() appends) — so context sources
+    // stay in exact lockstep, and DSpark's round-1 anchor IS the last prompt
+    // token at position len-1, matching DeepSpec's reference loop. The
+    // assistant source's first-round anchor hidden = "the hidden that
+    // produced pending" = position len-2, the last drain chunk's final row.
     const t0 = performance.now();
-    for (let off = 0; off < promptIds.length; off += PREFILL_CHUNK) {
-      const chunk = promptIds.slice(off, off + PREFILL_CHUNK);
-      const ids = ops.fromInt32(chunk, [1, chunk.length]);
-      const { hidden: h, ctxML } = forwardMaybeTap(model, ids, caches, tapLayers);
-      ids.dispose();
-      if (ctxML) ctxParts.push(ctxML);
-      if (off + PREFILL_CHUNK >= promptIds.length) {
-        const L = h.shape[1]!;
-        const H = h.shape[2]!;
-        anchorHidden = h.slice([0, L - 1, 0], [1, L, H]); // [1,1,H], retained
-        const lg = model.logitsFromHidden(anchorHidden);
-        const V = lg.shape[lg.shape.length - 1]!;
-        lastLogits = ops.reshape(lg, [1, V]);
-        lg.dispose();
+    const tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
+    const oracleShape = tailSplit && promptIds.length > 1;
+    if (oracleShape) {
+      let pos = 0;
+      const end = promptIds.length - 1; // last prompt token NEVER prefilled
+      while (pos < end) {
+        const n = Math.min(PREFILL_CHUNK, end - pos);
+        const chunk = promptIds.slice(pos, pos + n);
+        const ids = ops.fromInt32(chunk, [1, chunk.length]);
+        const { hidden: h, ctxML } = forwardMaybeTap(model, ids, caches, tapLayers);
+        ids.dispose();
+        if (ctxML) ctxParts.push(ctxML);
+        if (pos + n >= end) {
+          const L = h.shape[1]!;
+          const H = h.shape[2]!;
+          anchorHidden = h.slice([0, L - 1, 0], [1, L, H]); // position len-2
+        }
+        h.dispose(); // logits never computed during the drain
+        clearCache();
+        pos += n;
       }
-      h.dispose();
-      clearCache();
+    } else {
+      // Legacy shape: full chunked prefill (final chunk included), token0
+      // sampled from the last position below.
+      for (let off = 0; off < promptIds.length; off += PREFILL_CHUNK) {
+        const chunk = promptIds.slice(off, off + PREFILL_CHUNK);
+        const ids = ops.fromInt32(chunk, [1, chunk.length]);
+        const { hidden: h, ctxML } = forwardMaybeTap(model, ids, caches, tapLayers);
+        ids.dispose();
+        if (ctxML) ctxParts.push(ctxML);
+        if (off + PREFILL_CHUNK >= promptIds.length) {
+          const L = h.shape[1]!;
+          const H = h.shape[2]!;
+          anchorHidden = h.slice([0, L - 1, 0], [1, L, H]); // [1,1,H], retained
+          const lg = model.logitsFromHidden(anchorHidden);
+          const V = lg.shape[lg.shape.length - 1]!;
+          lastLogits = ops.reshape(lg, [1, V]);
+          lg.dispose();
+        }
+        h.dispose();
+        clearCache();
+      }
     }
     extras.targetCalls++;
     // Seed the source: two-model prefills its own draft cache; DSpark seeds
@@ -242,24 +291,34 @@ export async function specServeRun(
     stats.prefillMs = performance.now() - t0;
     stats.prefillTps = (promptIds.length / Math.max(stats.prefillMs, 1e-6)) * 1000;
 
-    // ---- token 0 ----
+    // ---- first pending token ----
+    // Oracle shape: pending = the UNPROCESSED last prompt token — never
+    // emitted (it's prompt), it heads the first verify window; the first
+    // generated token is that window's position-0 sample, inside the walk.
+    // Legacy shape: sample + emit token0 from the prefill logits (old
+    // convention, kill-switch / 1-token prompts).
     const tDecode = performance.now();
-    let pending = await samplePos(lastLogits!, 0);
-    lastLogits!.dispose();
-    lastLogits = null;
-    if (eos.includes(pending)) {
-      stats.decodeMs = performance.now() - tDecode;
-      return stats;
-    }
-    stats.generatedTokens++;
-    if (
-      (await onToken(pending)) === false ||
-      stats.generatedTokens >= maxTokens ||
-      // grammar satisfied at token 0 (a 1-token grammar) — finish "stop"
-      grammar?.isTerminated
-    ) {
-      stats.decodeMs = performance.now() - tDecode;
-      return stats;
+    let pending: number;
+    if (oracleShape) {
+      pending = promptIds[promptIds.length - 1]!;
+    } else {
+      pending = await samplePos(lastLogits!, 0);
+      lastLogits!.dispose();
+      lastLogits = null;
+      if (eos.includes(pending)) {
+        stats.decodeMs = performance.now() - tDecode;
+        return stats;
+      }
+      stats.generatedTokens++;
+      if (
+        (await onToken(pending)) === false ||
+        stats.generatedTokens >= maxTokens ||
+        // grammar satisfied at token 0 (a 1-token grammar) — finish "stop"
+        grammar?.isTerminated
+      ) {
+        stats.decodeMs = performance.now() - tDecode;
+        return stats;
+      }
     }
 
     let feed: number[] = [pending];
@@ -353,8 +412,13 @@ export async function specServeRun(
         roundRow = null;
         if (i < d && tok === drafts[i]) {
           kAccept++;
-          emitted.push(tok);
+          // EOS is never content — even when it arrives as an ACCEPTED DRAFT
+          // (the correction/bonus branch below always excluded it; this
+          // branch pushed-then-broke, leaking the EOS through onToken —
+          // caught by the 2026-07-07 live oracle gate: streams were
+          // bit-identical, ours emitted one extra "content" token: <|eot_id|>).
           if (eos.includes(tok)) { sawEos = true; break; }
+          emitted.push(tok);
           // grammar termination mid-burst truncates the round — nothing may
           // be sampled past a satisfied grammar (the all--inf guarantee).
           if (grammar?.isTerminated) { grammarDone = true; break; }

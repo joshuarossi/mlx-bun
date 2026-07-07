@@ -88,11 +88,19 @@ incl. step 0); generated-parity's compiled-lane dispatch count is now 1
 Pre-existing failures on this box, NOT this change (stash-proven at
 baseline): kv-quant.test.ts ×3 + parity.test.ts (stale machine goldens —
 regen chip spawned), batch-grammar B=4 (chip spawned), batched extend-join
-oracle (known). Spec-decode serve lane (opt-in, draft-mounted) still uses
-the old convention — its oracle `speculative_generate_step._prefill`
-drains `while y.size > 1` the same way; re-anchor separately when that
-lane is next touched. Goldens on the M4 Pro reference box need the same
-regen when work moves there.
+oracle (known). Spec-decode serve lane re-anchor: **DONE 2026-07-07 on
+`feat/dspark-spec-decode`** — and its oracle's true shape turned out to be
+MORE than tail-split: `speculative_generate_step` drains BOTH models to
+len−1 with **no separate step-0 at all** (the un-drained last prompt token
+heads the first verify window; an L=1 step-0 is still ulp-different from
+the (1+γ)-window GEMM head and flipped a knife-edge). The live gate also
+caught a pre-existing bug: an EOS accepted AS A DRAFT leaked through
+onToken as content. Both fixed; gated 4/4 token-for-token vs the oracle
+venv (templated prompts, γ∈{2,3}, pinned in tests/spec-serve.test.ts "L1
+knife-edge"); the optiq-oracled standalone `specGenerate` deliberately
+keeps full-prompt prefill (per-scheme-oracle doctrine — optiq's own
+convention, read from the installed source). Goldens on the M4 Pro
+reference box need the same regen when work moves there.
 
 ## Where we were (2026-07-07 — cpm5 completion-probe parity closed)
 
