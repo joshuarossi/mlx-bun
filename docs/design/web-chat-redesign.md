@@ -304,7 +304,9 @@ nothing else in this doc depends on it.)*
    professional, excellent experience. Concretely: every animation is
    compositor-friendly (transform/opacity only), interruptible, and
    respects `prefers-reduced-motion`; every overlay/popover is tested at
-   375px, 768px, and desktop widths and at 200% zoom; streaming text never
+   375px, 768px, 1024px (iPad — where the 2026-07-06 nav-clip /
+   placeholder-wrap / pill-overflow jank actually surfaced), and desktop
+   widths and at 200% zoom; streaming text never
    causes scroll jank or reflow of completed content (§5.3's memoization
    is a polish requirement, not just a perf fix). Visual QA at phase
    boundaries is part of the definition of done, same standing as tests.
