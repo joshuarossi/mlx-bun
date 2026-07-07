@@ -26,6 +26,7 @@ import type { LoadedTokenizer } from "../tokenizer";
 import type { AudioTower } from "../audio/conformer";
 import { audioSoftTokenCount, decodeAudio } from "../audio/decode";
 import { extractMelFeatures } from "../audio/features";
+import { fetchMediaBytes } from "../media-fetch";
 
 /** Common contract for both vision towers (encoder-free gemma4_unified in
  *  ./embedder.ts and the SigLIP encoder in ./siglip.ts): preprocess image
@@ -158,23 +159,6 @@ export async function extractAudio(
     out.push({ ...m, content: parts });
   }
   return { messages: out, audio };
-}
-
-async function fetchMediaBytes(url: string, kind: "image" | "audio"): Promise<Uint8Array> {
-  if (url.startsWith("data:")) {
-    const comma = url.indexOf(",");
-    if (comma === -1) throw new Error("malformed data: URL");
-    const meta = url.slice(0, comma);
-    const body = url.slice(comma + 1);
-    if (!meta.includes("base64")) throw new Error("data: URL must be base64");
-    return Uint8Array.from(Buffer.from(body, "base64"));
-  }
-  if (url.startsWith("http://") || url.startsWith("https://")) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`${kind} fetch failed: ${res.status} ${url}`);
-    return new Uint8Array(await res.arrayBuffer());
-  }
-  throw new Error(`unsupported ${kind} url scheme: ${url.slice(0, 16)}`);
 }
 
 /** Decoded + featurized audio clip, ready to splice. */

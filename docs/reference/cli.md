@@ -44,6 +44,7 @@ Common flags (full list in [server-config.md](server-config.md)):
 | `--batch <n>` | Continuous-batched serving cap, mlx-lm B=N parity (default 8; `--batch 1` pins the serial path) |
 | `--temperature` / `--top-p` / `--top-k` / `--max-tokens` | Server-wide sampling defaults (per-request fields still win) |
 | `--l1` / `--l2` | Parity tier alias: bit-exact to mlx-lm / bit-exact to mlx-optiq. **No tier = `--l1`** (the default since 2026-07-05 — output-changing levers are opt-in until they beat the L1 baseline in a paired A/B). Each expands to per-fork flags (`--compiled-decode`, `--compiled-activations`, `--fused-sdpa`, `--kv-quant`); a fork flag overrides one. `--l3` was removed 2026-07-05 and now errors (the Lab replaces it — [unified-engine-frontier-plan.md](../design/unified-engine-frontier-plan.md)). See [server-config.md](server-config.md#fidelity-tiers-and-the-decode-route---l1----l2). |
+| `--allow-private-media` | Let `image_url`/`audio_url` parts fetch from private/loopback/link-local hosts (blocked by default — SSRF guard; the 10 s timeout and 64 MB cap on remote media apply either way) |
 | `--no-open` | Don't auto-open the chat UI |
 
 Endpoints: `/v1/chat/completions`, `/v1/completions`, `/v1/messages`,

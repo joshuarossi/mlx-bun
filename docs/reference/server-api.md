@@ -88,6 +88,16 @@ Message `content` is a string or an array of parts:
 (http/https URLs also accepted; PNG, JPEG, HEIC, AVIF, WebP, TIFF, GIF,
 BMP via native OS codecs; requires a model with the vision sidecar).
 
+Remote (http/https) media URLs — image and audio alike — go through a
+destination policy: **private/loopback/link-local hosts are refused by
+default** (the request URL is attacker-controlled input — SSRF), every
+redirect hop is re-validated, and the fetch has a **10 s timeout** and a
+**64 MB response cap**. Violations are clean `400`s
+(`prompt build failed: image url rejected: …`). Serving media from a LAN
+host (a NAS, another machine) is the opt-in
+[`--allow-private-media`](server-config.md#start-flags) flag. `data:`
+URLs are decoded locally and never policy-checked.
+
 ### Audio input
 
 Audio rides the same content-part array (OpenAI-canonical shape plus two
@@ -98,6 +108,9 @@ aliases):
 { "type": "audio",       "data": "<base64>" }                        // alias
 { "type": "audio_url",   "audio_url": { "url": "data:…|http(s)://…" } } // alias
 ```
+
+(`audio_url` http/https fetches follow the same destination policy,
+timeout, and size cap as `image_url` — see above.)
 
 ```bash
 curl -s http://localhost:8080/v1/chat/completions \
