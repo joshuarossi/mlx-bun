@@ -187,6 +187,34 @@ dominates both paths) — no speed claim until a quiet-machine benchmark.sh
 run; the win is removing the O(T) transform, which matters more once the
 gather itself is fused.
 
+## Future: rotation-based WEIGHT quantization (noted 2026-07-06, Josh)
+
+The same rotate-then-quantize mechanism applies to weights, and we already
+ship a quantization tool (`convert`/`fuse` verbs) to hang it on — as a
+further optimization of quantization itself, the quantizer leg of the §7.1
+mixed-precision program (allocation × quantizer, same orthogonality as KV):
+
+- Rotation smears outlier channels so a low-bit codebook covers the signal
+  mass — the QuaRot/SpinQuant family (both cited by the TurboQuant paper).
+- Weights beat KV on one axis: the rotation FOLDS into adjacent weight
+  matrices offline (R into one layer, Rᵀ into the next) → zero runtime
+  cost, no online transform at all.
+- Weights lose on the other: they're static, so calibration-aware methods
+  (GPTQ/AWQ/imatrix, optiq sensitivity maps) are admissible and set a
+  higher baseline than any calibration-free scheme — the win to chase is
+  rotation COMPOSED WITH calibration/allocation, not instead of it.
+- A Lloyd-Max weight FORMAT needs custom quantized-matmul kernels — the
+  26B gather-qmv shelving (dispatch fixed-cost ate the prize) is the
+  cautionary precedent. Rotation-folding into mlx's EXISTING affine format
+  needs no new kernels and is the cheap first experiment.
+- Activations (W4A4/QuaRot act-quant): more involved (online rotation,
+  fused kernels) and mispriced for this hardware — no int4 tensor cores,
+  decode is weight-bandwidth-bound. See w4a16-compute-precision-spike.md.
+  Not queued.
+
+Gate when picked up: perplexity + frozen 6-task eval at equal bpw vs the
+plain affine convert output (the §7.1 gate, eval DB rows).
+
 ## Non-goals for v1 (recorded so they don't creep)
 
 - Fused quantized-SDPA Metal kernel (the remaining fetch cost is the
