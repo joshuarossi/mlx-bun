@@ -59,6 +59,18 @@ is the gate the Performance/Quality numbers are only meaningful *under*.
 Fused quantized-attention prefill is separately bit-exact against
 optiq's reference (`tests/fused-sdpa.test.ts`).
 
+**Served-surface parity (2026-07-07, prefill tail-split fix):** the two
+serve-bench parity residuals (cpm5 + 12B `/v1/completions` probe ✗ on the
+07-07 run) are closed — with the oracle's step-0 prefill convention
+adopted (drain to len−1, step 0 from an L=1 forward of the last prompt
+token; `MLX_BUN_PREFILL_TAIL_SPLIT`), live HTTP probes are
+**byte-identical** to `mlx_lm.server`/optiq serve for MiniCPM5-1B,
+gemma-4-e4b, AND gemma-4-12B, on completion + chat probes, in both the
+unified (`--batch 8` default) and `--batch 1` lanes; script-level A/B
+shows 64/64 token ids + top-2 logprob values identical per step
+(`scripts/experiments/serve-parity-probe.ts`,
+`scripts/experiments/step0-top2-dump.ts`).
+
 ---
 
 ## Methodology change (2026-07-05)
