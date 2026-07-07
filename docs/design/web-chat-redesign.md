@@ -297,6 +297,17 @@ nothing else in this doc depends on it.)*
    model/adapter, command palette) has a keyboard path, but nothing is
    keyboard-only-discoverable — mirror ChatGPT's documented shortcut sheet
    (`Cmd/Ctrl+/`) as the baseline, not a stretch goal.
+9. **The bar for done is perfect visual polish.** No overlapping text at
+   any viewport width, no animation jitter, no layout shift on stream, no
+   flash of unstyled/mispositioned anything. A feature that works but
+   looks unfinished is not done — it ships when it feels like a polished,
+   professional, excellent experience. Concretely: every animation is
+   compositor-friendly (transform/opacity only), interruptible, and
+   respects `prefers-reduced-motion`; every overlay/popover is tested at
+   375px, 768px, and desktop widths and at 200% zoom; streaming text never
+   causes scroll jank or reflow of completed content (§5.3's memoization
+   is a polish requirement, not just a perf fix). Visual QA at phase
+   boundaries is part of the definition of done, same standing as tests.
 
 ---
 
@@ -585,6 +596,11 @@ tour, not a search bar — presence.
   Ship a lightweight persistent assistant affordance on every view —
   Developer tabs included — with the Chat tab as the deep surface
   (PortfolioManager's floating-panel pattern proves it on our SDK).
+  **And the panel itself is never intrusive:** the moment the user engages
+  the page (clicks Quantize, focuses a form field), the panel minimizes
+  with a smooth animation to a small persistent affordance — you know it's
+  there, it isn't blocking you. It re-expands on invocation, never on its
+  own initiative.
 - **The snapshot carries *process state*, not just elements.** "Knows what
   part of the process you're in" means the context push includes wizard
   step (Quantize step 2 of 4), running job progress, which fields are
