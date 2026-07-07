@@ -71,7 +71,21 @@ class AsyncMutex {
   }
 }
 
-export type Vision = { embeddings: MlxArray; imageMask: MlxArray };
+/** Embeddings-prefill payload for media prompts (vision and/or audio — the
+ *  name predates audio). Any request carrying one routes to the serial lane
+ *  (shape.hasVision) and prefills through generate()'s promptEmbeddings
+ *  path, bypassing the prompt cache. */
+export type Vision = {
+  embeddings: MlxArray;
+  /** bool [L] image-token mask for the bidirectional attention overlay.
+   *  Absent when the prompt carries ANY audio — audio(-containing) prompts
+   *  run fully causal (audio-input-plan.md §3.3 Q1). */
+  imageMask?: MlxArray;
+  /** bool [L] union multimodal soft-token mask (image | audio) for
+   *  per-layer-input id zeroing. Absent on the legacy vision-only shape,
+   *  where zeroing falls back to imageMask. */
+  multimodalMask?: MlxArray;
+};
 
 /** Per-token sink: returning `false` halts this generation (stop sequence).
  *  `logprobs` is only populated on the serial lane when the request asked for

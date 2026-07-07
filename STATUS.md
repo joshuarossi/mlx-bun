@@ -625,6 +625,28 @@ or shelved with numbers — ledger:
 
 ## Active workstreams
 
+### Audio input — phase opened 2026-07-07 (branch `josh/audio-input`)
+
+Audio-in/text-out through the chat API, e4b first. Survey done: mlx-lm
+strips audio entirely (sanitize pops the towers, server 400s non-text) →
+the oracle is optiq's internal gemma4 machinery (USM mel extractor +
+12-block Conformer + embed_audio, complete but unexposed by its own serve
+frontend). The local e4b OptiQ-4bit sidecar ALREADY carries all 752 audio
+tensors + `audio_config` + token ids (boa 256000 / audio 258881 / eoa
+258883) — no downloads. Plan + phase boxes: PLAN.md "audio input" phase,
+design in [docs/design/audio-input-plan.md](docs/design/audio-input-plan.md).
+**A0 DONE (2026-07-07):** conv2d bound (found + worked around a bun:ffi
+stack-arg ABI bug — see CLAUDE.md hard-won facts +
+lab/repro/bun-ffi-stack-args), §3.3 semantics resolved (audio strictly
+causal), fixtures + oracle goldens live (speech greedy = token-perfect
+transcription). A0-A4 DONE — audio is SERVED on e4b: live HTTP transcription matches the
+oracle golden EXACTLY, mixed image+audio grounds on both media, serial-lane
+isolation proven, docs shipped in the same commit. Remaining: A5 (quotable
+bench cells need a QUIET machine — Josh-gated; 12B audio cell needs a
+sidecar rebuild via optiq build_vision_sidecar — download, Josh-gated). A1 DONE:
+mel port is 1-ulp-f32 from the oracle (the numpy f32 Hann window is baked
+in as the spec — see PLAN.md A1).
+
 ### Batched serving — engine live, wave-1 upgraded
 
 `--batch N` continuous batching is live for full-attention (CPM),
@@ -769,6 +791,17 @@ rename. **Josh-gated GPU:** data scale + **12B retarget** + train + live-τ
 [docs/investigations/dspark-handoff.md](docs/investigations/dspark-handoff.md).
 
 ## Josh-gated (needs hardware / downloads / own shell)
+
+0. **Audio A5 closeout** (branch `josh/audio-input`, PLAN "audio input"):
+   - Quiet-machine bench cells → RESULTS.md: audio tower ms, TTFT delta
+     vs text-only, RSS delta with the tower loaded (the serve test's e4b
+     load+transcribe round trip was ~2.3 s on a loaded box — directional
+     only, don't quote).
+   - 12B audio cell: rebuild its sidecar via optiq `build_vision_sidecar`
+     (selective download pulls only the audio shards; the local 12B
+     sidecar holds 1 audio tensor) → then regen 12B audio goldens and
+     clone the e4b test cells (per-model doctrine: every cell validates
+     or defers explicitly).
 
 1. **Fresh clean-machine benchmark** (reboot + `sudo purge` first):
    - `./benchmark.sh --redo` — the standing h2h rows.

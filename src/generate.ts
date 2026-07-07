@@ -50,8 +50,16 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
    *  covering the whole prompt; prefilled in one shot (no chunking).
    *  Caller keeps ownership. */
   promptEmbeddings?: MlxArray;
-  /** bool [L] marking image tokens (bidirectional attention among them). */
+  /** bool [L] marking image tokens (bidirectional attention among them).
+   *  MUST be unset when the prompt contains any audio — audio prompts run
+   *  fully causal (audio-input-plan.md §3.3 Q1). */
   imageMask?: MlxArray;
+  /** bool [L] marking ALL multimodal soft tokens (image | audio) for
+   *  per-layer-input id zeroing (e2b/e4b), decoupled from imageMask so
+   *  audio-only prompts (no bidirectional mask) still zero their positions.
+   *  When unset, zeroing falls back to imageMask (the legacy vision shape).
+   *  Caller keeps ownership. */
+  multimodalMask?: MlxArray;
   /** Quantize full-attention KV caches to this many bits (4 or 8).
    *  Rotating (sliding-window) caches stay bf16 — they're window-capped
    *  and upstream rotating-cache quantization is NYI. */
@@ -533,10 +541,11 @@ async function* generateInner(
       if (needsTokenHistory)
         history = ops.fromInt32(promptTokens, [promptTokens.length]);
       // e2b/e4b need the spliced token ids to build per-layer inputs
-      // (image positions zeroed inside forwardEmbeddings).
+      // (multimodal soft-token positions zeroed inside forwardEmbeddings).
       const embedIds = ops.fromInt32(promptTokens, [1, promptTokens.length]);
       h0 = model.forwardEmbeddings(
         options.promptEmbeddings, cache, options.imageMask ?? null, embedIds,
+        options.multimodalMask ?? null,
       );
       embedIds.dispose();
     } else {

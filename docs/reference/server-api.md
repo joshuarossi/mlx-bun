@@ -88,6 +88,52 @@ Message `content` is a string or an array of parts:
 (http/https URLs also accepted; PNG, JPEG, HEIC, AVIF, WebP, TIFF, GIF,
 BMP via native OS codecs; requires a model with the vision sidecar).
 
+### Audio input
+
+Audio rides the same content-part array (OpenAI-canonical shape plus two
+aliases):
+
+```jsonc
+{ "type": "input_audio", "input_audio": { "data": "<base64>", "format": "wav" } }
+{ "type": "audio",       "data": "<base64>" }                        // alias
+{ "type": "audio_url",   "audio_url": { "url": "data:…|http(s)://…" } } // alias
+```
+
+```bash
+curl -s http://localhost:8080/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d "$(jq -n --arg b64 "$(base64 -i clip.wav)" '{
+    messages: [{ role: "user", content: [
+      { type: "input_audio", input_audio: { data: $b64, format: "wav" } },
+      { type: "text", text: "Transcribe this audio." }
+    ]}],
+    max_tokens: 64, temperature: 0
+  }')"
+```
+
+- **Models**: any model whose `config.json` carries an `audio_config`
+  AND whose `optiq_vision.safetensors` sidecar ships the audio-tower
+  tensors — gemma-4 **e4b** today. Auto-detected, no flags (mirrors
+  vision). A request WITH audio on any other model gets an explicit
+  `400` naming the model — never a silent text-only answer.
+- **Formats**: WAV is decoded natively (PCM 16/24/32-bit + float32, any
+  channel count / sample rate). mp3, m4a/AAC, FLAC, ogg(-CAF), AIFF and
+  anything else CoreAudio reads transcode via macOS `afconvert`;
+  undecodable bytes are a `400` (`audio transcode failed …`).
+- **Internal format**: 16 kHz mono — multi-channel input is mean-mixed,
+  other rates resample. Clips truncate at **30 s** (the oracle
+  processor's 480 000-sample cap); one clip costs
+  `ceil(duration_ms / 40)` prompt tokens, at most **750**.
+- Multiple clips per message and **mixed image+audio** requests work;
+  media splices in document order.
+- **Routing**: audio requests always run on the **serial lane** (never
+  batched, even under `--batch N`) and skip the prompt cache — soft
+  tokens are identical placeholder ids, so prefix matching across
+  different clips would false-hit.
+- The Anthropic surface (`/v1/messages`) has no audio block type in its
+  protocol; audio blocks there are a `400` pointing back to this
+  endpoint.
+
 Non-streaming response:
 
 ```jsonc
@@ -240,7 +286,9 @@ notes: [structured-output.md](../design/structured-output.md).
 All errors are `{ "error": { "message": …, ... } }`.
 
 - `400` — malformed JSON, empty `messages`, unknown adapter id, vision
-  request on a model without a sidecar, prompt build failures,
+  request on a model without a sidecar, audio request on a model
+  without an audio tower (message names the model), audio transcode
+  failures, prompt build failures,
   non-numeric `logit_bias` keys/values (`logit_bias must be a dict of
   int to float`, mlx-lm's coercion error), invalid logprobs params
   (mlx-lm's exact validation: `logprobs must be of type bool`,
@@ -315,7 +363,9 @@ Code works as a client this way.
   content-block arrays; `tool_use` / `tool_result` blocks map to the
   native gemma tool-calling path (better than the optiq shim, which
   inlines them as text); `image` blocks (base64 or url source) hit the
-  vision path on sidecar models.
+  vision path on sidecar models. The protocol has no audio input block;
+  audio-shaped blocks (`input_audio` / `audio` / `audio_url`) are
+  rejected with a `400` pointing to `/v1/chat/completions`.
 - `tools` (`{name, description, input_schema}`) map to function tools;
   server-tool types (web_search, …) are dropped silently.
 - `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences`,

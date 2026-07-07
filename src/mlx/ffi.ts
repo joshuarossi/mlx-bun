@@ -173,6 +173,16 @@ export const C = dlopen(LIBMLXC_PATH, {
   // (res, input, weight, stride, padding, dilation, groups, stream) — depthwise
   // causal conv1d for Qwen3.5 gated-DeltaNet (groups == channels, padding 0).
   mlx_conv1d: { args: [P, u64, u64, i32, i32, i32, i32, u64], returns: i32 },
+  // C signature: (res, input, weight, stride_0, stride_1, padding_0,
+  // padding_1, dilation_0, dilation_1, groups, stream) — NHWC conv2d for the
+  // gemma-4 audio SSCP subsampler.
+  // HAZARD (lab/repro/bun-ffi-stack-args): Apple arm64 packs sub-8-byte STACK
+  // args at natural size (dilation_1@sp+0, groups@sp+4, stream@sp+8) but
+  // bun:ffi 1.3.14 writes one 8-byte slot per arg — the callee reads shifted
+  // garbage and mlx segfaults on a bogus stream. Workaround: declare the two
+  // stack ints as ONE u64 (dilation_1 | groups<<32) so Bun's slot layout
+  // byte-matches the Apple ABI. ops.conv2d does the packing.
+  mlx_conv2d: { args: [P, u64, u64, i32, i32, i32, i32, i32, u64, u64], returns: i32 },
   // --- training: autograd (value_and_grad) — proven in lab/spikes/phase-train-vag.ts.
   // mlx_value_and_grad(res: mlx_closure_value_and_grad*, fun: mlx_closure,
   //   argnums: int*, n) → builds a value+grad closure differentiating the

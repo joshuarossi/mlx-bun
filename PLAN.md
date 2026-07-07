@@ -2514,6 +2514,109 @@ closed (details in STATUS.md, one section per fix):
 Residual: quiet-machine bench rerun for quotable perf/RSS legs (numbers
 this session were on a loaded box — parity results are load-independent).
 
+## Phase: audio input — gemma-4 audio tower, e4b first `[ ]` (opened 2026-07-07)
+
+Audio-in/text-out through the chat API. Full design + survey:
+**docs/design/audio-input-plan.md** (mlx-lm strips audio entirely → the
+oracle is optiq's internal gemma4 machinery, complete but unexposed by
+its own serve frontend; our local e4b OptiQ-4bit sidecar ALREADY holds
+all 752 `audio_tower.*`/`embed_audio.*` bf16 tensors + `audio_config` +
+token ids — no downloads needed). Mirrors the vision port: same sidecar,
+same splice/merge seams, same parity-tier ladder.
+
+- [x] **A0 groundwork** (2026-07-07) — `mlx_conv2d` bound; binding it
+      surfaced a REAL bun:ffi ABI bug (sub-8-byte stack args get 8-byte
+      slots; Apple packs at natural size → shifted garbage from the 10th
+      arg, mlx segfaulted on a bogus stream). Workaround: dilation_1|groups
+      packed into one u64; bit-exact vs Python mlx incl. groups
+      (tests/conv2d.test.ts); repro lab/repro/bun-ffi-stack-args; all
+      other >8-arg bindings audited clean. Goldens live:
+      `scripts/gen-e4b-audio-golden.py` → goldens/e4b-audio.json +
+      4 .bin blobs (mel [159,128]/[267,128], embeds [40,2560]/[67,2560]);
+      soft tokens 40/67 exactly as computed from duration; oracle greedy
+      decodes: chirp → "cricket chirping", speech → a TOKEN-PERFECT
+      "The quick brown fox jumps over the lazy dog." Fixtures tracked
+      (fixtures/audio/, regen script TS port byte-identical to the numpy
+      original; first-cut linear sweep replaced — e4b grounds sweeps as
+      "dog barking", warble grounds robustly). All four §3.3 questions
+      RESOLVED in the design doc: audio strictly causal (audio presence
+      disables the vision bidir overlay), per-layer ids zero the mm
+      union, USM params are fixed defaults, boa/eoa splice-side.
+- [x] **A1 decode + features** (2026-07-07) — `src/audio/decode.ts`
+      (RIFF/WAVE PCM16/24/32/f32, mean mixdown, linear resample; PCM16
+      /32768 = the oracle scaling) + `src/audio/features.ts` (USM mel
+      port: pad-to-128-multiple, 160-zero semicausal left pad, 321-frame
+      unfold, f32 Hann product, f64 rfft512, transformers-semantics HTK
+      filter bank, log+1e-3 floor). KEY FINDING: numpy builds the Hann
+      window in float32 and its vectorized f32 cos differs from
+      fround(Math.cos) by 1 ulp — that ulp log-amplifies to ~4.5e-4 in
+      quiet mel bins, so the oracle's exact 320 f32 window values are
+      BAKED into features.ts as the spec (with regen one-liner). With
+      them the port hits maxDiff = 1 ulp f32 (4.77e-7) vs the T0 mel
+      goldens — gated at 1e-5 in tests/audio-features.test.ts (7 tests,
+      model-free; golden-presence-gated per goldens/README.md). Soft
+      tokens + frame counts exact (40/159, 67/267). afconvert transcode
+      + spliced-ids exactness land with A3/A4 where those layers exist.
+- [x] **A2 tower** (2026-07-07) — `src/audio/conformer.ts` (AudioTower:
+      SSCP + 12 Conformer blocks + clipped linears + embed_audio from the
+      vision sidecar). T1 result: **bit-exact** — rel-RMSE 2.4e-8 both
+      fixtures (pure f32-ulp roundtrip; gate 1e-6, ~40× margin). Root
+      cause of the free bit-exactness: the oracle feeds f32 mel into bf16
+      weights and mlx PROMOTES — activations stay f32 end-to-end (unlike
+      the vision tower's bf16 composition), so there is no drift to
+      accumulate; the port must NOT cast activations to weight dtype.
+      Clipped-linear toggle: OFF diverges 90.2% rel-RMSE — the shipped
+      min/max stats are load-bearing. Sidecar convs are already
+      MLX-layout (no sanitize transpose). Golden reference point:
+      embed_audio output BEFORE /embed_scale; features() returns
+      pre-divided (vision convention). tests/e4b-audio-tower.test.ts
+      (weight+golden-gated).
+- [x] **A3 prompt + LM** (2026-07-07) — `buildMultimodalPrompt`
+      (src/vision/prompt.ts generalized; images+audio in document order;
+      buildVisionPrompt kept as thin wrapper); `<|audio|>` → boa +
+      258881×n + eoa from DECODED samples; forwardEmbeddings gained a
+      `multimodal` zeroing mask DECOUPLED from `bidir` (audio-only
+      prompts are causal but still zero per-layer ids; `?? bidir`
+      fallback keeps vision unchanged); GenerateOptions.multimodalMask.
+      T2 EXCEEDED the planned prefix gate: **full greedy stream +
+      decoded text match the oracle EXACTLY (incl. EOS)** on both
+      fixtures; spliced ids exact. Parity trap found: the oracle merge
+      divides by embed_scale AFTER the bf16 cast (mlx weak scalars adopt
+      array dtype) — tower features(preDivide=false) + builder-side
+      astype→div mirrors it literally. promptEmbeddings prefill is
+      single-shot (matches the oracle script; tail-split applies only to
+      the token-id path). 17/17 across audio+vision suites, tsc clean.
+- [x] **A4 serve + docs** (2026-07-07) — server.ts audio branch (hasAudio
+      over `input_audio`/`audio`/`audio_url`, lazy getAudioTower from the
+      same sidecar, ZERO new flags), mixed image+audio via one
+      buildMultimodalPrompt call, afconvert transcode
+      (src/audio/transcode.ts, content-based RIFF sniff first), 30 s
+      truncation mirroring the oracle (480k samples BEFORE features —
+      keeps the 750-token splice consistent), Anthropic endpoint 400s
+      audio blocks with an OpenAI pointer. Serial-lane isolation PROVEN
+      non-vacuously (batch.submitted_rows stayed 0 across an audio
+      request while a concurrent text request advanced it); media
+      requests skip prompt cache + spec decode. T3: gated serve test
+      (MLX_BUN_TEST_AUDIO_SERVE=1) 5/5 — live HTTP transcription is
+      EXACTLY the golden string; m4a→CoreAudio transcode transcribes;
+      malformed parts → 400. Three bugs found in passing:
+      normalizeMessages silently ATE audio-bearing content arrays
+      (hasMediaPart fix was load-bearing), a pre-existing
+      vision-embeddings leak on the adapter-resolve 400 path, and
+      afconvert cannot ENCODE mp3 (decode-only — test fixture is m4a).
+      Docs in the same commit: server-api.md, features-matrix.md,
+      README. 41/41 across audio+vision+anthropic suites; tsc + hygiene
+      green.
+- [ ] **A5 bench + coverage** — benchmark.sh cells (tower ms, TTFT delta,
+      RSS delta) → RESULTS.md; 12B audio cell (sidecar rebuild via optiq
+      `build_vision_sidecar` — local 12B sidecar has 1 audio tensor);
+      audio×batching=serial documented. Exit: numbers curated; e4b cell
+      validated, 12B validated or explicitly deferred.
+
+Non-goals pinned in the design doc §5: TTS/STS/transcription endpoints,
+streaming audio, >30 s (cap at 750 like the oracle), video, batched audio
+prefill, and 26B-A4B/DiffusionGemma (no `audio_config` — architectural).
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the
