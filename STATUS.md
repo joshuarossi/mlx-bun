@@ -617,6 +617,19 @@ or shelved with numbers — ledger:
 
 ## Active workstreams
 
+### Audio input — phase opened 2026-07-07 (branch `josh/audio-input`)
+
+Audio-in/text-out through the chat API, e4b first. Survey done: mlx-lm
+strips audio entirely (sanitize pops the towers, server 400s non-text) →
+the oracle is optiq's internal gemma4 machinery (USM mel extractor +
+12-block Conformer + embed_audio, complete but unexposed by its own serve
+frontend). The local e4b OptiQ-4bit sidecar ALREADY carries all 752 audio
+tensors + `audio_config` + token ids (boa 256000 / audio 258881 / eoa
+258883) — no downloads. Plan + phase boxes: PLAN.md "audio input" phase,
+design in [docs/design/audio-input-plan.md](docs/design/audio-input-plan.md).
+Next action: A0 (mlx_conv2d binding, golden regen script + fixtures,
+resolve the four §3.3 open questions).
+
 ### Batched serving — engine live, wave-1 upgraded
 
 `--batch N` continuous batching is live for full-attention (CPM),

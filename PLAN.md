@@ -2472,6 +2472,48 @@ closed (details in STATUS.md, one section per fix):
 Residual: quiet-machine bench rerun for quotable perf/RSS legs (numbers
 this session were on a loaded box — parity results are load-independent).
 
+## Phase: audio input — gemma-4 audio tower, e4b first `[ ]` (opened 2026-07-07)
+
+Audio-in/text-out through the chat API. Full design + survey:
+**docs/design/audio-input-plan.md** (mlx-lm strips audio entirely → the
+oracle is optiq's internal gemma4 machinery, complete but unexposed by
+its own serve frontend; our local e4b OptiQ-4bit sidecar ALREADY holds
+all 752 `audio_tower.*`/`embed_audio.*` bf16 tensors + `audio_config` +
+token ids — no downloads needed). Mirrors the vision port: same sidecar,
+same splice/merge seams, same parity-tier ladder.
+
+- [ ] **A0 groundwork** — `mlx_conv2d` binding (full-header signature);
+      `scripts/regen-audio-goldens.py` + tracked fixtures (chirp WAV +
+      short speech clip); resolve the four §3.3 open questions (audio
+      bidir-attention semantics, per-layer id zeroing, per-bin mel stats
+      location, template-vs-splice boa/eoa) and write answers into the
+      design doc. Exit: goldens on disk, semantics documented.
+- [ ] **A1 decode + features** — `src/audio/decode.ts` (WAV→16 kHz mono,
+      afconvert fallback), `src/audio/features.ts` (USM mel, verbatim
+      port). Exit: T0 model-free gates green (mel tolerance; soft-token
+      count + spliced ids EXACT).
+- [ ] **A2 tower** — `src/audio/conformer.ts` (SSCP + 12 Conformer blocks
+      + clipped linears + embed_audio, bf16, from the vision sidecar).
+      Exit: T1 rel-RMSE gate vs oracle tower output.
+- [ ] **A3 prompt + LM** — generalize the vision prompt builder to
+      multimodal document order; `<|audio|>` → boa + 258881×n + eoa
+      (n = min(ceil(ms/40), 750)); merged embeddings through
+      `forwardEmbeddings`. Exit: T2 greedy-prefix + grounded gates green
+      (`tests/e4b-audio.test.ts`); vision goldens unchanged.
+- [ ] **A4 serve + docs** — server.ts `input_audio`/`audio`/`audio_url`
+      parts, lazy tower, serial-lane routing, mixed image+audio;
+      server-api.md + features-matrix.md + README in the SAME commit.
+      Exit: T3 curl e2e; docs-map hygiene green.
+- [ ] **A5 bench + coverage** — benchmark.sh cells (tower ms, TTFT delta,
+      RSS delta) → RESULTS.md; 12B audio cell (sidecar rebuild via optiq
+      `build_vision_sidecar` — local 12B sidecar has 1 audio tensor);
+      audio×batching=serial documented. Exit: numbers curated; e4b cell
+      validated, 12B validated or explicitly deferred.
+
+Non-goals pinned in the design doc §5: TTS/STS/transcription endpoints,
+streaming audio, >30 s (cap at 750 like the oracle), video, batched audio
+prefill, and 26B-A4B/DiffusionGemma (no `audio_config` — architectural).
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the
