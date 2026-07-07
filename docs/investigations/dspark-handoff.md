@@ -26,7 +26,7 @@ of the design doc). Once the deepspec-variant port lands:
 
 ```sh
 # 1. download the trained drafter (~6.9 GB)
-HF_HUB_DISABLE_XET=1 hf download deepseek-ai/dspark_gemma4_12b_block7
+mlx-bun get deepseek-ai/dspark_gemma4_12b_block7
 # 2. oracle gate: dump their reference trace (temp 0 = RNG-free deterministic)
 #    in a torch venv, then compare ours round-for-round (scripts staged)
 # 3. measure + serve (auto-detected via config.json architectures field)
@@ -85,6 +85,36 @@ Caveat: trained against the bf16 HF target; our serving 12B is OptiQ-4bit —
 tapped hiddens differ numerically, so measure acceptance rather than assuming
 their 60–85%.
 
+**FIRST LIVE RUN (2026-07-07, loaded machine — directional only):** τ ≈ 2.8
+committed/target-forward (200 tok / 72 verify rounds; per-token acceptance
+26–33% — the predicted OptiQ-4bit degradation), output coherent, losslessness
+holding. **But wall-clock LOST ~3.4×** (spec 14.6 vs serial 49.8 agg tok/s;
+the 20 s bench TTFT is conc-4 queueing on the serial-forced spec lane, not
+prefill). The tax is the drafter itself. **The full step-by-step program for
+the next pass is
+[docs/design/dspark-serving-program.md](../design/dspark-serving-program.md)**
+(phases, gates, dependency graph; pickup at TurboQuant merge, only its
+Phase 5 waits for it). Lever summary:
+1. **Quantize the drafter** — the big one, and the ideal quantization target
+   PERIOD: drafter numerics only move ACCEPTANCE, never correctness
+   (losslessness is structural), so aggressive bpw is safe and the gate is a
+   single acceptance A/B. 6.9 GB bf16 → ~1.8 GB @4-bit kills both the
+   ~3 GB/round bandwidth tax (2 GB lm_head + 7×134 MB markov_w2 reads) and
+   the 14 GB two-model memory pressure on 24 GB. Uniform 4-bit (mlx-native)
+   first as the baseline; **TurboQuant (Phase 13), when it lands, competes
+   on acceptance-per-byte against that baseline** — the drafter is its
+   lowest-risk first customer. Enabler either way: quantized-weight support
+   in deepspec-module's forward (quantized_matmul, the house pattern).
+2. **Tighten deepspec draftBlock** — ~14 host syncs/round (7 argmax + 7
+   confidence reads); replay the on-device chaining + deferred-conf
+   tightening already done for our own module (threshold=0 needs NO conf
+   reads).
+3. **captureLayer in the GENERATED gemma forwards** — tapped verifies
+   currently fall back to the monolith (correct-but-unspecialized); teach
+   scripts/gen-model.ts to emit the tap so spec verifies keep the fast path.
+4. **γ sweep** — γ=7 at ~30% acceptance wastes drafts;
+   `--num-draft-tokens 2..3` may net better wall-clock free of any code.
+
 ## PATH B — train our own module (custom targets / research)
 
 The payoff target is **12B** (27B is memory-infeasible to train on 24 GB; the
@@ -101,7 +131,7 @@ superseded.
 ```sh
 # 0. one-time: cache the 12B target + a prompt/topic corpus (thousands of
 #    on-distribution topics — the data-scale lever; 160 only reached per-pos ~0.17).
-HF_HUB_DISABLE_XET=1 hf download mlx-community/gemma-4-12B-it-OptiQ-4bit
+mlx-bun get mlx-community/gemma-4-12B-it-OptiQ-4bit
 # (12B target may need the serve process stopped to free memory for regen.)
 
 # 1. regen multi-layer training shards from the 12B target's own generations

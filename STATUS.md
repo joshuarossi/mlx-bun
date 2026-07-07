@@ -710,9 +710,15 @@ monolith when hiddenTap is set (they never captured — 12B tapping would have
 thrown; generator patched too), and the seam accepts d=0 (DeepSpec ℓ=0 = plain
 tapped step). Oracle scripts staged (temp-0 RNG-free trace: `scripts/
 oracle-dspark-deepspec.py` → `scripts/dspark-deepspec-compare.ts`). Real 12B
-tap layers `[5,17,29,41,46]` adopted (our guess superseded). **Josh's step is
-now just PATH A in the handoff: download their 6.9 GB drafter → oracle gate →
-measure/serve. No training required for the first real speedup.**
+tap layers `[5,17,29,41,46]` adopted (our guess superseded). **PATH A RAN
+2026-07-07 (post-merge): τ ≈ 2.8 (2.7× fewer target forwards, losslessness
+holding) but wall-clock −3.4× — the 6.9 GB bf16 drafter's own tax. The
+follow-up program is fully planned:
+[docs/design/dspark-serving-program.md](docs/design/dspark-serving-program.md)
+(drafter quantization — 4-bit baseline then TurboQuant as its lowest-risk
+first customer — + draftBlock tightening + generated-forward tap + the
+serving-UX/defaults pass; Josh picks up at TurboQuant merge, only Phase 5
+actually waits for it).**
 
 **Phase 2 (same session): every remaining paper component LANDED** via a
 multi-agent build + adversarial review — Alg-1 confidence-scheduled
