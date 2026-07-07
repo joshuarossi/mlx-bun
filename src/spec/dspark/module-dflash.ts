@@ -312,14 +312,17 @@ export class DflashDrafter {
     return { B, emb1 };
   }
 
-  /** RNN sequential head (design-doc Eq 6 shape — the DSpark paper PDF is not
-   *  in this repo; §"RNN sequential head" of docs/design/dspark-speculative-
-   *  decoding.md only names it as a Markov-head alternative with no formula,
-   *  so this is the natural GRU/Elman-style faithful reading: a scalar-gain
-   *  tanh recurrence over the SAME token embedding (markov.w1, weight-shared)
-   *  the Markov head uses, producing a per-position bias B_k exactly like Eq 5
-   *  so the rest of the module (base logits add, confidence input) is
-   *  untouched. FLAG: unverified against the actual paper equation. */
+  /** RNN sequential head — the ELMAN variant. VERIFIED-DIVERGENT from paper
+   *  Eq 6 (2026-07-06 audit vs arXiv:2607.05147): the paper's cell is GATED
+   *  over z_k=[s_{k−1}; W₁[x_{k−1}]; h_k] (backbone hidden included!) with a
+   *  fused (2r+d)→3r projection, s_k=σ(W_g z)⊙s_{k−1}+(1−σ)⊙tanh(W_c z),
+   *  B_k=W₂ᵀtanh(W_o z) — DeepSpec's RNNHead is that form. This ungated
+   *  tanh recurrence over the shared token embedding (no h_k) is kept as a
+   *  documented VARIANT ([[dont-delete-optionality-on-one-measurement]]):
+   *  the paper reports the RNN head's gains over Markov as "marginal" and
+   *  production uses Markov (our default). Add the gated cell as
+   *  seqHead:"gru" if it ever earns a run; details in the design doc's
+   *  "DeepSpec ground truth" section. */
   #rnn(prevToks: MlxArray): { B: MlxArray; emb1: MlxArray } {
     const { gamma: G, markovRank: r } = this.cfg;
     const A = prevToks.shape[0]!;

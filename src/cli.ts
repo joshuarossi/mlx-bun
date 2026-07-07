@@ -136,7 +136,9 @@ Model & quality:
                             Serial lane only — with --batch N a mounted draft
                             routes every request serial, like mlx_lm.server.
   --draft-kind <kind>       Override draft-artifact detection:
-                            two-model | assistant | dspark  [default: auto]
+                            two-model | assistant | dspark | deepspec
+                            (deepspec = DeepSeek's released Gemma4DSparkModel
+                            drafters)  [default: auto]
   --num-draft-tokens <n>    Drafts per verify round  [default: 3;
                             DSpark pins to its trained block width]
   --kv-quant <mode>         KV cache quantization: config (per-layer
@@ -1433,9 +1435,9 @@ switch (cmd) {
     }
     const draftKindRaw = opt("draft-kind");
     const draftKind = (draftKindRaw ?? undefined) as
-      | "dspark" | "assistant" | "two-model" | undefined;
-    if (draftKind !== undefined && !["dspark", "assistant", "two-model"].includes(draftKind)) {
-      console.error(`--draft-kind expects two-model|assistant|dspark (got "${draftKindRaw}")`);
+      | "dspark" | "deepspec" | "assistant" | "two-model" | undefined;
+    if (draftKind !== undefined && !["dspark", "deepspec", "assistant", "two-model"].includes(draftKind)) {
+      console.error(`--draft-kind expects two-model|assistant|dspark|deepspec (got "${draftKindRaw}")`);
       process.exit(1);
     }
     const sLoad = step("loading weights");

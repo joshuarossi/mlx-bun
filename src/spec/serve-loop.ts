@@ -317,7 +317,12 @@ export async function specServeRun(
       // borrows the target's anchor hidden; two-model/dflash ignore it.
       const drafts = source.draft(feed, n, stats.generatedTokens, anchorHidden ?? undefined);
       const d = drafts.length;
-      if (d < 1 || d > n) throw new Error(`DraftSource returned ${d} drafts (contract: 1..${n})`);
+      if (d < 0 || d > n) throw new Error(`DraftSource returned ${d} drafts (contract: 0..${n})`);
+      // d === 0 (a confidence scheduler skipping the round, DeepSpec ℓ=0
+      // semantics) needs NO special case: the verify window degenerates to
+      // [pending] alone, the accept walk to the single bonus position, commit
+      // to a 0-accept round (tapped sources still grow context by the anchor
+      // row — lockstep with the target cache).
       extras.drafted += d;
 
       // (b) ONE target forward over [pending, ...drafts] (optionally tapped for
@@ -399,7 +404,7 @@ export async function specServeRun(
 
       // (f) chain: mlx-lm's re-feed rule (generate.py:645-648)
       const emit = correction!; // non-null: the walk always sets it unless it broke on EOS/max inside accepts
-      if (kAccept === d) feed = [drafts[d - 1]!, emit];
+      if (d > 0 && kAccept === d) feed = [drafts[d - 1]!, emit]; // d=0 has no last draft to re-feed
       else feed = [emit];
       pending = emit;
     }

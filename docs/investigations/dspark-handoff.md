@@ -17,7 +17,75 @@ retarget + train + calibrate + measure; e4b not netting a speedup is a
 data/target-speed problem, not architecture. Full design:
 [docs/design/dspark-speculative-decoding.md](../design/dspark-speculative-decoding.md).
 
-## GPU run recipe — 12B retarget (Josh's shell; agent-spawned runs get reaped)
+## PATH A (preferred, no training) — DeepSeek's published 12B drafter
+
+DeepSeek released a TRAINED drafter for our exact target:
+`deepseek-ai/dspark_gemma4_12b_block7` (6.86 GB bf16, γ=7; DeepSpec repo is
+the MIT reference impl + the oracle — see the "DeepSpec ground truth" section
+of the design doc). Once the deepspec-variant port lands:
+
+```sh
+# 1. download the trained drafter (~6.9 GB)
+HF_HUB_DISABLE_XET=1 hf download deepseek-ai/dspark_gemma4_12b_block7
+# 2. oracle gate: dump their reference trace (temp 0 = RNG-free deterministic)
+#    in a torch venv, then compare ours round-for-round (scripts staged)
+# 3. measure + serve (auto-detected via config.json architectures field)
+mlx-bun serve --model gemma-4-12B-it-OptiQ-4bit --draft-model <snapshot-of-dspark_gemma4_12b_block7>
+```
+
+### Oracle protocol (step 2, expanded)
+
+Two staged scripts implement the temp-0 deterministic trace protocol against
+DeepSpec's own reference implementation (github.com/deepseek-ai/DeepSpec, MIT).
+At temperature 0 their leaky-rejection verify degenerates to exact argmax
+token-match — the whole round trace is RNG-free and reproducible, so a
+plain round-for-round diff is a real bit-exact gate (same discipline as the
+D2 diffusion oracle, minus RNG parity entirely — see the design doc's
+"DeepSpec ground truth" section).
+
+```sh
+# a. dump the reference trace — needs its OWN torch venv (NOT the mlx-lm
+#    oracle venv at /Users/joshrossi/Code/mlx-lm/.venv, which has no
+#    torch/deepspec and shouldn't); see the script header for the exact
+#    venv-setup + pip install steps.
+.venv-deepspec/bin/python scripts/oracle-dspark-deepspec.py \
+    --target <snapshot-dir-of-google/gemma-4-12B-it> \
+    --drafter <snapshot-of-dspark_gemma4_12b_block7> \
+    --data prompts.jsonl --n 8 --max-new-tokens 128 \
+    --temperature 0 --confidence-threshold 0 \
+    --out goldens/dspark-deepspec/trace-thr0.jsonl
+
+# b. compare our port round-for-round
+bun scripts/dspark-deepspec-compare.ts \
+    --fixture goldens/dspark-deepspec/trace-thr0.jsonl \
+    --target gemma-4-12B-it-bf16 --drafter <snapshot-of-dspark_gemma4_12b_block7>
+```
+
+Run the pair twice — once at `--confidence-threshold 0` (no pruning), once at
+`0.5` — to gate both the base draft loop and the confidence-truncation path.
+
+Fixture location: `goldens/dspark-deepspec/*.jsonl` follows the house
+manifest convention (goldens/README.md) — these are machine-independent
+**JSON manifests** (prompts + token-id traces, no tensor blobs), so they are
+the **tracked** kind, not the `.bin` machine-specific kind. Regenerate by
+rerunning step (a); there is no `scripts/regen-*` wrapper for this family yet
+since the oracle run needs its own GPU-hosting torch venv, not the mlx-lm
+oracle venv this repo otherwise standardizes on.
+
+**The OptiQ-4bit caveat is load-bearing, not a footnote**: the fixture above
+is generated against the bf16 HF target. A `dspark-deepspec-compare.ts` run
+with `--target` pointing at our bf16 12B is the TRUE bit-exact gate. A run
+with `--target` pointing at the OptiQ-4bit-quantized 12B we actually serve is
+a **separate acceptance-rate measurement** — tapped hiddens differ
+numerically at 4-bit, so round-for-round divergence there is expected, not a
+bug; pass `--acceptance-only` on that arm so the script reports an aggregate
+accept-length reading instead of a PASS/FAIL assert.
+
+Caveat: trained against the bf16 HF target; our serving 12B is OptiQ-4bit —
+tapped hiddens differ numerically, so measure acceptance rather than assuming
+their 60–85%.
+
+## PATH B — train our own module (custom targets / research)
 
 The payoff target is **12B** (27B is memory-infeasible to train on 24 GB; the
 pipeline stays dim-generic so 27B remains a future recipe). All three scripts
@@ -25,8 +93,10 @@ take `--model` and (new, 2026-07-06) `--tap-layers` — the retarget is now a
 pure parameterization, no code edits. **`--tap-layers` MUST be identical across
 regen and train** (the shard feature dim is `m*H`, `m = tapLayers.length`).
 
-12B has 48 layers → tap set `24,37,47,48` (mid / late / last / post-finalNorm
-sentinel = `layers.length`); tune if desired.
+12B tap set: use **`5,17,29,41,46`** — DeepSeek's actual trained
+`target_layer_ids` for this model (their layer-output convention matches our
+tapLayers indexing; audited 2026-07-06). Our earlier `24,37,47,48` guess is
+superseded.
 
 ```sh
 # 0. one-time: cache the 12B target + a prompt/topic corpus (thousands of
@@ -36,14 +106,14 @@ HF_HUB_DISABLE_XET=1 hf download mlx-community/gemma-4-12B-it-OptiQ-4bit
 
 # 1. regen multi-layer training shards from the 12B target's own generations
 bun scripts/dspark-regen-dflash.ts \
-  --model gemma-4-12B-it-OptiQ-4bit --tap-layers 24,37,47,48 \
+  --model gemma-4-12B-it-OptiQ-4bit --tap-layers 5,17,29,41,46 \
   --topics <thousands-of-topics.txt> --out data/dspark-12b --max-resp 320
 
 # 2. train the drafter against the 12B (warm-start survivable via --resume;
 #    GPU runs kept getting killed ~step 5000 pre-resume). Optional A/B:
 #    --seq-head rnn trains the Eq-6 RNN head instead of Markov (Eq 5).
 bun scripts/dspark-train-dflash.ts \
-  --model gemma-4-12B-it-OptiQ-4bit --tap-layers 24,37,47,48 \
+  --model gemma-4-12B-it-OptiQ-4bit --tap-layers 5,17,29,41,46 \
   --data data/dspark-12b --out ckpt/dspark-12b \
   --iters 8000 --batch 8 [--seq-head rnn] [--ddraft 2560] [--resume ckpt/dspark-12b]
 

@@ -197,15 +197,21 @@ export interface GenSamplingDefaults {
   repetitionPenalty?: number;
 }
 
-export type DraftKind = "dspark" | "assistant" | "two-model";
+export type DraftKind = "dspark" | "deepspec" | "assistant" | "two-model";
 
-/** Detect the draft artifact's kind so the right provider is loaded. All three
+/** Detect the draft artifact's kind so the right provider is loaded. All four
  *  providers share ONE serve loop (src/spec/serve-loop.ts). Exported for the
  *  bench harness (scripts/bench-feature-matrix.ts) — one detection, no drift. */
 export async function detectDraftKind(dir: string): Promise<DraftKind> {
-  if (await Bun.file(`${dir}/dspark.json`).exists()) return "dspark";
+  if (await Bun.file(`${dir}/dspark.json`).exists()) return "dspark"; // our trained module
   try {
-    const cfg = (await Bun.file(`${dir}/config.json`).json()) as { model_type?: string };
+    const cfg = (await Bun.file(`${dir}/config.json`).json()) as {
+      model_type?: string;
+      architectures?: string[];
+    };
+    // DeepSeek's released DSpark drafters (DeepSpec reference): no
+    // dspark.json, plain HF config stamped Gemma4DSparkModel.
+    if (cfg.architectures?.[0] === "Gemma4DSparkModel") return "deepspec";
     if (String(cfg.model_type ?? "").includes("assistant")) return "assistant";
   } catch {
     // no/unreadable config → fall through to a full second model
@@ -294,6 +300,13 @@ export async function loadContext(
       provider = p;
       // Pin to the trained block width — the serve loop must never ask for
       // more positions than the DSpark block was trained for (n ≤ cfg.gamma).
+      numDraftTokens = Math.max(1, Math.min(opts.numDraftTokens ?? p.gamma, p.gamma));
+    } else if (kind === "deepspec") {
+      const { DeepspecProvider } = await import("./spec/deepspec-source");
+      const p = await DeepspecProvider.load(dir);
+      provider = p;
+      // Same pin, from their config's block_size (e.g. 7 for the released
+      // dspark_gemma4_12b_block7).
       numDraftTokens = Math.max(1, Math.min(opts.numDraftTokens ?? p.gamma, p.gamma));
     } else if (kind === "assistant") {
       const { AssistantProvider } = await import("./spec/assistant-source");

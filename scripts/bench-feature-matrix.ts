@@ -192,6 +192,7 @@ const { loadContext, createServer, detectDraftKind } = await import("../src/serv
 async function loadDraftProvider(dir: string, targetVocabSize: number) {
   const kind = await detectDraftKind(dir);
   if (kind === "dspark") return (await import("../src/spec/dflash-source")).DflashProvider.load(dir);
+  if (kind === "deepspec") return (await import("../src/spec/deepspec-source")).DeepspecProvider.load(dir);
   if (kind === "assistant") return (await import("../src/spec/assistant-source")).AssistantProvider.load(dir);
   return (await import("../src/spec/two-model")).TwoModelProvider.load(dir, targetVocabSize);
 }

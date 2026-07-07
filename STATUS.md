@@ -681,7 +681,30 @@ untouched.
 a broad sample → promote to the real vault + nightly fold-in. Handoff:
 [docs/design/the-dreaming-handoff.md](docs/design/the-dreaming-handoff.md).
 
-### DSpark speculative drafter — PAPER CODE-COMPLETE + SERVE-INTEGRATED (2026-07-06); GPU-gated payoff remains
+### DSpark speculative drafter — PAPER CODE-COMPLETE + SERVE-INTEGRATED + DEEPSPEC ORACLE (2026-07-06); download-gated payoff
+
+**Phase 3 (same session): DeepSeek open-sourced DSpark** (DeepSpec, MIT +
+trained drafters incl. `dspark_gemma4_12b_block7` FOR OUR 12B TARGET) — so
+DSpark now has a real oracle ("if someone did it, there is already an
+oracle"). Two audit agents verified our build vs the paper (arXiv:2607.05147)
++ source: our loss/backbone/Markov/confidence match the paper EXACTLY; our
+scheduler matches the RELEASED reference (paper Alg-1/STS = their unreleased
+production layer); our Elman RNN differs from the paper's gated cell (kept as
+variant). **Their module is a different architecture** — ported faithfully
+(`src/spec/dspark/deepspec-module.ts`, copy-verbatim w/ source citations;
+k≡v single-KV attention, scale 1.0, partial RoPE 0.25, layer_scalar, softcap,
+incremental context-KV cache), wired behind the seam
+(`src/spec/deepspec-source.ts`, kind auto-detect on the `Gemma4DSparkModel`
+config stamp), reviewed (7 findings fixed: bf16 sampling fidelity, conf-head
+leak+precision, ~+4.8 GB transpose-copy memory, 3 silent-wrongness guards).
+Enablers fixed along the way: generated gemma forwards now fall back to the
+monolith when hiddenTap is set (they never captured — 12B tapping would have
+thrown; generator patched too), and the seam accepts d=0 (DeepSpec ℓ=0 = plain
+tapped step). Oracle scripts staged (temp-0 RNG-free trace: `scripts/
+oracle-dspark-deepspec.py` → `scripts/dspark-deepspec-compare.ts`). Real 12B
+tap layers `[5,17,29,41,46]` adopted (our guess superseded). **Josh's step is
+now just PATH A in the handoff: download their 6.9 GB drafter → oracle gate →
+measure/serve. No training required for the first real speedup.**
 
 **Phase 2 (same session): every remaining paper component LANDED** via a
 multi-agent build + adversarial review — Alg-1 confidence-scheduled

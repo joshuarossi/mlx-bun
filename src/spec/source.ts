@@ -46,10 +46,13 @@ export interface DraftSource {
    *  iff tapLayers is set). */
   prefill(promptIds: number[], ctxML?: MlxArray): void;
 
-  /** Propose 1..n tokens (RETURN LENGTH IS AUTHORITATIVE — a source may
+  /** Propose 0..n tokens (RETURN LENGTH IS AUTHORITATIVE — a source may
    *  return fewer than n, e.g. DSpark's confidence-scheduled draft-length
-   *  pruning; never zero). The serve loop verifies over exactly the returned
-   *  length. `feed` is the token(s) the draft has not yet consumed: [pending]
+   *  pruning; ZERO means "skip drafting this round" — DeepSpec ℓ=0 semantics,
+   *  the serve loop degenerates to one plain target step, still tapped +
+   *  committed for context-growing sources). The serve loop verifies over
+   *  exactly the returned length. `feed` is the token(s) the draft has not
+   *  yet consumed: [pending]
    *  after a rejection/first round, or [lastDraft, bonus] after an all-accept
    *  round (mlx-lm's re-feed rule, generate.py:645-648). `stepBase` is the
    *  emitted-token index, threaded to the sampler for per-step RNG streams.

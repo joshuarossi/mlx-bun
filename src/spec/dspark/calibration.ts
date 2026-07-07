@@ -1,17 +1,23 @@
-// STS calibration (DSpark paper §3.2.1) — fits per-position confidence
-// thresholds from real (confidence, accepted) verify outcomes, so the
-// scheduler in module-dflash.ts#forwardInfer (Alg 1) prunes positions the
+// Threshold calibration for the confidence scheduler — fits per-position
+// confidence thresholds from real (confidence, accepted) verify outcomes, so
+// the scheduler in module-dflash.ts#forwardInfer prunes positions the
 // confidence head can't actually call. Pure math, no MLX/GPU here: the
 // caller (scripts/dspark-calibrate.ts) collects samples off a live model via
 // dflashGenerate's onRound hook, this module just fits.
 //
-// ASSUMPTION FLAGGED: the paper PDF is not in this repo. §3.2.1 is described
-// in docs/design/dspark-speculative-decoding.md only at the level of "per-
-// position thresholds stored in dspark.json, consumed by the scheduler" — no
-// exact estimator or smoothing scheme is given. The isotonic-style "smallest
-// τ meeting a target precision, Laplace-smoothed" rule below is our shape for
-// that gap; it composes cleanly with Alg-1's existing `conf_k < threshold ⇒
-// drop` consumer and degrades safely (see edge rules on fitStsThresholds).
+// VERIFIED vs the paper + reference (2026-07-06 audit, arXiv:2607.05147 +
+// github.com/deepseek-ai/DeepSpec): the RELEASED reference schedules exactly
+// this way — per-position threshold truncation on sigmoid confidence
+// (default 0 = off) — so this calibrator fits the reference-shaped consumer.
+// The PAPER's §3.2.1 "STS" is a different mechanism (Sequential Temperature
+// Scaling: per-position temperatures by ECE grid search on cumulative
+// survival products, feeding Alg-1's throughput-maximizing scheduler with a
+// profiled SPS(B) cost table) — that machinery lives in DeepSeek's UNRELEASED
+// production serving layer, not in DeepSpec. Paper-faithful STS/Alg-1 is a
+// future Lab item; details in docs/design/dspark-speculative-decoding.md
+// "DeepSpec ground truth". The isotonic-style "smallest τ meeting a target
+// precision, Laplace-smoothed" fit below is ours (the reference ships no
+// calibrator at all — raw sigmoid vs a hand-set threshold).
 
 import type { StsCalibration } from "./module-dflash";
 
