@@ -29,16 +29,23 @@ has its own gate; the drafter-quantization thesis
 quant) the SAFEST: drafter numerics only move acceptance, never correctness,
 so the entire quality gate is one acceptance A/B.
 
-**THE OBJECTIVE, stated right (Josh, 2026-07-07): the point of a drafter is
-to predict tokens, not to be small.** speedup = τ·t_target/(t_draft+t_verify)
-— and our broken term is the NUMERATOR: 26–33% acceptance is a
-distribution-shift symptom (drafter trained on bf16 target hiddens, we feed
-it OptiQ-4bit hiddens), not a capability ceiling. The cost levers (Phases
-1–3) are necessary but subordinate: they set the size/speed point at which
-acceptance is then MAXIMIZED — quantization allocation, mixed-precision
-choices, and the fine-tune below all optimize acceptance-at-cost, never
-bytes for their own sake. A cheaper drafter that still predicts at 26% is
-just a cheaper bad predictor.
+**THE OBJECTIVE, stated right (Josh, 2026-07-07): 26–33% acceptance with the
+bf16 drafter is the WORKABLE BASELINE — τ≈2.8 already pays. The question
+quantization must answer is PRESERVATION: do we still get that number at
+4-bit?** The point of quantizing (and of mixed precision specifically) is
+never compression for its own sake — it's cutting the drafter's cost 4×
+WITHOUT making it terrible at predicting tokens. Where 4-bit-everywhere is
+most likely to bleed acceptance, concretely: (a) **lm_head is
+argmax-proximal** — layer noise is buffered by norms/residuals, head noise
+lands directly on the logits the exact-token-match argmax reads, and the
+marginal accepted drafts are the near-tie ones noise flips first; (b) **the
+γ-block is a sequential chain** — one flipped draft at position k kills
+k+1..γ, so noise compounds into the deep positions where acceptance is
+already thinnest. Hence the first mixed rung in 5b′: 8-bit head + 4-bit
+rest (the "only 5 layers" scarcity never bites — the layers aren't the
+sensitive part, the head is). Every rung is one cheap A/B; nobody's prior
+gets trusted. Phase 1.5 (fine-tune) is an OPTIONAL UPSIDE lever on top of
+the workable baseline, not a premise that acceptance is broken.
 
 ## Phase 0 — baseline + attribution (no code; Josh's shell for GPU runs)
 
@@ -102,11 +109,14 @@ mlx-native group quantization, no research dependency.
   record both. If 4-bit alone flips spec past serial — say so loudly in the
   handoff, that's the headline.
 
-## Phase 1.5 — ACCEPTANCE RECOVERY (the τ phase — likely the biggest lever)
+## Phase 1.5 — acceptance upside (OPTIONAL; the baseline is already workable)
 
-The numerator work. Our 26–33% vs their bf16-target numbers is
-distribution shift with a known mechanism; every point of acceptance
-recovered multiplies ALL the cost work below.
+26–33% (τ≈2.8) with the bf16 drafter pays as-is — this phase is the
+opportunistic numerator work on top, NOT a precondition: the gap vs their
+bf16-target numbers is distribution shift with a known mechanism, and every
+point recovered multiplies the cost work. Run it if Phase 1's preserved
+acceptance + cost win lands short of the ≥1.3× goal, or whenever the upside
+is worth the run.
 
 - [ ] **1.5a. Adaptation fine-tune on OUR target's hiddens** — their
   checkpoint as init (the expensive pretraining is done; this is short
@@ -233,13 +243,15 @@ customer — aggressive bpw, one-number gate.
   (2 M params) 8-bit for free. The ~10-group space is small enough for a
   near-exhaustive sweep through the SAME one-number harness — unlike
   sensitivity search on a full model. **Allocation objective (the point):
-  MAXIMIZE ACCEPTANCE AT A FIXED BYTE BUDGET, not minimize bytes** — the
-  sweep also runs the other direction: at the wall-clock-winning size,
-  which tensors deserve MORE bits to recover prediction quality (e.g.
-  8-bit lm_head + 3-bit embed may beat uniform-4 at equal bytes). Sized
-  honestly on the cost axis: second-order after uniform 4-bit — a ladder
-  rung, never a blocker; its acceptance-side upside is measured, not
-  assumed.
+  PRESERVE the bf16 acceptance at the smallest cost, not minimize bytes** —
+  the sensitivity map is known in advance: lm_head is argmax-proximal (the
+  dangerous one), the sequential block chains one flip into the rest,
+  layers are norm/residual-buffered, embed is gather-only. **FIRST RUNG:
+  8-bit lm_head + 4-bit everything else** — surrenders ~0.5 GB of the ~5 GB
+  saving to protect exactly the argmax-facing tensor; it's the likely fix
+  if uniform-4 bleeds acceptance, and the "only 5 layers" scarcity never
+  bites because the layers aren't the sensitive part. Then the aggressive
+  direction (3-bit head / 2-bit embed) only if uniform-4 held.
 - [ ] **5c.** If TurboQuant wins: fold the recipe into 4b's UX (the
   conversion the server offers is the TurboQuant one).
 
@@ -263,18 +275,19 @@ customer — aggressive bpw, one-number gate.
 0a (oracle gate, Josh: venv+GPU) ──┐
 0b (γ sweep, Josh: GPU)  ──────────┼─→ 1a→1b→1c→1d (quant baseline; 1d Josh GPU)
 0c (attribution, Josh: GPU) ───────┘        │
-                                            ├─→ 1.5 (ACCEPTANCE RECOVERY: the
-                                            │    τ phase — fine-tune on our
+                                            ├─→ 1.5 (OPTIONAL acceptance
+                                            │    upside: fine-tune on our
                                             │    target's hiddens + threshold
-                                            │    sweep; 1.5a design first)
+                                            │    sweep; run if 1's preserved
+                                            │    acceptance falls short)
                                             ├─→ 2a-2c (tightening; CPU-gated)
 3a-3b (generator tap; parallel anytime) ────┤
                                             └─→ 4 (UX, needs 0–3 data)
 TurboQuant merge ─→ 5a-5c (reuses 1c harness) ─→ 6 (clean machine, Josh)
 ```
-Priority note: if forced to order by expected value, 1.5 (numerator) likely
-beats everything in 2–3 (denominator) — cost work amortizes better at every
-extra point of acceptance.
+Priority note: Phase 1's PRESERVATION question ("do we keep 26–33% at
+4-bit?") is the program's hinge — one A/B answers it, and the 8-bit-head
+mixed rung is the standing insurance if uniform-4 bleeds.
 
 Code phases (1a/1b/2/3/4-impl) are agent-runnable sessions; every GPU
 measurement is Josh's shell. Nothing except Phase 5 waits on TurboQuant —
@@ -285,10 +298,11 @@ Phases 0–4 can land first so TurboQuant drops into a finished harness.
 1. Spec wall-clock ≥ 1.3× serial on 12B at the recommended config,
    clean-machine paired — or a written verdict that it can't be reached and
    why (with the config left as a characterized default-off lever).
-2. **Acceptance recovered and understood**: the OptiQ-shift gap is measured
-   (1.5c), the adaptation fine-tune's recovery is measured (1.5a), and the
-   shipped drafter's acceptance is the best achieved at its cost point —
-   the drafter predicts tokens; small was never the goal.
+2. **Acceptance PRESERVED and understood**: the quantized drafter holds the
+   bf16 baseline's 26–33% (or the mixed rung that does is adopted, or the
+   loss is measured and accepted with numbers); the optional 1.5 upside
+   levers are run-or-explicitly-deferred — the drafter predicts tokens;
+   small was never the goal.
 3. The acceptance-per-byte curve exists (TurboQuant vs 4-bit vs mixed vs
    bf16), with acceptance-at-fixed-budget allocation swept (5b′).
 4. The serving surface is documented, defaults decided per-pair and
