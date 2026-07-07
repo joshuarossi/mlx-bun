@@ -180,6 +180,19 @@ customer — aggressive bpw, one-number gate.
   **acceptance-per-byte curve** vs the uniform-4-bit baseline. Adopt the
   knee as the recommended artifact; keep the ladder results in the
   investigation doc (dont-delete-optionality).
+- [ ] **5b′. PER-TENSOR MIXED PRECISION rungs** (Josh, 2026-07-07). The
+  intuition "only 5 layers = few knobs" undercounts: the drafter's mass is
+  ~10 TENSOR GROUPS, and two of them are 58% of the bytes — `lm_head`
+  (~2 GB, read FULLY every round: the bandwidth whale) and `embed_tokens`
+  (~2 GB, gather-only: ~free to read, pure resident-memory win), plus
+  `markov_w2` (134 MB read ×7/round ≈ 940 MB). Both whales only shape the
+  DRAFT distribution → acceptance-only risk. Mixed rungs to sweep: 3-bit
+  lm_head + 3-bit markov_w2 + 4-bit layers; 2-bit embed variants; k_proj
+  (2 M params) 8-bit for free. The ~10-group space is small enough for a
+  near-exhaustive sweep through the SAME one-number harness — unlike
+  sensitivity search on a full model. Sized honestly: second-order after
+  uniform 4-bit (~1.8 → ~1.3 GB resident, ~20% less read/round) — a
+  ladder rung, never a blocker.
 - [ ] **5c.** If TurboQuant wins: fold the recipe into 4b's UX (the
   conversion the server offers is the TurboQuant one).
 
