@@ -277,6 +277,23 @@ function findByLabel(snapshot: UiSnapshot | null, label: string): UiSnapshotElem
   return bestScore >= 50 ? best : undefined;
 }
 
+/** Attribute-value escape for selectors built from model-provided (or
+ *  DOM-read) strings — `[data-ui-ref="…"]` etc. Backslash-escapes `\` and
+ *  `"` so a quote in the value can't break out of the attribute string
+ *  and turn the selector into a SyntaxError (or something else entirely). */
+function attrEscape(v: string): string {
+  return v.replace(/[\\"]/g, "\\$&");
+}
+
+/** querySelector that treats an INVALID selector as a miss, not a throw.
+ *  request.selector is model-invented; a malformed one must resolve to
+ *  null so chat.ts's ui_spotlight case reaches the "couldn't find that on
+ *  screen" toast — a SyntaxError here would escape through handle() and
+ *  kill the ws frame instead (2026-07-07 review finding). */
+function safeQuery(selector: string): Element | null {
+  try { return document.querySelector(selector); } catch { return null; }
+}
+
 /** Resolve a spotlight request in PortfolioManager's exact precedence: ref
  *  from the last snapshot -> live selector -> label fuzzy-match (against
  *  the snapshot, falling back to any live data-ui-label/data-spotlight in
@@ -292,13 +309,13 @@ export function resolveSpotlightTarget(
   if (request.ref) {
     const el = snapshot?.elements.find((e) => e.ref === request.ref);
     if (el) return { selector: el.selector, title: el.label, message: request.message };
-    const selector = `[data-ui-ref="${request.ref}"]`;
-    if (document.querySelector(selector)) {
+    const selector = `[data-ui-ref="${attrEscape(request.ref)}"]`;
+    if (safeQuery(selector)) {
       return { selector, title: request.label ?? request.ref, message: request.message };
     }
   }
 
-  if (request.selector && document.querySelector(request.selector)) {
+  if (request.selector && safeQuery(request.selector)) {
     return { selector: request.selector, title: request.label ?? "Here", message: request.message };
   }
 
@@ -315,7 +332,9 @@ export function resolveSpotlightTarget(
     if (bestEl && bestScore >= 50) {
       const ref = bestEl.getAttribute("data-ui-ref");
       return {
-        selector: ref ? `[data-ui-ref="${ref}"]` : `[data-ui-label="${bestEl.getAttribute("data-ui-label")}"]`,
+        selector: ref
+          ? `[data-ui-ref="${attrEscape(ref)}"]`
+          : `[data-ui-label="${attrEscape(bestEl.getAttribute("data-ui-label") ?? "")}"]`,
         title: bestEl.getAttribute("data-ui-label") ?? request.label,
         message: request.message,
       };
@@ -324,14 +343,15 @@ export function resolveSpotlightTarget(
 
   if (request.target) {
     const meta = getSpotlightTarget(request.target);
-    if (meta && document.querySelector(meta.selector)) {
+    if (meta && safeQuery(meta.selector)) {
       return { selector: meta.selector, title: meta.label, message: request.message };
     }
-    const bySpotlightAttr = document.querySelector(`[data-spotlight="${request.target}"]`);
+    const targetSelector = `[data-spotlight="${attrEscape(request.target)}"]`;
+    const bySpotlightAttr = safeQuery(targetSelector);
     if (bySpotlightAttr) {
       const ref = bySpotlightAttr.getAttribute("data-ui-ref");
       return {
-        selector: ref ? `[data-ui-ref="${ref}"]` : `[data-spotlight="${request.target}"]`,
+        selector: ref ? `[data-ui-ref="${attrEscape(ref)}"]` : targetSelector,
         title: bySpotlightAttr.getAttribute("data-ui-label") ?? request.label ?? request.target,
         message: request.message,
       };
@@ -385,7 +405,10 @@ export function dismissSpotlight(): void {
  *  transform/opacity are the only animated properties, and the CSS
  *  respects prefers-reduced-motion (app.html). */
 export function showSpotlight(resolved: ResolvedSpotlight): boolean {
-  const target = document.querySelector(resolved.selector) as HTMLElement | null;
+  // safeQuery: resolved.selector can be the raw model-provided passthrough;
+  // it was valid at resolve time, but "return false → toast" is the right
+  // failure mode here too, never a throw.
+  const target = safeQuery(resolved.selector) as HTMLElement | null;
   if (!target) return false;
 
   dismissSpotlight();

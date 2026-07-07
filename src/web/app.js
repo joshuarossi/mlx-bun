@@ -3075,17 +3075,27 @@ function findByLabel(snapshot, label) {
   }
   return bestScore >= 50 ? best : undefined;
 }
+function attrEscape(v) {
+  return v.replace(/[\\"]/g, "\\$&");
+}
+function safeQuery(selector) {
+  try {
+    return document.querySelector(selector);
+  } catch {
+    return null;
+  }
+}
 function resolveSpotlightTarget(request, snapshot) {
   if (request.ref) {
     const el2 = snapshot?.elements.find((e) => e.ref === request.ref);
     if (el2)
       return { selector: el2.selector, title: el2.label, message: request.message };
-    const selector = `[data-ui-ref="${request.ref}"]`;
-    if (document.querySelector(selector)) {
+    const selector = `[data-ui-ref="${attrEscape(request.ref)}"]`;
+    if (safeQuery(selector)) {
       return { selector, title: request.label ?? request.ref, message: request.message };
     }
   }
-  if (request.selector && document.querySelector(request.selector)) {
+  if (request.selector && safeQuery(request.selector)) {
     return { selector: request.selector, title: request.label ?? "Here", message: request.message };
   }
   if (request.label) {
@@ -3104,7 +3114,7 @@ function resolveSpotlightTarget(request, snapshot) {
     if (bestEl && bestScore >= 50) {
       const ref = bestEl.getAttribute("data-ui-ref");
       return {
-        selector: ref ? `[data-ui-ref="${ref}"]` : `[data-ui-label="${bestEl.getAttribute("data-ui-label")}"]`,
+        selector: ref ? `[data-ui-ref="${attrEscape(ref)}"]` : `[data-ui-label="${attrEscape(bestEl.getAttribute("data-ui-label") ?? "")}"]`,
         title: bestEl.getAttribute("data-ui-label") ?? request.label,
         message: request.message
       };
@@ -3112,14 +3122,15 @@ function resolveSpotlightTarget(request, snapshot) {
   }
   if (request.target) {
     const meta = getSpotlightTarget(request.target);
-    if (meta && document.querySelector(meta.selector)) {
+    if (meta && safeQuery(meta.selector)) {
       return { selector: meta.selector, title: meta.label, message: request.message };
     }
-    const bySpotlightAttr = document.querySelector(`[data-spotlight="${request.target}"]`);
+    const targetSelector = `[data-spotlight="${attrEscape(request.target)}"]`;
+    const bySpotlightAttr = safeQuery(targetSelector);
     if (bySpotlightAttr) {
       const ref = bySpotlightAttr.getAttribute("data-ui-ref");
       return {
-        selector: ref ? `[data-ui-ref="${ref}"]` : `[data-spotlight="${request.target}"]`,
+        selector: ref ? `[data-ui-ref="${attrEscape(ref)}"]` : targetSelector,
         title: bySpotlightAttr.getAttribute("data-ui-label") ?? request.label ?? request.target,
         message: request.message
       };
@@ -3155,7 +3166,7 @@ function dismissSpotlight() {
     el2.classList.remove("show");
 }
 function showSpotlight(resolved) {
-  const target = document.querySelector(resolved.selector);
+  const target = safeQuery(resolved.selector);
   if (!target)
     return false;
   dismissSpotlight();

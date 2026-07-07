@@ -1286,6 +1286,28 @@ describe("assistant.ts: resolveSpotlightTarget", () => {
     const resolved = resolveSpotlightTarget({ selector: "#chat-send", message: "click here to send" }, null);
     expect(resolved?.message).toBe("click here to send");
   });
+
+  // Model-invented inputs must MISS (→ the "couldn't find that on screen"
+  // toast in chat.ts), never throw a SyntaxError through the ws message
+  // handler (2026-07-07 review finding).
+  it("treats an invalid model-invented selector as a miss, not a throw", () => {
+    document.body.innerHTML = '<button id="chat-send">Send</button>';
+    expect(resolveSpotlightTarget({ selector: ":::not-a-selector(" }, null)).toBeNull();
+    expect(resolveSpotlightTarget({ selector: "[unclosed" }, null)).toBeNull();
+  });
+
+  it("survives quotes/brackets in model-provided ref/target values", () => {
+    // attrEscape keeps a quote from breaking out of the attribute string —
+    // the built selector stays syntactically valid and simply misses.
+    // (Matching an escaped quote against a real quoted attr works in
+    // browsers but not happy-dom's selector engine, so only the miss/no-
+    // throw property is pinned here; real refs are our own generated
+    // `ui-<route>-<n>` ids and never contain quotes.)
+    document.body.innerHTML = '<button data-ui-ref="ui-chat-0">Send</button>';
+    expect(resolveSpotlightTarget({ ref: '"]' }, null)).toBeNull();
+    expect(resolveSpotlightTarget({ target: '"] *' }, null)).toBeNull();
+    expect(resolveSpotlightTarget({ ref: 'odd"ref' }, null)).toBeNull();
+  });
 });
 
 describe("assistant.ts: buildAppContext + ambientLine", () => {
