@@ -2515,9 +2515,20 @@ same splice/merge seams, same parity-tier ladder.
       model-free; golden-presence-gated per goldens/README.md). Soft
       tokens + frame counts exact (40/159, 67/267). afconvert transcode
       + spliced-ids exactness land with A3/A4 where those layers exist.
-- [ ] **A2 tower** — `src/audio/conformer.ts` (SSCP + 12 Conformer blocks
-      + clipped linears + embed_audio, bf16, from the vision sidecar).
-      Exit: T1 rel-RMSE gate vs oracle tower output.
+- [x] **A2 tower** (2026-07-07) — `src/audio/conformer.ts` (AudioTower:
+      SSCP + 12 Conformer blocks + clipped linears + embed_audio from the
+      vision sidecar). T1 result: **bit-exact** — rel-RMSE 2.4e-8 both
+      fixtures (pure f32-ulp roundtrip; gate 1e-6, ~40× margin). Root
+      cause of the free bit-exactness: the oracle feeds f32 mel into bf16
+      weights and mlx PROMOTES — activations stay f32 end-to-end (unlike
+      the vision tower's bf16 composition), so there is no drift to
+      accumulate; the port must NOT cast activations to weight dtype.
+      Clipped-linear toggle: OFF diverges 90.2% rel-RMSE — the shipped
+      min/max stats are load-bearing. Sidecar convs are already
+      MLX-layout (no sanitize transpose). Golden reference point:
+      embed_audio output BEFORE /embed_scale; features() returns
+      pre-divided (vision convention). tests/e4b-audio-tower.test.ts
+      (weight+golden-gated).
 - [ ] **A3 prompt + LM** — generalize the vision prompt builder to
       multimodal document order; `<|audio|>` → boa + 258881×n + eoa
       (n = min(ceil(ms/40), 750)); merged embeddings through

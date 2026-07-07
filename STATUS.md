@@ -631,8 +631,9 @@ design in [docs/design/audio-input-plan.md](docs/design/audio-input-plan.md).
 stack-arg ABI bug — see CLAUDE.md hard-won facts +
 lab/repro/bun-ffi-stack-args), §3.3 semantics resolved (audio strictly
 causal), fixtures + oracle goldens live (speech greedy = token-perfect
-transcription). Next action: A2 — src/audio/conformer.ts (SSCP + 12 Conformer blocks +
-clipped linears from the sidecar) gated on the T1 embed goldens. A1 DONE:
+transcription). Next action: A3 — multimodal prompt builder + LM integration, gated on the
+T2 greedy goldens. A2 DONE: the Conformer tower is BIT-EXACT vs the oracle
+(rel-RMSE 2.4e-8; activations stay f32 — mlx promotes over bf16 weights). A1 DONE:
 mel port is 1-ulp-f32 from the oracle (the numpy f32 Hann window is baked
 in as the spec — see PLAN.md A1).
 

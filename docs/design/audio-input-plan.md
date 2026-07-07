@@ -257,10 +257,17 @@ cells (tower ms, TTFT delta vs text-only, peak RSS delta) and lands in
 - Exit: T0 green (mel within tolerance; token counts + spliced ids exact).
 
 **Phase A2 — tower**
-- [ ] `src/audio/conformer.ts` loads `audio_tower.*`/`embed_audio.*` from
-      `optiq_vision.safetensors`; forward matches golden
-- [ ] Clipped-linear toggle test (off → measurable divergence, on → gate)
-- Exit: T1 rel-RMSE gate green.
+- [x] `src/audio/conformer.ts` loads `audio_tower.*`/`embed_audio.*` from
+      `optiq_vision.safetensors`; forward matches golden — rel-RMSE **2.4e-8**
+      (bit-exact: the tower runs f32 activations over bf16 weights because
+      the oracle feeds f32 mel and mlx promotes; the residual is 1 f32 ulp
+      from the test's /embed_scale·embed_scale roundtrip). Sidecar conv
+      weights are ALREADY MLX layout [C_out,kH,kW,C_in] — no transpose.
+      Golden reference point: embed_audio output BEFORE the /embed_scale
+      pre-division; features() returns pre-divided (vision convention).
+- [x] Clipped-linear toggle test (off → 90% rel-RMSE divergence, on → gate;
+      in tests/e4b-audio-tower.test.ts)
+- Exit: T1 rel-RMSE gate green. ✅ (gate 1e-6, ~40× margin)
 
 **Phase A3 — prompt + LM integration**
 - [ ] Generalize prompt builder (images + audio, document order);
