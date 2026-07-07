@@ -13,7 +13,7 @@
 // swap — live swap is Phase 3's Hub item (docs/design/web-chat-redesign.md
 // §9 Phase 3 "Model Hub"), not invented here.
 
-import { $, setModelPopClose } from "./shell";
+import { $, setModelPopClose, openHubFromModelPicker } from "./shell";
 import { api } from "./api";
 import { esc } from "./markdown";
 
@@ -89,16 +89,18 @@ function renderRow(m: LibraryRow): string {
  *  user-controlled HF strings — the same class of interpolation hazard
  *  finding #15 flagged for the adapter dropdown). */
 export function renderModelPopBodyHtml(models: LibraryRow[]): string {
+  const browseRow = '<button type="button" class="mp-browse-hub" id="model-pop-browse">Browse models…</button>';
   if (!models.length) {
-    return '<div class="mp-empty">No models downloaded yet. Use <code>mlx-bun get &lt;repo-id&gt;</code> to fetch one.</div>';
+    return '<div class="mp-empty">No models downloaded yet. Use <code>mlx-bun get &lt;repo-id&gt;</code> to fetch one, ' +
+      "or browse Hugging Face below.</div>" + browseRow;
   }
   const rows = pickModel(models).map(renderRow).join("");
   return (
     rows +
     '<div class="mp-foot-note">Fit is predicted for THIS Mac (src/fit.ts), not a generic guess. ' +
     "Switching the served model restarts the process — there's no live " +
-    "in-process swap yet (that's a Phase 3 Hub feature); copy the command " +
-    "above and restart.</div>"
+    "in-process swap yet; copy the command above and restart.</div>" +
+    browseRow
   );
 }
 
@@ -121,6 +123,13 @@ async function refreshModelPop(): Promise<void> {
         }
       };
     });
+    const browseBtn = body.querySelector<HTMLButtonElement>("#model-pop-browse");
+    if (browseBtn) {
+      browseBtn.onclick = () => {
+        setModelPopOpen(false);
+        if (openHubFromModelPicker) openHubFromModelPicker();
+      };
+    }
   } catch {
     body.innerHTML = '<div class="mp-empty">Could not reach the server.</div>';
   }

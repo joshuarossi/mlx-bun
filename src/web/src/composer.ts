@@ -17,6 +17,7 @@ import type { ApiEnvelope } from "./protocol";
 import {
   $, el, toast, trapFocus, type FocusTrap, setSamplingPopoverClose, setSysPromptPopoverClose,
 } from "./shell";
+import { buildContextBlock, retrieve, shouldRetrieve, type Citation } from "./rag";
 
 /* ────────────────────────────────────────────────────────────────────
    Attachments (files + images)
@@ -73,6 +74,16 @@ export class ComposerState {
   // back to the built-in constants below until a ready frame arrives.
   genDefaults: ReadyGenDefaults = { temperature: null, topP: null, topK: null };
 
+  // Per-message sampling scope (plan §9 Phase 3, beat matrix Axis 4): "session"
+  // (default) behaves exactly as today — overrides persist until changed.
+  // "next_turn" is a one-shot: the NEXT change the user makes is sent with
+  // `scope:"next_turn"` and the server reverts to the prior session-level
+  // sampling once that turn completes (turn_end). armedOneShot mirrors the
+  // server's one-shot state locally purely for the indicator chip/dot — it's
+  // cleared on turn_end (see clearOneShotArmed in chat.ts's handle()).
+  samplingScope: "session" | "next_turn" = "session";
+  oneShotArmed = false;
+
   // Per-chat custom system prompt (plan §9 Phase 2 item, beat matrix Axis 4),
   // layered onto the built-in surface prompt server-side (see pi-web.ts's
   // injectSystemPrompt/installSystemPromptHook). null/"" = none set.
@@ -104,25 +115,66 @@ export function renderAttachments(state: ComposerState): void {
   const box = $("chat-attach");
   box.innerHTML = "";
   box.style.display = state.attachments.length ? "flex" : "none";
+  // Retrieval-mode tag (task brief item 4, transparency principle): whether
+  // ANY text file currently gets RAG'd is a property of the WHOLE attached
+  // set (buildMessageText sums all text-file chars together), so every text
+  // chip shows the tag together, not per-file — a file isn't individually
+  // "over threshold", the attachment set is.
+  const totalTextChars = state.attachments.reduce((n, a) => n + (a.kind === "text" ? (a.text || "").length : 0), 0);
+  const retrievalMode = shouldRetrieve(totalTextChars);
   for (const a of state.attachments) {
     const chip = el("div", "attach-chip", box);
     chip.dataset.attId = String(a.id); // mention-picker pulse target (composer.ts's initMentionPicker)
     if (a.kind === "image") { const im = el("img", "", chip); im.src = "data:" + a.mimeType + ";base64," + a.data; im.alt = a.name; }
     else el("span", "att-ico", chip).textContent = "📄";
     el("span", "att-name", chip).textContent = a.name + (a.truncated ? " (truncated)" : "");
+    if (a.kind === "text" && retrievalMode) {
+      const tag = el("span", "att-tag", chip);
+      tag.textContent = "retrieval";
+      tag.title = "This file is large enough that only the most relevant excerpts are sent, not the whole file";
+    }
     const x = el("button", "att-x", chip); x.type = "button"; x.textContent = "✕";
     x.onclick = () => { state.attachments = state.attachments.filter((z) => z.id !== a.id); renderAttachments(state); };
   }
 }
 export function clearAttachments(state: ComposerState): void { state.attachments = []; renderAttachments(state); }
 
-/** Prepend text-file contents to the message the model sees (UI shows chips). */
-export function buildMessageText(state: ComposerState, userText: string): string {
-  const files = state.attachments.filter((a) => a.kind === "text");
-  if (!files.length) return userText;
-  let pre = "";
-  for (const a of files) pre += "Attached file: " + a.name + "\n```\n" + a.text + "\n```\n\n";
-  return pre + userText;
+/** Result of buildMessageText: the outgoing text the model sees, plus (when
+ *  retrieval mode fired) the citation list chat.ts needs to attach a Sources
+ *  panel to the just-sent turn. `citations` is empty for the common small-
+ *  attachment case — inline mode has nothing to cite, matching today's
+ *  behavior exactly (task brief item 2: "zero behavior change"). */
+export interface BuiltMessage {
+  text: string;
+  citations: Citation[];
+}
+
+/** Chat-with-files RAG v1 (plan §9 Phase 3, beat matrix Axis 5 — optiq
+ *  Lab's dependency-free BM25 bar). Size-aware retrieval over attached text
+ *  files, decided per send:
+ *   - total attached text <= INLINE_THRESHOLD_CHARS: inline every file
+ *     verbatim exactly as before this feature existed (LM Studio's
+ *     transparent "fits context -> just inline it" half of the dual mode).
+ *   - above threshold: retrieve the top-K chunks (src/web/src/rag.ts's
+ *     BM25 index) scored against the outgoing message text, and inject a
+ *     numbered [1]..[K] context block instead of the raw files. The index
+ *     is rebuilt fresh on every send (attachments can change between
+ *     turns) — cheap for the few-dozen-chunk scale this targets.
+ *  The user's visible message (what addUserMsg renders) is untouched
+ *  either way — the injection composes into the outgoing WS text only,
+ *  same as plain file-inlining does today. */
+export function buildMessageText(state: ComposerState, userText: string): BuiltMessage {
+  const files = state.attachments.filter((a): a is Attachment & { text: string } => a.kind === "text" && a.text != null);
+  if (!files.length) return { text: userText, citations: [] };
+  const totalChars = files.reduce((n, a) => n + a.text.length, 0);
+  if (!shouldRetrieve(totalChars)) {
+    let pre = "";
+    for (const a of files) pre += "Attached file: " + a.name + "\n```\n" + a.text + "\n```\n\n";
+    return { text: pre + userText, citations: [] };
+  }
+  const citations = retrieve(files.map((a) => ({ id: a.id, name: a.name, text: a.text })), userText);
+  if (!citations.length) return { text: userText, citations: [] }; // no term overlap at all — nothing useful to inject
+  return { text: buildContextBlock(citations) + userText, citations };
 }
 export function updateAttachHint(state: ComposerState): void {
   const btn = $("chat-attach-btn");
@@ -293,19 +345,63 @@ function onSeedInput(state: ComposerState, send: (obj: unknown) => boolean): voi
   pushSampling(state, send);
 }
 function pushSampling(state: ComposerState, send: (obj: unknown) => boolean): void {
-  send({ type: "set_sampling", ...state.sampling });
+  // Session mode omits `scope` entirely — identical wire shape to before
+  // this feature existed ("session mode behaves exactly as today," task
+  // brief item 2). Only next-turn mode adds the field, and only arms the
+  // one-shot indicator once there's actually an override to apply for it
+  // (sending scope:"next_turn" with every field null would arm a chip for
+  // an override that doesn't exist).
+  if (state.samplingScope === "next_turn") {
+    send({ type: "set_sampling", scope: "next_turn", ...state.sampling });
+    state.oneShotArmed = Object.values(state.sampling).some((v) => v != null);
+  } else {
+    send({ type: "set_sampling", ...state.sampling });
+    state.oneShotArmed = false;
+  }
+  updateSamplingUi(state);
 }
 
-// The pill shows a lit dot whenever any field is overridden.
+// The pill shows a lit dot whenever any field is overridden, and a distinct
+// "armed" dot state while a one-shot next-turn override is queued but hasn't
+// applied yet (task brief item 2: "the Sampling pill's dot shows a distinct
+// state while a one-shot override is armed").
 function updateSamplingUi(state: ComposerState): void {
   const dirty = Object.values(state.sampling).some((v) => v != null);
   const pill = $("chat-sampling");
-  if (pill) { pill.classList.toggle("dirty", dirty); pill.title = dirty
-    ? "Sampling overridden — click to edit or reset" : "Sampling controls (temperature · top_p · top_k · Advanced)"; }
+  if (pill) {
+    pill.classList.toggle("dirty", dirty && !state.oneShotArmed);
+    pill.classList.toggle("armed", state.oneShotArmed);
+    pill.title = state.oneShotArmed
+      ? "Sampling override armed for your next message only"
+      : dirty
+        ? "Sampling overridden — click to edit or reset"
+        : "Sampling controls (temperature · top_p · top_k · Advanced)";
+  }
+  const chip = $("samp-oneshot-chip");
+  if (chip) chip.style.display = state.oneShotArmed ? "inline-flex" : "none";
+  const scopeSelect = $("samp-scope") as HTMLSelectElement | null;
+  if (scopeSelect && scopeSelect.value !== state.samplingScope) scopeSelect.value = state.samplingScope;
+}
+
+/** Called from chat.ts on every `turn_end` — the server applies a one-shot
+ *  next_turn override for exactly one turn then reverts, so the client-side
+ *  indicator must clear in lockstep rather than guessing a timeout. A no-op
+ *  when no one-shot was armed (the common case: session-mode sampling, or no
+ *  overrides set at all). Does NOT touch state.sampling — the server is the
+ *  source of truth for what the NEXT turn's session-level values revert to;
+ *  this only clears the local "armed" indicator and flips scope back to
+ *  session so the popover doesn't silently keep applying next-turn-only
+ *  semantics to values the user may tweak next without re-selecting scope. */
+export function clearOneShotArmed(state: ComposerState): void {
+  if (!state.oneShotArmed) return;
+  state.oneShotArmed = false;
+  state.samplingScope = "session";
+  updateSamplingUi(state);
 }
 
 export function resetSampling(state: ComposerState, send: (obj: unknown) => boolean): void {
   for (const k of Object.keys(state.sampling) as SamplingField[]) (state.sampling[k] as number | null) = null;
+  state.samplingScope = "session";
   refreshSamplingRecs(state); updateSamplingUi(state);
   pushSampling(state, send);
 }
@@ -342,6 +438,21 @@ export function initSampling(state: ComposerState, send: (obj: unknown) => boole
   const seedInput = $("samp-seed");
   if (seedInput) seedInput.addEventListener("input", () => onSeedInput(state, send));
   const reset = $("samp-reset"); if (reset) reset.onclick = (e) => { e.stopPropagation(); resetSampling(state, send); };
+  // Scope control (task brief item 2): switching to "next message only"
+  // doesn't itself send anything — it just changes what the NEXT slider
+  // drag/seed edit means. Switching back to "this session" while a one-shot
+  // was armed but not yet consumed just clears the local indicator; the
+  // server-side revert already only ever happens at turn_end, so there's
+  // nothing to un-arm server-side from a scope flip alone (no changed value
+  // was ever sent for it to apply to session-persistently and no frame
+  // corresponds to that alone).
+  const scopeSelect = $("samp-scope") as HTMLSelectElement | null;
+  if (scopeSelect) scopeSelect.addEventListener("change", (e) => {
+    e.stopPropagation();
+    state.samplingScope = scopeSelect.value === "next_turn" ? "next_turn" : "session";
+    if (state.samplingScope === "session") { state.oneShotArmed = false; }
+    updateSamplingUi(state);
+  });
   updateSamplingUi(state); refreshSamplingRecs(state);
 }
 

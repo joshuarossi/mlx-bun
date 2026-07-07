@@ -70,6 +70,16 @@ function toast(msg, kind = "", ms = 4200) {
     setTimeout(() => t.remove(), 420);
   }, ms);
 }
+var injectedStyleIds = new Set;
+function injectStyles(id, css) {
+  if (injectedStyleIds.has(id))
+    return;
+  injectedStyleIds.add(id);
+  const style = document.createElement("style");
+  style.id = id;
+  style.textContent = css;
+  document.head.appendChild(style);
+}
 async function refreshHfGear() {
   try {
     const d = await api("/api/settings/hf-token");
@@ -376,9 +386,29 @@ var modelPopClose = null;
 function setModelPopClose(fn) {
   modelPopClose = fn;
 }
+var hubPanelClose = null;
+function setHubPanelClose(fn) {
+  hubPanelClose = fn;
+}
+var openHubFromModelPicker = null;
+function setOpenHubFromModelPicker(fn) {
+  openHubFromModelPicker = fn;
+}
 var sysPromptPopoverClose = null;
 function setSysPromptPopoverClose(fn) {
   sysPromptPopoverClose = fn;
+}
+var paletteClose = null;
+function setPaletteClose(fn) {
+  paletteClose = fn;
+}
+var paletteIsOpen = null;
+function setPaletteIsOpen(fn) {
+  paletteIsOpen = fn;
+}
+var paletteOpen = null;
+function setPaletteOpen(fn) {
+  paletteOpen = fn;
 }
 function closeTopOverlay() {
   if ($("shortcut-overlay").classList.contains("open")) {
@@ -414,6 +444,15 @@ function closeTopOverlay() {
     modelPopClose();
     return true;
   }
+  const hubOverlay = $("hub-overlay");
+  if (hubOverlay && hubOverlay.classList.contains("open") && hubPanelClose) {
+    hubPanelClose();
+    return true;
+  }
+  if (paletteIsOpen && paletteIsOpen() && paletteClose) {
+    paletteClose();
+    return true;
+  }
   if ($("chat-sidebar").classList.contains("drawer-open")) {
     closeDrawer();
     return true;
@@ -423,6 +462,15 @@ function closeTopOverlay() {
 function initGlobalKeydown() {
   document.addEventListener("keydown", (e) => {
     const mod = e.metaKey || e.ctrlKey;
+    if (mod && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      if (paletteIsOpen && paletteIsOpen()) {
+        if (paletteClose)
+          paletteClose();
+      } else if (paletteOpen)
+        paletteOpen();
+      return;
+    }
     if (mod && e.key === "/") {
       e.preventDefault();
       $("shortcut-overlay").classList.contains("open") ? closeShortcutSheet() : openShortcutSheet();
@@ -573,6 +621,17 @@ function initRouter() {
   window.addEventListener("resize", updateTabFades);
   updateTabFades();
 }
+function initServiceWorker() {
+  if (!("serviceWorker" in navigator))
+    return;
+  const host = location.hostname;
+  const isLocalhost = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  if (location.protocol !== "https:" && !isLocalhost)
+    return;
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}
 var activeModelId = null;
 function setConn(state, text) {
   const p = $("nav-conn");
@@ -636,9 +695,87 @@ function mdInline(t) {
   s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+[^\s<).,;:!?'"])/g, (_m, pre, url) => pre + '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + "</a>");
   return s.replace(/ C(\d+) /g, (_m, i) => "<code>" + esc(codes[+i]) + "</code>");
 }
+function isCanvasFence(lang) {
+  return /^(html?|svg)$/i.test(lang.trim());
+}
 function mdCodeBlock(lang, code) {
   const langClass = lang ? ' class="language-' + esc(lang) + '"' : "";
-  return '<div class="codeblock"><div class="cbhead"><span class="cblang">' + esc(lang || "") + '</span><button class="cbcopy" type="button">Copy</button></div>' + "<pre><code" + langClass + ">" + esc(code) + "</code></pre></div>";
+  const canvas = isCanvasFence(lang);
+  const toggleHtml = canvas ? '<span class="cbtoggle" role="group" aria-label="View">' + '<button class="cbview cbview-source active" type="button" aria-pressed="true">Source</button>' + '<button class="cbview cbview-preview" type="button" aria-pressed="false">Preview</button>' + "</span>" : "";
+  const srcStash = canvas ? '<div class="cbsrc" hidden>' + esc(code) + "</div>" : "";
+  return '<div class="codeblock' + (canvas ? " has-canvas" : "") + '"><div class="cbhead"><span class="cblang">' + esc(lang || "") + "</span>" + toggleHtml + '<button class="cbcopy" type="button">Copy</button></div>' + "<pre><code" + langClass + ">" + esc(code) + "</code></pre>" + srcStash + (canvas ? '<div class="cbcanvas" hidden></div>' : "") + "</div>";
+}
+function wireCanvasToggle(container) {
+  container.addEventListener("click", (e) => {
+    const btn = e.target.closest?.(".cbview");
+    if (!btn || !container.contains(btn))
+      return;
+    const block = btn.closest(".codeblock");
+    if (!block)
+      return;
+    const showPreview = btn.classList.contains("cbview-preview");
+    setCanvasView(block, showPreview ? "preview" : "source");
+  });
+}
+function captureCanvasViewStates(container) {
+  const previewIdx = [];
+  const blocks = container.querySelectorAll(".codeblock.has-canvas");
+  blocks.forEach((block, i) => {
+    if (block.querySelector(".cbview-preview")?.classList.contains("active"))
+      previewIdx.push(i);
+  });
+  return previewIdx;
+}
+function restoreCanvasViewStates(container, previewIdx) {
+  if (!previewIdx.length)
+    return;
+  const blocks = container.querySelectorAll(".codeblock.has-canvas");
+  for (const i of previewIdx) {
+    const block = blocks[i];
+    if (block)
+      setCanvasView(block, "preview");
+  }
+}
+function setCanvasView(block, view) {
+  const sourceBtn = block.querySelector(".cbview-source");
+  const previewBtn = block.querySelector(".cbview-preview");
+  const pre = block.querySelector("pre");
+  const canvasEl = block.querySelector(".cbcanvas");
+  if (!sourceBtn || !previewBtn || !pre || !canvasEl)
+    return;
+  sourceBtn.classList.toggle("active", view === "source");
+  sourceBtn.setAttribute("aria-pressed", String(view === "source"));
+  previewBtn.classList.toggle("active", view === "preview");
+  previewBtn.setAttribute("aria-pressed", String(view === "preview"));
+  if (view === "source") {
+    canvasEl.hidden = true;
+    pre.hidden = false;
+    return;
+  }
+  pre.hidden = true;
+  canvasEl.hidden = false;
+  if (!canvasEl.querySelector("iframe")) {
+    const srcEl = block.querySelector(".cbsrc");
+    const code = srcEl ? srcEl.textContent || "" : "";
+    const frame = document.createElement("iframe");
+    frame.className = "cbframe";
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("loading", "lazy");
+    frame.title = "Canvas preview";
+    frame.srcdoc = code;
+    canvasEl.appendChild(frame);
+  }
+}
+function linkifyCitations(html, validNs) {
+  if (!validNs.size)
+    return html;
+  const replaceMarkers = (text) => text.replace(/\[(\d{1,3})\]/g, (m, d) => {
+    const n = Number(d);
+    if (!validNs.has(n))
+      return m;
+    return '<button type="button" class="cite-mark" data-cite="' + n + '" aria-label="Source ' + n + '">' + n + "</button>";
+  });
+  return html.split(/(<[^>]*>)/g).map((seg, i) => i % 2 === 0 ? replaceMarkers(seg) : seg).join("");
 }
 function mdTableSep(s) {
   return /^[\s|:-]+$/.test(s) && /-/.test(s) && /\|/.test(s);
@@ -891,6 +1028,153 @@ function renderSteps(container, names, cur) {
   }).join("");
 }
 
+// src/web/src/rag.ts
+var CHUNK_TARGET = 1200;
+function chunkText(fileId, fileName, text) {
+  if (!text)
+    return [];
+  const chunks = [];
+  const paraRe = /\n\s*\n/g;
+  const paras = [];
+  let last = 0;
+  let m;
+  while (m = paraRe.exec(text)) {
+    paras.push({ start: last, end: m.index });
+    last = m.index + m[0].length;
+  }
+  paras.push({ start: last, end: text.length });
+  let curStart = -1, curEnd = -1;
+  const flush = () => {
+    if (curStart < 0 || curEnd <= curStart)
+      return;
+    chunks.push({ fileId, fileName, start: curStart, end: curEnd, text: text.slice(curStart, curEnd) });
+    curStart = -1;
+    curEnd = -1;
+  };
+  for (const p of paras) {
+    if (p.end <= p.start)
+      continue;
+    const paraLen = p.end - p.start;
+    if (curStart < 0) {
+      curStart = p.start;
+      curEnd = p.end;
+      if (paraLen >= CHUNK_TARGET)
+        flush();
+      continue;
+    }
+    const curLen = curEnd - curStart;
+    if (curLen + paraLen > CHUNK_TARGET) {
+      flush();
+      curStart = p.start;
+      curEnd = p.end;
+      if (paraLen >= CHUNK_TARGET)
+        flush();
+    } else {
+      curEnd = p.end;
+    }
+  }
+  flush();
+  return chunks;
+}
+function chunkFiles(files) {
+  const out = [];
+  for (const f of files)
+    out.push(...chunkText(f.id, f.name, f.text));
+  return out;
+}
+function tokenize(text) {
+  const m = text.toLowerCase().match(/[a-z0-9]+/g);
+  return m || [];
+}
+var K1 = 1.5;
+var B = 0.75;
+function buildIndex(chunks) {
+  const indexed = [];
+  const df = new Map;
+  let totalLen = 0;
+  for (const chunk of chunks) {
+    const toks = tokenize(chunk.text);
+    const termCounts = new Map;
+    for (const t of toks)
+      termCounts.set(t, (termCounts.get(t) || 0) + 1);
+    for (const t of termCounts.keys())
+      df.set(t, (df.get(t) || 0) + 1);
+    totalLen += toks.length;
+    indexed.push({ chunk, termCounts, length: toks.length });
+  }
+  return {
+    chunks: indexed,
+    df,
+    avgLength: indexed.length ? totalLen / indexed.length : 0,
+    n: indexed.length
+  };
+}
+function idf(index, term) {
+  const n = index.df.get(term) || 0;
+  return Math.log((index.n - n + 0.5) / (n + 0.5) + 1);
+}
+function bm25TopK(index, query, k) {
+  const qTerms = tokenize(query);
+  if (!qTerms.length || !index.n)
+    return [];
+  const uniqueTerms = [...new Set(qTerms)];
+  const scored = [];
+  for (const ic of index.chunks) {
+    let score = 0;
+    for (const term of uniqueTerms) {
+      const f = ic.termCounts.get(term);
+      if (!f)
+        continue;
+      const numer = f * (K1 + 1);
+      const denom = f + K1 * (1 - B + B * ic.length / (index.avgLength || 1));
+      score += idf(index, term) * (numer / denom);
+    }
+    if (score > 0)
+      scored.push({ chunk: ic.chunk, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, k);
+}
+var INLINE_THRESHOLD_CHARS = 8000;
+var TOP_K = 6;
+function shouldRetrieve(totalChars) {
+  return totalChars > INLINE_THRESHOLD_CHARS;
+}
+function toCitations(top) {
+  return top.map((s, i) => ({
+    n: i + 1,
+    fileName: s.chunk.fileName,
+    start: s.chunk.start,
+    end: s.chunk.end,
+    text: s.chunk.text
+  }));
+}
+function buildContextBlock(citations) {
+  if (!citations.length)
+    return "";
+  let out = `Context from attached files (retrieved by relevance to your message):
+
+`;
+  for (const c of citations) {
+    out += `[${c.n}] ${c.fileName} (chars ${c.start}-${c.end}):
+${c.text}
+
+`;
+  }
+  out += `When you use information from the context above, cite it inline with the matching [n] marker.
+
+`;
+  return out;
+}
+function retrieve(files, queryText, k = TOP_K) {
+  const chunks = chunkFiles(files);
+  if (!chunks.length)
+    return [];
+  const index = buildIndex(chunks);
+  const top = bm25TopK(index, queryText, k);
+  return toCitations(top);
+}
+
 // src/web/src/composer.ts
 var MAX_TEXT_BYTES = 256 * 1024;
 var TEXT_EXTS = /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|ini|cfg|conf|log|xml|html?|css|scss|js|mjs|cjs|ts|tsx|jsx|py|rs|go|java|c|h|cpp|hpp|cc|cs|rb|php|sh|bash|zsh|fish|sql|swift|kt|lua|r|jl|tex|svg|env|gitignore|dockerfile|makefile)$/i;
@@ -942,6 +1226,8 @@ class ComposerState {
     seed: null
   };
   genDefaults = { temperature: null, topP: null, topK: null };
+  samplingScope = "session";
+  oneShotArmed = false;
   systemPrompt = null;
   recTemp() {
     return this.genDefaults.temperature != null ? this.genDefaults.temperature : this.thinkingOn ? 0.9 : 0.7;
@@ -985,6 +1271,8 @@ function renderAttachments(state) {
   const box = $("chat-attach");
   box.innerHTML = "";
   box.style.display = state.attachments.length ? "flex" : "none";
+  const totalTextChars = state.attachments.reduce((n, a) => n + (a.kind === "text" ? (a.text || "").length : 0), 0);
+  const retrievalMode = shouldRetrieve(totalTextChars);
   for (const a of state.attachments) {
     const chip = el("div", "attach-chip", box);
     chip.dataset.attId = String(a.id);
@@ -995,6 +1283,11 @@ function renderAttachments(state) {
     } else
       el("span", "att-ico", chip).textContent = "\uD83D\uDCC4";
     el("span", "att-name", chip).textContent = a.name + (a.truncated ? " (truncated)" : "");
+    if (a.kind === "text" && retrievalMode) {
+      const tag = el("span", "att-tag", chip);
+      tag.textContent = "retrieval";
+      tag.title = "This file is large enough that only the most relevant excerpts are sent, not the whole file";
+    }
     const x = el("button", "att-x", chip);
     x.type = "button";
     x.textContent = "✕";
@@ -1009,13 +1302,20 @@ function clearAttachments(state) {
   renderAttachments(state);
 }
 function buildMessageText(state, userText) {
-  const files = state.attachments.filter((a) => a.kind === "text");
+  const files = state.attachments.filter((a) => a.kind === "text" && a.text != null);
   if (!files.length)
-    return userText;
-  let pre = "";
-  for (const a of files)
-    pre += "Attached file: " + a.name + "\n```\n" + a.text + "\n```\n\n";
-  return pre + userText;
+    return { text: userText, citations: [] };
+  const totalChars = files.reduce((n, a) => n + a.text.length, 0);
+  if (!shouldRetrieve(totalChars)) {
+    let pre = "";
+    for (const a of files)
+      pre += "Attached file: " + a.name + "\n```\n" + a.text + "\n```\n\n";
+    return { text: pre + userText, citations: [] };
+  }
+  const citations = retrieve(files.map((a) => ({ id: a.id, name: a.name, text: a.text })), userText);
+  if (!citations.length)
+    return { text: userText, citations: [] };
+  return { text: buildContextBlock(citations) + userText, citations };
 }
 function updateAttachHint(state) {
   const btn = $("chat-attach-btn");
@@ -1144,19 +1444,41 @@ function onSeedInput(state, send) {
   pushSampling(state, send);
 }
 function pushSampling(state, send) {
-  send({ type: "set_sampling", ...state.sampling });
+  if (state.samplingScope === "next_turn") {
+    send({ type: "set_sampling", scope: "next_turn", ...state.sampling });
+    state.oneShotArmed = Object.values(state.sampling).some((v) => v != null);
+  } else {
+    send({ type: "set_sampling", ...state.sampling });
+    state.oneShotArmed = false;
+  }
+  updateSamplingUi(state);
 }
 function updateSamplingUi(state) {
   const dirty = Object.values(state.sampling).some((v) => v != null);
   const pill = $("chat-sampling");
   if (pill) {
-    pill.classList.toggle("dirty", dirty);
-    pill.title = dirty ? "Sampling overridden — click to edit or reset" : "Sampling controls (temperature · top_p · top_k · Advanced)";
+    pill.classList.toggle("dirty", dirty && !state.oneShotArmed);
+    pill.classList.toggle("armed", state.oneShotArmed);
+    pill.title = state.oneShotArmed ? "Sampling override armed for your next message only" : dirty ? "Sampling overridden — click to edit or reset" : "Sampling controls (temperature · top_p · top_k · Advanced)";
   }
+  const chip = $("samp-oneshot-chip");
+  if (chip)
+    chip.style.display = state.oneShotArmed ? "inline-flex" : "none";
+  const scopeSelect = $("samp-scope");
+  if (scopeSelect && scopeSelect.value !== state.samplingScope)
+    scopeSelect.value = state.samplingScope;
+}
+function clearOneShotArmed(state) {
+  if (!state.oneShotArmed)
+    return;
+  state.oneShotArmed = false;
+  state.samplingScope = "session";
+  updateSamplingUi(state);
 }
 function resetSampling(state, send) {
   for (const k of Object.keys(state.sampling))
     state.sampling[k] = null;
+  state.samplingScope = "session";
   refreshSamplingRecs(state);
   updateSamplingUi(state);
   pushSampling(state, send);
@@ -1209,6 +1531,16 @@ function initSampling(state, send) {
       e.stopPropagation();
       resetSampling(state, send);
     };
+  const scopeSelect = $("samp-scope");
+  if (scopeSelect)
+    scopeSelect.addEventListener("change", (e) => {
+      e.stopPropagation();
+      state.samplingScope = scopeSelect.value === "next_turn" ? "next_turn" : "session";
+      if (state.samplingScope === "session") {
+        state.oneShotArmed = false;
+      }
+      updateSamplingUi(state);
+    });
   updateSamplingUi(state);
   refreshSamplingRecs(state);
 }
@@ -1652,6 +1984,27 @@ function renderQueue(q) {
 }
 
 // src/web/src/sessions.ts
+var SESSIONS_STYLE_ID = "mlxbun-sessions-style";
+function injectSessionsStyles() {
+  injectStyles(SESSIONS_STYLE_ID, `
+.sess-msg-search{margin-top:6px;padding-top:6px;border-top:1px solid var(--hairline,rgba(255,255,255,.14));}
+.sess-msg-search-hdr{font-size:11px;color:var(--dim,#86868b);text-transform:uppercase;
+  letter-spacing:.04em;padding:4px 10px;}
+.sess-msg-search-loading{color:var(--dim,#86868b);font-size:12px;padding:6px 10px;}
+.sess-msg-hit{padding:7px 10px;border-radius:8px;cursor:pointer;}
+.sess-msg-hit:hover{background:var(--card-hover,rgba(255,255,255,.08));}
+.sess-msg-hit .stitle{font-size:12.5px;}
+.sess-msg-snippet{color:var(--dim,#86868b);font-size:11px;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;margin-top:2px;}
+.sess-msg-snippet mark{background:rgba(255,214,10,.35);color:inherit;border-radius:2px;}
+.sess-export-menu{position:fixed;z-index:950;background:var(--bg,#000);
+  border:1px solid var(--hairline-strong,rgba(255,255,255,.28));border-radius:10px;
+  box-shadow:0 12px 30px rgba(0,0,0,.4);overflow:hidden;min-width:150px;}
+.sess-export-item{display:block;width:100%;box-sizing:border-box;appearance:none;background:none;
+  border:0;text-align:left;color:var(--ink,#fff);font-size:12.5px;padding:9px 12px;cursor:pointer;}
+.sess-export-item:hover{background:var(--card-hover,rgba(255,255,255,.08));}
+`);
+}
 function newSidebarState() {
   return { lastSessionItems: [] };
 }
@@ -1677,6 +2030,7 @@ function esc2(s) {
   return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 }
 function renderSessions(state, items, activePath, cb) {
+  injectSessionsStyles();
   state.lastSessionItems = items || [];
   const box = $("chat-sessions");
   if (!items || !items.length) {
@@ -1687,9 +2041,14 @@ function renderSessions(state, items, activePath, cb) {
   for (const s of items) {
     const row = el("div", "sess" + (s.path === activePath ? " active" : ""), box);
     row.dataset.title = (s.title || "New chat").toLowerCase();
-    row.innerHTML = '<div class="stitle">' + esc2(s.title || "New chat") + "</div>" + '<div class="smeta"><span>' + esc2(relTime(s.modified)) + "</span>" + (s.messageCount ? "<span>· " + s.messageCount + " msg" + (s.messageCount === 1 ? "" : "s") + "</span>" : "") + (s.forked ? "<span>· forked</span>" : "") + "</div>" + '<button class="sbtn sfork" title="New chat from here">⑂</button>' + '<button class="sbtn sdel" title="Delete chat">✕</button>';
+    row.dataset.path = s.path;
+    row.innerHTML = '<div class="stitle">' + esc2(s.title || "New chat") + "</div>" + '<div class="smeta"><span>' + esc2(relTime(s.modified)) + "</span>" + (s.messageCount ? "<span>· " + s.messageCount + " msg" + (s.messageCount === 1 ? "" : "s") + "</span>" : "") + (s.forked ? "<span>· forked</span>" : "") + "</div>" + '<button class="sbtn sexport" title="Export this chat">⇩</button>' + '<button class="sbtn sfork" title="New chat from here">⑂</button>' + '<button class="sbtn sdel" title="Delete chat">✕</button>';
     row.addEventListener("click", () => {
       cb.onOpen(s.path);
+    });
+    row.querySelector(".sexport").addEventListener("click", (e) => {
+      e.stopPropagation();
+      openExportMenu(row.querySelector(".sexport"), s.path, s.title);
     });
     row.querySelector(".sfork").addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1702,19 +2061,35 @@ function renderSessions(state, items, activePath, cb) {
   }
   applySessSearch(state);
 }
+function openSessionRowByPath(path) {
+  const box = document.getElementById("chat-sessions");
+  if (!box)
+    return false;
+  const row = box.querySelector('.sess[data-path="' + cssEscape(path) + '"]');
+  if (!row)
+    return false;
+  row.classList.remove("sess-hidden");
+  row.click();
+  return true;
+}
+function cssEscape(s) {
+  if (typeof CSS !== "undefined" && CSS.escape)
+    return CSS.escape(s);
+  return s.replace(/["\\]/g, "\\$&");
+}
 function applySessSearch(state) {
   const input = $("chat-sess-search");
   const q = input ? input.value.trim().toLowerCase() : "";
   const rows = $("chat-sessions").querySelectorAll(".sess");
-  let anyVisible = false;
+  let visibleCount = 0;
   rows.forEach((row) => {
     const match = !q || (row.dataset.title || "").includes(q);
     row.classList.toggle("sess-hidden", !match);
     if (match)
-      anyVisible = true;
+      visibleCount++;
   });
   let empty = $("chat-sessions").querySelector(".sess-search-empty");
-  if (q && !anyVisible && state.lastSessionItems.length) {
+  if (q && !visibleCount && state.lastSessionItems.length) {
     if (!empty) {
       empty = el("div", "sessempty sess-search-empty", $("chat-sessions"));
     }
@@ -1722,6 +2097,66 @@ function applySessSearch(state) {
   } else if (empty) {
     empty.remove();
   }
+  scheduleMessageSearch(state, q, visibleCount);
+}
+var MESSAGE_SEARCH_DEBOUNCE_MS = 250;
+var FEW_HITS_THRESHOLD = 3;
+var messageSearchTimer;
+var messageSearchSeq = 0;
+function scheduleMessageSearch(state, q, titleHits) {
+  if (messageSearchTimer)
+    clearTimeout(messageSearchTimer);
+  const section = document.getElementById("chat-sessions")?.querySelector(".sess-msg-search");
+  if (!q || q.length < 2 || titleHits > FEW_HITS_THRESHOLD) {
+    if (section)
+      section.remove();
+    return;
+  }
+  const seq = ++messageSearchSeq;
+  messageSearchTimer = setTimeout(() => runMessageSearch(state, q, seq), MESSAGE_SEARCH_DEBOUNCE_MS);
+}
+async function runMessageSearch(state, q, seq) {
+  const box = $("chat-sessions");
+  let section = box.querySelector(".sess-msg-search");
+  if (!section)
+    section = el("div", "sess-msg-search", box);
+  section.innerHTML = '<div class="sess-msg-search-hdr">In messages</div><div class="sess-msg-search-loading">Searching…</div>';
+  const d = await api("/api/sessions/search?q=" + encodeURIComponent(q)).catch(() => ({ ok: false }));
+  if (seq !== messageSearchSeq)
+    return;
+  const input = $("chat-sess-search");
+  if (!input || input.value.trim().toLowerCase() !== q)
+    return;
+  const body = d;
+  if (!body.ok || !body.results || !body.results.length) {
+    section.innerHTML = '<div class="sess-msg-search-hdr">In messages</div><div class="sessempty">No message matches for “' + esc2(q) + "”.</div>";
+    return;
+  }
+  section.innerHTML = '<div class="sess-msg-search-hdr">In messages</div>';
+  for (const r of body.results) {
+    const item = el("div", "sess-msg-hit", section);
+    item.dataset.path = r.sessionPath;
+    const first = r.matches[0];
+    item.innerHTML = '<div class="stitle">' + esc2(r.sessionTitle) + "</div>" + (first ? '<div class="sess-msg-snippet">' + highlightSnippetHtml(first.snippet, first.ranges) + "</div>" : "");
+    item.addEventListener("click", () => {
+      openSessionRowByPath(r.sessionPath);
+    });
+  }
+}
+function highlightSnippetHtml(snippet, ranges) {
+  if (!ranges.length)
+    return esc2(snippet);
+  let out = "";
+  let cursor = 0;
+  for (const [start, end] of ranges) {
+    if (start < cursor || end <= start || end > snippet.length)
+      continue;
+    out += esc2(snippet.slice(cursor, start));
+    out += "<mark>" + esc2(snippet.slice(start, end)) + "</mark>";
+    cursor = end;
+  }
+  out += esc2(snippet.slice(cursor));
+  return out;
 }
 function newSiblingInfo() {
   return { entryId: null, index: 0, count: 0, siblingIds: [] };
@@ -1782,6 +2217,92 @@ function renderSiblingToggle(lastUserMsgEl, lastUserEntryId, siblingInfo, onSwit
 function switchSiblingTarget(siblingInfo, delta) {
   const ids = siblingInfo.siblingIds || [];
   return ids[siblingInfo.index - 1 + delta] ?? null;
+}
+function slugTitle(title) {
+  const slug = (title || "chat").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return (slug || "chat").slice(0, 60);
+}
+function entryContentText(content) {
+  if (typeof content === "string")
+    return content;
+  if (Array.isArray(content)) {
+    return content.filter((p) => !!p && p.type === "text" && typeof p.text === "string").map((p) => p.text).join(" ");
+  }
+  return "";
+}
+function sessionEntriesToMarkdown(entries, title) {
+  const lines = ["# " + (title || "Chat"), ""];
+  for (const raw of entries) {
+    const e = raw;
+    if (e.type !== "message" || !e.message)
+      continue;
+    const role = e.message.role;
+    if (role !== "user" && role !== "assistant")
+      continue;
+    const text = entryContentText(e.message.content);
+    if (!text)
+      continue;
+    lines.push("### " + (role === "user" ? "User" : "Assistant"), "", text, "");
+  }
+  return lines.join(`
+`);
+}
+function downloadBlob(filename, content, mime) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function exportSession(path, title, format) {
+  const d = await api("/api/sessions/export?path=" + encodeURIComponent(path)).catch(() => ({ ok: false }));
+  const body = d;
+  if (!body.ok || !body.entries)
+    return;
+  const stem = slugTitle(title);
+  if (format === "json") {
+    downloadBlob(stem + ".json", JSON.stringify(body.entries, null, 2), "application/json");
+  } else {
+    downloadBlob(stem + ".md", sessionEntriesToMarkdown(body.entries, title), "text/markdown");
+  }
+}
+var exportMenuEl = null;
+function closeExportMenu() {
+  if (exportMenuEl) {
+    exportMenuEl.remove();
+    exportMenuEl = null;
+  }
+}
+function openExportMenu(anchor, path, title) {
+  closeExportMenu();
+  const menu = el("div", "sess-export-menu", document.body);
+  const rect = anchor.getBoundingClientRect();
+  menu.style.position = "fixed";
+  menu.style.top = rect.bottom + 4 + "px";
+  menu.style.left = Math.max(4, rect.right - 140) + "px";
+  menu.innerHTML = '<button class="sess-export-item" data-fmt="md">Export as Markdown</button>' + '<button class="sess-export-item" data-fmt="json">Export as JSON</button>';
+  menu.querySelectorAll(".sess-export-item").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      exportSession(path, title, btn.dataset.fmt);
+      closeExportMenu();
+    });
+  });
+  exportMenuEl = menu;
+  setTimeout(() => {
+    document.addEventListener("click", closeExportMenu, { once: true });
+    document.addEventListener("keydown", onExportMenuKeydown);
+  }, 0);
+}
+function onExportMenuKeydown(e) {
+  if (e.key === "Escape") {
+    closeExportMenu();
+    document.removeEventListener("keydown", onExportMenuKeydown);
+  }
 }
 
 // src/web/src/adapters-panel.ts
@@ -2164,7 +2685,7 @@ async function showArticle(name) {
     body.innerHTML = `<div class="mem-list-empty">Couldn't load “` + esc(display) + "”.</div>";
     return;
   }
-  body.innerHTML = '<div class="mem-art-head">' + '<div class="mem-art-tabs">' + '<button class="mem-art-tab active" id="mem-tab-view" type="button">Article</button>' + '<button class="mem-art-tab" id="mem-tab-history" type="button">History</button>' + "</div></div>" + '<div id="mem-art-view">' + '<div class="mem-article-render">' + mdToHtml(artRes.content) + "</div>" + linksLineHtml(linksRes.outbound || [], linksRes.inbound || []) + "</div>" + '<div id="mem-art-history" style="display:none"></div>';
+  body.innerHTML = '<div class="mem-art-head">' + '<div class="mem-art-tabs">' + '<button class="mem-art-tab active" id="mem-tab-view" type="button">Article</button>' + '<button class="mem-art-tab" id="mem-tab-history" type="button">History</button>' + "</div></div>" + '<div id="mem-art-view">' + '<div class="mem-article-render" data-ui-chrome="content">' + mdToHtml(artRes.content) + "</div>" + linksLineHtml(linksRes.outbound || [], linksRes.inbound || []) + "</div>" + '<div id="mem-art-history" style="display:none"></div>';
   wireLinkChips(body);
   $("mem-tab-view").onclick = () => switchArticleTab("view");
   $("mem-tab-history").onclick = () => switchArticleTab("history", name);
@@ -2364,13 +2885,328 @@ function initMemoryPanel() {
     if (e.target === $("mem-overlay"))
       closeMemPanel();
   });
+  wireCanvasToggle($("mem-body"));
   wireConsentCard();
   refreshSidebarEntry();
   personalizeHeroChips();
   maybeShowConsentCard();
 }
 
+// src/web/src/ui-catalog.ts
+var ROUTE_IDS = ["chat", "quantize", "finetune", "dataset", "status"];
+var VIEW_IDS = ["memory-panel", "hub-panel", "settings", "adapters-panel"];
+function isRouteId(v) {
+  return ROUTE_IDS.includes(v);
+}
+function isViewId(v) {
+  return VIEW_IDS.includes(v);
+}
+var SPOTLIGHT_TARGETS = {
+  composer: { selector: "#chat-box", label: "Message box", route: "chat" },
+  send: { selector: "#chat-send", label: "Send", route: "chat" },
+  "new-chat": { selector: "#chat-new", label: "New chat", route: "chat" },
+  "session-search": { selector: "#chat-sess-search", label: "Search chats", route: "chat" },
+  "sampling-pill": { selector: "#chat-sampling", label: "Sampling", route: "chat" },
+  "prompt-pill": { selector: "#chat-sysprompt", label: "System prompt", route: "chat" },
+  "adapter-select": { selector: "#chat-adapter", label: "LoRA adapter", route: "chat" },
+  "memory-entry": { selector: "#chat-memory-entry", label: "Memory", route: "chat" },
+  "developer-toggle": { selector: "#nav-developer", label: "Developer toggle" },
+  "model-picker": { selector: "#nav-model", label: "Active model" },
+  "hub-browse": { selector: "#model-pop-browse", label: "Browse models", view: "hub-panel" },
+  "quantize-source": { selector: "#q-model", label: "Source model", route: "quantize" },
+  "finetune-base": { selector: "#f-model", label: "Base model", route: "finetune" }
+};
+function getSpotlightTarget(id) {
+  return SPOTLIGHT_TARGETS[id] ?? null;
+}
+
+// src/web/src/assistant.ts
+var STEP_CONTAINER_BY_ROUTE = {
+  quantize: "q-steps",
+  finetune: "f-steps",
+  dataset: "d-steps"
+};
+function currentWizardStep(route) {
+  const containerId = STEP_CONTAINER_BY_ROUTE[route];
+  if (!containerId)
+    return null;
+  const container = document.getElementById(containerId);
+  if (!container)
+    return null;
+  const spans = [...container.querySelectorAll(".s")];
+  if (spans.length === 0)
+    return null;
+  const curIdx = spans.findIndex((s) => s.classList.contains("cur"));
+  const cur = spans[curIdx] ?? spans[0];
+  const label = cur.querySelector(".n") ? (cur.textContent || "").replace(/^\d+/, "").trim() : (cur.textContent || "").trim();
+  return { index: curIdx < 0 ? 0 : curIdx, count: spans.length, label };
+}
+var INTERACTIVE_SELECTOR = [
+  "button:not([disabled])",
+  "a[href]",
+  'input:not([type="hidden"]):not([disabled])',
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[role="button"]',
+  "[data-spotlight]"
+].join(", ");
+var MAX_ELEMENTS = 120;
+function isAgentChrome(el2) {
+  return !!el2.closest("[data-ui-chrome]") || !!el2.closest("#toasts");
+}
+function isHiddenSelf(el2) {
+  const html = el2;
+  if (html.hidden)
+    return true;
+  const inline = html.style?.display;
+  if (inline === "none")
+    return true;
+  const inlineVis = html.style?.visibility;
+  if (inlineVis === "hidden" || inlineVis === "collapse")
+    return true;
+  return false;
+}
+function isVisible(el2) {
+  const html = el2;
+  if (html.offsetParent === null) {
+    const style = globalThis.getComputedStyle?.(html);
+    if (style && style.position === "fixed")
+      return true;
+  }
+  for (let node = el2;node; node = node.parentElement) {
+    if (isHiddenSelf(node))
+      return false;
+  }
+  return true;
+}
+function elementLabel(el2) {
+  const html = el2;
+  const uiLabel = html.getAttribute("data-ui-label")?.trim();
+  if (uiLabel)
+    return uiLabel;
+  const aria = html.getAttribute("aria-label")?.trim();
+  if (aria)
+    return aria;
+  const labelledBy = html.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const labelEl = document.getElementById(labelledBy);
+    if (labelEl?.textContent?.trim())
+      return labelEl.textContent.trim();
+  }
+  const spotlight = html.getAttribute("data-spotlight")?.trim();
+  const text = html.textContent?.replace(/\s+/g, " ").trim() ?? "";
+  if (spotlight)
+    return text.length > 0 && text.length <= 100 ? text : spotlight;
+  if (text.length > 0 && text.length <= 80)
+    return text;
+  const placeholder = html.placeholder?.trim();
+  if (placeholder)
+    return placeholder;
+  const title = html.getAttribute("title")?.trim();
+  if (title)
+    return title;
+  const name = html.getAttribute("name")?.trim();
+  if (name)
+    return name;
+  return "";
+}
+function captureUiSnapshot(route) {
+  const nodes = [...document.querySelectorAll(INTERACTIVE_SELECTOR)];
+  const elements = [];
+  const seenRefs = new Set;
+  let index = 0;
+  for (const el2 of nodes) {
+    if (isAgentChrome(el2) || !isVisible(el2))
+      continue;
+    const label = elementLabel(el2);
+    if (!label)
+      continue;
+    const html = el2;
+    const spotlightId = html.getAttribute("data-spotlight")?.trim() || undefined;
+    const existingRef = html.getAttribute("data-ui-ref");
+    const ref = existingRef ?? `ui-${route.replace(/[^a-zA-Z0-9]/g, "_") || "root"}-${index}`;
+    if (!existingRef)
+      html.setAttribute("data-ui-ref", ref);
+    if (seenRefs.has(ref))
+      continue;
+    seenRefs.add(ref);
+    elements.push({
+      ref,
+      tag: html.tagName.toLowerCase(),
+      label,
+      kind: spotlightId ? "region" : "interactive",
+      role: html.getAttribute("role") ?? undefined,
+      selector: `[data-ui-ref="${ref}"]`,
+      spotlightId
+    });
+    index += 1;
+    if (elements.length >= MAX_ELEMENTS)
+      break;
+  }
+  return { route, capturedAt: new Date().toISOString(), elements };
+}
+function matchScore(haystack, query) {
+  const h = haystack.toLowerCase();
+  const q = query.toLowerCase().trim();
+  if (!q)
+    return 0;
+  if (h === q)
+    return 100;
+  if (h.includes(q))
+    return 85;
+  const tokens = q.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0)
+    return 0;
+  const matched = tokens.filter((t) => h.includes(t)).length;
+  return matched === 0 ? 0 : 50 + matched / tokens.length * 35;
+}
+function findByLabel(snapshot, label) {
+  if (!snapshot)
+    return;
+  let best;
+  let bestScore = 0;
+  for (const el2 of snapshot.elements) {
+    const hay = [el2.label, el2.spotlightId].filter(Boolean).join(" ");
+    const score = matchScore(hay, label);
+    if (score > bestScore) {
+      bestScore = score;
+      best = el2;
+    }
+  }
+  return bestScore >= 50 ? best : undefined;
+}
+function resolveSpotlightTarget(request, snapshot) {
+  if (request.ref) {
+    const el2 = snapshot?.elements.find((e) => e.ref === request.ref);
+    if (el2)
+      return { selector: el2.selector, title: el2.label, message: request.message };
+    const selector = `[data-ui-ref="${request.ref}"]`;
+    if (document.querySelector(selector)) {
+      return { selector, title: request.label ?? request.ref, message: request.message };
+    }
+  }
+  if (request.selector && document.querySelector(request.selector)) {
+    return { selector: request.selector, title: request.label ?? "Here", message: request.message };
+  }
+  if (request.label) {
+    const el2 = findByLabel(snapshot, request.label);
+    if (el2)
+      return { selector: el2.selector, title: el2.label, message: request.message };
+    let bestEl = null;
+    let bestScore = 0;
+    for (const node of document.querySelectorAll("[data-ui-label]")) {
+      const score = matchScore(node.getAttribute("data-ui-label") ?? "", request.label);
+      if (score > bestScore) {
+        bestScore = score;
+        bestEl = node;
+      }
+    }
+    if (bestEl && bestScore >= 50) {
+      const ref = bestEl.getAttribute("data-ui-ref");
+      return {
+        selector: ref ? `[data-ui-ref="${ref}"]` : `[data-ui-label="${bestEl.getAttribute("data-ui-label")}"]`,
+        title: bestEl.getAttribute("data-ui-label") ?? request.label,
+        message: request.message
+      };
+    }
+  }
+  if (request.target) {
+    const meta = getSpotlightTarget(request.target);
+    if (meta && document.querySelector(meta.selector)) {
+      return { selector: meta.selector, title: meta.label, message: request.message };
+    }
+    const bySpotlightAttr = document.querySelector(`[data-spotlight="${request.target}"]`);
+    if (bySpotlightAttr) {
+      const ref = bySpotlightAttr.getAttribute("data-ui-ref");
+      return {
+        selector: ref ? `[data-ui-ref="${ref}"]` : `[data-spotlight="${request.target}"]`,
+        title: bySpotlightAttr.getAttribute("data-ui-label") ?? request.label ?? request.target,
+        message: request.message
+      };
+    }
+  }
+  return null;
+}
+var AUTO_DISMISS_MS = 3000;
+var dismissTimer = null;
+var dismissListeners = null;
+function ensureOverlayEl() {
+  let el2 = document.getElementById("assistant-spotlight");
+  if (!el2) {
+    el2 = document.createElement("div");
+    el2.id = "assistant-spotlight";
+    el2.setAttribute("data-ui-chrome", "assistant");
+    el2.innerHTML = '<div class="asr-ring"></div><div class="asr-pop"><div class="asr-pop-text"></div></div>';
+    document.body.appendChild(el2);
+  }
+  return el2;
+}
+function dismissSpotlight() {
+  if (dismissTimer) {
+    clearTimeout(dismissTimer);
+    dismissTimer = null;
+  }
+  if (dismissListeners) {
+    dismissListeners();
+    dismissListeners = null;
+  }
+  const el2 = document.getElementById("assistant-spotlight");
+  if (el2)
+    el2.classList.remove("show");
+}
+function showSpotlight(resolved) {
+  const target = document.querySelector(resolved.selector);
+  if (!target)
+    return false;
+  dismissSpotlight();
+  const overlay = ensureOverlayEl();
+  const rect = target.getBoundingClientRect();
+  const ring = overlay.querySelector(".asr-ring");
+  const pop = overlay.querySelector(".asr-pop");
+  const popText = overlay.querySelector(".asr-pop-text");
+  const pad = 6;
+  ring.style.left = `${rect.left - pad}px`;
+  ring.style.top = `${rect.top - pad}px`;
+  ring.style.width = `${rect.width + pad * 2}px`;
+  ring.style.height = `${rect.height + pad * 2}px`;
+  popText.textContent = resolved.message ? `${resolved.title} — ${resolved.message}` : resolved.title;
+  const popTop = rect.bottom + 12;
+  pop.style.left = `${Math.max(8, rect.left)}px`;
+  pop.style.top = `${popTop}px`;
+  overlay.classList.add("show");
+  const onDismiss = () => dismissSpotlight();
+  document.addEventListener("keydown", onDismiss, { capture: true });
+  document.addEventListener("mousedown", onDismiss, { capture: true });
+  document.addEventListener("wheel", onDismiss, { capture: true, passive: true });
+  dismissListeners = () => {
+    document.removeEventListener("keydown", onDismiss, { capture: true });
+    document.removeEventListener("mousedown", onDismiss, { capture: true });
+    document.removeEventListener("wheel", onDismiss, { capture: true });
+  };
+  dismissTimer = setTimeout(dismissSpotlight, AUTO_DISMISS_MS);
+  return true;
+}
+function buildAppContext(route, viewOverride) {
+  const view = viewOverride && isViewId(viewOverride) ? viewOverride : undefined;
+  const step = currentWizardStep(route) ?? undefined;
+  return {
+    route,
+    ...view ? { view } : {},
+    ...step ? { step } : {},
+    snapshot: captureUiSnapshot(route)
+  };
+}
+
 // src/web/src/chat.ts
+function renderSourcesHtml(citations) {
+  if (!citations.length)
+    return "";
+  const rows = citations.map((c) => {
+    const snippet = c.text.length > 240 ? c.text.slice(0, 240).trim() + "…" : c.text.trim();
+    return '<div class="src-row" data-cite-row="' + c.n + '">' + '<span class="src-n">[' + c.n + "]</span>" + '<span class="src-meta"><span class="src-file">' + esc(c.fileName) + "</span>" + '<span class="src-range">chars ' + c.start + "–" + c.end + "</span></span>" + '<div class="src-snippet">' + esc(snippet) + "</div></div>";
+  }).join("");
+  return '<details class="sources"><summary>Sources · ' + citations.length + "</summary>" + '<div class="src-list">' + rows + "</div></details>";
+}
 function argSummary(args) {
   if (!args)
     return "";
@@ -2426,6 +3262,8 @@ function createChatController() {
   let ws = null, connected = false, reconnectTimer, manualClose = false;
   let curAssistant = null;
   let turnActive = false;
+  let lastSnapshot = null;
+  let pendingCitations = [];
   let currentSessionPath = null, pendingResumePath = null;
   const thread = () => $("chat-thread");
   const composer = new ComposerState;
@@ -2481,6 +3319,31 @@ function createChatController() {
     }
     return false;
   }
+  function currentView2() {
+    if ($("mem-overlay")?.classList.contains("open"))
+      return "memory-panel";
+    if ($("hub-overlay")?.classList.contains("open"))
+      return "hub-panel";
+    if ($("adapters-overlay")?.classList.contains("open"))
+      return "adapters-panel";
+    return null;
+  }
+  function pushAppContext() {
+    const route = currentRoute();
+    if (!isRouteId(route))
+      return;
+    const ctx = buildAppContext(route, currentView2());
+    lastSnapshot = ctx.snapshot;
+    send({ type: "context", context: ctx });
+  }
+  function watchWizardSteps() {
+    const mo = new MutationObserver(() => pushAppContext());
+    for (const id of ["q-steps", "f-steps", "d-steps"]) {
+      const el2 = $(id);
+      if (el2)
+        mo.observe(el2, { childList: true, subtree: true });
+    }
+  }
   function setChatStatus(s) {
     const line = $("chat-status-line");
     if (s === "connected")
@@ -2494,6 +3357,7 @@ function createChatController() {
   let lastUserEntryId = null;
   let siblingInfo = newSiblingInfo();
   let lastAssistantMsgEl = null;
+  let lastAssistantCitations = [];
   function doRegenerate() {
     if (turnActive)
       return;
@@ -2505,6 +3369,7 @@ function createChatController() {
       lastAssistantMsgEl.remove();
       lastAssistantMsgEl = null;
     }
+    pendingCitations = lastAssistantCitations;
   }
   function switchSiblingDir(delta) {
     const target = switchSiblingTarget(siblingInfo, delta);
@@ -2553,6 +3418,7 @@ function createChatController() {
         lastAssistantMsgEl.remove();
         lastAssistantMsgEl = null;
       }
+      pendingCitations = lastAssistantCitations;
     };
     cancelBtn.onclick = restore;
     sendBtn.onclick = doSend;
@@ -2621,8 +3487,10 @@ function createChatController() {
       tokens: 0,
       blockState: { blocks: [] },
       scheduleText: () => {},
-      scheduleThinking: () => {}
+      scheduleThinking: () => {},
+      citations: pendingCitations
     };
+    pendingCitations = [];
     curAssistant.scheduleText = makeFrameScheduler(() => renderBlocksIncremental(curAssistant.textNode, curAssistant.text, curAssistant.blockState), atBottom, stick);
     curAssistant.scheduleThinking = makeFrameScheduler(() => {
       curAssistant.thinkBody.textContent = curAssistant.thinking;
@@ -2766,12 +3634,38 @@ function createChatController() {
     bubble.innerHTML = '<strong style="color:var(--red)">Agent error</strong><br>' + esc(message || "unknown error");
     stick(true);
   }
+  function attachSourcesPanel(a) {
+    const validNs = new Set(a.citations.map((c) => c.n));
+    a.textNode.innerHTML = linkifyCitations(a.textNode.innerHTML, validNs);
+    const panel = el("div", "", null);
+    panel.innerHTML = renderSourcesHtml(a.citations);
+    const detailsEl = panel.firstElementChild;
+    if (!detailsEl)
+      return;
+    a.bubble.appendChild(detailsEl);
+    a.textNode.querySelectorAll(".cite-mark").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const n = btn.dataset.cite;
+        detailsEl.open = true;
+        const row = detailsEl.querySelector('.src-row[data-cite-row="' + n + '"]');
+        if (row) {
+          row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          row.classList.add("pulse");
+          setTimeout(() => row.classList.remove("pulse"), 1000);
+        }
+      });
+    });
+  }
   function finishStreaming(a) {
     if (!a)
       return;
+    const previewIdx = captureCanvasViewStates(a.textNode);
     a.textNode.innerHTML = mdToHtml(a.text);
+    restoreCanvasViewStates(a.textNode, previewIdx);
     highlightIn(a.textNode);
     a.thinkBody.textContent = a.thinking;
+    if (a.citations.length)
+      attachSourcesPanel(a);
   }
   function clearRegenerateAffordance() {
     if (!lastAssistantMsgEl)
@@ -2792,6 +3686,7 @@ function createChatController() {
         clearRegenerateAffordance();
         addMsgActions(curAssistant.m, curAssistant.text, { regenerate: true }, { onRegenerate: doRegenerate });
         lastAssistantMsgEl = curAssistant.m;
+        lastAssistantCitations = curAssistant.citations;
       }
     }
     curAssistant = null;
@@ -2859,8 +3754,10 @@ function createChatController() {
     }
     if (item.text) {
       addMsgActions(m, item.text, { regenerate: !!opts.isLast }, { onRegenerate: doRegenerate });
-      if (opts.isLast)
+      if (opts.isLast) {
         lastAssistantMsgEl = m;
+        lastAssistantCitations = [];
+      }
     }
   }
   function renderHistory(items) {
@@ -2901,6 +3798,7 @@ function createChatController() {
           send({ type: "set_thinking", enabled: composer.thinkingOn });
         refreshAdapters();
         send({ type: "set_coding_tools", enabled: storedCodingToolsPreference() });
+        pushAppContext();
         if (pendingResumePath) {
           send({ type: "open_session", path: pendingResumePath });
           pendingResumePath = null;
@@ -2961,6 +3859,7 @@ function createChatController() {
       case "turn_end":
         finalizeMeta();
         renderLane(m.lane);
+        clearOneShotArmed(composer);
         endTurn();
         break;
       case "queue_update":
@@ -2969,9 +3868,22 @@ function createChatController() {
       case "error":
         showAgentError(m.message || "agent error");
         toast(m.message || "agent error", "err");
+        clearOneShotArmed(composer);
         if (turnActive)
           endTurn();
         break;
+      case "ui_navigate":
+        location.hash = `#/${m.route}`;
+        break;
+      case "ui_spotlight": {
+        if (m.route)
+          location.hash = `#/${m.route}`;
+        const resolved = resolveSpotlightTarget({ ref: m.ref, label: m.label, selector: m.selector, target: m.target, message: m.message }, lastSnapshot);
+        if (!resolved || !showSpotlight(resolved)) {
+          toast("Couldn't find that on screen to point at.", "err");
+        }
+        break;
+      }
     }
   }
   function submit() {
@@ -2996,7 +3908,8 @@ function createChatController() {
     addUserMsg(text, composer.attachments, { isLast: true });
     box.value = "";
     box.style.height = "auto";
-    const frame = imgs.length ? { type: "prompt", text: combined, images: imgs } : { type: "prompt", text: combined };
+    pendingCitations = combined.citations;
+    const frame = imgs.length ? { type: "prompt", text: combined.text, images: imgs } : { type: "prompt", text: combined.text };
     send(frame);
     clearAttachments(composer);
   }
@@ -3143,6 +4056,15 @@ function createChatController() {
           }, 1200);
         }).catch(() => {});
       });
+      wireCanvasToggle(thread());
+      window.addEventListener("hashchange", pushAppContext);
+      watchWizardSteps();
+      const overlayMo = new MutationObserver(() => pushAppContext());
+      for (const id of ["mem-overlay", "hub-overlay", "adapters-overlay"]) {
+        const el2 = $(id);
+        if (el2)
+          overlayMo.observe(el2, { attributes: true, attributeFilter: ["class"] });
+      }
     },
     enter() {
       if (!ws || ws.readyState > 1)
@@ -4041,11 +4963,12 @@ function renderRow(m) {
   return '<div class="mp-row' + (m.serving ? " serving" : "") + '">' + dot + '<div class="mp-main">' + '<div class="mp-name" title="' + esc(m.repo_id) + '">' + esc(name) + "</div>" + '<div class="mp-meta">' + esc(metaBits.join(" · ")) + " · " + esc(tpsBit) + "</div>" + servingTag + cmdRow + "</div>" + "</div>";
 }
 function renderModelPopBodyHtml(models) {
+  const browseRow = '<button type="button" class="mp-browse-hub" id="model-pop-browse">Browse models…</button>';
   if (!models.length) {
-    return '<div class="mp-empty">No models downloaded yet. Use <code>mlx-bun get &lt;repo-id&gt;</code> to fetch one.</div>';
+    return '<div class="mp-empty">No models downloaded yet. Use <code>mlx-bun get &lt;repo-id&gt;</code> to fetch one, ' + "or browse Hugging Face below.</div>" + browseRow;
   }
   const rows = pickModel(models).map(renderRow).join("");
-  return rows + '<div class="mp-foot-note">Fit is predicted for THIS Mac (src/fit.ts), not a generic guess. ' + "Switching the served model restarts the process — there's no live " + "in-process swap yet (that's a Phase 3 Hub feature); copy the command " + "above and restart.</div>";
+  return rows + '<div class="mp-foot-note">Fit is predicted for THIS Mac (src/fit.ts), not a generic guess. ' + "Switching the served model restarts the process — there's no live " + "in-process swap yet; copy the command above and restart.</div>" + browseRow;
 }
 async function refreshModelPop() {
   const body = $("model-pop-body");
@@ -4070,6 +4993,14 @@ async function refreshModelPop() {
         }
       };
     });
+    const browseBtn = body.querySelector("#model-pop-browse");
+    if (browseBtn) {
+      browseBtn.onclick = () => {
+        setModelPopOpen(false);
+        if (openHubFromModelPicker)
+          openHubFromModelPicker();
+      };
+    }
   } catch {
     body.innerHTML = '<div class="mp-empty">Could not reach the server.</div>';
   }
@@ -4100,12 +5031,615 @@ function initModelPicker() {
   setModelPopClose(closeModelPop);
 }
 
+// src/web/src/hub.ts
+function gb3(n) {
+  return (n / 2 ** 30).toFixed(1) + " GB";
+}
+function fitVerdict2(a) {
+  if (!a)
+    return null;
+  if (!a.fits)
+    return "red";
+  return a.predicted_decode_tps >= 10 ? "green" : "yellow";
+}
+function fitDotHtml(verdict) {
+  return verdict ? '<span class="hub-fit-dot ' + verdict + '" aria-hidden="true"></span>' : '<span class="hub-fit-dot" aria-hidden="true" style="background:var(--dimmer)"></span>';
+}
+function localRowHtml(m) {
+  const verdict = fitVerdict2(m.assessment);
+  const name = m.repo_id.split("/").pop() || m.repo_id;
+  const quant = m.quant_bits ? m.quant_bits + "-bit" : "unquantized";
+  const metaBits = [gb3(m.size_bytes), quant];
+  if (m.vision)
+    metaBits.push("vision");
+  if (!m.supported)
+    metaBits.push("unsupported model family");
+  const tpsBit = m.assessment && m.assessment.fits ? m.assessment.predicted_decode_tps.toFixed(0) + " tok/s predicted" : m.assessment ? "doesn't fit this Mac's memory" : "fit unknown";
+  const serveBtn = m.supported ? '<button type="button" class="hub-serve-btn" data-repo="' + esc(m.repo_id) + '">Serve</button>' : "";
+  return '<div class="hub-row">' + fitDotHtml(verdict) + '<div class="hub-row-main">' + '<div class="hub-row-name" title="' + esc(m.repo_id) + '">' + esc(name) + "</div>" + '<div class="hub-row-meta">' + esc(metaBits.join(" · ")) + " · " + esc(tpsBit) + "</div>" + "</div>" + '<div class="hub-row-actions">' + serveBtn + "</div>" + "</div>";
+}
+function renderHubLocalHtml(models) {
+  if (!models.length) {
+    return '<div class="hub-empty">No models downloaded yet — search Hugging Face below to get one.</div>';
+  }
+  return [...models].sort((a, b) => a.repo_id.localeCompare(b.repo_id)).map(localRowHtml).join("");
+}
+async function loadLocal() {
+  const body = $("hub-local-body");
+  if (!body)
+    return;
+  body.innerHTML = '<div class="hub-empty"><span class="shimmer">loading…</span></div>';
+  try {
+    const d = await api("/api/hub/local");
+    body.innerHTML = renderHubLocalHtml(d.models || []);
+    wireServeButtons(body);
+  } catch {
+    body.innerHTML = '<div class="hub-empty">Could not reach the server.</div>';
+  }
+}
+function wireServeButtons(container) {
+  container.querySelectorAll(".hub-serve-btn").forEach((btn) => {
+    btn.onclick = () => serveModel(btn.dataset.repo || "", btn);
+  });
+}
+async function serveModel(repo, btn) {
+  if (!repo)
+    return;
+  btn.disabled = true;
+  const prevText = btn.textContent;
+  btn.textContent = "Checking…";
+  const d = await api("/api/hub/serve", { method: "POST", body: { model: repo } }).catch(() => ({ ok: false, error: "request failed" }));
+  btn.disabled = false;
+  btn.textContent = prevText;
+  if (d.ok) {
+    toast("Now serving " + repo, "ok");
+    return;
+  }
+  if (d.restart_required && d.command) {
+    showRestartCommand(repo, d.command);
+    return;
+  }
+  toast("Couldn't switch models: " + (d.error || "unknown error"), "err");
+}
+function showRestartCommand(repo, command) {
+  const strip = $("hub-restart-strip");
+  if (!strip)
+    return;
+  strip.innerHTML = '<div class="hub-restart-note">Switching to <strong>' + esc(repo) + "</strong> needs a restart — " + "there's no live in-process model swap on this path yet. Restarting takes about a second " + "and your sessions are preserved on disk, exactly as they are now.</div>" + '<div class="hub-cmd"><code>' + esc(command) + "</code>" + '<button type="button" class="hub-copy-btn" data-cmd="' + esc(command) + '">Copy</button></div>';
+  strip.classList.add("show");
+  const copyBtn = strip.querySelector(".hub-copy-btn");
+  if (copyBtn) {
+    copyBtn.onclick = () => {
+      const cmd = copyBtn.dataset.cmd || "";
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(cmd).then(() => {
+          const prev = copyBtn.textContent;
+          copyBtn.textContent = "Copied";
+          setTimeout(() => {
+            copyBtn.textContent = prev;
+          }, 1200);
+        }).catch(() => {});
+      }
+    };
+  }
+}
+function hideRestartStrip() {
+  const strip = $("hub-restart-strip");
+  if (strip) {
+    strip.classList.remove("show");
+    strip.innerHTML = "";
+  }
+}
+function searchRowHtml(r, downloading) {
+  const name = r.id.split("/").pop() || r.id;
+  const metaBits = [r.downloads.toLocaleString() + " downloads"];
+  if (r.size_estimate != null)
+    metaBits.push(gb3(r.size_estimate));
+  const action = downloading ? '<span class="hub-dl-tag">downloading…</span>' : '<button type="button" class="hub-download-btn" data-repo="' + esc(r.id) + '">Download</button>';
+  return '<div class="hub-row" data-search-repo="' + esc(r.id) + '">' + '<div class="hub-row-main">' + '<div class="hub-row-name" title="' + esc(r.id) + '">' + esc(name) + "</div>" + '<div class="hub-row-meta">' + esc(r.id) + " · " + esc(metaBits.join(" · ")) + "</div>" + "</div>" + '<div class="hub-row-actions">' + action + "</div>" + "</div>";
+}
+function renderHubSearchHtml(results, offline, downloading) {
+  if (offline) {
+    return `<div class="hub-empty">Can't reach Hugging Face right now — search needs a network connection.</div>`;
+  }
+  if (!results.length) {
+    return '<div class="hub-empty">No matches.</div>';
+  }
+  return results.map((r) => searchRowHtml(r, downloading.has(r.id))).join("");
+}
+var searchDebounce;
+var lastSearchQuery = "";
+var inFlightDownloads = new Set;
+async function runSearch(query) {
+  const body = $("hub-search-body");
+  if (!body)
+    return;
+  lastSearchQuery = query;
+  if (!query) {
+    body.innerHTML = '<div class="hub-empty">Type to search Hugging Face for MLX models.</div>';
+    return;
+  }
+  body.innerHTML = '<div class="hub-empty"><span class="shimmer">searching…</span></div>';
+  const d = await api("/api/hub/search?q=" + encodeURIComponent(query)).catch(() => ({ ok: false, offline: true, results: [] }));
+  if (lastSearchQuery !== query)
+    return;
+  const offline = !!d.offline;
+  body.innerHTML = renderHubSearchHtml(d.results || [], offline, inFlightDownloads);
+  wireDownloadButtons(body);
+  setOfflineFooter(offline);
+}
+function wireDownloadButtons(container) {
+  container.querySelectorAll(".hub-download-btn").forEach((btn) => {
+    btn.onclick = () => startDownload(btn.dataset.repo || "", btn);
+  });
+}
+async function startDownload(repo, btn) {
+  if (!repo)
+    return;
+  btn.disabled = true;
+  btn.textContent = "Starting…";
+  const d = await api("/api/hub/download", { method: "POST", body: { repo } }).catch(() => ({ ok: false, error: "request failed" }));
+  if (!d.ok) {
+    btn.disabled = false;
+    btn.textContent = "Download";
+    toast("Couldn't start download: " + (d.error || "unknown error"), "err");
+    return;
+  }
+  inFlightDownloads.add(repo);
+  toast("Downloading " + repo, "ok");
+  const row = btn.closest(".hub-row");
+  const actions = row ? row.querySelector(".hub-row-actions") : null;
+  if (actions)
+    actions.innerHTML = '<span class="hub-dl-tag">downloading…</span>';
+  ensureDownloadPolling();
+}
+var downloadPollTimer;
+function ensureDownloadPolling() {
+  if (downloadPollTimer)
+    return;
+  downloadPollTimer = setInterval(pollDownloads, 1500);
+}
+function stopDownloadPolling() {
+  if (downloadPollTimer) {
+    clearInterval(downloadPollTimer);
+    downloadPollTimer = undefined;
+  }
+}
+async function pollDownloads() {
+  let downloads = [];
+  try {
+    const r = await fetch("/downloads");
+    const d = await r.json();
+    downloads = d.downloads || [];
+  } catch {
+    return;
+  }
+  let anyActive = false;
+  for (const dl of downloads) {
+    if (dl.state === "active") {
+      anyActive = true;
+      inFlightDownloads.add(dl.repoId);
+    }
+    const row = document.querySelector('.hub-row[data-search-repo="' + cssEscape2(dl.repoId) + '"]');
+    if (!row)
+      continue;
+    const actions = row.querySelector(".hub-row-actions");
+    if (!actions)
+      continue;
+    if (dl.state === "active") {
+      const pct = dl.totalBytes ? Math.floor(dl.receivedBytes / dl.totalBytes * 100) : 0;
+      actions.innerHTML = '<span class="hub-dl-tag">' + pct + "%</span>";
+    } else if (dl.state === "done") {
+      inFlightDownloads.delete(dl.repoId);
+      actions.innerHTML = '<span class="hub-dl-tag done">done — reload to serve</span>';
+    } else if (dl.state === "error") {
+      inFlightDownloads.delete(dl.repoId);
+      actions.innerHTML = '<span class="hub-dl-tag error">' + esc(dl.error || "download failed") + "</span>";
+    }
+  }
+  for (const repo of [...inFlightDownloads]) {
+    if (!downloads.some((d) => d.repoId === repo && d.state === "active"))
+      inFlightDownloads.delete(repo);
+  }
+  if (!anyActive)
+    stopDownloadPolling();
+}
+function cssEscape2(s) {
+  return s.replace(/"/g, "\\\"");
+}
+var panelTrap2;
+function isHubPanelOpen() {
+  const ov = $("hub-overlay");
+  return !!ov && ov.classList.contains("open");
+}
+function closeHubPanel() {
+  $("hub-overlay").classList.remove("open");
+  stopDownloadPolling();
+  panelTrap2.restore();
+}
+async function openHubPanel() {
+  panelTrap2.capture();
+  $("hub-overlay").classList.add("open");
+  hideRestartStrip();
+  const search = $("hub-search-input");
+  if (search)
+    search.value = "";
+  const searchBody = $("hub-search-body");
+  if (searchBody)
+    searchBody.innerHTML = '<div class="hub-empty">Type to search Hugging Face for MLX models.</div>';
+  setOfflineFooter(false);
+  await loadLocal();
+  if (inFlightDownloads.size)
+    ensureDownloadPolling();
+  setTimeout(() => {
+    const el22 = $("hub-search-input");
+    if (el22)
+      el22.focus();
+  }, 30);
+}
+function setOfflineFooter(offline) {
+  const note = $("hub-offline-note");
+  if (!note)
+    return;
+  note.style.display = offline ? "" : "none";
+}
+function initHubPanel() {
+  panelTrap2 = trapFocus($("hub-overlay"), isHubPanelOpen);
+  setHubPanelClose(closeHubPanel);
+  setOpenHubFromModelPicker(() => {
+    openHubPanel();
+  });
+  const closeBtn = $("hub-close");
+  if (closeBtn)
+    closeBtn.onclick = closeHubPanel;
+  const overlay = $("hub-overlay");
+  if (overlay)
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay)
+        closeHubPanel();
+    });
+  const search = $("hub-search-input");
+  if (search) {
+    search.addEventListener("input", () => {
+      clearTimeout(searchDebounce);
+      const q = search.value.trim();
+      searchDebounce = setTimeout(() => runSearch(q), 300);
+    });
+  }
+}
+
+// src/web/src/palette.ts
+function staticActions() {
+  return [
+    {
+      id: "new-chat",
+      label: "New chat",
+      hint: "⌘⇧O",
+      chatOnly: true,
+      run() {
+        const fn = controllers.chat && controllers.chat.newChat;
+        fn && fn();
+      }
+    },
+    {
+      id: "toggle-thinking",
+      label: "Toggle thinking",
+      chatOnly: true,
+      run() {
+        const btn = document.getElementById("chat-think");
+        if (btn)
+          btn.click();
+      }
+    },
+    {
+      id: "toggle-theme",
+      label: "Toggle theme",
+      run() {
+        const order = ["auto", "dark", "light"];
+        const active = document.querySelector("#theme-toggle button.active");
+        const cur = active && active.dataset.themeChoice || "auto";
+        const next = order[(order.indexOf(cur) + 1) % order.length];
+        setTheme(next);
+      }
+    },
+    {
+      id: "toggle-developer",
+      label: "Toggle Developer mode",
+      run() {
+        setDeveloperMode(!isDeveloperMode());
+      }
+    },
+    {
+      id: "open-memory",
+      label: "Open Memory panel",
+      run() {
+        openMemPanel();
+      }
+    },
+    {
+      id: "browse-models",
+      label: "Browse models (Hub)",
+      run() {
+        openHubPanel();
+      }
+    },
+    {
+      id: "open-shortcuts",
+      label: "Open shortcut sheet",
+      run() {
+        const btn = document.getElementById("nav-shortcuts");
+        if (btn)
+          btn.click();
+      }
+    },
+    {
+      id: "export-chat",
+      label: "Export this chat",
+      chatOnly: true,
+      async run() {
+        const activeRow = document.querySelector("#chat-sessions .sess.active");
+        if (!activeRow || !activeRow.dataset.path)
+          return;
+        const title = activeRow.querySelector(".stitle")?.textContent || "chat";
+        await exportSession(activeRow.dataset.path, title, "md");
+      }
+    }
+  ];
+}
+function fuzzyMatch(query, candidate) {
+  const q = query.toLowerCase();
+  const c = candidate.toLowerCase();
+  if (!q)
+    return true;
+  let qi = 0;
+  for (let ci = 0;ci < c.length && qi < q.length; ci++) {
+    if (c[ci] === q[qi])
+      qi++;
+  }
+  return qi === q.length;
+}
+var overlay = null;
+var input = null;
+var listEl = null;
+var trap2 = null;
+var selectedIndex = 0;
+var entries = [];
+var searchSeq = 0;
+var debounceTimer;
+var STYLE_ID = "mlxbun-palette-style";
+var DEBOUNCE_MS = 200;
+function injectPaletteStyles() {
+  injectStyles(STYLE_ID, `
+#palette-overlay{position:fixed;inset:0;z-index:900;display:none;
+  align-items:flex-start;justify-content:center;padding-top:12vh;
+  background:rgba(0,0,0,.45);backdrop-filter:blur(2px);}
+#palette-overlay.open{display:flex;}
+@media (prefers-reduced-motion:no-preference){
+  #palette-overlay.open .palette-box{animation:palette-in .15s ease-out;}
+}
+@keyframes palette-in{from{opacity:0;transform:translateY(-6px) scale(.98);}to{opacity:1;transform:none;}}
+.palette-box{width:min(560px,92vw);max-height:70vh;display:flex;flex-direction:column;
+  background:var(--bg,#000);border:1px solid var(--hairline-strong,rgba(255,255,255,.28));
+  border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden;}
+.palette-input-row{border-bottom:1px solid var(--hairline,rgba(255,255,255,.14));padding:4px 4px;}
+#palette-input{width:100%;box-sizing:border-box;background:transparent;border:0;outline:0;
+  color:var(--ink,#fff);font-size:15px;padding:12px 14px;}
+#palette-input::placeholder{color:var(--dimmer,#515154);}
+.palette-list{overflow-y:auto;flex:1;padding:6px;}
+.palette-section-hdr{font-size:11px;color:var(--dim,#86868b);text-transform:uppercase;
+  letter-spacing:.04em;padding:8px 10px 4px;}
+.palette-row{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:9px 10px;border-radius:8px;cursor:pointer;color:var(--ink,#fff);font-size:13.5px;}
+.palette-row:hover,.palette-row.active{background:var(--card-hover,rgba(255,255,255,.08));}
+.palette-row .prow-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.palette-row .prow-snippet{color:var(--dim,#86868b);font-size:11.5px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;margin-top:1px;}
+.palette-row .prow-main{min-width:0;flex:1;}
+.palette-row .prow-hint{color:var(--dimmer,#515154);font-size:11px;font-family:var(--mono,monospace);
+  flex:0 0 auto;}
+.palette-empty{color:var(--dim,#86868b);font-size:13px;padding:16px 10px;text-align:center;}
+.palette-row mark{background:rgba(255,214,10,.35);color:inherit;border-radius:2px;}
+`);
+}
+function isPaletteOpen() {
+  return !!overlay && overlay.classList.contains("open");
+}
+function closePalette() {
+  if (!overlay)
+    return;
+  overlay.classList.remove("open");
+  if (trap2)
+    trap2.restore();
+}
+function openPalette() {
+  ensureBuilt();
+  if (!overlay || !input || !trap2)
+    return;
+  trap2.capture();
+  overlay.classList.add("open");
+  input.value = "";
+  refreshResults("");
+  setTimeout(() => input && input.focus(), 20);
+}
+function ensureBuilt() {
+  if (overlay)
+    return;
+  injectPaletteStyles();
+  overlay = el("div", "", document.body);
+  overlay.id = "palette-overlay";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-label", "Command palette");
+  const box = el("div", "palette-box", overlay);
+  const inputRow = el("div", "palette-input-row", box);
+  input = el("input", "", inputRow);
+  input.id = "palette-input";
+  input.type = "text";
+  input.placeholder = "Type a command or search…";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  listEl = el("div", "palette-list", box);
+  listEl.setAttribute("role", "listbox");
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay)
+      closePalette();
+  });
+  input.addEventListener("input", () => {
+    if (debounceTimer)
+      clearTimeout(debounceTimer);
+    const q = input.value;
+    debounceTimer = setTimeout(() => refreshResults(q), DEBOUNCE_MS);
+  });
+  input.addEventListener("keydown", onKeydown);
+  trap2 = trapFocus(overlay, isPaletteOpen);
+}
+function onKeydown(e) {
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    move(1);
+    return;
+  }
+  if (e.key === "ArrowUp") {
+    e.preventDefault();
+    move(-1);
+    return;
+  }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    activate(selectedIndex);
+    return;
+  }
+}
+function move(delta) {
+  if (!entries.length)
+    return;
+  selectedIndex = (selectedIndex + delta + entries.length) % entries.length;
+  renderRows();
+  const activeEl = listEl?.querySelector(".palette-row.active");
+  if (activeEl)
+    activeEl.scrollIntoView({ block: "nearest" });
+}
+function activate(index) {
+  const entry = entries[index];
+  if (!entry)
+    return;
+  if (entry.kind === "action") {
+    closePalette();
+    entry.action.run();
+    return;
+  }
+  if (entry.kind === "session") {
+    closePalette();
+    openSessionRowByPath(entry.row.path);
+    return;
+  }
+  if (entry.kind === "message") {
+    closePalette();
+    openSessionRowByPath(entry.hit.sessionPath);
+    return;
+  }
+}
+function matchingActions(query) {
+  const onChat = currentRoute() === "chat";
+  return staticActions().filter((a) => onChat || !a.chatOnly).filter((a) => fuzzyMatch(query, a.label));
+}
+function matchingSessionRows(query) {
+  const rows = document.querySelectorAll("#chat-sessions .sess");
+  const out = [];
+  rows.forEach((row) => {
+    const title = row.querySelector(".stitle")?.textContent || "New chat";
+    const path = row.dataset.path;
+    if (!path)
+      return;
+    if (fuzzyMatch(query, title))
+      out.push({ path, title });
+  });
+  return out.slice(0, 6);
+}
+async function refreshResults(query) {
+  selectedIndex = 0;
+  const q = query.trim();
+  const actionEntries = matchingActions(q).map((action) => ({ kind: "action", action }));
+  const sessionEntries = q ? matchingSessionRows(q).map((row) => ({ kind: "session", row })) : [];
+  entries = [...actionEntries, ...sessionEntries];
+  renderRows();
+  if (!q || q.length < 2)
+    return;
+  const seq = ++searchSeq;
+  const d = await api("/api/sessions/search?q=" + encodeURIComponent(q)).catch(() => ({ ok: false }));
+  if (seq !== searchSeq)
+    return;
+  if (input && input.value.trim() !== q)
+    return;
+  const body = d;
+  if (!body.ok || !body.results || !body.results.length)
+    return;
+  const messageEntries = body.results.slice(0, 6).map((r) => ({
+    kind: "message",
+    hit: { sessionPath: r.sessionPath, sessionTitle: r.sessionTitle, snippet: r.matches[0]?.snippet || "" }
+  }));
+  entries = [...actionEntries, ...sessionEntries, ...messageEntries];
+  renderRows();
+}
+function esc3(s) {
+  return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
+function renderRows() {
+  if (!listEl)
+    return;
+  if (!entries.length) {
+    listEl.innerHTML = '<div class="palette-empty">No matching commands or chats.</div>';
+    return;
+  }
+  listEl.innerHTML = "";
+  let sawActionHdr = false, sawSessionHdr = false, sawMessageHdr = false;
+  entries.forEach((entry, i) => {
+    if (entry.kind === "action" && !sawActionHdr) {
+      el("div", "palette-section-hdr", listEl).textContent = "Commands";
+      sawActionHdr = true;
+    }
+    if (entry.kind === "session" && !sawSessionHdr) {
+      el("div", "palette-section-hdr", listEl).textContent = "Chats";
+      sawSessionHdr = true;
+    }
+    if (entry.kind === "message" && !sawMessageHdr) {
+      el("div", "palette-section-hdr", listEl).textContent = "In messages";
+      sawMessageHdr = true;
+    }
+    const row = el("div", "palette-row" + (i === selectedIndex ? " active" : ""), listEl);
+    row.setAttribute("role", "option");
+    row.dataset.index = String(i);
+    if (entry.kind === "action") {
+      row.innerHTML = '<div class="prow-main"><div class="prow-label">' + esc3(entry.action.label) + "</div></div>" + (entry.action.hint ? '<span class="prow-hint">' + esc3(entry.action.hint) + "</span>" : "");
+    } else if (entry.kind === "session") {
+      row.innerHTML = '<div class="prow-main"><div class="prow-label">' + esc3(entry.row.title) + "</div></div>";
+    } else {
+      row.innerHTML = '<div class="prow-main"><div class="prow-label">' + esc3(entry.hit.sessionTitle) + "</div>" + '<div class="prow-snippet">' + esc3(entry.hit.snippet) + "</div></div>";
+    }
+    row.addEventListener("click", () => activate(i));
+    row.addEventListener("mousemove", () => {
+      if (selectedIndex !== i) {
+        selectedIndex = i;
+        renderRows();
+      }
+    });
+  });
+}
+function initPalette() {
+  setPaletteClose(closePalette);
+  setPaletteIsOpen(isPaletteOpen);
+  setPaletteOpen(openPalette);
+}
+
 // src/web/src/main.ts
 initHfSettings();
 initTheme();
+initServiceWorker();
 initShortcutSheet();
 initDrawer();
 initModelPicker();
+initHubPanel();
+initPalette();
 initGlobalKeydown();
 initRouter();
 initDeveloperToggle();

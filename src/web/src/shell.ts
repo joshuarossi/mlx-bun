@@ -34,6 +34,29 @@ export function toast(msg: string, kind = "", ms = 4200): void {
   setTimeout(() => { t.style.transition = "opacity .4s,transform .4s"; t.style.opacity = "0"; t.style.transform = "translateY(10px)"; setTimeout(() => t.remove(), 420); }, ms);
 }
 
+const injectedStyleIds = new Set<string>();
+
+/** Append a `<style>` block to `<head>` exactly once per `id`, keyed
+ *  independent of call order/count (idempotent — safe to call from a
+ *  module's own top-level init every boot). Used by modules that build
+ *  their DOM entirely via createElement (no app.html markup of their own)
+ *  and therefore have nowhere else to put CSS for their new classes — the
+ *  command palette (palette.ts) and the sidebar's full-text-search /
+ *  export-menu additions (sessions.ts) both use this instead of touching
+ *  app.html's <style> block, which is out of scope for the modules that
+ *  introduce them. All rules should reference the existing `:root` design
+ *  tokens (var(--card), var(--hairline), etc.) so injected chrome matches
+ *  the current theme (dark/light/auto) automatically — those custom
+ *  properties cascade regardless of where in the document this tag lands. */
+export function injectStyles(id: string, css: string): void {
+  if (injectedStyleIds.has(id)) return;
+  injectedStyleIds.add(id);
+  const style = document.createElement("style");
+  style.id = id;
+  style.textContent = css;
+  document.head.appendChild(style);
+}
+
 /* ════════════════════════════════════════════════════════════════════
    HUGGING FACE — shared token settings + push-to-hub flow
    ════════════════════════════════════════════════════════════════════ */
@@ -334,7 +357,12 @@ export function initTheme(): void {
    ════════════════════════════════════════════════════════════════════ */
 let skTrap: FocusTrap;
 
-function openShortcutSheet(): void {
+/** Exported (not just used internally) so palette.ts's "Open shortcut
+ *  sheet" action can call it directly — same registered-entry-point
+ *  posture as openMemPanel/openHubPanel below, just a plain export since
+ *  this one takes no arguments and lives in the same module as its own
+ *  close/trap state. */
+export function openShortcutSheet(): void {
   skTrap.capture();
   $("shortcut-overlay").classList.add("open");
   $("nav-shortcuts").setAttribute("aria-expanded", "true");
@@ -407,10 +435,36 @@ export function setAdaptersPanelClose(fn: (() => void) | null): void { adaptersP
 export let modelPopClose: (() => void) | null = null;
 export function setModelPopClose(fn: (() => void) | null): void { modelPopClose = fn; }
 
+/** Same pattern, for the Model Hub panel (hub.ts, plan §9 Phase 3) —
+ *  opened from the model picker's "Browse models…" action. */
+export let hubPanelClose: (() => void) | null = null;
+export function setHubPanelClose(fn: (() => void) | null): void { hubPanelClose = fn; }
+
+/** Registered by hub.ts's initHubPanel(); called by model-picker.ts's
+ *  "Browse models…" button. Its own body is re-rendered via innerHTML on
+ *  every popover open (see refreshModelPop()), so the button can't hold a
+ *  handler bound once at boot the way the overlay-close callbacks above
+ *  do — model-picker.ts re-wires the click to this registered function
+ *  each time it re-renders instead. */
+export let openHubFromModelPicker: (() => void) | null = null;
+export function setOpenHubFromModelPicker(fn: (() => void) | null): void { openHubFromModelPicker = fn; }
+
 /** Same pattern, for the system-prompt popover (composer.ts's
  *  initSystemPrompt() — presets v1, plan §9 Phase 2). */
 export let sysPromptPopoverClose: (() => void) | null = null;
 export function setSysPromptPopoverClose(fn: (() => void) | null): void { sysPromptPopoverClose = fn; }
+
+/** Same pattern, for the command palette (palette.ts, plan §9 Phase 3,
+ *  beat-matrix Axis 10 "Command palette" row). Its own module builds 100%
+ *  of its DOM via createElement (no app.html markup to look up), so
+ *  isPaletteOpen()/openPalette() are registered functions rather than
+ *  `$(id)`-based lookups like the overlays above. */
+export let paletteClose: (() => void) | null = null;
+export function setPaletteClose(fn: (() => void) | null): void { paletteClose = fn; }
+export let paletteIsOpen: (() => boolean) | null = null;
+export function setPaletteIsOpen(fn: (() => boolean) | null): void { paletteIsOpen = fn; }
+export let paletteOpen: (() => void) | null = null;
+export function setPaletteOpen(fn: (() => void) | null): void { paletteOpen = fn; }
 
 /** Any open popover/drawer/sheet this Escape binding knows how to close,
  *  checked in a fixed priority order (most-recently-opened-ish first).
@@ -428,6 +482,9 @@ function closeTopOverlay(): boolean {
   if (adaptersOverlay && adaptersOverlay.classList.contains("open") && adaptersPanelClose) { adaptersPanelClose(); return true; }
   const modelPop = $("model-pop");
   if (modelPop && modelPop.classList.contains("open") && modelPopClose) { modelPopClose(); return true; }
+  const hubOverlay = $("hub-overlay");
+  if (hubOverlay && hubOverlay.classList.contains("open") && hubPanelClose) { hubPanelClose(); return true; }
+  if (paletteIsOpen && paletteIsOpen() && paletteClose) { paletteClose(); return true; }
   if ($("chat-sidebar").classList.contains("drawer-open")) { closeDrawer(); return true; }
   return false;
 }
@@ -435,6 +492,15 @@ function closeTopOverlay(): boolean {
 export function initGlobalKeydown(): void {
   document.addEventListener("keydown", (e) => {
     const mod = e.metaKey || e.ctrlKey;
+    // Cmd/Ctrl+K — command palette (beat-matrix Axis 10). Checked before
+    // Cmd/Ctrl+/ below since they're different keys but both live here;
+    // order doesn't matter functionally, kept first as the newer addition.
+    if (mod && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      if (paletteIsOpen && paletteIsOpen()) { if (paletteClose) paletteClose(); }
+      else if (paletteOpen) paletteOpen();
+      return;
+    }
     // Cmd/Ctrl+/ — shortcut sheet. Not a browser-reserved combo.
     if (mod && e.key === "/") { e.preventDefault(); $("shortcut-overlay").classList.contains("open") ? closeShortcutSheet() : openShortcutSheet(); return; }
     // Cmd/Ctrl+Shift+O — new chat. (Ctrl+Shift+O is free in every major
@@ -653,6 +719,32 @@ export function initRouter(): void {
   $("tabs").addEventListener("scroll", updateTabFades, { passive: true });
   window.addEventListener("resize", updateTabFades);
   updateTabFades();
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   PWA SERVICE WORKER REGISTRATION (plan §9 Phase 3, beat-matrix Axis 10)
+   Shell-only cache-first worker (src/web/sw.js) — installability + instant
+   shell paint, explicitly NOT offline chat (the app is useless without the
+   local model server running, see sw.js's own header comment). Guarded so
+   it never registers somewhere a service worker can't run at all
+   (`'serviceWorker' in navigator`) or where the browser would refuse it
+   anyway (secure-context requirement: https, or localhost/127.0.0.1 for
+   local dev — a plain `http://<lan-ip>` load would silently no-op without
+   this check, so failing the guard is preferable to a console error on
+   every load in that case).
+   ════════════════════════════════════════════════════════════════════ */
+export function initServiceWorker(): void {
+  if (!("serviceWorker" in navigator)) return;
+  const host = location.hostname;
+  const isLocalhost = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  if (location.protocol !== "https:" && !isLocalhost) return;
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // Registration failure isn't user-actionable (browser policy, private
+      // browsing, etc.) — the app works identically without it, so this is
+      // silent rather than a toast.
+    });
+  });
 }
 
 /* ════════════════════════════════════════════════════════════════════

@@ -28,12 +28,25 @@ import hljsCss from "./web/vendor/hljs-theme.css" with { type: "text" };
 // with { type: "text" } + /assets/<name> pattern as the vendored assets
 // above; app.html's <script defer src="/assets/app.js"> loads it.
 import appJs from "./web/app.js" with { type: "text" };
+// PWA installability (plan §9 Phase 3, beat-matrix Axis 10): a manifest +
+// a single inline SVG icon (no binary PNGs — the hygiene gate forbids
+// tracked binary files; some browsers won't show an SVG app icon, which is
+// an accepted tradeoff, see docs/reference/features-matrix.md) + a shell-
+// only service worker. Same with { type: "text" } + /assets/<name>-shaped
+// pattern as the vendored assets above; see src/web/sw.js's header for why
+// it deliberately does NOT cache API/WS traffic.
+import manifestWebmanifest from "./web/manifest.webmanifest" with { type: "text" };
+import iconSvg from "./web/icon.svg" with { type: "text" };
+import swJs from "./web/sw.js" with { type: "text" };
 import pkgJson from "../package.json" with { type: "json" };
 import { readFileSync } from "node:fs";
 const APP_PAGE = appHtml as unknown as string;
 const HLJS_JS = hljsJs as unknown as string;
 const HLJS_CSS = hljsCss as unknown as string;
 const APP_JS = appJs as unknown as string;
+const MANIFEST_WEBMANIFEST = manifestWebmanifest as unknown as string;
+const ICON_SVG = iconSvg as unknown as string;
+const SW_JS = swJs as unknown as string;
 const pkgVersion = (pkgJson as { version: string }).version;
 import { loadModelConfig, type KvQuantSpec, type ModelConfig, type TurboQuantScheme } from "./config";
 import { Weights } from "./weights";
@@ -2158,6 +2171,42 @@ export function createServer(
         return handleMemoryInit(request);
       }
 
+      // Model Hub (web-chat-redesign.md §9 Phase 3, beat-matrix Axis 3):
+      // thin loopback JSON routes over the registry/download/fit machinery
+      // for the web chat's Hub panel. Handlers live in src/hub-rest.ts
+      // (pure functions, no `ctx` dependency); dispatch here just matches
+      // path+method, same convention as the memory wrappers above.
+      if (url.pathname === "/api/hub/local" && request.method === "GET") {
+        const { handleHubLocal } = await import("./hub-rest");
+        return handleHubLocal();
+      }
+      if (url.pathname === "/api/hub/search" && request.method === "GET") {
+        const { handleHubSearch } = await import("./hub-rest");
+        return handleHubSearch(url);
+      }
+      if (url.pathname === "/api/hub/download" && request.method === "POST") {
+        const { handleHubDownload } = await import("./hub-rest");
+        return handleHubDownload(request);
+      }
+      if (url.pathname === "/api/hub/serve" && request.method === "POST") {
+        const { handleHubServe } = await import("./hub-rest");
+        return handleHubServe(request);
+      }
+
+      // Session full-text search + export (docs/design/web-chat-redesign.md
+      // §9 Phase 3, beat-matrix Axis 10/11 — the full-text-search BEAT and
+      // Markdown/JSON chat export). Handlers live in src/serve/session-search.ts
+      // (pure, read-only, no `ctx` dependency), dispatched here by
+      // path+method, same convention as the memory/hub blocks above.
+      if (url.pathname === "/api/sessions/search" && request.method === "GET") {
+        const { handleSessionsSearch } = await import("./serve/session-search");
+        return handleSessionsSearch(url);
+      }
+      if (url.pathname === "/api/sessions/export" && request.method === "GET") {
+        const { handleSessionsExport } = await import("./serve/session-search");
+        return handleSessionsExport(url);
+      }
+
       // The unified SPA is served at "/"; legacy deep links redirect into
       // the hash router so old bookmarks still land on the right section.
       if (url.pathname === "/" && request.method === "GET") {
@@ -2184,6 +2233,29 @@ export function createServer(
       if (url.pathname === "/assets/app.js" && request.method === "GET") {
         return new Response(APP_JS, {
           headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+        });
+      }
+      // PWA manifest + icon (plan §9 Phase 3): linked from app.html's
+      // <link rel="manifest">. Same versioned-by-content cache posture as
+      // the other /assets/* entries above.
+      if (url.pathname === "/manifest.webmanifest" && request.method === "GET") {
+        return new Response(MANIFEST_WEBMANIFEST, {
+          headers: { "content-type": "application/manifest+json; charset=utf-8", "cache-control": "public, max-age=3600" },
+        });
+      }
+      if (url.pathname === "/assets/icon.svg" && request.method === "GET") {
+        return new Response(ICON_SVG, {
+          headers: { "content-type": "image/svg+xml; charset=utf-8", "cache-control": "public, max-age=3600" },
+        });
+      }
+      // Service worker MUST be served at the root scope (/sw.js, not
+      // /assets/sw.js) — a worker's default scope is the directory it's
+      // served from, and the shell it manages includes "/" itself.
+      // no-store: the browser's own update check needs a fresh byte
+      // comparison every time to notice a new worker, not a cached 304.
+      if (url.pathname === "/sw.js" && request.method === "GET") {
+        return new Response(SW_JS, {
+          headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" },
         });
       }
       // v2 HLG Curve Designer — served same-origin so /generate + /signal need no CORS.

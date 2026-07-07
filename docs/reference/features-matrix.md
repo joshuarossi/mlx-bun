@@ -73,8 +73,14 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 Training (`mlx-bun train`: ORPO/DPO/SFT, flash-CCE, segmented backward) ·
 quantization (`convert`, `fuse`, `--target-bpw`) · embeddings · local
 memory/wiki (`mlx-bun memory`) · pi agent integration (`mlx-bun pi`) ·
-model registry + `fit` planner + `gc` · HF `upload`. See
-[cli.md](cli.md) and the per-topic reference docs.
+model registry + `fit` planner + `gc` · HF `upload` · web chat Model Hub
+(`/api/hub/local` + `/search` + `/download`, per-row `/fit` verdict;
+`/api/hub/serve` is `restart_required`-only today — no in-process model-swap
+seam reaches `/ws/chat`, see [server-api.md](server-api.md#model-hub-apihub))
+· **PWA installability** (manifest + shell-only service worker —
+installable, instant static-shell paint; explicitly not offline chat, see
+[server-api.md](server-api.md#web-app-static-routes--pwa-installability)).
+See [cli.md](cli.md) and the per-topic reference docs.
 
 ---
 ¹ `guided_regex` accepts the regex∩EBNF subset today (no `\d`/anchors — those degrade to prompt injection); real regex support is tracked.

@@ -182,6 +182,11 @@
   .mp-cmd button:hover{color:var(--ink);border-color:var(--hairline-strong)}
   .mp-empty{color:var(--dim);font-size:12px;padding:10px 4px;line-height:1.5}
   .mp-foot-note{font-size:10.5px;color:var(--dimmer);line-height:1.4;margin-top:10px;padding-top:10px;border-top:1px solid var(--hairline-soft)}
+  /* "Browse models…" entry -> Model Hub panel (plan §9 Phase 3) */
+  .mp-browse-hub{display:block;width:100%;appearance:none;cursor:pointer;background:var(--card);
+    border:1px solid var(--hairline);color:var(--ink);border-radius:8px;padding:8px 10px;
+    font-size:12px;font-weight:600;margin-top:8px;text-align:center;transition:border-color .18s var(--ease),background .18s var(--ease)}
+  .mp-browse-hub:hover{border-color:var(--hairline-strong);background:var(--card-hover)}
   .pill{display:inline-flex;align-items:center;gap:8px;
     border:1px solid var(--hairline);border-radius:999px;padding:6px 13px;
     font-size:12.5px;font-weight:600;color:var(--dim);letter-spacing:.01em;white-space:nowrap}
@@ -204,6 +209,13 @@
   #chat-sampling:hover{border-color:var(--hairline-strong);color:var(--ink)}
   #chat-sampling.on{color:var(--ink);border-color:var(--hairline-strong)}
   #chat-sampling.dirty .dot{background:var(--blue);box-shadow:0 0 11px var(--blue)}
+  /* Distinct one-shot-armed dot state (task brief item 2) — orange/amber
+     reads as "temporary/pending" against the plain blue "overridden"
+     state, matching the same semantic the orange dot already carries
+     elsewhere (.pill.warn) rather than inventing a new color meaning. */
+  #chat-sampling.armed .dot{background:var(--orange);box-shadow:0 0 11px var(--orange);animation:pulse-armed 1.6s var(--ease) infinite}
+  @media (prefers-reduced-motion:reduce){#chat-sampling.armed .dot{animation:none}}
+  @keyframes pulse-armed{0%,100%{opacity:1}50%{opacity:.45}}
   #chat-sampling .dot{width:7px;height:7px}
   .samplepop{position:absolute;bottom:calc(100% + 9px);right:0;z-index:40;width:300px;
     max-height:min(70vh,560px);overflow-y:auto;
@@ -213,7 +225,16 @@
     transform:translateY(4px);opacity:0;transition:opacity .16s var(--ease),transform .16s var(--ease)}
   .samplepop.open{display:block;transform:translateY(0);opacity:1}
   .samplepop h4{font-size:12px;font-weight:600;color:var(--dim);letter-spacing:.02em;
-    text-transform:uppercase;margin:0 0 10px}
+    text-transform:uppercase;margin:0}
+  .samp-head-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px}
+  .samp-oneshot-chip{font:10.5px/1 var(--mono);color:var(--orange);background:rgba(255,159,10,.12);
+    border:1px solid rgba(255,159,10,.3);border-radius:999px;padding:3px 8px;letter-spacing:.01em;white-space:nowrap}
+  .samp-scope-row{display:flex;align-items:center;gap:9px;margin:0 0 12px;padding-bottom:11px;border-bottom:1px solid var(--hairline-soft)}
+  .samp-scope-row label{font-size:12.5px;color:var(--ink);width:74px;flex:0 0 auto}
+  .samp-scope-row select{flex:1 1 auto;background:var(--card);border:1px solid var(--hairline);border-radius:7px;
+    color:var(--ink);font-size:12px;padding:5px 8px;cursor:pointer;appearance:none;-webkit-appearance:none;
+    transition:border-color .18s var(--ease)}
+  .samp-scope-row select:hover,.samp-scope-row select:focus{border-color:var(--hairline-strong)}
   .samprow{display:flex;align-items:center;gap:9px;margin:0 0 11px}
   .samprow label{font-size:12.5px;color:var(--ink);width:74px;flex:0 0 auto}
   .samprow input[type=range]{flex:1 1 auto;-webkit-appearance:none;appearance:none;height:4px;margin:0;
@@ -499,6 +520,59 @@
   .ad-stack-bar .lbl{font-size:11.5px;color:var(--dim);flex:0 0 auto}
   .ad-stack-bar .expr{font:12px var(--mono);color:var(--ink);flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
+  /* ─── Model Hub (plan §9 Phase 3, beat-matrix Axis 3) — same right-side
+     overlay/panel/head/body chrome as Memory + Adapters (mem-overlay/
+     mem-panel/mem-head/mem-body), new top-level ids since it's a distinct
+     panel opened from the model picker instead of the sidebar/composer. ─── */
+  #hub-overlay{position:fixed;inset:var(--nav-h) 0 0 0;z-index:150;display:none;justify-content:flex-end;
+    background:var(--overlay-scrim);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+  #hub-overlay.open{display:flex;animation:fade .22s var(--ease)}
+  #hub-panel{width:min(480px,100%);height:100%;background:var(--overlay-panel);border-left:1px solid var(--hairline);
+    display:flex;flex-direction:column;box-shadow:-24px 0 60px rgba(0,0,0,.4)}
+  #hub-body{flex:1 1 auto;overflow-y:auto;padding:14px 18px 24px}
+  .hub-sec{margin-bottom:20px}
+  .hub-sec:last-child{margin-bottom:0}
+  #hub-search-input{width:100%;background:var(--card);border:1px solid var(--hairline);border-radius:10px;
+    color:var(--ink);font-size:12.5px;padding:9px 12px;outline:none;transition:border-color .2s;margin-bottom:10px}
+  #hub-search-input:focus{border-color:rgba(10,132,255,.5)}
+  #hub-search-input::placeholder{color:var(--dimmer)}
+  .hub-search-body{min-height:0}
+  .hub-empty{color:var(--dim);font-size:12.5px;padding:10px 4px;line-height:1.5}
+  /* row language shared by Downloaded + Search results */
+  .hub-row{display:flex;align-items:flex-start;gap:10px;padding:10px 11px;border-radius:12px;
+    border:1px solid var(--hairline-soft);margin-bottom:8px;transition:border-color .15s var(--ease)}
+  .hub-row:last-child{margin-bottom:0}
+  .hub-fit-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;margin-top:5px}
+  .hub-fit-dot.green{background:var(--green);box-shadow:0 0 7px var(--green)}
+  .hub-fit-dot.yellow{background:var(--yellow);box-shadow:0 0 7px var(--yellow)}
+  .hub-fit-dot.red{background:var(--red)}
+  .hub-row-main{flex:1 1 auto;min-width:0}
+  .hub-row-name{font-size:13px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hub-row-meta{font-size:11px;color:var(--dimmer);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hub-row-actions{flex:0 0 auto;display:flex;align-items:center;gap:6px}
+  .hub-row-actions button{appearance:none;cursor:pointer;background:var(--card);border:1px solid var(--hairline);
+    color:var(--dim);border-radius:8px;padding:5px 11px;font-size:11.5px;font-weight:600;white-space:nowrap;
+    transition:color .18s var(--ease),border-color .18s var(--ease),background .18s var(--ease)}
+  .hub-row-actions button:hover:not(:disabled){color:var(--ink);border-color:rgba(10,132,255,.5);background:rgba(10,132,255,.08)}
+  .hub-row-actions button:disabled{opacity:.5;cursor:default}
+  .hub-dl-tag{font:11px var(--mono);color:var(--blue);white-space:nowrap}
+  .hub-dl-tag.done{color:var(--green)}
+  .hub-dl-tag.error{color:var(--red)}
+  /* restart-command strip (POST /api/hub/serve's honest restart_required
+     outcome) — same code-panel visual language as .mp-cmd, but persistent
+     (not a toast) since it needs to stay put long enough to copy. */
+  .hub-restart-strip{display:none}
+  .hub-restart-strip.show{display:block;margin-bottom:16px;padding:12px 14px;border-radius:12px;
+    background:rgba(10,132,255,.08);border:1px solid rgba(10,132,255,.3)}
+  .hub-restart-note{font-size:12px;color:var(--ink);line-height:1.5;margin-bottom:8px}
+  .hub-cmd{display:flex;align-items:center;gap:8px;background:var(--code-bg-soft);border-radius:8px;
+    padding:7px 10px;overflow-x:auto}
+  .hub-cmd code{font:12px var(--mono);color:var(--ink);white-space:nowrap;flex:1 1 auto}
+  .hub-copy-btn{appearance:none;cursor:pointer;background:var(--card);border:1px solid var(--hairline);
+    color:var(--dim);border-radius:6px;padding:3px 9px;font-size:11px;font-weight:600;flex:0 0 auto;white-space:nowrap}
+  .hub-copy-btn:hover{color:var(--ink);border-color:var(--hairline-strong)}
+  .hub-offline-note{font-size:11.5px;color:var(--dim);line-height:1.5;margin-top:4px;padding-top:14px;border-top:1px solid var(--hairline-soft)}
+
   /* ═══════════════════ app shell / routing ═══════════════════ */
   #app{position:fixed;inset:var(--nav-h) 0 0 0;z-index:1}
   section[data-route]{display:none;position:absolute;inset:0}
@@ -657,6 +731,26 @@
   .toast.ok{border-color:rgba(48,209,88,.5)}
   @keyframes toastIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
 
+  /* App-aware assistant spotlight (plan §6.6, §9 Phase 3, beat matrix Axis
+     12) — NEVER-HIJACK overlay: pointer-events:none on the whole thing (the
+     highlighted control stays clickable straight through the ring/popover),
+     no focus trap, transform/opacity-only animation, auto-dismiss handled
+     in assistant.ts. Positioned in fixed viewport coordinates by JS
+     (getBoundingClientRect of the target), not CSS layout. */
+  #assistant-spotlight{position:fixed;inset:0;z-index:95;pointer-events:none;
+    opacity:0;transform:scale(.98);transition:opacity .22s var(--ease),transform .22s var(--ease)}
+  #assistant-spotlight.show{opacity:1;transform:none}
+  #assistant-spotlight .asr-ring{position:fixed;border-radius:12px;
+    box-shadow:0 0 0 3px var(--blue),0 0 0 9999px rgba(0,0,0,.32),0 0 24px rgba(10,132,255,.5);
+    transition:left .22s var(--ease),top .22s var(--ease),width .22s var(--ease),height .22s var(--ease)}
+  #assistant-spotlight .asr-pop{position:fixed;max-width:min(320px,80vw);background:var(--overlay-panel);
+    backdrop-filter:blur(20px);border:1px solid var(--hairline);border-radius:12px;padding:10px 14px;
+    font-size:13px;line-height:1.4;box-shadow:0 16px 50px rgba(0,0,0,.35)}
+  @media (prefers-reduced-motion:reduce){
+    #assistant-spotlight{transition:opacity .01ms;transform:none}
+    #assistant-spotlight .asr-ring{transition:none}
+  }
+
   /* empty state */
   .empty{text-align:center;color:var(--dim);padding:60px 20px}
   .empty h3{font-size:18px;font-weight:600;color:var(--ink);margin-bottom:8px;letter-spacing:-.01em}
@@ -787,6 +881,27 @@
   :is(.bubble,.mem-article-render) .cbcopy{font:11px/1 var(--mono);color:rgba(245,245,247,.65);background:transparent;border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 10px;cursor:pointer;transition:color .15s,border-color .15s}
   :is(.bubble,.mem-article-render) .cbcopy:hover{color:var(--code-ink);border-color:rgba(255,255,255,.4)}
   :is(.bubble,.mem-article-render) .codeblock pre{margin:0;border:none;border-radius:0;background:transparent;color:inherit}
+  /* Canvas v1 (plan §9 Phase 3, beat matrix Axis 2): Preview|Source toggle
+     for html/svg fences, sharing .cbhead with the existing lang tag + Copy
+     button. .cbhead keeps lang pinned left; the toggle+copy group sits
+     right via margin-left:auto on the first right-side element instead of
+     space-between, since space-between with 3 children would push the
+     toggle to the dead center of the bar. */
+  :is(.bubble,.mem-article-render) .cbhead{justify-content:flex-start}
+  :is(.bubble,.mem-article-render) .cbtoggle{display:inline-flex;gap:2px;margin-left:auto;padding:2px;border-radius:7px;background:rgba(255,255,255,.05)}
+  :is(.bubble,.mem-article-render) .cbview{font:11px/1 var(--mono);color:rgba(245,245,247,.55);background:transparent;border:none;
+    border-radius:5px;padding:4px 9px;cursor:pointer;transition:color .15s,background .15s}
+  :is(.bubble,.mem-article-render) .cbview:hover{color:var(--code-ink)}
+  :is(.bubble,.mem-article-render) .cbview.active{color:var(--code-ink);background:rgba(255,255,255,.14)}
+  /* has-canvas keeps Copy visually last, right after the toggle group. */
+  :is(.bubble,.mem-article-render) .codeblock.has-canvas .cbcopy{margin-left:2px}
+  :is(.bubble,.mem-article-render) .cbcanvas{position:relative;background:#fff}
+  :is(.bubble,.mem-article-render) .cbframe{display:block;width:100%;height:420px;min-height:160px;max-height:80vh;
+    border:none;resize:vertical;overflow:auto;background:#fff}
+  /* No layout shift on toggle: pre and cbcanvas are simply swapped via
+     [hidden] — the codeblock's own border/rounding stays put, and the
+     iframe's own default height (420px) plus resize:vertical means the
+     block doesn't jump when Preview first opens vs. later re-opens. */
   .cursor{display:inline-block;width:8px;height:17px;vertical-align:-3px;border-radius:2px;
     background:linear-gradient(180deg,var(--pink),var(--purple));animation:blink 1s steps(2) infinite}
   @keyframes blink{50%{opacity:0}}
@@ -864,6 +979,37 @@
   .memchip .mcopen{font:11px/1 var(--mono);color:var(--purple);background:transparent;border:1px solid rgba(191,90,242,.4);
     border-radius:6px;padding:5px 10px;cursor:pointer;transition:background .15s}
   .memchip .mcopen:hover{background:rgba(191,90,242,.14)}
+
+  /* ─── Chat-with-files RAG v1 Sources panel (plan §9 Phase 3, beat matrix
+     Axis 5) — deliberately close to the memchip's citation language above:
+     a collapsed "Sources · K" line under the reply that expands to
+     filename+snippet per retrieved chunk, plus [n] markers in the reply
+     text rendered as small round citation buttons that jump to their row. */
+  .sources{margin-top:11px;border:1px solid var(--hairline-soft);border-radius:12px;overflow:hidden;
+    background:rgba(255,255,255,.03)}
+  .sources summary{list-style:none;display:flex;align-items:center;gap:7px;padding:8px 13px;
+    cursor:pointer;user-select:none;font-size:12.5px;font-weight:600;color:var(--dim)}
+  .sources summary::-webkit-details-marker{display:none}
+  .sources summary::before{content:"›";display:inline-block;color:var(--dimmer);
+    transition:transform .2s var(--ease)}
+  .sources[open] summary::before{transform:rotate(90deg)}
+  .src-list{border-top:1px solid var(--hairline-soft);padding:9px 13px 11px;display:flex;flex-direction:column;gap:10px}
+  .src-row{border-radius:9px;padding:7px 9px;transition:background .5s var(--ease)}
+  .src-row.pulse{background:rgba(10,132,255,.16)}
+  .src-n{font:700 11px var(--mono);color:var(--blue);margin-right:7px}
+  .src-meta{display:inline-flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .src-file{font-size:12.5px;font-weight:600;color:var(--ink)}
+  .src-range{font:11px var(--mono);color:var(--dimmer)}
+  .src-snippet{margin-top:4px;font-size:12px;line-height:1.5;color:var(--dim);white-space:pre-wrap;word-break:break-word}
+  /* [n] citation markers rendered inline in the assistant's reply text
+     (markdown.ts's linkifyCitations) — small round buttons, never full-size
+     links, so they read as footnote markers rather than ordinary hyperlinks. */
+  :is(.bubble) .cite-mark{display:inline-flex;align-items:center;justify-content:center;
+    min-width:16px;height:16px;padding:0 4px;margin:0 1px;border-radius:999px;border:none;
+    background:rgba(10,132,255,.18);color:var(--blue);font:700 10px var(--mono);
+    cursor:pointer;vertical-align:2px;line-height:1;transition:background .15s}
+  :is(.bubble) .cite-mark:hover{background:rgba(10,132,255,.3)}
+  @media (prefers-reduced-motion:reduce){.src-row{transition:none}.sources summary::before{transition:none}}
 
   /* chat hello / starters */
   #chat-hello{max-width:840px;margin:6vh auto 0;padding:0 22px;text-align:center}
@@ -980,6 +1126,14 @@
   .attach-chip .att-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
   .attach-chip .att-x{border:none;background:transparent;color:var(--dim);cursor:pointer;font-size:12px;line-height:1;padding:0 2px}
   .attach-chip .att-x:hover{color:var(--red)}
+  /* Chat-with-files RAG v1 (plan §9 Phase 3, beat matrix Axis 5): shown on
+     text-file chips once the attached set is large enough that only the
+     most relevant chunks get sent per turn instead of the whole file
+     (composer.ts's shouldRetrieve threshold) — transparency principle, the
+     mode switch must be visible on the chip, not just in prompt content
+     the user never sees. */
+  .attach-chip .att-tag{flex:0 0 auto;font-size:9.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
+    color:var(--purple);background:rgba(191,90,242,.14);border-radius:999px;padding:2px 7px}
   .composer.dragover{outline:2px dashed var(--blue);outline-offset:6px;border-radius:14px}
   .msg-atts{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
   .msg-att-img{max-width:220px;max-height:220px;border-radius:10px;display:block}
@@ -1059,6 +1213,16 @@
      from the design tokens above — see that file's header). No CDN; served by
      src/server.ts alongside this page. -->
 <link rel="stylesheet" href="/assets/hljs.css">
+<!-- PWA installability (plan §9 Phase 3, beat-matrix Axis 10): manifest +
+     inline SVG icon (src/web/manifest.webmanifest, src/web/icon.svg — no
+     binary PNGs, per the hygiene gate; some browsers won't render an SVG
+     app icon and that's an accepted tradeoff, see features-matrix.md).
+     theme-color matches the app's --bg token so the OS chrome doesn't
+     flash a mismatched color on launch. -->
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/assets/icon.svg">
+<meta name="theme-color" content="#000000">
 </head>
 <body>
 <div class="bloom" id="bloom"></div>
@@ -1092,7 +1256,7 @@
          Build Dataset/Status/Curves/Routes behind one switch. State + the
          one-time existing-user default live in shell.ts's
          initDeveloperToggle/isDeveloperMode. -->
-    <button id="nav-developer" type="button" role="switch" aria-checked="false"
+    <button id="nav-developer" data-spotlight="developer-toggle" type="button" role="switch" aria-checked="false"
             title="Show developer tools (Quantize, Fine-tune, Build Dataset, Status, Curves, Routes)"
             aria-label="Toggle developer tools">
       <span class="nd-dot" id="nav-developer-dot" aria-hidden="true"></span><span>Developer</span>
@@ -1117,7 +1281,7 @@
          with a per-row /fit-shaped verdict (model-picker.ts). Wrapped for
          position:relative anchoring, same pattern as #chat-sampling-wrap. -->
     <span id="nav-model-wrap">
-      <button class="model" id="nav-model" type="button" title="active model — click to browse downloaded models"
+      <button class="model" id="nav-model" data-spotlight="model-picker" type="button" title="active model — click to browse downloaded models"
               aria-haspopup="dialog" aria-controls="model-pop" aria-expanded="false">connecting…</button>
       <div id="model-pop" class="samplepop" role="dialog" aria-label="Downloaded models">
         <h4>Downloaded models</h4>
@@ -1225,6 +1389,44 @@
   </div>
 </div>
 
+<!-- ═══════════════════ MODEL HUB ═══════════════════ (plan §9 Phase 3, beat-matrix Axis 3)
+     Same right-side overlay/panel/head/body chrome as the Memory + Adapters
+     panels (fixed, scrimmed, focus-trapped, Escape closes). Opened from the
+     model picker popover's "Browse models…" action (hub.ts registers the
+     open callback via shell.ts's setOpenHubFromModelPicker). Three sections:
+     Downloaded (from /api/hub/local), Search Hugging Face (/api/hub/search),
+     and a quiet offline footer note. NEVER auto-downloads, NEVER
+     auto-serves — every action here is an explicit click. -->
+<div id="hub-overlay">
+  <div id="hub-panel" role="dialog" aria-modal="true" aria-labelledby="hub-title">
+    <div class="mem-head">
+      <h2 id="hub-title">Model Hub</h2>
+      <button class="mem-close" id="hub-close" aria-label="Close Model Hub">✕</button>
+    </div>
+    <div class="mem-body" id="hub-body">
+      <div id="hub-restart-strip" class="hub-restart-strip"></div>
+
+      <div class="hub-sec">
+        <div class="mem-sec-title">Downloaded</div>
+        <div id="hub-local-body"></div>
+      </div>
+
+      <div class="hub-sec">
+        <div class="mem-sec-title">Search Hugging Face</div>
+        <input type="search" id="hub-search-input" placeholder="Search MLX models…" aria-label="Search Hugging Face for MLX models" autocomplete="off">
+        <div id="hub-search-body" class="hub-search-body">
+          <div class="hub-empty">Type to search Hugging Face for MLX models.</div>
+        </div>
+      </div>
+
+      <p class="hub-offline-note" id="hub-offline-note" style="display:none">
+        You're offline (or Hugging Face is unreachable) — search needs a network connection,
+        but your downloaded models still work fully offline.
+      </p>
+    </div>
+  </div>
+</div>
+
 <!-- Mobile drawer backdrop (chat sidebar only — see #chat-sidebar CSS) -->
 <div id="chat-drawer-backdrop"></div>
 
@@ -1233,15 +1435,15 @@
   <!-- ═══════════════════ CHAT ═══════════════════ -->
   <section data-route="chat" id="s-chat">
     <aside id="chat-sidebar">
-      <button id="chat-new" title="Start a new chat (or type /new)">＋&nbsp; New chat</button>
-      <input type="search" id="chat-sess-search" placeholder="Search chats…" aria-label="Search chats" autocomplete="off">
+      <button id="chat-new" data-spotlight="new-chat" title="Start a new chat (or type /new)">＋&nbsp; New chat</button>
+      <input type="search" id="chat-sess-search" data-spotlight="session-search" placeholder="Search chats…" aria-label="Search chats" autocomplete="off">
       <div id="chat-sessions" class="sesslist"></div>
       <!-- Memory panel entry (plan §5.5) — quiet, chat-adjacent, NOT a nav
            tab: memory is the product, not a dev tool. Hidden entirely until
            the first /api/memory/status poll resolves (see memory-panel.ts),
            so it never flashes "0 articles" before a real vault is known to
            exist or not exist. -->
-      <button id="chat-memory-entry" type="button" style="display:none"
+      <button id="chat-memory-entry" data-spotlight="memory-entry" type="button" style="display:none"
               aria-haspopup="dialog" aria-controls="mem-overlay" aria-expanded="false">
         <span class="mi" aria-hidden="true">◆</span>
         <span class="mt">Memory</span>
@@ -1279,7 +1481,13 @@
            screen reader with one interruption per token. aria-atomic=false
            so only the newly-appended content is announced, not the whole
            growing thread each time. -->
-      <div id="chat-thread" role="log" aria-live="polite" aria-atomic="false"></div>
+      <!-- data-ui-chrome="content" excludes the whole rendered conversation
+           (model/user/tool text, links, citations) from captureUiSnapshot
+           (assistant.ts) — that snapshot is re-served to the model verbatim
+           as trusted "current UI state" via get_current_app_context, and an
+           `a[href]` inside a rendered message is untrusted content, not app
+           chrome (see isAgentChrome's doc comment). -->
+      <div id="chat-thread" role="log" aria-live="polite" aria-atomic="false" data-ui-chrome="content"></div>
     </div>
     <div id="chat-foot">
       <div class="queuebar" id="chat-queue"></div>
@@ -1294,7 +1502,7 @@
                  sheet). A long placeholder wraps to two lines at phone/tablet
                  widths inside this single-row box and clips against the
                  border (2026-07-06 jank; re-introduced + re-fixed 07-07). -->
-            <textarea id="chat-box" rows="1" placeholder="Message the local agent…"></textarea>
+            <textarea id="chat-box" data-spotlight="composer" rows="1" placeholder="Message the local agent…"></textarea>
             <!-- Unified "#" retrieval mention (plan §5.2/§9 Phase 2): typing
                  "#" opens this picker over both attached files and vault
                  articles as one gesture (composer.ts's initMentionPicker).
@@ -1303,7 +1511,7 @@
             <div id="chat-mention-pop" class="mentionpop" role="listbox" aria-label="Attach a file or recall a memory"></div>
           </div>
           <button id="chat-stop" title="Abort the current turn">Stop</button>
-          <button id="chat-send">Send</button>
+          <button id="chat-send" data-spotlight="send">Send</button>
         </div>
         <div class="chat-hint">
           <span id="chat-status-line">Enter to send · Shift+Enter for a new line · type while it streams to steer</span>
@@ -1315,7 +1523,7 @@
                  custom prompt is active — the user must always SEE it's
                  shaping replies (trust rule), never a silent setting. -->
             <span id="chat-sysprompt-wrap">
-              <span id="chat-sysprompt" class="pill" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false"
+              <span id="chat-sysprompt" data-spotlight="prompt-pill" class="pill" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false"
                     title="System prompt (shapes how the assistant replies in this chat)"><span class="dot"></span>Prompt</span>
               <div id="chat-sysprompt-pop" class="samplepop sysprompt-pop" role="dialog" aria-label="System prompt">
                 <h4>System prompt</h4>
@@ -1342,10 +1550,24 @@
               </div>
             </span>
             <span id="chat-sampling-wrap">
-              <span id="chat-sampling" class="pill" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false"
+              <span id="chat-sampling" data-spotlight="sampling-pill" class="pill" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false"
                     title="Sampling controls (temperature · top_p · top_k)"><span class="dot"></span>Sampling</span>
               <div id="chat-sampling-pop" class="samplepop" role="dialog" aria-label="Sampling controls">
-                <h4>Sampling</h4>
+                <div class="samp-head-row">
+                  <h4>Sampling</h4>
+                  <span id="samp-oneshot-chip" class="samp-oneshot-chip" style="display:none">next msg only</span>
+                </div>
+                <!-- Per-message sampling scope (plan §9 Phase 3, beat matrix Axis 4):
+                     "this session" (default) behaves exactly as today; "next message
+                     only" arms a one-shot override consumed by the next completed
+                     turn (composer.ts's pushSampling/clearOneShotArmed). -->
+                <div class="samp-scope-row">
+                  <label for="samp-scope">Apply</label>
+                  <select id="samp-scope" aria-label="Sampling scope">
+                    <option value="session">this session</option>
+                    <option value="next_turn">next message only</option>
+                  </select>
+                </div>
                 <div class="samprow">
                   <label for="samp-temp">Temperature</label>
                   <input id="samp-temp" type="range" min="0" max="2" step="0.05" aria-label="Temperature">
@@ -1409,7 +1631,7 @@
                 </div>
               </div>
             </span>
-            <select id="chat-adapter" class="pill" title="LoRA adapter for this chat (none = base model)">
+            <select id="chat-adapter" data-spotlight="adapter-select" class="pill" title="LoRA adapter for this chat (none = base model)">
               <option value="">no adapter</option>
             </select>
             <!-- Adapter routing table entry (plan §5.6/§9 Phase 2): the
@@ -1460,7 +1682,7 @@
         <div class="field">
           <label>Model id or path</label>
           <div id="q-drop">
-            <input type="text" id="q-model" placeholder="mlx-community/Qwen3-8B-bf16" autocomplete="off">
+            <input type="text" id="q-model" data-spotlight="quantize-source" placeholder="mlx-community/Qwen3-8B-bf16" autocomplete="off">
           </div>
           <input type="file" id="q-folder" webkitdirectory directory style="display:none">
           <div class="hint">Anything on huggingface.co, an absolute path to a local snapshot, or <strong>choose / drop a folder</strong> below — we read its <code>config.json</code> and find the snapshot on disk.</div>
@@ -1554,7 +1776,7 @@
         <div class="field">
           <label>Model directory / path</label>
           <div id="f-drop">
-            <input type="text" id="f-model" placeholder="/abs/path/to/model  or  mlx-community/Qwen3-8B-4bit" autocomplete="off">
+            <input type="text" id="f-model" data-spotlight="finetune-base" placeholder="/abs/path/to/model  or  mlx-community/Qwen3-8B-4bit" autocomplete="off">
           </div>
           <input type="file" id="f-folder" webkitdirectory directory style="display:none">
           <div class="hint">An OptiQ quant or any supported local model works — type a path/repo id, or <strong>choose / drop a folder</strong> below.</div>
@@ -1874,6 +2096,20 @@
 </div>
 
 <div id="toasts"></div>
+
+<!-- App-aware assistant spotlight overlay (plan §6.6, §9 Phase 3, beat
+     matrix Axis 12) — built/positioned by assistant.ts's showSpotlight().
+     data-ui-chrome="assistant" excludes it (and only it) from the DOM
+     snapshot the assistant itself reads, so it never spotlights or
+     narrates its own overlay. NEVER-HIJACK (verbatim §6.6): the whole
+     overlay is pointer-events:none in CSS below — the highlighted control
+     stays clickable straight through the ring and popover. It traps no
+     focus (deliberately absent from shell.ts's trapFocus/closeTopOverlay
+     set — this is not a modal). -->
+<div id="assistant-spotlight" data-ui-chrome="assistant" aria-hidden="true">
+  <div class="asr-ring"></div>
+  <div class="asr-pop"><div class="asr-pop-text"></div></div>
+</div>
 
 <!-- Vendored syntax highlighter (src/web/vendor/hljs.js — highlight.js core +
      a curated language set, BSD-3-Clause, see that file's header). `defer`

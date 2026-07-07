@@ -11,5 +11,5 @@
     "noEmit": true
   },
   "include": ["src", "scripts", "tests"],
-  "exclude": ["src/web/src", "tests/web-app.test.ts", "tests/web-dom-setup.ts"]
+  "exclude": ["src/web/src", "tests/web-app.test.ts", "tests/web-dom-setup.ts", "tests/web-palette-sessions.test.ts"]
 }

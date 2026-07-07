@@ -14,7 +14,7 @@
 
 import {
   controllers, initDeveloperToggle, initDrawer, initGlobalKeydown, initHfSettings,
-  initRouter, initRoutesProbe, initShortcutSheet, initTheme, pollIdentity, router,
+  initRouter, initRoutesProbe, initServiceWorker, initShortcutSheet, initTheme, pollIdentity, router,
 } from "./shell";
 import { createChatController } from "./chat";
 import { createQuantizeController } from "./quantize";
@@ -22,6 +22,8 @@ import { createFinetuneController } from "./finetune";
 import { createDatasetController } from "./dataset";
 import { createStatusController } from "./status";
 import { initModelPicker } from "./model-picker";
+import { initHubPanel } from "./hub";
+import { initPalette } from "./palette";
 
 // — Hugging Face nav gear + push-to-hub modal (original: an IIFE right
 //   after mdToHtml/markdown helpers were declared) —
@@ -29,6 +31,11 @@ initHfSettings();
 
 // — Theme: auto/dark/light, prefers-color-scheme —
 initTheme();
+
+// — PWA service worker (plan §9 Phase 3): shell-only cache-first, guarded
+//   to secure contexts / localhost. Registration is fire-and-forget and
+//   never blocks boot —
+initServiceWorker();
 
 // — Keyboard shortcut sheet (Cmd/Ctrl+/) —
 initShortcutSheet();
@@ -38,6 +45,19 @@ initDrawer();
 
 // — Model picker (plan §5.6/§9 Phase 2): #nav-model click -> /library popover —
 initModelPicker();
+
+// — Model Hub (plan §9 Phase 3): panel chrome + the model picker's "Browse
+//   models…" entry. Registers its open callback before initModelPicker's
+//   popover is ever opened, so the first click already has a live target —
+//   order here doesn't actually matter (both are registered-callback
+//   indirections, not direct DOM lookups), but this keeps the two model-
+//   surface inits visually adjacent in the boot sequence. —
+initHubPanel();
+
+// — Command palette (plan §9 Phase 3): Cmd/Ctrl+K, registers its
+//   open/close/isOpen callbacks (shell.ts's registered-callback pattern)
+//   before initGlobalKeydown()'s binding below can ever fire —
+initPalette();
 
 // — Global Escape/shortcut keydown sweep (closeTopOverlay + shortcuts) —
 initGlobalKeydown();

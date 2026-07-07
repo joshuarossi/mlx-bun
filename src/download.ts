@@ -114,6 +114,28 @@ function acquireLock(blobPath: string, name: string): () => void {
   throw new Error(`could not acquire ${lockPath}`);
 }
 
+/** Reject a repo file path that could escape the snapshot directory once
+ *  joined onto it. `rfilename` comes verbatim from the remote HF API's
+ *  `siblings[].rfilename` (listRepoFiles) — for a repo the caller doesn't
+ *  control (attacker-owned/attacker-referenced), that string is untrusted
+ *  input reaching a path-join + symlink write (downloadModel's
+ *  `join(snapDir, f.rfilename)` + `symlinkSync`). node:path's `join()`
+ *  normalizes `..` segments, so an rfilename like
+ *  `../../../../home/x/.ssh/authorized_keys` would otherwise resolve
+ *  OUTSIDE the intended snapshots dir and write a symlink at an arbitrary
+ *  filesystem path. Reachable over HTTP via POST /api/hub/download
+ *  (src/hub-rest.ts), which passes any caller-supplied `repo` straight
+ *  through with no allowlist — this check is the actual gate, not that
+ *  route. A leading `/` (absolute path) is equally rejected: join() would
+ *  otherwise treat it as relative to snapDir and still normalize safely,
+ *  but there's no legitimate reason a repo file entry needs one, and
+ *  rejecting it removes any doubt. */
+export function isSafeRepoFilename(rfilename: string): boolean {
+  if (!rfilename || rfilename.startsWith("/") || rfilename.includes("\0")) return false;
+  const parts = rfilename.split("/");
+  return parts.every((p) => p !== "" && p !== "." && p !== "..");
+}
+
 /** git blob identity: sha1("blob <size>\0" + content) — what blobId is. */
 export function gitBlobSha1(bytes: Uint8Array): string {
   const hasher = new Bun.CryptoHasher("sha1");
@@ -294,6 +316,14 @@ export function downloadsSnapshot(): DownloadStatus[] {
   return downloadLog.slice(-5);
 }
 
+/** True when a download for this exact repoId is currently "active" in this
+ *  process's tracker (used by the Hub's POST /api/hub/download to refuse a
+ *  duplicate kick-off — same repoId, still running — rather than starting a
+ *  second writer that would race the first on the same blob lockfile). */
+export function isDownloadActive(repoId: string): boolean {
+  return downloadLog.some((d) => d.repoId === repoId && d.state === "active");
+}
+
 export async function downloadModel(
   repoId: string, opts: DownloadOptions = {},
 ): Promise<string> {
@@ -303,6 +333,16 @@ export async function downloadModel(
   const hub = opts.cacheDir ?? DEFAULT_HUB;
 
   const listing = await listRepoFiles(repoId, { ...opts, token });
+  // Fail the whole download closed (not skip-and-continue) if the repo's
+  // file listing contains a path-traversal rfilename — see
+  // isSafeRepoFilename's doc comment. This gates BOTH the CLI and the web
+  // Hub's POST /api/hub/download (src/hub-rest.ts), which accepts any
+  // caller-supplied repo string with no allowlist of its own.
+  for (const f of listing.files) {
+    if (!isSafeRepoFilename(f.rfilename)) {
+      throw new Error(`${repoId}: refusing unsafe file path in repo listing: ${JSON.stringify(f.rfilename)}`);
+    }
+  }
   const repoDir = join(hub, `models--${repoId.replaceAll("/", "--")}`);
   const blobsDir = join(repoDir, "blobs");
   const snapDir = join(repoDir, "snapshots", listing.sha);

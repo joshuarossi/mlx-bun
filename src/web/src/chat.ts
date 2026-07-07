@@ -23,10 +23,10 @@ import {
   $, el, toast, currentRoute, closeDrawer,
   storedCodingToolsPreference, renderCodingToolsState, renderToolApprovals,
 } from "./shell";
-import { esc, mdToHtml, highlightIn, makeFrameScheduler, renderBlocksIncremental, type BlockState } from "./markdown";
+import { esc, mdToHtml, highlightIn, linkifyCitations, makeFrameScheduler, renderBlocksIncremental, wireCanvasToggle, captureCanvasViewStates, restoreCanvasViewStates, type BlockState } from "./markdown";
 import {
-  ComposerState, addFiles, buildMessageText, clearAttachments, initMentionPicker, initSampling,
-  initSystemPrompt, onSelectAdapter, refreshAdapters as composerRefreshAdapters, refreshSamplingRecs,
+  ComposerState, addFiles, buildMessageText, clearAttachments, clearOneShotArmed, initMentionPicker,
+  initSampling, initSystemPrompt, onSelectAdapter, refreshAdapters as composerRefreshAdapters, refreshSamplingRecs,
   renderAttachments, renderContext, renderLane, renderQueue, updateAttachHint,
   updateThinkingToggle, type ContextFrame,
 } from "./composer";
@@ -38,6 +38,34 @@ import { AdaptersPanelState, initAdaptersPanel, refreshAdaptersPanel } from "./a
 import { initMemoryPanel, isMemoryToolName, memoryToolChip, type MemChipHandle } from "./memory-panel";
 import { api } from "./api";
 import type { ApiEnvelope } from "./protocol";
+import type { Citation } from "./rag";
+import { buildAppContext, resolveSpotlightTarget, showSpotlight, type UiSnapshot } from "./assistant";
+import { isRouteId } from "./ui-catalog";
+
+/* ────────────────────────────────────────────────────────────────────
+   Chat-with-files RAG v1 — Sources panel (plan §9 Phase 3, beat matrix
+   Axis 5). Pure HTML builder so tests/web-app.test.ts can exercise the
+   esc() discipline directly, same reasoning as renderAdapterOptionsHtml
+   etc. in composer.ts.
+   ──────────────────────────────────────────────────────────────────── */
+
+/** Pure: builds the collapsed "Sources · K" summary line + expandable list
+ *  of [n] filename + snippet for a turn's citations. Snippets are
+ *  truncated (a citation's chunk can be ~1200 chars — the panel is a
+ *  pointer back to the source, not a document viewer). */
+export function renderSourcesHtml(citations: Citation[]): string {
+  if (!citations.length) return "";
+  const rows = citations.map((c) => {
+    const snippet = c.text.length > 240 ? c.text.slice(0, 240).trim() + "…" : c.text.trim();
+    return '<div class="src-row" data-cite-row="' + c.n + '">' +
+      '<span class="src-n">[' + c.n + "]</span>" +
+      '<span class="src-meta"><span class="src-file">' + esc(c.fileName) + '</span>' +
+      '<span class="src-range">chars ' + c.start + "–" + c.end + "</span></span>" +
+      '<div class="src-snippet">' + esc(snippet) + "</div></div>";
+  }).join("");
+  return '<details class="sources"><summary>Sources · ' + citations.length + "</summary>" +
+    '<div class="src-list">' + rows + "</div></details>";
+}
 
 /* ────────────────────────────────────────────────────────────────────
    Tool arg formatting helpers (shared by streaming + replayed history)
@@ -117,12 +145,28 @@ interface AssistantMsgState {
   blockState: BlockState;
   scheduleText: () => void;
   scheduleThinking: () => void;
+  // Chat-with-files RAG v1 (plan §9 Phase 3, beat matrix Axis 5): the
+  // citation list retrieved for the prompt that started THIS turn, if any
+  // (composer.ts's buildMessageText only returns a non-empty list when
+  // retrieval mode fired). Empty for the common case — no Sources panel,
+  // no [n] linkification, zero visual change from before this feature.
+  citations: Citation[];
 }
 
 export function createChatController() {
   let ws: WebSocket | null = null, connected = false, reconnectTimer: ReturnType<typeof setTimeout> | undefined, manualClose = false;
   let curAssistant: AssistantMsgState | null = null;
   let turnActive = false;
+  // App-aware assistant (plan §6.6): the last uiSnapshot pushed to the
+  // server, kept client-side too so spotlight_ui's ref resolution
+  // (resolveSpotlightTarget) doesn't need a round-trip — the browser
+  // already has the freshest snapshot it just sent.
+  let lastSnapshot: UiSnapshot | null = null;
+  // Citations retrieved for the prompt currently in flight (set in submit(),
+  // just before send()) — startAssistant() picks this up when turn_start
+  // arrives and attaches it to the new AssistantMsgState, then clears it so
+  // a later turn with no attachments doesn't inherit a stale citation set.
+  let pendingCitations: Citation[] = [];
   // This connection's active session path (from `sessions` frames). Each
   // connect gets a fresh server session; on a transient reconnect we re-open
   // our own session so a blip doesn't strand us on a blank one.
@@ -158,6 +202,46 @@ export function createChatController() {
     return false;
   }
 
+  /* ── App-aware assistant (plan §6.6, §9 Phase 3, beat matrix Axis 12) ──
+     "See": push a structured context frame on every route change and every
+     wizard-step change. Never on a timer — only these two triggers, so the
+     server's ambient one-liner always reflects a real, user-caused state
+     change. */
+
+  /** Which non-route overlay (if any) is currently open, layered on top of
+   *  whatever route is active underneath — same "where is the user, really"
+   *  question navigate_app/spotlight_ui need answered. Checked in a fixed
+   *  order; the first open one wins (only one of these opens at a time in
+   *  practice — each is closed by shell.ts's closeTopOverlay sweep before
+   *  another opens). */
+  function currentView(): string | null {
+    if ($("mem-overlay")?.classList.contains("open")) return "memory-panel";
+    if ($("hub-overlay")?.classList.contains("open")) return "hub-panel";
+    if ($("adapters-overlay")?.classList.contains("open")) return "adapters-panel";
+    return null;
+  }
+
+  function pushAppContext(): void {
+    const route = currentRoute();
+    if (!isRouteId(route)) return; // "routes" (DAG diagram) isn't a useful assistant destination
+    const ctx = buildAppContext(route, currentView());
+    lastSnapshot = ctx.snapshot;
+    send({ type: "context", context: ctx });
+  }
+
+  /** MutationObserver on the three wizard step-indicator containers: their
+   *  innerHTML is fully rewritten by markdown.ts's renderSteps() on every
+   *  show(n) call in quantize.ts/finetune.ts/dataset.ts, so a childList+
+   *  subtree observer fires exactly on step change — no callback hook
+   *  needed in those three controllers (outside this wave's file scope). */
+  function watchWizardSteps(): void {
+    const mo = new MutationObserver(() => pushAppContext());
+    for (const id of ["q-steps", "f-steps", "d-steps"]) {
+      const el = $(id);
+      if (el) mo.observe(el, { childList: true, subtree: true });
+    }
+  }
+
   function setChatStatus(s: "connected" | "disconnected" | "error"): void {
     const line = $("chat-status-line");
     // The "#" hint lives HERE, not in the composer placeholder — a long
@@ -181,6 +265,15 @@ export function createChatController() {
   let lastUserEntryId: string | null = null; // its session entryId (from history/siblings frames)
   let siblingInfo: SiblingInfo = newSiblingInfo();
   let lastAssistantMsgEl: HTMLElement | null = null; // the <div class="msg assistant"> eligible for regenerate
+  // Citations for the reply currently sitting in lastAssistantMsgEl (kept in
+  // lockstep with it — set alongside it in endTurn, cleared alongside it
+  // everywhere it's nulled). Regenerate/edit-resend re-prompt the SAME
+  // underlying (possibly RAG'd) user turn without going through submit()/
+  // buildMessageText, so pendingCitations would otherwise be the stale `[]`
+  // left over from consumption at the prior startAssistant() call — see the
+  // pendingCitations declaration below. Re-seeding from here means a
+  // citation-bearing turn keeps its Sources panel across regenerate/edit.
+  let lastAssistantCitations: Citation[] = [];
 
   function doRegenerate(): void {
     if (turnActive) return;
@@ -190,6 +283,7 @@ export function createChatController() {
     // reply would otherwise linger above the new one as it streams in.
     // Drop it now; startAssistant() appends the fresh reply right after.
     if (lastAssistantMsgEl) { lastAssistantMsgEl.remove(); lastAssistantMsgEl = null; }
+    pendingCitations = lastAssistantCitations;
   }
 
   function switchSiblingDir(delta: number): void {
@@ -229,6 +323,7 @@ export function createChatController() {
       textEl.textContent = text;
       box.replaceWith(textEl); actions.remove();
       if (lastAssistantMsgEl) { lastAssistantMsgEl.remove(); lastAssistantMsgEl = null; }
+      pendingCitations = lastAssistantCitations;
     };
     cancelBtn.onclick = restore;
     sendBtn.onclick = doSend;
@@ -290,7 +385,11 @@ export function createChatController() {
       blockState: { blocks: [] },
       scheduleText: () => {},
       scheduleThinking: () => {},
+      citations: pendingCitations,
     };
+    // Consumed — a later turn with no RAG'd attachments must not inherit
+    // this turn's citation set (see the pendingCitations declaration above).
+    pendingCitations = [];
     curAssistant.scheduleText = makeFrameScheduler(
       () => renderBlocksIncremental(curAssistant!.textNode, curAssistant!.text, curAssistant!.blockState),
       atBottom, stick);
@@ -470,6 +569,37 @@ export function createChatController() {
     stick(true);
   }
 
+  /** Chat-with-files RAG v1 (plan §9 Phase 3, beat matrix Axis 5): append a
+   *  collapsed "Sources · K" panel under the bubble and linkify any [n]
+   *  markers the model actually used in its reply. Only ever called with a
+   *  non-empty citation list (finishStreaming guards this) — an ordinary
+   *  reply with no attachments gets neither the panel nor any [n]
+   *  rewriting, so a message that happens to contain literal "[1]" text
+   *  never gets a false citation link. */
+  function attachSourcesPanel(a: AssistantMsgState): void {
+    const validNs = new Set(a.citations.map((c) => c.n));
+    a.textNode.innerHTML = linkifyCitations(a.textNode.innerHTML, validNs);
+    const panel = el("div", "", null);
+    panel.innerHTML = renderSourcesHtml(a.citations);
+    const detailsEl = panel.firstElementChild as HTMLElement | null;
+    if (!detailsEl) return;
+    a.bubble.appendChild(detailsEl);
+    // Clicking a [n] marker in the rendered text expands the panel (if
+    // collapsed) and scrolls/highlights the matching source row.
+    a.textNode.querySelectorAll<HTMLElement>(".cite-mark").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const n = btn.dataset.cite;
+        (detailsEl as HTMLDetailsElement).open = true;
+        const row = detailsEl.querySelector<HTMLElement>('.src-row[data-cite-row="' + n + '"]');
+        if (row) {
+          row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          row.classList.add("pulse");
+          setTimeout(() => row.classList.remove("pulse"), 1000);
+        }
+      });
+    });
+  }
+
   /** Turn-end finalization for the streamed text channel: replace the
    *  block-memoized incremental render with ONE full non-memoized
    *  mdToHtml(fullText) pass. This is the acceptance test for block
@@ -482,9 +612,17 @@ export function createChatController() {
    *  directly on the full string. */
   function finishStreaming(a: AssistantMsgState | null): void {
     if (!a) return;
+    // Preserve any Canvas Preview toggle the user made mid-stream (Principle
+    // 9: this full non-memoized re-render must not throw away user
+    // interaction state) — mdCodeBlock always emits qualifying fences back
+    // in their default Source view, so without this a live Preview click
+    // silently reverts the instant the turn finalizes.
+    const previewIdx = captureCanvasViewStates(a.textNode);
     a.textNode.innerHTML = mdToHtml(a.text);
+    restoreCanvasViewStates(a.textNode, previewIdx);
     highlightIn(a.textNode);
     a.thinkBody.textContent = a.thinking;
+    if (a.citations.length) attachSourcesPanel(a);
   }
 
   /** Demote the previously-"last" assistant message: only ONE message ever
@@ -511,6 +649,7 @@ export function createChatController() {
         clearRegenerateAffordance();
         addMsgActions(curAssistant.m, curAssistant.text, { regenerate: true }, { onRegenerate: doRegenerate });
         lastAssistantMsgEl = curAssistant.m;
+        lastAssistantCitations = curAssistant.citations;
       }
     }
     curAssistant = null;
@@ -580,7 +719,16 @@ export function createChatController() {
     }
     if (item.text) {
       addMsgActions(m, item.text, { regenerate: !!opts.isLast }, { onRegenerate: doRegenerate });
-      if (opts.isLast) lastAssistantMsgEl = m;
+      if (opts.isLast) {
+        lastAssistantMsgEl = m;
+        // History replay doesn't carry citations (HistoryItem has no
+        // citations field — the server doesn't persist them across
+        // reload), so there's nothing to restore here; this keeps
+        // lastAssistantCitations honest (no stale carry-over from a
+        // previous session) rather than claiming a citation set for a
+        // reply that regenerate can't actually attribute one to.
+        lastAssistantCitations = [];
+      }
     }
   }
 
@@ -624,6 +772,12 @@ export function createChatController() {
         // frame that follows will report whether it's active yet or only
         // pending for the next new/opened chat.
         send({ type: "set_coding_tools", enabled: storedCodingToolsPreference() });
+        // App-aware assistant (plan §6.6): a fresh WS session starts with no
+        // stored context server-side (currentAppContext is null until the
+        // first push) — every `ready` (initial connect AND reconnect) must
+        // re-push so get_current_app_context / the ambient line are never
+        // blind while a browser tab sits idle on a non-chat route.
+        pushAppContext();
         // Reconnect: re-open the session we were in (fresh load has none).
         if (pendingResumePath) { send({ type: "open_session", path: pendingResumePath }); pendingResumePath = null; }
         break;
@@ -655,9 +809,42 @@ export function createChatController() {
       case "tool_approval_request": approvalCard(m.callId, m.tool, m.args); break;
       case "tool_update": toolUpdate(m.callId, (m.chunk as string) || ""); break;
       case "tool_end": toolEnd(m.callId, m.ok, m.result); break;
-      case "turn_end": finalizeMeta(); renderLane(m.lane as Lane | undefined); endTurn(); break;
+      // clearOneShotArmed: a one-shot next_turn sampling override (if any
+      // was armed) has now been consumed by the server for exactly this
+      // turn — clear the local indicator in lockstep (plan §9 Phase 3 item 2).
+      case "turn_end": finalizeMeta(); renderLane(m.lane as Lane | undefined); clearOneShotArmed(composer); endTurn(); break;
       case "queue_update": renderQueue(m); break;
-      case "error": showAgentError(m.message || "agent error"); toast(m.message || "agent error", "err"); if (turnActive) endTurn(); break;
+      // A prompt/regenerate/edit_resend that fails before the server ever
+      // reaches turn_start (no model selected, auth failure, etc.) never
+      // sends turn_end, so this is also where a one-shot next_turn sampling
+      // override must be cleared client-side — the server clears its own
+      // copy on this same failure path (clearArmedOneShotOnFailedPrompt in
+      // pi-web.ts), so the two stay in lockstep instead of the UI's "armed"
+      // pill lingering after the override it referred to is already gone.
+      case "error": showAgentError(m.message || "agent error"); toast(m.message || "agent error", "err"); clearOneShotArmed(composer); if (turnActive) endTurn(); break;
+      // App-aware assistant (plan §6.6): navigate_app / spotlight_ui tool
+      // calls arrive as these two frames. Navigation always routes through
+      // location.hash (the SAME mechanism a nav-tab click uses — shell.ts's
+      // hashchange listener does the actual section toggle), so it's
+      // indistinguishable from the user clicking the tab themselves.
+      case "ui_navigate":
+        location.hash = `#/${m.route}`;
+        break;
+      // spotlight_ui: navigate first if the tool asked (route present), THEN
+      // resolve+show — every route's section already lives in the DOM,
+      // toggled by CSS (shell.ts's router()), so no waitForElement polling
+      // is needed the way a client-side-routed app would require.
+      case "ui_spotlight": {
+        if (m.route) location.hash = `#/${m.route}`;
+        const resolved = resolveSpotlightTarget(
+          { ref: m.ref, label: m.label, selector: m.selector, target: m.target, message: m.message },
+          lastSnapshot,
+        );
+        if (!resolved || !showSpotlight(resolved)) {
+          toast("Couldn't find that on screen to point at.", "err");
+        }
+        break;
+      }
     }
   }
 
@@ -680,7 +867,15 @@ export function createChatController() {
     // entryId-mismatch check, same as a fresh page load's history replay.
     addUserMsg(text, composer.attachments as unknown as { kind: string; data?: string; mimeType?: string; name: string }[], { isLast: true });
     box.value = ""; box.style.height = "auto";
-    const frame: ClientMessage = imgs.length ? { type: "prompt", text: combined, images: imgs } : { type: "prompt", text: combined };
+    // buildMessageText returns { text, citations } (RAG v1, plan §9 Phase 3
+    // Axis 5): .text is the WS-outgoing prompt string (with the numbered
+    // context block injected when retrieval mode fired); .citations stash
+    // into pendingCitations so startAssistant() can attach them to the
+    // AssistantMsgState this prompt's reply streams into once turn_start
+    // arrives (empty array — the common case — is a no-op all the way
+    // through: no Sources panel, no [n] linkification).
+    pendingCitations = combined.citations;
+    const frame: ClientMessage = imgs.length ? { type: "prompt", text: combined.text, images: imgs } : { type: "prompt", text: combined.text };
     // A composer submission is always a new user turn. If the model is still
     // streaming, the server passes it to pi with streamingBehavior:"followUp"
     // so it becomes the next turn instead of steering/mutating the current one.
@@ -807,6 +1002,25 @@ export function createChatController() {
           btn.textContent = "Copied"; setTimeout(() => { btn.textContent = "Copy"; }, 1200);
         }).catch(() => {});
       });
+      // Canvas v1 (plan §9 Phase 3): Preview|Source toggle for html/svg
+      // fences, delegated the same way as the copy button above.
+      wireCanvasToggle(thread());
+
+      // App-aware assistant (plan §6.6): registered at document/window level
+      // (not scoped to the chat route being active) since chat.ts owns the
+      // one WebSocket for the whole app and must push context on every
+      // route, regardless of which route the user navigates TO or FROM.
+      // hashchange covers route changes; the MutationObserver covers wizard
+      // step changes (quantize/finetune/dataset); a MutationObserver on each
+      // overlay's `class` attribute covers view changes (memory/hub/adapters
+      // panel open/close) without touching those three modules.
+      window.addEventListener("hashchange", pushAppContext);
+      watchWizardSteps();
+      const overlayMo = new MutationObserver(() => pushAppContext());
+      for (const id of ["mem-overlay", "hub-overlay", "adapters-overlay"]) {
+        const el = $(id);
+        if (el) overlayMo.observe(el, { attributes: true, attributeFilter: ["class"] });
+      }
     },
     enter() {
       if (!ws || ws.readyState > 1) connect();

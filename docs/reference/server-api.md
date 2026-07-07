@@ -775,6 +775,175 @@ initiated via `mlx-bun download` or the web library panel.
 }
 ```
 
+## Model Hub (`/api/hub/*`)
+
+The web chat's Model Hub panel (docs/design/web-chat-redesign.md §9 Phase 3,
+beat-matrix Axis 3): browse downloaded models, search Hugging Face, and kick
+off downloads — all loopback-served, no separate auth, same posture as
+`/api/gc/*` and `/api/memory/*`. Handlers live in `src/hub-rest.ts` (pure
+functions, no loaded-model dependency); route dispatch in `src/server.ts`
+just matches path + method.
+
+`GET /api/hub/local` — every model in the local registry (same source
+`/library` reads), each with a `/fit`-computed hardware verdict at a fixed
+8k context — the beat matrix's "real hardware verdict per row" that optiq's
+Hub lacks:
+
+```jsonc
+{
+  "ok": true,
+  "models": [{
+    "repo_id": "…",
+    "model_type": "gemma3" | "minicpm5" | "qwen3" | …,
+    "size_bytes": 0,
+    "quant_bits": 4,
+    "quant_group_size": 64,
+    "vision": false,
+    "supported": true,
+    "support_tier": "targeted" | "generic" | null,
+    "assessment": { "fits": true, "max_safe_context": 8192, "predicted_decode_tps": 0.0 } | null
+  }]
+}
+```
+
+`GET /api/hub/search?q=<query>` — server-side Hugging Face model search,
+filtered to the `mlx` library tag (the tag every mlx-community / MLX-format
+repo carries) so results are MLX-compatible by construction, normalized to
+the fields the Hub panel needs. Never downloads anything — search only.
+Degrades gracefully on any network failure (DNS, timeout, non-2xx) to an
+explicit offline state rather than a 500:
+
+```jsonc
+{ "ok": true, "offline": false, "results": [{ "id": "mlx-community/…", "downloads": 0, "likes": 0, "size_estimate": null }] }
+```
+
+```jsonc
+{ "ok": true, "offline": true, "error": "…", "results": [] }
+```
+
+`size_estimate` is always `null` in v1 — the search endpoint doesn't return
+per-repo file sizes and a second per-repo call would slow the search down;
+the fit badge lands once a model is actually downloaded (`/api/hub/local`).
+
+`POST /api/hub/download` with body `{"repo": "org/name"}` — starts a
+background download via the existing `downloadModel()` +
+`src/download.ts` process tracker and returns immediately; progress is
+already visible via [`GET /downloads`](#get-downloads). Refuses a duplicate
+kick-off for a repo that's already downloading:
+
+```jsonc
+{ "ok": true, "repo": "org/name", "started": true }
+```
+
+```jsonc
+{ "ok": false, "error": "a download for org/name is already in progress" }
+```
+(409)
+
+`POST /api/hub/serve` with body `{"model": "org/name"}` — **always answers
+`restart_required`, never performs a live in-process swap.** Investigated
+against `docs/design/runtime-isolation.md`: the web chat's `/ws/chat` path
+is explicitly not proxied even under `--isolate` (`src/serve/isolate.ts`
+answers it 501), and `--isolate` itself is opt-in, not the default — so the
+process a web chat session is actually attached to always has exactly one
+model loaded with no drop-weights-and-reload seam reachable from that path.
+(The `--isolate` proxy's `ModelPool`, P2 of that doc, *is* a real
+spawn-overlap live-swap mechanism — it just lives entirely on the isolated
+`/v1/*` HTTP surface, not on `/ws/chat`.) Faking a swap here would leave the
+server in a half-state; the honest answer is the restart command:
+
+```jsonc
+{ "ok": false, "restart_required": true, "command": "mlx-bun serve org/name" }
+```
+
+Wiring `/ws/chat` through the isolate proxy (or otherwise reaching
+`ModelPool`'s spawn-overlap swap from the web chat) is the Hub's live-swap
+follow-up, not yet scheduled.
+
+## GET /api/sessions/search · GET /api/sessions/export
+
+Full-text search across web-chat session message **bodies** and chat
+export (docs/design/web-chat-redesign.md §9 Phase 3, beat-matrix Axis
+10/11's full-text-search BEAT: Claude's own session search is title-only —
+a widely-cited annoyance — and local storage removes any server-cost
+excuse to skip real body search). Same loopback-only, no-separate-auth
+posture as `/api/memory/*`/`/api/hub/*`. Handlers live in
+`src/serve/session-search.ts` (pure, read-only, no loaded-model
+dependency); route dispatch in `src/server.ts` just matches path + method.
+Both routes read the same session directory the web chat's `PiWebSession`
+writes to (`~/.mlx-bun/sessions`, pi's own JSONL-per-session format) and
+are JSONL-tolerant — a corrupt or mid-write line is skipped, never thrown.
+
+`GET /api/sessions/search?q=<query>` — case-insensitive substring scan (v1;
+no index — personal-chat-corpus scale, see the module header comment for
+the upgrade path if the corpus ever grows enough to matter) over every
+session file's user/assistant message text, capped at 50 matches total (10
+per session). Each match reports a plain-text ±60-char snippet plus the
+match's own `[start,end)` offsets **into that snippet** — offsets, not
+pre-rendered HTML highlighting, so the frontend escapes the snippet then
+inserts its own `<mark>` (the same escape-then-restore discipline the
+markdown renderer uses for code spans, applied here to search
+highlighting instead):
+
+```jsonc
+{
+  "ok": true,
+  "results": [{
+    "sessionPath": "/Users/…/.mlx-bun/sessions/20260706_…jsonl",
+    "sessionTitle": "Chicken recipes",
+    "matches": [{ "snippet": "…tell me about rosemary and thyme…", "ranges": [[14, 22]], "role": "user" }]
+  }]
+}
+```
+
+400s `{"ok": false, "error": "q is required"}` without a query.
+
+`GET /api/sessions/export?path=<session file>` — the raw session JSONL,
+parsed into an array of entries (one per line, in file order) — the
+frontend's Markdown/JSON export renders from this for a session that isn't
+the currently-open one (the open session's own history is already loaded
+client-side, but this endpoint is used uniformly for both cases so there's
+one code path, not two). `path` must resolve under the session directory —
+exactly the same guard shape as `PiWebSession`'s private
+`isUnderSessionDir` (the root itself, or a path prefixed by `root + "/"`)
+— reimplemented as a small standalone check in `session-search.ts` rather
+than exported from that class:
+
+```jsonc
+{ "ok": true, "path": "…", "entries": [{ "type": "session", "id": "…", "cwd": "…" }, { "type": "message", "message": { "role": "user", "content": "…" } }] }
+```
+
+400s without `path`; 403s a `path` outside the session directory; 404s a
+path inside the directory that doesn't exist on disk.
+
+## Web app static routes + PWA installability
+
+The web chat (`GET /`) and everything it loads same-origin, no CDN, ever:
+
+| Route | Content | Notes |
+| --- | --- | --- |
+| `GET /` | `src/web/app.html` | The unified SPA shell. |
+| `GET /assets/app.js` | `src/web/app.js` | GENERATED from `src/web/src/*.ts` by `bun scripts/build-web.ts` — see `tests/web-build.test.ts`'s freshness gate. |
+| `GET /assets/hljs.js`, `GET /assets/hljs.css` | `src/web/vendor/hljs*` | Vendored syntax highlighting, no CDN (see that dir's README). |
+| `GET /manifest.webmanifest` | `src/web/manifest.webmanifest` | PWA manifest — name/short_name/theme colors match the app's design tokens. |
+| `GET /assets/icon.svg` | `src/web/icon.svg` | A single inline SVG app icon. No binary PNGs are shipped (the hygiene gate forbids tracked binaries beyond its allowlist); some browsers don't render an SVG as an install icon — accepted, noted in [features-matrix.md](features-matrix.md). |
+| `GET /sw.js` | `src/web/sw.js` | Service worker, served `cache-control: no-store` at the root scope (required for a worker to control `/`). |
+
+**PWA scope (beat-matrix Axis 10 "PWA installability"):** the manifest +
+service worker exist for *installability and an instant static-shell
+paint* — "Add to Home Screen" / a browser "Install app" prompt, and the
+next visit's HTML/JS/CSS loading from cache while the WebSocket connects.
+This is explicitly **not** offline chat: `src/web/sw.js`'s fetch handler
+only intercepts the exact shell files listed above (`/`, `/assets/app.js`,
+`/assets/hljs.js`, `/assets/hljs.css`) and lets every dynamic route
+(`/api/*`, `/v1/*`, `/ws/chat`, `/downloads`, …) fall straight through to
+the network unconditionally — caching a chat API response would be
+actively misleading given the app is a thin client over a local model
+process that has to actually be running. Registration
+(`src/web/src/shell.ts`'s `initServiceWorker()`) is guarded to secure
+contexts: `https:` or `localhost`/`127.0.0.1`, matching the browser's own
+service-worker eligibility rule.
+
 ## GET /fit
 
 Fit assessment for the loaded model on this machine, plus a capability
@@ -849,6 +1018,56 @@ spelling) mounts an adapter at startup through this same machinery and
 makes it the default for requests that send no `adapter` field; an
 explicit `adapter` (including `"none"`) always wins, and hot-swap via
 these endpoints is unchanged.
+
+## App-aware assistant (`/ws/chat`)
+
+The web chat agent can see and act on the app it lives in —
+`docs/design/web-chat-redesign.md` §6.6, beat matrix Axis 12. No
+screenshots and no vision model are involved: the browser sends a
+structured DOM snapshot as a WS frame, and the model gets three tools that
+read/navigate/highlight that snapshot.
+
+Three tools join the web chat's tool allowlist unconditionally (same
+class as `web_search`/`read` — read-only-on-the-machine, never gated by
+the approval card, regardless of memory or `codingTools` state; see
+`APP_AWARE_TOOL_NAMES` in `src/pi-web.ts`):
+
+- **`get_current_app_context`** — returns the last context the browser
+  pushed: `{ route, view?, step?, snapshot }`. `snapshot` is a capped
+  (~120) list of visible interactive elements as `{ref, label, kind,
+  role?, selector, spotlightId?}`, agent chrome excluded.
+- **`navigate_app({ route | page })`** — validates against the route
+  catalog (`chat`, `quantize`, `finetune`, `dataset`, `status`; unknown
+  routes 400 as a tool error, never silently sent to the browser) and
+  emits a `ui_navigate` frame. Reversible; no approval needed.
+- **`spotlight_ui({ ref | label | selector | target, route?, message?
+  })`** — emits a `ui_spotlight` frame; the browser resolves the target
+  (ref from its last snapshot, then live selector, then fuzzy label
+  match, then a curated catalog id) and shows a brief highlight. Never
+  blocks: the overlay traps no focus and passes clicks straight through
+  to the highlighted control, auto-dismisses in ~3s, and any keystroke,
+  click, or scroll dismisses it instantly.
+
+Client → server WS frame (pushed by the browser on every route change and
+every wizard-step change, never on a timer):
+
+```jsonc
+{ "type": "context", "context": { "route": "quantize", "step": { "index": 1, "count": 4, "label": "Configure" }, "snapshot": { "route": "quantize", "capturedAt": "…", "elements": [/* … */] } } }
+```
+
+Server → client frames the two action tools produce:
+
+```jsonc
+{ "type": "ui_navigate", "route": "quantize" }
+{ "type": "ui_spotlight", "target": "quantize-source", "message": "Paste a Hugging Face repo id or local path here" }
+```
+
+The server also auto-prepends a compact one-line ambient context (e.g.
+`[user is on: Quantize · step 2/4]`) to the system prompt on every turn —
+never a full snapshot dump — so the model is never answering completely
+blind even when it doesn't call a tool. `ui_act` (approval-gated form-fill
+and job-start actions) is explicitly out of scope for this v1; only
+navigate/spotlight are wired.
 
 ## Client setup: pi
 

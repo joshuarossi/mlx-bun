@@ -18,7 +18,7 @@
 import { $, el, toast, trapFocus, setMemPanelClose, type FocusTrap } from "./shell";
 import { api } from "./api";
 import type { ApiEnvelope } from "./protocol";
-import { esc, mdToHtml } from "./markdown";
+import { esc, mdToHtml, wireCanvasToggle } from "./markdown";
 
 /* ────────────────────────────────────────────────────────────────────
    REST response shapes (mirrors src/memory/rest.ts's jsonOk() bodies —
@@ -286,7 +286,12 @@ async function showArticle(name: string): Promise<void> {
     '<button class="mem-art-tab" id="mem-tab-history" type="button">History</button>' +
     "</div></div>" +
     '<div id="mem-art-view">' +
-    '<div class="mem-article-render">' + mdToHtml(artRes.content) + "</div>" +
+    // data-ui-chrome="content": rendered vault-article markdown (synthesized
+    // from past conversations, not app-authored UI) can contain arbitrary
+    // links — excluded from captureUiSnapshot for the same reason chat-thread
+    // is (see assistant.ts's isAgentChrome doc comment: that snapshot is
+    // re-served to the model verbatim as trusted UI state).
+    '<div class="mem-article-render" data-ui-chrome="content">' + mdToHtml(artRes.content) + "</div>" +
     linksLineHtml((linksRes.outbound || []), (linksRes.inbound || [])) +
     "</div>" +
     '<div id="mem-art-history" style="display:none"></div>';
@@ -556,6 +561,10 @@ export function initMemoryPanel(): void {
   ($("mem-close") as HTMLButtonElement).onclick = closeMemPanel;
   ($("mem-back") as HTMLButtonElement).onclick = () => showList();
   $("mem-overlay").addEventListener("click", (e) => { if (e.target === $("mem-overlay")) closeMemPanel(); });
+  // Canvas v1 (plan §9 Phase 3): same Preview|Source toggle as the chat
+  // thread, shared via markdown.ts — mem-body is the stable ancestor whose
+  // innerHTML gets replaced per article, same delegation pattern as chat.ts.
+  wireCanvasToggle($("mem-body"));
   wireConsentCard();
   refreshSidebarEntry();
   personalizeHeroChips();

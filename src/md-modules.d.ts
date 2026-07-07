@@ -33,3 +33,17 @@ declare module "./web/*.js" {
   const content: string;
   export default content;
 }
+
+// PWA sources (plan §9 Phase 3): manifest.webmanifest + icon.svg,
+// text-imported into src/server.ts the same way. Globs, not exact paths —
+// the app.js comment above already found (2026-07) that TS's ambient
+// module resolution only matches a real on-disk file against a wildcard
+// pattern, not an exact-path declaration; same quirk applies here.
+declare module "./web/*.webmanifest" {
+  const content: string;
+  export default content;
+}
+declare module "./web/*.svg" {
+  const content: string;
+  export default content;
+}

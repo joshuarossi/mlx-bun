@@ -32,6 +32,7 @@ import {
   createAgentSessionFromServices,
   createAgentSessionRuntime,
   createAgentSessionServices,
+  defineTool,
   SessionManager,
   type AgentSession,
   type AgentSessionEvent,
@@ -41,8 +42,10 @@ import {
   type SessionEntry,
   type SessionInfo,
   type ToolCallEvent,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { ImageContent } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { WEB_TOOL_NAMES } from "./web-tools";
 import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "./memory/tools";
 import { buildPiAgentSurface } from "./pi-session";
@@ -55,8 +58,14 @@ import { isToolAlwaysAllowed, setToolAlwaysAllowed, listAlwaysAllowedTools } fro
  * Tools that never mutate the user's machine; auto-allowed without a browser
  * round-trip. The web tools make outbound network requests but change nothing
  * locally, so they're auto-allowed too (and remain usable in read-only mode).
+ * The app-aware assistant's three tools (get_current_app_context/
+ * navigate_app/spotlight_ui, plan §6.6) join this set for the same reason:
+ * navigation and spotlighting are reversible UI actions on the user's OWN
+ * open browser tab, never a machine mutation — see createAppAwareTools'
+ * doc comment below for the full classification rationale.
  */
-const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", ...WEB_TOOL_NAMES, ...MEMORY_TOOL_NAMES, ...REFERENCE_TOOL_NAMES]);
+export const APP_AWARE_TOOL_NAMES = ["get_current_app_context", "navigate_app", "spotlight_ui"] as const;
+const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", ...WEB_TOOL_NAMES, ...MEMORY_TOOL_NAMES, ...REFERENCE_TOOL_NAMES, ...APP_AWARE_TOOL_NAMES]);
 /** Tools that require explicit per-call browser approval. */
 const GATED_TOOLS = new Set(["bash", "edit", "write"]);
 
@@ -82,11 +91,15 @@ const WELCOME_TOOLS = ["read", "web_search"] as const;
  * bash/edit/write ARE gated — this is precisely what makes the
  * already-built approval card fire for the first time once codingTools is
  * on (previously dead code: nothing in the default surface could ever
- * reach GATED_TOOLS).
+ * reach GATED_TOOLS). APP_AWARE_TOOL_NAMES ride along unconditionally
+ * (like WELCOME_TOOLS) — they're read-only-on-the-machine regardless of
+ * memory/codingTools/read-only-server state (see APP_AWARE_TOOL_NAMES'
+ * doc comment).
  */
 export function webChatToolAllowlist(memoryEnabled: boolean, codingTools = false): string[] {
   return [
     ...WELCOME_TOOLS,
+    ...APP_AWARE_TOOL_NAMES,
     ...(memoryEnabled ? [...MEMORY_TOOL_NAMES, ...REFERENCE_TOOL_NAMES] : []),
     ...(codingTools ? ["grep", "find", "ls", ...GATED_TOOLS] : []),
   ];
@@ -94,6 +107,186 @@ export function webChatToolAllowlist(memoryEnabled: boolean, codingTools = false
 
 /** Auto-deny a pending approval after this long with no browser decision. */
 const APPROVAL_TIMEOUT_MS = 120_000;
+
+// ---- Loop hygiene (beat matrix Axis 7 "Tool-loop hygiene" row) --------
+//
+// What the pi SDK already provides (investigated in
+// node_modules/@earendil-works/pi-agent-core/dist/agent-loop.js and
+// pi-coding-agent/dist/core/agent-session.js before adding any of this):
+//   - Malformed tool-call ARGS: pi-ai's `parseJsonWithRepair`/
+//     `parseStreamingJson` (dist/utils/json-parse.js) already repairs
+//     invalid backslash escapes/control chars and tolerates truncated
+//     streaming JSON; `validateToolArguments` (utils/validation.js)
+//     coerces JSON-Schema primitive types. Neither touches OUR OWN
+//     format-specific tool-call text parsers (gemma4 `call:name{...}`,
+//     the OpenAI/Qwen/MiniCPM5 decoded-text shapes) — that repair layer
+//     is added in src/tool-call.ts instead (see RepairKind there).
+//   - Repeated identical calls: NOT deduped anywhere in the SDK. Every
+//     tool_call the model emits executes, full stop.
+//   - Failed-call retries: NOT budgeted. A tool error becomes a
+//     toolResult with isError:true and the loop just continues; nothing
+//     nudges the model to stop repeating a failing call.
+//   - Max turns / loop cap: NOT implemented by AgentSession at all (only
+//     agent-loop.js's raw runAgentLoop is hook-driven via
+//     config.shouldStopAfterTurn, which AgentSession never wires up or
+//     exposes to extensions). There is no cap, so a small model that
+//     keeps calling tools can loop until the user manually stops it.
+// All three gaps are closed here using the ONE mechanism AgentSession
+// does expose to extensions: pi.on("tool_call", ...) (before execution,
+// can only `block`) and pi.on("tool_result", ...) (after execution, can
+// reshape the result) — see installLoopHygieneHooks below. Turn-index
+// bookkeeping rides pi.on("turn_start"/"turn_end") (AgentSession's own
+// _turnIndex, which resets to 0 once per agent_start i.e. once per
+// session.prompt() call — see agent-session.js's _emitExtensionEvent).
+//
+// KNOWN SDK LIMITATION (documented, not silently worked around): a
+// `tool_call` handler's block path (ToolCallEventResult) can only
+// produce an ERROR toolResult (agent-loop.js's createErrorToolResult —
+// there is no "block but still succeed" return shape). So "dedup: skip
+// re-execution, return cached result" cannot literally inject a
+// non-error result without running the tool again — the closest honest
+// equivalent is blocking the repeat with the PRIOR call's actual result
+// text inlined into the (error-flagged) block reason, so the model
+// still sees the real answer instead of a bare "blocked" message and
+// can move on, rather than getting a second identical error with no
+// information gain.
+
+/** Consecutive-identical-successful-call dedup, retry budget, and
+ *  tool-turn cap. Mutable per-connection (reset at prompt time) so re-
+ *  export as a class keeps all three concerns in one bookkeeping object
+ *  that's trivial to unit test via its pure decision methods. */
+export const LOOP_HYGIENE = {
+  /** After this many consecutive FAILED calls with the same signature
+   *  (name + JSON-stable args), the nudge text asks the model to change
+   *  approach instead of repeating verbatim. optiq Lab's documented
+   *  budget (beat matrix Axis 7) is 3. */
+  MAX_CONSECUTIVE_FAILURES: 3,
+  /** Cap on AgentSession's turnIndex (one assistant-response round, per
+   *  agent-session.js's _turnIndex) within a single user prompt before
+   *  every further tool call is blocked with a force-finish nudge.
+   *  optiq Lab's documented cap (beat matrix Axis 7) is 25. */
+  MAX_TOOL_TURNS: 25,
+} as const;
+
+/** Stable key for "the same call" — used by both the dedup check and the
+ *  failure-streak counter. JSON.stringify on a plain object from parsed
+ *  tool-call args is key-order-dependent; that's fine here since we're
+ *  comparing the SDK's own re-delivered `event.input` (same object shape
+ *  each time for a literal repeat, which is the only case that matters —
+ *  semantically-equal-but-differently-ordered args are not "identical"
+ *  for dedup purposes, only byte-identical repeats are). Exported for
+ *  unit testing. */
+export function toolCallSignature(toolName: string, args: unknown): string {
+  return `${toolName}:${stableStringify(args)}`;
+}
+
+/** Deterministic (key-sorted) JSON.stringify so argument key order never
+ *  causes two semantically-identical calls to hash differently. */
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    const keys = Object.keys(value as Record<string, unknown>).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/** Pure decision for the tool_call (before) hook: given the current loop
+ *  state and the incoming call's signature, decide whether to block it
+ *  outright (dedup or turn-cap) and, if so, why. Returns undefined when
+ *  the call should proceed to normal execution. Exported + pure so the
+ *  three policies (dedup / turn cap / [failure budget is a tool_result-
+ *  side concern, see nextFailureNudge]) are unit-testable without a live
+ *  AgentSession. */
+export interface LoopHygieneState {
+  /** Signature + result text of the last call that completed successfully
+   *  (undefined if none yet this prompt). */
+  lastSuccess?: { signature: string; resultText: string };
+  /** Consecutive failure count keyed by call signature. */
+  failureStreaks: Map<string, number>;
+  /** Current AgentSession turnIndex (updated on every turn_start). */
+  turnIndex: number;
+}
+
+export function initialLoopHygieneState(): LoopHygieneState {
+  return { lastSuccess: undefined, failureStreaks: new Map(), turnIndex: 0 };
+}
+
+export interface LoopHygieneBlock {
+  reason: string;
+}
+
+/** Decide whether to block a tool call BEFORE it runs. Checked in this
+ *  order: turn cap first (a model that's been looping for 25 rounds gets
+ *  force-finish treatment regardless of what it's calling next), then
+ *  consecutive-identical-successful-call dedup. */
+export function decideBeforeToolCall(
+  state: LoopHygieneState,
+  toolName: string,
+  args: unknown,
+): LoopHygieneBlock | undefined {
+  if (state.turnIndex >= LOOP_HYGIENE.MAX_TOOL_TURNS) {
+    return {
+      reason:
+        `Tool-turn limit (${LOOP_HYGIENE.MAX_TOOL_TURNS}) reached for this message. ` +
+        "Stop calling tools now and answer the user directly with what you have so far.",
+    };
+  }
+  const signature = toolCallSignature(toolName, args);
+  if (state.lastSuccess && state.lastSuccess.signature === signature) {
+    return {
+      reason:
+        "This exact tool call already ran and succeeded; skipping re-execution. " +
+        `Its result was:\n\n${state.lastSuccess.resultText}\n\n` +
+        "Use that result instead of calling it again.",
+    };
+  }
+  return undefined;
+}
+
+/** Update loop-hygiene bookkeeping AFTER a call executes (or was
+ *  immediately blocked/errored) and, on repeated failure, return nudge
+ *  text to append to the error the model sees. `resultText` is the
+ *  flattened text content of the tool's result (used to seed
+ *  `lastSuccess` for the dedup check above). Exported + pure. */
+export function recordToolCallOutcome(
+  state: LoopHygieneState,
+  toolName: string,
+  args: unknown,
+  outcome: { isError: boolean; resultText: string },
+): string | undefined {
+  const signature = toolCallSignature(toolName, args);
+  if (outcome.isError) {
+    const streak = (state.failureStreaks.get(signature) ?? 0) + 1;
+    state.failureStreaks.set(signature, streak);
+    if (streak >= LOOP_HYGIENE.MAX_CONSECUTIVE_FAILURES) {
+      return (
+        `\n\n(This exact call has now failed ${streak} times in a row. ` +
+        "Stop repeating it verbatim — try a different tool, different arguments, " +
+        "or explain to the user what's blocking you.)"
+      );
+    }
+    return undefined;
+  }
+  state.failureStreaks.delete(signature);
+  state.lastSuccess = { signature, resultText: outcome.resultText };
+  return undefined;
+}
+
+/** Flatten a tool result's content (TextContent[] shape) to plain text for
+ *  dedup-cache display and diagnostics. Mirrors contentText's tolerance
+ *  for non-array/string shapes. Exported for unit testing. */
+export function toolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((p): p is { type: string; text: string } =>
+        !!p && (p as { type?: string }).type === "text" && typeof (p as { text?: unknown }).text === "string")
+      .map((p) => p.text)
+      .join("");
+  }
+  return "";
+}
 
 /**
  * System prompt for the web chat assistant.
@@ -111,7 +304,7 @@ const APPROVAL_TIMEOUT_MS = 120_000;
  * with the long one). So: state identity + privacy in one breath, then tell it
  * plainly to answer what was asked and not to greet or recite capabilities.
  */
-export const WEB_CHAT_PROMPT_VERSION = "2026-06-21-minimal-v1";
+export const WEB_CHAT_PROMPT_VERSION = "2026-07-07-app-aware-v1";
 
 export function webChatPromptFingerprint(prompt: string): string {
   return createHash("sha256").update(prompt).digest("hex").slice(0, 12);
@@ -137,8 +330,17 @@ export function buildWebChatSystemPrompt(
   // those two — and telling it to answer from knowledge first — is what keeps a
   // small model from reaching for a tool on math/writing/general questions.
   const hasTools = opts?.hasTools ?? true;
+  // App-aware assistant (plan §6.6): tell the model these tools exist and
+  // when to reach for them instead of describing the UI blind — "when the
+  // user asks where/how in the app, navigate or spotlight instead of
+  // describing blind" is the literal steer the task calls for. Included
+  // whenever the session has tools at all (these three are always in the
+  // allowlist alongside WELCOME_TOOLS — see webChatToolAllowlist).
+  const appAwareLine = hasTools
+    ? ` You can see and act on the app: \`navigate_app\` switches the view, \`spotlight_ui\` highlights a control (use \`get_current_app_context\` first for its ref). When asked where/how in the app, navigate or spotlight instead of describing it blind.`
+    : "";
   const toolsLine = hasTools
-    ? ` Answer directly from your own knowledge whenever you can. Only call a tool when you truly need information you don't have: \`web_search\` for current or external facts (news, current events, prices, latest docs), \`read\` for a specific local file the user points you to. Never use a tool for general questions, explanations, math, or writing — just answer. When a tool returns results, pull the answer out of the result text and state it directly — never tell the user to go open the links or check the sources themselves; reading them is your job.`
+    ? ` Answer directly from your own knowledge whenever you can. Only call a tool when you truly need information you don't have: \`web_search\` for current or external facts (news, current events, prices, latest docs), \`read\` for a specific local file the user points you to. Never use a tool for general questions, explanations, math, or writing — just answer. When a tool returns results, pull the answer out of the result text and state it directly — never tell the user to go open the links or check the sources themselves; reading them is your job.${appAwareLine}`
     : ` You have no tools in this session, so answer from your own knowledge; if something needs current or external data you can't reach, say so briefly instead of pretending to look it up.`;
 
   return `You are mlx-bun's built-in assistant, running entirely on the user's own Apple-silicon Mac — nothing they type leaves the machine.${modelLine}${aboutLine}${toolsLine}
@@ -207,13 +409,27 @@ export type ClientMessage =
   // app.html mounts it (POST /v1/adapters) before sending this; the
   // before_provider_request hook injects it into the provider payload.
   | { type: "set_adapter"; id: string | null }
-  // Per-request sampling overrides for subsequent turns. Each field is
-  // optional; null/undefined means "leave it to the server default"
-  // (the mode-aware recommended value resolved in toOptions). A present
-  // numeric value is injected into the provider payload and always wins.
-  // The before_provider_request hook injects whatever is set here.
+  // Per-request sampling overrides. Each field is optional; null/undefined
+  // means "leave it to the server default" (the mode-aware recommended
+  // value resolved in toOptions). A present numeric value is injected into
+  // the provider payload and always wins. The before_provider_request hook
+  // injects whatever is set here.
+  //
+  // `scope` (plan §9 Phase 3 / beat matrix Axis 4 "per-message sampling
+  // scope"): "session" (default, omitting the field means this too) persists
+  // the override on the connection until changed — today's behavior,
+  // unchanged. "next_turn" stores a ONE-SHOT override applied to exactly
+  // the next prompt's injection, then cleared automatically — it never
+  // touches the session-level values (a later plain set_sampling with
+  // scope:"session" or omitted still sees whatever was there before this
+  // message). Composition when both are present: next_turn's SET fields
+  // win over session's for that one request; anything next_turn leaves
+  // null/unset falls back to the session-level override for that field
+  // (composeSampling — session-level itself falls back to the server's
+  // mode-aware default per injectSampling's existing contract).
   | {
       type: "set_sampling";
+      scope?: "session" | "next_turn";
       temperature?: number | null;
       top_p?: number | null;
       top_k?: number | null;
@@ -250,7 +466,108 @@ export type ClientMessage =
   // without sending anything new.
   | { type: "regenerate" }
   | { type: "edit_resend"; text: string }
-  | { type: "switch_sibling"; entryId: string };
+  | { type: "switch_sibling"; entryId: string }
+  // App-aware assistant (plan §6.6, §9 Phase 3, beat matrix Axis 12): pushed
+  // by chat.ts on every route change AND on wizard-step change (quantize/
+  // finetune/dataset), never on a timer. `context` is opaque here (the
+  // browser's AppContext shape, src/web/src/assistant.ts) — stored verbatim
+  // as the connection's currentAppContext and returned by the
+  // get_current_app_context tool, plus mined for the compact one-line
+  // ambient context auto-prepended to the NEXT prompt (see
+  // installAppContextHook / ambientContextLine). This is a DIFFERENT frame
+  // from the server->client `context` ServerMessage (context-window usage,
+  // above) — same name, opposite direction, disambiguated by which type
+  // union it's a member of; the two are never in scope at the same call
+  // site (ClientMessage here vs. ServerMessage below).
+  | { type: "context"; context: AppUiContext };
+
+// ---- App-aware assistant (plan §6.6, §9 Phase 3, beat matrix Axis 12) --
+//
+// Mirrors src/web/src/assistant.ts's browser-side types (which are the
+// source of truth for shape — this server-side copy is intentionally loose
+// (mostly `unknown`/optional) since the server never constructs a
+// UiSnapshot itself, only stores and forwards what the browser sends. Kept
+// here (not imported) because src/web/src/assistant.ts is bundled into the
+// browser and importing it here would pull browser code into the server
+// build — the inverse of the type-only ClientMessage/ServerMessage import
+// direction the frontend uses for pi-web.ts.
+
+/** One element in a captured DOM snapshot — see assistant.ts's
+ *  UiSnapshotElement for the authoritative shape/doc. */
+export interface UiSnapshotElement {
+  ref: string;
+  tag: string;
+  label: string;
+  kind: "interactive" | "region";
+  role?: string;
+  selector: string;
+  spotlightId?: string;
+}
+
+export interface UiSnapshot {
+  route: string;
+  capturedAt: string;
+  elements: UiSnapshotElement[];
+}
+
+/** The wizard-step process-state fields (§6.6 "carries process state, not
+ *  just elements") — present only on routes with a step wizard. */
+export interface WizardStep {
+  index: number;
+  count: number;
+  label: string;
+}
+
+/** The full context payload pushed by chat.ts on route/step change — see
+ *  assistant.ts's buildAppContext. Stored verbatim per-connection. */
+export interface AppUiContext {
+  route: string;
+  view?: string;
+  step?: WizardStep;
+  snapshot: UiSnapshot;
+}
+
+/** Route catalog mirror (src/web/src/ui-catalog.ts's ROUTE_IDS) for
+ *  server-side validation of navigate_app's route/page param BEFORE it
+ *  ever reaches the browser — an unknown route is rejected here as a tool
+ *  error rather than sent as a `ui_navigate` frame the router can't match.
+ *  Keep in sync with ui-catalog.ts's ROUTE_IDS by hand (no shared-JSON
+ *  import between the server and browser bundles — see that file's
+ *  top-of-file comment for why). */
+export const APP_ROUTE_IDS = ["chat", "quantize", "finetune", "dataset", "status"] as const;
+export type AppRouteId = (typeof APP_ROUTE_IDS)[number];
+
+export function isAppRouteId(v: string): v is AppRouteId {
+  return (APP_ROUTE_IDS as readonly string[]).includes(v);
+}
+
+/** Resolve a free-form route/page string the way navigate_app's tool
+ *  describes its param to the model: either a bare route id ("quantize")
+ *  or a "#/quantize"-style hash. Returns null for anything else. */
+export function resolveAppRoute(routeOrPage: string): AppRouteId | null {
+  const bare = routeOrPage.trim().replace(/^#\/?/, "");
+  return isAppRouteId(bare) ? bare : null;
+}
+
+/** Compact one-line ambient context (§6.6 "never answer blind") mined from
+ *  the stored AppUiContext — e.g. "[user is on: Quantize · step 2/4]".
+ *  Never a snapshot dump; this is the ONLY thing auto-attached to every
+ *  turn (the full snapshot stays on-demand via get_current_app_context).
+ *  Returns null when there's no context yet (nothing pushed this
+ *  connection — e.g. a non-browser WS client, or the very first frame
+ *  race before chat.ts's first context push lands). Pure + exported for
+ *  unit testing; mirrors assistant.ts's ambientLine so the two stay in
+ *  lockstep even though the server never imports the browser module. */
+const APP_ROUTE_LABELS: Record<AppRouteId, string> = {
+  chat: "Chat", quantize: "Quantize", finetune: "Fine-tune", dataset: "Build Dataset", status: "Status",
+};
+
+export function ambientContextLine(ctx: AppUiContext | null | undefined): string | null {
+  if (!ctx || !ctx.route) return null;
+  const place = ctx.view ?? APP_ROUTE_LABELS[ctx.route as AppRouteId] ?? ctx.route;
+  const stepPart = ctx.step ? ` · step ${ctx.step.index + 1}/${ctx.step.count}` : "";
+  return `[user is on: ${place}${stepPart}]`;
+}
 
 /** Model-author recommended sampling (generation_config.json, server-CLI
  *  overrides applied) — sent once on `ready` so the sampling popover can show
@@ -314,6 +631,16 @@ export type ServerMessage =
   // `ready` and after any change, so the settings panel can list/forget
   // durable per-tool approvals without a separate REST round-trip.
   | { type: "tool_approvals"; alwaysAllow: string[] }
+  // App-aware assistant (plan §6.6): the navigate_app / spotlight_ui tools'
+  // side-channel notifications, mapped 1:1 from the tool call's params —
+  // never guessed or re-derived, so chat.ts's router/spotlight get exactly
+  // what the model asked for. `route` here is always a validated
+  // AppRouteId (isAppRouteId already ran server-side before this frame is
+  // ever sent — see navigate_app's execute). ui_spotlight's fields mirror
+  // SpotlightRequest 1:1 (assistant.ts resolves ref/label/selector/target
+  // client-side, in that precedence order, against its last snapshot).
+  | { type: "ui_navigate"; route: AppRouteId }
+  | { type: "ui_spotlight"; ref?: string; label?: string; selector?: string; target?: string; message?: string; route?: AppRouteId }
   | { type: "error"; message: string };
 
 // ---- Session serialization (pure, unit-tested) -----------------------
@@ -687,6 +1014,91 @@ export function injectSampling(
   return changed ? out : undefined;
 }
 
+// ---- Per-message sampling scope (beat matrix Axis 4 / plan §9 Phase 3) --
+//
+// set_sampling's optional `scope` field: "session" (default, today's
+// behavior — persists on the connection until changed) or "next_turn" (a
+// one-shot override for exactly the next prompt, then cleared). The
+// composition rule is "next_turn OVER session": a next_turn field that's
+// a real number wins over the session-level value for that SAME field;
+// a next_turn field left null/undefined falls through to the session
+// override (which itself falls through to the server default per
+// injectSampling's existing null-means-unset contract). This mirrors
+// optiq Lab's per-message temp/max-tokens/thinking granularity cited in
+// the beat matrix, layered onto (not replacing) Phase 1's session-level
+// overrides.
+//
+// Lifecycle: armed by the set_sampling handler when scope is "next_turn"
+// (stored separately from the session-level `sampling` field so a
+// one-shot override never permanently clobbers the session default it's
+// laid over). Consumed at the FIRST before_provider_request of the very
+// next prompt — before_agent_start fires exactly once per session.prompt()
+// call (see agent-session.js's prompt() body), which is the natural
+// "one prompt" boundary, but the actual sampling injection happens in
+// before_provider_request (fired once per model call, i.e. once per
+// tool-loop turn) — so the override is consumed (cleared) the first time
+// before_provider_request fires after being armed, guaranteeing it rides
+// on exactly the next outgoing provider request and never leaks into a
+// second turn within the same prompt, let alone the next user message.
+
+/** Compose the effective sampling overrides for one outgoing provider
+ *  request: every field in `nextTurn` that's a real number wins; anything
+ *  left null/undefined in `nextTurn` falls back to `session`'s value for
+ *  that field. Pure + exported for unit testing. When `nextTurn` is
+ *  undefined (no one-shot override armed), returns `session` unchanged. */
+export function composeSampling(
+  session: SamplingOverrides,
+  nextTurn: SamplingOverrides | undefined,
+): SamplingOverrides {
+  if (!nextTurn) return session;
+  const out: SamplingOverrides = { ...session };
+  for (const field of SAMPLING_FIELDS) {
+    const v = nextTurn[field];
+    if (typeof v === "number" && Number.isFinite(v)) out[field] = v;
+  }
+  return out;
+}
+
+/** Pure state machine for the arm/consume lifecycle above, factored out of
+ *  PiWebSession so "set → one turn → cleared" is unit-testable without a
+ *  live session. `applySetSampling` is the set_sampling handler body;
+ *  `consumeForRequest` is the before_provider_request handler body — both
+ *  mutate and return a NEW state object (no hidden mutation) so tests can
+ *  assert on each step's output directly. */
+export interface SamplingScopeState {
+  session: SamplingOverrides;
+  nextTurn: SamplingOverrides | undefined;
+}
+
+export function initialSamplingScopeState(): SamplingScopeState {
+  return { session: {}, nextTurn: undefined };
+}
+
+/** Apply a set_sampling message to scope state: scope "next_turn" arms the
+ *  one-shot override (leaving `session` untouched); scope "session" or
+ *  omitted replaces the session-level override (today's behavior). Pure. */
+export function applySetSampling(
+  state: SamplingScopeState,
+  overrides: SamplingOverrides,
+  scope: "session" | "next_turn" | undefined,
+): SamplingScopeState {
+  return scope === "next_turn"
+    ? { session: state.session, nextTurn: overrides }
+    : { session: overrides, nextTurn: state.nextTurn };
+}
+
+/** Compute the effective overrides for ONE outgoing provider request and
+ *  return the post-consumption state (nextTurn always cleared, whether or
+ *  not one was armed — consuming "nothing armed" is a no-op clear). Pure. */
+export function consumeForRequest(
+  state: SamplingScopeState,
+): { effective: SamplingOverrides; nextState: SamplingScopeState } {
+  return {
+    effective: composeSampling(state.session, state.nextTurn),
+    nextState: { session: state.session, nextTurn: undefined },
+  };
+}
+
 /**
  * Layer the user's custom system prompt onto (not replacing) the built-in
  * surface prompt for one turn. Called from the `before_agent_start` hook
@@ -720,6 +1132,119 @@ export function applyEditedArgs(input: Record<string, unknown>, editedArgs: Reco
   Object.assign(input, editedArgs);
 }
 
+// ---- App-aware assistant tools (plan §6.6, §9 Phase 3, beat matrix ----
+// Axis 12): get_current_app_context / navigate_app / spotlight_ui.
+//
+// Same shape as PortfolioManager's createPortfolioTools(getAppContext,
+// clientId, notify) — the reference implementation this ports (read in
+// full: server/src/agent/portfolio-tools.ts). Built here (not in
+// pi-session.ts's shared buildPiAgentSurface) because these three tools are
+// PER-CONNECTION: they close over this session's currentAppContext getter
+// and its `notify` (send) function, whereas buildPiAgentSurface's tools are
+// stateless singletons shared across every session. Read-only/navigate
+// class (no approval gate, see APP_AWARE_TOOL_NAMES above): navigation and
+// spotlighting are reversible UI actions, not machine mutations — exactly
+// the same "auto-allow" reasoning READ_ONLY_TOOLS already applies to
+// memory/web tools. approval-gated ui_act (fill a form, start a job) is
+// explicitly Phase 5 per §6.6's scope guard, not implemented here.
+
+function appAwareTextResult(text: string, details: unknown = {}): { content: [{ type: "text"; text: string }]; details: unknown } {
+  return { content: [{ type: "text", text }], details };
+}
+
+/** Build the three app-aware tools for one connection. `getContext` reads
+ *  the connection's currentAppContext (last `context` ClientMessage, or
+ *  null before the first one arrives); `notify` sends a ServerMessage
+ *  (ui_navigate/ui_spotlight) to that same browser tab. Pure enough to
+ *  unit test the tool -> frame mapping via a fake notify collecting sent
+ *  frames (tests/pi-web.test.ts). */
+export function createAppAwareTools(
+  getContext: () => AppUiContext | null,
+  notify: (msg: ServerMessage) => void,
+): ToolDefinition[] {
+  const getCurrentAppContext = defineTool({
+    name: "get_current_app_context",
+    label: "Get Current App Context",
+    description:
+      "Returns the current web-app UI context: route, view, wizard step (if on one), and a uiSnapshot of visible interactive elements (ref, label, selector, spotlightId). Call this before spotlight_ui to pick the correct ref, label, or target — do not guess selectors blind.",
+    parameters: Type.Object({}),
+    execute: async () => {
+      const ctx = getContext();
+      if (!ctx) {
+        return appAwareTextResult(
+          "No app context received yet — the browser hasn't reported its current view. Ask the user what page they're on, or proceed without UI tools.",
+        );
+      }
+      return appAwareTextResult(JSON.stringify(ctx, null, 2), { context: ctx });
+    },
+  });
+
+  const navigateApp = defineTool({
+    name: "navigate_app",
+    label: "Navigate App",
+    description:
+      "Navigate the user's browser to a different page in the app. Use when they ask to be taken somewhere (e.g. \"take me to Quantize\", \"open the fine-tune wizard\"). Pass route or page as one of: chat, quantize, finetune, dataset, status (or \"#/quantize\"-style). Reversible and never needs approval. Does not highlight a specific control — use spotlight_ui separately for that.",
+    parameters: Type.Object({
+      route: Type.Optional(Type.String({ description: "chat | quantize | finetune | dataset | status (or #/quantize)" })),
+      page: Type.Optional(Type.String({ description: "Same as route — alternate param name" })),
+    }),
+    execute: async (_id, params) => {
+      const resolved = resolveAppRoute(params.route ?? params.page ?? "");
+      if (!resolved) {
+        return {
+          ...appAwareTextResult(`Unknown route. Valid routes: ${APP_ROUTE_IDS.join(", ")}.`),
+          isError: true,
+        };
+      }
+      notify({ type: "ui_navigate", route: resolved });
+      return appAwareTextResult(
+        `Navigating the user to ${resolved}. They can see the page now — use spotlight_ui if you need to point at a specific control.`,
+        { route: resolved },
+      );
+    },
+  });
+
+  const spotlightUi = defineTool({
+    name: "spotlight_ui",
+    label: "Spotlight UI",
+    description:
+      "Highlight a visible UI control with a brief, auto-dismissing spotlight (never blocks the user — they can keep working through it). Call get_current_app_context first and prefer ref from its uiSnapshot.elements; or pass label (visible text, e.g. \"Source model\"); or selector; or target (a curated catalog id, e.g. hub-browse, quantize-source). Optional route navigates there first. Optional message is a short hint shown in the popover.",
+    parameters: Type.Object({
+      ref: Type.Optional(Type.String({ description: "Element ref from uiSnapshot.elements[].ref (preferred)" })),
+      label: Type.Optional(Type.String({ description: "Visible label/text to match, e.g. Source model, New chat" })),
+      selector: Type.Optional(Type.String({ description: "CSS selector, when ref/label are unknown" })),
+      target: Type.Optional(Type.String({ description: "Curated catalog id, e.g. hub-browse, quantize-source, sampling-pill" })),
+      route: Type.Optional(Type.String({ description: "Navigate to this route first (chat, quantize, finetune, dataset, status)" })),
+      message: Type.Optional(Type.String({ description: "Short hint shown in the spotlight popover" })),
+    }),
+    execute: async (_id, params) => {
+      const hasLocator = !!params.ref?.trim() || !!params.label?.trim() || !!params.selector?.trim() || !!params.target?.trim();
+      if (!hasLocator) {
+        return { ...appAwareTextResult("Provide at least one of: ref (from uiSnapshot), label, selector, or target."), isError: true };
+      }
+      let route: AppRouteId | undefined;
+      if (params.route) {
+        route = resolveAppRoute(params.route) ?? undefined;
+        if (!route) {
+          return { ...appAwareTextResult(`Unknown route "${params.route}". Valid routes: ${APP_ROUTE_IDS.join(", ")}.`), isError: true };
+        }
+      }
+      notify({
+        type: "ui_spotlight",
+        ref: params.ref, label: params.label, selector: params.selector, target: params.target,
+        route, message: params.message,
+      });
+      const desc = params.ref ?? params.label ?? params.selector ?? params.target ?? "element";
+      return appAwareTextResult(
+        `Highlighting ${desc}${params.message ? `: ${params.message}` : ""}. The spotlight fades on its own in a few seconds.`,
+        { ...params, route },
+      );
+    },
+  });
+
+  return [getCurrentAppContext, navigateApp, spotlightUi];
+}
+
 /**
  * One browser connection's pi agent. Owns the AgentSession, the event
  * subscription, and the pending tool-approval handshakes.
@@ -734,10 +1259,15 @@ class PiWebSession {
   /** Active LoRA adapter id for this connection (null = none/base model).
    *  Read by the before_provider_request hook; set via the set_adapter msg. */
   private selectedAdapter: string | null = null;
-  /** Per-request sampling overrides for this connection (set via set_sampling).
-   *  Read by the before_provider_request hook; unset fields fall back to the
-   *  server's mode-aware recommended defaults. */
-  private sampling: SamplingOverrides = {};
+  /** Session-level + one-shot-next-turn sampling overrides for this
+   *  connection (set via set_sampling; scope "session"/omitted mutates
+   *  .session, scope "next_turn" arms .nextTurn). Read and consumed by
+   *  the before_provider_request hook via consumeForRequest — see the
+   *  "Per-message sampling scope" block comment above composeSampling for
+   *  the full lifecycle. Wrapped in SamplingScopeState (not two loose
+   *  fields) so the exact same applySetSampling/consumeForRequest pure
+   *  functions run here and in tests/pi-web.test.ts. */
+  private samplingScope: SamplingScopeState = initialSamplingScopeState();
   /** User's custom system-prompt text for this connection (set via
    *  set_system_prompt), null = none. Read by the before_agent_start hook
    *  and layered onto the built-in surface prompt on the NEXT turn — see
@@ -755,6 +1285,20 @@ class PiWebSession {
    *  reachable this session, informational only — the allowlist itself is
    *  the real enforcement). */
   private codingToolsActive = false;
+
+  /** Last `context` ClientMessage the browser pushed (route/view/step/
+   *  snapshot, plan §6.6) — null before the first one arrives (a non-
+   *  browser WS client, or the race before chat.ts's first push). Read by
+   *  get_current_app_context's tool and by installAppContextHook's
+   *  ambient-line injection. Set wholesale (not merged) on every "context"
+   *  ClientMessage — the browser always sends the full current picture. */
+  private currentAppContext: AppUiContext | null = null;
+
+  /** Dedup/retry-budget/turn-cap bookkeeping (see LOOP_HYGIENE above).
+   *  Reset at the start of every new agent turn (turn_start with
+   *  turnIndex 0) so a dedup hit or failure streak from a PREVIOUS user
+   *  message never bleeds into the next one. */
+  private loopHygiene: LoopHygieneState = initialLoopHygieneState();
 
   /** Per-connection invariants, built once in start() and reused across
    *  session switches (new chat / resume / fork). */
@@ -867,9 +1411,14 @@ class PiWebSession {
           additionalSkillPaths: surface.skillPaths,
           systemPrompt: webPrompt,
           extensionFactories: [
+            // Loop hygiene runs FIRST: a deduped/turn-capped call is
+            // blocked before the approval gate ever sees it (see
+            // installLoopHygieneHooks's doc comment).
+            (pi) => this.installLoopHygieneHooks(pi),
             (pi) => this.installApprovalGate(pi),
             (pi) => this.installAdapterHook(pi),
             (pi) => this.installSystemPromptHook(pi),
+            (pi) => this.installAppContextHook(pi),
           ],
         },
       });
@@ -892,7 +1441,11 @@ class PiWebSession {
           // point offering (and prompting the model to attempt) a tool that
           // can only ever fail.
           tools: webChatToolAllowlist(surface.memoryEnabled, this.codingToolsActive && !this.opts.readOnly),
-          customTools: surface.customTools,
+          // App-aware assistant tools (plan §6.6) are PER-CONNECTION (close
+          // over this.currentAppContext + this.send), unlike surface.customTools
+          // which is a stateless singleton shared across every session — see
+          // createAppAwareTools' doc comment.
+          customTools: [...surface.customTools, ...createAppAwareTools(() => this.currentAppContext, (m) => this.send(m))],
         })),
         services,
         diagnostics: services.diagnostics,
@@ -1072,6 +1625,17 @@ class PiWebSession {
     else void this.sendSessions();
   }
 
+  /** Clear an armed one-shot next_turn sampling override after a prompt()
+   *  call throws before ever reaching before_provider_request (the hook
+   *  that normally consumes it via consumeForRequest — see the
+   *  "Per-message sampling scope" comment above composeSampling). Reuses
+   *  that same pure helper so the clearing logic has exactly one
+   *  implementation; discards its `effective` composition since there's no
+   *  outgoing request to apply it to. A no-op when nothing was armed. */
+  private clearArmedOneShotOnFailedPrompt(): void {
+    this.samplingScope = consumeForRequest(this.samplingScope).nextState;
+  }
+
   /** Move the session leaf to `entryId`'s parent via navigateTree, then
    *  re-prompt with {text, images}. This is the shared mechanism behind
    *  regenerate and edit_resend: navigateTree does NOT delete the old
@@ -1096,7 +1660,18 @@ class PiWebSession {
       return false;
     }
     await session.navigateTree(entryId);
-    await session.prompt(text, images.length ? { images } : {});
+    try {
+      await session.prompt(text, images.length ? { images } : {});
+    } catch (err) {
+      // Same pre-flight-failure guard as the "prompt" case above: prompt()
+      // can throw before before_provider_request ever fires (no model
+      // selected, auth failure), which is the only place a one-shot
+      // next_turn sampling override normally gets consumed. Without this,
+      // an override armed right before a failed regenerate/edit-resend
+      // would silently ride along on a later, unrelated successful turn.
+      this.clearArmedOneShotOnFailedPrompt();
+      throw err;
+    }
     return true;
   }
 
@@ -1159,8 +1734,9 @@ class PiWebSession {
   }
 
   /** Register the before_provider_request hook that injects the selected LoRA
-   *  adapter into every provider request (Pi-native adapter control, mirrors the
-   *  CLI extension). Default none = no injection (base model). */
+   *  adapter and the effective sampling overrides into every provider
+   *  request (Pi-native adapter control, mirrors the CLI extension).
+   *  Default none = no injection (base model). */
   private installAdapterHook(pi: ExtensionAPI): void {
     pi.on("before_provider_request", (event) => {
       let payload = event.payload as Record<string, unknown>;
@@ -1168,7 +1744,15 @@ class PiWebSession {
       // Each returns undefined when it has nothing to change, so we keep the
       // prior payload in that case.
       payload = injectAdapter(payload, this.selectedAdapter) ?? payload;
-      payload = injectSampling(payload, this.sampling) ?? payload;
+      // Compose next_turn OVER session, then CONSUME the one-shot override
+      // immediately — this is the very first outgoing provider request
+      // since it was armed (before_provider_request fires once per model
+      // call), so clearing it here guarantees it rides on exactly one
+      // request and never leaks into a second tool-loop turn of the same
+      // prompt, let alone the next user message.
+      const { effective, nextState } = consumeForRequest(this.samplingScope);
+      this.samplingScope = nextState;
+      payload = injectSampling(payload, effective) ?? payload;
       return payload;
     });
   }
@@ -1189,6 +1773,25 @@ class PiWebSession {
     });
   }
 
+  /** Register the before_agent_start hook that auto-prepends the compact
+   *  one-line ambient context (plan §6.6 "never answer blind") to every
+   *  turn's system prompt — the SAME layering mechanism
+   *  installSystemPromptHook uses for the user's custom prompt (pi's
+   *  BeforeAgentStartEventResult can only replace systemPrompt, chained
+   *  across multiple extensions — there's no channel to rewrite the raw
+   *  user prompt text itself). Fires fresh on every session.prompt() call,
+   *  so it always reflects the LATEST context push, never a stale one from
+   *  session-creation time. Returns undefined (no-op) when nothing has
+   *  been pushed yet — a non-browser WS client, or the race before chat.ts's
+   *  first `context` frame lands, must never inject a made-up location. */
+  private installAppContextHook(pi: ExtensionAPI): void {
+    pi.on("before_agent_start", (event) => {
+      const line = ambientContextLine(this.currentAppContext);
+      if (!line) return undefined;
+      return { systemPrompt: `${event.systemPrompt}\n\n${line}` };
+    });
+  }
+
   /**
    * Register the tool_call approval gate on the inline extension.
    *
@@ -1201,6 +1804,51 @@ class PiWebSession {
    * outright denial. This keeps the fatigue budget spent only on tools
    * that actually mutate the machine.
    */
+  /**
+   * Register loop-hygiene bookkeeping: turnIndex tracking (turn_start),
+   * the before-execution dedup/turn-cap block (tool_call), and the
+   * after-execution failure-streak nudge (tool_result). Registered FIRST
+   * among the tool_call handlers (see extensionFactories order in
+   * createRuntimeFactory) so a deduped or turn-capped call never even
+   * reaches the approval gate — no point prompting the user to approve
+   * a call we're about to skip. See the LOOP_HYGIENE block comment above
+   * for what the SDK already does vs. what this closes.
+   */
+  private installLoopHygieneHooks(pi: ExtensionAPI): void {
+    pi.on("turn_start", (event) => {
+      this.loopHygiene.turnIndex = event.turnIndex;
+      // A fresh user prompt always restarts at turnIndex 0 (AgentSession
+      // resets _turnIndex on agent_start, before the first turn_start) —
+      // treat that as "new tool loop" and clear dedup/failure state so a
+      // previous message's history never suppresses/nudges this one.
+      if (event.turnIndex === 0) this.loopHygiene = initialLoopHygieneState();
+    });
+
+    pi.on("tool_call", (event: ToolCallEvent) => {
+      const block = decideBeforeToolCall(this.loopHygiene, event.toolName, event.input);
+      if (block && process.env.MLX_BUN_PI_DEBUG) {
+        console.error(`[pi-web] loop-hygiene blocked ${event.toolName}: ${block.reason.split("\n")[0]}`);
+      }
+      return block ? { block: true, reason: block.reason } : undefined;
+    });
+
+    pi.on("tool_result", (event) => {
+      const nudge = recordToolCallOutcome(this.loopHygiene, event.toolName, event.input, {
+        isError: event.isError,
+        resultText: toolResultText(event.content),
+      });
+      if (!nudge) return undefined;
+      // Append the course-correction nudge to the existing error content
+      // rather than replacing it, so the model still sees the real
+      // failure reason plus the "stop repeating this" instruction.
+      const existingText = toolResultText(event.content);
+      return {
+        content: [{ type: "text", text: existingText + nudge }],
+        isError: event.isError,
+      };
+    });
+  }
+
   private installApprovalGate(pi: ExtensionAPI): void {
     pi.on("tool_call", async (event: ToolCallEvent) => {
       const tool = event.toolName;
@@ -1350,6 +1998,14 @@ class PiWebSession {
         this.codingToolsRequested = !!msg.enabled;
         this.sendCodingToolsState();
         return;
+      case "context":
+        // App-aware assistant (plan §6.6): stored wholesale, no session
+        // required — chat.ts pushes this on route/step change, which can
+        // race the very first `ready` frame on initial connect. Read by
+        // get_current_app_context (live) and installAppContextHook (the
+        // ambient one-liner auto-prepended to the NEXT turn).
+        this.currentAppContext = msg.context;
+        return;
     }
 
     const session = this.session;
@@ -1373,8 +2029,21 @@ class PiWebSession {
           console.error(`[pi-web] prompt text=${JSON.stringify(msg.text.slice(0, 500))} images=${msg.images?.length ?? 0} streaming=${session.isStreaming} adapter=${this.selectedAdapter ?? "base"}`);
         }
         const images = toPiImages(msg.images);
-        if (session.isStreaming) await session.prompt(msg.text, { streamingBehavior: "followUp", images });
-        else await session.prompt(msg.text, { images });
+        // Guard a one-shot next_turn override against prompt() throwing
+        // BEFORE it ever issues a provider request (no model selected, auth
+        // failure, etc.) — the normal consumer, installAdapterHook's
+        // before_provider_request hook, never fires in that case, so
+        // without this the armed override would silently survive to land
+        // on some later, unrelated successful turn instead of this one.
+        // sendError (the WS layer's outer catch) still reports the error;
+        // this only prevents the override from outliving its intended turn.
+        try {
+          if (session.isStreaming) await session.prompt(msg.text, { streamingBehavior: "followUp", images });
+          else await session.prompt(msg.text, { images });
+        } catch (err) {
+          this.clearArmedOneShotOnFailedPrompt();
+          throw err;
+        }
         return;
       }
       case "abort":
@@ -1394,14 +2063,11 @@ class PiWebSession {
         // app.html has already mounted it server-side (POST /v1/adapters).
         this.selectedAdapter = msg.id;
         return;
-      case "set_sampling":
-        // Record the per-request sampling overrides; the
-        // before_provider_request hook injects any set fields into the
-        // outgoing payload. A null/undefined field clears the override so the
-        // server's mode-aware default applies again. The full mlx_lm.server
-        // sampler extension set (min_p/XTC/penalty families/seed), not just
-        // temperature/top_p/top_k (web-ui-pass-plan.md #8).
-        this.sampling = {
+      case "set_sampling": {
+        // The full mlx_lm.server sampler extension set (min_p/XTC/penalty
+        // families/seed), not just temperature/top_p/top_k
+        // (web-ui-pass-plan.md #8), for either scope.
+        const overrides: SamplingOverrides = {
           temperature: msg.temperature ?? null,
           top_p: msg.top_p ?? null,
           top_k: msg.top_k ?? null,
@@ -1414,7 +2080,17 @@ class PiWebSession {
           frequency_penalty: msg.frequency_penalty ?? null,
           seed: msg.seed ?? null,
         };
+        // scope "next_turn": one-shot, armed via applySetSampling and
+        // consumed by installAdapterHook's before_provider_request handler
+        // on the very next outgoing provider request — never touches the
+        // session-level value, so a later plain set_sampling (scope
+        // "session" or omitted) still sees whatever was there before this
+        // message. scope "session"/omitted: today's behavior, persists on
+        // the connection until changed; a null/undefined field clears the
+        // override so the server's mode-aware default applies again.
+        this.samplingScope = applySetSampling(this.samplingScope, overrides, msg.scope);
         return;
+      }
       case "set_system_prompt":
         // Store verbatim (including whitespace-only/empty -> effectively
         // cleared by injectSystemPrompt's trim+empty check); applied by the

@@ -7,7 +7,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readlinkSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { downloadModel, gitBlobSha1 } from "../src/download";
+import { downloadModel, gitBlobSha1, isSafeRepoFilename } from "../src/download";
 
 const REPO = "test/tiny-model";
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
@@ -151,4 +151,73 @@ describe("downloader", () => {
   });
 
   afterAll(() => rmSync(hub, { recursive: true, force: true }));
+});
+
+/* ────────────────────────────────────────────────────────────────────
+   isSafeRepoFilename (review finding, src/hub-rest.ts / src/download.ts):
+   a repo's `rfilename` is the remote HF API's own data, untrusted for a
+   repo the caller doesn't control — an attacker-owned repo can return
+   any string there, and it was flowing straight into
+   join(snapDir, rfilename) + symlinkSync with zero validation. Reachable
+   over HTTP via POST /api/hub/download (src/hub-rest.ts), which forwards
+   any caller-supplied repo string with no allowlist.
+   ──────────────────────────────────────────────────────────────────── */
+describe("isSafeRepoFilename", () => {
+  test("accepts ordinary flat and nested filenames", () => {
+    expect(isSafeRepoFilename("config.json")).toBe(true);
+    expect(isSafeRepoFilename("weights/model.safetensors")).toBe(true);
+    expect(isSafeRepoFilename("a/b/c/d.bin")).toBe(true);
+  });
+
+  test("rejects any path-traversal segment", () => {
+    expect(isSafeRepoFilename("../../../../../../etc/passwd")).toBe(false);
+    expect(isSafeRepoFilename("../../home/x/.ssh/authorized_keys")).toBe(false);
+    expect(isSafeRepoFilename("weights/../../escape.bin")).toBe(false);
+    expect(isSafeRepoFilename("..")).toBe(false);
+  });
+
+  test("rejects an absolute path", () => {
+    expect(isSafeRepoFilename("/etc/passwd")).toBe(false);
+  });
+
+  test("rejects empty string, empty segments, and embedded NUL", () => {
+    expect(isSafeRepoFilename("")).toBe(false);
+    expect(isSafeRepoFilename("a//b")).toBe(false);
+    expect(isSafeRepoFilename("a/\0/b")).toBe(false);
+  });
+});
+
+describe("downloadModel: refuses a repo listing with a path-traversal rfilename", () => {
+  const evilRepo = "test/evil-model";
+  const evilServer = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const url = new URL(req.url);
+      if (url.pathname === `/api/models/${evilRepo}/revision/main`) {
+        return Response.json({
+          sha: COMMIT,
+          siblings: [
+            { rfilename: "config.json", size: small.length, blobId: smallSha1 },
+            // Malicious sibling: escapes the snapshot dir once join()'d.
+            { rfilename: "../../../../../../tmp/mlx-bun-pwned", size: small.length, blobId: smallSha1 },
+          ],
+        });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+  afterAll(() => evilServer.stop(true));
+  const evilEndpoint = `http://localhost:${evilServer.port}`;
+
+  test("throws before writing anything, and never creates a symlink outside the hub dir", async () => {
+    const evilHub = mkdtempSync(join(tmpdir(), "mlx-bun-dl-evil-"));
+    try {
+      await expect(downloadModel(evilRepo, { endpoint: evilEndpoint, cacheDir: evilHub, token: null }))
+        .rejects.toThrow(/unsafe file path/);
+      expect(existsSync("/tmp/mlx-bun-pwned")).toBe(false);
+    } finally {
+      rmSync(evilHub, { recursive: true, force: true });
+      rmSync("/tmp/mlx-bun-pwned", { force: true }); // best-effort cleanup if the bug regresses
+    }
+  });
 });
