@@ -42,8 +42,12 @@
        deliberately stay dark-chrome in BOTH themes — the conventional
        "code block keeps its own dark surface" pattern (GitHub, VS Code
        light themes, etc.), so monospace content keeps consistent contrast
-       regardless of the surrounding chat theme. */
-    --code-bg:rgba(0,0,0,.45); --code-bg-soft:rgba(0,0,0,.32); --code-ink:#f5f5f7;
+       regardless of the surrounding chat theme.
+       These MUST be opaque: the original rgba(0,0,0,.45) composited to
+       mid-GRAY over the light theme's white page, washing out the
+       near-white code ink + #86868b hljs comments (2026-07-06 visual QA).
+       Opaque values render identically over any page background. */
+    --code-bg:#121214; --code-bg-soft:#1a1a1d; --code-ink:#f5f5f7;
     --nav-bg:rgba(0,0,0,.62);
     --scrollbar-thumb:rgba(255,255,255,.12); --scrollbar-thumb-hover:rgba(255,255,255,.22);
   }
@@ -234,6 +238,9 @@
   #theme-toggle button:hover{color:var(--ink);background:var(--card-hover)}
   #theme-toggle button.active{color:var(--ink);background:var(--card-hover)}
   #theme-toggle button:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
+  /* Auto's ◐ icon only appears when the text label hides at narrow widths
+     (see the 900px media block) — never both, never neither. */
+  #theme-toggle .tt-icon{display:none}
 
   /* ─── keyboard shortcut sheet (Cmd/Ctrl+/) ─── */
   #shortcut-overlay{position:fixed;inset:0;z-index:210;display:none;align-items:flex-start;justify-content:center;
@@ -707,15 +714,36 @@
     nav{gap:12px;padding:0 16px}
     /* Icon-only theme toggle a bit earlier than 560px — the nav is already
        tight here (hamburger + shortcuts + toggle + hf-gear + conn pill) and
-       "Auto" as a text label isn't worth the horizontal cost at this width. */
+       "Auto" as a text label isn't worth the horizontal cost at this width.
+       The ◐ tt-icon stands in so the Auto button never renders as an empty
+       sliver (2026-07-06 QA finding). */
     #theme-toggle button{padding:0 7px;font-size:15px}
     #theme-toggle .tt-label{display:none}
+    #theme-toggle .tt-icon{display:inline}
+  }
+  @media (max-width:760px){
+    /* Touch band (2026-07-06 QA): a keyboard-shortcut sheet button is dead
+       weight on touch viewports, and the nav needs its width back. */
+    #nav-shortcuts{display:none}
+    /* The conn pill collapses to its status dot (title keeps the text for
+       long-press/hover); "live · localhost" was clipping at the viewport
+       edge at 375px. */
+    #nav-conn #nav-conn-text{display:none}
+    #nav-conn{padding:6px 9px}
+    /* Keep a scrollable strip of tabs alive — flex shrank them to 0 width
+       at phone sizes, silently removing Quantize/Status navigation. The
+       scroll-fade masks signal the rest. */
+    nav .tabs{min-width:96px}
   }
   @media (max-width:560px){
     nav .brand{font-size:16px}
     nav .tab{padding:8px 10px;font-size:13px}
     nav .right{gap:6px}
     .icon-btn,.hf-gear{width:30px;height:30px}
+    /* Phones follow the system theme (Auto is the default); the explicit
+       3-way toggle returns ≥560px. Freeing its ~110px is what keeps the
+       tab strip + status dot inside a 375px viewport (2026-07-06 QA). */
+    #theme-toggle{display:none}
   }
 </style>
 <!-- Vendored syntax-highlighting theme (src/web/vendor/hljs-theme.css, hand-derived
@@ -755,7 +783,7 @@
          dark/light are explicit user overrides — all persisted to
          localStorage by setTheme() below. -->
     <div id="theme-toggle" role="group" aria-label="Theme">
-      <button type="button" data-theme-choice="auto" title="Match system theme" aria-label="Auto theme"><span class="tt-label">Auto</span></button>
+      <button type="button" data-theme-choice="auto" title="Match system theme" aria-label="Auto theme"><span class="tt-icon" aria-hidden="true">◐</span><span class="tt-label">Auto</span></button>
       <button type="button" data-theme-choice="dark" title="Dark theme" aria-label="Dark theme">🌙</button>
       <button type="button" data-theme-choice="light" title="Light theme" aria-label="Light theme">☀️</button>
     </div>
