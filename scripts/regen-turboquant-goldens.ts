@@ -104,6 +104,14 @@ const signsEntries = HEAD_DIMS.map((d) => {
 const lloydMaxEntries = VALUE_BITS.map((bits) => {
   const entry = golden.lloyd_max[String(bits)];
   if (!entry) throw new Error(`missing Lloyd-Max table for bits=${bits}`);
+  const want = 1 << bits;
+  if (entry.centroids.length !== want || entry.boundaries.length !== want - 1) {
+    throw new Error(
+      `mismatched Lloyd-Max table shape for bits=${bits}: ` +
+      `centroids=${entry.centroids.length} (want ${want}), ` +
+      `boundaries=${entry.boundaries.length} (want ${want - 1})`,
+    );
+  }
   return `  ${bits}: {\n    centroids: [\n${fmtNumArray(entry.centroids)}\n    ],\n    boundaries: [\n${fmtNumArray(entry.boundaries)}\n    ],\n  },`;
 }).join("\n");
 

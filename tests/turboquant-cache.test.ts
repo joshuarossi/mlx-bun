@@ -137,7 +137,7 @@ describe("TurboQuantKVCache — append/fetch roundtrip", () => {
     cache.dispose();
   });
 
-  test("trim-from-front then append: offset shrinks and new writes land correctly", () => {
+  test("trim-last-n (rewind) then append: offset shrinks and new writes land correctly", () => {
     const cache = new TurboQuantKVCache(8, 3);
     const [k1, v1] = randKV(6, 30);
     const [f1k, f1v] = cache.updateAndFetch(k1, v1);
@@ -334,18 +334,23 @@ describe("TurboQuantKVCache — dispose leak sanity", () => {
     expect(after - before).toBeLessThan(4_000_000);
   });
 
-  test("disposeTurboQuant releases all 5 arrays (state() is empty after)", () => {
+  test("dispose() releases the cache's storage (state() is empty after)", () => {
     const cache = new TurboQuantKVCache(8, 3);
     const [k, v] = randKV(2, 300);
     const [fk, fv] = cache.updateAndFetch(k, v);
     fk.dispose(); fv.dispose(); k.dispose(); v.dispose();
+    const live = cache.state(); // fresh views — this cache kind's caller disposes
+    expect(live).toHaveLength(5);
+    for (const a of live) a.dispose();
+    cache.dispose();
+    expect(cache.state()).toEqual([]);
+    // disposeTurboQuant itself tolerates an arbitrary 5-array tuple
     const t = { kIdx: MlxArray.fromFloat32(new Float32Array(4), [4]),
       kScales: MlxArray.fromFloat32(new Float32Array(1), [1]),
       kZeros: MlxArray.fromFloat32(new Float32Array(1), [1]),
       vPacked: MlxArray.fromFloat32(new Float32Array(4), [4]),
       vScales: MlxArray.fromFloat32(new Float32Array(1), [1]) };
     expect(() => disposeTurboQuant(t)).not.toThrow();
-    cache.dispose();
   });
 
   test("state() itself allocates fresh arrays every call (documents the contract evalCacheState must respect)", () => {

@@ -1229,6 +1229,14 @@ export function createServer(
   // whose presets pass it explicitly). The CLI always passes kvQuant now;
   // this fallback is the library-user default and matches the CLI's.
   const configScheme = ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};
+  // Mutually exclusive by contract (GenerateOptions.turboQuant doc): a
+  // programmatic caller setting both gets turboQuant — say so, like the
+  // other risky-combination warnings below.
+  if (serverOptions.turboQuant && serverOptions.kvQuant && serverOptions.kvQuant !== "off")
+    console.warn(
+      `[kv-quant] both turboQuant and --kv-quant ${serverOptions.kvQuant} are set; ` +
+        `turboQuant wins (they are mutually exclusive).`,
+    );
   const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart" | "turboQuant"> =
     serverOptions.turboQuant ? { turboQuant: serverOptions.turboQuant, quantizedKvStart: 0 }
     : serverOptions.kvQuant === "off" ? {}
