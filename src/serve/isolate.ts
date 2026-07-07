@@ -364,7 +364,8 @@ export function startProxyServer(opts: ProxyServerOptions): {
  *  (a stale entry here mis-classifies one token as a positional). */
 const SERVE_VALUE_FLAGS = new Set([
   "--port", "--host", "--model", "--query", "--draft-model",
-  "--num-draft-tokens", "--draft-kind", "--batch", "--decode-concurrency", "--kv-quant",
+  "--num-draft-tokens", "--draft-kind", "--ngram-max", "--ngram-min",
+  "--batch", "--decode-concurrency", "--kv-quant",
   "--kv-group-size", "--quantized-kv-start", "--kv-budget",
   "--memory-budget", "--prompt-cache", "--ssd-cache", "--ssd-cache-max",
   "--ssd-demote-idle", "--adapter", "--max-tokens", "--unix",

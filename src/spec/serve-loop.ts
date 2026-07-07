@@ -97,6 +97,12 @@ export interface SpecServeExtras {
   drafted: number;
   accepted: number;
   targetCalls: number;
+  /** Per-draft-position counters (index = position within a round's block,
+   *  0..γ-1): how many rounds drafted/accepted at that position. Drives the
+   *  Phase-1c per-position acceptance report (scripts/dspark-drafter-ab.ts)
+   *  — near-zero cost, always populated. */
+  draftedByPos: number[];
+  acceptedByPos: number[];
 }
 
 export async function specServeRun(
@@ -113,9 +119,14 @@ export async function specServeRun(
   const processors = makeLogitsProcessors(options);
   const gamma = Math.max(1, numDraftTokens);
 
-  const caches: Cache[] = model.makeCache();
-  const source = provider.open({ sampler, target: { model, caches } });
-  const tapLayers = source.tapLayers;
+  // Allocated INSIDE the try below (2026-07-07 review): provider.open()
+  // throws on a mismatched (target, drafter) pairing — as pre-try consts a
+  // throw leaked options.grammar (a live WASM matcher) and the fresh caches,
+  // and turned a config error into a per-request 500. loadContext now
+  // probe-opens the pairing at startup, so a throw here is belt+suspenders.
+  let caches: Cache[] = [];
+  let source: import("./source").DraftSource | null = null;
+  let tapLayers: number[] | undefined;
   // Target final hidden [1,1,H] at the anchor position — the assistant source
   // borrows it for its first draft step of each round; two-model/dflash ignore
   // it. Retained across rounds, disposed in finally.
@@ -137,7 +148,9 @@ export async function specServeRun(
   let history: MlxArray | null =
     processors.length > 0 ? ops.fromInt32(promptIds, [promptIds.length]) : null;
 
-  const extras: SpecServeExtras = { drafted: 0, accepted: 0, targetCalls: 0 };
+  const extras: SpecServeExtras = {
+    drafted: 0, accepted: 0, targetCalls: 0, draftedByPos: [], acceptedByPos: [],
+  };
   const stats: GenerateStats = {
     promptTokens: promptIds.length,
     cachedTokens: 0,
@@ -159,35 +172,52 @@ export async function specServeRun(
    *  Appends the sampled token to the processor history. */
   const grammar = options.grammar;
   const samplePos = async (logits1V: MlxArray, step: number): Promise<number> => {
-    let cur = logits1V;
-    for (const p of processors) {
-      const next = p(history, cur);
+    // Owned intermediates drained in the finally on any throw — grammar
+    // fill reject, applyMask/toLogprobs/sampler error (2026-07-07 review:
+    // these were the one spot the header's hoist discipline missed; a
+    // grammar+penalties request whose matcher fill rejects orphaned one
+    // [1,V] row per occurrence). `cur` is owned only once it diverges from
+    // the caller's row.
+    let cur: MlxArray = logits1V;
+    let lp: MlxArray | null = null;
+    let tokArr: MlxArray | null = null;
+    try {
+      for (const p of processors) {
+        const next = p(history, cur);
+        if (cur !== logits1V) cur.dispose();
+        cur = next;
+      }
+      if (grammar && !grammar.isTerminated) {
+        await grammar.ready();
+        const masked = grammar.applyMask(cur);
+        if (cur !== logits1V) cur.dispose();
+        cur = masked;
+      }
+      lp = toLogprobs(cur);
       if (cur !== logits1V) cur.dispose();
-      cur = next;
-    }
-    if (grammar && !grammar.isTerminated) {
-      await grammar.ready();
-      const masked = grammar.applyMask(cur);
+      cur = logits1V; // consumed — nothing owned under this name now
+      tokArr = sampler(lp, step);
+      lp.dispose();
+      lp = null;
+      const tok = ops.itemUint32(tokArr);
+      tokArr.dispose();
+      tokArr = null;
+      // Advance the matcher on the emitted token (fires the next async fill).
+      // EOS is never content and never grammar-valid — don't feed it.
+      if (grammar && !eos.includes(tok)) grammar.accept(tok);
+      if (history) {
+        const t1 = ops.fromInt32([tok], [1]);
+        const prev = history;
+        history = ops.concatAxis([prev, t1], 0);
+        prev.dispose();
+        t1.dispose();
+      }
+      return tok;
+    } finally {
       if (cur !== logits1V) cur.dispose();
-      cur = masked;
+      lp?.dispose();
+      tokArr?.dispose();
     }
-    const lp = toLogprobs(cur);
-    if (cur !== logits1V) cur.dispose();
-    const tokArr = sampler(lp, step);
-    lp.dispose();
-    const tok = ops.itemUint32(tokArr);
-    tokArr.dispose();
-    // Advance the matcher on the emitted token (fires the next async fill).
-    // EOS is never content and never grammar-valid — don't feed it.
-    if (grammar && !eos.includes(tok)) grammar.accept(tok);
-    if (history) {
-      const t1 = ops.fromInt32([tok], [1]);
-      const prev = history;
-      history = ops.concatAxis([prev, t1], 0);
-      prev.dispose();
-      t1.dispose();
-    }
-    return tok;
   };
 
   /** The [1,V] logits row at position `pos` of a hidden window — batched
@@ -201,6 +231,10 @@ export async function specServeRun(
   };
 
   try {
+    caches = model.makeCache();
+    const src = provider.open({ sampler, target: { model, caches } });
+    source = src;
+    tapLayers = src.tapLayers;
     // ---- prefill (target, chunked; optionally tapped for DSpark), then seed
     // the source. Order: the source's prefill needs the tapped context that the
     // target prefill produces, so target-first (two-model's own draft prefill
@@ -283,10 +317,10 @@ export async function specServeRun(
         for (const p of ctxParts) p.dispose();
       }
       ctxParts.length = 0; // parts consumed (transferred as prefillCtx or disposed)
-      source.prefill(promptIds, prefillCtx ?? undefined); // takes ownership of prefillCtx
+      src.prefill(promptIds, prefillCtx ?? undefined); // takes ownership of prefillCtx
       prefillCtx = null; // ownership transferred
     } else {
-      source.prefill(promptIds);
+      src.prefill(promptIds);
     }
     stats.prefillMs = performance.now() - t0;
     stats.prefillTps = (promptIds.length / Math.max(stats.prefillMs, 1e-6)) * 1000;
@@ -374,7 +408,7 @@ export async function specServeRun(
       // length d is authoritative — DSpark's confidence scheduler may prune the
       // block short (source.ts contract; never zero). The assistant source
       // borrows the target's anchor hidden; two-model/dflash ignore it.
-      const drafts = source.draft(feed, n, stats.generatedTokens, anchorHidden ?? undefined);
+      const drafts = src.draft(feed, n, stats.generatedTokens, anchorHidden ?? undefined);
       const d = drafts.length;
       if (d < 0 || d > n) throw new Error(`DraftSource returned ${d} drafts (contract: 0..${n})`);
       // d === 0 (a confidence scheduler skipping the round, DeepSpec ℓ=0
@@ -383,6 +417,8 @@ export async function specServeRun(
       // to a 0-accept round (tapped sources still grow context by the anchor
       // row — lockstep with the target cache).
       extras.drafted += d;
+      for (let i = 0; i < d; i++)
+        extras.draftedByPos[i] = (extras.draftedByPos[i] ?? 0) + 1;
 
       // (b) ONE target forward over [pending, ...drafts] (optionally tapped for
       // DSpark's H_ctx). vHidden is retained past the accept walk: its slice at
@@ -435,6 +471,8 @@ export async function specServeRun(
       vLogits!.dispose();
       vLogits = null;
       extras.accepted += kAccept;
+      for (let i = 0; i < kAccept; i++)
+        extras.acceptedByPos[i] = (extras.acceptedByPos[i] ?? 0) + 1;
       clearCache();
 
       // (d) emit the round's tokens through onToken, one at a time
@@ -453,7 +491,7 @@ export async function specServeRun(
       // outlives its parent's dispose).
       if (!stop) {
         if (kAccept < d) for (const c of caches) c.trim(d - kAccept);
-        source.commit(d, kAccept, vCtxML ?? undefined); // takes ownership of vCtxML
+        src.commit(d, kAccept, vCtxML ?? undefined); // takes ownership of vCtxML
         vCtxML = null;
         const H = vHidden!.shape[2]!;
         anchorHidden?.dispose();
@@ -490,7 +528,7 @@ export async function specServeRun(
     vHidden?.dispose();
     vCtxML?.dispose();
     for (const c of caches) c.dispose();
-    source.dispose();
+    source?.dispose();
     history?.dispose();
     options.grammar?.dispose(); // Phase C will consume it; never leak either way
     clearCache();

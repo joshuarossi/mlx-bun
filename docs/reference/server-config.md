@@ -33,8 +33,9 @@ the design rationale is in
 | `--kv-quant` | `config`\|`off`\|`4`\|`8`\|`turbo[:k<bits>v<bits>]` | `off` (bf16) | KV-cache quantization. **Default flipped to bf16 2026-07-05** (naked = L1): quantized KV measured 5–20% slower decode than bf16 at ≤16k on every model — on mlx-lm too — so it pays only in **memory headroom** (e.g. ~1.3 GB on the 12B @16k) and is an explicit opt-in (`--kv-quant …` or `--l2`, whose preset passes `config`). `off` = bf16 (L1). `4`/`8` = **uniform** bits (group 64, start 0) — the scheme mlx-lm exposes as `--kv-bits`/`--kv-group-size`/`--quantized-kv-start`. In the L1 kernel set (`--l1 --kv-quant 8` = fused-sdpa off) our unfused quantized SDPA is **op-for-op identical** to mlx-lm's `quantized_scaled_dot_product_attention`, so uniform-quant is **bit-exact L1** (the fused-sdpa-ON path is optiq-aligned). `config` = **per-layer mixed-precision** from `kv_config.json` — optiq-only, no mlx-lm analog → **L2**. `turbo[:k<bits>v<bits>]` = **TurboQuant** ([docs/design/turboquant-kv.md](../design/turboquant-kv.md)): rotation-based KV quantization (asymmetric-affine int8/int4/int2/int5 keys, FWHT + Lloyd-Max values) — default `k8v3` (2.56× compression at head_dim 128); `kBits` ∈ {2,4,5,8}, `vBits` ∈ {2,3,4,5,8}. A separate axis from the scheme above (mutually exclusive with `config`/`4`/`8`); v1 is dequantize-on-fetch (stock `ops.sdpa`, no fused kernel) and **full-attention layers only** — sliding-window layers stay bf16 (one-time warning, never a throw). Under `--batch N`, a per-layer `config` scheme **batches** — full-attention layers since Phase 3.1 (MiniCPM5), rotating/sliding layers since milestone 2 (gemma's whole kv_config), so every shipped `kv_config.json` now batches. The scheduler applies the mixed scheme per row, gated bit-exact per row vs the serial composition (`tests/batched-kv-quant-parity.test.ts` — compositions no other stack ships). Uniform `4`/`8` still routes those requests serial (quantizedKvStart threshold semantics). **`turbo` is solo-only, unconditionally** — `TurboQuantKVCache` is a novel `Cache` implementation (no merge/filter/temporalView), so it's excluded from the batch scheduler by construction; `GenerationGateway.willBatch` also refuses it explicitly (belt + braces — both layers exist on purpose). |
 | `--adapter` | dir | none | Mount a LoRA adapter at startup (same machinery as `POST /v1/adapters`; the adapter id is the directory's basename) and make it the **default** for requests that send no `adapter` field. A request's explicit `adapter` — including `"none"` — always wins, and hot-swap via `/v1/adapters` is unchanged. `--adapter-path` is accepted as the mlx_lm.server-named alias. A bad adapter fails startup loudly rather than silently serving the base model. This is the flag `mlx-bun train`'s completion message points at. |
 | `--draft-model` | path/query | none | **Speculative decoding**: a drafter proposes tokens the main model verifies in one forward — exact results, faster decode when drafts land. Resolves like the main model. The artifact's **kind is auto-detected**: a full same-tokenizer model (mlx_lm.server parity — L1: token-for-token vs mlx-lm's spec path; tokenizer-family mismatch fails startup, upstream silently accepts ~0%), a Gemma `-assistant` KV-borrowing drafter (L2 vs optiq spec_generate; ~1.09× γ=1 on 12B, no training), a locally-trained **DSpark** checkpoint (`dspark.json`), or one of **DeepSeek's released DSpark drafters** (DeepSpec `Gemma4DSparkModel` config stamp, e.g. `deepseek-ai/dspark_gemma4_12b_block7` for the 12B — oracle: DeepSpec's reference at temperature 0, token-for-token). All four share ONE serve loop. A confidence-calibrated DSpark checkpoint additionally self-schedules its draft length per round (threshold pruning — fewer wasted verify positions; uncalibrated checkpoints draft fixed-length). Mounting a draft routes **every** request to the serial lane (upstream `is_batchable = draft is None`). Pays on slow targets (12B+); fast small models lose to the draft overhead. Composes with structured output (the constrained verify walk). Prompt-cache reuse is bypassed on the spec path (v1). Telemetry: `usage.speculation` (`drafted`/`accepted`/`targetCalls`). |
-| `--draft-kind` | `two-model`\|`assistant`\|`dspark`\|`deepspec` | auto | Override the draft-artifact kind detection (`dspark.json` → dspark; `Gemma4DSparkModel` architecture stamp → deepspec; `*_assistant` config → assistant; else two-model). |
-| `--num-draft-tokens` | n | `3` | Drafts per verify round (mlx_lm.server's default; `mlx_lm.generate`'s is 2). A DSpark draft pins this to its trained block width (`cfg.gamma`). |
+| `--draft-kind` | `two-model`\|`assistant`\|`dspark`\|`deepspec`\|`ngram` | auto | Override the draft-artifact kind detection (`dspark.json` → dspark; `Gemma4DSparkModel` architecture stamp → deepspec; `*_assistant` config → assistant; else two-model). **`ngram` is never auto-detected — it has no artifact**: MODEL-FREE prompt lookup (drafts copied from the request's own prompt+generation when its trailing k-gram occurred earlier in the stream; port of prompt-lookup decoding / vLLM's `ngram` proposer). Mount it ALONE — `--draft-kind ngram` with a `--draft-model` is refused, as is any other kind without one. Zero weights/memory, lossless by the same verify (gated: serve-loop output token-identical to non-spec greedy on e4b, tests/spec-ngram.test.ts); a no-match round degrades to one plain target step. Best on agentic/RAG/code-edit traffic that re-emits context spans. |
+| `--num-draft-tokens` | n | `3` (`ngram`: `10`) | Drafts per verify round (mlx_lm.server's default; `mlx_lm.generate`'s is 2). A DSpark draft pins this to its trained block width (`cfg.gamma`); ngram drafting is free so its default is the reference implementation's 10. |
+| `--ngram-max` / `--ngram-min` | k | `3` / `1` | `--draft-kind ngram` only: longest/shortest trailing k-gram searched for a match (the reference values — longest first, first occurrence wins). |
 | `--thinking` | `true`\|`false` | model's own (false for CPM) | Server-wide default for the chat template's `enable_thinking` (MiniCPM5/CPM and Qwen3.5 hybrid reasoning). A request's `chat_template_kwargs.enable_thinking` overrides it. |
 | `--temperature` | n ∈ [0,5] | `generation_config.json` | Server-wide sampling default. Per-request `temperature` still wins; the browser chat (sends none) inherits this. `--temp` is accepted as an alias (mlx_lm.server compat); explicit `--temperature` wins if both are given. **Migration note:** mlx_lm.server's `--temp` *default* is `0.0` (unset-temperature requests are greedy there); mlx-bun falls back to the model's `generation_config.json`, then `0.7` — pass `--temp 0` for mlx-lm's behavior. |
 | `--top-p` | n ∈ [0,1] | `generation_config.json` | Server-wide top-p default (per-request `top_p` wins). |
@@ -106,7 +107,9 @@ for paired A/B harnesses).
 | `MLX_BUN_COMPILED_SWIGLU` | `--compiled-activations` | on (`!=="0"`) | `mx.compile`'d SwiGLU (`silu(gate)·up` → one kernel) on MiniCPM5 decode (M=1), porting mlx-lm's `activations.py`. Bit-exact (passes the exact logit-parity gate), both lanes. +5.5% CPM5 decode. (qwen3/qwen3.5/universal compile swiglu unconditionally, independent of this flag.) |
 | `MLX_BUN_FORCE_WIRE` | `--force-wire` | off (`==="1"`) | Wire weights for the generation. |
 | `MLX_BUN_PREFILL_TAIL_SPLIT` | — | on (`!=="0"`) | Oracle prefill convention (mlx-lm `generate_step` and its server's batched engine): drain the prompt only to len−1, then compute step-0 logits from a separate **L=1 forward of the last prompt token**. Both lanes. **The SPEC lane (`--draft-model`) follows its own oracle's shape under the same flag** (mlx-lm `speculative_generate_step`, re-anchored 2026-07-07): both target AND draft drain to len−1 and there is **no separate step-0 at all** — the un-drained last prompt token heads the first verify window. Gated live: token-for-token vs the oracle venv incl. a knife-edge cell (tests/spec-serve.test.ts "L1 knife-edge"). (The standalone optiq-oracled assistant loop `specGenerate` deliberately keeps FULL-prompt prefill — optiq's own convention.) `=0` restores the pre-2026-07-07 full-final-chunk convention everywhere (A/B lever + kill switch) — that convention is ulp-different in bf16 at step 0 AND in the last prompt token's stored KV, which flips near-tie greedy streams vs mlx-lm (the 2026-07-07 12B completion-probe divergence). |
-| `MLX_BUN_SSD_WRITEBEHIND` | — | on (`!=="0"`) | `--ssd-cache`'s debounced write-behind snapshot (restart survival). `=0` disables it entirely — the paired-A/B lever + kill switch for the 2026-07-07 idle-gating fix (eviction/demotion spills still write). The flush is **idle-gated**: every per-tensor step (blocking GPU sync + `writeSync`) waits for the engine to go idle and pauses when a request arrives mid-flush, so durability work never taxes an active decode (pre-fix: a ~16k entry's flush overlapping cached ctx repeats cost e4b ~9% decode@ctx vs mlx-lm). |
+| `MLX_BUN_GRAMMAR_JUMP` | — | **off** (`==="1"`) | Jump-forward decoding for structured output (SGLang's technique via xgrammar's `findJumpForwardString`): when the grammar forces a unique continuation (JSON punctuation/keys; longest under `any_whitespace:false` fixed formatting), the SERIAL lane emits its retokenized ids with ONE multi-token forward instead of one masked forward per token. Lossless in STRING space and always grammar-valid, but the token stream (and, conditioning on it, content after a forced span) can legally differ from an unjumped run — no oracle, hence opt-in. Excluded automatically for `logprobs` requests; SentencePiece-family tokenizers whose raw encode can't reproduce a mid-stream span simply never jump (guard degrades to normal decode). The batch lane's per-row grammar (`#stepGrammar`) does not jump yet. Tests: tests/grammar-jump.test.ts (contract + Llama-3.2-1B e2e). |
+| `MLX_BUN_SSD_WRITEBEHIND` | — | on (`!=="0"`) | `--ssd-cache`'s debounced write-behind snapshot (restart survival). `=0` disables it entirely — the paired-A/B lever + kill switch for the 2026-07-07 idle-gating fix (eviction/demotion spills still write). The flush is **idle-gated**: every per-tensor step (blocking GPU sync + `writeSync`) waits for the engine to go idle and pauses when a request arrives mid-flush, so durability work never taxes an active decode (pre-fix: a ~16k entry's flush overlapping cached ctx repeats cost e4b ~9% decode@ctx vs mlx-lm). The snapshot timer also never holds batch admission — while rows are active it re-arms instead of grabbing the exclusive. |
+| `MLX_BUN_SSD_SPILL_QUEUE_GB` | — | 2 | Byte cap on the write-behind queue's PENDING spill clones (they pin the evicted entries' GPU memory until the idle-gated flush runs). Over cap, the oldest queued spill drops — its clones free immediately and the entry becomes a future cache miss (never a wrong result). `/stats.ssd_cache` reports `pending_spills` / `pending_spill_bytes` / `dropped_spills`. Note: there is deliberately **no shutdown flush** — exiting under traffic loses queued write-behind entries (best-effort tier; cost = one re-prefill). |
 
 (`MLX_BUN_PERF_KERNEL`, `MLX_BUN_FUSED_GELU`, `MLX_BUN_FUSED_DECODE`,
 `MLX_BUN_FUSED_SWIGLU*`, and `MLX_BUN_CPM5_FAITHFUL` were deleted
@@ -257,11 +260,11 @@ there.
 These are deliberate v1 scope, not bugs — but they change behavior, so
 know them:
 
-1. **Prompt cache bypassed.** Batched requests solo-prefill every row;
-   `cached_tokens=0`. Wiring `PromptCache` into the scheduler is a
-   follow-up. (The **spec path bypasses it too** — a `--draft-model`
+1. **Prompt cache on the SPEC path is bypassed.** A `--draft-model`
    server re-prefills every request; the target+draft cache-entry
-   composition is designed in mlx-lm-tool-parity-plan §7.6, not built.)
+   composition is designed in mlx-lm-tool-parity-plan §7.6, not built.
+   (Batched rows DO reuse the prompt cache since Phase 3.2 — see the
+   lane table above and `/stats` `submitted_rows`.)
 2. **Aggregate admission is opt-in.** `--memory-budget` checks each
    request against single-sequence max-safe-context; the AGGREGATE cap
    across N concurrent rows is `--kv-budget <GB>` (landed 2026-07-03):
@@ -389,30 +392,12 @@ cache (v1 bypass; the §7.6 composition is the fix).
 
 ## Observability — `GET /stats`
 
-The live config and batch state:
-
-```jsonc
-{
-  "server":  { "owner": "serve" | "pi-session" | "embedded", "model": "...", "started_at": 0 },
-  "prompt_cache":  { "entries": 0, "bytes": 0, "max_bytes": 2000000000, "hits": 0, "misses": 0 },
-  "response_store": { "entries": 0, "bytes": 0, "max_bytes": 33554432, "ttl_ms": 3600000 },
-  "kv_quant": {
-    "mode": "mixed (kv_config.json)" | "uniform-kv8" | "bf16",
-    "layers": { "kv4": 8, "bf16": 40 },
-    "attention": { "global": 10, "sliding_window": 38 }
-  },
-  "admission": {
-    "max_safe_context": 0,          // requests above this 400
-    "memory_budget_bytes": null,    // explicit budget, or null = machine default
-    "usable_bytes": 0, "weights_bytes": 0
-  },
-  "batch": {
-    "configured": 1,                // the --batch N value
-    "batched": false,               // batching enabled (N>1) for this server
-    "active_rows": 0                // rows currently decoding in the batch
-  }
-}
-```
+The live config and batch state. The canonical field-by-field snippet
+lives in [server-api.md](server-api.md#get-stats) (kept in lockstep with
+the code — this section only explains how to read it); highlights:
+`prompt_cache` (8 GB default cap), `kv_quant.mode` (incl. `turbo kXvY`),
+the conditional `ssd_cache` block, and `batch`
+(`active_rows`/`pending_rows`/`submitted_rows`/`kv_bytes`/`kv_budget_bytes`).
 
 `batch.batched` reflects only whether `--batch N` (N>1) is configured;
 with an explicit `--kv-quant` it can read `true` while `active_rows`

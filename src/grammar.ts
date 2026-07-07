@@ -197,11 +197,17 @@ export class GrammarController {
   private readonly compiler: XGrammarCompiler;
   private readonly ownsCompiler: boolean;
   private readonly vocabSize: number;
+  /** Raw-encode hook for jump-forward (encode WITHOUT special tokens); null
+   *  disables jumpForward(). */
+  private readonly encodeRaw: ((text: string) => number[]) | null;
   /** Bitmask width in int32s = ceil(V / 32). */
   private readonly maskWidth: number;
   private readyMask: Int32Array;
   private pending: Promise<void> | null;
   private terminated = false;
+  private disposed = false;
+  /** Tokens emitted via jumpForward() this generation — telemetry/test hook. */
+  jumpedTokens = 0;
 
   constructor(
     matcher: XGrammarMatcher,
@@ -209,12 +215,14 @@ export class GrammarController {
     compiler: XGrammarCompiler,
     ownsCompiler: boolean,
     vocabSize: number,
+    encodeRaw?: (text: string) => number[],
   ) {
     this.matcher = matcher;
     this.compiled = compiled;
     this.compiler = compiler;
     this.ownsCompiler = ownsCompiler;
     this.vocabSize = vocabSize;
+    this.encodeRaw = encodeRaw ?? null;
     this.maskWidth = Math.ceil(vocabSize / 32);
     this.readyMask = new Int32Array(this.maskWidth).fill(-1);
     this.pending = null;
@@ -269,7 +277,20 @@ export class GrammarController {
       this.terminated = true;
       return;
     }
-    this.pending = wasmQueue(() => this.matcher.getNextTokenBitmask()).then((m) => {
+    this.pending = this.fireFill();
+  }
+
+  /** Queue the async bitmask fill. The closure re-checks `disposed` at RUN
+   *  time: a controller disposed while its fill is still queued (an exception
+   *  between accept/jumpForward and ready()) must not call into the deleted
+   *  WASM matcher — that BindingError poisons the module-wide wasmChain for
+   *  every later grammar request (found by tests/grammar-jump.test.ts). */
+  private fireFill(): Promise<void> {
+    return wasmQueue(() =>
+      this.disposed
+        ? Promise.resolve(this.readyMask)
+        : this.matcher.getNextTokenBitmask(),
+    ).then((m) => {
       this.readyMask = m;
     });
   }
@@ -287,7 +308,59 @@ export class GrammarController {
     return this.terminated;
   }
 
+  /** Jump-forward decoding (SGLang's technique via xgrammar's
+   *  findJumpForwardString; opt-in — MLX_BUN_GRAMMAR_JUMP=1): when the grammar
+   *  admits exactly one continuation string (JSON keys/punctuation, enum
+   *  bodies — longest with `any_whitespace:false` compact schemas), return its
+   *  token ids so the decode loop can carry them into the KV with ONE
+   *  multi-token forward instead of one masked forward per token.
+   *
+   *  Contract: MUTATES the matcher for every id it returns (and only those) —
+   *  the caller MUST emit exactly the returned ids, then await ready() before
+   *  the next applyMask. Call only after ready() has resolved (no WASM fill in
+   *  flight — the matcher calls here are sync). Returns null (matcher
+   *  untouched) when: no hook, terminated, the jump retokenizes to <2 ids
+   *  (a 1-token jump saves no forward), maxIds < 2, or the first id is
+   *  rejected. If a LATER id is rejected the accepted prefix is returned —
+   *  those ids already advanced the matcher, so they must be emitted; the
+   *  loop resumes masked decoding after them (no rollback needed by
+   *  construction).
+   *
+   *  Fidelity note (why opt-in, no oracle): encode(jumpStr) standalone can
+   *  tokenize the forced span differently than the model would have sampled
+   *  it. The emitted STRING is identical (token strings concatenate to the
+   *  jump string) and grammar validity is preserved (every id is
+   *  matcher-accepted), but the token STREAM — and, conditioning on it,
+   *  content generated AFTER the forced span — may differ from an unjumped
+   *  run. SentencePiece-family tokenizers whose raw encode prepends a space
+   *  simply never jump (the first id gets rejected) — the guard degrades to
+   *  normal decoding, never to invalid output. */
+  jumpForward(maxIds: number): number[] | null {
+    if (this.terminated || !this.encodeRaw || maxIds < 2) return null;
+    const str = this.matcher.findJumpForwardString();
+    if (!str || str.length < 2) return null;
+    const ids = this.encodeRaw(str);
+    if (ids.length < 2) return null;
+    const take = Math.min(ids.length, maxIds);
+    if (take < 2) return null;
+    const accepted: number[] = [];
+    for (let i = 0; i < take; i++) {
+      const id = ids[i]!;
+      if (!this.matcher.acceptToken(id)) break; // keep the accepted prefix
+      accepted.push(id);
+      if (this.matcher.isTerminated()) {
+        this.terminated = true;
+        break;
+      }
+    }
+    if (accepted.length === 0) return null; // matcher untouched
+    this.jumpedTokens += accepted.length;
+    if (!this.terminated) this.pending = this.fireFill();
+    return accepted;
+  }
+
   dispose(): void {
+    this.disposed = true; // queued fills become no-ops (see fireFill)
     this.matcher.dispose();
     this.compiled.dispose();
     if (this.ownsCompiler) this.compiler.dispose();
@@ -396,7 +469,11 @@ export async function compileGrammarRequest(
     xgrammar.GrammarMatcher.createGrammarMatcher(compiled!, undefined, true),
   );
   const vocabSize = effectiveVocabSize(tokenizer, configVocabSize) || info.getVocabSize();
-  const controller = new GrammarController(matcher, compiled, compiler, false, vocabSize);
+  const controller = new GrammarController(
+    matcher, compiled, compiler, false, vocabSize,
+    // Raw encode (no BOS/specials) for jump-forward retokenization.
+    (s) => tokenizer.encode(s, false),
+  );
   await controller.prime();
   return { controller, degradeHint };
 }

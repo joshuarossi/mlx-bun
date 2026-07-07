@@ -760,9 +760,12 @@ export class BatchScheduler {
         else if (!prevQ) { /* disposed in the rows loop */ }
         continue;
       }
+      // NOTE: the quantized-rotating branch below never uses this layer's
+      // bf16 temporalView — calling it before the branch leaked the pair
+      // (six arrays per second-row join on quantized rotating layers,
+      // introduced in 859572d; 2026-07-07 review fix). The view is taken
+      // AFTER the branch, on the paths that actually consume it.
       const soloC = p.solo[layer] as KVCache | RotatingKVCache;
-      const [sk, sv] = soloC.temporalView();
-      const newRow: Row1 = { keys: sk, values: sv };
       if (this.#kinds[layer] === "rot" && p.solo[layer] instanceof RotatingQuantizedKVCache) {
         // Milestone 2 — QUANTIZED rotating layer: the solo row converted at
         // the serial boundaries (#quantizeSolo), so its ring bytes are the
@@ -806,6 +809,8 @@ export class BatchScheduler {
         for (const r of rows) dispose3(r);
         continue;
       }
+      const [sk, sv] = soloC.temporalView();
+      const newRow: Row1 = { keys: sk, values: sv };
       if (this.#kinds[layer] === "rot") {
         const rows: Row1[] = [];
         const offsets: number[] = [];

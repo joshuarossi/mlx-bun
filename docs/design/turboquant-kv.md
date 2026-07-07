@@ -221,5 +221,15 @@ plain affine convert output (the §7.1 gate, eval DB rows).
   unpack+gather; deferred InvFWHT — see above — already landed).
 - Rotating/sliding-window TurboQuant cache; batched TurboQuant; QJL residual
   stage (Q_prod); entropy coding (paper explicitly declined it too).
+- TurboQuant on the speculative lane: `--kv-quant turbo` + `--draft-model`
+  keeps the KV scheme — those requests decode serially WITHOUT speculation
+  (the spec loop is bf16-KV-only; excluded in the server's spec-eligibility
+  gate with a startup warning, 2026-07-07 review fix — turbo was previously
+  routed into the spec lane and silently dropped).
+- Head dims beyond {64,128,256,512}: REFUSED AT SERVER START (2026-07-07
+  review fix — validation was lazy on the first cache append, so an
+  unsupported model 500'd every request mid-prefill; createServer now
+  checks the config's full-attention head dim against
+  TURBOQUANT_HEAD_DIMS, and the cache-level check stays as the backstop).
 - Speed claims of any kind — v1 dequant-on-fetch is expected slower per-step
   at long context; this ships as a memory/context feature like uniform KV.

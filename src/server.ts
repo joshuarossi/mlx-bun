@@ -28,7 +28,8 @@ import { spliceImageTokens } from "./vision/diffusion-vision";
 import { createModel, type RuntimeModel } from "./model/factory";
 import { isMiniCPM5Config, isSupportedModelRecord } from "./model/support";
 import { generate, type GenerateOptions, type TokenLogprobs } from "./generate";
-import { cloneKvCaches } from "./kv-store";
+import { cloneKvCaches, SpillQueue } from "./kv-store";
+import { TURBOQUANT_HEAD_DIMS } from "./mlx/turboquant-tables";
 import {
   compileGrammarRequest, grammarEnabled, type GrammarRequest,
 } from "./grammar";
@@ -44,7 +45,7 @@ import {
   CHANNEL_END, CHANNEL_START, parseGeneratedToolCalls, parseToolCalls,
   TOOL_CALL_END, TOOL_CALL_START,
 } from "./tool-call";
-import { PromptCache } from "./prompt-cache";
+import { PromptCache, cacheBytes } from "./prompt-cache";
 import { SsdCacheStore } from "./ssd-cache";
 import { configFingerprint } from "./model/fingerprint";
 import {
@@ -215,11 +216,13 @@ export interface GenSamplingDefaults {
   repetitionPenalty?: number;
 }
 
-export type DraftKind = "dspark" | "deepspec" | "assistant" | "two-model";
+export type DraftKind = "dspark" | "deepspec" | "assistant" | "two-model" | "ngram";
 
-/** Detect the draft artifact's kind so the right provider is loaded. All four
+/** Detect the draft artifact's kind so the right provider is loaded. All
  *  providers share ONE serve loop (src/spec/serve-loop.ts). Exported for the
- *  bench harness (scripts/bench-feature-matrix.ts) — one detection, no drift. */
+ *  bench harness (scripts/bench-feature-matrix.ts) — one detection, no drift.
+ *  "ngram" is never detected — it has no artifact (model-free prompt lookup,
+ *  src/spec/ngram-source.ts) and mounts via an explicit `--draft-kind ngram`. */
 export async function detectDraftKind(dir: string): Promise<DraftKind> {
   if (await Bun.file(`${dir}/dspark.json`).exists()) return "dspark"; // our trained module
   try {
@@ -267,8 +270,12 @@ export async function loadContext(
     numDraftTokens?: number;
     /** Draft-provider kind override (`--draft-kind`); auto-detected from the
      *  draft artifact when absent (dspark.json → dspark; *_assistant config →
-     *  assistant; otherwise two-model). */
+     *  assistant; otherwise two-model). "ngram" mounts WITHOUT a draft dir. */
     draftKind?: DraftKind;
+    /** Prompt-lookup window bounds (`--ngram-max` / `--ngram-min`), ngram
+     *  kind only. Defaults 3 / 1 (Saxena's reference values). */
+    ngramMax?: number;
+    ngramMin?: number;
   } = {},
 ): Promise<ServerContext> {
   const config = await loadModelConfig(modelDir);
@@ -307,7 +314,21 @@ export async function loadContext(
   // *_assistant config → the optiq KV-borrowing Gemma drafter, otherwise a
   // full second model (mlx-lm parity). `--draft-kind` overrides the detect.
   let draft: ServerContext["draft"] = null;
-  if (opts.draftModelDir) {
+  if (opts.draftKind === "ngram") {
+    // Model-free prompt lookup: no artifact, no dir, no probe/budget concerns
+    // (weightsBytes 0, open() never throws). Default γ=10 per the reference
+    // implementation — drafting is free, so wide blocks cost only verify-window
+    // width when wrong.
+    if (opts.draftModelDir)
+      throw new Error(
+        "--draft-kind ngram is model-free — drop --draft-model (it would be ignored)",
+      );
+    const { NgramProvider } = await import("./spec/ngram-source");
+    draft = {
+      provider: new NgramProvider({ max: opts.ngramMax, min: opts.ngramMin }),
+      numDraftTokens: Math.max(1, opts.numDraftTokens ?? 10),
+    };
+  } else if (opts.draftModelDir) {
     const dir = opts.draftModelDir;
     const kind = opts.draftKind ?? (await detectDraftKind(dir));
     let provider: import("./spec/source").DraftProvider;
@@ -348,6 +369,31 @@ export async function loadContext(
         );
       }
     }
+    // Fail-fast pairing validation (2026-07-07 review): the KV-borrowing
+    // sources validate the (target, drafter) pairing in open() — non-Gemma4
+    // target, DeepSpec target-layer-count mismatch — which used to surface
+    // as a 500 from inside specServeRun on EVERY text request. Probe-open
+    // once with throwaway caches here so a mismatch refuses at load; open()
+    // allocates no per-request tensors before prefill/draft, so this is
+    // free. The probe sampler is never called during open().
+    {
+      const probeCaches = model.makeCache();
+      try {
+        provider
+          .open({
+            sampler: () => { throw new Error("probe sampler never samples"); },
+            target: { model, caches: probeCaches },
+          })
+          .dispose();
+      } catch (err) {
+        provider.dispose();
+        throw new Error(
+          `--draft-model is incompatible with this target: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      } finally {
+        for (const c of probeCaches) c.dispose();
+      }
+    }
     if (opts.memoryBudgetBytes) {
       const targetBytes = [...weights.shards.files.values()].reduce((a, f) => a + f.mmap.size, 0);
       // Draft weights shrink the target's envelope. Draft KV is not modeled
@@ -363,6 +409,10 @@ export async function loadContext(
       }
     }
     draft = { provider, numDraftTokens };
+  } else if (opts.draftKind) {
+    // Every other kind names an artifact to load — refuse instead of silently
+    // serving without speculation.
+    throw new Error(`--draft-kind ${opts.draftKind} requires --draft-model`);
   }
 
   return {
@@ -1201,6 +1251,7 @@ class LogprobsCollector {
 export class StreamDecoder {
   #ids: number[] = [];
   #emitted = "";
+  #warnedRevision = false;
   readonly #trimLeadingSpace: boolean;
   readonly #bareSpaceId: number | undefined;
 
@@ -1227,8 +1278,25 @@ export class StreamDecoder {
     // hold back a trailing replacement char (partial multi-byte sequence)
     const stable = full.endsWith("�") ? full.slice(0, -1) : full;
     if (!stable.startsWith(this.#emitted)) {
-      // decoder revised earlier text (rare); re-emit from scratch
-      const out = stable;
+      // The decoder revised already-streamed text (cleanup rules — never
+      // fires for the shipped tokenizers, which all have
+      // clean_up_tokenization_spaces=false; see the LATENT HAZARD note in
+      // the class doc). An SSE client cannot un-receive bytes, so the old
+      // "re-emit from scratch" answer DUPLICATED the whole stream
+      // (2026-07-07 review). Truncate-safe resync instead: emit only the
+      // length-extension and keep the emitted watermark monotone — byte
+      // drift is confined to the revised span, and the once-per-stream
+      // warning makes the tokenizer that needs real _space_matches
+      // emulation loud instead of silently wrong.
+      if (!this.#warnedRevision) {
+        this.#warnedRevision = true;
+        console.warn(
+          "[detok] decoder revised already-streamed text (clean_up_tokenization_spaces?) — " +
+            "resyncing without re-emit; add mlx-lm's cleanup-rule emulation for this tokenizer",
+        );
+      }
+      if (stable.length <= this.#emitted.length) return "";
+      const out = stable.slice(this.#emitted.length);
       this.#emitted = stable;
       return out;
     }
@@ -1327,6 +1395,33 @@ export function createServer(
         `— those requests won't batch. Omit --kv-quant to batch in bf16. ` +
         `(docs/design/turboquant-kv.md)`,
     );
+  // Quantized KV (any axis) excludes the spec lane: drafted requests fall to
+  // the normal serial path WITH the KV scheme applied rather than losing it
+  // silently (mirrors the affine kvBits/kvConfig exclusion; the spec loop is
+  // bf16-KV-only in v1).
+  if (ctx.draft && (kvScheme.turboQuant || kvScheme.kvBits || kvScheme.kvConfig?.length))
+    console.warn(
+      `[spec] --draft-model with quantized KV (--kv-quant ${serverOptions.turboQuant ? "turbo" : String(serverOptions.kvQuant)}): ` +
+        `the speculative lane is bf16-KV-only in v1 — requests keep the KV scheme and ` +
+        `decode serially WITHOUT speculation. Omit --kv-quant to speculate. ` +
+        `(docs/design/dspark-serving-program.md Phase 4)`,
+    );
+  // TurboQuant head-dim fail-fast (2026-07-07 review): the cache class only
+  // supports {64,128,256,512} (sign-vector + Lloyd-Max table coverage) and
+  // used to validate LAZILY on the first append — an unsupported model
+  // (e.g. a 72/80/96 head dim) accepted --kv-quant turbo at startup and
+  // then 500'd EVERY request from inside prefill. The config knows the
+  // full-attention head dim (the only kind that converts; sliding layers
+  // stay bf16) — refuse at createServer instead.
+  if (kvScheme.turboQuant) {
+    const dim = ctx.model.config.text.globalHeadDim;
+    if (!(TURBOQUANT_HEAD_DIMS as readonly number[]).includes(dim))
+      throw new Error(
+        `--kv-quant turbo: this model's full-attention head_dim is ${dim}; ` +
+          `TurboQuant supports {${TURBOQUANT_HEAD_DIMS.join(",")}} ` +
+          `(docs/design/turboquant-kv.md) — use --kv-quant config|4|8 or omit it`,
+      );
+  }
 
   // SSD cold tier (docs/design/ssd-kv-cold-tier.md): prefix KV survives RAM
   // eviction and restarts. Compatibility key = configFingerprint (graph
@@ -1395,25 +1490,18 @@ export function createServer(
     // (2026-07-06, same contract as the write-behind snapshot below): the
     // cache hands us OWNED zero-copy clones + copied tokens (made under
     // the generation lock — microseconds; entries are immutable so the
-    // clones stay consistent), and the flush chains onto the serial
-    // ssdWriteChain -> storeAsync (idle-gated per tensor, see below) ->
-    // dispose the clones on BOTH settle paths (that dispose is what
-    // actually frees the demoted GPU memory — bounded by the chain, and
-    // DEFERRED while requests keep the engine busy: the gate holds the
-    // clones alive until the flush gets its idle turn). ssdWriteChain and
-    // ssdFlushGate are declared with the snapshot scheduler below; safe to
-    // close over here because spills only fire at put()/demoteIdle time,
-    // long after init.
+    // clones stay consistent), and the flush goes through the BOUNDED
+    // SpillQueue -> storeAsync (idle-gated per tensor, see below) ->
+    // clone disposal on every settle/drop path (that dispose is what
+    // actually frees the demoted GPU memory; the queue's byte cap keeps
+    // starved-gate retention bounded — 2026-07-07 review fix). spillQueue
+    // is declared with the snapshot scheduler below; safe to close over
+    // here because spills only fire at put()/demoteIdle time, long after
+    // init.
     ssdStore
       ? {
-          spillOwned: (entry) => {
-            ssdWriteChain = ssdWriteChain
-              .then(() => ssdStore!.storeAsync(entry.tokens, entry.caches, entry.ns, ssdFlushGate))
-              .then(
-                () => disposeSpillClones(entry.caches),
-                () => disposeSpillClones(entry.caches),
-              );
-          },
+          spillOwned: (entry) =>
+            spillQueue!.enqueue({ tokens: entry.tokens, caches: entry.caches, ns: entry.ns }),
         }
       : null,
     coldTier,
@@ -1447,16 +1535,21 @@ export function createServer(
     // decode through the verify loop; the rest fall through to the normal
     // serial path (never wrong results, just no speedup — logged once per
     // combination class would be noise, so silent). Eligibility v1:
-    // text-only, base weights, no logprobs capture, bf16 KV. Grammar
-    // COMPOSES (Phase C constrained verify walk — see the serve-loop.ts
-    // header). Prompt-cache reuse is bypassed on the spec path v1.
+    // text-only, base weights, no logprobs capture, bf16 KV — ALL quantized
+    // KV axes excluded (affine kvBits/kvConfig AND turboQuant; the spec loop
+    // builds fresh bf16 caches and never calls maybeQuantizeKv, so routing a
+    // turbo request here would silently drop the operator's KV scheme —
+    // 2026-07-07 review). Grammar COMPOSES (Phase C constrained verify walk
+    // — see the serve-loop.ts header). Prompt-cache reuse is bypassed on
+    // the spec path v1.
     if (
       ctx.draft &&
       !vision &&
       !options.adapters?.length &&
       !options.logprobs &&
       !options.kvBits &&
-      !options.kvConfig
+      !options.kvConfig &&
+      !options.turboQuant
     ) {
       const { specServeRun } = await import("./spec/serve-loop");
       return specServeRun(
@@ -1587,33 +1680,54 @@ export function createServer(
   const writeBehindOn = process.env.MLX_BUN_SSD_WRITEBEHIND !== "0";
   const ssdFlushGate = (): Promise<void> => gateway.onIdle();
   const ssdPending = new Map<string, ReturnType<typeof setTimeout>>();
-  let ssdWriteChain: Promise<void> = Promise.resolve();
-  // Settle-dispose for spill clones: freeing them is what actually releases
-  // the demoted GPU memory, on success AND failure paths alike (storeAsync
-  // is best-effort). Shared by the eviction spill (spillOwned above) and
-  // the write-behind snapshot chain below.
-  const disposeSpillClones = (caches: { dispose(): void }[]): void => {
-    for (const c of caches) c.dispose();
-  };
+  // Bounded write-behind queue (2026-07-07 review fix — see SpillQueue in
+  // kv-store.ts): pending clones pin their entries' GPU buffers while the
+  // idle gate starves under sustained traffic, so QUEUED bytes are capped —
+  // over cap the oldest queued spill drops (clone disposed immediately, a
+  // future cache miss, never a wrong result) instead of accumulating past
+  // the prompt-cache cap. Default 2 GB (a quarter of the 8 GB RAM-cache
+  // default); MLX_BUN_SSD_SPILL_QUEUE_GB overrides. There is deliberately
+  // NO shutdown flush: exiting under traffic loses queued write-behind
+  // entries (restart survival degrades to whatever flushed) — accepted for
+  // a best-effort cache tier; drops/pending are visible in /stats.
+  const spillQueueCapBytes =
+    (Number(process.env.MLX_BUN_SSD_SPILL_QUEUE_GB) || 2) * 1024 ** 3;
+  const spillQueue = ssdStore
+    ? new SpillQueue(
+        spillQueueCapBytes,
+        cacheBytes,
+        (item) => ssdStore!.storeAsync(item.tokens, item.caches, item.ns, ssdFlushGate),
+        (caches) => { for (const c of caches) c.dispose(); },
+      )
+    : null;
   const scheduleSsdSnapshot = (tokens: number[], ns: string): void => {
     if (!ssdStore || !writeBehindOn || tokens.length === 0) return;
     const key = `${ns}|${tokens.length}`;
     const prev = ssdPending.get(key);
     if (prev) clearTimeout(prev);
-    ssdPending.set(key, setTimeout(() => {
+    const fire = (): void => {
       ssdPending.delete(key);
+      // Same guard as demoteIdle below (2026-07-07 review fix): the
+      // runExclusive registers a serial waiter, which HOLDS BATCH ADMISSION
+      // until every running row drains — a background durability timer must
+      // never do that. Busy → re-arm and try again in 5 s (entries are
+      // immutable; a late snapshot is just as valid).
+      if (gateway.activeRows > 0 || gateway.pendingRows > 0) {
+        const t = setTimeout(fire, 5000);
+        t.unref?.();
+        ssdPending.set(key, t);
+        return;
+      }
       void gateway.runExclusive(async () => {
         const e = promptCache.findExact(tokens, ns);
         if (!e) return null;
         return { tokens: e.tokens, caches: cloneKvCaches(e.caches) };
       }).then((snap) => {
         if (!snap) return;
-        ssdWriteChain = ssdWriteChain
-          .then(() => ssdStore!.storeAsync(snap.tokens, snap.caches, ns, ssdFlushGate))
-          .then(() => disposeSpillClones(snap.caches),
-                () => disposeSpillClones(snap.caches));
+        spillQueue!.enqueue({ tokens: snap.tokens, caches: snap.caches, ns });
       }).catch(() => { /* cold tier is best-effort */ });
-    }, 1000));
+    };
+    ssdPending.set(key, setTimeout(fire, 1000));
   };
   // Every put() — serial lane AND batch scheduler — schedules the snapshot
   // (Layer 0: batch-lane entries survive restarts too, not just evictions).
@@ -2136,6 +2250,12 @@ export function createServer(
               spills: ssdStore.stats.spills,
               restore_ms_last: Math.round(ssdStore.stats.restoreMsLast),
               demotions: promptCache.demotions,
+              // Bounded write-behind queue (2026-07-07): clones waiting for
+              // the idle-gated flush, and spills the byte cap dropped
+              // (each = one future cache miss, never a wrong result).
+              pending_spills: spillQueue?.pendingCount ?? 0,
+              pending_spill_bytes: spillQueue?.pendingBytes ?? 0,
+              dropped_spills: spillQueue?.droppedCount ?? 0,
             },
           } : {}),
           response_store: {

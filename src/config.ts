@@ -131,6 +131,11 @@ export interface ModelConfig {
 function parseRope(raw: Record<string, any>): Record<string, RopeParams> {
   const out: Record<string, RopeParams> = {};
   for (const [kind, p] of Object.entries(raw ?? {})) {
+    // transformers ≥5.10 configs mix flat scalars into the per-attention-type
+    // map (`rope_parameters: { full_attention: {...}, rope_theta: null,
+    // rope_type: "default", ... }` — the DeepSpec drafter ships this shape);
+    // only object entries are attention-type params.
+    if (!p || typeof p !== "object") continue;
     out[kind] = {
       ropeTheta: p.rope_theta,
       ropeType: p.rope_type ?? "default",
@@ -141,7 +146,7 @@ function parseRope(raw: Record<string, any>): Record<string, RopeParams> {
   return out;
 }
 
-function parseQuantization(raw: Record<string, any> | undefined): QuantizationConfig | null {
+export function parseQuantization(raw: Record<string, any> | undefined): QuantizationConfig | null {
   if (!raw) return null;
   const def: QuantSpec = {
     bits: raw.bits,

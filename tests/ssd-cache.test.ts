@@ -286,3 +286,163 @@ describe("SsdCacheStore", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+// ---------------------------------------------------------------------------
+// SpillQueue — the bounded write-behind queue (2026-07-07 review fix: the
+// bare promise chain retained GPU-pinning clones without bound while the
+// idle gate starved under sustained traffic). Model-free: byte sizing and
+// disposal are injected, so fakes suffice.
+// ---------------------------------------------------------------------------
+
+const { SpillQueue } = await import("../src/kv-store");
+
+type FakeCache = { nbytes: number; disposed: number; dispose(): void };
+function fakeCaches(nbytes: number): FakeCache[] {
+  const c: FakeCache = { nbytes, disposed: 0, dispose() { this.disposed++; } };
+  return [c];
+}
+const bytesOf = (caches: unknown[]) =>
+  (caches as FakeCache[]).reduce((s, c) => s + c.nbytes, 0);
+const disposeAll = (caches: unknown[]) => {
+  for (const c of caches as FakeCache[]) c.dispose();
+};
+
+function makeQueue(cap: number, storeImpl: (item: { ns: string }) => Promise<unknown>) {
+  return new SpillQueue(
+    cap,
+    bytesOf as never,
+    storeImpl as never,
+    disposeAll as never,
+  );
+}
+
+describe("SpillQueue", () => {
+  test("flushes serially in enqueue order and disposes every clone exactly once", async () => {
+    const stored: string[] = [];
+    const q = makeQueue(1_000, async (item) => { stored.push(item.ns); });
+    const a = fakeCaches(10), b = fakeCaches(10), c = fakeCaches(10);
+    q.enqueue({ tokens: [1], caches: a as never, ns: "a" });
+    q.enqueue({ tokens: [2], caches: b as never, ns: "b" });
+    q.enqueue({ tokens: [3], caches: c as never, ns: "c" });
+    await q.drain();
+    expect(stored).toEqual(["a", "b", "c"]);
+    for (const set of [a, b, c]) expect(set[0]!.disposed).toBe(1);
+    expect(q.pendingCount).toBe(0);
+    expect(q.pendingBytes).toBe(0);
+    expect(q.droppedCount).toBe(0);
+  });
+
+  test("over cap drops the OLDEST queued (not in-flight, not newest) and disposes it immediately", async () => {
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((r) => { releaseFirst = r; });
+    const stored: string[] = [];
+    const q = makeQueue(100, async (item) => {
+      if (stored.length === 0) await gate; // block the first (in-flight) store
+      stored.push(item.ns);
+    });
+    const a = fakeCaches(60), b = fakeCaches(60), c = fakeCaches(60);
+    q.enqueue({ tokens: [1], caches: a as never, ns: "a" });
+    // let a's store() actually START (blocked on the gate) — a queued-but-
+    // not-started head is legitimately droppable; a mid-store one is not.
+    await new Promise((r) => setTimeout(r, 0));
+    q.enqueue({ tokens: [2], caches: b as never, ns: "b" }); // 120 > 100, but only in-flight+newest → soft cap
+    expect(q.droppedCount).toBe(0);
+    q.enqueue({ tokens: [3], caches: c as never, ns: "c" }); // 180 > 100 → drop b (oldest droppable)
+    expect(q.droppedCount).toBe(1);
+    expect(b[0]!.disposed).toBe(1); // disposed AT DROP TIME, before any flush
+    expect(a[0]!.disposed).toBe(0); // in-flight never dropped
+    releaseFirst();
+    await q.drain();
+    expect(stored).toEqual(["a", "c"]); // b never stored
+    expect(a[0]!.disposed).toBe(1);
+    expect(c[0]!.disposed).toBe(1);
+    expect(b[0]!.disposed).toBe(1); // exactly once — no double-dispose on its chain turn
+    expect(q.pendingCount).toBe(0);
+    expect(q.pendingBytes).toBe(0);
+  });
+
+  test("a single oversized item exceeds the cap rather than never spilling (soft cap)", async () => {
+    const stored: string[] = [];
+    const q = makeQueue(10, async (item) => { stored.push(item.ns); });
+    const big = fakeCaches(50);
+    q.enqueue({ tokens: [1], caches: big as never, ns: "big" });
+    await q.drain();
+    expect(stored).toEqual(["big"]);
+    expect(q.droppedCount).toBe(0);
+    expect(big[0]!.disposed).toBe(1);
+  });
+
+  test("a store failure disposes the clones and the queue keeps flushing", async () => {
+    const stored: string[] = [];
+    const q = makeQueue(1_000, async (item) => {
+      if (item.ns === "boom") throw new Error("disk full");
+      stored.push(item.ns);
+    });
+    const a = fakeCaches(10), b = fakeCaches(10);
+    q.enqueue({ tokens: [1], caches: a as never, ns: "boom" });
+    q.enqueue({ tokens: [2], caches: b as never, ns: "ok" });
+    await q.drain();
+    expect(stored).toEqual(["ok"]);
+    expect(a[0]!.disposed).toBe(1);
+    expect(b[0]!.disposed).toBe(1);
+    expect(q.pendingBytes).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadKvCache verify-failure leak regression (2026-07-07 review): a hash
+// mismatch on an entry's SECOND tensor used to orphan the first tensor
+// (already materialized + grown to step capacity) — the catch only saw
+// completed caches. The pending[] drain must free mid-entry orphans, so
+// repeated corrupt-file loads must not grow active memory.
+// ---------------------------------------------------------------------------
+
+describe("loadKvCache — verify-failure drains mid-entry tensors", () => {
+  test("repeated hash-mismatch loads do not grow active memory", async () => {
+    const { saveKvCache, loadKvCache, readKvHeader } = await import("../src/kv-store");
+    const { activeMemory } = await import("../src/mlx/ffi");
+    const { readSync } = await import("node:fs");
+    const dir = mkdtempSync(join(tmpdir(), "kv-verify-"));
+    try {
+      const S = 4096, D = 64; // ~1 MB per tensor — a leak is unmistakable
+      const mkBig = () => {
+        const c = new KVCache();
+        c.restoreState(
+          ops.zeros([1, 2, S, D], Dtype.bfloat16),
+          ops.zeros([1, 2, S, D], Dtype.bfloat16),
+          S,
+        );
+        return c;
+      };
+      const caches = [mkBig(), mkBig()];
+      const path = join(dir, "entry.kv");
+      saveKvCache(path, [1, 2, 3], caches, {});
+      for (const c of caches) c.dispose();
+
+      // Flip one byte inside the FIRST entry's SECOND tensor: tensor 0
+      // materializes (and grows) before the mismatch throws.
+      const header = readKvHeader(path);
+      const slot = header.caches[0]!.tensors[1]!;
+      const at = header.dataStart + slot.off + 8;
+      const fd = openSync(path, "r+");
+      const buf = new Uint8Array(1);
+      readSync(fd, buf, 0, 1, at);
+      buf[0] = buf[0]! ^ 0xff;
+      writeSync(fd, buf, 0, 1, at);
+      closeSync(fd);
+
+      const bigModel = { makeCache: () => [mkBig(), mkBig()] };
+      expect(() => loadKvCache(path, bigModel, { verify: true })).toThrow(/hash mismatch/);
+
+      const before = activeMemory();
+      for (let i = 0; i < 10; i++) {
+        expect(() => loadKvCache(path, bigModel, { verify: true })).toThrow(/hash mismatch/);
+      }
+      // Pre-fix this leaked the ~1.1 MB grown tensor per load (11+ MB over
+      // the loop); post-fix growth is pool slack only.
+      expect(activeMemory() - before).toBeLessThan(8_000_000);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -24,6 +24,11 @@ import type { Cache } from "../model/gemma4";
 import { toLogprobs } from "../sampler";
 import type { DraftProvider, DraftSource } from "./source";
 
+/** mlx-lm's prefill_step_size — the draft drain chunks at the same stride
+ *  as the target's (serve-loop.ts); chunking is numerically exact for
+ *  causal attention. */
+const PREFILL_CHUNK = 2048;
+
 export class TwoModelProvider implements DraftProvider {
   readonly id: string;
   readonly weightsBytes: number;
@@ -86,18 +91,25 @@ class TwoModelSource implements DraftSource {
     // loop's oracle shape), mirroring _draft_generate's first _step. Draft-side
     // full-prefill was the residual knife-edge flipper in the 2026-07-07 live
     // oracle gate (γ=2 haiku cell). MLX_BUN_PREFILL_TAIL_SPLIT=0 reverts.
-    // (mlx-lm chunks its drain at prefill_step_size=2048; we forward the
-    // ≤len-1 head in one chunk — identical for prompts under 2048, the serve
-    // regime this lane gates at.)
+    // (mlx-lm chunks its drain at prefill_step_size=2048; chunking is
+    // numerically exact for causal attention — same KV, same positions —
+    // so we chunk too. Pre-2026-07-07 this was a SINGLE forward of the
+    // whole head: nothing enforced the "<2048 serve regime" the old
+    // comment assumed, and a 32k prompt through the spec lane ran one
+    // 32k-position draft forward — a large activation/mask transient on a
+    // 24 GB box, and untested numerics vs the chunked oracle.)
     const tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
     const upTo = tailSplit && promptIds.length > 1 ? promptIds.length - 1 : promptIds.length;
-    const ids = ops.fromInt32(promptIds.slice(0, upTo), [1, upTo]);
-    const h = this.model.forwardHidden(ids, this.caches);
-    ids.dispose();
-    // The head's last-position logits are not needed: the serve loop's first
-    // `feed` is consumed at the top of draft().
-    h.dispose();
-    clearCache();
+    for (let at = 0; at < upTo; at += PREFILL_CHUNK) {
+      const end = Math.min(at + PREFILL_CHUNK, upTo);
+      const ids = ops.fromInt32(promptIds.slice(at, end), [1, end - at]);
+      const h = this.model.forwardHidden(ids, this.caches);
+      ids.dispose();
+      // The head's last-position logits are not needed: the serve loop's
+      // first `feed` is consumed at the top of draft().
+      h.dispose();
+      clearCache();
+    }
   }
 
   /** One forward over `feed`, sample the first draft from its last position,

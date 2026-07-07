@@ -49,6 +49,13 @@ export interface QuantizeOptions {
   groupSize: 32 | 64;
   /** Quantization scheme; v1 only exercises "affine". */
   mode?: string;
+  /** Extra per-module gate on top of the shape-eligibility check: return
+   *  false to keep a module full-precision even though its shape qualifies
+   *  (e.g. the DeepSpec drafter's confidence_head — threshold-sensitive and
+   *  tiny). Excluded modules are recorded as `false` in the quantization
+   *  block (mlx's "not quantized" convention). Shape-ineligible modules
+   *  never reach this. */
+  quantizePredicate?: (base: string, fullShape: number[]) => boolean;
 
   // --- mixed-precision (OptiQ sensitivity + knapsack) -------------------
   // Setting targetBpw switches quantizeModelDir to the mixed path: it loads the
@@ -225,7 +232,11 @@ export async function quantizeModelDir(
       // re-quantized weight it is the dequantized array's shape.
       const fullShape = alreadyQuant ? materialized!.shape : shape;
 
-      if (!isQuantizable(fullShape, groupSize)) {
+      const predicateExcluded =
+        isQuantizable(fullShape, groupSize) &&
+        opts.quantizePredicate !== undefined &&
+        !opts.quantizePredicate(base, fullShape);
+      if (!isQuantizable(fullShape, groupSize) || predicateExcluded) {
         // Not eligible: pass the full-precision weight through unchanged
         // (re-materialized to bf16 if it had been quantized).
         if (alreadyQuant) {
@@ -235,6 +246,10 @@ export async function quantizeModelDir(
         } else {
           out.push({ name: weightName, array: fullWeight });
         }
+        // Policy-excluded (shape-eligible) modules get an explicit `false`
+        // in the quantization block — the loader must not apply the block's
+        // default spec to them (mlx's "not quantized" convention).
+        if (predicateExcluded) perLayer.set(base, false);
         bumpProgress();
         continue;
       }

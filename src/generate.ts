@@ -128,9 +128,14 @@ export interface TokenLogprobs {
  *  FinalizationRegistry backstop on GC of the tiny JS wrapper). */
 export function evalCacheState(cache: Cache[]): void {
   const turboState = cache.flatMap((c) => (c instanceof TurboQuantKVCache ? c.state() : []));
-  const liveState = cache.flatMap((c) => (c instanceof TurboQuantKVCache ? [] : c.state()));
-  ops.evalAll([...turboState, ...liveState]);
-  for (const a of turboState) a.dispose();
+  try {
+    const liveState = cache.flatMap((c) => (c instanceof TurboQuantKVCache ? [] : c.state()));
+    ops.evalAll([...turboState, ...liveState]);
+  } finally {
+    // Disposed even when evalAll throws (Metal OOM / deferred graph error) —
+    // the whole reason this chokepoint exists is that these views are owned.
+    for (const a of turboState) a.dispose();
+  }
 }
 
 /** Port of mlx-lm maybe_quantize_kv_cache + BOTH halves of optiq serve's
@@ -211,10 +216,14 @@ function maybeTurboQuantizeKv(cache: Cache[], scheme: TurboQuantScheme, start: n
     const tq = TurboQuantKVCache.fromKVCache(c, scheme.kBits, scheme.vBits);
     cache[i] = tq;
     // state() allocates fresh trimmed slice views for this cache kind
-    // (see evalCacheState) — dispose after materializing, or they leak.
+    // (see evalCacheState) — dispose after materializing (throw included),
+    // or they leak.
     const state = tq.state();
-    ops.evalAll(state);
-    for (const a of state) a.dispose();
+    try {
+      ops.evalAll(state);
+    } finally {
+      for (const a of state) a.dispose();
+    }
     clearCache();
   }
 }
@@ -232,8 +241,14 @@ export interface GenerateStats {
    *  decoded token that was forwarded, including a trailing EOS the
    *  pipeline forwarded before reading it). For PromptCache.put(). */
   cacheTokens: number[];
-  /** Speculative-decoding telemetry (serve --draft-model path only). */
-  spec?: { drafted: number; accepted: number; targetCalls: number };
+  /** Speculative-decoding telemetry (serve --draft-model path only).
+   *  draftedByPos/acceptedByPos: per-draft-position round counts (index =
+   *  position within a round's block) — the Phase-1c per-position
+   *  acceptance signal. */
+  spec?: {
+    drafted: number; accepted: number; targetCalls: number;
+    draftedByPos?: number[]; acceptedByPos?: number[];
+  };
 }
 
 export interface GeneratedToken {
@@ -671,6 +686,17 @@ async function* generateInner(
      *  the yield, avoiding a second readback). -1 when grammar is off — the
      *  pipelined path keeps its deferred itemUint32 below. */
     let grammarTok = -1;
+    // Jump-forward decoding (opt-in, MLX_BUN_GRAMMAR_JUMP=1; serial lane
+    // only — the batch lane's #stepGrammar doesn't jump yet): when the
+    // grammar forces a unique continuation, emit its retokenized ids without
+    // per-token forwards — ONE multi-token forward carries them into the KV
+    // (see GrammarController.jumpForward for the contract + the fidelity
+    // note on why this is opt-in). Excluded when logprobs are requested
+    // (jumped tokens are never sampled, so they'd have no logprobs rows).
+    const grammarJump =
+      options.grammar !== undefined &&
+      flagOn("MLX_BUN_GRAMMAR_JUMP", false) &&
+      !options.logprobs;
     while (!stop) {
       const cur = pending!;
       const curExtras = pendingExtras;
@@ -691,11 +717,19 @@ async function* generateInner(
       // previous step's token, or -1 when max_tokens=1) → truncated JSON ended
       // on a corrupted token + cacheTokens recorded the wrong id. Now only
       // accept()/ready() (which prepare the NEXT step's mask) are gated.
+      /** Forced ids to emit after cur this iteration (jump-forward), else null. */
+      let jumpEmit: number[] | null = null;
       if (options.grammar) {
         grammarTok = ops.itemUint32(cur);
         if (generated + 1 < maxTokens) {
           options.grammar.accept(grammarTok);
           await options.grammar.ready();
+          if (grammarJump && !options.grammar.isTerminated) {
+            jumpEmit = options.grammar.jumpForward(maxTokens - (generated + 1));
+            // jumpForward advanced the matcher and fired the post-jump mask
+            // fill; it must be ready before this iteration's sampleStep.
+            if (jumpEmit) await options.grammar.ready();
+          }
         }
       }
       // build step n+1's graph from the *unread* pending token
@@ -704,7 +738,43 @@ async function* generateInner(
       // When the grammar has terminated (a complete valid JSON/schema
       // accepted), there are no valid tokens left — skip building the next
       // step so the sampler never sees an all--inf distribution.
-      if (generated + 1 < maxTokens && !options.grammar?.isTerminated) {
+      if (jumpEmit) {
+        // JUMP iteration: one [1, 1+m] forward carries cur AND the forced ids
+        // into the KV (they are all committed content — jumpForward's
+        // contract); the next sampled token, if the budget and grammar allow
+        // one, comes from its last position. Compiled decode resumes on the
+        // following iteration (supports() re-checks the grown caches).
+        maybeQuantizeKv(cache, options);
+        pushHistory(cur);
+        if (needsTokenHistory) {
+          const jt = ops.fromInt32(jumpEmit, [jumpEmit.length]);
+          const prev = history!;
+          history = ops.concatAxis([prev, jt], 0);
+          prev.dispose();
+          jt.dispose();
+        }
+        const chunk = [grammarTok, ...jumpEmit];
+        const ids = ops.fromInt32(chunk, [1, chunk.length]);
+        const h = model.forwardHidden(ids, cache);
+        ids.dispose();
+        // Every chunk token's KV is in the cache regardless of what follows.
+        forwarded.push(...chunk);
+        const willGen = generated + 1 + jumpEmit.length;
+        if (willGen < maxTokens && !options.grammar!.isTerminated) {
+          const [, Lj, Hj] = h.shape as [number, number, number];
+          const hLast = h.slice([0, Lj - 1, 0], [1, Lj, Hj]);
+          h.dispose();
+          const logits = model.logitsFromHidden(hLast);
+          hLast.dispose();
+          const sn = sampleStep(logits, willGen);
+          nextPending = sn.tok;
+          nextExtras = sn.extras;
+          logits.dispose();
+          ops.asyncEvalAll([nextPending, ...extrasArrays(nextExtras)]);
+        } else {
+          h.dispose(); // burst ends the generation (max_tokens or grammar done)
+        }
+      } else if (generated + 1 < maxTokens && !options.grammar?.isTerminated) {
         maybeQuantizeKv(cache, options);
         pushHistory(cur);
         let logits: MlxArray | null = null;
@@ -753,7 +823,8 @@ async function* generateInner(
       pending = null;
       generated++;
       // if a next-step graph was built, this token's KV entered the cache
-      if (nextPending !== null) forwarded.push(token);
+      // (jump iterations pushed the whole chunk already)
+      if (nextPending !== null && !jumpEmit) forwarded.push(token);
 
       if (eosTokenIds.includes(token)) {
         disposeExtras(curExtras);
@@ -770,6 +841,18 @@ async function* generateInner(
         // mlx-lm generate_step: clear_cache after token 0 (drops the
         // remaining prefill transients) and every 256 tokens after
         if ((generated - 1) % 256 === 0) clearCache();
+        // Jump-forward burst: the forced ids follow cur, one yield each (the
+        // consumer's stop-sequence matcher and detokenizer see the same
+        // one-at-a-time stream shape as always). Their KV is already in the
+        // cache (the chunk forward above); a consumer break mid-burst is
+        // safe — `forwarded` already reflects the cache exactly.
+        if (jumpEmit) {
+          for (const jt of jumpEmit) {
+            generated++;
+            yield { token: jt, index: generated - 1 };
+            if ((generated - 1) % 256 === 0) clearCache();
+          }
+        }
         if (nextPending === null) {
           stop = true;
         } else {

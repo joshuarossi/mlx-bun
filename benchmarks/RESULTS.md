@@ -175,7 +175,7 @@ At 64k mlx-bun holds parity with mlx-lm on bf16 while optiq collapses to
 
 ---
 
-## 3. Quality — for non-bit-exact (L3) optimizations only
+## 3. Quality — for non-bit-exact (Lab) optimizations only
 
 When a custom path trades bit-exactness for speed, quantify the cost so a
 perf win is only claimed with its quality delta — e.g. *"+23% tok/s while
@@ -186,12 +186,15 @@ holding ±5% on the 6-test mean."*
   upstream.
 - **KL divergence** — optimized vs compatible token distribution.
 
-_No Lab quality runs recorded yet._ This section is the home for a Lab
-experiment's quality measurements when it's promoted (the bar:
-paired-A/B win vs L1 on a stable pass + KL PASS — see
-docs/design/unified-engine-frontier-plan.md §6-7).
+This section is the home for a Lab experiment's quality measurements
+when it's promoted (the bar: paired-A/B win vs L1 on a stable pass +
+KL PASS — see docs/design/unified-engine-frontier-plan.md §6-7).
 
 ### TurboQuant KV quality-vs-bpw (2026-07-06, M1 Max 32 GB, MiniCPM5-1B)
+
+> Note: measured on an M1 Max 32 GB, not this file's M4 Pro reference
+> box — valid as a paired quality/KL measurement (machine-independent),
+> not as a perf number.
 
 Opt-in memory/context scheme (`--kv-quant turbo[:k<bits>v<bits>]`), not a
 speed lever. Teacher-forced serving-decode KL vs bf16 KV (8×128 tokens, 32
@@ -212,3 +215,46 @@ on-curve with affine at matched bits; 2-bit values are the cliff (matches
 the TurboQuant paper's law). Codec is bit-exact vs the vendored vllm-metal
 reference (goldens/turboquant.json); details in
 docs/design/turboquant-kv.md.
+
+## 4. Composition — feature-default decisions (measured, per pair)
+
+The doctrine (dspark-serving-program.md Phase 4e): a feature is ON by
+default for a (model, config) pair only when it WINS a clean-machine
+paired A/B on that pair; losing configs stay documented default-off
+levers. This section records the decisions and the numbers behind them.
+
+### Speculative decoding — "should spec be on?" (decision pending Phase 0/1 runs)
+
+Decision rule: spec defaults ON for a (target, drafter) pair iff
+serve-path decode ≥ 1.3× serial at the recommended γ, clean-machine
+paired (`benchmark.sh` preflight, `bench-feature-matrix.ts --cells
+serial,spec`), with acceptance within 3 pts of the bf16-drafter baseline
+(`scripts/dspark-drafter-ab.ts`). Prediction to test: ON for
+12B + quantized DeepSpec drafter, OFF for e4b + anything.
+
+| target | drafter | γ | acceptance | τ | spec tok/s | serial tok/s | verdict |
+|---|---|---|---|---|---|---|---|
+| 12B-OptiQ-4bit | DeepSpec bf16 (6.9 GB) | 7 | 26–33% | ≈2.8 | 14.6 agg | 49.8 agg | **OFF** — drafter tax −3.4× (2026-07-07 first live run, loaded box, conc-4; directional) |
+| 12B-OptiQ-4bit | DeepSpec affine-q4-g64 (1.8 GB, built 2026-07-07) | best-of-0b | _1d run_ | _1d run_ | _0b/6 run_ | _0b/6 run_ | _pending_ |
+| e4b-OptiQ-4bit | (expected-negative control) | — | — | — | — | — | _pending_ |
+
+Runbook (Josh's shell; directional passes fine loaded, the FINAL pair
+clean-machine per the house rule):
+1. **1d acceptance A/B** (no server): `bun scripts/dspark-drafter-ab.ts
+   --target gemma-4-12B-it-OptiQ-4bit --drafter-a <bf16-snap>
+   --drafter-b <q4-snap> --json ab-q4.json` — gate: drop ≤ 3 pts AND
+   wall-clock strictly improves.
+2. **0b γ sweep** (server): serve 12B `--draft-model <q4-snap>
+   --num-draft-tokens {2,3,5,7}` × `bun scripts/bench-feature-matrix.ts
+   --concurrency 1 --cells serial,spec` — pick best-γ by per-request tok/s.
+3. **Phase 6 decision pair** (clean machine: reboot + `sudo purge`):
+   best-γ config, `--cells serial,spec` at conc 1 AND agg×4 — fill the
+   table, flip the features-matrix default cell if ≥ 1.3×.
+
+### TurboQuant KV — decided OFF (2026-07-06, re-affirmed post-leak-fix)
+
+Opt-in memory/context lever, not a speed feature (v1 dequant-on-fetch is
+slower per step at long context; no speed claim made). The KL-vs-bpw
+curve above is the quality evidence. NOTE: any turbo perf/RSS impression
+formed before 2026-07-07 is invalid — the pre-fix build leaked
+window-scale buffers per decode step (PLAN Phase 13 post-merge fix).

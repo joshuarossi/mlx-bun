@@ -20,6 +20,8 @@ import { Dtype } from "../src/mlx/ffi";
 import * as ops from "../src/mlx/ops";
 import { writeShardedSafetensors, type NamedTensor } from "../src/quantize/safetensors-writer";
 import { DeepspecDrafter } from "../src/spec/dspark/deepspec-module";
+import { quantizeDrafterDir } from "../src/spec/dspark/quantize-drafter";
+import { Weights } from "../src/weights";
 
 function rng(seed: number): () => number {
   let s = seed >>> 0 || 1;
@@ -69,10 +71,14 @@ interface BuildOpts {
   confidenceZero?: boolean; // zero confidence_head weights → sigmoid(0)=0.5
   confidenceThreshold?: number;
   seed?: number;
+  /** Override MARKOV_RANK (the quantized-checkpoint block uses 32 so the
+   *  markov tensors and the confidence proj are group-eligible). */
+  markovRank?: number;
 }
 
 function buildCheckpoint(dir: string, opts: BuildOpts = {}) {
   const r = rng(opts.seed ?? 42);
+  const markovRank = opts.markovRank ?? MARKOV_RANK;
   const tensors: NamedTensor[] = [];
   const push = (name: string, array: MlxArray) => tensors.push({ name, array });
 
@@ -102,16 +108,16 @@ function buildCheckpoint(dir: string, opts: BuildOpts = {}) {
 
   push(
     "markov_head.markov_w1.weight",
-    opts.markovZero ? zerosBf16([VOCAB, MARKOV_RANK]) : randBf16(r, [VOCAB, MARKOV_RANK]),
+    opts.markovZero ? zerosBf16([VOCAB, markovRank]) : randBf16(r, [VOCAB, markovRank]),
   );
   push(
     "markov_head.markov_w2.weight", // stored as Linear [vocab, rank] (out,in)
-    opts.markovZero ? zerosBf16([VOCAB, MARKOV_RANK]) : randBf16(r, [VOCAB, MARKOV_RANK]),
+    opts.markovZero ? zerosBf16([VOCAB, markovRank]) : randBf16(r, [VOCAB, markovRank]),
   );
 
   push(
     "confidence_head.proj.weight",
-    opts.confidenceZero ? zerosBf16([1, HIDDEN + MARKOV_RANK]) : randBf16(r, [1, HIDDEN + MARKOV_RANK]),
+    opts.confidenceZero ? zerosBf16([1, HIDDEN + markovRank]) : randBf16(r, [1, HIDDEN + markovRank]),
   );
   push("confidence_head.proj.bias", zerosBf16([1]));
 
@@ -135,7 +141,7 @@ function buildCheckpoint(dir: string, opts: BuildOpts = {}) {
     mask_token_id: MASK_TOKEN,
     target_layer_ids: TAPS,
     num_target_layers: 5,
-    markov_rank: MARKOV_RANK,
+    markov_rank: markovRank,
     markov_head_type: "vanilla",
     enable_confidence_head: true,
     confidence_head_with_markov: true,
@@ -471,6 +477,142 @@ describe("DeepspecDrafter", () => {
       } finally {
         d.dispose();
       }
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Quantized checkpoint (Phase 1a/1b, docs/design/dspark-serving-program.md):
+// quantize the synthetic bf16 checkpoint through the drafter policy
+// (scripts/dspark-quantize-drafter.ts), then verify detection, policy, and
+// that the quantized forward tracks the bf16 forward. markovRank=32 makes
+// the markov tensors and the confidence proj group-32-eligible, so the
+// policy exclusion (confidence stays bf16) is actually exercised rather
+// than hidden behind shape ineligibility.
+// ---------------------------------------------------------------------------
+
+describe("DeepspecDrafter (quantized checkpoint)", () => {
+  const QOPTS = { bits: 8 as const, groupSize: 32 as const };
+
+  async function buildPair(fn: (bf16Dir: string, qDir: string) => Promise<void>): Promise<void> {
+    await withTmpDir(async (bf16Dir) => {
+      await withTmpDir(async (qDir) => {
+        buildCheckpoint(bf16Dir, { markovRank: 32, confidenceThreshold: 0 });
+        await quantizeDrafterDir(bf16Dir, qDir, QOPTS);
+        await fn(bf16Dir, qDir);
+      });
+    });
+  }
+
+  test("policy: matmul weights + gather tables quantized, confidence head kept bf16", async () => {
+    await buildPair(async (_bf16Dir, qDir) => {
+      const w = await Weights.open(qDir);
+      try {
+        // Quantized: every 2-D matmul weight and both gather tables.
+        for (const base of [
+          "embed_tokens", "fc", "lm_head",
+          "layers.0.self_attn.q_proj", "layers.0.self_attn.k_proj", "layers.0.self_attn.o_proj",
+          "layers.1.mlp.gate_proj", "layers.1.mlp.up_proj", "layers.1.mlp.down_proj",
+          "markov_head.markov_w1", "markov_head.markov_w2",
+        ]) {
+          expect(w.has(`${base}.scales`)).toBe(true);
+          expect(w.has(`${base}.biases`)).toBe(true);
+        }
+        // Kept bf16: the confidence head (policy), norms + scalars (shape).
+        for (const base of [
+          "confidence_head.proj", "norm", "hidden_norm",
+          "layers.0.input_layernorm", "layers.0.self_attn.q_norm",
+        ]) {
+          expect(w.has(`${base}.scales`)).toBe(false);
+        }
+        expect(w.has("layers.0.layer_scalar")).toBe(true); // passthrough survived
+        expect(w.has("confidence_head.proj.bias")).toBe(true);
+      } finally {
+        w.dispose();
+      }
+
+      // Config block: house default + the mlx `false` convention for the
+      // policy-excluded head.
+      const cfg = (await Bun.file(join(qDir, "config.json")).json()) as Record<string, any>;
+      expect(cfg.quantization.bits).toBe(QOPTS.bits);
+      expect(cfg.quantization.group_size).toBe(QOPTS.groupSize);
+      expect(cfg.quantization["confidence_head.proj"]).toBe(false);
+      expect(cfg.architectures).toEqual(["Gemma4DSparkModel"]);
+    });
+  });
+
+  test("quantized checkpoint loads and drafts deterministically (full gamma, in-vocab)", async () => {
+    await buildPair(async (_bf16Dir, qDir) => {
+      const d = await DeepspecDrafter.load(qDir);
+      try {
+        const runOnce = () => {
+          const r = rng(21);
+          const raw = fakeTargetHiddens(r, 2);
+          const projected = d.projectContext(raw);
+          raw.dispose();
+          const ctxKV = d.projectContextKV(projected, [0, 1]);
+          projected.dispose();
+          const result = d.draftBlock(ctxKV, 7, 2);
+          const tokens = [...result.tokens];
+          result.baseLogits.dispose();
+          for (const { k, v } of ctxKV) { k.dispose(); v.dispose(); }
+          return tokens;
+        };
+        const first = runOnce();
+        expect(first.length).toBe(BLOCK);
+        for (const t of first) {
+          expect(t).toBeGreaterThanOrEqual(0);
+          expect(t).toBeLessThan(VOCAB);
+        }
+        expect(runOnce()).toEqual(first);
+      } finally {
+        d.dispose();
+      }
+    });
+  });
+
+  test("8-bit quantized forward tracks the bf16 forward (same tokens, close logits)", async () => {
+    await buildPair(async (bf16Dir, qDir) => {
+      const run = async (dir: string) => {
+        const d = await DeepspecDrafter.load(dir);
+        try {
+          const r = rng(33);
+          const raw = fakeTargetHiddens(r, 3);
+          const projected = d.projectContext(raw);
+          raw.dispose();
+          const ctxKV = d.projectContextKV(projected, [0, 1, 2]);
+          projected.dispose();
+          const result = d.draftBlock(ctxKV, 5, 3);
+          const logits = result.baseLogits.toFloat32();
+          const tokens = [...result.tokens];
+          result.baseLogits.dispose();
+          for (const { k, v } of ctxKV) { k.dispose(); v.dispose(); }
+          return { logits, tokens };
+        } finally {
+          d.dispose();
+        }
+      };
+      const a = await run(bf16Dir);
+      const b = await run(qDir);
+      // 8-bit affine is near-lossless on this scale: the greedy block must
+      // survive quantization, and the softcapped logits (range ±30) must
+      // stay close — a wrong transpose/spec/gather in the quantized path
+      // produces garbage far outside this tolerance.
+      expect(b.tokens).toEqual(a.tokens);
+      let maxDiff = 0;
+      for (let i = 0; i < a.logits.length; i++) {
+        maxDiff = Math.max(maxDiff, Math.abs(a.logits[i]! - b.logits[i]!));
+      }
+      expect(maxDiff).toBeLessThan(0.5);
+      expect(maxDiff).toBeGreaterThan(0); // actually a different code path ran
+    });
+  });
+
+  test("rejects an already-quantized source", async () => {
+    await buildPair(async (_bf16Dir, qDir) => {
+      await withTmpDir(async (q2Dir) => {
+        await expect(quantizeDrafterDir(qDir, q2Dir, QOPTS)).rejects.toThrow(/already quantized/);
+      });
     });
   });
 });
