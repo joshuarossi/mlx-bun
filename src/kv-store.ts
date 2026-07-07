@@ -8,7 +8,8 @@
 //   [tensor data at 16 KiB-aligned offsets]
 // Header: { formatVersion, modelId, configFingerprint, ns, tokenizerHash,
 //           createdAt, tokens, caches: [{ kind, offset, idx?, maxSize?,
-//           groupSize?, bits?, tensors: [{ off, bytes, shape, dtype, hash }] }] }
+//           groupSize?, bits?, kBits?, vBits?, headDim?,
+//           tensors: [{ off, bytes, shape, dtype, hash }] }] }
 //
 // v2 over v1: quantized cache kinds (the serving DEFAULT is kv_config
 // quantization, which v1 could not persist), SSM kind (Qwen3.5 hybrid),
@@ -46,6 +47,7 @@ import * as ops from "./mlx/ops";
 import {
   type Cache, KVCache, RotatingKVCache,
   QuantizedKVCache, RotatingQuantizedKVCache,
+  TurboQuantKVCache, type TurboQuantTensor,
 } from "./model/gemma4-base";
 import { SSMCache } from "./model/qwen3-delta";
 
@@ -59,7 +61,7 @@ const PREFIX_LEN = MAGIC.length + 4 + 4 + 8;
 // the header's byte length when the real values replace the placeholders.
 const hash64 = (bytes: Uint8Array): string => Bun.hash(bytes).toString(16).padStart(16, "0");
 
-export type CacheKind = "kv" | "rotating" | "qkv" | "rotating-qkv" | "ssm";
+export type CacheKind = "kv" | "rotating" | "qkv" | "rotating-qkv" | "ssm" | "turboquant";
 
 interface TensorSlot {
   off: number;
@@ -76,11 +78,21 @@ export interface CacheHeaderEntry {
   idx?: number;
   /** rotating variants: window size */
   maxSize?: number;
-  /** quantized variants */
+  /** quantized variants (qkv/rotating-qkv: mlx affine scheme) */
   groupSize?: number;
   bits?: number;
+  /** turboquant: per-side bit widths (reuses the `bits` field's slot class
+   *  but needs both — asymmetric key/value bit widths, unlike qkv's single
+   *  `bits`). `groupSize` is unused for turboquant (fixed at 32, the
+   *  BLOCK_SIZE constant — not a configurable field like qkv's). */
+  kBits?: number;
+  vBits?: number;
+  /** turboquant: head_dim, needed to unpack kIdx/vPacked on restore
+   *  (packed byte width alone doesn't recover the original element count). */
+  headDim?: number;
   /** kv/rotating: [k, v] · qkv/rotating-qkv: [kPacked, kScales, kBiases,
-   *  vPacked, vScales, vBiases] · ssm: [conv, recurrent] */
+   *  vPacked, vScales, vBiases] · ssm: [conv, recurrent] · turboquant:
+   *  [kIdx, kScales, kZeros, vPacked, vScales] */
   tensors: TensorSlot[];
 }
 
@@ -137,7 +149,16 @@ function snapshotCache(c: Cache, dataOffset: number): { entry: CacheHeaderEntry;
   };
 
   let entry: CacheHeaderEntry;
-  if (c instanceof RotatingQuantizedKVCache) {
+  if (c instanceof TurboQuantKVCache) {
+    const t = c.state();
+    if (t.length === 0) throw new Error("cannot persist an empty cache");
+    const [kIdx, kScales, kZeros, vPacked, vScales] = t as [MlxArray, MlxArray, MlxArray, MlxArray, MlxArray];
+    // state() already trims to offset — dispose these lazy slice views
+    // once written (same disposeAfter contract as liveSlice elsewhere).
+    for (const a of [kIdx, kScales, kZeros, vPacked, vScales]) push(a, true);
+    entry = { kind: "turboquant", offset: c.offset, kBits: c.kBits, vBits: c.vBits,
+      headDim: c.headDim ?? 0, tensors: slots };
+  } else if (c instanceof RotatingQuantizedKVCache) {
     if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
     pushTriple(c.keys, null);
     pushTriple(c.values, null);
@@ -197,7 +218,19 @@ export function cloneKvCaches(caches: Cache[]): Cache[] {
   const out: Cache[] = [];
   try {
     for (const c of caches) {
-      if (c instanceof RotatingQuantizedKVCache) {
+      if (c instanceof TurboQuantKVCache) {
+        const state = c.state();
+        if (state.length === 0) throw new Error("cannot clone an empty cache");
+        const [kIdx, kScales, kZeros, vPacked, vScales] = state;
+        const n = new TurboQuantKVCache(c.kBits, c.vBits);
+        n.restoreState(
+          { kIdx: view(kIdx!), kScales: view(kScales!), kZeros: view(kZeros!),
+            vPacked: view(vPacked!), vScales: view(vScales!) },
+          c.offset, c.headDim!,
+        );
+        for (const a of state) a.dispose();
+        out.push(n);
+      } else if (c instanceof RotatingQuantizedKVCache) {
         if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
         const n = new RotatingQuantizedKVCache(c.maxSize, c.groupSize, c.bits);
         n.restoreState(tripleView(c.keys, null), tripleView(c.values, null), c.offset, c.ringIdx);
@@ -493,6 +526,16 @@ export function loadKvCache(
           c.conv = arr(t[0]!);
           c.recurrent = arr(t[1]!);
           c.offset = e.offset;
+          caches.push(c);
+          break;
+        }
+        case "turboquant": {
+          const c = new TurboQuantKVCache(e.kBits!, e.vBits!);
+          const kv: TurboQuantTensor = {
+            kIdx: arr(t[0]!), kScales: arr(t[1]!), kZeros: arr(t[2]!),
+            vPacked: arr(t[3]!), vScales: arr(t[4]!),
+          };
+          c.restoreState(kv, e.offset, e.headDim!);
           caches.push(c);
           break;
         }

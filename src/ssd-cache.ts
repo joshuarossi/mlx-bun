@@ -41,11 +41,11 @@ export interface SsdIndexEntry {
 }
 
 /** Trimmability from a file header alone (mirror of the live caches'
- *  isTrimmable(): kv/qkv always trim; rotating kinds only pre-wrap
+ *  isTrimmable(): kv/qkv/turboquant always trim; rotating kinds only pre-wrap
  *  (offset < maxSize); ssm never). Keep in sync with gemma4-base/qwen3-delta. */
 const headerTrimmable = (caches: { kind: string; offset: number; maxSize?: number }[]): boolean =>
   caches.every((c) =>
-    c.kind === "kv" || c.kind === "qkv"
+    c.kind === "kv" || c.kind === "qkv" || c.kind === "turboquant"
       ? true
       : c.kind === "rotating" || c.kind === "rotating-qkv"
         ? c.offset < (c.maxSize ?? 0)

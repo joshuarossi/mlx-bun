@@ -35,7 +35,7 @@ Common flags (full list in [server-config.md](server-config.md)):
 | `--port <n>` | Listen port (default 8080) |
 | `--memory-budget <GB>` | Reject loads/requests that can't fit the budget |
 | `--kv-budget <GB>` | Aggregate KV budget across concurrent batch rows: over-budget joiners queue until rows finish; a request over the budget alone is rejected (off unless set) |
-| `--kv-quant config\|off\|4\|8` | KV cache quantization: per-layer `kv_config.json`, bf16, or uniform bits (default `off` — quantized KV trades 5–20% decode speed for memory headroom, so it's opt-in) |
+| `--kv-quant config\|off\|4\|8\|turbo[:k<bits>v<bits>]` | KV cache quantization: per-layer `kv_config.json`, bf16, uniform bits, or TurboQuant (rotation-based, default `k8v3` — [turboquant-kv.md](../design/turboquant-kv.md); full-attention layers only, solo-only/serial) (default `off` — quantized KV trades 5–20% decode speed for memory headroom, so it's opt-in) |
 | `--adapter <dir>` | Mount a LoRA adapter at startup (`--adapter-path` accepted as the mlx_lm.server alias) |
 | `--draft-model <path\|query>` | Speculative decoding: a drafter proposes, the main model verifies — exact results, faster decode when drafts land. The artifact's kind is auto-detected: a full same-tokenizer model (mlx_lm.server parity), a Gemma `-assistant` KV-borrowing drafter, a DSpark checkpoint trained here, or one of DeepSeek's released DSpark drafters (DeepSpec `Gemma4DSparkModel`, e.g. `dspark_gemma4_12b_block7`). Serial lane only: with `--batch N` a mounted draft routes every request serial |
 | `--draft-kind <kind>` | Override draft-artifact detection: `two-model` \| `assistant` \| `dspark` \| `deepspec` (default: auto) |

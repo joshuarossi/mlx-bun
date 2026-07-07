@@ -911,3 +911,46 @@ export function silu(a: MlxArray, s: S = gpuStream): MlxArray {
   sig.dispose();
   return r;
 }
+
+/** fast::hadamard_transform over the last axis. `scale` defaults to
+ *  1/sqrt(dim) (mlx's own default when unset) — pass it explicitly to
+ *  match a reference that always states its normalization, per
+ *  turboquant-ops.ts's fwht(). */
+export function hadamardTransform(x: MlxArray, scale: number | null = null, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("hadamard_transform", (o) =>
+      C.mlx_hadamard_transform(o, x.handle, optFloat(scale), s),
+    ),
+  );
+}
+
+export function minAxis(a: MlxArray, axis: number, keepdims: boolean, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("min_axis", (o) => C.mlx_min_axis(o, a.handle, axis, keepdims, s)),
+  );
+}
+
+/** mx.round(x, decimals=0) — round-half-to-even at the ULP grid mlx uses. */
+export function round(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("round", (o) => C.mlx_round(o, a.handle, 0, s)));
+}
+
+export function greater(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("greater", (o) => C.mlx_greater(o, a.handle, b.handle, s)));
+}
+
+export function bitwiseAnd(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("bitwise_and", (o) => C.mlx_bitwise_and(o, a.handle, b.handle, s)));
+}
+
+export function bitwiseOr(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("bitwise_or", (o) => C.mlx_bitwise_or(o, a.handle, b.handle, s)));
+}
+
+export function leftShift(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("left_shift", (o) => C.mlx_left_shift(o, a.handle, b.handle, s)));
+}
+
+export function rightShift(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("right_shift", (o) => C.mlx_right_shift(o, a.handle, b.handle, s)));
+}

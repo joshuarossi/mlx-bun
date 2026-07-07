@@ -43,7 +43,7 @@ import { KVCache, RotatingKVCache } from "../model/gemma4-base";
 import { SSMCache } from "../model/qwen3-delta";
 import { UniversalDenseModel } from "../model/universal/dense";
 import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate";
-import type { KvQuantSpec } from "../config";
+import type { KvQuantSpec, TurboQuantScheme } from "../config";
 import { makeSampler, makeLogitsProcessors, toLogprobs } from "../sampler";
 import { BatchScheduler, type RowPromptCache } from "./batch-scheduler";
 
@@ -99,6 +99,14 @@ export interface RequestShape {
   userSeed: boolean;
   /** KV quantization is active (kvConfig/kvBits) — batched is bf16-only in v1. */
   kvQuant: boolean;
+  /** TurboQuant is active (docs/design/turboquant-kv.md). Solo-only in v1:
+   *  TurboQuantKVCache is a novel Cache implementation (not a KVCache/
+   *  RotatingKVCache subclass), so #modelCachesBatchable() already excludes
+   *  it automatically once a request's cache is converted — this flag is the
+   *  BELT on top of that automatic BRACES, an explicit refusal at the
+   *  request-shape level so a turbo request never reaches the scheduler even
+   *  before any cache conversion has happened. Both layers exist on purpose. */
+  turboQuant: boolean;
   /** Any of the mlx-lm sampler/processor extensions is active: min_p, XTC,
    *  logit_bias, presence/frequency penalty. Safe v1: they ALL route to the
    *  serial lane alongside repetition penalty. min_p/XTC are per-row samplers
@@ -149,8 +157,10 @@ export class GenerationGateway {
     private readonly opts: {
       kvBudgetBytes?: number;
       /** The server-wide KV scheme (server.ts kvScheme) — threaded to the
-       *  scheduler at construction when batchable (Phase 3.1). */
-      kvScheme?: { kvBits?: number; kvConfig?: KvQuantSpec[] };
+       *  scheduler at construction when batchable (Phase 3.1). turboQuant is
+       *  never threaded to the scheduler (always solo-only — see willBatch);
+       *  it's here only so the gateway can see it's active. */
+      kvScheme?: { kvBits?: number; kvConfig?: KvQuantSpec[]; turboQuant?: TurboQuantScheme };
       /** The server's prompt cache (Phase 3.2): batch-lane joiners take()
        *  the longest usable prefix at admission; never-merged rows put()
        *  back on finish. Safe to share with the serial lane — both use it
@@ -297,6 +307,12 @@ export class GenerationGateway {
       // the batchable kvConfig composition (the scheduler applies it);
       // otherwise it routes serial exactly as before.
       !(shape.kvQuant && !this.#kvBatchable()) &&
+      // TurboQuant: solo-only in v1, unconditionally — never partially
+      // batchable like kvConfig. The automatic instanceof exclusion in
+      // #modelCachesBatchable() already covers this once a cache converts;
+      // this is the explicit belt-and-braces refusal at request-shape time
+      // (mirrors the kvQuant pattern above — both layers exist on purpose).
+      !shape.turboQuant &&
       !shape.hasDraft &&
       // Grammar: B1 makes it batchable (per-row matchers) unless the kill
       // switch forces serial. MLX_BUN_GRAMMAR_BATCH=0 = B0 behavior (serial),

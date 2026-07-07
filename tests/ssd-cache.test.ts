@@ -195,6 +195,43 @@ describe("SsdCacheStore", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  // headerTrimmable() is a closed switch over the on-disk kind string; when
+  // "turboquant" was missing it fell through to false, so a restart scan()
+  // misclassified every TurboQuant entry as untrimmable and find() skipped
+  // partial-prefix hits — silently forfeiting restart survival for exactly
+  // that scheme (2026-07-06 integration review).
+  test("turboquant entry stays trimmable across a restart scan", async () => {
+    const { TurboQuantKVCache } = await import("../src/model/gemma4-base");
+    const dir = mkdtempSync(join(tmpdir(), "ssd-"));
+    const s1 = new SsdCacheStore(OPTS(dir));
+    const mkTq = () => {
+      const c = new TurboQuantKVCache(8, 3);
+      const key = ops.randomKey(7n);
+      const k = ops.randomNormal([1, 2, 4, 64], Dtype.bfloat16, 0, 1, key);
+      const v = ops.randomNormal([1, 2, 4, 64], Dtype.bfloat16, 0, 1, key);
+      const [fk, fv] = c.updateAndFetch(k, v);
+      for (const a of [key, k, v, fk, fv]) a.dispose();
+      return c;
+    };
+    const caches = [mkTq()];
+    expect(s1.store([1, 2, 3, 4], caches)).toBe(true);
+    for (const c of caches) c.dispose();
+
+    // live index: diverging tail needs a 1-token trim → only served if trimmable
+    expect(s1.find([1, 2, 3, 9], "")?.prefixLen).toBe(3);
+
+    // restart: the header-derived flag must agree with the live isTrimmable()
+    const s2 = new SsdCacheStore(OPTS(dir));
+    expect(s2.scan()).toBe(1);
+    const hit = s2.find([1, 2, 3, 9], "");
+    expect(hit?.prefixLen).toBe(3);
+    const tqModel = { makeCache: () => [new TurboQuantKVCache(8, 3)] };
+    const loaded = s2.restore(hit!.entry, tqModel);
+    expect(loaded).not.toBeNull();
+    for (const c of loaded!.caches) c.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   test("exact-duplicate store replaces the file regardless of trimmability", () => {
     const dir = mkdtempSync(join(tmpdir(), "ssd-"));
     const s = new SsdCacheStore(OPTS(dir));
