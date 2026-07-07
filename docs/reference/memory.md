@@ -42,15 +42,31 @@ mlx-bun memory unschedule
 
 ## Agent tools
 
-Both `mlx-bun pi` and the web chat expose these read-only tools:
+Both `mlx-bun pi` and the web chat expose these read-only tools, in the recommended call order — FIND the article, READ it small, follow the graph, fall back to reference docs and utilities, search only as a last resort:
 
-- `memory_search`
-- `memory_read`
-- `memory_toc`
-- `memory_section`
-- `memory_links`
+**FIND** (deterministic lookup, never a vector search):
+- `memory_resolve` — name/alias → the article
+- `memory_category` — category/type/series → members
+
+**READ** (TOC → one section, not a full-article dump):
+- `memory_read` — TOC + lead by default; `force=true` for the full article
+- `memory_section` — one section's body (the default granularity)
+
+**Follow the graph**:
+- `memory_links` — outbound/inbound wikilinks
+- `memory_infobox` — read an article's infobox fields (there is no infobox *query* tool — the infobox is content the model reads, not a filter)
+
+**Reference docs** (mlx-bun's own docs, mirrored read-only into the vault):
+- `reference_search`
+- `reference_read`
+- `reference_list`
+
+**Utility**:
 - `memory_list` — user articles plus read-only `Reference/*` docs
 - `memory_status` — vault path, setup state, article count, git state, last synthesis run (from the vault's git log), schedule state, recent changed articles
+
+**Last resort**:
+- `memory_search` — substring fallback when FIND failed
 
 The tools are always registered. If no vault exists, they return a setup message instead of disappearing. Search/read results prefixed with `Reference/` are mlx-bun docs, not user memory articles.
 

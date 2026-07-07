@@ -19,15 +19,29 @@ Produces a relocatable directory:
 
 | file | what | size (arm64) |
 |---|---|---|
-| `mlx-bun` | the CLI/server, compiled with `bun build --compile` | ~61 MB |
+| `mlx-bun` | the CLI/server, compiled with `bun build --compile` | ~70-75 MB |
 | `libmlxc.dylib` | mlx-c, rewritten to load `@loader_path/libmlx.dylib` | ~0.7 MB |
 | `libmlx.dylib` | mlx core (+`@loader_path` rpath added for libjaccl) | ~15 MB |
 | `libjaccl.dylib` | mlx's distributed-comm dependency | ~0.6 MB |
 | `mlx.metallib` | Metal kernels — libmlx loads it from its own directory | ~150 MB |
 | `photon_rs_bg.wasm` | pi image codec — only the web chat's `read`-on-image path; resolved next to the executable | ~1.8 MB |
 
+`build-binary.sh` also sidecars a second set of assets for the embedded
+pi **terminal** (`mlx-bun pi`, `src/pi-terminal.ts` → `InteractiveMode`),
+none of which the headless web chat touches:
+
+| file | what |
+|---|---|
+| `theme/*.json` | TUI color themes (built-in dark/light fallback exists in code; shipped so custom theme reads and the schema resolve) |
+| `assets/*.png` | TUI startup art |
+| `export-html/template.html`, `export-html/vendor/*.js` | the `/export` command's HTML template + vendor JS |
+| `package.json`, `CHANGELOG.md` | version banner + startup changelog |
+| `native/darwin/prebuilds/<arch>/darwin-modifiers.node` | pi-tui's native modifier-key detection (degrades gracefully if absent) |
+
 Library resolution order (src/mlx/ffi.ts): `MLX_BUN_LIBMLXC` env var →
-`libmlxc.dylib` next to the executable → homebrew
+`libmlxc.dylib` next to the executable → the downloaded native-pack
+cache (`~/Library/Caches/mlx-bun/native-v<ver>-<arch>/`, populated on
+first run when no sidecar or homebrew install is found) → homebrew
 (`/opt/homebrew/lib`, `/usr/local/lib`). The whole directory can be
 renamed/moved; nothing references absolute paths after the build
 script's `install_name_tool` fixups.
@@ -60,21 +74,28 @@ crashing), so it is best-effort, not load-bearing.
 > The web chat itself is unaffected (its provider is text-only), and the
 > wasm is shipped so it will work once Bun's support lands.
 
-**Intentionally omitted** (TUI-only assets pi ships beside its own binary,
-never reached by the headless web chat):
+## Embedded pi terminal (`mlx-bun pi`)
+
+The compiled binary also embeds pi's full interactive TUI
+(`src/pi-terminal.ts` → `InteractiveMode`), reachable via `mlx-bun pi`.
+Unlike the headless web chat, the terminal *does* resolve theme JSON,
+startup art, the `/export` template, the version banner, and the
+pi-tui native modifier-key helper by path — the second table above is
+sidecar'd for exactly this mode. `src/pi-web.ts`'s session (the web
+chat) still builds with `noThemes`/`noSkills`/`noExtensions`/
+`noPromptTemplates`/`noContextFiles`, so none of that table is reached
+from `/ws/chat` — only `mlx-bun pi` uses it.
+
+**Omitted** (upstream pi ships these beside its own binary; neither
+mlx-bun mode reaches them):
 
 | omitted asset | what it's for |
 |---|---|
-| `theme/*.json` | TUI color themes (loaded via `initTheme`; we pass `noThemes`) |
-| `assets/*.png` | TUI announcement/interactive images |
-| `export-html/*` | the `/export-html` command's template + vendor JS |
-| `docs/`, `examples/`, `README.md`, `CHANGELOG.md` | TUI help/doc browsing |
+| `docs/`, `examples/`, `README.md` | upstream's own help/doc browsing, not exposed by either mlx-bun entry point |
 
-These are gated behind TUI code paths and the explicit `exportToHtml()`
-method; `createAgentSession`'s import graph (`core/sdk.js`) pulls in no
-theme/asset/export-html loaders, and `src/pi-web.ts` builds the session
-with `noThemes`/`noSkills`/`noExtensions`/`noPromptTemplates`/
-`noContextFiles`.
+`createAgentSession`'s import graph (`core/sdk.js`) pulls in no loaders
+for these; both `src/pi-web.ts` and `src/pi-terminal.ts` build sessions
+that never reference them.
 
 **Verifying it.** `build-binary.sh` runs `scripts/verify-binary-pi.ts` as
 a sibling compiled binary inside the bundle (so `process.execPath` points

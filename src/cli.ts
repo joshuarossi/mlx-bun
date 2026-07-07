@@ -2130,7 +2130,7 @@ switch (cmd) {
     if (!ds.ok) { console.error(`dataset: ${ds.error}`); process.exit(1); }
 
     const planLines = [
-      `${style.green("●")} ${style.bold(`train ${method}`)} ${style.dim(`· ${m.repoId}${picked ? " (auto-picked)" : ""}${isGemma ? " · e4b env set" : ""}`)}`,
+      `${style.green("●")} ${style.bold(`train ${method}`)} ${style.dim(`· ${m.repoId}${picked ? " (auto-picked)" : ""}${isGemma ? " · e4b defaults" : ""}`)}`,
       "",
       `data       ${style.bold(`${ds.n_train} train`)}${ds.n_valid ? ` · ${ds.n_valid} valid` : ""} ${style.dim(`· format ${ds.format}`)}`,
       `loop       ${style.dim(`iters ${iters} · lr ${cfg.learning_rate} · rank ${cfg.rank} · scale ${cfg.scale} · seq ${seq} · batch ${cfg.batch_size}`)}`,

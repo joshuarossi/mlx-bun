@@ -36,6 +36,13 @@ Common flags (full list in [server-config.md](server-config.md)):
 | `--port <n>` | Listen port (default 8080) |
 | `--memory-budget <GB>` | Reject loads/requests that can't fit the budget |
 | `--kv-budget <GB>` | Aggregate KV budget across concurrent batch rows: over-budget joiners queue until rows finish; a request over the budget alone is rejected (off unless set) |
+| `--prompt-cache <GB>` | RAM prefix-KV cache, byte-capped LRU (default 8; `0` disables). Non-consuming prefix sharing: a hit clones instead of consuming the donor entry |
+| `--isolate` | Run the inference engine as a crash-isolated child process on a unix socket; this process becomes a pure reverse-proxy (instant under GPU load, auto-respawns on engine crash) — default off ([runtime-isolation.md](../design/runtime-isolation.md)) |
+| `--model-pool <n>` | With `--isolate`: cap on resident per-model engine children (default 1); over the cap the LRU engine drains its cache to the SSD tier and exits, respawning on demand |
+| `--ssd-cache <dir>` | SSD cold tier under the prompt cache: idle/evicted prefix-KV spills to disk and restores on reattach, surviving restarts (default off — [ssd-kv-cold-tier.md](../design/ssd-kv-cold-tier.md)) |
+| `--ssd-cache-max <GB>` | SSD tier byte cap, oldest-mtime evicted first (default 32; `--ssd-cache` only) |
+| `--ssd-cache-verify` | Verify every tensor hash on restore, not just the header (integrity paranoia; roughly doubles restore reads; `--ssd-cache` only) |
+| `--ssd-demote-idle <sec>` | Idle prompt-cache entries spill to the SSD tier and free GPU memory after this long (default 300 with `--ssd-cache`; `0` disables) |
 | `--kv-quant config\|off\|4\|8\|turbo[:k<bits>v<bits>]` | KV cache quantization: per-layer `kv_config.json`, bf16, uniform bits, or TurboQuant (rotation-based, default `k8v3` — [turboquant-kv.md](../design/turboquant-kv.md); full-attention layers only, solo-only/serial) (default `off` — quantized KV trades 5–20% decode speed for memory headroom, so it's opt-in) |
 | `--paged-kv` | OPTIONAL vLLM-style paged KV cache (block pool + gather before the stock SDPA; env `MLX_BUN_PAGED_KV=1`) — bit-exact with the plain path, default off. v1: serial only (pins `--batch 1` unless `--batch` is given; refuses `--batch N>1`, `--kv-quant`, `--draft-model`), Gemma4-family, bf16; bypasses the prompt cache and runs uncompiled decode. Expect a small decode cost at batch=1 — v1 ships the abstraction for batched/CoW follow-ups ([paged-kv-cache.md](../design/paged-kv-cache.md)) |
 | `--paged-kv-block-size <n>` | Tokens per KV block (default 256 = the plain cache's growth step; `--paged-kv` only) |

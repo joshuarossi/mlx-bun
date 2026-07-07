@@ -31,7 +31,7 @@ const template = await ChatTemplate.load(dir);
 // Gemma4Model and MiniCPM5Model can still be imported directly from "mlx-bun"
 // if you need the concrete type. Qwen35Model is NOT exported from the public
 // package — use createModel/RuntimeModel (preferred dispatch), or import from
-// "./src/model/qwen35" in-repo.
+// "./src/model/qwen3_5" in-repo.
 
 const ids = tok.encode(template.render([{ role: "user", content: "hi" }]));
 const promptIds = ids[0] === ids[1] && ids[0] === tok.bosTokenId ? ids.slice(1) : ids;
@@ -45,6 +45,14 @@ console.log(gen.stats);                          // set once iteration ends
 
 Weight loading is lazy (mmap + mlx native loader): construction is
 milliseconds; weights materialize on first forward.
+
+> **First run:** library consumers bypass the CLI's first-run step, so
+> call `await ensureNativeRuntime()` once before constructing a model on
+> a machine that may not have the MLX native runtime yet — it downloads
+> the sha256-verified native pack to `~/Library/Caches/mlx-bun/` and is
+> a no-op when the runtime is already present (beside the executable,
+> already cached, or installed via homebrew). `nativeRuntimeDir()`
+> returns the resolved directory, or `null` on a fresh machine.
 
 ## generate(model, promptTokens, options) → Generation
 
@@ -66,13 +74,20 @@ after an early `break`, which cleanly cancels the in-flight step).
 | `kvConfig` | off | per-layer mixed precision from `kv_config.json` (`config.kvQuant`); overrides `kvBits`, start 0 — optiq serve semantics |
 | `adapters` | none | mounted LoRA adapter ids, applied for exactly this generation |
 | `promptEmbeddings` / `imageMask` | — | vision path (see `src/vision/`) |
+| `logprobs` / `topLogprobs` | off | per-token logprob capture (mlx_lm.server parity): `logprobs` captures the emitted token's log-probability, `topLogprobs` (0/unset = off) captures the top-k (id, logprob) pairs — same full-vocab log-softmax distribution mlx-lm's generate_step samples from, taken after logits processors and before the sampler |
+| `grammar` | off | a compiled `GrammarController` (`src/grammar.ts`) for structured output — masks invalid tokens to `-inf` each step (L2-class, oMLX oracle) |
+| `turboQuant` | off | TurboQuant KV scheme (docs/design/turboquant-kv.md), a rotation-based alternative to uniform `kvBits`; mutually exclusive with `kvBits`/`kvConfig` |
+| `pagedKv` | off | `{ blockSize? }` — OPTIONAL paged KV cache (docs/design/paged-kv-cache.md); v1 scope is serial batch=1 Gemma4-family bf16, mutually exclusive with `kvBits`/`kvConfig`/`turboQuant`/draft/compiled decode |
 
 `GenerateStats`: `promptTokens`, `cachedTokens`, `generatedTokens`,
 `prefillTps` / `prefillMs`, `decodeTps` / `decodeMs`, `cacheTokens`
 (the exact token sequence whose KV is in the cache — feed it to
 `PromptCache.put`). Timing semantics match mlx-lm: the prompt clock
 runs until the first token arrives (the prefill→decode boundary is
-prompt time), the decode clock from there.
+prompt time), the decode clock from there. An optional `spec` field
+carries speculative-decoding telemetry (serve `--draft-model` path
+only): `drafted`, `accepted`, `targetCalls`, and per-draft-position
+`draftedByPos` / `acceptedByPos` counts.
 
 ## Serving pieces
 
@@ -82,7 +97,7 @@ import { loadContext, createServer } from "mlx-bun";
 const ctx = await loadContext(dir, "my-model", { memoryBudgetBytes: 12e9 });
 const server = createServer(ctx, 8080, {
   promptCacheBytes: 2e9,        // byte-capped LRU (never count-capped)
-  kvQuant: undefined,           // default: kv_config.json; "off" | bits
+  kvQuant: undefined,           // default: kv_config.json; "off" | "config" | bits
   memoryBudgetBytes: 12e9,      // admission control — the only OOM defense
 });
 ```
@@ -137,11 +152,13 @@ under one adapter must not seed another's prefill).
 ```ts
 import { saveKvCache, loadKvCache } from "./src/kv-store";
 saveKvCache("/tmp/prefix.kv", tokens, caches);       // page-aligned file
-const { tokens, caches, mmap } = loadKvCache("/tmp/prefix.kv", model as Gemma4Model);
+const { tokens, caches, mmap } = loadKvCache("/tmp/prefix.kv", model);
 // reload is a zero-copy MAP_PRIVATE mmap straight to the GPU (~1 ms);
 // keep `mmap` referenced as long as the caches live
-// Note: loadKvCache is typed to accept Gemma4Model, but only uses model.layers.length
-// at runtime — a cast from RuntimeModel is safe for any model that has a layers array.
+// Note: loadKvCache accepts anything with makeCache(): Cache[] — it validates
+// the entry count against the cache list makeCache() returns (not
+// model.layers.length, which is wrong for KV-shared models like e4b, whose
+// makeCache() returns donors only). RuntimeModel qualifies directly, no cast.
 ```
 
 Quantized caches are not persistable yet (documented gap).
