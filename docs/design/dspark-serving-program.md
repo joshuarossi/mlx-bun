@@ -89,7 +89,11 @@ fine on a loaded box; the FINAL pre/post pair must be clean-machine.
 The expected big lever: 6.9 GB → ~1.8 GB kills bandwidth AND memory pressure.
 mlx-native group quantization, no research dependency.
 
-- [ ] **1a. `scripts/dspark-quantize-drafter.ts`** — reads a DeepSpec-format
+- [x] **1a. `scripts/dspark-quantize-drafter.ts`** *(DONE 2026-07-07 — thin
+  driver over the house quantizer: `src/spec/dspark/quantize-drafter.ts`
+  adds a `quantizePredicate` overlay (confidence_head kept bf16, recorded
+  as the mlx `false` convention); load smoke = DeepspecDrafter reload +
+  one quantized fc forward)* — reads a DeepSpec-format
   checkpoint dir, writes a quantized sibling (same config.json + arch stamp,
   plus the house `quantization: {bits, group_size}` block). Per-tensor
   policy:
@@ -102,13 +106,23 @@ mlx-native group quantization, no research dependency.
   - KEEP bf16: all norms, `layers.*.layer_scalar`, `confidence_head.proj.*`
     (tiny), biases.
   - Output verified loadable before exit (load smoke).
-- [ ] **1b. Quantized forward in `src/spec/dspark/deepspec-module.ts`**:
+- [x] **1b. Quantized forward in `src/spec/dspark/deepspec-module.ts`**
+  *(DONE 2026-07-07 — MatW/TableW weight representation: `.scales` sibling
+  detection, quantized_matmul transpose=true for every Linear, mlx
+  QuantizedEmbedding gather-dequant for embed_tokens/markov_w1; bf16 path
+  keeps the lazy transpose views untouched; synthetic quantized-checkpoint
+  describe block added — 8-bit tracks bf16 token-for-token)*:
   detect quantization at load (scales/biases sibling keys — the house
   detection pattern), route matmuls through `quantized_matmul` and lookups
   through the quantized-gather path; bf16 path untouched (both formats load
   through the same class — kind detection unchanged). Synthetic-format test
   extended with a tiny quantized checkpoint (same file, new describe block).
-- [ ] **1c. The acceptance A/B harness** — `scripts/dspark-drafter-ab.ts`:
+- [x] **1c. The acceptance A/B harness** *(DONE 2026-07-07 — runner drives
+  `specServeRun` per arm (target loaded once, drafters sequential); spec
+  telemetry extended with per-position draftedByPos/acceptedByPos; the
+  stats/verdict math is model-free in `src/spec/dspark/ab-stats.ts`,
+  unit-tested in tests/dspark-ab-stats.test.ts; chat-template rendering
+  pins enable_thinking OFF)* — `scripts/dspark-drafter-ab.ts`:
   same target, same prompt set (≥32 prompts, temp 0), drafter A vs drafter
   B; reports per-position acceptance, τ, tok/s, and a paired verdict. This
   is THE gate for every quantization experiment from here on (Phase 5
@@ -250,11 +264,15 @@ default-off), spec = opt-in until it WINS a clean-machine paired A/B.
 
 ## Phase 5 — TurboQuant application (the trigger event)
 
-When TurboQuant (Phase 13) merges: the drafter is its lowest-risk first
-customer — one-number gate, no KL/eval battery. **TQ's role here is
-PRESERVATION AT EQUAL BITS** (Gaussian-distributed vectors + finer step
-sizes around the peak → strictly better quant than affine at the same
-bpw), not deeper compression.
+Trigger, precisely: **TQ WEIGHT quantization** in the convert tooling — PR
+#20 (2026-07-07) landed TurboQuant for KV; the rotation-based weight-side
+is the noted follow-up (turboquant-kv.md), and it's what the drafter
+needs. The drafter is its lowest-risk first customer — one-number gate,
+no KL/eval battery. **TQ's HYPOTHESIS here is PRESERVATION AT EQUAL BITS**
+(Gaussian-distributed vectors + finer step sizes around the peak, where
+affine spends half its levels on tails) — a hypothesis 5b MEASURES, never
+a default: TurboQuant earns its place the same way everything in this
+repo does.
 
 - [ ] **5a.** Extend `dspark-quantize-drafter.ts` with the TurboQuant
   scheme.
@@ -265,14 +283,16 @@ bpw), not deeper compression.
   the lower-bpw ladder (3.5 / 3.0 / 2.5) → acceptance-per-byte curve,
   knee adopted (dont-delete-optionality for the rest).
 - [ ] **5b″. TQ IS HOW, SENSITIVITY-AWARE IS WHAT (Josh)** — two orthogonal
-  axes, never mixed: TQ is the quantization METHOD and it applies to ALL
-  tensors (strictly better at equal bits — no tensor prefers affine);
-  sensitivity is the bit ALLOCATION — the 1e knapsack's candidate set
-  becomes {TQ-2, TQ-3, TQ-4, TQ-8} per group, measured KL cost each, greedy
-  to target BPW. The shipped artifact is TQ-everywhere with
-  sensitivity-allocated bits. Affine survives only as (a) the Phase-1
-  pre-TurboQuant baseline and (b) the control arm in the 5b equal-bpw
-  comparison — never a component of the final artifact.
+  axes, never mixed: TQ vs affine is a METHOD question (decided by 5b's
+  equal-bpw measurement — a method that wins at equal bits wins for every
+  tensor, so there is no reason to mix METHODS within an artifact);
+  sensitivity is the bit ALLOCATION question (the 1e knapsack, whatever
+  the method — candidate set {method-2, method-3, method-4, method-8} per
+  group, measured KL cost each, greedy to target BPW). IF 5b confirms TQ,
+  the artifact is TQ-uniform at knapsack-allocated bits; if it doesn't,
+  affine-uniform at knapsack-allocated bits — either way the OUTCOME of
+  the measurement, not a premise. Nothing here is "on by default";
+  defaults are Phase 4e/6 decisions made on clean-machine numbers.
 - [ ] **5b′. PER-TENSOR MIXED PRECISION rungs** (Josh, 2026-07-07). The
   intuition "only 5 layers = few knobs" undercounts: the drafter's mass is
   ~10 TENSOR GROUPS, and two of them are 58% of the bytes — `lm_head`
