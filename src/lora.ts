@@ -31,6 +31,12 @@ export interface AdapterInfo {
   /** Adapter tensors for modules outside the 7 target suffixes
    *  (per-layer-input projections etc.) — skipped, like the reference. */
   skippedTensors: number;
+  /** Actual resident bytes of this adapter's mounted lora_a/lora_b arrays
+   *  (sum of MlxArray.nbytes — the real RAM cost while mounted, not the
+   *  on-disk safetensors size). Web chat's adapter routing table (plan
+   *  §5.6/§9 Phase 2) shows this per loaded adapter instead of guessing
+   *  from file size. */
+  ramBytes: number;
 }
 
 /** Read every tensor from an adapter safetensors file (small, f32) into
@@ -266,6 +272,7 @@ export class AdapterManager {
       linear.loraState = this.#model.loraState;
     }
 
+    const ramBytes = validated.reduce((sum, { lw }) => sum + lw.a.nbytes + lw.b.nbytes, 0);
     const info: AdapterInfo = {
       id,
       path,
@@ -274,6 +281,7 @@ export class AdapterManager {
       sizeBytes: statSync(weightsFile).size,
       mountedLayers: validated.length,
       skippedTensors: skipped,
+      ramBytes,
     };
     this.#mounted.set(id, info);
     this.#arrays.set(id, validated.flatMap(({ lw }) => [lw.a, lw.b]));

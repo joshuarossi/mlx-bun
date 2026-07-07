@@ -168,6 +168,12 @@ Non-streaming response:
   "usage": {
     "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
     "prompt_tokens_details": { "cached_tokens": 0 },  // prompt-cache reuse
+    "lane": "serial",              // "serial" | "serial+spec" | "batched" —
+                                    //   which execution lane served THIS
+                                    //   request (GenerationGateway.willBatch
+                                    //   + whether a draft actually contributed
+                                    //   accepted tokens). Chat completions
+                                    //   only (streaming: final usage chunk).
     "speculation": {               // only when a draft source is mounted
       "drafted": 0,                //   draft tokens proposed
       "accepted": 0,               //   drafts accepted by the verify step
@@ -176,6 +182,13 @@ Non-streaming response:
   }
 }
 ```
+
+`usage.lane` is server-driven, never client-inferred (the web chat's perf-strip
+lane badge reads it, not a heuristic): `"batched"` when `--batch N` picked up
+the request, `"serial+spec"` when a mounted draft source actually
+contributed accepted draft tokens to this reply, `"serial"` otherwise. It
+rides the SAME usage block on both streaming (final chunk before `[DONE]`) and
+non-streaming responses.
 
 Speculative decoding is a **server-level mode** (`serve --draft-model`,
 or the model-free `serve --draft-kind ngram`, which mounts no draft
@@ -458,10 +471,44 @@ curl localhost:8080/v1/embeddings -H 'content-type: application/json' \
 `{ "object": "list", "data": [{ "id": "<model id>", "object": "model",
 "created": <unix s>, … }] }`
 
-The served model is FIRST (with extra capability fields:
-`context_window`, `reasoning`, `vision`, `audio`, `owned_by`), followed by
-every other servable model the local registry knows (mlx-lm scans the HF
-cache here; the registry is that scan, filtered to supported architectures).
+The served model is FIRST, with extra capability fields:
+
+```jsonc
+{
+  "id": "<served model id>", "object": "model", "created": 0,
+  "owned_by": "mlx-bun",
+  "context_window": 32768,
+  "reasoning": false,           // switchable thinking channel (gates the
+                                 //   web chat's thinking toggle)
+  "vision": false,               // image input accepted (tower loaded or
+                                 //   lazily loadable)
+  "audio": false,                // input_audio content parts accepted
+                                 //   (tower loaded or lazily loadable)
+  "gen_defaults": {              // model-author sampling defaults
+    "temperature": 0.7,          //   (generation_config.json, with any
+    "top_p": 0.95,               //   --temperature/--top-p/--top-k server
+    "top_k": 0                   //   override applied); null when neither
+                                 //   the model nor the server set one
+  }
+}
+```
+
+Followed by every other servable model the local registry knows (mlx-lm
+scans the HF cache here; the registry is that scan, filtered to supported
+architectures, one row per repo via `listCanonical()` — duplicate snapshots
+from upstream re-pushes are not separate entries):
+
+```jsonc
+{ "id": "<repo id>", "object": "model", "created": 0,
+  "vision": false,               // visionCapable(): sidecar OR encoder-free
+                                 //   unified vision config
+  "tier": "targeted" | "generic" // supportTier(): dedicated/generated forward
+                                 //   ("targeted") vs the Tier-0 universal
+                                 //   module ("generic"); entries with no tier
+                                 //   (unsupported) are filtered out entirely
+}
+```
+
 `GET /v1/models/<id>` filters the list to that id — same list shape,
 matching `mlx_lm.server`.
 
@@ -521,9 +568,13 @@ tensor bytes are read).
     "model_type": "gemma3" | "minicpm5" | "qwen3" | …,
     "size_bytes": 0,
     "quant_bits": 4,
-    "vision": false,             // vision-capable (sidecar or unified tower)
+    "vision": false,             // visionCapable(): sidecar OR encoder-free
+                                 //   unified vision config (not sidecar-only)
     "audio": false,              // audio-capable (audio_config + sidecar audio-tower tensors)
-    "supported": true,           // recognized model family
+    "supported": true,           // supportTier() !== null (recognized family)
+    "support_tier": "targeted" | "generic" | null,  // dedicated/generated
+                                 //   forward vs the Tier-0 universal module;
+                                 //   null only when supported is false
     "serving": false,            // currently loaded in this server
     "assessment": {              // null if config unreadable
       "fits": true,
@@ -533,6 +584,173 @@ tensor bytes are read).
   }]
 }
 ```
+
+One row per repo (`listCanonical()`; duplicate snapshots from upstream
+re-pushes surface only via the CLI's `mlx-bun ls --all-revisions`).
+
+## GET /api/gc/plan · POST /api/gc/execute
+
+Reclaim disk from superseded snapshots + orphaned blobs in the local HF
+cache — the web-UI equivalent of `mlx-bun gc` (thin wrappers over
+`src/registry.ts`'s `planGc`/`executeGc`; same planner the CLI uses). Every
+downloaded revision the HF cache keeps a `snapshots/<commit>` dir for; a
+snapshot no `refs/*` points at is superseded and, once no surviving snapshot
+symlinks to a blob, that blob is dead too. Loopback-served admin routes, no
+separate auth (same bind as every other `/api/*` route).
+
+`GET /api/gc/plan` — read-only (config.json + safetensors index reads only,
+no tensor bytes, no deletion):
+
+```jsonc
+{
+  "ok": true,
+  "superseded": [{
+    "repo_id": "…",
+    "prune_snapshots": 1,        // unreferenced, safe to delete
+    "skipped_snapshots": 0,      // unreferenced but hold files the kept
+                                 //   revision lacks — needs --force via the
+                                 //   CLI to actually prune; not deletable here
+    "dead_blobs": 3,
+    "reclaim_bytes": 0
+  }],
+  "reclaim_bytes": 0             // sum across every repo
+}
+```
+
+`POST /api/gc/execute` with body `{"yes": true}` — deletes exactly what a
+fresh plan would show (recomputed at execute time, not the caller's stale
+plan); `{"yes": true}` is required or the request 400s, mirroring the CLI's
+`--yes` gate so a stray call can't delete anything by accident:
+
+```jsonc
+{ "ok": true, "snapshots": 1, "blobs": 3, "reclaimed_bytes": 0 }
+```
+
+Errors follow the same `{ "ok": false, "error": "…" }` shape as the other
+`/api/*` job routes.
+
+## GET /api/memory/\* · POST /api/memory/init
+
+Thin loopback JSON wrappers over `src/memory/vault.ts` for the web chat's
+Memory panel (docs/design/web-chat-redesign.md §5.5) — same loopback-only
+admin-route posture as `/api/gc/*`, no separate auth. Handlers live in
+`src/memory/rest.ts`; they never touch the agent-tool surface
+(`src/memory/tools.ts`), which stays read-only and unchanged. Every route
+below degrades gracefully — a missing vault, an unknown article, or a bad
+param returns `{ "ok": false, ... }` (with an appropriate HTTP status), never
+a 500 or an unhandled throw.
+
+When no vault exists yet, every `GET` route (except `/init`) returns:
+
+```jsonc
+{ "ok": false, "enabled": false, "error": "no memory vault yet", "root": "…" }
+```
+
+`GET /api/memory/status` — `vaultStatus()` as JSON:
+
+```jsonc
+{ "ok": true, "enabled": true, "status": { "root": "…", "exists": true, "articleCount": 12, "referenceCount": 9, "isGitRepo": true, "recentArticles": [{ "article": "…", "mtimeMs": 0 }] } }
+```
+
+`GET /api/memory/list` — article stems plus `Reference/*` doc ids, kept
+separate (mirrors `memory_list`):
+
+```jsonc
+{ "ok": true, "articles": ["Alpha", "Beta"], "reference": ["Reference/mlx-bun_README"] }
+```
+
+`GET /api/memory/search?q=<query>&scope=all|articles|reference&limit=50` —
+wraps `searchArticles`; same summaries/hits shape the `memory_search` tool
+formats from:
+
+```jsonc
+{ "ok": true, "summaries": [{ "article": "…", "occurrences": 3, "matched_terms": ["…"] }], "hits": [{ "article": "…", "anchor": "…", "line": 10, "excerpt": "…" }] }
+```
+
+`GET /api/memory/article?name=<article>` — rendered source plus the
+deterministic metadata the panel needs to render it (infobox, lead, series
+banner, section skeleton) without re-parsing client-side; 404s
+`{ "ok": false }` for an unknown name:
+
+```jsonc
+{ "ok": true, "name": "…", "path": "…", "content": "# …", "infobox": { "type": "…", "entityKind": "thing", "fields": [] }, "lead": "…", "series": null, "structure": [] }
+```
+
+`GET /api/memory/links?name=<article>` — inbound/outbound wikilinks (same
+data `memory_links` resolves); articles only, not `Reference/*` (matching
+the tool's own scope):
+
+```jsonc
+{ "ok": true, "name": "…", "outbound": ["…"], "inbound": ["…"] }
+```
+
+`GET /api/memory/history?name=<article>&limit=50` — the article's git log
+(read-only `git log` plumbing on the vault's own repo, via `Bun.spawn` —
+never a shell string):
+
+```jsonc
+{ "ok": true, "name": "…", "isGitRepo": true, "entries": [{ "hash": "…", "date": "YYYY-MM-DD", "subject": "…" }] }
+```
+
+`GET /api/memory/diff?name=<article>&rev=<hash>` — that commit's diff for
+the article (`git show <rev> -- <path>`). `rev` must match
+`/^[0-9a-f]{4,40}$/` (a bare commit hash — never a ref expression like
+`HEAD~1` or `main^`) or the request 400s before touching git; `name` is
+resolved through the same existence-checked normalization `readArticle`
+uses, so a path-traversal or otherwise-invalid name 404s rather than
+reaching the `git` argv:
+
+```jsonc
+{ "ok": true, "name": "…", "rev": "…", "diff": "diff --git a/articles/…" }
+```
+
+`POST /api/memory/init` with optional body `{"path"?: string}` — the
+first-run consent-card backend. Delegates to the exact same `setupVault()`
+the CLI's `mlx-bun memory init` calls (idempotent: create dirs, write
+README + Meta pages only if missing, git init + initial commit); omits only
+the CLI's interactive extras (seed-from-existing-vault prompt, nightly
+schedule prompt), which stay TTY-only. `path`, if given, must resolve under
+the default vault root or the OS temp directory — `setupVault()` mkdir's
+into it and `git init`s it if it isn't already a repo, so anything outside
+those trees 400s before touching the filesystem rather than letting a
+caller redirect vault setup at an arbitrary directory:
+
+```jsonc
+{ "ok": true, "result": { "root": "…", "created": ["…"], "gitInitialized": true, "alreadySetUp": false }, "status": { "root": "…", "exists": true, "articleCount": 0, "referenceCount": 9, "isGitRepo": true, "recentArticles": [] } }
+```
+
+## GET /api/settings/tool-approvals · DELETE /api/settings/tool-approvals
+
+The web chat's durable "always allow this tool" list for gated tools
+(`bash`/`edit`/`write`) — docs/design/web-chat-redesign.md §5.4/§6.5/§9
+Phase 2, risk #6. Backed by `~/.mlx-bun/tool-approvals.json`
+(`src/tool-approvals.ts`), a versioned `{version, allows}` file (same
+plain-JSON-at-0600 convention as `~/.mlx-bun/hf.json`) keyed by stable tool
+NAME, not per-call arguments — "always allow bash" means every future
+`bash` call skips the browser's approval card, on every chat and every
+browser tab, until forgotten. These two routes are read/forget only:
+granting an always-allow happens through the approval card itself (the
+`approval` WS frame on `/ws/chat`, `alwaysAllow: true`), never a bare
+settings-form POST.
+
+`GET /api/settings/tool-approvals`:
+
+```jsonc
+{ "ok": true, "alwaysAllow": ["bash", "edit"] }
+```
+
+`DELETE /api/settings/tool-approvals` with body `{"tool": "bash"}` —
+revokes one tool's always-allow (idempotent; forgetting an entry that
+isn't present is not an error). Returns the updated set:
+
+```jsonc
+{ "ok": true, "alwaysAllow": ["edit"] }
+```
+
+Separately, `GET /api/settings/hf-token` / `POST /api/settings/hf-token`
+manage the Hugging Face write token the same settings modal's other
+section uses (see the `upload` CLI command in [cli.md](./cli.md) for the
+push-to-hub flow this token drives).
 
 ## GET /downloads
 
@@ -556,6 +774,175 @@ initiated via `mlx-bun download` or the web library panel.
   }]
 }
 ```
+
+## Model Hub (`/api/hub/*`)
+
+The web chat's Model Hub panel (docs/design/web-chat-redesign.md §9 Phase 3,
+beat-matrix Axis 3): browse downloaded models, search Hugging Face, and kick
+off downloads — all loopback-served, no separate auth, same posture as
+`/api/gc/*` and `/api/memory/*`. Handlers live in `src/hub-rest.ts` (pure
+functions, no loaded-model dependency); route dispatch in `src/server.ts`
+just matches path + method.
+
+`GET /api/hub/local` — every model in the local registry (same source
+`/library` reads), each with a `/fit`-computed hardware verdict at a fixed
+8k context — the beat matrix's "real hardware verdict per row" that optiq's
+Hub lacks:
+
+```jsonc
+{
+  "ok": true,
+  "models": [{
+    "repo_id": "…",
+    "model_type": "gemma3" | "minicpm5" | "qwen3" | …,
+    "size_bytes": 0,
+    "quant_bits": 4,
+    "quant_group_size": 64,
+    "vision": false,
+    "supported": true,
+    "support_tier": "targeted" | "generic" | null,
+    "assessment": { "fits": true, "max_safe_context": 8192, "predicted_decode_tps": 0.0 } | null
+  }]
+}
+```
+
+`GET /api/hub/search?q=<query>` — server-side Hugging Face model search,
+filtered to the `mlx` library tag (the tag every mlx-community / MLX-format
+repo carries) so results are MLX-compatible by construction, normalized to
+the fields the Hub panel needs. Never downloads anything — search only.
+Degrades gracefully on any network failure (DNS, timeout, non-2xx) to an
+explicit offline state rather than a 500:
+
+```jsonc
+{ "ok": true, "offline": false, "results": [{ "id": "mlx-community/…", "downloads": 0, "likes": 0, "size_estimate": null }] }
+```
+
+```jsonc
+{ "ok": true, "offline": true, "error": "…", "results": [] }
+```
+
+`size_estimate` is always `null` in v1 — the search endpoint doesn't return
+per-repo file sizes and a second per-repo call would slow the search down;
+the fit badge lands once a model is actually downloaded (`/api/hub/local`).
+
+`POST /api/hub/download` with body `{"repo": "org/name"}` — starts a
+background download via the existing `downloadModel()` +
+`src/download.ts` process tracker and returns immediately; progress is
+already visible via [`GET /downloads`](#get-downloads). Refuses a duplicate
+kick-off for a repo that's already downloading:
+
+```jsonc
+{ "ok": true, "repo": "org/name", "started": true }
+```
+
+```jsonc
+{ "ok": false, "error": "a download for org/name is already in progress" }
+```
+(409)
+
+`POST /api/hub/serve` with body `{"model": "org/name"}` — **always answers
+`restart_required`, never performs a live in-process swap.** Investigated
+against `docs/design/runtime-isolation.md`: the web chat's `/ws/chat` path
+is explicitly not proxied even under `--isolate` (`src/serve/isolate.ts`
+answers it 501), and `--isolate` itself is opt-in, not the default — so the
+process a web chat session is actually attached to always has exactly one
+model loaded with no drop-weights-and-reload seam reachable from that path.
+(The `--isolate` proxy's `ModelPool`, P2 of that doc, *is* a real
+spawn-overlap live-swap mechanism — it just lives entirely on the isolated
+`/v1/*` HTTP surface, not on `/ws/chat`.) Faking a swap here would leave the
+server in a half-state; the honest answer is the restart command:
+
+```jsonc
+{ "ok": false, "restart_required": true, "command": "mlx-bun serve org/name" }
+```
+
+Wiring `/ws/chat` through the isolate proxy (or otherwise reaching
+`ModelPool`'s spawn-overlap swap from the web chat) is the Hub's live-swap
+follow-up, not yet scheduled.
+
+## GET /api/sessions/search · GET /api/sessions/export
+
+Full-text search across web-chat session message **bodies** and chat
+export (docs/design/web-chat-redesign.md §9 Phase 3, beat-matrix Axis
+10/11's full-text-search BEAT: Claude's own session search is title-only —
+a widely-cited annoyance — and local storage removes any server-cost
+excuse to skip real body search). Same loopback-only, no-separate-auth
+posture as `/api/memory/*`/`/api/hub/*`. Handlers live in
+`src/serve/session-search.ts` (pure, read-only, no loaded-model
+dependency); route dispatch in `src/server.ts` just matches path + method.
+Both routes read the same session directory the web chat's `PiWebSession`
+writes to (`~/.mlx-bun/sessions`, pi's own JSONL-per-session format) and
+are JSONL-tolerant — a corrupt or mid-write line is skipped, never thrown.
+
+`GET /api/sessions/search?q=<query>` — case-insensitive substring scan (v1;
+no index — personal-chat-corpus scale, see the module header comment for
+the upgrade path if the corpus ever grows enough to matter) over every
+session file's user/assistant message text, capped at 50 matches total (10
+per session). Each match reports a plain-text ±60-char snippet plus the
+match's own `[start,end)` offsets **into that snippet** — offsets, not
+pre-rendered HTML highlighting, so the frontend escapes the snippet then
+inserts its own `<mark>` (the same escape-then-restore discipline the
+markdown renderer uses for code spans, applied here to search
+highlighting instead):
+
+```jsonc
+{
+  "ok": true,
+  "results": [{
+    "sessionPath": "/Users/…/.mlx-bun/sessions/20260706_…jsonl",
+    "sessionTitle": "Chicken recipes",
+    "matches": [{ "snippet": "…tell me about rosemary and thyme…", "ranges": [[14, 22]], "role": "user" }]
+  }]
+}
+```
+
+400s `{"ok": false, "error": "q is required"}` without a query.
+
+`GET /api/sessions/export?path=<session file>` — the raw session JSONL,
+parsed into an array of entries (one per line, in file order) — the
+frontend's Markdown/JSON export renders from this for a session that isn't
+the currently-open one (the open session's own history is already loaded
+client-side, but this endpoint is used uniformly for both cases so there's
+one code path, not two). `path` must resolve under the session directory —
+exactly the same guard shape as `PiWebSession`'s private
+`isUnderSessionDir` (the root itself, or a path prefixed by `root + "/"`)
+— reimplemented as a small standalone check in `session-search.ts` rather
+than exported from that class:
+
+```jsonc
+{ "ok": true, "path": "…", "entries": [{ "type": "session", "id": "…", "cwd": "…" }, { "type": "message", "message": { "role": "user", "content": "…" } }] }
+```
+
+400s without `path`; 403s a `path` outside the session directory; 404s a
+path inside the directory that doesn't exist on disk.
+
+## Web app static routes + PWA installability
+
+The web chat (`GET /`) and everything it loads same-origin, no CDN, ever:
+
+| Route | Content | Notes |
+| --- | --- | --- |
+| `GET /` | `src/web/app.html` | The unified SPA shell. |
+| `GET /assets/app.js` | `src/web/app.js` | GENERATED from `src/web/src/*.ts` by `bun scripts/build-web.ts` — see `tests/web-build.test.ts`'s freshness gate. |
+| `GET /assets/hljs.js`, `GET /assets/hljs.css` | `src/web/vendor/hljs*` | Vendored syntax highlighting, no CDN (see that dir's README). |
+| `GET /manifest.webmanifest` | `src/web/manifest.webmanifest` | PWA manifest — name/short_name/theme colors match the app's design tokens. |
+| `GET /assets/icon.svg` | `src/web/icon.svg` | A single inline SVG app icon. No binary PNGs are shipped (the hygiene gate forbids tracked binaries beyond its allowlist); some browsers don't render an SVG as an install icon — accepted, noted in [features-matrix.md](features-matrix.md). |
+| `GET /sw.js` | `src/web/sw.js` | Service worker, served `cache-control: no-store` at the root scope (required for a worker to control `/`). |
+
+**PWA scope (beat-matrix Axis 10 "PWA installability"):** the manifest +
+service worker exist for *installability and an instant static-shell
+paint* — "Add to Home Screen" / a browser "Install app" prompt, and the
+next visit's HTML/JS/CSS loading from cache while the WebSocket connects.
+This is explicitly **not** offline chat: `src/web/sw.js`'s fetch handler
+only intercepts the exact shell files listed above (`/`, `/assets/app.js`,
+`/assets/hljs.js`, `/assets/hljs.css`) and lets every dynamic route
+(`/api/*`, `/v1/*`, `/ws/chat`, `/downloads`, …) fall straight through to
+the network unconditionally — caching a chat API response would be
+actively misleading given the app is a thin client over a local model
+process that has to actually be running. Registration
+(`src/web/src/shell.ts`'s `initServiceWorker()`) is guarded to secure
+contexts: `https:` or `localhost`/`127.0.0.1`, matching the browser's own
+service-worker eligibility rule.
 
 ## GET /fit
 
@@ -594,21 +981,93 @@ the prediction.
 
 ## Adapters (LoRA hot-swap)
 
-- `GET /v1/adapters` — `{ adapters: [{ id, path, rank, scale, size_bytes, mounted_layers }] }`
+- `GET /v1/adapters` — `{ adapters: [{ id, path, rank, scale, size_bytes,
+  mounted_layers, ram_bytes }] }` — currently-mounted adapters only.
+  `ram_bytes` is the actual resident size of the adapter's mounted
+  `lora_a`/`lora_b` arrays (summed `MlxArray.nbytes` — real RAM cost while
+  mounted, not a guess from the on-disk file size); the web chat's adapter
+  routing table (§5.6 of `docs/design/web-chat-redesign.md`) shows this per
+  loaded adapter.
+- `GET /v1/adapters/available` — `{ adapters: [{ id, path, rank, scale,
+  base_model, mounted, compatible }] }` — every adapter found on disk
+  (`~/.cache/mlx-bun-finetunes`, `~/.cache/mlx-bun/adapters`), unfiltered.
+  `compatible` is true when the adapter's recorded base model matches the
+  currently-served model (compared by bare repo name) or the adapter
+  recorded no base at all; `mounted` is true when it's already loaded.
+  The web chat's adapter chip uses `compatible` to gray out entries it
+  won't let you select rather than hiding them.
 - `POST /v1/adapters` — `{ "id": "...", "path": "/dir" }`; mounts
-  through the generation queue (never races a forward pass). 400 on
-  shape/compat mismatch — validation is all-or-nothing.
+  through the generation queue (never races a forward pass). Response:
+  `{ id, mounted_layers, rank, scale, ram_bytes }`. 400 on shape/compat
+  mismatch — validation is all-or-nothing.
 - `DELETE /v1/adapters/<id>` — unmount; 404 if not mounted.
 
-Select per request with the `adapter` body field. Prompt-cache entries
-are namespaced per adapter spec, so switching adapters never reuses
-another adapter's KV.
+Select per request with the `adapter` body field, which also accepts a
+composed spec — `"a+b"` (or `"a,b"`) stacks two mounted adapters, their
+LoRA residuals summed in order (`AdapterManager.resolveSpec` /
+`parseAdapterSpec` in `src/lora.ts`); every named id must already be
+mounted or the request 400s with the unknown id named. The web chat's
+adapter routing table exposes this as a "stack" action on top of the
+composer's single-select quick-switcher. Prompt-cache entries are
+namespaced per adapter spec (including composed ones), so switching
+adapters — or switching which ones are stacked — never reuses another
+combination's KV.
 
 `serve --adapter <dir>` (alias `--adapter-path`, mlx_lm.server's
 spelling) mounts an adapter at startup through this same machinery and
 makes it the default for requests that send no `adapter` field; an
 explicit `adapter` (including `"none"`) always wins, and hot-swap via
 these endpoints is unchanged.
+
+## App-aware assistant (`/ws/chat`)
+
+The web chat agent can see and act on the app it lives in —
+`docs/design/web-chat-redesign.md` §6.6, beat matrix Axis 12. No
+screenshots and no vision model are involved: the browser sends a
+structured DOM snapshot as a WS frame, and the model gets three tools that
+read/navigate/highlight that snapshot.
+
+Three tools join the web chat's tool allowlist unconditionally (same
+class as `web_search`/`read` — read-only-on-the-machine, never gated by
+the approval card, regardless of memory or `codingTools` state; see
+`APP_AWARE_TOOL_NAMES` in `src/pi-web.ts`):
+
+- **`get_current_app_context`** — returns the last context the browser
+  pushed: `{ route, view?, step?, snapshot }`. `snapshot` is a capped
+  (~120) list of visible interactive elements as `{ref, label, kind,
+  role?, selector, spotlightId?}`, agent chrome excluded.
+- **`navigate_app({ route | page })`** — validates against the route
+  catalog (`chat`, `quantize`, `finetune`, `dataset`, `status`; unknown
+  routes 400 as a tool error, never silently sent to the browser) and
+  emits a `ui_navigate` frame. Reversible; no approval needed.
+- **`spotlight_ui({ ref | label | selector | target, route?, message?
+  })`** — emits a `ui_spotlight` frame; the browser resolves the target
+  (ref from its last snapshot, then live selector, then fuzzy label
+  match, then a curated catalog id) and shows a brief highlight. Never
+  blocks: the overlay traps no focus and passes clicks straight through
+  to the highlighted control, auto-dismisses in ~3s, and any keystroke,
+  click, or scroll dismisses it instantly.
+
+Client → server WS frame (pushed by the browser on every route change and
+every wizard-step change, never on a timer):
+
+```jsonc
+{ "type": "context", "context": { "route": "quantize", "step": { "index": 1, "count": 4, "label": "Configure" }, "snapshot": { "route": "quantize", "capturedAt": "…", "elements": [/* … */] } } }
+```
+
+Server → client frames the two action tools produce:
+
+```jsonc
+{ "type": "ui_navigate", "route": "quantize" }
+{ "type": "ui_spotlight", "target": "quantize-source", "message": "Paste a Hugging Face repo id or local path here" }
+```
+
+The server also auto-prepends a compact one-line ambient context (e.g.
+`[user is on: Quantize · step 2/4]`) to the system prompt on every turn —
+never a full snapshot dump — so the model is never answering completely
+blind even when it doesn't call a tool. `ui_act` (approval-gated form-fill
+and job-start actions) is explicitly out of scope for this v1; only
+navigate/spotlight are wired.
 
 ## Client setup: pi
 

@@ -16,9 +16,37 @@ import type { Server } from "bun";
 // the runtime value a string — hence the double cast.
 import appHtml from "./web/app.html" with { type: "text" };
 import curveDesignerHtml from "./assets/curve-designer.html" with { type: "text" };
+// Vendored, no-CDN static assets referenced by app.html (convention: any
+// self-contained JS/CSS too big to inline gets `with { type: "text" }`
+// imported here and served under /assets/<name>; see src/web/vendor/README
+// for how hljs.js was built). Add new vendored assets the same way.
+import hljsJs from "./web/vendor/hljs.js" with { type: "text" };
+import hljsCss from "./web/vendor/hljs-theme.css" with { type: "text" };
+// The frontend bundle (plan §7/§9 Phase 2 module split): GENERATED from
+// src/web/src/*.ts by `bun scripts/build-web.ts` — see that file's header
+// and tests/web-build.test.ts (the freshness gate). Same
+// with { type: "text" } + /assets/<name> pattern as the vendored assets
+// above; app.html's <script defer src="/assets/app.js"> loads it.
+import appJs from "./web/app.js" with { type: "text" };
+// PWA installability (plan §9 Phase 3, beat-matrix Axis 10): a manifest +
+// a single inline SVG icon (no binary PNGs — the hygiene gate forbids
+// tracked binary files; some browsers won't show an SVG app icon, which is
+// an accepted tradeoff, see docs/reference/features-matrix.md) + a shell-
+// only service worker. Same with { type: "text" } + /assets/<name>-shaped
+// pattern as the vendored assets above; see src/web/sw.js's header for why
+// it deliberately does NOT cache API/WS traffic.
+import manifestWebmanifest from "./web/manifest.webmanifest" with { type: "text" };
+import iconSvg from "./web/icon.svg" with { type: "text" };
+import swJs from "./web/sw.js" with { type: "text" };
 import pkgJson from "../package.json" with { type: "json" };
 import { readFileSync } from "node:fs";
 const APP_PAGE = appHtml as unknown as string;
+const HLJS_JS = hljsJs as unknown as string;
+const HLJS_CSS = hljsCss as unknown as string;
+const APP_JS = appJs as unknown as string;
+const MANIFEST_WEBMANIFEST = manifestWebmanifest as unknown as string;
+const ICON_SVG = iconSvg as unknown as string;
+const SW_JS = swJs as unknown as string;
 const pkgVersion = (pkgJson as { version: string }).version;
 import { loadModelConfig, type KvQuantSpec, type ModelConfig, type TurboQuantScheme } from "./config";
 import { Weights } from "./weights";
@@ -26,7 +54,7 @@ import { Gemma4Model } from "./model/gemma4";
 import { DiffusionGemmaModel } from "./model/diffusion-gemma";
 import { spliceImageTokens } from "./vision/diffusion-vision";
 import { createModel, type RuntimeModel } from "./model/factory";
-import { isMiniCPM5Config, isSupportedModelRecord } from "./model/support";
+import { isMiniCPM5Config } from "./model/support";
 import { generate, type GenerateOptions, type TokenLogprobs } from "./generate";
 import { cloneKvCaches, SpillQueue } from "./kv-store";
 import { TURBOQUANT_HEAD_DIMS } from "./mlx/turboquant-tables";
@@ -37,6 +65,7 @@ import type { HlgConfig } from "./sampler";
 import { isMonotone, CURVE_UMIN, type CurveParams } from "./curve-sampler";
 const CURVE_PAGE = curveDesignerHtml as unknown as string;
 import { GenerationGateway } from "./serve/generation-gateway";
+import { recordLane, type Lane } from "./serve/lane-registry";
 import {
   ChatTemplate, type ChatMessage, type ToolDefinition,
 } from "./chat-template";
@@ -2082,6 +2111,17 @@ export function createServer(
       vision: !!(ctx.vision || ctx.loadVision),
       audio: !!(ctx.audio || ctx.loadAudio),
       thinking: ctx.template.supportsThinking,
+      // Model-author sampling defaults (generation_config.json, server-CLI
+      // overrides applied) for the sampling popover's per-model recommended
+      // values (web-ui-pass-plan.md #14 groundwork) — same resolution
+      // /v1/models' gen_defaults uses, so the two surfaces agree. The
+      // think-mode-vs-not distinction lives in toOptions (per-request); this
+      // is the single "model's own defaults" snapshot sent once at ready.
+      genDefaults: {
+        temperature: serverOptions.defaultTemperature ?? ctx.genDefaults.temperature ?? null,
+        topP: serverOptions.defaultTopP ?? ctx.genDefaults.topP ?? null,
+        topK: serverOptions.defaultTopK ?? ctx.genDefaults.topK ?? null,
+      },
     }),
     async fetch(request, server) {
       const url = new URL(request.url);
@@ -2092,11 +2132,130 @@ export function createServer(
         return new Response("expected websocket", { status: 426 });
       }
 
+      // Memory REST wrappers (web-chat-redesign.md §2.3/§9 Phase 2): thin
+      // loopback JSON routes over src/memory/vault.ts for the web chat's
+      // Memory panel. Handlers live in src/memory/rest.ts (pure functions,
+      // no `ctx` dependency) so they're unit-testable without a loaded
+      // model; dispatch here just matches path+method. The agent-tool
+      // surface (src/memory/tools.ts) is untouched by this block.
+      if (url.pathname === "/api/memory/status" && request.method === "GET") {
+        const { handleMemoryStatus } = await import("./memory/rest");
+        return handleMemoryStatus();
+      }
+      if (url.pathname === "/api/memory/list" && request.method === "GET") {
+        const { handleMemoryList } = await import("./memory/rest");
+        return handleMemoryList();
+      }
+      if (url.pathname === "/api/memory/search" && request.method === "GET") {
+        const { handleMemorySearch } = await import("./memory/rest");
+        return handleMemorySearch(url);
+      }
+      if (url.pathname === "/api/memory/article" && request.method === "GET") {
+        const { handleMemoryArticle } = await import("./memory/rest");
+        return handleMemoryArticle(url);
+      }
+      if (url.pathname === "/api/memory/links" && request.method === "GET") {
+        const { handleMemoryLinks } = await import("./memory/rest");
+        return handleMemoryLinks(url);
+      }
+      if (url.pathname === "/api/memory/history" && request.method === "GET") {
+        const { handleMemoryHistory } = await import("./memory/rest");
+        return handleMemoryHistory(url);
+      }
+      if (url.pathname === "/api/memory/diff" && request.method === "GET") {
+        const { handleMemoryDiff } = await import("./memory/rest");
+        return handleMemoryDiff(url);
+      }
+      if (url.pathname === "/api/memory/init" && request.method === "POST") {
+        const { handleMemoryInit } = await import("./memory/rest");
+        return handleMemoryInit(request);
+      }
+
+      // Model Hub (web-chat-redesign.md §9 Phase 3, beat-matrix Axis 3):
+      // thin loopback JSON routes over the registry/download/fit machinery
+      // for the web chat's Hub panel. Handlers live in src/hub-rest.ts
+      // (pure functions, no `ctx` dependency); dispatch here just matches
+      // path+method, same convention as the memory wrappers above.
+      if (url.pathname === "/api/hub/local" && request.method === "GET") {
+        const { handleHubLocal } = await import("./hub-rest");
+        return handleHubLocal();
+      }
+      if (url.pathname === "/api/hub/search" && request.method === "GET") {
+        const { handleHubSearch } = await import("./hub-rest");
+        return handleHubSearch(url);
+      }
+      if (url.pathname === "/api/hub/download" && request.method === "POST") {
+        const { handleHubDownload } = await import("./hub-rest");
+        return handleHubDownload(request);
+      }
+      if (url.pathname === "/api/hub/serve" && request.method === "POST") {
+        const { handleHubServe } = await import("./hub-rest");
+        return handleHubServe(request);
+      }
+
+      // Session full-text search + export (docs/design/web-chat-redesign.md
+      // §9 Phase 3, beat-matrix Axis 10/11 — the full-text-search BEAT and
+      // Markdown/JSON chat export). Handlers live in src/serve/session-search.ts
+      // (pure, read-only, no `ctx` dependency), dispatched here by
+      // path+method, same convention as the memory/hub blocks above.
+      if (url.pathname === "/api/sessions/search" && request.method === "GET") {
+        const { handleSessionsSearch } = await import("./serve/session-search");
+        return handleSessionsSearch(url);
+      }
+      if (url.pathname === "/api/sessions/export" && request.method === "GET") {
+        const { handleSessionsExport } = await import("./serve/session-search");
+        return handleSessionsExport(url);
+      }
+
       // The unified SPA is served at "/"; legacy deep links redirect into
       // the hash router so old bookmarks still land on the right section.
       if (url.pathname === "/" && request.method === "GET") {
         return new Response(APP_PAGE, {
           headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+      // Vendored syntax-highlighting assets (src/web/vendor/*, no CDN — see
+      // that dir's README). Long cache: content is versioned by the vendor
+      // rebuild step, not by URL, but a hard reload always wins during dev.
+      if (url.pathname === "/assets/hljs.js" && request.method === "GET") {
+        return new Response(HLJS_JS, {
+          headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+        });
+      }
+      if (url.pathname === "/assets/hljs.css" && request.method === "GET") {
+        return new Response(HLJS_CSS, {
+          headers: { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=3600" },
+        });
+      }
+      // The frontend bundle (see the import comment above) — cache header
+      // matches the other /assets/* entries; content is versioned by the
+      // build step, not the URL, and a hard reload always wins during dev.
+      if (url.pathname === "/assets/app.js" && request.method === "GET") {
+        return new Response(APP_JS, {
+          headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+        });
+      }
+      // PWA manifest + icon (plan §9 Phase 3): linked from app.html's
+      // <link rel="manifest">. Same versioned-by-content cache posture as
+      // the other /assets/* entries above.
+      if (url.pathname === "/manifest.webmanifest" && request.method === "GET") {
+        return new Response(MANIFEST_WEBMANIFEST, {
+          headers: { "content-type": "application/manifest+json; charset=utf-8", "cache-control": "public, max-age=3600" },
+        });
+      }
+      if (url.pathname === "/assets/icon.svg" && request.method === "GET") {
+        return new Response(ICON_SVG, {
+          headers: { "content-type": "image/svg+xml; charset=utf-8", "cache-control": "public, max-age=3600" },
+        });
+      }
+      // Service worker MUST be served at the root scope (/sw.js, not
+      // /assets/sw.js) — a worker's default scope is the directory it's
+      // served from, and the shell it manages includes "/" itself.
+      // no-store: the browser's own update check needs a fresh byte
+      // comparison every time to notice a new worker, not a cached 304.
+      if (url.pathname === "/sw.js" && request.method === "GET") {
+        return new Response(SW_JS, {
+          headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" },
         });
       }
       // v2 HLG Curve Designer — served same-origin so /generate + /signal need no CORS.
@@ -2408,6 +2567,15 @@ export function createServer(
           ? decodeURIComponent(url.pathname.slice("/v1/models/".length))
           : null;
         const created = Math.floor(startedAt / 1000);
+        // Model-author sampling defaults (generation_config.json), resolved once
+        // at load (web-ui-pass-plan.md #14 groundwork): lets a client (the web
+        // chat's sampling popover, external pi) show the SERVED model's actual
+        // recommended values instead of one hardcoded shape.
+        const genDefaultsOut = {
+          temperature: ctx.genDefaults.temperature ?? null,
+          top_p: ctx.genDefaults.topP ?? null,
+          top_k: ctx.genDefaults.topK ?? null,
+        };
         const data: Array<Record<string, unknown>> = [{
           id: ctx.modelId, object: "model", created, owned_by: "mlx-bun",
           context_window: ctx.model.config.text.maxPositionEmbeddings,
@@ -2419,17 +2587,23 @@ export function createServer(
           reasoning: ctx.template.supportsThinking,
           vision: !!(ctx.vision || ctx.loadVision),
           audio: !!(ctx.audio || ctx.loadAudio),
+          gen_defaults: genDefaultsOut,
         }];
         try {
-          const { Registry } = await import("./registry");
+          const { Registry, visionCapable } = await import("./registry");
+          const { supportTier } = await import("./model/support");
           const reg = new Registry();
           try {
             if (reg.list().length === 0) await reg.scan();
             // Canonical rows only — a repo with N snapshots is ONE model id.
             for (const m of reg.listCanonical()) {
               if (m.repoId === ctx.modelId) continue;
-              if (!isSupportedModelRecord(m.modelType, m.repoId)) continue;
-              data.push({ id: m.repoId, object: "model", created });
+              const tier = supportTier(m.modelType, m.repoId);
+              if (tier === null) continue;
+              data.push({
+                id: m.repoId, object: "model", created,
+                vision: visionCapable(m), tier,
+              });
             }
           } finally {
             reg.close();
@@ -2485,13 +2659,16 @@ export function createServer(
       // unmount. Mount and unmount go through the generation queue so
       // they never race an in-flight forward pass.
       if (url.pathname === "/v1/adapters/available" && request.method === "GET") {
-        // On-disk adapters that can be mounted (the chat selector's source),
-        // FILTERED to ones compatible with the currently-served model — a
-        // MiniCPM5 adapter can't mount on Gemma, so it must not appear in the
-        // picker. Compatibility = the adapter's recorded base repo id matches the
-        // served model (compared on the bare name, lenient about the org); an
-        // adapter with no recorded base is kept (mount validates it). `mounted`
-        // flags ones already loaded so the UI auto-loads on select only if needed.
+        // On-disk adapters that can be mounted (the chat selector's source).
+        // Every on-disk adapter is returned — the web chat routing chip (§5.2)
+        // needs incompatible entries visible-but-grayed, not silently dropped,
+        // so a user understands "10 adapters exist, 2 apply here" rather than
+        // seeing a shorter list with no explanation. `compatible` = the
+        // adapter's recorded base repo id matches the served model (compared
+        // on the bare name, lenient about the org); an adapter with no
+        // recorded base is treated as compatible (mount validates it for
+        // real). `mounted` flags ones already loaded so the UI auto-loads on
+        // select only if needed.
         const { homedir } = await import("node:os");
         const stores = [
           `${homedir()}/.cache/mlx-bun-finetunes`,
@@ -2501,10 +2678,10 @@ export function createServer(
         const bareName = (s: string) => s.split("/").pop()!.toLowerCase();
         const servedName = bareName(ctx.modelId);
         const adapters = (await listAvailableAdapters(stores))
-          .filter((a) => a.baseModel == null || bareName(a.baseModel) === servedName)
           .map((a) => ({
             id: a.id, path: a.path, rank: a.rank, scale: a.scale,
             base_model: a.baseModel, mounted: mounted.has(a.id),
+            compatible: a.baseModel == null || bareName(a.baseModel) === servedName,
           }));
         return Response.json({ adapters });
       }
@@ -2513,6 +2690,7 @@ export function createServer(
           adapters: ctx.adapters.list().map((a) => ({
             id: a.id, path: a.path, rank: a.rank, scale: a.scale,
             size_bytes: a.sizeBytes, mounted_layers: a.mountedLayers,
+            ram_bytes: a.ramBytes,
           })),
         });
       }
@@ -2532,7 +2710,7 @@ export function createServer(
           const info = await gateway.runExclusive(() => ctx.adapters.mount(body.id!, body.path!));
           return Response.json({
             id: info.id, mounted_layers: info.mountedLayers,
-            rank: info.rank, scale: info.scale,
+            rank: info.rank, scale: info.scale, ram_bytes: info.ramBytes,
           });
         } catch (e) {
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
@@ -2923,6 +3101,16 @@ export function createServer(
         const batched = gateway.willBatch(shape);
         if (process.env.MLX_BUN_LANE_DEBUG === "1")
           console.error(`[lane] batched=${batched} shape=${JSON.stringify(shape)} t=${Date.now() % 100000}`);
+        // Per-turn lane (docs/design/web-chat-redesign.md §2.3 caveat / risk #5):
+        // reported on usage AND recorded in the in-process lane registry (keyed
+        // by this response's `id`) so pi-web's WS bridge — which the pi SDK's
+        // usage parsing can't carry a custom field through — can correlate it
+        // via AssistantMessage.responseId. batched wins over hasDraft (mutually
+        // exclusive by construction: willBatch already excludes hasDraft), so
+        // the only ambiguity is serial vs serial+spec, resolved once s.spec is
+        // known post-generation.
+        const lane: Lane = batched ? "batched" : shape.hasDraft ? "serial+spec" : "serial";
+        recordLane(id, lane);
 
         if (body.stream) {
           const stream = new ReadableStream<Uint8Array>({
@@ -3000,6 +3188,11 @@ export function createServer(
                   ? "tool_calls"
                   : stopper.stopped ? "stop"
                   : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
+                // Refine serial vs serial+spec now that s.spec is known (a mounted
+                // draft can still decode zero speculative tokens on a very short
+                // reply) and re-record for pi-web's WS correlation.
+                const finalLane: Lane = batched ? "batched" : s.spec ? "serial+spec" : lane;
+                if (finalLane !== lane) recordLane(id, finalLane);
                 send({
                   ...chunk({}, finish),
                   usage: {
@@ -3007,6 +3200,7 @@ export function createServer(
                     completion_tokens: s.generatedTokens,
                     total_tokens: s.promptTokens + s.generatedTokens,
                     prompt_tokens_details: { cached_tokens: s.cachedTokens },
+                    lane: finalLane,
                     ...(s.spec ? { speculation: s.spec } : {}),
                   },
                 });
@@ -3071,6 +3265,10 @@ export function createServer(
               : stopper.stopped ? "stop"
               : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
             const logprobsBlock = lpc?.payload() ?? null;
+            // Refine serial vs serial+spec now that s.spec is known; re-record
+            // for pi-web's WS correlation (see the streaming branch above).
+            const finalLane: Lane = batched ? "batched" : s.spec ? "serial+spec" : lane;
+            if (finalLane !== lane) recordLane(id, finalLane);
             return Response.json({
               id, object: "chat.completion", created, model: ctx.modelId,
               choices: [{
@@ -3089,7 +3287,8 @@ export function createServer(
                 completion_tokens: s.generatedTokens,
                 total_tokens: s.promptTokens + s.generatedTokens,
                 prompt_tokens_details: { cached_tokens: s.cachedTokens },
-                    ...(s.spec ? { speculation: s.spec } : {}),
+                lane: finalLane,
+                ...(s.spec ? { speculation: s.spec } : {}),
               },
             }, grammarWarning ? { headers: { Warning: grammarWarning } } : undefined);
           }
@@ -3689,6 +3888,27 @@ export function createServer(
         saveHfToken(body.token);
         return Response.json({ ok: true });
       }
+
+      // --- Durable tool-approvals settings (plan §5.4/§6.5/§9 Phase 2) ---
+      // The web chat's own "always allow this tool" list
+      // (~/.mlx-bun/tool-approvals.json, src/tool-approvals.ts). The
+      // approval card itself grants an always-allow via the `approval` WS
+      // frame (alwaysAllow:true) — these REST routes are read/forget only,
+      // for the settings panel's list view (matches the hf-token GET/POST
+      // pattern's separation of "the card that grants" vs "settings that
+      // manage" — there is no POST here on purpose, granting always goes
+      // through the approval card, never a bare settings form).
+      if (url.pathname === "/api/settings/tool-approvals" && request.method === "GET") {
+        const { listAlwaysAllowedTools } = await import("./tool-approvals");
+        return Response.json({ ok: true, alwaysAllow: listAlwaysAllowedTools() });
+      }
+      if (url.pathname === "/api/settings/tool-approvals" && request.method === "DELETE") {
+        const body = (await request.json().catch(() => ({}))) as { tool?: string };
+        if (!body.tool) return Response.json({ ok: false, error: "tool required" }, { status: 400 });
+        const { revokeToolAlwaysAllowed } = await import("./tool-approvals");
+        const file = revokeToolAlwaysAllowed(body.tool);
+        return Response.json({ ok: true, alwaysAllow: Object.keys(file.allows).sort() });
+      }
       {
         const m = url.pathname.match(/^\/api\/(quantize|finetune|dataset)\/push$/);
         if (m && request.method === "POST") {
@@ -3715,6 +3935,50 @@ export function createServer(
             return Response.json({ ok: false, error: (e as Error).message }, { status: 400 });
           }
         }
+      }
+
+      // gc plan/execute (web-ui-pass-plan.md #9): thin wrappers over the CLI's
+      // own `mlx-bun gc` planner/executor (src/registry.ts planGc/executeGc).
+      // Loopback-served admin route — no auth beyond the server's own bind
+      // (matches every other /api/* route here). GET plans (read-only, cheap:
+      // config.json + safetensors index reads, no tensor bytes); POST executes
+      // and requires an explicit {yes:true} body (mirrors the CLI's --yes gate)
+      // so a stray call can't delete anything by accident.
+      if (url.pathname === "/api/gc/plan" && request.method === "GET") {
+        const { planGc } = await import("./registry");
+        const plans = planGc().filter(
+          (p) => p.pruneSnapshots.length || p.skippedSnapshots.length || p.deadBlobs.length,
+        );
+        const superseded = plans.map((p) => ({
+          repo_id: p.repoId,
+          prune_snapshots: p.pruneSnapshots.length,
+          skipped_snapshots: p.skippedSnapshots.length,
+          dead_blobs: p.deadBlobs.length,
+          reclaim_bytes: p.reclaimBytes,
+        }));
+        const reclaim_bytes = plans.reduce((a, p) => a + p.reclaimBytes, 0);
+        return Response.json({ ok: true, superseded, reclaim_bytes });
+      }
+      if (url.pathname === "/api/gc/execute" && request.method === "POST") {
+        const body = (await request.json().catch(() => ({}))) as { yes?: boolean };
+        if (body.yes !== true)
+          return Response.json({ ok: false, error: "pass {\"yes\": true} to confirm deletion" }, { status: 400 });
+        const { planGc, executeGc, Registry } = await import("./registry");
+        const plans = planGc().filter(
+          (p) => p.pruneSnapshots.length || p.skippedSnapshots.length || p.deadBlobs.length,
+        );
+        const res = executeGc(plans);
+        const reg = new Registry();
+        try {
+          await reg.scan(); // reap deleted snapshots from the registry
+        } finally {
+          reg.close();
+        }
+        libraryCache = null; // force /library to reflect the deletion
+        return Response.json({
+          ok: true,
+          snapshots: res.snapshots, blobs: res.blobs, reclaimed_bytes: res.reclaimedBytes,
+        });
       }
 
       if (url.pathname === "/api/jobs" && request.method === "GET") {

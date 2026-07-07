@@ -218,6 +218,17 @@ export async function readArticle(root: string, article: string): Promise<{ path
   return { path, content: await readFile(path, "utf8") };
 }
 
+/** Vault-relative path (`articles/<stem>.md` or `Reference/<stem>.md`) for an
+ *  existing article/reference doc — the safe argv piece for git plumbing
+ *  (articleHistory/articleDiff), resolved via the same name normalization/
+ *  existence check as readArticle so a caller can't smuggle a path-traversal
+ *  or shell-metacharacter name through. Throws if the doc doesn't exist. */
+export async function resolveArticleRelPath(root: string, article: string): Promise<string> {
+  const doc = normalizeMemoryDocId(article);
+  await resolveArticlePath(root, article); // existence check, reuses the same normalization
+  return doc.kind === "reference" ? join("Reference", `${doc.stem}.md`) : join("articles", `${doc.stem}.md`);
+}
+
 /** Filename stems for every `*.md` under articles/, sorted alphabetically. */
 export async function listArticles(root: string): Promise<string[]> {
   let names: string[];
@@ -1011,6 +1022,69 @@ function runGit(args: string[], cwd: string): Promise<boolean> {
     proc.on("exit", (code) => resolve(code === 0));
     proc.on("error", () => resolve(false));
   });
+}
+
+// ---- read-only git plumbing (per-article history/diff) ----------------
+//
+// Used by the memory REST surface (GET /api/memory/history|diff) to render
+// "watch it self-heal" — the article's commit history and a specific
+// commit's diff. Read-only plumbing only (log/show), args always an
+// explicit argv array via Bun.spawn (never a shell string), and callers
+// MUST validate `rev`/`name` before calling these (see server.ts) — this
+// layer trusts its `relPath`/`rev` inputs are already safe.
+
+export interface ArticleHistoryEntry {
+  hash: string;
+  date: string;
+  subject: string;
+}
+
+/** `git log` for one file, newest first, argv-only (never a shell string).
+ *  Returns [] when the vault isn't a git repo, the file has no history, or
+ *  git is unavailable. `relPath` must already be a repo-relative path (no
+ *  `..`, not absolute) — callers validate before calling. */
+export async function articleHistory(root: string, relPath: string, limit = 50): Promise<ArticleHistoryEntry[]> {
+  if (!(await pathExists(join(root, ".git")))) return [];
+  try {
+    const proc = Bun.spawn(
+      ["git", "log", `--max-count=${limit}`, "--date=short", "--pretty=format:%H%x1f%ad%x1f%s%x1e", "--", relPath],
+      { cwd: root, stdout: "pipe", stderr: "ignore" },
+    );
+    const out = await new Response(proc.stdout).text();
+    if ((await proc.exited) !== 0) return [];
+    return out
+      .split("\x1e")
+      .map((rec) => rec.trim())
+      .filter((rec) => rec.length > 0)
+      .map((rec) => {
+        const [hash = "", date = "", subject = ""] = rec.split("\x1f");
+        return { hash, date, subject };
+      })
+      .filter((e) => e.hash.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/** `git show <rev> -- <relPath>` — the diff for one commit touching one file.
+ *  `rev` must already be validated as a hex commit hash by the caller (never
+ *  a ref expression like `HEAD~1` or `main^`, which could be abused as an
+ *  argument-injection vector); `relPath` must already be repo-relative.
+ *  Returns null when the vault isn't a git repo or the commit/diff can't be
+ *  produced. */
+export async function articleDiff(root: string, rev: string, relPath: string): Promise<string | null> {
+  if (!(await pathExists(join(root, ".git")))) return null;
+  try {
+    const proc = Bun.spawn(
+      ["git", "show", rev, "--pretty=format:", "--", relPath],
+      { cwd: root, stdout: "pipe", stderr: "ignore" },
+    );
+    const out = await new Response(proc.stdout).text();
+    if ((await proc.exited) !== 0) return null;
+    return out;
+  } catch {
+    return null;
+  }
 }
 
 export interface SetupResult {

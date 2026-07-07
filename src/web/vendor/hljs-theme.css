@@ -1,0 +1,59 @@
+/* Vendored highlight.js theme, hand-derived from mlx-bun's own design
+ * tokens (see the :root / [data-theme="light"] blocks in src/web/app.html)
+ * rather than one of highlight.js's stock themes — keeps code-block colors
+ * on the same palette as the rest of the app in both themes. Code blocks
+ * deliberately keep a dark chrome in BOTH themes (see app.html's
+ * --code-bg/--code-ink comment), so this stylesheet targets a fixed dark
+ * surface rather than swapping with [data-theme="light"] itself; only the
+ * accent hues are shared with the live token set.
+ *
+ * Applies to `.bubble pre code.hljs` (see the highlightIn() hook in
+ * app.html) — every `<span class="hljs-*">` produced by the vendored
+ * hljs.js bundle (src/web/vendor/hljs.js, BSD-3-Clause, see its header).
+ */
+
+.bubble pre code.hljs{ display:block; }
+
+.hljs-comment,
+.hljs-quote{ color:#86868b; font-style:italic; }
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-subst,
+.hljs-doctag{ color:#ff375f; }
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attr,
+.hljs-meta-string{ color:#30d158; }
+
+.hljs-number,
+.hljs-literal,
+.hljs-deletion{ color:#ff9f0a; }
+
+.hljs-title,
+.hljs-title.function_,
+.hljs-title.class_,
+.hljs-section{ color:#64d2ff; }
+
+.hljs-type,
+.hljs-class .hljs-title,
+.hljs-built_in{ color:#bf5af2; }
+
+.hljs-name,
+.hljs-tag,
+.hljs-selector-id,
+.hljs-selector-class{ color:#0a84ff; }
+
+.hljs-variable,
+.hljs-template-variable,
+.hljs-attribute{ color:#ffd60a; }
+
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link,
+.hljs-meta{ color:#5e5ce6; }
+
+.hljs-emphasis{ font-style:italic; }
+.hljs-strong{ font-weight:700; }

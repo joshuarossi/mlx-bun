@@ -194,6 +194,57 @@ while busy, bounded by the chain). Final vs-mlx-lm decode@ctx numbers
 need the quiet-machine bench rerun (loadavg was ~4–7 throughout; a
 residual genuine kernel gap at 16k is not excluded — xctrace on quiet).
 
+## Parallel thread: web chat redesign (2026-07-06/07, branch feat/web-chat-phase2)
+
+[docs/design/web-chat-redesign.md](docs/design/web-chat-redesign.md) is the
+working UI plan (supersedes web-ui-pass-plan.md; revised 2026-07-06 to the
+**superset doctrine** — concede nothing, differentiate on top — with
+[web-chat-beat-matrix.md](docs/design/web-chat-beat-matrix.md) (12 axes,
+116 rows, MATCH/BEAT/SKIP) as the coverage contract, §6.6 the app-aware
+assistant, and principle 9: the bar for done is perfect visual polish).
+
+**Phases 0, 1, AND 2 are done + visually QA'd on this branch, rebased on
+post-merge main (PR #18/#19/#20).** Phase 1: block-memoized streaming
+render + vendored hljs; per-turn `lane` → live perf strip (verified live:
+"230 tok/s · TTFT 292ms · BATCHED"); full sampling popover w/ per-model
+defaults; message actions (regenerate/edit-as-sibling via navigateTree);
+mobile drawer, light theme, Cmd+/ sheet; gc endpoints; /v1/models
+tier+vision+gen_defaults. Phase 2 (248a85d): app.html's inline script →
+12 typed modules (type-only WS-contract imports from pi-web; generated
+committed src/web/app.js + freshness gate; tsconfig.web.json; happy-dom
+harness incl. streaming-parity fixtures); /api/memory/* REST + POST init
+(confined to vaultRoot/tmpdir after review caught arbitrary-path git-
+commit exposure); Memory panel (vault browser, git History+diff view,
+Reference docs, provenance chips, personalized hero, consent card —
+full flow verified live on a scratch vault); adapter routing table
+(three-state + ramBytes + "a+b" stacking test-proven); model picker w/
+/fit verdicts (live swap deferred to Phase 3 Hub); per-chat system
+prompt (before_agent_start layering) + presets v1; approval gate wired
+(codingTools opt-in, editable args via SDK event.input mutation,
+durable ~/.mlx-bun/tool-approvals.json); Developer IA toggle; "#"
+mention. Lane semantics re-verified against merged DSpark GenerateStats.
+Visual QA (3228734) fixed a placeholder-wrap regression + .bubble-scoped
+markdown chrome missing in the panel. Follow-ups: # mention doesn't
+search Reference/ docs; wikilink graph view (plan §5.5) still line-only.
+**Phase 3 done + visually QA'd, rebased through main@ca0ba91 (PRs
+#21–#27 incl. the audio-capability ready-frame union).** Files-RAG v1
+(client BM25, [n] citations, Sources panel); Model Hub (/api/hub/* w/
+real /fit verdicts; live swap honestly deferred — the isolate proxy
+501s /ws/chat); Canvas v1 (allow-scripts-only iframe, verified live);
+self-healing tool calls (format-aware repair in OUR parsers + envelope
+guard after a critical review catch — bare-JSON replies can't execute
+as tools); set_sampling scope:"next_turn"; **app-aware assistant v1
+verified live: "take me to quantize" navigated the real app via
+navigate_app** (§6.6 never-hijack spotlight, ambient context line,
+catalog-validated tools); Cmd+K palette (live); full-text session BODY
+search (live over HTTP); MD/JSON export; PWA manifest+sw (200s).
+Phase-3 follow-ups: RAG [n]-citation compliance unproven on 1B-class
+models; spec-lane badge demo needs a compatible draft artifact;
+history-replay citations need a HistoryItem field. Next: Phase 4
+(plan §9 — trust & speed: temporary chat, disk-touch tally, cache-hit
+telemetry, logprobs overlay, HLG in composer, ambient assistant panel
++ process-state snapshot maturity).
+
 ## Where we were (2026-07-07 — 12B completion-probe parity closed: prefill tail split)
 
 **The 12B completion-probe parity ✗ (07-07 bench @3d56676, diverged at

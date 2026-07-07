@@ -18,8 +18,8 @@ downloads a starter model, serves it, and opens the chat UI.
 
 ### `serve` — run the server
 
-Start the OpenAI/Anthropic-compatible server plus the status page and browser
-chat UI.
+Start the OpenAI/Anthropic-compatible server plus the browser web app (chat,
+status, and model tools).
 
 ```sh
 mlx-bun serve                              # default model, http://localhost:8080
@@ -52,7 +52,8 @@ Common flags (full list in [server-config.md](server-config.md)):
 
 Endpoints: `/v1/chat/completions`, `/v1/completions`, `/v1/messages`,
 `/v1/responses`, `/v1/models`, `/v1/adapters`, `/health`, `/stats`, `/fit`,
-`/library`, `/downloads` — status page at `/`, browser chat at `/chat`. Full
+`/library`, `/downloads` — web app at `/` (lands on chat); `/chat`, `/status`,
+`/quantize`, `/finetune`, `/dataset` deep-link its views. Full
 schemas in [server-api.md](server-api.md).
 
 ### `pi` — built-in coding agent
@@ -137,7 +138,9 @@ mlx-bun ls --all-revisions          # one row per cached snapshot
 ### `gc` — reclaim disk
 
 Delete superseded snapshots and the blobs only they reference. Prints the plan
-by default; `--yes` actually deletes.
+by default; `--yes` actually deletes. Same planner (`src/registry.ts`
+`planGc`/`executeGc`) also backs `GET /api/gc/plan` / `POST /api/gc/execute`
+on a running `serve` — see [server-api.md](server-api.md#get-apigcplan--post-apigcexecute).
 
 ```sh
 mlx-bun gc          # dry-run: what would be reclaimed
