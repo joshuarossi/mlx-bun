@@ -1270,8 +1270,8 @@ export function createServer(
             ssdWriteChain = ssdWriteChain
               .then(() => ssdStore!.storeAsync(entry.tokens, entry.caches, entry.ns, ssdFlushGate))
               .then(
-                () => { for (const c of entry.caches) c.dispose(); },
-                () => { for (const c of entry.caches) c.dispose(); },
+                () => disposeSpillClones(entry.caches),
+                () => disposeSpillClones(entry.caches),
               );
           },
         }
@@ -1437,6 +1437,13 @@ export function createServer(
   const ssdFlushGate = (): Promise<void> => gateway.onIdle();
   const ssdPending = new Map<string, ReturnType<typeof setTimeout>>();
   let ssdWriteChain: Promise<void> = Promise.resolve();
+  // Settle-dispose for spill clones: freeing them is what actually releases
+  // the demoted GPU memory, on success AND failure paths alike (storeAsync
+  // is best-effort). Shared by the eviction spill (spillOwned above) and
+  // the write-behind snapshot chain below.
+  const disposeSpillClones = (caches: { dispose(): void }[]): void => {
+    for (const c of caches) c.dispose();
+  };
   const scheduleSsdSnapshot = (tokens: number[], ns: string): void => {
     if (!ssdStore || !writeBehindOn || tokens.length === 0) return;
     const key = `${ns}|${tokens.length}`;
@@ -1452,8 +1459,8 @@ export function createServer(
         if (!snap) return;
         ssdWriteChain = ssdWriteChain
           .then(() => ssdStore!.storeAsync(snap.tokens, snap.caches, ns, ssdFlushGate))
-          .then(() => { for (const c of snap.caches) c.dispose(); },
-                () => { for (const c of snap.caches) c.dispose(); });
+          .then(() => disposeSpillClones(snap.caches),
+                () => disposeSpillClones(snap.caches));
       }).catch(() => { /* cold tier is best-effort */ });
     }, 1000));
   };

@@ -596,8 +596,9 @@ export class BatchScheduler {
 
     // Tail split: forward the remaining head [p.pos, len-1) as a plain chunk
     // (serial chunk-boundary semantics: eval + quantize + clear), leaving
-    // exactly one token for the L=1 step-0 forward below. Same admission
-    // latency as before — head + step share this tick.
+    // exactly one token for the L=1 step-0 forward below. Head + step share
+    // this tick — same chunk-tick count as before, plus one L=1 dispatch
+    // (~a single decode step) in the admission tick's no-yield window.
     if (tailSplit && p.pos < prompt.length - 1) {
       const head = prompt.slice(p.pos, prompt.length - 1);
       const ids = ops.fromInt32(head, [1, head.length]);
@@ -657,8 +658,13 @@ export class BatchScheduler {
       this.#finish(p.row, stop);
       return true;
     }
-    // Serial order: token 0 sampled from the unconverted final-chunk logits,
-    // THEN the caches convert (before decode step 1 == before the merge).
+    // Default tail-split path: the caches were already converted at the head
+    // boundary above (oracle composition: prefill ids[:-1] → convert → L=1
+    // step-0), so this call is an idempotent no-op (converted caches match
+    // neither serial class). It is LOAD-BEARING only under
+    // MLX_BUN_PREFILL_TAIL_SPLIT=0 — the old serial order: token 0 sampled
+    // from the unconverted final-chunk logits, THEN the caches convert
+    // (before decode step 1 == before the merge).
     this.#quantizeSolo(p.solo);
     await this.#mergeJoiner(p);
     return true;
