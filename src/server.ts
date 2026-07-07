@@ -197,6 +197,28 @@ export interface GenSamplingDefaults {
   repetitionPenalty?: number;
 }
 
+export type DraftKind = "dspark" | "deepspec" | "assistant" | "two-model";
+
+/** Detect the draft artifact's kind so the right provider is loaded. All four
+ *  providers share ONE serve loop (src/spec/serve-loop.ts). Exported for the
+ *  bench harness (scripts/bench-feature-matrix.ts) — one detection, no drift. */
+export async function detectDraftKind(dir: string): Promise<DraftKind> {
+  if (await Bun.file(`${dir}/dspark.json`).exists()) return "dspark"; // our trained module
+  try {
+    const cfg = (await Bun.file(`${dir}/config.json`).json()) as {
+      model_type?: string;
+      architectures?: string[];
+    };
+    // DeepSeek's released DSpark drafters (DeepSpec reference): no
+    // dspark.json, plain HF config stamped Gemma4DSparkModel.
+    if (cfg.architectures?.[0] === "Gemma4DSparkModel") return "deepspec";
+    if (String(cfg.model_type ?? "").includes("assistant")) return "assistant";
+  } catch {
+    // no/unreadable config → fall through to a full second model
+  }
+  return "two-model";
+}
+
 async function loadGenSamplingDefaults(modelDir: string): Promise<GenSamplingDefaults> {
   const file = Bun.file(`${modelDir}/generation_config.json`);
   if (!(await file.exists())) return {};
@@ -225,6 +247,10 @@ export async function loadContext(
     draftModelDir?: string;
     /** Drafts per round (`--num-draft-tokens`, mlx_lm.server default 3). */
     numDraftTokens?: number;
+    /** Draft-provider kind override (`--draft-kind`); auto-detected from the
+     *  draft artifact when absent (dspark.json → dspark; *_assistant config →
+     *  assistant; otherwise two-model). */
+    draftKind?: DraftKind;
   } = {},
 ): Promise<ServerContext> {
   const config = await loadModelConfig(modelDir);
@@ -257,26 +283,52 @@ export async function loadContext(
   if (tokenizer.eosTokenId != null && !config.eosTokenIds.includes(tokenizer.eosTokenId))
     config.eosTokenIds = [...config.eosTokenIds, tokenizer.eosTokenId];
 
-  // Speculative decoding: load the draft model (mlx_lm.server --draft-model).
+  // Speculative decoding: load the draft (mlx_lm.server --draft-model). The
+  // draft artifact's KIND selects the provider — all three share ONE serve
+  // loop (src/spec/serve-loop.ts): dspark.json → DSpark (KV-injected), a
+  // *_assistant config → the optiq KV-borrowing Gemma drafter, otherwise a
+  // full second model (mlx-lm parity). `--draft-kind` overrides the detect.
   let draft: ServerContext["draft"] = null;
   if (opts.draftModelDir) {
-    const { TwoModelProvider } = await import("./spec/two-model");
-    const provider = await TwoModelProvider.load(opts.draftModelDir, config.text.vocabSize);
-    // Tokenizer-family hard check: exact-token-match acceptance is only
-    // meaningful when both models tokenize identically. Vocab-size mismatch
-    // is a warning (upstream parity, inside TwoModelProvider.load); a probe
-    // string that ENCODES differently means different tokenizer families —
-    // refuse instead of silently accepting ~0% of drafts.
-    const draftTok = await loadTokenizer(opts.draftModelDir);
-    const probe = "The 3 quick brown foxes jumped över the lazy dog?! 🦊";
-    if (
-      JSON.stringify(tokenizer.encode(probe)) !== JSON.stringify(draftTok.encode(probe))
-    ) {
-      provider.dispose();
-      throw new Error(
-        `--draft-model tokenizer differs from the target's (probe string encodes ` +
-          `differently) — speculation needs the same tokenizer family`,
-      );
+    const dir = opts.draftModelDir;
+    const kind = opts.draftKind ?? (await detectDraftKind(dir));
+    let provider: import("./spec/source").DraftProvider;
+    let numDraftTokens = Math.max(1, opts.numDraftTokens ?? 3);
+    if (kind === "dspark") {
+      const { DflashProvider } = await import("./spec/dflash-source");
+      const p = await DflashProvider.load(dir);
+      provider = p;
+      // Pin to the trained block width — the serve loop must never ask for
+      // more positions than the DSpark block was trained for (n ≤ cfg.gamma).
+      numDraftTokens = Math.max(1, Math.min(opts.numDraftTokens ?? p.gamma, p.gamma));
+    } else if (kind === "deepspec") {
+      const { DeepspecProvider } = await import("./spec/deepspec-source");
+      const p = await DeepspecProvider.load(dir);
+      provider = p;
+      // Same pin, from their config's block_size (e.g. 7 for the released
+      // dspark_gemma4_12b_block7).
+      numDraftTokens = Math.max(1, Math.min(opts.numDraftTokens ?? p.gamma, p.gamma));
+    } else if (kind === "assistant") {
+      const { AssistantProvider } = await import("./spec/assistant-source");
+      provider = await AssistantProvider.load(dir);
+    } else {
+      const { TwoModelProvider } = await import("./spec/two-model");
+      provider = await TwoModelProvider.load(dir, config.text.vocabSize);
+      // Tokenizer-family hard check — two-model ONLY (it ships its own
+      // tokenizer). Exact-token-match acceptance is meaningful only when both
+      // models tokenize identically; a probe that ENCODES differently means
+      // different families — refuse instead of silently accepting ~0% of
+      // drafts. The KV-borrowing drafters share the target's tokenization by
+      // construction, so this check does not apply to them.
+      const draftTok = await loadTokenizer(dir);
+      const probe = "The 3 quick brown foxes jumped över the lazy dog?! 🦊";
+      if (JSON.stringify(tokenizer.encode(probe)) !== JSON.stringify(draftTok.encode(probe))) {
+        provider.dispose();
+        throw new Error(
+          `--draft-model tokenizer differs from the target's (probe string encodes ` +
+            `differently) — speculation needs the same tokenizer family`,
+        );
+      }
     }
     if (opts.memoryBudgetBytes) {
       const targetBytes = [...weights.shards.files.values()].reduce((a, f) => a + f.mmap.size, 0);
@@ -292,7 +344,7 @@ export async function loadContext(
         );
       }
     }
-    draft = { provider, numDraftTokens: Math.max(1, opts.numDraftTokens ?? 3) };
+    draft = { provider, numDraftTokens };
   }
 
   return {

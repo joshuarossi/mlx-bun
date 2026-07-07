@@ -16,6 +16,7 @@
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { clearCache } from "../mlx/ffi";
+import { flagOn } from "../flags";
 import { loadModelConfig } from "../config";
 import { Weights } from "../weights";
 import { createModel, type RuntimeModel } from "../model/factory";
@@ -78,12 +79,23 @@ class TwoModelSource implements DraftSource {
   }
 
   prefill(promptIds: number[]): void {
-    const ids = ops.fromInt32(promptIds, [1, promptIds.length]);
+    // Oracle convention (mlx-lm speculative_generate_step._prefill, re-anchored
+    // 2026-07-07): the DRAFT model also drains only to len-1 (`while y.size >
+    // 1`) — the last prompt token stays unprocessed and is consumed by the
+    // FIRST draft() round's feed ([pending] = that same token under the serve
+    // loop's oracle shape), mirroring _draft_generate's first _step. Draft-side
+    // full-prefill was the residual knife-edge flipper in the 2026-07-07 live
+    // oracle gate (γ=2 haiku cell). MLX_BUN_PREFILL_TAIL_SPLIT=0 reverts.
+    // (mlx-lm chunks its drain at prefill_step_size=2048; we forward the
+    // ≤len-1 head in one chunk — identical for prompts under 2048, the serve
+    // regime this lane gates at.)
+    const tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
+    const upTo = tailSplit && promptIds.length > 1 ? promptIds.length - 1 : promptIds.length;
+    const ids = ops.fromInt32(promptIds.slice(0, upTo), [1, upTo]);
     const h = this.model.forwardHidden(ids, this.caches);
     ids.dispose();
-    // The prompt's last-position logits are not needed: the serve loop's
-    // first `feed` is the target-sampled token0, which the draft consumes
-    // at the top of draft().
+    // The head's last-position logits are not needed: the serve loop's first
+    // `feed` is consumed at the top of draft().
     h.dispose();
     clearCache();
   }

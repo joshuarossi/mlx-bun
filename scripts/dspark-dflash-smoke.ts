@@ -79,7 +79,33 @@ console.log("faithful DFlash module");
   const hCtx1 = hCtx.slice([0, 0, 0], [1, Lctx, mH]);
   const blk = d.forwardInfer(stub, hCtx1, 3, G);
   check("forwardInfer γ tokens in-vocab", blk.tokens.length === G && blk.tokens.every((t) => t >= 0 && t < V));
-  blk.draftLogits.dispose(); hCtx1.dispose();
+  blk.draftLogits!.dispose(); // default collectLogits:true ⟹ always present here
+
+  // Alg 1 confidence pruning: conf.w/b are zero-init ⟹ every c_k = σ(0) = 0.5.
+  //  - minConf below 0.5 keeps the full block (no-op threshold);
+  //  - minConf above 0.5 prunes at k=1 ⟹ exactly 1 token (position 0 always kept);
+  //  - pruned draftLogits covers exactly tokens.length positions;
+  //  - pruned prefix tokens must be IDENTICAL to the unpruned block's
+  //    (pruning truncates, never re-draws — losslessness precondition).
+  const keep = d.forwardInfer(stub, hCtx1, 3, G, { minConf: 0.4 });
+  check("pruning no-op below c", keep.tokens.length === G && keep.tokens.every((t, i) => t === blk.tokens[i]));
+  keep.draftLogits!.dispose();
+  const pruned = d.forwardInfer(stub, hCtx1, 3, G, { minConf: 0.6 });
+  check("pruning fires above c → 1 token", pruned.tokens.length === 1 && pruned.conf.length === 1);
+  check("pruned logits match tokens", pruned.draftLogits!.shape[1] === pruned.tokens.length);
+  check("pruned prefix identical", pruned.tokens[0] === blk.tokens[0]);
+  pruned.draftLogits!.dispose();
+  const viaSts = d.forwardInfer(stub, hCtx1, 3, G, { thresholds: [0, 0.6, 0.6, 0.6, 0.6] });
+  check("per-position STS thresholds prune", viaSts.tokens.length === 1);
+  viaSts.draftLogits!.dispose();
+  // SAMPLE-path pruning alignment (2026-07-06 review bug): the prune branch
+  // must drop the sampled token too — tokens/conf/draftLogits all cover the
+  // same kept positions, or verifySampling slices out of bounds.
+  const sp = d.forwardInfer(stub, hCtx1, 3, G, { minConf: 0.6, sample: { temperature: 0.7, seed: 1 } });
+  check("sample+prune alignment", sp.tokens.length === 1 && sp.conf.length === 1 && sp.draftLogits!.shape[1] === 1,
+    `tokens=${sp.tokens.length} conf=${sp.conf.length} logits=${sp.draftLogits!.shape[1]}`);
+  sp.draftLogits!.dispose();
+  hCtx1.dispose();
 
   vag.dispose(); opt.dispose(); d.dispose(); w.dispose();
   hCtx.dispose(); ctxMask.dispose(); anchorEmb.dispose(); prevToks.dispose(); xStar.dispose(); targetLogits.dispose();
