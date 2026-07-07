@@ -203,20 +203,32 @@ working UI plan (supersedes web-ui-pass-plan.md; revised 2026-07-06 to the
 116 rows, MATCH/BEAT/SKIP) as the coverage contract, §6.6 the app-aware
 assistant, and principle 9: the bar for done is perfect visual polish).
 
-**Phase 0 AND Phase 1 are done + visually QA'd on this branch.** Phase 1
-(004544f): block-memoized streaming render (streamed ≡ one-shot, fixture-
-verified) + vendored hljs; per-turn `lane` on usage + lane-registry →
-live perf strip (verified live: "230 tok/s · TTFT 292ms · BATCHED");
-full sampling popover w/ per-model defaults; message actions (copy/
-regenerate/edit-as-sibling on pi navigateTree, < i/n > toggle); mobile
-drawer, light theme, Cmd+/ sheet, session search; gc endpoints;
-/v1/models tier+vision+gen_defaults; /v1/adapters/available returns all
-w/ compatible flag (pi extension updated to match). Visual QA on the
-running app at 375/768/1024/1280 both themes (0c601d2) fixed: empty
-Auto-toggle sliver, conn-pill clip, tabs flex-shrinking to zero on
-phones, translucent --code-bg washing out light-theme code. Next: Phase 2
-(plan §9 — module split + typed frontend FIRST, then memory REST wrappers
-+ panel, adapter routing table, system prompt/presets, auto-titles v2).
+**Phases 0, 1, AND 2 are done + visually QA'd on this branch, rebased on
+post-merge main (PR #18/#19/#20).** Phase 1: block-memoized streaming
+render + vendored hljs; per-turn `lane` → live perf strip (verified live:
+"230 tok/s · TTFT 292ms · BATCHED"); full sampling popover w/ per-model
+defaults; message actions (regenerate/edit-as-sibling via navigateTree);
+mobile drawer, light theme, Cmd+/ sheet; gc endpoints; /v1/models
+tier+vision+gen_defaults. Phase 2 (248a85d): app.html's inline script →
+12 typed modules (type-only WS-contract imports from pi-web; generated
+committed src/web/app.js + freshness gate; tsconfig.web.json; happy-dom
+harness incl. streaming-parity fixtures); /api/memory/* REST + POST init
+(confined to vaultRoot/tmpdir after review caught arbitrary-path git-
+commit exposure); Memory panel (vault browser, git History+diff view,
+Reference docs, provenance chips, personalized hero, consent card —
+full flow verified live on a scratch vault); adapter routing table
+(three-state + ramBytes + "a+b" stacking test-proven); model picker w/
+/fit verdicts (live swap deferred to Phase 3 Hub); per-chat system
+prompt (before_agent_start layering) + presets v1; approval gate wired
+(codingTools opt-in, editable args via SDK event.input mutation,
+durable ~/.mlx-bun/tool-approvals.json); Developer IA toggle; "#"
+mention. Lane semantics re-verified against merged DSpark GenerateStats.
+Visual QA (3228734) fixed a placeholder-wrap regression + .bubble-scoped
+markdown chrome missing in the panel. Follow-ups: # mention doesn't
+search Reference/ docs; wikilink graph view (plan §5.5) still line-only.
+Next: Phase 3 (plan §9 — table-stakes sweep: files-RAG v1, Model Hub,
+Canvas v1, per-message sampling, self-healing tool loop, app-aware
+assistant v1, palette, export, full-text search, PWA).
 
 ## Where we were (2026-07-07 — 12B completion-probe parity closed: prefill tail split)
 
