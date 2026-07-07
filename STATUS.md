@@ -28,7 +28,10 @@ background work. Internal control in the bench data: the mixed arm (4×
 smaller flush bytes) BEAT both bf16 arms at decode@ctx. Reproduced
 standalone (e4b, 9.5k-token entry, busy box, directional): pre-fix rep2
 37.9 vs cold 47.1 tok/s (−20%); post-fix flat 45.6/44.3/45.3, restart
-survival still PASS (cached=9575 after kill+respawn). Fix
+survival still PASS (cached=9575 after kill+respawn); the
+MLX_BUN_SSD_WRITEBEHIND=0 control is equally flat (43.4/43.6/47.1 —
+gated ON ≈ OFF, the gate leaves nothing on the table) with restart
+cached=0, by design. Fix
 (`src/serve/generation-gateway.ts`, `src/kv-store.ts`, `src/ssd-cache.ts`,
 `src/server.ts`): `gateway.busy`/`onIdle()` cover BOTH lanes (the serial
 lane holds the mutex but shows zero rows — activeRows alone was blind to
