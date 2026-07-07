@@ -65,7 +65,6 @@ describe("SsdCacheStore", () => {
     expect(loaded!.tokens).toEqual([1, 2, 3, 4]);
     expect(loaded!.caches).toHaveLength(2);
     for (const c of loaded!.caches) c.dispose();
-    loaded!.mmap.unmap();
     rmSync(dir, { recursive: true, force: true });
   });
 

@@ -391,7 +391,7 @@ describe.skipIf(!optIn || !haveCpm)("batch scheduler — SSD tier through the ba
         restore: (handle) => {
           const loaded = store.restore(handle as never, model);
           return loaded
-            ? { tokens: loaded.tokens, caches: loaded.caches, retain: () => loaded.mmap.unmap() }
+            ? { tokens: loaded.tokens, caches: loaded.caches, retain: () => {} }
             : null;
         },
         store: (tokens, caches, ns) => { store.store(tokens, caches, ns); },

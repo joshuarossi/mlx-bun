@@ -28,7 +28,7 @@ import { spliceImageTokens } from "./vision/diffusion-vision";
 import { createModel, type RuntimeModel } from "./model/factory";
 import { isMiniCPM5Config, isSupportedModelRecord } from "./model/support";
 import { generate, type GenerateOptions, type TokenLogprobs } from "./generate";
-import { cloneKvCaches, retainMmapForProcess } from "./kv-store";
+import { cloneKvCaches } from "./kv-store";
 import {
   compileGrammarRequest, grammarEnabled, type GrammarRequest,
 } from "./grammar";
@@ -1209,11 +1209,10 @@ export function createServer(
         restore: (handle: unknown) => {
           const loaded = ssdStore!.restore(handle as import("./ssd-cache").SsdIndexEntry, ctx.model);
           if (!loaded) return null;
-          // Deferred unmap (2026-07-06 hang fix): the mapping stays pinned
-          // for the process — see retainMmapForProcess. retain stays in the
-          // entry contract as a no-op so callers' dispose ordering is
-          // unchanged.
-          retainMmapForProcess(loaded.mmap);
+          // Restore is a STREAMED COPY (2026-07-07 A7-restore): the caches
+          // own their bytes and no mapping outlives loadKvCache — nothing
+          // to pin, nothing to unmap. retain stays in the entry contract
+          // as a no-op so callers' dispose ordering is unchanged.
           return { tokens: loaded.tokens, caches: loaded.caches, retain: () => {} };
         },
         store: (tokens: number[], caches: import("./model/gemma4").Cache[], ns: string) => {

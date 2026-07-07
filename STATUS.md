@@ -10,7 +10,35 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
-## Where we are (2026-07-06, round 2 — finish-the-list)
+## Where we are (2026-07-07 — A7 closure: ssd-cache RSS)
+
+**A7 ("ctx/restart legs read high on --ssd-cache arms") root-caused in
+three parts and closed** (src/kv-store.ts; fixed against the 07-07 bench
+at 3d56676). (1) WRITE residual — the v3 streaming writer's per-tensor
+`rawBytes()` ended in a JS-heap `.slice()`; dead copies outlive the flush
+under GC lag. Now hashes/writes from a ZERO-COPY view of the contiguous
+mlx buffer (`MlxArray.rawBytesView`); save allocates no JS-heap copies at
+all and 0 extra mlx bytes for contiguous sources. (2) RESTORE — the
+zero-copy mmap wrap became a per-restore PROCESS-LIFETIME mapping leak
+after the 07-06 FFI-dtor fix (retainMmapForProcess — now DELETED), and
+exact-offset-sized restores made the first decode step concat-copy the
+whole entry. Restore is now a STREAMED COPY (`fromBytesCopy` per tensor +
+`MADV_DONTNEED` + unmap-before-return; plain-KV lands in STEP-rounded
+capacity with slack): measured peak = live entry + ONE tensor (552 vs
+520 MB on a 512 MB synthetic), vmmap-clean, 12B cold cache-load→first
+token 277 ms (parity with the old ~240 ms). Copy-restore byte identity
+pinned for all five cache kinds (save→load(verify)→re-save
+hash-identical, tests/kv-store.test.ts) + real-model bf16/quant/SSM
+continuation suites green. (3) NOT a defect — most of the benched leg
+delta is `ps` RSS ACCOUNTING: the write-behind's hash+write CPU-touches
+the live KV entry and makes already-allocated unified-memory pages
+visible (GPU-written buffers and python-arm KV never show in ps RSS —
+proven with mlx active/peak counters + footprint probes). bench-serve.ts'
+hardcoded "fix A7 pending in src" note replaced with the accounting
+footnote. Docs: ssd-kv-cold-tier.md addendum, server-config.md restore
+rows. Residual: quiet-machine bench rerun for quotable before/after legs.
+
+## Where we were (2026-07-06, round 2 — finish-the-list)
 
 **Everything on the open list is closed** (PLAN.md "finish-the-list"
 phase; suite 1127/0, parity suites green on every change): e4b long-ctx

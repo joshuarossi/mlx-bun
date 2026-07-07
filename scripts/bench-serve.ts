@@ -881,15 +881,23 @@ async function main(): Promise<void> {
         lines.push(`- † ${r.cell.arm}: **${pf.phase}** phase failed (${pf.error.slice(0, 160)}) — "—" cells above; stderr tail in failures section`);
     }
     if (rows.some((r) => r.phaseFailures.length)) lines.push(``);
-    // Per-leg RSS attribution (B4). mlx-bun arms run with --ssd-cache: the
-    // write-behind transiently duplicates KV entry bytes host-side, which
-    // inflates the ctx/restart legs' RSS (fix A7 in src lands separately).
+    // Per-leg RSS attribution (B4). Two standing caveats (2026-07-07 A7
+    // closure): (1) leg boundary — the ctx entry's debounced write-behind
+    // flushes during the restart phase's pre-kill sleep, so its cost lands
+    // in the RESTART leg's window; (2) accounting — ps RSS only counts
+    // unified-memory KV pages once the CPU touches them, which the
+    // write-behind's hash+write does to the (already-allocated) live
+    // entry, while python arms' KV never shows in RSS at all. An elevated
+    // ctx/restart leg on an --ssd-cache arm is therefore VISIBILITY of
+    // existing KV, not duplication (the real duplications — JS-heap copy
+    // pile-up in the writer, pinned restore mmap + whole-entry regrow —
+    // were fixed 2026-07-07; kv-store.ts).
     lines.push(`per-leg peak RSS MB (sampler max between leg boundaries; idle = right after ready):`);
     for (const r of rows) {
       const legs = r.rssByLeg.map(([n, v]) => `${n} ${v.toFixed(0)}`).join(" · ");
       lines.push(`- ${r.cell.arm}: idle ${r.idleRssMB.toFixed(0)} · ${legs} · peak ${r.peakRssMB.toFixed(0)}`);
     }
-    lines.push(`- note: mlx-bun arms carry --ssd-cache; its write-behind transiently duplicates entry bytes host-side (ctx/restart legs read high — fix A7 pending in src)`, ``);
+    lines.push(`- note: --ssd-cache arms' ctx/restart legs read high because the write-behind's hash+write makes the live KV entry's unified-memory pages VISIBLE to ps RSS (python arms' KV never shows) — accounting, not duplication`, ``);
     // BIT-PARITY verdicts (B2): per-probe lines. The completion probe is
     // template-free (tokenizer comparison); the chat probe pins
     // enable_thinking on every arm so all stacks render the SAME prompt.

@@ -151,8 +151,10 @@ export class SsdCacheStore {
     return best ? { entry: best, prefixLen: bestLen } : null;
   }
 
-  /** Restore an entry zero-copy (COW mmap; pages fault in lazily). Bumps
-   *  LRU mtime. On ANY failure the file is dropped and null returned. */
+  /** Restore an entry via kv-store's STREAMED COPY (bounded host
+   *  transient — live entry + one tensor; no mapping survives the call,
+   *  the caches own their bytes). Bumps LRU mtime. On ANY failure the
+   *  file is dropped and null returned. */
   restore(entry: SsdIndexEntry, model: { makeCache(): Cache[] }): LoadedKvCache | null {
     const t0 = performance.now();
     try {

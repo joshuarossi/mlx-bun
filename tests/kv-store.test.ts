@@ -1,4 +1,4 @@
-// KV-cache persistence (slow tier): save → load (zero-copy mmap) →
+// KV-cache persistence (slow tier): save → load (streamed copy-restore) →
 // continuation must be token-identical; loading + first token must meet
 // the Phase 5 cold-start criterion (< 1s for a cached-prefix prompt).
 
@@ -70,7 +70,6 @@ describe.skipIf(!haveWeights || !haveGoldens)("kv-cache persistence", async () =
     expect(ttftMs).toBeLessThan(3000);
 
     for (const c of loaded.caches) c.dispose();
-    loaded.mmap.unmap();
     rmSync(dir, { recursive: true, force: true });
   }, 240_000);
 
@@ -138,7 +137,6 @@ describe.skipIf(!haveWeights || !haveGoldens)("kv-cache persistence", async () =
     for (let i = 0; i < 8; i++) { b = stepGreedy(loaded.caches, b); diskIds.push(b); }
     expect(diskIds).toEqual(memIds);
     for (const c of loaded.caches) c.dispose();
-    loaded.mmap.unmap();
     rmSync(dirQ, { recursive: true, force: true });
   }, 300_000);
 });
@@ -213,12 +211,99 @@ describe.skipIf(!existsSync(`${QWEN_BASE}/config.json`))("kv-cache persistence �
       for (let i = 0; i < 6; i++) { b = stepGreedy(loaded.caches, b); diskIds.push(b); }
       expect(diskIds).toEqual(memIds);
       for (const c of loaded.caches) c.dispose();
-      loaded.mmap.unmap();
       rmSync(dir, { recursive: true, force: true });
     } finally {
       weights.dispose();
     }
   }, 300_000);
+});
+
+// Copy-restore byte identity, model-free, ALL FIVE cache kinds: the
+// streamed copy-restore (2026-07-07, replacing the zero-copy mmap wrap)
+// must hand back byte-identical tensors. Proven by save → load(verify) →
+// re-save: identical per-tensor hashes (fixed-width Bun.hash of the raw
+// bytes) mean the copies match the originals bit-for-bit. Also pins the
+// KVCache STEP pre-sizing: restored full-attention caches carry ≥1 token
+// of slack so the first post-restore step never concat-copies the entry.
+describe("kv-store copy-restore byte identity", () => {
+  test("save → load → re-save keeps every tensor hash; restored KVCache is STEP-sized", async () => {
+    const { saveKvCache, loadKvCache, readKvHeader } = await import("../src/kv-store");
+    const {
+      KVCache, RotatingKVCache, QuantizedKVCache, RotatingQuantizedKVCache,
+    } = await import("../src/model/gemma4-base");
+    const { SSMCache } = await import("../src/model/qwen3-delta");
+    const { MlxArray } = await import("../src/mlx/array");
+    const { Dtype } = await import("../src/mlx/ffi");
+    const ops = await import("../src/mlx/ops");
+
+    // deterministic pseudo-random bf16 data (seeded LCG)
+    let seed = 0x2545f491;
+    const rnd = (): number => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x40000000 - 1;
+    };
+    const randBf16 = (shape: number[]): InstanceType<typeof MlxArray> => {
+      const n = shape.reduce((a, b) => a * b, 1);
+      const f = MlxArray.fromFloat32(Float32Array.from({ length: n }, rnd), shape);
+      const b = f.astype(Dtype.bfloat16).eval();
+      f.dispose();
+      return b;
+    };
+    const qt = (shape: number[], g: number, bits: number): import("../src/mlx/ops").QuantizedTensor => {
+      const w = randBf16(shape);
+      const t = ops.quantize(w, g, bits);
+      ops.evalAll([t.packed, t.scales, t.biases]);
+      w.dispose();
+      return t;
+    };
+
+    const kv = new KVCache();
+    kv.restoreState(randBf16([1, 2, 8, 16]), randBf16([1, 2, 8, 16]), 8);
+    const rot = new RotatingKVCache(8);
+    rot.restoreState(randBf16([1, 2, 8, 16]), randBf16([1, 2, 8, 16]), 10, 2); // post-wrap ring
+    const qkv = new QuantizedKVCache(64, 8);
+    qkv.restoreState(qt([1, 2, 4, 64], 64, 8), qt([1, 2, 4, 64], 64, 8), 4);
+    const rq = new RotatingQuantizedKVCache(8, 64, 4);
+    rq.restoreState(qt([1, 2, 8, 64], 64, 4), qt([1, 2, 8, 64], 64, 4), 12, 4);
+    const ssm = new SSMCache();
+    ssm.conv = randBf16([1, 4, 3, 8]);
+    ssm.recurrent = randBf16([1, 4, 8, 8]);
+    ssm.offset = 5;
+    const caches = [kv, rot, qkv, rq, ssm];
+    const stub = { makeCache: () => [new KVCache(), new KVCache(), new KVCache(), new KVCache(), new KVCache()] };
+
+    const dir = mkdtempSync(join(tmpdir(), "mlx-bun-kvrt-"));
+    const f1 = join(dir, "a.mlxkv");
+    const f2 = join(dir, "b.mlxkv");
+    saveKvCache(f1, [1, 2, 3], caches, {});
+    for (const c of caches) c.dispose();
+
+    const loaded = loadKvCache(f1, stub, { verify: true });
+
+    // STEP pre-sizing: the restored plain KVCache has slack capacity, and
+    // the first 1-token update advances in place (no grow/realloc).
+    const lkv = loaded.caches[0] as InstanceType<typeof KVCache>;
+    expect(lkv.keys!.shape[2]).toBe(256);
+    const one = randBf16([1, 2, 1, 16]);
+    const [K, V] = lkv.updateAndFetch(one, one);
+    ops.evalAll([K, V]);
+    expect(lkv.offset).toBe(9);
+    expect(lkv.keys!.shape[2]).toBe(256);
+    K.dispose(); V.dispose(); one.dispose();
+    lkv.trim(1); // back to the persisted state for the re-save
+
+    saveKvCache(f2, [1, 2, 3], loaded.caches, {});
+    for (const c of loaded.caches) c.dispose();
+
+    const strip = (h: ReturnType<typeof readKvHeader>) =>
+      h.caches.map((e) => ({
+        kind: e.kind, offset: e.offset, idx: e.idx, maxSize: e.maxSize,
+        groupSize: e.groupSize, bits: e.bits,
+        tensors: e.tensors.map((t) => ({ bytes: t.bytes, shape: t.shape, dtype: t.dtype, hash: t.hash })),
+      }));
+    expect(strip(readKvHeader(f2))).toEqual(strip(readKvHeader(f1)));
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
 
 // Integrity + atomicity: no model needed — hand-built caches.
@@ -253,7 +338,6 @@ describe("kv-store v2 integrity", () => {
     const okLoad = loadKvCache(file, stub, { configFingerprint: "fp-a", tokenizerHash: "tk-a" });
     expect(okLoad.tokens).toEqual([1, 2, 3, 4]);
     for (const c of okLoad.caches) c.dispose();
-    okLoad.mmap.unmap();
     expect(() => loadKvCache(file, stub, { configFingerprint: "fp-B" })).toThrow(/configFingerprint/);
     expect(() => loadKvCache(file, { makeCache: () => [mk()] })).toThrow(/cached layers/);
 
