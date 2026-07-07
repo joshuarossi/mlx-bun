@@ -264,12 +264,15 @@ bpw), not deeper compression.
   margin becomes headroom for lower rungs. Only AFTER TQ-4 ≥ affine-4:
   the lower-bpw ladder (3.5 / 3.0 / 2.5) → acceptance-per-byte curve,
   knee adopted (dont-delete-optionality for the rest).
-- [ ] **5b″. TQ enters the 1e knapsack as candidate SCHEMES**, not a
-  separate framework: candidate set {affine-4, affine-8, TQ-4, TQ-3.5,…}
-  per group, measured KL cost each, same greedy allocation to target BPW —
-  optiq's method generalizes over schemes unchanged. The final mixed
-  artifact may be TQ-where-sensitive / affine-where-not, all from the
-  table.
+- [ ] **5b″. TQ IS HOW, SENSITIVITY-AWARE IS WHAT (Josh)** — two orthogonal
+  axes, never mixed: TQ is the quantization METHOD and it applies to ALL
+  tensors (strictly better at equal bits — no tensor prefers affine);
+  sensitivity is the bit ALLOCATION — the 1e knapsack's candidate set
+  becomes {TQ-2, TQ-3, TQ-4, TQ-8} per group, measured KL cost each, greedy
+  to target BPW. The shipped artifact is TQ-everywhere with
+  sensitivity-allocated bits. Affine survives only as (a) the Phase-1
+  pre-TurboQuant baseline and (b) the control arm in the 5b equal-bpw
+  comparison — never a component of the final artifact.
 - [ ] **5b′. PER-TENSOR MIXED PRECISION rungs** (Josh, 2026-07-07). The
   intuition "only 5 layers = few knobs" undercounts: the drafter's mass is
   ~10 TENSOR GROUPS, and two of them are 58% of the bytes — `lm_head`
