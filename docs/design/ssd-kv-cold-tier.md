@@ -255,3 +255,34 @@ request; and the restart window tightens — the flush now runs in idle gaps
 instead of overlapping decodes, so the bench's 2.5 s pre-kill beat must
 absorb it (verified surviving: e4b 9.5k entry, restart cached=9575 with
 the gate on).
+
+## Addendum 2026-07-07 (later) — bounded retention + admission-safe snapshots
+
+The post-merge review found two operational holes in the contract above:
+
+1. **Snapshot timer could stall batch admission.** `scheduleSsdSnapshot`'s
+   debounced timer fired `gateway.runExclusive` unconditionally; the
+   exclusive registers a serial WAITER, which holds batch admission until
+   every running row drains naturally — a background durability timer
+   periodically freezing admission under `--batch N` sustained load. Fixed
+   with the same guard `demoteIdle` always had: the timer checks
+   `activeRows/pendingRows` first and RE-ARMS (5 s, unref'd) while busy —
+   entries are immutable, a late snapshot is equally valid.
+2. **Starved-gate clone retention was unbounded.** Every eviction/demotion/
+   snapshot chained GPU-pinning zero-copy clones onto a bare serial promise
+   chain, and every flush step awaits `onIdle()` — under continuous traffic
+   the chain starves and resident memory = prompt-cache cap + every queued
+   clone, defeating the byte cap exactly under the load causing evictions.
+   Now all three producers go through **`SpillQueue`** (kv-store.ts):
+   queued bytes are capped (default 2 GB = a quarter of the 8 GB RAM-cache
+   default; `MLX_BUN_SSD_SPILL_QUEUE_GB` overrides) — over cap the OLDEST
+   not-mid-store item drops with its clones disposed immediately. A dropped
+   spill is a future cache miss, never a wrong result: the contention-free
+   alternative to letting the flush cut into decode. `/stats.ssd_cache`
+   exposes `pending_spills` / `pending_spill_bytes` / `dropped_spills`.
+
+Explicitly accepted (documented, not built): **no shutdown flush** — a
+SIGINT/SIGTERM during (or within the debounce after) traffic loses queued
+write-behind entries; restart survival degrades to whatever already
+flushed. This is a best-effort cache tier; the cost of a lost entry is one
+re-prefill. `SpillQueue.drain()` exists if a shutdown hook is ever wanted.

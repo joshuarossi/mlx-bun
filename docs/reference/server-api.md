@@ -411,9 +411,14 @@ matching `mlx_lm.server`.
   "server": { "owner": "serve" | "pi-session" | "embedded", "model": "...", "started_at": 0 },
   "prompt_cache": { "entries": 0, "bytes": 0, "max_bytes": 0, "hits": 0, "misses": 0 },
   "response_store": { "entries": 0, "bytes": 0, "max_bytes": 33554432, "ttl_ms": 3600000 },
-  "kv_quant": { "mode": "mixed (kv_config.json)" | "uniform-kv8" | "bf16",
-                 "layers": { "kv4": 8, "bf16": 40 },
+  "kv_quant": { "mode": "mixed (kv_config.json)" | "uniform-kv8" | "turbo k8v3" | "bf16",
+                 "layers": { "kv4": 8, "bf16": 40 },     // turbo: { "turbo-k8v3": 8, "bf16": 40 }
                  "attention": { "global": 10, "sliding_window": 38 } },
+  // present only when --ssd-cache is on:
+  "ssd_cache": { "dir": "...", "entries": 0, "bytes": 0, "max_bytes": 0,
+                 "restores": 0, "spills": 0, "restore_ms_last": 0, "demotions": 0,
+                 // bounded write-behind queue (MLX_BUN_SSD_SPILL_QUEUE_GB):
+                 "pending_spills": 0, "pending_spill_bytes": 0, "dropped_spills": 0 },
   "admission": {
     "max_safe_context": 0,            // tokens; requests above this 400
     "memory_budget_bytes": null,      // explicit budget, or null (machine default)

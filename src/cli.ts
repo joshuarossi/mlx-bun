@@ -136,11 +136,15 @@ Model & quality:
                             Serial lane only — with --batch N a mounted draft
                             routes every request serial, like mlx_lm.server.
   --draft-kind <kind>       Override draft-artifact detection:
-                            two-model | assistant | dspark | deepspec
+                            two-model | assistant | dspark | deepspec | ngram
                             (deepspec = DeepSeek's released Gemma4DSparkModel
-                            drafters)  [default: auto]
-  --num-draft-tokens <n>    Drafts per verify round  [default: 3;
+                            drafters; ngram = MODEL-FREE prompt lookup — no
+                            --draft-model, drafts copied from the request's
+                            own context, lossless)  [default: auto]
+  --num-draft-tokens <n>    Drafts per verify round  [default: 3; ngram: 10;
                             DSpark pins to its trained block width]
+  --ngram-max <k>           Prompt-lookup longest match window  [default: 3]
+  --ngram-min <k>           Prompt-lookup shortest match window  [default: 1]
   --kv-quant <mode>         KV cache quantization: config (per-layer
                             kv_config.json when the model ships one), off
                             (bf16), 4 / 8 (uniform bits), or turbo[:k<bits>v
@@ -1453,18 +1457,44 @@ switch (cmd) {
     }
     const draftKindRaw = opt("draft-kind");
     const draftKind = (draftKindRaw ?? undefined) as
-      | "dspark" | "deepspec" | "assistant" | "two-model" | undefined;
-    if (draftKind !== undefined && !["dspark", "deepspec", "assistant", "two-model"].includes(draftKind)) {
-      console.error(`--draft-kind expects two-model|assistant|dspark|deepspec (got "${draftKindRaw}")`);
+      | "dspark" | "deepspec" | "assistant" | "two-model" | "ngram" | undefined;
+    if (draftKind !== undefined && !["dspark", "deepspec", "assistant", "two-model", "ngram"].includes(draftKind)) {
+      console.error(`--draft-kind expects two-model|assistant|dspark|deepspec|ngram (got "${draftKindRaw}")`);
+      process.exit(1);
+    }
+    // Prompt-lookup window bounds (ngram kind only; validated here so a typo
+    // fails the launch, not the first request).
+    const ngramInt = (name: string): number | undefined => {
+      const raw = opt(name);
+      if (raw === null) return undefined;
+      const v = Number(raw);
+      if (!Number.isInteger(v) || v < 1) {
+        console.error(`--${name} expects an integer >= 1 (got "${raw}")`);
+        process.exit(1);
+      }
+      return v;
+    };
+    const ngramMax = ngramInt("ngram-max");
+    const ngramMin = ngramInt("ngram-min");
+    if (ngramMax !== undefined && ngramMin !== undefined && ngramMin > ngramMax) {
+      console.error(`--ngram-min (${ngramMin}) must be <= --ngram-max (${ngramMax})`);
       process.exit(1);
     }
     const sLoad = step("loading weights");
     const t0 = performance.now();
     const ctx = await loadContext(m.path, m.repoId, {
       memoryBudgetBytes: rt.serverOptions.memoryBudgetBytes,
-      ...(draftModelDir ? { draftModelDir, numDraftTokens, ...(draftKind ? { draftKind } : {}) } : {}),
+      ...(draftModelDir || draftKind === "ngram"
+        ? {
+            ...(draftModelDir ? { draftModelDir } : {}),
+            numDraftTokens,
+            ...(draftKind ? { draftKind } : {}),
+            ...(ngramMax !== undefined ? { ngramMax } : {}),
+            ...(ngramMin !== undefined ? { ngramMin } : {}),
+          }
+        : {}),
     });
-    sLoad.done(`weights loaded ${style.dim(`in ${(performance.now() - t0).toFixed(0)} ms`)}${draftModelDir ? style.dim(` · draft: ${draftModelDir.split("/").filter(Boolean).at(-1)}`) : ""}`);
+    sLoad.done(`weights loaded ${style.dim(`in ${(performance.now() - t0).toFixed(0)} ms`)}${draftModelDir ? style.dim(` · draft: ${draftModelDir.split("/").filter(Boolean).at(-1)}`) : draftKind === "ngram" ? style.dim(" · draft: ngram (prompt lookup)") : ""}`);
     await mountStartupAdapter(ctx, rt.serverOptions);
     const server = createServer(ctx, rt.port, { ...rt.serverOptions, owner: "serve" });
     const shownHost = rt.serverOptions.hostname ?? "localhost";
@@ -1805,7 +1835,7 @@ switch (cmd) {
       "--query", "-q", "--model", "--port", "--host", "--memory-budget", "--kv-budget", "--prompt-cache",
       "--ssd-cache", "--ssd-cache-max", "--ssd-demote-idle", "--kv-quant", "--unix",
       "--batch", "--decode-concurrency", "--adapter", "--adapter-path",
-      "--draft-model", "--num-draft-tokens", "--draft-kind",
+      "--draft-model", "--num-draft-tokens", "--draft-kind", "--ngram-max", "--ngram-min",
       "--compiled-decode", "--compiled-activations", "--fused-sdpa", "--thinking",
       "--temperature", "--temp", "--top-p", "--top-k", "--max-tokens",
       "--hlg-sampling", "--hlg-width", "--hlg-shoulder", "--hlg-toe", "--hlg-pivot-offset",

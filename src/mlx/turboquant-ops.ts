@@ -454,10 +454,23 @@ function groupsOf(a: MlxArray, groupSize: number): { xg: MlxArray; shape: number
   return { xg, shape, nGroups };
 }
 
+/** Split the last axis into single-element lanes and drop that trailing
+ *  axis, DISPOSING the raw split slices (2026-07-07 review: the bare
+ *  `split().map(reshape)` orphaned every slice node — each pinned the full
+ *  window-sized input on the per-decode-step unpack path, ~8 MB/call at 2k
+ *  context, OOM within dozens of tokens of real serving). */
+function splitLanes(a: MlxArray, indices: number[]): MlxArray[] {
+  return ops.split(a, indices, -1).map((l) => {
+    const r = ops.reshape(l, l.shape.slice(0, -1));
+    l.dispose();
+    return r;
+  });
+}
+
 /** vals: [..., dim] uint8, each using only 2 bits. Returns [..., dim/4] uint8. */
 function pack2bit(vals: MlxArray): MlxArray {
   const { xg } = groupsOf(vals, 4);
-  const lanes = ops.split(xg, [1, 2, 3], -1).map((l) => ops.reshape(l, l.shape.slice(0, -1)));
+  const lanes = splitLanes(xg, [1, 2, 3]);
   xg.dispose();
   const mask = u8(0x3, lanes[0]!);
   const v0 = ops.bitwiseAnd(lanes[0]!, mask);
@@ -508,7 +521,7 @@ function pack3bit(vals: MlxArray): MlxArray {
   const { xg } = groupsOf(vals, 8);
   const xg32 = xg.astype(Dtype.uint32);
   xg.dispose();
-  const lanes = ops.split(xg32, [1, 2, 3, 4, 5, 6, 7], -1).map((l) => ops.reshape(l, l.shape.slice(0, -1)));
+  const lanes = splitLanes(xg32, [1, 2, 3, 4, 5, 6, 7]);
   xg32.dispose();
   const v = lanes;
   const mask7 = u8(0x7, v[0]!);
@@ -527,12 +540,22 @@ function pack3bit(vals: MlxArray): MlxArray {
     return r;
   };
 
+  // Or-accumulate DISPOSING the previous accumulator (2026-07-07 review:
+  // the bare `b = ops.bitwiseOr(b, x)` reassignment orphaned the prior
+  // node — same discipline as pack5bit's byteVal loop).
+  const orInto = (acc: MlxArray, x: MlxArray): MlxArray => {
+    const next = ops.bitwiseOr(acc, x);
+    acc.dispose();
+    x.dispose();
+    return next;
+  };
+
   // b0 = v0 | (v1<<3) | (v2<<6)
   const m0 = m(0);
   const m1 = m(1); const m1s = shl(m1, 3); m1.dispose();
   const m2 = m(2); const m2s = shl(m2, 6); m2.dispose();
   let b0 = ops.bitwiseOr(m0, m1s); m0.dispose(); m1s.dispose();
-  b0 = ops.bitwiseOr(b0, m2s); m2s.dispose();
+  b0 = orInto(b0, m2s);
 
   // b1 = (v2>>2) | (v3<<1) | (v4<<4) | (v5<<7)
   const m2b = m(2); const m2bs = shr(m2b, 2); m2b.dispose();
@@ -540,15 +563,15 @@ function pack3bit(vals: MlxArray): MlxArray {
   const m4 = m(4); const m4s = shl(m4, 4); m4.dispose();
   const m5 = m(5); const m5s = shl(m5, 7); m5.dispose();
   let b1 = ops.bitwiseOr(m2bs, m3s); m2bs.dispose(); m3s.dispose();
-  b1 = ops.bitwiseOr(b1, m4s); m4s.dispose();
-  b1 = ops.bitwiseOr(b1, m5s); m5s.dispose();
+  b1 = orInto(b1, m4s);
+  b1 = orInto(b1, m5s);
 
   // b2 = (v5>>1) | (v6<<2) | (v7<<5)
   const m5b = m(5); const m5bs = shr(m5b, 1); m5b.dispose();
   const m6 = m(6); const m6s = shl(m6, 2); m6.dispose();
   const m7 = m(7); const m7s = shl(m7, 5); m7.dispose();
   let b2 = ops.bitwiseOr(m5bs, m6s); m5bs.dispose(); m6s.dispose();
-  b2 = ops.bitwiseOr(b2, m7s); m7s.dispose();
+  b2 = orInto(b2, m7s);
 
   mask7.dispose();
   v.forEach((l) => l.dispose());
@@ -579,7 +602,7 @@ function unpack3bit(packed: MlxArray, origDim: number): MlxArray {
   const { xg } = groupsOf(packed, 3);
   const xg32 = xg.astype(Dtype.uint32);
   xg.dispose();
-  const bytes = ops.split(xg32, [1, 2], -1).map((l) => ops.reshape(l, l.shape.slice(0, -1)));
+  const bytes = splitLanes(xg32, [1, 2]);
   xg32.dispose();
   const [b0, b1, b2] = bytes;
 
@@ -588,8 +611,8 @@ function unpack3bit(packed: MlxArray, origDim: number): MlxArray {
   const b1s = ops.leftShift(b1!, s8);
   const b2s = ops.leftShift(b2!, s16);
   s8.dispose(); s16.dispose();
-  let combined = ops.bitwiseOr(b0!, b1s); b1s.dispose();
-  combined = ops.bitwiseOr(combined, b2s); b2s.dispose();
+  const comb01 = ops.bitwiseOr(b0!, b1s); b1s.dispose();
+  const combined = ops.bitwiseOr(comb01, b2s); comb01.dispose(); b2s.dispose();
   b0!.dispose(); b1!.dispose(); b2!.dispose();
 
   const mask7 = u8(0x7, combined);
@@ -617,7 +640,7 @@ function unpack3bit(packed: MlxArray, origDim: number): MlxArray {
 /** vals: [..., dim] uint8 (each using 4 bits). Returns [..., dim/2] uint8. */
 function pack4bit(vals: MlxArray): MlxArray {
   const { xg } = groupsOf(vals, 2);
-  const lanes = ops.split(xg, [1], -1).map((l) => ops.reshape(l, l.shape.slice(0, -1)));
+  const lanes = splitLanes(xg, [1]);
   xg.dispose();
   const [v0, v1] = lanes;
   const mask = u8(0xf, v0!);
@@ -681,7 +704,7 @@ function pack5bit(vals: MlxArray): MlxArray {
   const { xg } = groupsOf(vals, 8);
   const xg32 = xg.astype(Dtype.uint32);
   xg.dispose();
-  const lanes = ops.split(xg32, [1, 2, 3, 4, 5, 6, 7], -1).map((l) => ops.reshape(l, l.shape.slice(0, -1)));
+  const lanes = splitLanes(xg32, [1, 2, 3, 4, 5, 6, 7]);
   xg32.dispose();
 
   const bytes: MlxArray[] = [];
@@ -730,7 +753,7 @@ function unpack5bit(packed: MlxArray, origDim: number): MlxArray {
   const { xg } = groupsOf(packed, 5);
   const xg32 = xg.astype(Dtype.uint32);
   xg.dispose();
-  const bytes = ops.split(xg32, [1, 2, 3, 4], -1).map((l) => ops.reshape(l, l.shape.slice(0, -1)));
+  const bytes = splitLanes(xg32, [1, 2, 3, 4]);
   xg32.dispose();
 
   const lanes: MlxArray[] = [];

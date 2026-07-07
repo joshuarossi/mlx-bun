@@ -383,6 +383,102 @@ export async function saveKvCacheAsync(
   }
 }
 
+/** One pending write-behind item: an entry's copied tokens + OWNED
+ *  zero-copy cache clones (the queue disposes them on every exit path). */
+export interface SpillItem {
+  tokens: number[];
+  caches: Cache[];
+  ns: string;
+}
+
+/** Bounded write-behind queue (2026-07-07 post-merge review fix).
+ *
+ *  Pending spill/snapshot clones pin their entries' GPU buffers until the
+ *  idle-gated flush gets a turn; the old bare promise chain queued them
+ *  WITHOUT BOUND, so under sustained traffic (gate starved, evictions
+ *  ongoing) resident memory = prompt-cache cap + every queued clone —
+ *  allocator pressure exactly under the load that caused the evictions.
+ *
+ *  Policy: queued bytes are capped. Over cap, the OLDEST not-in-flight
+ *  item is dropped and its clones disposed immediately — cache semantics
+ *  (a dropped spill is a future cache miss, never a wrong result; the
+ *  contention-free alternative to letting the flush cut into decode).
+ *  The item being enqueued is never its own victim (soft cap: one
+ *  oversized entry may exceed the cap alone rather than never spilling).
+ *  Items run strictly serially in enqueue order via an internal chain;
+ *  store failures are swallowed (cold tier is best-effort) but clones
+ *  are disposed on every settle path. */
+type SpillRec = SpillItem & { bytes: number; dropped: boolean };
+
+export class SpillQueue {
+  #queue: SpillRec[] = [];
+  #bytes = 0;
+  #dropped = 0;
+  #inFlight: object | null = null;
+  #chain: Promise<void> = Promise.resolve();
+
+  constructor(
+    readonly capBytes: number,
+    /** Byte size of a clone set (prompt-cache's cacheBytes). */
+    readonly bytesOf: (caches: Cache[]) => number,
+    /** The actual write (server passes storeAsync + the idle gate). */
+    readonly store: (item: SpillItem) => Promise<unknown>,
+    /** Clone disposal — frees the pinned GPU memory. */
+    readonly disposeClones: (caches: Cache[]) => void,
+  ) {}
+
+  /** Bytes pinned by queued (not yet flushed) clones. */
+  get pendingBytes(): number { return this.#bytes; }
+  get pendingCount(): number { return this.#queue.length; }
+  /** Spills dropped by the cap since start (each = one future cache miss). */
+  get droppedCount(): number { return this.#dropped; }
+
+  enqueue(item: SpillItem): void {
+    const rec = { ...item, bytes: this.bytesOf(item.caches), dropped: false };
+    this.#queue.push(rec);
+    this.#bytes += rec.bytes;
+    while (this.#bytes > this.capBytes) {
+      const victim = this.#queue.find(
+        (p) => !p.dropped && p !== this.#inFlight && p !== rec,
+      );
+      if (!victim) break; // only the new item (or in-flight) left — soft cap
+      this.#drop(victim);
+    }
+    this.#chain = this.#chain.then(async () => {
+      if (rec.dropped) return; // clones already disposed at drop time
+      this.#inFlight = rec;
+      try {
+        await this.store(rec);
+      } catch {
+        // best-effort tier — the entry simply won't restore
+      } finally {
+        this.#inFlight = null;
+        this.#remove(rec);
+        this.disposeClones(rec.caches);
+      }
+    });
+  }
+
+  /** Settles when everything enqueued so far has flushed or dropped
+   *  (tests; a future shutdown hook would await this). */
+  drain(): Promise<void> { return this.#chain; }
+
+  #drop(rec: SpillRec): void {
+    rec.dropped = true;
+    this.#dropped++;
+    this.#remove(rec);
+    this.disposeClones(rec.caches);
+  }
+
+  #remove(rec: SpillRec): void {
+    const i = this.#queue.indexOf(rec);
+    if (i >= 0) {
+      this.#queue.splice(i, 1);
+      this.#bytes -= rec.bytes;
+    }
+  }
+}
+
 /** Read only the header (cheap — for prefix matching across many files).
  *  Always verifies the header hash; throws on any structural mismatch. */
 export function readKvHeader(path: string): KvFileHeader & { dataStart: number } {
@@ -438,12 +534,25 @@ function withStepCapacity(a: MlxArray, offset: number): MlxArray {
   const [B, H, S, D] = a.shape as [number, number, number, number];
   const cap = Math.ceil((offset + 1) / KVCache.STEP) * KVCache.STEP;
   if (S >= cap) return a;
-  const z = ops.zeros([B, H, cap, D], a.dtype);
-  const grown = ops.sliceUpdate(z, a, [0, 0, 0, 0], [B, H, S, D]);
-  z.dispose();
-  grown.eval();
-  a.dispose();
-  return grown;
+  // Internals drained on throw (2026-07-07 review: a grown.eval() failure
+  // orphaned z/grown; `a` stays the CALLER's to free — loadKvCache's
+  // pending[] holds it).
+  let z: MlxArray | null = null;
+  let grown: MlxArray | null = null;
+  try {
+    z = ops.zeros([B, H, cap, D], a.dtype);
+    grown = ops.sliceUpdate(z, a, [0, 0, 0, 0], [B, H, S, D]);
+    z.dispose();
+    z = null;
+    grown.eval();
+    a.dispose();
+    const out = grown;
+    grown = null;
+    return out;
+  } finally {
+    z?.dispose();
+    grown?.dispose();
+  }
 }
 
 /** Reload by STREAMED COPY (see the header note): every tensor is copied
@@ -471,6 +580,13 @@ export function loadKvCache(
 
   const mmap = MmapFile.open(path, "ro");
   const dataStart = header.dataStart;
+  // Every tensor materialized for the CURRENT entry, drained on any throw
+  // (2026-07-07 review: a hash mismatch under --ssd-cache-verify — or any
+  // per-tensor failure — orphaned the entry's already-built tensors: the
+  // catch below only saw completed caches). Cleared once the entry's cache
+  // takes ownership; disposing an array withStepCapacity already consumed
+  // is safe (dispose is idempotent).
+  const pending: MlxArray[] = [];
   const arr = (slot: TensorSlot): MlxArray => {
     const view = mmap.view(dataStart + slot.off, slot.bytes);
     if (expect.verify && hash64(view) !== slot.hash)
@@ -478,12 +594,19 @@ export function loadKvCache(
     // mlx_array_new_data COPIES synchronously — the view only has to
     // outlive this call, so the mapping can be advised/unmapped freely.
     const a = MlxArray.fromBytesCopy(view, slot.shape, slot.dtype as Dtype);
+    pending.push(a);
     // Drop the just-read clean pages so the load's transient stays at
     // live entry + one tensor (ALIGN = 16 KiB == the arm64 page size, so
     // every tensor offset is page-aligned by construction).
     const len = Math.min(alignUp(slot.bytes), mmap.size - (dataStart + slot.off));
     mmap.advise(dataStart + slot.off, len, MADV_DONTNEED);
     return a;
+  };
+  /** withStepCapacity whose (possibly fresh) result is pending-tracked. */
+  const grownArr = (slot: TensorSlot, offset: number): MlxArray => {
+    const g = withStepCapacity(arr(slot), offset);
+    pending.push(g);
+    return g;
   };
   const triple = (slots: TensorSlot[], at: number): ops.QuantizedTensor =>
     ({ packed: arr(slots[at]!), scales: arr(slots[at + 1]!), biases: arr(slots[at + 2]!) });
@@ -496,8 +619,8 @@ export function loadKvCache(
         case "kv": {
           const c = new KVCache();
           c.restoreState(
-            withStepCapacity(arr(t[0]!), e.offset),
-            withStepCapacity(arr(t[1]!), e.offset),
+            grownArr(t[0]!, e.offset),
+            grownArr(t[1]!, e.offset),
             e.offset,
           );
           caches.push(c);
@@ -542,8 +665,12 @@ export function loadKvCache(
         default:
           throw new Error(`${path}: unknown cache kind ${(e as { kind: string }).kind}`);
       }
+      // This entry's tensors are now owned by its cache — stop tracking them
+      // (the catch must not double-free through both pending AND caches).
+      pending.length = 0;
     }
   } catch (err) {
+    for (const a of pending) a.dispose(); // the mid-entry orphans
     for (const c of caches) c.dispose();
     throw err;
   } finally {

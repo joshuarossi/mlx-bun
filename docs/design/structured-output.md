@@ -440,3 +440,45 @@ U1/U2 engine upgrades (addendum), and device-side bitmask expansion
 a V-float mask ≈ 1 MB/step/row, expand with `right_shift`+`bitwise_and`
 on device) — ONLY if the B2 bench shows the O(B·V) host loop, which the
 measured serial numbers say it won't at B≤4.
+
+## Addendum (2026-07-07): jump-forward decoding LANDED (opt-in, serial lane)
+
+`MLX_BUN_GRAMMAR_JUMP=1` enables SGLang's jump-forward technique through
+the WASM API we already ship (`GrammarMatcher.findJumpForwardString`,
+exposed since 0.1.27 and previously uncalled): after each matcher
+advance, if the grammar admits exactly ONE continuation string, the
+serial decode loop retokenizes it (`tokenizer.encode(str, false)` — no
+specials), advances the matcher per id (partial-accept keeps the
+accepted prefix; matcher/emitted lockstep holds by construction, no
+rollback machinery), and carries the whole burst into the KV with ONE
+`[1, 1+m]` forward instead of m masked single-token forwards.
+`GrammarController.jumpForward` owns the contract (src/grammar.ts);
+generate()'s jump iteration owns the KV/history/`forwarded`/emission
+bookkeeping.
+
+Why opt-in (Lab, no oracle): the emitted STRING is identical and
+validity is preserved, but encode(jumpStr) standalone may tokenize a
+forced span differently than the model would have sampled it — the
+token stream, and content generated after the span (conditioning), can
+legally differ from an unjumped run. oMLX does not jump, so there is
+nothing to be bit-exact against. Gates: string-losslessness invariants +
+schema validity + jump-fired telemetry (`controller.jumpedTokens`),
+tests/grammar-jump.test.ts (contract suite + Llama-3.2-1B e2e, flag
+on/off).
+
+Notes for the next pass:
+- `any_whitespace:false` compiles to a FIXED pretty-printed layout
+  (measured: step-0 jump = `{\n  "name": "` on the person schema) —
+  fixed formatting makes forced spans longer, so compact/fixed schemas
+  are where the flag pays.
+- Excluded for `logprobs` requests (jumped tokens are never sampled).
+- SP-family (byte_fallback) tokenizers whose raw encode prepends space
+  never jump — first id gets matcher-rejected, guard degrades to normal
+  decode. Structurally safe, documented in server-config.md.
+- Batch lane (`#stepGrammar`) does NOT jump yet: per-row bursts make the
+  batched step ragged — follow-up only if serial measurements justify it.
+- Landed alongside: a disposed-guard on the async bitmask fill
+  (`fireFill`) — disposing a controller with a queued fill used to call
+  into the deleted WASM matcher and poison the module-wide wasmChain for
+  every later grammar request (BindingError; found by the jump contract
+  tests, latent for any exception between accept() and ready()).

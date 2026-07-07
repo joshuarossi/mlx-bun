@@ -28,10 +28,68 @@ import { Weights } from "../../weights";
 import { MlxArray } from "../../mlx/array";
 import { Dtype } from "../../mlx/ffi";
 import * as ops from "../../mlx/ops";
+import { parseQuantization, quantFor, type QuantizationConfig } from "../../config";
 
 function disposing(old: MlxArray, next: MlxArray): MlxArray {
   old.dispose();
   return next;
+}
+
+// ---------------------------------------------------------------------------
+// Weight representation: every matmul weight and gather table loads as either
+// bf16 (the released checkpoint) or affine-quantized (a
+// scripts/dspark-quantize-drafter.ts sibling). Detection is the house
+// pattern — a `.scales` sibling key marks a quantized module; bits/group_size
+// come from the config's `quantization` block (per-module overrides + the
+// mlx `false` = kept-full-precision convention). Both formats flow through
+// the same forward: the quantized matmul path is mlx QuantizedLinear
+// semantics (x @ W^T via quantized_matmul transpose=true) and the quantized
+// gather path is mlx QuantizedEmbedding semantics (gather packed/scales/bias
+// rows, dequantize the gathered rows) — matching mlx-lm's numerics.
+// ---------------------------------------------------------------------------
+
+/** A Linear weight `W [out, in]`, used as `x @ W^T`. bf16 keeps the lazy
+ *  transpose VIEW (see the memory note below); quant keeps packed storage. */
+type MatW =
+  | { kind: "bf16"; t: MlxArray }
+  | { kind: "quant"; w: MlxArray; scales: MlxArray; biases: MlxArray | null; spec: ops.QuantSpec };
+
+/** An embedding table `[vocab, dim]`, used via row gather. */
+type TableW =
+  | { kind: "bf16"; w: MlxArray }
+  | { kind: "quant"; w: MlxArray; scales: MlxArray; biases: MlxArray | null; spec: ops.QuantSpec };
+
+/** x @ W^T for either format. Output dtype follows x (bf16 on the real
+ *  checkpoint) in BOTH branches — the model-dtype fidelity notes on the
+ *  markov/confidence paths hold unchanged for the quantized path. */
+function matmulW(x: MlxArray, m: MatW): MlxArray {
+  if (m.kind === "bf16") return ops.matmul(x, m.t);
+  return ops.quantizedMatmul(x, m.w, m.scales, m.biases, m.spec, true);
+}
+
+/** Row gather for either format (quant: QuantizedEmbedding.encode —
+ *  dequantize returns the scales' dtype, bf16, same as the bf16 branch). */
+function gatherW(t: TableW, idsU32: MlxArray): MlxArray {
+  if (t.kind === "bf16") return ops.takeAxis(t.w, idsU32, 0);
+  const rows = ops.takeAxis(t.w, idsU32, 0);
+  const scaleRows = ops.takeAxis(t.scales, idsU32, 0);
+  const biasRows = t.biases ? ops.takeAxis(t.biases, idsU32, 0) : null;
+  const out = ops.dequantize(rows, scaleRows, biasRows, t.spec);
+  rows.dispose();
+  scaleRows.dispose();
+  biasRows?.dispose();
+  return out;
+}
+
+function disposeW(m: MatW | TableW | null): void {
+  if (!m) return;
+  if (m.kind === "bf16") {
+    ("t" in m ? m.t : m.w).dispose();
+    return;
+  }
+  m.w.dispose();
+  m.scales.dispose();
+  m.biases?.dispose();
 }
 
 // ---------------------------------------------------------------------------
@@ -133,9 +191,9 @@ function readConfig(raw: Record<string, any>): DeepspecConfig {
 // ---------------------------------------------------------------------------
 
 interface Layer {
-  qProjT: MlxArray; // [hidden, nHeads*headDim] (transposed for x@W)
-  kProjT: MlxArray; // [hidden, nKvHeads*headDim]
-  oProjT: MlxArray; // [nHeads*headDim, hidden]
+  qProj: MatW; // [nHeads*headDim, hidden] Linear storage, used as x@W^T
+  kProj: MatW; // [nKvHeads*headDim, hidden]
+  oProj: MatW; // [hidden, nHeads*headDim]
   qNorm: MlxArray;  // [headDim]
   kNorm: MlxArray;  // [headDim]
   // v_norm has with_scale=False (Gemma4RMSNorm(..., with_scale=False)) — no
@@ -144,9 +202,9 @@ interface Layer {
   postAttnNorm: MlxArray;
   preFfNorm: MlxArray;
   postFfNorm: MlxArray;
-  gateProjT: MlxArray;
-  upProjT: MlxArray;
-  downProjT: MlxArray;
+  gateProj: MatW;
+  upProj: MatW;
+  downProj: MatW;
   layerScalar: MlxArray; // [1]
 }
 
@@ -189,19 +247,20 @@ export class DeepspecDrafter {
   readonly ropeFreqs: MlxArray; // proportional-RoPE freqs, [headDim/2]
 
   #w: Weights;
-  #embed: MlxArray;      // [vocab, hidden]
-  #fcT: MlxArray;        // [taps*hidden, hidden] transposed (fc.weight is [hidden, taps*hidden])
+  #embed: TableW;        // [vocab, hidden]
+  #fc: MatW;             // fc.weight [hidden, taps*hidden] Linear storage
   #hiddenNorm: MlxArray; // [hidden]
   #norm: MlxArray;       // [hidden]
-  #lmHeadT: MlxArray;    // [hidden, vocab] transposed
+  #lmHead: MatW;         // lm_head.weight [vocab, hidden]
   #layers: Layer[] = [];
-  #markovW1: MlxArray | null; // [vocab, markovRank] embedding
-  #markovW2T: MlxArray | null; // [markovRank, vocab] transposed (stored as Linear [vocab, rank])
-  #confW: MlxArray | null;   // [1, confDim] proj weight (Linear storage)
-  #confWT: MlxArray | null;  // [confDim, 1] transpose view, built once (per-call transpose+cast leaked — review fix)
-  #confB: MlxArray | null;   // [1]
+  #markovW1: TableW | null; // [vocab, markovRank] embedding
+  #markovW2: MatW | null;   // markov_w2.weight [vocab, rank] Linear storage
+  #confProj: MatW | null;   // proj.weight [1, confDim] Linear storage (bf16
+                            // keeps the once-built transpose view — per-call
+                            // transpose+cast leaked, 2026-07-06 review fix)
+  #confB: MlxArray | null;  // [1]
 
-  private constructor(w: Weights, cfg: DeepspecConfig) {
+  private constructor(w: Weights, cfg: DeepspecConfig, quant: QuantizationConfig | null) {
     this.#w = w;
     this.cfg = cfg;
     this.tapLayers = cfg.target_layer_ids;
@@ -221,12 +280,36 @@ export class DeepspecDrafter {
     // dispatches a transposed-B operand natively, so the view costs nothing
     // per matmul. (2026-07-06 port review, MEDIUM-memory finding.)
     const transposed = (name: string): MlxArray => ops.transposeAxes(T(name), [1, 0]);
+    // Quantized-module detection + spec (house pattern: `.scales` sibling
+    // key gates; bits/group_size from the config quantization block).
+    const qspec = (base: string): ops.QuantSpec => {
+      const spec = quantFor(quant, base);
+      if (!spec)
+        throw new Error(
+          `DeepspecDrafter: ${base} has quantized tensors (.scales sibling) but no quantization config entry`,
+        );
+      return { bits: spec.bits, groupSize: spec.groupSize, mode: spec.mode };
+    };
+    const quantParts = (base: string) => ({
+      w: T(`${base}.weight`),
+      scales: T(`${base}.scales`),
+      biases: w.has(`${base}.biases`) ? T(`${base}.biases`) : null,
+      spec: qspec(base),
+    });
+    const mat = (base: string): MatW =>
+      w.has(`${base}.scales`)
+        ? { kind: "quant", ...quantParts(base) }
+        : { kind: "bf16", t: transposed(`${base}.weight`) };
+    const table = (base: string): TableW =>
+      w.has(`${base}.scales`)
+        ? { kind: "quant", ...quantParts(base) }
+        : { kind: "bf16", w: T(`${base}.weight`) };
 
-    this.#embed = T("embed_tokens.weight");
-    this.#fcT = transposed("fc.weight");
+    this.#embed = table("embed_tokens");
+    this.#fc = mat("fc");
     this.#hiddenNorm = T("hidden_norm.weight");
     this.#norm = T("norm.weight");
-    this.#lmHeadT = transposed("lm_head.weight");
+    this.#lmHead = mat("lm_head");
 
     // Proportional RoPE freqs (mlx_lm.models.rope_utils.ProportionalRoPE,
     // transformers._compute_proportional_rope_parameters): rotated_dims =
@@ -247,37 +330,35 @@ export class DeepspecDrafter {
     for (let i = 0; i < cfg.num_hidden_layers; i++) {
       const p = `layers.${i}`;
       this.#layers.push({
-        qProjT: transposed(`${p}.self_attn.q_proj.weight`),
-        kProjT: transposed(`${p}.self_attn.k_proj.weight`),
-        oProjT: transposed(`${p}.self_attn.o_proj.weight`),
+        qProj: mat(`${p}.self_attn.q_proj`),
+        kProj: mat(`${p}.self_attn.k_proj`),
+        oProj: mat(`${p}.self_attn.o_proj`),
         qNorm: T(`${p}.self_attn.q_norm.weight`),
         kNorm: T(`${p}.self_attn.k_norm.weight`),
         inputNorm: T(`${p}.input_layernorm.weight`),
         postAttnNorm: T(`${p}.post_attention_layernorm.weight`),
         preFfNorm: T(`${p}.pre_feedforward_layernorm.weight`),
         postFfNorm: T(`${p}.post_feedforward_layernorm.weight`),
-        gateProjT: transposed(`${p}.mlp.gate_proj.weight`),
-        upProjT: transposed(`${p}.mlp.up_proj.weight`),
-        downProjT: transposed(`${p}.mlp.down_proj.weight`),
+        gateProj: mat(`${p}.mlp.gate_proj`),
+        upProj: mat(`${p}.mlp.up_proj`),
+        downProj: mat(`${p}.mlp.down_proj`),
         layerScalar: T(`${p}.layer_scalar`),
       });
     }
 
     if (cfg.markov_rank > 0) {
-      this.#markovW1 = T("markov_head.markov_w1.weight"); // [vocab, rank] embedding
-      this.#markovW2T = transposed("markov_head.markov_w2.weight"); // stored [vocab,rank] Linear → T is [rank,vocab]
+      this.#markovW1 = table("markov_head.markov_w1"); // [vocab, rank] embedding
+      this.#markovW2 = mat("markov_head.markov_w2");   // stored [vocab, rank] Linear
     } else {
       this.#markovW1 = null;
-      this.#markovW2T = null;
+      this.#markovW2 = null;
     }
 
     if (cfg.enable_confidence_head) {
-      this.#confW = T("confidence_head.proj.weight"); // [1, confDim]
-      this.#confWT = ops.transposeAxes(this.#confW, [1, 0]); // [confDim,1] view
-      this.#confB = T("confidence_head.proj.bias");   // [1]
+      this.#confProj = mat("confidence_head.proj"); // [1, confDim] Linear
+      this.#confB = T("confidence_head.proj.bias"); // [1]
     } else {
-      this.#confW = null;
-      this.#confWT = null;
+      this.#confProj = null;
       this.#confB = null;
     }
   }
@@ -285,8 +366,11 @@ export class DeepspecDrafter {
   static async load(dir: string): Promise<DeepspecDrafter> {
     const raw = (await Bun.file(`${dir}/config.json`).json()) as Record<string, any>;
     const cfg = readConfig(raw);
+    // Quantized siblings (scripts/dspark-quantize-drafter.ts) carry the house
+    // quantization block; the released bf16 checkpoint has none → null.
+    const quant = parseQuantization(raw.quantization ?? raw.quantization_config);
     const w = await Weights.open(dir);
-    return new DeepspecDrafter(w, cfg);
+    return new DeepspecDrafter(w, cfg, quant);
   }
 
   /** f32-internal RMSNorm (Gemma4RMSNorm casts through float32 internally:
@@ -303,14 +387,14 @@ export class DeepspecDrafter {
   }
 
   #geluTanhMlp(x: MlxArray, layer: Layer): MlxArray {
-    const g = ops.matmul(x, layer.gateProjT);
-    const u = ops.matmul(x, layer.upProjT);
+    const g = matmulW(x, layer.gateProj);
+    const u = matmulW(x, layer.upProj);
     const act = ops.geluApprox(g); // gelu_pytorch_tanh == config.hidden_activation
     g.dispose();
     let mlp = ops.mul(act, u);
     act.dispose();
     u.dispose();
-    mlp = disposing(mlp, ops.matmul(mlp, layer.downProjT));
+    mlp = disposing(mlp, matmulW(mlp, layer.downProj));
     return mlp;
   }
 
@@ -333,7 +417,7 @@ export class DeepspecDrafter {
    * projectContextKV).
    */
   projectContext(targetHiddens: MlxArray): MlxArray {
-    const proj = ops.matmul(targetHiddens, this.#fcT); // [1,L,hidden]
+    const proj = matmulW(targetHiddens, this.#fc); // [1,L,hidden]
     return disposing(proj, this.#rms(proj, this.#hiddenNorm));
   }
 
@@ -371,7 +455,7 @@ export class DeepspecDrafter {
       throw new Error(`projectContextKV: ${positions.length} positions for ${L} context rows`);
     const out: ContextKV[] = [];
     for (const layer of this.#layers) {
-      const kFlat = ops.matmul(contextHidden, layer.kProjT); // [1,L,nKvHeads*headDim]
+      const kFlat = matmulW(contextHidden, layer.kProj); // [1,L,nKvHeads*headDim]
       const k4 = ops.reshape(kFlat, [1, L, this.nKvHeads, this.headDim]);
       kFlat.dispose();
       // v ≡ k pre-norm (attention_k_eq_v: v_ctx = k_ctx, same tensor before
@@ -418,7 +502,7 @@ export class DeepspecDrafter {
     const idsArr = ops.fromInt32(blockIds, [1, G]);
     const idsU32 = idsArr.astype(Dtype.uint32);
     idsArr.dispose();
-    const embRaw = ops.takeAxis(this.#embed, idsU32, 0); // [G,hidden] (takeAxis over vocab axis)
+    const embRaw = gatherW(this.#embed, idsU32); // [1,G,hidden] (gather over vocab axis)
     idsU32.dispose();
     const embFlat = ops.reshape(embRaw, [1, G, this.hidden]);
     embRaw.dispose();
@@ -435,7 +519,7 @@ export class DeepspecDrafter {
       const x = this.#rms(h, layer.inputNorm);
 
       // q = q_norm(q_proj(x).view(B,q_len,nHeads,headDim)).transpose(1,2)
-      const qFlat = ops.matmul(x, layer.qProjT); // [1,G,nHeads*headDim]
+      const qFlat = matmulW(x, layer.qProj); // [1,G,nHeads*headDim]
       const q4 = ops.reshape(qFlat, [1, G, this.nHeads, this.headDim]);
       qFlat.dispose();
       const qNormed = this.#rms(q4, layer.qNorm);
@@ -451,7 +535,7 @@ export class DeepspecDrafter {
       // k_noise = k_proj(x); norm+rope IDENTICALLY to the cached context
       // rows (concat-then-norm == norm-then-concat per the RMSNorm argument
       // in projectContextKV's doc comment).
-      const kNoiseFlat = ops.matmul(x, layer.kProjT);
+      const kNoiseFlat = matmulW(x, layer.kProj);
       const kNoise4 = ops.reshape(kNoiseFlat, [1, G, this.nKvHeads, this.headDim]);
       kNoiseFlat.dispose();
       const vNoiseNormed = this.#rms(kNoise4, null);
@@ -482,7 +566,7 @@ export class DeepspecDrafter {
       attnOut.dispose();
       const attnFlat = ops.reshape(attnT, [1, G, this.nHeads * this.headDim]);
       attnT.dispose();
-      let attn = ops.matmul(attnFlat, layer.oProjT);
+      let attn = matmulW(attnFlat, layer.oProj);
       attnFlat.dispose();
       attn = disposing(attn, this.#rms(attn, layer.postAttnNorm));
       h = ops.add(residual, attn);
@@ -509,7 +593,7 @@ export class DeepspecDrafter {
 
   /** lm_head(h) then softcap: `tanh(logits/cap)*cap` (compute_logits). */
   #computeLogits(h: MlxArray): MlxArray {
-    const logits = ops.matmul(h, this.#lmHeadT);
+    const logits = matmulW(h, this.#lmHead);
     if (this.cfg.final_logit_softcapping === null) return logits;
     const cap = this.cfg.final_logit_softcapping;
     const capArr = ops.scalarLike(cap, logits);
@@ -530,14 +614,14 @@ export class DeepspecDrafter {
    *  steps ~0.125-0.25, so an f32 sum here reorders near-ties vs torch and
    *  derails the sequential block (2026-07-06 port review, fidelity fix). */
   #markovStepBias(prevTok: number): MlxArray {
-    if (!this.#markovW1 || !this.#markovW2T)
+    if (!this.#markovW1 || !this.#markovW2)
       throw new Error("markovStepBias: markov_rank == 0 (no markov head)");
     const idxArr = ops.fromInt32([prevTok], [1]);
     const idxU32 = idxArr.astype(Dtype.uint32);
     idxArr.dispose();
-    const e1 = ops.takeAxis(this.#markovW1, idxU32, 0); // [1,rank]
+    const e1 = gatherW(this.#markovW1, idxU32); // [1,rank]
     idxU32.dispose();
-    const bias = ops.matmul(e1, this.#markovW2T); // [1,vocab], model dtype
+    const bias = matmulW(e1, this.#markovW2); // [1,vocab], model dtype
     e1.dispose();
     return bias;
   }
@@ -548,7 +632,7 @@ export class DeepspecDrafter {
    *  features @ proj.weight^T + bias without transposing storage (row-vector
    *  dot via matmul against a [confDim,1] view). */
   #confidence(h1: MlxArray, prevTok: number): number {
-    if (!this.#confW || !this.#confB)
+    if (!this.#confProj || !this.#confB)
       throw new Error("confidence: confidence head disabled");
     let feat = h1;
     let ownFeat = false;
@@ -557,7 +641,7 @@ export class DeepspecDrafter {
       const idxArr = ops.fromInt32([prevTok], [1]);
       const idxU32 = idxArr.astype(Dtype.uint32);
       idxArr.dispose();
-      const e1 = ops.takeAxis(this.#markovW1, idxU32, 0); // [1,rank]
+      const e1 = gatherW(this.#markovW1, idxU32); // [1,rank]
       idxU32.dispose();
       const e1f = e1.dtype === h1.dtype ? e1 : disposing(e1, e1.astype(h1.dtype));
       feat = ops.concatAxis([h1, e1f], 1); // [1, hidden+rank]
@@ -568,8 +652,9 @@ export class DeepspecDrafter {
     // the nn.Linear runs in MODEL dtype (bf16 on the real checkpoint) and is
     // .float()ed AFTER — computing it in f32 here flipped borderline
     // threshold comparisons vs torch (2026-07-06 port review). So: matmul +
-    // bias in feat's dtype against the precomputed transpose view, then cast.
-    let z = ops.matmul(feat, this.#confWT!);
+    // bias in feat's dtype (matmulW: the once-built transpose view for bf16,
+    // qmm transpose=true for a quantized head), then cast.
+    let z = matmulW(feat, this.#confProj);
     if (ownFeat) feat.dispose();
     z = disposing(z, ops.add(z, this.#confB));
     if (z.dtype !== Dtype.float32) z = disposing(z, z.astype(Dtype.float32));
@@ -659,7 +744,7 @@ export class DeepspecDrafter {
     // sampled[:-1]] (_predict_confidence_logits) — independent of pass 1's
     // truncation decision, computed for every position.
     let proposalLen = G;
-    if (this.#confW) {
+    if (this.#confProj) {
       const confVals: number[] = [];
       let confPrev = anchorTok;
       for (let k = 0; k < G; k++) {
@@ -686,24 +771,23 @@ export class DeepspecDrafter {
   }
 
   dispose(): void {
-    this.#embed.dispose();
-    this.#fcT.dispose();
+    disposeW(this.#embed);
+    disposeW(this.#fc);
     this.#hiddenNorm.dispose();
     this.#norm.dispose();
-    this.#lmHeadT.dispose();
+    disposeW(this.#lmHead);
     this.ropeFreqs.dispose();
     for (const l of this.#layers) {
-      l.qProjT.dispose(); l.kProjT.dispose(); l.oProjT.dispose();
+      disposeW(l.qProj); disposeW(l.kProj); disposeW(l.oProj);
       l.qNorm.dispose(); l.kNorm.dispose();
       l.inputNorm.dispose(); l.postAttnNorm.dispose();
       l.preFfNorm.dispose(); l.postFfNorm.dispose();
-      l.gateProjT.dispose(); l.upProjT.dispose(); l.downProjT.dispose();
+      disposeW(l.gateProj); disposeW(l.upProj); disposeW(l.downProj);
       l.layerScalar.dispose();
     }
-    this.#markovW1?.dispose();
-    this.#markovW2T?.dispose();
-    this.#confW?.dispose();
-    this.#confWT?.dispose();
+    disposeW(this.#markovW1);
+    disposeW(this.#markovW2);
+    disposeW(this.#confProj);
     this.#confB?.dispose();
     this.#w.dispose();
   }

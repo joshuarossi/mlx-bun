@@ -65,7 +65,8 @@ mlx-bun
 
 Self-contained (binary + MLX runtime) and notarized, so it runs without a
 Gatekeeper prompt. Installs to `~/.mlx-bun` by default — override with
-`MLX_BUN_INSTALL_DIR`, or pin a release with `MLX_BUN_VERSION=v0.0.8`.
+`MLX_BUN_INSTALL_DIR`, or pin a release with `MLX_BUN_VERSION=<tag>`
+(see [releases](https://github.com/joshuarossi/mlx-bun/releases)).
 
 ### Homebrew
 
@@ -346,16 +347,23 @@ agent CLIs like pi/OpenClaw via their provider config.
   (measured 5–20% at ≤16k, on mlx-lm's uniform scheme too) for KV bytes
   ÷4 on the quantized layers — reach for it when context, not speed, is
   the constraint. The default KV cache is bf16 (the mlx-lm-parity L1
-  route); `--kv-quant 4|8` selects uniform bits instead. Long prefills
+  route); `--kv-quant 4|8` selects uniform bits instead, and
+  `--kv-quant turbo[:kXvY]` opts into TurboQuant rotation-based KV
+  (affine keys + FWHT/Lloyd-Max values, full-attention layers, serial
+  lane — [design](./docs/design/turboquant-kv.md)). Long prefills
   over quantized caches run a fused FlashAttention-2 tiling that never
   materializes the full scores matrix (bounded transient;
   `MLX_BUN_NO_FUSED_SDPA=1` to disable).
 - **Speculative decoding** — `serve --draft-model <path|query>`
-  (mlx_lm.server parity; `--num-draft-tokens`, default 3): a smaller
-  same-tokenizer model drafts, the main model verifies — exact results,
-  faster decode when drafts land; pays on 12B-class targets, not small
-  fast models. Serial lane only — with `--batch N` a mounted draft
-  routes every request serial, like mlx_lm.server.
+  (mlx_lm.server parity; `--num-draft-tokens`): the drafter KIND is
+  auto-detected from the artifact (`--draft-kind` overrides) — a full
+  smaller same-tokenizer model (mlx-lm parity), a Gemma `-assistant`
+  KV-borrowing drafter (optiq parity), or a DeepSpec/DSpark
+  hidden-tapping drafter (e.g. DeepSeek's released
+  `dspark_gemma4_12b_block7`). The main model verifies every draft —
+  exact results, faster decode when drafts land; pays on 12B-class
+  targets, not small fast models. Serial lane only — with `--batch N` a
+  mounted draft routes every request serial, like mlx_lm.server.
 - **Memory admission control** — `--memory-budget <GB>` refuses to load
   a model that can't serve within the budget and rejects requests whose
   `prompt + max_tokens` exceed the budget's max safe context with a 400

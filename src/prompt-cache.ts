@@ -102,7 +102,7 @@ export interface PromptCacheEntry {
   retain?: () => void;
 }
 
-function cacheBytes(caches: Cache[]): number {
+export function cacheBytes(caches: Cache[]): number {
   let total = 0;
   for (const c of caches) {
     const state = c.state();

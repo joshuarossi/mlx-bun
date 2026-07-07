@@ -334,6 +334,43 @@ describe("TurboQuantKVCache — dispose leak sanity", () => {
     expect(after - before).toBeLessThan(4_000_000);
   });
 
+  test("window-scale pack/unpack does not leak (2026-07-07 split/accumulator regression)", () => {
+    // The original leak (bare split().map(reshape) + or-chain reassignment
+    // in the bit twiddling helpers) pinned the WHOLE window-sized input per
+    // call — ~8 MB/call at [1,8,2048,96] b3 — and slipped under the tiny
+    // shapes above. Measure at the decode-step-realistic scale where any
+    // per-call retention is unmistakable against the tight budget.
+    const HEAD_DIM = 256;
+    const n = 1 * 8 * 2048 * HEAD_DIM;
+    const data = new Float32Array(n);
+    for (let i = 0; i < n; i++) data[i] = i % 7;
+    const f = MlxArray.fromFloat32(data, [1, 8, 2048, HEAD_DIM]);
+    const vals = f.astype(Dtype.uint8);
+    f.dispose();
+
+    for (const bits of [2, 3, 4, 5]) {
+      const packed = tq.packBits(vals, bits);
+      packed.eval();
+      // warm-up (JIT/pool effects), then measure
+      for (let i = 0; i < 2; i++) {
+        const un = tq.unpackBits(packed, bits, HEAD_DIM);
+        un.eval(); un.dispose();
+      }
+      const before = activeMemory();
+      for (let i = 0; i < 10; i++) {
+        const un = tq.unpackBits(packed, bits, HEAD_DIM);
+        un.eval(); un.dispose();
+        const p2 = tq.packBits(vals, bits);
+        p2.eval(); p2.dispose();
+      }
+      // The measured pre-fix leak was ~84 MB here (b3); post-fix growth is
+      // 0 — allow one window of pool slack, nothing linear.
+      expect(activeMemory() - before).toBeLessThan(20_000_000);
+      packed.dispose();
+    }
+    vals.dispose();
+  });
+
   test("dispose() releases the cache's storage (state() is empty after)", () => {
     const cache = new TurboQuantKVCache(8, 3);
     const [k, v] = randKV(2, 300);

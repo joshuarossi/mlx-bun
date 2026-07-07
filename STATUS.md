@@ -10,7 +10,97 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
-## Where we are (2026-07-07 — decode@ctx gap closed: SSD write-behind flush is now idle-gated)
+## Where we are (2026-07-07 — two vLLM-inspired serving features: ngram drafter + grammar jump-forward)
+
+**Both landed with gates + reference docs, from a vLLM-mining pass that
+first killed three other candidates against the code** (chunked-prefill
+interleave: already built; paged KV: physical sharing already exists via
+take()'s zero-copy view clones + paging explicitly rejected in
+ssd-kv-cold-tier.md D1; block-hash prefix keying: our token-granular LCP
+is strictly finer). The two that survived:
+
+1. **`--draft-kind ngram` — MODEL-FREE prompt-lookup speculative drafting**
+   (src/spec/ngram-source.ts; port of Saxena's prompt-lookup decoding /
+   vLLM's `ngram` proposer — longest-k-first, first occurrence). No
+   artifact, no dir: drafts are copied from the request's own
+   prompt+generation; the shared verify makes it lossless at any
+   temperature; a no-match round degrades to one plain step. Directly
+   answers the DSpark drafter-tax finding (τ≈2.8 eaten by a 6.9 GB bf16
+   drafter — this drafter is free). The subtle part is token-history
+   reconstruction from the seam's feed/commit discipline (an all-accept
+   round's last draft arrives via the NEXT feed — mlx-lm's re-feed rule);
+   pinned model-free in tests/spec-ngram.test.ts. **Real-weights gates
+   GREEN on this box: serve-loop ngram spec TOKEN-IDENTICAL to non-spec
+   greedy on e4b (γ=3 and γ=10, tie-free prompt) + echo prompt lands
+   accepts.** Flags: `--ngram-max/--ngram-min` (3/1), `--num-draft-tokens`
+   defaults 10 for this kind; mounting it WITH `--draft-model` (or another
+   kind without one) refuses at load. Docs: cli.md, server-config.md,
+   features-matrix.md.
+2. **`MLX_BUN_GRAMMAR_JUMP=1` — jump-forward decoding for structured
+   output** (opt-in Lab lever, serial lane): xgrammar's
+   `findJumpForwardString` (shipped in our WASM build, previously
+   uncalled) + a generate() jump iteration that carries grammar-forced
+   spans into the KV with ONE multi-token forward instead of per-token
+   masked forwards. String-lossless + always grammar-valid; the token
+   stream may legally differ (retokenized forced spans) → opt-in, no
+   oracle. Partial-accept keeps matcher/emitted lockstep with no rollback;
+   SP-family raw-encode mismatch degrades to normal decode (never invalid
+   output). Gated: tests/grammar-jump.test.ts (contract + Llama-3.2-1B
+   e2e on/off). Batch-lane #stepGrammar deliberately doesn't jump yet.
+   Design: structured-output.md 2026-07-07 addendum. **Drive-by fix found
+   by its tests: disposing a GrammarController with a queued bitmask fill
+   called into the deleted WASM matcher and poisoned the module-wide
+   wasmChain (BindingError) — fireFill() now no-ops after dispose (latent
+   for any exception between accept() and ready(), both lanes).**
+
+Open follow-ups from the same pass (small, backlog): mid-flight
+preemption (demote a running row's KV to the SSD tier to admit a
+higher-priority request — the restore primitive exists, only an idleness
+trigger today); ngram + jump-forward composition cells in
+bench-feature-matrix on a quiet box.
+
+## Where we were (2026-07-07 — merge wave landed + post-merge review fixed; drafter-quant Phase 1 code done)
+
+**All three threads merged within hours: PR #18 (bench residuals), PR #19
+(DSpark spec decoding), PR #20 (TurboQuant KV).** A 4-agent post-merge
+review over the union found and FIXED same-day: (1) CRITICAL — the
+TurboQuant bit-pack/unpack helpers leaked window-scale GPU buffers per
+decode step (bare `split().map(reshape)` + or-chain reassignment; measured
+~8.4 MB/call at 2k ctx → OOM within dozens of tokens; splitLanes + orInto
+now dispose, regression test at window scale); (2) `--kv-quant turbo` +
+`--draft-model` silently dropped turbo (spec eligibility gate now excludes
+turboQuant like the affine axes + startup warning); (3) turbo state()
+try/finally on the eval chokepoints. The two #18-thread operational
+findings are ALSO FIXED (same day): the write-behind snapshot timer now
+carries demoteIdle's activity guard (re-arms while rows are active instead
+of registering a serial waiter that froze batch admission), and pending
+spill clones go through the new bounded `SpillQueue` (kv-store.ts; 2 GB
+default cap, `MLX_BUN_SSD_SPILL_QUEUE_GB`, drop-oldest with immediate
+clone disposal, `/stats.ssd_cache` pending/dropped counters;
+no-shutdown-flush documented as accepted in ssd-kv-cold-tier.md's
+2026-07-07 addendum). The error-path leak batch is ALSO drained (same
+day): samplePos try/finally (grammar-reject orphaned a [1,V] row/hit),
+spec caches+source allocated inside the try + loadContext PROBE-OPENS the
+(target, drafter) pairing at startup (mismatch now refuses at load, not
+500-per-request), loadKvCache pending[]-drains mid-entry orphans under
+--ssd-cache-verify (regression test: repeated corrupt-file loads, flat
+active memory), and the batch-scheduler quantized-rotating join no longer
+takes the unused bf16 temporalView (6 arrays/join, pre-existing from
+859572d). The robustness triple is CLOSED too: turbo head-dim validated at
+createServer (was a per-request 500 mid-prefill for unsupported dims),
+StreamDecoder's revised-text path is a truncate-safe resync + once-per-
+stream warning (was whole-stream duplication for future cleanup-rule
+tokenizers; regression-tested with a fake cleanup tokenizer), and the
+two-model draft prefill drains in PREFILL_CHUNK=2048 chunks like its
+oracle (was one unchunked forward — a 32k prompt ran a 32k-position
+draft forward). **DSpark serving program
+Phase 1 CODE is done** (1a quantize script, 1b quantized drafter forward,
+1c acceptance A/B harness — all tested); 1d awaits Josh's GPU run:
+`bun scripts/dspark-quantize-drafter.ts <bf16-drafter-dir>` then
+`bun scripts/dspark-drafter-ab.ts --target gemma-4-12B-it-OptiQ-4bit
+--drafter-a <bf16> --drafter-b <q4>`.
+
+## Previous (2026-07-07 — decode@ctx gap closed: SSD write-behind flush is now idle-gated)
 
 **The bun arms' decode@ctx losses in the 07-07 bench (e4b −9.3%, 12B
 −3.9% vs mlx-lm, while short-ctx decode won on every model) were
@@ -88,8 +178,8 @@ incl. step 0); generated-parity's compiled-lane dispatch count is now 1
 Pre-existing failures on this box, NOT this change (stash-proven at
 baseline): kv-quant.test.ts ×3 + parity.test.ts (stale machine goldens —
 regen chip spawned), batch-grammar B=4 (chip spawned), batched extend-join
-oracle (known). Spec-decode serve lane re-anchor: **DONE 2026-07-07 on
-`feat/dspark-spec-decode`** — and its oracle's true shape turned out to be
+oracle (known). Spec-decode serve lane re-anchor: **DONE 2026-07-07,
+merged in PR #19** — and its oracle's true shape turned out to be
 MORE than tail-split: `speculative_generate_step` drains BOTH models to
 len−1 with **no separate step-0 at all** (the un-drained last prompt token
 heads the first verify window; an L=1 step-0 is still ulp-different from
@@ -717,8 +807,9 @@ follow-up program is fully planned:
 [docs/design/dspark-serving-program.md](docs/design/dspark-serving-program.md)
 (drafter quantization — 4-bit baseline then TurboQuant as its lowest-risk
 first customer — + draftBlock tightening + generated-forward tap + the
-serving-UX/defaults pass; Josh picks up at TurboQuant merge, only Phase 5
-actually waits for it).**
+serving-UX/defaults pass). TurboQuant merged 2026-07-07 (PR #20) — the
+Phase-5 gate is CLEAR; Phase 1's code boxes (1a/1b/1c) landed the same
+day, 1d is the next GPU run.**
 
 **Phase 2 (same session): every remaining paper component LANDED** via a
 multi-agent build + adversarial review — Alg-1 confidence-scheduled
@@ -744,7 +835,7 @@ recipe** (regen→train→calibrate→measure on 12B):
 docs/investigations/dspark-handoff.md.
 
 Architecture verified faithful (2026-07-01 review; overfit τ=3.24). **Phase 1
-(this session, branch `feat/dspark-spec-decode`):** DSpark + the optiq Gemma
+(merged in PR #19):** DSpark + the optiq Gemma
 `-assistant` drafter are now serve-loadable behind `--draft-model` — the
 `DraftSource` seam was extended for KV-borrowing sources (target donor-KV /
 anchor-hidden / tapped H_ctx), provider kind is auto-detected (`dspark.json` →

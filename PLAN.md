@@ -477,6 +477,20 @@ Lights up e2b/e4b/26B-A4B/31B image input. The 12B unified
 
 ## Phase 13 — TurboQuant `[x]` v1 LANDED 2026-07-06 (research path — PROMOTED 2026-06-12)
 
+**Post-merge review fix (2026-07-07, CRITICAL):** the bit-pack/unpack
+helpers leaked window-scale GPU buffers on every decode step — the bare
+`ops.split(...).map(reshape)` orphaned every split slice (each pinning the
+full window-sized input) and pack3/unpack3's or-chain reassignment orphaned
+accumulators. Measured ~8.4 MB/call at [1,8,2048,96] b3 ⇒ ~67 MB per
+generated token on 12B at 2k ctx ⇒ OOM within dozens of tokens of real
+serving. Fixed with `splitLanes` (dispose-inside-map) + `orInto`; goldens
+untouched (dispose-only change); window-scale regression test added (the
+original leak test's tiny shapes + 4 MB slack had hidden it). Same review:
+`--kv-quant turbo` + `--draft-model` silently dropped turbo on the spec
+lane — the spec-eligibility gate now excludes turboQuant (mirrors the
+affine axes) + a startup warning; the turbo `state()` eval chokepoints got
+try/finally.
+
 **v1 shipped** (multi-agent build, this worktree): design doc
 `docs/design/turboquant-kv.md` is the contract. Findings that reframed the
 phase, from the research fan-out:

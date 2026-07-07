@@ -197,3 +197,57 @@ describe.skipIf(!haveE4b)("gemma-4 e4b (SPM, no Strip): no trim + reasoning keep
     expect(content).toBe("Hi.");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Revised-text resync (2026-07-07 review): when a decoder REVISES earlier
+// text (clean_up_tokenization_spaces-style rules — no shipped tokenizer does
+// this), the old path re-emitted the whole stream from scratch, so an SSE
+// client concatenating deltas duplicated everything already received. The
+// truncate-safe resync emits only the length-extension.
+// ---------------------------------------------------------------------------
+
+describe("StreamDecoder — revised-text truncate-safe resync", () => {
+  const { StreamDecoder } = require("../src/server");
+
+  // Fake cleanup-rule tokenizer: once token 3 arrives, the earlier "hello ,"
+  // collapses to "hello," (the _space_matches shape).
+  const fakeTok = {
+    trimsLeadingSpace: false,
+    bareSpaceTokenId: undefined,
+    decode(ids: number[]): string {
+      const key = ids.join(",");
+      if (key === "1") return "hello";
+      if (key === "1,2") return "hello ,";
+      if (key === "1,2,3") return "hello, world";
+      throw new Error(`unexpected ids ${key}`);
+    },
+  };
+
+  test("a revision emits only the length-extension — no whole-stream duplication", () => {
+    const d = new StreamDecoder(fakeTok as never);
+    let client = "";
+    client += d.push(1); // "hello"
+    client += d.push(2); // " ,"
+    client += d.push(3); // revision fires: "hello, world" !startsWith "hello ,"
+    // Pre-fix the third delta was ALL of "hello, world" → client saw
+    // "hello ,hello, world". Post-fix: only the extension past the emitted
+    // watermark ("world"); drift is confined to the revised span.
+    expect(client).toBe("hello ,world");
+    expect(client.match(/hello/g)!.length).toBe(1); // no duplication
+  });
+
+  test("a shrinking revision emits nothing and keeps the watermark monotone", () => {
+    const tok = {
+      trimsLeadingSpace: false,
+      bareSpaceTokenId: undefined,
+      decode(ids: number[]): string {
+        return ids.length === 1 ? "abcdef" : "abcxy"; // revised AND shorter
+      },
+    };
+    const d = new StreamDecoder(tok as never);
+    let client = "";
+    client += d.push(1); // "abcdef"
+    client += d.push(2); // shrunk revision → nothing new to send
+    expect(client).toBe("abcdef");
+  });
+});
