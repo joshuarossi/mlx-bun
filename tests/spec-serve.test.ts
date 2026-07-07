@@ -196,7 +196,7 @@ describe.skipIf(!optIn || !TARGET || !DRAFT)("serve --draft-model (two-model spe
       const MAX = 64;
 
       // grammar + spec
-      const g1 = (await compileGrammarRequest(req, tok, model.config.text.vocabSize))!.controller;
+      const g1 = (await compileGrammarRequest(req, tok, model.config.text.vocabSize))!.controller!;
       const specToks: number[] = [];
       const st = await specServeRun(model, provider, 3, ids, {
         maxTokens: MAX, temperature: 0, grammar: g1,
@@ -212,7 +212,7 @@ describe.skipIf(!optIn || !TARGET || !DRAFT)("serve --draft-model (two-model spe
       );
 
       // (2) grammar-only serial reference (same controller config, fresh instance)
-      const g2 = (await compileGrammarRequest(req, tok, model.config.text.vocabSize))!.controller;
+      const g2 = (await compileGrammarRequest(req, tok, model.config.text.vocabSize))!.controller!;
       const refToks: number[] = [];
       const caches = model.makeCache();
       try {
@@ -229,7 +229,7 @@ describe.skipIf(!optIn || !TARGET || !DRAFT)("serve --draft-model (two-model spe
       // (3) guided_choice terminates early through the spec loop
       const g3 = (await compileGrammarRequest(
         { guidedChoice: ["affirmative", "negative"] }, tok, model.config.text.vocabSize,
-      ))!.controller;
+      ))!.controller!;
       const choiceToks: number[] = [];
       const stC = await specServeRun(model, provider, 3, tok.encode("Is water wet? Answer:"), {
         maxTokens: 16, temperature: 0, grammar: g3,

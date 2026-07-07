@@ -45,7 +45,7 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())("jumpForward controller con
       tok.vocabSize,
     );
     expect(r).not.toBeNull();
-    const c = r!.controller;
+    const c = r!.controller!;
     try {
       const ids = c.jumpForward(64);
       expect(ids).not.toBeNull();
@@ -76,7 +76,7 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())("jumpForward controller con
       tok.vocabSize,
     );
     expect(r).not.toBeNull();
-    const c = r!.controller;
+    const c = r!.controller!;
     try {
       const ids = c.jumpForward(64);
       expect(ids).not.toBeNull();
@@ -102,7 +102,7 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())("jumpForward controller con
       tok,
       tok.vocabSize,
     );
-    const c = r!.controller;
+    const c = r!.controller!;
     try {
       expect(c.jumpForward(1)).toBeNull(); // budget too small to pay off
       expect(c.jumpedTokens).toBe(0);
@@ -155,7 +155,7 @@ describe.skipIf(!haveWeights || !grammarEnabled())("generate() jump-forward (Lla
         tok.vocabSize,
       );
       expect(r).not.toBeNull();
-      const controller = r!.controller;
+      const controller = r!.controller!;
       const out: number[] = [];
       const gen = generate(model, promptIds(PROMPT), {
         maxTokens: 120,

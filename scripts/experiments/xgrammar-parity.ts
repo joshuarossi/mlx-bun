@@ -50,7 +50,7 @@ async function ours(opts: { temperature: number; seed: number; maxTokens: number
     temperature: opts.temperature,
     topP: 1,
     seed: opts.seed,
-    grammar: g.controller,
+    grammar: g.controller!,
     eosTokenIds: ctx.model.config.eosTokenIds,
   });
   const tokens: number[] = [];

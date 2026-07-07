@@ -1695,6 +1695,11 @@ export function createServer(
     } catch (e) {
       for (const c of caches) c.dispose();
       entry?.retain?.();
+      // A throw BEFORE generate()/the gateway took ownership (promptCache
+      // take / makeCache) would leak the grammar's WASM matcher; dispose()
+      // is idempotent, so this is safe when the throw came from inside run
+      // (whose finally already disposed it).
+      options.grammar?.dispose();
       throw e;
     } finally {
       vision?.embeddings.dispose();
@@ -1756,8 +1761,12 @@ export function createServer(
   // NO shutdown flush: exiting under traffic loses queued write-behind
   // entries (restart survival degrades to whatever flushed) — accepted for
   // a best-effort cache tier; drops/pending are visible in /stats.
+  // `|| 2` would coerce an explicit "0" back to 2 GB — parse so 0 works
+  // (cap 0 = keep only the newest + in-flight clone pinned; the soft cap
+  // never drops the item just enqueued).
+  const spillQueueGbRaw = Number(process.env.MLX_BUN_SSD_SPILL_QUEUE_GB);
   const spillQueueCapBytes =
-    (Number(process.env.MLX_BUN_SSD_SPILL_QUEUE_GB) || 2) * 1024 ** 3;
+    (Number.isFinite(spillQueueGbRaw) && spillQueueGbRaw >= 0 ? spillQueueGbRaw : 2) * 1024 ** 3;
   const spillQueue = ssdStore
     ? new SpillQueue(
         spillQueueCapBytes,
@@ -2682,6 +2691,19 @@ export function createServer(
             };
           }
         }
+        // Free what a rejected request has already allocated (grammar WASM
+        // matcher/compiled-grammar, vision embeddings, diffusion pixels).
+        // Every early return between here and gateway.run() must call this —
+        // generate()/the gateway only take disposal ownership once running
+        // (leaked one matcher per SSRF-blocked-media + response_format
+        // request before the 2026-07-07 sweep).
+        const disposeRejected = () => {
+          grammarCtrl?.dispose();
+          vision?.embeddings.dispose();
+          vision?.imageMask?.dispose();
+          vision?.multimodalMask?.dispose();
+          diffusionPixels?.dispose();
+        };
         try {
           if (hasAudio) {
             // Audio (and MIXED image+audio) input — A4 of
@@ -2691,7 +2713,8 @@ export function createServer(
             // — never a silent text-only degrade (that leniency is only for
             // requests without the media, getVisionTower's contract).
             const audioTower = getAudioTower(ctx);
-            if (!audioTower || !ctx.audioTokenIds)
+            if (!audioTower || !ctx.audioTokenIds) {
+              disposeRejected();
               return Response.json(
                 {
                   error: {
@@ -2703,15 +2726,18 @@ export function createServer(
                 },
                 { status: 400 },
               );
+            }
             let visionSide:
               | { tower: VisionEncoder; tokenIds: VisionTokenIds }
               | undefined;
             if (hasImages) {
               const tower = getVisionTower(ctx);
-              if (!tower)
+              if (!tower) {
+                disposeRejected();
                 return Response.json(
                   { error: { message: "model has no vision sidecar" } }, { status: 400 },
                 );
+              }
               visionSide = { tower, tokenIds: ctx.visionTokenIds };
             }
             const { messages: withAudioParts, images } =
@@ -2744,16 +2770,20 @@ export function createServer(
             // encoder vision merge feed the denoising engine (NOT the AR
             // forwardEmbeddings path). v1 supports a single image.
             const dm = ctx.model;
-            if (!dm.visionTower)
+            if (!dm.visionTower) {
+              disposeRejected();
               return Response.json(
                 { error: { message: "this checkpoint has no vision tower" } }, { status: 400 },
               );
+            }
             const { messages, images } = await extractImages(normalizeMessages(body.messages));
-            if (images.length !== 1)
+            if (images.length !== 1) {
+              disposeRejected();
               return Response.json(
                 { error: { message: "DiffusionGemma image input supports exactly one image" } },
                 { status: 400 },
               );
+            }
             const rendered = ctx.template.render(messages, { tools, addGenerationPrompt: true });
             const rawIds = ctx.tokenizer.encode(rendered, /* addSpecialTokens */ false);
             const { pixels, softTokens } = await dm.visionTower.preprocess(images[0]!);
@@ -2767,10 +2797,12 @@ export function createServer(
             // Loads (and caches) the tower on first image request — text-only
             // sessions never pay for it.
             const tower = getVisionTower(ctx);
-            if (!tower)
+            if (!tower) {
+              disposeRejected();
               return Response.json(
                 { error: { message: "model has no vision sidecar" } }, { status: 400 },
               );
+            }
             const { messages, images } = await extractImages(normalizeMessages(body.messages));
             // The tower is only ever non-null for Gemma4 (sidecar gate in
             // makeVisionLoader), so the model narrow is safe here.
@@ -2787,6 +2819,7 @@ export function createServer(
             stableLen = -1; // marker: chat path, probe lazily below
           }
         } catch (e) {
+          disposeRejected();
           return Response.json(
             { error: { message: `prompt build failed: ${(e as Error).message}` } },
             { status: 400 },
@@ -2809,10 +2842,7 @@ export function createServer(
           }
         } catch (e) {
           // bad logit_bias (non-numeric keys/values) — mlx-lm's coercion error
-          vision?.embeddings.dispose();
-          vision?.imageMask?.dispose();
-          vision?.multimodalMask?.dispose();
-          diffusionPixels?.dispose();
+          disposeRejected();
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
         }
         if (diffusionPixels) options.visionPixels = diffusionPixels;
@@ -2824,10 +2854,7 @@ export function createServer(
         // the process — Phase 6 finding).
         const requiredCtx = promptIds.length + (options.maxTokens ?? 1024);
         if (requiredCtx > admission.maxSafeContext) {
-          vision?.embeddings.dispose();
-          vision?.imageMask?.dispose();
-          vision?.multimodalMask?.dispose();
-          diffusionPixels?.dispose();
+          disposeRejected();
           return Response.json(
             {
               error: {
@@ -2849,10 +2876,7 @@ export function createServer(
           const adapterIds = ctx.adapters.resolveSpec(body.adapter ?? serverOptions.defaultAdapter);
           if (adapterIds.length) options.adapters = adapterIds;
         } catch (e) {
-          vision?.embeddings.dispose();
-          vision?.imageMask?.dispose();
-          vision?.multimodalMask?.dispose();
-          diffusionPixels?.dispose();
+          disposeRejected();
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
         }
 
@@ -3145,7 +3169,10 @@ export function createServer(
         // completion: with no template an EOS may never come.
         options.maxTokens = body.max_completion_tokens ?? body.max_tokens ?? serverOptions.defaultMaxTokens ?? 512;
         const requiredCtx = promptIds.length + options.maxTokens;
-        if (requiredCtx > admission.maxSafeContext)
+        if (requiredCtx > admission.maxSafeContext) {
+          // Pre-run reject: the gateway only takes grammar disposal ownership
+          // once run — free the WASM matcher here (chat lane: disposeRejected).
+          textGrammarCtrl?.dispose();
           return Response.json(
             {
               error: {
@@ -3160,10 +3187,12 @@ export function createServer(
             },
             { status: 400 },
           );
+        }
         try {
           const adapterIds = ctx.adapters.resolveSpec(body.adapter ?? serverOptions.defaultAdapter);
           if (adapterIds.length) options.adapters = adapterIds;
         } catch (e) {
+          textGrammarCtrl?.dispose();
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
         }
         // logprobs capture — same mlx-lm block as chat (generate_response is

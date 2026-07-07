@@ -11,8 +11,9 @@
 //           groupSize?, bits?, kBits?, vBits?, headDim?,
 //           tensors: [{ off, bytes, shape, dtype, hash }] }] }
 //
-// v2 over v1: quantized cache kinds (the serving DEFAULT is kv_config
-// quantization, which v1 could not persist), SSM kind (Qwen3.5 hybrid),
+// v2 over v1: quantized cache kinds (kv_config quantization — v1 could not
+// persist it; NOTE bf16 is the serving default since the 2026-07-05 L1
+// decision, quantized KV is opt-in), SSM kind (Qwen3.5 hybrid),
 // invalidation metadata (configFingerprint covers the kv-quant scheme;
 // tokenizerHash guards vocab drift; ns = adapter spec), per-tensor hashes
 // (verified opt-in — the hash pass roughly doubles restore reads),

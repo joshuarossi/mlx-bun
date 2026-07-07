@@ -61,7 +61,7 @@ describe.skipIf(!optIn || !haveCpm)("batch lane × grammar (B2 gates, CPM)", () 
     compileFor = async (req) => {
       const r = await compileGrammarRequest(req, tok, model.config.text.vocabSize);
       if (!r) throw new Error("grammar compile failed in test setup");
-      return r.controller;
+      return r.controller!;
     };
   });
 

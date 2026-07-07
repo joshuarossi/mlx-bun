@@ -58,7 +58,7 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())(
         tok.vocabSize,
       );
       expect(r).not.toBeNull();
-      const ctrl = r!.controller;
+      const ctrl = r!.controller!;
       expect(ctrl.isTerminated).toBe(false);
 
       // Fabricate logits [1, V] all-zero; after applyMask, valid tokens stay
@@ -93,7 +93,7 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())(
         tok.vocabSize,
       );
       expect(r).not.toBeNull();
-      const ctrl = r!.controller;
+      const ctrl = r!.controller!;
       const V = tok.vocabSize ?? 128000;
       const logits = MlxArray.fromFloat32(new Float32Array(V).fill(0), [1, V]);
       const masked = ctrl.applyMask(logits);
@@ -118,7 +118,7 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())(
         tok.vocabSize,
       );
       expect(r).not.toBeNull();
-      const ctrl = r!.controller;
+      const ctrl = r!.controller!;
       const V = tok.vocabSize ?? 128000;
       const logits = MlxArray.fromFloat32(new Float32Array(V).fill(0), [1, V]);
       const masked = ctrl.applyMask(logits);
@@ -151,7 +151,7 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())(
         tok.vocabSize,
       );
       expect(r).not.toBeNull();
-      const ctrl = r!.controller;
+      const ctrl = r!.controller!;
       const V = tok.vocabSize ?? 128000;
       const logits = MlxArray.fromFloat32(new Float32Array(V).fill(0), [1, V]);
       const masked = ctrl.applyMask(logits);
@@ -176,7 +176,7 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())(
         tok,
         tok.vocabSize,
       );
-      const ctrl = r!.controller;
+      const ctrl = r!.controller!;
       const V = tok.vocabSize ?? 128000;
 
       // step0 valid set
@@ -208,20 +208,25 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())(
       ctrl.dispose();
     });
 
-    test("degrade path: malformed grammar returns null (abort is catchable)", async () => {
+    test("degrade path: malformed grammar degrades with a hint (abort is catchable)", async () => {
       // xgrammar's EBNF parser calls abort() on a parse error — but the WASM
       // trap surfaces as a catchable `RuntimeError: Aborted()` (verified in
       // scripts/experiments + tests/grammar.test.ts probe). The process
       // survives, WASM state is intact, and a later good grammar still works.
       // The [FATAL]/Aborted() stderr line is xgrammar's LOG(FATAL) noise —
-      // harmless. compileGrammarRequest catches it and degrades to null.
+      // harmless. compileGrammarRequest catches it and returns
+      // { controller: null, degradeHint } — the hint is what drives the
+      // Warning header + prompt injection (a bare null here silently served
+      // unconstrained output; 2026-07-07 sweep finding).
       const tok = await loadTokenizer(SNAPSHOT);
       const r = await compileGrammarRequest(
         { guidedGrammar: "root ::= (unclosed (" },
         tok,
         tok.vocabSize,
       );
-      expect(r).toBeNull();
+      expect(r).not.toBeNull();
+      expect(r!.controller).toBeNull(); // degrade, not throw
+      expect(r!.degradeHint).toBeTruthy(); // reaches Warning header + injection
 
       // And a GOOD grammar still compiles after the abort — WASM not corrupt.
       const r2 = await compileGrammarRequest(
@@ -230,7 +235,7 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())(
         tok.vocabSize,
       );
       expect(r2).not.toBeNull();
-      r2!.controller.dispose();
+      r2!.controller!.dispose();
     });
 
     test("text / unset → null (no constraint)", async () => {
@@ -251,7 +256,7 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())(
         tok,
         tok.vocabSize,
       );
-      const ctrl = r!.controller;
+      const ctrl = r!.controller!;
       const V = tok.vocabSize ?? 128000;
       const logits = MlxArray.fromFloat32(new Float32Array(V).fill(1.5), [1, V]);
       const masked = ctrl.applyMask(logits);
@@ -287,7 +292,7 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())(
           compileGrammarRequest(
             { responseFormat: { type: "json_schema", json_schema: { name: "x", schema: s } } },
             tok, tok.vocabSize,
-          ).then((r) => r!.controller),
+          ).then((r) => r!.controller!),
         ),
       );
       const V = tok.vocabSize ?? 128000;
@@ -348,7 +353,7 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())(
       const r1 = await compileGrammarRequest(req, tok, tok.vocabSize);
       const cold = (Bun.nanoseconds() - t0) / 1e6;
       expect(r1).not.toBeNull();
-      r1!.controller.dispose();
+      r1!.controller!.dispose();
 
       // same schema again, after dispose — must compile (and hit the cache)
       const t1 = Bun.nanoseconds();
@@ -358,26 +363,27 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())(
       // the warm controller must actually work
       const V = tok.vocabSize ?? 128000;
       const lg = MlxArray.fromFloat32(new Float32Array(V).fill(0), [1, V]);
-      const m = r2!.controller.applyMask(lg); lg.dispose();
+      const m = r2!.controller!.applyMask(lg); lg.dispose();
       const arr = m.toFloat32(); m.dispose();
       let valid = 0;
       for (let i = 0; i < V; i++) if (arr[i] === 0) valid++;
       expect(valid).toBeGreaterThan(0);
-      r2!.controller.dispose();
+      r2!.controller!.dispose();
       console.log(`F4 compile: cold ${cold.toFixed(1)} ms, warm ${warm.toFixed(1)} ms`);
 
       // degrade (abort) must not poison the cached compiler either
       const bad = await compileGrammarRequest(
         { guidedGrammar: "root ::= (unclosed (" }, tok, tok.vocabSize,
       );
-      expect(bad).toBeNull();
+      expect(bad!.controller).toBeNull();
       const r3 = await compileGrammarRequest(req, tok, tok.vocabSize);
       expect(r3).not.toBeNull();
-      r3!.controller.dispose();
+      r3!.controller!.dispose();
     });
 
     // F6: choices containing \n\r\t compile via named escapes; other control
-    // chars have no EBNF spelling and take the degrade path (null), not a 500.
+    // chars have no EBNF spelling and take the degrade path (controller null
+    // + degradeHint), not a 500.
     test("F6: guided_choice escaping — \\n compiles, \\x01 degrades", async () => {
       const tok = await loadTokenizer(SNAPSHOT);
       const r = await compileGrammarRequest(
@@ -386,18 +392,19 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())(
       expect(r).not.toBeNull();
       const V = tok.vocabSize ?? 128000;
       const lg = MlxArray.fromFloat32(new Float32Array(V).fill(0), [1, V]);
-      const m = r!.controller.applyMask(lg); lg.dispose();
+      const m = r!.controller!.applyMask(lg); lg.dispose();
       const arr = m.toFloat32(); m.dispose();
       let valid = 0;
       for (let i = 0; i < V; i++) if (arr[i] === 0) valid++;
       expect(valid).toBeGreaterThan(0); // tight but non-empty start set
       expect(valid).toBeLessThan(100);
-      r!.controller.dispose();
+      r!.controller!.dispose();
 
       const bad = await compileGrammarRequest(
         { guidedChoice: ["ok", "bad\x01choice"] }, tok, tok.vocabSize,
       );
-      expect(bad).toBeNull(); // degrade, not throw
+      expect(bad!.controller).toBeNull(); // degrade, not throw
+      expect(bad!.degradeHint).toBeTruthy();
     });
 
     // F3: config.vocab_size padding beyond the tokenizer vocab — padded ids
@@ -411,10 +418,10 @@ describe.skipIf(!haveTokenizer || !grammarEnabled())(
       );
       expect(r).not.toBeNull();
       const lg = MlxArray.fromFloat32(new Float32Array(V).fill(0), [1, V]);
-      const m = r!.controller.applyMask(lg); lg.dispose();
+      const m = r!.controller!.applyMask(lg); lg.dispose();
       const arr = m.toFloat32(); m.dispose();
       for (let i = V - pad; i < V; i++) expect(arr[i]).toBe(-Infinity);
-      r!.controller.dispose();
+      r!.controller!.dispose();
     });
   },
 );

@@ -921,6 +921,12 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
     if (flag("ssd-cache-verify")) serverOptions.ssdCacheVerify = true;
     const demoteRaw = opt("ssd-demote-idle");
     if (demoteRaw !== null) serverOptions.ssdDemoteIdleSec = Math.max(0, Number(demoteRaw));
+  } else {
+    // Refuse-loudly house rule: sub-flags of an absent tier must not vanish.
+    for (const f of ["ssd-cache-max", "ssd-demote-idle"] as const)
+      if (opt(f) !== null) console.warn(`--${f} has no effect without --ssd-cache — ignored`);
+    if (flag("ssd-cache-verify"))
+      console.warn("--ssd-cache-verify has no effect without --ssd-cache — ignored");
   }
   // --batch N: max concurrent requests batched through the mlx-lm-parity
   // engine (N=1 = today's serial path). --decode-concurrency is accepted for
@@ -1389,6 +1395,8 @@ switch (cmd) {
     // same argv minus parent-only flags). Zero MLX calls in the parent: the
     // UI stays instant under any GPU load, and an engine crash respawns
     // without taking the session down.
+    if (!flag("isolate") && opt("model-pool") !== null)
+      console.warn("--model-pool has no effect without --isolate (child-per-model pool) — ignored");
     if (flag("isolate")) {
       const { startProxyServer, engineArgvForModel, defaultSocketPath } = await import("./serve/isolate");
       const sock = defaultSocketPath();
@@ -1515,6 +1523,8 @@ switch (cmd) {
       console.error(`--ngram-min (${ngramMin}) must be <= --ngram-max (${ngramMax})`);
       process.exit(1);
     }
+    if ((ngramMax !== undefined || ngramMin !== undefined) && draftKind !== "ngram")
+      console.warn("--ngram-max/--ngram-min only apply with --draft-kind ngram — ignored");
     const sLoad = step("loading weights");
     const t0 = performance.now();
     const ctx = await loadContext(m.path, m.repoId, {
