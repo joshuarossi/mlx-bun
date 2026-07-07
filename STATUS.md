@@ -226,9 +226,24 @@ mention. Lane semantics re-verified against merged DSpark GenerateStats.
 Visual QA (3228734) fixed a placeholder-wrap regression + .bubble-scoped
 markdown chrome missing in the panel. Follow-ups: # mention doesn't
 search Reference/ docs; wikilink graph view (plan §5.5) still line-only.
-Next: Phase 3 (plan §9 — table-stakes sweep: files-RAG v1, Model Hub,
-Canvas v1, per-message sampling, self-healing tool loop, app-aware
-assistant v1, palette, export, full-text search, PWA).
+**Phase 3 done + visually QA'd, rebased through main@ca0ba91 (PRs
+#21–#27 incl. the audio-capability ready-frame union).** Files-RAG v1
+(client BM25, [n] citations, Sources panel); Model Hub (/api/hub/* w/
+real /fit verdicts; live swap honestly deferred — the isolate proxy
+501s /ws/chat); Canvas v1 (allow-scripts-only iframe, verified live);
+self-healing tool calls (format-aware repair in OUR parsers + envelope
+guard after a critical review catch — bare-JSON replies can't execute
+as tools); set_sampling scope:"next_turn"; **app-aware assistant v1
+verified live: "take me to quantize" navigated the real app via
+navigate_app** (§6.6 never-hijack spotlight, ambient context line,
+catalog-validated tools); Cmd+K palette (live); full-text session BODY
+search (live over HTTP); MD/JSON export; PWA manifest+sw (200s).
+Phase-3 follow-ups: RAG [n]-citation compliance unproven on 1B-class
+models; spec-lane badge demo needs a compatible draft artifact;
+history-replay citations need a HistoryItem field. Next: Phase 4
+(plan §9 — trust & speed: temporary chat, disk-touch tally, cache-hit
+telemetry, logprobs overlay, HLG in composer, ambient assistant panel
++ process-state snapshot maturity).
 
 ## Where we were (2026-07-07 — 12B completion-probe parity closed: prefill tail split)
 
