@@ -363,9 +363,13 @@ agent CLIs like pi/OpenClaw via their provider config.
   (mlx_lm.server parity; `--num-draft-tokens`): the drafter KIND is
   auto-detected from the artifact (`--draft-kind` overrides) — a full
   smaller same-tokenizer model (mlx-lm parity), a Gemma `-assistant`
-  KV-borrowing drafter (optiq parity), or a DeepSpec/DSpark
+  KV-borrowing drafter (optiq parity), a DeepSpec/DSpark
   hidden-tapping drafter (e.g. DeepSeek's released
-  `dspark_gemma4_12b_block7`). The main model verifies every draft —
+  `dspark_gemma4_12b_block7`), or **model-free prompt-lookup drafting**
+  (`--draft-kind ngram`, no draft artifact at all — drafts are copied
+  from the request's own prompt/generation; free wins on echo-heavy
+  workloads like extraction and code edits, lossless at any
+  temperature). The main model verifies every draft —
   exact results, faster decode when drafts land; pays on 12B-class
   targets, not small fast models. Serial lane only — with `--batch N` a
   mounted draft routes every request serial, like mlx_lm.server.

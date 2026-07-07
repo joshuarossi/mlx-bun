@@ -11,7 +11,8 @@ candidates — just make it more specific.
 Bare `mlx-bun` with no verb runs `serve` — the appliance path: first run
 downloads a starter model, serves it, and opens the chat UI.
 
-> Verbs marked **(v0.0.9)** ship in v0.0.9; everything else is in v0.0.8.
+> All verbs below ship in current releases; the release notes in
+> `docs/planning/` record when each verb first appeared.
 
 ## Serving & chat
 
@@ -89,7 +90,7 @@ mlx-bun generate gemma "a haiku about metal shaders"
 mlx-bun gen e4b --prompt "…" --max-tokens 512 --seed 42
 ```
 
-### `embed` — text embeddings **(v0.0.9)**
+### `embed` — text embeddings
 
 One-shot embeddings from a local Qwen3-Embedding model (last-token pooled,
 L2-normalized — bit-exact vs mlx-lm). One JSON vector per input line.
@@ -133,7 +134,7 @@ mlx-bun ls --vision --max-size 10GB # filter
 mlx-bun ls --all-revisions          # one row per cached snapshot
 ```
 
-### `gc` — reclaim disk **(v0.0.9)**
+### `gc` — reclaim disk
 
 Delete superseded snapshots and the blobs only they reference. Prints the plan
 by default; `--yes` actually deletes.
@@ -178,7 +179,7 @@ Tails an adapter dir's `metrics.jsonl` and renders live loss / speed / memory.
 mlx-bun train-watch ~/.cache/mlx-bun/mlx-bun-finetunes/orpo-e4b
 ```
 
-### `fuse` — merge an adapter into the base **(v0.0.9)**
+### `fuse` — merge an adapter into the base
 
 Folds LoRA deltas into the base weights and writes a standalone snapshot; a
 quantized base keeps its exact quantization layout. Flag names match
@@ -189,7 +190,7 @@ mlx-bun fuse e4b --adapter ./adapters --save-path ./fused_model
 mlx-bun serve ./fused_model
 ```
 
-### `convert` — quantize a model **(v0.0.9)**
+### `convert` — quantize a model
 
 Quantize an HF model (local path, downloaded model, or repo id) into a local
 MLX snapshot — uniform 4/8-bit, or mixed-precision via `--target-bpw`
@@ -200,7 +201,7 @@ mlx-bun convert Qwen/Qwen3-4B -q                      # uniform 4-bit
 mlx-bun convert Qwen/Qwen3-4B --target-bpw 4.5        # mixed precision
 ```
 
-### `upload` — push to the Hugging Face Hub **(v0.0.9)**
+### `upload` — push to the Hugging Face Hub
 
 Native push-to-hub, no Python: creates the repo if needed, uploads via the
 git-LFS batch protocol, commits. Flag names match `mlx_lm.upload`.
@@ -209,7 +210,7 @@ git-LFS batch protocol, commits. Flag names match `mlx_lm.upload`.
 mlx-bun upload --path ./fused_model --upload-repo you/my-model
 ```
 
-### `perplexity` — evaluate on your data **(v0.0.9)**
+### `perplexity` — evaluate on your data
 
 `mlx_lm.perplexity` methodology exactly, over a **local** `.jsonl`/`.txt` file.
 
@@ -234,7 +235,7 @@ mlx-bun memory synthesize        # conversations → cross-linked articles, all 
 mlx-bun memory schedule --at 03:00
 ```
 
-`setup` is an alias for `memory` **(v0.0.9)**.
+`setup` is an alias for `memory`.
 
 ## Measurement
 
