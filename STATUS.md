@@ -10,7 +10,38 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
-## Where we are (2026-07-07b — optional paged KV cache v1, `--paged-kv`)
+## Where we are (2026-07-07, later — review sweep over everything landed + in flight)
+
+**Four-agent review pass (docs drift / defaults+serving path / web-chat
+worktree / paged-kv worktree), fixes on branch `josh/review-sweep-0707`.**
+Two CONFIRMED serving bugs found and fixed: (1) grammar controllers
+compiled before the reject paths leaked their WASM matcher on EVERY
+early 400 (both API surfaces; attacker-loopable via `response_format` +
+an SSRF-blocked `image_url`) — every pre-run reject now disposes, and
+`GrammarController.dispose()` is idempotent; (2) the documented grammar
+degrade path (prompt injection + Warning header) was dead code since the
+feature landed — `compileGrammarRequest` dropped its `degradeHint`, so
+malformed grammars served 200 unconstrained with no Warning; now
+reachable and re-pinned in tests. Plus: `MLX_BUN_SSD_SPILL_QUEUE_GB=0`
+un-coerced, refuse-loudly warnings for silently-ignored flag combos
+(ssd sub-flags / --model-pool / --ngram-*), stale default-comments fixed,
+docs drift closed (8 findings — far cleaner than the 2026-07-03 sweep),
+openwiki-evaluation investigation landed. Full report + the worktree
+findings: `reports/review-sweep-2026-07-07.md` (local). Web-chat tranche:
+2 confirmed findings, the big one being the wrapperless tool-call repair
+that can EXECUTE JSON-shaped assistant CONTENT as a real tool call —
+owed before that tranche commits. Paged-kv was reviewed PRE-merge
+(REDIRECT verdict); the merged v1 (below) addressed the
+record-engagement + refusal-gate items — still owed from that review:
+two try-body temp leaks (paged-kv.ts gather/updateAndFetch throw paths)
+and a verify-or-refuse for `MLX_BUN_GRAMMAR_JUMP` + `--paged-kv`
+(jumped spans can overflow the exactly-`prompt+maxTokens`-sized pool →
+mid-request 500). OPEN design decision: write-behind flush has NO
+max-defer — a continuously busy server never flushes (SpillQueue pins up
+to 2 GB through exactly the loaded window; restart survival degrades to
+nothing under sustained traffic).
+
+## Where we were (2026-07-07b — optional paged KV cache v1, `--paged-kv`)
 
 **`PagedKVCache`/`BlockPool` landed behind default-off `--paged-kv`**
 (docs/design/paged-kv-cache.md — plan produced by a multi-agent design

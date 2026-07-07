@@ -360,6 +360,9 @@ export class GrammarController {
   }
 
   dispose(): void {
+    // Idempotent: generate()/the gateway dispose in finally, and the server's
+    // early-reject paths dispose pre-run — a throw inside run can reach both.
+    if (this.disposed) return;
     this.disposed = true; // queued fills become no-ops (see fireFill)
     this.matcher.dispose();
     this.compiled.dispose();
@@ -368,14 +371,14 @@ export class GrammarController {
 }
 
 /** Normalize the request fields + compile. Returns null when no constraint is
- *  requested (text / none set). `degradeHint` is set when a grammar was
- *  requested but could not be compiled — callers inject a "respond in valid
+ *  requested (text / none set). On compile failure returns
+ *  `{ controller: null, degradeHint }` — callers inject a "respond in valid
  *  JSON" system prompt + emit a Warning header (oMLX parity, never 500). */
 export async function compileGrammarRequest(
   req: GrammarRequest,
   tokenizer: LoadedTokenizer,
   configVocabSize?: number,
-): Promise<{ controller: GrammarController; degradeHint: string | null } | null> {
+): Promise<{ controller: GrammarController | null; degradeHint: string | null } | null> {
   const tokenizerJsonPath = tokenizer.tokenizerJsonPath;
   if (!tokenizerJsonPath)
     throw new Error("grammar: tokenizer.tokenizerJsonPath is required (set by loadTokenizer)");
@@ -455,7 +458,10 @@ export async function compileGrammarRequest(
     // The compiler is the cached per-TokenizerInfo instance (F4) — a failed
     // compile must NOT dispose it; the WASM abort is catchable and the
     // compiler state survives (verified in tests/grammar.test.ts).
-    return null;
+    // Return the hint (NOT bare null): it drives the degrade path's
+    // system-prompt injection + Warning header. Dropping it here served
+    // unconstrained output with no Warning at all (found 2026-07-07 sweep).
+    return { controller: null, degradeHint };
   }
 
   // terminateWithoutStopToken=true: the matcher terminates as soon as the

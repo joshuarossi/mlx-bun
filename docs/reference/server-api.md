@@ -168,7 +168,7 @@ Non-streaming response:
   "usage": {
     "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
     "prompt_tokens_details": { "cached_tokens": 0 },  // prompt-cache reuse
-    "speculation": {               // only when serving with --draft-model
+    "speculation": {               // only when a draft source is mounted
       "drafted": 0,                //   draft tokens proposed
       "accepted": 0,               //   drafts accepted by the verify step
       "targetCalls": 0             //   target-model forward calls
@@ -177,8 +177,10 @@ Non-streaming response:
 }
 ```
 
-Speculative decoding is a **server-level mode** (`serve --draft-model`);
-there is no per-request draft field. The `speculation` usage extension
+Speculative decoding is a **server-level mode** (`serve --draft-model`,
+or the model-free `serve --draft-kind ngram`, which mounts no draft
+model); there is no per-request draft field. The `speculation` usage
+extension
 appears on chat and text completions alike, non-streaming and on the
 final stream chunk. Spec-eligible requests are text-only on base weights
 (no adapter, no logprobs capture, bf16 KV); ineligible ones decode

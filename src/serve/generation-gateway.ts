@@ -122,11 +122,11 @@ export interface RequestShape {
    *  before any cache conversion has happened. Both layers exist on purpose. */
   turboQuant: boolean;
   /** Any of the mlx-lm sampler/processor extensions is active: min_p, XTC,
-   *  logit_bias, presence/frequency penalty. Safe v1: they ALL route to the
-   *  serial lane alongside repetition penalty. min_p/XTC are per-row samplers
-   *  and could batch (the batched lane already builds a per-row sampler);
-   *  keeping them serial until the batched path grows per-row logits
-   *  processors keeps one gate for the whole family. */
+   *  logit_bias, presence/frequency penalty. INFORMATIONAL ONLY: since the
+   *  batched lane grew per-row samplers/logits processors these all batch —
+   *  willBatch() deliberately does not gate on this field (see its
+   *  repetitionPenalty note). Kept so /stats and lane tracing can show what
+   *  a request carries. */
   hasLogitsExtras: boolean;
   /** A grammar controller compiled for this request (response_format /
    *  guided_*). Degrade-path requests (compile failed → prompt injection)
