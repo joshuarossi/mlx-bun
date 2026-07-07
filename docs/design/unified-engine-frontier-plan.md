@@ -410,7 +410,7 @@ any subset of rows must stack):
 | optimized per-model graph | ✅ both lanes | ✅ (fingerprint-routed, unchanged) |
 | mixed-precision quantized KV | serial only | one active scheme per server, applies at any B |
 | LoRA adapters (hot-swap, per-request select) | serial only (compiled decode also skips them) | per-slot adapter state in the batched step |
-| speculative decoding (two-model today, DSpark next) | serial only, forces ALL requests serial | per-slot drafting behind the `DraftSource` seam |
+| speculative decoding (two-model + assistant + DSpark, 2026-07-06) | serial only, forces ALL requests serial; the `DraftSource` seam is now KV-borrowing-ready (target donor-KV / anchor-hidden / tapped H_ctx flow through it — the per-slot substrate is in place) | per-slot drafting behind the `DraftSource` seam |
 | structured output (grammar) | ✅ both lanes (B1 per-row matchers) | ✅ (already composes; keep the conformance gate) |
 | sampling method + values (temp/top-p/top-k/min-p/XTC/penalties/HLG/seed) | per-row samplers batch; seeds force serial | fully per-row, seeds included |
 | prompt cache / SSD tier | serial only | prefix reuse for batched rows |

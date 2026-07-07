@@ -41,8 +41,18 @@ const H = config.text.hiddenSize;
 const eos = config.eosTokenIds;
 mkdirSync(OUT, { recursive: true });
 
-// tap layers: default [20,31,41,42]; 42 = post-finalNorm sentinel (= layers.length).
-const tapLayers = DEFAULT_DFLASH_CONFIG.tapLayers;
+// tap layers: e4b default [20,31,41,42], last = post-finalNorm sentinel
+// (= layers.length). Retargeting to another model (e.g. 12B, 48 layers) needs
+// its own set — pass `--tap-layers 24,37,47,48` (sentinel = layers.length).
+// MUST match the value passed to dspark-train-dflash.ts for the same run.
+const tapLayers = (() => {
+  const raw = arg("tap-layers", "");
+  if (!raw) return DEFAULT_DFLASH_CONFIG.tapLayers;
+  const v = raw.split(",").map((s) => parseInt(s.trim(), 10));
+  if (v.some((n) => !Number.isInteger(n) || n < 0 || n > model.layers.length))
+    throw new Error(`--tap-layers must be integers in [0, ${model.layers.length}] (got "${raw}")`);
+  return v;
+})();
 const m = tapLayers.length;
 console.log(`[regen-dflash] tapLayers=${tapLayers} (m=${m}); layers.length=${model.layers.length}; H=${H}`);
 

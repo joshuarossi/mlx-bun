@@ -51,6 +51,47 @@ import type { DraftProvider } from "./source";
 
 const PREFILL_CHUNK = 2048;
 
+/** Run one target forward, and when `tapLayers` is set (⟹ a Gemma4 target — a
+ *  DSpark-style source), also return the captured multi-layer context
+ *  [1,L,m*H] (tapLayers concatenated on the feature axis; index nLayers is the
+ *  post-finalNorm sentinel). Non-tapping sources get ctxML=null and never
+ *  touch model.hiddenTap. Mirrors generate-dflash.ts forwardTapped. */
+function forwardMaybeTap(
+  model: RuntimeModel,
+  ids: MlxArray,
+  caches: Cache[],
+  tapLayers: number[] | undefined,
+): { hidden: MlxArray; ctxML: MlxArray | null } {
+  if (!tapLayers) return { hidden: model.forwardHidden(ids, caches), ctxML: null };
+  const m = model as unknown as {
+    hiddenTap: { layers: Set<number>; captured: Map<number, MlxArray> } | null;
+  };
+  const cap = new Map<number, MlxArray>();
+  m.hiddenTap = { layers: new Set(tapLayers), captured: cap };
+  let hidden: MlxArray | null = null;
+  try {
+    hidden = model.forwardHidden(ids, caches);
+    const perLayer = tapLayers.map((li) => {
+      const a = cap.get(li);
+      if (!a) throw new Error(`spec tap: layer ${li} not captured`);
+      return a;
+    });
+    const ctxML = ops.concatAxis(perLayer, 2); // [1,L,m*H]
+    for (const [, a] of cap) a.dispose();
+    cap.clear(); // consumed — the finally must not double-dispose
+    const out = { hidden, ctxML };
+    hidden = null; // ownership returned to the caller
+    return out;
+  } finally {
+    // On any throw (forward mid-capture, missing layer, concat), free the
+    // partially-captured tap tensors and the orphaned hidden. On success both
+    // are already gone (cap cleared, hidden nulled).
+    hidden?.dispose();
+    for (const [, a] of cap) a.dispose();
+    m.hiddenTap = null;
+  }
+}
+
 export interface SpecServeExtras {
   drafted: number;
   accepted: number;
@@ -72,7 +113,24 @@ export async function specServeRun(
   const gamma = Math.max(1, numDraftTokens);
 
   const caches: Cache[] = model.makeCache();
-  const source = provider.open({ sampler });
+  const source = provider.open({ sampler, target: { model, caches } });
+  const tapLayers = source.tapLayers;
+  // Target final hidden [1,1,H] at the anchor position — the assistant source
+  // borrows it for its first draft step of each round; two-model/dflash ignore
+  // it. Retained across rounds, disposed in finally.
+  let anchorHidden: MlxArray | null = null;
+  // Round/prefill scratch tensors, hoisted so the finally disposes them on ANY
+  // throw mid-round/prefill (grammar WASM reject, awaited onToken reject, a GPU
+  // error). Each is nulled the instant its in-body disposal or ownership
+  // transfer runs, so the finally never double-frees. (A serve endpoint hits
+  // these throw seams per request; a try-body local would leak GPU memory.)
+  let lastLogits: MlxArray | null = null;
+  let prefillCtx: MlxArray | null = null;
+  const ctxParts: MlxArray[] = []; // per-chunk tapped context (DSpark only)
+  let vHidden: MlxArray | null = null;
+  let vCtxML: MlxArray | null = null;
+  let vLogits: MlxArray | null = null;
+  let roundRow: MlxArray | null = null; // the in-flight verify/continuation row
   // Device-side token history for the logits processors (repetition/presence/
   // frequency penalties, logit_bias) — generate()'s pushHistory discipline.
   let history: MlxArray | null =
@@ -142,21 +200,22 @@ export async function specServeRun(
   };
 
   try {
-    // ---- prefill (both models, chunked) ----
+    // ---- prefill (target, chunked; optionally tapped for DSpark), then seed
+    // the source. Order: the source's prefill needs the tapped context that the
+    // target prefill produces, so target-first (two-model's own draft prefill
+    // and the assistant no-op are order-independent). ----
     const t0 = performance.now();
-    source.prefill(promptIds);
-    let lastLogits: MlxArray | null = null;
     for (let off = 0; off < promptIds.length; off += PREFILL_CHUNK) {
       const chunk = promptIds.slice(off, off + PREFILL_CHUNK);
       const ids = ops.fromInt32(chunk, [1, chunk.length]);
-      const h = model.forwardHidden(ids, caches);
+      const { hidden: h, ctxML } = forwardMaybeTap(model, ids, caches, tapLayers);
       ids.dispose();
+      if (ctxML) ctxParts.push(ctxML);
       if (off + PREFILL_CHUNK >= promptIds.length) {
         const L = h.shape[1]!;
         const H = h.shape[2]!;
-        const hLast = h.slice([0, L - 1, 0], [1, L, H]);
-        const lg = model.logitsFromHidden(hLast);
-        hLast.dispose();
+        anchorHidden = h.slice([0, L - 1, 0], [1, L, H]); // [1,1,H], retained
+        const lg = model.logitsFromHidden(anchorHidden);
         const V = lg.shape[lg.shape.length - 1]!;
         lastLogits = ops.reshape(lg, [1, V]);
         lg.dispose();
@@ -165,6 +224,21 @@ export async function specServeRun(
       clearCache();
     }
     extras.targetCalls++;
+    // Seed the source: two-model prefills its own draft cache; DSpark seeds
+    // H_ctx from the tapped prompt context (ownership transfers to prefill);
+    // the assistant is a no-op.
+    if (tapLayers) {
+      if (ctxParts.length === 1) prefillCtx = ctxParts[0]!;
+      else if (ctxParts.length > 1) {
+        prefillCtx = ops.concatAxis(ctxParts, 1); // [1,Lp,m*H]
+        for (const p of ctxParts) p.dispose();
+      }
+      ctxParts.length = 0; // parts consumed (transferred as prefillCtx or disposed)
+      source.prefill(promptIds, prefillCtx ?? undefined); // takes ownership of prefillCtx
+      prefillCtx = null; // ownership transferred
+    } else {
+      source.prefill(promptIds);
+    }
     stats.prefillMs = performance.now() - t0;
     stats.prefillTps = (promptIds.length / Math.max(stats.prefillMs, 1e-6)) * 1000;
 
@@ -201,11 +275,12 @@ export async function specServeRun(
         const lg = model.logitsFromHidden(h);
         h.dispose();
         const V = lg.shape[lg.shape.length - 1]!;
-        const flat = ops.reshape(lg, [1, V]);
+        roundRow = ops.reshape(lg, [1, V]);
         lg.dispose();
         extras.targetCalls++;
-        const tok = await samplePos(flat, stats.generatedTokens);
-        flat.dispose();
+        const tok = await samplePos(roundRow, stats.generatedTokens);
+        roundRow.dispose();
+        roundRow = null;
         clearCache();
         if (eos.includes(tok)) break;
         stats.generatedTokens++;
@@ -236,17 +311,25 @@ export async function specServeRun(
         continue;
       }
 
-      // (a) draft n tokens (request sampler, mlx-lm parity)
-      const drafts = source.draft(feed, n, stats.generatedTokens);
-      extras.drafted += n;
+      // (a) draft UP TO n tokens (request sampler, mlx-lm parity). The return
+      // length d is authoritative — DSpark's confidence scheduler may prune the
+      // block short (source.ts contract; never zero). The assistant source
+      // borrows the target's anchor hidden; two-model/dflash ignore it.
+      const drafts = source.draft(feed, n, stats.generatedTokens, anchorHidden ?? undefined);
+      const d = drafts.length;
+      if (d < 1 || d > n) throw new Error(`DraftSource returned ${d} drafts (contract: 1..${n})`);
+      extras.drafted += d;
 
-      // (b) ONE target forward over [pending, ...drafts]
-      const vIds = ops.fromInt32([pending, ...drafts], [1, n + 1]);
-      const vHidden = model.forwardHidden(vIds, caches);
+      // (b) ONE target forward over [pending, ...drafts] (optionally tapped for
+      // DSpark's H_ctx). vHidden is retained past the accept walk: its slice at
+      // the emitted position is the next round's anchor hidden.
+      const vIds = ops.fromInt32([pending, ...drafts], [1, d + 1]);
+      const ft = forwardMaybeTap(model, vIds, caches, tapLayers);
+      vHidden = ft.hidden;
+      vCtxML = ft.ctxML;
       vIds.dispose();
       extras.targetCalls++;
-      const vLogits = model.logitsFromHidden(vHidden); // batched lm-head, ONE matmul
-      vHidden.dispose();
+      vLogits = model.logitsFromHidden(vHidden); // batched lm-head, ONE matmul
 
       // (c) per-position accept walk: sample the target at each position,
       // accept while it reproduces the draft. Sampling is sequential because
@@ -258,11 +341,12 @@ export async function specServeRun(
       let halted = false;
       const emitted: number[] = [];
       let grammarDone = false;
-      for (let i = 0; i <= n; i++) {
-        const row = logitsRow(vLogits, i);
-        const tok = await samplePos(row, stats.generatedTokens + emitted.length);
-        row.dispose();
-        if (i < n && tok === drafts[i]) {
+      for (let i = 0; i <= d; i++) {
+        roundRow = logitsRow(vLogits!, i);
+        const tok = await samplePos(roundRow, stats.generatedTokens + emitted.length);
+        roundRow.dispose();
+        roundRow = null;
+        if (i < d && tok === drafts[i]) {
           kAccept++;
           emitted.push(tok);
           if (eos.includes(tok)) { sawEos = true; break; }
@@ -279,7 +363,8 @@ export async function specServeRun(
         if (grammar?.isTerminated) grammarDone = true;
         break;
       }
-      vLogits.dispose();
+      vLogits!.dispose();
+      vLogits = null;
       extras.accepted += kAccept;
       clearCache();
 
@@ -289,16 +374,32 @@ export async function specServeRun(
         if ((await onToken(tok)) === false) { halted = true; break; }
         if (stats.generatedTokens >= maxTokens) break;
       }
-      if (sawEos || halted || grammarDone || stats.generatedTokens >= maxTokens) break decode;
+      const stop = sawEos || halted || grammarDone || stats.generatedTokens >= maxTokens;
 
-      // (e) roll back the rejected suffix on the target (the pre-round gate
-      // guarantees trimmability here)
-      if (kAccept < n) for (const c of caches) c.trim(n - kAccept);
-      source.commit(n, kAccept);
+      // (e) roll back the rejected suffix + commit to the source (skipped on
+      // stop — the target caches are about to be disposed). commit takes
+      // ownership of vCtxML (DSpark grows H_ctx by the accepted window; the
+      // others ignore it). The next anchor = the target hidden at the emitted
+      // position (the assistant borrows it; generate.ts:230 pattern — the slice
+      // outlives its parent's dispose).
+      if (!stop) {
+        if (kAccept < d) for (const c of caches) c.trim(d - kAccept);
+        source.commit(d, kAccept, vCtxML ?? undefined); // takes ownership of vCtxML
+        vCtxML = null;
+        const H = vHidden!.shape[2]!;
+        anchorHidden?.dispose();
+        anchorHidden = vHidden!.slice([0, kAccept, 0], [1, kAccept + 1, H]); // [1,1,H]
+      } else {
+        vCtxML?.dispose();
+        vCtxML = null;
+      }
+      vHidden!.dispose();
+      vHidden = null;
+      if (stop) break decode;
 
       // (f) chain: mlx-lm's re-feed rule (generate.py:645-648)
       const emit = correction!; // non-null: the walk always sets it unless it broke on EOS/max inside accepts
-      if (kAccept === n) feed = [drafts[n - 1]!, emit];
+      if (kAccept === d) feed = [drafts[d - 1]!, emit];
       else feed = [emit];
       pending = emit;
     }
@@ -309,6 +410,16 @@ export async function specServeRun(
       : 0;
     return stats;
   } finally {
+    // Dispose whatever a mid-round/prefill throw left live (each is nulled the
+    // instant its normal disposal or ownership transfer ran, so no double-free).
+    anchorHidden?.dispose();
+    lastLogits?.dispose();
+    prefillCtx?.dispose();
+    for (const p of ctxParts) p.dispose();
+    vLogits?.dispose();
+    roundRow?.dispose();
+    vHidden?.dispose();
+    vCtxML?.dispose();
     for (const c of caches) c.dispose();
     source.dispose();
     history?.dispose();

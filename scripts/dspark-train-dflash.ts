@@ -37,7 +37,22 @@ const EVAL_EVERY = num("eval-every", "500");
 const SEED = num("seed", "0");
 const DDRAFT = num("ddraft", String(DEFAULT_DFLASH_CONFIG.dDraft));
 const NHEADS = num("nheads", String(DEFAULT_DFLASH_CONFIG.nHeads));
-const cfg: DflashConfig = { ...DEFAULT_DFLASH_CONFIG, gamma: GAMMA, dDraft: DDRAFT, nHeads: NHEADS };
+// Retarget tap layers — MUST match the --tap-layers used for dspark-regen-dflash
+// (the shard feature dim is m*H, m = tapLayers.length). e4b default is
+// [20,31,41,42]; 12B (48 layers) uses e.g. 24,37,47,48 (sentinel = layers.length).
+const TAP_LAYERS = (() => {
+  const raw = arg("tap-layers", "");
+  if (!raw) return DEFAULT_DFLASH_CONFIG.tapLayers;
+  const v = raw.split(",").map((s) => parseInt(s.trim(), 10));
+  if (v.some((n) => !Number.isInteger(n) || n < 0)) throw new Error(`--tap-layers must be non-negative integers (got "${raw}")`);
+  return v;
+})();
+// Sequential head: markov (Eq 5, default) or rnn (Eq 6). Stored in the
+// checkpoint config; the loader dispatches automatically.
+const SEQ_HEAD_RAW = arg("seq-head", "markov");
+if (SEQ_HEAD_RAW !== "markov" && SEQ_HEAD_RAW !== "rnn") throw new Error(`--seq-head expects markov|rnn (got "${SEQ_HEAD_RAW}")`);
+const SEQ_HEAD: "markov" | "rnn" = SEQ_HEAD_RAW === "rnn" ? "rnn" : "markov";
+const cfg: DflashConfig = { ...DEFAULT_DFLASH_CONFIG, gamma: GAMMA, dDraft: DDRAFT, nHeads: NHEADS, tapLayers: TAP_LAYERS, seqHead: SEQ_HEAD };
 
 function makeRng(seed: number) { let s = seed >>> 0 || 0x9e3779b9; return () => { s ^= s << 13; s >>>= 0; s ^= s >> 17; s ^= s << 5; s >>>= 0; return s / 0x100000000; }; }
 const rng = makeRng(SEED);

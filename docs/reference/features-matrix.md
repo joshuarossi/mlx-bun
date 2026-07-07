@@ -27,7 +27,7 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | Compiled decode (bit-exact graph replay) | on, every tier | serial | L1/L2 | `--compiled-decode on\|off` |
 | Compiled activations (faithful geglu/swiglu — mlx-lm's `@mx.compile`) | **on**, every tier | both | L1 | `--compiled-activations on\|off` |
 | Fused SDPA (optiq-exact quantized-KV attention) | follows `--kv-quant`: on for `config`, off for uniform/bf16 | serial | L2 | `--fused-sdpa on\|off` |
-| **Speculative decoding** (two-model, mlx-lm parity) | off | serial (forces all-serial) | L1 | `--draft-model <path\|query>`, `--num-draft-tokens` |
+| **Speculative decoding** (auto-detected drafter: two-model = mlx-lm parity/L1, Gemma `-assistant` = optiq/L2, DSpark = L3) | off | serial (forces all-serial) | L1/L2/L3 | `--draft-model <path\|query>`, `--draft-kind`, `--num-draft-tokens` |
 | Memory admission (refuse what can't fit; never GPU-OOM) | on (RAM × 0.75) | both | — | `--memory-budget <GB>` |
 | Aggregate KV admission for batch rows (queue, don't OOM) | off | batch | — | `--kv-budget <GB>` |
 | Expert offload (MoE cold experts on mmap) | off | serial | Lab | `--expert-offload` |

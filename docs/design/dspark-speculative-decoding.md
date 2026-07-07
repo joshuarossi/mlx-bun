@@ -78,7 +78,55 @@ Also confirmed: width is NOT the ceiling (`dDraft=1024` and `2560` both plateau
 ~0.17 pre-scale); the parity-safe `hiddenTap` doesn't change target numerics;
 long-context spec rollback works via the `trim(n, bypass)` physical-slice.
 
+## Serve integration (Phase 1, 2026-07-06)
+
+DSpark is now serve-loadable behind the same `--draft-model` seam as every
+other drafter — one verify/accept executor, no lane routing. The seam
+(`src/spec/source.ts`) was extended from its two-model-only shape to carry the
+target state KV-borrowing drafters need (it previously could NOT host these,
+despite the header claiming so):
+
+- `DraftProvider.open({sampler, target:{model,caches}})` — the source gets the
+  target model + its live caches.
+- `DraftSource.tapLayers?` — when set (DSpark), the serve loop taps the
+  target's prefill + every verify forward and hands the captured `[1,L,m*H]`
+  context to `prefill(ids, ctxML)` / `commit(n, kAccept, vCtxML)` (ownership
+  transfers). `draft(feed, n, stepBase, anchorHidden?)` — the assistant borrows
+  the target anchor hidden; DSpark drafts from its growing `H_ctx`.
+
+Provider selection is by artifact kind (`src/server.ts` `detectDraftKind`):
+`dspark.json` → **DflashProvider** (`src/spec/dflash-source.ts`), a `*_assistant`
+config → **AssistantProvider** (`src/spec/assistant-source.ts`, the optiq
+KV-borrowing Gemma drafter — ships a real ~1.09× γ=1 decode win with no
+training), else **TwoModelProvider**. `--draft-kind` overrides. The server pins
+`--num-draft-tokens` to the DSpark checkpoint's trained block width
+(`cfg.gamma`) so the serve loop never asks for more positions than were trained.
+
+**Unified-engine alignment (per-slot readiness).** This is the
+`DraftSource` seam the unified-engine plan names as the substrate for its
+frontier "per-slot drafting behind the `DraftSource` seam" row
+([docs/design/unified-engine-frontier-plan.md](unified-engine-frontier-plan.md)).
+Spec still forces the serial lane today (upstream `is_batchable = draft is
+None`); Phase 1 did NOT change that — it made the seam *carry per-source target
+state* (each source binds its own `TargetView{model,caches}`, anchor hidden,
+and tapped H_ctx), which is exactly what a batched executor would need to open
+one `DraftSource` per row. So the seam is forward-compatible with per-slot
+drafting; the hard part that remains is the executor, not the seam — variable
+accept-length per slot breaks a uniform-B step (see
+[spec-decode-larger-targets.md](spec-decode-larger-targets.md) caveats), so
+per-slot spec is a real batched-scheduler project, not free composition.
+
+**v1 acceptance caveat:** the serve loop verifies with TOKEN-MATCH acceptance
+(mlx-lm/optiq style, lossless at any temperature), NOT the paper's
+distribution-level rejection-sampling verify. Greedy is identical; temp>0 is
+still lossless but lower-acceptance. The richer rejection-sampling verify stays
+in the standalone `generate-dflash.ts` (the measure script). See
+[[dspark-seam-kv-borrowing]].
+
 ## Files
+- `src/spec/source.ts` — the extended DraftSource/DraftProvider/TargetView seam.
+- `src/spec/assistant-source.ts` / `dflash-source.ts` — the two KV-borrowing providers.
+- `src/spec/serve-loop.ts` — the shared verify/accept executor (now tap-aware).
 - `src/model/gemma4.ts` — `hiddenTap`/`captureLayer` (parity-safe multi-layer tap).
 - `src/model/gemma4-base.ts` — `trim(n, bypass)` on rotating caches (spec rollback past the window).
 - `src/spec/dspark/module-dflash.ts` — faithful DFlash+Markov+confidence module.
@@ -96,11 +144,63 @@ bun scripts/dspark-train-dflash.ts --data <data> --out <ckpt> --iters 8000 --bat
 bun scripts/dspark-measure-dflash.ts --drafter <ckpt> --data <prompts.jsonl>   # τ + tok/s vs vanilla
 ```
 
+## Paper components — Phase 2 (2026-07-06): the paper is CODE-COMPLETE
+
+All remaining components landed the same day (multi-agent build, adversarially
+reviewed; smoke 21/21, dspark test files 17/17, real-weights serve gate 3/3):
+
+- **Alg 1, single-user form — confidence-scheduled draft-length pruning.**
+  `forwardInfer` drops position k (and truncates the block) when
+  `c_k < thresholds[k] ?? minConf`; position 0 always survives. Activation is
+  checkpoint-driven: STS thresholds in `dspark.json` (`cfg.sts`) or the
+  `MLX_BUN_DSPARK_MINCONF` env override — **uncalibrated checkpoints draft
+  fixed-γ exactly as before** (zero behavior change). Losslessness invariant:
+  pruning changes how many positions the target verifies, never what's emitted
+  (gated: truncation-never-redraw, prefix-identical to the unpruned block).
+- **Variable-length draft contract.** `DraftSource.draft()` returns 1..n —
+  the RETURN LENGTH is authoritative; the serve loop and `dflashGenerate`
+  verify/trim/re-feed over `d = drafts.length`. Two-model/assistant return
+  exactly n (unchanged).
+- **STS calibration (§3.2.1).** `src/spec/dspark/calibration.ts`
+  (`fitStsThresholds`: per position, smallest τ whose Laplace-smoothed
+  `P(accepted | conf ≥ τ)` ≥ target; pos 0 → 0, under-sampled → 0 (don't
+  prune on thin evidence), unreachable target → 1.0) +
+  `scripts/dspark-calibrate.ts` (GPU: greedy unpruned rounds via
+  `dflashGenerate`'s `onRound` hook → fit → patch `config.sts` into
+  dspark.json in place). ⚠ estimator shape is our reading — paper PDF absent.
+- **RNN sequential head (Eq 6 — ⚠ design-doc-faithful shape, paper PDF
+  absent, flagged in code).** `cfg.seqHead: "markov"|"rnn"`; Elman recurrence
+  `s_k = tanh(s_{k-1}·wH + E[x_{k-1}] + bH)`, `B_k = s_k·wO`, `wO` zero-init
+  (starts as pure DFlash, like markov.w2); shares `markov.w1` as the token
+  embedding (also feeds the confidence head). Same loss, autograd-gated;
+  init-equivalence gate: rnn ≡ markov token-for-token at init.
+  Train with `scripts/dspark-train-dflash.ts --seq-head rnn`.
+- **Draft loop TIGHTENED** (handoff item 3): greedy tokens chain ON-DEVICE
+  (one concat + one host read after the loop, was γ syncs); confidence reads
+  deferred+batched when pruning is inactive (per-position only when Alg 1
+  needs the answer mid-loop — inherent); `collectLogits: false` on the serve
+  path skips the per-position draft-logits materialization entirely
+  (`draftLogits` now optional). Gate: bit-identical to the pre-tightening
+  loop (pinned reference tokens, tests/dspark-infer-loop.test.ts).
+- **Rename + central loader.** Canonical variant is now `"dspark"`
+  (`save()` stamps it; `load()` accepts legacy `"dflash"`);
+  `src/spec/dspark/loader.ts` `loadDsparkDrafter()` dispatches by variant and
+  refuses v1 single-vector checkpoints with a pointer at the v2 trainer. The
+  serve path and the bench (`bench-feature-matrix.ts` via the server's
+  exported `detectDraftKind`) both go through it.
+
 ## Open items / next
-- **Real data scale** (thousands of on-distribution generations, not 160) to lift generalizing τ toward the overfit ~0.75.
-- **Retarget to a slow model (27B/12b)** where the τ≈3 architecture actually nets a speedup — the whole point. Needs the drafter sized to that model's H/layers + regen+train there; 27B on 32GB is memory-tight (17.75GB weights + KV budget).
-- **Tighten the draft inference loop** (per-position host syncs, double 262K LM-head) so τ translates to wall-clock.
-- **Remaining paper components:** RNN head (Eq 6), STS calibration (§3.2.1), hardware-aware prefix scheduler (Alg 1 — single-user form = confidence-scheduled draft-length pruning).
-- **Rename** `dflash`→`dspark` (the faithful module IS DSpark; v1 is the legacy single-vector variant).
+
+- [x] Serve integration (Phase 1) · [x] Alg-1 scheduler · [x] STS calibration
+  · [x] RNN head · [x] loop tightening · [x] `dspark` rename + loader —
+  **everything buildable without a GPU is DONE.**
+- [ ] **Josh-gated GPU (the payoff):** real data scale (thousands of
+  on-distribution generations) + **retarget to 12B** (`--model` +
+  `--tap-layers 24,37,47,48`; 27B memory-infeasible to train on 24 GB, kept
+  dim-generic) + train (`--seq-head` A/B optional) + **calibrate**
+  (`scripts/dspark-calibrate.ts`) + live-τ measure. Recipe:
+  [docs/investigations/dspark-handoff.md](../investigations/dspark-handoff.md).
+- [ ] Verify the Eq 6 / §3.2.1 shapes against the actual paper when the PDF
+  is available (both flagged in code).
 
 Full session handoff: `docs/investigations/dspark-handoff.md`.

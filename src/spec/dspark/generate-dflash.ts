@@ -15,12 +15,22 @@ import * as ops from "../../mlx/ops";
 import { Gemma4Model } from "../../model/gemma4";
 import type { DflashDrafter } from "./module-dflash";
 import { KeyStream, processLogits, probsOf, probAtToken, sampleToken, sampleResidual, type DSparkSampleConfig } from "./sample";
+import type { ConfSample } from "./calibration";
 
 export interface DflashGenOptions {
   gamma?: number;
   maxTokens?: number;
   eosTokenIds?: number[];
   sample?: DSparkSampleConfig;
+  /** Confidence-scheduled draft-length pruning (Alg 1). Defaults to the
+   *  checkpoint's STS thresholds (drafter.cfg.sts) when calibrated; pass
+   *  minConf for a uniform manual override; pass thresholds:[] to disable. */
+  thresholds?: number[];
+  minConf?: number;
+  /** Calibration hook (scripts/dspark-calibrate.ts): called once per draft
+   *  round with that round's per-position (confidence, accepted) samples,
+   *  AFTER kAccept is known. Not used by ordinary decode. */
+  onRound?: (samples: ConfSample[]) => void;
 }
 export interface DflashStats {
   emitted: number; drafted: number; accepted: number; targetCalls: number;
@@ -32,19 +42,26 @@ export interface DflashResult { tokens: number[]; stats: DflashStats }
  *  hidden [1,L,H] AND the m-layer context [1,L,m*H] (tapLayers concatenated on
  *  the feature axis). */
 function forwardTapped(model: Gemma4Model, ids: MlxArray, caches: import("../../model/gemma4").Cache[], tapLayers: number[]): { finalH: MlxArray; ctxML: MlxArray } {
-  model.hiddenTap = { layers: new Set(tapLayers), captured: new Map() };
-  let finalH: MlxArray;
+  const cap = new Map<number, MlxArray>();
+  model.hiddenTap = { layers: new Set(tapLayers), captured: cap };
+  let finalH: MlxArray | null = null;
   let ctxML: MlxArray;
   try {
     finalH = model.forwardHidden(ids, caches);
-    const cap = model.hiddenTap.captured;
     const perLayer = tapLayers.map((li) => { const a = cap.get(li); if (!a) throw new Error(`layer ${li} not captured`); return a; });
     ctxML = ops.concatAxis(perLayer, 2); // [1,L,m*H]
     for (const [, a] of cap) a.dispose();
+    cap.clear(); // consumed — the finally must not double-dispose
+    const out = { finalH, ctxML };
+    finalH = null; // ownership returned to the caller
+    return out;
   } finally {
+    // Free partial captures + an orphaned finalH on the throw path (on success
+    // both are already gone).
+    finalH?.dispose();
+    for (const [, a] of cap) a.dispose();
     model.hiddenTap = null;
   }
-  return { finalH, ctxML };
 }
 
 function sampleFromHidden(model: Gemma4Model, hidden: MlxArray, pos: number, cfg: DSparkSampleConfig | null, keys: KeyStream): number {
@@ -90,14 +107,22 @@ function verifySampling(model: Gemma4Model, vHidden: MlxArray, draftLogits: MlxA
   let verdict: Verdict | null = null;
   for (let k = 0; k < gamma; k++) {
     const x = drafts[k]!;
-    const ps = processLogits(slice(tl, k), cfg); const P = probsOf(ps); ps.dispose();
-    const qs = processLogits(slice(draftLogits, k), cfg); const Q = probsOf(qs); qs.dispose();
+    // processLogits does not consume its input — bind each sliced row and
+    // dispose it after (an inline slice(...) here leaked one [1,V] per position).
+    const tRow = slice(tl, k);
+    const ps = processLogits(tRow, cfg); tRow.dispose(); const P = probsOf(ps); ps.dispose();
+    const qRow = slice(draftLogits, k);
+    const qs = processLogits(qRow, cfg); qRow.dispose(); const Q = probsOf(qs); qs.dispose();
     const pX = probAtToken(P, x), qX = probAtToken(Q, x);
     if (u[k]! < Math.min(1, qX > 0 ? pX / qX : 1)) { P.dispose(); Q.dispose(); continue; }
     const corr = sampleResidual(P, Q, keys.next()); P.dispose(); Q.dispose();
     verdict = { kAccept: k, emit: corr }; break;
   }
-  if (!verdict) { const bs = processLogits(slice(tl, gamma), cfg); verdict = { kAccept: gamma, emit: sampleToken(bs, keys.next()) }; bs.dispose(); }
+  if (!verdict) {
+    const bRow = slice(tl, gamma);
+    const bs = processLogits(bRow, cfg); bRow.dispose();
+    verdict = { kAccept: gamma, emit: sampleToken(bs, keys.next()) }; bs.dispose();
+  }
   tl.dispose();
   return verdict;
 }
@@ -114,6 +139,12 @@ export function dflashGenerate(model: Gemma4Model, drafter: DflashDrafter, promp
   const out: number[] = [];
   let confSum = 0, rounds = 0, acceptLenSum = 0;
   let H_ctx: MlxArray | null = null;
+  // Round-local tensors, hoisted so the finally frees them on a mid-round
+  // throw (verify, sampling, concat); each is nulled at its normal disposal
+  // — the serve-loop discipline (src/spec/serve-loop.ts).
+  let vHidden: MlxArray | null = null;
+  let vCtxML: MlxArray | null = null;
+  let blockLogits: MlxArray | null = null;
 
   try {
     // 1. prefill (tapped): seed H_ctx with the prompt's m-layer hiddens.
@@ -132,31 +163,49 @@ export function dflashGenerate(model: Gemma4Model, drafter: DflashDrafter, promp
     out.push(next); stats.emitted++;
 
     const tDecode = performance.now();
+    // Alg 1 thresholds: explicit option > checkpoint STS calibration > none.
+    const thresholds = options.thresholds ?? drafter.cfg.sts?.thresholds;
     outer: while (stats.emitted < maxTokens) {
-      // 2a. draft against the current (growing) H_ctx.
-      const block = drafter.forwardInfer(model, H_ctx!, next, gamma, { sample: sampleCfg ?? undefined, keys });
+      // 2a. draft against the current (growing) H_ctx. The scheduler may prune
+      // the block short (d ≤ γ) — verify then covers exactly d positions.
+      const block = drafter.forwardInfer(model, H_ctx!, next, gamma, {
+        sample: sampleCfg ?? undefined, keys, thresholds, minConf: options.minConf,
+      });
       const drafts = block.tokens;
-      stats.drafted += gamma;
+      blockLogits = block.draftLogits ?? null;
+      const d = drafts.length;
+      stats.drafted += d;
       for (const c of block.conf) confSum += c;
 
       // 2b. verify (tapped) — get accepted tokens' m-layer hiddens to append.
-      const vIds = ops.fromInt32([next, ...drafts], [1, gamma + 1]);
-      const { finalH: vHidden, ctxML: vCtxML } = forwardTapped(model, vIds, caches, tapLayers);
+      const vIds = ops.fromInt32([next, ...drafts], [1, d + 1]);
+      const ft = forwardTapped(model, vIds, caches, tapLayers);
+      vHidden = ft.finalH;
+      vCtxML = ft.ctxML;
       vIds.dispose();
       stats.targetCalls++;
 
       const { kAccept, emit } = sampleCfg
-        ? verifySampling(model, vHidden, block.draftLogits, drafts, gamma, sampleCfg, keys)
-        : verifyGreedy(model, vHidden, drafts, gamma);
-      block.draftLogits.dispose();
+        ? verifySampling(model, vHidden, blockLogits!, drafts, d, sampleCfg, keys)
+        : verifyGreedy(model, vHidden, drafts, d);
+      blockLogits?.dispose();
+      blockLogits = null;
       stats.accepted += kAccept; rounds++; acceptLenSum += kAccept + 1;
+
+      // Calibration hook (scripts/dspark-calibrate.ts): report this round's
+      // per-position (confidence, accepted) outcomes now that kAccept is known.
+      if (options.onRound) {
+        const roundSamples: ConfSample[] = [];
+        for (let k = 0; k < drafts.length; k++) roundSamples.push({ pos: k, conf: block.conf[k]!, accepted: k < kAccept });
+        options.onRound(roundSamples);
+      }
 
       // 2c. emit accepted drafts
       for (let k = 0; k < kAccept; k++) {
         const isEos = eosTokenIds.includes(drafts[k]!);
         if (!isEos) out.push(drafts[k]!);
         stats.emitted++;
-        if (isEos || stats.emitted >= maxTokens) { vHidden.dispose(); vCtxML.dispose(); break outer; }
+        if (isEos || stats.emitted >= maxTokens) break outer; // finally frees vHidden/vCtxML
       }
       const emitIsEos = eosTokenIds.includes(emit);
       if (!emitIsEos) out.push(emit);
@@ -164,21 +213,24 @@ export function dflashGenerate(model: Gemma4Model, drafter: DflashDrafter, promp
 
       // 2d. append accepted stream's m-layer hiddens (anchor + kAccept drafts =
       // vCtxML[:, 0..kAccept]) to H_ctx; never the rejected tips.
-      const add = vCtxML.slice([0, 0, 0], [1, kAccept + 1, vCtxML.shape[2]!]);
+      const add = vCtxML!.slice([0, 0, 0], [1, kAccept + 1, vCtxML!.shape[2]!]);
       const grown = ops.concatAxis([H_ctx!, add], 1);
-      H_ctx!.dispose(); add.dispose(); vCtxML.dispose();
+      H_ctx!.dispose(); add.dispose(); vCtxML!.dispose(); vCtxML = null;
       H_ctx = grown;
 
       // 2e. roll back rejected KV tips (bypass trim, past-window safe)
-      if (kAccept < gamma) { const n = gamma - kAccept; for (const c of caches) c.trim(n, true); }
+      if (kAccept < d) { const nRej = d - kAccept; for (const c of caches) c.trim(nRej, true); }
 
-      vHidden.dispose();
+      vHidden!.dispose(); vHidden = null;
       if (emitIsEos || stats.emitted >= maxTokens) break;
       next = emit;
     }
     stats.decodeMs = performance.now() - tDecode;
   } finally {
     H_ctx?.dispose();
+    vHidden?.dispose();
+    vCtxML?.dispose();
+    blockLogits?.dispose();
     for (const c of caches) c.dispose();
   }
   return finalize(stats, out, rounds, acceptLenSum, confSum);

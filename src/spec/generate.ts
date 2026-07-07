@@ -128,18 +128,29 @@ export function specGenerate(
     full: (caches[donors.full] as never as { temporalView(): [MlxArray, MlxArray] }).temporalView(),
   });
 
+  // Round/prefill scratch tensors, hoisted so the finally frees them on a
+  // mid-round throw (the 2f not-trimmable throw, or any mlx op) — try-body
+  // locals are invisible to the finally. Each is nulled at its normal
+  // disposal, so the finally never double-frees. Same discipline as
+  // src/spec/serve-loop.ts / generate-dflash.ts (2026-07-06 review fix);
+  // see memory [[mlx-inline-slice-leak-pattern]].
+  let prefillH: MlxArray | null = null;
+  let lastHidden: MlxArray | null = null;
+  let vHidden: MlxArray | null = null;
+
   try {
     // 1. prefill
     const t0 = performance.now();
     const ids = ops.fromInt32(promptTokens, [1, promptTokens.length]);
-    const hidden = model.forwardHidden(ids, caches);
+    prefillH = model.forwardHidden(ids, caches);
     ids.dispose();
     stats.targetCalls++;
-    const H = hidden.shape[2]!;
-    const Lp = hidden.shape[1]!;
-    let next = pickFromHidden(model, hidden, Lp - 1);
-    let lastHidden = hidden.slice([0, Lp - 1, 0], [1, Lp, H]);
-    hidden.dispose();
+    const H = prefillH.shape[2]!;
+    const Lp = prefillH.shape[1]!;
+    let next = pickFromHidden(model, prefillH, Lp - 1);
+    lastHidden = prefillH.slice([0, Lp - 1, 0], [1, Lp, H]);
+    prefillH.dispose();
+    prefillH = null;
     stats.prefillMs = performance.now() - t0;
 
     // EOS convention: an EOS id stops generation and counts toward
@@ -158,30 +169,38 @@ export function specGenerate(
       const position = caches[0]!.offset - 1;
       const shared = readDonors();
 
-      // 2a. draft γ tokens against the frozen donor views
+      // 2a. draft γ tokens against the frozen donor views. try/finally so a
+      // mid-draft throw still frees the chained hiddens + donor views + the
+      // in-flight emb (assistant-source.ts draft() discipline).
       const drafts: number[] = [];
       let dTok = next;
-      let dHid = lastHidden; // borrowed for k=0
+      let dHid = lastHidden!; // borrowed for k=0
       const ownedHiddens: MlxArray[] = [];
-      for (let k = 0; k < gamma; k++) {
-        const emb = embedScaled(dTok);
-        const step = drafter.forward(emb, dHid, shared, position + k);
-        emb.dispose();
-        drafts.push(step.token);
-        stats.drafted++;
-        ownedHiddens.push(step.nextHidden);
-        dTok = step.token;
-        dHid = step.nextHidden;
-      }
-      for (const a of ownedHiddens) a.dispose();
-      for (const [k, v] of [shared.sliding, shared.full]) {
-        k.dispose();
-        v.dispose();
+      let emb: MlxArray | null = null;
+      try {
+        for (let k = 0; k < gamma; k++) {
+          emb = embedScaled(dTok);
+          const step = drafter.forward(emb, dHid, shared, position + k);
+          emb.dispose();
+          emb = null;
+          drafts.push(step.token);
+          stats.drafted++;
+          ownedHiddens.push(step.nextHidden);
+          dTok = step.token;
+          dHid = step.nextHidden;
+        }
+      } finally {
+        emb?.dispose();
+        for (const a of ownedHiddens) a.dispose();
+        for (const [k, v] of [shared.sliding, shared.full]) {
+          k.dispose();
+          v.dispose();
+        }
       }
 
       // 2b. verify all γ drafts (+ the pending token) in one forward
       const vIds = ops.fromInt32([next, ...drafts], [1, gamma + 1]);
-      const vHidden = model.forwardHidden(vIds, caches);
+      vHidden = model.forwardHidden(vIds, caches);
       vIds.dispose();
       stats.targetCalls++;
 
@@ -199,6 +218,7 @@ export function specGenerate(
         stats.emitted++;
         if (isEos || stats.emitted >= maxTokens) {
           vHidden.dispose();
+          vHidden = null;
           break outer;
         }
       }
@@ -221,18 +241,25 @@ export function specGenerate(
 
       if (emitIsEos || stats.emitted >= maxTokens) {
         vHidden.dispose();
+        vHidden = null;
         break;
       }
 
       // 2g. chain state
       next = emit;
-      lastHidden.dispose();
+      lastHidden!.dispose();
       lastHidden = vHidden.slice([0, kAccept, 0], [1, kAccept + 1, H]);
       vHidden.dispose();
+      vHidden = null;
     }
     stats.decodeMs = performance.now() - tDecode;
     lastHidden.dispose();
+    lastHidden = null;
   } finally {
+    // Survivors of a mid-round throw (each nulled at its normal disposal).
+    prefillH?.dispose();
+    lastHidden?.dispose();
+    vHidden?.dispose();
     for (const c of caches) c.dispose();
   }
 

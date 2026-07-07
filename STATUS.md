@@ -681,14 +681,54 @@ untouched.
 a broad sample → promote to the real vault + nightly fold-in. Handoff:
 [docs/design/the-dreaming-handoff.md](docs/design/the-dreaming-handoff.md).
 
-### DSpark speculative drafter — faithful build verified; research-only
+### DSpark speculative drafter — PAPER CODE-COMPLETE + SERVE-INTEGRATED (2026-07-06); GPU-gated payoff remains
 
-Architecture verified faithful end-to-end (2026-07-01 adversarial review).
-**Caveat:** the τ=3.24 overfit proof is a teacher-forced proxy — run
-`scripts/dspark-measure-dflash.ts` (live τ) before trusting it. Two gaps to
-a real speedup: DATA (160 articles → per-pos ~0.17) and TARGET (the 27B
-agentic workload is the real payoff, not e4b). Not wired into serve/CLI.
-**Next:** live-τ → retarget 27B/12b → scale data. Handoff:
+**Phase 2 (same session): every remaining paper component LANDED** via a
+multi-agent build + adversarial review — Alg-1 confidence-scheduled
+draft-length pruning (variable-length `DraftSource.draft()` contract, serve
+loop verifies over the returned length; activation is checkpoint-driven so
+uncalibrated checkpoints are unchanged), STS calibration §3.2.1
+(`src/spec/dspark/calibration.ts` + `scripts/dspark-calibrate.ts`), the RNN
+sequential head Eq 6 (`--seq-head rnn`, init-equivalent to Markov; ⚠
+design-doc-faithful shape, paper PDF absent — flagged in code, as is the STS
+estimator), the tightened draft loop (on-device token chaining, deferred conf
+reads, `collectLogits:false` on serve; bit-identity pinned in
+tests/dspark-infer-loop.test.ts), and the `dspark` variant rename + central
+loader. A second adversarial-review wave (17 agents) confirmed 13 findings —
+1 real logic bug (sample-path pruning misaligned tokens/conf/draftLogits →
+OOB in verifySampling; found independently by all 3 reviewers) + 12
+leak-shaped (inline-slice orphans, try-body locals invisible to finally,
+calibration NaN poisoning) — ALL FIXED same session with regression checks
+(the leak shapes are now a memory: [[mlx-inline-slice-leak-pattern]]).
+Final gate: tsc 0 · smoke 22/22 · 84/84 across dspark+spec+server suites
+(incl. real-weights; the grammar suite's `Aborted()` line is pre-existing
+xgrammar WASM teardown noise, stash-proven). **All that remains is the GPU
+recipe** (regen→train→calibrate→measure on 12B):
+docs/investigations/dspark-handoff.md.
+
+Architecture verified faithful (2026-07-01 review; overfit τ=3.24). **Phase 1
+(this session, branch `feat/dspark-spec-decode`):** DSpark + the optiq Gemma
+`-assistant` drafter are now serve-loadable behind `--draft-model` — the
+`DraftSource` seam was extended for KV-borrowing sources (target donor-KV /
+anchor-hidden / tapped H_ctx), provider kind is auto-detected (`dspark.json` →
+DSpark, `*_assistant` → assistant, else two-model; `--draft-kind` overrides),
+and the server pins `--num-draft-tokens` to a DSpark checkpoint's trained
+γ. tsc-green, CPU smoke 16/16. **AssistantSource VERIFIED ON REAL WEIGHTS**
+(`tests/spec-serve-assistant.test.ts`, e4b + assistant drafter, auto-gated):
+serve-loop spec output is TOKEN-IDENTICAL to non-spec greedy for γ=1,2,3
+(losslessness) + telemetry populates — the extended seam is proven end-to-end
+(both providers share it). Ships a real ~1.09× γ=1 win with NO training. The
+Phase-1 code was adversarially reviewed (multi-agent workflow) and 5
+leak-on-exception bugs fixed (round/prefill scratch-tensor disposal on throw,
+forwardMaybeTap partial-capture leak, DflashProvider.dispose). DSpark-source
+correctness stays model-gated (needs a trained checkpoint — Josh's GPU).
+Design + seam contract:
+[docs/design/dspark-speculative-decoding.md](docs/design/dspark-speculative-decoding.md),
+[[dspark-seam-kv-borrowing]].
+**Remaining (this plan):** paper components (confidence-scheduled draft-length
+pruning / STS calibration / RNN head), loop tightening, `dflash`→`dspark`
+rename. **Josh-gated GPU:** data scale + **12B retarget** + train + live-τ
+(27B is memory-infeasible to train on 24 GB — kept dim-generic). Handoff:
 [docs/investigations/dspark-handoff.md](docs/investigations/dspark-handoff.md).
 
 ## Josh-gated (needs hardware / downloads / own shell)

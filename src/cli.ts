@@ -127,13 +127,18 @@ Model & quality:
                             request's \`adapter\` field, incl. "none", wins).
                             --adapter-path is accepted as the mlx_lm.server
                             alias. Hot-swap via POST /v1/adapters unchanged.
-  --draft-model <query>     Speculative decoding: a smaller same-tokenizer
-                            model drafts tokens the main model verifies
-                            (mlx_lm.server parity; exact results, faster
-                            decode when drafts land). Serial lane only —
-                            with --batch N a mounted draft routes every
-                            request serial, like mlx_lm.server.
-  --num-draft-tokens <n>    Drafts per verify round  [default: 3]
+  --draft-model <query>     Speculative decoding: a drafter proposes tokens
+                            the main model verifies (exact results, faster
+                            decode when drafts land). The artifact's kind is
+                            auto-detected — a full same-tokenizer model
+                            (mlx_lm.server parity), a Gemma "-assistant"
+                            KV-borrowing drafter, or a DSpark checkpoint.
+                            Serial lane only — with --batch N a mounted draft
+                            routes every request serial, like mlx_lm.server.
+  --draft-kind <kind>       Override draft-artifact detection:
+                            two-model | assistant | dspark  [default: auto]
+  --num-draft-tokens <n>    Drafts per verify round  [default: 3;
+                            DSpark pins to its trained block width]
   --kv-quant <mode>         KV cache quantization: config (per-layer
                             kv_config.json when the model ships one), off
                             (bf16), or 4 / 8 (uniform bits)
@@ -1426,11 +1431,18 @@ switch (cmd) {
       console.error(`--num-draft-tokens expects an integer >= 1 (got "${numDraftRaw}")`);
       process.exit(1);
     }
+    const draftKindRaw = opt("draft-kind");
+    const draftKind = (draftKindRaw ?? undefined) as
+      | "dspark" | "assistant" | "two-model" | undefined;
+    if (draftKind !== undefined && !["dspark", "assistant", "two-model"].includes(draftKind)) {
+      console.error(`--draft-kind expects two-model|assistant|dspark (got "${draftKindRaw}")`);
+      process.exit(1);
+    }
     const sLoad = step("loading weights");
     const t0 = performance.now();
     const ctx = await loadContext(m.path, m.repoId, {
       memoryBudgetBytes: rt.serverOptions.memoryBudgetBytes,
-      ...(draftModelDir ? { draftModelDir, numDraftTokens } : {}),
+      ...(draftModelDir ? { draftModelDir, numDraftTokens, ...(draftKind ? { draftKind } : {}) } : {}),
     });
     sLoad.done(`weights loaded ${style.dim(`in ${(performance.now() - t0).toFixed(0)} ms`)}${draftModelDir ? style.dim(` · draft: ${draftModelDir.split("/").filter(Boolean).at(-1)}`) : ""}`);
     await mountStartupAdapter(ctx, rt.serverOptions);
@@ -1763,7 +1775,7 @@ switch (cmd) {
       "--query", "-q", "--model", "--port", "--host", "--memory-budget", "--kv-budget", "--prompt-cache",
       "--ssd-cache", "--ssd-cache-max", "--ssd-demote-idle", "--kv-quant", "--unix",
       "--batch", "--decode-concurrency", "--adapter", "--adapter-path",
-      "--draft-model", "--num-draft-tokens",
+      "--draft-model", "--num-draft-tokens", "--draft-kind",
       "--compiled-decode", "--compiled-activations", "--fused-sdpa", "--thinking",
       "--temperature", "--temp", "--top-p", "--top-k", "--max-tokens",
       "--hlg-sampling", "--hlg-width", "--hlg-shoulder", "--hlg-toe", "--hlg-pivot-offset",
