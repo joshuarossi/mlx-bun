@@ -150,7 +150,38 @@
   nav .right{display:flex;align-items:center;gap:12px;flex:0 0 auto}
   nav .model{font:12px var(--mono);color:var(--dim);
     background:var(--card);border:1px solid var(--hairline);border-radius:8px;padding:5px 10px;
-    max-width:34vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    max-width:34vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    appearance:none;-webkit-appearance:none;cursor:pointer;transition:color .18s var(--ease),border-color .18s var(--ease)}
+  nav .model:hover{color:var(--ink);border-color:var(--hairline-strong)}
+  /* Model picker anchor + popover (plan §5.6) — same positioning/transition
+     language as #chat-sampling-wrap/.samplepop, anchored below-left instead
+     of above-right since the nav sits at the top of the page. */
+  #nav-model-wrap{position:relative;display:inline-flex}
+  #nav-model-wrap #model-pop{top:calc(100% + 9px);bottom:auto;left:0;right:auto;width:340px}
+  /* Model picker rows — same list-row language as the adapter table, one
+     row per /library entry with its own fit verdict + restart command
+     (model-picker.ts; no in-process swap exists, see docs/reference/cli.md). */
+  .mp-row{display:flex;align-items:flex-start;gap:9px;padding:9px 10px;border-radius:10px;
+    border:1px solid transparent;margin-bottom:4px;transition:background .12s}
+  .mp-row:last-child{margin-bottom:0}
+  .mp-row.serving{border-color:rgba(48,209,88,.35);background:rgba(48,209,88,.06)}
+  .mp-fit-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;margin-top:4px}
+  .mp-fit-dot.green{background:var(--green);box-shadow:0 0 7px var(--green)}
+  .mp-fit-dot.yellow{background:var(--yellow);box-shadow:0 0 7px var(--yellow)}
+  .mp-fit-dot.red{background:var(--red)}
+  .mp-main{flex:1 1 auto;min-width:0}
+  .mp-name{font-size:12.5px;color:var(--ink);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mp-meta{font-size:10.5px;color:var(--dimmer);margin-top:2px}
+  .mp-meta b{color:var(--dim);font-variant-numeric:tabular-nums}
+  .mp-serving-tag{font:10px var(--mono);color:var(--green);letter-spacing:.03em;margin-top:2px}
+  .mp-cmd{display:flex;align-items:center;gap:6px;margin-top:6px;background:var(--code-bg-soft);border-radius:7px;
+    padding:5px 8px;overflow-x:auto}
+  .mp-cmd code{font:11px var(--mono);color:var(--ink);white-space:nowrap}
+  .mp-cmd button{appearance:none;cursor:pointer;background:var(--card);border:1px solid var(--hairline);
+    color:var(--dim);border-radius:6px;padding:2px 8px;font-size:10.5px;font-weight:600;flex:0 0 auto;white-space:nowrap}
+  .mp-cmd button:hover{color:var(--ink);border-color:var(--hairline-strong)}
+  .mp-empty{color:var(--dim);font-size:12px;padding:10px 4px;line-height:1.5}
+  .mp-foot-note{font-size:10.5px;color:var(--dimmer);line-height:1.4;margin-top:10px;padding-top:10px;border-top:1px solid var(--hairline-soft)}
   .pill{display:inline-flex;align-items:center;gap:8px;
     border:1px solid var(--hairline);border-radius:999px;padding:6px 13px;
     font-size:12.5px;font-weight:600;color:var(--dim);letter-spacing:.01em;white-space:nowrap}
@@ -217,6 +248,31 @@
   .samp-adv .seed-row input[type=text]{flex:1 1 auto;background:var(--card);border:1px solid var(--hairline);
     border-radius:6px;color:var(--ink);font-family:var(--mono);font-size:12px;padding:5px 8px}
   .samp-adv .seed-row input[type=text]::placeholder{color:var(--dimmer)}
+  /* System prompt pill + popover (plan §9 Phase 2) — same chrome as
+     #chat-sampling-wrap/.samplepop, just to its left in the hint row. */
+  #chat-sysprompt-wrap{position:relative;display:inline-flex}
+  #chat-sysprompt{cursor:pointer;gap:6px;padding:5px 11px;font-size:12px;user-select:none;-webkit-user-select:none;
+    transition:color .22s var(--ease),border-color .22s var(--ease)}
+  #chat-sysprompt:hover{border-color:var(--hairline-strong);color:var(--ink)}
+  #chat-sysprompt.on{color:var(--ink);border-color:var(--hairline-strong)}
+  #chat-sysprompt.dirty .dot{background:var(--purple);box-shadow:0 0 11px var(--purple)}
+  #chat-sysprompt .dot{width:7px;height:7px}
+  .sysprompt-pop{width:320px}
+  #sysprompt-text{width:100%;resize:vertical;min-height:80px;background:var(--card);
+    border:1px solid var(--hairline);border-radius:9px;color:var(--ink);
+    font:12.5px/1.5 inherit;padding:9px 10px;margin:0 0 6px}
+  #sysprompt-text::placeholder{color:var(--dimmer)}
+  #sysprompt-text:focus{outline:none;border-color:var(--hairline-strong)}
+  .sysprompt-foot-row{display:flex;justify-content:space-between;align-items:center;margin:0 0 10px}
+  .sysprompt-foot-row .note{font-size:10.5px;color:var(--dimmer)}
+  .sysprompt-foot-row button,.sysprompt-preset-row button{appearance:none;cursor:pointer;background:var(--card);
+    border:1px solid var(--hairline);color:var(--dim);border-radius:8px;padding:5px 11px;font-size:11.5px;
+    font-weight:600;flex:0 0 auto;transition:color .18s var(--ease),border-color .18s var(--ease)}
+  .sysprompt-foot-row button:hover,.sysprompt-preset-row button:hover{color:var(--ink);border-color:var(--hairline-strong)}
+  .sysprompt-presets{margin-top:12px;padding-top:12px;border-top:1px solid var(--hairline-soft)}
+  .sysprompt-preset-row{display:flex;align-items:center;gap:6px;margin:0 0 6px}
+  #sysprompt-preset-select{flex:1 1 auto;min-width:0;max-width:none;appearance:none;-webkit-appearance:none;
+    cursor:pointer;background:var(--card);text-overflow:ellipsis}
   #nav-download{color:var(--ink);font-family:var(--mono);font-size:11.5px;font-weight:500}
   #nav-download .dot{background:var(--orange);box-shadow:0 0 11px var(--orange);animation:dlpulse 1.4s ease-in-out infinite}
   @keyframes dlpulse{0%,100%{opacity:.4}50%{opacity:1}}
@@ -241,6 +297,21 @@
   /* Auto's ◐ icon only appears when the text label hides at narrow widths
      (see the 900px media block) — never both, never neither. */
   #theme-toggle .tt-icon{display:none}
+
+  /* Developer toggle (plan §8/§9 Phase 2): a small switch, same nav-pill
+     sizing language as #theme-toggle, showing/hiding the Quantize/Fine-tune/
+     Build Dataset/Status/Curves/Routes tabs. aria-pressed reflects state
+     (kept in sync by shell.ts's applyDeveloperMode). */
+  #nav-developer{appearance:none;cursor:pointer;display:inline-flex;align-items:center;gap:7px;
+    border:1px solid var(--hairline);border-radius:10px;background:transparent;color:var(--dim);
+    padding:0 10px;height:34px;font-size:12.5px;font-weight:600;letter-spacing:.01em;flex:0 0 auto;
+    transition:color .18s var(--ease),background .18s var(--ease),border-color .18s var(--ease)}
+  #nav-developer:hover{color:var(--ink);background:var(--card-hover);border-color:var(--hairline-strong)}
+  #nav-developer:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
+  #nav-developer .nd-dot{width:8px;height:8px;border-radius:50%;background:var(--dimmer);flex:0 0 auto;
+    transition:background .18s var(--ease)}
+  #nav-developer .nd-dot.on{background:var(--green)}
+  #nav-developer[aria-checked="true"]{color:var(--ink)}
 
   /* ─── keyboard shortcut sheet (Cmd/Ctrl+/) ─── */
   #shortcut-overlay{position:fixed;inset:0;z-index:210;display:none;align-items:flex-start;justify-content:center;
@@ -274,11 +345,159 @@
     width:30px;height:30px;border-radius:8px;transition:color .2s,background .2s}
   .hf-close:hover{color:var(--ink);background:var(--card-hover)}
 
+  /* ─── Settings modal sections (plan §5.4/§6.5) ─── */
+  .settings-section{margin:0 0 20px;padding:0 0 20px;border-bottom:1px solid var(--hairline-soft)}
+  .settings-section:last-child{border-bottom:none;padding-bottom:0;margin-bottom:0}
+  .settings-h{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);margin:0 0 12px}
+  .settings-toggle-row{display:flex;align-items:center;gap:10px;font-size:13.5px;color:var(--ink);
+    cursor:pointer;font-weight:500;margin-bottom:8px}
+  .settings-toggle-row input{width:auto;margin:0;accent-color:var(--blue)}
+  .settings-note{font-size:12px;color:var(--orange);margin:8px 0 0;line-height:1.5}
+  #settings-approvals-list{margin-top:12px}
+  .settings-approvals-empty{font-size:12.5px;color:var(--dimmer)}
+  .settings-approval-row{display:flex;align-items:center;gap:10px;padding:7px 0;font-size:13px;
+    border-top:1px solid var(--hairline-soft)}
+  .settings-approval-row:first-child{border-top:none}
+  .settings-approval-row .satool{font:600 12.5px var(--mono);color:var(--ink);flex:1 1 auto}
+  .settings-approval-row .saforget{appearance:none;cursor:pointer;background:none;border:1px solid var(--hairline);
+    color:var(--dim);border-radius:7px;padding:3px 9px;font-size:11.5px;font-weight:600;flex:0 0 auto;
+    transition:color .18s var(--ease),border-color .18s var(--ease)}
+  .settings-approval-row .saforget:hover{color:var(--red);border-color:rgba(255,69,58,.4)}
+
   /* ─── inline push-to-hub panel (in done-step cards) ─── */
   .pushpanel{margin-top:14px;border-top:1px solid var(--hairline-soft);padding-top:14px}
   .pushpanel .field{margin-bottom:12px}
   .pushpanel label.chk{display:flex;align-items:center;gap:9px;font-size:13.5px;color:var(--ink);cursor:pointer;font-weight:500}
   .pushpanel label.chk input{width:auto;margin:0;accent-color:var(--blue)}
+
+  /* ─── Memory panel (plan §5.5/§9 Phase 2) — a full-height overlay beside
+     chat, same drawer/overlay language as the mobile sidebar and the HF
+     modal: fixed, scrimmed, focus-trapped, Escape closes. Sidebar entry
+     is a quiet row (not a nav tab) — see #chat-memory-entry markup. ─── */
+  #mem-overlay{position:fixed;inset:var(--nav-h) 0 0 0;z-index:150;display:none;justify-content:flex-end;
+    background:var(--overlay-scrim);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+  #mem-overlay.open{display:flex;animation:fade .22s var(--ease)}
+  #mem-panel{width:min(480px,100%);height:100%;background:var(--overlay-panel);border-left:1px solid var(--hairline);
+    display:flex;flex-direction:column;box-shadow:-24px 0 60px rgba(0,0,0,.4)}
+  .mem-head{display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid var(--hairline-soft);flex:0 0 auto}
+  .mem-head h2{font-size:16px;font-weight:700;letter-spacing:-.01em;flex:1 1 auto}
+  .mem-close{appearance:none;background:none;border:none;cursor:pointer;color:var(--dim);font-size:15px;
+    width:30px;height:30px;border-radius:8px;transition:color .2s,background .2s;flex:0 0 auto}
+  .mem-close:hover{color:var(--ink);background:var(--card-hover)}
+  .mem-back{appearance:none;background:none;border:none;cursor:pointer;color:var(--dim);font-size:13px;
+    display:none;align-items:center;gap:4px;padding:4px 2px;flex:0 0 auto}
+  .mem-back:hover{color:var(--ink)}
+  .mem-back.show{display:inline-flex}
+  /* status strip: article count · last synthesis · git state */
+  .mem-status{display:flex;gap:16px;padding:12px 18px;border-bottom:1px solid var(--hairline-soft);flex:0 0 auto;flex-wrap:wrap}
+  .mem-stat{font-size:11.5px;color:var(--dim)}
+  .mem-stat b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+  .mem-body{flex:1 1 auto;overflow-y:auto;padding:14px 18px 24px}
+  /* no-vault state (consent already declined earlier, or panel opened directly) */
+  .mem-empty{text-align:center;color:var(--dim);padding:50px 18px;font-size:13.5px;line-height:1.6}
+  .mem-empty .mcta{margin-top:16px}
+  /* search + list */
+  #mem-search{width:100%;background:var(--card);border:1px solid var(--hairline);border-radius:10px;
+    color:var(--ink);font-size:12.5px;padding:9px 12px;outline:none;transition:border-color .2s;margin-bottom:14px}
+  #mem-search:focus{border-color:rgba(10,132,255,.5)}
+  #mem-search::placeholder{color:var(--dimmer)}
+  .mem-sec{margin-bottom:16px}
+  .mem-sec:last-child{margin-bottom:0}
+  .mem-sec-title{font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dimmer);
+    margin-bottom:7px;display:flex;align-items:center;gap:6px}
+  .mem-art{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:10px;cursor:pointer;
+    border:1px solid transparent;transition:background .12s,border-color .12s}
+  .mem-art:hover{background:var(--card)}
+  .mem-art-name{font-size:13px;color:var(--ink);flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mem-art-excerpt{font-size:11px;color:var(--dim);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mem-art-ico{font-size:12px;color:var(--dimmer);flex:0 0 auto}
+  .mem-list-empty{color:var(--dim);font-size:12.5px;padding:8px 10px;line-height:1.5}
+  /* article view */
+  .mem-art-head{margin-bottom:12px}
+  .mem-art-title{font-size:19px;font-weight:700;letter-spacing:-.02em;margin-bottom:4px}
+  .mem-art-tabs{display:flex;gap:6px;margin:10px 0 14px}
+  .mem-art-tab{font:600 11.5px/1 inherit;color:var(--dim);background:var(--card);border:1px solid var(--hairline);
+    border-radius:999px;padding:6px 13px;cursor:pointer;transition:all .18s var(--ease)}
+  .mem-art-tab:hover{color:var(--ink)}
+  .mem-art-tab.active{color:var(--ink);border-color:var(--hairline-strong);background:var(--card-hover)}
+  .mem-article-render{font-size:13.5px;line-height:1.65;color:var(--ink)}
+  .mem-article-render h1,.mem-article-render h2,.mem-article-render h3{font-weight:700;margin:16px 0 7px;letter-spacing:-.01em}
+  .mem-article-render h1:first-child,.mem-article-render h2:first-child{margin-top:0}
+  .mem-article-render p{margin:0 0 10px}
+  .mem-article-render ul,.mem-article-render ol{margin:0 0 10px;padding-left:22px}
+  .mem-article-render code{font-family:var(--mono);font-size:.86em;background:rgba(127,127,127,.18);padding:2px 7px;border-radius:6px}
+  .mem-article-render pre{background:var(--code-bg);color:var(--code-ink);border:1px solid var(--hairline-soft);border-radius:12px;
+    padding:12px 14px;overflow-x:auto;margin:10px 0;font:12px/1.6 var(--mono)}
+  .mem-article-render a{color:var(--cyan);text-decoration:none;border-bottom:1px solid rgba(100,210,255,.34)}
+  /* links line (inbound/outbound) */
+  .mem-links{display:flex;flex-direction:column;gap:8px;margin-top:16px;padding-top:14px;border-top:1px solid var(--hairline-soft)}
+  .mem-links-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:11.5px}
+  .mem-links-row .lbl{color:var(--dimmer);flex:0 0 auto;font-weight:600;letter-spacing:.03em}
+  .mem-link-chip{font-size:12px;color:var(--dim);background:var(--card);border:1px solid var(--hairline);
+    border-radius:999px;padding:4px 11px;cursor:pointer;transition:all .15s var(--ease)}
+  .mem-link-chip:hover{color:var(--ink);border-color:var(--hairline-strong)}
+  /* history / diff (code-panel visual language, matching .tool pre / .approval pre) */
+  .mem-hist-entry{display:flex;align-items:baseline;gap:10px;padding:9px 10px;border-radius:10px;cursor:pointer;
+    border:1px solid transparent;transition:background .12s}
+  .mem-hist-entry:hover{background:var(--card)}
+  .mem-hist-entry.active{background:var(--card);border-color:var(--hairline)}
+  .mem-hist-subject{font-size:13px;color:var(--ink);flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mem-hist-date{font-size:11px;color:var(--dimmer);font-variant-numeric:tabular-nums;flex:0 0 auto}
+  .mem-hist-hash{font:11px var(--mono);color:var(--dimmer);flex:0 0 auto}
+  .mem-diff{background:var(--code-bg-soft);border-radius:9px;padding:11px 13px;overflow-x:auto;margin-top:10px;
+    font:11.5px/1.55 var(--mono);white-space:pre-wrap;word-break:break-word;max-height:420px;overflow-y:auto}
+  .mem-diff .diffadd{color:var(--green)}
+  .mem-diff .diffdel{color:var(--red)}
+  .mem-diff .diffctx{color:var(--dim)}
+  .mem-diff .diffhunk{color:var(--cyan)}
+
+  /* sidebar entry to the panel (quiet, count-bearing — not a nav tab) */
+  #chat-memory-entry{display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:10px;cursor:pointer;
+    border:1px solid transparent;color:var(--dim);font-size:12.5px;transition:background .12s,color .12s;margin-top:auto}
+  #chat-memory-entry:hover{background:var(--card);color:var(--ink)}
+  #chat-memory-entry .mi{font-size:13px;flex:0 0 auto;color:var(--purple)}
+  #chat-memory-entry .mt{flex:1 1 auto}
+  #chat-memory-entry .mcount{font:11px var(--mono);color:var(--dimmer);background:var(--card);border-radius:999px;padding:2px 8px;flex:0 0 auto}
+
+  /* ─── Adapter routing table (plan §5.6/§9 Phase 2) — same right-side
+     overlay/panel/head/body chrome as the Memory panel (mem-overlay/
+     mem-panel/mem-head/mem-body), new top-level ids since it's a distinct
+     panel opened from the composer instead of the sidebar. ─── */
+  #adapters-overlay{position:fixed;inset:var(--nav-h) 0 0 0;z-index:150;display:none;justify-content:flex-end;
+    background:var(--overlay-scrim);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+  #adapters-overlay.open{display:flex;animation:fade .22s var(--ease)}
+  #adapters-panel{width:min(520px,100%);height:100%;background:var(--overlay-panel);border-left:1px solid var(--hairline);
+    display:flex;flex-direction:column;box-shadow:-24px 0 60px rgba(0,0,0,.4)}
+  #adapters-body{flex:1 1 auto;overflow-y:auto;padding:14px 18px 24px}
+  .ad-empty{text-align:center;color:var(--dim);padding:50px 18px;font-size:13.5px;line-height:1.6}
+  .ad-sec-title{font-size:10.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dimmer);margin:0 0 9px}
+  .ad-note{font-size:11.5px;color:var(--dim);line-height:1.5;margin:0 0 16px}
+  .ad-row{display:flex;align-items:flex-start;gap:11px;padding:11px 12px;border-radius:12px;
+    border:1px solid var(--hairline-soft);margin-bottom:9px;transition:border-color .15s var(--ease)}
+  .ad-row.incompatible{opacity:.55}
+  .ad-row.selected{border-color:rgba(10,132,255,.5);background:rgba(10,132,255,.06)}
+  .ad-row-main{flex:1 1 auto;min-width:0}
+  .ad-row-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .ad-row-id{font-size:13.5px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ad-badge{font:10.5px var(--mono);letter-spacing:.02em;padding:2px 8px;border-radius:999px;border:1px solid var(--hairline);color:var(--dim);white-space:nowrap}
+  .ad-badge.mounted{color:var(--green);border-color:rgba(48,209,88,.4)}
+  .ad-badge.selected{color:var(--blue);border-color:rgba(10,132,255,.4)}
+  .ad-meta{font-size:11.5px;color:var(--dimmer);margin-top:4px;display:flex;gap:10px;flex-wrap:wrap}
+  .ad-meta b{color:var(--dim);font-weight:600;font-variant-numeric:tabular-nums}
+  .ad-why{font-size:11px;color:var(--dimmer);margin-top:4px;font-style:italic}
+  .ad-actions{display:flex;gap:6px;flex:0 0 auto;flex-wrap:wrap;align-items:center}
+  .ad-actions button{appearance:none;cursor:pointer;background:var(--card);border:1px solid var(--hairline);
+    color:var(--dim);border-radius:8px;padding:5px 11px;font-size:11.5px;font-weight:600;white-space:nowrap;
+    transition:color .18s var(--ease),border-color .18s var(--ease),background .18s var(--ease)}
+  .ad-actions button:hover:not(:disabled){color:var(--ink);border-color:var(--hairline-strong)}
+  .ad-actions button:disabled{opacity:.4;cursor:default}
+  .ad-actions button.primary{color:var(--ink);border-color:rgba(10,132,255,.5);background:rgba(10,132,255,.1)}
+  .ad-actions label.ad-stack-chk{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--dimmer);cursor:pointer;white-space:nowrap}
+  .ad-actions label.ad-stack-chk input{width:auto;margin:0;accent-color:var(--blue)}
+  .ad-stack-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border-radius:12px;
+    background:var(--card);border:1px solid var(--hairline);margin-bottom:14px}
+  .ad-stack-bar .lbl{font-size:11.5px;color:var(--dim);flex:0 0 auto}
+  .ad-stack-bar .expr{font:12px var(--mono);color:var(--ink);flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
   /* ═══════════════════ app shell / routing ═══════════════════ */
   #app{position:fixed;inset:var(--nav-h) 0 0 0;z-index:1}
@@ -608,6 +827,40 @@
   .approval .resolved{padding:11px 16px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
   .approval .resolved.allow{color:var(--green)}
   .approval .resolved.deny{color:var(--red)}
+  /* Editable arguments (plan §5.4/§6.5, LM Studio's pattern): pre-filled
+     with the proposed args JSON; the diff (edit/write only) stays above as
+     a read-only visual aid so large content edits don't only exist as raw
+     JSON. Approve re-parses the textarea and ships the edited object. */
+  .approval .a-diff{margin-bottom:10px}
+  .approval textarea.a-args{width:100%;background:var(--code-bg);color:var(--code-ink);border:1px solid var(--hairline);
+    border-radius:10px;padding:12px 14px;font:12.5px/1.6 var(--mono);resize:vertical;min-height:64px;max-height:280px}
+  .approval textarea.a-args:focus{outline:none;border-color:var(--orange)}
+  .approval .a-argerr{margin-top:8px;font-size:12px;color:var(--red)}
+  .approval .a-always{display:flex;align-items:center;gap:9px;padding:0 16px 13px;font-size:12.5px;
+    color:var(--dim);cursor:pointer;font-weight:500}
+  .approval .a-always input{width:auto;margin:0;accent-color:var(--orange)}
+
+  /* ─── memory provenance chip (plan §5.4.2) — deliberately NOT the wrench
+     tool-card language: a citation, not a shell command. Quiet by default
+     (small pill, one line), expands to a lightweight card on click. ─── */
+  .memchip{margin:10px 0;border:1px solid rgba(191,90,242,.3);border-radius:999px;overflow:hidden;
+    background:rgba(191,90,242,.07);max-width:fit-content;transition:border-radius .18s var(--ease)}
+  .memchip.open{border-radius:14px;max-width:none}
+  .memchip.fail{border-color:rgba(255,69,58,.45);background:rgba(255,69,58,.06)}
+  .memchip.fail .mcicon{color:var(--red)}
+  .memchip .mchead{display:flex;align-items:center;gap:8px;padding:7px 14px;cursor:pointer;user-select:none}
+  .memchip .mcicon{font-size:12.5px;flex:0 0 auto;color:var(--purple)}
+  .memchip .mclabel{font-size:12.5px;color:var(--dim);flex:1 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .memchip .mclabel b{color:var(--ink);font-weight:600}
+  .memchip .mccaret{color:var(--dimmer);font-size:11px;transition:transform .2s var(--ease);flex:0 0 auto}
+  .memchip.open .mccaret{transform:rotate(90deg)}
+  .memchip .mcbody{display:none;border-top:1px solid rgba(191,90,242,.2);padding:11px 14px 12px}
+  .memchip.open .mcbody{display:block}
+  .memchip .mcbody pre{background:var(--code-bg-soft);border-radius:9px;padding:9px 11px;overflow-x:auto;
+    font:11.5px/1.5 var(--mono);color:rgba(245,245,247,.7);white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;margin-bottom:8px}
+  .memchip .mcopen{font:11px/1 var(--mono);color:var(--purple);background:transparent;border:1px solid rgba(191,90,242,.4);
+    border-radius:6px;padding:5px 10px;cursor:pointer;transition:background .15s}
+  .memchip .mcopen:hover{background:rgba(191,90,242,.14)}
 
   /* chat hello / starters */
   #chat-hello{max-width:840px;margin:6vh auto 0;padding:0 22px;text-align:center}
@@ -618,6 +871,17 @@
     padding:9px 16px;font-size:13.5px;cursor:pointer;transition:all .25s var(--ease)}
   .chip:hover{color:var(--ink);border-color:var(--hairline-strong);background:var(--card-hover)}
 
+  /* memory consent card (plan §5.1/§9 Phase 2) — one-line, skippable, in the
+     hero. Never auto-creates the vault; a plain hairline card, not a modal,
+     so it reads as an offer, not an interruption. */
+  #chat-consent{display:none;align-items:center;gap:12px;text-align:left;margin:22px auto 0;max-width:640px;
+    border:1px solid var(--hairline);background:var(--card);border-radius:14px;padding:13px 16px}
+  #chat-consent.show{display:flex}
+  #chat-consent .cc-icon{font-size:18px;flex:0 0 auto}
+  #chat-consent .cc-text{flex:1 1 auto;font-size:13px;color:var(--dim);line-height:1.5}
+  #chat-consent .cc-text b{color:var(--ink);font-weight:600}
+  #chat-consent .cc-actions{display:flex;gap:8px;flex:0 0 auto}
+
   /* chat composer */
   #chat-foot{flex:0 0 auto;border-top:1px solid var(--hairline);padding:14px 22px 16px;
     background:var(--card-2);backdrop-filter:blur(16px)}
@@ -627,10 +891,36 @@
     border-radius:999px;padding:4px 11px;background:var(--card)}
   .queuebar .qtag b{color:var(--ink);font-weight:600}
   .inputrow{display:flex;gap:10px;align-items:flex-end}
-  #chat-box{flex:1;background:var(--card);border:1px solid var(--hairline);border-radius:16px;
+  #chat-box-wrap{position:relative;flex:1;min-width:0}
+  #chat-box{width:100%;background:var(--card);border:1px solid var(--hairline);border-radius:16px;
     color:var(--ink);font:15px/1.5 inherit;padding:13px 16px;resize:none;outline:none;
-    max-height:200px;min-height:50px;transition:border-color .25s}
+    max-height:200px;min-height:50px;transition:border-color .25s;box-sizing:border-box}
   #chat-box:focus{border-color:rgba(10,132,255,.5)}
+  /* Unified "#" retrieval mention picker (plan §5.2/§9 Phase 2) — same
+     floating-panel chrome as .samplepop, anchored above the textarea it
+     types into instead of a pill. Zero layout shift: absolutely positioned,
+     hidden by default, never reflows the composer underneath it. */
+  .mentionpop{position:absolute;bottom:calc(100% + 8px);left:0;right:0;z-index:40;
+    max-height:min(46vh,320px);overflow-y:auto;
+    background:var(--popover-panel);border:1px solid var(--hairline);border-radius:13px;padding:6px;
+    backdrop-filter:blur(22px) saturate(1.3);-webkit-backdrop-filter:blur(22px) saturate(1.3);
+    box-shadow:0 18px 50px rgba(0,0,0,.35);display:none;
+    transform:translateY(4px);opacity:0;transition:opacity .14s var(--ease),transform .14s var(--ease)}
+  .mentionpop.open{display:block;transform:translateY(0);opacity:1}
+  .mention-sec-title{font-size:10.5px;font-weight:600;color:var(--dimmer);letter-spacing:.04em;
+    text-transform:uppercase;padding:7px 9px 4px}
+  .mention-row{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:9px;cursor:pointer}
+  .mention-row:hover,.mention-row.active{background:var(--card-hover)}
+  .mention-ico{font-size:12px;color:var(--dimmer);flex:0 0 auto}
+  .mention-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font-size:13px;color:var(--ink)}
+  .mention-tag{flex:0 0 auto;font-size:10px;color:var(--dimmer);text-transform:uppercase;letter-spacing:.03em}
+  .mention-empty{padding:10px 9px;font-size:12px;color:var(--dim)}
+  /* Pulse a file's attach-chip when it's selected from the mention picker
+     (the file is already attached — this is the only feedback needed). */
+  .attach-chip.pulse{animation:chippulse .5s var(--ease) 2}
+  @keyframes chippulse{0%,100%{box-shadow:0 0 0 rgba(10,132,255,0)}50%{box-shadow:0 0 0 3px rgba(10,132,255,.45)}}
+  @media (prefers-reduced-motion:reduce){.attach-chip.pulse{animation:none}}
   #chat-send{background:linear-gradient(120deg,var(--blue),var(--purple));color:#fff;
     border:none;border-radius:14px;height:50px;padding:0 22px;font:600 14px inherit;cursor:pointer;transition:filter .2s}
   #chat-send:hover{filter:brightness(1.14)}
@@ -668,6 +958,13 @@
      selection + specialty line, options grayed by /v1/adapters/available's
      compatible flag rather than hidden outright. */
   #chat-adapter option:disabled{color:var(--dimmer);font-style:italic}
+  /* "manage adapters" gear beside the quick-switch <select> — opens the
+     routing table (#adapters-overlay), same pill sizing as #chat-think. */
+  #adapters-manage{appearance:none;-webkit-appearance:none;cursor:pointer;display:inline-flex;align-items:center;
+    justify-content:center;width:27px;height:27px;border-radius:999px;background:var(--card);
+    border:1px solid var(--hairline);color:var(--dim);font-size:12.5px;line-height:1;flex:0 0 auto;
+    transition:color .18s var(--ease),border-color .18s var(--ease),background .18s var(--ease)}
+  #adapters-manage:hover{color:var(--ink);background:var(--card-hover);border-color:var(--hairline-strong)}
   /* attach (+) button + attachment chips */
   #chat-attach-btn{flex:0 0 auto;width:50px;height:50px;border-radius:14px;background:var(--card);
     border:1px solid var(--hairline);color:var(--ink);font-size:23px;line-height:1;cursor:pointer;transition:background .15s,border-color .15s}
@@ -699,10 +996,11 @@
   .chart-stats .cs b{display:block;font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:3px}
   .chart-stats .cs span{font-size:20px;font-weight:700;letter-spacing:-.02em}
 
-  /* Tablet band (2026-07-06 jank fix): with 7 tabs + hamburger + shortcuts +
-     theme toggle + gear + conn pill, the tab row overflows well above the
-     900px cutoff — tighten tab padding first so fewer widths need the
-     scroll-fade at all. */
+  /* Tablet band (2026-07-06 jank fix): with up to 7 tabs (fewer once the
+     plan §8 Developer toggle is off — see nav .tab[data-dev] above) +
+     hamburger + shortcuts + theme toggle + gear + conn pill, the tab row
+     can overflow well above the 900px cutoff — tighten tab padding first
+     so fewer widths need the scroll-fade at all. */
   @media (max-width:1160px){
     nav{gap:12px}
     nav .tab{padding:8px 9px;font-size:13px}
@@ -720,6 +1018,11 @@
     #theme-toggle button{padding:0 7px;font-size:15px}
     #theme-toggle .tt-label{display:none}
     #theme-toggle .tt-icon{display:inline}
+    /* Developer toggle: dot-only past this width, same reasoning as the
+       theme toggle above — "Developer" as a text label costs more than
+       the dot alone conveys once the row is already tight. */
+    #nav-developer span:not(.nd-dot){display:none}
+    #nav-developer{padding:0;width:34px;justify-content:center}
   }
   @media (max-width:760px){
     /* Touch band (2026-07-06 QA): a keyboard-shortcut sheet button is dead
@@ -732,7 +1035,10 @@
     #nav-conn{padding:6px 9px}
     /* Keep a scrollable strip of tabs alive — flex shrank them to 0 width
        at phone sizes, silently removing Quantize/Status navigation. The
-       scroll-fade masks signal the rest. */
+       scroll-fade masks signal the rest. With the Developer toggle off
+       (the fresh-browser default) this row can be just the single Chat
+       tab — min-width still holds so the fade-mask math in
+       updateTabFades() never divides against a zero-width strip. */
     nav .tabs{min-width:96px}
   }
   @media (max-width:560px){
@@ -767,14 +1073,27 @@
   <a class="brand grad g-hero" href="#/chat">mlx-bun</a>
   <div class="tabs" id="tabs">
     <a class="tab" href="#/chat" data-tab="chat">Chat</a>
-    <a class="tab" href="#/quantize" data-tab="quantize">Quantize</a>
-    <a class="tab" href="#/finetune" data-tab="finetune">Fine-tune</a>
-    <a class="tab" href="#/dataset" data-tab="dataset">Build Dataset</a>
-    <a class="tab" href="#/status" data-tab="status">Status</a>
-    <a class="tab" href="/curves" data-tab="curves">Curves</a>
-    <a class="tab" href="#/routes" data-tab="routes">Routes</a>
+    <a class="tab" href="#/quantize" data-tab="quantize" data-dev>Quantize</a>
+    <a class="tab" href="#/finetune" data-tab="finetune" data-dev>Fine-tune</a>
+    <a class="tab" href="#/dataset" data-tab="dataset" data-dev>Build Dataset</a>
+    <a class="tab" href="#/status" data-tab="status" data-dev>Status</a>
+    <!-- Full-page link (not hash-routed), so the active-tab highlight logic
+         can never mark it — web-ui-pass-plan.md #19, cosmetic-only per the
+         plan. aria-label spells out that it leaves the SPA rather than
+         leaving the tab looking silently broken. -->
+    <a class="tab" href="/curves" data-tab="curves" data-dev aria-label="Curve designer (opens a separate page)">Curves</a>
+    <a class="tab" href="#/routes" data-tab="routes" data-dev>Routes</a>
   </div>
   <div class="right">
+    <!-- Developer toggle (plan §8/§9 Phase 2): collapses Quantize/Fine-tune/
+         Build Dataset/Status/Curves/Routes behind one switch. State + the
+         one-time existing-user default live in shell.ts's
+         initDeveloperToggle/isDeveloperMode. -->
+    <button id="nav-developer" type="button" role="switch" aria-checked="false"
+            title="Show developer tools (Quantize, Fine-tune, Build Dataset, Status, Curves, Routes)"
+            aria-label="Toggle developer tools">
+      <span class="nd-dot" id="nav-developer-dot" aria-hidden="true"></span><span>Developer</span>
+    </button>
     <button class="icon-btn" id="nav-shortcuts" title="Keyboard shortcuts (Cmd/Ctrl+/)" aria-label="Keyboard shortcuts"
             aria-haspopup="dialog" aria-controls="shortcut-overlay" aria-expanded="false">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"></rect><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12"></path></svg>
@@ -790,28 +1109,65 @@
     <button class="hf-gear" id="nav-hf" title="Hugging Face token settings" aria-label="Hugging Face settings">
       <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
     </button>
-    <span class="model" id="nav-model" title="active model">connecting…</span>
+    <!-- Model picker (plan §5.6/§9 Phase 2): #nav-model was a dead <span>
+         with no click handler; now opens a popover of downloaded models
+         with a per-row /fit-shaped verdict (model-picker.ts). Wrapped for
+         position:relative anchoring, same pattern as #chat-sampling-wrap. -->
+    <span id="nav-model-wrap">
+      <button class="model" id="nav-model" type="button" title="active model — click to browse downloaded models"
+              aria-haspopup="dialog" aria-controls="model-pop" aria-expanded="false">connecting…</button>
+      <div id="model-pop" class="samplepop" role="dialog" aria-label="Downloaded models">
+        <h4>Downloaded models</h4>
+        <div id="model-pop-body"></div>
+      </div>
+    </span>
     <span class="pill" id="nav-conn"><span class="dot"></span><span id="nav-conn-text">connecting…</span></span>
     <span class="pill" id="nav-download" style="display:none" title="A more capable model is downloading in the background"><span class="dot"></span><span id="nav-download-text"></span></span>
   </div>
 </nav>
 
-<!-- ═══════════════════ HF SETTINGS OVERLAY ═══════════════════ -->
+<!-- ═══════════════════ SETTINGS OVERLAY ═══════════════════
+     (was "HF settings" — widened in place for the Agent tools section,
+     plan §5.4/§6.5/§9 Phase 2. Same ids/behavior for the HF piece; nothing
+     about push-to-hub or the hf-* wiring changed.) -->
 <div id="hf-overlay">
   <div id="hf-modal" role="dialog" aria-modal="true" aria-labelledby="hf-modal-title-el">
     <div class="hf-modal-head">
-      <div class="hf-modal-title" id="hf-modal-title-el">Hugging Face</div>
+      <div class="hf-modal-title" id="hf-modal-title-el">Settings</div>
       <button class="hf-close" id="hf-close" aria-label="Close">✕</button>
     </div>
-    <p class="hf-modal-sub" id="hf-state">Checking for a saved token…</p>
-    <div class="field" style="margin-bottom:10px">
-      <label>Write token</label>
-      <input type="password" id="hf-token-input" placeholder="hf_…" autocomplete="off" spellcheck="false">
-      <div class="hint">A <strong>write</strong> token from huggingface.co/settings/tokens. Stored locally at <code>~/.mlx-bun/hf.json</code> — never sent anywhere but your own Hub pushes.</div>
+
+    <!-- Agent tools (plan §5.4/§6.5): the codingTools opt-in + the durable
+         always-allow list. Lives above Hugging Face since it's the more
+         chat-relevant setting. -->
+    <div class="settings-section">
+      <h3 class="settings-h">Agent tools</h3>
+      <label class="chk settings-toggle-row" for="settings-coding-tools">
+        <input type="checkbox" id="settings-coding-tools">
+        <span>Let the agent touch files on this machine</span>
+      </label>
+      <div class="hint">
+        Off by default. When on, the chat assistant can run shell commands and
+        edit or create files — each one asks first, in the chat, unless you
+        choose "always allow" for that action. Nothing runs without your
+        review the first time.
+      </div>
+      <p class="settings-note" id="settings-coding-tools-note" style="display:none"></p>
+      <div id="settings-approvals-list"></div>
     </div>
-    <div id="hf-settings-msg"></div>
-    <div class="btnrow" style="margin-top:14px">
-      <button class="btn primary sm" id="hf-save">Save token</button>
+
+    <div class="settings-section">
+      <h3 class="settings-h">Hugging Face</h3>
+      <p class="hf-modal-sub" id="hf-state">Checking for a saved token…</p>
+      <div class="field" style="margin-bottom:10px">
+        <label>Write token</label>
+        <input type="password" id="hf-token-input" placeholder="hf_…" autocomplete="off" spellcheck="false">
+        <div class="hint">A <strong>write</strong> token from huggingface.co/settings/tokens. Stored locally at <code>~/.mlx-bun/hf.json</code> — never sent anywhere but your own Hub pushes.</div>
+      </div>
+      <div id="hf-settings-msg"></div>
+      <div class="btnrow" style="margin-top:14px">
+        <button class="btn primary sm" id="hf-save">Save token</button>
+      </div>
     </div>
   </div>
 </div>
@@ -833,6 +1189,39 @@
   </div>
 </div>
 
+<!-- ═══════════════════ MEMORY PANEL ═══════════════════ (plan §5.5/§9 Phase 2)
+     Full-height overlay beside chat, same drawer/overlay language as the HF
+     modal and mobile sidebar: fixed, scrimmed, focus-trapped, Escape closes.
+     All content rendered client-side by memory-panel.ts from the
+     /api/memory/* REST wrappers — no new WS frames. -->
+<div id="mem-overlay">
+  <div id="mem-panel" role="dialog" aria-modal="true" aria-labelledby="mem-title">
+    <div class="mem-head">
+      <button class="mem-back" id="mem-back" type="button" aria-label="Back to article list">‹ Back</button>
+      <h2 id="mem-title">Memory</h2>
+      <button class="mem-close" id="mem-close" aria-label="Close memory panel">✕</button>
+    </div>
+    <div class="mem-status" id="mem-status"></div>
+    <div class="mem-body" id="mem-body"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════ ADAPTER ROUTING TABLE ═══════════════════ (plan §5.6/§9 Phase 2)
+     Same right-side overlay/panel chrome as the Memory panel (fixed,
+     scrimmed, focus-trapped, Escape closes) — the deep adapter surface
+     opened from the composer's ⚙ button beside #chat-adapter. Reads the
+     same /v1/adapters + /v1/adapters/available list state the quick
+     <select> uses (adapters-panel.ts), never a second fetch owner. -->
+<div id="adapters-overlay">
+  <div id="adapters-panel" role="dialog" aria-modal="true" aria-labelledby="adapters-title">
+    <div class="mem-head">
+      <h2 id="adapters-title">Adapters</h2>
+      <button class="mem-close" id="adapters-close" aria-label="Close adapter routing table">✕</button>
+    </div>
+    <div class="mem-body" id="adapters-body"></div>
+  </div>
+</div>
+
 <!-- Mobile drawer backdrop (chat sidebar only — see #chat-sidebar CSS) -->
 <div id="chat-drawer-backdrop"></div>
 
@@ -844,17 +1233,41 @@
       <button id="chat-new" title="Start a new chat (or type /new)">＋&nbsp; New chat</button>
       <input type="search" id="chat-sess-search" placeholder="Search chats…" aria-label="Search chats" autocomplete="off">
       <div id="chat-sessions" class="sesslist"></div>
+      <!-- Memory panel entry (plan §5.5) — quiet, chat-adjacent, NOT a nav
+           tab: memory is the product, not a dev tool. Hidden entirely until
+           the first /api/memory/status poll resolves (see memory-panel.ts),
+           so it never flashes "0 articles" before a real vault is known to
+           exist or not exist. -->
+      <button id="chat-memory-entry" type="button" style="display:none"
+              aria-haspopup="dialog" aria-controls="mem-overlay" aria-expanded="false">
+        <span class="mi" aria-hidden="true">◆</span>
+        <span class="mt">Memory</span>
+        <span class="mcount" id="chat-memory-count">—</span>
+      </button>
     </aside>
     <div id="chat-main">
     <div id="chat-scroll">
       <div id="chat-hello">
         <h1>Local. Private. <span class="grad g-hero">Yours.</span></h1>
         <p id="chat-hello-sub">A full pi agent on this machine — local model, local tools, zero cloud. Every token below is generated here.</p>
-        <div class="chips">
+        <div class="chips" id="chat-hello-chips">
           <button class="chip" data-q="What is mlx-bun and what can it do?">What is mlx-bun?</button>
           <button class="chip" data-q="How do I load a bigger or different model?">Load a bigger model</button>
           <button class="chip" data-q="Is this really private? Where does my data go?">Is this private?</button>
           <button class="chip" data-q="What can you help me with right now?">What can you do?</button>
+        </div>
+        <!-- Memory consent card (plan §5.1/§9 Phase 2): first run only (no
+             vault + never dismissed, see memory-panel.ts's isConsentDismissed).
+             NEVER auto-creates the vault — this is the only path that calls
+             POST /api/memory/init. Hidden by default; shown by
+             maybeShowConsentCard() after the first status poll. -->
+        <div id="chat-consent" role="group" aria-label="Memory setup">
+          <span class="cc-icon" aria-hidden="true">◆</span>
+          <span class="cc-text">Let mlx-bun remember what matters? Creates a local, git-tracked vault you can open anytime.</span>
+          <span class="cc-actions">
+            <button class="btn ghost sm" id="chat-consent-skip" type="button">Skip</button>
+            <button class="btn primary sm" id="chat-consent-yes" type="button">Set up memory</button>
+          </span>
         </div>
       </div>
       <!-- aria-live is a coarse approximation: it announces at the container
@@ -872,17 +1285,58 @@
         <div class="inputrow">
           <button id="chat-attach-btn" class="iconbtn" title="Attach files or images" aria-label="Attach files">＋</button>
           <input type="file" id="chat-file-input" multiple style="display:none">
-          <!-- Keep the placeholder SHORT: the Enter/Shift+Enter hint lives in
-               the chat-hint line below (and the Cmd+/ sheet). A long
-               placeholder wraps to two lines at tablet widths inside this
-               single-row box and clips against the border (2026-07-06 jank). -->
-          <textarea id="chat-box" rows="1" placeholder="Message the local agent…"></textarea>
+          <div id="chat-box-wrap">
+            <!-- Keep the placeholder SHORT: the Enter/Shift+Enter hint lives in
+                 the chat-hint line below (and the Cmd+/ sheet). A long
+                 placeholder wraps to two lines at tablet widths inside this
+                 single-row box and clips against the border (2026-07-06 jank). -->
+            <textarea id="chat-box" rows="1" placeholder="Message the local agent… (# to attach a file or recall memory)"></textarea>
+            <!-- Unified "#" retrieval mention (plan §5.2/§9 Phase 2): typing
+                 "#" opens this picker over both attached files and vault
+                 articles as one gesture (composer.ts's initMentionPicker).
+                 role=listbox for the arrow-key/Enter contract; content is
+                 built entirely client-side by renderMentionListHtml(). -->
+            <div id="chat-mention-pop" class="mentionpop" role="listbox" aria-label="Attach a file or recall a memory"></div>
+          </div>
           <button id="chat-stop" title="Abort the current turn">Stop</button>
           <button id="chat-send">Send</button>
         </div>
         <div class="chat-hint">
           <span id="chat-status-line">Enter to send · Shift+Enter for a new line · type while it streams to steer</span>
           <span class="hint-right">
+            <!-- Per-chat system prompt + presets v1 (plan §9 Phase 2, beat
+                 matrix Axis 4): same pill+popover chrome as #chat-sampling
+                 (setSysPromptPopoverClose registers with shell.ts's
+                 closeTopOverlay the same way). The dot lights up whenever a
+                 custom prompt is active — the user must always SEE it's
+                 shaping replies (trust rule), never a silent setting. -->
+            <span id="chat-sysprompt-wrap">
+              <span id="chat-sysprompt" class="pill" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false"
+                    title="System prompt (shapes how the assistant replies in this chat)"><span class="dot"></span>Prompt</span>
+              <div id="chat-sysprompt-pop" class="samplepop sysprompt-pop" role="dialog" aria-label="System prompt">
+                <h4>System prompt</h4>
+                <textarea id="sysprompt-text" rows="6" maxlength="4000"
+                  placeholder="e.g. Answer in French. Keep replies under 3 sentences. Prefer Python over JS."
+                  aria-label="Custom system prompt"></textarea>
+                <div class="sysprompt-foot-row">
+                  <span class="note" id="sysprompt-count">0 / 4000</span>
+                  <button id="sysprompt-clear" type="button">Clear</button>
+                </div>
+                <span class="note">Layered on top of the built-in assistant prompt — it doesn't replace mlx-bun's own
+                  identity/tool guidance. Takes effect on your next message (not retroactively).</span>
+                <div class="sysprompt-presets">
+                  <h4>Presets</h4>
+                  <div class="sysprompt-preset-row">
+                    <select id="sysprompt-preset-select" class="pill" aria-label="Saved presets">
+                      <option value="">— presets —</option>
+                    </select>
+                    <button id="sysprompt-preset-save" type="button" title="Save the current prompt + sampling as a named preset">Save</button>
+                    <button id="sysprompt-preset-delete" type="button" title="Delete the selected preset">Delete</button>
+                  </div>
+                  <span class="note">A preset bundles this system prompt with the current Sampling settings — applying one sets both at once.</span>
+                </div>
+              </div>
+            </span>
             <span id="chat-sampling-wrap">
               <span id="chat-sampling" class="pill" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false"
                     title="Sampling controls (temperature · top_p · top_k)"><span class="dot"></span>Sampling</span>
@@ -954,6 +1408,13 @@
             <select id="chat-adapter" class="pill" title="LoRA adapter for this chat (none = base model)">
               <option value="">no adapter</option>
             </select>
+            <!-- Adapter routing table entry (plan §5.6/§9 Phase 2): the
+                 quick-switch <select> above stays the fast path; this opens
+                 the deep three-state surface (available/loaded/selected,
+                 RAM cost, stacking) — same adapter list state, not a
+                 second source of truth (see adapters-panel.ts). -->
+            <button id="adapters-manage" type="button" title="Manage adapters — routing table, RAM cost, stacking"
+                    aria-haspopup="dialog" aria-controls="adapters-overlay" aria-expanded="false">⚙</button>
             <span id="chat-think" class="pill" role="button" tabindex="0" title="Toggle the model's reasoning"><span class="dot"></span>Thinking</span>
           </span>
         </div>
@@ -1394,6 +1855,13 @@
   </section>
 
   <!-- ═══════════════════ ROUTES ═══════════════════ -->
+  <!-- web-ui-pass-plan.md #17: /dag 404s outside a repo checkout (readFileSync
+       on a repo-relative doc, absent from compiled binaries/npm installs).
+       shell.ts's initRoutesProbe() HEAD-checks /dag at boot: on success this
+       iframe renders as-is; on 404 it hides the Routes tab and swaps this
+       section's innerHTML for a graceful note instead of a raw 404 iframe.
+       Could instead embed the artifact server-side like /curves' fallback
+       does — that's server.ts territory, out of scope this wave. -->
   <section data-route="routes" id="s-routes">
     <iframe src="/dag" title="Training · inference route map"
             style="width:100%;height:100%;border:0;display:block"></iframe>
@@ -1407,2532 +1875,18 @@
      a curated language set, BSD-3-Clause, see that file's header). `defer`
      means this loads/executes at DOMContentLoaded, which happens well before
      any real highlighting call (those only fire later, on streamed content
-     or history replay) — the main inline script below runs synchronously
-     first, but it only *calls* highlightIn() from async event handlers, so
-     ordering here is safe in practice. highlightIn() still guards with
-     `typeof hljs !== "undefined"` for the case this tag is ever stripped or
-     the asset 404s. No CDN; served by src/server.ts at /assets/hljs.js. -->
+     or history replay) — app.js (below) only *calls* highlightIn() from
+     async event handlers, so load order here is safe in practice.
+     highlightIn() still guards with `typeof hljs !== "undefined"` for the
+     case this tag is ever stripped or the asset 404s. No CDN; served by
+     src/server.ts at /assets/hljs.js. -->
 <script defer src="/assets/hljs.js"></script>
-<script>
-/* ════════════════════════════════════════════════════════════════════
-   SHARED HELPERS
-   ════════════════════════════════════════════════════════════════════ */
-const $ = (id) => document.getElementById(id);
-const gb = (b) => b == null ? "—" : (b / 2 ** 30).toFixed(2) + " GB";
-const mb = (b) => b == null ? "—" : (b / 2 ** 20).toFixed(1) + " MB";
-const num = (n) => n == null ? "—" : Math.round(n).toLocaleString();
-const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-
-/** Build a DOM node quickly. */
-function el(tag, cls, parent) {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (parent) parent.appendChild(e);
-  return e;
-}
-
-/** Toast notification. kind: "" | "ok" | "err". */
-function toast(msg, kind = "", ms = 4200) {
-  const t = el("div", "toast " + kind, $("toasts"));
-  t.textContent = msg;
-  setTimeout(() => { t.style.transition = "opacity .4s,transform .4s"; t.style.opacity = "0"; t.style.transform = "translateY(10px)"; setTimeout(() => t.remove(), 420); }, ms);
-}
-
-/** Fetch JSON with graceful error handling. Throws on !ok. */
-async function api(path, opts) {
-  const r = await fetch(path, {
-    headers: { "content-type": "application/json" },
-    ...opts,
-    ...(opts && opts.body ? { body: typeof opts.body === "string" ? opts.body : JSON.stringify(opts.body) } : {}),
-  });
-  const text = await r.text();
-  let data;
-  try { data = text ? JSON.parse(text) : {}; } catch { data = { ok: false, error: text.slice(0, 400) || ("HTTP " + r.status) }; }
-  // OpenAI-envelope errors are {error:{message,…}} — unwrap to a string so
-  // callers can concatenate without printing "[object Object]".
-  if (data && data.error && typeof data.error === "object")
-    data.error = data.error.message || JSON.stringify(data.error).slice(0, 400);
-  if (!r.ok && data.ok === undefined) data = { ok: false, error: data.error || data.message || ("HTTP " + r.status) };
-  return data;
-}
-
-/**
- * Wraps an EventSource over /api/jobs/:id/stream and dispatches typed events.
- * Server → client line protocol (JSON per `data:` line):
- *   {type:"log",  line}
- *   {type:"stage", stage, progress, message, output_dir?, adapter_path?}
- *   {type:"metric", kind:"train"|"val", step, loss, learning_rate?, tokens_per_sec?, progress?, message?}
- *   {type:"done"}  {type:"failed", error}
- * Returns the EventSource so callers can .close().
- */
-function jobStream(jobId, handlers) {
-  const es = new EventSource("/api/jobs/" + encodeURIComponent(jobId) + "/stream");
-  es.onmessage = (ev) => {
-    let e; try { e = JSON.parse(ev.data); } catch { return; }
-    const fn = handlers[e.type];
-    if (fn) fn(e);
-  };
-  es.addEventListener("end", () => es.close());
-  es.onerror = () => { if (handlers.error) handlers.error(); };
-  return es;
-}
-
-/** Allow only safe link targets (http/https/mailto/anchor/relative). */
-function mdSafeUrl(u) {
-  const s = String(u).trim();
-  return /^(https?:\/\/|mailto:|#|\/|\.{1,2}\/)/i.test(s) ? s : null;
-}
-
-/** Inline markdown → HTML. Escapes first, then shields code spans from
- *  further markup so backticked text is never mangled or unsafe. */
-function mdInline(t) {
-  const codes = [];
-  // Pull code spans out first (any run of backticks), then escape the rest.
-  t = String(t).replace(/(`+)([\s\S]+?)\1/g, (_m, _ticks, c) => {
-    codes.push(c.replace(/^ | $/g, ""));
-    return "\u0000C" + (codes.length - 1) + "\u0000";
-  });
-  let s = esc(t);
-  // [text](url "title") — title optional and ignored.
-  s = s.replace(/\[([^\]]+)\]\(\s*([^)\s]+)(?:\s+&quot;[^)]*&quot;)?\s*\)/g, (m, text, url) => {
-    const safe = mdSafeUrl(url);
-    return safe ? '<a href="' + safe + '" target="_blank" rel="noopener noreferrer">' + text + "</a>" : m;
-  });
-  s = s
-    .replace(/\*\*\*([^*]+)\*\*\*/g, "<strong><em>$1</em></strong>")
-    .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^_\w])__([^_]+?)__(?![\w])/g, "$1<strong>$2</strong>")
-    .replace(/(^|[^*\w])\*([^*\s][^*]*?)\*/g, "$1<em>$2</em>")
-    .replace(/(^|[^_\w])_([^_\s][^_]*?)_(?![\w])/g, "$1<em>$2</em>")
-    .replace(/~~([^~]+?)~~/g, "<del>$1</del>");
-  // Autolink bare URLs that markdown didn't already wrap.
-  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+[^\s<).,;:!?'"])/g,
-    (_m, pre, url) => pre + '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + "</a>");
-  return s.replace(/\u0000C(\d+)\u0000/g, (_m, i) => "<code>" + esc(codes[+i]) + "</code>");
-}
-
-function mdCodeBlock(lang, code) {
-  // language-<lang> on <code> is the de-facto convention hljs's own
-  // language-detection-from-class reads (see highlightIn() below); an empty
-  // fence info string just omits the class and highlightIn() skips it.
-  const langClass = lang ? ' class="language-' + esc(lang) + '"' : "";
-  return '<div class="codeblock"><div class="cbhead"><span class="cblang">' + esc(lang || "") +
-    '</span><button class="cbcopy" type="button">Copy</button></div>' +
-    "<pre><code" + langClass + ">" + esc(code) + "</code></pre></div>";
-}
-
-function mdTableSep(s) { return /^[\s|:-]+$/.test(s) && /-/.test(s) && /\|/.test(s); }
-function mdSplitRow(s) { return s.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim()); }
-function mdBlockStart(s) {
-  return /^\s*(`{3,}|~{3,})/.test(s) || /^(#{1,6})\s/.test(s) || /^\s*>/.test(s) ||
-    /^\s*[-*+]\s+/.test(s) || /^\s*\d+[.)]\s+/.test(s) || /^\s*([-*_])\s*(\1\s*){2,}$/.test(s);
-}
-
-/** Safe markdown renderer: code fences (w/ copy), headings, lists, task
- *  lists, tables, blockquotes, rules, links, emphasis, inline code. */
-function mdToHtml(src) {
-  const lines = String(src).replace(/\r\n?/g, "\n").split("\n");
-  let html = "", i = 0, list = null;
-  const closeList = () => { if (list) { html += "</" + list + ">"; list = null; } };
-
-  while (i < lines.length) {
-    const ln = lines[i];
-
-    // fenced code block
-    const fence = ln.match(/^\s*(`{3,}|~{3,})\s*([\w+#.-]*)/);
-    if (fence) {
-      closeList();
-      const tick = fence[1][0], lang = fence[2] || "", buf = [];
-      const closeRe = new RegExp("^\\s*" + (tick === "`" ? "`{3,}" : "~{3,}") + "\\s*$");
-      i++;
-      while (i < lines.length && !closeRe.test(lines[i])) { buf.push(lines[i]); i++; }
-      i++; // consume closing fence (or run off the end mid-stream)
-      html += mdCodeBlock(lang, buf.join("\n"));
-      continue;
-    }
-
-    // GFM table: a row with pipes followed by a separator row
-    if (ln.includes("|") && i + 1 < lines.length && mdTableSep(lines[i + 1])) {
-      closeList();
-      const header = mdSplitRow(ln);
-      const aligns = mdSplitRow(lines[i + 1]).map((c) => {
-        const l = c.startsWith(":"), r = c.endsWith(":");
-        return l && r ? "center" : r ? "right" : l ? "left" : "";
-      });
-      i += 2;
-      const rows = [];
-      while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") { rows.push(mdSplitRow(lines[i])); i++; }
-      const al = (k) => (aligns[k] ? ' style="text-align:' + aligns[k] + '"' : "");
-      let tbl = '<div class="md-tablewrap"><table class="md-table"><thead><tr>';
-      header.forEach((c, k) => { tbl += "<th" + al(k) + ">" + mdInline(c) + "</th>"; });
-      tbl += "</tr></thead><tbody>";
-      rows.forEach((r) => {
-        tbl += "<tr>";
-        for (let k = 0; k < header.length; k++) tbl += "<td" + al(k) + ">" + mdInline(r[k] || "") + "</td>";
-        tbl += "</tr>";
-      });
-      html += tbl + "</tbody></table></div>";
-      continue;
-    }
-
-    // heading
-    const h = ln.match(/^(#{1,6})\s+(.*)$/);
-    if (h) { closeList(); const n = h[1].length; html += "<h" + n + ">" + mdInline(h[2].replace(/\s+#+\s*$/, "")) + "</h" + n + ">"; i++; continue; }
-
-    // horizontal rule
-    if (/^\s*([-*_])\s*(\1\s*){2,}$/.test(ln)) { closeList(); html += "<hr>"; i++; continue; }
-
-    // blockquote (consecutive '>' lines, rendered recursively)
-    if (/^\s*>/.test(ln)) {
-      closeList();
-      const buf = [];
-      while (i < lines.length && /^\s*>/.test(lines[i])) { buf.push(lines[i].replace(/^\s*>\s?/, "")); i++; }
-      html += "<blockquote>" + mdToHtml(buf.join("\n")) + "</blockquote>";
-      continue;
-    }
-
-    // task list / unordered / ordered list items
-    const task = ln.match(/^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/);
-    const ul = ln.match(/^\s*[-*+]\s+(.*)$/);
-    const ol = ln.match(/^\s*\d+[.)]\s+(.*)$/);
-    if (task) {
-      if (list !== "ul") { closeList(); html += "<ul>"; list = "ul"; }
-      html += '<li class="task"><input type="checkbox" disabled' + (task[1].toLowerCase() === "x" ? " checked" : "") + "> " + mdInline(task[2]) + "</li>";
-      i++; continue;
-    }
-    if (ul) { if (list !== "ul") { closeList(); html += "<ul>"; list = "ul"; } html += "<li>" + mdInline(ul[1]) + "</li>"; i++; continue; }
-    if (ol) { if (list !== "ol") { closeList(); html += "<ol>"; list = "ol"; } html += "<li>" + mdInline(ol[1]) + "</li>"; i++; continue; }
-
-    if (ln.trim() === "") { closeList(); i++; continue; }
-
-    // paragraph: merge following plain lines (soft breaks → <br>)
-    closeList();
-    const para = [ln];
-    i++;
-    while (i < lines.length && lines[i].trim() !== "" && !mdBlockStart(lines[i])) { para.push(lines[i]); i++; }
-    html += "<p>" + para.map(mdInline).join("<br>") + "</p>";
-  }
-  closeList();
-  return html;
-}
-
-/* ────────────────────────────────────────────────────────────────────
-   STREAMING BLOCK MEMOIZATION  (plan §5.3, §2.2 #7)
-   ────────────────────────────────────────────────────────────────────
-   Naively doing `textNode.innerHTML = mdToHtml(fullText)` on every token
-   is O(n²) over a response: every delta re-parses and re-renders the
-   *entire* message from scratch, and innerHTML-replace also blows away
-   and recreates every DOM node (losing e.g. text selection) each time.
-
-   The fix, ported from the Streamdown/t3.chat "block memoization"
-   pattern into this vanilla renderer: split accumulated text at stable
-   block boundaries (blank lines; a fenced code block counts as one
-   block and only becomes "stable" once its closing fence has arrived).
-   Every block except the last is done streaming and gets parsed with
-   mdToHtml exactly ONCE — its DOM node is then left completely alone.
-   Only the last ("live tail") block gets re-parsed on each delta, and
-   even that is throttled to once per animation frame so a burst of
-   fast tokens (e.g. spec-decode) coalesces into one reflow instead of
-   one per token.
-
-   INVARIANT (this is the correctness test for this whole scheme): the
-   memoized incremental render must be pixel-for-pixel/byte-for-byte
-   identical to a single `mdToHtml(fullText)` pass once the message is
-   complete. We guarantee this by (a) never touching a block's DOM once
-   it's marked done, using the same mdToHtml on that exact substring
-   that a full pass would have used, and (b) doing one full non-
-   memoized mdToHtml(fullText) pass at turn-end (see finishStreaming
-   below) to paper over any edge case where incremental block splitting
-   disagrees with whole-text parsing (e.g. a list that only "closes"
-   because a later blank line arrives, or a paragraph the tail-block
-   join glued differently than the full parse would). That final pass
-   is the ground truth; the incremental renders are a fast-path
-   approximation of it while streaming is in flight. */
-
-/** Split text into blocks at blank lines. A fenced code block (opened by
- *  a ``` or ~~~ fence) is always kept as a single block and is only
- *  "closed" (safe to memoize) once its matching closing fence has been
- *  seen — while the fence is still open we keep extending the same
- *  block on every call, exactly like mdToHtml's own fence scanner does.
- *  Returns [{text, done}]; every element except possibly the last has
- *  done:true (the last block is "done" too if the text itself ends
- *  with a blank line — i.e. the block truly can't grow anymore given
- *  what's arrived so far). */
-function splitBlocks(src) {
-  const lines = String(src).replace(/\r\n?/g, "\n").split("\n");
-  const blocks = [];
-  let buf = [], i = 0;
-  const flush = (done) => { if (buf.length) { blocks.push({ text: buf.join("\n"), done }); buf = []; } };
-
-  while (i < lines.length) {
-    const ln = lines[i];
-    const fence = ln.match(/^\s*(`{3,}|~{3,})/);
-    if (fence) {
-      // A fence starts a code block: flush whatever came before it as its
-      // own (done) block, then greedily consume lines until the matching
-      // closing fence — the whole fenced region is one block.
-      flush(true);
-      const tick = fence[1][0];
-      const closeRe = new RegExp("^\\s*" + (tick === "`" ? "`{3,}" : "~{3,}") + "\\s*$");
-      buf.push(ln); i++;
-      let closed = false;
-      while (i < lines.length) {
-        buf.push(lines[i]);
-        if (closeRe.test(lines[i])) { closed = true; i++; break; }
-        i++;
-      }
-      flush(closed); // still-open fence -> not done; more deltas may extend it
-      continue;
-    }
-    if (ln.trim() === "") { flush(true); i++; continue; }
-    buf.push(ln); i++;
-  }
-  // Trailing buffered lines with no closing blank line yet: this is the
-  // live tail, not done — it may still grow on the next delta.
-  flush(false);
-  return blocks;
-}
-
-/**
- * Incrementally (re)render an accumulated markdown string into `container`
- * using block memoization. `state` is a small cache object stashed on the
- * caller (e.g. `a.blockState`) shaped `{ blocks: [{text, done, node}] }`,
- * created fresh per message. Completed blocks whose text hasn't changed
- * since last render are left untouched (their DOM node is reused as-is);
- * only new/changed/live-tail blocks get an mdToHtml call.
- *
- * Completed block nodes get `class="md-block done"` and, once rendered,
- * have any fenced code inside them run through highlightIn() (syntax
- * highlighting only ever touches finished blocks — never the streaming
- * live tail, to avoid re-highlighting on every token).
- */
-function renderBlocksIncremental(container, text, state) {
-  const next = splitBlocks(text);
-  const prev = state.blocks || [];
-
-  for (let k = 0; k < next.length; k++) {
-    const nb = next[k];
-    const pb = prev[k];
-    if (pb && pb.done && pb.text === nb.text && pb.node) {
-      // Unchanged completed block: reuse the existing node untouched.
-      nb.node = pb.node;
-      continue;
-    }
-    // (Re)render this block. Reuse the DOM node in place if one already
-    // exists at this index (keeps node identity stable across re-renders
-    // of the live tail instead of thrashing the DOM), otherwise create it.
-    const node = pb && pb.node ? pb.node : document.createElement("div");
-    node.className = "md-block" + (nb.done ? " done" : "");
-    node.innerHTML = mdToHtml(nb.text);
-    nb.node = node;
-    if (!node.parentNode) container.appendChild(node);
-    if (nb.done) highlightIn(node);
-  }
-  // Drop any now-stale trailing nodes (text shrank — shouldn't normally
-  // happen during streaming, but keep the DOM honest if it ever does).
-  for (let k = next.length; k < prev.length; k++) {
-    if (prev[k].node && prev[k].node.parentNode) prev[k].node.remove();
-  }
-  state.blocks = next;
-}
-
-/** rAF-throttled scheduler: coalesces many deltas arriving within one
- *  animation frame into a single re-render (block-memoized text, or the
- *  plain-text thinking channel). Each assistant message gets its own
- *  scheduler instance (created per-message in startAssistant) so the
- *  pending-frame flag is scoped to that message rather than shared
- *  global state. The wrapped `render` fn is called with no args on the
- *  next frame; calling the returned `schedule()` again before that frame
- *  fires is a no-op (a render is already queued). */
-/* ────────────────────────────────────────────────────────────────────
-   SYNTAX HIGHLIGHTING (plan §5.3/§7)
-   ────────────────────────────────────────────────────────────────────
-   Vendored highlight.js (src/web/vendor/hljs.js, no CDN — see that file's
-   header) applied to fenced code blocks. mdCodeBlock() above stamps
-   `class="language-<fence-info-string>"` onto the <code> element when the
-   fence declares one (```ts, ```python, …); highlight.js reads that class
-   itself (its own `language-xxx` convention), so no lookup table is needed
-   here — an empty/unrecognized language just falls through to hljs's
-   plaintext handling.
-
-   Called from exactly three places, matching the plan's "block completion
-   + final full-render pass" instruction:
-     1. renderBlocksIncremental(), only on blocks freshly marked `done`
-        (the live streaming tail is never highlighted — that would mean
-        re-highlighting on every token, the same O(n²) shape the block-
-        memoization pass just fixed).
-     2. finishStreaming(), the end-of-turn full mdToHtml pass (ground truth
-        — catches any block whose "done" transition happened without a
-        fresh render, e.g. the last block if it ends exactly on a blank line).
-     3. renderAssistantStatic(), for replayed history.
-   Idempotent via hljs's own `data-highlighted` marker (set on the <code>
-   element after its first highlightElement() call) — highlightElement()
-   itself throws "Element previously highlighted" if called twice on the
-   same node without clearing that marker, so we check for it explicitly
-   rather than relying on the library to no-op. */
-function highlightIn(container) {
-  if (typeof hljs === "undefined" || !container) return;
-  const blocks = container.querySelectorAll("pre code");
-  for (const block of blocks) {
-    if (block.dataset.highlighted) continue; // already done — idempotent
-    // Skip auto-detect on huge blocks: hljs's language guesser runs every
-    // registered grammar against the text, which is fine for a fenced
-    // ```lang block (single grammar) but expensive with no declared
-    // language on a very large block. A declared language always runs
-    // (fixed grammar, no guessing), regardless of size.
-    const hasLang = /\blanguage-/.test(block.className);
-    if (!hasLang && block.textContent.length > 20_000) continue;
-    try { hljs.highlightElement(block); } catch { /* leave as plain text */ }
-  }
-}
-
-/** rAF-throttled scheduler: coalesces many deltas arriving within one
- *  animation frame into a single re-render (block-memoized text, or the
- *  plain-text thinking channel). Each assistant message gets its own
- *  scheduler instance (created per-message in startAssistant) so the
- *  pending-frame flag is scoped to that message rather than shared
- *  global state. The wrapped `render` fn is called with no args on the
- *  next frame; calling the returned `schedule()` again before that frame
- *  fires is a no-op (a render is already queued). */
-/** rAF-throttle `render` so a burst of calls within one frame collapses into
- *  a single DOM update. `shouldStick`/`doStick` (both optional) let a caller
- *  autoscroll correctly across the coalesced burst: `shouldStick` is sampled
- *  fresh at the START of each queued frame (i.e. right before `render` runs,
- *  against whatever scrollHeight the LAST completed render left behind —
- *  never the stale pre-burst height a synchronous caller-side check would
- *  see), and `doStick` runs immediately after `render` grows the DOM in that
- *  same frame, so the pin decision and the scroll it acts on are always the
- *  correct before/after pair regardless of how many calls got coalesced. */
-function makeFrameScheduler(render, shouldStick, doStick) {
-  let queued = false;
-  return function schedule() {
-    if (queued) return;
-    queued = true;
-    requestAnimationFrame(() => {
-      queued = false;
-      const stickAfter = shouldStick ? shouldStick() : false;
-      render();
-      if (stickAfter && doStick) doStick();
-    });
-  };
-}
-
-/** Render a step indicator into a container. names[], current index. */
-function renderSteps(container, names, cur) {
-  container.innerHTML = names.map((n, i) => {
-    const cls = i === cur ? "cur" : (i < cur ? "done" : "");
-    const arrow = i < names.length - 1 ? '<span class="arrow">→</span>' : "";
-    return '<span class="s ' + cls + '"><span class="n">' + (i + 1) + "</span>" + esc(n) + "</span>" + arrow;
-  }).join("");
-}
-
-/* ════════════════════════════════════════════════════════════════════
-   HUGGING FACE — shared token settings + push-to-hub flow
-   ════════════════════════════════════════════════════════════════════ */
-
-/** Reflect saved-token state on the nav gear. */
-async function refreshHfGear() {
-  try {
-    const d = await api("/api/settings/hf-token");
-    const saved = !!(d && d.ok && d.hasToken);
-    $("nav-hf").classList.toggle("saved", saved);
-    $("nav-hf").title = saved ? "Hugging Face token saved · click to replace" : "Hugging Face token settings";
-    return saved;
-  } catch { return false; }
-}
-
-/* — the nav settings modal — */
-let hfOverlayTrap = null; // set by initHfSettings() below
-function openHfSettings() {
-  const ov = $("hf-overlay"); ov.classList.add("open");
-  if (hfOverlayTrap) hfOverlayTrap.capture();
-  $("hf-token-input").value = ""; $("hf-settings-msg").innerHTML = "";
-  $("hf-state").textContent = "Checking for a saved token…";
-  api("/api/settings/hf-token").then((d) => {
-    const saved = !!(d && d.ok && d.hasToken);
-    $("hf-state").innerHTML = saved
-      ? 'A write token is <strong>saved</strong>. Enter a new one below to replace it.'
-      : 'No token saved yet. Add a write token to push models and datasets to the Hub.';
-  }).catch(() => { $("hf-state").textContent = "Could not reach the server."; });
-  setTimeout(() => $("hf-token-input").focus(), 50);
-}
-function closeHfSettings() {
-  $("hf-overlay").classList.remove("open");
-  if (hfOverlayTrap) hfOverlayTrap.restore();
-}
-
-async function saveHfToken() {
-  const token = $("hf-token-input").value.trim();
-  const msg = $("hf-settings-msg");
-  if (!token) { msg.innerHTML = '<div class="flash err">Enter a token first.</div>'; return; }
-  const btn = $("hf-save"); btn.disabled = true;
-  const d = await api("/api/settings/hf-token", { method: "POST", body: { token } }).catch(() => ({ ok: false, error: "request failed" }));
-  btn.disabled = false;
-  if (!d.ok) { msg.innerHTML = '<div class="flash err">' + esc(d.error || "could not save token") + "</div>"; return; }
-  msg.innerHTML = '<div class="flash ok">Token saved to <code>~/.mlx-bun/hf.json</code>.</div>';
-  $("hf-token-input").value = "";
-  refreshHfGear();
-  toast("Hugging Face token saved", "ok");
-}
-
-/**
- * Shared push-to-hub flow, rendered inline inside a done-step card.
- *   pushToHub(panelEl, { kind, job_id?, source_path? })
- * kind: "quantize" | "finetune" | "dataset". Posts to /api/{kind}/push.
- * Walks: ensure token → repo_id + private → POST → success/error flash.
- */
-async function pushToHub(panel, { kind, job_id, source_path }) {
-  panel.innerHTML = '<div class="pushpanel"><div class="flash"><span class="shimmer">checking Hugging Face token…</span></div></div>';
-  const wrap = panel.firstChild;
-  let hasToken = false;
-  try { const s = await api("/api/settings/hf-token"); hasToken = !!(s && s.ok && s.hasToken); } catch {}
-
-  const renderForm = () => {
-    wrap.innerHTML =
-      (!hasToken
-        ? '<div class="field"><label>Hugging Face write token</label>' +
-          '<input type="password" class="p-token" placeholder="hf_…" autocomplete="off" spellcheck="false">' +
-          '<div class="hint">A <strong>write</strong> token from huggingface.co/settings/tokens. Stored locally at <code>~/.mlx-bun/hf.json</code>.</div></div>'
-        : "") +
-      '<div class="field"><label>Repository id</label>' +
-        '<input type="text" class="p-repo" placeholder="you/my-' + esc(kind === "dataset" ? "dataset" : "model") + '" autocomplete="off"></div>' +
-      '<div class="field"><label class="chk"><input type="checkbox" class="p-priv">Private repository</label></div>' +
-      '<div class="p-msg"></div>' +
-      '<div class="btnrow" style="margin-top:6px"><button class="btn primary sm p-go">' +
-        (hasToken ? "Push" : "Save token &amp; push") + "</button></div>";
-    wrap.querySelector(".p-go").onclick = go;
-    const focusEl = wrap.querySelector(hasToken ? ".p-repo" : ".p-token");
-    if (focusEl) focusEl.focus();
-  };
-
-  async function go() {
-    const msg = wrap.querySelector(".p-msg");
-    const repo = (wrap.querySelector(".p-repo").value || "").trim();
-    const priv = wrap.querySelector(".p-priv").checked;
-    if (!repo) { msg.innerHTML = '<div class="flash err">Enter a repository id (e.g. <code>you/my-model</code>).</div>'; return; }
-    const btn = wrap.querySelector(".p-go"); btn.disabled = true;
-
-    if (!hasToken) {
-      const token = (wrap.querySelector(".p-token").value || "").trim();
-      if (!token) { msg.innerHTML = '<div class="flash err">Enter a write token first.</div>'; btn.disabled = false; return; }
-      const sv = await api("/api/settings/hf-token", { method: "POST", body: { token } }).catch(() => ({ ok: false, error: "request failed" }));
-      if (!sv.ok) { msg.innerHTML = '<div class="flash err">' + esc(sv.error || "could not save token") + "</div>"; btn.disabled = false; return; }
-      hasToken = true; refreshHfGear();
-    }
-
-    msg.innerHTML = '<div class="flash"><span class="shimmer">pushing to ' + esc(repo) + "…</span></div>";
-    const body = { repo_id: repo, private: priv };
-    if (job_id != null) body.job_id = job_id;
-    if (source_path != null) body.source_path = source_path;
-    const d = await api("/api/" + kind + "/push", { method: "POST", body }).catch(() => ({ ok: false, error: "request failed" }));
-    btn.disabled = false;
-    if (!d.ok) { msg.innerHTML = '<div class="flash err">' + esc(d.error || "push failed") + "</div>"; return; }
-    const url = d.url || ("https://huggingface.co/" + repo);
-    wrap.innerHTML = '<div class="flash ok">Pushed to <a href="' + esc(url) + '" target="_blank" rel="noopener" style="text-decoration:underline">' + esc(url) + "</a></div>";
-    toast("Pushed to Hugging Face", "ok");
-  }
-
-  renderForm();
-}
-
-/* wire the nav gear + modal once at boot */
-(function initHfSettings() {
-  $("nav-hf").onclick = openHfSettings;
-  $("hf-close").onclick = closeHfSettings;
-  $("hf-save").onclick = saveHfToken;
-  $("hf-overlay").addEventListener("click", (e) => { if (e.target === $("hf-overlay")) closeHfSettings(); });
-  $("hf-token-input").addEventListener("keydown", (e) => { if (e.key === "Enter") saveHfToken(); });
-  // Escape is handled globally by closeTopOverlay (plan §7 item 5 — one
-  // Escape mechanism for every popover/overlay, not a bespoke one per modal).
-  hfOverlayTrap = trapFocus($("hf-overlay"), () => $("hf-overlay").classList.contains("open"));
-  refreshHfGear();
-})();
-
-/* ════════════════════════════════════════════════════════════════════
-   POPOVER / OVERLAY A11Y SWEEP (plan §7 item 5)
-   A single reusable focus-trap: Tab/Shift+Tab cycle within the container
-   while `isOpen()` is true, and focus returns to whatever triggered the
-   overlay when it closes. Applied uniformly to the HF modal, the
-   shortcut sheet, the sampling popover, and the drawer — one mechanism,
-   not four bespoke ones.
-   ════════════════════════════════════════════════════════════════════ */
-function trapFocus(container, isOpen) {
-  let lastFocused = null;
-  const focusables = () => [...container.querySelectorAll(
-    'a[href],button:not([disabled]),textarea,input:not([disabled]),select,[tabindex]:not([tabindex="-1"])'
-  )].filter((el) => el.offsetParent !== null || el === document.activeElement);
-  container.addEventListener("keydown", (e) => {
-    if (e.key !== "Tab" || !isOpen()) return;
-    const items = focusables();
-    if (!items.length) return;
-    const first = items[0], last = items[items.length - 1];
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-  });
-  return {
-    /** Call right before opening: remembers the trigger to restore focus to. */
-    capture() { lastFocused = document.activeElement; },
-    /** Call right after closing. */
-    restore() { if (lastFocused && lastFocused.focus) lastFocused.focus(); lastFocused = null; },
-  };
-}
-
-/* ════════════════════════════════════════════════════════════════════
-   THEME (plan §7): auto/dark/light, persisted, honors prefers-color-scheme
-   when the choice is "auto" (the default). Ambient bloom/shimmer already
-   respect prefers-reduced-motion via CSS above — this only handles color.
-   ════════════════════════════════════════════════════════════════════ */
-const THEME_KEY = "mlxbun.theme"; // "auto" | "dark" | "light"
-const themeMedia = window.matchMedia("(prefers-color-scheme: light)");
-
-function effectiveTheme(choice) {
-  if (choice === "dark" || choice === "light") return choice;
-  return themeMedia.matches ? "light" : "dark";
-}
-function applyTheme(choice) {
-  document.documentElement.setAttribute("data-theme", effectiveTheme(choice));
-  document.querySelectorAll("#theme-toggle button").forEach((b) =>
-    b.classList.toggle("active", b.dataset.themeChoice === choice));
-}
-function setTheme(choice) {
-  localStorage.setItem(THEME_KEY, choice);
-  applyTheme(choice);
-}
-(function initTheme() {
-  const saved = localStorage.getItem(THEME_KEY) || "auto";
-  applyTheme(saved);
-  document.querySelectorAll("#theme-toggle button").forEach((b) =>
-    b.addEventListener("click", () => setTheme(b.dataset.themeChoice)));
-  // Live-follow the OS when the user's choice is "auto" (default).
-  themeMedia.addEventListener("change", () => {
-    if ((localStorage.getItem(THEME_KEY) || "auto") === "auto") applyTheme("auto");
-  });
-})();
-
-/* ════════════════════════════════════════════════════════════════════
-   KEYBOARD SHORTCUT SHEET (Cmd/Ctrl+/) + global bindings (plan §7)
-   ════════════════════════════════════════════════════════════════════ */
-const skTrap = trapFocus($("shortcut-overlay"), () => $("shortcut-overlay").classList.contains("open"));
-function openShortcutSheet() {
-  skTrap.capture();
-  $("shortcut-overlay").classList.add("open");
-  $("nav-shortcuts").setAttribute("aria-expanded", "true");
-  setTimeout(() => $("sk-close").focus(), 30);
-}
-function closeShortcutSheet() {
-  $("shortcut-overlay").classList.remove("open");
-  $("nav-shortcuts").setAttribute("aria-expanded", "false");
-  skTrap.restore();
-}
-(function initShortcutSheet() {
-  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
-  document.querySelectorAll("#sk-mod-label, .sk-mod").forEach((e) => { e.textContent = isMac ? "⌘" : "Ctrl"; });
-  $("nav-shortcuts").onclick = () => {
-    $("shortcut-overlay").classList.contains("open") ? closeShortcutSheet() : openShortcutSheet();
-  };
-  $("sk-close").onclick = closeShortcutSheet;
-  $("shortcut-overlay").addEventListener("click", (e) => { if (e.target === $("shortcut-overlay")) closeShortcutSheet(); });
-})();
-
-/* ════════════════════════════════════════════════════════════════════
-   MOBILE DRAWER (plan §5.7/§7/§9 Phase 1 item 1) — chat sidebar becomes a
-   slide-over on narrow viewports instead of vanishing outright. Chat-route
-   only: the hamburger button is CSS-hidden ≥760px and JS-hidden off /chat
-   (router() below), so open/close are only ever reachable when relevant.
-   ════════════════════════════════════════════════════════════════════ */
-const drawerTrap = trapFocus($("chat-sidebar"), () => $("chat-sidebar").classList.contains("drawer-open"));
-function openDrawer() {
-  drawerTrap.capture();
-  $("chat-sidebar").classList.add("drawer-open");
-  $("chat-drawer-backdrop").classList.add("open");
-  $("chat-hamburger").setAttribute("aria-expanded", "true");
-  setTimeout(() => { const s = $("chat-sess-search"); if (s) s.focus(); }, 30);
-}
-function closeDrawer() {
-  $("chat-sidebar").classList.remove("drawer-open");
-  $("chat-drawer-backdrop").classList.remove("open");
-  $("chat-hamburger").setAttribute("aria-expanded", "false");
-  drawerTrap.restore();
-}
-(function initDrawer() {
-  $("chat-hamburger").onclick = () => {
-    $("chat-sidebar").classList.contains("drawer-open") ? closeDrawer() : openDrawer();
-  };
-  $("chat-drawer-backdrop").addEventListener("click", closeDrawer);
-})();
-
-/** Any open popover/drawer/sheet this Escape binding knows how to close,
- *  checked in a fixed priority order (most-recently-opened-ish first).
- *  Returns true if it closed something, so callers can stop there. */
-function closeTopOverlay() {
-  if ($("shortcut-overlay").classList.contains("open")) { closeShortcutSheet(); return true; }
-  if ($("hf-overlay").classList.contains("open")) { closeHfSettings(); return true; }
-  const samplePop = $("chat-sampling-pop");
-  if (samplePop && samplePop.classList.contains("open") && samplingPopoverClose) { samplingPopoverClose(); return true; }
-  if ($("chat-sidebar").classList.contains("drawer-open")) { closeDrawer(); return true; }
-  return false;
-}
-
-document.addEventListener("keydown", (e) => {
-  const mod = e.metaKey || e.ctrlKey;
-  // Cmd/Ctrl+/ — shortcut sheet. Not a browser-reserved combo.
-  if (mod && e.key === "/") { e.preventDefault(); $("shortcut-overlay").classList.contains("open") ? closeShortcutSheet() : openShortcutSheet(); return; }
-  // Cmd/Ctrl+Shift+O — new chat. (Ctrl+Shift+O is free in every major
-  // browser; Cmd+Shift+O has no macOS Safari/Chrome reservation either.)
-  if (mod && e.shiftKey && (e.key === "O" || e.key === "o")) {
-    if (currentRoute() !== "chat") return; // no-op off the chat route
-    e.preventDefault();
-    controllers.chat.newChat && controllers.chat.newChat();
-    return;
-  }
-  // Cmd/Ctrl+Shift+C — copy last response. Reuses the wave-3 copy action.
-  if (mod && e.shiftKey && (e.key === "C" || e.key === "c")) {
-    if (currentRoute() !== "chat") return;
-    e.preventDefault();
-    controllers.chat.copyLastResponse && controllers.chat.copyLastResponse();
-    return;
-  }
-  // Shift+Escape — focus the composer (skipped while already typing
-  // somewhere else that isn't the composer, so it doesn't steal focus
-  // from e.g. the HF token field — but Escape's own overlay-close below
-  // still fires first via closeTopOverlay for the "any open thing" case).
-  if (e.shiftKey && e.key === "Escape") {
-    if (currentRoute() !== "chat") return;
-    e.preventDefault();
-    $("chat-box").focus();
-    return;
-  }
-  // Escape alone — close whatever overlay is open, with focus restored to
-  // its trigger. Never shadows a plain Escape when nothing is open (e.g.
-  // the composer's own Escape-to-cancel-edit keeps working, since
-  // closeTopOverlay simply returns false and this handler does nothing else).
-  if (e.key === "Escape" && !e.shiftKey && !mod) {
-    closeTopOverlay();
-  }
-});
-
-/* ════════════════════════════════════════════════════════════════════
-   ROUTER  — toggles section[data-route]; lazily inits each controller.
-   ════════════════════════════════════════════════════════════════════ */
-const ROUTES = ["chat", "quantize", "finetune", "dataset", "status", "routes"];
-const inited = {};
-const controllers = {}; // name -> { init, enter, leave }
-
-function currentRoute() {
-  const h = (location.hash || "").replace(/^#\/?/, "").split("?")[0];
-  return ROUTES.includes(h) ? h : "chat";
-}
-
-function router() {
-  const route = currentRoute();
-  document.querySelectorAll("section[data-route]").forEach((s) => {
-    const on = s.dataset.route === route;
-    if (on && !s.classList.contains("active")) {
-      s.classList.add("active");
-      const c = controllers[route];
-      if (c) { if (!inited[route]) { inited[route] = true; c.init && c.init(); } c.enter && c.enter(); }
-    } else if (!on && s.classList.contains("active")) {
-      s.classList.remove("active");
-      const c = controllers[s.dataset.route];
-      if (c && c.leave) c.leave();
-    }
-  });
-  document.querySelectorAll("nav .tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === route));
-  // dim the ambient bloom slightly in the chat workspace so text reads cleanly
-  $("bloom").style.opacity = route === "chat" ? "0.55" : "1";
-  // The mobile drawer hamburger only makes sense on /chat (it opens the
-  // recent-chats sidebar, which only exists there) — CSS already hides it
-  // ≥760px; this hides it off-route regardless of viewport width.
-  $("chat-hamburger").style.display = route === "chat" ? "" : "none";
-  if (route !== "chat") closeDrawer();
-}
-window.addEventListener("hashchange", router);
-
-/* Nav-tab scroll-edge fades (2026-07-06 jank fix): the tab row scrolls with
-   its scrollbar hidden, so overflow read as clipped/broken text. Toggle
-   .fade-r/.fade-l so the CSS mask signals "more this way" only when true. */
-function updateTabFades() {
-  const t = $("tabs");
-  const over = t.scrollWidth - t.clientWidth > 1;
-  t.classList.toggle("fade-r", over && t.scrollLeft + t.clientWidth < t.scrollWidth - 1);
-  t.classList.toggle("fade-l", over && t.scrollLeft > 1);
-}
-$("tabs").addEventListener("scroll", updateTabFades, { passive: true });
-window.addEventListener("resize", updateTabFades);
-updateTabFades();
-
-/* ════════════════════════════════════════════════════════════════════
-   GLOBAL CONNECTION PILL + MODEL ID  (polled lightly, always on)
-   ════════════════════════════════════════════════════════════════════ */
-let activeModelId = null;
-function setConn(state, text) {
-  const p = $("nav-conn");
-  p.className = "pill " + (state || "");
-  $("nav-conn-text").textContent = text;
-}
-let defaultHelloSub = null;
-async function pollIdentity() {
-  try {
-    const [models, dl] = await Promise.all([
-      fetch("/v1/models").then((r) => r.json()),
-      fetch("/downloads").then((r) => r.json()).catch(() => ({ downloads: [] })),
-    ]);
-    activeModelId = models.data && models.data[0] ? models.data[0].id : null;
-    $("nav-model").textContent = activeModelId || "no model";
-    setConn("ok", "live · localhost");
-    updateDownloadIndicator((dl && dl.downloads) || []);
-  } catch {
-    $("nav-model").textContent = "server unreachable";
-    setConn("bad", "unreachable — retrying");
-  }
-}
-
-/** Surface a background model download — the "bigger model arriving while you
- *  chat on the starter" case — as a live nav pill plus a download-aware
- *  greeting in the empty chat state. Hidden when nothing else is downloading. */
-function updateDownloadIndicator(downloads) {
-  const sub = $("chat-hello-sub");
-  if (sub && defaultHelloSub === null) defaultHelloSub = sub.textContent;
-  const incoming = downloads.find((d) => d.state === "active" && d.repoId !== activeModelId);
-  const pill = $("nav-download");
-  if (incoming) {
-    const pct = incoming.totalBytes ? Math.floor((incoming.receivedBytes / incoming.totalBytes) * 100) : 0;
-    const name = incoming.repoId.split("/").pop();
-    $("nav-download-text").textContent = "↓ " + name + " · " + pct + "%";
-    pill.style.display = "";
-    if (sub) sub.textContent = "You're on a small, fast starter model so you can chat right now — a more capable one (" + name + ") is downloading and takes over next launch. Ask me anything, or about mlx-bun itself.";
-  } else {
-    pill.style.display = "none";
-    if (sub && defaultHelloSub !== null) sub.textContent = defaultHelloSub;
-  }
-}
-
-/** Set by controllers.chat's initSampling() once the popover exists; let
- *  closeTopOverlay's global Escape sweep close it without a second,
- *  divergent Escape listener living inside the controller. */
-let samplingPopoverClose = null;
-
-/* ════════════════════════════════════════════════════════════════════
-   CHAT CONTROLLER  — full pi agent over WebSocket /ws/chat
-   ════════════════════════════════════════════════════════════════════ */
-controllers.chat = (() => {
-  let ws = null, connected = false, reconnectTimer = null, manualClose = false;
-  let curAssistant = null;      // { bubble, cursor, meta, tools:Map, text, t0, tFirst, tokens }
-  let turnActive = false;
-  // This connection's active session path (from `sessions` frames). Each
-  // connect gets a fresh server session; on a transient reconnect we re-open
-  // our own session so a blip doesn't strand us on a blank one.
-  let currentSessionPath = null, pendingResumePath = null;
-  const thread = () => $("chat-thread");
-
-  function wsUrl() {
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    return proto + "//" + location.host + "/ws/chat";
-  }
-
-  function connect() {
-    manualClose = false;
-    // Remember our session across this (re)connect: if we were already in a
-    // session, re-open it once the new connection is ready (the server starts
-    // each connection on a fresh session by default).
-    pendingResumePath = currentSessionPath;
-    try { ws = new WebSocket(wsUrl()); } catch { scheduleReconnect(); return; }
-    ws.onopen = () => { connected = true; setChatStatus("connected"); };
-    ws.onclose = () => { connected = false; setChatStatus("disconnected"); if (!manualClose) scheduleReconnect(); };
-    ws.onerror = () => { setChatStatus("error"); };
-    ws.onmessage = (ev) => { let m; try { m = JSON.parse(ev.data); } catch { return; } handle(m); };
-  }
-  function scheduleReconnect() {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(() => { if (currentRoute() === "chat") connect(); }, 2200);
-  }
-  function send(obj) { if (ws && ws.readyState === 1) { ws.send(JSON.stringify(obj)); return true; } return false; }
-
-  function setChatStatus(s) {
-    const line = $("chat-status-line");
-    if (s === "connected") line.textContent = "connected · type to send · Shift+Enter for newline";
-    else if (s === "disconnected") line.textContent = "reconnecting to agent…";
-    else if (s === "error") line.textContent = "connection error — retrying";
-  }
-
-  /* — message actions: copy / regenerate / edit-and-resend (plan §5.2) —
-   *  Only the LAST assistant message gets "regenerate" and only the LAST
-   *  user message gets "edit" + the sibling `< i/n >` toggle. Both "last"
-   *  pointers are tracked module-side and re-derived whenever a `history`
-   *  frame rebuilds #chat-thread wholesale (see renderHistory/endTurn below).
-   *  Regenerate/edit-resend re-prompt on a new sibling branch WITHOUT a
-   *  `history` frame (resendFrom in pi-web.ts), so their click handlers below
-   *  drop the stale lastAssistantMsgEl (and, for edit, update the surviving
-   *  user bubble's text) themselves before the new reply streams in. */
-  let lastUserMsgEl = null;   // the <div class="msg user"> for the last user message
-  let lastUserEntryId = null; // its session entryId (from history/siblings frames)
-  let siblingInfo = { entryId: null, index: 0, count: 0, siblingIds: [] };
-  let lastAssistantMsgEl = null; // the <div class="msg assistant"> eligible for regenerate
-
-  /** Append a hover/focus action row to a message element. `text` is the
-   *  RAW SOURCE (markdown for assistant, plain for user) — never innerHTML —
-   *  so Copy puts back exactly what the model said / the user typed. */
-  function addMsgActions(m, text, opts) {
-    opts = opts || {};
-    const row = el("div", "msg-actions", m);
-    const copyBtn = el("button", "maction", row);
-    copyBtn.type = "button"; copyBtn.textContent = "Copy";
-    copyBtn.addEventListener("click", () => {
-      if (!navigator.clipboard) return;
-      navigator.clipboard.writeText(text || "").then(() => {
-        copyBtn.textContent = "Copied"; setTimeout(() => { copyBtn.textContent = "Copy"; }, 1200);
-      }).catch(() => {});
-    });
-    if (opts.regenerate) {
-      const btn = el("button", "maction", row);
-      btn.type = "button"; btn.textContent = "Regenerate";
-      btn.title = "Re-run this reply (keeps the old one on disk as a branch)";
-      btn.addEventListener("click", () => {
-        if (turnActive) return;
-        if (!send({ type: "regenerate" })) { toast("Not connected to the agent yet.", "err"); return; }
-        // The server re-prompts on a new sibling branch — it does not send a
-        // `history` frame for this (see resendFrom in pi-web.ts), so the old
-        // reply would otherwise linger above the new one as it streams in.
-        // Drop it now; startAssistant() appends the fresh reply right after.
-        if (lastAssistantMsgEl) { lastAssistantMsgEl.remove(); lastAssistantMsgEl = null; }
-      });
-    }
-    if (opts.edit) {
-      const btn = el("button", "maction", row);
-      btn.type = "button"; btn.textContent = "Edit";
-      btn.title = "Edit and resend — keeps the original as a numbered branch";
-      btn.addEventListener("click", () => startEditLast(m));
-    }
-    return row;
-  }
-
-  /** Render (or clear) the `< i/n >` sibling toggle above the last user
-   *  message. Rebuilt whenever a `siblings` frame arrives or the thread is
-   *  rebuilt. Hidden entirely when count <= 1 (the common no-edits case). */
-  function renderSiblingToggle() {
-    if (!lastUserMsgEl) return;
-    let box = lastUserMsgEl.querySelector(".sib-toggle");
-    if (siblingInfo.count <= 1 || siblingInfo.entryId !== lastUserEntryId) {
-      if (box) box.remove();
-      return;
-    }
-    if (!box) {
-      box = el("div", "sib-toggle", null);
-      lastUserMsgEl.insertBefore(box, lastUserMsgEl.firstChild);
-    }
-    const { index, count } = siblingInfo;
-    box.innerHTML =
-      '<button class="sib-prev" type="button" ' + (index <= 1 ? "disabled" : "") + '>&lt;</button>' +
-      '<span>' + index + '/' + count + '</span>' +
-      '<button class="sib-next" type="button" ' + (index >= count ? "disabled" : "") + '>&gt;</button>';
-    box.querySelector(".sib-prev").onclick = () => switchSiblingDir(-1);
-    box.querySelector(".sib-next").onclick = () => switchSiblingDir(1);
-  }
-  function switchSiblingDir(delta) {
-    // siblingInfo.siblingIds is the full ordered group from the server's
-    // `siblings` frame (never inferred client-side); index is 1-based.
-    const ids = siblingInfo.siblingIds || [];
-    const target = ids[siblingInfo.index - 1 + delta];
-    if (!target) return;
-    send({ type: "switch_sibling", entryId: target });
-  }
-
-  /** Turn the last user message bubble into an inline editor. Cancel restores
-   *  the original text view; Send fires edit_resend, updates the surviving
-   *  user bubble to the edited text in place, and drops the stale assistant
-   *  reply — the server re-prompts on a new sibling branch without sending a
-   *  `history` frame (see resendFrom in pi-web.ts), so the old reply/text
-   *  would otherwise linger next to the new one as it streams in. */
-  function startEditLast(m) {
-    if (turnActive) return;
-    const bubble = m.querySelector(".bubble");
-    const textEl = bubble.querySelector(".msg-text");
-    if (!textEl) return;
-    const original = textEl.textContent;
-    const box = document.createElement("textarea");
-    box.className = "msg-edit-box";
-    box.value = original;
-    const actions = el("div", "msg-edit-actions", null);
-    const cancelBtn = el("button", "btn ghost sm", actions);
-    cancelBtn.type = "button"; cancelBtn.textContent = "Cancel";
-    const sendBtn = el("button", "btn primary sm", actions);
-    sendBtn.type = "button"; sendBtn.textContent = "Send";
-    textEl.replaceWith(box);
-    box.after(actions);
-    box.focus(); box.setSelectionRange(box.value.length, box.value.length);
-    const restore = () => { box.replaceWith(textEl); actions.remove(); };
-    cancelBtn.onclick = restore;
-    sendBtn.onclick = () => {
-      const text = box.value.trim();
-      if (!text) return;
-      if (!send({ type: "edit_resend", text })) { toast("Not connected to the agent yet.", "err"); return; }
-      textEl.textContent = text;
-      box.replaceWith(textEl); actions.remove();
-      if (lastAssistantMsgEl) { lastAssistantMsgEl.remove(); lastAssistantMsgEl = null; }
-    };
-    box.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") { e.preventDefault(); restore(); }
-      else if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendBtn.onclick(); }
-    });
-  }
-
-  /* — message + tool DOM construction — */
-  function addUserMsg(text, atts, opts) {
-    opts = opts || {};
-    const m = el("div", "msg user", thread());
-    el("div", "who", m).textContent = "you";
-    const bubble = el("div", "bubble", m);
-    if (atts && atts.length) {
-      const wrap = el("div", "msg-atts", bubble);
-      for (const a of atts) {
-        if (a.kind === "image") {
-          const im = el("img", "msg-att-img", wrap);
-          im.src = "data:" + a.mimeType + ";base64," + a.data; im.alt = a.name;
-        } else {
-          el("span", "msg-att-file", wrap).textContent = "📎 " + a.name;
-        }
-      }
-    }
-    if (text) el("div", "msg-text", bubble).textContent = text;
-    if (opts.isLast) {
-      lastUserMsgEl = m;
-      lastUserEntryId = opts.entryId || null;
-      addMsgActions(m, text, { edit: true });
-      renderSiblingToggle();
-    }
-    stick(true);
-  }
-  function startAssistant() {
-    $("chat-hello").style.display = "none";
-    const m = el("div", "msg assistant", thread());
-    el("div", "who", m).textContent = "local agent";
-    const bubble = el("div", "bubble", m);
-    const thinkBox = el("details", "thinkbox", bubble);
-    thinkBox.open = false; // collapsed by default; the reasoning stays tucked behind "Thinking" — click to expand
-    el("summary", "", thinkBox).textContent = "Thinking";
-    const thinkBody = el("div", "thinkbody", thinkBox);
-    thinkBox.style.display = "none";
-    const textNode = el("span", "atext", bubble);
-    const cursor = el("span", "cursor", bubble);
-    const meta = el("div", "meta", m);
-    curAssistant = {
-      m, bubble, thinkBox, thinkBody, textNode, cursor, meta, tools: new Map(),
-      text: "", thinking: "", t0: performance.now(), tFirst: 0, tokens: 0,
-      // Block-memoization state (see renderBlocksIncremental) for the main
-      // markdown text stream, plus a shared rAF scheduler so a burst of
-      // deltas within one frame (e.g. spec-decode emitting several tokens
-      // back-to-back) collapses into a single re-render instead of one per
-      // token. The thinking channel is plain text (no markdown — see
-      // appendThinkingDelta), so it only needs the textContent set
-      // throttled, not block splitting; it gets its own scheduler since
-      // both channels can stream concurrently (interleaved thinking/text).
-      blockState: { blocks: [] },
-    };
-    curAssistant.scheduleText = makeFrameScheduler(
-      () => renderBlocksIncremental(curAssistant.textNode, curAssistant.text, curAssistant.blockState),
-      atBottom, stick);
-    curAssistant.scheduleThinking = makeFrameScheduler(
-      () => { curAssistant.thinkBody.textContent = curAssistant.thinking; },
-      atBottom, stick);
-    stick(true);
-  }
-  function ensureAssistant() { if (!curAssistant) startAssistant(); }
-
-  function appendDelta(delta) {
-    ensureAssistant();
-    const a = curAssistant;
-    if (!a.tFirst) a.tFirst = performance.now();
-    a.tokens++;
-    a.text += delta;
-    // Block-memoized + rAF-throttled render (see renderBlocksIncremental):
-    // only the live tail block re-parses per delta; completed blocks are
-    // never touched again. A final full mdToHtml pass runs at turn-end
-    // (finishStreaming) to guarantee the streamed result is byte-identical
-    // to a non-streaming render. Autoscroll is handled INSIDE the scheduler
-    // (its shouldStick/doStick args) — not here — because the render itself
-    // is rAF-deferred: checking atBottom() synchronously at this point would
-    // measure scrollHeight from before the queued render grows it, which
-    // desyncs autoscroll once several deltas land within one frame.
-    a.scheduleText();
-    updateTps();
-  }
-  function appendThinkingDelta(delta) {
-    ensureAssistant();
-    const a = curAssistant;
-    if (!a.tFirst) a.tFirst = performance.now();
-    a.tokens++;
-    a.thinking += delta;
-    a.thinkBox.style.display = a.thinking.trim() ? "" : "none";
-    // Plain text (no markdown here), but still rAF-throttled: a long
-    // thinking trace can otherwise do one textContent-set per token.
-    // Autoscroll: see the comment in appendDelta above — handled inside the
-    // scheduler, not with a synchronous atBottom() check here.
-    a.scheduleThinking();
-    updateTps();
-  }
-
-  /* tool card lifecycle */
-  function toolCard(callId, tool, args) {
-    ensureAssistant();
-    const a = curAssistant;
-    let t = a.tools.get(callId);
-    if (t) return t;
-    const wrap = el("div", "tool running open", a.bubble);
-    wrap.innerHTML =
-      '<div class="thead"><div class="ticon">⚙</div>' +
-      '<span class="tname">' + esc(tool || "tool") + '</span>' +
-      '<span class="targs">' + esc(argSummary(args)) + '</span>' +
-      '<span class="tstat"><span class="sdot"></span><span class="slabel">running</span></span>' +
-      '<span class="caret">›</span></div>' +
-      '<div class="tbody">' +
-        '<div class="blk"><div class="blbl">arguments</div><pre class="aargs">' + esc(prettyArgs(args)) + '</pre></div>' +
-        '<div class="blk tresult" style="display:none"><div class="blbl">result</div><pre class="ares"></pre></div>' +
-      '</div>';
-    wrap.querySelector(".thead").addEventListener("click", () => wrap.classList.toggle("open"));
-    t = { wrap, res: wrap.querySelector(".ares"), resBlk: wrap.querySelector(".tresult"), label: wrap.querySelector(".slabel"), chunks: "" };
-    a.tools.set(callId, t);
-    stick();
-    return t;
-  }
-  function toolUpdate(callId, chunk) {
-    const t = curAssistant && curAssistant.tools.get(callId);
-    if (!t) return;
-    t.chunks += chunk;
-    t.resBlk.style.display = "";
-    t.res.textContent = t.chunks.slice(-8000);
-    if (atBottom()) stick();
-  }
-  function toolEnd(callId, ok, result) {
-    const t = curAssistant && curAssistant.tools.get(callId);
-    if (!t) return;
-    t.wrap.classList.remove("running");
-    t.wrap.classList.add(ok ? "ok" : "fail");
-    t.label.textContent = ok ? "done" : "failed";
-    const body = result != null ? (typeof result === "string" ? result : JSON.stringify(result, null, 2)) : t.chunks;
-    if (body) { t.resBlk.style.display = ""; t.res.textContent = String(body).slice(-12000); }
-    if (!ok) t.wrap.classList.add("open");
-  }
-
-  /* approval dialog */
-  function approvalCard(callId, tool, args) {
-    ensureAssistant();
-    const a = curAssistant;
-    const wrap = el("div", "approval", a.bubble);
-    const isBash = /bash|shell|exec|run/i.test(tool || "");
-    const isEdit = /edit|write|patch|create/i.test(tool || "");
-    let preview;
-    if (isBash) {
-      preview = '<pre>' + esc(args && (args.command || args.cmd || args.script) || prettyArgs(args)) + '</pre>';
-    } else if (isEdit) {
-      preview = '<pre>' + diffView(args) + '</pre>';
-    } else {
-      preview = '<pre>' + esc(prettyArgs(args)) + '</pre>';
-    }
-    wrap.innerHTML =
-      '<div class="ahead"><div class="ai">⚠</div><div class="at">Approval required</div>' +
-      '<div class="as">' + esc(tool || "tool") + '</div></div>' +
-      '<div class="abody"><div class="blbl" style="margin-bottom:7px">' +
-        (isBash ? "command" : isEdit ? "proposed change" : "arguments") + '</div>' + preview + '</div>' +
-      '<div class="actions">' +
-        '<button class="btn ghost sm a-deny">Deny</button>' +
-        '<button class="btn primary sm a-allow">Allow</button></div>';
-    const resolve = (decision) => {
-      send({ type: "approval", callId, decision });
-      wrap.querySelector(".actions").remove();
-      const r = el("div", "resolved " + (decision === "allow" ? "allow" : "deny"), wrap);
-      r.textContent = decision === "allow" ? "✓ allowed" : "✕ denied";
-    };
-    wrap.querySelector(".a-allow").onclick = () => resolve("allow");
-    wrap.querySelector(".a-deny").onclick = () => resolve("deny");
-    stick(true);
-  }
-  function diffView(args) {
-    // Best-effort diff-ish view for edit/write tools.
-    if (!args) return "";
-    if (args.old_string != null || args.new_string != null) {
-      const o = String(args.old_string ?? "").split("\n").map((l) => '<span class="diffdel">- ' + esc(l) + "</span>").join("\n");
-      const n = String(args.new_string ?? "").split("\n").map((l) => '<span class="diffadd">+ ' + esc(l) + "</span>").join("\n");
-      return (args.file_path ? esc(args.file_path) + "\n\n" : "") + o + (o && n ? "\n" : "") + n;
-    }
-    if (args.content != null) {
-      return (args.file_path ? esc(args.file_path) + "\n\n" : "") +
-        String(args.content).split("\n").map((l) => '<span class="diffadd">+ ' + esc(l) + "</span>").join("\n");
-    }
-    return esc(prettyArgs(args));
-  }
-  function argSummary(args) {
-    if (!args) return "";
-    if (typeof args === "string") return args.slice(0, 120);
-    if (args.command || args.cmd) return String(args.command || args.cmd).slice(0, 120);
-    if (args.file_path || args.path) return String(args.file_path || args.path).slice(0, 120);
-    if (args.query || args.url || args.location) return String(args.query || args.url || args.location).slice(0, 120);
-    const s = JSON.stringify(args); return s.length > 120 ? s.slice(0, 117) + "…" : s;
-  }
-  function prettyArgs(args) {
-    if (args == null) return "";
-    if (typeof args === "string") return args;
-    try { return JSON.stringify(args, null, 2); } catch { return String(args); }
-  }
-
-  function showAgentError(message) {
-    const m = el("div", "msg assistant", thread());
-    el("div", "who", m).textContent = "local agent";
-    const bubble = el("div", "bubble", m);
-    bubble.innerHTML = '<strong style="color:var(--red)">Agent error</strong><br>' + esc(message || "unknown error");
-    stick(true);
-  }
-
-  /** Turn-end finalization for the streamed text channel: replace the
-   *  block-memoized incremental render with ONE full non-memoized
-   *  mdToHtml(fullText) pass. This is the acceptance test for block
-   *  memoization — whatever the incremental path did while streaming,
-   *  the final DOM must match exactly what a plain, non-streaming
-   *  render of the same text would have produced. Cheap (happens once
-   *  per turn, not per token) and removes any residual "done" block
-   *  wrappers so the settled message's markup matches replayed history
-   *  (renderAssistantStatic / renderHistory), which also call mdToHtml
-   *  directly on the full string. */
-  function finishStreaming(a) {
-    if (!a) return;
-    a.textNode.innerHTML = mdToHtml(a.text);
-    highlightIn(a.textNode);
-    a.thinkBody.textContent = a.thinking;
-  }
-
-  /** Demote the previously-"last" assistant message: only ONE message ever
-   *  shows Regenerate (plan §5.2 scopes it to the last assistant turn). */
-  function clearRegenerateAffordance() {
-    if (!lastAssistantMsgEl) return;
-    const row = lastAssistantMsgEl.querySelector(".msg-actions");
-    const btn = row && [...row.querySelectorAll(".maction")].find((b) => b.textContent === "Regenerate");
-    if (btn) btn.remove();
-  }
-
-  function endTurn() {
-    turnActive = false;
-    if (curAssistant) {
-      finishStreaming(curAssistant);
-      curAssistant.cursor.remove();
-      if (!curAssistant.text && !curAssistant.thinking && curAssistant.tools.size === 0) {
-        curAssistant.m.remove();
-      } else {
-        // A settled assistant reply becomes the new regenerate target.
-        // Works after abort/stop too — a partial reply still gets the
-        // action row, and the server resolves regenerate from the session's
-        // last user message regardless of whether this reply finished.
-        clearRegenerateAffordance();
-        addMsgActions(curAssistant.m, curAssistant.text, { regenerate: true });
-        lastAssistantMsgEl = curAssistant.m;
-      }
-    }
-    curAssistant = null;
-    $("chat-send").disabled = false;
-    $("chat-stop").style.display = "none";
-    renderQueue({});
-  }
-
-  // Perf strip (plan §5.2/§6.4): tok/s + TTFT update live during streaming;
-  // context-fill is driven separately by the `context` frame (renderContext).
-  // All client-computed from data the composer already has — the lane badge
-  // is the only server-driven field (see renderLane / the turn_end handler).
-  function updateTps() {
-    const a = curAssistant; if (!a) return;
-    const secs = (performance.now() - (a.tFirst || a.t0)) / 1000;
-    if (a.tokens > 1 && secs > 0) {
-      const tps = $("pf-tps"); if (tps) tps.innerHTML = "<b style='color:var(--green)'>" + (a.tokens / secs).toFixed(1) + " tok/s</b>";
-    }
-    if (a.tFirst) {
-      const ttft = $("pf-ttft"); if (ttft) ttft.textContent = "TTFT " + Math.round(a.tFirst - a.t0) + "ms";
-    }
-  }
-  function finalizeMeta() {
-    const a = curAssistant; if (!a) return;
-    const secs = (performance.now() - (a.tFirst || a.t0)) / 1000;
-    if (a.tokens > 1 && secs > 0)
-      a.meta.innerHTML = "<b>" + (a.tokens / secs).toFixed(1) + " tok/s</b> · " + a.tokens +
-        " tokens · first token " + Math.round((a.tFirst - a.t0)) + "ms";
-  }
-  // Lane badge (plan §5.2/§6.4, risk #5): server-driven only, from the
-  // turn_end frame's optional `lane` field (src/serve/lane-registry.ts +
-  // pi-web.ts). Absent on turns that never resolved a lane (aborted before
-  // any model call) — the badge just stays hidden rather than guessing.
-  const LANE_LABEL = { serial: "serial", "serial+spec": "spec-decode active", batched: "batched" };
-  const LANE_CLASS = { serial: "serial", "serial+spec": "spec", batched: "batched" };
-  function renderLane(lane) {
-    const el = $("pf-lane"), label = $("pf-lane-label");
-    if (!el || !label) return;
-    if (!lane) { el.style.display = "none"; return; }
-    el.className = "pf-lane " + (LANE_CLASS[lane] || "");
-    label.textContent = LANE_LABEL[lane] || lane;
-    el.style.display = "inline-flex";
-  }
-
-  function renderQueue(q) {
-    const bar = $("chat-queue");
-    const parts = [];
-    // steering/followUp are arrays (pi-web queue_update) — an empty array is
-    // truthy, so gate on .length; show the latest steering note and one pill
-    // per queued follow-up.
-    const steering = q.steering || [];
-    if (steering.length) parts.push('<span class="qtag">steering: <b>' + esc(String(steering[steering.length - 1]).slice(0, 60)) + "</b></span>");
-    for (const f of q.followUp || []) parts.push('<span class="qtag">queued: <b>' + esc(String(f).slice(0, 60)) + "</b></span>");
-    bar.innerHTML = parts.join("");
-    bar.style.display = parts.length ? "flex" : "none";
-  }
-
-  /* — context-window indicator — */
-  function fmtTok(n) {
-    if (n == null) return "—";
-    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
-    if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k";
-    return String(n);
-  }
-  function renderContext(m) {
-    const node = $("pf-fill");
-    if (!node || !m.contextWindow) return;
-    const pct = m.percent;
-    const pctStr = pct == null ? "" : " (" + Math.round(pct) + "%)";
-    node.textContent = "ctx " + fmtTok(m.tokens) + "/" + fmtTok(m.contextWindow) + pctStr;
-    node.style.color = pct == null ? "var(--dimmer)" : pct >= 85 ? "var(--orange)" : pct >= 70 ? "var(--yellow)" : "var(--dimmer)";
-  }
-
-  /* — recent-chats sidebar + transcript replay — */
-  function relTime(ms) {
-    if (!ms) return "";
-    const s = (Date.now() - ms) / 1000;
-    if (s < 60) return "just now";
-    if (s < 3600) return Math.floor(s / 60) + "m ago";
-    if (s < 86400) return Math.floor(s / 3600) + "h ago";
-    if (s < 604800) return Math.floor(s / 86400) + "d ago";
-    try { return new Date(ms).toLocaleDateString(); } catch { return ""; }
-  }
-
-  function newChat() {
-    if (!send({ type: "new_session" })) { toast("Not connected to the agent yet.", "err"); return; }
-    $("chat-box").focus();
-    closeDrawer(); // a fresh chat is the natural "I'm done browsing" signal on mobile
-  }
-
-  // Kept so the session-search filter (plan §5.7/§9 Phase 1 item 4) can
-  // re-apply itself after every `sessions` frame without the server
-  // knowing search exists at all — trivial, local, title-only substring
-  // match (SessionListItem carries no preview text today).
-  let lastSessionItems = [];
-  function renderSessions(items, activePath) {
-    lastSessionItems = items || [];
-    const box = $("chat-sessions");
-    if (!items || !items.length) { box.innerHTML = '<div class="sessempty">No saved chats yet. Your conversations are saved locally here.</div>'; return; }
-    box.innerHTML = "";
-    for (const s of items) {
-      const row = el("div", "sess" + (s.path === activePath ? " active" : ""), box);
-      row.dataset.title = (s.title || "New chat").toLowerCase();
-      row.innerHTML =
-        '<div class="stitle">' + esc(s.title || "New chat") + '</div>' +
-        '<div class="smeta"><span>' + esc(relTime(s.modified)) + '</span>' +
-          (s.messageCount ? '<span>· ' + s.messageCount + ' msg' + (s.messageCount === 1 ? '' : 's') + '</span>' : '') +
-          (s.forked ? '<span>· forked</span>' : '') + '</div>' +
-        '<button class="sbtn sfork" title="New chat from here">⑂</button>' +
-        '<button class="sbtn sdel" title="Delete chat">✕</button>';
-      row.addEventListener("click", () => { send({ type: "open_session", path: s.path }); closeDrawer(); });
-      row.querySelector(".sfork").addEventListener("click", (e) => { e.stopPropagation(); send({ type: "fork_session", path: s.path }); });
-      row.querySelector(".sdel").addEventListener("click", (e) => { e.stopPropagation(); send({ type: "delete_session", path: s.path }); });
-    }
-    applySessSearch();
-  }
-
-  /** Client-side substring filter over session titles (no server round
-   *  trip). Re-applied after every re-render since #chat-sessions is
-   *  rebuilt wholesale on each `sessions` frame. */
-  function applySessSearch() {
-    const input = $("chat-sess-search");
-    const q = input ? input.value.trim().toLowerCase() : "";
-    const rows = $("chat-sessions").querySelectorAll(".sess");
-    let anyVisible = false;
-    rows.forEach((row) => {
-      const match = !q || (row.dataset.title || "").includes(q);
-      row.classList.toggle("sess-hidden", !match);
-      if (match) anyVisible = true;
-    });
-    let empty = $("chat-sessions").querySelector(".sess-search-empty");
-    if (q && !anyVisible && lastSessionItems.length) {
-      if (!empty) { empty = el("div", "sessempty sess-search-empty", $("chat-sessions")); }
-      empty.textContent = "No chats match “" + q + "”.";
-    } else if (empty) {
-      empty.remove();
-    }
-  }
-
-  /** Render a finished assistant turn from replayed history (no streaming).
-   *  `opts.isLast` attaches the Regenerate action (plan §5.2: last turn only). */
-  function renderAssistantStatic(item, opts) {
-    opts = opts || {};
-    const m = el("div", "msg assistant", thread());
-    el("div", "who", m).textContent = "local agent";
-    const bubble = el("div", "bubble", m);
-    if (item.thinking && item.thinking.trim()) {
-      const tb = el("details", "thinkbox", bubble); tb.open = false;
-      el("summary", "", tb).textContent = "Thinking";
-      el("div", "thinkbody", tb).textContent = item.thinking;
-    }
-    if (item.text) { const tn = el("span", "atext", bubble); tn.innerHTML = mdToHtml(item.text); highlightIn(tn); }
-    for (const t of (item.tools || [])) {
-      const wrap = el("div", "tool ok", bubble);   // collapsed; click to expand
-      wrap.innerHTML =
-        '<div class="thead"><div class="ticon">⚙</div>' +
-        '<span class="tname">' + esc(t.name || "tool") + '</span>' +
-        '<span class="targs">' + esc(argSummary(t.args)) + '</span>' +
-        '<span class="tstat"><span class="sdot"></span><span class="slabel">done</span></span>' +
-        '<span class="caret">›</span></div>' +
-        '<div class="tbody">' +
-          '<div class="blk"><div class="blbl">arguments</div><pre class="aargs">' + esc(prettyArgs(t.args)) + '</pre></div>' +
-          (t.result ? '<div class="blk tresult"><div class="blbl">result</div><pre class="ares">' + esc(String(t.result).slice(-12000)) + '</pre></div>' : '') +
-        '</div>';
-      wrap.querySelector(".thead").addEventListener("click", () => wrap.classList.toggle("open"));
-    }
-    if (item.text) {
-      addMsgActions(m, item.text, { regenerate: !!opts.isLast });
-      if (opts.isLast) lastAssistantMsgEl = m;
-    }
-  }
-
-  /** Authoritative thread rebuild from a server `history` frame. */
-  function renderHistory(items) {
-    turnActive = false;
-    curAssistant = null;
-    $("chat-send").disabled = false;
-    $("chat-stop").style.display = "none";
-    renderQueue({});
-    thread().innerHTML = "";
-    lastUserMsgEl = null; lastAssistantMsgEl = null;
-    if (!items || !items.length) { $("chat-hello").style.display = ""; return; }
-    $("chat-hello").style.display = "none";
-    const lastUserIdx = items.map((it) => it.role).lastIndexOf("user");
-    const lastAssistantIdx = items.map((it) => it.role).lastIndexOf("assistant");
-    items.forEach((it, i) => {
-      if (it.role === "user") addUserMsg(it.text, null, { isLast: i === lastUserIdx, entryId: it.entryId });
-      else renderAssistantStatic(it, { isLast: i === lastAssistantIdx });
-    });
-    stick(true);
-  }
-
-  /* — server → client dispatch — */
-  function handle(m) {
-    switch (m.type) {
-      case "ready":
-        $("nav-model").textContent = m.model || activeModelId || "no model"; activeModelId = m.model || activeModelId;
-        visionCapable = !!m.vision; updateAttachHint();
-        thinkingCapable = !!m.thinking; updateThinkingToggle();
-        // Per-model recommended sampling (generation_config.json, server-CLI
-        // overrides applied) — replaces the old hardcoded SAMP_REC shape.
-        genDefaults = m.genDefaults || { temperature: null, topP: null, topK: null };
-        refreshSamplingRecs();
-        if (thinkingCapable) send({ type: "set_thinking", enabled: thinkingOn });
-        refreshAdapters();
-        // Reconnect: re-open the session we were in (fresh load has none).
-        if (pendingResumePath) { send({ type: "open_session", path: pendingResumePath }); pendingResumePath = null; }
-        break;
-      case "history": renderHistory(m.items); break;
-      case "sessions": currentSessionPath = m.activePath || null; renderSessions(m.items, m.activePath); break;
-      case "context": renderContext(m); break;
-      // Sibling group for the last user message (edit-and-resend's `< i/n >`
-      // toggle, plan §5.2) — see renderSiblingToggle/switchSiblingDir.
-      case "siblings":
-        siblingInfo = { entryId: m.entryId || null, index: m.index, count: m.count, siblingIds: m.siblingIds || [] };
-        lastUserEntryId = siblingInfo.entryId;
-        renderSiblingToggle();
-        break;
-      case "turn_start": turnActive = true; startAssistant(); $("chat-send").disabled = true; $("chat-stop").style.display = "block"; break;
-      case "text_delta": appendDelta(m.delta || ""); break;
-      case "thinking_delta": appendThinkingDelta(m.delta || ""); break;
-      case "tool_start": toolCard(m.callId, m.tool, m.args); break;
-      case "tool_approval_request": approvalCard(m.callId, m.tool, m.args); break;
-      case "tool_update": toolUpdate(m.callId, m.chunk || ""); break;
-      case "tool_end": toolEnd(m.callId, m.ok, m.result); break;
-      case "turn_end": finalizeMeta(); renderLane(m.lane); endTurn(); break;
-      case "queue_update": renderQueue(m); break;
-      case "error": showAgentError(m.message || "agent error"); toast(m.message || "agent error", "err"); if (turnActive) endTurn(); break;
-    }
-  }
-
-  /* — composer — */
-  /* — attachments (files + images) — */
-  let attachments = [];       // { id, kind:"image"|"text", name, mimeType, data, text, truncated }
-  let visionCapable = false;  // from the `ready` frame; gates image attachments
-  let thinkingCapable = false; // from `ready`; gates the reasoning toggle
-  let thinkingOn = true;       // default on: with tools (read/web_search) the reasoning step gives the small model far better tool judgment (answers math/writing itself, only searches when needed). The thinking box defaults collapsed. Users can toggle it off.
-  // Per-request sampling. Each field is either a user override (a number) or
-  // null = "use the recommended default" (resolved server-side). Recommended
-  // values come from the `ready` frame's genDefaults (per-model, sourced from
-  // generation_config.json server-side) — replacing the old hardcoded
-  // MiniCPM5-shaped SAMP_REC (web-ui-pass-plan.md #14). Temperature's
-  // recommendation additionally tracks the thinking toggle when the model's
-  // own genDefaults didn't specify one (mirrors server toOptions' fallback).
-  // Fields with no meaningful "recommended" number (penalties, XTC, seed) show
-  // "off" when unset — there's no dimmed live value to track for those.
-  const sampling = {
-    temperature: null, top_p: null, top_k: null, min_p: null,
-    xtc_probability: null, xtc_threshold: null, repetition_penalty: null,
-    repetition_context_size: null, presence_penalty: null, frequency_penalty: null,
-    seed: null,
-  };
-  // Populated from the `ready` frame (ReadyGenDefaults); null entries fall
-  // back to the built-in constants below until a ready frame arrives.
-  let genDefaults = { temperature: null, topP: null, topK: null };
-  function recTemp() { return genDefaults.temperature != null ? genDefaults.temperature : (thinkingOn ? 0.9 : 0.7); }
-  function recTopP() { return genDefaults.topP != null ? genDefaults.topP : 0.95; }
-  function recTopK() { return genDefaults.topK != null ? genDefaults.topK : 0; }
-  let attachSeq = 0;
-  const MAX_TEXT_BYTES = 256 * 1024;
-  const TEXT_EXTS = /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|ini|cfg|conf|log|xml|html?|css|scss|js|mjs|cjs|ts|tsx|jsx|py|rs|go|java|c|h|cpp|hpp|cc|cs|rb|php|sh|bash|zsh|fish|sql|swift|kt|lua|r|jl|tex|svg|env|gitignore|dockerfile|makefile)$/i;
-
-  function isTextFile(f) {
-    if (f.type.startsWith("text/")) return true;
-    if (/(json|xml|javascript|yaml|x-sh|x-toml|csv|markdown)/i.test(f.type)) return true;
-    return TEXT_EXTS.test(f.name || "");
-  }
-  function readDataUrl(file) {
-    return new Promise((res, rej) => {
-      const r = new FileReader(); r.onerror = rej;
-      r.onload = () => { const s = String(r.result); const i = s.indexOf(","); res(i >= 0 ? s.slice(i + 1) : s); };
-      r.readAsDataURL(file);
-    });
-  }
-  function readText(file) {
-    return new Promise((res, rej) => { const r = new FileReader(); r.onerror = rej; r.onload = () => res(String(r.result)); r.readAsText(file); });
-  }
-  async function addFiles(files) {
-    for (const f of files) {
-      if (f.type.startsWith("image/")) {
-        if (!visionCapable) { toast("This model can't see images — serve a vision-capable model (look for the vision tag in the Library).", "err"); continue; }
-        try { attachments.push({ id: ++attachSeq, kind: "image", name: f.name || "image", mimeType: f.type, data: await readDataUrl(f) }); }
-        catch { toast("Couldn't read " + (f.name || "image"), "err"); }
-      } else if (isTextFile(f)) {
-        try {
-          let text = await readText(f); const truncated = text.length > MAX_TEXT_BYTES; if (truncated) text = text.slice(0, MAX_TEXT_BYTES);
-          attachments.push({ id: ++attachSeq, kind: "text", name: f.name || "file", text, truncated });
-        } catch { toast("Couldn't read " + (f.name || "file"), "err"); }
-      } else {
-        toast("Unsupported file type: " + (f.name || "file"), "err");
-      }
-    }
-    renderAttachments();
-  }
-  function renderAttachments() {
-    const box = $("chat-attach");
-    box.innerHTML = "";
-    box.style.display = attachments.length ? "flex" : "none";
-    for (const a of attachments) {
-      const chip = el("div", "attach-chip", box);
-      if (a.kind === "image") { const im = el("img", "", chip); im.src = "data:" + a.mimeType + ";base64," + a.data; im.alt = a.name; }
-      else el("span", "att-ico", chip).textContent = "📄";
-      el("span", "att-name", chip).textContent = a.name + (a.truncated ? " (truncated)" : "");
-      const x = el("button", "att-x", chip); x.type = "button"; x.textContent = "✕";
-      x.onclick = () => { attachments = attachments.filter((z) => z.id !== a.id); renderAttachments(); };
-    }
-  }
-  function clearAttachments() { attachments = []; renderAttachments(); }
-  /** Prepend text-file contents to the message the model sees (UI shows chips). */
-  function buildMessageText(userText) {
-    const files = attachments.filter((a) => a.kind === "text");
-    if (!files.length) return userText;
-    let pre = "";
-    for (const a of files) pre += "Attached file: " + a.name + "\n```\n" + a.text + "\n```\n\n";
-    return pre + userText;
-  }
-  function updateAttachHint() {
-    const btn = $("chat-attach-btn");
-    if (btn) btn.title = visionCapable ? "Attach files or images" : "Attach files (this model can't see images)";
-  }
-  // — LoRA adapter selector. Pi-native: app.html lists + mounts adapters, then
-  //   tells pi-web which one is active; the before_provider_request hook injects
-  //   it into every provider request. Default "" = none (base model). Still a
-  //   single-select <select> this phase (the full three-state routing table is
-  //   Phase 2) — the presentation upgrade here is showing every adapter found
-  //   on disk (not just ones that fit the served model) with incompatible
-  //   entries grayed via the `compatible` flag /v1/adapters/available now
-  //   returns, each with a title explaining why it's unusable right now. —
-  async function refreshAdapters() {
-    const sel = $("chat-adapter");
-    if (!sel) return;
-    let list = [];
-    try { const d = await api("/v1/adapters/available"); list = (d && d.adapters) || []; } catch {}
-    const cur = sel.value;
-    sel.innerHTML = '<option value="">no adapter</option>' + list.map((a) => {
-      const label = esc(a.id) + (a.rank ? " · r" + esc(a.rank) : "") + (a.mounted ? " · mounted" : "");
-      if (a.compatible) return `<option value="${esc(a.id)}" data-path="${esc(a.path)}">${label}</option>`;
-      const why = a.base_model
-        ? `trained for ${esc(a.base_model)}, not the currently-served model`
-        : "not compatible with the currently-served model";
-      return `<option value="${esc(a.id)}" disabled title="${why}">${label} (incompatible)</option>`;
-    }).join("");
-    if (cur && list.some((a) => a.id === cur)) sel.value = cur; // keep prior selection
-  }
-  async function onSelectAdapter(sel) {
-    const id = sel.value;
-    if (!id) { send({ type: "set_adapter", id: null }); return; } // none → base model
-    const opt = sel.options[sel.selectedIndex];
-    const path = opt && opt.getAttribute("data-path");
-    if (path) { // auto-load on select; mount() is idempotent server-side
-      const r = await api("/v1/adapters", { method: "POST", body: { id, path } });
-      if (r && (r.error || r.ok === false)) {
-        if (typeof toast === "function") toast("adapter: " + (r.error || "mount failed"), "err");
-        sel.value = ""; send({ type: "set_adapter", id: null }); return;
-      }
-    }
-    send({ type: "set_adapter", id });
-    // Adapter-namespaced KV means a swap can never reuse the outgoing
-    // adapter's cache — make that concrete instead of implicit (plan §5.2).
-    toast("adapter mounted — new turns start a fresh KV segment", "ok");
-  }
-  function updateThinkingToggle() {
-    const b = $("chat-think");
-    if (!b) return;
-    b.style.display = thinkingCapable ? "inline-flex" : "none"; // only for thinking-capable models
-    b.classList.toggle("think-on", thinkingOn);
-    b.title = thinkingOn ? "Reasoning on — click to answer directly" : "Reasoning off — click to let the model think";
-    b.setAttribute("aria-pressed", String(thinkingOn));
-    refreshSamplingRecs(); // recommended temperature follows the thinking state
-  }
-
-  /* — sampling controls — */
-  // Each row is a slider + a live value readout. A field is "auto" (null
-  // override → the server uses its mode-aware default; temperature/top_p/top_k
-  // recommendations come from genDefaults, resolved per-model) until the user
-  // drags it, which records an explicit override. Reset returns every field to
-  // auto. The three primary fields have a live "rec" (a meaningful recommended
-  // number always shown dimmed); the Advanced fields have no natural default
-  // number to display, so they just show "off" until overridden.
-  const SAMP_FIELDS = [
-    { id: "samp-temp", field: "temperature", valId: "samp-temp-val", rec: () => recTemp(), fmt: (v) => v.toFixed(2) },
-    { id: "samp-topp", field: "top_p", valId: "samp-topp-val", rec: () => recTopP(), fmt: (v) => v.toFixed(2) },
-    { id: "samp-topk", field: "top_k", valId: "samp-topk-val", rec: () => recTopK(), fmt: (v) => (v >= 1 ? String(Math.round(v)) : "off") },
-  ];
-  // Advanced fields: no meaningful "recommended" number — auto just reads "off".
-  const SAMP_ADV_FIELDS = [
-    { id: "samp-minp", field: "min_p", valId: "samp-minp-val", fmt: (v) => v.toFixed(2) },
-    { id: "samp-xtcp", field: "xtc_probability", valId: "samp-xtcp-val", fmt: (v) => v.toFixed(2) },
-    { id: "samp-xtct", field: "xtc_threshold", valId: "samp-xtct-val", fmt: (v) => v.toFixed(2) },
-    { id: "samp-reppen", field: "repetition_penalty", valId: "samp-reppen-val", fmt: (v) => v.toFixed(2) },
-    { id: "samp-repctx", field: "repetition_context_size", valId: "samp-repctx-val", fmt: (v) => String(Math.round(v)) },
-    { id: "samp-prespen", field: "presence_penalty", valId: "samp-prespen-val", fmt: (v) => v.toFixed(2) },
-    { id: "samp-freqpen", field: "frequency_penalty", valId: "samp-freqpen-val", fmt: (v) => v.toFixed(2) },
-  ];
-  const SAMP_SLIDER_FIELDS = SAMP_FIELDS.concat(SAMP_ADV_FIELDS);
-
-  // Sync every slider + readout to current state: an overridden field shows its
-  // set value (bright readout); an auto primary field shows the recommended
-  // value (dimmed) and tracks it live — e.g. temperature when the thinking
-  // toggle flips; an auto Advanced field just shows "off". Also syncs the seed
-  // text input. Called on thinking-toggle flips, ready-frame arrival, popover
-  // open, and reset.
-  function refreshSamplingRecs() {
-    for (const f of SAMP_FIELDS) {
-      const slider = $(f.id), val = $(f.valId); if (!slider || !val) continue;
-      const over = sampling[f.field];
-      const v = over != null ? over : f.rec();
-      slider.value = String(v);
-      val.textContent = f.fmt(v);
-      val.classList.toggle("auto", over == null);
-    }
-    for (const f of SAMP_ADV_FIELDS) {
-      const slider = $(f.id), val = $(f.valId); if (!slider || !val) continue;
-      const over = sampling[f.field];
-      slider.value = String(over != null ? over : slider.min);
-      val.textContent = over != null ? f.fmt(over) : "off";
-      val.classList.toggle("auto", over == null);
-    }
-    const seedInput = $("samp-seed");
-    if (seedInput) seedInput.value = sampling.seed != null ? String(sampling.seed) : "";
-  }
-
-  // User dragged a slider → record the explicit override, brighten the readout,
-  // and push the whole sampling state to the server.
-  function onSlide(f) {
-    const slider = $(f.id); if (!slider) return;
-    const v = Number(slider.value);
-    sampling[f.field] = v;
-    const val = $(f.valId); if (val) { val.textContent = f.fmt(v); val.classList.remove("auto"); }
-    updateSamplingUi();
-    pushSampling();
-  }
-  function onSeedInput() {
-    const input = $("samp-seed"); if (!input) return;
-    const raw = input.value.trim();
-    sampling.seed = raw === "" ? null : Number(raw);
-    if (sampling.seed != null && !Number.isFinite(sampling.seed)) sampling.seed = null;
-    updateSamplingUi();
-    pushSampling();
-  }
-  function pushSampling() {
-    send({ type: "set_sampling", ...sampling });
-  }
-
-  // The pill shows a lit dot whenever any field is overridden.
-  function updateSamplingUi() {
-    const dirty = Object.values(sampling).some((v) => v != null);
-    const pill = $("chat-sampling");
-    if (pill) { pill.classList.toggle("dirty", dirty); pill.title = dirty
-      ? "Sampling overridden — click to edit or reset" : "Sampling controls (temperature · top_p · top_k · Advanced)"; }
-  }
-
-  function resetSampling() {
-    for (const k of Object.keys(sampling)) sampling[k] = null;
-    refreshSamplingRecs(); updateSamplingUi();
-    pushSampling();
-  }
-  function initSampling() {
-    const pill = $("chat-sampling"), pop = $("chat-sampling-pop");
-    if (!pill || !pop) return;
-    const trap = trapFocus(pop, () => pop.classList.contains("open"));
-    const setOpen = (open) => {
-      const was = pop.classList.contains("open");
-      if (open === was) return;
-      if (open) trap.capture();
-      pop.classList.toggle("open", open);
-      pill.classList.toggle("on", open);
-      pill.setAttribute("aria-expanded", String(open));
-      if (open) refreshSamplingRecs();
-      else trap.restore();
-    };
-    // Exposed so the global Escape sweep (closeTopOverlay) can close this
-    // popover uniformly instead of keeping a second Escape listener.
-    samplingPopoverClose = () => setOpen(false);
-    const toggle = () => setOpen(!pop.classList.contains("open"));
-    pill.onclick = (e) => { e.stopPropagation(); toggle(); };
-    pill.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } });
-    pop.addEventListener("click", (e) => e.stopPropagation());
-    // Click-away closes the popover (Escape is handled globally, see
-    // closeTopOverlay — kept out of this listener to avoid a second,
-    // divergent Escape path).
-    document.addEventListener("click", () => setOpen(false));
-    for (const f of SAMP_SLIDER_FIELDS) {
-      const e = $(f.id); if (!e) continue;
-      e.addEventListener("input", () => onSlide(f));
-    }
-    const seedInput = $("samp-seed");
-    if (seedInput) seedInput.addEventListener("input", onSeedInput);
-    const reset = $("samp-reset"); if (reset) reset.onclick = (e) => { e.stopPropagation(); resetSampling(); };
-    updateSamplingUi(); refreshSamplingRecs();
-  }
-
-  /* — composer — */
-  function submit() {
-    const box = $("chat-box");
-    const text = box.value.trim();
-    // Client-side slash commands for session control (not sent to the model).
-    const cmd = text.toLowerCase();
-    if (cmd === "/reload" || cmd === "/new" || cmd === "/clear") {
-      box.value = ""; box.style.height = "auto"; clearAttachments(); newChat();
-      return;
-    }
-    if (!text && attachments.length === 0) return;
-    if (!connected) { toast("Not connected to the agent yet — reconnecting.", "err"); return; }
-    const imgs = attachments.filter((a) => a.kind === "image").map((a) => ({ data: a.data, mimeType: a.mimeType }));
-    const combined = buildMessageText(text);
-    // entryId isn't known yet (assigned server-side); the next `siblings`
-    // frame (sent on turn_end) backfills it via renderSiblingToggle's
-    // entryId-mismatch check, same as a fresh page load's history replay.
-    addUserMsg(text, attachments, { isLast: true });
-    box.value = ""; box.style.height = "auto";
-    const frame = imgs.length ? { text: combined, images: imgs } : { text: combined };
-    // A composer submission is always a new user turn. If the model is still
-    // streaming, the server passes it to pi with streamingBehavior:"followUp"
-    // so it becomes the next turn instead of steering/mutating the current one.
-    send({ type: "prompt", ...frame });
-    clearAttachments();
-  }
-  const scroll = () => $("chat-scroll");
-  const atBottom = () => scroll().scrollHeight - scroll().scrollTop - scroll().clientHeight < 90;
-  function stick(force) { if (force || atBottom()) scroll().scrollTop = scroll().scrollHeight; }
-
-  /** Cmd/Ctrl+Shift+C (plan §7): reuses the exact per-message Copy button
-   *  (addMsgActions) on the last assistant message rather than duplicating
-   *  its clipboard logic — a synthetic click keeps the "Copied" flash
-   *  feedback consistent with the mouse path. */
-  function copyLastResponse() {
-    if (!lastAssistantMsgEl) { toast("No response to copy yet.", "err"); return; }
-    const btn = lastAssistantMsgEl.querySelector(".msg-actions .maction");
-    if (btn) btn.click();
-  }
-
-  return {
-    init() {
-      $("chat-send").onclick = submit;
-      $("chat-new").onclick = newChat;
-      $("chat-stop").onclick = () => { send({ type: "abort" }); $("chat-stop").style.display = "none"; };
-      const thinkToggle = () => { thinkingOn = !thinkingOn; updateThinkingToggle(); send({ type: "set_thinking", enabled: thinkingOn }); };
-      $("chat-think").onclick = thinkToggle;
-      $("chat-think").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); thinkToggle(); } });
-      const adapterSel = $("chat-adapter");
-      if (adapterSel) adapterSel.onchange = () => onSelectAdapter(adapterSel);
-      initSampling();
-      refreshAdapters();
-      const sessSearch = $("chat-sess-search");
-      if (sessSearch) sessSearch.addEventListener("input", applySessSearch);
-      const box = $("chat-box");
-      box.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } });
-      box.addEventListener("input", () => { box.style.height = "auto"; box.style.height = Math.min(box.scrollHeight, 200) + "px"; });
-      document.querySelectorAll("#chat-hello .chip").forEach((c) =>
-        c.addEventListener("click", () => { $("chat-box").value = c.dataset.q; submit(); }));
-      // Attachments: + button, file picker, clipboard paste, drag-and-drop.
-      $("chat-attach-btn").onclick = () => $("chat-file-input").click();
-      $("chat-file-input").addEventListener("change", (e) => { addFiles([...e.target.files]); e.target.value = ""; });
-      box.addEventListener("paste", (e) => {
-        const items = e.clipboardData && e.clipboardData.items;
-        if (!items) return;
-        const files = [];
-        for (const it of items) if (it.kind === "file") { const f = it.getAsFile(); if (f) files.push(f); }
-        if (files.length) { e.preventDefault(); addFiles(files); }
-      });
-      const composer = document.querySelector("#s-chat .composer");
-      if (composer) {
-        ["dragenter", "dragover"].forEach((ev) => composer.addEventListener(ev, (e) => { e.preventDefault(); composer.classList.add("dragover"); }));
-        ["dragleave", "drop"].forEach((ev) => composer.addEventListener(ev, (e) => {
-          e.preventDefault();
-          if (ev === "drop" && e.dataTransfer && e.dataTransfer.files.length) addFiles([...e.dataTransfer.files]);
-          if (ev === "drop" || !composer.contains(e.relatedTarget)) composer.classList.remove("dragover");
-        }));
-      }
-      // Delegated copy buttons for rendered code blocks (the thread element
-      // is stable even though its contents re-render on every token).
-      thread().addEventListener("click", (e) => {
-        const btn = e.target.closest && e.target.closest(".cbcopy");
-        if (!btn) return;
-        const code = btn.closest(".codeblock")?.querySelector("code");
-        if (!code || !navigator.clipboard) return;
-        navigator.clipboard.writeText(code.textContent).then(() => {
-          btn.textContent = "Copied"; setTimeout(() => { btn.textContent = "Copy"; }, 1200);
-        }).catch(() => {});
-      });
-    },
-    enter() {
-      if (!ws || ws.readyState > 1) connect();
-      $("chat-box").focus();
-      // Refresh the adapter list on every chat enter (web-ui-pass-plan.md
-      // #15's staleness half): a training job that completed while the user
-      // was elsewhere, or a manual drop into the adapters directory, should
-      // show up without needing a full page reload. Cheap (one GET) and the
-      // list is short.
-      refreshAdapters();
-    },
-    leave() { /* keep WS warm; closing on every nav would drop in-flight turns */ },
-    // Exposed so the finetune controller can refresh the chat adapter chip
-    // immediately when a training job finishes, instead of waiting for the
-    // user to navigate back to Chat (which would also refresh it via enter()).
-    refreshAdapters,
-    // Exposed for the global keyboard-shortcut sweep (plan §7): Cmd/Ctrl+Shift+O
-    // and Cmd/Ctrl+Shift+C, bound at document level so they work regardless
-    // of which control has focus while on the chat route.
-    newChat,
-    copyLastResponse,
-  };
-})();
-
-/* ════════════════════════════════════════════════════════════════════
-   QUANTIZE CONTROLLER  — 4-step wizard
-   ════════════════════════════════════════════════════════════════════ */
-controllers.quantize = (() => {
-  const STEPS = ["Source", "Configure", "Run", "Done"];
-  let step = 0, bits = 4, gs = 64, mode = "uniform", bpw = 5, jobId = null, es = null, log = [];
-
-  function show(n) {
-    step = n;
-    document.querySelectorAll("[data-qstep]").forEach((d) => d.style.display = (+d.dataset.qstep === n) ? "" : "none");
-    renderSteps($("q-steps"), STEPS, n);
-  }
-  function seg(container, onPick) {
-    container.querySelectorAll("button").forEach((b) =>
-      b.addEventListener("click", () => {
-        container.querySelectorAll("button").forEach((x) => x.classList.remove("on"));
-        b.classList.add("on"); onPick(b.dataset.v, b);
-      }));
-  }
-
-  // --- OS folder picker / drag-drop → real on-disk snapshot path ---
-  // The browser can't reveal an absolute path, and the HF cache uses symlinked
-  // snapshots over a blobs/ store — so we DON'T read any files. We only take the
-  // picked folder's NAME (which encodes the repo id) and let the server
-  // reconstruct the snapshot path it owns. No upload, no "config.json" hunt.
-  async function resolveByName(name, relPath) {
-    if (!name && !relPath) return;
-    const out = $("q-inspect-out");
-    out.innerHTML = '<div class="flash"><span class="shimmer">locating on disk…</span></div>';
-    const d = await api("/api/quantize/resolve-folder", { method: "POST", body: { folder_name: name || "", rel_path: relPath || "" } })
-      .catch(() => ({ ok: false, error: "request failed" }));
-    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "could not locate this folder on the server") + "</div>"; return; }
-    $("q-model").value = d.path;
-    inspect();
-  }
-  async function pickFolder() {
-    // Native OS folder dialog with no "upload N files" prompt; we only read the
-    // folder's .name, never its contents.
-    if (window.showDirectoryPicker) {
-      try {
-        const handle = await window.showDirectoryPicker({ id: "mlx-models", mode: "read" });
-        return resolveByName(handle.name);
-      } catch (e) { return; } // user cancelled / denied
-    }
-    $("q-folder").click(); // fallback for browsers without the File System Access API
-  }
-
-  async function inspect() {
-    const id = $("q-model").value.trim();
-    if (!id) { toast("Enter a model id or path first.", "err"); return; }
-    const out = $("q-inspect-out");
-    out.innerHTML = '<div class="flash"><span class="shimmer">inspecting…</span></div>';
-    const btn = $("q-inspect"); btn.disabled = true;
-    const d = await api("/api/quantize/inspect", { method: "POST", body: { model_id: id } }).catch(() => ({ ok: false, error: "request failed" }));
-    btn.disabled = false;
-    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "could not inspect this model") + "</div>"; return; }
-    // inspectModel returns support: boolean (src/quantize/job.ts); size_gb
-    // can be 0 when a direct path bypasses the registry — hide it then.
-    const supported = d.support === true;
-    const cls = supported ? "ok" : "err";
-    out.innerHTML =
-      '<div class="flash ' + cls + '"><strong>' + esc(d.arch || d.model_id || id) + "</strong>" +
-      (d.size_gb ? " · " + (+d.size_gb).toFixed(2) + " GB" : "") +
-      " · " + (supported ? "supported" : "not quantizable") + "</div>" +
-      '<div class="btnrow"><button class="btn primary" id="q-continue">Continue</button></div>';
-    $("q-continue").onclick = () => show(1);
-  }
-
-  async function submit() {
-    const id = $("q-model").value.trim();
-    const btn = $("q-submit"); btn.disabled = true;
-    const body = { model_id: id, bits, group_size: gs };
-    if (mode === "mixed") { body.target_bpw = bpw; body.candidate_bits = [4, 8]; }
-    const d = await api("/api/quantize/submit", { method: "POST", body })
-      .catch(() => ({ ok: false, error: "request failed" }));
-    btn.disabled = false;
-    if (!d.ok) { toast(d.error || "could not start quantize", "err"); return; }
-    jobId = d.job_id || null;
-    $("q-push-panel").innerHTML = "";
-    $("q-out").textContent = d.output_dir || "";
-    log = []; $("q-log").textContent = ""; $("q-bar").style.width = "0%"; $("q-pct").textContent = "0%"; $("q-msg").textContent = "Starting…";
-    show(2);
-    attach(d.job_id);
-  }
-
-  function attach(jobId) {
-    if (es) es.close();
-    es = jobStream(jobId, {
-      log: (e) => { log.push(e.line); $("q-log").textContent = log.slice(-200).join("\n"); $("q-log").scrollTop = $("q-log").scrollHeight; },
-      stage: (e) => {
-        if (e.progress != null) { const p = Math.round(e.progress * 100); $("q-bar").style.width = p + "%"; $("q-pct").textContent = p + "%"; }
-        if (e.message) $("q-msg").textContent = e.message;
-        if (e.stage === "done") { if (e.output_dir) $("q-out").textContent = e.output_dir; finish(); }
-      },
-      done: () => finish(),
-      failed: (e) => { $("q-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "quantize failed", "err"); es && es.close(); },
-    });
-  }
-  function finish() {
-    $("q-bar").style.width = "100%"; $("q-pct").textContent = "100%"; es && es.close(); show(3);
-    // web-ui-pass-plan.md #3: the server invalidates its /library cache the
-    // instant this job completes (server.ts onComplete) — pull the fresh
-    // list right away instead of waiting for Status's own 15s poll.
-    if (controllers.status && controllers.status.refreshLibrary) controllers.status.refreshLibrary();
-  }
-
-  return {
-    init() {
-      show(0);
-      $("q-inspect").onclick = inspect;
-      $("q-model").addEventListener("keydown", (e) => { if (e.key === "Enter") inspect(); });
-      // OS folder dialog (native; resolves by folder name, no upload)
-      $("q-browse").onclick = pickFolder;
-      $("q-folder").addEventListener("change", (e) => {
-        const f = e.target.files[0]; e.target.value = "";
-        if (f) resolveByName((f.webkitRelativePath || f.name).split("/")[0], f.webkitRelativePath || "");
-      });
-      // drag a folder onto the box — use the directory entry's NAME (no read)
-      const drop = $("q-drop");
-      const hi = (on) => { drop.style.outline = on ? "2px dashed var(--blue)" : ""; drop.style.outlineOffset = on ? "4px" : ""; };
-      ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); hi(true); }));
-      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
-        e.preventDefault(); hi(false);
-        if (ev !== "drop" || !e.dataTransfer) return;
-        for (const it of [...(e.dataTransfer.items || [])]) {
-          const en = it.webkitGetAsEntry && it.webkitGetAsEntry();
-          if (en && en.isDirectory) return resolveByName(en.name);
-        }
-        const f = e.dataTransfer.files && e.dataTransfer.files[0];
-        if (f) resolveByName((f.webkitRelativePath || f.name).split("/")[0]);
-      }));
-      seg($("q-bits"), (v) => { bits = +v; $("q-bits-hint").textContent = v === "4"
-        ? "4-bit · ~4× smaller than bf16 · the recommended default for local serving."
-        : "8-bit · ~2× smaller than bf16 · highest fidelity quant."; });
-      seg($("q-gs"), (v) => { gs = +v; });
-      seg($("q-mode"), (v) => { mode = v; $("q-bpw-field").style.display = v === "mixed" ? "" : "none"; });
-      $("q-bpw").addEventListener("input", (e) => { bpw = +e.target.value; $("q-bpw-val").textContent = bpw.toFixed(1); });
-      document.querySelectorAll("#s-quantize [data-qback]").forEach((b) => b.onclick = () => show(step - 1));
-      $("q-submit").onclick = submit;
-      $("q-push").onclick = () => pushToHub($("q-push-panel"), { kind: "quantize", job_id: jobId });
-      $("q-again").onclick = () => { $("q-inspect-out").innerHTML = ""; $("q-push-panel").innerHTML = ""; show(0); };
-    },
-  };
-})();
-
-/* ════════════════════════════════════════════════════════════════════
-   FINE-TUNE CONTROLLER  — 5-step wizard with live loss chart
-   ════════════════════════════════════════════════════════════════════ */
-controllers.finetune = (() => {
-  const STEPS = ["Base", "Dataset", "Hyperparams", "Train", "Done"];
-  let step = 0, method = "sft", lrTouched = false, rankTouched = false, es = null, log = [];
-  let datasetOk = false, adapterPath = "";
-  const trainPts = [], valPts = [];
-
-  function show(n) {
-    step = n;
-    document.querySelectorAll("[data-fstep]").forEach((d) => d.style.display = (+d.dataset.fstep === n) ? "" : "none");
-    renderSteps($("f-steps"), STEPS, n);
-  }
-
-  // OS folder picker for the base model — resolve by NAME server-side (no
-  // upload, works with the HF cache's symlinked layout). Mirrors Quantize.
-  async function resolveBaseByName(name, relPath) {
-    if (!name && !relPath) return;
-    const d = await api("/api/model/resolve-folder", { method: "POST", body: { folder_name: name || "", rel_path: relPath || "" } })
-      .catch(() => ({ ok: false, error: "request failed" }));
-    if (!d.ok) { toast(d.error || "could not locate this folder", "err"); return; }
-    $("f-model").value = d.path;
-  }
-  async function pickBaseFolder() {
-    if (window.showDirectoryPicker) {
-      try { const h = await window.showDirectoryPicker({ id: "mlx-models", mode: "read" }); return resolveBaseByName(h.name); }
-      catch (e) { return; }
-    }
-    $("f-folder").click();
-  }
-
-  async function inspectDataset() {
-    const path = $("f-data").value.trim();
-    if (!path) { toast("Enter a dataset directory.", "err"); return; }
-    const out = $("f-inspect-out");
-    out.innerHTML = '<div class="flash"><span class="shimmer">inspecting…</span></div>';
-    const d = await api("/api/finetune/inspect-dataset", { method: "POST", body: { path } }).catch(() => ({ ok: false, error: "request failed" }));
-    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "could not read dataset") + "</div>"; datasetOk = false; $("f-next1").disabled = true; return; }
-    datasetOk = true; $("f-next1").disabled = false;
-    out.innerHTML = '<div class="flash ok"><strong>' + num(d.n_train) + "</strong> train rows" +
-      (d.n_valid ? " · <strong>" + num(d.n_valid) + "</strong> valid rows" : "") +
-      (d.format ? " · format <strong>" + esc(d.format) + "</strong>" : "") + "</div>";
-  }
-
-  function setMethod(m) {
-    method = m;
-    $("f-method").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.v === m));
-    $("f-dpo-extra").style.display = m === "dpo" ? "" : "none";
-    $("f-orpo-extra").style.display = m === "orpo" ? "" : "none";
-    $("f-method-hint").textContent = m === "dpo"
-      ? "Direct Preference Optimization — data is {prompt, chosen, rejected}."
-      : m === "orpo"
-        ? "Odds Ratio Preference Optimization (reference-free) — data is {prompt, chosen, rejected}."
-        : "Supervised fine-tuning — data is messages or prompt+completion.";
-    if (!lrTouched) $("f-lr").value = m === "dpo" ? 0.00005 : m === "orpo" ? 0.00001 : 0.0002;
-    // ORPO's validated LoRA recipe uses rank 16 (vs 8 for SFT); apply unless edited.
-    if (!rankTouched) $("f-rank").value = m === "orpo" ? 16 : 8;
-  }
-
-  function collectHP() {
-    const modules = $("f-modules").value.split(",").map((s) => s.trim()).filter(Boolean);
-    const hp = {
-      model_dir: $("f-model").value.trim(),
-      data_dir: $("f-data").value.trim(),
-      method,
-      rank: +$("f-rank").value, scale: +$("f-scale").value, lora_dropout: +$("f-dropout").value,
-      target_modules: modules, num_layers: +$("f-layers").value, iters: +$("f-iters").value,
-      batch_size: +$("f-batch").value, learning_rate: +$("f-lr").value, max_seq_length: +$("f-seq").value,
-    };
-    if (method === "dpo") { hp.dpo_beta = +$("f-beta").value; hp.dpo_lr_schedule = $("f-sched").value; }
-    if (method === "orpo") {
-      hp.orpo_lambda = +$("f-orpo-lambda").value; hp.orpo_lr_schedule = $("f-orpo-sched").value;
-      // web-ui-pass-plan.md #7: sft_scope only makes sense for ORPO's
-      // monolithic loss (the SFT term needs a scope); default matches the
-      // segmented control's default ("full", paper/TRL chosen-NLL).
-      const scopeBtn = $("f-orpo-scope").querySelector("button.on");
-      hp.sft_scope = (scopeBtn && scopeBtn.dataset.v) || "full";
-    }
-    return hp;
-  }
-
-  async function submit() {
-    const btn = $("f-submit"); btn.disabled = true;
-    const d = await api("/api/finetune/submit", { method: "POST", body: collectHP() }).catch(() => ({ ok: false, error: "request failed" }));
-    btn.disabled = false;
-    if (!d.ok) { toast(d.error || "could not start training", "err"); return; }
-    adapterPath = d.adapter_path || "";
-    $("f-out").textContent = adapterPath;
-    $("f-merge-out").innerHTML = $("f-exp-out").innerHTML = $("f-push-panel").innerHTML = "";
-    trainPts.length = 0; valPts.length = 0; log = [];
-    $("f-log").textContent = ""; $("f-bar").style.width = "0%"; $("f-pct").textContent = "0%"; $("f-msg").textContent = "Starting…";
-    $("f-step").textContent = $("f-loss").textContent = $("f-curlr").textContent = $("f-curtps").textContent = "—";
-    drawChart();
-    show(3);
-    attach(d.job_id);
-  }
-
-  function attach(jobId) {
-    if (es) es.close();
-    es = jobStream(jobId, {
-      log: (e) => { log.push(e.line); $("f-log").textContent = log.slice(-200).join("\n"); $("f-log").scrollTop = $("f-log").scrollHeight; },
-      metric: (e) => {
-        if (e.kind === "val") { valPts.push({ step: e.step, loss: e.loss }); $("f-leg-val").style.display = ""; }
-        else {
-          trainPts.push({ step: e.step, loss: e.loss });
-          $("f-step").textContent = num(e.step);
-          $("f-loss").textContent = e.loss != null ? e.loss.toFixed(4) : "—";
-          if (e.learning_rate != null) $("f-curlr").textContent = e.learning_rate.toExponential(2);
-          if (e.tokens_per_sec != null) $("f-curtps").textContent = e.tokens_per_sec.toFixed(1);
-          if (e.progress != null) { const p = Math.round(e.progress * 100); $("f-bar").style.width = p + "%"; $("f-pct").textContent = p + "%"; }
-          if (e.message) $("f-msg").textContent = e.message;
-        }
-        drawChart();
-      },
-      stage: (e) => {
-        if (e.progress != null) { const p = Math.round(e.progress * 100); $("f-bar").style.width = p + "%"; $("f-pct").textContent = p + "%"; }
-        if (e.message) $("f-msg").textContent = e.message;
-        if (e.stage === "done") { if (e.adapter_path) { adapterPath = e.adapter_path; $("f-out").textContent = e.adapter_path; } finish(); }
-      },
-      done: () => finish(),
-      failed: (e) => { $("f-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "training failed", "err"); es && es.close(); },
-    });
-  }
-  function finish() {
-    $("f-bar").style.width = "100%"; $("f-pct").textContent = "100%"; es && es.close();
-    if (!adapterPath) adapterPath = $("f-out").textContent.trim();
-    const base = $("f-model").value.trim();
-    // prefill the done-step affordances from this run's paths
-    $("f-merge-a").value = adapterPath;
-    $("f-exp-base").value = base;
-    $("f-exp-adapter").value = adapterPath;
-    show(4);
-    // web-ui-pass-plan.md #15 staleness half: the new adapter is on disk now —
-    // refresh the chat adapter chip immediately rather than waiting for the
-    // user to navigate to Chat (enter() also refreshes, this just removes the
-    // wait for the common case of finishing a run and going straight to try it).
-    if (controllers.chat && controllers.chat.refreshAdapters) controllers.chat.refreshAdapters();
-  }
-
-  async function mergeAdapters() {
-    const a = $("f-merge-a").value.trim(), b = $("f-merge-b").value.trim();
-    const out = $("f-merge-out");
-    if (!a || !b) { out.innerHTML = '<div class="flash err">Enter both adapter paths.</div>'; return; }
-    out.innerHTML = '<div class="flash"><span class="shimmer">merging…</span></div>';
-    const btn = $("f-merge-go"); btn.disabled = true;
-    const d = await api("/api/finetune/merge", { method: "POST", body: { adapter_a: a, adapter_b: b } }).catch(() => ({ ok: false, error: "request failed" }));
-    btn.disabled = false;
-    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "merge failed") + "</div>"; return; }
-    const stats = d.stats && typeof d.stats === "object" ? Object.entries(d.stats).map(([k, v]) => esc(k) + " " + esc(v)).join(" · ") : (d.stats ? esc(d.stats) : "");
-    out.innerHTML = '<div class="flash ok">Merged → <code>' + esc(d.merged_path || "") + "</code>" + (stats ? "<br>" + stats : "") + "</div>";
-    toast("Adapters merged", "ok");
-  }
-
-  async function exportModel() {
-    const base = $("f-exp-base").value.trim(), adapter = $("f-exp-adapter").value.trim();
-    const out = $("f-exp-out");
-    if (!base || !adapter) { out.innerHTML = '<div class="flash err">Enter a base model and adapter path.</div>'; return; }
-    out.innerHTML = '<div class="flash"><span class="shimmer">exporting…</span></div>';
-    const btn = $("f-exp-go"); btn.disabled = true;
-    const d = await api("/api/finetune/export", { method: "POST", body: { base_model: base, adapter_path: adapter } }).catch(() => ({ ok: false, error: "request failed" }));
-    btn.disabled = false;
-    if (!d.ok) { out.innerHTML = '<div class="flash err">' + esc(d.error || "export failed") + "</div>"; return; }
-    out.innerHTML = '<div class="flash ok">Exported → <code>' + esc(d.export_path || "") + "</code></div>";
-    toast("Model exported", "ok");
-  }
-
-  /* inline SVG line plot — themed green (train) / blue (val) */
-  function drawChart() {
-    const svg = $("f-chart");
-    const W = 600, H = 200, padL = 8, padR = 8, padT = 12, padB = 12;
-    const all = trainPts.concat(valPts);
-    if (!all.length) { svg.innerHTML = '<text x="300" y="104" text-anchor="middle" fill="var(--dimmer)" font-size="13">waiting for the first metric…</text>'; return; }
-    const losses = all.map((p) => p.loss).filter((x) => x != null && isFinite(x));
-    let minL = Math.min(...losses), maxL = Math.max(...losses);
-    if (minL === maxL) { minL -= 0.5; maxL += 0.5; }
-    const range = maxL - minL || 1;
-    const maxStep = Math.max(...all.map((p) => p.step || 0), 1);
-    const xOf = (s) => padL + (s / maxStep) * (W - padL - padR);
-    const yOf = (l) => padT + (1 - (l - minL) / range) * (H - padT - padB);
-    const path = (pts, color, fillId) => {
-      if (!pts.length) return "";
-      const d = pts.map((p, i) => (i ? "L" : "M") + xOf(p.step).toFixed(1) + " " + yOf(p.loss).toFixed(1)).join(" ");
-      let out = '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
-      // soft area fill under the curve
-      const area = d + " L" + xOf(pts[pts.length - 1].step).toFixed(1) + " " + (H - padB) + " L" + xOf(pts[0].step).toFixed(1) + " " + (H - padB) + " Z";
-      out = '<path d="' + area + '" fill="url(#' + fillId + ')" opacity="0.18"/>' + out;
-      return out;
-    };
-    // gridlines
-    let grid = "";
-    for (let i = 1; i < 4; i++) { const y = padT + (i / 4) * (H - padT - padB); grid += '<line x1="0" y1="' + y.toFixed(1) + '" x2="' + W + '" y2="' + y.toFixed(1) + '" stroke="rgba(255,255,255,.06)" stroke-width="1"/>'; }
-    svg.innerHTML =
-      '<defs>' +
-      '<linearGradient id="gf-train" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#30d158"/><stop offset="1" stop-color="#30d158" stop-opacity="0"/></linearGradient>' +
-      '<linearGradient id="gf-val" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0a84ff"/><stop offset="1" stop-color="#0a84ff" stop-opacity="0"/></linearGradient>' +
-      '</defs>' + grid +
-      path(valPts, "#0a84ff", "gf-val") +
-      path(trainPts, "#30d158", "gf-train");
-  }
-
-  return {
-    init() {
-      show(0);
-      $("f-next0").onclick = () => { if (!$("f-model").value.trim()) { toast("Enter a base model path.", "err"); return; } show(1); };
-      // OS folder dialog for the base model (native; resolves by name, no upload)
-      $("f-browse").onclick = pickBaseFolder;
-      $("f-folder").addEventListener("change", (e) => {
-        const f = e.target.files[0]; e.target.value = "";
-        if (f) resolveBaseByName((f.webkitRelativePath || f.name).split("/")[0], f.webkitRelativePath || "");
-      });
-      {
-        const drop = $("f-drop");
-        const hi = (on) => { drop.style.outline = on ? "2px dashed var(--blue)" : ""; drop.style.outlineOffset = on ? "4px" : ""; };
-        ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); hi(true); }));
-        ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
-          e.preventDefault(); hi(false);
-          if (ev !== "drop" || !e.dataTransfer) return;
-          for (const it of [...(e.dataTransfer.items || [])]) {
-            const en = it.webkitGetAsEntry && it.webkitGetAsEntry();
-            if (en && en.isDirectory) return resolveBaseByName(en.name);
-          }
-          const f = e.dataTransfer.files && e.dataTransfer.files[0];
-          if (f) resolveBaseByName((f.webkitRelativePath || f.name).split("/")[0]);
-        }));
-      }
-      $("f-inspect").onclick = inspectDataset;
-      $("f-data").addEventListener("keydown", (e) => { if (e.key === "Enter") inspectDataset(); });
-      $("f-data").addEventListener("input", () => { datasetOk = false; $("f-next1").disabled = true; $("f-inspect-out").innerHTML = ""; });
-      $("f-next1").onclick = () => { if (datasetOk) show(2); };
-      $("f-method").querySelectorAll("button").forEach((b) => b.onclick = () => setMethod(b.dataset.v));
-      $("f-orpo-scope").querySelectorAll("button").forEach((b) => b.onclick = () =>
-        $("f-orpo-scope").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b)));
-      $("f-lr").addEventListener("input", () => { lrTouched = true; });
-      $("f-rank").addEventListener("input", () => { rankTouched = true; });
-      document.querySelectorAll("#s-finetune [data-fback]").forEach((b) => b.onclick = () => show(step - 1));
-      $("f-submit").onclick = submit;
-      $("f-merge-go").onclick = mergeAdapters;
-      $("f-exp-go").onclick = exportModel;
-      $("f-push").onclick = () => pushToHub($("f-push-panel"), { kind: "finetune", source_path: adapterPath || $("f-out").textContent.trim() });
-      $("f-again").onclick = () => {
-        $("f-inspect-out").innerHTML = "";
-        $("f-merge-out").innerHTML = $("f-exp-out").innerHTML = $("f-push-panel").innerHTML = "";
-        show(0);
-      };
-    },
-  };
-})();
-
-/* ════════════════════════════════════════════════════════════════════
-   DATASET CONTROLLER  — template-driven builder
-   ════════════════════════════════════════════════════════════════════ */
-controllers.dataset = (() => {
-  const STEPS = ["Template", "Inputs", "Generate", "Done"];
-  let step = 0, templates = [], selected = null, jobId = null, es = null, log = [];
-
-  function show(n) {
-    step = n;
-    document.querySelectorAll("[data-dstep]").forEach((d) => d.style.display = (+d.dataset.dstep === n) ? "" : "none");
-    renderSteps($("d-steps"), STEPS, n);
-  }
-
-  async function loadTemplates() {
-    const grid = $("d-templates");
-    grid.innerHTML = Array.from({ length: 4 }, () => '<div class="card" style="height:130px"><div class="shimmer" style="height:18px;width:50%;margin-bottom:12px"></div><div class="shimmer" style="height:13px;width:90%;margin-bottom:6px"></div><div class="shimmer" style="height:13px;width:70%"></div></div>').join("");
-    const d = await api("/api/dataset/templates").catch(() => ({ templates: null }));
-    templates = (d && d.templates) || [];
-    if (!templates.length) { grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><h3>No templates available</h3><p>The server didn\'t return any dataset templates. Make sure the server is running.</p></div>'; return; }
-    // non-LLM templates first
-    const ordered = templates.slice().sort((a, b) => (a.needs_llm ? 1 : 0) - (b.needs_llm ? 1 : 0));
-    grid.innerHTML = ordered.map((t, i) =>
-      '<div class="card" data-tid="' + esc(t.id) + '" style="cursor:pointer;display:flex;flex-direction:column;gap:8px">' +
-        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
-          '<h3 style="margin:0;font-size:16px;font-weight:700;letter-spacing:-.01em;color:var(--ink);text-transform:none">' + esc(t.label || t.id) + "</h3>" +
-          (t.needs_llm ? '<span class="pill warn" style="padding:3px 9px;font-size:11px"><span class="dot"></span>uses local model</span>' : "") +
-          (t.output_format ? '<span class="soon" style="color:var(--dim)">' + esc(t.output_format) + "</span>" : "") +
-        "</div>" +
-        '<p style="color:var(--dim);font-size:13.5px;line-height:1.5;margin:0">' + esc(t.description || "") + "</p>" +
-      "</div>").join("");
-    grid.querySelectorAll("[data-tid]").forEach((c) =>
-      c.onclick = () => selectTemplate(templates.find((t) => t.id === c.dataset.tid)));
-  }
-
-  function selectTemplate(t) {
-    selected = t;
-    $("d-form-title").textContent = t.label || t.id;
-    $("d-form-desc").textContent = t.description || "";
-    const form = $("d-form");
-    form.innerHTML = (t.fields || []).map((f) => {
-      const lbl = esc(f.label || f.name) + (f.required ? " *" : "");
-      const ph = f.hint ? ' placeholder="' + esc(f.hint) + '"' : "";
-      const dv = f.default != null ? f.default : "";
-      let ctrl;
-      if (f.type === "textarea") ctrl = '<textarea data-fld="' + esc(f.name) + '"' + ph + ">" + esc(dv) + "</textarea>";
-      else if (f.type === "number") ctrl = '<input type="number" data-fld="' + esc(f.name) + '" value="' + esc(dv) + '"' + ph + ">";
-      else ctrl = '<input type="text" data-fld="' + esc(f.name) + '" value="' + esc(dv) + '"' + ph + ">";
-      return '<div class="field"><label>' + lbl + "</label>" + ctrl + (f.hint ? '<div class="hint">' + esc(f.hint) + "</div>" : "") + "</div>";
-    }).join("");
-    show(1);
-  }
-
-  async function submit() {
-    if (!selected) return;
-    const inputs = {};
-    $("d-form").querySelectorAll("[data-fld]").forEach((i) => {
-      inputs[i.dataset.fld] = i.type === "number" ? (i.value === "" ? null : +i.value) : i.value;
-    });
-    const body = { template_id: selected.id, inputs };
-    if (selected.needs_llm && activeModelId) body.model_name = activeModelId;
-    const btn = $("d-submit"); btn.disabled = true;
-    const d = await api("/api/dataset/submit", { method: "POST", body }).catch(() => ({ ok: false, error: "request failed" }));
-    btn.disabled = false;
-    if (!d.ok) { toast(d.error || "could not start generation", "err"); return; }
-    jobId = d.job_id || null;
-    $("d-push-panel").innerHTML = "";
-    $("d-out").textContent = d.output_dir || "";
-    log = []; $("d-log").textContent = ""; $("d-bar").style.width = "0%"; $("d-pct").textContent = "0%"; $("d-msg").textContent = "Starting…";
-    $("d-ntrain").textContent = $("d-nvalid").textContent = "—";
-    show(2);
-    attach(d.job_id);
-  }
-
-  function attach(jobId) {
-    if (es) es.close();
-    es = jobStream(jobId, {
-      log: (e) => { log.push(e.line); $("d-log").textContent = log.slice(-200).join("\n"); $("d-log").scrollTop = $("d-log").scrollHeight; },
-      stage: (e) => {
-        if (e.progress != null) { const p = Math.round(e.progress * 100); $("d-bar").style.width = p + "%"; $("d-pct").textContent = p + "%"; }
-        if (e.message) $("d-msg").textContent = e.message;
-        if (e.n_train != null) $("d-ntrain").textContent = num(e.n_train);
-        if (e.n_valid != null) $("d-nvalid").textContent = num(e.n_valid);
-        if (e.stage === "done") { if (e.output_dir) $("d-out").textContent = e.output_dir; finish(e); }
-      },
-      done: (e) => finish(e),
-      failed: (e) => { $("d-msg").textContent = "Failed: " + (e.error || "unknown error"); toast(e.error || "generation failed", "err"); es && es.close(); },
-    });
-  }
-  function finish(e) {
-    $("d-bar").style.width = "100%"; $("d-pct").textContent = "100%"; es && es.close();
-    if (e && e.n_train != null) $("d-ntrain").textContent = num(e.n_train);
-    if (e && e.n_valid != null) $("d-nvalid").textContent = num(e.n_valid);
-    show(3);
-  }
-
-  return {
-    init() {
-      show(0);
-      loadTemplates();
-      document.querySelectorAll("#s-dataset [data-dback]").forEach((b) => b.onclick = () => show(0));
-      $("d-submit").onclick = submit;
-      $("d-push").onclick = () => pushToHub($("d-push-panel"), { kind: "dataset", job_id: jobId });
-      $("d-again").onclick = () => { selected = null; $("d-push-panel").innerHTML = ""; show(0); };
-    },
-  };
-})();
-
-/* ════════════════════════════════════════════════════════════════════
-   STATUS CONTROLLER  — ported dashboard (poll /stats + /v1/models + /fit + /library + /downloads)
-   ════════════════════════════════════════════════════════════════════ */
-controllers.status = (() => {
-  let timer = null, libTimer = null, fitLoaded = false;
-  const dlRates = {};
-  // Library staleness (web-ui-pass-plan.md #3): /library is server-cached for
-  // 30s, but the client used to fetch it exactly once per page load
-  // (gated on `fitLoaded`) — a quantize job finishing, a fresh download
-  // landing, or a manual drop into the HF cache never showed up without a
-  // hard reload. Poll it independently on a ~15s cadence while this view is
-  // visible (started in enter()/stopped in leave(), same as the main tick).
-
-  async function tick() {
-    try {
-      const [stats, models] = await Promise.all([
-        fetch("/stats").then((r) => r.json()),
-        fetch("/v1/models").then((r) => r.json()),
-      ]);
-      const m = models.data && models.data[0];
-      $("st-model-id").textContent = (m && m.id) || "—";
-      const a = stats.admission || {};
-      $("st-model-meta").textContent = num(m && m.context_window) + " token window · weights " + gb(a.weights_bytes);
-      $("st-safe-ctx").textContent = num(a.max_safe_context);
-
-      $("st-weights").textContent = gb(a.weights_bytes);
-      $("st-usable").textContent = gb(a.usable_bytes);
-      $("st-budget").textContent = a.memory_budget_bytes ? gb(a.memory_budget_bytes) : "off";
-      $("st-mem-bar").style.width = a.usable_bytes ? Math.min(100, 100 * a.weights_bytes / a.usable_bytes) + "%" : "0%";
-
-      const pc = stats.prompt_cache || {};
-      const lookups = (pc.hits || 0) + (pc.misses || 0);
-      $("st-pc-hits").textContent = lookups ? Math.round(100 * pc.hits / lookups) + "%" : "no lookups";
-      $("st-pc-entries").textContent = num(pc.entries);
-      $("st-pc-bytes").textContent = mb(pc.bytes) + " / " + mb(pc.max_bytes);
-      $("st-pc-bar").style.width = pc.max_bytes ? Math.min(100, 100 * pc.bytes / pc.max_bytes) + "%" : "0%";
-
-      const rs = stats.response_store || {};
-      $("st-rs-entries").textContent = num(rs.entries);
-      $("st-rs-bytes").textContent = mb(rs.bytes) + " / " + mb(rs.max_bytes);
-      $("st-rs-ttl").textContent = rs.ttl_ms ? (rs.ttl_ms / 60000) + " min" : "—";
-      $("st-rs-bar").style.width = rs.max_bytes ? Math.min(100, 100 * rs.bytes / rs.max_bytes) + "%" : "0%";
-
-      const kv = stats.kv_quant || {};
-      $("st-kv-mode").innerHTML = "<code>" + esc(kv.mode || "—") + "</code>";
-      const att = kv.attention;
-      $("st-kv-layers").innerHTML = Object.entries(kv.layers || {})
-        .map(([k, v]) => '<div class="kv"><b>' + esc(k) + ' layers</b><span class="num">' + esc(v) + "</span></div>").join("") +
-        (att ? '<div class="kv"><b>attention</b><span class="num">' + esc(att.global) + " global · " + esc(att.sliding_window) + " sliding</span></div>" : "");
-
-      await loadDownloads();
-      if (!fitLoaded) { await loadFit(); await loadLibrary(); }
-      if (stats.server && stats.server.started_at) {
-        const up = (Date.now() - stats.server.started_at) / 1000;
-        $("st-uptime").textContent = up < 90 ? Math.round(up) + "s" : up < 5400 ? Math.round(up / 60) + "m" : (up / 3600).toFixed(1) + "h";
-      }
-      $("st-updated").textContent = new Date().toLocaleTimeString();
-    } catch {
-      /* nav pill already reflects connectivity; leave last-good values on screen */
-    }
-  }
-
-  async function loadDownloads() {
-    let downloads;
-    try { ({ downloads } = await fetch("/downloads").then((r) => r.json())); } catch { return; }
-    const card = $("st-dl-card");
-    if (!downloads || downloads.length === 0) { card.style.display = "none"; return; }
-    card.style.display = "";
-    const order = downloads.slice().sort((a, b) =>
-      (a.state === "active" ? 0 : 1) - (b.state === "active" ? 0 : 1) || b.startedAt - a.startedAt);
-    $("st-dl-list").innerHTML = order.map((d) => {
-      const pct = d.totalBytes ? Math.min(100, 100 * d.receivedBytes / d.totalBytes) : 0;
-      let detail, barCls = "";
-      if (d.state === "active") {
-        let bps = d.bytesPerSec || 0;
-        if (!bps) {
-          const prev = dlRates[d.repoId], now = performance.now();
-          if (prev && now > prev.t) bps = (d.receivedBytes - prev.bytes) / ((now - prev.t) / 1000);
-          dlRates[d.repoId] = { bytes: d.receivedBytes, t: now };
-        }
-        const speed = bps > 0 ? " · " + mb(bps) + "/s · ~" + Math.max(1, Math.round((d.totalBytes - d.receivedBytes) / bps / 60)) + " min left" : "";
-        detail = gb(d.receivedBytes) + " / " + gb(d.totalBytes) + " · " + pct.toFixed(0) + "%" + speed +
-          (d.currentFile ? " · <code>" + esc(d.currentFile) + "</code>" : "");
-        barCls = "warm";
-      } else if (d.state === "done") {
-        detail = gb(d.totalBytes) + ' · <span style="color:var(--green);font-weight:600">complete</span>';
-      } else {
-        detail = '<span style="color:var(--red);font-weight:600">error</span> · ' + esc(d.error || "");
-      }
-      return '<div style="padding:10px 0">' +
-        '<div class="kv" style="border:none"><b>' + esc(d.repoId) + "</b>" +
-        '<span class="num">' + d.filesDone + "/" + d.filesTotal + " files</span></div>" +
-        '<div style="font-size:13.5px;color:var(--dim)" class="num">' + detail + "</div>" +
-        '<div class="meter ' + barCls + '"><i style="width:' + pct + '%"></i></div></div>';
-    }).join("");
-  }
-
-  async function loadLibrary() {
-    let models;
-    try { ({ models } = await fetch("/library").then((r) => r.json())); } catch { return; }
-    if (!models) return;
-    $("st-lib-body").innerHTML = models.slice()
-      .sort((a, b) => (b.serving ? 1 : 0) - (a.serving ? 1 : 0) || b.size_bytes - a.size_bytes)
-      .map((m) => {
-        const a = m.assessment;
-        let status;
-        if (m.serving) status = '<span style="color:var(--blue);font-weight:700">SERVING</span>';
-        else if (!m.supported) status = '<span style="color:var(--dimmer)">unsupported (' + esc(m.model_type) + ")</span>";
-        else if (a && a.fits) status = '<span style="color:var(--green);font-weight:600">fits</span>';
-        else status = '<span style="color:var(--red);font-weight:600">too big</span>';
-        // web-ui-pass-plan.md #20: max_safe_context is meaningful whenever
-        // it's > 0, even when `fits` is false at the library's default 8192
-        // probe context — e.g. a model that doesn't fit at 8192 tokens but
-        // does fit at a smaller context still gets a real number here rather
-        // than an uninformative "—". predicted_decode_tps stays gated on
-        // `fits` since it's only computed for the fitting case server-side.
-        const safeCtx = m.supported && a && a.max_safe_context > 0 ? num(a.max_safe_context) : "—";
-        return "<tr" + (m.serving ? ' class="you"' : "") + "><td>" + esc(m.repo_id) +
-          (m.vision ? ' · <span style="color:var(--dim)">vision</span>' : "") +
-          '</td><td class="num">' + gb(m.size_bytes) + "</td><td>" + status + "</td>" +
-          '<td class="num">' + safeCtx + "</td>" +
-          '<td class="num">' + (m.supported && a && a.fits ? a.predicted_decode_tps.toFixed(0) + " tok/s" : "—") + "</td></tr>";
-      }).join("");
-  }
-
-  async function loadFit() {
-    let f;
-    try { f = await fetch("/fit").then((r) => r.json()); } catch { return; }
-    fitLoaded = true;
-    const r = f.report || {};
-    if (f.measured_decode_tps) {
-      $("st-tps").textContent = f.measured_decode_tps.toFixed(1);
-      $("st-tps").closest(".card").querySelector("h3").textContent = "Decode · measured";
-      $("st-tps-cap").textContent = "mlx-bun benchmark on this machine · predicted " + (f.typical_decode_tps || 0).toFixed(1) + " at " + num(f.typical_context_tokens) + " ctx";
-    } else if (f.typical_decode_tps) {
-      $("st-tps").textContent = f.typical_decode_tps.toFixed(1);
-      $("st-tps-cap").textContent = "at " + num(f.typical_context_tokens) + " context · " + (r.predicted_decode_tps || 0).toFixed(1) + " tok/s at the " + num(f.context_tokens) + " max (full-KV reads)";
-    } else {
-      $("st-tps").textContent = (r.predicted_decode_tps || 0).toFixed(1);
-    }
-    $("st-m-ram").textContent = gb(f.machine && f.machine.ram_bytes);
-    $("st-m-bw").textContent = (f.machine && f.machine.bandwidth_gbs || "—") + " GB/s";
-    $("st-m-fits").innerHTML = r.fits ? '<span style="color:var(--green);font-weight:700">FITS</span>' : '<span style="color:var(--red);font-weight:700">DOES NOT FIT</span>';
-    $("st-fit-ctx").textContent = num(f.context_tokens);
-    $("st-f-weights").textContent = gb(r.weights_bytes);
-    $("st-f-kv").textContent = gb(r.kv_bytes);
-    $("st-f-transient").textContent = gb(r.transient_bytes);
-    $("st-f-total").textContent = gb(r.total_bytes) + " / " + gb(r.usable_bytes);
-    $("st-fit-bar").style.width = r.usable_bytes ? Math.min(100, 100 * r.total_bytes / r.usable_bytes) + "%" : "0%";
-
-    $("st-sku-ctx").textContent = num(f.sku_matrix_ctx);
-    const myRam = Math.round((f.machine && f.machine.ram_bytes || 0) / 2 ** 30);
-    const myChip = (f.machine && f.machine.chip) || null;
-    const rows = f.sku_matrix || [];
-    let youIdx = rows.findIndex((r) => myChip && r.sku === myChip && r.ram_gb === myRam);
-    if (youIdx < 0 && myChip) {
-      let best = Infinity;
-      rows.forEach((r, i) => { if (r.sku === myChip && Math.abs(r.ram_gb - myRam) < best) { best = Math.abs(r.ram_gb - myRam); youIdx = i; } });
-    }
-    if (youIdx < 0) youIdx = rows.findIndex((r) => r.ram_gb === myRam);
-    $("st-sku-body").innerHTML = rows.map((row, i) => {
-      const you = i === youIdx;
-      const dimCls = row.fits ? "num" : "num fit-no";
-      return "<tr" + (you ? ' class="you"' : "") + "><td>" + esc(row.sku) + (you ? " · <b>this machine</b>" : "") +
-        '</td><td class="num">' + row.ram_gb + " GB</td>" +
-        '<td class="' + (row.fits ? "fit-yes" : "fit-no") + '">' + (row.fits ? "fits" : "no") + "</td>" +
-        '<td class="' + dimCls + '">' + (row.max_context > 0 ? num(row.max_context) : "0 — weights alone don’t fit") + "</td>" +
-        '<td class="' + dimCls + '">' + (row.decode_tps > 0 ? "~" + row.decode_tps.toFixed(0) + " tok/s" : "—") + "</td></tr>";
-    }).join("");
-  }
-
-  return {
-    init() {
-      // trigger scroll reveals once mounted
-      const page = $("status-page");
-      requestAnimationFrame(() => page.classList.add("lit"));
-      page.classList.add("lit");
-    },
-    enter() {
-      tick();
-      timer = setInterval(tick, 2000);
-      loadLibrary();
-      libTimer = setInterval(loadLibrary, 15_000);
-    },
-    leave() {
-      clearInterval(timer); timer = null;
-      clearInterval(libTimer); libTimer = null;
-    },
-    // Exposed so a quantize job's `done` event (this same controller's own
-    // quantize flow, see controllers.quantize below) can force an immediate
-    // refresh instead of waiting up to 15s — the server invalidates its
-    // /library cache the moment the job completes (server.ts onComplete),
-    // so an immediate re-fetch is guaranteed fresh, not a race.
-    refreshLibrary: loadLibrary,
-  };
-})();
-
-/* ════════════════════════════════════════════════════════════════════
-   BOOT
-   ════════════════════════════════════════════════════════════════════ */
-if (!location.hash) location.replace("#/chat");
-router();
-pollIdentity();
-setInterval(pollIdentity, 4000);
-</script>
+<!-- The app itself: GENERATED bundle of src/web/src/*.ts (plan §7/§9 Phase 2
+     module split), built by `bun scripts/build-web.ts` into src/web/app.js
+     and served by src/server.ts at /assets/app.js — see that file's header
+     comment. `defer` (like hljs.js above) means both scripts run in document
+     order at DOMContentLoaded, after the DOM this script queries with $()
+     is fully parsed. Edit src/web/src/*.ts, never this bundle or this tag. -->
+<script defer src="/assets/app.js"></script>
 </body>
 </html>

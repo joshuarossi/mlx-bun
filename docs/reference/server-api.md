@@ -629,6 +629,129 @@ plan); `{"yes": true}` is required or the request 400s, mirroring the CLI's
 Errors follow the same `{ "ok": false, "error": "…" }` shape as the other
 `/api/*` job routes.
 
+## GET /api/memory/\* · POST /api/memory/init
+
+Thin loopback JSON wrappers over `src/memory/vault.ts` for the web chat's
+Memory panel (docs/design/web-chat-redesign.md §5.5) — same loopback-only
+admin-route posture as `/api/gc/*`, no separate auth. Handlers live in
+`src/memory/rest.ts`; they never touch the agent-tool surface
+(`src/memory/tools.ts`), which stays read-only and unchanged. Every route
+below degrades gracefully — a missing vault, an unknown article, or a bad
+param returns `{ "ok": false, ... }` (with an appropriate HTTP status), never
+a 500 or an unhandled throw.
+
+When no vault exists yet, every `GET` route (except `/init`) returns:
+
+```jsonc
+{ "ok": false, "enabled": false, "error": "no memory vault yet", "root": "…" }
+```
+
+`GET /api/memory/status` — `vaultStatus()` as JSON:
+
+```jsonc
+{ "ok": true, "enabled": true, "status": { "root": "…", "exists": true, "articleCount": 12, "referenceCount": 9, "isGitRepo": true, "recentArticles": [{ "article": "…", "mtimeMs": 0 }] } }
+```
+
+`GET /api/memory/list` — article stems plus `Reference/*` doc ids, kept
+separate (mirrors `memory_list`):
+
+```jsonc
+{ "ok": true, "articles": ["Alpha", "Beta"], "reference": ["Reference/mlx-bun_README"] }
+```
+
+`GET /api/memory/search?q=<query>&scope=all|articles|reference&limit=50` —
+wraps `searchArticles`; same summaries/hits shape the `memory_search` tool
+formats from:
+
+```jsonc
+{ "ok": true, "summaries": [{ "article": "…", "occurrences": 3, "matched_terms": ["…"] }], "hits": [{ "article": "…", "anchor": "…", "line": 10, "excerpt": "…" }] }
+```
+
+`GET /api/memory/article?name=<article>` — rendered source plus the
+deterministic metadata the panel needs to render it (infobox, lead, series
+banner, section skeleton) without re-parsing client-side; 404s
+`{ "ok": false }` for an unknown name:
+
+```jsonc
+{ "ok": true, "name": "…", "path": "…", "content": "# …", "infobox": { "type": "…", "entityKind": "thing", "fields": [] }, "lead": "…", "series": null, "structure": [] }
+```
+
+`GET /api/memory/links?name=<article>` — inbound/outbound wikilinks (same
+data `memory_links` resolves); articles only, not `Reference/*` (matching
+the tool's own scope):
+
+```jsonc
+{ "ok": true, "name": "…", "outbound": ["…"], "inbound": ["…"] }
+```
+
+`GET /api/memory/history?name=<article>&limit=50` — the article's git log
+(read-only `git log` plumbing on the vault's own repo, via `Bun.spawn` —
+never a shell string):
+
+```jsonc
+{ "ok": true, "name": "…", "isGitRepo": true, "entries": [{ "hash": "…", "date": "YYYY-MM-DD", "subject": "…" }] }
+```
+
+`GET /api/memory/diff?name=<article>&rev=<hash>` — that commit's diff for
+the article (`git show <rev> -- <path>`). `rev` must match
+`/^[0-9a-f]{4,40}$/` (a bare commit hash — never a ref expression like
+`HEAD~1` or `main^`) or the request 400s before touching git; `name` is
+resolved through the same existence-checked normalization `readArticle`
+uses, so a path-traversal or otherwise-invalid name 404s rather than
+reaching the `git` argv:
+
+```jsonc
+{ "ok": true, "name": "…", "rev": "…", "diff": "diff --git a/articles/…" }
+```
+
+`POST /api/memory/init` with optional body `{"path"?: string}` — the
+first-run consent-card backend. Delegates to the exact same `setupVault()`
+the CLI's `mlx-bun memory init` calls (idempotent: create dirs, write
+README + Meta pages only if missing, git init + initial commit); omits only
+the CLI's interactive extras (seed-from-existing-vault prompt, nightly
+schedule prompt), which stay TTY-only. `path`, if given, must resolve under
+the default vault root or the OS temp directory — `setupVault()` mkdir's
+into it and `git init`s it if it isn't already a repo, so anything outside
+those trees 400s before touching the filesystem rather than letting a
+caller redirect vault setup at an arbitrary directory:
+
+```jsonc
+{ "ok": true, "result": { "root": "…", "created": ["…"], "gitInitialized": true, "alreadySetUp": false }, "status": { "root": "…", "exists": true, "articleCount": 0, "referenceCount": 9, "isGitRepo": true, "recentArticles": [] } }
+```
+
+## GET /api/settings/tool-approvals · DELETE /api/settings/tool-approvals
+
+The web chat's durable "always allow this tool" list for gated tools
+(`bash`/`edit`/`write`) — docs/design/web-chat-redesign.md §5.4/§6.5/§9
+Phase 2, risk #6. Backed by `~/.mlx-bun/tool-approvals.json`
+(`src/tool-approvals.ts`), a versioned `{version, allows}` file (same
+plain-JSON-at-0600 convention as `~/.mlx-bun/hf.json`) keyed by stable tool
+NAME, not per-call arguments — "always allow bash" means every future
+`bash` call skips the browser's approval card, on every chat and every
+browser tab, until forgotten. These two routes are read/forget only:
+granting an always-allow happens through the approval card itself (the
+`approval` WS frame on `/ws/chat`, `alwaysAllow: true`), never a bare
+settings-form POST.
+
+`GET /api/settings/tool-approvals`:
+
+```jsonc
+{ "ok": true, "alwaysAllow": ["bash", "edit"] }
+```
+
+`DELETE /api/settings/tool-approvals` with body `{"tool": "bash"}` —
+revokes one tool's always-allow (idempotent; forgetting an entry that
+isn't present is not an error). Returns the updated set:
+
+```jsonc
+{ "ok": true, "alwaysAllow": ["edit"] }
+```
+
+Separately, `GET /api/settings/hf-token` / `POST /api/settings/hf-token`
+manage the Hugging Face write token the same settings modal's other
+section uses (see the `upload` CLI command in [cli.md](./cli.md) for the
+push-to-hub flow this token drives).
+
 ## GET /downloads
 
 Snapshot of the last 5 model downloads (active, completed, or errored)
@@ -689,8 +812,13 @@ the prediction.
 
 ## Adapters (LoRA hot-swap)
 
-- `GET /v1/adapters` — `{ adapters: [{ id, path, rank, scale, size_bytes, mounted_layers }] }`
-  — currently-mounted adapters only.
+- `GET /v1/adapters` — `{ adapters: [{ id, path, rank, scale, size_bytes,
+  mounted_layers, ram_bytes }] }` — currently-mounted adapters only.
+  `ram_bytes` is the actual resident size of the adapter's mounted
+  `lora_a`/`lora_b` arrays (summed `MlxArray.nbytes` — real RAM cost while
+  mounted, not a guess from the on-disk file size); the web chat's adapter
+  routing table (§5.6 of `docs/design/web-chat-redesign.md`) shows this per
+  loaded adapter.
 - `GET /v1/adapters/available` — `{ adapters: [{ id, path, rank, scale,
   base_model, mounted, compatible }] }` — every adapter found on disk
   (`~/.cache/mlx-bun-finetunes`, `~/.cache/mlx-bun/adapters`), unfiltered.
@@ -700,13 +828,21 @@ the prediction.
   The web chat's adapter chip uses `compatible` to gray out entries it
   won't let you select rather than hiding them.
 - `POST /v1/adapters` — `{ "id": "...", "path": "/dir" }`; mounts
-  through the generation queue (never races a forward pass). 400 on
-  shape/compat mismatch — validation is all-or-nothing.
+  through the generation queue (never races a forward pass). Response:
+  `{ id, mounted_layers, rank, scale, ram_bytes }`. 400 on shape/compat
+  mismatch — validation is all-or-nothing.
 - `DELETE /v1/adapters/<id>` — unmount; 404 if not mounted.
 
-Select per request with the `adapter` body field. Prompt-cache entries
-are namespaced per adapter spec, so switching adapters never reuses
-another adapter's KV.
+Select per request with the `adapter` body field, which also accepts a
+composed spec — `"a+b"` (or `"a,b"`) stacks two mounted adapters, their
+LoRA residuals summed in order (`AdapterManager.resolveSpec` /
+`parseAdapterSpec` in `src/lora.ts`); every named id must already be
+mounted or the request 400s with the unknown id named. The web chat's
+adapter routing table exposes this as a "stack" action on top of the
+composer's single-select quick-switcher. Prompt-cache entries are
+namespaced per adapter spec (including composed ones), so switching
+adapters — or switching which ones are stacked — never reuses another
+combination's KV.
 
 `serve --adapter <dir>` (alias `--adapter-path`, mlx_lm.server's
 spelling) mounts an adapter at startup through this same machinery and

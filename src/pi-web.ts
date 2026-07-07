@@ -49,6 +49,7 @@ import { buildPiAgentSurface } from "./pi-session";
 import { buildPiProvider, DEFAULT_CONTEXT_WINDOW, PI_LOCAL_MODEL_ID } from "./pi-provider";
 import { downloadsSnapshot } from "./download";
 import { getLane, type Lane } from "./serve/lane-registry";
+import { isToolAlwaysAllowed, setToolAlwaysAllowed, listAlwaysAllowedTools } from "./tool-approvals";
 
 /**
  * Tools that never mutate the user's machine; auto-allowed without a browser
@@ -70,16 +71,24 @@ const WELCOME_TOOLS = ["read", "web_search"] as const;
 
 /**
  * The web chat session's tool allowlist: the two welcome tools, plus the
- * memory/reference read tools whenever the surface has memory enabled. The
- * system prompt (surface.memoryHint) and the bundled memory skill instruct
- * the model to call memory_resolve/memory_read/… — pi treats `tools` as an
+ * memory/reference read tools whenever the surface has memory enabled, plus
+ * — opt-in only (plan §5.4/§6.5/§9 Phase 2's "let the agent touch files on
+ * this machine" toggle, default OFF) — the three GATED_TOOLS (bash/edit/
+ * write) and the read-only grep/find/ls that make them useful. The system
+ * prompt (surface.memoryHint) and the bundled memory skill instruct the
+ * model to call memory_resolve/memory_read/… — pi treats `tools` as an
  * allowlist, so leaving them out makes every such call fail. All additions
- * are in READ_ONLY_TOOLS (no approval round-trip).
+ * except the coding tools are in READ_ONLY_TOOLS (no approval round-trip);
+ * bash/edit/write ARE gated — this is precisely what makes the
+ * already-built approval card fire for the first time once codingTools is
+ * on (previously dead code: nothing in the default surface could ever
+ * reach GATED_TOOLS).
  */
-export function webChatToolAllowlist(memoryEnabled: boolean): string[] {
+export function webChatToolAllowlist(memoryEnabled: boolean, codingTools = false): string[] {
   return [
     ...WELCOME_TOOLS,
     ...(memoryEnabled ? [...MEMORY_TOOL_NAMES, ...REFERENCE_TOOL_NAMES] : []),
+    ...(codingTools ? ["grep", "find", "ls", ...GATED_TOOLS] : []),
   ];
 }
 
@@ -146,24 +155,54 @@ type PiWs = ServerWebSocket<PiWsData>;
 
 // ---- WS protocol message shapes --------------------------------------
 
-/** Decision a browser returns for a gated tool call. */
-type ApprovalDecision = "allow" | "deny";
+/** Decision a browser returns for a gated tool call. `editedArgs`, when
+ *  present on an "allow", replaces the tool's proposed input before it runs
+ *  (LM Studio's editable-args pattern — plan §5.4/§6.5). `alwaysAllow` marks
+ *  the decision as "and remember this tool" — handled by resolveApproval,
+ *  which persists it to the durable tool-approvals config (src/tool-
+ *  approvals.ts) before settling the pending promise. */
+export type ApprovalDecision = "allow" | "deny";
 
 /** An image attachment from the browser: base64 (no data: prefix) + mime. */
-interface ImageAttachment {
+export interface ImageAttachment {
   data: string;
   mimeType: string;
 }
 
-/** Client -> server frames. */
-type ClientMessage =
+/** Client -> server frames. Exported type-only for the web frontend
+ *  (src/web/src/*.ts import it via `import type` — see tsconfig.web.json
+ *  and scripts/build-web.ts) so the WS contract is checked at compile time
+ *  on both ends instead of drifting between server TS and untyped inline
+ *  browser JS (the observed Phase-0 bug class). */
+export type ClientMessage =
   | { type: "prompt"; text: string; images?: ImageAttachment[] }
   | { type: "abort" }
-  | { type: "approval"; callId: string; decision: ApprovalDecision }
+  // `editedArgs`: when the user edited the proposed arguments in the
+  // approval card's textarea before approving, the (re-parsed) JSON object
+  // to substitute for the tool's original input — mutated onto the pi SDK's
+  // ToolCallEvent.input in place (the SDK's documented mutation contract;
+  // see installApprovalGate). Ignored on "deny". `alwaysAllow`: persist this
+  // tool to the durable always-allow config (src/tool-approvals.ts) so
+  // future calls to the SAME TOOL NAME skip the card entirely, on this and
+  // every other session.
+  | { type: "approval"; callId: string; decision: ApprovalDecision; editedArgs?: Record<string, unknown>; alwaysAllow?: boolean }
   // Toggle the model's reasoning channel on/off (only meaningful when the
   // model supports thinking — ready.thinking). Maps to Pi's session thinking
   // level: "medium" (on) ↔ "off". Pi sends it as enable_thinking to the server.
   | { type: "set_thinking"; enabled: boolean }
+  // Opt-in toggle (plan §5.4/§6.5/§9 Phase 2, default OFF): "let the agent
+  // touch files on this machine". Persisted per-browser by the client
+  // (localStorage `mlxbun.codingTools`); the ALLOWLIST decision is enforced
+  // here, server-side. buildPiAgentSurface's tool list is fixed for the
+  // life of an AgentSession (pi's DefaultResourceLoader config is baked in
+  // at createAgentSessionServices time), so this can't rewire an
+  // in-progress session — it takes effect starting with the next
+  // new_session/open_session/fork_session (createRuntimeFactory reads
+  // this.codingToolsRequested fresh every time the SDK calls it, including
+  // from AgentSessionRuntime.newSession()'s internal re-invocation). The
+  // `coding_tools` ServerMessage below reports the honest current-vs-pending
+  // state so the UI can say so instead of implying it applies immediately.
+  | { type: "set_coding_tools"; enabled: boolean }
   // Select the active LoRA adapter for subsequent turns (null = none/base).
   // app.html mounts it (POST /v1/adapters) before sending this; the
   // before_provider_request hook injects it into the provider payload.
@@ -187,6 +226,14 @@ type ClientMessage =
       frequency_penalty?: number | null;
       seed?: number | null;
     }
+  // Per-session USER system prompt, layered ON TOP OF (not replacing) the
+  // built-in surface prompt (buildWebChatSystemPrompt + memoryHint). null
+  // clears it. Applied by the before_agent_start hook on the NEXT turn (pi
+  // calls it fresh inside every session.prompt(), so this is a true
+  // per-turn injection, not a session-creation-only setting — see
+  // installSystemPromptHook). Presets v1 (composer.ts) send this alongside
+  // set_sampling to apply a saved bundle.
+  | { type: "set_system_prompt"; text: string | null }
   // Session management (recent-chats sidebar + new chat).
   | { type: "new_session" }
   | { type: "list_sessions" }
@@ -216,8 +263,8 @@ export interface ReadyGenDefaults {
   topK: number | null;
 }
 
-/** Server -> client frames. */
-type ServerMessage =
+/** Server -> client frames. Exported type-only — see ClientMessage above. */
+export type ServerMessage =
   // `vision`: whether the loaded model can accept images (drives the UI's
   // image-attach affordance — false on e4b until the SigLIP sidecar lands).
   // `audio`: whether the loaded model can accept `input_audio` parts (audio
@@ -256,6 +303,17 @@ type ServerMessage =
   // Context-window usage indicator. tokens/percent are null right after a
   // compaction until the next assistant reply (pi can't estimate yet).
   | { type: "context"; tokens: number | null; contextWindow: number; percent: number | null }
+  // Effective vs. pending codingTools state (set_coding_tools above).
+  // `active` is what the CURRENT session actually built with (gates
+  // whether the approval card can ever fire); `pending` is the browser's
+  // most recent request, which only takes effect on the next
+  // new/opened/forked session — surfaced so the settings copy can say
+  // "will apply to your next new chat" instead of lying about immediacy.
+  | { type: "coding_tools"; active: boolean; pending: boolean }
+  // Full always-allow set for THIS machine (src/tool-approvals.ts), sent on
+  // `ready` and after any change, so the settings panel can list/forget
+  // durable per-tool approvals without a separate REST round-trip.
+  | { type: "tool_approvals"; alwaysAllow: string[] }
   | { type: "error"; message: string };
 
 // ---- Session serialization (pure, unit-tested) -----------------------
@@ -630,6 +688,39 @@ export function injectSampling(
 }
 
 /**
+ * Layer the user's custom system prompt onto (not replacing) the built-in
+ * surface prompt for one turn. Called from the `before_agent_start` hook
+ * body with `event.systemPrompt` (the fully-assembled base: identity +
+ * memoryHint) and the connection's stored override. Returns undefined when
+ * there's nothing to layer (null/empty override), so the hook can leave
+ * pi's base prompt alone — mirrors injectAdapter/injectSampling's "undefined
+ * means unchanged" contract. Pure + exported for unit testing.
+ */
+export function injectSystemPrompt(base: string, custom: string | null | undefined): string | undefined {
+  const trimmed = custom?.trim();
+  if (!trimmed) return undefined;
+  return `${base}\n\n---\n\nThe user has set a custom instruction for this chat. Follow it alongside (not instead of) the guidance above:\n\n${trimmed}`;
+}
+
+/**
+ * Apply the browser's edited tool arguments onto pi's mutable
+ * ToolCallEvent.input IN PLACE, per the SDK's documented tool_call
+ * mutation contract (installApprovalGate's own doc comment quotes it: no
+ * return-value channel exists for modified args). A no-op when
+ * `editedArgs` is undefined (the common "approved as proposed" case).
+ * Replaces the input's keys wholesale (delete-then-assign) rather than a
+ * shallow merge, so a key the user removed from the textarea actually
+ * disappears from the call instead of lingering from the original
+ * proposal. Pure enough to unit test the mutation shape without a live
+ * ExtensionAPI/ToolCallEvent — takes any mutable record, not the SDK type.
+ */
+export function applyEditedArgs(input: Record<string, unknown>, editedArgs: Record<string, unknown> | undefined): void {
+  if (!editedArgs) return;
+  for (const key of Object.keys(input)) delete input[key];
+  Object.assign(input, editedArgs);
+}
+
+/**
  * One browser connection's pi agent. Owns the AgentSession, the event
  * subscription, and the pending tool-approval handshakes.
  */
@@ -647,6 +738,23 @@ class PiWebSession {
    *  Read by the before_provider_request hook; unset fields fall back to the
    *  server's mode-aware recommended defaults. */
   private sampling: SamplingOverrides = {};
+  /** User's custom system-prompt text for this connection (set via
+   *  set_system_prompt), null = none. Read by the before_agent_start hook
+   *  and layered onto the built-in surface prompt on the NEXT turn — see
+   *  installSystemPromptHook/injectSystemPrompt. */
+  private systemPrompt: string | null = null;
+  /** Requested codingTools state (set via set_coding_tools), read fresh by
+   *  createRuntimeFactory every time the SDK invokes it. Starts false — the
+   *  toggle in settings defaults OFF, and a connection that never sends
+   *  set_coding_tools must never get bash/edit/write. */
+  private codingToolsRequested = false;
+  /** What the CURRENT (already-built) session's tool surface actually
+   *  contains — set only inside createRuntimeFactory, so it always reflects
+   *  reality rather than the latest request. Read by the `coding_tools`
+   *  ServerMessage and by installApprovalGate (whether GATED_TOOLS is even
+   *  reachable this session, informational only — the allowlist itself is
+   *  the real enforcement). */
+  private codingToolsActive = false;
 
   /** Per-connection invariants, built once in start() and reused across
    *  session switches (new chat / resume / fork). */
@@ -659,7 +767,7 @@ class PiWebSession {
   private readonly sessionDir = join(homedir(), ".mlx-bun", "sessions");
 
   /** callId -> resolve(decision). Pending browser approvals in flight. */
-  private readonly pendingApprovals = new Map<string, (decision: ApprovalDecision) => void>();
+  private readonly pendingApprovals = new Map<string, (decision: ApprovalDecision, editedArgs?: Record<string, unknown>, alwaysAllow?: boolean) => void>();
   /** callId -> timer handle, so we can clear on resolve/dispose. */
   private readonly approvalTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -704,6 +812,8 @@ class PiWebSession {
       type: "ready", model: this.opts.modelId, vision: this.opts.vision, audio: this.opts.audio,
       thinking: this.opts.thinking, genDefaults: this.opts.genDefaults,
     });
+    this.sendCodingToolsState();
+    this.sendToolApprovals();
     this.sendHistory();
     await this.sendSessions();
   }
@@ -716,12 +826,24 @@ class PiWebSession {
 
       // Welcome-assistant tool surface: exactly two read-only tools —
       // `web_search` (current/external facts) and `read` (a local file the user
-      // points to). Both auto-allow (no approval round-trip). We deliberately
-      // do NOT expose web_fetch/weather/bash/edit/write/grep/find/ls: a 1B model
-      // over-calls a big toolset. With thinking ON (the web chat default) it
-      // uses these two appropriately; build the web tools (for the web_search
-      // definition) then restrict the allowlist to the two names below.
+      // points to) — UNLESS the user opted into codingTools (settings toggle,
+      // default OFF), in which case bash/edit/write/grep/find/ls join the
+      // allowlist too. We deliberately do NOT expose web_fetch/weather: a 1B
+      // model over-calls a big toolset. With thinking ON (the web chat
+      // default) it uses these appropriately; build the web tools (for the
+      // web_search definition) then restrict the allowlist below.
+      //
+      // codingTools:false here is NOT the coding-tools gate (that lives in
+      // webChatToolAllowlist below, which is the array pi actually receives
+      // as `tools:` — see the comment at that call site). buildPiAgentSurface's
+      // own codingTools flag only affects surface.tools, which pi-web.ts never
+      // reads; kept false so surface.tools (unused here) doesn't silently
+      // imply a wider allowlist than webChatToolAllowlist actually grants.
       const surface = await buildPiAgentSurface({ webTools: true, codingTools: false });
+      // Snapshot what THIS session is actually being built with — read fresh
+      // here (not at set_coding_tools time) so `coding_tools`'s `active`
+      // field is always true reality, never a stale request.
+      this.codingToolsActive = this.codingToolsRequested;
       const webPrompt = buildWebChatSystemPrompt(this.opts.readOnly, {
         modelId: this.opts.modelId,
         downloadingModel: downloadsSnapshot().find(
@@ -729,7 +851,7 @@ class PiWebSession {
         )?.repoId ?? null,
       }, { hasTools: WELCOME_TOOLS.length > 0 }) + surface.memoryHint;
       if (process.env.MLX_BUN_PI_DEBUG) {
-        console.error(`[pi-web] prompt ${WEB_CHAT_PROMPT_VERSION} sha=${webChatPromptFingerprint(webPrompt)} memory=${surface.memoryEnabled ? "on" : "off"}`);
+        console.error(`[pi-web] prompt ${WEB_CHAT_PROMPT_VERSION} sha=${webChatPromptFingerprint(webPrompt)} memory=${surface.memoryEnabled ? "on" : "off"} codingTools=${this.codingToolsActive ? "on" : "off"}`);
       }
       const services = await createAgentSessionServices({
         cwd,
@@ -747,6 +869,7 @@ class PiWebSession {
           extensionFactories: [
             (pi) => this.installApprovalGate(pi),
             (pi) => this.installAdapterHook(pi),
+            (pi) => this.installSystemPromptHook(pi),
           ],
         },
       });
@@ -762,8 +885,13 @@ class PiWebSession {
           // exposes only names in this list, so web_fetch/weather stay defined
           // but hidden. Memory/reference tools ride along when the surface has
           // memory enabled — the prompt + memory skill advertise them, so they
-          // must be callable (webChatToolAllowlist).
-          tools: webChatToolAllowlist(surface.memoryEnabled),
+          // must be callable (webChatToolAllowlist). codingTools is further
+          // ANDed with !readOnly here: a read-only server (--read-only) never
+          // advertises bash/edit/write even if the browser opted in, since
+          // installApprovalGate would deny every one of them anyway — no
+          // point offering (and prompting the model to attempt) a tool that
+          // can only ever fail.
+          tools: webChatToolAllowlist(surface.memoryEnabled, this.codingToolsActive && !this.opts.readOnly),
           customTools: surface.customTools,
         })),
         services,
@@ -883,18 +1011,24 @@ class PiWebSession {
     return p === root || p.startsWith(root + "/");
   }
 
-  /** Start a fresh chat (old one stays on disk, resumable from the sidebar). */
+  /** Start a fresh chat (old one stays on disk, resumable from the sidebar).
+   *  Re-invokes createRuntimeFactory (either directly via replaceRuntime, or
+   *  through AgentSessionRuntime.newSession()'s own internal call to the
+   *  SAME factory) — so this is the earliest point a codingTools toggle
+   *  flipped mid-session actually takes effect (see set_coding_tools). */
   private async newSession(): Promise<void> {
     if (!this.runtime) {
       await this.replaceRuntime(SessionManager.create(this.cwd, this.sessionDir));
     } else {
       await this.runtime.newSession();
     }
+    this.sendCodingToolsState();
     this.sendHistory();
     await this.sendSessions();
   }
 
-  /** Resume an existing chat by file path. */
+  /** Resume an existing chat by file path. Same "factory re-runs, codingTools
+   *  becomes active if pending" note as newSession above. */
   private async openSession(path: string): Promise<void> {
     if (!this.isUnderSessionDir(path)) {
       this.send({ type: "error", message: "invalid session path" });
@@ -902,6 +1036,7 @@ class PiWebSession {
     }
     if (!this.runtime) await this.replaceRuntime(SessionManager.open(path, this.sessionDir));
     else await this.runtime.switchSession(path);
+    this.sendCodingToolsState();
     this.sendHistory();
     await this.sendSessions();
   }
@@ -915,6 +1050,7 @@ class PiWebSession {
     // File-level fork is not a runtime primitive, so create the target
     // SessionManager then replace the runtime through the same SDK factory.
     await this.replaceRuntime(SessionManager.forkFrom(path, this.cwd, this.sessionDir));
+    this.sendCodingToolsState();
     this.sendHistory();
     await this.sendSessions();
   }
@@ -1037,7 +1173,34 @@ class PiWebSession {
     });
   }
 
-  /** Register the tool_call approval gate on the inline extension. */
+  /** Register the before_agent_start hook that layers the user's custom
+   *  system prompt onto the built-in surface prompt. This fires fresh inside
+   *  EVERY session.prompt() call (pi passes the freshly-built base prompt
+   *  each time, see agent-session.js's emitBeforeAgentStart call site), so a
+   *  set_system_prompt sent mid-session takes effect starting with the very
+   *  next turn — there is no "only at session creation" limitation here, and
+   *  the UI copy should say so plainly (it applies going forward, not
+   *  retroactively to already-sent turns). Returning undefined leaves pi's
+   *  base prompt (identity + memoryHint) untouched. */
+  private installSystemPromptHook(pi: ExtensionAPI): void {
+    pi.on("before_agent_start", (event) => {
+      const merged = injectSystemPrompt(event.systemPrompt, this.systemPrompt);
+      return merged !== undefined ? { systemPrompt: merged } : undefined;
+    });
+  }
+
+  /**
+   * Register the tool_call approval gate on the inline extension.
+   *
+   * Approval-fatigue defaults (web-chat-redesign.md §5.4 matrix — verified
+   * here, not just asserted): READ_ONLY_TOOLS NEVER prompt, checked first
+   * and unconditionally — no config, always-allow list, or codingTools
+   * state can make a read-only tool gated, and no combination of state can
+   * make a GATED_TOOLS member skip the card except the durable
+   * tool-approvals config (isToolAlwaysAllowed) or read-only-mode's
+   * outright denial. This keeps the fatigue budget spent only on tools
+   * that actually mutate the machine.
+   */
   private installApprovalGate(pi: ExtensionAPI): void {
     pi.on("tool_call", async (event: ToolCallEvent) => {
       const tool = event.toolName;
@@ -1048,7 +1211,9 @@ class PiWebSession {
       // Read-only tools never need approval.
       if (READ_ONLY_TOOLS.has(tool)) return undefined;
 
-      // Anything mutating is denied outright in read-only mode.
+      // Anything mutating is denied outright in read-only mode — before the
+      // durable always-allow list is even consulted, since --read-only is a
+      // server operator's hard constraint, not a per-tool user preference.
       if (this.opts.readOnly && GATED_TOOLS.has(tool)) {
         return { block: true, reason: "Read-only session: mutating tools are disabled." };
       }
@@ -1057,9 +1222,28 @@ class PiWebSession {
       // surface, but be safe): allow.
       if (!GATED_TOOLS.has(tool)) return undefined;
 
+      // Durable "always allow this tool" (risk #6): a prior approval card on
+      // THIS machine checked the box, persisting to ~/.mlx-bun/tool-
+      // approvals.json (src/tool-approvals.ts). Skip the round-trip entirely
+      // — no card, no wait, matching every session and every browser tab.
+      if (isToolAlwaysAllowed(tool)) return undefined;
+
       const decision = await this.requestApproval(event);
-      if (decision === "deny") {
+      if (decision.decision === "deny") {
         return { block: true, reason: "Denied by user." };
+      }
+      // Editable arguments (LM Studio's pattern): the SDK's documented
+      // mutation contract is "mutate event.input in place before returning"
+      // — there is no return-value channel for modified args (ToolCallEventResult
+      // is `{block?, reason?}` only). event.input is asserted as a mutable
+      // Record here since ToolCallEvent's per-tool variants type it as their
+      // specific input shape, but the mutation contract is untyped-record at
+      // the wire level (this mirrors how pi's own bundled permission-gate
+      // example extension does it).
+      applyEditedArgs(event.input as Record<string, unknown>, decision.editedArgs);
+      if (decision.alwaysAllow) {
+        setToolAlwaysAllowed(tool);
+        this.sendToolApprovals();
       }
       return undefined; // allow
     });
@@ -1069,15 +1253,15 @@ class PiWebSession {
    * Ask the browser to approve a gated tool call and await its decision.
    * Auto-denies after APPROVAL_TIMEOUT_MS or if the connection drops.
    */
-  private requestApproval(event: ToolCallEvent): Promise<ApprovalDecision> {
+  private requestApproval(event: ToolCallEvent): Promise<{ decision: ApprovalDecision; editedArgs?: Record<string, unknown>; alwaysAllow?: boolean }> {
     const callId = event.toolCallId;
-    return new Promise<ApprovalDecision>((resolve) => {
-      const settle = (decision: ApprovalDecision) => {
+    return new Promise((resolve) => {
+      const settle = (decision: ApprovalDecision, editedArgs?: Record<string, unknown>, alwaysAllow?: boolean) => {
         const timer = this.approvalTimers.get(callId);
         if (timer) clearTimeout(timer);
         this.approvalTimers.delete(callId);
         this.pendingApprovals.delete(callId);
-        resolve(decision);
+        resolve({ decision, editedArgs, alwaysAllow });
       };
 
       this.pendingApprovals.set(callId, settle);
@@ -1094,9 +1278,22 @@ class PiWebSession {
   }
 
   /** Resolve a pending approval from a browser `approval` frame. */
-  resolveApproval(callId: string, decision: ApprovalDecision): void {
+  resolveApproval(callId: string, decision: ApprovalDecision, editedArgs?: Record<string, unknown>, alwaysAllow?: boolean): void {
     const settle = this.pendingApprovals.get(callId);
-    if (settle) settle(decision);
+    if (settle) settle(decision, editedArgs, alwaysAllow);
+  }
+
+  /** Push the effective-vs-pending codingTools state (sent on ready and
+   *  after every set_coding_tools). */
+  private sendCodingToolsState(): void {
+    this.send({ type: "coding_tools", active: this.codingToolsActive, pending: this.codingToolsRequested });
+  }
+
+  /** Push the full durable always-allow set (sent on ready and after any
+   *  change), so the settings panel can list/forget approvals without a
+   *  separate REST round-trip. */
+  private sendToolApprovals(): void {
+    this.send({ type: "tool_approvals", alwaysAllow: listAlwaysAllowedTools() });
   }
 
   private onSessionEvent(event: AgentSessionEvent): void {
@@ -1140,6 +1337,19 @@ class PiWebSession {
       case "delete_session":
         this.deleteSession(msg.path);
         return;
+      case "set_coding_tools":
+        // Record the request; doesn't touch the ALREADY-BUILT session's tool
+        // surface (pi bakes tools/customTools in at createAgentSessionServices
+        // time — there is no live "add a tool to this running session" hook).
+        // Applied by createRuntimeFactory the next time the SDK calls it:
+        // new_session, open_session, fork_session, or a reconnect's initial
+        // start(). sendCodingToolsState reports both active (this session)
+        // and pending (the request just recorded) so the UI can be honest
+        // about "applies to your next new chat" rather than implying it's
+        // live now.
+        this.codingToolsRequested = !!msg.enabled;
+        this.sendCodingToolsState();
+        return;
     }
 
     const session = this.session;
@@ -1171,7 +1381,7 @@ class PiWebSession {
         await session.abort();
         return;
       case "approval":
-        this.resolveApproval(msg.callId, msg.decision);
+        this.resolveApproval(msg.callId, msg.decision, msg.editedArgs, msg.alwaysAllow);
         return;
       case "set_thinking":
         // Pi clamps to the model's available levels; a no-op for models
@@ -1204,6 +1414,12 @@ class PiWebSession {
           frequency_penalty: msg.frequency_penalty ?? null,
           seed: msg.seed ?? null,
         };
+        return;
+      case "set_system_prompt":
+        // Store verbatim (including whitespace-only/empty -> effectively
+        // cleared by injectSystemPrompt's trim+empty check); applied by the
+        // before_agent_start hook starting with the next turn.
+        this.systemPrompt = msg.text;
         return;
       case "regenerate":
         await this.regenerate();

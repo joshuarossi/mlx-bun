@@ -6,11 +6,13 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import type { AgentSessionEvent, SessionEntry, SessionInfo } from "@earendil-works/pi-coding-agent";
 import {
+  applyEditedArgs,
   buildWebChatSystemPrompt,
   deepestLeafFrom,
   findLastUserMessageEntry,
   injectAdapter,
   injectSampling,
+  injectSystemPrompt,
   mapEventToFrames,
   serializeHistory,
   toSessionListItems,
@@ -19,6 +21,7 @@ import {
 } from "../src/pi-web";
 import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "../src/memory/tools";
 import { clearLaneRegistry, recordLane } from "../src/serve/lane-registry";
+import { parseAdapterSpec } from "../src/lora";
 
 // Cast helper: the real AgentSessionEvent union is large; we only build
 // the fields mapEventToFrames reads, so narrow via `as`.
@@ -43,6 +46,27 @@ describe("injectAdapter (before_provider_request hook body)", () => {
     const p: Record<string, unknown> = { model: "x" };
     injectAdapter(p, "chunk");
     expect(p).toEqual({ model: "x" });
+  });
+
+  // Adapter routing table (plan §5.6/§9 Phase 2): the table's "stack a+b"
+  // action sends `{ type: "set_adapter", id: "a+b" }` — the same frame shape
+  // as a single-select, since `set_adapter`'s `id` is already `string | null`
+  // with no format restriction. This proves the composite id survives
+  // injectAdapter verbatim onto the wire (the pi-web half of the chain) and
+  // that src/lora.ts's own parser (parseAdapterSpec — the first step of
+  // AdapterManager.resolveSpec, the server-side half) splits it back into
+  // the two ids in order. resolveSpec itself additionally requires both ids
+  // to already be mounted (real, shape-validated adapter weights against a
+  // real base model) before it accepts the spec — that full HTTP round-trip
+  // is what tests/lora.test.ts's "per-request selection over HTTP" test
+  // exercises (MLX_BUN_TEST_LORA=1-gated, needs e4b weights). Together these
+  // two tests are the end-to-end proof with no untested link in between:
+  // nothing in the set_adapter frame, injectAdapter, or parseAdapterSpec
+  // rejects or mangles a composite id.
+  it("stacking: a composite 'a+b' selection is injected as one wire field and parses back to both ids in order", () => {
+    const out = injectAdapter({ model: "x", messages: [] }, "sft+dpo");
+    expect(out).toEqual({ model: "x", messages: [], adapter: "sft+dpo" });
+    expect(parseAdapterSpec((out as { adapter: string }).adapter)).toEqual(["sft", "dpo"]);
   });
 });
 
@@ -126,6 +150,73 @@ describe("injectSampling (before_provider_request hook body)", () => {
     expect(injectSampling({ model: "x" }, { repetition_penalty: 0, seed: 0 })).toEqual({
       model: "x", repetition_penalty: 0, seed: 0,
     });
+  });
+});
+
+// Per-chat system prompt (plan §9 Phase 2, beat matrix Axis 4): the
+// before_agent_start hook body. Layers the user's custom text onto (never
+// replacing) the built-in surface prompt pi hands in as event.systemPrompt
+// on every turn — see pi-web.ts's installSystemPromptHook.
+describe("injectSystemPrompt (before_agent_start hook body)", () => {
+  const base = "You are mlx-bun's built-in assistant.";
+
+  it("returns undefined when no custom prompt is set → pi's base prompt is left alone", () => {
+    expect(injectSystemPrompt(base, null)).toBeUndefined();
+    expect(injectSystemPrompt(base, undefined)).toBeUndefined();
+  });
+
+  it("returns undefined for an empty or whitespace-only custom prompt (treated as cleared)", () => {
+    expect(injectSystemPrompt(base, "")).toBeUndefined();
+    expect(injectSystemPrompt(base, "   \n\t  ")).toBeUndefined();
+  });
+
+  it("layers the custom text ONTO the base prompt — never drops the built-in surface", () => {
+    const out = injectSystemPrompt(base, "Answer only in French.");
+    expect(out).toContain(base);
+    expect(out).toContain("Answer only in French.");
+    // The base prompt must appear before the custom text (layered on top,
+    // not prepended-over — the built-in identity/tool guidance still leads).
+    expect(out!.indexOf(base)).toBeLessThan(out!.indexOf("Answer only in French."));
+  });
+
+  it("trims surrounding whitespace from the custom prompt before layering", () => {
+    const out = injectSystemPrompt(base, "  Be terse.  ");
+    expect(out).toContain("Be terse.");
+    expect(out).not.toContain("  Be terse.  ");
+  });
+
+  it("is layered as user-set, not confused with the base surface prompt", () => {
+    const out = injectSystemPrompt(base, "Custom instruction here.");
+    expect(out).toMatch(/user has set a custom instruction/i);
+  });
+});
+
+describe("applyEditedArgs (approval-card editable-arguments mutation, plan §5.4/§6.5)", () => {
+  it("is a no-op when nothing was edited (the common 'approved as proposed' case)", () => {
+    const input = { command: "ls -la" };
+    applyEditedArgs(input, undefined);
+    expect(input).toEqual({ command: "ls -la" });
+  });
+
+  it("mutates the SAME object in place (pi's tool_call contract: mutate event.input, no return channel)", () => {
+    const input: Record<string, unknown> = { command: "rm -rf /tmp/x" };
+    const ref = input;
+    applyEditedArgs(input, { command: "rm -rf /tmp/y" });
+    expect(ref).toBe(input); // identity preserved — same object pi holds a reference to
+    expect(input).toEqual({ command: "rm -rf /tmp/y" });
+  });
+
+  it("removes keys present in the original but absent from the edit (delete-then-assign, not a shallow merge)", () => {
+    const input: Record<string, unknown> = { file_path: "/tmp/a.txt", content: "old", extra_stale_key: 1 };
+    applyEditedArgs(input, { file_path: "/tmp/a.txt", content: "new" });
+    expect(input).toEqual({ file_path: "/tmp/a.txt", content: "new" });
+    expect("extra_stale_key" in input).toBe(false);
+  });
+
+  it("can add a key that wasn't in the original proposal", () => {
+    const input: Record<string, unknown> = { command: "ls" };
+    applyEditedArgs(input, { command: "ls", cwd: "/tmp" });
+    expect(input).toEqual({ command: "ls", cwd: "/tmp" });
   });
 });
 
@@ -342,10 +433,28 @@ describe("webChatToolAllowlist", () => {
     for (const t of REFERENCE_TOOL_NAMES) expect(allow).toContain(t);
   });
 
-  it("never widens beyond read-only tools (no bash/edit/write/web_fetch)", () => {
+  it("never widens beyond read-only tools by default (no bash/edit/write/web_fetch)", () => {
     for (const t of ["bash", "edit", "write", "web_fetch", "weather", "grep", "find", "ls"]) {
       expect(webChatToolAllowlist(true)).not.toContain(t);
+      expect(webChatToolAllowlist(true, false)).not.toContain(t);
     }
+  });
+
+  it("adds bash/edit/write/grep/find/ls ONLY when codingTools is explicitly true (plan §5.4/§6.5 opt-in toggle)", () => {
+    const allow = webChatToolAllowlist(true, true);
+    for (const t of ["bash", "edit", "write", "grep", "find", "ls", "read", "web_search"]) {
+      expect(allow).toContain(t);
+    }
+    // Still never exposes web_fetch/weather — those stay out regardless of
+    // codingTools (a 1B model over-calling a wide toolset, per WELCOME_TOOLS'
+    // own module comment).
+    expect(allow).not.toContain("web_fetch");
+    expect(allow).not.toContain("weather");
+  });
+
+  it("codingTools works independently of memoryEnabled", () => {
+    const allow = webChatToolAllowlist(false, true);
+    expect(allow).toEqual(["read", "web_search", "grep", "find", "ls", "bash", "edit", "write"]);
   });
 });
 

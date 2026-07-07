@@ -54,6 +54,10 @@ Both `mlx-bun pi` and the web chat expose these read-only tools:
 
 The tools are always registered. If no vault exists, they return a setup message instead of disappearing. Search/read results prefixed with `Reference/` are mlx-bun docs, not user memory articles.
 
+## Web chat REST surface
+
+The web chat's Memory panel talks to a separate, HTTP-only `/api/memory/*` route surface (status/list/search/article/links/history/diff + a `POST /api/memory/init` consent-card endpoint) — thin wrappers over the same vault read path above, documented in [server-api.md](server-api.md#get-apimemory--post-apimemoryinit). The agent-tool surface above is unaffected by it.
+
 ## Obsidian
 
 ```bash

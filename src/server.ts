@@ -22,11 +22,18 @@ import curveDesignerHtml from "./assets/curve-designer.html" with { type: "text"
 // for how hljs.js was built). Add new vendored assets the same way.
 import hljsJs from "./web/vendor/hljs.js" with { type: "text" };
 import hljsCss from "./web/vendor/hljs-theme.css" with { type: "text" };
+// The frontend bundle (plan §7/§9 Phase 2 module split): GENERATED from
+// src/web/src/*.ts by `bun scripts/build-web.ts` — see that file's header
+// and tests/web-build.test.ts (the freshness gate). Same
+// with { type: "text" } + /assets/<name> pattern as the vendored assets
+// above; app.html's <script defer src="/assets/app.js"> loads it.
+import appJs from "./web/app.js" with { type: "text" };
 import pkgJson from "../package.json" with { type: "json" };
 import { readFileSync } from "node:fs";
 const APP_PAGE = appHtml as unknown as string;
 const HLJS_JS = hljsJs as unknown as string;
 const HLJS_CSS = hljsCss as unknown as string;
+const APP_JS = appJs as unknown as string;
 const pkgVersion = (pkgJson as { version: string }).version;
 import { loadModelConfig, type KvQuantSpec, type ModelConfig, type TurboQuantScheme } from "./config";
 import { Weights } from "./weights";
@@ -2112,6 +2119,45 @@ export function createServer(
         return new Response("expected websocket", { status: 426 });
       }
 
+      // Memory REST wrappers (web-chat-redesign.md §2.3/§9 Phase 2): thin
+      // loopback JSON routes over src/memory/vault.ts for the web chat's
+      // Memory panel. Handlers live in src/memory/rest.ts (pure functions,
+      // no `ctx` dependency) so they're unit-testable without a loaded
+      // model; dispatch here just matches path+method. The agent-tool
+      // surface (src/memory/tools.ts) is untouched by this block.
+      if (url.pathname === "/api/memory/status" && request.method === "GET") {
+        const { handleMemoryStatus } = await import("./memory/rest");
+        return handleMemoryStatus();
+      }
+      if (url.pathname === "/api/memory/list" && request.method === "GET") {
+        const { handleMemoryList } = await import("./memory/rest");
+        return handleMemoryList();
+      }
+      if (url.pathname === "/api/memory/search" && request.method === "GET") {
+        const { handleMemorySearch } = await import("./memory/rest");
+        return handleMemorySearch(url);
+      }
+      if (url.pathname === "/api/memory/article" && request.method === "GET") {
+        const { handleMemoryArticle } = await import("./memory/rest");
+        return handleMemoryArticle(url);
+      }
+      if (url.pathname === "/api/memory/links" && request.method === "GET") {
+        const { handleMemoryLinks } = await import("./memory/rest");
+        return handleMemoryLinks(url);
+      }
+      if (url.pathname === "/api/memory/history" && request.method === "GET") {
+        const { handleMemoryHistory } = await import("./memory/rest");
+        return handleMemoryHistory(url);
+      }
+      if (url.pathname === "/api/memory/diff" && request.method === "GET") {
+        const { handleMemoryDiff } = await import("./memory/rest");
+        return handleMemoryDiff(url);
+      }
+      if (url.pathname === "/api/memory/init" && request.method === "POST") {
+        const { handleMemoryInit } = await import("./memory/rest");
+        return handleMemoryInit(request);
+      }
+
       // The unified SPA is served at "/"; legacy deep links redirect into
       // the hash router so old bookmarks still land on the right section.
       if (url.pathname === "/" && request.method === "GET") {
@@ -2130,6 +2176,14 @@ export function createServer(
       if (url.pathname === "/assets/hljs.css" && request.method === "GET") {
         return new Response(HLJS_CSS, {
           headers: { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=3600" },
+        });
+      }
+      // The frontend bundle (see the import comment above) — cache header
+      // matches the other /assets/* entries; content is versioned by the
+      // build step, not the URL, and a hard reload always wins during dev.
+      if (url.pathname === "/assets/app.js" && request.method === "GET") {
+        return new Response(APP_JS, {
+          headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
         });
       }
       // v2 HLG Curve Designer — served same-origin so /generate + /signal need no CORS.
@@ -2564,6 +2618,7 @@ export function createServer(
           adapters: ctx.adapters.list().map((a) => ({
             id: a.id, path: a.path, rank: a.rank, scale: a.scale,
             size_bytes: a.sizeBytes, mounted_layers: a.mountedLayers,
+            ram_bytes: a.ramBytes,
           })),
         });
       }
@@ -2583,7 +2638,7 @@ export function createServer(
           const info = await gateway.runExclusive(() => ctx.adapters.mount(body.id!, body.path!));
           return Response.json({
             id: info.id, mounted_layers: info.mountedLayers,
-            rank: info.rank, scale: info.scale,
+            rank: info.rank, scale: info.scale, ram_bytes: info.ramBytes,
           });
         } catch (e) {
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
@@ -3760,6 +3815,27 @@ export function createServer(
         const { saveHfToken } = await import("./hf-push");
         saveHfToken(body.token);
         return Response.json({ ok: true });
+      }
+
+      // --- Durable tool-approvals settings (plan §5.4/§6.5/§9 Phase 2) ---
+      // The web chat's own "always allow this tool" list
+      // (~/.mlx-bun/tool-approvals.json, src/tool-approvals.ts). The
+      // approval card itself grants an always-allow via the `approval` WS
+      // frame (alwaysAllow:true) — these REST routes are read/forget only,
+      // for the settings panel's list view (matches the hf-token GET/POST
+      // pattern's separation of "the card that grants" vs "settings that
+      // manage" — there is no POST here on purpose, granting always goes
+      // through the approval card, never a bare settings form).
+      if (url.pathname === "/api/settings/tool-approvals" && request.method === "GET") {
+        const { listAlwaysAllowedTools } = await import("./tool-approvals");
+        return Response.json({ ok: true, alwaysAllow: listAlwaysAllowedTools() });
+      }
+      if (url.pathname === "/api/settings/tool-approvals" && request.method === "DELETE") {
+        const body = (await request.json().catch(() => ({}))) as { tool?: string };
+        if (!body.tool) return Response.json({ ok: false, error: "tool required" }, { status: 400 });
+        const { revokeToolAlwaysAllowed } = await import("./tool-approvals");
+        const file = revokeToolAlwaysAllowed(body.tool);
+        return Response.json({ ok: true, alwaysAllow: Object.keys(file.allows).sort() });
       }
       {
         const m = url.pathname.match(/^\/api\/(quantize|finetune|dataset)\/push$/);

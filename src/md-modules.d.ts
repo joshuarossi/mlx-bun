@@ -19,3 +19,17 @@ declare module "./web/vendor/*.css" {
   const content: string;
   export default content;
 }
+
+// The frontend bundle (plan §7/§9 Phase 2 module split): GENERATED from
+// src/web/src/*.ts by scripts/build-web.ts into src/web/app.js, imported as
+// raw text in src/server.ts the same way as the vendored assets above.
+// Must stay a glob ("./web/*.js"), not the exact "./web/app.js" path — TS's
+// ambient-module resolution only matches the real on-disk src/web/app.js
+// against a wildcard pattern here, not an exact-path declaration (verified
+// 2026-07: an exact-path declare module silently failed to match while the
+// file existed, and "cannot find module" once it didn't — a TS quirk, not
+// intentional design; keep the glob if this ever needs revisiting).
+declare module "./web/*.js" {
+  const content: string;
+  export default content;
+}
