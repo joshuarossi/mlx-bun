@@ -72,7 +72,11 @@ Verified: 12B AND cpm5 CLI-route A/B vs oracle = 64/64 token ids AND
 top-2 logprob values IDENTICAL, first diverging step NONE; serve-level
 HTTP probes (scripts/experiments/serve-parity-probe.ts) = completion +
 chat probes byte-IDENTICAL vs live mlx-lm servers for cpm5, e4b, AND 12B
-on both bun arms (unified + --batch 1). Fallout re-anchored: mixed-KV
+on both bun arms (unified + --batch 1). (The e4b cells were initially
+asserted without a recorded run — the completeness audit flagged it; a
+recorded probe run landed 2026-07-07: all four e4b cells IDENTICAL,
+completion 384 chars / chat 258 chars, prompt_tokens 6/6 + 32/32.)
+Fallout re-anchored: mixed-KV
 golden composition now mirrors the oracle serve loop (prefill ids[:-1] →
 convert → L=1 step-0; regen-mixed-kv-goldens.ts + both goldens regen'd on
 this box) — gate 1's step-0 GEMV-vs-GEMM argmax anchor is RETIRED (strict
