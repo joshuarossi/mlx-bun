@@ -10,7 +10,33 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
-## Where we are (2026-07-07 — two vLLM-inspired serving features: ngram drafter + grammar jump-forward)
+## Where we are (2026-07-07b — optional paged KV cache v1, `--paged-kv`)
+
+**`PagedKVCache`/`BlockPool` landed behind default-off `--paged-kv`**
+(docs/design/paged-kv-cache.md — plan produced by a multi-agent design
+pass, judged synthesis of 3 proposals): vLLM-style block-pool storage
+for full-attention layers, host-side block table, `takeAxis` gather to
+contiguous before the UNCHANGED stock SDPA (no new kernel, no new FFI
+binding — the plan's proposed `mlx_gather` binding proved unnecessary).
+Scope v1: serial batch=1, Gemma4-family, bf16; CLI pins `--batch 1`,
+createServer REFUSES `--batch N>1`/`--kv-quant`/`--draft-model`; paged
+requests bypass the prompt cache and run uncompiled decode (automatic:
+`PagedKVCache` is deliberately not a `KVCache` subclass, so every
+instanceof gate excludes it — the TurboQuant pattern). Gates:
+tests/paged-kv.test.ts (model-free storage-layout parity incl. block
+boundaries + trim/regrow + typed pool exhaustion) and
+tests/paged-kv-parity.test.ts (12B: single-forward logits BIT-EXACT,
+48-token greedy trajectory IDENTICAL, paged-on vs paged-off).
+Honest framing: at batch=1 the gather is pure bandwidth tax — v1 is the
+correctness-proven rung-3 abstraction (parallel-slots.md updated);
+the payoff (batched block allocation, block-CoW prefix sharing, fused
+paged kernel) is the documented follow-up chain. This does NOT reverse
+the 2026-07-07 mining-pass rejection (paged-as-prompt-cache) or
+ssd-kv-cold-tier D1 (paged SSD spill) — different axes, reconciled in
+the design doc. **Next:** quiet-machine perf disclosure via
+benchmark.sh (paged-on vs off, 12B/e4b) → benchmarks/RESULTS.md.
+
+## Where we were (2026-07-07 — two vLLM-inspired serving features: ngram drafter + grammar jump-forward)
 
 **Both landed with gates + reference docs, from a vLLM-mining pass that
 first killed three other candidates against the code** (chunked-prefill

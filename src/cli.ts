@@ -166,6 +166,17 @@ Model & quality:
                             explicit --kv-quant routes those requests serial.
                             turbo is solo-only in v1 (full-attention layers
                             only; sliding-window layers stay bf16)]
+  --paged-kv                OPTIONAL vLLM-style paged KV storage (block pool +
+                            gather before the stock SDPA; env MLX_BUN_PAGED_KV=1).
+                            v1: serial only (pins --batch 1 unless --batch is
+                            given), Gemma4-family, bf16 — refuses --batch N>1,
+                            --kv-quant, --draft-model; bypasses the prompt
+                            cache; runs uncompiled decode. Bit-exact with the
+                            plain path; expect a small decode cost at batch=1
+                            (the gather copy). docs/design/paged-kv-cache.md
+                            [default: off]
+  --paged-kv-block-size <n> Tokens per KV block  [default: 256 = the plain
+                            cache's growth step]
   --thinking <true|false>   Default for the chat template's enable_thinking
                             variable (CPM and other hybrid-reasoning models);
                             a request's chat_template_kwargs overrides it
@@ -928,6 +939,18 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   }
   if (route.kvQuant !== undefined) serverOptions.kvQuant = route.kvQuant;
   if (route.turboQuant !== undefined) serverOptions.turboQuant = route.turboQuant;
+  // --paged-kv (env: MLX_BUN_PAGED_KV=1): OPTIONAL vLLM-style block-pool KV
+  // storage, default off (docs/design/paged-kv-cache.md). Serial-only in v1:
+  // with no explicit --batch, pin --batch 1 (the default is 8); an explicit
+  // --batch N>1 is refused loudly by createServer rather than downgraded.
+  if (flag("paged-kv") || process.env.MLX_BUN_PAGED_KV === "1") {
+    const bsRaw = opt("paged-kv-block-size");
+    serverOptions.pagedKv = bsRaw !== null ? { blockSize: Number(bsRaw) } : {};
+    if (batchRaw === null) {
+      serverOptions.batch = 1;
+      console.log("[paged-kv] serial-only in v1 — pinning --batch 1");
+    }
+  }
   // Bind loopback unless asked otherwise (mlx_lm.server parity); --host
   // 0.0.0.0 is the explicit opt-in for LAN exposure. The chat-UI open and
   // `mlx-bun pi` attach both go through localhost, so loopback-only is
@@ -1851,8 +1874,9 @@ switch (cmd) {
       "--compiled-decode", "--compiled-activations", "--fused-sdpa", "--thinking",
       "--temperature", "--temp", "--top-p", "--top-k", "--max-tokens",
       "--hlg-sampling", "--hlg-width", "--hlg-shoulder", "--hlg-toe", "--hlg-pivot-offset",
+      "--paged-kv-block-size",
     ]);
-    const OURS_BOOL = new Set(["--force-wire", "--expert-offload", "--no-open", "--ssd-cache-verify", "--l1", "--l2", "--l3", "--isolate"]);
+    const OURS_BOOL = new Set(["--force-wire", "--expert-offload", "--no-open", "--ssd-cache-verify", "--l1", "--l2", "--l3", "--isolate", "--paged-kv"]);
     const passthrough: string[] = [];
     for (let i = 1; i < argv.length; i++) {
       const a = argv[i]!;

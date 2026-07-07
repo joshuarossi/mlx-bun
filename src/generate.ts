@@ -16,6 +16,7 @@ import {
 import * as ops from "./mlx/ops";
 import { CompiledDecode } from "./model/compiled-decode";
 import { Gemma4Model, KVCache, RotatingKVCache, TurboQuantKVCache, type Cache } from "./model/gemma4";
+import { PagedKVCache } from "./model/paged-kv";
 import { DiffusionGemmaModel } from "./model/diffusion-gemma";
 import { diffusionGenerate } from "./diffusion/diffusion-generate";
 import type { RuntimeModel } from "./model/factory";
@@ -81,6 +82,14 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
    *  RotatingKVCache (sliding-window) layers stay bf16 in v1 — a one-time
    *  warning names the limitation, never a throw. */
   turboQuant?: TurboQuantScheme;
+  /** OPTIONAL paged KV storage (docs/design/paged-kv-cache.md): fresh
+   *  full-attention KVCache layers are replaced with PagedKVCache (block
+   *  pool + gather-to-contiguous) before prefill. v1 scope: serial batch=1
+   *  Gemma4-family, bf16 — mutually exclusive with kvBits/kvConfig/
+   *  turboQuant/draft/compiled decode (callers refuse the combos; the
+   *  cache swap itself only ever touches plain empty KVCache entries).
+   *  Values are gated bit-exact vs the plain path (tests/paged-kv*). */
+  pagedKv?: { blockSize?: number };
   /** Mounted LoRA adapter ids to apply (resolved/validated by
    *  AdapterManager.resolveSpec). Residuals sum in order. Set on the
    *  model's LoraState for exactly the duration of this generation —
@@ -186,6 +195,31 @@ export function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void 
     // converts — the transient stays ~one layer, not the whole cache.
     ops.evalAll(cache[i]!.state());
     clearCache();
+  }
+}
+
+/** Paged-KV conversion (docs/design/paged-kv-cache.md): swap each FRESH
+ *  plain full-attention KVCache for a PagedKVCache sized to hold
+ *  `capacityTokens` (prompt + maxTokens — known exactly at generate()
+ *  setup, so pool exhaustion is unreachable absent an accounting bug).
+ *  Same in-place-mutation shape as maybeQuantizeKv, but runs ONCE before
+ *  prefill: paging changes storage layout, not arithmetic, so there is no
+ *  "convert when populated" trigger. Sliding-window (RotatingKVCache)
+ *  layers keep today's scheme — mixed paged-full + rotating-sliding is
+ *  the supported v1 shape. Pre-warmed caches (offset > 0) skip conversion
+ *  entirely: the serve lane bypasses prompt-cache reuse for paged
+ *  requests, so this only guards library callers. */
+export function maybePageKv(
+  cache: Cache[], options: GenerateOptions, capacityTokens: number,
+): void {
+  if (!options.pagedKv) return;
+  if (cache.some((c) => c.offset > 0)) return;
+  const blockSize = options.pagedKv.blockSize ?? PagedKVCache.DEFAULT_BLOCK_SIZE;
+  for (let i = 0; i < cache.length; i++) {
+    if (cache[i] instanceof KVCache) {
+      cache[i]!.dispose(); // fresh (offset 0) — nothing stored yet
+      cache[i] = new PagedKVCache(capacityTokens, blockSize);
+    }
   }
 }
 
@@ -432,6 +466,11 @@ async function* generateInner(
     throw new Error(
       `pre-warmed cache (${cachedTokens} tokens) must be a strict prefix of the prompt (${promptTokens.length})`,
     );
+  // Paged KV (default off): swap fresh full-attention caches for paged
+  // storage BEFORE prefill. Capacity is exact — the deepest write lands at
+  // prompt + maxTokens − 1 (step maxTokens−1's forward), so this bound
+  // makes pool exhaustion an accounting-bug tripwire, not a request limit.
+  maybePageKv(cache, options, promptTokens.length + maxTokens);
   /** device-side token history (only maintained when processors need it) */
   let history: MlxArray | null = null;
 
@@ -677,6 +716,10 @@ async function* generateInner(
     let compiled =
       flagOn("MLX_BUN_COMPILED_DECODE", true) &&
       !options.adapters?.length &&
+      // Paged caches can't compile (data-dependent block-list length —
+      // the shapeless-replay hazard; CompiledDecode.supports() also
+      // excludes them per step, this just skips the setup).
+      !options.pagedKv &&
       model.config.modelType.startsWith("gemma4") &&
       !model.config.text.enableMoeBlock
         ? CompiledDecode.for(model as Gemma4Model)

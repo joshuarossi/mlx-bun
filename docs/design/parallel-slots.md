@@ -394,7 +394,14 @@ growing in 256-token steps, width = longest live sequence, left-pad
 projection, no KV budget enforcement) — that's scheduler work (S2, NOT
 STARTED). *(Since LANDED 2026-07-03: `--kv-budget` aggregate projection
 gate in the scheduler — grammar-spec-batching-integration.md Phase D.)*
-And **rung 3 (paged) is a deferred spike**.
+And **rung 3 (paged): the v1 CACHE CLASS shipped** —
+`PagedKVCache`/`BlockPool` behind default-off `--paged-kv`
+(docs/design/paged-kv-cache.md): serial batch=1, Gemma4, bf16,
+gather-then-stock-sdpa (no custom kernel yet), gated bit-exact vs the
+plain path. The rung-3 PAYOFF (batched block allocation replacing the
+pad+concat merge/extend, block-level CoW prefix sharing, the fused paged
+kernel) is still the deferred follow-up — the shipped slice is the block
+manager + correctness proof, not the density win.
 
 KV quantization is a force multiplier: 4-bit KV (`generate.ts:67`,
 already supported) is ~4× smaller, so the same budget buys ~4× the slots
@@ -527,8 +534,12 @@ penalty + logits extras now batch via per-row processors, 2026-07-02.)*
   Dynamic byte-budget admission landed 2026-07-03 as `--kv-budget`
   (aggregate projection gate, queue-don't-OOM —
   grammar-spec-batching-integration.md Phase D).
-- **S3+ — paged KV (DEFERRED)** (custom paged-attention kernel + block manager),
-  KV-quant under batch, LoRA-group batching.
+- **S3+ — paged KV (v1 cache class SHIPPED; density payoff DEFERRED)** —
+  the block manager (`src/model/paged-kv.ts`) shipped behind default-off
+  `--paged-kv` at serial scope, bit-exact-gated (paged-kv-cache.md); the
+  batched block allocation, block-level CoW, and the custom
+  paged-attention kernel remain the follow-ups. KV-quant under batch
+  landed separately (Phase 3.1 + milestone 2); LoRA-group batching open.
 
 Every phase ships default-off behind `batch=1`; the serialized path is
 never removed (only bypassed).
