@@ -225,8 +225,12 @@ Verdict legend:
 
 The chat agent can see and act on the app it lives in — a structured DOM
 snapshot (no screenshots, no vision round-trip), agent-driven navigation,
-and element spotlighting. Verified against every other axis: **no product
-in the surveyed field has any of this** — the nearest neighbors are generic
+and element spotlighting. The product theory: guided tours fail on timing
+(help before intent → skipped), chatbot help fails on grounding (moment of
+intent, but blind — a search bar with a face); this is the only shape with
+both — help at the moment of intent, grounded in what's actually on screen.
+Acceptance test: it feels like someone is there with you. Verified against
+every other axis: **no product in the surveyed field has any of this** — the nearest neighbors are generic
 browser-automation agents (wrong tool, heavyweight) and static product
 tours (not conversational). Reference implementation:
 `~/Code/PortfolioManager` (`server/src/agent/{ui-catalog,portfolio-tools}.ts`,

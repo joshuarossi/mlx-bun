@@ -565,6 +565,39 @@ full beat matrix: **no product in the surveyed field has this** (matrix
 Axis 12). Reference implementation proven in-house on the same pi SDK:
 `~/Code/PortfolioManager`.
 
+**Why this matters (the product theory, not the feature):** both existing
+in-app help paradigms fail on the same axis from opposite ends. Guided
+tours fail on *timing* — they front-load help before intent exists, so
+users skip them and the knowledge is gone by the time they care. Chatbot
+help fails on *grounding* — it arrives at the moment of intent but blind:
+no idea what screen you're on, what step you're in, what you just tried; a
+search bar with a face, and users feel it immediately. The app-aware
+assistant is the only shape with both: help at the moment of intent,
+grounded in current state. Instead of screenshotting and circling a thing
+for an AI, you ask — and it highlights, navigates, takes you there. **The
+acceptance test is a feeling: like someone is there with you.** Not a
+tour, not a search bar — presence.
+
+**Design consequences the feeling forces** (a naive port misses these):
+
+- **Ambient across every view, not confined to the Chat tab.** A guide you
+  must leave the Quantize tab to talk to is blind again by construction.
+  Ship a lightweight persistent assistant affordance on every view —
+  Developer tabs included — with the Chat tab as the deep surface
+  (PortfolioManager's floating-panel pattern proves it on our SDK).
+- **The snapshot carries *process state*, not just elements.** "Knows what
+  part of the process you're in" means the context push includes wizard
+  step (Quantize step 2 of 4), running job progress, which fields are
+  filled — beyond PortfolioManager's visible-element list.
+- **Never answer blind.** Tool-pull alone (the agent *choosing* to call
+  `get_current_app_context`) sometimes won't fire, and one ungrounded
+  answer breaks the "with you" illusion. Auto-attach a compact ambient
+  context line (route + view + step) to every turn; the deep snapshot
+  stays on-demand.
+- **Choreography:** the spotlight lands *while* the explanation streams
+  ("it's right here —" and the highlight appears), not as a report
+  afterwards.
+
 Mechanism — three tools plus one client loop, no screenshots, no vision
 model in the loop:
 
@@ -911,6 +944,15 @@ Each item names its matrix axis.)
   title-only — no cloud indexing-cost excuse applies locally.
 - **PWA installability** (Axis 10): manifest + shell service worker
   (installability + instant shell, explicitly not offline chat).
+- **App-aware assistant v1** (§6.6, matrix Axis 12 — promoted from Phase 4
+  2026-07-06: best wow-per-effort in this phase): `uiSnapshot` context push
+  on route change + a compact ambient context line (route/view/step)
+  auto-attached to every turn, `get_current_app_context` + `navigate_app` +
+  `spotlight_ui` tools on the pi-web bridge, curated route/anchor catalog,
+  hand-rolled spotlight overlay choreographed with the streaming
+  explanation. Pattern proven in `~/Code/PortfolioManager` on the same pi
+  SDK. The ambient every-view floating panel and process-state snapshot
+  enrichment mature in Phase 4; approval-gated `ui_act` stays Phase 5.
 
 ### Phase 4 — Trust & speed differentiators (1-2 weeks)
 
@@ -923,14 +965,11 @@ Each item names its matrix axis.)
   opt-in per-turn confidence overlay.
 - HLG tone-curve controls folded into the main chat composer (currently
   disconnected, only reachable via the standalone Curve Designer page).
-- **App-aware assistant v1** (§6.6, matrix Axis 12): `uiSnapshot` context
-  push on route change, `get_current_app_context` + `navigate_app` +
-  `spotlight_ui` tools on the pi-web bridge, curated route/anchor catalog,
-  hand-rolled spotlight overlay. Small (~a few hundred lines, pattern
-  proven in `~/Code/PortfolioManager` on the same pi SDK) — pull forward
-  into Phase 3 if that phase lands light; it belongs here thematically
-  (trust: the agent shows you where things are instead of describing
-  blind).
+- **App-aware assistant: ambient panel maturity** (§6.6): the floating
+  assistant affordance on every view (Developer tabs included) with the
+  Chat tab as the deep surface, and process-state enrichment of the
+  snapshot (wizard step, job progress, field completion) — building on
+  Phase 3's v1.
 
 ### Phase 5 — Stretch differentiators (ongoing, pick 1-2 per quarter after Phase 4)
 
