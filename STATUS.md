@@ -10,7 +10,41 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
-## Where we are (2026-07-07 — 12B completion-probe parity closed: prefill tail split)
+## Where we are (2026-07-07 — decode@ctx gap closed: SSD write-behind flush is now idle-gated)
+
+**The bun arms' decode@ctx losses in the 07-07 bench (e4b −9.3%, 12B
+−3.9% vs mlx-lm, while short-ctx decode won on every model) were
+SELF-INFLICTED CONTENTION from the --ssd-cache write-behind flush, not a
+kernel gap.** The "non-blocking" flush (storeAsync on ssdWriteChain) was
+only non-blocking at the event-loop level: every per-tensor step is
+`ops.contiguous` (a kernel on the SAME GPU stream decode uses) →
+`rawBytesView()` → a synchronous `mlx_array_eval` that blocks the JS
+thread until the stream drains → a synchronous multi-MB `writeSync`, and
+the `setImmediate` pacing interleaved those slices exactly between decode
+tokens. The bench's decode@ctx is the median of {cold, rep1, rep2}; the
+debounced ~16k-entry flush (0.4–1.1 GB bf16) lands exactly on the cached
+repeats. Only bun arms carry --ssd-cache — mlx-lm runs no equivalent
+background work. Internal control in the bench data: the mixed arm (4×
+smaller flush bytes) BEAT both bf16 arms at decode@ctx. Reproduced
+standalone (e4b, 9.5k-token entry, busy box, directional): pre-fix rep2
+37.9 vs cold 47.1 tok/s (−20%); post-fix flat 45.6/44.3/45.3, restart
+survival still PASS (cached=9575 after kill+respawn). Fix
+(`src/serve/generation-gateway.ts`, `src/kv-store.ts`, `src/ssd-cache.ts`,
+`src/server.ts`): `gateway.busy`/`onIdle()` cover BOTH lanes (the serial
+lane holds the mutex but shows zero rows — activeRows alone was blind to
+it); `saveKvCacheAsync`/`storeAsync` take a per-step `waitTurn` gate
+awaited before EVERY tensor (a request arriving MID-flush pauses the
+remaining tensors); both chain sites (write-behind snapshots AND
+eviction/demotion spills) pass `() => gateway.onIdle()`.
+`MLX_BUN_SSD_WRITEBEHIND=0` disables write-behind snapshots entirely
+(kill switch + paired-A/B lever, server-config.md). Accepted tradeoffs
+documented in ssd-kv-cold-tier.md's 07-07 scheduling-contract addendum
+(durability waits for a quiet moment; spill clones' GPU release deferred
+while busy, bounded by the chain). Final vs-mlx-lm decode@ctx numbers
+need the quiet-machine bench rerun (loadavg was ~4–7 throughout; a
+residual genuine kernel gap at 16k is not excluded — xctrace on quiet).
+
+## Where we were (2026-07-07 — 12B completion-probe parity closed: prefill tail split)
 
 **The 12B completion-probe parity ✗ (07-07 bench @3d56676, diverged at
 char 24 in the degenerate "1111…" stream) was a STEP-0 PREFILL-CONVENTION

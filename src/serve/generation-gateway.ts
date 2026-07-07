@@ -50,12 +50,24 @@ import { BatchScheduler, type RowPromptCache } from "./batch-scheduler";
 /** Async mutex: acquire() resolves to a release fn; releases run FIFO. */
 class AsyncMutex {
   #tail: Promise<void> = Promise.resolve();
+  /** Holders + waiters. > 0 means somebody owns or wants the engine. */
+  #pending = 0;
+  get locked(): boolean {
+    return this.#pending > 0;
+  }
   acquire(): Promise<() => void> {
+    this.#pending++;
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });
     const wait = this.#tail;
     this.#tail = this.#tail.then(() => gate);
-    return wait.then(() => release);
+    let released = false;
+    return wait.then(() => () => {
+      if (released) return; // idempotent: a double release must not skew #pending
+      released = true;
+      this.#pending--;
+      release();
+    });
   }
 }
 
@@ -162,6 +174,25 @@ export class GenerationGateway {
   /** Queued + mid-prefill rows waiting behind the batch (0 when idle). */
   get pendingRows(): number {
     return this.#scheduler?.pendingRows ?? 0;
+  }
+
+  /** True while ANY engine work is active or queued, on EITHER lane: the
+   *  mutex is held/awaited (a serial generation, the batch scheduler's whole
+   *  active period, curve endpoints, adapter mounts) or batch rows are
+   *  running/pending. activeRows/pendingRows alone MISS the serial lane —
+   *  a serial generation holds the mutex but shows zero rows. */
+  get busy(): boolean {
+    return this.#mutex.locked || this.activeRows > 0 || this.pendingRows > 0;
+  }
+
+  /** Resolves once the engine is idle (poll-based, ~`pollMs` granularity —
+   *  cheap vs the multi-hundred-ms flushes it paces; resolves without a
+   *  timer when already idle). The SSD write-behind gates each per-tensor
+   *  flush step on this so durability work never steals blocking
+   *  GPU-sync + writeSync slices from an active decode (the 2026-07-07
+   *  decode@ctx contamination — see server.ts's write-behind block). */
+  async onIdle(pollMs = 20): Promise<void> {
+    while (this.busy) await new Promise<void>((r) => setTimeout(r, pollMs));
   }
 
   /** Cumulative rows routed to the batch lane since server start. The serial

@@ -327,10 +327,27 @@ export function saveKvCache(path: string, tokens: number[], caches: Cache[], met
 
 /** Non-blocking variant: yields the event loop after every tensor write so
  *  serving interleaves with the flush. Caller owns `caches` lifetime for
- *  the duration (pass zero-copy clones, dispose after). */
-export async function saveKvCacheAsync(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {}): Promise<void> {
-  for (const _ of saveKvCacheSteps(path, tokens, caches, meta))
+ *  the duration (pass zero-copy clones, dispose after).
+ *
+ *  `waitTurn` (optional) is awaited BEFORE every step — including the first —
+ *  so the caller can gate the flush's schedule (the server passes the
+ *  gateway's onIdle: each tensor step is a blocking GPU sync on the decode
+ *  stream + a synchronous multi-MB writeSync, and the old unconditional
+ *  setImmediate pacing interleaved those slices exactly between decode
+ *  tokens — the 2026-07-07 decode@ctx contamination. A request arriving
+ *  MID-flush pauses the remaining tensors until idle again). Gate failures
+ *  are swallowed: scheduling advice must never corrupt the write path
+ *  (an early generator close inside the fd-open section would leak the fd). */
+export async function saveKvCacheAsync(
+  path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {},
+  waitTurn?: () => Promise<void>,
+): Promise<void> {
+  const steps = saveKvCacheSteps(path, tokens, caches, meta);
+  while (true) {
+    if (waitTurn) await waitTurn().catch(() => {});
+    if (steps.next().done) break;
     await new Promise<void>((r) => setImmediate(r));
+  }
 }
 
 /** Read only the header (cheap — for prefix matching across many files).

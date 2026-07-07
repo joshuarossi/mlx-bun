@@ -207,4 +207,45 @@ describe("SsdCacheStore", () => {
     expect(s.entries).toBe(1);
     rmSync(dir, { recursive: true, force: true });
   });
+
+  // The 2026-07-07 decode@ctx fix: storeAsync's flush must gate EVERY
+  // per-tensor step (including the first) on the caller's waitTurn — a
+  // flush step is a blocking GPU sync + writeSync, and ungated steps
+  // interleaved with active decodes (the bench's contaminated ctx repeats).
+  test("storeAsync awaits waitTurn before every tensor step and still stores", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ssd-"));
+    const s = new SsdCacheStore(OPTS(dir));
+    const caches = mkCaches(); // 2 caches × [k, v] = 4 tensor steps
+    let gateCalls = 0;
+    let gateOpen = false;
+    const waitTurn = async (): Promise<void> => {
+      gateCalls++;
+      // the first call happens BEFORE any bytes hit disk (the .tmp is only
+      // opened inside the first step) — hold the gate one macrotask and
+      // verify nothing was written while it was shut
+      if (gateCalls === 1) {
+        expect(readdirSync(join(dir, "fp-test", "base")).length).toBe(0);
+        await new Promise<void>((r) => setTimeout(r, 5));
+        gateOpen = true;
+      }
+      expect(gateOpen).toBe(true);
+    };
+    expect(await s.storeAsync([1, 2, 3, 4], caches, "", waitTurn)).toBe(true);
+    // 4 yields → 5 next() calls, each preceded by the gate
+    expect(gateCalls).toBe(5);
+    for (const c of caches) c.dispose();
+    expect(s.entries).toBe(1);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a throwing waitTurn is swallowed — the flush completes ungated", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ssd-"));
+    const s = new SsdCacheStore(OPTS(dir));
+    const caches = mkCaches();
+    const bad = (): Promise<void> => Promise.reject(new Error("gate broke"));
+    expect(await s.storeAsync([1, 2, 3], caches, "", bad)).toBe(true);
+    for (const c of caches) c.dispose();
+    expect(s.entries).toBe(1);
+    rmSync(dir, { recursive: true, force: true });
+  });
 });

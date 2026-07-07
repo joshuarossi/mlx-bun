@@ -1256,16 +1256,19 @@ export function createServer(
     // cache hands us OWNED zero-copy clones + copied tokens (made under
     // the generation lock — microseconds; entries are immutable so the
     // clones stay consistent), and the flush chains onto the serial
-    // ssdWriteChain -> storeAsync (yields between tensors) -> dispose the
-    // clones on BOTH settle paths (that dispose is what actually frees
-    // the demoted GPU memory — bounded by the chain). ssdWriteChain is
-    // declared with the snapshot scheduler below; safe to close over here
-    // because spills only fire at put()/demoteIdle time, long after init.
+    // ssdWriteChain -> storeAsync (idle-gated per tensor, see below) ->
+    // dispose the clones on BOTH settle paths (that dispose is what
+    // actually frees the demoted GPU memory — bounded by the chain, and
+    // DEFERRED while requests keep the engine busy: the gate holds the
+    // clones alive until the flush gets its idle turn). ssdWriteChain and
+    // ssdFlushGate are declared with the snapshot scheduler below; safe to
+    // close over here because spills only fire at put()/demoteIdle time,
+    // long after init.
     ssdStore
       ? {
           spillOwned: (entry) => {
             ssdWriteChain = ssdWriteChain
-              .then(() => ssdStore!.storeAsync(entry.tokens, entry.caches, entry.ns))
+              .then(() => ssdStore!.storeAsync(entry.tokens, entry.caches, entry.ns, ssdFlushGate))
               .then(
                 () => { for (const c of entry.caches) c.dispose(); },
                 () => { for (const c of entry.caches) c.dispose(); },
@@ -1411,14 +1414,31 @@ export function createServer(
   // gateway lock is held only for a zero-copy SNAPSHOT (findExact +
   // cloneKvCaches — microseconds; entries are immutable so the clones are
   // consistent forever). The flush itself runs OFF the lock via
-  // storeAsync, yielding the event loop between tensors, and writes chain
-  // serially so two multi-hundred-MB flushes never overlap. Before this,
-  // a ctx repeat that landed during the cold entry's flush queued behind
-  // ~0.5 s of synchronous serialization (measured: rep-0 vs rep-1 delta).
+  // storeAsync, and writes chain serially so two multi-hundred-MB flushes
+  // never overlap.
+  //
+  // IDLE-GATED (2026-07-07, the decode@ctx fix): "off the lock" was not
+  // enough — every per-tensor flush step is a blocking GPU sync on the
+  // SAME stream decode uses (ops.contiguous enqueues a kernel, rawBytesView
+  // evals) plus a synchronous multi-MB writeSync, and the setImmediate
+  // pacing interleaved those slices exactly between decode tokens. A ~16k
+  // entry's flush overlapping the bench's ctx repeats depressed decode@ctx
+  // ~9% on e4b (mlx-lm runs no equivalent background work). Now every step
+  // — including the first — awaits gateway.onIdle() (ssdFlushGate), so the
+  // flush only progresses while NOTHING is generating and pauses when a
+  // request arrives mid-flush. Tradeoffs, accepted: durability waits for a
+  // quiet moment (single-user serving quiesces constantly; sustained
+  // hammering defers the flush AND the spill clones' GPU-memory release —
+  // bounded by the chain), and one in-flight tensor step (~10-15 MB) can
+  // still land ahead of a just-arrived request. MLX_BUN_SSD_WRITEBEHIND=0
+  // disables write-behind snapshots entirely — the paired-A/B lever + kill
+  // switch (restart survival then degrades to spill-on-evict only).
+  const writeBehindOn = process.env.MLX_BUN_SSD_WRITEBEHIND !== "0";
+  const ssdFlushGate = (): Promise<void> => gateway.onIdle();
   const ssdPending = new Map<string, ReturnType<typeof setTimeout>>();
   let ssdWriteChain: Promise<void> = Promise.resolve();
   const scheduleSsdSnapshot = (tokens: number[], ns: string): void => {
-    if (!ssdStore || tokens.length === 0) return;
+    if (!ssdStore || !writeBehindOn || tokens.length === 0) return;
     const key = `${ns}|${tokens.length}`;
     const prev = ssdPending.get(key);
     if (prev) clearTimeout(prev);
@@ -1431,7 +1451,7 @@ export function createServer(
       }).then((snap) => {
         if (!snap) return;
         ssdWriteChain = ssdWriteChain
-          .then(() => ssdStore!.storeAsync(snap.tokens, snap.caches, ns))
+          .then(() => ssdStore!.storeAsync(snap.tokens, snap.caches, ns, ssdFlushGate))
           .then(() => { for (const c of snap.caches) c.dispose(); },
                 () => { for (const c of snap.caches) c.dispose(); });
       }).catch(() => { /* cold tier is best-effort */ });
