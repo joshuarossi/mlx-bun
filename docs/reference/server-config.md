@@ -104,6 +104,7 @@ for paired A/B harnesses).
 | `MLX_BUN_COMPILED_GEGLU` | `--compiled-activations` | on (`!=="0"`) | Gemma geglu via mlx-lm's `@mx.compile` closure — the faithful default (bit-exact vs mlx-lm, one kernel). `=0` → uncompiled composition (same parity, slower). |
 | `MLX_BUN_COMPILED_SWIGLU` | `--compiled-activations` | on (`!=="0"`) | `mx.compile`'d SwiGLU (`silu(gate)·up` → one kernel) on MiniCPM5 decode (M=1), porting mlx-lm's `activations.py`. Bit-exact (passes the exact logit-parity gate), both lanes. +5.5% CPM5 decode. (qwen3/qwen3.5/universal compile swiglu unconditionally, independent of this flag.) |
 | `MLX_BUN_FORCE_WIRE` | `--force-wire` | off (`==="1"`) | Wire weights for the generation. |
+| `MLX_BUN_PREFILL_TAIL_SPLIT` | — | on (`!=="0"`) | Oracle prefill convention (mlx-lm `generate_step` and its server's batched engine): drain the prompt only to len−1, then compute step-0 logits from a separate **L=1 forward of the last prompt token**. Both lanes. `=0` restores the pre-2026-07-07 full-final-chunk convention (A/B lever + kill switch) — that convention is ulp-different in bf16 at step 0 AND in the last prompt token's stored KV, which flips near-tie greedy streams vs mlx-lm (the 2026-07-07 12B completion-probe divergence). |
 
 (`MLX_BUN_PERF_KERNEL`, `MLX_BUN_FUSED_GELU`, `MLX_BUN_FUSED_DECODE`,
 `MLX_BUN_FUSED_SWIGLU*`, and `MLX_BUN_CPM5_FAITHFUL` were deleted

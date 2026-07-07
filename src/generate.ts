@@ -505,8 +505,25 @@ async function* generateInner(
         }
         options.onPrefillDone?.();
       }
-      while (promptTokens.length - pos > prefillChunkSize) {
-        const chunk = promptTokens.slice(pos, pos + prefillChunkSize);
+      // Oracle prefill convention (mlx-lm 0.31.3 generate_step,
+      // generate.py:430-453): drain the prompt only to len-1 — chunks of
+      // min(prefillChunkSize, remaining-1) — then compute step-0 logits from
+      // a SEPARATE L=1 forward of the LAST prompt token (its server's
+      // batched engine shares the convention: insert_segments' forced final
+      // 1-token segment + GenerationBatch._step, generate.py:1645/1327).
+      // Forwarding the last token as the tail of an L=n GEMM instead is
+      // ulp-different in bf16 (qmm-vs-qmv + L-dependent SDPA dispatch) in
+      // BOTH the step-0 logits and that token's stored KV — near-tie greedy
+      // streams flip (2026-07-07 12B completion-probe ✗: first token flip at
+      // step 24). MLX_BUN_PREFILL_TAIL_SPLIT=0 restores the old
+      // full-final-chunk convention (A/B lever + kill switch).
+      const tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
+      const drainGate = tailSplit ? 1 : prefillChunkSize;
+      while (promptTokens.length - pos > drainGate) {
+        const n = tailSplit
+          ? Math.min(prefillChunkSize, promptTokens.length - pos - 1)
+          : prefillChunkSize;
+        const chunk = promptTokens.slice(pos, pos + n);
         const ids = ops.fromInt32(chunk, [1, chunk.length]);
         const h = model.forwardHidden(ids, cache);
         ids.dispose();
@@ -520,13 +537,19 @@ async function* generateInner(
         // measured, scripts/decode-split.ts; the context-scaling decode
         // gap's main term).
         clearCache();
-        pos += prefillChunkSize;
+        pos += n;
         // Macrotask yield between chunks (runtime-isolation.md Phase 1).
         await new Promise<void>((r) => setImmediate(r));
       }
       if (needsTokenHistory) {
         history = ops.fromInt32(promptTokens, [promptTokens.length]);
       }
+      // Under tailSplit this is exactly [promptTokens[len-1]] — the L=1
+      // step-0 forward (uncompiled L=1 is bit-exact with compiled decode,
+      // tests/compiled-decode.test.ts). The last prompt token's KV enters
+      // the cache HERE, so downstream bookkeeping (forwarded[], cacheTokens,
+      // PromptCache.put alignment) is unchanged: after step 0 the caches
+      // cover exactly the prompt, as before.
       const lastChunk = promptTokens.slice(pos);
       const ids0 = ops.fromInt32(lastChunk, [1, lastChunk.length]);
       h0 = model.forwardHidden(ids0, cache);

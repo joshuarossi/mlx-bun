@@ -571,7 +571,17 @@ export class BatchScheduler {
       }
       return false;
     }
-    if (prompt.length - p.pos > this.#prefillChunkSize) {
+    // Oracle prefill convention (see generate.ts prefill): drain only to
+    // len-1 in chunks, then step-0 logits from an L=1 forward of the LAST
+    // prompt token — mirrors mlx-lm's batched engine (insert_segments'
+    // forced final 1-token segment + GenerationBatch._step,
+    // generate.py:1645/1327) and keeps this lane bit-exact with the serial
+    // lane (unified == --batch 1 == oracle). The L=1 step runs on the solo
+    // caches BEFORE merge, so per-row serial equivalence is by construction.
+    // MLX_BUN_PREFILL_TAIL_SPLIT=0 restores the old convention.
+    const tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
+    if ((tailSplit ? prompt.length - p.pos - 1 : prompt.length - p.pos) >
+        this.#prefillChunkSize) {
       const chunk = prompt.slice(p.pos, p.pos + this.#prefillChunkSize);
       const ids = ops.fromInt32(chunk, [1, chunk.length]);
       const h = this.model.forwardHidden(ids, p.solo);
@@ -584,10 +594,27 @@ export class BatchScheduler {
       return false;
     }
 
+    // Tail split: forward the remaining head [p.pos, len-1) as a plain chunk
+    // (serial chunk-boundary semantics: eval + quantize + clear), leaving
+    // exactly one token for the L=1 step-0 forward below. Same admission
+    // latency as before — head + step share this tick.
+    if (tailSplit && p.pos < prompt.length - 1) {
+      const head = prompt.slice(p.pos, prompt.length - 1);
+      const ids = ops.fromInt32(head, [1, head.length]);
+      const h = this.model.forwardHidden(ids, p.solo);
+      ids.dispose();
+      h.dispose();
+      ops.evalAll(p.solo.flatMap((c) => c.state()));
+      this.#quantizeSolo(p.solo);
+      clearCache();
+      p.pos = prompt.length - 1;
+    }
+
     // Final chunk: slice the LAST hidden position BEFORE the lm_head — running
     // logitsFromHidden on the whole [1,Lp,H] hidden materializes a [1,Lp,V]
     // transient (~4.3 GB bf16 at Gemma V=262k, 8k prompt). Same reorder as the
-    // serial path (generate.ts prefill).
+    // serial path (generate.ts prefill). Under tailSplit this chunk is exactly
+    // the last prompt token (L=1).
     const chunk = prompt.slice(p.pos);
     const ids = ops.fromInt32(chunk, [1, chunk.length]);
     const h = this.model.forwardHidden(ids, p.solo);
