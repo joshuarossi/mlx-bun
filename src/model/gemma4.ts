@@ -866,25 +866,35 @@ export class Gemma4Model {
   }
 
   /** Pre-merged (unscaled) input embeddings → hidden states. Used by the
-   *  vision path; `bidir` (bool [L]) marks image tokens, which attend
-   *  bidirectionally among themselves (use_bidirectional_attention:
-   *  "vision" — text stays causal). `ids` ([1, L], the spliced token ids)
-   *  is required for per-layer-input models (e2b/e4b): image-token
-   *  positions get token 0's per-layer embedding, and their vision content
+   *  multimodal (vision/audio) path; `bidir` (bool [L]) marks image tokens,
+   *  which attend bidirectionally among themselves (use_bidirectional_attention:
+   *  "vision" — text stays causal; audio prompts pass NO bidir mask, and a
+   *  mixed image+audio prompt drops the image overlay too, §3.3 Q1 of
+   *  docs/design/audio-input-plan.md). `ids` ([1, L], the spliced token ids)
+   *  is required for per-layer-input models (e2b/e4b): multimodal soft-token
+   *  positions get token 0's per-layer embedding, and their tower content
    *  enters only through the projection term (the merged hidden). Matches
-   *  optiq's frontend: `zeroed = where(text_mask, input_ids, 0)`. */
+   *  optiq's frontend: `zeroed = where(text_mask, input_ids, 0)`.
+   *
+   *  `multimodal` (bool [L]) is the per-layer-input ZEROING mask — the UNION
+   *  of multimodal soft tokens (image | audio, §3.3 Q2), decoupled from the
+   *  attention overlay: an audio-only prompt has no bidir mask but its audio
+   *  positions must still be zeroed. When null (the legacy vision call
+   *  shape), the zeroing mask falls back to `bidir` — vision passes the same
+   *  image mask for both roles, so that path is unchanged. */
   forwardEmbeddings(
     embeds: MlxArray, cache: Cache[], bidir: MlxArray | null,
-    ids: MlxArray | null = null,
+    ids: MlxArray | null = null, multimodal: MlxArray | null = null,
   ): MlxArray {
     const h = ops.mulScalar(embeds, this.embedScale);
     if (this.perLayerWidth === 0) return this.forwardLayers(h, cache, bidir, null);
 
     if (!ids)
-      throw new Error("per-layer-input vision models require token ids");
+      throw new Error("per-layer-input multimodal models require token ids");
+    const zeroing = multimodal ?? bidir;
     let plIds = ids;
-    if (bidir) {
-      const cond = ops.reshape(bidir, ids.shape);
+    if (zeroing) {
+      const cond = ops.reshape(zeroing, ids.shape);
       const zero = ops.zeros(ids.shape, ids.dtype);
       plIds = ops.where(cond, zero, ids);
       cond.dispose();

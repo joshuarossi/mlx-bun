@@ -270,12 +270,23 @@ cells (tower ms, TTFT delta vs text-only, peak RSS delta) and lands in
 - Exit: T1 rel-RMSE gate green. ✅ (gate 1e-6, ~40× margin)
 
 **Phase A3 — prompt + LM integration**
-- [ ] Generalize prompt builder (images + audio, document order);
-      `<|audio|>` → `boa + audio×n + eoa`; vision goldens prove no
-      regression
-- [ ] Merged embeddings + mask; per-layer id zeroing per Q2;
-      `forwardEmbeddings` path
-- Exit: T2 green (`tests/e4b-audio.test.ts` greedy prefix + grounded).
+- [x] Generalize prompt builder (images + audio, document order):
+      `buildMultimodalPrompt` in src/vision/prompt.ts; `<|audio|>` →
+      `boa + audio×n + eoa`; `buildVisionPrompt` kept as a byte-identical
+      wrapper (vision goldens green, e4b-vision 3/3).
+- [x] Merged embeddings + masks; per-layer id zeroing per Q2 decoupled from
+      the bidir overlay (`forwardEmbeddings` gained an optional `multimodal`
+      zeroing mask; generate() `multimodalMask` option). Merge numerics are
+      oracle-exact: the divide happens AFTER the bf16 cast with a weak
+      (bf16) embed_scale scalar — `AudioTower.features(preDivide=false)` +
+      astype + div, mirroring `features.astype(bf16) / embed_scale` (mlx
+      weak scalars take the array dtype; divide-in-f32-then-cast is up to a
+      bf16 ulp off and fails the exact gate).
+- Exit: T2 green — and stronger than planned: the FULL greedy stream +
+  decoded text match the oracle EXACTLY for both fixtures (the tower is
+  bit-exact, so no prefix allowance was needed; generate()'s
+  promptEmbeddings path prefills in one forward exactly like the golden
+  script — no tail-split gap). `tests/e4b-audio.test.ts`.
 
 **Phase A4 — serve + docs**
 - [ ] `src/server.ts` audio branch, lazy tower, serial-lane routing,

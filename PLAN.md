@@ -2529,11 +2529,21 @@ same splice/merge seams, same parity-tier ladder.
       embed_audio output BEFORE /embed_scale; features() returns
       pre-divided (vision convention). tests/e4b-audio-tower.test.ts
       (weight+golden-gated).
-- [ ] **A3 prompt + LM** — generalize the vision prompt builder to
-      multimodal document order; `<|audio|>` → boa + 258881×n + eoa
-      (n = min(ceil(ms/40), 750)); merged embeddings through
-      `forwardEmbeddings`. Exit: T2 greedy-prefix + grounded gates green
-      (`tests/e4b-audio.test.ts`); vision goldens unchanged.
+- [x] **A3 prompt + LM** (2026-07-07) — `buildMultimodalPrompt`
+      (src/vision/prompt.ts generalized; images+audio in document order;
+      buildVisionPrompt kept as thin wrapper); `<|audio|>` → boa +
+      258881×n + eoa from DECODED samples; forwardEmbeddings gained a
+      `multimodal` zeroing mask DECOUPLED from `bidir` (audio-only
+      prompts are causal but still zero per-layer ids; `?? bidir`
+      fallback keeps vision unchanged); GenerateOptions.multimodalMask.
+      T2 EXCEEDED the planned prefix gate: **full greedy stream +
+      decoded text match the oracle EXACTLY (incl. EOS)** on both
+      fixtures; spliced ids exact. Parity trap found: the oracle merge
+      divides by embed_scale AFTER the bf16 cast (mlx weak scalars adopt
+      array dtype) — tower features(preDivide=false) + builder-side
+      astype→div mirrors it literally. promptEmbeddings prefill is
+      single-shot (matches the oracle script; tail-split applies only to
+      the token-id path). 17/17 across audio+vision suites, tsc clean.
 - [ ] **A4 serve + docs** — server.ts `input_audio`/`audio`/`audio_url`
       parts, lazy tower, serial-lane routing, mixed image+audio;
       server-api.md + features-matrix.md + README in the SAME commit.

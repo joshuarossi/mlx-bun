@@ -578,8 +578,17 @@ export class AudioTower {
    *  language-space soft tokens [1, nSoft, textHidden] f32, PRE-DIVIDED by
    *  embedScale (forwardEmbeddings re-multiplies — vision-tower convention;
    *  the T1 golden is the UN-divided embed_audio output, so the parity test
-   *  re-multiplies). nSoft = ceil(ceil(frames/2)/2)… i.e. two stride-2 convs. */
-  features(mel: Float32Array, frames: number): MlxArray {
+   *  re-multiplies). nSoft = ceil(ceil(frames/2)/2)… i.e. two stride-2 convs.
+   *
+   *  `preDivide=false` returns the RAW f32 embed_audio output (the T1 golden
+   *  reference point). The T2 merge path needs it because the oracle divides
+   *  AFTER the bf16 cast — `features.astype(bf16) / embed_scale`, where mlx's
+   *  weak python scalar takes the array dtype, i.e. a bf16(embedScale)
+   *  divisor (verified against the oracle venv). Dividing here in f32 and
+   *  casting after is up to a bf16 ulp different, which the exact greedy
+   *  gate does not tolerate — the builder casts first, then divides via
+   *  scalarLike (same weak-scalar semantics). */
+  features(mel: Float32Array, frames: number, preDivide = true): MlxArray {
     if (mel.length !== frames * AUDIO_INPUT_FEAT_SIZE)
       throw new Error(`mel length ${mel.length} != frames ${frames} × ${AUDIO_INPUT_FEAT_SIZE}`);
     const eps = this.cfg.rmsNormEps;
@@ -623,6 +632,7 @@ export class AudioTower {
     // ── embed_audio: RMSNormNoScale → Linear(textHidden), then /embed_scale
     h = dispose(h, ops.rmsNorm(h, null, eps));
     h = dispose(h, this.#linear(h, "embed_audio.embedding_projection.weight"));
+    if (!preDivide) return h; // raw f32 [1, T2, textHidden]
     const scale = ops.scalarLike(this.embedScale, h);
     const out = ops.div(h, scale);
     h.dispose();

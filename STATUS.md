@@ -631,9 +631,10 @@ design in [docs/design/audio-input-plan.md](docs/design/audio-input-plan.md).
 stack-arg ABI bug — see CLAUDE.md hard-won facts +
 lab/repro/bun-ffi-stack-args), §3.3 semantics resolved (audio strictly
 causal), fixtures + oracle goldens live (speech greedy = token-perfect
-transcription). Next action: A3 — multimodal prompt builder + LM integration, gated on the
-T2 greedy goldens. A2 DONE: the Conformer tower is BIT-EXACT vs the oracle
-(rel-RMSE 2.4e-8; activations stay f32 — mlx promotes over bf16 weights). A1 DONE:
+transcription). Next action: A4 — server wiring (input_audio content parts, lazy tower,
+serial-lane routing) + reference docs in the SAME commit. A0-A3 DONE; the
+whole offline path is ORACLE-EXACT: full greedy stream + decoded text match
+token-for-token on both fixtures (tests/e4b-audio.test.ts). A1 DONE:
 mel port is 1-ulp-f32 from the oracle (the numpy f32 Hann window is baked
 in as the spec — see PLAN.md A1).
 
