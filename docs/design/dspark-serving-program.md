@@ -34,18 +34,27 @@ bf16 drafter is the WORKABLE BASELINE — τ≈2.8 already pays. The question
 quantization must answer is PRESERVATION: do we still get that number at
 4-bit?** The point of quantizing (and of mixed precision specifically) is
 never compression for its own sake — it's cutting the drafter's cost 4×
-WITHOUT making it terrible at predicting tokens. Where 4-bit-everywhere is
-most likely to bleed acceptance, concretely: (a) **lm_head is
-argmax-proximal** — layer noise is buffered by norms/residuals, head noise
-lands directly on the logits the exact-token-match argmax reads, and the
-marginal accepted drafts are the near-tie ones noise flips first; (b) **the
-γ-block is a sequential chain** — one flipped draft at position k kills
-k+1..γ, so noise compounds into the deep positions where acceptance is
-already thinnest. Hence the first mixed rung in 5b′: 8-bit head + 4-bit
-rest (the "only 5 layers" scarcity never bites — the layers aren't the
-sensitive part, the head is). Every rung is one cheap A/B; nobody's prior
-gets trusted. Phase 1.5 (fine-tune) is an OPTIONAL UPSIDE lever on top of
+WITHOUT making it terrible at predicting tokens.
+
+**Sensitivity is MEASURED, never guessed (Josh):** the acceptance A/B is a
+one-number oracle, so the per-tensor sensitivity map is an experiment, not
+an argument — quantize ONE tensor group at a time (rest bf16), run the A/B,
+tabulate (~10 groups × one cheap run each; Phase 1e). Allocation decisions
+(which tensors get more bits) come from that table. Hypotheses the table
+will test, recorded for falsification only: lm_head is argmax-proximal
+(noise lands on the exact-match logits); the γ-block chains one flipped
+draft into all deeper positions; layers are norm/residual-buffered; embed
+is gather-only. Phase 1.5 (fine-tune) is an OPTIONAL UPSIDE lever on top of
 the workable baseline, not a premise that acceptance is broken.
+
+**And TurboQuant's role, stated right (Josh): TQ is the better-quant-at-
+EQUAL-bits instrument — the preservation tool, not a compression ladder.**
+Mechanism: distribute the weight vectors Gaussian, then place the
+quantization levels non-uniformly with FINER step sizes around the peak
+where the mass lives — affine 4-bit spends half its levels on tails TQ
+barely pays for. Expected: TQ-4bit preserves acceptance better than
+affine-4bit at the same size; the Phase-5 headline comparison is TQ-4 vs
+affine-4 AT EQUAL BPW, with lower-bpw rungs only after that's won.
 
 ## Phase 0 — baseline + attribution (no code; Josh's shell for GPU runs)
 
@@ -108,6 +117,13 @@ mlx-native group quantization, no research dependency.
   acceptance drop ≤ 3 points absolute AND wall-clock strictly improves;
   record both. If 4-bit alone flips spec past serial — say so loudly in the
   handoff, that's the headline.
+- [ ] **1e. The MEASURED sensitivity map** (only if 1d bleeds acceptance —
+  or run anyway, it's ~10 cheap runs): quantize one tensor group at a time
+  (rest bf16) — {lm_head, embed, markov_w1, markov_w2, fc, per-layer
+  attn, per-layer mlp, conf} — one acceptance A/B each. Output: the
+  sensitivity TABLE that drives all mixed-precision allocation (5b′) and
+  falsifies/confirms the recorded hypotheses. `dspark-quantize-drafter.ts`
+  takes an `--only <group>` flag to make this a loop, not a project.
 
 ## Phase 1.5 — acceptance upside (OPTIONAL; the baseline is already workable)
 
@@ -223,15 +239,19 @@ default-off), spec = opt-in until it WINS a clean-machine paired A/B.
 ## Phase 5 — TurboQuant application (the trigger event)
 
 When TurboQuant (Phase 13) merges: the drafter is its lowest-risk first
-customer — aggressive bpw, one-number gate.
+customer — one-number gate, no KL/eval battery. **TQ's role here is
+PRESERVATION AT EQUAL BITS** (Gaussian-distributed vectors + finer step
+sizes around the peak → strictly better quant than affine at the same
+bpw), not deeper compression.
 
 - [ ] **5a.** Extend `dspark-quantize-drafter.ts` with the TurboQuant
-  scheme(s); produce a bpw ladder (4.0 / 3.5 / 3.0 / 2.5) of drafter
-  artifacts.
-- [ ] **5b.** Run the Phase-1c A/B harness across the ladder →
-  **acceptance-per-byte curve** vs the uniform-4-bit baseline. Adopt the
-  knee as the recommended artifact; keep the ladder results in the
-  investigation doc (dont-delete-optionality).
+  scheme.
+- [ ] **5b. THE HEADLINE: TQ-4bit vs affine-4bit AT EQUAL BPW** through the
+  Phase-1c harness — same size, whose acceptance is closer to bf16? If
+  affine-4 bled in 1d, this is the expected fix; if affine-4 held, TQ's
+  margin becomes headroom for lower rungs. Only AFTER TQ-4 ≥ affine-4:
+  the lower-bpw ladder (3.5 / 3.0 / 2.5) → acceptance-per-byte curve,
+  knee adopted (dont-delete-optionality for the rest).
 - [ ] **5b′. PER-TENSOR MIXED PRECISION rungs** (Josh, 2026-07-07). The
   intuition "only 5 layers = few knobs" undercounts: the drafter's mass is
   ~10 TENSOR GROUPS, and two of them are 58% of the bytes — `lm_head`
@@ -243,15 +263,13 @@ customer — aggressive bpw, one-number gate.
   (2 M params) 8-bit for free. The ~10-group space is small enough for a
   near-exhaustive sweep through the SAME one-number harness — unlike
   sensitivity search on a full model. **Allocation objective (the point):
-  PRESERVE the bf16 acceptance at the smallest cost, not minimize bytes** —
-  the sensitivity map is known in advance: lm_head is argmax-proximal (the
-  dangerous one), the sequential block chains one flip into the rest,
-  layers are norm/residual-buffered, embed is gather-only. **FIRST RUNG:
-  8-bit lm_head + 4-bit everything else** — surrenders ~0.5 GB of the ~5 GB
-  saving to protect exactly the argmax-facing tensor; it's the likely fix
-  if uniform-4 bleeds acceptance, and the "only 5 layers" scarcity never
-  bites because the layers aren't the sensitive part. Then the aggressive
-  direction (3-bit head / 2-bit embed) only if uniform-4 held.
+  PRESERVE the bf16 acceptance at the smallest cost, not minimize bytes —
+  and allocation follows the MEASURED sensitivity table from 1e, never a
+  prior.** The mixed rungs are built FROM the table: give the measured-
+  sensitive groups more bits (or TQ them, post-Phase-5), squeeze the
+  measured-insensitive ones. The "only 5 layers" worry dissolves either
+  way — the tensor-group space (~10 knobs, two of them 58% of the bytes)
+  is the real granularity, and 1e prices every knob empirically.
 - [ ] **5c.** If TurboQuant wins: fold the recipe into 4b's UX (the
   conversion the server offers is the TurboQuant one).
 
@@ -286,8 +304,10 @@ customer — aggressive bpw, one-number gate.
 TurboQuant merge ─→ 5a-5c (reuses 1c harness) ─→ 6 (clean machine, Josh)
 ```
 Priority note: Phase 1's PRESERVATION question ("do we keep 26–33% at
-4-bit?") is the program's hinge — one A/B answers it, and the 8-bit-head
-mixed rung is the standing insurance if uniform-4 bleeds.
+4-bit?") is the program's hinge — one A/B answers it; if affine-4 bleeds,
+the answers are MEASURED (1e sensitivity table → mixed allocation) and
+ENGINEERED (Phase 5: TQ-4 at equal bpw — the better quant is the designed
+fix, not a fallback).
 
 Code phases (1a/1b/2/3/4-impl) are agent-runnable sessions; every GPU
 measurement is Josh's shell. Nothing except Phase 5 waits on TurboQuant —
