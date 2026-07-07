@@ -177,23 +177,34 @@ All under `optiq/vlm/_mlxvlm/models/gemma4/` in the oracle venv:
   note), README capability line, `cli.md` only if a flag appears
   (target: none).
 
-### 3.3 Open questions — resolve against the oracle in A0
+### 3.3 Open questions — RESOLVED against the oracle sources (2026-07-07)
 
-1. **LM attention semantics for audio tokens.** Images get bidirectional
-   attention within the region (`imageMask` → bidir). Do audio soft
-   tokens? Gemma-4 marks them `mm_token_type_ids=3`. Resolve by reading
-   the internal `gemma4.py` mask construction for audio positions and
-   confirming with a probe prompt. Wrong answer = quality bug the
-   greedy-prefix gate will catch, but know it before A3, not after.
-2. **Per-layer-input zeroing (e4b).** Image token ids are zeroed for the
-   per-layer side input (`src/model/gemma4.ts:876–896`). Confirm the
-   oracle does the same for audio ids; mirror exactly.
-3. **Per-bin mel normalization stats** — where do `per_bin_mean/stddev`
-   live in the snapshot (config? preprocessor_config.json? baked
-   defaults)? Locate and pin; if absent, lift optiq's defaults verbatim.
-4. **Template vs splice ownership of boa/eoa** — verify
-   `chat_template.jinja` emits only `<|audio|>` and the boa/eoa pair is
-   splice-side (vision precedent: boi/eoi are splice-side).
+1. **LM attention semantics for audio tokens: strictly CAUSAL.**
+   `language.py:484–545 _make_masks`: the blockwise bidirectional overlay
+   keys off `is_vision = (mm_token_type_ids == 1) | (== 2)` only — audio
+   (type 3) never enters a block. Stronger: `use_bidirectional_vision`
+   requires `not has_audio_tokens`, so **any audio token in the prompt
+   disables the vision overlay entirely** (oracle comment: "Audio spans
+   are sequential; keep mixed image+audio prompts causal"). mlx-bun rule:
+   audio runs get NO bidir mask, and a mixed image+audio request drops
+   the image bidir mask too — pass no bidir mask at all in that case.
+2. **Per-layer-input zeroing: yes, audio included.** `gemma4.py:92–99`
+   zeroes per-layer ids for the union mask
+   `(ids==image_token) | (ids==audio_token) | (ids==video_token)`.
+   Extend the existing image-mask zeroing in
+   `src/model/gemma4.ts:876–896` to the combined multimodal mask.
+3. **Per-bin mel stats: constructor defaults, no normalization.**
+   `processing_gemma4.py:919–934`: standard HF checkpoints ship no
+   `feature_extractor` key (our e4b snapshot has no
+   processor_config.json at all) → `Gemma4AudioFeatureExtractor()` with
+   defaults; "the USM parameters are fixed for all Gemma 4 models".
+   `per_bin_mean/stddev = None` → that branch is dead for us. Also
+   pinned there: `audio_seq_length` default 750, `audio_ms_per_token`
+   default 40.
+4. **boa/eoa are splice-side.** e4b `chat_template.jinja:301,334` emits
+   bare `<|audio|>` for audio parts (both content shapes); the
+   boa + audio×n + eoa expansion is processor-side — same ownership as
+   vision's boi/eoi. Splice in our prompt builder, not the template.
 
 ### 3.4 Parity strategy (tree doctrine)
 

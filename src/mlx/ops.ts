@@ -878,6 +878,26 @@ export function conv1d(
   );
 }
 
+/** nn.Conv2d: input [B, H, W, C_in] (NHWC), weight [C_out, kH, kW, C_in/groups]
+ *  → [B, H', W', C_out]. mlx weight layout — the oracle transposes PyTorch's
+ *  [C_out, C_in, kH, kW] at load. For the gemma-4 audio SSCP subsampler.
+ *  dilation_1 and groups ride in one packed u64 — see the mlx_conv2d hazard
+ *  note in ffi.ts (bun:ffi stack-arg ABI bug). */
+export function conv2d(
+  input: MlxArray, weight: MlxArray, stride: [number, number] = [1, 1],
+  padding: [number, number] = [0, 0], dilation: [number, number] = [1, 1],
+  groups = 1, s: S = gpuStream,
+): MlxArray {
+  const dilation1AndGroups =
+    (BigInt(dilation[1] >>> 0) & 0xffffffffn) | (BigInt(groups >>> 0) << 32n);
+  return new MlxArray(
+    outArray("conv2d", (o) =>
+      C.mlx_conv2d(o, input.handle, weight.handle, stride[0], stride[1],
+        padding[0], padding[1], dilation[0], dilation1AndGroups, s),
+    ),
+  );
+}
+
 /** mx.split(a, indices, axis): split at the given boundary offsets along `axis`
  *  into N+1 contiguous slices (mirrors numpy/mlx split-by-indices). */
 export function split(a: MlxArray, indices: number[], axis: number): MlxArray[] {

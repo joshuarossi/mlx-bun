@@ -71,6 +71,15 @@ README.md has the pitch and scope boundaries.
   GPU ops silently read garbage (CPU-stream ops are fine). Weights load
   via `mlx_load_safetensors` on the **CPU stream** (Load has no GPU
   kernel). See PLAN.md Phase 1 findings.
+- bun:ffi (≤1.3.14) mis-lays sub-8-byte STACK args on macOS arm64: it
+  writes one 8-byte slot per arg, but the Apple ABI packs stack args at
+  natural size — a binding whose 9th+ int-class args put an i32 before
+  more args hands the callee shifted garbage (mlx_conv2d's
+  segfault-at-0x1; the bogus value landed in the stream arg). Fix: pack
+  adjacent stack-i32 pairs into ONE u64 little-endian (see ops.conv2d).
+  f32 args don't count toward the 8 (they ride v-registers); all-u64/ptr
+  tails and a lone trailing bool are safe. Repro:
+  lab/repro/bun-ffi-stack-args.
 - When binding mlx-c functions, read the full signature from the header
   first — a missed trailing optional param shifts the stream arg and
   produces "There is no Stream(...)" errors at eval time.
