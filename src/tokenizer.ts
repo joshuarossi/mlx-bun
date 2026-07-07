@@ -38,6 +38,17 @@ export interface LoadedTokenizer {
    *  decoder the strip already happens inside decode(); without one
    *  (gemma-4) mlx-lm uses trim_space=False and keeps the space too. */
   readonly trimsLeadingSpace?: boolean;
+  /** mlx-lm streaming-detokenizer parity (companion to trimsLeadingSpace):
+   *  for ByteLevel-decoder (BPE) tokenizers, the vocab id of the bare-space
+   *  token "Ġ" — the ONLY token matching mlx-lm 0.31.3
+   *  BPEStreamingDetokenizer.add_token's hold condition
+   *  `len(v) == 1 and self._byte_decoder.get(v[0]) == 32`
+   *  (tokenizer_utils.py:206-218, "For single spaces wait until the next
+   *  token"). mlx_lm.server NEVER calls detokenizer.finalize() (grep: zero
+   *  hits in server.py 0.31.3), so a generation ENDING on this token silently
+   *  drops its space from the served bytes. The serving StreamDecoder
+   *  consults this id to mirror both behaviors (MiniCPM5: id 242). */
+  readonly bareSpaceTokenId?: number;
   /** Encode-path counters (memo hits / incremental splices / fallbacks /
    *  full encodes) — observability + test hook, no behavioral role. */
   readonly encodeStats?: EncodeStats;
@@ -288,6 +299,19 @@ export async function loadTokenizer(modelDir: string): Promise<LoadedTokenizer> 
     return enc.ids.length === 1 ? Number(enc.ids[0]) : null;
   };
 
+  // mirror mlx-lm's `_is_bpe_decoder` (tokenizer_utils.py): top-level
+  // decoder type "ByteLevel" selects the BPE streaming detokenizer.
+  const isByteLevel =
+    (tokenizerJson as { decoder?: { type?: string } }).decoder?.type === "ByteLevel";
+  // The bare-space token: in the GPT-2 ByteLevel byte-to-unicode map, byte 32
+  // (space) renders as "Ġ" (U+0120) — the only single-char vocab entry whose
+  // byte decodes to 32, i.e. the only token mlx-lm's BPEStreamingDetokenizer
+  // withholds in _unflushed. Look it up straight in the BPE vocab.
+  const bareSpaceTokenId = isByteLevel
+    ? (tokenizerJson as { model?: { vocab?: Record<string, number> } }).model
+        ?.vocab?.["Ġ"]
+    : undefined;
+
   return {
     // Memo + incremental-splice path live in IncrementalEncoder; short
     // prompts (<4096 chars, <1 ms) bypass both inside it.
@@ -301,11 +325,11 @@ export async function loadTokenizer(modelDir: string): Promise<LoadedTokenizer> 
     bosTokenId: idOf("bos_token"),
     eosTokenId: idOf("eos_token"),
     tokenizerJsonPath: `${modelDir}/tokenizer.json`,
-    // mirror mlx-lm's `_is_bpe_decoder` (tokenizer_utils.py): top-level
-    // decoder type "ByteLevel" selects the BPE streaming detokenizer, the
-    // only class whose sequence-start space-trim our decode() lacks.
-    trimsLeadingSpace:
-      (tokenizerJson as { decoder?: { type?: string } }).decoder?.type === "ByteLevel",
+    // ByteLevel/BPE = the only detokenizer class with the sequence-start
+    // space-trim and the bare-space hold-back our decode() lacks (see the
+    // interface docs above).
+    trimsLeadingSpace: isByteLevel,
+    bareSpaceTokenId: typeof bareSpaceTokenId === "number" ? bareSpaceTokenId : undefined,
     encodeStats: enc.stats,
   };
 }

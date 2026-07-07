@@ -1056,32 +1056,53 @@ class LogprobsCollector {
 /** Incremental detokenizer: emits the longest stable decoded prefix.
  *
  *  Byte parity with mlx-lm's streaming detokenizers (the drop-in contract is
- *  rendered BYTES, not just token ids): for BPE/ByteLevel tokenizers
- *  (tokenizer.trimsLeadingSpace) mlx-lm drops ONE leading " " at the start of
- *  the generated sequence (tokenizer_utils.py BPEStreamingDetokenizer
- *  `_maybe_trim_space`) which our full-sequence decode keeps — trim it here.
- *  SPM decode already matches (see LoadedTokenizer.trimsLeadingSpace).
+ *  rendered BYTES, not just token ids). For BPE/ByteLevel tokenizers, two
+ *  mlx-lm 0.31.3 BPEStreamingDetokenizer behaviors our full-sequence decode
+ *  lacks (tokenizer_utils.py:195-226):
+ *
+ *  1. `trimsLeadingSpace` — mlx-lm drops ONE leading " " at the start of the
+ *     generated sequence (`_maybe_trim_space`); trim it here. SPM decode
+ *     already matches (see LoadedTokenizer.trimsLeadingSpace).
+ *  2. `bareSpaceTokenId` — add_token WITHHOLDS a single-char byte-32 token
+ *     ("Ġ") in `_unflushed` ("For single spaces wait until the next token"),
+ *     flushing it together with the NEXT token — and mlx_lm.server NEVER
+ *     calls detokenizer.finalize() (zero hits in server.py 0.31.3), so a
+ *     generation ENDING on bare-space token(s) silently drops their spaces
+ *     from the served bytes. push() withholds those spaces; flush() drops a
+ *     trailing bare-space run (the held text dies with the request, exactly
+ *     like mlx-lm serve). Re-check both if upstream ever adds a finalize()
+ *     call. LATENT HAZARD (deliberately not emulated): models with
+ *     clean_up_tokenization_spaces=true get an ADDITIONAL mid-stream rule
+ *     (`_space_matches`: held space dropped before "." "," "'s" …) — both
+ *     current BPE targets have it false (MiniCPM5), so it never fires here.
+ *
  *  Exported for unit tests (serve-detok mlx-lm byte parity). */
 export class StreamDecoder {
   #ids: number[] = [];
   #emitted = "";
   readonly #trimLeadingSpace: boolean;
+  readonly #bareSpaceId: number | undefined;
 
   constructor(
     readonly tokenizer: LoadedTokenizer,
     readonly skipSpecialTokens = true,
   ) {
     this.#trimLeadingSpace = tokenizer.trimsLeadingSpace === true;
+    this.#bareSpaceId = tokenizer.bareSpaceTokenId;
   }
 
-  #decode(): string {
-    const full = this.tokenizer.decode(this.#ids, this.skipSpecialTokens);
+  #decode(ids: number[]): string {
+    const full = this.tokenizer.decode(ids, this.skipSpecialTokens);
     return this.#trimLeadingSpace && full.startsWith(" ") ? full.slice(1) : full;
   }
 
   push(token: number): string {
     this.#ids.push(token);
-    const full = this.#decode();
+    // Bare-space hold-back (mlx-lm add_token keeps "Ġ" in _unflushed): don't
+    // advance #emitted; the held space(s) flush as part of the next
+    // non-bare-space token's delta — consecutive bare spaces accumulate.
+    if (token === this.#bareSpaceId) return "";
+    const full = this.#decode(this.#ids);
     // hold back a trailing replacement char (partial multi-byte sequence)
     const stable = full.endsWith("�") ? full.slice(0, -1) : full;
     if (!stable.startsWith(this.#emitted)) {
@@ -1096,7 +1117,15 @@ export class StreamDecoder {
   }
 
   flush(): string {
-    const full = this.#decode();
+    // mlx_lm.server never finalize()s: a trailing bare-space run stays
+    // withheld forever, so its text is dropped from the served bytes.
+    let ids = this.#ids;
+    if (this.#bareSpaceId !== undefined) {
+      let n = ids.length;
+      while (n > 0 && ids[n - 1] === this.#bareSpaceId) n--;
+      if (n < ids.length) ids = ids.slice(0, n);
+    }
+    const full = this.#decode(ids);
     const delta = full.slice(this.#emitted.length);
     this.#emitted = full;
     return delta;

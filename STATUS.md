@@ -10,7 +10,39 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
-## Where we are (2026-07-07 — A7 closure: ssd-cache RSS)
+## Where we are (2026-07-07 — cpm5 completion-probe parity closed)
+
+**The MiniCPM5 completion-probe parity ✗ (07-07 bench, diverged at char
+249: trailing `" "`) was a DETOKENIZATION artifact, not logit
+divergence.** The 64-token greedy streams are identical; the
+max_tokens-final token is the bare-space token `Ġ` (id 242).
+mlx-lm 0.31.3's `BPEStreamingDetokenizer.add_token` WITHHOLDS a
+single-char byte-32 token in `_unflushed` ("For single spaces wait until
+the next token", tokenizer_utils.py:206-218) and `mlx_lm.server` NEVER
+calls `finalize()` (zero hits) — so mlx-lm silently DROPS a genuinely
+generated token's text when generation ends on a bare space; our
+full-sequence StreamDecoder kept it. Fix: StreamDecoder now mirrors the
+serve semantics for ByteLevel tokenizers (`LoadedTokenizer.
+bareSpaceTokenId` = vocab["Ġ"]): push(bareSpace) emits nothing, the next
+token's delta carries the held run, flush() drops a trailing run.
+Verified END-TO-END over HTTP: our server (batch 1 AND batch 8) now
+renders bytes IDENTICAL to a live mlx_lm.server on the same snapshot
+(249 chars, `…numbers greater than`). Model-free regression tests pin
+the served id stream (tests/serve-detok-parity.test.ts); suite +
+whole-repo tsc 0 green. Two durable observations: (1) upstream-worthy —
+mlx_lm.server drops served text on a final bare-space token (its own
+stream_generate+finalize path disagrees with its server path; candidate
+lab/repro + upstream report). (2) mlx-lm's greedy stream is
+ROUTE-DEPENDENT at bf16 near-ties: its CLI route (stream_generate,
+full-prompt GEMM step 0) picks "focuses on" at step 50 where its OWN
+server route (BatchGenerator prompt[:-1]+[last] split) picks "deals
+with"; our serve matches its serve — serve-vs-serve is the contract.
+Latent hazard flagged in code: clean_up_tokenization_spaces=true BPE
+models have an extra mid-stream `_space_matches` rule we don't emulate
+(both current BPE targets are false). No served-surface change → no
+reference-doc edits.
+
+## Where we were (2026-07-07 — A7 closure: ssd-cache RSS)
 
 **A7 ("ctx/restart legs read high on --ssd-cache arms") root-caused in
 three parts and closed** (src/kv-store.ts; fixed against the 07-07 bench
