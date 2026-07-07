@@ -314,6 +314,15 @@ cells (tower ms, TTFT delta vs text-only, peak RSS delta) and lands in
       features-matrix.md (audio row + footnote: mlx-lm strips it, optiq
       never serves it — we expose it) / README capability line, same
       change set; Anthropic endpoint 400 documented.
+- [x] capability discovery (post-merge CodeRabbit follow-up, 2026-07-07):
+      `audio` flag mirrors `vision` on every surface — /v1/models served
+      row, /library rows (`audioCapable` in src/registry.ts:
+      `has_audio_config AND has_audio_tower`, header-only sidecar scan),
+      and the pi ws `ready` frame. The predicate checks TENSORS, not just
+      config: the 12B stub sidecar (audio_config + embed_audio-only) reads
+      audio=false, and `makeAudioLoader` header-checks the sidecar so the
+      runtime flag can't lie either. Discovery-only in pi land — pi's
+      `Model.input` type has no "audio" modality to declare.
 - Exit: T3 green — `tests/e4b-audio-serve.test.ts`
       (MLX_BUN_TEST_AUDIO_SERVE=1): base64 WAV over
       /v1/chat/completions returns the EXACT golden transcription

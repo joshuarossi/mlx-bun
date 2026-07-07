@@ -444,11 +444,16 @@ curl localhost:8080/v1/embeddings -H 'content-type: application/json' \
 "created": <unix s>, … }] }`
 
 The served model is FIRST (with extra capability fields:
-`context_window`, `reasoning`, `vision`, `owned_by`), followed by every other
-servable model the local registry knows (mlx-lm scans the HF cache
-here; the registry is that scan, filtered to supported architectures).
+`context_window`, `reasoning`, `vision`, `audio`, `owned_by`), followed by
+every other servable model the local registry knows (mlx-lm scans the HF
+cache here; the registry is that scan, filtered to supported architectures).
 `GET /v1/models/<id>` filters the list to that id — same list shape,
 matching `mlx_lm.server`.
+
+`vision` / `audio` say whether the served model accepts `image_url` /
+`input_audio` content parts (tower loaded or lazily loadable — see
+*Audio input* above for what audio requires), so clients can discover
+capabilities instead of probing for a `400`.
 
 ## GET /health
 
@@ -496,7 +501,8 @@ tensor bytes are read).
     "model_type": "gemma3" | "minicpm5" | "qwen3" | …,
     "size_bytes": 0,
     "quant_bits": 4,
-    "vision": false,             // has vision sidecar
+    "vision": false,             // vision-capable (sidecar or unified tower)
+    "audio": false,              // audio-capable (audio_config + sidecar audio-tower tensors)
     "supported": true,           // recognized model family
     "serving": false,            // currently loaded in this server
     "assessment": {              // null if config unreadable

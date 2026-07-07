@@ -34,6 +34,14 @@ export interface ModelRecord {
    *  AND for configs whose nested vision_config is not a vision tower
    *  (Qwen3.5 nests a copy of its own text config there). */
   visionConfigType: string | null;
+  /** config.json declares an `audio_config` block (gemma-4 Conformer). */
+  hasAudioConfig: boolean;
+  /** The optiq_vision.safetensors sidecar actually ships `audio_tower.*`
+   *  tensors (header-only check). Distinct from hasAudioConfig: the 12B
+   *  OptiQ snapshot pairs an audio_config with a STUB sidecar holding only
+   *  embed_audio.embedding_projection.weight, so config presence alone
+   *  is not an audio-capability signal. */
+  hasAudioTower: boolean;
   hasKvConfig: boolean;
   hasToolTemplate: boolean;
   numLayers: number | null;
@@ -60,6 +68,8 @@ CREATE TABLE IF NOT EXISTS models (
   quant_mode TEXT,
   has_vision_sidecar INTEGER NOT NULL,
   vision_config_type TEXT,
+  has_audio_config INTEGER NOT NULL DEFAULT 0,
+  has_audio_tower INTEGER NOT NULL DEFAULT 0,
   has_kv_config INTEGER NOT NULL,
   has_tool_template INTEGER NOT NULL,
   num_layers INTEGER,
@@ -97,7 +107,8 @@ export class Registry {
       !cols.includes("sidecar_bytes") ||
       !cols.includes("experts_bytes") ||
       !cols.includes("license") ||
-      !cols.includes("vision_config_type")
+      !cols.includes("vision_config_type") ||
+      !cols.includes("has_audio_tower")
     ) {
       this.db.exec("DROP TABLE models");
       this.db.exec(SCHEMA);
@@ -115,7 +126,8 @@ export class Registry {
     const upsert = this.db.prepare(`
       INSERT OR REPLACE INTO models VALUES
       ($path, $repo, $type, $params, $size, $sidecar, $experts, $bits, $gs, $mode,
-       $vision, $vtype, $kv, $tools, $layers, $hidden, $vocab, $license, $at)
+       $vision, $vtype, $audiocfg, $audiotower, $kv, $tools, $layers, $hidden,
+       $vocab, $license, $at)
     `);
     for (const entry of readdirSync(hubDir)) {
       if (!entry.startsWith("models--")) continue;
@@ -133,6 +145,8 @@ export class Registry {
           $bits: rec.quantBits, $gs: rec.quantGroupSize, $mode: rec.quantMode,
           $vision: rec.hasVisionSidecar ? 1 : 0,
           $vtype: rec.visionConfigType,
+          $audiocfg: rec.hasAudioConfig ? 1 : 0,
+          $audiotower: rec.hasAudioTower ? 1 : 0,
           $kv: rec.hasKvConfig ? 1 : 0,
           $tools: rec.hasToolTemplate ? 1 : 0,
           $layers: rec.numLayers, $hidden: rec.hiddenSize, $vocab: rec.vocabSize,
@@ -218,6 +232,15 @@ export function visionCapable(m: Pick<ModelRecord, "hasVisionSidecar" | "visionC
   return m.hasVisionSidecar || (m.visionConfigType?.endsWith("unified_vision") ?? false);
 }
 
+/** True when the model can answer audio (`input_audio`) requests: config.json
+ *  declares an `audio_config` AND the sidecar actually ships the Conformer
+ *  (`audio_tower.*`) tensors. Both legs matter — the 12B OptiQ snapshot has
+ *  audio_config but a stub sidecar (embed_audio only), so config presence
+ *  alone would advertise a capability that 400s at request time. */
+export function audioCapable(m: Pick<ModelRecord, "hasAudioConfig" | "hasAudioTower">): boolean {
+  return m.hasAudioConfig && m.hasAudioTower;
+}
+
 /** Of several cached revisions of ONE repo, pick the canonical snapshot: the
  *  revision refs/main points at, else the most recently scanned (stable
  *  tie-break on path). Paths are `<hub>/models--<repo>/snapshots/<hash>`. */
@@ -250,6 +273,8 @@ function rowToRecord(r: Record<string, unknown>): ModelRecord {
     quantMode: r.quant_mode as string | null,
     hasVisionSidecar: !!r.has_vision_sidecar,
     visionConfigType: (r.vision_config_type as string | null) ?? null,
+    hasAudioConfig: !!r.has_audio_config,
+    hasAudioTower: !!r.has_audio_tower,
     hasKvConfig: !!r.has_kv_config,
     hasToolTemplate: !!r.has_tool_template,
     numLayers: r.num_layers as number | null,
@@ -277,6 +302,34 @@ function readmeLicense(dir: string): string | null {
     return lic || null;
   } catch {
     return null;
+  }
+}
+
+/** True when a safetensors file's header names any `audio_tower.*` tensor
+ *  (header JSON only — never touches tensor data). Separates a real
+ *  audio-capable sidecar (e4b: 752 audio tensors) from the 12B stub, whose
+ *  only audio entry is embed_audio.embedding_projection.weight. Missing or
+ *  unparseable files read as false. */
+export function sidecarShipsAudioTower(path: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch {
+    return false;
+  }
+  try {
+    const lenBuf = Buffer.alloc(8);
+    readSync(fd, lenBuf, 0, 8, 0);
+    const headerLen = Number(lenBuf.readBigUInt64LE(0));
+    if (headerLen <= 0 || headerLen > 256 * 2 ** 20) return false;
+    const headerBuf = Buffer.alloc(headerLen);
+    readSync(fd, headerBuf, 0, headerLen, 8);
+    const header = JSON.parse(headerBuf.toString("utf8")) as Record<string, unknown>;
+    return Object.keys(header).some((n) => n.startsWith("audio_tower."));
+  } catch {
+    return false;
+  } finally {
+    closeSync(fd);
   }
 }
 
@@ -536,6 +589,8 @@ export async function scanSnapshot(dir: string, repoId: string): Promise<ModelRe
     quantMode: quant?.mode ?? (quant ? "affine" : null),
     hasVisionSidecar: existsSync(join(dir, "optiq_vision.safetensors")),
     visionConfigType: visionConfigTypeOf(config),
+    hasAudioConfig: !!config.audio_config,
+    hasAudioTower: sidecarShipsAudioTower(join(dir, "optiq_vision.safetensors")),
     hasKvConfig: existsSync(join(dir, "kv_config.json")),
     hasToolTemplate,
     numLayers: text.num_hidden_layers ?? null,

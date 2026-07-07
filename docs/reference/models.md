@@ -79,6 +79,8 @@ Schema (table `models`, one row **per snapshot**, keyed on `path`):
 | `quant_bits`, `quant_group_size`, `quant_mode` | quantization |
 | `has_vision_sidecar` | sidecar file present |
 | `vision_config_type` | `config.json`'s `vision_config.model_type` when it names a vision tower (`*_vision`) |
+| `has_audio_config` | `config.json` declares an `audio_config` block |
+| `has_audio_tower` | sidecar header names `audio_tower.*` tensors |
 | `has_kv_config`, `has_tool_template`, `license` | capabilities/terms |
 | `scanned_at` | freshness (canonical tie-break) |
 
@@ -88,6 +90,14 @@ Schema (table `models`, one row **per snapshot**, keyed on `path`):
 (`gemma4_unified_vision`) declares its encoder-free tower in config.
 Presence of a `vision_config` key alone is **not** a signal — Qwen3.5
 nests a copy of its own text config there.
+
+**Audio capability** is `has_audio_config AND has_audio_tower`: both
+legs are required because the 12B OptiQ snapshot carries an
+`audio_config` but a stub sidecar whose only audio entry is
+`embed_audio.embedding_projection.weight` (no `audio_tower.*` Conformer
+tensors) — config presence alone would advertise audio that fails at
+request time. The check reads only the sidecar's safetensors header,
+never tensor bytes.
 
 ## Query resolution rules (per verb)
 
