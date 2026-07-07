@@ -1,4 +1,4 @@
-// Registry canonical-revision collapsing + vision-capability detection
+// Registry canonical-revision collapsing + vision/audio-capability detection
 // (fast tier — synthetic hub dir, in-memory db, no models, no network).
 //
 // The HF cache keeps one snapshots/<commit> dir per downloaded revision and
@@ -9,20 +9,43 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Registry, visionCapable } from "../src/registry";
+import { Registry, audioCapable, visionCapable } from "../src/registry";
 
 const hubs: string[] = [];
 afterAll(() => { for (const h of hubs) rmSync(h, { recursive: true, force: true }); });
 
+/** Minimal VALID safetensors bytes: 8-byte LE header length + JSON header
+ *  naming `tensors` (2 bytes of bf16 data each). Enough for the registry's
+ *  header-only scans (sidecarShipsAudioTower). */
+function safetensorsBytes(tensors: string[]): Uint8Array {
+  const header: Record<string, unknown> = {};
+  let off = 0;
+  for (const name of tensors) {
+    header[name] = { dtype: "BF16", shape: [1], data_offsets: [off, off + 2] };
+    off += 2;
+  }
+  const json = Buffer.from(JSON.stringify(header));
+  const buf = Buffer.alloc(8 + json.length + off);
+  buf.writeBigUInt64LE(BigInt(json.length), 0);
+  json.copy(buf, 8);
+  return new Uint8Array(buf);
+}
+
 function makeSnapshot(
   hub: string, repo: string, commit: string,
-  config: Record<string, unknown>, opts: { sidecar?: boolean } = {},
+  config: Record<string, unknown>,
+  // `sidecar: true` writes 64 garbage bytes (presence-only checks);
+  // `sidecarTensors` writes a valid safetensors header naming those tensors.
+  opts: { sidecar?: boolean; sidecarTensors?: string[] } = {},
 ): string {
   const snap = join(hub, `models--${repo.replaceAll("/", "--")}`, "snapshots", commit);
   mkdirSync(snap, { recursive: true });
   writeFileSync(join(snap, "config.json"), JSON.stringify(config));
   writeFileSync(join(snap, "model.safetensors"), new Uint8Array(512));
-  if (opts.sidecar) writeFileSync(join(snap, "optiq_vision.safetensors"), new Uint8Array(64));
+  if (opts.sidecarTensors)
+    writeFileSync(join(snap, "optiq_vision.safetensors"), safetensorsBytes(opts.sidecarTensors));
+  else if (opts.sidecar)
+    writeFileSync(join(snap, "optiq_vision.safetensors"), new Uint8Array(64));
   return snap;
 }
 
@@ -117,6 +140,72 @@ describe("vision-capability detection", () => {
     // must not poison the NOT branch)
     const noVis = reg.list({ vision: false }).map((m) => m.repoId).sort();
     expect(noVis).toEqual(["v/qwen", "v/sidecar-missing", "v/text-only"]);
+    reg.close();
+  });
+});
+
+describe("audio-capability detection", () => {
+  test("audio_config + audio_tower tensors, the 12B stub, and text-only", async () => {
+    const hub = mkdtempSync(join(tmpdir(), "mlx-bun-audio-"));
+    hubs.push(hub);
+    const audioCfg = { model_type: "gemma4_audio", hidden_size: 1536 };
+    // e4b flavor: audio_config + a sidecar that really ships the Conformer
+    makeSnapshot(hub, "a/capable", "c1", {
+      model_type: "gemma4",
+      text_config: { num_hidden_layers: 2, hidden_size: 64, vocab_size: 100 },
+      audio_config: audioCfg,
+    }, { sidecarTensors: [
+      "audio_tower.output_proj.weight",
+      "embed_audio.embedding_projection.weight",
+      "vision_tower.patch_embedding.weight",
+    ] });
+    // 12B trap: audio_config present, but the sidecar's ONLY audio entry is
+    // embed_audio.embedding_projection.weight — no audio_tower.* tensors.
+    // Config presence alone must not read as audio-capable.
+    makeSnapshot(hub, "a/stub", "s1", {
+      model_type: "gemma4_unified",
+      text_config: { num_hidden_layers: 2, hidden_size: 64, vocab_size: 100 },
+      audio_config: audioCfg,
+    }, { sidecarTensors: [
+      "embed_audio.embedding_projection.weight",
+      "vision_tower.patch_embedding.weight",
+    ] });
+    // 26B flavor: sidecar without audio tensors and no audio_config
+    makeSnapshot(hub, "a/vision-only", "v1", {
+      model_type: "gemma4",
+      text_config: { num_hidden_layers: 2, hidden_size: 64, vocab_size: 100 },
+    }, { sidecarTensors: ["vision_tower.patch_embedding.weight"] });
+    // audio_config with an unparseable (garbage) sidecar: tensors unknowable,
+    // must read as not capable — and must not crash the scan
+    makeSnapshot(hub, "a/garbage-sidecar", "g1", {
+      model_type: "gemma4",
+      text_config: { num_hidden_layers: 2, hidden_size: 64, vocab_size: 100 },
+      audio_config: audioCfg,
+    }, { sidecar: true });
+    makeSnapshot(hub, "a/text-only", "t1", {
+      model_type: "llama", num_hidden_layers: 2, hidden_size: 64, vocab_size: 100,
+    });
+
+    const reg = new Registry(":memory:");
+    await reg.scan(hub);
+    const by = (q: string) => reg.resolve(q);
+
+    const capable = by("capable");
+    expect(capable.hasAudioConfig).toBe(true);
+    expect(capable.hasAudioTower).toBe(true);
+    expect(audioCapable(capable)).toBe(true);
+
+    const stub = by("stub");
+    expect(stub.hasAudioConfig).toBe(true);
+    expect(stub.hasAudioTower).toBe(false); // embed_audio alone isn't a tower
+    expect(audioCapable(stub)).toBe(false);
+
+    const visionOnly = by("vision-only");
+    expect(visionOnly.hasAudioConfig).toBe(false);
+    expect(audioCapable(visionOnly)).toBe(false);
+
+    expect(audioCapable(by("garbage-sidecar"))).toBe(false);
+    expect(audioCapable(by("text-only"))).toBe(false);
     reg.close();
   });
 });

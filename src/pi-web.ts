@@ -184,9 +184,13 @@ type ClientMessage =
 type ServerMessage =
   // `vision`: whether the loaded model can accept images (drives the UI's
   // image-attach affordance — false on e4b until the SigLIP sidecar lands).
+  // `audio`: whether the loaded model can accept `input_audio` parts (audio
+  // tower loaded or loadable). Discovery-only for now: pi's Model.input type
+  // has no "audio" modality, so unlike `vision` this flag never feeds the
+  // provider declaration — clients use it instead of probing for a 400.
   // `thinking`: whether the model has a switchable reasoning channel (drives
   // the UI's thinking on/off toggle; false hides it).
-  | { type: "ready"; model: string; vision: boolean; thinking: boolean }
+  | { type: "ready"; model: string; vision: boolean; audio: boolean; thinking: boolean }
   | { type: "turn_start" }
   | { type: "text_delta"; delta: string }
   | { type: "thinking_delta"; delta: string }
@@ -490,7 +494,7 @@ class PiWebSession {
 
   constructor(
     private readonly ws: PiWs,
-    private readonly opts: { port: number | (() => number); modelId: string; contextWindow: number; readOnly: boolean; vision: boolean; thinking: boolean },
+    private readonly opts: { port: number | (() => number); modelId: string; contextWindow: number; readOnly: boolean; vision: boolean; audio: boolean; thinking: boolean },
   ) {}
 
   /** Build the provider, resume the most recent chat, and start streaming. */
@@ -522,7 +526,7 @@ class PiWebSession {
     await this.replaceRuntime(SessionManager.create(this.cwd, this.sessionDir));
     if (this.disposed) return;
 
-    this.send({ type: "ready", model: this.opts.modelId, vision: this.opts.vision, thinking: this.opts.thinking });
+    this.send({ type: "ready", model: this.opts.modelId, vision: this.opts.vision, audio: this.opts.audio, thinking: this.opts.thinking });
     this.sendHistory();
     await this.sendSessions();
   }
@@ -942,6 +946,10 @@ export function makePiWsHandler(opts: {
   readOnly?: boolean;
   /** Whether the loaded model can accept images (server's ctx.vision != null). */
   vision?: boolean;
+  /** Whether the loaded model can accept `input_audio` parts (server's audio
+   *  tower loaded or loadable). Rides only the `ready` frame — pi's
+   *  Model.input type has no "audio" modality to declare. */
+  audio?: boolean;
   /** Whether the model has a switchable reasoning channel
    *  (server's ctx.template.supportsThinking). Drives the thinking toggle. */
   thinking?: boolean;
@@ -952,6 +960,7 @@ export function makePiWsHandler(opts: {
     contextWindow: opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     readOnly: opts.readOnly ?? false,
     vision: opts.vision ?? false,
+    audio: opts.audio ?? false,
     thinking: opts.thinking ?? false,
   };
 

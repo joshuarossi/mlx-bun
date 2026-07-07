@@ -69,6 +69,7 @@ import {
 } from "./vision/prompt";
 import { AudioTower, parseAudioConfig } from "./audio/conformer";
 import { ensureWav } from "./audio/transcode";
+import { sidecarShipsAudioTower } from "./registry";
 import { makePiWsHandler, type PiWsData } from "./pi-web";
 
 export interface ServerOptions {
@@ -495,6 +496,11 @@ function makeAudioLoader(
 ): (() => AudioTower) | null {
   if (!(config.hasVisionSidecar && config.raw.audio_config && model instanceof Gemma4Model))
     return null;
+  // The sidecar header must actually name the Conformer tensors: the local
+  // 12B snapshot pairs audio_config with a STUB sidecar (embed_audio only),
+  // and a non-null loader here is what advertises `audio: true` on every
+  // capability surface (ws handshake, /v1/models). Header-only read.
+  if (!sidecarShipsAudioTower(`${modelDir}/optiq_vision.safetensors`)) return null;
   const audioCfg = parseAudioConfig(config.raw.audio_config as Record<string, any>);
   return () => AudioTower.load(modelDir, audioCfg, model.embedScale);
 }
@@ -503,8 +509,9 @@ function makeAudioLoader(
  *  warn-and-continue (text-only degrade is correct for requests WITHOUT
  *  images), this is only ever consulted for requests WITH audio — the
  *  caller turns null into an explicit 400, never a silent text-only
- *  degrade. A failed load (e.g. a stub sidecar carrying no audio tensors,
- *  the local 12B state) is not retried every request. */
+ *  degrade. A failed load is not retried every request. (The stub-sidecar
+ *  case — the local 12B state — never gets here: makeAudioLoader checks the
+ *  sidecar header and returns a null loader.) */
 function getAudioTower(ctx: ServerContext): AudioTower | null {
   if (ctx.audio) return ctx.audio;
   if (!ctx.loadAudio) return null;
@@ -2000,8 +2007,9 @@ export function createServer(
       port: () => serverRef.port ?? port,
       modelId: ctx.modelId,
       contextWindow: ctx.model.config.text.maxPositionEmbeddings,
-      // capability flag — true if a tower is loaded or loadable (lazy)
+      // capability flags — true if a tower is loaded or loadable (lazy)
       vision: !!(ctx.vision || ctx.loadVision),
+      audio: !!(ctx.audio || ctx.loadAudio),
       thinking: ctx.template.supportsThinking,
     }),
     async fetch(request, server) {
@@ -2063,7 +2071,7 @@ export function createServer(
           // surface on their own. (scan() is INSERT-OR-REPLACE + prunes deleted,
           // so it's idempotent and cheap for a local cache.)
           await reg.scan();
-          const { visionCapable } = await import("./registry");
+          const { visionCapable, audioCapable } = await import("./registry");
           const { supportTier } = await import("./model/support");
           const rows = [];
           // listCanonical: one row per repo (refs/main) — duplicate snapshots
@@ -2084,7 +2092,8 @@ export function createServer(
             rows.push({
               repo_id: m.repoId, model_type: m.modelType,
               size_bytes: m.sizeBytes, quant_bits: m.quantBits,
-              vision: visionCapable(m), supported, support_tier: tier,
+              vision: visionCapable(m), audio: audioCapable(m),
+              supported, support_tier: tier,
               serving: m.repoId === ctx.modelId,
               assessment,
             });
@@ -2333,10 +2342,12 @@ export function createServer(
           context_window: ctx.model.config.text.maxPositionEmbeddings,
           // Capability flags for clients (CLI/external pi) that build a
           // provider from discovery — `reasoning` gates the thinking toggle,
-          // `vision` the image input declaration (tower loaded or lazily
-          // loadable; same signal the web embed uses).
+          // `vision` the image input declaration, `audio` whether
+          // `input_audio` content parts are accepted (tower loaded or lazily
+          // loadable; same signals the web embed uses).
           reasoning: ctx.template.supportsThinking,
           vision: !!(ctx.vision || ctx.loadVision),
+          audio: !!(ctx.audio || ctx.loadAudio),
         }];
         try {
           const { Registry } = await import("./registry");

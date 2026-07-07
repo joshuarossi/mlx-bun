@@ -731,7 +731,13 @@ lab/repro/bun-ffi-stack-args), §3.3 semantics resolved (audio strictly
 causal), fixtures + oracle goldens live (speech greedy = token-perfect
 transcription). A0-A4 DONE — audio is SERVED on e4b: live HTTP transcription matches the
 oracle golden EXACTLY, mixed image+audio grounds on both media, serial-lane
-isolation proven, docs shipped in the same commit. Remaining: A5 (quotable
+isolation proven, docs shipped in the same commit. Capability discovery
+landed 2026-07-07 (post-merge CodeRabbit follow-up): `audio` mirrors
+`vision` on /v1/models, /library, and the pi ws `ready` frame —
+`audioCapable` in src/registry.ts checks TENSORS not just config
+(`has_audio_config AND has_audio_tower`, header-only scan), so the 12B
+stub sidecar reads audio=false everywhere and clients stop probing for
+400s. Remaining: A5 (quotable
 bench cells need a QUIET machine — Josh-gated; 12B audio cell needs a
 sidecar rebuild via optiq build_vision_sidecar — download, Josh-gated). A1 DONE:
 mel port is 1-ulp-f32 from the oracle (the numpy f32 Hann window is baked
