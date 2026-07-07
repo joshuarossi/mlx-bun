@@ -172,3 +172,86 @@ Total ~7–10 working days.
   discipline) before making footprint claims.
 - **Stale-token poisoning**: `configFingerprint` + `tokenizerHash` + ns;
   chat-template drift degrades to a shorter matched prefix (safe).
+
+## Addendum 2026-07-07 — A7 closure: bounded memory on BOTH sides of the file
+
+The 07-06/07 serve benches flagged elevated ctx/restart-leg RSS on
+--ssd-cache arms ("A7"). Root-caused in three parts; the first two were
+real defects, both fixed in `src/kv-store.ts`:
+
+- **Write side** (residual after the v3 streaming writer of 4f9bad9): the
+  per-tensor `rawBytes()` readback ended in a JS-heap `.slice()`; under GC
+  lag the dead copies outlive the flush loop, re-spiking RSS toward the
+  whole entry. The writer now hashes and writes from a ZERO-COPY view of
+  the contiguous mlx buffer (`MlxArray.rawBytesView`) — no JS-heap copy
+  exists at any point; save-transient mlx memory measured 0 bytes for
+  contiguous sources (one tensor otherwise).
+- **Restore side** (never covered by A7's original scope): the zero-copy
+  restore (COW mmap + `fromPointer`) became a per-restore PROCESS-LIFETIME
+  mapping leak once the 2026-07-06 FFI-dtor fix removed the unmap signal,
+  and the exactly-offset-sized restored buffers made the first
+  post-restore decode step concat-copy the entire entry into fresh mlx
+  memory. Restore is now a **streamed copy** — each tensor is copied into
+  an mlx-owned leaf (`fromBytesCopy`, no dtor contract), its clean file
+  pages dropped (`MADV_DONTNEED`; tensor offsets are 16 KiB-aligned = the
+  arm64 page size), the mapping unmapped before `loadKvCache` returns, and
+  plain-KV tensors land in STEP-rounded capacity with ≥1 token of slack so
+  the first step updates in place. Measured (512 MB synthetic entry): mlx
+  peak during restore+first-step = live entry + ONE tensor (552 vs 520 MB
+  active); `vmmap` confirms no `.mlxkv` mapping survives; 12B real-model
+  cold cache-load → first token 277 ms (parity with the old zero-copy
+  ~240 ms claim — the old path paid the same whole-entry copy on the first
+  decode step anyway). Byte identity of the copy-restore is pinned for all
+  five cache kinds (save → load(verify) → re-save hash-identical;
+  tests/kv-store.test.ts "copy-restore byte identity") plus the real-model
+  bf16/quantized/SSM continuation suites.
+- **What was NOT a defect**: most of the benched leg delta is `ps` RSS
+  ACCOUNTING — the write-behind's hash+write CPU-touches the live KV
+  entry, which makes those already-allocated unified-memory pages visible
+  to `ps` (GPU-written buffers and python-arm KV never show). The bench
+  report now footnotes this instead of promising a pending fix.
+
+Supersedes the D2 line "restored entry carries its MmapFile, unmapped on
+entry dispose" and the D1 "restore = one zero-copy mmap with lazy page
+fault-in" mechanics above — the economics (SSD-vs-recompute) and the
+zero-work-on-token-loop property are unchanged.
+
+## Addendum 2026-07-07 — write-behind scheduling contract: flush only while idle
+
+The 07-07 serve bench showed decode@ctx losing to mlx-lm on the bun arms
+(e4b −9.3%, 12B −3.9%) while short-ctx decode won on every model — and the
+mixed arm (4× smaller flush bytes) BEAT the bf16 arms at decode@ctx. Root
+cause: "non-blocking" write-behind was only non-blocking at the event-loop
+level. Every per-tensor flush step is (1) `ops.contiguous` — a kernel on
+the SAME GPU stream decode uses — then (2) `rawBytesView()` → a synchronous
+`mlx_array_eval` that blocks the JS thread until the stream drains, then
+(3) a synchronous multi-MB `writeSync`. The `setImmediate` pacing
+interleaved those slices exactly between decode tokens, so a ~16k entry's
+flush overlapping the bench's cached ctx repeats taxed their 64-token
+decode windows (reproduced standalone: e4b 9.5k-token entry, repeat decode
+37.9 vs cold 47.1 tok/s; flat 44–46 across all three samples post-fix).
+mlx-lm runs no equivalent background work — the gap was pure self-inflicted
+contention.
+
+**The contract now:** the flush only progresses while the engine is idle.
+- `GenerationGateway.busy` covers BOTH lanes (mutex held/awaited — the
+  serial lane shows zero rows — OR batch rows active/pending);
+  `gateway.onIdle()` is the poll-based waiter (`generation-gateway.ts`).
+- `saveKvCacheAsync`/`SsdCacheStore.storeAsync` accept a per-step
+  `waitTurn` gate awaited before EVERY tensor step (including the first),
+  so a request arriving MID-flush pauses the remaining tensors until idle
+  again; the server passes `() => gateway.onIdle()` at both chain sites
+  (write-behind snapshots AND eviction/demotion spills). Gate failures are
+  swallowed — scheduling advice must never corrupt the write path.
+- `MLX_BUN_SSD_WRITEBEHIND=0` disables write-behind snapshots entirely
+  (kill switch + paired-A/B lever; restart survival then degrades to
+  spill-on-evict only).
+
+Accepted tradeoffs: durability waits for a quiet moment (single-user
+serving quiesces constantly; sustained hammering defers the flush AND the
+spill clones' GPU-memory release, bounded by the serial chain); one
+in-flight tensor step (~10–15 MB) can still land ahead of a just-arrived
+request; and the restart window tightens — the flush now runs in idle gaps
+instead of overlapping decodes, so the bench's 2.5 s pre-kill beat must
+absorb it (verified surviving: e4b 9.5k entry, restart cached=9575 with
+the gate on).

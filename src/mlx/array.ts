@@ -40,13 +40,14 @@ let nextPinId = 1;
 // So NO array here ever gets a JS dtor: fromPointer AND fromView both hand
 // mlx the native no-op dtor below (payload 0), and host-buffer lifetime is
 // the CALLER's contract, released only from the JS thread (unpinHostBuffer)
-// or never (process-lifetime mmaps: expert-offload, kv-store).
+// or never (process-lifetime mmaps: expert-offload).
 
 // Native no-op dtor: payload is always 0, and libc free(NULL) is defined to
 // do nothing — a dtor mlx can safely call from ANY thread. The pointed-to
 // memory's lifetime is the CALLER's contract (weight mmaps live for the
-// process; restored KV mmaps are kept mapped for the process too — see
-// kv-store.ts retainMmapForProcess). The address comes via dlsym because
+// process; restored KV is COPIED at load since 2026-07-07 — see kv-store.ts
+// loadKvCache — so no restore mapping needs pinning anymore). The address
+// comes via dlsym because
 // bun:ffi's symbol .ptr returns the pointer bit-cast to float64
 // (lab/repro/bun-ffi-f64) — passing that back truncates to NULL.
 const libcDlsym = dlopen("/usr/lib/libSystem.B.dylib", {
@@ -114,8 +115,8 @@ export class MlxArray {
     }
   }
 
-  /** Zero-copy: wrap a raw pointer (e.g. into an mmap'd weight shard or a
-   *  restored KV file). The caller guarantees the memory outlives EVERY mlx
+  /** Zero-copy: wrap a raw pointer (e.g. into an mmap'd weight shard).
+   *  The caller guarantees the memory outlives EVERY mlx
    *  reference to the array — including GPU command buffers that retain the
    *  buffer past dispose() — i.e. mmaps backing these arrays stay mapped for
    *  the process. The dtor is free(NULL) (payload 0): native + no-op, so
@@ -234,6 +235,18 @@ export class MlxArray {
 
   /** Raw bytes of the evaluated array (copy). bf16/f16/f32 only. */
   rawBytes(): Uint8Array {
+    return this.rawBytesView().slice();
+  }
+
+  /** ZERO-COPY view of the evaluated array's bytes — aliases the mlx
+   *  buffer directly, no JS-heap copy. Valid only while THIS array is
+   *  alive and unmutated: do not retain past dispose(). Built for
+   *  bulk-write paths (kv-store's streamed writer) where per-tensor
+   *  rawBytes() copies pile up in the JS heap faster than GC collects
+   *  them — the residual A7 whole-entry RSS spike (2026-07-07). The
+   *  array must be contiguous (ops.contiguous first for views), same
+   *  contract as rawBytes. */
+  rawBytesView(): Uint8Array {
     this.eval();
     const dt = this.dtype;
     const p =
@@ -242,8 +255,8 @@ export class MlxArray {
       : dt === Dtype.bfloat16 ? C.mlx_array_data_bfloat16(this.handle)
       : dt === Dtype.uint32 ? C.mlx_array_data_uint32(this.handle)
       : null;
-    if (p === null) throw new Error(`rawBytes: unsupported dtype ${this.dtypeName}`);
-    return new Uint8Array(toArrayBuffer(p!, 0, this.nbytes)).slice();
+    if (p === null) throw new Error(`rawBytesView: unsupported dtype ${this.dtypeName}`);
+    return new Uint8Array(toArrayBuffer(p!, 0, this.nbytes));
   }
 
   /** Read back an INTEGER array without enqueueing a cast kernel: eval +

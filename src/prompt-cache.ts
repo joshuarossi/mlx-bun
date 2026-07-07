@@ -172,10 +172,10 @@ export class PromptCache {
         // instantly; acceptable because the chain is serial and each write
         // disposes its clones on settle (fulfill AND reject).
         // Retain contract: entry.retain still runs below, possibly while
-        // the clones are in flight — safe because cold-restored entries'
-        // backing mmaps are process-pinned (retainMmapForProcess,
-        // 2026-07-06 hang fix), so retain no longer unmaps anything the
-        // clones could alias.
+        // the clones are in flight — safe because cold-restored entries
+        // OWN their bytes (streamed copy-restore, 2026-07-07): there is
+        // no backing mmap for retain to unmap, so nothing the clones
+        // could alias goes away.
         let clones: Cache[] | null = null;
         try {
           clones = this.#clone(entry.caches);

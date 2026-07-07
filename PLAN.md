@@ -2441,6 +2441,37 @@ suites green on every change).
   first). Stale "serial is default" comments fixed (cli.ts/server.ts);
   cli.md --batch default corrected to 8.
 
+## Phase: 2026-07-07 serve-bench residuals — A7 RSS, cpm5 detok, 12B step-0 convention `[x]` (2026-07-07)
+
+Three residuals from the 07-07 serve bench @3d56676, each root-caused and
+closed (details in STATUS.md, one section per fix):
+
+- `[x]` **A7 ssd-cache RSS** — write side: per-tensor `rawBytes()` JS-heap
+  slice → zero-copy `rawBytesView`; restore side: process-lifetime mmap
+  retention deleted, streamed copy-restore (`fromBytesCopy` + MADV_DONTNEED,
+  STEP-rounded plain-KV capacity); most of the benched leg delta was `ps`
+  RSS *accounting* (write-behind CPU-touch makes GPU pages visible).
+- `[x]` **cpm5 completion-probe ✗ (trailing space)** — detok artifact:
+  mlx_lm.server never finalizes its BPE streaming detok, silently dropping
+  a final bare-space token ("Ġ"); StreamDecoder now mirrors the hold-back
+  (`bareSpaceTokenId`), regression-pinned model-free.
+- `[x]` **12B completion-probe ✗ (near-tie flip at step 24)** — step-0
+  prefill convention: mlx-lm (both routes) drains the prompt to len−1 and
+  computes step-0 from an L=1 forward of the last prompt token; we forwarded
+  the whole final chunk (ulp-different logits AND last-token KV → greedy
+  flips). generate.ts + batch-scheduler.ts now tail-split
+  (`MLX_BUN_PREFILL_TAIL_SPLIT=0` kill switch). Verified bit-exact vs
+  oracle per step (64/64 ids + top-2 logprobs, 12B and cpm5) and
+  byte-identical over HTTP vs live mlx-lm (cpm5/e4b/12B × completion/chat
+  × unified/--batch 1). Mixed-KV golden composition re-anchored to the
+  oracle serve loop (step-0 GEMV/GEMM argmax anchors RETIRED — strict
+  bit-compare now passes); padded-row KL envelope recalibrated for the
+  new join geometry. Spec-decode lane (opt-in) still on the old
+  convention — re-anchor with its own oracle when next touched.
+
+Residual: quiet-machine bench rerun for quotable perf/RSS legs (numbers
+this session were on a loaded box — parity results are load-independent).
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the

@@ -3,17 +3,15 @@
 // anchors to the L2/optiq golden per row).
 //
 //   Gate 1 (bit-exact): ONE row through the REAL BatchScheduler, teacher-
-//     forced down the cpm5 mixed golden — DECODE-step logits (1..3) must be
+//     forced down the cpm5 mixed golden — per-step logits (0..3) must be
 //     IDENTICAL (maxDiff 0) to the optiq-composition golden: the B=1
 //     unpadded fast path + serial-boundary solo conversion dispatch the
 //     same graph as the serial `--kv-quant config` path the golden
-//     verifies. Step 0 asserts the argmax only: both engines' prefill
-//     slices hLast then computes [1,V] logits (GEMV), while the golden
-//     takes the last row of the full [L,V] matmul (GEMM) — a known bf16
-//     tiling convention difference shared by the SERIAL engine (verified:
-//     serial via model.forward matches the golden bit-exact incl. step 0;
-//     scripts/experiments/mixed-cpm-serial-check.ts), not a batching
-//     artifact.
+//     verifies. Since the prefill tail-split fix (2026-07-07) BOTH sides
+//     compute step 0 from an L=1 forward of the last prompt token on
+//     converted caches (the oracle serve-loop convention, mlx-lm
+//     generate.py:430-453), so step 0 is a strict compare too — the old
+//     GEMV-vs-GEMM argmax anchor is retired.
 //   Gate 2 (B=2 dynamic join, teacher-forced): two rows joining
 //     mid-flight, both forced down their solo trajectories. The UNPADDED
 //     row must be BIT-EXACT vs its solo serial-quantized run (it is — the
@@ -96,13 +94,12 @@ describe.skipIf(!optIn || !haveCpm || !haveGolden)("batched mixed-KV parity (cpm
       onToken: () => true,
     });
     expect(step).toBe(48);
-    // Step 0: argmax anchor only (GEMV-vs-GEMM prefill convention, above).
-    const ref0 = new Float32Array(await goldenAt("mixedkv-cpm-logits-step0.bin").arrayBuffer());
-    const argmax = (a: Float32Array) => a.reduce((m, x, i) => (x > a[m]! ? i : m), 0);
-    expect(argmax(captured[0]!)).toBe(argmax(ref0));
-    expect(argmax(captured[0]!)).toBe(golden.mixed[0]!);
-    // Steps 1..3: L=1 decode on both sides — BIT-EXACT vs the oracle golden.
-    for (let s = 1; s < golden.logit_steps; s++) {
+    // Steps 0..3 BIT-EXACT vs the oracle golden — since the prefill
+    // tail-split fix (2026-07-07), step 0 is an L=1 forward on both sides
+    // (the golden regen mirrors the oracle serve loop: prefill ids[:-1] →
+    // convert → L=1 step), so the old GEMV-vs-GEMM argmax anchor is now a
+    // strict compare.
+    for (let s = 0; s < golden.logit_steps; s++) {
       const ref = new Float32Array(await goldenAt(`mixedkv-cpm-logits-step${s}.bin`).arrayBuffer());
       let maxDiff = 0;
       for (let i = 0; i < ref.length; i++)
@@ -113,14 +110,26 @@ describe.skipIf(!optIn || !haveCpm || !haveGolden)("batched mixed-KV parity (cpm
   }, 240_000);
 
   test("gate 2 — B=2 dynamic join, teacher-forced: per-row KL vs solo serial-quantized within the calibrated envelope", async () => {
-    const KL_TOL_PADDED = 5e-2; // quantized calibration at JOIN_STEP (see header)
+    // Quantized calibration at JOIN_STEP (see header). Re-measured
+    // 2026-07-07 after the prefill tail-split re-anchor: the padded row's
+    // grid-snap geometry shifted (the last prompt token's KV is now
+    // quantized-written by the L=1 step) — deterministic 1.21e-1 at K=6,
+    // the same threshold-effect amplitude the 2026-07-05 K-sweep already
+    // measured at adjacent joins (K=7→1.5e-1, K=8→1.3e-1). Bar carries
+    // the usual margin; the correctness contract stays the UNPADDED row's
+    // bit-exactness (a real fault shifts BOTH rows to O(10)).
+    const KL_TOL_PADDED = 2e-1;
     const JOIN_STEP = 6; // pinned join geometry — the bar is calibrated HERE
     const STEPS = 32;
     // Two prompts, different lengths (the joiner is shorter → left-padded).
     const promptA = golden.prompt_ids;
     const promptB = golden.prompt_ids.slice(0, Math.floor(golden.prompt_ids.length / 2));
 
-    /** Solo serial-quantized run: greedy trajectory + per-step logits. */
+    /** Solo serial-quantized run: greedy trajectory + per-step logits.
+     *  Tail-split composition (2026-07-07, matches generate.ts and the
+     *  oracle serve loop): prefill ids[:-1] bf16 → convert per kv_config →
+     *  step-0 from an L=1 forward of the last prompt token (KV written
+     *  into the quantized caches). */
     const solo = async (ids: number[]): Promise<{ toks: number[]; logits: Float32Array[] }> => {
       const { maybeQuantizeKv } = await import("../src/generate");
       const { lastPositionLogits, argmaxLastPosition } = await import("../src/model/gemma4");
@@ -128,11 +137,13 @@ describe.skipIf(!optIn || !haveCpm || !haveGolden)("batched mixed-KV parity (cpm
       const cache = model.makeCache();
       const toks: number[] = [];
       const logits: Float32Array[] = [];
-      let l = model.forward(ids, cache);
+      const head = model.forward(ids.slice(0, -1), cache);
+      head.dispose();
+      maybeQuantizeKv(cache, kvOpts);
+      let l = model.forward([ids[ids.length - 1]!], cache);
       logits.push(lastPositionLogits(l));
       toks.push(argmaxLastPosition(l));
       l.dispose();
-      maybeQuantizeKv(cache, kvOpts);
       for (let s = 1; s < STEPS; s++) {
         l = model.forward([toks[s - 1]!], cache);
         logits.push(lastPositionLogits(l));
@@ -186,9 +197,11 @@ describe.skipIf(!optIn || !haveCpm || !haveGolden)("batched mixed-KV parity (cpm
 
     expect(gotA.length).toBe(STEPS);
     expect(gotB.length).toBe(STEPS);
-    // Unpadded row: BIT-EXACT at every decode step (steps 1+; step 0 is the
-    // GEMV/GEMM prefill convention, argmax-anchored in gate 1).
-    for (let s = 1; s < STEPS; s++) {
+    // Unpadded row: BIT-EXACT at EVERY step incl. 0 — with the shared
+    // tail-split convention both sides compute step-0 from the same L=1
+    // forward on identically composed caches (the old GEMV/GEMM step-0
+    // caveat is gone).
+    for (let s = 0; s < STEPS; s++) {
       let maxAbs = 0;
       const ref = refA.logits[s]!, got = gotA[s]!;
       for (let i = 0; i < ref.length; i++) maxAbs = Math.max(maxAbs, Math.abs(ref[i]! - got[i]!));
@@ -243,16 +256,20 @@ describe.skipIf(!optIn || !haveGemma)("batched mixed-KV parity (gemma 12B, rotat
       const promptA = [2, 100, 200, 300, 400, 500, 600, 700];
       const promptB = [2, 150, 250, 350, 450];
 
+      // Tail-split composition (2026-07-07): prefill ids[:-1] → convert →
+      // L=1 step-0 (see the cpm5 gate 2 solo above).
       const solo = (ids: number[]): { toks: number[]; logits: Float32Array[] } => {
         const kvOpts = { kvConfig: config.kvQuant!, quantizedKvStart: 0 };
         const cache = model.makeCache();
         const toks: number[] = [];
         const logits: Float32Array[] = [];
-        let l = model.forward(ids, cache);
+        const head = model.forward(ids.slice(0, -1), cache);
+        head.dispose();
+        maybeQuantizeKv(cache, kvOpts);
+        let l = model.forward([ids[ids.length - 1]!], cache);
         logits.push(lastPositionLogits(l));
         toks.push(argmaxLastPosition(l));
         l.dispose();
-        maybeQuantizeKv(cache, kvOpts);
         for (let s = 1; s < STEPS; s++) {
           l = model.forward([toks[s - 1]!], cache);
           logits.push(lastPositionLogits(l));

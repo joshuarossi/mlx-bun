@@ -10,7 +10,151 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
-## Where we are (2026-07-06, round 2 — finish-the-list)
+## Where we are (2026-07-07 — decode@ctx gap closed: SSD write-behind flush is now idle-gated)
+
+**The bun arms' decode@ctx losses in the 07-07 bench (e4b −9.3%, 12B
+−3.9% vs mlx-lm, while short-ctx decode won on every model) were
+SELF-INFLICTED CONTENTION from the --ssd-cache write-behind flush, not a
+kernel gap.** The "non-blocking" flush (storeAsync on ssdWriteChain) was
+only non-blocking at the event-loop level: every per-tensor step is
+`ops.contiguous` (a kernel on the SAME GPU stream decode uses) →
+`rawBytesView()` → a synchronous `mlx_array_eval` that blocks the JS
+thread until the stream drains → a synchronous multi-MB `writeSync`, and
+the `setImmediate` pacing interleaved those slices exactly between decode
+tokens. The bench's decode@ctx is the median of {cold, rep1, rep2}; the
+debounced ~16k-entry flush (0.4–1.1 GB bf16) lands exactly on the cached
+repeats. Only bun arms carry --ssd-cache — mlx-lm runs no equivalent
+background work. Internal control in the bench data: the mixed arm (4×
+smaller flush bytes) BEAT both bf16 arms at decode@ctx. Reproduced
+standalone (e4b, 9.5k-token entry, busy box, directional): pre-fix rep2
+37.9 vs cold 47.1 tok/s (−20%); post-fix flat 45.6/44.3/45.3, restart
+survival still PASS (cached=9575 after kill+respawn); the
+MLX_BUN_SSD_WRITEBEHIND=0 control is equally flat (43.4/43.6/47.1 —
+gated ON ≈ OFF, the gate leaves nothing on the table) with restart
+cached=0, by design. Fix
+(`src/serve/generation-gateway.ts`, `src/kv-store.ts`, `src/ssd-cache.ts`,
+`src/server.ts`): `gateway.busy`/`onIdle()` cover BOTH lanes (the serial
+lane holds the mutex but shows zero rows — activeRows alone was blind to
+it); `saveKvCacheAsync`/`storeAsync` take a per-step `waitTurn` gate
+awaited before EVERY tensor (a request arriving MID-flush pauses the
+remaining tensors); both chain sites (write-behind snapshots AND
+eviction/demotion spills) pass `() => gateway.onIdle()`.
+`MLX_BUN_SSD_WRITEBEHIND=0` disables write-behind snapshots entirely
+(kill switch + paired-A/B lever, server-config.md). Accepted tradeoffs
+documented in ssd-kv-cold-tier.md's 07-07 scheduling-contract addendum
+(durability waits for a quiet moment; spill clones' GPU release deferred
+while busy, bounded by the chain). Final vs-mlx-lm decode@ctx numbers
+need the quiet-machine bench rerun (loadavg was ~4–7 throughout; a
+residual genuine kernel gap at 16k is not excluded — xctrace on quiet).
+
+## Where we were (2026-07-07 — 12B completion-probe parity closed: prefill tail split)
+
+**The 12B completion-probe parity ✗ (07-07 bench @3d56676, diverged at
+char 24 in the degenerate "1111…" stream) was a STEP-0 PREFILL-CONVENTION
+mismatch with the oracle.** mlx-lm 0.31.3 — BOTH its routes — prefills the
+prompt only to len−1 and computes step-0 logits from a separate **L=1
+forward of the last prompt token** (serial `generate_step`: drain loop
+`while total−processed > 1`, then `_step(prompt)`, generate.py:430-453;
+the server's batched engine: `insert_segments` forces a final 1-token
+segment + `GenerationBatch._step` forwards `inputs[:, None]`,
+generate.py:1645/1182/1327). We forwarded the ENTIRE final chunk and
+sampled step 0 from its last position — the same token at L=1 (qmv +
+vector SDPA) vs as the tail of an L=n GEMM (qmm + L-dependent SDPA) is
+ulp-different in bf16 in BOTH the step-0 logits and that token's stored
+KV; near-tie greedy streams flip (12B flipped at step 24 — reproduced
+with per-step top-2 logprob dumps, scripts/experiments/step0-top2-dump.ts
+vs the oracle transcript). Fix: generate.ts + batch-scheduler.ts
+`#prefillChunk` now drain to len−1 (chunks of `min(chunkSize,
+remaining−1)`) and step-0 is an L=1 forward — bookkeeping unchanged
+(after step 0 the caches cover exactly the prompt, as before);
+`MLX_BUN_PREFILL_TAIL_SPLIT=0` is the kill switch (server-config.md).
+Verified: 12B AND cpm5 CLI-route A/B vs oracle = 64/64 token ids AND
+top-2 logprob values IDENTICAL, first diverging step NONE; serve-level
+HTTP probes (scripts/experiments/serve-parity-probe.ts) = completion +
+chat probes byte-IDENTICAL vs live mlx-lm servers for cpm5, e4b, AND 12B
+on both bun arms (unified + --batch 1). (The e4b cells were initially
+asserted without a recorded run — the completeness audit flagged it; a
+recorded probe run landed 2026-07-07: all four e4b cells IDENTICAL,
+completion 384 chars / chat 258 chars, prompt_tokens 6/6 + 32/32.)
+Fallout re-anchored: mixed-KV
+golden composition now mirrors the oracle serve loop (prefill ids[:-1] →
+convert → L=1 step-0; regen-mixed-kv-goldens.ts + both goldens regen'd on
+this box) — gate 1's step-0 GEMV-vs-GEMM argmax anchor is RETIRED (strict
+bit-compare passes, incl. batched B=1); gate 2's padded-row KL envelope
+recalibrated 5e-2→2e-1 (deterministic 1.21e-1 at K=6, the documented
+join-geometry threshold-effect amplitude; unpadded row stays bit-exact
+incl. step 0); generated-parity's compiled-lane dispatch count is now 1
+(the L=1 step-0 legitimately rides the generated quantized fast path).
+Pre-existing failures on this box, NOT this change (stash-proven at
+baseline): kv-quant.test.ts ×3 + parity.test.ts (stale machine goldens —
+regen chip spawned), batch-grammar B=4 (chip spawned), batched extend-join
+oracle (known). Spec-decode serve lane (opt-in, draft-mounted) still uses
+the old convention — its oracle `speculative_generate_step._prefill`
+drains `while y.size > 1` the same way; re-anchor separately when that
+lane is next touched. Goldens on the M4 Pro reference box need the same
+regen when work moves there.
+
+## Where we were (2026-07-07 — cpm5 completion-probe parity closed)
+
+**The MiniCPM5 completion-probe parity ✗ (07-07 bench, diverged at char
+249: trailing `" "`) was a DETOKENIZATION artifact, not logit
+divergence.** The 64-token greedy streams are identical; the
+max_tokens-final token is the bare-space token `Ġ` (id 242).
+mlx-lm 0.31.3's `BPEStreamingDetokenizer.add_token` WITHHOLDS a
+single-char byte-32 token in `_unflushed` ("For single spaces wait until
+the next token", tokenizer_utils.py:206-218) and `mlx_lm.server` NEVER
+calls `finalize()` (zero hits) — so mlx-lm silently DROPS a genuinely
+generated token's text when generation ends on a bare space; our
+full-sequence StreamDecoder kept it. Fix: StreamDecoder now mirrors the
+serve semantics for ByteLevel tokenizers (`LoadedTokenizer.
+bareSpaceTokenId` = vocab["Ġ"]): push(bareSpace) emits nothing, the next
+token's delta carries the held run, flush() drops a trailing run.
+Verified END-TO-END over HTTP: our server (batch 1 AND batch 8) now
+renders bytes IDENTICAL to a live mlx_lm.server on the same snapshot
+(249 chars, `…numbers greater than`). Model-free regression tests pin
+the served id stream (tests/serve-detok-parity.test.ts); suite +
+whole-repo tsc 0 green. Two durable observations: (1) upstream-worthy —
+mlx_lm.server drops served text on a final bare-space token (its own
+stream_generate+finalize path disagrees with its server path; candidate
+lab/repro + upstream report). (2) mlx-lm's greedy stream is
+ROUTE-DEPENDENT at bf16 near-ties: its CLI route (stream_generate,
+full-prompt GEMM step 0) picks "focuses on" at step 50 where its OWN
+server route (BatchGenerator prompt[:-1]+[last] split) picks "deals
+with"; our serve matches its serve — serve-vs-serve is the contract.
+Latent hazard flagged in code: clean_up_tokenization_spaces=true BPE
+models have an extra mid-stream `_space_matches` rule we don't emulate
+(both current BPE targets are false). No served-surface change → no
+reference-doc edits.
+
+## Where we were (2026-07-07 — A7 closure: ssd-cache RSS)
+
+**A7 ("ctx/restart legs read high on --ssd-cache arms") root-caused in
+three parts and closed** (src/kv-store.ts; fixed against the 07-07 bench
+at 3d56676). (1) WRITE residual — the v3 streaming writer's per-tensor
+`rawBytes()` ended in a JS-heap `.slice()`; dead copies outlive the flush
+under GC lag. Now hashes/writes from a ZERO-COPY view of the contiguous
+mlx buffer (`MlxArray.rawBytesView`); save allocates no JS-heap copies at
+all and 0 extra mlx bytes for contiguous sources. (2) RESTORE — the
+zero-copy mmap wrap became a per-restore PROCESS-LIFETIME mapping leak
+after the 07-06 FFI-dtor fix (retainMmapForProcess — now DELETED), and
+exact-offset-sized restores made the first decode step concat-copy the
+whole entry. Restore is now a STREAMED COPY (`fromBytesCopy` per tensor +
+`MADV_DONTNEED` + unmap-before-return; plain-KV lands in STEP-rounded
+capacity with slack): measured peak = live entry + ONE tensor (552 vs
+520 MB on a 512 MB synthetic), vmmap-clean, 12B cold cache-load→first
+token 277 ms (parity with the old ~240 ms). Copy-restore byte identity
+pinned for all five cache kinds (save→load(verify)→re-save
+hash-identical, tests/kv-store.test.ts) + real-model bf16/quant/SSM
+continuation suites green. (3) NOT a defect — most of the benched leg
+delta is `ps` RSS ACCOUNTING: the write-behind's hash+write CPU-touches
+the live KV entry and makes already-allocated unified-memory pages
+visible (GPU-written buffers and python-arm KV never show in ps RSS —
+proven with mlx active/peak counters + footprint probes). bench-serve.ts'
+hardcoded "fix A7 pending in src" note replaced with the accounting
+footnote. Docs: ssd-kv-cold-tier.md addendum, server-config.md restore
+rows. Residual: quiet-machine bench rerun for quotable before/after legs.
+
+## Where we were (2026-07-06, round 2 — finish-the-list)
 
 **Everything on the open list is closed** (PLAN.md "finish-the-list"
 phase; suite 1127/0, parity suites green on every change): e4b long-ctx

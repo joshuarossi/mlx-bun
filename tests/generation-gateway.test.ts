@@ -201,3 +201,47 @@ describe("GenerationGateway.willBatch", () => {
     });
   });
 });
+
+// The engine-busy signal (2026-07-07 decode@ctx fix): the SSD write-behind
+// gates every per-tensor flush step on onIdle(), so `busy` must cover the
+// SERIAL lane too — activeRows/pendingRows read 0 while a serial generation
+// holds the mutex, which is exactly when the old flush stole decode slices.
+describe("GenerationGateway.busy / onIdle", () => {
+  test("idle gateway: busy=false, onIdle resolves immediately", async () => {
+    const g = gateway(1);
+    expect(g.busy).toBe(false);
+    await g.onIdle(); // must not hang
+  });
+
+  test("busy while runExclusive holds the mutex (serial lane, zero rows); onIdle waits it out", async () => {
+    const g = gateway(1);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const work = g.runExclusive(async () => { await gate; });
+    expect(g.activeRows).toBe(0); // the serial lane never shows rows —
+    expect(g.busy).toBe(true);    // busy must come from the mutex
+    let idled = false;
+    const idle = g.onIdle(1).then(() => { idled = true; });
+    await new Promise<void>((r) => setTimeout(r, 10));
+    expect(idled).toBe(false); // still generating → the flush stays paused
+    release();
+    await work;
+    await idle;
+    expect(g.busy).toBe(false);
+  });
+
+  test("busy covers a WAITER queued behind the lock (flush must yield to it)", async () => {
+    const g = gateway(1);
+    let release1!: () => void;
+    const gate1 = new Promise<void>((r) => { release1 = r; });
+    const first = g.runExclusive(async () => { await gate1; });
+    const second = g.runExclusive(async () => {});
+    release1();
+    await first;
+    // between first's release and second's turn, busy must never read false
+    expect(g.busy).toBe(true);
+    await second;
+    await g.onIdle(1);
+    expect(g.busy).toBe(false);
+  });
+});

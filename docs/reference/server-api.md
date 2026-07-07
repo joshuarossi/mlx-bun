@@ -200,7 +200,11 @@ OpenAI/oMLX/vLLM structured-output fields (snake_case on the wire):
   "response_format":              // OpenAI: {type:"json_object"} = any valid
     { "type": "json_schema",      //   JSON; {type:"json_schema"} constrains
       "json_schema": {            //   to the schema; {type:"text"} = no-op
-        "name": "…", "schema": { /* JSON schema */ }, "strict": true } },
+        "name": "…", "schema": { /* JSON schema */ }, "strict": true,
+        "any_whitespace": true } },  // false = compact separators (no
+                                  //   whitespace freedom in the grammar —
+                                  //   escape hatch for base models that
+                                  //   greedily emit whitespace to max_tokens)
   "guided_grammar": "root ::= …", // raw EBNF grammar string (vLLM/oMLX)
   "guided_regex": "[A-Z][a-z]*",  // regex — the regex∩EBNF subset ONLY
                                   //   (classes, |, *, +, ?, parens);
@@ -421,6 +425,7 @@ matching `mlx_lm.server`.
     "batched": false,                 // batching enabled (N>1)
     "active_rows": 0,                 // rows currently decoding in the batch
     "pending_rows": 0,                // queued + mid-prefill rows waiting
+    "submitted_rows": 0,              // cumulative rows routed to the batch lane since start
     "kv_bytes": 0,                    // projected aggregate KV bytes of admitted rows
     "kv_budget_bytes": null           // --kv-budget cap, or null (uncapped)
   }

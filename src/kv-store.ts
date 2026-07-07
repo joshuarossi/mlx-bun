@@ -1,4 +1,4 @@
-// KV-cache persistence: save prompt caches to disk, reload zero-copy.
+// KV-cache persistence: save prompt caches to disk, reload by streamed copy.
 // The serialization core of the SSD cold tier (docs/design/ssd-kv-cold-tier.md).
 //
 // File layout (every tensor PAGE-ALIGNED — the Phase 1 corollary: files
@@ -14,7 +14,7 @@
 // quantization, which v1 could not persist), SSM kind (Qwen3.5 hybrid),
 // invalidation metadata (configFingerprint covers the kv-quant scheme;
 // tokenizerHash guards vocab drift; ns = adapter spec), per-tensor hashes
-// (verified opt-in — eager verification would defeat lazy page fault-in),
+// (verified opt-in — the hash pass roughly doubles restore reads),
 // a header hash (always verified — cheap), and atomic tmp+fsync+rename
 // writes. v1 files are not migrated: nothing shipped wrote them (the
 // format was test/experiment-only) — they read as "not a v2 file" and the
@@ -26,11 +26,20 @@
 // not the whole entry). Same magic; v2 files read as unsupported and the
 // SSD tier deletes-and-regenerates (machine-local, cheap).
 //
-// Reload mmaps copy-on-write (MAP_PRIVATE): if mlx ever donates one of
-// these buffers, writes hit private pages, never the file.
+// Reload (2026-07-07, A7-restore) is a STREAMED COPY — the read-side twin
+// of the v3 streaming writer: each tensor is copied out of a read-only mmap
+// into an mlx-owned leaf (MlxArray.fromBytesCopy), its clean file pages
+// dropped (MADV_DONTNEED) right after, and the mapping unmapped before
+// loadKvCache returns. Peak host transient = the live entry + one tensor,
+// and NOTHING outlives the call: the old zero-copy wrap (COW mmap +
+// fromPointer) required pinning every restore mapping for the PROCESS
+// lifetime once the FFI-dtor fix removed the unmap signal (2026-07-06) —
+// one leaked full-entry mapping per restore — and the exactly-offset-sized
+// restored buffers made the first post-restore decode step concat-copy the
+// whole entry again.
 
 import { openSync, writeSync, readSync, closeSync, fsyncSync, renameSync, rmSync } from "node:fs";
-import { MmapFile } from "./mmap";
+import { MmapFile, MADV_DONTNEED } from "./mmap";
 import { MlxArray } from "./mlx/array";
 import type { Dtype } from "./mlx/ffi";
 import * as ops from "./mlx/ops";
@@ -39,14 +48,6 @@ import {
   QuantizedKVCache, RotatingQuantizedKVCache,
 } from "./model/gemma4-base";
 import { SSMCache } from "./model/qwen3-delta";
-
-/** Contiguous raw bytes of (possibly a view of) an array. */
-function contiguousBytes(a: MlxArray): Uint8Array {
-  const c = ops.contiguous(a);
-  const bytes = c.rawBytes();
-  c.dispose();
-  return bytes;
-}
 
 const MAGIC = "MLXBUNKV2\n";
 const ALIGN = 16384;
@@ -264,18 +265,31 @@ function* saveKvCacheSteps(path: string, tokens: number[], caches: Cache[], meta
     const fd = openSync(tmp, "w");
     try {
       // Data pass: materialize → hash → write → drop, ONE tensor at a time.
-      // Peak host transient = the largest single tensor, not the whole entry
-      // (the old all-blobs-first path spiked RSS by the full entry size on
-      // every write-behind snapshot — ~390 MB for a 16k cpm5 entry).
+      // The hash+write read a ZERO-COPY view of the contiguous mlx buffer
+      // (rawBytesView) — never a JS-heap copy. rawBytes() here looked
+      // "streamed" but each call allocated a dead per-tensor JS-heap copy
+      // whose reclamation is GC-timing-dependent — up to a whole extra
+      // entry of heap on a busy server (the A7 residual). Now zero JS
+      // allocations; the only real transient is the one mlx-side
+      // contiguous copy (allocator-pooled; none at all for contiguous
+      // sources — mlx save-transient measured 0 bytes, 2026-07-07). NOTE:
+      // the hash+write still CPU-touch the live entry's unified-memory
+      // pages, which makes them VISIBLE to ps RSS — accounting, not an
+      // allocation (see bench-serve.ts' per-leg RSS note).
       let srcIdx = 0;
       for (const e of entries) {
         for (const slot of e.tensors) {
           const src = sources[srcIdx++]!;
-          const bytes = contiguousBytes(src.arr);
-          if (bytes.length !== slot.bytes)
-            throw new Error(`tensor byte-length drift: planned ${slot.bytes}, got ${bytes.length}`);
-          slot.hash = hash64(bytes);
-          writeSync(fd, bytes, 0, bytes.length, dataStart + slot.off);
+          const c = ops.contiguous(src.arr);
+          try {
+            const bytes = c.rawBytesView(); // evals; aliases the mlx buffer
+            if (bytes.length !== slot.bytes)
+              throw new Error(`tensor byte-length drift: planned ${slot.bytes}, got ${bytes.length}`);
+            slot.hash = hash64(bytes);
+            writeSync(fd, bytes, 0, bytes.length, dataStart + slot.off);
+          } finally {
+            c.dispose(); // the view dies with the buffer — nothing retains it
+          }
           if (src.disposeAfter) { src.arr.dispose(); src.disposeAfter = false; }
           yield;
         }
@@ -313,10 +327,27 @@ export function saveKvCache(path: string, tokens: number[], caches: Cache[], met
 
 /** Non-blocking variant: yields the event loop after every tensor write so
  *  serving interleaves with the flush. Caller owns `caches` lifetime for
- *  the duration (pass zero-copy clones, dispose after). */
-export async function saveKvCacheAsync(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {}): Promise<void> {
-  for (const _ of saveKvCacheSteps(path, tokens, caches, meta))
+ *  the duration (pass zero-copy clones, dispose after).
+ *
+ *  `waitTurn` (optional) is awaited BEFORE every step — including the first —
+ *  so the caller can gate the flush's schedule (the server passes the
+ *  gateway's onIdle: each tensor step is a blocking GPU sync on the decode
+ *  stream + a synchronous multi-MB writeSync, and the old unconditional
+ *  setImmediate pacing interleaved those slices exactly between decode
+ *  tokens — the 2026-07-07 decode@ctx contamination. A request arriving
+ *  MID-flush pauses the remaining tensors until idle again). Gate failures
+ *  are swallowed: scheduling advice must never corrupt the write path
+ *  (an early generator close inside the fd-open section would leak the fd). */
+export async function saveKvCacheAsync(
+  path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {},
+  waitTurn?: () => Promise<void>,
+): Promise<void> {
+  const steps = saveKvCacheSteps(path, tokens, caches, meta);
+  while (true) {
+    if (waitTurn) await waitTurn().catch(() => {});
+    if (steps.next().done) break;
     await new Promise<void>((r) => setImmediate(r));
+  }
 }
 
 /** Read only the header (cheap — for prefix matching across many files).
@@ -349,20 +380,6 @@ export interface LoadedKvCache {
   tokens: number[];
   header: KvFileHeader;
   caches: Cache[];
-  /** Keep referenced as long as the caches live. */
-  mmap: MmapFile;
-}
-
-/** Process-lifetime keepalive for restore mmaps. Eager unmap-after-dispose
- *  is UNSOUND: mlx GPU command buffers retain the wrapped buffers until
- *  completion — past dispose() — and with fromPointer's native no-op dtor
- *  there is no release signal to unmap on. Clean MAP_PRIVATE file-backed
- *  pages cost address space, not RAM (the OS reclaims them under pressure;
- *  an unlinked-but-mapped file stays valid), so serving pins each restored
- *  mapping here for the life of the process. */
-const retainedMmaps = new Set<MmapFile>();
-export function retainMmapForProcess(mmap: MmapFile): void {
-  retainedMmaps.add(mmap);
 }
 
 export interface KvLoadExpect {
@@ -370,14 +387,39 @@ export interface KvLoadExpect {
   configFingerprint?: string;
   tokenizerHash?: string;
   ns?: string;
-  /** Verify every tensor hash (reads all bytes — defeats lazy fault-in;
-   *  off by default, `--ssd-cache-verify`). */
+  /** Verify every tensor hash before copying it in (off by default,
+   *  `--ssd-cache-verify` — the hash pass roughly doubles restore reads). */
   verify?: boolean;
 }
 
-/** Reload zero-copy. `model` is anything with makeCache() — the entry count
- *  is validated against the DONOR cache list (model.layers.length was wrong
- *  for KV-shared models like e4b, whose makeCache() returns donors only). */
+/** Copy-restore a full-attention KV tensor into STEP-rounded capacity with
+ *  ≥1 token of slack (what a live mid-generation cache looks like) so the
+ *  first post-restore updateAndFetch never takes the grow path — the old
+ *  exactly-offset-sized restore made that first step concat-copy the ENTIRE
+ *  entry into a fresh buffer. Zero padding is bit-safe: writes land at
+ *  [offset..) before any read, and attention only reads [:offset+L).
+ *  Evaluated EAGERLY so the host-copy leaf frees before the next tensor
+ *  streams in (bounded transient). Plain KVCache only — rotating rings and
+ *  quantized triples are position-exact layouts. */
+function withStepCapacity(a: MlxArray, offset: number): MlxArray {
+  const [B, H, S, D] = a.shape as [number, number, number, number];
+  const cap = Math.ceil((offset + 1) / KVCache.STEP) * KVCache.STEP;
+  if (S >= cap) return a;
+  const z = ops.zeros([B, H, cap, D], a.dtype);
+  const grown = ops.sliceUpdate(z, a, [0, 0, 0, 0], [B, H, S, D]);
+  z.dispose();
+  grown.eval();
+  a.dispose();
+  return grown;
+}
+
+/** Reload by STREAMED COPY (see the header note): every tensor is copied
+ *  into an mlx-owned leaf; the mapping is read-only, its pages dropped
+ *  per-tensor, and unmapped before returning — the caches own their bytes
+ *  outright (no dtor contract, no pinned mapping, nothing to retain).
+ *  `model` is anything with makeCache() — the entry count is validated
+ *  against the DONOR cache list (model.layers.length was wrong for
+ *  KV-shared models like e4b, whose makeCache() returns donors only). */
 export function loadKvCache(
   path: string,
   model: { makeCache(): Cache[] },
@@ -394,17 +436,21 @@ export function loadKvCache(
   if (header.caches.length !== cacheCount)
     throw new Error(`${path}: ${header.caches.length} cached layers but model has ${cacheCount}`);
 
-  const mmap = MmapFile.open(path, "cow");
+  const mmap = MmapFile.open(path, "ro");
   const dataStart = header.dataStart;
   const arr = (slot: TensorSlot): MlxArray => {
-    if (expect.verify) {
-      const view = mmap.view(dataStart + slot.off, slot.bytes);
-      if (hash64(view) !== slot.hash) {
-        mmap.unmap();
-        throw new Error(`${path}: tensor hash mismatch at offset ${slot.off}`);
-      }
-    }
-    return MlxArray.fromPointer(mmap.pointer(dataStart + slot.off), slot.shape, slot.dtype as Dtype);
+    const view = mmap.view(dataStart + slot.off, slot.bytes);
+    if (expect.verify && hash64(view) !== slot.hash)
+      throw new Error(`${path}: tensor hash mismatch at offset ${slot.off}`);
+    // mlx_array_new_data COPIES synchronously — the view only has to
+    // outlive this call, so the mapping can be advised/unmapped freely.
+    const a = MlxArray.fromBytesCopy(view, slot.shape, slot.dtype as Dtype);
+    // Drop the just-read clean pages so the load's transient stays at
+    // live entry + one tensor (ALIGN = 16 KiB == the arm64 page size, so
+    // every tensor offset is page-aligned by construction).
+    const len = Math.min(alignUp(slot.bytes), mmap.size - (dataStart + slot.off));
+    mmap.advise(dataStart + slot.off, len, MADV_DONTNEED);
+    return a;
   };
   const triple = (slots: TensorSlot[], at: number): ops.QuantizedTensor =>
     ({ packed: arr(slots[at]!), scales: arr(slots[at + 1]!), biases: arr(slots[at + 2]!) });
@@ -416,7 +462,11 @@ export function loadKvCache(
       switch (e.kind) {
         case "kv": {
           const c = new KVCache();
-          c.restoreState(arr(t[0]!), arr(t[1]!), e.offset);
+          c.restoreState(
+            withStepCapacity(arr(t[0]!), e.offset),
+            withStepCapacity(arr(t[1]!), e.offset),
+            e.offset,
+          );
           caches.push(c);
           break;
         }
@@ -453,6 +503,8 @@ export function loadKvCache(
   } catch (err) {
     for (const c of caches) c.dispose();
     throw err;
+  } finally {
+    mmap.unmap(); // every tensor was copied out — nothing aliases the file
   }
-  return { tokens: header.tokens, header, caches, mmap };
+  return { tokens: header.tokens, header, caches };
 }

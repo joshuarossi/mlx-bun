@@ -28,7 +28,7 @@ import { spliceImageTokens } from "./vision/diffusion-vision";
 import { createModel, type RuntimeModel } from "./model/factory";
 import { isMiniCPM5Config, isSupportedModelRecord } from "./model/support";
 import { generate, type GenerateOptions, type TokenLogprobs } from "./generate";
-import { cloneKvCaches, retainMmapForProcess } from "./kv-store";
+import { cloneKvCaches } from "./kv-store";
 import {
   compileGrammarRequest, grammarEnabled, type GrammarRequest,
 } from "./grammar";
@@ -1056,32 +1056,53 @@ class LogprobsCollector {
 /** Incremental detokenizer: emits the longest stable decoded prefix.
  *
  *  Byte parity with mlx-lm's streaming detokenizers (the drop-in contract is
- *  rendered BYTES, not just token ids): for BPE/ByteLevel tokenizers
- *  (tokenizer.trimsLeadingSpace) mlx-lm drops ONE leading " " at the start of
- *  the generated sequence (tokenizer_utils.py BPEStreamingDetokenizer
- *  `_maybe_trim_space`) which our full-sequence decode keeps — trim it here.
- *  SPM decode already matches (see LoadedTokenizer.trimsLeadingSpace).
+ *  rendered BYTES, not just token ids). For BPE/ByteLevel tokenizers, two
+ *  mlx-lm 0.31.3 BPEStreamingDetokenizer behaviors our full-sequence decode
+ *  lacks (tokenizer_utils.py:195-226):
+ *
+ *  1. `trimsLeadingSpace` — mlx-lm drops ONE leading " " at the start of the
+ *     generated sequence (`_maybe_trim_space`); trim it here. SPM decode
+ *     already matches (see LoadedTokenizer.trimsLeadingSpace).
+ *  2. `bareSpaceTokenId` — add_token WITHHOLDS a single-char byte-32 token
+ *     ("Ġ") in `_unflushed` ("For single spaces wait until the next token"),
+ *     flushing it together with the NEXT token — and mlx_lm.server NEVER
+ *     calls detokenizer.finalize() (zero hits in server.py 0.31.3), so a
+ *     generation ENDING on bare-space token(s) silently drops their spaces
+ *     from the served bytes. push() withholds those spaces; flush() drops a
+ *     trailing bare-space run (the held text dies with the request, exactly
+ *     like mlx-lm serve). Re-check both if upstream ever adds a finalize()
+ *     call. LATENT HAZARD (deliberately not emulated): models with
+ *     clean_up_tokenization_spaces=true get an ADDITIONAL mid-stream rule
+ *     (`_space_matches`: held space dropped before "." "," "'s" …) — both
+ *     current BPE targets have it false (MiniCPM5), so it never fires here.
+ *
  *  Exported for unit tests (serve-detok mlx-lm byte parity). */
 export class StreamDecoder {
   #ids: number[] = [];
   #emitted = "";
   readonly #trimLeadingSpace: boolean;
+  readonly #bareSpaceId: number | undefined;
 
   constructor(
     readonly tokenizer: LoadedTokenizer,
     readonly skipSpecialTokens = true,
   ) {
     this.#trimLeadingSpace = tokenizer.trimsLeadingSpace === true;
+    this.#bareSpaceId = tokenizer.bareSpaceTokenId;
   }
 
-  #decode(): string {
-    const full = this.tokenizer.decode(this.#ids, this.skipSpecialTokens);
+  #decode(ids: number[]): string {
+    const full = this.tokenizer.decode(ids, this.skipSpecialTokens);
     return this.#trimLeadingSpace && full.startsWith(" ") ? full.slice(1) : full;
   }
 
   push(token: number): string {
     this.#ids.push(token);
-    const full = this.#decode();
+    // Bare-space hold-back (mlx-lm add_token keeps "Ġ" in _unflushed): don't
+    // advance #emitted; the held space(s) flush as part of the next
+    // non-bare-space token's delta — consecutive bare spaces accumulate.
+    if (token === this.#bareSpaceId) return "";
+    const full = this.#decode(this.#ids);
     // hold back a trailing replacement char (partial multi-byte sequence)
     const stable = full.endsWith("�") ? full.slice(0, -1) : full;
     if (!stable.startsWith(this.#emitted)) {
@@ -1096,7 +1117,15 @@ export class StreamDecoder {
   }
 
   flush(): string {
-    const full = this.#decode();
+    // mlx_lm.server never finalize()s: a trailing bare-space run stays
+    // withheld forever, so its text is dropped from the served bytes.
+    let ids = this.#ids;
+    if (this.#bareSpaceId !== undefined) {
+      let n = ids.length;
+      while (n > 0 && ids[n - 1] === this.#bareSpaceId) n--;
+      if (n < ids.length) ids = ids.slice(0, n);
+    }
+    const full = this.#decode(ids);
     const delta = full.slice(this.#emitted.length);
     this.#emitted = full;
     return delta;
@@ -1209,11 +1238,10 @@ export function createServer(
         restore: (handle: unknown) => {
           const loaded = ssdStore!.restore(handle as import("./ssd-cache").SsdIndexEntry, ctx.model);
           if (!loaded) return null;
-          // Deferred unmap (2026-07-06 hang fix): the mapping stays pinned
-          // for the process — see retainMmapForProcess. retain stays in the
-          // entry contract as a no-op so callers' dispose ordering is
-          // unchanged.
-          retainMmapForProcess(loaded.mmap);
+          // Restore is a STREAMED COPY (2026-07-07 A7-restore): the caches
+          // own their bytes and no mapping outlives loadKvCache — nothing
+          // to pin, nothing to unmap. retain stays in the entry contract
+          // as a no-op so callers' dispose ordering is unchanged.
           return { tokens: loaded.tokens, caches: loaded.caches, retain: () => {} };
         },
         store: (tokens: number[], caches: import("./model/gemma4").Cache[], ns: string) => {
@@ -1228,19 +1256,22 @@ export function createServer(
     // cache hands us OWNED zero-copy clones + copied tokens (made under
     // the generation lock — microseconds; entries are immutable so the
     // clones stay consistent), and the flush chains onto the serial
-    // ssdWriteChain -> storeAsync (yields between tensors) -> dispose the
-    // clones on BOTH settle paths (that dispose is what actually frees
-    // the demoted GPU memory — bounded by the chain). ssdWriteChain is
-    // declared with the snapshot scheduler below; safe to close over here
-    // because spills only fire at put()/demoteIdle time, long after init.
+    // ssdWriteChain -> storeAsync (idle-gated per tensor, see below) ->
+    // dispose the clones on BOTH settle paths (that dispose is what
+    // actually frees the demoted GPU memory — bounded by the chain, and
+    // DEFERRED while requests keep the engine busy: the gate holds the
+    // clones alive until the flush gets its idle turn). ssdWriteChain and
+    // ssdFlushGate are declared with the snapshot scheduler below; safe to
+    // close over here because spills only fire at put()/demoteIdle time,
+    // long after init.
     ssdStore
       ? {
           spillOwned: (entry) => {
             ssdWriteChain = ssdWriteChain
-              .then(() => ssdStore!.storeAsync(entry.tokens, entry.caches, entry.ns))
+              .then(() => ssdStore!.storeAsync(entry.tokens, entry.caches, entry.ns, ssdFlushGate))
               .then(
-                () => { for (const c of entry.caches) c.dispose(); },
-                () => { for (const c of entry.caches) c.dispose(); },
+                () => disposeSpillClones(entry.caches),
+                () => disposeSpillClones(entry.caches),
               );
           },
         }
@@ -1383,14 +1414,38 @@ export function createServer(
   // gateway lock is held only for a zero-copy SNAPSHOT (findExact +
   // cloneKvCaches — microseconds; entries are immutable so the clones are
   // consistent forever). The flush itself runs OFF the lock via
-  // storeAsync, yielding the event loop between tensors, and writes chain
-  // serially so two multi-hundred-MB flushes never overlap. Before this,
-  // a ctx repeat that landed during the cold entry's flush queued behind
-  // ~0.5 s of synchronous serialization (measured: rep-0 vs rep-1 delta).
+  // storeAsync, and writes chain serially so two multi-hundred-MB flushes
+  // never overlap.
+  //
+  // IDLE-GATED (2026-07-07, the decode@ctx fix): "off the lock" was not
+  // enough — every per-tensor flush step is a blocking GPU sync on the
+  // SAME stream decode uses (ops.contiguous enqueues a kernel, rawBytesView
+  // evals) plus a synchronous multi-MB writeSync, and the setImmediate
+  // pacing interleaved those slices exactly between decode tokens. A ~16k
+  // entry's flush overlapping the bench's ctx repeats depressed decode@ctx
+  // ~9% on e4b (mlx-lm runs no equivalent background work). Now every step
+  // — including the first — awaits gateway.onIdle() (ssdFlushGate), so the
+  // flush only progresses while NOTHING is generating and pauses when a
+  // request arrives mid-flush. Tradeoffs, accepted: durability waits for a
+  // quiet moment (single-user serving quiesces constantly; sustained
+  // hammering defers the flush AND the spill clones' GPU-memory release —
+  // bounded by the chain), and one in-flight tensor step (~10-15 MB) can
+  // still land ahead of a just-arrived request. MLX_BUN_SSD_WRITEBEHIND=0
+  // disables write-behind snapshots entirely — the paired-A/B lever + kill
+  // switch (restart survival then degrades to spill-on-evict only).
+  const writeBehindOn = process.env.MLX_BUN_SSD_WRITEBEHIND !== "0";
+  const ssdFlushGate = (): Promise<void> => gateway.onIdle();
   const ssdPending = new Map<string, ReturnType<typeof setTimeout>>();
   let ssdWriteChain: Promise<void> = Promise.resolve();
+  // Settle-dispose for spill clones: freeing them is what actually releases
+  // the demoted GPU memory, on success AND failure paths alike (storeAsync
+  // is best-effort). Shared by the eviction spill (spillOwned above) and
+  // the write-behind snapshot chain below.
+  const disposeSpillClones = (caches: { dispose(): void }[]): void => {
+    for (const c of caches) c.dispose();
+  };
   const scheduleSsdSnapshot = (tokens: number[], ns: string): void => {
-    if (!ssdStore || tokens.length === 0) return;
+    if (!ssdStore || !writeBehindOn || tokens.length === 0) return;
     const key = `${ns}|${tokens.length}`;
     const prev = ssdPending.get(key);
     if (prev) clearTimeout(prev);
@@ -1403,9 +1458,9 @@ export function createServer(
       }).then((snap) => {
         if (!snap) return;
         ssdWriteChain = ssdWriteChain
-          .then(() => ssdStore!.storeAsync(snap.tokens, snap.caches, ns))
-          .then(() => { for (const c of snap.caches) c.dispose(); },
-                () => { for (const c of snap.caches) c.dispose(); });
+          .then(() => ssdStore!.storeAsync(snap.tokens, snap.caches, ns, ssdFlushGate))
+          .then(() => disposeSpillClones(snap.caches),
+                () => disposeSpillClones(snap.caches));
       }).catch(() => { /* cold tier is best-effort */ });
     }, 1000));
   };
@@ -1953,6 +2008,7 @@ export function createServer(
             batched: gateway.batchingEnabled,
             active_rows: gateway.activeRows,
             pending_rows: gateway.pendingRows,
+            submitted_rows: gateway.submittedRows,
             kv_bytes: gateway.kvBytes.projected,
             kv_budget_bytes: gateway.kvBytes.budget,
           },

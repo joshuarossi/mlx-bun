@@ -7,19 +7,23 @@
 //
 // Reference composition — the MIXED path differs from regen-kvq-goldens.ts's
 // uniform one, mirroring optiq's install_mixed_kv hook (and our
-// maybeQuantizeKv, which copies it):
-//   1. the prompt prefill runs BF16 (the hook skips empty caches; converting
-//      before prefill would quantize prefill itself and diverge),
-//   2. the populated caches are then converted per kv_config.json — BOTH
+// maybeQuantizeKv, which copies it) AT THE ORACLE'S SERVE-LOOP GEOMETRY
+// (re-anchored 2026-07-07 with the prefill tail-split fix):
+//   1. the prompt prefill runs BF16 over ids[:-1] — mlx-lm generate_step
+//      drains the prompt to len-1 (generate.py:430-453); the hook skips
+//      empty caches, so conversion happens at this first chunk boundary,
+//   2. the populated caches are converted per kv_config.json — BOTH
 //      full-attention KVCache and sliding RotatingKVCache (Phase 9;
 //      patch_rotating_to_quantized supplies rotating to_quantized), each
 //      with its own bits/group_size,
-//   3. decode runs stock UNFUSED quantized SDPA (mlx-lm base.py — our L = 1
+//   3. step-0 logits come from an L=1 forward of the LAST prompt token
+//      (oracle _step; its KV lands in the already-quantized caches),
+//   4. decode runs stock UNFUSED quantized SDPA (mlx-lm base.py — our L = 1
 //      dispatch; fused N-tiled only covers L > 1, which mixed never re-hits
 //      in this single-prompt scenario).
 // The hook decides WHICH bits per layer at quantize time; converting
-// manually with the same map reproduces identical numerics without
-// depending on generation-loop hook timing.
+// manually with the same map at the same boundary reproduces the oracle
+// generation loop's numerics exactly.
 //
 // Prompt ids are reused from goldens/kv-quant.json so trajectory history
 // stays comparable across schemes.
@@ -94,12 +98,11 @@ if not ids:
         tokenize=True, add_generation_prompt=True,
     )
 
-# 1. bf16 prefill (the hook skips empty caches)
-logits = model(mx.array([ids]), cache=cache)
-last = logits[0, -1, :].astype(mx.float32)
-mx.eval(last)
-dump(last, 0)
-toks = [int(mx.argmax(last).item())]
+# 1. bf16 prefill of ids[:-1] — the ORACLE SERVE-LOOP convention (mlx-lm
+#    0.31.3 generate_step drains the prompt to len-1, generate.py:430-453;
+#    its server's batched engine forces a final 1-token segment). The mixed
+#    hook fires at the first non-empty chunk boundary, i.e. HERE.
+model(mx.array([ids[:-1]]), cache=cache)
 
 # 2. quantize the POPULATED caches per the per-layer map (mixed hook semantics)
 for i, c in enumerate(cache):
@@ -107,7 +110,16 @@ for i, c in enumerate(cache):
         bits, group = by_layer[i]
         cache[i] = c.to_quantized(group_size=group, bits=bits)
 
-# 3. stock unfused quantized decode (mlx-lm base.py = our L=1 dispatch)
+# 3. step-0 logits from an L=1 forward of the LAST prompt token — its KV is
+#    written into the already-quantized caches, exactly like _step in the
+#    oracle's generation loop (and our tail-split prefill, 2026-07-07).
+logits = model(mx.array([[ids[-1]]]), cache=cache)
+last = logits[0, -1, :].astype(mx.float32)
+mx.eval(last)
+dump(last, 0)
+toks = [int(mx.argmax(last).item())]
+
+# 4. stock unfused quantized decode (mlx-lm base.py = our L=1 dispatch)
 y = mx.array([[toks[0]]])
 for step in range(1, max_tokens):
     logits = model(y, cache=cache)

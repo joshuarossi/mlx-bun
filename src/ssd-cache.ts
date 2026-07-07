@@ -151,8 +151,10 @@ export class SsdCacheStore {
     return best ? { entry: best, prefixLen: bestLen } : null;
   }
 
-  /** Restore an entry zero-copy (COW mmap; pages fault in lazily). Bumps
-   *  LRU mtime. On ANY failure the file is dropped and null returned. */
+  /** Restore an entry via kv-store's STREAMED COPY (bounded host
+   *  transient — live entry + one tensor; no mapping survives the call,
+   *  the caches own their bytes). Bumps LRU mtime. On ANY failure the
+   *  file is dropped and null returned. */
   restore(entry: SsdIndexEntry, model: { makeCache(): Cache[] }): LoadedKvCache | null {
     const t0 = performance.now();
     try {
@@ -200,13 +202,16 @@ export class SsdCacheStore {
    *  index, and supersede semantics as store(), but the tensor flush
    *  yields the event loop between tensors so serving interleaves.
    *  Caller passes zero-copy CLONES it owns (a consistent snapshot no
-   *  matter what the live entry does meanwhile) and disposes them after. */
-  async storeAsync(tokens: number[], caches: Cache[], ns = ""): Promise<boolean> {
+   *  matter what the live entry does meanwhile) and disposes them after.
+   *  `waitTurn` gates every per-tensor step (see saveKvCacheAsync) — the
+   *  server passes the gateway's onIdle so the flush only progresses while
+   *  the engine is idle, never mid-decode. */
+  async storeAsync(tokens: number[], caches: Cache[], ns = "", waitTurn?: () => Promise<void>): Promise<boolean> {
     const dir = join(this.#root, nsHash(ns));
     const path = join(dir, `${randomUUID()}.mlxkv`);
     try {
       mkdirSync(dir, { recursive: true });
-      await saveKvCacheAsync(path, tokens, caches, this.#meta(ns));
+      await saveKvCacheAsync(path, tokens, caches, this.#meta(ns), waitTurn);
       return this.#indexStored(path, tokens, caches, ns);
     } catch (err) {
       return this.#storeFailed(path, err);
