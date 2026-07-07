@@ -752,38 +752,41 @@
   .thinkbox{margin:0 0 12px;border:1px solid rgba(10,132,255,.18);border-radius:12px;background:rgba(10,132,255,.06);overflow:hidden}
   .thinkbox summary{cursor:pointer;padding:7px 10px;font-size:12px;font-weight:600;color:var(--dim);user-select:none}
   .thinkbody{padding:0 12px 10px;color:var(--dim);font-size:.92em;white-space:pre-wrap}
-  /* markdown-ish rendering inside bubbles */
-  .bubble p{margin:0 0 10px}.bubble p:last-child{margin-bottom:0}
-  .bubble ul,.bubble ol{margin:0 0 10px;padding-left:22px}
-  .bubble li{margin:3px 0}
-  .bubble strong{font-weight:700;color:var(--ink)}
-  .bubble em{font-style:italic}
-  .bubble code{font-family:var(--mono);font-size:.86em;background:rgba(127,127,127,.18);padding:2px 7px;border-radius:6px}
-  .bubble pre{background:var(--code-bg);color:var(--code-ink);border:1px solid var(--hairline-soft);border-radius:12px;
+  /* markdown-ish rendering — shared by chat bubbles AND the memory panel's
+     article view (.mem-article-render renders vault/Reference docs through
+     the same mdToHtml; without this scope the panel's code fences lost
+     their header chrome — "shCopy" mash, 2026-07-07 visual QA). */
+  :is(.bubble,.mem-article-render) p{margin:0 0 10px}:is(.bubble,.mem-article-render) p:last-child{margin-bottom:0}
+  :is(.bubble,.mem-article-render) ul,:is(.bubble,.mem-article-render) ol{margin:0 0 10px;padding-left:22px}
+  :is(.bubble,.mem-article-render) li{margin:3px 0}
+  :is(.bubble,.mem-article-render) strong{font-weight:700;color:var(--ink)}
+  :is(.bubble,.mem-article-render) em{font-style:italic}
+  :is(.bubble,.mem-article-render) code{font-family:var(--mono);font-size:.86em;background:rgba(127,127,127,.18);padding:2px 7px;border-radius:6px}
+  :is(.bubble,.mem-article-render) pre{background:var(--code-bg);color:var(--code-ink);border:1px solid var(--hairline-soft);border-radius:12px;
     padding:13px 15px;overflow-x:auto;margin:10px 0;font:12.5px/1.6 var(--mono)}
-  .bubble pre code{background:none;padding:0;font-size:inherit;color:inherit}
-  .bubble h1,.bubble h2,.bubble h3,.bubble h4,.bubble h5,.bubble h6{font-weight:700;margin:14px 0 7px;letter-spacing:-.01em;line-height:1.3}
-  .bubble h1{font-size:1.28em}.bubble h2{font-size:1.16em}.bubble h3{font-size:1.06em}
-  .bubble h4,.bubble h5,.bubble h6{font-size:1em;color:var(--dim)}
-  .bubble h1:first-child,.bubble h2:first-child,.bubble h3:first-child{margin-top:0}
-  .bubble a{color:var(--cyan);text-decoration:none;border-bottom:1px solid rgba(100,210,255,.34)}
-  .bubble a:hover{border-bottom-color:var(--cyan)}
-  .bubble del{opacity:.55}
-  .bubble blockquote{margin:9px 0;padding:3px 14px;border-left:3px solid var(--hairline);color:var(--dim)}
-  .bubble blockquote p:last-child{margin-bottom:0}
-  .bubble hr{border:none;border-top:1px solid var(--hairline);margin:15px 0}
-  .bubble li.task{list-style:none;margin-left:-18px}
-  .bubble li.task input{margin-right:7px;accent-color:var(--blue);vertical-align:-1px}
-  .bubble .md-tablewrap{overflow-x:auto;margin:11px 0}
-  .bubble table.md-table{width:100%;border-collapse:collapse;font-size:.92em}
-  .bubble table.md-table th,.bubble table.md-table td{border:1px solid var(--hairline-soft);padding:6px 11px;text-align:left}
-  .bubble table.md-table th{background:rgba(255,255,255,.05);font-weight:600;color:var(--ink)}
-  .bubble .codeblock{margin:11px 0;border:1px solid var(--hairline-soft);border-radius:12px;overflow:hidden;background:var(--code-bg);color:var(--code-ink)}
-  .bubble .cbhead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 9px 5px 13px;background:rgba(255,255,255,.04);border-bottom:1px solid var(--hairline-soft)}
-  .bubble .cblang{font:11px/1 var(--mono);color:rgba(245,245,247,.65);letter-spacing:.02em}
-  .bubble .cbcopy{font:11px/1 var(--mono);color:rgba(245,245,247,.65);background:transparent;border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 10px;cursor:pointer;transition:color .15s,border-color .15s}
-  .bubble .cbcopy:hover{color:var(--code-ink);border-color:rgba(255,255,255,.4)}
-  .bubble .codeblock pre{margin:0;border:none;border-radius:0;background:transparent;color:inherit}
+  :is(.bubble,.mem-article-render) pre code{background:none;padding:0;font-size:inherit;color:inherit}
+  :is(.bubble,.mem-article-render) h1,:is(.bubble,.mem-article-render) h2,:is(.bubble,.mem-article-render) h3,:is(.bubble,.mem-article-render) h4,:is(.bubble,.mem-article-render) h5,:is(.bubble,.mem-article-render) h6{font-weight:700;margin:14px 0 7px;letter-spacing:-.01em;line-height:1.3}
+  :is(.bubble,.mem-article-render) h1{font-size:1.28em}:is(.bubble,.mem-article-render) h2{font-size:1.16em}:is(.bubble,.mem-article-render) h3{font-size:1.06em}
+  :is(.bubble,.mem-article-render) h4,:is(.bubble,.mem-article-render) h5,:is(.bubble,.mem-article-render) h6{font-size:1em;color:var(--dim)}
+  :is(.bubble,.mem-article-render) h1:first-child,:is(.bubble,.mem-article-render) h2:first-child,:is(.bubble,.mem-article-render) h3:first-child{margin-top:0}
+  :is(.bubble,.mem-article-render) a{color:var(--cyan);text-decoration:none;border-bottom:1px solid rgba(100,210,255,.34)}
+  :is(.bubble,.mem-article-render) a:hover{border-bottom-color:var(--cyan)}
+  :is(.bubble,.mem-article-render) del{opacity:.55}
+  :is(.bubble,.mem-article-render) blockquote{margin:9px 0;padding:3px 14px;border-left:3px solid var(--hairline);color:var(--dim)}
+  :is(.bubble,.mem-article-render) blockquote p:last-child{margin-bottom:0}
+  :is(.bubble,.mem-article-render) hr{border:none;border-top:1px solid var(--hairline);margin:15px 0}
+  :is(.bubble,.mem-article-render) li.task{list-style:none;margin-left:-18px}
+  :is(.bubble,.mem-article-render) li.task input{margin-right:7px;accent-color:var(--blue);vertical-align:-1px}
+  :is(.bubble,.mem-article-render) .md-tablewrap{overflow-x:auto;margin:11px 0}
+  :is(.bubble,.mem-article-render) table.md-table{width:100%;border-collapse:collapse;font-size:.92em}
+  :is(.bubble,.mem-article-render) table.md-table th,:is(.bubble,.mem-article-render) table.md-table td{border:1px solid var(--hairline-soft);padding:6px 11px;text-align:left}
+  :is(.bubble,.mem-article-render) table.md-table th{background:rgba(255,255,255,.05);font-weight:600;color:var(--ink)}
+  :is(.bubble,.mem-article-render) .codeblock{margin:11px 0;border:1px solid var(--hairline-soft);border-radius:12px;overflow:hidden;background:var(--code-bg);color:var(--code-ink)}
+  :is(.bubble,.mem-article-render) .cbhead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 9px 5px 13px;background:rgba(255,255,255,.04);border-bottom:1px solid var(--hairline-soft)}
+  :is(.bubble,.mem-article-render) .cblang{font:11px/1 var(--mono);color:rgba(245,245,247,.65);letter-spacing:.02em}
+  :is(.bubble,.mem-article-render) .cbcopy{font:11px/1 var(--mono);color:rgba(245,245,247,.65);background:transparent;border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px 10px;cursor:pointer;transition:color .15s,border-color .15s}
+  :is(.bubble,.mem-article-render) .cbcopy:hover{color:var(--code-ink);border-color:rgba(255,255,255,.4)}
+  :is(.bubble,.mem-article-render) .codeblock pre{margin:0;border:none;border-radius:0;background:transparent;color:inherit}
   .cursor{display:inline-block;width:8px;height:17px;vertical-align:-3px;border-radius:2px;
     background:linear-gradient(180deg,var(--pink),var(--purple));animation:blink 1s steps(2) infinite}
   @keyframes blink{50%{opacity:0}}
@@ -1286,11 +1289,12 @@
           <button id="chat-attach-btn" class="iconbtn" title="Attach files or images" aria-label="Attach files">＋</button>
           <input type="file" id="chat-file-input" multiple style="display:none">
           <div id="chat-box-wrap">
-            <!-- Keep the placeholder SHORT: the Enter/Shift+Enter hint lives in
-                 the chat-hint line below (and the Cmd+/ sheet). A long
-                 placeholder wraps to two lines at tablet widths inside this
-                 single-row box and clips against the border (2026-07-06 jank). -->
-            <textarea id="chat-box" rows="1" placeholder="Message the local agent… (# to attach a file or recall memory)"></textarea>
+            <!-- Keep the placeholder SHORT: the Enter/Shift+Enter AND "#"
+                 hints live in the chat-hint status line below (and the Cmd+/
+                 sheet). A long placeholder wraps to two lines at phone/tablet
+                 widths inside this single-row box and clips against the
+                 border (2026-07-06 jank; re-introduced + re-fixed 07-07). -->
+            <textarea id="chat-box" rows="1" placeholder="Message the local agent…"></textarea>
             <!-- Unified "#" retrieval mention (plan §5.2/§9 Phase 2): typing
                  "#" opens this picker over both attached files and vault
                  articles as one gesture (composer.ts's initMentionPicker).

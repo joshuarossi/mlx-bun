@@ -160,7 +160,10 @@ export function createChatController() {
 
   function setChatStatus(s: "connected" | "disconnected" | "error"): void {
     const line = $("chat-status-line");
-    if (s === "connected") line.textContent = "connected · type to send · Shift+Enter for newline";
+    // The "#" hint lives HERE, not in the composer placeholder — a long
+    // placeholder wraps + clips at phone widths (the 2026-07-06 jank class).
+    // This status line ellipsizes gracefully instead (.chat-hint CSS).
+    if (s === "connected") line.textContent = "connected · type to send · Shift+Enter for newline · # attaches files or recalls memory";
     else if (s === "disconnected") line.textContent = "reconnecting to agent…";
     else if (s === "error") line.textContent = "connection error — retrying";
   }

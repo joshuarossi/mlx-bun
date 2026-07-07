@@ -2484,7 +2484,7 @@ function createChatController() {
   function setChatStatus(s) {
     const line = $("chat-status-line");
     if (s === "connected")
-      line.textContent = "connected · type to send · Shift+Enter for newline";
+      line.textContent = "connected · type to send · Shift+Enter for newline · # attaches files or recalls memory";
     else if (s === "disconnected")
       line.textContent = "reconnecting to agent…";
     else if (s === "error")
