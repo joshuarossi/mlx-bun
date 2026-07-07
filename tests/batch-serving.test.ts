@@ -54,17 +54,26 @@ describe.skipIf(!optIn || !haveCpm)("--batch N serving (CPM, full-attention)", a
   });
 
   test("--batch 2 alone engages the bf16 batch path (Option B), not serial", async () => {
-    // The batched path solo-prefills every row (cachedTokens=0); the serial path
-    // reuses the prompt cache, so an identical repeat would report cached_tokens>0.
-    // cached_tokens===0 on the repeat ⇒ the request went through the scheduler —
-    // i.e. `--batch 2` with kvQuant UNSET defaulted to bf16 and batched.
+    // Routing proof: /stats' cumulative batch.submitted_rows advances — only
+    // the batch lane increments it (gateway run()'s submit fork); the serial
+    // lane never touches it. (The old assertion — cached_tokens===0 on an
+    // identical repeat — relied on the batch path solo-prefilling every row.
+    // Stale since the batch lane gained prompt-cache reuse: admission take()
+    // + finish-time put() in batch-scheduler.ts, so the repeat legitimately
+    // cache-hits now.)
+    const stats = async () =>
+      ((await (await fetch(`${base}/stats`)).json()) as any).batch.submitted_rows as number;
+    const before = await stats();
     const p = "The quick brown fox jumps over the lazy dog. Continue the story:";
     const r1 = await chat(req(p));
-    const r2 = await chat(req(p)); // identical prompt → serial would cache-hit
+    const r2 = await chat(req(p)); // identical prompt → batch lane still cache-hits
     expect(r1.status).toBe(200);
     expect(r2.status).toBe(200);
+    expect((await stats()) - before).toBe(2); // both requests rode the batch lane
+    // The repeat reuses the prompt cache THROUGH the batch lane (the behavior
+    // the old premise predates): finish-time put from r1, admission take by r2.
     const b2 = (await r2.json()) as any;
-    expect(b2.usage.prompt_tokens_details.cached_tokens).toBe(0);
+    expect(b2.usage.prompt_tokens_details.cached_tokens).toBeGreaterThan(0);
   }, 120_000);
 
   test("concurrent requests all complete with coherent output", async () => {

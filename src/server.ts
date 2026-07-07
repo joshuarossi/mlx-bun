@@ -1981,6 +1981,7 @@ export function createServer(
             batched: gateway.batchingEnabled,
             active_rows: gateway.activeRows,
             pending_rows: gateway.pendingRows,
+            submitted_rows: gateway.submittedRows,
             kv_bytes: gateway.kvBytes.projected,
             kv_budget_bytes: gateway.kvBytes.budget,
           },

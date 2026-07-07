@@ -421,6 +421,7 @@ matching `mlx_lm.server`.
     "batched": false,                 // batching enabled (N>1)
     "active_rows": 0,                 // rows currently decoding in the batch
     "pending_rows": 0,                // queued + mid-prefill rows waiting
+    "submitted_rows": 0,              // cumulative rows routed to the batch lane since start
     "kv_bytes": 0,                    // projected aggregate KV bytes of admitted rows
     "kv_budget_bytes": null           // --kv-budget cap, or null (uncapped)
   }

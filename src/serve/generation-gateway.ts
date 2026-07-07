@@ -118,6 +118,7 @@ export class GenerationGateway {
   readonly #mutex = new AsyncMutex();
   readonly #batch: number;
   #scheduler: BatchScheduler | null = null;
+  #rowsSubmitted = 0;
   /** Serial-lane requests waiting for / holding the mutex. While > 0 the
    *  scheduler pauses admission (drain) so they can't be starved. */
   #serialWaiters = 0;
@@ -161,6 +162,13 @@ export class GenerationGateway {
   /** Queued + mid-prefill rows waiting behind the batch (0 when idle). */
   get pendingRows(): number {
     return this.#scheduler?.pendingRows ?? 0;
+  }
+
+  /** Cumulative rows routed to the batch lane since server start. The serial
+   *  lane never advances this — /stats' race-free lane-routing observable
+   *  (active/pending are instantaneous and read 0 once a request finishes). */
+  get submittedRows(): number {
+    return this.#rowsSubmitted;
   }
 
   /** Projected aggregate KV bytes of admitted rows / the --kv-budget cap. */
@@ -362,6 +370,7 @@ export class GenerationGateway {
     };
 
     let st;
+    this.#rowsSubmitted++;
     try {
       st = await this.#ensureScheduler().submit({
         promptIds,
