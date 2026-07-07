@@ -363,8 +363,10 @@ export function encodeValues(x: MlxArray, bits: number, s: S = gpuStream): Turbo
 
 /** Port of turbo_quant_decode_value(): centroid lookup + block rescale,
  *  then inverse FWHT. Output cast to bf16. */
-export function decodeValues(
-  indices: MlxArray, scales: MlxArray, bits: number, s: S = gpuStream,
+/** Dequantize to the ROTATED (FWHT) domain in f32: centroids[idx] * scale,
+ *  no inverse rotation. Shared tail of decodeValues / decodeValuesRotated. */
+function dequantScaled(
+  indices: MlxArray, scales: MlxArray, bits: number, s: S,
 ): MlxArray {
   const shape = indices.shape;
   const dim = shape[shape.length - 1]!;
@@ -387,13 +389,49 @@ export function decodeValues(
 
   const flat = ops.reshape(scaled, shape, s);
   scaled.dispose();
+  return flat;
+}
 
+export function decodeValues(
+  indices: MlxArray, scales: MlxArray, bits: number, s: S = gpuStream,
+): MlxArray {
+  const flat = dequantScaled(indices, scales, bits, s);
   const rotatedBack = fwht(flat, false, s);
   flat.dispose();
 
   const outBf16 = rotatedBack.astype(Dtype.bfloat16, s);
   rotatedBack.dispose();
   return outBf16;
+}
+
+/** Dequantized values still in the ROTATED domain (bf16) — the deferred-
+ *  inverse-FWHT read path. Attention over V is linear in V, so
+ *  InvFWHT(Σᵢ wᵢ·v̂ᵢ) = Σᵢ wᵢ·InvFWHT(v̂ᵢ): sdpa may run on these directly
+ *  and the caller un-rotates the attention OUTPUT once per query row
+ *  (unrotateValues) instead of un-rotating every cached token per step —
+ *  vllm-metal's deferred-V trick, O(q·d log d) instead of O(T·d log d).
+ *  Not bit-identical to the eager path (reduction order differs); both are
+ *  valid decodes of the same cache bytes. */
+export function decodeValuesRotated(
+  indices: MlxArray, scales: MlxArray, bits: number, s: S = gpuStream,
+): MlxArray {
+  const flat = dequantScaled(indices, scales, bits, s);
+  const outBf16 = flat.astype(Dtype.bfloat16, s);
+  flat.dispose();
+  return outBf16;
+}
+
+/** Undo the value rotation on an attention output computed against
+ *  decodeValuesRotated values. f32 through the transform (matching the
+ *  eager decode path's precision), returned in the input's dtype. */
+export function unrotateValues(x: MlxArray, s: S = gpuStream): MlxArray {
+  const dt = x.dtype;
+  const f32 = x.astype(Dtype.float32, s);
+  const rotatedBack = fwht(f32, false, s);
+  f32.dispose();
+  const out = rotatedBack.astype(dt, s);
+  rotatedBack.dispose();
+  return out;
 }
 
 // --- bit packing ----------------------------------------------------------

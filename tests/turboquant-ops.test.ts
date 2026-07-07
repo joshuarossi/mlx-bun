@@ -323,6 +323,54 @@ describe("turboquant codec — dtype routing", () => {
   });
 });
 
+describe("turboquant codec — deferred inverse FWHT", () => {
+  test("decodeValuesRotated + unrotateValues matches eager decodeValues", () => {
+    const key = ops.randomKey(31n);
+    const v = ops.randomNormal([1, 2, 6, 128], Dtype.float32, 0, 1, key);
+    key.dispose();
+    const enc = tq.encodeValues(v, 3);
+
+    const eager = tq.decodeValues(enc.indices, enc.scales, 3);
+    const rotated = tq.decodeValuesRotated(enc.indices, enc.scales, 3);
+    const deferred = tq.unrotateValues(rotated);
+
+    const e = [...eager.astype(Dtype.float32).toFloat32()];
+    const d = [...deferred.astype(Dtype.float32).toFloat32()];
+    // Not bit-equal by design: the deferred path rounds to bf16 in the
+    // rotated domain before the inverse transform. Bound the drift by one
+    // bf16 ulp of the transform magnitude.
+    for (let i = 0; i < e.length; i++) {
+      expect(Math.abs(d[i]! - e[i]!)).toBeLessThan(0.05);
+    }
+    for (const a of [v, enc.indices, enc.scales, eager, rotated, deferred]) a.dispose();
+  });
+
+  test("linearity: unrotate(Σ w·v_rot) equals Σ w·unrotate(v_rot)", () => {
+    // The property the deferred attention path rests on: InvFWHT commutes
+    // with the softmax-weighted sum over tokens.
+    const key = ops.randomKey(32n);
+    const vRot = ops.randomNormal([1, 1, 4, 64], Dtype.float32, 0, 1, key);
+    key.dispose();
+    const w = [0.4, 0.3, 0.2, 0.1];
+    const wArr = MlxArray.fromFloat32(new Float32Array(w), [1, 1, 4, 1]);
+
+    const weighted = ops.mul(vRot, wArr);
+    const summed = ops.sumAxis(weighted, 2, true); // Σ w·v_rot  [1,1,1,64]
+    const lhs = tq.unrotateValues(summed);
+
+    const unrot = tq.unrotateValues(vRot);
+    const weighted2 = ops.mul(unrot, wArr);
+    const rhs = ops.sumAxis(weighted2, 2, true);
+
+    const l = [...lhs.astype(Dtype.float32).toFloat32()];
+    const r = [...rhs.astype(Dtype.float32).toFloat32()];
+    for (let i = 0; i < l.length; i++) {
+      expect(Math.abs(l[i]! - r[i]!)).toBeLessThan(1e-4);
+    }
+    for (const a of [vRot, wArr, weighted, summed, lhs, unrot, weighted2, rhs]) a.dispose();
+  });
+});
+
 describe("turboquant codec — model-free math properties", () => {
   test("FWHT involution: encode then decode recovers the input", () => {
     const x = ops.randomNormal([2, 3, 128], Dtype.float32, 0, 1, null);

@@ -204,7 +204,13 @@ export class QuantizedEmbedding {
  *  position (see src/model/compiled-decode.ts). */
 export type SharedKv =
   | { kind: "plain"; keys: MlxArray; values: MlxArray; offset: number;
-      offsetArr?: MlxArray }
+      offsetArr?: MlxArray;
+      /** TurboQuant deferred-V: `values` are still in the rotated (FWHT)
+       *  domain — every consumer must un-rotate its attention OUTPUT
+       *  (tq.unrotateValues) after sdpa. Attention is linear in V, so the
+       *  result is the same decode, just transformed once per query row
+       *  instead of once per cached token. */
+      vRotated?: boolean }
   | { kind: "quant"; keys: ops.QuantizedTensor; values: ops.QuantizedTensor;
       offset: number; groupSize: number; bits: number; offsetArr?: MlxArray };
 
@@ -1427,8 +1433,10 @@ export class TurboQuantKVCache implements Cache {
   }
 
   /** Decode a TurboQuantTensor's active [B,H,upTo,*] window back to
-   *  bf16 [B,H,upTo,headDim] (k, v). Caller owns the returned arrays. */
-  #decode(t: TurboQuantTensor, upTo: number, headDim: number): [MlxArray, MlxArray] {
+   *  bf16 [B,H,upTo,headDim] (k, v). Caller owns the returned arrays.
+   *  deferV leaves V in the rotated domain (decodeValuesRotated) — the
+   *  caller un-rotates its attention output instead (tq.unrotateValues). */
+  #decode(t: TurboQuantTensor, upTo: number, headDim: number, deferV = false): [MlxArray, MlxArray] {
     const cut = (a: MlxArray): MlxArray => {
       const [B, H, , D] = a.shape as [number, number, number, number];
       return a.slice([0, 0, 0, 0], [B, H, upTo, D]);
@@ -1445,7 +1453,9 @@ export class TurboQuantKVCache implements Cache {
     const vIdxUnpacked = this.vBits < 8 ? tq.unpackBits(vPackedCut, this.vBits, headDim) : vPackedCut;
     if (vIdxUnpacked !== vPackedCut) vPackedCut.dispose();
     const vScalesCut = cut(t.vScales);
-    const v = tq.decodeValues(vIdxUnpacked, vScalesCut, this.vBits);
+    const v = deferV
+      ? tq.decodeValuesRotated(vIdxUnpacked, vScalesCut, this.vBits)
+      : tq.decodeValues(vIdxUnpacked, vScalesCut, this.vBits);
     for (const a of [vIdxUnpacked, vScalesCut]) a.dispose();
 
     return [k, v];
@@ -1456,6 +1466,24 @@ export class TurboQuantKVCache implements Cache {
    *  dequantize the WHOLE active window (v1 semantics) so the standard
    *  ops.sdpa path runs unmodified. */
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
+    const D = this.#append(k, v);
+    return this.#decode(this.#kv!, this.offset, D);
+  }
+
+  /** Deferred-inverse-FWHT read path: same append, but the returned V
+   *  window stays in the ROTATED domain. The caller MUST un-rotate its
+   *  attention output with tq.unrotateValues (see SharedKv.vRotated) —
+   *  same decode by linearity, O(q·d log d) per step instead of
+   *  O(T·d log d). Opt-in per attention site; sites that don't know about
+   *  rotation keep calling updateAndFetch and stay correct. */
+  updateAndFetchDeferredV(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
+    const D = this.#append(k, v);
+    return this.#decode(this.#kv!, this.offset, D, true);
+  }
+
+  /** Shared append: grow storage, encode the new tokens, slice-write them
+   *  at the previous offset, advance offset. Returns head_dim. */
+  #append(k: MlxArray, v: MlxArray): number {
     const [B, H, L, D] = k.shape as [number, number, number, number];
     this.#validateHeadDim(D);
     const prev = this.offset;
@@ -1513,7 +1541,7 @@ export class TurboQuantKVCache implements Cache {
       vScales: write(this.#kv!.vScales, enc.vScales),
     };
 
-    return this.#decode(this.#kv, this.offset, D);
+    return D;
   }
 
   /** Same rule as KVCache/QuantizedKVCache.makeMask (mlx-lm cache.py:114-125):

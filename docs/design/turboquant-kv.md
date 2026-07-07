@@ -170,10 +170,27 @@ roundtrip test hits.
 4. Whole-repo `tsc --noEmit` = 0; fast suite green; no batching regression
    (turbo requests route serial with a clear reason).
 
+## Deferred inverse FWHT (LANDED 2026-07-06, post-v1, Josh-directed)
+
+Attention is linear in V, so `InvFWHT(Σᵢ wᵢ·v̂ᵢ) = Σᵢ wᵢ·InvFWHT(v̂ᵢ)`:
+`updateAndFetchDeferredV` returns the V window still in the rotated domain
+and the attention site un-rotates the OUTPUT once per query row
+(`tq.unrotateValues`) — O(q·d log d) per step instead of O(T·d log d).
+Opt-in per attention site via `SharedKv.vRotated` (monolith gemma4.ts —
+KV-shared consumer layers inherit the flag through sharedIn — and
+minicpm5.ts); every other consumer keeps calling `updateAndFetch` (eager)
+and stays correct. Not bit-identical to eager (bf16 rounding in the rotated
+domain before the transform); measured k8v3 KL 0.0338 vs eager 0.0325 —
+same quality. Paired fetch-path A/B on a LOADED M1 Max: never slower,
+~10-20% off fetch cost at 4k ctx, noise-level at 8k (dequant gather
+dominates both paths) — no speed claim until a quiet-machine benchmark.sh
+run; the win is removing the O(T) transform, which matters more once the
+gather itself is fused.
+
 ## Non-goals for v1 (recorded so they don't creep)
 
-- Fused quantized-SDPA Metal kernel (deferred-InvFWHT-after-weighted-sum is
-  the known perf trick; do it only after the curve gate passes).
+- Fused quantized-SDPA Metal kernel (the remaining fetch cost is the
+  unpack+gather; deferred InvFWHT — see above — already landed).
 - Rotating/sliding-window TurboQuant cache; batched TurboQuant; QJL residual
   stage (Q_prod); entropy coding (paper explicitly declined it too).
 - Speed claims of any kind — v1 dequant-on-fetch is expected slower per-step

@@ -45,6 +45,7 @@ import {
   RMSNorm,
   RotatingKVCache,
   RotatingQuantizedKVCache,
+  TurboQuantKVCache,
   quantizedSdpa,
   type Cache,
   type Mask,
@@ -53,6 +54,7 @@ import {
 } from "./gemma4-base";
 import { Checkpoint } from "../mlx/checkpoint";
 import { flashAttention, getTrainingAttn, flashSupported } from "./flash-attention";
+import { unrotateValues as tqUnrotateValues } from "../mlx/turboquant-ops";
 import { CompiledFunction } from "../mlx/compile";
 import { flagOn } from "../flags";
 
@@ -335,6 +337,14 @@ class Attention {
           groupSize: cache.groupSize, bits: cache.bits,
           offsetArr,
         };
+      } else if (cache instanceof TurboQuantKVCache) {
+        // Deferred-V read: values stay rotated; the attention output is
+        // un-rotated below (shared.vRotated) — including by KV-shared
+        // consumer layers, which see the flag through sharedIn.
+        const [keys, values] = cache.updateAndFetchDeferredV(kRoped, vT);
+        kRoped.dispose();
+        vT.dispose();
+        shared = { kind: "plain", keys, values, offset, offsetArr, vRotated: true };
       } else {
         const [keys, values] = cache.updateAndFetch(kRoped, vT);
         kRoped.dispose();
@@ -370,6 +380,11 @@ class Attention {
       attn = ops.sdpa(q, shared.keys, shared.values, 1.0, mask.mode, mask.arr);
     }
     q.dispose();
+    if (shared.kind === "plain" && shared.vRotated) {
+      // Attention is linear in V: one InvFWHT on the [B,H,L,D] output
+      // replaces one per cached token (TurboQuant deferred-V).
+      attn = disposing(attn, tqUnrotateValues(attn));
+    }
     const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
     attn.dispose();
     const merged = ops.reshape(attnT, [B, L, -1]);

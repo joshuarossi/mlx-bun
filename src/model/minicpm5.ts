@@ -6,6 +6,7 @@ import type { Weights } from "../weights";
 import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
+import { unrotateValues as tqUnrotateValues } from "../mlx/turboquant-ops";
 import {
   argmaxLastPosition,
   disposeTriple,
@@ -13,6 +14,7 @@ import {
   KVCache,
   LoraState,
   QuantizedKVCache,
+  TurboQuantKVCache,
   QuantizedEmbedding,
   QuantizedLinear,
   quantizedSdpa,
@@ -147,6 +149,17 @@ export class LlamaAttention {
       attn = quantizedSdpa(q, keys, values, this.scale, mask, cache.groupSize, cache.bits);
       disposeTriple(keys);
       disposeTriple(values);
+    } else if (cache instanceof TurboQuantKVCache) {
+      // Deferred-V: sdpa runs on rotated values, then one InvFWHT on the
+      // output (linear in V) — see TurboQuantKVCache.updateAndFetchDeferredV.
+      const [keys, values] = cache.updateAndFetchDeferredV(k, v);
+      k.dispose();
+      v.dispose();
+      const rotated = ops.sdpa(q, keys, values, this.scale, mask.mode, mask.arr);
+      keys.dispose();
+      values.dispose();
+      attn = tqUnrotateValues(rotated);
+      rotated.dispose();
     } else {
       const [keys, values] = cache.updateAndFetch(k, v);
       k.dispose();
