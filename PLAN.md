@@ -2482,12 +2482,24 @@ all 752 `audio_tower.*`/`embed_audio.*` bf16 tensors + `audio_config` +
 token ids — no downloads needed). Mirrors the vision port: same sidecar,
 same splice/merge seams, same parity-tier ladder.
 
-- [ ] **A0 groundwork** — `mlx_conv2d` binding (full-header signature);
-      `scripts/regen-audio-goldens.py` + tracked fixtures (chirp WAV +
-      short speech clip); resolve the four §3.3 open questions (audio
-      bidir-attention semantics, per-layer id zeroing, per-bin mel stats
-      location, template-vs-splice boa/eoa) and write answers into the
-      design doc. Exit: goldens on disk, semantics documented.
+- [x] **A0 groundwork** (2026-07-07) — `mlx_conv2d` bound; binding it
+      surfaced a REAL bun:ffi ABI bug (sub-8-byte stack args get 8-byte
+      slots; Apple packs at natural size → shifted garbage from the 10th
+      arg, mlx segfaulted on a bogus stream). Workaround: dilation_1|groups
+      packed into one u64; bit-exact vs Python mlx incl. groups
+      (tests/conv2d.test.ts); repro lab/repro/bun-ffi-stack-args; all
+      other >8-arg bindings audited clean. Goldens live:
+      `scripts/gen-e4b-audio-golden.py` → goldens/e4b-audio.json +
+      4 .bin blobs (mel [159,128]/[267,128], embeds [40,2560]/[67,2560]);
+      soft tokens 40/67 exactly as computed from duration; oracle greedy
+      decodes: chirp → "cricket chirping", speech → a TOKEN-PERFECT
+      "The quick brown fox jumps over the lazy dog." Fixtures tracked
+      (fixtures/audio/, regen script TS port byte-identical to the numpy
+      original; first-cut linear sweep replaced — e4b grounds sweeps as
+      "dog barking", warble grounds robustly). All four §3.3 questions
+      RESOLVED in the design doc: audio strictly causal (audio presence
+      disables the vision bidir overlay), per-layer ids zero the mm
+      union, USM params are fixed defaults, boa/eoa splice-side.
 - [ ] **A1 decode + features** — `src/audio/decode.ts` (WAV→16 kHz mono,
       afconvert fallback), `src/audio/features.ts` (USM mel, verbatim
       port). Exit: T0 model-free gates green (mel tolerance; soft-token

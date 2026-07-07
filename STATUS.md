@@ -627,8 +627,12 @@ frontend). The local e4b OptiQ-4bit sidecar ALREADY carries all 752 audio
 tensors + `audio_config` + token ids (boa 256000 / audio 258881 / eoa
 258883) — no downloads. Plan + phase boxes: PLAN.md "audio input" phase,
 design in [docs/design/audio-input-plan.md](docs/design/audio-input-plan.md).
-Next action: A0 (mlx_conv2d binding, golden regen script + fixtures,
-resolve the four §3.3 open questions).
+**A0 DONE (2026-07-07):** conv2d bound (found + worked around a bun:ffi
+stack-arg ABI bug — see CLAUDE.md hard-won facts +
+lab/repro/bun-ffi-stack-args), §3.3 semantics resolved (audio strictly
+causal), fixtures + oracle goldens live (speech greedy = token-perfect
+transcription). Next action: A1 — src/audio/decode.ts (WAV→16 kHz mono)
++ src/audio/features.ts (USM mel port) gated on the T0 mel goldens.
 
 ### Batched serving — engine live, wave-1 upgraded
 
