@@ -1,4 +1,4 @@
-# v0.0.11 release notes (DRAFT — Josh edits + publishes)
+# v0.0.11 release notes
 
 Everything since v0.0.10. The big themes: mlx-bun grows a second modality
 (audio), a constrained-decoding stack (structured output / grammar),

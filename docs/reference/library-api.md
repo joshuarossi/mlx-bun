@@ -15,6 +15,7 @@ surface); direct library callers must do the same.
 
 ```ts
 import {
+  ensureNativeRuntime,
   loadModelConfig,
   Weights,
   createModel,       // dispatches to Gemma4Model / MiniCPM5Model / Qwen35Model
@@ -23,6 +24,7 @@ import {
   generate,
 } from "mlx-bun";   // or "./src/index" in-repo
 
+await ensureNativeRuntime();
 const dir = "/path/to/hf-snapshot";          // mlx-bun ls prints these
 const config = await loadModelConfig(dir);
 const model = createModel(await Weights.open(dir), config);   // returns RuntimeModel
