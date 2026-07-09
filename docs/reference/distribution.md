@@ -156,8 +156,8 @@ manual escape hatch if offline.
 
 ## npm / bunx
 
-mlx-bun is published to npm as `mlx-bun` (current: 0.0.4). Install or
-run without a permanent install:
+mlx-bun is published to npm as `mlx-bun`. Install or run without a
+permanent install:
 
 ```sh
 # one-off (no install)
@@ -168,10 +168,17 @@ bun install -g mlx-bun
 mlx-bun --version
 ```
 
-The npm package wraps the same signed binary via a postinstall download
-step (it does not bundle the ~228 MB dylibs/metallib in the npm tarball
-itself). Publish to npm as part of a release:
+The npm package is a thin launcher (no postinstall hook): it imports
+`src/cli.ts` under Bun, which fetches the small (~52 MB compressed,
+sha256-verified) native runtime pack — `libmlxc`/`libmlx`/`libjaccl`/
+`mlx.metallib` — into `~/Library/Caches/mlx-bun/` on first invocation if
+no copy is already resolvable (env / beside the binary / cache /
+Homebrew). This is the same npm/sidecar mechanism described above, not
+the signed/notarized Homebrew bundle. `bun publish` is already run
+automatically and idempotently as step 4 of `PUBLISH=1
+./scripts/release-binary.sh`; run it standalone only as a manual
+fallback/retry:
 
 ```sh
-bun publish   # from repo root; package.json version must already be bumped
+bun publish   # manual retry; package.json version must already be bumped
 ```

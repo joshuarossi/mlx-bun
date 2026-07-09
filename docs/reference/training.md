@@ -22,7 +22,7 @@ Training is reachable several ways — all of them drive the **same** runner
 
 | Path | How | Use when |
 |---|---|---|
-| **CLI** | `mlx-bun train <model> --data <dir> [options]` — foreground, full ORPO stack on by default; auto-detects e4b/Gemma + sets its env; `--save-every`, `--resume`, `--dry-run`, `--sft-scope full\|response`, `--grad-accum`, `--grad-clip`, `--seed`, `--val-size`; streams loss to the terminal. `mlx-bun help train` for all flags. Run long jobs detached: `nohup mlx-bun train … &` | **The default for CLI users** |
+| **CLI** | `mlx-bun train <model> --data <dir> [options]` — foreground, full ORPO stack on by default; auto-detects e4b/Gemma to pick sensible `--seq`/adapter-path defaults; no env flags needed; `--save-every`, `--resume`, `--dry-run`, `--sft-scope full\|response`, `--grad-accum`, `--grad-clip`, `--seed`, `--val-size`; streams loss to the terminal. `mlx-bun help train` for all flags. Run long jobs detached: `nohup mlx-bun train … &` | **The default for CLI users** |
 | **Web UI** | `mlx-bun serve`, open `/finetune` — pick model → dataset → hyperparameters → train; watch live train/val loss; merge/export the adapter | Interactive, in the browser |
 | **HTTP API** | `POST /api/finetune/submit` (job id + SSE events); `POST /api/finetune/inspect-dataset` to probe a file; `POST /api/finetune/merge` to fold an adapter into base weights | Scripted / remote |
 | **ORPO launcher** | [`scripts/train-orpo.ts`](../../scripts/train-orpo.ts) — the same stack driven by env vars (`MODEL=`, `DATA=`, `RANK=`, `RESUME=`, …). See [orpo-quickstart](./orpo-quickstart.md) | Env-var scripting |
@@ -167,7 +167,7 @@ are `DEFAULT_TRAIN_CONFIG` (trainer.ts:89).
 | `target_modules` | string[] | `q,k,v,o,gate,up,down _proj` | Which linears get adapters |
 | `num_layers` | int | `-1` | `-1` = all layers; `N` = last N only |
 | `iters` | int >0 | `100` | Total training steps |
-| `learning_rate` | float >0 | `2e-4` (sft) / `5e-5` (dpo) | AdamW LR |
+| `learning_rate` | float >0 | `2e-4` (sft) / `1e-5` (orpo) / `5e-5` (dpo) | AdamW LR |
 | `max_seq_length` | int >0 | `512` | Truncate/pad sequences to this |
 | `batch_size` | int ≥1 | `1` | Rows per step (B=1 is the safe path; B>1 length-sorts + pads to 32) |
 | `grad_accumulation_steps` | int ≥1 | `1` | Accumulate grads over N micro-steps |
@@ -179,8 +179,12 @@ are `DEFAULT_TRAIN_CONFIG` (trainer.ts:89).
 | `rs_lora` | bool | `false` | rsLoRA — scale the update by α/√rank instead of α, so `rank_scaling` changes capacity not step size. Recorded in the adapter config; inference applies the same per-layer scale |
 | `lora_plus_ratio` | float ≥1 | `1.0` | LoRA+ — LR multiplier for the B leaves (A stays at base LR). >1 speeds the B-driven early learning (B is zero-init). 1 = off. Wired in the ORPO loop |
 | `grad_checkpoint` | bool | `false` | Recompute layer activations in backward (memory↔compute; bit-identical) |
+| `mlp_split` | bool | `false` | Gradient-checkpoint MLP splitting (Gemma4-only, requires `grad_checkpoint`) |
 | `segment_size` | int | `0` (off) | `>0` enables segmented backward — layers per segment (see below) |
 | `save_checkpoints` | bool | `false` | Save every eval-step checkpoint + write `metrics.json` |
+| `grad_clip_norm` | float ≥0 | `1.0` | Gradient-norm clipping (on by default); `0` = off |
+| `val_max_examples` | int >0 | `256` | Caps the validation-set size used per eval |
+| `warm_start_adapter` | string | `""` (off) | Adapter dir to warm-start/resume LoRA weights from (the API field behind the CLI's `--resume`) |
 | `dpo_beta` | float >0 | `0.1` | DPO strength (dpo only) |
 | `dpo_warmup_iters` | int ≥0 | `0` | DPO LR warmup (dpo only) |
 | `dpo_lr_schedule` | `constant` \| `cosine` | `cosine` | DPO LR schedule (dpo only) |

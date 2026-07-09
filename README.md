@@ -145,7 +145,11 @@ curl http://localhost:8080/v1/chat/completions \
 
 That's it. The server serves the one model it was started with (the
 request's `model` field is ignored and the loaded model id is echoed
-back in responses).
+back in responses). Run `serve --isolate --model-pool N` instead and
+the parent proxy pools per-model engine children, routing each request
+by its `model` field and spawning on demand — see
+[docs/reference/server-config.md](./docs/reference/server-config.md)
+and [docs/design/runtime-isolation.md](./docs/design/runtime-isolation.md).
 
 Longer walkthrough on the site:
 [Installation](https://mlx-bun.dev/getting-started/installation/) and
@@ -176,9 +180,11 @@ need to know those knobs exist.
 
 `mlx-bun memory init` creates a git-tracked Markdown wiki at
 `~/.mlx-bun/wiki`; `Reference/` is seeded with read-only symlinks to
-mlx-bun's own docs, and the built-in pi agents read both those docs and your
-articles quietly (`memory_search`, `memory_section`, etc.) and can open it in
-Obsidian for you (`mlx-bun memory open [article]`). Chat-time memory is
+mlx-bun's own docs, and the built-in pi agents read both quietly through two
+separate tool families — `reference_search`/`reference_read` for the seeded
+Reference docs, `memory_search`/`memory_section`/`memory_read` for your own
+articles — and can open it in Obsidian for you (`mlx-bun memory open
+[article]`). Chat-time memory is
 read-only; synthesis is the separate writer path: `mlx-bun memory synthesize`
 runs the built-in local pipeline (segment → extract → route → create/patch →
 reconcile → link → wikify) that turns your conversations into cross-linked
@@ -327,15 +333,19 @@ agent CLIs like pi/OpenClaw via their provider config.
   `guided_choice`, and `structured_outputs`, enforced by
   grammar-constrained decoding (xgrammar) on chat and raw completions,
   serial and batched lanes alike; a grammar that fails to compile
-  degrades to prompt injection (oMLX parity) instead of an error.
+  degrades to prompt injection (oMLX parity) instead of an error
+  (`MLX_BUN_GRAMMAR=0` disables grammar-constrained decoding server-wide).
 - **Vision** — `image_url` content parts (data: URLs or http/s), on
   models with the vision sidecar. PNG, JPEG, HEIC, AVIF, WebP, TIFF,
-  GIF, BMP via native OS codecs.
+  GIF, BMP via native OS codecs. Remote fetches are SSRF-guarded by
+  default (private/loopback/LAN destinations refused); opt out with
+  `--allow-private-media` / `MLX_BUN_ALLOW_PRIVATE_MEDIA=1`.
 - **Audio input** — `input_audio` content parts (base64 WAV, plus
   `audio` / `audio_url` aliases), on models whose sidecar ships the
   audio tower (gemma-4 e4b). WAV decoded natively; mp3, m4a, FLAC, ogg,
   AIFF via CoreAudio. Up to 30 s per clip; images and audio mix in one
-  message — a capability neither mlx-lm nor optiq serves.
+  message — a capability neither mlx-lm nor optiq serves. Same SSRF
+  guard and opt-out as `image_url` applies to `audio_url`.
 - **Prompt caching** — a byte-capped LRU KV cache reuses the longest
   common token prefix across requests (multi-turn conversations
   re-prefill only the new turn) — automatic, no client changes.

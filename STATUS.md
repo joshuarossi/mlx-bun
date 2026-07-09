@@ -10,7 +10,25 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
-## Where we are (2026-07-07, later — review sweep over everything landed + in flight)
+## Where we are (2026-07-07, release prep — v0.0.11 staged)
+
+**PR #27 (review-sweep fixes) and PR #28 (web chat redesign Phases 0–3)
+are both MERGED to main**; the sweep's two CONFIRMED serving bugs
+(grammar WASM leak on early-400 rejects, dead grammar-degrade path) ship
+in this release, and the web-chat tranche's "big one" — the wrapperless
+tool-call repair executing JSON-shaped assistant content — was fixed
+before merge (`looksLikeToolEnvelope` envelope guard in tool-call.ts,
+pinned in tests/tool-call.test.ts). Release notes drafted:
+[docs/planning/release-notes-v0.0.11.md](docs/planning/release-notes-v0.0.11.md)
+(142 commits since v0.0.10). Post-merge main verified: hygiene OK, tsc 0,
+model-free suite green, CI green. Still owed (all opt-in surfaces, judged
+non-blocking for the release): paged-kv try-body temp leaks +
+GRAMMAR_JUMP×paged-kv verify-or-refuse; write-behind max-defer design
+decision. To ship: clean the two dated bench artifacts out of the working
+tree, then `bun run release` (publish-release.sh refuses a dirty tree),
+then commit the rewritten in-repo Homebrew formula.
+
+## Where we were (2026-07-07, later — review sweep over everything landed + in flight)
 
 **Four-agent review pass (docs drift / defaults+serving path / web-chat
 worktree / paged-kv worktree), fixes on branch `josh/review-sweep-0707`.**

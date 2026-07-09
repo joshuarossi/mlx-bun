@@ -54,8 +54,10 @@ Request body (OpenAI chat schema; unknown fields ignored):
   },
   "reasoning_effort": "medium",  // "none"|"minimal"|"low"|"medium"|"high"
                                  // gates enable_thinking on Qwen3.5/MiniCPM5:
-                                 // "none" → off, any other level → on.
-                                 // Overrides chat_template_kwargs.enable_thinking.
+                                 // "none" → off, any other level → on. Only
+                                 // consulted when chat_template_kwargs
+                                 // .enable_thinking is not explicitly set —
+                                 // an explicit enable_thinking always wins.
   "hlg": {                       // HLG tone-curve sampling (per request).
     "enabled": true,             // merged over --hlg-sampling server defaults.
     "width": 4,                  // logit-width of the tone plateau
