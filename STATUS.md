@@ -10,23 +10,21 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
-## Where we are (2026-07-07, release prep — v0.0.11 staged)
+## Where we are (2026-07-10 — v0.0.11 released)
 
-**PR #27 (review-sweep fixes) and PR #28 (web chat redesign Phases 0–3)
-are both MERGED to main**; the sweep's two CONFIRMED serving bugs
-(grammar WASM leak on early-400 rejects, dead grammar-degrade path) ship
-in this release, and the web-chat tranche's "big one" — the wrapperless
-tool-call repair executing JSON-shaped assistant content — was fixed
-before merge (`looksLikeToolEnvelope` envelope guard in tool-call.ts,
-pinned in tests/tool-call.test.ts). Release notes drafted:
-[docs/planning/release-notes-v0.0.11.md](docs/planning/release-notes-v0.0.11.md)
-(142 commits since v0.0.10). Post-merge main verified: hygiene OK, tsc 0,
-model-free suite green, CI green. Still owed (all opt-in surfaces, judged
-non-blocking for the release): paged-kv try-body temp leaks +
-GRAMMAR_JUMP×paged-kv verify-or-refuse; write-behind max-defer design
-decision. To ship: clean the two dated bench artifacts out of the working
-tree, then `bun run release` (publish-release.sh refuses a dirty tree),
-then commit the rewritten in-repo Homebrew formula.
+**v0.0.11 is live on every distribution channel.** PR #29 merged the
+final release notes and reference-doc accuracy sweep into main; CI and
+CodeRabbit were green. The Developer-ID build passed its binary/pi smoke,
+was signed and notarized (submission `434ac11a-09c3-4f74-94dd-bb9fdf94f793`),
+and shipped as both versioned and stable-name GitHub assets with SHA-256
+`e9178d264a375694ed1b704eb2b9f717b91e40038781f874c9ec015619ac64e5`.
+The `joshuarossi/homebrew-tap` formula and npm `mlx-bun@0.0.11` are live;
+the in-repo formula is synchronized in the release follow-up commit.
+Release notes: [docs/planning/release-notes-v0.0.11.md](docs/planning/release-notes-v0.0.11.md).
+
+Still owed (all opt-in surfaces, judged non-blocking for the release):
+paged-kv try-body temp leaks + GRAMMAR_JUMP×paged-kv verify-or-refuse;
+write-behind max-defer design decision.
 
 ## Where we were (2026-07-07, later — review sweep over everything landed + in flight)
 
