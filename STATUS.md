@@ -27,13 +27,32 @@ matmul, DSA, LFRU, and elementary RMSNorm/sigmoid. The operator/router/LRU/MTP
 sections are explicitly derived scaffolding, not Colibri runtime output. The
 pinned tools do not emit a complete tiny MTP layer, so teacher-forced numeric
 GLM/MLA/MTP-head/KV outputs and measured neural acceptance remain uncaptured.
-Restart handoff (2026-07-22): Josh reports the approximately 372 GB artifact
-download is complete. After reboot, verify its snapshot revision, complete file
-manifest/checksums, config/tokenizer metadata, DSA files, and the corrected
-int8-MTP shards; then repeat the stable disk preflight. The earlier disk reading
-was taken while the download was active and remains only a moving snapshot.
-Next, run the cleared-M1-Max-32-GB direct-Colibri cold/warm baseline with MTP
-both off and on. That measurement is the actual G0 exit; do not start G1 first.
+Post-restart audit (2026-07-22): the 357.404 GiB artifact is complete relative
+to HF revision `3cc8db99b1b13fc79325d987ba3c1c430766b3b8` (150/150 files;
+141 main + 3 corrected int8-MTP shards), and all safetensors headers and MTP
+tensor families validate. The recommended artifact has **no DSA indexer
+weights** (`out-idx-*` and `indexer.*` tensors are both absent), so pinned
+Colibri will run with `has_dsa=0`. The audit also found and fixed a downloader
+schema bug: HF exposes LFS digests as `lfs.sha256`, while mlx-bun read
+`lfs.oid`, so the original transfer checked sizes but skipped payload SHA-256.
+The three MTP shards, tokenizer, and five non-LFS metadata files now have direct
+cryptographic verification; the 141 main-shard payload hashes remain pending.
+
+The stable post-download APFS snapshot has about 174 GB hard-free, no local
+snapshots, zero swap, and no competing model/download process. The exact-pin
+Metal build and standalone kernel suite pass from an isolated archive.
+
+At Josh's explicit direction, a bounded full-model proof run completed at an
+18 GB budget and 128-token context. GLM-5.2 answered `2+2=4.` identically with
+MTP off and on. MTP-off decoded 6 tokens in 17.61 s (0.34 tok/s); MTP-on decoded
+them in 14.44 s (0.42 tok/s), accepted 4/6 drafts (67%), and delivered 3.0
+tokens/forward. Whole-process wall time was 42.62 s versus 38.36 s; both runs
+used Metal unified-memory zero-copy, true top-8 routing, and zero swap. Raw
+logs/stats are under ignored `runs/colibri-g0/results-20260722/` and the exact
+numbers are recorded in the oracle note. This is functional proof, not the G0
+benchmark: it is a tiny sequential pair with different one/two-slot cache caps,
+DSA off, and incomplete main-shard hashes. G1 remains blocked pending the full
+numeric oracle and controlled repeated baseline.
 
 ## Where we are (2026-07-10 — v0.0.11 released)
 

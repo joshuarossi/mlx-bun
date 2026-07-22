@@ -57,9 +57,10 @@ It is the same-artifact oracle target for G0 and the initial native loader.
 - Previously measured disk preflight, not reverified by this item: about
   556 GB unallocated plus 123 GB purgeable, or about 679 GB practically
   available on the internal SSD on 2026-07-21.
-- The artifact revision, complete file manifest, and checksums remain unpinned
-  until the user performs the manual download. Record all three before using it
-  as a release or reproducibility oracle.
+- The downloaded artifact is pinned locally at revision
+  `3cc8db99b1b13fc79325d987ba3c1c430766b3b8`. The complete metadata manifest
+  is recorded below. Main-shard payload SHA-256 verification remains pending,
+  so it is not yet a complete release or reproducibility oracle.
 
 The public mirror without the corrected MTP head is not an equivalent
 artifact. The pinned README identifies the correct int8 MTP shard byte sizes
@@ -74,6 +75,49 @@ as:
 These sizes are a preflight signal, not a sufficient integrity check. The
 native loader must validate the complete tensor set, names, dtypes, dimensions,
 and byte counts before allocation.
+
+### Post-download artifact audit (2026-07-22)
+
+The artifact downloaded through `mlx-bun get` resolves to:
+
+`/Users/joshrossi/.cache/huggingface/hub/models--mateogrgic--GLM-5.2-colibri-int4-with-int8-mtp/snapshots/3cc8db99b1b13fc79325d987ba3c1c430766b3b8`
+
+- Local `refs/main` and the exact-revision HF API both report
+  `3cc8db99b1b13fc79325d987ba3c1c430766b3b8`.
+- Remote and local inventories match exactly: 150 files and
+  `383,760,077,466` bytes (`357.404 GiB`), with no missing/extra files, broken
+  links, `.incomplete` files, or locks. The canonical
+  `name<TAB>size<TAB>blobId` manifest SHA-256 is
+  `d0a400b49ca018bdaf3b7d98686e5bd9ebad121f79580911fec4fe22196747e2`.
+- The model has 141 consecutive main shards (`out-00000` through
+  `out-00140`) and three MTP shards. Header-only validation parsed all 144
+  safetensors, found no offset/size/JSON errors, and accounted for 118,478
+  tensors. The layer-78 MTP family contains 777 U8 payload tensors, 786 F32
+  scale/dense tensors, all 256 routed experts, and all required attention,
+  shared-expert, `eh_proj`, norm, and shared-head tensors.
+- Direct SHA-256 verification passed for all corrected MTP shards:
+  `dc020ddbb87347f7e6711c9e8cd2715ac79a2a9f2b4599ff11b7980a35e3cf88`,
+  `172b49be499a1070505cd13718c47c82165c663d6422e537b1335aae28c331bf`,
+  and `534a1a2a05188dc372f1e0e4f6d72503cbe86fc9a94f085dc6a6a0941b45975d`.
+  `tokenizer.json` also matches its LFS SHA-256, and all five non-LFS metadata
+  files recompute to their advertised Git blob identities.
+- **DSA is absent from this artifact.** There are zero `out-idx-*` files and
+  zero tensor names containing `indexer`, locally and in the remote revision,
+  even though `config.json` declares the DSA/IndexShare geometry. Pinned
+  Colibri checks for every full-layer `indexer.wq_b.weight` tensor and therefore
+  sets `has_dsa=0`. A baseline on this artifact cannot be called a DSA baseline.
+
+The audit exposed a downloader integrity bug. The current HF `?blobs=true`
+schema returns LFS digests as `lfs.sha256`; mlx-bun modeled the property as
+`lfs.oid`. Consequently, the original 145 LFS transfers used Git `blobId`
+filenames but did not compare their payloads to the advertised SHA-256. The
+local fix normalizes `sha256` (with legacy `oid` compatibility), rejects an
+invalid digest, uses the digest as the content-addressed blob name, and restores
+streaming SHA-256 verification. The regression suite exercises the real field
+name and the corrupt-payload refusal path. The 141 main payloads remain
+unverified until a deliberate full read; doing that before a cold run would
+populate the filesystem cache. The MTP hashes performed during this audit also
+mean this boot is not a valid cold MTP-on cell.
 
 ## Snapshot metadata contract
 
@@ -235,17 +279,24 @@ Limitations that must stay explicit:
 
 ## Manual G0 baseline checklist
 
-G0 remains incomplete until the user performs this work on the cleared M1 Max
-32 GB machine. Agent sessions and CI must not perform it.
+G0 remains incomplete until the user performs the full-model work on the
+cleared M1 Max 32 GB machine. Agent sessions and CI must not perform it. The
+400 GB figure is a pre-download capacity floor, not a requirement to retain
+400 GB after the 357 GiB artifact itself is present.
 
-- [ ] Reverify at least 400 GB actually free on the target fast local disk;
-      record `diskutil` unallocated and purgeable values with date and commands.
-- [ ] Download the public artifact; record repository revision/commit, complete
-      file manifest, byte sizes, and cryptographic checksums.
-- [ ] Verify `config.json`, tokenizer metadata, generation metadata, main
-      shards, complete DSA shards, and the three correct int8 MTP shards.
-- [ ] Record machine model, chip, 32 GB memory, macOS/build versions, storage
-      device/filesystem, Colibri commit, build flags, and all runtime settings.
+- [x] Record the stable post-download APFS capacity snapshot, including hard
+      free space, snapshots, date, and commands.
+- [x] Download the public artifact and record its repository revision, complete
+      file manifest, link identities, and byte sizes.
+- [ ] Complete cryptographic payload verification for all 141 main shards.
+- [x] Verify `config.json`, tokenizer metadata, generation metadata, main-shard
+      headers, and the three corrected int8 MTP shards.
+- [ ] Supply or explicitly waive complete DSA `out-idx-*` weights. The
+      recommended artifact contains none and therefore runs DSA-disabled.
+- [x] Record machine model, chip, 32 GB memory, macOS/build versions, storage
+      device/filesystem, Colibri commit, Metal build flags, and binary hash.
+- [ ] Record the final runtime settings and a passing Colibri doctor/plan for
+      each baseline cell; the present 18.8 GB reclaimable reading is too low.
 - [ ] Ensure the machine is cleared and quiet; record competing processes,
       memory pressure, compression, and swap before each run.
 - [ ] Run quality-preserving true top-8 defaults. Do not use expert top-p,
@@ -946,6 +997,99 @@ This is deliberately not treated as the final stable G0 baseline. The active
 approximately 372 GB artifact transfer can materially change the value. Re-run
 the same commands after that user-owned transfer completes and before any
 conversion or full-model oracle measurement.
+
+## Stable post-download machine and build preflight (2026-07-22)
+
+The post-restart target was an Apple M1 Max with 10 cores and 32 GiB unified
+memory, running macOS 26.5.2 (`25F84`, Darwin 25.5.0). The model is on the
+internal APFS SSD (`Apple Fabric`). During the stable audit APFS reported about
+`174.1 GB` hard-free, with no local Time Machine snapshots. Before inference,
+`memory_pressure -Q` reported 93% free, swap and compressed pages were zero,
+and no Colibri, MLX, Bun, Python model, or Hugging Face transfer process was
+active. The 400 GB value above was the satisfied pre-download floor; it is not
+a post-download runtime requirement.
+
+The oracle source checkout was returned to a clean, build-artifact-free
+`44e489b196c9b7876b3d37a0570ebf1c6f90f54c`. A `git archive` of that exact pin
+was built separately under ignored `runs/colibri-g0/` with:
+
+```bash
+make -C <exact-pin-archive>/c glm METAL=1
+make -C <exact-pin-archive>/c metal-test
+```
+
+Apple clang 21.0.0 built the engine with `-O3`, Homebrew OpenMP, and
+`-DCOLI_METAL`. Every standalone Metal int8/int4/int2 matmul, batched MoE,
+large GEMM, and fused-attention comparison passed. The tested engine SHA-256
+is `fa2b00cb7b8b5fbfb0c43908567c07fdd2bb9024ec47502697cb01885ca2b501`.
+
+Colibri's Python doctor correctly analyzes 144 shards, 19,456 experts,
+`10,877,286,144` dense bytes, `372,848,459,776` expert bytes, and
+`18,915,328` bytes per typical expert. Its conservative 4K-context plan did
+not pass on the then-current reclaimable-memory snapshot: auto sizing produced
+zero cache slots and a forced 25 GB budget exceeded reported availability.
+Separately, the C profiler's `hw_probe` has no macOS branch and prints
+`unknown CPU | RAM 0.0 GB total, 0.0 GB available`; the engine's distinct
+`host_statistics64` safety path does have macOS support. This is an upstream
+telemetry bug, not evidence that unified memory was unavailable.
+
+## Bounded full-model proof run (2026-07-22)
+
+At the user's explicit direction, the exact-pin Metal engine was run against
+the complete 357.404 GiB snapshot with a deliberately bounded configuration:
+18 GB RAM budget, 128-token context, 19-token deterministic prompt, at most 8
+generated tokens, true top-8 expert routing, no cache-aware routing, expert
+budget, pilot, repin, or autopin. Both cells used `COLI_METAL=1`, `DIRECT=1`,
+`PIPE=1`, six loader workers, `TEMP=0`, `SEED=1`, `PROF=1`, and int4 main
+expert/dense interpretation. MTP-off set `MTP=0 DRAFT=0`; MTP-on set
+`MTP=1 DRAFT=3 SPEC_PIN=1`. DSA was off because the artifact has no indexer
+weights.
+
+Both cells emitted the same six token IDs (`17 10 17 28 19 13`) and the same
+correct text: `2+2=4.`
+
+| Metric | MTP off | MTP on |
+|---|---:|---:|
+| Engine load | 3.22 s | 2.44 s |
+| Prefill, 19 tokens | 20.94 s | 21.04 s |
+| Decode, 6 tokens | 17.61 s | 14.44 s |
+| Decode rate | 0.34 tok/s | 0.42 tok/s |
+| Process wall time | 42.62 s | 38.36 s |
+| Tokens/forward | 1.00 | 3.00 |
+| MTP accepted/proposed | 0/0 | 4/6 (67%) |
+| LRU hit rate | 4.8% | 1.5% |
+| Expert cache cap | 2/layer | 1/layer |
+| Expert payload fetched | 64.823 GB | 65.576 GB |
+| Read service / felt wait | 52.351 / 9.929 s | 56.293 / 9.696 s |
+| Maximum RSS (`time -l`) | 6.19 GB | 10.56 GB |
+| Peak footprint (`time -l`) | 14.98 GB | 16.29 GB |
+| Swap | 0 | 0 |
+
+For this tiny proof, MTP-on improved reported decode rate by about 23.5%,
+reduced decode wall time by about 18.0%, and reduced whole-process wall time by
+about 10.0%. Those deltas are not benchmark claims: this is one sequential
+pair, only six generated tokens, the cells had different LRU capacities, and
+the MTP files had been read during integrity verification. It establishes the
+important facts that the real GLM-5.2 container loads on the 32 GB M1 Max,
+Metal unified-memory zero-copy executes with no CPU fallback, output is sane,
+the corrected MTP layer activates, SPEC_PIN activates, and neural drafts are
+accepted.
+
+Raw machine-local evidence and SHA-256 values:
+
+- `runs/colibri-g0/results-20260722/mtp-off.log`:
+  `593a9274f70e7b2f80a5f90bc5d3edea948d77199897464c3ec3134b989f974b`
+- `runs/colibri-g0/results-20260722/mtp-on.log`:
+  `58d9715d7d81ef94aeaf9a70e1fc1ca2442341c4dcd9c380000dc7bf4bc1bb85`
+- `mtp-off.stats`:
+  `767abcfd2a21af8797509586b2f0e6ab990fb28ddefd40445ca42cf8d252933d`
+- `mtp-on.stats`:
+  `c409ed39ecb97b6a9da999a121db372fc25db79f8eacffd4d5afcc589bbd59d1`
+
+G0 remains open. The controlled cold/warm repeated baseline, complete
+main-shard hashes, DSA decision/artifact, exact TTFT instrumentation,
+acceptance-length distribution, and teacher-forced numeric GLM/MLA/MTP/KV
+oracle are still required.
 
 ## G0 item 4: model-free capture and derived scaffolding (2026-07-21)
 
