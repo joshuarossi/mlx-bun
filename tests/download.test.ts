@@ -23,6 +23,7 @@ const smallSha1 = gitBlobSha1(small);
 const cdnRequests: { file: string; range: string | null; auth: string | null }[] = [];
 let apiAuth: string | null = null;
 let corruptBig = false;
+let lfsDigestMode: "sha256" | "oid" | "missing" | "malformed" = "sha256";
 
 const server = Bun.serve({
   port: 0,
@@ -30,6 +31,13 @@ const server = Bun.serve({
     const url = new URL(req.url);
     if (url.pathname === `/api/models/${REPO}/revision/main`) {
       apiAuth = req.headers.get("authorization");
+      const lfs = lfsDigestMode === "sha256"
+        ? { sha256: bigSha256, size: big.length }
+        : lfsDigestMode === "oid"
+          ? { oid: bigSha256, size: big.length }
+          : lfsDigestMode === "malformed"
+            ? { sha256: "not-a-sha256", size: big.length }
+            : { size: big.length };
       return Response.json({
         sha: COMMIT,
         siblings: [
@@ -37,7 +45,10 @@ const server = Bun.serve({
           {
             rfilename: "weights/model.bin", size: big.length,
             blobId: "aaaa000000000000000000000000000000000000",
-            lfs: { oid: bigSha256, size: big.length },
+            // Hugging Face's current ?blobs=true schema names this digest
+            // `sha256` (not `oid`). Keep the mock faithful so a field-name
+            // drift cannot silently bypass content verification again.
+            lfs,
           },
         ],
       });
@@ -86,6 +97,7 @@ beforeEach(() => {
   hub = mkdtempSync(join(tmpdir(), "mlx-bun-dl-"));
   cdnRequests.length = 0;
   corruptBig = false;
+  lfsDigestMode = "sha256";
 });
 
 const repoDir = () => join(hub, "models--test--tiny-model");
@@ -148,6 +160,22 @@ describe("downloader", () => {
     const before = cdnRequests.length;
     await downloadModel(REPO, { endpoint, cacheDir: hub, token: null });
     expect(cdnRequests.length).toBe(before);
+  });
+
+  test("normalizes the legacy lfs.oid spelling to the SHA-256 identity", async () => {
+    lfsDigestMode = "oid";
+    const snap = await downloadModel(REPO, { endpoint, cacheDir: hub, token: null });
+    expect(existsSync(join(repoDir(), "blobs", bigSha256))).toBe(true);
+    expect(readlinkSync(join(snap, "weights/model.bin"))).toBe(`../../../blobs/${bigSha256}`);
+  });
+
+  test("rejects missing or malformed LFS digests before downloading", async () => {
+    for (const mode of ["missing", "malformed"] as const) {
+      lfsDigestMode = mode;
+      await expect(downloadModel(REPO, { endpoint, cacheDir: hub, token: null }))
+        .rejects.toThrow(/invalid LFS sha256/);
+    }
+    expect(cdnRequests).toHaveLength(0);
   });
 
   afterAll(() => rmSync(hub, { recursive: true, force: true }));

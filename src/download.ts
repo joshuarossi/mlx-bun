@@ -4,7 +4,7 @@
 // lore"): Xet stalls (we speak plain HTTPS resolve/CDN), no resume on
 // flaky links (we Range-resume partial blobs), and silent corruption
 // (every blob is verified — sha256 for LFS files against the API's
-// oid, git-blob sha1 for small files against blobId).
+// normalized LFS digest, git-blob sha1 for small files against blobId).
 //
 // Writes the exact huggingface_hub cache layout so the registry and
 // loaders find the result with zero changes:
@@ -29,8 +29,8 @@ export interface RepoFile {
   size: number;
   /** git blob sha1 (non-LFS identity, and the blob filename for non-LFS). */
   blobId: string;
-  /** LFS sha256 + size; present for large files. oid is the blob filename. */
-  lfs?: { oid: string; size: number };
+  /** LFS sha256 + size; present for large files. sha256 is the blob filename. */
+  lfs?: { sha256: string; size: number };
 }
 
 export interface RepoListing {
@@ -161,16 +161,32 @@ export async function listRepoFiles(
     );
   const body = (await res.json()) as {
     sha: string;
-    siblings: { rfilename: string; size?: number; blobId?: string; lfs?: { oid: string; size: number } }[];
+    siblings: {
+      rfilename: string;
+      size?: number;
+      blobId?: string;
+      // The current HF API calls this field `sha256`. Accept the older `oid`
+      // spelling too, but normalize it before the download path sees it.
+      lfs?: { sha256?: string; oid?: string; size: number };
+    }[];
   };
   return {
     sha: body.sha,
-    files: body.siblings.map((s) => ({
-      rfilename: s.rfilename,
-      size: s.lfs?.size ?? s.size ?? 0,
-      blobId: s.blobId ?? "",
-      lfs: s.lfs,
-    })),
+    files: body.siblings.map((s) => {
+      let lfs: RepoFile["lfs"];
+      if (s.lfs) {
+        const sha256 = s.lfs.sha256 ?? s.lfs.oid;
+        if (!sha256 || !/^[0-9a-f]{64}$/i.test(sha256))
+          throw new Error(`HF API returned an invalid LFS sha256 for ${s.rfilename}`);
+        lfs = { sha256: sha256.toLowerCase(), size: s.lfs.size };
+      }
+      return {
+        rfilename: s.rfilename,
+        size: lfs?.size ?? s.size ?? 0,
+        blobId: s.blobId ?? "",
+        lfs,
+      };
+    }),
   };
 }
 
@@ -369,7 +385,7 @@ export async function downloadModel(
 
   try {
     for (const f of listing.files) {
-      const blobId = f.lfs?.oid ?? f.blobId;
+      const blobId = f.lfs?.sha256 ?? f.blobId;
       if (!blobId) throw new Error(`no blob id for ${f.rfilename} (API response missing ?blobs=true data)`);
       const blobPath = join(blobsDir, blobId);
 
@@ -378,7 +394,7 @@ export async function downloadModel(
         status.currentFile = f.rfilename;
         await downloadOne(url, token, blobPath, {
           size: f.size, name: f.rfilename,
-          ...(f.lfs ? { sha256: f.lfs.oid } : { sha1: f.blobId }),
+          ...(f.lfs ? { sha256: f.lfs.sha256 } : { sha1: f.blobId }),
         }, (file, received, total) => {
           status.receivedBytes = doneBytes + received;
           sampleRate(status.receivedBytes);
