@@ -2045,6 +2045,115 @@ design + reasoning: `docs/investigations/expert-offload-single-user-moe.md`.
   multi-tenant loses the locality guarantee → experts stay resident there;
   keep offload files separate from the batch/slots work.
 
+## Phase 21 — GLM-5.2 on 32 GB via the complete Colibri hierarchy `[ ]` (opened 2026-07-21)
+
+Full investigation and phased contract:
+**docs/design/colibri-glm52-port.md**. Source baseline:
+`JustVugg/colibri@44e489b196c9b7876b3d37a0570ebf1c6f90f54c` (post-v1.0.0),
+Apache-2.0. This phase extends Phase 20; it does not rediscover expert
+streaming.
+
+**Decision:** port the complete Colibri design into mlx-bun as one native
+Bun+MLX runtime. Do not embed, launch, or ship Colibri as a backend. A pinned
+direct Colibri/Metal build is the same-artifact behavioral and performance
+oracle. MLX owns the model/tensor graph; Bun owns residency policy, I/O
+orchestration, serving, tooling, Atlas/heat telemetry, and UI. Native helpers or
+custom Metal kernels remain valid implementation details at the OS/kernel
+boundary. The port decision is settled: the direct-Colibri same-machine numbers
+recorded in G0 are the bar the port is debugged against — a gap versus the
+oracle is a bug to close, not a go/no-go. **Product target: >=2 tok/s warm on
+the M1 Max 32 GB, MTP on, quality-preserving defaults** (decomposes as a
+~0.8-1 tok/s no-MTP base × MTP's measured 2.2-2.6 tok/forward — which is why
+serial MTP sits on the critical path as its own gate). Target machine is the
+M1 Max 32 GB; the 24 GB M4 Pro is below the one-slot-per-layer floor and out
+of scope. (Revised 2026-07-21 with the design doc: gates renumbered G0-G8,
+serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
+
+- [ ] **G0 — direct oracle baseline:** pin/build direct Colibri arm64 Metal;
+      record the public artifact; run model-free `make check` + Metal tests;
+      import tiny GLM/quant/DSA/MTP/cache fixtures; measure the direct baseline
+      on the cleared M1 Max 32 GB — memory/I/O/speed, **MTP on and off**. Disk
+      preflight met (2026-07-21: ~556 GB unallocated + ~123 GB purgeable ≈
+      679 GB available). No model download in CI or agent sessions.
+- [ ] **G1 — unified-memory MLX storage foundation:** fixed aligned shared
+      slabs, bounded positioned-read workers, zero-copy MLX/custom-Metal
+      consumption, completion-fenced generation-tagged slot reuse, allocator
+      caps, forced-churn stress, and same-shape Colibri kernel benchmarks.
+- [ ] **G2 — native GLM-5.2 spine:** dedicated config/model; compressed MLA KV,
+      DSA indexer, sigmoid+correction-bias top-8 router, shared+routed experts,
+      MTP layer, multiple EOS; direct Colibri-container parsing. Numeric parity
+      contract defined BEFORE debugging (bitwise: int4/int8 dequant, router
+      top-8 selection, byte accounting; trajectory-level: tie-free greedy token
+      match + recorded max-logit-delta bound — cross-implementation Metal
+      accumulation order is not expected to match bitwise). Tiny model 32/32
+      token-exact on a tie-free greedy trajectory vs the pinned engine.
+- [ ] **G3 — explicit bounded expert residency (load-bearing):** per-layer
+      expert-ID→slot LRU, separate pinned tier, 64-unique working set,
+      aligned gate/up/down+scale slabs, generation-tagged async loads, GPU-use
+      fence, deterministic eviction, real RSS guard, and batched routed-SwiGLU
+      Metal kernel. The current whole-file mmap/page-cache path is a bring-up
+      backend, not the 25 GB contract.
+- [ ] **G4 — serial native MTP (requirement):** int8 MTP row sharing target
+      weights, counted in the residency budget; draft-to-gamma, batched verify,
+      exact rollback; `SPEC_PIN`-equivalent fixed draft/verify kernel family;
+      grammar + prompt-lookup integration; tok/forward + end-to-end metrics.
+      Exit: oracle accept/reject trace match + net win over MTP-off. All later
+      gates measure with MTP on (the 2 tok/s target assumes it).
+- [ ] **G5 — 32 GB memory contract (measured MTP on):** full dense + LRU +
+      working-set + KV + reconstructed-KV + MLX allocator/transient + Bun +
+      OS-reserve planner, startup refusal, and physical-footprint feedback; the
+      verify batch, MTP KV row, and larger per-forward union are in the
+      accounted workload. Gate on the cleared M1 Max 32 GB: startup +128 tokens
+      MTP on <=25 GB, flat memory, no compression spiral/swap; record cold/warm
+      speed (MTP on and off) vs the G0 baseline.
+- [ ] **G6 — complete scheduler + Atlas:** batch-union; bounded
+      pread/F_NOCACHE workers; resident-first Metal submit overlapped with
+      misses; persistent `.usage`; auto-pin; live LFRU (decay + 25%+4
+      hysteresis + bounded swaps); PILOT, coupling, and two-step prediction.
+      Add live tier/heat/hit maps and the replicated topic-affinity Atlas probe,
+      validation, and visualization. Each lever needs a paired hit/I/O/p95/tok-s
+      A/B **with MTP on** before defaulting (a lever that wins MTP-off but loses
+      MTP-on is not a default); Atlas-informed warm-start is a separate
+      experiment.
+- [ ] **G7 — persistence, concurrency, and API parity:** (a) versioned
+      compressed MLA/DSA/MTP `kv-store` save/restore with no full-K/V
+      materialization; (b) batchable cache merge/extract, compressed-byte
+      admission, cross-row expert union, join/leave/cancel — batched rows decode
+      ordinary single-token; per-row MTP under batching is **post-release**,
+      with telemetry always reporting the actual mode; (c) parity on
+      chat/text completions, Anthropic Messages, OpenAI Responses, streaming,
+      tools, grammar, stops, sampling/penalties, usage, serial logprobs, library
+      `generate`, CLI chat/serve, health/stats — incl. GLM chat-template
+      rendering, thinking-block policy per surface, and tool-call parsing (the
+      existing parser is Gemma-only). Non-generative capabilities such as
+      embeddings, vision/audio, LoRA and training remain explicitly false.
+- [ ] **G8 — productization:** resumable acquisition or one-shard-at-a-time
+      conversion, docs/attribution, 32 GB quickstart, curated memory/speed/
+      quality cells in `benchmarks/RESULTS.md`; update README and reference
+      models/memory/cli/server-config/server-api/library-api/features-matrix with
+      each shipped surface rather than deferring documentation to phase end.
+      Headline bar: **>=2 tok/s warm on the M1 Max 32 GB, MTP on,
+      quality-preserving defaults**, provenance-recorded.
+
+**Correctness boundary:** default quality policy keeps checkpoint precision and
+true top-8 routing. `CACHE_ROUTE`, expert top-p/top-k, and any expert budget are
+Lab-only/KL+task-quality gated. Preserve Colibri's negative result:
+`EXPERT_BUDGET` currently has no measured coherent+faster operating window and
+must not ship as a normal knob. Several of Colibri's best small-RAM hit-rate
+numbers use expert top-p; the 2 tok/s target must be met without
+quality-changing knobs.
+
+**Overall exit:** a fresh 32 GB Apple Silicon machine with adequate fast disk
+can start GLM-5.2 and complete a chat within the measured <=25 GB contract from
+one documented mlx-bun command sequence, at **>=2 tok/s warm with serial MTP
+on and quality-preserving defaults** (measured on the M1 Max 32 GB);
+save/restart continuation, mixed-row continuous batching (ordinary decode —
+batched MTP is post-release), tools and structured output work through chat
+completions, text completions, Anthropic Messages, OpenAI Responses, the
+library and CLI; the live expert map and offline Atlas are available;
+oracle/native results are provenance-recorded; and no default changes
+precision or router semantics.
+
 ## Fit-model calibration status (2026-06-12, second external tester)
 
 The decode prediction is single-point-calibrated on the M4 Pro

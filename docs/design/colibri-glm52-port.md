@@ -1,0 +1,859 @@
+# GLM-5.2 on a 32 GB Mac — native MLX port of the Colibri hierarchy
+
+*2026-07-21. Source baseline: `JustVugg/colibri` at
+`44e489b196c9b7876b3d37a0570ebf1c6f90f54c` (post-v1.0.0). This plan is
+grounded in the local Colibri checkout, its C/Metal implementation and tests,
+and mlx-bun's indexed call graph. The original inspiration is Apple's
+[AFM 3 Core Advanced](https://machinelearning.apple.com/research/introducing-third-generation-of-apple-foundation-models)
+flash-resident sparse model; Colibri is the concrete GLM-5.2 implementation.*
+
+*Revised 2026-07-21 after review: the 2 tok/s warm product target is set;
+serial MTP moves onto the critical path as gate G4 and every later gate
+measures with MTP on; batched multi-row MTP is descoped to post-release; the
+G2 numeric parity contract is defined; the direct-Colibri baseline is reframed
+as the bar the port is debugged against, not a go/no-go. Gates renumbered
+G0-G8.*
+
+## Decision
+
+**Yes: a native MLX port should be feasible within an approximately 25 GB
+runtime budget, but embedding or launching Colibri from mlx-bun is not the
+goal.** Direct Colibri already provides that runtime. Putting its executable
+behind mlx-bun would add API/CLI/tooling consistency, but it would not improve
+memory use, I/O, or generation speed. That is not enough value for this project.
+
+The recommended path is therefore a native `Glm52Model` plus an explicit
+Apple-oriented expert residency runtime. The pinned Colibri build remains an
+**external executable oracle** for formats, logits/tokens, routing, cache traces,
+memory, and performance; its code is studied and its behavior reproduced, not
+shipped inside mlx-bun.
+
+Colibri is also no longer accurately described as CPU-only. Its opt-in macOS
+backend already creates `MTLStorageModeShared` buffers and registers aligned
+expert slabs with `newBufferWithBytesNoCopy`; routed expert SwiGLU, fused decode
+MLA, and large prefill GEMMs can run on Metal over unified memory. The MLX thesis
+is to express the model and tensor runtime in MLX and the orchestration,
+residency policy, serving, tooling, and UI in Bun while retaining Colibri's
+disk/LRU/prefetch hierarchy. Performance gates choose the winning MLX/custom-
+Metal implementation at each boundary; they do not cancel the port. The port
+decision is settled: the direct-Colibri same-machine numbers recorded in G0
+are the baseline the port is debugged against — a gap versus the oracle is a
+bug to close, not a reason to stop.
+
+This is not a small extension of the current Gemma expert-offload flag.
+GLM-5.2 adds a new model graph (MLA, DSA, shared+routed MoE, MTP) and Colibri's
+memory result depends on an explicit residency scheduler that mlx-bun does not
+yet have.
+
+The honest product contract is:
+
+- **RAM:** target <=25 GB measured RSS/physical footprint on the target
+  machine — the M1 Max MacBook Pro with 32 GB, the only qualifying machine in
+  this project's fleet (the 24 GB M4 Pro is below the one-slot-per-layer floor
+  and out of scope) — including dense weights, expert slots, working buffers,
+  KV, Metal transient, the Bun server, and an OS reserve.
+- **Disk:** roughly 370 GB for the converted checkpoint, with at least 400 GB
+  free for the ready-to-run artifact. Converting from source needs the output
+  plus one source shard at peak because Colibri converts and deletes one shard
+  at a time. Preflight (measured 2026-07-21): the target machine has ~556 GB
+  unallocated plus ~123 GB purgeable — ~679 GB practically available
+  (Finder's figure; macOS auto-purges snapshots/caches on demand). The
+  requirement is met on the internal SSD with wide margin. Re-verify at
+  download time; if an external drive were ever substituted, its measured
+  bandwidth (Thunderbolt caps near ~2.8-3 GB/s) would lower the cold-token
+  ceiling and must be entered into the resource plan.
+- **Speed:** the product target is **>=2 tok/s warm on the M1 Max 32 GB with
+  MTP on and quality-preserving defaults**. No 32 GB Mac has ever been
+  measured by Colibri; the nearest primary-source datapoints (pinned checkout)
+  are: 0.05-0.1 tok/s cold on the author's 25 GB dev box — a ~1 GB/s WSL2
+  virtual disk, not a Mac (`docs/benchmarks.md:71`); 0.30 tok/s on a Mac Mini
+  M4 Pro 48 GB with Metal and a 6.59 GB/s SSD (`docs/benchmarks.md:90`);
+  0.42 tok/s warm on an M4 Max 128 GB (CPU 0.30 -> Metal 0.42, MTP on,
+  `docs/metal.md:17`); 2.06 tok/s on an M5 Max 128 GB with a 46.9 GB learned
+  pin at 72.5% hit, MTP off (`docs/benchmarks.md:89`). The target decomposes
+  as a ~0.8-1 tok/s no-MTP base — the top edge of Colibri's own projection for
+  the 3-5 GB/s-NVMe / 32 GB class (`docs/benchmarks.md:72`) — multiplied by
+  MTP's measured 2.2-2.6 tok/forward (`docs/windows.md:88`,
+  `docs/benchmarks.md:92`). This is why serial MTP is a requirement on the
+  critical path, not a later optimization. If the target only closes with
+  quality-changing knobs (expert top-p, reduced top-k), that is a finding to
+  surface, not a default to ship.
+- **Quality:** the default path keeps the checkpoint's precision and exact
+  top-8 router decisions. Cache-aware routing, top-p expert dropping, and
+  expert budgets remain explicit Lab experiments.
+
+## What Colibri is actually doing
+
+GLM-5.2 has 78 main layers: three dense FFN layers followed by 75 sparse MoE
+layers. Each sparse layer has 256 routed experts and activates eight per token;
+the MTP head adds another 256-expert row. That is 19,456 expert instances.
+Colibri keeps the always-used dense graph resident at int4 (about 9.9 GB) and
+stores the roughly 370 GB routed-expert pool on disk.
+
+The runtime is a hierarchy, not a large mmap:
+
+```text
+router output (true top-8)
+        |
+        v
+batch union of unique (layer, expert) requests
+        |
+        +--> pinned hot-store hit ----------------------+
+        +--> per-layer LRU hit -------------------------+--> expert compute
+        +--> miss -> bounded async pread -> work slot --+
+                                  |
+                                  +--> promote/evict LRU at a safe point
+
+profile history -> startup pinning -> live LFRU repinning
+next-layer router prediction ------> prefetch queue
+RSS feedback ----------------------> shrink LRU capacity
+```
+
+The load-bearing pieces are:
+
+1. **Streaming converter and container.** FP8 shards are converted one at a
+   time to symmetric int4/int8 or grouped-int4. Every expert is addressable
+   independently. Gate/up/down matrices and scales are laid out so a miss can
+   be served with a coalesced read. MTP experts stay int8 by default because
+   int4 MTP measured 0-4% acceptance.
+2. **Resident dense spine.** Embeddings, lm-head, attention, norms, the first
+   dense FFNs, routers, and shared experts remain resident. Only routed experts
+   enter the tier manager.
+3. **Compressed MLA KV.** Each token stores the 512-wide latent plus 64 RoPE
+   values rather than reconstructed per-head K/V (576 floats/token, about 57x
+   smaller than conventional KV for this geometry). DSA index state is stored
+   only on the full-indexer layers.
+4. **Per-layer bounded LRU.** Each sparse layer owns a fixed number of expert
+   slots. A hit updates a monotonic use clock. Misses load into working slots;
+   after compute, those slots swap into the least-recently-used cache slots.
+   The capacity is derived from the whole-process memory equation, not a fixed
+   expert count.
+5. **Pinned hot-store.** A separate non-evicted tier is seeded from persistent
+   `.coli_usage` counts. On macOS Colibri attempts to wire pinned slabs so the
+   memory compressor cannot turn a logical hit into a slow page-in.
+6. **Learning and live LFRU.** Every route increments persistent frequency,
+   recent heat, and last-access time. At safe turn boundaries, LFRU can replace
+   at most a few sufficiently colder pins; a 25%+4 hysteresis prevents
+   oscillation, and recent heat decays without erasing long-term history.
+7. **Hard RSS feedback.** The planner's estimate is not trusted blindly.
+   Colibri samples actual RSS and, above 102% of budget +300 MB, frees the
+   coldest LRU slabs in place and lowers the cache cap so they do not regrow.
+8. **Batch-union.** Prefill and speculative verification route all positions
+   first, deduplicate expert IDs per layer, load each unique expert once, and
+   run it over every row that selected it.
+9. **I/O/compute overlap.** A bounded worker pool performs positioned reads.
+   Resident experts are submitted for compute before miss reads finish; missed
+   experts join afterward. Linux can use io_uring; macOS uses positioned reads
+   and `F_NOCACHE`/the direct-I/O equivalent. The three expert matrices are read
+   together where the container permits.
+10. **Predictive prefetch.** `PILOT` applies the next layer's router to the
+    current post-attention state (measured 71.6% recall), and `COUPLE` uses
+    observed cross-layer route pairs. Real prefetch loads only future layers,
+    rechecks residency, and must never publish a partially filled slot.
+11. **Metal execution.** On Apple Silicon, Colibri batches routed SwiGLU work
+    over zero-copy aligned host slabs, fuses decode MLA attention, and runs
+    large prefill GEMMs on Metal. It submits resident work before disk reads to
+    overlap GPU execution with I/O; failures fall back per block.
+12. **MTP speculation.** The native MTP layer proposes tokens and the main
+    model verifies them in a batch. Draft and verify are forced onto the same
+    kernel family (`SPEC_PIN=1`), because changing accumulation order destroyed
+    acceptance. Grammar-forced drafts and prompt lookup are additional sources.
+13. **Persistent conversations and slots.** Compressed MLA/DSA state is
+    appended crash-safely and restored without re-prefill. The mux protocol
+    supports independent KV slots and continuously batches one decode row per
+    active slot; MTP is currently disabled in the mux path because it is not
+    ragged-safe.
+14. **Planner, diagnostics, and telemetry.** The runtime exposes dense/runtime/
+    expert/KV bytes, disk service vs foreground wait, LRU/pin hit rates, tier
+    maps, route heat, per-turn latency, queue state, and an explicit startup
+    refusal when even one expert slot per sparse layer cannot fit.
+15. **Expert observability and Atlas.** The live `EMAP` is one byte per expert:
+    tier plus a log-bucketed usage count; `HITS` is a per-turn routing bitmap.
+    Separately, the offline Atlas probe workflow builds replicated topic-affinity
+    vectors for experts and publishes them to the web visualization. These are
+    related data products, not one prefetch algorithm.
+
+## What unified memory changes — and what it does not
+
+Apple unified memory removes a host-to-VRAM copy. It does **not** make the
+roughly 370 GB expert file addressable as memory on a 32 GB machine. The useful
+native hierarchy is therefore:
+
+```text
+NVMe cold expert -> aligned resident shared-memory slot -> MLX/Metal consumer
+                         |                         |
+                         +-- optional mlock -------+
+```
+
+There should be no fictional RAM-versus-VRAM capacity split on Apple Silicon.
+A Metal-visible expert and a CPU-visible expert occupy the same physical DRAM.
+The meaningful state is disk, resident, wired/pinned, loading, in-flight, or
+evictable. MLX can operate on that shared storage, but the LRU still decides
+which approximately 10-12 GB of experts may coexist with the ~9.9 GB dense
+spine, KV, activations, runtime allocations, Bun, and the OS.
+
+The current mlx-bun proof already wraps page-aligned host pointers as MLX arrays
+without a copy. There is an important lifetime limit: `MlxArray.fromPointer`
+requires its backing storage to outlive every MLX reference and retained Metal
+command buffer, which is why the existing mmap stays mapped for the process.
+Reusable LRU slots violate that assumption unless eviction is fenced. The first
+native spike must prove one of these safe designs:
+
+1. native-owned fixed slabs registered once, never freed, whose contents are
+   overwritten only after an MLX/Metal completion fence and generation check;
+2. a custom Metal routed-SwiGLU kernel over registered slabs, with explicit
+   command-buffer completion outside MLX array ownership; or
+3. a new native external-buffer owner whose destructor and completion path never
+   call into JavaScript.
+
+Ordinary per-miss MLX array creation/copy is not acceptable. Nor may lazy MLX
+graphs retain an evicted slot. Layer-safe `eval`/synchronization, slot generation
+tags, and stress tests are part of the correctness contract.
+
+mlx-bun already exposes MLX allocator controls (`setMemoryLimit`, `clearCache`,
+cached/peak memory counters). The 25 GB planner must reserve and cap this
+allocator explicitly, clear reusable temporaries at measured safe points, and
+still use real process physical footprint as the final guard. MLX's cache limit
+is not a substitute for whole-process RSS/footprint control.
+
+Potential Apple wins that require measurement:
+
+- MLX quantized GEMM/SDPA and compiled graph paths for the resident dense spine;
+- fewer framework crossings and better scheduling of MLA/DSA/shared-expert work;
+- a routed-SwiGLU Metal kernel integrated with the same stream as the model;
+- direct GPU consumption of a freshly loaded shared slab, with no staging copy;
+- mlx-bun's existing batching, KV tiers, grammar, and speculative infrastructure.
+
+Colibri already has a fused decode MLA command buffer and zero-copy expert
+Metal kernel, so MLX does not win merely by using the GPU. It must beat or match
+those paths on the same artifact. CPU workers must also wait passively: Colibri
+measured active OpenMP spin stealing the shared SoC power/thermal budget and
+severely throttling Metal.
+
+## Atlas, heat maps, and prefetch are three connected systems
+
+The source separates concepts that the UI presents together:
+
+- **Live cortex/heat map:** `eusage`, recent heat, last-access clocks, `EMAP`,
+  and `HITS` show every expert's residency and activity. Persistent
+  `.coli_usage` seeds auto-pin; recent heat plus recency drives live LFRU swaps.
+- **Measured Expert Atlas:** a controlled offline sweep runs independent
+  topic-tagged prompts, normalizes for category size, requires cross-prompt
+  replication, and assigns per-expert topic-affinity/entropy. The published
+  `experts.json` powers labels and the Atlas visualization.
+- **Runtime prefetch:** `PILOT` predicts the next layer with its router;
+  `PILOT_REAL` performs value-preserving speculative loads; `PILOT_TWO` adds the
+  shared-expert correction; `COUPLE` uses measured cross-layer route pairs.
+
+In the inspected Colibri source, the offline topic Atlas is observability and
+interpretability data; it does not directly choose `PILOT` loads. The native
+port should faithfully reproduce all three. It may additionally test an
+Atlas-informed cold-start prior—classify or fingerprint the prompt, then warm
+likely topic specialists—but that is a new experiment, not a claimed Colibri
+behavior. It must beat plain persistent usage/PILOT without changing router
+decisions.
+
+## What mlx-bun already has
+
+The codebase-memory graph confirms that the earlier AFM-3 investigation already
+landed the essential Apple proof points:
+
+- `src/expert-offload-build.ts` creates a page-aligned expert file.
+- `src/expert-offload.ts` wraps that process-lifetime mmap as MLX arrays.
+- `QuantizedSwitchLinear.load` redirects routed weights into the offload mmap;
+  `forward` still uses the bit-exact `mlx_gather_qmm` path.
+- `MmapFile.advise(offset, length, MADV_DONTNEED)` already supports explicit
+  clean-page eviction by range.
+- `src/expert-trace.ts` and the trace-analysis scripts measured expert skew and
+  cross-task hot-set overlap.
+- The 26B experiment measured roughly 17.1 -> 4.2 GB resident with no short-run
+  decode regression and bit-exact output.
+- The serving stack already has continuous batching, byte-capped prompt cache,
+  disk KV persistence, memory admission, structured output, prompt-lookup and
+  model-based speculative verification, OpenAI/Anthropic/Responses APIs,
+  telemetry, a web app, and an existing custom Metal-kernel wrapper.
+
+That removes major uncertainty, but the current offload implementation is not
+a GLM-5.2 residency manager:
+
+- it maps one whole expert tensor and relies on macOS page-cache policy;
+- it has no per-layer expert-ID -> slot table or deterministic byte cap;
+- it does not stream expert scales/biases (acceptable for Gemma, not necessarily
+  for grouped GLM quantization);
+- it does not coalesce gate/up/down reads or overlap them with resident compute;
+- it has tracing but no persistent online usage profile, pinned tier, live LFRU,
+  pilot/coupling prefetch, or RSS feedback loop;
+- it only plugs into Gemma's `QuantizedSwitchLinear` loader;
+- mlx-bun has GLM-4 dense support, but no GLM-5.2 MLA, DSA, router, shared MoE,
+  or native MTP model class.
+
+## Native MLX architecture
+
+Colibri stays installed and runnable on the development machine as a pinned
+external oracle. We use its public artifact directly if the native loader can
+consume it, and invoke direct Colibri only from explicit parity/benchmark
+workflows. There is no Colibri child process, backend protocol adapter, vendored
+runtime, or `--backend colibri` product surface in mlx-bun.
+
+The implementation is one in-process MLX model with a native macOS residency
+helper:
+
+```text
+Glm52Model (MLX graph)
+    |
+    +-- MLA/DSA compressed caches
+    +-- resident dense/shared weights
+    +-- ExpertResidencyManager (TS policy + native storage/I/O/fences)
+            |
+            +-- fixed shared-memory slabs
+            +-- pread worker queue
+            +-- LRU/pin/LFRU/prefetch policy
+            +-- routed-SwiGLU Metal/MLX kernel
+            +-- route/heat/Atlas telemetry
+```
+
+The public Colibri container should be supported in place so users do not need
+a second 370 GB copy. A future mlx-bun-native layout is justified only by a
+measured Mac I/O or kernel improvement and must remain stream-convertible one
+shard at a time.
+
+### N1. GLM-5.2 graph
+
+Add a dedicated `Glm52Model`; this is not the existing universal `glm4`
+descriptor.
+
+- Config fields: q/kv LoRA ranks; no-PE/RoPE/value head dimensions; first dense
+  layer count; 256 experts/top-8; correction bias; routed scale; shared experts;
+  DSA indexer schedule; MTP metadata; multiple EOS IDs.
+- Attention: q-a -> norm -> q-b; kv-a -> latent norm; compressed MLA cache;
+  weight-absorption decode; reconstructed prefill fallback; partial interleaved
+  RoPE.
+- DSA: indexer q/k/projection/norm, per-layer full/shared schedule, exact dense
+  fallback when the selected set covers the whole prefix.
+- MoE: sigmoid scores plus correction bias for selection, un-biased gate weights,
+  true top-8, optional normalization/routed scale, shared expert in parallel.
+- MTP: the 79th layer, `eh_proj`, norms, its independent partial KV row, and
+  batched verify integration.
+- Cache types: `MLACache` and `DSAIndexCache`, including per-row extraction and
+  persistence state.
+
+### N2. Colibri-compatible quant/container support
+
+Support the public artifact directly: per-expert gate/up/down tensors, packed
+symmetric int4/int8, per-row or grouped scales, int8 MTP shards, and optional
+indexer shards. Do not keep grouped scales resident merely because the Gemma
+prototype did.
+
+Two kernel paths are needed:
+
+1. a reference MLX composition for fixtures and parity work;
+2. a custom Metal routed-SwiGLU kernel reading Colibri slot slabs directly.
+
+The latter preserves the one-read-per-expert layout. Repacking into three
+projection-major MLX tensors would turn one coalesced expert read into three
+reads or add a copy, defeating a central Colibri optimization.
+
+### N3. Explicit `ExpertResidencyManager` (hard gate)
+
+State per sparse layer:
+
+```text
+cold -> loading -> resident-LRU -> in-use -> resident-LRU
+                     |                         |
+                     +------> pinned <--------+
+                     +------> evict-pending -> cold
+```
+
+Required behavior:
+
+- fixed byte budget and derived slots/layer;
+- expert-ID -> slot lookup, monotonic LRU use clock, and a separate pinned set;
+- a 64-unique working set for prefill/verify, bounded by actual union size;
+- deduplicated concurrent loads and generation-tagged slots so stale workers
+  cannot publish into reused storage;
+- aligned native slabs holding gate/up/down weights and scales;
+- no slot reuse until the Metal/MLX consumer has completed;
+- eviction at model-safe points, never while a lazy MLX command can retain the
+  buffer;
+- real RSS/physical-footprint sampling and downward cap correction;
+- startup refusal when dense + one slot/layer + working/KV/transient + OS reserve
+  exceeds the budget.
+
+The implementation should reuse Colibri's small, well-tested LRU/LFRU policy
+code through a native helper or a faithful TS port, while native aligned
+allocation, `pread`, `F_NOCACHE`, `mlock`, and worker threads live in C/ObjC.
+Blocking disk reads must not run on Bun's event loop.
+
+The current process-wide mmap remains a useful reference backend:
+explicit per-expert LRU can call `MADV_DONTNEED` on evicted ranges after an eval
+barrier. It is a bring-up step, not the final 25 GB contract; the slab backend
+is the deterministic Colibri-equivalent implementation.
+
+### N4. Scheduling and prediction
+
+- Route the whole layer batch first, form the stable unique expert union, and
+  gather all rows/weights per expert.
+- Submit resident experts and the shared expert before starting/waiting for miss
+  reads; submit missed experts in a second Metal command buffer and accumulate.
+- Promote completed misses into LRU only after every consumer is done.
+- Persist frequency counts atomically after each turn.
+- Add startup `PIN=auto`, frequency/recency heat, decay, 25%+4 hysteresis, at
+  most four live swaps per safe-point pass, and optional wire/unwire.
+- Port PILOT measurement first, hint-only prefetch second, real-load PILOT third,
+  and coupling/two-step prediction last. Every prefetch mode needs a paired
+  hit-rate, disk-byte, p95-latency, and tok/s A/B; Colibri itself warns that
+  prefetch can regress a saturated disk.
+
+### N5. Cache and continuous-batching contract
+
+The current `Cache` protocol and `BatchScheduler` are integration targets, not
+automatic compatibility. GLM-5.2 needs three explicit state families:
+
+- `MLACache`: compressed latent plus decoupled RoPE state and offset;
+- `DSAIndexCache`: only the indexer state required by that layer's full/shared
+  schedule;
+- `MtpCache`: the MTP row's independent attention/cache state.
+
+The serial versions must implement masking, state enumeration, trim/rollback,
+disposal, and exact byte accounting without reconstructing full K/V for
+storage. Then add a capability-based batched cache contract (names provisional)
+rather than another list of scheduler class checks:
+
+```ts
+interface BatchableCache extends Cache {
+  mergeRows(rows: Cache[]): void;
+  extractRow(row: number): Cache;
+  projectedBytes(tokens: number): number;
+}
+```
+
+Required scheduler work:
+
+- recognize every GLM cache row as batchable only after all three cache types
+  implement merge/extract and per-row offsets;
+- use compressed MLA+DSA+MTP byte projections in `#kvAdmits`, never the generic
+  full-K/V formula;
+- preserve joiner prompt-cache reuse, FIFO admission, row-local sampling,
+  grammar state, stop sequences, errors, and cancellation;
+- form the expert batch-union across all live rows so an expert is acquired once
+  per layer/step and released after the shared GPU completion fence;
+- extract completed/cancelled rows without retaining an expert-slot lease or a
+  view into another row's cache;
+- test mixed prompt lengths, join/leave churn, context limits, cancellation,
+  grammar rows, and a forced expert miss during a row eviction.
+
+Serial correctness is allowed before these capabilities land. The final model
+must not claim batching support until the gateway's `willBatch()` and cache
+checks admit it for the correct reasons.
+
+### N6. Native MTP contract
+
+MTP is part of GLM-5.2, not a separately loaded assistant model. Integrate it
+with mlx-bun's speculative framework through an in-process draft source that
+shares the target model and reports no duplicate weight allocation.
+
+Serial MTP is a hard requirement on the critical path (gate G4): the 2 tok/s
+product target assumes its measured 2.2-2.6 tok/forward multiplier, and every
+later gate validates its workload with MTP on.
+
+Serial path:
+
+- load MTP experts at int8 and include their row in the residency budget;
+- draft up to the configured gamma, verify with the main model in one batched
+  forward, and trim target+MTP cache tails precisely after rejection;
+- use the same request sampler and a `SPEC_PIN`-equivalent fixed kernel family
+  for draft and verify so accumulation drift does not destroy acceptance;
+- integrate grammar-forced tokens and prompt-lookup/ngram drafts without
+  double-advancing caches;
+- expose drafted, accepted, rejected, acceptance length, forwards saved, and
+  end-to-end speed—not acceptance alone.
+
+Batched MTP across concurrent rows is descoped from the release critical path:
+at 2 tok/s single-user it buys little, and Colibri itself keeps MTP out of its
+mux path because it is not ragged-safe. It remains a documented post-release
+milestone:
+
+- add per-row native-draft state to the scheduler;
+- cohort eligible rows into bounded speculative rounds, pad/mask verification
+  where draft lengths differ, and apply accept/rollback independently per row;
+- ensure a cancelled or grammar-completed row cannot retain verification arrays,
+  cache tips, or expert leases;
+- fall back to ordinary one-token decode for an individual ineligible row while
+  its siblings continue.
+
+Telemetry and `/v1/models` must report the actual mode (`serial`, `batch`, or
+`off`); it must never be silently disabled. Release (G8) requires serial MTP
+and continuous batching to coexist — batched rows decode ordinary single
+tokens — while per-row MTP under batching lands post-release.
+
+### N7. Persistence contract
+
+Extend mlx-bun's versioned `kv-store` rather than inventing a parallel GLM
+session format. Add cache-kind discriminators and snapshot/restore support for
+MLA, DSA indexer, and MTP state; bump the format only if the existing v3 header
+cannot remain backward-compatible.
+
+Persist:
+
+- token history and exact per-cache offsets/lengths;
+- compressed MLA latent+RoPE tensors only;
+- DSA index state only on layers that own it;
+- the MTP cache row when enabled;
+- model/artifact identity, quantization/layout version, context configuration,
+  and hashes needed to reject an incompatible restore.
+
+Writes remain streaming, asynchronous, and crash-safe (`.tmp`, fsync, atomic
+rename), materializing at most one tensor at a time. Restore must not build full
+K/V or touch the expert file. Persistent expert usage/heat is a separate small
+atomic profile: KV reset must not erase learned expert placement, and deleting
+the usage profile must not invalidate a KV snapshot.
+
+The existing prompt cache and SSD cold tier must receive accurate compressed
+byte counts and support row extraction/demotion. Exit requires a restart at
+multiple sequence lengths to produce the same next logits/tokens and cache
+offsets as uninterrupted generation.
+
+### N8. Serving, library, and CLI parity contract
+
+"API parity" means the generative surfaces mlx-bun already exposes, with the
+same request validation, stream shapes, finish reasons, errors, and usage
+accounting as other text models:
+
+| Surface | GLM-5.2 requirement |
+|---|---|
+| `POST /v1/chat/completions` | streaming/non-streaming chat, tools, stops, sampling, usage, structured output |
+| `POST /v1/completions` | raw-tokenized text completion, streaming/non-streaming |
+| `POST /v1/messages` | Anthropic message/tool blocks and event stream |
+| `POST /v1/responses` | input/instructions, tools, streaming, `previous_response_id` continuation |
+| `GET /v1/models` | GLM identity, context, reasoning/MTP/batching capability truth |
+| `GET /health`, `GET /stats` | readiness plus memory, scheduler, MTP, expert-tier and I/O telemetry |
+| library `generate(...)` | tokens, samplers, grammar, stop callback, stats, disposal |
+| `mlx-bun chat` / `serve` | the same model path—no special runner or backend flag |
+
+Required request features are SSE/disconnect cancellation, greedy and sampled
+decode, penalties/logit bias where that protocol accepts them, logprobs through
+the existing serial lane, tool round-trips, JSON schema/grammar constraints,
+stop sequences, prompt-cache reuse, usage accounting, and bounded concurrency.
+The HTTP translators must remain model-agnostic; GLM-specific behavior belongs
+below `GenerationGateway`.
+
+This does **not** imply embeddings, image/audio input, LoRA hot-swap, training,
+or adapter APIs for GLM-5.2. Those are different model capabilities and must be
+advertised false/unsupported rather than faked. Existing non-generation admin,
+memory, hub, and web routes must continue to work but require no GLM-specific
+semantics.
+
+### N9. Observability, Atlas, and resource-planning contract
+
+Add an expert block to `/stats` with budget/resident/wired/working/MLX-cache
+bytes, LRU/pin capacity, hit/miss/prefetch counts, disk bytes/service/wait,
+prefetch precision/recall, evictions, and pressure-driven cap changes. Serve the
+packed per-expert tier/heat/hit map through a dedicated web data route so the
+normal stats response does not carry 19,456 cells every poll.
+
+The web experience includes:
+
+- live layer x expert residency/heat cells and per-turn hit flashes;
+- pinned/LRU/disk totals and pressure events;
+- the offline replicated topic-affinity Atlas with provenance and confidence;
+- I/O, cache, MTP acceptance, and latency timelines suitable for A/B runs.
+
+`fit` and `doctor` expose the exact dense, expert-slot, 64-working-set,
+MLA/DSA/MTP-per-slot, reconstructed-KV transient, MLX allocator, Bun, and OS
+reserve equation. Startup refuses an impossible quality-preserving placement;
+runtime physical-footprint feedback may shrink only the evictable LRU tier.
+
+### Proposed code map
+
+Names are provisional, but ownership should remain this explicit:
+
+| Area | Production location | Responsibility |
+|---|---|---|
+| Model/config | `src/model/glm52.ts`, `src/model/glm52-config.ts` | graph, routing, MLA/DSA, factory registration |
+| Cache | `src/model/glm52-cache.ts` | serial/batched MLA, DSA and MTP state; byte projection |
+| MTP | `src/model/glm52-mtp.ts`, `src/spec/` adapter | native drafting, verify, rollback, metrics |
+| Container | `src/model/glm52-container.ts` | manifest/index validation and tensor/expert offsets |
+| Residency policy | `src/expert-residency.ts` | LRU/pin/LFRU state machine, leases, learning, prefetch |
+| Native boundary | `src/native/` plus Bun FFI binding | aligned slabs, `pread`, no-cache hints, wire/unwire, completion fences |
+| Kernels | `src/model/glm52-kernels.ts` | reference MLX compositions and selected Metal kernels |
+| Resource plan | existing fit/memory modules | 32 GB equation, startup refusal, pressure feedback |
+| Serving | existing gateway/scheduler/server | cache capabilities, MTP batches, protocol-neutral generation |
+| Atlas/UI | expert trace/analysis scripts + web | live map, offline affinity workflow, A/B telemetry |
+
+Do not put HTTP request parsing, Atlas visualization, or LRU policy into the
+native helper. Do not put disk I/O or blocking waits into MLX model methods or
+the Bun event loop. The native boundary exposes leases/completion signals; Bun
+owns policy and observability.
+
+### Test and workflow split
+
+- **Every-commit, model-free:** synthetic container parsing, LRU/LFRU traces,
+  short reads/errors/cancellation, slot-generation races, cache merge/extract,
+  protocol regression, and memory-equation unit tests.
+- **macOS Metal CI:** tiny routed-SwiGLU/MLA/DSA parity; repeated slot churn;
+  external Colibri `make check` and `metal-test` at the pinned commit. No model
+  download.
+- **Tiny-model parity workflow:** deterministic generated GLM fixture for
+  teacher forcing, MTP accept/rollback, KV save/restore, and two-row batching.
+- **Full-model manual workflow:** the public artifact on a cleared machine;
+  records commit/artifact/hardware/OS/settings, footprint/swap, cache/I/O,
+  tokens, latency and throughput. It never runs in an agent session or CI.
+- **Release gate:** API conformance suites exercise the same server twice—one
+  ordinary supported text model and GLM-5.2—to prove the model did not fork the
+  HTTP contract.
+
+## What not to copy blindly
+
+"Everything" means preserving every useful mechanism and every negative result,
+not enabling every knob:
+
+- CUDA multi-GPU, Linux io_uring, Windows shims, Power/AVX kernels, and NUMA are
+  not part of an Apple-only MLX runtime. Their *roles* map to Metal, a macOS I/O
+  worker, ARM kernels, and unified memory.
+- `EXPERT_BUDGET` is quarantined upstream: tested settings damaged HellaSwag,
+  produced incoherent decode, broke MTP's draft/verify contract, and were not
+  faster. Keep it unshipped or behind an unmistakable research gate.
+- `CACHE_ROUTE`, expert top-p, and reduced top-k change the model function. They
+  are Lab tier, default off, with KL and task-quality gates. Several of
+  Colibri's best small-RAM hit-rate numbers use expert top-p; the 2 tok/s
+  target must be met without them.
+- PILOT real loads can evict useful experts on a misprediction. It is an A/B
+  optimization, not part of the correctness floor.
+- MTP must not silently claim to be active under a scheduler that disables it.
+- Colibri's projected cap was once wrong by tens of GB; the measured RSS guard
+  is mandatory for the 25 GB promise.
+
+## Risk register
+
+| Risk | Earliest detection | Required mitigation |
+|---|---|---|
+| MLX retains an expert slot after policy release | G1 forced-churn poison/generation-tag test | explicit eval/completion fence; fixed native slab lifetime; never reuse on JS disposal alone |
+| Lazy graph observes overwritten expert bytes | G1/G3 adversarial miss+evict trace | lease count plus slot generation checked before publish and before reuse |
+| MLX allocator/transients break 25 GB | G1 counters, G5 physical-footprint trace | reserve allocator bytes, set limit, clear only at safe points, runtime LRU shrink |
+| Prefetch saturates disk or evicts useful experts | G6 paired off/hint/real A/B | bounded queue, future-layer-only loads, residency recheck, default off unless positive |
+| MTP accumulation drift collapses acceptance | G2 fixture, G4 oracle trace | fixed draft/verify kernel family and int8 MTP; acceptance + wall-time gate |
+| Warm speed lands under 2 tok/s on the target machine | G0 baseline, G5 measured speed | gap-vs-oracle debugging (pin quality, I/O overlap, MTP acceptance); never quality-changing knobs by default |
+| Batched cache merge/extract corrupts row offsets | G7 tiny mixed-length/cancel workflow | capability-based cache contract, row ownership tests, serial differential oracle |
+| Persistence silently restores wrong artifact/layout | G7 restore-negative tests | model/config/quant/layout identities and tensor hashes; fail before allocation |
+| Expert policy changes model quality | every routing golden | true top-8 default; policy moves weights only; approximate routing Lab-only |
+| HTTP behavior forks for GLM | G7 dual-model API conformance | keep translation above `GenerationGateway`; no GLM branches in protocol builders |
+| Public artifact format moves | G0 manifest inventory, loader tests | pin supported layout versions; reject unknown; one-shard converter fallback |
+| Atlas overstates expert specialization | G6 leave-one-prompt-out workflow | normalized independent probes and replication gate; provenance in UI |
+
+## Phased delivery and exit criteria
+
+Critical path:
+
+```text
+G0 oracle baseline
+  -> G1 safe shared slabs + kernel choices
+  -> G2 serial GLM graph + compressed caches
+  -> G3 full expert LRU execution
+  -> G4 serial native MTP
+  -> G5 <=25 GB full-model contract (MTP on)
+       +-> G6 learning / Atlas / overlap / prefetch --+
+       +-> G7 persistence / batching / APIs ----------+-> G8 release
+```
+
+G6 and G7 may proceed independently after G5, but G8 requires both. No phase may
+claim a later capability early: for example, G2 can be serial-only, G3 can run
+without MTP, and G7 cannot claim batching merely because ordinary KV caches
+batch.
+
+### G0 — establish the direct Colibri/Metal baseline
+
+- Pin the external Colibri commit and record its license, public artifact
+  identity, file inventory, config, tokenizer, int8-MTP presence, and disk
+  envelope. Do not vendor it into mlx-bun.
+- Build and run direct Colibri's model-free macOS workflow (`make -C c check`
+  and `make -C c metal-test`) without model downloads.
+- Verify >=400 GB free on the target machine at download time (measured
+  2026-07-21: ~556 GB unallocated + ~123 GB purgeable ≈ 679 GB practically
+  available — met on the internal SSD with wide margin).
+- On the cleared M1 Max 32 GB machine, run the public artifact directly with
+  Metal and capture physical footprint, compression/swap, LRU/pin capacity,
+  hit rate, disk bytes/wait, first-token latency, and cold/warm tok/s — each
+  with MTP on and off.
+- Export tiny deterministic GLM/quant/DSA/MTP and routing/cache-trace fixtures.
+
+**Exit:** a reproducible same-machine oracle baseline is recorded — footprint,
+hit rate, disk service/wait, TTFT, cold/warm tok/s, MTP on and off. These
+numbers are the bar the port is debugged against for the rest of the program:
+a gap versus direct Colibri is a bug to close, never a reason to cancel the
+port. They also tell us early how much of the 2 tok/s target comes from
+matching the oracle versus beating it.
+
+### G1 — unified-memory MLX storage foundation
+
+- Build a model-free synthetic expert file in Colibri's gate/up/down layout.
+- Implement fixed aligned native slabs plus bounded positioned-read workers.
+- Prove zero-copy MLX/custom-Metal consumption, command completion fencing,
+  generation-tagged slot reuse, eviction, and allocator-cache control.
+- Benchmark Colibri Metal and candidate MLX paths for representative int4 dense
+  GEMM, routed SwiGLU at decode/prefill row counts, and MLA decode attention.
+- Measure CPU/GPU power contention with passive workers; reject busy-spin.
+
+**Exit:** no hidden expert copy, stale read, use-after-reuse, or monotonic memory
+growth under forced churn. Select and record the fastest correct MLX/custom-
+Metal execution path for each kernel shape, then proceed with the full port.
+
+### G2 — native GLM-5.2 correctness spine
+
+- Implement config, tokenizer/template, dense graph, MLA compressed KV, DSA,
+  router/shared MoE, and reference expert math against tiny fixtures.
+- Add Colibri container parsing and per-tensor validation.
+- Define the numeric parity contract before debugging begins: bitwise equality
+  where the math is deterministic (int4/int8 dequantization on identical
+  inputs, router top-8 selection, cache byte accounting); trajectory-level
+  equality for floating-point logits (tie-free greedy token match plus a
+  recorded max-logit-delta bound). Cross-implementation Metal accumulation
+  order is not expected to match bitwise — the SigLIP parity investigation
+  established sub-bf16 accumulation as an expected residual, not a bug.
+
+**Exit:** layer/op goldens pass under the recorded contract; tiny-model teacher
+forcing is 32/32 token-exact on a tie-free greedy trajectory against the pinned
+Colibri engine; full-model dense/router probes match within the recorded
+bounds.
+
+### G3 — native bounded LRU and slab execution path
+
+- Add the native I/O helper, slot manager, LRU/pin states, RSS guard, batch-union,
+  and the winning batched routed-SwiGLU MLX/Metal kernel from G1.
+- First run with pure LRU; add persistent auto-pin only after the baseline.
+
+**Exit:** forced hit/miss/evict traces match a reference policy exactly; no
+partial/stale slot can be observed under stress; quality-policy tokens match
+direct Colibri for a tie-free trajectory.
+
+### G4 — serial native MTP (requirement)
+
+Serial MTP lands ahead of the memory contract because the 2 tok/s target
+assumes it, and because it changes the workload every later gate must
+validate: verify forwards route a larger per-forward expert union, and the
+verify batch plus the MTP row's KV live inside the 25 GB envelope.
+
+- int8 MTP row sharing target weights, included in the residency budget;
+- draft to the configured gamma, one batched verification forward, exact
+  target+MTP cache trim after rejection;
+- the same request sampler and a `SPEC_PIN`-equivalent fixed kernel family for
+  draft and verify — accumulation drift destroys acceptance;
+- grammar-forced tokens and prompt-lookup drafts without double-advancing
+  caches;
+- report drafted/accepted/rejected, acceptance length, tok/forward, forwards
+  saved, and end-to-end speed — not acceptance alone.
+
+**Exit:** the accept/reject trace matches the direct-Colibri oracle for a
+tie-free trajectory; measured tok/forward and a net end-to-end win over
+MTP-off on the same artifact. All subsequent gates run with MTP on as the
+default workload.
+
+### G5 — 32 GB memory contract (measured with MTP on)
+
+- Port the full resource equation and expose every line item.
+- Set a conservative one-slot, 4k-context quality preset for 32 GB machines;
+  allow explicit overrides but refuse impossible starts.
+- Include MLX allocator cache/transients, native slabs, Bun, physical footprint,
+  and the OS reserve; shrink only evictable LRU slots under real pressure.
+- Measure with MTP on: the verify batch, the MTP KV row, and the larger
+  per-forward expert union are part of the accounted workload.
+
+**Exit:** startup and a 128-token run with MTP on remain <=25 GB measured
+footprint (small documented tolerance only), with flat memory and no
+compression spiral, swap/OOM kill, or hidden duplicate weights. Record cold
+and warm speed, MTP on and off, against the direct-Colibri G0 baseline.
+
+### G6 — Atlas, overlap, learning, and prefetch
+
+- I/O worker pool, direct/no-cache reads, resident-first Metal submit, persistent
+  usage, live LFRU repin, PILOT/coupling/two-step variants.
+- Emit live tier/heat/hit maps; port the controlled Atlas probe/analyze/validate
+  workflow and expert-affinity visualization.
+- Treat any Atlas-informed topic warm-start as a separate new experiment.
+
+**Exit:** each lever has a paired cold/warm A/B with hit rate, disk GB/token,
+disk-service vs foreground-wait, p50/p95/p99 forward latency, and tok/s — all
+measured with MTP on (a lever that wins MTP-off but loses MTP-on is not a
+default). Only positive Apple results become defaults. Atlas labels reproduce across prompts;
+prefetch remains value-preserving and never changes selected experts.
+
+### G7 — persistence, concurrency, and full API parity
+
+Serial MTP already landed in G4; this gate integrates everything around it.
+
+- [ ] **G7a compressed persistence:** extend `kv-store` cache kinds for MLA,
+      DSA and MTP; atomic async save, validated restore, prompt/SSD byte
+      accounting, no reconstructed full K/V.
+- [ ] **G7b continuous batching:** batched cache capability, compressed-byte
+      admission, merge/extract, cross-row expert union, join/leave/cancel.
+      Batched rows decode ordinary single-token; per-row MTP under batching is
+      post-release (see N6), and telemetry reports the actual mode.
+- [ ] **G7c serving parity:** chat/text completions, Anthropic Messages,
+      Responses continuation, streaming/disconnect, tools, structured output,
+      stops, sampling/penalties, serial logprobs, usage and truthful discovery;
+      library `generate`, CLI chat/serve, health/stats. GLM-5.2 chat-template
+      rendering, thinking-block policy per surface, and tool-call parsing are
+      explicit work items — the existing tool-call parser is Gemma-only today.
+
+**Exit:** uninterrupted vs restored next logits/tokens and offsets match at
+multiple sequence lengths; batched rows are parity-checked against serial rows
+under mixed lengths and cancellation (ordinary decode — batched MTP is
+post-release); both stream and non-stream protocol suites pass across all four
+generative HTTP surfaces. Unsupported non-generative GLM capabilities are
+advertised false, not emulated.
+
+### G8 — productization
+
+- Expert brain/tier telemetry, `fit`/doctor UX, model acquisition/conversion,
+  third-party notices, and benchmarks.
+- Update README plus `docs/reference/{models,memory,cli,server-config,
+  server-api,library-api,features-matrix}.md` in the same feature changes that
+  add the corresponding flags, fields, routes, defaults, and limitations.
+- Add a 32 GB quickstart, artifact/disk preflight, recovery/resume instructions,
+  and explicit cold/warm expectations.
+
+**Exit:** a new 32 GB user can go from adequate disk space to a working GLM-5.2
+chat with one documented command sequence; the headline bar — **>=2 tok/s warm
+on the M1 Max 32 GB, MTP on, quality-preserving defaults only** — is met and
+recorded with provenance in `benchmarks/RESULTS.md`; no default silently
+changes precision or routing.
+
+## Test matrix
+
+| Gate | Direct Colibri oracle | Native MLX port |
+|---|---:|---:|
+| Colibri macOS `make check` + Metal tests | required | oracle only |
+| zero-copy slot lifetime/churn/fence stress | comparison | required |
+| tiny GLM op/layer/teacher-forcing goldens | fixture source | required |
+| same-artifact 32-token greedy stream | baseline | required |
+| <=25 GB on the cleared M1 Max 32 GB (MTP on) | baseline | required |
+| 128-token flat memory / no swap | baseline | required |
+| cold/warm hit, I/O, latency, tok/s report | baseline | required |
+| warm >=2 tok/s, MTP on, quality-preserving defaults (M1 Max 32 GB) | baseline | required |
+| live heat map + offline Atlas replication | baseline | required |
+| MTP accept/reject trace + net speed | baseline | required |
+| MLA/DSA/MTP KV restart at short/mid/wrapped lengths | baseline | required |
+| 2/4-row merge/extract + mixed-length decode parity | comparison | required |
+| batched MTP mixed accept/reject/cancel trace | comparison | post-release |
+| chat/completions stream + non-stream | comparison | required |
+| text completions, Messages, Responses protocol suites | comparison | required |
+| tools, grammar, stops, penalties, usage, serial logprobs | comparison | required |
+| truthful model/stats capability discovery | comparison | required |
+
+## First implementation slice
+
+Do not start by porting MLA. First establish the safe storage and execution
+foundation that the native MLX implementation requires:
+
+1. Build direct Colibri with Metal and measure the public GLM-5.2 artifact on
+   the M1 Max 32 GB machine.
+2. Generate a small local file in Colibri's expert layout; no model download is
+   needed for this spike.
+3. Add a Lab-only native fixed-slab/LRU harness with async positioned reads and
+   both MLX/custom-Metal consumers.
+4. Stress slot reuse and prove completion fences, zero-copy behavior, flat RSS,
+   and deterministic LRU traces.
+5. Benchmark representative expert/attention kernels against direct Colibri.
+
+Then proceed to the GLM-5.2 graph and direct-container loader. A slow MLX
+composition is a reason to add or tune a custom Metal kernel behind mlx-bun's
+MLX model boundary, not a reason to abandon the Bun+MLX port.
