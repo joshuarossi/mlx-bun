@@ -26,12 +26,14 @@ exact-pin model-free captures only for quantization, Apple-ARM quantized
 matmul, DSA, LFRU, and elementary RMSNorm/sigmoid. The operator/router/LRU/MTP
 sections are explicitly derived scaffolding, not Colibri runtime output. The
 pinned tools do not emit a complete tiny MTP layer, so teacher-forced numeric
-GLM/MLA/MTP-head/KV outputs and measured neural acceptance remain uncaptured. A
-user-owned approximately 372 GB artifact download is
-active and was left untouched; the disk reading is explicitly a moving
-snapshot, not the stable baseline. The cleared-M1-Max-32-GB cold/warm
-direct-Colibri baseline with MTP both off and on remains manual; that
-measurement is the actual G0 exit.
+GLM/MLA/MTP-head/KV outputs and measured neural acceptance remain uncaptured.
+Restart handoff (2026-07-22): Josh reports the approximately 372 GB artifact
+download is complete. After reboot, verify its snapshot revision, complete file
+manifest/checksums, config/tokenizer metadata, DSA files, and the corrected
+int8-MTP shards; then repeat the stable disk preflight. The earlier disk reading
+was taken while the download was active and remains only a moving snapshot.
+Next, run the cleared-M1-Max-32-GB direct-Colibri cold/warm baseline with MTP
+both off and on. That measurement is the actual G0 exit; do not start G1 first.
 
 ## Where we are (2026-07-10 — v0.0.11 released)
 
