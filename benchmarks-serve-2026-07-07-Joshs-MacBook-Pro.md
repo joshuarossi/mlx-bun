@@ -1,6 +1,6 @@
-# serve h2h — 2026-07-06
+# serve h2h — 2026-07-07
 
-machine: Apple M1 Max · 32 GB · loadavg { 12.76 33.77 18.89 } · 2026-07-06T20:59:18.039Z
+machine: Apple M1 Max · 32 GB · loadavg { 3.50 2.38 6.14 } · 2026-07-07T02:01:01.950Z
 commit: 3d56676
 
 All numbers over HTTP against REAL servers at their real defaults
@@ -16,16 +16,16 @@ optiq-mixed-kv-inert), so that arm would just re-benchmark mlx-lm bf16.
 
 | arm | decode tok/s | ttft cold ms | ttft warm ms (cached) | prefill@1k tok/s | ctx tok | prefill@ctx tok/s | decode@ctx tok/s | ctx repeat ttft ms | restart ctx ttft ms (cached) | agg×4 tok/s | peak RSS MB | cold start s | ready s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| mlx-bun (unstable spread=1.34) | 237.8 | 239 | 27 (626) | 2626 | 15851 | 1718 | 113.1 | 26 | 134 (15850) | 451.6 | 1756 | 4.3 | 4.1 |
-| mlx-bun-serial | 242.7 | 228 | 28 (627) | 2769 | 15818 | 1724 | 106.8 | 42 | 129 (15817) | 248.9 | 1505 | 0.9 | 0.8 |
-| mlx-lm | 201.8 | 326 | 86 (627) | 1916 | 15816 | 1534 | 100.0 | 126 | 10327 (0) | 191.9 | 1215 | 6.0 | 5.8 |
-| mlx-bun-mixed (unstable spread=1.98) | 184.6 | 267 | 27 (628) | 2346 | 15818 | 1027 | 105.3 | 25 | 119 (15817) | 410.7 | 1465 | 0.9 | 0.8 |
+| mlx-bun (unstable spread=1.32) | 237.1 | 243 | 26 (625) | 2585 | 15887 | 1712 | 113.9 | 28 | 157 (15886) | 454.1 | 1718 | 1.2 | 1.0 |
+| mlx-bun-serial (stabilized top3of8) | 272.4 | 226 | 28 (627) | 2775 | 15816 | 1724 | 108.1 | 45 | 141 (15815) | 247.5 | 1558 | 0.9 | 0.8 |
+| mlx-lm | 199.5 | 325 | 83 (624) | 1929 | 15921 | 1532 | 98.0 | 125 | 10600 (0) | 189.1 | 1216 | 3.1 | 3.0 |
+| mlx-bun-mixed (unstable spread=2.02) | 184.1 | 266 | 29 (627) | 2361 | 15818 | 1023 | 106.9 | 27 | 126 (15817) | 410.5 | 1447 | 0.9 | 0.8 |
 
 per-leg peak RSS MB (sampler max between leg boundaries; idle = right after ready):
-- mlx-bun: idle 311 · warmup 311 · parity 1200 · decode 1251 · ttft1k 1254 · ctx 1265 · restart 1756 · agg 1212 · peak 1756
-- mlx-bun-serial: idle 308 · warmup 1199 · parity 1205 · decode 1240 · ttft1k 1244 · ctx 1258 · restart 1505 · agg 1223 · peak 1505
-- mlx-lm: idle 1112 · warmup 1127 · parity 1138 · decode 1138 · ttft1k 1139 · ctx 1152 · restart 1196 · agg 1215 · peak 1215
-- mlx-bun-mixed: idle 309 · warmup 309 · parity 1218 · decode 1245 · ttft1k 1248 · ctx 1285 · restart 1465 · agg 1233 · peak 1465
+- mlx-bun: idle 313 · warmup 313 · parity 1203 · decode 1246 · ttft1k 1249 · ctx 1259 · restart 1718 · agg 1212 · peak 1718
+- mlx-bun-serial: idle 313 · warmup 1204 · parity 1212 · decode 1250 · ttft1k 1251 · ctx 1266 · restart 1558 · agg 1229 · peak 1558
+- mlx-lm: idle 1148 · warmup 1152 · parity 1174 · decode 1174 · ttft1k 1175 · ctx 1190 · restart 1190 · agg 1216 · peak 1216
+- mlx-bun-mixed: idle 308 · warmup 1200 · parity 1216 · decode 1245 · ttft1k 1248 · ctx 1284 · restart 1447 · agg 1240 · peak 1447
 - note: mlx-bun arms carry --ssd-cache; its write-behind transiently duplicates entry bytes host-side (ctx/restart legs read high — fix A7 pending in src)
 
 - **parity ✗** bf16 drop-in (vs mlx-lm) [completion-probe]: same prompt bits (prompt_tokens 7 both), diverged at char 249: …`numbers greater than ` vs …`numbers greater than`
@@ -33,22 +33,22 @@ per-leg peak RSS MB (sampler max between leg boundaries; idle = right after read
 - **parity ✓** unified engine vs --batch 1 pin [completion-probe]: 64 greedy tokens identical (prompt_tokens 7 both)
 - **parity ✓** unified engine vs --batch 1 pin [chat-probe]: 64 greedy tokens identical (prompt_tokens 27 both)
 
-- kv-quant check ✓ — mlx-bun-mixed peak RSS 1465 MB vs mlx-bun 1756 MB (expect mixed < bf16)
+- kv-quant check ✓ — mlx-bun-mixed peak RSS 1447 MB vs mlx-bun 1718 MB (expect mixed < bf16)
 
 ## gemma-4-e4b
 
 | arm | decode tok/s | ttft cold ms | ttft warm ms (cached) | prefill@1k tok/s | ctx tok | prefill@ctx tok/s | decode@ctx tok/s | ctx repeat ttft ms | restart ctx ttft ms (cached) | agg×4 tok/s | peak RSS MB | cold start s | ready s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| mlx-bun | 58.9 | 756 | 41 (660) | 875 | 15905 | 875 | 39.1 | 70 | 603 (15904) | 100.4 | 7742 | 2.1 | 1.0 |
-| mlx-bun-serial | 60.9 | 756 | 41 (660) | 874 | 15903 | 854 | 38.1 | 55 | 543 (15902) | 58.7 | 7764 | 1.4 | 1.0 |
-| mlx-lm | 53.3 | 975 | 257 (665) | 684 | 15799 | 780 | 43.7 | 305 | 21425 (0) | 75.1 | 7367 | 3.6 | 1.4 |
-| mlx-bun-mixed | 48.8 | 767 | 47 (659) | 860 | 15939 | 780 | 41.0 | 58 | 544 (15938) | 96.9 | 7221 | 1.4 | 1.0 |
+| mlx-bun | 59.4 | 760 | 46 (659) | 869 | 15941 | 870 | 39.1 | 69 | 653 (15940) | 99.6 | 7452 | 2.4 | 1.2 |
+| mlx-bun-serial | 60.2 | 753 | 41 (660) | 877 | 15902 | 869 | 38.1 | 55 | 616 (15901) | 59.8 | 7758 | 1.5 | 1.0 |
+| mlx-lm | 53.1 | 974 | 256 (666) | 685 | 15761 | 878 | 43.1 | 312 | 19906 (0) | 72.4 | 7368 | 3.7 | 1.5 |
+| mlx-bun-mixed | 49.1 | 766 | 46 (658) | 861 | 15941 | 795 | 41.2 | 59 | 628 (15940) | 97.1 | 7218 | 1.5 | 1.1 |
 
 per-leg peak RSS MB (sampler max between leg boundaries; idle = right after ready):
-- mlx-bun: idle 587 · warmup 6608 · parity 6865 · decode 6933 · ttft1k 6963 · ctx 7035 · restart 7742 · agg 6916 · peak 7742
-- mlx-bun-serial: idle 591 · warmup 591 · parity 6885 · decode 6957 · ttft1k 6973 · ctx 7072 · restart 7764 · agg 6909 · peak 7764
-- mlx-lm: idle 810 · warmup 7367 · parity 6710 · decode 6710 · ttft1k 6720 · ctx 6725 · restart 7223 · agg 6754 · peak 7367
-- mlx-bun-mixed: idle 591 · warmup 6874 · parity 6884 · decode 6917 · ttft1k 6933 · ctx 6979 · restart 7221 · agg 6928 · peak 7221
+- mlx-bun: idle 590 · warmup 5245 · parity 6491 · decode 6564 · ttft1k 6604 · ctx 6692 · restart 7452 · agg 6903 · peak 7452
+- mlx-bun-serial: idle 591 · warmup 6875 · parity 6888 · decode 6955 · ttft1k 6975 · ctx 7075 · restart 7758 · agg 6911 · peak 7758
+- mlx-lm: idle 1885 · warmup 7329 · parity 6715 · decode 6724 · ttft1k 6726 · ctx 6728 · restart 7368 · agg 6763 · peak 7368
+- mlx-bun-mixed: idle 589 · warmup 6864 · parity 6886 · decode 6918 · ttft1k 6934 · ctx 6972 · restart 7218 · agg 6928 · peak 7218
 - note: mlx-bun arms carry --ssd-cache; its write-behind transiently duplicates entry bytes host-side (ctx/restart legs read high — fix A7 pending in src)
 
 - **parity ✓** bf16 drop-in (vs mlx-lm) [completion-probe]: 64 greedy tokens identical (prompt_tokens 6 both)
@@ -56,22 +56,22 @@ per-leg peak RSS MB (sampler max between leg boundaries; idle = right after read
 - **parity ✓** unified engine vs --batch 1 pin [completion-probe]: 64 greedy tokens identical (prompt_tokens 6 both)
 - **parity ✓** unified engine vs --batch 1 pin [chat-probe]: 64 greedy tokens identical (prompt_tokens 32 both)
 
-- kv-quant check ✓ — mlx-bun-mixed peak RSS 7221 MB vs mlx-bun 7742 MB (expect mixed < bf16)
+- kv-quant check ✓ — mlx-bun-mixed peak RSS 7218 MB vs mlx-bun 7452 MB (expect mixed < bf16)
 
 ## gemma-4-12B
 
 | arm | decode tok/s | ttft cold ms | ttft warm ms (cached) | prefill@1k tok/s | ctx tok | prefill@ctx tok/s | decode@ctx tok/s | ctx repeat ttft ms | restart ctx ttft ms (cached) | agg×4 tok/s | peak RSS MB | cold start s | ready s |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| mlx-bun | 27.5 | 3454 | 83 (661) | 192 | 15871 | 185 | 25.9 | 150 | 1248 (15867) | 38.1 | 10501 | 2.4 | 1.0 |
-| mlx-bun-serial | 28.5 | 3423 | 73 (661) | 194 | 15870 | 182 | 23.5 | 144 | 1160 (15866) | 27.5 | 10769 | 1.7 | 1.2 |
-| mlx-lm | 27.8 | 3636 | 368 (667) | 184 | 15725 | 189 | 26.5 | 395 | 87629 (0) | 33.6 | 9555 | 6.4 | 1.7 |
-| mlx-bun-mixed | 24.0 | 3514 | 88 (664) | 189 | 15798 | 172 | 21.2 | 214 | 639 (15794) | 39.8 | 10236 | 1.8 | 1.3 |
+| mlx-bun | 27.4 | 3465 | 81 (662) | 191 | 15872 | 187 | 24.5 | 153 | 1266 (15868) | 40.5 | 10627 | 2.6 | 1.2 |
+| mlx-bun-serial | 28.5 | 3434 | 73 (663) | 193 | 15833 | 188 | 25.2 | 144 | 1217 (15829) | 28.6 | 10339 | 1.8 | 1.2 |
+| mlx-lm | 26.9 | 3656 | 367 (665) | 183 | 15800 | 188 | 25.5 | 397 | 102775 (0) | 33.1 | 9587 | 6.7 | 1.7 |
+| mlx-bun-mixed | 23.7 | 3524 | 86 (664) | 189 | 15796 | 172 | 21.5 | 214 | 662 (15792) | 39.1 | 10216 | 2.0 | 1.4 |
 
 per-leg peak RSS MB (sampler max between leg boundaries; idle = right after ready):
-- mlx-bun: idle 588 · warmup 9059 · parity 9124 · decode 9556 · ttft1k 9645 · ctx 9667 · restart 10501 · agg 9126 · peak 10501
-- mlx-bun-serial: idle 587 · warmup 9061 · parity 9160 · decode 9562 · ttft1k 9648 · ctx 9698 · restart 10769 · agg 9163 · peak 10769
-- mlx-lm: idle 117 · warmup 9533 · parity 8931 · decode 8940 · ttft1k 8941 · ctx 8946 · restart 9555 · agg 8987 · peak 9555
-- mlx-bun-mixed: idle 586 · warmup 9064 · parity 9087 · decode 9210 · ttft1k 9226 · ctx 9276 · restart 10236 · agg 9144 · peak 10236
+- mlx-bun: idle 591 · warmup 8775 · parity 9069 · decode 9487 · ttft1k 9509 · ctx 9271 · restart 10627 · agg 9121 · peak 10627
+- mlx-bun-serial: idle 586 · warmup 9059 · parity 9156 · decode 9569 · ttft1k 9656 · ctx 9691 · restart 10339 · agg 9161 · peak 10339
+- mlx-lm: idle 117 · warmup 9488 · parity 8934 · decode 8942 · ttft1k 8944 · ctx 8952 · restart 9587 · agg 8992 · peak 9587
+- mlx-bun-mixed: idle 590 · warmup 9065 · parity 9091 · decode 9198 · ttft1k 9222 · ctx 9276 · restart 10216 · agg 9124 · peak 10216
 - note: mlx-bun arms carry --ssd-cache; its write-behind transiently duplicates entry bytes host-side (ctx/restart legs read high — fix A7 pending in src)
 
 - **parity ✗** bf16 drop-in (vs mlx-lm) [completion-probe]: same prompt bits (prompt_tokens 6 both), diverged at char 24: …`111111111111111111111.1111.1111111111111` vs …`11111111111111111111..111.1.1.1.1...1...`
@@ -79,4 +79,4 @@ per-leg peak RSS MB (sampler max between leg boundaries; idle = right after read
 - **parity ✓** unified engine vs --batch 1 pin [completion-probe]: 64 greedy tokens identical (prompt_tokens 6 both)
 - **parity ✓** unified engine vs --batch 1 pin [chat-probe]: 64 greedy tokens identical (prompt_tokens 32 both)
 
-- kv-quant check ✓ — mlx-bun-mixed peak RSS 10236 MB vs mlx-bun 10501 MB (expect mixed < bf16)
+- kv-quant check ✓ — mlx-bun-mixed peak RSS 10216 MB vs mlx-bun 10627 MB (expect mixed < bf16)
