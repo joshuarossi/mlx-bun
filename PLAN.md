@@ -2075,6 +2075,20 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
       on the cleared M1 Max 32 GB — memory/I/O/speed, **MTP on and off**. Disk
       preflight met (2026-07-21: ~556 GB unallocated + ~123 GB purgeable ≈
       679 GB available). No model download in CI or agent sessions.
+      **Agent-side evidence (2026-07-21):** G0 items 1-3 passed: exact oracle
+      pin/license/artifact inventory, isolated archived `make check` and
+      `metal-test`, and a dated APFS preflight are recorded in
+      `docs/investigations/colibri-oracle-pin.md`. Item 4 remains partial. The
+      checked-in model-free package captures exact-pin Python quantization,
+      Apple-ARM quantized matmul, DSA, LFRU, and elementary RMSNorm/sigmoid;
+      operator/router/LRU/MTP sections are explicitly derived scaffolding.
+      Targeted tests pass 10/10 (379 assertions), typecheck and hygiene are
+      green, and regeneration is byte-identical on the recorded Bun 1.3.14
+      macOS ARM64 runtime. Missing teacher-forced numeric GLM/MLA/MTP-head/KV
+      evidence and the cleared-machine MTP-off/on baseline keep G0 unchecked
+      and block G1. The later 543.8 GB reading was taken during the active
+      user-owned artifact download and is a moving snapshot; repeat it after
+      the transfer settles rather than replacing the stable preflight above.
 - [ ] **G1 — unified-memory MLX storage foundation:** fixed aligned shared
       slabs, bounded positioned-read workers, zero-copy MLX/custom-Metal
       consumption, completion-fenced generation-tagged slot reuse, allocator

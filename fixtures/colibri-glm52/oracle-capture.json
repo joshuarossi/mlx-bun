@@ -1,0 +1,727 @@
+{
+  "schema_version": 1,
+  "capture_kind": "exact_pin_model_free_capture",
+  "captured_at_utc": "2026-07-22T05:56:23.459Z",
+  "oracle": {
+    "repository": "https://github.com/JustVugg/colibri",
+    "commit": "44e489b196c9b7876b3d37a0570ebf1c6f90f54c",
+    "git_tree": "faae3d9594319ab856a4c3dd3f69a3afdd71f348",
+    "source_files": {
+      "c/tools/convert_fp8_to_int4.py": {
+        "git_blob": "59c891bc0192820f7699c142e01fe8dd8cba7a28",
+        "sha256": "8cb972d4abfffbff54dcca52c64f41035f619165b4088553f159677e67a9a8d2"
+      },
+      "c/glm.c": {
+        "git_blob": "a3e7ab74560639d869f43f5bf3543643bd483c27",
+        "sha256": "3be1b4dd663667c8fa2cfbbacdada3e545ff5f924737a0f5d058708d7bc5ad9d"
+      },
+      "c/tier.h": {
+        "git_blob": "859cacf6311d397db3927361b0a6cccda032bf69",
+        "sha256": "1971c5325fc4ffe5dce17e50d7781dc64ef31d14ebf354cb2452ca6c13a3d495"
+      },
+      "c/tests/test_dsa_select.c": {
+        "git_blob": "99fecb07657dbd76ee35a6a33445840ddf3a8f98",
+        "sha256": "557db2899ce68939a1419f9258c5e75eac26d1cec90749929c6d24d6f66cd44c"
+      },
+      "c/tests/test_tier.c": {
+        "git_blob": "eb6f1ac9596ce0a205176e8b1a437071b0c70fcc",
+        "sha256": "d0658ea30d6e81d2894b585e4fa0316ca5f906f68341abae7733a8e31c9d287f"
+      }
+    },
+    "checkout_path_advisory_capture_host_only": "/Users/joshrossi/Code/colibri",
+    "checkout_precondition": {
+      "head_exact": true,
+      "porcelain_empty": true,
+      "worktree_diff_exit": 0,
+      "index_diff_exit": 0
+    }
+  },
+  "capture_harness": {
+    "archive_isolation": true,
+    "external_checkout_mutated": false,
+    "model_weights_used": false,
+    "network_used": false,
+    "validation_commands_exact_capture_host": [
+      "git -C /Users/joshrossi/Code/colibri rev-parse HEAD",
+      "git -C /Users/joshrossi/Code/colibri status --porcelain=v1 --untracked-files=all",
+      "git -C /Users/joshrossi/Code/colibri diff --quiet",
+      "git -C /Users/joshrossi/Code/colibri diff --cached --quiet"
+    ],
+    "commands_exact_capture_host": [
+      "git -C /Users/joshrossi/Code/colibri archive --format=tar --output=/var/folders/t3/bdj253f52sv60p_9rmzm86tr0000gn/T/mlx-bun-colibri-capture-M8WbLY/colibri.tar 44e489b196c9b7876b3d37a0570ebf1c6f90f54c",
+      "tar -xf /var/folders/t3/bdj253f52sv60p_9rmzm86tr0000gn/T/mlx-bun-colibri-capture-M8WbLY/colibri.tar -C /var/folders/t3/bdj253f52sv60p_9rmzm86tr0000gn/T/mlx-bun-colibri-capture-M8WbLY/source",
+      "/Users/joshrossi/Code/mlx-lm/.venv/bin/python /Users/joshrossi/Code/mlx-bun/scripts/colibri-glm52-capture.py --source-root /var/folders/t3/bdj253f52sv60p_9rmzm86tr0000gn/T/mlx-bun-colibri-capture-M8WbLY/source --json-out /var/folders/t3/bdj253f52sv60p_9rmzm86tr0000gn/T/mlx-bun-colibri-capture-M8WbLY/quant.json --header-out /var/folders/t3/bdj253f52sv60p_9rmzm86tr0000gn/T/mlx-bun-colibri-capture-M8WbLY/source/c/tests/capture_quant.h",
+      "/usr/bin/clang -O3 -Xclang -fopenmp -I/opt/homebrew/opt/libomp/include -Wall -Wextra -Wno-unused-parameter -Wno-misleading-indentation -Wno-unused-function /var/folders/t3/bdj253f52sv60p_9rmzm86tr0000gn/T/mlx-bun-colibri-capture-M8WbLY/source/c/tests/mlx_bun_capture.c -o /var/folders/t3/bdj253f52sv60p_9rmzm86tr0000gn/T/mlx-bun-colibri-capture-M8WbLY/colibri-capture -lm -L/opt/homebrew/opt/libomp/lib -lomp",
+      "/var/folders/t3/bdj253f52sv60p_9rmzm86tr0000gn/T/mlx-bun-colibri-capture-M8WbLY/colibri-capture"
+    ],
+    "helpers": {
+      "capture-colibri-glm52-oracle.ts": "ceaafd65208499e9a86736da56b3d244e5ed78d320643deff74ace7e5939f7c4",
+      "colibri-glm52-capture.py": "ff39e82ae06f8e10940ad71fb87ac2b2638ea87b95cd71a505632c9db330c568",
+      "colibri-glm52-capture.c": "ad375571dc96bf31925b798bc62e2a9aaf0fe716a9314c9d0e8d3fed5abc3c72"
+    }
+  },
+  "target": {
+    "os": "darwin",
+    "arch": "arm64",
+    "uname_machine": "arm64",
+    "chip": "Apple M1 Max",
+    "macos_product": "26.5.2",
+    "macos_build": "25F84"
+  },
+  "toolchain": {
+    "apple_clang": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.5.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin",
+    "python": {
+      "executable": "/Users/joshrossi/Code/mlx-lm/.venv/bin/python",
+      "version": "3.14.5 (main, May 10 2026, 10:21:34) [Clang 21.0.0 (clang-2100.0.123.102)]",
+      "implementation": "CPython",
+      "numpy": "2.4.6"
+    },
+    "bun": {
+      "executable": "/Users/joshrossi/.bun/bin/bun",
+      "version": "1.3.14"
+    }
+  },
+  "provenance": {
+    "quantization": "direct_capture_from_archived_pinned_python_functions",
+    "quantized_matmul": "direct_capture_from_archived_pinned_arm_neon_functions",
+    "dsa": "direct_capture_from_archived_pinned_partial_select_desc",
+    "lfru": "direct_capture_from_archived_pinned_tier_functions",
+    "rmsnorm_and_sigmoid": "direct_capture_from_archived_pinned_c_functions"
+  },
+  "constants": {
+    "python": {
+      "numpy_version": "2.4.6",
+      "int8_per_row": {
+        "bits": 8,
+        "weights_f32": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0.5,
+            1.5,
+            2.5,
+            -0.5,
+            -1.5,
+            -2.5,
+            -127,
+            127
+          ],
+          [
+            12.699999809265137,
+            -12.699999809265137,
+            6.349999904632568,
+            -6.349999904632568,
+            3.174999952316284,
+            -3.174999952316284,
+            0.10000000149011612,
+            -0.10000000149011612
+          ]
+        ],
+        "input_f32": [
+          [
+            1,
+            -1,
+            0.5,
+            -0.5,
+            2,
+            -2,
+            0.25,
+            -0.25
+          ],
+          [
+            0.25,
+            0.5,
+            -0.75,
+            1,
+            -1.25,
+            1.5,
+            -1.75,
+            2
+          ]
+        ],
+        "scales_f32": [
+          9.99999993922529e-9,
+          1,
+          0.10000000149011612
+        ],
+        "qbytes_u8": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          2,
+          2,
+          0,
+          254,
+          254,
+          129,
+          127,
+          127,
+          129,
+          64,
+          192,
+          32,
+          224,
+          1,
+          255
+        ],
+        "qvalues_i8": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            2,
+            2,
+            0,
+            -2,
+            -2,
+            -127,
+            127
+          ],
+          [
+            127,
+            -127,
+            64,
+            -64,
+            32,
+            -32,
+            1,
+            -1
+          ]
+        ]
+      },
+      "int4_grouped": {
+        "bits": 4,
+        "group_size": 16,
+        "weights_f32": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            -7,
+            -6.5,
+            -5.5,
+            -4.5,
+            -3.5,
+            -2.5,
+            -1.5,
+            -0.5,
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7,
+            -1,
+            0.5,
+            1
+          ],
+          [
+            3.25,
+            -3.25,
+            2.75,
+            -2.75,
+            2.25,
+            -2.25,
+            1.75,
+            -1.75,
+            1.25,
+            -1.25,
+            0.75,
+            -0.75,
+            0.25,
+            -0.25,
+            0,
+            3,
+            -0.5,
+            0.25,
+            0.5
+          ]
+        ],
+        "input_f32": [
+          [
+            -1,
+            -0.6666666865348816,
+            -0.3333333432674408,
+            0,
+            0.3333333432674408,
+            0.6666666865348816,
+            1,
+            -1,
+            -0.6666666865348816,
+            -0.3333333432674408,
+            0,
+            0.3333333432674408,
+            0.6666666865348816,
+            1,
+            -1,
+            -0.6666666865348816,
+            -0.3333333432674408,
+            0,
+            0.3333333432674408
+          ],
+          [
+            1.5,
+            -1.25,
+            1,
+            -0.75,
+            0.5,
+            -0.25,
+            0,
+            0.25,
+            -0.5,
+            0.75,
+            -1,
+            1.25,
+            -1.5,
+            1.125,
+            -0.875,
+            0.625,
+            -0.375,
+            0.125,
+            0.0625
+          ]
+        ],
+        "scales_f32": [
+          9.99999993922529e-9,
+          9.99999993922529e-9,
+          1,
+          0.1428571492433548,
+          0.4642857015132904,
+          0.0714285746216774
+        ],
+        "qbytes_u8": [
+          136,
+          136,
+          136,
+          136,
+          136,
+          136,
+          136,
+          136,
+          136,
+          8,
+          33,
+          66,
+          100,
+          134,
+          168,
+          202,
+          236,
+          254,
+          177,
+          15,
+          31,
+          46,
+          61,
+          76,
+          91,
+          106,
+          121,
+          232,
+          177,
+          15
+        ],
+        "qvalues_i4": [
+          [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            -7,
+            -6,
+            -6,
+            -4,
+            -4,
+            -2,
+            -2,
+            0,
+            0,
+            2,
+            2,
+            4,
+            4,
+            6,
+            6,
+            7,
+            -7,
+            3,
+            7
+          ],
+          [
+            7,
+            -7,
+            6,
+            -6,
+            5,
+            -5,
+            4,
+            -4,
+            3,
+            -3,
+            2,
+            -2,
+            1,
+            -1,
+            0,
+            6,
+            -7,
+            3,
+            7
+          ]
+        ]
+      },
+      "round_clip_edges": {
+        "int8_input_f32": [
+          -200,
+          -128.5,
+          -127.5,
+          -126.5,
+          -0.5,
+          0.5,
+          126.5,
+          127.5,
+          200
+        ],
+        "int8_expected_i16": [
+          -128,
+          -128,
+          -128,
+          -126,
+          0,
+          0,
+          126,
+          127,
+          127
+        ],
+        "int4_input_f32": [
+          -20,
+          -8.5,
+          -7.5,
+          -6.5,
+          -0.5,
+          0.5,
+          6.5,
+          7.5,
+          20
+        ],
+        "int4_expected_i16": [
+          -8,
+          -8,
+          -8,
+          -6,
+          0,
+          0,
+          6,
+          7,
+          7
+        ]
+      }
+    },
+    "c": {
+      "target": "pinned_colibri_c_apple_arm64",
+      "quantized_matmul": {
+        "int8_f32": [
+          0,
+          -64.5,
+          44.6500015,
+          0,
+          475.25,
+          -23.5500011
+        ],
+        "int4_grouped_f32": [
+          0,
+          7.66666794,
+          -1.52380919,
+          0,
+          -2.63392854,
+          12.0267859
+        ]
+      },
+      "elementary": {
+        "rmsnorm_f32": [
+          0.433860749,
+          -0.650791109,
+          2.16930366,
+          -0.108465187
+        ],
+        "sigmoidf_f32": [
+          0.880797029,
+          0.731058598,
+          0.622459352,
+          0.5,
+          0.377540678,
+          0.268941432,
+          0.119202919,
+          0.0474258736,
+          0.562176526,
+          0.437823504
+        ]
+      },
+      "dsa": [
+        {
+          "name": "threshold_tie_position_order",
+          "scores_f32": [
+            0.100000001,
+            0.899999976,
+            0.5,
+            0.5,
+            0.699999988,
+            0.5,
+            -0.200000003
+          ],
+          "keep": 4,
+          "threshold_f32": 0.5,
+          "selected": [
+            1,
+            4,
+            2,
+            3
+          ]
+        },
+        {
+          "name": "all_equal",
+          "scores_f32": [
+            0.25,
+            0.25,
+            0.25,
+            0.25,
+            0.25,
+            0.25
+          ],
+          "keep": 3,
+          "threshold_f32": 0.25,
+          "selected": [
+            0,
+            1,
+            2
+          ]
+        },
+        {
+          "name": "keep_all_two_pass_order",
+          "scores_f32": [
+            3,
+            -1,
+            2
+          ],
+          "keep": 3,
+          "threshold_f32": -1,
+          "selected": [
+            0,
+            2,
+            1
+          ]
+        },
+        {
+          "name": "negative_scores",
+          "scores_f32": [
+            -4,
+            -1,
+            -3,
+            -1,
+            -2
+          ],
+          "keep": 2,
+          "threshold_f32": -1,
+          "selected": [
+            1,
+            3
+          ]
+        }
+      ],
+      "lfru": {
+        "cases": [
+          {
+            "name": "swap_hot_nonresident",
+            "heat": [
+              3,
+              8,
+              7,
+              20,
+              4,
+              2
+            ],
+            "last": [
+              1,
+              5,
+              7,
+              8,
+              9,
+              10
+            ],
+            "clock": 10,
+            "pinned": [
+              0,
+              1,
+              2
+            ],
+            "scores_u64": [
+              1014,
+              2298,
+              2044,
+              5373,
+              1278,
+              767
+            ],
+            "swap": true,
+            "slot": 0,
+            "eid": 3,
+            "gain": 17
+          },
+          {
+            "name": "hold_inside_hysteresis",
+            "heat": [
+              8,
+              9,
+              10,
+              13,
+              12,
+              11
+            ],
+            "last": [
+              10,
+              9,
+              8,
+              10,
+              10,
+              10
+            ],
+            "clock": 10,
+            "pinned": [
+              0,
+              1,
+              2
+            ],
+            "scores_u64": [
+              2303,
+              2558,
+              2813,
+              3583,
+              3327,
+              3071
+            ],
+            "swap": false,
+            "slot": -1,
+            "eid": -1,
+            "gain": 0
+          },
+          {
+            "name": "tie_prefers_lower_slot_and_eid",
+            "heat": [
+              10,
+              10,
+              18,
+              18,
+              18
+            ],
+            "last": [
+              100,
+              100,
+              100,
+              100,
+              100
+            ],
+            "clock": 100,
+            "pinned": [
+              0,
+              1
+            ],
+            "scores_u64": [
+              2815,
+              2815,
+              4863,
+              4863,
+              4863
+            ],
+            "swap": true,
+            "slot": 0,
+            "eid": 2,
+            "gain": 8
+          }
+        ],
+        "wrap_score_case": {
+          "heat": 5,
+          "last": 4294967295,
+          "clock": 2,
+          "score_u64": 1532
+        },
+        "decay_input": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          15,
+          16
+        ],
+        "decay_expected": [
+          0,
+          0,
+          1,
+          1,
+          2,
+          7,
+          8
+        ]
+      }
+    }
+  }
+}

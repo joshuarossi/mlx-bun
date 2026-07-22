@@ -10,6 +10,29 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
+## Active: native Colibri/GLM-5.2 port (2026-07-21)
+
+Work is on branch `codex/colibri-glm52-port` and is at Phase 21 **G0**. G0
+items 1-3 are complete: the external oracle pin, Apache-2.0 obligations,
+public-artifact and tensor-format contract, safe test isolation, fixture
+feasibility, passing model-free `check`/`metal-test` evidence, the moving disk
+preflight, and manual baseline checklist are recorded in
+[docs/investigations/colibri-oracle-pin.md](docs/investigations/colibri-oracle-pin.md).
+The Colibri checkout remains clean and untouched at
+`44e489b196c9b7876b3d37a0570ebf1c6f90f54c`.
+
+G0 item 4 and G0 are **not complete**. `fixtures/colibri-glm52/` now contains
+exact-pin model-free captures only for quantization, Apple-ARM quantized
+matmul, DSA, LFRU, and elementary RMSNorm/sigmoid. The operator/router/LRU/MTP
+sections are explicitly derived scaffolding, not Colibri runtime output. The
+pinned tools do not emit a complete tiny MTP layer, so teacher-forced numeric
+GLM/MLA/MTP-head/KV outputs and measured neural acceptance remain uncaptured. A
+user-owned approximately 372 GB artifact download is
+active and was left untouched; the disk reading is explicitly a moving
+snapshot, not the stable baseline. The cleared-M1-Max-32-GB cold/warm
+direct-Colibri baseline with MTP both off and on remains manual; that
+measurement is the actual G0 exit.
+
 ## Where we are (2026-07-10 — v0.0.11 released)
 
 **v0.0.11 is live on every distribution channel.** PR #29 merged the

@@ -676,6 +676,21 @@ batch.
   with MTP on and off.
 - Export tiny deterministic GLM/quant/DSA/MTP and routing/cache-trace fixtures.
 
+G0 inventory note (2026-07-21): the exact pin, artifact/layout contract, and
+manual checklist are recorded in
+[`../investigations/colibri-oracle-pin.md`](../investigations/colibri-oracle-pin.md).
+Because the pinned Makefile writes ignored build artifacts and even creates a
+configuration stamp while parsing, model-free oracle targets must run from a
+temporary `git archive` extraction, not in the read-only checkout. The pinned
+tiny generator covers GLM/MLA/DSA but does not emit a complete MTP layer; the
+checked-in [`../../fixtures/colibri-glm52/`](../../fixtures/colibri-glm52/README.md)
+package therefore contains a narrow exact-pin model-free capture for Python
+quantization, Apple-ARM quantized matmul, DSA, LFRU, and elementary
+RMSNorm/sigmoid. Its operator/router/LRU/MTP material is explicitly derived
+scaffolding. It does **not** claim teacher-forced numeric GLM/MLA/MTP-head/KV
+outputs or measured neural acceptance. Those require a real model oracle and
+remain a G0 blocker alongside the manual same-machine baseline.
+
 **Exit:** a reproducible same-machine oracle baseline is recorded — footprint,
 hit rate, disk service/wait, TTFT, cold/warm tok/s, MTP on and off. These
 numbers are the bar the port is debugged against for the rest of the program:
