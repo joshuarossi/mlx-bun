@@ -1,0 +1,403 @@
+--- a/c/glm.c
++++ b/c/glm.c
+@@ -217,6 +217,57 @@
+     uint64_t ld_mtp, ld_main;                    /* expert_load per tipo layer (MTP int8 vs main int4) */
+     uint64_t bytes_mtp, bytes_main;              /* byte letti da disco per tipo layer */
+ } Model;
++
++/* Archive-only G0 numeric oracle. ORACLE_DUMP=<empty-dir> writes one raw
++ * little-endian payload per checkpoint plus an append-only TSV manifest:
++ * name, dtype, shape, bytes. The production checkout is deliberately not
++ * modified; this pinned git-archive copy is the executable numeric oracle. */
++static int g_oracle_on;
++static char g_oracle_dir[2048], g_oracle_phase[32];
++static FILE *g_oracle_manifest;
++static unsigned g_oracle_seq;
++
++static void oracle_phase(const char *phase){
++    if(g_oracle_on) snprintf(g_oracle_phase,sizeof(g_oracle_phase),"%s",phase);
++}
++static void oracle_init(const char *dir){
++    if(!dir||!*dir) return;
++#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
++    fprintf(stderr,"ORACLE_DUMP requires a little-endian host\n"); exit(2);
++#endif
++    if(strlen(dir)>=sizeof(g_oracle_dir)-1){ fprintf(stderr,"ORACLE_DUMP path too long\n"); exit(2); }
++    snprintf(g_oracle_dir,sizeof(g_oracle_dir),"%s",dir);
++    if(mkdir(g_oracle_dir,0755) && errno!=EEXIST){ perror(g_oracle_dir); exit(2); }
++    char mp[2304]; snprintf(mp,sizeof(mp),"%s/manifest.tsv",g_oracle_dir);
++    FILE *old=fopen(mp,"rb");
++    if(old){ fclose(old); fprintf(stderr,"ORACLE_DUMP refuses non-empty oracle directory: %s\n",mp); exit(2); }
++    g_oracle_manifest=fopen(mp,"wb"); if(!g_oracle_manifest){ perror(mp); exit(2); }
++    fputs("name\tdtype\tshape\tbytes\n",g_oracle_manifest); fflush(g_oracle_manifest);
++    snprintf(g_oracle_phase,sizeof(g_oracle_phase),"setup"); g_oracle_on=1;
++    fprintf(stderr,"[ORACLE_DUMP] raw numeric capture -> %s\n",g_oracle_dir);
++}
++static void oracle_raw(const char *stage,const char *dtype,const void *data,size_t elem,
++                       int nd,int64_t d0,int64_t d1,int64_t d2){
++    if(!g_oracle_on||!data||nd<1||nd>3) return;
++    int64_t dims[3]={d0,d1,d2}, n=1;
++    for(int i=0;i<nd;i++){ if(dims[i]<0){fprintf(stderr,"ORACLE_DUMP invalid shape\n");exit(2);} n*=dims[i]; }
++    char name[256],path[2304],shape[96];
++    snprintf(name,sizeof(name),"%04u.%s.%s.%s",g_oracle_seq++,g_oracle_phase,stage,dtype);
++    snprintf(path,sizeof(path),"%s/%s",g_oracle_dir,name);
++    if(nd==1) snprintf(shape,sizeof(shape),"%lld",(long long)d0);
++    else if(nd==2) snprintf(shape,sizeof(shape),"%lldx%lld",(long long)d0,(long long)d1);
++    else snprintf(shape,sizeof(shape),"%lldx%lldx%lld",(long long)d0,(long long)d1,(long long)d2);
++    FILE *f=fopen(path,"wb"); if(!f){perror(path);exit(2);}
++    size_t bytes=(size_t)n*elem;
++    if(bytes&&fwrite(data,1,bytes,f)!=bytes){perror(path);fclose(f);exit(2);}
++    if(fclose(f)){perror(path);exit(2);}
++    fprintf(g_oracle_manifest,"%s\t%s\t%s\t%zu\n",name,dtype,shape,bytes); fflush(g_oracle_manifest);
++}
++#define OD_F1(n,p,a) oracle_raw((n),"f32",(p),sizeof(float),1,(a),0,0)
++#define OD_F2(n,p,a,b) oracle_raw((n),"f32",(p),sizeof(float),2,(a),(b),0)
++#define OD_F3(n,p,a,b,c) oracle_raw((n),"f32",(p),sizeof(float),3,(a),(b),(c))
++#define OD_I1(n,p,a) oracle_raw((n),"i32",(p),sizeof(int),1,(a),0,0)
++static int oracle_layer(int layer){ return g_oracle_on&&(layer==0||layer==3||layer==77||layer==78); }
+ 
+ static void usage_save(Model *m);        /* cache che impara: definita accanto a stats_dump */
+ static void tiers_emit(Model *m);
+@@ -296,6 +347,12 @@
+  * the existing PROFILE line. Additive only: with PROF unset the output of
+  * every mode stays byte-identical. */
+ static int g_prof=0;
++/* Archive-only G0 timing/speculation trace. Stderr-only so the serve byte
++ * protocol on stdout remains unchanged. */
++static int g_g0_trace=0;
++static uint64_t g_g0_trace_turn=0;
++static int g_g0_trace_tokens[4096];
++static int g_g0_trace_ntokens=0;
+ static _Atomic int64_t g_prof_io;                /* bytes pread()/faulted from expert files */
+ /* Disk service: wall time inside expert_load on whichever thread runs the read
+  * (PIPE I/O workers, OMP loaders, the speculative pilot). It overlaps compute,
+@@ -2531,7 +2588,7 @@
+      * would rope every row at position 0 and attend over a 1-token window of the wrong
+      * cache -> greedy decode hits EOS at token 2 (mux answers truncated to 1 token).
+      * Ragged rows take the CPU absorb path below, which reads kvs[s]/positions[s]. */
+-    if(g_metal_enabled && !kvs && S<=4 && (g_absorb==1||(g_absorb<0&&S<=4)) && m->kv_start[layer]==0
++    if(g_metal_enabled && !g_oracle_on && !kvs && S<=4 && (g_absorb==1||(g_absorb<0&&S<=4)) && m->kv_start[layer]==0
+        && D==6144 && H==64 && c->q_lora==2048 && c->kv_lora==512 && c->qk_nope==192
+        && c->qk_rope==64 && vh==256 && l->kv_b.fmt==2){
+         int sel_active = m->has_dsa && layer<c->n_layers && c->idx_type[layer] && (pos_base+S) > c->index_topk;
+@@ -2607,6 +2664,14 @@
+         memcpy(Rdst, cs+c->kv_lora, c->qk_rope*sizeof(float));
+         rope_interleave(Rdst, pos, c);                            /* k_rot roped, condiviso fra teste */
+     }
++    if(oracle_layer(layer) && !kvs){
++        char nm[96];
++        snprintf(nm,sizeof(nm),"layer%d.attn.qr_norm",layer); OD_F2(nm,QR,S,c->q_lora);
++        snprintf(nm,sizeof(nm),"layer%d.attn.q_roped",layer); OD_F3(nm,Q,S,H,qh);
++        snprintf(nm,sizeof(nm),"layer%d.attn.comp_raw",layer); OD_F2(nm,comp,S,cw);
++        snprintf(nm,sizeof(nm),"layer%d.kv.lc",layer); OD_F2(nm,m->Lc[layer]+(int64_t)pos_base*c->kv_lora,S,c->kv_lora);
++        snprintf(nm,sizeof(nm),"layer%d.kv.rc",layer); OD_F2(nm,m->Rc[layer]+(int64_t)pos_base*c->qk_rope,S,c->qk_rope);
++    }
+     /* ---- DSA lightning indexer ----
+      * Layer FULL: k_idx dei token nuovi in cache + selezione top-k per query (riusata
+      * dai layer SHARED successivi). Selezione attiva solo con contesto > index_topk
+@@ -3042,6 +3107,13 @@
+         }
+         for(int d=0;d<D;d++) out[(int64_t)s*D+d]=0;
+     }
++    if(oracle_layer(layer)){
++        char nm[96];
++        snprintf(nm,sizeof(nm),"layer%d.moe.sigmoid_scores",layer); OD_F2(nm,logits_all,S,E);
++        snprintf(nm,sizeof(nm),"layer%d.moe.top_ids",layer); oracle_raw(nm,"i32",idxs,sizeof(int),2,S,K,0);
++        snprintf(nm,sizeof(nm),"layer%d.moe.top_weights",layer); OD_F2(nm,ws,S,K);
++        snprintf(nm,sizeof(nm),"layer%d.moe.keff",layer); OD_I1(nm,keff,S);
++    }
+     free(rank_buf); free(rank_w);
+     if(g_prof)m->t_route+=now_s()-route_t0;
+     if(g_route_fp) g_route_call++;
+@@ -3861,6 +3933,8 @@
+ static void layer_forward_rows(Model *m, Layer *l, int li, float *x, int S, int pos_base,
+                                KVState *const *kvs, const int *positions, float *nrm, float *tmp){
+     Cfg *c=&m->c; int D=c->hidden;
++    char odn[96];
++    if(oracle_layer(li)){ snprintf(odn,sizeof(odn),"layer%d.residual.entry",li); OD_F2(odn,x,S,D); }
+     if(g_spec && g_prefetch && l->sparse && m->enr[li]>0)
+         for(int z=0;z<m->enr[li];z++) expert_prefetch(m,li,m->eroute[li][z]);
+     if(g_looka && S==1 && li<c->n_layers && l->sparse) la_predict(m,li,x,0);
+@@ -3870,7 +3944,7 @@
+      * Fallback: qualsiasi condizione mancante -> percorso CPU intero qui sotto.
+      * !kvs: ragged mux rows (per-row KV/position) are not expressible in this kernel's
+      * single Lc/Rc + pos_base contract — see the matching guard in attention_rows. */
+-    if(g_metal_enabled && !kvs && S<=4 && li<c->n_layers && l->sparse
++    if(g_metal_enabled && !g_oracle_on && !kvs && S<=4 && li<c->n_layers && l->sparse
+        && (g_absorb==1||(g_absorb<0&&S<=4)) && m->kv_start[li]==0
+        && D==6144 && c->n_heads==64 && c->q_lora==2048 && c->kv_lora==512
+        && c->qk_nope==192 && c->qk_rope==64 && c->v_head==256 && l->kv_b.fmt==2
+@@ -3924,16 +3998,22 @@
+     }
+ #endif
+     for(int s=0;s<S;s++) rmsnorm(nrm+(int64_t)s*D, x+(int64_t)s*D, l->in_ln, D, c->eps);
++    if(oracle_layer(li)){ snprintf(odn,sizeof(odn),"layer%d.attn.norm",li); OD_F2(odn,nrm,S,D); }
+     attention_rows(m,l,li,nrm,S,pos_base,kvs,positions,tmp);
++    if(oracle_layer(li)){ snprintf(odn,sizeof(odn),"layer%d.attn.output",li); OD_F2(odn,tmp,S,D); }
+     for(int64_t j=0;j<(int64_t)S*D;j++) x[j]+=tmp[j];
++    if(oracle_layer(li)){ snprintf(odn,sizeof(odn),"layer%d.attn.post_residual",li); OD_F2(odn,x,S,D); }
+     if(g_pilot && S<=8 && li+1<c->n_layers && m->L[li+1].sparse) pilot_prefetch(m,li+1,x,S);
+     if(g_looka && S==1 && li+1<c->n_layers && m->L[li+1].sparse){
+         la_predict(m,li+1,x,1);  /* baseline: stale-state PILOT */
+         la_predict(m,li+1,x,2);  /* two-step: shared-expert-corrected prediction */
+     }
+     for(int s=0;s<S;s++) rmsnorm(nrm+(int64_t)s*D, x+(int64_t)s*D, l->post_ln, D, c->eps);
++    if(oracle_layer(li)){ snprintf(odn,sizeof(odn),"layer%d.ffn.norm",li); OD_F2(odn,nrm,S,D); }
+     if(l->sparse) moe(m,l,li,nrm,S,tmp,1); else dense_mlp(l,nrm,S,D,c->dense_inter,tmp);
++    if(oracle_layer(li)){ snprintf(odn,sizeof(odn),"layer%d.ffn.output",li); OD_F2(odn,tmp,S,D); }
+     for(int64_t j=0;j<(int64_t)S*D;j++) x[j]+=tmp[j];
++    if(oracle_layer(li)){ snprintf(odn,sizeof(odn),"layer%d.residual.final",li); OD_F2(odn,x,S,D); }
+ }
+ static void layer_forward(Model *m, Layer *l, int li, float *x, int S, int pos_base, float *nrm, float *tmp){
+     layer_forward_rows(m,l,li,x,S,pos_base,NULL,NULL,nrm,tmp);
+@@ -4065,14 +4145,18 @@
+ static void mtp_absorb(Model *m, const int *next_ids, const float *x, int S, int pos_base);
+ static float *step(Model *m, const int *ids, int S, int pos_base){
+     Cfg *c=&m->c; int D=c->hidden;
++    OD_I1("main.input_ids",ids,S);
+     float *x=falloc((int64_t)S*D);
+     for(int s=0;s<S;s++) embed_row(m, ids[s], x+(int64_t)s*D);
+     layers_forward(m,x,S,pos_base);
++    OD_F2("main.hidden_prenorm",x,S,D);
+     if(m->hlast) memcpy(m->hlast, x+(int64_t)(S-1)*D, D*sizeof(float));
+     if(m->has_mtp && S>=2 && g_draft>0) mtp_absorb(m, ids+1, x, S-1, pos_base);
+     float *last=falloc(D); rmsnorm(last, x+(int64_t)(S-1)*D, m->final_norm, D, c->eps);
++    OD_F1("main.head_norm",last,D);
+     double th0=now_s();
+     float *logit=falloc(c->vocab); matmul_qt(logit,last,&m->lm_head,1);
++    OD_F2("main.logits",logit,1,c->vocab);
+     m->t_head += now_s()-th0;
+     free(x); free(last); return logit;
+ }
+@@ -4080,14 +4164,17 @@
+ /* come step(), ma ritorna i logits di TUTTE le S posizioni [S,vocab] (per la verifica spec) */
+ static float *step_all(Model *m, const int *ids, int S, int pos_base){
+     Cfg *c=&m->c; int D=c->hidden;
++    OD_I1("main.input_ids",ids,S);
+     float *x=falloc((int64_t)S*D);
+     for(int s=0;s<S;s++) embed_row(m, ids[s], x+(int64_t)s*D);
+     layers_forward(m,x,S,pos_base);
++    OD_F2("main.h_all",x,S,D);
+     if(m->h_all) memcpy(m->h_all, x, (int64_t)S*D*sizeof(float));   /* hidden di TUTTE le pos (S<=512) */
+     if(m->hlast) memcpy(m->hlast, x+(int64_t)(S-1)*D, D*sizeof(float));
+     float *lo=falloc((int64_t)S*c->vocab), *row=falloc(D);
+     for(int s=0;s<S;s++){ rmsnorm(row, x+(int64_t)s*D, m->final_norm, D, c->eps);
+         matmul_qt(lo+(int64_t)s*c->vocab, row, &m->lm_head, 1); }
++    OD_F2("main.logits",lo,S,c->vocab);
+     free(x); free(row); return lo;
+ }
+ 
+@@ -4163,21 +4250,29 @@
+         int pos=p+g; if(pos+2>=m->max_t) break;
+         embed_row(m, tok, x);
+         rmsnorm(x, x, m->enorm, D, c->eps);
++        OD_F1("mtp_draft.emb_norm",x,D);
+         if(g==0 && !prenorm) rmsnorm(h, h, m->final_norm, D, c->eps);  /* h vero: post model.norm */
+         rmsnorm(h, h, m->hnorm, D, c->eps);
++        OD_F1("mtp_draft.hidden_norm",h,D);
+         if(getenv("MTP_SWAP")){ memcpy(cat, h, D*sizeof(float)); memcpy(cat+D, x, D*sizeof(float)); }
+         else { memcpy(cat, x, D*sizeof(float)); memcpy(cat+D, h, D*sizeof(float)); }
++        OD_F1("mtp_draft.concat",cat,2*D);
+         matmul_qt(hx, cat, &m->eh_proj, 1);
++        OD_F1("mtp_draft.eh_proj",hx,D);
+         double n_eh=0; for(int d=0;d<D;d++) n_eh+=hx[d]*hx[d];
+         int dbg = getenv("MTP_DEBUG") && atoi(getenv("MTP_DEBUG"))>=2;
+         int t_pre=-1;
+         if(dbg){ rmsnorm(row, hx, m->mtp_norm, D, c->eps); matmul_qt(logit, row, &m->lm_head, 1);
+                  t_pre=mtp_argmax(logit, c->vocab); }
+         layer_forward(m, &m->mtpL, li, hx, 1, pos, nrm, tmp);
++        OD_F1("mtp_draft.post_layer",hx,D);
+         double n_post=0; for(int d=0;d<D;d++) n_post+=hx[d]*hx[d];
+         rmsnorm(row, hx, m->mtp_norm, D, c->eps);
++        OD_F1("mtp_draft.head_norm",row,D);
+         matmul_qt(logit, row, &m->lm_head, 1);
++        OD_F2("mtp_draft.logits",logit,1,c->vocab);
+         int t2=mtp_argmax(logit, c->vocab);
++        OD_I1("mtp_draft.draft_id",&t2,1);
+         if(dbg) fprintf(stderr,"[mtp2] pos=%d in_tok=%d ||eh||=%.1f ||post||=%.1f pre_blk=%d post_blk=%d\n",
+                         pos, tok, sqrt(n_eh), sqrt(n_post), t_pre, t2);
+         draft[n++]=t2; tok=t2; memcpy(h, hx, D*sizeof(float));
+@@ -4192,6 +4287,7 @@
+ static void mtp_absorb(Model *m, const int *next_ids, const float *x, int S, int pos_base){
+     if(!m->has_mtp || S<1) return;
+     Cfg *c=&m->c; int D=c->hidden, li=c->n_layers;
++    OD_I1("mtp_absorb.next_ids",next_ids,S);
+     if(m->kv_start[li]<0 || m->kv_start[li]>pos_base) m->kv_start[li]=pos_base;
+     float *hx=falloc((int64_t)S*D), *cat=falloc(2*D), *e=falloc(D), *hn=falloc(D), *hf=falloc(D);
+     int prenorm = getenv("MTP_PRENORM")!=NULL;
+@@ -4205,13 +4301,52 @@
+         else { memcpy(cat,e,D*sizeof(float)); memcpy(cat+D,hn,D*sizeof(float)); }
+         matmul_qt(hx+(int64_t)i*D, cat, &m->eh_proj, 1);
+     }
++    OD_F2("mtp_absorb.eh_proj",hx,S,D);
+     float *nrm=falloc((int64_t)S*D), *tmp=falloc((int64_t)S*D);
+     m->ld_ctx=2;                                 /* DISK_SPLIT: load del layer MTP in absorb */
+     layer_forward(m,&m->mtpL,li,hx,S,pos_base,nrm,tmp);
++    OD_F2("mtp_absorb.post_layer",hx,S,D);
+     m->ld_ctx=0;
+     free(hx); free(cat); free(e); free(hn); free(hf); free(nrm); free(tmp);
+ }
+ 
++/* One bounded, deterministic real-model capture. The 32-token prefix is the
++ * fixed GLM-5.2 teacher-forcing sequence selected for the mlx-bun port; token
++ * 16 is forwarded at position 32 after the MTP absorb/draft checkpoints. */
++static void run_oracle_dump(Model *m){
++    static const int ids[33]={
++        154822,154824,154827,7984,264,48520,1140,315,
++        17054,12454,10245,5109,11,448,825,2805,
++        16134,11646,1283,1817,1372,13,3155,537,
++        2936,1573,17054,3589,13,154828,154841,154842,
++        16
++    };
++    Cfg *c=&m->c;
++    if(c->hidden!=6144||c->n_layers!=78||c->vocab<=154842||!m->has_mtp){
++        fprintf(stderr,"ORACLE_DUMP requires full GLM-5.2 geometry with complete MTP weights\n"); exit(2);
++    }
++    kv_alloc(m,36);
++    oracle_phase("prefill");
++    float *lo=step_all(m,ids,32,0);
++    int main_next=mtp_argmax(lo+(int64_t)31*c->vocab,c->vocab);
++    OD_I1("main.next_id",&main_next,1);
++    free(lo);
++
++    oracle_phase("mtp_absorb");
++    mtp_absorb(m,ids+1,m->h_all,31,0);
++
++    memcpy(m->hlast,m->h_all+(int64_t)30*c->hidden,(size_t)c->hidden*sizeof(float));
++    oracle_phase("mtp_draft");
++    int draft=-1, nd=mtp_draft(m,ids[31],31,1,&draft);
++    OD_I1("mtp_draft.count",&nd,1);
++
++    oracle_phase("decode32");
++    float *next=step(m,ids+32,1,32); free(next);
++    if(g_oracle_manifest){ fclose(g_oracle_manifest); g_oracle_manifest=NULL; }
++    fprintf(stderr,"[ORACLE_DUMP] complete: main_next=%d mtp_draft=%d records=%u\n",
++            main_next,draft,g_oracle_seq);
++}
++
+ static inline int argmax_v(const float *lo, int V){
+     /* skip NaN (x==x is false for NaN) so a poisoned logit can't pin the argmax
+      * to index 0 — pick the max finite/+Inf entry instead. */
+@@ -4439,6 +4574,7 @@
+ static int spec_decode(Model *m, int *all, int kv, int n_new, int eos, float *logit,
+                        void (*emit)(int,void*), void *ud, int *kv_out){
+     Cfg *c=&m->c; int V=c->vocab; int emitted=0, done=0;
++    uint64_t trace_fw=0;
+     int draft[64]; if(g_draft>63) g_draft=63;
+     int carry_ban=-1;                    /* token rifiutato dalla verifica: escluso dal resample */
+     /* #163: draft del modello attivi -> pin della famiglia di kernel per draft+verifica.
+@@ -4481,14 +4617,16 @@
+             if(m->has_mtp){ g=mtp_draft(m,next,kv,g_draft,draft); m->mtp_prop+=g; if(g)gsrc=2; }
+             else { g=ngram_draft(all,kv+1,g_draft,draft); if(g)gsrc=2; }
+         }
++        int proposed_raw=g;
+         if(g>n_new-emitted) g=n_new-emitted;
+         if(kv+1+g+1>m->max_t) g=m->max_t-kv-2;
+         if(g<0) g=0;
+         if(gsrc==1) g_gr_prop+=(uint64_t)g;
+         int S=1+g; int batch[64]; batch[0]=next; memcpy(batch+1,draft,g*sizeof(int));
+-        double tf0=g_prof?now_s():0;
++        double tf0=(g_prof||g_g0_trace)?now_s():0;
+         float *lo=step_all(m,batch,S,kv); m->n_fw++;
+-        if(g_prof) prof_lat(now_s()-tf0);
++        double tf1=(g_prof||g_g0_trace)?now_s():0;
++        if(g_prof) prof_lat(tf1-tf0);
+         int k=0;                                        /* verifica: accetta finche' coincide */
+         if(g>0 && getenv("MTP_DEBUG")){ int veri=argmax_v(lo,V);
+             fprintf(stderr,"[mtpdbg] draft0=%d verified=%d %s\n", draft[0], veri, draft[0]==veri?"HIT":"miss"); }
+@@ -4504,6 +4642,11 @@
+         }
+         if(gsrc==1) g_gr_acc+=(uint64_t)k;
+         else if(gsrc==2 && m->has_mtp) m->mtp_acc+=k;
++        if(g_g0_trace) fprintf(stderr,
++            "[G0_TRACE] VERIFY turn=%llu fw=%llu src=%d mtp=%d proposed_raw=%d "
++            "proposed=%d accepted=%d tokens=%d forward_s=%.9f mono_s=%.9f\n",
++            (unsigned long long)g_g0_trace_turn,(unsigned long long)++trace_fw,
++            gsrc,m->has_mtp,proposed_raw,g,k,1+k,tf1-tf0,now_s());
+         if(m->has_mtp && k>=1) mtp_absorb(m, all+kv+1, m->h_all, k, kv);   /* KV MTP in sync coi verificati */
+         /* hlast deve corrispondere all'ultima posizione ACCETTATA (kv+k), non a fine batch */
+         if(m->h_all && k<S-1) memcpy(m->hlast, m->h_all+(int64_t)k*m->c.hidden, m->c.hidden*sizeof(float));
+@@ -4524,8 +4667,15 @@
+ typedef struct { Tok *T; Model *m; double t0; int count; int quiet; } EmitStream;
+ static void emit_stream(int t, void *ud){
+     EmitStream *e=(EmitStream*)ud; char dec[64];
++    double ts=g_g0_trace?now_s():0;
++    if(g_g0_trace && g_g0_trace_ntokens<(int)(sizeof(g_g0_trace_tokens)/sizeof(g_g0_trace_tokens[0])))
++        g_g0_trace_tokens[g_g0_trace_ntokens++]=t;
++    if(g_g0_trace && e->count==0) fprintf(stderr,
++        "[G0_TRACE] FIRST turn=%llu token=%d mono_s=%.9f ttft_s=%.9f\n",
++        (unsigned long long)g_g0_trace_turn,t,ts,ts-e->t0);
+     int dn=tok_decode(e->T,&t,1,dec,63); dec[dn]=0; fputs(dec,stdout); fflush(stdout);
+-    if(!e->quiet && ++e->count%16==0){ double tt=e->m->hits+e->m->miss;
++    e->count++;
++    if(!e->quiet && e->count%16==0){ double tt=e->m->hits+e->m->miss;
+         if(g_cache_route && e->m->route_slots){
+             double swap=100.0*e->m->route_swaps/e->m->route_slots;
+             fprintf(stderr,"\n[t=%d  RSS %.2f GB  hit %.0f%%  swap %.0f%%  %.2f tok/s  %.2f tok/fw]\n", e->count,
+@@ -5467,13 +5617,22 @@
+             if(len<1){ printf("\x01\x01" "END" "\x01\x01\n"); printf("STAT 0 0.00 0.0 %.2f\n", rss_gb()); fflush(stdout); continue; }
+             int cur=ngen; if(len+cur+g_draft+2>=maxctx) cur=maxctx-len-g_draft-2;
+             uint64_t h0=m->hits, ms0=m->miss; double tt0=now_s();
++            if(g_g0_trace){ g_g0_trace_ntokens=0; fprintf(stderr,"[G0_TRACE] BEGIN turn=%llu mono_s=%.9f\n",
++                (unsigned long long)++g_g0_trace_turn,tt0); }
+             ProfBase pb; if(g_prof) prof_base(m,&pb);
+             float *logit=step(m,hist+len-1,1,len-1);
+-            EmitStream es={&T,m,now_s(),0,1};
++            EmitStream es={&T,m,tt0,0,1};
+             int prod=0;
+             if(cur>0) prod=spec_decode(m,hist,len,cur,eos,logit,emit_stream,&es,&len);
+             else free(logit);
+             double tdt=now_s()-tt0; if(tdt<1e-6) tdt=1e-6;
++            if(g_g0_trace){ fprintf(stderr,
++                "[G0_TRACE] END turn=%llu produced=%d elapsed_s=%.9f\n",
++                (unsigned long long)g_g0_trace_turn,prod,tdt);
++                fprintf(stderr,"[G0_TRACE] TOKENS turn=%llu count=%d ids=",
++                    (unsigned long long)g_g0_trace_turn,g_g0_trace_ntokens);
++                for(int ti=0;ti<g_g0_trace_ntokens;ti++) fprintf(stderr,"%s%d",ti?",":"",g_g0_trace_tokens[ti]);
++                fprintf(stderr,"\n"); }
+             double dh=(double)(m->hits-h0), dm=(double)(m->miss-ms0);
+             printf("\n\x01\x01" "END" "\x01\x01\n");
+             printf("STAT %d %.2f %.1f %.2f\n", prod, prod/tdt, (dh+dm)>0?100.0*dh/(dh+dm):0.0, rss_gb());
+@@ -5547,16 +5706,25 @@
+         uint64_t agh0=m->route_agree_hit, agt0=m->route_agree_tot;
+         uint64_t kln0=m->route_kl_n; double kls0=m->route_kl_sum;
+         double tt0=now_s();
++        if(g_g0_trace){ g_g0_trace_ntokens=0; fprintf(stderr,"[G0_TRACE] BEGIN turn=%llu mono_s=%.9f\n",
++            (unsigned long long)++g_g0_trace_turn,tt0); }
+         ProfBase pb; if(g_prof) prof_base(m,&pb);
+         float *logit;
+         if(k>0){ logit=step(m,hist+len,k,len); len+=k; }
+         else logit=step(m,hist+len-1,1,len-1);   /* prompt identico/prefisso: rigenera i logits */
+-        EmitStream es={&T,m,now_s(),0,1};
++        EmitStream es={&T,m,tt0,0,1};
+         int prod=0;
+         grammar_reset();                         /* nuova risposta = nuovo documento (MORE invece continua) */
+         if(cur>0) prod=spec_decode(m,hist,len,cur,eos,logit,emit_stream,&es,&len);
+         else free(logit);
+         double tdt=now_s()-tt0; if(tdt<1e-6) tdt=1e-6;
++        if(g_g0_trace){ fprintf(stderr,
++            "[G0_TRACE] END turn=%llu produced=%d elapsed_s=%.9f\n",
++            (unsigned long long)g_g0_trace_turn,prod,tdt);
++            fprintf(stderr,"[G0_TRACE] TOKENS turn=%llu count=%d ids=",
++                (unsigned long long)g_g0_trace_turn,g_g0_trace_ntokens);
++            for(int ti=0;ti<g_g0_trace_ntokens;ti++) fprintf(stderr,"%s%d",ti?",":"",g_g0_trace_tokens[ti]);
++            fprintf(stderr,"\n"); }
+         double dh=(double)(m->hits-h0), dm=(double)(m->miss-ms0);
+         uint64_t rslots=m->route_slots-rs0, rswaps=m->route_swaps-rw0;
+         double swap_pct=rslots?100.0*rswaps/rslots:0.0;
+@@ -6550,8 +6718,15 @@
+        * RAM_GB assente o <=0 = budget automatico da MemAvailable. */
+       cap_for_ram(&m, ram_env, ebits, est_ctx);
+       g_prof = getenv("PROF")?atoi(getenv("PROF")):0;   /* PROF=1: opt-in performance profile */
++      g_g0_trace = getenv("COLI_G0_TRACE")?atoi(getenv("COLI_G0_TRACE")):0;
+       if(g_prof) prof_config(&m, ram_env, est_ctx); }
+     const char *stats=getenv("STATS");   /* STATS=<file> -> istogramma uso expert a fine run */
++
++    /* Bounded archive-only numeric oracle: no tokenizer, server, or generation loop. */
++    if(getenv("ORACLE_DUMP")&&*getenv("ORACLE_DUMP")){
++        oracle_init(getenv("ORACLE_DUMP")); run_oracle_dump(&m);
++        if(stats) stats_dump(&m,stats); return 0;
++    }
+ 
+     /* modo scoring per benchmark: SCORE=<requests.txt> -> log-likelihood per riga */
+     if(getenv("SCORE")){ run_score(&m, snap, getenv("SCORE")); if(stats) stats_dump(&m,stats); return 0; }

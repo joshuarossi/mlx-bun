@@ -2069,26 +2069,33 @@ M1 Max 32 GB; the 24 GB M4 Pro is below the one-slot-per-layer floor and out
 of scope. (Revised 2026-07-21 with the design doc: gates renumbered G0-G8,
 serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
 
-- [ ] **G0 — direct oracle baseline:** pin/build direct Colibri arm64 Metal;
+- [x] **G0 — direct oracle baseline:** pin/build direct Colibri arm64 Metal;
       record the public artifact; run model-free `make check` + Metal tests;
       import tiny GLM/quant/DSA/MTP/cache fixtures; measure the direct baseline
       on the cleared M1 Max 32 GB — memory/I/O/speed, **MTP on and off**. Disk
       preflight met (2026-07-21: ~556 GB unallocated + ~123 GB purgeable ≈
       679 GB available). No model download in CI or agent sessions.
-      **Agent-side evidence (2026-07-21):** G0 items 1-3 passed: exact oracle
-      pin/license/artifact inventory, isolated archived `make check` and
-      `metal-test`, and a dated APFS preflight are recorded in
-      `docs/investigations/colibri-oracle-pin.md`. Item 4 remains partial. The
-      checked-in model-free package captures exact-pin Python quantization,
-      Apple-ARM quantized matmul, DSA, LFRU, and elementary RMSNorm/sigmoid;
-      operator/router/LRU/MTP sections are explicitly derived scaffolding.
-      Targeted tests pass 10/10 (379 assertions), typecheck and hygiene are
-      green, and regeneration is byte-identical on the recorded Bun 1.3.14
-      macOS ARM64 runtime. Missing teacher-forced numeric GLM/MLA/MTP-head/KV
-      evidence and the cleared-machine MTP-off/on baseline keep G0 unchecked
-      and block G1. The later 543.8 GB reading was taken during the active
-      user-owned artifact download and is a moving snapshot; repeat it after
-      the transfer settles rather than replacing the stable preflight above.
+      **Closed 2026-07-22:** the exact pin/license/inventory, isolated model-free
+      and Metal suites, APFS preflight, model-free fixture package, full-model
+      numeric capture, and same-machine runtime baseline are recorded in
+      `docs/investigations/colibri-oracle-pin.md`. All 145 LFS payloads
+      (383,760,044,154 bytes) match the exact public-artifact revision's
+      SHA-256 values. The 140-record real-model GLM/MLA/router/MTP/KV oracle is
+      bitwise reproducible across two captures and is compacted into
+      `fixtures/colibri-glm52/real-model-oracle.json`; both the main and MTP
+      heads predict teacher token 16. The final matrix has three independent
+      processes per mode and two turns per process, capturing TTFT, footprint,
+      compression/swap, hit/I/O, token IDs, speed, and MTP acceptance lengths.
+      Fresh-turn median throughput is 0.34 tok/s without MTP versus 0.26 tok/s
+      with MTP at the one-slot 18 GB budget: 34/90 accepted raw drafts reduce
+      main forwards 63 -> 30 but add 34.6% expert traffic and 29.1% wall time.
+      Median peaks are 13.631/17.475 GB; all process swaps are zero and the
+      same pre-existing 0.75 MB system swap is unchanged. All twelve turns are
+      exact-token-identical. DSA is explicitly waived for this public-artifact
+      baseline because it contains no indexer weights; G2 retains exact-pin
+      model-free fixtures and later generates a separate stock indexer overlay
+      from 20 pinned source shards without mutating the serving snapshot. G1 is
+      unblocked.
 - [ ] **G1 — unified-memory MLX storage foundation:** fixed aligned shared
       slabs, bounded positioned-read workers, zero-copy MLX/custom-Metal
       consumption, completion-fenced generation-tagged slot reuse, allocator
@@ -2099,8 +2106,11 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
       contract defined BEFORE debugging (bitwise: int4/int8 dequant, router
       top-8 selection, byte accounting; trajectory-level: tie-free greedy token
       match + recorded max-logit-delta bound — cross-implementation Metal
-      accumulation order is not expected to match bitwise). Tiny model 32/32
-      token-exact on a tie-free greedy trajectory vs the pinned engine.
+      accumulation order is not expected to match bitwise by default). Added
+      2026-07-22: custom kernels pin numerics to dequant→f32-MAC — Colibri's
+      Metal/CUDA tiers are byte-identical to its CPU engine this way — so the
+      gate hardens to bitwise where accumulation semantics match. Tiny model
+      32/32 token-exact on a tie-free greedy trajectory vs the pinned engine.
 - [ ] **G3 — explicit bounded expert residency (load-bearing):** per-layer
       expert-ID→slot LRU, separate pinned tier, 64-unique working set,
       aligned gate/up/down+scale slabs, generation-tagged async loads, GPU-use

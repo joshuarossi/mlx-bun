@@ -1,9 +1,9 @@
-# Colibri GLM-5.2 G0 fixture scaffolding
+# Colibri GLM-5.2 G0 oracle fixtures
 
-This directory is a small, model-free starting contract for the MLX/Bun port.
-It is pinned to Colibri commit
-`44e489b196c9b7876b3d37a0570ebf1c6f90f54c`. It is not a complete GLM-5.2,
-MLA, router, cache, or MTP oracle, and it does not complete G0 item 4.
+This directory combines a small model-free contract with a compact, validated
+real-model oracle for the MLX/Bun port. It is pinned to Colibri commit
+`44e489b196c9b7876b3d37a0570ebf1c6f90f54c` and public-artifact revision
+`3cc8db99b1b13fc79325d987ba3c1c430766b3b8`.
 
 Git is the authenticity and integrity root for these files. SHA-256 values in
 `manifest.json` are reproducibility and accidental-drift checks, not signatures
@@ -16,7 +16,15 @@ and not a substitute for the recorded Git tree/blob identities.
   Apple target, clang, Python, NumPy, and Bun versions used for the capture.
 - `v1.json` combines the captured constants with explicitly labeled derived
   canonical traces.
-- `manifest.json` describes the boundary and hashes both data files. Its former
+- `real-model-oracle.json` is the deterministic compact reduction of 140 raw
+  real-model tensor records: GLM layer stages, MLA compressed KV, true top-8
+  routing, MTP fusion/head state, full-logit top-128 summaries, and the
+  teacher-token decode. The raw 54 MB payload remains machine-local and is
+  reproducible through the recorded instrumentation patch and provenance.
+- `oracle-instrumentation.patch` is that exact measurement-only diff against
+  pinned `c/glm.c`; apply it only to an isolated archive, never the oracle
+  checkout.
+- `manifest.json` describes the boundary and hashes all four data files. Its former
   machine-local checkout path was removed; the absolute path retained in the
   capture evidence is explicitly advisory capture-host metadata required to
   reproduce the historical command transcript.
@@ -80,11 +88,11 @@ was installed, no file was downloaded, no model was loaded, and the external
 checkout remained clean. Different target/toolchain captures must be reviewed
 as new evidence rather than silently replacing the recorded constants.
 
-## Remaining gaps
+## Scope boundary
 
-There is still no teacher-forced numeric GLM/MLA/MTP-head/KV capture, complete
-tiny MTP exporter, or measured neural acceptance oracle. The derived MTP trace
-also does not capture EOS/special-stop handling, `n_new`/`max_t` length clamps,
-the 24-proposal adaptive guard, grammar precedence, or sampling rejection.
-Those gaps and the cleared-M1-Max-32-GB full-runtime baseline keep item 4 and G0
-incomplete.
+The real-model oracle closes G0's teacher-forced GLM/MLA/router/MTP-head/KV
+gap. The tiny `v1.json` MTP trace remains derived scaffolding and intentionally
+does not claim coverage for every serving control path (EOS/special-stop,
+length clamps, adaptive drafting, grammar precedence, or sampling rejection).
+Those paths are exercised in later implementation gates against the direct
+runtime trace rather than being mislabeled as model-free oracle output.

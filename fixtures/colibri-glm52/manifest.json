@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "fixture_set": "colibri-glm52",
   "oracle": {
     "repository": "https://github.com/JustVugg/colibri",
@@ -79,6 +79,16 @@
       "path": "v1.json",
       "bytes": 26288,
       "sha256": "31055ecc0c8470457d034f56c614fc308b265401cb74284f11bf50cbfb94b57a"
+    },
+    {
+      "path": "real-model-oracle.json",
+      "bytes": 168353,
+      "sha256": "4540c09a32664b1cd2519b4f8fe69eae8b58694776d690d003c8d57d1f576d28"
+    },
+    {
+      "path": "oracle-instrumentation.patch",
+      "bytes": 23356,
+      "sha256": "d9dfffe52c27d54cef0d89eee6a3cd865aed2bacf02e9d856cf31374903ac394"
     }
   ],
   "provenance": [
@@ -121,6 +131,11 @@
       "section": "mtp_spec_decode",
       "kind": "derived_canonical",
       "source": "canonical greedy trace of c/glm.c:mtp_draft, mtp_absorb, spec_decode; no model/head executed"
+    },
+    {
+      "section": "real_model_glm_mla_router_mtp_kv",
+      "kind": "direct_instrumented_exact_pin_capture",
+      "source": "140 validated tensors from the exact public GLM-5.2 artifact; raw machine-local payloads reduced by scripts/colibri-g0-oracle-report.ts"
     }
   ],
   "tolerances": {
@@ -138,5 +153,5 @@
     },
     "discrete_contracts": "exact"
   },
-  "residual_blocker": "Item 4 and G0 remain incomplete: no teacher-forced numeric GLM/MLA/MTP-head/KV oracle or neural acceptance capture exists, and the same-machine full runtime baseline remains pending. Derived operator/router/LRU/MTP scaffolding is not oracle output."
+  "g0_status": "complete: model-free fixtures plus validated real-model GLM/MLA/router/MTP/KV capture and same-machine runtime baseline"
 }

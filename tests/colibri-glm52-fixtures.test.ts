@@ -10,9 +10,12 @@ const PIN = "44e489b196c9b7876b3d37a0570ebf1c6f90f54c";
 const manifestText = readFileSync(join(FIXTURE_DIR, "manifest.json"), "utf8");
 const fixtureText = readFileSync(join(FIXTURE_DIR, "v1.json"), "utf8");
 const captureText = readFileSync(join(FIXTURE_DIR, "oracle-capture.json"), "utf8");
+const realModelOracleText = readFileSync(join(FIXTURE_DIR, "real-model-oracle.json"), "utf8");
+const oraclePatchText = readFileSync(join(FIXTURE_DIR, "oracle-instrumentation.patch"), "utf8");
 const manifest = JSON.parse(manifestText);
 const fixture = JSON.parse(fixtureText);
 const capture = JSON.parse(captureText);
+const realModelOracle = JSON.parse(realModelOracleText);
 
 function f32(value: number): number {
   return Math.fround(value);
@@ -74,10 +77,13 @@ describe("Colibri GLM-5.2 fixture package", () => {
     expect(manifest.generator.reproducibility_scope).toContain("Bun 1.3.14 macOS arm64");
     expect(manifest.integrity).toContain("Git is the authenticity and integrity root");
     expect(manifest.oracle.local_read_only_path).toBeUndefined();
-    expect(manifest.files).toHaveLength(2);
+    expect(manifest.schema_version).toBe(3);
+    expect(manifest.files).toHaveLength(4);
     const payloads: Array<{ name: string; text: string }> = [
       { name: "oracle-capture.json", text: captureText },
       { name: "v1.json", text: fixtureText },
+      { name: "real-model-oracle.json", text: realModelOracleText },
+      { name: "oracle-instrumentation.patch", text: oraclePatchText },
     ];
     for (const { name, text } of payloads) {
       const entry = manifest.files.find((file: { path: string }) => file.path === name);
@@ -89,6 +95,11 @@ describe("Colibri GLM-5.2 fixture package", () => {
     expect(capture.toolchain.apple_clang).toContain("Apple clang version 21.0.0");
     expect(capture.toolchain.python.numpy).toBe("2.4.6");
     expect(capture.toolchain.bun.version).toBe("1.3.14");
+    expect(realModelOracle.provenance.colibri_pin).toBe(PIN);
+    expect(realModelOracle.manifest.record_count).toBe(140);
+    expect(realModelOracle.evidence.main_next.token_id).toBe(16);
+    expect(realModelOracle.evidence.mtp_draft.token_id).toBe(16);
+    expect(realModelOracle.provenance.patch_sha256).toBe(createHash("sha256").update(oraclePatchText).digest("hex"));
   });
 
   test("regenerates byte-identically without Colibri or model dependencies", () => {
@@ -103,7 +114,7 @@ describe("Colibri GLM-5.2 fixture package", () => {
         );
         expect(processResult.exitCode).toBe(0);
       }
-      for (const name of ["manifest.json", "oracle-capture.json", "v1.json"]) {
+      for (const name of ["manifest.json", "oracle-capture.json", "v1.json", "real-model-oracle.json", "oracle-instrumentation.patch"]) {
         const tracked = readFileSync(join(FIXTURE_DIR, name), "utf8");
         expect(readFileSync(join(first, name), "utf8")).toBe(tracked);
         expect(readFileSync(join(second, name), "utf8")).toBe(tracked);

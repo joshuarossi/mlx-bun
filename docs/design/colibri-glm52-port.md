@@ -689,7 +689,35 @@ quantization, Apple-ARM quantized matmul, DSA, LFRU, and elementary
 RMSNorm/sigmoid. Its operator/router/LRU/MTP material is explicitly derived
 scaffolding. It does **not** claim teacher-forced numeric GLM/MLA/MTP-head/KV
 outputs or measured neural acceptance. Those require a real model oracle and
-remain a G0 blocker alongside the manual same-machine baseline.
+were the two remaining G0 blockers before the closure evidence below.
+
+G0 closure (2026-07-22): both blockers are now closed. The complete public
+artifact was run directly on the 32 GiB M1 Max with Metal unified-memory
+zero-copy. Six matched fresh-process/direct-I/O cells (three MTP-off, three
+MTP-on) and bounded same-process pairs with KV reset establish the explicit-LRU
+cold/warm baseline. A measurement-only archived-copy build emitted 140
+teacher-forced GLM/MLA/router/MTP/KV records twice, byte-identically; the
+validated compact oracle is tracked under `fixtures/colibri-glm52/`. All 145
+LFS payloads match pinned-revision SHA-256. For reproducibility, **cold** here
+means a fresh process with an empty explicit LRU and macOS `F_NOCACHE`
+(`DIRECT=1`), not an unrepeatable claim that no file on the machine had been
+read since boot. **Warm** means request two in the same PID after RESET clears
+KV but preserves the explicit expert LRU. In the authoritative three-process
+per-mode matrix, fresh-turn throughput is 0.34 tok/s MTP-off versus 0.26 tok/s
+MTP-on, with median peaks of 13.631/17.475 GB and no process swaps. MTP reduces
+main forwards by 52% but adds 34.6% expert traffic and 29.1% wall time. Live
+telemetry (~4.9 GB/s reads, 0 writes, 24% GPU, 16.1 GB/s unified-memory
+bandwidth) confirms the initial optimization target is overlapped expert
+delivery/residency rather than more arithmetic throughput.
+
+The artifact lacks DSA indexers, so the direct public-artifact baseline
+explicitly runs DSA-off. At G0's 128-token context this does not change
+attention selection: the first 21 layers are full-attention layers and DSA's
+`topk=2048` cannot prune such a short history. G2 retains the exact-pin
+model-free DSA fixtures and will generate a **separate immutable indexer
+overlay** by extracting only the indexer tensors from 20 pinned stock FP8
+source shards (~99.90 GiB read, ~197 MB output). The overlay must never mutate
+or duplicate the 357 GiB serving snapshot.
 
 **Exit:** a reproducible same-machine oracle baseline is recorded — footprint,
 hit rate, disk service/wait, TTFT, cold/warm tok/s, MTP on and off. These
@@ -722,8 +750,18 @@ Metal execution path for each kernel shape, then proceed with the full port.
   inputs, router top-8 selection, cache byte accounting); trajectory-level
   equality for floating-point logits (tie-free greedy token match plus a
   recorded max-logit-delta bound). Cross-implementation Metal accumulation
-  order is not expected to match bitwise — the SigLIP parity investigation
-  established sub-bf16 accumulation as an expected residual, not a bug.
+  order is not expected to match bitwise by default — the SigLIP parity
+  investigation established sub-bf16 accumulation as an expected residual, not
+  a bug.
+- *(Added 2026-07-22.)* Colibri shows the stronger contract is attainable by
+  construction: its Metal and CUDA tiers pin numerics to **dequant→f32
+  multiply-accumulate** and produce greedy outputs byte-identical to its CPU
+  engine (`docs/metal.md`). Our custom kernels adopt the same dequant→f32-MAC
+  discipline — the `SPEC_PIN` philosophy applied to the whole expert path.
+  Where we also match the oracle's accumulation semantics, the
+  greedy-trajectory gate hardens to a bitwise claim; the trajectory-level
+  bound remains the fallback only for paths whose accumulation order is not
+  ours to pin (e.g., stock MLX kernels on the dense spine).
 
 **Exit:** layer/op goldens pass under the recorded contract; tiny-model teacher
 forcing is 32/32 token-exact on a tie-free greedy trajectory against the pinned

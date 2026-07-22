@@ -12,47 +12,45 @@ the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md)
 
 ## Active: native Colibri/GLM-5.2 port (2026-07-21)
 
-Work is on branch `codex/colibri-glm52-port` and is at Phase 21 **G0**. G0
-items 1-3 are complete: the external oracle pin, Apache-2.0 obligations,
-public-artifact and tensor-format contract, safe test isolation, fixture
-feasibility, passing model-free `check`/`metal-test` evidence, the moving disk
-preflight, and manual baseline checklist are recorded in
+Work is on branch `codex/colibri-glm52-port`. Phase 21 **G0 is complete; G1 is
+next**. The Colibri checkout remains clean at
+`44e489b196c9b7876b3d37a0570ebf1c6f90f54c`; the public GLM-5.2 artifact is
+pinned at revision `3cc8db99b1b13fc79325d987ba3c1c430766b3b8`. All 150 files
+are accounted for and all 145 LFS payloads (383,760,044,154 bytes) match the
+pinned Hugging Face SHA-256 metadata. The downloader now reads the current
+`lfs.sha256` field, fixing the schema bug discovered during this audit.
+
+Direct Colibri/Metal ran the full model on this 32 GiB M1 Max at an 18 GB
+budget, 128-token context, true top-8 routing, one explicit LRU slot/layer,
+`DIRECT=1`, and zero pins/learned routing. The authoritative matrix has three
+independent processes per MTP mode and two requests per process. Fresh-turn
+median throughput was 0.34 tok/s MTP-off versus 0.26 tok/s MTP-on; MTP accepted
+34/90 raw proposals and reduced main forwards from 63 to 30, but raised expert
+traffic from 836.909 to 1126.703 GB and total request time by 29.1%. Median peak
+footprints were 13.631 and 17.475 GB. Every process reported zero swaps, and
+the same pre-existing 0.75 MB of system swap remained unchanged in every cell.
+
+The second request uses the same PID after RESET clears KV but preserves the
+expert LRU. Median MTP-off TTFT improved 29.332 -> 28.431 s while throughput
+remained 0.34 tok/s. MTP-on TTFT moved 31.132 -> 31.895 s and throughput only
+reached 0.27 tok/s; acceptance shifted from 34 to 33 and required one extra
+main forward. All twelve turns returned exactly the same 64 token IDs. Live
+`mactop` telemetry during MTP-on showed ~4.9 GB/s reads, 0 B/s writes, 24% GPU,
+16.1 GB/s unified-memory bandwidth, and 19.91/32 GB memory: the current limit is
+expert delivery/serialization, not compute or DRAM bandwidth. A 140-record
+real-model GLM/MLA/router/MTP/KV oracle reproduced byte-for-byte twice; both
+heads predict teacher token 16 and the compact validated capture is tracked in
+`fixtures/colibri-glm52/real-model-oracle.json`.
+
+The recommended artifact has no DSA indexer tensors. G0 explicitly waives
+full-model DSA and retains the exact-pin model-free DSA fixtures for G2. The
+planned stock overlay is a separate immutable artifact: extract only the
+indexer from 20 pinned source shards (~99.90 GiB input, ~197 MB output), without
+mutating or duplicating the 357 GiB serving snapshot. It is not needed at the
+128-token G0 context because Colibri's first 21 layers use full attention and
+DSA selects from at most `topk=2048` prior tokens. Complete
+commands, caveats, and evidence hashes live in
 [docs/investigations/colibri-oracle-pin.md](docs/investigations/colibri-oracle-pin.md).
-The Colibri checkout remains clean and untouched at
-`44e489b196c9b7876b3d37a0570ebf1c6f90f54c`.
-
-G0 item 4 and G0 are **not complete**. `fixtures/colibri-glm52/` now contains
-exact-pin model-free captures only for quantization, Apple-ARM quantized
-matmul, DSA, LFRU, and elementary RMSNorm/sigmoid. The operator/router/LRU/MTP
-sections are explicitly derived scaffolding, not Colibri runtime output. The
-pinned tools do not emit a complete tiny MTP layer, so teacher-forced numeric
-GLM/MLA/MTP-head/KV outputs and measured neural acceptance remain uncaptured.
-Post-restart audit (2026-07-22): the 357.404 GiB artifact is complete relative
-to HF revision `3cc8db99b1b13fc79325d987ba3c1c430766b3b8` (150/150 files;
-141 main + 3 corrected int8-MTP shards), and all safetensors headers and MTP
-tensor families validate. The recommended artifact has **no DSA indexer
-weights** (`out-idx-*` and `indexer.*` tensors are both absent), so pinned
-Colibri will run with `has_dsa=0`. The audit also found and fixed a downloader
-schema bug: HF exposes LFS digests as `lfs.sha256`, while mlx-bun read
-`lfs.oid`, so the original transfer checked sizes but skipped payload SHA-256.
-The three MTP shards, tokenizer, and five non-LFS metadata files now have direct
-cryptographic verification; the 141 main-shard payload hashes remain pending.
-
-The stable post-download APFS snapshot has about 174 GB hard-free, no local
-snapshots, zero swap, and no competing model/download process. The exact-pin
-Metal build and standalone kernel suite pass from an isolated archive.
-
-At Josh's explicit direction, a bounded full-model proof run completed at an
-18 GB budget and 128-token context. GLM-5.2 answered `2+2=4.` identically with
-MTP off and on. MTP-off decoded 6 tokens in 17.61 s (0.34 tok/s); MTP-on decoded
-them in 14.44 s (0.42 tok/s), accepted 4/6 drafts (67%), and delivered 3.0
-tokens/forward. Whole-process wall time was 42.62 s versus 38.36 s; both runs
-used Metal unified-memory zero-copy, true top-8 routing, and zero swap. Raw
-logs/stats are under ignored `runs/colibri-g0/results-20260722/` and the exact
-numbers are recorded in the oracle note. This is functional proof, not the G0
-benchmark: it is a tiny sequential pair with different one/two-slot cache caps,
-DSA off, and incomplete main-shard hashes. G1 remains blocked pending the full
-numeric oracle and controlled repeated baseline.
 
 ## Where we are (2026-07-10 — v0.0.11 released)
 

@@ -2,8 +2,9 @@
 //
 // This ordinary generator deliberately does not import, build, or execute
 // Colibri. It consumes the tracked exact-pin oracle-capture.json constants and
-// adds explicitly labeled derived operator/router/LRU/MTP scaffolding. It does
-// not create teacher-forced neural-head output.
+// adds explicitly labeled derived operator/router/LRU/MTP scaffolding. The
+// tracked compact real-model oracle is copied verbatim; regenerating its raw
+// tensors remains a separate, explicit full-model capture operation.
 //
 // Regenerate:
 //   bun scripts/gen-colibri-glm52-fixtures.ts
@@ -19,10 +20,19 @@ const SEED_HEX = "0x51a7c0de";
 const SEED = 0x51a7c0de;
 const DEFAULT_OUT = resolve(import.meta.dir, "../fixtures/colibri-glm52");
 const CAPTURE_PATH = resolve(DEFAULT_OUT, "oracle-capture.json");
+const REAL_MODEL_ORACLE_PATH = resolve(DEFAULT_OUT, "real-model-oracle.json");
+const ORACLE_PATCH_PATH = resolve(DEFAULT_OUT, "oracle-instrumentation.patch");
 const captureText = readFileSync(CAPTURE_PATH, "utf8");
+const realModelOracleText = readFileSync(REAL_MODEL_ORACLE_PATH, "utf8");
+const oraclePatchText = readFileSync(ORACLE_PATCH_PATH, "utf8");
 const capture = JSON.parse(captureText);
+const realModelOracle = JSON.parse(realModelOracleText);
 if (capture.oracle?.commit !== ORACLE_COMMIT) {
   throw new Error(`capture pin ${capture.oracle?.commit} != ${ORACLE_COMMIT}`);
+}
+if (realModelOracle.provenance?.colibri_pin !== ORACLE_COMMIT ||
+    realModelOracle.manifest?.record_count !== 140) {
+  throw new Error("real-model oracle has unexpected provenance or schema");
 }
 
 function outputDir(args: string[]): string {
@@ -418,9 +428,16 @@ const dataBytes = new TextEncoder().encode(dataText);
 const dataSha256 = createHash("sha256").update(dataBytes).digest("hex");
 const captureBytes = new TextEncoder().encode(captureText);
 const captureSha256 = createHash("sha256").update(captureBytes).digest("hex");
+const realModelOracleBytes = new TextEncoder().encode(realModelOracleText);
+const realModelOracleSha256 = createHash("sha256").update(realModelOracleBytes).digest("hex");
+const oraclePatchBytes = new TextEncoder().encode(oraclePatchText);
+const oraclePatchSha256 = createHash("sha256").update(oraclePatchBytes).digest("hex");
+if (oraclePatchSha256 !== realModelOracle.provenance.patch_sha256) {
+  throw new Error("real-model oracle patch hash does not match tracked patch");
+}
 
 const manifest = {
-  schema_version: 2,
+  schema_version: 3,
   fixture_set: "colibri-glm52",
   oracle: {
     repository: "https://github.com/JustVugg/colibri",
@@ -453,6 +470,8 @@ const manifest = {
   files: [
     { path: "oracle-capture.json", bytes: captureBytes.byteLength, sha256: captureSha256 },
     { path: "v1.json", bytes: dataBytes.byteLength, sha256: dataSha256 },
+    { path: "real-model-oracle.json", bytes: realModelOracleBytes.byteLength, sha256: realModelOracleSha256 },
+    { path: "oracle-instrumentation.patch", bytes: oraclePatchBytes.byteLength, sha256: oraclePatchSha256 },
   ],
   provenance: [
     { section: "quantization.int8_per_row", kind: "mixed", source: "direct archived quant_int8 + Apple-ARM matmul_q captures; derived canonical dequant expansion" },
@@ -463,6 +482,7 @@ const manifest = {
     { section: "cache_policy.lru", kind: "derived_canonical", source: "canonical trace of c/glm.c LRU hit/promotion rules; moe() was not executed" },
     { section: "cache_policy.lfru", kind: "direct_exact_pin_capture", source: "archived c/tier.h:tier_lfru_score, tier_pick_lfru, tier_decay, including tie and uint32 wrap cases" },
     { section: "mtp_spec_decode", kind: "derived_canonical", source: "canonical greedy trace of c/glm.c:mtp_draft, mtp_absorb, spec_decode; no model/head executed" },
+    { section: "real_model_glm_mla_router_mtp_kv", kind: "direct_instrumented_exact_pin_capture", source: "140 validated tensors from the exact public GLM-5.2 artifact; raw machine-local payloads reduced by scripts/colibri-g0-oracle-report.ts" },
   ],
   tolerances: {
     quantized_matmul: { atol: 1e-5, rtol: 1e-5 },
@@ -470,7 +490,7 @@ const manifest = {
     router: { atol: 1e-6, rtol: 1e-6 },
     discrete_contracts: "exact",
   },
-  residual_blocker: "Item 4 and G0 remain incomplete: no teacher-forced numeric GLM/MLA/MTP-head/KV oracle or neural acceptance capture exists, and the same-machine full runtime baseline remains pending. Derived operator/router/LRU/MTP scaffolding is not oracle output.",
+  g0_status: "complete: model-free fixtures plus validated real-model GLM/MLA/router/MTP/KV capture and same-machine runtime baseline",
 };
 
 const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
@@ -479,6 +499,8 @@ mkdirSync(out, { recursive: true });
 await Promise.all([
   Bun.write(resolve(out, "oracle-capture.json"), captureText),
   Bun.write(resolve(out, "v1.json"), dataText),
+  Bun.write(resolve(out, "real-model-oracle.json"), realModelOracleText),
+  Bun.write(resolve(out, "oracle-instrumentation.patch"), oraclePatchText),
   Bun.write(resolve(out, "manifest.json"), manifestText),
 ]);
 console.log(`wrote ${resolve(out, "v1.json")} (${dataBytes.byteLength} bytes, sha256 ${dataSha256})`);
