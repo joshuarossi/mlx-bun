@@ -39,6 +39,12 @@ export function isQwen3MoeConfig(config: ModelConfig): boolean {
   return config.modelType === "qwen3_moe";
 }
 
+/** GLM-5.2 Colibri architecture. Its dedicated MLA/DSA/shared-MoE graph is
+ *  intentionally distinct from the universal dense `glm4` descriptor. */
+export function isGlm52Config(config: ModelConfig): boolean {
+  return config.modelType === "glm_moe_dsa";
+}
+
 /** Speculative-decoding drafters (e.g. `gemma4_assistant`) are companion
  *  artifacts to a target model — Q-only, centroid-head, no standalone LM
  *  head. They are never servable/selectable on their own (the spec path
@@ -67,6 +73,7 @@ export function supportTier(modelType: string, repoId = ""): "targeted" | "gener
   if (modelType === "qwen3_5" || modelType === "qwen3_5_text") return "targeted";
   if (modelType === "qwen3") return "targeted"; // plain Qwen3 (embedding backbone)
   if (modelType === "qwen3_moe") return "targeted"; // Qwen3-MoE (sparse experts)
+  if (modelType === "glm_moe_dsa") return "targeted"; // dedicated GLM-5.2 MLA/DSA port
   if (modelType === "llama" && repoId.toLowerCase().includes("minicpm5-1b-optiq-4bit"))
     return "targeted";
   // Tier-0 generic fallback: the universal-dense descriptor table.
@@ -83,7 +90,7 @@ export function isSupportedModelConfig(config: ModelConfig): boolean {
   if (
     config.modelType.startsWith("gemma4") || isMiniCPM5Config(config) ||
     isQwen35Config(config) || isQwen3Config(config) || isQwen3MoeConfig(config) ||
-    isDiffusionGemmaConfig(config)
+    isDiffusionGemmaConfig(config) || isGlm52Config(config)
   ) return true;
   // Generic tier: an arch descriptor exists for this model_type (and its
   // config parses — a malformed config is unsupported, not a crash).

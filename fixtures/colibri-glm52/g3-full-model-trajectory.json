@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "gate": "G3 full streamed two-forward trajectory",
+  "date": "2026-07-24",
+  "provenance": {
+    "machine": "Apple M1 Max, 32 GiB unified memory",
+    "colibri_commit": "44e489b196c9b7876b3d37a0570ebf1c6f90f54c",
+    "artifact_revision": "3cc8db99b1b13fc79325d987ba3c1c430766b3b8",
+    "raw_report_sha256": "84dabf1116b9c898b0f80f7676761acb536327a85a691140c1cf68b158e78d68",
+    "live_trace_sha256": "ec844c6c4df88c607fff001272bf75bfbbb5f3fe8647025e6827d3264d3d43cd"
+  },
+  "scope": {
+    "mtp": false,
+    "performance_claim": false,
+    "prefix_tokens": 32,
+    "forwards": 2,
+    "working_slots": 64,
+    "slots_per_sparse_layer": 1,
+    "allocator_limit_bytes": 4294967296,
+    "swapout_abort_bytes": 536870912
+  },
+  "trajectory": {
+    "expected": [
+      16,
+      13
+    ],
+    "actual": [
+      16,
+      13
+    ],
+    "prefill_margin": 2.9581356048583984,
+    "decode_margin": 7.082424163818359
+  },
+  "residency_plan": {
+    "budget_bytes": 26843545600,
+    "fixed_bytes": 14887281152,
+    "slot_bytes": 18939904,
+    "sparse_layers": 75,
+    "working_slots": 64,
+    "resident_slots": 75,
+    "total_slots": 139,
+    "slab_bytes": 2632646656,
+    "planned_bytes": 17519927808
+  },
+  "residency_after_decode": {
+    "working": 64,
+    "resident": 75,
+    "pinned": 0,
+    "disabled": 0,
+    "loading": 0,
+    "leased": 0,
+    "hits": 11,
+    "misses": 7885,
+    "evictions": 144,
+    "pressure_evictions": 0
+  },
+  "memory": {
+    "physical_footprint_after_prefill_bytes": 13510798568,
+    "physical_footprint_after_decode_bytes": 13474688232,
+    "mlx_peak_bytes": 11007206184,
+    "swapout_delta_bytes": 397148160,
+    "swapin_delta_bytes": 71811072,
+    "note": "System-wide swap delta on a non-cleared machine with other applications open; the strict cleared-machine zero-swap contract is G5."
+  },
+  "result": "pass"
+}

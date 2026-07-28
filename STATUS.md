@@ -10,10 +10,24 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
-## Active: native Colibri/GLM-5.2 port (2026-07-21)
+## Active: native Colibri/GLM-5.2 port (2026-07-24)
 
-Work is on branch `codex/colibri-glm52-port`. Phase 21 **G0 is complete; G1 is
-next**. The Colibri checkout remains clean at
+Work is on branch `codex/colibri-glm52-port`. Phase 21 **G0 and G2 are
+complete; G1's agent-safe implementation is complete and independently
+audited; G3 is in progress**. G1's two
+quiet-machine manual measurements still remain before its exit can close. The
+landed-in-worktree foundation now has a strict versioned synthetic Colibri
+gate/up/down artifact, fixed 16 KiB native slabs, passive bounded `pread`
+workers, async Bun-side completion polling, generation-bound CPU/GPU leases,
+lazy-graph evaluation plus stream synchronization before reuse, deterministic
+LRU traces, and stock-MLX/custom-Metal zero-copy consumers. Forced churn covers
+1,000 native reloads plus 100 GPU-fenced MLX reloads with flat allocator use.
+The final adversarial audit reproduced and closed both a post-close bus error
+and a lazy-graph stale-read/UAF class before passing. G3 is proceeding with the
+stock-MLX correctness candidate while the workflow's manual paired kernel
+matrix and passive-worker power measurement remain outstanding; no performance
+winner has been selected or quoted yet. The Colibri checkout
+remains clean at
 `44e489b196c9b7876b3d37a0570ebf1c6f90f54c`; the public GLM-5.2 artifact is
 pinned at revision `3cc8db99b1b13fc79325d987ba3c1c430766b3b8`. All 150 files
 are accounted for and all 145 LFS payloads (383,760,044,154 bytes) match the
@@ -51,6 +65,108 @@ mutating or duplicating the 357 GiB serving snapshot. It is not needed at the
 DSA selects from at most `topk=2048` prior tokens. Complete
 commands, caveats, and evidence hashes live in
 [docs/investigations/colibri-oracle-pin.md](docs/investigations/colibri-oracle-pin.md).
+
+G2 now has a dedicated `glm_moe_dsa` config/model and artifact-aware
+`openModel()` path, exact GLM template fallback and multiple EOS, direct
+Colibri shard catalog/layout validation, lazy MLX Q4/Q8 loading, compressed MLA
+KV, reconstructed prefill plus absorbed serial decode, exact DSA selection and
+shared-state reuse, exact lower-ID-tie top-8 routing, and shared+routed expert
+composition. Focused synthetic/reference gates are green. Header-only
+validation of the pinned public artifact found 59,003 quantized tensors, 472
+float tensors, 19,456 routed experts, complete MTP metadata, and—as expected—
+no DSA sidecar, without executing the full model.
+
+The G2 tiny-model gate is now closed with the pinned Colibri code. An isolated
+generator environment reproduced the committed BF16 trajectory exactly, then
+Colibri's converter produced the production-relevant 353 KiB per-row Q4 direct
+container. The apparent 26/32 discrepancy was entirely an oracle-mode mismatch:
+Colibri defaults to activation-int8 `IDOT` on Apple Silicon, while G2's
+quality-preserving contract is exact dequant-to-f32-MAC. With `IDOT=0`, Colibri
+C and mlx-bun match at 32/32 positions on identical Q4 bytes. Across all 8,192
+logits, max absolute delta is 1.3113e-6 and RMSE is 2.7423e-7; mlx-bun's
+minimum top-two margin is 0.003425. The tracked fixture records the pinned
+commit, exact conversion/oracle arguments, both exact and default-IDOT
+trajectories, numeric bounds, and SHA-256 values. The artifact is preserved
+machine-locally at `runs/colibri-glm52-tiny-i4`.
+
+The manual production-Q4 gate is now closed too. A selected-shard runner used
+the real G0 decode inputs without constructing the full model, experts, cache,
+or generation loop. Layer 0's complete Q4 gate/up/down SwiGLU matched pinned
+Colibri `dense_mlp` under `IDOT=0` at max absolute delta 5.2387e-9 and RMSE
+9.7823e-10. Layer-3 and layer-77 router projections reproduced the exact eight
+expert IDs and `keff=8`; sigmoid max deltas were 4.7684e-7 and 7.1526e-7.
+Two fresh processes produced identical numeric results. The run exposed and
+fixed one production-only bug: Colibri's whole-row scale implied unsupported
+MLX affine-dequant group size 6144, so the same scale is now repeated over
+supported 32-value groups with identical dequantized values. With the tiny
+artifact gate enabled, the focused GLM suite is 55 pass, 0 fail.
+
+Peak MLX allocation was 1,566,883,896 bytes and observed process RSS peaked at
+290,455,552 bytes. System free memory remained 78%; the pre-existing 1,840.25
+MiB of swap did not change. Stable evidence is tracked at
+`fixtures/colibri-glm52/production-probe.json`. No performance benchmark or
+full-model generation was performed; this was the bounded G2 correctness
+probe authorized for the production artifact.
+
+G3 now has the direct-artifact residency path in worktree. Native slabs accept
+up to eight positioned segments across the 141 main shards, which covers the
+19,114 ordinary four-segment experts and 86 cross-shard six-segment experts
+without constructing a converted copy. The canonical production Q4 slot is
+18,939,904 bytes (down/gate/up packed weights followed by their F32 scales);
+every directly wrapped component starts on its own 16 KiB boundary.
+The native layer also exposes physical-footprint sampling and safe decommit of
+idle generations while preserving fixed virtual addresses.
+
+The TypeScript policy derives capacity from a fixed byte budget and refuses
+startup below the global 64-slot working bank plus one persistent slot per
+sparse layer. It implements deterministic per-layer LRU, a separate pinned
+tier, generation-tagged async loads, reverse-order miss promotion by logical
+slot-role swap (no 19 MB copy), one shared GPU fence per wave, stable row/rank
+batch union, and safe-point-only downward pressure correction. Read failures
+are drained and discarded before a scratch slot can be reused.
+
+The GLM execution chain has a parallel async path from model through layer and
+MLP. It submits resident expert graphs and the shared expert before miss reads,
+materializes each <=64-unique wave before releasing its slab leases, and
+composes rows afterward in exact route order. Resident weights explicitly
+reject every `.mlp.experts.*` access, preventing fallback to the G2 mmap
+backend. The stock-MLX candidate wraps canonical packed Q4 bytes directly as
+uint32 lanes and uses affine QMM with the exact `-8*scale` bias. The machine-
+local tiny direct container passes the complete streamed 32/32 trajectory with
+64 global working slots, one LRU slot for each sparse layer, and no live leases
+or loads after the forward. Focused G3 policy/layout/async/native tests are
+green.
+
+The post-alignment bounded production expert gate also passes. Layer 3
+reproduces exact top-8 `[250,64,199,172,129,191,82,63]`; the complete weighted
+routed sum plus unweighted shared expert is byte-identical across cold, warm,
+and forced-eviction reruns and matches the direct Colibri capture at max
+absolute delta 1.8626e-9 / RMSE 3.6290e-10. The forced trace records cold
+`0H/8M/0E`, warm `1H/7M/0E`, replacement `0H/1M/1E`, and post-eviction
+`0H/8M/1E`. Final physical footprint is 726,549,944 bytes and swap growth is
+zero. Stable evidence:
+`fixtures/colibri-glm52/g3-production-expert-probe.json`.
+
+The full streamed two-forward gate now passes: the 32-token prefix predicts
+16 and the following decode predicts 13, with tie-free margins 2.9581 and
+7.0824. The run used the required 64-slot global bank plus one LRU slot for
+each of 75 sparse layers; final physical footprint was 13,474,688,232 bytes,
+MLX peak allocation was 11,007,206,184 bytes, and no load or lease remained.
+The first attempt exposed and fixed a G2-only full-table Q8 embedding/head
+transient: streamed embedding now gathers rows before signed-int8 dequant,
+the output head is evaluated in bounded output-row tiles, resident Q4 spine
+linears use MLX affine quantized matmul, and every layer is an explicit safe
+point. A live per-wave swap guard now records and bounds system-wide swap
+activity. The passing non-cleared run recorded 397,148,160 bytes of swapout
+with other applications open; that is not a zero-swap claim, whose cleared
+machine gate remains G5. Stable evidence is
+`fixtures/colibri-glm52/g3-full-model-trajectory.json`.
+
+The final adversarial review found no numeric, alignment, ownership/UAF, or
+budget blocker. Its two error-path findings (double release after a failed
+lease release and post-close guard sampling) are fixed, and the 98-test
+focused/native suite plus both entry bundles pass afterward. Remaining G3
+work is only the quiet kernel/power matrix and routed-SwiGLU path selection.
 
 ## Where we are (2026-07-10 — v0.0.11 released)
 

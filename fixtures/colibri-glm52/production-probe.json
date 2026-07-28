@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "gate": "G2 production Q4 dense/router",
+  "date": "2026-07-24",
+  "provenance": {
+    "machine": "Apple M1 Max, 32 GiB unified memory",
+    "bun": "1.3.14",
+    "colibri_commit": "44e489b196c9b7876b3d37a0570ebf1c6f90f54c",
+    "colibri_glm_sha256": "3be1b4dd663667c8fa2cfbbacdada3e545ff5f924737a0f5d058708d7bc5ad9d",
+    "artifact_revision": "3cc8db99b1b13fc79325d987ba3c1c430766b3b8",
+    "capture_manifest_sha256": "1eeb481d4dcd0e6ebac5917dae0640e7acee6509231a24ea31eb14f0a6c62fec",
+    "command": "bun scripts/probe-colibri-glm52-production.ts --model <snapshot> --capture <numeric-oracle-final-r1> --colibri <checkout> --output <report.json>"
+  },
+  "contract": {
+    "dense": "same production Q4 bytes; pinned Colibri dense_mlp with IDOT=0 versus MLX dequant-to-f32 matmul",
+    "router": "same captured production f32 inputs and weights; exact top-8 IDs and keff",
+    "sanity_bounds": {
+      "dense_max_abs": 0.001,
+      "dense_rmse": 0.0001,
+      "dense_min_cosine": 0.99999,
+      "router_sigmoid_max_abs": 0.0001,
+      "router_weight_max_abs": 0.0001
+    }
+  },
+  "dense_layer_0_decode_row": {
+    "input_sha256": "9b71fd78f316a196191dd5422a29ae6c8296e674da10189ca86a57e8040a41ae",
+    "colibri_idot0_output_sha256": "597d7f809cb1df2ab7598fc84b281e7bcb2b2fd19cc359902ef3086d1308d82d",
+    "mlx_output_sha256": "74dfd8efc1aeb333827ebba83685395e4a4d59cc5cc1c0e694a962e6199e9b85",
+    "max_abs": 5.238689482212067e-9,
+    "mean_abs": 7.699855845514728e-10,
+    "rmse": 9.782275481549657e-10,
+    "cosine": 0.9999999999998781,
+    "mlx_peak_bytes": 1566883896,
+    "process_rss_peak_observed_bytes": 290455552
+  },
+  "routers": [
+    {
+      "layer": 3,
+      "input_sha256": "0747fa2826f3bd39364ab88f2b6cae7c5b85d4f3199227bcbf2880c566961024",
+      "top_ids": [250, 64, 199, 172, 129, 191, 82, 63],
+      "keff": 8,
+      "top8_boundary_margin": 0.000614166259765625,
+      "sigmoid_max_abs": 4.76837158203125e-7,
+      "sigmoid_rmse": 1.3381261419997967e-7,
+      "execution_weight_max_abs": 4.3213367462158203e-7,
+      "execution_weight_rmse": 1.7873630726181203e-7
+    },
+    {
+      "layer": 77,
+      "input_sha256": "d450468287a2d141433ed081745489fa4233b3fcf02c38303834719e03a6ff4c",
+      "top_ids": [133, 202, 112, 203, 86, 191, 163, 201],
+      "keff": 8,
+      "top8_boundary_margin": 0.013111114501953125,
+      "sigmoid_max_abs": 7.152557373046875e-7,
+      "sigmoid_rmse": 2.1257182746934266e-7,
+      "execution_weight_max_abs": 8.940696716308594e-8,
+      "execution_weight_rmse": 6.233602959916559e-8
+    }
+  ],
+  "reproducibility": {
+    "independent_processes": 2,
+    "numeric_reports_identical": true
+  },
+  "memory_guard": {
+    "system_free_percent_before": 78,
+    "system_free_percent_after": 78,
+    "swap_used_before_mib": 1840.25,
+    "swap_used_after_mib": 1840.25,
+    "swap_growth_mib": 0
+  },
+  "result": "pass"
+}

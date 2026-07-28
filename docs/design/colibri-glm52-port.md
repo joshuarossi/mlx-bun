@@ -740,6 +740,31 @@ matching the oracle versus beating it.
 growth under forced churn. Select and record the fastest correct MLX/custom-
 Metal execution path for each kernel shape, then proceed with the full port.
 
+#### G1 implementation status (2026-07-22)
+
+The agent-safe foundation is implemented and independently audited. A strict,
+versioned model-free artifact preserves one-read contiguous gate/up/down bytes
+and separately contiguous scales. The native helper owns fixed 16 KiB-aligned
+slabs, uses a bounded `pthread_cond_wait` worker pool plus full positioned reads,
+and exposes nonblocking Bun polling. Slot pointers are observable only through
+matching generation-bound leases. GPU release requires the dependent lazy MLX
+outputs, evaluates them, synchronizes their selected stream, and only then
+publishes the slot as reusable; close refuses live leases.
+
+The stress gate includes short-read/cancellation/error paths, post-close access,
+stateful hit/miss/evict traces, 1,000 native reloads with stable addresses and
+bounded RSS, 100 GPU-fenced reloads with flat MLX active+cache accounting, and a
+reproduction of the lazy-graph poison race. Both stock MLX and custom Metal
+consume the same slab, including a complete synthetic gate/up/down region.
+The helper remains an internal, build-only G1 artifact via
+`scripts/build-expert-io.sh`; G3/G8 integration will publish it in a newly
+versioned native pack and update the distribution reference in the same change.
+
+G1 remains open only for the workflow's manual quiet-machine gates: paired
+Colibri-vs-MLX/custom-Metal benchmarks for int4 dense GEMM, routed SwiGLU, and
+MLA decode, followed by CPU/GPU/package-power measurement confirming passive
+workers. Those measurements select the recorded execution path per shape.
+
 ### G2 — native GLM-5.2 correctness spine
 
 - Implement config, tokenizer/template, dense graph, MLA compressed KV, DSA,
@@ -768,6 +793,90 @@ forcing is 32/32 token-exact on a tie-free greedy trajectory against the pinned
 Colibri engine; full-model dense/router probes match within the recorded
 bounds.
 
+#### G2 implementation status (2026-07-24)
+
+The dedicated correctness path is implemented. `glm_moe_dsa` configuration is
+parsed independently of the stale source-checkpoint FP8 metadata; the factory
+has an artifact-aware `openModel()` entrypoint; the GLM fallback template pins
+roles, thinking blocks, and tool formatting; and EOS IDs are the union of model
+and generation configuration. A header-only catalog reads `out-*`,
+`out-mtp-*`, and optional `out-idx-*` safetensors directly, infers Q4/Q8 from
+payload/scale geometry, and validates every expected global, attention, dense,
+shared, routed-expert, DSA, and MTP tensor before graph construction.
+
+The MLX correctness backend opens those shards lazily on the CPU stream.
+Colibri Q4 bytes are repacked lazily into MLX's uint32 affine layout with
+`bias=-8*scale`; Q8 restores the signed two's-complement byte before applying
+its scale. MLA stores only compressed latent and decoupled RoPE state, supports
+reconstructed causal prefill and absorbed single-token decode, and gathers DSA
+positions without first materializing full K/V. The DSA state is correctly one
+shared `[B,T,index_head_dim]` key—not one key per index head—and implements
+full-layer selection plus scheduled reuse. MoE routing uses biased sigmoid for
+selection, lower expert ID for exact ties, unbiased sigmoid for execution,
+routed scaling, and an unweighted shared expert.
+
+Focused tests cover config/container failures, layout/dispatch, Q4/Q8
+dequantization, reference f32 arithmetic, partial interleaved RoPE, compressed
+cache bytes and trim, reconstructed/absorbed MLA equality, DSA threshold/ties,
+sparse decode, exact row-wise fallback when a multi-token prefill crosses
+`index_topk`, exact router ties, shared+routed composition, the template, and
+independent one-layer dense and MoE host oracles. Header-only validation of
+the pinned public artifact completed without executing the model and reported
+59,003 quantized tensors, 472 floats, 19,456 routed experts, MTP present, and
+DSA absent.
+
+The pinned 32-token gate is tracked as
+`fixtures/colibri-glm52/tiny-teacher-forcing.json` and selected with
+`MLX_BUN_GLM52_TINY_COLIBRI`. On 2026-07-24 an isolated Python 3.12 environment
+with Torch 2.8.0, Transformers 5.12.0, and safetensors 0.8.0 ran the pinned
+Colibri generator. Transformers' default grouped-MoE dispatcher has no Torch
+2.8 CPU kernel, so generation selected its mathematically identical eager
+expert implementation; the resulting BF16 trajectory reproduced committed
+`c/ref_glm.json` exactly.
+
+The raw toy model was then converted with Colibri's own converter to the
+production-relevant per-row Q4 direct format. Its 9/32 score against the BF16
+trajectory is simply the quantized model differing from the source model; the
+correct cross-engine oracle is the same Q4 bytes in both runtimes. An initial
+default-vs-default comparison produced 26/32 because the two defaults did not
+compute the same function: on Apple Silicon Colibri enables `IDOT=1`, which
+quantizes each activation row to int8 before the packed-int4 dot product and
+documents about 0.3% additional RMS error per matmul. The G2 contract instead
+pins the quality-preserving dequant-to-f32-MAC path, selected in Colibri with
+`IDOT=0`.
+
+Under that matched contract, pinned Colibri C and mlx-bun are 32/32 on the same
+Q4 artifact. An archive-only Colibri instrumentation build dumped all 8,192
+f32 logits: max absolute delta is 1.3113e-6, mean absolute delta 2.1548e-7,
+RMSE 2.7423e-7, and the minimum MLX top-two margin is 0.003425. The fixture
+records exact commands, oracle flags, exact-path and default-IDOT trajectories,
+numeric bounds, and raw/config/container hashes; the generated 353 KiB
+container lives at `runs/colibri-glm52-tiny-i4` (gitignored). `IDOT` is now an
+explicit approximate-performance candidate for a later quality/performance
+gate, not the correctness oracle.
+
+The production-artifact gate is also closed. The bounded runner opens only the
+shard owning the cell under test and never constructs the full model, experts,
+KV cache, tokenizer, or generation loop. On the captured real decode row,
+layer 0's complete Q4 gate/up/down SwiGLU matched pinned Colibri `dense_mlp`
+with `IDOT=0` at max absolute delta 5.2387e-9 and RMSE 9.7823e-10. The real
+layer-3 and layer-77 routers reproduced every top-8 ID and `keff=8`; their
+sigmoid max deltas were 4.7684e-7 and 7.1526e-7. Two fresh processes produced
+identical numeric reports. This run caught a production-only loader defect
+that the tiny artifact could not expose: MLX has no affine-dequant Metal kernel
+for Colibri's logical whole-row group size 6144. Repeating the identical
+per-row scale over supported 32-value groups preserves every dequantized value
+and selects an available kernel. With the tiny artifact gate enabled, the
+focused GLM suite is 55 pass, 0 fail after the fix.
+
+The probe peaked at 1,566,883,896 MLX allocator bytes and 290,455,552 observed
+process RSS; system free memory stayed at 78% and swap usage was unchanged.
+The stable evidence and bounds are tracked in
+`fixtures/colibri-glm52/production-probe.json`, with the reproducible runner at
+`scripts/probe-colibri-glm52-production.ts`. G2 validates the complete MTP
+container/config surface; serial MTP execution and rollback remain G4 under
+the revised order.
+
 ### G3 — native bounded LRU and slab execution path
 
 - Add the native I/O helper, slot manager, LRU/pin states, RSS guard, batch-union,
@@ -777,6 +886,58 @@ bounds.
 **Exit:** forced hit/miss/evict traces match a reference policy exactly; no
 partial/stale slot can be observed under stress; quality-policy tokens match
 direct Colibri for a tie-free trajectory.
+
+#### G3 implementation status (2026-07-24, in progress)
+
+The direct artifact now has one canonical routed-expert slot catalog and a
+native multi-file scatter-read pool. Production Q4 experts occupy 18,939,904
+aligned bytes; every MLX-addressed component has an independently page-aligned
+offset. The 19,114 ordinary main experts use four positioned reads and the 86
+shard-boundary cases use six, below the fixed eight-segment limit. Idle
+generations can be decommitted without changing their virtual addresses, and
+live pressure uses the process `phys_footprint` counter rather than historical
+peak RSS.
+
+The first policy implementation mirrors Colibri's physical tiers: one global
+64-slot working bank, fixed per-layer LRU slots, and a separate pinned bank.
+Misses are promoted only after a shared GPU fence by swapping logical slot
+roles with free/LRU destinations; expert payloads are never copied. Stable
+row/rank batch union, reverse miss promotion, deterministic LRU ties, startup
+refusal, failure drain/discard, and safe-point-only downward capacity
+correction have focused tests.
+
+An async GLM-only execution seam preserves the synchronous G2 model as the
+oracle. Its stock-MLX candidate wraps packed slot bytes directly, submits
+resident/shared work before miss reads, materializes each <=64-expert wave
+before releasing leases, and composes rows in exact route order afterward.
+The resident tensor source rejects routed-expert names, closing accidental
+mmap fallback. The tiny direct Q4 container remains 32/32 token-exact through
+this path. The bounded production layer-3 expert probe reproduces exact top-8,
+matches the complete Colibri routed+shared output at max absolute delta
+1.8626e-9, and remains byte-identical after a forced LRU eviction with zero
+swap growth. The custom M=1 Metal candidate is implemented and explicitly
+selectable.
+
+The production full-model trajectory now passes as well. A 32-token prefill
+and one decode forward reproduce the tie-free Colibri token sequence
+`[16,13]`, with margins 2.9581 and 7.0824. The direct streamed run ends at
+13,474,688,232 bytes physical footprint and 11,007,206,184 bytes MLX peak
+allocation, with 64 working slots, 75 resident slots, and no loading or leased
+slot left behind. Bring-up first exposed a G2-only memory amplification:
+materializing the 154,880×6,144 signed-int8 embedding and output head as full
+f32 tensors. The streamed source now gathers embedding rows before dequant,
+evaluates the output head in bounded row tiles, uses MLX affine Q4 matmul for
+the resident spine, and synchronizes each layer as a residency safe point.
+A per-wave live guard records cumulative swap counters and aborts at a caller
+bound. The passing non-cleared run recorded 397,148,160 bytes of system-wide
+swapout while other applications were open; the strict cleared-machine
+zero-swap contract remains G5. Evidence:
+`fixtures/colibri-glm52/g3-full-model-trajectory.json`.
+
+The quiet-machine kernel/power matrix and routed-SwiGLU path selection remain
+open; therefore G3 is not yet closed. The final adversarial code review found
+no numeric, alignment, ownership/UAF, or budget blocker; its two cleanup-path
+findings were fixed before the focused/native suite was rerun.
 
 ### G4 — serial native MTP (requirement)
 

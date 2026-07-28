@@ -2,6 +2,11 @@
 // Parses HF config.json (Gemma 4 unified layout: text_config nested),
 // the OptiQ per-layer quantization map, and kv_config.json when present.
 
+import {
+  parseGlm52Config,
+  type Glm52Config,
+} from "./model/glm52-config";
+
 export interface RopeParams {
   ropeTheta: number;
   ropeType: string;
@@ -223,6 +228,18 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
   const raw = (await Bun.file(`${modelDir}/config.json`).json()) as Record<string, any>;
   const modelType = raw.model_type;
   const isDiffusion = modelType === "diffusion_gemma";
+  const isGlm52 = modelType === "glm_moe_dsa";
+  // The converted Colibri artifact keeps stop metadata split across the two
+  // HF files. Preserve the old config-only behavior for every other family;
+  // GLM-5.2 explicitly unions both lists through its dedicated parser.
+  let glm52: Glm52Config | null = null;
+  if (isGlm52) {
+    const generationFile = Bun.file(`${modelDir}/generation_config.json`);
+    const generation = await generationFile.exists()
+      ? await generationFile.json() as Record<string, any>
+      : null;
+    glm52 = parseGlm52Config(modelDir, raw, generation);
+  }
   // Gemma 4 unified nests the LM config; plain text models keep it at top level.
   // DiffusionGemma keeps it flat too, but omits all dims — backfill from defaults.
   const baseT = (raw.text_config ?? raw) as Record<string, any>;
@@ -238,32 +255,44 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
   const qwenRope = (t.rope_parameters ?? {}) as Record<string, any>;
 
   const text: TextConfig = {
-    hiddenSize: t.hidden_size,
-    numHiddenLayers: t.num_hidden_layers,
-    numAttentionHeads: t.num_attention_heads,
-    numKeyValueHeads: t.num_key_value_heads,
-    headDim: t.head_dim ?? Math.floor(t.hidden_size / t.num_attention_heads),
-    numGlobalKeyValueHeads: t.num_global_key_value_heads ?? t.num_key_value_heads,
-    globalHeadDim: t.global_head_dim ?? t.head_dim ?? Math.floor(t.hidden_size / t.num_attention_heads),
+    hiddenSize: glm52?.hiddenSize ?? t.hidden_size,
+    numHiddenLayers: glm52?.numHiddenLayers ?? t.num_hidden_layers,
+    numAttentionHeads: glm52?.numAttentionHeads ?? t.num_attention_heads,
+    numKeyValueHeads: glm52?.numKeyValueHeads ?? t.num_key_value_heads,
+    headDim: glm52?.qkHeadDim ?? t.head_dim ?? Math.floor(t.hidden_size / t.num_attention_heads),
+    numGlobalKeyValueHeads:
+      glm52?.numKeyValueHeads ?? t.num_global_key_value_heads ?? t.num_key_value_heads,
+    globalHeadDim:
+      glm52?.qkHeadDim ??
+      t.global_head_dim ??
+      t.head_dim ??
+      Math.floor(t.hidden_size / t.num_attention_heads),
     attentionKEqV: t.attention_k_eq_v ?? false,
-    intermediateSize: t.intermediate_size,
+    intermediateSize: glm52?.intermediateSize ?? t.intermediate_size,
     hiddenActivation: t.hidden_activation ?? t.hidden_act ?? "gelu_pytorch_tanh",
-    rmsNormEps: t.rms_norm_eps,
-    vocabSize: t.vocab_size,
-    maxPositionEmbeddings: t.max_position_embeddings,
+    rmsNormEps: glm52?.rmsNormEps ?? t.rms_norm_eps,
+    vocabSize: glm52?.vocabSize ?? t.vocab_size,
+    maxPositionEmbeddings:
+      glm52?.maxPositionEmbeddings ?? t.max_position_embeddings,
     slidingWindow: t.sliding_window ?? 0,
-    layerTypes: t.layer_types ?? (isLlama ? Array(t.num_hidden_layers).fill("full_attention") : []),
+    layerTypes: glm52
+      ? Array(glm52.numHiddenLayers).fill("full_attention")
+      : t.layer_types ?? (isLlama ? Array(t.num_hidden_layers).fill("full_attention") : []),
     hiddenSizePerLayerInput: t.hidden_size_per_layer_input ?? 0,
-    vocabSizePerLayerInput: t.vocab_size_per_layer_input ?? t.vocab_size,
+    vocabSizePerLayerInput:
+      t.vocab_size_per_layer_input ?? glm52?.vocabSize ?? t.vocab_size,
     numKvSharedLayers: t.num_kv_shared_layers ?? 0,
-    enableMoeBlock: t.enable_moe_block ?? false,
-    numExperts: t.num_experts ?? 0,
+    enableMoeBlock: glm52 ? true : t.enable_moe_block ?? false,
+    numExperts: glm52?.numRoutedExperts ?? t.num_experts ?? 0,
     // gemma4 uses `top_k_experts`; qwen3_moe uses `num_experts_per_tok`.
-    topKExperts: t.top_k_experts ?? t.num_experts_per_tok ?? 0,
-    moeIntermediateSize: t.moe_intermediate_size ?? 0,
-    decoderSparseStep: t.decoder_sparse_step ?? 1,
-    mlpOnlyLayers: t.mlp_only_layers ?? [],
-    normTopkProb: t.norm_topk_prob ?? false,
+    topKExperts:
+      glm52?.numExpertsPerToken ?? t.top_k_experts ?? t.num_experts_per_tok ?? 0,
+    moeIntermediateSize: glm52?.moeIntermediateSize ?? t.moe_intermediate_size ?? 0,
+    decoderSparseStep: glm52 ? 1 : t.decoder_sparse_step ?? 1,
+    mlpOnlyLayers: glm52
+      ? Array.from({ length: glm52.firstKDenseReplace }, (_, layer) => layer)
+      : t.mlp_only_layers ?? [],
+    normTopkProb: glm52?.normTopkProb ?? t.norm_topk_prob ?? false,
     linearNumValueHeads: t.linear_num_value_heads ?? 0,
     linearNumKeyHeads: t.linear_num_key_heads ?? 0,
     linearKeyHeadDim: t.linear_key_head_dim ?? 0,
@@ -271,9 +300,19 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
     linearConvKernelDim: t.linear_conv_kernel_dim ?? 0,
     fullAttentionInterval: t.full_attention_interval ?? 0,
     attnOutputGate: t.attn_output_gate ?? false,
-    partialRotaryFactor:
-      qwenRope.partial_rotary_factor ?? t.partial_rotary_factor ?? 1.0,
-    ropeParameters: isQwen35
+    partialRotaryFactor: glm52
+      ? glm52.qkRopeHeadDim / glm52.qkHeadDim
+      : qwenRope.partial_rotary_factor ?? t.partial_rotary_factor ?? 1.0,
+    ropeParameters: glm52
+      ? {
+          full_attention: {
+            ropeTheta: glm52.ropeTheta,
+            ropeType: "default",
+            partialRotaryFactor: glm52.qkRopeHeadDim / glm52.qkHeadDim,
+            factor: 1.0,
+          },
+        }
+      : isQwen35
       ? {
           full_attention: {
             ropeTheta: qwenRope.rope_theta ?? t.rope_theta ?? 10000,
@@ -297,7 +336,7 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
     finalLogitSoftcapping: t.final_logit_softcapping ?? null,
     tieWordEmbeddings: t.tie_word_embeddings ?? raw.tie_word_embeddings ?? false,
     bosTokenId: t.bos_token_id ?? raw.bos_token_id,
-    eosTokenId: t.eos_token_id ?? raw.eos_token_id,
+    eosTokenId: glm52?.eosTokenIds ?? t.eos_token_id ?? raw.eos_token_id,
     canvasLength: raw.canvas_length ?? t.canvas_length,
   };
 
@@ -311,14 +350,20 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
     }));
   }
 
-  const eos = raw.eos_token_id ?? text.eosTokenId;
+  const eos = glm52?.eosTokenIds ?? raw.eos_token_id ?? text.eosTokenId;
   return {
     modelDir,
     modelType,
     architectures: raw.architectures ?? [],
     dtype: raw.dtype ?? "bfloat16",
     text,
-    quantization: parseQuantization(raw.quantization ?? raw.quantization_config),
+    // Colibri's config retains the SOURCE FP8 quantization_config, while the
+    // serving shards are converted U8 + `.qs` tensors whose int4/int8/group
+    // geometry is inferred and validated by Glm52Container. Advertising the
+    // source FP8 block as mlx affine quantization would be actively wrong.
+    quantization: glm52
+      ? null
+      : parseQuantization(raw.quantization ?? raw.quantization_config),
     kvQuant,
     hasVisionSidecar: await Bun.file(`${modelDir}/optiq_vision.safetensors`).exists(),
     eosTokenIds: Array.isArray(eos) ? eos : [eos],

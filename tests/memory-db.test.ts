@@ -2,6 +2,9 @@
 
 import { describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { MemoryStore, chunkId } from "../src/memory/db";
 
 function byteLen(s: string): number {
@@ -10,24 +13,30 @@ function byteLen(s: string): number {
 
 describe("MemoryStore schema", () => {
   it("nukes a legacy DB (chunks.text / synthesized_bucket_chunks) and recreates cleanly", () => {
-    const path = `/private/tmp/claude-501/-Users-joshrossi-Code-mlx-bun/legacy-${Date.now()}.sqlite`;
-    const seed = new Database(path);
-    seed.exec(`CREATE TABLE conversations (conv TEXT PRIMARY KEY, transcript TEXT)`);
-    seed.exec(`CREATE TABLE chunks (id TEXT PRIMARY KEY, conv TEXT, ordinal INTEGER, text TEXT, bucket TEXT)`);
-    seed.exec(`INSERT INTO chunks VALUES ('old', 'c0', 0, 'legacy body', 'b')`);
-    seed.exec(`CREATE TABLE synthesized_bucket_chunks (bucket TEXT, chunk_id TEXT, PRIMARY KEY (bucket, chunk_id))`);
-    seed.close();
+    const root = mkdtempSync(join(tmpdir(), "mlx-bun-memory-db-"));
+    let store: MemoryStore | null = null;
+    try {
+      const path = join(root, "legacy.sqlite");
+      const seed = new Database(path);
+      seed.exec(`CREATE TABLE conversations (conv TEXT PRIMARY KEY, transcript TEXT)`);
+      seed.exec(`CREATE TABLE chunks (id TEXT PRIMARY KEY, conv TEXT, ordinal INTEGER, text TEXT, bucket TEXT)`);
+      seed.exec(`INSERT INTO chunks VALUES ('old', 'c0', 0, 'legacy body', 'b')`);
+      seed.exec(`CREATE TABLE synthesized_bucket_chunks (bucket TEXT, chunk_id TEXT, PRIMARY KEY (bucket, chunk_id))`);
+      seed.close();
 
-    const store = new MemoryStore(path);
-    const cols = store.db.query("PRAGMA table_info(chunks)").all() as { name: string }[];
-    expect(cols.some((c) => c.name === "text")).toBe(false);
-    expect(cols.some((c) => c.name === "bucket")).toBe(false);
-    expect(cols.some((c) => c.name === "start")).toBe(true);
-    expect(cols.some((c) => c.name === "end")).toBe(true);
-    expect(store.db.query("SELECT name FROM sqlite_master WHERE name='synthesized_bucket_chunks'").get()).toBeNull();
-    expect(store.db.query("SELECT name FROM sqlite_master WHERE name='entities'").get()).not.toBeNull();
-    expect(store.chunkText("old")).toBe(""); // legacy row gone
-    store.close();
+      store = new MemoryStore(path);
+      const cols = store.db.query("PRAGMA table_info(chunks)").all() as { name: string }[];
+      expect(cols.some((c) => c.name === "text")).toBe(false);
+      expect(cols.some((c) => c.name === "bucket")).toBe(false);
+      expect(cols.some((c) => c.name === "start")).toBe(true);
+      expect(cols.some((c) => c.name === "end")).toBe(true);
+      expect(store.db.query("SELECT name FROM sqlite_master WHERE name='synthesized_bucket_chunks'").get()).toBeNull();
+      expect(store.db.query("SELECT name FROM sqlite_master WHERE name='entities'").get()).not.toBeNull();
+      expect(store.chunkText("old")).toBe(""); // legacy row gone
+    } finally {
+      store?.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("stores chunks as pointers — no text duplication, chunkText reassembles the slice", () => {

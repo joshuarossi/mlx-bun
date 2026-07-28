@@ -35,7 +35,7 @@ const weights = await Weights.open(MODEL);
 const model = createModel(weights, config);
 if (!(model instanceof MiniCPM5Model)) throw new Error("expected MiniCPM5Model");
 const cpm: MiniCPM5Model = model;
-const nLayers = model.layers.length;
+const nLayers = cpm.layers.length;
 
 const ids = Array.from({ length: SEQ }, (_, i) => ((i * 7 + 3) % 2000) + 1);
 const batch: SftBatch = { ids: [ids], promptLens: [Math.floor(SEQ / 2)] };
@@ -47,15 +47,15 @@ for (let t = 0; t < T; t++) inputHost[t] = ids[t]!;
 function lossVariant(detach: boolean): number {
   const inputIds = MlxArray.fromInt32(inputHost, [1, T]);
   const caches: Cache[] = Array.from({ length: nLayers }, () => new TrainingCache());
-  let h = model.embed.encode(inputIds);
+  let h = cpm.embed.encode(inputIds);
   if (detach) { const d = ops.stopGradient(h); h.dispose(); h = d; h.eval(); }
   const layerOut = cpm.runLayerRange(h, 0, nLayers, caches);
   h.dispose();
   let lo = layerOut;
   if (detach) { const d = ops.stopGradient(lo); lo.dispose(); lo = d; lo.eval(); }
-  const hn = model.finalNorm.forward(lo);
+  const hn = cpm.finalNorm.forward(lo);
   lo.dispose();
-  const loss = responseOnlyCe(model, hn, batch);
+  const loss = responseOnlyCe(cpm, hn, batch);
   hn.dispose();
   loss.eval();
   const v = loss.toFloat32()[0]!;

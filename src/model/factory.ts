@@ -4,8 +4,8 @@
 // Gemma4Model and only override forwardLayers (with their own
 // cache-signature guard), so the choice is always safe.
 
-import type { ModelConfig } from "../config";
-import type { Weights } from "../weights";
+import { loadModelConfig, type ModelConfig } from "../config";
+import { Weights } from "../weights";
 import { Gemma4Model } from "./gemma4";
 import { configFingerprint } from "./fingerprint";
 import { GENERATED } from "./generated";
@@ -14,19 +14,37 @@ import { Qwen35Model } from "./qwen3_5";
 import { Qwen3Model } from "./qwen3";
 import { Qwen3MoeModel } from "./qwen3-moe";
 import { DiffusionGemmaModel } from "./diffusion-gemma";
+import { Glm52Model } from "./glm52";
 import { UniversalDenseModel } from "./universal/dense";
 import { genericArgsFor, GENERIC_MODEL_TYPES, remapModelType } from "./universal/archs";
-import { isDiffusionGemmaConfig, isMiniCPM5Config, isQwen35Config, isQwen3Config, isQwen3MoeConfig } from "./support";
+import { isDiffusionGemmaConfig, isGlm52Config, isMiniCPM5Config, isQwen35Config, isQwen3Config, isQwen3MoeConfig } from "./support";
 
 export type RuntimeModel =
   | Gemma4Model | MiniCPM5Model | Qwen35Model | Qwen3Model | Qwen3MoeModel
-  | DiffusionGemmaModel | UniversalDenseModel;
+  | DiffusionGemmaModel | Glm52Model | UniversalDenseModel;
+
+/**
+ * Artifact-aware construction. GLM-5.2's Colibri snapshot has no ordinary
+ * model.safetensors.index.json, so it must bypass Weights.open and use its
+ * dedicated header catalog/tensor source.
+ */
+export async function openModel(modelDir: string): Promise<RuntimeModel> {
+  const config = await loadModelConfig(modelDir);
+  if (isGlm52Config(config)) return Glm52Model.open(modelDir);
+  return createModel(await Weights.open(modelDir), config);
+}
 
 /** Dispatch ladder (docs/design/generic-model-support.md §3.3):
  *  dedicated → generated/monolith (gemma4*) → generic (Tier-0 universal)
  *  → reject with a helpful error. Generic never shadows a dedicated port. */
 export function createModel(weights: Weights, config: ModelConfig): RuntimeModel {
   // 1. Dedicated classes.
+  if (isGlm52Config(config)) {
+    throw new Error(
+      "glm_moe_dsa uses the direct Colibri container; construct it with " +
+      "openModel(modelDir) or Glm52Model.open(modelDir)",
+    );
+  }
   // DiffusionGemma is non-autoregressive — generate() detects it and routes to
   // the denoising engine instead of the AR decode loop. It exposes the shared
   // RuntimeModel surface (config/weightsBytes/loraState/makeCache) with the
@@ -54,7 +72,7 @@ export function createModel(weights: Weights, config: ModelConfig): RuntimeModel
   throw new Error(
     `unsupported model_type "${config.modelType}"` +
     (arch !== config.modelType ? ` (mlx-lm remaps it to "${arch}")` : "") +
-    ` — targeted: gemma4*, diffusion_gemma, qwen3_5, qwen3, qwen3_moe, MiniCPM5;` +
+    ` — targeted: gemma4*, diffusion_gemma, glm_moe_dsa, qwen3_5, qwen3, qwen3_moe, MiniCPM5;` +
     ` generic (Tier-0): ${[...GENERIC_MODEL_TYPES].sort().join(", ")}`,
   );
 }

@@ -12,7 +12,7 @@ export { loadModelConfig } from "./config";
 export { Weights } from "./weights";
 export { Gemma4Model } from "./model/gemma4";
 export { MiniCPM5Model } from "./model/minicpm5";
-export { createModel, type RuntimeModel } from "./model/factory";
+export { createModel, openModel, type RuntimeModel } from "./model/factory";
 export { Qwen3Model } from "./model/qwen3";
 export { generate } from "./generate";
 export { loadTokenizer } from "./tokenizer";

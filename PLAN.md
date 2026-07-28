@@ -2100,7 +2100,21 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
       slabs, bounded positioned-read workers, zero-copy MLX/custom-Metal
       consumption, completion-fenced generation-tagged slot reuse, allocator
       caps, forced-churn stress, and same-shape Colibri kernel benchmarks.
-- [ ] **G2 — native GLM-5.2 spine:** dedicated config/model; compressed MLA KV,
+      - [x] Agent-safe foundation (2026-07-22): strict synthetic gate/up/down
+        artifact; fixed 16 KiB native slabs; passive bounded positioned-read
+        workers; async Bun polling; generation-bound CPU/GPU leases; dependent
+        lazy-output evaluation + selected-stream fence before reuse; stateful
+        LRU, cancellation, 1,000 native-churn and 100 MLX-churn tests; stock MLX
+        and custom Metal consume the same registered slab. Independent audit
+        passed after closing reproduced post-close and lazy-graph stale-read
+        failures. The helper is build-only until G3/G8 publishes a newly
+        versioned native pack; the existing v0.1.0 pack remains unchanged.
+      - [ ] Manual quiet-machine paired kernel matrix: Colibri Metal vs stock
+        MLX vs custom Metal for int4 dense GEMM, routed SwiGLU decode/prefill,
+        and MLA decode; record the fastest correct path per shape.
+      - [ ] Manual passive-worker CPU/GPU/package-power measurement; reject
+        busy-spin and record the chosen worker counts.
+- [x] **G2 — native GLM-5.2 spine:** dedicated config/model; compressed MLA KV,
       DSA indexer, sigmoid+correction-bias top-8 router, shared+routed experts,
       MTP layer, multiple EOS; direct Colibri-container parsing. Numeric parity
       contract defined BEFORE debugging (bitwise: int4/int8 dequant, router
@@ -2111,12 +2125,117 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
       Metal/CUDA tiers are byte-identical to its CPU engine this way — so the
       gate hardens to bitwise where accumulation semantics match. Tiny model
       32/32 token-exact on a tie-free greedy trajectory vs the pinned engine.
+      - [x] Dedicated `glm_moe_dsa` config, exact GLM chat-template fallback,
+        multiple-EOS handling, artifact-aware factory entrypoint, and direct
+        header catalog/layout validation for `out-*`, `out-mtp-*`, and optional
+        `out-idx-*` shards.
+      - [x] Direct lazy MLX tensor source plus exact Colibri int4 offset-binary
+        and int8 two's-complement dequantization. The int4 path repacks bytes to
+        MLX's uint32 affine layout lazily on-device; it does not copy a whole
+        tensor through the Bun heap.
+      - [x] Compressed MLA cache and attention correctness path: native
+        `[B,T,kv_lora_rank]` latent plus decoupled RoPE state, reconstructed
+        causal prefill, absorbed serial decode, partial interleaved RoPE, and
+        optional DSA-selected latent/RoPE gathers.
+      - [x] Exact DSA and MoE semantics: one shared
+        `[B,T,index_head_dim]` DSA key per token, weighted-ReLU scoring,
+        threshold/tie selection, `index_topk` dense fallback, shared-selection
+        reuse, sigmoid+correction-bias lower-ID-tie top-8 routing, raw-sigmoid
+        execution weights, routed scaling, and unweighted shared expert.
+      - [x] Direct reference-model graph and focused layer/op gates for dense
+        and shared+routed layers, MLA, DSA sparse decode, cache accounting,
+        Q4/Q8 arithmetic, router ties, template rendering, and artifact
+        dispatch. Current focused result with the immutable direct-container
+        fixture enabled: 55 pass, 0 fail.
+      - [x] Header-only validation of the pinned public artifact without model
+        execution: 59,003 quantized tensors, 472 float tensors, 19,456 routed
+        experts, complete MTP metadata, and no DSA sidecar, matching G0.
+      - [x] Tiny-model 32/32 Colibri teacher forcing (2026-07-24). The pinned
+        Colibri generator reproduces its committed BF16 trajectory exactly.
+        Colibri's own per-row Q4 conversion is intentionally compared against
+        predictions from that exact Q4 container, not the now-irrelevant BF16
+        trajectory. The first 26/32 cross-engine result was not a Q4 loader or
+        graph bug: pinned Colibri defaults to `IDOT=1` on Apple Silicon, which
+        quantizes every activation row to int8 and explicitly adds about 0.3%
+        RMS error per matmul. With `IDOT=0`, Colibri's documented exact
+        dequant-to-f32-MAC path, Colibri C and mlx-bun are 32/32 on the same Q4
+        bytes. Across all 8,192 logits, max absolute delta is 1.3113e-6 and
+        RMSE is 2.7423e-7; the minimum MLX top-two margin is 0.003425. The
+        tracked fixture records both exact-path and default-IDOT trajectories,
+        generator/converter arguments, oracle flags, numeric bounds, and
+        raw/config/container hashes. The 353 KiB artifact is machine-local at
+        `runs/colibri-glm52-tiny-i4`.
+      - [x] Production Q4 dense/router gate (2026-07-24). A bounded
+        selected-shard probe reused the real G0 decode-row inputs without
+        constructing the model, caches, experts, or generation path. Layer 0's
+        complete gate/up/down SwiGLU was evaluated by pinned Colibri
+        `dense_mlp` with `IDOT=0` and by MLX from the same Q4 bytes:
+        max absolute delta 5.2387e-9, RMSE 9.7823e-10, cosine
+        0.9999999999998781. Real layer-3 and layer-77 routers selected the
+        exact captured top-8 IDs with `keff=8`; sigmoid max deltas were
+        4.7684e-7 and 7.1526e-7, and execution-weight max deltas were
+        4.3213e-7 and 8.9407e-8. Two independent processes produced identical
+        numeric reports. The run also found and fixed the production-only MLX
+        affine-dequant gap: a one-scale-per-row Colibri tensor cannot request
+        an unsupported `gs_6144` Metal kernel, so the identical row scale is
+        now repeated over supported 32-value MLX groups. MLX peak allocation
+        was 1,566,883,896 bytes; observed process RSS peaked at 290,455,552
+        bytes; system free memory remained 78% and swap grew by 0 MiB. The
+        stable record is
+        `fixtures/colibri-glm52/production-probe.json`; the manual runner is
+        `scripts/probe-colibri-glm52-production.ts`.
+        Serial MTP execution remains G4 as specified; G2 validates its complete
+        container/config metadata rather than advancing the MTP cache.
 - [ ] **G3 — explicit bounded expert residency (load-bearing):** per-layer
       expert-ID→slot LRU, separate pinned tier, 64-unique working set,
       aligned gate/up/down+scale slabs, generation-tagged async loads, GPU-use
       fence, deterministic eviction, real RSS guard, and batched routed-SwiGLU
       Metal kernel. The current whole-file mmap/page-cache path is a bring-up
       backend, not the 25 GB contract.
+      - [x] Native multi-shard segmented reads, canonical 16 KiB-aligned direct
+        artifact slots, generation-safe leases, idle-slot decommit, and
+        `TASK_VM_INFO.phys_footprint` sampling. Every MLX-addressed component
+        is independently 16 KiB aligned; production headers resolve to
+        18,939,904-byte Q4 slots. The 19,114 ordinary experts need four reads
+        and the 86 cross-shard experts need six, within the fixed eight-segment
+        native job.
+      - [x] Fixed-budget planner and pure-LRU manager with one global 64-slot
+        working tier, per-layer resident tiers, separate configured pins,
+        deterministic LRU ties, reverse miss promotion by logical role swap,
+        safe-point-only pressure shrink, stable batch union, resident-first
+        submission, and failed-generation drain/discard.
+      - [x] Async GLM model/layer/MLP seam plus resident-only tensor source and
+        stock-MLX streamed Q4 SwiGLU candidate. The source rejects routed
+        expert names, so the streamed path cannot fall back to whole-shard
+        expert tensors. The machine-local tiny direct container remains 32/32
+        token-exact through 64 working slots + one LRU slot per sparse layer.
+      - [x] Custom M=1 Q4 Metal candidate reads the canonical slot directly and
+        performs explicit dequant-to-F32 MACs in two dispatches
+        (gate+up+SiLU, then down). It is explicitly selectable; stock MLX
+        remains the default pending measurement.
+      - [ ] Run the outstanding G1 quiet kernel/power matrix, then select the
+        routed-SwiGLU path by measured correctness and speed.
+      - [x] Bounded production pure-LRU expert gate: exact layer-3 top-8;
+        complete routed+shared output is identical across cold/warm/churn and
+        matches Colibri at max absolute delta 1.8626e-9 / RMSE 3.6290e-10.
+        Forced replacement and rerun produce the expected miss/evict trace;
+        physical footprint ends at 726,549,944 bytes and swap grows by 0 MiB.
+        Stable record:
+        `fixtures/colibri-glm52/g3-production-expert-probe.json`.
+      - [x] Run the two-forward tie-free `[16,13]` direct-Colibri trajectory
+        through the full streamed model and record footprint/swap. The
+        correctness-first 32-token prefill + one-token decode reproduced
+        `[16,13]` with margins 2.9581 / 7.0824. Final physical footprint was
+        13,474,688,232 bytes and MLX peak allocation was 11,007,206,184 bytes;
+        every load/lease was drained at exit. A live 512 MiB swapout abort
+        bounded the non-cleared run, which recorded 397,148,160 bytes of
+        system-wide swapout while other applications remained open. This is
+        evidence, not the G5 cleared-machine zero-swap claim. Stable record:
+        `fixtures/colibri-glm52/g3-full-model-trajectory.json`.
+      - [x] Final adversarial G3 review: no numeric, alignment, ownership/UAF,
+        or budget blocker. Fixed release-error double-attempt masking and made
+        the live guard sample both before store close and after teardown; the
+        98-test focused/native suite and project/probe bundles pass afterward.
 - [ ] **G4 — serial native MTP (requirement):** int8 MTP row sharing target
       weights, counted in the residency budget; draft-to-gamma, batched verify,
       exact rollback; `SPEC_PIN`-equivalent fixed draft/verify kernel family;

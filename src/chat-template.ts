@@ -42,6 +42,126 @@ export interface RenderOptions {
   enableThinking?: boolean;
 }
 
+type ChatRenderer = (
+  messages: ChatMessage[],
+  options: RenderOptions,
+) => string;
+
+function glm52ContentText(content: ChatMessage["content"], label: string): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content))
+    throw new Error(`${label} must be a string or an array of text parts`);
+  return content.map((part, index) => {
+    if (
+      !part ||
+      (part.type !== "text" && part.type !== "input_text") ||
+      typeof part.text !== "string"
+    ) {
+      throw new Error(`${label}.${index}: GLM-5.2 supports text content only`);
+    }
+    return part.text;
+  }).join("");
+}
+
+/** Text/tool subset of the pinned GLM-5.2 template used by Colibri. */
+export function renderGlm52Chat(
+  messages: ChatMessage[],
+  options: RenderOptions = {},
+): string {
+  if (!Array.isArray(messages) || messages.length === 0)
+    throw new Error("GLM-5.2 messages must be a non-empty array");
+  const {
+    addGenerationPrompt = true,
+    tools = null,
+    enableThinking = false,
+  } = options;
+  const prompt = ["[gMASK]<sop>"];
+  if (enableThinking)
+    prompt.push("<|system|>Reasoning Effort: Max");
+
+  const normalizedTools = normalizeToolSchemas(tools);
+  if (normalizedTools && normalizedTools.length > 0) {
+    prompt.push(
+      "<|system|>\n# Tools\n\nYou may call one or more functions to assist with the " +
+      "user query.\n\nYou are provided with function signatures within <tools></tools> " +
+      "XML tags:\n<tools>\n",
+    );
+    for (const tool of normalizedTools) {
+      const fn = { ...tool.function } as Record<string, unknown>;
+      delete fn.defer_loading;
+      delete fn.strict;
+      prompt.push(`${JSON.stringify(fn)}\n`);
+    }
+    prompt.push(
+      "</tools>\n\nFor each function call, output the function name and arguments " +
+      "within the following XML format:\n<tool_call>{function-name}" +
+      "<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value>" +
+      "<arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call>",
+    );
+  }
+
+  let previousWasTool = false;
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index]!;
+    const role = message.role;
+    if (role === "system" || role === "developer") {
+      prompt.push(
+        `<|system|>${glm52ContentText(message.content, `messages.${index}.content`)}`,
+      );
+    } else if (role === "user") {
+      prompt.push(
+        `<|user|>${glm52ContentText(message.content, `messages.${index}.content`)}`,
+      );
+    } else if (role === "assistant") {
+      const content = message.content === null || message.content === undefined
+        ? ""
+        : glm52ContentText(message.content, `messages.${index}.content`);
+      prompt.push(`<|assistant|><think></think>${content.trim()}`);
+      for (const call of message.tool_calls ?? []) {
+        const raw = call.function.arguments;
+        let args: Record<string, unknown> = {};
+        if (typeof raw === "string") {
+          try {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+              args = parsed as Record<string, unknown>;
+          } catch {
+            // Match the pinned template path: malformed historical arguments
+            // contribute an empty call body rather than changing the prompt.
+          }
+        } else {
+          args = raw;
+        }
+        prompt.push(`<tool_call>${call.function.name}`);
+        for (const [key, value] of Object.entries(args)) {
+          prompt.push(
+            `<arg_key>${key}</arg_key><arg_value>` +
+            `${typeof value === "string" ? value : JSON.stringify(value)}</arg_value>`,
+          );
+        }
+        prompt.push("</tool_call>");
+      }
+    } else if (role === "tool") {
+      if (!previousWasTool) prompt.push("<|observation|>");
+      prompt.push(
+        `<tool_response>${glm52ContentText(message.content, `messages.${index}.content`)}` +
+        "</tool_response>",
+      );
+    } else {
+      throw new Error(`GLM-5.2 unsupported message role ${JSON.stringify(role)}`);
+    }
+    previousWasTool = role === "tool";
+  }
+  if (addGenerationPrompt) {
+    prompt.push(
+      enableThinking
+        ? "<|assistant|><think>"
+        : "<|assistant|><think></think>",
+    );
+  }
+  return prompt.join("");
+}
+
 /** JSON-schema type implied by a literal value. */
 function jsonTypeOf(v: unknown): string {
   if (typeof v === "number") return Number.isInteger(v) ? "integer" : "number";
@@ -116,7 +236,8 @@ export function normalizeToolSchemas(tools: ToolDefinition[] | null): ToolDefini
 }
 
 export class ChatTemplate {
-  readonly #template: Template;
+  readonly #template: Template | null;
+  readonly #renderer: ChatRenderer | null;
   readonly #bosToken: string | null;
   readonly #eosToken: string | null;
   /** Which reasoning format the template's `enable_thinking` channel uses, or
@@ -132,15 +253,20 @@ export class ChatTemplate {
   readonly supportsThinking: boolean;
 
   private constructor(
-    source: string,
+    source: string | null,
     bosToken: string | null,
     eosToken: string | null,
     forceNoThinking = false,
+    renderer: ChatRenderer | null = null,
+    explicitThinkingFormat: "think-tag" | "gemma-channel" | null = null,
   ) {
-    this.#template = new Template(source);
+    if (source === null && renderer === null)
+      throw new Error("ChatTemplate needs a Jinja source or renderer");
+    this.#template = source === null ? null : new Template(source);
+    this.#renderer = renderer;
     this.#bosToken = bosToken;
     this.#eosToken = eosToken;
-    const gatesThinking = source.includes("enable_thinking");
+    const gatesThinking = source?.includes("enable_thinking") ?? false;
     // `forceNoThinking` suppresses the switchable channel even when the template
     // carries the gemma markers. DiffusionGemma ships the shared gemma-family
     // template (with the `<|channel>thought…<channel|>` reasoning channel), but
@@ -149,13 +275,13 @@ export class ChatTemplate {
     // reasoning, no answer). The OptiQ reference never enables thinking for this
     // model — it always renders the template's `default(false)` pre-closed empty
     // channel and decodes the whole canvas as plain text. We match that.
-    this.thinkingFormat = forceNoThinking
+    this.thinkingFormat = explicitThinkingFormat ?? (forceNoThinking
       ? null
-      : gatesThinking && source.includes("<think>")
+      : gatesThinking && source!.includes("<think>")
         ? "think-tag"
-        : gatesThinking && source.includes("<|channel>")
+        : gatesThinking && source!.includes("<|channel>")
           ? "gemma-channel"
-          : null;
+          : null);
     this.supportsThinking = this.thinkingFormat !== null;
   }
 
@@ -169,7 +295,25 @@ export class ChatTemplate {
       const jinjaFile = Bun.file(`${modelDir}/chat_template.jinja`);
       if (await jinjaFile.exists()) source = await jinjaFile.text();
     }
-    if (!source) throw new Error(`${modelDir}: no chat template found`);
+    if (!source) {
+      const modelConfigFile = Bun.file(`${modelDir}/config.json`);
+      const modelConfig = await modelConfigFile.exists()
+        ? await modelConfigFile.json() as Record<string, unknown>
+        : null;
+      if (modelConfig?.model_type === "glm_moe_dsa") {
+        const tokenText = (t: unknown): string | null =>
+          t == null ? null : typeof t === "string" ? t : (t as any).content;
+        return new ChatTemplate(
+          null,
+          tokenText(config.bos_token),
+          tokenText(config.eos_token),
+          false,
+          renderGlm52Chat,
+          "think-tag",
+        );
+      }
+      throw new Error(`${modelDir}: no chat template found`);
+    }
     // @huggingface/jinja lacks the `min`/`max` array filters that real
     // Jinja2 has. MiniCPM5's template uses `[a, b]|min` in its assistant
     // tool-call history branch, so without this rewrite every multi-turn
@@ -189,8 +333,9 @@ export class ChatTemplate {
   }
 
   render(messages: ChatMessage[], options: RenderOptions = {}): string {
+    if (this.#renderer) return this.#renderer(messages, options);
     const { addGenerationPrompt = true, tools = null, enableThinking } = options;
-    return this.#template.render({
+    return this.#template!.render({
       messages,
       add_generation_prompt: addGenerationPrompt,
       // Guarantee every tool param schema has a `type` so templates that do

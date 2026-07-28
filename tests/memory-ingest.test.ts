@@ -3,10 +3,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { MemoryStore, chunkId } from "../src/memory/db";
 import { ingestLucien } from "../src/memory/ingest";
 
-const TMP = "/private/tmp/claude-501/-Users-joshrossi-Code-mlx-bun";
+const TMP = tmpdir();
 
 /** Build a tiny Lucien-shaped source DB on disk and return its path. */
 function makeLucienFixture(): string {
