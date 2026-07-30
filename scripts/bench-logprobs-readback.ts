@@ -92,6 +92,19 @@ const DEFAULT_PROMPT =
   "Write a detailed essay about the history of computing, starting with mechanical calculators.";
 const DEFAULT_MODEL = process.env.PERF02_MODEL ?? "Qwen2.5-0.5B";
 const ARM_NAMES: ArmName[] = ["off", "logprobs", "top_logprobs"];
+const REPO_ROOT = resolvePath(import.meta.dir, "..");
+
+function gitWorktreeDirty(): boolean | null {
+  try {
+    const result = Bun.spawnSync(
+      ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+      { cwd: REPO_ROOT },
+    );
+    return result.exitCode === 0 ? result.stdout.length > 0 : null;
+  } catch {
+    return null;
+  }
+}
 
 function usage(): never {
   console.log(`Usage:
@@ -158,7 +171,7 @@ function parseCli(argv: string[]): CliOptions {
     prompt: optionValue(argv, "--prompt") ?? DEFAULT_PROMPT,
     output:
       optionValue(argv, "--output") ??
-      `reports/perf02-logprobs-readback-${timestamp}.json`,
+      join(REPO_ROOT, `reports/perf02-logprobs-readback-${timestamp}.json`),
     force: argv.includes("--force"),
   };
 }
@@ -521,6 +534,7 @@ try {
     kind: "perf02-logprobs-readback",
     createdAt: new Date().toISOString(),
     commitSha: gitCommit(),
+    worktreeDirty: gitWorktreeDirty(),
     bunVersion: Bun.version,
     hypothesis:
       "readExtras creates astype(float32) after the next decode step is async-dispatched, " +
