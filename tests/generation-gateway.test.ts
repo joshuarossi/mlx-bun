@@ -258,3 +258,64 @@ describe("GenerationGateway.busy / onIdle", () => {
     expect(g.busy).toBe(false);
   });
 });
+
+describe("GenerationGateway request cancellation", () => {
+  test("an already-aborted request releases its grammar before lane selection", async () => {
+    let disposals = 0;
+    const grammar = { dispose: () => { disposals++; } };
+    const abort = new AbortController();
+    abort.abort(new DOMException("client disconnected", "AbortError"));
+
+    await expect(
+      gateway(1).run(
+        [1],
+        { grammar } as any,
+        () => {},
+        undefined,
+        { ...batchable, hasGrammar: true },
+        abort.signal,
+      ),
+    ).rejects.toHaveProperty("name", "AbortError");
+    expect(disposals).toBe(1);
+  });
+
+  test("an aborted serial waiter never starts generation and does not block the next request", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let serialStarts = 0;
+    const serial = async (
+      _ids: number[],
+      _options: any,
+      onToken: (token: number) => void | boolean | Promise<void | boolean>,
+    ) => {
+      serialStarts++;
+      await onToken(7);
+      return {
+        promptTokens: 1, cachedTokens: 0, generatedTokens: 1,
+        prefillMs: 0, decodeMs: 0, prefillTps: 0, decodeTps: 0, cacheTokens: [],
+      };
+    };
+    const g = new GenerationGateway(stubModel, 1, serial);
+    const owner = g.runExclusive(async () => { await held; });
+    const abort = new AbortController();
+    let grammarDisposals = 0;
+    const abandoned = g.run(
+      [1],
+      { grammar: { dispose: () => { grammarDisposals++; } } } as any,
+      () => {},
+      undefined,
+      { ...batchable, hasGrammar: true },
+      abort.signal,
+    );
+    abort.abort(new DOMException("client disconnected", "AbortError"));
+    release();
+    await owner;
+    await expect(abandoned).rejects.toHaveProperty("name", "AbortError");
+    expect(serialStarts).toBe(0);
+    expect(grammarDisposals).toBe(1);
+
+    const next = await g.run([1], {}, () => {}, undefined, batchable);
+    expect(next.generatedTokens).toBe(1);
+    expect(serialStarts).toBe(1);
+  });
+});

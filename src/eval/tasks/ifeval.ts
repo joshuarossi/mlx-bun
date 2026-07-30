@@ -5,13 +5,14 @@
 // 'banana'", "respond in JSON"). Each example carries one or more constraint
 // instructions; we generate a response and run the corresponding verifier.
 //
-// We report prompt-level pass rates (matches the official methodology):
-//   * strict — fraction of examples where ALL of the prompt's instructions
-//     pass on the raw response.
-//   * loose  — same but with response-cleaning preprocessing (strip leading
-//     "Sure, here is…" boilerplate and outer code fences).
-// The primary metric (`accuracy`) is prompt-level strict, headlined by
-// ifeval.py's IFEvalResult.__str__.
+// We report strict and loose metrics at both official granularities:
+//   * prompt — fraction of examples where ALL instructions pass;
+//   * instruction — fraction of supported individual checks that pass.
+// Loose mode first strips leading "Sure, here is…" boilerplate and outer code
+// fences. The primary metric (`accuracy`) remains prompt-level strict, as
+// headlined by ifeval.py's IFEvalResult.__str__. Unknown instruction IDs retain
+// optiq's prompt-pass behavior but are excluded from instruction accuracy and
+// reported through the coverage object.
 //
 // Faithful port note: several verifiers below read kwarg keys that the dataset
 // rows never populate (e.g. _check_capital_words_count / _check_letter_frequency
@@ -21,11 +22,25 @@
 
 import { generateText, loadJsonl, sampleIndices, type TaskModel } from "../runner";
 
-interface IfevalRow {
-  key: number;
+export interface IfevalInstance {
   prompt: string;
   instruction_id_list: string[];
   kwargs: Record<string, unknown>[];
+}
+
+interface IfevalRow extends IfevalInstance {
+  key: number;
+}
+
+export interface IfevalCoverage {
+  /** Prompts for which every instruction ID has a registered verifier. */
+  fullySupportedPrompts: number;
+  promptCoverage: number;
+  /** Registered instruction checks; unknown IDs are excluded from accuracy. */
+  supportedInstructions: number;
+  totalInstructions: number;
+  instructionCoverage: number;
+  unhandledInstructionCounts: Record<string, number>;
 }
 
 export interface IfevalResult {
@@ -33,6 +48,30 @@ export interface IfevalResult {
   strictAcc: number; // 0..1 — prompt-level strict pass rate
   looseAcc: number; // 0..1 — prompt-level loose pass rate
   accuracy: number; // 0..1 — primary metric == strictAcc (ifeval.py headline)
+  strictInstructionAcc: number;
+  looseInstructionAcc: number;
+  coverage: IfevalCoverage;
+}
+
+export interface IfevalVerification {
+  /**
+   * One result per requested instruction. null means the instruction ID is
+   * unhandled and therefore excluded from instruction-level accuracy.
+   */
+  instructionPasses: Array<boolean | null>;
+  /** OptiQ parity: unhandled IDs do not make the prompt fail. */
+  pass: boolean;
+  unhandled: string[];
+}
+
+export interface IfevalInstanceScore {
+  strict: IfevalVerification;
+  loose: IfevalVerification;
+}
+
+export interface IfevalPair {
+  instance: IfevalInstance;
+  response: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -278,20 +317,24 @@ const VERIFIERS = new Map<string, Verifier>([
   ["detectable_content:postscript", alwaysPass],
 ]);
 
+export const SUPPORTED_INSTRUCTIONS = new Set(VERIFIERS.keys());
+
 /**
  * Verify one response against its instruction list.
- * Returns { pass, unhandled }. An instruction_id with no registered verifier is
- * treated as a PASS (does not affect `pass`) and only recorded in `unhandled` for
- * visibility — matching ifeval.py's `continue` policy EXACTLY, so our strict_acc
- * reproduces optiq's. (Our VERIFIERS map mirrors his `_VERIFIERS` 1:1, so unhandled
- * is empty for the standard IFEval set anyway; this only matters for parity safety.)
+ * `instructionPasses` is aligned with the requested IDs and uses null for
+ * unhandled IDs. An ID with no registered verifier does not affect prompt
+ * `pass` and is recorded in `unhandled` — matching ifeval.py's `continue`
+ * policy exactly, so strict prompt accuracy reproduces OptiQ's. The canonical
+ * aggregate excludes those nulls from instruction accuracy and reports them
+ * through coverage.
  */
 export function verifyResponse(
   response: string,
   instructionIds: string[],
   kwargsList: Kw[],
-): { pass: boolean; unhandled: string[] } {
+): IfevalVerification {
   const unhandled: string[] = [];
+  const instructionPasses: Array<boolean | null> = [];
   let pass = true;
   for (let i = 0; i < instructionIds.length; i++) {
     const iid = instructionIds[i]!;
@@ -299,15 +342,19 @@ export function verifyResponse(
     const verifier = VERIFIERS.get(iid);
     if (verifier === undefined) {
       unhandled.push(iid);
+      instructionPasses.push(null);
       continue; // ifeval.py: treat an unhandled instruction as PASS (don't touch `pass`)
     }
     try {
-      if (!verifier(response, kw)) pass = false;
+      const followed = verifier(response, kw);
+      instructionPasses.push(followed);
+      if (!followed) pass = false;
     } catch {
+      instructionPasses.push(false);
       pass = false;
     }
   }
-  return { pass, unhandled };
+  return { instructionPasses, pass, unhandled };
 }
 
 /** Loose-mode preprocessing — mirrors ifeval.py `_loose_clean`. */
@@ -326,6 +373,92 @@ export function looseClean(response: string): string {
 export function stripThinking(response: string): string {
   const idx = response.indexOf("</think>");
   return idx === -1 ? response : response.slice(idx + "</think>".length);
+}
+
+/** Score one generated response with the canonical strict + loose contract. */
+export function scoreIfevalInstance(
+  instance: IfevalInstance,
+  rawResponse: string,
+): IfevalInstanceScore {
+  const response = stripThinking(rawResponse);
+  return {
+    strict: verifyResponse(
+      response,
+      instance.instruction_id_list,
+      instance.kwargs,
+    ),
+    loose: verifyResponse(
+      looseClean(response),
+      instance.instruction_id_list,
+      instance.kwargs,
+    ),
+  };
+}
+
+/**
+ * Canonical IFEval aggregation.
+ *
+ * Prompt accuracy follows the OptiQ reference behavior: an unknown instruction
+ * is recorded but does not fail its prompt. Instruction accuracy has a stricter
+ * denominator contract: unknown instructions are excluded and their coverage
+ * is reported explicitly, so an incomplete verifier registry cannot silently
+ * inflate that metric.
+ */
+export function scoreIfevalPairs(pairs: IfevalPair[]): IfevalResult {
+  let strictPrompts = 0;
+  let loosePrompts = 0;
+  let fullySupportedPrompts = 0;
+  let strictInstructions = 0;
+  let looseInstructions = 0;
+  let supportedInstructions = 0;
+  let totalInstructions = 0;
+  const unhandledCounts = new Map<string, number>();
+
+  for (const { instance, response } of pairs) {
+    const score = scoreIfevalInstance(instance, response);
+    if (score.strict.pass) strictPrompts++;
+    if (score.loose.pass) loosePrompts++;
+    if (score.strict.unhandled.length === 0) fullySupportedPrompts++;
+    totalInstructions += instance.instruction_id_list.length;
+
+    for (let i = 0; i < score.strict.instructionPasses.length; i++) {
+      const strict = score.strict.instructionPasses[i];
+      if (strict === null) continue;
+      supportedInstructions++;
+      if (strict) strictInstructions++;
+      if (score.loose.instructionPasses[i]) looseInstructions++;
+    }
+    for (const id of score.strict.unhandled)
+      unhandledCounts.set(id, (unhandledCounts.get(id) ?? 0) + 1);
+  }
+
+  const nTotal = pairs.length;
+  const strictAcc = nTotal ? strictPrompts / nTotal : 0;
+  const looseAcc = nTotal ? loosePrompts / nTotal : 0;
+  return {
+    nTotal,
+    strictAcc,
+    looseAcc,
+    accuracy: strictAcc,
+    strictInstructionAcc: supportedInstructions
+      ? strictInstructions / supportedInstructions
+      : 0,
+    looseInstructionAcc: supportedInstructions
+      ? looseInstructions / supportedInstructions
+      : 0,
+    coverage: {
+      fullySupportedPrompts,
+      promptCoverage: nTotal ? fullySupportedPrompts / nTotal : 0,
+      supportedInstructions,
+      totalInstructions,
+      instructionCoverage: totalInstructions
+        ? supportedInstructions / totalInstructions
+        : 0,
+      unhandledInstructionCounts: Object.fromEntries(
+        [...unhandledCounts.entries()].sort(([a], [b]) => a.localeCompare(b)),
+      ),
+    },
+  };
 }
 
 export async function evaluateIfeval(
@@ -348,7 +481,7 @@ export async function evaluateIfeval(
 
   let nStrict = 0;
   let nLoose = 0;
-  const unhandledCounts = new Map<string, number>();
+  const pairs: IfevalPair[] = [];
 
   for (let k = 0; k < idx.length; k++) {
     const item = rows[idx[k]!]!;
@@ -356,14 +489,16 @@ export async function evaluateIfeval(
     const kwList = item.kwargs ?? iids.map(() => ({}));
 
     const raw = await generateText(tm, item.prompt, { maxTokens, useChat: true });
-    const response = stripThinking(raw);
+    const instance: IfevalInstance = {
+      prompt: item.prompt,
+      instruction_id_list: iids,
+      kwargs: kwList,
+    };
+    const score = scoreIfevalInstance(instance, raw);
+    pairs.push({ instance, response: raw });
 
-    const strict = verifyResponse(response, iids, kwList);
-    const loose = verifyResponse(looseClean(response), iids, kwList);
-    for (const u of strict.unhandled) unhandledCounts.set(u, (unhandledCounts.get(u) ?? 0) + 1);
-
-    if (strict.pass) nStrict++;
-    if (loose.pass) nLoose++;
+    if (score.strict.pass) nStrict++;
+    if (score.loose.pass) nLoose++;
 
     if ((k + 1) % 10 === 0 || k + 1 === idx.length)
       process.stderr.write(
@@ -372,8 +507,12 @@ export async function evaluateIfeval(
   }
   process.stderr.write("\n");
 
-  if (unhandledCounts.size) {
-    const top = [...unhandledCounts.entries()].sort((a, b) => b[1] - a[1]);
+  const result = scoreIfevalPairs(pairs);
+  const unhandledCounts = Object.entries(
+    result.coverage.unhandledInstructionCounts,
+  );
+  if (unhandledCounts.length) {
+    const top = unhandledCounts.sort((a, b) => b[1] - a[1]);
     process.stderr.write(
       "  ifeval unported instruction ids (treated as PASS, per optiq): " +
         top.map(([k, v]) => `${k}(${v})`).join(", ") +
@@ -381,8 +520,5 @@ export async function evaluateIfeval(
     );
   }
 
-  const nTotal = idx.length;
-  const strictAcc = nTotal ? nStrict / nTotal : 0;
-  const looseAcc = nTotal ? nLoose / nTotal : 0;
-  return { nTotal, strictAcc, looseAcc, accuracy: strictAcc };
+  return result;
 }

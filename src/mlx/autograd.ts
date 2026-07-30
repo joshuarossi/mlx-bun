@@ -15,6 +15,23 @@ import { JSCallback, ptr, read } from "bun:ffi";
 import { C, takeMlxError } from "./ffi";
 import { MlxArray } from "./array";
 
+type CallbackHandle = Pick<JSCallback, "ptr" | "close">;
+type NativeCall<F extends (...args: any[]) => any> =
+  (...args: Parameters<F>) => ReturnType<F>;
+
+/** Constructor-only dependency seam for deterministic native failure tests. */
+export interface ValueAndGradConstructorHooks {
+  callback?: (
+    callback: ConstructorParameters<typeof JSCallback>[0],
+    definition: ConstructorParameters<typeof JSCallback>[1],
+  ) => CallbackHandle;
+  closureNew?: NativeCall<typeof C.mlx_closure_new_func_payload>;
+  transformedNew?: NativeCall<typeof C.mlx_closure_value_and_grad_new>;
+  transform?: NativeCall<typeof C.mlx_value_and_grad>;
+  transformedFree?: NativeCall<typeof C.mlx_closure_value_and_grad_free>;
+  closureFree?: NativeCall<typeof C.mlx_closure_free>;
+}
+
 /** A reusable value-and-grad over a JS-built loss graph.
  *
  *  `loss(primals)` receives the input arrays in argument order and must
@@ -28,18 +45,30 @@ import { MlxArray } from "./array";
  *  are owned by mlx — do NOT dispose them; the returned loss IS disposed
  *  of by mlx's graph. */
 export class ValueAndGrad {
-  readonly #cb: JSCallback;
+  readonly #cb: CallbackHandle;
   readonly #closure: bigint;
   readonly #vag: bigint;
   readonly #argIdx: Int32Array;
+  readonly #freeClosure: NativeCall<typeof C.mlx_closure_free>;
+  readonly #freeVag: NativeCall<typeof C.mlx_closure_value_and_grad_free>;
   #closureError: string | null = null;
   #disposed = false;
 
-  constructor(loss: (primals: MlxArray[]) => MlxArray, argIdx: number[]) {
+  constructor(
+    loss: (primals: MlxArray[]) => MlxArray,
+    argIdx: number[],
+    hooks: ValueAndGradConstructorHooks = {},
+  ) {
     if (argIdx.length === 0) throw new Error("ValueAndGrad: argIdx must be non-empty");
     this.#argIdx = new Int32Array(argIdx);
+    const makeCallback = hooks.callback ?? ((callback, definition) => new JSCallback(callback, definition));
+    const closureNew = hooks.closureNew ?? C.mlx_closure_new_func_payload;
+    const transformedNew = hooks.transformedNew ?? C.mlx_closure_value_and_grad_new;
+    const transform = hooks.transform ?? C.mlx_value_and_grad;
+    this.#freeClosure = hooks.closureFree ?? C.mlx_closure_free;
+    this.#freeVag = hooks.transformedFree ?? C.mlx_closure_value_and_grad_free;
 
-    this.#cb = new JSCallback(
+    const cb = makeCallback(
       (outPtr: number, inVec: bigint, _payload: number): number => {
         try {
           // Read the primals out of the input vector_array. mlx_vector_array_get
@@ -73,16 +102,24 @@ export class ValueAndGrad {
       { args: ["ptr", "u64", "ptr"], returns: "i32" },
     );
 
-    this.#closure = C.mlx_closure_new_func_payload(this.#cb.ptr as never, null, null);
-
-    const vagSlot = new BigUint64Array([C.mlx_closure_value_and_grad_new()]);
-    if (C.mlx_value_and_grad(ptr(vagSlot), this.#closure, ptr(this.#argIdx), BigInt(this.#argIdx.length)) !== 0) {
-      // best-effort cleanup before throwing
-      C.mlx_closure_free(this.#closure);
-      this.#cb.close();
-      throw new Error("mlx_value_and_grad failed");
+    let closure: bigint | null = null;
+    let vagSlot: BigUint64Array | null = null;
+    try {
+      closure = closureNew(cb.ptr as never, null, null);
+      vagSlot = new BigUint64Array([transformedNew()]);
+      if (transform(ptr(vagSlot), closure, ptr(this.#argIdx), BigInt(this.#argIdx.length)) !== 0)
+        throw new Error("mlx_value_and_grad failed");
+      this.#cb = cb;
+      this.#closure = closure;
+      this.#vag = read.u64(ptr(vagSlot), 0);
+    } catch (e) {
+      // mlx-c out-params are initialized live handles. On failure the slot
+      // still owns whichever handle it contains and must be freed explicitly.
+      if (vagSlot) this.#freeVag(read.u64(ptr(vagSlot), 0));
+      if (closure !== null) this.#freeClosure(closure);
+      cb.close();
+      throw e;
     }
-    this.#vag = read.u64(ptr(vagSlot), 0);
   }
 
   /** Run the loss + backward on `primals` (in argument order). Returns the
@@ -136,8 +173,8 @@ export class ValueAndGrad {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    C.mlx_closure_value_and_grad_free(this.#vag);
-    C.mlx_closure_free(this.#closure);
+    this.#freeVag(this.#vag);
+    this.#freeClosure(this.#closure);
     this.#cb.close();
   }
 

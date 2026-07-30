@@ -303,13 +303,16 @@ with `finish_reason: "stop"`. Works on both lanes — serial and
 `--batch N` (per-row matchers).
 
 Degrade path — a grammar that fails to compile is never rejected (no
-400/500): chat prepends a system message instructing valid JSON output
-(schema included when one was given) and the response carries a
-`Warning` header (`grammar not enforced: …`); `/v1/completions` has no
-chat template to inject into, so it emits the `Warning` header only.
-`MLX_BUN_GRAMMAR=0` disables the feature entirely (the fields are
-ignored: no enforcement, no injection, no Warning). Design and fidelity
-notes: [structured-output.md](../design/structured-output.md).
+400/500): chat prepends a string-valued system instruction for the
+requested JSON schema, raw grammar, regex, or choice constraint, and the
+response carries a `Warning` header (`grammar not enforced: …`);
+`/v1/completions` has no chat template to inject into, so it emits the
+`Warning` header only.
+`MLX_BUN_GRAMMAR=0` disables mask compilation but does not silently
+ignore a requested constraint: it uses this same degrade path (chat
+prompt injection plus `Warning`; raw completions `Warning` only).
+Design and fidelity notes:
+[structured-output.md](../design/structured-output.md).
 
 ### Errors
 

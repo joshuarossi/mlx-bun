@@ -328,4 +328,16 @@ describe("translateOpenAiSse", () => {
     expect(text).toContain('"text_delta","text":"hey"');
     expect(text).toContain('"output_tokens":1');
   });
+
+  test("canceling the translated stream cancels its upstream exactly once", async () => {
+    const reasons: unknown[] = [];
+    const upstream = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        reasons.push(reason);
+      },
+    });
+    const reader = translateOpenAiSse(upstream, "m").getReader();
+    await reader.cancel("client disconnected");
+    expect(reasons).toEqual(["client disconnected"]);
+  });
 });

@@ -7,6 +7,7 @@ import { Dtype } from "../src/mlx/ffi";
 import * as ops from "../src/mlx/ops";
 import { AdamW } from "../src/train/optimizer";
 import { buildTrainableLora } from "../src/train/lora-params";
+import { loraPlusLrScale } from "../src/train/trainer";
 import { loraInputDropout } from "../src/model/gemma4-base";
 import type { RuntimeModel } from "../src/model/factory";
 
@@ -14,6 +15,15 @@ const f32 = (xs: number[]) => MlxArray.fromFloat32(new Float32Array(xs), [xs.len
 const read = (a: MlxArray) => a.toFloat32();
 
 describe("LoRA+ — AdamW per-param lrScale", () => {
+  test("shared trainer policy scales every B leaf for SFT, DPO, and ORPO", () => {
+    // flatParams is [A0,A1,A2,B0,B1,B2]. Every training method now constructs
+    // AdamW through the same policy helper.
+    expect(loraPlusLrScale(6, 3, 4)).toEqual([1, 1, 1, 4, 4, 4]);
+    expect(loraPlusLrScale(6, 3, 1)).toBeUndefined();
+    expect(() => loraPlusLrScale(6, 3, 0.5)).toThrow(/>= 1/);
+    expect(() => loraPlusLrScale(5, 3, 4)).toThrow(/A\/B leaves/);
+  });
+
   test("B param (lrScale 4) moves 4× the A param for the same grad/state", () => {
     // Two scalars-as-vectors; identical grads. lrScale=[1,4]. With wd=0, the
     // first AdamW step moves each by ±lr·lrScale (m̂/√v̂ = 1 at t=1).

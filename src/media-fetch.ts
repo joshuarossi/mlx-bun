@@ -13,10 +13,9 @@
 // apply.
 //
 // DNS names are resolved and every resolved address is checked before the
-// fetch. The fetch itself re-resolves, so a DNS-rebinding attacker who
-// controls TTLs can theoretically race the check — accepted for a local
-// single-user server (fixing it needs pinned-address dialing, which
-// bun's fetch doesn't expose).
+// fetch. The request then dials one of those checked IP literals while
+// preserving the logical Host header and HTTPS SNI, so the transport cannot
+// re-resolve to a private address between validation and connect.
 //
 // This module must stay free of mlx imports so tests/media-fetch.test.ts
 // runs model-free.
@@ -26,6 +25,8 @@ import { lookup } from "node:dns/promises";
 export interface MediaFetchPolicy {
   /** Permit private/loopback/link-local destinations (LAN hosts). */
   allowPrivate: boolean;
+  /** Optional caller-specific explanation when private destinations fail. */
+  privateDestinationHint?: string;
   /** Wall-clock budget for the whole fetch — every redirect hop plus the
    *  body read share one AbortSignal.timeout. */
   timeoutMs: number;
@@ -33,6 +34,39 @@ export interface MediaFetchPolicy {
    *  AND while streaming, since the header is optional/spoofable). */
   maxBytes: number;
   maxRedirects: number;
+}
+
+export type RestrictedFetch = (
+  input: string | URL,
+  init?: BunFetchRequestInit,
+) => Promise<Response>;
+
+export type ResolveHost = (
+  hostname: string,
+) => Promise<ReadonlyArray<{ address: string }>>;
+
+export interface RestrictedFetchDependencies {
+  fetch: RestrictedFetch;
+  resolve: ResolveHost;
+}
+
+export interface RestrictedFetchOptions {
+  /** Optional caller cancellation, combined with the policy timeout. */
+  signal?: AbortSignal;
+  /** Request headers applied on every validated redirect hop. */
+  headers?: Record<string, string>;
+  /** Test seam for deterministic DNS/redirect/body behavior. */
+  dependencies?: Partial<RestrictedFetchDependencies>;
+  /** Media callers reject non-2xx before reading; web_fetch returns the body. */
+  rejectHttpErrors?: boolean;
+}
+
+export interface RestrictedFetchResult {
+  ok: boolean;
+  status: number;
+  finalUrl: string;
+  contentType: string;
+  bytes: Uint8Array;
 }
 
 export function defaultMediaFetchPolicy(): MediaFetchPolicy {
@@ -49,6 +83,10 @@ export function defaultMediaFetchPolicy(): MediaFetchPolicy {
 const PRIVATE_HINT =
   "private/loopback hosts are blocked by default; start the server with " +
   "--allow-private-media (or MLX_BUN_ALLOW_PRIVATE_MEDIA=1) to fetch from LAN hosts";
+
+function privateHint(policy: MediaFetchPolicy): string {
+  return policy.privateDestinationHint ?? PRIVATE_HINT;
+}
 
 function parseIpv4(s: string): number[] | null {
   const parts = s.split(".");
@@ -155,19 +193,22 @@ export function checkMediaUrl(u: URL, policy: MediaFetchPolicy): string | null {
   if (policy.allowPrivate) return null;
   const lower = host.toLowerCase();
   if (lower === "localhost" || lower.endsWith(".localhost"))
-    return `destination "${host}" — ${PRIVATE_HINT}`;
+    return `destination "${host}" — ${privateHint(policy)}`;
   // WHATWG URL parsing already canonicalized numeric IPv4 forms
   // (http://2130706433/, http://0x7f000001/ → 127.0.0.1).
   if (parseIpv4(lower) || parseIpv6(lower)) {
-    if (isBlockedAddress(lower)) return `destination "${host}" — ${PRIVATE_HINT}`;
+    if (isBlockedAddress(lower))
+      return `destination "${host}" — ${privateHint(policy)}`;
   }
   return null;
 }
 
-async function assertResolvesPublic(
+export async function assertResolvesPublic(
   hostname: string,
   kind: string,
   policy: MediaFetchPolicy,
+  resolve: ResolveHost = async (host) =>
+    await lookup(host, { all: true, verbatim: true }),
 ): Promise<void> {
   if (policy.allowPrivate) return;
   const host =
@@ -177,15 +218,184 @@ async function assertResolvesPublic(
   if (parseIpv4(host) || parseIpv6(host)) return; // literal — checked sync
   let addrs: { address: string }[];
   try {
-    addrs = await lookup(host, { all: true, verbatim: true });
+    addrs = [...await resolve(host)];
   } catch {
     throw new Error(`${kind} fetch failed: could not resolve host "${host}"`);
   }
   for (const a of addrs) {
     if (isBlockedAddress(a.address))
       throw new Error(
-        `${kind} url rejected: host "${host}" resolves to ${a.address} — ${PRIVATE_HINT}`,
+        `${kind} url rejected: host "${host}" resolves to ${a.address} — ${privateHint(policy)}`,
       );
+  }
+}
+
+async function resolveFetchAddresses(
+  hostname: string,
+  kind: string,
+  policy: MediaFetchPolicy,
+  resolve: ResolveHost,
+): Promise<string[]> {
+  const host =
+    hostname.startsWith("[") && hostname.endsWith("]")
+      ? hostname.slice(1, -1)
+      : hostname;
+  if (parseIpv4(host) || parseIpv6(host)) return [host];
+  if (policy.allowPrivate) return [];
+  let addrs: { address: string }[];
+  try {
+    addrs = [...await resolve(host)];
+  } catch {
+    throw new Error(`${kind} fetch failed: could not resolve host "${host}"`);
+  }
+  if (addrs.length === 0)
+    throw new Error(`${kind} fetch failed: host "${host}" resolved to no addresses`);
+  for (const a of addrs) {
+    if (isBlockedAddress(a.address))
+      throw new Error(
+        `${kind} url rejected: host "${host}" resolves to ${a.address} — ${privateHint(policy)}`,
+      );
+  }
+  return addrs.map((a) => a.address);
+}
+
+/**
+ * Fetch an http(s) response through the shared public-destination policy.
+ * Every redirect is handled manually and revalidated, caller cancellation
+ * shares one signal with the wall-clock timeout, and the body is streamed
+ * into a byte-capped buffer.
+ */
+export async function fetchRestrictedHttpBytes(
+  url: string,
+  kind: string,
+  policy: MediaFetchPolicy,
+  options: RestrictedFetchOptions = {},
+): Promise<RestrictedFetchResult> {
+  let current: URL;
+  try {
+    current = new URL(url);
+  } catch {
+    throw new Error(`unsupported ${kind} url scheme: ${url.slice(0, 16)}`);
+  }
+
+  const fetchImpl = options.dependencies?.fetch ??
+    ((input: string | URL, init?: BunFetchRequestInit) => fetch(input, init));
+  const resolve = options.dependencies?.resolve ??
+    (async (host: string) => await lookup(host, { all: true, verbatim: true }));
+  const timeout = AbortSignal.timeout(policy.timeoutMs);
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, timeout])
+    : timeout;
+  const capMb = Math.round(policy.maxBytes / (1024 * 1024));
+  let overCap = false;
+
+  try {
+    for (let hop = 0; ; hop++) {
+      const reason = checkMediaUrl(current, policy);
+      if (reason) throw new Error(`${kind} url rejected: ${reason}`);
+      const addresses = await resolveFetchAddresses(
+        current.hostname,
+        kind,
+        policy,
+        resolve,
+      );
+      const logicalHostname = current.hostname.replace(/^\[|\]$/g, "");
+      const connectUrl = new URL(current);
+      if (!policy.allowPrivate && addresses.length > 0) {
+        const address = addresses[0]!;
+        connectUrl.hostname = address.includes(":") ? `[${address}]` : address;
+      }
+      const headers = new Headers(options.headers);
+      if (connectUrl.hostname !== current.hostname && !headers.has("host"))
+        headers.set("host", current.host);
+      const init: BunFetchRequestInit = {
+        redirect: "manual",
+        signal,
+        headers,
+      };
+      if (current.protocol === "https:" && connectUrl.hostname !== current.hostname) {
+        init.tls = { serverName: logicalHostname };
+      }
+      const res = await fetchImpl(connectUrl, init);
+      if (res.status >= 300 && res.status < 400) {
+        const loc = res.headers.get("location");
+        if (!loc)
+          throw new Error(`${kind} fetch failed: ${res.status} redirect without location`);
+        if (hop >= policy.maxRedirects)
+          throw new Error(`${kind} fetch failed: more than ${policy.maxRedirects} redirects`);
+        try {
+          await res.body?.cancel();
+        } catch {}
+        try {
+          current = new URL(loc, current);
+        } catch {
+          throw new Error(`${kind} fetch failed: malformed redirect location`);
+        }
+        continue;
+      }
+
+      if (options.rejectHttpErrors && !res.ok) {
+        try {
+          await res.body?.cancel();
+        } catch {}
+        throw new Error(`${kind} fetch failed: ${res.status} ${current}`);
+      }
+
+      const declared = Number(res.headers.get("content-length") ?? "0");
+      if (Number.isFinite(declared) && declared > policy.maxBytes) {
+        overCap = true;
+        try {
+          await res.body?.cancel();
+        } catch {}
+        throw new Error(`${kind} response exceeds the ${capMb} MB limit`);
+      }
+
+      let bytes: Uint8Array;
+      if (!res.body) {
+        bytes = new Uint8Array(await res.arrayBuffer());
+        if (bytes.byteLength > policy.maxBytes) {
+          overCap = true;
+          throw new Error(`${kind} response exceeds the ${capMb} MB limit`);
+        }
+      } else {
+        const reader = res.body.getReader();
+        const chunks: Uint8Array[] = [];
+        let total = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          if (total > policy.maxBytes) {
+            overCap = true;
+            try {
+              await reader.cancel();
+            } catch {}
+            throw new Error(`${kind} response exceeds the ${capMb} MB limit`);
+          }
+          chunks.push(value);
+        }
+        bytes = new Uint8Array(total);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+      }
+
+      return {
+        ok: res.ok,
+        status: res.status,
+        finalUrl: current.href,
+        contentType: res.headers.get("content-type") ?? "",
+        bytes,
+      };
+    }
+  } catch (error) {
+    if (timeout.aborted && !options.signal?.aborted && !overCap)
+      throw new Error(
+        `${kind} fetch timed out after ${policy.timeoutMs} ms: ${url.slice(0, 200)}`,
+      );
+    throw error;
   }
 }
 
@@ -208,77 +418,9 @@ export async function fetchMediaBytes(
     if (!meta.includes("base64")) throw new Error("data: URL must be base64");
     return Uint8Array.from(Buffer.from(body, "base64"));
   }
-  let current: URL;
-  try {
-    current = new URL(url);
-  } catch {
-    throw new Error(`unsupported ${kind} url scheme: ${url.slice(0, 16)}`);
-  }
-  const capMb = Math.round(policy.maxBytes / (1024 * 1024));
-  const signal = AbortSignal.timeout(policy.timeoutMs);
-  let overCap = false;
-  try {
-    for (let hop = 0; ; hop++) {
-      const reason = checkMediaUrl(current, policy);
-      if (reason) throw new Error(`${kind} url rejected: ${reason}`);
-      await assertResolvesPublic(current.hostname, kind, policy);
-      const res = await fetch(current, { redirect: "manual", signal });
-      if (res.status >= 300 && res.status < 400) {
-        const loc = res.headers.get("location");
-        if (!loc)
-          throw new Error(`${kind} fetch failed: ${res.status} redirect without location`);
-        if (hop >= policy.maxRedirects)
-          throw new Error(`${kind} fetch failed: more than ${policy.maxRedirects} redirects`);
-        try {
-          await res.body?.cancel();
-        } catch {}
-        try {
-          current = new URL(loc, current);
-        } catch {
-          throw new Error(`${kind} fetch failed: malformed redirect location`);
-        }
-        continue;
-      }
-      if (!res.ok) throw new Error(`${kind} fetch failed: ${res.status} ${current}`);
-      const declared = Number(res.headers.get("content-length") ?? "0");
-      if (declared > policy.maxBytes) {
-        overCap = true;
-        try {
-          await res.body?.cancel();
-        } catch {}
-        throw new Error(`${kind} response exceeds the ${capMb} MB limit`);
-      }
-      if (!res.body) return new Uint8Array(await res.arrayBuffer());
-      // stream + count: Content-Length is optional (chunked) and spoofable
-      const reader = res.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let total = 0;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        total += value.byteLength;
-        if (total > policy.maxBytes) {
-          overCap = true;
-          try {
-            await reader.cancel();
-          } catch {}
-          throw new Error(`${kind} response exceeds the ${capMb} MB limit`);
-        }
-        chunks.push(value);
-      }
-      const out = new Uint8Array(total);
-      let off = 0;
-      for (const c of chunks) {
-        out.set(c, off);
-        off += c.byteLength;
-      }
-      return out;
-    }
-  } catch (e) {
-    if (signal.aborted && !overCap)
-      throw new Error(
-        `${kind} fetch timed out after ${policy.timeoutMs} ms: ${url.slice(0, 200)}`,
-      );
-    throw e;
-  }
+  return (
+    await fetchRestrictedHttpBytes(url, kind, policy, {
+      rejectHttpErrors: true,
+    })
+  ).bytes;
 }

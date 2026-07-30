@@ -123,16 +123,6 @@ function parseConfig(raw: Record<string, unknown>): { modelDir: string; dataDir:
 export const finetuneRunner: JobRunner = async (emit, config) => {
   const { modelDir, dataDir, cfg } = parseConfig(config);
 
-  // Gemma/e4b needs these training env flags set BEFORE the model loads — same
-  // as the `mlx-bun train` CLI. The subprocess job path doesn't inherit them
-  // from the server, so without this a web-submitted ORPO/SFT run on Gemma uses
-  // the wrong kernels. ??= so an explicit env (or the CLI) still wins.
-  try {
-    const isGemma = (await Bun.file(`${modelDir}/config.json`).text()).toLowerCase().includes("gemma");
-    if (isGemma) {
-    }
-  } catch {}
-
   emit({ type: "stage", stage: "load", progress: 0.01, message: `loading model ${modelDir}` });
 
   const { loadModelConfig } = await import("../config");

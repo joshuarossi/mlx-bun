@@ -17,7 +17,16 @@ cd "$(dirname "$0")/.."
 printf '== hygiene gate ==\n'
 bun scripts/check-hygiene.ts || exit 1
 
-FILES=(tests/*.test.ts)
+SERVING_LOAD_TEST=scripts/bench-serving-load.test.ts
+FILES=(tests/*.test.ts "$SERVING_LOAD_TEST")
+SERVING_LOAD_COUNT=0
+for file in "${FILES[@]}"; do
+  [[ "$file" == "$SERVING_LOAD_TEST" ]] && SERVING_LOAD_COUNT=$((SERVING_LOAD_COUNT + 1))
+done
+if [[ $SERVING_LOAD_COUNT -ne 1 ]]; then
+  echo "gate error: $SERVING_LOAD_TEST must be enumerated exactly once" >&2
+  exit 1
+fi
 N=${#FILES[@]}
 HALF=$((N / 2))
 

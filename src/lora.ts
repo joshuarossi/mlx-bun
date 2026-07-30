@@ -15,6 +15,7 @@ import { resolve } from "node:path";
 import { ptr, read } from "bun:ffi";
 import { MlxArray, cpuStream } from "./mlx/array";
 import { C } from "./mlx/ffi";
+import { transposeAxes } from "./mlx/ops";
 import { SafetensorsFile } from "./safetensors";
 import type { LoraWeights } from "./model/gemma4";
 import type { RuntimeModel } from "./model/factory";
@@ -80,21 +81,26 @@ export function loadAdapterTensors(file: string): Map<string, MlxArray> {
 }
 
 /** Adapter scale from its config: mlx-lm writes lora_parameters.scale;
- *  PEFT writes lora_alpha + r (scale = alpha / r). Reference: mount.py.
- *  `rsLora` (recorded at train time) means the effective per-layer scale is
- *  α/√rank — the caller divides by √(that layer's rank). */
+ *  PEFT writes lora_alpha + r and optionally use_rslora. For ordinary PEFT
+ *  return alpha/r as the scale. For PEFT rsLoRA return alpha and set rsLora,
+ *  so the caller's one per-layer division produces alpha/√rank exactly once.
+ *  Internal configs already store their pre-√rank scale directly. */
 export async function readAdapterScale(dir: string): Promise<{ scale: number; rank: number | null; rsLora: boolean }> {
   for (const name of ["optiq_lora_config.json", "adapter_config.json"]) {
     const f = Bun.file(`${dir}/${name}`);
     if (await f.exists()) {
       const cfg = (await f.json()) as Record<string, any>;
       const lp = cfg.lora_parameters;
-      const rsLora = Boolean(cfg.rs_lora ?? lp?.rs_lora ?? false);
+      const rsLora = Boolean(cfg.rs_lora ?? lp?.rs_lora ?? cfg.use_rslora ?? false);
       if (lp && typeof lp === "object")
         return { scale: Number(lp.scale ?? 20.0), rank: lp.rank ?? null, rsLora };
       const alpha = Number(cfg.lora_alpha ?? 16);
       const r = Number(cfg.r ?? 8);
-      return { scale: r ? alpha / r : 1.0, rank: r || null, rsLora };
+      return {
+        scale: rsLora ? alpha : r ? alpha / r : 1.0,
+        rank: r || null,
+        rsLora,
+      };
     }
   }
   throw new Error(`no adapter_config.json in ${dir}`);
@@ -215,7 +221,12 @@ export class AdapterManager {
 
     // Group adapter tensors into (modulePath → {a, b}), probing both the
     // pure-LLM and VLM-wrapped prefixes like the reference _find_weight_pair.
-    const pairs = new Map<string, { a?: MlxArray; b?: MlxArray }>();
+    const pairs = new Map<string, {
+      a?: MlxArray;
+      b?: MlxArray;
+      aIsPeft?: boolean;
+      bIsPeft?: boolean;
+    }>();
     let skipped = 0;
     const ourPrefix = `${this.#model.prefixBase}.layers.`;
     const altPrefix = ourPrefix.startsWith("language_model.")
@@ -225,11 +236,23 @@ export class AdapterManager {
       const m = name.match(/^(.*)\.(lora_a|lora_A|lora_b|lora_B)(\.weight)?$/);
       if (!m) { skipped++; arr.dispose(); continue; }
       let modulePath = m[1]!;
+      // Standard PEFT state dicts wrap the model path in
+      // `base_model.model.`. The remainder is the underlying HF module path
+      // (`model.layers...` or `language_model.model.layers...`).
+      if (modulePath.startsWith("base_model.model."))
+        modulePath = modulePath.slice("base_model.model.".length);
       if (modulePath.startsWith(altPrefix))
         modulePath = ourPrefix + modulePath.slice(altPrefix.length);
       if (!targets.has(modulePath)) { skipped++; arr.dispose(); continue; }
       const slot = pairs.get(modulePath) ?? {};
-      if (m[2]!.toLowerCase() === "lora_a") slot.a = arr; else slot.b = arr;
+      const peftName = m[3] === ".weight" || m[2] === "lora_A" || m[2] === "lora_B";
+      if (m[2]!.toLowerCase() === "lora_a") {
+        slot.a = arr;
+        slot.aIsPeft = peftName;
+      } else {
+        slot.b = arr;
+        slot.bIsPeft = peftName;
+      }
       pairs.set(modulePath, slot);
     }
 
@@ -240,21 +263,61 @@ export class AdapterManager {
       for (const { a, b } of pairs.values()) { a?.dispose(); b?.dispose(); }
     };
     try {
-      for (const [modulePath, { a, b }] of pairs) {
+      for (const [modulePath, pair] of pairs) {
+        const { a, b } = pair;
         if (!a || !b)
           throw new Error(`${modulePath}: adapter has only one of lora_a/lora_b`);
         const linear = targets.get(modulePath)!;
-        const [aIn, rank] = a.shape as [number, number];
-        const [bRank, bOut] = b.shape as [number, number];
-        if (aIn !== linear.inFeatures || bRank !== rank || bOut !== linear.outFeatures)
+        if (a.shape.length !== 2 || b.shape.length !== 2)
+          throw new Error(
+            `${modulePath}: LoRA tensors must be rank-2; got ` +
+            `lora_a [${a.shape}] / lora_b [${b.shape}]`,
+          );
+
+        const internalLayout =
+          a.shape[0] === linear.inFeatures &&
+          b.shape[0] === a.shape[1] &&
+          b.shape[1] === linear.outFeatures;
+        const peftLayout =
+          a.shape[1] === linear.inFeatures &&
+          b.shape[1] === a.shape[0] &&
+          b.shape[0] === linear.outFeatures;
+        if (!internalLayout && !peftLayout)
           throw new Error(
             `${modulePath}: shape mismatch — lora_a [${a.shape}] / lora_b [${b.shape}] ` +
-            `vs base [in ${linear.inFeatures}, out ${linear.outFeatures}]; ` +
-            `was this adapter trained for a different base model?`,
+            `vs base [in ${linear.inFeatures}, out ${linear.outFeatures}]. Expected ` +
+            `mlx-lm [in, rank] + [rank, out] or PEFT [rank, in] + [out, rank].`,
           );
+
+        // Full-rank square adapters satisfy both shape predicates. In that
+        // ambiguous case the PEFT spelling is authoritative; otherwise the
+        // unique compatible layout decides.
+        const usePeftLayout =
+          peftLayout && (!internalLayout || (pair.aIsPeft === true && pair.bIsPeft === true));
+        let mountedA = a;
+        let mountedB = b;
+        if (usePeftLayout) {
+          let transposedA: MlxArray | null = null;
+          let transposedB: MlxArray | null = null;
+          try {
+            transposedA = transposeAxes(a, [1, 0]);
+            transposedB = transposeAxes(b, [1, 0]);
+          } catch (e) {
+            transposedA?.dispose();
+            transposedB?.dispose();
+            throw e;
+          }
+          mountedA = transposedA;
+          mountedB = transposedB;
+          pair.a = mountedA;
+          pair.b = mountedB;
+          a.dispose();
+          b.dispose();
+        }
+        const rank = mountedA.shape[1]!;
         // rsLoRA: effective per-layer scale is α/√rank (matches training).
         const effScale = rsLora ? scale / Math.sqrt(rank) : scale;
-        validated.push({ linear, lw: { a, b, scale: effScale, rank } });
+        validated.push({ linear, lw: { a: mountedA, b: mountedB, scale: effScale, rank } });
       }
       if (validated.length === 0)
         throw new Error(

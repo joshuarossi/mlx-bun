@@ -24,6 +24,7 @@ const cdnRequests: { file: string; range: string | null; auth: string | null }[]
 let apiAuth: string | null = null;
 let corruptBig = false;
 let lfsDigestMode: "sha256" | "oid" | "missing" | "malformed" = "sha256";
+let smallBlobId = smallSha1;
 
 const server = Bun.serve({
   port: 0,
@@ -41,7 +42,7 @@ const server = Bun.serve({
       return Response.json({
         sha: COMMIT,
         siblings: [
-          { rfilename: "config.json", size: small.length, blobId: smallSha1 },
+          { rfilename: "config.json", size: small.length, blobId: smallBlobId },
           {
             rfilename: "weights/model.bin", size: big.length,
             blobId: "aaaa000000000000000000000000000000000000",
@@ -84,7 +85,7 @@ const server = Bun.serve({
           headers: { "content-range": `bytes ${start}-${bytes.length - 1}/${bytes.length}` },
         });
       }
-      return new Response(bytes);
+      return new Response(new Blob([Uint8Array.from(bytes)]));
     }
     return new Response("not found", { status: 404 });
   },
@@ -98,6 +99,7 @@ beforeEach(() => {
   cdnRequests.length = 0;
   corruptBig = false;
   lfsDigestMode = "sha256";
+  smallBlobId = smallSha1;
 });
 
 const repoDir = () => join(hub, "models--test--tiny-model");
@@ -176,6 +178,16 @@ describe("downloader", () => {
         .rejects.toThrow(/invalid LFS sha256/);
     }
     expect(cdnRequests).toHaveLength(0);
+  });
+
+  test("rejects malformed non-LFS blob IDs before path construction", async () => {
+    for (const blobId of ["../outside", smallSha1.toUpperCase(), "a".repeat(39), "g".repeat(40)]) {
+      smallBlobId = blobId;
+      await expect(downloadModel(REPO, { endpoint, cacheDir: hub, token: null }))
+        .rejects.toThrow(/invalid git blob SHA-1/);
+    }
+    expect(cdnRequests).toHaveLength(0);
+    expect(existsSync(repoDir())).toBe(false);
   });
 
   afterAll(() => rmSync(hub, { recursive: true, force: true }));

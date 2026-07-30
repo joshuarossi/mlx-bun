@@ -420,7 +420,7 @@ async function uploadLfsFiles(
     const putRes = await fetch(upload.href, {
       method: "PUT",
       headers: { ...(upload.header ?? {}) },
-      body: item.bytes,
+      body: new Blob([Uint8Array.from(item.bytes)]),
     });
     if (!putRes.ok) throw await httpError(`LFS upload of ${item.file.repoPath}`, putRes);
     onProgress?.(item.file.repoPath, item.file.size, item.file.size);

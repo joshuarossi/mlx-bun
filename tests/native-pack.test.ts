@@ -22,7 +22,10 @@ beforeAll(async () => {
   await proc.exited;
   tarBytes = new Uint8Array(await Bun.file(tarPath).arrayBuffer());
   tarSha256 = new Bun.CryptoHasher("sha256").update(tarBytes).digest("hex");
-  stub = Bun.serve({ port: 0, fetch: () => new Response(tarBytes) });
+  stub = Bun.serve({
+    port: 0,
+    fetch: () => new Response(new Blob([Uint8Array.from(tarBytes)])),
+  });
 });
 afterAll(() => {
   stub.stop(true);

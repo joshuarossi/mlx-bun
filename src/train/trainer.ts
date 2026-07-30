@@ -202,6 +202,51 @@ export const DEFAULT_TRAIN_CONFIG: TrainConfig = {
   baseModel: "",
 };
 
+/** Build the per-leaf LoRA+ LR multipliers for flatParams' stable
+ *  `[...A, ...B]` order. `undefined` keeps AdamW's uniform-LR fast path. */
+export function loraPlusLrScale(
+  paramCount: number,
+  targetCount: number,
+  ratio: number,
+): number[] | undefined {
+  if (!Number.isFinite(ratio) || ratio < 1)
+    throw new RangeError(`loraPlusRatio must be a finite number >= 1 (got ${ratio})`);
+  if (paramCount !== targetCount * 2)
+    throw new Error(
+      `LoRA+ expected ${targetCount * 2} A/B leaves for ${targetCount} targets, got ${paramCount}`,
+    );
+  if (ratio === 1) return undefined;
+  return Array.from({ length: paramCount }, (_, i) => (i < targetCount ? 1 : ratio));
+}
+
+/** One optimizer policy for SFT, DPO, and ORPO. Keeping LoRA+ here prevents a
+ *  method-specific loop from silently accepting the knob without applying it. */
+function createLoraOptimizer(
+  params: MlxArray[],
+  lora: TrainableLora,
+  cfg: TrainConfig,
+  emit: Emit,
+): AdamW {
+  const lrScale = loraPlusLrScale(params.length, lora.targets.length, cfg.loraPlusRatio);
+  if (lrScale) emit({
+    type: "stage",
+    stage: "setup",
+    progress: 0.04,
+    message: `LoRA+ : B leaves at ${cfg.loraPlusRatio}× LR`,
+  });
+  return new AdamW(
+    params,
+    {
+      lr: cfg.learningRate,
+      betas: cfg.betas,
+      eps: 1e-8,
+      weightDecay: cfg.weightDecay,
+      lrScale,
+    },
+    (i, p) => writeParam(lora, i, p),
+  );
+}
+
 /** Run a LoRA fine-tune. Emits per-step train metrics, periodic val metrics,
  *  and a final stage:done with the adapter path + applied ranks. Saves the
  *  adapter (last + best-on-val) and returns where it landed. */
@@ -286,6 +331,7 @@ export async function trainLora(
   // weak proxy. Capture them when the loop emits them so metrics.json lets you
   // pick the best-MARGIN checkpoint (overfit shows as train↑ / val-margin flat).
   const valHistory: { step: number; loss: number; margin?: number; accuracy?: number; checkpoint: string | null }[] = [];
+  const checkpointSaves: Promise<void>[] = [];
   const startedAt = Date.now();
 
   // Live, append-only metrics stream (the source `mlx-bun train-watch` tails).
@@ -319,7 +365,11 @@ export async function trainLora(
       if (cfg.saveCheckpoints) {
         const tag = `step-${String(e.step).padStart(5, "0")}-val${e.loss.toFixed(4)}`;
         checkpoint = `${cfg.adapterPath}/checkpoints/${tag}`;
-        saveAdapter(lora, checkpoint, saveCfg, appliedRanks);
+        const save = saveAdapter(lora, checkpoint, saveCfg, appliedRanks);
+        checkpointSaves.push(save);
+        // Keep a handler attached while training continues. Promise.all below
+        // still surfaces the original rejection before the run can succeed.
+        void save.catch(() => {});
         emit({ type: "stage", stage: "checkpoint", progress: e.step / cfg.iters,
                message: `checkpoint ${tag}` });
       }
@@ -337,9 +387,11 @@ export async function trainLora(
           ? await orpoLoop(model, tok, tmpl, dataDir, cfg, lora, collect)
           : await sftLoop(model, tok, tmpl, dataDir, cfg, lora, collect);
 
+    await Promise.all(checkpointSaves);
+
     // Final save (last adapter).
     detachTraining(model, lora);
-    saveAdapter(lora, cfg.adapterPath, saveCfg, appliedRanks);
+    await saveAdapter(lora, cfg.adapterPath, saveCfg, appliedRanks);
 
     // Durable, structured run record alongside the adapter (only when we kept
     // checkpoints). Pick the best-val one for convenience, but ship ALL of them
@@ -415,11 +467,7 @@ async function sftLoop(
     : [];
 
   const params = flatParams(lora);
-  const opt = new AdamW(
-    params,
-    { lr: cfg.learningRate, betas: cfg.betas, eps: 1e-8, weightDecay: cfg.weightDecay },
-    (i, p) => writeParam(lora, i, p),
-  );
+  const opt = createLoraOptimizer(params, lora, cfg, emit);
 
   // Segmented backward: stream the SFT backward segment-by-segment (only one
   // segment's activations live at a time). Phase A is MiniCPM5 SFT B=1 only;
@@ -658,11 +706,7 @@ async function dpoLoop(
     : [];
 
   const params = flatParams(lora);
-  const opt = new AdamW(
-    params,
-    { lr: cfg.learningRate, betas: cfg.betas, eps: 1e-8, weightDecay: cfg.weightDecay },
-    (i, p) => writeParam(lora, i, p),
-  );
+  const opt = createLoraOptimizer(params, lora, cfg, emit);
 
   const schedule =
     cfg.dpoLrSchedule === "cosine" || cfg.dpoWarmupIters > 0
@@ -789,18 +833,7 @@ async function orpoLoop(
     : [];
 
   const params = flatParams(lora);
-  // LoRA+: B leaves (the second half of flatParams) get a higher LR than A.
-  const nT = lora.targets.length;
-  const lrScale = cfg.loraPlusRatio !== 1
-    ? params.map((_, i) => (i < nT ? 1 : cfg.loraPlusRatio))
-    : undefined;
-  if (lrScale) emit({ type: "stage", stage: "setup", progress: 0.04,
-    message: `LoRA+ : B leaves at ${cfg.loraPlusRatio}× LR` });
-  const opt = new AdamW(
-    params,
-    { lr: cfg.learningRate, betas: cfg.betas, eps: 1e-8, weightDecay: cfg.weightDecay, lrScale },
-    (i, p) => writeParam(lora, i, p),
-  );
+  const opt = createLoraOptimizer(params, lora, cfg, emit);
 
   const schedule =
     cfg.orpoLrSchedule === "cosine" || cfg.orpoWarmupIters > 0
@@ -1172,11 +1205,11 @@ function clipGradsByNorm(grads: MlxArray[], normVal: number, maxNorm: number): v
 
 /** Supervised (response) tokens across ALL rows of the batch — the count
  *  tokens/sec is reported over (mlx-lm's n_tokens counts every row too). */
-function countResponseTokens(batch: SftBatch): number {
+export function countResponseTokens(batch: SftBatch): number {
   let total = 0;
   for (let r = 0; r < batch.ids.length; r++) {
     const promptLen = batch.promptLens[r]!;
-    const len = batch.ids[r]!.length;
+    const len = rowLength(batch, r);
     total += Math.max(0, len - Math.max(promptLen, 1));
   }
   return total;

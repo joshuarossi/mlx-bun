@@ -149,6 +149,7 @@ interface QueuedSpawn {
   jobId: string;
   entry: string;
   bin: string;
+  spawn: typeof Bun.spawn;
   onComplete?: (jobId: string, code: number) => void;
 }
 
@@ -171,6 +172,8 @@ export interface SubprocessOpts {
   entry?: string;
   /** Override the runtime binary (tests). Defaults to "bun". */
   bin?: string;
+  /** Override process creation for deterministic failure-path tests. */
+  spawn?: typeof Bun.spawn;
   /** Called on the server (parent) after the child exits — used to invalidate
    *  caches (e.g. the Library) so a finished quantize surfaces immediately. */
   onComplete?: (jobId: string, code: number) => void;
@@ -192,35 +195,46 @@ export function submitSubprocess(
     jobId: row.id,
     entry: opts.entry ?? JOB_ENTRY_PATH,
     bin: opts.bin ?? "bun",
+    spawn: opts.spawn ?? Bun.spawn,
     onComplete: opts.onComplete,
   };
-  if (gpuLeaseHolder === null) {
-    spawnNow(item);
-  } else {
-    spawnQueue.push(item);
-  }
+  spawnQueue.push(item);
+  drainQueue();
   return { jobId: row.id, outputPath };
 }
 
 /** Spawn the child, acquire the lease, stream stdout/stderr into the log,
  *  reconcile terminal status on exit, then release the lease and drain. */
 function spawnNow(item: QueuedSpawn): void {
-  const { store, jobId, entry, bin } = item;
+  const { store, jobId, entry, bin, spawn } = item;
   gpuLeaseHolder = jobId;
 
   // The child opens its OWN JobStore over the SAME DB/logs — a sqlite
   // connection can't cross the process boundary, so we hand the paths via
   // env. A :memory: DB can't be shared with a child; subprocess jobs require
   // a file-backed DB.
-  const proc = Bun.spawn([bin, entry, jobId], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: {
-      ...process.env,
-      MLX_BUN_JOBS_DB: store.dbPath,
-      MLX_BUN_JOBS_DIR: store.logsDir,
-    },
-  });
+  let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
+  try {
+    proc = spawn([bin, entry, jobId], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        MLX_BUN_JOBS_DB: store.dbPath,
+        MLX_BUN_JOBS_DIR: store.logsDir,
+      },
+    });
+  } catch (e) {
+    try {
+      store.setStatus(jobId, "failed", {
+        error: errString(e),
+        endedAt: nowIso(),
+      });
+    } finally {
+      releaseLease(jobId);
+    }
+    return;
+  }
 
   const row = store.get(jobId);
   const logPath = row?.log_path;
@@ -259,9 +273,14 @@ function releaseLease(jobId: string): void {
 
 /** Run the next queued subprocess job if the lease is free. */
 export function drainQueue(): void {
-  if (gpuLeaseHolder !== null) return;
-  const next = spawnQueue.shift();
-  if (next) spawnNow(next);
+  while (gpuLeaseHolder === null) {
+    const next = spawnQueue.shift();
+    if (!next) return;
+    // A synchronous spawn failure releases the lease. Keep draining
+    // iteratively so a run of bad queue entries cannot recurse or wedge the
+    // first startable job behind them.
+    spawnNow(next);
+  }
 }
 
 /** Read a child stream line-by-line, buffering partial trailing lines, and

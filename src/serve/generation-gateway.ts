@@ -364,7 +364,16 @@ export class GenerationGateway {
     onToken: OnToken,
     vision: Vision | undefined,
     shape: RequestShape,
+    signal?: AbortSignal,
   ): Promise<GenerateStats> {
+    try {
+      signal?.throwIfAborted();
+    } catch (e) {
+      // The gateway is the first component that accepts ownership of a
+      // compiled controller. An already-aborted request reaches neither lane.
+      options.grammar?.dispose();
+      throw e;
+    }
     if (!this.willBatch(shape)) {
       // Serial decode is an unbroken microtask chain (FFI + generator
       // resumes): without a periodic macrotask hop the event loop starves for
@@ -377,14 +386,26 @@ export class GenerationGateway {
       let lastHop = performance.now();
       const hop = (): Promise<void> => new Promise<void>((r) => setImmediate(r));
       const hoppingOnToken: OnToken = (token, lp) => {
+        if (signal?.aborted) return false;
         const r = onToken(token, lp);
         if (r === false) return false;
         if (performance.now() - lastHop < 25) return r;
         lastHop = performance.now();
-        if (r instanceof Promise) return r.then((v) => (v === false ? false : hop().then(() => v)));
-        return hop().then(() => r);
+        if (r instanceof Promise)
+          return r.then((v) =>
+            v === false || signal?.aborted ? false : hop().then(() => signal?.aborted ? false : v),
+          );
+        return hop().then(() => signal?.aborted ? false : r);
       };
-      return this.runExclusive(() => this.serialRun(promptIds, options, hoppingOnToken, vision));
+      return this.runExclusive(async () => {
+        signal?.throwIfAborted();
+        const stats = await this.serialRun(promptIds, options, hoppingOnToken, vision);
+        signal?.throwIfAborted();
+        return stats;
+      })
+        // Covers a serial waiter aborted before serialRun takes ownership.
+        // generate() also disposes defensively; the operation is idempotent.
+        .finally(() => options.grammar?.dispose());
     }
 
     // Per-row sampler, mirroring generate()'s sampleStep: logits processors
@@ -447,6 +468,7 @@ export class GenerationGateway {
           processors.length === 0 &&
           !options.grammar,
         onToken,
+        ...(signal ? { signal } : {}),
         // B1: pass the per-row grammar controller through. The scheduler drives
         // accept/ready/terminate; this gateway OWNS disposal (finally below)
         // across resolve, reject, eviction, and the whole-batch-drop error path.
@@ -458,9 +480,7 @@ export class GenerationGateway {
     } finally {
       history?.dispose();
       history = null;
-      // The controller's WASM matcher/compiled-grammar are per-request; free
-      // them on every exit path. (generate()'s finally does this on the serial
-      // lane; the batch lane owns it here since the scheduler never does.)
+      // The scheduler never owns per-row grammar state.
       options.grammar?.dispose();
     }
 

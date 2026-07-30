@@ -1167,16 +1167,21 @@ export function nextDefaultSeed(): number {
  *  compile fails — the response_format degrades to prompt injection rather
  *  than a 500, oMLX parity). Returns null for {type:"text"} / unset. */
 export function degradeJsonSystemPrompt(body: ChatRequest): string | null {
+  if (body.guided_grammar) {
+    return "You must respond with text matching this grammar:\n\n" + body.guided_grammar;
+  }
   const rf = body.response_format as { type?: string; json_schema?: { name?: string; description?: string; schema?: unknown } } | undefined;
-  if (!rf || typeof rf !== "object") return null;
-  const type = rf.type ?? "text";
-  if (type === "text") return null;
-  if (type === "json_object") {
+  if (rf && typeof rf === "object" && rf.type === "json_object") {
     return "You must respond with valid JSON only. " +
       "Do not include any explanation or text outside the JSON object.";
   }
-  if (type === "json_schema") {
-    const spec = rf.json_schema ?? {};
+  const schemaSpec = rf && typeof rf === "object" && rf.type === "json_schema"
+    ? rf.json_schema
+    : body.structured_outputs && typeof body.structured_outputs === "object"
+      ? { schema: body.structured_outputs }
+      : null;
+  if (schemaSpec) {
+    const spec = schemaSpec;
     const schema = spec.schema ?? body.structured_outputs ?? {};
     const name = spec.name ?? "response";
     const description = spec.description ?? "";
@@ -1186,7 +1191,31 @@ export function degradeJsonSystemPrompt(body: ChatRequest): string | null {
       "Respond with only the JSON object, no additional text or explanation.";
     return prompt;
   }
+  if (body.guided_regex) {
+    return "You must respond with text matching this regular expression:\n\n" +
+      body.guided_regex;
+  }
+  if (body.guided_choice?.length) {
+    return "You must respond with exactly one of these choices:\n\n" +
+      body.guided_choice.map((choice) => JSON.stringify(choice)).join("\n");
+  }
   return null;
+}
+
+export function applyGrammarDegrade(
+  body: ChatRequest,
+  degradeHint: string,
+): { body: ChatRequest; warning: string } {
+  const content = degradeJsonSystemPrompt(body) ??
+    "Follow the requested output constraint exactly.";
+  return {
+    warning:
+      `grammar not enforced: ${degradeHint} - falling back to prompt injection`,
+    body: {
+      ...body,
+      messages: [{ role: "system", content }, ...body.messages],
+    },
+  };
 }
 
 export function validateLogprobsParams(body: {
@@ -1293,9 +1322,14 @@ class LogprobsCollector {
  *
  *  Exported for unit tests (serve-detok mlx-lm byte parity). */
 export class StreamDecoder {
+  static readonly #WINDOW_TOKENS = 32;
   #ids: number[] = [];
   #emitted = "";
   #warnedRevision = false;
+  /** Token index where the bounded decode suffix begins. */
+  #windowStart = 0;
+  /** Exact decoded text before #windowStart, established by suffix matching. */
+  #windowPrefix = "";
   readonly #trimLeadingSpace: boolean;
   readonly #bareSpaceId: number | undefined;
 
@@ -1308,8 +1342,41 @@ export class StreamDecoder {
   }
 
   #decode(ids: number[]): string {
-    const full = this.tokenizer.decode(ids, this.skipSpecialTokens);
+    const full = this.#decodeRaw(ids);
     return this.#trimLeadingSpace && full.startsWith(" ") ? full.slice(1) : full;
+  }
+
+  #decodeRaw(ids: number[]): string {
+    return this.tokenizer.decode(ids, this.skipSpecialTokens);
+  }
+
+  /** Decode only a bounded suffix once an exact text anchor can be proven.
+   *
+   * At each rebase, decode a candidate suffix independently and accept it only
+   * when it is literally the suffix of the exact text decoded so far. This
+   * preserves ByteLevel/SPM boundary behavior while reducing steady-state
+   * decode work from the whole generation to 32–64 tokens. If no suffix can be
+   * anchored (an unusual/global decoder), leave #windowStart at zero and keep
+   * the full-history correctness path. */
+  #decodeIncremental(): string {
+    const full = this.#windowStart === 0
+      ? this.#decode(this.#ids)
+      : this.#windowPrefix + this.#decodeRaw(this.#ids.slice(this.#windowStart));
+
+    if (this.#ids.length - this.#windowStart < StreamDecoder.#WINDOW_TOKENS * 2)
+      return full;
+
+    const preferred = this.#ids.length - StreamDecoder.#WINDOW_TOKENS;
+    const oldest = Math.max(this.#windowStart, preferred - StreamDecoder.#WINDOW_TOKENS);
+    for (let start = preferred; start >= oldest; start--) {
+      const tail = this.#decodeRaw(this.#ids.slice(start));
+      if ((tail.length > 0 || full.length === 0) && full.endsWith(tail)) {
+        this.#windowStart = start;
+        this.#windowPrefix = full.slice(0, full.length - tail.length);
+        break;
+      }
+    }
+    return full;
   }
 
   push(token: number): string {
@@ -1318,7 +1385,7 @@ export class StreamDecoder {
     // advance #emitted; the held space(s) flush as part of the next
     // non-bare-space token's delta — consecutive bare spaces accumulate.
     if (token === this.#bareSpaceId) return "";
-    const full = this.#decode(this.#ids);
+    const full = this.#decodeIncremental();
     // hold back a trailing replacement char (partial multi-byte sequence)
     const stable = full.endsWith("�") ? full.slice(0, -1) : full;
     if (!stable.startsWith(this.#emitted)) {
@@ -2004,7 +2071,12 @@ export function createServer(
   const compileGrammarForRequest = async (
     req: ChatRequest,
   ): Promise<{ controller: import("./grammar").GrammarController | null; degradeHint: string | null }> => {
-    if (!grammarEnabled()) return { controller: null, degradeHint: null };
+    if (!grammarEnabled()) {
+      return {
+        controller: null,
+        degradeHint: "grammar compilation disabled by MLX_BUN_GRAMMAR=0",
+      };
+    }
     const r = await compileGrammarRequest(
       req as GrammarRequest,
       ctx.tokenizer,
@@ -2812,7 +2884,7 @@ export function createServer(
       // translates its body into this shape and the Response back —
       // generation, tools, vision, stop sequences, prompt cache, and
       // admission control all live here exactly once.
-      const handleChat = async (body: ChatRequest): Promise<Response> => {
+      const handleChat = async (body: ChatRequest, signal: AbortSignal): Promise<Response> => {
         if (!Array.isArray(body.messages) || body.messages.length === 0)
           return Response.json({ error: { message: "messages required" } }, { status: 400 });
         // mlx-lm validates logprobs params up front (ValueError → 400)
@@ -2859,14 +2931,9 @@ export function createServer(
           const g = await compileGrammarForRequest(body);
           grammarCtrl = g.controller;
           if (!g.controller && g.degradeHint) {
-            grammarWarning = `grammar not enforced: ${g.degradeHint} — falling back to prompt injection`;
-            body = {
-              ...body,
-              messages: [
-                { role: "system", content: degradeJsonSystemPrompt(body) },
-                ...body.messages,
-              ],
-            };
+            const degraded = applyGrammarDegrade(body, g.degradeHint);
+            grammarWarning = degraded.warning;
+            body = degraded.body;
           }
         }
         // Free what a rejected request has already allocated (grammar WASM
@@ -3113,16 +3180,22 @@ export function createServer(
         recordLane(id, lane);
 
         if (body.stream) {
+          const streamAbort = new AbortController();
+          const generationSignal = AbortSignal.any([signal, streamAbort.signal]);
+          let cancelled = false;
           const stream = new ReadableStream<Uint8Array>({
-            async start(controller) {
+            start(controller) {
               const enc = new TextEncoder();
-              const send = (obj: unknown) =>
-                controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
+              const send = (obj: unknown) => {
+                if (!generationSignal.aborted)
+                  controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
+              };
               const chunk = (delta: Record<string, unknown>, finish: string | null) => ({
                 id, object: "chat.completion.chunk", created, model: ctx.modelId,
                 choices: [{ index: 0, delta, finish_reason: finish }],
               });
-              try {
+              void (async () => {
+                try {
                 // The gateway owns lane selection + GPU exclusivity; this body
                 // runs per-request (concurrently in batched mode, each writing
                 // its own SSE stream — the per-row fan-out).
@@ -3157,7 +3230,8 @@ export function createServer(
                       return new Promise<void>((r) => setImmediate(r));
                     }
                   }
-                }, vision, shape);
+                }, vision, shape, generationSignal);
+                if (generationSignal.aborted) return;
                 // a stop match discards everything from the match on,
                 // including text still held by the decoders
                 let tail = "";
@@ -3206,12 +3280,21 @@ export function createServer(
                 });
                 // bare sentinel per the OpenAI spec — JSON.stringify would
                 // quote it and strict SDK clients never see the terminator
-                controller.enqueue(enc.encode("data: [DONE]\n\n"));
-              } catch (e) {
-                send({ error: { message: (e as Error).message } });
-              } finally {
-                controller.close();
-              }
+                  controller.enqueue(enc.encode("data: [DONE]\n\n"));
+                } catch (e) {
+                  if (!generationSignal.aborted)
+                    send({ error: { message: (e as Error).message } });
+                } finally {
+                  if (!cancelled) {
+                    if (generationSignal.aborted) controller.error(generationSignal.reason);
+                    else controller.close();
+                  }
+                }
+              })();
+            },
+            cancel(reason) {
+              cancelled = true;
+              streamAbort.abort(reason);
             },
           });
           return new Response(stream, {
@@ -3244,7 +3327,7 @@ export function createServer(
               content += parts.content;
               reasoning += parts.reasoning;
               if (stopper.stopped) return false; // halt generation
-            }, vision, shape);
+            }, vision, shape, signal);
             if (!stopper.stopped) {
               const flushed = router.flush();
               reasoning += router.takeReasoning();
@@ -3304,7 +3387,7 @@ export function createServer(
         } catch {
           return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
         }
-        return handleChat(body);
+        return handleChat(body, request.signal);
       }
 
       // Raw text completion (mlx_lm.server's /v1/completions, request_type
@@ -3358,7 +3441,8 @@ export function createServer(
           const g = await compileGrammarForRequest(body as unknown as ChatRequest);
           if (g.controller) options.grammar = g.controller;
           else if (g.degradeHint)
-            textGrammarWarning = `grammar not enforced: ${g.degradeHint} — no prompt injection on /v1/completions`;
+            textGrammarWarning =
+              `grammar not enforced: ${g.degradeHint} - no prompt injection on /v1/completions`;
         }
         // Mirrors the chat lane: a real controller (not the degrade path)
         // shapes the request for per-row grammar batching.
@@ -3427,16 +3511,22 @@ export function createServer(
           stopped ? "stop" : generated >= (options.maxTokens ?? 512) ? "length" : "stop";
 
         if (body.stream) {
+          const streamAbort = new AbortController();
+          const generationSignal = AbortSignal.any([request.signal, streamAbort.signal]);
+          let cancelled = false;
           const stream = new ReadableStream<Uint8Array>({
-            async start(controller) {
+            start(controller) {
               const enc = new TextEncoder();
-              const send = (obj: unknown) =>
-                controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
+              const send = (obj: unknown) => {
+                if (!generationSignal.aborted)
+                  controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
+              };
               const chunk = (text: string, finish: string | null) => ({
                 id, object: "text_completion", created, model: ctx.modelId,
                 choices: [{ index: 0, text, finish_reason: finish }],
               });
-              try {
+              void (async () => {
+                try {
                 const decoder = new StreamDecoder(ctx.tokenizer);
                 const stopper = new StopMatcher(options.stopSequences);
                 // ≥25 ms macrotask hop, same reason as the chat lane: keep the
@@ -3453,7 +3543,8 @@ export function createServer(
                       return new Promise<void>((r) => setImmediate(r));
                     }
                   }
-                }, undefined, shape);
+                }, undefined, shape, generationSignal);
+                if (generationSignal.aborted) return;
                 if (!stopper.stopped) {
                   let tail = stopper.push(decoder.flush());
                   if (!stopper.stopped) tail += stopper.flush();
@@ -3472,12 +3563,21 @@ export function createServer(
                     ...(s.spec ? { speculation: s.spec } : {}),
                   },
                 });
-                controller.enqueue(enc.encode("data: [DONE]\n\n"));
-              } catch (e) {
-                send({ error: { message: (e as Error).message } });
-              } finally {
-                controller.close();
-              }
+                  controller.enqueue(enc.encode("data: [DONE]\n\n"));
+                } catch (e) {
+                  if (!generationSignal.aborted)
+                    send({ error: { message: (e as Error).message } });
+                } finally {
+                  if (!cancelled) {
+                    if (generationSignal.aborted) controller.error(generationSignal.reason);
+                    else controller.close();
+                  }
+                }
+              })();
+            },
+            cancel(reason) {
+              cancelled = true;
+              streamAbort.abort(reason);
             },
           });
           return new Response(stream, {
@@ -3501,7 +3601,7 @@ export function createServer(
             lpc?.push(token, lpInfo);
             text += stopper.push(decoder.push(token));
             if (stopper.stopped) return false; // halt generation
-          }, undefined, shape);
+          }, undefined, shape, request.signal);
           if (!stopper.stopped) {
             let tail = stopper.push(decoder.flush());
             if (!stopper.stopped) tail += stopper.flush();
@@ -3548,7 +3648,7 @@ export function createServer(
         } catch (e) {
           return anthropicError(400, "invalid_request_error", (e as Error).message);
         }
-        const resp = await handleChat(chatBody);
+        const resp = await handleChat(chatBody, request.signal);
         if (!resp.ok) {
           const err = (await resp.json().catch(() => null)) as
             | { error?: { message?: string } }
@@ -3629,7 +3729,7 @@ export function createServer(
         } catch (e) {
           return responsesError(400, (e as Error).message);
         }
-        const resp = await handleChat(chatBody);
+        const resp = await handleChat(chatBody, request.signal);
         if (!resp.ok) {
           const err = (await resp.json().catch(() => null)) as
             | { error?: { message?: string } }

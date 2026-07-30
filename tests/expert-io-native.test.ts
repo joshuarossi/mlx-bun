@@ -2,7 +2,11 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ExpertIOSlabStore, selectExpertLruVictim } from "../src/expert-io";
+import {
+  _pollExpertReadUntilReady,
+  ExpertIOSlabStore,
+  selectExpertLruVictim,
+} from "../src/expert-io";
 import { MlxArray, gpuStream } from "../src/mlx/array";
 import { Dtype, activeMemory, cacheMemory, clearCache, synchronize } from "../src/mlx/ffi";
 import { MetalKernel } from "../src/mlx/metal-kernel";
@@ -31,6 +35,36 @@ beforeAll(async () => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("native expert I/O slabs", () => {
+  it("never polls native state again after close wins a pending wait", async () => {
+    for (let iteration = 0; iteration < 250; iteration++) {
+      let closed = false;
+      let polls = 0;
+      const sleeping = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      const wait = _pollExpertReadUntilReady(
+        () => {
+          if (closed) throw new Error("expert slab store is closed");
+        },
+        () => {
+          polls++;
+          if (closed) throw new Error("polled freed expert state");
+          return 35; // EAGAIN on macOS
+        },
+        async () => {
+          sleeping.resolve();
+          await resume.promise;
+        },
+      );
+
+      await sleeping.promise;
+      closed = true;
+      resume.resolve();
+
+      await expect(wait).rejects.toThrow(/closed/);
+      expect(polls).toBe(1);
+    }
+  });
+
   it("scatter-loads disjoint regions from multiple shards into one slot", async () => {
     const store = new ExpertIOSlabStore(
       [file, secondFile],

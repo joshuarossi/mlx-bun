@@ -7,6 +7,7 @@ import { describe, expect, it } from "bun:test";
 import {
   decodeEntities,
   extractTitle,
+  fetchWebText,
   formatSearchResults,
   formatWeather,
   htmlToText,
@@ -17,6 +18,11 @@ import {
   wmoCodeToText,
   type SearchResult,
 } from "../src/web-tools";
+import type {
+  MediaFetchPolicy,
+  RestrictedFetch,
+  RestrictedFetchDependencies,
+} from "../src/media-fetch";
 
 describe("decodeEntities", () => {
   it("decodes named and numeric entities", () => {
@@ -179,5 +185,231 @@ describe("formatWeather", () => {
   });
   it("uses fahrenheit units when requested", () => {
     expect(formatWeather(place, data, true)).toContain("22°F");
+  });
+});
+
+const RESTRICTED_WEB_POLICY: MediaFetchPolicy = {
+  allowPrivate: false,
+  timeoutMs: 1_000,
+  maxBytes: 64,
+  maxRedirects: 2,
+};
+
+function webFetchDependencies(
+  fetch: RestrictedFetch,
+  resolve: RestrictedFetchDependencies["resolve"] = async () => [
+    { address: "93.184.216.34" },
+  ],
+): RestrictedFetchDependencies {
+  return { fetch, resolve };
+}
+
+describe("fetchWebText restricted transport", () => {
+  it("rejects loopback and private literals before fetch", async () => {
+    let fetchCalls = 0;
+    const dependencies = webFetchDependencies(async () => {
+      fetchCalls++;
+      return new Response("secret");
+    });
+
+    for (const url of [
+      "http://127.0.0.1/api/settings/hf-token",
+      "http://169.254.169.254/latest/meta-data",
+      "http://192.168.1.1/admin",
+      "http://[::1]/private",
+    ]) {
+      await expect(
+        fetchWebText(url, undefined, {
+          policy: RESTRICTED_WEB_POLICY,
+          dependencies,
+        }),
+      ).rejects.toThrow(/url rejected|blocked by default/);
+    }
+    expect(fetchCalls).toBe(0);
+  });
+
+  it("rejects a hostname when DNS returns any private address", async () => {
+    let fetchCalls = 0;
+    const dependencies = webFetchDependencies(
+      async () => {
+        fetchCalls++;
+        return new Response("secret");
+      },
+      async () => [
+        { address: "93.184.216.34" },
+        { address: "10.0.0.8" },
+      ],
+    );
+
+    await expect(
+      fetchWebText("https://public-looking.test/data", undefined, {
+        policy: RESTRICTED_WEB_POLICY,
+        dependencies,
+      }),
+    ).rejects.toThrow(/resolves to 10\.0\.0\.8/);
+    expect(fetchCalls).toBe(0);
+  });
+
+  it("revalidates a public-to-private redirect before the second request", async () => {
+    const requested: string[] = [];
+    const dependencies = webFetchDependencies(async (input) => {
+      requested.push(String(input));
+      return new Response(null, {
+        status: 302,
+        headers: { location: "http://127.0.0.1/api/settings/hf-token" },
+      });
+    });
+
+    await expect(
+      fetchWebText("https://public.test/start", undefined, {
+        policy: RESTRICTED_WEB_POLICY,
+        dependencies,
+      }),
+    ).rejects.toThrow(/127\.0\.0\.1/);
+    expect(requested).toEqual(["https://93.184.216.34/start"]);
+  });
+
+  it("dials the checked address instead of re-resolving the hostname", async () => {
+    let resolveCalls = 0;
+    let requested = "";
+    let init: BunFetchRequestInit | undefined;
+    const dependencies = webFetchDependencies(
+      async (input, requestInit) => {
+        requested = String(input);
+        init = requestInit;
+        return new Response("pinned");
+      },
+      async () => {
+        resolveCalls++;
+        return [{ address: resolveCalls === 1 ? "93.184.216.34" : "127.0.0.1" }];
+      },
+    );
+
+    const result = await fetchWebText("https://public.test/article", undefined, {
+      policy: RESTRICTED_WEB_POLICY,
+      dependencies,
+    });
+
+    expect(resolveCalls).toBe(1);
+    expect(requested).toBe("https://93.184.216.34/article");
+    expect(new Headers(init?.headers).get("host")).toBe("public.test");
+    expect(init?.tls?.serverName).toBe("public.test");
+    expect(result.finalUrl).toBe("https://public.test/article");
+  });
+
+  it("stops redirect chains at the configured cap", async () => {
+    let fetchCalls = 0;
+    const dependencies = webFetchDependencies(async () => {
+      fetchCalls++;
+      return new Response(null, {
+        status: 302,
+        headers: { location: `/hop-${fetchCalls}` },
+      });
+    });
+
+    await expect(
+      fetchWebText("https://public.test/start", undefined, {
+        policy: RESTRICTED_WEB_POLICY,
+        dependencies,
+      }),
+    ).rejects.toThrow("more than 2 redirects");
+    expect(fetchCalls).toBe(3);
+  });
+
+  it("cancels a chunked response as soon as it crosses the byte cap", async () => {
+    let canceled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(30));
+      },
+      cancel() {
+        canceled = true;
+      },
+    });
+    const dependencies = webFetchDependencies(async () =>
+      new Response(body, { headers: { "content-type": "text/plain" } })
+    );
+
+    await expect(
+      fetchWebText("https://public.test/chunked", undefined, {
+        policy: RESTRICTED_WEB_POLICY,
+        dependencies,
+      }),
+    ).rejects.toThrow("response exceeds");
+    expect(canceled).toBe(true);
+  });
+
+  it("returns normal text with final metadata and preserves request headers", async () => {
+    let init: BunFetchRequestInit | undefined;
+    const dependencies = webFetchDependencies(async (_input, requestInit) => {
+      init = requestInit;
+      return new Response("hello, public web", {
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    });
+
+    const result = await fetchWebText("https://public.test/article", undefined, {
+      policy: RESTRICTED_WEB_POLICY,
+      dependencies,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      status: 200,
+      finalUrl: "https://public.test/article",
+      contentType: "text/plain; charset=utf-8",
+      text: "hello, public web",
+    });
+    expect(init?.redirect).toBe("manual");
+    expect(new Headers(init?.headers).get("accept")).toContain("text/html");
+    expect(new Headers(init?.headers).get("user-agent")).toContain("Mozilla");
+  });
+
+  it("applies one wall-clock timeout to the restricted fetch", async () => {
+    let fetchSignal: AbortSignal | undefined;
+    const dependencies = webFetchDependencies(async (_input, init) => {
+      fetchSignal = init?.signal ?? undefined;
+      return await new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) return;
+        const rejectAbort = () => reject(signal.reason);
+        if (signal.aborted) rejectAbort();
+        else signal.addEventListener("abort", rejectAbort, { once: true });
+      });
+    });
+
+    await expect(
+      fetchWebText("https://public.test/slow", undefined, {
+        policy: { ...RESTRICTED_WEB_POLICY, timeoutMs: 20 },
+        dependencies,
+      }),
+    ).rejects.toThrow("timed out after 20 ms");
+    expect(fetchSignal?.reason).toMatchObject({ name: "TimeoutError" });
+  });
+
+  it("combines caller cancellation with the transport timeout", async () => {
+    const controller = new AbortController();
+    let fetchSignal: AbortSignal | undefined;
+    const dependencies = webFetchDependencies(async (_input, init) => {
+      fetchSignal = init?.signal ?? undefined;
+      return await new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) return;
+        const rejectAbort = () => reject(signal.reason);
+        if (signal.aborted) rejectAbort();
+        else signal.addEventListener("abort", rejectAbort, { once: true });
+      });
+    });
+
+    const pending = fetchWebText(
+      "https://public.test/slow",
+      controller.signal,
+      { policy: RESTRICTED_WEB_POLICY, dependencies },
+    );
+    await Promise.resolve();
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchSignal?.aborted).toBe(true);
   });
 });

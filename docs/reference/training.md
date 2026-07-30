@@ -177,7 +177,7 @@ are `DEFAULT_TRAIN_CONFIG` (trainer.ts:89).
 | `weight_decay` | float ≥0 | `0.01` | AdamW weight decay (β = `[0.9, 0.999]`, fixed) |
 | `lora_dropout` | float [0,1) | `0.0` | LoRA-input dropout (PEFT-style), training-only regularizer for small sets. Recompute-safe (mask keyed by step+layer, so segmented/checkpointed backward reproduces it) |
 | `rs_lora` | bool | `false` | rsLoRA — scale the update by α/√rank instead of α, so `rank_scaling` changes capacity not step size. Recorded in the adapter config; inference applies the same per-layer scale |
-| `lora_plus_ratio` | float ≥1 | `1.0` | LoRA+ — LR multiplier for the B leaves (A stays at base LR). >1 speeds the B-driven early learning (B is zero-init). 1 = off. Wired in the ORPO loop |
+| `lora_plus_ratio` | float ≥1 | `1.0` | LoRA+ — LR multiplier for the B leaves (A stays at base LR). >1 speeds the B-driven early learning (B is zero-init). 1 = off. The same optimizer policy applies to SFT, DPO, and ORPO |
 | `grad_checkpoint` | bool | `false` | Recompute layer activations in backward (memory↔compute; bit-identical) |
 | `mlp_split` | bool | `false` | Gradient-checkpoint MLP splitting (Gemma4-only, requires `grad_checkpoint`) |
 | `segment_size` | int | `0` (off) | `>0` enables segmented backward — layers per segment (see below) |
@@ -294,6 +294,15 @@ A finished run writes a PEFT-compatible adapter directory:
 - `adapters.safetensors` — the `lora_a` / `lora_b` tensors
 - `optiq_lora_config.json` — mlx-bun/optiq adapter metadata (per-layer ranks)
 - `adapter_config.json` — PEFT-compatible config
+
+The save completes only after both config files are written, including
+eval-step checkpoints, so a successful process exit always leaves an
+immediately mountable directory. Serving accepts both mlx-lm tensor layout
+(`[in, rank]` / `[rank, out]`) and standard PEFT layout
+(`[rank, in]` / `[out, rank]`, including `base_model.model.*` names).
+Standard PEFT `use_rslora` metadata is honored as
+`lora_alpha / sqrt(rank)`, and saved rsLoRA adapters emit that metadata so
+their training and serving scales agree.
 
 When `save_checkpoints: true`, each eval step also writes
 `checkpoints/step-<NNNNN>-val<loss>/` and a durable `metrics.json` (config,

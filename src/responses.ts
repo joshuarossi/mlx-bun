@@ -45,6 +45,7 @@ export class ResponseStore {
   constructor(
     readonly ttlMs: number = DEFAULT_TTL_MS,
     readonly maxBytes: number = DEFAULT_MAX_BYTES,
+    private readonly now: () => number = Date.now,
   ) {}
 
   get size(): number {
@@ -67,7 +68,7 @@ export class ResponseStore {
       input: [...entry.input],
       output: [...entry.output],
       instructions: entry.instructions,
-      createdAt: Date.now(),
+      createdAt: this.now(),
       size,
     });
     this.#bytes += size;
@@ -89,9 +90,11 @@ export class ResponseStore {
   }
 
   #evictExpired(): void {
-    const cutoff = Date.now() - this.ttlMs;
+    const cutoff = this.now() - this.ttlMs;
     for (const [id, entry] of this.#items) {
-      if (entry.createdAt >= cutoff) break; // oldest-first walk, like the oracle
+      // LRU touches reorder the map independently of TTL age, so every entry
+      // must be checked rather than stopping at the first fresh one.
+      if (entry.createdAt >= cutoff) continue;
       this.#bytes -= entry.size;
       this.#items.delete(id);
     }
@@ -733,8 +736,10 @@ export function translateOpenAiSseToResponses(
   const dec = new TextDecoder();
   let buf = "";
   let finalized = false;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let cancelled = false;
   return new ReadableStream<Uint8Array>({
-    async start(controller) {
+    start(controller) {
       const emit = (frames: string[]) => {
         for (const f of frames) controller.enqueue(enc.encode(f));
       };
@@ -744,54 +749,62 @@ export function translateOpenAiSseToResponses(
         emit(translator.finalize());
         onComplete(translator.finalResponse());
       };
-      const reader = upstream.getReader();
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += dec.decode(value, { stream: true });
-          let sep: number;
-          while ((sep = buf.indexOf("\n\n")) !== -1) {
-            const frame = buf.slice(0, sep);
-            buf = buf.slice(sep + 2);
-            const data = frame
-              .split("\n")
-              .find((l) => l.startsWith("data: "))
-              ?.slice(6);
-            if (data == null) continue;
-            if (data === "[DONE]" || data === '"[DONE]"') {
-              finish();
-              continue;
+      reader = upstream.getReader();
+      void (async () => {
+        try {
+          while (!cancelled) {
+            const { done, value } = await reader!.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            let sep: number;
+            while ((sep = buf.indexOf("\n\n")) !== -1) {
+              const frame = buf.slice(0, sep);
+              buf = buf.slice(sep + 2);
+              const data = frame
+                .split("\n")
+                .find((l) => l.startsWith("data: "))
+                ?.slice(6);
+              if (data == null) continue;
+              if (data === "[DONE]" || data === '"[DONE]"') {
+                finish();
+                continue;
+              }
+              const parsed = JSON.parse(data);
+              if (parsed?.error) {
+                emit([
+                  sse("error", {
+                    type: "error",
+                    code: "server_error",
+                    message: parsed.error.message ?? "generation failed",
+                    param: null,
+                  }),
+                ]);
+                continue;
+              }
+              emit(translator.addChunk(parsed));
             }
-            const parsed = JSON.parse(data);
-            if (parsed?.error) {
-              emit([
-                sse("error", {
-                  type: "error",
-                  code: "server_error",
-                  message: parsed.error.message ?? "generation failed",
-                  param: null,
-                }),
-              ]);
-              continue;
-            }
-            emit(translator.addChunk(parsed));
           }
+          if (!cancelled) finish();
+        } catch (e) {
+          if (!cancelled)
+            emit([
+              sse("error", {
+                type: "error",
+                code: "server_error",
+                message: (e as Error).message,
+                param: null,
+              }),
+            ]);
+        } finally {
+          reader?.releaseLock();
+          reader = null;
+          if (!cancelled) controller.close();
         }
-        finish();
-      } catch (e) {
-        emit([
-          sse("error", {
-            type: "error",
-            code: "server_error",
-            message: (e as Error).message,
-            param: null,
-          }),
-        ]);
-      } finally {
-        reader.releaseLock();
-        controller.close();
-      }
+      })();
+    },
+    async cancel(reason) {
+      cancelled = true;
+      await reader?.cancel(reason);
     },
   });
 }

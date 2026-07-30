@@ -21,6 +21,11 @@
 
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import {
+  fetchRestrictedHttpBytes,
+  type MediaFetchPolicy,
+  type RestrictedFetchDependencies,
+} from "./media-fetch";
 
 /** Tool names, exported so pi-web can add them to its tool allowlist. */
 export const WEB_TOOL_NAMES = ["web_search", "web_fetch", "weather"] as const;
@@ -31,6 +36,7 @@ const USER_AGENT =
   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
 const FETCH_TIMEOUT_MS = 20_000;
+const MAX_FETCH_BYTES = 1024 * 1024;
 /** Cap on text returned to the model from a fetched page. */
 const MAX_FETCH_CHARS = 12_000;
 const DEFAULT_SEARCH_RESULTS = 5;
@@ -44,13 +50,27 @@ function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-interface FetchResult {
+export interface FetchResult {
   ok: boolean;
   status: number;
   finalUrl: string;
   contentType: string;
   text: string;
 }
+
+export interface WebFetchOptions {
+  policy?: MediaFetchPolicy;
+  dependencies?: Partial<RestrictedFetchDependencies>;
+}
+
+const WEB_FETCH_POLICY: MediaFetchPolicy = {
+  allowPrivate: false,
+  privateDestinationHint:
+    "private/loopback destinations are never available to the model-driven web_fetch tool",
+  timeoutMs: FETCH_TIMEOUT_MS,
+  maxBytes: MAX_FETCH_BYTES,
+  maxRedirects: 5,
+};
 
 /** GET/POST a URL and read the body as text, with timeout + abort wiring. */
 async function httpText(
@@ -67,6 +87,38 @@ async function httpText(
   const contentType = res.headers.get("content-type") ?? "";
   const text = await res.text();
   return { ok: res.ok, status: res.status, finalUrl: res.url || url, contentType, text };
+}
+
+/**
+ * Fetch a model-selected URL through the shared restricted-destination
+ * transport. Exported with dependency injection for deterministic,
+ * model-free security tests.
+ */
+export async function fetchWebText(
+  url: string,
+  signal?: AbortSignal,
+  options: WebFetchOptions = {},
+): Promise<FetchResult> {
+  const result = await fetchRestrictedHttpBytes(
+    url,
+    "web",
+    options.policy ?? WEB_FETCH_POLICY,
+    {
+      signal,
+      dependencies: options.dependencies,
+      headers: {
+        "user-agent": USER_AGENT,
+        accept: "text/html,application/json,text/plain,*/*",
+      },
+    },
+  );
+  return {
+    ok: result.ok,
+    status: result.status,
+    finalUrl: result.finalUrl,
+    contentType: result.contentType,
+    text: new TextDecoder().decode(result.bytes),
+  };
 }
 
 /** Normalize anything thrown by fetch (timeout, DNS, abort) into a message. */
@@ -362,7 +414,7 @@ const webFetchTool = defineTool({
     let url = params.url.trim();
     if (!/^https?:\/\//i.test(url)) url = "https://" + url;
     try {
-      const res = await httpText(url, { headers: { accept: "text/html,application/json,text/plain,*/*" }, signal });
+      const res = await fetchWebText(url, signal);
       const header = `Fetched ${res.finalUrl} (HTTP ${res.status})`;
       if (!res.ok) return textResult(`${header}\n\n${truncate(htmlToText(res.text), 2_000)}`);
       const isHtml = /text\/html|application\/xhtml/i.test(res.contentType);

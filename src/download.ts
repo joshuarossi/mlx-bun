@@ -180,6 +180,8 @@ export async function listRepoFiles(
           throw new Error(`HF API returned an invalid LFS sha256 for ${s.rfilename}`);
         lfs = { sha256: sha256.toLowerCase(), size: s.lfs.size };
       }
+      if (!lfs && (!s.blobId || !/^[0-9a-f]{40}$/.test(s.blobId)))
+        throw new Error(`HF API returned an invalid git blob SHA-1 for ${s.rfilename}`);
       return {
         rfilename: s.rfilename,
         size: lfs?.size ?? s.size ?? 0,

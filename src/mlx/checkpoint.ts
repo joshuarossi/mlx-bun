@@ -15,6 +15,22 @@ import { JSCallback, ptr, read } from "bun:ffi";
 import { C, takeMlxError } from "./ffi";
 import { MlxArray } from "./array";
 
+type CallbackHandle = Pick<JSCallback, "ptr" | "close">;
+type NativeCall<F extends (...args: any[]) => any> =
+  (...args: Parameters<F>) => ReturnType<F>;
+
+/** Constructor-only dependency seam for deterministic native failure tests. */
+export interface CheckpointConstructorHooks {
+  callback?: (
+    callback: ConstructorParameters<typeof JSCallback>[0],
+    definition: ConstructorParameters<typeof JSCallback>[1],
+  ) => CallbackHandle;
+  closureNew?: NativeCall<typeof C.mlx_closure_new_func_payload>;
+  transformedNew?: NativeCall<typeof C.mlx_closure_new>;
+  transform?: NativeCall<typeof C.mlx_checkpoint>;
+  closureFree?: NativeCall<typeof C.mlx_closure_free>;
+}
+
 /** A reusable checkpointed wrapper over a JS-built subgraph.
  *
  *  `fn(inputs)` receives the input arrays (in order) and returns one or more
@@ -24,14 +40,24 @@ import { MlxArray } from "./array";
  *  AND to any outer-trace leaves captured by `fn` (e.g. swapped-in LoRA
  *  primals), exactly as if `fn` had been inlined. */
 export class Checkpoint {
-  readonly #cb: JSCallback;
+  readonly #cb: CallbackHandle;
   readonly #closure: bigint;
   readonly #ckpt: bigint;
+  readonly #freeClosure: NativeCall<typeof C.mlx_closure_free>;
   #closureError: string | null = null;
   #disposed = false;
 
-  constructor(fn: (inputs: MlxArray[]) => MlxArray[]) {
-    this.#cb = new JSCallback(
+  constructor(
+    fn: (inputs: MlxArray[]) => MlxArray[],
+    hooks: CheckpointConstructorHooks = {},
+  ) {
+    const makeCallback = hooks.callback ?? ((callback, definition) => new JSCallback(callback, definition));
+    const closureNew = hooks.closureNew ?? C.mlx_closure_new_func_payload;
+    const transformedNew = hooks.transformedNew ?? C.mlx_closure_new;
+    const transform = hooks.transform ?? C.mlx_checkpoint;
+    this.#freeClosure = hooks.closureFree ?? C.mlx_closure_free;
+
+    const cb = makeCallback(
       (outPtr: number, inVec: bigint, _payload: number): number => {
         try {
           const n = Number(C.mlx_vector_array_size(inVec));
@@ -58,15 +84,22 @@ export class Checkpoint {
       { args: ["ptr", "u64", "ptr"], returns: "i32" },
     );
 
-    this.#closure = C.mlx_closure_new_func_payload(this.#cb.ptr as never, null, null);
-
-    const slot = new BigUint64Array([C.mlx_closure_new()]);
-    if (C.mlx_checkpoint(ptr(slot), this.#closure) !== 0) {
-      C.mlx_closure_free(this.#closure);
-      this.#cb.close();
-      throw new Error(`mlx_checkpoint failed: ${takeMlxError() ?? ""}`);
+    let closure: bigint | null = null;
+    let slot: BigUint64Array | null = null;
+    try {
+      closure = closureNew(cb.ptr as never, null, null);
+      slot = new BigUint64Array([transformedNew()]);
+      if (transform(ptr(slot), closure) !== 0)
+        throw new Error(`mlx_checkpoint failed: ${takeMlxError() ?? ""}`);
+      this.#cb = cb;
+      this.#closure = closure;
+      this.#ckpt = read.u64(ptr(slot), 0);
+    } catch (e) {
+      if (slot) this.#freeClosure(read.u64(ptr(slot), 0));
+      if (closure !== null) this.#freeClosure(closure);
+      cb.close();
+      throw e;
     }
-    this.#ckpt = read.u64(ptr(slot), 0);
   }
 
   /** Apply the checkpointed fn. Returns its outputs as owned MlxArrays. */
@@ -105,8 +138,8 @@ export class Checkpoint {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    C.mlx_closure_free(this.#ckpt);
-    C.mlx_closure_free(this.#closure);
+    this.#freeClosure(this.#ckpt);
+    this.#freeClosure(this.#closure);
     this.#cb.close();
   }
 

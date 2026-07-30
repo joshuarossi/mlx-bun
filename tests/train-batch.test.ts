@@ -21,6 +21,7 @@ import {
   type SftExample, type DpoExample,
 } from "../src/train/dataset";
 import { buildBatchedPadMask } from "../src/train/forward";
+import { countResponseTokens } from "../src/train/trainer";
 
 // ---------------------------------------------------------------------------
 // SFT batching
@@ -75,6 +76,15 @@ describe("iterateSftBatches B>1", () => {
       // Pad positions are the pad id (0).
       for (let t = trueLen; t < L; t++) expect(small.ids[r]![t]).toBe(0);
     }
+  });
+
+  test("throughput counts true response tokens, never padded positions", () => {
+    const batches = [...iterateSftBatches(examples, 2, 256, 1, false, 0)];
+    const small = batches.find((b) => Math.max(...b.lengths!) === 5)!;
+    // Window {len=3,prompt=1; len=5,prompt=2}: 2 + 3 supervised targets.
+    // Both id rows are padded to 33, which the old implementation counted.
+    expect(small.ids[0]!.length).toBe(33);
+    expect(countResponseTokens(small)).toBe(5);
   });
 
   test("preserves prompt boundaries per row", () => {

@@ -117,6 +117,15 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   grammar?: GrammarController;
 }
 
+export function shouldUseGrammarJump(
+  options: Pick<GenerateOptions, "grammar" | "logprobs" | "topLogprobs">,
+): boolean {
+  return options.grammar !== undefined &&
+    flagOn("MLX_BUN_GRAMMAR_JUMP", false) &&
+    !options.logprobs &&
+    !(options.topLogprobs && options.topLogprobs > 0);
+}
+
 /** Per-token logprob info (only present when GenerateOptions requested it). */
 export interface TokenLogprobs {
   /** logprob of the emitted token (requires options.logprobs). */
@@ -736,10 +745,7 @@ async function* generateInner(
     // (see GrammarController.jumpForward for the contract + the fidelity
     // note on why this is opt-in). Excluded when logprobs are requested
     // (jumped tokens are never sampled, so they'd have no logprobs rows).
-    const grammarJump =
-      options.grammar !== undefined &&
-      flagOn("MLX_BUN_GRAMMAR_JUMP", false) &&
-      !options.logprobs;
+    const grammarJump = shouldUseGrammarJump(options);
     while (!stop) {
       const cur = pending!;
       const curExtras = pendingExtras;
