@@ -10,24 +10,13 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
-## Active: pre-Colibri stabilization (2026-07-29)
+## Completed: pre-Colibri stabilization (2026-07-29)
 
-Phase 22 is now the active workstream and Phase 21 is paused before G4. The
-25-item intake is tracked in
+Phase 22 is closed. The 25-item intake is tracked in
 [docs/design/pre-colibri-stabilization.md](docs/design/pre-colibri-stabilization.md)
-with stable IDs, priorities, reproducer/measurement requirements, execution
-waves, and a single exit gate. P0 safety/lifetime work leads; advertised
-correctness and durability follow; leaks and gate coverage come next; the two
-performance observations are measured only after the correctness baseline is
-stable. The WebSocket Origin, `/api/*` CSRF, and wildcard-CORS trio remains a
-conditional threat-model project while loopback-only is the supported
-deployment.
-
-P0, P1, and P2 implementation is complete with adversarial focused evidence:
-SSRF/cancellation/native lifetime, advertised correctness and durability, all
-three leak families, and the expanded type/test gates are green. The repository
-gate retains one frozen pre-existing e4b chirp golden mismatch, documented in
-the stabilization ledger rather than hidden.
+with stable IDs and evidence. Every P0/P1/P2 item is fixed; the conditional
+WebSocket Origin, `/api/*` CSRF, and wildcard-CORS trio remains deferred while
+loopback-only is the supported deployment.
 
 PERF-01 is measured and fixed: bounded incremental detokenization is
 byte/chunk-exact and 19.84× faster at 2,048 output tokens on the paired
@@ -37,13 +26,16 @@ measurable overhead (0.999× the off arm), and `top_logprobs=5` fell from
 68.7% to 6.5%. The off control stayed flat, and all 40 parity checks plus
 1,280/1,280 selected and top-k values remained exact.
 
-The next action is an oracle decision for the two isolated unrelated gate
-drifts (e4b chirp token golden and mixed-KV teacher-forcing logit golden),
-followed by the repository closeout gate. Typecheck/hygiene and all
-stabilization-focused tests are green; the prior two-shard run otherwise
-recorded 1,842 passes. Phase 21 remains paused until S5 closes explicitly.
+The two isolated oracle drifts are resolved. The e4b chirp difference is an
+allowed frontend residual crossing a later greedy near-tie: the actual bf16
+language-model splice boundary is byte-exact from the oracle mel, so the e2e
+fixture now gates the factual decode instead of asserting a contradictory
+trajectory. The mixed-KV mismatch was stale machine-local `.bin` data; fresh
+pinned-oracle blobs are bit-exact, and their manifest now binds provenance and
+SHA-256 values. The final two-shard gate passed 1,857 tests with 71 intentional
+skips and zero failures. Phase 21 is explicitly unpaused.
 
-## Paused checkpoint: native Colibri/GLM-5.2 port (2026-07-29)
+## Active: native Colibri/GLM-5.2 port (2026-07-29)
 
 The G1–G3 foundation is landed on `main` at `2cd6e35`. Phase 21 **G0 and G2 are
 complete; G1's agent-safe implementation is complete and independently
