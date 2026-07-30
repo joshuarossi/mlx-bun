@@ -2312,7 +2312,7 @@ until measured. WebSocket Origin, `/api/*` CSRF, and wildcard CORS stay grouped
 and deferred while loopback-only is an enforced product invariant; any
 supported non-loopback/tunnel/proxy deployment reopens all three together.
 
-- [~] **S0 — baseline and proof harnesses:** record environment; reproduce or
+- [x] **S0 — baseline and proof harnesses:** record environment; reproduce or
       disprove every active item; create model-free failure injection and
       deterministic perf harnesses. No “fixed by inspection.”
 - [x] **S1 — P0 safety/lifetime:** web-fetch SSRF + redirect/body cap;
@@ -2326,7 +2326,7 @@ supported non-loopback/tunnel/proxy deployment reopens all three together.
 - [x] **S3 — P2 resources/gates:** diffusion, weights, and closure failure-path
       ownership; remove dead Gemma job read; include shipped web/test sources
       in typecheck; include the model-free serving-load test in the gate.
-- [~] **S4 — measured performance:** establish scaling/latency baselines for
+- [x] **S4 — measured performance:** establish scaling/latency baselines for
       incremental detokenization and serial logprob readback; optimize only
       when material; require paired A/B plus exact output parity.
 - [~] **S5 — closeout:** all P0/P1 fixed or disproved; P2 fixed/disproved or

@@ -31,16 +31,17 @@ the stabilization ledger rather than hidden.
 
 PERF-01 is measured and fixed: bounded incremental detokenization is
 byte/chunk-exact and 19.84× faster at 2,048 output tokens on the paired
-MiniCPM5 harness. PERF-02 now has a deterministic paired harness, but its
-preflight refused this machine at 10,856 MB swap and 99% Chrome CPU; no
-untrustworthy number or speculative code change was accepted.
+MiniCPM5 harness. PERF-02 is also measured and fixed on the clean M1 Max
+Qwen2.5-0.5B harness: selected-logprob overhead fell from 47.7% to no
+measurable overhead (0.999× the off arm), and `top_logprobs=5` fell from
+68.7% to 6.5%. The off control stayed flat, and all 40 parity checks plus
+1,280/1,280 selected and top-k values remained exact.
 
-The next action is a clean-machine run of
-`scripts/bench-logprobs-readback.ts`, followed by an oracle decision for the
-two isolated unrelated gate drifts (e4b chirp token golden and mixed-KV
-teacher-forcing logit golden). Typecheck/hygiene and all stabilization-focused
-tests are green; the two-shard repository run otherwise recorded 1,842 passes.
-Phase 21 remains paused until that evidence closes S4/S5 explicitly.
+The next action is an oracle decision for the two isolated unrelated gate
+drifts (e4b chirp token golden and mixed-KV teacher-forcing logit golden),
+followed by the repository closeout gate. Typecheck/hygiene and all
+stabilization-focused tests are green; the prior two-shard run otherwise
+recorded 1,842 passes. Phase 21 remains paused until S5 closes explicitly.
 
 ## Paused checkpoint: native Colibri/GLM-5.2 port (2026-07-29)
 

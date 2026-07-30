@@ -497,15 +497,14 @@ async function* generateInner(
     if (e) for (const a of [e.sel, e.topIdx, e.topVals]) a?.dispose();
   };
   /** Read extras back to JS (forces eval — they were async-dispatched with the
-   *  token, so this normally just copies) and dispose the device arrays. */
+   *  token) without appending casts behind the next decode step. */
   const readExtras = (e: StepExtras | null): TokenLogprobs | undefined => {
     if (!e) return undefined;
     const out: TokenLogprobs = {};
-    if (e.sel) out.logprob = e.sel.toFloat32()[0]!;
+    if (e.sel) out.logprob = e.sel.toFloat32Host()[0]!;
     if (e.topIdx && e.topVals) {
-      // uint32 ids read via the f32 cast: exact for ids < 2^24 (vocab ≪ 16M)
-      const ids = e.topIdx.toFloat32();
-      const vals = e.topVals.toFloat32();
+      const ids = e.topIdx.toIntTokens();
+      const vals = e.topVals.toFloat32Host();
       out.top = Array.from(ids, (id, i) => ({ id, logprob: vals[i]! })).sort(
         (a, b) => b.logprob - a.logprob,
       );

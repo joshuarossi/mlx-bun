@@ -292,6 +292,49 @@ export class MlxArray {
     return out;
   }
 
+  /** Read an f32/f16/bf16 array numerically as float32 without enqueueing a
+   *  GPU cast. This evaluates the ORIGINAL array, then expands 16-bit values
+   *  on the host. Use this for small readbacks after later GPU work has
+   *  already been dispatched: toFloat32() would append astype(float32) behind
+   *  that work and turn the readback into an accidental full-step barrier. */
+  toFloat32Host(): Float32Array {
+    this.eval();
+    const dt = this.dtype;
+    if (dt === Dtype.float32) {
+      const p = C.mlx_array_data_float32(this.handle);
+      return new Float32Array(toArrayBuffer(p!, 0, this.size * 4)).slice();
+    }
+    if (dt === Dtype.bfloat16) {
+      const p = C.mlx_array_data_bfloat16(this.handle);
+      const src = new Uint16Array(toArrayBuffer(p!, 0, this.size * 2));
+      const words = new Uint32Array(src.length);
+      for (let i = 0; i < src.length; i++) words[i] = src[i]! << 16;
+      return new Float32Array(words.buffer);
+    }
+    if (dt === Dtype.float16) {
+      const p = C.mlx_array_data_float16(this.handle);
+      const src = new Uint16Array(toArrayBuffer(p!, 0, this.size * 2));
+      const out = new Float32Array(src.length);
+      for (let i = 0; i < src.length; i++) {
+        const bits = src[i]!;
+        const sign = bits & 0x8000;
+        const exponent = (bits >>> 10) & 0x1f;
+        const fraction = bits & 0x03ff;
+        let value: number;
+        if (exponent === 0) {
+          value = fraction === 0 ? 0 : fraction * 2 ** -24;
+        } else if (exponent === 0x1f) {
+          value = fraction === 0 ? Infinity : NaN;
+        } else {
+          value = (1 + fraction / 1024) * 2 ** (exponent - 15);
+        }
+        out[i] = sign ? -value : value;
+      }
+      return out;
+    }
+    throw new Error(`toFloat32Host: unsupported dtype ${this.dtypeName}`);
+  }
+
   /** Basic slice: start/stop per dimension (stride 1). */
   slice(start: number[], stop: number[], stream: MlxHandle = gpuStream): MlxArray {
     const s = new Int32Array(start);
