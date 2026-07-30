@@ -120,6 +120,37 @@ describe.skipIf(!haveWeights || !haveGoldens || !haveBins)(
       }, 300_000);
     }
 
+    test("chirp: bf16 splice features match the oracle tower output exactly", async () => {
+      const fx = golden.fixtures.chirp!;
+      const mel = new Float32Array(
+        await Bun.file(binPath(fx.mel_bin)).arrayBuffer(),
+      );
+      const want = new Float32Array(
+        await Bun.file(binPath(fx.embed_bin)).arrayBuffer(),
+      );
+      const { MlxArray } = await import("../src/mlx/array");
+      const { Dtype } = await import("../src/mlx/ffi");
+
+      // T2 consumes bf16(raw tower output) / bf16(embed_scale). Tiny f32
+      // tower residuals are harmless only if they disappear at this actual
+      // splice boundary; compare the bytes the language model receives.
+      const gotRaw = tower.features(mel, fx.mel_shape[0], false);
+      const gotBf = gotRaw.astype(Dtype.bfloat16);
+      gotRaw.dispose();
+      const refRaw = MlxArray.fromFloat32(want, [1, fx.embed_shape[0], fx.embed_shape[1]]);
+      const refBf = refRaw.astype(Dtype.bfloat16);
+      refRaw.dispose();
+      const gotScale = ops.scalarLike(embedScale, gotBf);
+      const refScale = ops.scalarLike(embedScale, refBf);
+      const got = ops.div(gotBf, gotScale);
+      const ref = ops.div(refBf, refScale);
+      for (const a of [gotBf, refBf, gotScale, refScale]) a.dispose();
+
+      expect(got.rawBytes()).toEqual(ref.rawBytes());
+      got.dispose();
+      ref.dispose();
+    }, 300_000);
+
     // A2 exit criterion: the clipped linears are load-bearing — running the
     // same weights with clipping disabled must diverge measurably MORE than
     // the clipped path (guards against silently never applying the stats).
