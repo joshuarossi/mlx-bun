@@ -140,7 +140,11 @@ export class Glm52ExpertRuntime {
         store,
         layout,
         hiddenSize: config.hiddenSize,
-        decodeKernel: options.decodeKernel,
+        // G1/G3 quiet-machine selection: custom Metal wins eligible M=1
+        // expert jobs; the hybrid executor falls back to stock MLX for
+        // multi-row ragged/prefill jobs. Keep an explicit "stock" override
+        // for oracle and diagnostic runs.
+        decodeKernel: options.decodeKernel ?? "metal",
       });
       const runtime = new Glm52ExpertRuntime(
         plan,

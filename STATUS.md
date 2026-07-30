@@ -35,24 +35,18 @@ pinned-oracle blobs are bit-exact, and their manifest now binds provenance and
 SHA-256 values. The final two-shard gate passed 1,857 tests with 71 intentional
 skips and zero failures. Phase 21 is explicitly unpaused.
 
-## Active: native Colibri/GLM-5.2 port (2026-07-29)
+## Active: native Colibri/GLM-5.2 port (2026-07-30)
 
 The G1–G3 foundation is landed on `main` at `2cd6e35`. Phase 21 **G0 and G2 are
-complete; G1's agent-safe implementation is complete and independently
-audited; G3 is in progress**. G1's two
-quiet-machine manual measurements still remain before its exit can close. The
-landed-in-worktree foundation now has a strict versioned synthetic Colibri
+complete, and the G1/G3 closeout measurements now make G0–G3 complete; G4
+serial native MTP is next**. The landed foundation has a strict versioned synthetic Colibri
 gate/up/down artifact, fixed 16 KiB native slabs, passive bounded `pread`
 workers, async Bun-side completion polling, generation-bound CPU/GPU leases,
 lazy-graph evaluation plus stream synchronization before reuse, deterministic
 LRU traces, and stock-MLX/custom-Metal zero-copy consumers. Forced churn covers
 1,000 native reloads plus 100 GPU-fenced MLX reloads with flat allocator use.
 The final adversarial audit reproduced and closed both a post-close bus error
-and a lazy-graph stale-read/UAF class before passing. G3 is proceeding with the
-stock-MLX correctness candidate while the workflow's manual paired kernel
-matrix and passive-worker power measurement remain outstanding; no performance
-winner has been selected or quoted yet. The Colibri checkout
-remains clean at
+and a lazy-graph stale-read/UAF class before passing. The Colibri checkout remains clean at
 `44e489b196c9b7876b3d37a0570ebf1c6f90f54c`; the public GLM-5.2 artifact is
 pinned at revision `3cc8db99b1b13fc79325d987ba3c1c430766b3b8`. All 150 files
 are accounted for and all 145 LFS payloads (383,760,044,154 bytes) match the
@@ -190,8 +184,23 @@ machine gate remains G5. Stable evidence is
 The final adversarial review found no numeric, alignment, ownership/UAF, or
 budget blocker. Its two error-path findings (double release after a failed
 lease release and post-close guard sampling) are fixed, and the 98-test
-focused/native suite plus both entry bundles pass afterward. Remaining G3
-work is only the quiet kernel/power matrix and routed-SwiGLU path selection.
+focused/native suite plus both entry bundles pass afterward.
+
+The cleared-machine G1/G3 matrix is now complete. At the production M=1 top-8
+decode shape, custom Metal measured 4.282 ms versus stock MLX at 5.099 ms
+(16.0% faster after ten warmups; an independent shorter run also won by 5.4%)
+with max absolute output delta `2.33e-9` and relative RMSE `5.56e-7`.
+Therefore custom Metal is selected for routed decode; stock MLX remains
+selected for Q4 dense operations, routed M=11/M=32, and absorbed MLA. The
+same-shape direct-Colibri matrix remains the performance oracle and exposes
+the largest residual gap at MLA decode (1.014 ms direct vs 11.506 ms stock
+MLX). Two matched idle-power matrices show no monotonic CPU/GPU/package-power
+increase from 1, 2, or 4 sleeping workers, confirming passive waits; the
+chosen default remains two workers. Swap stayed exactly 339.25 MiB through
+the kernel runs. Raw reports are under `runs/colibri-g1/`.
+
+**Next:** G4 serial native MTP: exact draft/verify cache rollback and oracle
+accept/reject trace first, then prove a net MTP-on end-to-end win.
 
 ## Where we are (2026-07-10 — v0.0.11 released)
 

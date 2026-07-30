@@ -760,10 +760,22 @@ The helper remains an internal, build-only G1 artifact via
 `scripts/build-expert-io.sh`; G3/G8 integration will publish it in a newly
 versioned native pack and update the distribution reference in the same change.
 
-G1 remains open only for the workflow's manual quiet-machine gates: paired
-Colibri-vs-MLX/custom-Metal benchmarks for int4 dense GEMM, routed SwiGLU, and
-MLA decode, followed by CPU/GPU/package-power measurement confirming passive
-workers. Those measurements select the recorded execution path per shape.
+G1 closed on 2026-07-30 with the manual quiet-machine gates. After aligning
+both harnesses to identical production shapes, a ten-warmup/fifteen-sample
+matrix selected custom Metal for routed SwiGLU decode M=1: 4.282 ms versus
+5.099 ms for stock MLX (16.0% faster), with max absolute output delta
+`2.33e-9` and relative RMSE `5.56e-7`. An independent three-warmup/eleven-
+sample run also selected custom Metal by 5.4%. Stock MLX remains selected for
+Q4 dense decode/prefill, routed M=11 ragged and M=32 prefill, and absorbed MLA
+decode. Direct Colibri remains the same-shape performance oracle; the largest
+observed residual is MLA decode at 1.014 ms direct versus 11.506 ms stock MLX.
+
+The passive-worker matrix retained raw mactop samples for matched no-worker,
+1-, 2-, and 4-worker arms and repeated the worker arms in reverse order. No
+monotonic CPU, GPU, or package-power increase appears as worker count rises,
+confirming that the `pthread_cond_wait` pool does not busy-spin. Two workers
+remain the bounded default. Swap was unchanged at 339.25 MiB through both
+kernel runs. Raw artifacts are under `runs/colibri-g1/`.
 
 ### G2 — native GLM-5.2 correctness spine
 
@@ -934,10 +946,11 @@ swapout while other applications were open; the strict cleared-machine
 zero-swap contract remains G5. Evidence:
 `fixtures/colibri-glm52/g3-full-model-trajectory.json`.
 
-The quiet-machine kernel/power matrix and routed-SwiGLU path selection remain
-open; therefore G3 is not yet closed. The final adversarial code review found
-no numeric, alignment, ownership/UAF, or budget blocker; its two cleanup-path
-findings were fixed before the focused/native suite was rerun.
+G3 closed on 2026-07-30 after the quiet kernel/power matrix selected custom
+Metal for M=1 routed decode and stock MLX for ragged/prefill shapes. The final
+adversarial code review found no numeric, alignment, ownership/UAF, or budget
+blocker; its two cleanup-path findings were fixed before the focused/native
+suite was rerun.
 
 ### G4 — serial native MTP (requirement)
 
