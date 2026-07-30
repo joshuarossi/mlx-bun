@@ -153,6 +153,26 @@ Direct decode is at parity-to-slightly-behind mlx-lm (the residual host
 overhead per step); prefill leads on the larger models. See PLAN.md
 "Decode gap RESOLVED" for the root-cause/fix history.
 
+### Logprob metadata readback (2026-07-29)
+
+Paired internal before/after measurement on the M1 Max 32 GB,
+Qwen2.5-0.5B-Instruct-4bit, Bun 1.3.14: 256 generated tokens, two warmups,
+five randomized measured rounds. This isolates mlx-bun's API metadata
+readback; it is **not** a Bun-versus-Python FFI comparison.
+
+| arm | before total / decode | after total / decode | overhead vs off, before → after |
+|---|---:|---:|---:|
+| off | 802.75 ms / 328.92 tok/s | 803.94 ms / 328.81 tok/s | control |
+| `logprobs` | 1,185.89 ms / 220.52 tok/s | 802.77 ms / 329.18 tok/s | +47.7% → −0.1% |
+| `top_logprobs=5` | 1,354.21 ms / 192.69 tok/s | 856.24 ms / 307.63 tok/s | +68.7% → +6.5% |
+
+The fix reads uint32 IDs directly and expands the few bf16/f16 values on the
+host instead of queueing `astype(float32)` behind the already-dispatched next
+decode step. The off control stayed flat; all 40 parity checks and all 1,280
+selected/top-k comparisons were exact. Clean commits: before `00e597e`, after
+`b1cb7cb`. Raw artifacts are recorded in the Phase 22 ledger in
+`docs/design/pre-colibri-stabilization.md`.
+
 ### Long context (gemma-4-12B) — where the gap opens
 
 decode tok/s · gen-peak GB

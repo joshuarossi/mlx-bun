@@ -78,7 +78,7 @@ change that state.
 | ID | Pri | State | Discovery anchor | Failure or invariant | Proof to close |
 |---|---:|---|---|---|---|
 | PERF-01 | P3 | fixed | `src/server.ts`, `StreamDecoder.push` | `push()` decoded the full accumulated ID list on every token, giving an O(n²) code shape across streaming surfaces. | Deterministic tokenizer-only scaling benchmark at several output lengths; optimize only if the curve and wall time are material, then preserve exact emitted bytes/chunk boundaries. |
-| PERF-02 | P3 | reported | `src/generate.ts`, `readExtras` | Serial `logprobs`/`top_logprobs` readback may place `astype` work behind the already-dispatched next step and serialize decoding. Magnitude is unknown. | Quiet-machine paired generation benchmark with logprobs off/on and a timeline or per-token latency signal; patch must recover overlap without changing logprob values. |
+| PERF-02 | P3 | fixed | `src/generate.ts`, `readExtras` | Serial `logprobs`/`top_logprobs` readback placed `astype` work behind the already-dispatched next step and serialized decoding. Direct integer reads plus host bf16/f16 expansion remove the barrier. | Quiet-machine paired generation benchmark with logprobs off/on and a timeline or per-token latency signal; patch must recover overlap without changing logprob values. |
 | CANCEL-01 | P0 | fixed | `src/anthropic.ts`, `src/responses.ts` SSE translators | Canceling the outer Anthropic or Responses stream does not cancel its upstream OpenAI stream. | A synthetic slow upstream records `cancel()` exactly once when the translated reader is canceled; normal completion and upstream error behavior remain exact. |
 | CANCEL-02 | P0 | fixed | `src/server.ts`, non-streaming chat/completions | Client abort is not threaded into non-streaming gateway generation, so abandoned work can retain the serial lane. | End-to-end abort test proves generation stops, the lane/row is released, and a following request begins promptly for chat and text completions; protocol shims inherit the same signal. |
 | JOB-01 | P0 | fixed | `src/jobs/runner.ts`, `spawnNow` | The GPU lease is assigned before `Bun.spawn`; a synchronous throw can leave `isGpuBusy()` true forever. | Inject a throwing spawn, assert failed job state, null lease, and successful queue drain/next job. |
@@ -150,12 +150,22 @@ change that state.
   113.62–116.06 ms). Every per-push chunk and final byte stream matched at
   64–2,048 tokens; the e4b 1,024-token check was 88.62 → 10.25 ms. Raw,
   gitignored artifacts are under `reports/perf-01-stream-decoder-*.json`.
-- **PERF-02:** the checked-in `scripts/bench-logprobs-readback.ts` harness
-  covers off/logprobs/logprobs+top arms, warmups, repeated per-token timing,
-  and bit-parity. Its repository preflight correctly refused to run: swap was
-  10,856 MB (512 MB ceiling) and Chrome sampled at 99% CPU. No model loaded,
-  no artifact was produced, and no speculative production change was made.
-  A reboot/quiet Chrome session is required for the paired measurement.
+- **PERF-02:** `scripts/bench-logprobs-readback.ts` confirmed the reported
+  barrier on a clean M1 Max 32 GB with Bun 1.3.14 and
+  Qwen2.5-0.5B-Instruct-4bit (256 tokens, two warmups, five measured rounds).
+  At clean base `00e597e`, off/logprobs/top-5 medians were
+  802.75/1,185.89/1,354.21 ms: logprobs cost 1.477× and top-5 cost 1.687×.
+  Clean fix commit `b1cb7cb` measured 803.94/802.77/856.24 ms:
+  0.999× and 1.065× the off arm. The off control moved only 0.15%; selected
+  logprob throughput rose 220.52→329.18 tok/s and top-5 rose
+  192.69→307.63 tok/s. All 40 parity checks passed; all 1,280 selected values
+  and all 1,280 emitted top-k entries were bit-exact with zero maximum delta.
+  Raw gitignored artifacts:
+  `scripts/reports/perf02-logprobs-readback-2026-07-30T04-40-09-139Z.json`
+  (before) and
+  `reports/perf02-logprobs-readback-2026-07-30T04-50-06-626Z.json` (after).
+  The focused affected-path gate is 100/100 green, with typecheck, hygiene,
+  and diff checks green.
 - **Repository closeout gate:** shard 1 ran 753 pass / 44 skip and stopped only
   at the frozen e4b chirp golden mismatch. Shard 2 was then run explicitly:
   1,089 pass / 29 skip, with one unrelated mixed-KV teacher-forcing golden
@@ -165,7 +175,7 @@ change that state.
   reproduce together in isolation, and neither affected model/KV/audio path
   changed in this program. Typecheck, hygiene, shell syntax, and diff checks
   are green. The final stabilization-focused union is 300/300 green. These
-  two oracle drifts and PERF-02 keep the formal exit open.
+  the two oracle drifts keep the formal exit open.
 
 ## 5. Execution waves
 
