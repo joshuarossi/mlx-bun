@@ -230,24 +230,30 @@ describe("GLM-5.2 canonical Q4 Metal streamed expert", () => {
   });
 
   test("one fixed kernel family is row-stable for M=1 and M=4", () => {
+    const downWeights = matrixBytes(31);
+    const gateWeights = matrixBytes(37);
+    const upWeights = matrixBytes(41);
+    const downScales = scales(11);
+    const gateScales = scales(13);
+    const upScales = scales(17);
     const bytes = new Uint8Array(LAYOUT.slotBytes);
-    copyInto(bytes, LAYOUT.downWeightOffset, matrixBytes(31));
-    copyInto(bytes, LAYOUT.gateWeightOffset, matrixBytes(37));
-    copyInto(bytes, LAYOUT.upWeightOffset, matrixBytes(41));
+    copyInto(bytes, LAYOUT.downWeightOffset, downWeights);
+    copyInto(bytes, LAYOUT.gateWeightOffset, gateWeights);
+    copyInto(bytes, LAYOUT.upWeightOffset, upWeights);
     copyInto(
       bytes,
       LAYOUT.downScaleOffset,
-      new Uint8Array(scales(11).buffer),
+      new Uint8Array(downScales.buffer),
     );
     copyInto(
       bytes,
       LAYOUT.gateScaleOffset,
-      new Uint8Array(scales(13).buffer),
+      new Uint8Array(gateScales.buffer),
     );
     copyInto(
       bytes,
       LAYOUT.upScaleOffset,
-      new Uint8Array(scales(17).buffer),
+      new Uint8Array(upScales.buffer),
     );
     const values = new Float32Array(HIDDEN * 4);
     for (let row = 0; row < 4; row++) {
@@ -266,14 +272,38 @@ describe("GLM-5.2 canonical Q4 Metal streamed expert", () => {
     const output1 = executor.execute(input1, slot, LAYOUT);
     const output4 = executor.execute(input4, slot, LAYOUT);
     const row0 = output4.slice([0, 0], [1, HIDDEN]);
-    ops.evalAll([output1, row0]);
+    const gate = referenceLinear(input4, gateWeights, gateScales);
+    const up = referenceLinear(input4, upWeights, upScales);
+    const activated = ops.silu(gate);
+    const product = ops.mul(activated, up);
+    const expected = referenceLinear(product, downWeights, downScales);
+    ops.evalAll([output1, row0, output4, expected]);
     expect([...output1.toFloat32()]).toEqual([...row0.toFloat32()]);
-    input1.dispose();
-    input4.dispose();
-    slot.dispose();
-    output1.dispose();
-    output4.dispose();
-    row0.dispose();
+    const actualValues = output4.toFloat32();
+    const expectedValues = expected.toFloat32();
+    let maxAbs = 0;
+    for (let i = 0; i < actualValues.length; i++) {
+      maxAbs = Math.max(
+        maxAbs,
+        Math.abs(actualValues[i]! - expectedValues[i]!),
+      );
+    }
+    expect(maxAbs).toBeLessThan(2e-4);
+    for (const value of [
+      input1,
+      input4,
+      slot,
+      output1,
+      output4,
+      row0,
+      gate,
+      up,
+      activated,
+      product,
+      expected,
+    ]) {
+      value.dispose();
+    }
     executor.dispose();
   });
 });
@@ -328,6 +358,22 @@ function referenceLinearQ8(
 }
 
 describe("GLM-5.2 canonical Q8 Metal MTP expert", () => {
+  test("rejects an out-of-slot descriptor before Metal dispatch", () => {
+    const input = ops.zeros([1, HIDDEN], Dtype.float32);
+    const slot = ops.zeros([Q8_LAYOUT.slotBytes], Dtype.uint8);
+    const executor = new Glm52CanonicalQ8MetalExecutor();
+    try {
+      expect(() => executor.execute(input, slot, {
+        ...Q8_LAYOUT,
+        upScaleOffset: Q8_LAYOUT.slotBytes - SCALE_BYTES + 1,
+      })).toThrow(/up scales exceeds the canonical expert slot/);
+    } finally {
+      input.dispose();
+      slot.dispose();
+      executor.dispose();
+    }
+  });
+
   test("one fixed kernel family matches stock MLX for M=1 and M=3", () => {
     const downWeights = q8Matrix(3);
     const gateWeights = q8Matrix(5);

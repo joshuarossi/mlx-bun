@@ -2257,11 +2257,12 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         separate signed-int8 expert tier reserves 24 verify-working slots plus
         one resident slot (945,356,800 bytes), and that slab plus the remaining
         MTP tensors are included in the main fixed-byte plan.
-      - [x] Full-prompt native recurrence drafts to gamma=3, verifies
-        `[pending,...drafts]` in one target forward, retains the first MTP row,
-        rebuilds accepted rows from the target's verified hidden window, and
-        trims every rejected target/MTP cache tip. The model-free state-machine
-        gate covers partial acceptance followed by full rejection.
+      - [x] Full-prompt **target** prefill followed by Colibri's decode-only
+        MTP recurrence drafts to gamma=3, verifies `[pending,...drafts]` in one
+        target forward, retains the first MTP row, rebuilds accepted rows from
+        the target's verified hidden window, and trims every rejected
+        target/MTP cache tip. The model-free state-machine gate covers partial
+        acceptance followed by full rejection.
       - [x] One row-independent custom Metal family handles Q4 target
         M=1/verify rows while a second handles signed-Q8 MTP M=1/absorption
         rows. M=1/M=4 Q4 and M=1/M=3 Q8 row-stability gates pass. Grammar
@@ -2286,6 +2287,28 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         is evidence only—not the G5 memory-contract result. Stable records:
         `fixtures/colibri-glm52/g4-direct-mtp-trace.json` and
         `fixtures/colibri-glm52/g4-native-mtp-e2e.json`.
+- [ ] **G4R — prompt-seeded MTP research spike:** test whether populating the
+      MTP layer's independent KV cache from prompt context improves draft
+      acceptance enough to repay its added prefill work. The landed
+      direct-Colibri decode-only window remains the control and default.
+      Implementation parity is not the correctness oracle: candidate output
+      must remain bit-for-bit identical to the target-only trajectory for the
+      gated greedy and seeded-sampling cells.
+      - [ ] Extend the draft-source prefill seam to expose the already-computed
+        target hidden rows; do not rerun the target prompt. Seed MTP rows from
+        `(promptIds[1:], targetHidden[:-1])`, preserving the final prompt
+        hidden plus pending token as the first actual draft input.
+      - [ ] Lock cache-position, cancellation, rejection, and accepted-row
+        rebuild behavior with model-free tests, including short/single-token
+        prompts and multi-round generation.
+      - [ ] Run paired fresh-process A/B cells across short/long prompts and
+        short/long continuations. Record exact token IDs, TTFT, MTP-prefill
+        time, decode and end-to-end wall time, acceptance, target forwards,
+        physical footprint, and swap.
+      - [ ] Promote prompt seeding only if exact output remains closed and
+        paired **end-to-end** wall time wins without breaking the G5 memory
+        envelope. Otherwise record the negative result and retain the
+        decode-only implementation.
 - [ ] **G5 — 32 GB memory contract (measured MTP on):** full dense + LRU +
       working-set + KV + reconstructed-KV + MLX allocator/transient + Bun +
       OS-reserve planner, startup refusal, and physical-footprint feedback; the

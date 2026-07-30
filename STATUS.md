@@ -219,9 +219,13 @@ so the 14,679,224,320-byte completed footprint is not a G5 memory claim.
 Stable evidence:
 `fixtures/colibri-glm52/g4-native-mtp-e2e.json`.
 
-**Next:** G5 on the cleared 32 GB M1 Max, with MTP enabled: close the complete
-resource equation, enforce the <=25 GB startup + 128-token contract, and
-record cold/warm MTP-on/off performance without swap or compression spiral.
+**Next:** G4 is merged with its direct-Colibri decode-only MTP cache as the
+correctness-closed baseline. Run G4R's prompt-seeded MTP research spike next.
+The candidate may intentionally differ internally from Colibri, but must keep
+the gated target output bit-for-bit exact and win paired end-to-end wall time
+after its additional prefill cost. G5 then measures whichever default wins on
+the cleared 32 GB M1 Max, enforcing the <=25 GB startup + 128-token contract
+without swap or compression spiral.
 
 ## Where we are (2026-07-10 — v0.0.11 released)
 

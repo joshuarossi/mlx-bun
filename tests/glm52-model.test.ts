@@ -471,6 +471,60 @@ test("streamed GLM async model path matches the synchronous sparse reference", a
   }
 });
 
+test("native GLM MTP provider rejects incomplete model wiring", () => {
+  const cases = [
+    {
+      capabilities: { dsa: false, mtpMetadata: false },
+      nextLayers: 1,
+      streamed: false,
+      message: /does not contain a complete MTP row/,
+    },
+    {
+      capabilities: {
+        dsa: false,
+        mtpMetadata: true,
+        mtpEnabled: false,
+      },
+      nextLayers: 1,
+      streamed: false,
+      message: /MTP is disabled/,
+    },
+    {
+      capabilities: { dsa: false, mtpMetadata: true },
+      nextLayers: 2,
+      streamed: false,
+      message: /requires exactly one next-token layer; got 2/,
+    },
+    {
+      capabilities: { dsa: false, mtpMetadata: true },
+      nextLayers: 1,
+      streamed: true,
+      message: /requires the bounded int8 MTP expert tier/,
+    },
+  ] as const;
+
+  for (const entry of cases) {
+    const glm = {
+      ...config(true),
+      numNextnPredictLayers: entry.nextLayers,
+      indexShareForMtpIteration: true,
+    };
+    const weights = buildWeights(glm);
+    const model = new Glm52Model(
+      weights,
+      runtimeConfig(glm),
+      glm,
+      entry.capabilities,
+      entry.streamed ? new TinyAsyncExpertBackend(weights, glm) : null,
+    );
+    try {
+      expect(() => new Glm52NativeMtpProvider(model)).toThrow(entry.message);
+    } finally {
+      model.dispose();
+    }
+  }
+});
+
 test("native GLM MTP drafts to gamma and rolls target + MTP caches back exactly", async () => {
   const glm = {
     ...config(true),
@@ -498,15 +552,30 @@ test("native GLM MTP drafts to gamma and rolls target + MTP caches back exactly"
   let verified: MlxArray | null = null;
   try {
     source.prefill([2, 3]);
+    // Direct Colibri has no MTP prompt prefill: the first draft starts its
+    // decode-only cache at the target anchor.
+    expect(mtp.cacheOffset).toBe(0);
     const anchorIds = ops.fromInt32([2], [1, 1]);
     try {
       anchor = model.forwardHidden(anchorIds, targetCache);
     } finally {
       anchorIds.dispose();
     }
+    const malformedAnchor = MlxArray.fromFloat32(
+      new Float32Array(2 * HIDDEN),
+      [1, 2, HIDDEN],
+    );
+    try {
+      await expect(source.draft([3], 1, 0, malformedAnchor))
+        .rejects.toThrow(/native MTP anchor must be \[1,1,4\]/);
+    } finally {
+      malformedAnchor.dispose();
+    }
     const drafts = await source.draft([3], 3, 0, anchor);
     expect(drafts).toHaveLength(3);
     expect(mtp.cacheOffset).toBe(3);
+    await expect(source.draft([drafts.at(-1)!], 1, 3, anchor))
+      .rejects.toThrow(/prior round committed/);
 
     const verifyIds = ops.fromInt32([3, ...drafts], [1, drafts.length + 1]);
     try {
@@ -516,6 +585,10 @@ test("native GLM MTP drafts to gamma and rolls target + MTP caches back exactly"
     }
     expect(targetCache[0]!.offset).toBe(5);
     targetCache[0]!.trim(2);
+    await expect(source.commit(3, 4, undefined, verified, drafts))
+      .rejects.toThrow(/outside \[0,3\]/);
+    await expect(source.commit(3, 1, undefined, verified, []))
+      .rejects.toThrow(/0 accepted tokens for k=1/);
     await source.commit(3, 1, undefined, verified, drafts.slice(0, 1));
     expect(targetCache[0]!.offset).toBe(3);
     expect(mtp.cacheOffset).toBe(2);

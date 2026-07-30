@@ -82,7 +82,10 @@ export interface DraftSource {
    *  by max(d - kAccept - 1, 0) — mlx-lm's rewind rule (generate.py:589-591).
    *  DSpark: grow H_ctx by the accepted window from `vCtxML`, the verified
    *  window's tapped context [1,d+1,m*H] (present iff tapLayers is set), and
-   *  drop the rejected tips. */
+   *  drop the rejected tips. Native GLM MTP receives the target's verified
+   *  hidden window [1,d+1,H] in `verifiedHidden` and the kAccept accepted token
+   *  ids in `acceptedTokens`; it uses them to rebuild accepted MTP KV rows
+   *  from target state rather than recursively drafted hidden state. */
   commit(
     d: number,
     kAccept: number,

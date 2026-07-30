@@ -271,7 +271,9 @@ export class Glm52ExpertRuntime {
           hiddenSize: config.hiddenSize,
           // The signed-Q8 custom kernel is one fixed family for both S=1
           // drafts and S>1 accepted-token absorption (SPEC_PIN equivalent).
-          decodeKernel: "metal",
+          // Preserve the explicit stock-kernel diagnostic escape hatch across
+          // both the target and MTP tiers.
+          decodeKernel: options.decodeKernel ?? "metal",
         });
         mtp = {
           plan: mtpPlan,

@@ -1013,6 +1013,25 @@ correctness/performance evidence, not the G5 memory-contract result. Stable
 records: `fixtures/colibri-glm52/g4-direct-mtp-trace.json` and
 `fixtures/colibri-glm52/g4-native-mtp-e2e.json`.
 
+### G4R — prompt-seeded MTP research spike
+
+G4 deliberately copies direct Colibri's decode-only MTP window: target prompt
+prefill is complete, but the independent MTP KV row begins with the first
+draft. That implementation is the control, not a permanent restriction.
+Investigate a candidate that batch-seeds MTP KV from the already-computed
+prompt pairs `(token[i+1], target_hidden[i])` before drafting. It must reuse
+captured target hidden rows rather than rerun target prefill.
+
+The oracle for this spike is emitted output, not Colibri's internal draft or
+acceptance trace. Promotion requires bit-for-bit target-output identity in the
+gated greedy and seeded-sampling cells, correct rollback/cancellation behavior,
+and a paired end-to-end wall-time win after charging the additional MTP
+prefill. Report TTFT, MTP-prefill time, decode and total time, acceptance,
+target forwards, footprint, and swap across short/long prompt and continuation
+cells. A decode-throughput or acceptance-only win is insufficient. If the
+candidate loses or exceeds the G5 envelope, retain the decode-only default and
+record the negative result.
+
 ### G5 — 32 GB memory contract (measured with MTP on)
 
 - Port the full resource equation and expose every line item.

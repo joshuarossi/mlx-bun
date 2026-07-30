@@ -555,6 +555,17 @@ export class Glm52CanonicalQ8MetalExecutor {
         slot.size < layout.slotBytes) {
       throw new Error("canonical Q8 expert slot is invalid");
     }
+    const ranges = [
+      [layout.downWeightOffset, hidden * intermediate, "down weights"],
+      [layout.gateWeightOffset, intermediate * hidden, "gate weights"],
+      [layout.upWeightOffset, intermediate * hidden, "up weights"],
+      [layout.downScaleOffset, hidden * 4, "down scales"],
+      [layout.gateScaleOffset, intermediate * 4, "gate scales"],
+      [layout.upScaleOffset, intermediate * 4, "up scales"],
+    ] as const;
+    for (const [offset, length, label] of ranges)
+      validateRange(offset, length, layout.slotBytes, label);
+
     const templateInts = {
       M: rows,
       H: hidden,

@@ -100,6 +100,10 @@ export class Glm52NativeMtpSource implements DraftSource {
     this.#checkOpen();
     if (this.#cache.offset !== 0)
       throw new Error("native MTP source cannot be prefilled twice");
+    // Direct Colibri intentionally leaves MTP KV empty here ("niente
+    // prefill"): its first draft opens a decode-only window from the target
+    // anchor hidden and pending token. Seeding this cache with the prompt
+    // would change both the oracle state and the first speculative round.
   }
 
   async draft(
