@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "lib": ["ESNext"],
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "target": "ESNext",
     "module": "Preserve",
     "moduleResolution": "bundler",
@@ -10,6 +10,5 @@
     "noUncheckedIndexedAccess": true,
     "noEmit": true
   },
-  "include": ["src", "scripts", "tests"],
-  "exclude": ["src/web/src", "tests/web-app.test.ts", "tests/web-dom-setup.ts", "tests/web-palette-sessions.test.ts"]
+  "include": ["src", "scripts", "tests"]
 }

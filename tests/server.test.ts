@@ -179,6 +179,141 @@ describe.skipIf(!haveWeights)("openai-compatible server", async () => {
     expect(stats.prompt_cache.bytes).toBeLessThanOrEqual(stats.prompt_cache.max_bytes);
   }, 240_000);
 
+  test("client abort/cancel releases the serial lane for the next request", async () => {
+    const abort = new AbortController();
+    const abandoned = fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      signal: abort.signal,
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "Keep counting upward and do not stop." }],
+        max_tokens: 512,
+        temperature: 0,
+      }),
+    });
+    await Bun.sleep(100);
+    abort.abort();
+    await expect(abandoned).rejects.toHaveProperty("name", "AbortError");
+
+    const streamed = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "Keep counting upward and do not stop." }],
+        max_tokens: 512,
+        temperature: 0,
+        stream: true,
+      }),
+    });
+    const reader = streamed.body!.getReader();
+    await reader.read(); // initial assistant-role chunk
+    await reader.cancel("test client disconnected");
+
+    const started = performance.now();
+    const next = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "Reply with one word." }],
+        max_tokens: 1,
+        temperature: 0,
+      }),
+    });
+    expect(next.status).toBe(200);
+    await next.arrayBuffer();
+    expect(performance.now() - started).toBeLessThan(15_000);
+  }, 120_000);
+
+  test("aborted raw completion releases the serial lane for the next request", async () => {
+    const abort = new AbortController();
+    const abandoned = fetch(`${base}/v1/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      signal: abort.signal,
+      body: JSON.stringify({
+        prompt: "Keep counting upward forever:",
+        max_tokens: 512,
+        temperature: 0,
+      }),
+    });
+    await Bun.sleep(100);
+    abort.abort();
+    await expect(abandoned).rejects.toHaveProperty("name", "AbortError");
+
+    const started = performance.now();
+    const next = await fetch(`${base}/v1/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompt: "One word:",
+        max_tokens: 1,
+        temperature: 0,
+      }),
+    });
+    expect(next.status).toBe(200);
+    await next.arrayBuffer();
+    expect(performance.now() - started).toBeLessThan(15_000);
+  }, 120_000);
+
+  test("grammar kill switch degrades every guided form through the production route", async () => {
+    const previous = process.env.MLX_BUN_GRAMMAR;
+    process.env.MLX_BUN_GRAMMAR = "0";
+    const guidedForms = [
+      { guided_grammar: 'root ::= "ok"' },
+      { guided_regex: "^ok$" },
+      { guided_choice: ["yes", "no"] },
+      { structured_outputs: { type: "object", properties: { ok: { type: "boolean" } } } },
+      { response_format: { type: "json_object" } },
+      {
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: "answer", schema: { type: "object" } },
+        },
+      },
+    ];
+    try {
+      for (const guided of guidedForms) {
+        const res = await fetch(`${base}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: "Answer briefly." }],
+            max_tokens: 1,
+            temperature: 0,
+            ...guided,
+          }),
+        });
+        const responseText = await res.text();
+        if (res.status !== 200) {
+          throw new Error(
+            `guided degrade failed for ${JSON.stringify(guided)}: ` +
+              `${res.status} ${responseText}`,
+          );
+        }
+        expect(res.headers.get("warning")).toContain("grammar not enforced");
+        const body = JSON.parse(responseText) as any;
+        expect(body.object).toBe("chat.completion");
+      }
+
+      const raw = await fetch(`${base}/v1/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          prompt: "Answer:",
+          max_tokens: 1,
+          temperature: 0,
+          guided_choice: ["yes", "no"],
+        }),
+      });
+      expect(raw.status).toBe(200);
+      expect(raw.headers.get("warning")).toContain("grammar not enforced");
+      expect(raw.headers.get("warning")).toContain("no prompt injection");
+    } finally {
+      if (previous === undefined) delete process.env.MLX_BUN_GRAMMAR;
+      else process.env.MLX_BUN_GRAMMAR = previous;
+    }
+  }, 120_000);
+
   test("vision: image_url data: URL describes the image", async () => {
     const png = await Bun.file("tests/fixtures/grad-768.png").arrayBuffer();
     const dataUrl = `data:image/png;base64,${Buffer.from(png).toString("base64")}`;

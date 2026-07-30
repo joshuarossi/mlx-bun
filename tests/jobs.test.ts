@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   JobStore,
+  currentGpuJob,
+  isGpuBusy,
   submitInProcess,
   submitSubprocess,
   tailJob,
@@ -39,6 +41,35 @@ async function waitForStatus(
     if (Date.now() > deadline) throw new Error(`timeout waiting for ${wanted} (got ${s})`);
     await Bun.sleep(20);
   }
+}
+
+async function waitFor(
+  predicate: () => boolean,
+  message: string,
+  timeoutMs = 5000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timeout waiting for ${message}`);
+    await Bun.sleep(20);
+  }
+}
+
+function deferredExit(): {
+  promise: Promise<number>;
+  resolve: (code: number) => void;
+} {
+  let resolve!: (code: number) => void;
+  const promise = new Promise<number>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function stubSpawn(exited: Promise<number>): typeof Bun.spawn {
+  return (() => ({
+    stdout: undefined,
+    stderr: undefined,
+    exited,
+  })) as unknown as typeof Bun.spawn;
 }
 
 afterAll(() => {
@@ -155,6 +186,74 @@ describe("submitInProcess (noop)", () => {
 });
 
 describe("submitSubprocess crash isolation", () => {
+  test("a synchronous spawn throw fails the row and releases the GPU lease", () => {
+    const store = freshStore();
+    const throwingSpawn = (() => {
+      throw new TypeError("injected spawn failure");
+    }) as typeof Bun.spawn;
+
+    const { jobId } = submitSubprocess(store, "noop", {}, undefined, {
+      spawn: throwingSpawn,
+    });
+
+    const row = store.get(jobId)!;
+    expect(row.status).toBe("failed");
+    expect(row.error).toBe("TypeError: injected spawn failure");
+    expect(row.ended_at).not.toBeNull();
+    expect(isGpuBusy()).toBe(false);
+    expect(currentGpuJob()).toBeNull();
+  });
+
+  test("a queued spawn throw is skipped and the next queued job starts", async () => {
+    const store = freshStore();
+    const firstExit = deferredExit();
+    const nextExit = deferredExit();
+    let failedStarts = 0;
+    let nextStarts = 0;
+
+    const first = submitSubprocess(store, "noop", { order: 1 }, undefined, {
+      spawn: stubSpawn(firstExit.promise),
+    });
+    const failed = submitSubprocess(store, "noop", { order: 2 }, undefined, {
+      spawn: (() => {
+        failedStarts++;
+        throw new Error("queued spawn failure");
+      }) as typeof Bun.spawn,
+    });
+    const next = submitSubprocess(store, "noop", { order: 3 }, undefined, {
+      spawn: (() => {
+        nextStarts++;
+        return {
+          stdout: undefined,
+          stderr: undefined,
+          exited: nextExit.promise,
+        };
+      }) as unknown as typeof Bun.spawn,
+    });
+
+    expect(currentGpuJob()).toBe(first.jobId);
+    expect(store.get(failed.jobId)!.status).toBe("queued");
+    expect(store.get(next.jobId)!.status).toBe("queued");
+
+    firstExit.resolve(1);
+    await waitFor(
+      () => currentGpuJob() === next.jobId,
+      "the job after a queued spawn failure to acquire the lease",
+    );
+
+    const failedRow = store.get(failed.jobId)!;
+    expect(failedStarts).toBe(1);
+    expect(failedRow.status).toBe("failed");
+    expect(failedRow.error).toBe("Error: queued spawn failure");
+    expect(failedRow.ended_at).not.toBeNull();
+    expect(nextStarts).toBe(1);
+    expect(isGpuBusy()).toBe(true);
+
+    nextExit.resolve(1);
+    await waitForStatus(store, next.jobId, ["failed"]);
+    await waitFor(() => !isGpuBusy(), "the final test GPU lease to release");
+  });
+
   test("a child that process.exit(1)s marks the row failed and the test survives", async () => {
     const store = freshStore();
     const { jobId } = submitSubprocess(store, "crash", { boom: true }, undefined, {

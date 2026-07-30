@@ -17,6 +17,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync } from "node:fs";
 import { loadTokenizer } from "../src/tokenizer";
 import { compileGrammarRequest, grammarEnabled } from "../src/grammar";
+import { shouldUseGrammarJump } from "../src/generate";
 
 const SNAPSHOT = ((): string => {
   const base = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--Llama-3.2-1B-Instruct-4bit/snapshots`;
@@ -35,6 +36,21 @@ const COMPACT_SCHEMA = {
   required: ["name", "age"],
   additionalProperties: false,
 };
+
+describe("generate() jump-forward option gate", () => {
+  test("topLogprobs disables jumping just like token logprobs", () => {
+    const grammar = {} as any;
+    process.env.MLX_BUN_GRAMMAR_JUMP = "1";
+    try {
+      expect(shouldUseGrammarJump({ grammar })).toBe(true);
+      expect(shouldUseGrammarJump({ grammar, logprobs: true })).toBe(false);
+      expect(shouldUseGrammarJump({ grammar, topLogprobs: 3 })).toBe(false);
+      expect(shouldUseGrammarJump({ grammar, topLogprobs: 0 })).toBe(true);
+    } finally {
+      delete process.env.MLX_BUN_GRAMMAR_JUMP;
+    }
+  });
+});
 
 describe.skipIf(!haveTokenizer || !grammarEnabled())("jumpForward controller contract", () => {
   test("single-choice grammar: jumps the whole body and terminates", async () => {

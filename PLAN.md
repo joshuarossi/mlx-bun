@@ -2297,6 +2297,49 @@ library and CLI; the live expert map and offline Atlas are available;
 oracle/native results are provenance-recorded; and no default changes
 precision or router semantics.
 
+## Phase 22 — pre-Colibri stabilization burn-down `[~]` (opened 2026-07-29)
+
+This phase **interrupts Phase 21 before G4**. Full inventory, proof contracts,
+execution waves, and exit criteria:
+**docs/design/pre-colibri-stabilization.md**.
+
+**Decision:** treat the 25-item intake as a risk-ranked evidence program, not
+one omnibus patch. Source line numbers are discovery anchors, not identities.
+Every active item gets a stable ledger ID, a failing regression or measurement
+before production edits, an explicit invariant, a narrow patch, an adversarial
+test, and a recorded outcome. The two performance items remain hypotheses
+until measured. WebSocket Origin, `/api/*` CSRF, and wildcard CORS stay grouped
+and deferred while loopback-only is an enforced product invariant; any
+supported non-loopback/tunnel/proxy deployment reopens all three together.
+
+- [~] **S0 — baseline and proof harnesses:** record environment; reproduce or
+      disprove every active item; create model-free failure injection and
+      deterministic perf harnesses. No “fixed by inspection.”
+- [x] **S1 — P0 safety/lifetime:** web-fetch SSRF + redirect/body cap;
+      expert-I/O wait/close ownership; streaming and non-streaming
+      cancellation across OpenAI/Anthropic/Responses; exception-safe GPU job
+      lease.
+- [x] **S2 — P1 correctness/durability:** PEFT adapter layout and awaited
+      metadata; canonical IFEval semantics; B>1 token accounting; LoRA+ scope;
+      Responses TTL/LRU; grammar degrade/top-logprob alignment; blob-ID
+      validation.
+- [x] **S3 — P2 resources/gates:** diffusion, weights, and closure failure-path
+      ownership; remove dead Gemma job read; include shipped web/test sources
+      in typecheck; include the model-free serving-load test in the gate.
+- [~] **S4 — measured performance:** establish scaling/latency baselines for
+      incremental detokenization and serial logprob readback; optimize only
+      when material; require paired A/B plus exact output parity.
+- [~] **S5 — closeout:** all P0/P1 fixed or disproved; P2 fixed/disproved or
+      bounded and explicitly parked; full typecheck/hygiene/model-free gate
+      green; public docs updated with behavior; ledger evidence complete.
+- [ ] **Resume Phase 21:** run the remaining G1/G3 quiet kernel and
+      passive-worker power matrix, choose stock MLX versus custom Metal per
+      shape, close G1/G3, then begin G4 serial native MTP.
+
+**Exit:** the exact gate in the design doc is green and `STATUS.md` explicitly
+unpauses the Phase 21 resume sequence. Conditional remote-deployment hardening
+does not block while loopback-only remains the supported contract.
+
 ## Fit-model calibration status (2026-06-12, second external tester)
 
 The decode prediction is single-point-calibrated on the M4 Pro

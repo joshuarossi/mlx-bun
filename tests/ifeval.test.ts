@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { scoreInstance, aggregate, SUPPORTED_INSTRUCTIONS, type IFEvalInstance } from "../src/eval/ifeval";
+import { scoreIfevalPairs } from "../src/eval/tasks/ifeval";
 
 const inst = (id: string, kw: Record<string, unknown>): IFEvalInstance => ({
   prompt: "p", instruction_id_list: [id], kwargs: [kw],
@@ -87,8 +88,68 @@ describe("multi-instruction + aggregate", () => {
     expect(rep.instructionAccuracy).toBeCloseTo(0.75, 5);
   });
 
-  test("unknown instruction id fails closed", () => {
-    expect(scoreInstance(inst("not:a_real_instruction", {}), "anything").followedAll).toBe(false);
+  test("unknown instruction id follows the canonical prompt policy and reports coverage", () => {
+    const result = scoreInstance(inst("not:a_real_instruction", {}), "anything");
+    expect(result.followedAll).toBe(true);
+    expect(result.perInstruction).toEqual([true]);
+    expect(result.unhandled).toEqual(["not:a_real_instruction"]);
     expect(SUPPORTED_INSTRUCTIONS.has("keywords:existence")).toBe(true);
+  });
+});
+
+describe("canonical strict/loose contract", () => {
+  const fixture: Array<{ instance: IFEvalInstance; response: string }> = [
+    {
+      instance: inst("punctuation:no_comma", {}),
+      // Strict sees the boilerplate comma; loose mode removes that first line.
+      response: "Sure, here is the answer:\nno commas remain",
+    },
+    {
+      instance: {
+        prompt: "p",
+        instruction_id_list: [
+          "keywords:existence",
+          "change_case:english_lowercase",
+        ],
+        kwargs: [{ keywords: ["banana"] }, {}],
+      },
+      // Both entry points must apply the same thinking-block cleanup.
+      response: "<think>hidden uppercase</think>banana",
+    },
+    {
+      instance: inst("not:a_real_instruction", {}),
+      response: "anything",
+    },
+  ];
+
+  test("legacy run-ifeval facade and task evaluator report identical metrics", () => {
+    const task = scoreIfevalPairs(fixture);
+    const cli = aggregate(fixture);
+
+    expect(cli.n).toBe(task.nTotal);
+    expect(cli.promptAccuracy).toBe(task.strictAcc);
+    expect(cli.instructionAccuracy).toBe(task.strictInstructionAcc);
+    expect({
+      nTotal: cli.nTotal,
+      strictAcc: cli.strictAcc,
+      looseAcc: cli.looseAcc,
+      accuracy: cli.accuracy,
+      strictInstructionAcc: cli.strictInstructionAcc,
+      looseInstructionAcc: cli.looseInstructionAcc,
+      coverage: cli.coverage,
+    }).toEqual(task);
+
+    expect(task.strictAcc).toBeCloseTo(2 / 3, 10);
+    expect(task.looseAcc).toBe(1);
+    expect(task.strictInstructionAcc).toBeCloseTo(2 / 3, 10);
+    expect(task.looseInstructionAcc).toBe(1);
+    expect(task.coverage).toEqual({
+      fullySupportedPrompts: 2,
+      promptCoverage: 2 / 3,
+      supportedInstructions: 3,
+      totalInstructions: 4,
+      instructionCoverage: 3 / 4,
+      unhandledInstructionCounts: { "not:a_real_instruction": 1 },
+    });
   });
 });

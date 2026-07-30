@@ -10,9 +10,41 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
-## Active: native Colibri/GLM-5.2 port (2026-07-24)
+## Active: pre-Colibri stabilization (2026-07-29)
 
-Work is on branch `codex/colibri-glm52-port`. Phase 21 **G0 and G2 are
+Phase 22 is now the active workstream and Phase 21 is paused before G4. The
+25-item intake is tracked in
+[docs/design/pre-colibri-stabilization.md](docs/design/pre-colibri-stabilization.md)
+with stable IDs, priorities, reproducer/measurement requirements, execution
+waves, and a single exit gate. P0 safety/lifetime work leads; advertised
+correctness and durability follow; leaks and gate coverage come next; the two
+performance observations are measured only after the correctness baseline is
+stable. The WebSocket Origin, `/api/*` CSRF, and wildcard-CORS trio remains a
+conditional threat-model project while loopback-only is the supported
+deployment.
+
+P0, P1, and P2 implementation is complete with adversarial focused evidence:
+SSRF/cancellation/native lifetime, advertised correctness and durability, all
+three leak families, and the expanded type/test gates are green. The repository
+gate retains one frozen pre-existing e4b chirp golden mismatch, documented in
+the stabilization ledger rather than hidden.
+
+PERF-01 is measured and fixed: bounded incremental detokenization is
+byte/chunk-exact and 19.84× faster at 2,048 output tokens on the paired
+MiniCPM5 harness. PERF-02 now has a deterministic paired harness, but its
+preflight refused this machine at 10,856 MB swap and 99% Chrome CPU; no
+untrustworthy number or speculative code change was accepted.
+
+The next action is a clean-machine run of
+`scripts/bench-logprobs-readback.ts`, followed by an oracle decision for the
+two isolated unrelated gate drifts (e4b chirp token golden and mixed-KV
+teacher-forcing logit golden). Typecheck/hygiene and all stabilization-focused
+tests are green; the two-shard repository run otherwise recorded 1,842 passes.
+Phase 21 remains paused until that evidence closes S4/S5 explicitly.
+
+## Paused checkpoint: native Colibri/GLM-5.2 port (2026-07-29)
+
+The G1–G3 foundation is landed on `main` at `2cd6e35`. Phase 21 **G0 and G2 are
 complete; G1's agent-safe implementation is complete and independently
 audited; G3 is in progress**. G1's two
 quiet-machine manual measurements still remain before its exit can close. The

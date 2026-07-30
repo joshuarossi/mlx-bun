@@ -328,13 +328,17 @@ agent CLIs like pi/OpenClaw via their provider config.
   (Gemma 4 `<|tool_call>` sentinel tokens; MiniCPM5 / Qwen3.5
   `<function name=…>` XML with schema-aware argument decoding);
   `role: "tool"` round-trips, including multi-turn agent loops.
+  The built-in `web_fetch` tool accepts public HTTP(S) destinations only,
+  revalidates DNS and every redirect, and streams into a 1 MiB response cap.
 - **Structured output** — `response_format` (JSON mode / JSON schema),
   plus the vLLM/oMLX aliases `guided_grammar`, `guided_regex`,
   `guided_choice`, and `structured_outputs`, enforced by
   grammar-constrained decoding (xgrammar) on chat and raw completions,
   serial and batched lanes alike; a grammar that fails to compile
-  degrades to prompt injection (oMLX parity) instead of an error
-  (`MLX_BUN_GRAMMAR=0` disables grammar-constrained decoding server-wide).
+  degrades to a string-valued constraint-specific prompt injection
+  (oMLX parity) instead of an error
+  (`MLX_BUN_GRAMMAR=0` disables mask compilation server-wide and routes
+  requested constraints through that same warning-bearing degrade path).
 - **Vision** — `image_url` content parts (data: URLs or http/s), on
   models with the vision sidecar. PNG, JPEG, HEIC, AVIF, WebP, TIFF,
   GIF, BMP via native OS codecs. Remote fetches are SSRF-guarded by

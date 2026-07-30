@@ -1,13 +1,15 @@
 // Run IFEval before/after an ORPO adapter on Gemma e4b (or any model). Generates
 // a response per IFEval prompt and scores it with the judge-free verifiable
-// checks in src/eval/ifeval.ts. Run once WITHOUT --adapter (the base model) and
-// once WITH it; compare prompt-level / instruction-level accuracy.
+// canonical checks shared with scripts/eval.ts. Run once WITHOUT --adapter
+// (the base model) and once WITH it; compare strict/loose prompt and
+// instruction-level accuracy.
 //
 //   MODEL=/path/to/e4b bun scripts/run-ifeval.ts <ifeval.jsonl> [--adapter <dir>] [--limit N] [--max-new 512]
 //
 // <ifeval.jsonl> = the IFEval prompt set (google/IFEval input_data.jsonl, fields:
-// prompt, instruction_id_list, kwargs). Only instructions in SUPPORTED_INSTRUCTIONS
-// are scored (others fail closed) — coverage is reported so the number is honest.
+// prompt, instruction_id_list, kwargs). Unknown instruction IDs follow the
+// canonical OptiQ prompt contract (they do not fail a prompt), are excluded
+// from instruction accuracy, and are reported explicitly as coverage.
 // This GENERATES (hundreds of completions); run it yourself, not from a busy box.
 
 import { existsSync } from "node:fs";
@@ -90,7 +92,18 @@ for (let i = 0; i < limited.length; i++) {
 
 const rep = aggregate(pairs);
 console.log(`\n=== IFEval ${adapterDir ? "WITH adapter" : "BASE"} ===`);
-console.log(`prompt-level accuracy:      ${(rep.promptAccuracy * 100).toFixed(1)}%`);
-console.log(`instruction-level accuracy: ${(rep.instructionAccuracy * 100).toFixed(1)}%`);
-console.log(`(n=${rep.n})`);
+console.log(`strict prompt accuracy:      ${(rep.strictAcc * 100).toFixed(1)}%`);
+console.log(`loose prompt accuracy:       ${(rep.looseAcc * 100).toFixed(1)}%`);
+console.log(`strict instruction accuracy: ${(rep.strictInstructionAcc * 100).toFixed(1)}%`);
+console.log(`loose instruction accuracy:  ${(rep.looseInstructionAcc * 100).toFixed(1)}%`);
+console.log(
+  `coverage: ${rep.coverage.fullySupportedPrompts}/${rep.nTotal} prompts, ` +
+    `${rep.coverage.supportedInstructions}/${rep.coverage.totalInstructions} instructions`,
+);
+const unhandled = Object.entries(rep.coverage.unhandledInstructionCounts);
+if (unhandled.length)
+  console.log(
+    "unhandled instruction IDs: " +
+      unhandled.map(([id, count]) => `${id}(${count})`).join(", "),
+  );
 weights.dispose();

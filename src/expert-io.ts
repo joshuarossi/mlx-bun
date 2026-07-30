@@ -6,7 +6,29 @@ import type { MlxHandle } from "./mlx/ffi";
 
 const { cstring, i32, ptr: pointer, u32, u64 } = FFIType;
 const EBUSY = 16;
+const EAGAIN = 35;
 const MAX_SEGMENTS = 8;
+
+type ExpertIOState = "open" | "closing" | "closed";
+
+/**
+ * Poll an asynchronous expert read without letting an await cross the
+ * store's lifetime boundary. Exported only so the race can be tested with a
+ * deterministic fake poller rather than relying on native I/O timing.
+ */
+export async function _pollExpertReadUntilReady(
+  assertOpen: () => void,
+  poll: () => number,
+  sleep: () => Promise<void> = () => Bun.sleep(1),
+): Promise<void> {
+  for (;;) {
+    assertOpen();
+    const status = poll();
+    if (status === 0) return;
+    if (status !== EAGAIN) throw new Error(`expert read failed: errno ${status}`);
+    await sleep();
+  }
+}
 
 export interface ExpertIOOptions {
   slots: number;
@@ -40,7 +62,7 @@ export class ExpertIOSlabStore {
   readonly slotBytes: number;
   #lib: any;
   #handle: bigint;
-  #closed = false;
+  #state: ExpertIOState = "open";
 
   constructor(path: string | readonly string[], options: ExpertIOOptions) {
     if (!Number.isSafeInteger(options.slots) || options.slots <= 0) throw new Error("slots must be positive");
@@ -151,13 +173,10 @@ export class ExpertIOSlabStore {
   }
 
   async wait(slot: number, generation: bigint): Promise<void> {
-    this.#checkSlot(slot);
-    for (;;) {
-      const status = this.#lib.symbols.mlx_bun_expert_io_poll(this.#handle, slot, generation);
-      if (status === 0) return;
-      if (status !== 35) throw new Error(`expert read failed: errno ${status}`); // EAGAIN on macOS
-      await Bun.sleep(1);
-    }
+    await _pollExpertReadUntilReady(
+      () => this.#checkSlot(slot),
+      () => this.#lib.symbols.mlx_bun_expert_io_poll(this.#handle, slot, generation),
+    );
   }
 
   cancel(slot: number, generation: bigint): void {
@@ -204,7 +223,7 @@ export class ExpertIOSlabStore {
   }
 
   physicalFootprint(): number {
-    if (this.#closed) throw new Error("expert slab store is closed");
+    this.#checkOpen();
     return Number(this.#lib.symbols.mlx_bun_process_phys_footprint());
   }
 
@@ -223,15 +242,31 @@ export class ExpertIOSlabStore {
   }
 
   close(): void {
-    if (this.#closed) return;
-    const status = this.#lib.symbols.mlx_bun_expert_io_close(this.#handle);
-    if (status !== 0) throw new Error(`expert slab close failed: errno ${status}`);
-    this.#closed = true; this.#lib.close();
+    if (this.#state === "closed") return;
+    if (this.#state === "closing") return;
+    this.#state = "closing";
+    let status: number;
+    try {
+      status = this.#lib.symbols.mlx_bun_expert_io_close(this.#handle);
+    } catch (error) {
+      this.#state = "open";
+      throw error;
+    }
+    if (status !== 0) {
+      this.#state = "open";
+      throw new Error(`expert slab close failed: errno ${status}`);
+    }
+    this.#state = "closed";
+    this.#lib.close();
   }
 
   #checkSlot(slot: number): void {
-    if (this.#closed) throw new Error("expert slab store is closed");
+    this.#checkOpen();
     if (!Number.isInteger(slot) || slot < 0 || slot >= this.slots) throw new RangeError("expert slot out of range");
+  }
+
+  #checkOpen(): void {
+    if (this.#state !== "open") throw new Error("expert slab store is closed");
   }
 }
 

@@ -165,15 +165,21 @@ export interface SaveAdapterConfig {
   rsLora?: boolean;
 }
 
+export interface SaveAdapterOptions {
+  /** Override config-file writes for deterministic durability tests. */
+  writeFile?: (path: string, data: string) => Promise<unknown>;
+}
+
 /** Save the trained adapter into `dir` in the AdapterManager.mount format:
  *  adapters.safetensors (lora_a / lora_b tensor names), optiq_lora_config.json,
  *  and a PEFT-compatible adapter_config.json. */
-export function saveAdapter(
+export async function saveAdapter(
   lora: TrainableLora,
   dir: string,
   cfg: SaveAdapterConfig,
   appliedRanks: Record<string, number>,
-): void {
+  options: SaveAdapterOptions = {},
+): Promise<void> {
   mkdirSync(dir, { recursive: true });
 
   // Build the native string→array map and insert lora_a / lora_b per target.
@@ -211,8 +217,6 @@ export function saveAdapter(
     applied_ranks: appliedRanks,
     source_model: cfg.baseModel,
   };
-  Bun.write(`${dir}/optiq_lora_config.json`, JSON.stringify(optiqCfg, null, 2) + "\n");
-
   // PEFT-compatible adapter_config.json (loadable by mlx-lm / PEFT).
   const peftCfg = {
     fine_tune_type: "lora",
@@ -223,15 +227,22 @@ export function saveAdapter(
     fan_in_fan_out: false,
     inference_mode: false,
     init_lora_weights: true,
-    lora_alpha: Math.round(cfg.rank * cfg.scale),
+    // mlx-bun's `scale` is the numerator before rsLoRA's √rank division.
+    // Ordinary PEFT needs alpha/r = scale; rsLoRA needs alpha/√r = scale/√r.
+    lora_alpha: cfg.rsLora ? cfg.scale : Math.round(cfg.rank * cfg.scale),
     lora_dropout: 0.0,
     peft_type: "LORA",
     r: cfg.rank,
     target_modules: cfg.targetModules,
     task_type: "CAUSAL_LM",
+    use_rslora: cfg.rsLora ?? false,
     optiq: { rank_scaling: cfg.rankScaling, applied_ranks: appliedRanks },
   };
-  Bun.write(`${dir}/adapter_config.json`, JSON.stringify(peftCfg, null, 2) + "\n");
+  const writeFile = options.writeFile ?? ((path: string, data: string) => Bun.write(path, data));
+  await Promise.all([
+    writeFile(`${dir}/optiq_lora_config.json`, JSON.stringify(optiqCfg, null, 2) + "\n"),
+    writeFile(`${dir}/adapter_config.json`, JSON.stringify(peftCfg, null, 2) + "\n"),
+  ]);
 }
 
 /** Dispose all trainable leaves (frees A/B). */

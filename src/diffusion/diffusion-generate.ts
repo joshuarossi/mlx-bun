@@ -245,9 +245,7 @@ export function diffusionGenerate(
 
       let currentCanvas = ops.randint(0, vocab, [1, canvasLength], I32); // RNG: init
       let draftReveal = ops.zeros([1, canvasLength], Dtype.bool);
-      let draftCanvas: MlxArray = ops.logicalNot(ops.logicalNot(draftReveal)); // placeholder, replaced below
-      draftCanvas.dispose();
-      draftCanvas = ops.reshape(currentCanvas, [1, canvasLength]); // alias copy
+      let draftCanvas = ops.reshape(currentCanvas, [1, canvasLength]); // alias copy
       let argmaxCanvas = ops.reshape(currentCanvas, [1, canvasLength]);
       let scEmbeddings: MlxArray | null = null;
       const history: MlxArray[] = [];
@@ -266,7 +264,9 @@ export function diffusionGenerate(
         logits.dispose();
 
         argmaxCanvas.dispose();
-        argmaxCanvas = ops.argmaxAxis(processed, -1).astype(I32); // [1, L]
+        const argmax = ops.argmaxAxis(processed, -1);
+        argmaxCanvas = argmax.astype(I32); // [1, L]
+        argmax.dispose();
 
         if (curStep === 1) {
           processed.dispose();
@@ -296,7 +296,9 @@ export function diffusionGenerate(
           currentCanvas.dispose();
           currentCanvas = newCurrent;
           draftReveal.dispose();
-          draftReveal = ops.logicalNot(ops.logicalNot(acceptance)); // = acceptance
+          const notAcceptance = ops.logicalNot(acceptance);
+          draftReveal = ops.logicalNot(notAcceptance); // = acceptance
+          notAcceptance.dispose();
           draftCanvas.dispose();
           draftCanvas = ops.reshape(argmaxCanvas, [1, canvasLength]);
           accepted.dispose();
@@ -341,6 +343,10 @@ export function diffusionGenerate(
           stableStop &&
           stableAndConfident(argmaxCanvas, processed, history, stabilityThreshold, stopConfidence)
         ) {
+          // Entropy sampling precomputes the next step's self-conditioning
+          // tensor before evaluating this stop. The break means ownership is
+          // never transferred to scEmbeddings, so release the pending value.
+          nextSc?.dispose();
           processed.dispose();
           break;
         }
@@ -361,9 +367,9 @@ export function diffusionGenerate(
       draftCanvas.dispose();
 
       // Emit from the final argmax canvas.
-      const blockTokens = [...argmaxCanvas.astype(Dtype.float32).toFloat32()].map((x) =>
-        Math.round(x),
-      );
+      const argmaxFloat = argmaxCanvas.astype(Dtype.float32);
+      const blockTokens = [...argmaxFloat.toFloat32()].map((x) => Math.round(x));
+      argmaxFloat.dispose();
       argmaxCanvas.dispose();
       blocks.push(blockTokens);
       totalSteps += stepsThisCanvas;

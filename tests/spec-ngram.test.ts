@@ -14,7 +14,8 @@
 // actually lands accepts.
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { SNAPSHOT_E4B } from "./paths";
 import { NgramProvider } from "../src/spec/ngram-source";
 
 type TestSource = ReturnType<NgramProvider["open"]> & { history: readonly number[] };
@@ -124,12 +125,11 @@ describe("NgramSource contract (model-free)", () => {
 
 // ---- Part 2: real-weights losslessness through the serve loop ----
 
-const E4B_BASE = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-e4b-it-OptiQ-4bit/snapshots`;
-const have = existsSync(E4B_BASE);
+const have = existsSync(`${SNAPSHOT_E4B}/config.json`);
 
 describe.skipIf(!have)("serve-loop NgramSource (e4b, model-free)", async () => {
   if (!have) return;
-  const E4B = `${E4B_BASE}/${readdirSync(E4B_BASE)[0]}`;
+  const E4B = SNAPSHOT_E4B;
 
   const { loadModelConfig } = await import("../src/config");
   const { Weights } = await import("../src/weights");

@@ -250,4 +250,26 @@ describe("StreamDecoder — revised-text truncate-safe resync", () => {
     client += d.push(2); // shrunk revision → nothing new to send
     expect(client).toBe("abcdef");
   });
+
+  test("long additive streams decode a bounded suffix after exact anchoring", () => {
+    let maxPushDecodeIds = 0;
+    let inPush = true;
+    const tok = {
+      trimsLeadingSpace: false,
+      bareSpaceTokenId: undefined,
+      decode(ids: number[]): string {
+        if (inPush) maxPushDecodeIds = Math.max(maxPushDecodeIds, ids.length);
+        return ids.map((id) => String.fromCharCode(96 + id)).join("");
+      },
+    };
+    const ids = Array.from({ length: 512 }, (_, i) => (i % 26) + 1);
+    const d = new StreamDecoder(tok as never);
+    const chunks = ids.map((id) => d.push(id));
+    inPush = false;
+    const text = chunks.join("") + d.flush();
+
+    expect(text).toBe(ids.map((id) => String.fromCharCode(96 + id)).join(""));
+    expect(chunks).toEqual(ids.map((id) => String.fromCharCode(96 + id)));
+    expect(maxPushDecodeIds).toBeLessThanOrEqual(64);
+  });
 });

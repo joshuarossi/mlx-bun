@@ -250,6 +250,25 @@ describe("translateOpenAiSseToResponses", () => {
     expect(captured.output[0].content[0].text).toBe("yo");
     expect(captured.previous_response_id).toBe("resp_x");
   });
+
+  test("canceling the translated stream cancels upstream without completing", async () => {
+    const reasons: unknown[] = [];
+    let completed = 0;
+    const upstream = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        reasons.push(reason);
+      },
+    });
+    const reader = translateOpenAiSseToResponses(
+      upstream,
+      "m",
+      null,
+      () => { completed++; },
+    ).getReader();
+    await reader.cancel("client disconnected");
+    expect(reasons).toEqual(["client disconnected"]);
+    expect(completed).toBe(0);
+  });
 });
 
 describe("ResponseStore", () => {
@@ -281,5 +300,23 @@ describe("ResponseStore", () => {
     await Bun.sleep(25);
     expect(s.get("a")).toBeNull();
     expect(s.size).toBe(0);
+  });
+
+  test("TTL eviction checks every entry after an LRU touch reorders the map", () => {
+    let now = 0;
+    const s = new ResponseStore(10, Number.POSITIVE_INFINITY, () => now);
+    s.put("old", { input: ["old"], output: [], instructions: null });
+    now = 5;
+    s.put("fresh", { input: ["fresh"], output: [], instructions: null });
+    expect(s.get("old")).not.toBeNull(); // order is now fresh, old
+    const bytesBeforeExpiry = s.totalBytes;
+
+    now = 11;
+    expect(s.get("missing")).toBeNull(); // lazy eviction pass
+
+    expect(s.get("old")).toBeNull();
+    expect(s.get("fresh")).not.toBeNull();
+    expect(s.size).toBe(1);
+    expect(s.totalBytes).toBeLessThan(bytesBeforeExpiry);
   });
 });

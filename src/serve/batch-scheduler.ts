@@ -124,6 +124,10 @@ export interface BatchRequest {
    *  THIS row only (its submit promise rejects; siblings continue). May be
    *  async; keep it cheap — it runs inline in the step loop. */
   onToken: (token: number) => void | boolean | Promise<void | boolean>;
+  /** Client/request lifetime. An aborted pending row is removed before
+   *  admission; a row in prefill or decode is evicted at the next safe
+   *  scheduler boundary. */
+  signal?: AbortSignal;
   /** The row's sampler is PLAIN GREEDY (temperature 0, no curve) with no
    *  logits processors and no grammar — set by the gateway when true. Lets
    *  the scheduler take the vectorized sampling fast path (ONE
@@ -383,12 +387,24 @@ export class BatchScheduler {
 
   /** Submit a request; resolves when its row finishes (EOS, stop, or length). */
   submit(req: BatchRequest): Promise<BatchStats> {
+    if (req.signal?.aborted) return Promise.reject(req.signal.reason);
     return new Promise<BatchStats>((resolve, reject) => {
+      let abortListener: (() => void) | null = null;
+      const cleanup = () => {
+        if (abortListener) req.signal?.removeEventListener("abort", abortListener);
+        abortListener = null;
+      };
       this.#pending.push({
-        req, resolve, reject,
+        req,
+        resolve: (stats) => { cleanup(); resolve(stats); },
+        reject: (error) => { cleanup(); reject(error); },
         current: 0, generated: 0, sampled: 0, promptTokens: req.promptIds.length,
         cachedTokens: 0, fed: [], fedTainted: false, merged: false,
       });
+      if (req.signal) {
+        abortListener = () => this.kick();
+        req.signal.addEventListener("abort", abortListener, { once: true });
+      }
       this.#ensureLoop();
     });
   }
@@ -409,6 +425,12 @@ export class BatchScheduler {
     let release: (() => void) | null = null;
     try {
       while (true) {
+        for (let i = this.#pending.length - 1; i >= 0; i--) {
+          const row = this.#pending[i]!;
+          if (!row.req.signal?.aborted) continue;
+          this.#pending.splice(i, 1);
+          row.reject(row.req.signal.reason);
+        }
         const held = this.#admissionHeld?.() === true;
         // Work = running rows, an in-flight prefill (finish it even under
         // drain — the row is already half-admitted), or admissible pending.
@@ -543,6 +565,7 @@ export class BatchScheduler {
    *  The final chunk samples token 0, emits it, and — if the row survives —
    *  merges it into the running batch; returns true (admission complete). */
   async #prefillChunk(p: PrefillState): Promise<boolean> {
+    p.row.req.signal?.throwIfAborted();
     const prompt = p.row.req.promptIds;
     // Boundary-snapshot chunking (mirrors generate.ts's snapshotAt split):
     // chunk edges land EXACTLY on snapAt so the clone is taken while the
@@ -1294,6 +1317,7 @@ export class BatchScheduler {
    *  WITHOUT an onToken call; otherwise onToken(token) runs and `false` halts;
    *  reaching maxTokens ends with "length". Advances row.current on continue. */
   async #emit(row: Row, token: number): Promise<"continue" | "stop" | "length"> {
+    row.req.signal?.throwIfAborted();
     if (row.req.eosTokenIds.includes(token)) return "stop";
     const cont = await row.req.onToken(token);
     if (cont === false) return "stop";
