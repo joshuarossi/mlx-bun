@@ -16,8 +16,11 @@ import type {
 } from "./glm52-moe";
 import {
   Glm52CanonicalQ4MetalExecutor,
+  Glm52CanonicalQ8MetalExecutor,
   glm52CanonicalQ4MetalLayout,
   glm52CanonicalQ4SlotView,
+  glm52CanonicalQ8MetalLayout,
+  glm52CanonicalQ8SlotView,
 } from "./glm52-streamed-metal";
 
 export interface Glm52ExpertExecutionArgs {
@@ -193,6 +196,8 @@ implements Glm52ExpertExecutionBackend {
   readonly hiddenSize: number;
   #layout: Glm52StreamedExpertExecutorOptions["layout"];
   #metal: Glm52CanonicalQ4MetalExecutor | null;
+  #mtpMetal: Glm52CanonicalQ8MetalExecutor | null;
+  #fixedKernelFamily = false;
 
   constructor(options: Glm52StreamedExpertExecutorOptions) {
     this.manager = options.manager;
@@ -202,6 +207,13 @@ implements Glm52ExpertExecutionBackend {
     this.#metal = options.decodeKernel === "metal"
       ? new Glm52CanonicalQ4MetalExecutor()
       : null;
+    this.#mtpMetal = options.decodeKernel === "metal"
+      ? new Glm52CanonicalQ8MetalExecutor()
+      : null;
+  }
+
+  setFixedKernelFamily(enabled: boolean): void {
+    this.#fixedKernelFamily = enabled;
   }
 
   async execute(args: Glm52ExpertExecutionArgs): Promise<MlxArray> {
@@ -319,7 +331,23 @@ implements Glm52ExpertExecutionBackend {
     let rows: MlxArray | null = null;
     try {
       rows = ops.takeAxis(flattened, indices, 0);
-      if (this.#metal && rows.shape[0] === 1) {
+      if (this.#mtpMetal && layout.bits === 8) {
+        const descriptor = glm52CanonicalQ8MetalLayout(layout);
+        const slot = glm52CanonicalQ8SlotView(
+          this.store.pointer(lease.slot, lease.generation),
+          descriptor,
+        );
+        try {
+          return this.#mtpMetal.execute(rows, slot, descriptor);
+        } finally {
+          slot.dispose();
+        }
+      }
+      if (
+        this.#metal &&
+        layout.bits === 4 &&
+        (rows.shape[0] === 1 || this.#fixedKernelFamily)
+      ) {
         const descriptor = glm52CanonicalQ4MetalLayout(layout);
         const slot = glm52CanonicalQ4SlotView(
           this.store.pointer(lease.slot, lease.generation),
@@ -341,6 +369,8 @@ implements Glm52ExpertExecutionBackend {
   dispose(): void {
     this.#metal?.dispose();
     this.#metal = null;
+    this.#mtpMetal?.dispose();
+    this.#mtpMetal = null;
   }
 
   #compose(

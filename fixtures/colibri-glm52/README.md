@@ -1,4 +1,4 @@
-# Colibri GLM-5.2 G0 oracle fixtures
+# Colibri GLM-5.2 oracle and gate fixtures
 
 This directory combines a small model-free contract with a compact, validated
 real-model oracle for the MLX/Bun port. It is pinned to Colibri commit
@@ -28,6 +28,19 @@ and not a substitute for the recorded Git tree/blob identities.
   machine-local checkout path was removed; the absolute path retained in the
   capture evidence is explicitly advisory capture-host metadata required to
   reproduce the historical command transcript.
+
+Later gate records are reviewed, tracked evidence rather than inputs to the G0
+generator:
+
+- `production-probe.json`, `g3-production-expert-probe.json`, and
+  `g3-full-model-trajectory.json` close the production Q4/router and bounded
+  streamed-residency gates.
+- `g4-direct-mtp-trace.json` records the direct
+  `IDOT=0,SPEC_PIN=1` 64-token MTP trajectory and the exact tie-free acceptance
+  prefix used as the cross-engine oracle.
+- `g4-native-mtp-e2e.json` is the concise native-MTP on/off correctness,
+  telemetry, footprint, and end-to-end performance record. Its raw
+  separate-process reports remain gitignored and are bound by SHA-256.
 
 Direct exact-pin captures are limited to:
 

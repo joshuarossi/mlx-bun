@@ -57,13 +57,24 @@ const PREFILL_CHUNK = 2048;
  *  [1,L,m*H] (tapLayers concatenated on the feature axis; index nLayers is the
  *  post-finalNorm sentinel). Non-tapping sources get ctxML=null and never
  *  touch model.hiddenTap. Mirrors generate-dflash.ts forwardTapped. */
-function forwardMaybeTap(
+async function forwardMaybeTap(
   model: RuntimeModel,
   ids: MlxArray,
   caches: Cache[],
   tapLayers: number[] | undefined,
-): { hidden: MlxArray; ctxML: MlxArray | null } {
-  if (!tapLayers) return { hidden: model.forwardHidden(ids, caches), ctxML: null };
+): Promise<{ hidden: MlxArray; ctxML: MlxArray | null }> {
+  if (!tapLayers) {
+    const asyncModel = model as RuntimeModel & {
+      forwardHiddenAsync?: (
+        ids: MlxArray,
+        caches: Cache[],
+      ) => Promise<MlxArray>;
+    };
+    const hidden = typeof asyncModel.forwardHiddenAsync === "function"
+      ? await asyncModel.forwardHiddenAsync(ids, caches)
+      : model.forwardHidden(ids, caches);
+    return { hidden, ctxML: null };
+  }
   const m = model as unknown as {
     hiddenTap: { layers: Set<number>; captured: Map<number, MlxArray> } | null;
   };
@@ -96,7 +107,12 @@ function forwardMaybeTap(
 export interface SpecServeExtras {
   drafted: number;
   accepted: number;
+  rejected: number;
   targetCalls: number;
+  rounds: number;
+  acceptanceLengths: number[];
+  tokensPerForward: number;
+  forwardsSaved: number;
   /** Per-draft-position counters (index = position within a round's block,
    *  0..γ-1): how many rounds drafted/accepted at that position. Drives the
    *  Phase-1c per-position acceptance report (scripts/dspark-drafter-ab.ts)
@@ -149,7 +165,16 @@ export async function specServeRun(
     processors.length > 0 ? ops.fromInt32(promptIds, [promptIds.length]) : null;
 
   const extras: SpecServeExtras = {
-    drafted: 0, accepted: 0, targetCalls: 0, draftedByPos: [], acceptedByPos: [],
+    drafted: 0,
+    accepted: 0,
+    rejected: 0,
+    targetCalls: 0,
+    rounds: 0,
+    acceptanceLengths: [],
+    tokensPerForward: 0,
+    forwardsSaved: 0,
+    draftedByPos: [],
+    acceptedByPos: [],
   };
   const stats: GenerateStats = {
     promptTokens: promptIds.length,
@@ -263,7 +288,9 @@ export async function specServeRun(
     // assistant source's first-round anchor hidden = "the hidden that
     // produced pending" = position len-2, the last drain chunk's final row.
     const t0 = performance.now();
-    const tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
+    const tailSplit =
+      src.prefillMode !== "full" &&
+      flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
     const oracleShape = tailSplit && promptIds.length > 1;
     if (oracleShape) {
       let pos = 0;
@@ -272,7 +299,12 @@ export async function specServeRun(
         const n = Math.min(PREFILL_CHUNK, end - pos);
         const chunk = promptIds.slice(pos, pos + n);
         const ids = ops.fromInt32(chunk, [1, chunk.length]);
-        const { hidden: h, ctxML } = forwardMaybeTap(model, ids, caches, tapLayers);
+        const { hidden: h, ctxML } = await forwardMaybeTap(
+          model,
+          ids,
+          caches,
+          tapLayers,
+        );
         ids.dispose();
         if (ctxML) ctxParts.push(ctxML);
         if (pos + n >= end) {
@@ -290,7 +322,12 @@ export async function specServeRun(
       for (let off = 0; off < promptIds.length; off += PREFILL_CHUNK) {
         const chunk = promptIds.slice(off, off + PREFILL_CHUNK);
         const ids = ops.fromInt32(chunk, [1, chunk.length]);
-        const { hidden: h, ctxML } = forwardMaybeTap(model, ids, caches, tapLayers);
+        const { hidden: h, ctxML } = await forwardMaybeTap(
+          model,
+          ids,
+          caches,
+          tapLayers,
+        );
         ids.dispose();
         if (ctxML) ctxParts.push(ctxML);
         if (off + PREFILL_CHUNK >= promptIds.length) {
@@ -317,10 +354,10 @@ export async function specServeRun(
         for (const p of ctxParts) p.dispose();
       }
       ctxParts.length = 0; // parts consumed (transferred as prefillCtx or disposed)
-      src.prefill(promptIds, prefillCtx ?? undefined); // takes ownership of prefillCtx
+      await src.prefill(promptIds, prefillCtx ?? undefined); // takes ownership of prefillCtx
       prefillCtx = null; // ownership transferred
     } else {
-      src.prefill(promptIds);
+      await src.prefill(promptIds);
     }
     stats.prefillMs = performance.now() - t0;
     stats.prefillTps = (promptIds.length / Math.max(stats.prefillMs, 1e-6)) * 1000;
@@ -363,7 +400,12 @@ export async function specServeRun(
       if (!speculating) {
         // plain single-token continuation (post-ring-wrap fallback)
         const ids = ops.fromInt32([pending], [1, 1]);
-        const h = model.forwardHidden(ids, caches);
+        const { hidden: h } = await forwardMaybeTap(
+          model,
+          ids,
+          caches,
+          undefined,
+        );
         ids.dispose();
         const lg = model.logitsFromHidden(h);
         h.dispose();
@@ -406,11 +448,22 @@ export async function specServeRun(
 
       // (a) draft UP TO n tokens (request sampler, mlx-lm parity). The return
       // length d is authoritative — DSpark's confidence scheduler may prune the
-      // block short (source.ts contract; never zero). The assistant source
+      // block short or skip it entirely. The assistant source
       // borrows the target's anchor hidden; two-model/dflash ignore it.
-      const drafts = src.draft(feed, n, stats.generatedTokens, anchorHidden ?? undefined);
+      const drafts = await src.draft(
+        feed,
+        n,
+        stats.generatedTokens,
+        anchorHidden ?? undefined,
+      );
       const d = drafts.length;
       if (d < 0 || d > n) throw new Error(`DraftSource returned ${d} drafts (contract: 0..${n})`);
+      if (Bun.env.MLX_BUN_SPEC_TRACE === "1") {
+        console.error(
+          `[SPEC_TRACE] round=${extras.rounds + 1} ` +
+          `feed=${feed.join(",")} drafts=${drafts.join(",")}`,
+        );
+      }
       // d === 0 (a confidence scheduler skipping the round, DeepSpec ℓ=0
       // semantics) needs NO special case: the verify window degenerates to
       // [pending] alone, the accept walk to the single bonus position, commit
@@ -424,12 +477,24 @@ export async function specServeRun(
       // DSpark's H_ctx). vHidden is retained past the accept walk: its slice at
       // the emitted position is the next round's anchor hidden.
       const vIds = ops.fromInt32([pending, ...drafts], [1, d + 1]);
-      const ft = forwardMaybeTap(model, vIds, caches, tapLayers);
-      vHidden = ft.hidden;
-      vCtxML = ft.ctxML;
-      vIds.dispose();
+      const pinTarget = src.pinTargetKernelFamily === true &&
+        "setSpecKernelPinned" in model;
+      if (pinTarget) model.setSpecKernelPinned(true);
+      try {
+        const ft = await forwardMaybeTap(model, vIds, caches, tapLayers);
+        // Assign these before the lm-head call so the outer cleanup owns them
+        // even if logits construction throws.
+        vHidden = ft.hidden;
+        vCtxML = ft.ctxML;
+        vLogits = model.logitsFromHidden(vHidden);
+      } finally {
+        vIds.dispose();
+        if (pinTarget) model.setSpecKernelPinned(false);
+      }
       extras.targetCalls++;
-      vLogits = model.logitsFromHidden(vHidden); // batched lm-head, ONE matmul
+      // The lm-head remains one logical batched operation. Native GLM MTP's
+      // SPEC_PIN implementation evaluates its rows through the same M=1
+      // quantized family before concatenating them.
 
       // (c) per-position accept walk: sample the target at each position,
       // accept while it reproduces the draft. Sampling is sequential because
@@ -471,6 +536,9 @@ export async function specServeRun(
       vLogits!.dispose();
       vLogits = null;
       extras.accepted += kAccept;
+      extras.rejected = extras.drafted - extras.accepted;
+      extras.rounds++;
+      extras.acceptanceLengths.push(kAccept);
       for (let i = 0; i < kAccept; i++)
         extras.acceptedByPos[i] = (extras.acceptedByPos[i] ?? 0) + 1;
       clearCache();
@@ -481,6 +549,13 @@ export async function specServeRun(
         if ((await onToken(tok)) === false) { halted = true; break; }
         if (stats.generatedTokens >= maxTokens) break;
       }
+      extras.tokensPerForward = extras.rounds > 0
+        ? stats.generatedTokens / extras.rounds
+        : 0;
+      extras.forwardsSaved = Math.max(
+        0,
+        Math.max(0, stats.generatedTokens - 1) - extras.rounds,
+      );
       const stop = sawEos || halted || grammarDone || stats.generatedTokens >= maxTokens;
 
       // (e) roll back the rejected suffix + commit to the source (skipped on
@@ -491,7 +566,13 @@ export async function specServeRun(
       // outlives its parent's dispose).
       if (!stop) {
         if (kAccept < d) for (const c of caches) c.trim(d - kAccept);
-        src.commit(d, kAccept, vCtxML ?? undefined); // takes ownership of vCtxML
+        await src.commit(
+          d,
+          kAccept,
+          vCtxML ?? undefined,
+          vHidden,
+          drafts.slice(0, kAccept),
+        ); // takes ownership of vCtxML; verifiedHidden stays caller-owned
         vCtxML = null;
         const H = vHidden!.shape[2]!;
         anchorHidden?.dispose();

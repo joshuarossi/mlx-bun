@@ -291,6 +291,8 @@ export interface GenerateStats {
   spec?: {
     drafted: number; accepted: number; targetCalls: number;
     draftedByPos?: number[]; acceptedByPos?: number[];
+    rejected?: number; rounds?: number; acceptanceLengths?: number[];
+    tokensPerForward?: number; forwardsSaved?: number;
   };
 }
 

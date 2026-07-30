@@ -1,6 +1,6 @@
 // DraftSource — the seam between the serve-time speculative verify loop
 // (src/spec/serve-loop.ts) and whatever produces draft tokens. Designed in
-// docs/design/mlx-lm-tool-parity-plan.md §7 so three drafters share ONE
+// docs/design/mlx-lm-tool-parity-plan.md §7 so every drafter shares ONE
 // verify/accept executor:
 //   - TwoModelSource (src/spec/two-model.ts) — mlx-lm parity (L1 oracle:
 //     mlx_lm.server --draft-model), a full second model. Ignores `target`.
@@ -10,8 +10,11 @@
 //   - DflashSource (src/spec/dflash-source.ts) — DSpark (L3, KL/quality-gated).
 //     Taps the target's multi-layer hiddens (prefill + verify) into a growing
 //     H_ctx (docs/design/dspark-speculative-decoding.md).
+//   - NgramSource (src/spec/ngram-source.ts) — model-free prompt lookup.
+//   - Glm52NativeMtpSource (src/spec/glm52-mtp-source.ts) — the target
+//     artifact's native Colibri MTP row.
 //
-// The three differ ONLY in what fills the draft; the serve loop, admission
+// The sources differ ONLY in what fills the draft; the serve loop, admission
 // accounting, and stats never change. The KV-borrowing sources need target
 // state the two-model source doesn't — carried by the `target` view at open()
 // and the optional prefill/draft/commit arguments below (all no-ops for
@@ -33,6 +36,14 @@ export interface TargetView {
 /** A per-request draft-token producer. Created per generation (owns its own
  *  draft-side state), disposed by the serve loop's finally. */
 export interface DraftSource {
+  /** Target prefill shape required by this source's oracle. Most mlx-lm
+   *  sources leave the final prompt token pending; native Colibri MTP starts
+   *  from a full-prompt target forward. */
+  readonly prefillMode?: "tail-split" | "full";
+  /** Request one fixed target kernel family across the speculative verify
+   * batch. Native GLM MTP uses the direct-Colibri SPEC_PIN contract. */
+  readonly pinTargetKernelFamily?: boolean;
+
   /** Multi-layer target tap the source needs captured on the target's prefill
    *  AND every verify forward (DSpark's H_ctx; e4b {20,31,41,42}). When set,
    *  the serve loop sets model.hiddenTap around those forwards and passes the
@@ -44,7 +55,7 @@ export interface DraftSource {
    *  assistant/dflash: read the target's state — mostly a no-op, but DSpark
    *  seeds H_ctx from `ctxML`, the tapped prefill context [1,Lp,m*H], present
    *  iff tapLayers is set). */
-  prefill(promptIds: number[], ctxML?: MlxArray): void;
+  prefill(promptIds: number[], ctxML?: MlxArray): void | Promise<void>;
 
   /** Propose 0..n tokens (RETURN LENGTH IS AUTHORITATIVE — a source may
    *  return fewer than n, e.g. DSpark's confidence-scheduled draft-length
@@ -59,7 +70,12 @@ export interface DraftSource {
    *  `anchorHidden` is the target's final hidden [1,1,H] at the pending/anchor
    *  position — the assistant source borrows it for its first draft step;
    *  two-model and dflash ignore it. */
-  draft(feed: number[], n: number, stepBase: number, anchorHidden?: MlxArray): number[];
+  draft(
+    feed: number[],
+    n: number,
+    stepBase: number,
+    anchorHidden?: MlxArray,
+  ): number[] | Promise<number[]>;
 
   /** Verify outcome for the last round: kAccept of d accepted, where d is the
    *  length draft() actually RETURNED (≤ n). Two-model: trim the draft cache
@@ -67,7 +83,13 @@ export interface DraftSource {
    *  DSpark: grow H_ctx by the accepted window from `vCtxML`, the verified
    *  window's tapped context [1,d+1,m*H] (present iff tapLayers is set), and
    *  drop the rejected tips. */
-  commit(d: number, kAccept: number, vCtxML?: MlxArray): void;
+  commit(
+    d: number,
+    kAccept: number,
+    vCtxML?: MlxArray,
+    verifiedHidden?: MlxArray,
+    acceptedTokens?: readonly number[],
+  ): void | Promise<void>;
 
   /** Resident per-request draft weights, for admission accounting (0 when the
    *  provider owns the weights). */

@@ -125,6 +125,31 @@ workers are passive; two workers remain the default. Raw gitignored reports:
 `runs/colibri-g1/*matrix*-2026-07-30.json` and
 `runs/colibri-g1/passive-worker-power*-2026-07-30.json`.
 
+### Colibri G4 serial native MTP — M1 Max 32 GB
+
+Production-artifact separate-process A/B on 2026-07-30, Bun 1.3.14, pinned
+Colibri `44e489b`, public artifact revision `3cc8db9`, greedy gamma=3, 32-token
+prompt and 64 generated tokens. Both arms reproduced the same direct-Colibri
+64/64 target-token trajectory. Generation wall time is the comparison metric;
+the probe's prefill/decode sub-buckets place the first sample on different
+sides of that boundary and are therefore not compared.
+
+| arm | generation wall | wall throughput | target/verify forwards | draft acceptance |
+|---|---:|---:|---:|---:|
+| MTP off | 834.172 s | 0.0767 tok/s | 63 continuation | — |
+| MTP on | **675.654 s** | **0.0947 tok/s (1.235x)** | **31 verify (32 saved)** | 32/92 |
+
+MTP-on emitted 2.065 tokens per verify forward and reduced end-to-end
+generation time by 19.0%. Its direct-oracle acceptance prefix was exact for
+the tie-free first four rounds `[1,1,1,0]` (eight emitted tokens; minimum
+first-draft margin 3.5675). Later acceptance is intentionally non-gating
+across engines because direct Colibri's float64 RMSNorm reduction and MLX's
+float32 graph produce different recurrent MTP hidden states while preserving
+all target tokens. The machine was not swap-cleared, so the
+14,679,224,320-byte completed MTP-on physical footprint is not a G5 memory
+claim. Stable record:
+`fixtures/colibri-glm52/g4-native-mtp-e2e.json`.
+
 ### Served (warm) — the path agents actually use
 
 decode tok/s · TTFT ms · server-ready s · steady RSS GB
