@@ -113,7 +113,7 @@ function parseCli(argv: readonly string[]): Cli {
       throw new Error(
         "usage: bench-colibri-glm52-kernels.ts " +
         "--model DIR --library DYLIB --output FILE --confirm-quiet yes " +
-        "[--warmups 2] [--samples 7] [--context 32] [--workers 2] " +
+        "[--warmups 2] [--samples 7] [--context 129] [--workers 2] " +
         "[--allocator-limit-gib 4]",
       );
     }
@@ -136,7 +136,7 @@ function parseCli(argv: readonly string[]): Cli {
     output: required("output"),
     warmups: positiveInteger(values.get("warmups") ?? "2", "warmups"),
     samples: positiveInteger(values.get("samples") ?? "7", "samples"),
-    context: positiveInteger(values.get("context") ?? "32", "context"),
+    context: positiveInteger(values.get("context") ?? "129", "context"),
     workers: positiveInteger(values.get("workers") ?? "2", "workers"),
     allocatorLimitBytes:
       positiveNumber(

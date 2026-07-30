@@ -98,6 +98,33 @@ delta is the first "our-vs-our" axis. Lab experiment rows (no external
 oracle; KL/eval-gated) land here once one beats the L1 baseline in a
 paired A/B — none recorded yet (the 2026-07-05 candidates were deleted).
 
+### Colibri G1/G3 component matrix — M1 Max 32 GB
+
+Cleared-machine run on 2026-07-30, commit `47c4d6d`, Bun 1.3.14, pinned
+Colibri `44e489b`, public artifact revision `3cc8db9`, ten warmups and fifteen
+measured samples. Values are synchronized median milliseconds at identical
+production shapes; every arm passed its correctness oracle. These are
+component timings, not end-to-end generation claims.
+
+| production-shape cell | direct Colibri Metal | selected mlx-bun path | decision |
+|---|---:|---:|---|
+| Q4 dense decode M=1 | 0.302 | 1.372 stock MLX | stock MLX (only mlx-bun dense candidate) |
+| Q4 dense prefill M=32 | 1.286 | **1.030 stock MLX** | stock MLX |
+| routed SwiGLU decode, top-8 M=1 | **1.401** | 4.282 custom Metal | custom Metal; 16.0% faster than stock MLX's 5.099 ms |
+| routed SwiGLU ragged M=11/23 experts | **10.851** | 18.100 stock MLX | stock MLX |
+| routed SwiGLU prefill M=32/64 experts | **32.906** | 45.558 stock MLX | stock MLX |
+| absorbed MLA decode, position 128 | **1.014** | 11.506 stock MLX | stock MLX; largest remaining component gap |
+
+For the selected custom decode path, max absolute delta versus stock is
+`2.33e-9`, relative RMSE `5.56e-7`, and cosine
+`0.9999999999998354`. A separate three-warmup/eleven-sample run also selected
+custom Metal by 5.4%. Swap was unchanged at 339.25 MiB. Matched idle-power
+arms (baseline, 1, 2, and 4 native workers, repeated in reverse order) show no
+monotonic CPU/GPU/package-power increase, proving the condition-variable
+workers are passive; two workers remain the default. Raw gitignored reports:
+`runs/colibri-g1/*matrix*-2026-07-30.json` and
+`runs/colibri-g1/passive-worker-power*-2026-07-30.json`.
+
 ### Served (warm) — the path agents actually use
 
 decode tok/s · TTFT ms · server-ready s · steady RSS GB

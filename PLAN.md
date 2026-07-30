@@ -2096,7 +2096,7 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
       model-free fixtures and later generates a separate stock indexer overlay
       from 20 pinned source shards without mutating the serving snapshot. G1 is
       unblocked.
-- [ ] **G1 — unified-memory MLX storage foundation:** fixed aligned shared
+- [x] **G1 — unified-memory MLX storage foundation:** fixed aligned shared
       slabs, bounded positioned-read workers, zero-copy MLX/custom-Metal
       consumption, completion-fenced generation-tagged slot reuse, allocator
       caps, forced-churn stress, and same-shape Colibri kernel benchmarks.
@@ -2109,11 +2109,20 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         passed after closing reproduced post-close and lazy-graph stale-read
         failures. The helper is build-only until G3/G8 publishes a newly
         versioned native pack; the existing v0.1.0 pack remains unchanged.
-      - [ ] Manual quiet-machine paired kernel matrix: Colibri Metal vs stock
-        MLX vs custom Metal for int4 dense GEMM, routed SwiGLU decode/prefill,
-        and MLA decode; record the fastest correct path per shape.
-      - [ ] Manual passive-worker CPU/GPU/package-power measurement; reject
-        busy-spin and record the chosen worker counts.
+      - [x] Manual quiet-machine paired kernel matrix (2026-07-30): Colibri
+        Metal vs stock MLX vs custom Metal at identical production shapes,
+        ten warmups and fifteen measured samples. The mlx-bun path selection
+        is custom Metal for routed SwiGLU decode M=1 (4.282 ms vs stock MLX
+        5.099 ms, 16.0% faster; an independent 3/11 run also won by 5.4%).
+        Stock MLX remains selected for Q4 dense decode/prefill, routed M=11
+        ragged and M=32 prefill, and absorbed MLA decode. All correctness
+        checks passed and swap was unchanged.
+      - [x] Manual passive-worker CPU/GPU/package-power measurement
+        (2026-07-30): matched baseline plus 1/2/4-worker arms, repeated in
+        reverse order with raw mactop samples retained. There is no monotonic
+        CPU, GPU, or package-power increase with worker count, confirming the
+        `pthread_cond_wait` pool is passive. Keep the bounded default at two
+        workers.
 - [x] **G2 — native GLM-5.2 spine:** dedicated config/model; compressed MLA KV,
       DSA indexer, sigmoid+correction-bias top-8 router, shared+routed experts,
       MTP layer, multiple EOS; direct Colibri-container parsing. Numeric parity
@@ -2186,7 +2195,7 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         `scripts/probe-colibri-glm52-production.ts`.
         Serial MTP execution remains G4 as specified; G2 validates its complete
         container/config metadata rather than advancing the MTP cache.
-- [ ] **G3 — explicit bounded expert residency (load-bearing):** per-layer
+- [x] **G3 — explicit bounded expert residency (load-bearing):** per-layer
       expert-ID→slot LRU, separate pinned tier, 64-unique working set,
       aligned gate/up/down+scale slabs, generation-tagged async loads, GPU-use
       fence, deterministic eviction, real RSS guard, and batched routed-SwiGLU
@@ -2211,10 +2220,11 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         token-exact through 64 working slots + one LRU slot per sparse layer.
       - [x] Custom M=1 Q4 Metal candidate reads the canonical slot directly and
         performs explicit dequant-to-F32 MACs in two dispatches
-        (gate+up+SiLU, then down). It is explicitly selectable; stock MLX
-        remains the default pending measurement.
-      - [ ] Run the outstanding G1 quiet kernel/power matrix, then select the
-        routed-SwiGLU path by measured correctness and speed.
+        (gate+up+SiLU, then down). The measured hybrid default now selects it
+        for eligible one-row jobs and falls back to stock MLX for multi-row
+        ragged/prefill work; an explicit `"stock"` override remains.
+      - [x] Run the G1 quiet kernel/power matrix and select the routed-SwiGLU
+        path: custom Metal for M=1 decode; stock MLX for ragged/prefill.
       - [x] Bounded production pure-LRU expert gate: exact layer-3 top-8;
         complete routed+shared output is identical across cold/warm/churn and
         matches Colibri at max absolute delta 1.8626e-9 / RMSE 3.6290e-10.

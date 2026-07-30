@@ -235,11 +235,39 @@ float silu(float value) {
   return value / (1.0f + std::exp(-value));
 }
 
+struct RouteAssignment {
+  int row;
+  float weight;
+};
+
+using RoutedPattern = std::vector<std::vector<RouteAssignment>>;
+
+RoutedPattern routed_pattern(int rows, int unique_experts) {
+  RoutedPattern assignments(unique_experts);
+  constexpr float denominator = 36.0f;
+  for (int row = 0; row < rows; ++row) {
+    std::vector<int> selected;
+    for (int rank = 0; rank < 8; ++rank) {
+      int expert = (row * 17 + rank * 7) % unique_experts;
+      while (std::find(selected.begin(), selected.end(), expert) !=
+             selected.end())
+        expert = (expert + 1) % unique_experts;
+      selected.push_back(expert);
+      assignments[expert].push_back(
+          {row, static_cast<float>(rank + 1) / denominator});
+    }
+  }
+  return assignments;
+}
+
 Result moe_cell(
-    const char *name, const std::vector<int> &counts, int output_rows,
-    bool top8_rows, int warmups, int repeats, uint32_t seed) {
+    const char *name, const RoutedPattern &assignments, int output_rows,
+    int warmups, int repeats, uint32_t seed) {
   Rng rng(seed);
-  const int experts = static_cast<int>(counts.size());
+  const int experts = static_cast<int>(assignments.size());
+  std::vector<int> counts(experts);
+  for (int expert = 0; expert < experts; ++expert)
+    counts[expert] = static_cast<int>(assignments[expert].size());
   std::vector<Expert *> owned;
   for (int expert = 0; expert < experts; ++expert)
     owned.push_back(new Expert(rng));
@@ -265,10 +293,9 @@ Result moe_cell(
   for (int expert = 0; expert < experts; ++expert) {
     for (int local = 0; local < counts[expert]; ++local) {
       const int packed_row = offsets[expert] + local;
-      rows[packed_row] =
-          top8_rows ? local % output_rows : packed_row % output_rows;
-      route_weight[packed_row] =
-          0.1f + static_cast<float>(rng.next() % 101) / 100.0f;
+      const RouteAssignment assignment = assignments[expert][local];
+      rows[packed_row] = assignment.row;
+      route_weight[packed_row] = assignment.weight;
     }
   }
   std::vector<float> output(static_cast<size_t>(output_rows) * D);
@@ -589,15 +616,15 @@ int main(int argc, char **argv) {
         dense_cell("dense_q4_prefill32", 32, true, warmups, repeats, 0x102u));
     results.push_back(moe_cell(
         "routed_swiglu_decode_top8",
-        {1, 1, 1, 1, 1, 1, 1, 1}, 1, true,
+        routed_pattern(1, 8), 1,
         warmups, repeats, 0x201u));
     results.push_back(moe_cell(
-        "routed_swiglu_ragged",
-        {3, 1, 4, 2, 1, 5}, 8, false,
+        "routed_swiglu_ragged_m11",
+        routed_pattern(11, 23), 11,
         warmups, repeats, 0x202u));
     results.push_back(moe_cell(
-        "routed_swiglu_prefill8_top8",
-        {8, 8, 8, 8, 8, 8, 8, 8}, 8, true,
+        "routed_swiglu_prefill_m32",
+        routed_pattern(32, 64), 32,
         warmups, repeats, 0x203u));
     results.push_back(mla_cell(128, warmups, repeats, 0x301u));
     write_report(output, warmups, repeats, results);
