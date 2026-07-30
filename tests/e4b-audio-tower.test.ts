@@ -146,7 +146,8 @@ describe.skipIf(!haveWeights || !haveGoldens || !haveBins)(
       const ref = ops.div(refBf, refScale);
       for (const a of [gotBf, refBf, gotScale, refScale]) a.dispose();
 
-      expect(got.rawBytes()).toEqual(ref.rawBytes());
+      const refRawBytes = ref.rawBytes();
+      expect(got.rawBytes()).toEqual(refRawBytes);
       got.dispose();
       ref.dispose();
     }, 300_000);

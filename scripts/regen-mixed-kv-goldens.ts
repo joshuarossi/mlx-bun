@@ -64,10 +64,12 @@ const existing = NAME
   : ((await goldenAt("kv-quant.json").json()) as { prompt_ids: number[] });
 
 const py = `
-import sys, json
+import sys, json, hashlib, os
 import mlx.core as mx
 from optiq.mlx_lm_patches._register import register
 register()
+import mlx_lm
+import optiq
 from mlx_lm import load
 from mlx_lm.models.cache import make_prompt_cache, KVCache, RotatingKVCache
 from optiq.runtime.kv.rotating import patch_rotating_to_quantized
@@ -87,10 +89,13 @@ patch_rotating_to_quantized()  # gives RotatingKVCache.to_quantized (Phase 9)
 model, tokenizer = load(snap)
 
 cache = make_prompt_cache(model)
+logit_sha256 = []
 
 def dump(last, step):
+    data = bytes(memoryview(last))
     with open(f"{outdir}/{bin_prefix}{step}.bin", "wb") as f:
-        f.write(bytes(memoryview(last)))
+        f.write(data)
+    logit_sha256.append(hashlib.sha256(data).hexdigest())
 
 if not ids:
     ids = tokenizer.apply_chat_template(
@@ -132,8 +137,15 @@ for step in range(1, max_tokens):
     y = mx.array([[tok]])
 
 print(json.dumps({
+    "oracle": {
+        "mlx": mx.__version__,
+        "mlx_lm": mlx_lm.__version__,
+        "optiq": optiq.__version__,
+        "model_revision": os.path.basename(os.path.realpath(snap)),
+        "generator": "scripts/regen-mixed-kv-goldens.ts",
+    },
     "prompt_ids": ids, "mixed": toks, "logit_steps": logit_steps,
-    "layers": sorted(by_layer),
+    "layers": sorted(by_layer), "logit_sha256": logit_sha256,
 }))
 `;
 

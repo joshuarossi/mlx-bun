@@ -2297,7 +2297,7 @@ library and CLI; the live expert map and offline Atlas are available;
 oracle/native results are provenance-recorded; and no default changes
 precision or router semantics.
 
-## Phase 22 — pre-Colibri stabilization burn-down `[~]` (opened 2026-07-29)
+## Phase 22 — pre-Colibri stabilization burn-down `[x]` (opened 2026-07-29, closed 2026-07-29)
 
 This phase **interrupts Phase 21 before G4**. Full inventory, proof contracts,
 execution waves, and exit criteria:
@@ -2329,10 +2329,11 @@ supported non-loopback/tunnel/proxy deployment reopens all three together.
 - [x] **S4 — measured performance:** establish scaling/latency baselines for
       incremental detokenization and serial logprob readback; optimize only
       when material; require paired A/B plus exact output parity.
-- [~] **S5 — closeout:** all P0/P1 fixed or disproved; P2 fixed/disproved or
+- [x] **S5 — closeout:** all P0/P1 fixed or disproved; P2 fixed/disproved or
       bounded and explicitly parked; full typecheck/hygiene/model-free gate
       green; public docs updated with behavior; ledger evidence complete.
-- [ ] **Resume Phase 21:** run the remaining G1/G3 quiet kernel and
+- [x] **Resume Phase 21:** stabilization exit is green and Phase 21 is
+      explicitly unpaused. Next, run the remaining G1/G3 quiet kernel and
       passive-worker power matrix, choose stock MLX versus custom Metal per
       shape, close G1/G3, then begin G4 serial native MTP.
 

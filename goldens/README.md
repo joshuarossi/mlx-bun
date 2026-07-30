@@ -7,6 +7,9 @@ Bit-exact oracle fixtures for the parity gates (L1 = mlx-lm, L2 = optiq).
 - **`.json` manifests — tracked.** Machine-independent or cheap: prompts,
   greedy trajectories, left-padding, shapes, chat-template renders,
   tokenizer fixtures. Small, diffable, and the part reviews care about.
+  A manifest that depends on untracked `.bin` blobs must also record the
+  oracle/model provenance and each blob's SHA-256; otherwise a stale local
+  blob can masquerade as a model regression even after regeneration.
 - **`.bin` logit/tensor blobs — NOT tracked** (`.gitignore`d since
   2026-07-02). They are MACHINE-SPECIFIC (metallibs diverge across chips at
   the fast-SDPA dispatch boundary — see PLAN.md "goldens are

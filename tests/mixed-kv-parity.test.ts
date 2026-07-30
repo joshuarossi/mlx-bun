@@ -13,6 +13,7 @@
 // desynchronize the comparison), greedy trajectory long-prefix.
 
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { goldenAt } from "./goldens";
 import { SNAPSHOT, snapshotAvailable } from "./paths";
 
@@ -30,6 +31,7 @@ describe.skipIf(!haveWeights || !haveGoldens)("mixed-KV (kv_config) parity vs op
     mixed: number[];
     logit_steps: number;
     layers: number[];
+    logit_sha256: string[];
   };
 
   const { loadModelConfig } = await import("../src/config");
@@ -47,9 +49,13 @@ describe.skipIf(!haveWeights || !haveGoldens)("mixed-KV (kv_config) parity vs op
     const cache = model.makeCache();
     const maxDiffAt = async (step: number, logits: any) => {
       const ours = lastPositionLogits(logits);
-      const ref = new Float32Array(
-        await goldenAt(`mixedkv-logits-step${step}.bin`).arrayBuffer(),
-      );
+      const bytes = await goldenAt(`mixedkv-logits-step${step}.bin`).arrayBuffer();
+      const digest = createHash("sha256").update(new Uint8Array(bytes)).digest("hex");
+      const expectedDigest = golden.logit_sha256[step];
+      if (!expectedDigest)
+        throw new Error(`mixed-KV golden is missing SHA-256 for step ${step}`);
+      expect(digest).toBe(expectedDigest);
+      const ref = new Float32Array(bytes);
       let maxDiff = 0;
       for (let i = 0; i < ref.length; i++)
         maxDiff = Math.max(maxDiff, Math.abs(ours[i]! - ref[i]!));
