@@ -11,6 +11,9 @@ export interface VmStatCounters {
   readonly pageouts: number;
   readonly swapins: number;
   readonly swapouts: number;
+  readonly compressorPages: number;
+  readonly compressions: number;
+  readonly decompressions: number;
 }
 
 export interface SwapUsage {
@@ -35,8 +38,13 @@ export function parseVmStat(text: string): VmStatCounters {
   if (!pageSize) throw new Error("vm_stat output is missing the page size");
   const counters = new Map<string, number>();
   for (const line of text.split(/\r?\n/)) {
-    const match = line.match(/^([A-Za-z]+):\s+(\d+)\.\s*$/);
-    if (match) counters.set(match[1]!.toLowerCase(), Number(match[2]));
+    const match = line.match(/^([^:]+):\s+(\d+)\.\s*$/);
+    if (match) {
+      counters.set(
+        match[1]!.trim().toLowerCase().replace(/\s+/g, " "),
+        Number(match[2]),
+      );
+    }
   }
   return {
     pageSizeBytes: Number(pageSize[1]),
@@ -44,6 +52,12 @@ export function parseVmStat(text: string): VmStatCounters {
     pageouts: requiredCounter(counters, "pageouts"),
     swapins: requiredCounter(counters, "swapins"),
     swapouts: requiredCounter(counters, "swapouts"),
+    compressorPages:
+      counters.get("pages occupied by compressor") ??
+      counters.get("pages stored in compressor") ??
+      0,
+    compressions: counters.get("compressions") ?? 0,
+    decompressions: counters.get("decompressions") ?? 0,
   };
 }
 

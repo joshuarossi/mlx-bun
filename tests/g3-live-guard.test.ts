@@ -19,6 +19,9 @@ Pageins: 123.
 Pageouts: 45.
 Swapins: ${swapins}.
 Swapouts: ${swapouts}.
+Pages occupied by compressor: 77.
+Compressions: 88.
+Decompressions: 66.
 `);
 
 const sample = (
@@ -56,6 +59,9 @@ describe("G3 live swap guard", () => {
       pageouts: 45,
       swapins: 299950,
       swapouts: 1232946,
+      compressorPages: 77,
+      compressions: 88,
+      decompressions: 66,
     });
     expect(parseSwapUsage(
       "total = 2048.00M  used = 999.75M  free = 1048.25M  (encrypted)",

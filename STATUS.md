@@ -220,12 +220,26 @@ Stable evidence:
 `fixtures/colibri-glm52/g4-native-mtp-e2e.json`.
 
 **Next:** G4 is merged with its direct-Colibri decode-only MTP cache as the
-correctness-closed baseline. Run G4R's prompt-seeded MTP research spike next.
-The candidate may intentionally differ internally from Colibri, but must keep
-the gated target output bit-for-bit exact and win paired end-to-end wall time
-after its additional prefill cost. G5 then measures whichever default wins on
-the cleared 32 GB M1 Max, enforcing the <=25 GB startup + 128-token contract
-without swap or compression spiral.
+correctness-closed baseline. Josh explicitly deferred the optional G4R
+prompt-seeding research spike on 2026-07-30. G5 is active now: expose and
+enforce the complete 32 GB resource equation before loading weights, then run
+the decode-only default through paired fresh-process MTP-on/off cells with two
+128-token turns per process. The cleared-machine gate is <=25 GB measured
+physical footprint, flat cold-to-warm memory, no compression spiral, and no
+swapout.
+
+The G5 implementation and model-free gates are now complete on
+`codex/colibri-g5-memory-contract`. The pinned artifact's header-only MTP-on
+plan is 21,111,440,128 bytes, leaving 5,732,105,472 bytes below the 25 GiB
+process ceiling plus an explicit 7 GiB OS reserve. The planner total is
+byte-for-byte the same equation handed to runtime expert residency; impossible
+starts fail before resident weights are mapped. The manual lane harness runs
+cold then warm 128-token turns, samples physical footprint/MLX/compressor/swap,
+and the paired evaluator requires exact first-64 direct-oracle and complete
+128-token cold/warm/on/off identity. **Next action:** run the two cleared-machine
+lane commands documented under G5 in
+[docs/design/colibri-glm52-port.md](docs/design/colibri-glm52-port.md), then
+evaluate and curate the measured result.
 
 ## Where we are (2026-07-10 — v0.0.11 released)
 

@@ -2287,10 +2287,13 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         is evidence only—not the G5 memory-contract result. Stable records:
         `fixtures/colibri-glm52/g4-direct-mtp-trace.json` and
         `fixtures/colibri-glm52/g4-native-mtp-e2e.json`.
-- [ ] **G4R — prompt-seeded MTP research spike:** test whether populating the
+- [ ] **G4R — prompt-seeded MTP research spike (deferred 2026-07-30):** test
+      whether populating the
       MTP layer's independent KV cache from prompt context improves draft
       acceptance enough to repay its added prefill work. The landed
       direct-Colibri decode-only window remains the control and default.
+      Josh explicitly deferred this non-blocking research spike so G5 can
+      measure the already-correct, already-faster decode-only default first.
       Implementation parity is not the correctness oracle: candidate output
       must remain bit-for-bit identical to the target-only trajectory for the
       gated greedy and seeded-sampling cells.
@@ -2316,6 +2319,29 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
       accounted workload. Gate on the cleared M1 Max 32 GB: startup +128 tokens
       MTP on <=25 GB, flat memory, no compression spiral/swap; record cold/warm
       speed (MTP on and off) vs the G0 baseline.
+      - [x] Header-only preflight exposes every line item and refuses before
+        resident weights are mapped. For the pinned production artifact,
+        the conservative MTP-on plan is 21,111,440,128 process bytes:
+        10,877,286,144 resident weights + 2,632,646,656 main slab +
+        945,356,800 MTP slab + 736,100,352 target KV + 9,437,184 MTP KV +
+        537,395,200 reconstructed-KV transient + 4,508,672 verify rows +
+        4 GiB MLX allocator + 512 MiB Bun/native + 512 MiB safety. The 25 GiB
+        ceiling leaves 5,732,105,472 bytes of planned process headroom and
+        reserves the remaining 7 GiB of a 32 GiB machine for the OS.
+      - [x] The model-free contract proves that the planner's total is exactly
+        the runtime expert-residency equation, accounts the 32-slot target
+        verify union and 24-slot MTP draft union, rejects undersized banks and
+        impossible context/machine/process limits, and removes MTP-only bytes
+        from the off lane.
+      - [x] Manual harness runs two 128-token turns in one process per mode,
+        preserves expert residency while rebuilding request KV, gates the first
+        64 tokens against direct Colibri and all 128 cold/warm/on/off tokens
+        against each other, samples task physical footprint + MLX + vm_stat
+        every 15 seconds, rejects any swapout, bounds compressor growth to
+        256 MiB, and requires warm final footprint within 256 MiB of cold.
+      - [ ] On the cleared M1 Max, run the fresh-process MTP-on and MTP-off
+        lanes, evaluate the paired reports, and record the measured cold/warm
+        speed and memory result against G0.
 - [ ] **G6 — complete scheduler + Atlas:** batch-union; bounded
       pread/F_NOCACHE workers; resident-first Metal submit overlapped with
       misses; persistent `.usage`; auto-pin; live LFRU (decay + 25%+4

@@ -1013,11 +1013,13 @@ correctness/performance evidence, not the G5 memory-contract result. Stable
 records: `fixtures/colibri-glm52/g4-direct-mtp-trace.json` and
 `fixtures/colibri-glm52/g4-native-mtp-e2e.json`.
 
-### G4R — prompt-seeded MTP research spike
+### G4R — prompt-seeded MTP research spike (deferred 2026-07-30)
 
 G4 deliberately copies direct Colibri's decode-only MTP window: target prompt
 prefill is complete, but the independent MTP KV row begins with the first
 draft. That implementation is the control, not a permanent restriction.
+Josh explicitly deferred this optional research spike so G5 can measure the
+landed decode-only default first.
 Investigate a candidate that batch-seeds MTP KV from the already-computed
 prompt pairs `(token[i+1], target_hidden[i])` before drafting. It must reuse
 captured target hidden rows rather than rerun target prefill.
@@ -1041,6 +1043,51 @@ record the negative result.
   and the OS reserve; shrink only evictable LRU slots under real pressure.
 - Measure with MTP on: the verify batch, the MTP KV row, and the larger
   per-forward expert union are part of the accounted workload.
+
+The header-only preflight now runs before resident weights or native slabs are
+opened. Its pinned-artifact MTP-on equation is:
+
+| Process line item | Bytes |
+|---|---:|
+| Resident dense/shared/router/MTP weights | 10,877,286,144 |
+| Main expert slab: 64 working + 75 resident | 2,632,646,656 |
+| MTP expert slab: 24 working + 1 resident | 945,356,800 |
+| Target compressed MLA KV, 78 layers × 4k | 736,100,352 |
+| Decode-only MTP KV, 1 layer × 4k | 9,437,184 |
+| Reconstructed target K/V at 4k + verify rows | 537,395,200 |
+| Target verify + MTP draft visible rows | 4,508,672 |
+| MLX allocator/cache reserve | 4,294,967,296 |
+| Bun/native reserve | 536,870,912 |
+| Safety margin | 536,870,912 |
+| **Planned process** | **21,111,440,128** |
+
+The 25 GiB process ceiling therefore retains 5,732,105,472 bytes of planned
+headroom. The process is never allowed to consume the remaining 7 GiB of the
+32 GiB machine; that is the explicit OS reserve. The target verify union needs
+at most 32 of the 64 working slots and MTP reserves all 24 possible
+`topK × gamma` draft slots.
+
+The manual gate uses separate fresh processes for MTP on and off. Each process
+runs a cold and then warm 128-token turn: request KV is rebuilt, while expert
+residency remains warm. It records task physical footprint, RSS, MLX active/
+cache/peak allocation, expert residency, `vm_stat` compressor occupancy, and
+swap every 15 seconds. Any swapout or footprint above 25 GiB aborts at the next
+token boundary; compressor occupancy may grow by at most a documented 256 MiB
+to tolerate unrelated system activity, and warm final footprint may exceed
+cold by at most 256 MiB. The first 64 tokens remain pinned to direct Colibri;
+the complete 128-token cold/warm and MTP-on/off outputs must be identical.
+
+Run from a cleared 32 GB M1 Max:
+
+```sh
+MODEL=/Users/joshrossi/.cache/huggingface/hub/models--mateogrgic--GLM-5.2-colibri-int4-with-int8-mtp/snapshots/3cc8db99b1b13fc79325d987ba3c1c430766b3b8
+LIBRARY="$PWD/dist-native/libmlx_bun_expert_io.dylib"
+test -f "$LIBRARY"
+mkdir -p runs/colibri-g5
+bun scripts/probe-colibri-glm52-g5-memory.ts --mode on --model "$MODEL" --library "$LIBRARY" --output runs/colibri-g5/mtp-on.json --trace runs/colibri-g5/mtp-on.memory.jsonl
+bun scripts/probe-colibri-glm52-g5-memory.ts --mode off --model "$MODEL" --library "$LIBRARY" --output runs/colibri-g5/mtp-off.json --trace runs/colibri-g5/mtp-off.memory.jsonl
+bun scripts/check-colibri-glm52-g5-memory.ts --on runs/colibri-g5/mtp-on.json --off runs/colibri-g5/mtp-off.json --output runs/colibri-g5/summary.json
+```
 
 **Exit:** startup and a 128-token run with MTP on remain <=25 GB measured
 footprint (small documented tolerance only), with flat memory and no
