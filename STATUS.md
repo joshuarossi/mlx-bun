@@ -37,9 +37,8 @@ skips and zero failures. Phase 21 is explicitly unpaused.
 
 ## Active: native Colibri/GLM-5.2 port (2026-07-30)
 
-The G1–G3 foundation is landed on `main` at `2cd6e35`. Phase 21 **G0 and G2 are
-complete, and the G1/G3 closeout measurements now make G0–G3 complete; G4
-serial native MTP is next**. The landed foundation has a strict versioned synthetic Colibri
+The G1–G3 foundation is landed on `main`. Phase 21 **G0–G4 are complete; G5's
+cleared-machine 32 GB memory contract is next**. The landed foundation has a strict versioned synthetic Colibri
 gate/up/down artifact, fixed 16 KiB native slabs, passive bounded `pread`
 workers, async Bun-side completion polling, generation-bound CPU/GPU leases,
 lazy-graph evaluation plus stream synchronization before reuse, deterministic
@@ -181,7 +180,7 @@ with other applications open; that is not a zero-swap claim, whose cleared
 machine gate remains G5. Stable evidence is
 `fixtures/colibri-glm52/g3-full-model-trajectory.json`.
 
-The final adversarial review found no numeric, alignment, ownership/UAF, or
+The final adversarial G3 review found no numeric, alignment, ownership/UAF, or
 budget blocker. Its two error-path findings (double release after a failed
 lease release and post-close guard sampling) are fixed, and the 98-test
 focused/native suite plus both entry bundles pass afterward.
@@ -199,8 +198,30 @@ increase from 1, 2, or 4 sleeping workers, confirming passive waits; the
 chosen default remains two workers. Swap stayed exactly 339.25 MiB through
 the kernel runs. Raw reports are under `runs/colibri-g1/`.
 
-**Next:** G4 serial native MTP: exact draft/verify cache rollback and oracle
-accept/reject trace first, then prove a net MTP-on end-to-end win.
+G4 serial native MTP is complete. The in-process source shares the target
+embedding, output head, dense weights, and sampler; the signed-int8 MTP routed
+row has a bounded 24-working + 1-resident expert tier whose 945,356,800-byte
+slab is included in the main plan. Partial and zero-accept tests lock exact
+target/MTP rollback, and fixed Q4/Q8 Metal families are row-stable across
+draft and verify widths. Grammar remains in the common constrained verify
+walk; prompt lookup is the alternative model-free provider, so one draft
+history owns each request.
+
+The direct `IDOT=0,SPEC_PIN=1` capture and mlx-bun match all 64 target tokens
+and the tie-free first four acceptance rounds `[1,1,1,0]`. Later direct
+acceptance is retained as non-gating evidence because direct Colibri reduces
+RMSNorm in float64 while MLX uses its established float32 graph. The
+separate-process production A/B passed: 675.654 s MTP-on versus 834.172 s off
+for 64 tokens, a 1.235x wall-throughput win / 19.0% less generation time.
+MTP accepted 32/92 drafts over 31 verify forwards, emitted 2.065
+tokens/forward, and saved 32 target forwards. The machine was not swap-cleared,
+so the 14,679,224,320-byte completed footprint is not a G5 memory claim.
+Stable evidence:
+`fixtures/colibri-glm52/g4-native-mtp-e2e.json`.
+
+**Next:** G5 on the cleared 32 GB M1 Max, with MTP enabled: close the complete
+resource equation, enforce the <=25 GB startup + 128-token contract, and
+record cold/warm MTP-on/off performance without swap or compression spiral.
 
 ## Where we are (2026-07-10 — v0.0.11 released)
 

@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "gate": "G4 serial native MTP",
+  "date": "2026-07-30",
+  "machine": {
+    "chip": "Apple M1 Max",
+    "unified_memory_gib": 32,
+    "bun": "1.3.14"
+  },
+  "artifact": {
+    "colibri_commit": "44e489b196c9b7876b3d37a0570ebf1c6f90f54c",
+    "revision": "3cc8db99b1b13fc79325d987ba3c1c430766b3b8",
+    "numeric_contract": "IDOT=0, SPEC_PIN=1"
+  },
+  "request": {
+    "prompt_source": "real-model-oracle.json evidence.teacher_forcing_prefix_ids",
+    "prompt_tokens": 32,
+    "generated_tokens": 64,
+    "draft_tokens": 3,
+    "temperature": 0,
+    "working_slots": 64,
+    "resident_slots_per_sparse_layer": 1,
+    "budget_bytes": 26843545600,
+    "allocator_limit_bytes": 4294967296
+  },
+  "correctness": {
+    "mtp_on_target_tokens_exact": "64/64",
+    "mtp_off_target_tokens_exact": "64/64",
+    "direct_acceptance_prefix_exact": [1, 1, 1, 0],
+    "acceptance_oracle_tokens": 8,
+    "minimum_direct_first_draft_margin": 3.56746483,
+    "later_acceptance_note": "The full target trajectory remains exact. Later draft acceptance is non-gating across engines because direct Colibri reduces RMSNorm squared sums in float64 while MLX uses its established float32 reduction graph."
+  },
+  "mtp_on": {
+    "generation_wall_ms": 675653.549583,
+    "generation_wall_tokens_per_second": 0.09472310186115285,
+    "verify_forwards": 31,
+    "drafted": 92,
+    "accepted": 32,
+    "rejected": 60,
+    "tokens_per_verify_forward": 2.064516129032258,
+    "forwards_saved": 32,
+    "acceptance_lengths": [
+      1, 1, 1, 0, 0, 1, 2, 1, 1, 1, 3, 0, 3, 2, 3, 1,
+      0, 1, 1, 0, 1, 0, 1, 2, 2, 0, 0, 2, 0, 0, 1
+    ],
+    "main_expert_slab_bytes": 2632646656,
+    "mtp_expert_slab_bytes": 945356800,
+    "completed_process_physical_footprint_bytes": 14679224320,
+    "raw_report": "runs/colibri-g4/final-mtp-on-64.json",
+    "raw_report_sha256": "48a39bfb4b5689c4b33060ab8c445db8c253e24ab46dda363b554f6166b9d6be"
+  },
+  "mtp_off": {
+    "generation_wall_ms": 834172.422709,
+    "generation_wall_tokens_per_second": 0.07672274730943285,
+    "continuation_forwards": 63,
+    "main_expert_slab_bytes": 2632646656,
+    "completed_process_physical_footprint_bytes": 13479898224,
+    "raw_report": "runs/colibri-g4/final-mtp-off-64.json",
+    "raw_report_sha256": "f4dbb256b2697d3db8f85afb3e0a26e6a6ec369bce78ba48aa97f288a7484083"
+  },
+  "comparison": {
+    "wall_throughput_speedup": 1.2346156150942071,
+    "wall_time_saved_ms": 158518.87312599993,
+    "wall_time_reduction_fraction": 0.1900313038534709,
+    "measurement_order": ["mtp_on", "mtp_off"],
+    "process_isolation": true
+  },
+  "scope_note": "This is the G4 correctness and end-to-end speed gate on a non-cleared machine. Swap changed during the run and is not a G5 memory-contract claim; G5 reruns MTP-on on the cleared 32 GB machine."
+}

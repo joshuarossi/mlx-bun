@@ -60,8 +60,10 @@ export interface Glm52WeightSource extends Glm52MlaWeightSource {
 
 export interface Glm52ModelCapabilities {
   readonly dsa: boolean;
-  /** Metadata is complete; serial MTP execution remains G4. */
+  /** The artifact contains the complete native MTP metadata/tensor family. */
   readonly mtpMetadata: boolean;
+  /** The native MTP weights/tier are loaded for this model instance. */
+  readonly mtpEnabled?: boolean;
 }
 
 export interface Glm52StreamedOpenOptions
@@ -420,7 +422,7 @@ class Glm52Mlp {
   }
 }
 
-class Glm52DecoderLayer {
+export class Glm52DecoderLayer {
   readonly mla: Glm52Mla;
   readonly mlp: Glm52Mlp;
   readonly dsa: Glm52DsaIndexer | null;
@@ -619,7 +621,9 @@ export class Glm52Model {
   ): Promise<Glm52Model> {
     const glmConfig = await loadGlm52Config(modelDir);
     const config = await loadModelConfig(modelDir);
-    const weights = ColibriGlm52ResidentWeights.open(modelDir);
+    const weights = ColibriGlm52ResidentWeights.open(modelDir, {
+      includeMtp: options.enableMtp !== false,
+    });
     let runtime: Glm52ExpertRuntime | null = null;
     try {
       const detected = validateGlm52ContainerLayout(
@@ -637,6 +641,7 @@ export class Glm52Model {
         {
           dsa: detected.hasDsa,
           mtpMetadata: detected.hasMtp,
+          mtpEnabled: detected.hasMtp && options.enableMtp !== false,
         },
         runtime.executor,
         runtime,
@@ -661,6 +666,12 @@ export class Glm52Model {
         ? { dsa: { headDim: this.glmConfig.indexHeadDim } }
         : {}),
     }));
+  }
+
+  /** Pin streamed Q4 expert jobs to the row-independent M=1 kernel family.
+   * Native MTP enables this only around the batched target verify forward. */
+  setSpecKernelPinned(enabled: boolean): void {
+    this.expertRuntime?.executor.setFixedKernelFamily(enabled);
   }
 
   forwardHidden(ids: MlxArray, cache: Cache[]): MlxArray {

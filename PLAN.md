@@ -2246,12 +2246,46 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         or budget blocker. Fixed release-error double-attempt masking and made
         the live guard sample both before store close and after teardown; the
         98-test focused/native suite and project/probe bundles pass afterward.
-- [ ] **G4 — serial native MTP (requirement):** int8 MTP row sharing target
+- [x] **G4 — serial native MTP (requirement):** int8 MTP row sharing target
       weights, counted in the residency budget; draft-to-gamma, batched verify,
       exact rollback; `SPEC_PIN`-equivalent fixed draft/verify kernel family;
       grammar + prompt-lookup integration; tok/forward + end-to-end metrics.
       Exit: oracle accept/reject trace match + net win over MTP-off. All later
       gates measure with MTP on (the 2 tok/s target assumes it).
+      - [x] The in-process `Glm52NativeMtpProvider` shares the target embedding,
+        output head, dense spine, sampler, and resident weight source. Its
+        separate signed-int8 expert tier reserves 24 verify-working slots plus
+        one resident slot (945,356,800 bytes), and that slab plus the remaining
+        MTP tensors are included in the main fixed-byte plan.
+      - [x] Full-prompt native recurrence drafts to gamma=3, verifies
+        `[pending,...drafts]` in one target forward, retains the first MTP row,
+        rebuilds accepted rows from the target's verified hidden window, and
+        trims every rejected target/MTP cache tip. The model-free state-machine
+        gate covers partial acceptance followed by full rejection.
+      - [x] One row-independent custom Metal family handles Q4 target
+        M=1/verify rows while a second handles signed-Q8 MTP M=1/absorption
+        rows. M=1/M=4 Q4 and M=1/M=3 Q8 row-stability gates pass. Grammar
+        remains in the shared constrained accept walk; prompt lookup remains
+        the alternative model-free `DraftProvider`, so exactly one draft
+        history owns a request and neither path double-advances target or
+        grammar state.
+      - [x] The direct `IDOT=0,SPEC_PIN=1` capture and mlx-bun match all 64
+        target tokens and the tie-free first four acceptance rounds
+        `[1,1,1,0]` (eight emitted tokens; minimum direct first-draft margin
+        3.5675). The complete direct acceptance trace is retained as
+        non-gating evidence: direct Colibri reduces RMSNorm squared sums in
+        float64, whereas MLX uses its established float32 reduction graph, so
+        later MTP hidden recurrence and proposals need not be cross-engine
+        identical even though target output remains exact.
+      - [x] Separate-process production A/B on the 32 GB M1 Max: MTP-on
+        generated the exact 64-token trajectory in 675.654 s versus 834.172 s
+        off, a 1.235x wall-throughput win / 19.0% less generation time.
+        It accepted 32/92 drafts over 31 verify forwards, emitted 2.065
+        tokens/forward, and saved 32 target forwards. The machine was not
+        swap-cleared, so its 14,679,224,320-byte completed physical footprint
+        is evidence only—not the G5 memory-contract result. Stable records:
+        `fixtures/colibri-glm52/g4-direct-mtp-trace.json` and
+        `fixtures/colibri-glm52/g4-native-mtp-e2e.json`.
 - [ ] **G5 — 32 GB memory contract (measured MTP on):** full dense + LRU +
       working-set + KV + reconstructed-KV + MLX allocator/transient + Bun +
       OS-reserve planner, startup refusal, and physical-footprint feedback; the

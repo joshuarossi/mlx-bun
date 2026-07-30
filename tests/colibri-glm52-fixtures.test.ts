@@ -11,11 +11,21 @@ const manifestText = readFileSync(join(FIXTURE_DIR, "manifest.json"), "utf8");
 const fixtureText = readFileSync(join(FIXTURE_DIR, "v1.json"), "utf8");
 const captureText = readFileSync(join(FIXTURE_DIR, "oracle-capture.json"), "utf8");
 const realModelOracleText = readFileSync(join(FIXTURE_DIR, "real-model-oracle.json"), "utf8");
+const g4MtpTraceText = readFileSync(
+  join(FIXTURE_DIR, "g4-direct-mtp-trace.json"),
+  "utf8",
+);
+const g4MtpE2eText = readFileSync(
+  join(FIXTURE_DIR, "g4-native-mtp-e2e.json"),
+  "utf8",
+);
 const oraclePatchText = readFileSync(join(FIXTURE_DIR, "oracle-instrumentation.patch"), "utf8");
 const manifest = JSON.parse(manifestText);
 const fixture = JSON.parse(fixtureText);
 const capture = JSON.parse(captureText);
 const realModelOracle = JSON.parse(realModelOracleText);
+const g4MtpTrace = JSON.parse(g4MtpTraceText);
+const g4MtpE2e = JSON.parse(g4MtpE2eText);
 
 function f32(value: number): number {
   return Math.fround(value);
@@ -433,5 +443,66 @@ describe("Colibri GLM-5.2 fixture package", () => {
       expect.stringContaining("draft-length clamps"),
       expect.stringContaining("adaptive MTP guard"),
     ]));
+  });
+
+  test("locks the G4 direct exact MTP trajectory and tie-free trace prefix", () => {
+    expect(g4MtpTrace.provenance.colibri_commit).toBe(PIN);
+    expect(g4MtpTrace.provenance.numeric_contract).toBe(
+      "IDOT=0, SPEC_PIN=1",
+    );
+    expect(g4MtpTrace.token_ids).toHaveLength(64);
+    expect(g4MtpTrace.request.acceptance_oracle_tokens).toBe(8);
+    expect(g4MtpTrace.acceptance_lengths).toEqual([1, 1, 1, 0]);
+    expect(g4MtpTrace.summary.verify_forwards).toBe(4);
+    expect(g4MtpTrace.summary.accepted).toBe(
+      g4MtpTrace.acceptance_lengths.reduce(
+        (sum: number, value: number) => sum + value,
+        0,
+      ),
+    );
+    expect(g4MtpTrace.summary.acceptance_histogram).toEqual({
+      "0": 1,
+      "1": 3,
+    });
+    expect(g4MtpTrace.summary.minimum_first_draft_margin).toBeGreaterThan(3.5);
+    expect(g4MtpTrace.full_reference.acceptance_lengths).toHaveLength(29);
+  });
+
+  test("locks the G4 native MTP end-to-end win and telemetry", () => {
+    expect(g4MtpE2e.artifact.colibri_commit).toBe(PIN);
+    expect(g4MtpE2e.correctness.mtp_on_target_tokens_exact).toBe("64/64");
+    expect(g4MtpE2e.correctness.mtp_off_target_tokens_exact).toBe("64/64");
+    expect(g4MtpE2e.correctness.direct_acceptance_prefix_exact).toEqual(
+      g4MtpTrace.acceptance_lengths,
+    );
+    expect(g4MtpE2e.mtp_on.accepted + g4MtpE2e.mtp_on.rejected).toBe(
+      g4MtpE2e.mtp_on.drafted,
+    );
+    expect(g4MtpE2e.mtp_on.acceptance_lengths).toHaveLength(
+      g4MtpE2e.mtp_on.verify_forwards,
+    );
+    expect(g4MtpE2e.mtp_on.acceptance_lengths.reduce(
+      (sum: number, value: number) => sum + value,
+      0,
+    )).toBe(g4MtpE2e.mtp_on.accepted);
+    expect(g4MtpE2e.mtp_on.forwards_saved).toBe(
+      g4MtpE2e.mtp_off.continuation_forwards -
+      g4MtpE2e.mtp_on.verify_forwards,
+    );
+    expect(g4MtpE2e.comparison.wall_throughput_speedup).toBeGreaterThan(1);
+    expect(g4MtpE2e.mtp_on.generation_wall_ms).toBeLessThan(
+      g4MtpE2e.mtp_off.generation_wall_ms,
+    );
+    expect(g4MtpE2e.comparison.wall_throughput_speedup).toBeCloseTo(
+      g4MtpE2e.mtp_off.generation_wall_ms /
+      g4MtpE2e.mtp_on.generation_wall_ms,
+      12,
+    );
+    expect(g4MtpE2e.comparison.wall_time_reduction_fraction).toBeCloseTo(
+      g4MtpE2e.comparison.wall_time_saved_ms /
+      g4MtpE2e.mtp_off.generation_wall_ms,
+      12,
+    );
+    expect(g4MtpE2e.scope_note).toContain("not a G5 memory-contract claim");
   });
 });

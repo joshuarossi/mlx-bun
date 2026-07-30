@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "capture_kind": "direct_colibri_glm52_serial_mtp_trace",
+  "provenance": {
+    "colibri_commit": "44e489b196c9b7876b3d37a0570ebf1c6f90f54c",
+    "artifact_revision": "3cc8db99b1b13fc79325d987ba3c1c430766b3b8",
+    "numeric_contract": "IDOT=0, SPEC_PIN=1",
+    "source_run": "runs/colibri-g4/direct-traced-idot0-mtp-on",
+    "source_manifest_sha256": "7b89150b7a1539e2075679ff5170e2eae6963141b66b1281a8cd2d69bc7a248d",
+    "source_stderr_sha256": "6bfb2de30e7402ab79e6ba96e22c89765e7081330dc4fbafc3f06cf038e63b65",
+    "source_result_sha256": "f97bee7c3160c5b54731725fa784c5bc4608bc9eed3b097a6695a966457cc3a1"
+  },
+  "request": {
+    "prompt_source": "real-model-oracle.json evidence.teacher_forcing_prefix_ids",
+    "max_tokens": 64,
+    "acceptance_oracle_tokens": 8,
+    "temperature": 0,
+    "draft_tokens": 3,
+    "spec_pin": true,
+    "idot": false
+  },
+  "token_ids": [
+    16, 13, 3070, 17, 334, 374, 279, 24557,
+    10245, 1372, 323, 279, 1172, 1496, 10245, 624,
+    17, 13, 3070, 18, 334, 374, 279, 24557,
+    10317, 10245, 1372, 624, 18, 13, 3070, 20,
+    334, 374, 279, 1372, 315, 5792, 65450, 9856,
+    40779, 956, 320, 2120, 266, 14002, 80724, 4292,
+    19, 13, 3070, 22, 334, 374, 3545, 65383,
+    24708, 438, 264, 7548, 5089, 323, 17580, 1372
+  ],
+  "acceptance_lengths": [
+    1, 1, 1, 0
+  ],
+  "summary": {
+    "verify_forwards": 4,
+    "drafted": 12,
+    "verified": 12,
+    "accepted": 3,
+    "rejected": 9,
+    "tokens_per_forward": 2,
+    "acceptance_histogram": {
+      "0": 1,
+      "1": 3
+    },
+    "minimum_first_draft_margin": 3.56746483
+  },
+  "full_reference": {
+    "note": "The full direct trace is retained for analysis, not exact cross-engine gating: Colibri reduces RMSNorm in float64 while MLX uses the established f32 graph, so later MTP hidden recurrence differs although all target tokens remain exact.",
+    "acceptance_lengths": [
+      1, 1, 1, 0, 1, 2, 0, 1, 3, 1,
+      1, 0, 3, 3, 2, 1, 0, 2, 0, 2,
+      1, 3, 2, 0, 0, 2, 0, 0, 2
+    ],
+    "summary": {
+      "verify_forwards": 29,
+      "drafted": 87,
+      "verified": 86,
+      "accepted": 35,
+      "rejected": 52,
+      "tokens_per_forward": 2.206896551724138,
+      "acceptance_histogram": {
+        "0": 9,
+        "1": 9,
+        "2": 7,
+        "3": 4
+      }
+    }
+  }
+}

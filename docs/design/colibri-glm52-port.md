@@ -157,7 +157,9 @@ The load-bearing pieces are:
 12. **MTP speculation.** The native MTP layer proposes tokens and the main
     model verifies them in a batch. Draft and verify are forced onto the same
     kernel family (`SPEC_PIN=1`), because changing accumulation order destroyed
-    acceptance. Grammar-forced drafts and prompt lookup are additional sources.
+    acceptance. Grammar constrains the common target verification walk;
+    prompt lookup is an alternative model-free draft provider, with one
+    provider owning each request.
 13. **Persistent conversations and slots.** Compressed MLA/DSA state is
     appended crash-safely and restored without re-prefill. The mux protocol
     supports independent KV slots and continuously batches one decode row per
@@ -964,8 +966,9 @@ verify batch plus the MTP row's KV live inside the 25 GB envelope.
   target+MTP cache trim after rejection;
 - the same request sampler and a `SPEC_PIN`-equivalent fixed kernel family for
   draft and verify — accumulation drift destroys acceptance;
-- grammar-forced tokens and prompt-lookup drafts without double-advancing
-  caches;
+- grammar-constrained verification and the model-free prompt-lookup provider
+  without double-advancing caches or grammar state (one draft provider owns a
+  request);
 - report drafted/accepted/rejected, acceptance length, tok/forward, forwards
   saved, and end-to-end speed — not acceptance alone.
 
@@ -973,6 +976,42 @@ verify batch plus the MTP row's KV live inside the 25 GB envelope.
 tie-free trajectory; measured tok/forward and a net end-to-end win over
 MTP-off on the same artifact. All subsequent gates run with MTP on as the
 default workload.
+
+G4 closed on 2026-07-30. `Glm52NativeMtpProvider` runs the artifact's single
+MTP layer in-process, shares the target embedding/output head/dense weights,
+and gives the signed-int8 routed row its own bounded 24-working + 1-resident
+expert tier. The 945,356,800-byte MTP expert slab and the remaining MTP
+tensors are included in the main fixed-byte residency plan. Draft, verify,
+accepted-row absorption, and rollback use the same request sampler and
+row-independent custom Metal families (Q4 target and signed-Q8 MTP);
+M=1/M=4 and M=1/M=3 row-stability tests lock that accumulation contract.
+
+The cache state machine advances the MTP row once per proposal, retains the
+first true-target-conditioned row, discards the speculative tail, and rebuilds
+accepted rows from the target's verified hidden window. Thus target and MTP
+offsets remain aligned after partial or zero acceptance. Grammar remains in
+the existing constrained verify walk: proposals never advance the matcher,
+only target-accepted emitted tokens do. Prompt lookup remains the alternative
+model-free `DraftProvider`; exactly one provider owns a request, avoiding two
+independent draft histories or double cache/grammar advancement.
+
+The direct `IDOT=0,SPEC_PIN=1` oracle and mlx-bun match all 64 target tokens
+and the tie-free first four acceptance rounds `[1,1,1,0]` (the first eight
+emitted tokens; minimum direct first-draft margin 3.5675). The complete direct
+acceptance trace is preserved but is not an exact cross-engine gate: direct
+Colibri reduces RMSNorm squared sums in float64, while the established MLX
+graph reduces in float32. That difference recurs through 78 layers and can
+change later MTP proposals without changing the target trajectory.
+
+The separate-process production A/B is positive. MTP-on took 675.654 seconds
+for the exact 64-token trajectory versus 834.172 seconds off: 1.235x wall
+throughput, or 19.0% less generation time. It drafted 92 tokens, accepted 32,
+rejected 60, used 31 verify forwards, emitted 2.065 tokens per verify forward,
+and saved 32 target forwards. The completed MTP-on process footprint was
+14,679,224,320 bytes, but the machine was not swap-cleared; this is G4
+correctness/performance evidence, not the G5 memory-contract result. Stable
+records: `fixtures/colibri-glm52/g4-direct-mtp-trace.json` and
+`fixtures/colibri-glm52/g4-native-mtp-e2e.json`.
 
 ### G5 — 32 GB memory contract (measured with MTP on)
 

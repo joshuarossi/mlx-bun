@@ -23,6 +23,11 @@ import {
   swiGluF32,
   type SwiGluWeights,
 } from "../src/model/glm52-reference";
+import { makeSampler } from "../src/sampler";
+import {
+  Glm52NativeMtpProvider,
+  Glm52NativeMtpSource,
+} from "../src/spec/glm52-mtp-source";
 
 const HIDDEN = 4;
 const HEADS = 2;
@@ -195,6 +200,39 @@ function buildWeights(glm: Glm52Config): TinyGlmWeights {
     weights.put(`${s}.up_proj.weight`, matrix(glm.moeIntermediateSize, HIDDEN, 31), [glm.moeIntermediateSize, HIDDEN]);
     weights.put(`${s}.down_proj.weight`, matrix(HIDDEN, glm.moeIntermediateSize, 32), [HIDDEN, glm.moeIntermediateSize]);
   }
+  return weights;
+}
+
+function addMtpWeights(
+  weights: TinyGlmWeights,
+  glm: Glm52Config,
+): TinyGlmWeights {
+  const p = `model.layers.${glm.numHiddenLayers}`;
+  weights.put(`${p}.enorm.weight`, new Float32Array([1.1, 0.9, 1.2, 0.8]), [HIDDEN]);
+  weights.put(`${p}.hnorm.weight`, new Float32Array([0.8, 1.2, 0.9, 1.1]), [HIDDEN]);
+  weights.put(`${p}.shared_head.norm.weight`, new Float32Array([1, 0.95, 1.05, 0.9]), [HIDDEN]);
+  weights.put(`${p}.eh_proj.weight`, matrix(HIDDEN, 2 * HIDDEN, 41), [HIDDEN, 2 * HIDDEN]);
+  weights.put(`${p}.input_layernorm.weight`, new Float32Array([0.9, 1.1, 0.85, 1.15]), [HIDDEN]);
+  weights.put(`${p}.post_attention_layernorm.weight`, new Float32Array([1.2, 0.8, 1.1, 0.9]), [HIDDEN]);
+  weights.put(`${p}.self_attn.q_a_proj.weight`, matrix(Q_RANK, HIDDEN, 42), [Q_RANK, HIDDEN]);
+  weights.put(`${p}.self_attn.q_a_layernorm.weight`, new Float32Array([1.1, 0.8, 1]), [Q_RANK]);
+  weights.put(`${p}.self_attn.q_b_proj.weight`, matrix(HEADS * (NOPE + ROPE), Q_RANK, 43), [HEADS * (NOPE + ROPE), Q_RANK]);
+  weights.put(`${p}.self_attn.kv_a_proj_with_mqa.weight`, matrix(KV_RANK + ROPE, HIDDEN, 44), [KV_RANK + ROPE, HIDDEN]);
+  weights.put(`${p}.self_attn.kv_a_layernorm.weight`, new Float32Array([0.9, 1.1]), [KV_RANK]);
+  weights.put(`${p}.self_attn.kv_b_proj.weight`, matrix(HEADS * (NOPE + VALUE), KV_RANK, 45), [HEADS * (NOPE + VALUE), KV_RANK]);
+  weights.put(`${p}.self_attn.o_proj.weight`, matrix(HIDDEN, HEADS * VALUE, 46), [HIDDEN, HEADS * VALUE]);
+  weights.put(`${p}.mlp.gate.weight`, matrix(glm.numRoutedExperts, HIDDEN, 47), [glm.numRoutedExperts, HIDDEN]);
+  weights.put(`${p}.mlp.gate.e_score_correction_bias`, new Float32Array([0.05, 0.15, -0.1, 0.2]), [glm.numRoutedExperts]);
+  for (let expert = 0; expert < glm.numRoutedExperts; expert++) {
+    const e = `${p}.mlp.experts.${expert}`;
+    weights.put(`${e}.gate_proj.weight`, matrix(glm.moeIntermediateSize, HIDDEN, 48 + expert * 3), [glm.moeIntermediateSize, HIDDEN]);
+    weights.put(`${e}.up_proj.weight`, matrix(glm.moeIntermediateSize, HIDDEN, 49 + expert * 3), [glm.moeIntermediateSize, HIDDEN]);
+    weights.put(`${e}.down_proj.weight`, matrix(HIDDEN, glm.moeIntermediateSize, 50 + expert * 3), [HIDDEN, glm.moeIntermediateSize]);
+  }
+  const shared = `${p}.mlp.shared_experts`;
+  weights.put(`${shared}.gate_proj.weight`, matrix(glm.moeIntermediateSize, HIDDEN, 61), [glm.moeIntermediateSize, HIDDEN]);
+  weights.put(`${shared}.up_proj.weight`, matrix(glm.moeIntermediateSize, HIDDEN, 62), [glm.moeIntermediateSize, HIDDEN]);
+  weights.put(`${shared}.down_proj.weight`, matrix(HIDDEN, glm.moeIntermediateSize, 63), [HIDDEN, glm.moeIntermediateSize]);
   return weights;
 }
 
@@ -430,6 +468,75 @@ test("streamed GLM async model path matches the synchronous sparse reference", a
     for (const cache of asyncCache) cache.dispose();
     syncModel.dispose();
     asyncModel.dispose();
+  }
+});
+
+test("native GLM MTP drafts to gamma and rolls target + MTP caches back exactly", async () => {
+  const glm = {
+    ...config(true),
+    numNextnPredictLayers: 1,
+    indexShareForMtpIteration: true,
+  };
+  const weights = addMtpWeights(buildWeights(glm), glm);
+  const model = new Glm52Model(
+    weights,
+    runtimeConfig(glm),
+    glm,
+    { dsa: false, mtpMetadata: true },
+  );
+  const provider = new Glm52NativeMtpProvider(model);
+  const source = provider.open({
+    sampler: makeSampler({ temperature: 0 }),
+    target: { model, caches: [] },
+  });
+  expect(source).toBeInstanceOf(Glm52NativeMtpSource);
+  expect(source.prefillMode).toBe("full");
+  expect(source.pinTargetKernelFamily).toBe(true);
+  const mtp = source as Glm52NativeMtpSource;
+  const targetCache = model.makeCache();
+  let anchor: MlxArray | null = null;
+  let verified: MlxArray | null = null;
+  try {
+    source.prefill([2, 3]);
+    const anchorIds = ops.fromInt32([2], [1, 1]);
+    try {
+      anchor = model.forwardHidden(anchorIds, targetCache);
+    } finally {
+      anchorIds.dispose();
+    }
+    const drafts = await source.draft([3], 3, 0, anchor);
+    expect(drafts).toHaveLength(3);
+    expect(mtp.cacheOffset).toBe(3);
+
+    const verifyIds = ops.fromInt32([3, ...drafts], [1, drafts.length + 1]);
+    try {
+      verified = model.forwardHidden(verifyIds, targetCache);
+    } finally {
+      verifyIds.dispose();
+    }
+    expect(targetCache[0]!.offset).toBe(5);
+    targetCache[0]!.trim(2);
+    await source.commit(3, 1, undefined, verified, drafts.slice(0, 1));
+    expect(targetCache[0]!.offset).toBe(3);
+    expect(mtp.cacheOffset).toBe(2);
+
+    const nextAnchor = verified.slice([0, 1, 0], [1, 2, HIDDEN]);
+    try {
+      const rejected = await source.draft([4], 2, 2, nextAnchor);
+      expect(rejected).toHaveLength(2);
+      expect(mtp.cacheOffset).toBe(4);
+      await source.commit(2, 0, undefined, verified, []);
+      expect(mtp.cacheOffset).toBe(3);
+    } finally {
+      nextAnchor.dispose();
+    }
+  } finally {
+    anchor?.dispose();
+    verified?.dispose();
+    for (const cache of targetCache) cache.dispose();
+    source.dispose();
+    provider.dispose();
+    model.dispose();
   }
 });
 

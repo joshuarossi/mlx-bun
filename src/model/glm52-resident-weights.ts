@@ -28,11 +28,14 @@ export class ColibriGlm52ResidentWeights implements Glm52WeightSource {
     this.weightsBytes = weightsBytes;
   }
 
-  static open(modelDir: string): ColibriGlm52ResidentWeights {
+  static open(
+    modelDir: string,
+    options: { includeMtp?: boolean } = {},
+  ): ColibriGlm52ResidentWeights {
     const container = ColibriGlm52Container.open(modelDir);
     const names = [...container.tensors.values()]
       .filter((tensor) =>
-        tensor.family !== "mtp" &&
+        (options.includeMtp !== false || tensor.family !== "mtp") &&
         !ROUTED_EXPERT.test(tensor.name))
       .map((tensor) => tensor.name);
     const allowed = new Set(names);
