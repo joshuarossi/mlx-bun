@@ -1278,6 +1278,48 @@ real, but the absolute quality is not useful for speculative I/O: even budget
 and the completed predictor program does not advance to real loads. Evidence
 is under `runs/colibri-g6-coupling-shakeout-2026-08-16/`.
 
+The Atlas implementation now pins Colibri's 10-category, three-independent-
+prompt matrix at source commit
+`ecade075cfc2eae684097ea7de5570c3786ce199`. The probe opens the streamed model
+once but gives every prompt a fresh KV cache and its own route segment. MTP,
+persistent usage, auto-pin, live repin, PILOT, hinting, thinking, and sampling
+are disabled; the observer records the full true-top-8 target route before
+batch-union deduplication. Reusing residency across prompts changes only where
+weights are found, not router decisions, and avoids thirty redundant 370 GB
+container opens. The pinned prompts render to 13-36 tokens with the artifact's
+tokenizer.
+
+`src/model/glm52-atlas.ts` normalizes each expert count by that run's total,
+averages shares within a category, renormalizes to `p(topic|expert)`, computes
+normalized entropy/specialization, and requires the top topic to fire in at
+least two independent prompts. Validation is a strict global leave-one-prompt-
+out: the held-out route trace is absent from every category's specialist model,
+including the background distributions. The analyzer emits a detailed
+`atlas.json`, Colibri-compatible keyed `experts.json`, and a self-contained
+canvas affinity map whose position is the topic-vector barycenter and whose
+radius/opacity reflects specialization. Synthetic and CLI integration tests
+cover category-size normalization, the replication gate, held-out prediction,
+schema compatibility, and all three outputs.
+
+The real 30-prompt sweep remains the final G6 gate and is intentionally a
+Josh-run long model job:
+
+```sh
+MODEL=/Users/joshrossi/.cache/huggingface/hub/models--mateogrgic--GLM-5.2-colibri-int4-with-int8-mtp/snapshots/3cc8db99b1b13fc79325d987ba3c1c430766b3b8
+LIBRARY="$PWD/dist-native/libmlx_bun_expert_io.dylib"
+bun scripts/probe-colibri-glm52-g6-atlas.ts \
+  --model "$MODEL" --library "$LIBRARY" \
+  --output-dir runs/colibri-g6-atlas --max-tokens 64
+bun scripts/analyze-colibri-glm52-g6-atlas.ts \
+  --traces runs/colibri-g6-atlas/traces \
+  --output-dir runs/colibri-g6-atlas/analysis
+```
+
+The sweep is resumable with `--resume 1` and refuses mixed model/probe/options
+or incomplete trace/manifest checkpoints. No Atlas-informed warm-start is
+implemented or defaulted; that remains a separate experiment after labels pass
+the held-out reproduction gate.
+
 **Exit:** each lever has a paired cold/warm A/B with hit rate, disk GB/token,
 disk-service vs foreground-wait, p50/p95/p99 forward latency, and tok/s — all
 measured with MTP on (a lever that wins MTP-off but loses MTP-on is not a

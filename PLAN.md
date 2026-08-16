@@ -2463,8 +2463,19 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         are quality/cost shakeouts, not replicated performance claims.
         Evidence: `runs/colibri-g6-pilot-two-step-shakeout-2026-08-16/` and
         `runs/colibri-g6-coupling-shakeout-2026-08-16/`.
-      - [ ] Build/validate the Atlas probe and visualization; default only
-        measured winners.
+      - [x] Atlas probe/analyzer/visualization implementation (2026-08-16): pin
+        Colibri's 10-category x 3-prompt matrix at source commit
+        `ecade075cfc2eae684097ea7de5570c3786ce199`; reuse one streamed model
+        load but isolate every prompt with a fresh KV cache and route segment;
+        disable MTP, persistence, learning, prediction, hinting, thinking, and
+        sampling. Normalize per-run shares, require >=2 prompt replication,
+        and validate with a globally non-leaky leave-one-prompt-out classifier.
+        Emit detailed JSON, Colibri-compatible `experts.json`, and a standalone
+        interactive affinity map. Seven focused tests, including an end-to-end
+        analyzer run, pass; the pinned prompts tokenize to 13-36 tokens.
+      - [ ] Run the resumable 30-prompt real-model Atlas sweep, require labels
+        to reproduce on held-out prompts, publish the measured visualization,
+        and keep Atlas-informed warm-start separate/default-off.
 - [ ] **G7 — persistence, concurrency, and API parity:** (a) versioned
       compressed MLA/DSA/MTP `kv-store` save/restore with no full-K/V
       materialization; (b) batchable cache merge/extract, compressed-byte

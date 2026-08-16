@@ -315,9 +315,17 @@ default-off and real speculative loads are rejected. Evidence is machine-local
 under `runs/colibri-g6-pilot-two-step-shakeout-2026-08-16/` and
 `runs/colibri-g6-coupling-shakeout-2026-08-16/`.
 
-**Next:** build the Atlas probe/validation/visualization and default only
-measured winners. The optional G4R prompt-seeding spike remains explicitly
-deferred.
+The controlled Atlas workflow is implemented. It pins Colibri's 10 x 3 prompt
+matrix, captures isolated full target routes with every runtime policy disabled,
+applies per-run normalization plus a >=2-prompt replication gate, and performs
+globally non-leaky leave-one-prompt-out validation. The analyzer writes detailed
+JSON, Colibri-compatible `experts.json`, and a self-contained interactive
+affinity map. Seven focused tests and TypeScript pass; the real prompts tokenize
+to 13-36 tokens with thinking disabled.
+
+**Next:** Josh runs the resumable 30-prompt real-model Atlas sweep; then record
+held-out accuracy and publish the measured visualization. Atlas-informed
+warm-start and the optional G4R prompt-seeding spike remain explicitly deferred.
 
 ## Where we are (2026-07-10 — v0.0.11 released)
 

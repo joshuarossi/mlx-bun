@@ -32,6 +32,11 @@ and not a substitute for the recorded Git tree/blob identities.
 Later gate records are reviewed, tracked evidence rather than inputs to the G0
 generator:
 
+- `atlas-probes.json` pins the 10-category, three-prompt-per-category Expert
+  Atlas matrix from Colibri commit
+  `ecade075cfc2eae684097ea7de5570c3786ce199`. It carries its own provenance,
+  is not an executed-model oracle, and is intentionally outside the G0
+  generated-fixture manifest.
 - `production-probe.json`, `g3-production-expert-probe.json`, and
   `g3-full-model-trajectory.json` close the production Q4/router and bounded
   streamed-residency gates.
