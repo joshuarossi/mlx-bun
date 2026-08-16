@@ -9,7 +9,8 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-type Arm = "control" | "pilot-measure" | `pilot-hint-k${number}`;
+type Arm = "control" | "pilot-measure" | "pilot-two-step" |
+  `pilot-hint-k${number}`;
 
 interface Cli {
   readonly model: string;
@@ -19,6 +20,7 @@ interface Cli {
   readonly repeats: number;
   readonly resume: boolean;
   readonly hintK: number;
+  readonly twoStep: boolean;
 }
 
 function parse(argv: string[]): Cli {
@@ -44,6 +46,9 @@ function parse(argv: string[]): Cli {
   const hintK = Number(values.get("hint-k") ?? "0");
   if (!Number.isSafeInteger(hintK) || hintK < 0 || hintK > 8)
     throw new Error("--hint-k must be an integer in 0..8");
+  const twoStep = values.get("two-step") === "1";
+  if (twoStep && hintK > 0)
+    throw new Error("--two-step cannot be combined with --hint-k");
   return {
     model: required("model"),
     library: required("library"),
@@ -52,6 +57,7 @@ function parse(argv: string[]): Cli {
     repeats,
     resume: values.get("resume") === "1",
     hintK,
+    twoStep,
   };
 }
 
@@ -91,6 +97,7 @@ async function runLane(
   label: string,
   pilotMeasure: boolean,
   pilotHintK: number,
+  pilotTwoStep: boolean,
 ): Promise<any> {
   let attempt = 1;
   let suffix = "";
@@ -124,6 +131,7 @@ async function runLane(
     "--memory-mode", cli.memoryMode,
     "--pilot-measure", pilotMeasure ? "1" : "0",
     "--pilot-hint-k", String(pilotHintK),
+    "--pilot-two-step", pilotTwoStep ? "1" : "0",
   ], {
     stdout: "ignore",
     stderr: "inherit",
@@ -151,9 +159,11 @@ function turnSummary(turn: any): Record<string, unknown> {
   };
 }
 
-const candidateArm: Arm = cli.hintK > 0
-  ? `pilot-hint-k${cli.hintK}`
-  : "pilot-measure";
+const candidateArm: Arm = cli.twoStep
+  ? "pilot-two-step"
+  : cli.hintK > 0
+    ? `pilot-hint-k${cli.hintK}`
+    : "pilot-measure";
 const reports: Array<{ arm: Arm; repeat: number; report: any }> = [];
 for (let repeat = 1; repeat <= cli.repeats; repeat++) {
   const order: readonly Arm[] = repeat % 2 === 1
@@ -167,6 +177,7 @@ for (let repeat = 1; repeat <= cli.repeats; repeat++) {
         `${arm}-${repeat}`,
         arm !== "control",
         arm === candidateArm ? cli.hintK : 0,
+        arm === "pilot-two-step",
       ),
     });
   }
@@ -194,6 +205,11 @@ for (const item of reports) {
         pilot.hints.candidates < 1 || pilot.hints.submitted < 1)) {
     throw new Error(`${item.arm}-${item.repeat} submitted no advisory hints`);
   }
+  if (item.arm === "pilot-two-step" &&
+      pilots.some((pilot: any) => !pilot.twoStep ||
+        pilot.twoStep.predictionCalls < 1)) {
+    throw new Error(`${item.arm}-${item.repeat} produced no two-step scores`);
+  }
 }
 
 const arms = Object.fromEntries(
@@ -210,6 +226,9 @@ const arms = Object.fromEntries(
     const warmDemands = runs.map((run) => (run.warm as any).demand);
     const warmForwards = runs.map((run) => (run.warm as any).layerForward);
     const warmHints = warmPilots.map((pilot: any) => pilot.hints).filter(Boolean);
+    const warmTwoSteps = warmPilots
+      .map((pilot: any) => pilot.twoStep)
+      .filter(Boolean);
     const rankCount = warmPilots[0]?.rankHitRate?.length ?? 0;
     return [arm, {
       runs,
@@ -302,6 +321,23 @@ const arms = Object.fromEntries(
             (hint: any) => Number(hint.queueDepth),
           )),
         } : null,
+        twoStep: warmTwoSteps.length ? {
+          medianPrecision: median(warmTwoSteps.map(
+            (variant: any) => Number(variant.precision),
+          )),
+          medianRecall: median(warmTwoSteps.map(
+            (variant: any) => Number(variant.recall),
+          )),
+          medianExactRowRate: median(warmTwoSteps.map(
+            (variant: any) => Number(variant.exactRowRate),
+          )),
+          medianPredictionP95Ms: median(warmTwoSteps.map(
+            (variant: any) => Number(variant.predictionLatency.p95Ms),
+          )),
+          medianLeadP95Ms: median(warmTwoSteps.map(
+            (variant: any) => Number(variant.leadTime.p95Ms),
+          )),
+        } : null,
       } : null,
     }];
   }),
@@ -310,7 +346,9 @@ const control = arms.control as any;
 const pilot = arms[candidateArm] as any;
 const summary = {
   schemaVersion: 2,
-  gate: cli.hintK > 0
+  gate: cli.twoStep
+    ? "G6 measurement-only PILOT two-step paired A/B"
+    : cli.hintK > 0
     ? `G6 hint-only PILOT_K=${cli.hintK} paired A/B`
     : "G6 measurement-only PILOT paired A/B",
   result: "measured",
@@ -324,6 +362,7 @@ const summary = {
       : "none",
     realExpertLoads: false,
     hintK: cli.hintK,
+    twoStep: cli.twoStep,
     repeats: cli.repeats,
     memoryMode: cli.memoryMode,
   },

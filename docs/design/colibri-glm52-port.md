@@ -1236,6 +1236,48 @@ promoting it to real speculative loads. The next prefetch work measures
 coupling and two-step predictor quality before revisiting real loads. Evidence
 is under `runs/colibri-g6-pilot-hint-k4-shakeout-2026-08-16/`.
 
+The next measurement-only slice implements both remaining Colibri predictors
+without admitting speculative expert loads. `pilotTwoStep` duplicates the
+current sparse layer's shared-expert SwiGLU from the raw post-attention
+residual, adds that output to the residual, and applies the next layer's norm
+and router. It scores this route independently from the direct PILOT route and
+never feeds either result into routing, residency, or I/O. The dense-to-sparse
+boundary is direct-only because its source layer has no shared-expert block;
+two-step and hint-only modes are mutually exclusive so a baseline hint policy
+cannot be mistaken for a two-step result.
+
+Cross-layer coupling is also observation-only. A target-tier route observer
+copies the full per-row router result before batch-union deduplication and tags
+it by segment, forward, row, and layer. The offline evaluator learns Colibri's
+raw `(source layer, delta, source expert) -> target expert` coactivation counts
+for deltas one and two, retains 16 candidates per source expert, and sums votes
+with deterministic expert-ID ties. Its default 70/30 temporal split trains and
+scores within the cold segment only, excluding the repeated warm turn. The
+held-out path deliberately does not marginal-backfill unseen coupled routes;
+an equal-budget marginal predictor is reported separately as the baseline.
+Route collection and both predictors remain internal, opt-in, and default-off.
+
+The one-repeat MTP-on two-step shakeout kept both 128-token turns identical to
+control. Two-step raised top-8 precision/recall from 69.90% to 73.01% and
+exact rows from 5.35% to 7.90%, with 12.69 ms prediction p95 and 242.70 ms
+lead-time p95. That quality gain did not pay for its duplicated shared-expert
+work: warm throughput fell 10.13% from 0.14978 to 0.13461 tok/s. Logical demand
+bytes/token were bit-for-bit unchanged at 14,883,703,168 and final footprint
+changed by less than 1 MB. This is an observational cost/quality shakeout,
+not a replicated performance claim; two-step remains off. Evidence is under
+`runs/colibri-g6-pilot-two-step-shakeout-2026-08-16/`.
+
+The independent coupling lane emitted 23,250 route records. Excluding warm,
+the cold trace contained 155 positions: 108 trained the coactivation table and
+47 were held out, producing 22,766 `(layer, delta, expert)` entries. At budget
+8, delta-1 coupling recalled 31.02% of actual experts versus a 22.96% marginal
+baseline, while delta 2 recalled 30.81% versus 23.15%. The learned signal is
+real, but the absolute quality is not useful for speculative I/O: even budget
+32 reached only 57.35% / 56.74% recall, below direct PILOT's 69.90% at budget
+8 while proposing four times as many experts. Coupling therefore remains off,
+and the completed predictor program does not advance to real loads. Evidence
+is under `runs/colibri-g6-coupling-shakeout-2026-08-16/`.
+
 **Exit:** each lever has a paired cold/warm A/B with hit rate, disk GB/token,
 disk-service vs foreground-wait, p50/p95/p99 forward latency, and tok/s — all
 measured with MTP on (a lever that wins MTP-off but loses MTP-on is not a

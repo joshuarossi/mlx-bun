@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ExpertHintTelemetry } from "../src/expert-residency";
 import { MlxArray } from "../src/mlx/array";
+import * as ops from "../src/mlx/ops";
 import type { Glm52Config } from "../src/model/glm52-config";
 import { Glm52PilotTracker } from "../src/model/glm52-pilot";
 
@@ -19,7 +20,7 @@ function config(): Glm52Config {
     qkRopeHeadDim: 1,
     qkHeadDim: 2,
     vHeadDim: 1,
-    firstKDenseReplace: 1,
+    firstKDenseReplace: 0,
     intermediateSize: 2,
     moeIntermediateSize: 1,
     numRoutedExperts: 4,
@@ -52,6 +53,22 @@ class PilotWeights {
 
   constructor() {
     this.values.set(
+      "model.layers.0.post_attention_layernorm.weight",
+      MlxArray.fromFloat32(new Float32Array([1, 1]), [2]),
+    );
+    this.values.set(
+      "model.layers.0.mlp.shared_experts.gate_proj.weight",
+      MlxArray.fromFloat32(new Float32Array([1, 0]), [1, 2]),
+    );
+    this.values.set(
+      "model.layers.0.mlp.shared_experts.up_proj.weight",
+      MlxArray.fromFloat32(new Float32Array([1, 0]), [1, 2]),
+    );
+    this.values.set(
+      "model.layers.0.mlp.shared_experts.down_proj.weight",
+      MlxArray.fromFloat32(new Float32Array([-10, 0]), [2, 1]),
+    );
+    this.values.set(
       "model.layers.1.post_attention_layernorm.weight",
       MlxArray.fromFloat32(new Float32Array([1, 1]), [2]),
     );
@@ -74,6 +91,20 @@ class PilotWeights {
     const value = this.values.get(name);
     if (!value) throw new Error(`missing PILOT test tensor ${name}`);
     return value;
+  }
+
+  linear(
+    input: MlxArray,
+    name: string,
+    outputRows: number,
+    inputColumns: number,
+  ): MlxArray {
+    const weight = this.tensor(name);
+    expect(weight.shape).toEqual([outputRows, inputColumns]);
+    const transposed = ops.transposeAxes(weight, [1, 0]);
+    const output = ops.matmul(input, transposed);
+    transposed.dispose();
+    return output;
   }
 
   dispose(): void {
@@ -194,6 +225,83 @@ describe("GLM-5.2 measurement-only PILOT", () => {
         skippedWideCalls: 1,
         skippedWideRows: 9,
       });
+    } finally {
+      input.dispose();
+      weights.dispose();
+    }
+  });
+
+  test("skips two-step correction across the dense-to-sparse boundary", () => {
+    const weights = new PilotWeights();
+    const input = MlxArray.fromFloat32(new Float32Array([2, 1]), [1, 1, 2]);
+    const tracker = new Glm52PilotTracker({
+      config: { ...config(), firstKDenseReplace: 1 },
+      weights,
+      twoStep: true,
+    });
+    try {
+      tracker.predictNext(0, input);
+      tracker.observeActual(1, [{ indices: [0, 1] }]);
+      expect(tracker.drainTelemetry()).toMatchObject({
+        predictionCalls: 1,
+        observedCalls: 1,
+        twoStep: {
+          predictionCalls: 0,
+          observedCalls: 0,
+          rows: 0,
+        },
+      });
+    } finally {
+      input.dispose();
+      weights.dispose();
+    }
+  });
+
+  test("scores the shared-expert-corrected two-step route independently", () => {
+    const weights = new PilotWeights();
+    const input = MlxArray.fromFloat32(new Float32Array([2, 1]), [1, 1, 2]);
+    const ticks = [10, 12, 13, 18, 30];
+    const tracker = new Glm52PilotTracker({
+      config: config(),
+      weights,
+      twoStep: true,
+      now: () => ticks.shift()!,
+    });
+    try {
+      tracker.predictNext(0, input);
+      tracker.observeActual(1, [{ indices: [2, 1] }]);
+      const telemetry = tracker.drainTelemetry();
+      expect(telemetry).toMatchObject({
+        matchedSelections: 1,
+        exactRows: 0,
+        predictionLatency: { count: 1, totalMs: 2 },
+        leadTime: { count: 1, totalMs: 18 },
+        twoStep: {
+          predictionCalls: 1,
+          observedCalls: 1,
+          rows: 1,
+          matchedSelections: 2,
+          exactRows: 1,
+          precision: 1,
+          recall: 1,
+          exactRowRate: 1,
+          predictionLatency: { count: 1, totalMs: 5 },
+          leadTime: { count: 1, totalMs: 12 },
+        },
+      });
+      expect(telemetry.twoStep?.rankHitRate).toEqual([1, 1]);
+      expect(telemetry.twoStep?.layers).toEqual([{
+        layer: 1,
+        calls: 1,
+        rows: 1,
+        predictedSelections: 2,
+        actualSelections: 2,
+        matchedSelections: 2,
+        exactRows: 1,
+        precision: 1,
+        recall: 1,
+        exactRowRate: 1,
+      }]);
     } finally {
       input.dispose();
       weights.dispose();

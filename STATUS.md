@@ -301,9 +301,23 @@ shakeout, not a replicated performance result. Evidence is machine-local under
 `runs/colibri-g6-pilot-hint-k4-shakeout-2026-08-16/`; the preceding predictor
 quality result remains under `runs/colibri-g6-pilot-measure-shakeout-2026-08-16/`.
 
-**Next:** measure coupling and two-step predictor quality before reconsidering
-real speculative loads; then build the Atlas probe/validation/visualization.
-The optional G4R prompt-seeding spike remains explicitly deferred.
+Two-step and coupling measurement are now complete. The two-step predictor
+reproduces Colibri's current-layer shared-expert correction without feeding
+its output into execution. It improved top-8 precision/recall from 69.90% to
+73.01% and exact rows from 5.35% to 7.90%, but the one-repeat MTP-on warm arm
+fell 10.13% in throughput (0.14978 -> 0.13461 tok/s) with exactly unchanged
+logical demand bytes/token. A separate 23,250-record route trace used only the
+cold segment and a temporal 108-position train / 47-position held-out split.
+At budget 8, coupling reached 31.02% recall for delta 1 and 30.81% for delta 2,
+8.06 and 7.66 points above the marginal baselines but far below direct PILOT;
+budget 32 still reached only 57.35% / 56.74%. Both mechanisms remain
+default-off and real speculative loads are rejected. Evidence is machine-local
+under `runs/colibri-g6-pilot-two-step-shakeout-2026-08-16/` and
+`runs/colibri-g6-coupling-shakeout-2026-08-16/`.
+
+**Next:** build the Atlas probe/validation/visualization and default only
+measured winners. The optional G4R prompt-seeding spike remains explicitly
+deferred.
 
 ## Where we are (2026-07-10 — v0.0.11 released)
 

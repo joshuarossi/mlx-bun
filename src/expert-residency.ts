@@ -217,6 +217,11 @@ export interface ExpertResidencyManagerOptions {
   readonly locate: (layer: number, expertId: number) => ExpertResidencyLocation;
   readonly pinned?: ReadonlyArray<{ layer: number; expertId: number }>;
   readonly usage?: ExpertUsageLedger;
+  /** Synchronous measurement seam; receives router rows before union/dedup. */
+  readonly routeObserver?: (
+    layer: number,
+    routes: readonly ExpertUsageRoute[],
+  ) => void;
 }
 
 type SlotRole = "working" | "layer" | "pinned" | "disabled";
@@ -404,6 +409,7 @@ export class ExpertResidencyManager {
   #backend: ExpertResidencyBackend;
   #locate: ExpertResidencyManagerOptions["locate"];
   #usage: ExpertUsageLedger | null;
+  #routeObserver: ExpertResidencyManagerOptions["routeObserver"];
   #slots: SlotRecord[] = [];
   #working = new Set<number>();
   #layerSlots = new Map<number, Set<number>>();
@@ -442,6 +448,7 @@ export class ExpertResidencyManager {
     this.#backend = options.backend;
     this.#locate = options.locate;
     this.#usage = options.usage ?? null;
+    this.#routeObserver = options.routeObserver;
     this.#hintBaseline = options.backend.hintTelemetry?.() ??
       EMPTY_HINT_SNAPSHOT;
     this.sparseLayerIds = Object.freeze(options.sparseLayerIds.slice());
@@ -698,6 +705,7 @@ export class ExpertResidencyManager {
   /** Record the full router output before batch-union deduplication. */
   recordRoutes(layer: number, routes: readonly ExpertUsageRoute[]): void {
     this.#usage?.recordRoutes(layer, routes);
+    this.#routeObserver?.(layer, routes);
   }
 
   async acquireBlock(

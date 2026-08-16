@@ -16,6 +16,7 @@ import {
   type ExpertPolicyTelemetry,
   type ExpertRepinEvent,
   type ExpertResidencyPlan,
+  type ExpertResidencyManagerOptions,
 } from "../expert-residency";
 import type { Glm52Config } from "./glm52-config";
 import { ColibriGlm52Container } from "./glm52-container";
@@ -55,6 +56,10 @@ export interface Glm52ExpertRuntimeOptions {
   readonly pilotMeasure?: boolean;
   /** Opt-in G6 advisory prefetch width. Zero disables WILLNEED hints. */
   readonly pilotHintK?: number;
+  /** Opt-in G6 measurement: score Colibri's shared-expert-corrected route. */
+  readonly pilotTwoStep?: boolean;
+  /** Opt-in G6 route trace observer for the main target tier only. */
+  readonly routeObserver?: ExpertResidencyManagerOptions["routeObserver"];
 }
 
 export interface Glm52MtpExpertRuntime {
@@ -91,6 +96,7 @@ export class Glm52ExpertRuntime {
   readonly autoPin: ExpertAutoPinPlan | null;
   readonly pilotMeasureEnabled: boolean;
   readonly pilotHintK: number;
+  readonly pilotTwoStep: boolean;
   lastRepin: readonly ExpertRepinEvent[] = Object.freeze([]);
   lastTelemetry: Glm52ExpertTurnTelemetry | null = null;
   #liveRepin: boolean;
@@ -111,6 +117,7 @@ export class Glm52ExpertRuntime {
     liveRepin: boolean,
     pilotMeasure: boolean,
     pilotHintK: number,
+    pilotTwoStep: boolean,
   ) {
     this.plan = plan;
     this.store = store;
@@ -125,6 +132,7 @@ export class Glm52ExpertRuntime {
     this.#liveRepin = liveRepin;
     this.pilotMeasureEnabled = pilotMeasure;
     this.pilotHintK = pilotHintK;
+    this.pilotTwoStep = pilotTwoStep;
   }
 
   static async open(
@@ -158,6 +166,12 @@ export class Glm52ExpertRuntime {
         pilotHintK > config.numExpertsPerToken) {
       throw new Error(
         `GLM PILOT hint K must be in 0..${config.numExpertsPerToken}`,
+      );
+    }
+    const pilotTwoStep = options.pilotTwoStep === true;
+    if (pilotTwoStep && pilotHintK > 0) {
+      throw new Error(
+        "GLM PILOT two-step measurement cannot submit baseline-only hints",
       );
     }
     const mtpWorkingSlots = mtpRepresentative
@@ -302,6 +316,7 @@ export class Glm52ExpertRuntime {
         backend: store,
         pinned,
         usage: usage ?? undefined,
+        routeObserver: options.routeObserver,
         locate: (layer, expertId) => {
           const value = layout(layer, expertId);
           const segments = value.segments.map((segment) => {
@@ -425,8 +440,9 @@ export class Glm52ExpertRuntime {
         usage,
         autoPin,
         options.liveRepin === true,
-        options.pilotMeasure === true || pilotHintK > 0,
+        options.pilotMeasure === true || pilotHintK > 0 || pilotTwoStep,
         pilotHintK,
+        pilotTwoStep,
       );
       await manager.preloadPinned();
       await mtp?.manager.preloadPinned();

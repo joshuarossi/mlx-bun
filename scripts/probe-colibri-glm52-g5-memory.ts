@@ -42,6 +42,7 @@ import {
 import * as ops from "../src/mlx/ops";
 import { argmaxLastPosition } from "../src/model/gemma4-base";
 import { Glm52Model } from "../src/model/glm52";
+import { Glm52RouteTraceCollector } from "../src/model/glm52-coupling";
 import {
   planGlm52MemoryForArtifact,
   type Glm52MemoryPlan,
@@ -65,7 +66,8 @@ function argumentsMap(argv: string[]): Map<string, string> {
         "--mode on|off --model DIR --library DYLIB --output FILE " +
         "--trace FILE [--memory-mode strict|observe] " +
         "[--usage-path FILE --auto-pin 0|1 --live-repin 0|1] " +
-        "[--pilot-measure 0|1 --pilot-hint-k 0..8]",
+        "[--pilot-measure 0|1 --pilot-hint-k 0..8 " +
+        "--pilot-two-step 0|1 --route-trace FILE --max-tokens 1..128]",
       );
     }
     out.set(key.slice(2), value);
@@ -249,13 +251,26 @@ const autoPin = cli.get("auto-pin") === "1";
 const liveRepin = cli.get("live-repin") === "1";
 const pilotMeasure = cli.get("pilot-measure") === "1";
 const pilotHintK = Number(cli.get("pilot-hint-k") ?? "0");
+const pilotTwoStep = cli.get("pilot-two-step") === "1";
+const routeTracePath = cli.get("route-trace")
+  ? resolve(cli.get("route-trace")!)
+  : null;
+const maxTokens = Number(cli.get("max-tokens") ?? String(G5_MAX_TOKENS));
+if (!Number.isSafeInteger(maxTokens) || maxTokens < 1 ||
+    maxTokens > G5_MAX_TOKENS) {
+  throw new Error(`--max-tokens must be an integer in 1..${G5_MAX_TOKENS}`);
+}
 if (!Number.isSafeInteger(pilotHintK) || pilotHintK < 0 || pilotHintK > 8)
   throw new Error("--pilot-hint-k must be an integer in 0..8");
+if (pilotTwoStep && pilotHintK > 0)
+  throw new Error("--pilot-two-step cannot be combined with --pilot-hint-k");
 if ((autoPin || liveRepin) && !usagePath)
   throw new Error("--auto-pin/--live-repin require --usage-path");
 mkdirSync(dirname(output), { recursive: true });
 mkdirSync(dirname(tracePath), { recursive: true });
 if (usagePath) mkdirSync(dirname(usagePath), { recursive: true });
+if (routeTracePath) mkdirSync(dirname(routeTracePath), { recursive: true });
+const routeTrace = routeTracePath ? new Glm52RouteTraceCollector() : null;
 
 let model: Glm52Model | null = null;
 let plan: Glm52MemoryPlan | null = null;
@@ -286,7 +301,7 @@ try {
   });
   plan = await planGlm52MemoryForArtifact(modelDir, {
     enableMtp: mode === "on",
-    maxGenerationTokens: G5_MAX_TOKENS,
+    maxGenerationTokens: maxTokens,
     mtpDraftTokens: directTrace.request.draft_tokens,
   });
   monitor.record({
@@ -311,6 +326,10 @@ try {
     liveRepin,
     pilotMeasure,
     pilotHintK,
+    pilotTwoStep,
+    routeObserver: routeTrace
+      ? (layer, routes) => routeTrace.observe(layer, routes)
+      : undefined,
     workers: 2,
     libraryPath,
     decodeKernel: "metal",
@@ -357,6 +376,7 @@ try {
 
   let coldTokens: readonly number[] | null = null;
   for (const turn of ["cold", "warm"] as const) {
+    routeTrace?.beginSegment(turn);
     currentTurn = turn;
     generatedTokens = 0;
     pendingMonitorError = null;
@@ -376,7 +396,7 @@ try {
       generatedTokens = tokens.length;
       if (tokens.length % 8 === 0)
         console.log(
-          `G5 ${mode} ${turn}: ${tokens.length}/${G5_MAX_TOKENS}`,
+          `G5 ${mode} ${turn}: ${tokens.length}/${maxTokens}`,
         );
       return pendingMonitorError === null;
     };
@@ -389,7 +409,7 @@ try {
         plan.mtpDraftTokens,
         [...oracle.evidence.teacher_forcing_prefix_ids],
         {
-          maxTokens: G5_MAX_TOKENS,
+          maxTokens,
           temperature: 0,
           eosTokenIds: [],
         },
@@ -417,12 +437,12 @@ try {
       const serial = await serialTarget(
         model,
         oracle.evidence.teacher_forcing_prefix_ids,
-        G5_MAX_TOKENS,
+        maxTokens,
         (token) => {
           generatedTokens++;
           if (generatedTokens % 8 === 0)
             console.log(
-              `G5 ${mode} ${turn}: ${generatedTokens}/${G5_MAX_TOKENS}`,
+              `G5 ${mode} ${turn}: ${generatedTokens}/${maxTokens}`,
             );
           return pendingMonitorError === null;
         },
@@ -441,7 +461,7 @@ try {
       directTrace.token_ids,
       `G5 ${mode} ${turn} direct-oracle prefix`,
     );
-    if (tokens.length !== G5_MAX_TOKENS)
+    if (tokens.length !== maxTokens)
       throw new Error(`G5 ${mode} ${turn} emitted ${tokens.length} tokens`);
     if (coldTokens) exact(tokens, coldTokens, `G5 ${mode} cold/warm`);
     else coldTokens = [...tokens];
@@ -462,7 +482,7 @@ try {
         ...timing,
         wallMs,
         endToEndTps:
-          (G5_MAX_TOKENS / Math.max(wallMs, 1e-6)) * 1000,
+          (maxTokens / Math.max(wallMs, 1e-6)) * 1000,
       },
       finalPhysicalFootprintBytes:
         finalCheckpoint.physicalFootprintBytes,
@@ -513,7 +533,7 @@ try {
       processLimitBytes: plan.processLimitBytes,
       maxCompressorGrowthBytes: G5_MAX_COMPRESSOR_GROWTH_BYTES,
       flatMemoryToleranceBytes: G5_FLAT_MEMORY_TOLERANCE_BYTES,
-      maxTokens: G5_MAX_TOKENS,
+      maxTokens,
       sampleIntervalMs: SAMPLE_INTERVAL_MS,
       wiredLimitBytes,
     },
@@ -528,7 +548,14 @@ try {
       liveRepinEnabled: liveRepin,
       pilotMeasureEnabled: runtime.pilotMeasureEnabled,
       pilotHintK,
+      pilotTwoStep: runtime.pilotTwoStep,
       usage: runtime.usage?.snapshot() ?? null,
+      routeTrace: routeTracePath
+        ? {
+            path: routeTracePath,
+            records: routeTrace!.snapshot().length,
+          }
+        : null,
     },
     turns,
     memory: {
@@ -544,6 +571,12 @@ try {
       tracePath,
     },
   };
+  if (routeTracePath) {
+    const jsonl = routeTrace!.snapshot()
+      .map((record) => JSON.stringify(record))
+      .join("\n");
+    await Bun.write(routeTracePath, jsonl.length ? `${jsonl}\n` : "");
+  }
   await Bun.write(output, `${JSON.stringify(report, null, 2)}\n`);
   console.log(
     `G5 ${mode}: ${enforceMemoryContract ? "PASS" : "OBSERVED"}; warm e2e ` +

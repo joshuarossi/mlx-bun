@@ -2446,9 +2446,23 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         promote this policy to real speculative loads.** This is a correctness
         shakeout, not a replicated performance claim. Evidence:
         `runs/colibri-g6-pilot-hint-k4-shakeout-2026-08-16/summary.json`.
-      - [ ] Measure coupling and two-step predictor quality before revisiting
-        real speculative loads. Keep every stage value-preserving and
-        default-off until a replicated MTP-on A/B wins I/O/latency and tok/s.
+      - [x] Coupling + two-step measurement decision (2026-08-16): the
+        value-preserving two-step path reproduces Colibri's current-layer
+        shared-expert correction and scores it independently from direct
+        PILOT. On the one-repeat MTP-on paired shakeout it raised top-8
+        precision/recall from 69.90% to 73.01% and exact rows from 5.35% to
+        7.90%, but warm throughput fell 10.13% (0.14978 -> 0.13461 tok/s)
+        while logical demand bytes/token were exactly unchanged. The separate
+        route trace captured 23,250 full router rows; a non-leaky cold-only
+        70/30 temporal split trained on 108 positions and scored 47 held-out
+        positions. At budget 8, raw coactivation coupling reached 31.02%
+        recall for delta 1 and 30.81% for delta 2, beating equal-budget
+        marginals by 8.06 and 7.66 points but remaining far below direct
+        PILOT. Even budget 32 reached only 57.35% / 56.74% recall. **Decision:
+        keep both mechanisms off and reject real speculative loads.** These
+        are quality/cost shakeouts, not replicated performance claims.
+        Evidence: `runs/colibri-g6-pilot-two-step-shakeout-2026-08-16/` and
+        `runs/colibri-g6-coupling-shakeout-2026-08-16/`.
       - [ ] Build/validate the Atlas probe and visualization; default only
         measured winners.
 - [ ] **G7 — persistence, concurrency, and API parity:** (a) versioned

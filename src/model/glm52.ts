@@ -594,6 +594,7 @@ export class Glm52Model {
           config: glmConfig,
           weights,
           hintK: expertRuntime.pilotHintK,
+          twoStep: expertRuntime.pilotTwoStep,
           hintSink: expertRuntime.pilotHintK > 0
             ? expertRuntime.manager
             : undefined,

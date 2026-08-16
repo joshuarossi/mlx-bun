@@ -409,6 +409,39 @@ describe("expert residency manager", () => {
     expect(usage.entry(3, 2).heat).toBe(6);
   });
 
+  it("observes full route rows before demand union without changing them", () => {
+    const observed: Array<{ layer: number; indices: readonly number[] }> = [];
+    const plan = planExpertResidency({
+      budgetBytes: 100_000,
+      fixedBytes: 1_000,
+      slotBytes: 100,
+      sparseLayers: 1,
+      workingSlots: 2,
+      maxSlotsPerLayer: 1,
+    });
+    const manager = new ExpertResidencyManager({
+      plan,
+      backend: new FakeBackend(plan.totalSlots),
+      sparseLayerIds: [3],
+      locate: (layer, expertId) => ({
+        layer,
+        expertId,
+        segments: [{ file: 0, offset: expertId, destination: 0, length: 1 }],
+      }),
+      routeObserver: (layer, routes) => {
+        for (const route of routes)
+          observed.push({ layer, indices: Array.from(route.indices, Number) });
+      },
+    });
+    const routes = [{ indices: [4, 2] }, { indices: [1, 3] }];
+    manager.recordRoutes(3, routes);
+    expect(observed).toEqual([
+      { layer: 3, indices: [4, 2] },
+      { layer: 3, indices: [1, 3] },
+    ]);
+    expect(routes).toEqual([{ indices: [4, 2] }, { indices: [1, 3] }]);
+  });
+
   it("only corrects physical pressure at a safe point and permanently lowers capacity", async () => {
     const { manager, backend } = fixture({ cap: 2 });
     let lease = await manager.acquireBlock(3, [1, 2]);

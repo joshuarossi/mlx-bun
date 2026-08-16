@@ -491,7 +491,7 @@ test("streamed GLM async model path matches the synchronous sparse reference", a
   }
 });
 
-test("measurement-only PILOT observes the next streamed layer without changing output", async () => {
+test("PILOT variants observe the next streamed layer without changing output", async () => {
   const glm: Glm52Config = {
     ...config(true),
     numHiddenLayers: 2,
@@ -511,6 +511,8 @@ test("measurement-only PILOT observes the next streamed layer without changing o
   let attached: Glm52PilotTracker | null = null;
   const pilotRuntime = {
     pilotMeasureEnabled: true,
+    pilotHintK: 0,
+    pilotTwoStep: true,
     attachPilot: (value: Glm52PilotTracker) => { attached = value; },
     close: () => {},
   } as unknown as Glm52ExpertRuntime;
@@ -537,6 +539,11 @@ test("measurement-only PILOT observes the next streamed layer without changing o
         rows: 1,
         skippedWideCalls: 0,
         abandonedPredictions: 0,
+        twoStep: {
+          predictionCalls: 1,
+          observedCalls: 1,
+          rows: 1,
+        },
       });
     } finally {
       expected.dispose();
