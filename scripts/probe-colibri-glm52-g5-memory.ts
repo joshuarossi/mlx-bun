@@ -288,6 +288,7 @@ try {
     reserveBytes: plan.runtimeReserveBytes,
     workingSlots: plan.mainWorkingSlots,
     maxSlotsPerLayer: 1,
+    usagePath: false,
     workers: 2,
     libraryPath,
     decodeKernel: "metal",

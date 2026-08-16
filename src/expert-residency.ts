@@ -1,6 +1,12 @@
 import type { MlxArray } from "./mlx/array";
 import type { MlxHandle } from "./mlx/ffi";
 import type { ExpertIOSegment } from "./expert-io";
+import type {
+  ExpertLfruCandidate,
+  ExpertUsageEntry,
+  ExpertUsageLedger,
+  ExpertUsageRoute,
+} from "./expert-usage";
 
 export const DEFAULT_EXPERT_WORKING_SLOTS = 64;
 
@@ -171,6 +177,7 @@ export interface ExpertResidencyManagerOptions {
   readonly backend: ExpertResidencyBackend;
   readonly locate: (layer: number, expertId: number) => ExpertResidencyLocation;
   readonly pinned?: ReadonlyArray<{ layer: number; expertId: number }>;
+  readonly usage?: ExpertUsageLedger;
 }
 
 type SlotRole = "working" | "layer" | "pinned" | "disabled";
@@ -209,6 +216,23 @@ export interface ExpertResidencySnapshot {
   readonly misses: number;
   readonly evictions: number;
   readonly pressureEvictions: number;
+  readonly repinSwaps: number;
+}
+
+export interface ExpertResidencyMapEntry {
+  readonly slot: number;
+  readonly layer: number;
+  readonly expertId: number;
+  readonly tier: "resident" | "pinned";
+  readonly lastUse: bigint;
+  readonly usage: ExpertUsageEntry | null;
+}
+
+export interface ExpertRepinEvent {
+  readonly layer: number;
+  readonly evictedPin: number;
+  readonly admittedPin: number;
+  readonly gain: number;
 }
 
 function expertKey(layer: number, expertId: number): string {
@@ -268,11 +292,13 @@ export class ExpertResidencyManager {
   readonly sparseLayerIds: readonly number[];
   #backend: ExpertResidencyBackend;
   #locate: ExpertResidencyManagerOptions["locate"];
+  #usage: ExpertUsageLedger | null;
   #slots: SlotRecord[] = [];
   #working = new Set<number>();
   #layerSlots = new Map<number, Set<number>>();
   #lookup = new Map<string, number>();
   #pinnedKeys = new Set<string>();
+  #pinned: Array<{ layer: number; expertId: number }>;
   #active = false;
   #clock = 0n;
   #generation = 0n;
@@ -280,11 +306,13 @@ export class ExpertResidencyManager {
   #misses = 0;
   #evictions = 0;
   #pressureEvictions = 0;
+  #repinSwaps = 0;
 
   constructor(options: ExpertResidencyManagerOptions) {
     this.plan = options.plan;
     this.#backend = options.backend;
     this.#locate = options.locate;
+    this.#usage = options.usage ?? null;
     this.sparseLayerIds = Object.freeze(options.sparseLayerIds.slice());
     if (this.sparseLayerIds.length !== this.plan.sparseLayers ||
         new Set(this.sparseLayerIds).size !== this.sparseLayerIds.length)
@@ -295,6 +323,7 @@ export class ExpertResidencyManager {
       );
 
     const pinned = options.pinned ?? [];
+    this.#pinned = pinned.map((item) => ({ ...item }));
     if (pinned.length !== this.plan.pinnedSlots)
       throw new Error(
         `expert pinned set has ${pinned.length} entries; plan reserves ${this.plan.pinnedSlots}`,
@@ -320,6 +349,123 @@ export class ExpertResidencyManager {
     }
     for (; slot < this.plan.totalSlots; slot++)
       this.#slots.push(this.#newSlot(slot, "pinned", null));
+  }
+
+  /** Populate the configured hot-store before the first model forward. */
+  async preloadPinned(): Promise<void> {
+    if (this.#active)
+      throw new Error("pinned preload requires a model safe point");
+    for (const layer of this.sparseLayerIds) {
+      const ids = this.#pinned
+        .filter((item) => item.layer === layer)
+        .map((item) => item.expertId);
+      for (let begin = 0; begin < ids.length; begin += this.plan.workingSlots) {
+        const lease = await this.acquireBlock(
+          layer,
+          ids.slice(begin, begin + this.plan.workingSlots),
+        );
+        lease.releaseFenced();
+      }
+    }
+  }
+
+  repinCandidates(): ExpertLfruCandidate[] {
+    if (this.#active)
+      throw new Error("live repin requires a model safe point");
+    if (!this.#usage) return [];
+    const candidates: ExpertLfruCandidate[] = [];
+    for (const layer of this.sparseLayerIds) {
+      const ids = this.#pinned
+        .filter((item) => item.layer === layer)
+        .map((item) => item.expertId);
+      const candidate = this.#usage.lfruCandidate(layer, ids);
+      if (candidate) candidates.push(candidate);
+    }
+    return candidates;
+  }
+
+  /** Apply one previously selected LFRU promotion at a model safe point. */
+  async applyRepin(candidate: ExpertLfruCandidate): Promise<ExpertRepinEvent> {
+    if (this.#active)
+      throw new Error("live repin requires a model safe point");
+    const pinIndex = this.#pinned.findIndex((item) =>
+      item.layer === candidate.layer &&
+      item.expertId === candidate.coldExpertId);
+    if (pinIndex < 0 || this.#pinnedKeys.has(
+      expertKey(candidate.layer, candidate.hotExpertId),
+    )) {
+      throw new Error("stale live-repin candidate");
+    }
+
+    let hotSlotId = this.#lookup.get(
+      expertKey(candidate.layer, candidate.hotExpertId),
+    );
+    if (hotSlotId === undefined) {
+      const lease = await this.acquireBlock(
+        candidate.layer,
+        [candidate.hotExpertId],
+      );
+      lease.releaseFenced();
+      hotSlotId = this.#lookup.get(
+        expertKey(candidate.layer, candidate.hotExpertId),
+      );
+    }
+    const coldSlotId = this.#lookup.get(
+      expertKey(candidate.layer, candidate.coldExpertId),
+    );
+    if (hotSlotId === undefined || coldSlotId === undefined)
+      throw new Error("live repin could not materialize both experts");
+    const hot = this.#slots[hotSlotId]!;
+    const cold = this.#slots[coldSlotId]!;
+    if (hot.role !== "layer" || hot.phase !== "ready" ||
+        cold.role !== "pinned" || cold.phase !== "ready") {
+      throw new Error("live repin requires ready resident and pinned slots");
+    }
+
+    const layerSlots = this.#layerSlots.get(candidate.layer)!;
+    layerSlots.delete(hot.id);
+    layerSlots.add(cold.id);
+    hot.role = "pinned";
+    cold.role = "layer";
+    cold.lastUse = 0n;
+    this.#pinnedKeys.delete(
+      expertKey(candidate.layer, candidate.coldExpertId),
+    );
+    this.#pinnedKeys.add(
+      expertKey(candidate.layer, candidate.hotExpertId),
+    );
+    this.#pinned[pinIndex] = {
+      layer: candidate.layer,
+      expertId: candidate.hotExpertId,
+    };
+    this.#repinSwaps++;
+    return {
+      layer: candidate.layer,
+      evictedPin: candidate.coldExpertId,
+      admittedPin: candidate.hotExpertId,
+      gain: candidate.gain,
+    };
+  }
+
+  residencyMap(): ExpertResidencyMapEntry[] {
+    return this.#slots.flatMap((slot) => {
+      if ((slot.role !== "layer" && slot.role !== "pinned") ||
+          slot.phase !== "ready" || slot.layer === null ||
+          slot.expertId === null) return [];
+      return [{
+        slot: slot.id,
+        layer: slot.layer,
+        expertId: slot.expertId,
+        tier: slot.role === "pinned" ? "pinned" as const : "resident" as const,
+        lastUse: slot.lastUse,
+        usage: this.#usage?.entry(slot.layer, slot.expertId) ?? null,
+      }];
+    });
+  }
+
+  /** Record the full router output before batch-union deduplication. */
+  recordRoutes(layer: number, routes: readonly ExpertUsageRoute[]): void {
+    this.#usage?.recordRoutes(layer, routes);
   }
 
   async acquireBlock(
@@ -625,6 +771,7 @@ export class ExpertResidencyManager {
       misses: this.#misses,
       evictions: this.#evictions,
       pressureEvictions: this.#pressureEvictions,
+      repinSwaps: this.#repinSwaps,
     };
   }
 

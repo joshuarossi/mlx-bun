@@ -354,6 +354,8 @@ type WiredModelMemory = {
   readonly weightsBytes: number;
   readonly expertRuntime?: {
     readonly plan: { readonly plannedBytes: number };
+    flushUsage?: () => void;
+    finishUsage?: () => Promise<void>;
   } | null;
 };
 
@@ -398,6 +400,9 @@ export function generate(
       ? generateDiffusionInner(model, promptTokens, options)
       : generateInner(model, promptTokens, options);
   if (options.adapters?.length) inner = adapterScoped(model, options.adapters, inner);
+  const memoryModel: WiredModelMemory = model;
+  if (memoryModel.expertRuntime?.flushUsage)
+    inner = usageScoped(memoryModel, inner);
   const wire = modelNeedsWiredLimit(model);
   return new Generation(wire ? wiredScoped(inner) : inner);
 }
@@ -471,6 +476,21 @@ async function* wiredScoped(
   }
 }
 
+/** Publish the streamed model's route ledger on every generator exit path. */
+async function* usageScoped(
+  model: WiredModelMemory,
+  inner: AsyncGenerator<GeneratedToken, GenerateStats>,
+): AsyncGenerator<GeneratedToken, GenerateStats> {
+  try {
+    return yield* inner;
+  } finally {
+    if (model.expertRuntime?.finishUsage)
+      await model.expertRuntime.finishUsage();
+    else
+      model.expertRuntime?.flushUsage?.();
+  }
+}
+
 /** Apply generate()'s scoped wiring policy to non-generator execution paths. */
 export async function withModelWiredLimit<T>(
   model: WiredModelMemory,
@@ -482,6 +502,21 @@ export async function withModelWiredLimit<T>(
     return await run();
   } finally {
     exitWiredScope();
+  }
+}
+
+/** Apply generate()'s usage safe-point to direct/non-generator paths. */
+export async function withModelUsageFlush<T>(
+  model: WiredModelMemory,
+  run: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await run();
+  } finally {
+    if (model.expertRuntime?.finishUsage)
+      await model.expertRuntime.finishUsage();
+    else
+      model.expertRuntime?.flushUsage?.();
   }
 }
 

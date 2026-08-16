@@ -1133,6 +1133,22 @@ and warm speed, MTP on and off, against the direct-Colibri G0 baseline.
   workflow and expert-affinity visualization.
 - Treat any Atlas-informed topic warm-start as a separate new experiment.
 
+Implementation status (2026-08-15): batch-union, bounded positioned-read
+workers, `F_NOCACHE`, and resident-first submission were already in the G3
+foundation. G6's first new slice adds one shared target/MTP `.coli_usage`
+ledger in the direct Colibri three-column format. It records every top-k route
+before union deduplication, keeps loaded long-term frequency separate from
+session heat/recency, and atomically publishes at generation safe points.
+The opt-in startup auto-pin consumer is also implemented: the direct 5k-history
+floor, 200k full-confidence point, half-tier share, and 0.5 GB minimum are
+preserved, while deterministic ties and exact Q4/Q8 slot costs keep the shared
+target/MTP plan within its hard floor. Selected pins are preloaded before the
+first forward. The opt-in live LFRU consumer preserves the direct uint32
+recency score, 25%+4 hysteresis, heat halving, and a single four-swap turn cap
+across target and MTP; logical role exchange avoids copying expert slabs.
+Residency maps expose tier plus frequency/heat/recency and aggregate hit/miss/
+repin counters. Neither learning policy is defaulted before its MTP-on A/B.
+
 **Exit:** each lever has a paired cold/warm A/B with hit rate, disk GB/token,
 disk-service vs foreground-wait, p50/p95/p99 forward latency, and tok/s — all
 measured with MTP on (a lever that wins MTP-off but loses MTP-on is not a

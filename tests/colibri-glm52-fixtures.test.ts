@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { expertLfruScore } from "../src/expert-usage";
 
 const ROOT = resolve(import.meta.dir, "..");
 const FIXTURE_DIR = join(ROOT, "fixtures/colibri-glm52");
@@ -65,11 +66,6 @@ function matmul(inputs: number[][], weights: number[][]): number[][] {
 function sigmoid(value: number): number {
   const exponential = f32(Math.exp(f32(-value)));
   return f32(1 / f32(1 + exponential));
-}
-
-function lfruScore(heat: number, last: number, clock: number): number {
-  const age = (clock - last) >>> 0;
-  return heat * 256 + (age < 255 ? 255 - age : 0);
 }
 
 describe("Colibri GLM-5.2 fixture package", () => {
@@ -361,7 +357,8 @@ describe("Colibri GLM-5.2 fixture package", () => {
 
   test("locks LFRU scoring, hysteresis, deterministic candidates, and decay", () => {
     for (const data of fixture.cache_policy.lfru.cases) {
-      const scores = data.heat.map((heat: number, expert: number) => lfruScore(heat, data.last[expert], data.clock));
+      const scores = data.heat.map((heat: number, expert: number) =>
+        expertLfruScore(heat, data.last[expert], data.clock));
       let coldSlot = 0;
       for (let slot = 1; slot < data.pinned.length; slot++) {
         if (scores[data.pinned[slot]] < scores[data.pinned[coldSlot]]) coldSlot = slot;
@@ -390,7 +387,7 @@ describe("Colibri GLM-5.2 fixture package", () => {
     expect(tie.slot).toBe(0);
     expect(tie.eid).toBe(2);
     const wrap = fixture.cache_policy.lfru.wrap_score_case;
-    expect(lfruScore(wrap.heat, wrap.last, wrap.clock)).toBe(wrap.score_u64);
+    expect(expertLfruScore(wrap.heat, wrap.last, wrap.clock)).toBe(wrap.score_u64);
     expect(wrap.score_u64).toBe(1532);
     expect(fixture.cache_policy.lfru.decay_expected).toEqual(
       fixture.cache_policy.lfru.decay_input.map((value: number) => value >> 1),

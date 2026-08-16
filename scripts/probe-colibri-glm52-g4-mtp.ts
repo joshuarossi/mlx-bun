@@ -196,6 +196,7 @@ try {
     reserveBytes: 4 * GiB,
     workingSlots: 64,
     maxSlotsPerLayer: 1,
+    usagePath: false,
     workers: 2,
     libraryPath,
     decodeKernel: "metal",

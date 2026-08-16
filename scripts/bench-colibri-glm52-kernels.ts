@@ -679,12 +679,13 @@ try {
     config.hiddenSize,
     0x8899aabb,
   );
-  const stockRuntime = Glm52ExpertRuntime.open(cli.model, config, {
+  const stockRuntime = await Glm52ExpertRuntime.open(cli.model, config, {
     budgetBytes: 25 * GiB,
     fixedBytes: 0,
     workingSlots: 64,
     maxSlotsPerLayer: 1,
     pinned: pinnedExperts(PREFILL_EXPERTS),
+    usagePath: false,
     workers: cli.workers,
     noCache: false,
     libraryPath: cli.library,
@@ -799,12 +800,13 @@ try {
   }
 
   // ---- Routed SwiGLU custom Metal M=1 -----------------------------------
-  const metalRuntime = Glm52ExpertRuntime.open(cli.model, config, {
+  const metalRuntime = await Glm52ExpertRuntime.open(cli.model, config, {
     budgetBytes: 25 * GiB,
     fixedBytes: 0,
     workingSlots: DECODE_EXPERTS,
     maxSlotsPerLayer: 1,
     pinned: pinnedExperts(DECODE_EXPERTS),
+    usagePath: false,
     workers: cli.workers,
     noCache: false,
     libraryPath: cli.library,

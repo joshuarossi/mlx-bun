@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { ExpertIOSegment } from "../src/expert-io";
+import { ExpertUsageLedger } from "../src/expert-usage";
 import {
   ExpertResidencyManager,
   buildExpertBatchUnion,
@@ -78,7 +79,11 @@ class FakeBackend implements ExpertResidencyBackend {
   }
 }
 
-function fixture(options: { cap?: number; pinned?: Array<{ layer: number; expertId: number }> } = {}) {
+function fixture(options: {
+  cap?: number;
+  pinned?: Array<{ layer: number; expertId: number }>;
+  usage?: ExpertUsageLedger;
+} = {}) {
   const pinned = options.pinned ?? [];
   const plan = planExpertResidency({
     budgetBytes: 100_000,
@@ -95,6 +100,7 @@ function fixture(options: { cap?: number; pinned?: Array<{ layer: number; expert
     backend,
     sparseLayerIds: [3, 4],
     pinned,
+    usage: options.usage,
     locate: (layer, expertId) => ({
       layer,
       expertId,
@@ -214,6 +220,61 @@ describe("expert residency manager", () => {
     lease = await manager.acquireBlock(3, [9]);
     expect(lease.entries[0]!.hit).toBe(true);
     lease.releaseFenced();
+  });
+
+  it("preloads the configured hot-store before the first demand access", async () => {
+    const { manager, backend } = fixture({
+      cap: 1,
+      pinned: [
+        { layer: 3, expertId: 9 },
+        { layer: 4, expertId: 7 },
+      ],
+    });
+    await manager.preloadPinned();
+    expect(backend.events.filter((event) => event.startsWith("load:")))
+      .toHaveLength(2);
+    for (const [layer, expertId] of [[3, 9], [4, 7]] as const) {
+      const lease = await manager.acquireBlock(layer, [expertId]);
+      expect(lease.entries[0]).toMatchObject({ expertId, hit: true });
+      lease.releaseFenced();
+    }
+  });
+
+  it("applies exact LFRU hysteresis at a safe point and exposes the live map", async () => {
+    const usage = ExpertUsageLedger.open({
+      path: `/tmp/mlx-bun-unused-usage-${process.pid}-${Date.now()}`,
+      layers: [3, 4],
+      expertsPerLayer: 16,
+    });
+    const { manager } = fixture({
+      cap: 1,
+      pinned: [{ layer: 3, expertId: 9 }],
+      usage,
+    });
+    await manager.preloadPinned();
+    manager.recordRoutes(3, [{ indices: Array(12).fill(2) }]);
+    const candidates = manager.repinCandidates();
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      layer: 3,
+      coldExpertId: 9,
+      hotExpertId: 2,
+      gain: 12,
+    });
+    const event = await manager.applyRepin(candidates[0]!);
+    expect(event).toEqual({
+      layer: 3,
+      evictedPin: 9,
+      admittedPin: 2,
+      gain: 12,
+    });
+    expect(manager.residencyMap()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ layer: 3, expertId: 2, tier: "pinned" }),
+      expect.objectContaining({ layer: 3, expertId: 9, tier: "resident" }),
+    ]));
+    expect(manager.snapshot().repinSwaps).toBe(1);
+    usage.decayHeat();
+    expect(usage.entry(3, 2).heat).toBe(6);
   });
 
   it("only corrects physical pressure at a safe point and permanently lowers capacity", async () => {

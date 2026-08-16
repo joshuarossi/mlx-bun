@@ -2367,6 +2367,37 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
       A/B **with MTP on** before defaulting (a lever that wins MTP-off but loses
       MTP-on is not a default); Atlas-informed warm-start is a separate
       experiment.
+      - [x] Scheduler foundation already present entering G6: stable whole-batch
+        expert union, bounded positioned-read/F_NOCACHE workers, per-layer LRU,
+        and resident/shared Metal submission before miss reads.
+      - [x] Persistent learning ledger (2026-08-15): target and MTP share one
+        Colibri-compatible `<model>/.coli_usage` table. Every selected top-k
+        route is counted before union deduplication; long-term counts load at
+        startup while heat/recency begin session-local, and generation safe
+        points publish via same-directory temp + atomic rename. Invalid derived
+        profiles warn and restart empty rather than blocking model load;
+        `usagePath: false` is the explicit diagnostic opt-out. Model-free gate:
+        `tests/expert-usage.test.ts` plus generation-finally coverage in
+        `tests/generate-wiring.test.ts`.
+      - [x] Budgeted startup auto-pin candidate (2026-08-15, opt-in pending
+        A/B): reproduce Colibri's 5k-history floor, confidence ramp through
+        200k selections, half-resident-tier share, and 0.5 GB minimum. Rank
+        deterministically by frequency then layer/expert, account Q8 MTP pins
+        at their larger slot cost, clamp behind the one-slot-per-layer floor,
+        reserve the exact slots in both plans, and preload the hot store before
+        the first forward. Explicit pins take precedence; `autoPin` remains off
+        until the required MTP-on comparison wins.
+      - [x] Safe-turn live LFRU candidate (2026-08-15, opt-in pending A/B):
+        exact uint32 recency score, 25%+4 hysteresis, session-heat halving after
+        each pass, and one global four-swap cap across target + MTP. Promotion
+        reuses an already-resident hot expert or loads it through the bounded
+        working bank, then swaps logical tier roles only after the load is
+        complete. Residency maps expose slot/tier, long-term count, heat,
+        recency, hits/misses, and repin totals. Persistent frequency never
+        decays; `liveRepin` remains off until its MTP-on comparison wins.
+      - [ ] Implement and isolate PILOT, coupling, and two-step predictors.
+      - [ ] Run the required MTP-on paired A/B matrix, then build/validate the
+        Atlas probe and visualization; default only measured winners.
 - [ ] **G7 — persistence, concurrency, and API parity:** (a) versioned
       compressed MLA/DSA/MTP `kv-store` save/restore with no full-K/V
       materialization; (b) batchable cache merge/extract, compressed-byte

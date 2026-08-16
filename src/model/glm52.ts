@@ -630,7 +630,7 @@ export class Glm52Model {
         weights.container,
         glmConfig,
       );
-      runtime = Glm52ExpertRuntime.open(modelDir, glmConfig, {
+      runtime = await Glm52ExpertRuntime.open(modelDir, glmConfig, {
         ...options,
         fixedBytes: weights.weightsBytes + options.reserveBytes,
       });
@@ -916,6 +916,7 @@ export class Glm52Model {
       return output;
     } finally {
       for (const layer of cache) layer.dispose();
+      this.expertRuntime?.flushUsage();
     }
   }
 
@@ -939,6 +940,7 @@ export class Glm52Model {
       return output;
     } finally {
       for (const layer of cache) layer.dispose();
+      await this.expertRuntime?.finishUsage();
     }
   }
 

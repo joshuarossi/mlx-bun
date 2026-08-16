@@ -227,6 +227,7 @@ implements Glm52ExpertExecutionBackend {
       throw new Error(
         `streamed GLM plan has ${args.plan.routes.length} rows; input has ${rowCount}`,
       );
+    this.manager.recordRoutes(args.layer, args.plan.routes);
 
     const flattened = ops.reshape(args.input, [rowCount, this.hiddenSize]);
     const sharedFlat = args.shared

@@ -1,7 +1,16 @@
 import { ExpertIOSlabStore } from "../expert-io";
 import {
+  ExpertUsageLedger,
+  planExpertAutoPins,
+  selectExpertLfruCandidates,
+  type ExpertAutoPinPlan,
+} from "../expert-usage";
+import { join } from "node:path";
+import {
   ExpertResidencyManager,
+  DEFAULT_EXPERT_WORKING_SLOTS,
   planExpertResidency,
+  type ExpertRepinEvent,
   type ExpertResidencyPlan,
 } from "../expert-residency";
 import type { Glm52Config } from "./glm52-config";
@@ -27,6 +36,13 @@ export interface Glm52ExpertRuntimeOptions {
    *  scratch slots plus one persistent LRU slot. */
   readonly mtpDraftTokens?: number;
   readonly enableMtp?: boolean;
+  /** Persistent Colibri-compatible route profile. Defaults to
+   * `<modelDir>/.coli_usage`; false disables persistence. */
+  readonly usagePath?: string | false;
+  /** Opt-in G6 candidate. Explicit `pinned` entries take precedence. */
+  readonly autoPin?: boolean;
+  /** Opt-in G6 candidate: adapt at generation safe points, max four swaps. */
+  readonly liveRepin?: boolean;
 }
 
 export interface Glm52MtpExpertRuntime {
@@ -47,6 +63,10 @@ export class Glm52ExpertRuntime {
   readonly sparseLayerIds: readonly number[];
   readonly mtp: Glm52MtpExpertRuntime | null;
   readonly mtpExecutor: Glm52StockStreamedExpertExecutor | null;
+  readonly usage: ExpertUsageLedger | null;
+  readonly autoPin: ExpertAutoPinPlan | null;
+  lastRepin: readonly ExpertRepinEvent[] = Object.freeze([]);
+  #liveRepin: boolean;
   #layouts = new Map<string, Glm52ExpertSlotLayout>();
   #mtpLayouts = new Map<string, Glm52ExpertSlotLayout>();
 
@@ -58,6 +78,9 @@ export class Glm52ExpertRuntime {
     slotBytes: number,
     sparseLayerIds: readonly number[],
     mtp: Glm52MtpExpertRuntime | null,
+    usage: ExpertUsageLedger | null,
+    autoPin: ExpertAutoPinPlan | null,
+    liveRepin: boolean,
   ) {
     this.plan = plan;
     this.store = store;
@@ -67,13 +90,16 @@ export class Glm52ExpertRuntime {
     this.sparseLayerIds = sparseLayerIds;
     this.mtp = mtp;
     this.mtpExecutor = mtp?.executor ?? null;
+    this.usage = usage;
+    this.autoPin = autoPin;
+    this.#liveRepin = liveRepin;
   }
 
-  static open(
+  static async open(
     modelDir: string,
     config: Glm52Config,
     options: Glm52ExpertRuntimeOptions,
-  ): Glm52ExpertRuntime {
+  ): Promise<Glm52ExpertRuntime> {
     const container = ColibriGlm52Container.open(modelDir);
     const sparseLayerIds = Array.from(
       { length: config.numHiddenLayers - config.firstKDenseReplace },
@@ -101,6 +127,56 @@ export class Glm52ExpertRuntime {
           config.numExpertsPerToken * mtpDraftTokens,
         )
       : 0;
+    const usagePath = options.usagePath === false
+      ? null
+      : options.usagePath ?? join(modelDir, ".coli_usage");
+    const usage = usagePath === null
+      ? null
+      : ExpertUsageLedger.open({
+          path: usagePath,
+          layers: mtpRepresentative
+            ? [...sparseLayerIds, mtpLayer]
+            : sparseLayerIds,
+          expertsPerLayer: config.numRoutedExperts,
+          onWarning: (message) => console.warn(message),
+        });
+    if ((options.autoPin || options.liveRepin) && !usage)
+      throw new Error("GLM expert learning policies require persistent usage");
+    const autoPin = options.autoPin && options.pinned === undefined && usage
+      ? planExpertAutoPins({
+          ledger: usage,
+          residentTierBudgetBytes: Math.max(
+            0,
+            options.budgetBytes - options.fixedBytes -
+            (options.workingSlots ?? DEFAULT_EXPERT_WORKING_SLOTS) *
+              representative.slotBytes -
+            mtpWorkingSlots * (mtpRepresentative?.slotBytes ?? 0),
+          ),
+          mandatoryResidentBytes:
+            sparseLayerIds.length * representative.slotBytes +
+            (mtpRepresentative?.slotBytes ?? 0),
+          slotBytes: (layer) => {
+            if (layer === mtpLayer && mtpRepresentative)
+              return mtpRepresentative.slotBytes;
+            if (sparseLayerIds.includes(layer)) return representative.slotBytes;
+            throw new RangeError(`auto-pin layer ${layer} is not managed`);
+          },
+        })
+      : null;
+    const autoPins = autoPin?.pins ?? [];
+    const pinned = options.pinned ?? autoPins
+      .filter((item) => item.layer !== mtpLayer)
+      .map(({ layer, expertId }) => ({ layer, expertId }));
+    const mtpPinned = autoPins
+      .filter((item) => item.layer === mtpLayer)
+      .map(({ layer, expertId }) => ({ layer, expertId }));
+    for (const item of pinned) {
+      if (!sparseLayerIds.includes(item.layer) || item.expertId < 0 ||
+          item.expertId >= config.numRoutedExperts ||
+          !Number.isSafeInteger(item.expertId)) {
+        throw new RangeError(`invalid pinned expert ${item.layer}:${item.expertId}`);
+      }
+    }
     const mtpPlan = mtpRepresentative
       ? planExpertResidency({
           // physicalFootprint() is process-wide, not slab-local. Give the
@@ -112,10 +188,10 @@ export class Glm52ExpertRuntime {
           slotBytes: mtpRepresentative.slotBytes,
           sparseLayers: 1,
           workingSlots: mtpWorkingSlots,
+          pinnedExperts: mtpPinned.length,
           maxSlotsPerLayer: 1,
         })
       : null;
-    const pinned = options.pinned ?? [];
     const plan = planExpertResidency({
       budgetBytes: options.budgetBytes,
       fixedBytes: options.fixedBytes + (mtpPlan?.slabBytes ?? 0),
@@ -186,6 +262,7 @@ export class Glm52ExpertRuntime {
         sparseLayerIds,
         backend: store,
         pinned,
+        usage: usage ?? undefined,
         locate: (layer, expertId) => {
           const value = layout(layer, expertId);
           return {
@@ -250,6 +327,8 @@ export class Glm52ExpertRuntime {
           plan: mtpPlan,
           sparseLayerIds: [mtpLayer],
           backend: mtpStore,
+          pinned: mtpPinned,
+          usage: usage ?? undefined,
           locate: (layer, expertId) => {
             const value = mtpLayout(layer, expertId);
             return {
@@ -297,7 +376,12 @@ export class Glm52ExpertRuntime {
         representative.slotBytes,
         Object.freeze(sparseLayerIds),
         mtp,
+        usage,
+        autoPin,
+        options.liveRepin === true,
       );
+      await manager.preloadPinned();
+      await mtp?.manager.preloadPinned();
       runtime.#layouts = layouts;
       runtime.#mtpLayouts = mtpLayouts;
       return runtime;
@@ -311,9 +395,67 @@ export class Glm52ExpertRuntime {
   }
 
   close(): void {
+    let flushError: unknown = null;
+    try {
+      this.flushUsage();
+    } catch (error) {
+      flushError = error;
+    }
     this.mtp?.executor.dispose();
     this.mtp?.store.close();
     this.executor.dispose();
     this.store.close();
+    if (flushError) throw flushError;
+  }
+
+  /** Generation safe-point: atomically publish target + MTP route counts. */
+  flushUsage(): void {
+    this.usage?.flush();
+  }
+
+  /** Turn boundary: adapt the shared target/MTP tier, decay heat, then save. */
+  async finishUsage(): Promise<void> {
+    if (!this.#liveRepin || !this.usage) {
+      this.lastRepin = Object.freeze([]);
+      this.flushUsage();
+      return;
+    }
+    const candidates = [
+      ...this.manager.repinCandidates().map((candidate) => ({
+        manager: this.manager,
+        candidate,
+      })),
+      ...(this.mtp?.manager.repinCandidates() ?? []).map((candidate) => ({
+        manager: this.mtp!.manager,
+        candidate,
+      })),
+    ];
+    const selected = new Set(selectExpertLfruCandidates(
+      candidates.map((item) => item.candidate),
+      4,
+    ));
+    const planned = candidates.filter((item) => selected.has(item.candidate));
+    const events: ExpertRepinEvent[] = [];
+    let repinError: unknown = null;
+    try {
+      for (const item of planned)
+        events.push(await item.manager.applyRepin(item.candidate));
+    } catch (error) {
+      repinError = error;
+    }
+    this.lastRepin = Object.freeze(events.slice());
+    this.usage.decayHeat();
+    try {
+      this.flushUsage();
+    } catch (flushError) {
+      if (repinError) {
+        throw new AggregateError(
+          [repinError, flushError],
+          "live repin and expert usage flush both failed",
+        );
+      }
+      throw flushError;
+    }
+    if (repinError) throw repinError;
   }
 }

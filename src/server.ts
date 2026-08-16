@@ -59,6 +59,7 @@ import {
   generate,
   type GenerateOptions,
   type TokenLogprobs,
+  withModelUsageFlush,
   withModelWiredLimit,
 } from "./generate";
 import { cloneKvCaches, SpillQueue } from "./kv-store";
@@ -1708,9 +1709,12 @@ export function createServer(
       const { specServeRun } = await import("./spec/serve-loop");
       return withModelWiredLimit(
         ctx.model,
-        () => specServeRun(
-          ctx.model, ctx.draft!.provider, ctx.draft!.numDraftTokens,
-          promptIds, options, onToken,
+        () => withModelUsageFlush(
+          ctx.model,
+          () => specServeRun(
+            ctx.model, ctx.draft!.provider, ctx.draft!.numDraftTokens,
+            promptIds, options, onToken,
+          ),
         ),
       );
     }

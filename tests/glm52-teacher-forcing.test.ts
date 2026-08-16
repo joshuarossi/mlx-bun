@@ -120,6 +120,7 @@ describe.skipIf(!haveArtifact)(
           budgetBytes: 1024 * 1024 * 1024,
           reserveBytes: 0,
           maxSlotsPerLayer: 1,
+          usagePath: false,
           libraryPath,
         });
         const cache = model.makeCache();
@@ -150,6 +151,7 @@ describe.skipIf(!haveArtifact)(
           budgetBytes: 1024 * 1024 * 1024,
           reserveBytes: 0,
           maxSlotsPerLayer: 1,
+          usagePath: false,
           libraryPath,
           decodeKernel: "metal",
         });

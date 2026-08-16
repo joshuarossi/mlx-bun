@@ -38,7 +38,7 @@ skips and zero failures. Phase 21 is explicitly unpaused.
 ## Active: native Colibri/GLM-5.2 port (2026-08-15)
 
 The G1–G3 foundation is landed on `main`. Phase 21 **G0–G5 are complete; G6 is
-next**. The landed foundation has a strict versioned synthetic Colibri
+active**. The landed foundation has a strict versioned synthetic Colibri
 gate/up/down artifact, fixed 16 KiB native slabs, passive bounded `pread`
 workers, async Bun-side completion polling, generation-bound CPU/GPU leases,
 lazy-graph evaluation plus stream synchronization before reuse, deterministic
@@ -250,7 +250,32 @@ now applies the full streamed process plan to MLX's scoped wired limit, and
 native expert slabs wire slots before reads then unlock before discard.
 Stable machine-local evidence is under `runs/colibri-g5/`.
 
-**Next:** begin G6 scheduler/Atlas work against this decode-only MTP baseline.
+G6 is active. Its first production slice adds a shared target/MTP
+Colibri-compatible `.coli_usage` ledger: every top-k route is counted before
+batch-union deduplication, startup history is kept separate from live
+heat/recency, and generation safe points atomically replace the profile. A
+damaged derived profile warns and restarts empty rather than preventing model
+load; `usagePath: false` is the diagnostic opt-out. The scheduler inventory
+also confirms that stable batch-union, bounded positioned-read/F_NOCACHE
+workers, per-layer LRU, and resident-first Metal submission are already
+implemented.
+
+The second slice consumes that history through an opt-in startup auto-pin
+candidate. It matches Colibri's 5k/200k confidence ramp, half-tier share, and
+0.5 GB minimum, but adds deterministic ties and cost-aware Q4/Q8 budgeting.
+Pins are clamped behind the one-slot-per-layer floor, represented in the exact
+main/MTP slab plans, and loaded before the first forward. It remains off by
+default until the required MTP-on comparison wins.
+
+The third slice adds opt-in safe-turn live LFRU: exact uint32 recency scoring,
+25%+4 hysteresis, session-heat decay, and one four-swap cap shared across main
+and MTP. Completed loads change logical tier roles without copying a 19/38 MB
+expert, while live maps now expose tier, persistent count, heat, recency,
+hits/misses, and repin totals. Controlled probes explicitly disable usage
+learning so benchmark traffic cannot contaminate a real model profile.
+
+**Next:** build the paired MTP-on no-pin/auto-pin/live-LFRU harness and collect
+hit/I/O/latency/tok-s evidence before making any default-policy decision.
 The optional G4R prompt-seeding spike remains explicitly deferred.
 
 ## Where we are (2026-07-10 — v0.0.11 released)
