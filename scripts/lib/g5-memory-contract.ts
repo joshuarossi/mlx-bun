@@ -14,11 +14,14 @@ export const G5_MAX_PHYSICAL_FOOTPRINT_BYTES = 25 * 1024 ** 3;
 export const G5_MAX_COMPRESSOR_GROWTH_BYTES = 256 * 1024 ** 2;
 export const G5_FLAT_MEMORY_TOLERANCE_BYTES = 256 * 1024 ** 2;
 
+export type G5MeasurementMode = "strict" | "observe";
+
 export interface G5EnvironmentSample {
   readonly vm: VmStatCounters;
   readonly swapUsage: SwapUsage;
   readonly processRssBytes: number;
   readonly physicalFootprintBytes: number;
+  readonly processCompressedBytes: number;
   readonly mlxActiveBytes: number;
   readonly mlxCacheBytes: number;
   readonly mlxPeakBytes: number;
@@ -39,6 +42,7 @@ extends G5CheckpointContext, G5EnvironmentSample {
   readonly elapsedMs: number;
   readonly swapoutDeltaBytes: number;
   readonly compressorDeltaBytes: number;
+  readonly processCompressedDeltaBytes: number;
   readonly compressionCountDelta: number;
   readonly maxPhysicalFootprintBytes: number;
   readonly maxCompressorGrowthBytes: number;
@@ -83,6 +87,7 @@ export class G5MemoryMonitor {
   #tripped: G5MemoryCheckpoint | null = null;
   #maxObservedPhysicalFootprintBytes = 0;
   #maxObservedCompressorDeltaBytes = 0;
+  #maxObservedProcessCompressedDeltaBytes = 0;
 
   constructor(options: G5MemoryMonitorOptions) {
     for (const [label, value] of [
@@ -116,6 +121,10 @@ export class G5MemoryMonitor {
     return this.#maxObservedCompressorDeltaBytes;
   }
 
+  get maxObservedProcessCompressedDeltaBytes(): number {
+    return this.#maxObservedProcessCompressedDeltaBytes;
+  }
+
   record(
     context: G5CheckpointContext,
     enforce = false,
@@ -134,6 +143,8 @@ export class G5MemoryMonitor {
         sample.vm.compressorPages -
         this.baseline.vm.compressorPages
       ) * sample.vm.pageSizeBytes;
+    const processCompressedDeltaBytes =
+      sample.processCompressedBytes - this.baseline.processCompressedBytes;
     const compressionCountDelta =
       sample.vm.compressions - this.baseline.vm.compressions;
     this.#maxObservedPhysicalFootprintBytes = Math.max(
@@ -143,6 +154,10 @@ export class G5MemoryMonitor {
     this.#maxObservedCompressorDeltaBytes = Math.max(
       this.#maxObservedCompressorDeltaBytes,
       compressorDeltaBytes,
+    );
+    this.#maxObservedProcessCompressedDeltaBytes = Math.max(
+      this.#maxObservedProcessCompressedDeltaBytes,
+      processCompressedDeltaBytes,
     );
     const violations: string[] = [];
     if (sample.physicalFootprintBytes > this.maxPhysicalFootprintBytes) {
@@ -166,6 +181,7 @@ export class G5MemoryMonitor {
       elapsedMs: this.#now() - this.#startedAt,
       swapoutDeltaBytes,
       compressorDeltaBytes,
+      processCompressedDeltaBytes,
       compressionCountDelta,
       maxPhysicalFootprintBytes: this.maxPhysicalFootprintBytes,
       maxCompressorGrowthBytes: this.maxCompressorGrowthBytes,
@@ -197,6 +213,7 @@ export interface G5LaneReport {
   readonly schemaVersion: 1;
   readonly gate: "G5 32 GB memory contract";
   readonly mode: "on" | "off";
+  readonly measurementMode?: G5MeasurementMode;
   readonly result: "pass" | "error";
   readonly contract: {
     readonly processLimitBytes: number;
@@ -207,11 +224,29 @@ export interface G5LaneReport {
   readonly memory: {
     readonly maxPhysicalFootprintBytes: number;
     readonly maxCompressorDeltaBytes: number;
+    readonly maxProcessCompressedDeltaBytes?: number;
     readonly swapoutDeltaBytes: number;
+    readonly baseline?: G5EnvironmentSample;
+    readonly final?: G5MemoryCheckpoint;
   };
 }
 
+export interface G5LaneMemorySummary {
+  readonly baselinePhysicalFootprintBytes: number | null;
+  readonly coldFinalPhysicalFootprintBytes: number;
+  readonly warmFinalPhysicalFootprintBytes: number;
+  readonly finalPhysicalFootprintBytes: number | null;
+  readonly finalProcessRssBytes: number | null;
+  readonly finalProcessCompressedBytes: number | null;
+  readonly maxPhysicalFootprintBytes: number;
+  readonly maxSystemCompressorDeltaBytes: number;
+  readonly maxProcessCompressedDeltaBytes: number;
+  readonly swapoutDeltaBytes: number;
+}
+
 export interface G5PairSummary {
+  readonly measurementMode: G5MeasurementMode;
+  readonly strictContractSatisfied: boolean;
   readonly tokenCount: number;
   readonly mtpOnColdTps: number;
   readonly mtpOnWarmTps: number;
@@ -225,6 +260,57 @@ export interface G5PairSummary {
   readonly mtpOffWarmVsCold: number;
   readonly warmMtpSpeedup: number;
   readonly maxPhysicalFootprintBytes: number;
+  readonly maxCompressorDeltaBytes: number;
+  readonly maxProcessCompressedDeltaBytes: number;
+  readonly maxSwapoutDeltaBytes: number;
+  readonly mtpOnColdToWarmFootprintDeltaBytes: number;
+  readonly mtpOffColdToWarmFootprintDeltaBytes: number;
+  readonly beforeAfter: {
+    readonly on: G5LaneMemorySummary;
+    readonly off: G5LaneMemorySummary;
+  };
+}
+
+function measurementMode(report: G5LaneReport): G5MeasurementMode {
+  return report.measurementMode ?? "strict";
+}
+
+function strictContractSatisfied(
+  report: G5LaneReport,
+  cold: G5TurnReport,
+  warm: G5TurnReport,
+): boolean {
+  return report.memory.maxPhysicalFootprintBytes <=
+    report.contract.processLimitBytes &&
+    report.memory.swapoutDeltaBytes === 0 &&
+    report.memory.maxCompressorDeltaBytes <=
+    report.contract.maxCompressorGrowthBytes &&
+    warm.finalPhysicalFootprintBytes <=
+    cold.finalPhysicalFootprintBytes +
+    report.contract.flatMemoryToleranceBytes;
+}
+
+function laneMemorySummary(
+  report: G5LaneReport,
+  cold: G5TurnReport,
+  warm: G5TurnReport,
+): G5LaneMemorySummary {
+  return {
+    baselinePhysicalFootprintBytes:
+      report.memory.baseline?.physicalFootprintBytes ?? null,
+    coldFinalPhysicalFootprintBytes: cold.finalPhysicalFootprintBytes,
+    warmFinalPhysicalFootprintBytes: warm.finalPhysicalFootprintBytes,
+    finalPhysicalFootprintBytes:
+      report.memory.final?.physicalFootprintBytes ?? null,
+    finalProcessRssBytes: report.memory.final?.processRssBytes ?? null,
+    finalProcessCompressedBytes:
+      report.memory.final?.processCompressedBytes ?? null,
+    maxPhysicalFootprintBytes: report.memory.maxPhysicalFootprintBytes,
+    maxSystemCompressorDeltaBytes: report.memory.maxCompressorDeltaBytes,
+    maxProcessCompressedDeltaBytes:
+      report.memory.maxProcessCompressedDeltaBytes ?? 0,
+    swapoutDeltaBytes: report.memory.swapoutDeltaBytes,
+  };
 }
 
 function sameTokens(
@@ -295,26 +381,28 @@ function validateLane(
     `G5 ${mode} direct-oracle prefix`,
   );
   sameTokens(warm.tokenIds, cold.tokenIds, `G5 ${mode} cold/warm`);
-  if (
-    report.memory.maxPhysicalFootprintBytes >
-    report.contract.processLimitBytes
-  ) {
-    throw new Error(`G5 ${mode} exceeded the process footprint contract`);
-  }
-  if (report.memory.swapoutDeltaBytes !== 0)
-    throw new Error(`G5 ${mode} observed swapout growth`);
-  if (
-    report.memory.maxCompressorDeltaBytes >
-    report.contract.maxCompressorGrowthBytes
-  ) {
-    throw new Error(`G5 ${mode} exceeded the compressor-growth contract`);
-  }
-  if (
-    warm.finalPhysicalFootprintBytes >
-    cold.finalPhysicalFootprintBytes +
-    report.contract.flatMemoryToleranceBytes
-  ) {
-    throw new Error(`G5 ${mode} cold-to-warm footprint is not flat`);
+  if (measurementMode(report) === "strict") {
+    if (
+      report.memory.maxPhysicalFootprintBytes >
+      report.contract.processLimitBytes
+    ) {
+      throw new Error(`G5 ${mode} exceeded the process footprint contract`);
+    }
+    if (report.memory.swapoutDeltaBytes !== 0)
+      throw new Error(`G5 ${mode} observed swapout growth`);
+    if (
+      report.memory.maxCompressorDeltaBytes >
+      report.contract.maxCompressorGrowthBytes
+    ) {
+      throw new Error(`G5 ${mode} exceeded the compressor-growth contract`);
+    }
+    if (
+      warm.finalPhysicalFootprintBytes >
+      cold.finalPhysicalFootprintBytes +
+      report.contract.flatMemoryToleranceBytes
+    ) {
+      throw new Error(`G5 ${mode} cold-to-warm footprint is not flat`);
+    }
   }
   return [cold, warm];
 }
@@ -326,8 +414,17 @@ export function evaluateG5Pair(
 ): G5PairSummary {
   const [onCold, onWarm] = validateLane(on, "on", expectedPrefix);
   const [offCold, offWarm] = validateLane(off, "off", expectedPrefix);
+  const onMeasurementMode = measurementMode(on);
+  const offMeasurementMode = measurementMode(off);
+  if (onMeasurementMode !== offMeasurementMode) {
+    throw new Error("G5 on/off reports used different measurement modes");
+  }
   sameTokens(onCold.tokenIds, offCold.tokenIds, "G5 MTP on/off");
   return {
+    measurementMode: onMeasurementMode,
+    strictContractSatisfied:
+      strictContractSatisfied(on, onCold, onWarm) &&
+      strictContractSatisfied(off, offCold, offWarm),
     tokenCount: onCold.tokenIds.length,
     mtpOnColdTps: onCold.timing.decodeTps,
     mtpOnWarmTps: onWarm.timing.decodeTps,
@@ -350,5 +447,27 @@ export function evaluateG5Pair(
       on.memory.maxPhysicalFootprintBytes,
       off.memory.maxPhysicalFootprintBytes,
     ),
+    maxCompressorDeltaBytes: Math.max(
+      on.memory.maxCompressorDeltaBytes,
+      off.memory.maxCompressorDeltaBytes,
+    ),
+    maxProcessCompressedDeltaBytes: Math.max(
+      on.memory.maxProcessCompressedDeltaBytes ?? 0,
+      off.memory.maxProcessCompressedDeltaBytes ?? 0,
+    ),
+    maxSwapoutDeltaBytes: Math.max(
+      on.memory.swapoutDeltaBytes,
+      off.memory.swapoutDeltaBytes,
+    ),
+    mtpOnColdToWarmFootprintDeltaBytes:
+      onWarm.finalPhysicalFootprintBytes -
+      onCold.finalPhysicalFootprintBytes,
+    mtpOffColdToWarmFootprintDeltaBytes:
+      offWarm.finalPhysicalFootprintBytes -
+      offCold.finalPhysicalFootprintBytes,
+    beforeAfter: {
+      on: laneMemorySummary(on, onCold, onWarm),
+      off: laneMemorySummary(off, offCold, offWarm),
+    },
   };
 }

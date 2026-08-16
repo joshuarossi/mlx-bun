@@ -35,10 +35,10 @@ pinned-oracle blobs are bit-exact, and their manifest now binds provenance and
 SHA-256 values. The final two-shard gate passed 1,857 tests with 71 intentional
 skips and zero failures. Phase 21 is explicitly unpaused.
 
-## Active: native Colibri/GLM-5.2 port (2026-07-30)
+## Active: native Colibri/GLM-5.2 port (2026-08-15)
 
-The G1–G3 foundation is landed on `main`. Phase 21 **G0–G4 are complete; G5's
-cleared-machine 32 GB memory contract is next**. The landed foundation has a strict versioned synthetic Colibri
+The G1–G3 foundation is landed on `main`. Phase 21 **G0–G5 are complete; G6 is
+next**. The landed foundation has a strict versioned synthetic Colibri
 gate/up/down artifact, fixed 16 KiB native slabs, passive bounded `pread`
 workers, async Bun-side completion polling, generation-bound CPU/GPU leases,
 lazy-graph evaluation plus stream synchronization before reuse, deterministic
@@ -219,16 +219,8 @@ so the 14,679,224,320-byte completed footprint is not a G5 memory claim.
 Stable evidence:
 `fixtures/colibri-glm52/g4-native-mtp-e2e.json`.
 
-**Next:** G4 is merged with its direct-Colibri decode-only MTP cache as the
-correctness-closed baseline. Josh explicitly deferred the optional G4R
-prompt-seeding research spike on 2026-07-30. G5 is active now: expose and
-enforce the complete 32 GB resource equation before loading weights, then run
-the decode-only default through paired fresh-process MTP-on/off cells with two
-128-token turns per process. The cleared-machine gate is <=25 GB measured
-physical footprint, flat cold-to-warm memory, no compression spiral, and no
-swapout.
-
-The G5 implementation and model-free gates are now complete on
+The G5 implementation, model-free gates, and full-model measurement are now
+complete on
 `codex/colibri-g5-memory-contract`. The pinned artifact's header-only MTP-on
 plan is 21,111,440,128 bytes, leaving 5,732,105,472 bytes below the 25 GiB
 process ceiling plus an explicit 7 GiB OS reserve. The planner total is
@@ -236,10 +228,30 @@ byte-for-byte the same equation handed to runtime expert residency; impossible
 starts fail before resident weights are mapped. The manual lane harness runs
 cold then warm 128-token turns, samples physical footprint/MLX/compressor/swap,
 and the paired evaluator requires exact first-64 direct-oracle and complete
-128-token cold/warm/on/off identity. **Next action:** run the two cleared-machine
-lane commands documented under G5 in
-[docs/design/colibri-glm52-port.md](docs/design/colibri-glm52-port.md), then
-evaluate and curate the measured result.
+128-token cold/warm/on/off identity.
+
+The 2026-08-15 fresh-process observational pair completed all four turns with
+exact identity. MTP-on measured 13.791 GiB peak footprint, 13.666 -> 13.688
+GiB cold-to-warm final footprint (+23.1 MiB), and 0.146 -> 0.149 tok/s
+end-to-end. MTP-off measured 12.644 GiB peak, 12.564 -> 12.583 GiB (+19.2
+MiB), and 0.127 -> 0.114 tok/s. Warm MTP-on was 1.306x MTP-off. MTP accepted
+72/166 drafts per turn, emitted 2.286 tokens/target forward, and saved 71
+target forwards. Both peaks are far below the 25 GiB process ceiling.
+
+Josh changed this execution from hard compressor enforcement to an explicit
+before/after observation: strict mode remains the default and its thresholds
+are still reported, while `--memory-mode observe` does not abort generation.
+Accordingly the paired report is truthfully marked `observed` and
+`strictContractSatisfied: false`: system compressor growth peaked at 4.101
+GiB, task-compressed memory at 1.806 GiB, and the MTP-off lane recorded 6.8
+MiB of swapout (MTP-on zero). These were bounded rather than a footprint
+spiral; warm final footprint stayed nearly flat. Production/spec generation
+now applies the full streamed process plan to MLX's scoped wired limit, and
+native expert slabs wire slots before reads then unlock before discard.
+Stable machine-local evidence is under `runs/colibri-g5/`.
+
+**Next:** begin G6 scheduler/Atlas work against this decode-only MTP baseline.
+The optional G4R prompt-seeding spike remains explicitly deferred.
 
 ## Where we are (2026-07-10 — v0.0.11 released)
 

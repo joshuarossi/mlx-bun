@@ -22,10 +22,15 @@ typedef struct {
   uint64_t destination[EXPERT_IO_MAX_SEGMENTS];
   uint64_t length[EXPERT_IO_MAX_SEGMENTS];
 } io_job;
-typedef struct { void *data; uint64_t generation, capacity, length; int state, error, cancelled, gpu_lease; } io_slot;
+typedef struct {
+  void *data;
+  uint64_t generation, capacity, length;
+  int state, error, cancelled, gpu_lease, wired;
+} io_slot;
 
 struct expert_io_pool {
   int stopping;
+  int wire_slots;
   uint32_t file_count, slot_count, worker_count, qcap, qhead, qtail, qlen;
   int mu_init, work_init, changed_init;
   int *fds;
@@ -198,6 +203,12 @@ int mlx_bun_expert_io_submitv(expert_io_pool *p, uint32_t slot_id, uint64_t gene
   if (extent > slot->capacity || slot->state == SLOT_LOADING || slot->state == SLOT_LEASED) error = EBUSY;
   else if (p->qlen == p->qcap) error = EAGAIN;
   else {
+    if (p->wire_slots && !slot->wired) {
+      if (mlock(slot->data, (size_t)slot->capacity) != 0) error = errno;
+      else slot->wired = 1;
+    }
+  }
+  if (!error) {
     slot->generation = generation; slot->length = 0; slot->error = 0; slot->cancelled = 0; slot->state = SLOT_LOADING;
     io_job *job = &p->queue[p->qtail];
     memset(job, 0, sizeof(*job));
@@ -212,6 +223,20 @@ int mlx_bun_expert_io_submitv(expert_io_pool *p, uint32_t slot_id, uint64_t gene
     pthread_cond_signal(&p->work);
   }
   pthread_mutex_unlock(&p->mu); return error;
+}
+
+int mlx_bun_expert_io_set_wiring(expert_io_pool *p, int enabled) {
+  if (!p) return EINVAL;
+  pthread_mutex_lock(&p->mu);
+  int error = 0;
+  if (p->qlen != 0) error = EBUSY;
+  for (uint32_t i = 0; i < p->slot_count && !error; i++) {
+    if (p->slots[i].state == SLOT_LOADING ||
+        p->slots[i].state == SLOT_LEASED) error = EBUSY;
+  }
+  if (!error) p->wire_slots = enabled != 0;
+  pthread_mutex_unlock(&p->mu);
+  return error;
 }
 
 int mlx_bun_expert_io_submit(expert_io_pool *p, uint32_t slot_id, uint64_t generation,
@@ -270,6 +295,10 @@ int mlx_bun_expert_io_discard(expert_io_pool *p, uint32_t slot_id, uint64_t gene
   pthread_mutex_lock(&p->mu); io_slot *s = &p->slots[slot_id];
   int error = s->generation != generation ? ESTALE :
               s->state != SLOT_READY ? EBUSY : 0;
+  if (!error && s->wired) {
+    if (munlock(s->data, (size_t)s->capacity) != 0) error = errno;
+    else s->wired = 0;
+  }
   if (!error && madvise(s->data, (size_t)s->capacity, MADV_DONTNEED) != 0)
     error = errno;
   if (!error) {
@@ -300,6 +329,18 @@ uint64_t mlx_bun_process_phys_footprint(void) {
 #endif
 }
 
+uint64_t mlx_bun_process_compressed(void) {
+#ifdef __APPLE__
+  task_vm_info_data_t info;
+  mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+  kern_return_t status = task_info(
+    mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count
+  );
+  if (status == KERN_SUCCESS) return (uint64_t)info.compressed;
+#endif
+  return 0;
+}
+
 void *mlx_bun_expert_io_ptr(expert_io_pool *p, uint32_t slot_id, uint64_t generation) {
   if (!p || slot_id >= p->slot_count) return NULL;
   pthread_mutex_lock(&p->mu); io_slot *s = &p->slots[slot_id];
@@ -322,7 +363,11 @@ int mlx_bun_expert_io_close(expert_io_pool *p) {
   pthread_mutex_unlock(&p->mu);
   pthread_mutex_lock(&p->mu); p->stopping = 1; pthread_cond_broadcast(&p->work); pthread_mutex_unlock(&p->mu);
   for (uint32_t i = 0; i < p->worker_count; i++) pthread_join(p->workers[i], NULL);
-  for (uint32_t i = 0; i < p->slot_count; i++) free(p->slots[i].data);
+  for (uint32_t i = 0; i < p->slot_count; i++) {
+    if (p->slots[i].wired)
+      (void)munlock(p->slots[i].data, (size_t)p->slots[i].capacity);
+    free(p->slots[i].data);
+  }
   pthread_cond_destroy(&p->changed); pthread_cond_destroy(&p->work); pthread_mutex_destroy(&p->mu);
   for (uint32_t i = 0; i < p->file_count; i++) close(p->fds[i]);
   free(p->fds); free(p->workers); free(p->queue); free(p->slots); free(p); return 0;

@@ -55,7 +55,12 @@ import { DiffusionGemmaModel } from "./model/diffusion-gemma";
 import { spliceImageTokens } from "./vision/diffusion-vision";
 import { createModel, type RuntimeModel } from "./model/factory";
 import { isMiniCPM5Config } from "./model/support";
-import { generate, type GenerateOptions, type TokenLogprobs } from "./generate";
+import {
+  generate,
+  type GenerateOptions,
+  type TokenLogprobs,
+  withModelWiredLimit,
+} from "./generate";
 import { cloneKvCaches, SpillQueue } from "./kv-store";
 import { TURBOQUANT_HEAD_DIMS } from "./mlx/turboquant-tables";
 import {
@@ -1701,9 +1706,12 @@ export function createServer(
       !options.pagedKv
     ) {
       const { specServeRun } = await import("./spec/serve-loop");
-      return specServeRun(
-        ctx.model, ctx.draft.provider, ctx.draft.numDraftTokens,
-        promptIds, options, onToken,
+      return withModelWiredLimit(
+        ctx.model,
+        () => specServeRun(
+          ctx.model, ctx.draft!.provider, ctx.draft!.numDraftTokens,
+          promptIds, options, onToken,
+        ),
       );
     }
     // Cache entries are adapter-specific: KV computed under one adapter

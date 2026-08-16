@@ -41,6 +41,7 @@ Decompressions: 10.
     ),
     processRssBytes: 1,
     physicalFootprintBytes,
+    processCompressedBytes: 0,
     mlxActiveBytes: 2,
     mlxCacheBytes: 3,
     mlxPeakBytes: 4,
@@ -129,9 +130,39 @@ describe("G5 pair evaluator", () => {
       [0, 1, 2, 3],
     );
     expect(summary).toMatchObject({
+      measurementMode: "strict",
+      strictContractSatisfied: true,
       tokenCount: 128,
       warmMtpSpeedup: 1.25,
       maxPhysicalFootprintBytes: 20_100,
+    });
+  });
+
+  it("pairs observational lanes while preserving strict-contract status", () => {
+    const observed = (mode: "on" | "off"): G5LaneReport => {
+      const report = lane(mode);
+      return {
+        ...report,
+        measurementMode: "observe",
+        memory: {
+          ...report.memory,
+          maxCompressorDeltaBytes:
+            G5_MAX_COMPRESSOR_GROWTH_BYTES + 1,
+          maxProcessCompressedDeltaBytes: 42,
+          swapoutDeltaBytes: 16_384,
+        },
+      };
+    };
+    const summary = evaluateG5Pair(
+      observed("on"),
+      observed("off"),
+      [0, 1, 2, 3],
+    );
+    expect(summary).toMatchObject({
+      measurementMode: "observe",
+      strictContractSatisfied: false,
+      maxProcessCompressedDeltaBytes: 42,
+      maxSwapoutDeltaBytes: 16_384,
     });
   });
 

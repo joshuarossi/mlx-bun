@@ -1076,6 +1076,11 @@ token boundary; compressor occupancy may grow by at most a documented 256 MiB
 to tolerate unrelated system activity, and warm final footprint may exceed
 cold by at most 256 MiB. The first 64 tokens remain pinned to direct Colibri;
 the complete 128-token cold/warm and MTP-on/off outputs must be identical.
+Strict enforcement is the default. For a diagnostic before/after run,
+`--memory-mode observe` records the same violations and completes generation
+instead of aborting; its paired result is labeled `observed`, with a separate
+`strictContractSatisfied` field. Observation mode never silently changes the
+fixed thresholds.
 
 Run from a cleared 32 GB M1 Max:
 
@@ -1088,6 +1093,32 @@ bun scripts/probe-colibri-glm52-g5-memory.ts --mode on --model "$MODEL" --librar
 bun scripts/probe-colibri-glm52-g5-memory.ts --mode off --model "$MODEL" --library "$LIBRARY" --output runs/colibri-g5/mtp-off.json --trace runs/colibri-g5/mtp-off.memory.jsonl
 bun scripts/check-colibri-glm52-g5-memory.ts --on runs/colibri-g5/mtp-on.json --off runs/colibri-g5/mtp-off.json --output runs/colibri-g5/summary.json
 ```
+
+For the explicit observational run requested on 2026-08-15, add
+`--memory-mode observe` to both probe commands. The fresh-process pair
+completed all four 128-token turns with exact direct-prefix, cold/warm, and
+MTP-on/off identity:
+
+| Lane | Baseline footprint | Cold final | Warm final | Peak | Cold -> warm | Cold / warm e2e |
+|---|---:|---:|---:|---:|---:|---:|
+| MTP on | 0.078 GiB | 13.666 GiB | 13.688 GiB | 13.791 GiB | +23.1 MiB | 0.146 / 0.149 tok/s |
+| MTP off | 0.078 GiB | 12.564 GiB | 12.583 GiB | 12.644 GiB | +19.2 MiB | 0.127 / 0.114 tok/s |
+
+Warm MTP-on was 1.306x MTP-off. Each MTP-on turn accepted 72/166 drafts,
+emitted 2.286 tokens per target forward, and saved 71 target forwards. Both
+peaks retained more than 11 GiB of headroom below the 25 GiB ceiling, but they
+remain below direct G0 warm throughput (~0.27 tok/s on and ~0.34 off).
+
+The pair is intentionally not called a strict pass. Whole-system compressor
+growth peaked at 4.101 GiB, task-compressed growth at 1.806 GiB, and the
+MTP-off lane observed 6.8 MiB of swapout (MTP-on zero), so the checker reports
+`strictContractSatisfied: false`. These changes were bounded: the task ended
+near its observed compression maximum and final footprint changed by only
+23.1/19.2 MiB across cold to warm rather than spiraling. The run also exposed
+two wiring gaps now closed: speculative/server and manual-probe paths hold a
+scoped MLX wired limit based on the complete streamed process plan, and native
+expert slots are wired before their read begins then unlocked before discard.
+Machine-local reports and 15-second traces are under `runs/colibri-g5/`.
 
 **Exit:** startup and a 128-token run with MTP on remain <=25 GB measured
 footprint (small documented tolerance only), with flat memory and no

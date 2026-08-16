@@ -212,6 +212,33 @@ describe("native expert I/O slabs", () => {
     }
   });
 
+  it("wires loaded slots and unlocks them before discard", async () => {
+    const store = new ExpertIOSlabStore(file, {
+      slots: 1,
+      slotBytes: 16 * 1024,
+      workers: 1,
+      wireSlots: true,
+      libraryPath: dylib,
+    });
+    try {
+      store.submit(0, 1n, 0, 16 * 1024);
+      await store.wait(0, 1n);
+      store.lease(0, 1n);
+      const address = store.pointer(0, 1n);
+      store.releaseCpu(0, 1n);
+      store.discard(0, 1n);
+
+      store.submit(0, 2n, 4096, 4096);
+      await store.wait(0, 2n);
+      store.lease(0, 2n);
+      expect(store.pointer(0, 2n)).toBe(address);
+      expect(store.view(0, 2n, 4096)).toEqual(data.subarray(4096, 8192));
+      store.releaseCpu(0, 2n);
+    } finally {
+      store.close();
+    }
+  });
+
   it("feeds one registered slab to stock MLX and custom Metal without staging", async () => {
     const store = new ExpertIOSlabStore(floatFile, { slots: 1, slotBytes: floatData.byteLength, workers: 1, libraryPath: dylib });
     const kernel = new MetalKernel({

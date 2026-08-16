@@ -40,7 +40,9 @@ const summary = evaluateG5Pair(
 const result = {
   schemaVersion: 1,
   gate: "G5 paired 32 GB memory contract",
-  result: "pass",
+  result: summary.measurementMode === "strict"
+    ? "pass"
+    : "observed",
   onReport: resolve(onPath),
   offReport: resolve(offPath),
   ...summary,

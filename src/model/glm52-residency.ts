@@ -161,6 +161,10 @@ export class Glm52ExpertRuntime {
       slotBytes: representative.slotBytes,
       workers: options.workers,
       noCache: options.noCache,
+      // These slots are the bounded resident/working expert cache, not an
+      // expendable file cache. Letting macOS compress them turns every warm
+      // forward into decompression churn and invalidates the G5 equation.
+      wireSlots: true,
       libraryPath: options.libraryPath,
     });
     let mtpStore: ExpertIOSlabStore | null = null;
@@ -173,6 +177,7 @@ export class Glm52ExpertRuntime {
           slotBytes: mtpRepresentative.slotBytes,
           workers: options.workers,
           noCache: options.noCache,
+          wireSlots: true,
           libraryPath: options.libraryPath,
         });
       }

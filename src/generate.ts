@@ -349,6 +349,31 @@ export class Generation implements AsyncIterable<GeneratedToken> {
 const WIRE_THRESHOLD = 0.75;
 let wiredScopeDepth = 0;
 let wiredOldLimit = 0;
+
+type WiredModelMemory = {
+  readonly weightsBytes: number;
+  readonly expertRuntime?: {
+    readonly plan: { readonly plannedBytes: number };
+  } | null;
+};
+
+/** Bytes whose MLX graph must stay resident while a model executes. */
+export function wiredWorkingSetBytes(model: WiredModelMemory): number {
+  const planned = model.expertRuntime?.plan.plannedBytes;
+  return typeof planned === "number" && Number.isFinite(planned) && planned > 0
+    ? Math.max(model.weightsBytes, planned)
+    : model.weightsBytes;
+}
+
+export function modelNeedsWiredLimit(
+  model: WiredModelMemory,
+  recommendedBytes = maxRecommendedWorkingSetSize(),
+  force = process.env.MLX_BUN_FORCE_WIRE === "1",
+): boolean {
+  return force ||
+    wiredWorkingSetBytes(model) > WIRE_THRESHOLD * recommendedBytes;
+}
+
 function enterWiredScope(): void {
   if (wiredScopeDepth++ === 0)
     wiredOldLimit = setWiredLimit(maxRecommendedWorkingSetSize());
@@ -373,9 +398,7 @@ export function generate(
       ? generateDiffusionInner(model, promptTokens, options)
       : generateInner(model, promptTokens, options);
   if (options.adapters?.length) inner = adapterScoped(model, options.adapters, inner);
-  const wire =
-    process.env.MLX_BUN_FORCE_WIRE === "1" ||
-    model.weightsBytes > WIRE_THRESHOLD * maxRecommendedWorkingSetSize();
+  const wire = modelNeedsWiredLimit(model);
   return new Generation(wire ? wiredScoped(inner) : inner);
 }
 
@@ -443,6 +466,20 @@ async function* wiredScoped(
   enterWiredScope();
   try {
     return yield* inner;
+  } finally {
+    exitWiredScope();
+  }
+}
+
+/** Apply generate()'s scoped wiring policy to non-generator execution paths. */
+export async function withModelWiredLimit<T>(
+  model: WiredModelMemory,
+  run: () => Promise<T>,
+): Promise<T> {
+  if (!modelNeedsWiredLimit(model)) return run();
+  enterWiredScope();
+  try {
+    return await run();
   } finally {
     exitWiredScope();
   }

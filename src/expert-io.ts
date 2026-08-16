@@ -36,6 +36,8 @@ export interface ExpertIOOptions {
   workers?: number;
   alignment?: number;
   noCache?: boolean;
+  /** Keep loaded anonymous slot pages out of the macOS compressor. */
+  wireSlots?: boolean;
   libraryPath?: string;
 }
 
@@ -63,6 +65,7 @@ export class ExpertIOSlabStore {
   #lib: any;
   #handle: bigint;
   #state: ExpertIOState = "open";
+  readonly #wireSlots: boolean;
 
   constructor(path: string | readonly string[], options: ExpertIOOptions) {
     if (!Number.isSafeInteger(options.slots) || options.slots <= 0) throw new Error("slots must be positive");
@@ -72,6 +75,7 @@ export class ExpertIOSlabStore {
       throw new Error("expert slab store requires at least one file");
     this.files = Object.freeze(paths);
     this.slots = options.slots; this.slotBytes = options.slotBytes;
+    this.#wireSlots = options.wireSlots === true;
     this.#lib = dlopen(resolveLibrary(options.libraryPath), {
       mlx_bun_expert_io_open: { args: [cstring, u32, u64, u64, u32, i32], returns: u64 },
       mlx_bun_expert_io_open_many: {
@@ -89,7 +93,9 @@ export class ExpertIOSlabStore {
       mlx_bun_expert_io_lease: { args: [u64, u32, u64, i32], returns: i32 },
       mlx_bun_expert_io_release: { args: [u64, u32, u64, i32], returns: i32 },
       mlx_bun_expert_io_discard: { args: [u64, u32, u64], returns: i32 },
+      mlx_bun_expert_io_set_wiring: { args: [u64, i32], returns: i32 },
       mlx_bun_process_phys_footprint: { args: [], returns: u64 },
+      mlx_bun_process_compressed: { args: [], returns: u64 },
       mlx_bun_expert_io_ptr: { args: [u64, u32, u64], returns: u64 },
       mlx_bun_expert_io_length: { args: [u64, u32, u64], returns: u64 },
       mlx_bun_expert_io_close: { args: [u64], returns: i32 },
@@ -104,6 +110,17 @@ export class ExpertIOSlabStore {
     if (this.#handle === 0n) {
       this.#lib.close();
       throw new Error(`failed to open expert slab store: ${paths.join(", ")}`);
+    }
+    if (this.#wireSlots) {
+      const status = this.#lib.symbols.mlx_bun_expert_io_set_wiring(
+        this.#handle,
+        1,
+      );
+      if (status !== 0) {
+        this.#lib.symbols.mlx_bun_expert_io_close(this.#handle);
+        this.#lib.close();
+        throw new Error(`failed to enable expert slot wiring: errno ${status}`);
+      }
     }
   }
 
@@ -225,6 +242,11 @@ export class ExpertIOSlabStore {
   physicalFootprint(): number {
     this.#checkOpen();
     return Number(this.#lib.symbols.mlx_bun_process_phys_footprint());
+  }
+
+  compressedMemory(): number {
+    this.#checkOpen();
+    return Number(this.#lib.symbols.mlx_bun_process_compressed());
   }
 
   pointer(slot: number, generation: bigint): number {

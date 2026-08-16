@@ -20,6 +20,7 @@ import {
   G5MemoryContractError,
   G5MemoryMonitor,
   type G5EnvironmentSample,
+  type G5MeasurementMode,
   type G5TurnReport,
 } from "./lib/g5-memory-contract";
 import {
@@ -31,9 +32,11 @@ import {
   activeMemory,
   cacheMemory,
   clearCache,
+  maxRecommendedWorkingSetSize,
   peakMemory,
   resetPeakMemory,
   setMemoryLimit,
+  setWiredLimit,
   synchronize,
 } from "../src/mlx/ffi";
 import * as ops from "../src/mlx/ops";
@@ -60,7 +63,7 @@ function argumentsMap(argv: string[]): Map<string, string> {
       throw new Error(
         "usage: probe-colibri-glm52-g5-memory.ts " +
         "--mode on|off --model DIR --library DYLIB --output FILE " +
-        "--trace FILE",
+        "--trace FILE [--memory-mode strict|observe]",
       );
     }
     out.set(key.slice(2), value);
@@ -120,6 +123,7 @@ function environment(model: Glm52Model | null): G5EnvironmentSample {
     // sample. Every post-open sample uses task-wide phys_footprint.
     physicalFootprintBytes:
       runtime?.store.physicalFootprint() ?? rss,
+    processCompressedBytes: runtime?.store.compressedMemory() ?? 0,
     mlxActiveBytes: activeMemory(),
     mlxCacheBytes: cacheMemory(),
     mlxPeakBytes: peakMemory(),
@@ -226,6 +230,12 @@ const cli = argumentsMap(Bun.argv.slice(2));
 const mode = cli.get("mode") as Mode | undefined;
 if (mode !== "on" && mode !== "off")
   throw new Error("--mode must be on or off");
+const measurementMode = (cli.get("memory-mode") ?? "strict") as
+  G5MeasurementMode;
+if (measurementMode !== "strict" && measurementMode !== "observe") {
+  throw new Error("--memory-mode must be strict or observe");
+}
+const enforceMemoryContract = measurementMode === "strict";
 const modelDir = required(cli, "model");
 const libraryPath = required(cli, "library");
 const output = required(cli, "output");
@@ -241,6 +251,8 @@ let currentTurn: TurnName | undefined;
 let generatedTokens = 0;
 let interval: ReturnType<typeof setInterval> | null = null;
 let oldMemoryLimit: number | null = null;
+let oldWiredLimit: number | null = null;
+let wiredLimitBytes: number | null = null;
 let primaryError: unknown = null;
 const turns: Array<G5TurnReport & {
   speculation: unknown;
@@ -262,8 +274,12 @@ try {
   monitor.record({
     phase: "preflight_passed",
     note: `${plan.plannedProcessBytes} planned process bytes`,
-  }, true);
+  }, enforceMemoryContract);
   oldMemoryLimit = setMemoryLimit(plan.lineItems.allocatorReserveBytes);
+  // This harness calls the serial/spec loops directly rather than generate().
+  // Hold the same scoped MLX wired limit as the production execution path.
+  wiredLimitBytes = maxRecommendedWorkingSetSize();
+  oldWiredLimit = setWiredLimit(wiredLimitBytes);
   resetPeakMemory();
 
   const openStart = performance.now();
@@ -295,7 +311,7 @@ try {
   monitor.record({
     phase: "model_opened",
     note: `${openMs.toFixed(3)} ms`,
-  }, true);
+  }, enforceMemoryContract);
 
   interval = setInterval(() => {
     if (pendingMonitorError !== null) return;
@@ -304,7 +320,7 @@ try {
         phase: "periodic",
         ...(currentTurn ? { turn: currentTurn } : {}),
         generatedTokens,
-      }, true);
+      }, enforceMemoryContract);
     } catch (error) {
       pendingMonitorError = error;
     }
@@ -315,7 +331,10 @@ try {
     currentTurn = turn;
     generatedTokens = 0;
     pendingMonitorError = null;
-    monitor.record({ phase: "turn_start", turn }, true);
+    monitor.record(
+      { phase: "turn_start", turn },
+      enforceMemoryContract,
+    );
     const wallStart = performance.now();
     let tokens: number[] = [];
     let timing: Omit<
@@ -404,7 +423,7 @@ try {
       phase: "turn_complete",
       turn,
       generatedTokens: tokens.length,
-    }, true);
+    }, enforceMemoryContract);
     const wallMs = performance.now() - wallStart;
     turns.push({
       name: turn,
@@ -426,10 +445,13 @@ try {
     clearInterval(interval);
     interval = null;
   }
-  const final = monitor.record({ phase: "complete" }, true);
+  const final = monitor.record(
+    { phase: "complete" },
+    enforceMemoryContract,
+  );
   const cold = turns[0]!;
   const warm = turns[1]!;
-  if (
+  if (enforceMemoryContract &&
     warm.finalPhysicalFootprintBytes >
     cold.finalPhysicalFootprintBytes + G5_FLAT_MEMORY_TOLERANCE_BYTES
   ) {
@@ -443,6 +465,7 @@ try {
     schemaVersion: 1 as const,
     gate: "G5 32 GB memory contract" as const,
     mode,
+    measurementMode,
     result: "pass" as const,
     contract: {
       processLimitBytes: plan.processLimitBytes,
@@ -450,6 +473,7 @@ try {
       flatMemoryToleranceBytes: G5_FLAT_MEMORY_TOLERANCE_BYTES,
       maxTokens: G5_MAX_TOKENS,
       sampleIntervalMs: SAMPLE_INTERVAL_MS,
+      wiredLimitBytes,
     },
     plan,
     runtime: {
@@ -462,6 +486,8 @@ try {
         monitor.maxObservedPhysicalFootprintBytes,
       maxCompressorDeltaBytes:
         monitor.maxObservedCompressorDeltaBytes,
+      maxProcessCompressedDeltaBytes:
+        monitor.maxObservedProcessCompressedDeltaBytes,
       swapoutDeltaBytes: final.swapoutDeltaBytes,
       baseline: monitor.baseline,
       final,
@@ -470,7 +496,7 @@ try {
   };
   await Bun.write(output, `${JSON.stringify(report, null, 2)}\n`);
   console.log(
-    `G5 ${mode}: PASS; warm e2e ` +
+    `G5 ${mode}: ${enforceMemoryContract ? "PASS" : "OBSERVED"}; warm e2e ` +
     `${warm.timing.endToEndTps.toFixed(3)} tok/s; ` +
     `decode ${warm.timing.decodeTps.toFixed(3)} tok/s; ` +
     `peak ${(report.memory.maxPhysicalFootprintBytes / 1024 ** 3)
@@ -486,6 +512,7 @@ try {
     schemaVersion: 1,
     gate: "G5 32 GB memory contract",
     mode,
+    measurementMode,
     result: "error",
     error: error instanceof Error ? error.message : String(error),
     ...(error instanceof G5MemoryContractError
@@ -499,6 +526,8 @@ try {
             monitor.maxObservedPhysicalFootprintBytes,
           maxCompressorDeltaBytes:
             monitor.maxObservedCompressorDeltaBytes,
+          maxProcessCompressedDeltaBytes:
+            monitor.maxObservedProcessCompressedDeltaBytes,
           baseline: monitor.baseline,
           tracePath,
         }
@@ -517,6 +546,7 @@ try {
   try {
     synchronize(gpuStream);
     clearCache();
+    if (oldWiredLimit !== null) setWiredLimit(oldWiredLimit);
     if (oldMemoryLimit !== null) setMemoryLimit(oldMemoryLimit);
   } catch (error) {
     cleanupErrors.push(error);

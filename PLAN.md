@@ -2312,7 +2312,7 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         paired **end-to-end** wall time wins without breaking the G5 memory
         envelope. Otherwise record the negative result and retain the
         decode-only implementation.
-- [ ] **G5 — 32 GB memory contract (measured MTP on):** full dense + LRU +
+- [x] **G5 — 32 GB memory contract (measured MTP on):** full dense + LRU +
       working-set + KV + reconstructed-KV + MLX allocator/transient + Bun +
       OS-reserve planner, startup refusal, and physical-footprint feedback; the
       verify batch, MTP KV row, and larger per-forward union are in the
@@ -2339,9 +2339,25 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         against each other, samples task physical footprint + MLX + vm_stat
         every 15 seconds, rejects any swapout, bounds compressor growth to
         256 MiB, and requires warm final footprint within 256 MiB of cold.
-      - [ ] On the cleared M1 Max, run the fresh-process MTP-on and MTP-off
-        lanes, evaluate the paired reports, and record the measured cold/warm
-        speed and memory result against G0.
+      - [x] Fresh-process full-model pair (2026-08-15): all four 128-token
+        cold/warm/on/off turns are identical and retain the direct-Colibri
+        first-64 prefix. MTP-on peak footprint was 14,807,789,616 bytes
+        (13.791 GiB), with cold/warm finals 14,673,342,512 -> 14,697,574,448
+        (+23.1 MiB); MTP-off peak was 13,576,039,488 bytes (12.644 GiB), with
+        finals 13,490,515,008 -> 13,510,634,560 (+19.2 MiB). Warm end-to-end
+        speed was 0.149 tok/s on vs 0.114 off, a 1.306x MTP win; both remain
+        below the G0 direct-Colibri warm baselines (~0.27 on / ~0.34 off), so
+        G6 performance work remains material.
+      - [x] Josh explicitly changed the live gate to before/after observation
+        on 2026-08-15. Strict enforcement remains the harness default;
+        `--memory-mode observe` records the same threshold violations without
+        aborting. The paired artifact is therefore `result: observed` and
+        `strictContractSatisfied: false`: maximum system/task compressor
+        deltas were 4,402,905,088 / 1,939,537,920 bytes, and MTP-off observed
+        7,143,424 bytes of swapout while MTP-on observed zero. The bounded
+        cold-to-warm footprint deltas and <=13.791 GiB peak close the requested
+        32 GB fit measurement without mislabeling it a strict zero-compression
+        pass. Evidence: machine-local `runs/colibri-g5/{mtp-on,mtp-off,summary}`.
 - [ ] **G6 — complete scheduler + Atlas:** batch-union; bounded
       pread/F_NOCACHE workers; resident-first Metal submit overlapped with
       misses; persistent `.usage`; auto-pin; live LFRU (decay + 25%+4
