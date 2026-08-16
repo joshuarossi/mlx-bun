@@ -274,8 +274,14 @@ expert, while live maps now expose tier, persistent count, heat, recency,
 hits/misses, and repin totals. Controlled probes explicitly disable usage
 learning so benchmark traffic cannot contaminate a real model profile.
 
-**Next:** build the paired MTP-on no-pin/auto-pin/live-LFRU harness and collect
-hit/I/O/latency/tok-s evidence before making any default-policy decision.
+The paired harness is ready. It separates demand from startup/repin I/O and
+reports exact bytes/operations, disk-service versus foreground-visible wait,
+and main/MTP forward p50/p95/p99. A dedicated MTP-on seed process feeds
+byte-identical profile copies to control, auto-pin, and auto-pin+LFRU arms;
+token drift and accidental artifact overwrite are hard failures.
+
+**Next:** run the three-repeat MTP-on learning matrix and make an evidence-based
+default/no-default decision, then move to the isolated PILOT measurement arm.
 The optional G4R prompt-seeding spike remains explicitly deferred.
 
 ## Where we are (2026-07-10 — v0.0.11 released)

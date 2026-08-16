@@ -5,6 +5,7 @@ import {
   ExpertResidencyManager,
   buildExpertBatchUnion,
   planExpertResidency,
+  summarizeExpertLatencies,
   type ExpertResidencyBackend,
 } from "../src/expert-residency";
 
@@ -151,6 +152,19 @@ describe("expert batch union", () => {
   });
 });
 
+describe("expert telemetry", () => {
+  it("uses nearest-rank percentiles", () => {
+    expect(summarizeExpertLatencies([8, 1, 3, 2, 5])).toEqual({
+      count: 5,
+      totalMs: 19,
+      p50Ms: 3,
+      p95Ms: 8,
+      p99Ms: 8,
+      maxMs: 8,
+    });
+  });
+});
+
 describe("expert residency manager", () => {
   it("matches forced miss/hit/evict behavior and keeps four global working slots", async () => {
     const { manager, backend } = fixture({ cap: 1 });
@@ -207,6 +221,42 @@ describe("expert residency manager", () => {
     expect(backend.events.indexOf("resident-submit")).toBeLessThan(
       backend.events.findIndex((event) => event.startsWith("load:")),
     );
+  });
+
+  it("reports demand bytes and waits without counting policy preload", async () => {
+    const { manager } = fixture({
+      cap: 2,
+      pinned: [{ layer: 4, expertId: 9 }],
+    });
+    await manager.preloadPinned();
+    let lease = await manager.acquireBlock(3, [1, 2]);
+    lease.releaseFenced();
+    lease = await manager.acquireBlock(3, [1, 2]);
+    lease.releaseFenced();
+    const telemetry = manager.drainDemandTelemetry();
+    expect(telemetry).toMatchObject({
+      hits: 2,
+      misses: 2,
+      loads: 2,
+      readOperations: 2,
+      readBytes: 2,
+      diskService: { count: 2 },
+      foregroundWait: { count: 1 },
+    });
+    expect(manager.drainPolicyTelemetry()).toMatchObject({
+      hits: 0,
+      misses: 1,
+      loads: 1,
+      readOperations: 1,
+      readBytes: 1,
+      diskService: { count: 1 },
+      foregroundWait: { count: 1 },
+    });
+    expect(manager.drainDemandTelemetry()).toMatchObject({
+      hits: 0,
+      misses: 0,
+      readBytes: 0,
+    });
   });
 
   it("keeps configured pinned experts outside LRU eviction", async () => {

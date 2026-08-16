@@ -235,6 +235,53 @@ export interface ExpertRepinEvent {
   readonly gain: number;
 }
 
+export interface ExpertLatencySummary {
+  readonly count: number;
+  readonly totalMs: number;
+  readonly p50Ms: number;
+  readonly p95Ms: number;
+  readonly p99Ms: number;
+  readonly maxMs: number;
+}
+
+export interface ExpertDemandTelemetry {
+  readonly hits: number;
+  readonly misses: number;
+  readonly loads: number;
+  readonly readOperations: number;
+  readonly readBytes: number;
+  readonly diskService: ExpertLatencySummary;
+  readonly foregroundWait: ExpertLatencySummary;
+}
+
+export type ExpertPolicyTelemetry = ExpertDemandTelemetry;
+
+export function summarizeExpertLatencies(
+  samples: readonly number[],
+): ExpertLatencySummary {
+  if (samples.length === 0) {
+    return {
+      count: 0,
+      totalMs: 0,
+      p50Ms: 0,
+      p95Ms: 0,
+      p99Ms: 0,
+      maxMs: 0,
+    };
+  }
+  const sorted = samples.slice().sort((left, right) => left - right);
+  const percentile = (fraction: number): number =>
+    sorted[Math.ceil(fraction * sorted.length) - 1]!;
+  return {
+    count: sorted.length,
+    totalMs: sorted.reduce((sum, value) => sum + value, 0),
+    p50Ms: percentile(0.5),
+    p95Ms: percentile(0.95),
+    p99Ms: percentile(0.99),
+    maxMs: sorted[sorted.length - 1]!,
+  };
+}
+
 function expertKey(layer: number, expertId: number): string {
   return `${layer}:${expertId}`;
 }
@@ -307,6 +354,20 @@ export class ExpertResidencyManager {
   #evictions = 0;
   #pressureEvictions = 0;
   #repinSwaps = 0;
+  #telemetryHits = 0;
+  #telemetryMisses = 0;
+  #telemetryLoads = 0;
+  #telemetryReadOperations = 0;
+  #telemetryReadBytes = 0;
+  #diskServiceMs: number[] = [];
+  #foregroundWaitMs: number[] = [];
+  #policyHits = 0;
+  #policyMisses = 0;
+  #policyLoads = 0;
+  #policyReadOperations = 0;
+  #policyReadBytes = 0;
+  #policyDiskServiceMs: number[] = [];
+  #policyForegroundWaitMs: number[] = [];
 
   constructor(options: ExpertResidencyManagerOptions) {
     this.plan = options.plan;
@@ -363,6 +424,8 @@ export class ExpertResidencyManager {
         const lease = await this.acquireBlock(
           layer,
           ids.slice(begin, begin + this.plan.workingSlots),
+          undefined,
+          "policy",
         );
         lease.releaseFenced();
       }
@@ -404,6 +467,8 @@ export class ExpertResidencyManager {
       const lease = await this.acquireBlock(
         candidate.layer,
         [candidate.hotExpertId],
+        undefined,
+        "policy",
       );
       lease.releaseFenced();
       hotSlotId = this.#lookup.get(
@@ -463,6 +528,48 @@ export class ExpertResidencyManager {
     });
   }
 
+  /** Return and reset demand-only I/O telemetry for one generation turn. */
+  drainDemandTelemetry(): ExpertDemandTelemetry {
+    const telemetry = {
+      hits: this.#telemetryHits,
+      misses: this.#telemetryMisses,
+      loads: this.#telemetryLoads,
+      readOperations: this.#telemetryReadOperations,
+      readBytes: this.#telemetryReadBytes,
+      diskService: summarizeExpertLatencies(this.#diskServiceMs),
+      foregroundWait: summarizeExpertLatencies(this.#foregroundWaitMs),
+    };
+    this.#telemetryHits = 0;
+    this.#telemetryMisses = 0;
+    this.#telemetryLoads = 0;
+    this.#telemetryReadOperations = 0;
+    this.#telemetryReadBytes = 0;
+    this.#diskServiceMs = [];
+    this.#foregroundWaitMs = [];
+    return telemetry;
+  }
+
+  /** Return and reset startup-preload/live-repin I/O separately from demand. */
+  drainPolicyTelemetry(): ExpertPolicyTelemetry {
+    const telemetry = {
+      hits: this.#policyHits,
+      misses: this.#policyMisses,
+      loads: this.#policyLoads,
+      readOperations: this.#policyReadOperations,
+      readBytes: this.#policyReadBytes,
+      diskService: summarizeExpertLatencies(this.#policyDiskServiceMs),
+      foregroundWait: summarizeExpertLatencies(this.#policyForegroundWaitMs),
+    };
+    this.#policyHits = 0;
+    this.#policyMisses = 0;
+    this.#policyLoads = 0;
+    this.#policyReadOperations = 0;
+    this.#policyReadBytes = 0;
+    this.#policyDiskServiceMs = [];
+    this.#policyForegroundWaitMs = [];
+    return telemetry;
+  }
+
   /** Record the full router output before batch-union deduplication. */
   recordRoutes(layer: number, routes: readonly ExpertUsageRoute[]): void {
     this.#usage?.recordRoutes(layer, routes);
@@ -474,6 +581,7 @@ export class ExpertResidencyManager {
     beforeMissSubmit?: (
       resident: readonly ExpertResidencyLeaseEntry[],
     ) => void | Promise<void>,
+    classification: "demand" | "policy" = "demand",
   ): Promise<ExpertBatchLease> {
     if (this.#active)
       throw new Error("concurrent streamed expert waves are deferred to G7");
@@ -494,6 +602,7 @@ export class ExpertResidencyManager {
     this.#active = true;
     const entries: ExpertResidencyLeaseEntry[] = [];
     const loaded: SlotRecord[] = [];
+    const loadStarted = new Map<number, number>();
     try {
       for (const expertId of unique) {
         const hitId = this.#lookup.get(expertKey(layer, expertId));
@@ -504,7 +613,12 @@ export class ExpertResidencyManager {
         this.#backend.lease(record.id, record.generation, "gpu");
         record.phase = "leased";
         record.lastUse = ++this.#clock;
-        this.#hits++;
+        if (classification === "demand") {
+          this.#hits++;
+          this.#telemetryHits++;
+        } else {
+          this.#policyHits++;
+        }
         entries.push(this.#entry(record, true));
       }
 
@@ -536,14 +650,53 @@ export class ExpertResidencyManager {
         record.generation = ++this.#generation;
         record.layer = layer;
         record.expertId = expertId;
+        const submittedAt = performance.now();
         this.#backend.submitSegments(record.id, record.generation, location.segments);
         record.phase = "loading";
         loaded.push(record);
-        this.#misses++;
+        loadStarted.set(record.id, submittedAt);
+        if (classification === "demand") {
+          this.#misses++;
+          this.#telemetryMisses++;
+          this.#telemetryLoads++;
+          this.#telemetryReadOperations += location.segments.length;
+          this.#telemetryReadBytes += location.segments.reduce(
+            (sum, segment) => sum + segment.length,
+            0,
+          );
+        } else {
+          this.#policyMisses++;
+          this.#policyLoads++;
+          this.#policyReadOperations += location.segments.length;
+          this.#policyReadBytes += location.segments.reduce(
+            (sum, segment) => sum + segment.length,
+            0,
+          );
+        }
       }
 
-      const waits = await Promise.allSettled(loaded.map((record) =>
-        this.#backend.wait(record.id, record.generation)));
+      const foregroundStarted = loaded.length
+        ? performance.now()
+        : null;
+      const waits = await Promise.allSettled(loaded.map(async (record) => {
+        try {
+          await this.#backend.wait(record.id, record.generation);
+        } finally {
+          const started = loadStarted.get(record.id);
+          if (started !== undefined) {
+            const samples = classification === "demand"
+              ? this.#diskServiceMs
+              : this.#policyDiskServiceMs;
+            samples.push(performance.now() - started);
+          }
+        }
+      }));
+      if (foregroundStarted !== null) {
+        const samples = classification === "demand"
+          ? this.#foregroundWaitMs
+          : this.#policyForegroundWaitMs;
+        samples.push(performance.now() - foregroundStarted);
+      }
       for (let index = 0; index < loaded.length; index++) {
         const record = loaded[index]!;
         record.phase = "ready";

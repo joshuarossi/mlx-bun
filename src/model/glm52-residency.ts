@@ -10,6 +10,9 @@ import {
   ExpertResidencyManager,
   DEFAULT_EXPERT_WORKING_SLOTS,
   planExpertResidency,
+  type ExpertDemandTelemetry,
+  type ExpertLatencySummary,
+  type ExpertPolicyTelemetry,
   type ExpertRepinEvent,
   type ExpertResidencyPlan,
 } from "../expert-residency";
@@ -54,6 +57,17 @@ export interface Glm52MtpExpertRuntime {
   readonly layer: number;
 }
 
+export interface Glm52ExpertTierTelemetry {
+  readonly demand: ExpertDemandTelemetry;
+  readonly policy: ExpertPolicyTelemetry;
+  readonly layerForward: ExpertLatencySummary;
+}
+
+export interface Glm52ExpertTurnTelemetry {
+  readonly main: Glm52ExpertTierTelemetry;
+  readonly mtp: Glm52ExpertTierTelemetry | null;
+}
+
 export class Glm52ExpertRuntime {
   readonly plan: ExpertResidencyPlan;
   readonly store: ExpertIOSlabStore;
@@ -66,6 +80,7 @@ export class Glm52ExpertRuntime {
   readonly usage: ExpertUsageLedger | null;
   readonly autoPin: ExpertAutoPinPlan | null;
   lastRepin: readonly ExpertRepinEvent[] = Object.freeze([]);
+  lastTelemetry: Glm52ExpertTurnTelemetry | null = null;
   #liveRepin: boolean;
   #layouts = new Map<string, Glm52ExpertSlotLayout>();
   #mtpLayouts = new Map<string, Glm52ExpertSlotLayout>();
@@ -415,8 +430,29 @@ export class Glm52ExpertRuntime {
 
   /** Turn boundary: adapt the shared target/MTP tier, decay heat, then save. */
   async finishUsage(): Promise<void> {
+    const mainDemand = this.manager.drainDemandTelemetry();
+    const mainForward = this.executor.drainForwardTelemetry();
+    const mtpDemand = this.mtp?.manager.drainDemandTelemetry() ?? null;
+    const mtpForward = this.mtp?.executor.drainForwardTelemetry() ?? null;
+    const publishTelemetry = (): void => {
+      this.lastTelemetry = {
+        main: {
+          demand: mainDemand,
+          policy: this.manager.drainPolicyTelemetry(),
+          layerForward: mainForward,
+        },
+        mtp: this.mtp && mtpDemand && mtpForward
+          ? {
+              demand: mtpDemand,
+              policy: this.mtp.manager.drainPolicyTelemetry(),
+              layerForward: mtpForward,
+            }
+          : null,
+      };
+    };
     if (!this.#liveRepin || !this.usage) {
       this.lastRepin = Object.freeze([]);
+      publishTelemetry();
       this.flushUsage();
       return;
     }
@@ -445,6 +481,7 @@ export class Glm52ExpertRuntime {
     }
     this.lastRepin = Object.freeze(events.slice());
     this.usage.decayHeat();
+    publishTelemetry();
     try {
       this.flushUsage();
     } catch (flushError) {

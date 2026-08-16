@@ -1,6 +1,8 @@
 import { ExpertIOSlabStore } from "../expert-io";
 import {
   ExpertResidencyManager,
+  summarizeExpertLatencies,
+  type ExpertLatencySummary,
   type ExpertResidencyLeaseEntry,
 } from "../expert-residency";
 import { MlxArray, gpuStream } from "../mlx/array";
@@ -198,6 +200,7 @@ implements Glm52ExpertExecutionBackend {
   #metal: Glm52CanonicalQ4MetalExecutor | null;
   #mtpMetal: Glm52CanonicalQ8MetalExecutor | null;
   #fixedKernelFamily = false;
+  #forwardMs: number[] = [];
 
   constructor(options: Glm52StreamedExpertExecutorOptions) {
     this.manager = options.manager;
@@ -216,6 +219,12 @@ implements Glm52ExpertExecutionBackend {
     this.#fixedKernelFamily = enabled;
   }
 
+  drainForwardTelemetry(): ExpertLatencySummary {
+    const summary = summarizeExpertLatencies(this.#forwardMs);
+    this.#forwardMs = [];
+    return summary;
+  }
+
   async execute(args: Glm52ExpertExecutionArgs): Promise<MlxArray> {
     const [batch, tokens, hidden] = args.input.shape;
     if (args.input.shape.length !== 3 || hidden !== this.hiddenSize)
@@ -229,6 +238,7 @@ implements Glm52ExpertExecutionBackend {
       );
     this.manager.recordRoutes(args.layer, args.plan.routes);
 
+    const forwardStarted = performance.now();
     const flattened = ops.reshape(args.input, [rowCount, this.hiddenSize]);
     const sharedFlat = args.shared
       ? ops.reshape(args.shared, [rowCount, this.hiddenSize])
@@ -319,6 +329,7 @@ implements Glm52ExpertExecutionBackend {
       flattened.dispose();
       sharedFlat?.dispose();
       for (const value of materialized.values()) value.output.dispose();
+      this.#forwardMs.push(performance.now() - forwardStarted);
     }
   }
 

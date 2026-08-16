@@ -63,7 +63,8 @@ function argumentsMap(argv: string[]): Map<string, string> {
       throw new Error(
         "usage: probe-colibri-glm52-g5-memory.ts " +
         "--mode on|off --model DIR --library DYLIB --output FILE " +
-        "--trace FILE [--memory-mode strict|observe]",
+        "--trace FILE [--memory-mode strict|observe] " +
+        "[--usage-path FILE --auto-pin 0|1 --live-repin 0|1]",
       );
     }
     out.set(key.slice(2), value);
@@ -240,8 +241,16 @@ const modelDir = required(cli, "model");
 const libraryPath = required(cli, "library");
 const output = required(cli, "output");
 const tracePath = required(cli, "trace");
+const usagePath = cli.get("usage-path")
+  ? resolve(cli.get("usage-path")!)
+  : null;
+const autoPin = cli.get("auto-pin") === "1";
+const liveRepin = cli.get("live-repin") === "1";
+if ((autoPin || liveRepin) && !usagePath)
+  throw new Error("--auto-pin/--live-repin require --usage-path");
 mkdirSync(dirname(output), { recursive: true });
 mkdirSync(dirname(tracePath), { recursive: true });
+if (usagePath) mkdirSync(dirname(usagePath), { recursive: true });
 
 let model: Glm52Model | null = null;
 let plan: Glm52MemoryPlan | null = null;
@@ -254,9 +263,13 @@ let oldMemoryLimit: number | null = null;
 let oldWiredLimit: number | null = null;
 let wiredLimitBytes: number | null = null;
 let primaryError: unknown = null;
+let openMs: number | null = null;
 const turns: Array<G5TurnReport & {
   speculation: unknown;
   finalMemory: G5EnvironmentSample;
+  expertTelemetry: unknown;
+  repin: unknown;
+  tierMap: unknown;
 }> = [];
 
 try {
@@ -288,14 +301,16 @@ try {
     reserveBytes: plan.runtimeReserveBytes,
     workingSlots: plan.mainWorkingSlots,
     maxSlotsPerLayer: 1,
-    usagePath: false,
+    usagePath: usagePath ?? false,
+    autoPin,
+    liveRepin,
     workers: 2,
     libraryPath,
     decodeKernel: "metal",
     enableMtp: mode === "on",
     mtpDraftTokens: plan.mtpDraftTokens,
   });
-  const openMs = performance.now() - openStart;
+  openMs = performance.now() - openStart;
   const runtime = model.expertRuntime!;
   if (runtime.plan.plannedBytes !== plan.plannedProcessBytes) {
     throw new Error(
@@ -420,6 +435,7 @@ try {
 
     synchronize(gpuStream);
     clearCache();
+    if (usagePath) await runtime.finishUsage();
     const finalCheckpoint = monitor.record({
       phase: "turn_complete",
       turn,
@@ -439,6 +455,18 @@ try {
         finalCheckpoint.physicalFootprintBytes,
       speculation,
       finalMemory: environment(model),
+      expertTelemetry: runtime.lastTelemetry,
+      repin: runtime.lastRepin,
+      tierMap: {
+        main: runtime.manager.residencyMap().map((entry) => ({
+          ...entry,
+          lastUse: entry.lastUse.toString(),
+        })),
+        mtp: runtime.mtp?.manager.residencyMap().map((entry) => ({
+          ...entry,
+          lastUse: entry.lastUse.toString(),
+        })) ?? null,
+      },
     });
   }
   currentTurn = undefined;
@@ -478,8 +506,14 @@ try {
     },
     plan,
     runtime: {
+      openMs,
       mainPlan: runtime.plan,
       mtpPlan: runtime.mtp?.plan ?? null,
+      usagePath,
+      autoPin: runtime.autoPin,
+      autoPinEnabled: autoPin,
+      liveRepinEnabled: liveRepin,
+      usage: runtime.usage?.snapshot() ?? null,
     },
     turns,
     memory: {

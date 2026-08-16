@@ -2395,6 +2395,13 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         complete. Residency maps expose slot/tier, long-term count, heat,
         recency, hits/misses, and repin totals. Persistent frequency never
         decays; `liveRepin` remains off until its MTP-on comparison wins.
+      - [x] Paired-measurement seam: demand and policy traffic are separated;
+        both report exact read bytes/operations plus disk-service and
+        foreground-wait p50/p95/p99, while main/MTP layer-forward latency is
+        captured independently. The G6 harness first learns a seed in its own
+        MTP-on process, then gives identical copies to control, auto-pin, and
+        auto-pin+LFRU arms, refuses token drift/overwrites, and supports three
+        fresh repeats for a default-eligible result.
       - [ ] Implement and isolate PILOT, coupling, and two-step predictors.
       - [ ] Run the required MTP-on paired A/B matrix, then build/validate the
         Atlas probe and visualization; default only measured winners.

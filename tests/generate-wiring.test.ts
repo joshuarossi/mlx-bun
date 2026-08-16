@@ -51,4 +51,19 @@ describe("generation wired-limit policy", () => {
     })).rejects.toThrow("boom");
     expect(flushes).toBe(2);
   });
+
+  test("prefers the async turn finalizer when learning policy is present", async () => {
+    let finishes = 0;
+    let flushes = 0;
+    const model = {
+      weightsBytes: 10,
+      expertRuntime: {
+        plan: { plannedBytes: 21 },
+        finishUsage: async () => { finishes++; },
+        flushUsage: () => { flushes++; },
+      },
+    };
+    await withModelUsageFlush(model, async () => undefined);
+    expect({ finishes, flushes }).toEqual({ finishes: 1, flushes: 0 });
+  });
 });

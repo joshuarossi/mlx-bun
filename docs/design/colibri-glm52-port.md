@@ -1149,6 +1149,23 @@ across target and MTP; logical role exchange avoids copying expert slabs.
 Residency maps expose tier plus frequency/heat/recency and aggregate hit/miss/
 repin counters. Neither learning policy is defaulted before its MTP-on A/B.
 
+The paired runner charges policy I/O separately from demand while reporting
+both, including disk-service/foreground-wait and main/MTP layer-forward
+percentiles. It learns one MTP-on seed profile in a separate process and copies
+the identical seed into every control/candidate process:
+
+```sh
+MODEL=/Users/joshrossi/.cache/huggingface/hub/models--mateogrgic--GLM-5.2-colibri-int4-with-int8-mtp/snapshots/3cc8db99b1b13fc79325d987ba3c1c430766b3b8
+LIBRARY="$PWD/dist-native/libmlx_bun_expert_io.dylib"
+bun scripts/probe-colibri-glm52-g6-learning.ts \
+  --model "$MODEL" --library "$LIBRARY" \
+  --output-dir runs/colibri-g6-learning --memory-mode observe --repeats 3
+```
+
+One repeat is a harness shakeout only; the summary marks a policy decision
+eligible only at three or more fresh-process repeats. The runner refuses to
+overwrite an existing arm, so a rerun must use a new output directory.
+
 **Exit:** each lever has a paired cold/warm A/B with hit rate, disk GB/token,
 disk-service vs foreground-wait, p50/p95/p99 forward latency, and tok/s — all
 measured with MTP on (a lever that wins MTP-off but loses MTP-on is not a
