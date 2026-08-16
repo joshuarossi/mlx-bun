@@ -1,6 +1,10 @@
 import type { MlxArray } from "./mlx/array";
 import type { MlxHandle } from "./mlx/ffi";
-import type { ExpertIOSegment } from "./expert-io";
+import type {
+  ExpertIOHintSegment,
+  ExpertIOHintSnapshot,
+  ExpertIOSegment,
+} from "./expert-io";
 import type {
   ExpertLfruCandidate,
   ExpertUsageEntry,
@@ -163,12 +167,47 @@ export interface ExpertResidencyBackend {
   releaseGpuFenced(slot: number, generation: bigint): void;
   discard(slot: number, generation: bigint): void;
   physicalFootprint(): number;
+  /** Advisory-only readahead; returns false when its bounded queue is full. */
+  hintSegments?(segments: readonly ExpertIOHintSegment[]): boolean;
+  hintTelemetry?(): ExpertIOHintSnapshot;
 }
 
 export interface ExpertResidencyLocation {
   readonly layer: number;
   readonly expertId: number;
   readonly segments: readonly ExpertIOSegment[];
+  /** Optional subset for advisory readahead (for example scales-only). */
+  readonly hintSegments?: readonly ExpertIOHintSegment[];
+}
+
+/**
+ * Colibri hint policy: buffered demand may hint the full expert; F_NOCACHE
+ * demand hints only the scale tail because warming weight pages would be
+ * wasted by the subsequent cache-bypassing read.
+ */
+export function buildExpertHintSegments(
+  segments: readonly ExpertIOSegment[],
+  scaleOffset: number,
+  noCache: boolean,
+): ExpertIOHintSegment[] {
+  if (!Number.isSafeInteger(scaleOffset) || scaleOffset < 0)
+    throw new RangeError("expert hint scaleOffset must be non-negative");
+  if (!noCache) {
+    return segments.map(({ file, offset, length }) => ({
+      file,
+      offset,
+      length,
+    }));
+  }
+  return segments.flatMap((segment) => {
+    const skip = Math.max(0, scaleOffset - segment.destination);
+    if (skip >= segment.length) return [];
+    return [{
+      file: segment.file,
+      offset: segment.offset + skip,
+      length: segment.length - skip,
+    }];
+  });
 }
 
 export interface ExpertResidencyManagerOptions {
@@ -255,6 +294,31 @@ export interface ExpertDemandTelemetry {
 }
 
 export type ExpertPolicyTelemetry = ExpertDemandTelemetry;
+
+export interface ExpertHintTelemetry {
+  readonly candidates: number;
+  readonly residentSkipped: number;
+  readonly submitErrors: number;
+  readonly submitted: number;
+  readonly completed: number;
+  readonly dropped: number;
+  readonly operations: number;
+  readonly bytes: number;
+  readonly errors: number;
+  readonly queueDepth: number;
+  readonly inFlight: number;
+}
+
+const EMPTY_HINT_SNAPSHOT: ExpertIOHintSnapshot = Object.freeze({
+  submitted: 0,
+  completed: 0,
+  dropped: 0,
+  operations: 0,
+  bytes: 0,
+  errors: 0,
+  queueDepth: 0,
+  inFlight: 0,
+});
 
 export function summarizeExpertLatencies(
   samples: readonly number[],
@@ -368,12 +432,18 @@ export class ExpertResidencyManager {
   #policyReadBytes = 0;
   #policyDiskServiceMs: number[] = [];
   #policyForegroundWaitMs: number[] = [];
+  #hintCandidates = 0;
+  #hintResidentSkipped = 0;
+  #hintSubmitErrors = 0;
+  #hintBaseline: ExpertIOHintSnapshot;
 
   constructor(options: ExpertResidencyManagerOptions) {
     this.plan = options.plan;
     this.#backend = options.backend;
     this.#locate = options.locate;
     this.#usage = options.usage ?? null;
+    this.#hintBaseline = options.backend.hintTelemetry?.() ??
+      EMPTY_HINT_SNAPSHOT;
     this.sparseLayerIds = Object.freeze(options.sparseLayerIds.slice());
     if (this.sparseLayerIds.length !== this.plan.sparseLayers ||
         new Set(this.sparseLayerIds).size !== this.sparseLayerIds.length)
@@ -528,6 +598,35 @@ export class ExpertResidencyManager {
     });
   }
 
+  /**
+   * Queue future-layer advisory reads without allocating or mutating slots.
+   * Resident predictions are skipped; queue pressure and advisory failures
+   * are deliberately non-fatal because demand remains the correctness path.
+   */
+  hintExperts(layer: number, expertIds: readonly number[]): void {
+    if (!this.#layerSlots.has(layer))
+      throw new RangeError(`layer ${layer} is not a sparse residency layer`);
+    for (const expertId of new Set(expertIds)) {
+      if (!Number.isSafeInteger(expertId) || expertId < 0)
+        throw new RangeError(`invalid hinted expert id ${expertId}`);
+      this.#hintCandidates++;
+      if (this.#lookup.has(expertKey(layer, expertId))) {
+        this.#hintResidentSkipped++;
+        continue;
+      }
+      try {
+        const location = this.#locate(layer, expertId);
+        const segments = location.hintSegments ?? location.segments;
+        if (segments.length === 0) continue;
+        if (!this.#backend.hintSegments)
+          throw new Error("expert backend has no advisory hint queue");
+        this.#backend.hintSegments(segments);
+      } catch {
+        this.#hintSubmitErrors++;
+      }
+    }
+  }
+
   /** Return and reset demand-only I/O telemetry for one generation turn. */
   drainDemandTelemetry(): ExpertDemandTelemetry {
     const telemetry = {
@@ -567,6 +666,32 @@ export class ExpertResidencyManager {
     this.#policyReadBytes = 0;
     this.#policyDiskServiceMs = [];
     this.#policyForegroundWaitMs = [];
+    return telemetry;
+  }
+
+  /** Return and reset per-turn advisory PILOT telemetry. */
+  drainHintTelemetry(): ExpertHintTelemetry {
+    const current = this.#backend.hintTelemetry?.() ?? EMPTY_HINT_SNAPSHOT;
+    const prior = this.#hintBaseline;
+    const difference = (key: keyof ExpertIOHintSnapshot): number =>
+      Math.max(0, current[key] - prior[key]);
+    const telemetry = {
+      candidates: this.#hintCandidates,
+      residentSkipped: this.#hintResidentSkipped,
+      submitErrors: this.#hintSubmitErrors,
+      submitted: difference("submitted"),
+      completed: difference("completed"),
+      dropped: difference("dropped"),
+      operations: difference("operations"),
+      bytes: difference("bytes"),
+      errors: difference("errors"),
+      queueDepth: current.queueDepth,
+      inFlight: current.inFlight,
+    };
+    this.#hintCandidates = 0;
+    this.#hintResidentSkipped = 0;
+    this.#hintSubmitErrors = 0;
+    this.#hintBaseline = current;
     return telemetry;
   }
 

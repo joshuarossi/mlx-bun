@@ -590,7 +590,14 @@ export class Glm52Model {
     this.expertBackend = expertBackend;
     this.expertRuntime = expertRuntime;
     this.pilot = expertRuntime?.pilotMeasureEnabled
-      ? new Glm52PilotTracker({ config: glmConfig, weights })
+      ? new Glm52PilotTracker({
+          config: glmConfig,
+          weights,
+          hintK: expertRuntime.pilotHintK,
+          hintSink: expertRuntime.pilotHintK > 0
+            ? expertRuntime.manager
+            : undefined,
+        })
       : null;
     if (this.pilot) expertRuntime!.attachPilot(this.pilot);
     this.layers = Array.from(

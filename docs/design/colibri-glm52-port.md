@@ -1218,6 +1218,24 @@ default-off A/B because rank 5-8 precision falls sharply and wrong loads can
 evict useful experts. Machine-local evidence is under
 `runs/colibri-g6-pilot-measure-shakeout-2026-08-16/`.
 
+The bounded hint-only stage landed and completed a one-repeat MTP-on paired
+shakeout on 2026-08-16. A separate 4,096-job native advisory queue opens
+buffered hint descriptors while demand descriptors retain `F_NOCACHE`; on this
+path each nonresident top-4 candidate issues `F_RDADVISE` for its three scale
+tails only. Hints never allocate or publish expert slots, change LRU state, or
+alter routing. Both turns completed all 48,162 submitted hints (144,486
+operations / 1,972,715,520 advised bytes) with no drops, errors, or end-of-turn
+backlog, and candidate tokens exactly matched control. Warm logical demand
+bytes remained exactly 14,883,703,168 per token in both arms. Disk-service p95
+was 1.0065x control, foreground-wait p95 was 1.0193x, and warm throughput was
+0.9746x (0.14031 -> 0.13675 tok/s); final physical footprint changed by only
++3,817,328 bytes. The mechanism is therefore bounded and value-preserving, but
+this policy did not improve I/O or latency and remains default-off. One repeat
+is not a performance replication, and the negative shakeout does not justify
+promoting it to real speculative loads. The next prefetch work measures
+coupling and two-step predictor quality before revisiting real loads. Evidence
+is under `runs/colibri-g6-pilot-hint-k4-shakeout-2026-08-16/`.
+
 **Exit:** each lever has a paired cold/warm A/B with hit rate, disk GB/token,
 disk-service vs foreground-wait, p50/p95/p99 forward latency, and tok/s — all
 measured with MTP on (a lever that wins MTP-off but loses MTP-on is not a

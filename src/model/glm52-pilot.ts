@@ -7,6 +7,7 @@
 
 import {
   summarizeExpertLatencies,
+  type ExpertHintTelemetry,
   type ExpertLatencySummary,
   type ExpertRouteLike,
 } from "../expert-residency";
@@ -35,9 +36,15 @@ export interface Glm52PilotLayerTelemetry {
   readonly exactRowRate: number;
 }
 
+export interface Glm52PilotHintSink {
+  hintExperts(layer: number, expertIds: readonly number[]): void;
+  drainHintTelemetry(): ExpertHintTelemetry;
+}
+
 export interface Glm52PilotTelemetry {
-  readonly mode: "measure-only";
+  readonly mode: "measure-only" | "hint-only";
   readonly maxRows: number;
+  readonly hintK: number;
   readonly predictionCalls: number;
   readonly observedCalls: number;
   readonly rows: number;
@@ -57,6 +64,7 @@ export interface Glm52PilotTelemetry {
   /** Time from prediction completion until the target router is observed. */
   readonly leadTime: ExpertLatencySummary;
   readonly layers: readonly Glm52PilotLayerTelemetry[];
+  readonly hints: ExpertHintTelemetry | null;
 }
 
 interface PendingPrediction {
@@ -105,7 +113,9 @@ export class Glm52PilotTracker {
   readonly config: Glm52Config;
   readonly weights: Glm52PilotWeightSource;
   readonly maxRows: number;
+  readonly hintK: number;
   #now: () => number;
+  #hintSink: Glm52PilotHintSink | null;
   #pending = new Map<number, PendingPrediction>();
   #counts = emptyCounts();
   #layers = new Map<number, MutablePilotCounts>();
@@ -122,13 +132,25 @@ export class Glm52PilotTracker {
     weights: Glm52PilotWeightSource;
     maxRows?: number;
     now?: () => number;
+    hintK?: number;
+    hintSink?: Glm52PilotHintSink;
   }) {
     this.config = options.config;
     this.weights = options.weights;
     this.maxRows = options.maxRows ?? GLM52_PILOT_MAX_ROWS;
     if (!Number.isSafeInteger(this.maxRows) || this.maxRows < 1)
       throw new RangeError("GLM PILOT maxRows must be a positive safe integer");
+    this.hintK = options.hintK ?? 0;
+    if (!Number.isSafeInteger(this.hintK) || this.hintK < 0 ||
+        this.hintK > this.config.numExpertsPerToken) {
+      throw new RangeError(
+        `GLM PILOT hintK must be in 0..${this.config.numExpertsPerToken}`,
+      );
+    }
+    if ((this.hintK > 0) !== (options.hintSink !== undefined))
+      throw new Error("GLM PILOT hintK and hintSink must be enabled together");
     this.#now = options.now ?? (() => performance.now());
+    this.#hintSink = options.hintSink ?? null;
     this.#rankMatches = Array(this.config.numExpertsPerToken).fill(0);
   }
 
@@ -186,6 +208,18 @@ export class Glm52PilotTracker {
           },
         );
         predicted.push(Array.from(route.indices));
+      }
+      if (this.#hintSink) {
+        const hinted: number[] = [];
+        const seen = new Set<number>();
+        for (const row of predicted) {
+          for (const expertId of row.slice(0, this.hintK)) {
+            if (seen.has(expertId)) continue;
+            seen.add(expertId);
+            hinted.push(expertId);
+          }
+        }
+        this.#hintSink.hintExperts(targetLayer, hinted);
       }
       const completedAt = this.#now();
       this.#pending.set(targetLayer, {
@@ -249,8 +283,9 @@ export class Glm52PilotTracker {
     const abandonedPredictions = this.#pending.size;
     const observedRows = this.#counts.rows;
     const telemetry: Glm52PilotTelemetry = {
-      mode: "measure-only",
+      mode: this.#hintSink ? "hint-only" : "measure-only",
       maxRows: this.maxRows,
+      hintK: this.hintK,
       predictionCalls: this.#predictionCalls,
       observedCalls: this.#observedCalls,
       rows: observedRows,
@@ -277,6 +312,7 @@ export class Glm52PilotTracker {
       layers: Object.freeze([...this.#layers.entries()]
         .sort(([left], [right]) => left - right)
         .map(([layer, counts]) => publicCounts(layer, counts))),
+      hints: this.#hintSink?.drainHintTelemetry() ?? null,
     };
     this.#pending.clear();
     this.#counts = emptyCounts();

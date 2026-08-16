@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { ExpertHintTelemetry } from "../src/expert-residency";
 import { MlxArray } from "../src/mlx/array";
 import type { Glm52Config } from "../src/model/glm52-config";
 import { Glm52PilotTracker } from "../src/model/glm52-pilot";
@@ -77,6 +78,34 @@ class PilotWeights {
 
   dispose(): void {
     for (const value of this.values.values()) value.dispose();
+  }
+}
+
+class HintSink {
+  readonly calls: Array<{ layer: number; expertIds: readonly number[] }> = [];
+
+  hintExperts(layer: number, expertIds: readonly number[]): void {
+    this.calls.push({ layer, expertIds: [...expertIds] });
+  }
+
+  drainHintTelemetry(): ExpertHintTelemetry {
+    const candidates = this.calls.reduce(
+      (sum, call) => sum + call.expertIds.length,
+      0,
+    );
+    return {
+      candidates,
+      residentSkipped: 0,
+      submitErrors: 0,
+      submitted: candidates,
+      completed: candidates,
+      dropped: 0,
+      operations: candidates,
+      bytes: candidates * 16,
+      errors: 0,
+      queueDepth: 0,
+      inFlight: 0,
+    };
   }
 }
 
@@ -164,6 +193,47 @@ describe("GLM-5.2 measurement-only PILOT", () => {
         observedCalls: 0,
         skippedWideCalls: 1,
         skippedWideRows: 9,
+      });
+    } finally {
+      input.dispose();
+      weights.dispose();
+    }
+  });
+
+  test("deduplicates the top PILOT_K ranks into bounded advisory hints", () => {
+    const weights = new PilotWeights();
+    const input = MlxArray.fromFloat32(
+      new Float32Array([2, 1, 1, 2]),
+      [1, 2, 2],
+    );
+    const hints = new HintSink();
+    const tracker = new Glm52PilotTracker({
+      config: config(),
+      weights,
+      hintK: 1,
+      hintSink: hints,
+    });
+    try {
+      tracker.predictNext(0, input);
+      expect(hints.calls).toEqual([{
+        layer: 1,
+        expertIds: [0, 1],
+      }]);
+      tracker.observeActual(1, [
+        { indices: [0, 3] },
+        { indices: [1, 2] },
+      ]);
+      expect(tracker.drainTelemetry()).toMatchObject({
+        mode: "hint-only",
+        hintK: 1,
+        predictionCalls: 1,
+        observedCalls: 1,
+        hints: {
+          candidates: 2,
+          submitted: 2,
+          completed: 2,
+          bytes: 32,
+        },
       });
     } finally {
       input.dispose();

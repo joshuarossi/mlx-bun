@@ -65,7 +65,7 @@ function argumentsMap(argv: string[]): Map<string, string> {
         "--mode on|off --model DIR --library DYLIB --output FILE " +
         "--trace FILE [--memory-mode strict|observe] " +
         "[--usage-path FILE --auto-pin 0|1 --live-repin 0|1] " +
-        "[--pilot-measure 0|1]",
+        "[--pilot-measure 0|1 --pilot-hint-k 0..8]",
       );
     }
     out.set(key.slice(2), value);
@@ -248,6 +248,9 @@ const usagePath = cli.get("usage-path")
 const autoPin = cli.get("auto-pin") === "1";
 const liveRepin = cli.get("live-repin") === "1";
 const pilotMeasure = cli.get("pilot-measure") === "1";
+const pilotHintK = Number(cli.get("pilot-hint-k") ?? "0");
+if (!Number.isSafeInteger(pilotHintK) || pilotHintK < 0 || pilotHintK > 8)
+  throw new Error("--pilot-hint-k must be an integer in 0..8");
 if ((autoPin || liveRepin) && !usagePath)
   throw new Error("--auto-pin/--live-repin require --usage-path");
 mkdirSync(dirname(output), { recursive: true });
@@ -307,6 +310,7 @@ try {
     autoPin,
     liveRepin,
     pilotMeasure,
+    pilotHintK,
     workers: 2,
     libraryPath,
     decodeKernel: "metal",
@@ -522,7 +526,8 @@ try {
       autoPin: runtime.autoPin,
       autoPinEnabled: autoPin,
       liveRepinEnabled: liveRepin,
-      pilotMeasureEnabled: pilotMeasure,
+      pilotMeasureEnabled: runtime.pilotMeasureEnabled,
+      pilotHintK,
       usage: runtime.usage?.snapshot() ?? null,
     },
     turns,

@@ -1,8 +1,13 @@
 import { describe, expect, it } from "bun:test";
-import type { ExpertIOSegment } from "../src/expert-io";
+import type {
+  ExpertIOHintSegment,
+  ExpertIOHintSnapshot,
+  ExpertIOSegment,
+} from "../src/expert-io";
 import { ExpertUsageLedger } from "../src/expert-usage";
 import {
   ExpertResidencyManager,
+  buildExpertHintSegments,
   buildExpertBatchUnion,
   planExpertResidency,
   summarizeExpertLatencies,
@@ -15,6 +20,16 @@ class FakeBackend implements ExpertResidencyBackend {
   footprint: number;
   failNextWait = false;
   failNextRelease = false;
+  hintSnapshot: ExpertIOHintSnapshot = {
+    submitted: 0,
+    completed: 0,
+    dropped: 0,
+    operations: 0,
+    bytes: 0,
+    errors: 0,
+    queueDepth: 0,
+    inFlight: 0,
+  };
   #states: Array<{ generation: bigint; phase: "idle" | "loading" | "ready" | "leased" }>;
 
   constructor(slots: number, footprint = 1) {
@@ -78,6 +93,25 @@ class FakeBackend implements ExpertResidencyBackend {
   physicalFootprint(): number {
     return this.footprint;
   }
+
+  hintSegments(segments: readonly ExpertIOHintSegment[]): boolean {
+    this.events.push(`hint:${segments.map((segment) => segment.offset).join(",")}`);
+    this.hintSnapshot = {
+      ...this.hintSnapshot,
+      submitted: this.hintSnapshot.submitted + 1,
+      completed: this.hintSnapshot.completed + 1,
+      operations: this.hintSnapshot.operations + segments.length,
+      bytes: this.hintSnapshot.bytes + segments.reduce(
+        (sum, segment) => sum + segment.length,
+        0,
+      ),
+    };
+    return true;
+  }
+
+  hintTelemetry(): ExpertIOHintSnapshot {
+    return { ...this.hintSnapshot };
+  }
 }
 
 function fixture(options: {
@@ -112,6 +146,22 @@ function fixture(options: {
 }
 
 describe("expert residency planning", () => {
+  it("limits F_NOCACHE advisory hints to the scale tail", () => {
+    const segments: ExpertIOSegment[] = [
+      { file: 0, offset: 100, destination: 0, length: 80 },
+      { file: 1, offset: 500, destination: 128, length: 64 },
+    ];
+    expect(buildExpertHintSegments(segments, 144, true)).toEqual([{
+      file: 1,
+      offset: 516,
+      length: 48,
+    }]);
+    expect(buildExpertHintSegments(segments, 144, false)).toEqual([
+      { file: 0, offset: 100, length: 80 },
+      { file: 1, offset: 500, length: 64 },
+    ]);
+  });
+
   it("derives the layer cap after the fixed 64-working and pinned tiers", () => {
     const plan = planExpertResidency({
       budgetBytes: 25_000,
@@ -257,6 +307,38 @@ describe("expert residency manager", () => {
       misses: 0,
       readBytes: 0,
     });
+  });
+
+  it("queues deduplicated advisory hints without changing residency or demand", async () => {
+    const { manager, backend } = fixture({ cap: 2 });
+    const lease = await manager.acquireBlock(3, [1]);
+    lease.releaseFenced();
+    manager.drainDemandTelemetry();
+    const before = manager.residencyMap();
+
+    manager.hintExperts(3, [1, 2, 2]);
+
+    expect(manager.residencyMap()).toEqual(before);
+    expect(manager.drainDemandTelemetry()).toMatchObject({
+      hits: 0,
+      misses: 0,
+      loads: 0,
+      readBytes: 0,
+    });
+    expect(manager.drainHintTelemetry()).toEqual({
+      candidates: 2,
+      residentSkipped: 1,
+      submitErrors: 0,
+      submitted: 1,
+      completed: 1,
+      dropped: 0,
+      operations: 1,
+      bytes: 1,
+      errors: 0,
+      queueDepth: 0,
+      inFlight: 0,
+    });
+    expect(backend.events).toContain("hint:3002");
   });
 
   it("keeps configured pinned experts outside LRU eviction", async () => {

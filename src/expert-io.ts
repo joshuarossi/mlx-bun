@@ -8,6 +8,7 @@ const { cstring, i32, ptr: pointer, u32, u64 } = FFIType;
 const EBUSY = 16;
 const EAGAIN = 35;
 const MAX_SEGMENTS = 8;
+const HINT_STATS = 8;
 
 type ExpertIOState = "open" | "closing" | "closed";
 
@@ -48,6 +49,23 @@ export interface ExpertIOSegment {
   readonly length: number;
 }
 
+export interface ExpertIOHintSegment {
+  readonly file: number;
+  readonly offset: number;
+  readonly length: number;
+}
+
+export interface ExpertIOHintSnapshot {
+  readonly submitted: number;
+  readonly completed: number;
+  readonly dropped: number;
+  readonly operations: number;
+  readonly bytes: number;
+  readonly errors: number;
+  readonly queueDepth: number;
+  readonly inFlight: number;
+}
+
 function resolveLibrary(explicit?: string): string {
   if (explicit) return explicit;
   if (process.env.MLX_BUN_EXPERT_IO_DYLIB) return process.env.MLX_BUN_EXPERT_IO_DYLIB;
@@ -85,6 +103,14 @@ export class ExpertIOSlabStore {
       mlx_bun_expert_io_submit: { args: [u64, u32, u64, u64, u64], returns: i32 },
       mlx_bun_expert_io_submitv: {
         args: [u64, u32, u64, pointer, pointer, pointer, pointer, u32],
+        returns: i32,
+      },
+      mlx_bun_expert_io_hintv: {
+        args: [u64, pointer, pointer, pointer, u32],
+        returns: i32,
+      },
+      mlx_bun_expert_io_hint_stats: {
+        args: [u64, pointer, u32],
         returns: i32,
       },
       mlx_bun_expert_io_wait: { args: [u64, u32, u64], returns: i32 },
@@ -194,6 +220,61 @@ export class ExpertIOSlabStore {
       () => this.#checkSlot(slot),
       () => this.#lib.symbols.mlx_bun_expert_io_poll(this.#handle, slot, generation),
     );
+  }
+
+  /** Queue advisory readahead on the dedicated hint worker. No slab is used. */
+  hintSegments(segments: readonly ExpertIOHintSegment[]): boolean {
+    this.#checkOpen();
+    if (segments.length === 0 || segments.length > MAX_SEGMENTS)
+      throw new RangeError(`expert hint requires 1..${MAX_SEGMENTS} segments`);
+    const files = new Uint32Array(segments.length);
+    const offsets = new BigUint64Array(segments.length);
+    const lengths = new BigUint64Array(segments.length);
+    for (let index = 0; index < segments.length; index++) {
+      const segment = segments[index]!;
+      if (!Number.isSafeInteger(segment.file) || segment.file < 0 ||
+          segment.file >= this.files.length)
+        throw new RangeError(`expert hint ${index} file is out of range`);
+      if (!Number.isSafeInteger(segment.offset) || segment.offset < 0)
+        throw new RangeError(`expert hint ${index} offset must be non-negative`);
+      if (!Number.isSafeInteger(segment.length) || segment.length <= 0)
+        throw new RangeError(`expert hint ${index} length must be positive`);
+      files[index] = segment.file;
+      offsets[index] = BigInt(segment.offset);
+      lengths[index] = BigInt(segment.length);
+    }
+    const status = this.#lib.symbols.mlx_bun_expert_io_hintv(
+      this.#handle,
+      ffiPtr(files),
+      ffiPtr(offsets),
+      ffiPtr(lengths),
+      segments.length,
+    );
+    if (status === 0) return true;
+    if (status === EAGAIN) return false;
+    throw new Error(`expert hint submit failed: errno ${status}`);
+  }
+
+  hintTelemetry(): ExpertIOHintSnapshot {
+    this.#checkOpen();
+    const out = new BigUint64Array(HINT_STATS);
+    const status = this.#lib.symbols.mlx_bun_expert_io_hint_stats(
+      this.#handle,
+      ffiPtr(out),
+      out.length,
+    );
+    if (status !== 0)
+      throw new Error(`expert hint telemetry failed: errno ${status}`);
+    return {
+      submitted: Number(out[0]),
+      completed: Number(out[1]),
+      dropped: Number(out[2]),
+      operations: Number(out[3]),
+      bytes: Number(out[4]),
+      errors: Number(out[5]),
+      queueDepth: Number(out[6]),
+      inFlight: Number(out[7]),
+    };
   }
 
   cancel(slot: number, generation: bigint): void {

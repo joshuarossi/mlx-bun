@@ -7,6 +7,7 @@ import {
 } from "../expert-usage";
 import { join } from "node:path";
 import {
+  buildExpertHintSegments,
   ExpertResidencyManager,
   DEFAULT_EXPERT_WORKING_SLOTS,
   planExpertResidency,
@@ -52,6 +53,8 @@ export interface Glm52ExpertRuntimeOptions {
   readonly liveRepin?: boolean;
   /** Opt-in G6 observation: score next-layer router predictions, no I/O. */
   readonly pilotMeasure?: boolean;
+  /** Opt-in G6 advisory prefetch width. Zero disables WILLNEED hints. */
+  readonly pilotHintK?: number;
 }
 
 export interface Glm52MtpExpertRuntime {
@@ -87,6 +90,7 @@ export class Glm52ExpertRuntime {
   readonly usage: ExpertUsageLedger | null;
   readonly autoPin: ExpertAutoPinPlan | null;
   readonly pilotMeasureEnabled: boolean;
+  readonly pilotHintK: number;
   lastRepin: readonly ExpertRepinEvent[] = Object.freeze([]);
   lastTelemetry: Glm52ExpertTurnTelemetry | null = null;
   #liveRepin: boolean;
@@ -106,6 +110,7 @@ export class Glm52ExpertRuntime {
     autoPin: ExpertAutoPinPlan | null,
     liveRepin: boolean,
     pilotMeasure: boolean,
+    pilotHintK: number,
   ) {
     this.plan = plan;
     this.store = store;
@@ -119,6 +124,7 @@ export class Glm52ExpertRuntime {
     this.autoPin = autoPin;
     this.#liveRepin = liveRepin;
     this.pilotMeasureEnabled = pilotMeasure;
+    this.pilotHintK = pilotHintK;
   }
 
   static async open(
@@ -147,6 +153,13 @@ export class Glm52ExpertRuntime {
     const mtpDraftTokens = options.mtpDraftTokens ?? 3;
     if (!Number.isSafeInteger(mtpDraftTokens) || mtpDraftTokens < 1)
       throw new Error("GLM MTP draft token count must be a positive safe integer");
+    const pilotHintK = options.pilotHintK ?? 0;
+    if (!Number.isSafeInteger(pilotHintK) || pilotHintK < 0 ||
+        pilotHintK > config.numExpertsPerToken) {
+      throw new Error(
+        `GLM PILOT hint K must be in 0..${config.numExpertsPerToken}`,
+      );
+    }
     const mtpWorkingSlots = mtpRepresentative
       ? Math.min(
           config.numRoutedExperts,
@@ -291,20 +304,27 @@ export class Glm52ExpertRuntime {
         usage: usage ?? undefined,
         locate: (layer, expertId) => {
           const value = layout(layer, expertId);
+          const segments = value.segments.map((segment) => {
+            const file = fileIndex.get(segment.file);
+            if (file === undefined)
+              throw new Error(`${layer}:${expertId}: non-main expert shard`);
+            return {
+              file,
+              offset: segment.sourceOffset,
+              destination: segment.destinationOffset,
+              length: segment.length,
+            };
+          });
+          const hintSegments = buildExpertHintSegments(
+            segments,
+            value.scaleOffset,
+            options.noCache !== false,
+          );
           return {
             layer,
             expertId,
-            segments: value.segments.map((segment) => {
-              const file = fileIndex.get(segment.file);
-              if (file === undefined)
-                throw new Error(`${layer}:${expertId}: non-main expert shard`);
-              return {
-                file,
-                offset: segment.sourceOffset,
-                destination: segment.destinationOffset,
-                length: segment.length,
-              };
-            }),
+            segments,
+            hintSegments,
           };
         },
       });
@@ -405,7 +425,8 @@ export class Glm52ExpertRuntime {
         usage,
         autoPin,
         options.liveRepin === true,
-        options.pilotMeasure === true,
+        options.pilotMeasure === true || pilotHintK > 0,
+        pilotHintK,
       );
       await manager.preloadPinned();
       await mtp?.manager.preloadPinned();

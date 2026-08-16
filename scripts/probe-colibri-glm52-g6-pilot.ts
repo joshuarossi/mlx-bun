@@ -1,15 +1,15 @@
 #!/usr/bin/env bun
 
 /**
- * G6 measurement-only PILOT A/B. Both arms use plain LRU with native MTP on;
- * the candidate applies the next-layer router and records quality/timing but
- * never submits prefetch I/O or changes residency.
+ * G6 PILOT A/B. Both arms use plain LRU with native MTP on. With --hint-k 0,
+ * the candidate measures next-layer routing only; --hint-k K additionally
+ * queues bounded advisory WILLNEED hints, never real slab loads or eviction.
  */
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-type Arm = "control" | "pilot-measure";
+type Arm = "control" | "pilot-measure" | `pilot-hint-k${number}`;
 
 interface Cli {
   readonly model: string;
@@ -18,6 +18,7 @@ interface Cli {
   readonly memoryMode: "strict" | "observe";
   readonly repeats: number;
   readonly resume: boolean;
+  readonly hintK: number;
 }
 
 function parse(argv: string[]): Cli {
@@ -40,6 +41,9 @@ function parse(argv: string[]): Cli {
   const repeats = Number(values.get("repeats") ?? "1");
   if (!Number.isSafeInteger(repeats) || repeats < 1 || repeats > 10)
     throw new Error("--repeats must be an integer in 1..10");
+  const hintK = Number(values.get("hint-k") ?? "0");
+  if (!Number.isSafeInteger(hintK) || hintK < 0 || hintK > 8)
+    throw new Error("--hint-k must be an integer in 0..8");
   return {
     model: required("model"),
     library: required("library"),
@@ -47,6 +51,7 @@ function parse(argv: string[]): Cli {
     memoryMode,
     repeats,
     resume: values.get("resume") === "1",
+    hintK,
   };
 }
 
@@ -82,7 +87,11 @@ const cli = parse(Bun.argv.slice(2));
 mkdirSync(cli.outputDir, { recursive: true });
 const laneScript = join(import.meta.dir, "probe-colibri-glm52-g5-memory.ts");
 
-async function runLane(label: string, pilotMeasure: boolean): Promise<any> {
+async function runLane(
+  label: string,
+  pilotMeasure: boolean,
+  pilotHintK: number,
+): Promise<any> {
   let attempt = 1;
   let suffix = "";
   let output: string;
@@ -114,8 +123,9 @@ async function runLane(label: string, pilotMeasure: boolean): Promise<any> {
     "--trace", trace,
     "--memory-mode", cli.memoryMode,
     "--pilot-measure", pilotMeasure ? "1" : "0",
+    "--pilot-hint-k", String(pilotHintK),
   ], {
-    stdout: "inherit",
+    stdout: "ignore",
     stderr: "inherit",
   });
   const exitCode = await child.exited;
@@ -123,29 +133,41 @@ async function runLane(label: string, pilotMeasure: boolean): Promise<any> {
   const report = readJson(output);
   if (report.result !== "pass")
     throw new Error(`G6 PILOT ${label} did not complete: ${report.result}`);
+  console.log(`G6 PILOT ${label}${suffix}: completed`);
   return report;
 }
 
 function turnSummary(turn: any): Record<string, unknown> {
+  const main = turn.expertTelemetry?.main ?? null;
   return {
+    generatedTokens: turn.tokenIds.length,
     endToEndTps: Number(turn.timing.endToEndTps),
     decodeTps: Number(turn.timing.decodeTps),
     wallMs: Number(turn.timing.wallMs),
     physicalFootprintBytes: Number(turn.finalPhysicalFootprintBytes),
     pilot: turn.expertTelemetry?.pilot ?? null,
+    demand: main?.demand ?? null,
+    layerForward: main?.layerForward ?? null,
   };
 }
 
+const candidateArm: Arm = cli.hintK > 0
+  ? `pilot-hint-k${cli.hintK}`
+  : "pilot-measure";
 const reports: Array<{ arm: Arm; repeat: number; report: any }> = [];
 for (let repeat = 1; repeat <= cli.repeats; repeat++) {
   const order: readonly Arm[] = repeat % 2 === 1
-    ? ["control", "pilot-measure"]
-    : ["pilot-measure", "control"];
+    ? ["control", candidateArm]
+    : [candidateArm, "control"];
   for (const arm of order) {
     reports.push({
       arm,
       repeat,
-      report: await runLane(`${arm}-${repeat}`, arm === "pilot-measure"),
+      report: await runLane(
+        `${arm}-${repeat}`,
+        arm !== "control",
+        arm === candidateArm ? cli.hintK : 0,
+      ),
     });
   }
 }
@@ -157,14 +179,25 @@ for (const item of reports) {
   );
   if (item.arm === "control" && pilots.some(Boolean))
     throw new Error(`${item.arm}-${item.repeat} unexpectedly measured PILOT`);
-  if (item.arm === "pilot-measure" &&
+  if (item.arm === candidateArm &&
       pilots.some((pilot: any) => !pilot || pilot.predictionCalls < 1)) {
     throw new Error(`${item.arm}-${item.repeat} produced no PILOT predictions`);
+  }
+  const expectedMode = cli.hintK > 0 ? "hint-only" : "measure-only";
+  if (item.arm === candidateArm &&
+      pilots.some((pilot: any) => pilot.mode !== expectedMode ||
+        pilot.hintK !== cli.hintK)) {
+    throw new Error(`${item.arm}-${item.repeat} reported the wrong PILOT mode`);
+  }
+  if (item.arm === candidateArm && cli.hintK > 0 &&
+      pilots.some((pilot: any) => !pilot.hints ||
+        pilot.hints.candidates < 1 || pilot.hints.submitted < 1)) {
+    throw new Error(`${item.arm}-${item.repeat} submitted no advisory hints`);
   }
 }
 
 const arms = Object.fromEntries(
-  (["control", "pilot-measure"] as const).map((arm) => {
+  (["control", candidateArm] as const).map((arm) => {
     const runs = reports.filter((item) => item.arm === arm).map((item) => ({
       repeat: item.repeat,
       openMs: Number(item.report.runtime.openMs),
@@ -174,6 +207,9 @@ const arms = Object.fromEntries(
     const warmPilots = runs
       .map((run) => (run.warm as any).pilot)
       .filter(Boolean);
+    const warmDemands = runs.map((run) => (run.warm as any).demand);
+    const warmForwards = runs.map((run) => (run.warm as any).layerForward);
+    const warmHints = warmPilots.map((pilot: any) => pilot.hints).filter(Boolean);
     const rankCount = warmPilots[0]?.rankHitRate?.length ?? 0;
     return [arm, {
       runs,
@@ -183,6 +219,21 @@ const arms = Object.fromEntries(
       )),
       medianWarmPhysicalFootprintBytes: median(runs.map(
         (run) => Number((run.warm as any).physicalFootprintBytes),
+      )),
+      medianWarmHitRate: median(warmDemands.map((demand: any) =>
+        Number(demand.hits) / Math.max(1, Number(demand.hits) +
+          Number(demand.misses)))),
+      medianWarmDiskBytesPerToken: median(runs.map((run) =>
+        Number((run.warm as any).demand.readBytes) /
+        Number((run.warm as any).generatedTokens))),
+      medianWarmDiskServiceP95Ms: median(warmDemands.map(
+        (demand: any) => Number(demand.diskService.p95Ms),
+      )),
+      medianWarmForegroundWaitP95Ms: median(warmDemands.map(
+        (demand: any) => Number(demand.foregroundWait.p95Ms),
+      )),
+      medianWarmLayerForwardP95Ms: median(warmForwards.map(
+        (forward: any) => Number(forward.p95Ms),
       )),
       pilot: warmPilots.length ? {
         medianPrecision: median(warmPilots.map(
@@ -222,22 +273,57 @@ const arms = Object.fromEntries(
               0,
             ) / pilot.rankHitRate.length)),
         ),
+        hints: warmHints.length ? {
+          medianCandidates: median(warmHints.map(
+            (hint: any) => Number(hint.candidates),
+          )),
+          medianResidentSkipped: median(warmHints.map(
+            (hint: any) => Number(hint.residentSkipped),
+          )),
+          medianSubmitted: median(warmHints.map(
+            (hint: any) => Number(hint.submitted),
+          )),
+          medianCompleted: median(warmHints.map(
+            (hint: any) => Number(hint.completed),
+          )),
+          medianDropped: median(warmHints.map(
+            (hint: any) => Number(hint.dropped),
+          )),
+          medianOperations: median(warmHints.map(
+            (hint: any) => Number(hint.operations),
+          )),
+          medianBytes: median(warmHints.map(
+            (hint: any) => Number(hint.bytes),
+          )),
+          medianErrors: median(warmHints.map(
+            (hint: any) => Number(hint.errors + hint.submitErrors),
+          )),
+          medianQueueDepthAtTurnEnd: median(warmHints.map(
+            (hint: any) => Number(hint.queueDepth),
+          )),
+        } : null,
       } : null,
     }];
   }),
 );
 const control = arms.control as any;
-const pilot = arms["pilot-measure"] as any;
+const pilot = arms[candidateArm] as any;
 const summary = {
-  schemaVersion: 1,
-  gate: "G6 measurement-only PILOT paired A/B",
+  schemaVersion: 2,
+  gate: cli.hintK > 0
+    ? `G6 hint-only PILOT_K=${cli.hintK} paired A/B`
+    : "G6 measurement-only PILOT paired A/B",
   result: "measured",
   replicationComplete: cli.repeats >= 3,
   contract: {
     mtp: "on",
     exactTokens: true,
     valuePreserving: true,
-    prefetchIo: false,
+    prefetchIo: cli.hintK > 0
+      ? "advisory-willneed-scales-only"
+      : "none",
+    realExpertLoads: false,
+    hintK: cli.hintK,
     repeats: cli.repeats,
     memoryMode: cli.memoryMode,
   },
@@ -248,8 +334,20 @@ const summary = {
     warmPhysicalFootprintBytesDelta:
       pilot.medianWarmPhysicalFootprintBytes -
       control.medianWarmPhysicalFootprintBytes,
+    warmDiskBytesPerTokenRatio: ratio(
+      pilot.medianWarmDiskBytesPerToken,
+      control.medianWarmDiskBytesPerToken,
+    ),
+    warmDiskServiceP95Ratio: ratio(
+      pilot.medianWarmDiskServiceP95Ms,
+      control.medianWarmDiskServiceP95Ms,
+    ),
+    warmForegroundWaitP95Ratio: ratio(
+      pilot.medianWarmForegroundWaitP95Ms,
+      control.medianWarmForegroundWaitP95Ms,
+    ),
   },
 };
 const summaryPath = join(cli.outputDir, "summary.json");
 await Bun.write(summaryPath, `${JSON.stringify(summary, null, 2)}\n`);
-console.log(`G6 measurement-only PILOT measured: ${summaryPath}`);
+console.log(`G6 ${candidateArm} measured: ${summaryPath}`);

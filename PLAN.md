@@ -2428,9 +2428,27 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         final footprint, but one repeat is only a correctness/cost shakeout,
         not a replicated performance claim. Machine-local evidence:
         `runs/colibri-g6-pilot-measure-shakeout-2026-08-16/summary.json`.
-      - [ ] Add bounded hint-only `PILOT_K=4`, then test real loads before
-        implementing coupling and two-step predictors. Keep every stage
-        value-preserving and default-off until its replicated MTP-on A/B wins.
+      - [x] Bounded hint-only `PILOT_K=4` (2026-08-16): a dedicated native
+        advisory queue issues scale-tail-only `F_RDADVISE` on a buffered file
+        descriptor while demand reads retain `F_NOCACHE`. Hints deduplicate
+        candidates, skip resident experts, never allocate/publish slots or
+        mutate demand/LRU state, and expose submitted/completed/dropped/error
+        counters plus queue depth. Deterministic native/residency/model tests
+        cover queue completion, exact bytes, stable deduplication, resident
+        skips, and unchanged residency/demand state. The one-repeat MTP-on
+        paired full-model shakeout kept tokens exact; each turn submitted and
+        completed 48,162 hints (144,486 operations / 1,972,715,520 advised
+        bytes) with zero drops, errors, or end-of-turn backlog. Warm logical
+        demand reads were exactly unchanged at 14,883,703,168 bytes/token;
+        disk-service p95 was 1.0065x control, foreground-wait p95 was 1.0193x,
+        and warm throughput was 0.9746x (0.14031 -> 0.13675 tok/s) with only
+        +3.8 MB final footprint. **Decision: keep hint-only off and do not
+        promote this policy to real speculative loads.** This is a correctness
+        shakeout, not a replicated performance claim. Evidence:
+        `runs/colibri-g6-pilot-hint-k4-shakeout-2026-08-16/summary.json`.
+      - [ ] Measure coupling and two-step predictor quality before revisiting
+        real speculative loads. Keep every stage value-preserving and
+        default-off until a replicated MTP-on A/B wins I/O/latency and tok/s.
       - [ ] Build/validate the Atlas probe and visualization; default only
         measured winners.
 - [ ] **G7 — persistence, concurrency, and API parity:** (a) versioned

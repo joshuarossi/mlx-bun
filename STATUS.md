@@ -286,21 +286,23 @@ adaptation win. Both policies remain off by default. The default-eligible
 summary and raw per-turn telemetry are machine-local under
 `runs/colibri-g6-learning-shakeout-2026-08-15/`.
 
-The isolated measurement-only PILOT arm is now implemented. It predicts the
-next layer's top-8 routes from the raw post-attention residual, then scores the
-copied prediction when the real next-layer route becomes available; it never
-checks residency, issues I/O, or mutates the expert plan. A one-repeat MTP-on
-paired full-model shakeout kept tokens exact and measured 69.90% top-8
-precision/recall. The first four predicted ranks were 87.08% precise and
-covered 43.54% of the actual top-8, with 179.9 ms p50 / 219.7 ms p95 usable
-lead against ~92.7 ms demand-read p95. Warm throughput was 1.009x control and
-final footprint increased ~3.5 MB; those cost numbers are encouraging but are
-not a replicated performance claim. Evidence is machine-local under
-`runs/colibri-g6-pilot-measure-shakeout-2026-08-16/`.
+The isolated measurement-only PILOT arm and bounded hint-only `PILOT_K=4` arm
+are now implemented. The latter uses a separate bounded native advisory queue
+to issue scale-tail-only `F_RDADVISE`; it skips resident experts and never
+allocates/publishes slots or mutates demand/LRU state. A one-repeat MTP-on
+paired full-model shakeout kept tokens exact. Each turn completed all 48,162
+submitted hints (144,486 operations / 1.973 GB advised) with zero drops,
+errors, queue backlog, or in-flight work at turn end. Warm logical demand bytes
+were exactly unchanged, while disk-service p95 was 1.0065x control,
+foreground-wait p95 was 1.0193x, and warm throughput was 0.9746x (0.14031 ->
+0.13675 tok/s); final footprint increased only ~3.8 MB. Hint-only therefore
+remains off and does not justify real speculative loads. This is a correctness
+shakeout, not a replicated performance result. Evidence is machine-local under
+`runs/colibri-g6-pilot-hint-k4-shakeout-2026-08-16/`; the preceding predictor
+quality result remains under `runs/colibri-g6-pilot-measure-shakeout-2026-08-16/`.
 
-**Next:** add a bounded, hint-only `PILOT_K=4` stage and measure it before any
-real speculative loads; then proceed to coupling/two-step predictors and the
-Atlas probe/validation/visualization.
+**Next:** measure coupling and two-step predictor quality before reconsidering
+real speculative loads; then build the Atlas probe/validation/visualization.
 The optional G4R prompt-seeding spike remains explicitly deferred.
 
 ## Where we are (2026-07-10 — v0.0.11 released)
