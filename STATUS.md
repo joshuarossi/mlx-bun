@@ -286,8 +286,21 @@ adaptation win. Both policies remain off by default. The default-eligible
 summary and raw per-turn telemetry are machine-local under
 `runs/colibri-g6-learning-shakeout-2026-08-15/`.
 
-**Next:** implement the isolated PILOT measurement arm, followed by coupling
-and two-step predictors; then build the Atlas probe/validation/visualization.
+The isolated measurement-only PILOT arm is now implemented. It predicts the
+next layer's top-8 routes from the raw post-attention residual, then scores the
+copied prediction when the real next-layer route becomes available; it never
+checks residency, issues I/O, or mutates the expert plan. A one-repeat MTP-on
+paired full-model shakeout kept tokens exact and measured 69.90% top-8
+precision/recall. The first four predicted ranks were 87.08% precise and
+covered 43.54% of the actual top-8, with 179.9 ms p50 / 219.7 ms p95 usable
+lead against ~92.7 ms demand-read p95. Warm throughput was 1.009x control and
+final footprint increased ~3.5 MB; those cost numbers are encouraging but are
+not a replicated performance claim. Evidence is machine-local under
+`runs/colibri-g6-pilot-measure-shakeout-2026-08-16/`.
+
+**Next:** add a bounded, hint-only `PILOT_K=4` stage and measure it before any
+real speculative loads; then proceed to coupling/two-step predictors and the
+Atlas probe/validation/visualization.
 The optional G4R prompt-seeding spike remains explicitly deferred.
 
 ## Where we are (2026-07-10 — v0.0.11 released)

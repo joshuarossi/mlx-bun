@@ -22,6 +22,10 @@ import {
   buildGlm52ExpertSlotLayout,
   type Glm52ExpertSlotLayout,
 } from "./glm52-expert-layout";
+import type {
+  Glm52PilotTelemetry,
+  Glm52PilotTracker,
+} from "./glm52-pilot";
 import { Glm52StockStreamedExpertExecutor } from "./glm52-streamed-experts";
 
 export interface Glm52ExpertRuntimeOptions {
@@ -46,6 +50,8 @@ export interface Glm52ExpertRuntimeOptions {
   readonly autoPin?: boolean;
   /** Opt-in G6 candidate: adapt at generation safe points, max four swaps. */
   readonly liveRepin?: boolean;
+  /** Opt-in G6 observation: score next-layer router predictions, no I/O. */
+  readonly pilotMeasure?: boolean;
 }
 
 export interface Glm52MtpExpertRuntime {
@@ -66,6 +72,7 @@ export interface Glm52ExpertTierTelemetry {
 export interface Glm52ExpertTurnTelemetry {
   readonly main: Glm52ExpertTierTelemetry;
   readonly mtp: Glm52ExpertTierTelemetry | null;
+  readonly pilot: Glm52PilotTelemetry | null;
 }
 
 export class Glm52ExpertRuntime {
@@ -79,9 +86,11 @@ export class Glm52ExpertRuntime {
   readonly mtpExecutor: Glm52StockStreamedExpertExecutor | null;
   readonly usage: ExpertUsageLedger | null;
   readonly autoPin: ExpertAutoPinPlan | null;
+  readonly pilotMeasureEnabled: boolean;
   lastRepin: readonly ExpertRepinEvent[] = Object.freeze([]);
   lastTelemetry: Glm52ExpertTurnTelemetry | null = null;
   #liveRepin: boolean;
+  #pilot: Glm52PilotTracker | null = null;
   #layouts = new Map<string, Glm52ExpertSlotLayout>();
   #mtpLayouts = new Map<string, Glm52ExpertSlotLayout>();
 
@@ -96,6 +105,7 @@ export class Glm52ExpertRuntime {
     usage: ExpertUsageLedger | null,
     autoPin: ExpertAutoPinPlan | null,
     liveRepin: boolean,
+    pilotMeasure: boolean,
   ) {
     this.plan = plan;
     this.store = store;
@@ -108,6 +118,7 @@ export class Glm52ExpertRuntime {
     this.usage = usage;
     this.autoPin = autoPin;
     this.#liveRepin = liveRepin;
+    this.pilotMeasureEnabled = pilotMeasure;
   }
 
   static async open(
@@ -394,6 +405,7 @@ export class Glm52ExpertRuntime {
         usage,
         autoPin,
         options.liveRepin === true,
+        options.pilotMeasure === true,
       );
       await manager.preloadPinned();
       await mtp?.manager.preloadPinned();
@@ -428,12 +440,21 @@ export class Glm52ExpertRuntime {
     this.usage?.flush();
   }
 
+  attachPilot(pilot: Glm52PilotTracker): void {
+    if (!this.pilotMeasureEnabled)
+      throw new Error("cannot attach GLM PILOT when measurement is disabled");
+    if (this.#pilot)
+      throw new Error("GLM PILOT tracker is already attached");
+    this.#pilot = pilot;
+  }
+
   /** Turn boundary: adapt the shared target/MTP tier, decay heat, then save. */
   async finishUsage(): Promise<void> {
     const mainDemand = this.manager.drainDemandTelemetry();
     const mainForward = this.executor.drainForwardTelemetry();
     const mtpDemand = this.mtp?.manager.drainDemandTelemetry() ?? null;
     const mtpForward = this.mtp?.executor.drainForwardTelemetry() ?? null;
+    const pilot = this.#pilot?.drainTelemetry() ?? null;
     const publishTelemetry = (): void => {
       this.lastTelemetry = {
         main: {
@@ -448,6 +469,7 @@ export class Glm52ExpertRuntime {
               layerForward: mtpForward,
             }
           : null,
+        pilot,
       };
     };
     if (!this.#liveRepin || !this.usage) {

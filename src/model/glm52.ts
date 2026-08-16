@@ -38,6 +38,7 @@ import {
   routeGlm52MoeF32,
   type Glm52RoutedExpertOutput,
 } from "./glm52-moe";
+import { Glm52PilotTracker } from "./glm52-pilot";
 import type { Glm52ExpertExecutionBackend } from "./glm52-streamed-experts";
 import {
   Glm52ExpertRuntime,
@@ -255,6 +256,7 @@ class Glm52Mlp {
     readonly weights: Glm52WeightSource,
     readonly layer: number,
     readonly expertBackend: Glm52ExpertExecutionBackend | null = null,
+    readonly pilot: Glm52PilotTracker | null = null,
   ) {}
 
   forward(input: MlxArray): MlxArray {
@@ -398,6 +400,7 @@ class Glm52Mlp {
         routedScale: this.config.routedScalingFactor,
       },
     );
+    this.pilot?.observeActual(this.layer, plan.routes);
     const sharedIntermediate =
       this.config.moeIntermediateSize * this.config.numSharedExperts;
     const shared = sharedIntermediate > 0
@@ -435,10 +438,11 @@ export class Glm52DecoderLayer {
     readonly layer: number,
     hasDsa: boolean,
     expertBackend: Glm52ExpertExecutionBackend | null = null,
+    pilot: Glm52PilotTracker | null = null,
   ) {
     const prefix = `model.layers.${layer}`;
     this.mla = new Glm52Mla(config, weights, layer);
-    this.mlp = new Glm52Mlp(config, weights, layer, expertBackend);
+    this.mlp = new Glm52Mlp(config, weights, layer, expertBackend, pilot);
     this.inputNorm = weights.tensor(`${prefix}.input_layernorm.weight`);
     this.postAttentionNorm = weights.tensor(
       `${prefix}.post_attention_layernorm.weight`,
@@ -532,6 +536,7 @@ export class Glm52DecoderLayer {
     dsaKey?.dispose();
     const residual = ops.add(input, attention);
     attention.dispose();
+    this.mlp.pilot?.predictNext(this.layer, residual);
     const postNorm = rmsNormF32Mlx(
       residual,
       this.postAttentionNorm,
@@ -561,6 +566,7 @@ export class Glm52Model {
   readonly finalNorm: MlxArray;
   readonly expertBackend: Glm52ExpertExecutionBackend | null;
   readonly expertRuntime: Glm52ExpertRuntime | null;
+  readonly pilot: Glm52PilotTracker | null;
 
   constructor(
     weights: Glm52WeightSource,
@@ -583,6 +589,10 @@ export class Glm52Model {
     this.capabilities = capabilities;
     this.expertBackend = expertBackend;
     this.expertRuntime = expertRuntime;
+    this.pilot = expertRuntime?.pilotMeasureEnabled
+      ? new Glm52PilotTracker({ config: glmConfig, weights })
+      : null;
+    if (this.pilot) expertRuntime!.attachPilot(this.pilot);
     this.layers = Array.from(
       { length: glmConfig.numHiddenLayers },
       (_, layer) => new Glm52DecoderLayer(
@@ -591,6 +601,7 @@ export class Glm52Model {
         layer,
         capabilities.dsa,
         expertBackend,
+        this.pilot,
       ),
     );
     this.finalNorm = weights.tensor("model.norm.weight");

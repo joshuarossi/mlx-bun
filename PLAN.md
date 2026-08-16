@@ -2414,7 +2414,23 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         only run-order noise over the identical startup placement. **Decision:
         keep `autoPin` and `liveRepin` off by default.** Machine-local evidence:
         `runs/colibri-g6-learning-shakeout-2026-08-15/summary.json`.
-      - [ ] Implement and isolate PILOT, coupling, and two-step predictors.
+      - [x] Measurement-only PILOT seam (2026-08-16): after layer L attention,
+        apply layer L+1's post-attention RMS norm and router to the unnormalized
+        residual, copy the predicted top-8 routes, and compare them with the
+        actual next-layer routes without consulting residency or issuing I/O.
+        Deterministic tests cover rank accounting, the faithful <=8-row guard,
+        abandoned predictions, and an exact two-layer streamed differential.
+        One MTP-on paired full-model shakeout kept tokens exact and measured
+        69.90% top-8 precision/recall. The first four predicted ranks were
+        87.08% precise and covered 43.54% of the actual top-8; usable lead time
+        was 179.9 ms p50 / 219.7 ms p95 versus ~92.7 ms demand-read p95. The
+        candidate was 1.009x control warm throughput with ~3.5 MB additional
+        final footprint, but one repeat is only a correctness/cost shakeout,
+        not a replicated performance claim. Machine-local evidence:
+        `runs/colibri-g6-pilot-measure-shakeout-2026-08-16/summary.json`.
+      - [ ] Add bounded hint-only `PILOT_K=4`, then test real loads before
+        implementing coupling and two-step predictors. Keep every stage
+        value-preserving and default-off until its replicated MTP-on A/B wins.
       - [ ] Build/validate the Atlas probe and visualization; default only
         measured winners.
 - [ ] **G7 — persistence, concurrency, and API parity:** (a) versioned

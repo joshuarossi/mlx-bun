@@ -1179,6 +1179,45 @@ win. Therefore `autoPin` and `liveRepin` remain off by default. Raw telemetry
 and the summary are machine-local under
 `runs/colibri-g6-learning-shakeout-2026-08-15/`.
 
+The next slice isolates PILOT as measurement-only telemetry. Immediately after
+layer L attention, it feeds the raw residual through layer L+1's
+post-attention RMS norm and router, copies the predicted top-8 expert IDs, and
+scores them when layer L+1 produces its real route. The arm does not inspect
+residency, enqueue reads, alter routing, or mutate the expert plan. It preserves
+Colibri's `S <= 8` guard and reports selection precision/recall, exact rows,
+per-rank hits, per-layer quality, predictor latency, usable lead time, skipped
+wide calls, and abandoned predictions. The internal `pilotMeasure` runtime
+option is exposed by the probe harnesses only; it is not a serving default or
+public CLI surface. Deterministic tests cover scoring, rank accounting, the
+width guard, drain/reset behavior, and a two-layer streamed differential whose
+tokens/output match the no-PILOT path.
+
+The paired runner keeps MTP on, alternates control/candidate order, refuses
+token drift and accidental overwrites, and supports resume/retry:
+
+```sh
+MODEL=/Users/joshrossi/.cache/huggingface/hub/models--mateogrgic--GLM-5.2-colibri-int4-with-int8-mtp/snapshots/3cc8db99b1b13fc79325d987ba3c1c430766b3b8
+LIBRARY="$PWD/dist-native/libmlx_bun_expert_io.dylib"
+bun scripts/probe-colibri-glm52-g6-pilot.ts \
+  --model "$MODEL" --library "$LIBRARY" \
+  --output-dir runs/colibri-g6-pilot --memory-mode observe --repeats 3
+```
+
+A one-repeat full-model shakeout completed 2026-08-16 with exact control and
+candidate tokens. Across 4,200 predictions / 16,650 scored rows per turn,
+top-8 precision and recall were 69.90%; predicted ranks 1-4 were cumulatively
+87.08% precise and covered 43.54% of the actual top-8. Predictor latency was
+36.95 ms p50 / 53.45 ms p95, while usable lead was 179.9 ms p50 / 219.7 ms
+p95 against ~92.7 ms candidate demand-read p95. Seventy-five wide-prefill calls
+(2,400 rows) were intentionally skipped and no predictions were abandoned.
+Candidate warm throughput was 1.009x control and final footprint increased
+about 3.5 MB, which shows no obvious one-run tax but is not a replicated
+performance result. The quality/lead signal advances the next experiment as a
+bounded, hint-only `PILOT_K=4`; real speculative loads remain a later,
+default-off A/B because rank 5-8 precision falls sharply and wrong loads can
+evict useful experts. Machine-local evidence is under
+`runs/colibri-g6-pilot-measure-shakeout-2026-08-16/`.
+
 **Exit:** each lever has a paired cold/warm A/B with hit rate, disk GB/token,
 disk-service vs foreground-wait, p50/p95/p99 forward latency, and tok/s — all
 measured with MTP on (a lever that wins MTP-off but loses MTP-on is not a

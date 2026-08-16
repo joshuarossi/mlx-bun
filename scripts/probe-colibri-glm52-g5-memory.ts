@@ -64,7 +64,8 @@ function argumentsMap(argv: string[]): Map<string, string> {
         "usage: probe-colibri-glm52-g5-memory.ts " +
         "--mode on|off --model DIR --library DYLIB --output FILE " +
         "--trace FILE [--memory-mode strict|observe] " +
-        "[--usage-path FILE --auto-pin 0|1 --live-repin 0|1]",
+        "[--usage-path FILE --auto-pin 0|1 --live-repin 0|1] " +
+        "[--pilot-measure 0|1]",
       );
     }
     out.set(key.slice(2), value);
@@ -246,6 +247,7 @@ const usagePath = cli.get("usage-path")
   : null;
 const autoPin = cli.get("auto-pin") === "1";
 const liveRepin = cli.get("live-repin") === "1";
+const pilotMeasure = cli.get("pilot-measure") === "1";
 if ((autoPin || liveRepin) && !usagePath)
   throw new Error("--auto-pin/--live-repin require --usage-path");
 mkdirSync(dirname(output), { recursive: true });
@@ -304,6 +306,7 @@ try {
     usagePath: usagePath ?? false,
     autoPin,
     liveRepin,
+    pilotMeasure,
     workers: 2,
     libraryPath,
     decodeKernel: "metal",
@@ -441,7 +444,7 @@ try {
 
     synchronize(gpuStream);
     clearCache();
-    if (usagePath) await runtime.finishUsage();
+    await runtime.finishUsage();
     const finalCheckpoint = monitor.record({
       phase: "turn_complete",
       turn,
@@ -519,6 +522,7 @@ try {
       autoPin: runtime.autoPin,
       autoPinEnabled: autoPin,
       liveRepinEnabled: liveRepin,
+      pilotMeasureEnabled: pilotMeasure,
       usage: runtime.usage?.snapshot() ?? null,
     },
     turns,

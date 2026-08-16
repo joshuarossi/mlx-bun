@@ -3,10 +3,13 @@ import type { ModelConfig } from "../src/config";
 import { MlxArray } from "../src/mlx/array";
 import * as ops from "../src/mlx/ops";
 import {
+  Glm52DecoderLayer,
   Glm52Model,
   type Glm52WeightSource,
 } from "../src/model/glm52";
 import type { Glm52Config } from "../src/model/glm52-config";
+import type { Glm52ExpertRuntime } from "../src/model/glm52-residency";
+import type { Glm52PilotTracker } from "../src/model/glm52-pilot";
 import {
   composeGlm52MoeOutputsMlx,
   type Glm52RoutedExpertOutput,
@@ -157,7 +160,7 @@ function runtimeConfig(glm: Glm52Config): ModelConfig {
     modelType: glm.modelType,
     architectures: glm.architectures,
     dtype: "float32",
-    text: { numHiddenLayers: 1 } as ModelConfig["text"],
+    text: { numHiddenLayers: glm.numHiddenLayers } as ModelConfig["text"],
     quantization: null,
     kvQuant: null,
     hasVisionSidecar: false,
@@ -201,6 +204,23 @@ function buildWeights(glm: Glm52Config): TinyGlmWeights {
     weights.put(`${s}.down_proj.weight`, matrix(HIDDEN, glm.moeIntermediateSize, 32), [HIDDEN, glm.moeIntermediateSize]);
   }
   return weights;
+}
+
+function cloneLayer(
+  weights: TinyGlmWeights,
+  source: number,
+  target: number,
+): void {
+  const sourcePrefix = `model.layers.${source}.`;
+  const targetPrefix = `model.layers.${target}.`;
+  for (const [name, value] of [...weights.host.entries()]) {
+    if (!name.startsWith(sourcePrefix)) continue;
+    weights.put(
+      `${targetPrefix}${name.slice(sourcePrefix.length)}`,
+      value.data.slice(),
+      [...value.shape],
+    );
+  }
 }
 
 function addMtpWeights(
@@ -468,6 +488,65 @@ test("streamed GLM async model path matches the synchronous sparse reference", a
     for (const cache of asyncCache) cache.dispose();
     syncModel.dispose();
     asyncModel.dispose();
+  }
+});
+
+test("measurement-only PILOT observes the next streamed layer without changing output", async () => {
+  const glm: Glm52Config = {
+    ...config(true),
+    numHiddenLayers: 2,
+    indexerTypes: ["full", "full"],
+  };
+  const controlWeights = buildWeights(glm);
+  const pilotWeights = buildWeights(glm);
+  cloneLayer(controlWeights, 0, 1);
+  cloneLayer(pilotWeights, 0, 1);
+  const control = new Glm52Model(
+    controlWeights,
+    runtimeConfig(glm),
+    glm,
+    { dsa: false, mtpMetadata: false },
+    new TinyAsyncExpertBackend(controlWeights, glm),
+  );
+  let attached: Glm52PilotTracker | null = null;
+  const pilotRuntime = {
+    pilotMeasureEnabled: true,
+    attachPilot: (value: Glm52PilotTracker) => { attached = value; },
+    close: () => {},
+  } as unknown as Glm52ExpertRuntime;
+  const measured = new Glm52Model(
+    pilotWeights,
+    runtimeConfig(glm),
+    glm,
+    { dsa: false, mtpMetadata: false },
+    new TinyAsyncExpertBackend(pilotWeights, glm),
+    pilotRuntime,
+  );
+  const controlCache = control.makeCache();
+  const measuredCache = measured.makeCache();
+  try {
+    const expected = await control.forwardAsync([2], controlCache);
+    const actual = await measured.forwardAsync([2], measuredCache);
+    try {
+      expectClose(actual.toFloat32(), expected.toFloat32());
+      expect(attached).not.toBeNull();
+      expect(attached!.drainTelemetry()).toMatchObject({
+        mode: "measure-only",
+        predictionCalls: 1,
+        observedCalls: 1,
+        rows: 1,
+        skippedWideCalls: 0,
+        abandonedPredictions: 0,
+      });
+    } finally {
+      expected.dispose();
+      actual.dispose();
+    }
+  } finally {
+    for (const cache of controlCache) cache.dispose();
+    for (const cache of measuredCache) cache.dispose();
+    control.dispose();
+    measured.dispose();
   }
 });
 
