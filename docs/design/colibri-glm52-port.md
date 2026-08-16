@@ -1164,7 +1164,20 @@ bun scripts/probe-colibri-glm52-g6-learning.ts \
 
 One repeat is a harness shakeout only; the summary marks a policy decision
 eligible only at three or more fresh-process repeats. The runner refuses to
-overwrite an existing arm, so a rerun must use a new output directory.
+overwrite an existing arm by default. Pass `--resume 1` to reuse completed
+lanes and preserve a failed lane while retrying it under an attempt suffix.
+
+The default-eligible three-repeat run completed 2026-08-16 with exact tokens
+in all nine measured arm runs. Against control, startup auto-pin raised median
+warm hit rate from 1.66% to 9.62% and reduced disk GB/token by 8.02%, but it
+also read 3.329 GiB of policy data, increased median warm physical footprint
+from 13.694 to 17.032 GiB, added 526 ms to median model open, and reduced warm
+end-to-end throughput from 0.149 to 0.143 tok/s (-4.06%). Live LFRU made zero
+swaps on the repeated workload; its 0.148 tok/s median (-0.38% versus control)
+is run-order noise over the same startup placement rather than a live-policy
+win. Therefore `autoPin` and `liveRepin` remain off by default. Raw telemetry
+and the summary are machine-local under
+`runs/colibri-g6-learning-shakeout-2026-08-15/`.
 
 **Exit:** each lever has a paired cold/warm A/B with hit rate, disk GB/token,
 disk-service vs foreground-wait, p50/p95/p99 forward latency, and tok/s — all

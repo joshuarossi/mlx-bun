@@ -274,14 +274,20 @@ expert, while live maps now expose tier, persistent count, heat, recency,
 hits/misses, and repin totals. Controlled probes explicitly disable usage
 learning so benchmark traffic cannot contaminate a real model profile.
 
-The paired harness is ready. It separates demand from startup/repin I/O and
-reports exact bytes/operations, disk-service versus foreground-visible wait,
-and main/MTP forward p50/p95/p99. A dedicated MTP-on seed process feeds
-byte-identical profile copies to control, auto-pin, and auto-pin+LFRU arms;
-token drift and accidental artifact overwrite are hard failures.
+The three-repeat MTP-on learning matrix is complete. All nine cold/warm arm
+runs were token-identical from the same 308,592-selection seed. Startup
+auto-pin moved median warm hit rate 1.66% -> 9.62% and reduced disk GB/token
+8.02%, but median warm throughput fell 4.06% (0.149 -> 0.143 tok/s), model open
+rose 526 ms, and warm physical footprint rose 3.337 GiB (13.694 -> 17.032
+GiB). Its 3.329 GiB preload therefore did not pay back. Live LFRU made zero
+swaps across every measured turn and landed at 0.148 tok/s, 0.38% below
+control; that is run-order noise over the unchanged startup placement, not an
+adaptation win. Both policies remain off by default. The default-eligible
+summary and raw per-turn telemetry are machine-local under
+`runs/colibri-g6-learning-shakeout-2026-08-15/`.
 
-**Next:** run the three-repeat MTP-on learning matrix and make an evidence-based
-default/no-default decision, then move to the isolated PILOT measurement arm.
+**Next:** implement the isolated PILOT measurement arm, followed by coupling
+and two-step predictors; then build the Atlas probe/validation/visualization.
 The optional G4R prompt-seeding spike remains explicitly deferred.
 
 ## Where we are (2026-07-10 — v0.0.11 released)

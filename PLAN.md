@@ -2402,9 +2402,21 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         MTP-on process, then gives identical copies to control, auto-pin, and
         auto-pin+LFRU arms, refuses token drift/overwrites, and supports three
         fresh repeats for a default-eligible result.
+      - [x] Three-repeat MTP-on startup-pin/LFRU decision (2026-08-16): all
+        nine cold/warm arm runs were token-identical from the same 308,592-
+        selection seed profile. Relative to control, startup auto-pin raised
+        the median warm hit rate 1.66% -> 9.62% and cut warm disk GB/token by
+        8.02%, but warm end-to-end speed fell 4.06% (0.149 -> 0.143 tok/s),
+        median open time rose 526 ms, and median warm physical footprint rose
+        3.337 GiB (13.694 -> 17.032 GiB). Its 3.329 GiB policy preload did not
+        pay back on this workload. Live LFRU performed zero swaps in all six
+        measured turns; its 0.148 tok/s median was 0.38% below control and is
+        only run-order noise over the identical startup placement. **Decision:
+        keep `autoPin` and `liveRepin` off by default.** Machine-local evidence:
+        `runs/colibri-g6-learning-shakeout-2026-08-15/summary.json`.
       - [ ] Implement and isolate PILOT, coupling, and two-step predictors.
-      - [ ] Run the required MTP-on paired A/B matrix, then build/validate the
-        Atlas probe and visualization; default only measured winners.
+      - [ ] Build/validate the Atlas probe and visualization; default only
+        measured winners.
 - [ ] **G7 — persistence, concurrency, and API parity:** (a) versioned
       compressed MLA/DSA/MTP `kv-store` save/restore with no full-K/V
       materialization; (b) batchable cache merge/extract, compressed-byte
