@@ -23,6 +23,7 @@ interface Cli {
   readonly outputDir: string;
   readonly memoryMode: "strict" | "observe";
   readonly repeats: number;
+  readonly resume: boolean;
 }
 
 function parse(argv: string[]): Cli {
@@ -51,6 +52,7 @@ function parse(argv: string[]): Cli {
     outputDir: required("output-dir"),
     memoryMode,
     repeats,
+    resume: values.get("resume") === "1",
   };
 }
 
@@ -97,6 +99,10 @@ function summarizeTurn(turn: any): Record<string, unknown> {
     totalReadBytes: demandReadBytes + policyReadBytes,
     diskGbPerToken:
       (demandReadBytes + policyReadBytes) / (128 * 1_000_000_000),
+    physicalFootprintBytes: Number(turn.finalPhysicalFootprintBytes ?? 0),
+    processRssBytes: Number(turn.finalMemory?.processRssBytes ?? 0),
+    processCompressedBytes:
+      Number(turn.finalMemory?.processCompressedBytes ?? 0),
     mainDiskService: main?.demand?.diskService ?? null,
     mainForegroundWait: main?.demand?.foregroundWait ?? null,
     mainLayerForward: main?.layerForward ?? null,
@@ -128,11 +134,27 @@ async function runLane(
   autoPin: boolean,
   liveRepin: boolean,
 ): Promise<any> {
-  const output = join(cli.outputDir, `${label}.json`);
-  const trace = join(cli.outputDir, `${label}.jsonl`);
-  if (existsSync(output) || existsSync(trace))
-    throw new Error(`refusing to overwrite existing G6 arm ${label}`);
-  console.log(`G6 ${label}: starting MTP-on lane`);
+  let attempt = 1;
+  let suffix = "";
+  let output: string;
+  let trace: string;
+  while (true) {
+    suffix = attempt === 1 ? "" : `-attempt-${attempt}`;
+    output = join(cli.outputDir, `${label}${suffix}.json`);
+    trace = join(cli.outputDir, `${label}${suffix}.jsonl`);
+    if (!existsSync(output) && !existsSync(trace)) break;
+    if (!cli.resume)
+      throw new Error(`refusing to overwrite existing G6 arm ${label}`);
+    if (existsSync(output)) {
+      const prior = readJson(output);
+      if (prior.result === "pass") {
+        console.log(`G6 ${label}${suffix}: reusing completed lane`);
+        return prior;
+      }
+    }
+    attempt++;
+  }
+  console.log(`G6 ${label}${suffix}: starting MTP-on lane`);
   const child = Bun.spawn([
     process.execPath,
     laneScript,
@@ -212,6 +234,21 @@ const arms = Object.fromEntries(
       medianWarmDiskGbPerToken: median(summarized.map(
         (item) => Number((item.warm as any).diskGbPerToken),
       )),
+      medianColdPolicyReadBytes: median(summarized.map(
+        (item) => Number((item.cold as any).policyReadBytes),
+      )),
+      medianWarmPhysicalFootprintBytes: median(summarized.map(
+        (item) => Number((item.warm as any).physicalFootprintBytes),
+      )),
+      medianWarmProcessCompressedBytes: median(summarized.map(
+        (item) => Number((item.warm as any).processCompressedBytes),
+      )),
+      totalRepins: summarized.reduce(
+        (total, item) => total +
+          Number(((item.cold as any).repin ?? []).length) +
+          Number(((item.warm as any).repin ?? []).length),
+        0,
+      ),
     }];
   }),
 );
@@ -242,6 +279,11 @@ const summary = {
       warmDiskGbPerTokenRatio:
         ratio(auto.medianWarmDiskGbPerToken, control.medianWarmDiskGbPerToken),
       startupMsDelta: auto.medianOpenMs - control.medianOpenMs,
+      coldPolicyReadBytesDelta:
+        auto.medianColdPolicyReadBytes - control.medianColdPolicyReadBytes,
+      warmPhysicalFootprintBytesDelta:
+        auto.medianWarmPhysicalFootprintBytes -
+        control.medianWarmPhysicalFootprintBytes,
     },
     liveLfruVsAutoPin: {
       warmTpsRatio: ratio(live.medianWarmTps, auto.medianWarmTps),
@@ -249,6 +291,11 @@ const summary = {
       warmDiskGbPerTokenRatio:
         ratio(live.medianWarmDiskGbPerToken, auto.medianWarmDiskGbPerToken),
       startupMsDelta: live.medianOpenMs - auto.medianOpenMs,
+      coldPolicyReadBytesDelta:
+        live.medianColdPolicyReadBytes - auto.medianColdPolicyReadBytes,
+      warmPhysicalFootprintBytesDelta:
+        live.medianWarmPhysicalFootprintBytes -
+        auto.medianWarmPhysicalFootprintBytes,
     },
   },
 };

@@ -312,13 +312,19 @@ try {
   });
   openMs = performance.now() - openStart;
   const runtime = model.expertRuntime!;
-  if (runtime.plan.plannedBytes !== plan.plannedProcessBytes) {
+  if (!autoPin && runtime.plan.plannedBytes !== plan.plannedProcessBytes) {
     throw new Error(
       `runtime plan ${runtime.plan.plannedBytes} != G5 resource equation ` +
       `${plan.plannedProcessBytes}`,
     );
   }
-  if (
+  if (autoPin && runtime.plan.plannedBytes > plan.processLimitBytes) {
+    throw new Error(
+      `learning runtime plan ${runtime.plan.plannedBytes} exceeds process limit ` +
+      `${plan.processLimitBytes}`,
+    );
+  }
+  if (!autoPin &&
     (runtime.mtp?.plan.slabBytes ?? 0) !==
     plan.lineItems.mtpExpertSlabBytes
   ) {
