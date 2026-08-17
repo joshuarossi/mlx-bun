@@ -1301,8 +1301,8 @@ radius/opacity reflects specialization. Synthetic and CLI integration tests
 cover category-size normalization, the replication gate, held-out prediction,
 schema compatibility, and all three outputs.
 
-The real 30-prompt sweep remains the final G6 gate and is intentionally a
-Josh-run long model job:
+The real 30-prompt sweep is the final G6 gate and remains a Josh-run long model
+job when it needs to be reproduced:
 
 ```sh
 MODEL=/Users/joshrossi/.cache/huggingface/hub/models--mateogrgic--GLM-5.2-colibri-int4-with-int8-mtp/snapshots/3cc8db99b1b13fc79325d987ba3c1c430766b3b8
@@ -1315,16 +1315,27 @@ bun scripts/analyze-colibri-glm52-g6-atlas.ts \
   --output-dir runs/colibri-g6-atlas/analysis
 ```
 
+The sweep completed 2026-08-16 with all 30 prompts. It retained 13,236 experts
+after the >=2-prompt replication gate; 1,065 (8.05%) were strong specialists at
+the >=0.50 threshold. Strict global leave-one-prompt-out classification scored
+29/30 (96.7%, chance 10.0%), exactly reproducing Colibri's published accuracy
+and closely reproducing its 13,260 retained / 1,041 strong (7.85%) population.
+The only miss was Chinese prompt 1 classified as poetry. The detailed JSON,
+Colibri-compatible `experts.json`, and interactive report are machine-local at
+`runs/colibri-g6-atlas/analysis/`.
+
 The sweep is resumable with `--resume 1` and refuses mixed model/probe/options
 or incomplete trace/manifest checkpoints. No Atlas-informed warm-start is
-implemented or defaulted; that remains a separate experiment after labels pass
-the held-out reproduction gate.
+implemented or defaulted; that remains a separate experiment despite the
+successful label reproduction.
 
 **Exit:** each lever has a paired cold/warm A/B with hit rate, disk GB/token,
 disk-service vs foreground-wait, p50/p95/p99 forward latency, and tok/s — all
 measured with MTP on (a lever that wins MTP-off but loses MTP-on is not a
-default). Only positive Apple results become defaults. Atlas labels reproduce across prompts;
-prefetch remains value-preserving and never changes selected experts.
+default). Only positive Apple results become defaults. Atlas labels reproduce
+across prompts; prefetch remains value-preserving and never changes selected
+experts. **Closed 2026-08-16:** all defaults remain conservative, the Atlas
+gate reproduced 29/30 held-out labels, and no speculative-load policy advanced.
 
 ### G7 — persistence, concurrency, and full API parity
 

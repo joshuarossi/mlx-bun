@@ -37,8 +37,8 @@ skips and zero failures. Phase 21 is explicitly unpaused.
 
 ## Active: native Colibri/GLM-5.2 port (2026-08-15)
 
-The G1–G3 foundation is landed on `main`. Phase 21 **G0–G5 are complete; G6 is
-active**. The landed foundation has a strict versioned synthetic Colibri
+The G1–G3 foundation is landed on `main`. Phase 21 **G0–G6 are complete; G6R
+is next**. The landed foundation has a strict versioned synthetic Colibri
 gate/up/down artifact, fixed 16 KiB native slabs, passive bounded `pread`
 workers, async Bun-side completion polling, generation-bound CPU/GPU leases,
 lazy-graph evaluation plus stream synchronization before reuse, deterministic
@@ -315,17 +315,20 @@ default-off and real speculative loads are rejected. Evidence is machine-local
 under `runs/colibri-g6-pilot-two-step-shakeout-2026-08-16/` and
 `runs/colibri-g6-coupling-shakeout-2026-08-16/`.
 
-The controlled Atlas workflow is implemented. It pins Colibri's 10 x 3 prompt
-matrix, captures isolated full target routes with every runtime policy disabled,
-applies per-run normalization plus a >=2-prompt replication gate, and performs
-globally non-leaky leave-one-prompt-out validation. The analyzer writes detailed
-JSON, Colibri-compatible `experts.json`, and a self-contained interactive
-affinity map. Seven focused tests and TypeScript pass; the real prompts tokenize
-to 13-36 tokens with thinking disabled.
+The controlled Atlas workflow and real-model gate are complete. The 30-prompt
+sweep retained 13,236 replicated experts, including 1,065 strong specialists
+(8.05%), and global leave-one-prompt-out classification scored 29/30 (96.7%,
+chance 10.0%). That exactly reproduces Colibri's published held-out accuracy;
+its published population was 13,260 replicated / 1,041 strong (7.85%). The
+single miss was Chinese prompt 1 classified as poetry. Detailed JSON,
+Colibri-compatible `experts.json`, and the verified standalone interactive map
+are machine-local under `runs/colibri-g6-atlas/analysis/`. Atlas-informed
+warm-start and the optional G4R prompt-seeding spike remain explicitly deferred
+and default-off.
 
-**Next:** Josh runs the resumable 30-prompt real-model Atlas sweep; then record
-held-out accuracy and publish the measured visualization. Atlas-informed
-warm-start and the optional G4R prompt-seeding spike remain explicitly deferred.
+**Next:** G6R starts with the user-run immutable IndexShare indexer overlay,
+then the tiled deterministic device top-k implementation and long-context
+parity/performance matrix described below.
 
 ## Where we are (2026-07-10 — v0.0.11 released)
 

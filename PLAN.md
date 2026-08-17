@@ -2358,7 +2358,7 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         cold-to-warm footprint deltas and <=13.791 GiB peak close the requested
         32 GB fit measurement without mislabeling it a strict zero-compression
         pass. Evidence: machine-local `runs/colibri-g5/{mtp-on,mtp-off,summary}`.
-- [ ] **G6 — complete scheduler + Atlas:** batch-union; bounded
+- [x] **G6 — complete scheduler + Atlas:** batch-union; bounded
       pread/F_NOCACHE workers; resident-first Metal submit overlapped with
       misses; persistent `.usage`; auto-pin; live LFRU (decay + 25%+4
       hysteresis + bounded swaps); PILOT, coupling, and two-step prediction.
@@ -2473,9 +2473,18 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         Emit detailed JSON, Colibri-compatible `experts.json`, and a standalone
         interactive affinity map. Seven focused tests, including an end-to-end
         analyzer run, pass; the pinned prompts tokenize to 13-36 tokens.
-      - [ ] Run the resumable 30-prompt real-model Atlas sweep, require labels
-        to reproduce on held-out prompts, publish the measured visualization,
-        and keep Atlas-informed warm-start separate/default-off.
+      - [x] Real-model Atlas reproduction (2026-08-16): the resumable sweep
+        completed all 30 isolated prompts and retained 13,236 experts after
+        the >=2-prompt replication gate. Global leave-one-prompt-out
+        classification scored 29/30 (96.7%, chance 10.0%), exactly matching
+        Colibri's published held-out accuracy; the only miss was Chinese prompt
+        1 classified as poetry. Of the retained experts, 1,065 (8.05%) crossed
+        the >=0.50 strong-specialist threshold, versus Colibri's published
+        1,041/13,260 (7.85%). The standalone interactive report rendered at
+        desktop and narrow widths without application errors (the only browser
+        console event was the expected absent favicon). Atlas-informed
+        warm-start remains a separate, unimplemented, default-off experiment.
+        Evidence: machine-local `runs/colibri-g6-atlas/analysis/`.
 - [ ] **G7 — persistence, concurrency, and API parity:** (a) versioned
       compressed MLA/DSA/MTP `kv-store` save/restore with no full-K/V
       materialization; (b) batchable cache merge/extract, compressed-byte
