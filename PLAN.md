@@ -2639,6 +2639,15 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
           redirect/HTTP-200 metadata passed, followed by a clean default-URL
           `ensureNativeRuntime()` download, checksum, and extraction containing
           all five required files. Phase 21 G8 is closed.
+        - [x] Published the actual mlx-bun v0.0.12 distribution (2026-08-17):
+          signed/notarized GitHub release plus stable asset, npm
+          `mlx-bun@0.0.12`, and Homebrew tap. Both 80,420,638-byte binary
+          assets report SHA-256
+          `64c4d697faba65789c2af7c1344ee39024f8a03bd6839d2c8df4ec7dce872a74`;
+          npm reports shasum `0dcc5c200fa81dbea1f8be854e21a0efbbdebbfa`.
+          Public HTTP, registry, release metadata, and tap contents were
+          independently re-read after publication. The full release gate was
+          1,936 pass / 71 skip / 0 fail with 28,378 assertions.
 
 **Correctness boundary:** default quality policy keeps checkpoint precision and
 true top-8 routing. `CACHE_ROUTE`, expert top-p/top-k, and any expert budget are

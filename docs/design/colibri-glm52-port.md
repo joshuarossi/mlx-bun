@@ -1425,6 +1425,13 @@ advertised false, not emulated.
     `native-v0.2.0` GitHub release. Both assets are uploaded; anonymous HTTP
     resolution and an empty-cache default-URL download/checksum/extraction
     passed with all five required files. G8 is closed.
+  - [x] Published mlx-bun v0.0.12 itself: the signed/notarized GitHub release
+    and stable asset, npm package, and Homebrew tap are live and independently
+    verified. Both 80,420,638-byte binary assets carry SHA-256
+    `64c4d697faba65789c2af7c1344ee39024f8a03bd6839d2c8df4ec7dce872a74`;
+    npm reports shasum `0dcc5c200fa81dbea1f8be854e21a0efbbdebbfa`.
+    The final full gate passed 1,936 tests / 28,378 assertions with 71 skips
+    and zero failures.
 - Update README plus `docs/reference/{models,memory,cli,server-config,
   server-api,library-api,features-matrix}.md` in the same feature changes that
   add the corresponding flags, fields, routes, defaults, and limitations.

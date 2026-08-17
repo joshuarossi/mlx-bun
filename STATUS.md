@@ -356,6 +356,16 @@ published with both assets; the archive's remote size and SHA-256 match the
 baked constants. Anonymous HTTP resolution and a clean default-URL
 download/checksum/extraction passed with all five required files.
 
+The actual mlx-bun v0.0.12 package release is also complete (2026-08-17).
+GitHub publishes the signed/notarized 80,420,638-byte arm64 bundle under both
+versioned and stable asset names with SHA-256
+`64c4d697faba65789c2af7c1344ee39024f8a03bd6839d2c8df4ec7dce872a74`;
+`mlx-bun@0.0.12` is live on npm (registry shasum
+`0dcc5c200fa81dbea1f8be854e21a0efbbdebbfa`), and the public Homebrew tap
+points to the same archive and checksum. The full two-shard release gate passed
+1,936 tests / 28,378 assertions with 71 skips and zero failures. Remote `main`
+contains the release implementation and in-repo formula mirror.
+
 **G6R Stage 0 complete:** at context 2,049, the patched model produced all 21
 expected full-layer top-2,048 selections. All 21 official Colibri score rows
 were tie-free and replayed through mlx-bun with exact ordered positions and
