@@ -1,6 +1,7 @@
 import { dlopen, FFIType, ptr as ffiPtr, toArrayBuffer } from "bun:ffi";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { nativePackDir } from "./native-pack";
 import type { MlxArray } from "./mlx/array";
 import type { MlxHandle } from "./mlx/ffi";
 
@@ -71,6 +72,7 @@ function resolveLibrary(explicit?: string): string {
   if (process.env.MLX_BUN_EXPERT_IO_DYLIB) return process.env.MLX_BUN_EXPERT_IO_DYLIB;
   const candidates = [
     join(dirname(process.execPath), "libmlx_bun_expert_io.dylib"),
+    join(nativePackDir(), "libmlx_bun_expert_io.dylib"),
     join(import.meta.dir, "..", "dist-native", "libmlx_bun_expert_io.dylib"),
   ];
   return candidates.find(existsSync) ?? candidates[0]!;

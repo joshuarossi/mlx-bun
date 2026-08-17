@@ -16,9 +16,7 @@ surface); direct library callers must do the same.
 ```ts
 import {
   ensureNativeRuntime,
-  loadModelConfig,
-  Weights,
-  createModel,       // dispatches to Gemma4Model / MiniCPM5Model / Qwen35Model
+  openModel,         // artifact-aware dispatch, including bounded GLM-5.2
   loadTokenizer,
   ChatTemplate,
   generate,
@@ -26,13 +24,15 @@ import {
 
 await ensureNativeRuntime();
 const dir = "/path/to/hf-snapshot";          // mlx-bun ls prints these
-const config = await loadModelConfig(dir);
-const model = createModel(await Weights.open(dir), config);   // returns RuntimeModel
+const model = await openModel(dir, {
+  // Used only by the direct Colibri GLM-5.2 artifact; other models ignore it.
+  contextTokens: 4096, maxGenerationTokens: 256, enableMtp: false,
+});
 const tok = await loadTokenizer(dir);
 const template = await ChatTemplate.load(dir);
 // Gemma4Model and MiniCPM5Model can still be imported directly from "mlx-bun"
 // if you need the concrete type. Qwen35Model is NOT exported from the public
-// package — use createModel/RuntimeModel (preferred dispatch), or import from
+// package — use openModel/RuntimeModel (preferred artifact-aware dispatch), or import from
 // "./src/model/qwen3_5" in-repo.
 
 const ids = tok.encode(template.render([{ role: "user", content: "hi" }]));
@@ -45,13 +45,15 @@ console.log(tok.decode(out, true));
 console.log(gen.stats);                          // set once iteration ends
 ```
 
-Weight loading is lazy (mmap + mlx native loader): construction is
-milliseconds; weights materialize on first forward.
+Ordinary safetensors loading is lazy (mmap + mlx native loader). GLM-5.2 first
+runs its header-only exact process equation, then opens the bounded Colibri
+resident/expert tiers; impossible plans fail before either tier is committed.
 
 > **First run:** library consumers bypass the CLI's first-run step, so
 > call `await ensureNativeRuntime()` once before constructing a model on
 > a machine that may not have the MLX native runtime yet — it downloads
-> the sha256-verified native pack to `~/Library/Caches/mlx-bun/` and is
+> the sha256-verified native pack (MLX plus the direct-Colibri expert-I/O
+> helper) to `~/Library/Caches/mlx-bun/` and is
 > a no-op when the runtime is already present (beside the executable,
 > already cached, or installed via homebrew). `nativeRuntimeDir()`
 > returns the resolved directory, or `null` on a fresh machine.
@@ -109,6 +111,24 @@ budget (pre-GPU, mmap-only check). The server exposes OpenAI chat
 completions, Anthropic `/v1/messages`, OpenAI Responses, embeddings,
 adapters, and `/stats` — [server-api.md](./server-api.md).
 
+For GLM-5.2, pass its load-only resource controls under `glm`:
+
+```ts
+const ctx = await loadContext(dir, "glm-5.2", {
+  glm: {
+    contextTokens: 4096,
+    maxGenerationTokens: 128,
+    batchSize: 8,
+    enableMtp: true, // default; native MTP routes requests serial+spec
+  },
+});
+```
+
+`openModel()` and `loadContext()` both select the streamed Colibri runtime;
+callers do not use `Weights.open()` or `createModel()` for this artifact.
+Direct `generate()` supports the full sampling/grammar/logprobs contract but
+does not itself mount a drafter; native MTP is a serving-context feature.
+
 ## Text embeddings
 
 ```ts
@@ -154,16 +174,24 @@ under one adapter must not seed another's prefill).
 ```ts
 import { saveKvCache, loadKvCache } from "./src/kv-store";
 saveKvCache("/tmp/prefix.kv", tokens, caches);       // page-aligned file
-const { tokens, caches, mmap } = loadKvCache("/tmp/prefix.kv", model);
-// reload is a zero-copy MAP_PRIVATE mmap straight to the GPU (~1 ms);
-// keep `mmap` referenced as long as the caches live
+const { tokens, caches } = loadKvCache("/tmp/prefix.kv", model, {
+  modelId, configFingerprint, tokenizerHash, verify: true,
+});
+// Restore streams one tensor at a time from a read-only mmap into MLX-owned
+// storage, drops each clean file-page range, and unmaps before returning.
 // Note: loadKvCache accepts anything with makeCache(): Cache[] — it validates
 // the entry count against the cache list makeCache() returns (not
 // model.layers.length, which is wrong for KV-shared models like e4b, whose
 // makeCache() returns donors only). RuntimeModel qualifies directly, no cast.
 ```
 
-Quantized caches are not persistable yet (documented gap).
+Format v3 supports plain, rotating, quantized, TurboQuant, SSM, and GLM-5.2
+checkpoint-native caches. GLM rows use `mla`, `mla-dsa`, and `mtp-mla` kinds and
+store only compressed latent/RoPE/DSA state—never reconstructed full K/V.
+`Glm52NativeMtpSource.clonePersistentCache()` returns an owned MTP snapshot;
+`restorePersistentCache()` adopts a validated restored `mtp-mla` row. Writes
+are page-aligned, hashed, atomic (`.tmp` + fsync + rename), and available in
+both synchronous and event-loop-yielding `saveKvCacheAsync` forms.
 
 ## Registry + fit (model discovery and memory math)
 

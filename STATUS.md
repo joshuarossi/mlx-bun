@@ -35,10 +35,14 @@ pinned-oracle blobs are bit-exact, and their manifest now binds provenance and
 SHA-256 values. The final two-shard gate passed 1,857 tests with 71 intentional
 skips and zero failures. Phase 21 is explicitly unpaused.
 
-## Active: native Colibri/GLM-5.2 port (2026-08-15)
+## Active: native Colibri/GLM-5.2 port (2026-08-17)
 
-The G1–G3 foundation is landed on `main`. Phase 21 **G0–G6 are complete; G6R
-is next**. The landed foundation has a strict versioned synthetic Colibri
+The G1–G3 foundation is landed on `main`. Phase 21 **G0–G8 are complete**.
+Acquisition now has exact remaining
+disk preflight/resume accounting, and the normal CLI/API/status surfaces show
+the artifact-aware streamed plan, measured/direct/aspirational speed as
+distinct quantities, and live main/MTP expert-tier telemetry. The landed
+foundation has a strict versioned synthetic Colibri
 gate/up/down artifact, fixed 16 KiB native slabs, passive bounded `pread`
 workers, async Bun-side completion polling, generation-bound CPU/GPU leases,
 lazy-graph evaluation plus stream synchronization before reuse, deterministic
@@ -74,15 +78,17 @@ real-model GLM/MLA/router/MTP/KV oracle reproduced byte-for-byte twice; both
 heads predict teacher token 16 and the compact validated capture is tracked in
 `fixtures/colibri-glm52/real-model-oracle.json`.
 
-The recommended artifact has no DSA indexer tensors. G0 explicitly waives
-full-model DSA and retains the exact-pin model-free DSA fixtures for G2. The
-planned stock overlay is a separate immutable artifact: extract only the
-indexer from 20 pinned source shards (~99.90 GiB input, ~197 MB output), without
-mutating or duplicating the 357 GiB serving snapshot. It is not needed at the
-128-token G0 context because Colibri's first 21 layers use full attention and
-DSA selects from at most `topk=2048` prior tokens. Complete
-commands, caveats, and evidence hashes live in
-[docs/investigations/colibri-oracle-pin.md](docs/investigations/colibri-oracle-pin.md).
+The published artifact has no DSA indexer tensors. The machine-local HF
+snapshot now carries the exact stock overlay generated outside this repository:
+20 `out-idx-*` files, 197,202,400 bytes, from pinned
+`zai-org/GLM-5.2-FP8@ba978f7d`. Header validation finds all 21 full indexers,
+57 shared layers with no indexer requirement, complete MTP metadata, 118,646
+tensors, and no layout errors. The original G0 waiver and model-free fixtures
+remain historical evidence; the patched HF model is the long-context target.
+At the original 128-token G0 context DSA still selects densely because the
+context is below `topk=2048`; sparse behavior begins only at token 2,049.
+Commands, caveats, and current evidence are in
+[docs/investigations/indexshare-performance-spike.md](docs/investigations/indexshare-performance-spike.md).
 
 G2 now has a dedicated `glm_moe_dsa` config/model and artifact-aware
 `openModel()` path, exact GLM template fallback and multiple EOS, direct
@@ -326,9 +332,114 @@ are machine-local under `runs/colibri-g6-atlas/analysis/`. Atlas-informed
 warm-start and the optional G4R prompt-seeding spike remain explicitly deferred
 and default-off.
 
-**Next:** G6R starts with the user-run immutable IndexShare indexer overlay,
-then the tiled deterministic device top-k implementation and long-context
-parity/performance matrix described below.
+**G8 productization is complete:** the downloader computes
+the exact remaining payload before transfer, credits complete shared blobs and
+valid `.incomplete` prefixes, and refuses before the first payload when the
+target volume cannot fit the remainder plus a fixed 1 GiB reserve. The pinned
+~357 GiB artifact, cache-volume selection, resume/recovery flow, exact 32 GB /
+25 GiB launch command, model lineage, and Apache-2.0 Colibri attribution are
+documented. The CLI/API/status surfaces now show the exact streamed resource
+plan, measured/direct/aspirational speed separately, and live main/MTP expert
+telemetry. `benchmarks/RESULTS.md` curates the final oracle, memory, speed,
+expert-I/O, policy, DSA, and API cells, including the 13.45x gap to the 2 tok/s
+aspiration. The focused G8b gate passes TypeScript plus 55 tests / 1,910
+assertions. Native-pack publication and the public fresh-cache check are also
+complete, closing G8d and Phase 21.
+
+G8d is complete. Native pack v0.2.0
+and the compiled/Homebrew bundle now contain `libmlx_bun_expert_io.dylib`; an
+isolated empty-cache run downloaded and extracted the real 52,307,647-byte
+archive, loaded MLX, and completed a positioned expert read. The compiled
+bundle passed version/help/ls/pi smokes, and TypeScript, docs-map, plus 74
+focused tests / 4,335 assertions are green. GitHub release `native-v0.2.0` is
+published with both assets; the archive's remote size and SHA-256 match the
+baked constants. Anonymous HTTP resolution and a clean default-URL
+download/checksum/extraction passed with all five required files.
+
+**G6R Stage 0 complete:** at context 2,049, the patched model produced all 21
+expected full-layer top-2,048 selections. All 21 official Colibri score rows
+were tie-free and replayed through mlx-bun with exact ordered positions and
+float32 thresholds. Both runtimes emitted greedy tokens `[264, 264]` and the
+sparse-step top-1 logit matched; full-vector cosine was 0.997645. Direct
+full-runtime positions were 10/21 ordered-exact and 14/21 set-exact because
+the two runtimes accumulate quantized model matmuls differently before DSA;
+the official-score replay isolates and closes the DSA selection contract.
+Machine-local evidence and the 20-file SHA-256 manifest live outside the repo
+at `~/.cache/mlx-bun/evidence/glm52-dsa-stage0-2026-08-17/`. The current
+correctness scaffold has now been replaced by Stage 1's production-shaped
+device path.
+
+**G6R Stage 1 complete:** score accumulation is tiled `[H,D] @ [D,L]`, the
+deterministic uint64 device top-k preserves Colibri's threshold/lower-position
+tie contract, and one 8 KiB FULL index buffer is borrowed by SHARED MLA layers
+without normal-path host copies or re-uploads. Random, tied, all-equal,
+2,049/2,048, borrowed-gather, and 21/21 captured official score rows pass. A
+fresh live model run reproduced all 21 prior selection vectors, greedy
+`[264,264]`, and byte-identical decode logits; tiled score accumulation moved
+nine diagnostic thresholds by at most 3.05e-5 without moving a boundary. Warm
+model-free score+top-k medians are 0.929 ms at 8K and 1.269 ms at 32K; these are
+component numbers, not end-to-end claims. Evidence:
+`~/.cache/mlx-bun/evidence/glm52-dsa-stage1-2026-08-17/`. Plan and source audit:
+`docs/investigations/indexshare-performance-spike.md`.
+
+**G6R Stage 2 complete:** the quiet-machine direct-library matrix completed 24
+eligible fresh-process cells: 2K/8K, DSA off/on, MTP off/on, and three repeats,
+with cold and warm turns in each process. All cold/warm, repeat, and MTP token
+gates are exact. The 12 planned 32K cells are recorded as contract-ineligible:
+the exact planner requires 27.320 GiB MTP-off and 28.540 GiB MTP-on, both above
+G5's 25 GiB process ceiling. At 8K without MTP, DSA improved paired median
+decode throughput 12.38% but total wall time only 1.89%, below the 5% product
+gate. With MTP, DSA slowed decode 34.33% and increased total wall time 8.19%; it
+also reduced the deterministic MTP trace from 3.2 to 2.286 tokens/target
+forward. The result is therefore negative for product performance. The exact
+21F/57S schedule remains required model semantics; sparse prefill is deferred,
+and no prefill or end-to-end speed claim is made. Evidence:
+`~/.cache/mlx-bun/evidence/glm52-dsa-stage2-2026-08-17/`; manifest SHA-256
+`90b3fe4ed53714604b7a747991b3bb1b87aedbf57a139915065f5b4be42cda38`.
+
+**G7a compressed persistence complete:** the existing v3 `kv-store` format
+remains backward-compatible and now discriminates target `mla`, target
+`mla-dsa`, and native `mtp-mla` rows. It streams only compressed latent, RoPE,
+and owning-layer DSA tensors; clone, prompt-cache bytes, SSD restart scanning,
+trim eligibility, atomic async writes, verified copy-restore, and exact offsets
+all use that state without reconstructing full K/V. Restore validates model id,
+config/tokenizer metadata, cache role, and exact GLM geometry before opening the
+tensor mmap. Tiny-model forks prove uninterrupted versus restored target hidden
+state and offsets at two prefix lengths, while a restored MTP row produces the
+same next draft sequence and offset. The focused GLM/kv-store/SSD gate passes
+42 tests with 881 assertions.
+
+**G7b continuous batching complete:** GLM's checkpoint-native cache now exposes
+a structural dynamic-row capability with logical offsets, right-justified
+latent/RoPE/DSA tensors, exact compressed-byte projection, merge, independent
+extraction, filtering, and context bounds. Mixed-length batched DSA hidden
+states and extracted tips match serial rows exactly. The streamed async path
+receives the live `[B,1,H]` batch and constructs one cross-row expert plan;
+scheduler coverage proves join, cancellation, sibling completion, filtering,
+and exact admission bytes. Gateway and `GET /stats` report the actual
+`off`/`serial`/`batch` capability mode. Requests with native MTP continue to
+route serial by the explicit `hasDraft` contract; per-row batched MTP remains
+post-release. The broader GLM/persistence/gateway gate passes 115 tests with
+1,701 assertions. G7c implementation follows below.
+
+**G7c serving parity is complete:** the
+generic `generate()` path now awaits streamed expert layers, and the bounded
+Colibri opener is wired through `openModel`, `loadContext`, `serve`, embedded
+`pi`, and one-shot `generate`. GLM's native MTP row mounts by default through
+the serial speculative lane (`--mtp off` enables ordinary batching); the
+native `arg_key`/`arg_value` tool format parses; `/v1/models` explicitly marks
+unsupported embeddings/vision/audio/adapters/training false; and `/stats.glm52`
+reports the exact pre-open resource equation. Tiny streamed-model HTTP tests
+cover chat/text completions, Anthropic Messages, Responses, SSE, discovery,
+and native MTP. The fresh real-artifact CLI gate then passed under the exact
+25 GiB contract: health, discovery, and stats were correct; chat completions,
+text completions, Anthropic Messages, Responses, and SSE all returned HTTP 200
+with their correct envelopes; SSE ended in `[DONE]`; and chat/SSE reported the
+live `serial+spec` lane. Post-run telemetry returned to zero active/pending rows
+with the 21,352,663,936-byte plan inside the 26,843,545,600-byte limit.
+The final focused static/synthetic sweep passes TypeScript, diff hygiene, and
+152 tests with 2,536 assertions; the refreshed full code graph covers every
+operated G7c source/test file (18,774 nodes, 81,629 edges, zero skipped files).
 
 ## Where we are (2026-07-10 — v0.0.11 released)
 

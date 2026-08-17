@@ -21,7 +21,7 @@ the design rationale is in
 | --- | --- | --- | --- |
 | `--host` | addr | `127.0.0.1` | Interface to bind. Loopback-only by default (mlx_lm.server parity); pass `--host 0.0.0.0` to expose the server on your network. |
 | `--port` | n | `8080` | Listen port. A pre-flight probe refuses to start if the port is already serving. |
-| `--memory-budget` | GB | machine RAM × 0.75 | Admission ceiling. Requests whose `prompt + max_tokens` exceed the budget's max safe context are **rejected with 400** (`type: memory_admission`) instead of risking an uncatchable GPU OOM. Also caps the mlx allocator (`mlx_set_memory_limit`) as defense in depth. **Decimal GB (×10⁹).** |
+| `--memory-budget` | GB | machine RAM × 0.75; GLM-5.2: min(25 GiB, physical RAM) | Admission ceiling. Requests whose `prompt + max_tokens` exceed the budget's max safe context are **rejected with 400** (`type: memory_admission`) instead of risking an uncatchable GPU OOM. GLM-5.2 runs its header-only exact process equation before opening resident weights or expert slabs, and caps MLX to that plan's allocator reserve. **Decimal GB (×10⁹).** |
 | `--prompt-cache` | GB | `8` | RAM prefix-KV cache (byte-capped LRU; `0` disables). **PREFIX SHARING (2026-07-05): serves are NON-CONSUMING** — a hit hands out zero-copy clones and leaves the donor entry intact, so N agents (or a brand-new session) sharing a system prompt all reuse ONE prefill without destroying each other's conversation entries (the old consume-and-trim take cannibalized the donor). Extended entries supersede their prefix-ancestors (when trimmable), so a conversation stays one entry. Works on BOTH lanes and tiers over the SSD store (Layer 0). |
 | `--isolate` | (bool) | off | Runtime isolation ([runtime-isolation.md](../design/runtime-isolation.md)): the inference engine runs as a CHILD process on a unix socket; this process stays a pure UI/API reverse proxy — instant under any GPU load, survives engine crashes (auto-respawn, in-flight requests get a clean 502). Measured cost ≈0 (−0.4% tok/s, +2 ms TTFT, per-token SSE granularity preserved). `/ws/chat` is not proxied yet (501). `/engine` reports child pid/restarts. |
 | `--model-pool` | n | `1` | With `--isolate`: max RESIDENT model engines. Requests naming another model (**exact `/v1/models` id** — fuzzy strings keep mlx-lm's ignored-field semantics) spawn/route to that model's own engine child (SPAWN-OVERLAP: the new model loads while the old one keeps serving; nobody's stream is interrupted). Over the cap, the LRU engine drains, **demotes its prompt cache to the SSD tier**, and exits — switching back respawns it with state restored from disk. Measured (M1 Max, cpm5⇄qwen0.8b, pool 1): switch 1.5 s, switch-back 1.2 s with `cached_tokens` 103/104 — the conversation survived the eviction. The pool drives this eviction via `POST /admin/drain` — unix-socket-only (never exposed on the public TCP listener) — which quiesces the gateway and demotes the whole prompt cache to the SSD tier before eviction, responding `{ drained: true, demotions: N }`. |
@@ -38,11 +38,13 @@ the design rationale is in
 | `--draft-kind` | `two-model`\|`assistant`\|`dspark`\|`deepspec`\|`ngram` | auto | Override the draft-artifact kind detection (`dspark.json` → dspark; `Gemma4DSparkModel` architecture stamp → deepspec; `*_assistant` config → assistant; else two-model). **`ngram` is never auto-detected — it has no artifact**: MODEL-FREE prompt lookup (drafts copied from the request's own prompt+generation when its trailing k-gram occurred earlier in the stream; port of prompt-lookup decoding / vLLM's `ngram` proposer). Mount it ALONE — `--draft-kind ngram` with a `--draft-model` is refused, as is any other kind without one. Zero weights/memory, lossless by the same verify (gated: serve-loop output token-identical to non-spec greedy on e4b, tests/spec-ngram.test.ts); a no-match round degrades to one plain target step. Best on agentic/RAG/code-edit traffic that re-emits context spans. |
 | `--num-draft-tokens` | n | `3` (`ngram`: `10`) | Drafts per verify round (mlx_lm.server's default; `mlx_lm.generate`'s is 2). A DSpark draft pins this to its trained block width (`cfg.gamma`); ngram drafting is free so its default is the reference implementation's 10. |
 | `--ngram-max` / `--ngram-min` | k | `3` / `1` | `--draft-kind ngram` only: longest/shortest trailing k-gram searched for a match (the reference values — longest first, first occurrence wins). |
-| `--thinking` | `true`\|`false` | model's own (false for CPM) | Server-wide default for the chat template's `enable_thinking` (MiniCPM5/CPM and Qwen3.5 hybrid reasoning). Full precedence: an explicit request `chat_template_kwargs.enable_thinking` always wins; else `reasoning_effort` (`"none"` → off, any other level → on) if the request sent one; else this server default; else the model's own default. |
+| `--mtp` | `on`\|`off` | on for GLM-5.2 | Mount the checkpoint-native GLM MTP row as the server's drafter. It uses the bounded auxiliary expert tier and exact serial verify loop (`usage.lane: "serial+spec"`). `off` removes the draft so ordinary GLM requests can use continuous batching; per-row batched MTP is post-release. Mutually exclusive with an explicit `--draft-model`/`--draft-kind`. |
+| `--context-length` | tokens | `4096` for GLM-5.2 | Context reserved by GLM's header-only resource equation. The same value becomes the request-admission ceiling and is reported in `/stats.glm52`; an impossible plan fails before committing model memory. |
+| `--thinking` | `true`\|`false` | model's own (false for CPM and GLM-5.2) | Server-wide default for the chat template's `enable_thinking` (MiniCPM5/CPM, Qwen3.5, and GLM-5.2). Full precedence: an explicit request `chat_template_kwargs.enable_thinking` always wins; else `reasoning_effort` (`"none"` → off, any other level → on) if the request sent one; else this server default; else the model's own default. GLM renders disabled thinking as `<think></think>` and enabled thinking as an open `<think>` generation primer plus `Reasoning Effort: Max`. |
 | `--temperature` | n ∈ [0,5] | `generation_config.json` | Server-wide sampling default. Per-request `temperature` still wins; the browser chat (sends none) inherits this. `--temp` is accepted as an alias (mlx_lm.server compat); explicit `--temperature` wins if both are given. **Migration note:** mlx_lm.server's `--temp` *default* is `0.0` (unset-temperature requests are greedy there); mlx-bun falls back to the model's `generation_config.json`, then `0.7` — pass `--temp 0` for mlx-lm's behavior. |
 | `--top-p` | n ∈ [0,1] | `generation_config.json` | Server-wide top-p default (per-request `top_p` wins). |
 | `--top-k` | n ∈ [0,1e6] | `generation_config.json` | Server-wide top-k default (per-request `top_k` wins). |
-| `--max-tokens` | n | `65536` chat / `512` raw completion | Completion cap when a request omits `max_tokens` (mlx_lm.server flag; its default there is 512 — `--max-tokens 512` reproduces mlx_lm.server exactly). |
+| `--max-tokens` | n | GLM-5.2: `128`; otherwise `65536` chat / `512` raw completion | Completion cap when a request omits `max_tokens` (mlx_lm.server flag; its default there is 512 — `--max-tokens 512` reproduces mlx_lm.server exactly). For GLM this is also reserved by the pre-open resource equation and must fit inside `--context-length`. |
 | `--allow-private-media` | (bool) | off | Let `image_url`/`audio_url` content parts fetch from **private/loopback/link-local** hosts (a NAS, another LAN box). Off by default: a request's URL is attacker-controlled input, so remote media fetches (`src/media-fetch.ts`) refuse non-http(s) schemes and destinations in private/loopback/link-local/CGNAT ranges — including hosts that *resolve* there and every **redirect hop** (each hop re-passes the whole policy) — which keeps the server from being steered at cloud metadata (`169.254.169.254`) or LAN-internal services (SSRF). Independent of the flag, every remote fetch has a **10 s wall-clock timeout** and a **64 MB response cap** (streaming-enforced, not just Content-Length); violations surface as clean `400`s (`prompt build failed: …`). `data:` URLs decode locally and are never policy-checked. |
 | `--no-open` | (bool) | off | Skip the automatic browser open on start. By default an interactive terminal session opens `http://<host>:<port>/#/chat` once the server is ready; pass this flag to suppress it (e.g. headless or non-TTY environments already skip it). |
 | `--hlg-sampling` | `on`\|`off` | off | Piecewise tone-curve (HLG) sampling: rolls off the top-token region, boosts the mids, gentles the tail. The overall gain folds from `--temperature`. See [docs/design/hlg-sampling.md](../design/hlg-sampling.md). |
@@ -212,7 +214,8 @@ inside it per the table above).
 
 | Option | serial (`--batch 1`) | `--batch N` (N>1) |
 | --- | --- | --- |
-| `--kv-quant config`/`4`/`8` | ✅ applied to all requests | ⚠️ applied, but forces **all** requests to the serial lane (no batching) |
+| `--kv-quant config` | ✅ applied to all requests | ✅ batches where the loaded cache capability supports the per-layer scheme; otherwise routes serial |
+| `--kv-quant 4`/`8` | ✅ applied to all requests | ⚠️ uniform-threshold semantics route requests serial |
 | `--kv-quant turbo[:k<bits>v<bits>]` | ✅ applied to all requests | ⚠️ applied, but forces **all** requests to the serial lane (no batching) |
 | `--kv-quant off` | ✅ bf16 | ✅ bf16 (same as the implicit batch default) |
 | *(kv-quant unset)* | bf16 (the L1 default) | **bf16** (Option B) — incl. serial-lane fallback requests |
@@ -228,6 +231,7 @@ inside it per the table above).
 | `tools` / `stop` | ✅ | ✅ (batches) |
 | structured output (`response_format`/`guided_*`) | ✅ (mask in the decode loop) | ✅ (batches; per-row matchers) |
 | `--draft-model` | ✅ spec decode (grammar composes) | ⚠️ mounts, but routes **every** request serial — spec and batching are different modes |
+| GLM `--mtp on` | ✅ native MTP spec decode | ⚠️ default-on MTP routes every request serial+spec; `--mtp off` exposes ordinary GLM batching |
 | `--compiled-decode` | ✅ (serial decode route) | ✅ at **B=1 only** (Phase 3.2): a lone request's adopted serial-class caches replay the same compiled step, same kill switch; B>1 steps run the plain graph |
 | `--fused-sdpa`/`--force-wire` | ✅ (serial decode route) | **n/a — compat mode, no perf flags by design** |
 
@@ -395,9 +399,9 @@ cells in one run).
   `--expert-offload`. Inherently the serial recipe until batched
   quantized KV lands.
 
-**The two exclusions to remember:** batching ⊕ kv-quant (batch is bf16 by
-contract; the resolver is a Lab-gated follow-up) and spec ⊕ prompt
-cache (v1 bypass; the §7.6 composition is the fix).
+**The two exclusions to remember:** batching excludes uniform/TurboQuant KV
+(per-layer `kv_config.json` does compose with batching), and spec excludes
+prompt-cache reuse (v1 bypass; the §7.6 composition is the fix).
 
 ## Observability — `GET /stats`
 
@@ -406,9 +410,11 @@ lives in [server-api.md](server-api.md#get-stats) (kept in lockstep with
 the code — this section only explains how to read it); highlights:
 `prompt_cache` (8 GB default cap), `kv_quant.mode` (incl. `turbo kXvY`),
 the conditional `ssd_cache` block, and `batch`
-(`active_rows`/`pending_rows`/`submitted_rows`/`kv_bytes`/`kv_budget_bytes`).
+(`mode`/`active_rows`/`pending_rows`/`submitted_rows`/`kv_bytes`/
+`kv_budget_bytes`).
 
-`batch.batched` reflects only whether `--batch N` (N>1) is configured;
-with an explicit `--kv-quant` it can read `true` while `active_rows`
-never exceeds 1 (every request routes serial). `active_rows` is the
-honest signal of whether anything is actually batching.
+`batch.mode` is the truthful configured/capability state: `off` for
+`--batch 1`, `serial` when a larger configured cap cannot batch the loaded
+model's cache layout, and `batch` when the model is admitted. `batch.batched`
+is the compatibility boolean for `mode == "batch"`; `active_rows` reports the
+instantaneous live rows.

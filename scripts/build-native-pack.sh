@@ -12,6 +12,8 @@
 # prints the constants to bake into src/native-pack.ts.
 set -eu
 
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
 VER="${1:?usage: build-native-pack.sh <version> [outdir]}"
 OUT="${2:-dist-native}"
 ARCH="$(uname -m)"
@@ -26,13 +28,15 @@ cp -f "$BREW_MLXC" "$STAGE/libmlxc.dylib"
 cp -f "$BREW_MLX_DIR/libmlx.dylib" "$STAGE/libmlx.dylib"
 cp -f "$BREW_MLX_DIR/libjaccl.dylib" "$STAGE/libjaccl.dylib"
 cp -f "$BREW_MLX_DIR/mlx.metallib" "$STAGE/mlx.metallib"
+sh "$ROOT/scripts/build-expert-io.sh" "$STAGE/libmlx_bun_expert_io.dylib"
 
 # Same load-command rewrites as build-binary.sh: resolve siblings via
 # @loader_path so the extracted directory is self-contained.
 install_name_tool -change "$BREW_MLX_DIR/libmlx.dylib" \
   "@loader_path/libmlx.dylib" "$STAGE/libmlxc.dylib"
 install_name_tool -add_rpath "@loader_path" "$STAGE/libmlx.dylib" 2>/dev/null || true
-codesign -f -s - "$STAGE/libmlxc.dylib" "$STAGE/libmlx.dylib" "$STAGE/libjaccl.dylib" >/dev/null 2>&1
+codesign -f -s - "$STAGE/libmlxc.dylib" "$STAGE/libmlx.dylib" \
+  "$STAGE/libjaccl.dylib" "$STAGE/libmlx_bun_expert_io.dylib" >/dev/null 2>&1
 
 NAME="mlx-bun-native-v${VER}-${ARCH}.tar.gz"
 tar -czf "$OUT/$NAME" -C "$STAGE" .

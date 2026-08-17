@@ -59,6 +59,27 @@ is the gate the Performance/Quality numbers are only meaningful *under*.
 Fused quantized-attention prefill is separately bit-exact against
 optiq's reference (`tests/fused-sdpa.test.ts`).
 
+### GLM-5.2 direct-Colibri oracle closure — M1 Max 32 GB
+
+The direct-container port uses pinned Colibri, rather than mlx-lm, as its
+implementation oracle. The public artifact is
+`mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp@3cc8db9`; direct component and
+G0 controls use Colibri `44e489b`, while the later official DSA replay is
+pinned to `ecade075` with indexers sourced from
+`zai-org/GLM-5.2-FP8@ba978f7d`.
+
+| gate | result | durable proof |
+|---|---|---|
+| tiny converted Q4 trajectory | 32/32 greedy tokens exact with `IDOT=0`; all 8,192 logits max abs `1.3113e-6`, RMSE `2.7423e-7` | `fixtures/colibri-glm52/tiny-teacher-forcing.json` |
+| production Q4/router cells | layer-0 SwiGLU max abs `5.2387e-9`; layers 3/77 exact ordered top-8 | `fixtures/colibri-glm52/production-probe.json` |
+| real-model oracle | 140 GLM/MLA/router/MTP/KV records reproduced byte-for-byte twice; both heads predict teacher token 16 | `fixtures/colibri-glm52/real-model-oracle.json` |
+| full target trajectory | all 128 cold/warm, MTP-on/off target token IDs identical; first 64 also match direct Colibri | machine-local `runs/colibri-g5/summary.json` |
+| first-sparse DSA | all 21 official score rows replay to exact ordered positions and float32 thresholds at context 2,049; both engines emit `[264,264]` | `~/.cache/mlx-bun/evidence/glm52-dsa-stage0-2026-08-17/` |
+
+These are quality-preserving gates: checkpoint precision, true top-8 routing,
+and the 21-full/57-shared DSA schedule remain unchanged. Consequently there is
+no KL/eval tradeoff row in section 3 for this path.
+
 **Served-surface parity (2026-07-07, prefill tail-split fix):** the two
 serve-bench parity residuals (cpm5 + 12B `/v1/completions` probe ✗ on the
 07-07 run) are closed — with the oracle's step-0 prefill convention
@@ -149,6 +170,108 @@ all target tokens. The machine was not swap-cleared, so the
 14,679,224,320-byte completed MTP-on physical footprint is not a G5 memory
 claim. Stable record:
 `fixtures/colibri-glm52/g4-native-mtp-e2e.json`.
+
+### Colibri G5–G7 full-model productization — M1 Max 32 GB
+
+Final curated result for the streamed runtime. Bun 1.3.14, 32 GiB unified
+memory, 25 GiB process ceiling, batch 1, 4,096-token supported context, 128
+generated tokens, greedy decoding, true top-8, and quality-preserving defaults.
+The G5 before/after run is 2026-08-15; G6 learning telemetry is a three-repeat
+paired run on 2026-08-16; the DSA and API gates are 2026-08-17.
+
+#### Resource contract
+
+The current artifact-aware preflight, including the locally installed stock
+DSA indexer overlay, reports:
+
+| resource | bytes | GiB |
+|---|---:|---:|
+| full artifact on disk (streamed, not resident) | 383,739,826,712 | 357.39 |
+| resident non-expert weights + DSA indexers | 11,074,469,760 | 10.31 |
+| main Q4 expert slab (139 slots) | 2,632,646,656 | 2.45 |
+| MTP Q8 expert slab (25 slots) | 945,356,800 | 0.88 |
+| target + MTP compressed KV | 789,577,728 | 0.74 |
+| reconstructed KV + verify + allocator/Bun/safety reserves | 5,910,612,992 | 5.50 |
+| **planned process** | **21,352,663,936** | **19.89 / 25.00** |
+| **process/macOS headroom** | **5,490,881,664** | **5.11** |
+
+The original G5 measurement preceded the 197,202,400-byte stock indexer
+overlay and planned 21,111,440,128 bytes. The overlay raises the current
+preflight by 241,223,808 bytes but does not alter the short-context trajectory
+or the observed G5 footprints below.
+
+> **Measurement outcome:** the requested before/after observation closed the
+> 32 GB fit question, but did **not** satisfy the harness's stricter
+> zero-compression/zero-swap contract. Peak physical footprint stayed at or
+> below 14,807,789,616 bytes (13.791 GiB), while maximum system/task compressor
+> growth was 4,402,905,088 / 1,939,537,920 bytes; MTP-off observed 7,143,424
+> bytes of swapout and MTP-on observed zero. The source result is correctly
+> labeled `observed`, not `pass`.
+
+#### Cold/warm MTP and memory
+
+| arm / turn | decode tok/s | end-to-end tok/s | final physical footprint |
+|---|---:|---:|---:|
+| MTP off · cold | 0.1330 | 0.1274 | 13,490,515,008 B |
+| MTP off · warm | 0.1190 | 0.1139 | 13,510,634,560 B (+19.2 MiB) |
+| MTP on · cold | 0.1557 | 0.1456 | 14,673,342,512 B |
+| MTP on · warm | **0.1577** | **0.1487** | 14,697,574,448 B (+23.1 MiB) |
+
+MTP-on accepted 72/166 drafts over 56 verify forwards on each turn. Warm
+end-to-end throughput was 1.306x MTP-off. It is also only 55% of the rounded
+same-machine direct-Colibri MTP-on control (0.27 tok/s), and 0.1487 tok/s is
+7.43% of the aspirational 2 tok/s target—a **13.45x** remaining gap. The
+aspiration is not a release gate or a `fit` prediction.
+
+#### Expert delivery and policy decisions
+
+The replicated G6 control's median warm turn read exactly
+1,974,949,363,712 logical bytes from the expert artifact, or
+15.429291904 decimal GB per generated token. Its hit rate was 1.6597%; median
+main-tier disk-service p95 was 90.98 ms, foreground-wait p95 92.66 ms, and
+expert-layer-forward p95 167.84 ms. This is the measured reason the runtime is
+disk/serialization-bound rather than compute-bound.
+
+| MTP-on policy (three paired repeats) | warm hit rate | disk GB/token | warm e2e tok/s | decision |
+|---|---:|---:|---:|---|
+| control | 1.66% | 15.429 | **0.149** | default |
+| startup auto-pin | 9.62% | 14.191 | 0.143 | off: 4.06% slower, +3.337 GiB footprint |
+| auto-pin + live LFRU | 9.62% | 14.191 | 0.148 | off: zero swaps; no benefit beyond run-order noise |
+
+PILOT measurement found 69.90% next-layer top-8 precision/recall, but advisory
+`PILOT_K=4` left demand bytes unchanged and reduced warm throughput to 0.9746x.
+Two-step correction improved recall to 73.01% while reducing warm throughput
+10.13%. All learning/prediction/hint policies therefore remain off by default.
+
+#### DSA and served API
+
+The paired DSA matrix measured 24 eligible fresh-process cells (2K/8K × DSA
+off/on × MTP off/on × three repeats), all with exact cold/warm/repeat/MTP
+tokens. Positive decode delta means DSA was faster; negative wall delta means
+less total time.
+
+| context | MTP | paired median decode delta | paired median wall delta | decision |
+|---:|---|---:|---:|---|
+| 2,048 | off | -2.80% | +4.14% | no speed claim |
+| 2,048 | on | -32.90% | +20.95% | regression |
+| 8,192 | off | +12.38% | -1.89% | below 5% total-wall win gate |
+| 8,192 | on | -34.33% | +8.19% | regression |
+| 32,768 | off/on | not run | not run | ineligible: 27.320/28.540 GiB exceeds 25 GiB |
+
+The checkpoint's 21-full/57-shared schedule remains a semantic requirement,
+but no DSA product-speed claim is made. Stage-2 manifest SHA-256:
+`90b3fe4ed53714604b7a747991b3bb1b87aedbf57a139915065f5b4be42cda38`.
+
+Finally, the fresh real-artifact G7 smoke returned HTTP 200 with correct
+envelopes for chat completions, text completions, Anthropic Messages, and
+OpenAI Responses; SSE used `text/event-stream`, emitted four events, ended in
+`[DONE]`, and reported the truthful `serial+spec` lane. Health, discovery,
+exact-plan stats, and post-run idle rows also passed. This is protocol/API
+evidence, not a throughput benchmark.
+
+Primary raw records: machine-local `runs/colibri-g5/{summary,mtp-on,mtp-off}.json`,
+`runs/colibri-g6-learning-shakeout-2026-08-15/summary.json`, and
+`~/.cache/mlx-bun/evidence/glm52-dsa-stage2-2026-08-17/`.
 
 ### Served (warm) — the path agents actually use
 

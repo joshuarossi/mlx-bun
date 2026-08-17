@@ -53,8 +53,22 @@ import { Weights } from "./weights";
 import { Gemma4Model } from "./model/gemma4";
 import { DiffusionGemmaModel } from "./model/diffusion-gemma";
 import { spliceImageTokens } from "./vision/diffusion-vision";
-import { createModel, type RuntimeModel } from "./model/factory";
-import { isMiniCPM5Config } from "./model/support";
+import {
+  createModel,
+  openGlm52RuntimeModel,
+  type Glm52RuntimeOpenOptions,
+  type RuntimeModel,
+} from "./model/factory";
+import { Glm52Model } from "./model/glm52";
+import {
+  GLM52_G5_ASPIRATIONAL_DECODE_TPS,
+  GLM52_G5_DIRECT_ORACLE_WARM_DECODE_TPS,
+  GLM52_G5_MEASURED_AT,
+  GLM52_G5_MEASURED_WARM_DECODE_TPS,
+  type Glm52MemoryPlan,
+} from "./model/glm52-memory";
+import { isGlm52Config, isMiniCPM5Config } from "./model/support";
+import { Glm52NativeMtpProvider } from "./spec/glm52-mtp-source";
 import {
   generate,
   type GenerateOptions,
@@ -251,6 +265,25 @@ export interface ServerContext {
     provider: import("./spec/source").DraftProvider;
     numDraftTokens: number;
   } | null;
+  /** Present only for the direct Colibri GLM runtime. This is the exact
+   * header-derived process equation used before opening resident state. */
+  glmMemoryPlan?: Glm52MemoryPlan | null;
+}
+
+export interface LoadContextOptions {
+  memoryBudgetBytes?: number;
+  /** Direct Colibri runtime/resource overrides. Ignored by other models. */
+  glm?: Glm52RuntimeOpenOptions;
+  /** Snapshot dir of a draft model for speculative decoding
+   * (`--draft-model`). Loaded alongside the target; the pair must share
+   * a tokenizer family. */
+  draftModelDir?: string;
+  /** Drafts per round (`--num-draft-tokens`, mlx_lm.server default 3). */
+  numDraftTokens?: number;
+  /** Draft-provider kind override (`--draft-kind`). */
+  draftKind?: DraftKind;
+  ngramMax?: number;
+  ngramMin?: number;
 }
 
 export interface GenSamplingDefaults {
@@ -303,33 +336,38 @@ async function loadGenSamplingDefaults(modelDir: string): Promise<GenSamplingDef
 
 export async function loadContext(
   modelDir: string, modelId?: string,
-  opts: {
-    memoryBudgetBytes?: number;
-    /** Snapshot dir of a draft model for speculative decoding
-     *  (`--draft-model`). Loaded alongside the target; the pair must share
-     *  a tokenizer family (hard check below — upstream's silent-garbage
-     *  mode on mismatched tokenizers isn't worth inheriting). */
-    draftModelDir?: string;
-    /** Drafts per round (`--num-draft-tokens`, mlx_lm.server default 3). */
-    numDraftTokens?: number;
-    /** Draft-provider kind override (`--draft-kind`); auto-detected from the
-     *  draft artifact when absent (dspark.json → dspark; *_assistant config →
-     *  assistant; otherwise two-model). "ngram" mounts WITHOUT a draft dir. */
-    draftKind?: DraftKind;
-    /** Prompt-lookup window bounds (`--ngram-max` / `--ngram-min`), ngram
-     *  kind only. Defaults 3 / 1 (Saxena's reference values). */
-    ngramMax?: number;
-    ngramMin?: number;
-  } = {},
+  opts: LoadContextOptions = {},
 ): Promise<ServerContext> {
   const config = await loadModelConfig(modelDir);
-  const weights = await Weights.open(modelDir);
+  const glm = isGlm52Config(config);
+  const externalDraft = opts.draftModelDir !== undefined || opts.draftKind !== undefined;
+  if (glm && externalDraft && opts.glm?.enableMtp === true)
+    throw new Error("native GLM MTP and --draft-model/--draft-kind are mutually exclusive");
+  let weights: Weights | null = null;
+  let model!: RuntimeModel;
+  let glmMemoryPlan: Glm52MemoryPlan | null = null;
+  if (glm) {
+    const enableNativeMtp = !externalDraft && opts.glm?.enableMtp !== false;
+    const opened = await openGlm52RuntimeModel(modelDir, {
+      ...opts.glm,
+      memoryBudgetBytes: opts.memoryBudgetBytes ?? opts.glm?.memoryBudgetBytes,
+      // Every drafter owns the serial speculative lane. Do not reserve a
+      // simultaneous ordinary batch that cannot be admitted while it is live.
+      batchSize: enableNativeMtp || externalDraft ? 1 : opts.glm?.batchSize,
+      // An explicit alternate drafter owns the one speculative lane.
+      enableMtp: enableNativeMtp,
+    });
+    model = opened.model;
+    glmMemoryPlan = opened.plan;
+  } else {
+    weights = await Weights.open(modelDir);
+  }
   // memoryBudget enforcement at load (Phase 5): Weights.open only mmaps
   // (no GPU allocation yet), so a model whose weights can never serve
   // within the budget is refused HERE — before any unified-memory
   // commitment — with an actionable error instead of a Metal OOM later.
-  if (opts.memoryBudgetBytes) {
-    const weightsBytes = [...weights.shards.files.values()]
+  if (!glm && opts.memoryBudgetBytes) {
+    const weightsBytes = [...weights!.shards.files.values()]
       .reduce((a, f) => a + f.mmap.size, 0);
     const report = fit(config, weightsBytes, 1, undefined, undefined, 0, opts.memoryBudgetBytes);
     if (report.maxSafeContext < 1)
@@ -341,7 +379,7 @@ export async function loadContext(
   }
   // generated-specialization dispatch by config fingerprint (Phase C);
   // unmatched configs run the monolith — slow, never broken
-  const model = createModel(weights, config);
+  if (!glm) model = createModel(weights!, config);
   const tokenizer = await loadTokenizer(modelDir);
   // Generation must stop on the tokenizer's eos_token — the chat turn
   // terminator (e.g. Qwen <|im_end|> = 248046). Some configs (Qwen3.5-4B)
@@ -439,7 +477,9 @@ export async function loadContext(
       }
     }
     if (opts.memoryBudgetBytes) {
-      const targetBytes = [...weights.shards.files.values()].reduce((a, f) => a + f.mmap.size, 0);
+      const targetBytes = weights
+        ? [...weights.shards.files.values()].reduce((a, f) => a + f.mmap.size, 0)
+        : model.weightsBytes;
       // Draft weights shrink the target's envelope. Draft KV is not modeled
       // (small relative to its weights at serve contexts); admission stays
       // approximately conservative via the combined-weights term.
@@ -459,9 +499,20 @@ export async function loadContext(
     throw new Error(`--draft-kind ${opts.draftKind} requires --draft-model`);
   }
 
+  // GLM's checkpoint-native MTP row is the production default. It uses the
+  // already-planned bounded auxiliary expert tier and the same tokenizer, so
+  // there is no second artifact or compatibility probe to load.
+  if (!draft && model instanceof Glm52Model && glmMemoryPlan?.enableMtp) {
+    draft = {
+      provider: new Glm52NativeMtpProvider(model),
+      numDraftTokens: glmMemoryPlan.mtpDraftTokens,
+    };
+  }
+
   return {
     draft,
     model,
+    glmMemoryPlan,
     adapters: new AdapterManager(model),
     kvConfig: config.kvQuant,
     genDefaults: await loadGenSamplingDefaults(modelDir),
@@ -1469,6 +1520,8 @@ export function createServer(
   // agentic sub-agent workload. --batch 1 pins strict serial for
   // arrival-independent numerics. 8 = optiq's Mac-safe concurrency.
   const batch = Math.max(1, Math.floor(serverOptions.batch ?? 8));
+  const defaultGeneratedTokens =
+    serverOptions.defaultMaxTokens ?? ctx.glmMemoryPlan?.maxGenerationTokens;
 
   // KV-quant scheme, resolved once. UNSET now means bf16 (flipped
   // 2026-07-05 with the naked-=-L1 default): quantized KV measured 5–20%
@@ -1959,17 +2012,27 @@ export function createServer(
   // fit() solves max safe context from weights + KV growth + prefill
   // transient; the KV term assumes bf16 (a kv-quant scheme stretches the
   // real ceiling, never shrinks it — admission stays conservative).
-  const admission = fit(
+  const genericAdmission = fit(
     ctx.model.config, ctx.model.weightsBytes, 1,
     undefined, undefined, 0, serverOptions.memoryBudgetBytes,
   );
+  const admission = ctx.glmMemoryPlan
+    ? {
+        ...genericAdmission,
+        maxSafeContext: ctx.glmMemoryPlan.contextTokens,
+        usableBytes: ctx.glmMemoryPlan.processLimitBytes,
+      }
+    : genericAdmission;
   if (admission.maxSafeContext < 1)
     throw new Error(
       `memory budget ${(admission.usableBytes / 1e9).toFixed(2)} GB cannot serve ` +
       `${ctx.modelId} (weights ${(ctx.model.weightsBytes / 1e9).toFixed(2)} GB): ` +
       `no context fits — raise the budget or pick a smaller model`,
     );
-  if (serverOptions.memoryBudgetBytes) setMemoryLimit(serverOptions.memoryBudgetBytes);
+  if (ctx.glmMemoryPlan)
+    setMemoryLimit(ctx.glmMemoryPlan.lineItems.allocatorReserveBytes);
+  else if (serverOptions.memoryBudgetBytes)
+    setMemoryLimit(serverOptions.memoryBudgetBytes);
 
   // /library response cache (30 s) — registry + config reads only.
   let libraryCache: { at: number; rows: unknown[] } | null = null;
@@ -2043,7 +2106,8 @@ export function createServer(
       // truncates the visible reply. Default very generously (the model's
       // context is far larger); only an explicit max_tokens narrows it. The
       // model still stops at its eos_token well before this in normal replies.
-      maxTokens: req.max_completion_tokens ?? req.max_tokens ?? serverOptions.defaultMaxTokens ?? 65_536,
+      maxTokens: req.max_completion_tokens ?? req.max_tokens ??
+        defaultGeneratedTokens ?? 65_536,
       temperature: req.temperature ?? serverOptions.defaultTemperature ?? defaultTemp,
       topP: req.top_p ?? serverOptions.defaultTopP ?? ctx.genDefaults.topP ?? 0,
       topK: req.top_k ?? serverOptions.defaultTopK ?? ctx.genDefaults.topK ?? 0,
@@ -2467,16 +2531,65 @@ export function createServer(
         const machine = thisMachine();
         const chip = detectChip();
         let expertsBytes = 0;
+        let artifactDiskBytes: number | null = null;
         let measured: { decodeTps: number; ts: number } | null = null;
         try {
           const { Registry } = await import("./registry");
           const rec = new Registry().list().find((r) => r.repoId === ctx.modelId);
           if (rec) {
             expertsBytes = rec.expertsBytes;
+            artifactDiskBytes = rec.sizeBytes;
             const { EvalDB } = await import("./evaldb");
             measured = new EvalDB().latestFor(rec.path);
           }
         } catch {}
+        if (ctx.glmMemoryPlan) {
+          const plan = ctx.glmMemoryPlan;
+          const li = plan.lineItems;
+          const kvBytes = li.targetKvBytes + li.mtpKvBytes;
+          const transientBytes = plan.plannedProcessBytes -
+            li.residentWeightsBytes - li.mainExpertSlabBytes -
+            li.mtpExpertSlabBytes - kvBytes;
+          return Response.json({
+            machine: {
+              chip: chip.name,
+              ram_bytes: machine.ramBytes,
+              bandwidth_gbs: machine.bandwidthGBs,
+            },
+            context_tokens: plan.contextTokens,
+            typical_context_tokens: plan.contextTokens,
+            typical_decode_tps: GLM52_G5_MEASURED_WARM_DECODE_TPS,
+            measured_decode_tps: GLM52_G5_MEASURED_WARM_DECODE_TPS,
+            measured_at: GLM52_G5_MEASURED_AT,
+            report: {
+              fits: true,
+              weights_bytes: li.residentWeightsBytes,
+              kv_bytes: kvBytes,
+              transient_bytes: transientBytes,
+              total_bytes: plan.plannedProcessBytes,
+              usable_bytes: plan.processLimitBytes,
+              max_safe_context: plan.contextTokens,
+              predicted_decode_tps: null,
+            },
+            glm52: {
+              artifact_disk_bytes: artifactDiskBytes,
+              main_expert_slab_bytes: li.mainExpertSlabBytes,
+              mtp_expert_slab_bytes: li.mtpExpertSlabBytes,
+              max_generation_tokens: plan.maxGenerationTokens,
+              direct_oracle_warm_decode_tps:
+                GLM52_G5_DIRECT_ORACLE_WARM_DECODE_TPS,
+              aspirational_decode_tps: GLM52_G5_ASPIRATIONAL_DECODE_TPS,
+            },
+            sku_matrix_ctx: plan.contextTokens,
+            sku_matrix: [{
+              sku: chip.name,
+              ram_gb: Math.round(machine.ramBytes / 2 ** 30),
+              fits: true,
+              max_context: plan.contextTokens,
+              decode_tps: GLM52_G5_MEASURED_WARM_DECODE_TPS,
+            }],
+          });
+        }
         const report = fit(
           ctx.model.config, ctx.model.weightsBytes, admission.maxSafeContext,
           machine, undefined, expertsBytes, serverOptions.memoryBudgetBytes,
@@ -2597,14 +2710,44 @@ export function createServer(
           },
           admission: {
             max_safe_context: admission.maxSafeContext,
-            memory_budget_bytes: serverOptions.memoryBudgetBytes ?? null,
+            memory_budget_bytes:
+              ctx.glmMemoryPlan?.processLimitBytes ??
+              serverOptions.memoryBudgetBytes ?? null,
             usable_bytes: admission.usableBytes,
             weights_bytes: ctx.model.weightsBytes,
           },
+          ...(ctx.glmMemoryPlan ? {
+            glm52: {
+              preset: ctx.glmMemoryPlan.preset,
+              planned_process_bytes: ctx.glmMemoryPlan.plannedProcessBytes,
+              process_limit_bytes: ctx.glmMemoryPlan.processLimitBytes,
+              context_tokens: ctx.glmMemoryPlan.contextTokens,
+              max_generation_tokens: ctx.glmMemoryPlan.maxGenerationTokens,
+              batch_size: ctx.glmMemoryPlan.batchSize,
+              dsa: ctx.model instanceof Glm52Model && ctx.model.capabilities.dsa,
+              mtp: ctx.draft?.provider.id === "glm52-native-mtp",
+              mtp_draft_tokens: ctx.glmMemoryPlan.mtpDraftTokens,
+              resident_weight_bytes: ctx.glmMemoryPlan.lineItems.residentWeightsBytes,
+              main_expert_slab_bytes: ctx.glmMemoryPlan.lineItems.mainExpertSlabBytes,
+              mtp_expert_slab_bytes: ctx.glmMemoryPlan.lineItems.mtpExpertSlabBytes,
+              expert_runtime: ctx.model instanceof Glm52Model &&
+                  ctx.model.expertRuntime
+                ? {
+                    main_residency:
+                      ctx.model.expertRuntime.manager.snapshot(),
+                    mtp_residency:
+                      ctx.model.expertRuntime.mtp?.manager.snapshot() ?? null,
+                    last_turn: ctx.model.expertRuntime.lastTelemetry,
+                    last_repin: ctx.model.expertRuntime.lastRepin,
+                  }
+                : null,
+            },
+          } : {}),
           // --batch: configured cap, whether batching is live for this model,
           // and rows currently decoding in the batch.
           batch: {
             configured: batch,
+            mode: gateway.batchMode,
             batched: gateway.batchingEnabled,
             active_rows: gateway.activeRows,
             pending_rows: gateway.pendingRows,
@@ -2662,7 +2805,9 @@ export function createServer(
         };
         const data: Array<Record<string, unknown>> = [{
           id: ctx.modelId, object: "model", created, owned_by: "mlx-bun",
-          context_window: ctx.model.config.text.maxPositionEmbeddings,
+          context_window:
+            ctx.glmMemoryPlan?.contextTokens ??
+            ctx.model.config.text.maxPositionEmbeddings,
           // Capability flags for clients (CLI/external pi) that build a
           // provider from discovery — `reasoning` gates the thinking toggle,
           // `vision` the image input declaration, `audio` whether
@@ -2671,6 +2816,29 @@ export function createServer(
           reasoning: ctx.template.supportsThinking,
           vision: !!(ctx.vision || ctx.loadVision),
           audio: !!(ctx.audio || ctx.loadAudio),
+          batch_mode: gateway.batchMode,
+          tools: true,
+          structured_output: true,
+          embeddings: isEmbeddingModel(ctx.model),
+          adapters: !(ctx.model instanceof Glm52Model),
+          training: !(ctx.model instanceof Glm52Model),
+          dsa: ctx.model instanceof Glm52Model && ctx.model.capabilities.dsa,
+          mtp: ctx.draft?.provider.id === "glm52-native-mtp",
+          capabilities: {
+            chat_completions: true,
+            text_completions: true,
+            anthropic_messages: true,
+            responses: true,
+            streaming: true,
+            tools: true,
+            structured_output: true,
+            logprobs: true,
+            embeddings: isEmbeddingModel(ctx.model),
+            vision: !!(ctx.vision || ctx.loadVision),
+            audio: !!(ctx.audio || ctx.loadAudio),
+            adapters: !(ctx.model instanceof Glm52Model),
+            training: !(ctx.model instanceof Glm52Model),
+          },
           gen_defaults: genDefaultsOut,
         }];
         try {
@@ -3462,7 +3630,8 @@ export function createServer(
         // mlx_lm.server's default max_tokens is 512 (its --max-tokens CLI
         // default). The chat lane's very generous default is wrong for raw
         // completion: with no template an EOS may never come.
-        options.maxTokens = body.max_completion_tokens ?? body.max_tokens ?? serverOptions.defaultMaxTokens ?? 512;
+        options.maxTokens = body.max_completion_tokens ?? body.max_tokens ??
+          defaultGeneratedTokens ?? 512;
         const requiredCtx = promptIds.length + options.maxTokens;
         if (requiredCtx > admission.maxSafeContext) {
           // Pre-run reject: the gateway only takes grammar disposal ownership

@@ -9,8 +9,12 @@ import { generate, type GenerateOptions } from "../generate";
 import * as ops from "../mlx/ops";
 import { ChatTemplate } from "../chat-template";
 import { loadModelConfig, type ModelConfig } from "../config";
-import { Weights } from "../weights";
-import { createModel, type RuntimeModel } from "../model/factory";
+import {
+  openModel,
+  type Glm52RuntimeOpenOptions,
+  type RuntimeModel,
+} from "../model/factory";
+import { isGlm52Config } from "../model/support";
 import { DiffusionGemmaModel } from "../model/diffusion-gemma";
 import { loadTokenizer, type LoadedTokenizer } from "../tokenizer";
 import { resolveModelDir } from "./kl";
@@ -65,11 +69,16 @@ export interface TaskModel {
   activeAdapters?: string[];
 }
 
-export async function loadTaskModel(query: string, adapterDir?: string): Promise<TaskModel> {
+export async function loadTaskModel(
+  query: string,
+  adapterDir?: string,
+  runtimeOptions: Glm52RuntimeOpenOptions = {},
+): Promise<TaskModel> {
   const dir = resolveModelDir(query);
   const config = await loadModelConfig(dir);
-  const weights = await Weights.open(dir);
-  const model = createModel(weights, config);
+  if (adapterDir && isGlm52Config(config))
+    throw new Error("GLM-5.2 does not support LoRA adapters");
+  const model = await openModel(dir, runtimeOptions);
   const activeAdapters: string[] = [];
   if (adapterDir) {
     // Mount a trained LoRA adapter so the eval measures base+adapter (e.g. the

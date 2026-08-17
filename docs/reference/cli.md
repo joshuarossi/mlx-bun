@@ -26,6 +26,7 @@ mlx-bun serve                              # default model, http://localhost:808
 mlx-bun serve e4b                          # pick a model by substring
 mlx-bun serve gemma --memory-budget 18     # ...with admission control (GB)
 mlx-bun serve e4b --no-open                # don't open the browser chat UI
+mlx-bun serve GLM-5.2 --context-length 4096 # bounded Colibri runtime, native MTP
 ```
 
 Common flags (full list in [server-config.md](server-config.md)):
@@ -51,8 +52,10 @@ Common flags (full list in [server-config.md](server-config.md)):
 | `--draft-kind <kind>` | Override draft-artifact detection: `two-model` \| `assistant` \| `dspark` \| `deepspec` \| `ngram` (default: auto). `ngram` is MODEL-FREE prompt lookup — no `--draft-model` (mounting one alongside it is refused): drafts are copied from the request's own prompt+generation whenever its trailing tokens have occurred earlier in that stream, verified by the target like any other draft, so results stay exact at any temperature. Zero weights, zero memory; best on agentic/RAG/code-edit traffic that re-emits spans already in context (prior art: prompt-lookup decoding / vLLM's `ngram` proposer) |
 | `--num-draft-tokens <n>` | Drafts per verify round (default 3; `ngram` defaults to 10 — drafting is free; a DSpark draft pins to its trained block width) |
 | `--ngram-max <k>` / `--ngram-min <k>` | Prompt-lookup match-window bounds, `--draft-kind ngram` only: the longest/shortest trailing k-gram searched (defaults 3 / 1, the reference values) |
+| `--mtp on\|off` | GLM-5.2 checkpoint-native MTP (default on). Native MTP uses the exact serial verify lane; `off` enables ordinary continuous batching (batched per-row MTP is post-release) |
+| `--context-length <n>` | GLM-5.2 context reserved by the header-only resource equation (default 4096) |
 | `--batch <n>` | Continuous-batched serving cap, mlx-lm B=N parity (default 8; `--batch 1` pins the serial path) |
-| `--temperature` / `--top-p` / `--top-k` / `--max-tokens` | Server-wide sampling defaults (per-request fields still win) |
+| `--temperature` / `--top-p` / `--top-k` / `--max-tokens` | Server-wide sampling defaults (per-request fields still win; GLM-5.2 defaults to the planned 128 generated tokens) |
 | `--l1` / `--l2` | Parity tier alias: bit-exact to mlx-lm / bit-exact to mlx-optiq. **No tier = `--l1`** (the default since 2026-07-05 — output-changing levers are opt-in until they beat the L1 baseline in a paired A/B). Each expands to per-fork flags (`--compiled-decode`, `--compiled-activations`, `--fused-sdpa`, `--kv-quant`); a fork flag overrides one. `--l3` was removed 2026-07-05 and now errors (the Lab replaces it — [unified-engine-frontier-plan.md](../design/unified-engine-frontier-plan.md)). See [server-config.md](server-config.md#fidelity-tiers-and-the-decode-route---l1----l2). |
 | `--allow-private-media` | Let `image_url`/`audio_url` parts fetch from private/loopback/link-local hosts (blocked by default — SSRF guard; the 10 s timeout and 64 MB cap on remote media apply either way) |
 | `--no-open` | Don't auto-open the chat UI |
@@ -96,6 +99,7 @@ decode-path levers mirror `serve` (`--temperature`, `--seed`, `--l1/--l2`,
 ```sh
 mlx-bun generate gemma "a haiku about metal shaders"
 mlx-bun gen e4b --prompt "…" --max-tokens 512 --seed 42
+mlx-bun generate GLM-5.2 --prompt "Explain DSA" --max-tokens 128
 ```
 
 ### `embed` — text embeddings
@@ -118,12 +122,20 @@ Full guide: [models.md](models.md).
 ### `get` — download a model
 
 Resumable, checksum-verified download into the standard Hugging Face cache
-(plain HTTPS, no Xet — no 0% stalls).
+(plain HTTPS, no Xet — no 0% stalls). Before payload transfer, the downloader
+credits complete blobs and partial prefixes, then requires enough free space
+for the exact remainder plus a fixed 1 GiB reserve.
 
 ```sh
 mlx-bun get mlx-community/gemma-4-12B-it-OptiQ-4bit
 mlx-bun get 12B                  # no "/" = registry query; re-gets/refreshes the match
+mlx-bun get mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp \
+  --revision 3cc8db99b1b13fc79325d987ba3c1c430766b3b8
 ```
+
+The GLM artifact is roughly 357 GiB; select `HF_HUB_CACHE` on a sufficiently
+large fast volume before starting. Rerunning the same command resumes verified
+`.incomplete` prefixes. See the [32 GB GLM quickstart](models.md#glm-52-on-a-32-gb-mac).
 
 ### `scan` — index your cache
 
@@ -163,6 +175,20 @@ calibrated prefill transient, wired-memory ceiling.
 ```sh
 mlx-bun fit gemma --ctx 32768          # for this machine
 mlx-bun fit gemma --ctx 8192 --skus    # across the Apple Silicon lineup
+```
+
+The direct Colibri GLM-5.2 artifact is handled by its streamed-runtime
+contract, not by the generic resident-weights estimator. `fit GLM-5.2`
+defaults to the supported 4,096-token / 128-generation-token plan and reports
+the artifact's disk footprint separately from resident weights, the main and
+MTP expert slabs, KV, reserves, and the 25 GiB process ceiling. Its throughput
+line is the measured warm quality-preserving result; the direct Colibri oracle
+and the 2 tok/s aspiration are labeled separately. `--skus` explains that the
+generic resident-model matrix does not apply to this streamed artifact.
+
+```sh
+mlx-bun fit GLM-5.2
+mlx-bun fit GLM-5.2 --ctx 4096
 ```
 
 ## Training & model creation

@@ -162,6 +162,8 @@ export function parseToolCalls(text: string): ParsedToolCall[] {
 const TOOL_CALL_BLOCK_RE = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
 const XML_FUNCTION_EQUALS_RE = /^\s*<function=([^>\s]+)>\s*([\s\S]*?)\s*<\/function>\s*$/i;
 const XML_PARAMETER_EQUALS_RE = /<parameter=([^>\s]+)>\s*([\s\S]*?)\s*<\/parameter>/gi;
+const GLM52_ARG_KEY_RE = /<arg_key>/i;
+const GLM52_ARG_PAIR_RE = /<arg_key>\s*([\s\S]*?)\s*<\/arg_key>\s*<arg_value>\s*([\s\S]*?)\s*<\/arg_value>/gi;
 const XML_FUNCTION_ATTR_RE = /<function\s+name=["']([^"']+)["']\s*>\s*([\s\S]*?)\s*<\/function>/gi;
 // CDATA alternative first so a `</param>` inside a CDATA block never
 // terminates the value early.
@@ -560,6 +562,29 @@ function parseXmlEqualsToolCall(block: string, tools: ToolSpec[]): ParsedToolCal
   return { name, arguments: args };
 }
 
+function parseGlm52ToolCall(block: string, tools: ToolSpec[]): ParsedToolCall | null {
+  const firstArg = block.search(GLM52_ARG_KEY_RE);
+  const name = (firstArg < 0 ? block : block.slice(0, firstArg)).trim();
+  if (!name || !/^[^\s<>]+$/.test(name)) return null;
+  if (firstArg < 0) return { name, arguments: {} };
+
+  const body = block.slice(firstArg);
+  const args: Record<string, unknown> = {};
+  let cursor = 0;
+  let matched = false;
+  for (const pair of body.matchAll(GLM52_ARG_PAIR_RE)) {
+    if (body.slice(cursor, pair.index).trim()) return null;
+    const key = pair[1]!.trim();
+    if (!key) throw new Error(`tool '${name}' contains an empty argument name`);
+    args[key] = decodeToolValue(pair[2]!, toolParameterSchema(tools, name, key));
+    cursor = pair.index + pair[0].length;
+    matched = true;
+  }
+  GLM52_ARG_PAIR_RE.lastIndex = 0;
+  if (!matched || body.slice(cursor).trim()) return null;
+  return { name, arguments: args };
+}
+
 function parseXmlAttrToolCalls(text: string, tools: ToolSpec[]): ParsedToolCall[] {
   const calls: ParsedToolCall[] = [];
   for (const fn of text.matchAll(XML_FUNCTION_ATTR_RE)) {
@@ -582,7 +607,8 @@ function parseXmlAttrToolCalls(text: string, tools: ToolSpec[]): ParsedToolCall[
  *  after generation, and only when tools are active; tokenizer ids are
  *  model-family-specific and must not be used globally. Supports the
  *  OpenAI JSON `<tool_call>...</tool_call>` contract, Qwen-style
- *  `<function=name><parameter=...>`, and MiniCPM5's native
+ *  `<function=name><parameter=...>`, GLM-5.2's
+ *  `name<arg_key>...<arg_value>...`, and MiniCPM5's native
  *  `<function name="..."><param name="...">...` template shape. */
 export function parseGeneratedToolCalls(text: string, tools: ToolSpec[]): ParsedToolCall[] {
   if (!tools.length) return [];
@@ -590,7 +616,9 @@ export function parseGeneratedToolCalls(text: string, tools: ToolSpec[]): Parsed
   const calls: ParsedToolCall[] = [];
   for (const block of text.matchAll(TOOL_CALL_BLOCK_RE)) {
     const body = block[1]!.trim();
-    const parsed = parseJsonToolCall(body) ?? parseXmlEqualsToolCall(body, tools);
+    const parsed = parseJsonToolCall(body) ??
+      parseXmlEqualsToolCall(body, tools) ??
+      parseGlm52ToolCall(body, tools);
     if (!parsed) throw new Error("unsupported tool_call payload format");
     calls.push(parsed);
   }

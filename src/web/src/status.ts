@@ -90,6 +90,32 @@ export function createStatusController() {
         .map(([k, v]) => '<div class="kv"><b>' + esc(k) + ' layers</b><span class="num">' + esc(v) + "</span></div>").join("") +
         (att ? '<div class="kv"><b>attention</b><span class="num">' + esc(att.global) + " global · " + esc(att.sliding_window) + " sliding</span></div>" : "");
 
+      const glm = stats.glm52;
+      const expert = glm && glm.expert_runtime;
+      const expertCard = $("st-glm-expert-card");
+      expertCard.style.display = glm ? "" : "none";
+      if (glm) {
+        const rate = (d: { hits?: number; misses?: number } | null | undefined): string => {
+          const total = (d?.hits || 0) + (d?.misses || 0);
+          return total ? (100 * (d?.hits || 0) / total).toFixed(1) + "%" : "—";
+        };
+        const turn = expert && expert.last_turn;
+        $("st-glm-main-hit").textContent = rate(turn?.main?.demand);
+        $("st-glm-main-read").textContent = turn?.main?.demand
+          ? gb(turn.main.demand.readBytes) : "—";
+        $("st-glm-mtp-hit").textContent = rate(turn?.mtp?.demand);
+        $("st-glm-mtp-read").textContent = turn?.mtp?.demand
+          ? gb(turn.mtp.demand.readBytes) : "—";
+        const main = expert?.main_residency;
+        const mtp = expert?.mtp_residency;
+        $("st-glm-residency").textContent = main
+          ? "resident slots main " + num(main.resident + main.pinned) +
+            " / " + num(main.resident + main.pinned + main.working) +
+            (mtp ? " · MTP " + num(mtp.resident + mtp.pinned) +
+              " / " + num(mtp.resident + mtp.pinned + mtp.working) : "")
+          : "expert runtime telemetry unavailable";
+      }
+
       await loadDownloads();
       if (!fitLoaded) { await loadFit(); await loadLibrary(); }
       if (stats.server && stats.server.started_at) {
@@ -179,15 +205,28 @@ export function createStatusController() {
       machine?: { ram_bytes?: number; bandwidth_gbs?: number; chip?: string };
       sku_matrix_ctx?: number;
       sku_matrix?: SkuRow[];
+      glm52?: {
+        artifact_disk_bytes?: number | null;
+        main_expert_slab_bytes?: number;
+        mtp_expert_slab_bytes?: number;
+        direct_oracle_warm_decode_tps?: number;
+        aspirational_decode_tps?: number;
+      };
     }
     let f: FitResponse;
     try { f = await fetch("/fit").then((r) => r.json()); } catch { return; }
     fitLoaded = true;
     const r = f.report || {};
+    const tps = (value: number): string => value < 1 ? value.toFixed(2) : value.toFixed(1);
     if (f.measured_decode_tps) {
-      $("st-tps").textContent = f.measured_decode_tps.toFixed(1);
+      $("st-tps").textContent = tps(f.measured_decode_tps);
       $("st-tps").closest(".card")!.querySelector("h3")!.textContent = "Decode · measured";
-      $("st-tps-cap").textContent = "mlx-bun benchmark on this machine · predicted " + (f.typical_decode_tps || 0).toFixed(1) + " at " + num(f.typical_context_tokens) + " ctx";
+      $("st-tps-cap").textContent = f.glm52
+        ? "quality-preserving warm · direct oracle " +
+          tps(f.glm52.direct_oracle_warm_decode_tps || 0) +
+          " · aspiration " + tps(f.glm52.aspirational_decode_tps || 0)
+        : "mlx-bun benchmark on this machine · predicted " +
+          tps(f.typical_decode_tps || 0) + " at " + num(f.typical_context_tokens) + " ctx";
     } else if (f.typical_decode_tps) {
       $("st-tps").textContent = f.typical_decode_tps.toFixed(1);
       $("st-tps-cap").textContent = "at " + num(f.typical_context_tokens) + " context · " + (r.predicted_decode_tps || 0).toFixed(1) + " tok/s at the " + num(f.context_tokens) + " max (full-KV reads)";
@@ -198,6 +237,15 @@ export function createStatusController() {
     $("st-m-bw").textContent = (f.machine && f.machine.bandwidth_gbs || "—") + " GB/s";
     $("st-m-fits").innerHTML = r.fits ? '<span style="color:var(--green);font-weight:700">FITS</span>' : '<span style="color:var(--red);font-weight:700">DOES NOT FIT</span>';
     $("st-fit-ctx").textContent = num(f.context_tokens);
+    document.querySelectorAll<HTMLElement>("[data-glm-fit]").forEach((row) => {
+      row.style.display = f.glm52 ? "" : "none";
+    });
+    $("st-f-weights-label").textContent = f.glm52 ? "resident weights" : "weights";
+    $("st-f-transient-label").textContent = f.glm52 ? "other reserves" : "transient";
+    $("st-f-artifact").textContent = f.glm52?.artifact_disk_bytes
+      ? gb(f.glm52.artifact_disk_bytes) : "registry unavailable";
+    $("st-f-main-slab").textContent = gb(f.glm52?.main_expert_slab_bytes);
+    $("st-f-mtp-slab").textContent = gb(f.glm52?.mtp_expert_slab_bytes);
     $("st-f-weights").textContent = gb(r.weights_bytes);
     $("st-f-kv").textContent = gb(r.kv_bytes);
     $("st-f-transient").textContent = gb(r.transient_bytes);
@@ -221,7 +269,7 @@ export function createStatusController() {
         '</td><td class="num">' + row.ram_gb + " GB</td>" +
         '<td class="' + (row.fits ? "fit-yes" : "fit-no") + '">' + (row.fits ? "fits" : "no") + "</td>" +
         '<td class="' + dimCls + '">' + (row.max_context > 0 ? num(row.max_context) : "0 — weights alone don’t fit") + "</td>" +
-        '<td class="' + dimCls + '">' + (row.decode_tps > 0 ? "~" + row.decode_tps.toFixed(0) + " tok/s" : "—") + "</td></tr>";
+        '<td class="' + dimCls + '">' + (row.decode_tps > 0 ? "~" + tps(row.decode_tps) + " tok/s" : "—") + "</td></tr>";
     }).join("");
   }
 

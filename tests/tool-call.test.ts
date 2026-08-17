@@ -123,6 +123,22 @@ describe("parseGeneratedToolCalls", () => {
     )).toEqual([{ name: "read", arguments: { path: "AGENTS.md" } }]);
   });
 
+  test("GLM-5.2 arg_key/arg_value tool_call block", () => {
+    expect(parseGeneratedToolCalls(
+      "<tool_call>read<arg_key>path</arg_key><arg_value>AGENTS.md</arg_value></tool_call>",
+      tools,
+    )).toEqual([{ name: "read", arguments: { path: "AGENTS.md" } }]);
+  });
+
+  test("GLM-5.2 zero-argument tool_call block", () => {
+    const zeroArgTools = [{
+      type: "function",
+      function: { name: "status", parameters: { type: "object", properties: {} } },
+    }];
+    expect(parseGeneratedToolCalls("<tool_call>status</tool_call>", zeroArgTools))
+      .toEqual([{ name: "status", arguments: {} }]);
+  });
+
   test("MiniCPM5 native function/param XML", () => {
     expect(parseGeneratedToolCalls(
       '<function name="read"><param name="path">/Users/joshrossi/Code/mlx-bun/AGENTS.md</param></function>',

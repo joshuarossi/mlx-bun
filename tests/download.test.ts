@@ -7,7 +7,12 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readlinkSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { downloadModel, gitBlobSha1, isSafeRepoFilename } from "../src/download";
+import {
+  downloadModel,
+  gitBlobSha1,
+  isSafeRepoFilename,
+  planDownloadSpace,
+} from "../src/download";
 
 const REPO = "test/tiny-model";
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
@@ -25,6 +30,7 @@ let apiAuth: string | null = null;
 let corruptBig = false;
 let lfsDigestMode: "sha256" | "oid" | "missing" | "malformed" = "sha256";
 let smallBlobId = smallSha1;
+let reportedBigSize = big.length;
 
 const server = Bun.serve({
   port: 0,
@@ -44,12 +50,12 @@ const server = Bun.serve({
         siblings: [
           { rfilename: "config.json", size: small.length, blobId: smallBlobId },
           {
-            rfilename: "weights/model.bin", size: big.length,
+            rfilename: "weights/model.bin", size: reportedBigSize,
             blobId: "aaaa000000000000000000000000000000000000",
             // Hugging Face's current ?blobs=true schema names this digest
             // `sha256` (not `oid`). Keep the mock faithful so a field-name
             // drift cannot silently bypass content verification again.
-            lfs,
+            lfs: { ...lfs, size: reportedBigSize },
           },
         ],
       });
@@ -100,6 +106,7 @@ beforeEach(() => {
   corruptBig = false;
   lfsDigestMode = "sha256";
   smallBlobId = smallSha1;
+  reportedBigSize = big.length;
 });
 
 const repoDir = () => join(hub, "models--test--tiny-model");
@@ -136,6 +143,20 @@ describe("downloader", () => {
     mkdirSync(blobsDir, { recursive: true });
     writeFileSync(join(blobsDir, `${bigSha256}.incomplete`), big.slice(0, half));
 
+    expect(planDownloadSpace([
+      {
+        rfilename: "weights/model.bin",
+        size: big.length,
+        blobId: "",
+        lfs: { sha256: bigSha256, size: big.length },
+      },
+    ], blobsDir)).toEqual({
+      remainingBytes: half,
+      remainingFiles: 1,
+      completeFiles: 0,
+      resumableBytes: half,
+    });
+
     const snap = await downloadModel(REPO, { endpoint, cacheDir: hub, token: null });
     const bigReq = cdnRequests.find((r) => r.file === "weights/model.bin");
     expect(bigReq?.range).toBe(`bytes=${half}-`);
@@ -162,6 +183,13 @@ describe("downloader", () => {
     const before = cdnRequests.length;
     await downloadModel(REPO, { endpoint, cacheDir: hub, token: null });
     expect(cdnRequests.length).toBe(before);
+  });
+
+  test("disk preflight refuses an impossible acquisition before payload fetch", async () => {
+    reportedBigSize = 1_000_000_000_000_000;
+    await expect(downloadModel(REPO, { endpoint, cacheDir: hub, token: null }))
+      .rejects.toThrow(/insufficient disk space.*remains.*available.*rerun.*resume/);
+    expect(cdnRequests).toHaveLength(0);
   });
 
   test("normalizes the legacy lfs.oid spelling to the SHA-256 identity", async () => {

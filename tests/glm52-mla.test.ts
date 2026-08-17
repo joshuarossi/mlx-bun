@@ -373,6 +373,48 @@ describe("GLM-5.2 MLX MLA", () => {
     }
   });
 
+  test("absorbed MLA consumes a borrowed device selection without host upload", () => {
+    const prefixValues = new Float32Array([
+      0.2, -0.4, 0.7, 0.1,
+      -0.3, 0.8, 0.25, -0.6,
+    ]);
+    const decodeValues = new Float32Array([0.9, -0.2, -0.1, 0.5]);
+    const inputs = [
+      MlxArray.fromFloat32(prefixValues, [1, 2, HIDDEN]),
+      MlxArray.fromFloat32(prefixValues, [1, 2, HIDDEN]),
+      MlxArray.fromFloat32(decodeValues, [1, 1, HIDDEN]),
+      MlxArray.fromFloat32(decodeValues, [1, 1, HIDDEN]),
+    ];
+    const weightsA = new TinyWeights();
+    const weightsB = new TinyWeights();
+    const cacheA = new MLACache({ kvLoraRank: KV_RANK, ropeHeadDim: ROPE });
+    const cacheB = new MLACache({ kvLoraRank: KV_RANK, ropeHeadDim: ROPE });
+    const mlaA = new Glm52Mla(config, weightsA, 0);
+    const mlaB = new Glm52Mla(config, weightsB, 0);
+    const devicePositions = MlxArray.fromInt32(new Int32Array([0, 2]), [2]);
+    try {
+      mlaA.forward(inputs[0]!, cacheA, null, "reconstructed").dispose();
+      mlaB.forward(inputs[1]!, cacheB, null, "reconstructed").dispose();
+      const device = mlaA.forward(
+        inputs[2]!, cacheA, null, "absorbed", devicePositions,
+      );
+      const host = mlaB.forward(
+        inputs[3]!, cacheB, null, "absorbed", [0, 2],
+      );
+      close(device.toFloat32(), host.toFloat32(), 3e-5);
+      expect(devicePositions.toIntTokens()).toEqual([0, 2]);
+      device.dispose();
+      host.dispose();
+    } finally {
+      devicePositions.dispose();
+      for (const input of inputs) input.dispose();
+      cacheA.dispose();
+      cacheB.dispose();
+      weightsA.dispose();
+      weightsB.dispose();
+    }
+  });
+
   test("rejects absorbed multi-token execution without mutating the cache", () => {
     const input = MlxArray.fromFloat32(
       new Float32Array([

@@ -67,6 +67,10 @@ describe("ensureNativeRuntime", () => {
 });
 
 describe("constants", () => {
+  it("ships the GLM expert-I/O helper with the MLX runtime", () => {
+    expect(NATIVE_PACK_FILES).toContain("libmlx_bun_expert_io.dylib");
+  });
+
   it("pack url and cache dir are versioned and arch-specific", () => {
     expect(nativePackUrl("arm64")).toContain("native-v");
     expect(nativePackUrl("arm64")).toContain("arm64.tar.gz");

@@ -50,6 +50,7 @@ import {
   QuantizedKVCache, RotatingQuantizedKVCache,
   TurboQuantKVCache, type TurboQuantTensor,
 } from "./model/gemma4-base";
+import { Glm52Cache, MLACache } from "./model/glm52-cache";
 import { SSMCache } from "./model/qwen3-delta";
 
 const MAGIC = "MLXBUNKV2\n";
@@ -62,7 +63,16 @@ const PREFIX_LEN = MAGIC.length + 4 + 4 + 8;
 // the header's byte length when the real values replace the placeholders.
 const hash64 = (bytes: Uint8Array): string => Bun.hash(bytes).toString(16).padStart(16, "0");
 
-export type CacheKind = "kv" | "rotating" | "qkv" | "rotating-qkv" | "ssm" | "turboquant";
+export type CacheKind =
+  | "kv"
+  | "rotating"
+  | "qkv"
+  | "rotating-qkv"
+  | "ssm"
+  | "turboquant"
+  | "mla"
+  | "mla-dsa"
+  | "mtp-mla";
 
 interface TensorSlot {
   off: number;
@@ -91,6 +101,11 @@ export interface CacheHeaderEntry {
   /** turboquant: head_dim, needed to unpack kIdx/vPacked on restore
    *  (packed byte width alone doesn't recover the original element count). */
   headDim?: number;
+  /** GLM checkpoint-native compressed-cache geometry. */
+  kvLoraRank?: number;
+  ropeHeadDim?: number;
+  dsaHeadDim?: number;
+  maxTokens?: number;
   /** kv/rotating: [k, v] · qkv/rotating-qkv: [kPacked, kScales, kBiases,
    *  vPacked, vScales, vBiases] · ssm: [conv, recurrent] · turboquant:
    *  [kIdx, kScales, kZeros, vPacked, vScales] */
@@ -142,6 +157,10 @@ function snapshotCache(c: Cache, dataOffset: number): { entry: CacheHeaderEntry;
     const [B, H, , D] = a.shape as [number, number, number, number];
     return a.slice([0, 0, 0, 0], [B, H, upTo, D]);
   };
+  const liveMlaSlice = (a: MlxArray, upTo: number): MlxArray => {
+    const [B, , D] = a.shape as [number, number, number];
+    return a.slice([0, 0, 0], [B, upTo, D]);
+  };
   const pushTriple = (t: ops.QuantizedTensor, upTo: number | null): void => {
     for (const a of [t.packed, t.scales, t.biases]) {
       if (upTo === null) push(a, false);
@@ -150,7 +169,26 @@ function snapshotCache(c: Cache, dataOffset: number): { entry: CacheHeaderEntry;
   };
 
   let entry: CacheHeaderEntry;
-  if (c instanceof TurboQuantKVCache) {
+  if (c instanceof Glm52Cache) {
+    if (!c.latent || !c.rope || c.batchSize === null || c.offset === 0)
+      throw new Error("cannot persist an empty GLM compressed cache");
+    push(liveMlaSlice(c.latent, c.offset), true);
+    push(liveMlaSlice(c.rope, c.offset), true);
+    if (c.dsa) {
+      if (!c.dsa.data || c.dsa.offset !== c.offset)
+        throw new Error("cannot persist misaligned GLM DSA state");
+      push(liveMlaSlice(c.dsa.data, c.offset), true);
+    }
+    entry = {
+      kind: c.role === "mtp" ? "mtp-mla" : c.dsa ? "mla-dsa" : "mla",
+      offset: c.offset,
+      kvLoraRank: c.kvLoraRank,
+      ropeHeadDim: c.ropeHeadDim,
+      ...(c.dsa ? { dsaHeadDim: c.dsa.headDim } : {}),
+      maxTokens: c.maxTokens,
+      tensors: slots,
+    };
+  } else if (c instanceof TurboQuantKVCache) {
     const t = c.state();
     if (t.length === 0) throw new Error("cannot persist an empty cache");
     const [kIdx, kScales, kZeros, vPacked, vScales] = t as [MlxArray, MlxArray, MlxArray, MlxArray, MlxArray];
@@ -211,6 +249,10 @@ export function cloneKvCaches(caches: Cache[]): Cache[] {
     const [B, H, , D] = a.shape as [number, number, number, number];
     return a.slice([0, 0, 0, 0], [B, H, upTo, D]);
   };
+  const mlaView = (a: MlxArray, upTo: number): MlxArray => {
+    const [B, , D] = a.shape as [number, number, number];
+    return a.slice([0, 0, 0], [B, upTo, D]);
+  };
   const tripleView = (t: ops.QuantizedTensor, upTo: number | null): ops.QuantizedTensor => ({
     packed: upTo === null ? view(t.packed) : liveView(t.packed, upTo),
     scales: upTo === null ? view(t.scales) : liveView(t.scales, upTo),
@@ -219,7 +261,24 @@ export function cloneKvCaches(caches: Cache[]): Cache[] {
   const out: Cache[] = [];
   try {
     for (const c of caches) {
-      if (c instanceof TurboQuantKVCache) {
+      if (c instanceof Glm52Cache) {
+        if (!c.latent || !c.rope || c.batchSize === null || c.offset === 0)
+          throw new Error("cannot clone an empty GLM compressed cache");
+        const n = new MLACache({
+          kvLoraRank: c.kvLoraRank,
+          ropeHeadDim: c.ropeHeadDim,
+          ...(c.dsa ? { dsa: { headDim: c.dsa.headDim } } : {}),
+          maxTokens: c.maxTokens,
+          role: c.role,
+        });
+        n.restoreCompressedState(
+          mlaView(c.latent, c.offset),
+          mlaView(c.rope, c.offset),
+          c.dsa ? mlaView(c.dsa.data!, c.offset) : null,
+          c.offset,
+        );
+        out.push(n);
+      } else if (c instanceof TurboQuantKVCache) {
         const state = c.state();
         if (state.length === 0) throw new Error("cannot clone an empty cache");
         const [kIdx, kScales, kZeros, vPacked, vScales] = state;
@@ -514,12 +573,57 @@ export interface LoadedKvCache {
 
 export interface KvLoadExpect {
   /** Reject on metadata mismatch (pass what the server is running). */
+  modelId?: string;
   configFingerprint?: string;
   tokenizerHash?: string;
   ns?: string;
   /** Verify every tensor hash before copying it in (off by default,
    *  `--ssd-cache-verify` — the hash pass roughly doubles restore reads). */
   verify?: boolean;
+}
+
+/** Reject GLM cache/layout drift before opening the tensor mmap. Generic KV
+ *  kinds may legitimately differ from makeCache() after runtime quantization;
+ *  GLM's checkpoint-native cache geometry does not. */
+function validateGlm52Prototype(
+  path: string,
+  entry: CacheHeaderEntry,
+  prototype: Cache,
+): void {
+  const glmKind = entry.kind === "mla" || entry.kind === "mla-dsa" ||
+    entry.kind === "mtp-mla";
+  if (!(prototype instanceof Glm52Cache)) {
+    if (glmKind)
+      throw new Error(`${path}: GLM cache kind ${entry.kind} does not match model cache`);
+    return;
+  }
+  const expectedKind: CacheKind = prototype.role === "mtp"
+    ? "mtp-mla"
+    : prototype.dsa ? "mla-dsa" : "mla";
+  if (entry.kind !== expectedKind) {
+    throw new Error(
+      `${path}: cache kind ${entry.kind} != model cache kind ${expectedKind}`,
+    );
+  }
+  for (const [field, actual, expected] of [
+    ["kvLoraRank", entry.kvLoraRank, prototype.kvLoraRank],
+    ["ropeHeadDim", entry.ropeHeadDim, prototype.ropeHeadDim],
+    ["dsaHeadDim", entry.dsaHeadDim, prototype.dsa?.headDim],
+    ["maxTokens", entry.maxTokens, prototype.maxTokens],
+  ] as const) {
+    if (actual !== expected) {
+      throw new Error(
+        `${path}: ${field} ${String(actual)} != model ${String(expected)}`,
+      );
+    }
+  }
+  const expectedTensors = prototype.dsa ? 3 : 2;
+  if (entry.tensors.length !== expectedTensors) {
+    throw new Error(
+      `${path}: ${entry.kind} has ${entry.tensors.length} tensors, ` +
+      `expected ${expectedTensors}`,
+    );
+  }
 }
 
 /** Copy-restore a full-attention KV tensor into STEP-rounded capacity with
@@ -569,15 +673,28 @@ export function loadKvCache(
   expect: KvLoadExpect = {},
 ): LoadedKvCache {
   const header = readKvHeader(path);
-  for (const key of ["configFingerprint", "tokenizerHash", "ns"] as const) {
+  for (const key of [
+    "modelId",
+    "configFingerprint",
+    "tokenizerHash",
+    "ns",
+  ] as const) {
     if (expect[key] !== undefined && header[key] !== expect[key])
       throw new Error(`${path}: ${key} mismatch (file ${header[key]}, expected ${expect[key]})`);
   }
   const proto = model.makeCache();
-  const cacheCount = proto.length;
-  for (const c of proto) c.dispose();
-  if (header.caches.length !== cacheCount)
-    throw new Error(`${path}: ${header.caches.length} cached layers but model has ${cacheCount}`);
+  try {
+    if (header.caches.length !== proto.length) {
+      throw new Error(
+        `${path}: ${header.caches.length} cached layers but model has ${proto.length}`,
+      );
+    }
+    for (let index = 0; index < proto.length; index++) {
+      validateGlm52Prototype(path, header.caches[index]!, proto[index]!);
+    }
+  } finally {
+    for (const c of proto) c.dispose();
+  }
 
   const mmap = MmapFile.open(path, "ro");
   const dataStart = header.dataStart;
@@ -660,6 +777,28 @@ export function loadKvCache(
             vPacked: arr(t[3]!), vScales: arr(t[4]!),
           };
           c.restoreState(kv, e.offset, e.headDim!);
+          caches.push(c);
+          break;
+        }
+        case "mla":
+        case "mla-dsa":
+        case "mtp-mla": {
+          const hasDsa = e.kind === "mla-dsa";
+          if (e.kind === "mtp-mla" && e.dsaHeadDim !== undefined)
+            throw new Error(`${path}: native MTP cache cannot contain DSA state`);
+          const c = new MLACache({
+            kvLoraRank: e.kvLoraRank!,
+            ropeHeadDim: e.ropeHeadDim!,
+            ...(hasDsa ? { dsa: { headDim: e.dsaHeadDim! } } : {}),
+            maxTokens: e.maxTokens,
+            role: e.kind === "mtp-mla" ? "mtp" : "target",
+          });
+          c.restoreCompressedState(
+            arr(t[0]!),
+            arr(t[1]!),
+            hasDsa ? arr(t[2]!) : null,
+            e.offset,
+          );
           caches.push(c);
           break;
         }

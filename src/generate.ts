@@ -520,6 +520,24 @@ export async function withModelUsageFlush<T>(
   }
 }
 
+/** Forward through either the ordinary synchronous model surface or a
+ * streamed-expert model whose layer execution must cross async I/O. Keeping
+ * this choice inside the shared generator preserves the complete generation
+ * contract (sampling, grammar, logprobs, prompt cache, and cancellation) for
+ * both execution styles. */
+async function forwardHiddenForGeneration(
+  model: RuntimeModel,
+  ids: MlxArray,
+  cache: Cache[],
+): Promise<MlxArray> {
+  const asyncModel = model as RuntimeModel & {
+    forwardHiddenAsync?: (ids: MlxArray, cache: Cache[]) => Promise<MlxArray>;
+  };
+  return typeof asyncModel.forwardHiddenAsync === "function"
+    ? await asyncModel.forwardHiddenAsync(ids, cache)
+    : model.forwardHidden(ids, cache);
+}
+
 async function* generateInner(
   model: RuntimeModel,
   promptTokens: number[],
@@ -698,7 +716,7 @@ async function* generateInner(
         while (pos < snapAt) {
           const chunk = promptTokens.slice(pos, Math.min(pos + prefillChunkSize, snapAt));
           const ids = ops.fromInt32(chunk, [1, chunk.length]);
-          const h = model.forwardHidden(ids, cache);
+          const h = await forwardHiddenForGeneration(model, ids, cache);
           ids.dispose();
           h.dispose();
           evalCacheState(cache);
@@ -732,7 +750,7 @@ async function* generateInner(
           : prefillChunkSize;
         const chunk = promptTokens.slice(pos, pos + n);
         const ids = ops.fromInt32(chunk, [1, chunk.length]);
-        const h = model.forwardHidden(ids, cache);
+        const h = await forwardHiddenForGeneration(model, ids, cache);
         ids.dispose();
         h.dispose(); // logits never computed for non-final chunks
         evalCacheState(cache);
@@ -759,7 +777,7 @@ async function* generateInner(
       // cover exactly the prompt, as before.
       const lastChunk = promptTokens.slice(pos);
       const ids0 = ops.fromInt32(lastChunk, [1, lastChunk.length]);
-      h0 = model.forwardHidden(ids0, cache);
+      h0 = await forwardHiddenForGeneration(model, ids0, cache);
       ids0.dispose();
     }
     if (options.snapshotAt === undefined || options.snapshotAt >= promptTokens.length)
@@ -877,7 +895,7 @@ async function* generateInner(
         }
         const chunk = [grammarTok, ...jumpEmit];
         const ids = ops.fromInt32(chunk, [1, chunk.length]);
-        const h = model.forwardHidden(ids, cache);
+        const h = await forwardHiddenForGeneration(model, ids, cache);
         ids.dispose();
         // Every chunk token's KV is in the cache regardless of what follows.
         forwarded.push(...chunk);
@@ -918,7 +936,7 @@ async function* generateInner(
         }
         if (!logits) {
           const ids = ops.reshape(cur, [1, 1]);
-          const h = model.forwardHidden(ids, cache);
+          const h = await forwardHiddenForGeneration(model, ids, cache);
           ids.dispose();
           logits = model.logitsFromHidden(h);
           h.dispose();

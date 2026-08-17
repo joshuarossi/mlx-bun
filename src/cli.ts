@@ -17,7 +17,15 @@ import { fit, skuMatrix, thisMachine } from "./fit";
 import { EvalDB } from "./evaldb";
 import pkg from "../package.json" with { type: "json" };
 import { renderHelp } from "./tui";
-import { isSupportedModelRecord } from "./model/support";
+import { isGlm52Config, isSupportedModelRecord } from "./model/support";
+import {
+  GLM52_G5_ASPIRATIONAL_DECODE_TPS,
+  GLM52_G5_DEFAULT_MAX_GENERATION_TOKENS,
+  GLM52_G5_DEFAULT_PROCESS_LIMIT_BYTES,
+  GLM52_G5_DIRECT_ORACLE_WARM_DECODE_TPS,
+  GLM52_G5_MEASURED_WARM_DECODE_TPS,
+  planGlm52MemoryForArtifact,
+} from "./model/glm52-memory";
 import type { JobEvent } from "./jobs/types";
 
 const argv = process.argv.slice(2);
@@ -153,6 +161,11 @@ Model & quality:
                             DSpark pins to its trained block width]
   --ngram-max <k>           Prompt-lookup longest match window  [default: 3]
   --ngram-min <k>           Prompt-lookup shortest match window  [default: 1]
+  --mtp <on|off>            GLM-5.2 checkpoint-native MTP. On by default;
+                            routes requests through the exact serial verify
+                            lane. off enables ordinary continuous batching.
+  --context-length <n>      GLM-5.2 resource-plan context reservation
+                            [default: 4096]
   --kv-quant <mode>         KV cache quantization: config (per-layer
                             kv_config.json when the model ships one), off
                             (bf16), 4 / 8 (uniform bits), or turbo[:k<bits>v
@@ -190,7 +203,8 @@ Model & quality:
                             [default: the model's generation_config.json]
   --max-tokens <n>          Completion cap when a request omits max_tokens
                             (mlx_lm.server flag; its default is 512 there)
-                            [default: 65536 chat / 512 raw completion]
+                            [default: 128 GLM-5.2; otherwise 65536 chat /
+                            512 raw completion]
   --hlg-sampling on|off     Piecewise tone-curve sampling (HLG): rolls off the
                             top, boosts the mids, gentles the tail. Gain folds
                             from --temperature. [default: off]
@@ -285,7 +299,9 @@ Options:
 
 Resumable (Range requests against partial blobs) and verified (sha256
 for LFS blobs). Re-running after an interruption continues where it
-stopped. Uses HF_TOKEN / hf auth login credentials when present.
+stopped. Before payload transfer, complete blobs and partial prefixes are
+credited and the target volume must fit the remainder plus a 1 GiB reserve.
+Uses HF_TOKEN / hf auth login credentials when present.
 When upstream pushed a new revision, the previous snapshot stays on
 disk — \`mlx-bun gc\` reclaims it.`,
 
@@ -1007,6 +1023,39 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   return { port: Number(opt("port", "8080")), serverOptions };
 }
 
+/** Direct Colibri runtime defaults shared by `serve` and the embedded `pi`
+ * server. Other model families ignore this load-only option block. */
+function glm52RuntimeFlags(
+  serverOptions: import("./server").ServerOptions,
+): import("./model/factory").Glm52RuntimeOpenOptions {
+  const mtpRaw = opt("mtp");
+  let enableMtp: boolean | undefined;
+  if (mtpRaw !== null) {
+    if (["on", "1", "true"].includes(mtpRaw)) enableMtp = true;
+    else if (["off", "0", "false"].includes(mtpRaw)) enableMtp = false;
+    else {
+      console.error(`--mtp expects on|off (got "${mtpRaw}")`);
+      process.exit(1);
+    }
+  }
+  const contextRaw = opt("context-length");
+  let contextTokens: number | undefined;
+  if (contextRaw !== null) {
+    contextTokens = Number(contextRaw);
+    if (!Number.isSafeInteger(contextTokens) || contextTokens < 1) {
+      console.error(`--context-length expects an integer >= 1 (got "${contextRaw}")`);
+      process.exit(1);
+    }
+  }
+  return {
+    memoryBudgetBytes: serverOptions.memoryBudgetBytes,
+    batchSize: serverOptions.batch ?? 8,
+    maxGenerationTokens: serverOptions.defaultMaxTokens ?? 128,
+    ...(contextTokens !== undefined ? { contextTokens } : {}),
+    ...(enableMtp !== undefined ? { enableMtp } : {}),
+  };
+}
+
 /** `--adapter <dir>` (alias `--adapter-path`, mlx_lm.server's spelling):
  *  mount a LoRA adapter at startup — the same machinery as POST /v1/adapters —
  *  and make it the default for requests that don't select one (a request's
@@ -1332,9 +1381,69 @@ switch (cmd) {
     if (reg.list().length === 0) await reg.scan();
     const m = reg.resolve(query);
     const config = await loadModelConfig(m.path);
-    const ctx = Number(opt("ctx", "8192"));
-    const r = fit(config, m.sizeBytes, ctx, thisMachine(), undefined, m.expertsBytes);
     const { box, table, style, h1, gradient } = await import("./tui");
+    const glm = isGlm52Config(config);
+    const ctx = Number(opt("ctx", glm ? "4096" : "8192"));
+    if (glm) {
+      const machine = thisMachine();
+      let plan;
+      try {
+        plan = await planGlm52MemoryForArtifact(m.path, {
+          machineBytes: machine.ramBytes,
+          processLimitBytes: Math.min(
+            GLM52_G5_DEFAULT_PROCESS_LIMIT_BYTES,
+            machine.ramBytes,
+          ),
+          contextTokens: ctx,
+          maxGenerationTokens: Math.min(
+            ctx,
+            GLM52_G5_DEFAULT_MAX_GENERATION_TOKENS,
+          ),
+          batchSize: 1,
+          enableMtp: true,
+        });
+      } catch (error) {
+        console.error(
+          `GLM-5.2 resource plan refused: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+        );
+        process.exitCode = 1;
+        break;
+      }
+      const gib = (bytes: number): string => `${(bytes / 2 ** 30).toFixed(2)} GiB`;
+      const li = plan.lineItems;
+      const kvBytes = li.targetKvBytes + li.mtpKvBytes;
+      const otherBytes = plan.plannedProcessBytes - li.residentWeightsBytes -
+        li.mainExpertSlabBytes - li.mtpExpertSlabBytes - kvBytes;
+      h1("will it fit?");
+      console.log(`  ${style.bold(m.repoId)} ${style.dim(`@ ${ctx.toLocaleString()} context · streamed GLM plan`)}`);
+      console.log();
+      box([
+        `artifact on disk  ${gib(m.sizeBytes).padStart(10)} ${style.dim("(streamed, not resident)")}`,
+        `resident weights  ${gib(li.residentWeightsBytes).padStart(10)}`,
+        `main expert slab  ${gib(li.mainExpertSlabBytes).padStart(10)}`,
+        `MTP expert slab   ${gib(li.mtpExpertSlabBytes).padStart(10)}`,
+        `target + MTP KV   ${gib(kvBytes).padStart(10)}`,
+        `runtime reserves  ${gib(otherBytes).padStart(10)}`,
+        `process plan      ${gib(plan.plannedProcessBytes).padStart(10)} ${style.dim(`of ${gib(plan.processLimitBytes)}`)}  ${style.green(style.bold("FITS"))}`,
+        `macOS headroom    ${gib(plan.machineHeadroomBytes).padStart(10)}`,
+        "",
+        `max safe context  ${style.bold(plan.contextTokens.toLocaleString())} tokens`,
+        `max generation    ${style.bold(plan.maxGenerationTokens.toLocaleString())} tokens`,
+        `measured warm     ${gradient(`${GLM52_G5_MEASURED_WARM_DECODE_TPS.toFixed(3)} tok/s`)} ${style.dim("(quality-preserving, MTP on)")}`,
+        `direct oracle     ${GLM52_G5_DIRECT_ORACLE_WARM_DECODE_TPS.toFixed(2)} tok/s`,
+        `aspirational      ${GLM52_G5_ASPIRATIONAL_DECODE_TPS.toFixed(1)} tok/s ${style.dim("(not a fit prediction or release gate)")}`,
+      ]);
+      if (flag("skus")) {
+        console.log(style.dim(
+          "  GLM-5.2's direct-container preset is validated on the M1 Max 32 GB; " +
+          "the generic resident-weight SKU projection does not apply.",
+        ));
+      }
+      console.log();
+      break;
+    }
+    const r = fit(config, m.sizeBytes, ctx, thisMachine(), undefined, m.expertsBytes);
     h1("will it fit?");
     console.log(`  ${style.bold(m.repoId)} ${style.dim(`@ ${ctx.toLocaleString()} context · this machine`)}`);
     console.log();
@@ -1529,6 +1638,7 @@ switch (cmd) {
     const t0 = performance.now();
     const ctx = await loadContext(m.path, m.repoId, {
       memoryBudgetBytes: rt.serverOptions.memoryBudgetBytes,
+      glm: glm52RuntimeFlags(rt.serverOptions),
       ...(draftModelDir || draftKind === "ngram"
         ? {
             ...(draftModelDir ? { draftModelDir } : {}),
@@ -1585,7 +1695,12 @@ switch (cmd) {
       process.exit(1);
     }
     const { loadTaskModel, generateText } = await import("./eval/runner");
-    const tm = await loadTaskModel(positional(0) ?? opt("query") ?? "");
+    const maxTokens = Number(opt("max-tokens", "256"));
+    const tm = await loadTaskModel(
+      positional(0) ?? opt("query") ?? "",
+      undefined,
+      { maxGenerationTokens: maxTokens, enableMtp: false },
+    );
     // Resolve the tier/--kv-quant KV scheme exactly the way serve does
     // (server.ts kvScheme): "config" = the model's kv_config.json (absent →
     // bf16, same silent fallback as serve), N = uniform bits from decode
@@ -1601,7 +1716,7 @@ switch (cmd) {
       : undefined;
     const num = (n: string): number | undefined => { const v = opt(n); return v == null ? undefined : Number(v); };
     const text = await generateText(tm, prompt, {
-      maxTokens: Number(opt("max-tokens", "256")),
+      maxTokens,
       useChat: !flag("raw"),
       ...(kvScheme !== undefined ? { kvScheme } : {}),
       sampler: { temperature: num("temperature") ?? num("temp"), topP: num("top-p"), topK: num("top-k"), seed: num("seed") },
@@ -1883,6 +1998,7 @@ switch (cmd) {
       "--draft-model", "--num-draft-tokens", "--draft-kind", "--ngram-max", "--ngram-min",
       "--compiled-decode", "--compiled-activations", "--fused-sdpa", "--thinking",
       "--temperature", "--temp", "--top-p", "--top-k", "--max-tokens",
+      "--mtp", "--context-length",
       "--hlg-sampling", "--hlg-width", "--hlg-shoulder", "--hlg-toe", "--hlg-pivot-offset",
       "--paged-kv-block-size",
     ]);
@@ -1948,7 +2064,10 @@ switch (cmd) {
       const { createServer, loadContext } = await import("./server");
       const sLoad = step(`loading ${m.repoId}`);
       const t0 = performance.now();
-      const ctx = await loadContext(m.path, m.repoId, { memoryBudgetBytes: rt.serverOptions.memoryBudgetBytes });
+      const ctx = await loadContext(m.path, m.repoId, {
+        memoryBudgetBytes: rt.serverOptions.memoryBudgetBytes,
+        glm: glm52RuntimeFlags(rt.serverOptions),
+      });
       await mountStartupAdapter(ctx, rt.serverOptions);
       createServer(ctx, port, { ...rt.serverOptions, owner: "pi-session" });
       startedServer = true;

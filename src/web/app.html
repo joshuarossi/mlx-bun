@@ -2027,6 +2027,14 @@
             <div class="kv"><b>mode</b><span id="st-kv-mode">—</span></div>
             <div id="st-kv-layers"></div>
           </div>
+          <div class="card" id="st-glm-expert-card" style="display:none">
+            <h3>GLM expert tiers · last turn</h3>
+            <div class="kv"><b>main cache hit</b><span class="num" id="st-glm-main-hit">—</span></div>
+            <div class="kv"><b>main SSD read</b><span class="num" id="st-glm-main-read">—</span></div>
+            <div class="kv"><b>MTP cache hit</b><span class="num" id="st-glm-mtp-hit">—</span></div>
+            <div class="kv"><b>MTP SSD read</b><span class="num" id="st-glm-mtp-read">—</span></div>
+            <div class="cap" id="st-glm-residency">waiting for the first completed turn</div>
+          </div>
           <div class="card" id="st-dl-card" style="grid-column:1 / -1;display:none">
             <h3>Downloads</h3>
             <div id="st-dl-list"></div>
@@ -2057,9 +2065,12 @@
           </div>
           <div class="card">
             <h3>At max context · <span class="num" id="st-fit-ctx">—</span> tokens</h3>
-            <div class="kv"><b>weights</b><span class="num" id="st-f-weights">—</span></div>
+            <div class="kv" data-glm-fit style="display:none"><b>artifact on disk</b><span class="num" id="st-f-artifact">—</span></div>
+            <div class="kv"><b id="st-f-weights-label">weights</b><span class="num" id="st-f-weights">—</span></div>
+            <div class="kv" data-glm-fit style="display:none"><b>main expert slab</b><span class="num" id="st-f-main-slab">—</span></div>
+            <div class="kv" data-glm-fit style="display:none"><b>MTP expert slab</b><span class="num" id="st-f-mtp-slab">—</span></div>
             <div class="kv"><b>kv cache</b><span class="num" id="st-f-kv">—</span></div>
-            <div class="kv"><b>transient</b><span class="num" id="st-f-transient">—</span></div>
+            <div class="kv"><b id="st-f-transient-label">transient</b><span class="num" id="st-f-transient">—</span></div>
             <div class="kv"><b>total / usable</b><span class="num" id="st-f-total">—</span></div>
             <div class="meter"><i id="st-fit-bar"></i></div>
           </div>

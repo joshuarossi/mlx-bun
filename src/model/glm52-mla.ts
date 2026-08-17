@@ -39,6 +39,23 @@ export interface Glm52MlaProjection {
 }
 
 export type Glm52MlaPath = "auto" | "reconstructed" | "absorbed";
+export interface Glm52MlaBatchedSelection {
+  readonly rows: readonly (MlxArray | null)[];
+}
+export type Glm52MlaSelectedPositions =
+  | readonly number[]
+  | MlxArray
+  | Glm52MlaBatchedSelection
+  | null;
+
+function isBatchedSelection(
+  value: Glm52MlaSelectedPositions,
+): value is Glm52MlaBatchedSelection {
+  return value !== null &&
+    !(value instanceof MlxArray) &&
+    !Array.isArray(value) &&
+    "rows" in value;
+}
 
 function positiveInteger(name: string, value: number): void {
   if (!Number.isSafeInteger(value) || value <= 0)
@@ -73,7 +90,7 @@ function normalizedAxis(axis: number, rank: number): number {
  */
 export function partialInterleavedRopeMlx(
   input: MlxArray,
-  positionOffset: number,
+  positionOffset: number | readonly number[],
   rotaryDimensions: number,
   theta: number,
   tokenAxis = 1,
@@ -84,8 +101,25 @@ export function partialInterleavedRopeMlx(
   const axis = normalizedAxis(tokenAxis, shape.length);
   if (axis === shape.length - 1)
     throw new Error("RoPE token axis cannot be the feature axis");
-  if (!Number.isSafeInteger(positionOffset) || positionOffset < 0)
+  const positionOffsets = typeof positionOffset === "number"
+    ? null
+    : [...positionOffset];
+  if (positionOffsets) {
+    if (axis === 0)
+      throw new Error("per-row RoPE offsets require a separate token axis");
+    if (positionOffsets.length !== shape[0])
+      throw new Error(
+        `RoPE row offsets ${positionOffsets.length} != batch ${shape[0]}`,
+      );
+    for (const offset of positionOffsets) {
+      if (!Number.isSafeInteger(offset) || offset < 0)
+        throw new Error("RoPE position offset must be a non-negative integer");
+    }
+  } else if (
+    !Number.isSafeInteger(positionOffset) || (positionOffset as number) < 0
+  ) {
     throw new Error("RoPE position offset must be a non-negative integer");
+  }
   if (
     !Number.isSafeInteger(rotaryDimensions) ||
     rotaryDimensions <= 0 ||
@@ -98,20 +132,27 @@ export function partialInterleavedRopeMlx(
     throw new Error("RoPE theta must be positive");
 
   const tokens = shape[axis]!;
+  const batches = positionOffsets ? shape[0]! : 1;
   const half = rotaryDimensions / 2;
-  const angles = new Float32Array(tokens * half);
-  for (let token = 0; token < tokens; token++) {
-    const position = positionOffset + token;
-    for (let pair = 0; pair < half; pair++) {
-      const exponent = Math.fround(Math.fround(-2 * pair) / rotaryDimensions);
-      const inverseFrequency = Math.fround(
-        Math.pow(Math.fround(theta), exponent),
-      );
-      angles[token * half + pair] = Math.fround(position * inverseFrequency);
+  const angles = new Float32Array(batches * tokens * half);
+  for (let batch = 0; batch < batches; batch++) {
+    const offset = positionOffsets?.[batch] ?? positionOffset as number;
+    for (let token = 0; token < tokens; token++) {
+      const position = offset + token;
+      for (let pair = 0; pair < half; pair++) {
+        const exponent = Math.fround(Math.fround(-2 * pair) / rotaryDimensions);
+        const inverseFrequency = Math.fround(
+          Math.pow(Math.fround(theta), exponent),
+        );
+        angles[(batch * tokens + token) * half + pair] = Math.fround(
+          position * inverseFrequency,
+        );
+      }
     }
   }
 
   const frequencyShape = new Array(shape.length).fill(1);
+  if (positionOffsets) frequencyShape[0] = batches;
   frequencyShape[axis] = tokens;
   frequencyShape[shape.length - 1] = half;
   const angleArray = MlxArray.fromFloat32(angles, frequencyShape);
@@ -265,7 +306,10 @@ export class Glm52Mla {
    * Project a token block into query state and compressed cache state.
    * Returned arrays are caller-owned.
    */
-  project(input: MlxArray, positionOffset: number): Glm52MlaProjection {
+  project(
+    input: MlxArray,
+    positionOffset: number | readonly number[],
+  ): Glm52MlaProjection {
     const shape = input.shape;
     if (shape.length !== 3)
       throw new Error(`GLM-5.2 MLA input must have rank 3 (got ${shape.length})`);
@@ -362,7 +406,7 @@ export class Glm52Mla {
     cache: MLACache,
     dsa: MlxArray | null = null,
     path: Glm52MlaPath = "auto",
-    selectedPositions: readonly number[] | null = null,
+    selectedPositions: Glm52MlaSelectedPositions = null,
   ): MlxArray {
     if (cache.kvLoraRank !== this.config.kvLoraRank ||
         cache.ropeHeadDim !== this.config.qkRopeHeadDim) {
@@ -371,7 +415,13 @@ export class Glm52Mla {
     const tokens = input.shape[1]!;
     if (path === "absorbed" && tokens !== 1)
       throw new Error("absorbed MLA is valid only for single-token decode");
-    const projection = this.project(input, cache.offset);
+    const batch = input.shape[0]!;
+    const positionOffset = batch > 1
+      ? (cache.rowOffsets.length
+          ? cache.rowOffsets
+          : new Array(batch).fill(0) as number[])
+      : cache.offset;
+    const projection = this.project(input, positionOffset);
     const state = cache.appendCompressed(
       projection.latent,
       projection.rope,
@@ -384,6 +434,54 @@ export class Glm52Mla {
       throw new Error("DSA-selected MLA requires single-token absorbed decode");
     try {
       if (selectedPath === "absorbed") {
+        if (batch > 1) {
+          const selections = isBatchedSelection(selectedPositions)
+            ? selectedPositions.rows
+            : null;
+          if (selectedPositions !== null && selections === null)
+            throw new Error("batched MLA requires per-row DSA selections");
+          if (selections && selections.length !== batch)
+            throw new Error(
+              `batched MLA selections ${selections.length} != batch ${batch}`,
+            );
+          const rows: MlxArray[] = [];
+          try {
+            for (let row = 0; row < batch; row++) {
+              const start = cache.leftPad[row]!;
+              const qNope = projection.qNope.slice(
+                [row, 0, 0, 0],
+                [row + 1, 1, projection.qNope.shape[2]!, projection.qNope.shape[3]!],
+              );
+              const qRope = projection.qRope.slice(
+                [row, 0, 0, 0],
+                [row + 1, 1, projection.qRope.shape[2]!, projection.qRope.shape[3]!],
+              );
+              const latent = state.latent.slice(
+                [row, start, 0],
+                [row + 1, state.latent.shape[1]!, state.latent.shape[2]!],
+              );
+              const ropeState = state.rope.slice(
+                [row, start, 0],
+                [row + 1, state.rope.shape[1]!, state.rope.shape[2]!],
+              );
+              try {
+                rows.push(this.attendAbsorbed(
+                  { qNope, qRope },
+                  { latent, rope: ropeState },
+                  selections?.[row] ?? null,
+                ));
+              } finally {
+                qNope.dispose();
+                qRope.dispose();
+                latent.dispose();
+                ropeState.dispose();
+              }
+            }
+            return ops.concatAxis(rows, 0);
+          } finally {
+            for (const row of rows) row.dispose();
+          }
+        }
         return this.attendAbsorbed(projection, state, selectedPositions);
       }
       return this.attendReconstructed(projection, state);
@@ -529,7 +627,7 @@ export class Glm52Mla {
   attendAbsorbed(
     projection: Pick<Glm52MlaProjection, "qNope" | "qRope">,
     state: Pick<MLACompressedState, "latent" | "rope">,
-    selectedPositions: readonly number[] | null = null,
+    selectedPositions: Glm52MlaSelectedPositions = null,
   ): MlxArray {
     const [batch, tokens] = projection.qNope.shape;
     if (tokens !== 1)
@@ -562,19 +660,35 @@ export class Glm52Mla {
     let activeLatent = state.latent;
     let activeRope = state.rope;
     if (selectedPositions !== null) {
-      if (selectedPositions.length === 0)
-        throw new Error("DSA selection cannot be empty");
-      for (const position of selectedPositions) {
-        if (!Number.isSafeInteger(position) || position < 0 || position >= keys)
-          throw new Error(`DSA position ${position} is outside cached prefix ${keys}`);
+      if (isBatchedSelection(selectedPositions)) {
+        throw new Error("per-row DSA selection requires batched MLA");
       }
-      const indices = ops.fromInt32(
-        [...selectedPositions],
-        [selectedPositions.length],
-      );
+      let indices: MlxArray;
+      let ownsIndices = false;
+      if (selectedPositions instanceof MlxArray) {
+        if (selectedPositions.ndim !== 1 || selectedPositions.size === 0)
+          throw new Error("DSA device selection must be a non-empty vector");
+        if (selectedPositions.dtype !== Dtype.uint32 &&
+            selectedPositions.dtype !== Dtype.int32) {
+          throw new Error("DSA device selection must use uint32 or int32 indices");
+        }
+        indices = selectedPositions;
+      } else {
+        if (selectedPositions.length === 0)
+          throw new Error("DSA selection cannot be empty");
+        for (const position of selectedPositions) {
+          if (!Number.isSafeInteger(position) || position < 0 || position >= keys)
+            throw new Error(`DSA position ${position} is outside cached prefix ${keys}`);
+        }
+        indices = ops.fromInt32(
+          [...selectedPositions],
+          [selectedPositions.length],
+        );
+        ownsIndices = true;
+      }
       activeLatent = ops.takeAxis(state.latent, indices, 1);
       activeRope = ops.takeAxis(state.rope, indices, 1);
-      indices.dispose();
+      if (ownsIndices) indices.dispose();
     }
 
     const kvWidth = this.config.qkNopeHeadDim + this.config.vHeadDim;

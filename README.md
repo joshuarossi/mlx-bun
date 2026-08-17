@@ -90,8 +90,9 @@ nothing to install:
 bunx mlx-bun
 ```
 
-First run fetches the MLX native runtime (~52 MB) and the model into your
-caches, then serves. (Bun only — `npx mlx-bun` under Node exits with a
+First run fetches the MLX native runtime plus the streamed-expert helper
+(~52 MB) and the model into your caches, then serves. (Bun only — `npx
+mlx-bun` under Node exits with a
 "requires Bun" notice by design.)
 
 ### From source
@@ -116,7 +117,8 @@ mlx-bun
 Bare `mlx-bun` is an alias for `mlx-bun serve`. On its first run, with no
 model named, it does everything for you:
 
-1. pulls the MLX native runtime (~52 MB) into `~/Library/Caches/mlx-bun/`
+1. pulls the MLX native runtime plus streamed-expert helper (~52 MB) into
+   `~/Library/Caches/mlx-bun/`
    (skipped on the Homebrew install — the runtime ships in the bottle);
 2. downloads the sub-GB `MiniCPM5-1B` starter and serves it, so you're
    chatting in well under a minute;
@@ -221,9 +223,9 @@ On the site: [The lab](https://mlx-bun.dev/about/lab/).
 
 ## Supported models
 
-Scope is deliberate: a few model families held to **bit-exact** logit
-parity with the Python reference, rather than dozens held to none.
-Currently MiniCPM5, the Gemma-4 OptiQ quants, and Qwen3.5-4B:
+Scope is deliberate: a few model families held to explicit oracle contracts,
+rather than dozens held to none. Currently MiniCPM5, the Gemma-4 OptiQ quants,
+Qwen3.5-4B, and the direct-container GLM-5.2 path:
 
 | Model | Download | Fits on | Vision | Notes |
 |---|---|---|---|---|
@@ -232,6 +234,7 @@ Currently MiniCPM5, the Gemma-4 OptiQ quants, and Qwen3.5-4B:
 | [`mlx-community/gemma-4-e4b-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-e4b-it-OptiQ-4bit) | 7.0 GB | 16 GB | ✓ | **Recommended starter** (16 GB+); ~56 tok/s |
 | [`mlx-community/gemma-4-12B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-12B-it-OptiQ-4bit) | 8.4 GB | 16 GB | ✓ | Vision + tool calling, both verified end-to-end |
 | [`mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit) | 18 GB | 24 GB | — | MoE (top-8 of 128 experts); ~54 tok/s |
+| [`mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp`](https://huggingface.co/mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp) | ~384 GB / 357 GiB | 32 GB + fast disk | — | Direct streamed Colibri container; true top-8, native MTP, bounded 25 GiB process plan; warm single-stream performance is disk-bound and below the aspirational 2 tok/s target |
 
 Not sure what fits your machine? `bun src/cli.ts fit <model> --ctx 8192`
 gives a deterministic answer (see below). The larger
@@ -239,6 +242,26 @@ gives a deterministic answer (see below). The larger
 remain (see [PLAN.md](./PLAN.md)). Downloading, cache layout, and reclaiming
 disk: [docs/reference/models.md](./docs/reference/models.md); on the site:
 [Choosing a model](https://mlx-bun.dev/getting-started/models/).
+
+### GLM-5.2: 32 GB quickstart
+
+Choose a volume with at least the artifact remainder plus 1 GiB free before
+starting; mlx-bun checks this before the first payload and credits resumable
+partials. The validated artifact revision and exact 25 GiB serving command are
+documented in the [model-management guide](./docs/reference/models.md#glm-52-on-a-32-gb-mac):
+
+```sh
+export HF_HUB_CACHE=/Volumes/FastSSD/huggingface/hub  # optional large fast volume
+mlx-bun get mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp \
+  --revision 3cc8db99b1b13fc79325d987ba3c1c430766b3b8
+mlx-bun scan
+mlx-bun serve GLM-5.2-colibri --memory-budget 26.8435456 \
+  --context-length 4096 --max-tokens 128 --mtp on
+```
+
+Rerun `get` after interruption; partial files resume and every completed blob
+is checksum-verified. The model remains in the standard Hugging Face cache—no
+Python environment and no second converted copy inside this repository.
 
 ## Why
 
@@ -278,6 +301,7 @@ bun src/cli.ts ls                   # list models (size, params, quant, capabili
 bun src/cli.ts ls --vision --max-size 10GB
 bun src/cli.ts fit gemma --ctx 32768          # memory contract: fits? max context? predicted tok/s
 bun src/cli.ts fit gemma --ctx 8192 --skus    # ...same, across the Apple Silicon lineup
+bun src/cli.ts fit GLM-5.2                    # streamed plan: disk vs resident slabs + measured speed
 bun src/cli.ts serve gemma --port 8080        # OpenAI-compatible server
 bun src/cli.ts serve gemma --memory-budget 18 # ...with admission control (GB)
 bun src/cli.ts generate gemma "a haiku about metal shaders"   # raw one-shot generation
@@ -299,7 +323,10 @@ listing the candidates — just make it more specific.
 headers, KV bytes/token from the config (sliding-window layers capped,
 MoE active-expert bytes for decode), calibrated prefill transient, and
 the machine's wired-memory ceiling. Predictions are recorded next to
-measured peaks in the eval DB.
+measured peaks in the eval DB. The direct Colibri GLM-5.2 path uses its exact
+streamed plan instead: full artifact-on-disk size is separated from bounded
+resident weights, main/MTP expert slabs, KV, and reserves, and measured warm
+decode is separated from the direct oracle and the 2 tok/s aspiration.
 
 Every verb, with flags: [docs/reference/cli.md](./docs/reference/cli.md);
 on the site: [CLI reference](https://mlx-bun.dev/reference/cli/).
@@ -428,13 +455,12 @@ in [docs/reference/embedding.md](./docs/reference/embedding.md).
 
 ```ts
 import {
-  createModel,        // dispatches to Gemma4 / MiniCPM5 / Qwen3.5
-  Weights, loadModelConfig, loadTokenizer, ChatTemplate, generate,
+  openModel,          // artifact-aware, incl. bounded streamed GLM-5.2
+  loadTokenizer, ChatTemplate, generate,
 } from "mlx-bun";     // or "./src/index" in a clone
 
 const dir = "/path/to/hf/snapshot";
-const config = await loadModelConfig(dir);
-const model = createModel(await Weights.open(dir), config);  // RuntimeModel
+const model = await openModel(dir);  // RuntimeModel
 const tok = await loadTokenizer(dir);
 const template = await ChatTemplate.load(dir);
 

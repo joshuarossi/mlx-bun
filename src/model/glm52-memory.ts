@@ -13,6 +13,13 @@ export const GLM52_G5_DEFAULT_MAX_GENERATION_TOKENS = 128;
 export const GLM52_G5_DEFAULT_ALLOCATOR_RESERVE_BYTES = 4 * GLM52_G5_GIB;
 export const GLM52_G5_DEFAULT_BUN_NATIVE_RESERVE_BYTES = 512 * 1024 ** 2;
 export const GLM52_G5_DEFAULT_SAFETY_MARGIN_BYTES = 512 * 1024 ** 2;
+/** Curated G5 quality-preserving warm result on the M1 Max 32 GB, native MTP
+ * on, 128 generated tokens. This is operator guidance, not a prediction. */
+export const GLM52_G5_MEASURED_WARM_DECODE_TPS = 0.149;
+/** Same-machine direct Colibri/Metal warm median with native MTP on. */
+export const GLM52_G5_DIRECT_ORACLE_WARM_DECODE_TPS = 0.27;
+export const GLM52_G5_ASPIRATIONAL_DECODE_TPS = 2;
+export const GLM52_G5_MEASURED_AT = Date.UTC(2026, 7, 15);
 
 const ROUTED_EXPERT = /\.mlp\.experts\.\d+\./;
 

@@ -61,7 +61,8 @@ import { flagOn } from "../flags";
 import { CompiledDecode } from "../model/compiled-decode";
 import type { Gemma4Model } from "../model/gemma4";
 import {
-  KVCache, QuantizedKVCache, RotatingKVCache, RotatingQuantizedKVCache, type Cache,
+  KVCache, QuantizedKVCache, RotatingKVCache, RotatingQuantizedKVCache,
+  isBatchableCache, type BatchableCache, type Cache,
 } from "../model/gemma4-base";
 import { BatchedDecodeMaskCache, mergeKVRows, extendKVRows, extractKVRow, filterKVRows } from "../model/batched-mask";
 import {
@@ -273,7 +274,8 @@ type LayerInner =
   | BatchedRotatingQuantCache // rot layer under a kv_config scheme (milestone 2)
   | RotatingKVCache // adopted lone-row state only (see #mergeJoiner adopt)
   | RotatingQuantizedKVCache // adopted lone-row state, quantized rot layer
-  | SSMCache;
+  | SSMCache
+  | BatchableCache;
 type Row1 = { keys: MlxArray; values: MlxArray };
 
 export class BatchScheduler {
@@ -304,8 +306,10 @@ export class BatchScheduler {
    *  only a lone adopted row holds un-copied entry caches). Runs after the
    *  adopted caches are disposed, or transfers back on put(). */
   #adoptedRetain: (() => void) | null = null;
-  readonly #kinds: ("full" | "rot" | "ssm")[]; // per-layer attention type
+  readonly #kinds: ("full" | "rot" | "ssm" | "owned-batch")[];
   readonly #rotMaxSize: number[]; // per-layer sliding window (rot layers only)
+  readonly #compressedProjectors: Array<(tokens: number) => number> | null;
+  readonly #batchCacheMaxTokens: number | null;
   /** layerIdx → mixed-precision spec (Phase 3.1); null = bf16 batch (v1). */
   readonly #kvByLayer: Map<number, KvQuantSpec> | null;
   /** Compiled decode runner for the B=1 serial-class case (Phase 3.2) —
@@ -324,8 +328,20 @@ export class BatchScheduler {
     this.#promptCache = opts.promptCache;
     const proto = model.makeCache(); // fresh caches hold no buffers
     this.#kinds = proto.map((c) =>
-      c instanceof RotatingKVCache ? "rot" : c instanceof SSMCache ? "ssm" : "full",
+      isBatchableCache(c)
+        ? "owned-batch"
+        : c instanceof RotatingKVCache
+          ? "rot"
+          : c instanceof SSMCache
+            ? "ssm"
+            : "full",
     );
+    this.#compressedProjectors = proto.every(isBatchableCache)
+      ? proto.map((cache) => (tokens: number) => cache.projectedBytes(tokens))
+      : null;
+    this.#batchCacheMaxTokens = proto.every(isBatchableCache)
+      ? Math.min(...proto.map((cache) => cache.maxTokens ?? Number.MAX_SAFE_INTEGER))
+      : null;
     this.#kvByLayer = opts.kvConfig?.length
       ? new Map(opts.kvConfig.map((e) => [e.layerIdx, e]))
       : null;
@@ -350,7 +366,19 @@ export class BatchScheduler {
   /** Projected KV bytes of one row at its worst case (full prompt + full
    *  completion; the sliding-window term is window-capped by kvBytesAt). */
   #rowKvBytes(row: Row): number {
-    return kvBytesAt(this.model.config, row.promptTokens + row.req.maxTokens);
+    const tokens = row.promptTokens + row.req.maxTokens;
+    return this.#compressedProjectors
+      ? this.#compressedProjectors.reduce((sum, project) => sum + project(tokens), 0)
+      : kvBytesAt(this.model.config, tokens);
+  }
+
+  async #forwardHidden(ids: MlxArray, cache: Cache[]): Promise<MlxArray> {
+    const asyncModel = this.model as RuntimeModel & {
+      forwardHiddenAsync?: (ids: MlxArray, cache: Cache[]) => Promise<MlxArray>;
+    };
+    return typeof asyncModel.forwardHiddenAsync === "function"
+      ? await asyncModel.forwardHiddenAsync(ids, cache)
+      : this.model.forwardHidden(ids, cache);
   }
 
   /** Projected aggregate KV of everything admitted (running + mid-prefill). */
@@ -368,6 +396,18 @@ export class BatchScheduler {
    *  that cannot fit even alone is rejected here (never deadlocks the
    *  queue); one that fits alone but not alongside the current batch waits. */
   #kvAdmits(candidate: Row): boolean {
+    const requestedTokens = candidate.promptTokens + candidate.req.maxTokens;
+    if (
+      this.#batchCacheMaxTokens !== null &&
+      requestedTokens > this.#batchCacheMaxTokens
+    ) {
+      this.#pending.shift();
+      candidate.reject(new RangeError(
+        `context limit: prompt ${candidate.promptTokens} + max_tokens ` +
+        `${candidate.req.maxTokens} exceeds ${this.#batchCacheMaxTokens}`,
+      ));
+      return false;
+    }
     if (this.#kvBudgetBytes === undefined) return true;
     const need = this.#rowKvBytes(candidate);
     if (need > this.#kvBudgetBytes && this.#running.length === 0 && !this.#prefill) {
@@ -577,7 +617,7 @@ export class BatchScheduler {
       const end = Math.min(p.pos + this.#prefillChunkSize, p.snapAt);
       const chunk = prompt.slice(p.pos, end);
       const ids = ops.fromInt32(chunk, [1, chunk.length]);
-      const h = this.model.forwardHidden(ids, p.solo);
+      const h = await this.#forwardHidden(ids, p.solo);
       ids.dispose();
       h.dispose();
       ops.evalAll(p.solo.flatMap((c) => c.state()));
@@ -607,7 +647,7 @@ export class BatchScheduler {
         this.#prefillChunkSize) {
       const chunk = prompt.slice(p.pos, p.pos + this.#prefillChunkSize);
       const ids = ops.fromInt32(chunk, [1, chunk.length]);
-      const h = this.model.forwardHidden(ids, p.solo);
+      const h = await this.#forwardHidden(ids, p.solo);
       ids.dispose();
       h.dispose(); // logits never computed for non-final chunks
       ops.evalAll(p.solo.flatMap((c) => c.state()));
@@ -625,7 +665,7 @@ export class BatchScheduler {
     if (tailSplit && p.pos < prompt.length - 1) {
       const head = prompt.slice(p.pos, prompt.length - 1);
       const ids = ops.fromInt32(head, [1, head.length]);
-      const h = this.model.forwardHidden(ids, p.solo);
+      const h = await this.#forwardHidden(ids, p.solo);
       ids.dispose();
       h.dispose();
       ops.evalAll(p.solo.flatMap((c) => c.state()));
@@ -641,7 +681,7 @@ export class BatchScheduler {
     // the last prompt token (L=1).
     const chunk = prompt.slice(p.pos);
     const ids = ops.fromInt32(chunk, [1, chunk.length]);
-    const h = this.model.forwardHidden(ids, p.solo);
+    const h = await this.#forwardHidden(ids, p.solo);
     ids.dispose();
     const [, Lc, H] = h.shape as [number, number, number];
     const hLast = h.slice([0, Lc - 1, 0], [1, Lc, H]);
@@ -723,6 +763,17 @@ export class BatchScheduler {
     const newInners: LayerInner[] = [];
     let newFullPad = this.#fullLeftPad;
     for (let layer = 0; layer < this.#kinds.length; layer++) {
+      if (this.#kinds[layer] === "owned-batch") {
+        const solo = p.solo[layer]!;
+        if (!isBatchableCache(solo))
+          throw new Error(`batch-capable layer ${layer} lost its cache capability`);
+        const merged = solo.makeEmptyBatch();
+        const previous = prev?.[layer];
+        merged.mergeRows(previous ? [previous, solo] : [solo]);
+        newFullPad = [...merged.leftPad];
+        newInners.push(merged);
+        continue;
+      }
       if (this.#kinds[layer] === "ssm") {
         // No temporal axis, no left-pad: B-axis concat of the state slots.
         // mergeRows steals the solo arrays when the batch starts cold, so the
@@ -1028,7 +1079,7 @@ export class BatchScheduler {
         if (!lg) {
           fwd = inners.map((c) =>
             c instanceof BatchedRotatingCache || c instanceof BatchedRotatingQuantCache ||
-            c instanceof SSMCache || unpadded
+            c instanceof SSMCache || isBatchableCache(c) || unpadded
               ? c
               : c instanceof QuantizedKVCache
                 ? new BatchedQuantDecodeMaskCache(c, B, this.#fullLeftPad)
@@ -1037,7 +1088,7 @@ export class BatchScheduler {
           const ids = this.#pendingToks
             ? ops.reshape(this.#pendingToks, [B, 1]) // feed the unread tokens
             : ops.fromInt32(rows.map((r) => r.current), [B, 1]); // pipeline cold
-          const h = this.model.forwardHidden(ids, fwd);
+          const h = await this.#forwardHidden(ids, fwd);
           ids.dispose();
           lg = this.model.logitsFromHidden(h); // [B,1,V]
           h.dispose();
@@ -1203,7 +1254,7 @@ export class BatchScheduler {
       const unpadded = this.#fullLeftPad.every((p) => p === 0);
       const fwd: Cache[] = inners.map((c) =>
         c instanceof BatchedRotatingCache || c instanceof BatchedRotatingQuantCache ||
-            c instanceof SSMCache || unpadded
+            c instanceof SSMCache || isBatchableCache(c) || unpadded
           ? c
           : c instanceof QuantizedKVCache
             ? new BatchedQuantDecodeMaskCache(c, B, this.#fullLeftPad)
@@ -1214,7 +1265,7 @@ export class BatchScheduler {
         const ids = prev
           ? ops.reshape(prev, [B, 1]) // feed the unread tokens (device array)
           : ops.fromInt32(rows.map((r) => r.current), [B, 1]); // pipeline cold
-        const h = this.model.forwardHidden(ids, fwd);
+        const h = await this.#forwardHidden(ids, fwd);
         ids.dispose();
         const lg = this.model.logitsFromHidden(h); // [B,1,V]
         h.dispose();
@@ -1390,7 +1441,8 @@ export class BatchScheduler {
     const out: Cache[] = [];
     for (const inner of this.#inners!) {
       let c: Cache | null;
-      if (inner instanceof BatchedRotatingQuantCache) c = inner.extractRow(b);
+      if (isBatchableCache(inner)) c = inner.extractRow(b);
+      else if (inner instanceof BatchedRotatingQuantCache) c = inner.extractRow(b);
       else if (inner instanceof BatchedRotatingCache) c = inner.extractRow(b);
       else if (inner instanceof SSMCache)
         // Coverage gate: recurrent state is UNTRIMMABLE, so an entry is only
@@ -1451,7 +1503,10 @@ export class BatchScheduler {
     }
     const out: LayerInner[] = [];
     for (const inner of inners) {
-      if (inner instanceof BatchedRotatingCache) {
+      if (isBatchableCache(inner)) {
+        inner.filterRows(keep);
+        out.push(inner);
+      } else if (inner instanceof BatchedRotatingCache) {
         inner.filter(keep); // in-place (mutates + drops rows + reduces padding)
         out.push(inner);
       } else if (inner instanceof BatchedRotatingQuantCache) {

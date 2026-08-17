@@ -93,6 +93,7 @@ describe.skipIf(!haveWeights)("openai-compatible server", async () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.data[0].id).toBe("gemma-4-12b-it-optiq");
+    expect(["off", "serial", "batch"]).toContain(body.data[0].batch_mode);
   });
 
   test("non-streaming chat completion", async () => {

@@ -71,7 +71,7 @@ export class Glm52NativeMtpSource implements DraftSource {
   readonly prefillMode = "full" as const;
   readonly pinTargetKernelFamily = true;
   readonly weightsBytes = 0;
-  readonly #cache: MLACache;
+  #cache: MLACache;
   #roundStart = 0;
   #lastDraftCount = 0;
   #closed = false;
@@ -85,6 +85,7 @@ export class Glm52NativeMtpSource implements DraftSource {
       kvLoraRank: model.glmConfig.kvLoraRank,
       ropeHeadDim: model.glmConfig.qkRopeHeadDim,
       maxTokens: model.glmConfig.maxPositionEmbeddings,
+      role: "mtp",
     });
   }
 
@@ -94,6 +95,57 @@ export class Glm52NativeMtpSource implements DraftSource {
 
   get cacheBytes(): number {
     return this.#cache.byteLength;
+  }
+
+  /** Caller-owned zero-copy snapshot for the v3 KV persistence writer. */
+  clonePersistentCache(): MLACache {
+    this.#checkOpen();
+    if (this.#lastDraftCount !== 0)
+      throw new Error("native MTP cache cannot snapshot an uncommitted round");
+    if (this.#cache.offset === 0)
+      throw new Error("native MTP cache cannot snapshot empty state");
+    const state = this.#cache.fetch();
+    const clone = new MLACache({
+      kvLoraRank: this.#cache.kvLoraRank,
+      ropeHeadDim: this.#cache.ropeHeadDim,
+      maxTokens: this.#cache.maxTokens,
+      role: "mtp",
+    });
+    try {
+      clone.restoreCompressedState(state.latent, state.rope, null, this.#cache.offset);
+      return clone;
+    } catch (error) {
+      state.latent.dispose();
+      state.rope.dispose();
+      clone.dispose();
+      throw error;
+    }
+  }
+
+  /**
+   * Adopt one restored `mtp-mla` cache. Ownership transfers only after every
+   * role/geometry/offset check passes; the source disposes it thereafter.
+   */
+  restorePersistentCache(cache: MLACache): void {
+    this.#checkOpen();
+    if (this.#lastDraftCount !== 0)
+      throw new Error("native MTP cache cannot restore during a draft round");
+    if (this.#cache.offset !== 0)
+      throw new Error("native MTP cache restore requires an empty source");
+    if (cache.role !== "mtp" || cache.dsa)
+      throw new Error("native MTP restore requires one mtp-mla cache");
+    if (
+      cache.kvLoraRank !== this.#cache.kvLoraRank ||
+      cache.ropeHeadDim !== this.#cache.ropeHeadDim ||
+      cache.maxTokens !== this.#cache.maxTokens
+    ) {
+      throw new Error("native MTP restored cache geometry does not match model");
+    }
+    if (cache.offset <= 0 || cache.batchSize !== 1)
+      throw new Error("native MTP restored cache must contain one non-empty row");
+    this.#cache.dispose();
+    this.#cache = cache;
+    this.#roundStart = cache.offset;
   }
 
   prefill(_promptIds: number[]): void {
