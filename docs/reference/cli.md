@@ -35,7 +35,7 @@ Common flags (full list in [server-config.md](server-config.md)):
 |---|---|
 | `--host <addr>` | Interface to bind (default `127.0.0.1`, loopback only; `0.0.0.0` to expose) |
 | `--port <n>` | Listen port (default 8080) |
-| `--memory-budget <GB>` | Reject loads/requests that can't fit the budget |
+| `--memory-budget <GB>` | Admission ceiling for requests (bills the active `--kv-quant` scheme; clamps `max_tokens`, 400s only prompts that leave no room — never refuses to start) |
 | `--kv-budget <GB>` | Aggregate KV budget across concurrent batch rows: over-budget joiners queue until rows finish; a request over the budget alone is rejected (off unless set) |
 | `--prompt-cache <GB>` | RAM prefix-KV cache, byte-capped LRU (default 8; `0` disables). Non-consuming prefix sharing: a hit clones instead of consuming the donor entry |
 | `--isolate` | Run the inference engine as a crash-isolated child process on a unix socket; this process becomes a pure reverse-proxy (instant under GPU load, auto-respawns on engine crash) — default off ([runtime-isolation.md](../design/runtime-isolation.md)) |
@@ -170,11 +170,15 @@ mlx-bun gc --yes    # delete
 
 Deterministic memory assessment: does it fit, what's the max context, predicted
 tok/s. Weights bytes from safetensors headers, KV bytes/token from the config,
-calibrated prefill transient, wired-memory ceiling.
+calibrated prefill transient, wired-memory ceiling. `--kv-quant` mirrors serve's
+flag: it bills the quantized cache at its true bytes/element, so the reported
+window matches what serving with the same flag admits (a 4-bit cache holds
+~3.5× the context of bf16 in the same budget).
 
 ```sh
 mlx-bun fit gemma --ctx 32768          # for this machine
 mlx-bun fit gemma --ctx 8192 --skus    # across the Apple Silicon lineup
+mlx-bun fit qwen --kv-quant 4          # window with a 4-bit-quantized KV cache
 ```
 
 The direct Colibri GLM-5.2 artifact is handled by its streamed-runtime

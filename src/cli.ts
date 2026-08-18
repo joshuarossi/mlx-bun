@@ -13,7 +13,7 @@ import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { Registry } from "./registry";
 import { loadModelConfig, parseTurboQuantScheme, type TurboQuantScheme } from "./config";
-import { fit, skuMatrix, thisMachine } from "./fit";
+import { fit, skuMatrix, thisMachine, type FitKvScheme } from "./fit";
 import { EvalDB } from "./evaldb";
 import pkg from "../package.json" with { type: "json" };
 import { renderHelp } from "./tui";
@@ -347,6 +347,8 @@ Usage: mlx-bun fit <query> [options]
 
 Options:
   --ctx <tokens>       Context size to assess  [default: 8192]
+  --kv-quant <mode>    Bill the KV cache quantized: 4 | 8 | config | off
+                       (mirrors serve --kv-quant; default bf16)
   --skus               Also print the Apple silicon SKU matrix
 
 Solves weights + KV growth + prefill transient against wired memory and
@@ -1380,7 +1382,7 @@ switch (cmd) {
 
   case "fit": {
     const query = positional(0);
-    if (!query) { console.error("usage: mlx-bun fit <query> [--ctx N] [--skus]"); process.exit(1); }
+    if (!query) { console.error("usage: mlx-bun fit <query> [--ctx N] [--kv-quant 4|8|config] [--skus]"); process.exit(1); }
     const reg = new Registry();
     if (reg.list().length === 0) await reg.scan();
     const m = reg.resolve(query);
@@ -1447,9 +1449,28 @@ switch (cmd) {
       console.log();
       break;
     }
-    const r = fit(config, m.sizeBytes, ctx, thisMachine(), undefined, m.expertsBytes);
+    // --kv-quant mirrors serve: bill the quantized cache's true bytes so
+    // the reported window matches what serving with the same flag admits.
+    const kvQuantOpt = opt("kv-quant");
+    let fitKvScheme: FitKvScheme | undefined;
+    if (kvQuantOpt === "4" || kvQuantOpt === "8") {
+      fitKvScheme = { kvBits: Number(kvQuantOpt) };
+    } else if (kvQuantOpt === "config") {
+      if (!config.kvQuant?.length) {
+        console.error(`${m.repoId} ships no per-layer kv-quant config — use --kv-quant 4|8`);
+        process.exit(1);
+      }
+      fitKvScheme = { kvConfig: config.kvQuant };
+    } else if (kvQuantOpt != null && kvQuantOpt !== "off") {
+      console.error(`--kv-quant ${kvQuantOpt}: expected 4, 8, config, or off`);
+      process.exit(1);
+    }
+    const r = fit(config, m.sizeBytes, ctx, thisMachine(), undefined, m.expertsBytes, undefined, fitKvScheme);
     h1("will it fit?");
-    console.log(`  ${style.bold(m.repoId)} ${style.dim(`@ ${ctx.toLocaleString()} context · this machine`)}`);
+    const kvNote = fitKvScheme
+      ? style.dim(` · kv-quant ${fitKvScheme.kvBits ? `${fitKvScheme.kvBits}-bit` : "config"}`)
+      : "";
+    console.log(`  ${style.bold(m.repoId)} ${style.dim(`@ ${ctx.toLocaleString()} context · this machine`)}${kvNote}`);
     console.log();
     const expertsNote = config.text.enableMoeBlock && m.expertsBytes > 0
       ? style.dim(`  (experts ${gb(m.expertsBytes)}; top ${config.text.topKExperts}/${config.text.numExperts} read per token)`)
@@ -1474,7 +1495,7 @@ switch (cmd) {
           { header: "fits", paint: (c) => (c.includes("fits") ? style.green(c) : style.dim(c)) },
           { header: "max context", align: "right" }, { header: "decode", align: "right" },
         ],
-        skuMatrix(config, m.sizeBytes, ctx, m.expertsBytes).map((row) => [
+        skuMatrix(config, m.sizeBytes, ctx, m.expertsBytes, fitKvScheme).map((row) => [
           row.sku, `${row.ramGB} GB`, row.fits ? "fits" : "—",
           row.fits ? row.maxContext.toLocaleString() : "—",
           row.fits ? `~${row.decodeTps.toFixed(0)} tok/s` : "—",

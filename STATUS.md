@@ -1533,11 +1533,13 @@ rename. **Josh-gated GPU:** data scale + **12B retarget** + train + live-τ
    (tests/qwen-ssm-specround.test.ts, model-free) and REAL-WEIGHTS serve-loop
    losslessness with real rollbacks on Qwen3.5-0.8B
    (tests/qwen35-spec-ngram.test.ts — also newly enables ngram/two-model
-   spec for the whole qwen3_5 family). Still owed before an MTP perf claim:
-   download `mlx-community/Qwen3.8-27B-MTP-bf16`, run
-   `MLX_BUN_TEST_QWEN38_MTP=1 bun test tests/qwen38-mtp.test.ts` (27B
-   pairing losslessness + paired TPS) plus direct MTP-logit parity vs
-   mlx-vlm on a quiet box — details in PLAN 14g.
+   spec for the whole qwen3_5 family). The 27B pairing gate is ALSO GREEN
+   (2026-08-18, M1 Max): `MLX_BUN_TEST_QWEN38_MTP=1` token-identical to
+   non-spec greedy, acceptance 88% (30/34), 2.82 tokens/target-forward.
+   Paired decode was 0.86× MTP-off on a just-rebooted noisy box (not
+   quotable) — the bf16 head's per-step cost eats the forward savings.
+   Still owed before an MTP perf claim: direct MTP-logit parity vs mlx-vlm
+   + a quiet-machine TPS A/B — details in PLAN 14g.
    Separately, qwen3_5-27B serial-lane decode dies with a
    GPU command-buffer failure surfacing as an uncatchable Metal-
    completion-thread C++ throw (full finding + .ips backtrace in PLAN

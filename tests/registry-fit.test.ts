@@ -110,6 +110,28 @@ describe("fit", () => {
     expect(atMax.fits).toBe(true);
   });
 
+  test("kv-quant scheme bills the quantized cache and stretches the window", () => {
+    // uniform 4-bit gs64: bits/8 + (scale+bias)/group = 0.5625 B/elem vs 2 bf16
+    const q4 = { kvBits: 4 };
+    const slopeBf16 = kvBytesAt(config, 2048) - kvBytesAt(config, 1024);
+    const slopeQ4 = kvBytesAt(config, 2048, q4) - kvBytesAt(config, 1024, q4);
+    expect(slopeQ4 / slopeBf16).toBeCloseTo(0.5625 / 2);
+    // per-layer config: only the listed layer converts (40 is full-attention);
+    // above the window the slope drops by exactly that layer's savings
+    const cfg = { kvConfig: [{ layerIdx: 40, bits: 4, groupSize: 64 }] };
+    const slopeCfg = kvBytesAt(config, 2048, cfg) - kvBytesAt(config, 1024, cfg);
+    expect(slopeBf16 - slopeCfg).toBe(1024 * 2 * 1 * 512 * (2 - 0.5625));
+    // the solved ceiling grows under the scheme, and still actually fits
+    // (tight explicit budget so it binds before the maxPositionEmbeddings cap)
+    const m = { name: "x", ramBytes: 16 * 2 ** 30, bandwidthGBs: 273 };
+    const budget = 10.5e9;
+    const bf16 = fit(config, weights, 4096, m, undefined, 0, budget);
+    const quant = fit(config, weights, 4096, m, undefined, 0, budget, q4);
+    expect(bf16.maxSafeContext).toBeGreaterThan(0);
+    expect(quant.maxSafeContext).toBeGreaterThan(bf16.maxSafeContext);
+    expect(fit(config, weights, quant.maxSafeContext, m, undefined, 0, budget, q4).fits).toBe(true);
+  });
+
   // qwen3.8-like hybrid geometry: 36 DeltaNet layers + 12 full-attention
   const hybrid = {
     text: {

@@ -2064,11 +2064,15 @@ export function createServer(
 
   // Admission ceiling, resolved once (Phase 5 memoryBudget enforcement).
   // fit() solves max safe context from weights + KV growth + prefill
-  // transient; the KV term assumes bf16 (a kv-quant scheme stretches the
-  // real ceiling, never shrinks it — admission stays conservative).
+  // transient. The active kv-quant scheme (uniform kvBits / per-layer
+  // kvConfig) is billed at its true bytes/element so a quantized cache
+  // advertises and admits the larger window it actually enables; only
+  // TurboQuant still bills bf16 (conservative — no projector for its
+  // layout yet, and it is solo-only in v1).
   const genericAdmission = fit(
     ctx.model.config, ctx.model.weightsBytes, 1,
     undefined, undefined, 0, serverOptions.memoryBudgetBytes,
+    { kvBits: kvScheme.kvBits, kvConfig: kvScheme.kvConfig },
   );
   const admission = ctx.glmMemoryPlan
     ? {
@@ -2077,11 +2081,16 @@ export function createServer(
         usableBytes: ctx.glmMemoryPlan.processLimitBytes,
       }
     : genericAdmission;
+  // A zero ceiling is a warning, never a startup refusal: killing the
+  // server here can only parrot the per-request admission message (which
+  // still fires, with this same ceiling) or be a false positive from the
+  // fit model itself — it can never save anything the request gate
+  // doesn't. Serve until physically incapable.
   if (admission.maxSafeContext < 1)
-    throw new Error(
-      `memory budget ${(admission.usableBytes / 1e9).toFixed(2)} GB cannot serve ` +
-      `${ctx.modelId} (weights ${(ctx.model.weightsBytes / 1e9).toFixed(2)} GB): ` +
-      `no context fits — raise the budget or pick a smaller model`,
+    console.warn(
+      `[admission] memory budget ${(admission.usableBytes / 1e9).toFixed(2)} GB leaves no ` +
+      `safe context for ${ctx.modelId} (weights ${(ctx.model.weightsBytes / 1e9).toFixed(2)} GB) ` +
+      `— serving anyway; generation requests will be refused until the budget is raised`,
     );
   if (ctx.glmMemoryPlan)
     setMemoryLimit(ctx.glmMemoryPlan.lineItems.allocatorReserveBytes);
@@ -2673,6 +2682,7 @@ export function createServer(
         const report = fit(
           ctx.model.config, ctx.model.weightsBytes, admission.maxSafeContext,
           machine, undefined, expertsBytes, serverOptions.memoryBudgetBytes,
+          { kvBits: kvScheme.kvBits, kvConfig: kvScheme.kvConfig },
         );
         return Response.json({
           machine: { chip: chip.name, ram_bytes: machine.ramBytes, bandwidth_gbs: machine.bandwidthGBs },
@@ -2685,6 +2695,7 @@ export function createServer(
             ctx.model.config, ctx.model.weightsBytes,
             Math.min(8192, admission.maxSafeContext),
             machine, undefined, expertsBytes, serverOptions.memoryBudgetBytes,
+            { kvBits: kvScheme.kvBits, kvConfig: kvScheme.kvConfig },
           ).predictedDecodeTps,
           measured_decode_tps: measured?.decodeTps ?? null,
           measured_at: measured?.ts ?? null,

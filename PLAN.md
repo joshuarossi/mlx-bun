@@ -885,10 +885,17 @@ Sub-phases (gate each; B=1 single-stream first; downloads via
       two-model spec on ALL qwen3_5-family targets). The provider
       (src/spec/qwen-mtp-source.ts), pre-final-norm tap, `--draft-kind mtp`,
       and the gated pairing test (tests/qwen38-mtp.test.ts) are restored.
-      STILL OWED (needs the `Qwen3.8-27B-MTP-bf16` artifact — not on this
-      box — and a quiet machine): direct MTP-logit/acceptance parity vs
-      mlx-vlm, `MLX_BUN_TEST_QWEN38_MTP=1` losslessness on the 27B pairing,
-      and the cleared-machine TPS A/B.
+      **27B PAIRING GATE GREEN (2026-08-18, M1 Max, post-merge of PR #36):**
+      `MLX_BUN_TEST_QWEN38_MTP=1` passed — spec output token-identical to
+      non-spec greedy on the real target+head, acceptance 88% (30/34), 2.82
+      tokens/target-forward. Paired wall-clock decode was 14.31 vs 16.58
+      tok/s (MTP on 0.86× off) on a just-rebooted box (load ~9, OFF arm ran
+      cold-pages first) — NOT quotable; the bf16 drafter's per-step cost eats
+      the 2.8× forward savings. STILL OWED before any MTP perf
+      recommendation: direct MTP-logit/acceptance parity vs mlx-vlm, and a
+      quiet-machine TPS A/B (candidate levers if it stays negative: quantize
+      the head, batch its per-draft lm-head sampling). MTP stays opt-in via
+      --draft-model either way.
       The separate M4 Pro Metal-completion-thread crash under the 20.35 GB
       target plus swap pressure remains a 24 GB artifact-fit finding, not an
       MTP correctness gate; use the uniform 4-bit artifact there until 14z.
