@@ -187,3 +187,45 @@ A and D anytime (safe, agent-executable solo) — DONE 2026-07-02. B gate
 DONE 2026-07-02 (B2 adapter-untrack deferred to Josh — see B2 finding).
 C executed 2026-07-02 on Josh's explicit go — only remaining tail is the
 M4 Pro reset + deleting the backup tarball once both boxes are green.
+
+## Phase D — work-artifact hygiene + rules (2026-08-18) — DONE
+
+Trigger: Josh — "this is a software project; we should not be adding all
+these random work things into it." Compared against ml-explore/mlx-lm's
+root (9 files, 4 dirs, zero work artifacts).
+
+- **D1 root sweep**: six tracked `benchmarks-serve-2026-07-0*.md` dumps
+  git-rm'd (they leaked past a gitignore pattern that only covered
+  `benchmarks-h2h-*`); seven untracked root bench artifacts moved to
+  `reports/bench-archive/`; `tmp/` deleted. `.gitignore` now blocks
+  `/benchmarks-*`, `/bench-*`, `/tmp/`, `/*.log` at root.
+- **D2 guardrail**: `scripts/check-hygiene.ts` gained a third gate —
+  tracked ROOT files must be on an explicit allowlist (16 meta files).
+- **D3 CONTRIBUTING.md**: the rules (what-goes-where table; no dated
+  artifacts; models → `~/models`; docs lifecycle; PLAN/STATUS discipline;
+  external oracle venv is not a repo).
+- **D4 docs archive**: all 20 `docs/investigations/` → 
+  `docs/archive/investigations/` (investigations document finished work);
+  5 release-notes + journal + 2 chat-ui visions + 2 pass-plans →
+  `docs/archive/planning/`; `hlg-sampling.md` (self-declared superseded) →
+  `docs/archive/`. All inbound links rewritten; docs-map gate green.
+- **D5 journal trim (rule 4)**: STATUS.md 1648 → 106 lines (Colibri
+  gate-history + all "where we were" + the stale July ranked backlog →
+  PLAN-archive under "STATUS archive 2026-08-18"); PLAN.md 3815 → 2679
+  (8 closed `[x]` phase blocks → PLAN-archive with one-line pointers).
+- Model artifacts moved out of the tree entirely (`~/models/`) earlier
+  the same day.
+
+Remaining (curated, not mechanical — needs judgment per file):
+- `docs/design/` still holds 46 docs; many describe LANDED work and
+  should archive under rule 3 (candidates: optimization_plan,
+  faithful-base superseded pair, diffusion/audio/omlx/dspark docs whose
+  phases closed). Do this per-doc with link fixes, not as a bulk move.
+- `docs/planning/` leftovers (chunk-task-roadmap, curve-sampler-research-
+  plan, memory-docs-and-dag-plan, pi-integration-review) — keep-or-archive
+  per Josh.
+- `scripts/experiments/` = 199 files; prune ones whose findings are fully
+  recorded in archived docs (keep regen/oracle scripts).
+- `runs/` is 32 GB machine-local (Colibri evidence + quant lab arms) —
+  delete lab arms once the TQ/GPTQ program closes; Colibri evidence dirs
+  are cited from the archive and stay.
