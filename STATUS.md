@@ -10,6 +10,19 @@ summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
+## Released: mlx-bun v0.0.13 (2026-08-17)
+
+Qwen3.8-27B text support and the GLM fixed-context admission correction are
+published on GitHub, npm, and the Homebrew tap. The signed/notarized arm64
+archive is 80,421,168 bytes with SHA-256
+`7766573a6693a6038b2e23cee67f337718d971e2cdbc310f511e4d9155cf5b17`;
+Apple accepted notarization submission
+`edde8b8f-1d8d-4722-878f-0b6eadc63ae5`. The two-shard release gate passed
+1,940 tests with 71 intentional skips, zero failures, and 28,382 assertions.
+Qwen native MTP is explicitly not part of this release: review proved its
+recurrent target state cannot yet satisfy the shared verifier's rollback
+contract, so companion artifacts fail early with the precise reason.
+
 ## Completed: pre-Colibri stabilization (2026-07-29)
 
 Phase 22 is closed. The 25-item intake is tracked in

@@ -2889,6 +2889,19 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
           preserves its fail-fast 400 contract, and a prompt that fills the
           GLM context remains rejected. Model-free regression coverage locks
           all three cases.
+        - [x] Published mlx-bun v0.0.13 (2026-08-17): reviewed Qwen3.8 text
+          support plus the GLM admission correction are live on GitHub, npm,
+          and the Homebrew tap. Both 80,421,168-byte release assets have
+          SHA-256
+          `7766573a6693a6038b2e23cee67f337718d971e2cdbc310f511e4d9155cf5b17`;
+          Apple notarization submission
+          `edde8b8f-1d8d-4722-878f-0b6eadc63ae5` was accepted. npm's published
+          tarball shasum is `c767afe2f2fcdc85c9417934a2b891b4e4218be1`.
+          The full two-shard release gate was 1,940 pass / 71 skip / 0 fail
+          with 28,382 assertions. Qwen native MTP was deliberately removed
+          from the release surface after review proved recurrent-state
+          rollback unsound; startup still recognizes its artifact and fails
+          before target weights are opened.
 
 **Correctness boundary:** default quality policy keeps checkpoint precision and
 true top-8 routing. `CACHE_ROUTE`, expert top-p/top-k, and any expert budget are
