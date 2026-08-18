@@ -34,8 +34,7 @@ sys.path.insert(0, "scripts/experiments")
 from importlib import import_module
 
 tq_gptq = import_module("tq-gptq")
-gptq_one = tq_gptq.gptq_one
-compute_inverse_hessian = tq_gptq.compute_inverse_hessian
+gptq_one_guarded = tq_gptq.gptq_one_guarded
 
 from mlx_lm.models.base import create_attention_mask
 from mlx_lm.models.qwen3_5 import create_ssm_mask
@@ -72,7 +71,11 @@ def main():
     p.add_argument("--mlx-path", required=True)
     p.add_argument("--bits", type=int, default=4)
     p.add_argument("--group-size", type=int, default=64)
-    p.add_argument("--num-samples", type=int, default=64)
+    p.add_argument("--num-samples", type=int, default=128)
+    p.add_argument("--sensitivity", default=None,
+                   help="optiq sensitivity.json — drives per-module 8-bit upgrades")
+    p.add_argument("--target-bpw", type=float, default=4.8)
+    p.add_argument("--high-bits", type=int, default=8)
     p.add_argument("--sequence-length", type=int, default=512)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--seed", type=int, default=123)
@@ -84,12 +87,45 @@ def main():
         "bits": args.bits, "group_size": args.group_size,
         "num_samples": args.num_samples, "sequence_length": args.sequence_length,
         "seed": args.seed, "model": args.model,
+        "sensitivity": args.sensitivity, "target_bpw": args.target_bpw,
+        "high_bits": args.high_bits,
     }
     state_path = ckpt / "state.json"
     state = json.loads(state_path.read_text()) if state_path.exists() else None
     if state and state.get("params") != params:
         raise SystemExit(f"checkpoint {ckpt} was made with different params — delete it or match them")
     next_layer = state["next_layer"] if state else 0
+
+    # Sensitivity-driven aggressiveness (Josh 2026-08-18): upgrade the most
+    # KL-sensitive modules to high_bits, greedily by benefit-per-parameter,
+    # until the projected bpw hits --target-bpw. Source: OptiQ's published
+    # optiq/sensitivity.json for this exact trunk.
+    high_modules = {}
+    if args.sensitivity:
+        sens = json.loads(Path(args.sensitivity).read_text())
+        rows = []
+        total_params = sum(l["param_count"] for l in sens["layers"])
+        for l in sens["layers"]:
+            benefit = l["sensitivities"][str(args.bits)] - l["sensitivities"][str(args.high_bits)]
+            rows.append((benefit / max(l["param_count"], 1), benefit, l["layer_name"], l["param_count"]))
+        rows.sort(reverse=True)
+        base_bits_total = total_params * (args.bits + 32 / args.group_size)
+        budget_bits = args.target_bpw * total_params - base_bits_total
+        used = 0.0
+        for _, benefit, name, pcount in rows:
+            extra = pcount * (args.high_bits - args.bits)
+            if benefit <= 0 or used + extra > budget_bits:
+                continue
+            used += extra
+            high_modules[name] = args.high_bits
+        proj = (base_bits_total + used) / total_params
+        print(f"sensitivity allocation: {len(high_modules)} modules @ {args.high_bits}-bit, "
+              f"projected {proj:.2f} bpw", flush=True)
+    ckpt.mkdir(parents=True, exist_ok=True)
+    (ckpt / "bits.json").write_text(json.dumps(high_modules))
+
+    def bits_for(base):
+        return high_modules.get(base, args.bits)
 
     mx.random.seed(args.seed)
     model, tokenizer, config = load(args.model, lazy=True, return_config=True)
@@ -115,12 +151,12 @@ def main():
         print(f"resuming at layer {next_layer}/{n_layers}", flush=True)
     mx.clear_cache()
 
-    def quantize_linear(linear, H):
-        Hinv = compute_inverse_hessian(H)
-        mx.eval(Hinv)
+    def quantize_linear(linear, H, mbits, label=""):
         orig_type = linear.weight.dtype
-        scales, biases, Wq = gptq_one(linear.weight, Hinv, bits, gs)
-        q = linear.to_quantized(bits=bits, group_size=gs)
+        scales, biases, Wq, note = gptq_one_guarded(linear.weight, H, mbits, gs)
+        if note:
+            print(f"  {label}: {note}", flush=True)
+        q = linear.to_quantized(bits=mbits, group_size=gs)
         q.weight = Wq
         q.scales = scales
         q.biases = biases
@@ -148,10 +184,10 @@ def main():
             catcher = getattr(parent, name)
             H = catcher.H
             catcher.H = None
-            q = quantize_linear(catcher.module, H)
+            base = f"{P}.layers.{li}.{rel}"
+            q = quantize_linear(catcher.module, H, bits_for(base), base)
             del H
             setattr(parent, name, q)
-            base = f"{P}.layers.{li}.{rel}"
             out_tensors[f"{base}.weight"] = q.weight
             out_tensors[f"{base}.scales"] = q.scales
             out_tensors[f"{base}.biases"] = q.biases
@@ -182,7 +218,7 @@ def main():
                 mx.eval(lm.lm_head.H)
             H = lm.lm_head.H
             lm.lm_head.H = None
-            q = quantize_linear(lm.lm_head.module, H)
+            q = quantize_linear(lm.lm_head.module, H, bits_for("language_model.lm_head"), "lm_head")
             mx.save_safetensors(str(ckpt / "lm_head"), {
                 "language_model.lm_head.weight": q.weight,
                 "language_model.lm_head.scales": q.scales,
@@ -205,6 +241,7 @@ def assemble(args, ckpt, config):
     out = Path(args.mlx_path)
     out.mkdir(parents=True, exist_ok=True)
     bits, gs = args.bits, args.group_size
+    high_modules = json.loads((ckpt / "bits.json").read_text()) if (ckpt / "bits.json").exists() else {}
 
     replaced = {}
     for f in sorted(glob.glob(str(ckpt / "layer-*.safetensors"))) + [str(ckpt / "lm_head.safetensors")]:
@@ -239,6 +276,8 @@ def assemble(args, ckpt, config):
         cur_bytes += nb
 
     qcfg = {"group_size": gs, "bits": bits}
+    for mod, mbits in high_modules.items():
+        qcfg[mod] = {"bits": mbits, "group_size": gs}
     for f in shard_files:
         tensors = mx.load(f)  # lazy per shard
         for name in tensors:
@@ -250,10 +289,13 @@ def assemble(args, ckpt, config):
                     add(f"{base}.biases", replaced[f"{base}.biases"])
                 continue
             if name == embed_name:
-                w, s, b = mx.quantize(tensors[name], group_size=gs, bits=bits)
+                ebits = high_modules.get(f"{P}.embed_tokens", bits)
+                w, s, b = mx.quantize(tensors[name], group_size=gs, bits=ebits)
                 add(f"{P}.embed_tokens.weight", w)
                 add(f"{P}.embed_tokens.scales", s)
                 add(f"{P}.embed_tokens.biases", b)
+                if ebits != bits:
+                    qcfg[f"{P}.embed_tokens"] = {"bits": ebits, "group_size": gs}
                 continue
             if name.startswith("vision_tower.") and name.endswith(".weight"):
                 t = tensors[name]

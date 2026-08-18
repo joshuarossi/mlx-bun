@@ -28,10 +28,14 @@ def is_language_linear(key, module):
     return isinstance(module, nn.Linear) and "vision_tower" not in key
 
 
-def compute_inverse_hessian(H):
-    # verbatim from mlx_lm.quant.gptq (upper-Cholesky of the damped inverse)
+def compute_inverse_hessian(H, damp_factor=1e-2):
+    # verbatim from mlx_lm.quant.gptq (upper-Cholesky of the damped inverse),
+    # parameterized damping: rank-deficient H (early layers see low-rank
+    # calibration activations; 27B hidden 5120 exceeded the rank the standard
+    # 1% damping could regularize) needs escalation — see gptq_one_guarded.
     with mx.stream(mx.cpu):
-        damp = 1e-2 * mx.mean(mx.diag(H))
+        H = mx.array(H)  # copy — escalation retries need the undamped H
+        damp = damp_factor * mx.mean(mx.diag(H))
         diag = mx.arange(H.shape[0])
         H[diag, diag] += damp
         H = mx.linalg.cholesky(H)
@@ -74,6 +78,28 @@ def gptq_one(W_in, Hinv, bits, group_size):
     scales = mx.concatenate(all_scales, axis=-1)
     biases = mx.concatenate(all_biases, axis=-1)
     return scales, biases, quantize(W, bits, scales, biases)
+
+
+def gptq_one_guarded(W_in, H, bits, group_size):
+    """GPTQ with a divergence guard: rank-deficient Hessians make the
+    compensation loop explode (2026-08-18 27B run: layer-0 down_proj scales
+    grew 0.003 → 27 across column groups, max 28e6 — cosine ~0 vs source).
+    Guard: GPTQ scales must stay within 4× the plain-RTN scale ceiling;
+    on blow-up, retry with 10×/100×/1000× damping, else fall back to RTN
+    (never worse than RTN by construction). Returns
+    (scales, biases, packed, note)."""
+    _, rtn_scales, _ = mx.quantize(W_in.astype(mx.float32), bits=bits, group_size=group_size)
+    ceiling = 4.0 * float(mx.max(mx.abs(rtn_scales)))
+    for damp in (1e-2, 1e-1, 1.0, 10.0):
+        Hinv = compute_inverse_hessian(H, damp)
+        mx.eval(Hinv)
+        scales, biases, packed = gptq_one(W_in, Hinv, bits, group_size)
+        if float(mx.max(mx.abs(scales))) <= ceiling:
+            note = "" if damp == 1e-2 else f"damp={damp}"
+            return scales, biases, packed, note
+    # RTN fallback — identical to the mx.quantize grid, packed the same way.
+    Wq, scales, biases = mx.quantize(W_in.astype(mx.float32), bits=bits, group_size=group_size)
+    return scales, biases, Wq, "RTN-fallback"
 
 
 def gptq_quantize_lm(model, data, bits, group_size, fallback_bits, fallback_group_size, batch_size=8):
