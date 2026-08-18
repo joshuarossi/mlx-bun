@@ -3804,14 +3804,34 @@ verified via `mlx-bun get`).
       harness 71% accept / token-identical. NOT shipped: rotated
       uniform-4bit (loses to plain). Frozen 6-task eval cells + quiet-box
       numbers still owed before RESULTS.md rows.
-- [ ] **W5 calibration composition (the 4-bit flagship win):** GPTQ-style
-      error-compensated rounding on ROTATED weights (+ optional learned
-      rotations / OptiQ allocation). This is where the papers' 4-bit wins
-      actually come from; W3 proved rotation-only RTN can't get there.
-- [ ] **W6 release:** publish `Qwen3.8-27B-TQ` (mixed, 3.86 bpw, vision +
-      MTP) + `Qwen3.8-27B-MTP-TQ-bf16` to HF — cards drafted with
-      measured tables in the artifact dirs; STAGED, awaiting Josh's go
-      (outward-facing).
+- [~] **W5 calibration composition (the 4-bit flagship win)** — OPENED
+      2026-08-18 (Josh: "rotation + calibration + sensitivity-aware pass,
+      do it first, then publish the best version"). Every leg has a
+      SHIPPED oracle in the pinned venv: GPTQ = `mlx_lm.quant.gptq`
+      (forked minimally in scripts/experiments/tq-gptq.py: language-only
+      filter — vision H stays a zero scalar and must stay bf16 — plus a
+      REAL UPSTREAM BUG FIX: their `err[..., k:k+1]` uses the GLOBAL
+      column index on a group-local buffer and mlx out-of-range slice
+      assignment silently no-ops, so cross-group error propagation is
+      LOST for every group after the first; verified empirically, our
+      fork uses the group-local index); sensitivity =
+      `mlx_lm.quant.dynamic_quant` (gradient KL) + OptiQ's shipped
+      per-layer map for this exact 27B (metadata: it's a 5.14-bpw
+      artifact — comparisons must be per-bpw-band). 27B needs a CHUNKED
+      Hessian/GPTQ driver (their stock flow = whole bf16 model + all
+      Hessians resident; layers.N.mlp.down_proj H alone is 1.2 GB f32).
+      - [ ] W5a 0.8B matrix: {plain, rotated} × {RTN, GPTQ} @4bit —
+            running; gate: GPTQ > RTN and rotated+GPTQ ≥ GPTQ.
+      - [ ] W5b + allocation axis (dynamic_quant / OptiQ map), pick the
+            best ≤4.5 bpw recipe.
+      - [ ] W5c chunked 27B production run + ppl/eval gates.
+- [~] **W6 release — SINGLE REPO (Josh 2026-08-18: bundling beats
+      companion repos):** one artifact = quantized trunk + bf16 vision
+      (in-main + optiq sidecar) + folded MTP companion at `mtp/`.
+      Engine landed: `--draft-kind mtp` with no --draft-model resolves
+      `<model>/mtp/` (server.ts + cli.md/server-config.md same commit);
+      27b-tqmix re-packaged accordingly. Publish the W5 winner via
+      `mlx-bun upload`; awaiting the recipe outcome + Josh's go.
 
 Non-goals (pinned now): custom Lloyd-Max weight FORMAT / any new qmm
 kernel; activation quantization (no int4 tensor cores, decode is
