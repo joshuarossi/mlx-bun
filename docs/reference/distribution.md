@@ -15,6 +15,7 @@ tarball (~73 MB compressed, ~228 MB installed):
 | `mlx-bun` | the CLI/server (`bun build --compile`), ~61 MB |
 | `libmlxc.dylib`, `libmlx.dylib`, `libjaccl.dylib` | MLX native runtime |
 | `libmlx_bun_expert_io.dylib` | bounded native expert-streaming helper required by direct Colibri GLM-5.2 |
+| `mlx-bun-frame-extract` | AVFoundation frame-extraction sidecar for video input (darwin-native codecs, the afconvert doctrine) |
 | `mlx.metallib` | Metal kernels (~150 MB — the bulk) |
 | pi assets | `photon_rs_bg.wasm`, `theme/`, `assets/`, `export-html/`, `native/`, `package.json`, `CHANGELOG.md` |
 

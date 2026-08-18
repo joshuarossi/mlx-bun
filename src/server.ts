@@ -117,7 +117,7 @@ import { buildQwen3VLVisionPrompt } from "./vision/qwen3vl-prompt";
 import { Qwen35Model } from "./model/qwen3_5";
 import type { MropeRequestState } from "./model/qwen3-mrope";
 import {
-  buildMultimodalPrompt, buildVisionPrompt, extractAudio, extractImages,
+  buildMultimodalPrompt, buildVisionPrompt, extractAudio, extractImages, extractVideos,
   type AudioTokenIds, type VisionTokenIds, type VisionEncoder,
 } from "./vision/prompt";
 import { AudioTower, parseAudioConfig } from "./audio/conformer";
@@ -1194,7 +1194,8 @@ function hasMediaPart(parts: Array<Record<string, unknown>>): boolean {
     (p) =>
       p &&
       (p.type === "image" || p.type === "image_url" ||
-        p.type === "audio" || p.type === "input_audio" || p.type === "audio_url"),
+        p.type === "audio" || p.type === "input_audio" || p.type === "audio_url" ||
+        p.type === "video" || p.type === "video_url"),
   );
 }
 
@@ -1355,6 +1356,26 @@ export function validateLogprobsParams(body: {
   if (tl === -1) return null; // the "unset" whitelist sentinel
   if (tl < 0) return "top_logprobs must be at least 0";
   if (tl > 11) return "top_logprobs must be at most 11";
+  return null;
+}
+
+const REASONING_EFFORT_LEVELS =
+  ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+/** Validate `reasoning_effort` against the accepted level names. An invalid
+ *  string must NOT pass through: resolveEnableThinking treats any defined
+ *  value ≠ "none" as thinking-ON, so a typo like "hihg" silently flipped the
+ *  thinking channel (and its hotter temperature) on thinking-off models and
+ *  burned a full default-depth reasoning budget (2026-08-18 review). Same
+ *  contract style as validateLogprobsParams above. */
+export function validateReasoningEffort(body: {
+  reasoning_effort?: unknown;
+}): string | null {
+  const v = body.reasoning_effort;
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "string" || !(REASONING_EFFORT_LEVELS as readonly string[]).includes(v))
+    return "reasoning_effort must be one of " +
+      "'none', 'minimal', 'low', 'medium', 'high', 'xhigh'";
   return null;
 }
 
@@ -1807,10 +1828,11 @@ export function createServer(
   ) => {
     // Qwen vision: install the request's mRoPE state for every forward of
     // this serial run (prefill AND decode use the 3D interleaved positions +
-    // delta). Scoped HERE — under the serial mutex — so queued text requests
-    // never see it; cleared in the finally below.
-    if (vision?.mrope && ctx.model instanceof Qwen35Model)
-      ctx.model.mrope = vision.mrope;
+    // delta). Scoped inside the try below — under the serial mutex — so
+    // queued text requests never see it and a throw between here and the
+    // try (makeCache under memory pressure, spec-path early return) can't
+    // leave a DEAD request's positions installed for the next generation
+    // (2026-08-18 review).
     // Speculative decoding (serve --draft-model): spec-ELIGIBLE requests
     // decode through the verify loop; the rest fall through to the normal
     // serial path (never wrong results, just no speedup — logged once per
@@ -1885,6 +1907,8 @@ export function createServer(
     const snapshotBoundary =
       !skipPromptCache && boundary >= 256 && boundary > (entry?.tokens.length ?? 0);
     try {
+      if (vision?.mrope && ctx.model instanceof Qwen35Model)
+        ctx.model.mrope = vision.mrope;
       const gen = generate(ctx.model, promptIds, {
         ...options,
         pagedKv, // request-scoped (undefined strips the server-wide flag)
@@ -3184,6 +3208,11 @@ export function createServer(
         const lpParamError = validateLogprobsParams(body);
         if (lpParamError)
           return Response.json({ error: { message: lpParamError } }, { status: 400 });
+        // Covers /v1/messages and /v1/responses too — both funnel through
+        // this handler after translation.
+        const effortError = validateReasoningEffort(body);
+        if (effortError)
+          return Response.json({ error: { message: effortError } }, { status: 400 });
 
         const id = `chatcmpl-${crypto.randomUUID()}`;
         const created = Math.floor(Date.now() / 1000);
@@ -3200,6 +3229,13 @@ export function createServer(
             m.content.some(
               (p: any) => p.type === "input_audio" || p.type === "audio" || p.type === "audio_url",
             ),
+        );
+        // Video content parts (video_url / video with base64 data) —
+        // Qwen3.5-family only (decoded to sampled frames via the
+        // AVFoundation sidecar, vision/video-frames.ts).
+        const hasVideos = body.messages.some(
+          (m) => Array.isArray(m.content) &&
+            m.content.some((p: any) => p.type === "video_url" || p.type === "video"),
         );
         let promptIds: number[];
         let stableLen: number | null = null;
@@ -3243,6 +3279,19 @@ export function createServer(
           diffusionPixels?.dispose();
         };
         try {
+          // Video is Qwen3.5-family only and never composes with audio —
+          // one early guard so no downstream branch can silently drop a
+          // video part (the gemma/diffusion builders don't know the type).
+          if (hasVideos && (hasAudio || !(ctx.model instanceof Qwen35Model))) {
+            disposeRejected();
+            return Response.json(
+              { error: { message: hasAudio
+                  ? "video and audio content parts cannot be combined"
+                  : `model ${ctx.modelId} does not accept video input — video ` +
+                    `content parts need a Qwen3.5-family model (e.g. Qwen3.8-27B)` } },
+              { status: 400 },
+            );
+          }
           if (hasAudio) {
             // Audio (and MIXED image+audio) input — A4 of
             // docs/design/audio-input-plan.md. One buildMultimodalPrompt call
@@ -3331,11 +3380,12 @@ export function createServer(
               eoi: ctx.visionTokenIds.eoiTokenId,
             });
             diffusionPixels = pixels;
-          } else if (hasImages && ctx.model instanceof Qwen35Model) {
-            // Qwen3.8 vision: the tower is a Qwen3VLVisionTower riding the
-            // shared lazy slot (makeVisionLoader's qwen branch); image spans
-            // splice into input embeddings and the request carries mRoPE
-            // positions + delta (PLAN 14v).
+          } else if ((hasImages || hasVideos) && ctx.model instanceof Qwen35Model) {
+            // Qwen3.8 vision + video: the tower is a Qwen3VLVisionTower
+            // riding the shared lazy slot (makeVisionLoader's qwen branch);
+            // image/video spans splice into input embeddings and the request
+            // carries mRoPE positions + delta (PLAN 14v/14w). Videos decode
+            // to sampled frames via the AVFoundation sidecar.
             const tower = getVisionTower(ctx) as unknown as Qwen3VLVisionTower | null;
             if (!tower) {
               disposeRejected();
@@ -3343,14 +3393,19 @@ export function createServer(
                 { error: { message: "model has no vision sidecar" } }, { status: 400 },
               );
             }
-            const { messages, images } = await extractImages(normalizeMessages(body.messages));
+            const { messages: withVideos, images } =
+              await extractImages(normalizeMessages(body.messages));
+            const { messages, videos } = await extractVideos(withVideos);
             const vp = await buildQwen3VLVisionPrompt(
               ctx.model, tower, ctx.tokenizer, ctx.template, messages, images,
               {
                 imageTokenId: (ctx.model.config.raw.image_token_id as number) ?? 248056,
                 videoTokenId: (ctx.model.config.raw.video_token_id as number) ?? 248057,
+                visionStartId: (ctx.model.config.raw.vision_start_token_id as number) ?? 248053,
+                visionEndId: (ctx.model.config.raw.vision_end_token_id as number) ?? 248054,
               },
-              tools,
+              templateOptionsFor(body, tools),
+              videos,
             );
             promptIds = vp.ids;
             vision = { embeddings: vp.embeddings, mrope: vp.mrope };

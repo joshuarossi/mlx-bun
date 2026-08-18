@@ -167,6 +167,55 @@ function coerceText(content: unknown): string {
   return parts.join("");
 }
 
+/** Convert a Responses message content array to chat-shaped content: text
+ *  flattens, media TRANSLATES (`input_image` → `image_url`, incl. the
+ *  Responses-standard string `image_url` field; video symmetrically), and
+ *  unknown non-text parts REJECT loudly — a silent media drop answers
+ *  confidently about content the model never saw (the anthropic.ts audio
+ *  doctrine). Text-only arrays keep the legacy flattened-string shape. */
+function coerceContent(content: unknown): string | Record<string, unknown>[] {
+  if (content == null) return "";
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return String(content);
+  const parts: Record<string, unknown>[] = [];
+  let hasMedia = false;
+  for (const part of content) {
+    if (typeof part === "string") {
+      parts.push({ type: "text", text: part });
+      continue;
+    }
+    if (!part || typeof part !== "object") continue;
+    const p = part as Record<string, unknown>;
+    if (p.type === "input_image" || p.type === "image_url") {
+      const url = typeof p.image_url === "string"
+        ? p.image_url
+        : (p.image_url as { url?: string } | undefined)?.url;
+      if (typeof url !== "string")
+        throw new Error("input_image part missing image_url");
+      parts.push({ type: "image_url", image_url: { url } });
+      hasMedia = true;
+    } else if (p.type === "input_video" || p.type === "video_url") {
+      const url = typeof p.video_url === "string"
+        ? p.video_url
+        : (p.video_url as { url?: string } | undefined)?.url;
+      if (typeof url !== "string")
+        throw new Error("input_video part missing video_url");
+      parts.push({ type: "video_url", video_url: { url } });
+      hasMedia = true;
+    } else if (p.text != null) {
+      parts.push({ type: "text", text: String(p.text) });
+    } else {
+      throw new Error(
+        `unsupported Responses content part type "${String(p.type)}" — ` +
+        `use input_text, input_image, or input_video`,
+      );
+    }
+  }
+  if (!hasMedia)
+    return parts.map((p) => String((p as { text?: unknown }).text ?? "")).join("");
+  return parts;
+}
+
 /** Convert a prior response's output array into input-shaped items for
  *  previous_response_id resumption (reasoning items dropped — replaying
  *  them invites the model to repeat itself). */
@@ -232,11 +281,14 @@ export function responsesToChatBody(body: ResponsesRequest): Record<string, unkn
       }
       // regular message item (explicit type or implicit by having role)
       let role = String(item.role ?? "user");
-      const content = coerceText(item.content);
       if (role === "system" || role === "developer") {
-        if (content) systemParts.push(content);
+        // System prompts are text by contract — flatten (media in a system
+        // item has no defined semantics on any surface we mirror).
+        const text = coerceText(item.content);
+        if (text) systemParts.push(text);
         continue;
       }
+      const content = coerceContent(item.content);
       if (!["user", "assistant", "tool"].includes(role)) role = "user";
       messages.push({ role, content });
     }

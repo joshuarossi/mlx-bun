@@ -26,7 +26,7 @@ import type { LoadedTokenizer } from "../tokenizer";
 import type { AudioTower } from "../audio/conformer";
 import { audioSoftTokenCount, decodeAudio } from "../audio/decode";
 import { extractMelFeatures } from "../audio/features";
-import { fetchMediaBytes } from "../media-fetch";
+import { fetchMediaBytes, videoMediaFetchPolicy } from "../media-fetch";
 
 /** Common contract for both vision towers (encoder-free gemma4_unified in
  *  ./embedder.ts and the SigLIP encoder in ./siglip.ts): preprocess image
@@ -115,6 +115,52 @@ export async function extractImages(
     out.push({ ...m, content: parts });
   }
   return { messages: out, images };
+}
+
+/** Extract video bytes from content parts, rewriting to the template's
+ *  {type:"video"} form. Accepts {type:"video_url", video_url:{url}} (data:
+ *  or http(s), same SSRF guard as images with the larger video body cap)
+ *  and {type:"video"} with base64 `data`. Decode to frames happens later
+ *  (vision/video-frames.ts — the AVFoundation sidecar). */
+export async function extractVideos(
+  messages: ChatMessage[],
+): Promise<{ messages: ChatMessage[]; videos: Uint8Array[] }> {
+  const videos: Uint8Array[] = [];
+  const out: ChatMessage[] = [];
+  for (const m of messages) {
+    if (!Array.isArray(m.content)) {
+      out.push(m);
+      continue;
+    }
+    const parts: Array<Record<string, unknown>> = [];
+    for (const part of m.content) {
+      if (part.type === "video_url") {
+        const url = (part.video_url as { url: string } | undefined)?.url
+          ?? (part.video_url as unknown as string);
+        if (typeof url !== "string") throw new Error("video_url part missing url");
+        videos.push(await fetchMediaBytes(url, "video"));
+        parts.push({ type: "video" });
+      } else if (part.type === "video") {
+        if (typeof part.data === "string") {
+          // Same cap as fetched/data:-URL video bodies — the inline base64
+          // form must not be the uncapped route.
+          const cap = videoMediaFetchPolicy().maxBytes;
+          if (part.data.length * 0.75 > cap)
+            throw new Error(
+              `video part exceeds the ${Math.round(cap / 1024 / 1024)} MB cap`,
+            );
+          videos.push(Uint8Array.from(Buffer.from(part.data, "base64")));
+          parts.push({ type: "video" });
+        } else {
+          throw new Error("video part requires base64 `data`");
+        }
+      } else {
+        parts.push(part);
+      }
+    }
+    out.push({ ...m, content: parts });
+  }
+  return { messages: out, videos };
 }
 
 /** Extract audio bytes from OpenAI-style content parts, rewriting the parts

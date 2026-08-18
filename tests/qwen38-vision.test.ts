@@ -230,9 +230,13 @@ describe.skipIf(!haveClipGoldens || !haveClipBins)("qwen3.8 video: model-free ga
     expect(maxAbs).toBe(0);
   });
 
-  test("video mRoPE positions + delta are exact (t > 1 grid)", async () => {
+  test("video mRoPE positions + delta are exact (per-frame-group grids)", async () => {
     const pp = preprocessQwen3VLVideoFrames(await loadClipFrames());
-    const st = qwenRopeIndex(m.input_ids, [pp.gridThw], 2, 248056, 248057);
+    // The reference splits video grids per temporal group (t=1 each) —
+    // "timestamps are used to separate videos"; the builder feeds the same.
+    const [gridT, gh, gw] = pp.gridThw;
+    const grids = Array.from({ length: gridT }, () => [1, gh, gw] as [number, number, number]);
+    const st = qwenRopeIndex(m.input_ids, grids, 2, 248056, 248057);
     expect([
       Array.from(st.positions[0]), Array.from(st.positions[1]), Array.from(st.positions[2]),
     ]).toEqual(m.position_ids);
@@ -280,15 +284,34 @@ describe.skipIf(!optIn || !haveModel || !haveClipBins)(
     const textEmb = model.embed.encode(idsArr);
     idsArr.dispose();
     const H = textEmb.shape[2]!;
-    const start = ids.indexOf(248057);
+    // Per-frame-group format: splice per pad RUN, consecutive runs consume
+    // consecutive tower-feature rows; per-group t=1 grids for positions.
     const feat = tower.encode(pp);
-    const feat3 = ops.reshape(feat, [1, pp.imageTokens, H]);
+    const segments = [];
+    let cursor = 0;
+    let row = 0;
+    for (let i = 0; i < ids.length; ) {
+      if (ids[i] === 248057) {
+        let j = i;
+        while (j < ids.length && ids[j] === 248057) j++;
+        if (cursor < i) segments.push(textEmb.slice([0, cursor, 0], [1, i, H]));
+        const sl = feat.slice([row, 0], [row + (j - i), H]);
+        segments.push(ops.reshape(sl, [1, j - i, H]));
+        sl.dispose();
+        row += j - i;
+        cursor = j;
+        i = j;
+      } else i++;
+    }
+    if (cursor < ids.length)
+      segments.push(textEmb.slice([0, cursor, 0], [1, ids.length, H]));
+    const embeds = ops.concatAxis(segments, 1);
+    for (const s of segments) s.dispose();
     feat.dispose();
-    const pre = textEmb.slice([0, 0, 0], [1, start, H]);
-    const post = textEmb.slice([0, start + pp.imageTokens, 0], [1, ids.length, H]);
-    const embeds = ops.concatAxis([pre, feat3, post], 1);
-    pre.dispose(); post.dispose(); feat3.dispose(); textEmb.dispose();
-    model.mrope = qwenRopeIndex(ids, [pp.gridThw], 2, 248056, 248057);
+    textEmb.dispose();
+    const [gridT, gh, gw] = pp.gridThw;
+    const grids = Array.from({ length: gridT }, () => [1, gh, gw] as [number, number, number]);
+    model.mrope = qwenRopeIndex(ids, grids, 2, 248056, 248057);
     const out: number[] = [];
     try {
       for await (const t of generate(model, ids, {
@@ -306,4 +329,92 @@ describe.skipIf(!optIn || !haveModel || !haveClipBins)(
     while (prefix < out.length && out[prefix] === m.gen_ids[prefix]) prefix++;
     expect(prefix).toBeGreaterThanOrEqual(Math.min(12, m.gen_ids.length));
   }, 3_600_000);
+});
+
+// ---- video FILE decode (the shipped sidecar, PLAN 14w productization) ------
+// Auto-skips when no extractor resolves (no beside-binary copy, no native
+// pack, no swiftc): resolution + dev-compile live in vision/video-frames.ts.
+
+describe("qwen3.8 video: sidecar file decode", async () => {
+  const { resolveFrameExtract, extractVideoFrames } =
+    await import("../src/vision/video-frames");
+  const bin = await resolveFrameExtract();
+
+  test.skipIf(!bin)("fixture clip decodes to the committed frames, pixel-exact", async () => {
+    const bytes = new Uint8Array(await Bun.file(`${FIX}/qwen38-clip.mov`).arrayBuffer());
+    const frames = await extractVideoFrames(bytes);
+    const committed = await loadClipFrames();
+    expect(frames.length).toBe(committed.length);
+    for (let i = 0; i < frames.length; i++) {
+      expect(frames[i]!.width).toBe(committed[i]!.width);
+      expect(frames[i]!.height).toBe(committed[i]!.height);
+      // H.264 decode is spec-deterministic: the extracted pixels must equal
+      // the committed extraction byte-for-byte.
+      expect(Buffer.compare(
+        Buffer.from(frames[i]!.data), Buffer.from(committed[i]!.data),
+      )).toBe(0);
+    }
+  }, 120_000);
+
+  test.skipIf(!bin || !haveClipGoldens)("decoded clip preprocesses to the golden grid", async () => {
+    const m = await Bun.file(`${G}/clip-manifest.json`).json();
+    const { preprocessQwen3VLVideoFrames } = await import("../src/vision/qwen3vl-preprocess");
+    const bytes = new Uint8Array(await Bun.file(`${FIX}/qwen38-clip.mov`).arrayBuffer());
+    const pp = preprocessQwen3VLVideoFrames(await extractVideoFrames(bytes));
+    expect(pp.gridThw).toEqual(m.grid_thw);
+  }, 120_000);
+
+  test("video content parts extract and rewrite to template form", async () => {
+    const { extractVideos } = await import("../src/vision/prompt");
+    const clip = Buffer.from(
+      new Uint8Array(await Bun.file(`${FIX}/qwen38-clip.mov`).arrayBuffer()),
+    );
+    const { messages, videos } = await extractVideos([
+      {
+        role: "user",
+        content: [
+          { type: "video_url", video_url: { url: `data:video/quicktime;base64,${clip.toString("base64")}` } },
+          { type: "video", data: clip.toString("base64") },
+          { type: "text", text: "describe both" },
+        ],
+      } as never,
+    ]);
+    expect(videos.length).toBe(2);
+    expect(videos[0]!.length).toBe(clip.length);
+    const parts = (messages[0]!.content as { type: string }[]).map((p) => p.type);
+    expect(parts).toEqual(["video", "video", "text"]);
+  });
+});
+
+// ---- preprocessing arithmetic units (2026-08-18 review fixes) --------------
+
+describe("qwen3.8 vision: python-faithful arithmetic", async () => {
+  const { roundHalfEven, pyFixed1, smartResize, preprocessQwen3VLVideoFrames } =
+    await import("../src/vision/qwen3vl-preprocess");
+
+  test("smart_resize rounds HALF-TO-EVEN like Python round (80px case)", () => {
+    // Math.round(2.5)=3 gave 96; the reference round(2.5)=2 gives 64 —
+    // anchored against _smart_resize_image in the pinned venv.
+    expect(smartResize(80, 96, 32, 1, 1e9)).toEqual([64, 96]);
+    expect(roundHalfEven(2.5)).toBe(2);
+    expect(roundHalfEven(3.5)).toBe(4);
+    expect(roundHalfEven(2.4)).toBe(2);
+    expect(roundHalfEven(2.6)).toBe(3);
+  });
+
+  test("pyFixed1 formats exact ties HALF-TO-EVEN like Python %.1f", () => {
+    // Timestamp headers: frame-pair averages land on .x25/.x75 exactly.
+    expect(pyFixed1(0.25)).toBe("0.2"); // toFixed says "0.3"
+    expect(pyFixed1(1.25)).toBe("1.2");
+    expect(pyFixed1(0.75)).toBe("0.8");
+    expect(pyFixed1(2.5)).toBe("2.5");
+    expect(pyFixed1(3.0)).toBe("3.0");
+  });
+
+  test("video group timestamps are frame-pair averages with last-repeat padding", () => {
+    const frame = { width: 64, height: 64, data: new Uint8Array(64 * 64 * 3) };
+    const pp = preprocessQwen3VLVideoFrames([frame, frame, frame], { sampleFps: 2 });
+    // times 0, 0.5, 1.0 (+pad 1.0) → groups (0+0.5)/2=0.25, (1.0+1.0)/2=1.0
+    expect(pp.groupTimestamps).toEqual([0.25, 1.0]);
+  });
 });

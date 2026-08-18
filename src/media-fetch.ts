@@ -405,10 +405,19 @@ export async function fetchRestrictedHttpBytes(
  *  redirect hop re-validated, one wall-clock timeout, and a streaming
  *  size cap. Throws Error with a client-presentable message — callers
  *  surface it as a 400 (the prompt-build catch in server.ts). */
+/** Video clips are legitimately larger than images/audio: same SSRF guard
+ *  and timeout discipline, quadruple the body cap (a 30 s 1080p H.264 clip
+ *  runs tens of MB; frame sampling truncates long clips server-side). */
+export function videoMediaFetchPolicy(): MediaFetchPolicy {
+  return { ...defaultMediaFetchPolicy(), maxBytes: 256 * 1024 * 1024 };
+}
+
 export async function fetchMediaBytes(
   url: string,
-  kind: "image" | "audio",
-  policy: MediaFetchPolicy = defaultMediaFetchPolicy(),
+  kind: "image" | "audio" | "video",
+  policy: MediaFetchPolicy = kind === "video"
+    ? videoMediaFetchPolicy()
+    : defaultMediaFetchPolicy(),
 ): Promise<Uint8Array> {
   if (url.startsWith("data:")) {
     const comma = url.indexOf(",");
@@ -416,6 +425,12 @@ export async function fetchMediaBytes(
     const meta = url.slice(0, comma);
     const body = url.slice(comma + 1);
     if (!meta.includes("base64")) throw new Error("data: URL must be base64");
+    // The same body cap as the HTTP path — inline payloads must not become
+    // the uncapped route (base64 inflates 4/3, so check pre-decode too).
+    if (body.length * 0.75 > policy.maxBytes)
+      throw new Error(
+        `${kind} data: URL exceeds the ${Math.round(policy.maxBytes / 1024 / 1024)} MB cap`,
+      );
     return Uint8Array.from(Buffer.from(body, "base64"));
   }
   return (

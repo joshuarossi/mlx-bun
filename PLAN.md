@@ -959,24 +959,80 @@ Sub-phases (gate each; B=1 single-stream first; downloads via
       never load two 27B instances in one test process (Metal
       completion-thread crash — split heavy describes per file or share
       a singleton).
-- [~] **14w — video: FRAMES PIPELINE LANDED; file decode pending
-      productization.** The AVFoundation probe is GREEN
-      (lab/spikes/qwen38-video-sidecar/frame-extract.swift — swiftc,
-      AVAssetWriter fixture generation + AVAssetImageGenerator fps=2
-      extraction, zero external deps; the darwin-native codec doctrine,
-      same as afconvert audio). Committed fixtures:
-      tests/fixtures/qwen38-clip.mov (10 KB H.264) + its extracted
-      frames (both stacks consume identical pixels — no codec in the
-      comparison). Pipeline: T-aware smart_resize (video budget counts
-      padded frames), last-frame padding, REAL temporal-pair patchify,
-      tower gridT>1 (pos/rope tiled per frame group, attention split at
-      cu_seqlens = h·w per pair), t>1 get_rope_index. Gates: video
-      preprocessor BIT-EXACT + positions EXACT (model-free), tower +
-      e2e vs the mlx-vlm capture (gated,
-      scripts/experiments/oracle-qwen38-video.py). STILL OWED: ship the
-      sidecar in the native pack (frame-extract → libmlx_bun-style
-      asset) + serve-side video content parts wired through it +
-      `longest_edge` sizing for hour-scale video.
+- [x] **14w — video LANDED end-to-end (2026-08-18).** The AVFoundation
+      sidecar is PRODUCTIZED: src/native/frame_extract.swift builds via
+      scripts/build-frame-extract.sh into the release bundle AND the
+      native pack as `mlx-bun-frame-extract` (build-binary.sh /
+      build-native-pack.sh / release-binary.sh wired; NATIVE_PACK_VERSION
+      bumped to 0.3.0 — **RELEASE BLOCKER: publish the `native-v0.3.0`
+      GitHub release and bake its sha256/size into src/native-pack.ts
+      before tagging the next package release**; dev trees resolve via
+      env → beside-binary → pack → dist-native → compile-on-demand with
+      swiftc, vision/video-frames.ts). Serve surface:
+      `video_url`/`video` content parts (Qwen3.5-family only; 256 MB
+      body cap; refuses audio composition and non-Qwen models with clean
+      400s; AVFoundation needs a real container EXTENSION — the temp
+      file sniffs the ftyp brand for .mov/.mp4). Pipeline (previously
+      landed): T-aware smart_resize, last-frame padding, REAL
+      temporal-pair patchify, tower gridT>1 (pos/rope tiled per frame
+      group, attention split at cu_seqlens = h·w per pair), t>1
+      get_rope_index. Fixed during the serve wiring: (1)
+      hasMediaPart/normalizeMessages didn't know video part types — the
+      content array collapsed to text and the video SILENTLY vanished
+      (model answered "no video provided"); (2) buildQwen3VLVisionPrompt
+      rendered without the request's thinking controls — it now takes
+      templateOptionsFor's full options (media prompts honor
+      enable_thinking/reasoning_effort/preserve_thinking exactly like
+      text). Gates: sidecar decode of the committed clip is PIXEL-EXACT
+      vs the committed frames; decoded-clip preprocessing matches the
+      golden grid; extractVideos contract; serve smoke = image + text
+      isolation + VIDEO request on one server (green). Committed
+      fixtures: tests/fixtures/qwen38-clip.mov + extracted frames.
+      Remaining non-blockers: `longest_edge` sizing for hour-scale video;
+      video × prompt-cache stays bypassed (media contract).
+      **2026-08-18 bug-hunt (3 parallel reviewers + CodeRabbit) — all
+      confirmed findings fixed, each regression-pinned:**
+      (1) THE BIG ONE — the video PROMPT FORMAT diverged from the
+      training-time processor: transformers `replace_video_token` renders
+      each temporal frame group as `<{t:.1f} seconds><|vision_start|>{pads}
+      <|vision_end|>` with PER-GROUP t=1 grids ("timestamps are used to
+      separate videos"); mlx-vlm 0.6.14 lacks this entirely and the first
+      oracle capture hand-built the same naive expansion (self-referential
+      gate). Builder + oracle + goldens redone; behavioral confirmation:
+      the model now describes the fixture as "an animation featuring
+      shifting shapes" (was: "an image"). Timestamps are frame-pair
+      averages formatted with a PYTHON-%.1f port (half-even ties — JS
+      toFixed says 0.3 where the reference says 0.2).
+      (2) smart_resize used Math.round where Python round is HALF-TO-EVEN:
+      an 80px edge resized to 96 instead of the oracle's 64 (silent wrong
+      grid; our fixtures dodged it — 240/32=7.5 rounds to 8 both ways).
+      Anchored against the pinned venv.
+      (3) /v1/responses silently DROPPED all image/video input parts
+      (`coerceText` kept only .text) — Codex/Cursor-style `input_image`
+      now translates to chat parts; unknown parts reject loudly.
+      (4) Anthropic /v1/messages: `tool_result` nested images (the
+      computer-use screenshot shape) were silently flattened away — now
+      preserved as image parts; video blocks, unsupported image sources,
+      and assistant image blocks now reject loudly (the audio doctrine).
+      (5) Invalid `reasoning_effort` strings silently FORCED thinking ON
+      (any defined value ≠ "none") — now a 400 via validateReasoningEffort
+      (covers /v1/messages + /v1/responses through handleChat).
+      (6) Scoping/leak batch: model.mrope now installs INSIDE runGeneration's
+      try (a makeCache throw could leave a dead request's positions live);
+      forwardLayers disposes faMask/h on a mid-loop layer throw;
+      buildQwen3VLVisionPrompt disposes all mlx arrays on a mid-splice
+      throw; tower load frees the safetensors map on error paths;
+      compileFromSource memoizes the PROMISE (concurrent first-use race);
+      the video temp file writes inside the try; frame_extract guards NaN
+      durations (Swift Int(NaN) traps).
+      (7) Decoded-memory bounds (CodeRabbit): the sidecar caps the decoded
+      longest edge at 1024px (the language budget always downscales below
+      that anyway; a 4K×768-frame clip would otherwise materialize
+      ~17.8 GiB) + a 1.5 GiB aggregate decoded budget in extractVideoFrames;
+      `data:`-URL and inline-base64 video bodies now honor the same 256 MB
+      cap as fetched bodies.
+      Deliberately NOT changed: the native-pack sha/size placeholders (the
+      documented release-time bake).
 - [ ] **14y — 1M context (YaRN), opt-in.** `rope_type: "yarn"` branch
       (factor 4.0, original_max_position_embeddings 262144);
       flag-gated, never default (static YaRN penalizes short contexts

@@ -64,6 +64,38 @@ describe.skipIf(!optIn || !haveModel)("qwen3.8 vision serve smoke", async () => 
       expect(res2.status).toBe(200);
       const json2 = await res2.json() as { choices: { message: { content: string } }[] };
       expect(json2.choices[0]!.message.content).toContain("4");
+      // VIDEO request on the same server (PLAN 14w): the fixture clip runs
+      // through the AVFoundation sidecar → frames → tower → mRoPE. Skipped
+      // gracefully only when no extractor resolves on this machine.
+      const { resolveFrameExtract } = await import("../src/vision/video-frames");
+      if (await resolveFrameExtract()) {
+        const mov = await Bun.file(`${FIX}/qwen38-clip.mov`).arrayBuffer();
+        const vb64 = Buffer.from(mov).toString("base64");
+        const res3 = await fetch(`http://localhost:${server.port}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "qwen38",
+            max_tokens: 48,
+            temperature: 0,
+            chat_template_kwargs: { enable_thinking: false },
+            messages: [{
+              role: "user",
+              content: [
+                { type: "video_url", video_url: { url: `data:video/quicktime;base64,${vb64}` } },
+                { type: "text", text: "Describe this video in one short sentence." },
+              ],
+            }],
+          }),
+          // @ts-expect-error Bun extension
+          timeout: false,
+        });
+        expect(res3.status).toBe(200);
+        const json3 = await res3.json() as { choices: { message: { content: string } }[] };
+        // The clip is a moving gradient; any real description mentions
+        // gradient/color words.
+        expect(/gradient|colou?r/i.test(json3.choices[0]!.message.content)).toBe(true);
+      }
     } finally {
       server.stop(true);
     }
