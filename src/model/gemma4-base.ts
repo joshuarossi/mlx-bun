@@ -231,6 +231,18 @@ export interface Cache {
    *  speculative-decode rollback case (trim the last n ≤ γ tips right after a
    *  >1 concat write); rotating caches then physically shrink the buffer tail. */
   trim(n: number, bypass?: boolean): void;
+  /** Speculative verify-round support for NON-trimmable recurrent caches
+   *  (SSMCache — gated-DeltaNet conv + recurrent state). A cache exposing
+   *  these is spec-eligible without isTrimmable(): the serve loop arms a
+   *  round before the verify forward (the layer snapshots pre-round state —
+   *  free, MLX arrays are immutable — and records its position-local kernel
+   *  inputs), then resolves it: commit on full accept, or rollback(keep)
+   *  which restores the snapshot and bit-exactly REPLAYS the first `keep`
+   *  window tokens through the recurrence (identical arithmetic prefix ⇒
+   *  identical state). Trimmable caches leave these unset and keep trim(). */
+  specRoundBegin?(): void;
+  specRoundCommit?(): void;
+  specRoundRollback?(keep: number): void;
   dispose(): void;
 }
 

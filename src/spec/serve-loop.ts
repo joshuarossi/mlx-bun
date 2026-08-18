@@ -433,10 +433,14 @@ export async function specServeRun(
       // KV would be woven into the live window (unrecoverable, upstream
       // RAISES here, generate.py:529-533). Degrade to plain decode while the
       // caches are still clean instead of 500ing a stream.
+      // Non-trimmable recurrent caches (SSMCache — gated-DeltaNet state) are
+      // spec-eligible through the round snapshot/replay contract instead:
+      // specRoundBegin before the verify forward, then commit or a bit-exact
+      // rollback(keep) after the accept walk.
       const roundFits = caches.every((c) =>
         "maxSize" in c && typeof (c as { maxSize?: number }).maxSize === "number"
           ? c.offset + n + 1 < (c as { maxSize: number }).maxSize
-          : c.isTrimmable(),
+          : c.isTrimmable() || typeof c.specRoundBegin === "function",
       );
       if (!roundFits) {
         console.warn(
@@ -476,6 +480,9 @@ export async function specServeRun(
       // (b) ONE target forward over [pending, ...drafts] (optionally tapped for
       // DSpark's H_ctx). vHidden is retained past the accept walk: its slice at
       // the emitted position is the next round's anchor hidden.
+      // Arm recurrent caches' spec round around the verify forward (no-op for
+      // trimmable caches, which roll back via trim() below).
+      for (const c of caches) c.specRoundBegin?.();
       const vIds = ops.fromInt32([pending, ...drafts], [1, d + 1]);
       const pinTarget = src.pinTargetKernelFamily === true &&
         "setSpecKernelPinned" in model;
@@ -565,7 +572,18 @@ export async function specServeRun(
       // position (the assistant borrows it; generate.ts:230 pattern — the slice
       // outlives its parent's dispose).
       if (!stop) {
-        if (kAccept < d) for (const c of caches) c.trim(d - kAccept);
+        // The verify window kept positions 0..kAccept (pending + accepted
+        // drafts). Trimmable caches drop the rejected tail; recurrent caches
+        // restore their pre-round snapshot and bit-exactly replay those
+        // kAccept+1 kept tokens. On full accept the round just commits.
+        if (kAccept < d) {
+          for (const c of caches) {
+            if (c.specRoundRollback) c.specRoundRollback(kAccept + 1);
+            else c.trim(d - kAccept);
+          }
+        } else {
+          for (const c of caches) c.specRoundCommit?.();
+        }
         await src.commit(
           d,
           kAccept,

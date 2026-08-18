@@ -23,6 +23,18 @@ Qwen native MTP is explicitly not part of this release: review proved its
 recurrent target state cannot yet satisfy the shared verifier's rollback
 contract, so companion artifacts fail early with the precise reason.
 
+## Post-release on main (2026-08-18, unreleased)
+
+Two serving changes landed after the v0.0.13 tag: (1) **memory admission now
+clamps instead of rejecting** — a fitting prompt with a broad client
+`max_tokens` is capped to the room remaining under the safe context on every
+model (v0.0.13 scoped this to GLM's fixed context; the generic path still
+400'd a prompt with 8k of generation room over a 17-token overshoot —
+regression-pinned in tests/server-admission.test.ts). Only a prompt that
+leaves no generation slot rejects. (2) **Qwen native MTP is unblocked** —
+see the 14g entry below. A running `serve` needs a restart to pick these up
+(the CLI symlink serves the repo working tree).
+
 ## Completed: pre-Colibri stabilization (2026-07-29)
 
 Phase 22 is closed. The 25-item intake is tracked in
@@ -1512,15 +1524,21 @@ rename. **Josh-gated GPU:** data scale + **12B retarget** + train + live-τ
    live-serve smoke on the M4 Pro: thinking + instruct/eos PASS, the
    reasoning_effort + tool round-trips hit 30-min swap-starvation
    timeouts (logic verified model-free; re-run on the M1 Max).
-   **14g MTP is review-blocked and does not ship in v0.0.13.** The target's
-   48 recurrent DeltaNet caches cannot trim rejected verification rows, so
-   the shared loop disabled the proposed provider before its first draft;
-   forcing it would corrupt subsequent target state. The unfinished provider,
-   hidden tap, CLI surface, and misleading losslessness gate were removed.
-   MTP artifacts now fail before target load with the exact rollback reason.
-   Re-open 14g with recurrent-state snapshot/restore (or a non-overshooting
-   verify schedule) plus direct MTP-logit parity before the normal losslessness
-   and TPS gates. Separately, qwen3_5-27B serial-lane decode dies with a
+   **14g MTP: the rollback blocker is SOLVED post-release (2026-08-18, M1
+   Max).** The serve loop now speculates on gated-DeltaNet targets via the
+   spec-round contract (SSMCache snapshot/replay — free snapshot from MLX
+   array immutability; partial rejects bit-exactly replay the kept prefix
+   from recorded position-local inputs). Provider/tap/CLI (`--draft-kind
+   mtp`) restored. Gates green: kernel prefix property + round lifecycle
+   (tests/qwen-ssm-specround.test.ts, model-free) and REAL-WEIGHTS serve-loop
+   losslessness with real rollbacks on Qwen3.5-0.8B
+   (tests/qwen35-spec-ngram.test.ts — also newly enables ngram/two-model
+   spec for the whole qwen3_5 family). Still owed before an MTP perf claim:
+   download `mlx-community/Qwen3.8-27B-MTP-bf16`, run
+   `MLX_BUN_TEST_QWEN38_MTP=1 bun test tests/qwen38-mtp.test.ts` (27B
+   pairing losslessness + paired TPS) plus direct MTP-logit parity vs
+   mlx-vlm on a quiet box — details in PLAN 14g.
+   Separately, qwen3_5-27B serial-lane decode dies with a
    GPU command-buffer failure surfacing as an uncatchable Metal-
    completion-thread C++ throw (full finding + .ips backtrace in PLAN
    14g; leading theory = command buffers failing under the 20.35 GB +
