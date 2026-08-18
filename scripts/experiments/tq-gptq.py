@@ -28,6 +28,54 @@ def is_language_linear(key, module):
     return isinstance(module, nn.Linear) and "vision_tower" not in key
 
 
+def compute_inverse_hessian(H):
+    # verbatim from mlx_lm.quant.gptq (upper-Cholesky of the damped inverse)
+    with mx.stream(mx.cpu):
+        damp = 1e-2 * mx.mean(mx.diag(H))
+        diag = mx.arange(H.shape[0])
+        H[diag, diag] += damp
+        H = mx.linalg.cholesky(H)
+        H = mx.linalg.cholesky_inv(H)
+        Hinv = mx.linalg.cholesky(H, upper=True)
+        return Hinv
+
+
+def gptq_one(W_in, Hinv, bits, group_size):
+    """Corrected GPTQ for one [out, in] weight: returns (scales, biases,
+    packed) with the compensated rounding baked in. Paper-form update
+    window [k, j) — see the fork header for the two upstream defects."""
+    n_bins = 2**bits - 1
+
+    @mx.compile
+    def gptq_error(w, d, scales, biases):
+        q = mx.clip(mx.round((w - biases) / scales), 0.0, n_bins)
+        q = scales * q + biases
+        return (w - q) / d
+
+    W = W_in.astype(mx.float32)
+    all_scales = []
+    all_biases = []
+    for i in range(0, W.shape[-1], group_size):
+        j = i + group_size
+        Wl = W[..., i:j]
+        err = mx.zeros_like(Wl)
+        _, scales, biases = mx.quantize(Wl, bits=bits, group_size=group_size)
+        all_scales.append(scales)
+        all_biases.append(biases)
+        for k in range(group_size):
+            k += i
+            w = W[..., k : k + 1]
+            d = Hinv[k, k]
+            e = gptq_error(w, d, scales, biases)
+            W[..., k : j] -= e @ Hinv[k : k + 1, k : j]
+            err[..., k - i : k - i + 1] = e
+            mx.eval(err, W)
+        W[..., j:] -= err @ Hinv[i:j, j:]
+    scales = mx.concatenate(all_scales, axis=-1)
+    biases = mx.concatenate(all_biases, axis=-1)
+    return scales, biases, quantize(W, bits, scales, biases)
+
+
 def gptq_quantize_lm(model, data, bits, group_size, fallback_bits, fallback_group_size, batch_size=8):
     # === verbatim from mlx_lm.quant.gptq.gptq_quantize except the key filter ===
     layers = []
