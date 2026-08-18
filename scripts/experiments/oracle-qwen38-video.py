@@ -46,7 +46,13 @@ mx.eval(hidden)
 hidden_f32 = np.asarray(hidden.astype(mx.float32))
 print("hidden", hidden_f32.shape)
 
-# Prompt: template with one video part, video_pad expanded by merge_length.
+# Prompt: the TRAINING-TIME processor format (transformers
+# replace_video_token): each temporal frame group renders as
+#   <{t:.1f} seconds><|vision_start|>{pads}<|vision_end|>
+# inside the template's outer wrappers, with PER-GROUP t=1 grids for
+# get_rope_index (the reference splits video_grid_thw per frame —
+# "timestamps are used to separate videos"; mlx-vlm 0.6.14 lacks this
+# and is NOT the oracle for the video prompt format).
 tok = processor.tokenizer if hasattr(processor, "tokenizer") else processor
 prompt_str = tok.apply_chat_template(
     [{"role": "user", "content": [
@@ -57,27 +63,57 @@ prompt_str = tok.apply_chat_template(
 )
 raw_ids = tok.encode(prompt_str)
 VIDEO_TOKEN = 248057
-n_video_tokens = grid_t * (grid_h // 2) * (grid_w // 2)
+VISION_START, VISION_END = 248053, 248054
+SAMPLE_FPS = 2.0
+frame_seqlen = (grid_h // 2) * (grid_w // 2)
+times = [k / SAMPLE_FPS for k in range(T)]
+while len(times) % 2:
+    times.append(times[-1])
+group_ts = [(times[i] + times[i + 1]) / 2 for i in range(0, len(times), 2)]
 ids = []
 for t in raw_ids:
     if t == VIDEO_TOKEN:
-        ids.extend([VIDEO_TOKEN] * n_video_tokens)
+        for g in range(grid_t):
+            ids.extend(tok.encode(f"<{group_ts[g]:.1f} seconds>"))
+            ids.append(VISION_START)
+            ids.extend([VIDEO_TOKEN] * frame_seqlen)
+            ids.append(VISION_END)
     else:
         ids.append(t)
 
+video_grids = [[1, grid_h, grid_w]] * grid_t
 pos_ids, deltas = model.language_model.get_rope_index(
-    mx.array(ids)[None], None, mx.array([[grid_t, grid_h, grid_w]]), None
+    mx.array(ids)[None], None, mx.array(video_grids), None
 )
 mx.eval(pos_ids, deltas)
 delta = int(np.asarray(deltas).reshape(-1)[0])
 
 # Manual greedy: spliced embeds prefill + L=1 decode with delta positions.
 emb = model.language_model.model.embed_tokens(mx.array(ids)[None])
-idx = np.nonzero(np.asarray(mx.array(ids) == VIDEO_TOKEN))[0]
-start, count = int(idx[0]), len(idx)
-emb = mx.concatenate(
-    [emb[:, :start], hidden[None].astype(emb.dtype), emb[:, start + count:]], axis=1
-)
+# Splice per pad RUN (per-frame-group format): consecutive runs consume
+# consecutive hidden-row windows.
+segs = []
+cursor = 0
+row = 0
+i = 0
+L0 = len(ids)
+hid = hidden[None].astype(emb.dtype)
+while i < L0:
+    if ids[i] == VIDEO_TOKEN:
+        j = i
+        while j < L0 and ids[j] == VIDEO_TOKEN:
+            j += 1
+        if cursor < i:
+            segs.append(emb[:, cursor:i])
+        segs.append(hid[:, row:row + (j - i)])
+        row += j - i
+        cursor = j
+        i = j
+    else:
+        i += 1
+if cursor < L0:
+    segs.append(emb[:, cursor:])
+emb = mx.concatenate(segs, axis=1)
 cache = model.language_model.make_cache()
 out = model.language_model(
     mx.array(ids)[None], inputs_embeds=emb, position_ids=pos_ids, cache=cache

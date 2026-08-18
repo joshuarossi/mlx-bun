@@ -608,7 +608,7 @@ export class Qwen35Model {
       );
       setActiveMrope(mropeFwd);
     }
-    let h = h0;
+    let h: MlxArray | null = h0;
     try {
       for (let i = 0; i < this.layers.length; i++) {
         const next = this.layers[i]!.forward(h, faMask, cache[i]!);
@@ -616,14 +616,19 @@ export class Qwen35Model {
         h = next;
         this.captureLayer(i, h); // native-MTP pre-final-norm tap (no-op unless set)
       }
+      const out = disposing(h, this.finalNorm.forward(h));
+      h = null; // consumed — the finally must not double-free
+      return out;
     } finally {
       if (mropeFwd) {
         setActiveMrope(null);
         mropeFwd.posIds.dispose();
       }
+      // A mid-loop layer throw must not strand the mask array or the
+      // in-flight [1,L,H] residual (2026-08-18 review).
+      faMask.arr?.dispose();
+      h?.dispose();
     }
-    faMask.arr?.dispose();
-    return disposing(h, this.finalNorm.forward(h));
   }
 
   logitsFromHidden(h: MlxArray): MlxArray {

@@ -25,27 +25,31 @@ export const VIDEO_MAX_FRAMES = 768; // Qwen3VLVideoProcessor max_frames
 
 const BIN = "mlx-bun-frame-extract";
 
-let devCompiled: string | null | undefined;
+/** Memoize the PROMISE, not the result: a second video request arriving
+ *  while the first compile is in flight must await the same compile, not
+ *  observe a half-set cache and spuriously report the sidecar missing. */
+let devCompile: Promise<string | null> | null = null;
 
 /** Compile the sidecar from the repo tree (dev/from-source convenience —
- *  needs swiftc from the Xcode CLT). Result is cached across calls; null
- *  when the source or toolchain is unavailable. */
-async function compileFromSource(): Promise<string | null> {
-  if (devCompiled !== undefined) return devCompiled;
-  devCompiled = null;
-  const src = join(import.meta.dir, "..", "native", "frame_extract.swift");
-  if (!existsSync(src)) return null;
-  const out = join(import.meta.dir, "..", "..", "dist-native", BIN);
-  try {
-    mkdirSync(dirname(out), { recursive: true });
-    const proc = Bun.spawn(["swiftc", "-O", src, "-o", out], {
-      stdout: "ignore", stderr: "pipe",
-    });
-    if ((await proc.exited) === 0 && existsSync(out)) devCompiled = out;
-  } catch {
-    // no swiftc — resolver returns null and serving 400s with the reason
-  }
-  return devCompiled;
+ *  needs swiftc from the Xcode CLT). Null when the source or toolchain is
+ *  unavailable. */
+function compileFromSource(): Promise<string | null> {
+  devCompile ??= (async () => {
+    const src = join(import.meta.dir, "..", "native", "frame_extract.swift");
+    if (!existsSync(src)) return null;
+    const out = join(import.meta.dir, "..", "..", "dist-native", BIN);
+    try {
+      mkdirSync(dirname(out), { recursive: true });
+      const proc = Bun.spawn(["swiftc", "-O", src, "-o", out], {
+        stdout: "ignore", stderr: "pipe",
+      });
+      if ((await proc.exited) === 0 && existsSync(out)) return out;
+    } catch {
+      // no swiftc — resolver returns null and serving 400s with the reason
+    }
+    return null;
+  })();
+  return devCompile;
 }
 
 /** Locate (or dev-compile) the extractor; null ⟹ video input unavailable
@@ -87,8 +91,10 @@ export async function extractVideoFrames(
   const ext = brand.startsWith("qt") ? "mov" : "mp4";
   const inPath = `${base}.${ext}`;
   const outDir = `${base}.frames`;
-  await Bun.write(inPath, bytes);
   try {
+    // Inside the try so a part-way write failure (ENOSPC on a large clip)
+    // still hits the finally's cleanup instead of stranding the temp file.
+    await Bun.write(inPath, bytes);
     const proc = Bun.spawn(
       [
         bin, inPath, outDir,
@@ -113,6 +119,18 @@ export async function extractVideoFrames(
     const head = (await new Response(proc.stdout).text()).trim();
     const n = Number(/^N (\d+)/.exec(head)?.[1] ?? 0);
     if (!n) throw new Error(`video decode produced no frames (${head})`);
+    // Aggregate decoded-RGB budget (belt over the sidecar's 1024px
+    // longest-edge cap): a valid low-bitrate clip must not balloon into
+    // gigabytes of frame buffers before preprocessing.
+    const w = Number(/W (\d+)/.exec(head)?.[1] ?? 0);
+    const hh = Number(/H (\d+)/.exec(head)?.[1] ?? 0);
+    const DECODED_BUDGET = 1536 * 1024 * 1024; // 1.5 GiB
+    if (n * w * hh * 3 > DECODED_BUDGET)
+      throw new Error(
+        `video decodes to ${(n * w * hh * 3 / 1024 / 1024).toFixed(0)} MB of ` +
+        `frames (${n} × ${w}x${hh}) — over the ${DECODED_BUDGET / 1024 / 1024} MB ` +
+        `budget; send a shorter or smaller clip`,
+      );
     const frames: RGBImage[] = [];
     for (let i = 0; i < n; i++) {
       const f = join(outDir, `frame-${String(i).padStart(4, "0")}.png`);

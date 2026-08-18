@@ -341,3 +341,43 @@ describe("translateOpenAiSse", () => {
     expect(reasons).toEqual(["client disconnected"]);
   });
 });
+
+describe("Anthropic media blocks (2026-08-18 review fixes)", () => {
+  test("video blocks reject loudly (never silently dropped)", () => {
+    expect(() => anthropicToChatBody({
+      messages: [{ role: "user", content: [
+        { type: "video_url", video_url: { url: "data:video/mp4;base64,AAAA" } },
+      ] }],
+    } as never)).toThrow(/not part of the Anthropic Messages protocol/);
+  });
+
+  test("tool_result nested images are PRESERVED as image parts", () => {
+    const body = anthropicToChatBody({
+      messages: [{ role: "user", content: [
+        { type: "tool_result", tool_use_id: "toolu_1", content: [
+          { type: "text", text: "screenshot taken" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+        ] },
+      ] }],
+    } as never) as { messages: { role: string; content: unknown }[] };
+    const tool = body.messages.find((m) => m.role === "tool")!;
+    const parts = tool.content as { type: string }[];
+    expect(parts.map((p) => p.type)).toEqual(["text", "image_url"]);
+  });
+
+  test("unsupported image sources reject loudly", () => {
+    expect(() => anthropicToChatBody({
+      messages: [{ role: "user", content: [
+        { type: "image", source: { type: "file", file_id: "f_1" } },
+      ] }],
+    } as never)).toThrow(/unsupported image source/);
+  });
+
+  test("assistant image blocks reject loudly", () => {
+    expect(() => anthropicToChatBody({
+      messages: [{ role: "assistant", content: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+      ] }],
+    } as never)).toThrow(/not supported in assistant messages/);
+  });
+});

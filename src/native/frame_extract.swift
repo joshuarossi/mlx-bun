@@ -93,13 +93,25 @@ Task {
 }
 sem.wait()
 if let e = loadError { die("asset load failed: \(e.localizedDescription)") }
+// Fragmented/malformed containers can load with an indefinite duration —
+// CMTimeGetSeconds yields NaN and Int(NaN) is a Swift runtime TRAP. Fall
+// back to the frame cap; the extraction loop below already stops at the
+// first undecodable timestamp.
 let seconds = CMTimeGetSeconds(duration)
-let count = max(1, min(Int((seconds * fps).rounded(.up)), maxFrames))
+let count = seconds.isFinite
+    ? max(1, min(Int((seconds * fps).rounded(.up)), maxFrames))
+    : maxFrames
 
 let gen = AVAssetImageGenerator(asset: asset)
 gen.appliesPreferredTrackTransform = true
 gen.requestedTimeToleranceBefore = .zero
 gen.requestedTimeToleranceAfter = .zero
+// Bound DECODED memory at the source: the language pipeline's video pixel
+// budget always downscales frames far below 1024px anyway (max_pixels
+// 32·32·768 across t·h·w), so capping the longest edge here loses nothing
+// it would have kept while keeping a 4K clip from materializing ~24 MB per
+// frame (768 frames ≈ 17.8 GiB) before preprocessing.
+gen.maximumSize = CGSize(width: 1024, height: 1024)
 
 try? FileManager.default.createDirectory(
     atPath: outDir, withIntermediateDirectories: true)

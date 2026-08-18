@@ -6,6 +6,7 @@ import {
   admitRequestContext,
   detectDraftKind,
   loadContext,
+  validateReasoningEffort,
 } from "../src/server";
 
 describe("request context admission", () => {
@@ -74,5 +75,19 @@ describe("Qwen MTP admission", () => {
     } finally {
       rmSync(root, { recursive: true });
     }
+  });
+});
+
+describe("reasoning_effort validation (2026-08-18 review fix)", () => {
+  test("valid levels and unset pass", () => {
+    for (const v of ["none", "minimal", "low", "medium", "high", "xhigh", undefined, null])
+      expect(validateReasoningEffort({ reasoning_effort: v })).toBeNull();
+  });
+
+  test("invalid strings are rejected (previously they silently forced thinking ON)", () => {
+    for (const v of ["ultra", "hihg", "", "Medium", 3])
+      expect(validateReasoningEffort({ reasoning_effort: v })).toMatch(
+        /reasoning_effort must be one of/,
+      );
   });
 });

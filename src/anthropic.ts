@@ -128,7 +128,15 @@ export function anthropicToChatBody(body: AnthropicRequest): Record<string, unkn
           break; // prior-turn thinking is not re-fed (Anthropic semantics)
         case "image": {
           const part = imagePartFromBlock(block);
-          if (part) imageParts.push(part);
+          if (!part)
+            // e.g. a Files-API {type:"file"} source we cannot fetch —
+            // reject loudly, never answer about an image the model can't
+            // see (2026-08-18 review; the audio-doctrine below).
+            throw new Error(
+              `unsupported image source "${block.source?.type ?? "missing"}" — ` +
+                `send base64 or url image sources`,
+            );
+          imageParts.push(part);
           break;
         }
         case "tool_use":
@@ -141,15 +149,52 @@ export function anthropicToChatBody(body: AnthropicRequest): Record<string, unkn
             },
           });
           break;
-        case "tool_result":
+        case "tool_result": {
           // Anthropic packs tool results into the next user message;
           // OpenAI (and the gemma template) want role:"tool" messages.
+          // Nested image blocks (screenshot-returning tools — the
+          // computer-use shape) are PRESERVED as image parts: flattening
+          // them away had the model answering about screenshots it never
+          // saw (2026-08-18 review). An unrenderable pairing downstream
+          // fails loudly on the media-count check, never silently.
+          const trImages: Record<string, unknown>[] = [];
+          if (Array.isArray(block.content)) {
+            for (const b of block.content as AnthropicContentBlock[]) {
+              if (b && typeof b === "object" && b.type === "image") {
+                const part = imagePartFromBlock(b);
+                if (!part)
+                  throw new Error(
+                    `unsupported image source "${b.source?.type ?? "missing"}" ` +
+                      `in tool_result — send base64 or url image sources`,
+                  );
+                trImages.push(part);
+              }
+            }
+          }
+          const txt = flattenText(block.content);
           messages.push({
             role: "tool",
             tool_call_id: block.tool_use_id,
-            content: flattenText(block.content),
+            content: trImages.length
+              ? [
+                  ...(txt ? [{ type: "text", text: txt }] : []),
+                  ...trImages,
+                ] as never
+              : txt,
           });
           break;
+        }
+        case "video":
+        case "video_url":
+          // Not an Anthropic Messages block type — reject loudly instead of
+          // silently answering about a video the model never saw (same
+          // doctrine as audio below; the OpenAI surface serves video on
+          // Qwen3.5-family models).
+          throw new Error(
+            `"${block.type}" content blocks are not part of the Anthropic ` +
+              `Messages protocol — send video to the OpenAI endpoint ` +
+              `/v1/chat/completions as a video_url content part`,
+          );
         case "audio":
         case "input_audio":
         case "audio_url":
@@ -168,6 +213,11 @@ export function anthropicToChatBody(body: AnthropicRequest): Record<string, unkn
       }
     }
     if (role === "assistant") {
+      if (imageParts.length)
+        // Assistants don't produce images in the Anthropic protocol; a
+        // client that puts one here would previously have it silently
+        // discarded (2026-08-18 review — loud beats silent).
+        throw new Error("image content blocks are not supported in assistant messages");
       const msg: ChatMessage = { role, content: textParts.join("\n") || null };
       if (toolCalls.length) msg.tool_calls = toolCalls;
       if (msg.content || toolCalls.length) messages.push(msg);

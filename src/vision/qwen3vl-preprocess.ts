@@ -35,6 +35,37 @@ export interface Qwen3VLPreprocessed {
   gridThw: [number, number, number];
   /** Language-side image token count = t * (h/merge) * (w/merge). */
   imageTokens: number;
+  /** Videos only: per-temporal-group timestamps in seconds (frame-pair
+   *  averaged, transformers `_calculate_timestamps`) — the `<X.X seconds>`
+   *  headers the prompt builder renders before each frame group. */
+  groupTimestamps?: number[];
+}
+
+/** Python `f"{x:.1f}"` — correct rounding of the double with HALF-TO-EVEN
+ *  at the decimal digit. JS toFixed rounds exact .x5 ties AWAY from zero
+ *  (0.25 → "0.3"), the reference renders "0.2"; a different timestamp
+ *  string is a different token sequence. */
+export function pyFixed1(x: number): string {
+  const scaled = x * 10;
+  const floor = Math.floor(scaled);
+  const diff = scaled - floor;
+  let n: number;
+  if (diff > 0.5) n = floor + 1;
+  else if (diff < 0.5) n = floor;
+  else n = floor % 2 === 0 ? floor : floor + 1;
+  return (n / 10).toFixed(1);
+}
+
+/** Python's builtin round — HALF-TO-EVEN, unlike JS Math.round (half-up).
+ *  smart_resize divides integer dims by factor 32, which lands on exact .5
+ *  for heights like 80 (2.5): the reference rounds DOWN to the even 2 where
+ *  Math.round gives 3 — a different grid and silently different tokens. */
+export function roundHalfEven(x: number): number {
+  const floor = Math.floor(x);
+  const diff = x - floor;
+  if (diff > 0.5) return floor + 1;
+  if (diff < 0.5) return floor;
+  return floor % 2 === 0 ? floor : floor + 1;
 }
 
 /** HF qwen2_vl smart_resize (image variant): round to multiples of `factor`,
@@ -51,8 +82,8 @@ export function smartResize(
       `absolute aspect ratio must be smaller than 200, got ` +
       `${Math.max(height, width) / Math.min(height, width)}`,
     );
-  let hBar = Math.round(height / factor) * factor;
-  let wBar = Math.round(width / factor) * factor;
+  let hBar = roundHalfEven(height / factor) * factor;
+  let wBar = roundHalfEven(width / factor) * factor;
   if (hBar * wBar > maxPixels) {
     const beta = Math.sqrt((height * width) / maxPixels);
     hBar = Math.max(factor, Math.floor(height / beta / factor) * factor);
@@ -278,8 +309,8 @@ export function smartResizeVideo(
       `absolute aspect ratio must be smaller than 200, got ` +
       `${Math.max(height, width) / Math.min(height, width)}`,
     );
-  let hBar = Math.round(height / factor) * factor;
-  let wBar = Math.round(width / factor) * factor;
+  let hBar = roundHalfEven(height / factor) * factor;
+  let wBar = roundHalfEven(width / factor) * factor;
   const tBar = Math.ceil(numFrames / temporalFactor) * temporalFactor;
   if (tBar * hBar * wBar > maxPixels) {
     const beta = Math.sqrt((numFrames * height * width) / maxPixels);
@@ -299,8 +330,14 @@ export function smartResizeVideo(
  *  reads frame t·2+tp). File decoding is the AVFoundation sidecar's job. */
 export function preprocessQwen3VLVideoFrames(
   frames: RGBImage[],
+  opts: { sampleFps?: number } = {},
 ): Qwen3VLPreprocessed {
   if (frames.length === 0) throw new Error("video needs at least one frame");
+  // Frame timestamps: the sidecar samples at exact times k/fps, so frame k
+  // sits at k/fps seconds; padding repeats the last frame's time (the
+  // reference extends frames_indices with the last index). Group timestamp
+  // = pair average (transformers _calculate_timestamps).
+  const fps = opts.sampleFps ?? 2;
   const { height: H0, width: W0 } = frames[0]!;
   for (const f of frames)
     if (f.height !== H0 || f.width !== W0)
@@ -310,7 +347,14 @@ export function preprocessQwen3VLVideoFrames(
     h === f.height && w === f.width ? f : pilResizeBicubic(f, w, h));
   // Pad to a multiple of the temporal patch size (repeat the last frame).
   const tps = QWEN3VL_TEMPORAL_PATCH_SIZE;
-  while (sized.length % tps !== 0) sized.push(sized[sized.length - 1]!);
+  const frameTimes = frames.map((_, k) => k / fps);
+  while (sized.length % tps !== 0) {
+    sized.push(sized[sized.length - 1]!);
+    frameTimes.push(frameTimes[frameTimes.length - 1]!);
+  }
+  const groupTimestamps: number[] = [];
+  for (let i = 0; i < frameTimes.length; i += tps)
+    groupTimestamps.push((frameTimes[i]! + frameTimes[i + tps - 1]!) / 2);
 
   const ps = QWEN3VL_PATCH_SIZE;
   const ms = QWEN3VL_MERGE_SIZE;
@@ -360,5 +404,6 @@ export function preprocessQwen3VLVideoFrames(
     cols,
     gridThw: [gridT, gridH, gridW],
     imageTokens: gridT * (gridH / ms) * (gridW / ms),
+    groupTimestamps,
   };
 }

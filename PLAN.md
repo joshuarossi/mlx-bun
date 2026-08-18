@@ -990,6 +990,49 @@ Sub-phases (gate each; B=1 single-stream first; downloads via
       fixtures: tests/fixtures/qwen38-clip.mov + extracted frames.
       Remaining non-blockers: `longest_edge` sizing for hour-scale video;
       video × prompt-cache stays bypassed (media contract).
+      **2026-08-18 bug-hunt (3 parallel reviewers + CodeRabbit) — all
+      confirmed findings fixed, each regression-pinned:**
+      (1) THE BIG ONE — the video PROMPT FORMAT diverged from the
+      training-time processor: transformers `replace_video_token` renders
+      each temporal frame group as `<{t:.1f} seconds><|vision_start|>{pads}
+      <|vision_end|>` with PER-GROUP t=1 grids ("timestamps are used to
+      separate videos"); mlx-vlm 0.6.14 lacks this entirely and the first
+      oracle capture hand-built the same naive expansion (self-referential
+      gate). Builder + oracle + goldens redone; behavioral confirmation:
+      the model now describes the fixture as "an animation featuring
+      shifting shapes" (was: "an image"). Timestamps are frame-pair
+      averages formatted with a PYTHON-%.1f port (half-even ties — JS
+      toFixed says 0.3 where the reference says 0.2).
+      (2) smart_resize used Math.round where Python round is HALF-TO-EVEN:
+      an 80px edge resized to 96 instead of the oracle's 64 (silent wrong
+      grid; our fixtures dodged it — 240/32=7.5 rounds to 8 both ways).
+      Anchored against the pinned venv.
+      (3) /v1/responses silently DROPPED all image/video input parts
+      (`coerceText` kept only .text) — Codex/Cursor-style `input_image`
+      now translates to chat parts; unknown parts reject loudly.
+      (4) Anthropic /v1/messages: `tool_result` nested images (the
+      computer-use screenshot shape) were silently flattened away — now
+      preserved as image parts; video blocks, unsupported image sources,
+      and assistant image blocks now reject loudly (the audio doctrine).
+      (5) Invalid `reasoning_effort` strings silently FORCED thinking ON
+      (any defined value ≠ "none") — now a 400 via validateReasoningEffort
+      (covers /v1/messages + /v1/responses through handleChat).
+      (6) Scoping/leak batch: model.mrope now installs INSIDE runGeneration's
+      try (a makeCache throw could leave a dead request's positions live);
+      forwardLayers disposes faMask/h on a mid-loop layer throw;
+      buildQwen3VLVisionPrompt disposes all mlx arrays on a mid-splice
+      throw; tower load frees the safetensors map on error paths;
+      compileFromSource memoizes the PROMISE (concurrent first-use race);
+      the video temp file writes inside the try; frame_extract guards NaN
+      durations (Swift Int(NaN) traps).
+      (7) Decoded-memory bounds (CodeRabbit): the sidecar caps the decoded
+      longest edge at 1024px (the language budget always downscales below
+      that anyway; a 4K×768-frame clip would otherwise materialize
+      ~17.8 GiB) + a 1.5 GiB aggregate decoded budget in extractVideoFrames;
+      `data:`-URL and inline-base64 video bodies now honor the same 256 MB
+      cap as fetched bodies.
+      Deliberately NOT changed: the native-pack sha/size placeholders (the
+      documented release-time bake).
 - [ ] **14y — 1M context (YaRN), opt-in.** `rope_type: "yarn"` branch
       (factor 4.0, original_max_position_embeddings 262144);
       flag-gated, never default (static YaRN penalizes short contexts

@@ -26,7 +26,7 @@ import type { LoadedTokenizer } from "../tokenizer";
 import type { AudioTower } from "../audio/conformer";
 import { audioSoftTokenCount, decodeAudio } from "../audio/decode";
 import { extractMelFeatures } from "../audio/features";
-import { fetchMediaBytes } from "../media-fetch";
+import { fetchMediaBytes, videoMediaFetchPolicy } from "../media-fetch";
 
 /** Common contract for both vision towers (encoder-free gemma4_unified in
  *  ./embedder.ts and the SigLIP encoder in ./siglip.ts): preprocess image
@@ -142,6 +142,13 @@ export async function extractVideos(
         parts.push({ type: "video" });
       } else if (part.type === "video") {
         if (typeof part.data === "string") {
+          // Same cap as fetched/data:-URL video bodies — the inline base64
+          // form must not be the uncapped route.
+          const cap = videoMediaFetchPolicy().maxBytes;
+          if (part.data.length * 0.75 > cap)
+            throw new Error(
+              `video part exceeds the ${Math.round(cap / 1024 / 1024)} MB cap`,
+            );
           videos.push(Uint8Array.from(Buffer.from(part.data, "base64")));
           parts.push({ type: "video" });
         } else {

@@ -1359,6 +1359,26 @@ export function validateLogprobsParams(body: {
   return null;
 }
 
+const REASONING_EFFORT_LEVELS =
+  ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+/** Validate `reasoning_effort` against the accepted level names. An invalid
+ *  string must NOT pass through: resolveEnableThinking treats any defined
+ *  value ≠ "none" as thinking-ON, so a typo like "hihg" silently flipped the
+ *  thinking channel (and its hotter temperature) on thinking-off models and
+ *  burned a full default-depth reasoning budget (2026-08-18 review). Same
+ *  contract style as validateLogprobsParams above. */
+export function validateReasoningEffort(body: {
+  reasoning_effort?: unknown;
+}): string | null {
+  const v = body.reasoning_effort;
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "string" || !(REASONING_EFFORT_LEVELS as readonly string[]).includes(v))
+    return "reasoning_effort must be one of " +
+      "'none', 'minimal', 'low', 'medium', 'high', 'xhigh'";
+  return null;
+}
+
 /** Collects per-token logprob info and shapes mlx_lm.server's response block
  *  (server.py generate_response L1317-1327). NOT OpenAI's shape — entries
  *  carry token *ids* (and raw vocab token strings in the top-k form), and the
@@ -1808,10 +1828,11 @@ export function createServer(
   ) => {
     // Qwen vision: install the request's mRoPE state for every forward of
     // this serial run (prefill AND decode use the 3D interleaved positions +
-    // delta). Scoped HERE — under the serial mutex — so queued text requests
-    // never see it; cleared in the finally below.
-    if (vision?.mrope && ctx.model instanceof Qwen35Model)
-      ctx.model.mrope = vision.mrope;
+    // delta). Scoped inside the try below — under the serial mutex — so
+    // queued text requests never see it and a throw between here and the
+    // try (makeCache under memory pressure, spec-path early return) can't
+    // leave a DEAD request's positions installed for the next generation
+    // (2026-08-18 review).
     // Speculative decoding (serve --draft-model): spec-ELIGIBLE requests
     // decode through the verify loop; the rest fall through to the normal
     // serial path (never wrong results, just no speedup — logged once per
@@ -1886,6 +1907,8 @@ export function createServer(
     const snapshotBoundary =
       !skipPromptCache && boundary >= 256 && boundary > (entry?.tokens.length ?? 0);
     try {
+      if (vision?.mrope && ctx.model instanceof Qwen35Model)
+        ctx.model.mrope = vision.mrope;
       const gen = generate(ctx.model, promptIds, {
         ...options,
         pagedKv, // request-scoped (undefined strips the server-wide flag)
@@ -3185,6 +3208,11 @@ export function createServer(
         const lpParamError = validateLogprobsParams(body);
         if (lpParamError)
           return Response.json({ error: { message: lpParamError } }, { status: 400 });
+        // Covers /v1/messages and /v1/responses too — both funnel through
+        // this handler after translation.
+        const effortError = validateReasoningEffort(body);
+        if (effortError)
+          return Response.json({ error: { message: effortError } }, { status: 400 });
 
         const id = `chatcmpl-${crypto.randomUUID()}`;
         const created = Math.floor(Date.now() / 1000);
@@ -3373,6 +3401,8 @@ export function createServer(
               {
                 imageTokenId: (ctx.model.config.raw.image_token_id as number) ?? 248056,
                 videoTokenId: (ctx.model.config.raw.video_token_id as number) ?? 248057,
+                visionStartId: (ctx.model.config.raw.vision_start_token_id as number) ?? 248053,
+                visionEndId: (ctx.model.config.raw.vision_end_token_id as number) ?? 248054,
               },
               templateOptionsFor(body, tools),
               videos,

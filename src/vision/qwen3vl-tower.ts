@@ -104,9 +104,13 @@ export class Qwen3VLVisionTower {
       ptr(cstr(`${modelDir}/optiq/optiq_vision.safetensors`)), cpuStream,
     );
     C.mlx_map_string_to_string_free(read.u64(metaMapPtr, 0));
-    if (status !== 0)
-      throw new Error(`failed to load qwen vision sidecar from ${modelDir}`);
     const handle = read.u64(arrMapPtr, 0);
+    if (status !== 0) {
+      // The out-param map was allocated regardless — free it on the error
+      // path too (2026-08-18 review; one-shot leak, but a leak).
+      C.mlx_map_string_to_array_free(handle);
+      throw new Error(`failed to load qwen vision sidecar from ${modelDir}`);
+    }
     const weights = new Map<string, MlxArray>();
     // Pull every tensor we model by constructed name (333 total).
     const names: string[] = [
@@ -124,14 +128,20 @@ export class Qwen3VLVisionTower {
         "mlp.linear_fc2.weight", "mlp.linear_fc2.bias",
       ]) names.push(`vision_tower.blocks.${i}.${nm}`);
     }
-    for (const name of names) {
-      const slot = new BigUint64Array([C.mlx_array_new()]);
-      const slotPtr = ptr(slot);
-      if (C.mlx_map_string_to_array_get(slotPtr, handle, ptr(cstr(name))) !== 0)
-        throw new Error(`qwen vision sidecar missing tensor ${name}`);
-      weights.set(name, new MlxArray(read.u64(slotPtr, 0)));
+    try {
+      for (const name of names) {
+        const slot = new BigUint64Array([C.mlx_array_new()]);
+        const slotPtr = ptr(slot);
+        if (C.mlx_map_string_to_array_get(slotPtr, handle, ptr(cstr(name))) !== 0)
+          throw new Error(`qwen vision sidecar missing tensor ${name}`);
+        weights.set(name, new MlxArray(read.u64(slotPtr, 0)));
+      }
+    } catch (e) {
+      for (const [, a] of weights) a.dispose();
+      throw e;
+    } finally {
+      C.mlx_map_string_to_array_free(handle);
     }
-    C.mlx_map_string_to_array_free(handle);
     return new Qwen3VLVisionTower(weights);
   }
 

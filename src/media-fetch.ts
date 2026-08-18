@@ -425,6 +425,12 @@ export async function fetchMediaBytes(
     const meta = url.slice(0, comma);
     const body = url.slice(comma + 1);
     if (!meta.includes("base64")) throw new Error("data: URL must be base64");
+    // The same body cap as the HTTP path — inline payloads must not become
+    // the uncapped route (base64 inflates 4/3, so check pre-decode too).
+    if (body.length * 0.75 > policy.maxBytes)
+      throw new Error(
+        `${kind} data: URL exceeds the ${Math.round(policy.maxBytes / 1024 / 1024)} MB cap`,
+      );
     return Uint8Array.from(Buffer.from(body, "base64"));
   }
   return (

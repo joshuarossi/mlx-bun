@@ -320,3 +320,49 @@ describe("ResponseStore", () => {
     expect(s.totalBytes).toBeLessThan(bytesBeforeExpiry);
   });
 });
+
+describe("Responses media content parts (2026-08-18 review fixes)", () => {
+  test("input_image translates to a chat image_url part (string field)", () => {
+    const body = responsesToChatBody({
+      input: [{ role: "user", content: [
+        { type: "input_text", text: "what is this?" },
+        { type: "input_image", image_url: "data:image/png;base64,AAAA" },
+      ] }],
+    } as never) as { messages: { content: unknown }[] };
+    const content = body.messages[0]!.content as { type: string }[];
+    expect(content.map((p) => p.type)).toEqual(["text", "image_url"]);
+  });
+
+  test("input_image with object image_url also translates", () => {
+    const body = responsesToChatBody({
+      input: [{ role: "user", content: [
+        { type: "input_image", image_url: { url: "https://example.com/x.png" } },
+      ] }],
+    } as never) as { messages: { content: { type: string }[] }[] };
+    expect(body.messages[0]!.content[0]!.type).toBe("image_url");
+  });
+
+  test("input_video translates to a video_url part", () => {
+    const body = responsesToChatBody({
+      input: [{ role: "user", content: [
+        { type: "input_video", video_url: "data:video/mp4;base64,AAAA" },
+      ] }],
+    } as never) as { messages: { content: { type: string }[] }[] };
+    expect(body.messages[0]!.content[0]!.type).toBe("video_url");
+  });
+
+  test("text-only arrays keep the legacy flattened-string shape", () => {
+    const body = responsesToChatBody({
+      input: [{ role: "user", content: [
+        { type: "input_text", text: "a" }, { type: "input_text", text: "b" },
+      ] }],
+    } as never) as { messages: { content: unknown }[] };
+    expect(body.messages[0]!.content).toBe("ab");
+  });
+
+  test("unknown non-text parts REJECT instead of silently dropping", () => {
+    expect(() => responsesToChatBody({
+      input: [{ role: "user", content: [{ type: "input_file", file_id: "f_1" }] }],
+    } as never)).toThrow(/unsupported Responses content part/);
+  });
+});

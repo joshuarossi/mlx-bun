@@ -67,7 +67,9 @@ Request body (OpenAI chat schema; unknown fields ignored):
                                  // wins. On templates with a reasoning-depth
                                  // variable (Qwen3.8) the level also maps
                                  // into the template: minimal/low → low,
-                                 // medium → medium, high/xhigh → xhigh
+                                 // medium → medium, high/xhigh → xhigh.
+                                 // Any OTHER string is a 400 — a typo used
+                                 // to silently force thinking ON
                                  // (Qwen3.8's default depth is xhigh).
   "hlg": {                       // HLG tone-curve sampling (per request).
     "enabled": true,             // merged over --hlg-sampling server defaults.
