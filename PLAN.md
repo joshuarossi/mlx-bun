@@ -860,23 +860,35 @@ Sub-phases (gate each; B=1 single-stream first; downloads via
       SSM state is constant (~150 MB) regardless of context. Uniform
       affine kv8/kv4 stays as the simple mlx-lm-comparable option.
       All default OFF; KL + quality gated vs our own bf16-KV baseline.
-- [ ] **14g — MTP speculation (review-blocked 2026-08-17).** The first
-      implementation ported the companion head and pre-final-norm tap, but its
-      proposed losslessness gate could not establish drafter correctness: a
-      target verifier stays token-exact even when every proposal is wrong.
-      More decisively, the shared speculative loop checks target-cache rollback
-      before each round, and Qwen's 48 `SSMCache` instances deliberately return
-      `isTrimmable() === false`. The implementation therefore disabled
-      speculation before round one; forcing it would advance recurrent
-      DeltaNet state through rejected verify rows and corrupt the next target
-      step. The unfinished provider/tap/test were removed from the release.
-      `qwen3_5_mtp` artifacts are still detected so startup can refuse them
-      with this exact reason before opening the 20 GB target. Re-open only with
-      one of two correctness designs: (a) bounded recurrent-state
-      snapshot/restore around each verify window, or (b) a verification
-      schedule that never advances target recurrent state beyond the accepted
-      prefix. Then add direct MTP-logit/acceptance parity against mlx-vlm,
-      followed by the shared-loop losslessness and cleared-machine TPS A/B.
+- [x] **14g — MTP speculation: DeltaNet rollback SOLVED (2026-08-18); real-
+      artifact pairing gates remain.** The 2026-08-17 review block (48
+      `SSMCache` instances return `isTrimmable() === false`, so the shared
+      loop disabled speculation before round one) is resolved by design (a),
+      recurrent-state snapshot/restore, implemented as the **spec-round
+      contract**: optional `Cache.specRoundBegin/Commit/Rollback` (gemma4-base),
+      `SSMCache.specRound` (qwen3-delta.ts), and the serve loop arming every
+      verify forward. Snapshot is FREE (MLX arrays are immutable — the layer
+      hands its replaced conv/recurrent refs to the round instead of
+      disposing) and partial-reject rollback restores the snapshot then
+      REPLAYS the kept `kAccept+1` window tokens through conv1d + the delta
+      kernel from recorded position-local inputs (`qkv`/`a`/`b`, retained not
+      copied — a few hundred KB per round). Replay is bit-exact by
+      construction: the kernel's per-thread loop is serial, so the prefix
+      arithmetic is identical whether or not the rejected tail was processed.
+      Gates GREEN on the M1 Max (2026-08-18): (1) kernel prefix property —
+      full window vs prefix+chained tail bit-exact in y and state at the real
+      head geometry, every split point (tests/qwen-ssm-specround.test.ts);
+      (2) round lifecycle/guard rails (same file); (3) REAL-WEIGHTS serve-loop
+      losslessness on the 0.8B hybrid — ngram spec token-identical to non-spec
+      greedy at γ=3/γ=10, with the echo prompt proving real accepts AND real
+      rollbacks (tests/qwen35-spec-ngram.test.ts; also newly enables ngram/
+      two-model spec on ALL qwen3_5-family targets). The provider
+      (src/spec/qwen-mtp-source.ts), pre-final-norm tap, `--draft-kind mtp`,
+      and the gated pairing test (tests/qwen38-mtp.test.ts) are restored.
+      STILL OWED (needs the `Qwen3.8-27B-MTP-bf16` artifact — not on this
+      box — and a quiet machine): direct MTP-logit/acceptance parity vs
+      mlx-vlm, `MLX_BUN_TEST_QWEN38_MTP=1` losslessness on the 27B pairing,
+      and the cleared-machine TPS A/B.
       The separate M4 Pro Metal-completion-thread crash under the 20.35 GB
       target plus swap pressure remains a 24 GB artifact-fit finding, not an
       MTP correctness gate; use the uniform 4-bit artifact there until 14z.

@@ -234,7 +234,7 @@ the Qwen 3.x family, and the direct-container GLM-5.2 path:
 | [`mlx-community/gemma-4-e4b-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-e4b-it-OptiQ-4bit) | 7.0 GB | 16 GB | ✓ | **Recommended starter** (16 GB+); ~56 tok/s |
 | [`mlx-community/gemma-4-12B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-12B-it-OptiQ-4bit) | 8.4 GB | 16 GB | ✓ | Vision + tool calling, both verified end-to-end |
 | [`mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit) | 18 GB | 24 GB | — | MoE (top-8 of 128 experts); ~54 tok/s |
-| [`mlx-community/Qwen3.8-27B-OptiQ-4bit`](https://huggingface.co/mlx-community/Qwen3.8-27B-OptiQ-4bit) | 20.4 GB | 32 GB (24 GB with `--memory-budget`) | text-only for now | Current-gen Qwen; bf16-KV bit-exact parity (vs mlx-lm); thinking with `reasoning_effort` (xhigh/medium/low) + `preserve_thinking` + tool calling; MTP speculation, vision + video in bring-up |
+| [`mlx-community/Qwen3.8-27B-OptiQ-4bit`](https://huggingface.co/mlx-community/Qwen3.8-27B-OptiQ-4bit) | 20.4 GB | 32 GB (24 GB with `--memory-budget`) | text-only for now | Current-gen Qwen; bf16-KV bit-exact parity (vs mlx-lm); thinking with `reasoning_effort` (xhigh/medium/low) + `preserve_thinking` + tool calling; native MTP head mounts as a `--draft-model` (lossless-by-verify, recurrent-cache rollback built in); vision + video in bring-up |
 | [`mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp`](https://huggingface.co/mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp) | ~384 GB / 357 GiB | 32 GB + fast disk | — | Direct streamed Colibri container; true top-8, native MTP, bounded 25 GiB process plan; warm single-stream performance is disk-bound and below the aspirational 2 tok/s target |
 
 Not sure what fits your machine? `bun src/cli.ts fit <model> --ctx 8192`
@@ -416,12 +416,11 @@ agent CLIs like pi/OpenClaw via their provider config.
   targets, not small fast models. Serial lane only — with `--batch N` a
   mounted draft routes every request serial, like mlx_lm.server.
 - **Memory admission control** — `--memory-budget <GB>` refuses to load
-  a model that can't serve within the budget. Generic budgeted serving rejects
-  requests whose `prompt + max_tokens` exceed the safe context with a 400
-  (`type: "memory_admission"`) *before* generating. GLM-5.2 has a fixed,
-  pre-planned context instead: broad client `max_tokens` values are capped to
-  the remaining context, and only a prompt that leaves no generation slot is
-  rejected. The GPU
+  a model that can't serve within the budget. For requests, `max_tokens`
+  is a ceiling, not a promise: a broad client value is capped to the room
+  remaining under the safe context, and only a prompt that leaves no
+  generation slot at all is rejected with a 400
+  (`type: "memory_admission"`) *before* generating. The GPU
   out-of-memory crash it prevents is uncatchable by design — rejection
   up front is the only defense. Ceiling visible at `GET /stats`.
 - **Anthropic Messages API** (`POST /v1/messages`, on by default) —
@@ -591,10 +590,11 @@ head-to-head benchmark harness; the decode-gap root-cause fix
 notarized — Homebrew, direct-download, and npm/bunx).
 
 **In progress** — `Qwen3.8-27B` full support (Phase 14 retarget): text
-parity is bit-exact and thinking controls (`reasoning_effort` depths,
-`preserve_thinking`) + tool calling are wired; native MTP speculation
-(the Qwen-trained head as a `--draft-model`), vision, and video input
-are in bring-up.
+parity is bit-exact, thinking controls (`reasoning_effort` depths,
+`preserve_thinking`) + tool calling are wired, and native MTP speculation
+(the Qwen-trained head as a `--draft-model`) mounts through the serve
+loop's recurrent-cache rollback contract; vision and video input are in
+bring-up.
 
 **Experimental** — opt-in, default-off, still being hardened: transparent
 expert offload for MoE models (`serve --expert-offload`, Phase 20:

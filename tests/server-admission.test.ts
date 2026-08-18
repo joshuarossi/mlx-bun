@@ -6,35 +6,39 @@ import {
   admitRequestContext,
   detectDraftKind,
   loadContext,
-  QWEN_MTP_UNSUPPORTED_REASON,
 } from "../src/server";
 
 describe("request context admission", () => {
-  test("fixed-context GLM clamps a broad client completion cap", () => {
-    expect(admitRequestContext(2_788, 8_192, 4_096, true)).toEqual({
+  test("a broad client completion cap is clamped to the remaining context", () => {
+    expect(admitRequestContext(2_788, 8_192, 4_096)).toEqual({
       maxTokens: 1_308,
       clamped: true,
     });
   });
 
-  test("generic memory-budget serving preserves fail-fast admission", () => {
-    expect(admitRequestContext(2_788, 8_192, 4_096, false)).toBeNull();
+  test("regression 2026-08-18: 17-token overshoot with 8k of room is clamped, not rejected", () => {
+    // The reported failure: prompt 8213 + max_tokens 8192 vs safe context
+    // 16388 — the pre-fix generic path 400'd despite 8175 tokens of room.
+    expect(admitRequestContext(8_213, 8_192, 16_388)).toEqual({
+      maxTokens: 8_175,
+      clamped: true,
+    });
   });
 
-  test("a prompt that fills the fixed context is still rejected", () => {
-    expect(admitRequestContext(4_096, 1, 4_096, true)).toBeNull();
+  test("a prompt that fills the safe context is still rejected", () => {
+    expect(admitRequestContext(4_096, 1, 4_096)).toBeNull();
   });
 
   test("an already-fitting request is unchanged", () => {
-    expect(admitRequestContext(2_788, 128, 4_096, true)).toEqual({
+    expect(admitRequestContext(2_788, 128, 4_096)).toEqual({
       maxTokens: 128,
       clamped: false,
     });
   });
 });
 
-describe("Qwen MTP release guard", () => {
-  test("detects the companion artifact for a precise fail-fast refusal", async () => {
+describe("Qwen MTP admission", () => {
+  test("detects the companion artifact and no longer refuses it up front", async () => {
     const root = mkdtempSync(join(tmpdir(), "mlx-bun-qwen-mtp-"));
     const target = join(root, "target");
     const draft = join(root, "draft");
@@ -60,10 +64,13 @@ describe("Qwen MTP release guard", () => {
         full_attention_interval: 1,
         eos_token_id: 2,
       }));
+      // The DeltaNet rollback contract (SSMCache spec rounds) unblocked
+      // native MTP: the artifact is detected as "mtp" and load PROCEEDS —
+      // this synthetic dir then fails on its missing weights, not on the
+      // retired up-front refusal.
       expect(await detectDraftKind(draft)).toBe("mtp");
-      expect(QWEN_MTP_UNSUPPORTED_REASON).toContain("cannot roll back");
       await expect(loadContext(target, undefined, { draftModelDir: draft }))
-        .rejects.toThrow(QWEN_MTP_UNSUPPORTED_REASON);
+        .rejects.toThrow(/safetensors|weights|shard|tensor/i);
     } finally {
       rmSync(root, { recursive: true });
     }

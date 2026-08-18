@@ -147,6 +147,19 @@ export class GatedDeltaNet {
     const convDim = this.keyDim * 2 + this.valueDim;
     const nKeep = this.convKernel - 1;
 
+    // Armed speculative verify round (serve loop, serial lane): this forward
+    // must be rewindable. Snapshot = hand the REPLACED state slots to the
+    // round instead of disposing (free — arrays are immutable); record the
+    // position-local kernel inputs (qkv/a/b) and install the prefix replay.
+    const spec = cache.specRound;
+    if (spec) {
+      if (!spec.armed)
+        throw new Error("GatedDeltaNet: spec round already recorded this round");
+      spec.armed = false;
+      spec.S = S;
+      spec.replay = (c, keep) => this.#replaySpecPrefix(c, keep);
+    }
+
     const qkv = this.inProjQkv.forward(x); // [B,S,convDim]
     let z = this.inProjZ.forward(x);
     z = disposing(z, ops.reshape(z, [B, S, this.numVHeads, this.headVDim]));
@@ -158,12 +171,14 @@ export class GatedDeltaNet {
       cache.conv ?? ops.zeros([B, nKeep, convDim], x.dtype);
     const convInput = ops.concatAxis([convState, qkv], 1); // [B,S+nKeep,convDim]
     if (!cache.conv) convState.dispose();
-    qkv.dispose();
+    if (spec) spec.qkv = qkv;
+    else qkv.dispose();
     // New conv state = last nKeep rows (contiguous, the array is sliced).
     const newConv = ops.contiguous(
       convInput.slice([0, S, 0], [B, S + nKeep, convDim]),
     );
-    cache.conv?.dispose();
+    if (spec) spec.prevConv = cache.conv;
+    else cache.conv?.dispose();
     cache.conv = newConv;
 
     const conv = ops.conv1d(convInput, this.convWeight, 1, 0, 1, convDim);
@@ -194,9 +209,15 @@ export class GatedDeltaNet {
     q.dispose();
     k.dispose();
     v.dispose();
-    a.dispose();
-    b.dispose();
-    cache.recurrent?.dispose();
+    if (spec) {
+      spec.a = a;
+      spec.b = b;
+      spec.prevRecurrent = cache.recurrent;
+    } else {
+      a.dispose();
+      b.dispose();
+      cache.recurrent?.dispose();
+    }
     cache.recurrent = newState;
     cache.advance(S);
 
@@ -209,6 +230,75 @@ export class GatedDeltaNet {
     const result = this.outProj.forward(merged);
     merged.dispose();
     return result;
+  }
+
+  /** Speculative rollback replay: with the pre-round snapshot RESTORED onto
+   *  `cache`, re-advance the first `keep` window tokens from the recorded
+   *  position-local inputs. Every op mirrors forward() on the same values —
+   *  conv windows, silu, per-position norms, and the kernel's serial prefix
+   *  are all independent of the rejected tail — so the resulting conv +
+   *  recurrent state is BIT-EXACTLY what a forward over only the accepted
+   *  prefix would have produced. Output projections (z / out_proj) are state-
+   *  free and skipped: only the states matter here. */
+  #replaySpecPrefix(cache: SSMCache, keep: number): void {
+    const r = cache.specRound;
+    if (!r || !r.qkv || !r.a || !r.b)
+      throw new Error("GatedDeltaNet replay without recorded round inputs");
+    const B = r.qkv.shape[0]!;
+    const convDim = this.keyDim * 2 + this.valueDim;
+    const nKeep = this.convKernel - 1;
+
+    const qkvPfxView = r.qkv.slice([0, 0, 0], [B, keep, convDim]);
+    const qkvPfx = ops.contiguous(qkvPfxView);
+    qkvPfxView.dispose();
+    const convState = cache.conv ?? ops.zeros([B, nKeep, convDim], qkvPfx.dtype);
+    const convInput = ops.concatAxis([convState, qkvPfx], 1);
+    if (!cache.conv) convState.dispose();
+    qkvPfx.dispose();
+    const newConv = ops.contiguous(
+      convInput.slice([0, keep, 0], [B, keep + nKeep, convDim]),
+    );
+    cache.conv?.dispose();
+    cache.conv = newConv;
+
+    const conv = ops.conv1d(convInput, this.convWeight, 1, 0, 1, convDim);
+    convInput.dispose();
+    const convOut = compiledSilu(conv);
+    conv.dispose();
+    const [qFlat, kFlat, vFlat] = ops.split(
+      convOut, [this.keyDim, 2 * this.keyDim], -1,
+    ) as [MlxArray, MlxArray, MlxArray];
+    convOut.dispose();
+    let q = ops.reshape(qFlat, [B, keep, this.numKHeads, this.headKDim]);
+    qFlat.dispose();
+    let k = ops.reshape(kFlat, [B, keep, this.numKHeads, this.headKDim]);
+    kFlat.dispose();
+    const v = disposing(vFlat, ops.reshape(vFlat, [B, keep, this.numVHeads, this.headVDim]));
+    const invScale = Math.pow(this.headKDim, -0.5);
+    q = disposing(q, ops.rmsNorm(q, null, 1e-6));
+    q = disposing(q, ops.mulScalar(q, invScale * invScale));
+    k = disposing(k, ops.rmsNorm(k, null, 1e-6));
+    k = disposing(k, ops.mulScalar(k, invScale));
+
+    const aPfxView = r.a.slice([0, 0, 0], [B, keep, this.numVHeads]);
+    const aPfx = ops.contiguous(aPfxView);
+    aPfxView.dispose();
+    const bPfxView = r.b.slice([0, 0, 0], [B, keep, this.numVHeads]);
+    const bPfx = ops.contiguous(bPfxView);
+    bPfxView.dispose();
+
+    const [y, newState] = gatedDeltaUpdate(
+      q, k, v, aPfx, bPfx, this.aLog, this.dtBias, cache.recurrent,
+    );
+    q.dispose();
+    k.dispose();
+    v.dispose();
+    aPfx.dispose();
+    bPfx.dispose();
+    y.dispose(); // only the state advance matters on the rollback path
+    cache.recurrent?.dispose();
+    cache.recurrent = newState;
+    cache.advance(keep);
   }
 
   private rmsNormGated(hidden: MlxArray, gate: MlxArray): MlxArray {
@@ -452,6 +542,25 @@ export class Qwen35Model {
     throw new Error("qwen3_5 vision/input-embedding path is not supported");
   }
 
+  /** Layer-output tap (same contract as Gemma4Model.hiddenTap): the serve
+   *  loop's forwardMaybeTap sets it around prefill/verify forwards so
+   *  KV-borrowing draft sources (native Qwen MTP) can read PRE-final-norm
+   *  hiddens — layer 63's output stream, what mlx-vlm captures with
+   *  skip_final_norm=True. No-op (and graph-identical) when null. */
+  hiddenTap: { layers: Set<number>; pos?: number; captured: Map<number, MlxArray> } | null = null;
+
+  /** Store layer `i`'s residual stream ([1,L,H]) if the tap requests it.
+   *  Copies so the loop's h.dispose() can't free the capture. */
+  protected captureLayer(i: number, h: MlxArray): void {
+    const tap = this.hiddenTap;
+    if (!tap || !tap.layers.has(i)) return;
+    const H = h.shape[2]!;
+    const src = tap.pos !== undefined ? h.slice([0, tap.pos, 0], [1, tap.pos + 1, H]) : h;
+    const copy = ops.contiguous(src);
+    if (src !== h) src.dispose();
+    tap.captured.set(i, copy);
+  }
+
   protected forwardLayers(h0: MlxArray, cache: Cache[]): MlxArray {
     const L = h0.shape[1]!;
     // One full-attention mask shared by all full layers (same offset); linear
@@ -462,6 +571,7 @@ export class Qwen35Model {
       const next = this.layers[i]!.forward(h, faMask, cache[i]!);
       h.dispose();
       h = next;
+      this.captureLayer(i, h); // native-MTP pre-final-norm tap (no-op unless set)
     }
     faMask.arr?.dispose();
     return disposing(h, this.finalNorm.forward(h));

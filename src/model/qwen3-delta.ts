@@ -194,10 +194,37 @@ export function gatedDeltaUpdate(
  *  and writes these slots directly; `advance(N)` only tracks token count for
  *  B=1 single-stream (lengths / left_padding are batched-decode concerns).
  *  Not a KVCache, so maybeQuantizeKv skips it. */
+/** One armed speculative verify round on an SSMCache: the pre-round state
+ *  snapshot (retained refs — MLX arrays are immutable, so this is free) plus
+ *  the layer's recorded position-local kernel inputs, which make a partial
+ *  reject bit-exactly replayable: state after the first `keep` window tokens
+ *  is the same arithmetic prefix whether or not the rejected tail was ever
+ *  processed. The replay is installed by the OWNING layer (it needs the conv
+ *  weight / A_log / dt_bias); the cache only stores and frees. */
+export interface SsmSpecRound {
+  /** True from specRoundBegin() until the layer's forward records. */
+  armed: boolean;
+  prevConv: MlxArray | null;
+  prevRecurrent: MlxArray | null;
+  prevOffset: number;
+  /** Pre-conv in_proj output [B,S,convDim] — position-local. */
+  qkv: MlxArray | null;
+  /** Gate/beta projections [B,S,Hv] — position-local. */
+  a: MlxArray | null;
+  b: MlxArray | null;
+  /** Window length S of the recorded verify forward. */
+  S: number;
+  /** Layer-bound prefix replay: called AFTER the snapshot is restored onto
+   *  the cache; advances conv/recurrent/offset by `keep` tokens. */
+  replay: ((cache: SSMCache, keep: number) => void) | null;
+}
+
 export class SSMCache implements Cache {
   conv: MlxArray | null = null;
   recurrent: MlxArray | null = null;
   offset = 0;
+  /** Live speculative verify round (serial spec lane only; null otherwise). */
+  specRound: SsmSpecRound | null = null;
   /** Per-row token coverage (batch lane only; null on serial B=1 caches,
    *  where `offset` IS the row's count). mlx-lm's ArraysCache tracks no
    *  offset at all (cache.py:594-722) — per-sequence coverage is the
@@ -241,14 +268,77 @@ export class SSMCache implements Cache {
   }
 
   isTrimmable(): boolean {
-    return false; // recurrent state can't be rolled back per token
+    return false; // recurrent state can't be trimmed per token — see specRound*
   }
 
   trim(_n: number): void {
     throw new Error("SSMCache is not trimmable");
   }
 
+  // --- speculative verify-round support (serial spec lane, B=1) ------------
+  // The serve loop arms a round before the verify forward and resolves it
+  // after the accept walk. The layer's forward, seeing an armed round, hands
+  // its replaced state slots to the round instead of disposing them, records
+  // qkv/a/b, and installs the replay. Cache/interface contract:
+  // rollback(keep) restores the snapshot then replays `keep` window tokens
+  // bit-exactly; commit frees the snapshot + recordings.
+
+  specRoundBegin(): void {
+    this.#dropSpecRound(); // defensive: a mid-round throw left a stale round
+    this.specRound = {
+      armed: true,
+      prevConv: null,
+      prevRecurrent: null,
+      prevOffset: this.offset,
+      qkv: null,
+      a: null,
+      b: null,
+      S: 0,
+      replay: null,
+    };
+  }
+
+  specRoundCommit(): void {
+    this.#dropSpecRound();
+  }
+
+  specRoundRollback(keep: number): void {
+    const r = this.specRound;
+    if (!r) throw new Error("SSMCache.specRoundRollback without an armed round");
+    if (r.armed)
+      throw new Error("SSMCache.specRoundRollback before the verify forward recorded");
+    if (keep < 0 || keep > r.S)
+      throw new Error(`SSMCache.specRoundRollback keep=${keep} outside window S=${r.S}`);
+    // Restore the pre-round snapshot (ownership moves back to the cache).
+    this.conv?.dispose();
+    this.recurrent?.dispose();
+    this.conv = r.prevConv;
+    this.recurrent = r.prevRecurrent;
+    r.prevConv = null;
+    r.prevRecurrent = null;
+    this.offset = r.prevOffset;
+    if (this.offsets)
+      throw new Error("SSMCache.specRoundRollback on a batched cache (serial lane only)");
+    if (keep > 0) {
+      if (!r.replay) throw new Error("SSMCache.specRoundRollback with no recorded replay");
+      r.replay(this, keep); // advances conv/recurrent/offset by `keep`
+    }
+    this.#dropSpecRound();
+  }
+
+  #dropSpecRound(): void {
+    const r = this.specRound;
+    if (!r) return;
+    r.prevConv?.dispose();
+    r.prevRecurrent?.dispose();
+    r.qkv?.dispose();
+    r.a?.dispose();
+    r.b?.dispose();
+    this.specRound = null;
+  }
+
   dispose(): void {
+    this.#dropSpecRound();
     this.conv?.dispose();
     this.recurrent?.dispose();
     this.conv = null;

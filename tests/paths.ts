@@ -65,6 +65,15 @@ export const SNAPSHOT_QWEN35 = `${process.env.HOME}/.cache/huggingface/hub/model
 // optiq) on ~4.5 GB. Resolved dynamically so the download needs no hash edit.
 export const SNAPSHOT_QWEN35_4B = hfSnapshot("models--mlx-community--Qwen3.5-4B-OptiQ-4bit");
 
+// Qwen3.5-0.8B (qwen3_5 hybrid, 4-bit): the LIGHT gated-DeltaNet target for
+// serve-loop spec gates (SSM spec-round rollback under real rejects) without
+// the 20 GB 27B load.
+export const SNAPSHOT_QWEN35_08B = hfSnapshot("models--mlx-community--Qwen3.5-0.8B-OptiQ-4bit");
+
+export async function snapshotQwen35_08bAvailable(): Promise<boolean> {
+  return Bun.file(`${SNAPSHOT_QWEN35_08B}/config.json`).exists();
+}
+
 // Qwen3.8-27B: same qwen3_5 graph as the 3.6-27B target (64 layers, untied),
 // current-generation checkpoint — the Phase 14 retarget bring-up artifact.
 // New OptiQ repo layout: NO kv_config.json (per-layer WEIGHT bits stay in
@@ -110,6 +119,15 @@ export async function snapshotQwen35_4bAvailable(): Promise<boolean> {
 
 export async function snapshotQwen38Available(): Promise<boolean> {
   return Bun.file(`${SNAPSHOT_QWEN38}/config.json`).exists();
+}
+
+// The Qwen-trained MTP head for Qwen3.8-27B (the 15 mtp.* tensors from the
+// raw release's last shard, pre-split + sanitized; model_type qwen3_5_mtp,
+// block_size 3). Not standalone — binds the target's embed_tokens/lm_head.
+export const SNAPSHOT_QWEN38_MTP = hfSnapshot("models--mlx-community--Qwen3.8-27B-MTP-bf16");
+
+export async function snapshotQwen38MtpAvailable(): Promise<boolean> {
+  return Bun.file(`${SNAPSHOT_QWEN38_MTP}/config.json`).exists();
 }
 
 // Qwen3-30B-A3B (qwen3_moe, 4-bit): the MoE parity target for the faithful
