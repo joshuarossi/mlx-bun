@@ -76,7 +76,7 @@ streaming fold/quantize at 27B scale (ShardedWriter + Weights.releaseShard
 mlx-lm (worst KL 0.0035, flips only at exact ties). **Measured verdict:
 rotation-only RTN loses at 4-bit (+5% ppl both scales), wins at ≤4 bpw
 (uniform-3 −24%; mixed paired-control worse).** Artifact of record:
-`runs/tq-qwen/27b-tqmix` — rotated mixed 4/3-bit, 3.86 bpw / 13.9 GB
+`~/models/Qwen3.8-27B-TQ` — rotated mixed 4/3-bit, 3.86 bpw / 13.9 GB
 (the 14z M4-Pro fit lever), ppl 4.932 vs plain-4bit 4.659@4.5bpw;
 VALIDATED end-to-end (server chat reasoning ✓, vision over HTTP ✓, MTP
 harness 71% accept + token-identical ✓; the HTTP MTP lane has a

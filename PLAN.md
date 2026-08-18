@@ -3795,7 +3795,7 @@ verified via `mlx-bun get`).
       4-bit win needs GPTQ-on-rotated (→W5). AWQ-lite equalization spike
       ran and did not rescue 4-bit (details + scripts in design doc).
 - [x] **W4 27B artifacts + validation** — DONE 2026-08-18 (busy-box,
-      correctness only). `runs/tq-qwen/27b-tqmix` = rotated mixed
+      correctness only). `~/models/Qwen3.8-27B-TQ` = rotated mixed
       4-bit attn/embed + 3-bit MLP, **3.86 bpw / 13.9 GB** (the 14z
       M4-Pro fit artifact), ppl 4.932 vs plain-4bit 4.659 (4.5 bpw,
       15 GB) vs rotated-uniform-4bit 4.923; vision kept bf16 in-repo +
