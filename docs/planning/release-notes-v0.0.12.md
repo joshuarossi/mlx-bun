@@ -1,72 +1,80 @@
 # v0.0.12 release notes
 
-Everything since v0.0.11. One theme: **Qwen 3.8**. The current-generation
-Qwen (released August 2026) is brought up on the published OptiQ
-artifact at the repo's standard bar — bit-exact logit parity with
-mlx-lm — with its thinking controls served faithfully and its
-Qwen-trained multi-token-prediction head wired in as a native draft
-kind. Vision and video input for the same model are in bring-up and
-land in a later release.
+mlx-bun 0.0.12 completes the native Colibri/GLM-5.2 program: a Python-free,
+direct-container runtime that can serve the approximately 357 GiB artifact on
+a 32 GiB Apple Silicon Mac by keeping a bounded working set in memory and
+streaming routed experts from fast storage.
 
-## Qwen3.8-27B (text, bit-exact)
+## GLM-5.2 direct-container serving
 
-- `mlx-community/Qwen3.8-27B-OptiQ-4bit` serves on the existing
-  qwen3_5 hybrid graph (gated DeltaNet + gated attention) — the
-  architecture audit found byte-identical geometry to the verified
-  port, and parity confirmed it: **every logit at every prompt
-  position plus 32 greedy decode steps, bit-exact vs stock mlx-lm**
-  (the parity harness grew a full prefill-grid golden and
-  manifest-driven step counts in the process).
-- The config's new `output_gate_type: "swish"` field is inert in every
-  implementation (transformers ground truth included) — a load-time
-  guard now fails loudly if a future checkpoint carries a value we
-  haven't verified.
-- Fit reality: the artifact is 20.35 GB of shards. 32 GB machines
-  serve it comfortably; 24 GB machines need `--memory-budget` and
-  should prefer the uniform 4-bit conversion until the planned
-  ~4 bpw TurboQuant×weights artifact lands (PLAN 14z).
+- Loads `mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp` directly. No converted
+  copy and no Python process are involved in the serving path.
+- Preserves checkpoint precision and true top-8 routing. The port is gated
+  against pinned Colibri at tiny, production-component, real-model, MTP, cache,
+  and first-sparse DSA boundaries.
+- Native int8 MTP is enabled by default and uses the serial speculative lane.
+  It produced a measured 1.306x warm end-to-end win over MTP-off on the 32 GiB
+  reference machine while preserving all target tokens.
+- Compressed MLA/DSA/MTP cache persistence, restart restore, compressed-byte
+  admission, ordinary continuous batching, mixed-length join/leave/cancel, and
+  cross-row expert union are included. Per-row batched MTP remains a later
+  feature; MTP requests truthfully report `serial+spec`.
+- Chat completions, text completions, Anthropic Messages, OpenAI Responses,
+  SSE, tools, structured output, stops, sampling, usage, and serial logprobs
+  are supported. Embeddings, vision/audio, LoRA, and training are explicitly
+  reported unsupported for this model instead of being emulated.
 
-## Thinking controls (Qwen 3.8's serving surface)
+## Memory and acquisition contract
 
-- Thinking is on by default and streams as OpenAI `reasoning` deltas;
-  `chat_template_kwargs.enable_thinking: false` selects instruct mode.
-- `reasoning_effort` is now a real depth control on templates that read
-  it: OpenAI levels map onto Qwen's `low`/`medium`/`xhigh` (with
-  `xhigh` accepted as a first-class request value), and the variable is
-  only passed to templates that declare it — the Qwen 3.8 template
-  raises on unknown level names, so the server never forwards unmapped
-  strings.
-- `preserve_thinking` (new in Qwen 3.8, default on) is forwarded:
-  history keeps its think blocks, which also improves prompt-cache
-  reuse in agent loops.
-- Tool calling: Qwen 3.8's XML call format
-  (`<tool_call><function=name><parameter=…>`) parses through the
-  existing Qwen-style parser into OpenAI `tool_calls`, multiline
-  parameters included.
+- `mlx-bun get` now computes the exact remaining payload before the first
+  payload request, credits verified shared blobs and resumable prefixes, and
+  refuses an acquisition that cannot leave a fixed 1 GiB safety reserve.
+- The GLM header-only preflight runs before resident weights or expert slabs
+  open. With the stock DSA overlay installed, 4,096 context / 128 generation
+  tokens and MTP on produce a 19.89 GiB plan under a 25 GiB process ceiling,
+  leaving 5.11 GiB of process/macOS headroom on a 32 GiB machine.
+- `fit`, `/fit`, `/stats`, and the status page now distinguish the complete
+  artifact on disk from resident weights, main/MTP slabs, compressed KV, and
+  reserves. They also expose main/MTP residency, hit rate, SSD bytes, policy
+  telemetry, and repin events.
 
-## Native MTP speculative decoding (opt-in)
+## Performance: measured, not predicted
 
-- Qwen 3.8 ships a multi-step MTP head trained alongside the model;
-  mlx-community publishes it split out
-  (`mlx-community/Qwen3.8-27B-MTP-bf16`). It mounts as
-  `--draft-model … --draft-kind mtp` (auto-detected from the drafter's
-  `model_type`), implemented against mlx-vlm's reference drafter: the
-  head consumes the target's pre-final-norm hidden plus the next
-  token's embedding, drafts recursively, and shares the target's
-  embeddings and LM head — ~0.85 GB of extra weights, no separate
-  drafter model.
-- Correctness is by construction (greedy MTP output is verified
-  token-for-token identical to greedy non-MTP by the shared verify
-  loop) and gated by an opt-in A/B test that reports prefill/decode
-  TPS, acceptance rate, and tokens-per-forward.
+- Warm quality-preserving throughput on the M1 Max 32 GiB reference machine is
+  0.1577 decode tok/s / 0.1487 end-to-end tok/s with MTP on. The same-machine
+  direct-Colibri control is approximately 0.27 tok/s.
+- The 2 tok/s figure remains an aspiration, not a release gate or `fit`
+  prediction. The measured warm end-to-end result is 13.45x below it.
+- Replicated telemetry measured 1,974,949,363,712 logical expert bytes per
+  128-token warm turn (15.429 decimal GB/token) and a 1.66% cache hit rate.
+  Startup auto-pin, live LFRU, PILOT hints, two-step prediction, and coupling
+  did not improve paired end-to-end performance and remain off by default.
+- The checkpoint's 21-full/57-shared DSA schedule is implemented and exact.
+  Paired 2K/8K tests did not establish an MTP-on product-speed win, so this
+  release makes no DSA speed claim. The public Colibri artifact does not ship
+  the stock DSA indexer overlay; without it the runtime follows the artifact's
+  available attention path.
 
-## Also in this release
+## Distribution and operator experience
 
-- The parity harness's step-0 check now covers the full prefill logit
-  grid for all Qwen targets — masking/position bugs can no longer hide
-  behind a last-position comparison.
-- A GPU command-buffer failure mode on memory-saturated machines was
-  root-caused (Metal completion-thread exception, uncatchable by
-  design) and documented in PLAN 14g, along with the finding that some
-  mlx-c paths surface C++ errors as process panics instead of
-  catchable errors (hardening item).
+- First-run native pack v0.2.0 adds the bounded native expert-I/O helper. The
+  npm/bunx fresh-cache path downloads, verifies, and extracts all five runtime
+  files; the signed/Homebrew bundle includes the same helper beside the binary.
+- The pinned 32 GiB quickstart, volume selection, interrupted-download recovery,
+  model lineage, licenses, resource plan, measured performance, and limitations
+  are documented in README and the reference guides.
+- The interactive Atlas report reproduces Colibri's expert topic-affinity
+  result: 29/30 leave-one-prompt-out classifications (96.7%) and 1,065 strong
+  specialists among 13,236 replicated experts.
+
+## Stability fixes since v0.0.11
+
+- Closed pre-Colibri correctness and lifecycle findings, including expert-slab
+  post-close and lazy-graph reuse hazards, with forced native/MLX churn gates.
+- Fixed selected-logprob readback stalling and revalidated the audio splice
+  boundary against the oracle.
+- Corrected current Hugging Face LFS checksum-field handling and retained the
+  older spelling for compatibility.
+
+Full provenance and exact numbers are in `benchmarks/RESULTS.md`, `STATUS.md`,
+and `docs/design/colibri-glm52-port.md`.

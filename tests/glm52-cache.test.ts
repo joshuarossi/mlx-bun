@@ -268,4 +268,153 @@ describe("GLM-5.2 compressed MLA cache", () => {
       cache.dispose();
     }
   });
+
+  test("restores owned compressed target and MTP state without full K/V", () => {
+    const target = new MLACache({
+      kvLoraRank: 2,
+      ropeHeadDim: 1,
+      dsa: { headDim: 2 },
+      maxTokens: 8,
+    });
+    const latent = f32([1, 2, 3, 4], [1, 2, 2]);
+    const rope = f32([5, 6], [1, 2, 1]);
+    const dsa = f32([7, 8, 9, 10], [1, 2, 2]);
+    target.restoreCompressedState(latent, rope, dsa, 2);
+    try {
+      expect(target.role).toBe("target");
+      expect(target.offset).toBe(2);
+      expect(target.dsa!.offset).toBe(2);
+      expect(target.state().map((array) => array.shape)).toEqual([
+        [1, 2, 2],
+        [1, 2, 1],
+        [1, 2, 2],
+      ]);
+    } finally {
+      target.dispose();
+    }
+
+    const mtp = new MLACache({
+      kvLoraRank: 2,
+      ropeHeadDim: 1,
+      role: "mtp",
+    });
+    const mtpLatent = f32([11, 12], [1, 1, 2]);
+    const mtpRope = f32([13], [1, 1, 1]);
+    mtp.restoreCompressedState(mtpLatent, mtpRope, null, 1);
+    try {
+      expect(mtp.role).toBe("mtp");
+      expect(mtp.state()).toHaveLength(2);
+    } finally {
+      mtp.dispose();
+    }
+
+    expect(() => new MLACache({
+      kvLoraRank: 2,
+      ropeHeadDim: 1,
+      dsa: { headDim: 1 },
+      role: "mtp",
+    })).toThrow(/MTP cache cannot contain target DSA/);
+  });
+
+  test("merges unequal compressed rows and extracts exact independent rows", () => {
+    const geometry = {
+      kvLoraRank: 2,
+      ropeHeadDim: 1,
+      dsa: { headDim: 1 },
+      maxTokens: 8,
+    };
+    const short = new MLACache(geometry);
+    const long = new MLACache(geometry);
+    const shortLatent = f32([1, 2, 3, 4], [1, 2, 2]);
+    const shortRope = f32([5, 6], [1, 2, 1]);
+    const shortDsa = f32([7, 8], [1, 2, 1]);
+    const longLatent = f32([11, 12, 13, 14, 15, 16], [1, 3, 2]);
+    const longRope = f32([17, 18, 19], [1, 3, 1]);
+    const longDsa = f32([20, 21, 22], [1, 3, 1]);
+    const merged = short.makeEmptyBatch();
+    let extracted: MLACache | null = null;
+    try {
+      short.append(shortLatent, shortRope, shortDsa);
+      long.append(longLatent, longRope, longDsa);
+      merged.mergeRows([short, long]);
+      expect(merged.batchSize).toBe(2);
+      expect(merged.offset).toBe(3);
+      expect(merged.rowOffsets).toEqual([2, 3]);
+      expect(merged.leftPad).toEqual([1, 0]);
+      expect(merged.byteLength).toBe((2 + 3) * (2 + 1 + 1) * 4);
+      expect(merged.state().map((array) => array.shape)).toEqual([
+        [2, 3, 2],
+        [2, 3, 1],
+        [2, 3, 1],
+      ]);
+
+      const padded = merged.fetch();
+      expect(padded.latent.toFloat32()).toEqual(new Float32Array([
+        0, 0, 1, 2, 3, 4,
+        11, 12, 13, 14, 15, 16,
+      ]));
+      disposeState(padded);
+
+      extracted = merged.extractRow(0);
+      expect(extracted.offset).toBe(2);
+      expect(extracted.rowOffsets).toEqual([2]);
+      const row = extracted.fetch();
+      expect(row.latent.toFloat32()).toEqual(shortLatent.toFloat32());
+      expect(row.rope.toFloat32()).toEqual(shortRope.toFloat32());
+      expect(row.dsa!.toFloat32()).toEqual(shortDsa.toFloat32());
+      disposeState(row);
+
+      // The extracted row owns a copy and remains valid after the batch dies.
+      merged.dispose();
+      const stillOwned = extracted.fetch();
+      expect(stillOwned.latent.toFloat32()).toEqual(shortLatent.toFloat32());
+      disposeState(stillOwned);
+    } finally {
+      extracted?.dispose();
+      merged.dispose();
+      short.dispose();
+      long.dispose();
+      for (const array of [
+        shortLatent, shortRope, shortDsa,
+        longLatent, longRope, longDsa,
+      ]) array.dispose();
+    }
+  });
+
+  test("filters compressed rows and normalizes common padding", () => {
+    const geometry = { kvLoraRank: 1, ropeHeadDim: 1, maxTokens: 8 };
+    const rows = [1, 2, 3].map((tokens, row) => {
+      const cache = new MLACache(geometry);
+      const latent = f32(
+        Array.from({ length: tokens }, (_, index) => row * 10 + index + 1),
+        [1, tokens, 1],
+      );
+      const rope = f32(
+        Array.from({ length: tokens }, (_, index) => row * 10 + index + 5),
+        [1, tokens, 1],
+      );
+      cache.append(latent, rope);
+      latent.dispose();
+      rope.dispose();
+      return cache;
+    });
+    const merged = rows[0]!.makeEmptyBatch();
+    try {
+      merged.mergeRows(rows);
+      expect(merged.leftPad).toEqual([2, 1, 0]);
+      merged.filterRows([0, 1]);
+      expect(merged.batchSize).toBe(2);
+      expect(merged.offset).toBe(2);
+      expect(merged.rowOffsets).toEqual([1, 2]);
+      expect(merged.leftPad).toEqual([1, 0]);
+      const state = merged.fetch();
+      expect(state.latent.toFloat32()).toEqual(new Float32Array([0, 1, 11, 12]));
+      disposeState(state);
+      expect(() => merged.filterRows([0, 0])).toThrow(/duplicated/);
+      expect(() => merged.filterRows([])).toThrow(/zero rows/);
+    } finally {
+      merged.dispose();
+      for (const row of rows) row.dispose();
+    }
+  });
 });

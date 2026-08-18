@@ -7,7 +7,7 @@
 
 Ship local inference inside a Mac app (Tauri, Electron, or anything
 that can spawn a process) with zero user-visible dependencies: one
-executable + three native libraries, dropped into your app's resources.
+executable + four native libraries, dropped into your app's resources.
 
 ## Build the bundle
 
@@ -23,6 +23,7 @@ Produces a relocatable directory:
 | `libmlxc.dylib` | mlx-c, rewritten to load `@loader_path/libmlx.dylib` | ~0.7 MB |
 | `libmlx.dylib` | mlx core (+`@loader_path` rpath added for libjaccl) | ~15 MB |
 | `libjaccl.dylib` | mlx's distributed-comm dependency | ~0.6 MB |
+| `libmlx_bun_expert_io.dylib` | bounded streamed-expert I/O used by direct Colibri GLM-5.2 | ~0.03 MB |
 | `mlx.metallib` | Metal kernels — libmlx loads it from its own directory | ~150 MB |
 | `photon_rs_bg.wasm` | pi image codec — only the web chat's `read`-on-image path; resolved next to the executable | ~1.8 MB |
 
@@ -44,7 +45,9 @@ cache (`~/Library/Caches/mlx-bun/native-v<ver>-<arch>/`, populated on
 first run when no sidecar or homebrew install is found) → homebrew
 (`/opt/homebrew/lib`, `/usr/local/lib`). The whole directory can be
 renamed/moved; nothing references absolute paths after the build
-script's `install_name_tool` fixups.
+script's `install_name_tool` fixups. The expert helper independently resolves
+`MLX_BUN_EXPERT_IO_DYLIB`, then the executable directory, then the same
+native-pack cache.
 
 ## Embedded pi web chat (`/ws/chat`)
 

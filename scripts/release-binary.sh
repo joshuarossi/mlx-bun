@@ -80,7 +80,8 @@ rm -f "$ZIP"
 TARBALL="mlx-bun-v${VERSION}-${ARCH}.tar.gz"
 echo "==> packaging $TARBALL"
 FILES=""
-for f in mlx-bun libmlx.dylib libmlxc.dylib libjaccl.dylib mlx.metallib \
+for f in mlx-bun libmlx.dylib libmlxc.dylib libjaccl.dylib \
+         libmlx_bun_expert_io.dylib mlx.metallib \
          photon_rs_bg.wasm theme assets export-html native \
          package.json CHANGELOG.md; do
   [ -e "$BUILD_DIR/$f" ] && FILES="$FILES $f"

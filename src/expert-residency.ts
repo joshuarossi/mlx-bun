@@ -1,6 +1,16 @@
 import type { MlxArray } from "./mlx/array";
 import type { MlxHandle } from "./mlx/ffi";
-import type { ExpertIOSegment } from "./expert-io";
+import type {
+  ExpertIOHintSegment,
+  ExpertIOHintSnapshot,
+  ExpertIOSegment,
+} from "./expert-io";
+import type {
+  ExpertLfruCandidate,
+  ExpertUsageEntry,
+  ExpertUsageLedger,
+  ExpertUsageRoute,
+} from "./expert-usage";
 
 export const DEFAULT_EXPERT_WORKING_SLOTS = 64;
 
@@ -157,12 +167,47 @@ export interface ExpertResidencyBackend {
   releaseGpuFenced(slot: number, generation: bigint): void;
   discard(slot: number, generation: bigint): void;
   physicalFootprint(): number;
+  /** Advisory-only readahead; returns false when its bounded queue is full. */
+  hintSegments?(segments: readonly ExpertIOHintSegment[]): boolean;
+  hintTelemetry?(): ExpertIOHintSnapshot;
 }
 
 export interface ExpertResidencyLocation {
   readonly layer: number;
   readonly expertId: number;
   readonly segments: readonly ExpertIOSegment[];
+  /** Optional subset for advisory readahead (for example scales-only). */
+  readonly hintSegments?: readonly ExpertIOHintSegment[];
+}
+
+/**
+ * Colibri hint policy: buffered demand may hint the full expert; F_NOCACHE
+ * demand hints only the scale tail because warming weight pages would be
+ * wasted by the subsequent cache-bypassing read.
+ */
+export function buildExpertHintSegments(
+  segments: readonly ExpertIOSegment[],
+  scaleOffset: number,
+  noCache: boolean,
+): ExpertIOHintSegment[] {
+  if (!Number.isSafeInteger(scaleOffset) || scaleOffset < 0)
+    throw new RangeError("expert hint scaleOffset must be non-negative");
+  if (!noCache) {
+    return segments.map(({ file, offset, length }) => ({
+      file,
+      offset,
+      length,
+    }));
+  }
+  return segments.flatMap((segment) => {
+    const skip = Math.max(0, scaleOffset - segment.destination);
+    if (skip >= segment.length) return [];
+    return [{
+      file: segment.file,
+      offset: segment.offset + skip,
+      length: segment.length - skip,
+    }];
+  });
 }
 
 export interface ExpertResidencyManagerOptions {
@@ -171,6 +216,12 @@ export interface ExpertResidencyManagerOptions {
   readonly backend: ExpertResidencyBackend;
   readonly locate: (layer: number, expertId: number) => ExpertResidencyLocation;
   readonly pinned?: ReadonlyArray<{ layer: number; expertId: number }>;
+  readonly usage?: ExpertUsageLedger;
+  /** Synchronous measurement seam; receives router rows before union/dedup. */
+  readonly routeObserver?: (
+    layer: number,
+    routes: readonly ExpertUsageRoute[],
+  ) => void;
 }
 
 type SlotRole = "working" | "layer" | "pinned" | "disabled";
@@ -209,6 +260,95 @@ export interface ExpertResidencySnapshot {
   readonly misses: number;
   readonly evictions: number;
   readonly pressureEvictions: number;
+  readonly repinSwaps: number;
+}
+
+export interface ExpertResidencyMapEntry {
+  readonly slot: number;
+  readonly layer: number;
+  readonly expertId: number;
+  readonly tier: "resident" | "pinned";
+  readonly lastUse: bigint;
+  readonly usage: ExpertUsageEntry | null;
+}
+
+export interface ExpertRepinEvent {
+  readonly layer: number;
+  readonly evictedPin: number;
+  readonly admittedPin: number;
+  readonly gain: number;
+}
+
+export interface ExpertLatencySummary {
+  readonly count: number;
+  readonly totalMs: number;
+  readonly p50Ms: number;
+  readonly p95Ms: number;
+  readonly p99Ms: number;
+  readonly maxMs: number;
+}
+
+export interface ExpertDemandTelemetry {
+  readonly hits: number;
+  readonly misses: number;
+  readonly loads: number;
+  readonly readOperations: number;
+  readonly readBytes: number;
+  readonly diskService: ExpertLatencySummary;
+  readonly foregroundWait: ExpertLatencySummary;
+}
+
+export type ExpertPolicyTelemetry = ExpertDemandTelemetry;
+
+export interface ExpertHintTelemetry {
+  readonly candidates: number;
+  readonly residentSkipped: number;
+  readonly submitErrors: number;
+  readonly submitted: number;
+  readonly completed: number;
+  readonly dropped: number;
+  readonly operations: number;
+  readonly bytes: number;
+  readonly errors: number;
+  readonly queueDepth: number;
+  readonly inFlight: number;
+}
+
+const EMPTY_HINT_SNAPSHOT: ExpertIOHintSnapshot = Object.freeze({
+  submitted: 0,
+  completed: 0,
+  dropped: 0,
+  operations: 0,
+  bytes: 0,
+  errors: 0,
+  queueDepth: 0,
+  inFlight: 0,
+});
+
+export function summarizeExpertLatencies(
+  samples: readonly number[],
+): ExpertLatencySummary {
+  if (samples.length === 0) {
+    return {
+      count: 0,
+      totalMs: 0,
+      p50Ms: 0,
+      p95Ms: 0,
+      p99Ms: 0,
+      maxMs: 0,
+    };
+  }
+  const sorted = samples.slice().sort((left, right) => left - right);
+  const percentile = (fraction: number): number =>
+    sorted[Math.ceil(fraction * sorted.length) - 1]!;
+  return {
+    count: sorted.length,
+    totalMs: sorted.reduce((sum, value) => sum + value, 0),
+    p50Ms: percentile(0.5),
+    p95Ms: percentile(0.95),
+    p99Ms: percentile(0.99),
+    maxMs: sorted[sorted.length - 1]!,
+  };
 }
 
 function expertKey(layer: number, expertId: number): string {
@@ -268,11 +408,14 @@ export class ExpertResidencyManager {
   readonly sparseLayerIds: readonly number[];
   #backend: ExpertResidencyBackend;
   #locate: ExpertResidencyManagerOptions["locate"];
+  #usage: ExpertUsageLedger | null;
+  #routeObserver: ExpertResidencyManagerOptions["routeObserver"];
   #slots: SlotRecord[] = [];
   #working = new Set<number>();
   #layerSlots = new Map<number, Set<number>>();
   #lookup = new Map<string, number>();
   #pinnedKeys = new Set<string>();
+  #pinned: Array<{ layer: number; expertId: number }>;
   #active = false;
   #clock = 0n;
   #generation = 0n;
@@ -280,11 +423,34 @@ export class ExpertResidencyManager {
   #misses = 0;
   #evictions = 0;
   #pressureEvictions = 0;
+  #repinSwaps = 0;
+  #telemetryHits = 0;
+  #telemetryMisses = 0;
+  #telemetryLoads = 0;
+  #telemetryReadOperations = 0;
+  #telemetryReadBytes = 0;
+  #diskServiceMs: number[] = [];
+  #foregroundWaitMs: number[] = [];
+  #policyHits = 0;
+  #policyMisses = 0;
+  #policyLoads = 0;
+  #policyReadOperations = 0;
+  #policyReadBytes = 0;
+  #policyDiskServiceMs: number[] = [];
+  #policyForegroundWaitMs: number[] = [];
+  #hintCandidates = 0;
+  #hintResidentSkipped = 0;
+  #hintSubmitErrors = 0;
+  #hintBaseline: ExpertIOHintSnapshot;
 
   constructor(options: ExpertResidencyManagerOptions) {
     this.plan = options.plan;
     this.#backend = options.backend;
     this.#locate = options.locate;
+    this.#usage = options.usage ?? null;
+    this.#routeObserver = options.routeObserver;
+    this.#hintBaseline = options.backend.hintTelemetry?.() ??
+      EMPTY_HINT_SNAPSHOT;
     this.sparseLayerIds = Object.freeze(options.sparseLayerIds.slice());
     if (this.sparseLayerIds.length !== this.plan.sparseLayers ||
         new Set(this.sparseLayerIds).size !== this.sparseLayerIds.length)
@@ -295,6 +461,7 @@ export class ExpertResidencyManager {
       );
 
     const pinned = options.pinned ?? [];
+    this.#pinned = pinned.map((item) => ({ ...item }));
     if (pinned.length !== this.plan.pinnedSlots)
       throw new Error(
         `expert pinned set has ${pinned.length} entries; plan reserves ${this.plan.pinnedSlots}`,
@@ -322,12 +489,232 @@ export class ExpertResidencyManager {
       this.#slots.push(this.#newSlot(slot, "pinned", null));
   }
 
+  /** Populate the configured hot-store before the first model forward. */
+  async preloadPinned(): Promise<void> {
+    if (this.#active)
+      throw new Error("pinned preload requires a model safe point");
+    for (const layer of this.sparseLayerIds) {
+      const ids = this.#pinned
+        .filter((item) => item.layer === layer)
+        .map((item) => item.expertId);
+      for (let begin = 0; begin < ids.length; begin += this.plan.workingSlots) {
+        const lease = await this.acquireBlock(
+          layer,
+          ids.slice(begin, begin + this.plan.workingSlots),
+          undefined,
+          "policy",
+        );
+        lease.releaseFenced();
+      }
+    }
+  }
+
+  repinCandidates(): ExpertLfruCandidate[] {
+    if (this.#active)
+      throw new Error("live repin requires a model safe point");
+    if (!this.#usage) return [];
+    const candidates: ExpertLfruCandidate[] = [];
+    for (const layer of this.sparseLayerIds) {
+      const ids = this.#pinned
+        .filter((item) => item.layer === layer)
+        .map((item) => item.expertId);
+      const candidate = this.#usage.lfruCandidate(layer, ids);
+      if (candidate) candidates.push(candidate);
+    }
+    return candidates;
+  }
+
+  /** Apply one previously selected LFRU promotion at a model safe point. */
+  async applyRepin(candidate: ExpertLfruCandidate): Promise<ExpertRepinEvent> {
+    if (this.#active)
+      throw new Error("live repin requires a model safe point");
+    const pinIndex = this.#pinned.findIndex((item) =>
+      item.layer === candidate.layer &&
+      item.expertId === candidate.coldExpertId);
+    if (pinIndex < 0 || this.#pinnedKeys.has(
+      expertKey(candidate.layer, candidate.hotExpertId),
+    )) {
+      throw new Error("stale live-repin candidate");
+    }
+
+    let hotSlotId = this.#lookup.get(
+      expertKey(candidate.layer, candidate.hotExpertId),
+    );
+    if (hotSlotId === undefined) {
+      const lease = await this.acquireBlock(
+        candidate.layer,
+        [candidate.hotExpertId],
+        undefined,
+        "policy",
+      );
+      lease.releaseFenced();
+      hotSlotId = this.#lookup.get(
+        expertKey(candidate.layer, candidate.hotExpertId),
+      );
+    }
+    const coldSlotId = this.#lookup.get(
+      expertKey(candidate.layer, candidate.coldExpertId),
+    );
+    if (hotSlotId === undefined || coldSlotId === undefined)
+      throw new Error("live repin could not materialize both experts");
+    const hot = this.#slots[hotSlotId]!;
+    const cold = this.#slots[coldSlotId]!;
+    if (hot.role !== "layer" || hot.phase !== "ready" ||
+        cold.role !== "pinned" || cold.phase !== "ready") {
+      throw new Error("live repin requires ready resident and pinned slots");
+    }
+
+    const layerSlots = this.#layerSlots.get(candidate.layer)!;
+    layerSlots.delete(hot.id);
+    layerSlots.add(cold.id);
+    hot.role = "pinned";
+    cold.role = "layer";
+    cold.lastUse = 0n;
+    this.#pinnedKeys.delete(
+      expertKey(candidate.layer, candidate.coldExpertId),
+    );
+    this.#pinnedKeys.add(
+      expertKey(candidate.layer, candidate.hotExpertId),
+    );
+    this.#pinned[pinIndex] = {
+      layer: candidate.layer,
+      expertId: candidate.hotExpertId,
+    };
+    this.#repinSwaps++;
+    return {
+      layer: candidate.layer,
+      evictedPin: candidate.coldExpertId,
+      admittedPin: candidate.hotExpertId,
+      gain: candidate.gain,
+    };
+  }
+
+  residencyMap(): ExpertResidencyMapEntry[] {
+    return this.#slots.flatMap((slot) => {
+      if ((slot.role !== "layer" && slot.role !== "pinned") ||
+          slot.phase !== "ready" || slot.layer === null ||
+          slot.expertId === null) return [];
+      return [{
+        slot: slot.id,
+        layer: slot.layer,
+        expertId: slot.expertId,
+        tier: slot.role === "pinned" ? "pinned" as const : "resident" as const,
+        lastUse: slot.lastUse,
+        usage: this.#usage?.entry(slot.layer, slot.expertId) ?? null,
+      }];
+    });
+  }
+
+  /**
+   * Queue future-layer advisory reads without allocating or mutating slots.
+   * Resident predictions are skipped; queue pressure and advisory failures
+   * are deliberately non-fatal because demand remains the correctness path.
+   */
+  hintExperts(layer: number, expertIds: readonly number[]): void {
+    if (!this.#layerSlots.has(layer))
+      throw new RangeError(`layer ${layer} is not a sparse residency layer`);
+    for (const expertId of new Set(expertIds)) {
+      if (!Number.isSafeInteger(expertId) || expertId < 0)
+        throw new RangeError(`invalid hinted expert id ${expertId}`);
+      this.#hintCandidates++;
+      if (this.#lookup.has(expertKey(layer, expertId))) {
+        this.#hintResidentSkipped++;
+        continue;
+      }
+      try {
+        const location = this.#locate(layer, expertId);
+        const segments = location.hintSegments ?? location.segments;
+        if (segments.length === 0) continue;
+        if (!this.#backend.hintSegments)
+          throw new Error("expert backend has no advisory hint queue");
+        this.#backend.hintSegments(segments);
+      } catch {
+        this.#hintSubmitErrors++;
+      }
+    }
+  }
+
+  /** Return and reset demand-only I/O telemetry for one generation turn. */
+  drainDemandTelemetry(): ExpertDemandTelemetry {
+    const telemetry = {
+      hits: this.#telemetryHits,
+      misses: this.#telemetryMisses,
+      loads: this.#telemetryLoads,
+      readOperations: this.#telemetryReadOperations,
+      readBytes: this.#telemetryReadBytes,
+      diskService: summarizeExpertLatencies(this.#diskServiceMs),
+      foregroundWait: summarizeExpertLatencies(this.#foregroundWaitMs),
+    };
+    this.#telemetryHits = 0;
+    this.#telemetryMisses = 0;
+    this.#telemetryLoads = 0;
+    this.#telemetryReadOperations = 0;
+    this.#telemetryReadBytes = 0;
+    this.#diskServiceMs = [];
+    this.#foregroundWaitMs = [];
+    return telemetry;
+  }
+
+  /** Return and reset startup-preload/live-repin I/O separately from demand. */
+  drainPolicyTelemetry(): ExpertPolicyTelemetry {
+    const telemetry = {
+      hits: this.#policyHits,
+      misses: this.#policyMisses,
+      loads: this.#policyLoads,
+      readOperations: this.#policyReadOperations,
+      readBytes: this.#policyReadBytes,
+      diskService: summarizeExpertLatencies(this.#policyDiskServiceMs),
+      foregroundWait: summarizeExpertLatencies(this.#policyForegroundWaitMs),
+    };
+    this.#policyHits = 0;
+    this.#policyMisses = 0;
+    this.#policyLoads = 0;
+    this.#policyReadOperations = 0;
+    this.#policyReadBytes = 0;
+    this.#policyDiskServiceMs = [];
+    this.#policyForegroundWaitMs = [];
+    return telemetry;
+  }
+
+  /** Return and reset per-turn advisory PILOT telemetry. */
+  drainHintTelemetry(): ExpertHintTelemetry {
+    const current = this.#backend.hintTelemetry?.() ?? EMPTY_HINT_SNAPSHOT;
+    const prior = this.#hintBaseline;
+    const difference = (key: keyof ExpertIOHintSnapshot): number =>
+      Math.max(0, current[key] - prior[key]);
+    const telemetry = {
+      candidates: this.#hintCandidates,
+      residentSkipped: this.#hintResidentSkipped,
+      submitErrors: this.#hintSubmitErrors,
+      submitted: difference("submitted"),
+      completed: difference("completed"),
+      dropped: difference("dropped"),
+      operations: difference("operations"),
+      bytes: difference("bytes"),
+      errors: difference("errors"),
+      queueDepth: current.queueDepth,
+      inFlight: current.inFlight,
+    };
+    this.#hintCandidates = 0;
+    this.#hintResidentSkipped = 0;
+    this.#hintSubmitErrors = 0;
+    this.#hintBaseline = current;
+    return telemetry;
+  }
+
+  /** Record the full router output before batch-union deduplication. */
+  recordRoutes(layer: number, routes: readonly ExpertUsageRoute[]): void {
+    this.#usage?.recordRoutes(layer, routes);
+    this.#routeObserver?.(layer, routes);
+  }
+
   async acquireBlock(
     layer: number,
     expertIds: readonly number[],
     beforeMissSubmit?: (
       resident: readonly ExpertResidencyLeaseEntry[],
     ) => void | Promise<void>,
+    classification: "demand" | "policy" = "demand",
   ): Promise<ExpertBatchLease> {
     if (this.#active)
       throw new Error("concurrent streamed expert waves are deferred to G7");
@@ -348,6 +735,7 @@ export class ExpertResidencyManager {
     this.#active = true;
     const entries: ExpertResidencyLeaseEntry[] = [];
     const loaded: SlotRecord[] = [];
+    const loadStarted = new Map<number, number>();
     try {
       for (const expertId of unique) {
         const hitId = this.#lookup.get(expertKey(layer, expertId));
@@ -358,7 +746,12 @@ export class ExpertResidencyManager {
         this.#backend.lease(record.id, record.generation, "gpu");
         record.phase = "leased";
         record.lastUse = ++this.#clock;
-        this.#hits++;
+        if (classification === "demand") {
+          this.#hits++;
+          this.#telemetryHits++;
+        } else {
+          this.#policyHits++;
+        }
         entries.push(this.#entry(record, true));
       }
 
@@ -390,14 +783,53 @@ export class ExpertResidencyManager {
         record.generation = ++this.#generation;
         record.layer = layer;
         record.expertId = expertId;
+        const submittedAt = performance.now();
         this.#backend.submitSegments(record.id, record.generation, location.segments);
         record.phase = "loading";
         loaded.push(record);
-        this.#misses++;
+        loadStarted.set(record.id, submittedAt);
+        if (classification === "demand") {
+          this.#misses++;
+          this.#telemetryMisses++;
+          this.#telemetryLoads++;
+          this.#telemetryReadOperations += location.segments.length;
+          this.#telemetryReadBytes += location.segments.reduce(
+            (sum, segment) => sum + segment.length,
+            0,
+          );
+        } else {
+          this.#policyMisses++;
+          this.#policyLoads++;
+          this.#policyReadOperations += location.segments.length;
+          this.#policyReadBytes += location.segments.reduce(
+            (sum, segment) => sum + segment.length,
+            0,
+          );
+        }
       }
 
-      const waits = await Promise.allSettled(loaded.map((record) =>
-        this.#backend.wait(record.id, record.generation)));
+      const foregroundStarted = loaded.length
+        ? performance.now()
+        : null;
+      const waits = await Promise.allSettled(loaded.map(async (record) => {
+        try {
+          await this.#backend.wait(record.id, record.generation);
+        } finally {
+          const started = loadStarted.get(record.id);
+          if (started !== undefined) {
+            const samples = classification === "demand"
+              ? this.#diskServiceMs
+              : this.#policyDiskServiceMs;
+            samples.push(performance.now() - started);
+          }
+        }
+      }));
+      if (foregroundStarted !== null) {
+        const samples = classification === "demand"
+          ? this.#foregroundWaitMs
+          : this.#policyForegroundWaitMs;
+        samples.push(performance.now() - foregroundStarted);
+      }
       for (let index = 0; index < loaded.length; index++) {
         const record = loaded[index]!;
         record.phase = "ready";
@@ -625,6 +1057,7 @@ export class ExpertResidencyManager {
       misses: this.#misses,
       evictions: this.#evictions,
       pressureEvictions: this.#pressureEvictions,
+      repinSwaps: this.#repinSwaps,
     };
   }
 

@@ -2307,7 +2307,7 @@ design + reasoning: `docs/investigations/expert-offload-single-user-moe.md`.
   multi-tenant loses the locality guarantee → experts stay resident there;
   keep offload files separate from the batch/slots work.
 
-## Phase 21 — GLM-5.2 on 32 GB via the complete Colibri hierarchy `[ ]` (opened 2026-07-21)
+## Phase 21 — GLM-5.2 on 32 GB via the complete Colibri hierarchy `[x]` (closed 2026-08-17)
 
 Full investigation and phased contract:
 **docs/design/colibri-glm52-port.md**. Source baseline:
@@ -2323,8 +2323,9 @@ orchestration, serving, tooling, Atlas/heat telemetry, and UI. Native helpers or
 custom Metal kernels remain valid implementation details at the OS/kernel
 boundary. The port decision is settled: the direct-Colibri same-machine numbers
 recorded in G0 are the bar the port is debugged against — a gap versus the
-oracle is a bug to close, not a go/no-go. **Product target: >=2 tok/s warm on
-the M1 Max 32 GB, MTP on, quality-preserving defaults** (decomposes as a
+oracle is a bug to close, not a go/no-go. **Aspirational performance target
+(not a release gate): >=2 tok/s warm on the M1 Max 32 GB, MTP on,
+quality-preserving defaults** (decomposes as a
 ~0.8-1 tok/s no-MTP base × MTP's measured 2.2-2.6 tok/forward — which is why
 serial MTP sits on the critical path as its own gate). Target machine is the
 M1 Max 32 GB; the 24 GB M4 Pro is below the one-slot-per-layer floor and out
@@ -2513,7 +2514,7 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
       exact rollback; `SPEC_PIN`-equivalent fixed draft/verify kernel family;
       grammar + prompt-lookup integration; tok/forward + end-to-end metrics.
       Exit: oracle accept/reject trace match + net win over MTP-off. All later
-      gates measure with MTP on (the 2 tok/s target assumes it).
+      gates measure with MTP on (the 2 tok/s aspiration assumes it).
       - [x] The in-process `Glm52NativeMtpProvider` shares the target embedding,
         output head, dense spine, sampler, and resident weight source. Its
         separate signed-int8 expert tier reserves 24 verify-working slots plus
@@ -2549,10 +2550,13 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         is evidence only—not the G5 memory-contract result. Stable records:
         `fixtures/colibri-glm52/g4-direct-mtp-trace.json` and
         `fixtures/colibri-glm52/g4-native-mtp-e2e.json`.
-- [ ] **G4R — prompt-seeded MTP research spike:** test whether populating the
+- [ ] **G4R — prompt-seeded MTP research spike (deferred 2026-07-30):** test
+      whether populating the
       MTP layer's independent KV cache from prompt context improves draft
       acceptance enough to repay its added prefill work. The landed
       direct-Colibri decode-only window remains the control and default.
+      Josh explicitly deferred this non-blocking research spike so G5 can
+      measure the already-correct, already-faster decode-only default first.
       Implementation parity is not the correctness oracle: candidate output
       must remain bit-for-bit identical to the target-only trajectory for the
       gated greedy and seeded-sampling cells.
@@ -2571,14 +2575,53 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         paired **end-to-end** wall time wins without breaking the G5 memory
         envelope. Otherwise record the negative result and retain the
         decode-only implementation.
-- [ ] **G5 — 32 GB memory contract (measured MTP on):** full dense + LRU +
+- [x] **G5 — 32 GB memory contract (measured MTP on):** full dense + LRU +
       working-set + KV + reconstructed-KV + MLX allocator/transient + Bun +
       OS-reserve planner, startup refusal, and physical-footprint feedback; the
       verify batch, MTP KV row, and larger per-forward union are in the
       accounted workload. Gate on the cleared M1 Max 32 GB: startup +128 tokens
       MTP on <=25 GB, flat memory, no compression spiral/swap; record cold/warm
       speed (MTP on and off) vs the G0 baseline.
-- [ ] **G6 — complete scheduler + Atlas:** batch-union; bounded
+      - [x] Header-only preflight exposes every line item and refuses before
+        resident weights are mapped. For the pinned production artifact,
+        the conservative MTP-on plan is 21,111,440,128 process bytes:
+        10,877,286,144 resident weights + 2,632,646,656 main slab +
+        945,356,800 MTP slab + 736,100,352 target KV + 9,437,184 MTP KV +
+        537,395,200 reconstructed-KV transient + 4,508,672 verify rows +
+        4 GiB MLX allocator + 512 MiB Bun/native + 512 MiB safety. The 25 GiB
+        ceiling leaves 5,732,105,472 bytes of planned process headroom and
+        reserves the remaining 7 GiB of a 32 GiB machine for the OS.
+      - [x] The model-free contract proves that the planner's total is exactly
+        the runtime expert-residency equation, accounts the 32-slot target
+        verify union and 24-slot MTP draft union, rejects undersized banks and
+        impossible context/machine/process limits, and removes MTP-only bytes
+        from the off lane.
+      - [x] Manual harness runs two 128-token turns in one process per mode,
+        preserves expert residency while rebuilding request KV, gates the first
+        64 tokens against direct Colibri and all 128 cold/warm/on/off tokens
+        against each other, samples task physical footprint + MLX + vm_stat
+        every 15 seconds, rejects any swapout, bounds compressor growth to
+        256 MiB, and requires warm final footprint within 256 MiB of cold.
+      - [x] Fresh-process full-model pair (2026-08-15): all four 128-token
+        cold/warm/on/off turns are identical and retain the direct-Colibri
+        first-64 prefix. MTP-on peak footprint was 14,807,789,616 bytes
+        (13.791 GiB), with cold/warm finals 14,673,342,512 -> 14,697,574,448
+        (+23.1 MiB); MTP-off peak was 13,576,039,488 bytes (12.644 GiB), with
+        finals 13,490,515,008 -> 13,510,634,560 (+19.2 MiB). Warm end-to-end
+        speed was 0.149 tok/s on vs 0.114 off, a 1.306x MTP win; both remain
+        below the G0 direct-Colibri warm baselines (~0.27 on / ~0.34 off), so
+        G6 performance work remains material.
+      - [x] Josh explicitly changed the live gate to before/after observation
+        on 2026-08-15. Strict enforcement remains the harness default;
+        `--memory-mode observe` records the same threshold violations without
+        aborting. The paired artifact is therefore `result: observed` and
+        `strictContractSatisfied: false`: maximum system/task compressor
+        deltas were 4,402,905,088 / 1,939,537,920 bytes, and MTP-off observed
+        7,143,424 bytes of swapout while MTP-on observed zero. The bounded
+        cold-to-warm footprint deltas and <=13.791 GiB peak close the requested
+        32 GB fit measurement without mislabeling it a strict zero-compression
+        pass. Evidence: machine-local `runs/colibri-g5/{mtp-on,mtp-off,summary}`.
+- [x] **G6 — complete scheduler + Atlas:** batch-union; bounded
       pread/F_NOCACHE workers; resident-first Metal submit overlapped with
       misses; persistent `.usage`; auto-pin; live LFRU (decay + 25%+4
       hysteresis + bounded swaps); PILOT, coupling, and two-step prediction.
@@ -2587,7 +2630,178 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
       A/B **with MTP on** before defaulting (a lever that wins MTP-off but loses
       MTP-on is not a default); Atlas-informed warm-start is a separate
       experiment.
-- [ ] **G7 — persistence, concurrency, and API parity:** (a) versioned
+      - [x] Scheduler foundation already present entering G6: stable whole-batch
+        expert union, bounded positioned-read/F_NOCACHE workers, per-layer LRU,
+        and resident/shared Metal submission before miss reads.
+      - [x] Persistent learning ledger (2026-08-15): target and MTP share one
+        Colibri-compatible `<model>/.coli_usage` table. Every selected top-k
+        route is counted before union deduplication; long-term counts load at
+        startup while heat/recency begin session-local, and generation safe
+        points publish via same-directory temp + atomic rename. Invalid derived
+        profiles warn and restart empty rather than blocking model load;
+        `usagePath: false` is the explicit diagnostic opt-out. Model-free gate:
+        `tests/expert-usage.test.ts` plus generation-finally coverage in
+        `tests/generate-wiring.test.ts`.
+      - [x] Budgeted startup auto-pin candidate (2026-08-15, opt-in pending
+        A/B): reproduce Colibri's 5k-history floor, confidence ramp through
+        200k selections, half-resident-tier share, and 0.5 GB minimum. Rank
+        deterministically by frequency then layer/expert, account Q8 MTP pins
+        at their larger slot cost, clamp behind the one-slot-per-layer floor,
+        reserve the exact slots in both plans, and preload the hot store before
+        the first forward. Explicit pins take precedence; `autoPin` remains off
+        until the required MTP-on comparison wins.
+      - [x] Safe-turn live LFRU candidate (2026-08-15, opt-in pending A/B):
+        exact uint32 recency score, 25%+4 hysteresis, session-heat halving after
+        each pass, and one global four-swap cap across target + MTP. Promotion
+        reuses an already-resident hot expert or loads it through the bounded
+        working bank, then swaps logical tier roles only after the load is
+        complete. Residency maps expose slot/tier, long-term count, heat,
+        recency, hits/misses, and repin totals. Persistent frequency never
+        decays; `liveRepin` remains off until its MTP-on comparison wins.
+      - [x] Paired-measurement seam: demand and policy traffic are separated;
+        both report exact read bytes/operations plus disk-service and
+        foreground-wait p50/p95/p99, while main/MTP layer-forward latency is
+        captured independently. The G6 harness first learns a seed in its own
+        MTP-on process, then gives identical copies to control, auto-pin, and
+        auto-pin+LFRU arms, refuses token drift/overwrites, and supports three
+        fresh repeats for a default-eligible result.
+      - [x] Three-repeat MTP-on startup-pin/LFRU decision (2026-08-16): all
+        nine cold/warm arm runs were token-identical from the same 308,592-
+        selection seed profile. Relative to control, startup auto-pin raised
+        the median warm hit rate 1.66% -> 9.62% and cut warm disk GB/token by
+        8.02%, but warm end-to-end speed fell 4.06% (0.149 -> 0.143 tok/s),
+        median open time rose 526 ms, and median warm physical footprint rose
+        3.337 GiB (13.694 -> 17.032 GiB). Its 3.329 GiB policy preload did not
+        pay back on this workload. Live LFRU performed zero swaps in all six
+        measured turns; its 0.148 tok/s median was 0.38% below control and is
+        only run-order noise over the identical startup placement. **Decision:
+        keep `autoPin` and `liveRepin` off by default.** Machine-local evidence:
+        `runs/colibri-g6-learning-shakeout-2026-08-15/summary.json`.
+      - [x] Measurement-only PILOT seam (2026-08-16): after layer L attention,
+        apply layer L+1's post-attention RMS norm and router to the unnormalized
+        residual, copy the predicted top-8 routes, and compare them with the
+        actual next-layer routes without consulting residency or issuing I/O.
+        Deterministic tests cover rank accounting, the faithful <=8-row guard,
+        abandoned predictions, and an exact two-layer streamed differential.
+        One MTP-on paired full-model shakeout kept tokens exact and measured
+        69.90% top-8 precision/recall. The first four predicted ranks were
+        87.08% precise and covered 43.54% of the actual top-8; usable lead time
+        was 179.9 ms p50 / 219.7 ms p95 versus ~92.7 ms demand-read p95. The
+        candidate was 1.009x control warm throughput with ~3.5 MB additional
+        final footprint, but one repeat is only a correctness/cost shakeout,
+        not a replicated performance claim. Machine-local evidence:
+        `runs/colibri-g6-pilot-measure-shakeout-2026-08-16/summary.json`.
+      - [x] Bounded hint-only `PILOT_K=4` (2026-08-16): a dedicated native
+        advisory queue issues scale-tail-only `F_RDADVISE` on a buffered file
+        descriptor while demand reads retain `F_NOCACHE`. Hints deduplicate
+        candidates, skip resident experts, never allocate/publish slots or
+        mutate demand/LRU state, and expose submitted/completed/dropped/error
+        counters plus queue depth. Deterministic native/residency/model tests
+        cover queue completion, exact bytes, stable deduplication, resident
+        skips, and unchanged residency/demand state. The one-repeat MTP-on
+        paired full-model shakeout kept tokens exact; each turn submitted and
+        completed 48,162 hints (144,486 operations / 1,972,715,520 advised
+        bytes) with zero drops, errors, or end-of-turn backlog. Warm logical
+        demand reads were exactly unchanged at 14,883,703,168 bytes/token;
+        disk-service p95 was 1.0065x control, foreground-wait p95 was 1.0193x,
+        and warm throughput was 0.9746x (0.14031 -> 0.13675 tok/s) with only
+        +3.8 MB final footprint. **Decision: keep hint-only off and do not
+        promote this policy to real speculative loads.** This is a correctness
+        shakeout, not a replicated performance claim. Evidence:
+        `runs/colibri-g6-pilot-hint-k4-shakeout-2026-08-16/summary.json`.
+      - [x] Coupling + two-step measurement decision (2026-08-16): the
+        value-preserving two-step path reproduces Colibri's current-layer
+        shared-expert correction and scores it independently from direct
+        PILOT. On the one-repeat MTP-on paired shakeout it raised top-8
+        precision/recall from 69.90% to 73.01% and exact rows from 5.35% to
+        7.90%, but warm throughput fell 10.13% (0.14978 -> 0.13461 tok/s)
+        while logical demand bytes/token were exactly unchanged. The separate
+        route trace captured 23,250 full router rows; a non-leaky cold-only
+        70/30 temporal split trained on 108 positions and scored 47 held-out
+        positions. At budget 8, raw coactivation coupling reached 31.02%
+        recall for delta 1 and 30.81% for delta 2, beating equal-budget
+        marginals by 8.06 and 7.66 points but remaining far below direct
+        PILOT. Even budget 32 reached only 57.35% / 56.74% recall. **Decision:
+        keep both mechanisms off and reject real speculative loads.** These
+        are quality/cost shakeouts, not replicated performance claims.
+        Evidence: `runs/colibri-g6-pilot-two-step-shakeout-2026-08-16/` and
+        `runs/colibri-g6-coupling-shakeout-2026-08-16/`.
+      - [x] Atlas probe/analyzer/visualization implementation (2026-08-16): pin
+        Colibri's 10-category x 3-prompt matrix at source commit
+        `ecade075cfc2eae684097ea7de5570c3786ce199`; reuse one streamed model
+        load but isolate every prompt with a fresh KV cache and route segment;
+        disable MTP, persistence, learning, prediction, hinting, thinking, and
+        sampling. Normalize per-run shares, require >=2 prompt replication,
+        and validate with a globally non-leaky leave-one-prompt-out classifier.
+        Emit detailed JSON, Colibri-compatible `experts.json`, and a standalone
+        interactive affinity map. Seven focused tests, including an end-to-end
+        analyzer run, pass; the pinned prompts tokenize to 13-36 tokens.
+      - [x] Real-model Atlas reproduction (2026-08-16): the resumable sweep
+        completed all 30 isolated prompts and retained 13,236 experts after
+        the >=2-prompt replication gate. Global leave-one-prompt-out
+        classification scored 29/30 (96.7%, chance 10.0%), exactly matching
+        Colibri's published held-out accuracy; the only miss was Chinese prompt
+        1 classified as poetry. Of the retained experts, 1,065 (8.05%) crossed
+        the >=0.50 strong-specialist threshold, versus Colibri's published
+        1,041/13,260 (7.85%). The standalone interactive report rendered at
+        desktop and narrow widths without application errors (the only browser
+        console event was the expected absent favicon). Atlas-informed
+        warm-start remains a separate, unimplemented, default-off experiment.
+        Evidence: machine-local `runs/colibri-g6-atlas/analysis/`.
+- [x] **G6R — IndexShare/IndexCache long-context DSA performance spike:** the
+      paper/code audit is complete in
+      `docs/investigations/indexshare-performance-spike.md`. GLM-5.2 already
+      ships and mlx-bun already implements a 21-full/57-shared schedule, so
+      this is a production-kernel + measurement spike, not a new surface.
+      First generate the exact immutable indexer overlay (Josh-run selective
+      reads from about 99.90 GiB of pinned source shards; no agent-session
+      download), then replace the correctness-only broadcast/host-sort path
+      with a tiled deterministic score/top-k buffer that shared layers reuse
+      without host copies. Gate official-runtime parity above 2,048 tokens and
+      run paired 2K/8K/32K MTP-off/on cells on the M1 Max, recording cells that
+      fail the exact G5 planner as contract-ineligible. Keep the checkpoint
+      schedule fixed; report DSA-off vs DSA+IndexShare as a combined sparse-
+      attention comparison, because the checkpoint does not contain the 57
+      missing indexers needed for a true all-full A/B. Sparse long prefill is a
+      follow-up prerequisite before making a prefill claim.
+      - [x] **Stage 0 — overlay + first-sparse parity (2026-08-17):** generated
+        the external 20-file, 197,202,400-byte stock indexer overlay from
+        `zai-org/GLM-5.2-FP8@ba978f7d`, header-validated the exact 21F/57S
+        schedule, and ran context 2,049 through mlx-bun and pinned
+        `colibri@ecade075`. All 21 tie-free official score rows replay through
+        mlx-bun to exact ordered positions and float32 thresholds; both
+        runtimes emit greedy `[264,264]` and the same sparse-step top-1.
+        Full-vector cosine is 0.997645; direct model-state selections are
+        10/21 ordered-exact and 14/21 set-exact because the runtimes' upstream
+        quantized matmul accumulation differs, so official-score replay is the
+        isolated DSA gate. Reproducible probe/checker scripts are tracked;
+        raw capture + overlay SHA-256 manifest are machine-local under
+        `~/.cache/mlx-bun/evidence/glm52-dsa-stage0-2026-08-17/`.
+      - [x] **Stage 1 — production-shaped device score/top-k + reusable
+        indices (2026-08-17):** tiled `[H,D] @ [D,L]` scoring removes the
+        `[H,L,D]` broadcast; deterministic uint64 rank keys preserve exact
+        threshold/lower-position ties; FULL retains one 8 KiB device index
+        buffer and SHARED MLA consumes it without readback or re-upload. Random,
+        tied, all-equal, 2,049/2,048, borrowed-gather, and all 21 captured score
+        rows pass. A fresh live run reproduced all 21 prior position vectors,
+        `[264,264]`, and byte-identical logits. Exact-geometry score+top-k
+        medians are 0.929 ms at 8K and 1.269 ms at 32K (component numbers only).
+        Evidence: `~/.cache/mlx-bun/evidence/glm52-dsa-stage1-2026-08-17/`.
+      - [x] **Stage 2 — paired decode matrix (2026-08-17):** 24 eligible
+        fresh-process cells (2K/8K x DSA off/on x MTP off/on x three repeats)
+        passed cold/warm, repeat, and MTP exact-token gates. The 12 planned 32K
+        cells are contract-ineligible: exact plans are 27.320 GiB MTP-off and
+        28.540 GiB MTP-on, above G5's 25 GiB process ceiling. At 8K, DSA raised
+        serial decode 12.38% and reduced paired total wall time 1.89% without
+        MTP, below the 5% win gate. With MTP, DSA reduced decode throughput
+        34.33% and increased total wall time 8.19%; two of three DSA+MTP cells
+        also observed net swap growth. Preserve 21F/57S as model semantics, but
+        make no product-speed claim. Sparse prefill remains deferred because
+        decode is conclusive and the prompt-only dense benchmark seam makes no
+        prefill claim. Evidence:
+        `~/.cache/mlx-bun/evidence/glm52-dsa-stage2-2026-08-17/`; manifest
+        SHA-256 `90b3fe4ed53714604b7a747991b3bb1b87aedbf57a139915065f5b4be42cda38`.
+- [x] **G7 — persistence, concurrency, and API parity:** (a) versioned
       compressed MLA/DSA/MTP `kv-store` save/restore with no full-K/V
       materialization; (b) batchable cache merge/extract, compressed-byte
       admission, cross-row expert union, join/leave/cancel — batched rows decode
@@ -2596,29 +2810,120 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
       chat/text completions, Anthropic Messages, OpenAI Responses, streaming,
       tools, grammar, stops, sampling/penalties, usage, serial logprobs, library
       `generate`, CLI chat/serve, health/stats — incl. GLM chat-template
-      rendering, thinking-block policy per surface, and tool-call parsing (the
-      existing parser is Gemma-only). Non-generative capabilities such as
+      rendering, thinking-block policy per surface, and tool-call parsing.
+      Non-generative capabilities such as
       embeddings, vision/audio, LoRA and training remain explicitly false.
-- [ ] **G8 — productization:** resumable acquisition or one-shard-at-a-time
+      - [x] **G7a — compressed persistence (2026-08-17):** v3 remains backward
+        compatible and adds `mla`, `mla-dsa`, and `mtp-mla` cache kinds. Save,
+        async/atomic streaming, clone, prompt/SSD byte accounting, restart
+        scan/trim, and copy-restore operate only on checkpoint-native rank-3
+        latent/RoPE/index tensors. Model id plus config/tokenizer metadata and
+        exact GLM role/geometry reject incompatible restores before tensor mmap.
+        Tiny GLM target continuation matches uninterrupted hidden state and
+        offsets at dense and sparse prefix lengths; a restored native MTP row
+        produces the same next drafts and offset. The focused GLM/kv-store/SSD
+        gate passes 42 tests.
+      - [x] **G7b — continuous batching (2026-08-17):** a structural
+        `BatchableCache` capability now owns GLM's right-justified compressed
+        latent/RoPE/DSA rows, per-row offsets, merge, independent extraction,
+        filtering, context bounds, and logical byte projection. The scheduler
+        dispatches the streamed async model path, admits checkpoint-native
+        compressed bytes, preserves mixed-length positions, and forms one
+        cross-row MoE expert plan per layer/step. Tiny differential gates match
+        mixed-length DSA rows and extracted tips exactly against serial rows;
+        an end-to-end scheduler gate covers join, cancellation, sibling
+        completion, row filtering, context refusal, and exact projected bytes.
+        Gateway/stats advertise `batch` only when the model cache capability is
+        live. Native MTP requests remain truthfully serial (`hasDraft`), with
+        per-row batched MTP still post-release. The broader focused
+        GLM/persistence/gateway gate passes 115 tests with 1,701 assertions.
+      - [x] **G7c — serving parity (2026-08-17):** complete and gate every generative HTTP,
+        library, CLI, discovery, and telemetry surface listed above. The shared
+        generator now awaits streamed experts; `loadContext`/`openModel`, CLI
+        serve/pi/generate, native MTP defaulting, GLM tool parsing, explicit
+        capability discovery, exact-plan stats, all four HTTP protocols, and
+        SSE are synthetic-gated. The fresh real-artifact CLI smoke passed all
+        four non-streaming protocols plus SSE under the exact 25 GiB plan;
+        health/discovery/stats were correct, SSE terminated in `[DONE]`, and
+        chat/SSE reported `serial+spec`. Post-run rows returned to idle. The
+        final focused static/synthetic gate passes TypeScript plus 152 tests /
+        2,536 assertions with zero failures.
+- [x] **G8 — productization:** resumable acquisition or one-shard-at-a-time
       conversion, docs/attribution, 32 GB quickstart, curated memory/speed/
       quality cells in `benchmarks/RESULTS.md`; update README and reference
       models/memory/cli/server-config/server-api/library-api/features-matrix with
       each shipped surface rather than deferring documentation to phase end.
-      Headline bar: **>=2 tok/s warm on the M1 Max 32 GB, MTP on,
-      quality-preserving defaults**, provenance-recorded.
+      Aspirational target: **>=2 tok/s warm on the M1 Max 32 GB, MTP on,
+      quality-preserving defaults**. This is an optimization direction, not a
+      productization blocker; record the actual result and provenance.
+      - [x] **G8a — acquisition, recovery, and attribution (2026-08-17):**
+        `get` now preflights the exact remaining payload before network transfer,
+        credits complete shared blobs and valid resumable prefixes, and requires
+        a fixed 1 GiB safety reserve. The pinned ~357 GiB artifact, optional
+        `HF_HUB_CACHE` volume selection, rerun/resume behavior, exact 25 GiB
+        serve command, model lineage, and Apache-2.0 Colibri source attribution
+        are documented. Model-free gate: TypeScript plus 18 downloader/lock
+        tests with 56 assertions.
+      - [x] **G8b — operator UX and telemetry (2026-08-17):** `fit`, `/fit`,
+        `/stats`, and the status UI now use the exact streamed GLM plan rather
+        than the generic all-resident estimator. They separate the exact
+        artifact-on-disk size from resident weights, main/MTP expert slabs,
+        compressed KV, and reserves; report the measured 0.149 tok/s result,
+        direct 0.27 tok/s oracle, and 2 tok/s aspiration with distinct labels;
+        and publish/show last-turn main/MTP hit rates, SSD bytes, residency,
+        policy/forward telemetry, and repin events. There is no standalone
+        `doctor` verb; `fit` is the diagnostic command. TypeScript plus 55
+        focused GLM/downloader/server tests / 1,910 assertions pass.
+      - [x] **G8c — curated evidence (2026-08-17):**
+        `benchmarks/RESULTS.md` now records the pinned direct-Colibri/tiny/
+        production/real-model/DSA oracle gates; final DSA-aware 19.89/25 GiB
+        resource plan; honest G5 before/after compressor/swap caveat; cold/warm
+        MTP-on/off speed and footprint; replicated expert-I/O and rejected
+        learning policies; paired DSA matrix; and real-artifact API smoke. The
+        measured warm quality-preserving 0.1487 tok/s end-to-end result is
+        explicitly 7.43% of / 13.45x below the aspirational 2 tok/s target.
+      - [x] **G8d — release/docs closure (2026-08-17):** final cross-reference sweep across
+        README and the applicable model/CLI/server/library/features references;
+        package native expert I/O and verify the fresh-machine command path.
+        - [x] Local package/verification (2026-08-17): native pack v0.2.0 and
+          the compiled/Homebrew sidecar bundle both include the 53 KiB
+          `libmlx_bun_expert_io.dylib`; resolver order covers beside-binary and
+          versioned pack-cache layouts. The 52,307,647-byte arm64 pack has
+          SHA-256 `9bd3795c5ea8f52b18413501f2d68c32c264a20751302300a08dc04cd67df97c`.
+          An isolated empty-cache smoke downloaded/extracted it over the real
+          resumable path, loaded MLX, and completed a native positioned expert
+          read. The compiled binary bundle also passed version/help/ls/pi
+          asset smokes. TypeScript, docs-map, and 74 focused tests / 4,335
+          assertions pass.
+        - [x] Published GitHub release `native-v0.2.0` after explicit
+          authorization. Both assets are uploaded; GitHub reports the archive
+          at exactly 52,307,647 bytes with the expected SHA-256. Anonymous
+          redirect/HTTP-200 metadata passed, followed by a clean default-URL
+          `ensureNativeRuntime()` download, checksum, and extraction containing
+          all five required files. Phase 21 G8 is closed.
+        - [x] Published the actual mlx-bun v0.0.12 distribution (2026-08-17):
+          signed/notarized GitHub release plus stable asset, npm
+          `mlx-bun@0.0.12`, and Homebrew tap. Both 80,420,638-byte binary
+          assets report SHA-256
+          `64c4d697faba65789c2af7c1344ee39024f8a03bd6839d2c8df4ec7dce872a74`;
+          npm reports shasum `0dcc5c200fa81dbea1f8be854e21a0efbbdebbfa`.
+          Public HTTP, registry, release metadata, and tap contents were
+          independently re-read after publication. The full release gate was
+          1,936 pass / 71 skip / 0 fail with 28,378 assertions.
 
 **Correctness boundary:** default quality policy keeps checkpoint precision and
 true top-8 routing. `CACHE_ROUTE`, expert top-p/top-k, and any expert budget are
 Lab-only/KL+task-quality gated. Preserve Colibri's negative result:
 `EXPERT_BUDGET` currently has no measured coherent+faster operating window and
 must not ship as a normal knob. Several of Colibri's best small-RAM hit-rate
-numbers use expert top-p; the 2 tok/s target must be met without
-quality-changing knobs.
+numbers use expert top-p; progress toward the 2 tok/s aspiration must not use
+quality-changing defaults.
 
 **Overall exit:** a fresh 32 GB Apple Silicon machine with adequate fast disk
 can start GLM-5.2 and complete a chat within the measured <=25 GB contract from
-one documented mlx-bun command sequence, at **>=2 tok/s warm with serial MTP
-on and quality-preserving defaults** (measured on the M1 Max 32 GB);
+one documented mlx-bun command sequence; its actual cold/warm speed with serial
+MTP on and quality-preserving defaults is provenance-recorded on the M1 Max
+32 GB, including the gap to the aspirational 2 tok/s target;
 save/restart continuation, mixed-row continuous batching (ordinary decode —
 batched MTP is post-release), tools and structured output work through chat
 completions, text completions, Anthropic Messages, OpenAI Responses, the

@@ -20,14 +20,12 @@
 // curve endpoints, adapter mount/unmount) goes through runExclusive() so there
 // is exactly ONE mutual-exclusion domain.
 //
-// v1 batchable gate (the rest → serial): batch>1 AND every model cache is a
-// dynamic-B-capable type (KVCache | RotatingKVCache — mirrors mlx-lm
-// server.py's all-caches-have-merge check; Qwen3.5's SSMCache has no
-// merge/filter/temporalView, so hybrid models route serial until the ArraysCache
-// port — batching-v2-plan item h) AND bf16 KV (no kv-quant — the batched
-// scheduler runs bf16; mixed-precision-KV batching is the novel-combo L2
-// follow-up) AND no vision AND no LoRA adapters AND no repetition penalty
-// (per-row logits processors are a later refinement) AND no user-fixed seed
+// Batchable gate (the rest → serial): batch>1 AND every model cache is a
+// dynamic-B-capable built-in type or implements BatchableCache (mirrors mlx-lm
+// server.py's all-caches-have-merge check). GLM's capability owns compressed
+// MLA/DSA merge/extract/filter and byte projection; Qwen3.5's SSM cache owns
+// its row state. The remaining request-shape exclusions include vision, LoRA,
+// serial-only KV modes, and user-fixed seed
 // (reproducibility ⇒ solo, matching mlx-lm's _is_batchable). Temperature /
 // top-p / top-k DO batch (each row samples with its own seed). Full-attention
 // AND sliding-window (Gemma) models both batch — the scheduler assembles each
@@ -39,7 +37,7 @@ import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import type { RuntimeModel } from "../model/factory";
 import { DiffusionGemmaModel } from "../model/diffusion-gemma";
-import { KVCache, RotatingKVCache } from "../model/gemma4-base";
+import { KVCache, RotatingKVCache, isBatchableCache } from "../model/gemma4-base";
 import { SSMCache } from "../model/qwen3-delta";
 import { UniversalDenseModel } from "../model/universal/dense";
 import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate";
@@ -187,7 +185,13 @@ export class GenerationGateway {
 
   /** True if `--batch N` (N>1) is on (batchability is then per-request). */
   get batchingEnabled(): boolean {
-    return this.#batch > 1;
+    return this.batchMode === "batch";
+  }
+
+  /** Truthful configured/model-capability mode for stats and discovery. */
+  get batchMode(): "off" | "serial" | "batch" {
+    if (this.#batch <= 1) return "off";
+    return this.#modelCachesBatchable() ? "batch" : "serial";
   }
 
   /** Rows currently decoding in the batch (0 if no scheduler / idle). */
@@ -262,6 +266,7 @@ export class GenerationGateway {
         (c) =>
           c instanceof KVCache ||
           c instanceof RotatingKVCache ||
+          isBatchableCache(c) ||
           (ssmOk && c instanceof SSMCache),
       );
       for (const c of proto) c.dispose();

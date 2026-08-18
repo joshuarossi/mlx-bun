@@ -18,6 +18,7 @@
 import {
   mkdirSync, existsSync, statSync, createWriteStream, renameSync, rmSync,
   symlinkSync, readFileSync, openSync, closeSync, readSync, writeSync,
+  statfsSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { DEFAULT_HUB } from "./registry";
@@ -45,6 +46,56 @@ export interface DownloadOptions {
   endpoint?: string;
   token?: string | null;
   onProgress?: (file: string, received: number, total: number) => void;
+}
+
+export interface DownloadSpacePlan {
+  /** Bytes still absent after crediting verified blobs and resumable prefixes. */
+  remainingBytes: number;
+  /** Files that still need at least one byte. */
+  remainingFiles: number;
+  /** Files already complete in the shared HF blob store. */
+  completeFiles: number;
+  /** Existing `.incomplete` bytes that will be rehashed and resumed. */
+  resumableBytes: number;
+}
+
+/** One GiB for filesystem metadata, the final refs write, and normal host
+ * operation. The artifact bytes themselves are exact; this is deliberately a
+ * small fixed guard rather than a percentage that would add tens of GiB to a
+ * Colibri download. */
+export const DOWNLOAD_DISK_RESERVE_BYTES = 2 ** 30;
+
+/** Compute the exact remaining payload without opening or hashing any blob.
+ * A valid-size final blob is already complete; an in-range `.incomplete`
+ * prefix is credited because downloadOneLocked resumes it in place. */
+export function planDownloadSpace(
+  files: readonly RepoFile[],
+  blobsDir: string,
+): DownloadSpacePlan {
+  let remainingBytes = 0;
+  let remainingFiles = 0;
+  let completeFiles = 0;
+  let resumableBytes = 0;
+  for (const file of files) {
+    const blobId = file.lfs?.sha256 ?? file.blobId;
+    if (!blobId) throw new Error(`no blob id for ${file.rfilename}`);
+    const blobPath = join(blobsDir, blobId);
+    if (existsSync(blobPath) && statSync(blobPath).size === file.size) {
+      completeFiles++;
+      continue;
+    }
+    const partPath = `${blobPath}.incomplete`;
+    const partBytes = existsSync(partPath) ? statSync(partPath).size : 0;
+    const credited = partBytes >= 0 && partBytes <= file.size ? partBytes : 0;
+    resumableBytes += credited;
+    remainingBytes += file.size - credited;
+    remainingFiles++;
+  }
+  return { remainingBytes, remainingFiles, completeFiles, resumableBytes };
+}
+
+function formatGib(bytes: number): string {
+  return `${(bytes / 2 ** 30).toFixed(2)} GiB`;
 }
 
 /** HF auth: explicit > env > the file `hf auth login` writes. */
@@ -366,6 +417,28 @@ export async function downloadModel(
   const snapDir = join(repoDir, "snapshots", listing.sha);
   mkdirSync(blobsDir, { recursive: true });
   mkdirSync(join(repoDir, "refs"), { recursive: true });
+
+  // Preflight before the first network payload. This matters for direct
+  // Colibri artifacts (hundreds of GiB): discovering a full volume after the
+  // 140th shard is not a usable failure mode. Existing verified blobs and
+  // partial prefixes are credited exactly, so rerunning after interruption is
+  // both resumable and progressively cheaper.
+  const space = planDownloadSpace(listing.files, blobsDir);
+  if (space.remainingBytes > 0) {
+    const fs = statfsSync(blobsDir);
+    const availableBytes = fs.bavail * fs.bsize;
+    const requiredBytes = space.remainingBytes + DOWNLOAD_DISK_RESERVE_BYTES;
+    if (requiredBytes > availableBytes) {
+      throw new Error(
+        `insufficient disk space for ${repoId}: ${formatGib(space.remainingBytes)} ` +
+        `remains across ${space.remainingFiles} files, but only ` +
+        `${formatGib(availableBytes)} is available in ${hub} ` +
+        `(${formatGib(DOWNLOAD_DISK_RESERVE_BYTES)} safety reserve). ` +
+        `Free space or choose another cache directory, then rerun; ` +
+        `${formatGib(space.resumableBytes)} of partial data will resume.`,
+      );
+    }
+  }
 
   const status: DownloadStatus = {
     repoId, state: "active", currentFile: null,

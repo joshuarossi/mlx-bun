@@ -349,6 +349,33 @@ export class Generation implements AsyncIterable<GeneratedToken> {
 const WIRE_THRESHOLD = 0.75;
 let wiredScopeDepth = 0;
 let wiredOldLimit = 0;
+
+type WiredModelMemory = {
+  readonly weightsBytes: number;
+  readonly expertRuntime?: {
+    readonly plan: { readonly plannedBytes: number };
+    flushUsage?: () => void;
+    finishUsage?: () => Promise<void>;
+  } | null;
+};
+
+/** Bytes whose MLX graph must stay resident while a model executes. */
+export function wiredWorkingSetBytes(model: WiredModelMemory): number {
+  const planned = model.expertRuntime?.plan.plannedBytes;
+  return typeof planned === "number" && Number.isFinite(planned) && planned > 0
+    ? Math.max(model.weightsBytes, planned)
+    : model.weightsBytes;
+}
+
+export function modelNeedsWiredLimit(
+  model: WiredModelMemory,
+  recommendedBytes = maxRecommendedWorkingSetSize(),
+  force = process.env.MLX_BUN_FORCE_WIRE === "1",
+): boolean {
+  return force ||
+    wiredWorkingSetBytes(model) > WIRE_THRESHOLD * recommendedBytes;
+}
+
 function enterWiredScope(): void {
   if (wiredScopeDepth++ === 0)
     wiredOldLimit = setWiredLimit(maxRecommendedWorkingSetSize());
@@ -373,9 +400,10 @@ export function generate(
       ? generateDiffusionInner(model, promptTokens, options)
       : generateInner(model, promptTokens, options);
   if (options.adapters?.length) inner = adapterScoped(model, options.adapters, inner);
-  const wire =
-    process.env.MLX_BUN_FORCE_WIRE === "1" ||
-    model.weightsBytes > WIRE_THRESHOLD * maxRecommendedWorkingSetSize();
+  const memoryModel: WiredModelMemory = model;
+  if (memoryModel.expertRuntime?.flushUsage)
+    inner = usageScoped(memoryModel, inner);
+  const wire = modelNeedsWiredLimit(model);
   return new Generation(wire ? wiredScoped(inner) : inner);
 }
 
@@ -446,6 +474,68 @@ async function* wiredScoped(
   } finally {
     exitWiredScope();
   }
+}
+
+/** Publish the streamed model's route ledger on every generator exit path. */
+async function* usageScoped(
+  model: WiredModelMemory,
+  inner: AsyncGenerator<GeneratedToken, GenerateStats>,
+): AsyncGenerator<GeneratedToken, GenerateStats> {
+  try {
+    return yield* inner;
+  } finally {
+    if (model.expertRuntime?.finishUsage)
+      await model.expertRuntime.finishUsage();
+    else
+      model.expertRuntime?.flushUsage?.();
+  }
+}
+
+/** Apply generate()'s scoped wiring policy to non-generator execution paths. */
+export async function withModelWiredLimit<T>(
+  model: WiredModelMemory,
+  run: () => Promise<T>,
+): Promise<T> {
+  if (!modelNeedsWiredLimit(model)) return run();
+  enterWiredScope();
+  try {
+    return await run();
+  } finally {
+    exitWiredScope();
+  }
+}
+
+/** Apply generate()'s usage safe-point to direct/non-generator paths. */
+export async function withModelUsageFlush<T>(
+  model: WiredModelMemory,
+  run: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await run();
+  } finally {
+    if (model.expertRuntime?.finishUsage)
+      await model.expertRuntime.finishUsage();
+    else
+      model.expertRuntime?.flushUsage?.();
+  }
+}
+
+/** Forward through either the ordinary synchronous model surface or a
+ * streamed-expert model whose layer execution must cross async I/O. Keeping
+ * this choice inside the shared generator preserves the complete generation
+ * contract (sampling, grammar, logprobs, prompt cache, and cancellation) for
+ * both execution styles. */
+async function forwardHiddenForGeneration(
+  model: RuntimeModel,
+  ids: MlxArray,
+  cache: Cache[],
+): Promise<MlxArray> {
+  const asyncModel = model as RuntimeModel & {
+    forwardHiddenAsync?: (ids: MlxArray, cache: Cache[]) => Promise<MlxArray>;
+  };
+  return typeof asyncModel.forwardHiddenAsync === "function"
+    ? await asyncModel.forwardHiddenAsync(ids, cache)
+    : model.forwardHidden(ids, cache);
 }
 
 async function* generateInner(
@@ -626,7 +716,7 @@ async function* generateInner(
         while (pos < snapAt) {
           const chunk = promptTokens.slice(pos, Math.min(pos + prefillChunkSize, snapAt));
           const ids = ops.fromInt32(chunk, [1, chunk.length]);
-          const h = model.forwardHidden(ids, cache);
+          const h = await forwardHiddenForGeneration(model, ids, cache);
           ids.dispose();
           h.dispose();
           evalCacheState(cache);
@@ -660,7 +750,7 @@ async function* generateInner(
           : prefillChunkSize;
         const chunk = promptTokens.slice(pos, pos + n);
         const ids = ops.fromInt32(chunk, [1, chunk.length]);
-        const h = model.forwardHidden(ids, cache);
+        const h = await forwardHiddenForGeneration(model, ids, cache);
         ids.dispose();
         h.dispose(); // logits never computed for non-final chunks
         evalCacheState(cache);
@@ -687,7 +777,7 @@ async function* generateInner(
       // cover exactly the prompt, as before.
       const lastChunk = promptTokens.slice(pos);
       const ids0 = ops.fromInt32(lastChunk, [1, lastChunk.length]);
-      h0 = model.forwardHidden(ids0, cache);
+      h0 = await forwardHiddenForGeneration(model, ids0, cache);
       ids0.dispose();
     }
     if (options.snapshotAt === undefined || options.snapshotAt >= promptTokens.length)
@@ -805,7 +895,7 @@ async function* generateInner(
         }
         const chunk = [grammarTok, ...jumpEmit];
         const ids = ops.fromInt32(chunk, [1, chunk.length]);
-        const h = model.forwardHidden(ids, cache);
+        const h = await forwardHiddenForGeneration(model, ids, cache);
         ids.dispose();
         // Every chunk token's KV is in the cache regardless of what follows.
         forwarded.push(...chunk);
@@ -846,7 +936,7 @@ async function* generateInner(
         }
         if (!logits) {
           const ids = ops.reshape(cur, [1, 1]);
-          const h = model.forwardHidden(ids, cache);
+          const h = await forwardHiddenForGeneration(model, ids, cache);
           ids.dispose();
           logits = model.logitsFromHidden(h);
           h.dispose();

@@ -234,6 +234,38 @@ export interface Cache {
   dispose(): void;
 }
 
+/**
+ * Capability contract for cache layouts that own their dynamic-row batching.
+ * The scheduler uses this for non-K/V state families (for example GLM's
+ * compressed MLA/DSA state) instead of teaching the scheduler their tensor
+ * layout. `mergeRows` writes into an empty cache and does not consume inputs;
+ * extracted rows are independent owned caches.
+ */
+export interface BatchableCache extends Cache {
+  readonly batchSize: number | null;
+  readonly rowOffsets: readonly number[];
+  readonly leftPad: readonly number[];
+  readonly maxTokens?: number;
+  makeEmptyBatch(): BatchableCache;
+  mergeRows(rows: readonly Cache[]): void;
+  extractRow(row: number): Cache;
+  filterRows(keep: readonly number[]): void;
+  projectedBytes(tokens: number): number;
+}
+
+export function isBatchableCache(cache: Cache): cache is BatchableCache {
+  const candidate = cache as Partial<BatchableCache>;
+  return (
+    typeof candidate.makeEmptyBatch === "function" &&
+    typeof candidate.mergeRows === "function" &&
+    typeof candidate.extractRow === "function" &&
+    typeof candidate.filterRows === "function" &&
+    typeof candidate.projectedBytes === "function" &&
+    Array.isArray(candidate.rowOffsets) &&
+    Array.isArray(candidate.leftPad)
+  );
+}
+
 /** How one decode step interacts with a cache under compiled decode
  *  (returned by prepareDecodeStep, consumed by compiled-decode.ts):
  *  - "concat": the compiled graph fetches concat(active prefix, new kv)

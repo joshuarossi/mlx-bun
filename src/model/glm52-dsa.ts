@@ -6,6 +6,7 @@
 
 import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
+import { MetalKernel } from "../mlx/metal-kernel";
 import * as ops from "../mlx/ops";
 import {
   dsaScoresFromProjectedF32,
@@ -42,6 +43,19 @@ export interface Glm52DsaProjectedQuery {
   readonly headWeights: Float32Array;
 }
 
+/**
+ * Owned device result for one FULL-layer sparse selection. `positions` is the
+ * compact int32/uint32 buffer shared by the following SHARED layers; neither
+ * positions nor threshold is read back unless an explicit probe asks for it.
+ */
+export interface Glm52DsaDeviceSelection {
+  readonly contextLength: number;
+  readonly topK: number;
+  readonly positions: MlxArray;
+  readonly threshold: MlxArray;
+  dispose(): void;
+}
+
 export type Glm52DsaLayerSelection =
   | {
       readonly mode: "dense";
@@ -59,6 +73,11 @@ export type Glm52DsaLayerSelection =
       readonly positions: readonly number[];
       readonly threshold: number;
     };
+
+/** Debug/probe-only observer for selections computed by FULL indexer layers. */
+export type Glm52DsaSelectionObserver = (
+  selection: Glm52DsaLayerSelection,
+) => void;
 
 function f32(value: number): number {
   return Math.fround(value);
@@ -231,13 +250,11 @@ export function glm52DsaScoresMlx(
     ? headWeights
     : headWeights.astype(Dtype.float32);
 
-  const query = ops.reshape(queryF32, [heads, 1, dimensions]);
-  const key = ops.reshape(keysF32, [1, positions, dimensions]);
-  const products = ops.mul(query, key);
-  query.dispose();
-  key.dispose();
-  let dots = ops.sumAxis(products, -1, false);
-  products.dispose();
+  // [H,D] @ [D,T] -> [H,T]. MLX tiles the contraction internally, avoiding
+  // the correctness scaffold's materialized [H,T,D] broadcast product.
+  const keyTranspose = ops.transposeAxes(keysF32, [1, 0]);
+  let dots = ops.matmul(queryF32, keyTranspose);
+  keyTranspose.dispose();
   dots = replaceDisposed(dots, ops.mulScalar(dots, 1 / Math.sqrt(dimensions)));
   const zero = ops.scalarLike(0, dots);
   const relu = ops.maximum(dots, zero);
@@ -255,6 +272,114 @@ export function glm52DsaScoresMlx(
   if (keysF32 !== keys) keysF32.dispose();
   if (weightsF32 !== headWeights) weightsF32.dispose();
   return scores;
+}
+
+let dsaRankKeyKernel: MetalKernel | null = null;
+let dsaContractOrderKeyKernel: MetalKernel | null = null;
+
+function getDsaRankKeyKernel(): MetalKernel {
+  if (!dsaRankKeyKernel) {
+    dsaRankKeyKernel = new MetalKernel({
+      name: "glm52_dsa_rank_key",
+      inputNames: ["scores"],
+      outputNames: ["keys"],
+      source: `
+        const uint i = thread_position_in_grid.x;
+        const float score = scores[i];
+        const uint bits = as_type<uint>(score);
+        const uint ascending = (bits & 0x80000000u) != 0u
+          ? ~bits
+          : (bits ^ 0x80000000u);
+        const uint descending = ~ascending;
+        keys[i] = (ulong(descending) << 32) | ulong(i);
+      `,
+    });
+  }
+  return dsaRankKeyKernel;
+}
+
+function getDsaContractOrderKeyKernel(): MetalKernel {
+  if (!dsaContractOrderKeyKernel) {
+    dsaContractOrderKeyKernel = new MetalKernel({
+      name: "glm52_dsa_contract_order_key",
+      inputNames: ["selected_scores", "selected_positions", "threshold"],
+      outputNames: ["keys"],
+      source: `
+        const uint i = thread_position_in_grid.x;
+        const uint position = selected_positions[i];
+        const uint threshold_class = selected_scores[i] > threshold ? 0u : 1u;
+        keys[i] = (ulong(threshold_class) << 32) | ulong(position);
+      `,
+    });
+  }
+  return dsaContractOrderKeyKernel;
+}
+
+/**
+ * Deterministic on-device equivalent of `selectDsaThresholdTiesF32`.
+ *
+ * The first uint64 key sorts by score descending and then position ascending,
+ * making the top-k set deterministic even at the threshold. The second key
+ * restores Colibri's observable two-scan order: all scores strictly above the
+ * threshold in position order, followed by threshold ties in position order.
+ * The caller owns the returned arrays and must call `dispose()` once the last
+ * SHARED-layer consumer is done.
+ */
+export function selectGlm52DsaDevice(
+  scores: MlxArray,
+  topK: number,
+): Glm52DsaDeviceSelection {
+  if (scores.ndim !== 1)
+    throw new Error("DSA device selection requires scores [context]");
+  const contextLength = positiveInteger(scores.shape[0]!, "DSA context length");
+  positiveInteger(topK, "DSA topK");
+  if (topK >= contextLength)
+    throw new Error("DSA device selection requires context length greater than topK");
+
+  const scoresF32 = scores.dtype === Dtype.float32
+    ? scores
+    : scores.astype(Dtype.float32);
+  const [rankKeys] = getDsaRankKeyKernel().apply([scoresF32], {
+    outputs: [{ shape: [contextLength], dtype: Dtype.uint64 }],
+    grid: [contextLength, 1, 1],
+    threadGroup: [Math.min(256, contextLength), 1, 1],
+  });
+  const partition = ops.argpartitionAxis(rankKeys!, topK - 1, 0);
+  const selectedUnordered = partition.slice([0], [topK]);
+  const selectedScores = ops.takeAlongAxis(scoresF32, selectedUnordered, 0);
+  const threshold = ops.minAxis(selectedScores, 0, false);
+  const [orderKeys] = getDsaContractOrderKeyKernel().apply(
+    [selectedScores, selectedUnordered, threshold],
+    {
+      outputs: [{ shape: [topK], dtype: Dtype.uint64 }],
+      grid: [topK, 1, 1],
+      threadGroup: [Math.min(256, topK), 1, 1],
+    },
+  );
+  const order = ops.argsortAxis(orderKeys!, 0);
+  const positions = ops.takeAlongAxis(selectedUnordered, order, 0);
+
+  rankKeys!.dispose();
+  partition.dispose();
+  selectedUnordered.dispose();
+  selectedScores.dispose();
+  orderKeys!.dispose();
+  order.dispose();
+  if (scoresF32 !== scores) scoresF32.dispose();
+
+  let disposed = false;
+  return {
+    contextLength,
+    topK,
+    positions,
+    threshold,
+    dispose(): void {
+      if (disposed) return;
+      disposed = true;
+      positions.dispose();
+      threshold.dispose();
+    },
+  };
 }
 
 function replaceDisposed(oldValue: MlxArray, newValue: MlxArray): MlxArray {
@@ -283,9 +408,21 @@ export function scoreAndSelectGlm52DsaF32(
 export class Glm52DsaSelectionState {
   readonly topK: number;
   #latest: Glm52DsaLayerSelection | null = null;
+  #latestDevices: Array<{
+    readonly layer: number;
+    readonly row: number;
+    readonly contextLength: number;
+    /** The only buffer retained across FULL -> SHARED layers. */
+    readonly positions: MlxArray;
+  }> = [];
+  readonly #observer: Glm52DsaSelectionObserver | null;
 
-  constructor(topK: number) {
+  constructor(
+    topK: number,
+    observer: Glm52DsaSelectionObserver | null = null,
+  ) {
     this.topK = positiveInteger(topK, "DSA topK");
+    this.#observer = observer;
   }
 
   get latestFull(): Glm52DsaLayerSelection | null {
@@ -293,10 +430,14 @@ export class Glm52DsaSelectionState {
   }
 
   reset(): void {
+    for (const device of this.#latestDevices) device.positions.dispose();
+    this.#latestDevices = [];
     this.#latest = null;
   }
 
   selectFull(layer: number, scores: NumericVector): Glm52DsaLayerSelection {
+    for (const device of this.#latestDevices) device.positions.dispose();
+    this.#latestDevices = [];
     nonNegativeInteger(layer, "DSA layer");
     positiveInteger(scores.length, "DSA context length");
     let selection: Glm52DsaLayerSelection;
@@ -322,7 +463,121 @@ export class Glm52DsaSelectionState {
       };
     }
     this.#latest = selection;
+    if (this.#observer) {
+      this.#observer(selection.mode === "dense"
+        ? { ...selection }
+        : { ...selection, positions: [...selection.positions] });
+    }
     return selection;
+  }
+
+  /**
+   * Benchmark-only control for constructing a long KV/index-key context in a
+   * batched prefill without exercising the unfinished sparse-prefill path.
+   * Decode calls still use `selectFullDevice` once they append one token.
+   */
+  selectFullDense(layer: number, contextLength: number): Glm52DsaLayerSelection {
+    for (const device of this.#latestDevices) device.positions.dispose();
+    this.#latestDevices = [];
+    nonNegativeInteger(layer, "DSA layer");
+    positiveInteger(contextLength, "DSA context length");
+    const selection: Glm52DsaLayerSelection = {
+      mode: "dense",
+      layer,
+      ownerLayer: layer,
+      contextLength,
+      positions: null,
+      threshold: null,
+    };
+    this.#latest = selection;
+    this.#observer?.({ ...selection });
+    return selection;
+  }
+
+  /**
+   * Production sparse path: keep the exact top-k and threshold on device and
+   * retain the compact position buffer for the following SHARED layers. A
+   * probe observer deliberately opts into the otherwise-absent host readback.
+   */
+  selectFullDevice(layer: number, scores: MlxArray, row = 0): MlxArray {
+    nonNegativeInteger(layer, "DSA layer");
+    nonNegativeInteger(row, "DSA row");
+    const contextLength = positiveInteger(scores.shape[0]!, "DSA context length");
+    if (scores.ndim !== 1)
+      throw new Error("DSA device selection requires scores [context]");
+    if (contextLength <= this.topK)
+      throw new Error("DSA device selection requires sparse context");
+
+    const previousLayer = this.#latestDevices[0]?.layer;
+    if (previousLayer !== undefined && previousLayer !== layer) {
+      for (const previous of this.#latestDevices) previous.positions.dispose();
+      this.#latestDevices = [];
+    }
+    if (this.#latestDevices.some((entry) =>
+      entry.layer === layer && entry.row === row &&
+      entry.contextLength === contextLength
+    )) {
+      throw new Error(
+        `DSA full layer ${layer} already selected context ${contextLength}`,
+      );
+    }
+    const device = selectGlm52DsaDevice(scores, this.topK);
+    this.#latest = null;
+
+    try {
+      if (this.#observer) {
+        const host: Glm52DsaLayerSelection = {
+          mode: "sparse",
+          layer,
+          ownerLayer: layer,
+          contextLength,
+          positions: device.positions.toIntTokens(),
+          threshold: device.threshold.toFloat32()[0]!,
+        };
+        this.#latest = host;
+        this.#observer({ ...host, positions: [...host.positions] });
+      }
+    } catch (error) {
+      device.dispose();
+      throw error;
+    }
+    // Threshold is needed to construct/order positions and for optional probe
+    // readback only. Drop its wrapper now so state retains exactly one 8 KiB
+    // index buffer, not a second root into the score graph.
+    device.threshold.dispose();
+    this.#latestDevices.push({ layer, row, contextLength, positions: device.positions });
+    return device.positions;
+  }
+
+  /** Borrow the latest FULL selection without copying or re-uploading it. */
+  selectSharedPositions(
+    layer: number,
+    contextLength: number,
+    row = 0,
+  ): MlxArray | null {
+    nonNegativeInteger(layer, "DSA layer");
+    nonNegativeInteger(row, "DSA row");
+    positiveInteger(contextLength, "DSA context length");
+    const device = this.#latestDevices.find(
+      (entry) => entry.row === row && entry.contextLength === contextLength,
+    );
+    if (device) {
+      return device.positions;
+    }
+    // A small verification batch may straddle the dense/sparse boundary. Its
+    // sparse rows have device buffers while the earlier rows remain dense by
+    // the model contract and therefore need no index vector.
+    if (contextLength <= this.topK) return null;
+    if (this.#latestDevices.length > 0) {
+      throw new Error(
+        `DSA shared context length ${contextLength} has no FULL selection`,
+      );
+    }
+    const host = this.selectShared(layer, contextLength);
+    if (host.mode === "sparse") {
+      throw new Error("host DSA selection cannot be reused as a device buffer");
+    }
+    return null;
   }
 
   selectShared(layer: number, contextLength: number): Glm52DsaLayerSelection {
@@ -339,5 +594,9 @@ export class Glm52DsaSelectionState {
     return latest.mode === "dense"
       ? { ...latest, layer }
       : { ...latest, layer, positions: [...latest.positions] };
+  }
+
+  dispose(): void {
+    this.reset();
   }
 }

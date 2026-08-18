@@ -424,11 +424,12 @@ try {
 
   // Eight global scratch slots and one pure-LRU slot per sparse layer are the
   // smallest layout that can execute this top-8 decode row and force churn.
-  runtime = Glm52ExpertRuntime.open(cli.model, config, {
+  runtime = await Glm52ExpertRuntime.open(cli.model, config, {
     budgetBytes: 4 * 1024 ** 3,
     fixedBytes: 0,
     workingSlots: config.numExpertsPerToken,
     maxSlotsPerLayer: 1,
+    usagePath: false,
     workers: 4,
     noCache: false,
     libraryPath: cli.libraryPath,

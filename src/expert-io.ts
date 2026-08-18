@@ -1,6 +1,7 @@
 import { dlopen, FFIType, ptr as ffiPtr, toArrayBuffer } from "bun:ffi";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { nativePackDir } from "./native-pack";
 import type { MlxArray } from "./mlx/array";
 import type { MlxHandle } from "./mlx/ffi";
 
@@ -8,6 +9,7 @@ const { cstring, i32, ptr: pointer, u32, u64 } = FFIType;
 const EBUSY = 16;
 const EAGAIN = 35;
 const MAX_SEGMENTS = 8;
+const HINT_STATS = 8;
 
 type ExpertIOState = "open" | "closing" | "closed";
 
@@ -36,6 +38,8 @@ export interface ExpertIOOptions {
   workers?: number;
   alignment?: number;
   noCache?: boolean;
+  /** Keep loaded anonymous slot pages out of the macOS compressor. */
+  wireSlots?: boolean;
   libraryPath?: string;
 }
 
@@ -46,11 +50,29 @@ export interface ExpertIOSegment {
   readonly length: number;
 }
 
+export interface ExpertIOHintSegment {
+  readonly file: number;
+  readonly offset: number;
+  readonly length: number;
+}
+
+export interface ExpertIOHintSnapshot {
+  readonly submitted: number;
+  readonly completed: number;
+  readonly dropped: number;
+  readonly operations: number;
+  readonly bytes: number;
+  readonly errors: number;
+  readonly queueDepth: number;
+  readonly inFlight: number;
+}
+
 function resolveLibrary(explicit?: string): string {
   if (explicit) return explicit;
   if (process.env.MLX_BUN_EXPERT_IO_DYLIB) return process.env.MLX_BUN_EXPERT_IO_DYLIB;
   const candidates = [
     join(dirname(process.execPath), "libmlx_bun_expert_io.dylib"),
+    join(nativePackDir(), "libmlx_bun_expert_io.dylib"),
     join(import.meta.dir, "..", "dist-native", "libmlx_bun_expert_io.dylib"),
   ];
   return candidates.find(existsSync) ?? candidates[0]!;
@@ -63,6 +85,7 @@ export class ExpertIOSlabStore {
   #lib: any;
   #handle: bigint;
   #state: ExpertIOState = "open";
+  readonly #wireSlots: boolean;
 
   constructor(path: string | readonly string[], options: ExpertIOOptions) {
     if (!Number.isSafeInteger(options.slots) || options.slots <= 0) throw new Error("slots must be positive");
@@ -72,6 +95,7 @@ export class ExpertIOSlabStore {
       throw new Error("expert slab store requires at least one file");
     this.files = Object.freeze(paths);
     this.slots = options.slots; this.slotBytes = options.slotBytes;
+    this.#wireSlots = options.wireSlots === true;
     this.#lib = dlopen(resolveLibrary(options.libraryPath), {
       mlx_bun_expert_io_open: { args: [cstring, u32, u64, u64, u32, i32], returns: u64 },
       mlx_bun_expert_io_open_many: {
@@ -83,13 +107,23 @@ export class ExpertIOSlabStore {
         args: [u64, u32, u64, pointer, pointer, pointer, pointer, u32],
         returns: i32,
       },
+      mlx_bun_expert_io_hintv: {
+        args: [u64, pointer, pointer, pointer, u32],
+        returns: i32,
+      },
+      mlx_bun_expert_io_hint_stats: {
+        args: [u64, pointer, u32],
+        returns: i32,
+      },
       mlx_bun_expert_io_wait: { args: [u64, u32, u64], returns: i32 },
       mlx_bun_expert_io_poll: { args: [u64, u32, u64], returns: i32 },
       mlx_bun_expert_io_cancel: { args: [u64, u32, u64], returns: i32 },
       mlx_bun_expert_io_lease: { args: [u64, u32, u64, i32], returns: i32 },
       mlx_bun_expert_io_release: { args: [u64, u32, u64, i32], returns: i32 },
       mlx_bun_expert_io_discard: { args: [u64, u32, u64], returns: i32 },
+      mlx_bun_expert_io_set_wiring: { args: [u64, i32], returns: i32 },
       mlx_bun_process_phys_footprint: { args: [], returns: u64 },
+      mlx_bun_process_compressed: { args: [], returns: u64 },
       mlx_bun_expert_io_ptr: { args: [u64, u32, u64], returns: u64 },
       mlx_bun_expert_io_length: { args: [u64, u32, u64], returns: u64 },
       mlx_bun_expert_io_close: { args: [u64], returns: i32 },
@@ -104,6 +138,17 @@ export class ExpertIOSlabStore {
     if (this.#handle === 0n) {
       this.#lib.close();
       throw new Error(`failed to open expert slab store: ${paths.join(", ")}`);
+    }
+    if (this.#wireSlots) {
+      const status = this.#lib.symbols.mlx_bun_expert_io_set_wiring(
+        this.#handle,
+        1,
+      );
+      if (status !== 0) {
+        this.#lib.symbols.mlx_bun_expert_io_close(this.#handle);
+        this.#lib.close();
+        throw new Error(`failed to enable expert slot wiring: errno ${status}`);
+      }
     }
   }
 
@@ -179,6 +224,61 @@ export class ExpertIOSlabStore {
     );
   }
 
+  /** Queue advisory readahead on the dedicated hint worker. No slab is used. */
+  hintSegments(segments: readonly ExpertIOHintSegment[]): boolean {
+    this.#checkOpen();
+    if (segments.length === 0 || segments.length > MAX_SEGMENTS)
+      throw new RangeError(`expert hint requires 1..${MAX_SEGMENTS} segments`);
+    const files = new Uint32Array(segments.length);
+    const offsets = new BigUint64Array(segments.length);
+    const lengths = new BigUint64Array(segments.length);
+    for (let index = 0; index < segments.length; index++) {
+      const segment = segments[index]!;
+      if (!Number.isSafeInteger(segment.file) || segment.file < 0 ||
+          segment.file >= this.files.length)
+        throw new RangeError(`expert hint ${index} file is out of range`);
+      if (!Number.isSafeInteger(segment.offset) || segment.offset < 0)
+        throw new RangeError(`expert hint ${index} offset must be non-negative`);
+      if (!Number.isSafeInteger(segment.length) || segment.length <= 0)
+        throw new RangeError(`expert hint ${index} length must be positive`);
+      files[index] = segment.file;
+      offsets[index] = BigInt(segment.offset);
+      lengths[index] = BigInt(segment.length);
+    }
+    const status = this.#lib.symbols.mlx_bun_expert_io_hintv(
+      this.#handle,
+      ffiPtr(files),
+      ffiPtr(offsets),
+      ffiPtr(lengths),
+      segments.length,
+    );
+    if (status === 0) return true;
+    if (status === EAGAIN) return false;
+    throw new Error(`expert hint submit failed: errno ${status}`);
+  }
+
+  hintTelemetry(): ExpertIOHintSnapshot {
+    this.#checkOpen();
+    const out = new BigUint64Array(HINT_STATS);
+    const status = this.#lib.symbols.mlx_bun_expert_io_hint_stats(
+      this.#handle,
+      ffiPtr(out),
+      out.length,
+    );
+    if (status !== 0)
+      throw new Error(`expert hint telemetry failed: errno ${status}`);
+    return {
+      submitted: Number(out[0]),
+      completed: Number(out[1]),
+      dropped: Number(out[2]),
+      operations: Number(out[3]),
+      bytes: Number(out[4]),
+      errors: Number(out[5]),
+      queueDepth: Number(out[6]),
+      inFlight: Number(out[7]),
+    };
+  }
+
   cancel(slot: number, generation: bigint): void {
     this.#checkSlot(slot);
     const status = this.#lib.symbols.mlx_bun_expert_io_cancel(this.#handle, slot, generation);
@@ -225,6 +325,11 @@ export class ExpertIOSlabStore {
   physicalFootprint(): number {
     this.#checkOpen();
     return Number(this.#lib.symbols.mlx_bun_process_phys_footprint());
+  }
+
+  compressedMemory(): number {
+    this.#checkOpen();
+    return Number(this.#lib.symbols.mlx_bun_process_compressed());
   }
 
   pointer(slot: number, generation: bigint): number {

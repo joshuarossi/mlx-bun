@@ -50,8 +50,8 @@ Request body (OpenAI chat schema; unknown fields ignored):
   "tools": [ /* OpenAI function tools */ ],
   "tool_choice": "auto",         // "none" disables tools
   "chat_template_kwargs": {      // forwarded to the chat template
-    "enable_thinking": false,    // MiniCPM5 / Qwen3.5/3.8: <think> channel
-                                 // on/off (Qwen3.8 default: ON)
+    "enable_thinking": false,    // MiniCPM5 / Qwen3.5/3.8 / GLM-5.2: <think>
+                                 // channel on/off (Qwen3.8 default: ON)
     "preserve_thinking": true    // Qwen3.8: keep think blocks from earlier
                                  // assistant turns in the rendered prompt
                                  // (template default true — better prompt-
@@ -89,6 +89,11 @@ Sampling defaults follow the model author's `generation_config.json`
 when a field is omitted (optiq serve's gen_config behavior); explicit
 request values always win. MiniCPM5 defaults to the no-think direct
 answer mode unless `chat_template_kwargs.enable_thinking` is `true`.
+GLM-5.2 also defaults to no-think: its generation primer is
+`<think></think>`. Enabling thinking renders `Reasoning Effort: Max` in the
+system turn and leaves an open `<think>` primer for generation. The same
+precedence applies through Chat Completions, Anthropic Messages, and Responses
+because all three normalize into this one chat request path.
 
 `stop` sequences are matched on **decoded text**, not token ids, so a
 sequence that spans token boundaries still fires. Generation halts at
@@ -500,6 +505,23 @@ The served model is FIRST, with extra capability fields:
                                  //   lazily loadable)
   "audio": false,                // input_audio content parts accepted
                                  //   (tower loaded or lazily loadable)
+  "batch_mode": "batch",       // loaded cache capability; per-request
+                                 //   usage.lane is authoritative
+  "tools": true,
+  "structured_output": true,
+  "embeddings": false,
+  "adapters": false,
+  "training": false,
+  "dsa": true,                  // GLM-5.2 only; false elsewhere
+  "mtp": true,                  // checkpoint-native GLM MTP is mounted
+  "capabilities": {             // explicit discoverable surface
+    "chat_completions": true, "text_completions": true,
+    "anthropic_messages": true, "responses": true,
+    "streaming": true, "tools": true, "structured_output": true,
+    "logprobs": true, "embeddings": false,
+    "vision": false, "audio": false,
+    "adapters": false, "training": false
+  },
   "gen_defaults": {              // model-author sampling defaults
     "temperature": 0.7,          //   (generation_config.json, with any
     "top_p": 0.95,               //   --temperature/--top-p/--top-k server
@@ -532,6 +554,13 @@ matching `mlx_lm.server`.
 `input_audio` content parts (tower loaded or lazily loadable — see
 *Audio input* above for what audio requires), so clients can discover
 capabilities instead of probing for a `400`.
+The served-model row also includes `batch_mode: "off" | "serial" | "batch"`:
+the configured cap and the loaded model's cache capability together. Per-turn
+`usage.lane` remains authoritative for a particular request; for example,
+native-MTP requests route serial even when the served GLM model reports
+`batch_mode: "batch"` for ordinary requests.
+For GLM-5.2, the non-generative fields are deliberately false: embeddings,
+vision/audio, adapters, and training are not emulated by the serving port.
 
 ## GET /health
 
@@ -558,9 +587,40 @@ capabilities instead of probing for a `400`.
     "usable_bytes": 0,
     "weights_bytes": 0
   },
+  // present only for the direct Colibri GLM-5.2 runtime:
+  "glm52": {
+    "preset": "g5-32gb-quality",
+    "planned_process_bytes": 0,
+    "process_limit_bytes": 0,
+    "context_tokens": 4096,
+    "max_generation_tokens": 128,
+    "batch_size": 1,
+    "dsa": true,
+    "mtp": true,
+    "mtp_draft_tokens": 3,
+    "resident_weight_bytes": 0,
+    "main_expert_slab_bytes": 0,
+    "mtp_expert_slab_bytes": 0,
+    "expert_runtime": {
+      "main_residency": { "resident": 0, "pinned": 0, "working": 0,
+                            "hits": 0, "misses": 0, "evictions": 0 },
+      "mtp_residency": { "resident": 0, "pinned": 0, "working": 0,
+                           "hits": 0, "misses": 0, "evictions": 0 },
+      "last_turn": {
+        "main": { "demand": { "hits": 0, "misses": 0,
+                                  "readBytes": 0 } },
+        "mtp": { "demand": { "hits": 0, "misses": 0,
+                                 "readBytes": 0 } },
+        "pilot": null
+      },
+      "last_repin": []
+    }
+  },
   "batch": {
     "configured": 1,                  // the --batch N value
-    "batched": false,                 // batching enabled (N>1)
+    "mode": "off",                   // "off" | "serial" | "batch": configured
+                                           // and model-cache capability together
+    "batched": false,                 // true only when mode == "batch"
     "active_rows": 0,                 // rows currently decoding in the batch
     "pending_rows": 0,                // queued + mid-prefill rows waiting
     "submitted_rows": 0,              // cumulative rows routed to the batch lane since start
@@ -969,6 +1029,15 @@ banner and `mlx-bun fit`. When the eval DB has a real measured decode
 rate for this model snapshot, it is included and takes precedence over
 the prediction.
 
+For the direct Colibri GLM-5.2 runtime this endpoint switches to the exact
+serve-time memory plan. The response separates the full streamed artifact on
+disk from resident weights, main/MTP expert slabs, KV, and other reserves.
+`measured_decode_tps` is the G5 warm quality-preserving measurement;
+`glm52.direct_oracle_warm_decode_tps` is the same-machine direct Colibri
+control, while `glm52.aspirational_decode_tps` is a target, not a release
+gate. The single-row SKU result describes the current machine because the
+generic all-resident SKU estimator is inapplicable.
+
 ```jsonc
 {
   "machine": { "chip": "M4 Pro", "ram_bytes": 0, "bandwidth_gbs": 0.0 },
@@ -986,6 +1055,15 @@ the prediction.
     "usable_bytes": 0,
     "max_safe_context": 8192,
     "predicted_decode_tps": 0.0
+  },
+  // GLM-5.2 only:
+  "glm52": {
+    "artifact_disk_bytes": 0,       // exact registry size; null if unavailable
+    "main_expert_slab_bytes": 0,
+    "mtp_expert_slab_bytes": 0,
+    "max_generation_tokens": 128,
+    "direct_oracle_warm_decode_tps": 0.27,
+    "aspirational_decode_tps": 2.0
   },
   "sku_matrix_ctx": 32768,
   "sku_matrix": [{

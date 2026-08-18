@@ -14,6 +14,7 @@ tarball (~73 MB compressed, ~228 MB installed):
 |---|---|
 | `mlx-bun` | the CLI/server (`bun build --compile`), ~61 MB |
 | `libmlxc.dylib`, `libmlx.dylib`, `libjaccl.dylib` | MLX native runtime |
+| `libmlx_bun_expert_io.dylib` | bounded native expert-streaming helper required by direct Colibri GLM-5.2 |
 | `mlx.metallib` | Metal kernels (~150 MB — the bulk) |
 | pi assets | `photon_rs_bg.wasm`, `theme/`, `assets/`, `export-html/`, `native/`, `package.json`, `CHANGELOG.md` |
 
@@ -171,7 +172,8 @@ mlx-bun --version
 The npm package is a thin launcher (no postinstall hook): it imports
 `src/cli.ts` under Bun, which fetches the small (~52 MB compressed,
 sha256-verified) native runtime pack — `libmlxc`/`libmlx`/`libjaccl`/
-`mlx.metallib` — into `~/Library/Caches/mlx-bun/` on first invocation if
+`mlx.metallib` plus `libmlx_bun_expert_io.dylib` — into
+`~/Library/Caches/mlx-bun/` on first invocation if
 no copy is already resolvable (env / beside the binary / cache /
 Homebrew). This is the same npm/sidecar mechanism described above, not
 the signed/notarized Homebrew bundle. `bun publish` is already run
@@ -182,3 +184,25 @@ fallback/retry:
 ```sh
 bun publish   # manual retry; package.json version must already be bumped
 ```
+
+### Publishing the first-run native pack
+
+The npm/bunx path has an independent, versioned release asset. Whenever its
+file manifest changes, build and publish it before shipping code that names the
+new `NATIVE_PACK_VERSION`:
+
+```sh
+sh scripts/build-native-pack.sh 0.2.0 dist-native
+gh release create native-v0.2.0 \
+  dist-native/mlx-bun-native-v0.2.0-arm64.tar.gz \
+  dist-native/mlx-bun-native-v0.2.0-arm64.tar.gz.sha256 \
+  --title "mlx-bun native runtime v0.2.0" \
+  --notes "Adds the bounded native expert-I/O helper required by direct Colibri GLM-5.2."
+```
+
+For v0.2.0 the arm64 archive is 52,307,647 bytes with SHA-256
+`9bd3795c5ea8f52b18413501f2d68c32c264a20751302300a08dc04cd67df97c`.
+It contains `libmlxc.dylib`, `libmlx.dylib`, `libjaccl.dylib`,
+`mlx.metallib`, and `libmlx_bun_expert_io.dylib`. These values must match
+`src/native-pack.ts`; a fresh-cache extraction plus real MLX dlopen and native
+expert read is the pre-publish smoke.

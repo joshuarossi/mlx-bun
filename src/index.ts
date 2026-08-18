@@ -12,7 +12,13 @@ export { loadModelConfig } from "./config";
 export { Weights } from "./weights";
 export { Gemma4Model } from "./model/gemma4";
 export { MiniCPM5Model } from "./model/minicpm5";
-export { createModel, openModel, type RuntimeModel } from "./model/factory";
+export {
+  createModel,
+  openGlm52RuntimeModel,
+  openModel,
+  type Glm52RuntimeOpenOptions,
+  type RuntimeModel,
+} from "./model/factory";
 export { Qwen3Model } from "./model/qwen3";
 export { generate } from "./generate";
 export { loadTokenizer } from "./tokenizer";
@@ -21,4 +27,10 @@ export { ChatTemplate } from "./chat-template";
 export { chooseAutoModel, COEXIST_FRACTION, DEFAULT_REPO_ID, fit, largestRecommendedRepoId, recommendedRepoId, skuMatrix, thisMachine } from "./fit";
 export { downloadModel } from "./download";
 export { Registry } from "./registry";
-export { createServer, loadContext } from "./server";
+export {
+  createServer,
+  loadContext,
+  type LoadContextOptions,
+  type ServerContext,
+  type ServerOptions,
+} from "./server";

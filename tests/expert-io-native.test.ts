@@ -93,6 +93,44 @@ describe("native expert I/O slabs", () => {
     }
   });
 
+  it("runs advisory hints on a separate queue without publishing a slot", async () => {
+    const store = new ExpertIOSlabStore(
+      [file, secondFile],
+      { slots: 1, slotBytes: 16 * 1024, workers: 1, libraryPath: dylib },
+    );
+    try {
+      expect(store.hintSegments([
+        { file: 0, offset: 0, length: 4096 },
+        { file: 1, offset: 4096, length: 8192 },
+      ])).toBe(true);
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const telemetry = store.hintTelemetry();
+        if (telemetry.completed === 1 && telemetry.queueDepth === 0 &&
+            telemetry.inFlight === 0) break;
+        await Bun.sleep(1);
+      }
+      expect(store.hintTelemetry()).toEqual({
+        submitted: 1,
+        completed: 1,
+        dropped: 0,
+        operations: 2,
+        bytes: 12 * 1024,
+        errors: 0,
+        queueDepth: 0,
+        inFlight: 0,
+      });
+      expect(() => store.pointer(0, 1n)).toThrow(/active lease/);
+
+      store.submit(0, 1n, 1024, 4096);
+      await store.wait(0, 1n);
+      store.lease(0, 1n);
+      expect(store.view(0, 1n, 4096)).toEqual(data.subarray(1024, 5120));
+      store.releaseCpu(0, 1n);
+    } finally {
+      store.close();
+    }
+  });
+
   it("loads positioned bytes into stable aligned slots and fences reuse", async () => {
     const store = new ExpertIOSlabStore(file, { slots: 2, slotBytes: 16 * 1024, workers: 2, libraryPath: dylib });
     try {
@@ -200,6 +238,33 @@ describe("native expert I/O slabs", () => {
       store.releaseCpu(0, 1n);
       store.discard(0, 1n);
       expect(() => store.pointer(0, 1n)).toThrow(/active lease/);
+
+      store.submit(0, 2n, 4096, 4096);
+      await store.wait(0, 2n);
+      store.lease(0, 2n);
+      expect(store.pointer(0, 2n)).toBe(address);
+      expect(store.view(0, 2n, 4096)).toEqual(data.subarray(4096, 8192));
+      store.releaseCpu(0, 2n);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("wires loaded slots and unlocks them before discard", async () => {
+    const store = new ExpertIOSlabStore(file, {
+      slots: 1,
+      slotBytes: 16 * 1024,
+      workers: 1,
+      wireSlots: true,
+      libraryPath: dylib,
+    });
+    try {
+      store.submit(0, 1n, 0, 16 * 1024);
+      await store.wait(0, 1n);
+      store.lease(0, 1n);
+      const address = store.pointer(0, 1n);
+      store.releaseCpu(0, 1n);
+      store.discard(0, 1n);
 
       store.submit(0, 2n, 4096, 4096);
       await store.wait(0, 2n);

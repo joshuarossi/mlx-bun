@@ -22,7 +22,7 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | OpenAI Responses shim (`/v1/responses`) | on | both | — | — |
 | Continuous batching (mlx-lm B=N parity) | **on** — cap 8 (default flipped 2026-07-05; a lone request runs the exact serial engine, so the cap engages only under real concurrency; `--batch 1` pins serial) | batch | L1 | `--batch <n>` |
 | Prompt cache (prefix KV reuse) | on, 8 GB | both | — | `--prompt-cache <GB>` (0 = off) |
-| **SSD KV cold tier** (cache survives eviction + restarts) | off | both | — | `--ssd-cache <dir>` (+ `-max`, `-verify`, `-demote-idle <sec>` — default 300s once `--ssd-cache` is on, `0` disables) |
+| **SSD KV cold tier** (cache survives eviction + restarts; v3 includes GLM compressed MLA/DSA state without full-K/V reconstruction) | off | both | — | `--ssd-cache <dir>` (+ `-max`, `-verify`, `-demote-idle <sec>` — default 300s once `--ssd-cache` is on, `0` disables) |
 | **Runtime isolation** (engine runs as a crash-isolated CHILD process behind a reverse-proxy parent; UI stays instant under GPU load and survives engine crashes — [runtime-isolation.md](../design/runtime-isolation.md)) | off | both | — | `--isolate` |
 | **Model pool** (with `--isolate`: LRU-capped RESIDENT model engines; over the cap the least-recently-used engine demotes its cache to the SSD tier and exits, respawning on the next request) | 1 resident engine | both | — | `--model-pool <n>` (requires `--isolate`) |
 | Mixed-precision KV (`kv_config.json`, optiq's scheme) | **off** — opt-in (default flipped to bf16 2026-07-05; quantized KV trades 5–20% decode for memory headroom) | serial + **batch** (per-layer configs batch on every shipped model — full-attention layers Phase 3.1, rotating layers milestone 2; uniform bits stay serial) | L2 | `--kv-quant config\|off\|4\|8`, `--l2` |
@@ -32,6 +32,7 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | Fused SDPA (optiq-exact quantized-KV attention) | follows `--kv-quant`: on for `config`, off for uniform/bf16 | serial | L2 | `--fused-sdpa on\|off` |
 | **Paged KV** (vLLM-style block pool: host-side block table + gather before the stock SDPA, no fused kernel in v1 — [paged-kv-cache.md](../design/paged-kv-cache.md)) | off | serial (pins `--batch 1` unless `--batch` given) | gated bit-exact vs the plain `KVCache` (`tests/paged-kv-parity.test.ts`) | `--paged-kv`, `--paged-kv-block-size <n>` (default 256) — v1 scope Gemma4-family bf16; refuses `--batch N>1`, `--kv-quant`, `--draft-model` |
 | **Speculative decoding** (auto-detected drafter: two-model = mlx-lm parity/L1, Gemma `-assistant` = optiq/L2, DSpark local = Lab, DeepSpec released = DeepSpec-reference oracle) | off | serial (forces all-serial) | per-drafter oracle | `--draft-model <path\|query>`, `--draft-kind`, `--num-draft-tokens` |
+| **GLM-5.2 checkpoint-native MTP** (bounded auxiliary expert tier, exact verify) | **on** for GLM-5.2 | serial (`usage.lane: serial+spec`) | Colibri/oracle trajectory + synthetic HTTP gate | `--mtp on\|off` (`off` enables ordinary GLM batching) |
 | Speculative decoding, **model-free prompt lookup** (drafts copied from the request's own context; port of prompt-lookup decoding / vLLM `ngram`; zero weights) | off | serial (forces all-serial) | lossless by verify (gated vs non-spec greedy, tests/spec-ngram.test.ts) | `--draft-kind ngram` (no `--draft-model`), `--ngram-max`, `--ngram-min`, `--num-draft-tokens` (default 10) |
 | Memory admission (refuse what can't fit; never GPU-OOM) | on (RAM × 0.75) | both | — | `--memory-budget <GB>` |
 | Aggregate KV admission for batch rows (queue, don't OOM) | off | batch | — | `--kv-budget <GB>` |
@@ -48,7 +49,7 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | `guided_grammar` (EBNF) / `guided_regex`¹ / `guided_choice` / `structured_outputs` | on | both | L2 | request fields |
 | Structured output × speculative decoding | on (when both active) | serial | Lab (validity+equivalence) | — |
 | Quantized KV × speculative decoding (any axis: uniform / config / turbo) | KV scheme wins — drafted requests decode serially WITHOUT speculation (spec lane is bf16-KV-only in v1; startup warning) | serial | — | omit `--kv-quant` to speculate |
-| Tool calling (Gemma sentinel / CPM+Qwen XML) + `role:"tool"` loops | on | both | — | request `tools` |
+| Tool calling (Gemma sentinel / CPM+Qwen XML / GLM `arg_key`+`arg_value`) + `role:"tool"` loops | on | both | — | request `tools` |
 | Vision (`image_url` parts; PNG/JPEG/HEIC/AVIF/WebP/TIFF/GIF/BMP) | on (models with a tower); remote fetches refuse private/loopback/link-local hosts by default (SSRF guard) | serial | L1/L2 | `--allow-private-media` / `MLX_BUN_ALLOW_PRIVATE_MEDIA=1` re-permits LAN hosts |
 | **Audio input** (`input_audio`/`audio`/`audio_url` parts; WAV native, mp3/m4a/flac/ogg/aiff via CoreAudio; ≤30 s / 750 tokens per clip; mixes with images) | on (models with `audio_config` + sidecar tower: e4b); remote fetches refuse private/loopback/link-local hosts by default (SSRF guard) | serial³ | L2 (greedy stream EXACT vs the optiq internal model) | `--allow-private-media` / `MLX_BUN_ALLOW_PRIVATE_MEDIA=1` re-permits LAN hosts |
 | LoRA adapters (mount at start / hot-swap at runtime) | off | serial | — | `--adapter <dir>`, `POST /v1/adapters` |
@@ -69,6 +70,7 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | Gemma 4 (1B/e4b/12B/26B, + vision e4b/12B, + audio e4b) | ✅ L1/L2 | ✅ | sliding+full interleaved; MoE 26B |
 | Qwen3.5 (gated-DeltaNet hybrid) | ✅ L1/L2 | ✅ (SSM path) | `MLX_BUN_BATCH_SSM=0` reverts |
 | Qwen3.8-27B (same qwen3_5 graph) | ✅ L1 (no L2 oracle) | ✅ (SSM path) | thinking depths + preserve_thinking; MTP/vision/video in bring-up |
+| GLM-5.2 / Colibri (pre-release port gate) | ✅ chat/text, Messages, Responses, SSE, tools, grammar, logprobs, library/CLI | ✅ compressed MLA/DSA scheduler | native MTP defaults to serial+spec; `--mtp off` enables ordinary batching; artifact-aware CLI/API/status `fit` and live main/MTP expert-tier telemetry; embeddings, vision/audio, adapters, and training are explicitly unsupported; per-row batched MTP is post-release |
 | DiffusionGemma-26B (non-autoregressive) | ✅ (own engine) | — serial always | first bit-exact non-AR port |
 | Tier-0 universal (llama/qwen2/qwen3/olmo2/…, 11 archs) | ✅ L1 | ✅ plain full-attention archs² | gemma2-family/sliding universal → serial |
 

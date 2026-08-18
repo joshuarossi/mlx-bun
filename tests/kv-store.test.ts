@@ -335,10 +335,15 @@ describe("kv-store v2 integrity", () => {
     expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
 
     // metadata guards
-    const okLoad = loadKvCache(file, stub, { configFingerprint: "fp-a", tokenizerHash: "tk-a" });
+    const okLoad = loadKvCache(file, stub, {
+      modelId: "stub",
+      configFingerprint: "fp-a",
+      tokenizerHash: "tk-a",
+    });
     expect(okLoad.tokens).toEqual([1, 2, 3, 4]);
     for (const c of okLoad.caches) c.dispose();
     expect(() => loadKvCache(file, stub, { configFingerprint: "fp-B" })).toThrow(/configFingerprint/);
+    expect(() => loadKvCache(file, stub, { modelId: "other" })).toThrow(/modelId/);
     expect(() => loadKvCache(file, { makeCache: () => [mk()] })).toThrow(/cached layers/);
 
     // header corruption: flip a byte inside the JSON region
@@ -348,5 +353,154 @@ describe("kv-store v2 integrity", () => {
     expect(() => readKvHeader(file)).toThrow(/hash mismatch|not an mlx-bun/);
 
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("kv-store v3 — GLM checkpoint-native compressed caches", () => {
+  test("MLA, MLA+DSA, and MTP rows clone and round-trip byte-identically", async () => {
+    const {
+      cloneKvCaches,
+      loadKvCache,
+      readKvHeader,
+      saveKvCache,
+    } = await import("../src/kv-store");
+    const { cacheBytes } = await import("../src/prompt-cache");
+    const { MLACache } = await import("../src/model/glm52-cache");
+    const { MlxArray } = await import("../src/mlx/array");
+
+    const f32 = (values: number[], shape: number[]) =>
+      MlxArray.fromFloat32(Float32Array.from(values), shape);
+    const restore = (
+      cache: InstanceType<typeof MLACache>,
+      latentValues: number[],
+      ropeValues: number[],
+      dsaValues: number[] | null,
+      offset: number,
+    ): InstanceType<typeof MLACache> => {
+      cache.restoreCompressedState(
+        f32(latentValues, [1, offset, cache.kvLoraRank]),
+        f32(ropeValues, [1, offset, cache.ropeHeadDim]),
+        dsaValues ? f32(dsaValues, [1, offset, cache.dsa!.headDim]) : null,
+        offset,
+      );
+      return cache;
+    };
+    const makeEmpty = () => [
+      new MLACache({ kvLoraRank: 2, ropeHeadDim: 1, maxTokens: 16 }),
+      new MLACache({
+        kvLoraRank: 2,
+        ropeHeadDim: 1,
+        dsa: { headDim: 2 },
+        maxTokens: 16,
+      }),
+      new MLACache({
+        kvLoraRank: 2,
+        ropeHeadDim: 1,
+        maxTokens: 16,
+        role: "mtp",
+      }),
+    ];
+    const caches = makeEmpty();
+    restore(caches[0]!, [1, 2, 3, 4], [5, 6], null, 2);
+    restore(caches[1]!, [7, 8, 9, 10], [11, 12], [13, 14, 15, 16], 2);
+    restore(caches[2]!, [17, 18, 19, 20], [21, 22], null, 2);
+    expect(cacheBytes(caches)).toBe(
+      caches.reduce((total, cache) => total + cache.byteLength, 0),
+    );
+    const dir = mkdtempSync(join(tmpdir(), "mlx-bun-glm-kv-"));
+    const first = join(dir, "first.mlxkv");
+    const second = join(dir, "second.mlxkv");
+    try {
+      const clones = cloneKvCaches(caches) as InstanceType<typeof MLACache>[];
+      try {
+        expect(clones.map((cache) => cache.role)).toEqual([
+          "target",
+          "target",
+          "mtp",
+        ]);
+        expect(clones.map((cache) => cache.byteLength)).toEqual(
+          caches.map((cache) => cache.byteLength),
+        );
+      } finally {
+        for (const cache of clones) cache.dispose();
+      }
+
+      saveKvCache(first, [101, 102], caches, {
+        modelId: "glm-test",
+        configFingerprint: "glm-layout-v1",
+      });
+      const header = readKvHeader(first);
+      expect(header.formatVersion).toBe(3);
+      expect(header.caches.map((entry) => entry.kind)).toEqual([
+        "mla",
+        "mla-dsa",
+        "mtp-mla",
+      ]);
+      expect(header.caches.map((entry) => entry.offset)).toEqual([2, 2, 2]);
+      expect(header.caches.map((entry) => entry.tensors.length)).toEqual([2, 3, 2]);
+      expect(header.caches.flatMap((entry) => entry.tensors).every(
+        (tensor) => tensor.shape.length === 3,
+      )).toBe(true);
+
+      const wrongGeometry = () => [
+        new MLACache({ kvLoraRank: 2, ropeHeadDim: 1, maxTokens: 16 }),
+        new MLACache({
+          kvLoraRank: 2,
+          ropeHeadDim: 1,
+          dsa: { headDim: 3 },
+          maxTokens: 16,
+        }),
+        new MLACache({
+          kvLoraRank: 2,
+          ropeHeadDim: 1,
+          maxTokens: 16,
+          role: "mtp",
+        }),
+      ];
+      expect(() => loadKvCache(first, { makeCache: wrongGeometry }))
+        .toThrow(/dsaHeadDim/);
+
+      const { KVCache } = await import("../src/model/gemma4-base");
+      expect(() => loadKvCache(first, {
+        makeCache: () => [new KVCache(), new KVCache(), new KVCache()],
+      })).toThrow(/GLM cache kind/);
+
+      const loaded = loadKvCache(first, { makeCache: makeEmpty }, {
+        verify: true,
+        configFingerprint: "glm-layout-v1",
+      });
+      const glm = loaded.caches as InstanceType<typeof MLACache>[];
+      expect(glm.map((cache) => cache.role)).toEqual(["target", "target", "mtp"]);
+      expect(glm[1]!.dsa!.data!.toFloat32()).toEqual(
+        Float32Array.from([13, 14, 15, 16]),
+      );
+      expect(glm[2]!.latent!.toFloat32()).toEqual(
+        Float32Array.from([17, 18, 19, 20]),
+      );
+
+      saveKvCache(second, loaded.tokens, loaded.caches, {
+        modelId: "glm-test",
+        configFingerprint: "glm-layout-v1",
+      });
+      const stable = (path: string) => readKvHeader(path).caches.map((entry) => ({
+        kind: entry.kind,
+        offset: entry.offset,
+        kvLoraRank: entry.kvLoraRank,
+        ropeHeadDim: entry.ropeHeadDim,
+        dsaHeadDim: entry.dsaHeadDim,
+        maxTokens: entry.maxTokens,
+        tensors: entry.tensors.map((tensor) => ({
+          bytes: tensor.bytes,
+          shape: tensor.shape,
+          dtype: tensor.dtype,
+          hash: tensor.hash,
+        })),
+      }));
+      expect(stable(second)).toEqual(stable(first));
+      for (const cache of loaded.caches) cache.dispose();
+    } finally {
+      for (const cache of caches) cache.dispose();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

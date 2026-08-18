@@ -232,6 +232,37 @@ describe("SsdCacheStore", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("GLM compressed entry stays trimmable across a restart scan", async () => {
+    const { MLACache } = await import("../src/model/glm52-cache");
+    const dir = mkdtempSync(join(tmpdir(), "ssd-glm-"));
+    const make = () => new MLACache({
+      kvLoraRank: 2,
+      ropeHeadDim: 1,
+      dsa: { headDim: 2 },
+      maxTokens: 16,
+    });
+    const cache = make();
+    cache.restoreCompressedState(
+      ops.zeros([1, 4, 2], Dtype.float32),
+      ops.zeros([1, 4, 1], Dtype.float32),
+      ops.zeros([1, 4, 2], Dtype.float32),
+      4,
+    );
+    const s1 = new SsdCacheStore(OPTS(dir));
+    expect(s1.store([1, 2, 3, 4], [cache])).toBe(true);
+    cache.dispose();
+    expect(s1.find([1, 2, 3, 9], "")?.prefixLen).toBe(3);
+
+    const s2 = new SsdCacheStore(OPTS(dir));
+    expect(s2.scan()).toBe(1);
+    const hit = s2.find([1, 2, 3, 9], "");
+    expect(hit?.prefixLen).toBe(3);
+    const loaded = s2.restore(hit!.entry, { makeCache: () => [make()] });
+    expect(loaded?.caches[0]).toBeInstanceOf(MLACache);
+    for (const restored of loaded?.caches ?? []) restored.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   test("exact-duplicate store replaces the file regardless of trimmability", () => {
     const dir = mkdtempSync(join(tmpdir(), "ssd-"));
     const s = new SsdCacheStore(OPTS(dir));

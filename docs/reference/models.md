@@ -35,6 +35,11 @@ mlx-bun get <substring>          # no "/" = registry query, re-gets the match
 - Plain HTTPS resolve/CDN (no Xet), sequential files, `Range`-resume of
   partial blobs (`<blob>.incomplete`). Auth: `HF_TOKEN` env, then the
   token `hf auth login` writes. 401/403 answers get a "gated repo" hint.
+- Before the first payload request, mlx-bun totals the bytes still absent,
+  credits complete shared blobs and valid `.incomplete` prefixes, and checks
+  the target volume for that remainder plus a fixed 1 GiB safety reserve. An
+  impossible acquisition fails immediately with required/available GiB and a
+  rerun/resume instruction rather than filling the disk halfway through.
 - A substring argument (no `/`) resolves against already-downloaded
   repos — `mlx-bun get 12B` refreshes the 12B to upstream's latest. An
   unknown substring errors with a pointer to `mlx-bun ls <q>`.
@@ -51,13 +56,55 @@ mlx-bun get <substring>          # no "/" = registry query, re-gets the match
 Every blob is checksummed **while streaming** (a resume re-hashes the
 existing prefix in chunks — no whole-file allocation):
 
-- **LFS files** (weights): sha256 must equal the API's `lfs.oid` — which
-  is also the blob's filename.
+- **LFS files** (weights): sha256 must equal the API's current `lfs.sha256`
+  field (the older `lfs.oid` spelling is also accepted) — which is also the
+  blob's filename.
 - **Small files** (configs, tokenizer): git blob identity,
   `sha1("blob <size>\0" + content)`, must equal the API's `blobId`.
 
 A mismatch deletes the partial (never resume corrupt bytes); a short
 read keeps the `.incomplete` for resume.
+
+## GLM-5.2 on a 32 GB Mac
+
+The validated direct-container artifact is
+`mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp` at revision
+`3cc8db99b1b13fc79325d987ba3c1c430766b3b8`. It is approximately 384 GB
+decimal / 357 GiB on disk, so choose the Hugging Face cache volume before the
+download. Fast internal NVMe is strongly preferred; an external volume also
+needs to sustain the expert-streaming workload after acquisition.
+
+```sh
+# Optional: choose a large fast volume before downloading.
+export HF_HUB_CACHE=/Volumes/FastSSD/huggingface/hub
+
+mlx-bun get mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp \
+  --revision 3cc8db99b1b13fc79325d987ba3c1c430766b3b8
+mlx-bun scan
+mlx-bun serve GLM-5.2-colibri \
+  --memory-budget 26.8435456 \
+  --context-length 4096 \
+  --max-tokens 128 \
+  --mtp on
+```
+
+`26.8435456` decimal GB is exactly 25 GiB. The validated plan reserves about
+19.9 GiB for the process and leaves the rest of the 32 GiB machine to macOS.
+Startup runs the exact header-only resource equation before opening resident
+weights or expert slabs. The server reports the resulting plan at
+`GET /stats` under `glm52`.
+
+If acquisition is interrupted, rerun the identical `get` command: mlx-bun
+rehashes each existing prefix in bounded chunks, sends a Range request for the
+remainder, and verifies the complete blob before publishing it. If the disk
+preflight refuses, free space or point `HF_HUB_CACHE` at another volume and
+rerun. No Python environment and no converted copy inside the mlx-bun checkout
+are involved.
+
+The artifact is an external MIT-licensed derivative of
+`zai-org/GLM-5.2-FP8`, converted with Colibri and extended with int8 MTP
+weights. Model weights are not bundled with mlx-bun; review the artifact model
+card before redistribution.
 
 ## scan + the registry
 

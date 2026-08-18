@@ -27,7 +27,7 @@ describe("selectToolStreamMode", () => {
     // Qwen3.5; the rest are universal-dense generics served today.
     for (const t of [
       "llama", "qwen2", "qwen3", "qwen3_5", "qwen3_5_text", "phi3", "olmo2",
-      "glm4", "granite", "starcoder2", "smollm3", "gemma", "gemma2",
+      "glm4", "glm_moe_dsa", "granite", "starcoder2", "smollm3", "gemma", "gemma2",
       "diffusion_gemma",
     ]) {
       expect(selectToolStreamMode(t, true)).toBe("buffered-text");

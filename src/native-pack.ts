@@ -16,16 +16,17 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { downloadOne } from "./download";
 
-export const NATIVE_PACK_VERSION = "0.1.0";
+export const NATIVE_PACK_VERSION = "0.2.0";
 export const NATIVE_PACK_FILES = [
   "libmlxc.dylib", "libmlx.dylib", "libjaccl.dylib", "mlx.metallib",
+  "libmlx_bun_expert_io.dylib",
 ] as const;
 
 const SHA256: Record<string, string> = {
-  arm64: "90fa6a85bae648910bb957df3757270d581caf3294a06fb5195b44c5937d99da",
+  arm64: "9bd3795c5ea8f52b18413501f2d68c32c264a20751302300a08dc04cd67df97c",
 };
 const SIZE: Record<string, number> = {
-  arm64: 52_300_530,
+  arm64: 52_307_647,
 };
 
 export function nativePackName(arch = process.arch): string {
@@ -116,7 +117,8 @@ export async function ensureNativeRuntime(opts: EnsureNativeOptions = {}): Promi
   const sha256 = opts.sha256 ?? SHA256[arch];
   const sizeBytes = opts.sizeBytes ?? SIZE[arch];
   const destDir = opts.destDir ?? nativePackDir(arch);
-  if (existsSync(join(destDir, "libmlxc.dylib"))) return destDir;
+  if (NATIVE_PACK_FILES.every((file) => existsSync(join(destDir, file))))
+    return destDir;
   if (!sha256 || !sizeBytes)
     throw new Error(`no native pack published for ${arch} — set MLX_BUN_LIBMLXC or install mlx via homebrew`);
 

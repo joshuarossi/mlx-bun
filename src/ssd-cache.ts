@@ -42,10 +42,12 @@ export interface SsdIndexEntry {
 
 /** Trimmability from a file header alone (mirror of the live caches'
  *  isTrimmable(): kv/qkv/turboquant always trim; rotating kinds only pre-wrap
- *  (offset < maxSize); ssm never). Keep in sync with gemma4-base/qwen3-delta. */
+ *  (offset < maxSize); GLM compressed kinds always trim; ssm never). Keep in
+ *  sync with gemma4-base/qwen3-delta/glm52-cache. */
 const headerTrimmable = (caches: { kind: string; offset: number; maxSize?: number }[]): boolean =>
   caches.every((c) =>
-    c.kind === "kv" || c.kind === "qkv" || c.kind === "turboquant"
+    c.kind === "kv" || c.kind === "qkv" || c.kind === "turboquant" ||
+      c.kind === "mla" || c.kind === "mla-dsa" || c.kind === "mtp-mla"
       ? true
       : c.kind === "rotating" || c.kind === "rotating-qkv"
         ? c.offset < (c.maxSize ?? 0)
@@ -111,6 +113,7 @@ export class SsdCacheStore {
         try {
           const h = readKvHeader(path); // verifies the header hash
           if (
+            h.modelId !== this.#opts.modelId ||
             h.configFingerprint !== this.#opts.configFingerprint ||
             h.tokenizerHash !== this.#opts.tokenizerHash
           )
@@ -159,6 +162,7 @@ export class SsdCacheStore {
     const t0 = performance.now();
     try {
       const expect: KvLoadExpect = {
+        modelId: this.#opts.modelId,
         configFingerprint: this.#opts.configFingerprint,
         tokenizerHash: this.#opts.tokenizerHash,
         ns: entry.ns,

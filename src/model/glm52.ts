@@ -1,4 +1,4 @@
-// Dedicated serial GLM-5.2 correctness graph over the direct Colibri artifact.
+// Dedicated GLM-5.2 correctness graph over the direct Colibri artifact.
 //
 // G2 deliberately favors an auditable dequantize->f32 path. Routed experts are
 // resolved by their exact tensor names and composed in route order. G3 swaps
@@ -18,7 +18,7 @@ import {
 import {
   Glm52DsaSelectionState,
   glm52DsaScoresMlx,
-  type Glm52DsaLayerSelection,
+  type Glm52DsaSelectionObserver,
 } from "./glm52-dsa";
 import { MLACache } from "./glm52-cache";
 import {
@@ -29,6 +29,7 @@ import {
   Glm52Mla,
   partialInterleavedRopeMlx,
   rmsNormF32Mlx,
+  type Glm52MlaBatchedSelection,
   type Glm52MlaWeightSource,
 } from "./glm52-mla";
 import { validateGlm52ContainerLayout } from "./glm52-layout";
@@ -38,6 +39,7 @@ import {
   routeGlm52MoeF32,
   type Glm52RoutedExpertOutput,
 } from "./glm52-moe";
+import { Glm52PilotTracker } from "./glm52-pilot";
 import type { Glm52ExpertExecutionBackend } from "./glm52-streamed-experts";
 import {
   Glm52ExpertRuntime,
@@ -70,12 +72,25 @@ export interface Glm52StreamedOpenOptions
 extends Omit<Glm52ExpertRuntimeOptions, "fixedBytes"> {
   /** KV/transient/allocator/Bun/OS reserve, excluding resident weights. */
   readonly reserveBytes: number;
+  /** Internal counterfactual control; indexer weights remain resident. */
+  readonly enableDsa?: boolean;
+  /**
+   * Stage-2 benchmark seam: build long contexts with dense batched prefill,
+   * then exercise exact DSA on one-token decode. Normal serving stays exact.
+   */
+  readonly dsaPrefillMode?: "exact" | "dense-benchmark";
+  /** Exact prompt length covered by `dense-benchmark`; required in that mode. */
+  readonly dsaBenchmarkPrefillTokens?: number;
 }
 
 interface DsaStep {
   readonly key: MlxArray;
-  readonly selection: Glm52DsaLayerSelection;
+  /** Borrowed from the request-local selection state; do not dispose here. */
+  readonly selectedPositions: MlxArray | Glm52MlaBatchedSelection | null;
 }
+
+/** Native MTP verifies at most gamma+1 rows under the 64-slot expert union. */
+const GLM52_DSA_SPARSE_DECODE_BATCH_MAX = 8;
 
 function swiglu(
   source: Glm52WeightSource,
@@ -126,14 +141,19 @@ class Glm52DsaIndexer {
     input: MlxArray,
     cache: MLACache,
     state: Glm52DsaSelectionState,
+    forceDense = false,
   ): DsaStep {
     const [batch, tokens, hidden] = input.shape;
-    if (batch !== 1)
-      throw new Error("G2 DSA correctness path is serial (batch size 1)");
+    if (batch! > 1 && tokens !== 1)
+      throw new Error("batched DSA supports ordinary single-token decode only");
     if (hidden !== this.config.hiddenSize)
       throw new Error(`DSA hidden width ${hidden} != ${this.config.hiddenSize}`);
 
-    const positionOffset = cache.offset;
+    const positionOffset = batch! > 1
+      ? (cache.rowOffsets.length
+          ? cache.rowOffsets
+          : new Array(batch!).fill(0) as number[])
+      : cache.offset;
     const qA = this.weights.linear(
       input,
       `model.layers.${this.layer}.self_attn.q_a_proj.weight`,
@@ -156,7 +176,7 @@ class Glm52DsaIndexer {
     );
     qNorm.dispose();
     const queryRaw = ops.reshape(queryFlat, [
-      batch,
+      batch!,
       tokens!,
       this.config.indexNumHeads,
       this.config.indexHeadDim,
@@ -207,12 +227,57 @@ class Glm52DsaIndexer {
       prior.dispose();
     }
     const contextLength = allKeys.shape[1]!;
-    let selection: Glm52DsaLayerSelection;
-    if (contextLength <= this.config.indexTopk) {
-      selection = state.selectFull(
+    let selectedPositions: MlxArray | Glm52MlaBatchedSelection | null;
+    if (batch! > 1) {
+      const rowSelections: Array<MlxArray | null> = [];
+      for (let row = 0; row < batch!; row++) {
+        const rowContext = (cache.rowOffsets[row] ?? 0) + tokens!;
+        if (rowContext <= this.config.indexTopk) {
+          rowSelections.push(null);
+          continue;
+        }
+        const pad = contextLength - rowContext;
+        const queryRow = query.slice(
+          [row, 0, 0, 0],
+          [row + 1, 1, this.config.indexNumHeads, this.config.indexHeadDim],
+        );
+        const query2d = ops.reshape(queryRow, [
+          this.config.indexNumHeads,
+          this.config.indexHeadDim,
+        ]);
+        queryRow.dispose();
+        const keysRow = allKeys.slice(
+          [row, pad, 0],
+          [row + 1, contextLength, this.config.indexHeadDim],
+        );
+        const keys2d = ops.reshape(keysRow, [
+          rowContext,
+          this.config.indexHeadDim,
+        ]);
+        keysRow.dispose();
+        const weightsRow = headWeights.slice(
+          [row, 0, 0],
+          [row + 1, 1, this.config.indexNumHeads],
+        );
+        const weights1d = ops.reshape(weightsRow, [this.config.indexNumHeads]);
+        weightsRow.dispose();
+        const scores = glm52DsaScoresMlx(query2d, keys2d, weights1d);
+        rowSelections.push(state.selectFullDevice(this.layer, scores, row));
+        query2d.dispose();
+        keys2d.dispose();
+        weights1d.dispose();
+        scores.dispose();
+      }
+      selectedPositions = { rows: rowSelections };
+    } else if (forceDense) {
+      state.selectFullDense(this.layer, contextLength);
+      selectedPositions = null;
+    } else if (contextLength <= this.config.indexTopk) {
+      state.selectFull(
         this.layer,
         new Float32Array(contextLength),
       );
+      selectedPositions = null;
     } else {
       if (tokens !== 1) {
         if (allKeys !== key) allKeys.dispose();
@@ -236,7 +301,7 @@ class Glm52DsaIndexer {
         this.config.indexNumHeads,
       ]);
       const scores = glm52DsaScoresMlx(query2d, keys2d, weights1d);
-      selection = state.selectFull(this.layer, scores.toFloat32());
+      selectedPositions = state.selectFullDevice(this.layer, scores);
       query2d.dispose();
       keys2d.dispose();
       weights1d.dispose();
@@ -245,7 +310,7 @@ class Glm52DsaIndexer {
     if (allKeys !== key) allKeys.dispose();
     query.dispose();
     headWeights.dispose();
-    return { key, selection };
+    return { key, selectedPositions };
   }
 }
 
@@ -255,6 +320,7 @@ class Glm52Mlp {
     readonly weights: Glm52WeightSource,
     readonly layer: number,
     readonly expertBackend: Glm52ExpertExecutionBackend | null = null,
+    readonly pilot: Glm52PilotTracker | null = null,
   ) {}
 
   forward(input: MlxArray): MlxArray {
@@ -398,6 +464,7 @@ class Glm52Mlp {
         routedScale: this.config.routedScalingFactor,
       },
     );
+    this.pilot?.observeActual(this.layer, plan.routes);
     const sharedIntermediate =
       this.config.moeIntermediateSize * this.config.numSharedExperts;
     const shared = sharedIntermediate > 0
@@ -435,10 +502,12 @@ export class Glm52DecoderLayer {
     readonly layer: number,
     hasDsa: boolean,
     expertBackend: Glm52ExpertExecutionBackend | null = null,
+    pilot: Glm52PilotTracker | null = null,
+    readonly denseBenchmarkPrefillTokens = 0,
   ) {
     const prefix = `model.layers.${layer}`;
     this.mla = new Glm52Mla(config, weights, layer);
-    this.mlp = new Glm52Mlp(config, weights, layer, expertBackend);
+    this.mlp = new Glm52Mlp(config, weights, layer, expertBackend, pilot);
     this.inputNorm = weights.tensor(`${prefix}.input_layernorm.weight`);
     this.postAttentionNorm = weights.tensor(
       `${prefix}.post_attention_layernorm.weight`,
@@ -448,7 +517,13 @@ export class Glm52DecoderLayer {
       : null;
   }
 
-  forward(
+  /**
+   * Keep a small sparse verify window batched through residual/MLP while
+   * evaluating its causal DSA+MLA attention rows serially. This preserves one
+   * exact selection per query without collapsing native MTP into full-model
+   * M=1 forwards.
+   */
+  private attend(
     input: MlxArray,
     cache: MLACache,
     dsaState: Glm52DsaSelectionState | null,
@@ -458,28 +533,118 @@ export class Glm52DecoderLayer {
       this.inputNorm,
       this.config.rmsNormEps,
     );
-    let dsaKey: MlxArray | null = null;
-    let selection: Glm52DsaLayerSelection | null = null;
-    if (this.dsa) {
-      if (!dsaState) throw new Error("DSA full layer has no selection state");
-      const step = this.dsa.projectAndSelect(normalized, cache, dsaState);
-      dsaKey = step.key;
-      selection = step.selection;
-    } else if (dsaState) {
-      selection = dsaState.selectShared(this.layer, cache.offset + input.shape[1]!);
+    const tokens = input.shape[1]!;
+    const denseBenchmarkPrefill =
+      this.denseBenchmarkPrefillTokens > 0 &&
+      tokens > 1 &&
+      cache.offset + tokens <= this.denseBenchmarkPrefillTokens;
+    const sparseVerifyBatch =
+      dsaState !== null &&
+      tokens > 1 &&
+      tokens <= GLM52_DSA_SPARSE_DECODE_BATCH_MAX &&
+      cache.offset + tokens > this.config.indexTopk &&
+      !denseBenchmarkPrefill;
+
+    try {
+      if (sparseVerifyBatch) {
+        const rows: MlxArray[] = [];
+        try {
+          for (let token = 0; token < tokens; token++) {
+            const row = normalized.slice(
+              [0, token, 0],
+              [1, token + 1, this.config.hiddenSize],
+            );
+            let dsaKey: MlxArray | null = null;
+            let positions: MlxArray | null = null;
+            try {
+              if (this.dsa) {
+                const step = this.dsa.projectAndSelect(
+                  row,
+                  cache,
+                  dsaState,
+                );
+                dsaKey = step.key;
+                if (
+                  step.selectedPositions !== null &&
+                  !(step.selectedPositions instanceof MlxArray)
+                ) {
+                  throw new Error("serial DSA verification received batched selection");
+                }
+                positions = step.selectedPositions;
+              } else {
+                positions = dsaState.selectSharedPositions(
+                  this.layer,
+                  cache.offset + 1,
+                );
+              }
+              rows.push(this.mla.forward(
+                row,
+                cache,
+                dsaKey,
+                "auto",
+                positions,
+              ));
+            } finally {
+              row.dispose();
+              dsaKey?.dispose();
+            }
+          }
+          return ops.concatAxis(rows, 1);
+        } finally {
+          for (const row of rows) row.dispose();
+        }
+      }
+
+      let dsaKey: MlxArray | null = null;
+      let positions: MlxArray | Glm52MlaBatchedSelection | null = null;
+      try {
+        if (this.dsa) {
+          if (!dsaState) throw new Error("DSA full layer has no selection state");
+          const step = this.dsa.projectAndSelect(
+            normalized,
+            cache,
+            dsaState,
+            denseBenchmarkPrefill,
+          );
+          dsaKey = step.key;
+          positions = step.selectedPositions;
+        } else if (dsaState) {
+          positions = cache.batchSize !== null && cache.batchSize > 1
+            ? {
+                rows: cache.rowOffsets.map((offset, row) =>
+                  dsaState.selectSharedPositions(
+                    this.layer,
+                    offset + tokens,
+                    row,
+                  )
+                ),
+              }
+            : dsaState.selectSharedPositions(
+                this.layer,
+                cache.offset + tokens,
+              );
+        }
+        return this.mla.forward(
+          normalized,
+          cache,
+          dsaKey,
+          "auto",
+          positions,
+        );
+      } finally {
+        dsaKey?.dispose();
+      }
+    } finally {
+      normalized.dispose();
     }
-    const positions = selection?.mode === "sparse"
-      ? selection.positions
-      : null;
-    const attention = this.mla.forward(
-      normalized,
-      cache,
-      dsaKey,
-      "auto",
-      positions,
-    );
-    normalized.dispose();
-    dsaKey?.dispose();
+  }
+
+  forward(
+    input: MlxArray,
+    cache: MLACache,
+    dsaState: Glm52DsaSelectionState | null,
+  ): MlxArray {
+    const attention = this.attend(input, cache, dsaState);
     const residual = ops.add(input, attention);
     attention.dispose();
     const postNorm = rmsNormF32Mlx(
@@ -500,38 +665,10 @@ export class Glm52DecoderLayer {
     cache: MLACache,
     dsaState: Glm52DsaSelectionState | null,
   ): Promise<MlxArray> {
-    const normalized = rmsNormF32Mlx(
-      input,
-      this.inputNorm,
-      this.config.rmsNormEps,
-    );
-    let dsaKey: MlxArray | null = null;
-    let selection: Glm52DsaLayerSelection | null = null;
-    if (this.dsa) {
-      if (!dsaState) throw new Error("DSA full layer has no selection state");
-      const step = this.dsa.projectAndSelect(normalized, cache, dsaState);
-      dsaKey = step.key;
-      selection = step.selection;
-    } else if (dsaState) {
-      selection = dsaState.selectShared(
-        this.layer,
-        cache.offset + input.shape[1]!,
-      );
-    }
-    const positions = selection?.mode === "sparse"
-      ? selection.positions
-      : null;
-    const attention = this.mla.forward(
-      normalized,
-      cache,
-      dsaKey,
-      "auto",
-      positions,
-    );
-    normalized.dispose();
-    dsaKey?.dispose();
+    const attention = this.attend(input, cache, dsaState);
     const residual = ops.add(input, attention);
     attention.dispose();
+    this.mlp.pilot?.predictNext(this.layer, residual);
     const postNorm = rmsNormF32Mlx(
       residual,
       this.postAttentionNorm,
@@ -561,6 +698,10 @@ export class Glm52Model {
   readonly finalNorm: MlxArray;
   readonly expertBackend: Glm52ExpertExecutionBackend | null;
   readonly expertRuntime: Glm52ExpertRuntime | null;
+  readonly pilot: Glm52PilotTracker | null;
+  readonly dsaPrefillMode: "exact" | "dense-benchmark";
+  readonly dsaBenchmarkPrefillTokens: number;
+  #dsaSelectionObserver: Glm52DsaSelectionObserver | null = null;
 
   constructor(
     weights: Glm52WeightSource,
@@ -569,6 +710,8 @@ export class Glm52Model {
     capabilities: Glm52ModelCapabilities,
     expertBackend: Glm52ExpertExecutionBackend | null = null,
     expertRuntime: Glm52ExpertRuntime | null = null,
+    dsaPrefillMode: "exact" | "dense-benchmark" = "exact",
+    dsaBenchmarkPrefillTokens = 0,
   ) {
     if (config.modelType !== "glm_moe_dsa" ||
         glmConfig.modelType !== "glm_moe_dsa") {
@@ -581,8 +724,32 @@ export class Glm52Model {
     this.glmConfig = glmConfig;
     this.weightsBytes = weights.weightsBytes;
     this.capabilities = capabilities;
+    this.dsaPrefillMode = dsaPrefillMode;
+    if (
+      !Number.isSafeInteger(dsaBenchmarkPrefillTokens) ||
+      dsaBenchmarkPrefillTokens < 0 ||
+      (dsaPrefillMode === "dense-benchmark" && dsaBenchmarkPrefillTokens < 1) ||
+      (dsaPrefillMode === "exact" && dsaBenchmarkPrefillTokens !== 0)
+    ) {
+      throw new Error(
+        "dense-benchmark DSA prefill requires a positive exact prompt length",
+      );
+    }
+    this.dsaBenchmarkPrefillTokens = dsaBenchmarkPrefillTokens;
     this.expertBackend = expertBackend;
     this.expertRuntime = expertRuntime;
+    this.pilot = expertRuntime?.pilotMeasureEnabled
+      ? new Glm52PilotTracker({
+          config: glmConfig,
+          weights,
+          hintK: expertRuntime.pilotHintK,
+          twoStep: expertRuntime.pilotTwoStep,
+          hintSink: expertRuntime.pilotHintK > 0
+            ? expertRuntime.manager
+            : undefined,
+        })
+      : null;
+    if (this.pilot) expertRuntime!.attachPilot(this.pilot);
     this.layers = Array.from(
       { length: glmConfig.numHiddenLayers },
       (_, layer) => new Glm52DecoderLayer(
@@ -591,6 +758,8 @@ export class Glm52Model {
         layer,
         capabilities.dsa,
         expertBackend,
+        this.pilot,
+        dsaBenchmarkPrefillTokens,
       ),
     );
     this.finalNorm = weights.tensor("model.norm.weight");
@@ -630,8 +799,14 @@ export class Glm52Model {
         weights.container,
         glmConfig,
       );
-      runtime = Glm52ExpertRuntime.open(modelDir, glmConfig, {
-        ...options,
+      const {
+        enableDsa: _enableDsa,
+        dsaPrefillMode,
+        dsaBenchmarkPrefillTokens,
+        ...runtimeOptions
+      } = options;
+      runtime = await Glm52ExpertRuntime.open(modelDir, glmConfig, {
+        ...runtimeOptions,
         fixedBytes: weights.weightsBytes + options.reserveBytes,
       });
       return new Glm52Model(
@@ -639,12 +814,14 @@ export class Glm52Model {
         config,
         glmConfig,
         {
-          dsa: detected.hasDsa,
+          dsa: detected.hasDsa && options.enableDsa !== false,
           mtpMetadata: detected.hasMtp,
           mtpEnabled: detected.hasMtp && options.enableMtp !== false,
         },
         runtime.executor,
         runtime,
+        dsaPrefillMode ?? "exact",
+        dsaBenchmarkPrefillTokens ?? 0,
       );
     } catch (error) {
       runtime?.close();
@@ -668,6 +845,11 @@ export class Glm52Model {
     }));
   }
 
+  /** Attach probe-only telemetry for selections computed by FULL DSA layers. */
+  setDsaSelectionObserver(observer: Glm52DsaSelectionObserver | null): void {
+    this.#dsaSelectionObserver = observer;
+  }
+
   /** Pin streamed Q4 expert jobs to the row-independent M=1 kernel family.
    * Native MTP enables this only around the batched target verify forward. */
   setSpecKernelPinned(enabled: boolean): void {
@@ -681,7 +863,12 @@ export class Glm52Model {
     const firstOffset = cache[0]?.offset ?? 0;
     if (
       this.capabilities.dsa &&
+      !(
+        this.dsaPrefillMode === "dense-benchmark" &&
+        firstOffset + tokenCount <= this.dsaBenchmarkPrefillTokens
+      ) &&
       tokenCount > 1 &&
+      tokenCount > GLM52_DSA_SPARSE_DECODE_BATCH_MAX &&
       firstOffset + tokenCount > this.glmConfig.indexTopk
     ) {
       if (ids.shape.length !== 2 || ids.shape[0] !== 1) {
@@ -727,7 +914,12 @@ export class Glm52Model {
     const firstOffset = cache[0]?.offset ?? 0;
     if (
       this.capabilities.dsa &&
+      !(
+        this.dsaPrefillMode === "dense-benchmark" &&
+        firstOffset + tokenCount <= this.dsaBenchmarkPrefillTokens
+      ) &&
       tokenCount > 1 &&
+      tokenCount > GLM52_DSA_SPARSE_DECODE_BATCH_MAX &&
       firstOffset + tokenCount > this.glmConfig.indexTopk
     ) {
       if (ids.shape.length !== 2 || ids.shape[0] !== 1) {
@@ -773,30 +965,36 @@ export class Glm52Model {
     if (cache.length !== this.layers.length)
       throw new Error(`GLM cache has ${cache.length} layers, expected ${this.layers.length}`);
     const dsaState = this.capabilities.dsa
-      ? new Glm52DsaSelectionState(this.glmConfig.indexTopk)
+      ? new Glm52DsaSelectionState(
+          this.glmConfig.indexTopk,
+          this.#dsaSelectionObserver,
+        )
       : null;
     // The RuntimeModel contract keeps caller-provided embeddings caller-owned.
     // Take our own handle before entering the consuming layer loop.
     let current = ops.contiguous(embeddings);
-    for (let layer = 0; layer < this.layers.length; layer++) {
-      const layerCache = cache[layer];
-      if (!(layerCache instanceof MLACache))
-        throw new Error(`GLM layer ${layer} requires MLACache`);
-      const next = this.layers[layer]!.forward(
+    try {
+      for (let layer = 0; layer < this.layers.length; layer++) {
+        const layerCache = cache[layer];
+        if (!(layerCache instanceof MLACache))
+          throw new Error(`GLM layer ${layer} requires MLACache`);
+        const next = this.layers[layer]!.forward(
+          current,
+          layerCache,
+          dsaState,
+        );
+        current.dispose();
+        current = next;
+      }
+      return rmsNormF32Mlx(
         current,
-        layerCache,
-        dsaState,
+        this.finalNorm,
+        this.glmConfig.rmsNormEps,
       );
+    } finally {
       current.dispose();
-      current = next;
+      dsaState?.dispose();
     }
-    const output = rmsNormF32Mlx(
-      current,
-      this.finalNorm,
-      this.glmConfig.rmsNormEps,
-    );
-    current.dispose();
-    return output;
   }
 
   async forwardEmbeddingsAsync(
@@ -807,7 +1005,10 @@ export class Glm52Model {
     if (cache.length !== this.layers.length)
       throw new Error(`GLM cache has ${cache.length} layers, expected ${this.layers.length}`);
     const dsaState = this.capabilities.dsa
-      ? new Glm52DsaSelectionState(this.glmConfig.indexTopk)
+      ? new Glm52DsaSelectionState(
+          this.glmConfig.indexTopk,
+          this.#dsaSelectionObserver,
+        )
       : null;
     let current = ops.contiguous(embeddings);
     try {
@@ -835,6 +1036,7 @@ export class Glm52Model {
       );
     } finally {
       current.dispose();
+      dsaState?.dispose();
     }
   }
 
@@ -916,6 +1118,7 @@ export class Glm52Model {
       return output;
     } finally {
       for (const layer of cache) layer.dispose();
+      this.expertRuntime?.flushUsage();
     }
   }
 
@@ -939,6 +1142,7 @@ export class Glm52Model {
       return output;
     } finally {
       for (const layer of cache) layer.dispose();
+      await this.expertRuntime?.finishUsage();
     }
   }
 
