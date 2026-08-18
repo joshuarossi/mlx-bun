@@ -261,6 +261,37 @@ small-footprint variant. 27B needs a chunked Hessian/GPTQ driver (stock
 flow = whole bf16 model + all Hessians resident; down_proj H = 1.2 GB
 f32 each).
 
+## W5c 27B production results (2026-08-18)
+
+**v2 run (uniform GPTQ-4): BROKEN artifact (ppl 306k).** Root cause,
+evidence-backed: the compensation loop DIVERGED on layers with
+rank-deficient calibration Hessians (layer-0 down_proj group scales grew
+0.003 → 27 monotonically across columns, max 2.8e7; cosine ~0 vs source;
+neighbors healthy). Early layers see low-rank activations (layer-0 input
+= raw embeddings; rank ≤ distinct calibration tokens), so 5120 dims
+outran the standard 1% damping — the 0.8B (1024 dims) never hit it,
+which is why validation passed there.
+
+**v3 fixes (all landed):** divergence guard in `gptq_one_guarded`
+(GPTQ scales vs 4× the RTN scale ceiling per matrix; damping escalation
+1e-2→10; RTN fallback = never worse than RTN); 4× calibration (128×512);
+sensitivity-driven per-module bits from OptiQ's published
+sensitivity.json (semantics: `sensitivities[b]` = measured KL GAIN at b
+bits — first read had the sign flipped and allocated 0 modules); greedy
+benefit-per-param to `--target-bpw`. v3 27B: 169 modules @8-bit,
+4.80 bpw, 17.0 GB, ZERO guard triggers (the calibration bump fixed
+conditioning outright), 64 layers in 166 min, per-layer checkpoints.
+
+**27B ppl ladder (73×512, UF corpus, stock mlx-lm):** plain RTN-4
+4.570 ±0.060 · OptiQ 5.14 bpw 4.574 ±0.061 · GPTQ+sens 4.80 bpw
+4.618 ±0.061. **At 27B every sane ≥4.5-bpw recipe SATURATES this
+instrument** — OptiQ's +0.6 bpw buys nothing measurable, and GPTQ shows
+a small consistent deficit (likely calibration-domain mismatch:
+calibration_v5 vs chat-flavored eval text). This contradicts the 0.8B
+lab ordering (GPTQ clearly won there) — quantization robustness grows
+with scale. Decision moves to task benchmarks: MMLU-100 + GSM8K-50
+across {GPTQ-v3, plain4, OptiQ, TQ-mixed}, eval DB rows.
+
 ## Known engine gaps found in passing (not TQ defects)
 
 - `mlx-bun perplexity` cannot score qwen3_5: it routes through
