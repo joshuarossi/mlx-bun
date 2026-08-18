@@ -152,10 +152,17 @@ worst per-position KL 0.00353, argmax flips 2/42 positions BOTH at reference
 margin 0.0 (exact ties). scripts/experiments/{dequant-model,fold-qwen35}.ts +
 tq-fold-parity.py.
 
-Quantization packaging (differs from the OptiQ convention, which STRIPS
-vision): language modules quantize uniformly (embed + lm_head included),
-`vision_tower.*` is predicate-excluded and stays bf16 in the SAME repo — our
-tower loads raw tensors, so one self-contained artifact serves text+vision.
+Quantization packaging (CORRECTED 2026-08-18: OptiQ does NOT fully strip
+vision — its main weights omit it but `optiq/optiq_vision.safetensors`
+carries it, and `optiq/mtp.safetensors` bundles MTP; their artifact also
+publishes `optiq/sensitivity.json` — per-layer KL sensitivities for
+{4,8}-bit g64 against the SAME bf16 trunk, the ready-made allocation
+input for a GPTQ+sensitivity mixed pass. No kv_config.json is published.)
+Our packaging: language modules quantize uniformly (embed + lm_head
+included), `vision_tower.*` is predicate-excluded and stays bf16 both
+IN-MAIN (mlx-vlm compatible — OptiQ's sidecar-only vision is not) and as
+the `optiq/` sidecar, so one self-contained artifact serves text+vision
+across stacks.
 
 ## Subject models
 

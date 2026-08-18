@@ -1,7 +1,7 @@
 // STREAMING uniform quantizer for 27B-scale qwen3_5 VL snapshots: language
 // modules quantize uniformly (embed + lm_head included), `vision_tower.*` is
 // excluded and stays bf16 in the same repo (our tower loads raw tensors; the
-// OptiQ convention strips vision — we keep it). Streams shard-by-shard with
+// OptiQ ships vision only as an optiq/ sidecar — we ALSO keep in-main tensors). Streams shard-by-shard with
 // source release + incremental writer: the production quantizeModelDir holds
 // every source AND output array live until the end, which cannot fit a 51 GB
 // model on 32 GB (same OOM class as the 2026-08-18 fold OOM).
