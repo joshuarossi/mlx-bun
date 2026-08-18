@@ -1536,19 +1536,26 @@ rename. **Josh-gated GPU:** data scale + **12B retarget** + train + live-τ
    spec for the whole qwen3_5 family). The 27B pairing gate is ALSO GREEN
    (2026-08-18, M1 Max): `MLX_BUN_TEST_QWEN38_MTP=1` token-identical to
    non-spec greedy, acceptance 88% (30/34), 2.82 tokens/target-forward.
-   Paired decode was 0.86× MTP-off on a just-rebooted noisy box (not
-   quotable) — the bf16 head's per-step cost eats the forward savings.
-   Still owed before an MTP perf claim: direct MTP-logit parity vs mlx-vlm
-   + a quiet-machine TPS A/B — details in PLAN 14g.
+   ALL 14g follow-ups are closed (2026-08-18, quiet M1 Max — full detail in
+   PLAN 14g): the quiet-machine interleaved TPS A/B is a durable NEGATIVE
+   perf verdict (median MTP-on 12.93 vs off 15.75 tok/s = 0.821× at γ=2,
+   61% acceptance, arms token-identical, spreads ≤4.4%) — the head's serial
+   full-vocab lm-head cost per draft eats the saved forwards, so MTP is
+   correct-but-slower and stays opt-in; direct drafter-logit parity vs the
+   mlx-vlm 0.6.14 reference on identical hidden inputs is EXACT in tokens
+   and top-8 ordering (worst |Δlogprob| 1.9e-1 = bf16 logprob floor); and
+   the M4-Pro-swap-starved serve smokes pass here 4/4 (pressure theory
+   confirmed). Harnesses: scripts/experiments/qwen38-mtp-ab.ts,
+   oracle-qwen38-mtp-logits.py, qwen38-mtp-logit-parity.ts.
    Separately, qwen3_5-27B serial-lane decode dies with a
    GPU command-buffer failure surfacing as an uncatchable Metal-
    completion-thread C++ throw (full finding + .ips backtrace in PLAN
    14g; leading theory = command buffers failing under the 20.35 GB +
    swap regime — parity/sync is bit-exact and the pipelined repro
-   passes standalone). **M1 MAX PICKUP:** run
-   `MLX_BUN_TEST_QWEN38_SERVE=1 bun test tests/qwen38-serve.test.ts`
-   (the 2 swap-starved smoke items) there — green also confirms the
-   pressure theory. 14z (TQ×weights, ~4 bpw) is PROMOTED as the
+   passes standalone). ~~M1 MAX PICKUP~~ **DONE 2026-08-18**:
+   `MLX_BUN_TEST_QWEN38_SERVE=1` passed 4/4 on the M1 Max in 17.5s —
+   pressure theory confirmed (the M4 Pro timeouts were swap starvation,
+   not logic). 14z (TQ×weights, ~4 bpw) is PROMOTED as the
    M4-Pro fit lever (interim: the uniform -4bit artifact). Then:
    perplexity provenance check, 14v vision / 14w video (mlx-vlm
    reference), TurboQuant KL cell (14r-d), retire 3.6 (14r-b2).

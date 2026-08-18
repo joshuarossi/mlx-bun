@@ -891,11 +891,30 @@ Sub-phases (gate each; B=1 single-stream first; downloads via
       tokens/target-forward. Paired wall-clock decode was 14.31 vs 16.58
       tok/s (MTP on 0.86× off) on a just-rebooted box (load ~9, OFF arm ran
       cold-pages first) — NOT quotable; the bf16 drafter's per-step cost eats
-      the 2.8× forward savings. STILL OWED before any MTP perf
-      recommendation: direct MTP-logit/acceptance parity vs mlx-vlm, and a
-      quiet-machine TPS A/B (candidate levers if it stays negative: quantize
-      the head, batch its per-draft lm-head sampling). MTP stays opt-in via
-      --draft-model either way.
+      the 2.8× forward savings.
+      **All follow-ups closed (2026-08-18, quiet M1 Max):**
+      (1) QUIET-MACHINE TPS A/B (scripts/experiments/qwen38-mtp-ab.ts,
+      interleaved off/on ×3, 128 tokens, spreads 2.2%/4.4%, arms
+      token-identical every repeat): median OFF 15.75 vs ON 12.93 tok/s —
+      **MTP-on is 0.821× at γ=2 despite 61% acceptance and 2.25
+      tokens/target-forward**. The head's serial per-draft cost (full-vocab
+      lm-head matmul + sample per draft) exceeds the saved 27B forwards.
+      Durable negative perf verdict; MTP stays opt-in via --draft-model.
+      Levers if reopened: quantize the head, batch/defer its per-draft
+      lm-head sampling. (2) DIRECT DRAFTER-LOGIT PARITY vs the mlx-vlm
+      0.6.14 reference (scripts/experiments/oracle-qwen38-mtp-logits.py +
+      qwen38-mtp-logit-parity.ts; our drafter fed the ORACLE's captured
+      pre-final-norm hidden grid so target drift can't leak in): draft
+      tokens EXACT through the chained block ([513,279,31784]), top-8
+      ordering identical every step, worst |Δlogprob| 1.9e-1 = the
+      bf16-vs-f32 logprob-representation floor (ours bf16 logits−logsumexp,
+      reference f32 log_softmax; bf16 ulp ≈ 0.06–0.125 at these magnitudes).
+      Info: the cross-version target tap (venv mlx 0.32.1 vs our pinned
+      stack) drifts up to |Δ| 6.0 on Qwen's large-magnitude outlier channels
+      (1-ulp bf16 at |h|~1000) — which is WHY the gate feeds identical
+      inputs; token0 matched anyway. (3) The M4 Pro swap-starved serve
+      smokes PASS on the M1 Max (`MLX_BUN_TEST_QWEN38_SERVE=1`, 4/4, 17.5s)
+      — pressure theory confirmed.
       The separate M4 Pro Metal-completion-thread crash under the 20.35 GB
       target plus swap pressure remains a 24 GB artifact-fit finding, not an
       MTP correctness gate; use the uniform 4-bit artifact there until 14z.

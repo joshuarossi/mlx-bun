@@ -19,7 +19,7 @@ import { Qwen35Model } from "../../src/model/qwen3_5";
 import { setMemoryLimit, Dtype } from "../../src/mlx/ffi";
 import { MlxArray } from "../../src/mlx/array";
 import * as ops from "../../src/mlx/ops";
-import { makeSampler, toLogprobs } from "../../src/sampler";
+import { makeSampler } from "../../src/sampler";
 import { QwenMtpProvider } from "../../src/spec/qwen-mtp-source";
 
 const oraclePath = process.argv[2] ?? "/tmp/qwen38-mtp-oracle.json";
@@ -97,8 +97,7 @@ const oracleHidden = (() => {
 const recorded: { top_ids: number[]; top_logprobs: number[] }[] = [];
 const greedy = makeSampler({ temperature: 0 });
 const recordingSampler = (logprobs: MlxArray, step: number): MlxArray => {
-  const vals = toLogprobs === undefined ? null : null; // logprobs already log-probs
-  const v = logprobs.toFloat32();
+  const v = logprobs.toFloat32(); // already log-probs (the source's #sample)
   const idx = [...v.keys()].sort((a, b) => v[b]! - v[a]!).slice(0, TOPK);
   recorded.push({ top_ids: idx, top_logprobs: idx.map((i) => v[i]!) });
   return greedy(logprobs, step);
