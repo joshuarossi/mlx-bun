@@ -9,7 +9,7 @@
 // (see PLAN.md baselines; eval DB validates predictions against peaks).
 
 import { totalmem } from "node:os";
-import type { ModelConfig } from "./config";
+import type { KvQuantSpec, ModelConfig } from "./config";
 
 /** Decode-efficiency vs theoretical bandwidth ceiling, measured on the
  *  reference machine (24.9 tok/s vs 30.3 ceiling @600 ctx). */
@@ -26,8 +26,26 @@ export const TRANSIENT_PER_TOKEN = 0.55e6;
  *  recommendedMaxWorkingSetSize is ~75% on consumer SKUs). */
 export const WIRED_FRACTION = 0.75;
 export const DEFAULT_CHUNK = 2048;
-/** KV cache element size (bf16; quantized KV lands in Phase 6). */
+/** KV cache element size (bf16 — the default, scheme-less cache). */
 const KV_BYTES = 2;
+
+/** KV-quant scheme for the fit math, mirroring serve's --kv-quant surface:
+ *  uniform kvBits quantizes every attention layer (rotating included);
+ *  kvConfig lists the quantized layers per-layer, the rest stay bf16.
+ *  Omitted entirely → bf16. TurboQuant is deliberately absent: it stays
+ *  billed at bf16 (conservative) until its cache layout gets a projector. */
+export interface FitKvScheme {
+  kvBits?: number;
+  kvGroupSize?: number;
+  kvConfig?: KvQuantSpec[];
+}
+
+/** Bytes per stored KV element under affine group quantization: packed
+ *  uint32 words hold bits/8 per element, plus a scale and bias in the
+ *  source dtype (bf16, 2 B each) per group (QuantizedKVCache layout). */
+export function kvQuantBytesPerElement(bits: number, groupSize: number): number {
+  return bits / 8 + 4 / groupSize;
+}
 
 export interface MachineSpec {
   name: string;
@@ -145,28 +163,72 @@ export interface FitReport {
 interface KvGeometry {
   fullLayers: number;
   slidingLayers: number;
+  linearLayers: number;
   fullBytesPerToken: number;
   slidingBytesPerToken: number;
+  /** Constant recurrent-state bytes for linear-attention (DeltaNet) layers:
+   *  f32 state [Hv, Dv, Dk] + bf16 conv window [K-1, 2·Hk·Dk + Hv·Dv] per
+   *  layer (see qwen3-delta.ts) — context-independent, so it belongs in the
+   *  fixed term, never in bytes/token. */
+  linearStateBytes: number;
   window: number;
 }
 
-function kvGeometry(config: ModelConfig): KvGeometry {
+function kvGeometry(config: ModelConfig, scheme?: FitKvScheme): KvGeometry {
   const t = config.text;
-  const slidingLayers = t.layerTypes.filter((l) => l === "sliding_attention").length;
-  const fullLayers = t.numHiddenLayers - slidingLayers;
-  const kEqVFactor = t.attentionKEqV ? 2 : 2; // k and v stored separately either way
+  // Per-layer element size: kvConfig quantizes listed layers only; uniform
+  // kvBits quantizes every attention layer (matches maybeQuantizeKv).
+  const byLayer = scheme?.kvConfig?.length
+    ? new Map(scheme.kvConfig.map((e) => [e.layerIdx, e]))
+    : null;
+  const uniformBytes = scheme?.kvBits
+    ? kvQuantBytesPerElement(scheme.kvBits, scheme.kvGroupSize ?? 64)
+    : KV_BYTES;
+  const elBytes = (layer: number): number => {
+    if (byLayer) {
+      const e = byLayer.get(layer);
+      return e ? kvQuantBytesPerElement(e.bits, e.groupSize) : KV_BYTES;
+    }
+    return uniformBytes;
+  };
+  let fullLayers = 0, slidingLayers = 0, linearLayers = 0;
+  let fullBytesPerToken = 0, slidingBytesPerToken = 0;
+  for (let i = 0; i < t.numHiddenLayers; i++) {
+    // empty/short layerTypes means full attention (llama-like configs)
+    const type = t.layerTypes[i] ?? "full_attention";
+    if (type === "linear_attention") {
+      linearLayers++;
+    } else if (type === "sliding_attention") {
+      slidingLayers++;
+      slidingBytesPerToken += 2 * t.numKeyValueHeads * t.headDim * elBytes(i);
+    } else {
+      fullLayers++;
+      fullBytesPerToken += 2 * t.numGlobalKeyValueHeads * t.globalHeadDim * elBytes(i);
+    }
+  }
+  // Linear (DeltaNet) state is never KV-quantized (SSMCache is not a
+  // KVCache) — always f32 state + model-dtype conv window.
+  const convDim = 2 * t.linearNumKeyHeads * t.linearKeyHeadDim +
+    t.linearNumValueHeads * t.linearValueHeadDim;
+  const linearStateBytes = linearLayers === 0 ? 0 : linearLayers * (
+    t.linearNumValueHeads * t.linearValueHeadDim * t.linearKeyHeadDim * 4 +
+    Math.max(0, t.linearConvKernelDim - 1) * convDim * KV_BYTES
+  );
   return {
     fullLayers,
     slidingLayers,
-    fullBytesPerToken: fullLayers * kEqVFactor * t.numGlobalKeyValueHeads * t.globalHeadDim * KV_BYTES,
-    slidingBytesPerToken: slidingLayers * 2 * t.numKeyValueHeads * t.headDim * KV_BYTES,
+    linearLayers,
+    fullBytesPerToken,
+    slidingBytesPerToken,
+    linearStateBytes,
     window: t.slidingWindow,
   };
 }
 
-export function kvBytesAt(config: ModelConfig, ctx: number): number {
-  const g = kvGeometry(config);
-  return g.fullBytesPerToken * ctx + g.slidingBytesPerToken * Math.min(ctx, g.window);
+export function kvBytesAt(config: ModelConfig, ctx: number, kvScheme?: FitKvScheme): number {
+  const g = kvGeometry(config, kvScheme);
+  return g.fullBytesPerToken * ctx + g.slidingBytesPerToken * Math.min(ctx, g.window) +
+    g.linearStateBytes;
 }
 
 export function fit(
@@ -182,17 +244,20 @@ export function fit(
    *  replaces the machine-derived usable ceiling (ram × WIRED_FRACTION)
    *  outright — the budget IS the usable envelope. */
   usableBytes?: number,
+  /** Active KV-quant scheme; a quantized cache holds more context in the
+   *  same budget, so the solved ceiling (and admission) must bill it. */
+  kvScheme?: FitKvScheme,
 ): FitReport {
   const usable = usableBytes ?? machine.ramBytes * WIRED_FRACTION;
   const transient = Math.min(chunk, ctx) * TRANSIENT_PER_TOKEN;
-  const kv = kvBytesAt(config, ctx);
+  const kv = kvBytesAt(config, ctx, kvScheme);
   const total = weightsBytes + kv + transient;
 
   // solve max context: weights + kv(ctx) + transient ≤ usable.
   // Below the window both KV terms are linear in ctx; above it the
   // sliding term saturates and only full-attention layers keep growing.
-  const g = kvGeometry(config);
-  const fixed = weightsBytes + chunk * TRANSIENT_PER_TOKEN;
+  const g = kvGeometry(config, kvScheme);
+  const fixed = weightsBytes + chunk * TRANSIENT_PER_TOKEN + g.linearStateBytes;
   let maxCtx = 0;
   if (usable > fixed) {
     const budget = usable - fixed;
@@ -231,6 +296,7 @@ export function fit(
 /** The SKU matrix: which Apple Silicon configs run this model at `ctx`. */
 export function skuMatrix(
   config: ModelConfig, weightsBytes: number, ctx: number, expertsBytes = 0,
+  kvScheme?: FitKvScheme,
 ): { sku: string; ramGB: number; fits: boolean; maxContext: number; decodeTps: number }[] {
   const rows: ReturnType<typeof skuMatrix> = [];
   for (const sku of APPLE_SKUS) {
@@ -240,7 +306,7 @@ export function skuMatrix(
         ramBytes: ram * 2 ** 30,
         bandwidthGBs: sku.bandwidthGBs,
       };
-      const r = fit(config, weightsBytes, ctx, m, DEFAULT_CHUNK, expertsBytes);
+      const r = fit(config, weightsBytes, ctx, m, DEFAULT_CHUNK, expertsBytes, undefined, kvScheme);
       rows.push({
         sku: sku.chip,
         ramGB: ram,
