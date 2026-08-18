@@ -30,6 +30,10 @@ import {
   type Mask,
 } from "./gemma4-base";
 import { gatedDeltaUpdate, SSMCache } from "./qwen3-delta";
+import {
+  activeMrope, applyInterleavedRope, buildMropePositions, mropeInvFreq,
+  setActiveMrope, type MropeRequestState,
+} from "./qwen3-mrope";
 
 const PREFIX = "language_model";
 
@@ -369,13 +373,23 @@ export class Qwen3Attention {
     // position as ropeOffsetArr (rows have different prompt lengths); the
     // dynamic-offset kernel is the same fast::rope, bit-exact vs the static
     // form (tests/compile.test.ts). Serial lane: scalar offset, unchanged.
+    // Vision requests (serial lane only) install activeMrope for the current
+    // forward: 3D interleaved positions via the manual apply — the reference
+    // never uses the fused fast-rope kernel when position_ids are supplied,
+    // so this IS the oracle's own arithmetic. Text-only stays on ops.rope.
+    const mr = activeMrope;
     const offArr = (cache as { ropeOffsetArr?: MlxArray }).ropeOffsetArr;
-    q = disposing(q, offArr
-      ? ops.ropeDynamic(q, this.ropeDims, this.ropeBase, offArr, null)
-      : ops.rope(q, this.ropeDims, this.ropeBase, cache.offset, null));
-    k = disposing(k, offArr
-      ? ops.ropeDynamic(k, this.ropeDims, this.ropeBase, offArr, null)
-      : ops.rope(k, this.ropeDims, this.ropeBase, cache.offset, null));
+    if (mr) {
+      q = disposing(q, applyInterleavedRope(q, mr));
+      k = disposing(k, applyInterleavedRope(k, mr));
+    } else {
+      q = disposing(q, offArr
+        ? ops.ropeDynamic(q, this.ropeDims, this.ropeBase, offArr, null)
+        : ops.rope(q, this.ropeDims, this.ropeBase, cache.offset, null));
+      k = disposing(k, offArr
+        ? ops.ropeDynamic(k, this.ropeDims, this.ropeBase, offArr, null)
+        : ops.rope(k, this.ropeDims, this.ropeBase, cache.offset, null));
+    }
 
     let attn: MlxArray;
     if (cache instanceof QuantizedKVCache) {
@@ -538,8 +552,23 @@ export class Qwen35Model {
     return this.forwardLayers(h, cache);
   }
 
-  forwardEmbeddings(_embeds: MlxArray, _cache: Cache[], _bidir: MlxArray | null): MlxArray {
-    throw new Error("qwen3_5 vision/input-embedding path is not supported");
+  /** Active vision mRoPE request state (serial lane; set by the generation
+   *  gateway around a vision request's run, null for text-only — which keeps
+   *  the bit-exact fast-rope path). While set, forwardLayers installs the
+   *  per-forward interleaved cos/sin consumed by every full-attn layer. */
+  mrope: MropeRequestState | null = null;
+  #mropeInvFreq: MlxArray | null = null;
+
+  /** Vision prefill: spliced input embeddings [1, L, H] (image features
+   *  overwriting image-token rows — the caller builds them). Caller keeps
+   *  ownership of `embeds`. bidir/ids/multimodal are the Gemma-shaped extras
+   *  and are unused: Qwen3.5 vision attends fully causally. */
+  forwardEmbeddings(
+    embeds: MlxArray, cache: Cache[], _bidir: MlxArray | null,
+    _ids: MlxArray | null = null, _multimodal: MlxArray | null = null,
+  ): MlxArray {
+    const h = ops.contiguous(embeds); // fresh handle — the layer loop consumes it
+    return this.forwardLayers(h, cache);
   }
 
   /** Layer-output tap (same contract as Gemma4Model.hiddenTap): the serve
@@ -566,12 +595,32 @@ export class Qwen35Model {
     // One full-attention mask shared by all full layers (same offset); linear
     // layers see no ssm mask at B=1.
     const faMask = cache[this.faIdx]!.makeMask(L, null);
+    // Vision requests: one interleaved-mRoPE cos/sin table per forward,
+    // shared by all 12 full-attention layers (positions are layer-invariant).
+    let mropeFwd: ReturnType<typeof buildMropePositions> | null = null;
+    if (this.mrope) {
+      const t = this.config.text;
+      const ropeDims = Math.trunc(t.headDim * t.partialRotaryFactor);
+      const base = t.ropeParameters.full_attention?.ropeTheta ?? 10000;
+      this.#mropeInvFreq ??= mropeInvFreq(ropeDims, base);
+      mropeFwd = buildMropePositions(
+        this.mrope, cache[this.faIdx]!.offset, L, this.#mropeInvFreq, ropeDims,
+      );
+      setActiveMrope(mropeFwd);
+    }
     let h = h0;
-    for (let i = 0; i < this.layers.length; i++) {
-      const next = this.layers[i]!.forward(h, faMask, cache[i]!);
-      h.dispose();
-      h = next;
-      this.captureLayer(i, h); // native-MTP pre-final-norm tap (no-op unless set)
+    try {
+      for (let i = 0; i < this.layers.length; i++) {
+        const next = this.layers[i]!.forward(h, faMask, cache[i]!);
+        h.dispose();
+        h = next;
+        this.captureLayer(i, h); // native-MTP pre-final-norm tap (no-op unless set)
+      }
+    } finally {
+      if (mropeFwd) {
+        setActiveMrope(null);
+        mropeFwd.posIds.dispose();
+      }
     }
     faMask.arr?.dispose();
     return disposing(h, this.finalNorm.forward(h));

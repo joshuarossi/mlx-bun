@@ -918,27 +918,82 @@ Sub-phases (gate each; B=1 single-stream first; downloads via
       The separate M4 Pro Metal-completion-thread crash under the 20.35 GB
       target plus swap pressure remains a 24 GB artifact-fit finding, not an
       MTP correctness gate; use the uniform 4-bit artifact there until 14z.
-- [ ] **14v — vision (images).** Port the dedicated tower from
-      mlx-vlm `qwen3_5` (depth 27, hidden 1152, patch 16, merge 2,
-      deepstack disabled — own tower like DiffusionGemma D3, NOT
-      SigLIP reuse); preprocess via the existing Bun.Image path
-      (mean/std 0.5); splice at image token 248056; resolve the
-      image-position/mRoPE question against mlx-vlm as truth. Gate:
-      token-for-token vs mlx-vlm on fixture images, then the registry
-      advertises vision for qwen3_5 (today it correctly does not).
-- [ ] **14w — video.** NEW input infra: frame extraction (fps=2
-      default, `do_sample_frames`) — Bun.Image is stills-only; probe
-      AVFoundation via a native sidecar first (no-external-deps
-      identity) before considering a vendored decoder.
-      temporal_patch_size 2 (frame pairs), video token 248057,
-      `video_preprocessor_config` sizing + the documented
-      `longest_edge` bump for hour-scale video. Gate: token-for-token
-      vs mlx-vlm on a fixture clip.
+- [x] **14v — vision (images) LANDED (2026-08-18, M1 Max).** Oracle =
+      mlx-vlm 0.6.14 PINNED to pip mlx 0.31.2 (a scratch venv; goldens
+      regenerated there — the 0.32 venv's captures differ at bf16-ulp).
+      Pieces, each gated: (1) preprocessor
+      (src/vision/qwen3vl-preprocess.ts) — smart_resize + a PIL-EXACT
+      8bpc fixed-point bicubic emulation (int coefficients at
+      PRECISION_BITS 22, quantized uint8 intermediate between passes;
+      the float resizeBicubic differs by ±1 uint8 count) + the exact f32
+      normalize sequence → BIT-EXACT pixel grids on all three fixtures
+      incl. the resized one. (2) tower (src/vision/qwen3vl-tower.ts,
+      bf16 sidecar optiq/optiq_vision.safetensors, 333 tensors) — real
+      conv3d patch embed (NEW mlx_conv3d ffi binding, packed-stack-args
+      hazard handled; a value-equal GEMM rounds differently), addmm
+      linears (nn.Linear's fused bias path), interpolated pos-embed,
+      2D rope, ensure_fused_sdpa's 72→80 head-dim zero-pad replicated:
+      BIT-EXACT at 36/576 patches; at 2304 ONE bf16-boundary element in
+      block 13 (homebrew-libmlxc vs pip-mlx builds disagree on an FMA
+      path — pre-astype f32 0x…7fff vs the tie) amplifies → calibrated
+      relRMSE ≤ 2e-2 envelope. (3) language mRoPE
+      (src/model/qwen3-mrope.ts) — VERBATIM port of the reference's
+      custom Metal apply kernel (f32 angle/cos/sin in-kernel, one
+      rounding; a bf16-cos/sin manual path moved step-0 logits ~1.0),
+      interleaved selector [11,11,10], get_rope_index port EXACT on all
+      fixtures (positions + rope_delta), decode = offset+delta;
+      text-only requests keep the untouched bit-exact fast-rope path
+      (equal position streams ⟹ mRoPE degenerates to plain RoPE — the
+      14v "mRoPE question", resolved). (4) serving —
+      forwardEmbeddings + embed splice (segment concat ≡
+      masked_scatter), Vision.mrope scoped inside the serial run,
+      makeVisionLoader qwen branch, chat-lane branch; /v1/models
+      advertises vision automatically. GATES
+      (tests/qwen38-vision.test.ts + tests/qwen38-vision-serve.test.ts):
+      model-free 5/5; gated tower 3/3; e2e greedy TOKEN-EXACT on
+      grad-500x300 + grad-768, grad-96 exact ≥16 tokens then flips a
+      near-tie — mlx-vlm's language implementation is INDEPENDENT of
+      mlx-lm (our bit-exact L1 oracle), so a composite bit-match target
+      does not exist; step-0 argmax exact on all three. Serve smoke
+      (real HTTP image chat + follow-up text isolation) PASSES. NOTE:
+      never load two 27B instances in one test process (Metal
+      completion-thread crash — split heavy describes per file or share
+      a singleton).
+- [~] **14w — video: FRAMES PIPELINE LANDED; file decode pending
+      productization.** The AVFoundation probe is GREEN
+      (lab/spikes/qwen38-video-sidecar/frame-extract.swift — swiftc,
+      AVAssetWriter fixture generation + AVAssetImageGenerator fps=2
+      extraction, zero external deps; the darwin-native codec doctrine,
+      same as afconvert audio). Committed fixtures:
+      tests/fixtures/qwen38-clip.mov (10 KB H.264) + its extracted
+      frames (both stacks consume identical pixels — no codec in the
+      comparison). Pipeline: T-aware smart_resize (video budget counts
+      padded frames), last-frame padding, REAL temporal-pair patchify,
+      tower gridT>1 (pos/rope tiled per frame group, attention split at
+      cu_seqlens = h·w per pair), t>1 get_rope_index. Gates: video
+      preprocessor BIT-EXACT + positions EXACT (model-free), tower +
+      e2e vs the mlx-vlm capture (gated,
+      scripts/experiments/oracle-qwen38-video.py). STILL OWED: ship the
+      sidecar in the native pack (frame-extract → libmlx_bun-style
+      asset) + serve-side video content parts wired through it +
+      `longest_edge` sizing for hour-scale video.
 - [ ] **14y — 1M context (YaRN), opt-in.** `rope_type: "yarn"` branch
       (factor 4.0, original_max_position_embeddings 262144);
       flag-gated, never default (static YaRN penalizes short contexts
       per the model card). Fit math first — 1M KV on 24–32 GB needs
       the KV ladder (quant/TQ/SSD tiers).
+      RESEARCH NOTE (2026-08-18, from the 14v pass): the shipped Qwen3.8
+      config is `rope type: "default"` — yarn only activates when the
+      user EDITS rope_scaling per the model card, so nothing is silently
+      missing today (our ops.rope path has no yarn branch and correctly
+      serves the shipped config). The oracle implementation when we build
+      this is mlx-lm's generic `YarnRoPE` (rope_utils: correction-range
+      beta_fast/beta_slow ramp mask + mscale attention scaling); mlx-vlm's
+      rope_utils carries the same math, and its MRoPERotaryEmbedding would
+      need the yarn-scaled inv_freq for vision×yarn composition. Port =
+      precompute yarn-corrected inv_freq + attention_scaling, feed the
+      SAME mrope kernel; the fast-rope text path needs a scaled-freqs
+      variant (mx.fast.rope takes freqs= for that upstream).
 - [ ] **14r-b2 — consolidate on the best (Josh, 2026-08-16).** Once
       3.8-27B is green and serving, retire the 3.6-27B target: drop its
       paths/test gates/docs rows and let the snapshot gc. Keep
@@ -3590,6 +3645,88 @@ same splice/merge seams, same parity-tier ladder.
 Non-goals pinned in the design doc §5: TTS/STS/transcription endpoints,
 streaming audio, >30 s (cap at 750 like the oracle), video, batched audio
 prefill, and 26B-A4B/DiffusionGemma (no `audio_config` — architectural).
+
+## Phase: TurboQuant weights — rotation-folded quantization, Qwen3.8-27B target `[ ]` (opened 2026-08-17)
+
+Goal: the best-possible Qwen3.8-27B experience on our hardware. Mechanism:
+QuaRot/SpinQuant-style rotation folding (fold orthogonal R offline into
+producer/consumer weight pairs across the residual stream; RMSNorm γ
+absorbed first so bare RMSNorm commutes with R) ahead of quantization into
+mlx's EXISTING formats — no new qmm kernels (Path A; the 26B gather-qmv
+shelving is the precedent). This is the queued weight leg from
+docs/design/turboquant-kv.md "Future" (2026-07-06); the KV leg already
+shipped and is orthogonal (online rotation stays KV-only).
+
+Landscape scan (2026-08-17, HF): nobody publishes a rotation-based MLX
+quant of this model. mlx-community ships 15 Qwen3.8-27B repos in three
+families — uniform affine (4bit/8bit g64), FP micro-scaled (mxfp4 g32,
+nvfp4 g16, mxfp8), and calibration-ALLOCATED mixed (OptiQ-4bit: 498
+overrides, 261 layers at 8-bit; oQ4: 160 layers at 5-bit) — all handle
+outliers by allocation, none by rotation. Community mixed recipes bump
+exactly the DeltaNet linear-attention projections (5-bit in_proj_*,
+8-bit out_proj) → those are the empirically sensitive spots. Experiment
+grid: rotation {none, random-Hadamard, learned} × codebook {affine g64,
+mxfp4, nvfp4} × allocation {uniform, OptiQ-style}; published incumbents
+are free baselines (OptiQ-4bit already local, 19 GB).
+
+Gate (per turboquant-kv.md): perplexity + frozen 6-task eval at equal
+effective bpw vs the plain affine convert output AND vs OptiQ-4bit; eval
+DB rows; model runs sequential; results labeled host/chip/RAM.
+
+Hardware constraint recorded up front: 27B bf16 (~54 GB) never fully
+loads on either laptop — folding bit-identity is proven at W0 scale plus
+per-tensor shard checks on 27B; the 27B only ever RUNS folded-and-
+quantized (~15 GB at 4-bit). Convert streams shards lazily, so the fold
+pass itself is fine. Source artifacts (2026-08-17 correction: the trunk
+and the MTP head ship as SEPARATE repos): trunk =
+mlx-community/Qwen3.8-27B-bf16 (11 shards, 54.7 GB; Josh-run via
+`mlx-bun get`); MTP companion = mlx-community/Qwen3.8-27B-MTP-bf16
+(model_type qwen3_5_mtp, block_size 3, ~850 MB — already local +
+verified via `mlx-bun get`).
+
+- [ ] **W0 folding spike (small model):** γ-fold + R₁ (+ SpinQuant-style
+      per-head R₂) on **mlx-community/Llama-3.2-1B-Instruct-bf16**
+      (~2.5 GB, Josh-run get; the reference repos' literal target
+      family; tied embeddings exercise the untie step; no mlx bf16
+      MiniCPM5 exists). Exit: folded bf16 model runs through the
+      UNMODIFIED engine with logit parity vs unfolded (tolerance = bf16
+      reduction-order noise; argmax-stable on the parity prompt set).
+      Mechanics research DONE 2026-08-17 (agent read of spcl/QuaRot +
+      facebookresearch/SpinQuant fold code) — full recipe, fold table,
+      and four decided deviations (no mean-centering; delete the hidden
+      R4 half-fold in rotate_mlp_output; no R3; fp32 folds w/ oracle-venv
+      f64 escape hatch) in **docs/design/turboquant-weights.md**. Key
+      trap recorded there: QuaRot's v/o rotation needs a RUNTIME op —
+      copy SpinQuant's fully-offline R₂ pairing instead.
+- [ ] **W1 Qwen3.8 corridor map:** walk the module graph and decide
+      fold-or-skip per corridor, incl. the DeltaNet gated-delta blocks
+      (in_proj_a/b/z · out_proj around the recurrence — folding math not
+      in the papers; derivation or allocation-only fallback, decided in
+      the design doc). The MTP companion is a SEPARATE artifact sharing
+      the trunk's residual basis (embeddings/head) → an R₁-folded trunk
+      needs a consistently folded companion (or MTP breaks); decide the
+      companion fold story here.
+- [ ] **W2 convert integration:** rotation pass wired into the
+      convert/fuse tool ahead of quantization; output stays standard mlx
+      format — cross-check: the folded+quantized model loads and
+      generates in stock mlx-lm. VERIFY (don't assume) our loader
+      handles mode:mxfp4/nvfp4 configs before promising those arms.
+- [ ] **W3 small-model curve:** {rotated, plain} × {affine4 g64, mxfp4,
+      nvfp4} on the W0 model — ppl + teacher-forced KL harness
+      (src/eval/kl.ts pattern from the KV curve); pick winning arms.
+- [ ] **W4 27B gate:** convert Qwen3.8-27B-MTP-bf16 → candidate turbo
+      variants; run the gate vs OptiQ-4bit + plain 4bit at equal bpw
+      (frozen 6-task eval + ppl, eval DB rows). Deliverable: a local
+      `Qwen3.8-27B-MTP-turbo` that wins its bpw band.
+- [ ] **W5 composition (only if W3/W4 show a random-rotation win):**
+      learned rotations (SpinQuant Cayley-style, small calibration set)
+      and/or OptiQ-style per-layer allocation on top.
+
+Non-goals (pinned now): custom Lloyd-Max weight FORMAT / any new qmm
+kernel; activation quantization (no int4 tensor cores, decode is
+weight-bandwidth-bound — w4a16-compute-precision-spike.md); runtime
+weight rotation of any kind (weights fold offline; online rotation
+remains the KV codec's job); GGUF/AWQ export.
 
 ## Context / lore
 

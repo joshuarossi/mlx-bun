@@ -49,6 +49,7 @@ goldens/diffusion/vision-*.bin
 # + the oracle venv) — never tracked (they bloated history to 179 MB; the JSON
 # manifests/trajectories stay tracked). See goldens/README.md.
 goldens/**/*.bin
+goldens/**/*.npz
 # turboquant.json is a full golden-vector payload (1.3 MB of float arrays), not
 # a small manifest — regenerable via scripts/regen-turboquant-goldens.ts + the
 # vendored reference (lab/repro/vllm-metal-turboquant/), so .bin policy applies.
