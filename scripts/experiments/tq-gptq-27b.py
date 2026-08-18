@@ -106,7 +106,10 @@ def main():
         rows = []
         total_params = sum(l["param_count"] for l in sens["layers"])
         for l in sens["layers"]:
-            benefit = l["sensitivities"][str(args.bits)] - l["sensitivities"][str(args.high_bits)]
+            # OptiQ semantics: sensitivities[b] = measured KL GAIN of running
+            # this module at b bits (baseline entry is 0) — higher at high_bits
+            # means upgrading pays. (First read had the sign flipped → 0 picks.)
+            benefit = l["sensitivities"][str(args.high_bits)] - l["sensitivities"][str(args.bits)]
             rows.append((benefit / max(l["param_count"], 1), benefit, l["layer_name"], l["param_count"]))
         rows.sort(reverse=True)
         base_bits_total = total_params * (args.bits + 32 / args.group_size)
