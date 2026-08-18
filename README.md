@@ -225,7 +225,7 @@ On the site: [The lab](https://mlx-bun.dev/about/lab/).
 
 Scope is deliberate: a few model families held to explicit oracle contracts,
 rather than dozens held to none. Currently MiniCPM5, the Gemma-4 OptiQ quants,
-Qwen3.5-4B, and the direct-container GLM-5.2 path:
+the Qwen 3.x family, and the direct-container GLM-5.2 path:
 
 | Model | Download | Fits on | Vision | Notes |
 |---|---|---|---|---|
@@ -234,14 +234,13 @@ Qwen3.5-4B, and the direct-container GLM-5.2 path:
 | [`mlx-community/gemma-4-e4b-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-e4b-it-OptiQ-4bit) | 7.0 GB | 16 GB | ✓ | **Recommended starter** (16 GB+); ~56 tok/s |
 | [`mlx-community/gemma-4-12B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-12B-it-OptiQ-4bit) | 8.4 GB | 16 GB | ✓ | Vision + tool calling, both verified end-to-end |
 | [`mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit`](https://huggingface.co/mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit) | 18 GB | 24 GB | — | MoE (top-8 of 128 experts); ~54 tok/s |
+| [`mlx-community/Qwen3.8-27B-OptiQ-4bit`](https://huggingface.co/mlx-community/Qwen3.8-27B-OptiQ-4bit) | 20.4 GB | 32 GB (24 GB with `--memory-budget`) | text-only for now | Current-gen Qwen; bf16-KV bit-exact parity (vs mlx-lm); thinking with `reasoning_effort` (xhigh/medium/low) + `preserve_thinking` + tool calling; MTP speculation, vision + video in bring-up |
 | [`mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp`](https://huggingface.co/mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp) | ~384 GB / 357 GiB | 32 GB + fast disk | — | Direct streamed Colibri container; true top-8, native MTP, bounded 25 GiB process plan; warm single-stream performance is disk-bound and below the aspirational 2 tok/s target |
 
 Not sure what fits your machine? `bun src/cli.ts fit <model> --ctx 8192`
-gives a deterministic answer (see below). The larger
-`Qwen3.6-27B-OptiQ-4bit` is still in bring-up — parity and serving polish
-remain (see [PLAN.md](./PLAN.md)). Downloading, cache layout, and reclaiming
-disk: [docs/reference/models.md](./docs/reference/models.md); on the site:
-[Choosing a model](https://mlx-bun.dev/getting-started/models/).
+gives a deterministic answer (see below). Downloading, cache layout, and
+reclaiming disk: [docs/reference/models.md](./docs/reference/models.md);
+on the site: [Choosing a model](https://mlx-bun.dev/getting-started/models/).
 
 ### GLM-5.2: 32 GB quickstart
 
@@ -342,8 +341,10 @@ agent CLIs like pi/OpenClaw via their provider config.
   `temperature`, `top_p`, `top_k`, `max_tokens`, `seed`,
   `repetition_penalty`, `stop` (string or array, matched on decoded
   text with streaming hold-back), `reasoning_effort` (thinking on/off for
-  Qwen3.5 / MiniCPM5 — `none` disables, any level enables), and an `hlg`
-  tone-curve sampling override;
+  Qwen3.5/3.8 / MiniCPM5 — `none` disables, any level enables; on Qwen3.8
+  the level also sets reasoning depth: `low`/`medium`/`xhigh`), a Qwen3.8
+  `chat_template_kwargs.preserve_thinking` toggle (keep think blocks from
+  history; default on), and an `hlg` tone-curve sampling override;
   omitted sampling fields default to the model's own
   `generation_config.json` recipe; usage includes `cached_tokens`.
   Full schemas in
@@ -571,7 +572,7 @@ Pre-alpha, moving fast. See [PLAN.md](./PLAN.md) for phases, exit
 criteria, measured numbers, and the findings log.
 
 **Complete** — load path; bit-exact model port (MiniCPM5, Qwen3.5-4B,
-e4b per-layer-input, 12B dense, 26B MoE); sampling + serving (tools, vision,
+Qwen3.8-27B, e4b per-layer-input, 12B dense, 26B MoE); sampling + serving (tools, vision,
 prompt cache); registry / fit / KV persistence; quantized +
 mixed-precision KV serving (rotating-cache KV-quant, Phase 9) with fused
 quantized prefill (Phase 10); LoRA hot-swap with per-request selection;
@@ -586,9 +587,11 @@ head-to-head benchmark harness; the decode-gap root-cause fix
 (commit 4625fe5); the embeddable single-binary build (signed +
 notarized — Homebrew, direct-download, and npm/bunx).
 
-**In progress** — `Qwen3.6-27B` bring-up (Phase 14f): same architecture
-as the verified 4B (untied + larger geometry); parity and serving polish
-remain. MTP speculation and Qwen3-VL vision deferred.
+**In progress** — `Qwen3.8-27B` full support (Phase 14 retarget): text
+parity is bit-exact and thinking controls (`reasoning_effort` depths,
+`preserve_thinking`) + tool calling are wired; native MTP speculation
+(the Qwen-trained head as a `--draft-model`), vision, and video input
+are in bring-up.
 
 **Experimental** — opt-in, default-off, still being hardened: transparent
 expert offload for MoE models (`serve --expert-offload`, Phase 20:

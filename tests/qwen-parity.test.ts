@@ -3,16 +3,19 @@
 //   1. bf16 KV  (KV-quant OFF) → bit-exact vs stock mlx-lm
 //   2. mixed KV (KV-quant ON)  → bit-exact vs mlx-optiq (per-layer kv_config)
 //
-//   MLX_BUN_TEST_QWEN35=1    bun test tests/qwen-parity.test.ts   # 27B, both bars
+//   MLX_BUN_TEST_QWEN38=1    bun test tests/qwen-parity.test.ts   # 3.8-27B, bf16 bar
+//   MLX_BUN_TEST_QWEN35=1    bun test tests/qwen-parity.test.ts   # 3.6-27B, both bars
 //   MLX_BUN_TEST_QWEN35_4B=1 bun test tests/qwen-parity.test.ts   # 4B, bf16 bar only
 //
 // Opt-in + run alone: models are large; the default suite already holds other
 // weights and the GPU command buffer fails asynchronously (uncatchable) past
 // budget. Regen goldens FIRST on this machine:
-//   bun scripts/regen-qwen-parity-goldens.ts [27b|4b]
+//   bun scripts/regen-qwen-parity-goldens.ts [38|27b|4b]
 //
 // The 4B (8-bit, tied head, no kv_config) is the cheap end-to-end check of the
-// whole qwen3_5 graph; the 27B adds the mixed-KV bar.
+// whole qwen3_5 graph; the 3.6-27B adds the mixed-KV bar. Qwen3.8-27B has no
+// mixed bar (its repo ships no kv_config and no mixed-KV oracle exists for
+// it — mixed-KV serving is Lab-tier there, see PLAN.md Phase 14 retarget).
 
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
@@ -29,8 +32,10 @@ import { goldenAt, goldenPath } from "./goldens";
 import {
   SNAPSHOT_QWEN35,
   SNAPSHOT_QWEN35_4B,
+  SNAPSHOT_QWEN38,
   snapshotQwen35Available,
   snapshotQwen35_4bAvailable,
+  snapshotQwen38Available,
 } from "./paths";
 
 const STEPS = 12;
@@ -51,6 +56,9 @@ interface Golden {
   prompt_ids: number[];
   greedy_ids: number[];
   logit_steps: number;
+  /** Prompt length when the golden includes the full prefill grid
+   *  (<binPrefix>-prefill-logits.bin, [T, vocab] f32 — every position). */
+  prefill_positions?: number;
 }
 
 function runParity(opts: {
@@ -72,12 +80,27 @@ function runParity(opts: {
     if (opts.mixed && !config.kvQuant?.length) throw new Error("kv_config did not load");
     const model = new Qwen35Model(await Weights.open(opts.snapshot), config);
 
-    test(`first ${STEPS} greedy tokens identical; all logits bit-exact`, async () => {
+    const steps = golden.logit_steps ?? STEPS;
+    test(`first ${steps} greedy tokens identical; all logits bit-exact`, async () => {
       const cache = model.makeCache();
       let tokens = golden.prompt_ids;
+      // Full prefill grid golden (newer regens): logits at EVERY prompt
+      // position must be bit-exact, not just the last one.
+      const prefillGolden = golden.prefill_positions
+        ? goldenAt(`${opts.binPrefix}-prefill-logits.bin`)
+        : null;
       try {
-        for (let step = 0; step < STEPS; step++) {
+        for (let step = 0; step < steps; step++) {
           const logits = model.forward(tokens, cache);
+          if (step === 0 && prefillGolden && (await prefillGolden.exists())) {
+            const grid = new Float32Array(await prefillGolden.arrayBuffer());
+            const oursGrid = logits.toFloat32();
+            expect(oursGrid.length).toBe(grid.length);
+            let gridDiff = 0;
+            for (let i = 0; i < grid.length; i++)
+              gridDiff = Math.max(gridDiff, Math.abs(oursGrid[i]! - grid[i]!));
+            expect(gridDiff).toBe(0);
+          }
           const ours = lastPositionLogits(logits);
           const ref = new Float32Array(
             await goldenAt(`${opts.binPrefix}-logits-step${step}.bin`).arrayBuffer(),
@@ -95,9 +118,18 @@ function runParity(opts: {
       } finally {
         for (const c of cache) c.dispose();
       }
-    }, 300_000);
+      // Generous ceiling: this is an opt-in, run-alone gate, and the 27B-class
+      // targets swap hard on 24 GB machines (~30 s/step observed under
+      // pressure). Wall-clock here is meaningless; only the bit-exact
+      // comparisons matter (paired parity survives memory pressure).
+    }, 1_800_000);
   });
 }
+
+const optIn38 = process.env.MLX_BUN_TEST_QWEN38 === "1";
+const have38 = await snapshotQwen38Available();
+runParity({ label: "Qwen3.8-27B bf16-KV parity (vs mlx-lm)", snapshot: SNAPSHOT_QWEN38,
+  optIn: optIn38, haveWeights: have38, goldenName: "qwen38-parity.json", binPrefix: "qwen38", mixed: false });
 
 const optIn27b = process.env.MLX_BUN_TEST_QWEN35 === "1";
 const have27b = await snapshotQwen35Available();

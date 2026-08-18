@@ -699,6 +699,268 @@ Bring-up sub-phases (gate each with the parity tests; B=1 single-stream first):
       (~15 GB; same arch as the verified 4B but untied + larger geometry +
       Hv=48 — lower risk now, still worth confirming).
 
+### Phase 14 retarget — Qwen3.8-27B `[~]` (2026-08-16, branch `worktree-qwen3-8-bringup`)
+
+Alibaba shipped Qwen 3.8 in early August 2026. The open local-class release
+is **Qwen/Qwen3.8-27B** — a native VLM (image + video, "hour-scale" video)
+with a multi-step MTP head, thinking control (`reasoning_effort`
+xhigh/medium/low, `preserve_thinking`), 262k native context (1M via YaRN),
+and a new XML tool-call format. **Bring-up artifact (Josh, 2026-08-16):
+`mlx-community/Qwen3.8-27B-OptiQ-4bit`** (published 2026-08-16, base
+`mlx-community/Qwen3.8-27B-bf16`, 5.14 bpw achieved, 4 shards ≈ 17.4 GB,
+vision tower included). Rationale: the established artifact pattern (all
+primary models here are mlx-community OptiQ quants; `quantFor` honors the
+per-layer map), best quality/byte, and the L1 oracle is
+artifact-independent (stock mlx-lm loads the same snapshot). Fallback if
+the 24 GB fit proves too tight: the uniform `-4bit` (~15.5 GB). Downloads
+via OUR downloader: `mlx-bun get <repo>` (mirrors subdir files like
+`optiq/…` verbatim). **Scope (Josh): full support — text, thinking
+controls, tools, MTP, vision AND video; then retire 3.6.** The 3.6-27B
+confirmation in 14f is superseded. Findings from the model card +
+config/oracle/shard audit (2026-08-16, remote-verified):
+
+- **The architecture is IDENTICAL to the ported qwen3_5 graph.**
+  `model_type: qwen3_5` / `Qwen3_5ForConditionalGeneration`, 64 layers,
+  `full_attention_interval: 4`, GQA 24/4 @ head_dim 256, hidden 5120,
+  intermediate 17408 (dense swiglu, no MoE keys), linear 16/48 @ 128,
+  conv 4, partial RoPE 0.25 @ base 1e7 (`rope_type: "default"` ⇒ mrope
+  ignored, as before), untied head, eps 1e-6, vocab 248320,
+  generation_config eos [248046, 248044] — byte-for-byte the 3.6-27B
+  geometry. Zero new graph work expected.
+- **`output_gate_type: "swish"` (new config field) is INERT.** Ground
+  truth (transformers `modeling_qwen3_5.py`: `attn_output *
+  torch.sigmoid(gate)`), pinned mlx-lm 0.31.3, and upstream mlx-lm main
+  (`qwen3_next.py:158`) all hardcode sigmoid; no implementation reads the
+  field. Our `o_proj(out·σ(gate))` stands. Guard added to config parse:
+  throw on any value other than "swish"/absent, so a future checkpoint
+  where the field starts mattering fails loudly instead of silently
+  mis-gating.
+- **MTP is REAL on this model — the original "MTP home" thesis lands.**
+  The raw release ships `mtp.*` in the main shards (15 tensors, ≈0.85 GB
+  bf16 / ~425M params: `fc` [2·5120→5120] + `pre_fc_norm_embedding` +
+  `pre_fc_norm_hidden` + ONE full-attention decoder layer (gated attn +
+  q/k-norm + swiglu, `full_attention_interval=1`) + final `norm`;
+  `mtp_use_dedicated_embeddings: false` → binds the TARGET's
+  embed_tokens + lm_head). mlx-lm's sanitize DROPS them (and keys the
+  +1.0 norm shift on their presence), so **every MLX conversion (bf16
+  base, OptiQ, plain 4-bit) is pre-sanitized and MTP-less** — parity
+  bars are unaffected, and the OptiQ target needs a SEPARATE drafter
+  download: mlx-community publishes the head split out as
+  `Qwen3.8-27B-MTP-{bf16,8bit,4bit,mxfp4}` (`model_type: qwen3_5_mtp`,
+  block_size 3, already-sanitized single-file repos targeting mlx-vlm's
+  `--draft-kind mtp`). Mechanism (DeepSeek-V3 shape, verified from
+  `mlx_vlm/speculative/drafters/qwen3_5_mtp/qwen3_5_mtp.py`):
+  per step `h = fc(concat(rms(embed(next_tok)), rms(target_hidden)))` →
+  the one attn layer (own KVCache, continuing positions) → norm →
+  target lm_head → draft token; applied recursively for block_size−1
+  drafts ("trained with multiple steps"); prompt-prefill runs the
+  module over (tokens shifted by one, target hiddens) to fill the
+  drafter KV; after verify, cache.trim(rejected) + append accepted
+  tokens with their VERIFY hiddens; greedy = exact target verification.
+- **New OptiQ repo layout.** No `kv_config.json`; instead
+  `optiq/metadata.json` (per-layer WEIGHT bits, 260×8-bit + 237×4-bit
+  gs64) + `optiq/sensitivity.json` + `optiq/optiq_vision.safetensors`
+  (in the `optiq/` subdir, not root). config.json still carries the
+  501-entry per-layer `quantization` map our `quantFor` already
+  honors — the weights map is runtime-independent and loads in stock
+  mlx-lm, so L1 is unaffected. There is NO published mixed-KV oracle
+  for this model → no L2 bar; mixed-KV serving for 3.8 is Lab-tier
+  (KL-gated, default off — 14r-d).
+- **Vision tower ships IN the conversion** (`vision_tower.*`, 333
+  tensors, depth-27/hidden-1152 dedicated tower + the optiq sidecar).
+  Text bring-up is unaffected (we request tensors by name), and the
+  registry correctly does NOT advertise vision yet (sidecar is in a
+  subdir the root scan ignores; `vision_config.model_type` is
+  "qwen3_5", not `*_vision`). Vision + video are IN SCOPE (14v/14w).
+- **Serving surface (the card's "own stuff").** Thinking ON by default
+  (`<think>…</think>`); `enable_thinking` + `preserve_thinking` (NEW:
+  history keeps think blocks — better KV/prompt-cache reuse) as
+  chat_template_kwargs; `reasoning_effort` xhigh/medium/low as a
+  request param the template maps to instruction text; two recommended
+  sampling presets (thinking: temp 1.0 / top_p 0.95 / top_k 20;
+  instruct: temp 0.7 / top_p 0.8 / presence_penalty 1.5); optional
+  split budgets (262k reasoning / 131k final); XML tool-call format
+  (`<tool_call><function=name><parameter=...>`). Parity/bench prompts
+  must pin `enable_thinking` explicitly (standing TokenizerWrapper
+  hazard).
+- **Oracle map.** Text: pinned mlx-lm 0.31.3 `qwen3_5.py` runs this
+  model_type unchanged → the L1 bit-exact bar stands. Vision/video/MTP
+  reference implementation: mlx-vlm (its `qwen3_5` model + the
+  `qwen3_5_mtp` drafter the mlx-community MTP repos target). No
+  published mixed-KV oracle for this model.
+- **1M context via YaRN** is a config override (`rope_type: "yarn"`,
+  factor 4.0, `original_max_position_embeddings: 262144`). Static YaRN
+  hurts short contexts (card note) → opt-in flag only (14y).
+- Ecosystem notes: `RadixArk/Qwen3.8-27B-DSpark` drafter exists (DSpark
+  program tie-in, 14h); `mlx-community/Qwen3.8-27B-4bit`/`-8bit` exist
+  as uniform-quant fallbacks; the 2.4T-A95B flagship is irrelevant
+  locally.
+
+Sub-phases (gate each; B=1 single-stream first; downloads via
+`mlx-bun get`; Josh started the target download 2026-08-16):
+
+- [x] **14r-a — scaffolding (model-free, 2026-08-16).** `tests/paths.ts`
+      SNAPSHOT_QWEN38 + gate; regen script `38` target (bf16 bar only —
+      no L2 oracle for this model); `tests/qwen-parity.test.ts` gains
+      `MLX_BUN_TEST_QWEN38=1`; `output_gate_type` guard in config parse.
+- [x] **Download** `mlx-community/Qwen3.8-27B-OptiQ-4bit` (~17.4 GB) —
+      complete 2026-08-16 via `mlx-bun get`; all 4 shards + tokenizer +
+      the `optiq/` subdir mirrored correctly (downloader handles
+      subdir rfilenames — confirmed on real payload).
+- [x] **14r-b — text parity (L1) — GREEN (2026-08-16, M4 Pro), then
+      STRENGTHENED same day at Josh's ask ("all logits, not just
+      greedy").** Final gate: the FULL PREFILL GRID (logits at every
+      prompt position × 248,320 vocab, `maxDiff toBe(0)`) + 32 decode
+      steps with the complete logit vector bit-exact at each + greedy
+      identical vs stock mlx-lm, all on the published OptiQ artifact
+      (1 pass / 66 expects). Harness upgrades landed with it: regen
+      writes `<prefix>-prefill-logits.bin` + `prefill_positions`,
+      step count via MLX_BUN_PARITY_STEPS (manifest-driven in the
+      test), 30-min opt-in test ceiling (27B-class swaps hard on
+      24 GB; ~30 s/step under pressure — wall-clock meaningless,
+      paired parity pressure-immune). Config parse verified all
+      geometry (64L/interval 4, 24/4@256, linear 16/48@128, partial
+      RoPE 0.25 @1e7, untied, vocab 248320, eos [248046,248044]);
+      `output_gate_type: "swish"` guard passes. Retires the 14f "27B
+      both bars" line — 3.8-27B supersedes 3.6-27B as the open 27B
+      target. STILL OPEN from this item: the artifact provenance
+      check (perplexity/eval sanity — parity cannot catch a botched
+      conversion; a bad artifact is equally bad in both stacks).
+- [~] **14r-c — serving features + docs** (template layer DONE
+      2026-08-16; serve smoke remaining). Implemented + verified
+      against the real template: `reasoning_effort` maps into the
+      template as depth (minimal/low→low, medium→medium,
+      high/xhigh→xhigh; "xhigh" now a first-class request value;
+      passed ONLY to templates with readsReasoningEffort — the 3.8
+      template raises on unknown levels); `preserve_thinking`
+      chat_template_kwarg (verified: true keeps history think blocks,
+      false drops); thinking auto-detected think-tag, generation
+      prompt opens in `<think>` (existing splitter streams
+      reasoning_content); tool-call format ALREADY parsed by the
+      Qwen-style `<function=name><parameter=…>` parser from the 3.5
+      work (verified on the exact 3.8 shape incl. multiline params);
+      primer-cache mode key extended with the new template modes.
+      Sampling: generation_config carries the thinking-mode preset
+      (1.0/0.95/20); the existing no-think temperature clamp (≤0.7)
+      matches the card's instruct preset; instruct top_p 0.8 /
+      presence 1.5 left as documented recommendations, not silent
+      overrides (mlx-lm default-parity). Docs landed (server-api,
+      README ×3, features-matrix). REMAINING: an end-to-end serve
+      smoke (thinking stream + tool round-trip + eos) on the live
+      server.
+- [ ] **14r-d — KV compression (Lab).** No published mixed-KV config
+      for this model → the affine per-layer path has nothing to
+      mirror; **TurboQuant is the primary KV story for 3.8**
+      (`--kv-quant turbo:k8v3`): head_dim 256 ∈ supported set
+      {64,128,256,512}, and maybeTurboQuantizeKv already skips the 48
+      SSM layers (only plain KVCache converts) — structurally works
+      today, needs its per-model KL/quality gate cell on 3.8 (the v1
+      gate ran on CPM5). Context math: 16 KV layers ≈ 64 KB/token bf16
+      → 262k ctx ≈ 16.8 GB (doesn't fit anywhere) vs ~6.6 GB at k8v3;
+      SSM state is constant (~150 MB) regardless of context. Uniform
+      affine kv8/kv4 stays as the simple mlx-lm-comparable option.
+      All default OFF; KL + quality gated vs our own bf16-KV baseline.
+- [~] **14g — MTP speculation (IMPLEMENTED 2026-08-16; gate run
+      pending GPU).** Drafter downloaded (`Qwen3.8-27B-MTP-bf16`, the
+      Qwen-trained head — bf16 [12288|1024|1024|…] dense tensors,
+      already sanitized). Landed: `src/spec/qwen-mtp-source.ts`
+      (QwenMtpProvider/-Source per mlx-vlm `qwen3_5_mtp.py` semantics:
+      fc(concat(rms(embed), rms(hidden))) → one dense gated-attn+swiglu
+      block with own KVCache → target lm_head; predict-2-ahead row
+      convention with drafter offset tracking target positions;
+      prompt prefill over (shifted ids, tapped hiddens); commit keeps
+      accepted drafted rows, appends the all-accept tail row from TRUE
+      verify hiddens, and holds the emitted position's hidden for the
+      next round's pending row — computationally identical to the
+      reference's seed flow); `Qwen35Model.hiddenTap` (pre-final-norm
+      layer-63 tap — mlx-vlm's skip_final_norm equivalent; the seam's
+      post-norm anchorHidden is deliberately unused); DraftKind "mtp"
+      + auto-detect (`model_type *_mtp`) + provider dispatch (round
+      width defaults to block_size−1 = 2) + CLI. Gate test
+      `tests/qwen38-mtp.test.ts` (MLX_BUN_TEST_QWEN38_MTP=1): greedy
+      serve-loop MTP ≡ greedy non-spec, token-identical, + the paired
+      prefill/decode TPS A/B (MTP on vs off) and acceptance telemetry.
+      Remaining: run the gate ON THE M1 MAX (blocked on the M4 Pro —
+      see finding); acceptance + tok/s to the eval DB on a cleared
+      box; default-on only where it wins.
+      **FINDING (2026-08-16, M4 Pro): qwen3_5-27B serial-lane decode
+      dies with a GPU command-buffer execution failure on this box.**
+      Native backtrace (DiagnosticReports .ips): `mlx::core::gpu::
+      check_error(MTL::CommandBuffer*)` → `__cxa_throw` →
+      `std::terminate` ON THE METAL COMPLETION THREAD (the uncatchable
+      thread class CLAUDE.md documents) → Bun panic "A C++ exception
+      occurred". The surfacing call site MOVES between runs
+      (evalCacheState / clearCache / asyncEval / readback) — the
+      exception lands asynchronously wherever the runtime happens to
+      be. Evidence AGAINST a kernel/logic bug: 32-step full-grid
+      parity is bit-exact on the same kernels (sync eval); the
+      corrected pipelined-decode repro (two overlapped async steps on
+      a pending token) PASSES standalone; gateway serving passed the
+      thinking + instruct smoke tests. Leading theory: Metal command
+      buffers failing mid-execution under the 20.35 GB-resident +
+      swap-thrash regime (machine physics presenting as GPU error).
+      DECISIVE TEST: the same bare-generate repro on the 32 GB M1 Max
+      — green confirms pressure (then: 24 GB boxes need 14z or the
+      uniform-4bit artifact for serial decode); a crash there means a
+      real async-path bug (chase with Metal API validation).
+      Side-finding: a mis-shaped array through sampler→item()/reshape
+      PANICS instead of raising a JS error — some mlx-c paths lack
+      exception wrapping (hardening candidate; cost hours of repro
+      confusion tonight). Debug markers used for the bisect are
+      removed; raise-metal-limit stays in the gate test (harmless,
+      needed for target+drafter residency anyway).
+- [ ] **14v — vision (images).** Port the dedicated tower from
+      mlx-vlm `qwen3_5` (depth 27, hidden 1152, patch 16, merge 2,
+      deepstack disabled — own tower like DiffusionGemma D3, NOT
+      SigLIP reuse); preprocess via the existing Bun.Image path
+      (mean/std 0.5); splice at image token 248056; resolve the
+      image-position/mRoPE question against mlx-vlm as truth. Gate:
+      token-for-token vs mlx-vlm on fixture images, then the registry
+      advertises vision for qwen3_5 (today it correctly does not).
+- [ ] **14w — video.** NEW input infra: frame extraction (fps=2
+      default, `do_sample_frames`) — Bun.Image is stills-only; probe
+      AVFoundation via a native sidecar first (no-external-deps
+      identity) before considering a vendored decoder.
+      temporal_patch_size 2 (frame pairs), video token 248057,
+      `video_preprocessor_config` sizing + the documented
+      `longest_edge` bump for hour-scale video. Gate: token-for-token
+      vs mlx-vlm on a fixture clip.
+- [ ] **14y — 1M context (YaRN), opt-in.** `rope_type: "yarn"` branch
+      (factor 4.0, original_max_position_embeddings 262144);
+      flag-gated, never default (static YaRN penalizes short contexts
+      per the model card). Fit math first — 1M KV on 24–32 GB needs
+      the KV ladder (quant/TQ/SSD tiers).
+- [ ] **14r-b2 — consolidate on the best (Josh, 2026-08-16).** Once
+      3.8-27B is green and serving, retire the 3.6-27B target: drop its
+      paths/test gates/docs rows and let the snapshot gc. Keep
+      Qwen3.5-4B as the SMALL arch-regression gate for the shared
+      qwen3_5 graph (no small 3.8 exists — the family is 27B + 2.4T
+      only), unless Josh calls it too.
+- [ ] **14h — DSpark cross-check (optional).**
+      `RadixArk/Qwen3.8-27B-DSpark` vs the native MTP head — measure,
+      don't assume.
+- [ ] **14z — TQ×weights artifact (PROMOTED — Josh, 2026-08-16: this is
+      also the M4 Pro FIT lever, not just quality/byte).** The 20.35 GB
+      OptiQ artifact swap-crawls on 24 GB (weights ARE the resident
+      set; KV is trivial at chat contexts); ~4 bpw via the rotated
+      codec ≈ −3–4 GB → ~16.5–17 GB → fits with headroom, and fewer
+      bytes/token is a decode WIN on the bandwidth-bound path.
+      Interim for 24 GB boxes until this lands: the uniform `-4bit`
+      artifact (~15.5 GB, same L1 oracle). Stacking savings: 4-bit MTP
+      drafter (−0.6 GB, acceptance A/B) + the vision-tower admission
+      fix (budget math only).
+      Quantize the bf16 base with TurboQuant's rotated codec at the
+      PUBLISHED allocation (their `optiq/sensitivity.json` = the WHAT,
+      TQ rotation = the HOW — method/allocation are separate axes).
+      Target: ~4 bpw at 5.14-bpw quality (≈3–4 GB off the 27B) or
+      better quality at same size — the device-targeted-artifact lever.
+      Needs the weights-side runtime story (QuaRot/SpinQuant-style
+      rotation folding vs a custom qmm kernel — locate + port prior
+      art, don't invent; design sketch = turboquant-kv.md §8, which is
+      UNMERGED on `fix/objective-goldstine-a83509` — merge that first).
+      Lab tier: KL + quality + bench gates, default off. Sequenced
+      after 14r-b/14r-c green.
+
 ## Phase 15 — Head-to-head benchmark: mlx-bun vs mlx-lm vs mlx-optiq `[~]`
 (matrix complete 2026-06-10 except leg (c)'s purge-cold rows — see
 findings; results: benchmarks/benchmarks-h2h-2026-06-10.md + README Benchmarks)
