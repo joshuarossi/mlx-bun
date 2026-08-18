@@ -17,7 +17,7 @@
 // resident weight set rather than the whole model.
 
 import { ptr } from "bun:ffi";
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { C, takeMlxError } from "../mlx/ffi";
 import type { MlxArray } from "../mlx/array";
@@ -168,4 +168,82 @@ export function writeShardedSafetensors(
   }
 
   return { shards, totalSize, totalParams, index };
+}
+
+/**
+ * Incremental sharded writer for model-scale streaming transforms (27B fold/
+ * quantize): tensors are added one at a time; when the current shard reaches
+ * the byte ceiling it is SAVED AND ITS ARRAYS DISPOSED immediately, so peak
+ * memory is one shard plus the tensor in flight — never the whole model
+ * (the whole-list writeShardedSafetensors path holds every array until the
+ * caller disposes them, which OOMs a 51 GB model on a 32 GB box).
+ *
+ * Shards are written under temp names (the final `-of-NNNNN` count is unknown
+ * until finish()) and renamed at finish, which also writes the index.
+ * add() takes ownership of the array (evaluates it now, disposes after save).
+ */
+export class ShardedWriter {
+  readonly #outDir: string;
+  readonly #shardBytes: number;
+  #cur: NamedTensor[] = [];
+  #curBytes = 0;
+  #done: { tmp: string; names: string[]; bytes: number }[] = [];
+  #totalParams = 0;
+
+  constructor(outDir: string, opts: WriteOpts = {}) {
+    this.#outDir = outDir;
+    this.#shardBytes = opts.shardBytes ?? DEFAULT_SHARD_BYTES;
+  }
+
+  add(name: string, array: MlxArray): void {
+    array.eval();
+    const nb = array.nbytes;
+    if (this.#cur.length > 0 && this.#curBytes + nb > this.#shardBytes) this.#flush();
+    this.#cur.push({ name, array });
+    this.#curBytes += nb;
+    this.#totalParams += array.size;
+  }
+
+  #flush(): void {
+    if (this.#cur.length === 0) return;
+    const tmp = `model-shard-${String(this.#done.length + 1).padStart(5, "0")}.tmp.safetensors`;
+    saveShard(join(this.#outDir, tmp), this.#cur);
+    this.#done.push({
+      tmp,
+      names: this.#cur.map((t) => t.name),
+      bytes: this.#curBytes,
+    });
+    for (const t of this.#cur) t.array.dispose();
+    this.#cur = [];
+    this.#curBytes = 0;
+  }
+
+  finish(): WriteResult {
+    this.#flush();
+    const n = this.#done.length;
+    const shards: ShardInfo[] = [];
+    const weight_map: Record<string, string> = {};
+    let totalSize = 0;
+    for (let i = 0; i < n; i++) {
+      const d = this.#done[i]!;
+      const file = shardName(i, n);
+      renameSync(join(this.#outDir, d.tmp), join(this.#outDir, file));
+      for (const name of d.names) weight_map[name] = file;
+      totalSize += d.bytes;
+      shards.push({ file, names: d.names, bytes: d.bytes });
+    }
+    const sortedMap: Record<string, string> = {};
+    for (const name of Object.keys(weight_map).sort()) sortedMap[name] = weight_map[name]!;
+    const index: SafetensorsIndex = {
+      metadata: { total_size: totalSize, total_parameters: this.#totalParams },
+      weight_map: sortedMap,
+    };
+    if (n > 1) {
+      writeFileSync(
+        join(this.#outDir, "model.safetensors.index.json"),
+        JSON.stringify(index, null, 2),
+      );
+    }
+    return { shards, totalSize, totalParams: this.#totalParams, index };
+  }
 }

@@ -82,30 +82,7 @@ export class Weights {
     const shards = await (options.openShards ?? ShardedSafetensors.open)(modelDir);
     const self = new Weights(shards, native);
     try {
-      for (const [file, sf] of self.shards.files) {
-        // out-param slots read back via read.u64, not [0] (DFG stale-read
-        // bug — see outArray in mlx/ffi.ts). Cold path, but the rule is
-        // uniform: native wrote it, read.* reads it.
-        const arrMap = new BigUint64Array([native.newArrayMap()]);
-        const arrMapPtr = ptr(arrMap);
-        let arrayMapTransferred = false;
-        try {
-          const metaMap = new BigUint64Array([native.newStringMap()]);
-          const metaMapPtr = ptr(metaMap);
-          try {
-            const status = native.loadSafetensors(arrMap, metaMap, sf.path);
-            if (status !== 0)
-              throw new Error(`mlx_load_safetensors(${sf.path}) failed`);
-            self.#maps.set(file, read.u64(arrMapPtr, 0));
-            arrayMapTransferred = true;
-          } finally {
-            native.freeStringMap(read.u64(metaMapPtr, 0));
-          }
-        } finally {
-          if (!arrayMapTransferred)
-            native.freeArrayMap(read.u64(arrMapPtr, 0));
-        }
-      }
+      for (const [file] of self.shards.files) self.#openShard(file);
       return self;
     } catch (error) {
       // A failure on shard N must release every array map transferred by
@@ -113,6 +90,64 @@ export class Weights {
       self.dispose();
       throw error;
     }
+  }
+
+  /** Load one shard's native string→array map (lazy re-open path too). */
+  #openShard(file: string): void {
+    const sf = this.shards.files.get(file);
+    if (!sf) throw new Error(`no shard file ${file}`);
+    // out-param slots read back via read.u64, not [0] (DFG stale-read
+    // bug — see outArray in mlx/ffi.ts). Cold path, but the rule is
+    // uniform: native wrote it, read.* reads it.
+    const arrMap = new BigUint64Array([this.#native.newArrayMap()]);
+    const arrMapPtr = ptr(arrMap);
+    let arrayMapTransferred = false;
+    try {
+      const metaMap = new BigUint64Array([this.#native.newStringMap()]);
+      const metaMapPtr = ptr(metaMap);
+      try {
+        const status = this.#native.loadSafetensors(arrMap, metaMap, sf.path);
+        if (status !== 0)
+          throw new Error(`mlx_load_safetensors(${sf.path}) failed`);
+        this.#maps.set(file, read.u64(arrMapPtr, 0));
+        arrayMapTransferred = true;
+      } finally {
+        this.#native.freeStringMap(read.u64(metaMapPtr, 0));
+      }
+    } finally {
+      if (!arrayMapTransferred)
+        this.#native.freeArrayMap(read.u64(arrMapPtr, 0));
+    }
+  }
+
+  /** Free one shard's native map AND every cached tensor from it, releasing
+   *  all bytes materialized while consuming that shard. The shard transparently
+   *  re-opens on the next tensor() touching it (header parse only — lazy).
+   *  Required by streaming whole-model transforms at 27B scale: the native map
+   *  retains every evaluated source array, so per-tensor dispose alone frees
+   *  nothing — the whole model accumulates in RAM (2026-08-18 fold OOM). */
+  releaseShard(file: string): void {
+    const sf = this.shards.files.get(file);
+    if (!sf) return;
+    for (const [name, arr] of this.#arrays) {
+      if (this.shards.tensorToFile.get(name) === sf) {
+        arr.dispose();
+        this.#arrays.delete(name);
+      }
+    }
+    const map = this.#maps.get(file);
+    if (map !== undefined) {
+      this.#native.freeArrayMap(map);
+      this.#maps.delete(file);
+    }
+  }
+
+  /** The shard filename holding `name` (for releaseShard scheduling). */
+  fileOf(name: string): string | undefined {
+    const sf = this.shards.tensorToFile.get(name);
+    if (!sf) return undefined;
+    for (const [file, cand] of this.shards.files) if (cand === sf) return file;
+    return undefined;
   }
 
   get tensorNames(): string[] {
@@ -133,8 +168,15 @@ export class Weights {
     if (!arr) {
       const sf = this.shards.tensorToFile.get(name);
       if (!sf) throw new Error(`no tensor named ${name}`);
-      const mapHandle = [...this.#maps.entries()]
-        .find(([file]) => this.shards.files.get(file) === sf)![1];
+      let entry = [...this.#maps.entries()]
+        .find(([file]) => this.shards.files.get(file) === sf);
+      if (!entry) {
+        // Shard was releaseShard()'d — transparently re-open it.
+        const file = this.fileOf(name)!;
+        this.#openShard(file);
+        entry = [file, this.#maps.get(file)!];
+      }
+      const mapHandle = entry[1];
       const slot = new BigUint64Array([C.mlx_array_new()]);
       const slotPtr = ptr(slot);
       if (C.mlx_map_string_to_array_get(slotPtr, mapHandle, ptr(cstr(name))) !== 0)
@@ -143,6 +185,19 @@ export class Weights {
       this.#arrays.set(name, arr);
     }
     return arr;
+  }
+
+  /** Dispose + evict one cached tensor so its materialized bytes are freed
+   *  mid-walk. Streaming whole-model transforms (fold/quantize at 27B scale)
+   *  MUST release each source tensor after its consumer evaluates, or the
+   *  cache accumulates the entire model in RAM. Safe to call for names never
+   *  accessed; the next tensor(name) call re-opens it from the map. */
+  release(name: string): void {
+    const arr = this.#arrays.get(name);
+    if (arr) {
+      arr.dispose();
+      this.#arrays.delete(name);
+    }
   }
 
   dispose(): void {

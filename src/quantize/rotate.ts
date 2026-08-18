@@ -343,205 +343,242 @@ export interface QwenFoldOptions {
 
 /** Fold a qwen3_5 VL trunk (or text-only model when it has no vision tower).
  *  Handles both tied (clones an untied folded lm_head) and untied heads. */
-export function foldQwen35Weights(
-  weights: Weights,
-  hiddenSize: number,
-  opts: QwenFoldOptions,
-): FoldResult {
-  assertPow2OrKron(hiddenSize);
-  const P = opts.prefix ?? "language_model.";
-  const s1 = Arr.fromFloat32(signVector(opts.seed, hiddenSize, R1_LANE), [hiddenSize]);
+export type FoldOp =
+  | { kind: "passthrough" }
+  | { kind: "ones"; n: number }
+  /** Reader: fold the last (input) axis; γ (by tensor name) premultiplied. */
+  | { kind: "input"; gamma?: string }
+  /** Writer: R1ᵀ on the output axis of a 2-D [out, in] weight. */
+  | { kind: "output" }
+  /** Writer bias: R1ᵀ on a 1-D vector. */
+  | { kind: "bias" }
+  /** MTP fc [H, 2H]: per-block input folds (embed γ, hidden γ) + output fold. */
+  | { kind: "mtp-fc"; gammaEmbed: string; gammaHidden: string };
 
-  const gammaTimesS1 = (normName: string): MlxArray => {
-    const g = weights.tensor(normName).astype(Dtype.float32);
-    const gs = ops.mul(g, s1);
-    g.dispose();
-    return gs;
-  };
-  const toBf16 = (x: MlxArray): MlxArray => {
-    const out = x.astype(Dtype.bfloat16);
-    x.dispose();
-    return out;
-  };
-  const onesLike = (n: number): MlxArray => {
-    const ones = Arr.fromFloat32(new Float32Array(n).fill(1), [n]);
-    const out = ones.astype(Dtype.bfloat16);
-    ones.dispose();
-    return out;
-  };
+export interface QwenFoldPlan {
+  ops: Map<string, FoldOp>;
+  /** Names of the γ tensors the executor must preload (tiny, held for the
+   *  whole walk so shard release never invalidates them). */
+  gammaNames: string[];
+  /** Tied-embedding case: emit an extra folded lm_head cloned from `from`. */
+  extraHead: { name: string; from: string; gamma: string } | null;
+  deviations: string[];
+}
 
-  const tensors: NamedTensor[] = [];
-  const handled = new Set<string>();
-  const push = (name: string, array: MlxArray): void => {
-    tensors.push({ name, array });
-    handled.add(name);
-  };
+/**
+ * Classify every tensor of a qwen3_5 VL trunk (or its MTP companion) into a
+ * FoldOp — pure name analysis, no arrays. R1-ONLY (+γ): the attention output
+ * gate (`o_proj(out · σ(gate))`, elementwise in head space) does not commute
+ * with a per-head rotation, so R2 is architecturally off for this family.
+ * Corridor map: docs/design/turboquant-weights.md §W1.
+ */
+export function planQwen35Fold(names: string[], prefix = "language_model."): QwenFoldPlan {
+  const P = prefix;
+  const has = new Set(names);
+  const ops_ = new Map<string, FoldOp>();
+  const gammaNames = new Set<string>();
+  const finalNorm = `${P}model.norm.weight`;
+  const embed = `${P}model.embed_tokens.weight`;
+  const head = `${P}lm_head.weight`;
+  if (!has.has(embed) || !has.has(finalNorm))
+    throw new Error(`qwen fold plan: missing ${embed} or ${finalNorm}`);
 
-  // Embeddings + head + final norm.
-  const embedName = `${P}model.embed_tokens.weight`;
-  const headName = `${P}lm_head.weight`;
-  const finalNormName = `${P}model.norm.weight`;
-  for (const req of [embedName, finalNormName])
-    if (!weights.has(req)) throw new Error(`qwen fold: missing ${req}`);
-  const embed = weights.tensor(embedName);
-  push(embedName, toBf16(foldInputDim(embed, s1)));
-  const gFinal = gammaTimesS1(finalNormName);
-  const headSrc = weights.has(headName) ? weights.tensor(headName) : embed;
-  push(headName, toBf16(foldLastAxis(headSrc, gFinal)));
-  gFinal.dispose();
-  push(finalNormName, onesLike(hiddenSize));
+  ops_.set(embed, { kind: "input" });
+  ops_.set(finalNorm, { kind: "ones", n: 0 });
+  gammaNames.add(finalNorm);
+  let extraHead: QwenFoldPlan["extraHead"] = null;
+  if (has.has(head)) ops_.set(head, { kind: "input", gamma: finalNorm });
+  else extraHead = { name: head, from: embed, gamma: finalNorm };
 
-  // Layers — walk until the naming runs out; classify by which branch exists.
   for (let i = 0; ; i++) {
     const L = `${P}model.layers.${i}`;
     const inNorm = `${L}.input_layernorm.weight`;
-    if (!weights.has(inNorm)) break;
-    const gIn = gammaTimesS1(inNorm);
-    const gPost = gammaTimesS1(`${L}.post_attention_layernorm.weight`);
-    push(inNorm, onesLike(hiddenSize));
-    push(`${L}.post_attention_layernorm.weight`, onesLike(hiddenSize));
+    if (!has.has(inNorm)) break;
+    const postNorm = `${L}.post_attention_layernorm.weight`;
+    ops_.set(inNorm, { kind: "ones", n: 0 });
+    ops_.set(postNorm, { kind: "ones", n: 0 });
+    gammaNames.add(inNorm);
+    gammaNames.add(postNorm);
 
-    const readers = weights.has(`${L}.self_attn.q_proj.weight`)
+    const attnReaders = has.has(`${L}.self_attn.q_proj.weight`)
       ? ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]
       : ["linear_attn.in_proj_qkv", "linear_attn.in_proj_z", "linear_attn.in_proj_b", "linear_attn.in_proj_a"];
-    const writer = readers[0]!.startsWith("self_attn") ? "self_attn.o_proj" : "linear_attn.out_proj";
-    for (const r of readers) {
-      const n = `${L}.${r}.weight`;
-      push(n, toBf16(foldLastAxis(weights.tensor(n), gIn)));
-    }
-    push(`${L}.${writer}.weight`, toBf16(foldOutputDim(weights.tensor(`${L}.${writer}.weight`), s1)));
-
-    for (const r of ["mlp.gate_proj", "mlp.up_proj"]) {
-      const n = `${L}.${r}.weight`;
-      push(n, toBf16(foldLastAxis(weights.tensor(n), gPost)));
-    }
-    push(`${L}.mlp.down_proj.weight`, toBf16(foldOutputDim(weights.tensor(`${L}.mlp.down_proj.weight`), s1)));
-    drop(gIn, gPost);
+    const writer = attnReaders[0]!.startsWith("self_attn")
+      ? "self_attn.o_proj" : "linear_attn.out_proj";
+    for (const r of attnReaders) ops_.set(`${L}.${r}.weight`, { kind: "input", gamma: inNorm });
+    ops_.set(`${L}.${writer}.weight`, { kind: "output" });
+    for (const r of ["mlp.gate_proj", "mlp.up_proj"])
+      ops_.set(`${L}.${r}.weight`, { kind: "input", gamma: postNorm });
+    ops_.set(`${L}.mlp.down_proj.weight`, { kind: "output" });
   }
 
-  // Vision: fold ONLY the merger's final projection into the residual basis.
-  const fc2w = "vision_tower.merger.linear_fc2.weight";
-  const fc2b = "vision_tower.merger.linear_fc2.bias";
-  if (weights.has(fc2w)) {
-    push(fc2w, toBf16(foldOutputDim(weights.tensor(fc2w), s1)));
-    push(fc2b, toBf16(foldBias(weights.tensor(fc2b), s1)));
+  // Vision: the merger's final projection is the ONLY vision→residual seam
+  // (deepstack is empty for qwen3_5). Everything else passes through bf16.
+  if (has.has("vision_tower.merger.linear_fc2.weight")) {
+    ops_.set("vision_tower.merger.linear_fc2.weight", { kind: "output" });
+    ops_.set("vision_tower.merger.linear_fc2.bias", { kind: "bias" });
   }
 
-  // Everything else (vision tower internals, q/k norms, DeltaNet internals,
-  // rotary caches) passes through untouched.
-  for (const name of weights.tensorNames) {
-    if (!handled.has(name)) push(name, weights.tensor(name));
-  }
-
-  s1.dispose();
+  for (const n of names) if (!ops_.has(n)) ops_.set(n, { kind: "passthrough" });
   return {
-    tensors,
-    meta: {
-      seed: opts.seed, r1: true, r2: false, hiddenSize, headDim: 0,
-      deviations: [
-        "no-R2 (attn_output_gate does not commute with per-head rotation)",
-        "no-embedding-mean-centering", "no-R4-downproj-input-fold", "no-R3",
-        "gamma-kept-in-module-as-ones (eps preserved)", "fold-precision-f32",
-        "vision folded at merger.linear_fc2 only (deepstack empty)",
-      ],
-    },
+    ops: ops_,
+    gammaNames: [...gammaNames],
+    extraHead,
+    deviations: [
+      "no-R2 (attn_output_gate does not commute with per-head rotation)",
+      "no-embedding-mean-centering", "no-R4-downproj-input-fold", "no-R3",
+      "gamma-kept-in-module-as-ones (eps preserved)", "fold-precision-f32",
+      "vision folded at merger.linear_fc2 only (deepstack empty)",
+    ],
   };
 }
 
-/** Fold the Qwen MTP companion artifact with the SAME R1/seed as its trunk.
- *  fc reads concat(norm_emb(embed), norm_hid(hidden)) — two hidden-space
- *  blocks, each γ-folded then @R1 — and writes hidden-space (R1ᵀ). The MTP
- *  final norm's γ is DROPPED (set to ones): it feeds the shared trunk
- *  lm_head, which already carries the trunk's final γ. Draft logits therefore
- *  see γ_trunk instead of γ_mtp — a draft-quality-only mismatch (the target
- *  path is exact); revisit lever = private folded head in the companion. */
-export function foldQwenMtpWeights(
-  weights: Weights,
-  hiddenSize: number,
-  seed: number,
-): FoldResult {
-  assertPow2OrKron(hiddenSize);
-  const s1 = Arr.fromFloat32(signVector(seed, hiddenSize, R1_LANE), [hiddenSize]);
-  const gammaTimesS1 = (normName: string): MlxArray => {
-    const g = weights.tensor(normName).astype(Dtype.float32);
-    const gs = ops.mul(g, s1);
-    g.dispose();
-    return gs;
-  };
-  const toBf16 = (x: MlxArray): MlxArray => {
-    const out = x.astype(Dtype.bfloat16);
-    x.dispose();
-    return out;
-  };
-  const onesLike = (n: number): MlxArray => {
-    const ones = Arr.fromFloat32(new Float32Array(n).fill(1), [n]);
-    const out = ones.astype(Dtype.bfloat16);
-    ones.dispose();
-    return out;
-  };
+/** Plan for the MTP companion (same seed/R1 as its trunk — shared residual
+ *  basis). The final `norm` γ is DROPPED (→ ones): it feeds the shared trunk
+ *  lm_head which already carries the trunk's final γ; draft logits see
+ *  γ_trunk instead of γ_mtp — draft-quality-only (target path exact). */
+export function planQwenMtpFold(names: string[]): QwenFoldPlan {
+  const has = new Set(names);
+  const ops_ = new Map<string, FoldOp>();
+  const gammaNames = new Set<string>();
+  for (const req of ["fc.weight", "pre_fc_norm_embedding.weight", "pre_fc_norm_hidden.weight", "norm.weight"])
+    if (!has.has(req)) throw new Error(`mtp fold plan: missing ${req}`);
 
-  const tensors: NamedTensor[] = [];
-  const handled = new Set<string>();
-  const push = (name: string, array: MlxArray): void => {
-    tensors.push({ name, array });
-    handled.add(name);
-  };
+  ops_.set("fc.weight", {
+    kind: "mtp-fc",
+    gammaEmbed: "pre_fc_norm_embedding.weight",
+    gammaHidden: "pre_fc_norm_hidden.weight",
+  });
+  gammaNames.add("pre_fc_norm_embedding.weight");
+  gammaNames.add("pre_fc_norm_hidden.weight");
+  ops_.set("pre_fc_norm_embedding.weight", { kind: "ones", n: 0 });
+  ops_.set("pre_fc_norm_hidden.weight", { kind: "ones", n: 0 });
+  ops_.set("norm.weight", { kind: "ones", n: 0 });
 
-  // fc: [H, 2H] — input block 0 = embedding stream, block 1 = hidden stream
-  // (qwen-mtp-source.ts concat order), then an output-dim fold.
-  {
-    const gEmb = gammaTimesS1("pre_fc_norm_embedding.weight");
-    const gHid = gammaTimesS1("pre_fc_norm_hidden.weight");
-    const fc = weights.tensor("fc.weight");
-    const [b0, b1] = ops.split(fc, [hiddenSize], 1) as [MlxArray, MlxArray];
-    const f0 = foldLastAxis(b0, gEmb);
-    const f1 = foldLastAxis(b1, gHid);
-    const joined = ops.concatAxis([f0, f1], 1);
-    const out = foldOutputDim(joined, s1);
-    drop(b0, b1, f0, f1, joined, gEmb, gHid);
-    push("fc.weight", toBf16(out));
-    push("pre_fc_norm_embedding.weight", onesLike(hiddenSize));
-    push("pre_fc_norm_hidden.weight", onesLike(hiddenSize));
+  for (let i = 0; ; i++) {
+    const L = `layers.${i}`;
+    const inNorm = `${L}.input_layernorm.weight`;
+    if (!has.has(inNorm)) break;
+    const postNorm = `${L}.post_attention_layernorm.weight`;
+    ops_.set(inNorm, { kind: "ones", n: 0 });
+    ops_.set(postNorm, { kind: "ones", n: 0 });
+    gammaNames.add(inNorm);
+    gammaNames.add(postNorm);
+    for (const r of ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"])
+      ops_.set(`${L}.${r}.weight`, { kind: "input", gamma: inNorm });
+    ops_.set(`${L}.self_attn.o_proj.weight`, { kind: "output" });
+    for (const r of ["mlp.gate_proj", "mlp.up_proj"])
+      ops_.set(`${L}.${r}.weight`, { kind: "input", gamma: postNorm });
+    ops_.set(`${L}.mlp.down_proj.weight`, { kind: "output" });
   }
 
-  // The single decoder block: standard full-attention corridor treatment.
-  {
-    const L = "layers.0";
-    const gIn = gammaTimesS1(`${L}.input_layernorm.weight`);
-    const gPost = gammaTimesS1(`${L}.post_attention_layernorm.weight`);
-    push(`${L}.input_layernorm.weight`, onesLike(hiddenSize));
-    push(`${L}.post_attention_layernorm.weight`, onesLike(hiddenSize));
-    for (const r of ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]) {
-      const n = `${L}.${r}.weight`;
-      push(n, toBf16(foldLastAxis(weights.tensor(n), gIn)));
-    }
-    push(`${L}.self_attn.o_proj.weight`, toBf16(foldOutputDim(weights.tensor(`${L}.self_attn.o_proj.weight`), s1)));
-    for (const r of ["mlp.gate_proj", "mlp.up_proj"]) {
-      const n = `${L}.${r}.weight`;
-      push(n, toBf16(foldLastAxis(weights.tensor(n), gPost)));
-    }
-    push(`${L}.mlp.down_proj.weight`, toBf16(foldOutputDim(weights.tensor(`${L}.mlp.down_proj.weight`), s1)));
-    drop(gIn, gPost);
-  }
-
-  // Final MTP norm: gain-free (γ_mtp dropped — see doc comment above).
-  push("norm.weight", onesLike(hiddenSize));
-
-  for (const name of weights.tensorNames) {
-    if (!handled.has(name)) push(name, weights.tensor(name));
-  }
-
-  s1.dispose();
+  for (const n of names) if (!ops_.has(n)) ops_.set(n, { kind: "passthrough" });
   return {
-    tensors,
-    meta: {
-      seed, r1: true, r2: false, hiddenSize, headDim: 0,
-      deviations: [
-        "mtp-final-gamma-dropped (draft logits see trunk final γ — draft-quality-only)",
-        "no-R2", "fold-precision-f32",
-      ],
-    },
+    ops: ops_,
+    gammaNames: [...gammaNames],
+    extraHead: null,
+    deviations: [
+      "mtp-final-gamma-dropped (draft logits see trunk final γ — draft-quality-only)",
+      "no-R2", "fold-precision-f32",
+    ],
   };
+}
+
+/** Executor state for a streaming qwen fold: owns s1 and the (tiny, owned-f32)
+ *  γ table, so source shards can be released freely mid-walk. */
+export class QwenFoldContext {
+  readonly #s1: MlxArray;
+  readonly #gammas = new Map<string, MlxArray>();
+  readonly #gammaTimesS1 = new Map<string, MlxArray>();
+  readonly hiddenSize: number;
+
+  constructor(weights: Weights, hiddenSize: number, seed: number, gammaNames: string[]) {
+    assertPow2OrKron(hiddenSize);
+    this.hiddenSize = hiddenSize;
+    this.#s1 = Arr.fromFloat32(signVector(seed, hiddenSize, R1_LANE), [hiddenSize]);
+    for (const name of gammaNames) {
+      // Owned f32 copy — evaluated NOW so releasing its source shard is safe.
+      const g = weights.tensor(name).astype(Dtype.float32);
+      g.eval();
+      this.#gammas.set(name, g);
+    }
+  }
+
+  #vec(gamma?: string): MlxArray {
+    if (!gamma) return this.#s1;
+    let v = this.#gammaTimesS1.get(gamma);
+    if (!v) {
+      const g = this.#gammas.get(gamma);
+      if (!g) throw new Error(`fold context: γ ${gamma} not preloaded`);
+      v = ops.mul(g, this.#s1);
+      v.eval();
+      this.#gammaTimesS1.set(gamma, v);
+    }
+    return v;
+  }
+
+  /** Apply `op` to `src`, returning an EVALUATED bf16 array the caller owns.
+   *  Never disposes src (the source shard map owns it). */
+  apply(op: FoldOp, src: MlxArray): MlxArray {
+    switch (op.kind) {
+      case "passthrough": {
+        // Copy out of the shard map so the shard can be released: astype to
+        // the same dtype is a cheap materializing copy.
+        const copy = src.astype(src.dtype);
+        copy.eval();
+        return copy;
+      }
+      case "ones": {
+        const n = src.shape[0]!;
+        const ones = Arr.fromFloat32(new Float32Array(n).fill(1), [n]);
+        const out = ones.astype(Dtype.bfloat16);
+        out.eval();
+        ones.dispose();
+        return out;
+      }
+      case "input": {
+        const h = foldLastAxis(src, this.#vec(op.gamma));
+        const out = h.astype(Dtype.bfloat16);
+        out.eval();
+        h.dispose();
+        return out;
+      }
+      case "output": {
+        const h = foldOutputDim(src, this.#s1);
+        const out = h.astype(Dtype.bfloat16);
+        out.eval();
+        h.dispose();
+        return out;
+      }
+      case "bias": {
+        const h = foldBias(src, this.#s1);
+        const out = h.astype(Dtype.bfloat16);
+        out.eval();
+        h.dispose();
+        return out;
+      }
+      case "mtp-fc": {
+        const H = this.hiddenSize;
+        const [b0, b1] = ops.split(src, [H], 1) as [MlxArray, MlxArray];
+        const f0 = foldLastAxis(b0, this.#vec(op.gammaEmbed));
+        const f1 = foldLastAxis(b1, this.#vec(op.gammaHidden));
+        const joined = ops.concatAxis([f0, f1], 1);
+        const h = foldOutputDim(joined, this.#s1);
+        const out = h.astype(Dtype.bfloat16);
+        out.eval();
+        drop(b0, b1, f0, f1, joined, h);
+        return out;
+      }
+    }
+  }
+
+  dispose(): void {
+    this.#s1.dispose();
+    for (const g of this.#gammas.values()) g.dispose();
+    for (const v of this.#gammaTimesS1.values()) v.dispose();
+    this.#gammas.clear();
+    this.#gammaTimesS1.clear();
+  }
 }
 
 /** mlx hadamard_transform accepts n = m·2^k for m ∈ {1, 12, 20, 28} —
