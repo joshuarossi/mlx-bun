@@ -113,6 +113,50 @@ breaks the network. Skip QuaRot's pairing entirely.
 - W5 (only if random-R wins first): SpinQuant Cayley-SGD learned R1 +
   per-layer R2, folded identically afterward.
 
+## W1 — Qwen3.8 (qwen3_5) corridor map (2026-08-18, from src/model/qwen3_5.ts
++ src/spec/qwen-mtp-source.ts + src/vision/qwen3vl-tower.ts + tensor dumps)
+
+**R2 is architecturally OFF for this family:** full attention computes
+`o_proj(attention_output · σ(gate))` — q_proj emits 2×head_dim per head and
+the gate multiplies the attention output ELEMENTWISE in head space. An
+elementwise gate does not commute with a per-head rotation, so only γ+R1
+apply. hidden 5120 = 20·256 — mlx's hadamard_transform takes it natively
+(m·2^k, m ∈ {1,12,20,28}; verified live).
+
+Trunk corridors (prefix `language_model.`):
+- readers (@R1 input dim, γ folded in): self_attn.q/k/v_proj,
+  linear_attn.in_proj_{qkv,z,b,a}, mlp.gate/up_proj, lm_head (γ = model.norm)
+- writers (R1ᵀ output dim): self_attn.o_proj, linear_attn.out_proj,
+  mlp.down_proj
+- vision: `vision_tower.merger.linear_fc2` weight+bias is the ONLY
+  vision→residual seam (deepstack is empty for qwen3_5 and not ported) —
+  output-dim fold; everything else in the tower passes through bf16
+- untouched internal bases: q_norm/k_norm (head-space), linear_attn.{norm,
+  A_log, conv1d, dt_bias} (post-projection), rotary
+- 27B trunk is untied; the 0.8B proof subject is tied (untie step exercised)
+
+MTP companion (separate artifact, same seed/R1 — shared residual basis):
+- `fc [H,2H]`: input block 0 = embedding stream (γ = pre_fc_norm_embedding),
+  block 1 = hidden stream (γ = pre_fc_norm_hidden) — per-block γ+@R1 — plus
+  an output-dim R1ᵀ fold; both pre-fc norms → ones
+- `layers.0`: standard full-attention corridor treatment
+- **final `norm` γ is DROPPED (→ ones):** it feeds the SHARED trunk lm_head,
+  which already carries the trunk's final γ. Draft logits therefore see
+  γ_trunk instead of γ_mtp — draft-quality-only (the verified target path is
+  exact); revisit lever = ship a private folded head inside the companion.
+
+Small-scale proof (0.8B, dequantized from OptiQ-4bit since no bf16 is
+published; fold-parity on dequant-vs-folded-dequant tests the fold exactly):
+teacher-forced logits through STOCK mlx-lm (also the W2 cross-stack check) —
+worst per-position KL 0.00353, argmax flips 2/42 positions BOTH at reference
+margin 0.0 (exact ties). scripts/experiments/{dequant-model,fold-qwen35}.ts +
+tq-fold-parity.py.
+
+Quantization packaging (differs from the OptiQ convention, which STRIPS
+vision): language modules quantize uniformly (embed + lm_head included),
+`vision_tower.*` is predicate-excluded and stays bf16 in the SAME repo — our
+tower loads raw tensors, so one self-contained artifact serves text+vision.
+
 ## Subject models
 
 - **W0/W3: mlx-community/Llama-3.2-1B-Instruct-bf16** (~2.5 GB; the

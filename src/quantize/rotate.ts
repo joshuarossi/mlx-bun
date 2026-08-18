@@ -130,6 +130,11 @@ export interface FoldResult {
 /** Lane ids for signVector: R1 is lane 0, layer i's R2 is lane i+1. */
 const R1_LANE = 0;
 
+/** R1ᵀ·b for a 1-D bias vector: bᵀ·R1 holds the same numbers. */
+function foldBias(b: MlxArray, vec: MlxArray): MlxArray {
+  return foldLastAxis(b, vec);
+}
+
 /**
  * Fold a Llama-family model (tensor names model.embed_tokens / model.layers.N.
  * {input_layernorm, post_attention_layernorm, self_attn.{q,k,v,o}_proj,
@@ -310,4 +315,243 @@ export function foldLlamaWeights(
       ],
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// qwen3_5 (Qwen 3.8 family): hybrid DeltaNet/full-attention VL trunk + MTP
+// companion. R1-ONLY (+γ): the attention output gate (`o_proj(out · σ(gate))`,
+// elementwise in head space) does not commute with a per-head rotation, so R2
+// is architecturally off for this family — recorded in the design doc.
+//
+// Residual corridors (docs/design/turboquant-weights.md, W1 map):
+//   readers  (@R1 input dim, γ premultiplied): q/k/v_proj,
+//     linear_attn.in_proj_{qkv,z,b,a}, mlp.gate/up_proj, lm_head
+//   writers  (R1ᵀ output dim): self_attn.o_proj, linear_attn.out_proj,
+//     mlp.down_proj, vision_tower.merger.linear_fc2 (weight + bias — the ONLY
+//     place the vision tower touches the residual basis; deepstack is empty
+//     for qwen3_5 and not ported)
+//   untouched (internal bases): q/k_norm, linear_attn.{norm,A_log,conv1d,
+//     dt_bias}, the whole pre-merger vision tower
+// ---------------------------------------------------------------------------
+
+export interface QwenFoldOptions {
+  seed: number;
+  /** Tensor-name prefix of the language model ("language_model." for the VL
+   *  wrapper trunk; "" would be a bare text model). */
+  prefix?: string;
+}
+
+/** Fold a qwen3_5 VL trunk (or text-only model when it has no vision tower).
+ *  Handles both tied (clones an untied folded lm_head) and untied heads. */
+export function foldQwen35Weights(
+  weights: Weights,
+  hiddenSize: number,
+  opts: QwenFoldOptions,
+): FoldResult {
+  assertPow2OrKron(hiddenSize);
+  const P = opts.prefix ?? "language_model.";
+  const s1 = Arr.fromFloat32(signVector(opts.seed, hiddenSize, R1_LANE), [hiddenSize]);
+
+  const gammaTimesS1 = (normName: string): MlxArray => {
+    const g = weights.tensor(normName).astype(Dtype.float32);
+    const gs = ops.mul(g, s1);
+    g.dispose();
+    return gs;
+  };
+  const toBf16 = (x: MlxArray): MlxArray => {
+    const out = x.astype(Dtype.bfloat16);
+    x.dispose();
+    return out;
+  };
+  const onesLike = (n: number): MlxArray => {
+    const ones = Arr.fromFloat32(new Float32Array(n).fill(1), [n]);
+    const out = ones.astype(Dtype.bfloat16);
+    ones.dispose();
+    return out;
+  };
+
+  const tensors: NamedTensor[] = [];
+  const handled = new Set<string>();
+  const push = (name: string, array: MlxArray): void => {
+    tensors.push({ name, array });
+    handled.add(name);
+  };
+
+  // Embeddings + head + final norm.
+  const embedName = `${P}model.embed_tokens.weight`;
+  const headName = `${P}lm_head.weight`;
+  const finalNormName = `${P}model.norm.weight`;
+  for (const req of [embedName, finalNormName])
+    if (!weights.has(req)) throw new Error(`qwen fold: missing ${req}`);
+  const embed = weights.tensor(embedName);
+  push(embedName, toBf16(foldInputDim(embed, s1)));
+  const gFinal = gammaTimesS1(finalNormName);
+  const headSrc = weights.has(headName) ? weights.tensor(headName) : embed;
+  push(headName, toBf16(foldLastAxis(headSrc, gFinal)));
+  gFinal.dispose();
+  push(finalNormName, onesLike(hiddenSize));
+
+  // Layers — walk until the naming runs out; classify by which branch exists.
+  for (let i = 0; ; i++) {
+    const L = `${P}model.layers.${i}`;
+    const inNorm = `${L}.input_layernorm.weight`;
+    if (!weights.has(inNorm)) break;
+    const gIn = gammaTimesS1(inNorm);
+    const gPost = gammaTimesS1(`${L}.post_attention_layernorm.weight`);
+    push(inNorm, onesLike(hiddenSize));
+    push(`${L}.post_attention_layernorm.weight`, onesLike(hiddenSize));
+
+    const readers = weights.has(`${L}.self_attn.q_proj.weight`)
+      ? ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]
+      : ["linear_attn.in_proj_qkv", "linear_attn.in_proj_z", "linear_attn.in_proj_b", "linear_attn.in_proj_a"];
+    const writer = readers[0]!.startsWith("self_attn") ? "self_attn.o_proj" : "linear_attn.out_proj";
+    for (const r of readers) {
+      const n = `${L}.${r}.weight`;
+      push(n, toBf16(foldLastAxis(weights.tensor(n), gIn)));
+    }
+    push(`${L}.${writer}.weight`, toBf16(foldOutputDim(weights.tensor(`${L}.${writer}.weight`), s1)));
+
+    for (const r of ["mlp.gate_proj", "mlp.up_proj"]) {
+      const n = `${L}.${r}.weight`;
+      push(n, toBf16(foldLastAxis(weights.tensor(n), gPost)));
+    }
+    push(`${L}.mlp.down_proj.weight`, toBf16(foldOutputDim(weights.tensor(`${L}.mlp.down_proj.weight`), s1)));
+    drop(gIn, gPost);
+  }
+
+  // Vision: fold ONLY the merger's final projection into the residual basis.
+  const fc2w = "vision_tower.merger.linear_fc2.weight";
+  const fc2b = "vision_tower.merger.linear_fc2.bias";
+  if (weights.has(fc2w)) {
+    push(fc2w, toBf16(foldOutputDim(weights.tensor(fc2w), s1)));
+    push(fc2b, toBf16(foldBias(weights.tensor(fc2b), s1)));
+  }
+
+  // Everything else (vision tower internals, q/k norms, DeltaNet internals,
+  // rotary caches) passes through untouched.
+  for (const name of weights.tensorNames) {
+    if (!handled.has(name)) push(name, weights.tensor(name));
+  }
+
+  s1.dispose();
+  return {
+    tensors,
+    meta: {
+      seed: opts.seed, r1: true, r2: false, hiddenSize, headDim: 0,
+      deviations: [
+        "no-R2 (attn_output_gate does not commute with per-head rotation)",
+        "no-embedding-mean-centering", "no-R4-downproj-input-fold", "no-R3",
+        "gamma-kept-in-module-as-ones (eps preserved)", "fold-precision-f32",
+        "vision folded at merger.linear_fc2 only (deepstack empty)",
+      ],
+    },
+  };
+}
+
+/** Fold the Qwen MTP companion artifact with the SAME R1/seed as its trunk.
+ *  fc reads concat(norm_emb(embed), norm_hid(hidden)) — two hidden-space
+ *  blocks, each γ-folded then @R1 — and writes hidden-space (R1ᵀ). The MTP
+ *  final norm's γ is DROPPED (set to ones): it feeds the shared trunk
+ *  lm_head, which already carries the trunk's final γ. Draft logits therefore
+ *  see γ_trunk instead of γ_mtp — a draft-quality-only mismatch (the target
+ *  path is exact); revisit lever = private folded head in the companion. */
+export function foldQwenMtpWeights(
+  weights: Weights,
+  hiddenSize: number,
+  seed: number,
+): FoldResult {
+  assertPow2OrKron(hiddenSize);
+  const s1 = Arr.fromFloat32(signVector(seed, hiddenSize, R1_LANE), [hiddenSize]);
+  const gammaTimesS1 = (normName: string): MlxArray => {
+    const g = weights.tensor(normName).astype(Dtype.float32);
+    const gs = ops.mul(g, s1);
+    g.dispose();
+    return gs;
+  };
+  const toBf16 = (x: MlxArray): MlxArray => {
+    const out = x.astype(Dtype.bfloat16);
+    x.dispose();
+    return out;
+  };
+  const onesLike = (n: number): MlxArray => {
+    const ones = Arr.fromFloat32(new Float32Array(n).fill(1), [n]);
+    const out = ones.astype(Dtype.bfloat16);
+    ones.dispose();
+    return out;
+  };
+
+  const tensors: NamedTensor[] = [];
+  const handled = new Set<string>();
+  const push = (name: string, array: MlxArray): void => {
+    tensors.push({ name, array });
+    handled.add(name);
+  };
+
+  // fc: [H, 2H] — input block 0 = embedding stream, block 1 = hidden stream
+  // (qwen-mtp-source.ts concat order), then an output-dim fold.
+  {
+    const gEmb = gammaTimesS1("pre_fc_norm_embedding.weight");
+    const gHid = gammaTimesS1("pre_fc_norm_hidden.weight");
+    const fc = weights.tensor("fc.weight");
+    const [b0, b1] = ops.split(fc, [hiddenSize], 1) as [MlxArray, MlxArray];
+    const f0 = foldLastAxis(b0, gEmb);
+    const f1 = foldLastAxis(b1, gHid);
+    const joined = ops.concatAxis([f0, f1], 1);
+    const out = foldOutputDim(joined, s1);
+    drop(b0, b1, f0, f1, joined, gEmb, gHid);
+    push("fc.weight", toBf16(out));
+    push("pre_fc_norm_embedding.weight", onesLike(hiddenSize));
+    push("pre_fc_norm_hidden.weight", onesLike(hiddenSize));
+  }
+
+  // The single decoder block: standard full-attention corridor treatment.
+  {
+    const L = "layers.0";
+    const gIn = gammaTimesS1(`${L}.input_layernorm.weight`);
+    const gPost = gammaTimesS1(`${L}.post_attention_layernorm.weight`);
+    push(`${L}.input_layernorm.weight`, onesLike(hiddenSize));
+    push(`${L}.post_attention_layernorm.weight`, onesLike(hiddenSize));
+    for (const r of ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]) {
+      const n = `${L}.${r}.weight`;
+      push(n, toBf16(foldLastAxis(weights.tensor(n), gIn)));
+    }
+    push(`${L}.self_attn.o_proj.weight`, toBf16(foldOutputDim(weights.tensor(`${L}.self_attn.o_proj.weight`), s1)));
+    for (const r of ["mlp.gate_proj", "mlp.up_proj"]) {
+      const n = `${L}.${r}.weight`;
+      push(n, toBf16(foldLastAxis(weights.tensor(n), gPost)));
+    }
+    push(`${L}.mlp.down_proj.weight`, toBf16(foldOutputDim(weights.tensor(`${L}.mlp.down_proj.weight`), s1)));
+    drop(gIn, gPost);
+  }
+
+  // Final MTP norm: gain-free (γ_mtp dropped — see doc comment above).
+  push("norm.weight", onesLike(hiddenSize));
+
+  for (const name of weights.tensorNames) {
+    if (!handled.has(name)) push(name, weights.tensor(name));
+  }
+
+  s1.dispose();
+  return {
+    tensors,
+    meta: {
+      seed, r1: true, r2: false, hiddenSize, headDim: 0,
+      deviations: [
+        "mtp-final-gamma-dropped (draft logits see trunk final γ — draft-quality-only)",
+        "no-R2", "fold-precision-f32",
+      ],
+    },
+  };
+}
+
+/** mlx hadamard_transform accepts n = m·2^k for m ∈ {1, 12, 20, 28} —
+ *  equivalently: odd part ∈ {1, 3, 5, 7} with at least 4 | n when odd > 1
+ *  (verified live at n=5120 = 20·256). */
+function assertPow2OrKron(n: number): void {
+  let odd = n;
+  let twos = 0;
+  while (odd % 2 === 0) { odd /= 2; twos++; }
+  const ok = odd === 1 || ([3, 5, 7].includes(odd) && twos >= 2);
+  if (!ok)
+    throw new Error(`rotation fold: hidden_size ${n} is not m·2^k with m ∈ {1,12,20,28}`);
 }
