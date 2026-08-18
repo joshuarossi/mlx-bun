@@ -3772,29 +3772,46 @@ verified via `mlx-bun get`).
       f64 escape hatch) in **docs/design/turboquant-weights.md**. Key
       trap recorded there: QuaRot's v/o rotation needs a RUNTIME op —
       copy SpinQuant's fully-offline R₂ pairing instead.
-- [ ] **W1 Qwen3.8 corridor map:** walk the module graph and decide
-      fold-or-skip per corridor, incl. the DeltaNet gated-delta blocks
-      (in_proj_a/b/z · out_proj around the recurrence — folding math not
-      in the papers; derivation or allocation-only fallback, decided in
-      the design doc). The MTP companion is a SEPARATE artifact sharing
-      the trunk's residual basis (embeddings/head) → an R₁-folded trunk
-      needs a consistently folded companion (or MTP breaks); decide the
-      companion fold story here.
-- [ ] **W2 convert integration:** rotation pass wired into the
-      convert/fuse tool ahead of quantization; output stays standard mlx
-      format — cross-check: the folded+quantized model loads and
-      generates in stock mlx-lm. VERIFY (don't assume) our loader
-      handles mode:mxfp4/nvfp4 configs before promising those arms.
-- [ ] **W3 small-model curve:** {rotated, plain} × {affine4 g64, mxfp4,
-      nvfp4} on the W0 model — ppl + teacher-forced KL harness
-      (src/eval/kl.ts pattern from the KV curve); pick winning arms.
-- [ ] **W4 27B gate:** convert Qwen3.8-27B-MTP-bf16 → candidate turbo
-      variants; run the gate vs OptiQ-4bit + plain 4bit at equal bpw
-      (frozen 6-task eval + ppl, eval DB rows). Deliverable: a local
-      `Qwen3.8-27B-MTP-turbo` that wins its bpw band.
-- [ ] **W5 composition (only if W3/W4 show a random-rotation win):**
-      learned rotations (SpinQuant Cayley-style, small calibration set)
-      and/or OptiQ-style per-layer allocation on top.
+- [x] **W1 Qwen3.8 corridor map** — DONE 2026-08-18 (design doc §W1).
+      DeltaNet blocks fold cleanly on their residual-facing dims (in_proj_*
+      readers @R1, out_proj writer R1ᵀ; recurrence internals untouched);
+      **R2 is architecturally OFF** (`o_proj(out·σ(gate))` elementwise
+      head-space gate doesn't commute with per-head rotation); vision's
+      only residual seam is merger.linear_fc2 (deepstack empty); MTP
+      companion folds with the same seed; its final-norm γ is dropped
+      (shared trunk lm_head — draft-quality-only, measured 71% acceptance).
+- [x] **W2 streaming fold+quantize path** — DONE 2026-08-18 as
+      script-level tooling (fold-qwen35 / tq-quantize over the new
+      ShardedWriter + Weights.releaseShard; the naive whole-list path
+      OOM'd a 51 GB model — 27B fold peak footprint 17.9 GB after the
+      fix). Cross-stack: folded 0.8B AND the quantized 27B artifacts load
+      + score in STOCK mlx-lm. mxfp4/nvfp4 arms NOT verified (deferred
+      with the curve narrowing below). Promotion of the streaming path
+      into the convert verb = follow-up.
+- [x] **W3 curve** — DONE 2026-08-18, affine-only (see design doc table).
+      Headline: rotation LOSES at 4-bit g64 RTN (+5% ppl), WINS at 3-bit
+      (−24%) and in mixed ≤4 bpw (paired control worse). Per-module
+      Frobenius error is a wash at 4-bit — the anisotropy story; the
+      4-bit win needs GPTQ-on-rotated (→W5). AWQ-lite equalization spike
+      ran and did not rescue 4-bit (details + scripts in design doc).
+- [x] **W4 27B artifacts + validation** — DONE 2026-08-18 (busy-box,
+      correctness only). `runs/tq-qwen/27b-tqmix` = rotated mixed
+      4-bit attn/embed + 3-bit MLP, **3.86 bpw / 13.9 GB** (the 14z
+      M4-Pro fit artifact), ppl 4.932 vs plain-4bit 4.659 (4.5 bpw,
+      15 GB) vs rotated-uniform-4bit 4.923; vision kept bf16 in-repo +
+      optiq sidecar; MTP companion folded same-seed. VALIDATED: server
+      chat (correct reasoning), vision over HTTP (correct colors), MTP
+      harness 71% accept / token-identical. NOT shipped: rotated
+      uniform-4bit (loses to plain). Frozen 6-task eval cells + quiet-box
+      numbers still owed before RESULTS.md rows.
+- [ ] **W5 calibration composition (the 4-bit flagship win):** GPTQ-style
+      error-compensated rounding on ROTATED weights (+ optional learned
+      rotations / OptiQ allocation). This is where the papers' 4-bit wins
+      actually come from; W3 proved rotation-only RTN can't get there.
+- [ ] **W6 release:** publish `Qwen3.8-27B-TQ` (mixed, 3.86 bpw, vision +
+      MTP) + `Qwen3.8-27B-MTP-TQ-bf16` to HF — cards drafted with
+      measured tables in the artifact dirs; STAGED, awaiting Josh's go
+      (outward-facing).
 
 Non-goals (pinned now): custom Lloyd-Max weight FORMAT / any new qmm
 kernel; activation quantization (no int4 tensor cores, decode is

@@ -196,15 +196,33 @@ this doc already name as the real win.
 | plain mixed (3-bit MLP, 4-bit attn/embed) | 4.15 | 9.69 |
 | **TQ mixed (same profile)** | 4.24 | **9.22** ← paired rotation win |
 
-27B (32×512, same corpus): plain 4-bit 4.659 ±0.093 · TQ 4-bit
-4.923 ±0.102 (+5.7%, consistent with the lab). TQ-mixed 27B measured
-separately (see PLAN.md for the current number).
+27B (32×512, same corpus): plain 4-bit 4.659 ±0.093 (4.50 bpw, 15.0 GB) ·
+TQ 4-bit 4.923 ±0.102 (+5.7%, consistent with the lab) · **TQ-mixed
+(4-bit attn/embed + 3-bit MLP) 4.932 ±0.098 at 3.86 bpw / 13.9 GB** —
+matches rotated-uniform-4-bit quality at −0.64 bpw; the artifact of
+record for the 14z M4-Pro fit lever.
+
+AWQ-style equalization spike (norm-carried per-channel scales, α=0.5,
+function-preservation verified at KL 0.0037/0 flips): TQ+eq 7.363 (≈no
+change), plain+eq 7.809 (HURT — per-channel scales inside a g64 group
+widen group ranges; real AWQ grid-searches a far gentler α and the real
+4-bit fix is GPTQ-style compensated rounding). Scripts kept:
+tq-collect-actstats.py + tq-equalize.ts.
+
+**End-to-end validation of the TQ-mixed 27B artifact (2026-08-18, M1
+Max, busy box — correctness only):** server chat with correct arithmetic
+reasoning (thinking → `reasoning` field); vision through the folded
+merger + sidecar correctly identifies the gradient fixture's colors over
+HTTP; MTP via the 14g harness with the same-seed folded companion: 71%
+acceptance, 2.40 tok/target-forward, arms token-identical (losslessness),
+ON/OFF 0.726× (consistent with the stock 0.821× correct-but-slower
+verdict; MTP stays opt-in).
 
 Consequences for the release recipe: do NOT ship rotated uniform-4-bit
-(loses to the trivial baseline); the TQ product band is ≤3.5–4.2 bpw mixed
-(rotated 3-bit bulk + 4-bit sensitive corridors) IF the 27B tolerates the
-3-bit band, else the win waits for the calibration composition
-(GPTQ/sensitivity allocation on ROTATED weights — the W5 leg).
+(loses to the trivial baseline); the shipping artifact is the TQ-mixed
+≤4 bpw band where rotation is decisively ahead (paired no-rotation
+control worse; uniform-3-bit −24% ppl). The 4.5-bpw flagship win waits
+for the calibration composition (GPTQ on ROTATED weights — the W5 leg).
 
 ## Known engine gaps found in passing (not TQ defects)
 
@@ -217,6 +235,13 @@ Consequences for the release recipe: do NOT ship rotated uniform-4-bit
 - bf16 (unquantized) qwen3_5 trunks don't load in our engine:
   `QuantizedEmbedding.load`/`QuantizedLinear.load` hard-require `.scales`.
   The small-scale fold proof ran through stock mlx-lm instead.
+- Qwen MTP via the HTTP serve lane 500s with `[slice] Invalid number of
+  indices or strides for array with dimension 3` — REPRODUCES WITH STOCK
+  ARTIFACTS (plain-4bit trunk + original mlx-community MTP companion,
+  `serve --draft-model <companion> --draft-kind mtp`, any chat request),
+  so it is a pre-existing serving-path bug, not TQ. The 14g harness path
+  (specServeRun via scripts/experiments/qwen38-mtp-ab.ts) is the green
+  gate; TQ MTP was validated through that.
 
 ## Non-goals
 

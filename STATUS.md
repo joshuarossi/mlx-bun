@@ -65,10 +65,26 @@ folds Llama-3.2-1B-Instruct-bf16 (untie → γ → R₁ → per-head R₂) and t
 folded model passes the parity gate through the unmodified engine —
 teacher-forced two-model KL mean 0.00131 (16×256), greedy trajectories
 identical except near-tie flips (margins ≤0.125), per-tensor max|w|
-down 3–5×. Evidence in the PLAN.md W0 entry. Next action: W3 small-model
-curve ({rotated, plain} × {affine4, mxfp4, nvfp4} on the same 1B — needs
-the W2 loader check for mxfp4/nvfp4 modes first) and the W1 Qwen3.8
-corridor map. Source artifacts: the trunk
+down 3–5×. Evidence in the PLAN.md W0 entry.
+
+**W1–W4 DONE overnight 2026-08-18 (branch feature/turboquant-weights;
+full findings in the PLAN boxes + docs/design/turboquant-weights.md):**
+qwen3_5 corridor map (R2 off — attn output gate; DeltaNet folds on its
+residual dims; vision seam = merger.linear_fc2; MTP companion same-seed),
+streaming fold/quantize at 27B scale (ShardedWriter + Weights.releaseShard
+— the naive path OOM'd; fold peak 17.9 GB), fold proven through STOCK
+mlx-lm (worst KL 0.0035, flips only at exact ties). **Measured verdict:
+rotation-only RTN loses at 4-bit (+5% ppl both scales), wins at ≤4 bpw
+(uniform-3 −24%; mixed paired-control worse).** Artifact of record:
+`runs/tq-qwen/27b-tqmix` — rotated mixed 4/3-bit, 3.86 bpw / 13.9 GB
+(the 14z M4-Pro fit lever), ppl 4.932 vs plain-4bit 4.659@4.5bpw;
+VALIDATED end-to-end (server chat reasoning ✓, vision over HTTP ✓, MTP
+harness 71% accept + token-identical ✓; the HTTP MTP lane has a
+PRE-EXISTING slice bug reproducing with stock artifacts — recorded).
+Next actions: W6 release is STAGED (cards with measured tables in the
+artifact dirs) awaiting Josh's go; W5 = GPTQ-on-rotated for the 4-bit
+flagship win; frozen 6-task eval cells + quiet-box numbers owed.
+Source artifacts: the trunk
 and MTP head are SEPARATE repos — mlx-community/Qwen3.8-27B-bf16
 (11 shards, 54.7 GB, Josh-run `mlx-bun get`, needed by W4) +
 mlx-community/Qwen3.8-27B-MTP-bf16 (MTP companion, ~850 MB, already
