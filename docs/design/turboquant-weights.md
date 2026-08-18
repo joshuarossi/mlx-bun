@@ -292,6 +292,29 @@ lab ordering (GPTQ clearly won there) — quantization robustness grows
 with scale. Decision moves to task benchmarks: MMLU-100 + GSM8K-50
 across {GPTQ-v3, plain4, OptiQ, TQ-mixed}, eval DB rows.
 
+## FINAL BOARD + DECISION (2026-08-18 night 2)
+
+Task evals (lean mlx-lm runner, paired items; in-engine sweep swap-thrashed
+the box — 73 GB swap at 0.7 GB resident — killed, gap recorded below):
+
+| arm | bpw | GB | ppl(73×512) | MMLU-100 | GSM8K-50 |
+|---|---|---|---|---|---|
+| **GPTQ+sens v3 (SHIPPED as mjriii/Qwen3.8-27B)** | 4.80 | 16.3 | 4.618 | 87 | **96** |
+| plain RTN 4-bit | 4.50 | 15.0 | **4.570** | 88 | 94 |
+| OptiQ published | 5.14 | 18.1 | 4.574 | **89** | 92 |
+| TQ-mixed (staged, small-footprint variant) | 3.86 | 13.0 | 4.93 | 82 | 96 |
+
+All ≥4.5-bpw arms statistically tied on every instrument — 27B quality
+SATURATES at 4-bit; recipes differentiate below 4 bpw and on
+completeness. THE artifact = v3 (never trails; protective recipe;
+one-repo vision+video+MTP; additive to the ecosystem where plain-4bit
+already exists publicly). Serve gauntlet on THE artifact through OUR
+engine: text ✓ (23×19), image ✓ ("Green and pink"), video ✓ (gradient
+motion described; AVFoundation chain), MTP harness 76% accept /
+2.53 tok-per-forward with an output-divergence flag vs plain greedy
+(consistent with verify-width reduction-order near-ties, 12B step-0
+class — margin analysis queued; NOT claimed lossless on the card).
+
 ## Known engine gaps found in passing (not TQ defects)
 
 - `mlx-bun perplexity` cannot score qwen3_5: it routes through
@@ -303,6 +326,9 @@ across {GPTQ-v3, plain4, OptiQ, TQ-mixed}, eval DB rows.
 - bf16 (unquantized) qwen3_5 trunks don't load in our engine:
   `QuantizedEmbedding.load`/`QuantizedLinear.load` hard-require `.scales`.
   The small-scale fold proof ran through stock mlx-lm instead.
+- `scripts/eval.ts` capability tasks at 27B swap-thrash a 32 GB box
+  (73 GB swapfiles, process 95% paged out) where the mlx-lm scoring path
+  is fine — investigate the in-engine eval memory profile.
 - Qwen MTP via the HTTP serve lane 500s with `[slice] Invalid number of
   indices or strides for array with dimension 3` — REPRODUCES WITH STOCK
   ARTIFACTS (plain-4bit trunk + original mlx-community MTP companion,
