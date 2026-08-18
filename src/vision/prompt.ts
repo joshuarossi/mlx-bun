@@ -117,6 +117,45 @@ export async function extractImages(
   return { messages: out, images };
 }
 
+/** Extract video bytes from content parts, rewriting to the template's
+ *  {type:"video"} form. Accepts {type:"video_url", video_url:{url}} (data:
+ *  or http(s), same SSRF guard as images with the larger video body cap)
+ *  and {type:"video"} with base64 `data`. Decode to frames happens later
+ *  (vision/video-frames.ts — the AVFoundation sidecar). */
+export async function extractVideos(
+  messages: ChatMessage[],
+): Promise<{ messages: ChatMessage[]; videos: Uint8Array[] }> {
+  const videos: Uint8Array[] = [];
+  const out: ChatMessage[] = [];
+  for (const m of messages) {
+    if (!Array.isArray(m.content)) {
+      out.push(m);
+      continue;
+    }
+    const parts: Array<Record<string, unknown>> = [];
+    for (const part of m.content) {
+      if (part.type === "video_url") {
+        const url = (part.video_url as { url: string } | undefined)?.url
+          ?? (part.video_url as unknown as string);
+        if (typeof url !== "string") throw new Error("video_url part missing url");
+        videos.push(await fetchMediaBytes(url, "video"));
+        parts.push({ type: "video" });
+      } else if (part.type === "video") {
+        if (typeof part.data === "string") {
+          videos.push(Uint8Array.from(Buffer.from(part.data, "base64")));
+          parts.push({ type: "video" });
+        } else {
+          throw new Error("video part requires base64 `data`");
+        }
+      } else {
+        parts.push(part);
+      }
+    }
+    out.push({ ...m, content: parts });
+  }
+  return { messages: out, videos };
+}
+
 /** Extract audio bytes from OpenAI-style content parts, rewriting the parts
  *  to the template's {type:"audio"} form. Accepts the OpenAI-canonical
  *  {type:"input_audio", input_audio:{data:<b64>, format:...}} plus optiq's

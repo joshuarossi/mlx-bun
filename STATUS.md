@@ -40,11 +40,16 @@ in PLAN 14v/14w: dedicated tower port (bit-exact vs mlx-vlm pinned to mlx
 positions/delta exact, e2e greedy token-exact on 2/3 image fixtures +
 step-0-argmax on all, HTTP serve smoke green (image_url content parts;
 /v1/models now advertises vision), video preprocessor + gridT>1 tower
-BIT-EXACT on the sidecar-extracted fixture clip. The AVFoundation
-frame-extraction sidecar probe is GREEN (lab/spikes/qwen38-video-sidecar);
-video FILE serving awaits its native-pack productization. A running `serve`
-needs a restart to pick all of this up (the CLI symlink serves the repo
-working tree).
+BIT-EXACT on the sidecar-extracted fixture clip. (4) **video FILES SERVE**
+(14w complete): the AVFoundation sidecar is productized as
+`mlx-bun-frame-extract` (src/native/frame_extract.swift → release bundle +
+native pack v0.3.0 + dev compile-on-demand), `video_url`/`video` content
+parts decode → frames → the gated pipeline on Qwen3.5-family models, and
+the serve smoke covers image + video + text isolation on one server.
+**RELEASE BLOCKER: publish `native-v0.3.0` and bake its sha256/size into
+src/native-pack.ts before the next package tag** (PLAN 14w). A running
+`serve` needs a restart to pick all of this up (the CLI symlink serves the
+repo working tree).
 
 ## Active: TurboQuant weights — rotation-folded quantization (opened 2026-08-17)
 

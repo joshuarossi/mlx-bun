@@ -1,2 +1,0 @@
-# compiled probe binary — rebuild with: swiftc -O frame-extract.swift -o frame-extract
-frame-extract

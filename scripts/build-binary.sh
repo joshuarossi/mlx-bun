@@ -130,6 +130,7 @@ cp -f "$BREW_MLX_DIR/libmlx.dylib" "$OUT/libmlx.dylib"
 cp -f "$BREW_MLX_DIR/libjaccl.dylib" "$OUT/libjaccl.dylib"
 cp -f "$BREW_MLX_DIR/mlx.metallib" "$OUT/mlx.metallib"
 sh scripts/build-expert-io.sh "$OUT/libmlx_bun_expert_io.dylib"
+sh scripts/build-frame-extract.sh "$OUT/mlx-bun-frame-extract"
 
 # libmlxc references libmlx by absolute brew path; point it at the copy
 # in the same directory. libmlx references @rpath/libjaccl.dylib with an
@@ -140,7 +141,8 @@ install_name_tool -change "$BREW_MLX_DIR/libmlx.dylib" \
   "@loader_path/libmlx.dylib" "$OUT/libmlxc.dylib"
 install_name_tool -add_rpath "@loader_path" "$OUT/libmlx.dylib" 2>/dev/null || true
 codesign -f -s - "$OUT/libmlxc.dylib" "$OUT/libmlx.dylib" \
-  "$OUT/libjaccl.dylib" "$OUT/libmlx_bun_expert_io.dylib" >/dev/null 2>&1
+  "$OUT/libjaccl.dylib" "$OUT/libmlx_bun_expert_io.dylib" \
+  "$OUT/mlx-bun-frame-extract" >/dev/null 2>&1
 
 echo "==> bundle:"
 ls -lh "$OUT" | awk 'NR>1 {print "    " $9 "  " $5}'

@@ -117,7 +117,7 @@ import { buildQwen3VLVisionPrompt } from "./vision/qwen3vl-prompt";
 import { Qwen35Model } from "./model/qwen3_5";
 import type { MropeRequestState } from "./model/qwen3-mrope";
 import {
-  buildMultimodalPrompt, buildVisionPrompt, extractAudio, extractImages,
+  buildMultimodalPrompt, buildVisionPrompt, extractAudio, extractImages, extractVideos,
   type AudioTokenIds, type VisionTokenIds, type VisionEncoder,
 } from "./vision/prompt";
 import { AudioTower, parseAudioConfig } from "./audio/conformer";
@@ -1194,7 +1194,8 @@ function hasMediaPart(parts: Array<Record<string, unknown>>): boolean {
     (p) =>
       p &&
       (p.type === "image" || p.type === "image_url" ||
-        p.type === "audio" || p.type === "input_audio" || p.type === "audio_url"),
+        p.type === "audio" || p.type === "input_audio" || p.type === "audio_url" ||
+        p.type === "video" || p.type === "video_url"),
   );
 }
 
@@ -3201,6 +3202,13 @@ export function createServer(
               (p: any) => p.type === "input_audio" || p.type === "audio" || p.type === "audio_url",
             ),
         );
+        // Video content parts (video_url / video with base64 data) —
+        // Qwen3.5-family only (decoded to sampled frames via the
+        // AVFoundation sidecar, vision/video-frames.ts).
+        const hasVideos = body.messages.some(
+          (m) => Array.isArray(m.content) &&
+            m.content.some((p: any) => p.type === "video_url" || p.type === "video"),
+        );
         let promptIds: number[];
         let stableLen: number | null = null;
         // Whether the prompt primed an open <think> (Qwen3.5/MiniCPM5 thinking
@@ -3243,6 +3251,19 @@ export function createServer(
           diffusionPixels?.dispose();
         };
         try {
+          // Video is Qwen3.5-family only and never composes with audio —
+          // one early guard so no downstream branch can silently drop a
+          // video part (the gemma/diffusion builders don't know the type).
+          if (hasVideos && (hasAudio || !(ctx.model instanceof Qwen35Model))) {
+            disposeRejected();
+            return Response.json(
+              { error: { message: hasAudio
+                  ? "video and audio content parts cannot be combined"
+                  : `model ${ctx.modelId} does not accept video input — video ` +
+                    `content parts need a Qwen3.5-family model (e.g. Qwen3.8-27B)` } },
+              { status: 400 },
+            );
+          }
           if (hasAudio) {
             // Audio (and MIXED image+audio) input — A4 of
             // docs/design/audio-input-plan.md. One buildMultimodalPrompt call
@@ -3331,11 +3352,12 @@ export function createServer(
               eoi: ctx.visionTokenIds.eoiTokenId,
             });
             diffusionPixels = pixels;
-          } else if (hasImages && ctx.model instanceof Qwen35Model) {
-            // Qwen3.8 vision: the tower is a Qwen3VLVisionTower riding the
-            // shared lazy slot (makeVisionLoader's qwen branch); image spans
-            // splice into input embeddings and the request carries mRoPE
-            // positions + delta (PLAN 14v).
+          } else if ((hasImages || hasVideos) && ctx.model instanceof Qwen35Model) {
+            // Qwen3.8 vision + video: the tower is a Qwen3VLVisionTower
+            // riding the shared lazy slot (makeVisionLoader's qwen branch);
+            // image/video spans splice into input embeddings and the request
+            // carries mRoPE positions + delta (PLAN 14v/14w). Videos decode
+            // to sampled frames via the AVFoundation sidecar.
             const tower = getVisionTower(ctx) as unknown as Qwen3VLVisionTower | null;
             if (!tower) {
               disposeRejected();
@@ -3343,14 +3365,17 @@ export function createServer(
                 { error: { message: "model has no vision sidecar" } }, { status: 400 },
               );
             }
-            const { messages, images } = await extractImages(normalizeMessages(body.messages));
+            const { messages: withVideos, images } =
+              await extractImages(normalizeMessages(body.messages));
+            const { messages, videos } = await extractVideos(withVideos);
             const vp = await buildQwen3VLVisionPrompt(
               ctx.model, tower, ctx.tokenizer, ctx.template, messages, images,
               {
                 imageTokenId: (ctx.model.config.raw.image_token_id as number) ?? 248056,
                 videoTokenId: (ctx.model.config.raw.video_token_id as number) ?? 248057,
               },
-              tools,
+              templateOptionsFor(body, tools),
+              videos,
             );
             promptIds = vp.ids;
             vision = { embeddings: vp.embeddings, mrope: vp.mrope };

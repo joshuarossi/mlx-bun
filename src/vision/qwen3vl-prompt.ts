@@ -18,7 +18,8 @@ import type { ChatMessage, ChatTemplate, ToolDefinition } from "../chat-template
 import type { LoadedTokenizer } from "../tokenizer";
 import type { Qwen35Model } from "../model/qwen3_5";
 import { qwenRopeIndex, type MropeRequestState } from "../model/qwen3-mrope";
-import { preprocessQwen3VLImage } from "./qwen3vl-preprocess";
+import { preprocessQwen3VLImage, preprocessQwen3VLVideoFrames } from "./qwen3vl-preprocess";
+import { extractVideoFrames } from "./video-frames";
 import { QWEN3VL_MERGE_SIZE } from "./qwen3vl-preprocess";
 import type { Qwen3VLVisionTower } from "./qwen3vl-tower";
 
@@ -43,29 +44,50 @@ export async function buildQwen3VLVisionPrompt(
   messages: ChatMessage[],
   images: Uint8Array[],
   tokenIds: Qwen3VLTokenIds,
-  tools: ToolDefinition[] | null = null,
+  renderOptions: Parameters<ChatTemplate["render"]>[1] = {},
+  videos: Uint8Array[] = [],
 ): Promise<Qwen3VLVisionPrompt> {
-  const rendered = template.render(messages, { tools, addGenerationPrompt: true });
+  // The request's full template options (tools, enableThinking,
+  // reasoningEffort, preserveThinking) flow through — a media prompt must
+  // honor the same thinking controls as a text one.
+  const rendered = template.render(messages, {
+    ...renderOptions, addGenerationPrompt: true,
+  });
   const rawIds = tokenizer.encode(rendered, /* addSpecialTokens */ false);
-  const pads = rawIds.filter((t) => t === tokenIds.imageTokenId).length;
-  if (pads !== images.length)
+  const imagePads = rawIds.filter((t) => t === tokenIds.imageTokenId).length;
+  const videoPads = rawIds.filter((t) => t === tokenIds.videoTokenId).length;
+  if (imagePads !== images.length)
     throw new Error(
-      `prompt renders ${pads} image slots but ${images.length} images were supplied`,
+      `prompt renders ${imagePads} image slots but ${images.length} images were supplied`,
+    );
+  if (videoPads !== videos.length)
+    throw new Error(
+      `prompt renders ${videoPads} video slots but ${videos.length} videos were supplied`,
     );
 
-  // Preprocess + encode each image in appearance order.
-  const pps = [];
-  for (const img of images) pps.push(await preprocessQwen3VLImage(img));
-  const grids = pps.map((p) => p.gridThw);
+  // Preprocess each medium in its own appearance order; videos decode to
+  // sampled frames through the AVFoundation sidecar first.
+  const imagePps = [];
+  for (const img of images) imagePps.push(await preprocessQwen3VLImage(img));
+  const videoPps = [];
+  for (const vid of videos)
+    videoPps.push(preprocessQwen3VLVideoFrames(await extractVideoFrames(vid)));
 
-  // Expand each <|image_pad|> to its image's token count.
+  // Expand each pad token to its medium's token count; collect grids in
+  // PROMPT order (get_rope_index consumes image/video grids interleaved).
   const ids: number[] = [];
+  const grids: [number, number, number][] = [];
   let imgIdx = 0;
+  let vidIdx = 0;
   for (const t of rawIds) {
     if (t === tokenIds.imageTokenId) {
-      const count = pps[imgIdx]!.imageTokens;
-      for (let i = 0; i < count; i++) ids.push(tokenIds.imageTokenId);
-      imgIdx++;
+      const pp = imagePps[imgIdx++]!;
+      grids.push(pp.gridThw);
+      for (let i = 0; i < pp.imageTokens; i++) ids.push(tokenIds.imageTokenId);
+    } else if (t === tokenIds.videoTokenId) {
+      const pp = videoPps[vidIdx++]!;
+      grids.push(pp.gridThw);
+      for (let i = 0; i < pp.imageTokens; i++) ids.push(tokenIds.videoTokenId);
     } else ids.push(t);
   }
 
@@ -73,8 +95,8 @@ export async function buildQwen3VLVisionPrompt(
     ids, grids, QWEN3VL_MERGE_SIZE, tokenIds.imageTokenId, tokenIds.videoTokenId,
   );
 
-  // Text embeddings, then splice the tower features over the image spans by
-  // segment concatenation (spans are contiguous runs of the image token).
+  // Text embeddings, then splice the tower features over the media spans by
+  // segment concatenation (spans are contiguous runs of their pad token).
   const idsArr = ops.fromInt32(ids, [1, ids.length]);
   const textEmb = model.embed.encode(idsArr); // [1, L, H]
   idsArr.dispose();
@@ -83,22 +105,25 @@ export async function buildQwen3VLVisionPrompt(
   const owned: MlxArray[] = [];
   let cursor = 0;
   imgIdx = 0;
+  vidIdx = 0;
   for (let i = 0; i < ids.length; ) {
-    if (ids[i] === tokenIds.imageTokenId) {
-      const count = pps[imgIdx]!.imageTokens;
+    const isImage = ids[i] === tokenIds.imageTokenId;
+    const isVideo = ids[i] === tokenIds.videoTokenId;
+    if (isImage || isVideo) {
+      const pp = isImage ? imagePps[imgIdx++]! : videoPps[vidIdx++]!;
+      const count = pp.imageTokens;
       if (cursor < i) {
         const seg = textEmb.slice([0, cursor, 0], [1, i, H]);
         segments.push(seg);
         owned.push(seg);
       }
-      const feat = tower.encode(pps[imgIdx]!); // [count, H] bf16
+      const feat = tower.encode(pp); // [count, H] bf16
       const feat3 = ops.reshape(feat, [1, count, H]);
       feat.dispose();
       segments.push(feat3);
       owned.push(feat3);
       cursor = i + count;
       i = cursor;
-      imgIdx++;
     } else i++;
   }
   if (cursor < ids.length) {

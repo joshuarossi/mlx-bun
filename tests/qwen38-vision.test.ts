@@ -307,3 +307,58 @@ describe.skipIf(!optIn || !haveModel || !haveClipBins)(
     expect(prefix).toBeGreaterThanOrEqual(Math.min(12, m.gen_ids.length));
   }, 3_600_000);
 });
+
+// ---- video FILE decode (the shipped sidecar, PLAN 14w productization) ------
+// Auto-skips when no extractor resolves (no beside-binary copy, no native
+// pack, no swiftc): resolution + dev-compile live in vision/video-frames.ts.
+
+describe("qwen3.8 video: sidecar file decode", async () => {
+  const { resolveFrameExtract, extractVideoFrames } =
+    await import("../src/vision/video-frames");
+  const bin = await resolveFrameExtract();
+
+  test.skipIf(!bin)("fixture clip decodes to the committed frames, pixel-exact", async () => {
+    const bytes = new Uint8Array(await Bun.file(`${FIX}/qwen38-clip.mov`).arrayBuffer());
+    const frames = await extractVideoFrames(bytes);
+    const committed = await loadClipFrames();
+    expect(frames.length).toBe(committed.length);
+    for (let i = 0; i < frames.length; i++) {
+      expect(frames[i]!.width).toBe(committed[i]!.width);
+      expect(frames[i]!.height).toBe(committed[i]!.height);
+      // H.264 decode is spec-deterministic: the extracted pixels must equal
+      // the committed extraction byte-for-byte.
+      expect(Buffer.compare(
+        Buffer.from(frames[i]!.data), Buffer.from(committed[i]!.data),
+      )).toBe(0);
+    }
+  }, 120_000);
+
+  test.skipIf(!bin || !haveClipGoldens)("decoded clip preprocesses to the golden grid", async () => {
+    const m = await Bun.file(`${G}/clip-manifest.json`).json();
+    const { preprocessQwen3VLVideoFrames } = await import("../src/vision/qwen3vl-preprocess");
+    const bytes = new Uint8Array(await Bun.file(`${FIX}/qwen38-clip.mov`).arrayBuffer());
+    const pp = preprocessQwen3VLVideoFrames(await extractVideoFrames(bytes));
+    expect(pp.gridThw).toEqual(m.grid_thw);
+  }, 120_000);
+
+  test("video content parts extract and rewrite to template form", async () => {
+    const { extractVideos } = await import("../src/vision/prompt");
+    const clip = Buffer.from(
+      new Uint8Array(await Bun.file(`${FIX}/qwen38-clip.mov`).arrayBuffer()),
+    );
+    const { messages, videos } = await extractVideos([
+      {
+        role: "user",
+        content: [
+          { type: "video_url", video_url: { url: `data:video/quicktime;base64,${clip.toString("base64")}` } },
+          { type: "video", data: clip.toString("base64") },
+          { type: "text", text: "describe both" },
+        ],
+      } as never,
+    ]);
+    expect(videos.length).toBe(2);
+    expect(videos[0]!.length).toBe(clip.length);
+    const parts = (messages[0]!.content as { type: string }[]).map((p) => p.type);
+    expect(parts).toEqual(["video", "video", "text"]);
+  });
+});

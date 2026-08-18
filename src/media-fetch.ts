@@ -405,10 +405,19 @@ export async function fetchRestrictedHttpBytes(
  *  redirect hop re-validated, one wall-clock timeout, and a streaming
  *  size cap. Throws Error with a client-presentable message — callers
  *  surface it as a 400 (the prompt-build catch in server.ts). */
+/** Video clips are legitimately larger than images/audio: same SSRF guard
+ *  and timeout discipline, quadruple the body cap (a 30 s 1080p H.264 clip
+ *  runs tens of MB; frame sampling truncates long clips server-side). */
+export function videoMediaFetchPolicy(): MediaFetchPolicy {
+  return { ...defaultMediaFetchPolicy(), maxBytes: 256 * 1024 * 1024 };
+}
+
 export async function fetchMediaBytes(
   url: string,
-  kind: "image" | "audio",
-  policy: MediaFetchPolicy = defaultMediaFetchPolicy(),
+  kind: "image" | "audio" | "video",
+  policy: MediaFetchPolicy = kind === "video"
+    ? videoMediaFetchPolicy()
+    : defaultMediaFetchPolicy(),
 ): Promise<Uint8Array> {
   if (url.startsWith("data:")) {
     const comma = url.indexOf(",");

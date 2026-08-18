@@ -106,15 +106,36 @@ Message `content` is a string or an array of parts:
 (http/https URLs also accepted; PNG, JPEG, HEIC, AVIF, WebP, TIFF, GIF,
 BMP via native OS codecs; requires a model with the vision sidecar).
 
-Remote (http/https) media URLs — image and audio alike — go through a
-destination policy: **private/loopback/link-local hosts are refused by
-default** (the request URL is attacker-controlled input — SSRF), every
-redirect hop is re-validated, and the fetch has a **10 s timeout** and a
-**64 MB response cap**. Violations are clean `400`s
+Remote (http/https) media URLs — image, audio, and video alike — go
+through a destination policy: **private/loopback/link-local hosts are
+refused by default** (the request URL is attacker-controlled input —
+SSRF), every redirect hop is re-validated, and the fetch has a **10 s
+timeout** and a **64 MB response cap** (video: **256 MB** — clips are
+legitimately larger; frame sampling truncates long clips server-side).
+Violations are clean `400`s
 (`prompt build failed: image url rejected: …`). Serving media from a LAN
 host (a NAS, another machine) is the opt-in
 [`--allow-private-media`](server-config.md#start-flags) flag. `data:`
 URLs are decoded locally and never policy-checked.
+
+### Video input (Qwen3.5-family models)
+
+Video rides the same content-part array:
+
+```jsonc
+{ "type": "video_url", "video_url": { "url": "data:video/mp4;base64,…|http(s)://…" } }
+{ "type": "video",     "data": "<base64>" }                          // alias
+```
+
+The container decodes through macOS's own AVFoundation codecs (mp4/mov,
+H.264/HEVC/ProRes/… — whatever this macOS plays) via the
+`mlx-bun-frame-extract` helper that ships beside the binary and in the
+native pack; from a source tree it compiles on first use with the Xcode
+CLT. Frames are sampled at **2 fps, capped at 768 frames**, then run the
+gated Qwen3-VL video pipeline (temporal frame pairs, per-frame-group
+attention, 3D mRoPE positions). Qwen3.5-family models only; video never
+combines with audio parts, and a non-Qwen model answers video parts with
+a clean `400`.
 
 ### Audio input
 
