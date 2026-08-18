@@ -110,6 +110,44 @@ describe("fit", () => {
     expect(atMax.fits).toBe(true);
   });
 
+  // qwen3.8-like hybrid geometry: 36 DeltaNet layers + 12 full-attention
+  const hybrid = {
+    text: {
+      numHiddenLayers: 48,
+      layerTypes: [
+        ...Array(36).fill("linear_attention"),
+        ...Array(12).fill("full_attention"),
+      ],
+      numKeyValueHeads: 2,
+      headDim: 256,
+      numGlobalKeyValueHeads: 2,
+      globalHeadDim: 256,
+      attentionKEqV: false,
+      slidingWindow: 0,
+      maxPositionEmbeddings: 262144,
+      linearNumKeyHeads: 16,
+      linearNumValueHeads: 32,
+      linearKeyHeadDim: 128,
+      linearValueHeadDim: 128,
+      linearConvKernelDim: 4,
+    },
+  } as unknown as ModelConfig;
+
+  test("hybrid: linear layers bill constant state, not per-token KV", () => {
+    // per-token slope comes from the 12 full layers only
+    const slope = kvBytesAt(hybrid, 2048) - kvBytesAt(hybrid, 1024);
+    expect(slope).toBe(1024 * 12 * 2 * 2 * 256 * 2);
+    // ctx-independent term = recurrent f32 state + bf16 conv window per layer
+    const convDim = 2 * 16 * 128 + 32 * 128;
+    const state = 36 * (32 * 128 * 128 * 4 + 3 * convDim * 2);
+    expect(kvBytesAt(hybrid, 0)).toBe(state);
+    // the solved max context accounts for the state and actually fits
+    const m = { name: "x", ramBytes: 24 * 2 ** 30, bandwidthGBs: 273 };
+    const r = fit(hybrid, weights, 4096, m);
+    expect(r.maxSafeContext).toBeGreaterThan(4096);
+    expect(fit(hybrid, weights, r.maxSafeContext, m).fits).toBe(true);
+  });
+
   test("SKU matrix covers the lineup", () => {
     const rows = skuMatrix(config, weights, 8192);
     expect(rows.length).toBeGreaterThan(20);

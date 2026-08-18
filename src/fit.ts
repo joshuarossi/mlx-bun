@@ -145,28 +145,44 @@ export interface FitReport {
 interface KvGeometry {
   fullLayers: number;
   slidingLayers: number;
+  linearLayers: number;
   fullBytesPerToken: number;
   slidingBytesPerToken: number;
+  /** Constant recurrent-state bytes for linear-attention (DeltaNet) layers:
+   *  f32 state [Hv, Dv, Dk] + bf16 conv window [K-1, 2·Hk·Dk + Hv·Dv] per
+   *  layer (see qwen3-delta.ts) — context-independent, so it belongs in the
+   *  fixed term, never in bytes/token. */
+  linearStateBytes: number;
   window: number;
 }
 
 function kvGeometry(config: ModelConfig): KvGeometry {
   const t = config.text;
   const slidingLayers = t.layerTypes.filter((l) => l === "sliding_attention").length;
-  const fullLayers = t.numHiddenLayers - slidingLayers;
+  const linearLayers = t.layerTypes.filter((l) => l === "linear_attention").length;
+  const fullLayers = t.numHiddenLayers - slidingLayers - linearLayers;
   const kEqVFactor = t.attentionKEqV ? 2 : 2; // k and v stored separately either way
+  const convDim = 2 * t.linearNumKeyHeads * t.linearKeyHeadDim +
+    t.linearNumValueHeads * t.linearValueHeadDim;
+  const linearStateBytes = linearLayers === 0 ? 0 : linearLayers * (
+    t.linearNumValueHeads * t.linearValueHeadDim * t.linearKeyHeadDim * 4 +
+    Math.max(0, t.linearConvKernelDim - 1) * convDim * KV_BYTES
+  );
   return {
     fullLayers,
     slidingLayers,
+    linearLayers,
     fullBytesPerToken: fullLayers * kEqVFactor * t.numGlobalKeyValueHeads * t.globalHeadDim * KV_BYTES,
     slidingBytesPerToken: slidingLayers * 2 * t.numKeyValueHeads * t.headDim * KV_BYTES,
+    linearStateBytes,
     window: t.slidingWindow,
   };
 }
 
 export function kvBytesAt(config: ModelConfig, ctx: number): number {
   const g = kvGeometry(config);
-  return g.fullBytesPerToken * ctx + g.slidingBytesPerToken * Math.min(ctx, g.window);
+  return g.fullBytesPerToken * ctx + g.slidingBytesPerToken * Math.min(ctx, g.window) +
+    g.linearStateBytes;
 }
 
 export function fit(
@@ -192,7 +208,7 @@ export function fit(
   // Below the window both KV terms are linear in ctx; above it the
   // sliding term saturates and only full-attention layers keep growing.
   const g = kvGeometry(config);
-  const fixed = weightsBytes + chunk * TRANSIENT_PER_TOKEN;
+  const fixed = weightsBytes + chunk * TRANSIENT_PER_TOKEN + g.linearStateBytes;
   let maxCtx = 0;
   if (usable > fixed) {
     const budget = usable - fixed;
