@@ -38,6 +38,13 @@ skips and zero failures. Phase 21 is explicitly unpaused.
 ## Active: native Colibri/GLM-5.2 port (2026-08-17)
 
 The G1–G3 foundation is landed on `main`. Phase 21 **G0–G8 are complete**.
+Post-release first-prompt review found one API compatibility bug: a client-wide
+`max_tokens: 8192` upper bound was rejected wholesale against GLM's fixed 4,096
+context even when the prompt itself fit. The v0.0.13 fix caps that upper bound
+to the remaining planned context (the reported 2,788-token prompt gets 1,308
+completion tokens) and still rejects prompts that leave no generation slot.
+The exact case is model-free gated on both chat-admission arithmetic and the
+generic-budget non-regression.
 Acquisition now has exact remaining
 disk preflight/resume accounting, and the normal CLI/API/status surfaces show
 the artifact-aware streamed plan, measured/direct/aspirational speed as
@@ -1481,7 +1488,8 @@ rename. **Josh-gated GPU:** data scale + **12B retarget** + train + live-τ
    3.6-27B confirmation; findings + sub-phases in PLAN.md "Phase 14
    retarget"). Scope per Josh: text + thinking controls + tools + MTP
    + vision + video, then retire 3.6. **Text parity is GREEN
-   (2026-08-16, M4 Pro): 12 steps bit-exact vs mlx-lm on the published
+   (2026-08-16, M4 Pro): full prefill grid plus 32 decode steps bit-exact
+   vs mlx-lm on the published
    `mlx-community/Qwen3.8-27B-OptiQ-4bit` artifact, first try** —
    `MLX_BUN_TEST_QWEN38=1 bun test tests/qwen-parity.test.ts`. The MTP
    drafter (`Qwen3.8-27B-MTP-bf16`, the Qwen-trained head split from
@@ -1490,19 +1498,23 @@ rename. **Josh-gated GPU:** data scale + **12B retarget** + train + live-τ
    streaming, tool format verified; docs in server-api/README/matrix);
    live-serve smoke on the M4 Pro: thinking + instruct/eos PASS, the
    reasoning_effort + tool round-trips hit 30-min swap-starvation
-   timeouts (logic verified model-free; re-run on the M1 Max). 14g
-   MTP IMPLEMENTED (src/spec/qwen-mtp-source.ts + hiddenTap +
-   --draft-kind mtp; see PLAN 14g). **The MTP gate + TPS A/B are
-   BLOCKED ON THIS BOX**: qwen3_5-27B serial-lane decode dies with a
+   timeouts (logic verified model-free; re-run on the M1 Max).
+   **14g MTP is review-blocked and does not ship in v0.0.13.** The target's
+   48 recurrent DeltaNet caches cannot trim rejected verification rows, so
+   the shared loop disabled the proposed provider before its first draft;
+   forcing it would corrupt subsequent target state. The unfinished provider,
+   hidden tap, CLI surface, and misleading losslessness gate were removed.
+   MTP artifacts now fail before target load with the exact rollback reason.
+   Re-open 14g with recurrent-state snapshot/restore (or a non-overshooting
+   verify schedule) plus direct MTP-logit parity before the normal losslessness
+   and TPS gates. Separately, qwen3_5-27B serial-lane decode dies with a
    GPU command-buffer failure surfacing as an uncatchable Metal-
    completion-thread C++ throw (full finding + .ips backtrace in PLAN
    14g; leading theory = command buffers failing under the 20.35 GB +
    swap regime — parity/sync is bit-exact and the pipelined repro
-   passes standalone). **M1 MAX PICKUP: run
-   `MLX_BUN_TEST_QWEN38_MTP=1 bun test tests/qwen38-mtp.test.ts`
-   (losslessness + prefill/decode TPS A/B) and
+   passes standalone). **M1 MAX PICKUP:** run
    `MLX_BUN_TEST_QWEN38_SERVE=1 bun test tests/qwen38-serve.test.ts`
-   (the 2 swap-starved smoke items) there** — green also confirms the
+   (the 2 swap-starved smoke items) there — green also confirms the
    pressure theory. 14z (TQ×weights, ~4 bpw) is PROMOTED as the
    M4-Pro fit lever (interim: the uniform -4bit artifact). Then:
    perplexity provenance check, 14v vision / 14w video (mlx-vlm

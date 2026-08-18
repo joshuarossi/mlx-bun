@@ -860,55 +860,26 @@ Sub-phases (gate each; B=1 single-stream first; downloads via
       SSM state is constant (~150 MB) regardless of context. Uniform
       affine kv8/kv4 stays as the simple mlx-lm-comparable option.
       All default OFF; KL + quality gated vs our own bf16-KV baseline.
-- [~] **14g — MTP speculation (IMPLEMENTED 2026-08-16; gate run
-      pending GPU).** Drafter downloaded (`Qwen3.8-27B-MTP-bf16`, the
-      Qwen-trained head — bf16 [12288|1024|1024|…] dense tensors,
-      already sanitized). Landed: `src/spec/qwen-mtp-source.ts`
-      (QwenMtpProvider/-Source per mlx-vlm `qwen3_5_mtp.py` semantics:
-      fc(concat(rms(embed), rms(hidden))) → one dense gated-attn+swiglu
-      block with own KVCache → target lm_head; predict-2-ahead row
-      convention with drafter offset tracking target positions;
-      prompt prefill over (shifted ids, tapped hiddens); commit keeps
-      accepted drafted rows, appends the all-accept tail row from TRUE
-      verify hiddens, and holds the emitted position's hidden for the
-      next round's pending row — computationally identical to the
-      reference's seed flow); `Qwen35Model.hiddenTap` (pre-final-norm
-      layer-63 tap — mlx-vlm's skip_final_norm equivalent; the seam's
-      post-norm anchorHidden is deliberately unused); DraftKind "mtp"
-      + auto-detect (`model_type *_mtp`) + provider dispatch (round
-      width defaults to block_size−1 = 2) + CLI. Gate test
-      `tests/qwen38-mtp.test.ts` (MLX_BUN_TEST_QWEN38_MTP=1): greedy
-      serve-loop MTP ≡ greedy non-spec, token-identical, + the paired
-      prefill/decode TPS A/B (MTP on vs off) and acceptance telemetry.
-      Remaining: run the gate ON THE M1 MAX (blocked on the M4 Pro —
-      see finding); acceptance + tok/s to the eval DB on a cleared
-      box; default-on only where it wins.
-      **FINDING (2026-08-16, M4 Pro): qwen3_5-27B serial-lane decode
-      dies with a GPU command-buffer execution failure on this box.**
-      Native backtrace (DiagnosticReports .ips): `mlx::core::gpu::
-      check_error(MTL::CommandBuffer*)` → `__cxa_throw` →
-      `std::terminate` ON THE METAL COMPLETION THREAD (the uncatchable
-      thread class CLAUDE.md documents) → Bun panic "A C++ exception
-      occurred". The surfacing call site MOVES between runs
-      (evalCacheState / clearCache / asyncEval / readback) — the
-      exception lands asynchronously wherever the runtime happens to
-      be. Evidence AGAINST a kernel/logic bug: 32-step full-grid
-      parity is bit-exact on the same kernels (sync eval); the
-      corrected pipelined-decode repro (two overlapped async steps on
-      a pending token) PASSES standalone; gateway serving passed the
-      thinking + instruct smoke tests. Leading theory: Metal command
-      buffers failing mid-execution under the 20.35 GB-resident +
-      swap-thrash regime (machine physics presenting as GPU error).
-      DECISIVE TEST: the same bare-generate repro on the 32 GB M1 Max
-      — green confirms pressure (then: 24 GB boxes need 14z or the
-      uniform-4bit artifact for serial decode); a crash there means a
-      real async-path bug (chase with Metal API validation).
-      Side-finding: a mis-shaped array through sampler→item()/reshape
-      PANICS instead of raising a JS error — some mlx-c paths lack
-      exception wrapping (hardening candidate; cost hours of repro
-      confusion tonight). Debug markers used for the bisect are
-      removed; raise-metal-limit stays in the gate test (harmless,
-      needed for target+drafter residency anyway).
+- [ ] **14g — MTP speculation (review-blocked 2026-08-17).** The first
+      implementation ported the companion head and pre-final-norm tap, but its
+      proposed losslessness gate could not establish drafter correctness: a
+      target verifier stays token-exact even when every proposal is wrong.
+      More decisively, the shared speculative loop checks target-cache rollback
+      before each round, and Qwen's 48 `SSMCache` instances deliberately return
+      `isTrimmable() === false`. The implementation therefore disabled
+      speculation before round one; forcing it would advance recurrent
+      DeltaNet state through rejected verify rows and corrupt the next target
+      step. The unfinished provider/tap/test were removed from the release.
+      `qwen3_5_mtp` artifacts are still detected so startup can refuse them
+      with this exact reason before opening the 20 GB target. Re-open only with
+      one of two correctness designs: (a) bounded recurrent-state
+      snapshot/restore around each verify window, or (b) a verification
+      schedule that never advances target recurrent state beyond the accepted
+      prefix. Then add direct MTP-logit/acceptance parity against mlx-vlm,
+      followed by the shared-loop losslessness and cleared-machine TPS A/B.
+      The separate M4 Pro Metal-completion-thread crash under the 20.35 GB
+      target plus swap pressure remains a 24 GB artifact-fit finding, not an
+      MTP correctness gate; use the uniform 4-bit artifact there until 14z.
 - [ ] **14v — vision (images).** Port the dedicated tower from
       mlx-vlm `qwen3_5` (depth 27, hidden 1152, patch 16, merge 2,
       deepstack disabled — own tower like DiffusionGemma D3, NOT
@@ -2910,6 +2881,14 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
           Public HTTP, registry, release metadata, and tap contents were
           independently re-read after publication. The full release gate was
           1,936 pass / 71 skip / 0 fail with 28,378 assertions.
+        - [x] Post-release admission correction (v0.0.13 review): GLM's fixed
+          context now caps an oversized client `max_tokens` upper bound to the
+          remaining planned tokens instead of rejecting a prompt that fits.
+          The reported 2,788 + 8,192 request resolves to a safe 1,308-token
+          completion ceiling inside 4,096. Generic `--memory-budget` serving
+          preserves its fail-fast 400 contract, and a prompt that fills the
+          GLM context remains rejected. Model-free regression coverage locks
+          all three cases.
 
 **Correctness boundary:** default quality policy keeps checkpoint precision and
 true top-8 routing. `CACHE_ROUTE`, expert top-p/top-k, and any expert budget are

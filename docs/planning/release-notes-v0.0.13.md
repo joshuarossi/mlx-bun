@@ -3,10 +3,8 @@
 Everything since v0.0.12. One theme: **Qwen 3.8**. The current-generation
 Qwen (released August 2026) is brought up on the published OptiQ
 artifact at the repo's standard bar — bit-exact logit parity with
-mlx-lm — with its thinking controls served faithfully and its
-Qwen-trained multi-token-prediction head wired in as a native draft
-kind. Vision and video input for the same model are in bring-up and
-land in a later release.
+mlx-lm — with its thinking controls served faithfully. Vision, video,
+and native Qwen MTP remain separately gated follow-ups.
 
 ## Qwen3.8-27B (text, bit-exact)
 
@@ -44,21 +42,28 @@ land in a later release.
   existing Qwen-style parser into OpenAI `tool_calls`, multiline
   parameters included.
 
-## Native MTP speculative decoding (opt-in)
+## Qwen native MTP is deliberately not shipped yet
 
 - Qwen 3.8 ships a multi-step MTP head trained alongside the model;
   mlx-community publishes it split out
-  (`mlx-community/Qwen3.8-27B-MTP-bf16`). It mounts as
-  `--draft-model … --draft-kind mtp` (auto-detected from the drafter's
-  `model_type`), implemented against mlx-vlm's reference drafter: the
-  head consumes the target's pre-final-norm hidden plus the next
-  token's embedding, drafts recursively, and shares the target's
-  embeddings and LM head — ~0.85 GB of extra weights, no separate
-  drafter model.
-- Correctness is by construction (greedy MTP output is verified
-  token-for-token identical to greedy non-MTP by the shared verify
-  loop) and gated by an opt-in A/B test that reports prefill/decode
-  TPS, acceptance rate, and tokens-per-forward.
+  (`mlx-community/Qwen3.8-27B-MTP-bf16`). Review found that the target's
+  48 recurrent DeltaNet caches cannot roll back rejected verify rows,
+  while the shared speculative loop requires exactly that operation.
+  The initial implementation therefore never reached a draft round.
+- MTP artifacts are detected and refused at startup with the exact reason,
+  before the 20 GB target is opened. Shipping a switch that silently disables
+  itself—or corrupts recurrent state when forced—would be worse than a clear
+  deferral. The follow-up needs recurrent-state snapshot/restore or a verify
+  schedule that never advances state beyond the accepted prefix.
+
+## GLM-5.2 client compatibility
+
+- Fixed-context GLM serving now treats request `max_tokens` as an upper bound:
+  when a client sends a family-wide value larger than the planned remaining
+  context, the server caps it instead of rejecting an otherwise valid first
+  prompt. The reported 2,788-prompt + 8,192-cap failure now admits a 1,308-token
+  completion ceiling within the 4,096-token plan. Prompts that consume the
+  whole context remain rejected before generation.
 
 ## Also in this release
 

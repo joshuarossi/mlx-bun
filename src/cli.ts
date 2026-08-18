@@ -152,13 +152,9 @@ Model & quality:
                             Serial lane only — with --batch N a mounted draft
                             routes every request serial, like mlx_lm.server.
   --draft-kind <kind>       Override draft-artifact detection:
-                            two-model | assistant | dspark | deepspec | mtp | ngram
+                            two-model | assistant | dspark | deepspec | ngram
                             (deepspec = DeepSeek's released Gemma4DSparkModel
-                            drafters; mtp = a NATIVE multi-token-prediction
-                            head split from the target's own release, e.g.
-                            mlx-community/Qwen3.8-27B-MTP-bf16 — auto-detected
-                            from model_type *_mtp;
-                            ngram = MODEL-FREE prompt lookup — no
+                            drafters; ngram = MODEL-FREE prompt lookup — no
                             --draft-model, drafts copied from the request's
                             own context, lossless)  [default: auto]
   --num-draft-tokens <n>    Drafts per verify round  [default: 3; ngram: 10;
@@ -1613,9 +1609,9 @@ switch (cmd) {
     }
     const draftKindRaw = opt("draft-kind");
     const draftKind = (draftKindRaw ?? undefined) as
-      | "dspark" | "deepspec" | "assistant" | "two-model" | "ngram" | "mtp" | undefined;
-    if (draftKind !== undefined && !["dspark", "deepspec", "assistant", "two-model", "ngram", "mtp"].includes(draftKind)) {
-      console.error(`--draft-kind expects two-model|assistant|dspark|deepspec|mtp|ngram (got "${draftKindRaw}")`);
+      | "dspark" | "deepspec" | "assistant" | "two-model" | "ngram" | undefined;
+    if (draftKind !== undefined && !["dspark", "deepspec", "assistant", "two-model", "ngram"].includes(draftKind)) {
+      console.error(`--draft-kind expects two-model|assistant|dspark|deepspec|ngram (got "${draftKindRaw}")`);
       process.exit(1);
     }
     // Prompt-lookup window bounds (ngram kind only; validated here so a typo

@@ -344,11 +344,12 @@ All errors are `{ "error": { "message": …, ... } }`.
   `top_logprobs must be of type int` / `at least 0` / `at most 11`;
   `top_logprobs: -1` is the accepted "unset" sentinel).
 - `400` with `"type": "memory_admission"`, `"code":
-  "context_over_budget"` — `prompt + max_tokens` exceeds the memory
-  budget's max safe context (only when serving with `--memory-budget`;
-  the GPU OOM this prevents would kill the process, so it is refused
-  up front). Lower `max_tokens` or shorten the prompt; the ceiling is
-  visible at `/stats`.
+  "context_over_budget"` — the request cannot fit the memory budget's max
+  safe context. Generic budgeted serving rejects when `prompt + max_tokens`
+  exceeds the ceiling. GLM-5.2 instead caps a broad `max_tokens` upper bound
+  to the space remaining in its fixed planned context and returns this error
+  only when the prompt itself leaves no generation slot. The ceiling is visible
+  at `/stats`.
 
 ## POST /v1/completions (raw text completion)
 

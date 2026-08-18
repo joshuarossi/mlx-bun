@@ -416,9 +416,12 @@ agent CLIs like pi/OpenClaw via their provider config.
   targets, not small fast models. Serial lane only — with `--batch N` a
   mounted draft routes every request serial, like mlx_lm.server.
 - **Memory admission control** — `--memory-budget <GB>` refuses to load
-  a model that can't serve within the budget and rejects requests whose
-  `prompt + max_tokens` exceed the budget's max safe context with a 400
-  (`type: "memory_admission"`) *before* generating. The GPU
+  a model that can't serve within the budget. Generic budgeted serving rejects
+  requests whose `prompt + max_tokens` exceed the safe context with a 400
+  (`type: "memory_admission"`) *before* generating. GLM-5.2 has a fixed,
+  pre-planned context instead: broad client `max_tokens` values are capped to
+  the remaining context, and only a prompt that leaves no generation slot is
+  rejected. The GPU
   out-of-memory crash it prevents is uncatchable by design — rejection
   up front is the only defense. Ceiling visible at `GET /stats`.
 - **Anthropic Messages API** (`POST /v1/messages`, on by default) —

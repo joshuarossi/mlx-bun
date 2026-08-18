@@ -82,17 +82,22 @@ function runParity(opts: {
 
     const steps = golden.logit_steps ?? STEPS;
     test(`first ${steps} greedy tokens identical; all logits bit-exact`, async () => {
-      const cache = model.makeCache();
-      let tokens = golden.prompt_ids;
       // Full prefill grid golden (newer regens): logits at EVERY prompt
       // position must be bit-exact, not just the last one.
       const prefillGolden = golden.prefill_positions
         ? goldenAt(`${opts.binPrefix}-prefill-logits.bin`)
         : null;
+      if (prefillGolden && !(await prefillGolden.exists()))
+        throw new Error(
+          `${opts.binPrefix}: manifest requires ${golden.prefill_positions} ` +
+            `prefill positions but ${opts.binPrefix}-prefill-logits.bin is missing`,
+        );
+      const cache = model.makeCache();
+      let tokens = golden.prompt_ids;
       try {
         for (let step = 0; step < steps; step++) {
           const logits = model.forward(tokens, cache);
-          if (step === 0 && prefillGolden && (await prefillGolden.exists())) {
+          if (step === 0 && prefillGolden) {
             const grid = new Float32Array(await prefillGolden.arrayBuffer());
             const oursGrid = logits.toFloat32();
             expect(oursGrid.length).toBe(grid.length);

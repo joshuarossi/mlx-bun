@@ -452,25 +452,6 @@ export class Qwen35Model {
     throw new Error("qwen3_5 vision/input-embedding path is not supported");
   }
 
-  /** Layer-output tap (same contract as Gemma4Model.hiddenTap): the serve
-   *  loop's forwardMaybeTap sets it around prefill/verify forwards so
-   *  KV-borrowing draft sources (native Qwen MTP) can read PRE-final-norm
-   *  hiddens — layer 63's output stream, what mlx-vlm captures with
-   *  skip_final_norm=True. No-op (and graph-identical) when null. */
-  hiddenTap: { layers: Set<number>; pos?: number; captured: Map<number, MlxArray> } | null = null;
-
-  /** Store layer `i`'s residual stream ([1,L,H]) if the tap requests it.
-   *  Copies so the loop's h.dispose() can't free the capture. */
-  protected captureLayer(i: number, h: MlxArray): void {
-    const tap = this.hiddenTap;
-    if (!tap || !tap.layers.has(i)) return;
-    const H = h.shape[2]!;
-    const src = tap.pos !== undefined ? h.slice([0, tap.pos, 0], [1, tap.pos + 1, H]) : h;
-    const copy = ops.contiguous(src);
-    if (src !== h) src.dispose();
-    tap.captured.set(i, copy);
-  }
-
   protected forwardLayers(h0: MlxArray, cache: Cache[]): MlxArray {
     const L = h0.shape[1]!;
     // One full-attention mask shared by all full layers (same offset); linear
@@ -481,7 +462,6 @@ export class Qwen35Model {
       const next = this.layers[i]!.forward(h, faMask, cache[i]!);
       h.dispose();
       h = next;
-      this.captureLayer(i, h); // native-MTP pre-final-norm tap (no-op unless set)
     }
     faMask.arr?.dispose();
     return disposing(h, this.finalNorm.forward(h));

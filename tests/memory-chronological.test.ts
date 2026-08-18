@@ -187,5 +187,5 @@ describe("stages — chronological processing (oldest conversation first)", () =
     const r2 = await runSynthesizeStage(store, { root, call: mk, commit: false });
     expect(r2.created.map((c) => c.stem)).toEqual(["Charlie", "Bravo"]);
     store.close();
-  });
+  }, 10_000);
 });

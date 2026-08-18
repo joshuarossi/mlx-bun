@@ -311,14 +311,21 @@ export async function detectDraftKind(dir: string): Promise<DraftKind> {
     // dspark.json, plain HF config stamped Gemma4DSparkModel.
     if (cfg.architectures?.[0] === "Gemma4DSparkModel") return "deepspec";
     if (String(cfg.model_type ?? "").includes("assistant")) return "assistant";
-    // Native MTP heads split from a qwen3_5-family release
-    // (mlx-community/Qwen3.8-27B-MTP-*): model_type "qwen3_5_mtp".
+    // Detect Qwen's companion head so loadContext can refuse it precisely.
+    // The target's 48 recurrent DeltaNet caches cannot yet roll back rejected
+    // verification rows, so treating this as a generic two-model draft would
+    // fail later and obscure the actual unsupported composition.
     if (String(cfg.model_type ?? "").endsWith("_mtp")) return "mtp";
   } catch {
     // no/unreadable config → fall through to a full second model
   }
   return "two-model";
 }
+
+export const QWEN_MTP_UNSUPPORTED_REASON =
+  "Qwen native MTP is not supported yet: its target has recurrent DeltaNet " +
+  "caches that cannot roll back rejected verification tokens. Serve Qwen3.8 " +
+  "without --draft-model; MTP remains a gated follow-up.";
 
 async function loadGenSamplingDefaults(modelDir: string): Promise<GenSamplingDefaults> {
   const file = Bun.file(`${modelDir}/generation_config.json`);
@@ -344,6 +351,15 @@ export async function loadContext(
   const config = await loadModelConfig(modelDir);
   const glm = isGlm52Config(config);
   const externalDraft = opts.draftModelDir !== undefined || opts.draftKind !== undefined;
+  // Refuse the known-impossible composition before opening the 20 GB target
+  // or the companion head. The shared speculative loop requires target-cache
+  // rollback after a partial reject; Qwen's DeltaNet state is recurrent and
+  // deliberately non-trimmable. Silently degrading would make --draft-model
+  // a lie, while forcing it would corrupt the next target step.
+  const resolvedDraftKind = opts.draftModelDir
+    ? opts.draftKind ?? await detectDraftKind(opts.draftModelDir)
+    : opts.draftKind;
+  if (resolvedDraftKind === "mtp") throw new Error(QWEN_MTP_UNSUPPORTED_REASON);
   if (glm && externalDraft && opts.glm?.enableMtp === true)
     throw new Error("native GLM MTP and --draft-model/--draft-kind are mutually exclusive");
   let weights: Weights | null = null;
@@ -415,7 +431,7 @@ export async function loadContext(
     };
   } else if (opts.draftModelDir) {
     const dir = opts.draftModelDir;
-    const kind = opts.draftKind ?? (await detectDraftKind(dir));
+    const kind = resolvedDraftKind!;
     let provider: import("./spec/source").DraftProvider;
     let numDraftTokens = Math.max(1, opts.numDraftTokens ?? 3);
     if (kind === "dspark") {
@@ -435,17 +451,6 @@ export async function loadContext(
     } else if (kind === "assistant") {
       const { AssistantProvider } = await import("./spec/assistant-source");
       provider = await AssistantProvider.load(dir);
-    } else if (kind === "mtp") {
-      const { QwenMtpProvider } = await import("./spec/qwen-mtp-source");
-      const p = await QwenMtpProvider.load(dir);
-      provider = p;
-      // Default the round width to the head's trained block (block_size 3 →
-      // 2 recursive drafts + the pending row per round; the head was trained
-      // multi-step, so an explicit larger --num-draft-tokens is allowed but
-      // acceptance decides whether it pays).
-      const block = (await Bun.file(`${dir}/config.json`).json() as { block_size?: number }).block_size;
-      if (opts.numDraftTokens === undefined && typeof block === "number")
-        numDraftTokens = Math.max(1, block - 1);
     } else {
       const { TwoModelProvider } = await import("./spec/two-model");
       provider = await TwoModelProvider.load(dir, config.text.vocabSize);
@@ -727,6 +732,36 @@ interface ChatRequest {
 type TextCompletionRequest = Omit<ChatRequest, "messages" | "tools" | "tool_choice"> & {
   prompt?: unknown;
 };
+
+export interface ContextAdmissionDecision {
+  /** Effective completion ceiling after admission. */
+  maxTokens: number;
+  /** True when a fixed-context runtime reduced the client's upper bound. */
+  clamped: boolean;
+}
+
+/** Resolve a request's completion upper bound against the admitted context.
+ *
+ * Generic memory-budget serving preserves the established fail-fast contract:
+ * an oversized reservation is rejected. A fixed-context runtime such as GLM
+ * may instead clamp the client's upper bound to the remaining planned context.
+ * `max_tokens` is a ceiling, not a promise that every token will be emitted;
+ * clamping keeps clients that send a broad family-wide default usable without
+ * weakening the prompt/context OOM guard. A prompt that leaves no generation
+ * slot is always rejected. */
+export function admitRequestContext(
+  promptTokens: number,
+  requestedMaxTokens: number,
+  maxSafeContext: number,
+  clampToFit: boolean,
+): ContextAdmissionDecision | null {
+  const available = maxSafeContext - promptTokens;
+  if (available < 1) return null;
+  if (requestedMaxTokens <= available)
+    return { maxTokens: requestedMaxTokens, clamped: false };
+  if (!clampToFit) return null;
+  return { maxTokens: available, clamped: true };
+}
 
 /** Per-field default HLG knobs when enabling without specifying them. */
 const HLG_DEFAULTS = { width: 4, shoulder: 4, toe: 6, pivotOffset: 6 } as const;
@@ -3323,15 +3358,22 @@ export function createServer(
         // Admission: reject what cannot finish within the memory budget
         // (the GPU OOM it would otherwise hit is uncatchable and kills
         // the process — Phase 6 finding).
-        const requiredCtx = promptIds.length + (options.maxTokens ?? 1024);
-        if (requiredCtx > admission.maxSafeContext) {
+        const requestedMaxTokens = options.maxTokens ?? 1024;
+        const requiredCtx = promptIds.length + requestedMaxTokens;
+        const contextDecision = admitRequestContext(
+          promptIds.length,
+          requestedMaxTokens,
+          admission.maxSafeContext,
+          ctx.glmMemoryPlan !== null,
+        );
+        if (!contextDecision) {
           disposeRejected();
           return Response.json(
             {
               error: {
                 message:
                   `request needs ${requiredCtx} tokens of context ` +
-                  `(prompt ${promptIds.length} + max_tokens ${options.maxTokens}) but the ` +
+                  `(prompt ${promptIds.length} + max_tokens ${requestedMaxTokens}) but the ` +
                   `memory budget caps safe context at ${admission.maxSafeContext} — ` +
                   `shorten the prompt or lower max_tokens`,
                 type: "memory_admission",
@@ -3341,6 +3383,7 @@ export function createServer(
             { status: 400 },
           );
         }
+        options.maxTokens = contextDecision.maxTokens;
         try {
           // A request's explicit `adapter` (incl. "none") wins over the
           // startup default from `serve --adapter <dir>`.
@@ -3678,8 +3721,15 @@ export function createServer(
         // completion: with no template an EOS may never come.
         options.maxTokens = body.max_completion_tokens ?? body.max_tokens ??
           defaultGeneratedTokens ?? 512;
-        const requiredCtx = promptIds.length + options.maxTokens;
-        if (requiredCtx > admission.maxSafeContext) {
+        const requestedMaxTokens = options.maxTokens;
+        const requiredCtx = promptIds.length + requestedMaxTokens;
+        const contextDecision = admitRequestContext(
+          promptIds.length,
+          requestedMaxTokens,
+          admission.maxSafeContext,
+          ctx.glmMemoryPlan !== null,
+        );
+        if (!contextDecision) {
           // Pre-run reject: the gateway only takes grammar disposal ownership
           // once run — free the WASM matcher here (chat lane: disposeRejected).
           textGrammarCtrl?.dispose();
@@ -3698,6 +3748,7 @@ export function createServer(
             { status: 400 },
           );
         }
+        options.maxTokens = contextDecision.maxTokens;
         try {
           const adapterIds = ctx.adapters.resolveSpec(body.adapter ?? serverOptions.defaultAdapter);
           if (adapterIds.length) options.adapters = adapterIds;
