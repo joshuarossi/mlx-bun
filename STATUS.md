@@ -59,9 +59,16 @@ rotation folding ahead of quantization into mlx's existing formats
 `Qwen3.8-27B-MTP-turbo` that beats OptiQ-4bit / plain 4bit at equal
 effective bpw (ppl + frozen 6-task eval gate). HF scan: the entire MLX
 ecosystem handles outliers by per-layer allocation; nobody ships a
-rotation-based quant of this model — that's the gap. Next action: W0
-folding spike on MiniCPM5-1B (γ-fold + R₁/R₂, exit = folded bf16 model
-logit-parity through the unmodified engine). Source artifacts: the trunk
+rotation-based quant of this model — that's the gap. **W0 is DONE**
+(2026-08-17, branch feature/turboquant-weights): src/quantize/rotate.ts
+folds Llama-3.2-1B-Instruct-bf16 (untie → γ → R₁ → per-head R₂) and the
+folded model passes the parity gate through the unmodified engine —
+teacher-forced two-model KL mean 0.00131 (16×256), greedy trajectories
+identical except near-tie flips (margins ≤0.125), per-tensor max|w|
+down 3–5×. Evidence in the PLAN.md W0 entry. Next action: W3 small-model
+curve ({rotated, plain} × {affine4, mxfp4, nvfp4} on the same 1B — needs
+the W2 loader check for mxfp4/nvfp4 modes first) and the W1 Qwen3.8
+corridor map. Source artifacts: the trunk
 and MTP head are SEPARATE repos — mlx-community/Qwen3.8-27B-bf16
 (11 shards, 54.7 GB, Josh-run `mlx-bun get`, needed by W4) +
 mlx-community/Qwen3.8-27B-MTP-bf16 (MTP companion, ~850 MB, already

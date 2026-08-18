@@ -3740,15 +3740,33 @@ mlx-community/Qwen3.8-27B-bf16 (11 shards, 54.7 GB; Josh-run via
 (model_type qwen3_5_mtp, block_size 3, ~850 MB — already local +
 verified via `mlx-bun get`).
 
-- [ ] **W0 folding spike (small model):** γ-fold + R₁ (+ SpinQuant-style
-      per-head R₂) on **mlx-community/Llama-3.2-1B-Instruct-bf16**
-      (~2.5 GB, Josh-run get; the reference repos' literal target
-      family; tied embeddings exercise the untie step; no mlx bf16
-      MiniCPM5 exists). Exit: folded bf16 model runs through the
-      UNMODIFIED engine with logit parity vs unfolded (tolerance = bf16
-      reduction-order noise; argmax-stable on the parity prompt set).
-      Mechanics research DONE 2026-08-17 (agent read of spcl/QuaRot +
-      facebookresearch/SpinQuant fold code) — full recipe, fold table,
+- [x] **W0 folding spike (small model)** — DONE 2026-08-17 (branch
+      feature/turboquant-weights; M1 Max 32 GB, busy box — correctness
+      only, no perf claims). `src/quantize/rotate.ts` (fold core: untie →
+      γ-fold → R₁ → SpinQuant-style per-head R₂, seed-pinned splitmix32
+      signs, lazy f32 chains → bf16, per-tensor streaming through the
+      existing writer) + `scripts/experiments/w0-fold-llama.ts` (runner
+      with --skip-r1/--skip-r2 bisection arms + turboquant_fold.json
+      sidecar). Subject mlx-community/Llama-3.2-1B-Instruct-bf16 (tied →
+      untie exercised; hidden 2048 / head_dim 64, both pow-2). Fold:
+      2.4 s, 3.00 GB out (+0.53 GB = exactly the untied lm_head clone).
+      **Exit evidence:** (1) folded model loads + generates through the
+      UNMODIFIED engine (UniversalDenseModel path); (2) teacher-forced
+      two-model KL (scripts/eval.ts kl, 16×256 tok) **mean 0.00131 /
+      median 0.00119 / p95 0.00287** — below the KV curve's
+      quality-neutral kv8 yardstick (0.00246); (3) greedy 64-token
+      trajectories (step0-top2-dump, 6 prompts): 3/6 token-identical
+      incl. top-2 ids, 3 diverge ONLY at near-ties (orig top-2 margins
+      0.0 / 0.125 / 0.125 — the accepted bf16 tie-flip mode, 12B step-24
+      precedent), pre-divergence top-2 logprob deltas ≤ 0.375; (4)
+      non-triviality: folded weights fully re-expressed (mean|Δ|≈mean|w|),
+      per-tensor **max|w| down 3–5×** (q_proj 0.676→0.162, down_proj
+      0.578→0.110, gate 0.965→0.367 — the affine-scale win), down_proj
+      excess kurtosis 1.19→0.22; whole-tensor kurtosis on q/gate is a
+      mixed-row stat and not the operative metric. tsc 0. Artifacts
+      machine-local: runs/w0-fold-llama/full.
+      Mechanics research (agent read of spcl/QuaRot +
+      facebookresearch/SpinQuant fold code): full recipe, fold table,
       and four decided deviations (no mean-centering; delete the hidden
       R4 half-fold in rotate_mlp_output; no R3; fp32 folds w/ oracle-venv
       f64 escape hatch) in **docs/design/turboquant-weights.md**. Key
