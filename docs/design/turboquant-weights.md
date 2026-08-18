@@ -173,6 +173,18 @@ tower loads raw tensors, so one self-contained artifact serves text+vision.
   the papers; derive or fall back to allocation-only for those blocks
   (community quants mark exactly those projections sensitive).
 
+## Known engine gaps found in passing (not TQ defects)
+
+- `mlx-bun perplexity` cannot score qwen3_5: it routes through
+  `trainForward`, whose cache stub lacks the DeltaNet `SSMCache.advance`
+  (`qwen3_5.ts:226` throws on BOTH plain and TQ arms identically).
+  27B ppl therefore runs through stock mlx-lm
+  (scripts/experiments/tq-ppl.py) — which doubles as the cross-stack
+  load check for the release artifact.
+- bf16 (unquantized) qwen3_5 trunks don't load in our engine:
+  `QuantizedEmbedding.load`/`QuantizedLinear.load` hard-require `.scales`.
+  The small-scale fold proof ran through stock mlx-lm instead.
+
 ## Non-goals
 
 Mirrors the PLAN.md phase: no custom weight format / new qmm kernels,
