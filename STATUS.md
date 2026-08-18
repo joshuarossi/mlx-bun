@@ -25,15 +25,42 @@ contract, so companion artifacts fail early with the precise reason.
 
 ## Post-release on main (2026-08-18, unreleased)
 
-Two serving changes landed after the v0.0.13 tag: (1) **memory admission now
+Serving changes landed after the v0.0.13 tag: (1) **memory admission now
 clamps instead of rejecting** — a fitting prompt with a broad client
 `max_tokens` is capped to the room remaining under the safe context on every
 model (v0.0.13 scoped this to GLM's fixed context; the generic path still
 400'd a prompt with 8k of generation room over a 17-token overshoot —
 regression-pinned in tests/server-admission.test.ts). Only a prompt that
 leaves no generation slot rejects. (2) **Qwen native MTP is unblocked** —
-see the 14g entry below. A running `serve` needs a restart to pick these up
-(the CLI symlink serves the repo working tree).
+see the 14g entry below. (3) **Qwen3.8 VISION (images) SERVES and the video
+frames pipeline is gated** — 14v LANDED / 14w frames-complete, full detail
+in PLAN 14v/14w: dedicated tower port (bit-exact vs mlx-vlm pinned to mlx
+0.31.2; new conv3d binding; PIL-fixed-point bicubic; ensure_fused_sdpa's
+72→80 pad), interleaved mRoPE via the reference's verbatim Metal kernel with
+positions/delta exact, e2e greedy token-exact on 2/3 image fixtures +
+step-0-argmax on all, HTTP serve smoke green (image_url content parts;
+/v1/models now advertises vision), video preprocessor + gridT>1 tower
+BIT-EXACT on the sidecar-extracted fixture clip. The AVFoundation
+frame-extraction sidecar probe is GREEN (lab/spikes/qwen38-video-sidecar);
+video FILE serving awaits its native-pack productization. A running `serve`
+needs a restart to pick all of this up (the CLI symlink serves the repo
+working tree).
+
+## Active: TurboQuant weights — rotation-folded quantization (opened 2026-08-17)
+
+New phase in PLAN.md ("TurboQuant weights"): QuaRot/SpinQuant-style
+rotation folding ahead of quantization into mlx's existing formats
+(affine/mxfp4/nvfp4 — no new kernels), targeting a
+`Qwen3.8-27B-MTP-turbo` that beats OptiQ-4bit / plain 4bit at equal
+effective bpw (ppl + frozen 6-task eval gate). HF scan: the entire MLX
+ecosystem handles outliers by per-layer allocation; nobody ships a
+rotation-based quant of this model — that's the gap. Next action: W0
+folding spike on MiniCPM5-1B (γ-fold + R₁/R₂, exit = folded bf16 model
+logit-parity through the unmodified engine). Source artifacts: the trunk
+and MTP head are SEPARATE repos — mlx-community/Qwen3.8-27B-bf16
+(11 shards, 54.7 GB, Josh-run `mlx-bun get`, needed by W4) +
+mlx-community/Qwen3.8-27B-MTP-bf16 (MTP companion, ~850 MB, already
+local + verified).
 
 ## Completed: pre-Colibri stabilization (2026-07-29)
 

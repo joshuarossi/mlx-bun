@@ -83,6 +83,9 @@ export type Vision = {
    *  per-layer-input id zeroing. Absent on the legacy vision-only shape,
    *  where zeroing falls back to imageMask. */
   multimodalMask?: MlxArray;
+  /** Qwen3.5/3.8 vision: the request's mRoPE positions + decode delta,
+   *  installed on the model for exactly this serial run (server-side). */
+  mrope?: import("../model/qwen3-mrope").MropeRequestState;
 };
 
 /** Per-token sink: returning `false` halts this generation (stop sequence).

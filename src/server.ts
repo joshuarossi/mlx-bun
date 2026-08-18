@@ -39,7 +39,7 @@ import manifestWebmanifest from "./web/manifest.webmanifest" with { type: "text"
 import iconSvg from "./web/icon.svg" with { type: "text" };
 import swJs from "./web/sw.js" with { type: "text" };
 import pkgJson from "../package.json" with { type: "json" };
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 const APP_PAGE = appHtml as unknown as string;
 const HLJS_JS = hljsJs as unknown as string;
 const HLJS_CSS = hljsCss as unknown as string;
@@ -112,6 +112,10 @@ import { fit } from "./fit";
 import { setMemoryLimit } from "./mlx/ffi";
 import { VisionTower } from "./vision/embedder";
 import { SiglipVisionTower, parseSiglipConfig } from "./vision/siglip";
+import { Qwen3VLVisionTower } from "./vision/qwen3vl-tower";
+import { buildQwen3VLVisionPrompt } from "./vision/qwen3vl-prompt";
+import { Qwen35Model } from "./model/qwen3_5";
+import type { MropeRequestState } from "./model/qwen3-mrope";
 import {
   buildMultimodalPrompt, buildVisionPrompt, extractAudio, extractImages,
   type AudioTokenIds, type VisionTokenIds, type VisionEncoder,
@@ -571,6 +575,16 @@ export async function loadContext(
 function makeVisionLoader(
   modelDir: string, model: RuntimeModel, config: ModelConfig,
 ): (() => VisionEncoder) | null {
+  // Qwen3.5/3.8: the tower ships as optiq/optiq_vision.safetensors (the
+  // artifact's bf16 sidecar). The returned tower is a Qwen3VLVisionTower —
+  // it rides the same lazy slot/capability flags; the qwen chat branch is
+  // the only consumer and casts it back (the gemma branches are gated on
+  // `instanceof Gemma4Model`, so the union never crosses).
+  if (model instanceof Qwen35Model) {
+    if (!existsSync(`${modelDir}/optiq/optiq_vision.safetensors`)) return null;
+    return () =>
+      Qwen3VLVisionTower.load(modelDir) as unknown as VisionEncoder;
+  }
   if (!(config.hasVisionSidecar && model instanceof Gemma4Model)) return null;
   const vc = config.raw.vision_config as Record<string, any> | undefined;
   if (vc?.model_type === "gemma4_vision") {
@@ -1788,8 +1802,15 @@ export function createServer(
       embeddings: import("./mlx/array").MlxArray;
       imageMask?: import("./mlx/array").MlxArray;
       multimodalMask?: import("./mlx/array").MlxArray;
+      mrope?: MropeRequestState;
     },
   ) => {
+    // Qwen vision: install the request's mRoPE state for every forward of
+    // this serial run (prefill AND decode use the 3D interleaved positions +
+    // delta). Scoped HERE — under the serial mutex — so queued text requests
+    // never see it; cleared in the finally below.
+    if (vision?.mrope && ctx.model instanceof Qwen35Model)
+      ctx.model.mrope = vision.mrope;
     // Speculative decoding (serve --draft-model): spec-ELIGIBLE requests
     // decode through the verify loop; the rest fall through to the normal
     // serial path (never wrong results, just no speedup — logged once per
@@ -1917,6 +1938,7 @@ export function createServer(
       options.grammar?.dispose();
       throw e;
     } finally {
+      if (ctx.model instanceof Qwen35Model) ctx.model.mrope = null;
       vision?.embeddings.dispose();
       vision?.imageMask?.dispose();
       vision?.multimodalMask?.dispose();
@@ -3309,6 +3331,29 @@ export function createServer(
               eoi: ctx.visionTokenIds.eoiTokenId,
             });
             diffusionPixels = pixels;
+          } else if (hasImages && ctx.model instanceof Qwen35Model) {
+            // Qwen3.8 vision: the tower is a Qwen3VLVisionTower riding the
+            // shared lazy slot (makeVisionLoader's qwen branch); image spans
+            // splice into input embeddings and the request carries mRoPE
+            // positions + delta (PLAN 14v).
+            const tower = getVisionTower(ctx) as unknown as Qwen3VLVisionTower | null;
+            if (!tower) {
+              disposeRejected();
+              return Response.json(
+                { error: { message: "model has no vision sidecar" } }, { status: 400 },
+              );
+            }
+            const { messages, images } = await extractImages(normalizeMessages(body.messages));
+            const vp = await buildQwen3VLVisionPrompt(
+              ctx.model, tower, ctx.tokenizer, ctx.template, messages, images,
+              {
+                imageTokenId: (ctx.model.config.raw.image_token_id as number) ?? 248056,
+                videoTokenId: (ctx.model.config.raw.video_token_id as number) ?? 248057,
+              },
+              tools,
+            );
+            promptIds = vp.ids;
+            vision = { embeddings: vp.embeddings, mrope: vp.mrope };
           } else if (hasImages) {
             // Loads (and caches) the tower on first image request — text-only
             // sessions never pay for it.

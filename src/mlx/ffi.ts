@@ -183,6 +183,12 @@ export const C = dlopen(LIBMLXC_PATH, {
   // stack ints as ONE u64 (dilation_1 | groups<<32) so Bun's slot layout
   // byte-matches the Apple ABI. ops.conv2d does the packing.
   mlx_conv2d: { args: [P, u64, u64, i32, i32, i32, i32, i32, u64, u64], returns: i32 },
+  // mlx_conv3d(res, input, weight, stride_0..2, padding_0..2, dilation_0..2,
+  // groups, stream): registers hold res..padding_1 (8 int-class args); the
+  // FIVE stack i32s ride as two packed u64 pairs (padding_2|dilation_0,
+  // dilation_1|dilation_2) + a lone trailing groups i32 before the 8-aligned
+  // stream — same Apple-ABI stack-args workaround as mlx_conv2d above.
+  mlx_conv3d: { args: [P, u64, u64, i32, i32, i32, i32, i32, u64, u64, i32, u64], returns: i32 },
   // --- training: autograd (value_and_grad) — proven in lab/spikes/phase-train-vag.ts.
   // mlx_value_and_grad(res: mlx_closure_value_and_grad*, fun: mlx_closure,
   //   argnums: int*, n) → builds a value+grad closure differentiating the
