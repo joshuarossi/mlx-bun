@@ -50,14 +50,25 @@ Request body (OpenAI chat schema; unknown fields ignored):
   "tools": [ /* OpenAI function tools */ ],
   "tool_choice": "auto",         // "none" disables tools
   "chat_template_kwargs": {      // forwarded to the chat template
-    "enable_thinking": false     // MiniCPM5 / Qwen3.5: <think> channel on/off
+    "enable_thinking": false,    // MiniCPM5 / Qwen3.5/3.8: <think> channel
+                                 // on/off (Qwen3.8 default: ON)
+    "preserve_thinking": true    // Qwen3.8: keep think blocks from earlier
+                                 // assistant turns in the rendered prompt
+                                 // (template default true — better prompt-
+                                 // cache reuse in agent loops). Ignored by
+                                 // templates that don't read it.
   },
-  "reasoning_effort": "medium",  // "none"|"minimal"|"low"|"medium"|"high"
-                                 // gates enable_thinking on Qwen3.5/MiniCPM5:
-                                 // "none" → off, any other level → on. Only
-                                 // consulted when chat_template_kwargs
-                                 // .enable_thinking is not explicitly set —
-                                 // an explicit enable_thinking always wins.
+  "reasoning_effort": "medium",  // "none"|"minimal"|"low"|"medium"|"high"|"xhigh"
+                                 // gates enable_thinking on Qwen3.5/3.8/
+                                 // MiniCPM5: "none" → off, any other level →
+                                 // on. Only consulted when chat_template_
+                                 // kwargs.enable_thinking is not explicitly
+                                 // set — an explicit enable_thinking always
+                                 // wins. On templates with a reasoning-depth
+                                 // variable (Qwen3.8) the level also maps
+                                 // into the template: minimal/low → low,
+                                 // medium → medium, high/xhigh → xhigh
+                                 // (Qwen3.8's default depth is xhigh).
   "hlg": {                       // HLG tone-curve sampling (per request).
     "enabled": true,             // merged over --hlg-sampling server defaults.
     "width": 4,                  // logit-width of the tone plateau

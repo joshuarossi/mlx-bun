@@ -254,7 +254,7 @@ export interface GenSamplingDefaults {
   repetitionPenalty?: number;
 }
 
-export type DraftKind = "dspark" | "deepspec" | "assistant" | "two-model" | "ngram";
+export type DraftKind = "dspark" | "deepspec" | "assistant" | "two-model" | "ngram" | "mtp";
 
 /** Detect the draft artifact's kind so the right provider is loaded. All
  *  providers share ONE serve loop (src/spec/serve-loop.ts). Exported for the
@@ -272,6 +272,9 @@ export async function detectDraftKind(dir: string): Promise<DraftKind> {
     // dspark.json, plain HF config stamped Gemma4DSparkModel.
     if (cfg.architectures?.[0] === "Gemma4DSparkModel") return "deepspec";
     if (String(cfg.model_type ?? "").includes("assistant")) return "assistant";
+    // Native MTP heads split from a qwen3_5-family release
+    // (mlx-community/Qwen3.8-27B-MTP-*): model_type "qwen3_5_mtp".
+    if (String(cfg.model_type ?? "").endsWith("_mtp")) return "mtp";
   } catch {
     // no/unreadable config → fall through to a full second model
   }
@@ -388,6 +391,17 @@ export async function loadContext(
     } else if (kind === "assistant") {
       const { AssistantProvider } = await import("./spec/assistant-source");
       provider = await AssistantProvider.load(dir);
+    } else if (kind === "mtp") {
+      const { QwenMtpProvider } = await import("./spec/qwen-mtp-source");
+      const p = await QwenMtpProvider.load(dir);
+      provider = p;
+      // Default the round width to the head's trained block (block_size 3 →
+      // 2 recursive drafts + the pending row per round; the head was trained
+      // multi-step, so an explicit larger --num-draft-tokens is allowed but
+      // acceptance decides whether it pays).
+      const block = (await Bun.file(`${dir}/config.json`).json() as { block_size?: number }).block_size;
+      if (opts.numDraftTokens === undefined && typeof block === "number")
+        numDraftTokens = Math.max(1, block - 1);
     } else {
       const { TwoModelProvider } = await import("./spec/two-model");
       provider = await TwoModelProvider.load(dir, config.text.vocabSize);
@@ -606,15 +620,21 @@ interface ChatRequest {
   tools?: ToolDefinition[];
   tool_choice?: "auto" | "none" | { type: string; function?: { name: string } };
   /** Forwarded to HF chat templates, matching optiq serve. MiniCPM5 uses
-   *  enable_thinking to select direct answers vs the <think> channel. */
+   *  enable_thinking to select direct answers vs the <think> channel; Qwen3.8
+   *  adds preserve_thinking (keep think blocks from history; template default
+   *  true — better prompt-cache reuse in agent loops). */
   chat_template_kwargs?: {
     enable_thinking?: boolean;
+    preserve_thinking?: boolean;
     [key: string]: unknown;
   };
   /** OpenAI reasoning control. For models with a switchable <think> channel
    *  (Qwen3.5/MiniCPM5) it gates enable_thinking: "none" → off, any level → on.
-   *  This is what Pi sends when the provider advertises reasoning. */
-  reasoning_effort?: "none" | "minimal" | "low" | "medium" | "high";
+   *  This is what Pi sends when the provider advertises reasoning. For
+   *  templates that read a reasoning-depth variable (Qwen3.8: xhigh/medium/
+   *  low), the level ALSO maps into the template via qwenReasoningEffort —
+   *  "xhigh" accepted as a first-class value (Qwen3.8's default/deepest). */
+  reasoning_effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
   /** Mounted LoRA adapter selection: "id", "a+b" (stacked), or "none". */
   adapter?: string;
   /** HLG tone-curve sampling override (per request). Snake_case wire fields,
@@ -2086,10 +2106,36 @@ export function createServer(
     return { controller: r.controller, degradeHint: r.degradeHint };
   };
 
+  // Map OpenAI reasoning_effort levels onto the Qwen3.8 template's supported
+  // set (xhigh|medium|low — the template raises on anything else). "none"
+  // means thinking off (handled by resolveEnableThinking), so no depth is
+  // passed. Only consumed for templates with readsReasoningEffort.
+  const qwenReasoningEffort = (
+    effort: ChatRequest["reasoning_effort"],
+  ): "xhigh" | "medium" | "low" | undefined => {
+    switch (effort) {
+      case "minimal":
+      case "low":
+        return "low";
+      case "medium":
+        return "medium";
+      case "high":
+      case "xhigh":
+        return "xhigh";
+      default:
+        return undefined; // "none" / unset → template default (xhigh)
+    }
+  };
+
   const templateOptionsFor = (req: ChatRequest, tools: ToolDefinition[] | null) => {
     // enableThinking resolution (and its precedence) lives in
     // resolveEnableThinking so template rendering and sampling stay in sync.
-    return { tools, enableThinking: resolveEnableThinking(req) };
+    return {
+      tools,
+      enableThinking: resolveEnableThinking(req),
+      reasoningEffort: qwenReasoningEffort(req.reasoning_effort),
+      preserveThinking: req.chat_template_kwargs?.preserve_thinking,
+    };
   };
 
   const promptIdsFor = (
@@ -2124,7 +2170,7 @@ export function createServer(
     trimmed: number[],
   ): number => {
     const opts = templateOptionsFor(req, tools);
-    const mode = `${opts.enableThinking}|${!!tools?.length}`;
+    const mode = `${opts.enableThinking}|${!!tools?.length}|${opts.reasoningEffort ?? ""}|${opts.preserveThinking ?? ""}`;
     const primer = primerLenByMode.get(mode);
     if (primer !== undefined) return Math.max(0, trimmed.length - primer);
     let stableLen = trimmed.length;

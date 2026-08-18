@@ -1253,9 +1253,36 @@ rename. **Josh-gated GPU:** data scale + **12B retarget** + train + live-τ
      Promote quotable rows to benchmarks/RESULTS.md "composition".
 2. **M4 Pro post-rewrite reset** + delete the mirror backup tarball (see
    "Where we are"). One line, then both boxes are on rewritten history.
-2. **Phase 14 — Qwen3.6-27B confirmation** (~15 GB download):
-   `bun scripts/regen-qwen-parity-goldens.ts 27b` then
-   `MLX_BUN_TEST_QWEN35=1 bun test tests/qwen-parity.test.ts`.
+2. **Phase 14 retarget — Qwen3.8-27B, full support** (supersedes the
+   3.6-27B confirmation; findings + sub-phases in PLAN.md "Phase 14
+   retarget"). Scope per Josh: text + thinking controls + tools + MTP
+   + vision + video, then retire 3.6. **Text parity is GREEN
+   (2026-08-16, M4 Pro): 12 steps bit-exact vs mlx-lm on the published
+   `mlx-community/Qwen3.8-27B-OptiQ-4bit` artifact, first try** —
+   `MLX_BUN_TEST_QWEN38=1 bun test tests/qwen-parity.test.ts`. The MTP
+   drafter (`Qwen3.8-27B-MTP-bf16`, the Qwen-trained head split from
+   the release's shard 18) is also downloaded. 14r-c serving features
+   LANDED (reasoning_effort depths, preserve_thinking, think-tag
+   streaming, tool format verified; docs in server-api/README/matrix);
+   live-serve smoke on the M4 Pro: thinking + instruct/eos PASS, the
+   reasoning_effort + tool round-trips hit 30-min swap-starvation
+   timeouts (logic verified model-free; re-run on the M1 Max). 14g
+   MTP IMPLEMENTED (src/spec/qwen-mtp-source.ts + hiddenTap +
+   --draft-kind mtp; see PLAN 14g). **The MTP gate + TPS A/B are
+   BLOCKED ON THIS BOX**: qwen3_5-27B serial-lane decode dies with a
+   GPU command-buffer failure surfacing as an uncatchable Metal-
+   completion-thread C++ throw (full finding + .ips backtrace in PLAN
+   14g; leading theory = command buffers failing under the 20.35 GB +
+   swap regime — parity/sync is bit-exact and the pipelined repro
+   passes standalone). **M1 MAX PICKUP: run
+   `MLX_BUN_TEST_QWEN38_MTP=1 bun test tests/qwen38-mtp.test.ts`
+   (losslessness + prefill/decode TPS A/B) and
+   `MLX_BUN_TEST_QWEN38_SERVE=1 bun test tests/qwen38-serve.test.ts`
+   (the 2 swap-starved smoke items) there** — green also confirms the
+   pressure theory. 14z (TQ×weights, ~4 bpw) is PROMOTED as the
+   M4-Pro fit lever (interim: the uniform -4bit artifact). Then:
+   perplexity provenance check, 14v vision / 14w video (mlx-vlm
+   reference), TurboQuant KL cell (14r-d), retire 3.6 (14r-b2).
 3. ~~**Phase 13 — TurboQuant**~~ **v1 LANDED 2026-07-06** — `--kv-quant
    turbo[:k<bits>v<bits>]`, oracle = vllm-metal (vendored, bit-exact codec
    goldens), quality-vs-bpw curve gate passed on MiniCPM5-1B (k8v3 = 6.25

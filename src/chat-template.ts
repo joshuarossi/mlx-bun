@@ -40,6 +40,14 @@ export interface RenderOptions {
   addGenerationPrompt?: boolean;
   tools?: ToolDefinition[] | null;
   enableThinking?: boolean;
+  /** Template-level reasoning depth (Qwen3.8: xhigh|medium|low — the template
+   *  RAISES on other values, so callers must map OpenAI levels first and only
+   *  set this for templates that read it; see ChatTemplate.readsReasoningEffort). */
+  reasoningEffort?: "xhigh" | "medium" | "low";
+  /** Keep think blocks from historical assistant turns in the rendered prompt
+   *  (Qwen3.8 `preserve_thinking`, template default true — better prompt-cache
+   *  reuse and agent-trace continuity). Only passed when the template reads it. */
+  preserveThinking?: boolean;
 }
 
 type ChatRenderer = (
@@ -240,6 +248,14 @@ export class ChatTemplate {
   readonly #renderer: ChatRenderer | null;
   readonly #bosToken: string | null;
   readonly #eosToken: string | null;
+  /** True when the template reads `reasoning_effort` (Qwen3.8's xhigh/medium/
+   *  low depth control). Callers must not pass the variable otherwise — and
+   *  must never pass unmapped OpenAI level names; this template family raises
+   *  on values outside its supported set. */
+  readonly readsReasoningEffort: boolean;
+  /** True when the template reads `preserve_thinking` (Qwen3.8: keep think
+   *  blocks from historical turns; template default true). */
+  readonly readsPreserveThinking: boolean;
   /** Which reasoning format the template's `enable_thinking` channel uses, or
    *  null if the model has no switchable reasoning:
    *   - "think-tag": `<think>…</think>` text markers (Qwen3.5, MiniCPM5) — split
@@ -267,6 +283,8 @@ export class ChatTemplate {
     this.#bosToken = bosToken;
     this.#eosToken = eosToken;
     const gatesThinking = source?.includes("enable_thinking") ?? false;
+    this.readsReasoningEffort = source?.includes("reasoning_effort") ?? false;
+    this.readsPreserveThinking = source?.includes("preserve_thinking") ?? false;
     // `forceNoThinking` suppresses the switchable channel even when the template
     // carries the gemma markers. DiffusionGemma ships the shared gemma-family
     // template (with the `<|channel>thought…<channel|>` reasoning channel), but
@@ -334,7 +352,13 @@ export class ChatTemplate {
 
   render(messages: ChatMessage[], options: RenderOptions = {}): string {
     if (this.#renderer) return this.#renderer(messages, options);
-    const { addGenerationPrompt = true, tools = null, enableThinking } = options;
+    const {
+      addGenerationPrompt = true,
+      tools = null,
+      enableThinking,
+      reasoningEffort,
+      preserveThinking,
+    } = options;
     return this.#template!.render({
       messages,
       add_generation_prompt: addGenerationPrompt,
@@ -342,6 +366,15 @@ export class ChatTemplate {
       // `value['type'] | upper` (Gemma) never see UndefinedValue.
       tools: normalizeToolSchemas(tools),
       ...(enableThinking !== undefined ? { enable_thinking: enableThinking } : {}),
+      // Only set for templates that read them: reasoning_effort values are
+      // template-validated (Qwen3.8 raises on unknown levels), and an unread
+      // variable in other templates is dead context at best.
+      ...(reasoningEffort !== undefined && this.readsReasoningEffort
+        ? { reasoning_effort: reasoningEffort }
+        : {}),
+      ...(preserveThinking !== undefined && this.readsPreserveThinking
+        ? { preserve_thinking: preserveThinking }
+        : {}),
       bos_token: this.#bosToken,
       eos_token: this.#eosToken,
     });

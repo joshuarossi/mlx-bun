@@ -68,6 +68,7 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | MiniCPM5 (cpm5) | ✅ L1/L2 | ✅ | the starter model |
 | Gemma 4 (1B/e4b/12B/26B, + vision e4b/12B, + audio e4b) | ✅ L1/L2 | ✅ | sliding+full interleaved; MoE 26B |
 | Qwen3.5 (gated-DeltaNet hybrid) | ✅ L1/L2 | ✅ (SSM path) | `MLX_BUN_BATCH_SSM=0` reverts |
+| Qwen3.8-27B (same qwen3_5 graph) | ✅ L1 (no L2 oracle) | ✅ (SSM path) | thinking depths + preserve_thinking; MTP/vision/video in bring-up |
 | DiffusionGemma-26B (non-autoregressive) | ✅ (own engine) | — serial always | first bit-exact non-AR port |
 | Tier-0 universal (llama/qwen2/qwen3/olmo2/…, 11 archs) | ✅ L1 | ✅ plain full-attention archs² | gemma2-family/sliding universal → serial |
 

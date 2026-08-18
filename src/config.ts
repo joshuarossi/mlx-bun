@@ -253,6 +253,16 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
   // partial_rotary_factor}), not the gemma per-attention-type map — and
   // type "default" means plain partial nn.RoPE (mrope_section ignored for text).
   const qwenRope = (t.rope_parameters ?? {}) as Record<string, any>;
+  // Qwen3.8 adds output_gate_type ("swish"), which every implementation
+  // (transformers ground truth, mlx-lm pinned + main) currently ignores —
+  // the attention output gate is hardcoded o_proj(out·σ(gate)). Only accept
+  // values verified to mean that; an unknown value must fail at load, not
+  // silently mis-gate a future checkpoint where the field starts mattering.
+  if (isQwen35 && t.output_gate_type != null && t.output_gate_type !== "swish")
+    throw new Error(
+      `qwen3_5: unverified output_gate_type "${t.output_gate_type}" (only "swish" ` +
+        `is verified to mean the standard sigmoid output gate)`,
+    );
 
   const text: TextConfig = {
     hiddenSize: glm52?.hiddenSize ?? t.hidden_size,
