@@ -224,6 +224,36 @@ Consequences for the release recipe: do NOT ship rotated uniform-4-bit
 control worse; uniform-3-bit −24% ppl). The 4.5-bpw flagship win waits
 for the calibration composition (GPTQ on ROTATED weights — the W5 leg).
 
+## W5a corrected-GPTQ matrix (2026-08-18; 0.8B lab, 4.5 bpw arms, 48×512
+ppl, anchor = dequant-OptiQ 6.41 — verified lossless: original OptiQ
+scores 6.4077)
+
+mlx-lm's shipped GPTQ (`mlx_lm/quant/gptq.py`) has TWO real defects that
+partially cancel: the in-loop update window is `k:k+j` (over-propagates
+past the block edge; must be `k:j` — the k term itself writes the
+quantized value since e·Hinv[k,k] = w−q) and `err[..., k:k+1]` indexes a
+group-local buffer with the GLOBAL k (mlx out-of-range slice assignment
+silently no-ops → cross-group propagation lost after block 0). Fixing
+only err DOUBLE-compensates [j, k+j) and REGRESSES below RTN (measured:
+7.22/7.50); fixing both = paper GPTQ. Worth an upstream report.
+Fork: scripts/experiments/tq-gptq.py (also restricts GPTQ+fallback to
+language modules — vision H is a zero scalar and stays bf16).
+
+| arm | ppl |
+|---|---|
+| **plain + GPTQ (fixed)** | **6.741** |
+| TQ(R1) + GPTQ (fixed) | 6.847 |
+| plain RTN | 7.010 |
+| TQ RTN | 7.390 |
+
+**Verdict: calibration is the main course; rotation SUBTRACTS at the
+4-bit band even under GPTQ on this family** (gap −1.6%; GPTQ closes half
+the RTN→anchor gap). Rotation remains the sub-4-bpw lever (−24% at
+3-bit). Flagship recipe = plain + GPTQ 4-bit; TQ-mixed stays the
+small-footprint variant. 27B needs a chunked Hessian/GPTQ driver (stock
+flow = whole bf16 model + all Hessians resident; down_proj H = 1.2 GB
+f32 each).
+
 ## Known engine gaps found in passing (not TQ defects)
 
 - `mlx-bun perplexity` cannot score qwen3_5: it routes through
