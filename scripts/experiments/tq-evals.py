@@ -1,0 +1,82 @@
+# Lean MMLU / GSM8K runner through stock mlx-lm — one arm per process, no
+# generation for MMLU (answer-letter logprob comparison = one forward per
+# question), greedy short generation for GSM8K. Built after the in-engine
+# eval sweep swap-thrashed a 32 GB box (73 GB swap, 0.7 GB resident); the
+# mlx-lm scoring path handled every 27B ppl run without drama.
+#
+# Cross-arm comparisons are PAIRED (same items, same prompts, same scorer);
+# absolute numbers are not comparable to published harnesses.
+#
+#   .venv/bin/python -u scripts/experiments/tq-evals.py <model_dir> mmlu 100
+#   .venv/bin/python -u scripts/experiments/tq-evals.py <model_dir> gsm8k 50
+
+import json
+import re
+import sys
+from pathlib import Path
+
+import mlx.core as mx
+from mlx_lm.utils import load
+
+model_dir, task, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
+DATA = Path.home() / ".cache/mlx-bun/eval-data"
+
+model, tok = load(model_dir)
+
+if task == "mmlu":
+    rows = [json.loads(l) for l in open(DATA / "mmlu_optiq_frozen.jsonl")][:n]
+    letters = ["A", "B", "C", "D"]
+    letter_ids = [tok.encode(f" {l}", add_special_tokens=False)[-1] for l in letters]
+    correct = 0
+    for i, r in enumerate(rows):
+        prompt = r["question"].strip() + "\n"
+        for li, c in enumerate(r["choices"]):
+            prompt += f"{letters[li]}. {c}\n"
+        prompt += "Answer:"
+        ids = mx.array([tok.encode(prompt)])
+        logits = model(ids)[0, -1]
+        mx.eval(logits)
+        pick = int(mx.argmax(mx.array([logits[t] for t in letter_ids])))
+        correct += int(pick == r["answer"])
+        if (i + 1) % 25 == 0:
+            print(f"  {i + 1}/{len(rows)}  acc so far {correct / (i + 1):.3f}", flush=True)
+        mx.clear_cache()
+    print(f"RESULT mmlu {model_dir}: {correct}/{len(rows)} = {correct / len(rows) * 100:.1f}%")
+
+elif task == "gsm8k":
+    from mlx_lm.generate import generate
+
+    rows = [json.loads(l) for l in open(DATA / "gsm8k_optiq_frozen.jsonl")][:n]
+    # 4-shot prefix from the tail of the pool (never overlaps the scored head).
+    shots = [json.loads(l) for l in open(DATA / "gsm8k_optiq_frozen.jsonl")][-4:]
+
+    def gold(ans):
+        m = re.search(r"####\s*([-\d,.]+)", ans)
+        return m.group(1).replace(",", "").rstrip(".") if m else None
+
+    prefix = ""
+    for s in shots:
+        m = re.search(r"####\s*([-\d,.]+)", s["answer"])
+        short = s["answer"].split("####")[0].strip()
+        prefix += f"Q: {s['question']}\nA: {short}\n#### {m.group(1)}\n\n"
+
+    correct = 0
+    for i, r in enumerate(rows):
+        prompt = prefix + f"Q: {r['question']}\nA:"
+        out = generate(model, tok, prompt=prompt, max_tokens=320)
+        first = out.split("Q:")[0]
+        m = re.search(r"####\s*([-\d,.]+)", first)
+        pred = m.group(1).replace(",", "").rstrip(".") if m else (
+            re.findall(r"[-\d,.]*\d", first)[-1].replace(",", "") if re.findall(r"[-\d,.]*\d", first) else None)
+        g = gold(r["answer"])
+        try:
+            ok = pred is not None and abs(float(pred) - float(g)) < 1e-6
+        except Exception:
+            ok = pred == g
+        correct += int(ok)
+        if (i + 1) % 10 == 0:
+            print(f"  {i + 1}/{len(rows)}  acc so far {correct / (i + 1):.3f}", flush=True)
+        mx.clear_cache()
+    print(f"RESULT gsm8k {model_dir}: {correct}/{len(rows)} = {correct / len(rows) * 100:.1f}%")
+else:
+    raise SystemExit(f"unknown task {task}")
