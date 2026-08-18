@@ -349,6 +349,21 @@ export async function loadContext(
 ): Promise<ServerContext> {
   const config = await loadModelConfig(modelDir);
   const glm = isGlm52Config(config);
+  // Bundled MTP companion: `--draft-kind mtp` with no --draft-model resolves
+  // to the artifact's own mtp/ subfolder (single-repo packaging — the
+  // companion is a complete model dir the provider already loads). Explicit
+  // --draft-model still wins; a missing bundle is a clear refusal below.
+  if (opts.draftKind === "mtp" && !opts.draftModelDir) {
+    const bundled = `${modelDir}/mtp`;
+    if (await Bun.file(`${bundled}/config.json`).exists()) {
+      opts = { ...opts, draftModelDir: bundled };
+    } else {
+      throw new Error(
+        `--draft-kind mtp needs a companion: pass --draft-model <dir> or use ` +
+        `an artifact that bundles one at <model>/mtp/ (none at ${bundled})`,
+      );
+    }
+  }
   const externalDraft = opts.draftModelDir !== undefined || opts.draftKind !== undefined;
   const resolvedDraftKind = opts.draftModelDir
     ? opts.draftKind ?? await detectDraftKind(opts.draftModelDir)
