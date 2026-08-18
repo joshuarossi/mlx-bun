@@ -84,7 +84,13 @@ def gptq_quantize_lm(model, data, bits, group_size, fallback_bits, fallback_grou
                 w = W[..., k : k + 1]
                 d = Hinv[k, k]
                 e = gptq_error(w, d, scales, biases)
-                W[..., k : k + j] -= e @ Hinv[k : k + 1, k : k + j]
+                # Paper-form update: window [k, j) WITHIN the block — the k
+                # term itself writes the quantized value (e·Hinv[k,k] = w−q);
+                # upstream's `k : k+j` over-propagates past the block edge,
+                # and its `err[..., k:k+1]` (global index on a group-local
+                # buffer) silently no-ops for every block after the first —
+                # the two defects partially cancel; both fixed here.
+                W[..., k : j] -= e @ Hinv[k : k + 1, k : j]
                 err[..., k - i : k - i + 1] = e
                 mx.eval(err, W)
             W[..., j:] -= err @ Hinv[i:j, j:]
