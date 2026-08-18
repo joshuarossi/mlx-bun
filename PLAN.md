@@ -2689,6 +2689,27 @@ verified via `mlx-bun get`).
       - [ ] W5b + allocation axis (dynamic_quant / OptiQ map), pick the
             best ≤4.5 bpw recipe.
       - [ ] W5c chunked 27B production run + ppl/eval gates.
+- [ ] **W7 Pareto frontier (Josh 2026-08-18 — THE FRAME: "we shouldn't
+      operate in a vacuum"):** map (intelligence × tok/s × memory) for
+      local models on consumer Macs at the 24 GB and 32 GB budgets, with
+      Qwen3.8-27B as the case study — the best open-weight model that can
+      do real work locally. The deliverable is a measured frontier chart
+      + the claim "highest benchmarks and highest tps at this memory
+      level", defended against NON-OURS points, not just our own arms.
+      - Arms (artifact × stack): ours {GPTQ-4bit, TQ-mixed-3.86bpw} ×
+        mlx-bun; published {OptiQ-4bit 5.14bpw, mlx-community RTN-4bit}
+        × {mlx-bun, mlx-lm}; cross-ecosystem anchor {GGUF Q4_K_M ×
+        llama.cpp/Ollama}. KV axis composes: --kv-quant turbo k8v3 is
+        the context-headroom lever at fixed weight bpw.
+      - Intelligence: ppl ladder (done for most arms) + frozen-eval
+        subset (mmlu 100 / gsm8k 50 minimum) per arm, eval DB rows.
+      - Speed: quiet-machine benchmark.sh decode/TTFT per arm, labeled
+        host/chip/RAM (M1 Max 32 GB here; the 24 GB cut NEEDS the
+        M4 Pro — Josh-gated).
+      - Memory: peak footprint + max-context-that-fits at each budget
+        (fit.ts numbers + measured).
+      - Honesty rails: paired same-corpus same-seed; per-bpw-band
+        comparisons; no perf claims off a loaded box.
 - [~] **W6 release — SINGLE REPO (Josh 2026-08-18: bundling beats
       companion repos):** one artifact = quantized trunk + bf16 vision
       (in-main + optiq sidecar) + folded MTP companion at `mtp/`.
