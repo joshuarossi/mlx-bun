@@ -362,7 +362,7 @@ Ordered by expected payoff on this hardware:
   reuses the freed-but-pinned buffer sooner). Fix: **`fromBytesCopy`** (copy,
   mlx-owned); hardened `MetalKernel.apply` `ptr()` lifetimes; added a `pinned`
   canary to the train metric. Post-mortem +
-  [orpo-flash-cce-pin-leak.md](docs/investigations/orpo-flash-cce-pin-leak.md).
+  [orpo-flash-cce-pin-leak.md](docs/archive/investigations/orpo-flash-cce-pin-leak.md).
   **Lesson:** `fromView` is only for process-lifetime memory (mmap'd weights);
   any transient host buffer feeding a lazy op and disposed before eval must COPY.
 - **L3 (mlx-bun originals) has no oracle — verify by finite-difference +
@@ -1634,7 +1634,7 @@ change, consistent with Phase 6).
 ## Phase 16 — pi built-in terminal `[~]` (direction A; started 2026-06-12)
 
 Full investigation, options, pros/cons, and plan:
-docs/investigations/pi-builtin-investigation.md (+ styled HTML twin). pi v0.79.1, MIT,
+docs/archive/investigations/pi-builtin-investigation.md (+ styled HTML twin). pi v0.79.1, MIT,
 Bun-compile-native (upstream's own binary is `bun build --compile`).
 Users' own pi stays first-class forever; the flagship ends embedded.
 
@@ -1800,7 +1800,7 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       in 7 s; LoRA loss 4.48→0.68 in 4.6 s with a verified behavior change;
       live pi chat turn over WS. 85+ new tests green, tsc clean, server
       suite 17/17 (no regressions). Full story:
-      docs/investigations/lab-build-journal.md +
+      docs/archive/investigations/lab-build-journal.md +
       docs/archive/mlx-bun-lab-report.html.
 - [x] **First-run starter model**
       (2026-06-12, after the first external tester sat through a 16 GB
@@ -1830,7 +1830,7 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       default to the model's generation_config.json, the optiq
       gen_config injection (MiniCPM5 0.9/0.95; Gemma 1.0/64/0.95).
       Chat UI verified live in-browser (streaming, multi-turn,
-      prompt-cache hit on turn 2). Details in docs/planning/journal.md.
+      prompt-cache hit on turn 2). Details in docs/archive/planning/journal.md.
 
 ## Phase 17 — Compat CLI surface + parity harness `[ ]` (2026-06-12)
 
@@ -1880,7 +1880,7 @@ buckets below fill in behind it.
 **Native differentiators are NOT in this phase** — the compat layer
 makes us a drop-in *for* mlx-lm; pi (Phase 16: `harness pi` + `mlx-bun
 pi` exist, embedded single-binary pi is the flagship — see
-docs/investigations/pi-builtin-investigation.md) and the built-in web UI make us *more
+docs/archive/investigations/pi-builtin-investigation.md) and the built-in web UI make us *more
 than* mlx-lm. Both ride pi's `AgentSession` event stream. They are the
 other half of the product, tracked separately in Phase 16.
 
@@ -2116,7 +2116,7 @@ holds a soft toe on the shadows (suppress the tail smoothly, don't crush the
 blacks). The thesis: temperature *couples* "reduce top dominance" with "inflate
 the tail"; a region-aware tone curve **decouples** them. Post-inference and
 model-agnostic — applies to all four models and both lanes with no per-model
-code. Full design + math in **docs/design/hlg-sampling.md**.
+code. Full design + math in **docs/archive/hlg-sampling.md**.
 
 **First sampling feature with NO oracle ancestor** (neither mlx-lm nor optiq
 does this), so it is gated by **KL + quality + diversity, not parity** (see
@@ -2176,7 +2176,7 @@ Pieces (sequenced; keep flag-off and greedy paths bit-identical at every step):
       entropy, HLG vs entropy-matched temperature — the benefit), perf A/B.
       Set shipped defaults from the sweep; row in benchmarks/RESULTS.md §3. (moot — superseded)~~
 - ~~[ ] **(6) Docs** — finalize design doc + investigation write-up
-      (docs/investigations/hlg-sampling-investigation.md), server-config /
+      (docs/archive/investigations/hlg-sampling-investigation.md), server-config /
       server-api / README sampling sections, STATUS next-action, memory note. (moot — superseded)~~
 
 - ~~**Exit criterion**: neutrality gates bit-exact across all four models and
@@ -2186,12 +2186,12 @@ Pieces (sequenced; keep flag-off and greedy paths bit-identical at every step):
   with the flag on. Default stays **off** regardless — novel knob, never a
   silent change to the default sampler. (moot — phase closed/superseded)~~
 
-### Phase 19 findings (2026-06-14) — see docs/investigations/hlg-sampling-investigation.md
+### Phase 19 findings (2026-06-14) — see docs/archive/investigations/hlg-sampling-investigation.md
 
 Curve in place; HLG finalised as a **replacement sampler** (`if hlg → curve
 else → top_p/top_k/temperature`). Pivot question answered empirically on e4b
 (4 runs, `scripts/experiments/hlg-compare.ts`; full transcripts in
-docs/investigations/hlg-runs/):
+docs/archive/investigations/hlg-runs/):
 - **Pivot = top-anchored.** As a replacement, `top` (μ = ℓmax − c) holds
   coherence; `entropy` (μ = −H) and `median` (50% mass) collapse to multilingual
   word-salad — they land μ near the peak on confident distributions, so the
@@ -2252,7 +2252,7 @@ thesis (loosen top + gate tail) is mechanically real but its diversity payoff ov
 temp is, at most, within noise. Meta-result: the fresh-seed repeat caught BOTH
 premature verdicts (the Pass-3 "negative" and the Pass-4 "dominance") within one
 run each. Full arc + 15-run trail + hlg-frontier.json + 3 harnesses:
-docs/investigations/hlg-sampling-investigation.md.
+docs/archive/investigations/hlg-sampling-investigation.md.
 
 ## Publishing decision (2026-06-12, Josh)
 
@@ -2263,7 +2263,7 @@ public, which fixes the native-pack anonymous-download caveat.)
 Two gates before publishing:
 - [x] **Sub-GB starter model working** — MiniCPM5 Track A chosen and
       ported on branch `codex-minicpm5-starter-port`. See
-      **docs/investigations/starter-model-port-handoff.md** for the discovery that
+      **docs/archive/investigations/starter-model-port-handoff.md** for the discovery that
       Qwen3.5-0.8B is hybrid gated-DeltaNet and remains Phase 14 proper.
       MiniCPM5 is textbook Llama and now has committed oracle goldens,
       config/model/factory support, CLI starter wiring, and bit-exact
@@ -2295,7 +2295,7 @@ GB/token but we hold the whole 14.09 GB expert pool resident (Phase 6
 measured, gemma-4-26B-A4B → 16.4 GB resident, max ctx ~17.6k, ~0 GB left
 for apps). Single-user task locality (one human, one job for minutes–hours)
 makes per-task residency viable where a multi-tenant server can't. Full
-design + reasoning: `docs/investigations/expert-offload-single-user-moe.md`.
+design + reasoning: `docs/archive/investigations/expert-offload-single-user-moe.md`.
 
 **Mechanism de-risked 2026-06-14** (`scripts/probe-expert-residency.ts`,
 `scripts/probe-mmap-gather.ts`, on the M4 Pro):
@@ -2461,7 +2461,7 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
       **Closed 2026-07-22:** the exact pin/license/inventory, isolated model-free
       and Metal suites, APFS preflight, model-free fixture package, full-model
       numeric capture, and same-machine runtime baseline are recorded in
-      `docs/investigations/colibri-oracle-pin.md`. All 145 LFS payloads
+      `docs/archive/investigations/colibri-oracle-pin.md`. All 145 LFS payloads
       (383,760,044,154 bytes) match the exact public-artifact revision's
       SHA-256 values. The 140-record real-model GLM/MLA/router/MTP/KV oracle is
       bitwise reproducible across two captures and is compacted into
@@ -2870,7 +2870,7 @@ serial MTP promoted to G4, batched multi-row MTP descoped to post-release.)
         Evidence: machine-local `runs/colibri-g6-atlas/analysis/`.
 - [x] **G6R — IndexShare/IndexCache long-context DSA performance spike:** the
       paper/code audit is complete in
-      `docs/investigations/indexshare-performance-spike.md`. GLM-5.2 already
+      `docs/archive/investigations/indexshare-performance-spike.md`. GLM-5.2 already
       ships and mlx-bun already implements a 21-full/57-shared schedule, so
       this is a production-kernel + measurement spike, not a new surface.
       First generate the exact immutable indexer overlay (Josh-run selective
@@ -3222,7 +3222,7 @@ Exit criteria (met): parity vs autograd, integration tests green, e4b fits at 81
   segmentation, score boundary/label accuracy vs gold → localizes the Lucien pipeline).
 - **Gotcha** — agent-spawned background runs are reaped by the runtime (~47 min observed,
   not a crash/OOM); long training MUST be launched detached from the user's own shell.
-- Refs: `docs/investigations/steel-flash-cce-handoff.md`, `docs/reference/orpo-quickstart.md`,
+- Refs: `docs/archive/investigations/steel-flash-cce-handoff.md`, `docs/reference/orpo-quickstart.md`,
   `docs/reference/training.md`. `[~]` open: the big CPM5 UF run + the chunk segmenter + e4b overnight.
 
 ## Phase: oMLX adoption wave 1 — batching parity + SSD cold tier `[x]` (2026-07-02)

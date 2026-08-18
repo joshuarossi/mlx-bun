@@ -8,7 +8,7 @@
 
 import { writeFileSync } from "node:fs";
 
-const FIGDIR = `${process.cwd()}/docs/investigations/hlg-figs`;
+const FIGDIR = `${process.cwd()}/docs/archive/investigations/hlg-figs`;
 const REF = 0.633; // K=20 default-recipe diversity (e4b)
 
 // ---- grids (junk %) ----

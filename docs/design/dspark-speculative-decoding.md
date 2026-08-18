@@ -261,8 +261,8 @@ estimate was directionally right and their scale is far beyond a laptop run.
   `--tap-layers 5,17,29,41,46` (DeepSeek's trained taps); 27B memory-infeasible to train on 24 GB, kept
   dim-generic) + train (`--seq-head` A/B optional) + **calibrate**
   (`scripts/dspark-calibrate.ts`) + live-τ measure. Recipe:
-  [docs/investigations/dspark-handoff.md](../investigations/dspark-handoff.md).
+  [docs/archive/investigations/dspark-handoff.md](../archive/investigations/dspark-handoff.md).
 - [ ] Verify the Eq 6 / §3.2.1 shapes against the actual paper when the PDF
   is available (both flagged in code).
 
-Full session handoff: `docs/investigations/dspark-handoff.md`.
+Full session handoff: `docs/archive/investigations/dspark-handoff.md`.

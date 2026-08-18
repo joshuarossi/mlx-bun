@@ -226,7 +226,7 @@ fwd `:174–270`, SG bwd `:561–726`, gates `:732`/`:739`/`:1034`/`:1130`; stag
 
 **Cross-links:** [[flash-cce-metal-kernel-prototype]] · [[three-level-fidelity-tree-model]]
 · [[opssdpa-dk-vjp-bug]] · [[e4b-forward-length-sensitivity]] ·
-[[verify-benchmarks-against-evaldb-not-docs]] · `docs/investigations/steel-flash-cce-handoff.md`.
+[[verify-benchmarks-against-evaldb-not-docs]] · `docs/archive/investigations/steel-flash-cce-handoff.md`.
 
 **Sibling deferred lever** (queued together, post-run): `docs/design/orpo-future-enhancements.md`
 → "Deferred levers" (expose `--grad-accum`).

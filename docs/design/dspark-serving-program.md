@@ -4,7 +4,7 @@ Status: **PLANNED** (2026-07-07). Trigger for Josh's pickup: TurboQuant merge â€
 but only Phase 5 actually depends on it; Phases 0â€“4 are start-anytime.
 Owner: decode / spec. Predecessors: PR #19 (DSpark paper code-complete +
 serve-integrated + DeepSpec oracle), the first-live-run findings in
-[dspark-handoff.md](../investigations/dspark-handoff.md) "FIRST LIVE RUN".
+[dspark-handoff.md](../archive/investigations/dspark-handoff.md) "FIRST LIVE RUN".
 
 ## The problem, in numbers (2026-07-07 first live run, loaded machine)
 

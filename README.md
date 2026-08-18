@@ -212,12 +212,12 @@ runtime that serves them:
   [quickstart](./docs/reference/orpo-quickstart.md)).
 - **The curve designer** — HLG tone-curve sampling with an interactive
   designer in the server UI at `/curves`
-  ([design](./docs/design/hlg-sampling.md)).
+  ([design](./docs/archive/hlg-sampling.md)).
 - **Speculative decoding research (DSpark)** — a KV-injection drafter
   ([design](./docs/design/dspark-speculative-decoding.md)).
 - The full research trail — including dead ends — is tracked in
   [docs/design/](./docs/design/) and
-  [docs/investigations/](./docs/investigations/).
+  [docs/archive/investigations/](./docs/archive/investigations/).
 
 On the site: [The lab](https://mlx-bun.dev/about/lab/).
 

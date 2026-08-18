@@ -1,5 +1,5 @@
-// Static SVG preview for docs/investigations/curve-runs/curve-terrain.json.
-// The interactive terrain is docs/investigations/curve-terrain.html; this SVG is
+// Static SVG preview for docs/archive/investigations/curve-runs/curve-terrain.json.
+// The interactive terrain is docs/archive/investigations/curve-terrain.html; this SVG is
 // a lightweight thread/report preview that does not need a browser runtime.
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -14,8 +14,8 @@ type Cell = {
   score?: number;
 };
 
-const src = `${process.cwd()}/docs/investigations/curve-runs/curve-terrain.json`;
-const out = `${process.cwd()}/docs/investigations/curve-runs/curve-terrain.svg`;
+const src = `${process.cwd()}/docs/archive/investigations/curve-runs/curve-terrain.json`;
+const out = `${process.cwd()}/docs/archive/investigations/curve-runs/curve-terrain.svg`;
 const data = JSON.parse(readFileSync(src, "utf8")) as {
   model: string;
   n: number;

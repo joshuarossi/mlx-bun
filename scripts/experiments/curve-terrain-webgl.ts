@@ -6,8 +6,8 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 
-const jsonPath = `${process.cwd()}/docs/investigations/curve-runs/curve-terrain.json`;
-const htmlPath = `${process.cwd()}/docs/investigations/curve-terrain.html`;
+const jsonPath = `${process.cwd()}/docs/archive/investigations/curve-runs/curve-terrain.json`;
+const htmlPath = `${process.cwd()}/docs/archive/investigations/curve-terrain.html`;
 const data = JSON.parse(readFileSync(jsonPath, "utf8"));
 
 const html = `<!doctype html>

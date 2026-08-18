@@ -20,7 +20,7 @@ Two coherent options:
 
 - **(A) Recommended: cut v0.0.9, then deploy the site.** All docs become
   true simultaneously; nothing below needs version annotations. The
-  release-notes draft already exists (`docs/planning/release-notes-v0.0.9.md`).
+  release-notes draft already exists (`docs/archive/planning/release-notes-v0.0.9.md`).
 - **(B)** If v0.0.9 is not imminent: hold site deploys, and treat every
   item marked *v0.0.9* below as blocked. (Reverting docs to 8090 is churn
   for nothing — don't.)

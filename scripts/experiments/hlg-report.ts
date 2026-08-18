@@ -1,10 +1,10 @@
 // Builds a standalone HTML report of the HLG-sampling investigation, embedding the
 // generated SVG figures inline. Regenerable: re-run after adding figures/findings.
-//   bun scripts/hlg-report.ts   →   docs/investigations/hlg-report.html
+//   bun scripts/hlg-report.ts   →   docs/archive/investigations/hlg-report.html
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 
-const FIGDIR = `${process.cwd()}/docs/investigations/hlg-figs`;
+const FIGDIR = `${process.cwd()}/docs/archive/investigations/hlg-figs`;
 function fig(name: string): string {
   const p = `${FIGDIR}/${name}`;
   return existsSync(p) ? readFileSync(p, "utf8").trim() : `<div class="pending">figure <code>${name}</code> not generated yet</div>`;
@@ -260,8 +260,8 @@ ${figFigure("edges.svg", "<b>Edge texture (K=20).</b> Break-rate across the four
 gradient on 12B/CPM5 at K=20 (only e4b is settled); finishing the cut A sweep (≥1.5) and re-measuring 12B/CPM5's <code>L_W</code> diversity at K=20.</p>
 
 <div class="foot">
-  <p><strong>Run index.</strong> Logs preserved under <code>docs/investigations/hlg-runs/</code>; full write-up in
-  <code>docs/investigations/hlg-sampling-investigation.md</code>. Generators: <code>hlg-map</code>, <code>hlg-cross</code>, <code>hlg-lw</code>,
+  <p><strong>Run index.</strong> Logs preserved under <code>docs/archive/investigations/hlg-runs/</code>; full write-up in
+  <code>docs/archive/investigations/hlg-sampling-investigation.md</code>. Generators: <code>hlg-map</code>, <code>hlg-cross</code>, <code>hlg-lw</code>,
   <code>hlg-cliff</code>, <code>hlg-grid2</code>, <code>hlg-peak</code> (+ the <code>*-viz</code> figure builders).</p>
   <div class="runidx">
     <div><code>run0–O</code> — pivots, passes 1–4 (e4b)</div>
@@ -280,6 +280,6 @@ function figFigure(name: string, caption: string): string {
   return `<figure>${fig(name)}<figcaption>${caption}</figcaption></figure>`;
 }
 
-const outPath = `${process.cwd()}/docs/investigations/hlg-report.html`;
+const outPath = `${process.cwd()}/docs/archive/investigations/hlg-report.html`;
 writeFileSync(outPath, html);
 console.log(`wrote ${outPath} (${(html.length / 1024).toFixed(0)} KB)`);

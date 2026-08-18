@@ -11,7 +11,7 @@ comfortable.
 > trainer)** shipped as `orpo_prefix_shared`, composed with the flash head AND the
 > segmented backward for MiniCPM5 **and** e4b. See [training.md](../reference/training.md),
 > [orpo-quickstart.md](../reference/orpo-quickstart.md), and the live record
-> [steel-flash-cce-handoff.md](../investigations/steel-flash-cce-handoff.md). The
+> [steel-flash-cce-handoff.md](../archive/investigations/steel-flash-cce-handoff.md). The
 > remaining sections (§2, §4–§9, the objective variants) are still genuinely future.
 
 ## Deferred levers — queued, do NOT start mid-run (2026-06-19)

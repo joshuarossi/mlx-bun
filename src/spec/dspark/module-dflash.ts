@@ -403,7 +403,7 @@ export class DflashDrafter {
   /** Inference: parallel backbone once, then sequential Markov sampling.
    *  hCtx [1,Lctx,m*H] (full current context), anchorTok the bonus token.
    *
-   *  Host-sync discipline (docs/investigations/dspark-handoff.md item 3): the
+   *  Host-sync discipline (docs/archive/investigations/dspark-handoff.md item 3): the
    *  greedy path's token recurrence stays ON-DEVICE across positions — the
    *  argmax result [1] uint32 feeds directly into the next position's
    *  takeAxis, no itemUint32 in the loop. Per-position token arrays are

@@ -101,7 +101,7 @@ async function main(): Promise<void> {
   console.log(`\nSAMPLES (clockmaker prompt):`);
   for (let i = 0; i < 4; i++) console.log(`  ${i + 1}. ${await gen(tm, SHOW, { temperature: 1, seed: 50 + i, hlg: hlg() }, 80)}`);
 
-  writeFileSync(`${process.cwd()}/docs/investigations/hlg-runs/hlg-eval1.json`, JSON.stringify({ model: query, k: K, config: CFG, gamma, refDiv, refJunk, canMean, canMax, broke, div, openJunk }, null, 2));
-  console.log(`\n(results → docs/investigations/hlg-runs/hlg-eval1.json)`);
+  writeFileSync(`${process.cwd()}/docs/archive/investigations/hlg-runs/hlg-eval1.json`, JSON.stringify({ model: query, k: K, config: CFG, gamma, refDiv, refJunk, canMean, canMax, broke, div, openJunk }, null, 2));
+  console.log(`\n(results → docs/archive/investigations/hlg-runs/hlg-eval1.json)`);
 }
 await main();

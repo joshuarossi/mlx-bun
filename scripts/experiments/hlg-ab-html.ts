@@ -1,5 +1,5 @@
 // Renders the A/B/C sample JSON (scripts/hlg-ab.ts) into a side-by-side HTML viewer.
-//   bun scripts/hlg-ab-html.ts   →   docs/investigations/hlg-ab.html
+//   bun scripts/hlg-ab-html.ts   →   docs/archive/investigations/hlg-ab.html
 
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -8,7 +8,7 @@ type AB = {
   configs: { id: string; label: string; desc: string }[];
   prompts: { tag: string; text: string; samples: Record<string, string[]> }[];
 };
-const data = JSON.parse(readFileSync(`${process.cwd()}/docs/investigations/hlg-runs/hlg-ab.json`, "utf8")) as AB;
+const data = JSON.parse(readFileSync(`${process.cwd()}/docs/archive/investigations/hlg-runs/hlg-ab.json`, "utf8")) as AB;
 const COLORS: Record<string, string> = { A: "#64748b", B: "#2563eb", C: "#0891b2" };
 const esc = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -64,6 +64,6 @@ converge on a single strong continuation (lower diversity — the tight shoulder
 <b>HLG loose-A</b> spreads out — the same behavior the diversity sweeps measured, here in plain text.</p>
 </div></body></html>`;
 
-const outPath = `${process.cwd()}/docs/investigations/hlg-ab.html`;
+const outPath = `${process.cwd()}/docs/archive/investigations/hlg-ab.html`;
 writeFileSync(outPath, html);
 console.log(`wrote ${outPath} (${(html.length / 1024).toFixed(0)} KB)`);

@@ -66,7 +66,7 @@ grammar composition, and `usage.speculation` telemetry ALL landed
   serve wiring: 27B/12B retarget (regen+train, Josh's shell), data scale
   (thousands of on-distribution generations vs 160), draft-loop
   tightening. At τ≈3 on the 27B agent workload: **~15 → ~35–45 tok/s**
-  (docs/investigations/dspark-handoff.md). Slots in as `DflashSource`,
+  (docs/archive/investigations/dspark-handoff.md). Slots in as `DflashSource`,
   no-oracle/KL-gated (a Lab item).
 
 ### 2. mlx bump — narrow 26B / spec-decode wins, NOT a general decode lever  [main-only, from-source]

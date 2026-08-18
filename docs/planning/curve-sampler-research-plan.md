@@ -250,8 +250,8 @@ diversity; the audit below as methods material).
 
 ## 6. Why the old data is not trusted — audit of the prior experiments
 
-Committed artifacts checked: `docs/investigations/curve-runs/*.json`,
-`docs/investigations/hlg-runs/*`, harness sources. Severity: **INVALIDATES** /
+Committed artifacts checked: `docs/archive/investigations/curve-runs/*.json`,
+`docs/archive/investigations/hlg-runs/*`, harness sources. Severity: **INVALIDATES** /
 **WEAKENS** / cosmetic.
 
 - **F1 — INVALIDATES (the old distinctness claim).** The curve-temp family
@@ -327,5 +327,5 @@ Committed artifacts checked: `docs/investigations/curve-runs/*.json`,
 - Witness probe: `scripts/experiments/curve-distinctness.ts`.
 - Assessment: `reports/curve-designer-paper-assessment-2026-07-01.md`.
 - Prior investigations (superseded on the points in §6):
-  `docs/investigations/hlg-sampling-investigation.md`,
-  `docs/investigations/curve-bisector-routing.md`.
+  `docs/archive/investigations/hlg-sampling-investigation.md`,
+  `docs/archive/investigations/curve-bisector-routing.md`.

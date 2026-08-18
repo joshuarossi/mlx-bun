@@ -175,7 +175,7 @@ remain historical evidence; the patched HF model is the long-context target.
 At the original 128-token G0 context DSA still selects densely because the
 context is below `topk=2048`; sparse behavior begins only at token 2,049.
 Commands, caveats, and current evidence are in
-[docs/investigations/indexshare-performance-spike.md](docs/investigations/indexshare-performance-spike.md).
+[docs/archive/investigations/indexshare-performance-spike.md](docs/archive/investigations/indexshare-performance-spike.md).
 
 G2 now has a dedicated `glm_moe_dsa` config/model and artifact-aware
 `openModel()` path, exact GLM template fallback and multiple EOS, direct
@@ -477,7 +477,7 @@ nine diagnostic thresholds by at most 3.05e-5 without moving a boundary. Warm
 model-free score+top-k medians are 0.929 ms at 8K and 1.269 ms at 32K; these are
 component numbers, not end-to-end claims. Evidence:
 `~/.cache/mlx-bun/evidence/glm52-dsa-stage1-2026-08-17/`. Plan and source audit:
-`docs/investigations/indexshare-performance-spike.md`.
+`docs/archive/investigations/indexshare-performance-spike.md`.
 
 **G6R Stage 2 complete:** the quiet-machine direct-library matrix completed 24
 eligible fresh-process cells: 2K/8K, DSA off/on, MTP off/on, and three repeats,
@@ -548,7 +548,7 @@ and shipped as both versioned and stable-name GitHub assets with SHA-256
 `e9178d264a375694ed1b704eb2b9f717b91e40038781f874c9ec015619ac64e5`.
 The `joshuarossi/homebrew-tap` formula and npm `mlx-bun@0.0.11` are live;
 the in-repo formula is synchronized in the release follow-up commit.
-Release notes: [docs/planning/release-notes-v0.0.11.md](docs/planning/release-notes-v0.0.11.md).
+Release notes: [docs/archive/planning/release-notes-v0.0.11.md](docs/archive/planning/release-notes-v0.0.11.md).
 
 Still owed (all opt-in surfaces, judged non-blocking for the release):
 paged-kv try-body temp leaks + GRAMMAR_JUMP×paged-kv verify-or-refuse;
@@ -1196,7 +1196,7 @@ delete `~/mlx-bun-mirror-backup-2026-07-02.tar.gz`.
 roadmap: [docs/design/omlx-adoption-map.md](docs/design/omlx-adoption-map.md))
 + the kernel-perf-review backlog fully resolved (every item landed, refuted,
 or shelved with numbers — ledger:
-[docs/investigations/kernel-perf-review-2026-07.md](docs/investigations/kernel-perf-review-2026-07.md))
+[docs/archive/investigations/kernel-perf-review-2026-07.md](docs/archive/investigations/kernel-perf-review-2026-07.md))
 + repo cleanup phases A/B/C/D-gate
 ([docs/design/repo-cleanup-plan.md](docs/design/repo-cleanup-plan.md)).
 
@@ -1318,7 +1318,7 @@ or shelved with numbers — ledger:
    optiq spec_generate); (2) the goal **DflashSource = DSpark** (L3,
    KL-gated) — blocked on its research milestones, NOT serve wiring:
    27B/12B retarget (regen+train), data scale (~thousands vs 160),
-   draft-loop tightening (docs/investigations/dspark-handoff.md).
+   draft-loop tightening (docs/archive/investigations/dspark-handoff.md).
    **Benchmarks built 2026-07-03/04:** `scripts/bench-modes.ts` (mode
    matrix: TTFT/prefill/decode/agg/peak-mem across l1/l2/l3, kv4/8,
    nocompile, batch2/4, conc-4 queueing baseline, grammar cells,
@@ -1353,7 +1353,7 @@ or shelved with numbers — ledger:
    [docs/design/ssd-kv-cold-tier.md](docs/design/ssd-kv-cold-tier.md).
 7. **oQ-style quantization spike** in `convert` (eval-gated; arXiv-lens).
 8. **Web-UI fix wave** — 6 bugs, landing order in
-   [docs/planning/web-ui-pass-plan.md](docs/planning/web-ui-pass-plan.md).
+   [docs/archive/planning/web-ui-pass-plan.md](docs/archive/planning/web-ui-pass-plan.md).
 9. **Remaining compat verbs/flags** (`--draft-model` itself is now
    integration-plan Phase B; still open: cache_prompt, evaluate,
    awq/dwq/gptq; flags: --chat-template*, --min-p, --log-level,
@@ -1416,7 +1416,7 @@ prefix-sharing, `sft_scope` incl. `--sft-scope` CLI flag, warm-start,
 adapters-in-cache) is live — see
 [docs/reference/training.md](docs/reference/training.md). 2026-07-02
 kernel-review closeout (details + evidence in
-[kernel-perf-review-2026-07.md](docs/investigations/kernel-perf-review-2026-07.md)):
+[kernel-perf-review-2026-07.md](docs/archive/investigations/kernel-perf-review-2026-07.md)):
 - **#1 LANDED**: coeff filter + blockMax skip default ON at 1e-5 — combined
   backward 1.71× CPM5 / 3.16× e4b vs exact, fidelity-gated.
 - **#8 LANDED**: boundedSftCe — e4b M=6000 head 16.60 → 6.60 GB, dh relnorm
@@ -1512,7 +1512,7 @@ Final gate: tsc 0 · smoke 22/22 · 84/84 across dspark+spec+server suites
 (incl. real-weights; the grammar suite's `Aborted()` line is pre-existing
 xgrammar WASM teardown noise, stash-proven). **All that remains is the GPU
 recipe** (regen→train→calibrate→measure on 12B):
-docs/investigations/dspark-handoff.md.
+docs/archive/investigations/dspark-handoff.md.
 
 Architecture verified faithful (2026-07-01 review; overfit τ=3.24). **Phase 1
 (merged in PR #19):** DSpark + the optiq Gemma
@@ -1537,7 +1537,7 @@ Design + seam contract:
 pruning / STS calibration / RNN head), loop tightening, `dflash`→`dspark`
 rename. **Josh-gated GPU:** data scale + **12B retarget** + train + live-τ
 (27B is memory-infeasible to train on 24 GB — kept dim-generic). Handoff:
-[docs/investigations/dspark-handoff.md](docs/investigations/dspark-handoff.md).
+[docs/archive/investigations/dspark-handoff.md](docs/archive/investigations/dspark-handoff.md).
 
 ## Josh-gated (needs hardware / downloads / own shell)
 

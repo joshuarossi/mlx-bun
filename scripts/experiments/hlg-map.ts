@@ -9,7 +9,7 @@
 //            If the open prompts themselves leak junk → MARGINAL, not ACCEPTABLE.
 //
 // Per-knob sweeps from a known-good base; the default recipe is the diversity
-// reference. Results → docs/investigations/hlg-runs/hlg-map.json (+ printed tables).
+// reference. Results → docs/archive/investigations/hlg-runs/hlg-map.json (+ printed tables).
 //
 //   bun scripts/hlg-map.ts --model gemma-4-e4b-it-OptiQ-4bit
 
@@ -155,7 +155,7 @@ async function main(): Promise<void> {
     console.log(`  → ACCEPTABLE range: ${lo === null ? "(none)" : `[${lo}, ${hi}]`}`);
   }
 
-  const outPath = `${process.cwd()}/docs/investigations/hlg-runs/hlg-map.json`;
+  const outPath = `${process.cwd()}/docs/archive/investigations/hlg-runs/hlg-map.json`;
   writeFileSync(outPath, JSON.stringify({ model: query, base: BASE, refDiversity: refDiv, results }, null, 2));
   console.log(`\n(done — ${results.length} configs; results → ${outPath})`);
 }

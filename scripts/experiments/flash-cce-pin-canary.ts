@@ -1,5 +1,5 @@
 // Regression guard for the flash-CCE host-buffer pin leak (fixed 2026-06-21,
-// docs/investigations/orpo-flash-cce-pin-leak.md). Runs the flash-CCE head
+// docs/archive/investigations/orpo-flash-cce-pin-leak.md). Runs the flash-CCE head
 // forward+backward in a tight loop and asserts the module-level `pinned` buffer
 // count stays BOUNDED. Pre-fix (u32 using the zero-copy fromView) this grew
 // linearly +N/iter and never released, eventually crashing training natively;

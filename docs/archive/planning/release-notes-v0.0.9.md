@@ -117,6 +117,6 @@ overturning a load-bearing performance assumption.
   "failures" were M4-Pro fixtures; all code exonerated — mlx-lm reproduces
   mlx-bun token-for-token per machine); CI gate (typecheck + model-free tests).
 - **Research (the lab):** decode-roofline re-measurement overturned the "at
-  the floor" assumption (docs/investigations/decode-roofline-lookagain.md);
+  the floor" assumption (docs/archive/investigations/decode-roofline-lookagain.md);
   curve-sampler distinctness theorem + witness numbers + preregistered
   protocol (docs/planning/curve-sampler-research-plan.md).

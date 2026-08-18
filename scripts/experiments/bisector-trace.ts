@@ -91,7 +91,7 @@ for (const P of PROMPTS) {
   for (const n of div.slice(0, 4)) console.log(`  i=${String(n.i).padStart(2)}  rank2 "${n.refTok}"→"${n.forced}" p2=${n.rank2p}  conv=${n.conv}  ⇒ "${n.branch.slice(0,70)}…"`);
   report.prompts.push({ tag: P.tag, text: P.text, N, tfMismatch, nodes, depths, diverge: div.length, realForks: realForks.length });
 }
-writeFileSync("docs/investigations/curve-runs/bisector-trace.json", JSON.stringify(report, null, 2));
-console.log(`\nwrote docs/investigations/curve-runs/bisector-trace.json`);
+writeFileSync("docs/archive/investigations/curve-runs/bisector-trace.json", JSON.stringify(report, null, 2));
+console.log(`\nwrote docs/archive/investigations/curve-runs/bisector-trace.json`);
 console.log(`\nSUMMARY  (bisectors = diverging rank-2 branches; real-forks = rank2p≥0.05)`);
 for (const p of report.prompts) console.log(`  ${p.tag.padEnd(9)} N=${p.N}  bisectors=${p.diverge}  real-forks=${p.realForks}  depths=[${p.depths.slice(0,8).join(",")}${p.depths.length>8?",…":""}]`);

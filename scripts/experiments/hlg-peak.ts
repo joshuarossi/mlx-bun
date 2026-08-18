@@ -123,7 +123,7 @@ async function main(): Promise<void> {
       out.push({ sweep: sw.name, key: sw.key, value: v, note: sw.note(v), canaryJunk: canJunk, diversity, openJunk });
     }
   }
-  const outPath = `${process.cwd()}/docs/investigations/hlg-runs/hlg-peak.json`;
+  const outPath = `${process.cwd()}/docs/archive/investigations/hlg-runs/hlg-peak.json`;
   writeFileSync(outPath, JSON.stringify({ model: query, k: K, base: BASE, refDiversity: refDiv, results: out }, null, 2));
   console.log(`\n(done — ${out.length} points; results → ${outPath})`);
 }

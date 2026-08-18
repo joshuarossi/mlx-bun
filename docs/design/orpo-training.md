@@ -19,7 +19,7 @@ runs half the forwards per step.
 > The ✅/🔬 entries + optimization log below are the **design/build history**; for the
 > current usage, flags, and numbers see [training.md](../reference/training.md) +
 > [orpo-quickstart.md](../reference/orpo-quickstart.md), and the live engineering record
-> [steel-flash-cce-handoff.md](../investigations/steel-flash-cce-handoff.md).
+> [steel-flash-cce-handoff.md](../archive/investigations/steel-flash-cce-handoff.md).
 
 > Oracle note: neither `mlx_lm` nor `optiq` ships ORPO, so — unlike DPO
 > ([`loss.ts`](../../src/train/loss.ts) ported `optiq/lora/dpo.py`) — ORPO is
@@ -38,7 +38,7 @@ runs half the forwards per step.
 > hiddens before judging** (it's plausibly a free speedup to enable). Standing Lab
 > gates (filter-on-real-data, teacher-forced grad fidelity, end-to-end quality)
 > + the host-buffer pin-leak post-mortem:
-> [orpo-flash-cce-pin-leak.md](../investigations/orpo-flash-cce-pin-leak.md).
+> [orpo-flash-cce-pin-leak.md](../archive/investigations/orpo-flash-cce-pin-leak.md).
 
 ## Implementation status
 

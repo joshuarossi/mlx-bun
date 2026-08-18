@@ -61,7 +61,7 @@ async function main(): Promise<void> {
     promptsOut.push({ tag: p.tag, text: p.text, samples: cell });
   }
   out.prompts = promptsOut;
-  const outPath = `${process.cwd()}/docs/investigations/hlg-runs/hlg-ab.json`;
+  const outPath = `${process.cwd()}/docs/archive/investigations/hlg-runs/hlg-ab.json`;
   writeFileSync(outPath, JSON.stringify(out, null, 2));
   process.stderr.write(`\n(done — ${PROMPTS.length} prompts × ${configs.length} configs × ${N}; → ${outPath})\n`);
 }

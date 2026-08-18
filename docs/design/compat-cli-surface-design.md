@@ -85,7 +85,7 @@ mlx-lm" half.
 
 ### pi — the built-in agentic coding CLI
 
-(Phase 16; full plan in **docs/investigations/pi-builtin-investigation.md**.) pi is an
+(Phase 16; full plan in **docs/archive/investigations/pi-builtin-investigation.md**.) pi is an
 MIT, Bun-native (`bun build --compile`) coding agent — the "CLI
 experience inside our package" that neither Python package has. Two
 commands, one for each audience:

@@ -82,7 +82,7 @@ async function main(): Promise<void> {
     exported.push({ tag: p.tag, prompt: p.text, vocab: s.vocab, entropyBits: s.entropyBits, topP95count: s.topP95count, sorted: Array.from(sorted, (v) => Math.round(v * 100) / 100) });
   }
   const js = `// Real next-token logits captured from ${query} (sorted descending). Loaded by hlg-explorer.html.\nwindow.REAL_LOGITS = ${JSON.stringify(exported)};\n`;
-  const outPath = `${process.cwd()}/docs/investigations/hlg-figs/hlg-logits.js`;
+  const outPath = `${process.cwd()}/docs/archive/investigations/hlg-figs/hlg-logits.js`;
   writeFileSync(outPath, js);
   console.log(`\n(exported ${exported.length} real distributions → ${outPath}, ${(js.length / 1e6).toFixed(1)} MB)`);
 }

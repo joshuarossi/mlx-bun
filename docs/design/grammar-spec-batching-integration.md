@@ -15,7 +15,7 @@ three workstreams so they compose deliberately instead of colliding:
   (docs/design/batching-perf-path.md).
 - **Speculative decoding** — research proven (assistant drafter bit-exact
   vs optiq, 12B γ=1 ≈ 1.09× win, docs/design/spec-decode-larger-targets.md;
-  DSpark architecture verified, docs/investigations/dspark-handoff.md) but
+  DSpark architecture verified, docs/archive/investigations/dspark-handoff.md) but
   **not served**: no `--draft-model`. Build plan already written:
   docs/design/mlx-lm-tool-parity-plan.md §7 (the `DraftSource` interface,
   two-model L1 source, serve loop, admission, prompt-cache composition).

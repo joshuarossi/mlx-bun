@@ -692,7 +692,7 @@ batch.
 
 G0 inventory note (2026-07-21): the exact pin, artifact/layout contract, and
 manual checklist are recorded in
-[`../investigations/colibri-oracle-pin.md`](../investigations/colibri-oracle-pin.md).
+[`../archive/investigations/colibri-oracle-pin.md`](../archive/investigations/colibri-oracle-pin.md).
 Because the pinned Makefile writes ignored build artifacts and even creates a
 configuration stamp while parsing, model-free oracle targets must run from a
 temporary `git archive` extraction, not in the read-only checkout. The pinned

@@ -1,5 +1,5 @@
 // Regression gate for the forwardInfer host-sync tightening
-// (docs/investigations/dspark-handoff.md item 3): the greedy token
+// (docs/archive/investigations/dspark-handoff.md item 3): the greedy token
 // recurrence now stays on-device (argmax → takeAxis, no itemUint32 per
 // position) and confidence is deferred to one read when pruning is
 // inactive. This test pins the PRE-TIGHTENING reference output — the

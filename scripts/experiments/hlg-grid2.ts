@@ -60,7 +60,7 @@ async function main(): Promise<void> {
       console.log(row);
     }
   }
-  const outPath = `${process.cwd()}/docs/investigations/hlg-runs/hlg-grid2.json`;
+  const outPath = `${process.cwd()}/docs/archive/investigations/hlg-runs/hlg-grid2.json`;
   writeFileSync(outPath, JSON.stringify({ model: query, k: K, base: BASE, planes: PLANES, grid: out }, null, 2));
   console.log(`\n(done — ${out.length} cells; results → ${outPath})`);
 }

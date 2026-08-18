@@ -35,7 +35,7 @@ All committed-worthy, validated this session:
   Baseline 11.89/100 → fine-tuned **91.70/100** on lucien's 25-case chunk holdout
   (valid-JSON rate 12% → 100%). Full mlx-bun loop: train → save adapter (hot-swap
   format) → `AdapterManager.mount` → generate. Writeup:
-  `docs/investigations/chunk-finetune-experiment.md`. Scripts: `scripts/chunk-eval.ts`,
+  `docs/archive/investigations/chunk-finetune-experiment.md`. Scripts: `scripts/chunk-eval.ts`,
   `scripts/chunk-finetune.ts`, `scripts/chunk-filter.ts`. Adapter:
   `~/.cache/mlx-bun-finetunes/minicpm5-chunk-final`.
 
@@ -69,7 +69,7 @@ active-after 8.66 + cache-after 6.61 = 15.27 > peak 14.90, impossible if peak we
 total). MLX holds freed buffers in a **cache** (not returned to OS) so RSS overstates
 live memory; use `activeMemory()` / `cacheMemory()` / `clearCache()` to separate
 them (`src/mlx/ffi.ts`). Caveat from the MoE expert-offload work
-(`docs/investigations/expert-offload-single-user-moe.md`): `clearCache()` does NOT
+(`docs/archive/investigations/expert-offload-single-user-moe.md`): `clearCache()` does NOT
 reliably return device-buffer RAM to the OS — only the mmap clean-page path does.
 
 Facts established:

@@ -161,7 +161,7 @@ async function main(): Promise<void> {
     console.log(row);
   }
   console.log(`\n(legend: "✗jj%" canary-broke · "~" prose leaks junk · "+" beats default on a metric · value = self-BLEU-div (emb-div))`);
-  const outPath = `${process.cwd()}/docs/investigations/hlg-runs/hlg-grid.json`;
+  const outPath = `${process.cwd()}/docs/archive/investigations/hlg-runs/hlg-grid.json`;
   writeFileSync(outPath, JSON.stringify({ model: query, base: BASE, axisX: AXIS_X, axisY: AXIS_Y, refSbleu: refS, refEmb: refE, grid }, null, 2));
   console.log(`(results → ${outPath})`);
 }

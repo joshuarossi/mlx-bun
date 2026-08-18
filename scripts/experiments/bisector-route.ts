@@ -28,7 +28,7 @@ const POLICIES: [string, (seed: number) => any][] = [
   ["curve-router", (seed) => ({ curve: CURVE_ROUTER, seed })],
 ];
 
-const trace = JSON.parse(readFileSync("docs/investigations/curve-runs/bisector-trace.json", "utf8"));
+const trace = JSON.parse(readFileSync("docs/archive/investigations/curve-runs/bisector-trace.json", "utf8"));
 const tm = await loadTaskModel(CANDIDATE);
 const encode = (t: string) => tm.tokenizer.encode(tm.template!.render([{ role: "user", content: t }], { addGenerationPrompt: true }));
 async function gen(ids: number[], o: any, maxTokens: number): Promise<number[]> {
@@ -86,4 +86,4 @@ for (const pr of PROMPTS) {
 }
 console.log(`\nPREDICTION: curve-router's FORK/REMERGE ratio > the temperature policies' (and coherent), esp. on creative.`);
 console.log(`FALSIFIED if curve-router's ratio ≈ temp's — then the curve is just an entropy reshuffle, not a router.`);
-require("node:fs").writeFileSync("docs/investigations/curve-runs/bisector-route.json", JSON.stringify(summary, null, 2));
+require("node:fs").writeFileSync("docs/archive/investigations/curve-runs/bisector-route.json", JSON.stringify(summary, null, 2));

@@ -1,6 +1,6 @@
 # HLG sampling — a piecewise tone curve on the logits
 
-Status: **implemented, found neutral, superseded by Curve Designer** — `applyHlg` shipped in `src/sampler.ts`; investigation found HLG a wash vs plain temperature; the Curve Designer (`src/curve-sampler.ts`) is its v2 replacement. See [docs/investigations/hlg-sampling-investigation.md](../investigations/hlg-sampling-investigation.md) for findings. This doc remains as the design rationale.
+Status: **implemented, found neutral, superseded by Curve Designer** — `applyHlg` shipped in `src/sampler.ts`; investigation found HLG a wash vs plain temperature; the Curve Designer (`src/curve-sampler.ts`) is its v2 replacement. See [docs/archive/investigations/hlg-sampling-investigation.md](investigations/hlg-sampling-investigation.md) for findings. This doc remains as the design rationale.
 Owner: sampling layer (`src/sampler.ts`)
 Default: **off** (`--hlg-sampling off` = today's temperature sampler, untouched)
 
@@ -12,7 +12,7 @@ Default: **off** (`--hlg-sampling off` = today's temperature sampler, untouched)
 
 ## Outcome / Retrospective
 
-HLG was implemented through **Piece 2** (pure curve + neutrality tests + serial wiring, `applyHlg` live in `src/sampler.ts`). Evaluation found it **neutral vs plain temperature** — no measurable gain in diversity or quality at matched output entropy. As a result, HLG is **superseded by the Curve Designer** (`src/curve-sampler.ts`), which generalizes the same region-shaping idea with an editable control-point interface and cleaner UX. Full empirical findings are in [docs/investigations/hlg-sampling-investigation.md](../investigations/hlg-sampling-investigation.md).
+HLG was implemented through **Piece 2** (pure curve + neutrality tests + serial wiring, `applyHlg` live in `src/sampler.ts`). Evaluation found it **neutral vs plain temperature** — no measurable gain in diversity or quality at matched output entropy. As a result, HLG is **superseded by the Curve Designer** (`src/curve-sampler.ts`), which generalizes the same region-shaping idea with an editable control-point interface and cleaner UX. Full empirical findings are in [docs/archive/investigations/hlg-sampling-investigation.md](investigations/hlg-sampling-investigation.md).
 
 The sections below (Goal through Correctness) remain as design rationale. Pieces 3–6 of Phasing and the Open Questions were never executed; see the [Phasing](#phasing-the-piece-n-increments) and [Open Questions](#open-questions--risks) sections for historical context.
 
@@ -347,4 +347,4 @@ for it. That a transfer function is standard practice in another domain says
 nothing about whether it helps token sampling — that is decided only by
 measurement (the KL characterization, the capability guardrail, and the
 diversity lens in [Correctness](#correctness--evaluation)). The full empirical
-write-up is in [docs/investigations/hlg-sampling-investigation.md](../investigations/hlg-sampling-investigation.md).
+write-up is in [docs/archive/investigations/hlg-sampling-investigation.md](investigations/hlg-sampling-investigation.md).

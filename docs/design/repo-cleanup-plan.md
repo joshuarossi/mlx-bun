@@ -45,7 +45,7 @@ check). Untracked ≠ deleted ≠ unrunnable.
   + the two docs that reference `repro/` (grep first: `grep -rn "repro/"
   docs/ *.md`).
   - Also updated every path reference (CLAUDE.md, PLAN.md, PLAN-archive.md,
-    docs/investigations/lab-build-journal.md, docs/design/docs-reorg-plan.md,
+    docs/archive/investigations/lab-build-journal.md, docs/design/docs-reorg-plan.md,
     and the `repro/`-pointing comments in src/mlx/{ffi,array,autograd,ops}.ts
     + tests/{ffi-jit,train-autograd}.test.ts + the repro's own ISSUE.md).
 - `[x]` **A2. root strays** (all untracked; no git surgery): delete
@@ -168,12 +168,12 @@ suspenders until both machines are re-cloned.
     threads). The closed `oMLX` phase (2026-07-02) and Phase 19 are
     *newer* than 17, so they stay in PLAN.md as recent history per the
     criterion. Revisit D1 when a <17 phase is confirmed closed.
-- `[x]` **D2.** `docs/investigations/curve-runs/` + two untracked HTML
+- `[x]` **D2.** `docs/archive/investigations/curve-runs/` + two untracked HTML
   strays in docs/investigations: gitignore or move under `reports/`.
-  - Already satisfied: `docs/investigations/curve-runs/` is gitignored
+  - Already satisfied: `docs/archive/investigations/curve-runs/` is gitignored
     (`.gitignore`), and the four HTML strays (`curve-terrain.html`,
     `hlg-ab.html`, `hlg-report.html`, `hlg-explorer.html`) are gitignored
-    via `docs/investigations/*.html`. No action needed.
+    via `docs/archive/investigations/*.html`. No action needed.
 - `[x]` **D3.** The CLAUDE.md doc-map lists are hand-maintained; add a
   `scripts/check-hygiene.ts` assertion that every `docs/**/*.md` appears in
   the map (same guardrail spirit as B1).

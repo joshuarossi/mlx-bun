@@ -64,7 +64,7 @@ async function main(): Promise<void> {
       out.push({ cliff: cl.name, key: cl.key, value: v, over: cl.over, meanJunk: mean, maxJunk: max, breakRate: broke / K });
     }
   }
-  const outPath = `${process.cwd()}/docs/investigations/hlg-runs/hlg-cliff.json`;
+  const outPath = `${process.cwd()}/docs/archive/investigations/hlg-runs/hlg-cliff.json`;
   writeFileSync(outPath, JSON.stringify({ model: query, base: BASE, cliffs: CLIFFS, grid: out }, null, 2));
   console.log(`\n(done — ${out.length} steps; results → ${outPath})`);
 }

@@ -16,11 +16,22 @@
 //                   CLAUDE.md "Doc map" section, so the hand-maintained map
 //                   can't silently drift from reality.
 //
+//   3. root-clean — every TRACKED file at the repo root must be on the
+//                   explicit allowlist below. This is a SOFTWARE PROJECT:
+//                   dated benchmark dumps, logs, session reports, and any
+//                   other work artifacts never get committed at root
+//                   (2026-08-18 sweep: six benchmarks-serve-*.md had leaked
+//                   past an incomplete gitignore pattern). Raw bench output
+//                   goes to reports/ (untracked); curated numbers to
+//                   benchmarks/RESULTS.md; built models to ~/models.
+//                   See CONTRIBUTING.md.
+//
 // Usage:
 //   bun scripts/check-hygiene.ts            # check all tracked files (CI)
 //   bun scripts/check-hygiene.ts --staged   # check only staged files (pre-commit)
 //   bun scripts/check-hygiene.ts --binaries # just the binary gate
 //   bun scripts/check-hygiene.ts --docs-map # just the docs-map assertion
+//   bun scripts/check-hygiene.ts --root     # just the root allowlist
 //
 // Wire into CI via scripts/test.sh; for pre-commit, run with --staged.
 
@@ -30,7 +41,7 @@ import { execSync } from "node:child_process";
 const ROOT = import.meta.dir + "/..";
 const ONE_MB = 1_048_576;
 
-type Mode = "all" | "staged" | "binaries" | "docs-map";
+type Mode = "all" | "staged" | "binaries" | "docs-map" | "root";
 const args = new Set(process.argv.slice(2));
 const mode: Mode = args.has("--staged")
   ? "staged"
@@ -38,7 +49,37 @@ const mode: Mode = args.has("--staged")
     ? "binaries"
     : args.has("--docs-map")
       ? "docs-map"
-      : "all";
+      : args.has("--root")
+        ? "root"
+        : "all";
+
+// ---------------------------------------------------------------------------
+// 3. Root allowlist — tracked files with no "/" in their path
+// ---------------------------------------------------------------------------
+
+const ROOT_ALLOWLIST = new Set([
+  ".gitattributes", ".gitignore",
+  "AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "LICENSE",
+  "PLAN.md", "PLAN-archive.md", "README.md", "STATUS.md",
+  "THIRD_PARTY_LICENSES.md",
+  "benchmark.sh", "bun.lock", "package.json",
+  "tsconfig.json", "tsconfig.web.json",
+]);
+
+function checkRoot(): string[] {
+  const rootFiles = execSync("git ls-files", { cwd: ROOT, encoding: "utf8" })
+    .split("\n")
+    .map((s) => s.trim())
+    .filter((f) => f && !f.includes("/"));
+  return rootFiles
+    .filter((f) => !ROOT_ALLOWLIST.has(f))
+    .map(
+      (f) =>
+        `  FAIL  ${f} — tracked at root but not on ROOT_ALLOWLIST ` +
+        `(work artifacts belong in reports/ or ~/models, never committed at root; ` +
+        `genuinely new meta files get an allowlist entry with rationale — CONTRIBUTING.md)`,
+    );
+}
 
 // ---------------------------------------------------------------------------
 // 1. Binary-in-git gate
@@ -242,6 +283,17 @@ if (runMap) {
     exit = 1;
   } else {
     console.log("  OK — every docs/**/*.md appears in the CLAUDE.md Doc map.");
+  }
+}
+if (mode === "all" || mode === "root") {
+  const fails = checkRoot();
+  console.log(`== hygiene: root allowlist ==`);
+  if (fails.length) {
+    fails.forEach((l) => console.log(l));
+    console.log(`  ${fails.length} unexpected tracked root file(s).`);
+    exit = 1;
+  } else {
+    console.log("  OK — every tracked root file is on the allowlist.");
   }
 }
 process.exit(exit);

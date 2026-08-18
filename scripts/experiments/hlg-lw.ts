@@ -133,7 +133,7 @@ async function main(): Promise<void> {
     out.push({ lw, gamma, canaryJunk: canJunk, verdict, diversity, openJunk });
   }
   console.log(`\n  → ACCEPTABLE L_W range: ${lo === null ? "(none)" : `[${lo}, ${hi}]`}  (γ ∈ [${hlgGammaForLw(lo ?? 1).toFixed(2)}, ${hlgGammaForLw(hi ?? 1).toFixed(2)}])`);
-  const outPath = `${process.cwd()}/docs/investigations/hlg-runs/hlg-lw-${FINE ? "fine" : "coarse"}.json`;
+  const outPath = `${process.cwd()}/docs/archive/investigations/hlg-runs/hlg-lw-${FINE ? "fine" : "coarse"}.json`;
   writeFileSync(outPath, JSON.stringify({ model: query, fine: FINE, base: BASE, refDiversity: refDiv, results: out }, null, 2));
   console.log(`(done — ${out.length} points; results → ${outPath})`);
 }

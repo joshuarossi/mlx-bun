@@ -93,8 +93,8 @@ async function main(): Promise<void> {
     md += `\n_Rank the sets by diversity and by quality; flag incoherent text._\n`;
   }
 
-  const jsonPath = `${process.cwd()}/docs/investigations/hlg-runs/hlg-blind.json`;
-  const mdPath = `${process.cwd()}/docs/investigations/hlg-runs/hlg-blind-prompts.md`;
+  const jsonPath = `${process.cwd()}/docs/archive/investigations/hlg-runs/hlg-blind.json`;
+  const mdPath = `${process.cwd()}/docs/archive/investigations/hlg-runs/hlg-blind-prompts.md`;
   writeFileSync(jsonPath, JSON.stringify({ model: query, N, configs: CONFIGS.map((c) => c.name), prompts: blind }, null, 2));
   writeFileSync(mdPath, md);
   console.log(`\n(done — blind artifact → ${jsonPath}; paste-ready judge prompts → ${mdPath})`);

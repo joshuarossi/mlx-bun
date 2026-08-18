@@ -4,10 +4,10 @@ Status: proposed · Owner: web/chat surface · Scope: `src/web/app.html`, `src/p
 
 This document merges three independent design visions, ten market-research
 briefs, and a line-level audit of the current UI and backend into one
-execution plan. It supersedes `docs/planning/chat-ui-vision.md` and
-`docs/planning/chat-ui-vision-memory-first.md` as the working plan (keep
+execution plan. It supersedes `docs/archive/planning/chat-ui-vision.md` and
+`docs/archive/planning/chat-ui-vision-memory-first.md` as the working plan (keep
 those two as historical inputs; this is the doc that gets executed against).
-It also absorbs and re-prioritizes every item in `docs/planning/web-ui-pass-plan.md`
+It also absorbs and re-prioritizes every item in `docs/archive/planning/web-ui-pass-plan.md`
 — those bug-fixes are folded into Phase 0/1 below by number.
 
 ---
@@ -161,7 +161,7 @@ Ranked by severity, from the three-part current-state audit:
     2737 lines, no documented keyboard shortcuts beyond Enter/Shift+Enter,
     no chat search, generic non-personalized hero/empty-state.**
 
-Plus the full tactical list already catalogued in `docs/planning/web-ui-pass-plan.md`
+Plus the full tactical list already catalogued in `docs/archive/planning/web-ui-pass-plan.md`
 (queue-bar array-truthiness bug, library staleness, `[object Object]` adapter
 error, dead `status-page.html`, Routes-tab 404 in the compiled binary, stale
 vision copy, etc.) — folded into Phase 0/1 below by number, not repeated in
@@ -814,7 +814,7 @@ bugs fixed as part of the IA move (§9 Phase 1).
 ## 9. Phased roadmap
 
 Each phase is independently shippable and includes the relevant tactical
-fixes from `docs/planning/web-ui-pass-plan.md` by number. Ordered by
+fixes from `docs/archive/planning/web-ui-pass-plan.md` by number. Ordered by
 effort/reward, starting with free wins, ending with differentiator
 features. The [beat matrix](web-chat-beat-matrix.md) is the coverage
 checklist across all phases: at any release point, every matrix row is

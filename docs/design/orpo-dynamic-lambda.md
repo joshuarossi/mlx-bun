@@ -158,7 +158,7 @@ than the absolute max-bearable (the edge is fragile).
 **Synergy with the diffusion frontier:** all of this is noise-robustness machinery for
 controlling off a noisy process variable — so it transfers *especially* well to a
 diffusion LM, where the likelihood is a stochastic ELBO (even noisier). See
-[orpo-base-uf-experiment-and-directions.md](../investigations/orpo-base-uf-experiment-and-directions.md) §6.7.
+[orpo-base-uf-experiment-and-directions.md](../archive/investigations/orpo-base-uf-experiment-and-directions.md) §6.7.
 
 ## Wiring
 

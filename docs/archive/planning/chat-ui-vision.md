@@ -1,6 +1,6 @@
 # The mlx-bun chat surface: a vision
 
-*Draft vision, product/design lead pass — 2026-07-06. Bold stance: reimagine the chat surface from scratch. Companion to the market research and current-state audit that produced it; see `docs/planning/web-ui-pass-plan.md` for the tactical bug list and `docs/design/adapters-end-to-end.md` / `docs/design/memory-system.md` for the backend contracts this vision assumes.*
+*Draft vision, product/design lead pass — 2026-07-06. Bold stance: reimagine the chat surface from scratch. Companion to the market research and current-state audit that produced it; see `docs/archive/planning/web-ui-pass-plan.md` for the tactical bug list and `docs/design/adapters-end-to-end.md` / `docs/design/memory-system.md` for the backend contracts this vision assumes.*
 
 ## The feeling
 

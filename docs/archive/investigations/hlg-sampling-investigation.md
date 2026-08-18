@@ -3,7 +3,7 @@
 *2026-06-14. Question: can the structure of a piecewise nonlinear transfer
 function (HLG, the HDR transfer function) be transplanted onto a logit
 distribution as a sampling method, and if so, where do you place its pivot
-(middle grey)? Design contract: [docs/design/hlg-sampling.md](../design/hlg-sampling.md).
+(middle grey)? Design contract: [docs/archive/hlg-sampling.md](../design/hlg-sampling.md).
 Code: `src/sampler.ts` (`applyHlg`, `makeSampler`). Harness:
 `scripts/hlg-compare.ts`. Model under test: `gemma-4-e4b-it-OptiQ-4bit` on the
 M4 Pro.*

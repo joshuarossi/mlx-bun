@@ -26,7 +26,7 @@ exists AND it matches bit-exactly; otherwise it bubbles up. Note the subtlety th
 map already shows: an *optimization* that still matches the oracle stays low —
 `compiled-decode` is ours but is L1 because it replays the same ops bit-for-bit.
 Only nodes with **no** oracle (flash-CCE) are *forced* into the Lab. (Background +
-post-mortem: [orpo-flash-cce-pin-leak.md](../investigations/orpo-flash-cce-pin-leak.md).)
+post-mortem: [orpo-flash-cce-pin-leak.md](../archive/investigations/orpo-flash-cce-pin-leak.md).)
 
 ## Two axes: parity gates performance
 

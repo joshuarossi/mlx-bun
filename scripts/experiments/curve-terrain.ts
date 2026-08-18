@@ -300,7 +300,7 @@ async function main(): Promise<void> {
     }
   }
 
-  const outDir = `${process.cwd()}/docs/investigations/curve-runs`;
+  const outDir = `${process.cwd()}/docs/archive/investigations/curve-runs`;
   mkdirSync(outDir, { recursive: true });
   const data = {
     kind: "curve-terrain-v1",
@@ -315,7 +315,7 @@ async function main(): Promise<void> {
     cells,
   };
   const jsonPath = `${outDir}/curve-terrain.json`;
-  const htmlPath = `${process.cwd()}/docs/investigations/curve-terrain.html`;
+  const htmlPath = `${process.cwd()}/docs/archive/investigations/curve-terrain.html`;
   writeFileSync(jsonPath, JSON.stringify(data, null, 2));
   writeFileSync(htmlPath, htmlArtifact(data));
   console.log(`# wrote ${jsonPath}`);

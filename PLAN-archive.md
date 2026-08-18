@@ -511,7 +511,7 @@ registry license column. Suite 157/157 at every commit.
 
 **Direction debate → DECIDED (2026-06-12): direction (A) first.** Josh
 picked the pi built-in track; see Phase 16 below and
-docs/investigations/pi-builtin-investigation.md (investigation + P1–P4 plan +
+docs/archive/investigations/pi-builtin-investigation.md (investigation + P1–P4 plan +
 first-run starter model). Lucien (B) stays queued. Original framing:
 
 - **(A) DX/UX**: built-in web chat UI (pi-SDK-based, tool calls
@@ -1413,7 +1413,7 @@ backward: BOTH done + live + fast + `[M,V]`-free.**
 
 **→ Quickstart + perf table: [docs/reference/orpo-quickstart.md](docs/reference/orpo-quickstart.md).
 Training-flag reference: [docs/reference/training.md](docs/reference/training.md). Full plan +
-gotchas + glossary: [docs/investigations/steel-flash-cce-handoff.md](docs/investigations/steel-flash-cce-handoff.md).**
+gotchas + glossary: [docs/archive/investigations/steel-flash-cce-handoff.md](docs/archive/investigations/steel-flash-cce-handoff.md).**
 
 ## Vision — SigLIP sidecar lights up e4b image input (2026-06-17, merged to `main`)
 
@@ -1495,7 +1495,7 @@ trainable layers, 25.7 GB).** At 2K/4K both train all 42; segmented ~15-25% lowe
 (seg 11.0/16.1 vs mlx-lm 12.8/20.9 GB). No leak; adapter saves. NOTE the earlier
 "reference crashes at 4K / ~70 GB" claim was WRONG — it used mlx-bun's OWN
 checkpoint (ineffective, 23 GB @2048) as the baseline, not mlx-lm's. **Handoff
-report (start here): [docs/investigations/segmented-backward-handoff.md](docs/investigations/segmented-backward-handoff.md)**
+report (start here): [docs/archive/investigations/segmented-backward-handoff.md](docs/archive/investigations/segmented-backward-handoff.md)**
 — current state, validated numbers, how to run/train an adapter. Deep dossier:
 docs/design/segmented-backward-training.md §9 (MiniCPM5) / §10 (e4b). Enable via `TrainConfig.segmentSize` (layers
 per segment; 0 = off). Key files: `src/train/segmented.ts` (`SegmentedBackward`),
@@ -1636,7 +1636,7 @@ Full dossier: [docs/design/segmented-backward-training.md](docs/design/segmented
   (starts a server). **Resume at E1e**: cleared-machine tok/s + optional
   hot-expert pinning + offload scales/biases (last ~6%). Design + all findings:
   PLAN Phase 20 +
-  [docs/investigations/expert-offload-single-user-moe.md](docs/investigations/expert-offload-single-user-moe.md).
+  [docs/archive/investigations/expert-offload-single-user-moe.md](docs/archive/investigations/expert-offload-single-user-moe.md).
   Probes/tooling: `scripts/experiments/probe-{expert-residency,mmap-gather,madvise-eviction,footprint,metal-wire}.ts`,
   `scripts/run-expert-trace.ts`, `scripts/analyze-expert-trace.ts`, `src/expert-trace.ts`.
 
@@ -1824,7 +1824,7 @@ pi integration 10 fixes (generics tool-calling, memory tools, harness) ·
 website+README six-goals pass (23 pages; deploy release-gated) · CI gate ·
 batched goldens machine-keyed (the "regression" was M4-Pro fixtures; ALL
 code exonerated, 11/11 green) · decode-roofline look-again (**the floor
-claim was wrong** — only the 12B is at the wall; docs/investigations/
+claim was wrong** — only the 12B is at the wall; docs/archive/investigations/
 decode-roofline-lookagain.md) · curve-sampler distinctness THEOREM + witness
 (TV 0.11–0.19 at forks unreachable by any truncation sampler; old "wash"
 verdict invalidated — it measured the wrong sampler; preregistered protocol
@@ -1842,7 +1842,7 @@ in docs/planning/curve-sampler-research-plan.md).
    roofline doc's host-side fixes 1a–1d are dead and the recoverable decode
    gap is entirely GPU-side (26B expert reads, e4b dispatch count, CPM5
    KV-path, kernel backlog #4, spec decode).
-3. Web-UI fix wave (docs/planning/web-ui-pass-plan.md — 6 bugs, landing order inside).
+3. Web-UI fix wave (docs/archive/planning/web-ui-pass-plan.md — 6 bugs, landing order inside).
 4. Batching steps 4–10 (docs/design/batching-v2-plan.md).
 5. serve --draft-model + remaining verbs (docs/design/mlx-lm-tool-parity-plan.md).
 6. Curve H2/H3 preregistered run (docs/planning/curve-sampler-research-plan.md).

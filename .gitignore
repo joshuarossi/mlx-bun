@@ -63,3 +63,12 @@ bench-faithful-matrix-*
 # Per-model learned expert routing profile (runtime-derived, atomically replaced).
 .coli_usage
 .coli_usage.tmp-*
+
+# Dated benchmark/report artifacts never belong at root (curated numbers
+# go to benchmarks/RESULTS.md; raw dumps to reports/, which is untracked)
+/benchmarks-*.md
+/benchmarks-*.json
+/bench-*.md
+/bench-*.json
+/tmp/
+/*.log

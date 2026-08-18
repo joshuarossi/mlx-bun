@@ -2576,7 +2576,7 @@ export function createServer(
       }
       if (url.pathname === "/curve-terrain" && request.method === "GET") {
         try {
-          const html = readFileSync(new URL("../docs/investigations/curve-terrain.html", import.meta.url), "utf8");
+          const html = readFileSync(new URL("../docs/archive/investigations/curve-terrain.html", import.meta.url), "utf8");
           return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
         } catch {
           return new Response("curve terrain artifact not found; run scripts/experiments/curve-terrain.ts first", { status: 404 });

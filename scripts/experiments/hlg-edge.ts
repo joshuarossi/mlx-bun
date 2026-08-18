@@ -59,7 +59,7 @@ async function main(): Promise<void> {
       out.push({ zoom: z.name, key: z.key, value: v, gamma: z.gamma ? hlgGammaForLw(v) : null, meanJunk: mean, maxJunk: max, breakRate: broke / K });
     }
   }
-  const outPath = `${process.cwd()}/docs/investigations/hlg-runs/hlg-edge.json`;
+  const outPath = `${process.cwd()}/docs/archive/investigations/hlg-runs/hlg-edge.json`;
   writeFileSync(outPath, JSON.stringify({ model: query, k: K, base: BASE, zooms: ZOOMS, grid: out }, null, 2));
   console.log(`\n(done — ${out.length} steps; results → ${outPath})`);
 }

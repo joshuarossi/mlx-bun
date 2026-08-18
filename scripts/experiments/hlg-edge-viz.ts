@@ -1,11 +1,11 @@
 // Edge-texture figure: break-rate (fraction of K=20 seeds that broke) across the
 // four transition zooms. Reveals the edges are heterogeneous — the gate cliffs are
 // SOFT probabilistic ramps (declining break-rate), the L_W low wall is a HARD γ=0
-// threshold, the L_W high wall is barely there. Writes docs/investigations/hlg-figs/edges.svg.
+// threshold, the L_W high wall is barely there. Writes docs/archive/investigations/hlg-figs/edges.svg.
 //   bun scripts/hlg-edge-viz.ts
 
 import { writeFileSync } from "node:fs";
-const FIGDIR = `${process.cwd()}/docs/investigations/hlg-figs`;
+const FIGDIR = `${process.cwd()}/docs/archive/investigations/hlg-figs`;
 
 type Panel = { title: string; verdict: string; vcol: string; xs: number[]; xlab: string; brk: number[]; mean: number[]; note?: string };
 const PANELS: Panel[] = [

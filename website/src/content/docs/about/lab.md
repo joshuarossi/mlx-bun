@@ -41,8 +41,8 @@ at `/curves`** — design a curve against live logits and see what it does to
 the distribution.
 
 Write-ups:
-[HLG sampling design](https://github.com/joshuarossi/mlx-bun/blob/main/docs/design/hlg-sampling.md),
-[the investigation](https://github.com/joshuarossi/mlx-bun/blob/main/docs/investigations/hlg-sampling-investigation.md).
+[HLG sampling design](https://github.com/joshuarossi/mlx-bun/blob/main/docs/archive/hlg-sampling.md),
+[the investigation](https://github.com/joshuarossi/mlx-bun/blob/main/docs/archive/investigations/hlg-sampling-investigation.md).
 
 ## Speculative decoding (DSpark)
 
@@ -53,7 +53,7 @@ is ongoing research.
 
 Write-ups:
 [DSpark design](https://github.com/joshuarossi/mlx-bun/blob/main/docs/design/dspark-speculative-decoding.md),
-[research handoff](https://github.com/joshuarossi/mlx-bun/blob/main/docs/investigations/dspark-handoff.md).
+[research handoff](https://github.com/joshuarossi/mlx-bun/blob/main/docs/archive/investigations/dspark-handoff.md).
 
 ## Diffusion Gemma
 
@@ -68,7 +68,7 @@ Write-up:
 
 - [`docs/design/`](https://github.com/joshuarossi/mlx-bun/tree/main/docs/design)
   — design docs for features and experiments.
-- [`docs/investigations/`](https://github.com/joshuarossi/mlx-bun/tree/main/docs/investigations)
+- [`docs/archive/investigations/`](https://github.com/joshuarossi/mlx-bun/tree/main/docs/investigations)
   — dated research journals and handoffs, including the dead ends.
 - [`benchmarks/RESULTS.md`](https://github.com/joshuarossi/mlx-bun/blob/main/benchmarks/RESULTS.md)
   — the curated numbers everything above is held to.

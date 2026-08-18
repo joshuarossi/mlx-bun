@@ -214,7 +214,7 @@ async function main(): Promise<void> {
   }
 
   console.log(`\nVERDICT: ${dominance ? "★ a clean cell beats the default on a diversity metric — investigate." : "no clean cell beats the default on self-BLEU or embedding — control, not dominance."}`);
-  const outPath = `${process.cwd()}/docs/investigations/hlg-runs/hlg-frontier.json`;
+  const outPath = `${process.cwd()}/docs/archive/investigations/hlg-runs/hlg-frontier.json`;
   writeFileSync(outPath, JSON.stringify({ model: query, N, reference: ref, dominance, results }, null, 2));
   console.log(`(results → ${outPath})`);
 }

@@ -2,7 +2,7 @@
 
 Where the MiniCPM5 chunking adapter stands and what raises real segmentation
 quality. Companion to the chunk-eval metric vs. accuracy finding (score = well-formedness, not gold accuracy) and
-[`docs/investigations/chunk-finetune-experiment.md`](../investigations/chunk-finetune-experiment.md).
+[`docs/archive/investigations/chunk-finetune-experiment.md`](../investigations/chunk-finetune-experiment.md).
 
 ## Where we are
 
