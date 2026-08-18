@@ -32,6 +32,14 @@ const opt = (name: string, dflt: string): string => {
 const bits = Number(opt("bits", "4"));
 const groupSize = Number(opt("group", "64")) as 32 | 64;
 const excluded = (base: string): boolean => base.startsWith("vision_tower.");
+// --profile tqmix: 3-bit MLP bulk + 4-bit attention/DeltaNet/embed/head —
+// the rotated-low-bit band where TQ wins, with sensitive corridors kept at 4.
+const profile = opt("profile", "");
+const bitsFor = (base: string): number => {
+  if (profile !== "tqmix") return bits;
+  if (base.includes(".mlp.")) return 3;
+  return 4;
+};
 
 const config = await loadModelConfig(srcDir);
 if (config.quantization) throw new Error("source is already quantized");
@@ -66,16 +74,18 @@ try {
         writer.add(name, copy);
         if (eligible && excluded(base!)) perLayer.set(base!, false);
       } else {
+        const moduleBits = bitsFor(base!);
         const bf16 = src.astype(Dtype.bfloat16, cpuStream);
-        const q = quantize(bf16, groupSize, bits, "affine", cpuStream);
+        const q = quantize(bf16, groupSize, moduleBits, "affine", cpuStream);
         bf16.dispose();
         writer.add(`${base}.weight`, q.packed);
         writer.add(`${base}.scales`, q.scales);
         if (q.biases) writer.add(`${base}.biases`, q.biases);
+        if (moduleBits !== bits) perLayer.set(base!, { bits: moduleBits, groupSize });
         nQuantized++;
         const params = src.shape.reduce((a, b) => a * b, 1);
         quantizedParams += params;
-        quantizedBits += params * bits + (params / groupSize) * 32;
+        quantizedBits += params * moduleBits + (params / groupSize) * 32;
       }
       done++;
     }

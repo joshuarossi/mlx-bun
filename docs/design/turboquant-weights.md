@@ -173,6 +173,39 @@ tower loads raw tensors, so one self-contained artifact serves text+vision.
   the papers; derive or fall back to allocation-only for those blocks
   (community quants mark exactly those projections sensitive).
 
+## W3/W4 measured curve (2026-08-18, RTN affine g64, ppl via stock mlx-lm
+on the local UF-derived corpus, seq 512; M1 Max 32 GB)
+
+**Headline: rotation-only + RTN does NOT beat plain RTN at the 4-bit
+operating point; it wins decisively at 3-bit — the paper's law, reproduced.**
+Per-module function-space Frobenius error is a wash at 4-bit (~0.091 all
+arms, scripts/experiments/tq-quant-error.py — γs are tame, 0.7–2.7, no
+module class is the culprit); the 4-bit regression is the anisotropy story
+(isotropic rotated error vs activation-aligned plain error), which is
+exactly what GPTQ-style calibration fixes — the composition the paper and
+this doc already name as the real win.
+
+0.8B lab (dequant-OptiQ source; PAIRED arms; bf16 anchor 6.41, 48×512):
+
+| arm | bpw | ppl |
+|---|---|---|
+| plain 4-bit | 4.50 | 7.01 |
+| TQ(R1+γ) 4-bit | 4.50 | 7.39  ← regression, reproduces 27B |
+| plain 3-bit | 3.50 | 19.19 ← RTN collapse |
+| **TQ 3-bit** | 3.50 | **14.54** ← rotation −24% ppl |
+| plain mixed (3-bit MLP, 4-bit attn/embed) | 4.15 | 9.69 |
+| **TQ mixed (same profile)** | 4.24 | **9.22** ← paired rotation win |
+
+27B (32×512, same corpus): plain 4-bit 4.659 ±0.093 · TQ 4-bit
+4.923 ±0.102 (+5.7%, consistent with the lab). TQ-mixed 27B measured
+separately (see PLAN.md for the current number).
+
+Consequences for the release recipe: do NOT ship rotated uniform-4-bit
+(loses to the trivial baseline); the TQ product band is ≤3.5–4.2 bpw mixed
+(rotated 3-bit bulk + 4-bit sensitive corridors) IF the 27B tolerates the
+3-bit band, else the win waits for the calibration composition
+(GPTQ/sensitivity allocation on ROTATED weights — the W5 leg).
+
 ## Known engine gaps found in passing (not TQ defects)
 
 - `mlx-bun perplexity` cannot score qwen3_5: it routes through
