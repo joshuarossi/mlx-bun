@@ -67,6 +67,19 @@ teacher-forced two-model KL mean 0.00131 (16×256), greedy trajectories
 identical except near-tie flips (margins ≤0.125), per-tensor max|w|
 down 3–5×. Evidence in the PLAN.md W0 entry.
 
+**PROGRAM COMPLETE through W5c/W6-staging (2026-08-18 night 2):** THE
+artifact = **mjriii/Qwen3.8-27B** (staged in the hub cache, 16.3 GB,
+GPTQ + sensitivity-allocated 4/8-bit, vision + video + MTP bundled in
+ONE repo) — full board + decision rationale in
+docs/design/turboquant-weights.md §FINAL BOARD. Key finding: 27B quality
+SATURATES at ≥4.5 bpw on ppl AND MMLU/GSM8K (all top arms tied);
+recipes matter below 4 bpw (TQ-mixed staged as the 13 GB variant).
+Serve gauntlet on THE artifact: text/image/video ✓ through our engine;
+MTP 76% accept (near-tie divergence flag recorded, not claimed
+lossless). AWAITING JOSH: publish go (mlx-bun upload), then delete the
+51 GB bf16 trunk; Josh-gated frontier tail = quiet-box tps + M4 Pro
+24 GB cut + GGUF anchor (W7).
+
 **W1–W4 DONE overnight 2026-08-18 (branch feature/turboquant-weights;
 full findings in the PLAN boxes + docs/design/turboquant-weights.md):**
 qwen3_5 corridor map (R2 off — attn output gate; DeltaNet folds on its
