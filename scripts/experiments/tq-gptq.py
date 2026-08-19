@@ -44,6 +44,32 @@ def compute_inverse_hessian(H, damp_factor=1e-2):
         return Hinv
 
 
+def pack_flat(q_indices, bits):
+    """Pack integer grid indices into mlx's flat little-endian bitstream
+    (verified layout: element i occupies bits [i*bits, (i+1)*bits) of the
+    row, words little-endian). Covers bits ∈ {3, 5, 6} which the upstream
+    packer (whole-words-per-element shifts) cannot express; roundtrip-
+    verified against mx.quantize at 3-bit (max|diff| 0.0)."""
+    import numpy as np
+    q = np.array(q_indices, dtype=np.uint8)
+    rows, n = q.shape
+    bitplane = np.zeros((rows, n * bits), dtype=np.uint8)
+    for j in range(bits):
+        bitplane[:, j::bits] = (q >> j) & 1
+    packed = np.packbits(bitplane, axis=1, bitorder="little")
+    return mx.array(np.frombuffer(packed.tobytes(), dtype=np.uint32).reshape(rows, -1))
+
+
+def _final_pack(W, bits, scales, biases):
+    if bits in (2, 4, 8):
+        return quantize(W, bits, scales, biases)
+    n_bins = 2**bits - 1
+    q = mx.clip(mx.round((mx.unflatten(W, -1, (scales.shape[-1], -1)) - biases[..., None]) / scales[..., None]), 0.0, n_bins)
+    q = mx.flatten(q, -2, -1).astype(mx.uint32)
+    mx.eval(q)
+    return pack_flat(q, bits)
+
+
 def gptq_one(W_in, Hinv, bits, group_size):
     """Corrected GPTQ for one [out, in] weight: returns (scales, biases,
     packed) with the compensated rounding baked in. Paper-form update
@@ -77,7 +103,7 @@ def gptq_one(W_in, Hinv, bits, group_size):
         W[..., j:] -= err @ Hinv[i:j, j:]
     scales = mx.concatenate(all_scales, axis=-1)
     biases = mx.concatenate(all_biases, axis=-1)
-    return scales, biases, quantize(W, bits, scales, biases)
+    return scales, biases, _final_pack(W, bits, scales, biases)
 
 
 def gptq_one_guarded(W_in, H, bits, group_size):
