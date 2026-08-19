@@ -344,6 +344,20 @@ DO NOT bound task damage (+0.14 ppl ↔ −32 GSM8K pts) — the earlier
 "~0.3 ppl = visible damage" calibration is WRONG; every finalist needs
 generative tasks; (2) g128 disqualified for generative work.
 
+**Run B — the full suite (rotation + GPTQ + sensitivity, 4.80 bpw,
+17.0 GB, zero guard triggers):** ppl **4.5965** (best quantized arm,
+tied w/ plain-4bit) · MMLU 84 · raw-completion GSM8K **24% — and the
+collapse is a FORMAT CLIFF, not a reasoning failure**: when it answers
+it is flawless, but 3/4 raw few-shot prompts get INSTANT EOS; under the
+native chat template it always answers (3/5 correct at a tight token
+cap). g128's 62% was the same failure at lower frequency. **Methodology
+consequence: the raw-completion GSM8K column conflates math ability
+with EOS-cliff robustness** — different quant-noise realizations
+displace a razor-thin answer-vs-stop margin at token 0. The map now
+carries TWO generative columns: templated GSM8K (serving-path
+reasoning, re-run across all live arms) and raw-completion GSM8K
+(format-robustness probe). Neither ppl nor MMLU sees any of this.
+
 ## Known engine gaps found in passing (not TQ defects)
 
 - `mlx-bun perplexity` cannot score qwen3_5: it routes through
