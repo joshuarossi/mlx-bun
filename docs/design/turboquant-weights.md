@@ -333,6 +333,17 @@ task-invisible; ~0.3+ coincides with visible MMLU damage; ppl's
 remaining role is catastrophe detection + screening. mlx kernel bound:
 group_size ∈ {32, 64, 128} — 256+ needs custom kernels (non-goal).
 
+**Group-size lab (0.8B ppl) + 27B g128 arm:** rotation does NOT buy
+coarse-group tolerance at 4-bit (tax +4.7% rotated vs +4.2% plain); at
+3-bit the dividend is real but partial (+29% vs +47%; rotated 3.25 bpw ≈
+plain 3.5 bpw). 27B plain-4bit-g128 (4.25 bpw): ppl 4.714 (+3%), MMLU 88
+(plateau!), **GSM8K 62% — COLLAPSE via generation-behavior damage**
+(eyeballed: correct-but-rambling truncations + instant-EOS empty
+outputs; single-forward instruments blind to it). Lessons: (1) ppl deltas
+DO NOT bound task damage (+0.14 ppl ↔ −32 GSM8K pts) — the earlier
+"~0.3 ppl = visible damage" calibration is WRONG; every finalist needs
+generative tasks; (2) g128 disqualified for generative work.
+
 ## Known engine gaps found in passing (not TQ defects)
 
 - `mlx-bun perplexity` cannot score qwen3_5: it routes through
