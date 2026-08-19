@@ -358,6 +358,35 @@ carries TWO generative columns: templated GSM8K (serving-path
 reasoning, re-run across all live arms) and raw-completion GSM8K
 (format-robustness probe). Neither ppl nor MMLU sees any of this.
 
+## THE FRONTIER (campaign complete, 2026-08-19 — map:
+reports/frontier-map-2026-08-19.html)
+
+| arm | bpw | GB | ppl | MMLU | tGSM | rawGSM | tok/s* | Pareto |
+|---|---|---|---|---|---|---|---|---|
+| **rot+sens48 RTN (Josh's recipe)** | 4.79 | 17.0 | 4.680 | **90** | 94 | 84 | **11.80** | **YES** |
+| GPTQ+sens (staged flagship) | 4.80 | 17.0 | 4.618 | 87 | 94 | **96** | 11.42 | — |
+| rot+GPTQ+sens (full suite) | 4.80 | 17.0 | **4.597** | 84 | 94 | 24 | 11.77 | — |
+| OptiQ published | 5.14 | 18.1 | 4.574 | 89 | 94 | 92 | 8.92 | — (dominated) |
+| **TQ-mixed** | 3.86 | 13.0 | 4.932 | 82 | 82 | 96 | 10.94 | **YES** |
+| bf16 ceiling (streamed eval) | 16 | 54.4 | 4.552 | 87 | n/a | n/a | n/a | ref |
+
+*busy-box, spreads 8–34% — directional until quiet benchmark.sh.
+
+Findings of record: (1) the ≥4.5-bpw band sits AT the bf16 ceiling (ppl
+within ~1%, MMLU within noise — a quant scoring 90 vs ceiling 87 proves
+±3 noise); (2) BOTH Pareto points are ROTATED — rotation at 4-bit is
+competitive exactly when paired with sensitivity allocation (the earlier
+uniform-rotation loss concentrated in the sensitive modules, as Josh
+hypothesized), and mandatory below 4 bpw; (3) OptiQ is dominated on all
+three axes (its extra 0.34 bpw buys nothing and costs ~25% decode);
+(4) GPTQ's measurable 27B contribution is ppl-only — it buys no task
+quality at this scale and (with rotation) costs raw-format robustness;
+(5) 3-bit kernels pay an unpack tax that eats their bandwidth win
+(TQ-mixed slower than 4-bit arms despite −4 GB); (6) cross-engine parity
+CERTIFIED (byte-identical greedy, ours vs stock mlx-lm, on the staged
+flagship). Remaining before publish: promote+package the chosen artifact,
+its serve gauntlet, quiet-box TPS, M4 Pro 24 GB cut (Josh-gated).
+
 ## Known engine gaps found in passing (not TQ defects)
 
 - `mlx-bun perplexity` cannot score qwen3_5: it routes through
