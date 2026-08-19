@@ -43,6 +43,39 @@ if task == "mmlu":
         mx.clear_cache()
     print(f"RESULT mmlu {model_dir}: {correct}/{len(rows)} = {correct / len(rows) * 100:.1f}%")
 
+elif task == "gsm8k-templated":
+    # Native-chat-template GSM8K — the serving-path reasoning measure. The
+    # raw-completion variant below doubles as an EOS-cliff robustness probe
+    # (2026-08-19 finding: quant arms with near-best ppl can emit instant
+    # EOS in raw few-shot format while answering perfectly when templated).
+    from mlx_lm.generate import generate
+
+    rows = [json.loads(l) for l in open(DATA / "gsm8k_optiq_frozen.jsonl")][:n]
+
+    def gold(ans):
+        m = re.search(r"####\s*([-\d,.]+)", ans)
+        return m.group(1).replace(",", "").rstrip(".") if m else None
+
+    correct = 0
+    for i, r in enumerate(rows):
+        msgs = [{"role": "user", "content": r["question"] +
+                 "\nSolve step by step, then give the final number after '####'."}]
+        prompt = tok.apply_chat_template(msgs, add_generation_prompt=True,
+                                         tokenize=False, enable_thinking=False)
+        out = generate(model, tok, prompt=prompt, max_tokens=640)
+        m = re.search(r"####\s*\$?([-\d,.]+)", out)
+        pred = m.group(1).replace(",", "").rstrip(".") if m else None
+        g = gold(r["answer"])
+        try:
+            ok = pred is not None and abs(float(pred) - float(g)) < 1e-6
+        except Exception:
+            ok = pred == g
+        correct += int(ok)
+        if (i + 1) % 10 == 0:
+            print(f"  {i + 1}/{len(rows)}  acc so far {correct / (i + 1):.3f}", flush=True)
+        mx.clear_cache()
+    print(f"RESULT gsm8k-templated {model_dir}: {correct}/{len(rows)} = {correct / len(rows) * 100:.1f}%")
+
 elif task == "gsm8k":
     from mlx_lm.generate import generate
 
