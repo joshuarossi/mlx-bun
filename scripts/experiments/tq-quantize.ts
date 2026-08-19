@@ -41,7 +41,7 @@ const profile = opt("profile", "");
 const sensPath = opt("sensitivity", "");
 const targetBpw = Number(opt("target-bpw", "4.3"));
 const highBits = new Set<string>();
-if (profile === "sens3") {
+if (profile === "sens3" || profile === "sens48") {
   if (!sensPath) throw new Error("--profile sens3 needs --sensitivity <json>");
   const sens = JSON.parse(require("node:fs").readFileSync(sensPath, "utf8")) as
     { layers: { layer_name: string; param_count: number; sensitivities: Record<string, number> }[] };
@@ -50,17 +50,20 @@ if (profile === "sens3") {
     .map((l) => ({ name: l.layer_name, p: l.param_count,
       benefit: (l.sensitivities["8"] ?? 0) - (l.sensitivities["3"] ?? l.sensitivities["4"] ?? 0) }))
     .sort((a, b) => b.benefit / b.p - a.benefit / a.p);
-  const baseBits = totalParams * (3 + 32 / groupSize);
+  const profBase = profile === "sens48" ? 4 : 3;
+  const baseBits = totalParams * (profBase + 32 / groupSize);
   let budget = targetBpw * totalParams - baseBits;
   for (const r of rows) {
-    const extra = r.p * 5;
+    const extra = r.p * (8 - profBase);
     if (r.benefit <= 0 || extra > budget) continue;
     budget -= extra;
     highBits.add(r.name);
   }
-  console.log(`sens3: ${highBits.size} modules @8-bit, base 3-bit, target ${targetBpw} bpw`);
+  console.log(`${profile}: ${highBits.size} modules @8-bit, base 3-bit, target ${targetBpw} bpw`);
 }
 const bitsFor = (base: string): number => {
+  // sens48: OptiQ's own recipe shape — 4-bit base + sensitivity 8-bit.
+  if (profile === "sens48") return highBits.has(base) ? 8 : 4;
   if (profile === "sens3") return highBits.has(base) ? 8 : 3;
   if (profile !== "tqmix") return bits;
   if (base.includes(".mlp.")) return 3;
