@@ -21,6 +21,37 @@ from mlx_lm.utils import load
 model_dir, task, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
 DATA = Path.home() / ".cache/mlx-bun/eval-data"
 
+# --- pause/resume: per-item progress, fingerprinted to the artifact so a
+# swapped model at the same path can never resume stale results ---------------
+import glob as _glob
+import os as _os
+
+def _fingerprint(d):
+    fs = sorted(_glob.glob(_os.path.join(d, "model*.safetensors")))
+    if not fs:
+        return "none"
+    st = _os.stat(fs[0])
+    return f"{len(fs)}-{st.st_size}-{int(st.st_mtime)}"
+
+_FP = _fingerprint(model_dir)
+_slug = model_dir.rstrip("/").replace("/", "_").replace(".", "_")[-80:]
+_PROG = Path("runs/tq-qwen") / f"progress-{task}-{_slug}.jsonl"
+_done = {}
+if _PROG.exists():
+    for _line in open(_PROG):
+        _r = json.loads(_line)
+        if _r.get("fp") == _FP:
+            _done[_r["i"]] = _r
+
+def _resume(i):
+    """Return the stored ok-flag if item i is already scored, else None."""
+    return _done[i]["ok"] if i in _done else None
+
+def _record(i, ok):
+    _PROG.parent.mkdir(parents=True, exist_ok=True)
+    with open(_PROG, "a") as f:
+        f.write(json.dumps({"i": i, "ok": bool(ok), "fp": _FP}) + "\n")
+
 model, tok = load(model_dir)
 
 if task == "mmlu":
@@ -29,6 +60,10 @@ if task == "mmlu":
     letter_ids = [tok.encode(f" {l}", add_special_tokens=False)[-1] for l in letters]
     correct = 0
     for i, r in enumerate(rows):
+        prev = _resume(i)
+        if prev is not None:
+            correct += int(prev)
+            continue
         prompt = r["question"].strip() + "\n"
         for li, c in enumerate(r["choices"]):
             prompt += f"{letters[li]}. {c}\n"
@@ -38,6 +73,7 @@ if task == "mmlu":
         mx.eval(logits)
         pick = int(mx.argmax(mx.array([logits[t] for t in letter_ids])))
         correct += int(pick == r["answer"])
+        _record(i, pick == r["answer"])
         if (i + 1) % 25 == 0:
             print(f"  {i + 1}/{len(rows)}  acc so far {correct / (i + 1):.3f}", flush=True)
         mx.clear_cache()
@@ -53,6 +89,10 @@ elif task == "gsm8k-xhigh":
     rows = [json.loads(l) for l in open(DATA / "gsm8k_optiq_frozen.jsonl")][:n]
     correct = 0
     for i, r in enumerate(rows):
+        prev = _resume(i)
+        if prev is not None:
+            correct += int(prev)
+            continue
         msgs = [{"role": "user", "content": r["question"] +
                  "\nGive the final number after '####'."}]
         prompt = tok.apply_chat_template(msgs, add_generation_prompt=True,
@@ -71,6 +111,7 @@ elif task == "gsm8k-xhigh":
         except Exception:
             ok = pred == g
         correct += int(ok)
+        _record(i, ok)
         print(f"  {i + 1}/{len(rows)} {'OK' if ok else 'MISS'} (out {len(out)} ch)", flush=True)
         mx.clear_cache()
     print(f"RESULT gsm8k-xhigh {model_dir}: {correct}/{len(rows)} = {correct / len(rows) * 100:.1f}%")
@@ -90,6 +131,10 @@ elif task == "gsm8k-templated":
 
     correct = 0
     for i, r in enumerate(rows):
+        prev = _resume(i)
+        if prev is not None:
+            correct += int(prev)
+            continue
         msgs = [{"role": "user", "content": r["question"] +
                  "\nSolve step by step, then give the final number after '####'."}]
         prompt = tok.apply_chat_template(msgs, add_generation_prompt=True,
@@ -103,6 +148,7 @@ elif task == "gsm8k-templated":
         except Exception:
             ok = pred == g
         correct += int(ok)
+        _record(i, ok)
         if (i + 1) % 10 == 0:
             print(f"  {i + 1}/{len(rows)}  acc so far {correct / (i + 1):.3f}", flush=True)
         mx.clear_cache()
@@ -127,6 +173,10 @@ elif task == "gsm8k":
 
     correct = 0
     for i, r in enumerate(rows):
+        prev = _resume(i)
+        if prev is not None:
+            correct += int(prev)
+            continue
         prompt = prefix + f"Q: {r['question']}\nA:"
         out = generate(model, tok, prompt=prompt, max_tokens=320)
         first = out.split("Q:")[0]
@@ -139,6 +189,7 @@ elif task == "gsm8k":
         except Exception:
             ok = pred == g
         correct += int(ok)
+        _record(i, ok)
         if (i + 1) % 10 == 0:
             print(f"  {i + 1}/{len(rows)}  acc so far {correct / (i + 1):.3f}", flush=True)
         mx.clear_cache()

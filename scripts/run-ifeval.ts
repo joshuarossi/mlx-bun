@@ -83,9 +83,25 @@ if (adapterDir) {
 // limit (499k) across many long generations (2026-08-19 ifeval@qwen3.8).
 const { generate: produce } = await import("../src/generate");
 const pairs: Array<{ instance: IFEvalInstance; response: string }> = [];
+// pause/resume: responses persisted per item, fingerprinted to the artifact.
+const { statSync: st, readFileSync: rf, appendFileSync: af, mkdirSync: mk } = await import("node:fs");
+const shards = (await import("node:fs")).readdirSync(MODEL).filter(f => f.startsWith("model") && f.endsWith(".safetensors")).sort();
+const fp = shards.length ? `${shards.length}-${st(`${MODEL}/${shards[0]}`).size}` : "none";
+const progPath = `runs/tq-qwen/progress-ifeval-${MODEL.replace(/[\/.]/g, "_").slice(-80)}.jsonl`;
+const doneMap = new Map<number, string>();
+try {
+  for (const line of rf(progPath, "utf8").split("\n")) {
+    if (!line) continue;
+    const r = JSON.parse(line);
+    if (r.fp === fp) doneMap.set(r.i, r.response);
+  }
+} catch {}
+mk("runs/tq-qwen", { recursive: true });
 const t0 = Date.now();
 for (let i = 0; i < limited.length; i++) {
   const inst = limited[i]!;
+  const cached = doneMap.get(i);
+  if (cached !== undefined) { pairs.push({ instance: inst, response: cached }); continue; }
   // Thinking OFF (IFEval convention scores the ANSWER against format
   // constraints; a <think> trace fails word-count/punctuation rules
   // wholesale — 2026-08-19: thinking-on scored 47.5% strict vs ~expected
@@ -99,6 +115,7 @@ for (let i = 0; i < limited.length; i++) {
   const thinkEnd = response.lastIndexOf("</think>");
   if (thinkEnd !== -1) response = response.slice(thinkEnd + "</think>".length).trimStart();
   pairs.push({ instance: inst, response });
+  af(progPath, JSON.stringify({ i, fp, response }) + "\n");
   if ((i + 1) % 25 === 0) console.error(`  ${i + 1}/${limited.length} (${((Date.now() - t0) / (i + 1)).toFixed(0)} ms/prompt)`);
 }
 
