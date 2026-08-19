@@ -17,6 +17,7 @@
 // h/w positions and the pos-embed permutation are built in the same order.
 
 import { ptr, read } from "bun:ffi";
+import { existsSync, readFileSync } from "node:fs";
 import { MlxArray, cpuStream } from "../mlx/array";
 import { C, Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
@@ -94,25 +95,8 @@ export class Qwen3VLVisionTower {
     this.#mergerFc2B = t("merger.linear_fc2.bias");
   }
 
-  static load(modelDir: string): Qwen3VLVisionTower {
-    const arrMap = new BigUint64Array([C.mlx_map_string_to_array_new()]);
-    const metaMap = new BigUint64Array([C.mlx_map_string_to_string_new()]);
-    const arrMapPtr = ptr(arrMap);
-    const metaMapPtr = ptr(metaMap);
-    const status = C.mlx_load_safetensors(
-      arrMapPtr, metaMapPtr,
-      ptr(cstr(`${modelDir}/optiq/optiq_vision.safetensors`)), cpuStream,
-    );
-    C.mlx_map_string_to_string_free(read.u64(metaMapPtr, 0));
-    const handle = read.u64(arrMapPtr, 0);
-    if (status !== 0) {
-      // The out-param map was allocated regardless — free it on the error
-      // path too (2026-08-18 review; one-shot leak, but a leak).
-      C.mlx_map_string_to_array_free(handle);
-      throw new Error(`failed to load qwen vision sidecar from ${modelDir}`);
-    }
-    const weights = new Map<string, MlxArray>();
-    // Pull every tensor we model by constructed name (333 total).
+  /** The 333 tensor names the tower models, by constructed name. */
+  static #tensorNames(): string[] {
     const names: string[] = [
       "vision_tower.patch_embed.proj.weight", "vision_tower.patch_embed.proj.bias",
       "vision_tower.pos_embed.weight",
@@ -128,19 +112,75 @@ export class Qwen3VLVisionTower {
         "mlp.linear_fc2.weight", "mlp.linear_fc2.bias",
       ]) names.push(`vision_tower.blocks.${i}.${nm}`);
     }
+    return names;
+  }
+
+  /** Load one safetensors file's map and move `wanted` tensors into `out`
+   *  (missing names are skipped; the map is always freed). */
+  static #takeFromFile(path: string, wanted: string[], out: Map<string, MlxArray>): void {
+    const arrMap = new BigUint64Array([C.mlx_map_string_to_array_new()]);
+    const metaMap = new BigUint64Array([C.mlx_map_string_to_string_new()]);
+    const arrMapPtr = ptr(arrMap);
+    const metaMapPtr = ptr(metaMap);
+    const status = C.mlx_load_safetensors(arrMapPtr, metaMapPtr, ptr(cstr(path)), cpuStream);
+    C.mlx_map_string_to_string_free(read.u64(metaMapPtr, 0));
+    const handle = read.u64(arrMapPtr, 0);
+    if (status !== 0) {
+      // The out-param map was allocated regardless — free it on the error
+      // path too (2026-08-18 review; one-shot leak, but a leak).
+      C.mlx_map_string_to_array_free(handle);
+      throw new Error(`failed to load ${path}`);
+    }
     try {
-      for (const name of names) {
+      for (const name of wanted) {
+        if (out.has(name)) continue;
         const slot = new BigUint64Array([C.mlx_array_new()]);
         const slotPtr = ptr(slot);
-        if (C.mlx_map_string_to_array_get(slotPtr, handle, ptr(cstr(name))) !== 0)
-          throw new Error(`qwen vision sidecar missing tensor ${name}`);
-        weights.set(name, new MlxArray(read.u64(slotPtr, 0)));
+        if (C.mlx_map_string_to_array_get(slotPtr, handle, ptr(cstr(name))) !== 0) {
+          C.mlx_array_free(read.u64(slotPtr, 0));
+          continue;
+        }
+        out.set(name, new MlxArray(read.u64(slotPtr, 0)));
       }
+    } finally {
+      C.mlx_map_string_to_array_free(handle);
+    }
+  }
+
+  static load(modelDir: string): Qwen3VLVisionTower {
+    const names = Qwen3VLVisionTower.#tensorNames();
+    const weights = new Map<string, MlxArray>();
+    try {
+      const sidecar = `${modelDir}/optiq/optiq_vision.safetensors`;
+      if (existsSync(sidecar)) {
+        // OptiQ-convention sidecar (their artifacts + ours pre-2026-08-18).
+        Qwen3VLVisionTower.#takeFromFile(sidecar, names, weights);
+      } else {
+        // In-main fallback: the bf16 vision_tower.* tensors live in the main
+        // safetensors shards (the mlx-vlm convention — one copy serves both
+        // ecosystems; sidecar duplication retired 2026-08-18).
+        const idxPath = `${modelDir}/model.safetensors.index.json`;
+        let files: string[];
+        if (existsSync(idxPath)) {
+          const idx = JSON.parse(readFileSync(idxPath, "utf8")) as
+            { weight_map: Record<string, string> };
+          files = [...new Set(
+            names.map((n) => idx.weight_map[n]).filter((f): f is string => !!f),
+          )];
+          if (files.length === 0)
+            throw new Error(`no vision_tower tensors in ${modelDir} (index has none)`);
+        } else {
+          files = ["model.safetensors"];
+        }
+        for (const f of files)
+          Qwen3VLVisionTower.#takeFromFile(`${modelDir}/${f}`, names, weights);
+      }
+      for (const name of names)
+        if (!weights.has(name))
+          throw new Error(`qwen vision weights missing tensor ${name} (sidecar or in-main)`);
     } catch (e) {
       for (const [, a] of weights) a.dispose();
       throw e;
-    } finally {
-      C.mlx_map_string_to_array_free(handle);
     }
     return new Qwen3VLVisionTower(weights);
   }

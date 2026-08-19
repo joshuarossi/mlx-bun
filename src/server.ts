@@ -596,7 +596,12 @@ function makeVisionLoader(
   // the only consumer and casts it back (the gemma branches are gated on
   // `instanceof Gemma4Model`, so the union never crosses).
   if (model instanceof Qwen35Model) {
-    if (!existsSync(`${modelDir}/optiq/optiq_vision.safetensors`)) return null;
+    // Vision weights arrive either as the OptiQ-convention sidecar OR in-main
+    // (mlx-vlm convention; our artifacts ship one copy in-main since
+    // 2026-08-18 — the tower loader handles both).
+    const hasSidecar = existsSync(`${modelDir}/optiq/optiq_vision.safetensors`);
+    const hasInMain = config.raw.vision_config !== undefined;
+    if (!hasSidecar && !hasInMain) return null;
     return () =>
       Qwen3VLVisionTower.load(modelDir) as unknown as VisionEncoder;
   }
