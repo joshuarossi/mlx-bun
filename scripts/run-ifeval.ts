@@ -78,14 +78,18 @@ if (adapterDir) {
   model.loraState.active = ["orpo"];
 }
 
-const eos = tok.eosTokenId != null ? [tok.eosTokenId] : [];
+// Production generation path (src/generate) — the model-level .generate()
+// probe helper leaks per-step arrays and blows Metal's resident-buffer
+// limit (499k) across many long generations (2026-08-19 ifeval@qwen3.8).
+const { generate: produce } = await import("../src/generate");
 const pairs: Array<{ instance: IFEvalInstance; response: string }> = [];
 const t0 = Date.now();
 for (let i = 0; i < limited.length; i++) {
   const inst = limited[i]!;
   const prompt = tmpl.render([{ role: "user", content: inst.prompt }], { addGenerationPrompt: true });
   const ids = tok.encode(prompt);
-  const outIds = model.generate(ids, maxNew, eos);
+  const outIds: number[] = [];
+  for await (const t of produce(model, ids, { maxTokens: maxNew, temperature: 0 })) outIds.push(t.token);
   pairs.push({ instance: inst, response: tok.decode(outIds, true) });
   if ((i + 1) % 25 === 0) console.error(`  ${i + 1}/${limited.length} (${((Date.now() - t0) / (i + 1)).toFixed(0)} ms/prompt)`);
 }
