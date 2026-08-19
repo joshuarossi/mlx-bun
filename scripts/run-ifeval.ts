@@ -86,11 +86,19 @@ const pairs: Array<{ instance: IFEvalInstance; response: string }> = [];
 const t0 = Date.now();
 for (let i = 0; i < limited.length; i++) {
   const inst = limited[i]!;
-  const prompt = tmpl.render([{ role: "user", content: inst.prompt }], { addGenerationPrompt: true });
+  // Thinking OFF (IFEval convention scores the ANSWER against format
+  // constraints; a <think> trace fails word-count/punctuation rules
+  // wholesale — 2026-08-19: thinking-on scored 47.5% strict vs ~expected
+  // high-70s). Belt-and-braces: also strip any think block from the text.
+  const prompt = tmpl.render([{ role: "user", content: inst.prompt }],
+    { addGenerationPrompt: true, enableThinking: false });
   const ids = tok.encode(prompt);
   const outIds: number[] = [];
   for await (const t of produce(model, ids, { maxTokens: maxNew, temperature: 0 })) outIds.push(t.token);
-  pairs.push({ instance: inst, response: tok.decode(outIds, true) });
+  let response = tok.decode(outIds, true);
+  const thinkEnd = response.lastIndexOf("</think>");
+  if (thinkEnd !== -1) response = response.slice(thinkEnd + "</think>".length).trimStart();
+  pairs.push({ instance: inst, response });
   if ((i + 1) % 25 === 0) console.error(`  ${i + 1}/${limited.length} (${((Date.now() - t0) / (i + 1)).toFixed(0)} ms/prompt)`);
 }
 
