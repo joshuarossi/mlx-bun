@@ -17,6 +17,15 @@ from mlx_lm.utils import load
 
 model_dir = sys.argv[1]
 n = int(sys.argv[2]) if len(sys.argv) > 2 else 198
+MAX_TOKENS = int(sys.argv[3]) if len(sys.argv) > 3 else 12288
+# resume: per-question results persisted; finished ids skipped on restart
+import json as jsonmod, os
+RES = os.path.join("runs", "tq-qwen", "gpqa-progress.jsonl")
+done = {}
+if os.path.exists(RES):
+    for line in open(RES):
+        r = jsonmod.loads(line)
+        done[r["i"]] = r
 
 csv_path = hf_hub_download("Idavidrein/gpqa", "gpqa_diamond.csv", repo_type="dataset")
 import csv as csvmod
@@ -28,6 +37,10 @@ letters = ["A", "B", "C", "D"]
 correct = 0
 answered = 0
 for i, r in enumerate(rows):
+    if i in done:
+        correct += int(done[i]["ok"])
+        answered += int(done[i]["pred"] is not None)
+        continue
     opts = [r["Correct Answer"], r["Incorrect Answer 1"], r["Incorrect Answer 2"], r["Incorrect Answer 3"]]
     rng = random.Random(1000 + i)
     order = [0, 1, 2, 3]
@@ -40,7 +53,7 @@ for i, r in enumerate(rows):
     msgs = [{"role": "user", "content": body}]
     prompt = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False,
                                      enable_thinking=True, reasoning_effort="xhigh")
-    out = generate(model, tok, prompt=prompt, max_tokens=6144)
+    out = generate(model, tok, prompt=prompt, max_tokens=MAX_TOKENS)
     tail = out.split("</think>")[-1]
     m = re.search(r"Answer:\s*\(?([ABCD])", tail) or re.search(r"\b([ABCD])\)?\s*$", tail.strip()) \
         or re.search(r"Answer:\s*\(?([ABCD])", out)
@@ -50,6 +63,8 @@ for i, r in enumerate(rows):
     answered += int(pred is not None)
     print(f"  {i + 1}/{len(rows)} {'OK' if ok else ('MISS' if pred else 'NO-ANSWER')} "
           f"(acc {correct / (i + 1):.3f}, out {len(out)} ch)", flush=True)
+    with open(RES, "a") as f:
+        f.write(jsonmod.dumps({"i": i, "ok": ok, "pred": pred, "out_len": len(out)}) + "\n")
     mx.clear_cache()
 
 print(f"RESULT gpqa-diamond-xhigh {model_dir}: {correct}/{len(rows)} = "
