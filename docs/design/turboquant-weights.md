@@ -315,6 +315,24 @@ motion described; AVFoundation chain), MTP harness 76% accept /
 (consistent with verify-width reduction-order near-ties, 12B step-0
 class — margin analysis queued; NOT claimed lossless on the card).
 
+## Territory-mapping campaign (2026-08-18/19, Josh-directed: "map all the
+levers before concluding TQ-off")
+
+**sens3 arm (Josh's recipe: rotated 3-bit base + sensitivity-driven 8-bit,
+4.26 bpw / 15.25 GB incl. vision):** ppl 4.630 ±0.058 — TIED with the
+4.80-bpw flagship (4.618) at −0.54 bpw, and a full recovery over
+unprotected TQ-mixed (4.93). GSM8K 46/50 = 92% (plateau band). **MMLU
+83/100 — the 3-bit-base dip persists** (TQ-mixed scored 82): two
+independent 3-bit-base arms at 82–83 vs the 87–89 plateau → the
+knowledge-recall damage is SMEARED across the MLP long tail; KL-derived
+sensitivity shields fluency, not recall. Lever under test next: rotated
+4-bit g128 (4.25 bpw — same size, 4-bit granularity everywhere).
+
+Perplexity proxy calibration (from our own table): deltas <~0.1 ppl are
+task-invisible; ~0.3+ coincides with visible MMLU damage; ppl's
+remaining role is catastrophe detection + screening. mlx kernel bound:
+group_size ∈ {32, 64, 128} — 256+ needs custom kernels (non-goal).
+
 ## Known engine gaps found in passing (not TQ defects)
 
 - `mlx-bun perplexity` cannot score qwen3_5: it routes through
