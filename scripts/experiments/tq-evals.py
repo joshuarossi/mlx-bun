@@ -43,6 +43,38 @@ if task == "mmlu":
         mx.clear_cache()
     print(f"RESULT mmlu {model_dir}: {correct}/{len(rows)} = {correct / len(rows) * 100:.1f}%")
 
+elif task == "gsm8k-xhigh":
+    # Thinking ON at reasoning_effort=xhigh — Qwen3.8's headline mode and the
+    # model's default. Long traces (1-3k tok) make this both the max-capability
+    # row AND the most degradation-sensitive instrument (error compounds over
+    # the chain). Extraction reads AFTER the </think> block.
+    from mlx_lm.generate import generate
+
+    rows = [json.loads(l) for l in open(DATA / "gsm8k_optiq_frozen.jsonl")][:n]
+    correct = 0
+    for i, r in enumerate(rows):
+        msgs = [{"role": "user", "content": r["question"] +
+                 "\nGive the final number after '####'."}]
+        prompt = tok.apply_chat_template(msgs, add_generation_prompt=True,
+                                         tokenize=False, enable_thinking=True,
+                                         reasoning_effort="xhigh")
+        out = generate(model, tok, prompt=prompt, max_tokens=3584)
+        answer = out.split("</think>")[-1]
+        m = re.search(r"####\s*\$?([-\d,.]+)", answer)
+        if not m:
+            m = re.search(r"####\s*\$?([-\d,.]+)", out)
+        pred = m.group(1).replace(",", "").rstrip(".") if m else None
+        gm = re.search(r"####\s*([-\d,.]+)", r["answer"])
+        g = gm.group(1).replace(",", "").rstrip(".")
+        try:
+            ok = pred is not None and abs(float(pred) - float(g)) < 1e-6
+        except Exception:
+            ok = pred == g
+        correct += int(ok)
+        print(f"  {i + 1}/{len(rows)} {'OK' if ok else 'MISS'} (out {len(out)} ch)", flush=True)
+        mx.clear_cache()
+    print(f"RESULT gsm8k-xhigh {model_dir}: {correct}/{len(rows)} = {correct / len(rows) * 100:.1f}%")
+
 elif task == "gsm8k-templated":
     # Native-chat-template GSM8K — the serving-path reasoning measure. The
     # raw-completion variant below doubles as an EOS-cliff robustness probe
