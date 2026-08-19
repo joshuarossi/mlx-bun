@@ -109,7 +109,10 @@ def main():
             # OptiQ semantics: sensitivities[b] = measured KL GAIN of running
             # this module at b bits (baseline entry is 0) — higher at high_bits
             # means upgrading pays. (First read had the sign flipped → 0 picks.)
-            benefit = l["sensitivities"][str(args.high_bits)] - l["sensitivities"][str(args.bits)]
+            sv = l["sensitivities"]
+            # sensitivities exist only for the bits OptiQ measured ({4,8});
+            # for other bases fall back to the 4-bit entry (their 0 baseline).
+            benefit = sv.get(str(args.high_bits), 0.0) - sv.get(str(args.bits), sv.get("4", 0.0))
             rows.append((benefit / max(l["param_count"], 1), benefit, l["layer_name"], l["param_count"]))
         rows.sort(reverse=True)
         base_bits_total = total_params * (args.bits + 32 / args.group_size)
