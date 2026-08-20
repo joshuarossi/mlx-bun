@@ -2746,6 +2746,13 @@ remains the KV codec's job); GGUF/AWQ export.
             mlx-bun and match the mlx-lm scores — turns cross-engine
             parity into a certification-data claim, and future eval
             sweeps run in-engine so soak telemetry is OURS.
+      - [ ] 24 GB near-ceiling UX (M4 2026-08-20: 17 GB model + 1k
+            prefill = uncatchable async-GPU-OOM panic at the DEFAULT
+            iogpu wired limit ≈75% RAM; `sysctl iogpu.wired_limit_mb=21504`
+            fixes it): serve/cli should detect weightsBytes ≈ default
+            limit and PRINT the sysctl advice up front instead of dying
+            mid-request; document in memory.md + model README ("on 24 GB
+            Macs…"). Admission doctrine: clamp/advise, never refuse.
       - (bf16 qwen3_5 loading — .scales hard-require — stays backlog:
         not needed to serve the published quant.)
 
