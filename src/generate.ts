@@ -8,8 +8,10 @@
 
 import { MlxArray, gpuStream } from "./mlx/array";
 import {
+  activeMemory,
   clearCache,
   maxRecommendedWorkingSetSize,
+  peakMemory,
   setWiredLimit,
   synchronize,
 } from "./mlx/ffi";
@@ -763,6 +765,8 @@ async function* generateInner(
         // gap's main term).
         clearCache();
         pos += n;
+        if (process.env.MLX_BUN_PREFILL_MEM_LOG === "1")
+          console.error(`[prefill-mem] ${pos} active ${(activeMemory() / 2 ** 30).toFixed(2)} peak ${(peakMemory() / 2 ** 30).toFixed(2)}`);
         // Macrotask yield between chunks (runtime-isolation.md Phase 1).
         await new Promise<void>((r) => setImmediate(r));
       }
