@@ -409,7 +409,7 @@ export class SSMCache implements Cache {
       const hi = [...a.shape];
       hi[0] = i + 1;
       const view = a.slice(lo, hi);
-      const own = ops.contiguous(view);
+      const own = ops.copyOf(view); // TRUE copy: contiguous(view) is a no-op VIEW when already contiguous — pins the source buffer (2026-08-20 DeltaNet conv leak class)
       view.dispose();
       return own;
     };

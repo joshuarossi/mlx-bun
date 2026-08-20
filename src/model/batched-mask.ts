@@ -242,7 +242,7 @@ export function extractKVRow(cache: KVCache, leftPad: number, i: number): KVCach
   const cut = (a: MlxArray): MlxArray => {
     const [, H, , D] = a.shape as [number, number, number, number];
     const view = a.slice([i, 0, leftPad, 0], [i + 1, H, S, D]);
-    const own = ops.contiguous(view);
+    const own = ops.copyOf(view); // TRUE copy: contiguous(view) is a no-op VIEW when already contiguous — pins the source buffer (2026-08-20 DeltaNet conv leak class)
     view.dispose();
     return own;
   };

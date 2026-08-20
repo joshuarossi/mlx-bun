@@ -88,7 +88,7 @@ function trimToTokens(array: MlxArray, tokens: number): MlxArray {
   const stop = [...array.shape];
   stop[1] = tokens;
   const view = array.slice(start, stop);
-  const exact = ops.contiguous(view);
+  const exact = ops.copyOf(view); // TRUE copy: see 2026-08-20 contiguous-view pin class
   view.dispose();
   return exact;
 }
@@ -626,7 +626,7 @@ export class Glm52Cache implements BatchableCache {
         [0, removablePad, 0],
         [keep.length, this.offset, array.shape[2]!],
       );
-      const exact = ops.contiguous(view);
+      const exact = ops.copyOf(view); // TRUE copy: see 2026-08-20 contiguous-view pin class
       selected.dispose();
       view.dispose();
       return exact;

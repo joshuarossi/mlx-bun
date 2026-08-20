@@ -265,7 +265,7 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
         }
         const cutV = tt.slice([0, 0, pad, 0], [1, H, valid, D]);
         tt.dispose();
-        const own = ops.contiguous(cutV);
+        const own = ops.copyOf(cutV); // TRUE copy: see 2026-08-20 contiguous-view pin class
         cutV.dispose();
         return own;
       });
