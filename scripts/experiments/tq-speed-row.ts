@@ -74,7 +74,7 @@ for (const target of lens) {
     const t0 = performance.now();
     let first = 0;
     let n = 0;
-    for await (const t of generate(model, ids, { maxTokens: gen, temperature: 0, ...kvOpts })) {
+    for await (const t of generate(model, ids, { maxTokens: gen, temperature: 0, ...kvOpts, ...(process.env.MLX_BUN_SPEEDROW_CHUNK ? { prefillChunkSize: Number(process.env.MLX_BUN_SPEEDROW_CHUNK) } : {}) })) {
       if (n === 0) first = performance.now();
       n++;
     }
