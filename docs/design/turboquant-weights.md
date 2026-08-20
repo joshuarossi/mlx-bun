@@ -413,3 +413,29 @@ its serve gauntlet, quiet-box TPS, M4 Pro 24 GB cut (Josh-gated).
 
 Mirrors the PLAN.md phase: no custom weight format / new qmm kernels,
 no activation quant, no runtime weight rotation, no GGUF/AWQ export.
+
+## M4 Pro 24 GB speed row (2026-08-20, mlx-bun, winner artifact)
+
+Measured on the second reference machine (M4 Pro, 24 GB, ~273 GB/s) with
+`sysctl iogpu.wired_limit_mb=21504` and the DeltaNet leak fix (37de0d0):
+
+| prompt | prefill tok/s | TTFT | decode tok/s | notes |
+|---|---|---|---|---|
+| 1,024 | 127 | 8.1 s | 14.66 (1.1%) | chunk 2048 |
+| 8,192 | 124 | 66 s | 14.13 (1.3%) | chunk 2048 |
+| 32,768 | 114 | 288 s | 12.77 | chunk 1024 (peak 19.3 GB) |
+
+- **Compute-bound decode confirmed cross-machine:** 14.7 tok/s here vs
+  11.8 on the M1 Max (400 GB/s) — the machine with 68% of the bandwidth
+  is 25% FASTER. Decode is dequant-ALU-bound, not weight-streaming-bound
+  (supporting M1 telemetry: GPU 100% @ ~266 GB/s of 400). Kernel headroom
+  to the ~24 tok/s bandwidth roofline is a future perf program.
+- **Decode-at-depth is nearly flat** (−13% at 32× context): only 16 of 64
+  layers grow KV; DeltaNet state is constant.
+- **Prefill transient scales with chunk × offset** (~2.8 GB at 24k with
+  2048-chunks; measured via MLX_BUN_PREFILL_MEM_LOG): on 24 GB the 32k row
+  needs 1024-token chunks (−8% prefill). Engine follow-up: serve should
+  scale prefillChunkSize from fit.ts headroom automatically.
+- Prefill absolute rate (~125 tok/s) is the weak axis — suspected
+  DeltaNet per-token recurrence during prefill; compare against mlx-lm
+  same-box before treating as our bug (oracle-gap rule).
