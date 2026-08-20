@@ -28,10 +28,17 @@ MAX_TOKENS = int(sys.argv[3]) if len(sys.argv) > 3 else 12288
 SERVER_URL = None
 if "--server-url" in sys.argv:
     SERVER_URL = sys.argv[sys.argv.index("--server-url") + 1].rstrip("/")
+# --shard K/N — process only questions where i % N == K (0-based). Each shard
+# writes its own progress file; shards merge by concatenation (per-question
+# rows are self-describing). Farm mode: run N rented boxes, one shard each.
+SHARD_K, SHARD_N = 0, 1
+if "--shard" in sys.argv:
+    SHARD_K, SHARD_N = map(int, sys.argv[sys.argv.index("--shard") + 1].split("/"))
 # resume: per-question results persisted; finished ids skipped on restart
 import json as jsonmod, os
-RES = os.path.join("runs", "tq-qwen",
-                   "gpqa-progress-serve.jsonl" if ("--server-url" in sys.argv) else "gpqa-progress.jsonl")
+s_suffix = "-serve" if ("--server-url" in sys.argv) else ""
+sh_suffix = "" if ("--shard" not in sys.argv) else f"-shard{sys.argv[sys.argv.index('--shard')+1].replace('/','of')}"
+RES = os.path.join("runs", "tq-qwen", f"gpqa-progress{s_suffix}{sh_suffix}.jsonl")
 done = {}
 if os.path.exists(RES):
     for line in open(RES):
@@ -70,6 +77,8 @@ letters = ["A", "B", "C", "D"]
 correct = 0
 answered = 0
 for i, r in enumerate(rows):
+    if i % SHARD_N != SHARD_K:
+        continue
     if i in done:
         correct += int(done[i]["ok"])
         answered += int(done[i]["pred"] is not None)
@@ -108,5 +117,6 @@ for i, r in enumerate(rows):
         f.write(jsonmod.dumps({"i": i, "ok": ok, "pred": pred, "out_len": len(out)}) + "\n")
     mx.clear_cache()
 
-print(f"RESULT gpqa-diamond-xhigh {model_dir}: {correct}/{len(rows)} = "
-      f"{correct / len(rows) * 100:.1f}%  (answered {answered}/{len(rows)})")
+n_proc = len([i for i in range(len(rows)) if i % SHARD_N == SHARD_K])
+print(f"RESULT gpqa-diamond-xhigh {model_dir} shard {SHARD_K}/{SHARD_N}: {correct}/{n_proc} = "
+      f"{correct / max(1, n_proc) * 100:.1f}%  (answered {answered}/{n_proc})")
