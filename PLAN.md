@@ -2724,6 +2724,21 @@ weight-bandwidth-bound — w4a16-compute-precision-spike.md); runtime
 weight rotation of any kind (weights fold offline; online rotation
 remains the KV codec's job); GGUF/AWQ export.
 
+Queued follow-ups (Josh 2026-08-19, post-campaign — GPU owned by the
+certification suite until then):
+- [ ] **DSpark×27B Track A:** confidence-scheduled verification on the
+      stock MTP head (dynamic γ, STS calibration; no drafter training) —
+      paired A/B vs fixed-γ MTP. Design recorded in
+      docs/design/dspark-speculative-decoding.md §"27B program".
+- [ ] **DSpark×27B Track B:** true multi-token drafter targeting the TQ
+      trunk (the 17 GB quant kills the old "27B infeasible to train"
+      premise; teacher-forced data gen on the frozen trunk). Gate: beat
+      MTP's 0.68 generalizing acceptance or drop.
+- [ ] **ORPO LoRA on the TQ 27B (QLoRA shape):** frozen 17 GB base +
+      bf16 adapters; first step is a one-layer-backward memory probe at
+      target seq lens. Adapters are rotation-basis-married to this
+      artifact (card note if published).
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the
