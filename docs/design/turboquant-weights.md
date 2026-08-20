@@ -439,3 +439,20 @@ Measured on the second reference machine (M4 Pro, 24 GB, ~273 GB/s) with
 - Prefill absolute rate (~125 tok/s) is the weak axis — suspected
   DeltaNet per-token recurrence during prefill; compare against mlx-lm
   same-box before treating as our bug (oracle-gap rule).
+
+### Compact sibling on the M4 (same protocol, chunk 1024 all rows)
+
+| prompt | prefill tok/s | TTFT | decode tok/s (spread) |
+|---|---|---|---|
+| 1,024 | 117 | 8.8 s | **17.14** (0.7%) |
+| 8,192 | 124 | 66 s | 16.05 (2.4%) |
+| 32,768 | 85 | 6.4 min | 13.80 (2.9%) |
+
+**The 3-bit speed verdict is GPU-generation-dependent:** on M1 Max the
+3-bit-heavy artifact decoded SLOWER than the 4/8 winner (10.94 vs 11.80 —
+unpack ALU dominates); on M4 Pro it decodes FASTER (17.14 vs 14.66 —
+newer ALU absorbs the unpack, fewer bytes win). Card guidance: M1-class →
+winner fastest; M4-class → compact is smaller AND faster. Compact 32k
+prefill (85 tok/s) is its weak axis. Peak not instrumented this run;
+estimated ~16 GB at 32k (likely fits the DEFAULT 24 GB wired limit —
+untested).
