@@ -2746,6 +2746,21 @@ remains the KV codec's job); GGUF/AWQ export.
             mlx-bun and match the mlx-lm scores — turns cross-engine
             parity into a certification-data claim, and future eval
             sweeps run in-engine so soak telemetry is OURS.
+      - [x] **DeltaNet prefill leak FOUND+FIXED (2026-08-20, the gate's
+            first big catch):** qwen3_5 leaked ~1 MB/token of active GPU
+            memory in prefill (2.0 GB per 2048-chunk; 46 GB at 32k;
+            async-OOM on the 24 GB M4 at ~10-16k). Root cause:
+            `cache.conv = ops.contiguous(tail-slice)` — the slice is
+            already row-contiguous at B=1, so contiguous() returned a
+            NO-OP VIEW pinning the whole [1,S+3,10240] chunk buffer
+            (42 MB × 48 layers = the 2.015 GB, exact). Fix: new
+            `mlx_copy` binding + `ops.copyOf` true copy; probe now flat
+            (16.3→17.2 GB over 16k; peak 19.2 — 27B fits 24 GB). Proven
+            by removal; a sibling-retention hypothesis was tested first
+            and falsified. Audit swept 7 more extract-and-own
+            `contiguous(view)` sites (batched per-row KV extract — the
+            A7 RSS residual suspect — glm52 trim, SSM row cut) → all
+            copyOf now. Diagnosis harness: tq-mem-probe.ts.
       - [ ] 24 GB near-ceiling UX (M4 2026-08-20: 17 GB model + 1k
             prefill = uncatchable async-GPU-OOM panic at the DEFAULT
             iogpu wired limit ≈75% RAM; `sysctl iogpu.wired_limit_mb=21504`
