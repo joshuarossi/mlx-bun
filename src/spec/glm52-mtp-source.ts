@@ -305,6 +305,14 @@ export class Glm52NativeMtpSource implements DraftSource {
         config.rmsNormEps,
       );
       logits = this.model.logitsFromHidden(headInput);
+      // Sampler contract is [1, V] — same 3-D top-k hazard as
+      // qwen-mtp-source #sample (2026-08-20); see the comment there.
+      {
+        const V = logits.shape[logits.shape.length - 1]!;
+        const flat = ops.reshape(logits, [1, V]);
+        logits.dispose();
+        logits = flat;
+      }
       logprobs = toLogprobs(logits);
       sampled = this.sampler(logprobs, sampleStep);
       return {

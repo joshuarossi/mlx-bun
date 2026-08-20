@@ -408,8 +408,16 @@ export class QwenMtpSource implements DraftSource {
    *  and the request sampler (per-step RNG stream discipline). */
   #sample(moduleOut: MlxArray, step: number): number {
     const logits = this.#target.logitsFromHidden(moduleOut);
-    const logprobs = toLogprobs(logits);
+    // Sampler contract is [1, V] (the main decode loop's shape). moduleOut
+    // is [1, 1, H] → logits [1, 1, V]; without this reshape any sampler
+    // that slices 2-D (top-k) throws "[slice] Invalid number of indices…
+    // dimension 3" — the serve-lane MTP 500 (chat defaults carry the
+    // model's top_k=20; the greedy bench harness never hit it).
+    const V = logits.shape[logits.shape.length - 1]!;
+    const flat = ops.reshape(logits, [1, V]);
     logits.dispose();
+    const logprobs = toLogprobs(flat);
+    flat.dispose();
     const tok = this.#sampler(logprobs, step);
     logprobs.dispose();
     const id = ops.itemUint32(tok);
