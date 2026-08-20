@@ -3773,6 +3773,9 @@ export function createServer(
             }, grammarWarning ? { headers: { Warning: grammarWarning } } : undefined);
           }
         } catch (e) {
+          // A 500 with no server-side trace is undebuggable in the field —
+          // always log the stack (the JSON body keeps only the message).
+          console.error(`[serve] 500 on chat request:\n${(e as Error).stack ?? e}`);
           return Response.json({ error: { message: (e as Error).message } }, { status: 500 });
         }
       };
