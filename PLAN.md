@@ -2734,12 +2734,17 @@ remains the KV codec's job); GGUF/AWQ export.
             forwardHidden prefill (bit-exact: LM head never touches
             cache) + mlx-lm clear cadence. Verify at 27B post-GPQA
             (memory profile + a re-scored subset).
-      - [ ] MTP serve-lane 500 (`[slice] Invalid number of indices…
-            dimension 3`, stock artifacts too): all spec-path slices are
-            rank-consistent by inspection — needs a live repro stack
-            (serve + one chat request) the moment the GPU frees. Fix +
-            a curl-level regression test. THE blocker: the card
-            advertises `--draft-kind mtp`.
+      - [x] **MTP serve-lane FIXED (2026-08-20, M4, live HTTP repro):**
+            TWO defects in the one advertised feature — (1) cli.ts's
+            draft gate dropped `--draft-kind mtp` without `--draft-model`
+            (bundled `mtp/` resolution unreachable; silent no-op);
+            (2) draft #sample fed the sampler [1,1,V] logits where the
+            contract is [1,V] — top-k's 2-D slice threw the 500 (chat
+            defaults carry top_k=20; the greedy harness never hit it;
+            same latent bug fixed in glm52-mtp-source). Chat 500s now
+            log server-side stacks. Verified over HTTP on the 24 GB M4:
+            serial+spec lane, default + greedy sampling, 2.3 tokens per
+            target forward, zero 500s.
       - [ ] `mlx-bun perplexity` on qwen3_5 (trainForward cache stub
             lacks SSMCache.advance — qwen3_5.ts:226).
       - [ ] Dogfood close-out: re-score a GPQA subset (~30 q) through
