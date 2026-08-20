@@ -110,7 +110,12 @@ for (let i = 0; i < limited.length; i++) {
     { addGenerationPrompt: true, enableThinking: false });
   const ids = tok.encode(prompt);
   const outIds: number[] = [];
-  for await (const t of produce(model, ids, { maxTokens: maxNew, temperature: 0 })) outIds.push(t.token);
+  // Official instruct-mode sampling (Qwen3.8-27B card, Best Practices §1):
+  // temp 0.7 / top_p 0.80 / top_k 20 / min_p 0 / presence_penalty 1.5.
+  for await (const t of produce(model, ids, {
+    maxTokens: maxNew, temperature: 0.7, topP: 0.8, topK: 20, minP: 0,
+    presencePenalty: 1.5,
+  })) outIds.push(t.token);
   let response = tok.decode(outIds, true);
   const thinkEnd = response.lastIndexOf("</think>");
   if (thinkEnd !== -1) response = response.slice(thinkEnd + "</think>".length).trimStart();

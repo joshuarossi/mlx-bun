@@ -13,6 +13,7 @@ import sys
 import mlx.core as mx
 from huggingface_hub import hf_hub_download
 from mlx_lm.generate import generate
+from mlx_lm.sample_utils import make_sampler
 from mlx_lm.utils import load
 
 model_dir = sys.argv[1]
@@ -49,14 +50,19 @@ for i, r in enumerate(rows):
     body = r["Question"].strip() + "\n\n"
     for li, oi in enumerate(order):
         body += f"{letters[li]}) {opts[oi].strip()}\n"
-    body += "\nEnd your response with exactly: Answer: <letter>"
+    # Official Qwen3.8 GPQA prompt (model card, verbatim) + official
+    # thinking-mode sampling below (temp 1.0 / top_p 0.95 / top_k 20).
+    body += "\nPlease reason step by step, and put your final answer within \\boxed{}."
     msgs = [{"role": "user", "content": body}]
     prompt = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False,
                                      enable_thinking=True, reasoning_effort="xhigh")
-    out = generate(model, tok, prompt=prompt, max_tokens=MAX_TOKENS)
+    mx.random.seed(1000 + i)  # per-question seed: resumable-deterministic
+    sampler = make_sampler(temp=1.0, top_p=0.95, top_k=20, min_p=0.0)
+    out = generate(model, tok, prompt=prompt, max_tokens=MAX_TOKENS, sampler=sampler)
     tail = out.split("</think>")[-1]
-    m = re.search(r"Answer:\s*\(?([ABCD])", tail) or re.search(r"\b([ABCD])\)?\s*$", tail.strip()) \
-        or re.search(r"Answer:\s*\(?([ABCD])", out)
+    m = re.search(r"boxed\{+\s*\\?(?:text\{)?\(?([ABCD])", tail) \
+        or re.search(r"Answer:\s*\(?([ABCD])", tail) \
+        or re.search(r"\b([ABCD])\)?\s*$", tail.strip())
     pred = m.group(1) if m else None
     ok = pred == gold_letter
     correct += int(ok)
