@@ -1598,6 +1598,25 @@ switch (cmd) {
     const config = await loadModelConfig(m.path);
     const report = fit(config, m.sizeBytes, 8192, undefined, undefined, m.expertsBytes);
     sFit.done(`${style.bold(m.repoId)} ${style.dim(`· ${gb(m.sizeBytes)} · ~${report.predictedDecodeTps.toFixed(0)} tok/s predicted`)}${picked ? style.dim(" · auto-picked (override: mlx-bun serve <query>)") : ""}`);
+    // Near-ceiling advisory (admission doctrine: advise, never refuse). A
+    // model near the DEFAULT Metal wired ceiling (~75% of RAM) dies with an
+    // UNCATCHABLE async-GPU-OOM on long prefills (M4 24 GB × 17 GB model,
+    // 2026-08-20) — surface the standard remedy up front instead.
+    {
+      const { maxRecommendedWorkingSetSize } = await import("./mlx/ffi");
+      const ceiling = maxRecommendedWorkingSetSize();
+      const sysctlRaw = Bun.spawnSync(["sysctl", "-n", "iogpu.wired_limit_mb"]).stdout.toString().trim();
+      const limitIsDefault = sysctlRaw === "0" || sysctlRaw === "";
+      if (limitIsDefault && ceiling > 0 && m.sizeBytes > 0.8 * ceiling) {
+        const ramGb = Number(Bun.spawnSync(["sysctl", "-n", "hw.memsize"]).stdout.toString().trim()) / 2 ** 30;
+        const suggestMb = Math.floor((ramGb - 2.5) * 1024);
+        console.error(style.dim(
+          `  ! ${gb(m.sizeBytes)} model vs ~${gb(ceiling)} default GPU ceiling — long prompts can\n` +
+          `    hit an uncatchable Metal OOM. If that happens, raise the limit first:\n` +
+          `      sudo sysctl iogpu.wired_limit_mb=${suggestMb}   (resets on reboot)`,
+        ));
+      }
+    }
     const sNative = step("native runtime");
     await ensureNative(sNative);
     sNative.done("native runtime ready");

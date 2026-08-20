@@ -81,6 +81,22 @@ model loads, so they apply to `mlx-bun pi` too. They affect the
 3.2) — see
 [Levers that don't reach the batched lane](#--batch-n-is-compat-mode--perf-flags-dont-apply-by-design).
 
+## Near-ceiling models on small machines (24 GB)
+
+A model whose weights approach the DEFAULT macOS GPU wired ceiling (~75% of
+RAM — e.g. a 17 GB model on a 24 GB machine) loads and serves short prompts,
+but a long prefill can exceed the ceiling and die with an **uncatchable**
+Metal OOM (the failure is asynchronous; no server error is possible).
+`mlx-bun serve` detects this at startup and prints the remedy:
+
+```
+sudo sysctl iogpu.wired_limit_mb=<RAM_MB - ~2500>   # resets on reboot
+```
+
+For very long contexts on such machines, additionally prefer `--kv-quant`
+(e.g. `turbo`) and expect the engine to use smaller prefill chunks — the
+prefill transient scales with chunk size × context depth.
+
 ## Per-request overrides
 
 Most quality knobs can be set per request in the chat body and override

@@ -20,6 +20,7 @@ import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import { createCausalMask, type Cache, type Mask } from "../model/gemma4-base";
+import { SSMCache } from "../model/qwen3-delta";
 import type { RuntimeModel } from "../model/factory";
 
 /** Stateless cache for the training forward. Training is always a single
@@ -57,6 +58,35 @@ export class TrainingCache implements Cache {
   }
 }
 
+/** Stateless DeltaNet stand-in (same re-runnability contract as
+ *  TrainingCache): state WRITES are discarded immediately, so a gradient-
+ *  checkpoint recompute re-enters with the identical null-state conditions;
+ *  reads always yield null (zeros inside the kernel) — a full-sequence
+ *  forward from t=0, exactly the training/perplexity semantics. Before this
+ *  existed, qwen3_5 routed its DeltaNet layers into plain TrainingCache and
+ *  threw on the missing conv/recurrent/advance surface (the recorded
+ *  "mlx-bun perplexity cannot score qwen3_5" gap). */
+export class TrainingSSMCache implements Cache {
+  offset = 0;
+  specRound: null = null;
+  get conv(): MlxArray | null { return null; }
+  set conv(v: MlxArray | null) { v?.dispose(); }
+  get recurrent(): MlxArray | null { return null; }
+  set recurrent(v: MlxArray | null) { v?.dispose(); }
+  advance(_n: number): void { /* offset pinned at 0 */ }
+  rowOffset(_i: number): number { return 0; }
+  updateAndFetch(): [MlxArray, MlxArray] {
+    throw new Error("TrainingSSMCache: DeltaNet layers do not use the KV path");
+  }
+  makeMask(_N: number, _w: number | null): Mask {
+    return { mode: "", arr: null }; // ssm_mask is None at B=1 (SSMCache parity)
+  }
+  state(): MlxArray[] { return []; }
+  isTrimmable(): boolean { return true; }
+  trim(_n: number): void { /* stateless */ }
+  dispose(): void { /* owns no arrays */ }
+}
+
 /** Run a full-sequence forward for training.
  *  @param ids int32 array [B, L].
  *  @returns logits [B, L, V] (caller owns; dispose when done).
@@ -90,7 +120,8 @@ export function trainForwardHidden(
   // B=1 / no padding: stateless offset-0 caches (one per donor layer), so the
   // forward is pure and safe to recompute under gradient checkpointing.
   const probe = model.makeCache();
-  const cache: Cache[] = probe.map(() => new TrainingCache());
+  const cache: Cache[] = probe.map((c) =>
+    c instanceof SSMCache ? new TrainingSSMCache() : new TrainingCache());
   for (const c of probe) c.dispose();
   try {
     return model.forwardHidden(ids, cache); // [B, L, hidden]
