@@ -6,6 +6,7 @@
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
 import { generate, type GenerateOptions } from "../generate";
+import { clearCache } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import { ChatTemplate } from "../chat-template";
 import { loadModelConfig, type ModelConfig } from "../config";
@@ -124,7 +125,23 @@ export function greedyDecodeBitExact(tm: TaskModel, ids: number[], maxTokens: nu
   if (tm.activeAdapters) tm.model.loraState.active = tm.activeAdapters; // apply the mounted adapter
   const cache = tm.model.makeCache();
   try {
-    if (ids.length > 1) tm.model.forward(ids.slice(0, -1), cache).dispose(); // prefill
+    // Chunked, LM-head-free prefill. The old single-shot `forward(prompt)`
+    // materialized [1, L, vocab] logits just to discard them — at a 248k
+    // vocab that's ~1 GB per 1k prompt tokens, and with no allocator-cache
+    // clears the Metal buffer cache retained every giant freed tensor
+    // (the 27B capability-suite 73 GB swap-thrash). Prefill only needs the
+    // cache state, which forwardHidden advances identically (the LM head
+    // never touches the cache) — bit-exact by construction. Chunk size and
+    // clear cadence mirror mlx-lm generate_step / our generate().
+    const PREFILL_CHUNK = 2048;
+    const prompt = ids.slice(0, -1);
+    for (let s = 0; s < prompt.length; s += PREFILL_CHUNK) {
+      const chunk = prompt.slice(s, s + PREFILL_CHUNK);
+      const cIds = ops.fromInt32(chunk, [1, chunk.length]);
+      tm.model.forwardHidden(cIds, cache).dispose();
+      cIds.dispose();
+      clearCache();
+    }
     let last = ids[ids.length - 1]!;
     const eos = new Set(tm.config.eosTokenIds);
     const out: number[] = [];
@@ -134,6 +151,7 @@ export function greedyDecodeBitExact(tm: TaskModel, ids: number[], maxTokens: nu
       lg.dispose();
       const best = ops.itemUint32(am);
       am.dispose();
+      if (i % 256 === 0) clearCache(); // mlx-lm decode cadence
       if (eos.has(best)) break; // mlx-lm halts on EOS and excludes it from the output
       out.push(best);
       last = best;
