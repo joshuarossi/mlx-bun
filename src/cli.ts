@@ -1664,7 +1664,10 @@ switch (cmd) {
     const ctx = await loadContext(m.path, m.repoId, {
       memoryBudgetBytes: rt.serverOptions.memoryBudgetBytes,
       glm: glm52RuntimeFlags(rt.serverOptions),
-      ...(draftModelDir || draftKind === "ngram"
+      // ngram is model-free; mtp resolves the bundled <model>/mtp/ companion
+      // in loadContext when no --draft-model is given (cli.md contract —
+      // this gate silently dropped that case until 2026-08-20).
+      ...(draftModelDir || draftKind === "ngram" || draftKind === "mtp"
         ? {
             ...(draftModelDir ? { draftModelDir } : {}),
             numDraftTokens,
