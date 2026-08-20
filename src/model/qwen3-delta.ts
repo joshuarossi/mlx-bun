@@ -185,18 +185,7 @@ export function gatedDeltaUpdate(
   g.dispose();
   tArr.dispose();
   if (ownState) stateIn.dispose();
-  // Detach the returned state from the kernel's multi-output sibling set:
-  // y and stateOut are co-outputs of ONE primitive, and mlx sibling links
-  // survive evaluation — a retained stateOut (it becomes cache.recurrent,
-  // alive for the whole sequence) natively pins that chunk's y buffer
-  // (~25 MB/layer/chunk) forever. Measured 2026-08-20 (M4 24 GB): 27B
-  // prefill leaked ~1 MB/token — 2.0 GB per 2048-chunk, 46 GB active at
-  // 32k — async-GPU-OOM on 24 GB boxes; Gemma (no DeltaNet) held flat.
-  // copyOf is bit-identical and gives the cache a sibling-free node; the
-  // 3 MB copy per layer per chunk is noise next to the chunk forward.
-  const stateDetached = ops.copyOf(stateOut!);
-  stateOut!.dispose();
-  return [y!, stateDetached];
+  return [y!, stateOut!];
 }
 
 /** Recurrent cache for a gated-DeltaNet layer — port of mlx-lm

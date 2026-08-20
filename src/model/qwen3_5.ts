@@ -177,10 +177,15 @@ export class GatedDeltaNet {
     if (!cache.conv) convState.dispose();
     if (spec) spec.qkv = qkv;
     else qkv.dispose();
-    // New conv state = last nKeep rows (contiguous, the array is sliced).
-    const newConv = ops.contiguous(
-      convInput.slice([0, S, 0], [B, S + nKeep, convDim]),
-    );
+    // New conv state = last nKeep rows. MUST be a TRUE copy (mx.copy):
+    // this tail slice is already row-contiguous at B=1, so ops.contiguous
+    // is a no-op VIEW sharing convInput's buffer — caching it pinned the
+    // whole [B, S+nKeep, convDim] chunk buffer (~42 MB/layer/chunk, 48
+    // layers = the measured 2.0 GB-per-2048-chunk prefill leak; 46 GB
+    // active at 32k, async-GPU-OOM on 24 GB — M4 2026-08-20).
+    const newConvView = convInput.slice([0, S, 0], [B, S + nKeep, convDim]);
+    const newConv = ops.copyOf(newConvView);
+    newConvView.dispose();
     if (spec) spec.prevConv = cache.conv;
     else cache.conv?.dispose();
     cache.conv = newConv;
@@ -259,9 +264,11 @@ export class GatedDeltaNet {
     const convInput = ops.concatAxis([convState, qkvPfx], 1);
     if (!cache.conv) convState.dispose();
     qkvPfx.dispose();
-    const newConv = ops.contiguous(
-      convInput.slice([0, keep, 0], [B, keep + nKeep, convDim]),
-    );
+    // TRUE copy, same reason as forward(): the contiguous tail slice would
+    // otherwise be a view pinning the whole replay convInput buffer.
+    const rConvView = convInput.slice([0, keep, 0], [B, keep + nKeep, convDim]);
+    const newConv = ops.copyOf(rConvView);
+    rConvView.dispose();
     cache.conv?.dispose();
     cache.conv = newConv;
 
