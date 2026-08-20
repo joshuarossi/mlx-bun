@@ -2724,6 +2724,31 @@ weight-bandwidth-bound — w4a16-compute-precision-spike.md); runtime
 weight rotation of any kind (weights fold offline; online rotation
 remains the KV codec's job); GGUF/AWQ export.
 
+- [ ] **W6.5 DOGFOOD GATE (Josh 2026-08-19: "I wouldn't even publish this
+      model if we can't run it" — mlx-bun end-to-end is the PUBLISH
+      BLOCKER, ahead of W6 upload):**
+      - [x] eval-runner swap-thrash ROOT-CAUSED + fixed (47d6755):
+            greedyDecodeBitExact prefilled whole prompts through the LM
+            head ([1,L,248k-vocab] throwaway logits, ~1 GB/1k tokens) and
+            never cleared the Metal allocator cache → chunked
+            forwardHidden prefill (bit-exact: LM head never touches
+            cache) + mlx-lm clear cadence. Verify at 27B post-GPQA
+            (memory profile + a re-scored subset).
+      - [ ] MTP serve-lane 500 (`[slice] Invalid number of indices…
+            dimension 3`, stock artifacts too): all spec-path slices are
+            rank-consistent by inspection — needs a live repro stack
+            (serve + one chat request) the moment the GPU frees. Fix +
+            a curl-level regression test. THE blocker: the card
+            advertises `--draft-kind mtp`.
+      - [ ] `mlx-bun perplexity` on qwen3_5 (trainForward cache stub
+            lacks SSMCache.advance — qwen3_5.ts:226).
+      - [ ] Dogfood close-out: re-score a GPQA subset (~30 q) through
+            mlx-bun and match the mlx-lm scores — turns cross-engine
+            parity into a certification-data claim, and future eval
+            sweeps run in-engine so soak telemetry is OURS.
+      - (bf16 qwen3_5 loading — .scales hard-require — stays backlog:
+        not needed to serve the published quant.)
+
 Queued follow-ups (Josh 2026-08-19, post-campaign — GPU owned by the
 certification suite until then):
 - [ ] **DSpark×27B Track A:** confidence-scheduled verification on the
