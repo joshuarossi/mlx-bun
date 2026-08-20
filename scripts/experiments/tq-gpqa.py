@@ -19,9 +19,19 @@ from mlx_lm.utils import load
 model_dir = sys.argv[1]
 n = int(sys.argv[2]) if len(sys.argv) > 2 else 198
 MAX_TOKENS = int(sys.argv[3]) if len(sys.argv) > 3 else 12288
+# --server-url http://host:port — generate through a running `mlx-bun serve`
+# (the product path: template + sampler + MTP spec lane) instead of local
+# mlx-lm. Everything else (dataset, shuffle seeds, extraction, scoring) is
+# IDENTICAL, so scores compare directly. Greedy runs are bit-identical
+# cross-engine; at the official temp-1.0 sampling the engines draw from
+# different RNG streams (statistically equivalent, not token-identical).
+SERVER_URL = None
+if "--server-url" in sys.argv:
+    SERVER_URL = sys.argv[sys.argv.index("--server-url") + 1].rstrip("/")
 # resume: per-question results persisted; finished ids skipped on restart
 import json as jsonmod, os
-RES = os.path.join("runs", "tq-qwen", "gpqa-progress.jsonl")
+RES = os.path.join("runs", "tq-qwen",
+                   "gpqa-progress-serve.jsonl" if ("--server-url" in sys.argv) else "gpqa-progress.jsonl")
 done = {}
 if os.path.exists(RES):
     for line in open(RES):
@@ -33,7 +43,29 @@ import csv as csvmod
 rows = list(csvmod.DictReader(open(csv_path)))[:n]
 print(f"GPQA Diamond: {len(rows)} questions", flush=True)
 
-model, tok = load(model_dir)
+if SERVER_URL is None:
+    model, tok = load(model_dir)
+else:
+    import urllib.request
+    def serve_generate(body_text):
+        req = urllib.request.Request(
+            f"{SERVER_URL}/v1/chat/completions",
+            data=jsonmod.dumps({
+                "model": "gpqa", "max_tokens": MAX_TOKENS,
+                "messages": [{"role": "user", "content": body_text}],
+                # Official thinking-mode sampling (model card Best Practices §1);
+                # reasoning_effort xhigh = the certification methodology.
+                "temperature": 1.0, "top_p": 0.95, "top_k": 20,
+                "reasoning_effort": "xhigh",
+            }).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=14400) as r:
+            resp = jsonmod.load(r)
+        msg = resp["choices"][0]["message"]
+        # Reassemble the raw-transcript shape the extraction regexes expect.
+        reasoning = msg.get("reasoning") or ""
+        content = msg.get("content") or ""
+        return (f"{reasoning}</think>{content}" if reasoning else content)
 letters = ["A", "B", "C", "D"]
 correct = 0
 answered = 0
@@ -53,12 +85,15 @@ for i, r in enumerate(rows):
     # Official Qwen3.8 GPQA prompt (model card, verbatim) + official
     # thinking-mode sampling below (temp 1.0 / top_p 0.95 / top_k 20).
     body += "\nPlease reason step by step, and put your final answer within \\boxed{}."
-    msgs = [{"role": "user", "content": body}]
-    prompt = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False,
-                                     enable_thinking=True, reasoning_effort="xhigh")
-    mx.random.seed(1000 + i)  # per-question seed: resumable-deterministic
-    sampler = make_sampler(temp=1.0, top_p=0.95, top_k=20, min_p=0.0)
-    out = generate(model, tok, prompt=prompt, max_tokens=MAX_TOKENS, sampler=sampler)
+    if SERVER_URL is not None:
+        out = serve_generate(body)
+    else:
+        msgs = [{"role": "user", "content": body}]
+        prompt = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False,
+                                         enable_thinking=True, reasoning_effort="xhigh")
+        mx.random.seed(1000 + i)  # per-question seed: resumable-deterministic
+        sampler = make_sampler(temp=1.0, top_p=0.95, top_k=20, min_p=0.0)
+        out = generate(model, tok, prompt=prompt, max_tokens=MAX_TOKENS, sampler=sampler)
     tail = out.split("</think>")[-1]
     m = re.search(r"boxed\{+\s*\\?(?:text\{)?\(?([ABCD])", tail) \
         or re.search(r"Answer:\s*\(?([ABCD])", tail) \
