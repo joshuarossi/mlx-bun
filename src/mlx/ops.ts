@@ -113,6 +113,15 @@ export function matmul(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
   return new MlxArray(outArray("matmul", (o) => C.mlx_matmul(o, a.handle, b.handle, s)));
 }
 
+/** Bit-identical copy through a FRESH primitive node (mx.copy). Unlike
+ *  `contiguous`, this always creates a new graph node even for an already-
+ *  contiguous input — the tool for DETACHING an array from a multi-output
+ *  primitive's sibling set (a retained sibling output pins every co-output's
+ *  buffer natively; see gatedDeltaUpdate's state detach, 2026-08-20). */
+export function copyOf(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("copy", (o) => C.mlx_copy(o, a.handle, s)));
+}
+
 /** Materialize a row-major contiguous copy (needed before rawBytes on views). */
 export function contiguous(a: MlxArray, s: S = gpuStream): MlxArray {
   return new MlxArray(

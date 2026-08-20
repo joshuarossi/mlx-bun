@@ -99,6 +99,7 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_fast_layer_norm: { args: [P, u64, u64, u64, f32, u64], returns: i32 },
   mlx_matmul: { args: [P, u64, u64, u64], returns: i32 },
   mlx_contiguous: { args: [P, u64, FFIType.bool, u64], returns: i32 },
+  mlx_copy: { args: [P, u64, u64], returns: i32 },
   // (res: mlx_vector_array*, w, opt group_size, opt bits, mode, global_scale, stream)
   mlx_quantize: { args: [P, u64, u64, u64, cstring, u64, u64], returns: i32 },
   mlx_vector_array_get: { args: [P, u64, u64], returns: i32 },
