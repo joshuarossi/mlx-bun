@@ -31,7 +31,7 @@ const ids = tok.encode(PARA.repeat(Math.ceil((target * 8) / PARA.length))).slice
 
 const gb = (b: number) => (b / 2 ** 30).toFixed(2);
 console.log(`mem-probe ${dir} · target ${ids.length} · chunk ${chunkSize}`);
-console.log("| offset | active GB | cache GB | peak GB |");
+console.log("| offset | active GB | post-gc GB | cache GB | peak GB |");
 const cache = model.makeCache();
 let pos = 0;
 while (pos < ids.length) {
@@ -42,6 +42,10 @@ while (pos < ids.length) {
   evalCacheState(cache);
   clearCache();
   pos += chunk.length;
-  console.log(`| ${pos} | ${gb(activeMemory())} | ${gb(cacheMemory())} | ${gb(peakMemory())} |`);
+  const before = activeMemory();
+  if (process.argv.includes("--gc")) Bun.gc(true); // force FinalizationRegistry reclaim
+  console.log(
+    `| ${pos} | ${gb(before)} | ${gb(activeMemory())} | ${gb(cacheMemory())} | ${gb(peakMemory())} |`,
+  );
 }
 console.log("prefill completed without crash");
