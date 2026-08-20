@@ -9,9 +9,14 @@
 // specServeRun harness (scripts/experiments/qwen38-mtp-ab.ts) back-to-back
 // in the same sitting.
 //
-//   bun scripts/experiments/tq-speed-row.ts <model-dir> [lens=1024,8192,32768] [gen=128] [reps=3]
+//   bun scripts/experiments/tq-speed-row.ts <model-dir> [lens=1024,8192,32768] [gen=128] [reps=3] [kv=plain|kv8|turbo|turbo:kXvY]
+//
+// kv: the KV scheme for the run — "plain" (bf16, default), "kv8" (uniform
+// 8-bit affine, L1), or a turbo scheme. On 24 GB boxes the 17 GB artifact's
+// 32k row NEEDS quantized KV (bf16 KV + weights exceed the wired ceiling —
+// M4 2026-08-20 async-OOM); label rows with the scheme.
 
-import { loadModelConfig } from "../../src/config";
+import { loadModelConfig, parseTurboQuantScheme } from "../../src/config";
 import { Weights } from "../../src/weights";
 import { createModel } from "../../src/model/factory";
 import { loadTokenizer } from "../../src/tokenizer";
@@ -22,6 +27,11 @@ const dir = process.argv[2]!;
 const lens = (process.argv[3] ?? "1024,8192,32768").split(",").map(Number);
 const gen = Number(process.argv[4] ?? 128);
 const reps = Number(process.argv[5] ?? 3);
+const kvArg = process.argv[6] ?? "plain";
+const kvOpts =
+  kvArg === "plain" ? {}
+  : kvArg === "kv8" ? { kvBits: 8, quantizedKvStart: 0 }
+  : { turboQuant: parseTurboQuantScheme(kvArg) ?? (() => { throw new Error(`bad kv arg: ${kvArg}`); })(), quantizedKvStart: 0 };
 
 const config = await loadModelConfig(dir);
 const weights = await Weights.open(dir);
@@ -53,7 +63,7 @@ function promptOfLength(target: number): number[] {
 const med = (a: number[]) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)]!;
 const spread = (a: number[]) => a.length > 1 ? ((Math.max(...a) - Math.min(...a)) / med(a) * 100).toFixed(1) : "0.0";
 
-console.log(`speed-row ${dir}\n  gen ${gen} tok · ${reps} reps · ${new Date().toISOString()}`);
+console.log(`speed-row ${dir}\n  kv ${kvArg} · gen ${gen} tok · ${reps} reps · ${new Date().toISOString()}`);
 console.log("| prompt tok | prefill tok/s | TTFT ms | decode tok/s (spread) |");
 console.log("|---|---|---|---|");
 for (const target of lens) {
@@ -64,7 +74,7 @@ for (const target of lens) {
     const t0 = performance.now();
     let first = 0;
     let n = 0;
-    for await (const t of generate(model, ids, { maxTokens: gen, temperature: 0 })) {
+    for await (const t of generate(model, ids, { maxTokens: gen, temperature: 0, ...kvOpts })) {
       if (n === 0) first = performance.now();
       n++;
     }
