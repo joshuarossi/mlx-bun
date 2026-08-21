@@ -95,6 +95,7 @@ import {
 import { createDiscoveryRoutes } from "./serve/discovery-routes";
 import { handleLabRoute } from "./serve/lab-routes";
 import { handleModelAdminRoute } from "./serve/model-admin-routes";
+import { planRequest, RequestOwnership } from "./serve/request-plan";
 import { handleStaticRoute } from "./serve/static-routes";
 const STATIC_ROUTE_ASSETS = {
   appPage: APP_PAGE,
@@ -2846,6 +2847,7 @@ export function createServer(
         let startInThinking = false;
         let vision: Parameters<typeof runGeneration>[3];
         let diffusionPixels: import("./mlx/array").MlxArray | null = null;
+        const ownership = new RequestOwnership();
         // Grammar-constrained decoding (src/grammar.ts). Compile BEFORE prompt
         // rendering: on the degrade path (compile failed but a constraint was
         // requested) inject a system message instructing valid JSON so the
@@ -2859,39 +2861,29 @@ export function createServer(
           body.structured_outputs != null;
         if (grammarReq) {
           const g = await compileGrammarForRequest(body);
-          grammarCtrl = g.controller;
+          grammarCtrl = ownership.own(g.controller);
           if (!g.controller && g.degradeHint) {
             const degraded = applyGrammarDegrade(body, g.degradeHint);
             grammarWarning = degraded.warning;
             body = degraded.body;
           }
         }
-        // Free what a rejected request has already allocated (grammar WASM
-        // matcher/compiled-grammar, vision embeddings, diffusion pixels).
-        // Every early return between here and gateway.run() must call this —
-        // generate()/the gateway only take disposal ownership once running
-        // (leaked one matcher per SSRF-blocked-media + response_format
-        // request before the 2026-07-07 sweep).
-        const disposeRejected = () => {
-          grammarCtrl?.dispose();
-          vision?.embeddings.dispose();
-          vision?.imageMask?.dispose();
-          vision?.multimodalMask?.dispose();
-          diffusionPixels?.dispose();
+        const rejectBeforeRun = (response: Response): Response => {
+          ownership.dispose();
+          return response;
         };
         try {
           // Video is Qwen3.5-family only and never composes with audio —
           // one early guard so no downstream branch can silently drop a
           // video part (the gemma/diffusion builders don't know the type).
           if (hasVideos && (hasAudio || !(ctx.model instanceof Qwen35Model))) {
-            disposeRejected();
-            return Response.json(
+            return rejectBeforeRun(Response.json(
               { error: { message: hasAudio
                   ? "video and audio content parts cannot be combined"
                   : `model ${ctx.modelId} does not accept video input — video ` +
                     `content parts need a Qwen3.5-family model (e.g. Qwen3.8-27B)` } },
               { status: 400 },
-            );
+            ));
           }
           if (hasAudio) {
             // Audio (and MIXED image+audio) input — A4 of
@@ -2902,8 +2894,7 @@ export function createServer(
             // requests without the media, getVisionTower's contract).
             const audioTower = getAudioTower(ctx);
             if (!audioTower || !ctx.audioTokenIds) {
-              disposeRejected();
-              return Response.json(
+              return rejectBeforeRun(Response.json(
                 {
                   error: {
                     message:
@@ -2913,7 +2904,7 @@ export function createServer(
                   },
                 },
                 { status: 400 },
-              );
+              ));
             }
             let visionSide:
               | { tower: VisionEncoder; tokenIds: VisionTokenIds }
@@ -2921,10 +2912,9 @@ export function createServer(
             if (hasImages) {
               const tower = getVisionTower(ctx);
               if (!tower) {
-                disposeRejected();
-                return Response.json(
+                return rejectBeforeRun(Response.json(
                   { error: { message: "model has no vision sidecar" } }, { status: 400 },
-                );
+                ));
               }
               visionSide = { tower, tokenIds: ctx.visionTokenIds };
             }
@@ -2959,28 +2949,26 @@ export function createServer(
             // forwardEmbeddings path). v1 supports a single image.
             const dm = ctx.model;
             if (!dm.visionTower) {
-              disposeRejected();
-              return Response.json(
+              return rejectBeforeRun(Response.json(
                 { error: { message: "this checkpoint has no vision tower" } }, { status: 400 },
-              );
+              ));
             }
             const { messages, images } = await extractImages(normalizeMessages(body.messages));
             if (images.length !== 1) {
-              disposeRejected();
-              return Response.json(
+              return rejectBeforeRun(Response.json(
                 { error: { message: "DiffusionGemma image input supports exactly one image" } },
                 { status: 400 },
-              );
+              ));
             }
             const rendered = ctx.template.render(messages, { tools, addGenerationPrompt: true });
             const rawIds = ctx.tokenizer.encode(rendered, /* addSpecialTokens */ false);
             const { pixels, softTokens } = await dm.visionTower.preprocess(images[0]!);
+            diffusionPixels = ownership.own(pixels);
             promptIds = spliceImageTokens(rawIds, [softTokens], {
               image: ctx.visionTokenIds.imageTokenId,
               boi: ctx.visionTokenIds.boiTokenId,
               eoi: ctx.visionTokenIds.eoiTokenId,
             });
-            diffusionPixels = pixels;
           } else if ((hasImages || hasVideos) && ctx.model instanceof Qwen35Model) {
             // Qwen3.8 vision + video: the tower is a Qwen3VLVisionTower
             // riding the shared lazy slot (makeVisionLoader's qwen branch);
@@ -2989,10 +2977,9 @@ export function createServer(
             // to sampled frames via the AVFoundation sidecar.
             const tower = getVisionTower(ctx) as unknown as Qwen3VLVisionTower | null;
             if (!tower) {
-              disposeRejected();
-              return Response.json(
+              return rejectBeforeRun(Response.json(
                 { error: { message: "model has no vision sidecar" } }, { status: 400 },
-              );
+              ));
             }
             const { messages: withVideos, images } =
               await extractImages(normalizeMessages(body.messages));
@@ -3015,10 +3002,9 @@ export function createServer(
             // sessions never pay for it.
             const tower = getVisionTower(ctx);
             if (!tower) {
-              disposeRejected();
-              return Response.json(
+              return rejectBeforeRun(Response.json(
                 { error: { message: "model has no vision sidecar" } }, { status: 400 },
-              );
+              ));
             }
             const { messages, images } = await extractImages(normalizeMessages(body.messages));
             // The tower is only ever non-null for Gemma4 (sidecar gate in
@@ -3036,12 +3022,15 @@ export function createServer(
             stableLen = -1; // marker: chat path, probe lazily below
           }
         } catch (e) {
-          disposeRejected();
-          return Response.json(
+          return rejectBeforeRun(Response.json(
             { error: { message: `prompt build failed: ${(e as Error).message}` } },
             { status: 400 },
-          );
+          ));
         }
+        ownership.own(vision?.embeddings);
+        ownership.own(vision?.imageMask);
+        ownership.own(vision?.multimodalMask);
+        ownership.own(diffusionPixels);
         let options: ReturnType<typeof toOptions>;
         try {
           options = toOptions(body);
@@ -3059,90 +3048,52 @@ export function createServer(
           }
         } catch (e) {
           // bad logit_bias (non-numeric keys/values) — mlx-lm's coercion error
-          disposeRejected();
-          return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
+          return rejectBeforeRun(
+            Response.json({ error: { message: (e as Error).message } }, { status: 400 }),
+          );
         }
         if (diffusionPixels) options.visionPixels = diffusionPixels;
         // Attach the compiled grammar controller (null when no constraint /
         // degrade — generate() runs the unmasked fast pipelined loop).
         if (grammarCtrl) options.grammar = grammarCtrl;
-        // Admission: reject what cannot finish within the memory budget
-        // (the GPU OOM it would otherwise hit is uncatchable and kills
-        // the process — Phase 6 finding). A fitting prompt with a broad
-        // max_tokens is CLAMPED to the remaining room, never rejected.
         const requestedMaxTokens = options.maxTokens ?? 1024;
-        const contextDecision = admitRequestContext(
-          promptIds.length,
-          requestedMaxTokens,
-          admission.maxSafeContext,
-        );
-        if (!contextDecision) {
-          disposeRejected();
-          return Response.json(
-            {
-              error: {
-                message:
-                  `prompt is ${promptIds.length} tokens but the memory budget caps ` +
-                  `safe context at ${admission.maxSafeContext} — no room to generate; ` +
-                  `shorten the prompt or raise --memory-budget`,
-                type: "memory_admission",
-                code: "context_over_budget",
-              },
-            },
-            { status: 400 },
-          );
-        }
-        options.maxTokens = contextDecision.maxTokens;
+        let adapterIds: string[];
         try {
           // A request's explicit `adapter` (incl. "none") wins over the
           // startup default from `serve --adapter <dir>`.
-          const adapterIds = ctx.adapters.resolveSpec(body.adapter ?? serverOptions.defaultAdapter);
-          if (adapterIds.length) options.adapters = adapterIds;
+          adapterIds = ctx.adapters.resolveSpec(body.adapter ?? serverOptions.defaultAdapter);
         } catch (e) {
-          disposeRejected();
-          return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
+          return rejectBeforeRun(
+            Response.json({ error: { message: (e as Error).message } }, { status: 400 }),
+          );
         }
 
-        // logprobs capture: non-stream only — stream chunks never carry
-        // logprobs (mirroring mlx_lm.server, whose streaming generate_response
-        // calls pass no token_logprobs/top_tokens), so streaming requests skip
-        // the capture cost entirely and stay batchable.
         const wantLogprobs = body.logprobs === true;
         const topLogprobs =
           typeof body.top_logprobs === "number" && body.top_logprobs > 0
             ? body.top_logprobs : 0;
-        const captureLogprobs = !body.stream && (wantLogprobs || topLogprobs > 0);
-        if (captureLogprobs) {
-          options.logprobs = wantLogprobs;
-          options.topLogprobs = topLogprobs;
-        }
-
-        // What lane this request takes (vision/audio media / adapters /
-        // logprobs / seed / explicit kv-quant / a mounted draft → serial;
-        // sampler extras, repetition penalty, and grammar all BATCH — see
-        // willBatch). `vision` is the embeddings-prefill payload for BOTH
-        // media kinds, so hasVision routes audio serial too — batching is a
-        // mode, not a fallback, and batched audio has no oracle (§3.2).
-        const shape = {
+        const planned = planRequest({
+          promptIds,
+          options,
+          requestedMaxTokens,
+          maxSafeContext: admission.maxSafeContext,
+          stream: body.stream === true,
+          wantLogprobs,
+          topLogprobs,
+          adapterIds,
           hasVision: !!vision,
-          hasAdapters: !!options.adapters?.length,
-          hasRepetitionPenalty: !!options.repetitionPenalty,
-          // Informational since 2026-07-02: per-row logits processors batch;
-          // willBatch no longer gates on these fields.
-          hasLogitsExtras: !!(
-            options.minP || options.xtcProbability || options.logitBias ||
-            options.presencePenalty || options.frequencyPenalty
-          ),
-          wantsLogprobs: captureLogprobs,
           userSeed: body.seed !== undefined,
-          kvQuant: !!(options.kvConfig?.length || options.kvBits),
-          turboQuant: !!options.turboQuant,
-          // grammarCtrl is null on the degrade path (prompt injection) —
-          // those stay batchable. A real controller batches via per-row
-          // matchers (MLX_BUN_GRAMMAR_BATCH=0 forces it serial).
           hasGrammar: !!grammarCtrl,
           hasDraft: !!ctx.draft,
-        };
+          ownership,
+        });
+        if (!planned.ok) {
+          planned.dispose();
+          return Response.json({ error: planned.error }, { status: planned.status });
+        }
+        const plan = planned;
+        options = plan.options;
+        const { shape, captureLogprobs } = plan;
         const batched = gateway.willBatch(shape);
         if (process.env.MLX_BUN_LANE_DEBUG === "1")
           console.error(`[lane] batched=${batched} shape=${JSON.stringify(shape)} t=${Date.now() % 100000}`);
@@ -3210,6 +3161,8 @@ export function createServer(
                     }
                   }
                 };
+                generationSignal.throwIfAborted();
+                plan.transferOwnership();
                 const s = await gateway.run(promptIds, options, (token) => {
                   const pushed = completion.push(token);
                   sendEvents(pushed.events);
@@ -3244,6 +3197,7 @@ export function createServer(
                   controller.enqueue(enc.encode("data: [DONE]\n\n"));
                 }
                 } catch (e) {
+                  plan.dispose();
                   if (!generationSignal.aborted) {
                     const message = (e as Error).message;
                     if (streamProtocol) {
@@ -3294,6 +3248,8 @@ export function createServer(
             const lpc = captureLogprobs
               ? new LogprobsCollector(wantLogprobs, topLogprobs, (tid) => ctx.tokenizer.idToToken(tid))
               : null;
+            signal.throwIfAborted();
+            plan.transferOwnership();
             const s = await gateway.run(promptIds, options, (token, lpInfo) => {
               lpc?.push(token, lpInfo);
               return completion.push(token).control;
@@ -3332,6 +3288,7 @@ export function createServer(
             }, grammarWarning ? { headers: { Warning: grammarWarning } } : undefined);
           }
         } catch (e) {
+          plan.dispose();
           // A 500 with no server-side trace is undebuggable in the field —
           // always log the stack (the JSON body keeps only the message).
           console.error(`[serve] 500 on chat request:\n${(e as Error).stack ?? e}`);
@@ -3379,6 +3336,7 @@ export function createServer(
         const id = `cmpl-${crypto.randomUUID()}`;
         const created = Math.floor(Date.now() / 1000);
         const promptIds = ctx.tokenizer.encode(body.prompt);
+        const ownership = new RequestOwnership();
         let options: ReturnType<typeof toOptions>;
         try {
           options = toOptions(body as unknown as ChatRequest);
@@ -3398,80 +3356,49 @@ export function createServer(
           body.structured_outputs != null;
         if (textGrammarReq) {
           const g = await compileGrammarForRequest(body as unknown as ChatRequest);
-          if (g.controller) options.grammar = g.controller;
+          if (g.controller) options.grammar = ownership.own(g.controller);
           else if (g.degradeHint)
             textGrammarWarning =
               `grammar not enforced: ${g.degradeHint} - no prompt injection on /v1/completions`;
         }
-        // Mirrors the chat lane: a real controller (not the degrade path)
-        // shapes the request for per-row grammar batching.
-        const textGrammarCtrl = options.grammar ?? null;
         // mlx_lm.server's default max_tokens is 512 (its --max-tokens CLI
         // default). The chat lane's very generous default is wrong for raw
         // completion: with no template an EOS may never come.
-        options.maxTokens = body.max_completion_tokens ?? body.max_tokens ??
+        const requestedMaxTokens = body.max_completion_tokens ?? body.max_tokens ??
           defaultGeneratedTokens ?? 512;
-        const requestedMaxTokens = options.maxTokens;
-        const contextDecision = admitRequestContext(
-          promptIds.length,
-          requestedMaxTokens,
-          admission.maxSafeContext,
-        );
-        if (!contextDecision) {
-          // Pre-run reject: the gateway only takes grammar disposal ownership
-          // once run — free the WASM matcher here (chat lane: disposeRejected).
-          textGrammarCtrl?.dispose();
-          return Response.json(
-            {
-              error: {
-                message:
-                  `prompt is ${promptIds.length} tokens but the memory budget caps ` +
-                  `safe context at ${admission.maxSafeContext} — no room to generate; ` +
-                  `shorten the prompt or raise --memory-budget`,
-                type: "memory_admission",
-                code: "context_over_budget",
-              },
-            },
-            { status: 400 },
-          );
-        }
-        options.maxTokens = contextDecision.maxTokens;
+        let adapterIds: string[];
         try {
-          const adapterIds = ctx.adapters.resolveSpec(body.adapter ?? serverOptions.defaultAdapter);
-          if (adapterIds.length) options.adapters = adapterIds;
+          adapterIds = ctx.adapters.resolveSpec(body.adapter ?? serverOptions.defaultAdapter);
         } catch (e) {
-          textGrammarCtrl?.dispose();
+          ownership.dispose();
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
         }
-        // logprobs capture — same mlx-lm block as chat (generate_response is
-        // shared in the reference too); non-stream only, stream chunks never
-        // carry logprobs.
         const wantLogprobs = body.logprobs === true;
         const topLogprobs =
           typeof body.top_logprobs === "number" && body.top_logprobs > 0
             ? body.top_logprobs : 0;
-        const captureLogprobs = !body.stream && (wantLogprobs || topLogprobs > 0);
-        if (captureLogprobs) {
-          options.logprobs = wantLogprobs;
-          options.topLogprobs = topLogprobs;
-        }
-        const shape = {
+        const planned = planRequest({
+          promptIds,
+          options,
+          requestedMaxTokens,
+          maxSafeContext: admission.maxSafeContext,
+          stream: body.stream === true,
+          wantLogprobs,
+          topLogprobs,
+          adapterIds,
           hasVision: false,
-          hasAdapters: !!options.adapters?.length,
-          hasRepetitionPenalty: !!options.repetitionPenalty,
-          hasLogitsExtras: !!(
-            options.minP || options.xtcProbability || options.logitBias ||
-            options.presencePenalty || options.frequencyPenalty
-          ),
-          wantsLogprobs: captureLogprobs,
           userSeed: body.seed !== undefined,
-          kvQuant: !!(options.kvConfig?.length || options.kvBits),
-          turboQuant: !!options.turboQuant,
-          // /v1/completions grammar (textGrammarCtrl). Same null-on-degrade
-          // contract as the chat lane.
-          hasGrammar: !!textGrammarCtrl,
+          hasGrammar: !!options.grammar,
           hasDraft: !!ctx.draft,
-        };
+          ownership,
+        });
+        if (!planned.ok) {
+          planned.dispose();
+          return Response.json({ error: planned.error }, { status: planned.status });
+        }
+        const plan = planned;
+        options = plan.options;
+        const { shape, captureLogprobs } = plan;
         const batched = gateway.willBatch(shape);
         const lane: Lane = batched ? "batched" : shape.hasDraft ? "serial+spec" : "serial";
         recordLane(id, lane);
@@ -3507,6 +3434,8 @@ export function createServer(
                     if (event.type === "content") send(chunk(event.text, null));
                   }
                 };
+                generationSignal.throwIfAborted();
+                plan.transferOwnership();
                 const s = await gateway.run(promptIds, options, (token) => {
                   const pushed = completion.push(token);
                   sendEvents(pushed.events);
@@ -3533,6 +3462,7 @@ export function createServer(
                 });
                   controller.enqueue(enc.encode("data: [DONE]\n\n"));
                 } catch (e) {
+                  plan.dispose();
                   if (!generationSignal.aborted)
                     send({ error: { message: (e as Error).message } });
                 } finally {
@@ -3568,6 +3498,8 @@ export function createServer(
           const lpc = captureLogprobs
             ? new LogprobsCollector(wantLogprobs, topLogprobs, (tid) => ctx.tokenizer.idToToken(tid))
             : null;
+          request.signal.throwIfAborted();
+          plan.transferOwnership();
           const s = await gateway.run(promptIds, options, (token, lpInfo) => {
             lpc?.push(token, lpInfo);
             return completion.push(token).control;
@@ -3593,6 +3525,7 @@ export function createServer(
             },
           }, textGrammarWarning ? { headers: { Warning: textGrammarWarning } } : undefined);
         } catch (e) {
+          plan.dispose();
           return Response.json({ error: { message: (e as Error).message } }, { status: 500 });
         }
       }
