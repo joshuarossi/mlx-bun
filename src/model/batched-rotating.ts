@@ -25,6 +25,12 @@
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { RotatingKVCache, type Cache, type Mask } from "./gemma4-base";
+import { BatchedRotatingState } from "./batched-rotating-state";
+import {
+  mergeStorageRows,
+  plainRowStorage,
+  temporalStorageView,
+} from "./batched-row-storage";
 
 const STEP = 256;
 
@@ -78,39 +84,36 @@ export function buildBatchedRotatingMask(
 export class BatchedRotatingCache implements Cache {
   keys: MlxArray | null = null;
   values: MlxArray | null = null;
-  /** Per-row absolute position (drives RoPE) and buffer padding. */
-  offsetArr: number[];
-  leftPad: number[];
-  #idx = 0;
-  #offset = 0; // scalar total tokens processed (mlx-lm _offset)
-  #rotated = false;
+  readonly #rows: BatchedRotatingState;
   #ropeArr: MlxArray | null = null;
   #ropeForOffset = -1;
   readonly maxSize: number;
 
   constructor(maxSize: number, leftPad: number[]) {
     this.maxSize = maxSize;
-    this.leftPad = [...leftPad];
-    this.offsetArr = leftPad.map((l) => -l);
+    this.#rows = new BatchedRotatingState(maxSize, leftPad);
   }
+
+  get offsetArr(): number[] { return this.#rows.offsets; }
+  get leftPad(): number[] { return this.#rows.leftPad; }
 
   /** Current batch size — tracks filter() (which shrinks the per-row arrays). */
   get #B(): number {
-    return this.leftPad.length;
+    return this.#rows.batchSize;
   }
 
   /** mlx-lm uses `cache.offset` (the per-row array) for the scalar interface
    *  too; we expose the scalar total as `offset` and the per-row positions via
    *  `ropeOffsetArr` (the model's per-row RoPE path). */
   get offset(): number {
-    return this.#offset;
+    return this.#rows.totalOffset;
   }
 
   get ropeOffsetArr(): MlxArray {
-    if (this.#ropeArr && this.#ropeForOffset === this.#offset) return this.#ropeArr;
+    if (this.#ropeArr && this.#ropeForOffset === this.offset) return this.#ropeArr;
     this.#ropeArr?.dispose();
     this.#ropeArr = MlxArray.fromInt32(Int32Array.from(this.offsetArr), [this.#B]);
-    this.#ropeForOffset = this.#offset;
+    this.#ropeForOffset = this.offset;
     return this.#ropeArr;
   }
 
@@ -120,7 +123,7 @@ export class BatchedRotatingCache implements Cache {
       mode: "array",
       arr: buildBatchedRotatingMask(
         this.#B, N, this.leftPad, this.maxSize, window,
-        this.#idx, this.#offset, this.#rotated,
+        this.#rows.ringIndex, this.offset, this.#rows.rotated,
       ),
     };
   }
@@ -131,7 +134,7 @@ export class BatchedRotatingCache implements Cache {
     const vD = v.shape[3]!;
     if (S !== 1)
       throw new Error("BatchedRotatingCache supports N=1 decode updates only (solo-prefill then merge)");
-    const prev = this.#offset;
+    const prev = this.offset;
 
     // Grow the buffer (in STEP chunks) until it reaches maxSize.
     if (!this.keys || (prev >= this.keys.shape[2]! && this.keys.shape[2]! < this.maxSize)) {
@@ -148,7 +151,7 @@ export class BatchedRotatingCache implements Cache {
         this.keys = newK;
         this.values = newV;
       }
-      this.#idx = prev;
+      this.#rows.markGrown(prev);
     }
 
     // Trim any overshoot past maxSize (decrements left padding persistently).
@@ -160,34 +163,27 @@ export class BatchedRotatingCache implements Cache {
       this.values!.dispose();
       this.keys = tk;
       this.values = tv;
-      this.#idx = this.maxSize;
-      this.leftPad = this.leftPad.map((x) => x - trimSize);
+      this.#rows.trimOvershoot(trimSize);
     }
 
     // Rotate when the write head reaches the end of the ring.
-    if (this.#idx === this.maxSize) {
-      this.#rotated = true;
-      this.#idx = 0;
-    }
-    if (this.#rotated) this.leftPad = this.leftPad.map((x) => x - S);
+    const writeIndex = this.#rows.beginWrite(S);
 
     // Write the new K/V at the ring head.
     const [, , SK, DK] = this.keys!.shape as [number, number, number, number];
-    const k2 = ops.sliceUpdate(this.keys!, k, [0, 0, this.#idx, 0], [B, H, this.#idx + S, DK]);
-    const v2 = ops.sliceUpdate(this.values!, v, [0, 0, this.#idx, 0], [B, H, this.#idx + S, vD]);
+    const k2 = ops.sliceUpdate(this.keys!, k, [0, 0, writeIndex, 0], [B, H, writeIndex + S, DK]);
+    const v2 = ops.sliceUpdate(this.values!, v, [0, 0, writeIndex, 0], [B, H, writeIndex + S, vD]);
     this.keys!.dispose();
     this.values!.dispose();
     this.keys = k2;
     this.values = v2;
-    this.#offset += S;
-    this.offsetArr = this.offsetArr.map((x) => x + S);
-    this.#idx += S;
+    this.#rows.commitWrite(S);
 
     // Return the populated prefix (ring not yet full) or the whole buffer.
-    if (this.#offset < this.maxSize) {
+    if (this.offset < this.maxSize) {
       return [
-        this.keys.slice([0, 0, 0, 0], [B, H, this.#offset, DK]),
-        this.values.slice([0, 0, 0, 0], [B, H, this.#offset, vD]),
+        this.keys.slice([0, 0, 0, 0], [B, H, this.offset, DK]),
+        this.values.slice([0, 0, 0, 0], [B, H, this.offset, vD]),
       ];
     }
     return [
@@ -206,27 +202,10 @@ export class BatchedRotatingCache implements Cache {
   /** Ring contents in temporal order, cut to the valid length (extract). */
   temporalView(): [MlxArray, MlxArray] {
     if (!this.keys || !this.values) throw new Error("cache is empty");
-    const valid = Math.min(this.#offset, this.maxSize);
-    const order = (a: MlxArray): MlxArray => {
-      const [B, H, Sbuf, D] = a.shape as [number, number, number, number];
-      let t: MlxArray;
-      if (this.#idx === Sbuf) {
-        t = a.slice([0, 0, 0, 0], [B, H, Sbuf, D]);
-      } else if (this.#idx < this.#offset) {
-        const tail = a.slice([0, 0, this.#idx, 0], [B, H, Sbuf, D]);
-        const head = a.slice([0, 0, 0, 0], [B, H, this.#idx, D]);
-        t = ops.concatAxis([tail, head], 2);
-        tail.dispose();
-        head.dispose();
-      } else {
-        t = a.slice([0, 0, 0, 0], [B, H, this.#idx, D]);
-      }
-      const [, , , Dd] = t.shape as [number, number, number, number];
-      const cut = t.slice([0, 0, 0, 0], [B, H, valid, Dd]);
-      t.dispose();
-      return cut;
-    };
-    return [order(this.keys), order(this.values)];
+    return [
+      temporalStorageView(plainRowStorage, this.keys, this.#rows),
+      temporalStorageView(plainRowStorage, this.values, this.#rows),
+    ];
   }
 
   /** mlx-lm `BatchRotatingKVCache.extract` (models/cache.py:1417): row `i`
@@ -242,34 +221,13 @@ export class BatchedRotatingCache implements Cache {
   extractRow(i: number): RotatingKVCache | null {
     if (!this.keys || !this.values) return null;
     const pad = Math.max(0, this.leftPad[i]!);
-    const valid = Math.min(this.#offset, this.maxSize);
-    const cut = (a: MlxArray): MlxArray => {
-      const [, H, Sbuf, D] = a.shape as [number, number, number, number];
-      const row = a.slice([i, 0, 0, 0], [i + 1, H, Sbuf, D]);
-      // temporal order — same three cases as temporalView, single row.
-      let t: MlxArray;
-      if (this.#idx === Sbuf) {
-        t = row;
-      } else if (this.#idx < this.#offset) {
-        const tail = row.slice([0, 0, this.#idx, 0], [1, H, Sbuf, D]);
-        const head = row.slice([0, 0, 0, 0], [1, H, this.#idx, D]);
-        t = ops.concatAxis([tail, head], 2);
-        tail.dispose();
-        head.dispose();
-        row.dispose();
-      } else {
-        t = row.slice([0, 0, 0, 0], [1, H, this.#idx, D]);
-        row.dispose();
-      }
-      const cutV = t.slice([0, 0, pad, 0], [1, H, valid, D]);
-      t.dispose();
-      const own = ops.copyOf(cutV); // TRUE copy: see 2026-08-20 contiguous-view pin class
-      cutV.dispose();
-      return own;
-    };
     const c = new RotatingKVCache(this.maxSize);
-    const k = cut(this.keys);
-    const v = cut(this.values);
+    const k = temporalStorageView(plainRowStorage, this.keys, this.#rows, {
+      row: i, from: pad, copy: true,
+    });
+    const v = temporalStorageView(plainRowStorage, this.values, this.#rows, {
+      row: i, from: pad, copy: true,
+    });
     c.restoreState(k, v, this.offsetArr[i]!, k.shape[2]!);
     return c;
   }
@@ -277,17 +235,14 @@ export class BatchedRotatingCache implements Cache {
   /** Keep only `keep` rows along the batch axis (eviction). */
   filter(keep: number[]): void {
     if (this.keys && this.values) {
-      const idxArr = MlxArray.fromInt32(Int32Array.from(keep), [keep.length]);
-      const k = ops.takeAxis(this.keys, idxArr, 0);
-      const v = ops.takeAxis(this.values, idxArr, 0);
-      idxArr.dispose();
+      const k = plainRowStorage.takeRows(this.keys, keep);
+      const v = plainRowStorage.takeRows(this.values, keep);
       this.keys.dispose();
       this.values.dispose();
       this.keys = k;
       this.values = v;
     }
-    this.offsetArr = keep.map((i) => this.offsetArr[i]!);
-    this.leftPad = keep.map((i) => this.leftPad[i]!);
+    this.#rows.filter(keep);
     this.releaseRopeArr();
   }
 
@@ -295,13 +250,10 @@ export class BatchedRotatingCache implements Cache {
     return this.keys && this.values ? [this.keys, this.values] : [];
   }
   isTrimmable(): boolean {
-    return this.#offset < this.maxSize;
+    return this.#rows.trimmable;
   }
   trim(n: number): void {
-    const k = Math.min(this.#offset, n);
-    this.#offset -= k;
-    this.#idx -= k;
-    this.offsetArr = this.offsetArr.map((x) => x - k);
+    this.#rows.trim(n);
   }
   dispose(): void {
     this.keys?.dispose();
@@ -322,24 +274,11 @@ export class BatchedRotatingCache implements Cache {
     const width = Math.max(...lens, 0);
     const leftPad = lens.map((l) => width - l);
     const cache = new BatchedRotatingCache(maxSize, leftPad);
-    cache.offsetArr = [...offsets];
+    cache.#rows.restoreMerged(width, offsets);
     if (width === 0) return cache;
 
-    const padTo = (a: MlxArray, pad: number): MlxArray => {
-      if (pad === 0) return a.slice([0, 0, 0, 0], a.shape as number[]);
-      const [B, H, , D] = a.shape as [number, number, number, number];
-      const z = ops.zeros([B, H, pad, D], a.dtype);
-      const out = ops.concatAxis([z, a], 2);
-      z.dispose();
-      return out;
-    };
-    const ks = rows.map((r, i) => padTo(r.keys, leftPad[i]!));
-    const vs = rows.map((r, i) => padTo(r.values, leftPad[i]!));
-    cache.keys = ops.concatAxis(ks, 0);
-    cache.values = ops.concatAxis(vs, 0);
-    for (const a of [...ks, ...vs]) a.dispose();
-    cache.#idx = width;
-    cache.#offset = width;
+    cache.keys = mergeStorageRows(plainRowStorage, rows.map((row) => row.keys), leftPad);
+    cache.values = mergeStorageRows(plainRowStorage, rows.map((row) => row.values), leftPad);
     return cache;
   }
 }

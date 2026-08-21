@@ -32,6 +32,12 @@ import { Dtype } from "../mlx/ffi";
 import { RotatingQuantizedKVCache, type Mask } from "./gemma4-base";
 import { buildBatchedRotatingMask } from "./batched-rotating";
 import type { QuantRow } from "./batched-quant";
+import { BatchedRotatingState } from "./batched-rotating-state";
+import {
+  mergeStorageRows,
+  quantizedRowStorage,
+  temporalStorageView,
+} from "./batched-row-storage";
 
 const STEP = 256; // shared with RotatingQuantizedKVCache.STEP and the bf16 twin
 
@@ -49,9 +55,7 @@ const mapTriple = (
  *  storage. Scalar ring state (`ringIdx`/`offset` reuse the base fields);
  *  per-row `offsetArr` (absolute positions → RoPE) and `leftPad`. */
 export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
-  offsetArr: number[];
-  leftPad: number[];
-  #rotated = false;
+  readonly #rows: BatchedRotatingState;
   /** Per-row RoPE positions. STABLE ACROSS A STEP — refreshed only at
    *  releaseRopeArr() (the scheduler's post-dispatch hook), never inside
    *  the update: the monolith CAPTURES it pre-update and ropes Q after
@@ -67,13 +71,15 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
     maxSize: number, groupSize: number, bits: number, leftPad: number[], offsets: number[],
   ) {
     super(maxSize, groupSize, bits);
-    this.leftPad = [...leftPad];
-    this.offsetArr = [...offsets];
+    this.#rows = new BatchedRotatingState(maxSize, leftPad, offsets);
     this.ropeOffsetArr = MlxArray.fromInt32(Int32Array.from(offsets), [offsets.length]);
   }
 
+  get offsetArr(): number[] { return this.#rows.offsets; }
+  get leftPad(): number[] { return this.#rows.leftPad; }
+
   get #B(): number {
-    return this.leftPad.length;
+    return this.#rows.batchSize;
   }
 
   #seqLen2(): number {
@@ -104,7 +110,7 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
       mode: "array",
       arr: buildBatchedRotatingMask(
         this.#B, N, this.leftPad, this.maxSize, window,
-        this.ringIdx, this.offset, this.#rotated,
+        this.#rows.ringIndex, this.#rows.totalOffset, this.#rows.rotated,
       ),
     };
   }
@@ -117,7 +123,7 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
     const vD = v.shape[3]!;
     if (S !== 1)
       throw new Error("BatchedRotatingQuantCache supports N=1 decode updates only (solo-prefill then merge)");
-    const prev = this.offset;
+    const prev = this.#rows.totalOffset;
 
     // Grow the buffer (in STEP chunks) until it reaches maxSize.
     if (!this.keys || (prev >= this.#seqLen2() && this.#seqLen2() < this.maxSize)) {
@@ -144,7 +150,8 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
         this.keys = newK;
         this.values = newV;
       }
-      this.ringIdx = prev;
+      this.#rows.markGrown(prev);
+      this.ringIdx = this.#rows.ringIndex;
     }
 
     // Trim any overshoot past maxSize (decrements left padding persistently).
@@ -159,16 +166,12 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
         });
       this.keys = cutFrom(this.keys!);
       this.values = cutFrom(this.values!);
-      this.ringIdx = this.maxSize;
-      this.leftPad = this.leftPad.map((x) => x - trimSize);
+      this.#rows.trimOvershoot(trimSize);
+      this.ringIdx = this.#rows.ringIndex;
     }
 
     // Rotate when the write head reaches the end of the ring.
-    if (this.ringIdx === this.maxSize) {
-      this.#rotated = true;
-      this.ringIdx = 0;
-    }
-    if (this.#rotated) this.leftPad = this.leftPad.map((x) => x - S);
+    this.ringIdx = this.#rows.beginWrite(S);
 
     // Quantize + write the new K/V at the ring head (six sliceUpdates).
     const kq = ops.quantize(k, this.groupSize, this.bits);
@@ -184,9 +187,9 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
     disposeTriple(kq);
     disposeTriple(vq);
 
-    this.offset += S;
-    this.offsetArr = this.offsetArr.map((x) => x + S);
-    this.ringIdx += S;
+    this.#rows.commitWrite(S);
+    this.offset = this.#rows.totalOffset;
+    this.ringIdx = this.#rows.ringIndex;
 
     // Return the populated prefix (ring not yet full) or the whole buffer.
     const upTo = this.offset < this.maxSize ? this.offset : this.#seqLen2();
@@ -209,27 +212,10 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
    *  overrides the base to use the BATCHED ring state. */
   override temporalView(): [ops.QuantizedTensor, ops.QuantizedTensor] {
     if (!this.keys || !this.values) throw new Error("cache is empty");
-    const valid = Math.min(this.offset, this.maxSize);
-    const order = (t: ops.QuantizedTensor): ops.QuantizedTensor =>
-      mapTriple(t, (a) => {
-        const [B, H, Sbuf, D] = a.shape as [number, number, number, number];
-        let tt: MlxArray;
-        if (this.ringIdx === Sbuf) {
-          tt = a.slice([0, 0, 0, 0], [B, H, Sbuf, D]);
-        } else if (this.ringIdx < this.offset) {
-          const tail = a.slice([0, 0, this.ringIdx, 0], [B, H, Sbuf, D]);
-          const head = a.slice([0, 0, 0, 0], [B, H, this.ringIdx, D]);
-          tt = ops.concatAxis([tail, head], 2);
-          tail.dispose();
-          head.dispose();
-        } else {
-          tt = a.slice([0, 0, 0, 0], [B, H, this.ringIdx, D]);
-        }
-        const cut = tt.slice([0, 0, 0, 0], [B, H, valid, D]);
-        tt.dispose();
-        return cut;
-      });
-    return [order(this.keys), order(this.values)];
+    return [
+      temporalStorageView(quantizedRowStorage, this.keys, this.#rows),
+      temporalStorageView(quantizedRowStorage, this.values, this.#rows),
+    ];
   }
 
   /** Quantized twin of BatchedRotatingCache.extractRow (mlx-lm
@@ -244,34 +230,13 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
   extractRow(i: number): RotatingQuantizedKVCache | null {
     if (!this.keys || !this.values) return null;
     const pad = Math.max(0, this.leftPad[i]!);
-    const valid = Math.min(this.offset, this.maxSize);
-    const cut = (t: ops.QuantizedTensor): ops.QuantizedTensor =>
-      mapTriple(t, (a) => {
-        const [, H, Sbuf, D] = a.shape as [number, number, number, number];
-        const row = a.slice([i, 0, 0, 0], [i + 1, H, Sbuf, D]);
-        let tt: MlxArray;
-        if (this.ringIdx === Sbuf) {
-          tt = row;
-        } else if (this.ringIdx < this.offset) {
-          const tail = row.slice([0, 0, this.ringIdx, 0], [1, H, Sbuf, D]);
-          const head = row.slice([0, 0, 0, 0], [1, H, this.ringIdx, D]);
-          tt = ops.concatAxis([tail, head], 2);
-          tail.dispose();
-          head.dispose();
-          row.dispose();
-        } else {
-          tt = row.slice([0, 0, 0, 0], [1, H, this.ringIdx, D]);
-          row.dispose();
-        }
-        const cutV = tt.slice([0, 0, pad, 0], [1, H, valid, D]);
-        tt.dispose();
-        const own = ops.copyOf(cutV); // TRUE copy: see 2026-08-20 contiguous-view pin class
-        cutV.dispose();
-        return own;
-      });
     const c = new RotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits);
-    const k = cut(this.keys);
-    const v = cut(this.values);
+    const k = temporalStorageView(quantizedRowStorage, this.keys, this.#rows, {
+      row: i, from: pad, copy: true,
+    });
+    const v = temporalStorageView(quantizedRowStorage, this.values, this.#rows, {
+      row: i, from: pad, copy: true,
+    });
     c.restoreState(k, v, this.offsetArr[i]!, k.packed.shape[2]!);
     return c;
   }
@@ -279,19 +244,14 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
   /** Keep only `keep` rows along the batch axis (eviction), in place. */
   filter(keep: number[]): void {
     if (this.keys && this.values) {
-      const idxArr = MlxArray.fromInt32(Int32Array.from(keep), [keep.length]);
-      const take = (t: ops.QuantizedTensor): ops.QuantizedTensor =>
-        mapTriple(t, (a) => ops.takeAxis(a, idxArr, 0));
-      const k = take(this.keys);
-      const v = take(this.values);
-      idxArr.dispose();
+      const k = quantizedRowStorage.takeRows(this.keys, keep);
+      const v = quantizedRowStorage.takeRows(this.values, keep);
       disposeTriple(this.keys);
       disposeTriple(this.values);
       this.keys = k;
       this.values = v;
     }
-    this.offsetArr = keep.map((i) => this.offsetArr[i]!);
-    this.leftPad = keep.map((i) => this.leftPad[i]!);
+    this.#rows.filter(keep);
     this.releaseRopeArr(); // safe here: filter runs between steps
   }
 
@@ -317,30 +277,13 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
     const width = Math.max(...lens, 0);
     const leftPad = lens.map((l) => width - l);
     const cache = new BatchedRotatingQuantCache(maxSize, groupSize, bits, leftPad, offsets);
+    cache.#rows.restoreMerged(width, offsets);
+    cache.offset = cache.#rows.totalOffset;
+    cache.ringIdx = cache.#rows.ringIndex;
     if (width === 0) return cache;
 
-    const padTo = (a: MlxArray, pad: number): MlxArray => {
-      if (pad === 0) return a.slice([0, 0, 0, 0], a.shape as number[]);
-      const [B, H, , D] = a.shape as [number, number, number, number];
-      const z = ops.zeros([B, H, pad, D], a.dtype);
-      const out = ops.concatAxis([z, a], 2);
-      z.dispose();
-      return out;
-    };
-    const padded = rows.map((r, i) => ({
-      keys: mapTriple(r.keys, (a) => padTo(a, leftPad[i]!)),
-      values: mapTriple(r.values, (a) => padTo(a, leftPad[i]!)),
-    }));
-    const cat = (pick: (r: QuantRow) => ops.QuantizedTensor): ops.QuantizedTensor => ({
-      packed: ops.concatAxis(padded.map((r) => pick(r).packed), 0),
-      scales: ops.concatAxis(padded.map((r) => pick(r).scales), 0),
-      biases: ops.concatAxis(padded.map((r) => pick(r).biases), 0),
-    });
-    cache.keys = cat((r) => r.keys);
-    cache.values = cat((r) => r.values);
-    for (const r of padded) { disposeTriple(r.keys); disposeTriple(r.values); }
-    cache.ringIdx = width;
-    cache.offset = width;
+    cache.keys = mergeStorageRows(quantizedRowStorage, rows.map((row) => row.keys), leftPad);
+    cache.values = mergeStorageRows(quantizedRowStorage, rows.map((row) => row.values), leftPad);
     return cache;
   }
 }
