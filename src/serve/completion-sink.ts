@@ -24,6 +24,15 @@ export interface CompletionResult {
   stopped: boolean;
 }
 
+export type CompletionFinishReason = "stop" | "length" | "tool_calls";
+
+export interface CompletionStreamProtocol {
+  start(): string[];
+  addEvents(events: CompletionEvent[]): string[];
+  finish(reason: CompletionFinishReason, usage: Record<string, unknown>): string[];
+  error(message: string): string[];
+}
+
 export interface TokenTextRouter {
   push(token: number): string;
   flush(): string;

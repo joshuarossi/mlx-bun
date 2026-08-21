@@ -8,6 +8,7 @@ import {
   ResponseStore,
   ResponsesStreamTranslator,
   chatJsonToResponses,
+  createResponsesStreamProtocol,
   outputItemsToInputItems,
   responsesToChatBody,
   translateOpenAiSseToResponses,
@@ -162,6 +163,28 @@ const parseFrames = (frames: string[]) =>
   });
 
 describe("ResponsesStreamTranslator", () => {
+  test("semantic completion events bypass OpenAI SSE serialization", () => {
+    let captured: Record<string, unknown> = {};
+    const protocol = createResponsesStreamProtocol(
+      "m",
+      "resp_previous",
+      (final) => { captured = final; },
+    );
+    const frames = [
+      ...protocol.start(),
+      ...protocol.addEvents([
+        { type: "reasoning", text: "why" },
+        { type: "content", text: "answer" },
+      ]),
+      ...protocol.finish("stop", { prompt_tokens: 4, completion_tokens: 2 }),
+    ];
+    const events = parseFrames(frames);
+    expect(events.map((event) => event.event)).toContain("response.output_text.delta");
+    expect(events.at(-1)!.event).toBe("response.completed");
+    expect(captured).toEqual(events.at(-1)!.data.response);
+    expect(captured.previous_response_id).toBe("resp_previous");
+  });
+
   test("text stream: oracle event chain incl. Codex-required events", () => {
     const t = new ResponsesStreamTranslator("m");
     const frames = [

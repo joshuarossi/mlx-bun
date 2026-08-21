@@ -90,6 +90,7 @@ import {
   CompletionSink,
   createTimedFlowControl,
   type CompletionEvent,
+  type CompletionStreamProtocol,
 } from "./serve/completion-sink";
 import { createDiscoveryRoutes } from "./serve/discovery-routes";
 import { handleLabRoute } from "./serve/lab-routes";
@@ -117,12 +118,12 @@ import { PromptCache, cacheBytes } from "./prompt-cache";
 import { SsdCacheStore } from "./ssd-cache";
 import { configFingerprint } from "./model/fingerprint";
 import {
-  anthropicToChatBody, chatJsonToAnthropic, translateOpenAiSse,
+  anthropicToChatBody, chatJsonToAnthropic, createAnthropicStreamProtocol,
   type AnthropicRequest,
 } from "./anthropic";
 import {
   ResponseStore, chatJsonToResponses, outputItemsToInputItems,
-  responsesToChatBody, translateOpenAiSseToResponses,
+  responsesToChatBody, createResponsesStreamProtocol,
   type ResponsesRequest,
 } from "./responses";
 import { AdapterManager } from "./lora";
@@ -2797,7 +2798,11 @@ export function createServer(
       // translates its body into this shape and the Response back —
       // generation, tools, vision, stop sequences, prompt cache, and
       // admission control all live here exactly once.
-      const handleChat = async (body: ChatRequest, signal: AbortSignal): Promise<Response> => {
+      const handleChat = async (
+        body: ChatRequest,
+        signal: AbortSignal,
+        streamProtocol?: CompletionStreamProtocol,
+      ): Promise<Response> => {
         if (!Array.isArray(body.messages) || body.messages.length === 0)
           return Response.json({ error: { message: "messages required" } }, { status: 400 });
         // mlx-lm validates logprobs params up front (ValueError → 400)
@@ -3163,6 +3168,10 @@ export function createServer(
                 if (!generationSignal.aborted)
                   controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
               };
+              const emitFrames = (frames: string[]) => {
+                if (generationSignal.aborted) return;
+                for (const frame of frames) controller.enqueue(enc.encode(frame));
+              };
               const chunk = (delta: Record<string, unknown>, finish: string | null) => ({
                 id, object: "chat.completion.chunk", created, model: ctx.modelId,
                 choices: [{ index: 0, delta, finish_reason: finish }],
@@ -3172,7 +3181,8 @@ export function createServer(
                 // The gateway owns lane selection + GPU exclusivity; this body
                 // runs per-request (concurrently in batched mode, each writing
                 // its own SSE stream — the per-row fan-out).
-                send(chunk({ role: "assistant", content: "" }, null));
+                if (streamProtocol) emitFrames(streamProtocol.start());
+                else send(chunk({ role: "assistant", content: "" }, null));
                 const completion = new CompletionSink({
                   router: toolRouter(tools),
                   stopper: new StopMatcher(options.stopSequences),
@@ -3184,6 +3194,10 @@ export function createServer(
                   flowControl: createTimedFlowControl(!batched),
                 });
                 const sendEvents = (events: CompletionEvent[]) => {
+                  if (streamProtocol) {
+                    emitFrames(streamProtocol.addEvents(events));
+                    return;
+                  }
                   for (const event of events) {
                     if (event.type === "reasoning") {
                       send(chunk({ reasoning: event.text }, null));
@@ -3213,23 +3227,34 @@ export function createServer(
                 // reply) and re-record for pi-web's WS correlation.
                 const finalLane: Lane = batched ? "batched" : s.spec ? "serial+spec" : lane;
                 if (finalLane !== lane) recordLane(id, finalLane);
-                send({
-                  ...chunk({}, finish),
-                  usage: {
-                    prompt_tokens: s.promptTokens,
-                    completion_tokens: s.generatedTokens,
-                    total_tokens: s.promptTokens + s.generatedTokens,
-                    prompt_tokens_details: { cached_tokens: s.cachedTokens },
-                    lane: finalLane,
-                    ...(s.spec ? { speculation: s.spec } : {}),
-                  },
-                });
-                // bare sentinel per the OpenAI spec — JSON.stringify would
-                // quote it and strict SDK clients never see the terminator
+                const usage = {
+                  prompt_tokens: s.promptTokens,
+                  completion_tokens: s.generatedTokens,
+                  total_tokens: s.promptTokens + s.generatedTokens,
+                  prompt_tokens_details: { cached_tokens: s.cachedTokens },
+                  lane: finalLane,
+                  ...(s.spec ? { speculation: s.spec } : {}),
+                };
+                if (streamProtocol) {
+                  emitFrames(streamProtocol.finish(finish, usage));
+                } else {
+                  send({ ...chunk({}, finish), usage });
+                  // bare sentinel per the OpenAI spec — strict SDK clients
+                  // require the unquoted terminator.
                   controller.enqueue(enc.encode("data: [DONE]\n\n"));
+                }
                 } catch (e) {
-                  if (!generationSignal.aborted)
-                    send({ error: { message: (e as Error).message } });
+                  if (!generationSignal.aborted) {
+                    const message = (e as Error).message;
+                    if (streamProtocol) {
+                      emitFrames([
+                        ...streamProtocol.error(message),
+                        ...streamProtocol.finish("stop", {}),
+                      ]);
+                    } else {
+                      send({ error: { message } });
+                    }
+                  }
                 } finally {
                   if (!cancelled) {
                     if (generationSignal.aborted) controller.error(generationSignal.reason);
@@ -3592,7 +3617,13 @@ export function createServer(
         } catch (e) {
           return anthropicError(400, "invalid_request_error", (e as Error).message);
         }
-        const resp = await handleChat(chatBody, request.signal);
+        const resp = await handleChat(
+          chatBody,
+          request.signal,
+          anthropicBody.stream
+            ? createAnthropicStreamProtocol(ctx.modelId)
+            : undefined,
+        );
         if (!resp.ok) {
           const err = (await resp.json().catch(() => null)) as
             | { error?: { message?: string } }
@@ -3604,13 +3635,7 @@ export function createServer(
           );
         }
         if (anthropicBody.stream) {
-          return new Response(translateOpenAiSse(resp.body!, ctx.modelId), {
-            headers: {
-              "content-type": "text/event-stream",
-              "cache-control": "no-cache",
-              connection: "keep-alive",
-            },
-          });
+          return resp;
         }
         return Response.json(chatJsonToAnthropic(await resp.json(), ctx.modelId));
       }
@@ -3673,7 +3698,22 @@ export function createServer(
         } catch (e) {
           return responsesError(400, (e as Error).message);
         }
-        const resp = await handleChat(chatBody, request.signal);
+        const resp = await handleChat(
+          chatBody,
+          request.signal,
+          responsesBody.stream
+            ? createResponsesStreamProtocol(
+                ctx.modelId,
+                prevId,
+                (final) =>
+                  responseStore.put(final.id as string, {
+                    input: capturedInput,
+                    output: final.output as unknown[],
+                    instructions: capturedInstructions,
+                  }),
+              )
+            : undefined,
+        );
         if (!resp.ok) {
           const err = (await resp.json().catch(() => null)) as
             | { error?: { message?: string } }
@@ -3681,22 +3721,7 @@ export function createServer(
           return responsesError(resp.status, err?.error?.message ?? "request failed");
         }
         if (responsesBody.stream) {
-          const body = translateOpenAiSseToResponses(
-            resp.body!, ctx.modelId, prevId,
-            (final) =>
-              responseStore.put(final.id as string, {
-                input: capturedInput,
-                output: final.output as unknown[],
-                instructions: capturedInstructions,
-              }),
-          );
-          return new Response(body, {
-            headers: {
-              "content-type": "text/event-stream",
-              "cache-control": "no-cache",
-              connection: "keep-alive",
-            },
-          });
+          return resp;
         }
         const responses = chatJsonToResponses(await resp.json(), ctx.modelId, prevId);
         responseStore.put(responses.id as string, {
