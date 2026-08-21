@@ -7,6 +7,7 @@ export type AuxiliaryRoute =
   | "memory-history"
   | "memory-diff"
   | "memory-init"
+  | "memory-synthesize"
   | "hub-local"
   | "hub-search"
   | "hub-download"
@@ -26,6 +27,7 @@ export function matchAuxiliaryRoute(method: string, pathname: string): Auxiliary
     case "GET /api/memory/history": return "memory-history";
     case "GET /api/memory/diff": return "memory-diff";
     case "POST /api/memory/init": return "memory-init";
+    case "GET /v1/memory/synthesize": return "memory-synthesize";
     case "GET /api/hub/local": return "hub-local";
     case "GET /api/hub/search": return "hub-search";
     case "POST /api/hub/download": return "hub-download";
@@ -72,6 +74,33 @@ export async function handleAuxiliaryRoute(
     case "memory-init": {
       const { handleMemoryInit } = await import("../memory/rest");
       return handleMemoryInit(request);
+    }
+    case "memory-synthesize": {
+      const dryRun = url.searchParams.get("dry") === "1";
+      const { runSynthesis } = await import("../memory/pipeline");
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        async start(controller) {
+          const send = (event: unknown) =>
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          try {
+            const summary = await runSynthesis({ dryRun }, (event) => send(event));
+            send({ type: "summary", ...summary });
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          } catch (error) {
+            send({ type: "error", message: (error as Error).message });
+          } finally {
+            controller.close();
+          }
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        },
+      });
     }
     case "hub-local": {
       const { handleHubLocal } = await import("../hub-rest");

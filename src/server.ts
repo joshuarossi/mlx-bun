@@ -2460,39 +2460,6 @@ export function createServer(
       const modelAdminResponse = await handleModelAdminRoute(url, request, ctx, gateway);
       if (modelAdminResponse) return modelAdminResponse;
 
-      // Memory synthesis progress (P8-T5). The same DAG the nightly launchd job
-      // runs (`mlx-bun memory synthesize`), streamed as Server-Sent Events so the
-      // status page can show live stage/log/done progress. `?dry=1` plans the DAG
-      // without any model call or vault write — the safe wiring-verification path
-      // (the FULL-corpus run is USER-ACTION, P6-T5). GET so EventSource can drive it.
-      if (url.pathname === "/v1/memory/synthesize" && request.method === "GET") {
-        const dryRun = url.searchParams.get("dry") === "1";
-        const { runSynthesis } = await import("./memory/pipeline");
-        const enc = new TextEncoder();
-        const stream = new ReadableStream({
-          async start(controller) {
-            const send = (e: unknown) =>
-              controller.enqueue(enc.encode(`data: ${JSON.stringify(e)}\n\n`));
-            try {
-              const summary = await runSynthesis({ dryRun }, (ev) => send(ev));
-              send({ type: "summary", ...summary });
-              controller.enqueue(enc.encode("data: [DONE]\n\n"));
-            } catch (e) {
-              send({ type: "error", message: (e as Error).message });
-            } finally {
-              controller.close();
-            }
-          },
-        });
-        return new Response(stream, {
-          headers: {
-            "content-type": "text/event-stream",
-            "cache-control": "no-cache",
-            connection: "keep-alive",
-          },
-        });
-      }
-
       if (url.pathname === "/fit" && request.method === "GET") {
         // Fit assessment for the status page: this-machine report at the
         // admission ceiling + the Apple SKU matrix at a fixed 32k.

@@ -13,6 +13,7 @@ const routes: Array<[string, string, AuxiliaryRoute]> = [
   ["GET", "/api/memory/history", "memory-history"],
   ["GET", "/api/memory/diff", "memory-diff"],
   ["POST", "/api/memory/init", "memory-init"],
+  ["GET", "/v1/memory/synthesize", "memory-synthesize"],
   ["GET", "/api/hub/local", "hub-local"],
   ["GET", "/api/hub/search", "hub-search"],
   ["POST", "/api/hub/download", "hub-download"],
