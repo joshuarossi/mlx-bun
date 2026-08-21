@@ -59,6 +59,16 @@ describe("GLM-5.2 G5 memory contract", () => {
       bunNativeReserveBytes: 536_870_912,
       safetyMarginBytes: 536_870_912,
     });
+    expect(plan).toMatchObject({
+      strategy: "glm52-colibri",
+      fits: true,
+      maxSafeContext: plan.contextTokens,
+      totalBytes: plan.plannedProcessBytes,
+      usableBytes: plan.processLimitBytes,
+      allocatorLimitBytes: plan.lineItems.allocatorReserveBytes,
+    });
+    expect(plan.weightsBytes + plan.kvBytes + plan.transientBytes + plan.reserveBytes)
+      .toBe(plan.totalBytes);
     expect(plan.plannedMachineBytes + plan.machineHeadroomBytes)
       .toBe(plan.machineBytes);
   });

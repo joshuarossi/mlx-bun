@@ -10,6 +10,7 @@
 
 import { totalmem } from "node:os";
 import type { ModelConfig } from "./config";
+import type { MemoryPlan } from "./memory-plan";
 import {
   kvBytesAt,
   kvGeometry,
@@ -137,16 +138,9 @@ export function chooseAutoModel<T extends AutoPickCandidate>(
   return bySizeDesc.find(fitsCoexistBudget) ?? bySizeDesc.find(fitsFullBudget);
 }
 
-export interface FitReport {
-  fits: boolean;
-  contextTokens: number;
-  weightsBytes: number;
-  kvBytes: number;
-  transientBytes: number;
-  totalBytes: number;
-  usableBytes: number;
-  maxSafeContext: number;
-  predictedDecodeTps: number;
+export interface FitReport extends MemoryPlan {
+  readonly strategy: "generic-kv";
+  readonly predictedDecodeTps: number;
 }
 
 export function fit(
@@ -199,11 +193,14 @@ export function fit(
     (isMoe ? MOE_DECODE_EFFICIENCY : DECODE_EFFICIENCY);
 
   return {
+    schemaVersion: 1,
+    strategy: "generic-kv",
     fits: total <= usable,
     contextTokens: ctx,
     weightsBytes,
     kvBytes: kv,
     transientBytes: transient,
+    reserveBytes: 0,
     totalBytes: total,
     usableBytes: usable,
     maxSafeContext: maxCtx,

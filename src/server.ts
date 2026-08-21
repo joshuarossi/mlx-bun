@@ -2150,18 +2150,11 @@ export function createServer(
   // advertises and admits the larger window it actually enables; only
   // TurboQuant still bills bf16 (conservative — no projector for its
   // layout yet, and it is solo-only in v1).
-  const genericAdmission = fit(
+  const admission = ctx.glmMemoryPlan ?? fit(
     ctx.model.config, ctx.model.weightsBytes, 1,
     undefined, undefined, 0, serverOptions.memoryBudgetBytes,
     resolvedKvScheme.fitOptions,
   );
-  const admission = ctx.glmMemoryPlan
-    ? {
-        ...genericAdmission,
-        maxSafeContext: ctx.glmMemoryPlan.contextTokens,
-        usableBytes: ctx.glmMemoryPlan.processLimitBytes,
-      }
-    : genericAdmission;
   // A zero ceiling is a warning, never a startup refusal: killing the
   // server here can only parrot the per-request admission message (which
   // still fires, with this same ceiling) or be a false positive from the
@@ -2173,10 +2166,9 @@ export function createServer(
       `safe context for ${ctx.modelId} (weights ${(ctx.model.weightsBytes / 1e9).toFixed(2)} GB) ` +
       `— serving anyway; generation requests will be refused until the budget is raised`,
     );
-  if (ctx.glmMemoryPlan)
-    setMemoryLimit(ctx.glmMemoryPlan.lineItems.allocatorReserveBytes);
-  else if (serverOptions.memoryBudgetBytes)
-    setMemoryLimit(serverOptions.memoryBudgetBytes);
+  const allocatorLimit =
+    admission.allocatorLimitBytes ?? serverOptions.memoryBudgetBytes;
+  if (allocatorLimit) setMemoryLimit(allocatorLimit);
 
   // /library response cache (30 s) — registry + config reads only.
   const startedAt = Date.now();
