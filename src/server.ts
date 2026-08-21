@@ -86,6 +86,17 @@ import { isMonotone, CURVE_UMIN, type CurveParams } from "./curve-sampler";
 const CURVE_PAGE = curveDesignerHtml as unknown as string;
 import { GenerationGateway } from "./serve/generation-gateway";
 import { recordLane, type Lane } from "./serve/lane-registry";
+import { handleStaticRoute } from "./serve/static-routes";
+const STATIC_ROUTE_ASSETS = {
+  appPage: APP_PAGE,
+  appJs: APP_JS,
+  hljsJs: HLJS_JS,
+  hljsCss: HLJS_CSS,
+  manifest: MANIFEST_WEBMANIFEST,
+  iconSvg: ICON_SVG,
+  serviceWorker: SW_JS,
+  curvePage: CURVE_PAGE,
+};
 import {
   ChatTemplate, type ChatMessage, type ToolDefinition,
 } from "./chat-template";
@@ -2510,87 +2521,8 @@ export function createServer(
         return handleSessionsExport(url);
       }
 
-      // The unified SPA is served at "/"; legacy deep links redirect into
-      // the hash router so old bookmarks still land on the right section.
-      if (url.pathname === "/" && request.method === "GET") {
-        return new Response(APP_PAGE, {
-          headers: { "content-type": "text/html; charset=utf-8" },
-        });
-      }
-      // Vendored syntax-highlighting assets (src/web/vendor/*, no CDN — see
-      // that dir's README). Long cache: content is versioned by the vendor
-      // rebuild step, not by URL, but a hard reload always wins during dev.
-      if (url.pathname === "/assets/hljs.js" && request.method === "GET") {
-        return new Response(HLJS_JS, {
-          headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
-        });
-      }
-      if (url.pathname === "/assets/hljs.css" && request.method === "GET") {
-        return new Response(HLJS_CSS, {
-          headers: { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=3600" },
-        });
-      }
-      // The frontend bundle (see the import comment above) — cache header
-      // matches the other /assets/* entries; content is versioned by the
-      // build step, not the URL, and a hard reload always wins during dev.
-      if (url.pathname === "/assets/app.js" && request.method === "GET") {
-        return new Response(APP_JS, {
-          headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
-        });
-      }
-      // PWA manifest + icon (plan §9 Phase 3): linked from app.html's
-      // <link rel="manifest">. Same versioned-by-content cache posture as
-      // the other /assets/* entries above.
-      if (url.pathname === "/manifest.webmanifest" && request.method === "GET") {
-        return new Response(MANIFEST_WEBMANIFEST, {
-          headers: { "content-type": "application/manifest+json; charset=utf-8", "cache-control": "public, max-age=3600" },
-        });
-      }
-      if (url.pathname === "/assets/icon.svg" && request.method === "GET") {
-        return new Response(ICON_SVG, {
-          headers: { "content-type": "image/svg+xml; charset=utf-8", "cache-control": "public, max-age=3600" },
-        });
-      }
-      // Service worker MUST be served at the root scope (/sw.js, not
-      // /assets/sw.js) — a worker's default scope is the directory it's
-      // served from, and the shell it manages includes "/" itself.
-      // no-store: the browser's own update check needs a fresh byte
-      // comparison every time to notice a new worker, not a cached 304.
-      if (url.pathname === "/sw.js" && request.method === "GET") {
-        return new Response(SW_JS, {
-          headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" },
-        });
-      }
-      // v2 HLG Curve Designer — served same-origin so /generate + /signal need no CORS.
-      // Read fresh from disk in dev (edits show on reload, no restart); fall back to the
-      // embedded copy when running as the compiled single binary.
-      if (url.pathname === "/curves" && request.method === "GET") {
-        let html = CURVE_PAGE;
-        try { html = readFileSync(new URL("./assets/curve-designer.html", import.meta.url), "utf8"); } catch { /* binary: use embedded */ }
-        return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
-      }
-      // Training/inference DAG map — self-contained cytoscape artifact, served
-      // same-origin so the Routes tab can embed it in an <iframe src="/dag">.
-      if (url.pathname === "/dag" && request.method === "GET") {
-        try {
-          const html = readFileSync(new URL("../docs/dag/training-inference-map.html", import.meta.url), "utf8");
-          return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
-        } catch {
-          return new Response("DAG map artifact not found at docs/dag/training-inference-map.html", { status: 404 });
-        }
-      }
-      if (url.pathname === "/curve-terrain" && request.method === "GET") {
-        try {
-          const html = readFileSync(new URL("../docs/archive/investigations/curve-terrain.html", import.meta.url), "utf8");
-          return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
-        } catch {
-          return new Response("curve terrain artifact not found; run scripts/experiments/curve-terrain.ts first", { status: 404 });
-        }
-      }
-      if (request.method === "GET" &&
-          ["/status", "/chat", "/quantize", "/finetune", "/dataset"].includes(url.pathname)) {
-        return Response.redirect(`/#${url.pathname}`, 302);
-      }
+      const staticResponse = handleStaticRoute(url, request, STATIC_ROUTE_ASSETS);
+      if (staticResponse) return staticResponse;
 
       if (url.pathname === "/library" && request.method === "GET") {
         // Everything on disk, each with a fit assessment for THIS machine
