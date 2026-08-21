@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { MmapFile } from "./mmap";
 import { MlxArray, SAFETENSORS_TO_MLX } from "./mlx/array";
 import type { SafetensorsDtype } from "./safetensors";
+import { runtimeValue } from "./runtime-config";
 
 export interface OffloadEntry {
   name: string;
@@ -71,4 +72,5 @@ export function expertOffloadArray(name: string): MlxArray | null {
   return MlxArray.fromPointer(mm.pointer(e.offset), e.shape, SAFETENSORS_TO_MLX[e.dtype]);
 }
 
-if (process.env.MLX_BUN_EXPERT_OFFLOAD) activateExpertOffload(process.env.MLX_BUN_EXPERT_OFFLOAD);
+const expertOffloadPath = runtimeValue("MLX_BUN_EXPERT_OFFLOAD");
+if (expertOffloadPath) activateExpertOffload(expertOffloadPath);

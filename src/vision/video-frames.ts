@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { nativePackDir } from "../native-pack";
 import { decodeImage, type RGBImage } from "./preprocess";
+import { runtimeValue } from "../runtime-config";
 
 export const VIDEO_SAMPLE_FPS = 2;
 export const VIDEO_MAX_FRAMES = 768; // Qwen3VLVideoProcessor max_frames
@@ -55,7 +56,8 @@ function compileFromSource(): Promise<string | null> {
 /** Locate (or dev-compile) the extractor; null ⟹ video input unavailable
  *  on this install (surfaced as a clear 400, never a crash). */
 export async function resolveFrameExtract(): Promise<string | null> {
-  if (process.env.MLX_BUN_FRAME_EXTRACT) return process.env.MLX_BUN_FRAME_EXTRACT;
+  const explicit = runtimeValue("MLX_BUN_FRAME_EXTRACT");
+  if (explicit) return explicit;
   const candidates = [
     join(dirname(process.execPath), BIN),
     join(nativePackDir(), BIN),

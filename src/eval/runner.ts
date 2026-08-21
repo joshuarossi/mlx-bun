@@ -10,6 +10,7 @@ import { clearCache } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import { ChatTemplate } from "../chat-template";
 import { loadModelConfig, type ModelConfig } from "../config";
+import { runtimeValue } from "../runtime-config";
 import {
   openModel,
   type Glm52RuntimeOpenOptions,
@@ -20,7 +21,7 @@ import { DiffusionGemmaModel } from "../model/diffusion-gemma";
 import { loadTokenizer, type LoadedTokenizer } from "../tokenizer";
 import { resolveModelDir } from "./kl";
 
-export const EVAL_DATA_DIR = process.env.MLX_BUN_EVAL_DATA ?? `${homedir()}/.cache/mlx-bun/eval-data`;
+export const EVAL_DATA_DIR = runtimeValue("MLX_BUN_EVAL_DATA") ?? `${homedir()}/.cache/mlx-bun/eval-data`;
 
 /** Read a jsonl dataset exported by scripts/eval/export-datasets.py. */
 export function loadJsonl<T = Record<string, unknown>>(name: string): T[] {
@@ -166,7 +167,7 @@ export function greedyDecodeBitExact(tm: TaskModel, ids: number[], maxTokens: nu
  *  pass `opts.sampler` to drive temperature/HLG/etc. */
 export async function generateText(tm: TaskModel, body: string, opts: GenOpts = {}): Promise<string> {
   const maxTokens = opts.maxTokens ?? 256;
-  const enableThinking = opts.enableThinking ?? process.env.MLX_BUN_EVAL_THINK === "1";
+  const enableThinking = opts.enableThinking ?? runtimeValue("MLX_BUN_EVAL_THINK") === "1";
   const templated = opts.useChat !== false && tm.template !== null;
   const text = templated
     ? tm.template!.render([{ role: "user", content: body }], { addGenerationPrompt: true, enableThinking })
@@ -183,7 +184,7 @@ export async function generateText(tm: TaskModel, body: string, opts: GenOpts = 
   // MLX_BUN_EVAL_KV_QUANT=1 generates through the model's quantized KV (serving
   // config); an explicit opts.kvScheme (cli generate's resolved tier route) wins.
   const envKv: GenOpts["kvScheme"] | undefined =
-    (process.env.MLX_BUN_EVAL_KV_QUANT === "1" && tm.config.kvQuant?.length)
+    (runtimeValue("MLX_BUN_EVAL_KV_QUANT") === "1" && tm.config.kvQuant?.length)
       ? { kvConfig: tm.config.kvQuant, quantizedKvStart: 0 } : undefined;
   const kvScheme = opts.kvScheme ?? envKv;
   const kvActive = !!(kvScheme && (kvScheme.kvBits || kvScheme.kvConfig?.length || kvScheme.turboQuant));

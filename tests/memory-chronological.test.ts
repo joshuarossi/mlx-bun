@@ -14,6 +14,7 @@
 // All reachable WITHOUT the GPU via the injected `call` seams.
 
 import { afterEach, describe, expect, it } from "bun:test";
+import { configureRuntime } from "../src/runtime-config";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,10 +30,10 @@ const CONV_A = "aaaaaaaa-0000-0000-0000-000000000000"; // updated_at 100
 const CONV_B = "00000000-0000-0000-0000-000000000000"; // updated_at 300 (UUID sorts FIRST)
 const CONV_C = "cccccccc-0000-0000-0000-000000000000"; // updated_at 200
 
-const savedWiki = process.env.MLX_BUN_WIKI;
+let restoreWiki = () => {};
 afterEach(() => {
-  if (savedWiki === undefined) delete process.env.MLX_BUN_WIKI;
-  else process.env.MLX_BUN_WIKI = savedWiki;
+  restoreWiki();
+  restoreWiki = () => {};
 });
 
 async function seedVault(): Promise<string> {
@@ -40,7 +41,8 @@ async function seedVault(): Promise<string> {
   await mkdir(join(root, "articles"), { recursive: true });
   await mkdir(join(root, "Meta"), { recursive: true });
   await writeFile(join(root, "Meta", "Entities.md"), "# Entities\n\nName the entity each chunk is about.\n");
-  process.env.MLX_BUN_WIKI = root;
+  restoreWiki();
+  restoreWiki = configureRuntime({ MLX_BUN_WIKI: root });
   return root;
 }
 

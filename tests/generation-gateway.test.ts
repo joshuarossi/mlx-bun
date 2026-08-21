@@ -13,6 +13,7 @@ import { KVCache, RotatingKVCache } from "../src/model/gemma4-base";
 import { SSMCache } from "../src/model/qwen3-delta";
 import type { RuntimeModel } from "../src/model/factory";
 import { resolveKvScheme } from "../src/kv-scheme";
+import { configureRuntime } from "../src/runtime-config";
 
 // willBatch reads only makeCache() off the model (the capability gate) and
 // never the serialRun, so stubs are safe. The default stub models a
@@ -153,12 +154,11 @@ describe("GenerationGateway.willBatch", () => {
   // house style). Degrade-path requests have NO controller (hasGrammar=false)
   // and stay batchable regardless.
   test("grammar batches by default (B1 per-row matchers)", () => {
-    const prev = process.env.MLX_BUN_GRAMMAR_BATCH;
-    delete process.env.MLX_BUN_GRAMMAR_BATCH;
+    const restore = configureRuntime({ MLX_BUN_GRAMMAR_BATCH: undefined });
     try {
       expect(gateway(2).willBatch({ ...batchable, hasGrammar: true })).toBe(true);
     } finally {
-      if (prev !== undefined) process.env.MLX_BUN_GRAMMAR_BATCH = prev;
+      restore();
     }
   });
   // serve --draft-model: a mounted draft routes EVERY request serial —
@@ -169,15 +169,13 @@ describe("GenerationGateway.willBatch", () => {
     expect(gateway(2).willBatch({ ...batchable, hasDraft: false })).toBe(true);
   });
   test("MLX_BUN_GRAMMAR_BATCH=0 forces grammar to serial (B0 fallback)", () => {
-    const prev = process.env.MLX_BUN_GRAMMAR_BATCH;
-    process.env.MLX_BUN_GRAMMAR_BATCH = "0";
+    const restore = configureRuntime({ MLX_BUN_GRAMMAR_BATCH: "0" });
     try {
       expect(gateway(2).willBatch({ ...batchable, hasGrammar: true })).toBe(false);
       // degrade-path (no controller) still batches:
       expect(gateway(2).willBatch({ ...batchable, hasGrammar: false })).toBe(true);
     } finally {
-      if (prev !== undefined) process.env.MLX_BUN_GRAMMAR_BATCH = prev;
-      else delete process.env.MLX_BUN_GRAMMAR_BATCH;
+      restore();
     }
   });
 
@@ -216,7 +214,7 @@ describe("GenerationGateway.willBatch", () => {
     });
 
     test("MLX_BUN_BATCH_SSM=0 re-gates hybrid models to serial", () => {
-      process.env.MLX_BUN_BATCH_SSM = "0";
+      const restore = configureRuntime({ MLX_BUN_BATCH_SSM: "0" });
       try {
         const qwen = {
           makeCache: () => [new SSMCache(), new KVCache()],
@@ -224,7 +222,7 @@ describe("GenerationGateway.willBatch", () => {
         const g = new GenerationGateway(qwen, 2, stubSerial);
         expect(g.willBatch(batchable)).toBe(false);
       } finally {
-        delete process.env.MLX_BUN_BATCH_SSM;
+        restore();
       }
     });
 

@@ -28,6 +28,11 @@ import {
   planGlm52MemoryForArtifact,
 } from "./model/glm52-memory";
 import type { JobEvent } from "./jobs/types";
+import {
+  configureRuntime,
+  runtimeValue,
+  type RuntimeKey,
+} from "./runtime-config";
 
 const argv = process.argv.slice(2);
 // The appliance path: naked `mlx-bun` (or only options, e.g.
@@ -812,11 +817,11 @@ function openChatUi(url: string, hostPort: string): void {
 }
 
 /** Server/runtime flags shared by every mode that loads a model
- *  (serve, pi). Env levers are set here so they're in place before the
+ *  (serve, pi). Runtime overrides are installed here before the
  *  generate/compiled-decode modules read them. */
 /** Resolve the decode ROUTE: a tier alias (--l1/--l2) sets the whole route,
  *  and an explicit per-fork flag (--kv-quant/--fused-sdpa/…) overrides the
- *  alias. Sets the decode env levers and returns the kv-quant mode. See
+ *  alias. Installs decode runtime options and returns the kv-quant mode. See
  *  docs/design/parity-tier-dag.md + unified-engine-frontier-plan.md.
  *  Each tier is a GUARANTEE about which reference you reproduce bit-for-bit:
  *    --l1  bit-for-bit IDENTICAL to mlx-lm    — drop-in replacement for mlx-lm
@@ -870,8 +875,9 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number; turboQuant?:
   const pick = (name: string, base: boolean | undefined): boolean | null => {
     const ex = onOff(name); return ex !== null ? ex : (base ?? null); // explicit flag wins, else tier preset
   };
-  const set = (env: string, val: boolean | null, invert = false) => {
-    if (val !== null) process.env[env] = (invert ? !val : val) ? "1" : "0";
+  const set = (name: RuntimeKey, val: boolean | null, invert = false) => {
+    if (val !== null)
+      configureRuntime({ [name]: (invert ? !val : val) ? "1" : "0" });
   };
   // Explicit --kv-quant picks the composition its ORACLE uses: config (the
   // optiq mixed scheme) runs optiq's fused SDPA (the L2 golden composition);
@@ -881,7 +887,7 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number; turboQuant?:
   set("MLX_BUN_COMPILED_DECODE", pick("compiled-decode", p.compiled));
   set("MLX_BUN_NO_FUSED_SDPA", pick("fused-sdpa", fusedSdpaBase), true); // inverted env
   // Compiled activations (the faithful geglu/swiglu — mlx-lm's @mx.compile kernel).
-  // One fork drives both env vars; qwen3/qwen3.5/universal compile unconditionally,
+  // One fork drives both runtime options; qwen3/qwen3.5/universal compile unconditionally,
   // so this toggles gemma geglu + minicpm5 swiglu (the only unfused-capable sites).
   set("MLX_BUN_COMPILED_GEGLU", pick("compiled-activations", p.compiledAct));
   set("MLX_BUN_COMPILED_SWIGLU", pick("compiled-activations", p.compiledAct));
@@ -916,11 +922,12 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
     process.exit(1);
   };
   const route = applyDecodeRoute(); // --l1/--l2 tier alias, with per-fork flags overriding
-  if (flag("force-wire")) process.env.MLX_BUN_FORCE_WIRE = "1";
+  if (flag("force-wire")) configureRuntime({ MLX_BUN_FORCE_WIRE: "1" });
   // Remote image_url/audio_url media fetches block private/loopback/link-
   // local destinations by default (SSRF — src/media-fetch.ts); this is the
   // LAN-hosts escape hatch.
-  if (flag("allow-private-media")) process.env.MLX_BUN_ALLOW_PRIVATE_MEDIA = "1";
+  if (flag("allow-private-media"))
+    configureRuntime({ MLX_BUN_ALLOW_PRIVATE_MEDIA: "1" });
 
   const serverOptions: import("./server").ServerOptions = {};
   const budgetGB = Number(opt("memory-budget", "0"));
@@ -972,7 +979,7 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   // storage, default off (docs/design/paged-kv-cache.md). Serial-only in v1:
   // with no explicit --batch, pin --batch 1 (the default is 8); an explicit
   // --batch N>1 is refused loudly by createServer rather than downgraded.
-  if (flag("paged-kv") || process.env.MLX_BUN_PAGED_KV === "1") {
+  if (flag("paged-kv") || runtimeValue("MLX_BUN_PAGED_KV") === "1") {
     const bsRaw = opt("paged-kv-block-size");
     serverOptions.pagedKv = bsRaw !== null ? { blockSize: Number(bsRaw) } : {};
     if (batchRaw === null) {
@@ -1093,7 +1100,7 @@ async function mountStartupAdapter(
 function runtimeSummary(o: import("./server").ServerOptions): string {
   const kv = o.turboQuant ? `turbo-k${o.turboQuant.kBits}v${o.turboQuant.vBits}`
     : o.kvQuant === "off" ? "off" : typeof o.kvQuant === "number" ? `kv${o.kvQuant}` : "config";
-  const lever = (env: string, dflt: string) => process.env[env] ?? dflt;
+  const lever = (name: RuntimeKey, dflt: string) => runtimeValue(name) ?? dflt;
   return `kv-quant ${kv} · compiled-decode ${lever("MLX_BUN_COMPILED_DECODE", "1") === "1" ? "on" : "off"}` +
     (lever("MLX_BUN_COMPILED_GEGLU", "1") === "0" ? " · compiled-activations off" : "") +
     (o.batch && o.batch > 1 ? ` · batch ${o.batch}` : "") +
@@ -1734,7 +1741,7 @@ switch (cmd) {
     // three entry points (raw / OpenAI API / chat UI) differ only in how params
     // are POPULATED; here every param is explicit. Decode-path levers mirror
     // serve so you can pin the route (mlx-lm compat = --l1).
-    // --l1/--l2 + per-fork overrides set the decode env levers; the
+    // --l1/--l2 + per-fork overrides set the decode runtime options; the
     // returned KV scheme is applied below so `generate --l2` runs the same
     // quantized-KV route (and produces the same tokens) as `serve --l2`.
     const route = applyDecodeRoute();
@@ -1845,7 +1852,7 @@ switch (cmd) {
   case "benchmark": {
     const { banner, step, box, style } = await import("./tui");
     banner(pkg.version);
-    serverRuntimeFlags(); // env levers (--compiled-decode, --fused-sdpa, ...) apply to the run
+    serverRuntimeFlags(); // decode options (--compiled-decode, --fused-sdpa, ...) apply to the run
     const { m, picked } = await resolveModelAuto(opt("model") ?? positional(0) ?? opt("query"));
     const tokens = Number(opt("tokens", "256"));
     const runs = Number(opt("runs", "3"));

@@ -9,7 +9,8 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { configureRuntime } from "../src/runtime-config";
 
 import { getEmbedCounter, resetEmbedCounter } from "../src/embed";
 import { extractSection } from "../src/memory/vault";
@@ -166,9 +167,11 @@ describe("northstar — frozen query set", () => {
 // ---- byte counters + tripwire through the real read tools -------------
 
 describe.skipIf(!hasSmoke)("northstar — instrumented reader over the smoke vault", () => {
+  let restoreWiki = () => {};
   beforeAll(() => {
-    process.env.MLX_BUN_WIKI = SMOKE;
+    restoreWiki = configureRuntime({ MLX_BUN_WIKI: SMOKE });
   });
+  afterAll(() => restoreWiki());
 
   it("buckets context reads vs FIND navigation and counts bytes that match extractSection", async () => {
     const reader = new InstrumentedReader();

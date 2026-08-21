@@ -7,6 +7,7 @@
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { SNAPSHOT, snapshotAvailable } from "./paths";
+import { configureRuntime } from "../src/runtime-config";
 
 const haveWeights = await snapshotAvailable();
 
@@ -49,7 +50,9 @@ describe.skipIf(!haveWeights)("generated 12B vs monolith", async () => {
   const trajectory = async (
     model: InstanceType<typeof Gemma4Model>, compiled: boolean,
   ): Promise<number[]> => {
-    process.env.MLX_BUN_COMPILED_DECODE = compiled ? "1" : "0";
+    const restore = configureRuntime({
+      MLX_BUN_COMPILED_DECODE: compiled ? "1" : "0",
+    });
     try {
       const out: number[] = [];
       const g = generate(model, prompt, {
@@ -58,7 +61,7 @@ describe.skipIf(!haveWeights)("generated 12B vs monolith", async () => {
       for await (const t of g) out.push(t.token);
       return out;
     } finally {
-      delete process.env.MLX_BUN_COMPILED_DECODE;
+      restore();
     }
   };
 
@@ -93,7 +96,7 @@ describe.skipIf(!haveWeights)("generated 12B vs monolith", async () => {
   }, 240_000);
 
   test("logits bit-exact per step (uncompiled isolation)", () => {
-    process.env.MLX_BUN_COMPILED_DECODE = "0";
+    const restore = configureRuntime({ MLX_BUN_COMPILED_DECODE: "0" });
     try {
       const run = (model: InstanceType<typeof Gemma4Model>): Float32Array[] => {
         const cache = model.makeCache();
@@ -126,7 +129,7 @@ describe.skipIf(!haveWeights)("generated 12B vs monolith", async () => {
         expect(maxDiff).toBe(0);
       }
     } finally {
-      delete process.env.MLX_BUN_COMPILED_DECODE;
+      restore();
     }
   }, 240_000);
 
@@ -192,7 +195,9 @@ describe.skipIf(!have4b)("generated e4b vs monolith (KV sharing + per-layer inpu
   for (const compiled of [false, true]) {
     test(`greedy trajectories identical under serve kv_config (compiled ${compiled ? "on" : "off"})`, async () => {
       const run = async (model: InstanceType<typeof Gemma4Model>): Promise<number[]> => {
-        process.env.MLX_BUN_COMPILED_DECODE = compiled ? "1" : "0";
+        const restore = configureRuntime({
+          MLX_BUN_COMPILED_DECODE: compiled ? "1" : "0",
+        });
         try {
           const out: number[] = [];
           const g = generate(model, prompt, {
@@ -201,7 +206,7 @@ describe.skipIf(!have4b)("generated e4b vs monolith (KV sharing + per-layer inpu
           for await (const t of g) out.push(t.token);
           return out;
         } finally {
-          delete process.env.MLX_BUN_COMPILED_DECODE;
+          restore();
         }
       };
       const uses0 = ge4b.generatedForwardUses;

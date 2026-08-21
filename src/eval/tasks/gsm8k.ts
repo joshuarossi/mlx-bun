@@ -2,6 +2,7 @@
 // 3-shot CoT, greedy decode, extract the numeric answer, compare.
 
 import { generateText, loadJsonl, sampleIndices, type TaskModel } from "../runner";
+import { runtimeValue } from "../../runtime-config";
 
 // 3-shot exemplars (verbatim from gsm8k.py).
 const FEW_SHOT: { question: string; answer: string }[] = [
@@ -73,7 +74,7 @@ export async function evaluateGsm8k(
   // his published GSM8K used) but through OUR OWN pipeline — our few-shot builder,
   // our chat template, our scorer. If our number reproduces his, our runtime is
   // faithful. MLX_BUN_GSM8K_FROZEN=0 falls back to our own sampling of the full set.
-  const useFrozen = opts.frozen ?? (process.env.MLX_BUN_GSM8K_FROZEN !== "0");
+  const useFrozen = opts.frozen ?? (runtimeValue("MLX_BUN_GSM8K_FROZEN") !== "0");
   let rows: Gsm8kRow[];
   if (useFrozen) {
     rows = loadJsonl<Gsm8kRow>("gsm8k_optiq_frozen"); // optiq's exact draw; we use {question, answer}

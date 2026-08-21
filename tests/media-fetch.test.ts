@@ -11,6 +11,7 @@ import {
   isBlockedAddress,
   type MediaFetchPolicy,
 } from "../src/media-fetch";
+import { configureRuntime } from "../src/runtime-config";
 
 const DEFAULT: MediaFetchPolicy = {
   allowPrivate: false,
@@ -99,18 +100,20 @@ describe("checkMediaUrl", () => {
 
 describe("defaultMediaFetchPolicy", () => {
   test("safe defaults; MLX_BUN_ALLOW_PRIVATE_MEDIA=1 flips allowPrivate", () => {
-    const prev = process.env.MLX_BUN_ALLOW_PRIVATE_MEDIA;
-    delete process.env.MLX_BUN_ALLOW_PRIVATE_MEDIA;
+    const restoreDefault = configureRuntime({ MLX_BUN_ALLOW_PRIVATE_MEDIA: undefined });
     try {
       const p = defaultMediaFetchPolicy();
       expect(p.allowPrivate).toBe(false);
       expect(p.timeoutMs).toBe(10_000);
       expect(p.maxBytes).toBe(64 * 1024 * 1024);
-      process.env.MLX_BUN_ALLOW_PRIVATE_MEDIA = "1";
-      expect(defaultMediaFetchPolicy().allowPrivate).toBe(true);
+      const restorePrivate = configureRuntime({ MLX_BUN_ALLOW_PRIVATE_MEDIA: "1" });
+      try {
+        expect(defaultMediaFetchPolicy().allowPrivate).toBe(true);
+      } finally {
+        restorePrivate();
+      }
     } finally {
-      if (prev === undefined) delete process.env.MLX_BUN_ALLOW_PRIVATE_MEDIA;
-      else process.env.MLX_BUN_ALLOW_PRIVATE_MEDIA = prev;
+      restoreDefault();
     }
   });
 });

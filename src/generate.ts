@@ -24,6 +24,7 @@ import { diffusionGenerate } from "./diffusion/diffusion-generate";
 import type { RuntimeModel } from "./model/factory";
 import type { KvQuantSpec, TurboQuantScheme } from "./config";
 import { flagOn } from "./flags";
+import { runtimeValue } from "./runtime-config";
 import {
   disposeStepExtras,
   makeStepSampler,
@@ -376,7 +377,7 @@ export function wiredWorkingSetBytes(model: WiredModelMemory): number {
 export function modelNeedsWiredLimit(
   model: WiredModelMemory,
   recommendedBytes = maxRecommendedWorkingSetSize(),
-  force = process.env.MLX_BUN_FORCE_WIRE === "1",
+  force = runtimeValue("MLX_BUN_FORCE_WIRE") === "1",
 ): boolean {
   return force ||
     wiredWorkingSetBytes(model) > WIRE_THRESHOLD * recommendedBytes;
@@ -719,7 +720,7 @@ async function* generateInner(
         // gap's main term).
         clearCache();
         pos += n;
-        if (process.env.MLX_BUN_PREFILL_MEM_LOG === "1")
+        if (runtimeValue("MLX_BUN_PREFILL_MEM_LOG") === "1")
           console.error(`[prefill-mem] ${pos} active ${(activeMemory() / 2 ** 30).toFixed(2)} peak ${(peakMemory() / 2 ** 30).toFixed(2)}`);
         // Macrotask yield between chunks (runtime-isolation.md Phase 1).
         await new Promise<void>((r) => setImmediate(r));

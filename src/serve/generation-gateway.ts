@@ -43,6 +43,7 @@ import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate"
 import type { KvScheme } from "../kv-scheme";
 import { makeStepSampler } from "../sampler";
 import { BatchScheduler, type RowPromptCache } from "./batch-scheduler";
+import { runtimeValue } from "../runtime-config";
 
 /** Async mutex: acquire() resolves to a release fn; releases run FIFO. */
 class AsyncMutex {
@@ -256,7 +257,7 @@ export class GenerationGateway {
           !a.maskArray && !a.layerTypes?.includes("sliding_attention");
         return this.#cacheBatchable;
       }
-      const ssmOk = process.env.MLX_BUN_BATCH_SSM !== "0";
+      const ssmOk = runtimeValue("MLX_BUN_BATCH_SSM") !== "0";
       const proto = this.model.makeCache(); // fresh caches hold no buffers
       this.#cacheBatchable = proto.every(
         (c) =>
@@ -313,7 +314,7 @@ export class GenerationGateway {
       // Grammar: B1 makes it batchable (per-row matchers) unless the kill
       // switch forces serial. MLX_BUN_GRAMMAR_BATCH=0 = B0 behavior (serial),
       // the A/B + kill lever for the new code, house style.
-      !(shape.hasGrammar && process.env.MLX_BUN_GRAMMAR_BATCH === "0")
+      !(shape.hasGrammar && runtimeValue("MLX_BUN_GRAMMAR_BATCH") === "0")
     );
   }
 

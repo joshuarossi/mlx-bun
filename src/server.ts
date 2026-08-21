@@ -76,6 +76,7 @@ import {
 } from "./generate";
 import { cloneKvCaches, SpillQueue } from "./kv-store";
 import { resolveKvScheme } from "./kv-scheme";
+import { runtimeValue } from "./runtime-config";
 import { TURBOQUANT_HEAD_DIMS } from "./mlx/turboquant-tables";
 import {
   compileGrammarRequest, grammarEnabled, type GrammarRequest,
@@ -2044,7 +2045,7 @@ export function createServer(
   // still land ahead of a just-arrived request. MLX_BUN_SSD_WRITEBEHIND=0
   // disables write-behind snapshots entirely — the paired-A/B lever + kill
   // switch (restart survival then degrades to spill-on-evict only).
-  const writeBehindOn = process.env.MLX_BUN_SSD_WRITEBEHIND !== "0";
+  const writeBehindOn = runtimeValue("MLX_BUN_SSD_WRITEBEHIND") !== "0";
   const ssdFlushGate = (): Promise<void> => gateway.onIdle();
   const ssdPending = new Map<string, ReturnType<typeof setTimeout>>();
   // Bounded write-behind queue (2026-07-07 review fix — see SpillQueue in
@@ -2060,7 +2061,7 @@ export function createServer(
   // `|| 2` would coerce an explicit "0" back to 2 GB — parse so 0 works
   // (cap 0 = keep only the newest + in-flight clone pinned; the soft cap
   // never drops the item just enqueued).
-  const spillQueueGbRaw = Number(process.env.MLX_BUN_SSD_SPILL_QUEUE_GB);
+  const spillQueueGbRaw = Number(runtimeValue("MLX_BUN_SSD_SPILL_QUEUE_GB"));
   const spillQueueCapBytes =
     (Number.isFinite(spillQueueGbRaw) && spillQueueGbRaw >= 0 ? spillQueueGbRaw : 2) * 1024 ** 3;
   const spillQueue = ssdStore
@@ -3082,7 +3083,7 @@ export function createServer(
         options = plan.options;
         const { shape, captureLogprobs } = plan;
         const batched = gateway.willBatch(shape);
-        if (process.env.MLX_BUN_LANE_DEBUG === "1")
+        if (runtimeValue("MLX_BUN_LANE_DEBUG") === "1")
           console.error(`[lane] batched=${batched} shape=${JSON.stringify(shape)} t=${Date.now() % 100000}`);
         // Per-turn lane (docs/design/web-chat-redesign.md §2.3 caveat / risk #5):
         // reported on usage AND recorded in the in-process lane registry (keyed

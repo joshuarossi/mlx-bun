@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { downloadOne } from "./download";
+import { runtimeValue } from "./runtime-config";
 
 export const NATIVE_PACK_VERSION = "0.3.0";
 export const NATIVE_PACK_FILES = [
@@ -42,7 +43,7 @@ export function nativePackName(arch = process.arch): string {
  *  the repo is private the download needs a token (GITHUB_TOKEN or
  *  `gh auth token`); once public it works anonymously. */
 export function nativePackUrl(arch = process.arch): string {
-  return process.env.MLX_BUN_NATIVE_PACK_URL ??
+  return runtimeValue("MLX_BUN_NATIVE_PACK_URL") ??
     `https://github.com/joshuarossi/mlx-bun/releases/download/native-v${NATIVE_PACK_VERSION}/${nativePackName(arch)}`;
 }
 
@@ -53,7 +54,8 @@ export function nativePackDir(arch = process.arch): string {
 /** Where the native runtime currently resolves from, or null if absent
  *  everywhere (= a fresh machine that needs the pack). */
 export function nativeRuntimeDir(): string | null {
-  if (process.env.MLX_BUN_LIBMLXC) return dirname(process.env.MLX_BUN_LIBMLXC);
+  const explicit = runtimeValue("MLX_BUN_LIBMLXC");
+  if (explicit) return dirname(explicit);
   const candidates = [
     dirname(process.execPath),
     nativePackDir(),

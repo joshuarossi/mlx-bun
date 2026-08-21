@@ -7,18 +7,21 @@
 // NO infobox-field-query tool registered.
 
 import { join } from "node:path";
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 
 import { getEmbedCounter, resetEmbedCounter } from "../src/embed";
 import { createMemoryTools, MEMORY_TOOL_NAMES } from "../src/memory/tools";
+import { configureRuntime } from "../src/runtime-config";
 
 const FIXTURE_VAULT = join(import.meta.dir, "fixtures", "wiki");
 
 // vaultRoot() honors MLX_BUN_WIKI at call time, so the read tools point at the
 // fixture vault without writing the real ~/.mlx-bun/wiki.
+let restoreWiki = () => {};
 beforeAll(() => {
-  process.env.MLX_BUN_WIKI = FIXTURE_VAULT;
+  restoreWiki = configureRuntime({ MLX_BUN_WIKI: FIXTURE_VAULT });
 });
+afterAll(() => restoreWiki());
 
 const tools = createMemoryTools();
 

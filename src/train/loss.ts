@@ -27,6 +27,7 @@ import { logitSoftcap } from "../model/gemma4-base";
 import { trainForward, trainForwardHidden } from "./forward";
 import { setLoraScale, type TrainableLora } from "./lora-params";
 import { flashCceForward, flashCceBackward, type FlashCceHead } from "./flash-cce";
+import { runtimeValue } from "../runtime-config";
 
 /** The quantized LM-head weights + final-logit softcap, accessed uniformly across
  *  models for the fused linear-CE head: Gemma is tied (`embed.asLinear`, softcap
@@ -1197,7 +1198,7 @@ export function fusedRespLogpMean(
   // e4b time-tie point where flash's memory win takes over) takes the EXACT
   // fused head instead — short rows get the faster exact head for free.
   // MLX_BUN_FLASH_MIN_M=0 always honors flash (the pre-dispatch behavior).
-  const flashMinM = Number(process.env.MLX_BUN_FLASH_MIN_M ?? "1024");
+  const flashMinM = Number(runtimeValue("MLX_BUN_FLASH_MIN_M") ?? "1024");
   const useFlash = flash && (flashMinM <= 0 || M >= flashMinM);
   let op: CustomVjp;
   if (useFlash) {

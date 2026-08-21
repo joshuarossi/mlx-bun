@@ -19,6 +19,7 @@
 
 import { Dtype } from "./mlx/ffi";
 import type { MlxArray } from "./mlx/array";
+import { runtimeValue } from "./runtime-config";
 
 let sink: Bun.FileSink | null = null;
 let seq = 0;
@@ -61,7 +62,8 @@ export function recordRouting(layer: number, indices: MlxArray): void {
   if (++written % 2000 === 0) sink.flush();
 }
 
-if (process.env.MLX_BUN_EXPERT_TRACE) beginExpertTrace(process.env.MLX_BUN_EXPERT_TRACE);
+const expertTracePath = runtimeValue("MLX_BUN_EXPERT_TRACE");
+if (expertTracePath) beginExpertTrace(expertTracePath);
 
 process.on("exit", () => { try { endExpertTrace(); } catch { /* best-effort */ } });
 process.on("SIGINT", () => { endExpertTrace(); process.exit(0); });

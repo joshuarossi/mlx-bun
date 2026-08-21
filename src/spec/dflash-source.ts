@@ -26,6 +26,7 @@ import { Gemma4Model } from "../model/gemma4";
 import type { DflashDrafter } from "./dspark/module-dflash";
 import { loadDsparkDrafter } from "./dspark/loader";
 import type { DraftProvider, DraftSource, TargetView } from "./source";
+import { runtimeValue } from "../runtime-config";
 
 function safetensorsBytes(dir: string): number {
   let total = 0;
@@ -93,7 +94,7 @@ class DflashSource implements DraftSource {
   draft(feed: number[], n: number, _stepBase: number, _anchorHidden?: MlxArray): number[] {
     if (!this.hCtx) throw new Error("DSpark drafter: draft before prefill");
     const anchorTok = feed[feed.length - 1]!;
-    const envMin = process.env.MLX_BUN_DSPARK_MINCONF;
+    const envMin = runtimeValue("MLX_BUN_DSPARK_MINCONF");
     const block = this.drafter.forwardInfer(this.model, this.hCtx, anchorTok, n, {
       thresholds: this.drafter.cfg.sts?.thresholds,
       collectLogits: false, // serve loop runs its own verify lm-head, never reads this

@@ -14,6 +14,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
+import { configureRuntime } from "../src/runtime-config";
 
 const optIn = process.env.MLX_BUN_TEST_BATCH_DECODE === "1";
 const CPM_BASE =
@@ -67,12 +68,13 @@ describe.skipIf(!optIn || !haveCpm)("batch scheduler — vectorized greedy sampl
 
     try {
       // A: vectorized (default on, all-greedy)
-      delete process.env.MLX_BUN_BATCH_VEC_SAMPLE;
+      const restoreVector = configureRuntime({ MLX_BUN_BATCH_VEC_SAMPLE: undefined });
       const vec = await runBatch([0, 0, 0]);
+      restoreVector();
       // B: per-row closure path (kill switch)
-      process.env.MLX_BUN_BATCH_VEC_SAMPLE = "0";
+      const restoreLoop = configureRuntime({ MLX_BUN_BATCH_VEC_SAMPLE: "0" });
       const loop = await runBatch([0, 0, 0]);
-      delete process.env.MLX_BUN_BATCH_VEC_SAMPLE;
+      restoreLoop();
 
       expect(vec).toEqual(loop); // BIT equality — same math, same order
       for (const s of vec) expect(s.length).toBe(12);

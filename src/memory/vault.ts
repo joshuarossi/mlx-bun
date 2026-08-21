@@ -19,12 +19,13 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { spawn } from "node:child_process";
 import { isFenceLine } from "./article";
+import { runtimeValue } from "../runtime-config";
 
 // ---- paths -----------------------------------------------------------
 
 /** Root of the memory vault: ~/.mlx-bun/wiki (override with MLX_BUN_WIKI). */
 export function vaultRoot(): string {
-  const override = process.env.MLX_BUN_WIKI?.trim();
+  const override = runtimeValue("MLX_BUN_WIKI")?.trim();
   if (override) return override.replace(/^~(?=$|[/\\])/, homedir());
   return join(homedir(), ".mlx-bun", "wiki");
 }

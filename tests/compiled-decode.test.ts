@@ -10,6 +10,7 @@
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { SNAPSHOT, SNAPSHOT_E4B, snapshotAvailable } from "./paths";
+import { configureRuntime } from "../src/runtime-config";
 
 const haveWeights = await snapshotAvailable();
 
@@ -71,16 +72,16 @@ describe.skipIf(!haveWeights)("compiled decode parity (12B)", async () => {
   const trajectory = async (
     promptIds: number[], compiled: boolean, extra: object = {},
   ): Promise<number[]> => {
-    const prev = process.env.MLX_BUN_COMPILED_DECODE;
-    process.env.MLX_BUN_COMPILED_DECODE = compiled ? "1" : "0";
+    const restore = configureRuntime({
+      MLX_BUN_COMPILED_DECODE: compiled ? "1" : "0",
+    });
     try {
       const out: number[] = [];
       const gen = generate(model, promptIds, { maxTokens: 32, temperature: 0, ...extra });
       for await (const t of gen) out.push(t.token);
       return out;
     } finally {
-      if (prev === undefined) delete process.env.MLX_BUN_COMPILED_DECODE;
-      else process.env.MLX_BUN_COMPILED_DECODE = prev;
+      restore();
     }
   };
 
@@ -235,14 +236,16 @@ describe.skipIf(!have4b)("compiled decode parity (e4b: per-layer input + KV shar
   ] as const) {
     test(`greedy trajectory identical: ${name}`, async () => {
       const collect = async (compiled: boolean): Promise<number[]> => {
-        process.env.MLX_BUN_COMPILED_DECODE = compiled ? "1" : "0";
+        const restore = configureRuntime({
+          MLX_BUN_COMPILED_DECODE: compiled ? "1" : "0",
+        });
         try {
           const out: number[] = [];
           const gen = generate(model, prompt, { maxTokens: 24, temperature: 0, ...extra });
           for await (const t of gen) out.push(t.token);
           return out;
         } finally {
-          delete process.env.MLX_BUN_COMPILED_DECODE;
+          restore();
         }
       };
       const before = CompiledDecode.stepsExecuted;

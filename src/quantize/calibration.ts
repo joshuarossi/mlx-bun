@@ -20,6 +20,7 @@
 
 import { existsSync } from "node:fs";
 import type { LoadedTokenizer } from "../tokenizer";
+import { runtimeValue } from "../runtime-config";
 
 /** One JSONL calibration sample (subset of the OptIQ schema we can consume). */
 interface CalibrationSample {
@@ -34,7 +35,7 @@ function bundledMixCandidates(): string[] {
   const home = process.env.HOME ?? "";
   const rel = "lib/python3.14/site-packages/optiq/calibration/data/optiq.jsonl";
   return [
-    process.env.MLX_BUN_CALIBRATION_JSONL,
+    runtimeValue("MLX_BUN_CALIBRATION_JSONL"),
     `${home}/Code/mlx-lm-example/.venv/${rel}`,
     `${home}/Code/mlx-lm/.venv/${rel}`,
   ].filter((p): p is string => !!p);

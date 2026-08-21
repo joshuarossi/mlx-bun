@@ -15,6 +15,7 @@ import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import { expertOffloadArray } from "../expert-offload";
 import * as tq from "../mlx/turboquant-ops";
+import { runtimeValue } from "../runtime-config";
 
 export type MaskMode = "" | "causal";
 export interface Mask {
@@ -2035,7 +2036,7 @@ function fusedSdpaSupported(q: MlxArray, mask: Mask, groupSize: number, bits: nu
   // stock unfused path everywhere. Also the A/B lever for
   // scripts/bench-fused-prefill.ts. Read per call (cheap next to the
   // FFI work) so tests and paired A/B harnesses can flip it in-process.
-  if (process.env.MLX_BUN_NO_FUSED_SDPA === "1") return false;
+  if (runtimeValue("MLX_BUN_NO_FUSED_SDPA") === "1") return false;
   if (bits !== 4 && bits !== 8) return false;
   if (groupSize !== 32 && groupSize !== 64 && groupSize !== 128) return false;
   if (q.dtype !== Dtype.bfloat16 && q.dtype !== Dtype.float16) return false;
@@ -2077,7 +2078,7 @@ export function quantizedSdpa(
  *  as a compile-time constant and call this for the rest. The combined
  *  predicate is exactly fusedSdpaSupported. */
 export function fusedSdpaRuntimeOk(q: MlxArray, mask: Mask): boolean {
-  if (process.env.MLX_BUN_NO_FUSED_SDPA === "1") return false;
+  if (runtimeValue("MLX_BUN_NO_FUSED_SDPA") === "1") return false;
   if (q.dtype !== Dtype.bfloat16 && q.dtype !== Dtype.float16) return false;
   if (mask.mode === "causal" || mask.mode === "") return true;
   if (mask.mode === "array")

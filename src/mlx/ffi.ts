@@ -14,6 +14,7 @@ import { dlopen, FFIType, ptr, read } from "bun:ffi";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { nativePackDir } from "../native-pack";
+import { runtimeValue } from "../runtime-config";
 
 const { ptr: P, i32, u64, f32, f64, cstring } = FFIType;
 
@@ -24,7 +25,7 @@ const { ptr: P, i32, u64, f32, f64, cstring } = FFIType;
  *  (src/native-pack.ts; populated on first run by the CLI) → homebrew
  *  (arm64, then Intel prefix). Keep in sync with nativeRuntimeDir(). */
 function resolveLibmlxc(): string {
-  const env = process.env.MLX_BUN_LIBMLXC;
+  const env = runtimeValue("MLX_BUN_LIBMLXC");
   if (env) return env;
   const beside = join(dirname(process.execPath), "libmlxc.dylib");
   if (existsSync(beside)) return beside;

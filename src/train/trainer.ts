@@ -10,8 +10,9 @@
 
 import { MlxArray, pinnedBufferCount } from "../mlx/array";
 import { clearCache, peakMemory, activeMemory, cacheMemory, resetPeakMemory } from "../mlx/ffi";
+import { runtimeValue } from "../runtime-config";
 
-const MEM_LOG = process.env.MLX_BUN_MEM_LOG === "1";
+const MEM_LOG = runtimeValue("MLX_BUN_MEM_LOG") === "1";
 const gbStr = (b: number) => `${(b / 1e9).toFixed(2)}GB`;
 import { ValueAndGrad } from "../mlx/autograd";
 import * as ops from "../mlx/ops";
@@ -543,7 +544,7 @@ async function sftLoop(
   // so a stale `export MLX_BUN_TRAIN_ATTN=flash` from a MiniCPM5 experiment
   // would otherwise ride silently into a crash mid-run. Refuse it for Gemma
   // until the >=2K re-validation lands; MiniCPM5 stays allowed.
-  if (process.env.MLX_BUN_TRAIN_ATTN === "flash") {
+  if (runtimeValue("MLX_BUN_TRAIN_ATTN") === "flash") {
     if (model instanceof Gemma4Model)
       throw new Error(
         "MLX_BUN_TRAIN_ATTN=flash is disabled for Gemma models: e4b SIGTRAPs on this " +

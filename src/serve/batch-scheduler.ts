@@ -58,6 +58,7 @@ import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { clearCache, Dtype } from "../mlx/ffi";
 import { flagOn } from "../flags";
+import { runtimeValue } from "../runtime-config";
 import { CompiledDecode } from "../model/compiled-decode";
 import type { Gemma4Model } from "../model/gemma4";
 import {
@@ -90,14 +91,14 @@ import { batchRowKvBytes } from "./kv-budget";
 
 /** Decode-pipeline kill switch (read once at load, like the serial loop's
  *  MLX_BUN_COMPILED_DECODE): 1 ⇒ read each step's tokens synchronously. */
-const NO_PIPELINE = process.env.MLX_BUN_BATCH_NO_PIPELINE === "1";
+const NO_PIPELINE = runtimeValue("MLX_BUN_BATCH_NO_PIPELINE") === "1";
 
 /** Per-step phase timing (MLX_BUN_BATCH_STEP_TRACE=1, debug-only): where a
  *  decode step's wall time goes — graph BUILD+dispatch (host), the pipelined
  *  READ of the previous step's tokens (GPU wait), row EMIT (onToken/SSE), and
  *  the GAP between consecutive steps (drive-loop + everything else). Sums
  *  print via `stepTraceReport()` (the b1 profile experiment calls it). */
-const STEP_TRACE = process.env.MLX_BUN_BATCH_STEP_TRACE === "1";
+const STEP_TRACE = runtimeValue("MLX_BUN_BATCH_STEP_TRACE") === "1";
 const STEP_T = { t0: 0, lastEnd: 0, build: 0, read: 0, emit: 0, gap: 0, n: 0 };
 export function stepTraceReport(): string {
   const per = (x: number) => (STEP_T.n ? (x / STEP_T.n).toFixed(3) : "0");
@@ -820,7 +821,7 @@ export class BatchScheduler {
           t.packed.dispose(); t.scales.dispose(); t.biases.dispose();
         };
         const prevQ = prev?.[layer] as QuantizedKVCache | undefined;
-        if (prevQ && process.env.MLX_BUN_BATCH_EXTEND !== "0") {
+        if (prevQ && runtimeValue("MLX_BUN_BATCH_EXTEND") !== "0") {
           const [k0, v0] = prevQ.temporalView();
           const ext = extendQuantRows(k0, v0, prevPad, qRow);
           dispose3(k0); dispose3(v0);
@@ -853,7 +854,7 @@ export class BatchScheduler {
           for (const r of rows) { dispose3(r.keys); dispose3(r.values); }
         }
         // qRow views are disposed via the rows loop above or here for extend
-        if (prevQ && process.env.MLX_BUN_BATCH_EXTEND !== "0") { dispose3(qRow.keys); dispose3(qRow.values); }
+        if (prevQ && runtimeValue("MLX_BUN_BATCH_EXTEND") !== "0") { dispose3(qRow.keys); dispose3(qRow.values); }
         else if (!prevQ) { /* disposed in the rows loop */ }
         continue;
       }
@@ -944,7 +945,7 @@ export class BatchScheduler {
         for (const r of rows) { r.keys.dispose(); r.values.dispose(); }
       } else {
         const prevFull = prev?.[layer] as KVCache | undefined;
-        if (prevFull && process.env.MLX_BUN_BATCH_EXTEND !== "0") {
+        if (prevFull && runtimeValue("MLX_BUN_BATCH_EXTEND") !== "0") {
           // extend-join (mlx-lm BatchKVCache.extend semantics, P0): append
           // the new right-justified row to the running buffer in ONE pad +
           // ONE concat — no per-row extraction. Existing pads grow, never
@@ -1128,7 +1129,7 @@ export class BatchScheduler {
         // harmless (the slot is filtered before it is ever emitted; its only
         // use is one KV write on the row's own, about-to-evict row).
         const vecOk =
-          process.env.MLX_BUN_BATCH_VEC_SAMPLE !== "0" &&
+          runtimeValue("MLX_BUN_BATCH_VEC_SAMPLE") !== "0" &&
           rows.every((r) => r.sampled >= r.req.maxTokens || r.req.plainGreedy);
         // Doomed slots hold placeholders (vec path: a real argmax value,
         // equally not part of the row's stream) — flag them so the fed
@@ -1253,7 +1254,7 @@ export class BatchScheduler {
     const prev = this.#pendingToks;
     const prevVals: number[] =
       prev ? prev.toIntTokens() : [];
-    if (process.env.MLX_BUN_GRAMMAR_DEBUG === "1")
+    if (runtimeValue("MLX_BUN_GRAMMAR_DEBUG") === "1")
       console.log(`[sg] B=${B} prevVals=${JSON.stringify(prevVals)} current=${JSON.stringify(rows.map((r) => r.current))} sampled=${JSON.stringify(rows.map((r) => r.sampled))}`);
 
     // (2) accept() per live grammar row — fires that row's async bitmask fill.

@@ -21,6 +21,7 @@
 // runs model-free.
 
 import { lookup } from "node:dns/promises";
+import { runtimeValue } from "./runtime-config";
 
 export interface MediaFetchPolicy {
   /** Permit private/loopback/link-local destinations (LAN hosts). */
@@ -71,7 +72,7 @@ export interface RestrictedFetchResult {
 
 export function defaultMediaFetchPolicy(): MediaFetchPolicy {
   return {
-    allowPrivate: process.env.MLX_BUN_ALLOW_PRIVATE_MEDIA === "1",
+    allowPrivate: runtimeValue("MLX_BUN_ALLOW_PRIVATE_MEDIA") === "1",
     // 10 s / 64 MB: well above what a 30 s audio clip (~5 MB of 16 kHz
     // WAV, less compressed) or any supported image needs.
     timeoutMs: 10_000,

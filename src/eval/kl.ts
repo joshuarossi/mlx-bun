@@ -9,7 +9,7 @@
 //
 // Two reference modes:
 //   * self-flag (DEFAULT, the kernel-drift gate): one model, one weight
-//     load; forward each prompt twice with an env lever set to its
+//     load; forward each prompt twice with a runtime lever set to its
 //     reference value vs its candidate value. Directly measures the drift
 //     a perf lever introduces. Fits in RAM trivially (no second model).
 //   * two-model (optiq-style absolute quality): a separate reference
@@ -30,6 +30,10 @@ import { loadModelConfig, type ModelConfig, type TurboQuantScheme } from "../con
 import { createModel, type RuntimeModel } from "../model/factory";
 import { loadTokenizer, type LoadedTokenizer } from "../tokenizer";
 import { maybeQuantizeKv } from "../generate";
+import {
+  configureRuntime,
+  runtimeKey,
+} from "../runtime-config";
 
 export interface KLResult {
   nPrompts: number;
@@ -135,23 +139,28 @@ export async function evaluateKlSelfFlag(opts: {
   const { model, tokenizer } = await loadRunnable(opts.candidate);
   const tokenized = prepPrompts(opts.prompts, tokenizer, seqLen, n);
 
-  const prev = process.env[opts.flag];
+  const key = runtimeKey(opts.flag);
   const perPrompt: Float32Array[] = [];
-  try {
-    for (const ids of tokenized) {
-      process.env[opts.flag] = opts.refValue;
-      const p = forwardLogits(model, ids);
-      process.env[opts.flag] = opts.candValue;
-      const q = forwardLogits(model, ids);
-      const T = Math.min(p.shape[1]!, q.shape[1]!);
-      const pT = p.slice([0, 0, 0], [1, T, p.shape[2]!]);
-      const qT = q.slice([0, 0, 0], [1, T, q.shape[2]!]);
-      perPrompt.push(klPerToken(pT, qT));
-      for (const a of [p, q, pT, qT]) a.dispose();
+  for (const ids of tokenized) {
+    let p: MlxArray;
+    const restoreRef = configureRuntime({ [key]: opts.refValue });
+    try {
+      p = forwardLogits(model, ids);
+    } finally {
+      restoreRef();
     }
-  } finally {
-    if (prev === undefined) delete process.env[opts.flag];
-    else process.env[opts.flag] = prev;
+    let q: MlxArray;
+    const restoreCandidate = configureRuntime({ [key]: opts.candValue });
+    try {
+      q = forwardLogits(model, ids);
+    } finally {
+      restoreCandidate();
+    }
+    const T = Math.min(p.shape[1]!, q.shape[1]!);
+    const pT = p.slice([0, 0, 0], [1, T, p.shape[2]!]);
+    const qT = q.slice([0, 0, 0], [1, T, q.shape[2]!]);
+    perPrompt.push(klPerToken(pT, qT));
+    for (const a of [p, q, pT, qT]) a.dispose();
   }
 
   const agg = aggregate(perPrompt);
@@ -232,8 +241,7 @@ function decodeArm(
   flag: string, value: string,
   kvOverride?: Parameters<typeof maybeQuantizeKv>[1],
 ): Float32Array[] {
-  const prev = process.env[flag];
-  process.env[flag] = value;
+  const restore = configureRuntime({ [runtimeKey(flag)]: value });
   try {
     const cache = model.makeCache();
     try {
@@ -256,8 +264,7 @@ function decodeArm(
       for (const c of cache) c.dispose();
     }
   } finally {
-    if (prev === undefined) delete process.env[flag];
-    else process.env[flag] = prev;
+    restore();
   }
 }
 

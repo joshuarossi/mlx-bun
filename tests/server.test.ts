@@ -3,6 +3,7 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { SNAPSHOT, snapshotAvailable } from "./paths";
+import { configureRuntime } from "../src/runtime-config";
 
 const haveWeights = await snapshotAvailable();
 
@@ -257,8 +258,7 @@ describe.skipIf(!haveWeights)("openai-compatible server", async () => {
   }, 120_000);
 
   test("grammar kill switch degrades every guided form through the production route", async () => {
-    const previous = process.env.MLX_BUN_GRAMMAR;
-    process.env.MLX_BUN_GRAMMAR = "0";
+    const restore = configureRuntime({ MLX_BUN_GRAMMAR: "0" });
     const guidedForms = [
       { guided_grammar: 'root ::= "ok"' },
       { guided_regex: "^ok$" },
@@ -310,8 +310,7 @@ describe.skipIf(!haveWeights)("openai-compatible server", async () => {
       expect(raw.headers.get("warning")).toContain("grammar not enforced");
       expect(raw.headers.get("warning")).toContain("no prompt injection");
     } finally {
-      if (previous === undefined) delete process.env.MLX_BUN_GRAMMAR;
-      else process.env.MLX_BUN_GRAMMAR = previous;
+      restore();
     }
   }, 120_000);
 

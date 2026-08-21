@@ -24,6 +24,7 @@ import {
   type Mask,
 } from "./gemma4-base";
 import { CompiledFunction } from "../mlx/compile";
+import { runtimeValue } from "../runtime-config";
 
 /** Verbatim port of mlx_lm/models/activations.py:
  *    `@partial(mx.compile, shapeless=True) def swiglu(gate, x): return nn.silu(gate) * x`
@@ -207,7 +208,7 @@ export class LlamaMLP {
     // Plain sigmoid+mul+mul otherwise (M>1 prefill/training, or inside a compile
     // trace) — identical math either way. MLX_BUN_COMPILED_SWIGLU=0 disables.
     let hidden: MlxArray;
-    if (M === 1 && !isCompiledTrace() && process.env.MLX_BUN_COMPILED_SWIGLU !== "0") {
+    if (M === 1 && !isCompiledTrace() && runtimeValue("MLX_BUN_COMPILED_SWIGLU") !== "0") {
       hidden = compiledSwiglu(gate, up);
       gate.dispose();
       up.dispose();

@@ -30,6 +30,7 @@ import type { LoadedTokenizer } from "../tokenizer";
 import { BatchScheduler, type RowSampler } from "../serve/batch-scheduler";
 import * as ops from "../mlx/ops";
 import type { MlxArray } from "../mlx/array";
+import { runtimeValue } from "../runtime-config";
 
 const HF_HUB = `${process.env.HOME}/.cache/huggingface/hub`;
 const E4B_REPO = "models--mlx-community--gemma-4-e4b-it-OptiQ-4bit";
@@ -166,7 +167,7 @@ interface MemoryRuntime {
  *  Opt back in with MLX_BUN_MEMORY_BATCH=8 if a length-bucketed scheduler
  *  lands. (Decision: Josh, 2026-07-01.) */
 export function memoryBatchSize(): number {
-  const n = Number(process.env.MLX_BUN_MEMORY_BATCH ?? "1");
+  const n = Number(runtimeValue("MLX_BUN_MEMORY_BATCH") ?? "1");
   return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
 }
 
