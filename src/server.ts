@@ -86,6 +86,11 @@ import { GenerationGateway } from "./serve/generation-gateway";
 import { recordLane, type Lane } from "./serve/lane-registry";
 import { handleAdminRoute } from "./serve/admin-routes";
 import { handleAuxiliaryRoute } from "./serve/aux-routes";
+import {
+  CompletionSink,
+  createTimedFlowControl,
+  type CompletionEvent,
+} from "./serve/completion-sink";
 import { createDiscoveryRoutes } from "./serve/discovery-routes";
 import { handleLabRoute } from "./serve/lab-routes";
 import { handleModelAdminRoute } from "./serve/model-admin-routes";
@@ -3168,67 +3173,40 @@ export function createServer(
                 // runs per-request (concurrently in batched mode, each writing
                 // its own SSE stream — the per-row fan-out).
                 send(chunk({ role: "assistant", content: "" }, null));
-                const router = toolRouter(tools);
-                const stopper = new StopMatcher(options.stopSequences);
-                // <think>-text splitting is only for text-marker models; gemma's
-                // reasoning is already split at the token level by the router.
-                const thinking = new ThinkingTagSplitter(ctx.template.thinkingFormat === "think-tag", startInThinking);
-                // Serial decode is an unbroken microtask chain (FFI + generator
-                // resumes) — without a macrotask hop, Bun never services the
-                // socket and the whole SSE response flushes in one burst at the
-                // end (Phase 15: "687k tok/s decode"). Hopping EVERY token cost
-                // ~23% decode; rate-limited to ≥25 ms keeps the flush smooth and
-                // hides behind the next GPU step. Batched mode doesn't need it —
-                // the scheduler yields to the event loop between steps.
-                let lastFlush = performance.now();
-                const s = await gateway.run(promptIds, options, (token) => {
-                  const rawContent = router.push(token);
-                  // gemma-channel reasoning, split at the token level by the router
-                  const rReason = router.takeReasoning();
-                  if (rReason) send(chunk({ reasoning: rReason }, null));
-                  const text = stopper.push(rawContent);
-                  const parts = thinking.push(text);
-                  if (parts.reasoning) send(chunk({ reasoning: parts.reasoning }, null));
-                  if (parts.content) send(chunk({ content: parts.content }, null));
-                  if (stopper.stopped) return false; // halt generation
-                  if (!batched && (parts.content || parts.reasoning || rReason)) {
-                    const now = performance.now();
-                    if (now - lastFlush >= 25) {
-                      lastFlush = now;
-                      return new Promise<void>((r) => setImmediate(r));
+                const completion = new CompletionSink({
+                  router: toolRouter(tools),
+                  stopper: new StopMatcher(options.stopSequences),
+                  thinking: new ThinkingTagSplitter(
+                    ctx.template.thinkingFormat === "think-tag",
+                    startInThinking,
+                  ),
+                  collectToolCalls: true,
+                  flowControl: createTimedFlowControl(!batched),
+                });
+                const sendEvents = (events: CompletionEvent[]) => {
+                  for (const event of events) {
+                    if (event.type === "reasoning") {
+                      send(chunk({ reasoning: event.text }, null));
+                    } else if (event.type === "content") {
+                      send(chunk({ content: event.text }, null));
+                    } else {
+                      send(chunk({
+                        tool_calls: event.calls.map((call, index) => ({ index, ...call })),
+                      }, null));
                     }
                   }
+                };
+                const s = await gateway.run(promptIds, options, (token) => {
+                  const pushed = completion.push(token);
+                  sendEvents(pushed.events);
+                  return pushed.control;
                 }, vision, shape, generationSignal);
                 if (generationSignal.aborted) return;
-                // a stop match discards everything from the match on,
-                // including text still held by the decoders
-                let tail = "";
-                if (!stopper.stopped) {
-                  const flushed = router.flush();
-                  const rReason = router.takeReasoning();
-                  if (rReason) send(chunk({ reasoning: rReason }, null));
-                  tail = stopper.push(flushed);
-                  if (!stopper.stopped) tail += stopper.flush();
-                }
-                if (tail) {
-                  const parts = thinking.push(tail);
-                  if (parts.reasoning) send(chunk({ reasoning: parts.reasoning }, null));
-                  if (parts.content) send(chunk({ content: parts.content }, null));
-                }
-                {
-                  const parts = thinking.flush();
-                  if (parts.reasoning) send(chunk({ reasoning: parts.reasoning }, null));
-                  if (parts.content) send(chunk({ content: parts.content }, null));
-                }
-                const toolCalls = router.toolCalls();
-                if (toolCalls.length) {
-                  send(chunk({
-                    tool_calls: toolCalls.map((tc, i) => ({ index: i, ...tc })),
-                  }, null));
-                }
-                const finish = toolCalls.length
+                const result = completion.finish();
+                sendEvents(result.events);
+                const finish = result.toolCalls.length
                   ? "tool_calls"
-                  : stopper.stopped ? "stop"
+                  : result.stopped ? "stop"
                   : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
                 // Refine serial vs serial+spec now that s.spec is known (a mounted
                 // draft can still decode zero speculative tokens on a very short
@@ -3277,43 +3255,28 @@ export function createServer(
 
         try {
           {
-            const router = toolRouter(tools);
-            const stopper = new StopMatcher(options.stopSequences);
-            const thinking = new ThinkingTagSplitter(ctx.template.thinkingFormat === "think-tag", startInThinking);
+            const completion = new CompletionSink({
+              router: toolRouter(tools),
+              stopper: new StopMatcher(options.stopSequences),
+              thinking: new ThinkingTagSplitter(
+                ctx.template.thinkingFormat === "think-tag",
+                startInThinking,
+              ),
+              collectToolCalls: true,
+            });
             // mlx-lm collects logprobs across EVERY generated token (reasoning
             // and tool tokens included), not just visible content — same here.
             const lpc = captureLogprobs
               ? new LogprobsCollector(wantLogprobs, topLogprobs, (tid) => ctx.tokenizer.idToToken(tid))
               : null;
-            let content = "";
-            let reasoning = "";
             const s = await gateway.run(promptIds, options, (token, lpInfo) => {
               lpc?.push(token, lpInfo);
-              const rawContent = router.push(token);
-              reasoning += router.takeReasoning(); // gemma-channel thinking
-              const parts = thinking.push(stopper.push(rawContent));
-              content += parts.content;
-              reasoning += parts.reasoning;
-              if (stopper.stopped) return false; // halt generation
+              return completion.push(token).control;
             }, vision, shape, signal);
-            if (!stopper.stopped) {
-              const flushed = router.flush();
-              reasoning += router.takeReasoning();
-              let tail = stopper.push(flushed);
-              if (!stopper.stopped) tail += stopper.flush();
-              const parts = thinking.push(tail);
-              content += parts.content;
-              reasoning += parts.reasoning;
-            }
-            {
-              const parts = thinking.flush();
-              content += parts.content;
-              reasoning += parts.reasoning;
-            }
-            const toolCalls = router.toolCalls();
-            const finish = toolCalls.length
+            const result = completion.finish();
+            const finish = result.toolCalls.length
               ? "tool_calls"
-              : stopper.stopped ? "stop"
+              : result.stopped ? "stop"
               : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
             const logprobsBlock = lpc?.payload() ?? null;
             // Refine serial vs serial+spec now that s.spec is known; re-record
@@ -3326,9 +3289,9 @@ export function createServer(
                 index: 0,
                 message: {
                   role: "assistant",
-                  content: content || (toolCalls.length ? null : ""),
-                  ...(reasoning ? { reasoning } : {}),
-                  ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+                  content: result.content || (result.toolCalls.length ? null : ""),
+                  ...(result.reasoning ? { reasoning: result.reasoning } : {}),
+                  ...(result.toolCalls.length ? { tool_calls: result.toolCalls } : {}),
                 },
                 ...(logprobsBlock ? { logprobs: logprobsBlock } : {}),
                 finish_reason: finish,
@@ -3484,6 +3447,9 @@ export function createServer(
           hasGrammar: !!textGrammarCtrl,
           hasDraft: !!ctx.draft,
         };
+        const batched = gateway.willBatch(shape);
+        const lane: Lane = batched ? "batched" : shape.hasDraft ? "serial+spec" : "serial";
+        recordLane(id, lane);
         const finishReason = (stopped: boolean, generated: number): "stop" | "length" =>
           stopped ? "stop" : generated >= (options.maxTokens ?? 512) ? "length" : "stop";
 
@@ -3504,39 +3470,39 @@ export function createServer(
               });
               void (async () => {
                 try {
-                const decoder = new StreamDecoder(ctx.tokenizer);
-                const stopper = new StopMatcher(options.stopSequences);
-                // ≥25 ms macrotask hop, same reason as the chat lane: keep the
-                // serial decode loop from starving the socket (SSE bursts).
-                let lastFlush = performance.now();
-                const s = await gateway.run(promptIds, options, (token) => {
-                  const text = stopper.push(decoder.push(token));
-                  if (text) send(chunk(text, null));
-                  if (stopper.stopped) return false; // halt generation
-                  if (text) {
-                    const now = performance.now();
-                    if (now - lastFlush >= 25) {
-                      lastFlush = now;
-                      return new Promise<void>((r) => setImmediate(r));
-                    }
+                const completion = new CompletionSink({
+                  router: new ToolAwareStream(ctx.tokenizer, "plain", null),
+                  stopper: new StopMatcher(options.stopSequences),
+                  thinking: new ThinkingTagSplitter(false),
+                  collectToolCalls: false,
+                  flowControl: createTimedFlowControl(true),
+                });
+                const sendEvents = (events: CompletionEvent[]) => {
+                  for (const event of events) {
+                    if (event.type === "content") send(chunk(event.text, null));
                   }
+                };
+                const s = await gateway.run(promptIds, options, (token) => {
+                  const pushed = completion.push(token);
+                  sendEvents(pushed.events);
+                  return pushed.control;
                 }, undefined, shape, generationSignal);
                 if (generationSignal.aborted) return;
-                if (!stopper.stopped) {
-                  let tail = stopper.push(decoder.flush());
-                  if (!stopper.stopped) tail += stopper.flush();
-                  if (tail) send(chunk(tail, null));
-                }
+                const result = completion.finish();
+                sendEvents(result.events);
+                const finalLane: Lane = batched ? "batched" : s.spec ? "serial+spec" : lane;
+                if (finalLane !== lane) recordLane(id, finalLane);
                 // final chunk: finish_reason + usage (mlx-lm gates usage behind
                 // stream_options.include_usage; we always attach it, matching
                 // our chat lane — an additive superset OpenAI clients ignore)
                 send({
-                  ...chunk("", finishReason(stopper.stopped, s.generatedTokens)),
+                  ...chunk("", finishReason(result.stopped, s.generatedTokens)),
                   usage: {
                     prompt_tokens: s.promptTokens,
                     completion_tokens: s.generatedTokens,
                     total_tokens: s.promptTokens + s.generatedTokens,
                     prompt_tokens_details: { cached_tokens: s.cachedTokens },
+                    lane: finalLane,
                     ...(s.spec ? { speculation: s.spec } : {}),
                   },
                 });
@@ -3568,36 +3534,37 @@ export function createServer(
         }
 
         try {
-          const decoder = new StreamDecoder(ctx.tokenizer);
-          const stopper = new StopMatcher(options.stopSequences);
+          const completion = new CompletionSink({
+            router: new ToolAwareStream(ctx.tokenizer, "plain", null),
+            stopper: new StopMatcher(options.stopSequences),
+            thinking: new ThinkingTagSplitter(false),
+            collectToolCalls: false,
+          });
           const lpc = captureLogprobs
             ? new LogprobsCollector(wantLogprobs, topLogprobs, (tid) => ctx.tokenizer.idToToken(tid))
             : null;
-          let text = "";
           const s = await gateway.run(promptIds, options, (token, lpInfo) => {
             lpc?.push(token, lpInfo);
-            text += stopper.push(decoder.push(token));
-            if (stopper.stopped) return false; // halt generation
+            return completion.push(token).control;
           }, undefined, shape, request.signal);
-          if (!stopper.stopped) {
-            let tail = stopper.push(decoder.flush());
-            if (!stopper.stopped) tail += stopper.flush();
-            text += tail;
-          }
+          const result = completion.finish();
+          const finalLane: Lane = batched ? "batched" : s.spec ? "serial+spec" : lane;
+          if (finalLane !== lane) recordLane(id, finalLane);
           const logprobsBlock = lpc?.payload() ?? null;
           return Response.json({
             id, object: "text_completion", created, model: ctx.modelId,
             choices: [{
-              index: 0, text,
+              index: 0, text: result.content,
               ...(logprobsBlock ? { logprobs: logprobsBlock } : {}),
-              finish_reason: finishReason(stopper.stopped, s.generatedTokens),
+              finish_reason: finishReason(result.stopped, s.generatedTokens),
             }],
             usage: {
               prompt_tokens: s.promptTokens,
               completion_tokens: s.generatedTokens,
               total_tokens: s.promptTokens + s.generatedTokens,
               prompt_tokens_details: { cached_tokens: s.cachedTokens },
-                    ...(s.spec ? { speculation: s.spec } : {}),
+              lane: finalLane,
+              ...(s.spec ? { speculation: s.spec } : {}),
             },
           }, textGrammarWarning ? { headers: { Warning: textGrammarWarning } } : undefined);
         } catch (e) {
