@@ -588,6 +588,9 @@ knapsack per-layer bit allocation; implies quantization, no -q needed):
   --candidate-bits <l> Comma list the knapsack may pick from [default: 4,8]
   --calibration-mix <m> "optiq" or a JSONL path  [default: optiq]
   --n-calibration <n>  Calibration samples  [default: 2]
+  --rotate-weights     Fold the model's offline TurboQuant rotation before
+                       quantization (auto-detects Llama/Qwen3.5/Qwen MTP)
+  --rotation-seed <n>  Deterministic rotation seed  [default: 42]
 
 Not supported (mlx_lm.convert flags we don't implement — the command
 exits with an error rather than guessing): --dtype, -d/--dequantize,
@@ -2504,6 +2507,12 @@ switch (cmd) {
       console.error(`--candidate-bits expects a comma list of integers in [2, 8] (got "${opt("candidate-bits")}")`);
       process.exit(1);
     }
+    const rotateWeights = argv.includes("--rotate-weights");
+    const rotationSeed = Number(opt("rotation-seed", "42"));
+    if (!Number.isInteger(rotationSeed)) {
+      console.error(`--rotation-seed expects an integer (got "${opt("rotation-seed")}")`);
+      process.exit(1);
+    }
     const mlxPath = opt("mlx-path", "mlx_model")!;
     const { existsSync } = await import("node:fs");
     if (existsSync(mlxPath)) {
@@ -2545,7 +2554,7 @@ switch (cmd) {
         ? `quantizing (mixed, target ${targetBpw} bpw — sensitivity sweep, ~minutes)`
         : `quantizing (${qBits}-bit, group ${qGroup})`,
     );
-    const { quantizeModelDir } = await import("./quantize");
+    const { quantizeModelDir, automaticRotationWeightTransform } = await import("./quantize");
     try {
       const r = await quantizeModelDir(
         srcDir,
@@ -2558,6 +2567,9 @@ switch (cmd) {
           ...(candidateBits ? { candidateBits } : {}),
           ...(opt("calibration-mix") ? { calibrationMix: opt("calibration-mix")! } : {}),
           ...(opt("n-calibration") ? { nCalibration: Number(opt("n-calibration")) } : {}),
+          ...(rotateWeights
+            ? { weightTransform: automaticRotationWeightTransform({ seed: rotationSeed }) }
+            : {}),
         },
         (e) => sQ.update(e.message),
       );
@@ -2569,6 +2581,7 @@ switch (cmd) {
         `source    ${style.dim(srcDir)}`,
         `model     ${style.bold(r.outDir)} ${style.dim(`· ${gb(r.write.totalSize)}`)}`,
         `quant     ${style.dim(targetBpw !== undefined ? `mixed ${r.achievedBpw.toFixed(2)} bpw (target ${targetBpw})` : `${qBits}-bit g${qGroup} affine`)}`,
+        ...(rotateWeights ? [`transform ${style.dim(`TurboQuant rotation seed ${rotationSeed}`)}`] : []),
         "",
         `serve it   ${style.accent(`mlx-bun serve ${r.outDir}`)}`,
       ]);

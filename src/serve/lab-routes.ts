@@ -272,6 +272,8 @@ async function submitQuantize(request: Request, deps: LabRouteDeps): Promise<Res
     reference?: string;
     calibration_mix?: string;
     n_calibration?: number;
+    rotate_weights?: boolean;
+    rotation_seed?: number;
   };
   if (!body.model_id)
     return Response.json({ ok: false, error: "model_id required" }, { status: 400 });
@@ -303,7 +305,8 @@ async function submitQuantize(request: Request, deps: LabRouteDeps): Promise<Res
   }
   name = (name || "model").replace(/[^a-z0-9_.-]/gi, "");
   org = (org || "local").replace(/[^a-z0-9_.-]/gi, "");
-  const suffix = body.target_bpw ? `mixed-${body.target_bpw}bpw` : `${bits}bit`;
+  const suffix = `${body.target_bpw ? `mixed-${body.target_bpw}bpw` : `${bits}bit`}` +
+    `${body.rotate_weights ? `-rot${body.rotation_seed ?? 42}` : ""}`;
   const quantRepo = `${name}-OptiQ-${suffix}`;
   const hubRoot = process.env.HF_HUB_CACHE ??
     (process.env.HF_HOME
@@ -326,6 +329,8 @@ async function submitQuantize(request: Request, deps: LabRouteDeps): Promise<Res
     reference: body.reference,
     calibration_mix: body.calibration_mix,
     n_calibration: body.n_calibration,
+    rotate_weights: body.rotate_weights,
+    rotation_seed: body.rotation_seed,
   }, outDir, {
     onComplete: () => deps.invalidateLibrary(),
   });

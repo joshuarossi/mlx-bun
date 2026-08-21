@@ -52,6 +52,7 @@ describe("cli tool verbs — arg plumbing (model-free)", () => {
       const { code, out } = await runCli(["help", verb]);
       expect(code).toBe(0);
       expect(out).toContain(marker);
+      if (verb === "convert") expect(out).toContain("--rotate-weights");
     }
   });
 
@@ -113,6 +114,15 @@ describe("cli tool verbs — arg plumbing (model-free)", () => {
     const b = await runCli(["convert", "--hf-path", "x", "-q", "--q-group-size", "128"]);
     expect(b.code).toBe(1);
     expect(b.out).toContain("--q-group-size must be 32 or 64");
+  });
+
+  test("convert: validates --rotation-seed before model work", async () => {
+    const { code, out } = await runCli([
+      "convert", "--hf-path", "x", "-q", "--rotate-weights",
+      "--rotation-seed", "not-an-integer",
+    ]);
+    expect(code).toBe(1);
+    expect(out).toContain("--rotation-seed expects an integer");
   });
 
   test("perplexity: usage error without model/data", async () => {

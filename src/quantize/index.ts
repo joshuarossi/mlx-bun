@@ -2,12 +2,39 @@
 // import from here: quantize a model directory, write sharded safetensors,
 // build the config block, and resolve/inspect models for the wizard UI.
 
-export { quantizeModelDir, isQuantizable } from "./quantizer";
+export { quantizeModelDir, isQuantizable, withPreparedProbe } from "./quantizer";
 export type {
+  PreparedProbe,
+  ProbeSource,
   QuantizeOptions,
   QuantizeResult,
   ProgressEvent,
 } from "./quantizer";
+
+export {
+  planQwen35Fold,
+  planQwenMtpFold,
+} from "./rotate";
+export type {
+  FoldOptions,
+  QwenFoldOptions,
+} from "./rotate";
+
+export {
+  automaticRotationWeightTransform,
+  llamaWeightTransform,
+  planLlamaWeightTransform,
+  qwen35WeightTransform,
+  qwenMtpWeightTransform,
+} from "./weight-transform";
+export type {
+  LlamaWeightTransformPlan,
+  QwenWeightTransformPlan,
+  WeightTransform,
+  WeightTransformContext,
+  WeightTransformMetadata,
+  WeightTransformPlan,
+} from "./weight-transform";
 
 export {
   writeShardedSafetensors,

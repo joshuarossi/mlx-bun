@@ -2644,14 +2644,21 @@ verified via `mlx-bun get`).
       only residual seam is merger.linear_fc2 (deepstack empty); MTP
       companion folds with the same seed; its final-norm γ is dropped
       (shared trunk lm_head — draft-quality-only, measured 71% acceptance).
-- [x] **W2 streaming fold+quantize path** — DONE 2026-08-18 as
-      script-level tooling (fold-qwen35 / tq-quantize over the new
+- [x] **W2 streaming fold+quantize path** — DONE 2026-08-18; promoted into
+      the production convert/quantize pipeline 2026-08-20. The original
+      script tooling (fold-qwen35 / tq-quantize over the new
       ShardedWriter + Weights.releaseShard; the naive whole-list path
       OOM'd a 51 GB model — 27B fold peak footprint 17.9 GB after the
       fix). Cross-stack: folded 0.8B AND the quantized 27B artifacts load
       + score in STOCK mlx-lm. mxfp4/nvfp4 arms NOT verified (deferred
-      with the curve narrowing below). Promotion of the streaming path
-      into the convert verb = follow-up.
+      with the curve narrowing below). Production seam: one pure
+      `WeightTransform` plan + lazy executor contract with Llama/Qwen3.5/MTP
+      adapters, invoked by `convert --rotate-weights`; transform provenance
+      is persisted in `optiq_metadata.json`. Mixed allocation now injects a
+      `ProbeSource` and its default calls the lower-level writer rather than
+      recursively re-entering `quantizeModelDir`. Model-free gates: 33 pass;
+      typecheck clean. The 64×64 apply/model parity gate is intentionally
+      deferred until the active benchmark releases the GPU.
 - [x] **W3 curve** — DONE 2026-08-18, affine-only (see design doc table).
       Headline: rotation LOSES at 4-bit g64 RTN (+5% ppl), WINS at 3-bit
       (−24%) and in mixed ≤4 bpw (paired control worse). Per-module

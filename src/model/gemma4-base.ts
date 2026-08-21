@@ -54,6 +54,15 @@ export class LoraState {
   dropoutSeed: number | null = null;
 }
 
+/** Replaceable quantized payload. Inference sees this as read-only through
+ *  QuantizedLinear getters; sensitivity analysis exchanges it atomically. */
+export interface QuantizedLinearState {
+  w: MlxArray;
+  scales: MlxArray;
+  biases: MlxArray | null;
+  spec: ops.QuantSpec;
+}
+
 /** Inverted LoRA-input dropout, keyed by (seed, id) so it is deterministic —
  *  the same (seed, id, shape) reproduces the mask, which is what makes the
  *  segmented / gradient-checkpoint recompute correct. kept ⇒ x/(1-p),
@@ -80,18 +89,48 @@ export class QuantizedLinear {
   /** Stable per-target index for keying training-only LoRA dropout (set by
    *  attachForTraining). Gives each adapted linear an independent dropout mask. */
   dropoutId = 0;
+  private _w: MlxArray;
+  private _scales: MlxArray;
+  private _biases: MlxArray | null;
+  private _spec: ops.QuantSpec;
 
   constructor(
-    readonly w: MlxArray,
-    readonly scales: MlxArray,
-    readonly biases: MlxArray | null,
-    readonly spec: ops.QuantSpec,
+    w: MlxArray,
+    scales: MlxArray,
+    biases: MlxArray | null,
+    spec: ops.QuantSpec,
     /** ADDITIVE bias term (`.bias`, mlx nn.QuantizedLinear's optional bias —
      *  qwen2 qkv, starcoder2, …). Distinct from `biases`, the quantization
      *  zero-points. Applied after the matmul, before any LoRA residual,
      *  exactly like mlx's QuantizedLinear.__call__. */
     readonly bias: MlxArray | null = null,
-  ) {}
+  ) {
+    this._w = w;
+    this._scales = scales;
+    this._biases = biases;
+    this._spec = spec;
+  }
+
+  get w(): MlxArray { return this._w; }
+  get scales(): MlxArray { return this._scales; }
+  get biases(): MlxArray | null { return this._biases; }
+  get spec(): ops.QuantSpec { return this._spec; }
+
+  /** Atomically install a quantized payload and return the previous one.
+   *  This is the sole mutation capability used by sensitivity sweeps. */
+  exchangeQuantizedState(next: QuantizedLinearState): QuantizedLinearState {
+    const previous = {
+      w: this._w,
+      scales: this._scales,
+      biases: this._biases,
+      spec: this._spec,
+    };
+    this._w = next.w;
+    this._scales = next.scales;
+    this._biases = next.biases;
+    this._spec = next.spec;
+    return previous;
+  }
 
   static load(weights: Weights, path: string, config: ModelConfig): QuantizedLinear {
     if (!weights.has(`${path}.scales`))
@@ -110,14 +149,21 @@ export class QuantizedLinear {
   /** (in_features, out_features) from the quantized tensors (reference
    *  _infer_linear_shape: scales are [out, in/group_size]). */
   get inFeatures(): number {
-    return this.scales.shape[1]! * this.spec.groupSize;
+    return this._scales.shape[1]! * this._spec.groupSize;
   }
   get outFeatures(): number {
-    return this.scales.shape[0]!;
+    return this._scales.shape[0]!;
   }
 
   forward(x: MlxArray): MlxArray {
-    let out = ops.quantizedMatmul(x, this.w, this.scales, this.biases, this.spec, true);
+    let out = ops.quantizedMatmul(
+      x,
+      this._w,
+      this._scales,
+      this._biases,
+      this._spec,
+      true,
+    );
     // Additive bias (mlx QuantizedLinear: `x = x + self["bias"]`), before
     // the LoRA residual (LoRALinear calls the base linear bias-inclusive).
     if (this.bias) out = disposing(out, ops.add(out, this.bias));

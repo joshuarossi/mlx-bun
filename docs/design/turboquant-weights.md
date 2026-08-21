@@ -1,8 +1,8 @@
 # TurboQuant weights — rotation-folded quantization (design)
 
-Status: opened 2026-08-17. Phase: PLAN.md "TurboQuant weights". W0 spike
-not started. Companion to docs/design/turboquant-kv.md (the landed KV
-leg); this is the queued weight leg from its "Future" section.
+Status: active. Fold recipes and artifact-pipeline integration are implemented;
+quality/release gates remain in PLAN.md "TurboQuant weights". Companion to
+docs/design/turboquant-kv.md (the landed KV leg).
 
 ## What it is
 
@@ -76,6 +76,15 @@ breaks the network. Skip QuaRot's pairing entirely.
 
 **4. Quantize** the folded weights with the stock convert path
 (affine g64 / mxfp4 / nvfp4 arms).
+
+Implementation seam (2026-08-20): `WeightTransform` separates pure tensor-name
+planning from lazy tensor application. Llama, Qwen3.5 trunk, and Qwen MTP are
+adapters over that contract; `quantizeModelDir` applies the selected plan in its
+existing module walk. `mlx-bun convert --rotate-weights` selects the adapter,
+and `optiq_metadata.json` records the transform id, family, seed, and deviations.
+Mixed-precision calibration receives a `ProbeSource`; its default builds an
+8-bit probe through the lower-level writer instead of recursively re-entering
+the top-level quantizer.
 
 ### Deviations from the references (decided, with reasons)
 

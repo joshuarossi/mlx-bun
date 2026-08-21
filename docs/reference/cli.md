@@ -239,7 +239,14 @@ MLX snapshot — uniform 4/8-bit, or mixed-precision via `--target-bpw`
 ```sh
 mlx-bun convert Qwen/Qwen3-4B -q                      # uniform 4-bit
 mlx-bun convert Qwen/Qwen3-4B --target-bpw 4.5        # mixed precision
+mlx-bun convert ./qwen3.5-bf16 -q --rotate-weights    # fold then quantize
 ```
+
+`--rotate-weights` makes the offline rotation part of the same conversion
+pipeline and records its recipe in `optiq_metadata.json`. The adapter is
+selected from the model/tensor schema (Llama, Qwen3.5 trunk, or Qwen MTP);
+`--rotation-seed` defaults to `42`. Folding requires full-precision source
+weights and an MTP companion must use the same seed as its trunk.
 
 ### `upload` — push to the Hugging Face Hub
 
