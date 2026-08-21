@@ -75,6 +75,7 @@ import {
   withModelWiredLimit,
 } from "./generate";
 import { cloneKvCaches, SpillQueue } from "./kv-store";
+import { resolveKvScheme } from "./kv-scheme";
 import { TURBOQUANT_HEAD_DIMS } from "./mlx/turboquant-tables";
 import {
   compileGrammarRequest, grammarEnabled, type GrammarRequest,
@@ -1659,7 +1660,6 @@ export function createServer(
   // and must be an explicit opt-in (--kv-quant config|4|8, or --l2
   // whose presets pass it explicitly). The CLI always passes kvQuant now;
   // this fallback is the library-user default and matches the CLI's.
-  const configScheme = ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};
   // Mutually exclusive by contract (GenerateOptions.turboQuant doc): a
   // programmatic caller setting both gets turboQuant — say so, like the
   // other risky-combination warnings below.
@@ -1668,13 +1668,12 @@ export function createServer(
       `[kv-quant] both turboQuant and --kv-quant ${serverOptions.kvQuant} are set; ` +
         `turboQuant wins (they are mutually exclusive).`,
     );
-  const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart" | "turboQuant"> =
-    serverOptions.turboQuant ? { turboQuant: serverOptions.turboQuant, quantizedKvStart: 0 }
-    : serverOptions.kvQuant === "off" ? {}
-    : serverOptions.kvQuant === "config" ? configScheme
-    : typeof serverOptions.kvQuant === "number"
-      ? { kvBits: serverOptions.kvQuant, quantizedKvStart: 0 }
-    : {}; // unset → bf16 (L1 default; quantized KV is opt-in)
+  const resolvedKvScheme = resolveKvScheme({
+    override: serverOptions.kvQuant,
+    turboQuant: serverOptions.turboQuant,
+    config: ctx.kvConfig,
+  });
+  const kvScheme = resolvedKvScheme.options;
   // Phase 3.1: kvConfig whose layers are all full-attention BATCHES (the
   // scheduler applies the mixed scheme per row); uniform kvBits and configs
   // touching rotating layers still route those requests serial. The warning
@@ -1773,11 +1772,7 @@ export function createServer(
   if (serverOptions.ssdCacheDir) {
     if (promptCacheCap <= 0)
       throw new Error("--ssd-cache requires the RAM prompt cache (--prompt-cache 0 disables it)");
-    const schemeKey = kvScheme.turboQuant
-      ? `turbo-k${kvScheme.turboQuant.kBits}v${kvScheme.turboQuant.vBits}`
-      : kvScheme.kvBits
-      ? `kv${kvScheme.kvBits}`
-      : kvScheme.kvConfig?.length ? "config" : "bf16";
+    const schemeKey = resolvedKvScheme.cacheKey;
     const tokJson = readFileSync(`${ctx.model.config.modelDir}/tokenizer.json`);
     ssdStore = new SsdCacheStore({
       dir: serverOptions.ssdCacheDir,
@@ -2140,7 +2135,7 @@ export function createServer(
     // gateway batches kv-quant requests when the scheme is the batchable
     // kvConfig/full-attention composition (see #kvBatchable) and the
     // scheduler applies it — otherwise those requests route serial as before.
-    kvScheme,
+    kvScheme: resolvedKvScheme,
     // Phase 3.2: batch-lane prompt-cache reuse — joiners take() the longest
     // usable prefix (multi-turn chat TTFT under --batch N); never-merged
     // lone rows put() back on finish. Vision/adapter requests never batch,
@@ -2158,7 +2153,7 @@ export function createServer(
   const genericAdmission = fit(
     ctx.model.config, ctx.model.weightsBytes, 1,
     undefined, undefined, 0, serverOptions.memoryBudgetBytes,
-    { kvBits: kvScheme.kvBits, kvConfig: kvScheme.kvConfig },
+    resolvedKvScheme.fitOptions,
   );
   const admission = ctx.glmMemoryPlan
     ? {
@@ -2541,7 +2536,7 @@ export function createServer(
         const report = fit(
           ctx.model.config, ctx.model.weightsBytes, admission.maxSafeContext,
           machine, undefined, expertsBytes, serverOptions.memoryBudgetBytes,
-          { kvBits: kvScheme.kvBits, kvConfig: kvScheme.kvConfig },
+          resolvedKvScheme.fitOptions,
         );
         return Response.json({
           machine: { chip: chip.name, ram_bytes: machine.ramBytes, bandwidth_gbs: machine.bandwidthGBs },
@@ -2554,7 +2549,7 @@ export function createServer(
             ctx.model.config, ctx.model.weightsBytes,
             Math.min(8192, admission.maxSafeContext),
             machine, undefined, expertsBytes, serverOptions.memoryBudgetBytes,
-            { kvBits: kvScheme.kvBits, kvConfig: kvScheme.kvConfig },
+            resolvedKvScheme.fitOptions,
           ).predictedDecodeTps,
           measured_decode_tps: measured?.decodeTps ?? null,
           measured_at: measured?.ts ?? null,

@@ -40,7 +40,7 @@ import { KVCache, RotatingKVCache, isBatchableCache } from "../model/gemma4-base
 import { SSMCache } from "../model/qwen3-delta";
 import { UniversalDenseModel } from "../model/universal/dense";
 import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate";
-import type { KvQuantSpec, TurboQuantScheme } from "../config";
+import type { KvScheme } from "../kv-scheme";
 import { makeStepSampler } from "../sampler";
 import { BatchScheduler, type RowPromptCache } from "./batch-scheduler";
 
@@ -158,12 +158,6 @@ export class GenerationGateway {
   #serialWaiters = 0;
   /** Lazy, memoized: can this model's caches do the dynamic-B ops? */
   #cacheBatchable: boolean | null = null;
-  /** Lazy, memoized: can the server's kv scheme run under batching?
-   *  (Phase 3.1: kvConfig whose every configured layerIdx is a plain
-   *  full-attention KVCache — uniform kvBits and rotating-layer configs
-   *  stay serial. The scheme is a server-lifetime constant, so one memo.) */
-  #kvSchemeBatchable: boolean | null = null;
-
   constructor(
     private readonly model: RuntimeModel,
     batch: number,
@@ -174,7 +168,7 @@ export class GenerationGateway {
        *  scheduler at construction when batchable (Phase 3.1). turboQuant is
        *  never threaded to the scheduler (always solo-only — see willBatch);
        *  it's here only so the gateway can see it's active. */
-      kvScheme?: { kvBits?: number; kvConfig?: KvQuantSpec[]; turboQuant?: TurboQuantScheme };
+      kvScheme?: KvScheme;
       /** The server's prompt cache (Phase 3.2): batch-lane joiners take()
        *  the longest usable prefix at admission; never-merged rows put()
        *  back on finish. Safe to share with the serial lane — both use it
@@ -284,26 +278,8 @@ export class GenerationGateway {
    *  kvBits (quantizedKvStart threshold semantics via the serial no-byLayer
    *  path) and configs naming SSM layers stay serial. */
   #kvBatchable(): boolean {
-    if (this.#kvSchemeBatchable === null) {
-      const scheme = this.opts.kvScheme;
-      if (!scheme || (!scheme.kvBits && !scheme.kvConfig?.length)) {
-        // Only consulted when shape.kvQuant is SET: a kv-quant request with
-        // no scheme threaded to the gateway cannot be applied by the
-        // scheduler — batching it would SILENTLY DROP the quantization (the
-        // exact composition bug optiq serve ships). Route serial.
-        this.#kvSchemeBatchable = false;
-      } else if (scheme.kvBits || !scheme.kvConfig?.length) {
-        this.#kvSchemeBatchable = false; // uniform bits: serial
-      } else {
-        const proto = this.model.makeCache();
-        this.#kvSchemeBatchable = scheme.kvConfig.every(
-          (e) => proto[e.layerIdx] instanceof KVCache ||
-                 proto[e.layerIdx] instanceof RotatingKVCache,
-        );
-        for (const c of proto) c.dispose();
-      }
-    }
-    return this.#kvSchemeBatchable;
+    const scheme = this.opts.kvScheme;
+    return scheme?.kind === "affine-config" && scheme.batchable(this.model.config);
   }
 
   /** Decide whether a request joins the batch or runs serially. */
@@ -468,7 +444,7 @@ export class GenerationGateway {
         // scheduler (solo rows convert at serial chunk boundaries, then
         // merge as quantized triples). Only threaded when the scheme
         // passed #kvBatchable — otherwise those requests never reach here.
-        kvConfig: this.#kvBatchable() ? this.opts.kvScheme?.kvConfig : undefined,
+        kvScheme: this.#kvBatchable() ? this.opts.kvScheme : undefined,
         promptCache: this.opts.promptCache,
         lock: { acquire: () => this.#mutex.acquire() },
         // Drain: pause admission while any serial-lane request waits; the

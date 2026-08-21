@@ -12,19 +12,33 @@ import { GenerationGateway, type RequestShape } from "../src/serve/generation-ga
 import { KVCache, RotatingKVCache } from "../src/model/gemma4-base";
 import { SSMCache } from "../src/model/qwen3-delta";
 import type { RuntimeModel } from "../src/model/factory";
+import { resolveKvScheme } from "../src/kv-scheme";
 
 // willBatch reads only makeCache() off the model (the capability gate) and
 // never the serialRun, so stubs are safe. The default stub models a
 // full-attention model (all-KVCache — batch-capable).
-const stubModel = { makeCache: () => [new KVCache()] } as unknown as RuntimeModel;
+const stubModel = {
+  makeCache: () => [new KVCache()],
+  config: { text: { numHiddenLayers: 1, layerTypes: ["full_attention"] } },
+} as unknown as RuntimeModel;
 const stubSerial = (async () => ({}) as never) as never;
 const gateway = (batch: number) => new GenerationGateway(stubModel, batch, stubSerial);
 /** N-layer all-full-attention stub (Phase 3.1 kv-batchability probes). */
 const fullModel = (n: number) =>
-  ({ makeCache: () => Array.from({ length: n }, () => new KVCache()) }) as unknown as RuntimeModel;
+  ({
+    makeCache: () => Array.from({ length: n }, () => new KVCache()),
+    config: {
+      text: { numHiddenLayers: n, layerTypes: Array.from({ length: n }, () => "full_attention") },
+    },
+  }) as unknown as RuntimeModel;
 /** Layer 0 rotating, layer 1 full — a config naming layer 0 must stay serial. */
 const mixedModel = () =>
-  ({ makeCache: () => [new RotatingKVCache(1024), new KVCache()] }) as unknown as RuntimeModel;
+  ({
+    makeCache: () => [new RotatingKVCache(1024), new KVCache()],
+    config: {
+      text: { numHiddenLayers: 2, layerTypes: ["sliding_attention", "full_attention"] },
+    },
+  }) as unknown as RuntimeModel;
 const serialRunStub = stubSerial;
 
 // The all-clear shape: nothing that would force the serial lane.
@@ -85,19 +99,25 @@ describe("GenerationGateway.willBatch", () => {
   // kvBits stays serial (quantizedKvStart threshold semantics).
   test("kvQuant BATCHES with an all-full-attention kvConfig scheme", () => {
     const g = new GenerationGateway(fullModel(4), 2, serialRunStub, {
-      kvScheme: { kvConfig: [0, 1, 2, 3].map((layerIdx) => ({ layerIdx, bits: 4, groupSize: 64 })) },
+      kvScheme: resolveKvScheme({
+        override: "config",
+        config: [0, 1, 2, 3].map((layerIdx) => ({ layerIdx, bits: 4, groupSize: 64 })),
+      }),
     });
     expect(g.willBatch({ ...batchable, kvQuant: true })).toBe(true);
   });
   test("kvQuant stays serial for uniform kvBits", () => {
     const g = new GenerationGateway(fullModel(4), 2, serialRunStub, {
-      kvScheme: { kvBits: 8 },
+      kvScheme: resolveKvScheme({ override: 8 }),
     });
     expect(g.willBatch({ ...batchable, kvQuant: true })).toBe(false);
   });
   test("kvQuant BATCHES when the config names a rotating layer (milestone 2)", () => {
     const g = new GenerationGateway(mixedModel(), 2, serialRunStub, {
-      kvScheme: { kvConfig: [{ layerIdx: 0, bits: 4, groupSize: 64 }] },
+      kvScheme: resolveKvScheme({
+        override: "config",
+        config: [{ layerIdx: 0, bits: 4, groupSize: 64 }],
+      }),
     });
     expect(g.willBatch({ ...batchable, kvQuant: true })).toBe(true);
   });
@@ -108,7 +128,10 @@ describe("GenerationGateway.willBatch", () => {
   // filter/temporalView-capable).
   test("turboQuant stays serial regardless of the gateway's kvScheme", () => {
     const g = new GenerationGateway(fullModel(4), 2, serialRunStub, {
-      kvScheme: { kvConfig: [0, 1, 2, 3].map((layerIdx) => ({ layerIdx, bits: 4, groupSize: 64 })) },
+      kvScheme: resolveKvScheme({
+        override: "config",
+        config: [0, 1, 2, 3].map((layerIdx) => ({ layerIdx, bits: 4, groupSize: 64 })),
+      }),
     });
     expect(g.willBatch({ ...batchable, turboQuant: true })).toBe(false);
   });

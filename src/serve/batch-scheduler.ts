@@ -71,6 +71,7 @@ import {
 } from "../model/batched-quant";
 import { BatchedRotatingQuantCache } from "../model/batched-rotating-quant";
 import type { KvQuantSpec } from "../config";
+import type { KvScheme } from "../kv-scheme";
 import { BatchedRotatingCache } from "../model/batched-rotating";
 import { cloneKvCaches } from "../kv-store";
 import { SSMCache } from "../model/qwen3-delta";
@@ -258,6 +259,9 @@ export interface BatchSchedulerOptions {
    *  maybeQuantizeKv, so a row's quantized bytes are bit-exact vs serial
    *  `--kv-quant config` by construction (the L2-oracle composition rule). */
   kvConfig?: KvQuantSpec[];
+  /** Authoritative server-wide scheme. kvConfig remains as a compatibility
+   * input for direct scheduler tests and library callers. */
+  kvScheme?: KvScheme;
   /** Prompt-cache hook (Phase 3.2): admission take()s the longest usable
    *  prefix into the joiner's solo caches (suffix-only prefill — the
    *  multi-turn chat TTFT path); rows that finish never-merged put() their
@@ -311,6 +315,7 @@ export class BatchScheduler {
   readonly #compressedProjectors: Array<(tokens: number) => number> | null;
   readonly #batchCacheMaxTokens: number | null;
   readonly #kvConfig: KvQuantSpec[] | undefined;
+  readonly #kvScheme: KvScheme | undefined;
   /** layerIdx → mixed-precision spec (Phase 3.1); null = bf16 batch (v1). */
   readonly #kvByLayer: Map<number, KvQuantSpec> | null;
   /** Compiled decode runner for the B=1 serial-class case (Phase 3.2) —
@@ -327,7 +332,8 @@ export class BatchScheduler {
     this.#prefillChunkSize = Math.max(1, Math.floor(opts.prefillChunkSize ?? 2048));
     this.#kvBudgetBytes = opts.kvBudgetBytes;
     this.#promptCache = opts.promptCache;
-    this.#kvConfig = opts.kvConfig;
+    this.#kvScheme = opts.kvScheme;
+    this.#kvConfig = opts.kvScheme?.options.kvConfig ?? opts.kvConfig;
     const proto = model.makeCache(); // fresh caches hold no buffers
     this.#kinds = proto.map((c) =>
       isBatchableCache(c)
@@ -377,7 +383,7 @@ export class BatchScheduler {
           this.model.config,
           row.promptTokens,
           row.req.maxTokens,
-          this.#kvConfig,
+          this.#kvScheme ?? this.#kvConfig,
         );
   }
 

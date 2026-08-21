@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { KvQuantSpec, ModelConfig } from "../src/config";
 import { kvBytesAt } from "../src/fit";
+import { resolveKvScheme } from "../src/kv-scheme";
 import { batchRowKvBytes } from "../src/serve/kv-budget";
 
 const config = {
@@ -37,9 +38,26 @@ describe("batch KV budget projection", () => {
       { layerIdx: 1, bits: 4, groupSize: 64 },
       { layerIdx: 3, bits: 8, groupSize: 64 },
     ];
-    const projected = batchRowKvBytes(config, promptTokens, maxTokens, kvConfig);
+    const scheme = resolveKvScheme({ override: "config", config: kvConfig });
+    const projected = batchRowKvBytes(config, promptTokens, maxTokens, scheme);
 
+    expect(projected).toBe(scheme.bytesAt(config, totalTokens));
     expect(projected).toBe(kvBytesAt(config, totalTokens, { kvConfig }));
     expect(projected).toBeLessThan(kvBytesAt(config, totalTokens));
+  });
+
+  test("one resolved value owns options, labels, keys, and batchability", () => {
+    const configScheme = resolveKvScheme({
+      override: "config",
+      config: [{ layerIdx: 0, bits: 4, groupSize: 64 }],
+    });
+    expect(configScheme.kind).toBe("affine-config");
+    expect(configScheme.cacheKey).toBe("config");
+    expect(configScheme.label).toBe("mixed (kv_config.json)");
+    expect(configScheme.batchable(config)).toBe(true);
+
+    const uniform = resolveKvScheme({ override: 8 });
+    expect(uniform.options).toEqual({ kvBits: 8, quantizedKvStart: 0 });
+    expect(uniform.batchable(config)).toBe(false);
   });
 });

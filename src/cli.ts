@@ -14,6 +14,7 @@ import { basename, join, resolve } from "node:path";
 import { Registry } from "./registry";
 import { loadModelConfig, parseTurboQuantScheme, type TurboQuantScheme } from "./config";
 import { fit, skuMatrix, thisMachine, type FitKvScheme } from "./fit";
+import { resolveKvScheme } from "./kv-scheme";
 import { EvalDB } from "./evaldb";
 import pkg from "../package.json" with { type: "json" };
 import { renderHelp } from "./tui";
@@ -1454,13 +1455,17 @@ switch (cmd) {
     const kvQuantOpt = opt("kv-quant");
     let fitKvScheme: FitKvScheme | undefined;
     if (kvQuantOpt === "4" || kvQuantOpt === "8") {
-      fitKvScheme = { kvBits: Number(kvQuantOpt) };
+      fitKvScheme = resolveKvScheme({ override: Number(kvQuantOpt) }).fitOptions;
     } else if (kvQuantOpt === "config") {
       if (!config.kvQuant?.length) {
         console.error(`${m.repoId} ships no per-layer kv-quant config — use --kv-quant 4|8`);
         process.exit(1);
       }
-      fitKvScheme = { kvConfig: config.kvQuant };
+      fitKvScheme = resolveKvScheme({
+        override: "config",
+        config: config.kvQuant,
+        missingConfig: "error",
+      }).fitOptions;
     } else if (kvQuantOpt != null && kvQuantOpt !== "off") {
       console.error(`--kv-quant ${kvQuantOpt}: expected 4, 8, config, or off`);
       process.exit(1);
@@ -1753,13 +1758,12 @@ switch (cmd) {
     // bf16, same silent fallback as serve), N = uniform bits from decode
     // start. Unset (no tier, no --kv-quant) keeps generate's historical
     // default: bf16 bit-exact greedy (generateText's parity path).
-    const kvScheme =
-      route.turboQuant ? { turboQuant: route.turboQuant, quantizedKvStart: 0 }
-      : route.kvQuant === "off" ? {}
-      : route.kvQuant === "config"
-        ? (tm.config.kvQuant?.length ? { kvConfig: tm.config.kvQuant } : {})
-      : typeof route.kvQuant === "number"
-        ? { kvBits: route.kvQuant, quantizedKvStart: 0 }
+    const kvScheme = route.turboQuant || route.kvQuant !== undefined
+      ? resolveKvScheme({
+          override: route.kvQuant,
+          turboQuant: route.turboQuant,
+          config: tm.config.kvQuant,
+        }).options
       : undefined;
     const num = (n: string): number | undefined => { const v = opt(n); return v == null ? undefined : Number(v); };
     const text = await generateText(tm, prompt, {
