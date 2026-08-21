@@ -225,6 +225,15 @@ export class Glm52Cache implements BatchableCache {
       throw new Error("native MTP cache cannot contain target DSA state");
   }
 
+  signature(): string {
+    if (this.role === "mtp") return "kv:mla:mtp";
+    return this.dsa ? "kv:mla:target:dsa" : "kv:mla:target";
+  }
+
+  bytesPerToken(): number {
+    return (this.kvLoraRank + this.ropeHeadDim + (this.dsa?.headDim ?? 0)) * 4;
+  }
+
   /** Append one equal-width row block without expanding it to per-head K/V. */
   append(latent: MlxArray, rope: MlxArray, dsa: MlxArray | null = null): void {
     const latentShape = latent.shape;

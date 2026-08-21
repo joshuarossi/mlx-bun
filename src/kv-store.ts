@@ -46,7 +46,7 @@ import { MlxArray } from "./mlx/array";
 import type { Dtype } from "./mlx/ffi";
 import * as ops from "./mlx/ops";
 import {
-  type Cache, KVCache, RotatingKVCache,
+  type Cache, cacheSignature, KVCache, RotatingKVCache,
   QuantizedKVCache, RotatingQuantizedKVCache,
   TurboQuantKVCache, type TurboQuantTensor,
 } from "./model/gemma4-base";
@@ -142,6 +142,331 @@ const alignUp = (n: number) => Math.ceil(n / ALIGN) * ALIGN;
  *  as-laid-out with ringIdx. Slice handles are lazy graph nodes (no GPU
  *  materialization until rawBytes at write time). */
 interface TensorSource { arr: MlxArray; disposeAfter: boolean }
+
+interface SnapshotContext {
+  slots: TensorSlot[];
+  push(a: MlxArray, disposeAfter: boolean): void;
+  liveSlice(a: MlxArray, upTo: number): MlxArray;
+  liveMlaSlice(a: MlxArray, upTo: number): MlxArray;
+  pushTriple(t: ops.QuantizedTensor, upTo: number | null): void;
+}
+
+interface CloneContext {
+  view(a: MlxArray): MlxArray;
+  liveView(a: MlxArray, upTo: number): MlxArray;
+  mlaView(a: MlxArray, upTo: number): MlxArray;
+  tripleView(t: ops.QuantizedTensor, upTo: number | null): ops.QuantizedTensor;
+}
+
+interface LoadContext {
+  path: string;
+  arr(slot: TensorSlot): MlxArray;
+  grownArr(slot: TensorSlot, offset: number): MlxArray;
+  triple(slots: TensorSlot[], at: number): ops.QuantizedTensor;
+}
+
+interface CacheCodec {
+  matches(cache: Cache): boolean;
+  snapshot(cache: Cache, context: SnapshotContext): CacheHeaderEntry;
+  clone(cache: Cache, context: CloneContext): Cache;
+  load(entry: CacheHeaderEntry, context: LoadContext): Cache;
+  headerTrimmable(entry: CacheHeaderEntry): boolean;
+}
+
+const requireMlaState = (cache: Glm52Cache, operation: string): void => {
+  if (!cache.latent || !cache.rope || cache.batchSize === null || cache.offset === 0)
+    throw new Error(`cannot ${operation} an empty GLM compressed cache`);
+  if (cache.dsa && (!cache.dsa.data || cache.dsa.offset !== cache.offset))
+    throw new Error(`cannot ${operation} misaligned GLM DSA state`);
+};
+
+const snapshotMla = (
+  kind: Extract<CacheKind, "mla" | "mla-dsa" | "mtp-mla">,
+  cache: Cache,
+  context: SnapshotContext,
+): CacheHeaderEntry => {
+  const c = cache as Glm52Cache;
+  requireMlaState(c, "persist");
+  context.push(context.liveMlaSlice(c.latent!, c.offset), true);
+  context.push(context.liveMlaSlice(c.rope!, c.offset), true);
+  if (c.dsa) context.push(context.liveMlaSlice(c.dsa.data!, c.offset), true);
+  return {
+    kind,
+    offset: c.offset,
+    kvLoraRank: c.kvLoraRank,
+    ropeHeadDim: c.ropeHeadDim,
+    ...(c.dsa ? { dsaHeadDim: c.dsa.headDim } : {}),
+    maxTokens: c.maxTokens,
+    tensors: context.slots,
+  };
+};
+
+const cloneMla = (cache: Cache, context: CloneContext): Cache => {
+  const c = cache as Glm52Cache;
+  requireMlaState(c, "clone");
+  const clone = new MLACache({
+    kvLoraRank: c.kvLoraRank,
+    ropeHeadDim: c.ropeHeadDim,
+    ...(c.dsa ? { dsa: { headDim: c.dsa.headDim } } : {}),
+    maxTokens: c.maxTokens,
+    role: c.role,
+  });
+  clone.restoreCompressedState(
+    context.mlaView(c.latent!, c.offset),
+    context.mlaView(c.rope!, c.offset),
+    c.dsa ? context.mlaView(c.dsa.data!, c.offset) : null,
+    c.offset,
+  );
+  return clone;
+};
+
+const loadMla = (entry: CacheHeaderEntry, context: LoadContext): Cache => {
+  const hasDsa = entry.kind === "mla-dsa";
+  if (entry.kind === "mtp-mla" && entry.dsaHeadDim !== undefined)
+    throw new Error(`${context.path}: native MTP cache cannot contain DSA state`);
+  const cache = new MLACache({
+    kvLoraRank: entry.kvLoraRank!,
+    ropeHeadDim: entry.ropeHeadDim!,
+    ...(hasDsa ? { dsa: { headDim: entry.dsaHeadDim! } } : {}),
+    maxTokens: entry.maxTokens,
+    role: entry.kind === "mtp-mla" ? "mtp" : "target",
+  });
+  cache.restoreCompressedState(
+    context.arr(entry.tensors[0]!),
+    context.arr(entry.tensors[1]!),
+    hasDsa ? context.arr(entry.tensors[2]!) : null,
+    entry.offset,
+  );
+  return cache;
+};
+
+/** One authoritative persistence algebra. Adding a cache storage kind must
+ *  define all four operations here; save/clone/load and SSD eligibility
+ *  therefore cannot grow independent instanceof/switch chains. */
+const CACHE_CODECS = {
+  kv: {
+    matches: (cache) => cacheSignature(cache) === "kv:plain",
+    snapshot: (cache, context) => {
+      const c = cache as KVCache;
+      if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
+      context.push(context.liveSlice(c.keys, c.offset), true);
+      context.push(context.liveSlice(c.values, c.offset), true);
+      return { kind: "kv", offset: c.offset, tensors: context.slots };
+    },
+    clone: (cache, context) => {
+      const c = cache as KVCache;
+      if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
+      const clone = new KVCache();
+      clone.restoreState(
+        context.liveView(c.keys, c.offset),
+        context.liveView(c.values, c.offset),
+        c.offset,
+      );
+      return clone;
+    },
+    load: (entry, context) => {
+      const cache = new KVCache();
+      cache.restoreState(
+        context.grownArr(entry.tensors[0]!, entry.offset),
+        context.grownArr(entry.tensors[1]!, entry.offset),
+        entry.offset,
+      );
+      return cache;
+    },
+    headerTrimmable: () => true,
+  },
+  rotating: {
+    matches: (cache) => cacheSignature(cache) === "kv:rotating-plain",
+    snapshot: (cache, context) => {
+      const c = cache as RotatingKVCache;
+      if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
+      context.push(c.keys, false);
+      context.push(c.values, false);
+      return { kind: "rotating", offset: c.offset, idx: c.ringIdx,
+        maxSize: c.maxSize, tensors: context.slots };
+    },
+    clone: (cache, context) => {
+      const c = cache as RotatingKVCache;
+      if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
+      const clone = new RotatingKVCache(c.maxSize);
+      clone.restoreState(context.view(c.keys), context.view(c.values), c.offset, c.ringIdx);
+      return clone;
+    },
+    load: (entry, context) => {
+      const cache = new RotatingKVCache(entry.maxSize!);
+      cache.restoreState(
+        context.arr(entry.tensors[0]!), context.arr(entry.tensors[1]!),
+        entry.offset, entry.idx!,
+      );
+      return cache;
+    },
+    headerTrimmable: (entry) => entry.offset < (entry.maxSize ?? 0),
+  },
+  qkv: {
+    matches: (cache) => cacheSignature(cache).startsWith("kv:quant:"),
+    snapshot: (cache, context) => {
+      const c = cache as QuantizedKVCache;
+      if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
+      context.pushTriple(c.keys, c.offset);
+      context.pushTriple(c.values, c.offset);
+      return { kind: "qkv", offset: c.offset, groupSize: c.groupSize,
+        bits: c.bits, tensors: context.slots };
+    },
+    clone: (cache, context) => {
+      const c = cache as QuantizedKVCache;
+      if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
+      const clone = new QuantizedKVCache(c.groupSize, c.bits);
+      clone.restoreState(
+        context.tripleView(c.keys, c.offset),
+        context.tripleView(c.values, c.offset),
+        c.offset,
+      );
+      return clone;
+    },
+    load: (entry, context) => {
+      const cache = new QuantizedKVCache(entry.groupSize!, entry.bits!);
+      cache.restoreState(
+        context.triple(entry.tensors, 0), context.triple(entry.tensors, 3), entry.offset,
+      );
+      return cache;
+    },
+    headerTrimmable: () => true,
+  },
+  "rotating-qkv": {
+    matches: (cache) => cacheSignature(cache).startsWith("kv:rotating-quant:"),
+    snapshot: (cache, context) => {
+      const c = cache as RotatingQuantizedKVCache;
+      if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
+      context.pushTriple(c.keys, null);
+      context.pushTriple(c.values, null);
+      return { kind: "rotating-qkv", offset: c.offset, idx: c.ringIdx,
+        maxSize: c.maxSize, groupSize: c.groupSize, bits: c.bits,
+        tensors: context.slots };
+    },
+    clone: (cache, context) => {
+      const c = cache as RotatingQuantizedKVCache;
+      if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
+      const clone = new RotatingQuantizedKVCache(c.maxSize, c.groupSize, c.bits);
+      clone.restoreState(
+        context.tripleView(c.keys, null), context.tripleView(c.values, null),
+        c.offset, c.ringIdx,
+      );
+      return clone;
+    },
+    load: (entry, context) => {
+      const cache = new RotatingQuantizedKVCache(
+        entry.maxSize!, entry.groupSize!, entry.bits!,
+      );
+      cache.restoreState(
+        context.triple(entry.tensors, 0), context.triple(entry.tensors, 3),
+        entry.offset, entry.idx!,
+      );
+      return cache;
+    },
+    headerTrimmable: (entry) => entry.offset < (entry.maxSize ?? 0),
+  },
+  ssm: {
+    matches: (cache) => cacheSignature(cache) === "ssm",
+    snapshot: (cache, context) => {
+      const c = cache as SSMCache;
+      if (!c.conv || !c.recurrent) throw new Error("cannot persist an empty cache");
+      context.push(c.conv, false);
+      context.push(c.recurrent, false);
+      return { kind: "ssm", offset: c.offset, tensors: context.slots };
+    },
+    clone: (cache, context) => {
+      const c = cache as SSMCache;
+      if (!c.conv || !c.recurrent) throw new Error("cannot clone an empty cache");
+      const clone = new SSMCache();
+      clone.conv = context.view(c.conv);
+      clone.recurrent = context.view(c.recurrent);
+      clone.offset = c.offset;
+      return clone;
+    },
+    load: (entry, context) => {
+      const cache = new SSMCache();
+      cache.conv = context.arr(entry.tensors[0]!);
+      cache.recurrent = context.arr(entry.tensors[1]!);
+      cache.offset = entry.offset;
+      return cache;
+    },
+    headerTrimmable: () => false,
+  },
+  turboquant: {
+    matches: (cache) => cacheSignature(cache).startsWith("kv:turboquant:"),
+    snapshot: (cache, context) => {
+      const c = cache as TurboQuantKVCache;
+      const state = c.state();
+      if (state.length === 0) throw new Error("cannot persist an empty cache");
+      for (const array of state) context.push(array, true);
+      return { kind: "turboquant", offset: c.offset, kBits: c.kBits,
+        vBits: c.vBits, headDim: c.headDim ?? 0, tensors: context.slots };
+    },
+    clone: (cache, context) => {
+      const c = cache as TurboQuantKVCache;
+      const state = c.state();
+      if (state.length === 0) throw new Error("cannot clone an empty cache");
+      try {
+        const [kIdx, kScales, kZeros, vPacked, vScales] = state;
+        const clone = new TurboQuantKVCache(c.kBits, c.vBits);
+        clone.restoreState({
+          kIdx: context.view(kIdx!),
+          kScales: context.view(kScales!),
+          kZeros: context.view(kZeros!),
+          vPacked: context.view(vPacked!),
+          vScales: context.view(vScales!),
+        }, c.offset, c.headDim!);
+        return clone;
+      } finally {
+        for (const array of state) array.dispose();
+      }
+    },
+    load: (entry, context) => {
+      const cache = new TurboQuantKVCache(entry.kBits!, entry.vBits!);
+      const tensors: TurboQuantTensor = {
+        kIdx: context.arr(entry.tensors[0]!),
+        kScales: context.arr(entry.tensors[1]!),
+        kZeros: context.arr(entry.tensors[2]!),
+        vPacked: context.arr(entry.tensors[3]!),
+        vScales: context.arr(entry.tensors[4]!),
+      };
+      cache.restoreState(tensors, entry.offset, entry.headDim!);
+      return cache;
+    },
+    headerTrimmable: () => true,
+  },
+  mla: {
+    matches: (cache) => cacheSignature(cache) === "kv:mla:target",
+    snapshot: (cache, context) => snapshotMla("mla", cache, context),
+    clone: cloneMla,
+    load: loadMla,
+    headerTrimmable: () => true,
+  },
+  "mla-dsa": {
+    matches: (cache) => cacheSignature(cache) === "kv:mla:target:dsa",
+    snapshot: (cache, context) => snapshotMla("mla-dsa", cache, context),
+    clone: cloneMla,
+    load: loadMla,
+    headerTrimmable: () => true,
+  },
+  "mtp-mla": {
+    matches: (cache) => cacheSignature(cache) === "kv:mla:mtp",
+    snapshot: (cache, context) => snapshotMla("mtp-mla", cache, context),
+    clone: cloneMla,
+    load: loadMla,
+    headerTrimmable: () => true,
+  },
+} satisfies Record<CacheKind, CacheCodec>;
+
+const cacheCodec = (cache: Cache): CacheCodec => {
+  const codec = Object.values(CACHE_CODECS).find((candidate) => candidate.matches(cache));
+  if (!codec) throw new Error(`unsupported cache signature ${cacheSignature(cache)}`);
+  return codec;
+};
+
+export const cacheHeadersTrimmable = (caches: readonly CacheHeaderEntry[]): boolean =>
+  caches.every((entry) => CACHE_CODECS[entry.kind].headerTrimmable(entry));
+
 function snapshotCache(c: Cache, dataOffset: number): { entry: CacheHeaderEntry; sources: TensorSource[]; next: number } {
   const slots: TensorSlot[] = [];
   const sources: TensorSource[] = [];
@@ -168,64 +493,9 @@ function snapshotCache(c: Cache, dataOffset: number): { entry: CacheHeaderEntry;
     }
   };
 
-  let entry: CacheHeaderEntry;
-  if (c instanceof Glm52Cache) {
-    if (!c.latent || !c.rope || c.batchSize === null || c.offset === 0)
-      throw new Error("cannot persist an empty GLM compressed cache");
-    push(liveMlaSlice(c.latent, c.offset), true);
-    push(liveMlaSlice(c.rope, c.offset), true);
-    if (c.dsa) {
-      if (!c.dsa.data || c.dsa.offset !== c.offset)
-        throw new Error("cannot persist misaligned GLM DSA state");
-      push(liveMlaSlice(c.dsa.data, c.offset), true);
-    }
-    entry = {
-      kind: c.role === "mtp" ? "mtp-mla" : c.dsa ? "mla-dsa" : "mla",
-      offset: c.offset,
-      kvLoraRank: c.kvLoraRank,
-      ropeHeadDim: c.ropeHeadDim,
-      ...(c.dsa ? { dsaHeadDim: c.dsa.headDim } : {}),
-      maxTokens: c.maxTokens,
-      tensors: slots,
-    };
-  } else if (c instanceof TurboQuantKVCache) {
-    const t = c.state();
-    if (t.length === 0) throw new Error("cannot persist an empty cache");
-    const [kIdx, kScales, kZeros, vPacked, vScales] = t as [MlxArray, MlxArray, MlxArray, MlxArray, MlxArray];
-    // state() already trims to offset — dispose these lazy slice views
-    // once written (same disposeAfter contract as liveSlice elsewhere).
-    for (const a of [kIdx, kScales, kZeros, vPacked, vScales]) push(a, true);
-    entry = { kind: "turboquant", offset: c.offset, kBits: c.kBits, vBits: c.vBits,
-      headDim: c.headDim ?? 0, tensors: slots };
-  } else if (c instanceof RotatingQuantizedKVCache) {
-    if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
-    pushTriple(c.keys, null);
-    pushTriple(c.values, null);
-    entry = { kind: "rotating-qkv", offset: c.offset, idx: c.ringIdx, maxSize: c.maxSize,
-      groupSize: c.groupSize, bits: c.bits, tensors: slots };
-  } else if (c instanceof QuantizedKVCache) {
-    if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
-    pushTriple(c.keys, c.offset);
-    pushTriple(c.values, c.offset);
-    entry = { kind: "qkv", offset: c.offset, groupSize: c.groupSize, bits: c.bits, tensors: slots };
-  } else if (c instanceof RotatingKVCache) {
-    if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
-    push(c.keys, false);
-    push(c.values, false);
-    entry = { kind: "rotating", offset: c.offset, idx: c.ringIdx, maxSize: c.maxSize, tensors: slots };
-  } else if (c instanceof SSMCache) {
-    if (!c.conv || !c.recurrent) throw new Error("cannot persist an empty cache");
-    push(c.conv, false);
-    push(c.recurrent, false);
-    entry = { kind: "ssm", offset: c.offset, tensors: slots };
-  } else if (c instanceof KVCache) {
-    if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
-    push(liveSlice(c.keys, c.offset), true);
-    push(liveSlice(c.values, c.offset), true);
-    entry = { kind: "kv", offset: c.offset, tensors: slots };
-  } else {
-    throw new Error("unknown cache type");
-  }
+  const entry = cacheCodec(c).snapshot(c, {
+    slots, push, liveSlice, liveMlaSlice, pushTriple,
+  });
   return { entry, sources, next: cursor };
 }
 
@@ -261,65 +531,7 @@ export function cloneKvCaches(caches: Cache[]): Cache[] {
   const out: Cache[] = [];
   try {
     for (const c of caches) {
-      if (c instanceof Glm52Cache) {
-        if (!c.latent || !c.rope || c.batchSize === null || c.offset === 0)
-          throw new Error("cannot clone an empty GLM compressed cache");
-        const n = new MLACache({
-          kvLoraRank: c.kvLoraRank,
-          ropeHeadDim: c.ropeHeadDim,
-          ...(c.dsa ? { dsa: { headDim: c.dsa.headDim } } : {}),
-          maxTokens: c.maxTokens,
-          role: c.role,
-        });
-        n.restoreCompressedState(
-          mlaView(c.latent, c.offset),
-          mlaView(c.rope, c.offset),
-          c.dsa ? mlaView(c.dsa.data!, c.offset) : null,
-          c.offset,
-        );
-        out.push(n);
-      } else if (c instanceof TurboQuantKVCache) {
-        const state = c.state();
-        if (state.length === 0) throw new Error("cannot clone an empty cache");
-        const [kIdx, kScales, kZeros, vPacked, vScales] = state;
-        const n = new TurboQuantKVCache(c.kBits, c.vBits);
-        n.restoreState(
-          { kIdx: view(kIdx!), kScales: view(kScales!), kZeros: view(kZeros!),
-            vPacked: view(vPacked!), vScales: view(vScales!) },
-          c.offset, c.headDim!,
-        );
-        for (const a of state) a.dispose();
-        out.push(n);
-      } else if (c instanceof RotatingQuantizedKVCache) {
-        if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
-        const n = new RotatingQuantizedKVCache(c.maxSize, c.groupSize, c.bits);
-        n.restoreState(tripleView(c.keys, null), tripleView(c.values, null), c.offset, c.ringIdx);
-        out.push(n);
-      } else if (c instanceof QuantizedKVCache) {
-        if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
-        const n = new QuantizedKVCache(c.groupSize, c.bits);
-        n.restoreState(tripleView(c.keys, c.offset), tripleView(c.values, c.offset), c.offset);
-        out.push(n);
-      } else if (c instanceof RotatingKVCache) {
-        if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
-        const n = new RotatingKVCache(c.maxSize);
-        n.restoreState(view(c.keys), view(c.values), c.offset, c.ringIdx);
-        out.push(n);
-      } else if (c instanceof SSMCache) {
-        if (!c.conv || !c.recurrent) throw new Error("cannot clone an empty cache");
-        const n = new SSMCache();
-        n.conv = view(c.conv);
-        n.recurrent = view(c.recurrent);
-        n.offset = c.offset;
-        out.push(n);
-      } else if (c instanceof KVCache) {
-        if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
-        const n = new KVCache();
-        n.restoreState(liveView(c.keys, c.offset), liveView(c.values, c.offset), c.offset);
-        out.push(n);
-      } else {
-        throw new Error("cloneKvCaches: unknown cache type");
-      }
+      out.push(cacheCodec(c).clone(c, { view, liveView, mlaView, tripleView }));
     }
   } catch (err) {
     for (const c of out) c.dispose();
@@ -592,24 +804,26 @@ function validateGlm52Prototype(
 ): void {
   const glmKind = entry.kind === "mla" || entry.kind === "mla-dsa" ||
     entry.kind === "mtp-mla";
-  if (!(prototype instanceof Glm52Cache)) {
+  const prototypeSignature = cacheSignature(prototype);
+  if (!prototypeSignature.startsWith("kv:mla:")) {
     if (glmKind)
       throw new Error(`${path}: GLM cache kind ${entry.kind} does not match model cache`);
     return;
   }
-  const expectedKind: CacheKind = prototype.role === "mtp"
+  const glmPrototype = prototype as Glm52Cache;
+  const expectedKind: CacheKind = glmPrototype.role === "mtp"
     ? "mtp-mla"
-    : prototype.dsa ? "mla-dsa" : "mla";
+    : glmPrototype.dsa ? "mla-dsa" : "mla";
   if (entry.kind !== expectedKind) {
     throw new Error(
       `${path}: cache kind ${entry.kind} != model cache kind ${expectedKind}`,
     );
   }
   for (const [field, actual, expected] of [
-    ["kvLoraRank", entry.kvLoraRank, prototype.kvLoraRank],
-    ["ropeHeadDim", entry.ropeHeadDim, prototype.ropeHeadDim],
-    ["dsaHeadDim", entry.dsaHeadDim, prototype.dsa?.headDim],
-    ["maxTokens", entry.maxTokens, prototype.maxTokens],
+    ["kvLoraRank", entry.kvLoraRank, glmPrototype.kvLoraRank],
+    ["ropeHeadDim", entry.ropeHeadDim, glmPrototype.ropeHeadDim],
+    ["dsaHeadDim", entry.dsaHeadDim, glmPrototype.dsa?.headDim],
+    ["maxTokens", entry.maxTokens, glmPrototype.maxTokens],
   ] as const) {
     if (actual !== expected) {
       throw new Error(
@@ -617,7 +831,7 @@ function validateGlm52Prototype(
       );
     }
   }
-  const expectedTensors = prototype.dsa ? 3 : 2;
+  const expectedTensors = glmPrototype.dsa ? 3 : 2;
   if (entry.tensors.length !== expectedTensors) {
     throw new Error(
       `${path}: ${entry.kind} has ${entry.tensors.length} tensors, ` +
@@ -732,79 +946,10 @@ export function loadKvCache(
   const caches: Cache[] = [];
   try {
     for (const e of header.caches) {
-      const t = e.tensors;
-      switch (e.kind) {
-        case "kv": {
-          const c = new KVCache();
-          c.restoreState(
-            grownArr(t[0]!, e.offset),
-            grownArr(t[1]!, e.offset),
-            e.offset,
-          );
-          caches.push(c);
-          break;
-        }
-        case "rotating": {
-          const c = new RotatingKVCache(e.maxSize!);
-          c.restoreState(arr(t[0]!), arr(t[1]!), e.offset, e.idx!);
-          caches.push(c);
-          break;
-        }
-        case "qkv": {
-          const c = new QuantizedKVCache(e.groupSize!, e.bits!);
-          c.restoreState(triple(t, 0), triple(t, 3), e.offset);
-          caches.push(c);
-          break;
-        }
-        case "rotating-qkv": {
-          const c = new RotatingQuantizedKVCache(e.maxSize!, e.groupSize!, e.bits!);
-          c.restoreState(triple(t, 0), triple(t, 3), e.offset, e.idx!);
-          caches.push(c);
-          break;
-        }
-        case "ssm": {
-          const c = new SSMCache();
-          c.conv = arr(t[0]!);
-          c.recurrent = arr(t[1]!);
-          c.offset = e.offset;
-          caches.push(c);
-          break;
-        }
-        case "turboquant": {
-          const c = new TurboQuantKVCache(e.kBits!, e.vBits!);
-          const kv: TurboQuantTensor = {
-            kIdx: arr(t[0]!), kScales: arr(t[1]!), kZeros: arr(t[2]!),
-            vPacked: arr(t[3]!), vScales: arr(t[4]!),
-          };
-          c.restoreState(kv, e.offset, e.headDim!);
-          caches.push(c);
-          break;
-        }
-        case "mla":
-        case "mla-dsa":
-        case "mtp-mla": {
-          const hasDsa = e.kind === "mla-dsa";
-          if (e.kind === "mtp-mla" && e.dsaHeadDim !== undefined)
-            throw new Error(`${path}: native MTP cache cannot contain DSA state`);
-          const c = new MLACache({
-            kvLoraRank: e.kvLoraRank!,
-            ropeHeadDim: e.ropeHeadDim!,
-            ...(hasDsa ? { dsa: { headDim: e.dsaHeadDim! } } : {}),
-            maxTokens: e.maxTokens,
-            role: e.kind === "mtp-mla" ? "mtp" : "target",
-          });
-          c.restoreCompressedState(
-            arr(t[0]!),
-            arr(t[1]!),
-            hasDsa ? arr(t[2]!) : null,
-            e.offset,
-          );
-          caches.push(c);
-          break;
-        }
-        default:
-          throw new Error(`${path}: unknown cache kind ${(e as { kind: string }).kind}`);
-      }
+      const codec = CACHE_CODECS[e.kind];
+      if (!codec)
+        throw new Error(`${path}: unknown cache kind ${(e as { kind: string }).kind}`);
+      caches.push(codec.load(e, { path, arr, grownArr, triple }));
       // This entry's tensors are now owned by its cache — stop tracking them
       // (the catch must not double-free through both pending AND caches).
       pending.length = 0;

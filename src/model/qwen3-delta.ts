@@ -235,6 +235,7 @@ export class SSMCache implements Cache {
   offsets: number[] | null = null;
 
   signature(): string { return "ssm"; }
+  bytesPerToken(): number { return 0; }
   get batchSize(): number { return this.offsets?.length ?? 1; }
 
   /** Row `i`'s own token coverage (per-row when batched, `offset` serial). */

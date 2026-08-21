@@ -218,6 +218,13 @@ export interface Cache {
   offset: number;
   /** Stable storage identity for compatibility guards and persistence. */
   signature?(): string;
+  /** Physical cache storage consumed by one additional token for one row.
+   *  Recurrent caches return 0 because their state does not grow with the
+   *  sequence. Optional for stateless/training adapters that are never
+   *  admitted or persisted. */
+  bytesPerToken?(): number;
+  /** state() returned temporary views that the caller must release. */
+  readonly stateNeedsDispose?: boolean;
   /** Compiled-decode trace adapters expose the RoPE offset as an int32
    *  array input here; real caches leave it unset (static int path). */
   readonly ropeOffsetArr?: MlxArray;
@@ -346,6 +353,11 @@ export class KVCache implements Cache {
   offset = 0;
 
   signature(): string { return "kv:plain"; }
+
+  bytesPerToken(): number {
+    const steps = this.keys?.shape[2] ?? 0;
+    return steps > 0 ? (this.keys!.nbytes + this.values!.nbytes) / steps : 0;
+  }
 
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
     const prev = this.offset;
@@ -521,6 +533,16 @@ export class QuantizedKVCache implements Cache {
   constructor(readonly groupSize: number, readonly bits: number) {}
 
   signature(): string { return `kv:quant:${this.bits}:${this.groupSize}`; }
+
+  bytesPerToken(): number {
+    const steps = this.keys?.packed.shape[2] ?? 0;
+    if (steps === 0 || !this.keys || !this.values) return 0;
+    const tensors = [
+      this.keys.packed, this.keys.scales, this.keys.biases,
+      this.values.packed, this.values.scales, this.values.biases,
+    ];
+    return tensors.reduce((bytes, array) => bytes + array.nbytes, 0) / steps;
+  }
 
   updateAndFetch(): [MlxArray, MlxArray] {
     throw new Error("QuantizedKVCache: use updateAndFetchQuantized");
@@ -735,6 +757,11 @@ export class RotatingKVCache implements Cache {
   }
 
   signature(): string { return "kv:rotating-plain"; }
+
+  bytesPerToken(): number {
+    const steps = this.keys?.shape[2] ?? 0;
+    return steps > 0 ? (this.keys!.nbytes + this.values!.nbytes) / steps : 0;
+  }
 
   /** v with ring contents rearranged into temporal order (keep=0). */
   #temporalOrder(v: MlxArray): MlxArray {
@@ -1067,6 +1094,16 @@ export class RotatingQuantizedKVCache implements Cache {
   }
 
   signature(): string { return `kv:rotating-quant:${this.bits}:${this.groupSize}`; }
+
+  bytesPerToken(): number {
+    const steps = this.keys?.packed.shape[2] ?? 0;
+    if (steps === 0 || !this.keys || !this.values) return 0;
+    const tensors = [
+      this.keys.packed, this.keys.scales, this.keys.biases,
+      this.values.packed, this.values.scales, this.values.biases,
+    ];
+    return tensors.reduce((bytes, array) => bytes + array.nbytes, 0) / steps;
+  }
 
   updateAndFetch(): [MlxArray, MlxArray] {
     throw new Error("RotatingQuantizedKVCache: use updateAndFetchQuantized");
@@ -1453,6 +1490,7 @@ export const disposeTurboQuant = (t: TurboQuantTensor): void => {
  *  a full-window dequant every step; the deferred-InvFWHT trick is a
  *  documented non-goal until the quality gate passes. */
 export class TurboQuantKVCache implements Cache {
+  readonly stateNeedsDispose = true;
   static readonly STEP = 256;
   /** Set only by compiled-decode trace adapters (see Cache) — TurboQuant
    *  is not a compiled-decode participant in v1 (novel class, monolith
@@ -1465,6 +1503,17 @@ export class TurboQuantKVCache implements Cache {
   #headDim: number | null = null;
 
   constructor(readonly kBits: number, readonly vBits: number) {}
+
+  signature(): string { return `kv:turboquant:${this.kBits}:${this.vBits}`; }
+
+  bytesPerToken(): number {
+    const steps = this.#seqLen();
+    if (steps === 0 || !this.#kv) return 0;
+    return [
+      this.#kv.kIdx, this.#kv.kScales, this.#kv.kZeros,
+      this.#kv.vPacked, this.#kv.vScales,
+    ].reduce((bytes, array) => bytes + array.nbytes, 0) / steps;
+  }
 
   get headDim(): number | null {
     return this.#headDim;
