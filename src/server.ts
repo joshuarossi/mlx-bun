@@ -86,6 +86,7 @@ import { isMonotone, CURVE_UMIN, type CurveParams } from "./curve-sampler";
 const CURVE_PAGE = curveDesignerHtml as unknown as string;
 import { GenerationGateway } from "./serve/generation-gateway";
 import { recordLane, type Lane } from "./serve/lane-registry";
+import { handleAdminRoute } from "./serve/admin-routes";
 import { handleAuxiliaryRoute } from "./serve/aux-routes";
 import { handleStaticRoute } from "./serve/static-routes";
 const STATIC_ROUTE_ASSETS = {
@@ -4243,130 +4244,11 @@ export function createServer(
         }
       }
 
-      // --- HF token settings + push-to-hub (model & dataset repos) ------
-      if (url.pathname === "/api/settings/hf-token" && request.method === "GET") {
-        const { hasHfToken } = await import("./hf-push");
-        return Response.json({ ok: true, hasToken: hasHfToken() });
-      }
-      if (url.pathname === "/api/settings/hf-token" && request.method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as { token?: string };
-        if (!body.token) return Response.json({ ok: false, error: "token required" }, { status: 400 });
-        const { saveHfToken } = await import("./hf-push");
-        saveHfToken(body.token);
-        return Response.json({ ok: true });
-      }
-
-      // --- Durable tool-approvals settings (plan §5.4/§6.5/§9 Phase 2) ---
-      // The web chat's own "always allow this tool" list
-      // (~/.mlx-bun/tool-approvals.json, src/tool-approvals.ts). The
-      // approval card itself grants an always-allow via the `approval` WS
-      // frame (alwaysAllow:true) — these REST routes are read/forget only,
-      // for the settings panel's list view (matches the hf-token GET/POST
-      // pattern's separation of "the card that grants" vs "settings that
-      // manage" — there is no POST here on purpose, granting always goes
-      // through the approval card, never a bare settings form).
-      if (url.pathname === "/api/settings/tool-approvals" && request.method === "GET") {
-        const { listAlwaysAllowedTools } = await import("./tool-approvals");
-        return Response.json({ ok: true, alwaysAllow: listAlwaysAllowedTools() });
-      }
-      if (url.pathname === "/api/settings/tool-approvals" && request.method === "DELETE") {
-        const body = (await request.json().catch(() => ({}))) as { tool?: string };
-        if (!body.tool) return Response.json({ ok: false, error: "tool required" }, { status: 400 });
-        const { revokeToolAlwaysAllowed } = await import("./tool-approvals");
-        const file = revokeToolAlwaysAllowed(body.tool);
-        return Response.json({ ok: true, alwaysAllow: Object.keys(file.allows).sort() });
-      }
-      {
-        const m = url.pathname.match(/^\/api\/(quantize|finetune|dataset)\/push$/);
-        if (m && request.method === "POST") {
-          const kind = m[1]!;
-          const body = (await request.json().catch(() => ({}))) as {
-            job_id?: string; repo_id?: string; private?: boolean; source_path?: string;
-          };
-          if (!body.repo_id) return Response.json({ ok: false, error: "repo_id required" }, { status: 400 });
-          const { getHfToken, uploadFolder } = await import("./hf-push");
-          const token = getHfToken();
-          if (!token)
-            return Response.json({ ok: false, error: "no HF token saved — add one in Settings → Hugging Face" }, { status: 400 });
-          const store = await ensureJobs();
-          let dir = body.source_path;
-          if (!dir && body.job_id) dir = store.get(body.job_id)?.output_path ?? undefined;
-          if (!dir) return Response.json({ ok: false, error: "no source dir (pass job_id or source_path)" }, { status: 400 });
-          try {
-            const r = await uploadFolder(dir, body.repo_id, {
-              repoType: kind === "dataset" ? "dataset" : "model",
-              private: !!body.private, token,
-            });
-            return Response.json({ ok: true, url: r.url });
-          } catch (e) {
-            return Response.json({ ok: false, error: (e as Error).message }, { status: 400 });
-          }
-        }
-      }
-
-      // gc plan/execute (web-ui-pass-plan.md #9): thin wrappers over the CLI's
-      // own `mlx-bun gc` planner/executor (src/registry.ts planGc/executeGc).
-      // Loopback-served admin route — no auth beyond the server's own bind
-      // (matches every other /api/* route here). GET plans (read-only, cheap:
-      // config.json + safetensors index reads, no tensor bytes); POST executes
-      // and requires an explicit {yes:true} body (mirrors the CLI's --yes gate)
-      // so a stray call can't delete anything by accident.
-      if (url.pathname === "/api/gc/plan" && request.method === "GET") {
-        const { planGc } = await import("./registry");
-        const plans = planGc().filter(
-          (p) => p.pruneSnapshots.length || p.skippedSnapshots.length || p.deadBlobs.length,
-        );
-        const superseded = plans.map((p) => ({
-          repo_id: p.repoId,
-          prune_snapshots: p.pruneSnapshots.length,
-          skipped_snapshots: p.skippedSnapshots.length,
-          dead_blobs: p.deadBlobs.length,
-          reclaim_bytes: p.reclaimBytes,
-        }));
-        const reclaim_bytes = plans.reduce((a, p) => a + p.reclaimBytes, 0);
-        return Response.json({ ok: true, superseded, reclaim_bytes });
-      }
-      if (url.pathname === "/api/gc/execute" && request.method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as { yes?: boolean };
-        if (body.yes !== true)
-          return Response.json({ ok: false, error: "pass {\"yes\": true} to confirm deletion" }, { status: 400 });
-        const { planGc, executeGc, Registry } = await import("./registry");
-        const plans = planGc().filter(
-          (p) => p.pruneSnapshots.length || p.skippedSnapshots.length || p.deadBlobs.length,
-        );
-        const res = executeGc(plans);
-        const reg = new Registry();
-        try {
-          await reg.scan(); // reap deleted snapshots from the registry
-        } finally {
-          reg.close();
-        }
-        libraryCache = null; // force /library to reflect the deletion
-        return Response.json({
-          ok: true,
-          snapshots: res.snapshots, blobs: res.blobs, reclaimed_bytes: res.reclaimedBytes,
-        });
-      }
-
-      if (url.pathname === "/api/jobs" && request.method === "GET") {
-        const store = await ensureJobs();
-        const limit = Number(url.searchParams.get("limit") ?? "50");
-        const kind = url.searchParams.get("kind") ?? undefined;
-        return Response.json({ ok: true, jobs: store.recent(limit, kind) });
-      }
-      {
-        const m = url.pathname.match(/^\/api\/jobs\/([^/]+?)(\/stream)?$/);
-        if (m && request.method === "GET") {
-          const store = await ensureJobs();
-          if (m[2]) {
-            const { streamJobResponse } = await import("./jobs");
-            return streamJobResponse(store, m[1]!);
-          }
-          const job = store.get(m[1]!);
-          if (!job) return Response.json({ ok: false, error: "job not found" }, { status: 404 });
-          return Response.json({ ok: true, job });
-        }
-      }
+      const adminResponse = await handleAdminRoute(url, request, {
+        ensureJobs,
+        invalidateLibrary: () => { libraryCache = null; },
+      });
+      if (adminResponse) return adminResponse;
 
       return Response.json({ error: { message: "not found" } }, { status: 404 });
     },
