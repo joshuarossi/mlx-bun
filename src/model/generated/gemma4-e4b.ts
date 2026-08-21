@@ -12,6 +12,7 @@
 import { MlxArray } from "../../mlx/array";
 import * as ops from "../../mlx/ops";
 import {
+  cacheSignature,
   disposing,
   fusedSdpaRuntimeOk,
   KVCache,
@@ -529,83 +530,34 @@ function sharerFullQuantG64B4VPliScal(layer: DecoderLayer, x: MlxArray, mask: Ma
 }
 
 export class GeneratedGemma4 extends Gemma4Model {
-  /** Per-layer cache classes must match what this file was generated
-   *  for; anything else runs the monolith path. */
+  /** Per-layer cache signatures must match what this file was generated for. */
   #matches(cache: Cache[]): boolean {
     return (
       cache.length === 24 &&
-      cache[0] instanceof RotatingQuantizedKVCache &&
-      cache[0].bits === 4 &&
-      cache[0].groupSize === 64 &&
-      cache[1] instanceof RotatingQuantizedKVCache &&
-      cache[1].bits === 4 &&
-      cache[1].groupSize === 64 &&
-      cache[2] instanceof RotatingQuantizedKVCache &&
-      cache[2].bits === 4 &&
-      cache[2].groupSize === 64 &&
-      cache[3] instanceof RotatingQuantizedKVCache &&
-      cache[3].bits === 8 &&
-      cache[3].groupSize === 64 &&
-      cache[4] instanceof RotatingQuantizedKVCache &&
-      cache[4].bits === 8 &&
-      cache[4].groupSize === 64 &&
-      cache[5] instanceof QuantizedKVCache &&
-      cache[5].bits === 4 &&
-      cache[5].groupSize === 64 &&
-      cache[6] instanceof RotatingQuantizedKVCache &&
-      cache[6].bits === 4 &&
-      cache[6].groupSize === 64 &&
-      cache[7] instanceof RotatingQuantizedKVCache &&
-      cache[7].bits === 4 &&
-      cache[7].groupSize === 64 &&
-      cache[8] instanceof RotatingQuantizedKVCache &&
-      cache[8].bits === 4 &&
-      cache[8].groupSize === 64 &&
-      cache[9] instanceof RotatingQuantizedKVCache &&
-      cache[9].bits === 8 &&
-      cache[9].groupSize === 64 &&
-      cache[10] instanceof RotatingQuantizedKVCache &&
-      cache[10].bits === 8 &&
-      cache[10].groupSize === 64 &&
-      cache[11] instanceof QuantizedKVCache &&
-      cache[11].bits === 8 &&
-      cache[11].groupSize === 64 &&
-      cache[12] instanceof RotatingQuantizedKVCache &&
-      cache[12].bits === 4 &&
-      cache[12].groupSize === 64 &&
-      cache[13] instanceof RotatingQuantizedKVCache &&
-      cache[13].bits === 4 &&
-      cache[13].groupSize === 64 &&
-      cache[14] instanceof RotatingQuantizedKVCache &&
-      cache[14].bits === 8 &&
-      cache[14].groupSize === 64 &&
-      cache[15] instanceof RotatingQuantizedKVCache &&
-      cache[15].bits === 4 &&
-      cache[15].groupSize === 64 &&
-      cache[16] instanceof RotatingQuantizedKVCache &&
-      cache[16].bits === 4 &&
-      cache[16].groupSize === 64 &&
-      cache[17] instanceof QuantizedKVCache &&
-      cache[17].bits === 4 &&
-      cache[17].groupSize === 64 &&
-      cache[18] instanceof RotatingQuantizedKVCache &&
-      cache[18].bits === 4 &&
-      cache[18].groupSize === 64 &&
-      cache[19] instanceof RotatingQuantizedKVCache &&
-      cache[19].bits === 4 &&
-      cache[19].groupSize === 64 &&
-      cache[20] instanceof RotatingQuantizedKVCache &&
-      cache[20].bits === 4 &&
-      cache[20].groupSize === 64 &&
-      cache[21] instanceof RotatingQuantizedKVCache &&
-      cache[21].bits === 4 &&
-      cache[21].groupSize === 64 &&
-      cache[22] instanceof RotatingQuantizedKVCache &&
-      cache[22].bits === 4 &&
-      cache[22].groupSize === 64 &&
-      cache[23] instanceof QuantizedKVCache &&
-      cache[23].bits === 4 &&
-      cache[23].groupSize === 64
+      cacheSignature(cache[0]) === "kv:rotating-quant:4:64" &&
+      cacheSignature(cache[1]) === "kv:rotating-quant:4:64" &&
+      cacheSignature(cache[2]) === "kv:rotating-quant:4:64" &&
+      cacheSignature(cache[3]) === "kv:rotating-quant:8:64" &&
+      cacheSignature(cache[4]) === "kv:rotating-quant:8:64" &&
+      cacheSignature(cache[5]) === "kv:quant:4:64" &&
+      cacheSignature(cache[6]) === "kv:rotating-quant:4:64" &&
+      cacheSignature(cache[7]) === "kv:rotating-quant:4:64" &&
+      cacheSignature(cache[8]) === "kv:rotating-quant:4:64" &&
+      cacheSignature(cache[9]) === "kv:rotating-quant:8:64" &&
+      cacheSignature(cache[10]) === "kv:rotating-quant:8:64" &&
+      cacheSignature(cache[11]) === "kv:quant:8:64" &&
+      cacheSignature(cache[12]) === "kv:rotating-quant:4:64" &&
+      cacheSignature(cache[13]) === "kv:rotating-quant:4:64" &&
+      cacheSignature(cache[14]) === "kv:rotating-quant:8:64" &&
+      cacheSignature(cache[15]) === "kv:rotating-quant:4:64" &&
+      cacheSignature(cache[16]) === "kv:rotating-quant:4:64" &&
+      cacheSignature(cache[17]) === "kv:quant:4:64" &&
+      cacheSignature(cache[18]) === "kv:rotating-quant:4:64" &&
+      cacheSignature(cache[19]) === "kv:rotating-quant:4:64" &&
+      cacheSignature(cache[20]) === "kv:rotating-quant:4:64" &&
+      cacheSignature(cache[21]) === "kv:rotating-quant:4:64" &&
+      cacheSignature(cache[22]) === "kv:rotating-quant:4:64" &&
+      cacheSignature(cache[23]) === "kv:quant:4:64"
     );
   }
 

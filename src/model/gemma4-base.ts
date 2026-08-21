@@ -216,6 +216,8 @@ export type SharedKv =
 
 export interface Cache {
   offset: number;
+  /** Stable storage identity for compatibility guards and persistence. */
+  signature?(): string;
   /** Compiled-decode trace adapters expose the RoPE offset as an int32
    *  array input here; real caches leave it unset (static int path). */
   readonly ropeOffsetArr?: MlxArray;
@@ -244,6 +246,10 @@ export interface Cache {
   specRoundCommit?(): void;
   specRoundRollback?(keep: number): void;
   dispose(): void;
+}
+
+export function cacheSignature(cache: Cache | undefined): string {
+  return cache?.signature?.() ?? "unknown";
 }
 
 /**
@@ -307,6 +313,8 @@ export class KVCache implements Cache {
   keys: MlxArray | null = null;
   values: MlxArray | null = null;
   offset = 0;
+
+  signature(): string { return "kv:plain"; }
 
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
     const prev = this.offset;
@@ -480,6 +488,8 @@ export class QuantizedKVCache implements Cache {
   offset = 0;
 
   constructor(readonly groupSize: number, readonly bits: number) {}
+
+  signature(): string { return `kv:quant:${this.bits}:${this.groupSize}`; }
 
   updateAndFetch(): [MlxArray, MlxArray] {
     throw new Error("QuantizedKVCache: use updateAndFetchQuantized");
@@ -692,6 +702,8 @@ export class RotatingKVCache implements Cache {
   constructor(maxSize: number) {
     this.maxSize = maxSize;
   }
+
+  signature(): string { return "kv:rotating-plain"; }
 
   /** v with ring contents rearranged into temporal order (keep=0). */
   #temporalOrder(v: MlxArray): MlxArray {
@@ -1022,6 +1034,8 @@ export class RotatingQuantizedKVCache implements Cache {
   constructor(maxSize: number, readonly groupSize: number, readonly bits: number) {
     this.maxSize = maxSize;
   }
+
+  signature(): string { return `kv:rotating-quant:${this.bits}:${this.groupSize}`; }
 
   updateAndFetch(): [MlxArray, MlxArray] {
     throw new Error("RotatingQuantizedKVCache: use updateAndFetchQuantized");
