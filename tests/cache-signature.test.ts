@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   cacheSignature,
+  isRowBatchCache,
   KVCache,
   QuantizedKVCache,
   RotatingKVCache,
   RotatingQuantizedKVCache,
 } from "../src/model/gemma4-base";
+import { BatchedRotatingCache } from "../src/model/batched-rotating";
+import { SSMCache } from "../src/model/qwen3-delta";
 
 describe("cache signatures", () => {
   test("storage identity includes layout and affine parameters", () => {
@@ -20,5 +23,11 @@ describe("cache signatures", () => {
   test("unknown cache capabilities fail closed", () => {
     expect(cacheSignature(undefined)).toBe("unknown");
     expect(cacheSignature({} as never)).toBe("unknown");
+  });
+
+  test("row batching is a capability instead of a scheduler class list", () => {
+    expect(isRowBatchCache(new RotatingKVCache(1024))).toBe(false);
+    expect(isRowBatchCache(new BatchedRotatingCache(1024, [0, 2]))).toBe(true);
+    expect(isRowBatchCache(new SSMCache())).toBe(true);
   });
 });

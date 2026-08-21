@@ -96,6 +96,7 @@ export class BatchedRotatingCache implements Cache {
 
   get offsetArr(): number[] { return this.#rows.offsets; }
   get leftPad(): number[] { return this.#rows.leftPad; }
+  get batchSize(): number { return this.#rows.batchSize; }
 
   /** Current batch size — tracks filter() (which shrinks the per-row arrays). */
   get #B(): number {
@@ -245,6 +246,8 @@ export class BatchedRotatingCache implements Cache {
     this.#rows.filter(keep);
     this.releaseRopeArr();
   }
+
+  filterRows(keep: readonly number[]): void { this.filter([...keep]); }
 
   state(): MlxArray[] {
     return this.keys && this.values ? [this.keys, this.values] : [];

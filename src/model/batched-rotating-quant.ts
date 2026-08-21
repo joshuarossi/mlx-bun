@@ -77,6 +77,7 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
 
   get offsetArr(): number[] { return this.#rows.offsets; }
   get leftPad(): number[] { return this.#rows.leftPad; }
+  get batchSize(): number { return this.#rows.batchSize; }
 
   get #B(): number {
     return this.#rows.batchSize;
@@ -254,6 +255,8 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
     this.#rows.filter(keep);
     this.releaseRopeArr(); // safe here: filter runs between steps
   }
+
+  filterRows(keep: readonly number[]): void { this.filter([...keep]); }
 
   override isTrimmable(): boolean {
     return false; // batched rows never re-enter the prompt cache directly

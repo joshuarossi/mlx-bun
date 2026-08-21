@@ -234,6 +234,9 @@ export class SSMCache implements Cache {
    *  lockstep by advance(), row-filtered by filter(). */
   offsets: number[] | null = null;
 
+  signature(): string { return "ssm"; }
+  get batchSize(): number { return this.offsets?.length ?? 1; }
+
   /** Row `i`'s own token coverage (per-row when batched, `offset` serial). */
   rowOffset(i: number): number {
     return this.offsets ? this.offsets[i]! : this.offset;
@@ -393,6 +396,8 @@ export class SSMCache implements Cache {
     this.recurrent = recurrent;
     if (this.offsets) this.offsets = keep.map((i) => this.offsets![i]!);
   }
+
+  filterRows(keep: readonly number[]): void { this.filter([...keep]); }
 
   /** Row `i` as a fresh SERIAL cache — port of mlx-lm ArraysCache.extract
    *  (cache.py:673-676: `cache.cache = [c[idx : idx + 1] for c in self.cache]`,
