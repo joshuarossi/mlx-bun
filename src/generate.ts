@@ -25,8 +25,12 @@ import type { RuntimeModel } from "./model/factory";
 import type { KvQuantSpec, TurboQuantScheme } from "./config";
 import { flagOn } from "./flags";
 import {
-  makeLogitsProcessors, makeSampler,
-  type LogitsProcessorOptions, type SamplerOptions, toLogprobs,
+  disposeStepExtras,
+  makeStepSampler,
+  stepExtrasArrays,
+  type LogitsProcessorOptions,
+  type SamplerOptions,
+  type StepExtras,
 } from "./sampler";
 import type { GrammarController } from "./grammar";
 
@@ -550,9 +554,6 @@ async function* generateInner(
     eosTokenIds = model.config.eosTokenIds,
     prefillChunkSize = 2048,
   } = options;
-  const sampler = makeSampler(options);
-  const processors = makeLogitsProcessors(options);
-  const needsTokenHistory = processors.length > 0;
 
   // logprobs capture (mlx_lm.server semantics — see GenerateOptions.logprobs).
   // Everything below is gated: when neither flag is set, no extra ops, evals,
@@ -560,7 +561,14 @@ async function* generateInner(
   const captureSelLp = options.logprobs === true;
   const captureTopK =
     options.topLogprobs && options.topLogprobs > 0 ? options.topLogprobs : 0;
-  const capture = captureSelLp || captureTopK > 0;
+  const stepSampler = makeStepSampler(options, {
+    tokenRepresentation: "device",
+    grammarWait: "external",
+    historyUpdate: "manual",
+    captureSelectedLogprob: captureSelLp,
+    captureTopLogprobs: captureTopK,
+  });
+  const needsTokenHistory = stepSampler.needsHistory;
 
   const ownsCache = !options.cache;
   const cache = options.cache ?? model.makeCache();
@@ -574,22 +582,9 @@ async function* generateInner(
   // prompt + maxTokens − 1 (step maxTokens−1's forward), so this bound
   // makes pool exhaustion an accounting-bug tripwire, not a request limit.
   maybePageKv(cache, options, promptTokens.length + maxTokens);
-  /** device-side token history (only maintained when processors need it) */
-  let history: MlxArray | null = null;
-
   /** Device-side logprob capture for one step, computed from the SAME lp the
    *  sampler saw (post-processors, pre-truncation) — read back lazily with the
    *  token so decode pipelining is preserved. */
-  interface StepExtras {
-    sel: MlxArray | null; // [1,1] emitted token's logprob
-    topIdx: MlxArray | null; // [1,k] top-k token ids
-    topVals: MlxArray | null; // [1,k] their logprobs
-  }
-  const extrasArrays = (e: StepExtras | null): MlxArray[] =>
-    e ? [e.sel, e.topIdx, e.topVals].filter((a): a is MlxArray => a !== null) : [];
-  const disposeExtras = (e: StepExtras | null): void => {
-    if (e) for (const a of [e.sel, e.topIdx, e.topVals]) a?.dispose();
-  };
   /** Read extras back to JS (forces eval — they were async-dispatched with the
    *  token) without appending casts behind the next decode step. */
   const readExtras = (e: StepExtras | null): TokenLogprobs | undefined => {
@@ -603,7 +598,7 @@ async function* generateInner(
         (a, b) => b.logprob - a.logprob,
       );
     }
-    disposeExtras(e);
+    disposeStepExtras(e);
     return out;
   };
 
@@ -613,52 +608,11 @@ async function* generateInner(
     logits3d: MlxArray,
     step: number,
   ): { tok: MlxArray; extras: StepExtras | null } => {
-    const V = logits3d.shape[2]!;
-    let logits = ops.reshape(logits3d, [1, V]);
-    for (const p of processors) logits = disposing(logits, p(history, logits));
-    // Grammar mask (src/grammar.ts): apply AFTER the standard processors so the
-    // grammar has the final say on validity (a -inf'd token stays -inf through
-    // log-softmax). Off (no grammar) = zero cost — the branch is unset.
-    if (options.grammar) logits = disposing(logits, options.grammar.applyMask(logits));
-    const lp = toLogprobs(logits);
-    logits.dispose();
-    const tok = sampler(lp, step);
-    let extras: StepExtras | null = null;
-    if (capture) {
-      let sel: MlxArray | null = null;
-      let topIdx: MlxArray | null = null;
-      let topVals: MlxArray | null = null;
-      if (captureSelLp) {
-        const idx = ops.reshape(tok, [1, 1]);
-        sel = ops.takeAlongAxis(lp, idx, -1);
-        idx.dispose();
-      }
-      if (captureTopK > 0) {
-        // mlx-lm _format_top_logprobs: argpartition(-logprobs, kth=k-1)[:k]
-        const k = Math.min(captureTopK, V);
-        const negLp = ops.neg(lp);
-        const part = ops.argpartitionAxis(negLp, k - 1, -1);
-        const idxView = part.slice([0, 0], [1, k]);
-        topIdx = ops.contiguous(idxView); // slices are strided views; raw readback needs contiguous
-        topVals = ops.takeAlongAxis(lp, topIdx, -1);
-        for (const a of [negLp, part, idxView]) a.dispose();
-      }
-      extras = { sel, topIdx, topVals };
-    }
-    lp.dispose();
-    return { tok, extras };
+    const result = stepSampler.sample(logits3d, step);
+    return { tok: result.token, extras: result.extras };
   };
 
-  const pushHistory = (tok: MlxArray) => {
-    if (!needsTokenHistory) return;
-    if (!history) {
-      history = ops.reshape(tok, [1]);
-    } else {
-      const prev = history;
-      history = ops.concatAxis([prev, tok], 0);
-      prev.dispose();
-    }
-  };
+  const pushHistory = (tok: MlxArray): void => stepSampler.commitDevice(tok);
 
   // Decode-loop state lives at function scope so the finally can still
   // report stats and dispose in-flight arrays when the consumer
@@ -695,7 +649,7 @@ async function* generateInner(
       if (cachedTokens !== 0)
         throw new Error("promptEmbeddings cannot be combined with a pre-warmed cache");
       if (needsTokenHistory)
-        history = ops.fromInt32(promptTokens, [promptTokens.length]);
+        stepSampler.seedHistory(promptTokens);
       // e2b/e4b need the spliced token ids to build per-layer inputs
       // (multimodal soft-token positions zeroed inside forwardEmbeddings).
       const embedIds = ops.fromInt32(promptTokens, [1, promptTokens.length]);
@@ -771,7 +725,7 @@ async function* generateInner(
         await new Promise<void>((r) => setImmediate(r));
       }
       if (needsTokenHistory) {
-        history = ops.fromInt32(promptTokens, [promptTokens.length]);
+        stepSampler.seedHistory(promptTokens);
       }
       // Under tailSplit this is exactly [promptTokens[len-1]] — the L=1
       // step-0 forward (uncompiled L=1 is bit-exact with compiled decode,
@@ -803,7 +757,7 @@ async function* generateInner(
     // to prompt_time, not decode — replicated so cross-stack decode
     // tok/s measure the same quantity. The boundary cost is real and
     // scales with prompt length; it belongs to "having prefilled".
-    ops.asyncEvalAll([pending, ...extrasArrays(pendingExtras)]);
+    ops.asyncEvalAll([pending, ...stepExtrasArrays(pendingExtras)]);
 
     // ---- decode (pipelined) ----
     // Compiled decode (docs/design/optimization_plan.md Phase A): replay the per-step
@@ -890,13 +844,7 @@ async function* generateInner(
         // following iteration (supports() re-checks the grown caches).
         maybeQuantizeKv(cache, options);
         pushHistory(cur);
-        if (needsTokenHistory) {
-          const jt = ops.fromInt32(jumpEmit, [jumpEmit.length]);
-          const prev = history!;
-          history = ops.concatAxis([prev, jt], 0);
-          prev.dispose();
-          jt.dispose();
-        }
+        stepSampler.commitNumbers(jumpEmit);
         const chunk = [grammarTok, ...jumpEmit];
         const ids = ops.fromInt32(chunk, [1, chunk.length]);
         const h = await forwardHiddenForGeneration(model, ids, cache);
@@ -914,7 +862,7 @@ async function* generateInner(
           nextPending = sn.tok;
           nextExtras = sn.extras;
           logits.dispose();
-          ops.asyncEvalAll([nextPending, ...extrasArrays(nextExtras)]);
+          ops.asyncEvalAll([nextPending, ...stepExtrasArrays(nextExtras)]);
         } else {
           h.dispose(); // burst ends the generation (max_tokens or grammar done)
         }
@@ -949,7 +897,7 @@ async function* generateInner(
         nextPending = sn.tok;
         nextExtras = sn.extras;
         logits.dispose();
-        ops.asyncEvalAll([nextPending, ...extrasArrays(nextExtras), ...evalWith]);
+        ops.asyncEvalAll([nextPending, ...stepExtrasArrays(nextExtras), ...evalWith]);
       }
 
       // sync-read step n's token while n+1 computes
@@ -971,10 +919,10 @@ async function* generateInner(
       if (nextPending !== null && !jumpEmit) forwarded.push(token);
 
       if (eosTokenIds.includes(token)) {
-        disposeExtras(curExtras);
+        disposeStepExtras(curExtras);
         nextPending?.dispose();
         nextPending = null;
-        disposeExtras(nextExtras);
+        disposeStepExtras(nextExtras);
         nextExtras = null;
         stop = true;
       } else {
@@ -1017,8 +965,8 @@ async function* generateInner(
     if (!finished) {
       pending?.dispose();
       nextPending?.dispose();
-      disposeExtras(pendingExtras);
-      disposeExtras(nextExtras);
+      disposeStepExtras(pendingExtras);
+      disposeStepExtras(nextExtras);
     }
     if (ownsCache) for (const c of cache) c.dispose();
     // The grammar controller owns native WASM state (GrammarMatcher +
@@ -1026,7 +974,7 @@ async function* generateInner(
     // throw). TokenizerInfo itself is process-cached (vocab-structural), so
     // only the per-request matcher/compiled are freed here.
     options.grammar?.dispose();
-    history?.dispose();
+    stepSampler.dispose();
     if (!finished && !threw) {
       // forced early return (consumer break at a yield): still report
       // stats — `forwarded` only lists tokens whose KV actually entered
@@ -1035,9 +983,4 @@ async function* generateInner(
       return makeStats();
     }
   }
-}
-
-function disposing(old: MlxArray, next: MlxArray): MlxArray {
-  old.dispose();
-  return next;
 }

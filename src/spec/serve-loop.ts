@@ -46,7 +46,7 @@ import { flagOn } from "../flags";
 import type { RuntimeModel } from "../model/factory";
 import type { Cache } from "../model/gemma4";
 import type { GenerateOptions, GenerateStats } from "../generate";
-import { makeSampler, makeLogitsProcessors, toLogprobs } from "../sampler";
+import { makeSampler, makeStepSampler } from "../sampler";
 import type { OnToken } from "../serve/generation-gateway";
 import type { DraftProvider } from "./source";
 
@@ -132,7 +132,15 @@ export async function specServeRun(
   const maxTokens = options.maxTokens ?? 512;
   const eos = options.eosTokenIds ?? model.config.eosTokenIds;
   const sampler = makeSampler(options);
-  const processors = makeLogitsProcessors(options);
+  const stepSampler = makeStepSampler(options, {
+    tokenRepresentation: "number",
+    grammarWait: "before-sample",
+    historyUpdate: "after-sample",
+    initialHistory: promptIds,
+    acceptGrammar: true,
+    eosTokenIds: eos,
+    sampler,
+  });
   const gamma = Math.max(1, numDraftTokens);
 
   // Allocated INSIDE the try below (2026-07-07 review): provider.open()
@@ -159,11 +167,6 @@ export async function specServeRun(
   let vCtxML: MlxArray | null = null;
   let vLogits: MlxArray | null = null;
   let roundRow: MlxArray | null = null; // the in-flight verify/continuation row
-  // Device-side token history for the logits processors (repetition/presence/
-  // frequency penalties, logit_bias) — generate()'s pushHistory discipline.
-  let history: MlxArray | null =
-    processors.length > 0 ? ops.fromInt32(promptIds, [promptIds.length]) : null;
-
   const extras: SpecServeExtras = {
     drafted: 0,
     accepted: 0,
@@ -185,65 +188,12 @@ export async function specServeRun(
     spec: extras,
   };
 
-  /** Sample ONE verify position from a [1,V] logits row: processors →
-   *  grammar mask (Phase C: the constrained verify walk — the mask has the
-   *  final say, same ordering as serial sampleStep and the batch closure) →
-   *  log-softmax → sampler. The GRAMMAR walk is inherently sequential: the
-   *  mask at position i reflects every token emitted before it, so this
-   *  awaits the matcher's async fill (fired by the previous accept) before
-   *  masking, samples, then advances the matcher — the matcher only ever
-   *  moves on tokens that are (about to be) EMITTED, which is what makes
-   *  rollback-free v1 correct: rejected DRAFTS never touch grammar state.
-   *  Appends the sampled token to the processor history. */
+  /** The speculative walk needs eager token ids and waits for each grammar
+   * mask. StepSampler keeps its processor, mask, sample, and history ordering
+   * identical to the serial and batched lanes. */
   const grammar = options.grammar;
-  const samplePos = async (logits1V: MlxArray, step: number): Promise<number> => {
-    // Owned intermediates drained in the finally on any throw — grammar
-    // fill reject, applyMask/toLogprobs/sampler error (2026-07-07 review:
-    // these were the one spot the header's hoist discipline missed; a
-    // grammar+penalties request whose matcher fill rejects orphaned one
-    // [1,V] row per occurrence). `cur` is owned only once it diverges from
-    // the caller's row.
-    let cur: MlxArray = logits1V;
-    let lp: MlxArray | null = null;
-    let tokArr: MlxArray | null = null;
-    try {
-      for (const p of processors) {
-        const next = p(history, cur);
-        if (cur !== logits1V) cur.dispose();
-        cur = next;
-      }
-      if (grammar && !grammar.isTerminated) {
-        await grammar.ready();
-        const masked = grammar.applyMask(cur);
-        if (cur !== logits1V) cur.dispose();
-        cur = masked;
-      }
-      lp = toLogprobs(cur);
-      if (cur !== logits1V) cur.dispose();
-      cur = logits1V; // consumed — nothing owned under this name now
-      tokArr = sampler(lp, step);
-      lp.dispose();
-      lp = null;
-      const tok = ops.itemUint32(tokArr);
-      tokArr.dispose();
-      tokArr = null;
-      // Advance the matcher on the emitted token (fires the next async fill).
-      // EOS is never content and never grammar-valid — don't feed it.
-      if (grammar && !eos.includes(tok)) grammar.accept(tok);
-      if (history) {
-        const t1 = ops.fromInt32([tok], [1]);
-        const prev = history;
-        history = ops.concatAxis([prev, t1], 0);
-        prev.dispose();
-        t1.dispose();
-      }
-      return tok;
-    } finally {
-      if (cur !== logits1V) cur.dispose();
-      lp?.dispose();
-      tokArr?.dispose();
-    }
-  };
+  const samplePos = async (logits1V: MlxArray, step: number): Promise<number> =>
+    (await stepSampler.sample(logits1V, step)).token;
 
   /** The [1,V] logits row at position `pos` of a hidden window — batched
    *  lm-head is applied by the caller ONCE; this slices its output. */
@@ -628,7 +578,7 @@ export async function specServeRun(
     vCtxML?.dispose();
     for (const c of caches) c.dispose();
     source?.dispose();
-    history?.dispose();
+    stepSampler.dispose();
     options.grammar?.dispose(); // Phase C will consume it; never leak either way
     clearCache();
   }

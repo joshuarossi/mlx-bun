@@ -34,7 +34,6 @@
 // back on finish (merged rows' KV is not extracted — their entries age out).
 
 import { MlxArray } from "../mlx/array";
-import * as ops from "../mlx/ops";
 import type { RuntimeModel } from "../model/factory";
 import { DiffusionGemmaModel } from "../model/diffusion-gemma";
 import { KVCache, RotatingKVCache, isBatchableCache } from "../model/gemma4-base";
@@ -42,7 +41,7 @@ import { SSMCache } from "../model/qwen3-delta";
 import { UniversalDenseModel } from "../model/universal/dense";
 import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate";
 import type { KvQuantSpec, TurboQuantScheme } from "../config";
-import { makeSampler, makeLogitsProcessors, toLogprobs } from "../sampler";
+import { makeStepSampler } from "../sampler";
 import { BatchScheduler, type RowPromptCache } from "./batch-scheduler";
 
 /** Async mutex: acquire() resolves to a release fn; releases run FIFO. */
@@ -315,9 +314,8 @@ export class GenerationGateway {
     if (!this.batchingEnabled) return false;
     if (!this.#modelCachesBatchable()) return false;
     // repetitionPenalty / logits extras (min_p, XTC, logit_bias,
-    // presence/frequency penalties) batch: the per-row sampler folds in the
-    // same makeSampler/makeLogitsProcessors closures the serial lane runs,
-    // over a per-row device-side token history. (Load-bearing beyond opt-in
+    // presence/frequency penalties) batch through the same StepSampler and
+    // per-row device history as the serial lane. (Load-bearing beyond opt-in
     // knobs: some models — Qwen3.5 — ship a default repetition penalty in
     // generation_config.json, which used to route EVERY request serial.)
     return (
@@ -416,48 +414,16 @@ export class GenerationGateway {
         .finally(() => options.grammar?.dispose());
     }
 
-    // Per-row sampler, mirroring generate()'s sampleStep: logits processors
-    // (logit_bias / repetition / presence / frequency penalties — the same
-    // device-side closures the serial lane runs) fold in over a per-row token
-    // history seeded with the prompt, then the sampler. Greedy (temperature 0)
-    // is argmax; temp>0 uses this request's own seed → independent per-row RNG.
-    const sampler = makeSampler(options);
-    const processors = makeLogitsProcessors(options);
-    // Device-side history (prompt + generated), maintained only when a
-    // processor needs it — generate()'s pushHistory, one per row. The sample
-    // closure is called once per sampled token in order, so extending it
-    // inside the closure keeps history exact.
-    let history: MlxArray | null = null;
-    if (processors.length > 0) history = ops.fromInt32(promptIds, [promptIds.length]);
-    const sample = (logits1V: MlxArray, step: number): MlxArray => {
-      let cur = logits1V; // caller-owned; only intermediates are disposed here
-      for (const p of processors) {
-        const next = p(history, cur);
-        if (cur !== logits1V) cur.dispose();
-        cur = next;
-      }
-      // Grammar mask (B1): after the standard processors, before the sampler —
-      // same "grammar has the final say" ordering as serial sampleStep.
-      // Precondition: the scheduler has awaited ready() before invoking this
-      // closure (the mask for this step is materialized). applyMask is sync.
-      if (options.grammar) {
-        const masked = options.grammar.applyMask(cur);
-        if (cur !== logits1V) cur.dispose();
-        cur = masked;
-      }
-      const lp = toLogprobs(cur);
-      if (cur !== logits1V) cur.dispose();
-      const tok = sampler(lp, step);
-      lp.dispose();
-      if (history) {
-        const t1 = ops.reshape(tok, [1]);
-        const prev = history;
-        history = ops.concatAxis([prev, t1], 0);
-        prev.dispose();
-        t1.dispose();
-      }
-      return tok;
-    };
+    // The scheduler owns grammar ready/accept sequencing. StepSampler owns the
+    // shared processors -> mask -> logprobs -> sample -> history contract.
+    const stepSampler = makeStepSampler(options, {
+      tokenRepresentation: "device",
+      grammarWait: "external",
+      historyUpdate: "after-sample",
+      initialHistory: promptIds,
+    });
+    const sample = (logits1V: MlxArray, step: number): MlxArray =>
+      stepSampler.sample(logits1V, step).token;
 
     let st;
     this.#rowsSubmitted++;
@@ -467,14 +433,7 @@ export class GenerationGateway {
         maxTokens: options.maxTokens ?? 512,
         eosTokenIds: options.eosTokenIds ?? this.model.config.eosTokenIds,
         sample,
-        // Vectorized-sampling eligibility: mirrors makeSampler's greedy branch
-        // (temperature 0, no curve override) with nothing per-row in the way
-        // (no processors, no grammar mask).
-        plainGreedy:
-          (options.temperature ?? 0) === 0 &&
-          !options.curve &&
-          processors.length === 0 &&
-          !options.grammar,
+        plainGreedy: stepSampler.isPlainGreedy,
         onToken,
         ...(signal ? { signal } : {}),
         // B1: pass the per-row grammar controller through. The scheduler drives
@@ -486,8 +445,7 @@ export class GenerationGateway {
         ...(options.snapshotAt !== undefined ? { snapshotAt: options.snapshotAt } : {}),
       });
     } finally {
-      history?.dispose();
-      history = null;
+      stepSampler.dispose();
       // The scheduler never owns per-row grammar state.
       options.grammar?.dispose();
     }
