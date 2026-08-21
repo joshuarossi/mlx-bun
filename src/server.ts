@@ -38,7 +38,6 @@ import appJs from "./web/app.js" with { type: "text" };
 import manifestWebmanifest from "./web/manifest.webmanifest" with { type: "text" };
 import iconSvg from "./web/icon.svg" with { type: "text" };
 import swJs from "./web/sw.js" with { type: "text" };
-import pkgJson from "../package.json" with { type: "json" };
 import { existsSync, readFileSync } from "node:fs";
 const APP_PAGE = appHtml as unknown as string;
 const HLJS_JS = hljsJs as unknown as string;
@@ -47,7 +46,6 @@ const APP_JS = appJs as unknown as string;
 const MANIFEST_WEBMANIFEST = manifestWebmanifest as unknown as string;
 const ICON_SVG = iconSvg as unknown as string;
 const SW_JS = swJs as unknown as string;
-const pkgVersion = (pkgJson as { version: string }).version;
 import { loadModelConfig, type KvQuantSpec, type ModelConfig, type TurboQuantScheme } from "./config";
 import { Weights } from "./weights";
 import { Gemma4Model } from "./model/gemma4";
@@ -88,6 +86,7 @@ import { GenerationGateway } from "./serve/generation-gateway";
 import { recordLane, type Lane } from "./serve/lane-registry";
 import { handleAdminRoute } from "./serve/admin-routes";
 import { handleAuxiliaryRoute } from "./serve/aux-routes";
+import { createDiscoveryRoutes } from "./serve/discovery-routes";
 import { handleLabRoute } from "./serve/lab-routes";
 import { handleStaticRoute } from "./serve/static-routes";
 const STATIC_ROUTE_ASSETS = {
@@ -2178,8 +2177,8 @@ export function createServer(
     setMemoryLimit(serverOptions.memoryBudgetBytes);
 
   // /library response cache (30 s) — registry + config reads only.
-  let libraryCache: { at: number; rows: unknown[] } | null = null;
   const startedAt = Date.now();
+  const discoveryRoutes = createDiscoveryRoutes(ctx, gateway, startedAt);
 
   // Captured so the WebSocket handler can resolve the bound (possibly
   // ephemeral) port lazily for the loopback pi provider.
@@ -2455,54 +2454,8 @@ export function createServer(
       const staticResponse = handleStaticRoute(url, request, STATIC_ROUTE_ASSETS);
       if (staticResponse) return staticResponse;
 
-      if (url.pathname === "/library" && request.method === "GET") {
-        // Everything on disk, each with a fit assessment for THIS machine
-        // (30 s cache — registry scan + config reads, no tensor bytes).
-        if (!libraryCache || Date.now() - libraryCache.at > 30_000) {
-          const { Registry } = await import("./registry");
-          const { loadModelConfig } = await import("./config");
-          const reg = new Registry();
-          // Always rescan when (re)building the 30s cache so models that appeared
-          // after boot — fresh downloads AND quants written into the HF cache —
-          // surface on their own. (scan() is INSERT-OR-REPLACE + prunes deleted,
-          // so it's idempotent and cheap for a local cache.)
-          await reg.scan();
-          const { visionCapable, audioCapable } = await import("./registry");
-          const { supportTier } = await import("./model/support");
-          const rows = [];
-          // listCanonical: one row per repo (refs/main) — duplicate snapshots
-          // from upstream re-pushes stay visible only in `ls --all-revisions`.
-          for (const m of reg.listCanonical()) {
-            const tier = supportTier(m.modelType, m.repoId);
-            const supported = tier !== null;
-            let assessment = null;
-            try {
-              const config = await loadModelConfig(m.path);
-              const r = fit(config, m.sizeBytes, 8192, undefined, undefined, m.expertsBytes);
-              assessment = {
-                fits: r.fits,
-                max_safe_context: r.maxSafeContext,
-                predicted_decode_tps: r.predictedDecodeTps,
-              };
-            } catch {}
-            rows.push({
-              repo_id: m.repoId, model_type: m.modelType,
-              size_bytes: m.sizeBytes, quant_bits: m.quantBits,
-              vision: visionCapable(m), audio: audioCapable(m),
-              supported, support_tier: tier,
-              serving: m.repoId === ctx.modelId,
-              assessment,
-            });
-          }
-          libraryCache = { at: Date.now(), rows };
-        }
-        return Response.json({ models: libraryCache.rows });
-      }
-
-      if (url.pathname === "/downloads" && request.method === "GET") {
-        const { downloadsSnapshot } = await import("./download");
-        return Response.json({ downloads: downloadsSnapshot() });
-      }
+      const discoveryResponse = await discoveryRoutes.handle(url, request);
+      if (discoveryResponse) return discoveryResponse;
 
       // Memory synthesis progress (P8-T5). The same DAG the nightly launchd job
       // runs (`mlx-bun memory synthesize`), streamed as Server-Sent Events so the
@@ -2646,18 +2599,6 @@ export function createServer(
         });
       }
 
-      if (url.pathname === "/v1" && request.method === "GET") {
-        return Response.json({
-          name: "mlx-bun", version: pkgVersion, model: ctx.modelId,
-          endpoints: [
-            "POST /v1/chat/completions", "POST /v1/completions", "POST /v1/messages",
-            "POST /v1/responses", "POST /v1/embeddings", "GET /v1/models",
-            "GET/POST/DELETE /v1/adapters", "GET /health",
-            "GET /stats", "GET /fit", "GET /library", "GET /downloads",
-          ],
-        });
-      }
-
       if (url.pathname === "/stats" && request.method === "GET") {
         // Active KV scheme across ALL layers. Since Phase 9 rotating
         // (sliding-window) caches quantize too, so every layer the
@@ -2778,8 +2719,6 @@ export function createServer(
         });
       }
 
-      // mlx_lm.server parity: GET /health → the exact body it writes
-      // ('{"status": "ok"}', note the space) so byte-for-byte health checks pass.
       // Engine-mode admin (unix-socket children only — never exposed on
       // TCP): drain = quiesce the gateway + demote the whole prompt cache
       // to the SSD tier. The pool calls this before evicting a model
@@ -2793,98 +2732,6 @@ export function createServer(
           promptCache.demoteIdle(0);
         });
         return Response.json({ drained: true, demotions: promptCache.demotions });
-      }
-
-      if (url.pathname === "/health" && request.method === "GET") {
-        return new Response('{"status": "ok"}', {
-          headers: { "content-type": "application/json" },
-        });
-      }
-
-      // GET /v1/models — the served model FIRST (with our capability extras),
-      // then every other servable model the registry knows (mlx-lm scans the
-      // HF cache here; our registry is that scan, filtered to supported
-      // architectures). GET /v1/models/<id> filters to that id — same list
-      // shape, matching mlx_lm.server's handle_models_request.
-      if (
-        (url.pathname === "/v1/models" || url.pathname.startsWith("/v1/models/")) &&
-        request.method === "GET"
-      ) {
-        const filterId = url.pathname.length > "/v1/models/".length - 1
-          ? decodeURIComponent(url.pathname.slice("/v1/models/".length))
-          : null;
-        const created = Math.floor(startedAt / 1000);
-        // Model-author sampling defaults (generation_config.json), resolved once
-        // at load (web-ui-pass-plan.md #14 groundwork): lets a client (the web
-        // chat's sampling popover, external pi) show the SERVED model's actual
-        // recommended values instead of one hardcoded shape.
-        const genDefaultsOut = {
-          temperature: ctx.genDefaults.temperature ?? null,
-          top_p: ctx.genDefaults.topP ?? null,
-          top_k: ctx.genDefaults.topK ?? null,
-        };
-        const data: Array<Record<string, unknown>> = [{
-          id: ctx.modelId, object: "model", created, owned_by: "mlx-bun",
-          context_window:
-            ctx.glmMemoryPlan?.contextTokens ??
-            ctx.model.config.text.maxPositionEmbeddings,
-          // Capability flags for clients (CLI/external pi) that build a
-          // provider from discovery — `reasoning` gates the thinking toggle,
-          // `vision` the image input declaration, `audio` whether
-          // `input_audio` content parts are accepted (tower loaded or lazily
-          // loadable; same signals the web embed uses).
-          reasoning: ctx.template.supportsThinking,
-          vision: !!(ctx.vision || ctx.loadVision),
-          audio: !!(ctx.audio || ctx.loadAudio),
-          batch_mode: gateway.batchMode,
-          tools: true,
-          structured_output: true,
-          embeddings: isEmbeddingModel(ctx.model),
-          adapters: !(ctx.model instanceof Glm52Model),
-          training: !(ctx.model instanceof Glm52Model),
-          dsa: ctx.model instanceof Glm52Model && ctx.model.capabilities.dsa,
-          mtp: ctx.draft?.provider.id === "glm52-native-mtp",
-          capabilities: {
-            chat_completions: true,
-            text_completions: true,
-            anthropic_messages: true,
-            responses: true,
-            streaming: true,
-            tools: true,
-            structured_output: true,
-            logprobs: true,
-            embeddings: isEmbeddingModel(ctx.model),
-            vision: !!(ctx.vision || ctx.loadVision),
-            audio: !!(ctx.audio || ctx.loadAudio),
-            adapters: !(ctx.model instanceof Glm52Model),
-            training: !(ctx.model instanceof Glm52Model),
-          },
-          gen_defaults: genDefaultsOut,
-        }];
-        try {
-          const { Registry, visionCapable } = await import("./registry");
-          const { supportTier } = await import("./model/support");
-          const reg = new Registry();
-          try {
-            if (reg.list().length === 0) await reg.scan();
-            // Canonical rows only — a repo with N snapshots is ONE model id.
-            for (const m of reg.listCanonical()) {
-              if (m.repoId === ctx.modelId) continue;
-              const tier = supportTier(m.modelType, m.repoId);
-              if (tier === null) continue;
-              data.push({
-                id: m.repoId, object: "model", created,
-                vision: visionCapable(m), tier,
-              });
-            }
-          } finally {
-            reg.close();
-          }
-        } catch { /* registry unavailable → served model only */ }
-        return Response.json({
-          object: "list",
-          data: filterId ? data.filter((m) => m.id === filterId) : data,
-        });
       }
 
       // OpenAI embeddings API. Works when the SERVED model is an embedding model
@@ -4035,13 +3882,13 @@ export function createServer(
       const labResponse = await handleLabRoute(url, request, {
         ensureJobs,
         serverPort: () => server.port,
-        invalidateLibrary: () => { libraryCache = null; },
+        invalidateLibrary: () => discoveryRoutes.invalidateLibrary(),
       });
       if (labResponse) return labResponse;
 
       const adminResponse = await handleAdminRoute(url, request, {
         ensureJobs,
-        invalidateLibrary: () => { libraryCache = null; },
+        invalidateLibrary: () => discoveryRoutes.invalidateLibrary(),
       });
       if (adminResponse) return adminResponse;
 
