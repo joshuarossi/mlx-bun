@@ -86,6 +86,7 @@ import { isMonotone, CURVE_UMIN, type CurveParams } from "./curve-sampler";
 const CURVE_PAGE = curveDesignerHtml as unknown as string;
 import { GenerationGateway } from "./serve/generation-gateway";
 import { recordLane, type Lane } from "./serve/lane-registry";
+import { handleAuxiliaryRoute } from "./serve/aux-routes";
 import { handleStaticRoute } from "./serve/static-routes";
 const STATIC_ROUTE_ASSETS = {
   appPage: APP_PAGE,
@@ -2446,80 +2447,8 @@ export function createServer(
         return new Response("expected websocket", { status: 426 });
       }
 
-      // Memory REST wrappers (web-chat-redesign.md §2.3/§9 Phase 2): thin
-      // loopback JSON routes over src/memory/vault.ts for the web chat's
-      // Memory panel. Handlers live in src/memory/rest.ts (pure functions,
-      // no `ctx` dependency) so they're unit-testable without a loaded
-      // model; dispatch here just matches path+method. The agent-tool
-      // surface (src/memory/tools.ts) is untouched by this block.
-      if (url.pathname === "/api/memory/status" && request.method === "GET") {
-        const { handleMemoryStatus } = await import("./memory/rest");
-        return handleMemoryStatus();
-      }
-      if (url.pathname === "/api/memory/list" && request.method === "GET") {
-        const { handleMemoryList } = await import("./memory/rest");
-        return handleMemoryList();
-      }
-      if (url.pathname === "/api/memory/search" && request.method === "GET") {
-        const { handleMemorySearch } = await import("./memory/rest");
-        return handleMemorySearch(url);
-      }
-      if (url.pathname === "/api/memory/article" && request.method === "GET") {
-        const { handleMemoryArticle } = await import("./memory/rest");
-        return handleMemoryArticle(url);
-      }
-      if (url.pathname === "/api/memory/links" && request.method === "GET") {
-        const { handleMemoryLinks } = await import("./memory/rest");
-        return handleMemoryLinks(url);
-      }
-      if (url.pathname === "/api/memory/history" && request.method === "GET") {
-        const { handleMemoryHistory } = await import("./memory/rest");
-        return handleMemoryHistory(url);
-      }
-      if (url.pathname === "/api/memory/diff" && request.method === "GET") {
-        const { handleMemoryDiff } = await import("./memory/rest");
-        return handleMemoryDiff(url);
-      }
-      if (url.pathname === "/api/memory/init" && request.method === "POST") {
-        const { handleMemoryInit } = await import("./memory/rest");
-        return handleMemoryInit(request);
-      }
-
-      // Model Hub (web-chat-redesign.md §9 Phase 3, beat-matrix Axis 3):
-      // thin loopback JSON routes over the registry/download/fit machinery
-      // for the web chat's Hub panel. Handlers live in src/hub-rest.ts
-      // (pure functions, no `ctx` dependency); dispatch here just matches
-      // path+method, same convention as the memory wrappers above.
-      if (url.pathname === "/api/hub/local" && request.method === "GET") {
-        const { handleHubLocal } = await import("./hub-rest");
-        return handleHubLocal();
-      }
-      if (url.pathname === "/api/hub/search" && request.method === "GET") {
-        const { handleHubSearch } = await import("./hub-rest");
-        return handleHubSearch(url);
-      }
-      if (url.pathname === "/api/hub/download" && request.method === "POST") {
-        const { handleHubDownload } = await import("./hub-rest");
-        return handleHubDownload(request);
-      }
-      if (url.pathname === "/api/hub/serve" && request.method === "POST") {
-        const { handleHubServe } = await import("./hub-rest");
-        return handleHubServe(request);
-      }
-
-      // Session full-text search + export (docs/design/web-chat-redesign.md
-      // §9 Phase 3, beat-matrix Axis 10/11 — the full-text-search BEAT and
-      // Markdown/JSON chat export). Handlers live in src/serve/session-search.ts
-      // (pure, read-only, no `ctx` dependency), dispatched here by
-      // path+method, same convention as the memory/hub blocks above.
-      if (url.pathname === "/api/sessions/search" && request.method === "GET") {
-        const { handleSessionsSearch } = await import("./serve/session-search");
-        return handleSessionsSearch(url);
-      }
-      if (url.pathname === "/api/sessions/export" && request.method === "GET") {
-        const { handleSessionsExport } = await import("./serve/session-search");
-        return handleSessionsExport(url);
-      }
+      const auxiliaryResponse = await handleAuxiliaryRoute(url, request);
+      if (auxiliaryResponse) return auxiliaryResponse;
 
       const staticResponse = handleStaticRoute(url, request, STATIC_ROUTE_ASSETS);
       if (staticResponse) return staticResponse;
