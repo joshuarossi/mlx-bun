@@ -88,6 +88,7 @@ import { handleAdminRoute } from "./serve/admin-routes";
 import { handleAuxiliaryRoute } from "./serve/aux-routes";
 import { createDiscoveryRoutes } from "./serve/discovery-routes";
 import { handleLabRoute } from "./serve/lab-routes";
+import { handleModelAdminRoute } from "./serve/model-admin-routes";
 import { handleStaticRoute } from "./serve/static-routes";
 const STATIC_ROUTE_ASSETS = {
   appPage: APP_PAGE,
@@ -119,8 +120,7 @@ import {
   responsesToChatBody, translateOpenAiSseToResponses,
   type ResponsesRequest,
 } from "./responses";
-import { AdapterManager, listAvailableAdapters } from "./lora";
-import { embedMany, isEmbeddingModel } from "./embed";
+import { AdapterManager } from "./lora";
 import { fit } from "./fit";
 import { setMemoryLimit } from "./mlx/ffi";
 import { VisionTower } from "./vision/embedder";
@@ -2457,6 +2457,9 @@ export function createServer(
       const discoveryResponse = await discoveryRoutes.handle(url, request);
       if (discoveryResponse) return discoveryResponse;
 
+      const modelAdminResponse = await handleModelAdminRoute(url, request, ctx, gateway);
+      if (modelAdminResponse) return modelAdminResponse;
+
       // Memory synthesis progress (P8-T5). The same DAG the nightly launchd job
       // runs (`mlx-bun memory synthesize`), streamed as Server-Sent Events so the
       // status page can show live stage/log/done progress. `?dry=1` plans the DAG
@@ -2732,115 +2735,6 @@ export function createServer(
           promptCache.demoteIdle(0);
         });
         return Response.json({ drained: true, demotions: promptCache.demotions });
-      }
-
-      // OpenAI embeddings API. Works when the SERVED model is an embedding model
-      // (plain Qwen3 / Qwen3-Embedding) — consistent with the single-model server
-      // design: `mlx-bun serve <embedding-model>` to use this. Optional non-standard
-      // `instruction` applies Qwen3-Embedding's query format. Embedding is a pure
-      // forward (no decode loop / gateway), so it runs inline.
-      if (url.pathname === "/v1/embeddings" && request.method === "POST") {
-        if (!isEmbeddingModel(ctx.model))
-          return Response.json({
-            error: {
-              message: `served model "${ctx.modelId}" is not an embedding model; ` +
-                `serve an embedding model (e.g. Qwen3-Embedding) to use /v1/embeddings`,
-              type: "invalid_request_error",
-            },
-          }, { status: 400 });
-        let body: { input?: string | string[]; instruction?: string };
-        try {
-          body = (await request.json()) as typeof body;
-        } catch {
-          return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
-        }
-        const inputs = Array.isArray(body.input) ? body.input : body.input != null ? [body.input] : [];
-        if (inputs.length === 0 || !inputs.every((s) => typeof s === "string"))
-          return Response.json({
-            error: { message: "`input` must be a string or array of strings", type: "invalid_request_error" },
-          }, { status: 400 });
-        const instruction = typeof body.instruction === "string" ? body.instruction : undefined;
-        const results = embedMany(ctx.model, ctx.tokenizer, inputs, instruction);
-        let totalTokens = 0;
-        const data = results.map((r, index) => {
-          totalTokens += r.tokens;
-          return { object: "embedding", index, embedding: Array.from(r.vector) };
-        });
-        return Response.json({
-          object: "list",
-          data,
-          model: ctx.modelId,
-          usage: { prompt_tokens: totalTokens, total_tokens: totalTokens },
-        });
-      }
-
-      // Adapter admin (port of optiq registry semantics): list / mount /
-      // unmount. Mount and unmount go through the generation queue so
-      // they never race an in-flight forward pass.
-      if (url.pathname === "/v1/adapters/available" && request.method === "GET") {
-        // On-disk adapters that can be mounted (the chat selector's source).
-        // Every on-disk adapter is returned — the web chat routing chip (§5.2)
-        // needs incompatible entries visible-but-grayed, not silently dropped,
-        // so a user understands "10 adapters exist, 2 apply here" rather than
-        // seeing a shorter list with no explanation. `compatible` = the
-        // adapter's recorded base repo id matches the served model (compared
-        // on the bare name, lenient about the org); an adapter with no
-        // recorded base is treated as compatible (mount validates it for
-        // real). `mounted` flags ones already loaded so the UI auto-loads on
-        // select only if needed.
-        const { homedir } = await import("node:os");
-        const stores = [
-          `${homedir()}/.cache/mlx-bun-finetunes`,
-          `${homedir()}/.cache/mlx-bun/adapters`,
-        ];
-        const mounted = new Set(ctx.adapters.list().map((a) => a.id));
-        const bareName = (s: string) => s.split("/").pop()!.toLowerCase();
-        const servedName = bareName(ctx.modelId);
-        const adapters = (await listAvailableAdapters(stores))
-          .map((a) => ({
-            id: a.id, path: a.path, rank: a.rank, scale: a.scale,
-            base_model: a.baseModel, mounted: mounted.has(a.id),
-            compatible: a.baseModel == null || bareName(a.baseModel) === servedName,
-          }));
-        return Response.json({ adapters });
-      }
-      if (url.pathname === "/v1/adapters" && request.method === "GET") {
-        return Response.json({
-          adapters: ctx.adapters.list().map((a) => ({
-            id: a.id, path: a.path, rank: a.rank, scale: a.scale,
-            size_bytes: a.sizeBytes, mounted_layers: a.mountedLayers,
-            ram_bytes: a.ramBytes,
-          })),
-        });
-      }
-      if (url.pathname === "/v1/adapters" && request.method === "POST") {
-        let body: { id?: string; path?: string };
-        try {
-          body = (await request.json()) as typeof body;
-        } catch {
-          return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
-        }
-        if (!body.id || !body.path)
-          return Response.json({ error: { message: "id and path required" } }, { status: 400 });
-        try {
-          // Under the gateway lock: mount/unmount mutate the shared adapter
-          // registry (unmount disposes arrays a running generation could still
-          // hold) — one mutual-exclusion domain with generation (D3).
-          const info = await gateway.runExclusive(() => ctx.adapters.mount(body.id!, body.path!));
-          return Response.json({
-            id: info.id, mounted_layers: info.mountedLayers,
-            rank: info.rank, scale: info.scale, ram_bytes: info.ramBytes,
-          });
-        } catch (e) {
-          return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
-        }
-      }
-      if (url.pathname.startsWith("/v1/adapters/") && request.method === "DELETE") {
-        const id = decodeURIComponent(url.pathname.slice("/v1/adapters/".length));
-        const removed = await gateway.runExclusive(async () => ctx.adapters.unmount(id));
-        return removed > 0
-          ? Response.json({ id, removed_layers: removed })
-          : Response.json({ error: { message: `adapter ${id} not mounted` } }, { status: 404 });
       }
 
       // ---- Curve Designer: POST /signal {prompt} → next-token histogram over the curve's x-axis ----
