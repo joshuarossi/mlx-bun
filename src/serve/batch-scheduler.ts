@@ -76,8 +76,8 @@ import { cloneKvCaches } from "../kv-store";
 import { SSMCache } from "../model/qwen3-delta";
 import type { RuntimeModel } from "../model/factory";
 import type { GrammarController } from "../grammar";
-import { kvBytesAt } from "../fit";
 import { toLogprobs } from "../sampler";
+import { batchRowKvBytes } from "./kv-budget";
 
 /** Decode-pipeline kill switch (read once at load, like the serial loop's
  *  MLX_BUN_COMPILED_DECODE): 1 ⇒ read each step's tokens synchronously. */
@@ -310,6 +310,7 @@ export class BatchScheduler {
   readonly #rotMaxSize: number[]; // per-layer sliding window (rot layers only)
   readonly #compressedProjectors: Array<(tokens: number) => number> | null;
   readonly #batchCacheMaxTokens: number | null;
+  readonly #kvConfig: KvQuantSpec[] | undefined;
   /** layerIdx → mixed-precision spec (Phase 3.1); null = bf16 batch (v1). */
   readonly #kvByLayer: Map<number, KvQuantSpec> | null;
   /** Compiled decode runner for the B=1 serial-class case (Phase 3.2) —
@@ -326,6 +327,7 @@ export class BatchScheduler {
     this.#prefillChunkSize = Math.max(1, Math.floor(opts.prefillChunkSize ?? 2048));
     this.#kvBudgetBytes = opts.kvBudgetBytes;
     this.#promptCache = opts.promptCache;
+    this.#kvConfig = opts.kvConfig;
     const proto = model.makeCache(); // fresh caches hold no buffers
     this.#kinds = proto.map((c) =>
       isBatchableCache(c)
@@ -366,10 +368,17 @@ export class BatchScheduler {
   /** Projected KV bytes of one row at its worst case (full prompt + full
    *  completion; the sliding-window term is window-capped by kvBytesAt). */
   #rowKvBytes(row: Row): number {
-    const tokens = row.promptTokens + row.req.maxTokens;
     return this.#compressedProjectors
-      ? this.#compressedProjectors.reduce((sum, project) => sum + project(tokens), 0)
-      : kvBytesAt(this.model.config, tokens);
+      ? this.#compressedProjectors.reduce(
+          (sum, project) => sum + project(row.promptTokens + row.req.maxTokens),
+          0,
+        )
+      : batchRowKvBytes(
+          this.model.config,
+          row.promptTokens,
+          row.req.maxTokens,
+          this.#kvConfig,
+        );
   }
 
   async #forwardHidden(ids: MlxArray, cache: Cache[]): Promise<MlxArray> {
