@@ -1065,6 +1065,59 @@ Matrix: stacks {mlx-bun, mlx-lm, mlx-optiq} × models {e4b, 12B,
       at the client). Smoke-tested end-to-end on a dirty machine
       (rows flagged, not headline).
 
+### Phase 15 findings (2026-08-22 — current M1 Max serve matrix)
+
+- The canonical serve matrix now includes the staged 17 GB
+  `mjriii/Qwen3.8-27B` 4/8-bit winner by default. The bundle now carries the
+  same-topology Qwen3.6 OptiQ `kv_config.json`; this mixed arm remains Lab
+  because no Qwen3.8-specific mixed-KV oracle exists and its RSS diagnostic
+  did not prove effective KV quantization.
+- On the M1 Max 32 GB, Qwen mlx-bun measured 18.5 tok/s short and 16.5 tok/s
+  at ~15.1k context versus mlx-lm's 16.5 and 14.9 tok/s. All bf16 and
+  unified-versus-serial completion/chat parity probes passed.
+- Restart persistence regressed in the unified lane: e4b and 12B restored
+  only four cached tokens while their serial controls restored the full
+  ~15.9k cache. Qwen bf16 restored none in either lane; Qwen mixed restored
+  15,112. Investigate the scheduler/SSD restore path before quoting aggregate
+  throughput as representative for e4b or 12B.
+- `benchmark.sh` now runs the existing clean-machine preflight itself, so the
+  documented gate cannot be bypassed by using the canonical entry point.
+  Curated values and provenance are in `benchmarks/RESULTS.md`.
+- Bun 1.4.0 repeated the full matrix with all parity probes green and no broad
+  engine-speed shift versus 1.3.14. Qwen measured 18.6 tok/s short and 17.0
+  at long context on mlx-bun versus mlx-lm's 16.5 and 14.8. Its short prefill
+  remains the exception, 64 versus 85 tok/s, while long prefill ties 87 versus
+  88. The SSD durability race and fix contract are written in
+  `docs/design/ssd-kv-cold-tier.md`.
+- Bun 1.4 optimization audit (2026-08-22): the relevant runtime change is the
+  engine-native `bun:ffi` path. A local no-op binding microbench measured the
+  production-shaped pointer/u64 call at 11.3-11.8 ns on Bun 1.4 versus
+  75.8-77.2 ns on 1.3.14; the fresh closure shape used by `outArray` measured
+  13.2-13.9 ns versus 88.0-89.2 ns. The existing direct `C.symbol(...)` call
+  sites already receive that improvement, including through the callback
+  wrapper. Do not rewrite the binding layer merely to "enable" Bun 1.4 FFI.
+- A Bun 1.4 CPU profile of the local Qwen winner at a 794-token prompt measured
+  8.89 s prefill on both passes (about 89 tok/s). `forwardLayers` accounted for
+  only 64 ms across the complete 22.67 s profiled process and `outArray` for
+  18.6 ms; native MLX eval calls accounted for 98% of samples. This direct
+  result is already level with the mlx-lm server's 85 tok/s row, so the
+  standard server's 64 tok/s result is not explained by JS graph construction
+  or failure to use Bun 1.4's FFI JIT. Next isolate the serve/scheduler/cache
+  path against direct `Qwen35Model.forwardHidden` before changing kernels.
+- Bun 1.4 fixes the macOS arm64 stack-argument ABI repro. The minimum runtime
+  and CI pin are now 1.4.0, and conv2d/conv3d use their natural mlx-c header
+  signatures; the packed-u64 workaround is removed. The typed-array stale-read
+  repro still fails after JIT tier-up, so `read.*` out-parameter reads remain
+  mandatory. The ABI cleanup is maintenance, not a measured inference win.
+- The SSD restart race now has an explicit durability boundary:
+  `SsdDurabilityCoordinator` retains dirty records through debounce, queue
+  drops, and failed stores; `POST /admin/cache/flush` and graceful
+  SIGINT/SIGTERM await the atomic write; the benchmark records pre-kill
+  durability instead of sleeping 2.5 seconds. Targeted cache and ABI tests pass.
+  A dirty-machine correctness smoke on unified e4b restored 4,025 of 4,026
+  prompt tokens after an observed durable flush; full clean 16k numbers wait
+  for the benchmark preflight to clear.
+
 ### Phase 15 — PRE-REGISTERED cross-machine predictions (2026-06-10)
 
 Written down BEFORE any second-machine run. Two findings, two

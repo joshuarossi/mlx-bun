@@ -51,6 +51,14 @@ src/native-pack.ts before the next package tag** (PLAN 14w). A running
 `serve` needs a restart to pick all of this up (the CLI symlink serves the
 repo working tree).
 
+The SSD restart-cache race found by the Bun 1.4 serve matrix is fixed in the
+current worktree. Dirty snapshots now remain tracked until atomic storage,
+`POST /admin/cache/flush` provides a measurable boundary, and normal
+SIGINT/SIGTERM shutdown waits for it. The benchmark no longer relies on a
+2.5-second sleep and records durable-prefix evidence before restart. Bun 1.4.0
+is now the minimum runtime; the old packed conv2d/conv3d FFI workaround is
+removed, while the still-reproducing typed-array read workaround remains.
+
 ## Active: TurboQuant weights — rotation-folded quantization (opened 2026-08-17)
 
 New phase in PLAN.md ("TurboQuant weights"): QuaRot/SpinQuant-style

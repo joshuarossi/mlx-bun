@@ -680,12 +680,17 @@ export interface SpillItem {
  *  Items run strictly serially in enqueue order via an internal chain;
  *  store failures are swallowed (cold tier is best-effort) but clones
  *  are disposed on every settle path. */
-type SpillRec = SpillItem & { bytes: number; dropped: boolean };
+type SpillRec = SpillItem & {
+  bytes: number;
+  dropped: boolean;
+  settle: (stored: boolean) => void;
+};
 
 export class SpillQueue {
   #queue: SpillRec[] = [];
   #bytes = 0;
   #dropped = 0;
+  #failed = 0;
   #inFlight: object | null = null;
   #chain: Promise<void> = Promise.resolve();
 
@@ -704,9 +709,18 @@ export class SpillQueue {
   get pendingCount(): number { return this.#queue.length; }
   /** Spills dropped by the cap since start (each = one future cache miss). */
   get droppedCount(): number { return this.#dropped; }
+  /** Store calls that threw or returned false. */
+  get failedCount(): number { return this.#failed; }
 
-  enqueue(item: SpillItem): void {
-    const rec = { ...item, bytes: this.bytesOf(item.caches), dropped: false };
+  enqueue(item: SpillItem): Promise<boolean> {
+    let settle!: (stored: boolean) => void;
+    const result = new Promise<boolean>((resolve) => { settle = resolve; });
+    const rec: SpillRec = {
+      ...item,
+      bytes: this.bytesOf(item.caches),
+      dropped: false,
+      settle,
+    };
     this.#queue.push(rec);
     this.#bytes += rec.bytes;
     while (this.#bytes > this.capBytes) {
@@ -720,24 +734,30 @@ export class SpillQueue {
       if (rec.dropped) return; // clones already disposed at drop time
       this.#inFlight = rec;
       try {
-        await this.store(rec);
+        const stored = await this.store(rec);
+        if (stored === false) this.#failed++;
+        rec.settle(stored !== false);
       } catch {
         // best-effort tier — the entry simply won't restore
+        this.#failed++;
+        rec.settle(false);
       } finally {
         this.#inFlight = null;
         this.#remove(rec);
         this.disposeClones(rec.caches);
       }
     });
+    return result;
   }
 
   /** Settles when everything enqueued so far has flushed or dropped
-   *  (tests; a future shutdown hook would await this). */
+   *  (tests and graceful shutdown). */
   drain(): Promise<void> { return this.#chain; }
 
   #drop(rec: SpillRec): void {
     rec.dropped = true;
     this.#dropped++;
+    rec.settle(false);
     this.#remove(rec);
     this.disposeClones(rec.caches);
   }

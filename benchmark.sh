@@ -18,9 +18,9 @@
 #     doubling as a chat-template-parity check. Verdicts render in the
 #     report; failures are diagnosed with the divergence offset.
 #
-#   ./benchmark.sh                     cpm5 + e4b + 12B, all arms
+#   ./benchmark.sh                     cpm5 + e4b + 12B + Qwen3.8-27B, all arms
 #   ./benchmark.sh --no-serial        skip the --batch 1 control arm
-#   ./benchmark.sh --models cpm5,12B  subset
+#   ./benchmark.sh --models cpm5,qwen27b  subset
 #   ./benchmark.sh --skip-context     drop the long-context leg
 #   ./benchmark.sh --context 8192     shorter context leg
 #
@@ -35,6 +35,10 @@
 # scripts/bench-h2h.ts direct (in-process gen-peak/oracle legs).
 set -e
 cd "$(dirname "$0")"
+
+# Refuse headline numbers from a loaded or swapped machine. This keeps the
+# documented preflight gate on the canonical entry point.
+bun scripts/bench-h2h.ts preflight
 
 # Keep the Mac awake for the whole pass (idle-sleep keys off HID, not GPU).
 caffeinate -dimsu -w $$ &

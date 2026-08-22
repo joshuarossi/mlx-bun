@@ -14,7 +14,8 @@ separate sections because they answer different questions:
 3. **Quality** — for non-bit-exact optimizations, what does the speed cost
    in output quality? (6-test mean + KL)
 
-**Machine:** Apple M4 Pro, 24 GB unified (`Joshs-MBP-2025`), ~273 GB/s.
+**Default machine for older rows:** Apple M4 Pro, 24 GB unified
+(`Joshs-MBP-2025`), ~273 GB/s. Newer subsections name their machine explicitly.
 **Oracle toolchain:** Bun 1.3.14; Python 3.13.5 with mlx 0.31.2,
 mlx-lm 0.31.3, mlx-optiq 0.2.1. Numbers below are the 2026-06-14
 cleared-machine run (commits `97457e4` / `d1e0296`), preflight-gated,
@@ -118,6 +119,79 @@ diverges from). Within mlx-bun, `bf16` is the L1-compatible path and
 delta is the first "our-vs-our" axis. Lab experiment rows (no external
 oracle; KL/eval-gated) land here once one beats the L1 baseline in a
 paired A/B — none recorded yet (the 2026-07-05 candidates were deleted).
+
+### Current standard serve matrix — M1 Max 32 GB (2026-08-22)
+
+Real-server HTTP matrix on commit `4103ae1`, with the canonical preflight
+passing at the start of both runs: zero swap, ample free memory, and no large
+foreign process. The Qwen extension ended with 944 MiB of inactive swap,
+below the harness's 3 GiB mid-run rejection threshold. No benchmark phase
+failed. Raw gitignored reports:
+`benchmarks-serve-2026-08-22-Joshs-MacBook-Pro-2.md` and
+`benchmarks-serve-2026-08-22-Joshs-MacBook-Pro-2-qwen27b.md`.
+
+| model | arm | short decode tok/s | decode @ ~15.8k tok/s | aggregate ×4 tok/s | restart TTFT ms (cached tokens) |
+|---|---|---:|---:|---:|---:|
+| MiniCPM5-1B | mlx-bun | **267.7** | 122.0 | **420.1** | 207 (15,817) |
+|  | mlx-bun serial | 266.4 | 124.6 | 245.9 | 182 (15,889) |
+|  | mlx-lm | 179.7 | 96.2 | 181.4 | 10,355 (0) |
+|  | mlx-bun mixed | 194.2 | **127.0** | 397.5 | **130 (15,815)** |
+| gemma-4-e4b | mlx-bun | **61.5** | 43.7 | 20.7 | 18,863 (4) |
+|  | mlx-bun serial | **61.5** | 43.1 | 59.7 | **661 (15,940)** |
+|  | mlx-lm | 52.8 | 42.8 | 72.3 | 20,187 (0) |
+|  | mlx-bun mixed | 57.3 | **49.0** | **97.4** | 20,510 (0) |
+| gemma-4-12B | mlx-bun | **29.6** | 28.3 | 5.6 | 85,180 (4) |
+|  | mlx-bun serial | **29.6** | **28.4** | 27.5 | **1,338 (15,866)** |
+|  | mlx-lm | 27.1 | 25.8 | 32.5 | 89,504 (0) |
+|  | mlx-bun mixed | 28.7 | 24.4 | **38.7** | 93,068 (6) |
+| Qwen3.8-27B winner | mlx-bun | **18.5** | 16.5 | 19.3 | 173,215 (0) |
+|  | mlx-bun serial | **18.5** | **16.7** | 15.8 | 172,400 (0) |
+|  | mlx-lm | 16.5 | 14.9 | 18.3 | 177,066 (0) |
+|  | mlx-bun mixed | 18.1 | 14.9 | **19.4** | **3,328 (15,112)** |
+
+- All four models passed 64-token greedy completion and chat parity for
+  mlx-bun bf16 versus mlx-lm, and unified scheduling versus `--batch 1`.
+- Qwen's standard mlx-bun arm beat mlx-lm by 12.1% at short decode and
+  10.7% at long-context decode. The mixed arm did not beat bf16 on decode;
+  its useful result was restoring the full 15,112-token cache after restart.
+- The e4b and 12B unified arms restored only four cached tokens after restart,
+  while their serial controls restored the full cache. This is a real
+  scheduler/SSD-persistence regression and explains their poor aggregate rows.
+  Qwen bf16 restored no cache in either scheduler mode.
+- Qwen mixed KV is a Lab characterization, not an L2 correctness claim. Its
+  policy is copied from the official same-topology Qwen3.6 OptiQ artifact;
+  Qwen3.8 has no model-specific mixed-KV oracle yet. Its 15,278 MB sampled peak
+  RSS also failed the harness's `mixed < bf16` diagnostic, so the run proves
+  that the policy loads and serves, but not that KV quantization was effective.
+
+#### Bun 1.4.0 repeat
+
+The full matrix repeated after upgrading from Bun 1.3.14 to 1.4.0. Starting
+state was 401 MiB inactive swap, 93% free memory, load 3.7, and no large
+foreign process, which passed the canonical preflight. All completion, chat,
+and unified-versus-serial parity probes passed again. Core mlx-bun performance
+was stable; the largest one-run movements were MiniCPM aggregate +5.0% and
+Qwen long-context decode +3.0%, neither promoted as a Bun speed claim without
+repeats.
+
+| model | engine | short decode tok/s | short prefill tok/s | long decode tok/s | warm TTFT ms | aggregate ×4 tok/s |
+|---|---|---:|---:|---:|---:|---:|
+| MiniCPM5-1B | mlx-bun | **265.8** | **2,576** | **124.2** | **26** | **441.3** |
+|  | mlx-lm | 177.0 | 1,907 | 96.5 | 86 | 185.8 |
+| gemma-4-e4b | mlx-bun | **61.7** | **868** | **43.1** | **39** | 21.2 |
+|  | mlx-lm | 52.4 | 676 | 42.5 | 268 | **72.4** |
+| gemma-4-12B | mlx-bun | **29.7** | **191** | **28.4** | **77** | 6.0 |
+|  | mlx-lm | 26.7 | 181 | 25.3 | 388 | **33.4** |
+| Qwen3.8-27B winner | mlx-bun | **18.6** | 64 | **17.0** | **116** | **19.5** |
+|  | mlx-lm | 16.5 | **85** | 14.8 | 284 | 18.6 |
+
+The e4b and 12B aggregate losses remain contaminated by the SSD durability
+race. Their unified arms restored 2 and 4 tokens; serial restored 15,939 and
+15,794. Qwen's short-prefill loss is different: both mlx-bun schedulers lose
+at the roughly 754-token shape, while sustained prefill reaches 87 tok/s at
+15.1k versus mlx-lm's 88. This points to fixed graph-build or shape overhead,
+not a slower sustained prefill kernel. Split timing is still required before
+assigning the cause.
 
 ### Colibri G1/G3 component matrix — M1 Max 32 GB
 

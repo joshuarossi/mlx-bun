@@ -18,6 +18,11 @@ const { symbols: C } = dlopen(new URL("repro.dylib", import.meta.url).pathname, 
     args: ["ptr","u64","u64","i32","i32","i32","i32","i32","i32","i32","u64"],
     returns: "i32",
   },
+  conv3d_echo: {
+    args: ["ptr","u64","u64","i32","i32","i32","i32","i32","i32",
+      "i32","i32","i32","i32","u64"],
+    returns: "i32",
+  },
 });
 const res = new BigInt64Array(10);
 C.conv2d_echo(ptr(res), 111n, 222n, 2, 3, 4, 5, 6, 7, 8, 999n);
@@ -26,3 +31,11 @@ const want = [111, 222, 2, 3, 4, 5, 6, 7, 8, 999];
 console.log("got :", got.join(","));
 console.log("want:", want.join(","));
 console.log(got.join(",") === want.join(",") ? "OK" : "CORRUPTED (bug present)");
+
+const res3 = new BigInt64Array(13);
+C.conv3d_echo(ptr(res3), 111n, 222n, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 999n);
+const got3 = Array.from(res3).map(Number);
+const want3 = [111, 222, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 999];
+console.log("got3 :", got3.join(","));
+console.log("want3:", want3.join(","));
+console.log(got3.join(",") === want3.join(",") ? "OK" : "CORRUPTED (bug present)");

@@ -125,6 +125,11 @@ import {
 } from "./tool-call";
 import { PromptCache, cacheBytes } from "./prompt-cache";
 import { SsdCacheStore } from "./ssd-cache";
+import {
+  SsdDurabilityCoordinator,
+  type DurabilityFlushResult,
+  type DurabilitySnapshotStats,
+} from "./ssd-durability";
 import { configFingerprint } from "./model/fingerprint";
 import {
   anthropicToChatBody, chatJsonToAnthropic, createAnthropicStreamProtocol,
@@ -248,6 +253,77 @@ export interface ServerOptions {
   /** Verify every tensor hash on restore (`--ssd-cache-verify`) — reads all
    *  bytes eagerly, defeating lazy fault-in; integrity paranoia only. */
   ssdCacheVerify?: boolean;
+}
+
+interface ServerLifecycle {
+  flush: () => Promise<DurabilityFlushResult>;
+  stats: () => DurabilitySnapshotStats;
+  stopTimers: () => void;
+}
+
+export interface ServerShutdownResult {
+  stopped: boolean;
+  timedOut: boolean;
+  durability: DurabilityFlushResult;
+}
+
+const serverLifecycles = new WeakMap<Server<unknown>, ServerLifecycle>();
+
+function emptyDurabilityResult(): DurabilityFlushResult {
+  return {
+    durable: true,
+    flushedSnapshots: 0,
+    missingSnapshots: 0,
+    pendingSnapshots: 0,
+    pendingSpills: 0,
+    pendingSpillBytes: 0,
+    droppedSpills: 0,
+    failedSpills: 0,
+    elapsedMs: 0,
+  };
+}
+
+/** Flush prompt-cache snapshots without stopping the HTTP server. */
+export function flushServerCacheDurability(
+  server: Server<unknown>,
+): Promise<DurabilityFlushResult> {
+  return serverLifecycles.get(server)?.flush() ?? Promise.resolve(emptyDurabilityResult());
+}
+
+/** Stop admission, flush cache durability, then finish the Bun server. */
+export async function shutdownServer(
+  server: Server<unknown>, timeoutMs = 120_000,
+): Promise<ServerShutdownResult> {
+  const lifecycle = serverLifecycles.get(server);
+  lifecycle?.stopTimers();
+  const stopped = Promise.resolve(server.stop(false));
+  const work = (async (): Promise<ServerShutdownResult> => {
+    await stopped;
+    const durability = lifecycle ? await lifecycle.flush() : emptyDurabilityResult();
+    return { stopped: true, timedOut: false, durability };
+  })();
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<ServerShutdownResult>((resolve) => {
+    timeoutHandle = setTimeout(() => {
+      const stats = lifecycle?.stats();
+      resolve({
+        stopped: false,
+        timedOut: true,
+        durability: {
+          ...emptyDurabilityResult(),
+          durable: false,
+          ...(stats ?? {}),
+          elapsedMs: timeoutMs,
+        },
+      });
+    }, timeoutMs);
+    timeoutHandle.unref?.();
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
 }
 
 export interface ServerContext {
@@ -1957,12 +2033,10 @@ export function createServer(
   // extraction must not race a generation mutating the entry); if the entry
   // was evicted (already spilled) or extended (a newer schedule pending)
   // meanwhile, findExact misses and nothing is written.
-  // Keyed by ns AND entry length: a sub-second final [prompt+gen] put must
-  // not cancel the pending boundary-snapshot write (they are DIFFERENT
-  // entries; for wrapped-ring models the boundary file is the only one a
-  // restart can use). Same-length reschedules still coalesce; stale keys
-  // self-clean at fire time (findExact misses once the RAM tier superseded
-  // the entry, so nothing extra is written).
+  // Keyed by namespace and exact tokens: a sub-second final [prompt+gen] put
+  // must not cancel the pending boundary snapshot, and unrelated prompts of
+  // equal length must not cancel each other. Exact reschedules still
+  // coalesce; stale keys self-clean when findExact misses.
   //
   // NON-BLOCKING (2026-07-06, the write-behind persistence contract): the
   // gateway lock is held only for a zero-copy SNAPSHOT (findExact +
@@ -1989,20 +2063,25 @@ export function createServer(
   // switch (restart survival then degrades to spill-on-evict only).
   const writeBehindOn = runtimeValue("MLX_BUN_SSD_WRITEBEHIND") !== "0";
   const ssdFlushGate = (): Promise<void> => gateway.onIdle();
-  const ssdPending = new Map<string, ReturnType<typeof setTimeout>>();
   // Bounded write-behind queue (2026-07-07 review fix — see SpillQueue in
   // kv-store.ts): pending clones pin their entries' GPU buffers while the
   // idle gate starves under sustained traffic, so QUEUED bytes are capped —
   // over cap the oldest queued spill drops (clone disposed immediately, a
   // future cache miss, never a wrong result) instead of accumulating past
   // the prompt-cache cap. Default 2 GB (a quarter of the 8 GB RAM-cache
-  // default); MLX_BUN_SSD_SPILL_QUEUE_GB overrides. There is deliberately
-  // NO shutdown flush: exiting under traffic loses queued write-behind
-  // entries (restart survival degrades to whatever flushed) — accepted for
-  // a best-effort cache tier; drops/pending are visible in /stats.
+  // default); MLX_BUN_SSD_SPILL_QUEUE_GB overrides. The durability
+  // coordinator retains a dirty record until the queue confirms the atomic
+  // store. Explicit flush and graceful shutdown can therefore retry a drop.
   // `|| 2` would coerce an explicit "0" back to 2 GB — parse so 0 works
   // (cap 0 = keep only the newest + in-flight clone pinned; the soft cap
   // never drops the item just enqueued).
+  // The gateway exists before the spill queue because the SSD writer uses
+  // its idle boundary to avoid competing with generation.
+  const gateway = new GenerationGateway(ctx.model, batch, runGeneration, {
+    kvBudgetBytes: serverOptions.kvBudgetBytes,
+    kvScheme: resolvedKvScheme,
+    promptCache,
+  });
   const spillQueueGbRaw = Number(runtimeValue("MLX_BUN_SSD_SPILL_QUEUE_GB"));
   const spillQueueCapBytes =
     (Number.isFinite(spillQueueGbRaw) && spillQueueGbRaw >= 0 ? spillQueueGbRaw : 2) * 1024 ** 3;
@@ -2014,38 +2093,39 @@ export function createServer(
         (caches) => { for (const c of caches) c.dispose(); },
       )
     : null;
-  const scheduleSsdSnapshot = (tokens: number[], ns: string): void => {
-    if (!ssdStore || !writeBehindOn || tokens.length === 0) return;
-    const key = `${ns}|${tokens.length}`;
-    const prev = ssdPending.get(key);
-    if (prev) clearTimeout(prev);
-    const fire = (): void => {
-      ssdPending.delete(key);
-      // Same guard as demoteIdle below (2026-07-07 review fix): the
-      // runExclusive registers a serial waiter, which HOLDS BATCH ADMISSION
-      // until every running row drains — a background durability timer must
-      // never do that. Busy → re-arm and try again in 5 s (entries are
-      // immutable; a late snapshot is just as valid).
-      if (gateway.activeRows > 0 || gateway.pendingRows > 0) {
-        const t = setTimeout(fire, 5000);
-        t.unref?.();
-        ssdPending.set(key, t);
-        return;
-      }
-      void gateway.runExclusive(async () => {
-        const e = promptCache.findExact(tokens, ns);
-        if (!e) return null;
-        return { tokens: e.tokens, caches: cloneKvCaches(e.caches) };
-      }).then((snap) => {
-        if (!snap) return;
-        spillQueue!.enqueue({ tokens: snap.tokens, caches: snap.caches, ns });
-      }).catch(() => { /* cold tier is best-effort */ });
+  const durability = ssdStore && spillQueue && writeBehindOn
+    ? new SsdDurabilityCoordinator(
+        gateway,
+        promptCache,
+        spillQueue,
+        cloneKvCaches,
+        (tokens, ns) => ssdStore.hasDurablePrefix(tokens, ns),
+      )
+    : null;
+  const durabilityStats = (): DurabilitySnapshotStats =>
+    durability?.stats ?? {
+      pendingSnapshots: 0,
+      pendingSpills: spillQueue?.pendingCount ?? 0,
+      pendingSpillBytes: spillQueue?.pendingBytes ?? 0,
+      droppedSpills: spillQueue?.droppedCount ?? 0,
+      failedSpills: spillQueue?.failedCount ?? 0,
     };
-    ssdPending.set(key, setTimeout(fire, 1000));
+  const flushDurability = async (): Promise<DurabilityFlushResult> => {
+    if (durability) return durability.flush();
+    const started = performance.now();
+    await spillQueue?.drain();
+    const stats = durabilityStats();
+    return {
+      ...stats,
+      durable: stats.pendingSpills === 0,
+      flushedSnapshots: 0,
+      missingSnapshots: 0,
+      elapsedMs: performance.now() - started,
+    };
   };
   // Every put() — serial lane AND batch scheduler — schedules the snapshot
   // (Layer 0: batch-lane entries survive restarts too, not just evictions).
-  promptCache.onPut = (tokens, ns) => scheduleSsdSnapshot(tokens, ns);
+  promptCache.onPut = durability ? (tokens, ns) => durability.schedule(tokens, ns) : null;
 
   // Idle demotion (Layer 0): entries unused for --ssd-demote-idle seconds
   // spill to SSD and free their GPU memory — the RAM tier drains between
@@ -2069,22 +2149,6 @@ export function createServer(
     demoteTimer.unref?.();
   }
 
-  // The scheduling seam declares the preserved serial executor or continuous
-  // scheduler for the already-resolved composition, keeping both out of the
-  // GPU (and shared loraState) at the same time. It never rewrites features.
-  const gateway = new GenerationGateway(ctx.model, batch, runGeneration, {
-    kvBudgetBytes: serverOptions.kvBudgetBytes,
-    // Phase 3.1: the server-wide scheme travels to the gateway once; the
-    // gateway batches kv-quant requests when the scheme is the batchable
-    // kvConfig/full-attention composition (see #kvBatchable) and the
-    // scheduler applies it — otherwise those requests route serial as before.
-    kvScheme: resolvedKvScheme,
-    // Phase 3.2: batch-lane prompt-cache reuse — joiners take() the longest
-    // usable prefix (multi-turn chat TTFT under --batch N); never-merged
-    // lone rows put() back on finish. Vision/adapter requests never batch,
-    // so the serial lane's bypass rules are preserved by routing.
-    promptCache,
-  });
   const completionExecutor = new CompletionExecutor(gateway);
   const completionProtocolUsage = (usage: CompletionSummary["usage"]) => ({
     prompt_tokens: usage.promptTokens,
@@ -2391,6 +2455,19 @@ export function createServer(
     async fetch(request, server) {
       const url = new URL(request.url);
 
+      if (url.pathname === "/admin/cache/flush" && request.method === "POST") {
+        const result = await flushDurability();
+        return Response.json(
+          {
+            ...result,
+            entries: ssdStore?.entries ?? 0,
+            longest_durable_prefix_tokens:
+              ssdStore?.longestDurablePrefixTokens ?? 0,
+          },
+          { status: result.durable ? 200 : 503 },
+        );
+      }
+
       if (url.pathname === "/ws/chat") {
         if (server.upgrade(request, { data: { sessionId: crypto.randomUUID() } as PiWsData }))
           return undefined;
@@ -2566,12 +2643,12 @@ export function createServer(
               spills: ssdStore.stats.spills,
               restore_ms_last: Math.round(ssdStore.stats.restoreMsLast),
               demotions: promptCache.demotions,
-              // Bounded write-behind queue (2026-07-07): clones waiting for
-              // the idle-gated flush, and spills the byte cap dropped
-              // (each = one future cache miss, never a wrong result).
+              pending_snapshots: durability?.stats.pendingSnapshots ?? 0,
               pending_spills: spillQueue?.pendingCount ?? 0,
               pending_spill_bytes: spillQueue?.pendingBytes ?? 0,
               dropped_spills: spillQueue?.droppedCount ?? 0,
+              failed_spills: spillQueue?.failedCount ?? 0,
+              longest_durable_prefix_tokens: ssdStore.longestDurablePrefixTokens,
             },
           } : {}),
           response_store: {
@@ -3531,6 +3608,14 @@ export function createServer(
       if (adminResponse) return adminResponse;
 
       return Response.json({ error: { message: "not found" } }, { status: 404 });
+    },
+  });
+  serverLifecycles.set(serverRef, {
+    flush: flushDurability,
+    stats: durabilityStats,
+    stopTimers: () => {
+      if (demoteTimer) clearInterval(demoteTimer);
+      demoteTimer = null;
     },
   });
   return serverRef;

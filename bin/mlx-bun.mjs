@@ -4,7 +4,7 @@
 // (a guard inside cli.ts would never run under Node — its static imports
 // hoist and fail on the bun: scheme first).
 
-const MIN_BUN = "1.3.14"; // Bun.Image + verified FFI behavior (see README)
+const MIN_BUN = "1.4.0"; // fixed macOS arm64 FFI stack layout (see README)
 
 if (typeof Bun === "undefined") {
   console.error(

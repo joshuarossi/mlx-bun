@@ -83,7 +83,7 @@ runtime, so the only thing the first run fetches is the model.
 
 ### bunx (no install)
 
-Already have [Bun](https://bun.sh) ≥ 1.3.14? Run it straight from npm,
+Already have [Bun](https://bun.sh) ≥ 1.4.0? Run it straight from npm,
 nothing to install:
 
 ```sh
@@ -97,7 +97,7 @@ mlx-bun` under Node exits with a
 
 ### From source
 
-Needs [Bun](https://bun.sh) ≥ 1.3.14 — no Python, no native library to
+Needs [Bun](https://bun.sh) ≥ 1.4.0 — no Python, no native library to
 install by hand:
 
 ```sh
@@ -381,7 +381,9 @@ agent CLIs like pi/OpenClaw via their provider config.
 - **Prompt caching** — a byte-capped LRU KV cache reuses the longest
   common token prefix across requests (multi-turn conversations
   re-prefill only the new turn) — automatic, no client changes.
-  Entries are adapter-specific when LoRA adapters are in play.
+  Entries are adapter-specific when LoRA adapters are in play. With
+  `--ssd-cache`, pending snapshots are flushed durably on `SIGINT`/`SIGTERM`;
+  `POST /admin/cache/flush` exposes the same boundary for automation.
 - **LoRA hot-swap** — mount adapters at runtime (`POST /v1/adapters`)
   and discover on-disk ones (`GET /v1/adapters/available`), select per
   request with the `adapter` body field (`"id"`, stacked `"a+b"`, or
@@ -572,7 +574,7 @@ On the site: [Correctness](https://mlx-bun.dev/about/correctness/) and
 - **Slow decode on a model near your RAM ceiling** — close memory-heavy
   apps; a model that doesn't fit the wired-memory budget pages weights
   every token (check with `fit`).
-- **Bun version** — requires ≥ 1.3.14 (`bun upgrade`); pinned for
+- **Bun version** — requires ≥ 1.4.0 (`bun upgrade`); pinned for
   `Bun.Image` and verified FFI behavior.
 
 ## Status
