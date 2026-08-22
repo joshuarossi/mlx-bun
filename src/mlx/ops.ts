@@ -889,20 +889,16 @@ export function conv1d(
 
 /** nn.Conv2d: input [B, H, W, C_in] (NHWC), weight [C_out, kH, kW, C_in/groups]
  *  → [B, H', W', C_out]. mlx weight layout — the oracle transposes PyTorch's
- *  [C_out, C_in, kH, kW] at load. For the gemma-4 audio SSCP subsampler.
- *  dilation_1 and groups ride in one packed u64 — see the mlx_conv2d hazard
- *  note in ffi.ts (bun:ffi stack-arg ABI bug). */
+ *  [C_out, C_in, kH, kW] at load. For the gemma-4 audio SSCP subsampler. */
 export function conv2d(
   input: MlxArray, weight: MlxArray, stride: [number, number] = [1, 1],
   padding: [number, number] = [0, 0], dilation: [number, number] = [1, 1],
   groups = 1, s: S = gpuStream,
 ): MlxArray {
-  const dilation1AndGroups =
-    (BigInt(dilation[1] >>> 0) & 0xffffffffn) | (BigInt(groups >>> 0) << 32n);
   return new MlxArray(
     outArray("conv2d", (o) =>
       C.mlx_conv2d(o, input.handle, weight.handle, stride[0], stride[1],
-        padding[0], padding[1], dilation[0], dilation1AndGroups, s),
+        padding[0], padding[1], dilation[0], dilation[1], groups, s),
     ),
   );
 }
@@ -910,9 +906,7 @@ export function conv2d(
 /** nn.Conv3d: input [B, D, H, W, C_in] (NDHWC), weight [C_out, kD, kH, kW,
  *  C_in/groups] → [B, D', H', W', C_out]. The Qwen3-VL vision patch embed
  *  (kernel == stride) — the conv KERNEL's accumulation order is the parity-
- *  relevant arithmetic; a value-equivalent GEMM differs by bf16 ulp.
- *  padding_2/dilation_* /groups ride the packed-stack-args layout — see the
- *  mlx_conv3d hazard note in ffi.ts. */
+ *  relevant arithmetic; a value-equivalent GEMM differs by bf16 ulp. */
 export function conv3d(
   input: MlxArray, weight: MlxArray,
   stride: [number, number, number] = [1, 1, 1],
@@ -920,14 +914,11 @@ export function conv3d(
   dilation: [number, number, number] = [1, 1, 1],
   groups = 1, s: S = gpuStream,
 ): MlxArray {
-  const pad2Dil0 =
-    (BigInt(padding[2] >>> 0) & 0xffffffffn) | (BigInt(dilation[0] >>> 0) << 32n);
-  const dil1Dil2 =
-    (BigInt(dilation[1] >>> 0) & 0xffffffffn) | (BigInt(dilation[2] >>> 0) << 32n);
   return new MlxArray(
     outArray("conv3d", (o) =>
       C.mlx_conv3d(o, input.handle, weight.handle, stride[0], stride[1],
-        stride[2], padding[0], padding[1], pad2Dil0, dil1Dil2, groups, s),
+        stride[2], padding[0], padding[1], padding[2], dilation[0],
+        dilation[1], dilation[2], groups, s),
     ),
   );
 }

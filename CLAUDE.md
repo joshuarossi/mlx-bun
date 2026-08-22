@@ -64,7 +64,7 @@ README.md has the pitch and scope boundaries.
 
 ## Hard-won environment facts
 
-- Bun pinned at ≥ 1.3.14 (upgraded 2026-06-10): `Bun.Image` (native OS
+- Bun pinned at ≥ 1.4.0: `Bun.Image` (native OS
   image codecs incl. HEIC/AVIF) is the decode path for vision inputs —
   see `src/vision/preprocess.ts`. Full test suite re-verified post-upgrade.
 - `Bun.mmap` panics (SIGTRAP) on files > 4 GB (still true in 1.3.14) —
@@ -81,7 +81,8 @@ README.md has the pitch and scope boundaries.
   adjacent stack-i32 pairs into ONE u64 little-endian (see ops.conv2d).
   f32 args don't count toward the 8 (they ride v-registers); all-u64/ptr
   tails and a lone trailing bool are safe. Repro:
-  lab/repro/bun-ffi-stack-args.
+  lab/repro/bun-ffi-stack-args. Bun 1.4 fixes the ABI layout, so bindings now
+  use their natural header signatures and the packed-u64 workaround is gone.
 - When binding mlx-c functions, read the full signature from the header
   first — a missed trailing optional param shifts the stream arg and
   produces "There is no Stream(...)" errors at eval time.

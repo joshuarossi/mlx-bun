@@ -603,7 +603,9 @@ vision/audio, adapters, and training are not emulated by the serving port.
   "ssd_cache": { "dir": "...", "entries": 0, "bytes": 0, "max_bytes": 0,
                  "restores": 0, "spills": 0, "restore_ms_last": 0, "demotions": 0,
                  // bounded write-behind queue (MLX_BUN_SSD_SPILL_QUEUE_GB):
-                 "pending_spills": 0, "pending_spill_bytes": 0, "dropped_spills": 0 },
+                 "pending_snapshots": 0, "pending_spills": 0,
+                 "pending_spill_bytes": 0, "dropped_spills": 0,
+                 "failed_spills": 0, "longest_durable_prefix_tokens": 0 },
   "admission": {
     "max_safe_context": 0,            // tokens; requests above this 400
     "memory_budget_bytes": null,      // explicit budget, or null (machine default)
@@ -652,6 +654,37 @@ vision/audio, adapters, and training are not emulated by the serving port.
   }
 }
 ```
+
+`pending_snapshots` counts prompt-cache entries scheduled for persistence but
+not yet confirmed by the atomic SSD store. `longest_durable_prefix_tokens` is
+the longest prefix already present in the SSD index, not merely queued.
+
+## POST /admin/cache/flush
+
+Forces every pending SSD prompt-cache snapshot through the serial write queue
+and waits for the atomic temp-file/fsync/rename boundary. The response is `200`
+only when no snapshot or spill remains pending and no write failed during this
+flush; otherwise it is `503` with the counters that explain why.
+
+```jsonc
+{
+  "durable": true,
+  "flushedSnapshots": 1,
+  "missingSnapshots": 0,
+  "pendingSnapshots": 0,
+  "pendingSpills": 0,
+  "pendingSpillBytes": 0,
+  "droppedSpills": 0,
+  "failedSpills": 0,
+  "elapsedMs": 842,
+  "entries": 2,
+  "longest_durable_prefix_tokens": 16384
+}
+```
+
+The standard benchmark calls this endpoint before its restart leg and records
+the result. Normal `mlx-bun serve` shutdown on `SIGINT` or `SIGTERM` performs
+the same flush after active requests drain, with a 120-second default timeout.
 
 ## GET /library
 

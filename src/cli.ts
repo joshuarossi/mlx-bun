@@ -1635,7 +1635,7 @@ switch (cmd) {
     const sNative = step("native runtime");
     await ensureNative(sNative);
     sNative.done("native runtime ready");
-    const { createServer, loadContext } = await import("./server");
+    const { createServer, loadContext, shutdownServer } = await import("./server");
     if (flag("expert-offload")) {
       if (m.expertsBytes === 0) {
         console.error(style.dim("--expert-offload ignored: this model has no experts (dense)"));
@@ -1714,6 +1714,30 @@ switch (cmd) {
     sLoad.done(`weights loaded ${style.dim(`in ${(performance.now() - t0).toFixed(0)} ms`)}${draftModelDir ? style.dim(` · draft: ${draftModelDir.split("/").filter(Boolean).at(-1)}`) : draftKind === "ngram" ? style.dim(" · draft: ngram (prompt lookup)") : ""}`);
     await mountStartupAdapter(ctx, rt.serverOptions);
     const server = createServer(ctx, rt.port, { ...rt.serverOptions, owner: "serve" });
+    let shutdownStarted = false;
+    const onServeSignal = (signal: "SIGINT" | "SIGTERM"): void => {
+      if (shutdownStarted) return;
+      shutdownStarted = true;
+      const rawTimeout = Number(runtimeValue("MLX_BUN_SHUTDOWN_TIMEOUT_MS"));
+      const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 120_000;
+      console.log(`\n[server] ${signal}: flushing prompt-cache durability`);
+      void shutdownServer(server, timeoutMs).then((result) => {
+        if (!result.durability.durable) {
+          const d = result.durability;
+          console.warn(
+            `[server] cache flush incomplete after ${Math.round(d.elapsedMs)} ms: ` +
+              `${d.pendingSnapshots} snapshots, ${d.pendingSpills} spills, ` +
+              `${d.droppedSpills} dropped, ${d.failedSpills} failed`,
+          );
+        }
+        process.exit(0);
+      }).catch((error) => {
+        console.warn(`[server] shutdown flush failed: ${(error as Error).message}`);
+        process.exit(0);
+      });
+    };
+    process.once("SIGINT", () => onServeSignal("SIGINT"));
+    process.once("SIGTERM", () => onServeSignal("SIGTERM"));
     const shownHost = rt.serverOptions.hostname ?? "localhost";
     console.log();
     box([

@@ -7,7 +7,7 @@
 // NOTE: this byte-compare assumes the SAME Bun version produced both sides
 // (Bun.build's output is not guaranteed byte-stable across Bun versions —
 // e.g. minor formatting/codegen changes). This repo pins a Bun version
-// (CLAUDE.md: "Bun pinned at >= 1.3.14"; package.json engines.bun) so a
+// (CLAUDE.md: "Bun pinned at >= 1.4.0"; package.json engines.bun) so a
 // mismatch here in CI should mean "rerun the build on the pinned Bun", not
 // "the test is flaky."
 import { describe, expect, it } from "bun:test";

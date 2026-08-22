@@ -37,7 +37,7 @@ Gemma-4 OptiQ quants, and Qwen3.5 — see
 ## Requirements
 
 - An **Apple Silicon Mac** (MLX is Metal-only, so macOS only by design).
-- For the source/bunx paths: [Bun](https://bun.sh) ≥ 1.3.14. The Homebrew and
+- For the source/bunx paths: [Bun](https://bun.sh) ≥ 1.4.0. The Homebrew and
   direct-download binaries bundle everything and need no toolchain.
 
 Ready? Head to [Installation](/getting-started/installation/).

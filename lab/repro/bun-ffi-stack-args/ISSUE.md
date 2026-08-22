@@ -6,6 +6,13 @@
 > Standalone repro: `repro.c` + `repro.ts` in this directory
 > (`cc -dynamiclib -o repro.dylib repro.c && bun repro.ts`).
 
+## Resolution
+
+Bun 1.4.0 returns the expected values on the same M4 Pro/macOS arm64 machine.
+mlx-bun now requires Bun 1.4.0 and uses the natural mlx-c signatures; the
+packed-u64 workaround has been removed. This file retains the original report
+below as the regression record.
+
 ---
 
 **Title:** `bun:ffi` mis-lays sub-8-byte stack arguments on macOS arm64

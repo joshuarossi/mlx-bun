@@ -79,6 +79,21 @@ export class SsdCacheStore {
     return this.#opts.maxBytes;
   }
 
+  /** Longest token prefix whose atomic cache file is present in the index. */
+  get longestDurablePrefixTokens(): number {
+    return this.#index.reduce((best, entry) => Math.max(best, entry.tokens.length), 0);
+  }
+
+  /** True when the SSD index can seed every token in this prefix. A longer
+   * trimmable descendant is equivalent to an exact boundary snapshot. */
+  hasDurablePrefix(tokens: number[], ns = ""): boolean {
+    return this.#index.some((entry) => {
+      if (entry.ns !== ns || entry.tokens.length < tokens.length) return false;
+      if (commonPrefixLength(entry.tokens, tokens) !== tokens.length) return false;
+      return entry.tokens.length === tokens.length || entry.trimmable;
+    });
+  }
+
   /** Startup recovery: rebuild the in-memory index from disk. Corrupt
    *  headers and metadata mismatches are unlinked; `.tmp` orphans reaped.
    *  Only OUR fingerprint dir is touched. Returns entries indexed. */

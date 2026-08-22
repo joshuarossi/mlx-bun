@@ -1,9 +1,7 @@
 // FAST (no model load): the conv2d FFI binding for the gemma-4 audio SSCP
 // subsampler, checked bit-exact against Python mlx conv2d (oracle venv,
-// 2026-07-07) on deterministic ramp inputs. Doubles as the regression pin
-// for the bun:ffi stack-arg ABI workaround (lab/repro/bun-ffi-stack-args):
-// dilation_1 and groups ride in one packed u64, and the groups case below
-// only passes when that packing is intact.
+// 2026-07-07) on deterministic ramp inputs. The groups case also pins the
+// natural stack-argument ABI used by Bun 1.4 and newer.
 
 import { describe, expect, test } from "bun:test";
 import { MlxArray } from "../src/mlx/array";
@@ -28,7 +26,7 @@ describe("conv2d (model-free)", () => {
     x.dispose(); w.dispose(); y.dispose();
   });
 
-  test("groups path bit-exact vs mlx conv2d (packed-u64 stack arg)", () => {
+  test("groups path bit-exact vs mlx conv2d (natural stack args)", () => {
     const x = MlxArray.fromFloat32(ramp(60, 7, -3), [1, 4, 5, 3]);
     const w = MlxArray.fromFloat32(ramp(12, 3, -1), [3, 2, 2, 1]);
     const y = ops.conv2d(x, w, [1, 1], [0, 0], [1, 1], 3);
@@ -38,6 +36,17 @@ describe("conv2d (model-free)", () => {
       0, 2, 0, 4, -5, 3, -6, 2, -1, -2, 2, 2, -1, 2, -6, 3, -5, 4,
       0, 2, 0, 4, -5, 3, -2, 2, 2, 2, 2, -2, -1, 2, -6, 3, -5, 4,
     ]);
+    x.dispose(); w.dispose(); y.dispose();
+  });
+});
+
+describe("conv3d (model-free)", () => {
+  test("bit-exact vs mlx conv3d (natural stack args)", () => {
+    const x = MlxArray.fromFloat32(ramp(16, 7, -3), [1, 2, 2, 2, 2]);
+    const w = MlxArray.fromFloat32(ramp(32, 5, -2), [2, 2, 2, 2, 2]);
+    const y = ops.conv3d(x, w);
+    expect(y.shape).toEqual([1, 1, 1, 1, 2]);
+    expect([...y.toFloat32()]).toEqual([-1, 9]);
     x.dispose(); w.dispose(); y.dispose();
   });
 });

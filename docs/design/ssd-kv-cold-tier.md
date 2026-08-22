@@ -286,3 +286,130 @@ SIGINT/SIGTERM during (or within the debounce after) traffic loses queued
 write-behind entries; restart survival degrades to whatever already
 flushed. This is a best-effort cache tier; the cost of a lost entry is one
 re-prefill. `SpillQueue.drain()` exists if a shutdown hook is ever wanted.
+
+This acceptance was superseded by the 2026-08-22 durability fix below.
+
+## Bug brief 2026-08-22: restart can outrun SSD write-behind
+
+### User-visible failure
+
+A completed long-context request can report a full RAM-cache hit on repeat,
+then lose that prefix when the server restarts a few seconds later. The next
+request pays a full prefill even though `--ssd-cache` was enabled.
+
+The 2026-08-22 M1 Max serve matrix reproduced this with the standard restart
+leg, which waits 2.5 seconds after the long request before sending SIGTERM:
+
+| model and mode | cached tokens after restart | expected |
+|---|---:|---:|
+| MiniCPM5, unified bf16 | 15,817 | about 15.8k |
+| e4b, unified bf16 | 4 | about 15.9k |
+| e4b, serial bf16 | 15,940 | about 15.9k |
+| 12B, unified bf16 | 4 | about 15.9k |
+| 12B, serial bf16 | 15,866 | about 15.9k |
+| Qwen3.8, unified bf16 | 0 | about 15.1k |
+| Qwen3.8, serial bf16 | 0 | about 15.1k |
+| Qwen3.8, unified mixed KV | 15,112 | about 15.1k |
+
+The Bun 1.4 rerun reproduced the lane split before this brief was written:
+e4b unified restored 2 of 15,942 tokens, while e4b serial restored 15,939.
+The completed run also restored only 4 tokens for unified 12B versus 15,794
+for serial 12B, and 5 for mixed-KV 12B. Qwen bf16 restored zero in both
+lanes, while mixed-KV Qwen restored all 15,114 tokens. This is not a Bun
+1.3-only result.
+
+### Expected contract
+
+After a request completes and the server has reported the cache durable, a
+normal SIGTERM and restart must restore the longest compatible prefix. For
+the benchmark's exact-repeat request, `cached_tokens` should be at least
+`prompt_tokens - 1`. The server must never imply durability while a matching
+snapshot is still waiting on its debounce timer or the spill queue.
+
+### Evidence and current diagnosis
+
+The read and reconstruction path works when the file reaches disk. MiniCPM,
+serial e4b and 12B, and mixed-KV Qwen all restore a full prefix through the
+same `PromptCache.take()` and `SsdCacheStore.restore()` path. That makes a
+model-format or prefix-matching defect unlikely as the primary cause.
+
+The likely failure is the durability boundary:
+
+1. `PromptCache.onPut` schedules a snapshot with a one-second debounce.
+2. A busy gateway re-arms that timer for five seconds.
+3. The snapshot then joins a serial `SpillQueue`; large bf16 entries can still
+   be queued or in flight when the benchmark's 2.5-second wait expires.
+4. SIGTERM stops the process without forcing pending timers to fire or awaiting
+   `SpillQueue.drain()`. The queue's own comment calls drain a future shutdown
+   hook.
+
+Entry size explains the broad pattern. Small MiniCPM and smaller mixed-KV Qwen
+files finish in time; large Qwen bf16 files do not. The remaining unified versus
+serial split needs telemetry before assigning a second root cause. The unified
+lane may enqueue more snapshots, take longer to extract row caches, or hit the
+queue cap. The current report does not capture that state before termination.
+
+### Fix plan
+
+1. Expose `pending_snapshots`, `pending_spills`, `pending_spill_bytes`,
+   `dropped_spills`, and the longest durable prefix in `/stats.ssd_cache`.
+   `pending_snapshots` must include debounce and busy-rearm timers, not only
+   entries already placed in `SpillQueue`.
+2. Add one async durability operation that cancels debounce timers, snapshots
+   matching RAM entries under the gateway lock, and awaits
+   `SpillQueue.drain()`. Return success only after the atomic rename completes.
+3. Route graceful SIGINT/SIGTERM through that operation with a bounded timeout.
+   Stop new admission first. A timeout may drop the cache, but must log the
+   number of pending and dropped snapshots.
+4. Change the benchmark restart leg to request or poll durability instead of
+   sleeping for 2.5 seconds. A fixed sleep measures SSD timing luck, not the
+   restart contract.
+5. Capture pre-kill stats and the recovered entry count in every restart row so
+   a write miss cannot masquerade as a restore miss again.
+
+### Implemented 2026-08-22
+
+- `SsdDurabilityCoordinator` owns debounce, busy retry, queue completion, and
+  explicit flush as one state machine. A snapshot stays dirty until the atomic
+  store succeeds. Queue drops and write failures remain retryable.
+- Dirty keys include the exact token sequence, so two conversations with the
+  same namespace and token count cannot cancel each other.
+- `POST /admin/cache/flush` returns `200` only at the durability boundary and
+  exposes pending, dropped, failed, entry-count, and longest-prefix evidence.
+- `mlx-bun serve` handles `SIGINT` and `SIGTERM` by stopping admission,
+  draining active requests, and awaiting the same flush, bounded by
+  `MLX_BUN_SHUTDOWN_TIMEOUT_MS`.
+- The standard restart benchmark calls the endpoint instead of sleeping and
+  records its evidence in the Markdown report and eval database notes.
+- Model-free regression coverage holds an atomic store open and proves flush
+  waits, forces the busy-rearm path, retries a failed write, preserves
+  equal-length conversations, and reports a missing RAM boundary honestly.
+
+Focused real-server smoke on unified e4b passed the repaired path: a
+4,026-token prompt flushed in 408 ms with `durable=true`, zero pending,
+dropped, or failed work, then restored 4,025 cached tokens after SIGTERM and
+respawn. The machine failed the clean-performance preflight, so this is cache
+correctness evidence only, not a performance result. The full clean 16k
+e4b/12B/Qwen matrix remains the acceptance run.
+
+### Acceptance tests
+
+- A deterministic coordinator test holds `storeAsync`, requests a flush,
+  releases the store, and proves the durability boundary waits for the atomic
+  file. The focused real-server smoke exercises the SIGTERM path through that
+  same operation before restart.
+- A busy-gateway test forces the five-second re-arm path, then requests a flush
+  and proves the timer becomes an immediate queued snapshot without blocking an
+  active generation.
+- Batch 8 and `--batch 1` both restore at least `prompt_tokens - 1` for e4b,
+  12B, and Qwen3.8 at roughly 16k context.
+- The mixed-KV and SSM cache kinds retain their existing continuation parity.
+- Steady-state decode remains unchanged because normal writes still pause while
+  the engine is busy. Queued clone memory stays within the spill cap.
+
+Focused reproduction:
+
+```sh
+./benchmark.sh --models e4b,12B,qwen27b \
+  --arms mlx-bun,mlx-bun-serial,mlx-bun-mixed
+```

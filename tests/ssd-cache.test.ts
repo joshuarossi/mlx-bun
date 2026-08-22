@@ -52,6 +52,8 @@ describe("SsdCacheStore", () => {
     const s1 = new SsdCacheStore(OPTS(dir));
     const caches = mkCaches();
     expect(s1.store([1, 2, 3, 4], caches)).toBe(true);
+    expect(s1.hasDurablePrefix([1, 2, 3, 4])).toBe(true);
+    expect(s1.hasDurablePrefix([1, 2, 3, 4, 5])).toBe(false);
     for (const c of caches) c.dispose();
 
     // "restart": a fresh store over the same dir must recover the entry
@@ -352,10 +354,13 @@ describe("SpillQueue", () => {
     const stored: string[] = [];
     const q = makeQueue(1_000, async (item) => { stored.push(item.ns); });
     const a = fakeCaches(10), b = fakeCaches(10), c = fakeCaches(10);
-    q.enqueue({ tokens: [1], caches: a as never, ns: "a" });
-    q.enqueue({ tokens: [2], caches: b as never, ns: "b" });
-    q.enqueue({ tokens: [3], caches: c as never, ns: "c" });
+    const results = [
+      q.enqueue({ tokens: [1], caches: a as never, ns: "a" }),
+      q.enqueue({ tokens: [2], caches: b as never, ns: "b" }),
+      q.enqueue({ tokens: [3], caches: c as never, ns: "c" }),
+    ];
     await q.drain();
+    expect(await Promise.all(results)).toEqual([true, true, true]);
     expect(stored).toEqual(["a", "b", "c"]);
     for (const set of [a, b, c]) expect(set[0]!.disposed).toBe(1);
     expect(q.pendingCount).toBe(0);
@@ -372,18 +377,19 @@ describe("SpillQueue", () => {
       stored.push(item.ns);
     });
     const a = fakeCaches(60), b = fakeCaches(60), c = fakeCaches(60);
-    q.enqueue({ tokens: [1], caches: a as never, ns: "a" });
+    const aResult = q.enqueue({ tokens: [1], caches: a as never, ns: "a" });
     // let a's store() actually START (blocked on the gate) — a queued-but-
     // not-started head is legitimately droppable; a mid-store one is not.
     await new Promise((r) => setTimeout(r, 0));
-    q.enqueue({ tokens: [2], caches: b as never, ns: "b" }); // 120 > 100, but only in-flight+newest → soft cap
+    const bResult = q.enqueue({ tokens: [2], caches: b as never, ns: "b" }); // 120 > 100, but only in-flight+newest → soft cap
     expect(q.droppedCount).toBe(0);
-    q.enqueue({ tokens: [3], caches: c as never, ns: "c" }); // 180 > 100 → drop b (oldest droppable)
+    const cResult = q.enqueue({ tokens: [3], caches: c as never, ns: "c" }); // 180 > 100 → drop b (oldest droppable)
     expect(q.droppedCount).toBe(1);
     expect(b[0]!.disposed).toBe(1); // disposed AT DROP TIME, before any flush
     expect(a[0]!.disposed).toBe(0); // in-flight never dropped
     releaseFirst();
     await q.drain();
+    expect(await Promise.all([aResult, bResult, cResult])).toEqual([true, false, true]);
     expect(stored).toEqual(["a", "c"]); // b never stored
     expect(a[0]!.disposed).toBe(1);
     expect(c[0]!.disposed).toBe(1);
@@ -410,13 +416,134 @@ describe("SpillQueue", () => {
       stored.push(item.ns);
     });
     const a = fakeCaches(10), b = fakeCaches(10);
-    q.enqueue({ tokens: [1], caches: a as never, ns: "boom" });
-    q.enqueue({ tokens: [2], caches: b as never, ns: "ok" });
+    const failed = q.enqueue({ tokens: [1], caches: a as never, ns: "boom" });
+    const storedOk = q.enqueue({ tokens: [2], caches: b as never, ns: "ok" });
     await q.drain();
+    expect(await failed).toBe(false);
+    expect(await storedOk).toBe(true);
+    expect(q.failedCount).toBe(1);
     expect(stored).toEqual(["ok"]);
     expect(a[0]!.disposed).toBe(1);
     expect(b[0]!.disposed).toBe(1);
     expect(q.pendingBytes).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SsdDurabilityCoordinator: a dirty snapshot is not acknowledged until the
+// queue's atomic store settles. This is the restart boundary used by the
+// benchmark and graceful shutdown.
+// ---------------------------------------------------------------------------
+
+const { SsdDurabilityCoordinator } = await import("../src/ssd-durability");
+
+function durabilityFixture(
+  entries: Array<{ tokens: number[]; ns?: string }> = [{ tokens: [1, 2, 3] }],
+  storeImpl?: (item: { tokens: number[]; ns: string }) => Promise<unknown>,
+  isAlreadyDurable: (tokens: number[], ns: string) => boolean = () => false,
+) {
+  const source = fakeCaches(10);
+  const promptCache = {
+    findExact(tokens: number[], ns = "") {
+      const hit = entries.find((e) =>
+        (e.ns ?? "") === ns && e.tokens.length === tokens.length &&
+        e.tokens.every((token, i) => token === tokens[i]));
+      return hit ? { tokens: [...hit.tokens], caches: source as never, ns } : null;
+    },
+  };
+  const gateway = {
+    busy: false,
+    async runExclusive<T>(fn: () => Promise<T>): Promise<T> { return fn(); },
+  };
+  const stored: string[] = [];
+  const queue = makeQueue(1_000, async (item) => {
+    stored.push(`${item.ns}:${(item as unknown as { tokens: number[] }).tokens.join(",")}`);
+    return storeImpl?.(item as unknown as { tokens: number[]; ns: string });
+  });
+  const coordinator = new SsdDurabilityCoordinator(
+    gateway,
+    promptCache as never,
+    queue,
+    (() => fakeCaches(10) as never) as never,
+    isAlreadyDurable,
+    1,
+    60_000,
+  );
+  return { coordinator, gateway, queue, stored };
+}
+
+describe("SsdDurabilityCoordinator", () => {
+  test("flush overrides a busy retry and waits for the atomic store", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const f = durabilityFixture(undefined, async () => { await gate; return true; });
+    f.gateway.busy = true;
+    f.coordinator.schedule([1, 2, 3]);
+    await Bun.sleep(5);
+    expect(f.coordinator.stats.pendingSnapshots).toBe(1);
+    expect(f.stored).toEqual([]);
+
+    f.gateway.busy = false;
+    const flush = f.coordinator.flush();
+    expect(f.coordinator.flush()).toBe(flush);
+    await Bun.sleep(0);
+    expect(f.coordinator.stats.pendingSpills).toBe(1);
+    let settled = false;
+    void flush.then(() => { settled = true; });
+    await Bun.sleep(0);
+    expect(settled).toBe(false);
+
+    release();
+    const result = await flush;
+    expect(result.durable).toBe(true);
+    expect(result.flushedSnapshots).toBe(1);
+    expect(result.pendingSnapshots).toBe(0);
+    expect(result.pendingSpills).toBe(0);
+    expect(f.stored).toEqual([":1,2,3"]);
+  });
+
+  test("equal-length prompts keep separate durability records", async () => {
+    const f = durabilityFixture([{ tokens: [1, 2] }, { tokens: [3, 4] }]);
+    f.coordinator.schedule([1, 2]);
+    f.coordinator.schedule([3, 4]);
+    expect(f.coordinator.stats.pendingSnapshots).toBe(2);
+    const result = await f.coordinator.flush();
+    expect(result.durable).toBe(true);
+    expect(result.flushedSnapshots).toBe(2);
+    expect(f.stored).toEqual([":1,2", ":3,4"]);
+  });
+
+  test("a failed store remains dirty and a later flush retries it", async () => {
+    let attempts = 0;
+    const f = durabilityFixture(undefined, async () => ++attempts > 1);
+    f.coordinator.schedule([1, 2, 3]);
+    const first = await f.coordinator.flush();
+    expect(first.durable).toBe(false);
+    expect(first.pendingSnapshots).toBe(1);
+    expect(first.failedSpills).toBe(1);
+
+    const second = await f.coordinator.flush();
+    expect(second.durable).toBe(true);
+    expect(second.pendingSnapshots).toBe(0);
+    expect(attempts).toBe(2);
+  });
+
+  test("reports a boundary snapshot that vanished from RAM", async () => {
+    const f = durabilityFixture([]);
+    f.coordinator.schedule([9, 9]);
+    const result = await f.coordinator.flush();
+    expect(result.durable).toBe(false);
+    expect(result.missingSnapshots).toBe(1);
+    expect(result.pendingSnapshots).toBe(0);
+  });
+
+  test("accepts a vanished RAM snapshot when SSD already covers its prefix", async () => {
+    const f = durabilityFixture([], undefined, () => true);
+    f.coordinator.schedule([9, 9]);
+    const result = await f.coordinator.flush();
+    expect(result.durable).toBe(true);
+    expect(result.missingSnapshots).toBe(0);
+    expect(result.pendingSnapshots).toBe(0);
   });
 });
 

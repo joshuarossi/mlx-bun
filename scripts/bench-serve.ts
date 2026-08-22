@@ -53,7 +53,7 @@
 //     idle/ready RSS) in a per-cell detail block, so "peak" stops hiding
 //     WHERE the memory went.
 //
-//   bun scripts/bench-serve.ts all [--models cpm5,e4b,12B] [--context 16384]
+//   bun scripts/bench-serve.ts all [--models cpm5,e4b,12B,qwen27b] [--context 16384]
 //                                  [--tokens 192] [--no-serial] [--skip-context]
 //                                  [--arms mlx-bun,mlx-lm,...] [--out report.md]
 //
@@ -134,6 +134,13 @@ const MODELS: Record<string, { path: string; label: string; needsOptiqRegister?:
     path: `${HF}/models--mlx-community--gemma-4-12B-it-OptiQ-4bit/snapshots/5b1101065d2094c8f12aa87fee80e0afa5b292b7`,
     label: "gemma-4-12B",
     needsOptiqRegister: true,
+  },
+  qwen27b: {
+    // The shipped 4.79-bpw rotation + sensitivity winner. The bundle carries
+    // the same-architecture Qwen3.6 OptiQ mixed-KV policy; unlike the weight
+    // quantization, that KV policy has no Qwen3.8-specific oracle yet.
+    path: snapshotOf("models--mjriii--Qwen3.8-27B"),
+    label: "Qwen3.8-27B winner (4/8-bit)",
   },
 };
 function snapshotOf(repoDir: string): string {
@@ -371,6 +378,17 @@ export function probeVerdict(
 
 interface PhaseFailure { phase: string; error: string; stderrTail: string[] }
 
+interface RestartDurability {
+  durable: boolean;
+  flushMs: number;
+  pendingSnapshots: number;
+  pendingSpills: number;
+  droppedSpills: number;
+  failedSpills: number;
+  longestDurablePrefixTokens: number;
+  entries: number;
+}
+
 interface CellResult {
   cell: Cell;
   readyMs: number;
@@ -397,7 +415,12 @@ interface CellResult {
   /** RESTART STORY (ctx leg only): kill the server, respawn, re-send the
    *  long-context prompt ONCE. Ours restores the prefix from the SSD tier
    *  (Layer 0); stacks without persistence re-prefill from scratch. */
-  restart: null | { readyMs: number; ctxTtftMs: number; cachedTokens: number };
+  restart: null | {
+    readyMs: number;
+    ctxTtftMs: number;
+    cachedTokens: number;
+    durability: RestartDurability | null;
+  };
   decodeTps: number[] | null;
   decodeTag: string;
   ttft: null | {
@@ -492,9 +515,15 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
   const phaseFailures: PhaseFailure[] = [];
   let respawnUsed = false;
 
-  const killProc = async (): Promise<void> => {
-    proc.kill();
-    await Promise.race([proc.exited, Bun.sleep(5000)]);
+  const killProc = async (graceMs = 5_000): Promise<void> => {
+    try { proc.kill(); } catch { return; }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const grace = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, graceMs);
+      timer.unref?.();
+    });
+    await Promise.race([proc.exited.then(() => {}), grace]);
+    if (timer) clearTimeout(timer);
     try { proc.kill(9); } catch { /* gone */ }
   };
   const spawnProc = (): void => {
@@ -679,11 +708,39 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
     // long-context prompt once. mlx-bun restores the prefix from the SSD
     // tier (Layer 0, --ssd-cache); stacks without persistence pay the FULL
     // re-prefill — so the request budget assumes a full re-prefill at the
-    // measured ctx rate. Give the write-behind snapshot (debounced 1 s) a
-    // beat to land before the kill.
+    // measured ctx rate. mlx-bun exposes an explicit durability boundary;
+    // wait for it instead of guessing how long a large SSD write needs.
     const restart = ctx ? await runPhase("restart", async () => {
-      await Bun.sleep(2500);
-      await killProc();
+      let durability: RestartDurability | null = null;
+      if (c.arm.startsWith("mlx-bun")) {
+        const flushStarted = performance.now();
+        const flushResponse = await fetch(`${base}/admin/cache/flush`, {
+          method: "POST",
+          signal: AbortSignal.timeout(600_000),
+        });
+        const flush = await flushResponse.json() as {
+          durable?: boolean;
+          pendingSnapshots?: number;
+          pendingSpills?: number;
+          droppedSpills?: number;
+          failedSpills?: number;
+          entries?: number;
+          longest_durable_prefix_tokens?: number;
+        };
+        if (!flushResponse.ok || !flush.durable)
+          throw new Error(`cache durability flush failed: ${JSON.stringify(flush).slice(0, 300)}`);
+        durability = {
+          durable: true,
+          flushMs: performance.now() - flushStarted,
+          pendingSnapshots: flush.pendingSnapshots ?? -1,
+          pendingSpills: flush.pendingSpills ?? -1,
+          droppedSpills: flush.droppedSpills ?? -1,
+          failedSpills: flush.failedSpills ?? -1,
+          longestDurablePrefixTokens: flush.longest_durable_prefix_tokens ?? -1,
+          entries: flush.entries ?? -1,
+        };
+      }
+      await killProc(c.arm.startsWith("mlx-bun") ? 180_000 : 5_000);
       await Bun.sleep(1000);
       spawnProc();
       const readyMs2 = await waitReady(base, apiKey, 600_000);
@@ -694,6 +751,7 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
         readyMs: readyMs2,
         ctxTtftMs: afterRestart.ttftMs,
         cachedTokens: afterRestart.cachedTokens,
+        durability,
       };
     }) : null;
     markLeg("restart");
@@ -734,9 +792,7 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
     };
   } finally {
     clearInterval(rssTimer);
-    proc.kill();
-    await Promise.race([proc.exited, Bun.sleep(5000)]);
-    try { proc.kill(9); } catch { /* already gone */ }
+    await killProc();
     await Bun.sleep(1500); // port + GPU memory settle
   }
 }
@@ -756,7 +812,7 @@ const median = (xs: number[]): number => {
 };
 
 async function main(): Promise<void> {
-  const models = opt("models", "cpm5,e4b,12B").split(",").filter((m) => {
+  const models = opt("models", "cpm5,e4b,12B,qwen27b").split(",").filter((m) => {
     if (!MODELS[m] || !existsSync(`${MODELS[m]!.path}/config.json`)) {
       console.log(`[skip] unknown/missing model ${m}`);
       return false;
@@ -829,6 +885,11 @@ async function main(): Promise<void> {
             (res.coldStartMs != null ? `cold_start_ms=${res.coldStartMs.toFixed(0)} ` : "") +
             `rss_peak_mb=${res.peakRssMB.toFixed(0)} rss_idle_mb=${res.idleRssMB.toFixed(0)} ` +
             (res.restart ? `restart_ctx_ttft=${res.restart.ctxTtftMs.toFixed(0)} restart_cached=${res.restart.cachedTokens} ` : "") +
+            (res.restart?.durability
+              ? `cache_flush_ms=${res.restart.durability.flushMs.toFixed(0)} ` +
+                `cache_durable=${res.restart.durability.durable} ` +
+                `durable_prefix=${res.restart.durability.longestDurablePrefixTokens} `
+              : "") +
             (res.phaseFailures.length ? `failed_phases=${res.phaseFailures.map((f) => f.phase).join("+")} ` : "") +
             `${res.decodeTag}`.trim(),
         });
@@ -844,7 +905,7 @@ async function main(): Promise<void> {
   // ---- markdown report ----
   const lines: string[] = [];
   lines.push(`# serve h2h — ${new Date().toISOString().slice(0, 10)}`);
-  lines.push(``, `machine: ${machine}`, `commit: ${commit}`, ``);
+  lines.push(``, `machine: ${machine}`, `commit: ${commit}`, `toolchain: Bun ${Bun.version}`, ``);
   lines.push(`All numbers over HTTP against REAL servers at their real defaults`);
   lines.push(`(mlx-bun arm = the actual CLI). ttft cold = nonce-busted ~1k prompt;`);
   lines.push(`warm = exact repeat (each stack's own prompt cache). ctx figures from`);
@@ -881,10 +942,24 @@ async function main(): Promise<void> {
         lines.push(`- † ${r.cell.arm}: **${pf.phase}** phase failed (${pf.error.slice(0, 160)}) — "—" cells above; stderr tail in failures section`);
     }
     if (rows.some((r) => r.phaseFailures.length)) lines.push(``);
+    const durableRows = rows.filter((r) => r.restart?.durability);
+    if (durableRows.length) {
+      lines.push(`cache durability before restart:`);
+      for (const r of durableRows) {
+        const d = r.restart!.durability!;
+        lines.push(
+          `- ${r.cell.arm}: durable=${d.durable} · flush ${d.flushMs.toFixed(0)} ms · ` +
+          `longest prefix ${d.longestDurablePrefixTokens} tok · entries ${d.entries} · ` +
+          `pending snapshots/spills ${d.pendingSnapshots}/${d.pendingSpills} · ` +
+          `dropped/failed ${d.droppedSpills}/${d.failedSpills}`,
+        );
+      }
+      lines.push(``);
+    }
     // Per-leg RSS attribution (B4). Two standing caveats (2026-07-07 A7
-    // closure): (1) leg boundary — the ctx entry's debounced write-behind
-    // flushes during the restart phase's pre-kill sleep, so its cost lands
-    // in the RESTART leg's window; (2) accounting — ps RSS only counts
+    // closure): (1) leg boundary: the explicit durability flush runs in the
+    // RESTART leg, so its cost lands in that window; (2) accounting: ps RSS
+    // only counts
     // unified-memory KV pages once the CPU touches them, which the
     // write-behind's hash+write does to the (already-allocated) live
     // entry, while python arms' KV never shows in RSS at all. An elevated

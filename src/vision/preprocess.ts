@@ -6,7 +6,7 @@
 // 1/255 → patchify into 48×48 patch vectors with 2D grid positions →
 // pad to the 280 soft-token budget.
 //
-// Decode strategy (Bun ≥1.3.14): PNG goes straight through fast-png
+// Decode strategy (Bun ≥1.4.0): PNG goes straight through fast-png
 // (exact, lossless — the parity-golden path). Everything else (JPEG,
 // HEIC, AVIF, WebP, TIFF, GIF, BMP) is transcoded to lossless PNG by
 // Bun.Image — native OS codecs (ImageIO on macOS), EXIF auto-orient,

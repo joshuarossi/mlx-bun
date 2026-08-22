@@ -33,5 +33,5 @@ be (re)signed — see [Embedding in a Mac app](/guides/embedding/).
 
 ### Bun version
 
-Requires Bun ≥ 1.3.14 (`bun upgrade`). The version is pinned for `Bun.Image` and
+Requires Bun ≥ 1.4.0 (`bun upgrade`). The version is pinned for `Bun.Image` and
 verified FFI behavior.
