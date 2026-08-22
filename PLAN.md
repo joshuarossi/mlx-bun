@@ -3015,6 +3015,37 @@ those seams directly.
       are green, the PR is merged, no server remains running, and this phase
       plus its active execution-seam design doc move to the archive.
 
+## agg×4 regression — root-caused and fixed `[x]` (2026-08-22)
+
+Found via the 2026-08-22 serve h2h: e4b at 4 concurrent short streams read
+19-27 tok/s aggregate (vs mlx-lm 107) with rows dying after 1-2 tokens —
+silent SSE close, no finish frame; `--batch 1` healthy at 52; pre-merge
+`2f24caa` healthy at **122.5 tok/s** with true batching (~2.3× serial).
+Bisect over the consolidation commits isolated **`443f333` ("route batch
+rows by cache capability")**.
+
+Root cause: `BatchedRotatingCache` (bf16) has no `signature()` override, so
+`cacheSignature()` → `"unknown"`. 443f333 routed the running batch's cache
+into the rot-merge through `isRowBatchCache(prevC) && isRotatingPlainCache(prevC)`
+— the second conjunct is false for EVERY bf16 batched cache → `prevRot`
+evaluated undefined → joiners merged WITHOUT the running row's KV → the
+next full-B decode step crashed in `updateAndFetch`'s grow-path concatenate
+(`(1,2,23,256)` vs `(4,2,256,256)`) → whole-batch drop. The quantized
+variant escaped because `BatchedRotatingQuantCache extends
+RotatingQuantizedKVCache` and inherits a real signature. Lesson: signature-
+based routing requires every routable class to HAVE a signature — "unknown"
+must be treated as a bug, not a route.
+
+Fix (src/serve/batch-scheduler.ts): within the `"rot"` merge branch, route
+by capability alone — `isRowBatchCache(prevC)` — since the quant family is
+dispatched by its own earlier branch. Post-fix e4b CONC×4 = 122-126 tok/s
+aggregate, all rows finish=length (matches pre-merge); cpm5 547 tok/s agg;
+12B all-rows-complete. Regression pinned by tests/batch-rotating-join.test.ts
+(gated, `MLX_BUN_TEST_BATCH_DECODE=1`; fails pre-fix with the exact
+concatenate shapes, passes post). Coverage gap that let this slip: batch
+unit tests only exercised full-attention CPM; the rotating join path now
+has its own test.
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the

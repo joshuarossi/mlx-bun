@@ -387,6 +387,18 @@ the dead serve-path indirection.
 Across every served model: mlx-bun has the fastest decode and the fastest
 TTFT/startup (2–5×), at ~0% server tax vs its own direct engine.
 
+### Batched-concurrency regression fixed (2026-08-22, e4b)
+
+The consolidation merge (`443f333`) broke the unified engine's batched
+lane for hybrid models: 4 concurrent short streams read 19–27 tok/s
+aggregate with rows dying after 1–2 tokens, vs **122.5 tok/s** pre-merge
+(`2f24caa`) and 107 for mlx-lm. Root cause + fix in PLAN.md "agg×4
+regression" — bf16 `BatchedRotatingCache` lost its route in the join
+merge because it has no `signature()` override; joiners built the ring
+without the running row and the next full-B step crashed. Post-fix:
+**122–126 tok/s** aggregate (matches pre-merge), all rows complete;
+cpm5 547 tok/s agg×4. Regression test: tests/batch-rotating-join.test.ts.
+
 ### Direct (engine only)
 
 decode tok/s · prefill tok/s · gen-peak GB
