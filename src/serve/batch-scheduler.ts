@@ -920,7 +920,14 @@ export class BatchScheduler {
           rows.push({ keys: k0, values: v0 });
           offsets.push(prevC.offset);
         }
-        const prevRot = prevC && isRowBatchCache(prevC) && isRotatingPlainCache(prevC)
+        // Capability-only: BatchedRotatingCache has NO signature() override
+        // (cacheSignature → "unknown"), so any signature-based conjunct here
+        // silently drops the running batch's cache from the merge — joiners
+        // then build a B<max batched ring while forwards arrive at full B
+        // (grow-path concatenate crash, whole-batch drop; 2026-08-22 agg×4
+        // regression from 443f333). The quant family is routed by its own
+        // branch above (its subclass inherits a real signature).
+        const prevRot = prevC && isRowBatchCache(prevC)
           ? prevC as unknown as BatchedRotatingCache
           : undefined;
         if (prevRot) {
