@@ -30,4 +30,12 @@ describe("cache signatures", () => {
     expect(isRowBatchCache(new BatchedRotatingCache(1024, [0, 2]))).toBe(true);
     expect(isRowBatchCache(new SSMCache())).toBe(true);
   });
+
+  test("batched rotating carries the rotating-plain signature (merge guards)", () => {
+    // The #mergeJoiner prevRot branch recognizes an already-merged ring by
+    // isRowBatchCache(c) && isRotatingPlainCache(c); without the inherited-
+    // shape signature the second join saw "unknown", rebuilt a one-row cache,
+    // and B>=3 batches lost every sliding layer's KV (2026-08-22 agg×4 collapse).
+    expect(cacheSignature(new BatchedRotatingCache(1024, [0]))).toBe("kv:rotating-plain");
+  });
 });

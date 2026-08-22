@@ -94,6 +94,15 @@ export class BatchedRotatingCache implements Cache {
     this.#rows = new BatchedRotatingState(maxSize, leftPad);
   }
 
+  /** Same signature as the serial RotatingKVCache — the scheduler's merge
+   *  guards recognize a batched ring as "rotating-plain + RowBatchCache"
+   *  (batch-scheduler #mergeJoiner prevRot branch); without this the next
+   *  join sees "unknown", skips the prevRot rows, and replaces the batch's
+   *  sliding-layer KV with a one-row cache (B≥3 collapse). Guard order
+   *  everywhere is isRowBatchCache FIRST, so the shared string never
+   *  misroutes a batched cache into a serial-only path. */
+  signature(): string { return "kv:rotating-plain"; }
+
   get offsetArr(): number[] { return this.#rows.offsets; }
   get leftPad(): number[] { return this.#rows.leftPad; }
   get batchSize(): number { return this.#rows.batchSize; }
