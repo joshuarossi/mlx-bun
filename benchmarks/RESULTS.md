@@ -387,17 +387,28 @@ the dead serve-path indirection.
 Across every served model: mlx-bun has the fastest decode and the fastest
 TTFT/startup (2–5×), at ~0% server tax vs its own direct engine.
 
-### Batched-concurrency regression fixed (2026-08-22, e4b)
+### Served h2h post-consolidation (2026-08-22, e4b, single pass — directional)
 
-The consolidation merge (`443f333`) broke the unified engine's batched
-lane for hybrid models: 4 concurrent short streams read 19–27 tok/s
-aggregate with rows dying after 1–2 tokens, vs **122.5 tok/s** pre-merge
-(`2f24caa`) and 107 for mlx-lm. Root cause + fix in PLAN.md "agg×4
-regression" — bf16 `BatchedRotatingCache` lost its route in the join
-merge because it has no `signature()` override; joiners built the ring
-without the running row and the next full-B step crashed. Post-fix:
-**122–126 tok/s** aggregate (matches pre-merge), all rows complete;
-cpm5 547 tok/s agg×4. Regression test: tests/batch-rotating-join.test.ts.
+Real servers via `bench-serve.ts` on merged main `4103ae1`; loaded machine
+(ambient loadavg ~3), so treat as directional until a quiet-box pass. Full
+findings + root-cause sweep: PLAN.md "Prefill vs mlx-lm (2026-08-22)".
+
+| arm | prefill@1k tok/s | ttft cold/warm ms | decode tok/s | parity |
+|---|---:|---|---:|---|
+| mlx-bun | **1143** | 578 / **39** | **53.9** | ✓✓ byte-identical |
+| mlx-lm | 866 | 772 / 230 | 50.3 | (oracle) |
+
+Served prefill stays a decisive mlx-bun win (+32% @1k, warm TTFT 5.9×)
+after the serving-architecture merge. Engine-direct prefill is
+parity-within-noise elsewhere (cpm5/12B/26B; e4b@256 fresh-process −12%
+is the one reproducible engine-level residual). Chunk-size tuning below
+the 2048 convention is NOT L1-safe: logits are convention-pinned in BOTH
+stacks (mlx reduction-order sensitivity; python drifts more than we do).
+Open lead from this pass: e4b agg×4 read 26.6 vs mlx-lm 107.3 — RESOLVED
+same day as a `443f333` regression (bf16 BatchedRotatingCache lost its
+signature-based route in the join merge → whole-batch drop on joiners;
+PLAN.md "agg×4 regression"). Post-fix: 122-126 tok/s aggregate, matching
+pre-merge.
 
 ### Direct (engine only)
 
