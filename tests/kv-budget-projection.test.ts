@@ -61,4 +61,30 @@ describe("batch KV budget projection", () => {
     expect(uniform.options).toEqual({ kvBits: 8, quantizedKvStart: 0 });
     expect(uniform.batchable(config)).toBe(false);
   });
+
+  test("resolved schemes do not retain mutable caller-owned configuration", () => {
+    const entry: KvQuantSpec = { layerIdx: 1, bits: 4, groupSize: 64 };
+    const kvConfig = [entry];
+    const scheme = resolveKvScheme({ override: "config", config: kvConfig });
+    const projected = scheme.bytesAt(config, totalTokens);
+
+    entry.bits = 8;
+    kvConfig.push({ layerIdx: 3, bits: 8, groupSize: 64 });
+
+    expect(scheme.bytesAt(config, totalTokens)).toBe(projected);
+    expect(scheme.options.kvConfig).toEqual([
+      { layerIdx: 1, bits: 4, groupSize: 64 },
+    ]);
+    expect(Object.isFrozen(scheme.options.kvConfig)).toBe(true);
+    expect(Object.isFrozen(scheme.options.kvConfig![0])).toBe(true);
+    const generationOptions = scheme.generationOptions;
+    generationOptions.kvConfig![0]!.bits = 8;
+    expect(scheme.options.kvConfig![0]!.bits).toBe(4);
+
+    const turboQuant = { kBits: 8, vBits: 3 };
+    const turbo = resolveKvScheme({ turboQuant });
+    turboQuant.vBits = 8;
+    expect(turbo.cacheKey).toBe("turbo-k8v3");
+    expect(Object.isFrozen(turbo.options.turboQuant)).toBe(true);
+  });
 });

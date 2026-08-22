@@ -2800,13 +2800,22 @@ certification suite until then):
 
 ## Serving architecture consolidation `[~]` (opened 2026-08-21)
 
+Scope note: this dependency-ordered landing branch also carries the preparatory
+route extraction, semantic token sink, request ownership/planning, sampler,
+KV/cache capability, runtime-snapshot, and weight-transform seams that S0–S3
+build on. They are part of the requested repository-organization campaign, not
+unrelated product features. Route parity tests pin every extracted dispatch;
+the PR keeps them together because the deeper completion interface consumes
+those seams directly.
+
 - [x] **S0 Completion execution.** Added an opaque, single-use
       `PreparedCompletion` and a `CompletionExecutor` over the existing
       `GenerationGateway` and `CompletionSink`. One executor now owns
       admission, placement reporting, semantic events, logprobs, finish
       reason, usage, and pre-generation cleanup for chat and raw-text,
       streaming and non-streaming. The HTTP adapters still own protocol
-      frames and JSON shape. `src/server.ts` lost 148 net lines. The new
+      frames and JSON shape. `src/server.ts` lost 136 net lines in the S0
+      implementation commit. The new
       `execute()` method has cyclomatic complexity 7 and cognitive
       complexity 12 in the code graph.
       - Contract gate: explicit and default-resolved inference settings
@@ -2912,7 +2921,7 @@ certification suite until then):
         regenerated from the pinned mlx-optiq oracle; the tracked manifest now
         records oracle versions, artifact revision, generator, and blob hashes.
       - Final acceptance (2026-08-21): the complete hygiene-gated two-shard
-        suite passes 2,063 tests with 75 intentional skips and zero failures.
+        suite passes 2,064 tests with 75 intentional skips and zero failures.
         The public TypeScript surface, both Bun entry bundles, web bundle
         freshness, and `git diff --check` pass. All required ignored binary
         fixtures were regenerated from the pinned local oracles; their tracked
@@ -2935,6 +2944,23 @@ certification suite until then):
         in the token decode hot path: DOM rendering is client-side, GLM row
         filtering runs only on batch membership changes, and atomic publication
         is offline conversion I/O.
+      - Post-review immutability gate (2026-08-21): `KvScheme` now copies and
+        freezes every per-layer entry and the nested TurboQuant declaration,
+        so caller mutation cannot change cache conversion or accounting after
+        capability resolution. `GenerationGateway.place()` freezes the exact
+        `RequestShape` before it selects a mechanism or exposes placement to a
+        callback. Mutation regressions pin both boundaries.
+      - Current hot-path performance gate (2026-08-21): two interleaved
+        256-token MiniCPM5 serial benchmark repeats ran the identical script
+        against clean `main` and this branch. Median best serial decode was
+        265.0 tok/s on both sides (branch/main ratio 1.000). This directly
+        covers the `StepSampler` change that post-dates the older 0.992–0.996
+        scheduler/serial ratios.
+- [ ] **S4 Land and post-merge verify.** Open the consolidation PR against
+      `main`, resolve code-review and CI findings with focused regressions, and
+      rerun the real server/UI conversation on merged `main`. Exit when checks
+      are green, the PR is merged, no server remains running, and this phase
+      plus its active execution-seam design doc move to the archive.
 
 ## Context / lore
 

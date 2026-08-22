@@ -114,14 +114,14 @@ export type SerialRun = (
 
 /** What the batchable decision needs from a request (cheap to compute). */
 export interface RequestShape {
-  hasVision: boolean;
-  hasAdapters: boolean;
-  hasRepetitionPenalty: boolean;
+  readonly hasVision: boolean;
+  readonly hasAdapters: boolean;
+  readonly hasRepetitionPenalty: boolean;
   /** The user explicitly set `seed` (reproducibility) — not the random default. */
-  userSeed: boolean;
+  readonly userSeed: boolean;
   /** KV quantization is active. Per-layer configs may use the continuous
    *  scheduler; uniform schemes use the serial mechanism. */
-  kvQuant: boolean;
+  readonly kvQuant: boolean;
   /** TurboQuant is active (docs/design/turboquant-kv.md). Solo-only in v1:
    *  TurboQuantKVCache is a novel Cache implementation (not a KVCache/
    *  RotatingKVCache subclass), so #modelCachesBatchable() already excludes
@@ -129,7 +129,7 @@ export interface RequestShape {
    *  BELT on top of that automatic BRACES, an explicit refusal at the
    *  request-shape level so a turbo request never reaches the scheduler even
    *  before any cache conversion has happened. Both layers exist on purpose. */
-  turboQuant: boolean;
+  readonly turboQuant: boolean;
   /** Any of the mlx-lm sampler/processor extensions is active: min_p, XTC,
    *  logit_bias, presence/frequency penalty. INFORMATIONAL ONLY: since the
    *  continuous scheduler grew per-row samplers/logits processors, these all
@@ -137,25 +137,25 @@ export interface RequestShape {
    *  repetition-penalty note in #supportsContinuous). Kept so /stats and
    *  scheduling traces can show what
    *  a request carries. */
-  hasLogitsExtras: boolean;
+  readonly hasLogitsExtras: boolean;
   /** A grammar controller compiled for this request (response_format /
    *  guided_*). Degrade-path requests (compile failed → prompt injection)
    *  have NO controller and stay batchable — the injection already happened
    *  at the prompt level. B0 routes grammar to serial; B1 makes it batchable
    *  (per-row matchers), with MLX_BUN_GRAMMAR_BATCH=0 forcing the B0 serial
    *  fallback as the A/B + kill switch. */
-  hasGrammar: boolean;
+  readonly hasGrammar: boolean;
   /** The request asked for logprobs/top_logprobs capture. Batch-lane logprobs
    *  are deferred (the scheduler's per-row sampler doesn't capture or read
    *  back logprob arrays yet), so these route to the serial lane like the
    *  other mlx-lm request extensions above. */
-  wantsLogprobs: boolean;
+  readonly wantsLogprobs: boolean;
   /** A draft model is configured (serve --draft-model). Server-level and
    *  upstream-parity: mlx_lm.server sets is_batchable = (draft is None), so
    *  every request routes serial while a draft is mounted — speculation is a
    *  B=1 latency optimization, batching a throughput one; they are different
    *  mechanisms by design (grammar-spec-batching-integration.md). */
-  hasDraft: boolean;
+  readonly hasDraft: boolean;
 }
 
 export type GenerationMechanism = "serial" | "continuous";
@@ -357,9 +357,10 @@ export class GenerationGateway {
   }
 
   place(shape: RequestShape): GenerationPlacement {
+    const frozenShape = Object.freeze(shape);
     return Object.freeze({
-      shape,
-      mechanism: this.#supportsContinuous(shape) ? "continuous" : "serial",
+      shape: frozenShape,
+      mechanism: this.#supportsContinuous(frozenShape) ? "continuous" : "serial",
     });
   }
 

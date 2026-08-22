@@ -273,18 +273,41 @@ function familyProfile(config: ModelConfig, fingerprint: string): ModelProfile {
   );
 }
 
-function graphAccepts(profile: ModelProfile, config: ModelConfig): boolean {
-  switch (profile.execution.graph) {
-    case "glm5.2": return isGlm52Config(config);
-    case "diffusion-gemma": return isDiffusionGemmaConfig(config);
-    case "minicpm5": return isMiniCPM5Config(config);
-    case "qwen3.5": return isQwen35Config(config);
-    case "qwen3-moe": return isQwen3MoeConfig(config);
-    case "qwen3": return isQwen3Config(config);
-    case "gemma4": return config.modelType.startsWith("gemma4");
-    case "universal-dense":
+interface GraphMetadata {
+  readonly accepts: (config: ModelConfig) => boolean;
+  readonly capabilities: readonly EngineCapability[];
+}
+
+const GRAPH_METADATA: Readonly<Record<ModelGraph, GraphMetadata>> = Object.freeze({
+  "gemma4": {
+    accepts: (config) => config.modelType.startsWith("gemma4"),
+    capabilities: ["gemma4-graph"],
+  },
+  "minicpm5": { accepts: isMiniCPM5Config, capabilities: ["minicpm5-graph"] },
+  "qwen3.5": {
+    accepts: isQwen35Config,
+    capabilities: ["qwen3.5-graph", "recurrent-state"],
+  },
+  "qwen3": { accepts: isQwen3Config, capabilities: ["qwen3-graph"] },
+  "qwen3-moe": { accepts: isQwen3MoeConfig, capabilities: ["qwen3-moe-graph"] },
+  "diffusion-gemma": {
+    accepts: isDiffusionGemmaConfig,
+    capabilities: ["diffusion-gemma-graph"],
+  },
+  "glm5.2": {
+    accepts: isGlm52Config,
+    capabilities: ["glm5.2-graph", "streamed-experts"],
+  },
+  "universal-dense": {
+    accepts: (config) => {
       try { return genericArgsFor(config) !== null; } catch { return false; }
-  }
+    },
+    capabilities: ["universal-dense-graph"],
+  },
+});
+
+function graphAccepts(profile: ModelProfile, config: ModelConfig): boolean {
+  return GRAPH_METADATA[profile.execution.graph].accepts(config);
 }
 
 function executionCapabilities(profile: ModelProfile): EngineCapability[] {
@@ -293,16 +316,7 @@ function executionCapabilities(profile: ModelProfile): EngineCapability[] {
     : "safetensors"];
   if (profile.execution.loop === "diffusion") required.push("diffusion");
   else required.push("autoregressive");
-  switch (profile.execution.graph) {
-    case "gemma4": required.push("gemma4-graph"); break;
-    case "minicpm5": required.push("minicpm5-graph"); break;
-    case "qwen3.5": required.push("qwen3.5-graph", "recurrent-state"); break;
-    case "qwen3": required.push("qwen3-graph"); break;
-    case "qwen3-moe": required.push("qwen3-moe-graph"); break;
-    case "diffusion-gemma": required.push("diffusion-gemma-graph"); break;
-    case "glm5.2": required.push("glm5.2-graph", "streamed-experts"); break;
-    case "universal-dense": required.push("universal-dense-graph"); break;
-  }
+  required.push(...GRAPH_METADATA[profile.execution.graph].capabilities);
   if (profile.execution.specialization === "generated") required.push("generated-graph");
   return required;
 }

@@ -138,7 +138,7 @@ mixed-KV GPU gates pass: MiniCPM5 B=1 is bit-exact, MiniCPM5 B=2 peaks at KL
 1.21e-1 under its 0.2 padded-row bar, and Gemma 12B rotating-quant peaks at KL
 0/3.04e-3 under its 1e-3/1e-1 bars.
 
-The final two-shard gate passes 2,063 tests with 75 intentional skips and zero
+The final two-shard gate passes 2,064 tests with 75 intentional skips and zero
 failures; TypeScript, both Bun entry bundles, web bundle freshness, hygiene,
 and whitespace checks pass too. The same acceptance pass fixed three mainline
 lifecycle defects rather than carrying them into the PR. A queued chat render
@@ -152,6 +152,16 @@ composer recovery all worked with no runtime exception or duplicated response.
 These fixes do not touch the decode loop: the chat change is DOM lifecycle
 work, GLM row filtering runs only when rows leave a batch, and atomic
 publication is offline I/O.
+
+Post-review hardening also closes two mutability holes: resolved KV schemes
+own frozen copies of nested layer/TurboQuant declarations, and placement
+freezes the exact request shape before mechanism selection or callbacks. A
+fresh interleaved main-vs-branch MiniCPM5 serial benchmark directly covering
+the new sampler path measured a 1.000 median-best decode ratio (about 265.0
+tok/s on both sides).
+
+Next action (S4): open the PR into `main`, resolve review and CI findings, then
+repeat the real conversation smoke on merged `main` and archive this phase.
 
 ## Completed: native Colibri/GLM-5.2 port (Phase 21, closed 2026-08-17)
 

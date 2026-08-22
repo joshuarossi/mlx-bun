@@ -1616,7 +1616,7 @@ export function createServer(
     turboQuant: serverOptions.turboQuant,
     config: ctx.kvConfig,
   });
-  const kvScheme = resolvedKvScheme.options;
+  const kvScheme = resolvedKvScheme.generationOptions;
   // Phase 3.1: kvConfig whose layers are all full-attention BATCHES (the
   // scheduler applies the mixed scheme per row); uniform kvBits and configs
   // touching rotating layers still route those requests serial. The warning

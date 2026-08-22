@@ -12,6 +12,11 @@ export interface KvSchemeOptions {
   turboQuant?: TurboQuantScheme;
 }
 
+interface ResolvedKvSchemeOptions extends Omit<KvSchemeOptions, "kvConfig" | "turboQuant"> {
+  readonly kvConfig?: readonly Readonly<KvQuantSpec>[];
+  readonly turboQuant?: Readonly<TurboQuantScheme>;
+}
+
 export type KvSchemeKind = "bf16" | "affine-uniform" | "affine-config" | "turbo";
 
 export interface KvGeometry {
@@ -83,15 +88,20 @@ export function kvBytesAt(
 
 export class KvScheme {
   readonly kind: KvSchemeKind;
-  readonly options: Readonly<KvSchemeOptions>;
+  readonly options: Readonly<ResolvedKvSchemeOptions>;
 
   constructor(kind: KvSchemeKind, options: KvSchemeOptions) {
     this.kind = kind;
+    const kvConfig = options.kvConfig?.map((entry) =>
+      Object.freeze({ ...entry }),
+    );
+    const turboQuant = options.turboQuant
+      ? Object.freeze({ ...options.turboQuant })
+      : undefined;
     this.options = Object.freeze({
       ...options,
-      ...(options.kvConfig
-        ? { kvConfig: Object.freeze([...options.kvConfig]) as unknown as KvQuantSpec[] }
-        : {}),
+      ...(kvConfig ? { kvConfig: Object.freeze(kvConfig) } : {}),
+      ...(turboQuant ? { turboQuant } : {}),
     });
   }
 
@@ -125,8 +135,23 @@ export class KvScheme {
     return kvBytesAt(config, tokens, this.fitOptions);
   }
 
+  /** Mutable compatibility value for the numerical generator. The scheme
+   *  keeps its declaration immutable and hands legacy consumers owned copies. */
+  get generationOptions(): KvSchemeOptions {
+    const { kvConfig, turboQuant, ...scalar } = this.options;
+    return {
+      ...scalar,
+      ...(kvConfig
+        ? { kvConfig: kvConfig.map((entry) => ({ ...entry })) }
+        : {}),
+      ...(turboQuant
+        ? { turboQuant: { ...turboQuant } }
+        : {}),
+    };
+  }
+
   get fitOptions(): KvSchemeOptions {
-    return this.kind === "turbo" ? {} : { ...this.options };
+    return this.kind === "turbo" ? {} : this.generationOptions;
   }
 
   /** The current batch engine accepts only per-layer affine schemes whose

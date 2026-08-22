@@ -8,8 +8,8 @@ export interface RuntimeConfig {
   number(name: RuntimeKey, fallback: number): number;
 }
 
-/** Build an immutable process-start configuration. Only mlx-bun-owned keys
- *  cross this boundary; feature code never reads or mutates process.env. */
+/** Build one immutable runtime snapshot. Only mlx-bun-owned keys cross this
+ *  boundary; feature code never reads or mutates process.env. */
 export function createRuntimeConfig(
   source: Readonly<Record<string, string | undefined>>,
 ): RuntimeConfig {

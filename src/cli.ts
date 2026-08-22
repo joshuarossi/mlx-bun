@@ -1773,7 +1773,7 @@ switch (cmd) {
           override: route.kvQuant,
           turboQuant: route.turboQuant,
           config: tm.config.kvQuant,
-        }).options
+        }).generationOptions
       : undefined;
     const num = (n: string): number | undefined => { const v = opt(n); return v == null ? undefined : Number(v); };
     const text = await generateText(tm, prompt, {
@@ -2507,7 +2507,7 @@ switch (cmd) {
       console.error(`--candidate-bits expects a comma list of integers in [2, 8] (got "${opt("candidate-bits")}")`);
       process.exit(1);
     }
-    const rotateWeights = argv.includes("--rotate-weights");
+    const rotateWeights = flag("rotate-weights");
     const rotationSeed = Number(opt("rotation-seed", "42"));
     if (!Number.isInteger(rotationSeed)) {
       console.error(`--rotation-seed expects an integer (got "${opt("rotation-seed")}")`);

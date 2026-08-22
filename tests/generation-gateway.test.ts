@@ -58,10 +58,14 @@ const batchable: RequestShape = {
 describe("GenerationGateway.place", () => {
   test("place freezes one shape and declares its scheduling mechanism", () => {
     const g = gateway(2);
-    const placement = g.place(batchable);
-    expect(placement).toEqual({ shape: batchable, mechanism: "continuous" });
-    expect(placement.shape).toBe(batchable);
+    const shape = { ...batchable };
+    const placement = g.place(shape);
+    expect(placement).toEqual({ shape, mechanism: "continuous" });
+    expect(placement.shape).toBe(shape);
     expect(Object.isFrozen(placement)).toBe(true);
+    expect(Object.isFrozen(placement.shape)).toBe(true);
+    expect(() => Object.assign(shape, { hasVision: true })).toThrow();
+    expect(placement.mechanism).toBe("continuous");
   });
 
   test("--batch 1 declares the preserved strict-serial mechanism", () => {

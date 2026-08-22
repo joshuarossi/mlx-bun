@@ -24,17 +24,20 @@ lone scheduler request "batched." The continuous scheduler chooses its B=1
 fast path or B=N step from active rows. The strict serial executor remains for
 `--batch 1` and for declared compositions the continuous scheduler does not yet
 implement. Existing parity evidence covers both the default scheduler's B=1
-path and strict serial, while the recorded paired decode ratios are
-0.992–0.996.
+path and strict serial. The recorded scheduler/serial decode ratios are
+0.992–0.996, and a fresh main-vs-branch serial gate after the sampler
+consolidation measured a 1.000 median-best ratio (about 265.0 tok/s on both
+sides, MiniCPM5, two interleaved 256-token repeats).
 
 Final acceptance after the GPQA pause exercised the seam through the complete
 two-shard suite and a real two-turn browser conversation. The suite passed
-2,063 tests with zero failures. The browser run verified streaming, tool
+2,064 tests with zero failures. The browser run verified streaming, tool
 events, context carryover, metrics, and turn recovery. A mainline-only queued
 DOM render race found by that run was fixed at the UI lifecycle boundary; no
 decode-loop work was added. The architecture changes likewise keep accounting
-and capability decisions outside numerical kernels, so the established B=1
-latency and parity evidence remains the performance gate.
+and capability decisions outside numerical kernels. The fresh serial A/B plus
+the established scheduler B=1 parity and latency evidence are the performance
+gate.
 
 ## What the oracle actually does
 
