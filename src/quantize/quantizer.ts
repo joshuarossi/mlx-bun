@@ -37,6 +37,12 @@ import {
 import { loadLlmCalibration } from "./calibration";
 import { analyzeSensitivityExact, type SensitivityResult } from "./sensitivity";
 import { optimizeMixedPrecision } from "./allocator";
+import type {
+  WeightTransform,
+  WeightTransformContext,
+  WeightTransformPlan,
+} from "./weight-transform";
+import { writeAtomicDirectory } from "./atomic-output";
 
 /** Quantize the allocator cache this often (in modules processed). */
 const CACHE_CLEAR_EVERY = 16;
@@ -56,6 +62,8 @@ export interface QuantizeOptions {
    *  block (mlx's "not quantized" convention). Shape-ineligible modules
    *  never reach this. */
   quantizePredicate?: (base: string, fullShape: number[]) => boolean;
+  /** Optional offline basis transform applied before quantization. */
+  weightTransform?: WeightTransform;
 
   // --- mixed-precision (OptiQ sensitivity + knapsack) -------------------
   // Setting targetBpw switches quantizeModelDir to the mixed path: it loads the
@@ -73,6 +81,23 @@ export interface QuantizeOptions {
   calibrationMix?: string;
   /** Number of calibration samples (forward passes per layer×bit probe). */
   nCalibration?: number;
+  /** Dependency used to provide the loadable model for sensitivity sweeps. */
+  probeSource?: ProbeSource;
+}
+
+export interface PreparedProbe {
+  modelDir: string;
+  dispose(): void | Promise<void>;
+}
+
+/** Supplies a loadable sensitivity model without re-entering the top-level
+ *  quantization orchestrator. Tests and callers may inject an existing probe. */
+export interface ProbeSource {
+  prepare(
+    srcDir: string,
+    opts: QuantizeOptions,
+    onProgress?: (e: ProgressEvent) => void,
+  ): Promise<PreparedProbe>;
 }
 
 export interface ProgressEvent {
@@ -124,9 +149,6 @@ export async function quantizeModelDir(
   opts: QuantizeOptions,
   onProgress?: (e: ProgressEvent) => void,
 ): Promise<QuantizeResult> {
-  const groupSize = opts.groupSize;
-  const mode = opts.mode ?? "affine";
-
   // Mixed-precision path: derive a per-module bit allocation first, then write.
   let perLayerBits: Map<string, number> | undefined;
   let mixedMeta: MixedMeta | undefined;
@@ -135,6 +157,34 @@ export async function quantizeModelDir(
     perLayerBits = alloc.perLayerBits;
     mixedMeta = alloc.meta;
   }
+
+  return writeAtomicDirectory(outDir, (stagingDir) =>
+    writeQuantizedModelDir(
+      srcDir,
+      stagingDir,
+      opts,
+      perLayerBits,
+      mixedMeta,
+      onProgress,
+      outDir,
+    ),
+  );
+}
+
+/** Lower-level writer used by the public orchestrator and its probe source.
+ *  Deliberately does not perform sensitivity/allocation or call back into
+ *  quantizeModelDir. */
+async function writeQuantizedModelDir(
+  srcDir: string,
+  outDir: string,
+  opts: QuantizeOptions,
+  perLayerBits?: Map<string, number>,
+  mixedMeta?: MixedMeta,
+  onProgress?: (e: ProgressEvent) => void,
+  publishedOutDir = outDir,
+): Promise<QuantizeResult> {
+  const groupSize = opts.groupSize;
+  const mode = opts.mode ?? "affine";
 
   const bits = opts.bits;
 
@@ -148,13 +198,31 @@ export async function quantizeModelDir(
   const config = await loadModelConfig(srcDir);
   const srcQuant: QuantizationConfig | null = config.quantization;
   const weights = await Weights.open(srcDir);
+  let transformPlan: WeightTransformPlan | undefined;
+  let transformContext: WeightTransformContext | undefined;
+  try {
+    if (opts.weightTransform && srcQuant)
+      throw new Error(
+        `weight transform ${opts.weightTransform.id} requires full-precision source weights`,
+      );
+    transformPlan = opts.weightTransform?.plan(weights.tensorNames, config);
+    if (transformPlan) {
+      validateTransformPlan(transformPlan, weights.tensorNames);
+      transformContext = opts.weightTransform!.createContext(weights, transformPlan);
+      progress("transforming", `Planned ${transformPlan.id}`, 0);
+    }
+  } catch (error) {
+    transformContext?.dispose();
+    weights.dispose();
+    throw error;
+  }
 
   // Preserve the source tensor order so the output diff is mlx-lm-shaped.
   // tensorNames is sorted; we walk modules in that order. For each module's
   // `.weight` we decide quantize / pass-through, then emit its tensors. We
   // skip the source `.scales`/`.biases` of already-quantized modules (they're
   // regenerated) and pass through everything else verbatim.
-  const names = weights.tensorNames;
+  const names = transformPlan?.outputNames ?? weights.tensorNames;
 
   // Group names by module base so we can detect "already quantized" (has a
   // sibling `.scales`) and process a module atomically.
@@ -194,26 +262,28 @@ export async function quantizeModelDir(
       if (!hasWeight) {
         // Module with only scales/biases and no weight — shouldn't happen, but
         // pass any present tensors through unchanged.
-        for (const suf of suffixes) out.push(named(weights, `${base}.${suf}`));
+        for (const suf of suffixes)
+          out.push(outputTensor(weights, transformPlan, transformContext, `${base}.${suf}`));
         bumpProgress();
         continue;
       }
 
       // Materialize the full-precision weight for this module.
       const weightName = `${base}.weight`;
-      const shape = weights.info(weightName).shape;
+      let fullWeight = outputArray(weights, transformPlan, transformContext, weightName);
+      const shape = fullWeight.shape;
 
       // Determine the *original* (full-precision) shape: if already quantized,
       // the packed weight's last dim is compressed — recover the real width
       // from the scales (groups × srcGroupSize) when dequantizing.
-      let fullWeight = weights.tensor(weightName);
       let materialized: MlxArray | null = null;
 
       if (alreadyQuant) {
         const srcSpec = quantFor(srcQuant, base);
         if (!srcSpec) {
           // Has scales but config says unquantized — fall back to passthrough.
-          for (const suf of suffixes) out.push(named(weights, `${base}.${suf}`));
+          for (const suf of suffixes)
+            out.push(outputTensor(weights, transformPlan, transformContext, `${base}.${suf}`));
           bumpProgress();
           continue;
         }
@@ -263,6 +333,7 @@ export async function quantizeModelDir(
       // bf16 matches the reference dtype and the scales/biases dtype on disk).
       const bf16 = fullWeight.astype(Dtype.bfloat16, cpuStream);
       if (materialized) materialized.dispose();
+      else if (transformContext) fullWeight.dispose();
 
       const q = quantize(bf16, groupSize, moduleBits, mode, cpuStream);
       bf16.dispose();
@@ -283,9 +354,10 @@ export async function quantizeModelDir(
     }
 
     // Pass through non-weight/scale/bias tensors (e.g. anything unusual).
-    for (const name of passthroughNames) out.push(named(weights, name));
+    for (const name of passthroughNames)
+      out.push(outputTensor(weights, transformPlan, transformContext, name));
 
-    progress("writing", `Writing ${out.length} tensors to ${outDir}`, 1);
+    progress("writing", `Writing ${out.length} tensors to ${publishedOutDir}`, 1);
     const write = writeShardedSafetensors(outDir, out);
 
     const achievedBpw = quantizedParams > 0 ? quantizedBits / quantizedParams : 0;
@@ -302,7 +374,9 @@ export async function quantizeModelDir(
     // emit its standard optiq_metadata.json sidecar. For mixed mode we write a
     // richer OptiQ-style sidecar ourselves below (method "mixed_precision").
     const block = buildQuantizationBlock({ bits: defaultBits, groupSize, mode }, perLayer);
-    await writeQuantizedConfig(config.raw, outDir, block, {
+    const outputConfig = transformedConfig(config.raw, transformPlan);
+    const weightTransforms = transformPlan ? [transformPlan.metadata] : undefined;
+    await writeQuantizedConfig(outputConfig, outDir, block, {
       srcDir,
       optiq: mixedMeta
         ? undefined
@@ -313,6 +387,7 @@ export async function quantizeModelDir(
             group_size: groupSize,
             achieved_bpw: achievedBpw,
             per_layer_count: nQuantized,
+            weight_transforms: weightTransforms,
           },
     });
 
@@ -331,6 +406,7 @@ export async function quantizeModelDir(
             n_high: mixedMeta.nHigh,
             n_low: mixedMeta.nLow,
             per_layer_count: nQuantized,
+            weight_transforms: weightTransforms,
             per_layer: Object.fromEntries(
               [...perLayer].map(([p, e]) => [
                 p,
@@ -344,13 +420,14 @@ export async function quantizeModelDir(
       );
     }
 
-    progress("done", `Quantized ${nQuantized} modules → ${outDir}`, 1);
-    return { outDir, achievedBpw, nQuantized, write };
+    progress("done", `Quantized ${nQuantized} modules → ${publishedOutDir}`, 1);
+    return { outDir: publishedOutDir, achievedBpw, nQuantized, write };
   } finally {
     // Dispose every emitted array (their bytes are now on disk) and the source.
     for (const t of out) {
       try { t.array.dispose(); } catch {}
     }
+    transformContext?.dispose();
     weights.dispose();
     clearCache();
   }
@@ -367,8 +444,57 @@ export async function quantizeModelDir(
 }
 
 /** Pass-through tensor: the lazy mlx array straight from the source weights. */
-function named(weights: Weights, name: string): NamedTensor {
-  return { name, array: weights.tensor(name) };
+function outputTensor(
+  weights: Weights,
+  plan: WeightTransformPlan | undefined,
+  context: WeightTransformContext | undefined,
+  name: string,
+): NamedTensor {
+  return { name, array: outputArray(weights, plan, context, name) };
+}
+
+function outputArray(
+  weights: Weights,
+  plan: WeightTransformPlan | undefined,
+  context: WeightTransformContext | undefined,
+  name: string,
+): MlxArray {
+  if (!plan || !context) return weights.tensor(name);
+  const sourceName = plan.sourceByOutput.get(name);
+  if (!sourceName) throw new Error(`weight transform ${plan.id}: no source for ${name}`);
+  return context.apply(name, weights.tensor(sourceName));
+}
+
+function validateTransformPlan(
+  plan: WeightTransformPlan,
+  sourceNames: readonly string[],
+): void {
+  const seen = new Set<string>();
+  const sources = new Set(sourceNames);
+  for (const name of plan.outputNames) {
+    if (seen.has(name)) throw new Error(`weight transform ${plan.id}: duplicate output ${name}`);
+    seen.add(name);
+    const sourceName = plan.sourceByOutput.get(name);
+    if (!sourceName)
+      throw new Error(`weight transform ${plan.id}: no source for ${name}`);
+    if (!sources.has(sourceName))
+      throw new Error(`weight transform ${plan.id}: missing source tensor ${sourceName}`);
+  }
+}
+
+function transformedConfig(
+  raw: Record<string, unknown>,
+  plan: WeightTransformPlan | undefined,
+): Record<string, unknown> {
+  if (!plan?.untieWordEmbeddings) return raw;
+  const out: Record<string, unknown> = { ...raw, tie_word_embeddings: false };
+  if (raw.text_config && typeof raw.text_config === "object") {
+    out.text_config = {
+      ...(raw.text_config as Record<string, unknown>),
+      tie_word_embeddings: false,
+    };
+  }
+  return out;
 }
 
 /** Summary of a mixed-precision allocation, for the sidecar + return value. */
@@ -380,6 +506,57 @@ interface MixedMeta {
   /** Knapsack's own BPW estimate over the analyzed layers (params-weighted,
    *  no group overhead) — distinct from the writer's achievedBpw. */
   allocBpw: number;
+}
+
+const defaultProbeSource: ProbeSource = {
+  async prepare(srcDir, opts, onProgress) {
+    const config = await loadModelConfig(srcDir);
+    if (config.quantization) return { modelDir: srcDir, dispose() {} };
+
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const tempDir = mkdtempSync(join(tmpdir(), "mlx-bun-qbaseline-"));
+    onProgress?.({
+      stage: "sensitivity",
+      message: "Unquantized source — building an 8-bit baseline for the sweep",
+      progress: 0,
+    });
+    try {
+      await writeQuantizedModelDir(
+        srcDir,
+        tempDir,
+        {
+          ...opts,
+          bits: 8,
+          targetBpw: undefined,
+          probeSource: undefined,
+        },
+      );
+    } catch (error) {
+      rmSync(tempDir, { recursive: true, force: true });
+      throw error;
+    }
+    return {
+      modelDir: tempDir,
+      dispose: () => rmSync(tempDir, { recursive: true, force: true }),
+    };
+  },
+};
+
+/** Acquire/use/release helper that pins the injected ProbeSource lifecycle. */
+export async function withPreparedProbe<T>(
+  source: ProbeSource,
+  srcDir: string,
+  opts: QuantizeOptions,
+  run: (modelDir: string) => Promise<T>,
+  onProgress?: (e: ProgressEvent) => void,
+): Promise<T> {
+  const prepared = await source.prepare(srcDir, opts, onProgress);
+  try {
+    return await run(prepared.modelDir);
+  } finally {
+    await prepared.dispose();
+  }
 }
 
 /**
@@ -407,95 +584,83 @@ async function computeMixedAllocation(
 
   progress("sensitivity", "Loading model for sensitivity analysis", 0.0);
 
-  // The sensitivity sweep runs FORWARD passes, which need a model the runtime
-  // can load — and mlx-bun's model graph can only load QUANTIZED weights. If the
-  // source is bf16 (unquantized), build a temporary uniform 8-bit baseline
-  // (near-lossless) to probe against. The FINAL weights are still quantized from
-  // the original bf16 source per the allocation (quantizeModelDir reads srcDir),
-  // so fidelity is not capped by the baseline — the baseline only anchors the
-  // per-layer sensitivity (8→4-bit) measurement.
-  const srcConfig = await loadModelConfig(srcDir);
-  let probeDir = srcDir;
-  let tempBaseline: string | null = null;
-  if (!srcConfig.quantization) {
-    const { mkdtempSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-    tempBaseline = mkdtempSync(join(tmpdir(), "mlx-bun-qbaseline-"));
-    progress("sensitivity", "Unquantized source — building an 8-bit baseline for the sweep", 0.0);
-    await quantizeModelDir(srcDir, tempBaseline, { bits: 8, groupSize, mode: "affine" });
-    probeDir = tempBaseline;
-  }
+  // The source dependency owns preparation and cleanup. The default builds a
+  // temporary uniform 8-bit baseline from bf16 through the lower-level writer;
+  // an injected source can point at a prebuilt probe without orchestrator
+  // recursion.
+  return withPreparedProbe(
+    opts.probeSource ?? defaultProbeSource,
+    srcDir,
+    opts,
+    async (probeDir) => {
+      const config = await loadModelConfig(probeDir);
+      const weights = await Weights.open(probeDir);
+      try {
+        const model = createModel(weights, config);
+        const tokenizer = await loadTokenizer(srcDir);
 
-  const config = await loadModelConfig(probeDir);
-  const weights = await Weights.open(probeDir);
-  try {
-    const model = createModel(weights, config);
-    const tokenizer = await loadTokenizer(srcDir);
+        // Calibration: short sequences keep per-probe forward memory modest.
+        progress("sensitivity", "Building calibration set", 0.02);
+        const calibrationFn = loadLlmCalibration(tokenizer, {
+          nSamples: nCalibration,
+          seqLen: 128,
+          mix: calibrationMix,
+        });
+        const calIds = calibrationFn();
 
-    // Calibration: short sequences keep the per-probe forward memory modest.
-    progress("sensitivity", "Building calibration set", 0.02);
-    const calibrationFn = loadLlmCalibration(tokenizer, {
-      nSamples: nCalibration,
-      seqLen: 128,
-      mix: calibrationMix,
-    });
-    const calIds = calibrationFn();
+        // Quantizable linears to probe: the model's LoRA-target linears
+        // (attention + MLP projections), keyed by full module path.
+        const layers = model.loraTargets();
 
-    // Quantizable linears to probe: the model's LoRA-target linears (attention
-    // + MLP projections), keyed by full module path.
-    const layers = model.loraTargets();
-
-    progress(
-      "sensitivity",
-      `Probing ${layers.size} layers × ${candidateBits.length} bit-widths`,
-      0.05,
-    );
-    const sensitivity: SensitivityResult[] = analyzeSensitivityExact(
-      model,
-      layers,
-      calIds,
-      { candidateBits, groupSize },
-      (done, total, layerName) =>
         progress(
           "sensitivity",
-          `Sensitivity ${done}/${total}: ${layerName}`,
-          0.05 + 0.85 * (done / Math.max(total, 1)),
-        ),
-    );
+          `Probing ${layers.size} layers × ${candidateBits.length} bit-widths`,
+          0.05,
+        );
+        const sensitivity: SensitivityResult[] = analyzeSensitivityExact(
+          model,
+          layers,
+          calIds,
+          { candidateBits, groupSize },
+          (done, total, layerName) =>
+            progress(
+              "sensitivity",
+              `Sensitivity ${done}/${total}: ${layerName}`,
+              0.05 + 0.85 * (done / Math.max(total, 1)),
+            ),
+        );
 
-    // Greedy knapsack → per-layer bit allocation.
-    progress("allocating", "Optimizing per-layer bit allocation", 0.92);
-    const opt = optimizeMixedPrecision(sensitivity, {
-      targetBpw,
-      candidateBits,
-      groupSize,
-    });
+        // Greedy knapsack → per-layer bit allocation.
+        progress("allocating", "Optimizing per-layer bit allocation", 0.92);
+        const opt = optimizeMixedPrecision(sensitivity, {
+          targetBpw,
+          candidateBits,
+          groupSize,
+        });
 
-    const perLayerBits = new Map<string, number>();
-    for (const c of opt.configs) perLayerBits.set(c.layerName, c.bits);
+        const perLayerBits = new Map<string, number>();
+        for (const c of opt.configs) perLayerBits.set(c.layerName, c.bits);
 
-    const meta: MixedMeta = {
-      targetBpw,
-      candidateBits,
-      nHigh: opt.nHighBits,
-      nLow: opt.nLowBits,
-      allocBpw: opt.achievedBpw,
-    };
+        const meta: MixedMeta = {
+          targetBpw,
+          candidateBits,
+          nHigh: opt.nHighBits,
+          nLow: opt.nLowBits,
+          allocBpw: opt.achievedBpw,
+        };
 
-    progress(
-      "allocating",
-      `Allocated ${opt.nHighBits} high / ${opt.nLowBits} low (alloc bpw ${opt.achievedBpw.toFixed(2)})`,
-      0.95,
-    );
+        progress(
+          "allocating",
+          `Allocated ${opt.nHighBits} high / ${opt.nLowBits} low (alloc bpw ${opt.achievedBpw.toFixed(2)})`,
+          0.95,
+        );
 
-    return { perLayerBits, meta };
-  } finally {
-    weights.dispose();
-    clearCache();
-    if (tempBaseline) {
-      const { rmSync } = await import("node:fs");
-      rmSync(tempBaseline, { recursive: true, force: true });
-    }
-  }
+        return { perLayerBits, meta };
+      } finally {
+        weights.dispose();
+        clearCache();
+      }
+    },
+    onProgress,
+  );
 }

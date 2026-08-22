@@ -17,6 +17,7 @@
 //   • the pure deterministic helpers (assertsValueAsCurrent / dedupeAdjacentMarkers).
 
 import { describe, expect, it, afterEach } from "bun:test";
+import { configureRuntime } from "../src/runtime-config";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -330,10 +331,10 @@ describe("reconcile — deterministic helpers", () => {
   });
 });
 
-const savedWiki = process.env.MLX_BUN_WIKI;
+let restoreWiki = () => {};
 afterEach(() => {
-  if (savedWiki === undefined) delete process.env.MLX_BUN_WIKI;
-  else process.env.MLX_BUN_WIKI = savedWiki;
+  restoreWiki();
+  restoreWiki = () => {};
 });
 
 describe("reconcile — effectful entry writes the file + a ledger row, idempotent", () => {
@@ -341,7 +342,8 @@ describe("reconcile — effectful entry writes the file + a ledger row, idempote
     const root = await mkdtemp(join(tmpdir(), "dreaming-reconcile-"));
     await mkdir(join(root, "articles"), { recursive: true });
     await writeFile(join(root, "articles", `${STEM}.md`), content);
-    process.env.MLX_BUN_WIKI = root;
+    restoreWiki();
+    restoreWiki = configureRuntime({ MLX_BUN_WIKI: root });
     return { root, store: new MemoryStore(":memory:") };
   }
 

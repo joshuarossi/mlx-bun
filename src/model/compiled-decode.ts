@@ -33,6 +33,7 @@
 import { MlxArray } from "../mlx/array";
 import { CompiledFunction } from "../mlx/compile";
 import * as ops from "../mlx/ops";
+import { runtimeValue } from "../runtime-config";
 import {
   Gemma4Model,
   KVCache,
@@ -207,7 +208,7 @@ function slotDesc(c: AnyCache, plan: DecodeStepPlan): SlotDesc {
  *  inside quantizedSdpa's dispatch). Offsets/capacities don't — they're
  *  array values or shapeless dims. */
 function closureKey(descs: SlotDesc[]): string {
-  const flags = `nf=${process.env.MLX_BUN_NO_FUSED_SDPA === "1" ? 1 : 0}`;
+  const flags = `nf=${runtimeValue("MLX_BUN_NO_FUSED_SDPA") === "1" ? 1 : 0}`;
   return descs.map((d) => `${d.kind}:${d.groupSize}:${d.bits}`).join(",") + "|" + flags;
 }
 
@@ -555,7 +556,7 @@ export class CompiledDecode {
       anyCaches
         .map((c, i) => (phases[i] === "ring" ? `${slotDesc(c, plans[i]!).kind}:${slotDesc(c, plans[i]!).groupSize}:${slotDesc(c, plans[i]!).bits}` : "js"))
         .join(",") +
-      `|nf=${process.env.MLX_BUN_NO_FUSED_SDPA === "1" ? 1 : 0}`;
+      `|nf=${runtimeValue("MLX_BUN_NO_FUSED_SDPA") === "1" ? 1 : 0}`;
     if (this.#broken.has(key)) throw new Error(`compiled decode: known-broken closure ${key}`);
 
     let closures = this.#segClosures.get(key);

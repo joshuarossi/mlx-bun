@@ -22,6 +22,7 @@ import { randomUUID } from "node:crypto";
 import { commonPrefixLength } from "./prompt-cache";
 import {
   saveKvCache, saveKvCacheAsync, loadKvCache, readKvHeader,
+  cacheHeadersTrimmable,
   type KvSaveMeta, type KvLoadExpect, type LoadedKvCache,
 } from "./kv-store";
 import type { Cache } from "./model/gemma4-base";
@@ -39,19 +40,6 @@ export interface SsdIndexEntry {
    *  [prompt+gen] file always won, always got rejected after restore). */
   trimmable: boolean;
 }
-
-/** Trimmability from a file header alone (mirror of the live caches'
- *  isTrimmable(): kv/qkv/turboquant always trim; rotating kinds only pre-wrap
- *  (offset < maxSize); GLM compressed kinds always trim; ssm never). Keep in
- *  sync with gemma4-base/qwen3-delta/glm52-cache. */
-const headerTrimmable = (caches: { kind: string; offset: number; maxSize?: number }[]): boolean =>
-  caches.every((c) =>
-    c.kind === "kv" || c.kind === "qkv" || c.kind === "turboquant" ||
-      c.kind === "mla" || c.kind === "mla-dsa" || c.kind === "mtp-mla"
-      ? true
-      : c.kind === "rotating" || c.kind === "rotating-qkv"
-        ? c.offset < (c.maxSize ?? 0)
-        : false);
 
 export interface SsdStoreOptions {
   dir: string;
@@ -121,7 +109,7 @@ export class SsdCacheStore {
           const st = statSync(path);
           this.#index.push({
             path, ns: h.ns ?? "", tokens: h.tokens, bytes: st.size, mtimeMs: st.mtimeMs,
-            trimmable: headerTrimmable(h.caches),
+            trimmable: cacheHeadersTrimmable(h.caches),
           });
         } catch {
           try { rmSync(path, { force: true }); } catch {}

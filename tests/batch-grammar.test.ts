@@ -53,7 +53,7 @@ describe.skipIf(!optIn || !haveCpm)("batch lane × grammar (B2 gates, CPM)", () 
     tok = await loadTokenizer(CPM_BASE);
 
     // Batch-lane-only harness: grammar requests must batch (B1); a serial
-    // fallback here would mean willBatch routing broke — fail loudly.
+    // fallback here would mean the placement support check broke — fail loudly.
     makeGateway = () =>
       new GenerationGateway(model, 4, async () => {
         throw new Error("serial lane reached — batch routing broke");
@@ -85,6 +85,7 @@ describe.skipIf(!optIn || !haveCpm)("batch lane × grammar (B2 gates, CPM)", () 
     },
   ) => {
     const got: number[] = [];
+    const shape = { ...SHAPE, hasGrammar: !!opts.grammar };
     const st = await gw.run(
       tok.encode(promptText),
       {
@@ -94,7 +95,8 @@ describe.skipIf(!optIn || !haveCpm)("batch lane × grammar (B2 gates, CPM)", () 
       },
       (t) => { got.push(t); },
       undefined,
-      { ...SHAPE, hasGrammar: !!opts.grammar },
+      shape,
+      gw.place(shape),
     );
     return { tokens: got, text: tok.decode(got, true), stats: st };
   };

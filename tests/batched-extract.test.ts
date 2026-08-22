@@ -27,6 +27,7 @@ import { BatchedRotatingQuantCache } from "../src/model/batched-rotating-quant";
 import { BatchScheduler, type RowPromptCache } from "../src/serve/batch-scheduler";
 import { SSMCache } from "../src/model/qwen3-delta";
 import type { RuntimeModel } from "../src/model/factory";
+import { resolveKvScheme } from "../src/kv-scheme";
 
 /** Contiguous raw bytes of a (possibly strided) view, as a plain array. */
 const bytes = (a: MlxArray): number[] => {
@@ -406,7 +407,10 @@ const kvFromIds = (ids: MlxArray): MlxArray => {
 };
 
 const stubModel = {
-  config: { modelType: "stub" },
+  config: {
+    modelType: "stub",
+    text: { numHiddenLayers: 1, layerTypes: ["full_attention"] },
+  },
   makeCache: (): Cache[] => [new KVCache()],
   forwardHidden(ids: MlxArray, caches: Cache[]): MlxArray {
     const [B, L] = ids.shape as [number, number];
@@ -438,6 +442,72 @@ const soloReplay = (tokens: number[]): KVCache => {
 };
 
 describe("BatchScheduler per-row extraction (stub model)", () => {
+  test("rejects a scheme the scheduler cannot execute instead of serving bf16", () => {
+    expect(() =>
+      new BatchScheduler(stubModel, {
+        maxBatch: 2,
+        kvScheme: resolveKvScheme({ override: 8 }),
+      }),
+    ).toThrow("unsupported KV scheme");
+  });
+
+  test("authoritative kvScheme converts scheduled rows before cache storage", async () => {
+    const quantModel = {
+      ...stubModel,
+      forwardHidden(ids: MlxArray, caches: Cache[]): MlxArray {
+        const [B, L] = ids.shape as [number, number];
+        const f = ids.astype(Dtype.float32);
+        const col = ops.reshape(f, [B, 1, L, 1]);
+        f.dispose();
+        const k = ops.concatAxis(Array.from({ length: 32 }, () => col), 3);
+        col.dispose();
+        for (const cache of caches) {
+          if (cache instanceof QuantizedKVCache) {
+            const [rk, rv] = cache.updateAndFetchQuantized(k, k);
+            for (const tensor of [rk, rv]) {
+              tensor.packed.dispose();
+              tensor.scales.dispose();
+              tensor.biases.dispose();
+            }
+          } else {
+            const [rk, rv] = cache.updateAndFetch(k, k);
+            rk.dispose();
+            rv.dispose();
+          }
+        }
+        k.dispose();
+        return ops.zeros([B, L, HD], Dtype.float32);
+      },
+    } as unknown as RuntimeModel;
+    const puts: Cache[][] = [];
+    const pc: RowPromptCache = {
+      take: () => null,
+      put: (_tokens, caches) => { puts.push(caches); },
+    };
+    const scheme = resolveKvScheme({
+      override: "config",
+      config: [{ layerIdx: 0, bits: 4, groupSize: 32 }],
+    });
+    const sched = new BatchScheduler(quantModel, {
+      maxBatch: 2,
+      kvScheme: scheme,
+      promptCache: pc,
+    });
+
+    const stats = await sched.submit({
+      promptIds: [101, 102, 103],
+      maxTokens: 1,
+      eosTokenIds: [],
+      sample: (logits) => ops.argmaxAxis(logits, -1),
+      onToken: () => {},
+    });
+
+    expect(stats.generatedTokens).toBe(1);
+    expect(puts).toHaveLength(1);
+    expect(puts[0]![0]).toBeInstanceOf(QuantizedKVCache);
+    for (const caches of puts) for (const cache of caches) cache.dispose();
+  }, 30_000);
+
   test("finished rows in a multi-row batch put() exact serial caches", async () => {
     const puts: { tokens: number[]; caches: Cache[] }[] = [];
     const pc: RowPromptCache = {

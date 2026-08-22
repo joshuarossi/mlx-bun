@@ -16,6 +16,7 @@
 
 import { generateText, loadJsonl, sampleIndices, type TaskModel } from "../runner";
 import { type ToolDefinition } from "../../chat-template";
+import { runtimeValue } from "../../runtime-config";
 
 // ---------------------------------------------------------------------------
 // Data shapes (the merged jsonl: each line = {query, answer}).
@@ -465,7 +466,7 @@ export async function evaluateBfcl(
 
   // Optiq-parity mode (DEFAULT): optiq's EXACT 200 BFCL-simple questions, scored
   // through OUR pipeline. MLX_BUN_BFCL_FROZEN=0 reverts to our copy + sampling.
-  const useFrozen = opts.frozen ?? (process.env.MLX_BUN_BFCL_FROZEN !== "0");
+  const useFrozen = opts.frozen ?? (runtimeValue("MLX_BUN_BFCL_FROZEN") !== "0");
   let items: BfclItem[];
   if (useFrozen) {
     items = loadJsonl<BfclFrozenRow>("bfcl_optiq_frozen").map((r) => ({

@@ -4,6 +4,7 @@ import {
   type Glm52Config,
 } from "./glm52-config";
 import { ColibriGlm52Container } from "./glm52-container";
+import type { MemoryPlan } from "../memory-plan";
 
 export const GLM52_G5_GIB = 1024 ** 3;
 export const GLM52_G5_DEFAULT_MACHINE_BYTES = 32 * GLM52_G5_GIB;
@@ -73,8 +74,9 @@ export interface Glm52MemoryLineItems {
   readonly safetyMarginBytes: number;
 }
 
-export interface Glm52MemoryPlan {
+export interface Glm52MemoryPlan extends MemoryPlan {
   readonly schemaVersion: 1;
+  readonly strategy: "glm52-colibri";
   readonly preset: "g5-32gb-quality";
   readonly machineBytes: number;
   readonly processLimitBytes: number;
@@ -374,11 +376,14 @@ export function planGlm52Memory(
 
   return {
     schemaVersion: 1,
+    strategy: "glm52-colibri",
+    fits: true,
     preset: "g5-32gb-quality",
     machineBytes,
     processLimitBytes,
     osReserveBytes,
     contextTokens,
+    maxSafeContext: contextTokens,
     maxGenerationTokens,
     batchSize,
     enableMtp,
@@ -392,6 +397,28 @@ export function planGlm52Memory(
     mtpResidentSlots,
     mtpTotalSlots,
     lineItems,
+    weightsBytes: sum("GLM planned weights", [
+      lineItems.residentWeightsBytes,
+      lineItems.mainExpertSlabBytes,
+      lineItems.mtpExpertSlabBytes,
+    ]),
+    kvBytes: sum("GLM planned KV", [
+      lineItems.targetKvBytes,
+      lineItems.mtpKvBytes,
+    ]),
+    transientBytes: sum("GLM planned transient", [
+      lineItems.reconstructedKvTransientBytes,
+      lineItems.verifyBatchTransientBytes,
+    ]),
+    reserveBytes: sum("GLM planned reserves", [
+      lineItems.allocatorReserveBytes,
+      lineItems.bunNativeReserveBytes,
+      lineItems.safetyMarginBytes,
+    ]),
+    totalBytes: plannedProcessBytes,
+    usableBytes: processLimitBytes,
+    predictedDecodeTps: null,
+    allocatorLimitBytes: lineItems.allocatorReserveBytes,
     runtimeReserveBytes,
     plannedProcessBytes,
     processHeadroomBytes: processLimitBytes - plannedProcessBytes,

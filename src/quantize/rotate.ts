@@ -372,7 +372,7 @@ export interface QwenFoldPlan {
  * with a per-head rotation, so R2 is architecturally off for this family.
  * Corridor map: docs/design/turboquant-weights.md §W1.
  */
-export function planQwen35Fold(names: string[], prefix = "language_model."): QwenFoldPlan {
+export function planQwen35Fold(names: readonly string[], prefix = "language_model."): QwenFoldPlan {
   const P = prefix;
   const has = new Set(names);
   const ops_ = new Map<string, FoldOp>();
@@ -437,7 +437,7 @@ export function planQwen35Fold(names: string[], prefix = "language_model."): Qwe
  *  basis). The final `norm` γ is DROPPED (→ ones): it feeds the shared trunk
  *  lm_head which already carries the trunk's final γ; draft logits see
  *  γ_trunk instead of γ_mtp — draft-quality-only (target path exact). */
-export function planQwenMtpFold(names: string[]): QwenFoldPlan {
+export function planQwenMtpFold(names: readonly string[]): QwenFoldPlan {
   const has = new Set(names);
   const ops_ = new Map<string, FoldOp>();
   const gammaNames = new Set<string>();
@@ -491,15 +491,24 @@ export class QwenFoldContext {
   readonly #gammas = new Map<string, MlxArray>();
   readonly #gammaTimesS1 = new Map<string, MlxArray>();
   readonly hiddenSize: number;
+  readonly #eager: boolean;
 
-  constructor(weights: Weights, hiddenSize: number, seed: number, gammaNames: string[]) {
+  constructor(
+    weights: Weights,
+    hiddenSize: number,
+    seed: number,
+    gammaNames: string[],
+    eager = true,
+  ) {
     assertPow2OrKron(hiddenSize);
     this.hiddenSize = hiddenSize;
+    this.#eager = eager;
     this.#s1 = Arr.fromFloat32(signVector(seed, hiddenSize, R1_LANE), [hiddenSize]);
     for (const name of gammaNames) {
-      // Owned f32 copy — evaluated NOW so releasing its source shard is safe.
+      // Owned f32 copy. Streaming scripts evaluate it immediately before
+      // releasing source shards; the integrated quantizer keeps it lazy.
       const g = weights.tensor(name).astype(Dtype.float32);
-      g.eval();
+      if (this.#eager) g.eval();
       this.#gammas.set(name, g);
     }
   }
@@ -511,7 +520,7 @@ export class QwenFoldContext {
       const g = this.#gammas.get(gamma);
       if (!g) throw new Error(`fold context: γ ${gamma} not preloaded`);
       v = ops.mul(g, this.#s1);
-      v.eval();
+      if (this.#eager) v.eval();
       this.#gammaTimesS1.set(gamma, v);
     }
     return v;
@@ -525,35 +534,35 @@ export class QwenFoldContext {
         // Copy out of the shard map so the shard can be released: astype to
         // the same dtype is a cheap materializing copy.
         const copy = src.astype(src.dtype);
-        copy.eval();
+        if (this.#eager) copy.eval();
         return copy;
       }
       case "ones": {
         const n = src.shape[0]!;
         const ones = Arr.fromFloat32(new Float32Array(n).fill(1), [n]);
         const out = ones.astype(Dtype.bfloat16);
-        out.eval();
+        if (this.#eager) out.eval();
         ones.dispose();
         return out;
       }
       case "input": {
         const h = foldLastAxis(src, this.#vec(op.gamma));
         const out = h.astype(Dtype.bfloat16);
-        out.eval();
+        if (this.#eager) out.eval();
         h.dispose();
         return out;
       }
       case "output": {
         const h = foldOutputDim(src, this.#s1);
         const out = h.astype(Dtype.bfloat16);
-        out.eval();
+        if (this.#eager) out.eval();
         h.dispose();
         return out;
       }
       case "bias": {
         const h = foldBias(src, this.#s1);
         const out = h.astype(Dtype.bfloat16);
-        out.eval();
+        if (this.#eager) out.eval();
         h.dispose();
         return out;
       }
@@ -565,7 +574,7 @@ export class QwenFoldContext {
         const joined = ops.concatAxis([f0, f1], 1);
         const h = foldOutputDim(joined, this.#s1);
         const out = h.astype(Dtype.bfloat16);
-        out.eval();
+        if (this.#eager) out.eval();
         drop(b0, b1, f0, f1, joined, h);
         return out;
       }

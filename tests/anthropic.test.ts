@@ -7,6 +7,7 @@ import {
   AnthropicStreamTranslator,
   anthropicToChatBody,
   chatJsonToAnthropic,
+  createAnthropicStreamProtocol,
   translateOpenAiSse,
 } from "../src/anthropic";
 
@@ -215,6 +216,32 @@ const parseFrames = (frames: string[]) =>
   });
 
 describe("AnthropicStreamTranslator", () => {
+  test("semantic completion events bypass OpenAI SSE serialization", () => {
+    const protocol = createAnthropicStreamProtocol("m");
+    const frames = [
+      ...protocol.start(),
+      ...protocol.addEvents([
+        { type: "reasoning", text: "why" },
+        { type: "content", text: "answer" },
+      ]),
+      ...protocol.finish("stop", { prompt_tokens: 4, completion_tokens: 2 }),
+    ];
+    const events = parseFrames(frames);
+    expect(events.map((event) => event.event)).toEqual([
+      "message_start",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_delta",
+      "content_block_stop",
+      "content_block_start",
+      "content_block_delta",
+      "content_block_stop",
+      "message_delta",
+      "message_stop",
+    ]);
+    expect(events.at(-2)!.data.usage).toEqual({ input_tokens: 4, output_tokens: 2 });
+  });
+
   test("text stream: oracle event grammar order", () => {
     const t = new AnthropicStreamTranslator("m");
     const frames = [

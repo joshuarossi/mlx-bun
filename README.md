@@ -477,6 +477,13 @@ for await (const t of gen) process.stdout.write(tok.decode([t.token], true));
 console.log(gen.stats); // prompt/decode tok/s, cached tokens, ...
 ```
 
+`openModel()` first resolves a declared model profile: exact immutable artifact
+profiles outrank dedicated family paths, which outrank the generic fallback.
+Profiles select the loader/model graph/generation loop and carry their fidelity
+contract; they never rewrite explicit or default-resolved KV, MTP, adapter,
+grammar, or sampling choices. `loadContext()` exposes the resolved declaration
+as `ctx.profile`, and direct library users can call `resolveModelProfile()`.
+
 KV caches can be persisted to disk (page-aligned files that reload as
 zero-copy GPU-safe mmaps — see `src/kv-store.ts`) so a standard agent
 preamble prefills once, ever.
@@ -599,10 +606,11 @@ bring-up.
 **Experimental** — opt-in, default-off, still being hardened: transparent
 expert offload for MoE models (`serve --expert-offload`, Phase 20:
 page-aligned mmap-backed experts, bit-exact — 26B-A4B 17.1→4.2 GB
-resident, decode unregressed); batched serving (`--batch N`, default 8
-since 2026-07-05 — a lone request runs the exact serial engine, so the cap
-engages only under real concurrency, e.g. coding sub-agents; `--batch 1`
-pins strict serial; Phase 18: continuous-batching bf16 decode at mlx-lm B=N parity,
+resident, decode unregressed); continuous serving (`--batch N`, default 8
+since 2026-07-05 — the scheduler's B=1 fast path uses serial-class caches and
+the parity-gated single-row graph, while the cap permits B=N under real
+concurrency such as coding sub-agents; `--batch 1` pins the preserved strict
+serial executor; Phase 18: bf16 decode at mlx-lm B=N parity,
 B=2 bit-parity verified for MiniCPM5/12B/e4b/26B; sampler extras,
 repetition penalty, and grammar-constrained requests batch; Qwen3.5's
 SSM caches batch, as do plain full-attention Tier-0 archs (e.g. Llama) —

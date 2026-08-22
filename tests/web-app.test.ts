@@ -25,7 +25,7 @@ import {
   renderMentionListHtml, type Attachment, type MentionItem, type MentionQuery,
 } from "../src/web/src/composer";
 import { buildMessageText, ComposerState } from "../src/web/src/composer";
-import { renderSourcesHtml } from "../src/web/src/chat";
+import { createChatController, renderSourcesHtml } from "../src/web/src/chat";
 import { MEMORY_CHIP_TOOL_NAMES, isMemoryToolName, memoryToolChip } from "../src/web/src/memory-panel";
 import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "../src/memory/tools";
 import {
@@ -124,6 +124,65 @@ describe("streaming parity: renderBlocksIncremental vs one-shot mdToHtml", () =>
     expect(openFence[openFence.length - 1]!.done).toBe(false);
     const closedFence = splitBlocks("```js\nconst x = 1;\n```\n");
     expect(closedFence[closedFence.length - 1]!.done).toBe(true);
+  });
+});
+
+describe("chat turn rendering lifecycle", () => {
+  it("finishes a turn before its queued frame render without touching cleared state", async () => {
+    const html = await Bun.file("src/web/app.html").text();
+    document.body.innerHTML = html.match(/<body[^>]*>([\s\S]*?)<\/body>/)?.[1] || "";
+    localStorage.clear();
+
+    class FakeWebSocket {
+      static last: FakeWebSocket | null = null;
+      readyState = 0;
+      onopen: ((event: Event) => void) | null = null;
+      onclose: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+
+      constructor(readonly url: string) { FakeWebSocket.last = this; }
+      send(_data: string): void {}
+      emit(value: unknown): void {
+        this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(value) }));
+      }
+      open(): void {
+        this.readyState = 1;
+        this.onopen?.(new Event("open"));
+      }
+    }
+
+    const originalFetch = globalThis.fetch;
+    const originalWebSocket = globalThis.WebSocket;
+    const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+    const pendingFrames: FrameRequestCallback[] = [];
+    globalThis.fetch = (async () => Response.json({ ok: true })) as unknown as typeof fetch;
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+    globalThis.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+      pendingFrames.push(callback);
+      return pendingFrames.length;
+    }) as typeof requestAnimationFrame;
+    try {
+      const controller = createChatController();
+      controller.init();
+      controller.enter();
+      const socket = FakeWebSocket.last;
+      expect(socket).not.toBeNull();
+      socket!.open();
+      socket!.emit({ type: "turn_start" });
+      socket!.emit({ type: "text_delta", delta: "A normal streamed answer." });
+      socket!.emit({ type: "turn_end", lane: "batched" });
+
+      expect(() => {
+        for (const callback of pendingFrames) callback(performance.now());
+      }).not.toThrow();
+      expect(document.querySelector(".msg.assistant .atext")?.textContent).toBe("A normal streamed answer.");
+      expect((document.getElementById("chat-send") as HTMLButtonElement).disabled).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+      globalThis.WebSocket = originalWebSocket;
+      globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+    }
   });
 });
 

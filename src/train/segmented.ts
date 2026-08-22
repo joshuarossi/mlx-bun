@@ -38,6 +38,7 @@ import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { peakMemory } from "../mlx/ffi";
 import { Vjp } from "../mlx/autograd";
+import { runtimeValue } from "../runtime-config";
 
 // MLX_BUN_SEG_MEM_LOG=1: log the within-step peak after each phase of the
 // segmented step (forward+boundaries / head vjp / each segment backward).
@@ -46,7 +47,7 @@ import { Vjp } from "../mlx/autograd";
 // (This is how the backlog-#2 refutation below was measured. An inter-segment
 // clearCache was also tried and had NO effect — the watermark is live memory,
 // not allocator cache retention.)
-const SEG_MEM = process.env.MLX_BUN_SEG_MEM_LOG === "1";
+const SEG_MEM = runtimeValue("MLX_BUN_SEG_MEM_LOG") === "1";
 const segMem = (label: string): void => {
   if (SEG_MEM) console.log(`  [seg-mem] ${label}: peak=${(peakMemory() / 1e9).toFixed(2)} GB`);
 };
@@ -68,7 +69,7 @@ import { prefixSharedCaches, prefixGatherIdx, branchLogpMeanGathered, blockSpars
 // memory at the TOP level but not when nested in the segmented mlx_vjp (its
 // per-chunk graph isn't freed incrementally there); Checkpoint does. See
 // docs/design/orpo-training.md.
-const SEG_HEAD = process.env.MLX_BUN_SEG_HEAD ?? "checkpoint";
+const SEG_HEAD = runtimeValue("MLX_BUN_SEG_HEAD") ?? "checkpoint";
 function boundedHeadFromHidden(
   model: MiniCPM5Model | Gemma4Model, h: MlxArray, ids: number[], mask: number[],
   chunkSize: number, sink: Array<{ dispose(): void }>, span?: HeadSpan,
@@ -82,7 +83,7 @@ import { rowLength, type SftBatch, type DpoBatch } from "./dataset";
 
 // Token-chunk size for the bounded SFT head (the ORPO paths take theirs from
 // cfg.orpoChunkSize; SFT has no per-run knob, 512 matches the ORPO default).
-const SFT_HEAD_CHUNK = Number(process.env.MLX_BUN_SEG_HEAD_CHUNK ?? "512");
+const SFT_HEAD_CHUNK = Number(runtimeValue("MLX_BUN_SEG_HEAD_CHUNK") ?? "512");
 
 /** [M,V]-bounded response-only CE from post-finalNorm hidden — the SFT
  *  segmented head (kernel-review backlog #8). Same span arithmetic and

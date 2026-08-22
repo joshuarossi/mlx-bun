@@ -20,7 +20,7 @@ parity). **Tiers:** L1 = bit-exact vs mlx-lm · L2 = bit-exact vs mlx-optiq
 | Raw text completions (`/v1/completions`) | on | both | — | — |
 | Anthropic Messages (`/v1/messages`) | on | both | — | — |
 | OpenAI Responses shim (`/v1/responses`) | on | both | — | — |
-| Continuous batching (mlx-lm B=N parity) | **on** — cap 8 (default flipped 2026-07-05; a lone request runs the exact serial engine, so the cap engages only under real concurrency; `--batch 1` pins serial) | batch | L1 | `--batch <n>` |
+| Continuous batching (mlx-lm parity at the same B) | **on** — cap 8 (default flipped 2026-07-05; a lone admitted request uses the gated B=1 fast path and concurrent requests can form B=N; `--batch 1` pins the strict serial executor) | batch | L1 | `--batch <n>` |
 | Prompt cache (prefix KV reuse) | on, 8 GB | both | — | `--prompt-cache <GB>` (0 = off) |
 | **SSD KV cold tier** (cache survives eviction + restarts; v3 includes GLM compressed MLA/DSA state without full-K/V reconstruction) | off | both | — | `--ssd-cache <dir>` (+ `-max`, `-verify`, `-demote-idle <sec>` — default 300s once `--ssd-cache` is on, `0` disables) |
 | **Runtime isolation** (engine runs as a crash-isolated CHILD process behind a reverse-proxy parent; UI stays instant under GPU load and survives engine crashes — [runtime-isolation.md](../design/runtime-isolation.md)) | off | both | — | `--isolate` |

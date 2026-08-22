@@ -21,6 +21,7 @@
 // default in both implementations, so behavior is identical.
 
 import { generateText, loadJsonl, sampleIndices, type TaskModel } from "../runner";
+import { runtimeValue } from "../../runtime-config";
 
 export interface IfevalInstance {
   prompt: string;
@@ -472,7 +473,7 @@ export async function evaluateIfeval(
   // Optiq-parity mode (DEFAULT): score optiq's EXACT prompt set (he runs the full
   // IFEval split — 541 prompts) through OUR verifiers + OUR chat template.
   // MLX_BUN_IFEVAL_FROZEN=0 reverts to our own copy + optional sampling.
-  const useFrozen = opts.frozen ?? (process.env.MLX_BUN_IFEVAL_FROZEN !== "0");
+  const useFrozen = opts.frozen ?? (runtimeValue("MLX_BUN_IFEVAL_FROZEN") !== "0");
   const rows = loadJsonl<IfevalRow>(useFrozen ? "ifeval_optiq_frozen" : "ifeval");
   const nSamples = opts.nSamples ?? rows.length;
   const idx = (!useFrozen && nSamples < rows.length)

@@ -10,22 +10,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { loadMetaPolicy } from "../src/memory/prompts";
+import { configureRuntime } from "../src/runtime-config";
 
 describe("loadMetaPolicy", () => {
   let root: string;
   let metaDir: string;
-  const prevWiki = process.env.MLX_BUN_WIKI;
+  let restoreWiki = () => {};
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "mlx-bun-wiki-"));
     metaDir = join(root, "Meta");
     mkdirSync(metaDir, { recursive: true });
-    process.env.MLX_BUN_WIKI = root;
+    restoreWiki = configureRuntime({ MLX_BUN_WIKI: root });
   });
 
   afterEach(() => {
-    if (prevWiki === undefined) delete process.env.MLX_BUN_WIKI;
-    else process.env.MLX_BUN_WIKI = prevWiki;
+    restoreWiki();
+    restoreWiki = () => {};
     rmSync(root, { recursive: true, force: true });
   });
 

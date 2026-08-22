@@ -23,6 +23,7 @@ import { extractSection, parseToc } from "../../src/memory/vault";
 import { MemoryStore } from "../../src/memory/db";
 import { reindex } from "../../src/memory/reindex";
 import { articlesInCategory, buildMemoryIndex, neighbors, resolveName } from "../../src/memory/query";
+import { configureRuntime } from "../../src/runtime-config";
 
 // The MCP-server `instructions` equivalent — Lucien's LUCIEN_INSTRUCTIONS spirit
 // ported to mlx-bun's memory: (1) look up BEFORE answering; (2) each article is
@@ -38,7 +39,7 @@ USE WHAT YOU FIND SILENTLY, as priors that shape what you propose — like a lon
 // ---- vault setup (fixtures, no real ~/.mlx-bun/wiki write) -------------
 
 const FIXTURE_VAULT = join(import.meta.dir, "..", "..", "tests", "fixtures", "wiki");
-process.env.MLX_BUN_WIKI = FIXTURE_VAULT;
+configureRuntime({ MLX_BUN_WIKI: FIXTURE_VAULT });
 
 // ---- instrumented reads -----------------------------------------------
 

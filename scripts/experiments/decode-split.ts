@@ -22,6 +22,7 @@ import type { MlxArray } from "../../src/mlx/array";
 import * as ops from "../../src/mlx/ops";
 import { clearCache } from "../../src/mlx/ffi";
 import { generate } from "../../src/generate";
+import { configureRuntime } from "../../src/runtime-config";
 
 const CLEAR = process.argv.includes("--clear-cache");
 // --compiled: replay the decode graph via mx.compile (Phase A lever),
@@ -29,7 +30,7 @@ const CLEAR = process.argv.includes("--clear-cache");
 // JS-graph-build loop below.
 const COMPILED = process.argv.includes("--compiled");
 // keep the warmup generate() on the same path as the measured loop
-process.env.MLX_BUN_COMPILED_DECODE = COMPILED ? "1" : "0";
+configureRuntime({ MLX_BUN_COMPILED_DECODE: COMPILED ? "1" : "0" });
 // --no-fuse: replay without kernel fusion (isolates fusion-codegen cost
 // from the graph-replay win in the compiled A/B)
 if (process.argv.includes("--no-fuse")) {

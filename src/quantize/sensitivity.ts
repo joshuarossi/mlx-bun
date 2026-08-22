@@ -26,7 +26,10 @@ import { cpuStream, MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { trainForward } from "../train/forward";
 import type { RuntimeModel } from "../model/factory";
-import type { QuantizedLinear } from "../model/gemma4-base";
+import type {
+  QuantizedLinear,
+  QuantizedLinearState,
+} from "../model/gemma4-base";
 
 /** Per-layer KL sensitivity at each candidate bit-width (port of
  *  optiq SensitivityResult). */
@@ -43,46 +46,23 @@ export interface AnalyzeSensitivityOptions {
 }
 
 // --------------------------------------------------------------------------
-// Minimal in-place mutation of a QuantizedLinear.
-//
-// gemma4-base.ts declares QuantizedLinear's w/scales/biases/spec as `readonly`
-// (they never change at inference time). The sensitivity sweep needs to swap a
-// layer's quantized weight transiently. Rather than edit the model file, we
-// poke the public fields here via a typed cast — a quantize-only mutation
-// helper. The fields are public, so this is a write to public state, not a
-// reach into private internals. Flagged in the port report.
+// Scoped state exchange for sensitivity probes. QuantizedLinear owns the only
+// mutation capability; inference consumers retain a read-only getter surface.
 // --------------------------------------------------------------------------
 
-/** Mutable view of the public QuantizedLinear fields we swap. */
-type MutableQuantizedLinear = {
-  w: MlxArray;
-  scales: MlxArray;
-  biases: MlxArray | null;
-  spec: ops.QuantSpec;
-};
-
 /** Snapshot of a QuantizedLinear's quantized state (for restore). */
-interface LayerState {
-  w: MlxArray;
-  scales: MlxArray;
-  biases: MlxArray | null;
-  spec: ops.QuantSpec;
-}
+type LayerState = QuantizedLinearState;
 
 function captureState(layer: QuantizedLinear): LayerState {
   return { w: layer.w, scales: layer.scales, biases: layer.biases, spec: layer.spec };
 }
 
 function restoreState(layer: QuantizedLinear, state: LayerState): void {
-  const m = layer as unknown as MutableQuantizedLinear;
+  const transient = layer.exchangeQuantizedState(state);
   // Dispose the transient swapped-in tensors before restoring the originals.
-  if (m.w !== state.w) m.w.dispose();
-  if (m.scales !== state.scales) m.scales.dispose();
-  if (m.biases && m.biases !== state.biases) m.biases.dispose();
-  m.w = state.w;
-  m.scales = state.scales;
-  m.biases = state.biases;
-  m.spec = state.spec;
+  if (transient.w !== state.w) transient.w.dispose();
+  if (transient.scales !== state.scales) transient.scales.dispose();
+  if (transient.biases && transient.biases !== state.biases) transient.biases.dispose();
 }
 
 /** Quantize `bf16Weight` at `newBits`/`groupSize` and swap it into `layer`
@@ -97,15 +77,16 @@ function mutateLayerToBits(
   original: LayerState,
 ): void {
   const q = ops.quantize(bf16Weight, groupSize, newBits, "affine", cpuStream);
-  const m = layer as unknown as MutableQuantizedLinear;
+  const previous = layer.exchangeQuantizedState({
+    w: q.packed,
+    scales: q.scales,
+    biases: q.biases,
+    spec: { bits: newBits, groupSize, mode: "affine" },
+  });
   // Free any previously swapped-in transient tensors (not the original).
-  if (m.w !== original.w) m.w.dispose();
-  if (m.scales !== original.scales) m.scales.dispose();
-  if (m.biases && m.biases !== original.biases) m.biases.dispose();
-  m.w = q.packed;
-  m.scales = q.scales;
-  m.biases = q.biases;
-  m.spec = { bits: newBits, groupSize, mode: "affine" };
+  if (previous.w !== original.w) previous.w.dispose();
+  if (previous.scales !== original.scales) previous.scales.dispose();
+  if (previous.biases && previous.biases !== original.biases) previous.biases.dispose();
   ops.evalAll([q.packed, q.scales, q.biases]);
 }
 
@@ -193,28 +174,29 @@ export function analyzeSensitivityExact(
         ops.evalAll([bf16Source]);
 
         const sensitivities: Record<number, number> = {};
+        try {
+          for (const bits of candidateBits) {
+            if (bits === baselineBits) {
+              // KL is 0 by construction (re-quantizing to the baseline bit-width
+              // reproduces the running model). Skip the forwards.
+              sensitivities[bits] = 0.0;
+              continue;
+            }
+            mutateLayerToBits(layer, bf16Source, bits, groupSize, original);
 
-        for (const bits of candidateBits) {
-          if (bits === baselineBits) {
-            // KL is 0 by construction (re-quantizing to the baseline bit-width
-            // reproduces the running model). Skip the forwards.
-            sensitivities[bits] = 0.0;
-            continue;
+            let klSum = 0;
+            for (let i = 0; i < calArrays.length; i++) {
+              const cur = trainForward(model, calArrays[i]!);
+              klSum += klFromRef(cur, refLogits[i]!);
+              cur.dispose();
+            }
+            sensitivities[bits] = klSum / Math.max(calArrays.length, 1);
           }
-          mutateLayerToBits(layer, bf16Source, bits, groupSize, original);
-
-          let klSum = 0;
-          for (let i = 0; i < calArrays.length; i++) {
-            const cur = trainForward(model, calArrays[i]!);
-            klSum += klFromRef(cur, refLogits[i]!);
-            cur.dispose();
-          }
-          sensitivities[bits] = klSum / Math.max(calArrays.length, 1);
+        } finally {
+          // Restore even when quantization or a calibration forward throws.
+          restoreState(layer, original);
+          bf16Source.dispose();
         }
-
-        // Restore the original quantized weight; release the bf16 source.
-        restoreState(layer, original);
-        bf16Source.dispose();
 
         // param count = product of the dequantized (full) weight shape.
         const fullShape = [layer.outFeatures, layer.inFeatures];

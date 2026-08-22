@@ -13,6 +13,7 @@ import { registerRunner } from "../jobs/runner";
 import { Registry } from "../registry";
 import { loadModelConfig } from "../config";
 import { quantizeModelDir, type QuantizeOptions } from "./quantizer";
+import { automaticRotationWeightTransform } from "./weight-transform";
 
 /** Resolve the source model directory from a job config. Accepts an explicit
  *  filesystem path (src_dir) or a registry query / model id (model_id). */
@@ -57,6 +58,9 @@ export const quantizeRunner: JobRunner = async (emit: Emit, config) => {
   // MUST be forwarded into opts or quantizeModelDir silently runs uniform.
   const targetBpw = config.target_bpw != null ? Number(config.target_bpw) : undefined;
   const mixed = targetBpw !== undefined;
+  const rotationSeed = Number(config.rotation_seed ?? 42);
+  if (config.rotate_weights && !Number.isInteger(rotationSeed))
+    throw new Error(`quantize job: rotation_seed must be an integer (got ${String(config.rotation_seed)})`);
 
   emit({
     type: "stage",
@@ -74,6 +78,13 @@ export const quantizeRunner: JobRunner = async (emit: Emit, config) => {
     ...(config.reference ? { reference: String(config.reference) } : {}),
     ...(config.calibration_mix ? { calibrationMix: String(config.calibration_mix) } : {}),
     ...(config.n_calibration != null ? { nCalibration: Number(config.n_calibration) } : {}),
+    ...(config.rotate_weights
+      ? {
+          weightTransform: automaticRotationWeightTransform({
+            seed: rotationSeed,
+          }),
+        }
+      : {}),
   };
 
   const r = await quantizeModelDir(srcDir, outDir, opts, (e) =>

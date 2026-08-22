@@ -18,11 +18,14 @@
 import { mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { peakMemory, resetPeakMemory } from "../../src/mlx/ffi";
-import { finetuneRunner } from "../../src/train/job";
+import { configureRuntime } from "../../src/runtime-config";
 
 // e4b LoRA training standing env (see memory/e4b notes): the perf kernel and
 // fused GeGLU are inference-side and must be off for training.
-process.env.MLX_BUN_MEM_LOG = "1";
+configureRuntime({ MLX_BUN_MEM_LOG: "1" });
+// trainer.ts snapshots this diagnostic at module evaluation, so load it only
+// after the explicit runtime snapshot above has been installed.
+const { finetuneRunner } = await import("../../src/train/job");
 
 const HOME = process.env.HOME!;
 const e4bBase = `${HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-e4b-it-OptiQ-4bit/snapshots`;

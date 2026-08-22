@@ -10,8 +10,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { configureRuntime } from "../src/runtime-config";
 
-const savedWiki = process.env.MLX_BUN_WIKI;
+let restoreWiki = () => {};
 let root = "";
 
 async function runGit(args: string[], cwd: string): Promise<void> {
@@ -59,12 +60,12 @@ async function seedVault(): Promise<string> {
 
 beforeEach(async () => {
   root = await seedVault();
-  process.env.MLX_BUN_WIKI = root;
+  restoreWiki = configureRuntime({ MLX_BUN_WIKI: root });
 });
 
 afterEach(async () => {
-  if (savedWiki === undefined) delete process.env.MLX_BUN_WIKI;
-  else process.env.MLX_BUN_WIKI = savedWiki;
+  restoreWiki();
+  restoreWiki = () => {};
   await rm(root, { recursive: true, force: true });
 });
 
@@ -81,7 +82,9 @@ describe("GET /api/memory/status", () => {
   });
 
   test("no vault → enabled:false, never throws", async () => {
-    process.env.MLX_BUN_WIKI = join(tmpdir(), "mlxbun-memrest-does-not-exist");
+    configureRuntime({
+      MLX_BUN_WIKI: join(tmpdir(), "mlxbun-memrest-does-not-exist"),
+    });
     const { handleMemoryStatus } = await import("../src/memory/rest");
     const res = await handleMemoryStatus();
     const body = (await res.json()) as any;
@@ -101,7 +104,9 @@ describe("GET /api/memory/list", () => {
   });
 
   test("no vault → ok:false shape", async () => {
-    process.env.MLX_BUN_WIKI = join(tmpdir(), "mlxbun-memrest-does-not-exist");
+    configureRuntime({
+      MLX_BUN_WIKI: join(tmpdir(), "mlxbun-memrest-does-not-exist"),
+    });
     const { handleMemoryList } = await import("../src/memory/rest");
     const res = await handleMemoryList();
     const body = (await res.json()) as any;

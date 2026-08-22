@@ -59,7 +59,9 @@ const mode: Mode = args.has("--staged")
 
 const ROOT_ALLOWLIST = new Set([
   ".gitattributes", ".gitignore",
-  "AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", "LICENSE",
+  // Single-context domain vocabulary; required by the repository's domain
+  // layout and maintained as source documentation, not generated output.
+  "AGENTS.md", "CLAUDE.md", "CONTEXT.md", "CONTRIBUTING.md", "LICENSE",
   "PLAN.md", "PLAN-archive.md", "README.md", "STATUS.md",
   "THIRD_PARTY_LICENSES.md",
   "benchmark.sh", "bun.lock", "package.json",

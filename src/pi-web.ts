@@ -27,6 +27,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { runtimeValue } from "./runtime-config";
 import type { ServerWebSocket, WebSocketHandler } from "bun";
 import {
   createAgentSessionFromServices,
@@ -1394,7 +1395,7 @@ class PiWebSession {
           (d) => d.state === "active" && d.repoId !== this.opts.modelId,
         )?.repoId ?? null,
       }, { hasTools: WELCOME_TOOLS.length > 0 }) + surface.memoryHint;
-      if (process.env.MLX_BUN_PI_DEBUG) {
+      if (runtimeValue("MLX_BUN_PI_DEBUG")) {
         console.error(`[pi-web] prompt ${WEB_CHAT_PROMPT_VERSION} sha=${webChatPromptFingerprint(webPrompt)} memory=${surface.memoryEnabled ? "on" : "off"} codingTools=${this.codingToolsActive ? "on" : "off"}`);
       }
       const services = await createAgentSessionServices({
@@ -1826,7 +1827,7 @@ class PiWebSession {
 
     pi.on("tool_call", (event: ToolCallEvent) => {
       const block = decideBeforeToolCall(this.loopHygiene, event.toolName, event.input);
-      if (block && process.env.MLX_BUN_PI_DEBUG) {
+      if (block && runtimeValue("MLX_BUN_PI_DEBUG")) {
         console.error(`[pi-web] loop-hygiene blocked ${event.toolName}: ${block.reason.split("\n")[0]}`);
       }
       return block ? { block: true, reason: block.reason } : undefined;
@@ -1852,7 +1853,7 @@ class PiWebSession {
   private installApprovalGate(pi: ExtensionAPI): void {
     pi.on("tool_call", async (event: ToolCallEvent) => {
       const tool = event.toolName;
-      if (process.env.MLX_BUN_PI_DEBUG) {
+      if (runtimeValue("MLX_BUN_PI_DEBUG")) {
         console.error(`[pi-web] tool_call ${tool} args=${JSON.stringify(event.input)}`);
       }
 
@@ -1945,7 +1946,7 @@ class PiWebSession {
   }
 
   private onSessionEvent(event: AgentSessionEvent): void {
-    if (process.env.MLX_BUN_PI_DEBUG) {
+    if (runtimeValue("MLX_BUN_PI_DEBUG")) {
       const extra = event.type === "message_update"
         ? `/${(event as { assistantMessageEvent?: { type?: string } }).assistantMessageEvent?.type}` : "";
       console.error(`[pi-event] ${event.type}${extra}`);
@@ -2025,7 +2026,7 @@ class PiWebSession {
       // isStreaming atomically inside prompt(), so this read can't strand a
       // message at the turn boundary.
       case "prompt": {
-        if (process.env.MLX_BUN_PI_DEBUG) {
+        if (runtimeValue("MLX_BUN_PI_DEBUG")) {
           console.error(`[pi-web] prompt text=${JSON.stringify(msg.text.slice(0, 500))} images=${msg.images?.length ?? 0} streaming=${session.isStreaming} adapter=${this.selectedAdapter ?? "base"}`);
         }
         const images = toPiImages(msg.images);

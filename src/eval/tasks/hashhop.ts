@@ -10,6 +10,7 @@
 // fused-attention kernel (opportunity A) has the most to prove.
 
 import { generateText, loadJsonl, type TaskModel } from "../runner";
+import { runtimeValue } from "../../runtime-config";
 
 const INSTR =
   "You will be given a list of hash assignments and a starting hash. " +
@@ -96,7 +97,7 @@ export async function evaluateHashhop(
   // RECONSTRUCTION producing DIFFERENT problems, so it cannot reproduce optiq's
   // number — the frozen problems are the only way to match. MLX_BUN_HASHHOP_FROZEN=0
   // uses our generator.
-  const useFrozen = opts.frozen ?? (process.env.MLX_BUN_HASHHOP_FROZEN !== "0");
+  const useFrozen = opts.frozen ?? (runtimeValue("MLX_BUN_HASHHOP_FROZEN") !== "0");
   if (useFrozen) {
     const rows = loadJsonl<HashhopFrozen>("hashhop_optiq_frozen");
     const hopCorrect: Record<number, number> = {};

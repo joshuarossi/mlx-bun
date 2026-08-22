@@ -3,6 +3,7 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { SNAPSHOT, snapshotAvailable } from "./paths";
+import { configureRuntime } from "../src/runtime-config";
 
 const haveWeights = await snapshotAvailable();
 
@@ -257,8 +258,7 @@ describe.skipIf(!haveWeights)("openai-compatible server", async () => {
   }, 120_000);
 
   test("grammar kill switch degrades every guided form through the production route", async () => {
-    const previous = process.env.MLX_BUN_GRAMMAR;
-    process.env.MLX_BUN_GRAMMAR = "0";
+    const restore = configureRuntime({ MLX_BUN_GRAMMAR: "0" });
     const guidedForms = [
       { guided_grammar: 'root ::= "ok"' },
       { guided_regex: "^ok$" },
@@ -310,8 +310,7 @@ describe.skipIf(!haveWeights)("openai-compatible server", async () => {
       expect(raw.headers.get("warning")).toContain("grammar not enforced");
       expect(raw.headers.get("warning")).toContain("no prompt injection");
     } finally {
-      if (previous === undefined) delete process.env.MLX_BUN_GRAMMAR;
-      else process.env.MLX_BUN_GRAMMAR = previous;
+      restore();
     }
   }, 120_000);
 
@@ -429,7 +428,7 @@ describe.skipIf(!haveWeights)("openai-compatible server", async () => {
   // is rejection BEFORE generation: load refusal, startup refusal, and
   // per-request 400s, each with actionable messages.
 
-  test("admission: over-budget request → 400, in-budget passes", async () => {
+  test("admission: broad completion cap is clamped, in-budget passes unchanged", async () => {
     const { fit, kvBytesAt, TRANSIENT_PER_TOKEN, DEFAULT_CHUNK } = await import("../src/fit");
     const { setMemoryLimit } = await import("../src/mlx/ffi");
     // budget sized for ~512 tokens of bf16 context on this model
@@ -462,10 +461,10 @@ describe.skipIf(!haveWeights)("openai-compatible server", async () => {
           temperature: 0,
         }),
       });
-      expect(over.status).toBe(400);
+      expect(over.status).toBe(200);
       const overBody = (await over.json()) as any;
-      expect(overBody.error.type).toBe("memory_admission");
-      expect(overBody.error.message).toContain("max_tokens");
+      expect(overBody.error).toBeUndefined();
+      expect(overBody.usage.completion_tokens).toBeLessThanOrEqual(report.maxSafeContext);
 
       const ok = await fetch(`${tightBase}/v1/chat/completions`, {
         method: "POST",
@@ -483,8 +482,24 @@ describe.skipIf(!haveWeights)("openai-compatible server", async () => {
     }
   }, 240_000);
 
-  test("admission: budget below weights refuses to serve or load", async () => {
-    expect(() => createServer(ctx, 0, { memoryBudgetBytes: 1e9 })).toThrow(/cannot serve/);
+  test("admission: budget below weights serves diagnostics but refuses generation and load", async () => {
+    const diagnostic = createServer(ctx, 0, { memoryBudgetBytes: 1e9 });
+    try {
+      const response = await fetch(`http://localhost:${diagnostic.port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "hi" }],
+          max_tokens: 1,
+          temperature: 0,
+        }),
+      });
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as any;
+      expect(body.error.type).toBe("memory_admission");
+    } finally {
+      diagnostic.stop(true);
+    }
     await expect(loadContext(SNAPSHOT, undefined, { memoryBudgetBytes: 1e9 }))
       .rejects.toThrow(/does not fit the memory budget/);
   });

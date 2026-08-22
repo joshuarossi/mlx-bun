@@ -11,15 +11,17 @@
 // Gated like train-orpo-chunked (loads MiniCPM5-1B; no softcap — Gemma softcap is
 // exercised in scripts/experiments/fused-ce-parity.ts with E4B=1).
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import type { DpoBatch } from "../src/train/dataset";
+import { configureRuntime } from "../src/runtime-config";
 
 const optIn = process.env.MLX_BUN_TEST_TRAIN === "1";
 // This file's flash cases exist to exercise the flash-CCE head itself, on tiny
 // fixtures (M ≈ 20) — pin the M-dispatch off (loss.ts fusedRespLogpMean,
 // kernel backlog #3) so `flash: true` always routes to the flash kernel here.
-process.env.MLX_BUN_FLASH_MIN_M = "0";
+const restoreFlashMin = configureRuntime({ MLX_BUN_FLASH_MIN_M: "0" });
+afterAll(() => restoreFlashMin());
 const BASE =
   `${process.env.HOME}/.cache/huggingface/hub/` +
   `models--mlx-community--MiniCPM5-1B-OptiQ-4bit/snapshots/` +
@@ -100,7 +102,7 @@ describe.skipIf(!optIn || !haveBase)("ORPO fused linear-CE head parity (MiniCPM5
     // MLX_BUN_FLASH_MIN_M routes to the EXACT fused head — the loss must be
     // bit-identical to the fused single-chunk loss (which differs from the
     // flash head's bf16-class value at ~1e-3).
-    process.env.MLX_BUN_FLASH_MIN_M = "8192";
+    const restoreDispatch = configureRuntime({ MLX_BUN_FLASH_MIN_M: "8192" });
     try {
       const dispatched = (() => {
         const sink: Array<{ dispose(): void }> = [];
@@ -113,7 +115,7 @@ describe.skipIf(!optIn || !haveBase)("ORPO fused linear-CE head parity (MiniCPM5
       })();
       expect(dispatched).toBe(lossOf(respLen + 8)); // exact fused value, not flash's
     } finally {
-      process.env.MLX_BUN_FLASH_MIN_M = "0";
+      restoreDispatch();
     }
 
     weights.dispose();

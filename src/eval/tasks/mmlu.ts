@@ -10,6 +10,7 @@
 // table. MLX_BUN_MMLU_FROZEN=0 falls back to our own sampling of the full 14k set.
 
 import { loadJsonl, sampleIndices, type TaskModel } from "../runner";
+import { runtimeValue } from "../../runtime-config";
 
 interface MmluRow {
   question: string;
@@ -85,7 +86,7 @@ export async function evaluateMmlu(
   // parity, not sampling. Set MLX_BUN_MMLU_FROZEN=0 (or frozen:false) to fall back to
   // our own stratified sampling of the full 14k test set (a DIFFERENT subset: JS RNG
   // ≠ numpy RandomState, so it does not match optiq's questions even at the same seed).
-  const useFrozen = opts.frozen ?? (process.env.MLX_BUN_MMLU_FROZEN !== "0");
+  const useFrozen = opts.frozen ?? (runtimeValue("MLX_BUN_MMLU_FROZEN") !== "0");
 
   const testRows = loadJsonl<MmluRow>(useFrozen ? "mmlu_optiq_frozen" : "mmlu_test");
   const devRows = loadJsonl<MmluRow>(useFrozen ? "mmlu_optiq_dev" : "mmlu_dev");

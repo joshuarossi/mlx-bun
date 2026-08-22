@@ -18,6 +18,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { loadTokenizer } from "../src/tokenizer";
 import { compileGrammarRequest, grammarEnabled } from "../src/grammar";
 import { shouldUseGrammarJump } from "../src/generate";
+import { configureRuntime } from "../src/runtime-config";
 
 const SNAPSHOT = ((): string => {
   const base = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--Llama-3.2-1B-Instruct-4bit/snapshots`;
@@ -40,14 +41,14 @@ const COMPACT_SCHEMA = {
 describe("generate() jump-forward option gate", () => {
   test("topLogprobs disables jumping just like token logprobs", () => {
     const grammar = {} as any;
-    process.env.MLX_BUN_GRAMMAR_JUMP = "1";
+    const restore = configureRuntime({ MLX_BUN_GRAMMAR_JUMP: "1" });
     try {
       expect(shouldUseGrammarJump({ grammar })).toBe(true);
       expect(shouldUseGrammarJump({ grammar, logprobs: true })).toBe(false);
       expect(shouldUseGrammarJump({ grammar, topLogprobs: 3 })).toBe(false);
       expect(shouldUseGrammarJump({ grammar, topLogprobs: 0 })).toBe(true);
     } finally {
-      delete process.env.MLX_BUN_GRAMMAR_JUMP;
+      restore();
     }
   });
 });
@@ -152,8 +153,9 @@ describe.skipIf(!haveWeights || !grammarEnabled())("generate() jump-forward (Lla
   const PROMPT = "Describe a fictional person as JSON with their name and age.";
 
   const run = async (jump: boolean) => {
-    if (jump) process.env.MLX_BUN_GRAMMAR_JUMP = "1";
-    else delete process.env.MLX_BUN_GRAMMAR_JUMP;
+    const restore = configureRuntime({
+      MLX_BUN_GRAMMAR_JUMP: jump ? "1" : undefined,
+    });
     try {
       const r = await compileGrammarRequest(
         {
@@ -181,7 +183,7 @@ describe.skipIf(!haveWeights || !grammarEnabled())("generate() jump-forward (Lla
       for await (const t of gen) out.push(t.token);
       return { text: tok.decode(out), jumped: controller.jumpedTokens };
     } finally {
-      delete process.env.MLX_BUN_GRAMMAR_JUMP;
+      restore();
     }
   };
 

@@ -14,6 +14,7 @@ import { basename, join, resolve } from "node:path";
 import { Registry } from "./registry";
 import { loadModelConfig, parseTurboQuantScheme, type TurboQuantScheme } from "./config";
 import { fit, skuMatrix, thisMachine, type FitKvScheme } from "./fit";
+import { resolveKvScheme } from "./kv-scheme";
 import { EvalDB } from "./evaldb";
 import pkg from "../package.json" with { type: "json" };
 import { renderHelp } from "./tui";
@@ -27,6 +28,11 @@ import {
   planGlm52MemoryForArtifact,
 } from "./model/glm52-memory";
 import type { JobEvent } from "./jobs/types";
+import {
+  configureRuntime,
+  runtimeValue,
+  type RuntimeKey,
+} from "./runtime-config";
 
 const argv = process.argv.slice(2);
 // The appliance path: naked `mlx-bun` (or only options, e.g.
@@ -118,10 +124,10 @@ const SERVER_FLAGS = `Server options:
   --unix <path>             (internal) listen on a unix socket instead of a
                             TCP port — the engine half of --isolate.
   --batch <n>               Max concurrent requests decoded together
-                            [default: 8]. A LONE request runs the exact
-                            serial engine (same bits, same speed); the cap
-                            engages only when concurrent requests arrive
-                            (agent fan-out). 1 pins strict serial.
+                            [default: 8]. A lone scheduler request uses the
+                            parity- and latency-gated B=1 fast path; concurrent
+                            requests can form B=N (agent fan-out). 1 pins the
+                            preserved strict serial executor.
                             --decode-concurrency is accepted as the
                             mlx_lm.server alias (semantics differ; see
                             docs/reference/server-config.md)
@@ -582,6 +588,9 @@ knapsack per-layer bit allocation; implies quantization, no -q needed):
   --candidate-bits <l> Comma list the knapsack may pick from [default: 4,8]
   --calibration-mix <m> "optiq" or a JSONL path  [default: optiq]
   --n-calibration <n>  Calibration samples  [default: 2]
+  --rotate-weights     Fold the model's offline TurboQuant rotation before
+                       quantization (auto-detects Llama/Qwen3.5/Qwen MTP)
+  --rotation-seed <n>  Deterministic rotation seed  [default: 42]
 
 Not supported (mlx_lm.convert flags we don't implement — the command
 exits with an error rather than guessing): --dtype, -d/--dequantize,
@@ -811,11 +820,11 @@ function openChatUi(url: string, hostPort: string): void {
 }
 
 /** Server/runtime flags shared by every mode that loads a model
- *  (serve, pi). Env levers are set here so they're in place before the
+ *  (serve, pi). Runtime overrides are installed here before the
  *  generate/compiled-decode modules read them. */
 /** Resolve the decode ROUTE: a tier alias (--l1/--l2) sets the whole route,
  *  and an explicit per-fork flag (--kv-quant/--fused-sdpa/…) overrides the
- *  alias. Sets the decode env levers and returns the kv-quant mode. See
+ *  alias. Installs decode runtime options and returns the kv-quant mode. See
  *  docs/design/parity-tier-dag.md + unified-engine-frontier-plan.md.
  *  Each tier is a GUARANTEE about which reference you reproduce bit-for-bit:
  *    --l1  bit-for-bit IDENTICAL to mlx-lm    — drop-in replacement for mlx-lm
@@ -869,8 +878,9 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number; turboQuant?:
   const pick = (name: string, base: boolean | undefined): boolean | null => {
     const ex = onOff(name); return ex !== null ? ex : (base ?? null); // explicit flag wins, else tier preset
   };
-  const set = (env: string, val: boolean | null, invert = false) => {
-    if (val !== null) process.env[env] = (invert ? !val : val) ? "1" : "0";
+  const set = (name: RuntimeKey, val: boolean | null, invert = false) => {
+    if (val !== null)
+      configureRuntime({ [name]: (invert ? !val : val) ? "1" : "0" });
   };
   // Explicit --kv-quant picks the composition its ORACLE uses: config (the
   // optiq mixed scheme) runs optiq's fused SDPA (the L2 golden composition);
@@ -880,7 +890,7 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number; turboQuant?:
   set("MLX_BUN_COMPILED_DECODE", pick("compiled-decode", p.compiled));
   set("MLX_BUN_NO_FUSED_SDPA", pick("fused-sdpa", fusedSdpaBase), true); // inverted env
   // Compiled activations (the faithful geglu/swiglu — mlx-lm's @mx.compile kernel).
-  // One fork drives both env vars; qwen3/qwen3.5/universal compile unconditionally,
+  // One fork drives both runtime options; qwen3/qwen3.5/universal compile unconditionally,
   // so this toggles gemma geglu + minicpm5 swiglu (the only unfused-capable sites).
   set("MLX_BUN_COMPILED_GEGLU", pick("compiled-activations", p.compiledAct));
   set("MLX_BUN_COMPILED_SWIGLU", pick("compiled-activations", p.compiledAct));
@@ -915,11 +925,12 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
     process.exit(1);
   };
   const route = applyDecodeRoute(); // --l1/--l2 tier alias, with per-fork flags overriding
-  if (flag("force-wire")) process.env.MLX_BUN_FORCE_WIRE = "1";
+  if (flag("force-wire")) configureRuntime({ MLX_BUN_FORCE_WIRE: "1" });
   // Remote image_url/audio_url media fetches block private/loopback/link-
   // local destinations by default (SSRF — src/media-fetch.ts); this is the
   // LAN-hosts escape hatch.
-  if (flag("allow-private-media")) process.env.MLX_BUN_ALLOW_PRIVATE_MEDIA = "1";
+  if (flag("allow-private-media"))
+    configureRuntime({ MLX_BUN_ALLOW_PRIVATE_MEDIA: "1" });
 
   const serverOptions: import("./server").ServerOptions = {};
   const budgetGB = Number(opt("memory-budget", "0"));
@@ -951,7 +962,7 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
       console.warn("--ssd-cache-verify has no effect without --ssd-cache — ignored");
   }
   // --batch N: max concurrent requests batched through the mlx-lm-parity
-  // engine (N=1 = today's serial path). --decode-concurrency is accepted for
+  // engine (N=1 pins the strict serial executor). --decode-concurrency is accepted for
   // drop-in compatibility with mlx_lm.server, but the semantics differ: there
   // it caps per-BatchGenerator decode parallelism (default 32); in mlx-bun it
   // caps continuous batching (default 8; `--batch 1` pins the serial path —
@@ -971,7 +982,7 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   // storage, default off (docs/design/paged-kv-cache.md). Serial-only in v1:
   // with no explicit --batch, pin --batch 1 (the default is 8); an explicit
   // --batch N>1 is refused loudly by createServer rather than downgraded.
-  if (flag("paged-kv") || process.env.MLX_BUN_PAGED_KV === "1") {
+  if (flag("paged-kv") || runtimeValue("MLX_BUN_PAGED_KV") === "1") {
     const bsRaw = opt("paged-kv-block-size");
     serverOptions.pagedKv = bsRaw !== null ? { blockSize: Number(bsRaw) } : {};
     if (batchRaw === null) {
@@ -1092,7 +1103,7 @@ async function mountStartupAdapter(
 function runtimeSummary(o: import("./server").ServerOptions): string {
   const kv = o.turboQuant ? `turbo-k${o.turboQuant.kBits}v${o.turboQuant.vBits}`
     : o.kvQuant === "off" ? "off" : typeof o.kvQuant === "number" ? `kv${o.kvQuant}` : "config";
-  const lever = (env: string, dflt: string) => process.env[env] ?? dflt;
+  const lever = (name: RuntimeKey, dflt: string) => runtimeValue(name) ?? dflt;
   return `kv-quant ${kv} · compiled-decode ${lever("MLX_BUN_COMPILED_DECODE", "1") === "1" ? "on" : "off"}` +
     (lever("MLX_BUN_COMPILED_GEGLU", "1") === "0" ? " · compiled-activations off" : "") +
     (o.batch && o.batch > 1 ? ` · batch ${o.batch}` : "") +
@@ -1454,13 +1465,17 @@ switch (cmd) {
     const kvQuantOpt = opt("kv-quant");
     let fitKvScheme: FitKvScheme | undefined;
     if (kvQuantOpt === "4" || kvQuantOpt === "8") {
-      fitKvScheme = { kvBits: Number(kvQuantOpt) };
+      fitKvScheme = resolveKvScheme({ override: Number(kvQuantOpt) }).fitOptions;
     } else if (kvQuantOpt === "config") {
       if (!config.kvQuant?.length) {
         console.error(`${m.repoId} ships no per-layer kv-quant config — use --kv-quant 4|8`);
         process.exit(1);
       }
-      fitKvScheme = { kvConfig: config.kvQuant };
+      fitKvScheme = resolveKvScheme({
+        override: "config",
+        config: config.kvQuant,
+        missingConfig: "error",
+      }).fitOptions;
     } else if (kvQuantOpt != null && kvQuantOpt !== "off") {
       console.error(`--kv-quant ${kvQuantOpt}: expected 4, 8, config, or off`);
       process.exit(1);
@@ -1729,7 +1744,7 @@ switch (cmd) {
     // three entry points (raw / OpenAI API / chat UI) differ only in how params
     // are POPULATED; here every param is explicit. Decode-path levers mirror
     // serve so you can pin the route (mlx-lm compat = --l1).
-    // --l1/--l2 + per-fork overrides set the decode env levers; the
+    // --l1/--l2 + per-fork overrides set the decode runtime options; the
     // returned KV scheme is applied below so `generate --l2` runs the same
     // quantized-KV route (and produces the same tokens) as `serve --l2`.
     const route = applyDecodeRoute();
@@ -1753,13 +1768,12 @@ switch (cmd) {
     // bf16, same silent fallback as serve), N = uniform bits from decode
     // start. Unset (no tier, no --kv-quant) keeps generate's historical
     // default: bf16 bit-exact greedy (generateText's parity path).
-    const kvScheme =
-      route.turboQuant ? { turboQuant: route.turboQuant, quantizedKvStart: 0 }
-      : route.kvQuant === "off" ? {}
-      : route.kvQuant === "config"
-        ? (tm.config.kvQuant?.length ? { kvConfig: tm.config.kvQuant } : {})
-      : typeof route.kvQuant === "number"
-        ? { kvBits: route.kvQuant, quantizedKvStart: 0 }
+    const kvScheme = route.turboQuant || route.kvQuant !== undefined
+      ? resolveKvScheme({
+          override: route.kvQuant,
+          turboQuant: route.turboQuant,
+          config: tm.config.kvQuant,
+        }).generationOptions
       : undefined;
     const num = (n: string): number | undefined => { const v = opt(n); return v == null ? undefined : Number(v); };
     const text = await generateText(tm, prompt, {
@@ -1841,7 +1855,7 @@ switch (cmd) {
   case "benchmark": {
     const { banner, step, box, style } = await import("./tui");
     banner(pkg.version);
-    serverRuntimeFlags(); // env levers (--compiled-decode, --fused-sdpa, ...) apply to the run
+    serverRuntimeFlags(); // decode options (--compiled-decode, --fused-sdpa, ...) apply to the run
     const { m, picked } = await resolveModelAuto(opt("model") ?? positional(0) ?? opt("query"));
     const tokens = Number(opt("tokens", "256"));
     const runs = Number(opt("runs", "3"));
@@ -2493,6 +2507,12 @@ switch (cmd) {
       console.error(`--candidate-bits expects a comma list of integers in [2, 8] (got "${opt("candidate-bits")}")`);
       process.exit(1);
     }
+    const rotateWeights = flag("rotate-weights");
+    const rotationSeed = Number(opt("rotation-seed", "42"));
+    if (!Number.isInteger(rotationSeed)) {
+      console.error(`--rotation-seed expects an integer (got "${opt("rotation-seed")}")`);
+      process.exit(1);
+    }
     const mlxPath = opt("mlx-path", "mlx_model")!;
     const { existsSync } = await import("node:fs");
     if (existsSync(mlxPath)) {
@@ -2534,7 +2554,7 @@ switch (cmd) {
         ? `quantizing (mixed, target ${targetBpw} bpw — sensitivity sweep, ~minutes)`
         : `quantizing (${qBits}-bit, group ${qGroup})`,
     );
-    const { quantizeModelDir } = await import("./quantize");
+    const { quantizeModelDir, automaticRotationWeightTransform } = await import("./quantize");
     try {
       const r = await quantizeModelDir(
         srcDir,
@@ -2547,6 +2567,9 @@ switch (cmd) {
           ...(candidateBits ? { candidateBits } : {}),
           ...(opt("calibration-mix") ? { calibrationMix: opt("calibration-mix")! } : {}),
           ...(opt("n-calibration") ? { nCalibration: Number(opt("n-calibration")) } : {}),
+          ...(rotateWeights
+            ? { weightTransform: automaticRotationWeightTransform({ seed: rotationSeed }) }
+            : {}),
         },
         (e) => sQ.update(e.message),
       );
@@ -2558,6 +2581,7 @@ switch (cmd) {
         `source    ${style.dim(srcDir)}`,
         `model     ${style.bold(r.outDir)} ${style.dim(`· ${gb(r.write.totalSize)}`)}`,
         `quant     ${style.dim(targetBpw !== undefined ? `mixed ${r.achievedBpw.toFixed(2)} bpw (target ${targetBpw})` : `${qBits}-bit g${qGroup} affine`)}`,
+        ...(rotateWeights ? [`transform ${style.dim(`TurboQuant rotation seed ${rotationSeed}`)}`] : []),
         "",
         `serve it   ${style.accent(`mlx-bun serve ${r.outDir}`)}`,
       ]);

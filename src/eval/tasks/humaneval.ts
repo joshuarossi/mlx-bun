@@ -16,11 +16,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateText, loadJsonl, sampleIndices, type TaskModel } from "../runner";
+import { runtimeValue } from "../../runtime-config";
 
 // Oracle venv python — the same interpreter the Python reference uses.
 // Machine-specific: overridable via MLX_BUN_ORACLE_PYTHON (the committed default is
 // the reference box; other laptops set the env, never re-commit the path).
-const ORACLE_PYTHON = process.env.MLX_BUN_ORACLE_PYTHON ?? "/Users/joshrossi/Code/mlx-lm/.venv/bin/python";
+const ORACLE_PYTHON = runtimeValue("MLX_BUN_ORACLE_PYTHON") ?? "/Users/joshrossi/Code/mlx-lm/.venv/bin/python";
 
 interface HumanevalRow {
   task_id: string;
@@ -185,7 +186,7 @@ function runProgram(program: string, timeoutSec: number, memoryMb: number): RunR
       env,
       timeout: timeoutSec * 1000, // hard wall-clock kill
       killSignal: "SIGKILL",
-      stdio: ["ignore", "ignore", process.env.MLX_BUN_EVAL_DEBUG === "1" ? "pipe" : "ignore"],
+      stdio: ["ignore", "ignore", runtimeValue("MLX_BUN_EVAL_DEBUG") === "1" ? "pipe" : "ignore"],
       encoding: "utf8",
     });
 
@@ -219,7 +220,7 @@ export async function evaluateHumaneval(
   // Optiq-parity mode (DEFAULT): optiq's EXACT 164-problem set (he runs the full
   // HumanEval test split), scored through OUR pipeline. MLX_BUN_HUMANEVAL_FROZEN=0
   // reverts to our own copy + optional sampling.
-  const useFrozen = opts.frozen ?? (process.env.MLX_BUN_HUMANEVAL_FROZEN !== "0");
+  const useFrozen = opts.frozen ?? (runtimeValue("MLX_BUN_HUMANEVAL_FROZEN") !== "0");
   const rows = loadJsonl<HumanevalRow>(useFrozen ? "humaneval_optiq_frozen" : "humaneval");
   const idx = useFrozen
     ? Array.from({ length: rows.length }, (_, i) => i)
@@ -252,7 +253,7 @@ export async function evaluateHumaneval(
 
     const rr = runProgram(program, timeoutSec, memoryMb);
     if (rr.ok) nPass++;
-    else if (process.env.MLX_BUN_EVAL_DEBUG === "1") {
+    else if (runtimeValue("MLX_BUN_EVAL_DEBUG") === "1") {
       const err = rr.stderr ?? "";
       const reason = rr.timedOut ? "TIMEOUT"
         : completion.trim() === "" ? "EMPTY"

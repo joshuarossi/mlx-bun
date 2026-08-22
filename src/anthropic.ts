@@ -23,6 +23,10 @@
 //     semantics) instead of the oracle's json.dumps fallback.
 
 import type { ChatMessage, ToolDefinition } from "./chat-template";
+import type {
+  CompletionEvent,
+  CompletionStreamProtocol,
+} from "./serve/completion-sink";
 
 // ---------------------------------------------------------------------
 // Request translation: Anthropic → OpenAI (our ChatRequest shape)
@@ -505,6 +509,41 @@ export class AnthropicStreamTranslator {
     );
     return out;
   }
+}
+
+/** Direct semantic-event adapter used by the server. This avoids encoding
+ * OpenAI SSE only to parse those bytes back into protocol events. */
+export function createAnthropicStreamProtocol(model: string): CompletionStreamProtocol {
+  const translator = new AnthropicStreamTranslator(model);
+  const chunk = (delta: Record<string, unknown>) => ({ choices: [{ delta }] });
+  return {
+    start: () => translator.addChunk(chunk({ role: "assistant", content: "" })),
+    addEvents(events: CompletionEvent[]) {
+      return events.flatMap((event) => {
+        if (event.type === "reasoning") {
+          return translator.addChunk(chunk({ reasoning: event.text }));
+        }
+        if (event.type === "content") {
+          return translator.addChunk(chunk({ content: event.text }));
+        }
+        return translator.addChunk(chunk({
+          tool_calls: event.calls.map((call, index) => ({ index, ...call })),
+        }));
+      });
+    },
+    finish(reason, usage) {
+      return [
+        ...translator.addChunk({ choices: [{ delta: {}, finish_reason: reason }], usage }),
+        ...translator.finalize(),
+      ];
+    },
+    error(message) {
+      return [sse("error", {
+        type: "error",
+        error: { type: "api_error", message },
+      })];
+    },
+  };
 }
 
 /** Wrap our OpenAI SSE byte stream as an Anthropic SSE byte stream.

@@ -26,7 +26,7 @@
 // temporal axis and no padding (rows solo-prefill unpadded, decode feeds one
 // real token per row), so merge/filter are B-axis concat/take and the cache
 // passes through the step unwrapped (no mask, no per-row RoPE — full layers
-// carry positions). Gate: GenerationGateway.willBatch on cache capability.
+// carry positions). Gate: GenerationGateway.place on cache capability.
 //
 // Engine mechanics (the serial decode loop's hygiene, transplanted —
 // batching-v2-plan step 3):
@@ -58,11 +58,20 @@ import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { clearCache, Dtype } from "../mlx/ffi";
 import { flagOn } from "../flags";
+import { runtimeValue } from "../runtime-config";
 import { CompiledDecode } from "../model/compiled-decode";
 import type { Gemma4Model } from "../model/gemma4";
 import {
   KVCache, QuantizedKVCache, RotatingKVCache, RotatingQuantizedKVCache,
-  isBatchableCache, type BatchableCache, type Cache,
+  cacheSignature,
+  isBatchableCache,
+  isPlainKvCache,
+  isQuantizedKvCache,
+  isRotatingPlainCache,
+  isRotatingQuantizedCache,
+  isRowBatchCache,
+  type BatchableCache,
+  type Cache,
 } from "../model/gemma4-base";
 import { BatchedDecodeMaskCache, mergeKVRows, extendKVRows, extractKVRow, filterKVRows } from "../model/batched-mask";
 import {
@@ -71,24 +80,25 @@ import {
 } from "../model/batched-quant";
 import { BatchedRotatingQuantCache } from "../model/batched-rotating-quant";
 import type { KvQuantSpec } from "../config";
+import type { KvScheme } from "../kv-scheme";
 import { BatchedRotatingCache } from "../model/batched-rotating";
 import { cloneKvCaches } from "../kv-store";
 import { SSMCache } from "../model/qwen3-delta";
 import type { RuntimeModel } from "../model/factory";
 import type { GrammarController } from "../grammar";
-import { kvBytesAt } from "../fit";
 import { toLogprobs } from "../sampler";
+import { batchRowKvBytes } from "./kv-budget";
 
 /** Decode-pipeline kill switch (read once at load, like the serial loop's
  *  MLX_BUN_COMPILED_DECODE): 1 ⇒ read each step's tokens synchronously. */
-const NO_PIPELINE = process.env.MLX_BUN_BATCH_NO_PIPELINE === "1";
+const NO_PIPELINE = runtimeValue("MLX_BUN_BATCH_NO_PIPELINE") === "1";
 
 /** Per-step phase timing (MLX_BUN_BATCH_STEP_TRACE=1, debug-only): where a
  *  decode step's wall time goes — graph BUILD+dispatch (host), the pipelined
  *  READ of the previous step's tokens (GPU wait), row EMIT (onToken/SSE), and
  *  the GAP between consecutive steps (drive-loop + everything else). Sums
  *  print via `stepTraceReport()` (the b1 profile experiment calls it). */
-const STEP_TRACE = process.env.MLX_BUN_BATCH_STEP_TRACE === "1";
+const STEP_TRACE = runtimeValue("MLX_BUN_BATCH_STEP_TRACE") === "1";
 const STEP_T = { t0: 0, lastEnd: 0, build: 0, read: 0, emit: 0, gap: 0, n: 0 };
 export function stepTraceReport(): string {
   const per = (x: number) => (STEP_T.n ? (x / STEP_T.n).toFixed(3) : "0");
@@ -248,16 +258,10 @@ export interface BatchSchedulerOptions {
    *  evict. A request that can NEVER fit (over budget alone, empty batch)
    *  is rejected instead of deadlocking. Unset = unlimited (v1 behavior). */
   kvBudgetBytes?: number;
-  /** Per-layer mixed-precision KV scheme (kv_config.json entries) — Phase
-   *  3.1 batched quantized KV. Server-wide constant (one scheme per server
-   *  lifetime), so it lives here at construction, not on BatchRequest.
-   *  P1 scope: only layers whose cache is a plain full-attention KVCache
-   *  convert; the GATEWAY admits batching only when every configured
-   *  layerIdx is such a layer (rotating/uniform stay serial). Each joiner's
-   *  solo prefill converts at the SAME chunk boundaries as the serial
-   *  maybeQuantizeKv, so a row's quantized bytes are bit-exact vs serial
-   *  `--kv-quant config` by construction (the L2-oracle composition rule). */
-  kvConfig?: KvQuantSpec[];
+  /** Authoritative server-wide scheme. Each joiner's solo prefill converts at
+   * the same chunk boundaries as the serial path, so a row's quantized bytes
+   * preserve the L2 composition. Unsupported schemes fail at construction. */
+  kvScheme?: KvScheme;
   /** Prompt-cache hook (Phase 3.2): admission take()s the longest usable
    *  prefix into the joiner's solo caches (suffix-only prefill — the
    *  multi-turn chat TTFT path); rows that finish never-merged put() their
@@ -310,6 +314,7 @@ export class BatchScheduler {
   readonly #rotMaxSize: number[]; // per-layer sliding window (rot layers only)
   readonly #compressedProjectors: Array<(tokens: number) => number> | null;
   readonly #batchCacheMaxTokens: number | null;
+  readonly #kvScheme: KvScheme | undefined;
   /** layerIdx → mixed-precision spec (Phase 3.1); null = bf16 batch (v1). */
   readonly #kvByLayer: Map<number, KvQuantSpec> | null;
   /** Compiled decode runner for the B=1 serial-class case (Phase 3.2) —
@@ -326,13 +331,22 @@ export class BatchScheduler {
     this.#prefillChunkSize = Math.max(1, Math.floor(opts.prefillChunkSize ?? 2048));
     this.#kvBudgetBytes = opts.kvBudgetBytes;
     this.#promptCache = opts.promptCache;
+    this.#kvScheme = opts.kvScheme;
     const proto = model.makeCache(); // fresh caches hold no buffers
+    if (this.#kvScheme && !this.#kvScheme.batchable(
+      model.config,
+      (layerIdx) =>
+        isPlainKvCache(proto[layerIdx]) || isRotatingPlainCache(proto[layerIdx]),
+    )) {
+      for (const cache of proto) cache.dispose();
+      throw new Error(`unsupported KV scheme for batch scheduler: ${this.#kvScheme.kind}`);
+    }
     this.#kinds = proto.map((c) =>
       isBatchableCache(c)
         ? "owned-batch"
-        : c instanceof RotatingKVCache
+        : isRotatingPlainCache(c)
           ? "rot"
-          : c instanceof SSMCache
+          : cacheSignature(c) === "ssm"
             ? "ssm"
             : "full",
     );
@@ -342,10 +356,11 @@ export class BatchScheduler {
     this.#batchCacheMaxTokens = proto.every(isBatchableCache)
       ? Math.min(...proto.map((cache) => cache.maxTokens ?? Number.MAX_SAFE_INTEGER))
       : null;
-    this.#kvByLayer = opts.kvConfig?.length
-      ? new Map(opts.kvConfig.map((e) => [e.layerIdx, e]))
+    const kvConfig = this.#kvScheme?.options.kvConfig;
+    this.#kvByLayer = kvConfig?.length
+      ? new Map(kvConfig.map((entry) => [entry.layerIdx, entry]))
       : null;
-    this.#rotMaxSize = proto.map((c) => (c instanceof RotatingKVCache ? c.maxSize : 0));
+    this.#rotMaxSize = proto.map((c) => (isRotatingPlainCache(c) ? c.maxSize : 0));
     for (const c of proto) c.dispose();
     this.#compiled =
       flagOn("MLX_BUN_COMPILED_DECODE", true) &&
@@ -366,10 +381,17 @@ export class BatchScheduler {
   /** Projected KV bytes of one row at its worst case (full prompt + full
    *  completion; the sliding-window term is window-capped by kvBytesAt). */
   #rowKvBytes(row: Row): number {
-    const tokens = row.promptTokens + row.req.maxTokens;
     return this.#compressedProjectors
-      ? this.#compressedProjectors.reduce((sum, project) => sum + project(tokens), 0)
-      : kvBytesAt(this.model.config, tokens);
+      ? this.#compressedProjectors.reduce(
+          (sum, project) => sum + project(row.promptTokens + row.req.maxTokens),
+          0,
+        )
+      : batchRowKvBytes(
+          this.model.config,
+          row.promptTokens,
+          row.req.maxTokens,
+          this.#kvScheme,
+        );
   }
 
   async #forwardHidden(ids: MlxArray, cache: Cache[]): Promise<MlxArray> {
@@ -580,8 +602,8 @@ export class BatchScheduler {
    *  source frees before the next layer converts). Called at every prefill
    *  chunk boundary AND once before merge, exactly where the serial loop
    *  calls maybeQuantizeKv — that placement is what makes a row's quantized
-   *  bytes bit-exact vs serial `--kv-quant config`. P1: plain KVCache
-   *  layers only (the gateway guarantees the config maps only to those). */
+   *  bytes bit-exact vs serial `--kv-quant config`. Gateway placement and the
+   *  constructor both guarantee every named cache can convert. */
   #quantizeSolo(solo: Cache[]): void {
     if (!this.#kvByLayer) return;
     for (let i = 0; i < solo.length; i++) {
@@ -592,7 +614,7 @@ export class BatchScheduler {
       // toQuantized → RotatingQuantizedKVCache, exactly maybeQuantizeKv's
       // dispatch (generate.ts). Converted caches don't match either class
       // (the four cache classes are siblings), so re-conversion never fires.
-      if (!(c instanceof KVCache || c instanceof RotatingKVCache)) continue;
+      if (!(isPlainKvCache(c) || isRotatingPlainCache(c))) continue;
       const q = c.toQuantized(e.groupSize, e.bits);
       solo[i] = q;
       ops.evalAll(q.state());
@@ -784,7 +806,7 @@ export class BatchScheduler {
         ));
         continue;
       }
-      if (p.solo[layer] instanceof QuantizedKVCache) {
+      if (isQuantizedKvCache(p.solo[layer])) {
         // Phase 3.1 — quantized full layer: same merge/extend shapes as the
         // bf16 branch below, over (packed, scales, biases) triples. The solo
         // row was converted by #quantizeSolo with the serial ops, so its
@@ -797,7 +819,7 @@ export class BatchScheduler {
           t.packed.dispose(); t.scales.dispose(); t.biases.dispose();
         };
         const prevQ = prev?.[layer] as QuantizedKVCache | undefined;
-        if (prevQ && process.env.MLX_BUN_BATCH_EXTEND !== "0") {
+        if (prevQ && runtimeValue("MLX_BUN_BATCH_EXTEND") !== "0") {
           const [k0, v0] = prevQ.temporalView();
           const ext = extendQuantRows(k0, v0, prevPad, qRow);
           dispose3(k0); dispose3(v0);
@@ -830,7 +852,7 @@ export class BatchScheduler {
           for (const r of rows) { dispose3(r.keys); dispose3(r.values); }
         }
         // qRow views are disposed via the rows loop above or here for extend
-        if (prevQ && process.env.MLX_BUN_BATCH_EXTEND !== "0") { dispose3(qRow.keys); dispose3(qRow.values); }
+        if (prevQ && runtimeValue("MLX_BUN_BATCH_EXTEND") !== "0") { dispose3(qRow.keys); dispose3(qRow.values); }
         else if (!prevQ) { /* disposed in the rows loop */ }
         continue;
       }
@@ -840,7 +862,7 @@ export class BatchScheduler {
       // introduced in 859572d; 2026-07-07 review fix). The view is taken
       // AFTER the branch, on the paths that actually consume it.
       const soloC = p.solo[layer] as KVCache | RotatingKVCache;
-      if (this.#kinds[layer] === "rot" && p.solo[layer] instanceof RotatingQuantizedKVCache) {
+      if (this.#kinds[layer] === "rot" && isRotatingQuantizedCache(p.solo[layer])) {
         // Milestone 2 — QUANTIZED rotating layer: the solo row converted at
         // the serial boundaries (#quantizeSolo), so its ring bytes are the
         // serial oracle's; this branch re-arranges temporal triples across
@@ -854,21 +876,22 @@ export class BatchScheduler {
           t.values.packed.dispose(); t.values.scales.dispose(); t.values.biases.dispose();
         };
         const prevC = prev?.[layer];
-        if (prevC instanceof BatchedRotatingQuantCache) {
-          const [k0, v0] = prevC.temporalView(); // [B,H,valid,*] triples, temporal
+        if (prevC && isRowBatchCache(prevC) && isRotatingQuantizedCache(prevC)) {
+          const batched = prevC as BatchedRotatingQuantCache;
+          const [k0, v0] = batched.temporalView(); // [B,H,valid,*] triples, temporal
           const valid = k0.packed.shape[2]!;
           for (let b = 0; b < B; b++) {
-            const pad = Math.max(0, prevC.leftPad[b]!);
+            const pad = Math.max(0, batched.leftPad[b]!);
             const cutRow = (t: typeof k0): typeof k0 => ({
               packed: t.packed.slice([b, 0, pad, 0], [b + 1, t.packed.shape[1]!, valid, t.packed.shape[3]!]),
               scales: t.scales.slice([b, 0, pad, 0], [b + 1, t.scales.shape[1]!, valid, t.scales.shape[3]!]),
               biases: t.biases.slice([b, 0, pad, 0], [b + 1, t.biases.shape[1]!, valid, t.biases.shape[3]!]),
             });
             rows.push({ keys: cutRow(k0), values: cutRow(v0) });
-            offsets.push(prevC.offsetArr[b]!);
+            offsets.push(batched.offsetArr[b]!);
           }
           for (const t of [k0, v0]) { t.packed.dispose(); t.scales.dispose(); t.biases.dispose(); }
-        } else if (prevC instanceof RotatingQuantizedKVCache) {
+        } else if (isRotatingQuantizedCache(prevC)) {
           // Adopted lone row (Phase 3.2 adopt): its chronological triples
           // are the merge's first row, pad 0 by definition.
           const [k0, v0] = prevC.temporalView();
@@ -889,7 +912,7 @@ export class BatchScheduler {
         const rows: Row1[] = [];
         const offsets: number[] = [];
         const prevC = prev?.[layer];
-        if (prevC instanceof RotatingKVCache) {
+        if (isRotatingPlainCache(prevC) && !isRowBatchCache(prevC)) {
           // Adopted lone row (Phase 3.2): a plain serial rotating cache —
           // its chronological view is the merge's first row, same as a
           // fresh solo (pad 0 by definition).
@@ -897,7 +920,9 @@ export class BatchScheduler {
           rows.push({ keys: k0, values: v0 });
           offsets.push(prevC.offset);
         }
-        const prevRot = prevC instanceof BatchedRotatingCache ? prevC : undefined;
+        const prevRot = prevC && isRowBatchCache(prevC) && isRotatingPlainCache(prevC)
+          ? prevC as unknown as BatchedRotatingCache
+          : undefined;
         if (prevRot) {
           const [k0, v0] = prevRot.temporalView(); // [B,H,valid,D]
           const [, H, valid, D] = k0.shape as [number, number, number, number];
@@ -918,7 +943,7 @@ export class BatchScheduler {
         for (const r of rows) { r.keys.dispose(); r.values.dispose(); }
       } else {
         const prevFull = prev?.[layer] as KVCache | undefined;
-        if (prevFull && process.env.MLX_BUN_BATCH_EXTEND !== "0") {
+        if (prevFull && runtimeValue("MLX_BUN_BATCH_EXTEND") !== "0") {
           // extend-join (mlx-lm BatchKVCache.extend semantics, P0): append
           // the new right-justified row to the running buffer in ONE pad +
           // ONE concat — no per-row extraction. Existing pads grow, never
@@ -1050,7 +1075,7 @@ export class BatchScheduler {
         // A filtered-to-one BATCHED rot-quant cache subclasses the serial
         // class (so supports() passes) but carries batched ring state —
         // exclude it; only truly-adopted serial caches replay compiled.
-        !inners.some((c) => c instanceof BatchedRotatingQuantCache) &&
+        !inners.some((c) => isRowBatchCache(c) && isRotatingQuantizedCache(c)) &&
         CompiledDecode.supports(inners as Cache[])
       ) {
         let cur = this.#pendingToks;
@@ -1078,10 +1103,9 @@ export class BatchScheduler {
       try {
         if (!lg) {
           fwd = inners.map((c) =>
-            c instanceof BatchedRotatingCache || c instanceof BatchedRotatingQuantCache ||
-            c instanceof SSMCache || isBatchableCache(c) || unpadded
+            isRowBatchCache(c) || isBatchableCache(c) || unpadded
               ? c
-              : c instanceof QuantizedKVCache
+              : isQuantizedKvCache(c)
                 ? new BatchedQuantDecodeMaskCache(c, B, this.#fullLeftPad)
                 : new BatchedDecodeMaskCache(c, B, this.#fullLeftPad, null),
           );
@@ -1103,7 +1127,7 @@ export class BatchScheduler {
         // harmless (the slot is filtered before it is ever emitted; its only
         // use is one KV write on the row's own, about-to-evict row).
         const vecOk =
-          process.env.MLX_BUN_BATCH_VEC_SAMPLE !== "0" &&
+          runtimeValue("MLX_BUN_BATCH_VEC_SAMPLE") !== "0" &&
           rows.every((r) => r.sampled >= r.req.maxTokens || r.req.plainGreedy);
         // Doomed slots hold placeholders (vec path: a real argmax value,
         // equally not part of the row's stream) — flag them so the fed
@@ -1228,7 +1252,7 @@ export class BatchScheduler {
     const prev = this.#pendingToks;
     const prevVals: number[] =
       prev ? prev.toIntTokens() : [];
-    if (process.env.MLX_BUN_GRAMMAR_DEBUG === "1")
+    if (runtimeValue("MLX_BUN_GRAMMAR_DEBUG") === "1")
       console.log(`[sg] B=${B} prevVals=${JSON.stringify(prevVals)} current=${JSON.stringify(rows.map((r) => r.current))} sampled=${JSON.stringify(rows.map((r) => r.sampled))}`);
 
     // (2) accept() per live grammar row — fires that row's async bitmask fill.
@@ -1253,10 +1277,9 @@ export class BatchScheduler {
       // Unpadded fast path — same rule as #step (bare caches == serial graph).
       const unpadded = this.#fullLeftPad.every((p) => p === 0);
       const fwd: Cache[] = inners.map((c) =>
-        c instanceof BatchedRotatingCache || c instanceof BatchedRotatingQuantCache ||
-            c instanceof SSMCache || isBatchableCache(c) || unpadded
+        isRowBatchCache(c) || isBatchableCache(c) || unpadded
           ? c
-          : c instanceof QuantizedKVCache
+          : isQuantizedKvCache(c)
             ? new BatchedQuantDecodeMaskCache(c, B, this.#fullLeftPad)
             : new BatchedDecodeMaskCache(c, B, this.#fullLeftPad, null),
       );
@@ -1442,22 +1465,25 @@ export class BatchScheduler {
     for (const inner of this.#inners!) {
       let c: Cache | null;
       if (isBatchableCache(inner)) c = inner.extractRow(b);
-      else if (inner instanceof BatchedRotatingQuantCache) c = inner.extractRow(b);
-      else if (inner instanceof BatchedRotatingCache) c = inner.extractRow(b);
-      else if (inner instanceof SSMCache)
+      else if (isRowBatchCache(inner) && cacheSignature(inner) === "ssm")
         // Coverage gate: recurrent state is UNTRIMMABLE, so an entry is only
         // valid when the row's own advance count equals the [promptIds+fed]
         // key EXACTLY (a mismatched entry would silently corrupt every future
         // exact-hit). Defensive — a miss here means the fed accounting broke.
-        c = inner.conv && inner.rowOffset(b) === expectTokens ? inner.extractRow(b) : null;
+        c = (inner as SSMCache).conv && (inner as SSMCache).rowOffset(b) === expectTokens
+          ? inner.extractRow(b)
+          : null;
+      else if (isRowBatchCache(inner)) c = inner.extractRow(b);
       else if (
-        inner instanceof RotatingQuantizedKVCache || // adopted serial state never
-        inner instanceof RotatingKVCache //     coexists with a merged row (defensive)
+        isRotatingQuantizedCache(inner) || // adopted serial state never
+        isRotatingPlainCache(inner) //     coexists with a merged row (defensive)
       )
         c = null;
-      else if (inner instanceof QuantizedKVCache)
+      else if (isQuantizedKvCache(inner))
         c = inner.keys ? extractQuantRow(inner, this.#fullLeftPad[b]!, b) : null;
-      else c = inner.keys ? extractKVRow(inner, this.#fullLeftPad[b]!, b) : null;
+      else if (isPlainKvCache(inner))
+        c = inner.keys ? extractKVRow(inner, this.#fullLeftPad[b]!, b) : null;
+      else c = null;
       if (!c) {
         for (const d of out) d.dispose();
         return null;
@@ -1506,20 +1532,14 @@ export class BatchScheduler {
       if (isBatchableCache(inner)) {
         inner.filterRows(keep);
         out.push(inner);
-      } else if (inner instanceof BatchedRotatingCache) {
-        inner.filter(keep); // in-place (mutates + drops rows + reduces padding)
+      } else if (isRowBatchCache(inner)) {
+        inner.filterRows(keep);
         out.push(inner);
-      } else if (inner instanceof BatchedRotatingQuantCache) {
-        inner.filter(keep); // in-place B-axis take on all six components
-        out.push(inner);
-      } else if (inner instanceof RotatingQuantizedKVCache || inner instanceof RotatingKVCache) {
+      } else if (isRotatingQuantizedCache(inner) || isRotatingPlainCache(inner)) {
         // Adopted lone-row state exists only at B=1, where the only filter
         // is the keep=[] dispose-all handled above — unreachable.
         throw new Error("applyFilter: adopted serial rotating cache cannot be row-filtered");
-      } else if (inner instanceof SSMCache) {
-        inner.filter(keep); // in-place B-axis take on both state slots
-        out.push(inner);
-      } else if (inner instanceof QuantizedKVCache) {
+      } else if (isQuantizedKvCache(inner)) {
         const [k0, v0] = inner.temporalView();
         const f = filterQuantRows(k0, v0, keep);
         for (const t of [k0, v0]) { t.packed.dispose(); t.scales.dispose(); t.biases.dispose(); }
@@ -1527,7 +1547,7 @@ export class BatchScheduler {
         c.restoreState(f.keys, f.values, inner.offset);
         out.push(c);
         inner.dispose();
-      } else {
+      } else if (isPlainKvCache(inner)) {
         const [k0, v0] = inner.temporalView();
         const f = filterKVRows(k0, v0, keep);
         k0.dispose(); v0.dispose();
@@ -1535,6 +1555,8 @@ export class BatchScheduler {
         c.restoreState(f.keys, f.values, inner.offset);
         out.push(c);
         inner.dispose();
+      } else {
+        throw new Error(`applyFilter: unsupported cache signature ${cacheSignature(inner)}`);
       }
     }
     this.#inners = out;

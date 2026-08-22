@@ -14,10 +14,11 @@ import { existsSync } from "node:fs";
 import { MemoryStore } from "../../src/memory/db";
 import { runPipeline } from "../../src/memory/pipeline";
 import { setupVault } from "../../src/memory/vault";
+import { configureRuntime } from "../../src/runtime-config";
 
 const HOME = process.env.HOME!;
 const VAULT = `${HOME}/.mlx-bun/wiki-full`;
-process.env.MLX_BUN_WIKI = VAULT;
+configureRuntime({ MLX_BUN_WIKI: VAULT });
 const CURSOR = `${HOME}/.mlx-bun/full-run-cursor.txt`;
 const INIT = `${HOME}/.mlx-bun/full-run-initialized`;
 const BATCH = 20;

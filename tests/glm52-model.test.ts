@@ -33,6 +33,7 @@ import {
   Glm52NativeMtpSource,
 } from "../src/spec/glm52-mtp-source";
 import { BatchScheduler } from "../src/serve/batch-scheduler";
+import { resolveModelProfile } from "../src/model/profile";
 import { GenerationGateway } from "../src/serve/generation-gateway";
 import { generate } from "../src/generate";
 import { createServer } from "../src/server";
@@ -632,6 +633,7 @@ test("streamed GLM serves every generative HTTP protocol and truthful discovery"
   });
   const server = createServer({
     model,
+    profile: resolveModelProfile(model.config),
     tokenizer,
     template,
     modelId: "tiny-glm52-http",
@@ -915,6 +917,7 @@ test("native GLM MTP serves through the serial speculative lane", async () => {
   };
   const server = createServer({
     model,
+    profile: resolveModelProfile(model.config),
     tokenizer,
     template: {
       render: renderGlm52Chat,
@@ -1525,8 +1528,8 @@ test("GLM gateway truthfully reports batch mode while native MTP stays serial", 
   try {
     expect(gateway.batchMode).toBe("batch");
     expect(gateway.batchingEnabled).toBe(true);
-    expect(gateway.willBatch(shape)).toBe(true);
-    expect(gateway.willBatch({ ...shape, hasDraft: true })).toBe(false);
+    expect(gateway.place(shape).mechanism).toBe("continuous");
+    expect(gateway.place({ ...shape, hasDraft: true }).mechanism).toBe("serial");
   } finally {
     model.dispose();
   }

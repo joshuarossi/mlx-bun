@@ -17,6 +17,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { SNAPSHOT_E4B } from "./paths";
 import { NgramProvider } from "../src/spec/ngram-source";
+import { configureRuntime } from "../src/runtime-config";
 
 type TestSource = ReturnType<NgramProvider["open"]> & { history: readonly number[] };
 
@@ -37,7 +38,7 @@ describe("NgramSource contract (model-free)", () => {
   });
 
   test("legacy shape (MLX_BUN_PREFILL_TAIL_SPLIT=0): full prompt at prefill", () => {
-    process.env.MLX_BUN_PREFILL_TAIL_SPLIT = "0";
+    const restore = configureRuntime({ MLX_BUN_PREFILL_TAIL_SPLIT: "0" });
     try {
       const s = openSource();
       s.prefill([10, 20, 30, 40]);
@@ -45,7 +46,7 @@ describe("NgramSource contract (model-free)", () => {
       s.draft([50], 5, 0); // legacy first feed = the sampled+emitted token0
       expect([...s.history]).toEqual([10, 20, 30, 40, 50]);
     } finally {
-      delete process.env.MLX_BUN_PREFILL_TAIL_SPLIT;
+      restore();
     }
   });
 

@@ -17,6 +17,11 @@
 //   - previous_response_id is echoed in the response when the request
 //     carried one (oracle always emits null).
 
+import type {
+  CompletionEvent,
+  CompletionStreamProtocol,
+} from "./serve/completion-sink";
+
 // ---------------------------------------------------------------------
 // Response store (previous_response_id resumption)
 // ---------------------------------------------------------------------
@@ -772,6 +777,49 @@ export class ResponsesStreamTranslator {
     );
     return out;
   }
+}
+
+/** Direct semantic-event adapter used by the server. `onComplete` receives
+ * the same response.completed payload stored for previous_response_id. */
+export function createResponsesStreamProtocol(
+  model: string,
+  previousResponseId: string | null,
+  onComplete: (final: Record<string, unknown>) => void,
+): CompletionStreamProtocol {
+  const translator = new ResponsesStreamTranslator(model, previousResponseId);
+  const chunk = (delta: Record<string, unknown>) => ({ choices: [{ delta }] });
+  return {
+    start: () => translator.addChunk(chunk({ role: "assistant", content: "" })),
+    addEvents(events: CompletionEvent[]) {
+      return events.flatMap((event) => {
+        if (event.type === "reasoning") {
+          return translator.addChunk(chunk({ reasoning: event.text }));
+        }
+        if (event.type === "content") {
+          return translator.addChunk(chunk({ content: event.text }));
+        }
+        return translator.addChunk(chunk({
+          tool_calls: event.calls.map((call, index) => ({ index, ...call })),
+        }));
+      });
+    },
+    finish(reason, usage) {
+      const frames = [
+        ...translator.addChunk({ choices: [{ delta: {}, finish_reason: reason }], usage }),
+        ...translator.finalize(),
+      ];
+      onComplete(translator.finalResponse());
+      return frames;
+    },
+    error(message) {
+      return [sse("error", {
+        type: "error",
+        code: "server_error",
+        message,
+        param: null,
+      })];
+    },
+  };
 }
 
 /** Wrap our OpenAI SSE byte stream as a Responses SSE byte stream.

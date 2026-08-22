@@ -8,6 +8,7 @@ import { createModel } from "../../src/model/factory";
 import { maybeQuantizeKv } from "../../src/generate";
 import { lastPositionLogits, argmaxLastPosition } from "../../src/model/gemma4";
 import { BatchScheduler } from "../../src/serve/batch-scheduler";
+import { resolveKvScheme } from "../../src/kv-scheme";
 import { SNAPSHOT } from "../../tests/paths";
 import * as ops from "../../src/mlx/ops";
 import { clearCache } from "../../src/mlx/ffi";
@@ -96,7 +97,10 @@ const klDiv = (x: Float32Array, y: Float32Array): number => {
   return kl;
 };
 
-const sched = new BatchScheduler(model, { maxBatch: 2, kvConfig: config.kvQuant! });
+const sched = new BatchScheduler(model, {
+  maxBatch: 2,
+  kvScheme: resolveKvScheme({ override: "config", config: config.kvQuant }),
+});
 const mk = (ids: number[], forced: number[], sink: Float32Array[]) => {
   let step = 0;
   return {

@@ -1,30 +1,44 @@
-// FAST: the --batch N lane picker (GenerationGateway.willBatch) — no model
-// load. willBatch is pure over (batchingEnabled, cache capability,
-// RequestShape); the only model surface it touches is makeCache() (the
-// capability gate — fresh caches hold no buffers), so a stub stands in. This
-// gates the compatibility matrix in docs/reference/server-config.md: which
-// request shapes batch and which drain to the serial lane. The scheduler's
-// NUMERICS are gated separately (tests/batch-scheduler.test.ts); this gates
-// the ROUTING decision.
+// FAST: the --batch N scheduling declaration (GenerationGateway.place) — no
+// model load. Placement is pure over the configured concurrency cap, cache
+// capability, and RequestShape; the only model surface it touches is
+// makeCache() (fresh caches hold no buffers), so a stub stands in. Scheduler
+// numerics are gated separately in tests/batch-scheduler.test.ts.
 
 import { describe, expect, test } from "bun:test";
 import { GenerationGateway, type RequestShape } from "../src/serve/generation-gateway";
 import { KVCache, RotatingKVCache } from "../src/model/gemma4-base";
 import { SSMCache } from "../src/model/qwen3-delta";
 import type { RuntimeModel } from "../src/model/factory";
+import { resolveKvScheme } from "../src/kv-scheme";
+import { configureRuntime } from "../src/runtime-config";
 
-// willBatch reads only makeCache() off the model (the capability gate) and
-// never the serialRun, so stubs are safe. The default stub models a
+// place() reads only makeCache() off the model (the capability gate) and never
+// the serialRun, so stubs are safe. The default stub models a
 // full-attention model (all-KVCache — batch-capable).
-const stubModel = { makeCache: () => [new KVCache()] } as unknown as RuntimeModel;
+const stubModel = {
+  makeCache: () => [new KVCache()],
+  config: { text: { numHiddenLayers: 1, layerTypes: ["full_attention"] } },
+} as unknown as RuntimeModel;
 const stubSerial = (async () => ({}) as never) as never;
 const gateway = (batch: number) => new GenerationGateway(stubModel, batch, stubSerial);
+const usesContinuous = (g: GenerationGateway, shape: RequestShape): boolean =>
+  g.place(shape).mechanism === "continuous";
 /** N-layer all-full-attention stub (Phase 3.1 kv-batchability probes). */
 const fullModel = (n: number) =>
-  ({ makeCache: () => Array.from({ length: n }, () => new KVCache()) }) as unknown as RuntimeModel;
+  ({
+    makeCache: () => Array.from({ length: n }, () => new KVCache()),
+    config: {
+      text: { numHiddenLayers: n, layerTypes: Array.from({ length: n }, () => "full_attention") },
+    },
+  }) as unknown as RuntimeModel;
 /** Layer 0 rotating, layer 1 full — a config naming layer 0 must stay serial. */
 const mixedModel = () =>
-  ({ makeCache: () => [new RotatingKVCache(1024), new KVCache()] }) as unknown as RuntimeModel;
+  ({
+    makeCache: () => [new RotatingKVCache(1024), new KVCache()],
+    config: {
+      text: { numHiddenLayers: 2, layerTypes: ["sliding_attention", "full_attention"] },
+    },
+  }) as unknown as RuntimeModel;
 const serialRunStub = stubSerial;
 
 // The all-clear shape: nothing that would force the serial lane.
@@ -41,11 +55,28 @@ const batchable: RequestShape = {
   hasDraft: false,
 };
 
-describe("GenerationGateway.willBatch", () => {
+describe("GenerationGateway.place", () => {
+  test("place freezes one shape and declares its scheduling mechanism", () => {
+    const g = gateway(2);
+    const shape = { ...batchable };
+    const placement = g.place(shape);
+    expect(placement).toEqual({ shape, mechanism: "continuous" });
+    expect(placement.shape).toBe(shape);
+    expect(Object.isFrozen(placement)).toBe(true);
+    expect(Object.isFrozen(placement.shape)).toBe(true);
+    expect(() => Object.assign(shape, { hasVision: true })).toThrow();
+    expect(placement.mechanism).toBe("continuous");
+  });
+
+  test("--batch 1 declares the preserved strict-serial mechanism", () => {
+    const placement = gateway(1).place(batchable);
+    expect(placement).toEqual({ shape: batchable, mechanism: "serial" });
+  });
+
   test("--batch 1 never batches (serial mode), regardless of shape", () => {
     const g = gateway(1);
     expect(g.batchingEnabled).toBe(false);
-    expect(g.willBatch(batchable)).toBe(false);
+    expect(usesContinuous(g, batchable)).toBe(false);
   });
 
   test("--batch 0 / negative clamps to serial", () => {
@@ -56,7 +87,7 @@ describe("GenerationGateway.willBatch", () => {
   test("--batch N (N>1) batches the all-clear shape", () => {
     const g = gateway(2);
     expect(g.batchingEnabled).toBe(true);
-    expect(g.willBatch(batchable)).toBe(true);
+    expect(usesContinuous(g, batchable)).toBe(true);
   });
 
   test("idle gateway reports zero active rows (no scheduler created)", () => {
@@ -74,7 +105,7 @@ describe("GenerationGateway.willBatch", () => {
   ];
   for (const [flag, why] of disqualifiers) {
     test(`${flag} drains to serial — ${why}`, () => {
-      expect(gateway(2).willBatch({ ...batchable, [flag]: true })).toBe(false);
+      expect(usesContinuous(gateway(2), { ...batchable, [flag]: true })).toBe(false);
     });
   }
 
@@ -85,21 +116,45 @@ describe("GenerationGateway.willBatch", () => {
   // kvBits stays serial (quantizedKvStart threshold semantics).
   test("kvQuant BATCHES with an all-full-attention kvConfig scheme", () => {
     const g = new GenerationGateway(fullModel(4), 2, serialRunStub, {
-      kvScheme: { kvConfig: [0, 1, 2, 3].map((layerIdx) => ({ layerIdx, bits: 4, groupSize: 64 })) },
+      kvScheme: resolveKvScheme({
+        override: "config",
+        config: [0, 1, 2, 3].map((layerIdx) => ({ layerIdx, bits: 4, groupSize: 64 })),
+      }),
     });
-    expect(g.willBatch({ ...batchable, kvQuant: true })).toBe(true);
+    expect(usesContinuous(g, { ...batchable, kvQuant: true })).toBe(true);
   });
   test("kvQuant stays serial for uniform kvBits", () => {
     const g = new GenerationGateway(fullModel(4), 2, serialRunStub, {
-      kvScheme: { kvBits: 8 },
+      kvScheme: resolveKvScheme({ override: 8 }),
     });
-    expect(g.willBatch({ ...batchable, kvQuant: true })).toBe(false);
+    expect(usesContinuous(g, { ...batchable, kvQuant: true })).toBe(false);
   });
   test("kvQuant BATCHES when the config names a rotating layer (milestone 2)", () => {
     const g = new GenerationGateway(mixedModel(), 2, serialRunStub, {
-      kvScheme: { kvConfig: [{ layerIdx: 0, bits: 4, groupSize: 64 }] },
+      kvScheme: resolveKvScheme({
+        override: "config",
+        config: [{ layerIdx: 0, bits: 4, groupSize: 64 }],
+      }),
     });
-    expect(g.willBatch({ ...batchable, kvQuant: true })).toBe(true);
+    expect(usesContinuous(g, { ...batchable, kvQuant: true })).toBe(true);
+  });
+
+  test("kvQuant stays serial when a configured layer lacks KV conversion capability", () => {
+    const nonConvertible = {
+      makeCache: () => [new SSMCache()],
+      config: {
+        modelType: "stub",
+        text: { numHiddenLayers: 1, layerTypes: ["full_attention"] },
+      },
+    } as unknown as RuntimeModel;
+    const g = new GenerationGateway(nonConvertible, 2, serialRunStub, {
+      kvScheme: resolveKvScheme({
+        override: "config",
+        config: [{ layerIdx: 0, bits: 4, groupSize: 64 }],
+      }),
+    });
+
+    expect(usesContinuous(g, { ...batchable, kvQuant: true })).toBe(false);
   });
 
   // Unlike kvQuant (which can be partially batchable via a full-attention-only
@@ -108,9 +163,12 @@ describe("GenerationGateway.willBatch", () => {
   // filter/temporalView-capable).
   test("turboQuant stays serial regardless of the gateway's kvScheme", () => {
     const g = new GenerationGateway(fullModel(4), 2, serialRunStub, {
-      kvScheme: { kvConfig: [0, 1, 2, 3].map((layerIdx) => ({ layerIdx, bits: 4, groupSize: 64 })) },
+      kvScheme: resolveKvScheme({
+        override: "config",
+        config: [0, 1, 2, 3].map((layerIdx) => ({ layerIdx, bits: 4, groupSize: 64 })),
+      }),
     });
-    expect(g.willBatch({ ...batchable, turboQuant: true })).toBe(false);
+    expect(usesContinuous(g, { ...batchable, turboQuant: true })).toBe(false);
   });
 
   // Logits processors BATCH: the per-row sampler folds makeLogitsProcessors
@@ -119,10 +177,10 @@ describe("GenerationGateway.willBatch", () => {
   // penalty in generation_config.json — as serial-only gates these routed
   // EVERY Qwen3.5 request to the serial lane under --batch N.
   test("repetition penalty batches (per-row logits processor)", () => {
-    expect(gateway(2).willBatch({ ...batchable, hasRepetitionPenalty: true })).toBe(true);
+    expect(usesContinuous(gateway(2), { ...batchable, hasRepetitionPenalty: true })).toBe(true);
   });
   test("logits extras batch (min_p/XTC/logit_bias/presence+frequency)", () => {
-    expect(gateway(2).willBatch({ ...batchable, hasLogitsExtras: true })).toBe(true);
+    expect(usesContinuous(gateway(2), { ...batchable, hasLogitsExtras: true })).toBe(true);
   });
 
   // Grammar (B1): per-row matchers make it batchable by default; the kill
@@ -130,37 +188,34 @@ describe("GenerationGateway.willBatch", () => {
   // house style). Degrade-path requests have NO controller (hasGrammar=false)
   // and stay batchable regardless.
   test("grammar batches by default (B1 per-row matchers)", () => {
-    const prev = process.env.MLX_BUN_GRAMMAR_BATCH;
-    delete process.env.MLX_BUN_GRAMMAR_BATCH;
+    const restore = configureRuntime({ MLX_BUN_GRAMMAR_BATCH: undefined });
     try {
-      expect(gateway(2).willBatch({ ...batchable, hasGrammar: true })).toBe(true);
+      expect(usesContinuous(gateway(2), { ...batchable, hasGrammar: true })).toBe(true);
     } finally {
-      if (prev !== undefined) process.env.MLX_BUN_GRAMMAR_BATCH = prev;
+      restore();
     }
   });
   // serve --draft-model: a mounted draft routes EVERY request serial —
   // upstream parity (mlx_lm.server: is_batchable = draft is None). Spec is a
   // B=1 latency mode; batching is a throughput mode (integration plan).
   test("hasDraft routes serial (spec is serial-lane-only)", () => {
-    expect(gateway(2).willBatch({ ...batchable, hasDraft: true })).toBe(false);
-    expect(gateway(2).willBatch({ ...batchable, hasDraft: false })).toBe(true);
+    expect(usesContinuous(gateway(2), { ...batchable, hasDraft: true })).toBe(false);
+    expect(usesContinuous(gateway(2), { ...batchable, hasDraft: false })).toBe(true);
   });
   test("MLX_BUN_GRAMMAR_BATCH=0 forces grammar to serial (B0 fallback)", () => {
-    const prev = process.env.MLX_BUN_GRAMMAR_BATCH;
-    process.env.MLX_BUN_GRAMMAR_BATCH = "0";
+    const restore = configureRuntime({ MLX_BUN_GRAMMAR_BATCH: "0" });
     try {
-      expect(gateway(2).willBatch({ ...batchable, hasGrammar: true })).toBe(false);
+      expect(usesContinuous(gateway(2), { ...batchable, hasGrammar: true })).toBe(false);
       // degrade-path (no controller) still batches:
-      expect(gateway(2).willBatch({ ...batchable, hasGrammar: false })).toBe(true);
+      expect(usesContinuous(gateway(2), { ...batchable, hasGrammar: false })).toBe(true);
     } finally {
-      if (prev !== undefined) process.env.MLX_BUN_GRAMMAR_BATCH = prev;
-      else delete process.env.MLX_BUN_GRAMMAR_BATCH;
+      restore();
     }
   });
 
   test("multiple disqualifiers still serial", () => {
     expect(
-      gateway(2).willBatch({
+      usesContinuous(gateway(2), {
         ...batchable,
         hasVision: true,
         userSeed: true,
@@ -174,7 +229,7 @@ describe("GenerationGateway.willBatch", () => {
   // test documents that the all-clear shape (which they leave untouched) batches.
   test("sampler knobs (temp/top-p/top-k/stop/tools) are not disqualifiers", () => {
     // None of them appear in RequestShape, so an all-clear shape stays batchable.
-    expect(gateway(2).willBatch(batchable)).toBe(true);
+    expect(usesContinuous(gateway(2), batchable)).toBe(true);
   });
 
   // Cache-capability gate (mirrors mlx-lm server.py's all-caches-have-merge
@@ -189,19 +244,19 @@ describe("GenerationGateway.willBatch", () => {
       } as unknown as RuntimeModel;
       const g = new GenerationGateway(qwen, 2, stubSerial);
       expect(g.batchingEnabled).toBe(true);
-      expect(g.willBatch(batchable)).toBe(true);
+      expect(usesContinuous(g, batchable)).toBe(true);
     });
 
     test("MLX_BUN_BATCH_SSM=0 re-gates hybrid models to serial", () => {
-      process.env.MLX_BUN_BATCH_SSM = "0";
+      const restore = configureRuntime({ MLX_BUN_BATCH_SSM: "0" });
       try {
         const qwen = {
           makeCache: () => [new SSMCache(), new KVCache()],
         } as unknown as RuntimeModel;
         const g = new GenerationGateway(qwen, 2, stubSerial);
-        expect(g.willBatch(batchable)).toBe(false);
+        expect(usesContinuous(g, batchable)).toBe(false);
       } finally {
-        delete process.env.MLX_BUN_BATCH_SSM;
+        restore();
       }
     });
 
@@ -210,7 +265,7 @@ describe("GenerationGateway.willBatch", () => {
         makeCache: () => [new KVCache(), new RotatingKVCache(1024)],
       } as unknown as RuntimeModel;
       const g = new GenerationGateway(gemma, 2, stubSerial);
-      expect(g.willBatch(batchable)).toBe(true);
+      expect(usesContinuous(g, batchable)).toBe(true);
     });
   });
 });
@@ -260,19 +315,23 @@ describe("GenerationGateway.busy / onIdle", () => {
 });
 
 describe("GenerationGateway request cancellation", () => {
-  test("an already-aborted request releases its grammar before lane selection", async () => {
+  test("an already-aborted request releases its grammar before lane execution", async () => {
     let disposals = 0;
     const grammar = { dispose: () => { disposals++; } };
     const abort = new AbortController();
+    const g = gateway(1);
+    const shape = { ...batchable, hasGrammar: true };
+    const placement = g.place(shape);
     abort.abort(new DOMException("client disconnected", "AbortError"));
 
     await expect(
-      gateway(1).run(
+      g.run(
         [1],
         { grammar } as any,
         () => {},
         undefined,
-        { ...batchable, hasGrammar: true },
+        shape,
+        placement,
         abort.signal,
       ),
     ).rejects.toHaveProperty("name", "AbortError");
@@ -299,12 +358,14 @@ describe("GenerationGateway request cancellation", () => {
     const owner = g.runExclusive(async () => { await held; });
     const abort = new AbortController();
     let grammarDisposals = 0;
+    const shape = { ...batchable, hasGrammar: true };
     const abandoned = g.run(
       [1],
       { grammar: { dispose: () => { grammarDisposals++; } } } as any,
       () => {},
       undefined,
-      { ...batchable, hasGrammar: true },
+      shape,
+      g.place(shape),
       abort.signal,
     );
     abort.abort(new DOMException("client disconnected", "AbortError"));
@@ -314,7 +375,9 @@ describe("GenerationGateway request cancellation", () => {
     expect(serialStarts).toBe(0);
     expect(grammarDisposals).toBe(1);
 
-    const next = await g.run([1], {}, () => {}, undefined, batchable);
+    const next = await g.run(
+      [1], {}, () => {}, undefined, batchable, g.place(batchable),
+    );
     expect(next.generatedTokens).toBe(1);
     expect(serialStarts).toBe(1);
   });

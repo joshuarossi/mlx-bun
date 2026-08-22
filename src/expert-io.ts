@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { nativePackDir } from "./native-pack";
 import type { MlxArray } from "./mlx/array";
 import type { MlxHandle } from "./mlx/ffi";
+import { runtimeValue } from "./runtime-config";
 
 const { cstring, i32, ptr: pointer, u32, u64 } = FFIType;
 const EBUSY = 16;
@@ -69,7 +70,8 @@ export interface ExpertIOHintSnapshot {
 
 function resolveLibrary(explicit?: string): string {
   if (explicit) return explicit;
-  if (process.env.MLX_BUN_EXPERT_IO_DYLIB) return process.env.MLX_BUN_EXPERT_IO_DYLIB;
+  const configured = runtimeValue("MLX_BUN_EXPERT_IO_DYLIB");
+  if (configured) return configured;
   const candidates = [
     join(dirname(process.execPath), "libmlx_bun_expert_io.dylib"),
     join(nativePackDir(), "libmlx_bun_expert_io.dylib"),

@@ -9,6 +9,7 @@
 // land in the store, the watermark is set, and the downstream DAG runs on them.
 
 import { describe, expect, it, afterEach } from "bun:test";
+import { configureRuntime } from "../src/runtime-config";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,10 +21,10 @@ import { runPipeline } from "../src/memory/pipeline";
 
 const CONV = "77778888-0000-0000-0000-000000000000"; // → conv:77778888
 
-const savedWiki = process.env.MLX_BUN_WIKI;
+let restoreWiki = () => {};
 afterEach(() => {
-  if (savedWiki === undefined) delete process.env.MLX_BUN_WIKI;
-  else process.env.MLX_BUN_WIKI = savedWiki;
+  restoreWiki();
+  restoreWiki = () => {};
 });
 
 /** A throwaway vault with the Meta policy pages SEGMENT inlines (Chunking +
@@ -36,7 +37,8 @@ async function seedVault(): Promise<string> {
   await writeFile(join(root, "Meta", "Chunking.md"), "# Chunking\n\nDefault granularity.\n");
   await writeFile(join(root, "Meta", "Topics_to_Ignore.md"), "# Topics to Ignore\n\n(none)\n");
   await writeFile(join(root, "Meta", "Entities.md"), "# Entities\n\nName the entity each chunk is about.\n");
-  process.env.MLX_BUN_WIKI = root;
+  restoreWiki();
+  restoreWiki = configureRuntime({ MLX_BUN_WIKI: root });
   return root;
 }
 

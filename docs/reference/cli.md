@@ -54,7 +54,7 @@ Common flags (full list in [server-config.md](server-config.md)):
 | `--ngram-max <k>` / `--ngram-min <k>` | Prompt-lookup match-window bounds, `--draft-kind ngram` only: the longest/shortest trailing k-gram searched (defaults 3 / 1, the reference values) |
 | `--mtp on\|off` | GLM-5.2 checkpoint-native MTP (default on). Native MTP uses the exact serial verify lane; `off` enables ordinary continuous batching (batched per-row MTP is post-release) |
 | `--context-length <n>` | GLM-5.2 context reserved by the header-only resource equation (default 4096) |
-| `--batch <n>` | Continuous-batched serving cap, mlx-lm B=N parity (default 8; `--batch 1` pins the serial path) |
+| `--batch <n>` | Continuous-scheduler concurrency cap, mlx-lm parity at the same B (default 8; a lone admitted request uses the gated B=1 fast path, while `--batch 1` pins the preserved strict serial executor) |
 | `--temperature` / `--top-p` / `--top-k` / `--max-tokens` | Server-wide sampling defaults (per-request fields still win; GLM-5.2 defaults to the planned 128 generated tokens) |
 | `--l1` / `--l2` | Parity tier alias: bit-exact to mlx-lm / bit-exact to mlx-optiq. **No tier = `--l1`** (the default since 2026-07-05 — output-changing levers are opt-in until they beat the L1 baseline in a paired A/B). Each expands to per-fork flags (`--compiled-decode`, `--compiled-activations`, `--fused-sdpa`, `--kv-quant`); a fork flag overrides one. `--l3` was removed 2026-07-05 and now errors (the Lab replaces it — [unified-engine-frontier-plan.md](../design/unified-engine-frontier-plan.md)). See [server-config.md](server-config.md#fidelity-tiers-and-the-decode-route---l1----l2). |
 | `--allow-private-media` | Let `image_url`/`audio_url` parts fetch from private/loopback/link-local hosts (blocked by default — SSRF guard; the 10 s timeout and 64 MB cap on remote media apply either way) |
@@ -239,7 +239,14 @@ MLX snapshot — uniform 4/8-bit, or mixed-precision via `--target-bpw`
 ```sh
 mlx-bun convert Qwen/Qwen3-4B -q                      # uniform 4-bit
 mlx-bun convert Qwen/Qwen3-4B --target-bpw 4.5        # mixed precision
+mlx-bun convert ./qwen3.5-bf16 -q --rotate-weights    # fold then quantize
 ```
+
+`--rotate-weights` makes the offline rotation part of the same conversion
+pipeline and records its recipe in `optiq_metadata.json`. The adapter is
+selected from the model/tensor schema (Llama, Qwen3.5 trunk, or Qwen MTP);
+`--rotation-seed` defaults to `42`. Folding requires full-precision source
+weights and an MTP companion must use the same seed as its trunk.
 
 ### `upload` — push to the Hugging Face Hub
 

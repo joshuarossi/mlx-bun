@@ -76,6 +76,12 @@ export interface OptiqMetadata {
   group_size: number;
   achieved_bpw: number;
   per_layer_count: number;
+  weight_transforms?: Array<{
+    id: string;
+    seed: number;
+    family: string;
+    deviations: string[];
+  }>;
 }
 
 /**

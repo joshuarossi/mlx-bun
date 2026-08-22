@@ -7,6 +7,7 @@
 // Everything reachable WITHOUT the GPU via injected model seams.
 
 import { describe, expect, it, afterEach } from "bun:test";
+import { configureRuntime } from "../src/runtime-config";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,17 +41,18 @@ It runs off a removable battery pack.[^1]
 
 const NEW_CONV = "99990000-0000-0000-0000-000000000000"; // → conv:99990000
 
-const savedWiki = process.env.MLX_BUN_WIKI;
+let restoreWiki = () => {};
 afterEach(() => {
-  if (savedWiki === undefined) delete process.env.MLX_BUN_WIKI;
-  else process.env.MLX_BUN_WIKI = savedWiki;
+  restoreWiki();
+  restoreWiki = () => {};
 });
 
 async function seed(): Promise<{ root: string; store: MemoryStore; cid: string }> {
   const root = await mkdtemp(join(tmpdir(), "dreaming-newsection-"));
   await mkdir(join(root, "articles"), { recursive: true });
   await writeFile(join(root, "articles", "Gadget.md"), GADGET);
-  process.env.MLX_BUN_WIKI = root;
+  restoreWiki();
+  restoreWiki = configureRuntime({ MLX_BUN_WIKI: root });
 
   const store = new MemoryStore(":memory:");
   store.db.run("INSERT INTO entities (name, article_stem, kind, notable) VALUES (?,?,?,?)", ["Gadget", "Gadget", "thing", 1]);

@@ -38,7 +38,6 @@ import appJs from "./web/app.js" with { type: "text" };
 import manifestWebmanifest from "./web/manifest.webmanifest" with { type: "text" };
 import iconSvg from "./web/icon.svg" with { type: "text" };
 import swJs from "./web/sw.js" with { type: "text" };
-import pkgJson from "../package.json" with { type: "json" };
 import { existsSync, readFileSync } from "node:fs";
 const APP_PAGE = appHtml as unknown as string;
 const HLJS_JS = hljsJs as unknown as string;
@@ -47,7 +46,6 @@ const APP_JS = appJs as unknown as string;
 const MANIFEST_WEBMANIFEST = manifestWebmanifest as unknown as string;
 const ICON_SVG = iconSvg as unknown as string;
 const SW_JS = swJs as unknown as string;
-const pkgVersion = (pkgJson as { version: string }).version;
 import { loadModelConfig, type KvQuantSpec, type ModelConfig, type TurboQuantScheme } from "./config";
 import { Weights } from "./weights";
 import { Gemma4Model } from "./model/gemma4";
@@ -67,7 +65,8 @@ import {
   GLM52_G5_MEASURED_WARM_DECODE_TPS,
   type Glm52MemoryPlan,
 } from "./model/glm52-memory";
-import { isGlm52Config, isMiniCPM5Config } from "./model/support";
+import { isMiniCPM5Config } from "./model/support";
+import { resolveModelProfile, type ResolvedModelProfile } from "./model/profile";
 import { Glm52NativeMtpProvider } from "./spec/glm52-mtp-source";
 import {
   generate,
@@ -77,6 +76,8 @@ import {
   withModelWiredLimit,
 } from "./generate";
 import { cloneKvCaches, SpillQueue } from "./kv-store";
+import { resolveKvScheme } from "./kv-scheme";
+import { runtimeValue } from "./runtime-config";
 import { TURBOQUANT_HEAD_DIMS } from "./mlx/turboquant-tables";
 import {
   compileGrammarRequest, grammarEnabled, type GrammarRequest,
@@ -85,7 +86,35 @@ import type { HlgConfig } from "./sampler";
 import { isMonotone, CURVE_UMIN, type CurveParams } from "./curve-sampler";
 const CURVE_PAGE = curveDesignerHtml as unknown as string;
 import { GenerationGateway } from "./serve/generation-gateway";
-import { recordLane, type Lane } from "./serve/lane-registry";
+import {
+  CompletionExecutor,
+  CompletionRejected,
+  prepareCompletion,
+  type CompletionSummary,
+  type PreparedCompletion,
+} from "./serve/completion-executor";
+import { handleAdminRoute } from "./serve/admin-routes";
+import { handleAuxiliaryRoute } from "./serve/aux-routes";
+import {
+  createTimedFlowControl,
+  type CompletionEvent,
+  type CompletionStreamProtocol,
+} from "./serve/completion-sink";
+import { createDiscoveryRoutes } from "./serve/discovery-routes";
+import { handleLabRoute } from "./serve/lab-routes";
+import { handleModelAdminRoute } from "./serve/model-admin-routes";
+import { RequestOwnership } from "./serve/request-plan";
+import { handleStaticRoute } from "./serve/static-routes";
+const STATIC_ROUTE_ASSETS = {
+  appPage: APP_PAGE,
+  appJs: APP_JS,
+  hljsJs: HLJS_JS,
+  hljsCss: HLJS_CSS,
+  manifest: MANIFEST_WEBMANIFEST,
+  iconSvg: ICON_SVG,
+  serviceWorker: SW_JS,
+  curvePage: CURVE_PAGE,
+};
 import {
   ChatTemplate, type ChatMessage, type ToolDefinition,
 } from "./chat-template";
@@ -98,16 +127,15 @@ import { PromptCache, cacheBytes } from "./prompt-cache";
 import { SsdCacheStore } from "./ssd-cache";
 import { configFingerprint } from "./model/fingerprint";
 import {
-  anthropicToChatBody, chatJsonToAnthropic, translateOpenAiSse,
+  anthropicToChatBody, chatJsonToAnthropic, createAnthropicStreamProtocol,
   type AnthropicRequest,
 } from "./anthropic";
 import {
   ResponseStore, chatJsonToResponses, outputItemsToInputItems,
-  responsesToChatBody, translateOpenAiSseToResponses,
+  responsesToChatBody, createResponsesStreamProtocol,
   type ResponsesRequest,
 } from "./responses";
-import { AdapterManager, listAvailableAdapters } from "./lora";
-import { embedMany, isEmbeddingModel } from "./embed";
+import { AdapterManager } from "./lora";
 import { fit } from "./fit";
 import { setMemoryLimit } from "./mlx/ffi";
 import { VisionTower } from "./vision/embedder";
@@ -134,12 +162,10 @@ export interface ServerOptions {
    *  evict; a request over the budget alone is rejected. Unset = no
    *  aggregate cap (per-request admission via memoryBudget still applies). */
   kvBudgetBytes?: number;
-  /** KV quantization override. When unset: apply ctx.kvConfig (mixed
-   *  per-layer) for serial serving, but bf16 under `--batch N` (the batched
-   *  engine is bf16-only — a mode switch, see `batch` below). "config" forces
-   *  the model's kv_config even under batching (those requests then route to
-   *  the serial path); "off" forces bf16; a number forces uniform bits
-   *  (group size 64, start 0) ignoring the config file. */
+  /** KV quantization override. Unset/"off" is bf16. "config" applies the
+   *  model's declared mixed-precision kv_config; supported per-layer schemes
+   *  compose with continuous scheduling. A number forces uniform bits
+   *  (group size 64, start 0) and uses the preserved serial executor. */
   kvQuant?: "off" | "config" | number;
   /** TurboQuant scheme (docs/design/turboquant-kv.md): a separate axis from
    *  kvQuant above, mutually exclusive with it (`--kv-quant turbo[:k<bits>v
@@ -195,12 +221,9 @@ export interface ServerOptions {
    *  mlx_lm.server's flag; its default there is 512 — ours stays 65,536 so
    *  thinking traces never truncate. `--max-tokens 512` = mlx-lm behavior. */
   defaultMaxTokens?: number;
-  /** Max concurrent requests batched through the mlx-lm-parity engine
-   *  (`--batch N`). Default 8 (continuous batching, B floats 1..N,
-   *  bit-parity with mlx-lm B=N); `--batch 1` pins the serialized
-   *  single-queue path — a mode switch, not a load-dependent
-   *  fallback. See docs/design/parallel-slots.md. NOTE: the batched executor
-   *  is mid-build; until it lands, >1 warns and runs serially. */
+  /** Continuous-scheduler concurrency cap (`--batch N`). Default 8; the
+   *  scheduler specializes active B=1 and B=N with mlx-lm parity at the same
+   *  composition. `--batch 1` pins the preserved strict serial executor. */
   batch?: number;
   /** HLG tone-curve sampling default (set via --hlg-sampling on + sub-knobs).
    *  A per-request `hlg` object overrides it field-by-field. Off when unset. */
@@ -229,6 +252,9 @@ export interface ServerOptions {
 
 export interface ServerContext {
   model: RuntimeModel;
+  /** Declared external artifact/family profile that selected model
+   * construction. Request-level methods are resolved separately. */
+  profile: ResolvedModelProfile;
   tokenizer: LoadedTokenizer;
   template: ChatTemplate;
   modelId: string;
@@ -348,7 +374,8 @@ export async function loadContext(
   opts: LoadContextOptions = {},
 ): Promise<ServerContext> {
   const config = await loadModelConfig(modelDir);
-  const glm = isGlm52Config(config);
+  const profile = resolveModelProfile(config);
+  const glm = profile.profile.execution.loader === "colibri";
   // Bundled MTP companion: `--draft-kind mtp` with no --draft-model resolves
   // to the artifact's own mtp/ subfolder (single-repo packaging — the
   // companion is a complete model dir the provider already loads). Explicit
@@ -404,9 +431,7 @@ export async function loadContext(
         `${(opts.memoryBudgetBytes / 1e9).toFixed(2)} GB`,
       );
   }
-  // generated-specialization dispatch by config fingerprint (Phase C);
-  // unmatched configs run the monolith — slow, never broken
-  if (!glm) model = createModel(weights!, config);
+  if (!glm) model = createModel(weights!, config, profile);
   const tokenizer = await loadTokenizer(modelDir);
   // Generation must stop on the tokenizer's eos_token — the chat turn
   // terminator (e.g. Qwen <|im_end|> = 248046). Some configs (Qwen3.5-4B)
@@ -550,6 +575,7 @@ export async function loadContext(
   return {
     draft,
     model,
+    profile,
     glmMemoryPlan,
     adapters: new AdapterManager(model),
     kvConfig: config.kvQuant,
@@ -1287,7 +1313,8 @@ export function parseLogitBias(
 
 /** Default seed for a request that didn't pin one. `Date.now()` alone is NOT
  *  request-unique: under `--batch N` the batch lane serves ONLY default-seed
- *  requests (explicit-seed requests route serial, see GenerationGateway.willBatch),
+ *  requests (explicit-seed requests use the serial mechanism, see
+ *  GenerationGateway.place),
  *  so two identical prompts arriving in the same millisecond would share a seed
  *  and — with per-row RNG keyed as stepKey(seed, generatedCount) — produce
  *  byte-identical completions, silently collapsing best-of-N diversity. Mix a
@@ -1397,70 +1424,6 @@ export function validateReasoningEffort(body: {
     return "reasoning_effort must be one of " +
       "'none', 'minimal', 'low', 'medium', 'high', 'xhigh'";
   return null;
-}
-
-/** Collects per-token logprob info and shapes mlx_lm.server's response block
- *  (server.py generate_response L1317-1327). NOT OpenAI's shape — entries
- *  carry token *ids* (and raw vocab token strings in the top-k form), and the
- *  SAME block is attached under choices[0].logprobs for chat AND text
- *  completions:
- *  - top_logprobs > 0 → {content: [{id, token, logprob,
- *      top_logprobs: [{id, token, logprob}, …]}, …]} — each entry is the
- *      top-1 candidate merged with its own top-k list (`dict(i[0],
- *      top_logprobs=i)`); mlx-lm leaves argpartition order unspecified, we
- *      sort descending, so the entry is deterministically the argmax.
- *  - logprobs=true (and top_logprobs ≤ 0) → {content: [{id, logprob}, …]}
- *      with the SAMPLED token's logprob.
- *  When both are set, only the top_logprobs form is emitted (the reference's
- *  if/elif). Stream chunks never carry logprobs — mlx-lm's streaming
- *  generate_response calls pass no token_logprobs/top_tokens. */
-class LogprobsCollector {
-  readonly #tokens: number[] = [];
-  readonly #tokenLogprobs: number[] = [];
-  readonly #topTokens: { id: number; token: string; logprob: number }[][] = [];
-
-  constructor(
-    private readonly wantLogprobs: boolean,
-    private readonly topK: number,
-    private readonly idToToken: (id: number) => string,
-  ) {}
-
-  get active(): boolean {
-    return this.wantLogprobs || this.topK > 0;
-  }
-
-  push(token: number, info?: TokenLogprobs): void {
-    if (!this.active) return;
-    this.#tokens.push(token);
-    if (this.wantLogprobs) this.#tokenLogprobs.push(info?.logprob ?? NaN);
-    if (this.topK > 0)
-      this.#topTokens.push(
-        (info?.top ?? []).map((t) => ({
-          id: t.id,
-          token: this.idToToken(t.id),
-          logprob: t.logprob,
-        })),
-      );
-  }
-
-  /** choices[0].logprobs value, or null when nothing to attach (mirrors the
-   *  reference: the key is omitted entirely for zero collected tokens). */
-  payload(): { content: Record<string, unknown>[] } | null {
-    if (this.#topTokens.length)
-      return {
-        content: this.#topTokens.map((t) =>
-          t.length ? { ...t[0]!, top_logprobs: t } : {},
-        ),
-      };
-    if (this.#tokenLogprobs.length)
-      return {
-        content: this.#tokens.map((id, i) => ({
-          id,
-          logprob: this.#tokenLogprobs[i]!,
-        })),
-      };
-    return null;
-  }
 }
 
 /** Incremental detokenizer: emits the longest stable decoded prefix.
@@ -1614,13 +1577,14 @@ function curveJunk(s: string): boolean {
 export function createServer(
   ctx: ServerContext, port = 0, serverOptions: ServerOptions = {},
 ): Server<unknown> {
-  // --batch N (mode switch): N===1 is the serialized path below; N>1 routes
-  // batchable requests through the continuous-batching scheduler (the
-  // GenerationGateway picks the lane). Both full-attention (CPM) and
+  // --batch N is a concurrency cap: N===1 pins the strict serial executor;
+  // N>1 admits supported execution compositions to the continuous scheduler.
+  // The scheduler chooses its B=1 fast path or B=N step from active rows.
+  // Both full-attention (CPM) and
   // sliding-window (Gemma) models batch — the scheduler assembles each layer's
   // cache by attention type. Non-batchable requests (vision / adapters /
-  // repetition penalty / user seed / explicit kv-quant) drain to the serial
-  // lane (see GenerationGateway.willBatch).
+  // user seed / unsupported explicit kv-quant) drain to the serial executor
+  // (see GenerationGateway.place). No inference setting is rewritten.
   // DEFAULT 8 (flipped 2026-07-05, Josh's call, after GATE-B1-SPEED): a
   // lone request through the batch lane IS the serial engine (adopted
   // serial-class caches, compiled decode, prompt cache + SSD restore;
@@ -1639,7 +1603,6 @@ export function createServer(
   // and must be an explicit opt-in (--kv-quant config|4|8, or --l2
   // whose presets pass it explicitly). The CLI always passes kvQuant now;
   // this fallback is the library-user default and matches the CLI's.
-  const configScheme = ctx.kvConfig?.length ? { kvConfig: ctx.kvConfig } : {};
   // Mutually exclusive by contract (GenerateOptions.turboQuant doc): a
   // programmatic caller setting both gets turboQuant — say so, like the
   // other risky-combination warnings below.
@@ -1648,13 +1611,12 @@ export function createServer(
       `[kv-quant] both turboQuant and --kv-quant ${serverOptions.kvQuant} are set; ` +
         `turboQuant wins (they are mutually exclusive).`,
     );
-  const kvScheme: Pick<GenerateOptions, "kvBits" | "kvConfig" | "quantizedKvStart" | "turboQuant"> =
-    serverOptions.turboQuant ? { turboQuant: serverOptions.turboQuant, quantizedKvStart: 0 }
-    : serverOptions.kvQuant === "off" ? {}
-    : serverOptions.kvQuant === "config" ? configScheme
-    : typeof serverOptions.kvQuant === "number"
-      ? { kvBits: serverOptions.kvQuant, quantizedKvStart: 0 }
-    : {}; // unset → bf16 (L1 default; quantized KV is opt-in)
+  const resolvedKvScheme = resolveKvScheme({
+    override: serverOptions.kvQuant,
+    turboQuant: serverOptions.turboQuant,
+    config: ctx.kvConfig,
+  });
+  const kvScheme = resolvedKvScheme.generationOptions;
   // Phase 3.1: kvConfig whose layers are all full-attention BATCHES (the
   // scheduler applies the mixed scheme per row); uniform kvBits and configs
   // touching rotating layers still route those requests serial. The warning
@@ -1667,7 +1629,7 @@ export function createServer(
         `--kv-quant to batch in bf16. (docs/design/unified-engine-frontier-plan.md)`,
     );
   // TurboQuant is solo-only in v1 (novel cache class, not batchable by
-  // construction — see GenerationGateway#modelCachesBatchable/willBatch).
+  // construction — see GenerationGateway placement's cache-capability gate).
   if (batch > 1 && kvScheme.turboQuant)
     console.warn(
       `[batch] --batch ${batch} with --kv-quant turbo: TurboQuant is serial-only in v1 ` +
@@ -1753,11 +1715,7 @@ export function createServer(
   if (serverOptions.ssdCacheDir) {
     if (promptCacheCap <= 0)
       throw new Error("--ssd-cache requires the RAM prompt cache (--prompt-cache 0 disables it)");
-    const schemeKey = kvScheme.turboQuant
-      ? `turbo-k${kvScheme.turboQuant.kBits}v${kvScheme.turboQuant.vBits}`
-      : kvScheme.kvBits
-      ? `kv${kvScheme.kvBits}`
-      : kvScheme.kvConfig?.length ? "config" : "bf16";
+    const schemeKey = resolvedKvScheme.cacheKey;
     const tokJson = readFileSync(`${ctx.model.config.modelDir}/tokenizer.json`);
     ssdStore = new SsdCacheStore({
       dir: serverOptions.ssdCacheDir,
@@ -2029,7 +1987,7 @@ export function createServer(
   // still land ahead of a just-arrived request. MLX_BUN_SSD_WRITEBEHIND=0
   // disables write-behind snapshots entirely — the paired-A/B lever + kill
   // switch (restart survival then degrades to spill-on-evict only).
-  const writeBehindOn = process.env.MLX_BUN_SSD_WRITEBEHIND !== "0";
+  const writeBehindOn = runtimeValue("MLX_BUN_SSD_WRITEBEHIND") !== "0";
   const ssdFlushGate = (): Promise<void> => gateway.onIdle();
   const ssdPending = new Map<string, ReturnType<typeof setTimeout>>();
   // Bounded write-behind queue (2026-07-07 review fix — see SpillQueue in
@@ -2045,7 +2003,7 @@ export function createServer(
   // `|| 2` would coerce an explicit "0" back to 2 GB — parse so 0 works
   // (cap 0 = keep only the newest + in-flight clone pinned; the soft cap
   // never drops the item just enqueued).
-  const spillQueueGbRaw = Number(process.env.MLX_BUN_SSD_SPILL_QUEUE_GB);
+  const spillQueueGbRaw = Number(runtimeValue("MLX_BUN_SSD_SPILL_QUEUE_GB"));
   const spillQueueCapBytes =
     (Number.isFinite(spillQueueGbRaw) && spillQueueGbRaw >= 0 ? spillQueueGbRaw : 2) * 1024 ** 3;
   const spillQueue = ssdStore
@@ -2111,21 +2069,33 @@ export function createServer(
     demoteTimer.unref?.();
   }
 
-  // The lane picker: routes each request to the serial path (runGeneration,
-  // above) or the continuous-batching scheduler, keeping the two off the GPU
-  // (and shared loraState) at the same time. See src/serve/generation-gateway.ts.
+  // The scheduling seam declares the preserved serial executor or continuous
+  // scheduler for the already-resolved composition, keeping both out of the
+  // GPU (and shared loraState) at the same time. It never rewrites features.
   const gateway = new GenerationGateway(ctx.model, batch, runGeneration, {
     kvBudgetBytes: serverOptions.kvBudgetBytes,
     // Phase 3.1: the server-wide scheme travels to the gateway once; the
     // gateway batches kv-quant requests when the scheme is the batchable
     // kvConfig/full-attention composition (see #kvBatchable) and the
     // scheduler applies it — otherwise those requests route serial as before.
-    kvScheme,
+    kvScheme: resolvedKvScheme,
     // Phase 3.2: batch-lane prompt-cache reuse — joiners take() the longest
     // usable prefix (multi-turn chat TTFT under --batch N); never-merged
     // lone rows put() back on finish. Vision/adapter requests never batch,
     // so the serial lane's bypass rules are preserved by routing.
     promptCache,
+  });
+  const completionExecutor = new CompletionExecutor(gateway);
+  const completionProtocolUsage = (usage: CompletionSummary["usage"]) => ({
+    prompt_tokens: usage.promptTokens,
+    completion_tokens: usage.completionTokens,
+    total_tokens: usage.totalTokens,
+    prompt_tokens_details: { cached_tokens: usage.cachedTokens },
+    ...(usage.speculation ? { speculation: usage.speculation } : {}),
+  });
+  const completionUsage = (summary: CompletionSummary) => ({
+    ...completionProtocolUsage(summary.usage),
+    lane: summary.lane,
   });
 
   // Admission ceiling, resolved once (Phase 5 memoryBudget enforcement).
@@ -2135,18 +2105,11 @@ export function createServer(
   // advertises and admits the larger window it actually enables; only
   // TurboQuant still bills bf16 (conservative — no projector for its
   // layout yet, and it is solo-only in v1).
-  const genericAdmission = fit(
+  const admission = ctx.glmMemoryPlan ?? fit(
     ctx.model.config, ctx.model.weightsBytes, 1,
     undefined, undefined, 0, serverOptions.memoryBudgetBytes,
-    { kvBits: kvScheme.kvBits, kvConfig: kvScheme.kvConfig },
+    resolvedKvScheme.fitOptions,
   );
-  const admission = ctx.glmMemoryPlan
-    ? {
-        ...genericAdmission,
-        maxSafeContext: ctx.glmMemoryPlan.contextTokens,
-        usableBytes: ctx.glmMemoryPlan.processLimitBytes,
-      }
-    : genericAdmission;
   // A zero ceiling is a warning, never a startup refusal: killing the
   // server here can only parrot the per-request admission message (which
   // still fires, with this same ceiling) or be a false positive from the
@@ -2158,14 +2121,13 @@ export function createServer(
       `safe context for ${ctx.modelId} (weights ${(ctx.model.weightsBytes / 1e9).toFixed(2)} GB) ` +
       `— serving anyway; generation requests will be refused until the budget is raised`,
     );
-  if (ctx.glmMemoryPlan)
-    setMemoryLimit(ctx.glmMemoryPlan.lineItems.allocatorReserveBytes);
-  else if (serverOptions.memoryBudgetBytes)
-    setMemoryLimit(serverOptions.memoryBudgetBytes);
+  const allocatorLimit =
+    admission.allocatorLimitBytes ?? serverOptions.memoryBudgetBytes;
+  if (allocatorLimit) setMemoryLimit(allocatorLimit);
 
   // /library response cache (30 s) — registry + config reads only.
-  let libraryCache: { at: number; rows: unknown[] } | null = null;
   const startedAt = Date.now();
+  const discoveryRoutes = createDiscoveryRoutes(ctx, gateway, startedAt);
 
   // Captured so the WebSocket handler can resolve the bound (possibly
   // ephemeral) port lazily for the loopback pi provider.
@@ -2435,244 +2397,17 @@ export function createServer(
         return new Response("expected websocket", { status: 426 });
       }
 
-      // Memory REST wrappers (web-chat-redesign.md §2.3/§9 Phase 2): thin
-      // loopback JSON routes over src/memory/vault.ts for the web chat's
-      // Memory panel. Handlers live in src/memory/rest.ts (pure functions,
-      // no `ctx` dependency) so they're unit-testable without a loaded
-      // model; dispatch here just matches path+method. The agent-tool
-      // surface (src/memory/tools.ts) is untouched by this block.
-      if (url.pathname === "/api/memory/status" && request.method === "GET") {
-        const { handleMemoryStatus } = await import("./memory/rest");
-        return handleMemoryStatus();
-      }
-      if (url.pathname === "/api/memory/list" && request.method === "GET") {
-        const { handleMemoryList } = await import("./memory/rest");
-        return handleMemoryList();
-      }
-      if (url.pathname === "/api/memory/search" && request.method === "GET") {
-        const { handleMemorySearch } = await import("./memory/rest");
-        return handleMemorySearch(url);
-      }
-      if (url.pathname === "/api/memory/article" && request.method === "GET") {
-        const { handleMemoryArticle } = await import("./memory/rest");
-        return handleMemoryArticle(url);
-      }
-      if (url.pathname === "/api/memory/links" && request.method === "GET") {
-        const { handleMemoryLinks } = await import("./memory/rest");
-        return handleMemoryLinks(url);
-      }
-      if (url.pathname === "/api/memory/history" && request.method === "GET") {
-        const { handleMemoryHistory } = await import("./memory/rest");
-        return handleMemoryHistory(url);
-      }
-      if (url.pathname === "/api/memory/diff" && request.method === "GET") {
-        const { handleMemoryDiff } = await import("./memory/rest");
-        return handleMemoryDiff(url);
-      }
-      if (url.pathname === "/api/memory/init" && request.method === "POST") {
-        const { handleMemoryInit } = await import("./memory/rest");
-        return handleMemoryInit(request);
-      }
+      const auxiliaryResponse = await handleAuxiliaryRoute(url, request);
+      if (auxiliaryResponse) return auxiliaryResponse;
 
-      // Model Hub (web-chat-redesign.md §9 Phase 3, beat-matrix Axis 3):
-      // thin loopback JSON routes over the registry/download/fit machinery
-      // for the web chat's Hub panel. Handlers live in src/hub-rest.ts
-      // (pure functions, no `ctx` dependency); dispatch here just matches
-      // path+method, same convention as the memory wrappers above.
-      if (url.pathname === "/api/hub/local" && request.method === "GET") {
-        const { handleHubLocal } = await import("./hub-rest");
-        return handleHubLocal();
-      }
-      if (url.pathname === "/api/hub/search" && request.method === "GET") {
-        const { handleHubSearch } = await import("./hub-rest");
-        return handleHubSearch(url);
-      }
-      if (url.pathname === "/api/hub/download" && request.method === "POST") {
-        const { handleHubDownload } = await import("./hub-rest");
-        return handleHubDownload(request);
-      }
-      if (url.pathname === "/api/hub/serve" && request.method === "POST") {
-        const { handleHubServe } = await import("./hub-rest");
-        return handleHubServe(request);
-      }
+      const staticResponse = handleStaticRoute(url, request, STATIC_ROUTE_ASSETS);
+      if (staticResponse) return staticResponse;
 
-      // Session full-text search + export (docs/design/web-chat-redesign.md
-      // §9 Phase 3, beat-matrix Axis 10/11 — the full-text-search BEAT and
-      // Markdown/JSON chat export). Handlers live in src/serve/session-search.ts
-      // (pure, read-only, no `ctx` dependency), dispatched here by
-      // path+method, same convention as the memory/hub blocks above.
-      if (url.pathname === "/api/sessions/search" && request.method === "GET") {
-        const { handleSessionsSearch } = await import("./serve/session-search");
-        return handleSessionsSearch(url);
-      }
-      if (url.pathname === "/api/sessions/export" && request.method === "GET") {
-        const { handleSessionsExport } = await import("./serve/session-search");
-        return handleSessionsExport(url);
-      }
+      const discoveryResponse = await discoveryRoutes.handle(url, request);
+      if (discoveryResponse) return discoveryResponse;
 
-      // The unified SPA is served at "/"; legacy deep links redirect into
-      // the hash router so old bookmarks still land on the right section.
-      if (url.pathname === "/" && request.method === "GET") {
-        return new Response(APP_PAGE, {
-          headers: { "content-type": "text/html; charset=utf-8" },
-        });
-      }
-      // Vendored syntax-highlighting assets (src/web/vendor/*, no CDN — see
-      // that dir's README). Long cache: content is versioned by the vendor
-      // rebuild step, not by URL, but a hard reload always wins during dev.
-      if (url.pathname === "/assets/hljs.js" && request.method === "GET") {
-        return new Response(HLJS_JS, {
-          headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
-        });
-      }
-      if (url.pathname === "/assets/hljs.css" && request.method === "GET") {
-        return new Response(HLJS_CSS, {
-          headers: { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=3600" },
-        });
-      }
-      // The frontend bundle (see the import comment above) — cache header
-      // matches the other /assets/* entries; content is versioned by the
-      // build step, not the URL, and a hard reload always wins during dev.
-      if (url.pathname === "/assets/app.js" && request.method === "GET") {
-        return new Response(APP_JS, {
-          headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
-        });
-      }
-      // PWA manifest + icon (plan §9 Phase 3): linked from app.html's
-      // <link rel="manifest">. Same versioned-by-content cache posture as
-      // the other /assets/* entries above.
-      if (url.pathname === "/manifest.webmanifest" && request.method === "GET") {
-        return new Response(MANIFEST_WEBMANIFEST, {
-          headers: { "content-type": "application/manifest+json; charset=utf-8", "cache-control": "public, max-age=3600" },
-        });
-      }
-      if (url.pathname === "/assets/icon.svg" && request.method === "GET") {
-        return new Response(ICON_SVG, {
-          headers: { "content-type": "image/svg+xml; charset=utf-8", "cache-control": "public, max-age=3600" },
-        });
-      }
-      // Service worker MUST be served at the root scope (/sw.js, not
-      // /assets/sw.js) — a worker's default scope is the directory it's
-      // served from, and the shell it manages includes "/" itself.
-      // no-store: the browser's own update check needs a fresh byte
-      // comparison every time to notice a new worker, not a cached 304.
-      if (url.pathname === "/sw.js" && request.method === "GET") {
-        return new Response(SW_JS, {
-          headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" },
-        });
-      }
-      // v2 HLG Curve Designer — served same-origin so /generate + /signal need no CORS.
-      // Read fresh from disk in dev (edits show on reload, no restart); fall back to the
-      // embedded copy when running as the compiled single binary.
-      if (url.pathname === "/curves" && request.method === "GET") {
-        let html = CURVE_PAGE;
-        try { html = readFileSync(new URL("./assets/curve-designer.html", import.meta.url), "utf8"); } catch { /* binary: use embedded */ }
-        return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
-      }
-      // Training/inference DAG map — self-contained cytoscape artifact, served
-      // same-origin so the Routes tab can embed it in an <iframe src="/dag">.
-      if (url.pathname === "/dag" && request.method === "GET") {
-        try {
-          const html = readFileSync(new URL("../docs/dag/training-inference-map.html", import.meta.url), "utf8");
-          return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
-        } catch {
-          return new Response("DAG map artifact not found at docs/dag/training-inference-map.html", { status: 404 });
-        }
-      }
-      if (url.pathname === "/curve-terrain" && request.method === "GET") {
-        try {
-          const html = readFileSync(new URL("../docs/archive/investigations/curve-terrain.html", import.meta.url), "utf8");
-          return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
-        } catch {
-          return new Response("curve terrain artifact not found; run scripts/experiments/curve-terrain.ts first", { status: 404 });
-        }
-      }
-      if (request.method === "GET" &&
-          ["/status", "/chat", "/quantize", "/finetune", "/dataset"].includes(url.pathname)) {
-        return Response.redirect(`/#${url.pathname}`, 302);
-      }
-
-      if (url.pathname === "/library" && request.method === "GET") {
-        // Everything on disk, each with a fit assessment for THIS machine
-        // (30 s cache — registry scan + config reads, no tensor bytes).
-        if (!libraryCache || Date.now() - libraryCache.at > 30_000) {
-          const { Registry } = await import("./registry");
-          const { loadModelConfig } = await import("./config");
-          const reg = new Registry();
-          // Always rescan when (re)building the 30s cache so models that appeared
-          // after boot — fresh downloads AND quants written into the HF cache —
-          // surface on their own. (scan() is INSERT-OR-REPLACE + prunes deleted,
-          // so it's idempotent and cheap for a local cache.)
-          await reg.scan();
-          const { visionCapable, audioCapable } = await import("./registry");
-          const { supportTier } = await import("./model/support");
-          const rows = [];
-          // listCanonical: one row per repo (refs/main) — duplicate snapshots
-          // from upstream re-pushes stay visible only in `ls --all-revisions`.
-          for (const m of reg.listCanonical()) {
-            const tier = supportTier(m.modelType, m.repoId);
-            const supported = tier !== null;
-            let assessment = null;
-            try {
-              const config = await loadModelConfig(m.path);
-              const r = fit(config, m.sizeBytes, 8192, undefined, undefined, m.expertsBytes);
-              assessment = {
-                fits: r.fits,
-                max_safe_context: r.maxSafeContext,
-                predicted_decode_tps: r.predictedDecodeTps,
-              };
-            } catch {}
-            rows.push({
-              repo_id: m.repoId, model_type: m.modelType,
-              size_bytes: m.sizeBytes, quant_bits: m.quantBits,
-              vision: visionCapable(m), audio: audioCapable(m),
-              supported, support_tier: tier,
-              serving: m.repoId === ctx.modelId,
-              assessment,
-            });
-          }
-          libraryCache = { at: Date.now(), rows };
-        }
-        return Response.json({ models: libraryCache.rows });
-      }
-
-      if (url.pathname === "/downloads" && request.method === "GET") {
-        const { downloadsSnapshot } = await import("./download");
-        return Response.json({ downloads: downloadsSnapshot() });
-      }
-
-      // Memory synthesis progress (P8-T5). The same DAG the nightly launchd job
-      // runs (`mlx-bun memory synthesize`), streamed as Server-Sent Events so the
-      // status page can show live stage/log/done progress. `?dry=1` plans the DAG
-      // without any model call or vault write — the safe wiring-verification path
-      // (the FULL-corpus run is USER-ACTION, P6-T5). GET so EventSource can drive it.
-      if (url.pathname === "/v1/memory/synthesize" && request.method === "GET") {
-        const dryRun = url.searchParams.get("dry") === "1";
-        const { runSynthesis } = await import("./memory/pipeline");
-        const enc = new TextEncoder();
-        const stream = new ReadableStream({
-          async start(controller) {
-            const send = (e: unknown) =>
-              controller.enqueue(enc.encode(`data: ${JSON.stringify(e)}\n\n`));
-            try {
-              const summary = await runSynthesis({ dryRun }, (ev) => send(ev));
-              send({ type: "summary", ...summary });
-              controller.enqueue(enc.encode("data: [DONE]\n\n"));
-            } catch (e) {
-              send({ type: "error", message: (e as Error).message });
-            } finally {
-              controller.close();
-            }
-          },
-        });
-        return new Response(stream, {
-          headers: {
-            "content-type": "text/event-stream",
-            "cache-control": "no-cache",
-            connection: "keep-alive",
-          },
-        });
-      }
+      const modelAdminResponse = await handleModelAdminRoute(url, request, ctx, gateway);
+      if (modelAdminResponse) return modelAdminResponse;
 
       if (url.pathname === "/fit" && request.method === "GET") {
         // Fit assessment for the status page: this-machine report at the
@@ -2748,7 +2483,7 @@ export function createServer(
         const report = fit(
           ctx.model.config, ctx.model.weightsBytes, admission.maxSafeContext,
           machine, undefined, expertsBytes, serverOptions.memoryBudgetBytes,
-          { kvBits: kvScheme.kvBits, kvConfig: kvScheme.kvConfig },
+          resolvedKvScheme.fitOptions,
         );
         return Response.json({
           machine: { chip: chip.name, ram_bytes: machine.ramBytes, bandwidth_gbs: machine.bandwidthGBs },
@@ -2761,7 +2496,7 @@ export function createServer(
             ctx.model.config, ctx.model.weightsBytes,
             Math.min(8192, admission.maxSafeContext),
             machine, undefined, expertsBytes, serverOptions.memoryBudgetBytes,
-            { kvBits: kvScheme.kvBits, kvConfig: kvScheme.kvConfig },
+            resolvedKvScheme.fitOptions,
           ).predictedDecodeTps,
           measured_decode_tps: measured?.decodeTps ?? null,
           measured_at: measured?.ts ?? null,
@@ -2780,18 +2515,6 @@ export function createServer(
             sku: r.sku, ram_gb: r.ramGB, fits: r.fits,
             max_context: r.maxContext, decode_tps: r.decodeTps,
           })),
-        });
-      }
-
-      if (url.pathname === "/v1" && request.method === "GET") {
-        return Response.json({
-          name: "mlx-bun", version: pkgVersion, model: ctx.modelId,
-          endpoints: [
-            "POST /v1/chat/completions", "POST /v1/completions", "POST /v1/messages",
-            "POST /v1/responses", "POST /v1/embeddings", "GET /v1/models",
-            "GET/POST/DELETE /v1/adapters", "GET /health",
-            "GET /stats", "GET /fit", "GET /library", "GET /downloads",
-          ],
         });
       }
 
@@ -2915,8 +2638,6 @@ export function createServer(
         });
       }
 
-      // mlx_lm.server parity: GET /health → the exact body it writes
-      // ('{"status": "ok"}', note the space) so byte-for-byte health checks pass.
       // Engine-mode admin (unix-socket children only — never exposed on
       // TCP): drain = quiesce the gateway + demote the whole prompt cache
       // to the SSD tier. The pool calls this before evicting a model
@@ -2930,207 +2651,6 @@ export function createServer(
           promptCache.demoteIdle(0);
         });
         return Response.json({ drained: true, demotions: promptCache.demotions });
-      }
-
-      if (url.pathname === "/health" && request.method === "GET") {
-        return new Response('{"status": "ok"}', {
-          headers: { "content-type": "application/json" },
-        });
-      }
-
-      // GET /v1/models — the served model FIRST (with our capability extras),
-      // then every other servable model the registry knows (mlx-lm scans the
-      // HF cache here; our registry is that scan, filtered to supported
-      // architectures). GET /v1/models/<id> filters to that id — same list
-      // shape, matching mlx_lm.server's handle_models_request.
-      if (
-        (url.pathname === "/v1/models" || url.pathname.startsWith("/v1/models/")) &&
-        request.method === "GET"
-      ) {
-        const filterId = url.pathname.length > "/v1/models/".length - 1
-          ? decodeURIComponent(url.pathname.slice("/v1/models/".length))
-          : null;
-        const created = Math.floor(startedAt / 1000);
-        // Model-author sampling defaults (generation_config.json), resolved once
-        // at load (web-ui-pass-plan.md #14 groundwork): lets a client (the web
-        // chat's sampling popover, external pi) show the SERVED model's actual
-        // recommended values instead of one hardcoded shape.
-        const genDefaultsOut = {
-          temperature: ctx.genDefaults.temperature ?? null,
-          top_p: ctx.genDefaults.topP ?? null,
-          top_k: ctx.genDefaults.topK ?? null,
-        };
-        const data: Array<Record<string, unknown>> = [{
-          id: ctx.modelId, object: "model", created, owned_by: "mlx-bun",
-          context_window:
-            ctx.glmMemoryPlan?.contextTokens ??
-            ctx.model.config.text.maxPositionEmbeddings,
-          // Capability flags for clients (CLI/external pi) that build a
-          // provider from discovery — `reasoning` gates the thinking toggle,
-          // `vision` the image input declaration, `audio` whether
-          // `input_audio` content parts are accepted (tower loaded or lazily
-          // loadable; same signals the web embed uses).
-          reasoning: ctx.template.supportsThinking,
-          vision: !!(ctx.vision || ctx.loadVision),
-          audio: !!(ctx.audio || ctx.loadAudio),
-          batch_mode: gateway.batchMode,
-          tools: true,
-          structured_output: true,
-          embeddings: isEmbeddingModel(ctx.model),
-          adapters: !(ctx.model instanceof Glm52Model),
-          training: !(ctx.model instanceof Glm52Model),
-          dsa: ctx.model instanceof Glm52Model && ctx.model.capabilities.dsa,
-          mtp: ctx.draft?.provider.id === "glm52-native-mtp",
-          capabilities: {
-            chat_completions: true,
-            text_completions: true,
-            anthropic_messages: true,
-            responses: true,
-            streaming: true,
-            tools: true,
-            structured_output: true,
-            logprobs: true,
-            embeddings: isEmbeddingModel(ctx.model),
-            vision: !!(ctx.vision || ctx.loadVision),
-            audio: !!(ctx.audio || ctx.loadAudio),
-            adapters: !(ctx.model instanceof Glm52Model),
-            training: !(ctx.model instanceof Glm52Model),
-          },
-          gen_defaults: genDefaultsOut,
-        }];
-        try {
-          const { Registry, visionCapable } = await import("./registry");
-          const { supportTier } = await import("./model/support");
-          const reg = new Registry();
-          try {
-            if (reg.list().length === 0) await reg.scan();
-            // Canonical rows only — a repo with N snapshots is ONE model id.
-            for (const m of reg.listCanonical()) {
-              if (m.repoId === ctx.modelId) continue;
-              const tier = supportTier(m.modelType, m.repoId);
-              if (tier === null) continue;
-              data.push({
-                id: m.repoId, object: "model", created,
-                vision: visionCapable(m), tier,
-              });
-            }
-          } finally {
-            reg.close();
-          }
-        } catch { /* registry unavailable → served model only */ }
-        return Response.json({
-          object: "list",
-          data: filterId ? data.filter((m) => m.id === filterId) : data,
-        });
-      }
-
-      // OpenAI embeddings API. Works when the SERVED model is an embedding model
-      // (plain Qwen3 / Qwen3-Embedding) — consistent with the single-model server
-      // design: `mlx-bun serve <embedding-model>` to use this. Optional non-standard
-      // `instruction` applies Qwen3-Embedding's query format. Embedding is a pure
-      // forward (no decode loop / gateway), so it runs inline.
-      if (url.pathname === "/v1/embeddings" && request.method === "POST") {
-        if (!isEmbeddingModel(ctx.model))
-          return Response.json({
-            error: {
-              message: `served model "${ctx.modelId}" is not an embedding model; ` +
-                `serve an embedding model (e.g. Qwen3-Embedding) to use /v1/embeddings`,
-              type: "invalid_request_error",
-            },
-          }, { status: 400 });
-        let body: { input?: string | string[]; instruction?: string };
-        try {
-          body = (await request.json()) as typeof body;
-        } catch {
-          return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
-        }
-        const inputs = Array.isArray(body.input) ? body.input : body.input != null ? [body.input] : [];
-        if (inputs.length === 0 || !inputs.every((s) => typeof s === "string"))
-          return Response.json({
-            error: { message: "`input` must be a string or array of strings", type: "invalid_request_error" },
-          }, { status: 400 });
-        const instruction = typeof body.instruction === "string" ? body.instruction : undefined;
-        const results = embedMany(ctx.model, ctx.tokenizer, inputs, instruction);
-        let totalTokens = 0;
-        const data = results.map((r, index) => {
-          totalTokens += r.tokens;
-          return { object: "embedding", index, embedding: Array.from(r.vector) };
-        });
-        return Response.json({
-          object: "list",
-          data,
-          model: ctx.modelId,
-          usage: { prompt_tokens: totalTokens, total_tokens: totalTokens },
-        });
-      }
-
-      // Adapter admin (port of optiq registry semantics): list / mount /
-      // unmount. Mount and unmount go through the generation queue so
-      // they never race an in-flight forward pass.
-      if (url.pathname === "/v1/adapters/available" && request.method === "GET") {
-        // On-disk adapters that can be mounted (the chat selector's source).
-        // Every on-disk adapter is returned — the web chat routing chip (§5.2)
-        // needs incompatible entries visible-but-grayed, not silently dropped,
-        // so a user understands "10 adapters exist, 2 apply here" rather than
-        // seeing a shorter list with no explanation. `compatible` = the
-        // adapter's recorded base repo id matches the served model (compared
-        // on the bare name, lenient about the org); an adapter with no
-        // recorded base is treated as compatible (mount validates it for
-        // real). `mounted` flags ones already loaded so the UI auto-loads on
-        // select only if needed.
-        const { homedir } = await import("node:os");
-        const stores = [
-          `${homedir()}/.cache/mlx-bun-finetunes`,
-          `${homedir()}/.cache/mlx-bun/adapters`,
-        ];
-        const mounted = new Set(ctx.adapters.list().map((a) => a.id));
-        const bareName = (s: string) => s.split("/").pop()!.toLowerCase();
-        const servedName = bareName(ctx.modelId);
-        const adapters = (await listAvailableAdapters(stores))
-          .map((a) => ({
-            id: a.id, path: a.path, rank: a.rank, scale: a.scale,
-            base_model: a.baseModel, mounted: mounted.has(a.id),
-            compatible: a.baseModel == null || bareName(a.baseModel) === servedName,
-          }));
-        return Response.json({ adapters });
-      }
-      if (url.pathname === "/v1/adapters" && request.method === "GET") {
-        return Response.json({
-          adapters: ctx.adapters.list().map((a) => ({
-            id: a.id, path: a.path, rank: a.rank, scale: a.scale,
-            size_bytes: a.sizeBytes, mounted_layers: a.mountedLayers,
-            ram_bytes: a.ramBytes,
-          })),
-        });
-      }
-      if (url.pathname === "/v1/adapters" && request.method === "POST") {
-        let body: { id?: string; path?: string };
-        try {
-          body = (await request.json()) as typeof body;
-        } catch {
-          return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
-        }
-        if (!body.id || !body.path)
-          return Response.json({ error: { message: "id and path required" } }, { status: 400 });
-        try {
-          // Under the gateway lock: mount/unmount mutate the shared adapter
-          // registry (unmount disposes arrays a running generation could still
-          // hold) — one mutual-exclusion domain with generation (D3).
-          const info = await gateway.runExclusive(() => ctx.adapters.mount(body.id!, body.path!));
-          return Response.json({
-            id: info.id, mounted_layers: info.mountedLayers,
-            rank: info.rank, scale: info.scale, ram_bytes: info.ramBytes,
-          });
-        } catch (e) {
-          return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
-        }
-      }
-      if (url.pathname.startsWith("/v1/adapters/") && request.method === "DELETE") {
-        const id = decodeURIComponent(url.pathname.slice("/v1/adapters/".length));
-        const removed = await gateway.runExclusive(async () => ctx.adapters.unmount(id));
-        return removed > 0
-          ? Response.json({ id, removed_layers: removed })
-          : Response.json({ error: { message: `adapter ${id} not mounted` } }, { status: 404 });
       }
 
       // ---- Curve Designer: POST /signal {prompt} → next-token histogram over the curve's x-axis ----
@@ -3221,7 +2741,11 @@ export function createServer(
       // translates its body into this shape and the Response back —
       // generation, tools, vision, stop sequences, prompt cache, and
       // admission control all live here exactly once.
-      const handleChat = async (body: ChatRequest, signal: AbortSignal): Promise<Response> => {
+      const handleChat = async (
+        body: ChatRequest,
+        signal: AbortSignal,
+        streamProtocol?: CompletionStreamProtocol,
+      ): Promise<Response> => {
         if (!Array.isArray(body.messages) || body.messages.length === 0)
           return Response.json({ error: { message: "messages required" } }, { status: 400 });
         // mlx-lm validates logprobs params up front (ValueError → 400)
@@ -3265,6 +2789,7 @@ export function createServer(
         let startInThinking = false;
         let vision: Parameters<typeof runGeneration>[3];
         let diffusionPixels: import("./mlx/array").MlxArray | null = null;
+        const ownership = new RequestOwnership();
         // Grammar-constrained decoding (src/grammar.ts). Compile BEFORE prompt
         // rendering: on the degrade path (compile failed but a constraint was
         // requested) inject a system message instructing valid JSON so the
@@ -3278,39 +2803,29 @@ export function createServer(
           body.structured_outputs != null;
         if (grammarReq) {
           const g = await compileGrammarForRequest(body);
-          grammarCtrl = g.controller;
+          grammarCtrl = ownership.own(g.controller);
           if (!g.controller && g.degradeHint) {
             const degraded = applyGrammarDegrade(body, g.degradeHint);
             grammarWarning = degraded.warning;
             body = degraded.body;
           }
         }
-        // Free what a rejected request has already allocated (grammar WASM
-        // matcher/compiled-grammar, vision embeddings, diffusion pixels).
-        // Every early return between here and gateway.run() must call this —
-        // generate()/the gateway only take disposal ownership once running
-        // (leaked one matcher per SSRF-blocked-media + response_format
-        // request before the 2026-07-07 sweep).
-        const disposeRejected = () => {
-          grammarCtrl?.dispose();
-          vision?.embeddings.dispose();
-          vision?.imageMask?.dispose();
-          vision?.multimodalMask?.dispose();
-          diffusionPixels?.dispose();
+        const rejectBeforeRun = (response: Response): Response => {
+          ownership.dispose();
+          return response;
         };
         try {
           // Video is Qwen3.5-family only and never composes with audio —
           // one early guard so no downstream branch can silently drop a
           // video part (the gemma/diffusion builders don't know the type).
           if (hasVideos && (hasAudio || !(ctx.model instanceof Qwen35Model))) {
-            disposeRejected();
-            return Response.json(
+            return rejectBeforeRun(Response.json(
               { error: { message: hasAudio
                   ? "video and audio content parts cannot be combined"
                   : `model ${ctx.modelId} does not accept video input — video ` +
                     `content parts need a Qwen3.5-family model (e.g. Qwen3.8-27B)` } },
               { status: 400 },
-            );
+            ));
           }
           if (hasAudio) {
             // Audio (and MIXED image+audio) input — A4 of
@@ -3321,8 +2836,7 @@ export function createServer(
             // requests without the media, getVisionTower's contract).
             const audioTower = getAudioTower(ctx);
             if (!audioTower || !ctx.audioTokenIds) {
-              disposeRejected();
-              return Response.json(
+              return rejectBeforeRun(Response.json(
                 {
                   error: {
                     message:
@@ -3332,7 +2846,7 @@ export function createServer(
                   },
                 },
                 { status: 400 },
-              );
+              ));
             }
             let visionSide:
               | { tower: VisionEncoder; tokenIds: VisionTokenIds }
@@ -3340,10 +2854,9 @@ export function createServer(
             if (hasImages) {
               const tower = getVisionTower(ctx);
               if (!tower) {
-                disposeRejected();
-                return Response.json(
+                return rejectBeforeRun(Response.json(
                   { error: { message: "model has no vision sidecar" } }, { status: 400 },
-                );
+                ));
               }
               visionSide = { tower, tokenIds: ctx.visionTokenIds };
             }
@@ -3378,28 +2891,26 @@ export function createServer(
             // forwardEmbeddings path). v1 supports a single image.
             const dm = ctx.model;
             if (!dm.visionTower) {
-              disposeRejected();
-              return Response.json(
+              return rejectBeforeRun(Response.json(
                 { error: { message: "this checkpoint has no vision tower" } }, { status: 400 },
-              );
+              ));
             }
             const { messages, images } = await extractImages(normalizeMessages(body.messages));
             if (images.length !== 1) {
-              disposeRejected();
-              return Response.json(
+              return rejectBeforeRun(Response.json(
                 { error: { message: "DiffusionGemma image input supports exactly one image" } },
                 { status: 400 },
-              );
+              ));
             }
             const rendered = ctx.template.render(messages, { tools, addGenerationPrompt: true });
             const rawIds = ctx.tokenizer.encode(rendered, /* addSpecialTokens */ false);
             const { pixels, softTokens } = await dm.visionTower.preprocess(images[0]!);
+            diffusionPixels = ownership.own(pixels);
             promptIds = spliceImageTokens(rawIds, [softTokens], {
               image: ctx.visionTokenIds.imageTokenId,
               boi: ctx.visionTokenIds.boiTokenId,
               eoi: ctx.visionTokenIds.eoiTokenId,
             });
-            diffusionPixels = pixels;
           } else if ((hasImages || hasVideos) && ctx.model instanceof Qwen35Model) {
             // Qwen3.8 vision + video: the tower is a Qwen3VLVisionTower
             // riding the shared lazy slot (makeVisionLoader's qwen branch);
@@ -3408,10 +2919,9 @@ export function createServer(
             // to sampled frames via the AVFoundation sidecar.
             const tower = getVisionTower(ctx) as unknown as Qwen3VLVisionTower | null;
             if (!tower) {
-              disposeRejected();
-              return Response.json(
+              return rejectBeforeRun(Response.json(
                 { error: { message: "model has no vision sidecar" } }, { status: 400 },
-              );
+              ));
             }
             const { messages: withVideos, images } =
               await extractImages(normalizeMessages(body.messages));
@@ -3434,10 +2944,9 @@ export function createServer(
             // sessions never pay for it.
             const tower = getVisionTower(ctx);
             if (!tower) {
-              disposeRejected();
-              return Response.json(
+              return rejectBeforeRun(Response.json(
                 { error: { message: "model has no vision sidecar" } }, { status: 400 },
-              );
+              ));
             }
             const { messages, images } = await extractImages(normalizeMessages(body.messages));
             // The tower is only ever non-null for Gemma4 (sidecar gate in
@@ -3455,12 +2964,15 @@ export function createServer(
             stableLen = -1; // marker: chat path, probe lazily below
           }
         } catch (e) {
-          disposeRejected();
-          return Response.json(
+          return rejectBeforeRun(Response.json(
             { error: { message: `prompt build failed: ${(e as Error).message}` } },
             { status: 400 },
-          );
+          ));
         }
+        ownership.own(vision?.embeddings);
+        ownership.own(vision?.imageMask);
+        ownership.own(vision?.multimodalMask);
+        ownership.own(diffusionPixels);
         let options: ReturnType<typeof toOptions>;
         try {
           options = toOptions(body);
@@ -3478,103 +2990,78 @@ export function createServer(
           }
         } catch (e) {
           // bad logit_bias (non-numeric keys/values) — mlx-lm's coercion error
-          disposeRejected();
-          return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
+          return rejectBeforeRun(
+            Response.json({ error: { message: (e as Error).message } }, { status: 400 }),
+          );
         }
         if (diffusionPixels) options.visionPixels = diffusionPixels;
         // Attach the compiled grammar controller (null when no constraint /
         // degrade — generate() runs the unmasked fast pipelined loop).
         if (grammarCtrl) options.grammar = grammarCtrl;
-        // Admission: reject what cannot finish within the memory budget
-        // (the GPU OOM it would otherwise hit is uncatchable and kills
-        // the process — Phase 6 finding). A fitting prompt with a broad
-        // max_tokens is CLAMPED to the remaining room, never rejected.
         const requestedMaxTokens = options.maxTokens ?? 1024;
-        const contextDecision = admitRequestContext(
-          promptIds.length,
-          requestedMaxTokens,
-          admission.maxSafeContext,
-        );
-        if (!contextDecision) {
-          disposeRejected();
-          return Response.json(
-            {
-              error: {
-                message:
-                  `prompt is ${promptIds.length} tokens but the memory budget caps ` +
-                  `safe context at ${admission.maxSafeContext} — no room to generate; ` +
-                  `shorten the prompt or raise --memory-budget`,
-                type: "memory_admission",
-                code: "context_over_budget",
-              },
-            },
-            { status: 400 },
-          );
-        }
-        options.maxTokens = contextDecision.maxTokens;
+        let adapterIds: string[];
         try {
           // A request's explicit `adapter` (incl. "none") wins over the
           // startup default from `serve --adapter <dir>`.
-          const adapterIds = ctx.adapters.resolveSpec(body.adapter ?? serverOptions.defaultAdapter);
-          if (adapterIds.length) options.adapters = adapterIds;
+          adapterIds = ctx.adapters.resolveSpec(body.adapter ?? serverOptions.defaultAdapter);
         } catch (e) {
-          disposeRejected();
-          return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
+          return rejectBeforeRun(
+            Response.json({ error: { message: (e as Error).message } }, { status: 400 }),
+          );
         }
 
-        // logprobs capture: non-stream only — stream chunks never carry
-        // logprobs (mirroring mlx_lm.server, whose streaming generate_response
-        // calls pass no token_logprobs/top_tokens), so streaming requests skip
-        // the capture cost entirely and stay batchable.
         const wantLogprobs = body.logprobs === true;
         const topLogprobs =
           typeof body.top_logprobs === "number" && body.top_logprobs > 0
             ? body.top_logprobs : 0;
-        const captureLogprobs = !body.stream && (wantLogprobs || topLogprobs > 0);
-        if (captureLogprobs) {
-          options.logprobs = wantLogprobs;
-          options.topLogprobs = topLogprobs;
+        let prepared: PreparedCompletion;
+        try {
+          prepared = prepareCompletion({
+            requestId: id,
+            plan: {
+              promptIds,
+              options,
+              requestedMaxTokens,
+              maxSafeContext: admission.maxSafeContext,
+              stream: body.stream === true,
+              wantLogprobs,
+              topLogprobs,
+              adapterIds,
+              hasVision: !!vision,
+              userSeed: body.seed !== undefined,
+              hasGrammar: !!grammarCtrl,
+              hasDraft: !!ctx.draft,
+              ownership,
+            },
+            vision,
+            pipeline: {
+              router: toolRouter(tools),
+              stopper: new StopMatcher(options.stopSequences),
+              thinking: new ThinkingTagSplitter(
+                ctx.template.thinkingFormat === "think-tag",
+                startInThinking,
+              ),
+              collectToolCalls: true,
+            },
+            ...(body.stream
+              ? {
+                  createFlowControl: ({ mechanism }) =>
+                    createTimedFlowControl(mechanism === "serial"),
+                }
+              : {}),
+            onPlacement: ({ mechanism, shape }) => {
+              if (runtimeValue("MLX_BUN_LANE_DEBUG") === "1")
+                console.error(
+                  `[scheduling] mechanism=${mechanism} shape=${JSON.stringify(shape)} ` +
+                    `t=${Date.now() % 100000}`,
+                );
+            },
+            idToToken: (tokenId) => ctx.tokenizer.idToToken(tokenId),
+          });
+        } catch (error) {
+          if (!(error instanceof CompletionRejected)) throw error;
+          return Response.json({ error: error.error }, { status: error.status });
         }
-
-        // What lane this request takes (vision/audio media / adapters /
-        // logprobs / seed / explicit kv-quant / a mounted draft → serial;
-        // sampler extras, repetition penalty, and grammar all BATCH — see
-        // willBatch). `vision` is the embeddings-prefill payload for BOTH
-        // media kinds, so hasVision routes audio serial too — batching is a
-        // mode, not a fallback, and batched audio has no oracle (§3.2).
-        const shape = {
-          hasVision: !!vision,
-          hasAdapters: !!options.adapters?.length,
-          hasRepetitionPenalty: !!options.repetitionPenalty,
-          // Informational since 2026-07-02: per-row logits processors batch;
-          // willBatch no longer gates on these fields.
-          hasLogitsExtras: !!(
-            options.minP || options.xtcProbability || options.logitBias ||
-            options.presencePenalty || options.frequencyPenalty
-          ),
-          wantsLogprobs: captureLogprobs,
-          userSeed: body.seed !== undefined,
-          kvQuant: !!(options.kvConfig?.length || options.kvBits),
-          turboQuant: !!options.turboQuant,
-          // grammarCtrl is null on the degrade path (prompt injection) —
-          // those stay batchable. A real controller batches via per-row
-          // matchers (MLX_BUN_GRAMMAR_BATCH=0 forces it serial).
-          hasGrammar: !!grammarCtrl,
-          hasDraft: !!ctx.draft,
-        };
-        const batched = gateway.willBatch(shape);
-        if (process.env.MLX_BUN_LANE_DEBUG === "1")
-          console.error(`[lane] batched=${batched} shape=${JSON.stringify(shape)} t=${Date.now() % 100000}`);
-        // Per-turn lane (docs/design/web-chat-redesign.md §2.3 caveat / risk #5):
-        // reported on usage AND recorded in the in-process lane registry (keyed
-        // by this response's `id`) so pi-web's WS bridge — which the pi SDK's
-        // usage parsing can't carry a custom field through — can correlate it
-        // via AssistantMessage.responseId. batched wins over hasDraft (mutually
-        // exclusive by construction: willBatch already excludes hasDraft), so
-        // the only ambiguity is serial vs serial+spec, resolved once s.spec is
-        // known post-generation.
-        const lane: Lane = batched ? "batched" : shape.hasDraft ? "serial+spec" : "serial";
-        recordLane(id, lane);
 
         if (body.stream) {
           const streamAbort = new AbortController();
@@ -3587,6 +3074,11 @@ export function createServer(
                 if (!generationSignal.aborted)
                   controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
               };
+              const emitFrames = (frames: string[]) => {
+                if (generationSignal.aborted) return;
+                for (const frame of frames) controller.enqueue(enc.encode(frame));
+              };
+              let latestUsage: Readonly<CompletionSummary["usage"]> | null = null;
               const chunk = (delta: Record<string, unknown>, finish: string | null) => ({
                 id, object: "chat.completion.chunk", created, model: ctx.modelId,
                 choices: [{ index: 0, delta, finish_reason: finish }],
@@ -3596,91 +3088,56 @@ export function createServer(
                 // The gateway owns lane selection + GPU exclusivity; this body
                 // runs per-request (concurrently in batched mode, each writing
                 // its own SSE stream — the per-row fan-out).
-                send(chunk({ role: "assistant", content: "" }, null));
-                const router = toolRouter(tools);
-                const stopper = new StopMatcher(options.stopSequences);
-                // <think>-text splitting is only for text-marker models; gemma's
-                // reasoning is already split at the token level by the router.
-                const thinking = new ThinkingTagSplitter(ctx.template.thinkingFormat === "think-tag", startInThinking);
-                // Serial decode is an unbroken microtask chain (FFI + generator
-                // resumes) — without a macrotask hop, Bun never services the
-                // socket and the whole SSE response flushes in one burst at the
-                // end (Phase 15: "687k tok/s decode"). Hopping EVERY token cost
-                // ~23% decode; rate-limited to ≥25 ms keeps the flush smooth and
-                // hides behind the next GPU step. Batched mode doesn't need it —
-                // the scheduler yields to the event loop between steps.
-                let lastFlush = performance.now();
-                const s = await gateway.run(promptIds, options, (token) => {
-                  const rawContent = router.push(token);
-                  // gemma-channel reasoning, split at the token level by the router
-                  const rReason = router.takeReasoning();
-                  if (rReason) send(chunk({ reasoning: rReason }, null));
-                  const text = stopper.push(rawContent);
-                  const parts = thinking.push(text);
-                  if (parts.reasoning) send(chunk({ reasoning: parts.reasoning }, null));
-                  if (parts.content) send(chunk({ content: parts.content }, null));
-                  if (stopper.stopped) return false; // halt generation
-                  if (!batched && (parts.content || parts.reasoning || rReason)) {
-                    const now = performance.now();
-                    if (now - lastFlush >= 25) {
-                      lastFlush = now;
-                      return new Promise<void>((r) => setImmediate(r));
+                if (streamProtocol) emitFrames(streamProtocol.start());
+                else send(chunk({ role: "assistant", content: "" }, null));
+                const sendEvents = (events: readonly CompletionEvent[]) => {
+                  if (streamProtocol) {
+                    emitFrames(streamProtocol.addEvents([...events]));
+                    return;
+                  }
+                  for (const event of events) {
+                    if (event.type === "reasoning") {
+                      send(chunk({ reasoning: event.text }, null));
+                    } else if (event.type === "content") {
+                      send(chunk({ content: event.text }, null));
+                    } else {
+                      send(chunk({
+                        tool_calls: event.calls.map((call, index) => ({ index, ...call })),
+                      }, null));
                     }
                   }
-                }, vision, shape, generationSignal);
-                if (generationSignal.aborted) return;
-                // a stop match discards everything from the match on,
-                // including text still held by the decoders
-                let tail = "";
-                if (!stopper.stopped) {
-                  const flushed = router.flush();
-                  const rReason = router.takeReasoning();
-                  if (rReason) send(chunk({ reasoning: rReason }, null));
-                  tail = stopper.push(flushed);
-                  if (!stopper.stopped) tail += stopper.flush();
-                }
-                if (tail) {
-                  const parts = thinking.push(tail);
-                  if (parts.reasoning) send(chunk({ reasoning: parts.reasoning }, null));
-                  if (parts.content) send(chunk({ content: parts.content }, null));
-                }
-                {
-                  const parts = thinking.flush();
-                  if (parts.reasoning) send(chunk({ reasoning: parts.reasoning }, null));
-                  if (parts.content) send(chunk({ content: parts.content }, null));
-                }
-                const toolCalls = router.toolCalls();
-                if (toolCalls.length) {
-                  send(chunk({
-                    tool_calls: toolCalls.map((tc, i) => ({ index: i, ...tc })),
-                  }, null));
-                }
-                const finish = toolCalls.length
-                  ? "tool_calls"
-                  : stopper.stopped ? "stop"
-                  : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
-                // Refine serial vs serial+spec now that s.spec is known (a mounted
-                // draft can still decode zero speculative tokens on a very short
-                // reply) and re-record for pi-web's WS correlation.
-                const finalLane: Lane = batched ? "batched" : s.spec ? "serial+spec" : lane;
-                if (finalLane !== lane) recordLane(id, finalLane);
-                send({
-                  ...chunk({}, finish),
-                  usage: {
-                    prompt_tokens: s.promptTokens,
-                    completion_tokens: s.generatedTokens,
-                    total_tokens: s.promptTokens + s.generatedTokens,
-                    prompt_tokens_details: { cached_tokens: s.cachedTokens },
-                    lane: finalLane,
-                    ...(s.spec ? { speculation: s.spec } : {}),
-                  },
+                };
+                const summary = await completionExecutor.execute(prepared, {
+                  signal: generationSignal,
+                  onEvents: sendEvents,
+                  ...(streamProtocol
+                    ? { onUsageProgress: (usage) => { latestUsage = usage; } }
+                    : {}),
                 });
-                // bare sentinel per the OpenAI spec — JSON.stringify would
-                // quote it and strict SDK clients never see the terminator
+                const usage = completionUsage(summary);
+                if (streamProtocol) {
+                  emitFrames(streamProtocol.finish(summary.finishReason, usage));
+                } else {
+                  send({ ...chunk({}, summary.finishReason), usage });
+                  // bare sentinel per the OpenAI spec — strict SDK clients
+                  // require the unquoted terminator.
                   controller.enqueue(enc.encode("data: [DONE]\n\n"));
+                }
                 } catch (e) {
-                  if (!generationSignal.aborted)
-                    send({ error: { message: (e as Error).message } });
+                  if (!generationSignal.aborted) {
+                    const message = (e as Error).message;
+                    if (streamProtocol) {
+                      emitFrames([
+                        ...streamProtocol.error(message),
+                        ...streamProtocol.finish(
+                          "stop",
+                          latestUsage ? completionProtocolUsage(latestUsage) : {},
+                        ),
+                      ]);
+                    } else {
+                      send({ error: { message } });
+                    }
+                  }
                 } finally {
                   if (!cancelled) {
                     if (generationSignal.aborted) controller.error(generationSignal.reason);
@@ -3706,70 +3163,21 @@ export function createServer(
 
         try {
           {
-            const router = toolRouter(tools);
-            const stopper = new StopMatcher(options.stopSequences);
-            const thinking = new ThinkingTagSplitter(ctx.template.thinkingFormat === "think-tag", startInThinking);
-            // mlx-lm collects logprobs across EVERY generated token (reasoning
-            // and tool tokens included), not just visible content — same here.
-            const lpc = captureLogprobs
-              ? new LogprobsCollector(wantLogprobs, topLogprobs, (tid) => ctx.tokenizer.idToToken(tid))
-              : null;
-            let content = "";
-            let reasoning = "";
-            const s = await gateway.run(promptIds, options, (token, lpInfo) => {
-              lpc?.push(token, lpInfo);
-              const rawContent = router.push(token);
-              reasoning += router.takeReasoning(); // gemma-channel thinking
-              const parts = thinking.push(stopper.push(rawContent));
-              content += parts.content;
-              reasoning += parts.reasoning;
-              if (stopper.stopped) return false; // halt generation
-            }, vision, shape, signal);
-            if (!stopper.stopped) {
-              const flushed = router.flush();
-              reasoning += router.takeReasoning();
-              let tail = stopper.push(flushed);
-              if (!stopper.stopped) tail += stopper.flush();
-              const parts = thinking.push(tail);
-              content += parts.content;
-              reasoning += parts.reasoning;
-            }
-            {
-              const parts = thinking.flush();
-              content += parts.content;
-              reasoning += parts.reasoning;
-            }
-            const toolCalls = router.toolCalls();
-            const finish = toolCalls.length
-              ? "tool_calls"
-              : stopper.stopped ? "stop"
-              : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
-            const logprobsBlock = lpc?.payload() ?? null;
-            // Refine serial vs serial+spec now that s.spec is known; re-record
-            // for pi-web's WS correlation (see the streaming branch above).
-            const finalLane: Lane = batched ? "batched" : s.spec ? "serial+spec" : lane;
-            if (finalLane !== lane) recordLane(id, finalLane);
+            const summary = await completionExecutor.execute(prepared, { signal });
             return Response.json({
               id, object: "chat.completion", created, model: ctx.modelId,
               choices: [{
                 index: 0,
                 message: {
                   role: "assistant",
-                  content: content || (toolCalls.length ? null : ""),
-                  ...(reasoning ? { reasoning } : {}),
-                  ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+                  content: summary.content || (summary.toolCalls.length ? null : ""),
+                  ...(summary.reasoning ? { reasoning: summary.reasoning } : {}),
+                  ...(summary.toolCalls.length ? { tool_calls: summary.toolCalls } : {}),
                 },
-                ...(logprobsBlock ? { logprobs: logprobsBlock } : {}),
-                finish_reason: finish,
+                ...(summary.logprobs ? { logprobs: summary.logprobs } : {}),
+                finish_reason: summary.finishReason,
               }],
-              usage: {
-                prompt_tokens: s.promptTokens,
-                completion_tokens: s.generatedTokens,
-                total_tokens: s.promptTokens + s.generatedTokens,
-                prompt_tokens_details: { cached_tokens: s.cachedTokens },
-                lane: finalLane,
-                ...(s.spec ? { speculation: s.spec } : {}),
-              },
+              usage: completionUsage(summary),
             }, grammarWarning ? { headers: { Warning: grammarWarning } } : undefined);
           }
         } catch (e) {
@@ -3820,6 +3228,7 @@ export function createServer(
         const id = `cmpl-${crypto.randomUUID()}`;
         const created = Math.floor(Date.now() / 1000);
         const promptIds = ctx.tokenizer.encode(body.prompt);
+        const ownership = new RequestOwnership();
         let options: ReturnType<typeof toOptions>;
         try {
           options = toOptions(body as unknown as ChatRequest);
@@ -3839,82 +3248,61 @@ export function createServer(
           body.structured_outputs != null;
         if (textGrammarReq) {
           const g = await compileGrammarForRequest(body as unknown as ChatRequest);
-          if (g.controller) options.grammar = g.controller;
+          if (g.controller) options.grammar = ownership.own(g.controller);
           else if (g.degradeHint)
             textGrammarWarning =
               `grammar not enforced: ${g.degradeHint} - no prompt injection on /v1/completions`;
         }
-        // Mirrors the chat lane: a real controller (not the degrade path)
-        // shapes the request for per-row grammar batching.
-        const textGrammarCtrl = options.grammar ?? null;
         // mlx_lm.server's default max_tokens is 512 (its --max-tokens CLI
         // default). The chat lane's very generous default is wrong for raw
         // completion: with no template an EOS may never come.
-        options.maxTokens = body.max_completion_tokens ?? body.max_tokens ??
+        const requestedMaxTokens = body.max_completion_tokens ?? body.max_tokens ??
           defaultGeneratedTokens ?? 512;
-        const requestedMaxTokens = options.maxTokens;
-        const contextDecision = admitRequestContext(
-          promptIds.length,
-          requestedMaxTokens,
-          admission.maxSafeContext,
-        );
-        if (!contextDecision) {
-          // Pre-run reject: the gateway only takes grammar disposal ownership
-          // once run — free the WASM matcher here (chat lane: disposeRejected).
-          textGrammarCtrl?.dispose();
-          return Response.json(
-            {
-              error: {
-                message:
-                  `prompt is ${promptIds.length} tokens but the memory budget caps ` +
-                  `safe context at ${admission.maxSafeContext} — no room to generate; ` +
-                  `shorten the prompt or raise --memory-budget`,
-                type: "memory_admission",
-                code: "context_over_budget",
-              },
-            },
-            { status: 400 },
-          );
-        }
-        options.maxTokens = contextDecision.maxTokens;
+        let adapterIds: string[];
         try {
-          const adapterIds = ctx.adapters.resolveSpec(body.adapter ?? serverOptions.defaultAdapter);
-          if (adapterIds.length) options.adapters = adapterIds;
+          adapterIds = ctx.adapters.resolveSpec(body.adapter ?? serverOptions.defaultAdapter);
         } catch (e) {
-          textGrammarCtrl?.dispose();
+          ownership.dispose();
           return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
         }
-        // logprobs capture — same mlx-lm block as chat (generate_response is
-        // shared in the reference too); non-stream only, stream chunks never
-        // carry logprobs.
         const wantLogprobs = body.logprobs === true;
         const topLogprobs =
           typeof body.top_logprobs === "number" && body.top_logprobs > 0
             ? body.top_logprobs : 0;
-        const captureLogprobs = !body.stream && (wantLogprobs || topLogprobs > 0);
-        if (captureLogprobs) {
-          options.logprobs = wantLogprobs;
-          options.topLogprobs = topLogprobs;
+        let prepared: PreparedCompletion;
+        try {
+          prepared = prepareCompletion({
+            requestId: id,
+            plan: {
+              promptIds,
+              options,
+              requestedMaxTokens,
+              maxSafeContext: admission.maxSafeContext,
+              stream: body.stream === true,
+              wantLogprobs,
+              topLogprobs,
+              adapterIds,
+              hasVision: false,
+              userSeed: body.seed !== undefined,
+              hasGrammar: !!options.grammar,
+              hasDraft: !!ctx.draft,
+              ownership,
+            },
+            pipeline: {
+              router: new ToolAwareStream(ctx.tokenizer, "plain", null),
+              stopper: new StopMatcher(options.stopSequences),
+              thinking: new ThinkingTagSplitter(false),
+              collectToolCalls: false,
+            },
+            ...(body.stream
+              ? { createFlowControl: () => createTimedFlowControl(true) }
+              : {}),
+            idToToken: (tokenId) => ctx.tokenizer.idToToken(tokenId),
+          });
+        } catch (error) {
+          if (!(error instanceof CompletionRejected)) throw error;
+          return Response.json({ error: error.error }, { status: error.status });
         }
-        const shape = {
-          hasVision: false,
-          hasAdapters: !!options.adapters?.length,
-          hasRepetitionPenalty: !!options.repetitionPenalty,
-          hasLogitsExtras: !!(
-            options.minP || options.xtcProbability || options.logitBias ||
-            options.presencePenalty || options.frequencyPenalty
-          ),
-          wantsLogprobs: captureLogprobs,
-          userSeed: body.seed !== undefined,
-          kvQuant: !!(options.kvConfig?.length || options.kvBits),
-          turboQuant: !!options.turboQuant,
-          // /v1/completions grammar (textGrammarCtrl). Same null-on-degrade
-          // contract as the chat lane.
-          hasGrammar: !!textGrammarCtrl,
-          hasDraft: !!ctx.draft,
-        };
-        const finishReason = (stopped: boolean, generated: number): "stop" | "length" =>
-          stopped ? "stop" : generated >= (options.maxTokens ?? 512) ? "length" : "stop";
 
         if (body.stream) {
           const streamAbort = new AbortController();
@@ -3933,41 +3321,21 @@ export function createServer(
               });
               void (async () => {
                 try {
-                const decoder = new StreamDecoder(ctx.tokenizer);
-                const stopper = new StopMatcher(options.stopSequences);
-                // ≥25 ms macrotask hop, same reason as the chat lane: keep the
-                // serial decode loop from starving the socket (SSE bursts).
-                let lastFlush = performance.now();
-                const s = await gateway.run(promptIds, options, (token) => {
-                  const text = stopper.push(decoder.push(token));
-                  if (text) send(chunk(text, null));
-                  if (stopper.stopped) return false; // halt generation
-                  if (text) {
-                    const now = performance.now();
-                    if (now - lastFlush >= 25) {
-                      lastFlush = now;
-                      return new Promise<void>((r) => setImmediate(r));
-                    }
+                const sendEvents = (events: readonly CompletionEvent[]) => {
+                  for (const event of events) {
+                    if (event.type === "content") send(chunk(event.text, null));
                   }
-                }, undefined, shape, generationSignal);
-                if (generationSignal.aborted) return;
-                if (!stopper.stopped) {
-                  let tail = stopper.push(decoder.flush());
-                  if (!stopper.stopped) tail += stopper.flush();
-                  if (tail) send(chunk(tail, null));
-                }
+                };
+                const summary = await completionExecutor.execute(prepared, {
+                  signal: generationSignal,
+                  onEvents: sendEvents,
+                });
                 // final chunk: finish_reason + usage (mlx-lm gates usage behind
                 // stream_options.include_usage; we always attach it, matching
                 // our chat lane — an additive superset OpenAI clients ignore)
                 send({
-                  ...chunk("", finishReason(stopper.stopped, s.generatedTokens)),
-                  usage: {
-                    prompt_tokens: s.promptTokens,
-                    completion_tokens: s.generatedTokens,
-                    total_tokens: s.promptTokens + s.generatedTokens,
-                    prompt_tokens_details: { cached_tokens: s.cachedTokens },
-                    ...(s.spec ? { speculation: s.spec } : {}),
-                  },
+                  ...chunk("", summary.finishReason),
+                  usage: completionUsage(summary),
                 });
                   controller.enqueue(enc.encode("data: [DONE]\n\n"));
                 } catch (e) {
@@ -3997,37 +3365,17 @@ export function createServer(
         }
 
         try {
-          const decoder = new StreamDecoder(ctx.tokenizer);
-          const stopper = new StopMatcher(options.stopSequences);
-          const lpc = captureLogprobs
-            ? new LogprobsCollector(wantLogprobs, topLogprobs, (tid) => ctx.tokenizer.idToToken(tid))
-            : null;
-          let text = "";
-          const s = await gateway.run(promptIds, options, (token, lpInfo) => {
-            lpc?.push(token, lpInfo);
-            text += stopper.push(decoder.push(token));
-            if (stopper.stopped) return false; // halt generation
-          }, undefined, shape, request.signal);
-          if (!stopper.stopped) {
-            let tail = stopper.push(decoder.flush());
-            if (!stopper.stopped) tail += stopper.flush();
-            text += tail;
-          }
-          const logprobsBlock = lpc?.payload() ?? null;
+          const summary = await completionExecutor.execute(prepared, {
+            signal: request.signal,
+          });
           return Response.json({
             id, object: "text_completion", created, model: ctx.modelId,
             choices: [{
-              index: 0, text,
-              ...(logprobsBlock ? { logprobs: logprobsBlock } : {}),
-              finish_reason: finishReason(stopper.stopped, s.generatedTokens),
+              index: 0, text: summary.content,
+              ...(summary.logprobs ? { logprobs: summary.logprobs } : {}),
+              finish_reason: summary.finishReason,
             }],
-            usage: {
-              prompt_tokens: s.promptTokens,
-              completion_tokens: s.generatedTokens,
-              total_tokens: s.promptTokens + s.generatedTokens,
-              prompt_tokens_details: { cached_tokens: s.cachedTokens },
-                    ...(s.spec ? { speculation: s.spec } : {}),
-            },
+            usage: completionUsage(summary),
           }, textGrammarWarning ? { headers: { Warning: textGrammarWarning } } : undefined);
         } catch (e) {
           return Response.json({ error: { message: (e as Error).message } }, { status: 500 });
@@ -4054,7 +3402,13 @@ export function createServer(
         } catch (e) {
           return anthropicError(400, "invalid_request_error", (e as Error).message);
         }
-        const resp = await handleChat(chatBody, request.signal);
+        const resp = await handleChat(
+          chatBody,
+          request.signal,
+          anthropicBody.stream
+            ? createAnthropicStreamProtocol(ctx.modelId)
+            : undefined,
+        );
         if (!resp.ok) {
           const err = (await resp.json().catch(() => null)) as
             | { error?: { message?: string } }
@@ -4066,13 +3420,7 @@ export function createServer(
           );
         }
         if (anthropicBody.stream) {
-          return new Response(translateOpenAiSse(resp.body!, ctx.modelId), {
-            headers: {
-              "content-type": "text/event-stream",
-              "cache-control": "no-cache",
-              connection: "keep-alive",
-            },
-          });
+          return resp;
         }
         return Response.json(chatJsonToAnthropic(await resp.json(), ctx.modelId));
       }
@@ -4135,7 +3483,22 @@ export function createServer(
         } catch (e) {
           return responsesError(400, (e as Error).message);
         }
-        const resp = await handleChat(chatBody, request.signal);
+        const resp = await handleChat(
+          chatBody,
+          request.signal,
+          responsesBody.stream
+            ? createResponsesStreamProtocol(
+                ctx.modelId,
+                prevId,
+                (final) =>
+                  responseStore.put(final.id as string, {
+                    input: capturedInput,
+                    output: final.output as unknown[],
+                    instructions: capturedInstructions,
+                  }),
+              )
+            : undefined,
+        );
         if (!resp.ok) {
           const err = (await resp.json().catch(() => null)) as
             | { error?: { message?: string } }
@@ -4143,22 +3506,7 @@ export function createServer(
           return responsesError(resp.status, err?.error?.message ?? "request failed");
         }
         if (responsesBody.stream) {
-          const body = translateOpenAiSseToResponses(
-            resp.body!, ctx.modelId, prevId,
-            (final) =>
-              responseStore.put(final.id as string, {
-                input: capturedInput,
-                output: final.output as unknown[],
-                instructions: capturedInstructions,
-              }),
-          );
-          return new Response(body, {
-            headers: {
-              "content-type": "text/event-stream",
-              "cache-control": "no-cache",
-              connection: "keep-alive",
-            },
-          });
+          return resp;
         }
         const responses = chatJsonToResponses(await resp.json(), ctx.modelId, prevId);
         responseStore.put(responses.id as string, {
@@ -4169,343 +3517,18 @@ export function createServer(
         return Response.json(responses);
       }
 
-      // --- Lab API: dataset builder + quantize + finetune + jobs -------
-      if (url.pathname === "/api/dataset/templates" && request.method === "GET") {
-        const { TEMPLATES } = await import("./dataset");
-        return Response.json({ templates: TEMPLATES });
-      }
-      if (url.pathname === "/api/dataset/submit" && request.method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as {
-          template_id?: string; inputs?: Record<string, unknown>; model_name?: string;
-        };
-        const { getTemplate } = await import("./dataset");
-        if (!body.template_id || !getTemplate(body.template_id))
-          return Response.json({ ok: false, error: `unknown template ${body.template_id}` }, { status: 400 });
-        const store = await ensureJobs();
-        const { submitInProcess } = await import("./jobs");
-        const { homedir } = await import("node:os");
-        const safe = body.template_id.replace(/[^a-z0-9_-]/gi, "");
-        const outDir = `${homedir()}/.cache/mlx-bun/datasets/dataset-${safe}-${Date.now()}`;
-        const { jobId } = submitInProcess(store, "dataset", {
-          template_id: body.template_id, inputs: body.inputs ?? {},
-          output_dir: outDir, api_url: `http://127.0.0.1:${server.port}`,
-          model_name: body.model_name ?? "local",
-        }, outDir);
-        return Response.json({ ok: true, job_id: jobId, output_dir: outDir });
-      }
+      const labResponse = await handleLabRoute(url, request, {
+        ensureJobs,
+        serverPort: () => server.port,
+        invalidateLibrary: () => discoveryRoutes.invalidateLibrary(),
+      });
+      if (labResponse) return labResponse;
 
-      if (url.pathname === "/api/quantize/inspect" && request.method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as { model_id?: string };
-        const { inspectModel } = await import("./quantize");
-        return Response.json(await inspectModel(body.model_id ?? ""));
-      }
-      // Turn an OS-picked folder into the absolute snapshot path on disk. The
-      // browser can't reveal a filesystem path (security) and the HF cache
-      // stores real bytes in blobs/ with symlinked snapshots — so we resolve by
-      // the folder's NAME (which encodes the repo id), never by reading files.
-      // No upload, no dependence on the cache's symlink layout, and a
-      // just-downloaded model resolves before it's ever been indexed.
-      if ((url.pathname === "/api/quantize/resolve-folder" || url.pathname === "/api/model/resolve-folder") && request.method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as { folder_name?: string; rel_path?: string };
-        const { statSync, readdirSync, readFileSync } = await import("node:fs");
-        const { join } = await import("node:path");
-        const { homedir } = await import("node:os");
-        const hubRoot = process.env.HF_HUB_CACHE
-          ?? (process.env.HF_HOME ? join(process.env.HF_HOME, "hub") : join(homedir(), ".cache/huggingface/hub"));
-        const roots = [hubRoot, join(homedir(), ".cache/mlx-bun")];
-        const hasConfig = (d: string) => { try { return statSync(join(d, "config.json")).isFile(); } catch { return false; } };
-        // basename of the picked folder; the rel path's last-but-one segment is
-        // the <hash> dir if they drilled into a snapshot.
-        const folder = (body.folder_name ?? "").replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? "";
-        const relSegs = (body.rel_path ?? "").replace(/\\/g, "/").split("/").filter(Boolean);
-        const configDir = relSegs.length >= 2 ? relSegs[relSegs.length - 2] : "";
-        const repoIdOf = (modelsDir: string) => modelsDir.slice("models--".length).replaceAll("--", "/");
-        // Pick a repo dir's canonical snapshot: the one refs/main points at, else
-        // the first snapshot that actually has a config.json.
-        const pickSnapshot = (repoDir: string): string | null => {
-          const snaps = join(repoDir, "snapshots");
-          let head = "";
-          try { head = readFileSync(join(repoDir, "refs", "main"), "utf8").trim(); } catch {}
-          if (head && hasConfig(join(snaps, head))) return join(snaps, head);
-          try { for (const h of readdirSync(snaps)) if (hasConfig(join(snaps, h))) return join(snaps, h); } catch {}
-          return null;
-        };
-
-        // (1) HF-cache folder picked — its name IS the repo id.
-        if (folder.startsWith("models--")) {
-          const p = pickSnapshot(join(hubRoot, folder));
-          if (p) return Response.json({ ok: true, path: p, repo_id: repoIdOf(folder) });
-        }
-        // (2) A bare <hash> snapshot folder picked directly (or carried in rel).
-        const hashDir = configDir || folder;
-        if (hashDir) {
-          try {
-            for (const repo of readdirSync(hubRoot)) {
-              if (!repo.startsWith("models--")) continue;
-              const cand = join(hubRoot, repo, "snapshots", hashDir);
-              if (hasConfig(cand)) return Response.json({ ok: true, path: cand, repo_id: repoIdOf(repo) });
-            }
-          } catch {}
-        }
-        // (3) Flat local snapshot under a known root (folder name == model dir).
-        for (const root of roots) {
-          if (folder && hasConfig(join(root, folder))) return Response.json({ ok: true, path: join(root, folder) });
-        }
-        // (4) Registry rescan — last resort (also covers customized cache layouts).
-        const { Registry } = await import("./registry");
-        const reg = new Registry();
-        try {
-          await reg.scan();
-          const all = reg.list();
-          const rec = (folder.startsWith("models--")
-            ? all.find((m) => m.repoId === repoIdOf(folder))
-            : undefined)
-            ?? all.find((m) => m.path.split("/").pop() === hashDir)
-            ?? all.find((m) => m.repoId.split("/").pop() === folder);
-          if (rec) return Response.json({ ok: true, path: rec.path, repo_id: rec.repoId, model_type: rec.modelType });
-        } finally {
-          reg.close();
-        }
-        return Response.json({
-          ok: false,
-          error: "Couldn't locate this folder on disk — paste the path instead.",
-        });
-      }
-      if (url.pathname === "/api/quantize/submit" && request.method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as {
-          model_id?: string; bits?: number; group_size?: number;
-          target_bpw?: number; candidate_bits?: number[]; reference?: string;
-          calibration_mix?: string; n_calibration?: number;
-        };
-        if (!body.model_id)
-          return Response.json({ ok: false, error: "model_id required" }, { status: 400 });
-        const store = await ensureJobs();
-        const { submitSubprocess } = await import("./jobs");
-        const { homedir } = await import("node:os");
-        const { join } = await import("node:path");
-        const { mkdirSync, writeFileSync } = await import("node:fs");
-        const { createHash } = await import("node:crypto");
-        const bits = body.bits ?? 4, gs = body.group_size ?? 64;
-        // Derive org/name from the source so the quant is named readably (the
-        // source is usually an HF-cache snapshot path whose basename is a hash).
-        const snapMatch = body.model_id.match(/(models--[^/]+)\/snapshots\//);
-        let org = "local", name: string;
-        if (snapMatch) {
-          const parts = snapMatch[1]!.split("--"); // ["models", org, ...name]
-          org = parts[1] ?? "local";
-          name = parts.slice(2).join("--");
-        } else if (body.model_id.includes("/") && !body.model_id.startsWith("/") && !body.model_id.startsWith("~")) {
-          const seg = body.model_id.split("/"); // a repo id "org/name"
-          org = seg[0]!; name = seg.slice(1).join("-");
-        } else {
-          name = body.model_id.split("/").filter(Boolean).at(-1) ?? "model"; // a bare path
-        }
-        name = (name || "model").replace(/[^a-z0-9_.-]/gi, "");
-        org = (org || "local").replace(/[^a-z0-9_.-]/gi, "");
-        const suffix = body.target_bpw ? `mixed-${body.target_bpw}bpw` : `${bits}bit`;
-        // Write the quant INTO the HF hub cache as a normal models--org--name/
-        // snapshots/<hash> entry, so the standard registry scan + every other
-        // tool discovers it alongside downloaded models. refs/main makes it a
-        // well-formed cache entry.
-        const quantRepo = `${name}-OptiQ-${suffix}`;
-        const hubRoot = process.env.HF_HUB_CACHE
-          ?? (process.env.HF_HOME ? join(process.env.HF_HOME, "hub") : join(homedir(), ".cache/huggingface/hub"));
-        const repoDir = join(hubRoot, `models--${org}--${quantRepo}`);
-        const snapHash = createHash("sha1").update(`${org}/${quantRepo}`).digest("hex");
-        const outDir = join(repoDir, "snapshots", snapHash);
-        try {
-          mkdirSync(join(repoDir, "refs"), { recursive: true });
-          writeFileSync(join(repoDir, "refs", "main"), snapHash);
-        } catch {}
-        const { jobId } = submitSubprocess(store, "quantize", {
-          model_id: body.model_id, out_dir: outDir, bits, group_size: gs,
-          // forwarded to the mixed-precision path when target_bpw is set
-          target_bpw: body.target_bpw, candidate_bits: body.candidate_bits,
-          reference: body.reference, calibration_mix: body.calibration_mix,
-          n_calibration: body.n_calibration,
-        }, outDir, {
-          // The model is in the HF cache now; drop the Library cache so the next
-          // poll rescans and shows it — no `mlx-bun scan`, no restart.
-          onComplete: () => { libraryCache = null; },
-        });
-        return Response.json({ ok: true, job_id: jobId, output_dir: outDir });
-      }
-
-      if (url.pathname === "/api/finetune/inspect-dataset" && request.method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as { path?: string };
-        const { inspectDataset } = await import("./train");
-        return Response.json(await inspectDataset(body.path ?? ""));
-      }
-      if (url.pathname === "/api/finetune/submit" && request.method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-        if (!body.model_dir || !body.data_dir)
-          return Response.json({ ok: false, error: "model_dir and data_dir required" }, { status: 400 });
-        const store = await ensureJobs();
-        const { submitSubprocess } = await import("./jobs");
-        const { homedir } = await import("node:os");
-        const adapterPath = (body.adapter_path as string) ||
-          `${homedir()}/.cache/mlx-bun/adapters/adapter-${Date.now()}`;
-        const { jobId } = submitSubprocess(store, "finetune",
-          { ...body, adapter_path: adapterPath }, adapterPath);
-        return Response.json({ ok: true, job_id: jobId, adapter_path: adapterPath });
-      }
-      if (url.pathname === "/api/finetune/merge" && request.method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as {
-          adapter_a?: string; adapter_b?: string; scales?: number[];
-        };
-        if (!body.adapter_a || !body.adapter_b)
-          return Response.json({ ok: false, error: "adapter_a and adapter_b required" }, { status: 400 });
-        try {
-          const { mergeAdapters } = await import("./train");
-          const { homedir } = await import("node:os");
-          const mergedPath = `${homedir()}/.cache/mlx-bun/adapters/merged-${Date.now()}`;
-          const stats = await mergeAdapters([body.adapter_a, body.adapter_b], mergedPath, body.scales);
-          return Response.json({ ok: true, merged_path: mergedPath, stats });
-        } catch (e) {
-          return Response.json({ ok: false, error: (e as Error).message }, { status: 400 });
-        }
-      }
-      if (url.pathname === "/api/finetune/export" && request.method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as {
-          base_model?: string; adapter_path?: string; method?: string;
-        };
-        if (!body.base_model || !body.adapter_path)
-          return Response.json({ ok: false, error: "base_model and adapter_path required" }, { status: 400 });
-        try {
-          const { exportAdapter } = await import("./train");
-          const { homedir } = await import("node:os");
-          const exportPath = `${homedir()}/.cache/mlx-bun/exports/export-${Date.now()}`;
-          const manifest = await exportAdapter(exportPath, body.base_model, body.adapter_path, body.method);
-          return Response.json({ ok: true, export_path: exportPath, manifest });
-        } catch (e) {
-          return Response.json({ ok: false, error: (e as Error).message }, { status: 400 });
-        }
-      }
-
-      // --- HF token settings + push-to-hub (model & dataset repos) ------
-      if (url.pathname === "/api/settings/hf-token" && request.method === "GET") {
-        const { hasHfToken } = await import("./hf-push");
-        return Response.json({ ok: true, hasToken: hasHfToken() });
-      }
-      if (url.pathname === "/api/settings/hf-token" && request.method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as { token?: string };
-        if (!body.token) return Response.json({ ok: false, error: "token required" }, { status: 400 });
-        const { saveHfToken } = await import("./hf-push");
-        saveHfToken(body.token);
-        return Response.json({ ok: true });
-      }
-
-      // --- Durable tool-approvals settings (plan §5.4/§6.5/§9 Phase 2) ---
-      // The web chat's own "always allow this tool" list
-      // (~/.mlx-bun/tool-approvals.json, src/tool-approvals.ts). The
-      // approval card itself grants an always-allow via the `approval` WS
-      // frame (alwaysAllow:true) — these REST routes are read/forget only,
-      // for the settings panel's list view (matches the hf-token GET/POST
-      // pattern's separation of "the card that grants" vs "settings that
-      // manage" — there is no POST here on purpose, granting always goes
-      // through the approval card, never a bare settings form).
-      if (url.pathname === "/api/settings/tool-approvals" && request.method === "GET") {
-        const { listAlwaysAllowedTools } = await import("./tool-approvals");
-        return Response.json({ ok: true, alwaysAllow: listAlwaysAllowedTools() });
-      }
-      if (url.pathname === "/api/settings/tool-approvals" && request.method === "DELETE") {
-        const body = (await request.json().catch(() => ({}))) as { tool?: string };
-        if (!body.tool) return Response.json({ ok: false, error: "tool required" }, { status: 400 });
-        const { revokeToolAlwaysAllowed } = await import("./tool-approvals");
-        const file = revokeToolAlwaysAllowed(body.tool);
-        return Response.json({ ok: true, alwaysAllow: Object.keys(file.allows).sort() });
-      }
-      {
-        const m = url.pathname.match(/^\/api\/(quantize|finetune|dataset)\/push$/);
-        if (m && request.method === "POST") {
-          const kind = m[1]!;
-          const body = (await request.json().catch(() => ({}))) as {
-            job_id?: string; repo_id?: string; private?: boolean; source_path?: string;
-          };
-          if (!body.repo_id) return Response.json({ ok: false, error: "repo_id required" }, { status: 400 });
-          const { getHfToken, uploadFolder } = await import("./hf-push");
-          const token = getHfToken();
-          if (!token)
-            return Response.json({ ok: false, error: "no HF token saved — add one in Settings → Hugging Face" }, { status: 400 });
-          const store = await ensureJobs();
-          let dir = body.source_path;
-          if (!dir && body.job_id) dir = store.get(body.job_id)?.output_path ?? undefined;
-          if (!dir) return Response.json({ ok: false, error: "no source dir (pass job_id or source_path)" }, { status: 400 });
-          try {
-            const r = await uploadFolder(dir, body.repo_id, {
-              repoType: kind === "dataset" ? "dataset" : "model",
-              private: !!body.private, token,
-            });
-            return Response.json({ ok: true, url: r.url });
-          } catch (e) {
-            return Response.json({ ok: false, error: (e as Error).message }, { status: 400 });
-          }
-        }
-      }
-
-      // gc plan/execute (web-ui-pass-plan.md #9): thin wrappers over the CLI's
-      // own `mlx-bun gc` planner/executor (src/registry.ts planGc/executeGc).
-      // Loopback-served admin route — no auth beyond the server's own bind
-      // (matches every other /api/* route here). GET plans (read-only, cheap:
-      // config.json + safetensors index reads, no tensor bytes); POST executes
-      // and requires an explicit {yes:true} body (mirrors the CLI's --yes gate)
-      // so a stray call can't delete anything by accident.
-      if (url.pathname === "/api/gc/plan" && request.method === "GET") {
-        const { planGc } = await import("./registry");
-        const plans = planGc().filter(
-          (p) => p.pruneSnapshots.length || p.skippedSnapshots.length || p.deadBlobs.length,
-        );
-        const superseded = plans.map((p) => ({
-          repo_id: p.repoId,
-          prune_snapshots: p.pruneSnapshots.length,
-          skipped_snapshots: p.skippedSnapshots.length,
-          dead_blobs: p.deadBlobs.length,
-          reclaim_bytes: p.reclaimBytes,
-        }));
-        const reclaim_bytes = plans.reduce((a, p) => a + p.reclaimBytes, 0);
-        return Response.json({ ok: true, superseded, reclaim_bytes });
-      }
-      if (url.pathname === "/api/gc/execute" && request.method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as { yes?: boolean };
-        if (body.yes !== true)
-          return Response.json({ ok: false, error: "pass {\"yes\": true} to confirm deletion" }, { status: 400 });
-        const { planGc, executeGc, Registry } = await import("./registry");
-        const plans = planGc().filter(
-          (p) => p.pruneSnapshots.length || p.skippedSnapshots.length || p.deadBlobs.length,
-        );
-        const res = executeGc(plans);
-        const reg = new Registry();
-        try {
-          await reg.scan(); // reap deleted snapshots from the registry
-        } finally {
-          reg.close();
-        }
-        libraryCache = null; // force /library to reflect the deletion
-        return Response.json({
-          ok: true,
-          snapshots: res.snapshots, blobs: res.blobs, reclaimed_bytes: res.reclaimedBytes,
-        });
-      }
-
-      if (url.pathname === "/api/jobs" && request.method === "GET") {
-        const store = await ensureJobs();
-        const limit = Number(url.searchParams.get("limit") ?? "50");
-        const kind = url.searchParams.get("kind") ?? undefined;
-        return Response.json({ ok: true, jobs: store.recent(limit, kind) });
-      }
-      {
-        const m = url.pathname.match(/^\/api\/jobs\/([^/]+?)(\/stream)?$/);
-        if (m && request.method === "GET") {
-          const store = await ensureJobs();
-          if (m[2]) {
-            const { streamJobResponse } = await import("./jobs");
-            return streamJobResponse(store, m[1]!);
-          }
-          const job = store.get(m[1]!);
-          if (!job) return Response.json({ ok: false, error: "job not found" }, { status: 404 });
-          return Response.json({ ok: true, job });
-        }
-      }
+      const adminResponse = await handleAdminRoute(url, request, {
+        ensureJobs,
+        invalidateLibrary: () => discoveryRoutes.invalidateLibrary(),
+      });
+      if (adminResponse) return adminResponse;
 
       return Response.json({ error: { message: "not found" } }, { status: 404 });
     },

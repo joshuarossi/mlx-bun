@@ -7,6 +7,7 @@ import { createModel } from "../../src/model/factory";
 import { maybeQuantizeKv } from "../../src/generate";
 import { lastPositionLogits, argmaxLastPosition } from "../../src/model/gemma4";
 import { BatchScheduler } from "../../src/serve/batch-scheduler";
+import { resolveKvScheme } from "../../src/kv-scheme";
 import { goldenAt } from "../../tests/goldens";
 import { SNAPSHOT_MINICPM5 } from "../../tests/paths";
 import * as ops from "../../src/mlx/ops";
@@ -66,7 +67,12 @@ const promptB = golden.prompt_ids.slice(0, Math.floor(golden.prompt_ids.length /
 const refA = await solo(promptA);
 const refB = await solo(promptB);
 
-const sched = new BatchScheduler(model, { maxBatch: 2, ...(BF16 ? {} : { kvConfig: config.kvQuant! }) });
+const sched = new BatchScheduler(model, {
+  maxBatch: 2,
+  ...(BF16
+    ? {}
+    : { kvScheme: resolveKvScheme({ override: "config", config: config.kvQuant }) }),
+});
 const stepsAtB: number[] = []; // how many steps A had done when B's sampler first ran
 const mk = (forced: number[], sink: Float32Array[], other?: Float32Array[]) => {
   let step = 0;

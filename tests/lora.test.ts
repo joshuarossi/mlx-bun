@@ -152,10 +152,12 @@ describe.skipIf(!optIn || !haveWeights || !haveAdapters)("LoRA hot-swap (e4b)", 
 
   test("per-request selection over HTTP", async () => {
     const { createServer } = await import("../src/server");
+    const { resolveModelProfile } = await import("../src/model/profile");
     const { loadTokenizer } = await import("../src/tokenizer");
     const { ChatTemplate } = await import("../src/chat-template");
     const server = createServer({
       model,
+      profile: resolveModelProfile(model.config),
       tokenizer: await loadTokenizer(E4B),
       template: await ChatTemplate.load(E4B),
       modelId: "e4b-lora-test",

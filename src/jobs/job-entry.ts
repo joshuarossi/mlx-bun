@@ -10,6 +10,7 @@
 import { JobStore } from "./db";
 import { getRunner, makeEmit } from "./runner";
 import type { JobRunner } from "./types";
+import { runtimeValue } from "../runtime-config";
 
 /** kind → module to dynamically import so it registers its runner. Real job
  *  kinds are built by parallel efforts; importing the module is expected to
@@ -58,8 +59,8 @@ async function main(): Promise<void> {
   // Own fresh connection — overrides come from env so a spawned child finds
   // the same DB/logs the parent used (tests set these to a tmp dir).
   const store = new JobStore(
-    process.env.MLX_BUN_JOBS_DB || undefined,
-    process.env.MLX_BUN_JOBS_DIR || undefined,
+    runtimeValue("MLX_BUN_JOBS_DB") || undefined,
+    runtimeValue("MLX_BUN_JOBS_DIR") || undefined,
   );
 
   const row = store.get(jobId);

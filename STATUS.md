@@ -103,6 +103,66 @@ and MTP head are SEPARATE repos — mlx-community/Qwen3.8-27B-bf16
 mlx-community/Qwen3.8-27B-MTP-bf16 (MTP companion, ~850 MB, already
 local + verified).
 
+## Active: serving architecture consolidation
+
+S0 through S3 are complete in the current worktree. Chat and raw-text,
+streaming and non-streaming now share one `CompletionExecutor` for
+admission, semantic events, logprobs, finish reason, usage, lane reporting,
+and cleanup. `GenerationGateway.place()` creates one immutable scheduling
+decision that both reporting and execution use. Model construction now resolves
+one immutable declaration containing artifact/config identity, fidelity,
+required engine capabilities, and the loader/graph/loop composition. Exact
+Qwen3.8 OptiQ and GLM-5.2 Colibri revisions are pinned; dedicated family and
+generic routes remain fallbacks. Exact mismatches refuse rather than downgrade,
+and profiles cannot rewrite MTP, KV, adapters, grammar, or sampling. The staged
+`mjriii/Qwen3.8-27B` quant stays on the Qwen family profile until GPQA evidence
+and an immutable published revision exist. S3 now declares `serial` or
+`continuous` at the immutable placement seam instead of predicting that a
+request is "batched." Active-row count selects B=1 or B=N inside the
+continuous scheduler; `--batch 1` and dedicated compositions retain the strict
+serial executor. Existing B=1 parity evidence and 0.992–0.996 paired decode
+ratios support the current default path. No feature is removed or substituted
+to enter the scheduler. Post-S3 review hardening now carries the resolved KV
+scheme through placement, cache conversion, and budget projection; rejects
+configured caches that cannot actually convert; routes in-process A/B levers
+through the runtime snapshot interface; and atomically publishes complete
+quantized model directories. Raw scheduler `kvConfig` bypasses are gone, so
+production, tests, and diagnostics all use the same `KvScheme` interface.
+The scheduler fails fast if a direct caller supplies a scheme it cannot
+execute, preventing bf16 service with quantized accounting.
+Protocol adapters now retain accumulated usage on
+mid-stream failures as well, without adding that bookkeeping to ordinary
+OpenAI streaming. A worked numerical oracle now pins the public weight-transform
+interface. After the GPQA pause, 97 focused model-free tests and all three real
+mixed-KV GPU gates pass: MiniCPM5 B=1 is bit-exact, MiniCPM5 B=2 peaks at KL
+1.21e-1 under its 0.2 padded-row bar, and Gemma 12B rotating-quant peaks at KL
+0/3.04e-3 under its 1e-3/1e-1 bars.
+
+The final two-shard gate passes 2,064 tests with 75 intentional skips and zero
+failures; TypeScript, both Bun entry bundles, web bundle freshness, hygiene,
+and whitespace checks pass too. The same acceptance pass fixed three mainline
+lifecycle defects rather than carrying them into the PR. A queued chat render
+can no longer run after its turn settles and dereference cleared state or
+duplicate final content. GLM's compressed-cache row filter now slices padding
+before selecting rows, so the owned result preserves exact row values. Atomic
+quantization once again accepts a caller-created empty destination while still
+refusing populated output. The UI fix was exercised through a real two-turn
+browser conversation: streaming, tool cards, context carryover, metrics, and
+composer recovery all worked with no runtime exception or duplicated response.
+These fixes do not touch the decode loop: the chat change is DOM lifecycle
+work, GLM row filtering runs only when rows leave a batch, and atomic
+publication is offline I/O.
+
+Post-review hardening also closes two mutability holes: resolved KV schemes
+own frozen copies of nested layer/TurboQuant declarations, and placement
+freezes the exact request shape before mechanism selection or callbacks. A
+fresh interleaved main-vs-branch MiniCPM5 serial benchmark directly covering
+the new sampler path measured a 1.000 median-best decode ratio (about 265.0
+tok/s on both sides).
+
+Next action (S4): open the PR into `main`, resolve review and CI findings, then
+repeat the real conversation smoke on merged `main` and archive this phase.
+
 ## Completed: native Colibri/GLM-5.2 port (Phase 21, closed 2026-08-17)
 
 G0–G8 complete and shipped in v0.0.13; G6R stages 0–2 and G7a–c landed

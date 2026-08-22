@@ -37,6 +37,7 @@ import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import { STEEL_QMM_HEADER } from "./steel-qmm-header";
+import { runtimeValue } from "../runtime-config";
 
 /** The quantized head pieces the kernel needs (packed weight + per-group affine
  *  scale/bias + bits/group_size). Mirrors HeadQuant in loss.ts. */
@@ -392,7 +393,7 @@ function fwdSgKernel(): MetalKernel {
       inputNames: ["h", "wp", "scales", "biases", "targets", "shape", "capv"],
       outputNames: ["blockMax_out", "blockSum_out", "blockTgt_out"],
       source: FWD_SG_SOURCE,
-      header: `#include <metal_simdgroup_matrix>\n#define TG ${TG}\n#define BB ${SG_BB}\n#define BV ${SG_BV}\n#define BD ${SG_BD}\n#define BDX ${SG_BD + 4}\n#define BVX ${SG_BV + 4}\n#define CCE_SG_SKIPDQ ${process.env.MLX_BUN_CCE_SG_SKIPDQ === "1" ? 1 : 0}\n`,
+      header: `#include <metal_simdgroup_matrix>\n#define TG ${TG}\n#define BB ${SG_BB}\n#define BV ${SG_BV}\n#define BD ${SG_BD}\n#define BDX ${SG_BD + 4}\n#define BVX ${SG_BV + 4}\n#define CCE_SG_SKIPDQ ${runtimeValue("MLX_BUN_CCE_SG_SKIPDQ") === "1" ? 1 : 0}\n`,
       ensureRowContiguous: true,
     });
   }
@@ -404,7 +405,7 @@ function fwdSgKernel(): MetalKernel {
 // compute-bound regime. Removing the staging redundancy (one thread per packed
 // word; scale/bias once per group) cut it 1629→848 ms, beating the scalar
 // kernel's 1097 ms. Fall back to scalar (MLX_BUN_CCE_SCALAR=1) when H % SG_BD != 0.
-const USE_SIMDGROUP_FWD = process.env.MLX_BUN_CCE_SCALAR !== "1" && process.env.MLX_BUN_CCE_LANE !== "1";
+const USE_SIMDGROUP_FWD = runtimeValue("MLX_BUN_CCE_SCALAR") !== "1" && runtimeValue("MLX_BUN_CCE_LANE") !== "1";
 
 // Backward: dh[t,d] = Σ_v coeff_v · dequant(W_v)[d], coeff_v = g_t·(onehot_v −
 // softmax_v)·sech²_v, softmax_v = exp(softcap(logit_v) − lse_t). Two-phase per
@@ -549,7 +550,7 @@ function bwdKernel(daccN: number): MetalKernel {
       inputNames: ["h", "wp", "scales", "biases", "targets", "lse", "gv", "shape", "capv"],
       outputNames: ["dh"],
       source: BWD_SOURCE,
-      header: `#define TG ${TG}\n#define BLOCK_B ${BLOCK_B_BWD}\n#define DACC_N ${daccN}\n#define CCE_BWD_SKIP_P2DQ ${process.env.MLX_BUN_CCE_BWD_SKIP_P2DQ === "1" ? 1 : 0}\n#define CCE_BWD_SKIP_P2 ${process.env.MLX_BUN_CCE_BWD_SKIP_P2 === "1" ? 1 : 0}\n`,
+      header: `#define TG ${TG}\n#define BLOCK_B ${BLOCK_B_BWD}\n#define DACC_N ${daccN}\n#define CCE_BWD_SKIP_P2DQ ${runtimeValue("MLX_BUN_CCE_BWD_SKIP_P2DQ") === "1" ? 1 : 0}\n#define CCE_BWD_SKIP_P2 ${runtimeValue("MLX_BUN_CCE_BWD_SKIP_P2") === "1" ? 1 : 0}\n`,
       ensureRowContiguous: true,
       atomicOutputs: true, // dh is summed across the NBLK vocab-block programs
     });
@@ -735,7 +736,7 @@ const BWD_SG_SOURCE = String.raw`
 // (The ~3.5× figure floating around older notes was the retired SG kernel, not
 // steel.) MLX_BUN_CCE_BWD_FILTER_EPS=0 restores exact gradients — eps "0"
 // compiles the filter OUT (#if CCE_BWD_FILTER 0), the identical pre-flip kernel.
-const BWD_FILTER_EPS = process.env.MLX_BUN_CCE_BWD_FILTER_EPS ?? "1e-5";
+const BWD_FILTER_EPS = runtimeValue("MLX_BUN_CCE_BWD_FILTER_EPS") ?? "1e-5";
 // blockMax vocab-block early-exit eps (skip whole cold (token-block,vocab-block) programs
 // — attacks BOTH phases). DEFAULT ON at 1e-5 (flipped 2026-07-02). It is ~LOSSLESS when
 // it fires (only skips blocks whose max prob < eps AND which lack the target → ~0
@@ -744,7 +745,7 @@ const BWD_FILTER_EPS = process.env.MLX_BUN_CCE_BWD_FILTER_EPS ?? "1e-5";
 // at ≤0.004% dh; COMBINED with the coeff filter at 1e-5/1e-5 the backward is 1.71×
 // (CPM5) / 3.16× (e4b) vs exact. Fires only when the caller supplies blockMax (the
 // production head does); MLX_BUN_CCE_BWD_BLOCK_EPS=0 disables (compiled out).
-const BWD_BLOCK_EPS = process.env.MLX_BUN_CCE_BWD_BLOCK_EPS ?? "1e-5";
+const BWD_BLOCK_EPS = runtimeValue("MLX_BUN_CCE_BWD_BLOCK_EPS") ?? "1e-5";
 const _bwdSgKernels = new Map<string, MetalKernel>();
 function bwdSgKernel(dimTiles: number, filterEps: string, blockEps: string): MetalKernel {
   const filterOn = Number.parseFloat(filterEps) > 0 ? 1 : 0;
@@ -1061,9 +1062,9 @@ export function flashCceForward(
   // tiling is clean (H,V,blockV all % 32). MLX_BUN_CCE_NOSTEEL=1 falls back to the
   // old kernels (simdgroup / scalar / lane).
   const blockV0 = Math.ceil(V / NBLK);
-  const useSteel = process.env.MLX_BUN_CCE_NOSTEEL !== "1" && H % 32 === 0 && V % 32 === 0 && blockV0 % 32 === 0;
+  const useSteel = runtimeValue("MLX_BUN_CCE_NOSTEEL") !== "1" && H % 32 === 0 && V % 32 === 0 && blockV0 % 32 === 0;
   const useSimd = !useSteel && USE_SIMDGROUP_FWD && H % SG_BD === 0;
-  if (!useSteel && process.env.MLX_BUN_CCE_NOSTEEL !== "1") {
+  if (!useSteel && runtimeValue("MLX_BUN_CCE_NOSTEEL") !== "1") {
     // NOTE blockV0 = ceil(V/NBLK) can violate %32 even when V%32==0 (e.g. V=50304)
     const fails = [
       H % 32 !== 0 ? `H%32!=0 (H=${H})` : null,
@@ -1072,7 +1073,7 @@ export function flashCceForward(
     ].filter(Boolean).join(", ");
     warnSteelFallback("forward", fails, useSimd ? "simdgroup kernel" : "scalar/lane kernel");
   }
-  const useLane = !useSteel && !useSimd && process.env.MLX_BUN_CCE_LANE === "1" && WPR % 32 === 0;
+  const useLane = !useSteel && !useSimd && runtimeValue("MLX_BUN_CCE_LANE") === "1" && WPR % 32 === 0;
   const kernel = useSteel ? fwdSteelKernel(GS, head.bits) : useSimd ? fwdSgKernel() : useLane ? fwdLaneKernel() : fwdKernel();
   const tokTile = useSteel ? STEEL_BM : useSimd ? SG_BB : BLOCK_B;
   // steel + simdgroup read h as [M, H] (M on axis 0); lane + scalar read h TRANSPOSED
@@ -1178,11 +1179,11 @@ export function flashCceBackward(
   const blockV0 = Math.ceil(V / NBLK);
   // HTw == group_size for the phase-2 QuantizedBlockLoader (one group per H-tile); needs
   // H % GS == 0 (always, GR*GS=H) and GS % 32 == 0 (TNv = GS/32 frags per H-tile integral).
-  const useSteel = process.env.MLX_BUN_CCE_BWD_NOSTEEL !== "1" && H % 32 === 0 && V % 32 === 0 && blockV0 % 32 === 0 && H % GS === 0 && GS % 32 === 0;
+  const useSteel = runtimeValue("MLX_BUN_CCE_BWD_NOSTEEL") !== "1" && H % 32 === 0 && V % 32 === 0 && blockV0 % 32 === 0 && H % GS === 0 && GS % 32 === 0;
   // simdgroup_matrix phase-2 GEMM is the next tier (5512→3913 ms, 1.41×) when the H
   // tiling is clean; MLX_BUN_CCE_BWD_SCALAR=1 forces the float4 scalar kernel.
-  const useSg = !useSteel && process.env.MLX_BUN_CCE_BWD_SCALAR !== "1" && H % (SGN * 8) === 0 && H % SG_BD === 0;
-  if (!useSteel && process.env.MLX_BUN_CCE_BWD_NOSTEEL !== "1") {
+  const useSg = !useSteel && runtimeValue("MLX_BUN_CCE_BWD_SCALAR") !== "1" && H % (SGN * 8) === 0 && H % SG_BD === 0;
+  if (!useSteel && runtimeValue("MLX_BUN_CCE_BWD_NOSTEEL") !== "1") {
     // NOTE blockV0 = ceil(V/NBLK) can violate %32 even when V%32==0 (e.g. V=50304)
     const fails = [
       H % 32 !== 0 ? `H%32!=0 (H=${H})` : null,

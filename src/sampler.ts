@@ -112,6 +112,75 @@ export type Sampler = (logprobs: MlxArray, step: number) => MlxArray;
 /** (deviceTokens [n] | null, logits [1, V]) → logits [1, V]. */
 export type LogitsProcessor = (tokens: MlxArray | null, logits: MlxArray) => MlxArray;
 
+/** Optional arrays captured from the same post-processor logprobs used to
+ * sample a token. The caller controls readback timing and owns disposal. */
+export interface StepExtras {
+  sel: MlxArray | null;
+  topIdx: MlxArray | null;
+  topVals: MlxArray | null;
+}
+
+export interface StepSample<T> {
+  token: T;
+  extras: StepExtras | null;
+}
+
+interface StepGrammar {
+  readonly isTerminated: boolean;
+  ready(): Promise<void>;
+  applyMask(logits: MlxArray): MlxArray;
+  accept(token: number): void;
+}
+
+export interface StepSamplerOptions extends SamplerOptions, LogitsProcessorOptions {
+  grammar?: StepGrammar | null;
+}
+
+interface StepSamplerConfigBase {
+  /** The grammar owner already awaited ready(), or this sampler must do it. */
+  grammarWait: "external" | "before-sample";
+  /** Update processor history in sample(), or let the decode loop commit later. */
+  historyUpdate: "after-sample" | "manual";
+  initialHistory?: readonly number[];
+  captureSelectedLogprob?: boolean;
+  captureTopLogprobs?: number;
+  /** Eager-number mode can advance grammar after sampling. */
+  acceptGrammar?: boolean;
+  eosTokenIds?: readonly number[];
+  /** Reuse a sampler already shared with a speculative draft source. */
+  sampler?: Sampler;
+}
+
+export interface DeviceStepSamplerConfig extends StepSamplerConfigBase {
+  tokenRepresentation: "device";
+  grammarWait: "external";
+}
+
+export interface NumberStepSamplerConfig extends StepSamplerConfigBase {
+  tokenRepresentation: "number";
+  grammarWait: "before-sample";
+}
+
+export interface DeviceStepSampler {
+  readonly isPlainGreedy: boolean;
+  readonly needsHistory: boolean;
+  sample(logits: MlxArray, step: number): StepSample<MlxArray>;
+  seedHistory(tokens: readonly number[]): void;
+  commitDevice(token: MlxArray): void;
+  commitNumbers(tokens: readonly number[]): void;
+  dispose(): void;
+}
+
+export interface NumberStepSampler {
+  readonly isPlainGreedy: boolean;
+  readonly needsHistory: boolean;
+  sample(logits: MlxArray, step: number): Promise<StepSample<number>>;
+  seedHistory(tokens: readonly number[]): void;
+  commitDevice(token: MlxArray): void;
+  commitNumbers(tokens: readonly number[]): void;
+  dispose(): void;
+}
+
 const GOLDEN = 0x9e3779b97f4a7c15n;
 
 function stepKey(seed: number, step: number): MlxArray {
@@ -715,6 +784,209 @@ export function makeLogitsProcessors(opts: LogitsProcessorOptions = {}): LogitsP
   }
 
   return out;
+}
+
+/** Whether a whole [B,V] row can use the scheduler's vectorized argmax path. */
+export function isPlainGreedy(
+  opts: StepSamplerOptions,
+  hasProcessors = makeLogitsProcessors(opts).length > 0,
+): boolean {
+  return (opts.temperature ?? 0) === 0 && !opts.curve && !hasProcessors && !opts.grammar;
+}
+
+export function stepExtrasArrays(extras: StepExtras | null): MlxArray[] {
+  return extras
+    ? [extras.sel, extras.topIdx, extras.topVals].filter(
+        (array): array is MlxArray => array !== null,
+      )
+    : [];
+}
+
+export function disposeStepExtras(extras: StepExtras | null): void {
+  if (!extras) return;
+  extras.sel?.dispose();
+  extras.topIdx?.dispose();
+  extras.topVals?.dispose();
+}
+
+export function makeStepSampler(
+  options: StepSamplerOptions,
+  config: DeviceStepSamplerConfig,
+): DeviceStepSampler;
+export function makeStepSampler(
+  options: StepSamplerOptions,
+  config: NumberStepSamplerConfig,
+): NumberStepSampler;
+export function makeStepSampler(
+  options: StepSamplerOptions,
+  config: DeviceStepSamplerConfig | NumberStepSamplerConfig,
+): DeviceStepSampler | NumberStepSampler {
+  const sampler = config.sampler ?? makeSampler(options);
+  const processors = makeLogitsProcessors(options);
+  const grammar = options.grammar ?? null;
+  const captureSelected = config.captureSelectedLogprob === true;
+  const captureTop = Math.max(0, config.captureTopLogprobs ?? 0);
+  const capture = captureSelected || captureTop > 0;
+  let history: MlxArray | null = null;
+
+  const seedHistory = (tokens: readonly number[]): void => {
+    if (processors.length === 0) return;
+    const next = ops.fromInt32([...tokens], [tokens.length]);
+    const previous = history;
+    history = next;
+    previous?.dispose();
+  };
+
+  const commitDevice = (token: MlxArray): void => {
+    if (processors.length === 0) return;
+    const one = ops.reshape(token, [1]);
+    if (!history) {
+      history = one;
+      return;
+    }
+    const previous = history;
+    try {
+      history = ops.concatAxis([previous, one], 0);
+      previous.dispose();
+    } finally {
+      one.dispose();
+    }
+  };
+
+  const commitNumbers = (tokens: readonly number[]): void => {
+    if (tokens.length === 0 || processors.length === 0) return;
+    const next = ops.fromInt32([...tokens], [tokens.length]);
+    if (!history) {
+      history = next;
+      return;
+    }
+    const previous = history;
+    try {
+      history = ops.concatAxis([previous, next], 0);
+      previous.dispose();
+    } finally {
+      next.dispose();
+    }
+  };
+
+  const sampleDevice = (input: MlxArray, step: number): StepSample<MlxArray> => {
+    const vocab = input.shape[input.shape.length - 1]!;
+    let current = input.shape.length === 2 ? input : ops.reshape(input, [1, vocab]);
+    let ownsCurrent = current !== input;
+    let logprobs: MlxArray | null = null;
+    let token: MlxArray | null = null;
+    let extras: StepExtras | null = null;
+    try {
+      for (const processor of processors) {
+        const next = processor(history, current);
+        if (ownsCurrent && next !== current) current.dispose();
+        current = next;
+        ownsCurrent = current !== input;
+      }
+      if (grammar && !grammar.isTerminated) {
+        const next = grammar.applyMask(current);
+        if (ownsCurrent && next !== current) current.dispose();
+        current = next;
+        ownsCurrent = current !== input;
+      }
+      logprobs = toLogprobs(current);
+      if (ownsCurrent) current.dispose();
+      current = input;
+      ownsCurrent = false;
+      token = sampler(logprobs, step);
+
+      if (capture) {
+        extras = { sel: null, topIdx: null, topVals: null };
+        if (captureSelected) {
+          const idx = ops.reshape(token, [1, 1]);
+          try {
+            extras.sel = ops.takeAlongAxis(logprobs, idx, -1);
+          } finally {
+            idx.dispose();
+          }
+        }
+        if (captureTop > 0) {
+          const k = Math.min(captureTop, vocab);
+          let neg: MlxArray | null = null;
+          let partition: MlxArray | null = null;
+          let view: MlxArray | null = null;
+          try {
+            neg = ops.neg(logprobs);
+            partition = ops.argpartitionAxis(neg, k - 1, -1);
+            view = partition.slice([0, 0], [1, k]);
+            extras.topIdx = ops.contiguous(view);
+            extras.topVals = ops.takeAlongAxis(logprobs, extras.topIdx, -1);
+          } finally {
+            neg?.dispose();
+            partition?.dispose();
+            view?.dispose();
+          }
+        }
+      }
+
+      logprobs.dispose();
+      logprobs = null;
+      const result = { token, extras };
+      token = null;
+      extras = null;
+      return result;
+    } finally {
+      if (ownsCurrent) current.dispose();
+      logprobs?.dispose();
+      token?.dispose();
+      disposeStepExtras(extras);
+    }
+  };
+
+  if (config.initialHistory) seedHistory(config.initialHistory);
+
+  const common = {
+    isPlainGreedy: isPlainGreedy(options, processors.length > 0),
+    needsHistory: processors.length > 0,
+    seedHistory,
+    commitDevice,
+    commitNumbers,
+    dispose: () => {
+      history?.dispose();
+      history = null;
+    },
+  };
+
+  if (config.tokenRepresentation === "device") {
+    return {
+      ...common,
+      sample(logits, step) {
+        const result = sampleDevice(logits, step);
+        if (config.historyUpdate === "after-sample") commitDevice(result.token);
+        return result;
+      },
+    };
+  }
+
+  return {
+    ...common,
+    async sample(logits, step) {
+      if (grammar && !grammar.isTerminated) await grammar.ready();
+      const result = sampleDevice(logits, step);
+      let tokenArray: MlxArray | null = result.token;
+      try {
+        // Read the sampler's integer result directly. Adding an astype here
+        // would append work behind the next dispatched decode step.
+        const token = ops.itemUint32(tokenArray);
+        tokenArray.dispose();
+        tokenArray = null;
+        if (config.acceptGrammar && grammar && !config.eosTokenIds?.includes(token))
+          grammar.accept(token);
+        if (config.historyUpdate === "after-sample") commitNumbers([token]);
+        return { token, extras: result.extras };
+      } catch (error) {
+        disposeStepExtras(result.extras);
+        throw error;
+      } finally {
+        tokenArray?.dispose();
+      }
+    },
+  };
 }
 
 /** logits [1, V] → logprobs [1, V] (logits - logsumexp). */

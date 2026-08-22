@@ -225,6 +225,15 @@ export class Glm52Cache implements BatchableCache {
       throw new Error("native MTP cache cannot contain target DSA state");
   }
 
+  signature(): string {
+    if (this.role === "mtp") return "kv:mla:mtp";
+    return this.dsa ? "kv:mla:target:dsa" : "kv:mla:target";
+  }
+
+  bytesPerToken(): number {
+    return (this.kvLoraRank + this.ropeHeadDim + (this.dsa?.headDim ?? 0)) * 4;
+  }
+
   /** Append one equal-width row block without expanding it to per-head K/V. */
   append(latent: MlxArray, rope: MlxArray, dsa: MlxArray | null = null): void {
     const latentShape = latent.shape;
@@ -620,15 +629,16 @@ export class Glm52Cache implements BatchableCache {
     const nextWidth = this.offset - removablePad;
     const indices = ops.fromInt32([...keep], [keep.length]);
     const filterFamily = (array: MlxArray): MlxArray => {
-      const selected = ops.takeAxis(array, indices, 0);
-      if (removablePad === 0) return selected;
-      const view = selected.slice(
-        [0, removablePad, 0],
-        [keep.length, this.offset, array.shape[2]!],
-      );
-      const exact = ops.copyOf(view); // TRUE copy: see 2026-08-20 contiguous-view pin class
+      const trimmed = removablePad === 0
+        ? array
+        : array.slice(
+            [0, removablePad, 0],
+            [this.batchSize!, this.offset, array.shape[2]!],
+          );
+      const selected = ops.takeAxis(trimmed, indices, 0);
+      const exact = ops.copyOf(selected); // TRUE copy: see 2026-08-20 contiguous-view pin class
       selected.dispose();
-      view.dispose();
+      if (trimmed !== array) trimmed.dispose();
       return exact;
     };
 

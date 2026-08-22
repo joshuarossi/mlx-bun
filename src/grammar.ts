@@ -33,6 +33,7 @@ import xgrammar, {
 import { readFileSync } from "node:fs";
 import { MlxArray } from "./mlx/array";
 import * as ops from "./mlx/ops";
+import { runtimeValue } from "./runtime-config";
 import type { LoadedTokenizer } from "./tokenizer";
 
 /** The request shape — the union of every structured-output field name across
@@ -581,5 +582,5 @@ function resolveGrammarRequest(req: GrammarRequest):
  *  (requests degrade to prompt injection). Matches the project's envelope-gated
  *  kill-switch discipline (MLX_BUN_COMPILED_DECODE, MLX_BUN_GRAMMAR_BATCH, …). */
 export function grammarEnabled(): boolean {
-  return process.env.MLX_BUN_GRAMMAR !== "0";
+  return runtimeValue("MLX_BUN_GRAMMAR") !== "0";
 }

@@ -15,6 +15,7 @@ import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import { expertOffloadArray } from "../expert-offload";
 import * as tq from "../mlx/turboquant-ops";
+import { runtimeValue } from "../runtime-config";
 
 export type MaskMode = "" | "causal";
 export interface Mask {
@@ -53,6 +54,15 @@ export class LoraState {
   dropoutSeed: number | null = null;
 }
 
+/** Replaceable quantized payload. Inference sees this as read-only through
+ *  QuantizedLinear getters; sensitivity analysis exchanges it atomically. */
+export interface QuantizedLinearState {
+  w: MlxArray;
+  scales: MlxArray;
+  biases: MlxArray | null;
+  spec: ops.QuantSpec;
+}
+
 /** Inverted LoRA-input dropout, keyed by (seed, id) so it is deterministic —
  *  the same (seed, id, shape) reproduces the mask, which is what makes the
  *  segmented / gradient-checkpoint recompute correct. kept ⇒ x/(1-p),
@@ -79,18 +89,48 @@ export class QuantizedLinear {
   /** Stable per-target index for keying training-only LoRA dropout (set by
    *  attachForTraining). Gives each adapted linear an independent dropout mask. */
   dropoutId = 0;
+  private _w: MlxArray;
+  private _scales: MlxArray;
+  private _biases: MlxArray | null;
+  private _spec: ops.QuantSpec;
 
   constructor(
-    readonly w: MlxArray,
-    readonly scales: MlxArray,
-    readonly biases: MlxArray | null,
-    readonly spec: ops.QuantSpec,
+    w: MlxArray,
+    scales: MlxArray,
+    biases: MlxArray | null,
+    spec: ops.QuantSpec,
     /** ADDITIVE bias term (`.bias`, mlx nn.QuantizedLinear's optional bias —
      *  qwen2 qkv, starcoder2, …). Distinct from `biases`, the quantization
      *  zero-points. Applied after the matmul, before any LoRA residual,
      *  exactly like mlx's QuantizedLinear.__call__. */
     readonly bias: MlxArray | null = null,
-  ) {}
+  ) {
+    this._w = w;
+    this._scales = scales;
+    this._biases = biases;
+    this._spec = spec;
+  }
+
+  get w(): MlxArray { return this._w; }
+  get scales(): MlxArray { return this._scales; }
+  get biases(): MlxArray | null { return this._biases; }
+  get spec(): ops.QuantSpec { return this._spec; }
+
+  /** Atomically install a quantized payload and return the previous one.
+   *  This is the sole mutation capability used by sensitivity sweeps. */
+  exchangeQuantizedState(next: QuantizedLinearState): QuantizedLinearState {
+    const previous = {
+      w: this._w,
+      scales: this._scales,
+      biases: this._biases,
+      spec: this._spec,
+    };
+    this._w = next.w;
+    this._scales = next.scales;
+    this._biases = next.biases;
+    this._spec = next.spec;
+    return previous;
+  }
 
   static load(weights: Weights, path: string, config: ModelConfig): QuantizedLinear {
     if (!weights.has(`${path}.scales`))
@@ -109,14 +149,21 @@ export class QuantizedLinear {
   /** (in_features, out_features) from the quantized tensors (reference
    *  _infer_linear_shape: scales are [out, in/group_size]). */
   get inFeatures(): number {
-    return this.scales.shape[1]! * this.spec.groupSize;
+    return this._scales.shape[1]! * this._spec.groupSize;
   }
   get outFeatures(): number {
-    return this.scales.shape[0]!;
+    return this._scales.shape[0]!;
   }
 
   forward(x: MlxArray): MlxArray {
-    let out = ops.quantizedMatmul(x, this.w, this.scales, this.biases, this.spec, true);
+    let out = ops.quantizedMatmul(
+      x,
+      this._w,
+      this._scales,
+      this._biases,
+      this._spec,
+      true,
+    );
     // Additive bias (mlx QuantizedLinear: `x = x + self["bias"]`), before
     // the LoRA residual (LoRALinear calls the base linear bias-inclusive).
     if (this.bias) out = disposing(out, ops.add(out, this.bias));
@@ -216,6 +263,15 @@ export type SharedKv =
 
 export interface Cache {
   offset: number;
+  /** Stable storage identity for compatibility guards and persistence. */
+  signature?(): string;
+  /** Physical cache storage consumed by one additional token for one row.
+   *  Recurrent caches return 0 because their state does not grow with the
+   *  sequence. Optional for stateless/training adapters that are never
+   *  admitted or persisted. */
+  bytesPerToken?(): number;
+  /** state() returned temporary views that the caller must release. */
+  readonly stateNeedsDispose?: boolean;
   /** Compiled-decode trace adapters expose the RoPE offset as an int32
    *  array input here; real caches leave it unset (static int path). */
   readonly ropeOffsetArr?: MlxArray;
@@ -244,6 +300,41 @@ export interface Cache {
   specRoundCommit?(): void;
   specRoundRollback?(keep: number): void;
   dispose(): void;
+}
+
+export function cacheSignature(cache: Cache | undefined): string {
+  return cache?.signature?.() ?? "unknown";
+}
+
+export interface RowBatchCache extends Cache {
+  readonly batchSize: number;
+  filterRows(keep: readonly number[]): void;
+  extractRow(row: number): Cache | null;
+}
+
+export function isRowBatchCache(cache: Cache): cache is RowBatchCache {
+  const candidate = cache as Partial<RowBatchCache>;
+  return typeof candidate.batchSize === "number" &&
+    typeof candidate.filterRows === "function" &&
+    typeof candidate.extractRow === "function";
+}
+
+export function isPlainKvCache(cache: Cache | undefined): cache is KVCache {
+  return cacheSignature(cache) === "kv:plain";
+}
+
+export function isQuantizedKvCache(cache: Cache | undefined): cache is QuantizedKVCache {
+  return cacheSignature(cache).startsWith("kv:quant:");
+}
+
+export function isRotatingPlainCache(cache: Cache | undefined): cache is RotatingKVCache {
+  return cacheSignature(cache) === "kv:rotating-plain";
+}
+
+export function isRotatingQuantizedCache(
+  cache: Cache | undefined,
+): cache is RotatingQuantizedKVCache {
+  return cacheSignature(cache).startsWith("kv:rotating-quant:");
 }
 
 /**
@@ -307,6 +398,13 @@ export class KVCache implements Cache {
   keys: MlxArray | null = null;
   values: MlxArray | null = null;
   offset = 0;
+
+  signature(): string { return "kv:plain"; }
+
+  bytesPerToken(): number {
+    const steps = this.keys?.shape[2] ?? 0;
+    return steps > 0 ? (this.keys!.nbytes + this.values!.nbytes) / steps : 0;
+  }
 
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
     const prev = this.offset;
@@ -480,6 +578,18 @@ export class QuantizedKVCache implements Cache {
   offset = 0;
 
   constructor(readonly groupSize: number, readonly bits: number) {}
+
+  signature(): string { return `kv:quant:${this.bits}:${this.groupSize}`; }
+
+  bytesPerToken(): number {
+    const steps = this.keys?.packed.shape[2] ?? 0;
+    if (steps === 0 || !this.keys || !this.values) return 0;
+    const tensors = [
+      this.keys.packed, this.keys.scales, this.keys.biases,
+      this.values.packed, this.values.scales, this.values.biases,
+    ];
+    return tensors.reduce((bytes, array) => bytes + array.nbytes, 0) / steps;
+  }
 
   updateAndFetch(): [MlxArray, MlxArray] {
     throw new Error("QuantizedKVCache: use updateAndFetchQuantized");
@@ -691,6 +801,13 @@ export class RotatingKVCache implements Cache {
 
   constructor(maxSize: number) {
     this.maxSize = maxSize;
+  }
+
+  signature(): string { return "kv:rotating-plain"; }
+
+  bytesPerToken(): number {
+    const steps = this.keys?.shape[2] ?? 0;
+    return steps > 0 ? (this.keys!.nbytes + this.values!.nbytes) / steps : 0;
   }
 
   /** v with ring contents rearranged into temporal order (keep=0). */
@@ -1021,6 +1138,18 @@ export class RotatingQuantizedKVCache implements Cache {
 
   constructor(maxSize: number, readonly groupSize: number, readonly bits: number) {
     this.maxSize = maxSize;
+  }
+
+  signature(): string { return `kv:rotating-quant:${this.bits}:${this.groupSize}`; }
+
+  bytesPerToken(): number {
+    const steps = this.keys?.packed.shape[2] ?? 0;
+    if (steps === 0 || !this.keys || !this.values) return 0;
+    const tensors = [
+      this.keys.packed, this.keys.scales, this.keys.biases,
+      this.values.packed, this.values.scales, this.values.biases,
+    ];
+    return tensors.reduce((bytes, array) => bytes + array.nbytes, 0) / steps;
   }
 
   updateAndFetch(): [MlxArray, MlxArray] {
@@ -1408,6 +1537,7 @@ export const disposeTurboQuant = (t: TurboQuantTensor): void => {
  *  a full-window dequant every step; the deferred-InvFWHT trick is a
  *  documented non-goal until the quality gate passes. */
 export class TurboQuantKVCache implements Cache {
+  readonly stateNeedsDispose = true;
   static readonly STEP = 256;
   /** Set only by compiled-decode trace adapters (see Cache) — TurboQuant
    *  is not a compiled-decode participant in v1 (novel class, monolith
@@ -1420,6 +1550,17 @@ export class TurboQuantKVCache implements Cache {
   #headDim: number | null = null;
 
   constructor(readonly kBits: number, readonly vBits: number) {}
+
+  signature(): string { return `kv:turboquant:${this.kBits}:${this.vBits}`; }
+
+  bytesPerToken(): number {
+    const steps = this.#seqLen();
+    if (steps === 0 || !this.#kv) return 0;
+    return [
+      this.#kv.kIdx, this.#kv.kScales, this.#kv.kZeros,
+      this.#kv.vPacked, this.#kv.vScales,
+    ].reduce((bytes, array) => bytes + array.nbytes, 0) / steps;
+  }
 
   get headDim(): number | null {
     return this.#headDim;
@@ -1941,7 +2082,7 @@ function fusedSdpaSupported(q: MlxArray, mask: Mask, groupSize: number, bits: nu
   // stock unfused path everywhere. Also the A/B lever for
   // scripts/bench-fused-prefill.ts. Read per call (cheap next to the
   // FFI work) so tests and paired A/B harnesses can flip it in-process.
-  if (process.env.MLX_BUN_NO_FUSED_SDPA === "1") return false;
+  if (runtimeValue("MLX_BUN_NO_FUSED_SDPA") === "1") return false;
   if (bits !== 4 && bits !== 8) return false;
   if (groupSize !== 32 && groupSize !== 64 && groupSize !== 128) return false;
   if (q.dtype !== Dtype.bfloat16 && q.dtype !== Dtype.float16) return false;
@@ -1983,7 +2124,7 @@ export function quantizedSdpa(
  *  as a compile-time constant and call this for the rest. The combined
  *  predicate is exactly fusedSdpaSupported. */
 export function fusedSdpaRuntimeOk(q: MlxArray, mask: Mask): boolean {
-  if (process.env.MLX_BUN_NO_FUSED_SDPA === "1") return false;
+  if (runtimeValue("MLX_BUN_NO_FUSED_SDPA") === "1") return false;
   if (q.dtype !== Dtype.bfloat16 && q.dtype !== Dtype.float16) return false;
   if (mask.mode === "causal" || mask.mode === "") return true;
   if (mask.mode === "array")

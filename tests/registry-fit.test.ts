@@ -104,6 +104,9 @@ describe("fit", () => {
   test("max safe context honors the budget", () => {
     const m = { name: "x", ramBytes: 24 * 2 ** 30, bandwidthGBs: 273 };
     const r = fit(config, weights, 4096, m);
+    expect(r.strategy).toBe("generic-kv");
+    expect(r.weightsBytes + r.kvBytes + r.transientBytes + r.reserveBytes)
+      .toBe(r.totalBytes);
     expect(r.maxSafeContext).toBeGreaterThan(4096);
     // verify the solved context actually fits
     const atMax = fit(config, weights, r.maxSafeContext, m);
