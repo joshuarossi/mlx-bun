@@ -20,6 +20,7 @@ import {
   runSynthesizeStage,
 } from "../../src/memory/stages";
 import type { SynthesisCall } from "../../src/memory/synthesize";
+import { configureRuntime } from "../../src/runtime-config";
 
 function state(store: MemoryStore) {
   const q = (sql: string) => (store.db.query(sql).get() as { n: number }).n;
@@ -38,7 +39,7 @@ async function main(): Promise<void> {
   await writeFile(join(root, "Meta", "Entities.md"), "# Entities\n");
   await writeFile(join(root, "Meta", "Chunking.md"), "# Chunking\n\nSplit a conversation into single-topic chunks.\n");
   await writeFile(join(root, "Meta", "Topics_to_Ignore.md"), "# Topics to Ignore\n\nNothing for this demo.\n");
-  process.env.MLX_BUN_WIKI = root;
+  configureRuntime({ MLX_BUN_WIKI: root });
   const store = new MemoryStore(":memory:");
 
   // Seed 4 conversations (out-of-order updated_at) each with 6 messages, NOT yet

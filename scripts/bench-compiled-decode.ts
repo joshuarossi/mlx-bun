@@ -11,6 +11,7 @@
 
 import { SNAPSHOT } from "../tests/paths";
 import { peakMemory, resetPeakMemory, clearCache } from "../src/mlx/ffi";
+import { configureRuntime } from "../src/runtime-config";
 
 const SMOKE = process.argv.includes("--smoke");
 const N_PAIRS = SMOKE ? 1 : 3;
@@ -48,17 +49,22 @@ for (const [name, dir, contexts] of PLAN) {
     const promptIds = [2, ...Array.from({ length: CTX - 1 }, (_, i) => 2000 + (i % 500))];
 
     const runArm = async (compiled: boolean): Promise<{ decodeTps: number; peak: number }> => {
-      process.env.MLX_BUN_COMPILED_DECODE = compiled ? "1" : "0";
-      resetPeakMemory();
-      const gen = generate(model, promptIds, {
-        maxTokens: DECODE_TOKENS, temperature: 0, eosTokenIds: [],
-        kvConfig: config.kvQuant ?? undefined,
-        quantizedKvStart: config.kvQuant?.length ? 0 : undefined,
+      const restoreRuntime = configureRuntime({
+        MLX_BUN_COMPILED_DECODE: compiled ? "1" : "0",
       });
-      for await (const _ of gen) { /* drain */ }
-      clearCache();
-      delete process.env.MLX_BUN_COMPILED_DECODE;
-      return { decodeTps: gen.stats!.decodeTps, peak: peakMemory() };
+      try {
+        resetPeakMemory();
+        const gen = generate(model, promptIds, {
+          maxTokens: DECODE_TOKENS, temperature: 0, eosTokenIds: [],
+          kvConfig: config.kvQuant ?? undefined,
+          quantizedKvStart: config.kvQuant?.length ? 0 : undefined,
+        });
+        for await (const _ of gen) { /* drain */ }
+        clearCache();
+        return { decodeTps: gen.stats!.decodeTps, peak: peakMemory() };
+      } finally {
+        restoreRuntime();
+      }
     };
 
     await runArm(false); // warm both paths (kernels, closures)

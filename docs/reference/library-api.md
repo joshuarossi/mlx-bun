@@ -8,7 +8,7 @@ admission — is importable directly into a Bun process. Published as
 
 One rule everywhere: **one generation at a time per process** (one GPU).
 The server serializes through a queue (or, under `--batch N`, its
-continuous-batching scheduler — a server-lane feature, not a library
+continuous scheduler — a server scheduling mechanism, not a library
 surface); direct library callers must do the same.
 
 ## Quick start
@@ -48,6 +48,46 @@ console.log(gen.stats);                          // set once iteration ends
 Ordinary safetensors loading is lazy (mmap + mlx native loader). GLM-5.2 first
 runs its header-only exact process equation, then opens the bounded Colibri
 resident/expert tiers; impossible plans fail before either tier is committed.
+
+## Model profiles
+
+`openModel()` and `loadContext()` resolve a declared model profile before they
+open weights. `loadContext()` exposes that decision as `ctx.profile`, including
+the exact external fingerprint when the path is an immutable Hugging Face
+snapshot:
+
+```ts
+const ctx = await loadContext(dir);
+console.log(ctx.profile.profile.id);
+console.log(ctx.profile.artifact.fingerprint); // hf:<org>/<repo>@<revision> or null
+console.log(ctx.profile.profile.fidelity);
+console.log(ctx.profile.profile.execution);    // loader + graph + loop + specialization
+```
+
+Direct library construction can resolve and pass the same immutable value:
+
+```ts
+import { loadModelConfig, Weights, resolveModelProfile, createModel } from "mlx-bun";
+
+const config = await loadModelConfig(dir);
+const profile = resolveModelProfile(config);
+const model = createModel(await Weights.open(dir), config, profile);
+```
+
+For a local artifact that is not stored under an immutable HF snapshot path, an
+application may supply its own provenance fingerprint and exact declaration via
+`resolveModelProfile(config, { artifactFingerprint, artifactProfiles })`.
+Declarations use the exported `ArtifactModelProfile`, `FidelityTarget`,
+`EngineCapability`, and `ModelExecutionComposition` types. The resolver checks
+the declared config fingerprint (compute it with exported
+`configFingerprint(config)`) and required engine capabilities. An exact match
+that fails either check refuses instead of taking the family or generic
+fallback.
+
+Profile selection is limited to model construction. Generation options remain
+authoritative: passing mixed `kvConfig`, TurboQuant KV, adapters, grammar,
+sampling, or an explicitly configured draft method is not rewritten by the
+profile.
 
 > **First run:** library consumers bypass the CLI's first-run step, so
 > call `await ensureNativeRuntime()` once before constructing a model on

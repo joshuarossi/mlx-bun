@@ -24,6 +24,7 @@ import type { MlxArray } from "../../src/mlx/array";
 import * as ops from "../../src/mlx/ops";
 import { clearCache } from "../../src/mlx/ffi";
 import { generate } from "../../src/generate";
+import { configureRuntime } from "../../src/runtime-config";
 
 const arg = (name: string, dflt: string): string => {
   const i = process.argv.indexOf(name);
@@ -35,7 +36,7 @@ const PROMPT_TOKENS = Number(arg("--prompt-tokens", "128"));
 const STEPS = Number(arg("--steps", "128"));
 // --compiled: gemma4 dense only (mirrors generateInner's gate)
 const COMPILED = process.argv.includes("--compiled");
-process.env.MLX_BUN_COMPILED_DECODE = COMPILED ? "1" : "0";
+configureRuntime({ MLX_BUN_COMPILED_DECODE: COMPILED ? "1" : "0" });
 
 const config = await loadModelConfig(MODEL_DIR);
 const weights = await Weights.open(MODEL_DIR);

@@ -25,6 +25,7 @@ import * as ops from "../src/mlx/ops";
 import { Database } from "bun:sqlite";
 import { mkdirSync, existsSync, readdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
+import { configureRuntime } from "../src/runtime-config";
 
 const { Registry } = await import("../src/registry");
 const { loadModelConfig } = await import("../src/config");
@@ -48,7 +49,7 @@ const SEQS_PER_SHARD = parseInt(arg("seqs-per-shard", "64"), 10);
 const GAMMA_MIN = parseInt(arg("gamma-min", "6"), 10);
 const LIMIT = parseInt(arg("limit", "100000"), 10);
 const AUDIT = parseInt(arg("audit", "0"), 10);
-process.env.MLX_BUN_WIKI = WIKI; // loadMetaPolicy reads <vault>/Meta/*
+configureRuntime({ MLX_BUN_WIKI: WIKI }); // loadMetaPolicy reads <vault>/Meta/*
 
 const dir = new Registry().resolve(MODEL).path;
 const config = await loadModelConfig(dir);

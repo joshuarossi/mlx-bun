@@ -111,7 +111,10 @@ describe.skipIf(!optIn || !haveCpm)("batch containment + drain (CPM)", async () 
     const inflight = new Set<Promise<void>>();
     const launch = (i: number): void => {
       const p = gw
-        .run(PROMPTS[i % PROMPTS.length]!, opts, () => {}, undefined, batchShape)
+        .run(
+          PROMPTS[i % PROMPTS.length]!, opts, () => {}, undefined,
+          batchShape, gw.place(batchShape),
+        )
         .then(() => {
           batchedDone++;
           if (!stop) launch(i + 1);
@@ -124,8 +127,10 @@ describe.skipIf(!optIn || !haveCpm)("batch containment + drain (CPM)", async () 
     // Let the batch actually form before the serial request queues.
     while (batchedDone < 2) await new Promise((r) => setTimeout(r, 20));
 
+    const serialShape = { ...batchShape, userSeed: true };
     const serial = gw.run(
-      PROMPTS[0]!, opts, () => {}, undefined, { ...batchShape, userSeed: true },
+      PROMPTS[0]!, opts, () => {}, undefined,
+      serialShape, gw.place(serialShape),
     );
     const done = await Promise.race([
       serial.then(() => "serial" as const),
@@ -136,7 +141,10 @@ describe.skipIf(!optIn || !haveCpm)("batch containment + drain (CPM)", async () 
 
     // Resume: batchable traffic still completes after the serial run (kick()).
     const before = batchedDone;
-    const resumed = gw.run(PROMPTS[1]!, opts, () => {}, undefined, batchShape);
+    const resumed = gw.run(
+      PROMPTS[1]!, opts, () => {}, undefined,
+      batchShape, gw.place(batchShape),
+    );
     const rs = await resumed;
     expect(rs.generatedTokens).toBeGreaterThan(0);
     expect(batchedDone).toBeGreaterThanOrEqual(before);

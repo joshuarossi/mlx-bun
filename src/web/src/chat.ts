@@ -142,6 +142,7 @@ interface AssistantMsgState {
   t0: number;
   tFirst: number;
   tokens: number;
+  settled: boolean;
   blockState: BlockState;
   scheduleText: () => void;
   scheduleThinking: () => void;
@@ -373,7 +374,7 @@ export function createChatController() {
     const meta = el("div", "meta", m);
     curAssistant = {
       m, bubble, thinkBox, thinkBody, textNode, cursor, meta, tools: new Map(),
-      text: "", thinking: "", t0: performance.now(), tFirst: 0, tokens: 0,
+      text: "", thinking: "", t0: performance.now(), tFirst: 0, tokens: 0, settled: false,
       // Block-memoization state (see renderBlocksIncremental) for the main
       // markdown text stream, plus a shared rAF scheduler so a burst of
       // deltas within one frame (e.g. spec-decode emitting several tokens
@@ -390,11 +391,16 @@ export function createChatController() {
     // Consumed — a later turn with no RAG'd attachments must not inherit
     // this turn's citation set (see the pendingCitations declaration above).
     pendingCitations = [];
-    curAssistant.scheduleText = makeFrameScheduler(
-      () => renderBlocksIncremental(curAssistant!.textNode, curAssistant!.text, curAssistant!.blockState),
+    const assistant = curAssistant;
+    assistant.scheduleText = makeFrameScheduler(
+      () => {
+        if (!assistant.settled) renderBlocksIncremental(assistant.textNode, assistant.text, assistant.blockState);
+      },
       atBottom, stick);
-    curAssistant.scheduleThinking = makeFrameScheduler(
-      () => { curAssistant!.thinkBody.textContent = curAssistant!.thinking; },
+    assistant.scheduleThinking = makeFrameScheduler(
+      () => {
+        if (!assistant.settled) assistant.thinkBody.textContent = assistant.thinking;
+      },
       atBottom, stick);
     stick(true);
   }
@@ -612,6 +618,7 @@ export function createChatController() {
    *  directly on the full string. */
   function finishStreaming(a: AssistantMsgState | null): void {
     if (!a) return;
+    a.settled = true;
     // Preserve any Canvas Preview toggle the user made mid-stream (Principle
     // 9: this full non-memoized re-render must not throw away user
     // interaction state) — mdCodeBlock always emits qualifying fences back

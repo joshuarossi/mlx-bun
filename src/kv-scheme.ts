@@ -129,13 +129,18 @@ export class KvScheme {
     return this.kind === "turbo" ? {} : { ...this.options };
   }
 
-  /** The current batch engine accepts only per-layer affine schemes. */
-  batchable(config: ModelConfig): boolean {
+  /** The current batch engine accepts only per-layer affine schemes whose
+   * named cache instances can perform the required conversion. The capability
+   * probe is mandatory for quantized schemes so config shape alone can never
+   * authorize placement. */
+  batchable(config: ModelConfig, canConvert?: (layerIdx: number) => boolean): boolean {
     if (this.kind === "bf16") return true;
     if (this.kind !== "affine-config") return false;
+    if (!canConvert) return false;
     return this.options.kvConfig!.every((entry) => {
       if (entry.layerIdx < 0 || entry.layerIdx >= config.text.numHiddenLayers) return false;
-      return (config.text.layerTypes[entry.layerIdx] ?? "full_attention") !== "linear_attention";
+      return (config.text.layerTypes[entry.layerIdx] ?? "full_attention") !== "linear_attention" &&
+        canConvert(entry.layerIdx);
     });
   }
 }

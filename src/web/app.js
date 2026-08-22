@@ -3496,15 +3496,21 @@ function createChatController() {
       t0: performance.now(),
       tFirst: 0,
       tokens: 0,
+      settled: false,
       blockState: { blocks: [] },
       scheduleText: () => {},
       scheduleThinking: () => {},
       citations: pendingCitations
     };
     pendingCitations = [];
-    curAssistant.scheduleText = makeFrameScheduler(() => renderBlocksIncremental(curAssistant.textNode, curAssistant.text, curAssistant.blockState), atBottom, stick);
-    curAssistant.scheduleThinking = makeFrameScheduler(() => {
-      curAssistant.thinkBody.textContent = curAssistant.thinking;
+    const assistant = curAssistant;
+    assistant.scheduleText = makeFrameScheduler(() => {
+      if (!assistant.settled)
+        renderBlocksIncremental(assistant.textNode, assistant.text, assistant.blockState);
+    }, atBottom, stick);
+    assistant.scheduleThinking = makeFrameScheduler(() => {
+      if (!assistant.settled)
+        assistant.thinkBody.textContent = assistant.thinking;
     }, atBottom, stick);
     stick(true);
   }
@@ -3670,6 +3676,7 @@ function createChatController() {
   function finishStreaming(a) {
     if (!a)
       return;
+    a.settled = true;
     const previewIdx = captureCanvasViewStates(a.textNode);
     a.textNode.innerHTML = mdToHtml(a.text);
     restoreCanvasViewStates(a.textNode, previewIdx);

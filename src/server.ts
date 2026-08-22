@@ -65,7 +65,8 @@ import {
   GLM52_G5_MEASURED_WARM_DECODE_TPS,
   type Glm52MemoryPlan,
 } from "./model/glm52-memory";
-import { isGlm52Config, isMiniCPM5Config } from "./model/support";
+import { isMiniCPM5Config } from "./model/support";
+import { resolveModelProfile, type ResolvedModelProfile } from "./model/profile";
 import { Glm52NativeMtpProvider } from "./spec/glm52-mtp-source";
 import {
   generate,
@@ -85,11 +86,16 @@ import type { HlgConfig } from "./sampler";
 import { isMonotone, CURVE_UMIN, type CurveParams } from "./curve-sampler";
 const CURVE_PAGE = curveDesignerHtml as unknown as string;
 import { GenerationGateway } from "./serve/generation-gateway";
-import { recordLane, type Lane } from "./serve/lane-registry";
+import {
+  CompletionExecutor,
+  CompletionRejected,
+  prepareCompletion,
+  type CompletionSummary,
+  type PreparedCompletion,
+} from "./serve/completion-executor";
 import { handleAdminRoute } from "./serve/admin-routes";
 import { handleAuxiliaryRoute } from "./serve/aux-routes";
 import {
-  CompletionSink,
   createTimedFlowControl,
   type CompletionEvent,
   type CompletionStreamProtocol,
@@ -97,7 +103,7 @@ import {
 import { createDiscoveryRoutes } from "./serve/discovery-routes";
 import { handleLabRoute } from "./serve/lab-routes";
 import { handleModelAdminRoute } from "./serve/model-admin-routes";
-import { planRequest, RequestOwnership } from "./serve/request-plan";
+import { RequestOwnership } from "./serve/request-plan";
 import { handleStaticRoute } from "./serve/static-routes";
 const STATIC_ROUTE_ASSETS = {
   appPage: APP_PAGE,
@@ -156,12 +162,10 @@ export interface ServerOptions {
    *  evict; a request over the budget alone is rejected. Unset = no
    *  aggregate cap (per-request admission via memoryBudget still applies). */
   kvBudgetBytes?: number;
-  /** KV quantization override. When unset: apply ctx.kvConfig (mixed
-   *  per-layer) for serial serving, but bf16 under `--batch N` (the batched
-   *  engine is bf16-only — a mode switch, see `batch` below). "config" forces
-   *  the model's kv_config even under batching (those requests then route to
-   *  the serial path); "off" forces bf16; a number forces uniform bits
-   *  (group size 64, start 0) ignoring the config file. */
+  /** KV quantization override. Unset/"off" is bf16. "config" applies the
+   *  model's declared mixed-precision kv_config; supported per-layer schemes
+   *  compose with continuous scheduling. A number forces uniform bits
+   *  (group size 64, start 0) and uses the preserved serial executor. */
   kvQuant?: "off" | "config" | number;
   /** TurboQuant scheme (docs/design/turboquant-kv.md): a separate axis from
    *  kvQuant above, mutually exclusive with it (`--kv-quant turbo[:k<bits>v
@@ -217,12 +221,9 @@ export interface ServerOptions {
    *  mlx_lm.server's flag; its default there is 512 — ours stays 65,536 so
    *  thinking traces never truncate. `--max-tokens 512` = mlx-lm behavior. */
   defaultMaxTokens?: number;
-  /** Max concurrent requests batched through the mlx-lm-parity engine
-   *  (`--batch N`). Default 8 (continuous batching, B floats 1..N,
-   *  bit-parity with mlx-lm B=N); `--batch 1` pins the serialized
-   *  single-queue path — a mode switch, not a load-dependent
-   *  fallback. See docs/design/parallel-slots.md. NOTE: the batched executor
-   *  is mid-build; until it lands, >1 warns and runs serially. */
+  /** Continuous-scheduler concurrency cap (`--batch N`). Default 8; the
+   *  scheduler specializes active B=1 and B=N with mlx-lm parity at the same
+   *  composition. `--batch 1` pins the preserved strict serial executor. */
   batch?: number;
   /** HLG tone-curve sampling default (set via --hlg-sampling on + sub-knobs).
    *  A per-request `hlg` object overrides it field-by-field. Off when unset. */
@@ -251,6 +252,9 @@ export interface ServerOptions {
 
 export interface ServerContext {
   model: RuntimeModel;
+  /** Declared external artifact/family profile that selected model
+   * construction. Request-level methods are resolved separately. */
+  profile: ResolvedModelProfile;
   tokenizer: LoadedTokenizer;
   template: ChatTemplate;
   modelId: string;
@@ -370,7 +374,8 @@ export async function loadContext(
   opts: LoadContextOptions = {},
 ): Promise<ServerContext> {
   const config = await loadModelConfig(modelDir);
-  const glm = isGlm52Config(config);
+  const profile = resolveModelProfile(config);
+  const glm = profile.profile.execution.loader === "colibri";
   // Bundled MTP companion: `--draft-kind mtp` with no --draft-model resolves
   // to the artifact's own mtp/ subfolder (single-repo packaging — the
   // companion is a complete model dir the provider already loads). Explicit
@@ -426,9 +431,7 @@ export async function loadContext(
         `${(opts.memoryBudgetBytes / 1e9).toFixed(2)} GB`,
       );
   }
-  // generated-specialization dispatch by config fingerprint (Phase C);
-  // unmatched configs run the monolith — slow, never broken
-  if (!glm) model = createModel(weights!, config);
+  if (!glm) model = createModel(weights!, config, profile);
   const tokenizer = await loadTokenizer(modelDir);
   // Generation must stop on the tokenizer's eos_token — the chat turn
   // terminator (e.g. Qwen <|im_end|> = 248046). Some configs (Qwen3.5-4B)
@@ -572,6 +575,7 @@ export async function loadContext(
   return {
     draft,
     model,
+    profile,
     glmMemoryPlan,
     adapters: new AdapterManager(model),
     kvConfig: config.kvQuant,
@@ -1309,7 +1313,8 @@ export function parseLogitBias(
 
 /** Default seed for a request that didn't pin one. `Date.now()` alone is NOT
  *  request-unique: under `--batch N` the batch lane serves ONLY default-seed
- *  requests (explicit-seed requests route serial, see GenerationGateway.willBatch),
+ *  requests (explicit-seed requests use the serial mechanism, see
+ *  GenerationGateway.place),
  *  so two identical prompts arriving in the same millisecond would share a seed
  *  and — with per-row RNG keyed as stepKey(seed, generatedCount) — produce
  *  byte-identical completions, silently collapsing best-of-N diversity. Mix a
@@ -1419,70 +1424,6 @@ export function validateReasoningEffort(body: {
     return "reasoning_effort must be one of " +
       "'none', 'minimal', 'low', 'medium', 'high', 'xhigh'";
   return null;
-}
-
-/** Collects per-token logprob info and shapes mlx_lm.server's response block
- *  (server.py generate_response L1317-1327). NOT OpenAI's shape — entries
- *  carry token *ids* (and raw vocab token strings in the top-k form), and the
- *  SAME block is attached under choices[0].logprobs for chat AND text
- *  completions:
- *  - top_logprobs > 0 → {content: [{id, token, logprob,
- *      top_logprobs: [{id, token, logprob}, …]}, …]} — each entry is the
- *      top-1 candidate merged with its own top-k list (`dict(i[0],
- *      top_logprobs=i)`); mlx-lm leaves argpartition order unspecified, we
- *      sort descending, so the entry is deterministically the argmax.
- *  - logprobs=true (and top_logprobs ≤ 0) → {content: [{id, logprob}, …]}
- *      with the SAMPLED token's logprob.
- *  When both are set, only the top_logprobs form is emitted (the reference's
- *  if/elif). Stream chunks never carry logprobs — mlx-lm's streaming
- *  generate_response calls pass no token_logprobs/top_tokens. */
-class LogprobsCollector {
-  readonly #tokens: number[] = [];
-  readonly #tokenLogprobs: number[] = [];
-  readonly #topTokens: { id: number; token: string; logprob: number }[][] = [];
-
-  constructor(
-    private readonly wantLogprobs: boolean,
-    private readonly topK: number,
-    private readonly idToToken: (id: number) => string,
-  ) {}
-
-  get active(): boolean {
-    return this.wantLogprobs || this.topK > 0;
-  }
-
-  push(token: number, info?: TokenLogprobs): void {
-    if (!this.active) return;
-    this.#tokens.push(token);
-    if (this.wantLogprobs) this.#tokenLogprobs.push(info?.logprob ?? NaN);
-    if (this.topK > 0)
-      this.#topTokens.push(
-        (info?.top ?? []).map((t) => ({
-          id: t.id,
-          token: this.idToToken(t.id),
-          logprob: t.logprob,
-        })),
-      );
-  }
-
-  /** choices[0].logprobs value, or null when nothing to attach (mirrors the
-   *  reference: the key is omitted entirely for zero collected tokens). */
-  payload(): { content: Record<string, unknown>[] } | null {
-    if (this.#topTokens.length)
-      return {
-        content: this.#topTokens.map((t) =>
-          t.length ? { ...t[0]!, top_logprobs: t } : {},
-        ),
-      };
-    if (this.#tokenLogprobs.length)
-      return {
-        content: this.#tokens.map((id, i) => ({
-          id,
-          logprob: this.#tokenLogprobs[i]!,
-        })),
-      };
-    return null;
-  }
 }
 
 /** Incremental detokenizer: emits the longest stable decoded prefix.
@@ -1636,13 +1577,14 @@ function curveJunk(s: string): boolean {
 export function createServer(
   ctx: ServerContext, port = 0, serverOptions: ServerOptions = {},
 ): Server<unknown> {
-  // --batch N (mode switch): N===1 is the serialized path below; N>1 routes
-  // batchable requests through the continuous-batching scheduler (the
-  // GenerationGateway picks the lane). Both full-attention (CPM) and
+  // --batch N is a concurrency cap: N===1 pins the strict serial executor;
+  // N>1 admits supported execution compositions to the continuous scheduler.
+  // The scheduler chooses its B=1 fast path or B=N step from active rows.
+  // Both full-attention (CPM) and
   // sliding-window (Gemma) models batch — the scheduler assembles each layer's
   // cache by attention type. Non-batchable requests (vision / adapters /
-  // repetition penalty / user seed / explicit kv-quant) drain to the serial
-  // lane (see GenerationGateway.willBatch).
+  // user seed / unsupported explicit kv-quant) drain to the serial executor
+  // (see GenerationGateway.place). No inference setting is rewritten.
   // DEFAULT 8 (flipped 2026-07-05, Josh's call, after GATE-B1-SPEED): a
   // lone request through the batch lane IS the serial engine (adopted
   // serial-class caches, compiled decode, prompt cache + SSD restore;
@@ -1687,7 +1629,7 @@ export function createServer(
         `--kv-quant to batch in bf16. (docs/design/unified-engine-frontier-plan.md)`,
     );
   // TurboQuant is solo-only in v1 (novel cache class, not batchable by
-  // construction — see GenerationGateway#modelCachesBatchable/willBatch).
+  // construction — see GenerationGateway placement's cache-capability gate).
   if (batch > 1 && kvScheme.turboQuant)
     console.warn(
       `[batch] --batch ${batch} with --kv-quant turbo: TurboQuant is serial-only in v1 ` +
@@ -2127,9 +2069,9 @@ export function createServer(
     demoteTimer.unref?.();
   }
 
-  // The lane picker: routes each request to the serial path (runGeneration,
-  // above) or the continuous-batching scheduler, keeping the two off the GPU
-  // (and shared loraState) at the same time. See src/serve/generation-gateway.ts.
+  // The scheduling seam declares the preserved serial executor or continuous
+  // scheduler for the already-resolved composition, keeping both out of the
+  // GPU (and shared loraState) at the same time. It never rewrites features.
   const gateway = new GenerationGateway(ctx.model, batch, runGeneration, {
     kvBudgetBytes: serverOptions.kvBudgetBytes,
     // Phase 3.1: the server-wide scheme travels to the gateway once; the
@@ -2142,6 +2084,18 @@ export function createServer(
     // lone rows put() back on finish. Vision/adapter requests never batch,
     // so the serial lane's bypass rules are preserved by routing.
     promptCache,
+  });
+  const completionExecutor = new CompletionExecutor(gateway);
+  const completionProtocolUsage = (usage: CompletionSummary["usage"]) => ({
+    prompt_tokens: usage.promptTokens,
+    completion_tokens: usage.completionTokens,
+    total_tokens: usage.totalTokens,
+    prompt_tokens_details: { cached_tokens: usage.cachedTokens },
+    ...(usage.speculation ? { speculation: usage.speculation } : {}),
+  });
+  const completionUsage = (summary: CompletionSummary) => ({
+    ...completionProtocolUsage(summary.usage),
+    lane: summary.lane,
   });
 
   // Admission ceiling, resolved once (Phase 5 memoryBudget enforcement).
@@ -3060,41 +3014,54 @@ export function createServer(
         const topLogprobs =
           typeof body.top_logprobs === "number" && body.top_logprobs > 0
             ? body.top_logprobs : 0;
-        const planned = planRequest({
-          promptIds,
-          options,
-          requestedMaxTokens,
-          maxSafeContext: admission.maxSafeContext,
-          stream: body.stream === true,
-          wantLogprobs,
-          topLogprobs,
-          adapterIds,
-          hasVision: !!vision,
-          userSeed: body.seed !== undefined,
-          hasGrammar: !!grammarCtrl,
-          hasDraft: !!ctx.draft,
-          ownership,
-        });
-        if (!planned.ok) {
-          planned.dispose();
-          return Response.json({ error: planned.error }, { status: planned.status });
+        let prepared: PreparedCompletion;
+        try {
+          prepared = prepareCompletion({
+            requestId: id,
+            plan: {
+              promptIds,
+              options,
+              requestedMaxTokens,
+              maxSafeContext: admission.maxSafeContext,
+              stream: body.stream === true,
+              wantLogprobs,
+              topLogprobs,
+              adapterIds,
+              hasVision: !!vision,
+              userSeed: body.seed !== undefined,
+              hasGrammar: !!grammarCtrl,
+              hasDraft: !!ctx.draft,
+              ownership,
+            },
+            vision,
+            pipeline: {
+              router: toolRouter(tools),
+              stopper: new StopMatcher(options.stopSequences),
+              thinking: new ThinkingTagSplitter(
+                ctx.template.thinkingFormat === "think-tag",
+                startInThinking,
+              ),
+              collectToolCalls: true,
+            },
+            ...(body.stream
+              ? {
+                  createFlowControl: ({ mechanism }) =>
+                    createTimedFlowControl(mechanism === "serial"),
+                }
+              : {}),
+            onPlacement: ({ mechanism, shape }) => {
+              if (runtimeValue("MLX_BUN_LANE_DEBUG") === "1")
+                console.error(
+                  `[scheduling] mechanism=${mechanism} shape=${JSON.stringify(shape)} ` +
+                    `t=${Date.now() % 100000}`,
+                );
+            },
+            idToToken: (tokenId) => ctx.tokenizer.idToToken(tokenId),
+          });
+        } catch (error) {
+          if (!(error instanceof CompletionRejected)) throw error;
+          return Response.json({ error: error.error }, { status: error.status });
         }
-        const plan = planned;
-        options = plan.options;
-        const { shape, captureLogprobs } = plan;
-        const batched = gateway.willBatch(shape);
-        if (runtimeValue("MLX_BUN_LANE_DEBUG") === "1")
-          console.error(`[lane] batched=${batched} shape=${JSON.stringify(shape)} t=${Date.now() % 100000}`);
-        // Per-turn lane (docs/design/web-chat-redesign.md §2.3 caveat / risk #5):
-        // reported on usage AND recorded in the in-process lane registry (keyed
-        // by this response's `id`) so pi-web's WS bridge — which the pi SDK's
-        // usage parsing can't carry a custom field through — can correlate it
-        // via AssistantMessage.responseId. batched wins over hasDraft (mutually
-        // exclusive by construction: willBatch already excludes hasDraft), so
-        // the only ambiguity is serial vs serial+spec, resolved once s.spec is
-        // known post-generation.
-        const lane: Lane = batched ? "batched" : shape.hasDraft ? "serial+spec" : "serial";
-        recordLane(id, lane);
 
         if (body.stream) {
           const streamAbort = new AbortController();
@@ -3111,6 +3078,7 @@ export function createServer(
                 if (generationSignal.aborted) return;
                 for (const frame of frames) controller.enqueue(enc.encode(frame));
               };
+              let latestUsage: Readonly<CompletionSummary["usage"]> | null = null;
               const chunk = (delta: Record<string, unknown>, finish: string | null) => ({
                 id, object: "chat.completion.chunk", created, model: ctx.modelId,
                 choices: [{ index: 0, delta, finish_reason: finish }],
@@ -3122,19 +3090,9 @@ export function createServer(
                 // its own SSE stream — the per-row fan-out).
                 if (streamProtocol) emitFrames(streamProtocol.start());
                 else send(chunk({ role: "assistant", content: "" }, null));
-                const completion = new CompletionSink({
-                  router: toolRouter(tools),
-                  stopper: new StopMatcher(options.stopSequences),
-                  thinking: new ThinkingTagSplitter(
-                    ctx.template.thinkingFormat === "think-tag",
-                    startInThinking,
-                  ),
-                  collectToolCalls: true,
-                  flowControl: createTimedFlowControl(!batched),
-                });
-                const sendEvents = (events: CompletionEvent[]) => {
+                const sendEvents = (events: readonly CompletionEvent[]) => {
                   if (streamProtocol) {
-                    emitFrames(streamProtocol.addEvents(events));
+                    emitFrames(streamProtocol.addEvents([...events]));
                     return;
                   }
                   for (const event of events) {
@@ -3149,49 +3107,32 @@ export function createServer(
                     }
                   }
                 };
-                generationSignal.throwIfAborted();
-                plan.transferOwnership();
-                const s = await gateway.run(promptIds, options, (token) => {
-                  const pushed = completion.push(token);
-                  sendEvents(pushed.events);
-                  return pushed.control;
-                }, vision, shape, generationSignal);
-                if (generationSignal.aborted) return;
-                const result = completion.finish();
-                sendEvents(result.events);
-                const finish = result.toolCalls.length
-                  ? "tool_calls"
-                  : result.stopped ? "stop"
-                  : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
-                // Refine serial vs serial+spec now that s.spec is known (a mounted
-                // draft can still decode zero speculative tokens on a very short
-                // reply) and re-record for pi-web's WS correlation.
-                const finalLane: Lane = batched ? "batched" : s.spec ? "serial+spec" : lane;
-                if (finalLane !== lane) recordLane(id, finalLane);
-                const usage = {
-                  prompt_tokens: s.promptTokens,
-                  completion_tokens: s.generatedTokens,
-                  total_tokens: s.promptTokens + s.generatedTokens,
-                  prompt_tokens_details: { cached_tokens: s.cachedTokens },
-                  lane: finalLane,
-                  ...(s.spec ? { speculation: s.spec } : {}),
-                };
+                const summary = await completionExecutor.execute(prepared, {
+                  signal: generationSignal,
+                  onEvents: sendEvents,
+                  ...(streamProtocol
+                    ? { onUsageProgress: (usage) => { latestUsage = usage; } }
+                    : {}),
+                });
+                const usage = completionUsage(summary);
                 if (streamProtocol) {
-                  emitFrames(streamProtocol.finish(finish, usage));
+                  emitFrames(streamProtocol.finish(summary.finishReason, usage));
                 } else {
-                  send({ ...chunk({}, finish), usage });
+                  send({ ...chunk({}, summary.finishReason), usage });
                   // bare sentinel per the OpenAI spec — strict SDK clients
                   // require the unquoted terminator.
                   controller.enqueue(enc.encode("data: [DONE]\n\n"));
                 }
                 } catch (e) {
-                  plan.dispose();
                   if (!generationSignal.aborted) {
                     const message = (e as Error).message;
                     if (streamProtocol) {
                       emitFrames([
                         ...streamProtocol.error(message),
-                        ...streamProtocol.finish("stop", {}),
+                        ...streamProtocol.finish(
+                          "stop",
+                          latestUsage ? completionProtocolUsage(latestUsage) : {},
+                        ),
                       ]);
                     } else {
                       send({ error: { message } });
@@ -3222,61 +3163,24 @@ export function createServer(
 
         try {
           {
-            const completion = new CompletionSink({
-              router: toolRouter(tools),
-              stopper: new StopMatcher(options.stopSequences),
-              thinking: new ThinkingTagSplitter(
-                ctx.template.thinkingFormat === "think-tag",
-                startInThinking,
-              ),
-              collectToolCalls: true,
-            });
-            // mlx-lm collects logprobs across EVERY generated token (reasoning
-            // and tool tokens included), not just visible content — same here.
-            const lpc = captureLogprobs
-              ? new LogprobsCollector(wantLogprobs, topLogprobs, (tid) => ctx.tokenizer.idToToken(tid))
-              : null;
-            signal.throwIfAborted();
-            plan.transferOwnership();
-            const s = await gateway.run(promptIds, options, (token, lpInfo) => {
-              lpc?.push(token, lpInfo);
-              return completion.push(token).control;
-            }, vision, shape, signal);
-            const result = completion.finish();
-            const finish = result.toolCalls.length
-              ? "tool_calls"
-              : result.stopped ? "stop"
-              : s.generatedTokens >= (options.maxTokens ?? 1024) ? "length" : "stop";
-            const logprobsBlock = lpc?.payload() ?? null;
-            // Refine serial vs serial+spec now that s.spec is known; re-record
-            // for pi-web's WS correlation (see the streaming branch above).
-            const finalLane: Lane = batched ? "batched" : s.spec ? "serial+spec" : lane;
-            if (finalLane !== lane) recordLane(id, finalLane);
+            const summary = await completionExecutor.execute(prepared, { signal });
             return Response.json({
               id, object: "chat.completion", created, model: ctx.modelId,
               choices: [{
                 index: 0,
                 message: {
                   role: "assistant",
-                  content: result.content || (result.toolCalls.length ? null : ""),
-                  ...(result.reasoning ? { reasoning: result.reasoning } : {}),
-                  ...(result.toolCalls.length ? { tool_calls: result.toolCalls } : {}),
+                  content: summary.content || (summary.toolCalls.length ? null : ""),
+                  ...(summary.reasoning ? { reasoning: summary.reasoning } : {}),
+                  ...(summary.toolCalls.length ? { tool_calls: summary.toolCalls } : {}),
                 },
-                ...(logprobsBlock ? { logprobs: logprobsBlock } : {}),
-                finish_reason: finish,
+                ...(summary.logprobs ? { logprobs: summary.logprobs } : {}),
+                finish_reason: summary.finishReason,
               }],
-              usage: {
-                prompt_tokens: s.promptTokens,
-                completion_tokens: s.generatedTokens,
-                total_tokens: s.promptTokens + s.generatedTokens,
-                prompt_tokens_details: { cached_tokens: s.cachedTokens },
-                lane: finalLane,
-                ...(s.spec ? { speculation: s.spec } : {}),
-              },
+              usage: completionUsage(summary),
             }, grammarWarning ? { headers: { Warning: grammarWarning } } : undefined);
           }
         } catch (e) {
-          plan.dispose();
           // A 500 with no server-side trace is undebuggable in the field —
           // always log the stack (the JSON body keeps only the message).
           console.error(`[serve] 500 on chat request:\n${(e as Error).stack ?? e}`);
@@ -3365,33 +3269,40 @@ export function createServer(
         const topLogprobs =
           typeof body.top_logprobs === "number" && body.top_logprobs > 0
             ? body.top_logprobs : 0;
-        const planned = planRequest({
-          promptIds,
-          options,
-          requestedMaxTokens,
-          maxSafeContext: admission.maxSafeContext,
-          stream: body.stream === true,
-          wantLogprobs,
-          topLogprobs,
-          adapterIds,
-          hasVision: false,
-          userSeed: body.seed !== undefined,
-          hasGrammar: !!options.grammar,
-          hasDraft: !!ctx.draft,
-          ownership,
-        });
-        if (!planned.ok) {
-          planned.dispose();
-          return Response.json({ error: planned.error }, { status: planned.status });
+        let prepared: PreparedCompletion;
+        try {
+          prepared = prepareCompletion({
+            requestId: id,
+            plan: {
+              promptIds,
+              options,
+              requestedMaxTokens,
+              maxSafeContext: admission.maxSafeContext,
+              stream: body.stream === true,
+              wantLogprobs,
+              topLogprobs,
+              adapterIds,
+              hasVision: false,
+              userSeed: body.seed !== undefined,
+              hasGrammar: !!options.grammar,
+              hasDraft: !!ctx.draft,
+              ownership,
+            },
+            pipeline: {
+              router: new ToolAwareStream(ctx.tokenizer, "plain", null),
+              stopper: new StopMatcher(options.stopSequences),
+              thinking: new ThinkingTagSplitter(false),
+              collectToolCalls: false,
+            },
+            ...(body.stream
+              ? { createFlowControl: () => createTimedFlowControl(true) }
+              : {}),
+            idToToken: (tokenId) => ctx.tokenizer.idToToken(tokenId),
+          });
+        } catch (error) {
+          if (!(error instanceof CompletionRejected)) throw error;
+          return Response.json({ error: error.error }, { status: error.status });
         }
-        const plan = planned;
-        options = plan.options;
-        const { shape, captureLogprobs } = plan;
-        const batched = gateway.willBatch(shape);
-        const lane: Lane = batched ? "batched" : shape.hasDraft ? "serial+spec" : "serial";
-        recordLane(id, lane);
-        const finishReason = (stopped: boolean, generated: number): "stop" | "length" =>
-          stopped ? "stop" : generated >= (options.maxTokens ?? 512) ? "length" : "stop";
 
         if (body.stream) {
           const streamAbort = new AbortController();
@@ -3410,47 +3321,24 @@ export function createServer(
               });
               void (async () => {
                 try {
-                const completion = new CompletionSink({
-                  router: new ToolAwareStream(ctx.tokenizer, "plain", null),
-                  stopper: new StopMatcher(options.stopSequences),
-                  thinking: new ThinkingTagSplitter(false),
-                  collectToolCalls: false,
-                  flowControl: createTimedFlowControl(true),
-                });
-                const sendEvents = (events: CompletionEvent[]) => {
+                const sendEvents = (events: readonly CompletionEvent[]) => {
                   for (const event of events) {
                     if (event.type === "content") send(chunk(event.text, null));
                   }
                 };
-                generationSignal.throwIfAborted();
-                plan.transferOwnership();
-                const s = await gateway.run(promptIds, options, (token) => {
-                  const pushed = completion.push(token);
-                  sendEvents(pushed.events);
-                  return pushed.control;
-                }, undefined, shape, generationSignal);
-                if (generationSignal.aborted) return;
-                const result = completion.finish();
-                sendEvents(result.events);
-                const finalLane: Lane = batched ? "batched" : s.spec ? "serial+spec" : lane;
-                if (finalLane !== lane) recordLane(id, finalLane);
+                const summary = await completionExecutor.execute(prepared, {
+                  signal: generationSignal,
+                  onEvents: sendEvents,
+                });
                 // final chunk: finish_reason + usage (mlx-lm gates usage behind
                 // stream_options.include_usage; we always attach it, matching
                 // our chat lane — an additive superset OpenAI clients ignore)
                 send({
-                  ...chunk("", finishReason(result.stopped, s.generatedTokens)),
-                  usage: {
-                    prompt_tokens: s.promptTokens,
-                    completion_tokens: s.generatedTokens,
-                    total_tokens: s.promptTokens + s.generatedTokens,
-                    prompt_tokens_details: { cached_tokens: s.cachedTokens },
-                    lane: finalLane,
-                    ...(s.spec ? { speculation: s.spec } : {}),
-                  },
+                  ...chunk("", summary.finishReason),
+                  usage: completionUsage(summary),
                 });
                   controller.enqueue(enc.encode("data: [DONE]\n\n"));
                 } catch (e) {
-                  plan.dispose();
                   if (!generationSignal.aborted)
                     send({ error: { message: (e as Error).message } });
                 } finally {
@@ -3477,43 +3365,19 @@ export function createServer(
         }
 
         try {
-          const completion = new CompletionSink({
-            router: new ToolAwareStream(ctx.tokenizer, "plain", null),
-            stopper: new StopMatcher(options.stopSequences),
-            thinking: new ThinkingTagSplitter(false),
-            collectToolCalls: false,
+          const summary = await completionExecutor.execute(prepared, {
+            signal: request.signal,
           });
-          const lpc = captureLogprobs
-            ? new LogprobsCollector(wantLogprobs, topLogprobs, (tid) => ctx.tokenizer.idToToken(tid))
-            : null;
-          request.signal.throwIfAborted();
-          plan.transferOwnership();
-          const s = await gateway.run(promptIds, options, (token, lpInfo) => {
-            lpc?.push(token, lpInfo);
-            return completion.push(token).control;
-          }, undefined, shape, request.signal);
-          const result = completion.finish();
-          const finalLane: Lane = batched ? "batched" : s.spec ? "serial+spec" : lane;
-          if (finalLane !== lane) recordLane(id, finalLane);
-          const logprobsBlock = lpc?.payload() ?? null;
           return Response.json({
             id, object: "text_completion", created, model: ctx.modelId,
             choices: [{
-              index: 0, text: result.content,
-              ...(logprobsBlock ? { logprobs: logprobsBlock } : {}),
-              finish_reason: finishReason(result.stopped, s.generatedTokens),
+              index: 0, text: summary.content,
+              ...(summary.logprobs ? { logprobs: summary.logprobs } : {}),
+              finish_reason: summary.finishReason,
             }],
-            usage: {
-              prompt_tokens: s.promptTokens,
-              completion_tokens: s.generatedTokens,
-              total_tokens: s.promptTokens + s.generatedTokens,
-              prompt_tokens_details: { cached_tokens: s.cachedTokens },
-              lane: finalLane,
-              ...(s.spec ? { speculation: s.spec } : {}),
-            },
+            usage: completionUsage(summary),
           }, textGrammarWarning ? { headers: { Warning: textGrammarWarning } } : undefined);
         } catch (e) {
-          plan.dispose();
           return Response.json({ error: { message: (e as Error).message } }, { status: 500 });
         }
       }

@@ -2798,6 +2798,144 @@ certification suite until then):
       target seq lens. Adapters are rotation-basis-married to this
       artifact (card note if published).
 
+## Serving architecture consolidation `[~]` (opened 2026-08-21)
+
+- [x] **S0 Completion execution.** Added an opaque, single-use
+      `PreparedCompletion` and a `CompletionExecutor` over the existing
+      `GenerationGateway` and `CompletionSink`. One executor now owns
+      admission, placement reporting, semantic events, logprobs, finish
+      reason, usage, and pre-generation cleanup for chat and raw-text,
+      streaming and non-streaming. The HTTP adapters still own protocol
+      frames and JSON shape. `src/server.ts` lost 148 net lines. The new
+      `execute()` method has cyclomatic complexity 7 and cognitive
+      complexity 12 in the code graph.
+      - Contract gate: explicit and default-resolved inference settings
+        pass through unchanged. A test pins mixed-precision `kvConfig`,
+        `quantizedKvStart`, sampling, and adapter selection at the engine
+        boundary. Scheduling placement remains a capability check only.
+      - Resource gate: admission rejects before stream headers; placement
+        failure disposes prepared resources; ownership transfers once before
+        generation. Model and cache disposal stay in the gateway/generator.
+      - Verification: 44 focused model-free tests pass, `server.ts` imports,
+        hygiene and `git diff --check` pass. GPU/model integration tests were
+        deliberately not run while the GPQA certification job owns the
+        machine.
+- [x] **S1 Immutable placement decision.** `GenerationGateway.place()`
+      freezes one `GenerationPlacement` for the exact `RequestShape`.
+      `CompletionExecutor` uses it for lane reporting and passes it into
+      `run()`, which rejects a placement made for another shape. Eligibility
+      rules and feature composition are unchanged.
+- [x] **S2 Declared model profiles.** Introduce model/artifact profiles that
+      name the external artifact fingerprint, fidelity target, required
+      engine capabilities, and composed execution path. Keep the generic
+      model route as fallback. Specialized Qwen3.8, GLM/Colibri, and future
+      frontier profiles may select dedicated kernels and loop structure.
+      - `resolveModelProfile()` now freezes artifact identity, config identity,
+        fidelity, required capabilities, and loader/graph/loop specialization
+        before model construction. Immutable HF snapshot identities are stable
+        across cache relocation; local paths and mutable aliases are not
+        misrepresented as exact artifacts.
+      - Exact declarations pin the validated Qwen3.8 OptiQ and GLM-5.2 Colibri
+        revisions. Exact matches outrank family profiles; family profiles retain
+        every previous dedicated/generated path; universal dense remains the
+        final supported fallback. A matched exact profile with a config or
+        capability mismatch refuses instead of downgrading.
+        The mutable `mjriii/Qwen3.8-27B` staged artifact intentionally remains
+        on the Qwen family profile until the running GPQA evidence closes and a
+        published immutable revision can bind that evidence.
+      - `createModel()`, `openModel()`, and `loadContext()` consume the declared
+        composition; `ServerContext.profile` and the public library exports make
+        it inspectable/composable. Profiles do not own MTP, KV, adapters,
+        grammar, or sampling, so existing explicit/default-resolved behavior is
+        unchanged.
+      - Model-free verification: profile/factory/support tests pass, the public
+        TypeScript surface typechecks with zero errors, and GPU/model tests were
+        deliberately deferred while the GPQA certification job owns the machine.
+- [x] **S3 Unified batch mechanism.** Make serial execution the B=1 fast path
+      of the same scheduling mechanism where measurements support it. Preserve
+      the current serial route until B=1 latency and parity gates pass. Never
+      downgrade MTP, KV schemes, TurboQuant, grammar, adapters, or sampling to
+      make a request batchable.
+      - `GenerationPlacement` now declares `serial` or `continuous`; it no
+        longer predicts that a request is "batched." `CompletionExecutor`
+        reports and executes that same frozen declaration. Active-row count
+        chooses the adopted-cache B=1 fast path or B=N step inside the
+        continuous scheduler.
+      - The existing evidence supports the current cutover: default-scheduler
+        B=1 is byte-identical on the curated serve parity probes and recorded
+        paired decode ratios are 0.992–0.996. `--batch 1` still pins the strict
+        serial executor, and compositions not yet implemented by the scheduler
+        use that executor unchanged.
+      - The placement support check does not rewrite MTP/drafting, KV schemes,
+        TurboQuant, grammar, adapters, or sampling. Tests pin the mechanism at
+        the gateway/executor seam and preserve resolved mixed-KV, sampling, and
+        adapter inputs by identity/value.
+      - Verification: 55 pure model-free tests pass and the full TypeScript
+        surface typechecks. MLX-array tests were not used as a gate after the
+        concurrent GPQA run left the MLX stream unavailable; GPU/model
+        integration remains deferred.
+      - Review hardening (2026-08-21): the resolved `KvScheme` is now the
+        authoritative value through server resolution, gateway placement,
+        scheduler cache conversion, and KV-budget projection. The scheduler
+        no longer rebuilds its conversion map from the legacy `kvConfig`
+        fallback, and placement probes the actual configured cache instances
+        before admitting a quantized request to the continuous mechanism.
+        Scheme-driven conversion and non-convertible-cache regressions pin both
+        ends of the interface. The legacy raw `kvConfig` scheduler/budget
+        inputs are removed, so production, tests, and diagnostic scripts all
+        traverse the same `KvScheme` seam; quantized `batchable()` also returns
+        false unless its caller supplies the real cache-conversion probe. The
+        scheduler independently refuses an unsupported scheme at construction
+        instead of silently serving bf16 with quantized budget accounting.
+      - The same audit found two adjacent boundary violations and closed them:
+        all in-process benchmark, memory, and training-diagnostic overrides
+        now use `configureRuntime()` instead of mutating the already-snapshotted
+        environment, and native
+        quantization publishes a complete staged model directory with one
+        same-filesystem rename. An interrupted writer cannot expose rotated
+        weights with a stale config. `CompletionExecutor` also reports live
+        token usage to protocol adapters, so an Anthropic/Responses stream
+        that fails after emitting tokens closes with accumulated usage instead
+        of fabricated zeros. The live usage view is installed only for those
+        protocol adapters; ordinary OpenAI streaming selects the no-usage token
+        consumer once per request and has no added per-token branch. A worked
+        4-wide Llama numerical test now drives the public
+        `WeightTransform` plan/context/apply interface and pins R1/R2,
+        normalization, tied-head, attention, and MLP fold values instead of
+        checking plan shape alone.
+      - Review-focused verification after the GPQA pause: 97 fast model-free
+        tests pass. All three real mixed-KV GPU gates pass against local
+        MiniCPM5 and Gemma 12B artifacts: MiniCPM B=1 is bit-exact for every
+        checked logit step; its B=2 padded row peaks at KL 1.21e-1 under the
+        0.2 bar; Gemma rotating-quant rows peak at KL 0 and 3.04e-3 under the
+        1e-3/1e-1 bars. The missing machine-local MiniCPM binary logits were
+        regenerated from the pinned mlx-optiq oracle; the tracked manifest now
+        records oracle versions, artifact revision, generator, and blob hashes.
+      - Final acceptance (2026-08-21): the complete hygiene-gated two-shard
+        suite passes 2,063 tests with 75 intentional skips and zero failures.
+        The public TypeScript surface, both Bun entry bundles, web bundle
+        freshness, and `git diff --check` pass. All required ignored binary
+        fixtures were regenerated from the pinned local oracles; their tracked
+        manifests did not drift.
+      - A real browser acceptance run started `mlx-bun`, used the shipped web
+        UI for a two-turn conversation, and verified streamed content, tool
+        cards, context carryover, request metrics, and composer recovery. It
+        exposed a pre-existing mainline race: a queued animation-frame render
+        closed over mutable assistant state after `turn_end`, causing a null
+        dereference and, after the first narrow fix, duplicated final content.
+        Per-turn captured state plus an explicit settled guard fixes both; a
+        deterministic DOM test drains the pending frame after turn completion.
+      - The same full pass fixed two adjacent mainline lifecycle defects. GLM
+        compressed-cache filtering now removes common padding before row
+        selection and owns the selected result, preserving exact surviving
+        rows. Atomic quantization accepts a caller-created empty destination
+        but still refuses a populated one and never publishes partial output.
+        Server admission tests now pin the documented clamp/diagnostic contract
+        instead of the superseded rejection behavior. None of these changes is
+        in the token decode hot path: DOM rendering is client-side, GLM row
+        filtering runs only on batch membership changes, and atomic publication
+        is offline conversion I/O.
+
 ## Context / lore
 
 Born from an evening of running gemma-4-12B-it-OptiQ-4bit through the

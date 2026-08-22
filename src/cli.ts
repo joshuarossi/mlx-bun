@@ -124,10 +124,10 @@ const SERVER_FLAGS = `Server options:
   --unix <path>             (internal) listen on a unix socket instead of a
                             TCP port — the engine half of --isolate.
   --batch <n>               Max concurrent requests decoded together
-                            [default: 8]. A LONE request runs the exact
-                            serial engine (same bits, same speed); the cap
-                            engages only when concurrent requests arrive
-                            (agent fan-out). 1 pins strict serial.
+                            [default: 8]. A lone scheduler request uses the
+                            parity- and latency-gated B=1 fast path; concurrent
+                            requests can form B=N (agent fan-out). 1 pins the
+                            preserved strict serial executor.
                             --decode-concurrency is accepted as the
                             mlx_lm.server alias (semantics differ; see
                             docs/reference/server-config.md)
@@ -962,7 +962,7 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
       console.warn("--ssd-cache-verify has no effect without --ssd-cache — ignored");
   }
   // --batch N: max concurrent requests batched through the mlx-lm-parity
-  // engine (N=1 = today's serial path). --decode-concurrency is accepted for
+  // engine (N=1 pins the strict serial executor). --decode-concurrency is accepted for
   // drop-in compatibility with mlx_lm.server, but the semantics differ: there
   // it caps per-BatchGenerator decode parallelism (default 32); in mlx-bun it
   // caps continuous batching (default 8; `--batch 1` pins the serial path —

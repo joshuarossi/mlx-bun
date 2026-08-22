@@ -106,6 +106,39 @@ The artifact is an external MIT-licensed derivative of
 weights. Model weights are not bundled with mlx-bun; review the artifact model
 card before redistribution.
 
+## Declared model profiles
+
+Model loading resolves one immutable profile before weights are opened. A
+profile names four things: the external artifact fingerprint when one is
+known, its fidelity target, the engine capabilities it requires, and the
+composed loader/model-graph/generation-loop path.
+
+Exact artifact profiles outrank family profiles. The current exact declarations
+are:
+
+| profile | external artifact | fidelity | execution |
+| --- | --- | --- | --- |
+| `qwen3.8-27b-optiq-4bit` | `mlx-community/Qwen3.8-27B-OptiQ-4bit` revision `b04599de95d7a9bfbd7f208d347c0f10d9432a42` | L1: bit-exact mlx-lm | safetensors + dedicated Qwen3.5/3.8 graph + autoregressive loop |
+| `glm5.2-colibri-int4-int8-mtp` | `mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp` revision `3cc8db99b1b13fc79325d987ba3c1c430766b3b8` | L3: measured, no matching tier oracle | Colibri container + dedicated GLM-5.2 graph + autoregressive loop |
+
+The fingerprint is the Hugging Face repo plus immutable snapshot revision, so
+moving the cache does not change it. A mutable alias such as `snapshots/staged`
+or an arbitrary local directory is not treated as exact. Those artifacts use
+the dedicated model-family profile when one matches, then the universal dense
+profile when that architecture is supported. Unsupported architectures still
+refuse with the existing targeted/generic support list.
+
+Profiles select construction only. They do not enable, disable, or replace MTP,
+mixed-precision KV from `kv_config.json`, TurboQuant KV, adapters, grammar, or
+sampling. Those methods remain explicit flags/request fields or documented
+defaults. If an exact profile requires a capability the running engine does not
+have, loading refuses; it never downgrades to another model path.
+
+Fidelity labels mean L1 = bit-exact mlx-lm, L2 = bit-exact mlx-optiq, and L3 =
+measured evidence without a matching oracle. Model profiles do not imply that a
+quantized artifact retains the base model's benchmark score; quality evidence
+belongs to that exact artifact.
+
 ## scan + the registry
 
 `mlx-bun scan` walks `models--*/snapshots/*` reading only `config.json`

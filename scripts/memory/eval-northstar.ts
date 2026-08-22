@@ -36,6 +36,7 @@ import { getEmbedCounter, resetEmbedCounter } from "../../src/embed";
 import { generateText, loadTaskModel, type TaskModel } from "../../src/eval/runner";
 import { MODEL_ID } from "../../src/memory/model";
 import { createMemoryTools } from "../../src/memory/tools";
+import { configureRuntime, runtimeValue } from "../../src/runtime-config";
 import {
   detectSilentViolation,
   gradeAnswer,
@@ -76,7 +77,7 @@ export function loadQueries(): NorthstarQuerySet {
 
 /** Smoke vault the read path points at (MLX_BUN_WIKI override honored by vault.ts). */
 export function smokeVaultRoot(): string {
-  return process.env.MLX_BUN_WIKI ?? `${process.env.HOME}/.mlx-bun/wiki-smoke`;
+  return runtimeValue("MLX_BUN_WIKI") ?? `${process.env.HOME}/.mlx-bun/wiki-smoke`;
 }
 
 // ---- budgets + gate names ---------------------------------------------
@@ -311,7 +312,8 @@ function fmtGate(v: boolean | null): string {
 
 async function main(): Promise<void> {
   const dry = process.argv.includes("--dry") || process.env.NORTHSTAR_DRY === "1";
-  if (!process.env.MLX_BUN_WIKI) process.env.MLX_BUN_WIKI = `${process.env.HOME}/.mlx-bun/wiki-smoke`;
+  if (!runtimeValue("MLX_BUN_WIKI"))
+    configureRuntime({ MLX_BUN_WIKI: `${process.env.HOME}/.mlx-bun/wiki-smoke` });
   const set = loadQueries();
   console.log(`# north-star acceptance — ${set.queries.length} queries over ${smokeVaultRoot()}${dry ? " (DRY: stub answerer, no judge)" : ""}`);
 

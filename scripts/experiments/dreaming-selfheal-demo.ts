@@ -26,6 +26,7 @@ import { articleStructure, parseInfobox, parseLead } from "../../src/memory/arti
 import { extractConvHashes } from "../../src/memory/gate";
 import { assertsValueAsCurrent, isRelationshipKey } from "../../src/memory/reconcile";
 import { extractSection, slugifyHeading } from "../../src/memory/vault";
+import { configureRuntime } from "../../src/runtime-config";
 
 const C35 = "33333333-3333-3333-3333-333333333333"; // the 35mm conversation
 const C50 = "55555555-5555-5555-5555-555555555555"; // the 50mm conversation
@@ -182,7 +183,7 @@ interface ScenarioResult {
 
 async function runScenario(label: string, at35: number, at50: number): Promise<ScenarioResult> {
   const { store, root } = await buildScenario(at35, at50);
-  process.env.MLX_BUN_WIKI = root;
+  const restoreRuntime = configureRuntime({ MLX_BUN_WIKI: root });
   await runRouteStage(store); // notable=1 (recurs across 6 chunks)
 
   // Drive synthesize CHRONOLOGICALLY: one pass per conversation, oldest first.
@@ -234,6 +235,7 @@ async function runScenario(label: string, at35: number, at50: number): Promise<S
   console.log("----- article -----");
   console.log(article);
   await rm(root, { recursive: true, force: true });
+  restoreRuntime();
   return { article, favors: j.favors, lead: j.lead, patched, reconciled, sawNoop, noopLines };
 }
 

@@ -20,6 +20,26 @@ export {
   type RuntimeModel,
 } from "./model/factory";
 export { Qwen3Model } from "./model/qwen3";
+export { configFingerprint } from "./model/fingerprint";
+export {
+  BUILTIN_ARTIFACT_PROFILES,
+  ENGINE_CAPABILITIES,
+  externalArtifactFingerprint,
+  resolveModelProfile,
+  type ArtifactModelProfile,
+  type EngineCapability,
+  type FidelityTarget,
+  type FidelityTier,
+  type GenerationLoop,
+  type ModelArtifactIdentity,
+  type ModelExecutionComposition,
+  type ModelGraph,
+  type ModelLoader,
+  type ModelProfile,
+  type ModelSpecialization,
+  type ResolveModelProfileOptions,
+  type ResolvedModelProfile,
+} from "./model/profile";
 export { generate } from "./generate";
 export { loadTokenizer } from "./tokenizer";
 export { embedOne, embedMany, isEmbeddingModel, withInstruction, type EmbedResult } from "./embed";

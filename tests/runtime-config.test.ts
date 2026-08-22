@@ -25,4 +25,13 @@ describe("runtime config", () => {
     restore();
     expect(runtimeValue("MLX_BUN_GRAMMAR")).toBe(before);
   });
+
+  test("undefined explicitly unsets a key until restore", () => {
+    const restoreSet = configureRuntime({ MLX_BUN_GRAMMAR: "0" });
+    const restoreUnset = configureRuntime({ MLX_BUN_GRAMMAR: undefined });
+    expect(runtimeValue("MLX_BUN_GRAMMAR")).toBeUndefined();
+    restoreUnset();
+    expect(runtimeValue("MLX_BUN_GRAMMAR")).toBe("0");
+    restoreSet();
+  });
 });

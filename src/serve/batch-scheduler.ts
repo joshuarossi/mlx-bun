@@ -26,7 +26,7 @@
 // temporal axis and no padding (rows solo-prefill unpadded, decode feeds one
 // real token per row), so merge/filter are B-axis concat/take and the cache
 // passes through the step unwrapped (no mask, no per-row RoPE — full layers
-// carry positions). Gate: GenerationGateway.willBatch on cache capability.
+// carry positions). Gate: GenerationGateway.place on cache capability.
 //
 // Engine mechanics (the serial decode loop's hygiene, transplanted —
 // batching-v2-plan step 3):
@@ -258,18 +258,9 @@ export interface BatchSchedulerOptions {
    *  evict. A request that can NEVER fit (over budget alone, empty batch)
    *  is rejected instead of deadlocking. Unset = unlimited (v1 behavior). */
   kvBudgetBytes?: number;
-  /** Per-layer mixed-precision KV scheme (kv_config.json entries) — Phase
-   *  3.1 batched quantized KV. Server-wide constant (one scheme per server
-   *  lifetime), so it lives here at construction, not on BatchRequest.
-   *  P1 scope: only layers whose cache is a plain full-attention KVCache
-   *  convert; the GATEWAY admits batching only when every configured
-   *  layerIdx is such a layer (rotating/uniform stay serial). Each joiner's
-   *  solo prefill converts at the SAME chunk boundaries as the serial
-   *  maybeQuantizeKv, so a row's quantized bytes are bit-exact vs serial
-   *  `--kv-quant config` by construction (the L2-oracle composition rule). */
-  kvConfig?: KvQuantSpec[];
-  /** Authoritative server-wide scheme. kvConfig remains as a compatibility
-   * input for direct scheduler tests and library callers. */
+  /** Authoritative server-wide scheme. Each joiner's solo prefill converts at
+   * the same chunk boundaries as the serial path, so a row's quantized bytes
+   * preserve the L2 composition. Unsupported schemes fail at construction. */
   kvScheme?: KvScheme;
   /** Prompt-cache hook (Phase 3.2): admission take()s the longest usable
    *  prefix into the joiner's solo caches (suffix-only prefill — the
@@ -323,7 +314,6 @@ export class BatchScheduler {
   readonly #rotMaxSize: number[]; // per-layer sliding window (rot layers only)
   readonly #compressedProjectors: Array<(tokens: number) => number> | null;
   readonly #batchCacheMaxTokens: number | null;
-  readonly #kvConfig: KvQuantSpec[] | undefined;
   readonly #kvScheme: KvScheme | undefined;
   /** layerIdx → mixed-precision spec (Phase 3.1); null = bf16 batch (v1). */
   readonly #kvByLayer: Map<number, KvQuantSpec> | null;
@@ -342,8 +332,15 @@ export class BatchScheduler {
     this.#kvBudgetBytes = opts.kvBudgetBytes;
     this.#promptCache = opts.promptCache;
     this.#kvScheme = opts.kvScheme;
-    this.#kvConfig = opts.kvScheme?.options.kvConfig ?? opts.kvConfig;
     const proto = model.makeCache(); // fresh caches hold no buffers
+    if (this.#kvScheme && !this.#kvScheme.batchable(
+      model.config,
+      (layerIdx) =>
+        isPlainKvCache(proto[layerIdx]) || isRotatingPlainCache(proto[layerIdx]),
+    )) {
+      for (const cache of proto) cache.dispose();
+      throw new Error(`unsupported KV scheme for batch scheduler: ${this.#kvScheme.kind}`);
+    }
     this.#kinds = proto.map((c) =>
       isBatchableCache(c)
         ? "owned-batch"
@@ -359,8 +356,9 @@ export class BatchScheduler {
     this.#batchCacheMaxTokens = proto.every(isBatchableCache)
       ? Math.min(...proto.map((cache) => cache.maxTokens ?? Number.MAX_SAFE_INTEGER))
       : null;
-    this.#kvByLayer = opts.kvConfig?.length
-      ? new Map(opts.kvConfig.map((e) => [e.layerIdx, e]))
+    const kvConfig = this.#kvScheme?.options.kvConfig;
+    this.#kvByLayer = kvConfig?.length
+      ? new Map(kvConfig.map((entry) => [entry.layerIdx, entry]))
       : null;
     this.#rotMaxSize = proto.map((c) => (isRotatingPlainCache(c) ? c.maxSize : 0));
     for (const c of proto) c.dispose();
@@ -392,7 +390,7 @@ export class BatchScheduler {
           this.model.config,
           row.promptTokens,
           row.req.maxTokens,
-          this.#kvScheme ?? this.#kvConfig,
+          this.#kvScheme,
         );
   }
 
@@ -604,8 +602,8 @@ export class BatchScheduler {
    *  source frees before the next layer converts). Called at every prefill
    *  chunk boundary AND once before merge, exactly where the serial loop
    *  calls maybeQuantizeKv — that placement is what makes a row's quantized
-   *  bytes bit-exact vs serial `--kv-quant config`. P1: plain KVCache
-   *  layers only (the gateway guarantees the config maps only to those). */
+   *  bytes bit-exact vs serial `--kv-quant config`. Gateway placement and the
+   *  constructor both guarantee every named cache can convert. */
   #quantizeSolo(solo: Cache[]): void {
     if (!this.#kvByLayer) return;
     for (let i = 0; i < solo.length; i++) {

@@ -42,6 +42,7 @@ import type {
   WeightTransformContext,
   WeightTransformPlan,
 } from "./weight-transform";
+import { writeAtomicDirectory } from "./atomic-output";
 
 /** Quantize the allocator cache this often (in modules processed). */
 const CACHE_CLEAR_EVERY = 16;
@@ -157,13 +158,16 @@ export async function quantizeModelDir(
     mixedMeta = alloc.meta;
   }
 
-  return writeQuantizedModelDir(
-    srcDir,
-    outDir,
-    opts,
-    perLayerBits,
-    mixedMeta,
-    onProgress,
+  return writeAtomicDirectory(outDir, (stagingDir) =>
+    writeQuantizedModelDir(
+      srcDir,
+      stagingDir,
+      opts,
+      perLayerBits,
+      mixedMeta,
+      onProgress,
+      outDir,
+    ),
   );
 }
 
@@ -177,6 +181,7 @@ async function writeQuantizedModelDir(
   perLayerBits?: Map<string, number>,
   mixedMeta?: MixedMeta,
   onProgress?: (e: ProgressEvent) => void,
+  publishedOutDir = outDir,
 ): Promise<QuantizeResult> {
   const groupSize = opts.groupSize;
   const mode = opts.mode ?? "affine";
@@ -352,7 +357,7 @@ async function writeQuantizedModelDir(
     for (const name of passthroughNames)
       out.push(outputTensor(weights, transformPlan, transformContext, name));
 
-    progress("writing", `Writing ${out.length} tensors to ${outDir}`, 1);
+    progress("writing", `Writing ${out.length} tensors to ${publishedOutDir}`, 1);
     const write = writeShardedSafetensors(outDir, out);
 
     const achievedBpw = quantizedParams > 0 ? quantizedBits / quantizedParams : 0;
@@ -415,8 +420,8 @@ async function writeQuantizedModelDir(
       );
     }
 
-    progress("done", `Quantized ${nQuantized} modules → ${outDir}`, 1);
-    return { outDir, achievedBpw, nQuantized, write };
+    progress("done", `Quantized ${nQuantized} modules → ${publishedOutDir}`, 1);
+    return { outDir: publishedOutDir, achievedBpw, nQuantized, write };
   } finally {
     // Dispose every emitted array (their bytes are now on disk) and the source.
     for (const t of out) {

@@ -56,28 +56,21 @@ describe.skipIf(!optIn || !haveCpm || !haveGolden)("batched mixed-KV parity (cpm
   };
 
   const { loadModelConfig } = await import("../src/config");
+  const { resolveKvScheme } = await import("../src/kv-scheme");
   const { Weights } = await import("../src/weights");
   const { createModel } = await import("../src/model/factory");
-  const { generate } = await import("../src/generate");
   const { BatchScheduler } = await import("../src/serve/batch-scheduler");
-  const { toLogprobs } = await import("../src/sampler");
   const ops = await import("../src/mlx/ops");
   const { clearCache } = await import("../src/mlx/ffi");
 
   const config = await loadModelConfig(SNAPSHOT_MINICPM5);
+  const kvScheme = resolveKvScheme({ override: "config", config: config.kvQuant });
   const weights = await Weights.open(SNAPSHOT_MINICPM5);
   const model = createModel(weights, config);
   expect(config.kvQuant?.length).toBe(24); // all-full-attention config = P1 batchable
 
-  const greedySample = (lp: MlxArray): MlxArray => {
-    const l = toLogprobs(lp);
-    const t = ops.argmaxAxis(l, -1);
-    l.dispose();
-    return t;
-  };
-
   test("gate 1 — B=1 row through the scheduler: per-step logits BIT-EXACT vs the optiq golden", async () => {
-    const sched = new BatchScheduler(model, { maxBatch: 2, kvConfig: config.kvQuant! });
+    const sched = new BatchScheduler(model, { maxBatch: 2, kvScheme });
     const captured: Float32Array[] = [];
     let step = 0;
     await sched.submit({
@@ -173,7 +166,7 @@ describe.skipIf(!optIn || !haveCpm || !haveGolden)("batched mixed-KV parity (cpm
       return kl;
     };
 
-    const sched = new BatchScheduler(model, { maxBatch: 2, kvConfig: config.kvQuant! });
+    const sched = new BatchScheduler(model, { maxBatch: 2, kvScheme });
     const mkForced = (ids: number[], forced: number[], sink: Float32Array[]) => {
       let step = 0;
       return {
@@ -240,6 +233,7 @@ describe.skipIf(!optIn || !haveGemma)("batched mixed-KV parity (gemma 12B, rotat
     const JOIN_STEP = 6;
     const STEPS = 20;
     const { loadModelConfig } = await import("../src/config");
+    const { resolveKvScheme } = await import("../src/kv-scheme");
     const { Weights } = await import("../src/weights");
     const { createModel } = await import("../src/model/factory");
     const { maybeQuantizeKv } = await import("../src/generate");
@@ -249,6 +243,7 @@ describe.skipIf(!optIn || !haveGemma)("batched mixed-KV parity (gemma 12B, rotat
     const { clearCache } = await import("../src/mlx/ffi");
 
     const config = await loadModelConfig(SNAPSHOT);
+    const kvScheme = resolveKvScheme({ override: "config", config: config.kvQuant });
     expect(config.kvQuant?.length).toBeGreaterThan(0);
     const weights = await Weights.open(SNAPSHOT);
     const model = createModel(weights, config);
@@ -298,7 +293,7 @@ describe.skipIf(!optIn || !haveGemma)("batched mixed-KV parity (gemma 12B, rotat
         return kl;
       };
 
-      const sched = new BatchScheduler(model, { maxBatch: 2, kvConfig: config.kvQuant! });
+      const sched = new BatchScheduler(model, { maxBatch: 2, kvScheme });
       const mkForced = (ids: number[], forced: number[], sink: Float32Array[]) => {
         let step = 0;
         return {

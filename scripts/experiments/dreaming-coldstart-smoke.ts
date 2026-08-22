@@ -21,9 +21,10 @@ import { readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { configureRuntime } from "../../src/runtime-config";
 
 const SMOKE_VAULT = join(homedir(), ".mlx-bun", "wiki-smoke");
-process.env.MLX_BUN_WIKI = SMOKE_VAULT; // BEFORE importing vault-aware modules
+configureRuntime({ MLX_BUN_WIKI: SMOKE_VAULT });
 
 const { MemoryStore, DEFAULT_MEMORY_DB } = await import("../../src/memory/db");
 const { setupVault } = await import("../../src/memory/vault");

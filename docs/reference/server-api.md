@@ -211,7 +211,7 @@ Non-streaming response:
     "prompt_tokens_details": { "cached_tokens": 0 },  // prompt-cache reuse
     "lane": "serial",              // "serial" | "serial+spec" | "batched" —
                                     //   which execution lane served THIS
-                                    //   request (GenerationGateway.willBatch
+                                    //   request (GenerationGateway.place
                                     //   + whether a draft actually contributed
                                     //   accepted tokens). Chat completions
                                     //   only (streaming: final usage chunk).

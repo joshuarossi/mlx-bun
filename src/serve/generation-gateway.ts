@@ -1,10 +1,11 @@
-// Generation gateway — the seam between the server's request handlers and the
-// two execution lanes: the serial single-queue path (today's default) and the
-// continuous-batching scheduler (`--batch N`). The handler builds an onToken
-// closure (its own StopMatcher + tool router + SSE stream) and calls run();
-// the gateway routes it to the right lane. Per-row SSE fan-out falls out for
-// free — each request keeps its own onToken/stream and the scheduler just
-// invokes the right row's onToken.
+// GenerationGateway is the scheduling seam between CompletionExecutor and
+// the inference runtime. It declares one mechanism per request: the preserved
+// strict/dedicated serial executor, or the continuous scheduler (`--batch N`).
+// The scheduler itself chooses its B=1 fast path or B=N step from its active
+// row count; placement does not predict a batch size. The executor owns each
+// request's semantic token sink and passes its callback plus one immutable
+// placement into run(). Each request keeps its own callback, so the scheduler
+// can fan tokens out to the matching response stream.
 //
 // The two lanes are MUTUALLY EXCLUSIVE on the GPU (and on shared model state
 // like loraState, which generate() mutates per-generation assuming a serialized
@@ -36,7 +37,13 @@
 import { MlxArray } from "../mlx/array";
 import type { RuntimeModel } from "../model/factory";
 import { DiffusionGemmaModel } from "../model/diffusion-gemma";
-import { KVCache, RotatingKVCache, isBatchableCache } from "../model/gemma4-base";
+import {
+  KVCache,
+  RotatingKVCache,
+  isBatchableCache,
+  isPlainKvCache,
+  isRotatingPlainCache,
+} from "../model/gemma4-base";
 import { SSMCache } from "../model/qwen3-delta";
 import { UniversalDenseModel } from "../model/universal/dense";
 import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate";
@@ -112,7 +119,8 @@ export interface RequestShape {
   hasRepetitionPenalty: boolean;
   /** The user explicitly set `seed` (reproducibility) — not the random default. */
   userSeed: boolean;
-  /** KV quantization is active (kvConfig/kvBits) — batched is bf16-only in v1. */
+  /** KV quantization is active. Per-layer configs may use the continuous
+   *  scheduler; uniform schemes use the serial mechanism. */
   kvQuant: boolean;
   /** TurboQuant is active (docs/design/turboquant-kv.md). Solo-only in v1:
    *  TurboQuantKVCache is a novel Cache implementation (not a KVCache/
@@ -124,9 +132,10 @@ export interface RequestShape {
   turboQuant: boolean;
   /** Any of the mlx-lm sampler/processor extensions is active: min_p, XTC,
    *  logit_bias, presence/frequency penalty. INFORMATIONAL ONLY: since the
-   *  batched lane grew per-row samplers/logits processors these all batch —
-   *  willBatch() deliberately does not gate on this field (see its
-   *  repetitionPenalty note). Kept so /stats and lane tracing can show what
+   *  continuous scheduler grew per-row samplers/logits processors, these all
+   *  compose. Placement deliberately does not gate on this field (see the
+   *  repetition-penalty note in #supportsContinuous). Kept so /stats and
+   *  scheduling traces can show what
    *  a request carries. */
   hasLogitsExtras: boolean;
   /** A grammar controller compiled for this request (response_format /
@@ -145,8 +154,17 @@ export interface RequestShape {
    *  upstream-parity: mlx_lm.server sets is_batchable = (draft is None), so
    *  every request routes serial while a draft is mounted — speculation is a
    *  B=1 latency optimization, batching a throughput one; they are different
-   *  modes by design (grammar-spec-batching-integration.md). */
+   *  mechanisms by design (grammar-spec-batching-integration.md). */
   hasDraft: boolean;
+}
+
+export type GenerationMechanism = "serial" | "continuous";
+
+/** One immutable scheduling declaration for one exact request shape.
+ *  `continuous` means scheduler admission, not that another row is present. */
+export interface GenerationPlacement {
+  readonly shape: RequestShape;
+  readonly mechanism: GenerationMechanism;
 }
 
 export class GenerationGateway {
@@ -159,6 +177,8 @@ export class GenerationGateway {
   #serialWaiters = 0;
   /** Lazy, memoized: can this model's caches do the dynamic-B ops? */
   #cacheBatchable: boolean | null = null;
+  /** Lazy, memoized: can the configured KV scheme convert every named cache? */
+  #kvSchemeBatchable: boolean | null = null;
   constructor(
     private readonly model: RuntimeModel,
     batch: number,
@@ -167,7 +187,7 @@ export class GenerationGateway {
       kvBudgetBytes?: number;
       /** The server-wide KV scheme (server.ts kvScheme) — threaded to the
        *  scheduler at construction when batchable (Phase 3.1). turboQuant is
-       *  never threaded to the scheduler (always solo-only — see willBatch);
+       *  never threaded to the scheduler (always solo-only — see placement);
        *  it's here only so the gateway can see it's active. */
       kvScheme?: KvScheme;
       /** The server's prompt cache (Phase 3.2): batch-lane joiners take()
@@ -279,12 +299,30 @@ export class GenerationGateway {
    *  kvBits (quantizedKvStart threshold semantics via the serial no-byLayer
    *  path) and configs naming SSM layers stay serial. */
   #kvBatchable(): boolean {
-    const scheme = this.opts.kvScheme;
-    return scheme?.kind === "affine-config" && scheme.batchable(this.model.config);
+    if (this.#kvSchemeBatchable === null) {
+      const scheme = this.opts.kvScheme;
+      if (scheme?.kind !== "affine-config") {
+        this.#kvSchemeBatchable = false;
+      } else {
+        const proto = this.model.makeCache();
+        try {
+          this.#kvSchemeBatchable = scheme.batchable(
+            this.model.config,
+            (layerIdx) =>
+              isPlainKvCache(proto[layerIdx]) || isRotatingPlainCache(proto[layerIdx]),
+          );
+        } finally {
+          for (const cache of proto) cache.dispose();
+        }
+      }
+    }
+    return this.#kvSchemeBatchable;
   }
 
-  /** Decide whether a request joins the batch or runs serially. */
-  willBatch(shape: RequestShape): boolean {
+  /** Whether the declared execution composition is implemented by the
+   *  continuous scheduler. This is a support check only: it never rewrites
+   *  MTP/drafting, KV, TurboQuant, grammar, adapters, or sampling. */
+  #supportsContinuous(shape: RequestShape): boolean {
     // DiffusionGemma is non-autoregressive — the batch scheduler assumes the AR
     // KV-cache decode path, so it always runs serially through generate().
     if (this.model instanceof DiffusionGemmaModel) return false;
@@ -318,6 +356,13 @@ export class GenerationGateway {
     );
   }
 
+  place(shape: RequestShape): GenerationPlacement {
+    return Object.freeze({
+      shape,
+      mechanism: this.#supportsContinuous(shape) ? "continuous" : "serial",
+    });
+  }
+
   /** Run `fn` with exclusive ownership of the GPU + shared model state (the
    *  serial lane's lock). THE single mutual-exclusion domain: the serial
    *  generation path, the curve /generate + /signal endpoints, and adapter
@@ -347,8 +392,13 @@ export class GenerationGateway {
     onToken: OnToken,
     vision: Vision | undefined,
     shape: RequestShape,
+    placement: GenerationPlacement,
     signal?: AbortSignal,
   ): Promise<GenerateStats> {
+    if (placement.shape !== shape) {
+      options.grammar?.dispose();
+      throw new Error("generation placement does not belong to this request shape");
+    }
     try {
       signal?.throwIfAborted();
     } catch (e) {
@@ -357,7 +407,7 @@ export class GenerationGateway {
       options.grammar?.dispose();
       throw e;
     }
-    if (!this.willBatch(shape)) {
+    if (placement.mechanism === "serial") {
       // Serial decode is an unbroken microtask chain (FFI + generator
       // resumes): without a periodic macrotask hop the event loop starves for
       // the WHOLE generation — /stats, /health, and new-connection accepts

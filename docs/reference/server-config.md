@@ -9,8 +9,8 @@ adapters admin) see [server-api.md](./server-api.md); this doc is about
 
 The flags are parsed in `serverRuntimeFlags()`
 ([src/cli.ts](../../src/cli.ts)); the runtime knobs live in
-`ServerOptions` ([src/server.ts](../../src/server.ts)). The two execution
-lanes (serial vs. `--batch N`) and the lane picker are in
+`ServerOptions` ([src/server.ts](../../src/server.ts)). The serial and
+continuous scheduling mechanisms and their declaration are in
 [src/serve/generation-gateway.ts](../../src/serve/generation-gateway.ts);
 the design rationale is in
 [docs/design/parallel-slots.md](../design/parallel-slots.md).
@@ -30,7 +30,7 @@ the design rationale is in
 | `--ssd-cache-verify` | (bool) | off | Verify every tensor hash on restore before it is copied in (roughly doubles restore reads) — integrity paranoia only; the header hash is always verified. |
 | `--ssd-demote-idle` | sec | `300` (with `--ssd-cache`) | Idle demotion (Layer 0): prompt-cache entries unused this long spill to the SSD tier and **free their GPU memory** — unified memory drains between agent bursts while every prefix stays reachable (the next hit restores via the bounded streamed copy, ~0.25 s for a 13.7k-token entry vs a 12 s re-prefill). Swept only when the engine is fully idle (never drains a running batch). `0` disables. |
 | `--batch` | n | `8` | Max concurrent requests decoded together. **Default flipped 1→8 (2026-07-05)** after GATE-B1-SPEED: a LONE request through the unified engine IS the serial engine — adopted serial-class caches, compiled decode, prompt cache + SSD restore, byte-identical output, 0.992–0.996 paired decode ratios — so the cap only changes behavior when concurrent requests actually arrive (the agentic sub-agent workload: 4–8 coding agents against one local server). `--batch 1` pins strict serial (arrival-independent numerics). See [Execution modes](#execution-modes-serial-vs---batch-n). `--decode-concurrency` is accepted for drop-in compatibility (mlx_lm.server's cap, default 32). |
-| `--kv-quant` | `config`\|`off`\|`4`\|`8`\|`turbo[:k<bits>v<bits>]` | `off` (bf16) | KV-cache quantization. **Default flipped to bf16 2026-07-05** (naked = L1): quantized KV measured 5–20% slower decode than bf16 at ≤16k on every model — on mlx-lm too — so it pays only in **memory headroom** (e.g. ~1.3 GB on the 12B @16k) and is an explicit opt-in (`--kv-quant …` or `--l2`, whose preset passes `config`). `off` = bf16 (L1). `4`/`8` = **uniform** bits (group 64, start 0) — the scheme mlx-lm exposes as `--kv-bits`/`--kv-group-size`/`--quantized-kv-start`. In the L1 kernel set (`--l1 --kv-quant 8` = fused-sdpa off) our unfused quantized SDPA is **op-for-op identical** to mlx-lm's `quantized_scaled_dot_product_attention`, so uniform-quant is **bit-exact L1** (the fused-sdpa-ON path is optiq-aligned). `config` = **per-layer mixed-precision** from `kv_config.json` — optiq-only, no mlx-lm analog → **L2**. `turbo[:k<bits>v<bits>]` = **TurboQuant** ([docs/design/turboquant-kv.md](../design/turboquant-kv.md)): rotation-based KV quantization (asymmetric-affine int8/int4/int2/int5 keys, FWHT + Lloyd-Max values) — default `k8v3` (2.56× compression at head_dim 128); `kBits` ∈ {2,4,5,8}, `vBits` ∈ {2,3,4,5,8}. A separate axis from the scheme above (mutually exclusive with `config`/`4`/`8`); v1 is dequantize-on-fetch (stock `ops.sdpa`, no fused kernel) and **full-attention layers only** — sliding-window layers stay bf16 (one-time warning, never a throw). Under `--batch N`, a per-layer `config` scheme **batches** — full-attention layers since Phase 3.1 (MiniCPM5), rotating/sliding layers since milestone 2 (gemma's whole kv_config), so every shipped `kv_config.json` now batches. The scheduler applies the mixed scheme per row, gated bit-exact per row vs the serial composition (`tests/batched-kv-quant-parity.test.ts` — compositions no other stack ships). Uniform `4`/`8` still routes those requests serial (quantizedKvStart threshold semantics). **`turbo` is solo-only, unconditionally** — `TurboQuantKVCache` is a novel `Cache` implementation (no merge/filter/temporalView), so it's excluded from the batch scheduler by construction; `GenerationGateway.willBatch` also refuses it explicitly (belt + braces — both layers exist on purpose). |
+| `--kv-quant` | `config`\|`off`\|`4`\|`8`\|`turbo[:k<bits>v<bits>]` | `off` (bf16) | KV-cache quantization. **Default flipped to bf16 2026-07-05** (naked = L1): quantized KV measured 5–20% slower decode than bf16 at ≤16k on every model — on mlx-lm too — so it pays only in **memory headroom** (e.g. ~1.3 GB on the 12B @16k) and is an explicit opt-in (`--kv-quant …` or `--l2`, whose preset passes `config`). `off` = bf16 (L1). `4`/`8` = **uniform** bits (group 64, start 0) — the scheme mlx-lm exposes as `--kv-bits`/`--kv-group-size`/`--quantized-kv-start`. In the L1 kernel set (`--l1 --kv-quant 8` = fused-sdpa off) our unfused quantized SDPA is **op-for-op identical** to mlx-lm's `quantized_scaled_dot_product_attention`, so uniform-quant is **bit-exact L1** (the fused-sdpa-ON path is optiq-aligned). `config` = **per-layer mixed-precision** from `kv_config.json` — optiq-only, no mlx-lm analog → **L2**. `turbo[:k<bits>v<bits>]` = **TurboQuant** ([docs/design/turboquant-kv.md](../design/turboquant-kv.md)): rotation-based KV quantization (asymmetric-affine int8/int4/int2/int5 keys, FWHT + Lloyd-Max values) — default `k8v3` (2.56× compression at head_dim 128); `kBits` ∈ {2,4,5,8}, `vBits` ∈ {2,3,4,5,8}. A separate axis from the scheme above (mutually exclusive with `config`/`4`/`8`); v1 is dequantize-on-fetch (stock `ops.sdpa`, no fused kernel) and **full-attention layers only** — sliding-window layers stay bf16 (one-time warning, never a throw). Under `--batch N`, a per-layer `config` scheme **batches** — full-attention layers since Phase 3.1 (MiniCPM5), rotating/sliding layers since milestone 2 (gemma's whole kv_config), so every shipped `kv_config.json` now batches. The scheduler applies the mixed scheme per row, gated bit-exact per row vs the serial composition (`tests/batched-kv-quant-parity.test.ts` — compositions no other stack ships). Uniform `4`/`8` still routes those requests serial (quantizedKvStart threshold semantics). **`turbo` is solo-only, unconditionally** — `TurboQuantKVCache` is a novel `Cache` implementation (no merge/filter/temporalView), so it's excluded from the batch scheduler by construction; `GenerationGateway.place` also refuses continuous scheduling explicitly (belt + braces — both layers exist on purpose). |
 | `--paged-kv` | (bool) | off | **OPTIONAL vLLM-style paged KV cache** ([docs/design/paged-kv-cache.md](../design/paged-kv-cache.md)): full-attention layers store K/V in fixed-size **block pools** (host-side block table, `ops.takeAxis` gather back to contiguous before the stock SDPA — no new attention math, no fused kernel in v1). Env: `MLX_BUN_PAGED_KV=1`. **Gated bit-exact vs the plain path** (`tests/paged-kv-parity.test.ts`: identical single-forward logits + identical 48-token greedy trajectory on the 12B). **v1 scope: serial batch=1, Gemma4-family, bf16** — with no explicit `--batch` the CLI pins `--batch 1`; the server **refuses** (fails startup, never silently downgrades) `--batch N>1`, any `--kv-quant`, and `--draft-model`; sliding-window layers keep the rotating scheme (mixed paged-full + rotating-sliding is the supported shape). Media (vision/audio) and LoRA-adapter **requests** are scoped OUT per request — they run the plain cache path (v1 non-goal cells), never a 400. Paged requests **bypass the prompt cache** (fresh caches per request; `--ssd-cache` sees nothing) and run **uncompiled decode** (a data-dependent block-list length can't shapeless-replay). Expect a small decode cost at batch=1 — the per-step gather copy buys nothing until the batched/CoW follow-ups; this ships the correctness-proven abstraction, honestly labeled. Pool sized from prompt+`max_tokens` at request setup; exhaustion is a typed error (accounting tripwire), never truncation. |
 | `--paged-kv-block-size` | n | `256` | Tokens per KV block (`--paged-kv` only). 256 = the plain cache's growth step, so v1's allocation granularity is a permutation of today's into reusable slots, not a new tuning axis. |
 | `--adapter` | dir | none | Mount a LoRA adapter at startup (same machinery as `POST /v1/adapters`; the adapter id is the directory's basename) and make it the **default** for requests that send no `adapter` field. A request's explicit `adapter` — including `"none"` — always wins, and hot-swap via `/v1/adapters` is unchanged. `--adapter-path` is accepted as the mlx_lm.server-named alias. A bad adapter fails startup loudly rather than silently serving the base model. This is the flag `mlx-bun train`'s completion message points at. |
@@ -146,12 +146,12 @@ exporting them now does nothing.)
 
 ## Execution modes: serial vs. `--batch N`
 
-Batching is **concurrency-driven** (default cap 8, flipped 2026-07-05): a
-lone request runs the exact serial engine — its caches are ADOPTED
-serial-class objects, compiled decode replays, the prompt cache and SSD
-tier serve it — and only a second concurrent request causes a batch
-layout to exist. "How many requests you send" is the batching decision;
-the flag is just the cap.
+Scheduling is **concurrency-driven** (default cap 8, flipped 2026-07-05): a
+lone scheduler request uses the B=1 fast path — its caches are adopted
+serial-class objects, compiled decode replays, and the prompt cache and SSD
+tier serve it. Only a second concurrent request causes a batch layout to
+exist. The flag declares the concurrency cap; active rows select B=1 or B=N
+inside the scheduler.
 
 `--batch 1` pins the strict serialized single-queue path: one generation
 at a time, arrival-independent numerics (a request's bits never depend on
@@ -175,23 +175,29 @@ row for bf16, and per-row oracle-gated for the quantized compositions
   serial lane (quantizedKvStart threshold semantics; a startup warning
   is printed).
 
-### The lane picker (`GenerationGateway.willBatch`)
+### Scheduling declaration (`GenerationGateway.place`)
 
-Under `--batch N`, each request is routed per-request. It joins the
-batch only if **all** of these hold; otherwise it drains the batch and
-runs solo (mlx-lm's `_is_batchable` behavior). The two lanes are
-mutually exclusive on the GPU (one `AsyncMutex`), so a serial-fallback
-request never runs alongside a batched step — but batched requests run
-concurrently with each other.
+`--batch` declares a concurrency cap. With a cap greater than one,
+`GenerationGateway.place()` freezes one scheduling mechanism for the exact
+resolved execution composition. `continuous` admits it to the scheduler; that
+scheduler chooses its B=1 fast path or B=N step from active rows. `serial`
+preserves the strict or dedicated executor. The support check never removes,
+downgrades, or substitutes MTP, KV schemes, TurboQuant, grammar, adapters, or
+sampling. A composition the scheduler does not implement drains it and runs
+unchanged through the serial mechanism.
 
-| Request property | Batches? |
+The two mechanisms are mutually exclusive on the GPU (one `AsyncMutex`), so a
+serial request never runs alongside a continuous step, while requests admitted
+to the continuous scheduler can run concurrently with each other.
+
+| Request property | Continuous scheduler? |
 | --- | --- |
 | vision (image parts) | ❌ serial — needs offset-0 single-seq prefill + bidirectional image mask |
 | LoRA `adapter` (resolves to ≥1) | ❌ serial — `loraState.active` is one per-generation field; per-row adapters unsupported |
 | `logprobs` / `top_logprobs` | ❌ serial — the batched sampler doesn't capture logprob arrays yet |
 | explicit `seed` | ❌ serial — reproducibility ⇒ solo (matches mlx-lm) |
 | KV quant active (explicit `--kv-quant`) | ✅ batches for per-layer `config` schemes — full-attention layers (Phase 3.1) AND rotating layers (milestone 2: gemma's kv_config; unpadded row gated KL-0 vs serial); uniform bits → serial |
-| `--kv-quant turbo` (TurboQuant) | ❌ serial, unconditionally — solo-only in v1 (novel `Cache` class, no batched merge/filter/temporalView; belt-and-braces refusal in `willBatch` on top of the automatic capability-gate exclusion) |
+| `--kv-quant turbo` (TurboQuant) | ❌ serial, unconditionally — solo-only in v1 (novel `Cache` class, no batched merge/filter/temporalView; belt-and-braces refusal in placement on top of the automatic capability-gate exclusion) |
 | `--draft-model` mounted | ❌ serial, server-wide — speculation is a B=1 latency mode (upstream `is_batchable = draft is None`) |
 | `repetition_penalty` / `min_p` / `xtc_*` / `logit_bias` / presence+frequency penalties | ✅ batches — per-row logits processors over a per-row device-side history (since 2026-07-02; some models — Qwen3.5 — ship a *default* repetition penalty, which used to route everything serial) |
 | structured output (`response_format` / `guided_*`) | ✅ batches — per-row grammar matchers driven by the scheduler (`MLX_BUN_GRAMMAR_BATCH=0` forces serial) |
@@ -201,7 +207,7 @@ concurrently with each other.
 | `--thinking` / `enable_thinking` | ✅ batches (template-render concern, lane-independent) |
 | multi-turn / long prompt | ✅ batches **with prompt-cache reuse** (Phase 3.2): a joiner restores the longest usable cached prefix and prefills only the suffix (`cached_tokens` reported); a request that finishes without ever sharing the batch puts its caches back. **Prefix sharing (2026-07-05): serves are non-consuming clones**, so concurrent agents with a shared system prompt all reuse one prefill and nobody's entry is destroyed. A row that merges with others is not re-put (its entry ages out) — heavy concurrency reduces hit rate, never correctness |
 
-**Which models batch:** full-attention (CPM), sliding-window (Gemma),
+**Which models use continuous scheduling:** full-attention (CPM), sliding-window (Gemma),
 hybrid gated-DeltaNet (Qwen3.5 — the SSM batched path, token-exact vs the
 mlx-lm B=2 oracle, landed 2026-07-02; `MLX_BUN_BATCH_SSM=0` reverts it to
 serial routing), and **plain full-attention Tier-0 universal archs**
@@ -210,23 +216,24 @@ Still serial by the model-level capability gate: gemma2-family and
 sliding-window *universal* archs (unvalidated cells) and DiffusionGemma
 (non-autoregressive).
 
-A non-batchable request **drains** the batch: while it waits, the
+A request requiring the serial mechanism **drains** the scheduler: while it waits, the
 scheduler stops admitting new rows, finishes the running ones, and
 releases the GPU so the serial request runs (mlx-lm's `drain_batch`);
 admission then resumes. So a steady stream of batchable traffic cannot
 starve a serial-lane request.
 
-`--batch N` is a **mode switch, not a load-dependent fallback**:
-auto-batching "when >1 request arrives" was considered and rejected —
-an idle vs. loaded server would produce different numerics for the same
-request, breaking determinism and the drop-in-for-`mlx_lm.server`
-promise.
+Placement is not a load-dependent fallback. A request admitted to the
+continuous scheduler stays there whether it is the only active row or one of
+many; arrivals select B=1 versus B=N *inside* that mechanism. `--batch 1`
+remains the arrival-independent numerics pin. This matches mlx-lm's
+concurrency-driven serving contract while keeping the strict serial route for
+goldens and compositions that need it.
 
 ## Compatibility matrix
 
-How each option behaves in each mode. "serial" = `--batch 1`; "`--batch N`"
-= the batched mode (a given request may still take the serial *lane*
-inside it per the table above).
+How each option behaves under each configured mechanism. "serial" =
+`--batch 1`; `--batch N` permits continuous scheduling, although a declared
+composition may still require the serial mechanism as shown above.
 
 | Option | serial (`--batch 1`) | `--batch N` (N>1) |
 | --- | --- | --- |

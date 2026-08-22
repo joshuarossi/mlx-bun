@@ -59,6 +59,7 @@ describe.skipIf(!optIn || !haveCpm)("batch scheduler — vectorized greedy sampl
             (t) => { got.push(t); },
             undefined,
             SHAPE,
+            gw.place(SHAPE),
           );
           return got;
         }),

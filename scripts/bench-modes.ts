@@ -11,8 +11,8 @@
 // Default model: gemma-4-e4b (resolved from the HF cache); --model overrides.
 //
 // CELLS (mode axis) — each is a server/env configuration over the same
-// loaded weights; env levers (compiled-decode, perf-kernel, fused-sdpa) are
-// read per-generation so they flip without reloading:
+// loaded weights; runtime levers (compiled-decode, perf-kernel, fused-sdpa)
+// are installed per cell so they flip without reloading:
 //   serial-l1            bf16 KV, no fused-sdpa       (mlx-lm bit-exact composition)
 //   serial-l2            config KV + fused-sdpa       (the shipped default)
 //   serial-l2-nocompile  l2 with compiled-decode OFF  (isolates compile's win)
@@ -44,6 +44,7 @@
 // promoting anything to benchmarks/RESULTS.md.
 
 import { existsSync, readdirSync } from "node:fs";
+import { configureRuntime, type RuntimeOverrides } from "../src/runtime-config";
 
 type Args = Record<string, string | boolean>;
 const args: Args = {};
@@ -161,7 +162,7 @@ const pct = (xs: number[], p: number): number => {
 // cell definitions
 interface Cell {
   name: string;
-  env: Record<string, string>;           // env levers for the cell
+  env: RuntimeOverrides;                 // runtime levers for the cell
   kvQuant?: "off" | "config" | number;   // server option
   batch: number;                          // server --batch
   concurrency: number;
@@ -230,8 +231,9 @@ const rows: CellRow[] = [];
 let nonce = 0;
 
 for (const cell of ALL_CELLS.filter(want)) {
-  // env levers for this cell (read per-generation by the runtime)
-  for (const [k, v] of Object.entries(cell.env)) process.env[k] = v;
+  // Install one immutable runtime snapshot for this cell. Feature code reads
+  // this interface, never process.env, so paired cells really take distinct paths.
+  const restoreRuntime = configureRuntime(cell.env);
   // spec cells mount the draft; others run without
   ctx.draft = cell.needsDraft && draftProvider ? { provider: draftProvider, numDraftTokens: 3 } : null;
   const ssdDir = `/tmp/mlx-bun-bench-ssd-${process.pid}`;
@@ -344,6 +346,7 @@ for (const cell of ALL_CELLS.filter(want)) {
     }
   }
   server.stop(true);
+  restoreRuntime();
 }
 ctx.draft = null;
 

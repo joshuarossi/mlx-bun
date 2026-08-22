@@ -54,7 +54,8 @@ describe("batch KV budget projection", () => {
     expect(configScheme.kind).toBe("affine-config");
     expect(configScheme.cacheKey).toBe("config");
     expect(configScheme.label).toBe("mixed (kv_config.json)");
-    expect(configScheme.batchable(config)).toBe(true);
+    expect(configScheme.batchable(config)).toBe(false);
+    expect(configScheme.batchable(config, () => true)).toBe(true);
 
     const uniform = resolveKvScheme({ override: 8 });
     expect(uniform.options).toEqual({ kvBits: 8, quantizedKvStart: 0 });

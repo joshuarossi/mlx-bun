@@ -36,6 +36,7 @@ Object.assign(globalThis, {
   MouseEvent: win.MouseEvent,
   CustomEvent: win.CustomEvent,
   DragEvent: win.DragEvent,
+  MutationObserver: win.MutationObserver,
 });
 
 export { win as testWindow };

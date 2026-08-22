@@ -1,8 +1,9 @@
 // One-off diagnostic (moved from repo-root _diag.ts): inspect the next unchunked
 // conversations in the wiki-full import DB and re-run segment on 5 of them.
-process.env.MLX_BUN_WIKI = `${process.env.HOME}/.mlx-bun/wiki-full`;
 import { MemoryStore } from "../../src/memory/db";
 import { runSegmentStage } from "../../src/memory/stages";
+import { configureRuntime } from "../../src/runtime-config";
+configureRuntime({ MLX_BUN_WIKI: `${process.env.HOME}/.mlx-bun/wiki-full` });
 const store = new MemoryStore();
 // size of the next few unchunked convs
 const next = store.db.query(
