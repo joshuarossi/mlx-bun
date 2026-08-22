@@ -150,6 +150,9 @@ export class GatedDeltaNet {
     const [B, S] = x.shape as [number, number, number];
     const convDim = this.keyDim * 2 + this.valueDim;
     const nKeep = this.convKernel - 1;
+    const prof = (globalThis as Record<string, unknown>).__deltaProf as
+      Record<string, number>
+      | undefined;
 
     // Armed speculative verify round (serve loop, serial lane): this forward
     // must be rewindable. Snapshot = hand the REPLACED state slots to the
@@ -164,11 +167,14 @@ export class GatedDeltaNet {
       spec.replay = (c, keep) => this.#replaySpecPrefix(c, keep);
     }
 
+    const t0 = prof ? performance.now() : 0;
     const qkv = this.inProjQkv.forward(x); // [B,S,convDim]
     let z = this.inProjZ.forward(x);
     z = disposing(z, ops.reshape(z, [B, S, this.numVHeads, this.headVDim]));
     const b = this.inProjB.forward(x); // [B,S,numVHeads]
-    const a = this.inProjA.forward(x); // [B,S,numVHeads]
+    const a = this.inProjA.forward(x);
+    if (prof) { ops.evalAll([qkv, z, b, a]); prof.proj = (prof.proj ?? 0) + performance.now() - t0; }
+    const tc = prof ? performance.now() : 0; // [B,S,numVHeads]
 
     // Causal depthwise conv with the conv-state prefix (B=1: no ssm mask).
     const convState =
@@ -194,6 +200,8 @@ export class GatedDeltaNet {
     convInput.dispose();
     const convOut = compiledSilu(conv); // nn.silu (mx.compile), matches mlx-lm
     conv.dispose();
+    if (prof) { ops.evalAll([convOut]); prof.conv = (prof.conv ?? 0) + performance.now() - tc; }
+    const tn = prof ? performance.now() : 0;
 
     const [qFlat, kFlat, vFlat] = ops.split(
       convOut, [this.keyDim, 2 * this.keyDim], -1,
@@ -211,10 +219,14 @@ export class GatedDeltaNet {
     q = disposing(q, ops.mulScalar(q, invScale * invScale));
     k = disposing(k, ops.rmsNorm(k, null, 1e-6));
     k = disposing(k, ops.mulScalar(k, invScale));
+    if (prof) { ops.evalAll([q, k]); prof.norms = (prof.norms ?? 0) + performance.now() - tn; }
+    const tk = prof ? performance.now() : 0;
 
     const [out, newState] = gatedDeltaUpdate(
       q, k, v, a, b, this.aLog, this.dtBias, cache.recurrent,
     );
+    if (prof) { ops.evalAll([out]); prof.kernel = (prof.kernel ?? 0) + performance.now() - tk; }
+    const to = prof ? performance.now() : 0;
     q.dispose();
     k.dispose();
     v.dispose();
@@ -238,6 +250,7 @@ export class GatedDeltaNet {
     gated.dispose();
     const result = this.outProj.forward(merged);
     merged.dispose();
+    if (prof) { ops.evalAll([result]); prof.out = (prof.out ?? 0) + performance.now() - to; }
     return result;
   }
 
@@ -251,8 +264,7 @@ export class GatedDeltaNet {
    *  free and skipped: only the states matter here. */
   #replaySpecPrefix(cache: SSMCache, keep: number): void {
     const r = cache.specRound;
-    if (!r || !r.qkv || !r.a || !r.b)
-      throw new Error("GatedDeltaNet replay without recorded round inputs");
+    if (!r || !r.qkv || !r.a || !r.b)      throw new Error("GatedDeltaNet replay without recorded round inputs");
     const B = r.qkv.shape[0]!;
     const convDim = this.keyDim * 2 + this.valueDim;
     const nKeep = this.convKernel - 1;
@@ -616,11 +628,20 @@ export class Qwen35Model {
       setActiveMrope(mropeFwd);
     }
     let h: MlxArray | null = h0;
+    const prof = (globalThis as Record<string, unknown>).__deltaProf as
+      Record<string, number>
+      | undefined;
     try {
       for (let i = 0; i < this.layers.length; i++) {
+        const tl = prof ? performance.now() : 0;
         const next = this.layers[i]!.forward(h, faMask, cache[i]!);
         h.dispose();
         h = next;
+        if (prof) {
+          ops.evalAll([h]);
+          const key = this.layers[i]!.isLinear ? "layerLin" : "layerFull";
+          prof[key] = (prof[key] ?? 0) + performance.now() - tl;
+        }
         this.captureLayer(i, h); // native-MTP pre-final-norm tap (no-op unless set)
       }
       const out = disposing(h, this.finalNorm.forward(h));

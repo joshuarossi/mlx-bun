@@ -3015,36 +3015,153 @@ those seams directly.
       are green, the PR is merged, no server remains running, and this phase
       plus its active execution-seam design doc move to the archive.
 
-## agg×4 regression — root-caused and fixed `[x]` (2026-08-22)
+## Prefill vs mlx-lm — paired re-measurement + root-cause sweep `[x]` (2026-08-22)
 
-Found via the 2026-08-22 serve h2h: e4b at 4 concurrent short streams read
-19-27 tok/s aggregate (vs mlx-lm 107) with rows dying after 1-2 tokens —
-silent SSE close, no finish frame; `--batch 1` healthy at 52; pre-merge
-`2f24caa` healthy at **122.5 tok/s** with true batching (~2.3× serial).
-Bisect over the consolidation commits isolated **`443f333` ("route batch
+Question: do we win prefill? (Josh: decode already wins; prefill was the open
+flank.) Method: interleaved fresh-process pairs via `scripts/bench.ts` /
+`--baseline` (bf16 KV, identical filler+template conventions, medians),
+plus in-process sweeps (`scripts/experiments/prefill-chunk-ab.ts`), a
+weight-residency A/B, logits-level chunk-size probes
+(`scripts/experiments/prefill-logits-ab.ts` + python twin), and one served
+h2h pass. Machine was NOT quiet (ambient loadavg ~3, Chrome/Spotlight
+bursts) — ratios within a window are usable, absolute levels are not;
+backing rows in the eval DB.
+
+**Served prefill: WE WIN, post-consolidation confirmation** (e4b, real
+servers): prefill@1k **1143 vs 866 tok/s (+32%)**, warm TTFT **39 vs 230 ms**
+(5.9×), cold TTFT 578 vs 772 ms, decode 53.9 vs 50.3, both parity probes
+byte-identical. The engine-level deltas below never survive to the product
+surface — their server tax dominates.
+
+**Engine-direct: parity within noise on every model/context except two
+reproducible cells.** cpm5 parity everywhere (−2%..+6%); 12B −1..−2% ≤1k,
+−0.6% @16k, and −5..−8% @4k/8k ONLY in noisy windows — controlled re-runs
+(same-hour singles 232.8 vs 238.1; in-process sweeps 225-233 vs 224)
+overlapped bands; the morning deficit did not survive protocol changes.
+26B: parity @1024; ≥4k OOMs on BOTH stacks on 24 GB (capacity fact, not a
+defeat). Reproducible residuals, both FRESH-PROCESS-only: e4b @256 tok
+−12.5% (~30 ms/call fixed cost; in-process only −4%) — candidate host-side
+graph-build overhead through bun:ffi vs pybind; low priority given the
+served surface. Decode meanwhile reads +7..14% for us in every window
+(consistent with the June residual being resolved by later work).
+
+**Root-cause hunt (why python sits stable while we swing):** found their
+structural difference — `mlx_lm.load_model(lazy=False)` runs
+`mx.eval(model.parameters())`, COPYING every weight out of the file mmap
+into allocator-owned buffers at load (measured: eval of an mmap-backed
+array is a real copy; full 12B = 1.48 s inside their 37 s ready time). We
+keep mmap-wrapped arrays forever (we only eval outputs). Hypothesized this
+explains their generation-phase stability; implemented the mirror behind
+`MLX_BUN_WEIGHTS_MATERIALIZE` and ran an interleaved OFF/ON A/B ×6 @12B-8k:
+**NULL** (medians 216 vs 216) → flag REVERTED, hypothesis dead as measured.
+Also killed: file-cache eviction (cat-ing shards through page cache did not
+restore speed), warm-in (sweep rep0 ≈ steady), kernel compile (same),
+chunk-boundary accounting (drain-loop conventions verified identical:
+2048 chunks, drain-to-len−1 tail split, clear_cache per chunk).
+
+**Chunk-size lever: dead for L1, by Josh's logits test.** Smaller chunks
+are faster in-process (512/1024 beat 2048 by up to +9% @12B-8k) AND
+bit-deterministic at fixed size, BUT logits drift when the convention
+changes — and PYTHON DRIFTS MORE (max|Δlogit| ours 0.99/1.81 @1024/512 vs
+theirs 4.16/1.31; determinism controls exactly 0 both sides). Intrinsic mlx
+reduction-order sensitivity to SDPA key-axis tiling. Since outputs are
+convention-pinned, deviating from 2048 breaks bit-parity with mlx-lm
+defaults → not an L1 win; earlier "identical greedy trajectories" was
+argmax robustness, not bit equality. (Probe gotcha worth remembering:
+`Dtype` from ffi.ts is a const enum with lowercase members — a wrong-cased
+member is `undefined` at runtime under bun and silently skips the cast.)
+
+**Follow-ups opened:** (1) e4b agg×4 anomaly in today's serve pass — ours
+26.6 vs mlx-lm 107.3 tok/s aggregate at 4 concurrent streams despite
+winning single-stream decode; possible batch-lane regression from the
+consolidation merge, needs its own eyes before any claim. (2) bench-harness
+padding drift: our filler loop stops ~7 tokens short of python's on some
+tokenizers (267 vs 274 @e4b) — template/counting nuance, makes py wins
+conservative, but benchmark.sh's prompt_tokens-equality check would flag it.
+(3) Quiet-box confirmation of the served row before quoting absolutes.
+
+## Qwen3.8 prefill — measurement + analysis `[~]` (2026-08-22 evening)
+
+Question (Josh): "for qwen, our performance might not be optimal." Subject:
+`mjriii/Qwen3.8-27B-compact` (13 GB — the only Qwen3.8 artifact that fits
+24 GB; the 19 GB OptiQ-4bit OOMs the GPU on BOTH stacks here). Architecture:
+64 layers = 48 gated-DeltaNet linear + 16 full attention; mixed 4/8-bit
+affine quant. Machine quieted (Chrome/Battle.net killed). Method: paired
+fresh-process `bench.ts` + in-process sweeps + phase profiling.
+
+**Measured landscape (bf16 KV, paired, prefill tok/s):**
+
+| ctx | ours | mlx-lm | Δ |
+|---:|---:|---:|---:|
+| ~256 | 94.3 | 107.7 | **−12.5%** |
+| ~1024 | 102.8 | 113.8 | −9.7% |
+| ~4096 | 94.2 | 72.7 | **+29.6%** |
+
+Decode +17% for us (@256: 21.2 vs 18.1). So: we LOSE short-context by a
+constant-ish ~10-13 tok/s, WIN long-context (python degrades with chunk
+count, we hold flat).
+
+**Root-cause work so far:**
+- Delta-rule scan is NOT the gap: we dispatch mlx-lm's exact Metal kernel
+  (same grid/threadgroup/template), unmasked at B=1 both sides; kernel
+  sync-profile ≈ 2.8 ms/layer ×48 ≈ 130 ms/chunk.
+- Decode arithmetic proves bandwidth ceiling reached (13 GB / 47 ms step ≈
+  276 GB/s); prefill wall (~2.5-3.3 s @S=300) is dominated by QUANTIZED
+  MATMUL COMPUTE over S (qkv alone ≈ 31 GFLOP/layer), i.e. both stacks are
+  qmm-throughput-bound and sit tens of times off any bandwidth roofline.
+  Our deficit is a uniform per-op efficiency delta vs pybind dispatch of
+  the same mlx primitives — not one bad kernel.
+- mx.compile experiment — CLOSED NEGATIVE (2026-08-22 night). Compiling the
+  state-free delta core per layer, two variants measured: (a) weights
+  closure-captured → +~8-10% steady BUT peak 14.3→22 GB (mlx bakes closed-
+  over arrays into each compiled graph; 48 layers duplicated ~half the
+  weights); (b) weights as trace INPUTS → memory fixed (14.9 GB) but the
+  speed win VANISHED (~66 vs ~72 tok/s default) — proving the "+10%" was
+  RAM-for-speed trading (constant baking), not dispatch reduction. Bit-exact
+  trajectories in all variants. Conclusion: prefill is qmm-COMPUTE-bound;
+  compile doesn't reduce qmm compute. Path stripped; phase profiler kept
+  (env-gated via `__deltaProf`, zero cost when unset).
+
+**Improvement roadmap (revised):**
+1. Find the ~10% per-op qmm/dispatch efficiency delta vs python (candidate:
+   our FFI outArray/error handling per op; candidate: mlx-c dylib build vs
+   pip mlx codegen differences). A uniform win here lifts EVERY model's
+   prefill. NOTE: this is now the only open lever for short-context Qwen.
+2. Python's long-context degradation (113.8@1k → 72.7@4k) is unexplained;
+   understanding it may reveal a lever we already have (we hold flat).
+3. The 27B full-size artifacts OOM both stacks on 24 GB — capacity note,
+   not actionable.
+
+## agg×4 regression — root-caused and fixed `[x]` (2026-08-22, same day)
+
+The lead above was real and is closed. Symptom: unified-engine serve at 4
+concurrent short streams = 19-27 tok/s aggregate with rows dying after 1-2
+tokens (silent SSE close, no finish frame); `--batch 1` healthy at 52;
+pre-merge `2f24caa` healthy at **122.5** tok/s with true batching (~2.3×
+serial). Bisect over the merge commits isolated **`443f333` ("route batch
 rows by cache capability")**.
 
 Root cause: `BatchedRotatingCache` (bf16) has no `signature()` override, so
 `cacheSignature()` → `"unknown"`. 443f333 routed the running batch's cache
 into the rot-merge through `isRowBatchCache(prevC) && isRotatingPlainCache(prevC)`
 — the second conjunct is false for EVERY bf16 batched cache → `prevRot`
-evaluated undefined → joiners merged WITHOUT the running row's KV → the
-next full-B decode step crashed in `updateAndFetch`'s grow-path concatenate
-(`(1,2,23,256)` vs `(4,2,256,256)`) → whole-batch drop. The quantized
-variant escaped because `BatchedRotatingQuantCache extends
-RotatingQuantizedKVCache` and inherits a real signature. Lesson: signature-
-based routing requires every routable class to HAVE a signature — "unknown"
-must be treated as a bug, not a route.
+undefined → joiners merged WITHOUT the running row's KV → next full-B decode
+step crashed in `updateAndFetch`'s grow-path concatenate (`(1,2,23,256)` vs
+`(4,2,256,256)`) → whole-batch drop. The quantized variant escaped because
+`BatchedRotatingQuantCache extends RotatingQuantizedKVCache` and inherits a
+real signature. Lesson: signature-based routing needs every class to HAVE a
+signature — "unknown" must be treated as a bug, not a route.
 
-Fix (src/serve/batch-scheduler.ts): within the `"rot"` merge branch, route
-by capability alone — `isRowBatchCache(prevC)` — since the quant family is
-dispatched by its own earlier branch. Post-fix e4b CONC×4 = 122-126 tok/s
-aggregate, all rows finish=length (matches pre-merge); cpm5 547 tok/s agg;
-12B all-rows-complete. Regression pinned by tests/batch-rotating-join.test.ts
-(gated, `MLX_BUN_TEST_BATCH_DECODE=1`; fails pre-fix with the exact
-concatenate shapes, passes post). Coverage gap that let this slip: batch
-unit tests only exercised full-attention CPM; the rotating join path now
-has its own test.
+Fix (one hunk, src/serve/batch-scheduler.ts): within the `"rot"` branch,
+route by capability alone — `isRowBatchCache(prevC)` — since the quant
+family is dispatched by its own earlier branch. Post-fix e4b CONC×4 =
+122-126 tok/s aggregate, all rows finish=length (matches pre-merge);
+cpm5 547 tok/s agg; 12B all-rows-complete. Regression pinned by
+tests/batch-rotating-join.test.ts (gated, `MLX_BUN_TEST_BATCH_DECODE=1`;
+fails pre-fix with the exact concatenate shapes, passes post). Full gated
+batch family + tsc green. Coverage gap that let this slip: batch unit tests
+only exercised full-attention CPM; the rotating join path now has its own
+test.
 
 ## Context / lore
 
