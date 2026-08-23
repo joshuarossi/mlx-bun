@@ -1118,6 +1118,253 @@ Matrix: stacks {mlx-bun, mlx-lm, mlx-optiq} × models {e4b, 12B,
   prompt tokens after an observed durable flush; full clean 16k numbers wait
   for the benchmark preflight to clear.
 
+### Phase 15e — prompt-to-response attribution + prefill optimization `[x]` (consolidated 2026-08-22, closed 2026-08-23)
+
+This phase combines two related efforts. The Qwen prefill investigation on
+`origin/chore/qwen-prefill-analysis` (`545e935`) already measured the engine
+and eliminated several proposed fixes. The prompt-to-response work measures
+the surrounding server path. Do not repeat the closed experiments. Use the
+end-to-end trace to decide whether the remaining work belongs in server code
+or native MLX execution.
+
+The serve benchmark currently computes prefill throughput as
+`prompt_tokens / client-observed TTFT`. That is the right product number, but
+it combines request handling, prompt preparation, queueing, cache work, MLX
+graph construction and evaluation, first-token sampling, serialization, and
+the localhost hop.
+
+**Evidence already established `[x]`:**
+
+- e4b served prefill at approximately 1k measured 1,143 versus 866 tok/s
+  (+32%), while engine-direct results were generally at parity. Server-level
+  work can therefore dominate the product comparison at short context.
+- The 13 GB Qwen3.8 compact artifact measured 94.3 versus 107.7 tok/s at
+  approximately 256 tokens (-12.5%), 102.8 versus 113.8 at approximately 1k
+  (-9.7%), then 94.2 versus 72.7 at approximately 4k (+29.6%). Its decode was
+  17% faster. This disproves one universal monotonic scaling story: artifact
+  and chunk count matter.
+- Qwen prefill is quantized-matmul compute-bound. The DeltaNet scan uses the
+  same Metal kernel as mlx-lm and accounts for only about 130 ms per chunk.
+  Full weight materialization was a null result. Smaller prefill chunks were
+  sometimes faster but changed logits, so they are not an L1 optimization.
+- `mx.compile` is closed negative for this path. Captured weights bought about
+  8-10% at a roughly 8 GB memory cost; passing weights as inputs removed the
+  memory cost and the speedup. The experimental path was removed.
+- Bun 1.4 profiling further weakens the FFI-overhead theory: `outArray`
+  accounted for 18.6 ms in a 22.67 s Qwen process, `forwardLayers` host work
+  for 64 ms, and native MLX evaluation for 98% of samples. Do not optimize FFI
+  without new timing evidence that contradicts this profile.
+
+**Working diagnoses to falsify:**
+
+- D1: e4b's short served advantage is mainly lower fixed server work around an
+  engine prefill that is otherwise close to mlx-lm.
+- D2: Qwen compact's short deficit is inside native quantized operations or
+  their submitted graph shapes, not HTTP, tokenization, FFI call overhead, the
+  DeltaNet scan, weight paging, or compilation.
+- D3: Qwen's long-context crossover comes from mlx-lm degrading with chunk
+  count while mlx-bun stays flat. Measure each chunk instead of inferring this
+  from request totals.
+
+- [x] **P2R0 — define one timing contract.** Give every request a benchmark
+      trace id and record monotonic durations at these product
+      boundaries: client dispatch to handler entry; body read + JSON parse;
+      validation + chat rendering + tokenization; placement + admission wait;
+      prompt-cache lookup/restore; uncached prefill; final hidden to lm head to
+      sample/readback of token 0; detokenization + stop/tool processing; SSE
+      serialization/write; client receipt of the first event. Continue the
+      same trace through steady decode, final-token processing, usage/final
+      frame, and socket close. Define cache-hit, partial-hit, and miss as
+      separate rows. Do not infer server stage times by subtracting unrelated
+      benchmark runs. **DONE 2026-08-23:** versioned `[p2r]` JSONL contract in
+      `src/serve/prompt-response-trace.ts`. Leaf stages are additive; named
+      totals and per-chunk detail are containers/children and are never summed
+      twice. Request traces are passed explicitly because batched rows
+      interleave and cannot use ambient async context.
+- [x] **P2R1 — instrument mlx-bun behind a diagnostic switch.** Add a small
+      request-local span recorder at the HTTP handler, `CompletionExecutor`,
+      serial generation loop, `BatchScheduler` admission/prefill path, token
+      sink, and response writer. Inside prefill, break out token-array setup,
+      each model-forward enqueue, MLX evaluation/readback wait, KV conversion,
+      `clearCache`, prompt-cache snapshot/restore, and token-0 lm-head/sample.
+      Record per-chunk timings so D3 is directly testable. Emit structured JSON
+      after the response so ordinary SSE bytes and the public API remain
+      unchanged. Instrumentation must be absent when the switch is off.
+      **DONE 2026-08-23:** `MLX_BUN_P2R_TRACE=1`; absent means no recorder is
+      allocated. HTTP, executor, gateway, serial, and continuous paths emit
+      request preparation, placement/admission, cache, batch setup, prefill
+      wall + chunks/KV work, token zero, and first/final write records.
+- [x] **P2R2 — mirror the spans in mlx-lm without modifying the oracle venv.**
+      Build a benchmark-only Python launcher that imports the pinned server and
+      wraps `APIHandler`, `ResponseGenerator._tokenize`, `BatchGenerator`,
+      `GenerationBatch`, cache lookup, detokenization, and response writes.
+      Use the same trace schema and semantic boundaries. Record any boundary
+      that cannot be matched exactly instead of comparing unlike spans.
+      **DONE 2026-08-23:** `scripts/oracle-p2r-serve.py` imports and wraps the
+      pinned install at runtime, including the optiq registration route needed
+      by the 12B. The oracle venv is untouched. Python body parsing precedes
+      the wrapped request object, so that boundary is explicitly unavailable
+      rather than compared to mlx-bun.
+- [x] **P2R3 — run two separate modes.** Product mode keeps both servers'
+      normal asynchronous execution and measures critical-path wall time.
+      Attribution mode inserts `mx.synchronize()` around model forward, KV
+      maintenance, lm-head, and sampling boundaries to isolate completed MLX
+      work. Synchronized results are diagnostic because the barriers change
+      overlap. Capture one representative Metal System Trace per model to
+      expose GPU idle gaps; profiler-attached timings are not headline results.
+      **DONE 2026-08-23:** the 1,290-row product trace and 135-row synchronized
+      diagnostic trace are in `reports/prompt-response-{rerun,attribution}-2026-08-23-forced.{jsonl,md}`.
+      `reports/p2r-metal-five-models-2026-08-23.trace` contains one
+      profiler-attached 1k request for every model in one 145.6-second Metal
+      System Trace; those timings are excluded from the product medians.
+- [x] **P2R4 — measure a token-controlled matrix.** Compare mlx-bun unified,
+      mlx-bun `--batch 1`, and mlx-lm on MiniCPM, e4b, 12B, the standard Qwen
+      4/8-bit winner, and the 13 GB Qwen compact artifact at 128, 256, 1,024,
+      4,096, and approximately 16k prompt tokens where each model fits. Use
+      identical token ids or assert identical `usage.prompt_tokens`; generate
+      one token for prefill attribution and 64 tokens for the full response
+      path. Measure warm-loaded cache misses first, then full and partial cache
+      hits; keep process load/page-in separate. Alternate stack order, run the
+      canonical quiet-machine preflight, discard warmups, and collect at least
+      seven short samples and three long samples per cell. **DONE 2026-08-23:**
+      all five models, three arms, five target lengths, three cache states, and
+      the one-token/64-token paths completed with exact cross-arm prompt-token
+      counts. Each repetition and cache scenario owned a fresh warm-loaded
+      process, and arm order rotated. The run was explicitly forced after the
+      preflight rejected 582 MB of historical swap; memory was 94% free, load
+      approximately 1.1, and no large foreign process was present. Retain that
+      waiver in every citation rather than calling it a canonical preflight pass.
+- [x] **P2R5 — validate the observer.** Paired tracing-off/on runs must keep
+      median TTFT and decode throughput within 2%. Server spans plus the
+      client-minus-server remainder must reconcile to client TTFT within the
+      larger of 2 ms or 2%. Add model-free tests for span ordering, exactly-once
+      closure on success/error/abort, schema compatibility across both stacks,
+      and zero trace output when disabled. **DONE 2026-08-23:** the paired
+      observer run measured TTFT +0.32% and 64-token total -1.95%, inside the
+      2% gate. The focused 43-test trace/serve suite passes, TypeScript is
+      clean, and every recorded row reconciles server-first plus client
+      remainder to client TTFT.
+- [x] **P2R6 — isolate the remaining Qwen operation gap.** Only if P2R1-P2R5
+      still place the short-context loss inside synchronized MLX work, dump the
+      exact inputs and metadata for representative quantized matmuls and replay
+      them in Bun and Python. Match shapes, dtype, strides, stream, warmup, and
+      synchronization. Compare library/build identity, Metal kernel name and
+      grid, command-buffer count, allocation behavior, external-mmap versus
+      allocator-owned inputs, and per-op scaling with sequence length. This is
+      the decision point for a layout fix, graph-shape fix, MLX build alignment,
+      or upstream report. It is not permission to retry weight materialization,
+      chunk-size changes, compile, or generic FFI cleanup without new evidence.
+      **DONE 2026-08-23:** a forced-evaluation split first put the standard 1k
+      miss at about 1,470 ms in the final L=1 transformer forward, 14 ms in the
+      output head, and under 1 ms in sampling/readback. Head-only replay ruled
+      the head out. The apparent graph/buffer-lifetime clue was then falsified
+      by a controlled cache-disabled Python replay: the same L=1 forward took
+      about 1,638 ms without a wired limit and 61.3 ms after mlx-lm's normal
+      `set_wired_limit(max_recommended_working_set_size)`. Bun measured about
+      1,483 ms unwired and 55 ms wired. The actual difference was policy, not
+      token arithmetic or a Bun/MLX execution-strategy defect. macOS now reports
+      a 26,800,603,136-byte recommended working set on this host; the old 75%
+      threshold was therefore about 20.1 GB and classified neither the
+      17,015,296,020-byte standard plan nor the 13,915,442,961-byte compact plan
+      as large. mlx-lm's `BatchGenerator` wires unconditionally. A diagnostic
+      GPU marker looked promising only because that run also forced wiring;
+      holding wiring off left the marker at about 1.97 s, so it was removed.
+- [x] **P2R7 — implement one proven lever and re-run the matrix.** Require a
+      paired win against the current L1 path, bit-exact logits and trajectories,
+      no memory regression, and no loss in decode or concurrent serving. If the
+      gap belongs to MLX itself and no local parity-preserving lever wins,
+      record that result rather than adding a permanent workaround. **DONE
+      2026-08-23:** lower the large-model threshold from 75% to 50% of MLX's
+      recommended working set, preserving the 8-9 GB class as unwired while
+      covering both Qwen artifacts, and hold the same re-entrant wired scope
+      around continuous scheduler GPU ownership as serial generation. Default
+      direct replay now measures 55.7 ms for the standard final forward and
+      54.0 ms for compact (58.5/56.7 ms through head + sample), with the same
+      next token (1365) before and after. The machine-local full-logit golden is
+      absent, so that check could not run; the change only adjusts OS residency
+      and does not alter graph shapes or numerical operations. Three-run 1k
+      cache-disabled HTTP medians are 12,611.1 ms mlx-bun versus 12,844.8 ms
+      mlx-lm for standard, and 12,697.7 versus 12,932.1 ms for compact. Token
+      zero is 59.1/58.2 ms versus 123.3/122.6 ms. Continuous and serial results
+      agree, and 64-token runs show about 18.1 tok/s for both mlx-bun artifacts
+      versus 16.3/15.2 tok/s for mlx-lm. At approximately 17.2k tokens, standard
+      is 195.36 versus 195.95 s (+0.30%) and compact is 198.08 versus 198.49 s
+      (+0.21%): practical ties with no long-context regression. Focused tests
+      and TypeScript pass. The rejected 512-token chunk lever remains rejected;
+      it is unnecessary and numerically different.
+- [x] **P2R8 — report causes, not just totals.** Produce an additive table and
+      stacked plot for every prompt length: ingress, prompt preparation, queue,
+      cache, prefill host work, synchronized MLX work, token-0 work, response
+      formatting/write, and client remainder. Include per-chunk prefill timing,
+      medians, spread, and raw milliseconds. Store raw traces with the eval
+      record; promote quiet-machine conclusions to `benchmarks/RESULTS.md` and
+      record which of D1-D3 survived here. **DONE 2026-08-23 for the forced
+      local run:** the Markdown reports are additive, the 360-row reduced data
+      is `reports/prompt-response-waterfall-2026-08-23.json`, and the verified
+      interactive waterfall includes product/synchronized modes, every model,
+      miss/full/partial cache states, min-max spread, raw stage milliseconds,
+      and per-chunk timing. The swap waiver prevents promotion to curated
+      `benchmarks/RESULTS.md`; rerun unchanged after a canonical preflight for
+      that final publication step.
+
+**P2R bring-up findings (2026-08-23, non-quotable harness validation):**
+
+- The real-server schema and lifecycle work on MiniCPM across unified,
+  `--batch 1`, and the Python oracle; deterministic cross-arm prompts now pass
+  exact `usage.prompt_tokens` equality. The initial random-nonce smoke was
+  rejected by that gate as designed and was not used.
+- One-sample MiniCPM validation exposed a large named support cost in mlx-lm:
+  roughly 55-65 ms before prompt-forward work while constructing/merging its
+  `PromptProcessingBatch`, including on a full prompt-cache hit. mlx-bun's
+  corresponding setup was about 1 ms. This is a lead for D1, not a result;
+  the quiet seven-sample matrix is required.
+- Product-mode `prefill.total` is critical-path wall time. `prefill.chunk`
+  measures actual prompt-forward calls and `prefill.batch_setup` measures
+  cache/batch construction; the remaining difference is scheduler/inter-chunk
+  gap. `--attribution` enables matched MLX synchronization barriers and is
+  diagnostic only.
+
+**Corrected product findings (2026-08-23 forced local matrix):**
+
+- **D1 survives.** On e4b at 158 measured tokens, prompt-forward work was
+  effectively identical (197.3 ms mlx-bun versus 196.8 ms mlx-lm). The 44%
+  end-to-end win, 221.6 versus 394.1 ms, came from mlx-lm's 156.9 ms support
+  gap plus a 19.1 ms token-zero advantage. At 15,392 tokens the model work
+  dominates: 17,565.6 versus 17,479.8 ms total, a 0.49% mlx-bun loss and a
+  practical tie. The old three-sample claim that mlx-bun was 3% faster at 15k
+  was noise and is superseded.
+- **D2 is falsified and the exception is closed.** Standard Qwen's original
+  1k loss was almost entirely `token_zero.total`, but matched cache-disabled
+  Bun/Python replays show it was caused by mlx-bun's stale large-model wiring
+  threshold after the OS-reported recommended working set increased. With the
+  corrected policy, standard Qwen's three-run 1k TTFT is 1.82% faster and its
+  token-zero stage is about 64 ms faster than mlx-lm. Compact is likewise 1.81%
+  faster. Prompt-forward chunks were already at parity; no quantized operation,
+  graph-shape, or scheduler deficit remains at short context.
+- **D3 is falsified.** Fresh-process per-chunk traces show no special mlx-lm
+  degradation with chunk count. Standard Qwen converges from a 9.79% mlx-bun
+  loss at 1k to 2.32% at 4k and 0.63% at 16k; the 13 GB compact artifact is
+  within 1.34% from 1k onward and within 0.20% at 16k. Both stacks converge as
+  fixed work becomes insignificant.
+- The corrected Qwen result supports the performance-replacement claim. At 1k,
+  both the standard and 13 GB compact artifacts are about 1.8% faster than
+  mlx-lm; at approximately 17.2k, the one-run leads are 0.30% and 0.21%, which
+  are practical ties. The existing MiniCPM/e4b/12B matrix likewise showed wins
+  or ties at long context. No measured cache-disabled prefill or decode cell now
+  shows a material mlx-bun regression. Full prompt-cache hits remain a separate
+  product capability and are not used to explain this fix.
+- Two rejected harness designs are part of the result. Retaining one process
+  across repetitions caused Qwen TTFT drift from 3.4 to 8.3 seconds; retaining
+  unrelated 16k miss/full and partial caches together OOM'd the Python oracle.
+  Fresh process per repetition *and* per cache scenario removed both biases.
+
+**Exit criterion:** client-observed TTFT is reconciled to named stages at short
+and long context for every standard model and both Qwen artifacts; tracing
+overhead passes the 2% gate; mlx-bun and mlx-lm use matched boundaries; the
+Qwen short-context deficit is either closed without a parity/memory regression
+or assigned to a reproduced native cause; and no already-falsified experiment
+is repeated.
+
 ### Phase 15 — PRE-REGISTERED cross-machine predictions (2026-06-10)
 
 Written down BEFORE any second-machine run. Two findings, two

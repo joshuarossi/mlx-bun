@@ -12,6 +12,10 @@ describe("generation wired-limit policy", () => {
     expect(modelNeedsWiredLimit(model, 20, false)).toBe(false);
   });
 
+  test("wires models above half the recommended set", () => {
+    expect(modelNeedsWiredLimit({ weightsBytes: 11 }, 20, false)).toBe(true);
+  });
+
   test("uses the complete streamed execution plan when present", () => {
     const model = {
       weightsBytes: 10,

@@ -22,6 +22,7 @@ import { PagedKVCache } from "./model/paged-kv";
 import { DiffusionGemmaModel } from "./model/diffusion-gemma";
 import { diffusionGenerate } from "./diffusion/diffusion-generate";
 import type { RuntimeModel } from "./model/factory";
+import type { PromptResponseTrace } from "./serve/prompt-response-trace";
 import type { KvQuantSpec, TurboQuantScheme } from "./config";
 import { flagOn } from "./flags";
 import { runtimeValue } from "./runtime-config";
@@ -303,6 +304,11 @@ export interface GenerateStats {
   };
 }
 
+export interface GenerateDiagnostics {
+  trace?: PromptResponseTrace;
+  mechanism?: "serial" | "continuous";
+}
+
 export interface GeneratedToken {
   token: number;
   index: number;
@@ -353,7 +359,11 @@ export class Generation implements AsyncIterable<GeneratedToken> {
 // Scope semantics match the reference: set → generate → synchronize →
 // restore; nothing stays pinned between generations. Re-entrant: only
 // the outermost wiring scope touches the limit.
-const WIRE_THRESHOLD = 0.75;
+// macOS 26.6 reports a 24.96 GiB recommended set on this 24 GB machine.
+// The old 0.75 fraction therefore stopped wiring the 13-16 GiB Qwen/GLM
+// models even though they page heavily without an explicit wired limit.
+// Keep smaller 8-9 GiB models unwired while covering the large-model class.
+const WIRE_THRESHOLD = 0.5;
 let wiredScopeDepth = 0;
 let wiredOldLimit = 0;
 
@@ -394,10 +404,23 @@ function exitWiredScope(): void {
   }
 }
 
+/** Hold the process wired limit while one model owns GPU execution. */
+export function acquireModelWiredLimit(model: WiredModelMemory): () => void {
+  if (!modelNeedsWiredLimit(model)) return () => {};
+  enterWiredScope();
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    exitWiredScope();
+  };
+}
+
 export function generate(
   model: RuntimeModel,
   promptTokens: number[],
   options: GenerateOptions = {},
+  diagnostics: GenerateDiagnostics = {},
 ): Generation {
   // DiffusionGemma is non-autoregressive: route to the denoising engine instead
   // of the AR decode loop. Same Generation/GenerateStats contract so the CLI and
@@ -405,7 +428,7 @@ export function generate(
   let inner =
     model instanceof DiffusionGemmaModel
       ? generateDiffusionInner(model, promptTokens, options)
-      : generateInner(model, promptTokens, options);
+      : generateInner(model, promptTokens, options, diagnostics);
   if (options.adapters?.length) inner = adapterScoped(model, options.adapters, inner);
   const memoryModel: WiredModelMemory = model;
   if (memoryModel.expertRuntime?.flushUsage)
@@ -503,12 +526,11 @@ export async function withModelWiredLimit<T>(
   model: WiredModelMemory,
   run: () => Promise<T>,
 ): Promise<T> {
-  if (!modelNeedsWiredLimit(model)) return run();
-  enterWiredScope();
+  const release = acquireModelWiredLimit(model);
   try {
     return await run();
   } finally {
-    exitWiredScope();
+    release();
   }
 }
 
@@ -549,6 +571,7 @@ async function* generateInner(
   model: RuntimeModel,
   promptTokens: number[],
   options: GenerateOptions,
+  diagnostics: GenerateDiagnostics,
 ): AsyncGenerator<GeneratedToken, GenerateStats> {
   const {
     maxTokens = 512,
@@ -571,6 +594,14 @@ async function* generateInner(
   });
   const needsTokenHistory = stepSampler.needsHistory;
 
+  const closePrefill = diagnostics.trace?.begin("prefill.total", {
+    mechanism: diagnostics.mechanism ?? "serial",
+    promptTokens: promptTokens.length,
+    cachedTokens: options.cache?.[0]?.offset ?? 0,
+  });
+  const closeBatchSetup = diagnostics.trace?.begin("prefill.batch_setup", {
+    mechanism: diagnostics.mechanism ?? "serial",
+  });
   const ownsCache = !options.cache;
   const cache = options.cache ?? model.makeCache();
   const cachedTokens = cache[0]!.offset;
@@ -583,6 +614,7 @@ async function* generateInner(
   // prompt + maxTokens − 1 (step maxTokens−1's forward), so this bound
   // makes pool exhaustion an accounting-bug tripwire, not a request limit.
   maybePageKv(cache, options, promptTokens.length + maxTokens);
+  closeBatchSetup?.();
   /** Device-side logprob capture for one step, computed from the SAME lp the
    *  sampler saw (post-processors, pre-truncation) — read back lazily with the
    *  token so decode pipelining is preserved. */
@@ -630,6 +662,7 @@ async function* generateInner(
   let nextExtras: StepExtras | null = null;
   let finished = false;
   let threw = false;
+  let closeTokenZero: (() => void) | undefined;
   const makeStats = (): GenerateStats => ({
     promptTokens: promptTokens.length,
     cachedTokens,
@@ -643,7 +676,12 @@ async function* generateInner(
 
   try {
     // ---- prefill ----
+    const closeInitialKv = diagnostics.trace?.begin("prefill.kv_maintenance", {
+      mechanism: diagnostics.mechanism ?? "serial",
+      boundary: "initial",
+    });
     maybeQuantizeKv(cache, options);
+    closeInitialKv?.();
     const tPrefill = performance.now();
     let h0: MlxArray;
     if (options.promptEmbeddings) {
@@ -672,6 +710,11 @@ async function* generateInner(
       if (snapAt > pos && snapAt < promptTokens.length) {
         while (pos < snapAt) {
           const chunk = promptTokens.slice(pos, Math.min(pos + prefillChunkSize, snapAt));
+          const closeChunk = diagnostics.trace?.begin("prefill.chunk", {
+            mechanism: diagnostics.mechanism ?? "serial",
+            startToken: pos,
+            tokens: chunk.length,
+          });
           const ids = ops.fromInt32(chunk, [1, chunk.length]);
           const h = await forwardHiddenForGeneration(model, ids, cache);
           ids.dispose();
@@ -679,6 +722,7 @@ async function* generateInner(
           evalCacheState(cache);
           maybeQuantizeKv(cache, options);
           clearCache();
+          closeChunk?.();
           pos += chunk.length;
           // Macrotask yield between chunks (runtime-isolation.md Phase 1):
           // each chunk is a synchronous multi-hundred-ms FFI eval; without
@@ -706,6 +750,11 @@ async function* generateInner(
           ? Math.min(prefillChunkSize, promptTokens.length - pos - 1)
           : prefillChunkSize;
         const chunk = promptTokens.slice(pos, pos + n);
+        const closeChunk = diagnostics.trace?.begin("prefill.chunk", {
+          mechanism: diagnostics.mechanism ?? "serial",
+          startToken: pos,
+          tokens: chunk.length,
+        });
         const ids = ops.fromInt32(chunk, [1, chunk.length]);
         const h = await forwardHiddenForGeneration(model, ids, cache);
         ids.dispose();
@@ -719,6 +768,7 @@ async function* generateInner(
         // measured, scripts/decode-split.ts; the context-scaling decode
         // gap's main term).
         clearCache();
+        closeChunk?.();
         pos += n;
         if (runtimeValue("MLX_BUN_PREFILL_MEM_LOG") === "1")
           console.error(`[prefill-mem] ${pos} active ${(activeMemory() / 2 ** 30).toFixed(2)} peak ${(peakMemory() / 2 ** 30).toFixed(2)}`);
@@ -735,12 +785,27 @@ async function* generateInner(
       // PromptCache.put alignment) is unchanged: after step 0 the caches
       // cover exactly the prompt, as before.
       const lastChunk = promptTokens.slice(pos);
+      const closeChunk = diagnostics.trace?.begin("prefill.chunk", {
+        mechanism: diagnostics.mechanism ?? "serial",
+        startToken: pos,
+        tokens: lastChunk.length,
+        final: true,
+      });
       const ids0 = ops.fromInt32(lastChunk, [1, lastChunk.length]);
       h0 = await forwardHiddenForGeneration(model, ids0, cache);
       ids0.dispose();
+      closeChunk?.();
     }
     if (options.snapshotAt === undefined || options.snapshotAt >= promptTokens.length)
       options.onPrefillDone?.();
+    // The trace's prefill span is the uncached model-forward portion only.
+    // Token-0 lm-head, sampling, and readback are a separate additive stage.
+    if (diagnostics.trace && runtimeValue("MLX_BUN_P2R_SYNC") === "1")
+      synchronize(gpuStream);
+    closePrefill?.();
+    closeTokenZero = diagnostics.trace?.begin("token_zero.total", {
+      mechanism: diagnostics.mechanism ?? "serial",
+    });
     const [, L0, H] = h0.shape as [number, number, number];
     const hLast = h0.slice([0, L0 - 1, 0], [1, L0, H]);
     h0.dispose();
@@ -910,6 +975,8 @@ async function* generateInner(
         // (mlx-lm stream_generate's n==0 clock swap; the first token is
         // "free" on the decode clock there too)
         prefillMs = performance.now() - tPrefill;
+        closeTokenZero?.();
+        closeTokenZero = undefined;
         tDecode = performance.now();
       }
       cur.dispose();

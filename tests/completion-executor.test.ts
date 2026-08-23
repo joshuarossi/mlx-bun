@@ -16,6 +16,10 @@ import {
 } from "../src/serve/completion-sink";
 import { clearLaneRegistry, getLane } from "../src/serve/lane-registry";
 import { RequestOwnership } from "../src/serve/request-plan";
+import {
+  PromptResponseTrace,
+  type P2RTraceRecord,
+} from "../src/serve/prompt-response-trace";
 
 class ScriptedEngine implements CompletionEngine {
   readonly seenOptions: GenerateOptions[] = [];
@@ -69,6 +73,52 @@ const thinking: ThinkingSplitter = {
 };
 
 describe("CompletionExecutor", () => {
+  test("threads one request trace through placement and engine run", async () => {
+    let seenTrace: PromptResponseTrace | undefined;
+    const engine: CompletionEngine = {
+      place(shape) {
+        return Object.freeze({ shape, mechanism: "serial" as const });
+      },
+      async run(...args: Parameters<CompletionEngine["run"]>) {
+        seenTrace = args[7];
+        await args[2](1);
+        return {
+          promptTokens: 1, cachedTokens: 0, generatedTokens: 1,
+          prefillTps: 1, decodeTps: 1, prefillMs: 1, decodeMs: 1,
+          cacheTokens: [7],
+        };
+      },
+    };
+    const prepared = prepareCompletion({
+      requestId: "chatcmpl-traced",
+      plan: {
+        promptIds: [7], options: { maxTokens: 1, stopSequences: [] },
+        requestedMaxTokens: 1, maxSafeContext: 16, stream: true,
+        wantLogprobs: false, topLogprobs: 0, adapterIds: [],
+        hasVision: false, userSeed: false, hasGrammar: false, hasDraft: false,
+        ownership: new RequestOwnership(),
+      },
+      pipeline: { router, stopper, thinking, collectToolCalls: false },
+      idToToken: String,
+    });
+    const records: P2RTraceRecord[] = [];
+    const trace = new PromptResponseTrace({
+      traceId: "trace-executor",
+      requestId: "chatcmpl-traced",
+      route: "/v1/chat/completions",
+      emit: (record) => records.push(record),
+    });
+
+    await new CompletionExecutor(engine).execute(prepared, { trace });
+    trace.finish("success");
+
+    expect(seenTrace).toBe(trace);
+    expect(records[0]!.events.map((event) => event.phase)).toEqual([
+      "completion.total",
+      "completion.placement",
+    ]);
+  });
+
   test("runs one prepared completion and reports semantic output and usage", async () => {
     clearLaneRegistry();
     const engine = new ScriptedEngine();

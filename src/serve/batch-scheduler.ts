@@ -56,7 +56,7 @@
 
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
-import { clearCache, Dtype } from "../mlx/ffi";
+import { activeMemory, cacheMemory, clearCache, Dtype, peakMemory } from "../mlx/ffi";
 import { flagOn } from "../flags";
 import { runtimeValue } from "../runtime-config";
 import { CompiledDecode } from "../model/compiled-decode";
@@ -87,7 +87,9 @@ import { SSMCache } from "../model/qwen3-delta";
 import type { RuntimeModel } from "../model/factory";
 import type { GrammarController } from "../grammar";
 import { toLogprobs } from "../sampler";
+import { acquireModelWiredLimit } from "../generate";
 import { batchRowKvBytes } from "./kv-budget";
+import type { PromptResponseTrace } from "./prompt-response-trace";
 
 /** Decode-pipeline kill switch (read once at load, like the serial loop's
  *  MLX_BUN_COMPILED_DECODE): 1 ⇒ read each step's tokens synchronously. */
@@ -135,6 +137,10 @@ export interface BatchRequest {
    *  THIS row only (its submit promise rejects; siblings continue). May be
    *  async; keep it cheap — it runs inline in the step loop. */
   onToken: (token: number) => void | boolean | Promise<void | boolean>;
+  /** Diagnostic-only request-local trace. */
+  trace?: PromptResponseTrace;
+  /** Closes the gateway's queue/admission span when this row leaves pending. */
+  onAdmitted?: () => void;
   /** Client/request lifetime. An aborted pending row is removed before
    *  admission; a row in prefill or decode is evicted at the next safe
    *  scheduler boundary. */
@@ -233,6 +239,7 @@ interface PrefillState {
    *  exactly here, clones + put()s the trim-free prefix entry, then nulls
    *  it. null = no snapshot for this row (short prompt / cached past it). */
   snapAt: number | null;
+  closePrefill?: () => void;
 }
 
 /** Held while the batch is active; the serial fallback acquires the same lock. */
@@ -485,6 +492,7 @@ export class BatchScheduler {
 
   async #drive(): Promise<void> {
     let release: (() => void) | null = null;
+    let releaseWired: (() => void) | null = null;
     try {
       while (true) {
         for (let i = this.#pending.length - 1; i >= 0; i--) {
@@ -502,10 +510,12 @@ export class BatchScheduler {
           (!held && this.#pending.length > 0);
         if (!hasWork) {
           if (release) { release(); release = null; } // let the serial lane in
+          if (releaseWired) { releaseWired(); releaseWired = null; }
           await new Promise<void>((r) => { this.#wake = r; });
           this.#wake = null;
           continue;
         }
+        releaseWired ??= acquireModelWiredLimit(this.model);
         if (!release && this.#lock) release = await this.#lock.acquire();
 
         // Start at most one joiner prefill (drain-aware); it advances one
@@ -514,10 +524,15 @@ export class BatchScheduler {
             this.#pending.length > 0 && this.#running.length < this.#maxBatch &&
             this.#kvAdmits(this.#pending[0]!)) {
           const row = this.#pending.shift()!;
+          row.req.onAdmitted?.();
           // Prompt-cache reuse (Phase 3.2): start the solo prefill from the
           // longest usable cached prefix — the serial lane's take(), same
           // semantics (entry ownership transfers; put back or dispose).
+          const closeCache = row.req.trace?.begin("cache.lookup_restore", {
+            mechanism: "continuous",
+          });
           const hit = this.#promptCache?.take(row.req.promptIds) ?? null;
+          closeCache?.();
           if (hit) row.cachedTokens = hit.tokens.length;
           // Boundary snapshot (the serial lane's A1, ported): a trim-free
           // strict-prefix entry at min(stableLen, len-1) for every
@@ -532,19 +547,35 @@ export class BatchScheduler {
             this.#promptCache && boundary >= 256 && boundary > (hit?.tokens.length ?? 0)
               ? boundary
               : null;
+          const closePrefill = row.req.trace?.begin("prefill.total", {
+            mechanism: "continuous",
+            promptTokens: row.promptTokens,
+            cachedTokens: row.cachedTokens,
+          });
+          const closeBatchSetup = row.req.trace?.begin("prefill.batch_setup", {
+            mechanism: "continuous",
+          });
           this.#prefill = hit
-            ? { row, solo: hit.caches, pos: hit.tokens.length, retain: hit.retain, snapAt }
-            : { row, solo: this.model.makeCache(), pos: 0, snapAt };
+            ? {
+                row, solo: hit.caches, pos: hit.tokens.length,
+                retain: hit.retain, snapAt, closePrefill,
+              }
+            : { row, solo: this.model.makeCache(), pos: 0, snapAt, closePrefill };
+          closeBatchSetup?.();
         }
 
         if (this.#prefill) {
           const p = this.#prefill;
           try {
-            if (await this.#prefillChunk(p)) this.#prefill = null;
+            if (await this.#prefillChunk(p)) {
+              p.closePrefill?.();
+              this.#prefill = null;
+            }
           } catch (e) {
             // Prefill/admission failure is per-row: reject the joiner, keep
             // the running batch.
             this.#prefill = null;
+            p.closePrefill?.();
             for (const c of p.solo) c.dispose();
             p.retain?.();
             p.row.reject(e);
@@ -591,6 +622,7 @@ export class BatchScheduler {
       }
     } finally {
       if (release) release();
+      releaseWired?.();
       this.#looping = false;
     }
   }
@@ -604,21 +636,28 @@ export class BatchScheduler {
    *  calls maybeQuantizeKv — that placement is what makes a row's quantized
    *  bytes bit-exact vs serial `--kv-quant config`. Gateway placement and the
    *  constructor both guarantee every named cache can convert. */
-  #quantizeSolo(solo: Cache[]): void {
+  #quantizeSolo(solo: Cache[], trace?: PromptResponseTrace): void {
     if (!this.#kvByLayer) return;
-    for (let i = 0; i < solo.length; i++) {
-      const e = this.#kvByLayer.get(i);
-      const c = solo[i]!;
-      if (!e || c.offset === 0) continue;
-      // Milestone 2: rotating layers convert too — RotatingKVCache.
-      // toQuantized → RotatingQuantizedKVCache, exactly maybeQuantizeKv's
-      // dispatch (generate.ts). Converted caches don't match either class
-      // (the four cache classes are siblings), so re-conversion never fires.
-      if (!(isPlainKvCache(c) || isRotatingPlainCache(c))) continue;
-      const q = c.toQuantized(e.groupSize, e.bits);
-      solo[i] = q;
-      ops.evalAll(q.state());
-      clearCache();
+    const close = trace?.begin("prefill.kv_maintenance", {
+      mechanism: "continuous",
+    });
+    try {
+      for (let i = 0; i < solo.length; i++) {
+        const e = this.#kvByLayer.get(i);
+        const c = solo[i]!;
+        if (!e || c.offset === 0) continue;
+        // Milestone 2: rotating layers convert too — RotatingKVCache.
+        // toQuantized → RotatingQuantizedKVCache, exactly maybeQuantizeKv's
+        // dispatch (generate.ts). Converted caches don't match either class
+        // (the four cache classes are siblings), so re-conversion never fires.
+        if (!(isPlainKvCache(c) || isRotatingPlainCache(c))) continue;
+        const q = c.toQuantized(e.groupSize, e.bits);
+        solo[i] = q;
+        ops.evalAll(q.state());
+        clearCache();
+      }
+    } finally {
+      close?.();
     }
   }
 
@@ -629,6 +668,12 @@ export class BatchScheduler {
   async #prefillChunk(p: PrefillState): Promise<boolean> {
     p.row.req.signal?.throwIfAborted();
     const prompt = p.row.req.promptIds;
+    const chunkStart = p.pos;
+    const closeChunk = p.row.req.trace?.begin("prefill.chunk", {
+      mechanism: "continuous",
+      startToken: chunkStart,
+    });
+    try {
     // Boundary-snapshot chunking (mirrors generate.ts's snapshotAt split):
     // chunk edges land EXACTLY on snapAt so the clone is taken while the
     // caches hold precisely that prefix — slicing tokens against caches at
@@ -643,7 +688,7 @@ export class BatchScheduler {
       ids.dispose();
       h.dispose();
       ops.evalAll(p.solo.flatMap((c) => c.state()));
-      this.#quantizeSolo(p.solo); // serial converts at every chunk boundary
+      this.#quantizeSolo(p.solo, p.row.req.trace); // serial converts at every chunk boundary
       clearCache();
       p.pos = end;
       if (p.pos === p.snapAt) {
@@ -673,7 +718,7 @@ export class BatchScheduler {
       ids.dispose();
       h.dispose(); // logits never computed for non-final chunks
       ops.evalAll(p.solo.flatMap((c) => c.state()));
-      this.#quantizeSolo(p.solo); // serial converts at every chunk boundary
+      this.#quantizeSolo(p.solo, p.row.req.trace); // serial converts at every chunk boundary
       clearCache(); // serial prefill's per-chunk clear (generate.ts)
       p.pos += this.#prefillChunkSize;
       return false;
@@ -691,7 +736,7 @@ export class BatchScheduler {
       ids.dispose();
       h.dispose();
       ops.evalAll(p.solo.flatMap((c) => c.state()));
-      this.#quantizeSolo(p.solo);
+      this.#quantizeSolo(p.solo, p.row.req.trace);
       clearCache();
       p.pos = prompt.length - 1;
     }
@@ -705,15 +750,51 @@ export class BatchScheduler {
     const ids = ops.fromInt32(chunk, [1, chunk.length]);
     const h = await this.#forwardHidden(ids, p.solo);
     ids.dispose();
+    closeChunk?.();
+    p.closePrefill?.();
+    p.closePrefill = undefined;
+    const closeTokenZero = p.row.req.trace?.begin("token_zero.total", {
+      mechanism: "continuous",
+    });
+    // MLX is lazy: synchronize(stream) only waits for already-submitted work;
+    // it does not submit `h`'s graph. Attribution mode must evaluate the final
+    // L=1 forward explicitly or its work is silently charged to the head/read.
+    const forceAttribution = !!p.row.req.trace &&
+      runtimeValue("MLX_BUN_P2R_SYNC") === "1";
+    if (forceAttribution) {
+      const closeForward = p.row.req.trace!.begin("token_zero.forward", {
+        mechanism: "continuous",
+        activeBytes: activeMemory(),
+        cacheBytes: cacheMemory(),
+        peakBytes: peakMemory(),
+      });
+      ops.evalAll([h, ...p.solo.flatMap((c) => c.state())]);
+      closeForward();
+    }
     const [, Lc, H] = h.shape as [number, number, number];
     const hLast = h.slice([0, Lc - 1, 0], [1, Lc, H]);
     h.dispose();
     const lg = this.model.logitsFromHidden(hLast); // [1,1,V]
     hLast.dispose();
+    if (forceAttribution) {
+      const closeHead = p.row.req.trace!.begin("token_zero.head", {
+        mechanism: "continuous",
+        activeBytes: activeMemory(),
+        cacheBytes: cacheMemory(),
+        peakBytes: peakMemory(),
+      });
+      ops.evalAll([lg]);
+      closeHead();
+    }
     const V = lg.shape[2]!;
     const last2 = ops.reshape(lg, [1, V]);
     lg.dispose();
+    const closeSample = forceAttribution
+      ? p.row.req.trace!.begin("token_zero.sample", { mechanism: "continuous" })
+      : undefined;
     const tok = this.#readToken(p.row.req.sample(last2, 0));
+    closeSample?.();
+    closeTokenZero?.();
     last2.dispose();
     p.row.sampled = 1;
     p.row.generated = 1;
@@ -750,9 +831,12 @@ export class BatchScheduler {
     // MLX_BUN_PREFILL_TAIL_SPLIT=0 — the old serial order: token 0 sampled
     // from the unconverted final-chunk logits, THEN the caches convert
     // (before decode step 1 == before the merge).
-    this.#quantizeSolo(p.solo);
+    this.#quantizeSolo(p.solo, p.row.req.trace);
     await this.#mergeJoiner(p);
     return true;
+    } finally {
+      closeChunk?.();
+    }
   }
 
   /** Merge a fully-prefilled joiner with the running batch, layer by layer

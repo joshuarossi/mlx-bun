@@ -51,6 +51,7 @@ import type { KvScheme } from "../kv-scheme";
 import { makeStepSampler } from "../sampler";
 import { BatchScheduler, type RowPromptCache } from "./batch-scheduler";
 import { runtimeValue } from "../runtime-config";
+import type { PromptResponseTrace } from "./prompt-response-trace";
 
 /** Async mutex: acquire() resolves to a release fn; releases run FIFO. */
 class AsyncMutex {
@@ -110,6 +111,7 @@ export type SerialRun = (
   options: GenerateOptions & { stopSequences?: string[] },
   onToken: OnToken,
   vision?: Vision,
+  trace?: PromptResponseTrace,
 ) => Promise<GenerateStats>;
 
 /** What the batchable decision needs from a request (cheap to compute). */
@@ -370,10 +372,17 @@ export class GenerationGateway {
    *  mount/unmount all come through here, so nothing runs concurrently with
    *  batched decode steps (or with each other). Registers as a serial waiter
    *  so the scheduler drains (stops admitting) until `fn` has run. */
-  async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+  async runExclusive<T>(
+    fn: () => Promise<T>,
+    trace?: PromptResponseTrace,
+  ): Promise<T> {
     this.#serialWaiters++;
+    const closeAdmission = trace?.begin("engine.admission_wait", {
+      mechanism: "serial",
+    });
     try {
       const release = await this.#mutex.acquire();
+      closeAdmission?.();
       try {
         return await fn();
       } finally {
@@ -395,6 +404,7 @@ export class GenerationGateway {
     shape: RequestShape,
     placement: GenerationPlacement,
     signal?: AbortSignal,
+    trace?: PromptResponseTrace,
   ): Promise<GenerateStats> {
     if (placement.shape !== shape) {
       options.grammar?.dispose();
@@ -433,10 +443,12 @@ export class GenerationGateway {
       };
       return this.runExclusive(async () => {
         signal?.throwIfAborted();
-        const stats = await this.serialRun(promptIds, options, hoppingOnToken, vision);
+        const stats = await this.serialRun(
+          promptIds, options, hoppingOnToken, vision, trace,
+        );
         signal?.throwIfAborted();
         return stats;
-      })
+      }, trace)
         // Covers a serial waiter aborted before serialRun takes ownership.
         // generate() also disposes defensively; the operation is idempotent.
         .finally(() => options.grammar?.dispose());
@@ -455,6 +467,9 @@ export class GenerationGateway {
 
     let st;
     this.#rowsSubmitted++;
+    const closeAdmission = trace?.begin("engine.admission_wait", {
+      mechanism: "continuous",
+    });
     try {
       st = await this.#ensureScheduler().submit({
         promptIds,
@@ -463,6 +478,8 @@ export class GenerationGateway {
         sample,
         plainGreedy: stepSampler.isPlainGreedy,
         onToken,
+        onAdmitted: closeAdmission,
+        trace,
         ...(signal ? { signal } : {}),
         // B1: pass the per-row grammar controller through. The scheduler drives
         // accept/ready/terminate; this gateway OWNS disposal (finally below)
@@ -473,6 +490,7 @@ export class GenerationGateway {
         ...(options.snapshotAt !== undefined ? { snapshotAt: options.snapshotAt } : {}),
       });
     } finally {
+      closeAdmission?.();
       stepSampler.dispose();
       // The scheduler never owns per-row grammar state.
       options.grammar?.dispose();

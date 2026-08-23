@@ -59,6 +59,48 @@ SIGINT/SIGTERM shutdown waits for it. The benchmark no longer relies on a
 is now the minimum runtime; the old packed conv2d/conv3d FFI workaround is
 removed, while the still-reproducing typed-array read workaround remains.
 
+## Active: prompt-to-response attribution (measured 2026-08-23)
+
+The corrected full matrix is complete: 1,290 product trace rows plus 135
+synchronized attribution rows across MiniCPM, e4b, 12B, standard Qwen3.8-27B,
+and the 13 GB compact Qwen artifact; unified mlx-bun, `--batch 1`, and mlx-lm;
+five prompt lengths; miss/full/partial cache states; and one-/64-token paths.
+Every repetition and cache scenario owns a fresh warm-loaded process, fixing
+the retained-process Qwen drift and the unrelated-cache 16k oracle OOM found
+during harness bring-up. A single Metal System Trace contains representative
+1k requests for all five models. Observer overhead passes the 2% gate and the
+focused 43-test trace suite plus TypeScript pass.
+
+Headline: the original support-work explanation is correct for e4b—its short
+44% win is almost entirely mlx-lm's fixed ~157 ms support gap, while 15k is a
+0.49% practical tie. The old noisy e4b 15k +3% claim is superseded. The Qwen
+exception is now closed: its 1k token-zero regression was a stale large-model
+wiring policy, not slower token arithmetic, prompt-cache behavior, batching, or
+a different prefill/decode strategy. macOS now reports a 26.80 GB recommended
+working set, so the old 75% cutoff no longer covered either the 17.02 GB
+standard execution plan or the 13.92 GB compact plan. mlx-lm wires its
+`BatchGenerator` unconditionally.
+
+The threshold is now 50%, and both serial generation and the continuous
+scheduler hold the same re-entrant wired scope while they own GPU execution.
+Controlled cache-disabled replay moved the final Qwen L=1 forward from about
+1.48 s to 55 ms in Bun; Python independently moved from about 1.64 s unwired to
+61 ms wired. Three-run 1k HTTP medians now favor mlx-bun: standard is 12,611.1
+versus 12,844.8 ms and compact is 12,697.7 versus 12,932.1 ms. Token zero is
+59.1/58.2 ms versus mlx-lm's 123.3/122.6 ms. Continuous and serial agree.
+Steady decode is about 18.1 tok/s for both mlx-bun artifacts versus 16.3/15.2
+tok/s for mlx-lm. At approximately 17.2k tokens, standard is 195.36 versus
+195.95 s and compact is 198.08 versus 198.49 s: 0.30%/0.21% leads and practical
+ties. The policy does not alter graph shapes or numerics; direct next-token
+outputs are unchanged. The machine-local full-logit Qwen golden is absent, so
+that one optional check could not run. Focused tests and TypeScript pass.
+
+The full waterfall and raw traces remain under `reports/`; the pre-fix broad
+matrix was user-forced after a swap-only preflight warning (582 MB historical
+swap, 94% memory free, no large foreign process), so it is not promoted to
+curated `benchmarks/RESULTS.md`. The post-fix Qwen runs used fresh warm-loaded
+processes per arm and cache-disabled miss rows for the performance conclusion.
+
 ## Active: TurboQuant weights — rotation-folded quantization (opened 2026-08-17)
 
 New phase in PLAN.md ("TurboQuant weights"): QuaRot/SpinQuant-style
