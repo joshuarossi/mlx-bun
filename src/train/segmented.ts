@@ -1517,6 +1517,8 @@ export class SegmentedBackwardOrpoGemma4 {
  *  and null for full layers; the window arg selects the sliding term. One per DONOR
  *  layer (sharers reuse donors' fetched KV inside runLayerRange). */
 class Gemma4PrefixSharedSegCache implements Cache {
+  /** Training-only adapter; never admitted, merged, or persisted. */
+  signature(): string { return "train:gemma4-prefix-shared-seg"; }
   offset = 0;
   constructor(private readonly P: number, private readonly Rc: number, private readonly Rr: number) {}
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {

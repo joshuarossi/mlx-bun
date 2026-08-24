@@ -62,6 +62,8 @@ export function blockSparseMask(P: number, Rc: number, Rr: number): MlxArray {
  *  TrainingCache) but `makeMask` returns the block-sparse mask. One per layer;
  *  MiniCPM5's runLayerRange calls makeMask once and disposes the returned arr. */
 export class PrefixSharedCache implements Cache {
+  /** Training-only adapter; never admitted, merged, or persisted. */
+  signature(): string { return "train:prefix-shared"; }
   offset = 0;
   constructor(
     private readonly P: number, private readonly Rc: number, private readonly Rr: number,
@@ -371,6 +373,8 @@ export function blockSparsePrefixMaskGemma(P: number, Rc: number, Rr: number, wi
  *  type serves both (the window arg selects the sliding term). One per DONOR
  *  layer (sharers reuse donors' fetched KV). */
 class Gemma4PrefixSharedCache implements Cache {
+  /** Training-only adapter; never admitted, merged, or persisted. */
+  signature(): string { return "train:gemma4prefix-shared"; }
   offset = 0;
   constructor(private readonly P: number, private readonly Rc: number, private readonly Rr: number) {}
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {

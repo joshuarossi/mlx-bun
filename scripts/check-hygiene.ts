@@ -35,7 +35,7 @@
 //
 // Wire into CI via scripts/test.sh; for pre-commit, run with --staged.
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 
 const ROOT = import.meta.dir + "/..";
@@ -379,6 +379,104 @@ function checkScriptPaths(): string[] {
   return fails;
 }
 
+
+// ---------------------------------------------------------------------------
+// 8. design-doc front matter — every docs/design/*.md declares status/axis/
+//    canonical-for/plan-anchor; `status: active` must point at a PLAN.md
+//    heading that is still open (not `[x]`). Status lives in front matter and
+//    PLAN.md, never in drifting prose headers (the 2026-08 audit found five
+//    docs whose header said ACTIVE for phases PLAN.md had closed).
+// ---------------------------------------------------------------------------
+
+function checkDesignFrontMatter(): string[] {
+  const fails: string[] = [];
+  const plan = readFileSync(`${ROOT}/PLAN.md`, "utf8");
+  const headings = plan.split("\n").filter((l) => /^#{2,3} /.test(l));
+  for (const f of listFiles().filter((f) => /^docs\/design\/[^/]+\.md$/.test(f))) {
+    const text = readFileSync(`${ROOT}/${f}`, "utf8");
+    const m = text.match(/^---\n([\s\S]*?)\n---\n/);
+    if (!m) { fails.push(`  FAIL  ${f} — missing YAML front matter (status/axis/canonical-for/plan-anchor/last-verified).`); continue; }
+    const fm = Object.fromEntries(m[1]!.split("\n").map((l) => { const i = l.indexOf(":"); return [l.slice(0, i).trim(), l.slice(i + 1).trim()]; }));
+    for (const k of ["status", "axis", "canonical-for", "plan-anchor", "last-verified"])
+      if (!fm[k]) fails.push(`  FAIL  ${f} — front matter lacks '${k}'.`);
+    if (fm.status && !/^(active|landed|superseded)$/.test(fm.status)) fails.push(`  FAIL  ${f} — status must be active|landed|superseded (got '${fm.status}').`);
+    if (fm.axis && !/^(ON|USING|BOTH)$/.test(fm.axis)) fails.push(`  FAIL  ${f} — axis must be ON|USING|BOTH (got '${fm.axis}').`);
+    if (fm.status === "active" && fm["plan-anchor"] && fm["plan-anchor"] !== "none") {
+      const anchor = fm["plan-anchor"].replace(/^["']|["']$/g, "");
+      const hit = headings.find((h) => h.includes(anchor));
+      if (!hit) fails.push(`  FAIL  ${f} — status: active but plan-anchor '${anchor}' matches no PLAN.md heading.`);
+      else if (/\[x\]/.test(hit)) fails.push(`  FAIL  ${f} — status: active but its PLAN.md anchor is closed ([x]): ${hit.slice(0, 80)}`);
+    }
+  }
+  return fails;
+}
+
+// ---------------------------------------------------------------------------
+// 9. working-state line caps — STATUS.md is the current state, PLAN.md the
+//    open work. Regrowth is the failure mode (3,449-line PLAN for ~6 open
+//    items in 2026-08); cap them the way root artifacts are capped.
+// ---------------------------------------------------------------------------
+
+const LINE_CAPS: Record<string, number> = { "STATUS.md": 150, "PLAN.md": 800 };
+function checkLineCaps(): string[] {
+  const fails: string[] = [];
+  for (const [f, cap] of Object.entries(LINE_CAPS)) {
+    const n = readFileSync(`${ROOT}/${f}`, "utf8").split("\n").length;
+    if (n > cap) fails.push(`  FAIL  ${f} is ${n} lines (cap ${cap}). Closed material is deleted, not kept — git is the archive (CONTRIBUTING rule 4).`);
+  }
+  return fails;
+}
+
+
+// ---------------------------------------------------------------------------
+// docs map — GENERATED, not hand-kept. `--write-docs-map` regenerates
+// docs/README.md from the tree (path + first heading); the check verifies the
+// committed file is current. CLAUDE.md links docs/README.md instead of
+// carrying ~90 basenames in prose (the reason the old gate kept going red).
+// ---------------------------------------------------------------------------
+
+function firstHeading(path: string): string {
+  const text = readFileSync(`${ROOT}/${path}`, "utf8");
+  const body = text.replace(/^---\n[\s\S]*?\n---\n/, "");
+  const m = body.match(/^#\s+(.+)$/m);
+  return (m ? m[1]! : path.replace(/.*\//, "")).trim();
+}
+
+function renderDocsMap(): string {
+  const docs = execSync("git ls-files 'docs/**/*.md'", { cwd: ROOT, encoding: "utf8" })
+    .split("\n").map((s) => s.trim()).filter((f) => f && f !== "docs/README.md");
+  const groups: Record<string, string[]> = {};
+  for (const f of docs) {
+    const dir = f.split("/").slice(0, 2).join("/");
+    (groups[dir] ??= []).push(f);
+  }
+  const blurb: Record<string, string> = {
+    "docs/reference": "User-facing reference — the ONLY home for flags, routes, models, numbers, and environment facts.",
+    "docs/design": "Active engineering design docs — one per topic; status lives in front matter + PLAN.md.",
+    "docs/planning": "Living product/vision docs (USING side).",
+    "docs/archive": "Frozen history — read-only, never extended in place; recover raw data via git history.",
+  };
+  const out = ["# docs/ map (generated — do not edit; `bun scripts/check-hygiene.ts --write-docs-map`)", ""];
+  for (const dir of Object.keys(groups).sort()) {
+    out.push(`## ${dir}/`, "");
+    if (blurb[dir]) out.push(blurb[dir]!, "");
+    for (const f of groups[dir]!.sort()) out.push(`- [${f.slice(dir.length + 1)}](../${f}) — ${firstHeading(f)}`);
+    out.push("");
+  }
+  return out.join("\n");
+}
+
+function checkDocsMapGenerated(): string[] {
+  const want = renderDocsMap();
+  let have = "";
+  try { have = readFileSync(`${ROOT}/docs/README.md`, "utf8"); } catch { /* missing */ }
+  const fails: string[] = [];
+  if (have !== want) fails.push("  FAIL  docs/README.md is stale — run `bun scripts/check-hygiene.ts --write-docs-map` and commit it.");
+  const claude = readFileSync(`${ROOT}/CLAUDE.md`, "utf8");
+  if (!claude.includes("docs/README.md")) fails.push("  FAIL  CLAUDE.md must link docs/README.md (the generated doc map).");
+  return fails;
+}
+
 // ---------------------------------------------------------------------------
 // run
 // ---------------------------------------------------------------------------
@@ -398,7 +496,16 @@ if (runBin) {
     console.log("  OK — every binary/large tracked file is allowlisted + in-cap.");
   }
 }
-if (runMap) {
+if (args.has("--write-docs-map")) {
+  writeFileSync(`${ROOT}/docs/README.md`, renderDocsMap());
+  console.log("wrote docs/README.md");
+  process.exit(0);
+}
+if (runMap && args.has("--generated-map")) {
+  console.log("== hygiene: docs map (generated docs/README.md) ==");
+  const f = checkDocsMapGenerated();
+  if (f.length) { for (const m of f) console.log(m); exit = 1; } else console.log("  OK — docs/README.md is current and linked from CLAUDE.md.");
+} else if (runMap) {
   const fails = checkDocsMap();
   console.log(`== hygiene: docs-map coverage ==`);
   if (fails.length) {
@@ -411,7 +518,8 @@ if (runMap) {
 }
 if (mode === "all" || mode === "root") {
   console.log("== hygiene: root artifacts / archive md-only / scripts root / script paths ==");
-  const more = [...checkRootArtifacts(), ...checkArchiveMdOnly(), ...checkScriptsRoot(), ...checkScriptPaths()];
+  const more = [...checkRootArtifacts(), ...checkArchiveMdOnly(), ...checkScriptsRoot(), ...checkScriptPaths(),
+    ...(args.has("--no-caps") ? [] : [...checkDesignFrontMatter(), ...checkLineCaps()])];
   if (more.length) { for (const m of more) console.log(m); exit = 1; }
   else console.log("  OK — no root artifacts, archive is .md-only, scripts root allowlisted, doc script paths resolve.");
 }

@@ -1,178 +1,133 @@
-# Unified engine + the frontier program — the reorganization plan
+---
+status: active
+axis: ON
+canonical-for: engine-architecture
+plan-anchor: "Serving architecture consolidation `[~]` (opened 2026-08-21)"
+last-verified: 2026-08-23
+---
 
-Status: **PLAN** (2026-07-05, from the flag-architecture discussion with Josh
-after the naked-=-L1 decision). This is the design that makes the library
-"make sense": one engine, one honest flag surface, per-scheme oracles, and a
-Lab where optimization experiments live until they earn defaults.
+# Engine architecture — four layers, per-scheme oracles, one request path
 
-## 0. The goals (Josh, 2026-07-05 — the two-part product)
+This is the canonical architecture doc for mlx-bun's engine. It owns:
 
-1. **A drop-in replacement for mlx-lm: support EVERYTHING they do, with
-   bit-exact parity.** This is the default. Parity is only DEFINED over
-   outputs mlx-lm can produce — you cannot ask for "mlx-lm's bits under
-   mixed-precision KV" because mlx-lm cannot output anything under it.
-2. **Beyond mlx-lm — features you opt into by deliberately trading the
-   parity guarantee for something you value MORE**, each answering to its
-   own oracle (whoever already ships it):
-   - **multi-model switching** (oracle: optiq per-request switching / oMLX
-     EnginePool) — ❌ missing today; the newest backlog item (layer 4).
-   - **mixed-precision KV cache** (oracle: optiq) — ✅ serial, bit-exact;
-     ✅ **under batching for all-full-attention configs (LANDED 2026-07-05
-     — Phase 3.1 P1: cpm5 end-to-end, per-row bit-exact vs the optiq
-     composition; no other stack ships this)**; rotating-layer configs
-     (gemma) = milestone 2.
-   - **prefix sharing** (oracle: vLLM/SGLang) — ⚠️ whole-prefix reuse only;
-     true cross-request sharing (one system prompt's KV, N rows) missing.
-   - **prompt caching** (oracle: mlx-lm's LRUPromptCache) — ✅ byte-capped
-     + SSD cold tier beyond anyone; ❌ batched rows → Phase 3.2.
-   - **structured outputs** (oracle: oMLX/xgrammar) — ✅ serial + batched,
-     byte-identical vs oMLX; composes with spec decode.
+- the **four layers** (L1 graph / L2 KV+quant schemes / L3 engine / L4 surface)
+  and the rule that features decompose along them;
+- the **fidelity tiers** — L1 = mlx-lm bit-exact, L2 = mlx-optiq bit-exact,
+  Lab = no-oracle experiments gated by KL/eval and a paired A/B before any
+  default — and the decision procedure that places every optimization;
+- the **naked default IS L1** decision (2026-07-05);
+- the **engine** decision that concurrency is the batch size;
+- the **request path** as it exists in `src/` today, the single-path rule, and
+  the known deviations from it;
+- the **flag end-state** and how it maps onto the layers.
 
-Supersedes: batching-v2-plan.md's standing decision that `--batch N` is a
-mode switch (reversal documented in §4, with the new rationale — the old
-rejection's determinism argument is answered, not ignored). Builds on:
-faithful-l1-consolidation.md (the L1 baseline, now the naked default),
-parity-tier-dag.md (per-scheme oracles), omlx-adoption-map.md (survey),
-batching-perf-path.md (the B=1 gap numbers this plan must close).
+Folded in (2026-08-23): `parity-tier-dag.md` (tier framing, two axes, flag
+classification) and `faithful-l1-consolidation.md` (the 2026-07-04 faithful→L1
+consolidation and the 2026-07-05 deletion pass, now the History section).
+Status and changelog prose lives in PLAN.md — see "Decision: naked default =
+--l1; levers must beat the baseline (2026-07-05, Josh)" for the decision
+record and "Serving architecture consolidation" for the live S0–S4 work. Every
+`src/` claim below was re-read against the tree on 2026-08-23; where an older
+draft of this doc disagreed with the code, the code wins and the note says so.
+
+Companions: `batching-perf-path.md` (B=1 gap numbers), `parallel-slots.md` and
+`batching-v2-plan.md` (scheduler mechanics — the mode-switch decision there is
+superseded by §5), `mlx-lm-serving-execution-seam.md` (the S0–S3 seam),
+`decode-speed-program.md` (the only doc that ranks speed levers; it also
+carries the oMLX port ledger that used to be `omlx-adoption-map.md`).
 
 ---
 
-## 1. North star: beyond the Pareto frontier
+## 1. The two-part product and the contract
 
-The claim we are building toward: **"the best way to run local AI on a Mac."**
-Formally: every (model, workload) point we ship should sit on or beyond the
-current local-inference Pareto frontier in this space:
+1. **A drop-in replacement for mlx-lm: everything they do, bit-exact.** This is
+   the default. Parity is only *defined* over outputs mlx-lm can produce — you
+   cannot ask for "mlx-lm's bits under mixed-precision KV" because mlx-lm
+   cannot output anything under it.
+2. **Beyond mlx-lm — features you opt into by deliberately trading the parity
+   guarantee for something you value more**, each answering to its own oracle:
+   mixed-precision KV (optiq), structured output (oMLX/xgrammar), speculative
+   decoding (mlx-lm's `speculative_generate_step`; optiq for the KV-borrowing
+   assistant drafter), prompt caching (mlx-lm's `LRUPromptCache`), prefix
+   sharing and paged KV (vLLM/SGLang), multi-model switching (optiq
+   per-request switching / oMLX EnginePool).
 
-| axis | direction | measured by |
-|---|---|---|
-| memory | less is better | generation peak (Metal), fit-model predictions |
-| decode tok/s | more | bench-h2h (stable cells only) |
-| prefill / TTFT | faster | bench-h2h, server TTFT |
-| throughput | higher | batched aggregate tok/s (bench-serving-load) |
-| intelligence | higher | frozen eval suite (MMLU/GSM8K/IFEval/HumanEval/BFCL/HashHop, evals.sqlite) |
+**THE CONTRACT (Josh, 2026-07-05) — two rules that compose:**
 
-**THE CONTRACT (Josh, 2026-07-05):** two rules, and they compose:
+1. **The drop-in promise: the same BITS as mlx-lm.** How the bits are produced
+   (storage, kernels, scheduling, engine, language) is the space we compete in.
+2. **The oracle for anything is whoever already does that thing.** Want
+   mlx-lm's decode → mlx-lm. optiq's mixed KV → optiq. vLLM's paged attention
+   → vLLM: read their implementation, copy what they did, verify against them,
+   then optimize. "No oracle" means *nobody* does the thing — genuine research
+   — and that, and only that, is what the Lab is for.
 
-1. **The drop-in promise: we must produce the SAME BITS as mlx-lm** — the
-   original oracle. How the bits are produced (storage, kernels,
-   scheduling, engine, language) is the space we compete in.
-2. **The oracle for ANYTHING is whoever already does that thing.** Want
-   mlx-lm's decode → mlx-lm is the oracle. Want optiq's mixed KV → optiq.
-   Want vLLM's paged attention → **vLLM is the oracle**: read their
-   implementation, copy what they did, verify against them, then optimize.
-   This is the standing house method (FaithfulMiniCPM5 = copy mlx-lm;
-   mixed KV = copy optiq; batching = copy BatchGenerator; SSD tier = copy
-   oMLX). Never frame a capability someone ships as oracle-less. "No
-   oracle" means NOBODY does the thing — genuine research — and that, and
-   only that, is what the Lab is for.
-
-Verification form follows the oracle's framework: same-framework oracles
-(mlx-lm, optiq — same libmlx) admit bit-exact gates; cross-framework
-oracles (vLLM — CUDA/PyTorch) anchor the ALGORITHM and behavior (block
-semantics, sharing correctness, utilization), while rule 1 still binds the
-final output bits in the default regime. "Faithful" kernel-set identity is
-the easiest route to same-bits, not the contract; the one constraint
-bit-exactness puts on implementations is math/reduction order (the perf
-kernel died exactly there).
+Verification form follows the oracle's framework: same-libmlx oracles (mlx-lm,
+optiq) admit bit-exact gates; cross-framework oracles (vLLM, CUDA/PyTorch)
+anchor the algorithm and behavior while rule 1 still binds the output bits in
+the default regime. "Faithful" kernel-set identity is the easiest route to
+same-bits, not the contract; the one constraint bit-exactness puts on an
+implementation is math/reduction order.
 
 Two consequences drive everything below:
 
-- **The baseline must be even and proven before optimizing.** We now have it:
-  the L1 faithful path is bit-exact with mlx-lm at 1.00× speed on every
-  model. Anything that claims to beat it proves it with a paired A/B on a
-  stable pass — otherwise it is noise or a regression (2026-07-05 evidence:
-  every output-changing lever failed this bar).
-- **Frontier-shifting work is usually a *quality-per-byte* play, not a raw
-  kernel play.** Mixed-precision quantization (weights AND KV) moves memory
-  down while holding or raising intelligence — a genuine beyond-the-frontier
-  move, unlike micro-kernel wins that trade along it. This is why quantized
-  KV stays first-class even though it lost the speed A/B: it buys context
-  headroom (12B@16k: −1.3 GB, growing linearly) and mixed schemes buy
-  intelligence-per-byte.
+- **The baseline must be even and proven before optimizing.** The L1 path is
+  bit-exact with mlx-lm and at decode parity on every model (PLAN.md, the
+  2026-07-05 decision). Anything claiming to beat it proves it with a paired
+  A/B on a stable pass; otherwise it is noise or a regression.
+- **Frontier-shifting work is usually a quality-per-byte play, not a raw kernel
+  play.** Mixed-precision quantization (weights and KV) moves memory down while
+  holding or raising intelligence. Quantized KV stays first-class even though
+  it lost the speed A/B: it buys context headroom.
 
-## 2. Survey — what the other engines got right (and wrong for us)
+The frontier axes we measure: memory (generation peak, fit-model), decode
+tok/s (paired h2h, stable cells), prefill/TTFT, batched aggregate throughput,
+and intelligence (the frozen eval suite in evals.sqlite). Curated numbers live
+in `docs/reference/benchmarks.md`.
 
-- **mlx-lm** (`server.py`/`generate.py`): the original oracle and THE
-  drop-in target — and the project most similar to ours: it spans layers
-  1+2+3(+4), shipping the reference graphs, native bf16 + uniform 4/8-bit
-  quantized KV (`QuantizedKVCache`/`--kv-bits` — layer 2 is theirs too),
-  the batched engine, and the server. Its server is **concurrency-driven
-  by default** — it auto-creates a `BatchGenerator` (decode-concurrency
-  cap 32, prefill concurrency, chunked `prefill_step_size`) and routes any
-  batchable request into it; only non-batchable requests (draft models
-  etc.) serve sequentially. There is no "batching mode" flag — the cap is
-  the only knob. Count-capped prompt cache (the OOM footgun we already
-  fixed by byte-capping); no quantization on the batched path.
-  → **Adopt: the concurrency-driven default is our drop-in-parity behavior.**
-- **vLLM**: continuous batching + PagedAttention — the KV cache is block-paged
-  with a block table per sequence, which is what makes batching, long context,
-  and prefix sharing *compose* instead of conflict. No batch flag; `max_num_seqs`
-  caps. Chunked prefill interleaves with decode so TTFT doesn't starve running
-  streams. → **Adopt (long-term): block-paged KV as the structure that unifies
-  batch + quantized KV + prompt cache + SSD tier. Adopt (near-term): the
-  no-mode-flag scheduler and prefill/decode interleaving policy.**
-- **llama.cpp** (server): slot-based (`-np` = slot count), one shared KV
-  buffer partitioned by sequence — concurrency-driven, no mode flag. KV cache
-  default is **f16; quantized KV (q8_0/q4_0) is opt-in** — independent
-  confirmation of our bf16-default decision. Its imatrix (importance-matrix)
-  quantization is the ecosystem's calibration-driven intelligence-per-byte
-  play — the same family as oQ and our knapsack `--target-bpw`.
-  → **Adopt: nothing structural we don't have; validates KV defaults; imatrix
-  is prior art for the §7 quant program.**
-- **oMLX**: scheduler on mlx-lm's BatchGenerator + product appliances. Already
-  systematically mapped (omlx-adoption-map.md): batching parity + SSD tier
-  ported and won; burst decode ported and REFUTED (Python-GIL medicine, our
-  disease doesn't exist); oQ quant + DFlash queued. → **Keep mining the queue;
-  its engine architecture is not ahead of ours.**
-- **mlx-optiq**: the L2 oracle — per-layer mixed KV (`kv_config.json`), fused
-  quantized SDPA, vision sidecar. Not a batching engine. → **Its role is the
-  oracle for mixed-precision schemes (§5) and the source of the next quant
-  ideas (TurboQuant per Josh).**
-
-## 3. The architecture (four layers, each with one job)
+## 2. The four layers
 
 ```mermaid
 flowchart TB
     subgraph clients["CLIENTS"]
         direction LR
         PI["Pi agent<br/>chat UI + terminal"]
-        CLI["mlx-bun CLI<br/>generate · eval · train"]
-        API["any OpenAI client"]
+        CLI["mlx-bun CLI"]
+        API["any OpenAI / Anthropic / Responses client"]
         LIB["TS/Bun library import"]
     end
-    subgraph surface["SERVING SURFACE — src/server.ts"]
-        V1["OpenAI /v1 API"]
-        ADMIT["admission control<br/>--memory-budget · --kv-budget"]
+    subgraph surface["L4 SERVING SURFACE — src/server.ts + src/serve/*"]
+        V1["/v1 endpoints → prepareCompletion → CompletionExecutor"]
+        ADMIT["admission: --memory-budget · --kv-budget"]
     end
-    subgraph engine["ENGINE — one loop (Phase 2: concurrency IS the batch size)"]
-        SCHED["continuous-batching scheduler<br/>--batch N = cap (default 32 after B=1 gate)"]
-        B1["B=1 fast path<br/>pipelined + compiled step (today's serial loop)"]
-        BN["B>=2 batched step<br/>extend-join · bit-exact vs mlx-lm at same composition"]
-        FEAT["shared, implemented ONCE: prompt cache ·<br/>SSD KV tier · spec decode · grammar"]
+    subgraph engine["L3 ENGINE — GenerationGateway.place() → serial | continuous"]
+        SCHED["BatchScheduler (--batch N cap, default 8)<br/>B=1 adopted-cache fast path · B≥2 step"]
+        SERIAL["strict serial executor (generate.ts)<br/>--batch 1 and not-yet-batchable compositions"]
+        FEAT["shared: prompt cache · SSD tier · grammar · samplers"]
     end
-    subgraph models["MODEL LAYER — fingerprint-routed, NEVER flag-routed"]
-        OPT["optimized-verified graphs<br/>gemma4 12B/e4b/26B · MiniCPM5 · Qwen3/3.5"]
-        UNI["universal graph — any HF model, best effort"]
+    subgraph models["L1 MODEL GRAPH — profile-routed, never flag-routed"]
+        OPT["dedicated / generated graphs<br/>gemma4 · MiniCPM5 · Qwen3/3.5/3.8 · Qwen3-MoE · GLM-5.2"]
+        UNI["universal dense graph — any supported HF arch, best effort"]
     end
-    subgraph numerics["NUMERICS / KV SCHEMES — per-scheme oracles"]
+    subgraph numerics["L2 KV / QUANT SCHEMES — per-scheme oracles"]
         BF["bf16 (default) — oracle: mlx-lm"]
         UKV["uniform kv 4/8 — oracle: mlx-lm --kv-bits"]
         MKV["mixed kv_config — oracle: mlx-optiq"]
-        LAB["LAB: TurboQuant · mixed-bpw weights ·<br/>new kernels — KL + eval gates"]
+        LAB["Lab: TurboQuant KV · rotation-folded weights · new kernels — KL + eval gates"]
     end
     HW["libmlx (Metal) via bun:ffi — the only runtime link"]
     PI --> V1
     CLI --> V1
     API --> V1
-    LIB --> SCHED
+    LIB --> SERIAL
     V1 --> ADMIT --> SCHED
-    SCHED -->|1 active| B1
-    SCHED -->|2+ active| BN
+    ADMIT --> SERIAL
     SCHED -.-> FEAT
-    B1 --> OPT
-    BN --> OPT
-    B1 --> UNI
-    BN --> UNI
+    SERIAL -.-> FEAT
+    SCHED --> OPT
+    SERIAL --> OPT
+    SCHED --> UNI
+    SERIAL --> UNI
     OPT --> BF
     OPT --> UKV
     OPT --> MKV
@@ -183,592 +138,544 @@ flowchart TB
     MKV --> HW
 ```
 
-How a model becomes servable, and the promotion path:
+### Layer responsibilities (the contract)
 
-```mermaid
-flowchart LR
-    Q["mlx-bun serve QUERY"] --> REG["registry (local HF cache)"]
-    REG -->|not downloaded| GET["mlx-bun get"]
-    GET --> REG
-    REG --> FP["config.json fingerprint"]
-    FP -->|optimized-verified| OPTF["custom graph for THAT model"]
-    FP -->|anything else| UNIF["universal graph"]
-```
-
-```mermaid
-flowchart LR
-    A["runs on universal"] --> B["custom per-model graph<br/>(port the oracle's exact ops)"]
-    B --> C["bit-exact goldens vs scheme oracle"]
-    C --> D["h2h bench >= 1.00x mlx-lm, stable pass"]
-    D --> E["OPTIMIZED-VERIFIED badge"]
-    E -.-> F["Lab experiments on top<br/>paired A/B + expiry"]
-```
-
-**The model-layer philosophy (Josh's, verbatim intent):** the universal layer
-is the promise that anything from Hugging Face *runs*; the optimized-verified
-layer is the promise that the models we care about run *better than anywhere
-else*. Promotion from universal → optimized is a defined checklist: custom
-graph file, bit-exact parity goldens vs the scheme oracle, h2h bench entry at
-≥1.00× vs mlx-lm, eval-suite scores recorded. "Optimized and verified" is a
-badge with teeth, and the badge list is the marketing claim.
-
-### Layer 0 — the SSD spill substrate (Josh, 2026-07-05)
-
-Every stage that tried it found the same result: **it is almost always
-faster to cache to SSD and mmap it back than to regenerate, and spilling
-lets RAM be used as a cache instead of the only tier.** Three independent
-implementations already prove the pattern: the SSD KV cold tier (restart
-TTFT 12.1 s → 0.24 s, 0% decode overhead), MoE expert offload (page-aligned
-mmap, phys footprint ≈ active params), and the byte-capped prompt cache.
-Decision: extract the pattern into ONE generic substrate — content-addressed
-keys (model fingerprint + scheme + adapter + producer version), zero-copy
-mmap restore, byte-capped LRU eviction, corruption self-quarantine — that
-layers 1/2/4 consume. Future clients: vision encoder features (oMLX
-adoption-map #6), compiled xgrammar grammars, quantized-conversion results,
-TurboQuant artifacts. `src/ssd-cache.ts` is the seed to generalize.
-
-### The batching workload (Josh, 2026-07-05)
-
-The motivating case is THE USER'S AGENT HARNESS: someone points pi / a
-Claude-Code-style coding agent at their local server and spins up
-SUB-AGENTS to work different parts of a project. Serial, each agent queues
-behind all the others — the Nth agent's first token waits for N−1 full
-generations and every agent's loop stalls. Batched, 4–8 agents decode
-simultaneously: each stream is somewhat slower, but nobody waits, every
-agent starts instantly, and the fleet's wall-clock collapses (cpm5: 345
-aggregate at B=4 vs 267 solo → four jobs finish in ~3.1×T with zero queue
-latency, vs 4×T serial with the last agent idle through three
-generations). That is the entire reason a single-person laptop runtime
-carries a continuous-batching engine. Consequences: concurrency-driven
-batching (sub-agents don't coordinate arrivals); **prefix sharing gains
-priority** (sub-agents share long system prompts — one shared KV prefix ×
-N rows); per-slot adapters (different agents, different specializations);
-and batching × quantized KV first (agent fleets want long contexts).
-"Single-user" in this project means single-user, many-agents.
-
-### Layer responsibilities (the contract, 2026-07-05)
-
-1. **Model graph** — one forward step given hidden + caches; attention
-   dispatches on the CACHE TYPE it is handed (bf16 → ops.sdpa, quantized →
-   quantizedSdpa); shape-generic in B; selected by fingerprint, never flags.
-   *Responsibility: numerics of a step, for any B, for whatever cache it's
-   given.*
-2. **KV scheme (cache classes)** — the memory format and its semantics:
-   bf16 / uniform / mixed per-layer; conversion timing (bf16 prefill →
-   quantize populated rows — the optiq hook semantics); in batched form the
-   multi-row layout (padding, per-row rope, merge/extract/extend/filter).
-   *Responsibility: the scheme PER ROW — a row's bytes and math identical
-   solo or batched. This is where each scheme's oracle binds.*
-3. **Engine (scheduler)** — rows: admission, solo prefill, join/merge, the
+1. **Model graph (L1)** — one forward step given hidden + caches; attention
+   dispatches on the *cache type it is handed* (bf16 → `ops.sdpa`, quantized →
+   the quantized SDPA); shape-generic in B; selected by model profile, never by
+   flags. *Responsibility: the numerics of a step, for any B, for whatever
+   cache it is given.* The contract ENDS AT LOGITS.
+2. **KV scheme (L2, cache classes)** — the memory format and its semantics:
+   bf16 / uniform / mixed per-layer / TurboQuant; conversion timing (bf16
+   prefill → quantize populated rows, optiq's hook semantics); in batched form
+   the multi-row layout (padding, per-row rope, merge/extract/extend/filter).
+   *Responsibility: the scheme PER ROW — a row's bytes and math identical solo
+   or batched. This is where each scheme's oracle binds.* In code: `KvScheme`
+   (`src/kv-scheme.ts`, kinds `bf16 | affine-uniform | affine-config | turbo`),
+   the cache classes in `src/model/gemma4-base.ts`, and the batched variants in
+   `src/model/batched-*.ts`.
+3. **Engine (L3, scheduler)** — rows: admission, solo prefill, join/merge, the
    step loop, per-row sampling, eviction, pipelining, the concurrency cap.
-   Never implements scheme math; calls layer-2 operations.
-   *Responsibility: how many rows and when — never what a row's bytes mean.*
-4. **Serving surface** — endpoints, per-request features (adapters,
-   grammar, sampling, spec policy), prompt cache (keyed fingerprint +
-   effective scheme), admission budgets. *Responsibility: requests, not
-   tensors.*
+   Never implements scheme math; calls layer-2 operations. *Responsibility: how
+   many rows and when — never what a row's bytes mean.* In code:
+   `src/serve/generation-gateway.ts` (placement + the single mutual-exclusion
+   domain), `src/serve/batch-scheduler.ts`, `src/generate.ts` (the strict
+   serial loop), `src/spec/serve-loop.ts` (the verify loop).
+4. **Serving surface (L4)** — endpoints, per-request features (adapters,
+   grammar, sampling, spec policy), prompt cache (keyed by fingerprint +
+   effective scheme + adapter), admission budgets. *Responsibility: requests,
+   not tensors.* In code: `src/server.ts`, `src/serve/request-plan.ts`,
+   `src/serve/completion-executor.ts`, `src/serve/completion-sink.ts`.
 
-**Features decompose ALONG the layers (that's the model working, not
-leaking).** Per-request LoRA is the worked example: layer 1 = the math (a
-parameterization — `Wx + scale·B(Ax)` — oracle-gated vs mlx-lm's tuner);
-layer 3 = the policy (which rows run which adapter; today one active
-adapter per batch, per-slot adapters are the matrix item); layer 4 = the
-surface (`adapter` field, mount/hot-swap, discovery); plus one sideways
-obligation — KV under adapter A ≠ base KV, so the prompt cache keys by
-adapter (the SSD tier already does). When placing a feature, name its
-component at each layer and each component's gate.
+### Model selection is a declared profile, not a flag
 
-**Sampling's placement (and the debranching invariant).** The model
-graph's contract ENDS AT LOGITS. Sampling is *specified* at layer 4 (the
-request's params become a per-row sampler closure) and *executed* at
-layer 3 (each step, on each row's [1,V] slice; vectorized when all-greedy)
-— it never enters layer 1. This is the load-bearing placement behind the
-layer-1 debranching goal (Josh: the generated file pre-decides all ops and
-shapes; the path is a serial line with no branchable checks): everything
+`resolveModelProfile()` (`src/model/profile.ts`) freezes, before construction,
+the artifact/config identity, the fidelity target, the required engine
+capabilities, and the loader/graph/loop composition. Exact artifact profiles
+outrank family profiles; dedicated/generated graphs outrank the universal dense
+fallback; an exact profile whose config or capabilities mismatch refuses
+instead of downgrading. Profiles declare construction only — they cannot
+rewrite MTP, KV scheme, adapters, grammar, or sampling (those are request
+methods resolved independently). Promotion universal → dedicated is a
+checklist: custom graph file, bit-exact goldens vs the scheme oracle, an h2h
+entry at ≥1.00× vs mlx-lm on a stable pass, eval-suite rows recorded.
+
+Note: `profile.ts` keeps `FidelityTier = "l1" | "l2" | "l3"`, where `l3` means
+`oracle: null, claim: "measured"` — the Lab, named by its old letter. There is
+no `--l3` on the CLI (it hard-errors; §7).
+
+### Features decompose ALONG the layers
+
+Per-request LoRA is the worked example: L1 = the math (`Wx + scale·B(Ax)`,
+oracle-gated vs mlx-lm's tuner); L3 = the policy (which rows run which
+adapter; today one active adapter per batch, and adapter requests run on the
+serial mechanism); L4 = the surface (`adapter` field, mount/hot-swap,
+discovery); plus one sideways obligation — KV under adapter A ≠ base KV, so the
+prompt cache keys by adapter namespace (`cacheNs` in `runGeneration`). When
+placing a feature, name its component at each layer and each component's gate.
+
+### Sampling's placement and the debranching invariant
+
+Sampling is *specified* at L4 (request params → a per-row `StepSampler`,
+`src/sampler.ts`) and *executed* at L3 (each step, on each row's `[1,V]`
+slice; vectorized when all-greedy) — it never enters L1. Everything
 per-request-variable is either POST-GRAPH (sampling, grammar masks, stop
-logic) or DATA the fixed graph consumes (adapter weights, caches). Mixed
-adapter/no-adapter batches stay branch-free via vLLM's Punica/SGMV pattern
-— every row runs the adapter math, non-adapter rows at scale 0; data, not
-control flow (vLLM = the oracle for per-slot LoRA batching). Debranching
-backlog: the per-token runtime checks still in generated files (`L > 1`,
-`fusedSdpaRuntimeOk`) are per-GENERATION-decidable → hoist them out of the
-token path; compiled decode already achieves the fully-debranched line
-dynamically (trace once, replay).
+logic) or DATA the fixed graph consumes (adapter weights, caches). This is
+what keeps the generated graph a straight line. Debranching backlog, still
+open: the generated gemma files carry per-token runtime checks (`L > 1 &&
+fusedSdpaRuntimeOk(q, mask)` in `src/model/generated/gemma4-*.ts`) that are
+per-generation-decidable and should be hoisted out of the token path; compiled
+decode already achieves the debranched line dynamically (trace once, replay).
 
-**The option surface IS the four layers.** Users adjust: (1) how the model
-graph works — universal vs optimized file, compiled decode, future
-unrolled/fused variants; (2) how the quantization works — weights bpw,
-KV scheme, future TurboQuant; (3) how the scheduler works — concurrency
-cap, KV budget, prefill chunking, spec policy; (4) the serving surface —
-endpoints, adapters, structured output, sampling defaults, caches,
-multi-model. Flags, help text, and reference docs should be ARRANGED in
-these four groups.
+### Layer 0 — the SSD spill substrate
 
-**Composition truth (2026-07-05, source-verified to the line AND
-empirically proven live):** "does mixed-precision KV work with batched
-requests?" — optiq serve as shipped: **NO** (install_mixed_kv hooks
-stream_generate, the serial path; mlx_lm.server 0.31.3 contains zero
-quantization in its 1,904 lines and BatchKVCache has no to_quantized —
-batchable requests decode bf16). **Live 2×2 proof** (optiq serve, cpm5,
-9,132-token prompt, 128-tok decode, fresh server per arm; seeded requests
-route serial per mlx-lm's `_is_batchable`): batched path decode is
-IDENTICAL with and without --kv-config (120.5 vs 120.6 tok/s — the config
-is inert there), while the serial path drops 148.7 → 32.7 tok/s when the
-mixed hook engages (4.5× slower at this context in the shipped python
-pipeline). So optiq's composed reality today: batched requests silently
-bf16; quantized requests pay a heavy serial penalty. Phase 3.1's batched
-mixed-KV at full engine decode speed is an uncontested frontier point. mlx-bun
-today: **NO** (willBatch routes shape.kvQuant serial). mlx-bun after Phase
-3.1: **YES — the build**, and a first on this stack. In layer terms the
-limitation is purely layer 2: the quantized schemes only have single-row
-implementations, so layer 3 has nothing to call — not an engine limitation,
-not a model limitation. Phase 3.1 = give layer 2 batched quantized caches
-(copy the serial per-row ops that already bit-match optiq), teach layer 3 to
-call them at join/evict, hand layer 1 what it already dispatches on, then
-delete `shape.kvQuant` from willBatch — that deletion IS the feature.
-Bonus finding from the same review: optiq's Mac-safe concurrency default is
-**8** (they warn mlx-lm's 32 OOMs unified memory under burst) — adopt 8 as
-the `--batch` default, superseding the earlier 32.
+It is almost always faster to cache to SSD and mmap it back than to
+regenerate, and spilling lets RAM be a cache instead of the only tier. Three
+implementations prove it: the SSD KV cold tier (`src/ssd-cache.ts`, a
+`ColdTier` inside `PromptCache.take()` so both mechanisms restore prefixes
+from disk at admission), MoE expert offload (page-aligned mmap), and the
+byte-capped prompt cache. Decision: one generic substrate — content-addressed
+keys (fingerprint + scheme + adapter + producer version), zero-copy mmap
+restore, byte-capped LRU, corruption self-quarantine — that layers 1/2/4
+consume. Future clients: vision encoder features, compiled grammars,
+quantization results, TurboQuant artifacts. Economics (Josh): the SSD
+competes with RECOMPUTE, not RAM — a long agent context is minutes of prefill
+vs about a second of NVMe restore, and the ratio grows with context.
 
-## 4. The engine: concurrency IS the batch size
+### The option surface IS the four layers
 
-**Decision (Josh, 2026-07-05): batching is determined by how many concurrent
-requests are in flight, not by a flag.** One request = batch of 1 at full
-serial speed; N requests = continuous batching; requests join/leave running
-batches (the extend-join machinery already landed and is token-exact vs
-mlx-lm B=2).
+Users adjust: (1) how the model graph works — profile, compiled decode; (2)
+how quantization works — weight bpw, KV scheme, TurboQuant; (3) how the
+scheduler works — concurrency cap, KV budget, drafting policy; (4) the serving
+surface — endpoints, adapters, structured output, sampling defaults, caches,
+multi-model. Flags, help text, and reference docs should be arranged in these
+four groups (§7).
 
-This **reverses** batching-v2-plan.md's standing decision (`--batch N` as a
-mode switch, auto-batching rejected for determinism). The old objection was
-"an idle-vs-loaded server produces different numerics for the same request."
-It gets a real answer, not a shrug:
+## 3. Fidelity: per-scheme oracles, two axes, one decision procedure
 
-1. **The L1 oracle itself behaves this way.** mlx_lm.server auto-batches by
-   default; "drop-in for mlx-lm" now *requires* concurrency-driven batching.
-   Our parity contract becomes: **bit-exact to mlx-lm at the same batch
-   composition** — already golden-verified at B=1 and B=2.
-2. Anyone who needs load-independent numerics pins the cap to 1 (see below).
-3. **Batch-invariant kernels** (identical numerics regardless of B — the
-   Thinking-Machines-style program) go to the Lab as a research item; if that
-   ever lands, determinism-under-load comes back for free and it's an
-   arXiv-lens result on Apple Silicon.
-
-**Flag decision (Josh, 2026-07-05): the flag stays `--batch` — no rename.**
-Its *semantics* change from mode switch to cap: `--batch N` = maximum
-concurrent rows (mlx-lm's `--decode-concurrency` twin), **default 32**, and
-`--batch 1` is the force-serial / determinism pin. TIMING: the 32 default
-lands **with Phase 2, not before** — flipping it while the batched lane is
-still 1.8× slower at B=1 would regress every single-request user ~44%. Until
-GATE-B1-SPEED passes, `--batch` keeps today's default (1 = the serial lane).
-
-**The crux gate — the B=1 gap.** Today the batched lane at B=1 runs cpm5 at
-~149 tok/s vs 267 serial (batching-perf-path.md): the unified engine is
-**1.8× off** at the composition that matters most for a single-user runtime.
-
-**Measured 2026-07-05 (paired in-process A/B, cpm5, M1 Max): mlx-lm's own
-`BatchGenerator` at B=1 runs 256.5 tok/s vs 264.6 for its `stream_generate`
-— a 3.3% tax on the most host-tax-sensitive model we have.** Two
-consequences: (1) the unified design is *proven achievable* — a continuous-
-batching loop can serve a lone request at ~0.97× of the best serial loop,
-so our lane's 1.8× gap is an implementation artifact, not an inherent cost
-of the architecture; (2) our h2h 1.00× parity numbers were measured against
-`stream_generate` (mlx-lm's FASTEST single-stream path), so the baseline we
-match is not batched-handicapped — and `mlx_lm.server` actually serves a
-single request ~3% below the number we already match. The serial lane
-cannot be deleted until:
-
-- `GATE-B1-SPEED`: unified engine at B=1 ≥ 99% of today's serial decode tok/s
-  and TTFT on cpm5 + e4b + 12B (stable bench pass), and
-- `GATE-B1-PARITY`: unified engine at B=1 bit-exact vs the L1 goldens (full
-  logprobs, not just greedy).
-
-How to close 1.8×: the serial lane's wins are known and portable — the
-pipelined decode loop (async-eval overlap), compiled per-step graph replay,
-and no per-token scheduler hops. The likely landing: **the scheduler owns
-admission and join/leave; when exactly one sequence is active it executes the
-same pipelined/compiled step the serial path runs today** (B=1 specialization
-inside one engine — a fast path, not a second lane), falling back to the
-general batched step at B≥2. Same public machinery, no gateway routing rules,
-no feature×lane matrix.
-
-**COMPOSITION IS THE PRODUCT (Josh, 2026-07-05).** The goal state, verbatim
-intent: *"you start with the server, it serves an optimized version of the
-model, you add on top of that mixed-precision quantized KV cache, as well as
-LoRA adapters, and you add on top of that DSpark speculative decoding, and
-structured output potentially, and then you also can switch the sampling
-method and values."* Every serving capability is a STACKABLE layer on one
-engine — never a lane-routing condition, never mutually exclusive. The
-current gateway is the anti-pattern: `willBatch` routes vision / adapters /
-logprobs / seeds / kv-quant / drafts to a different lane, which is exactly
-the "batching OR performance" choice being killed.
-
-The composition matrix the unified engine must satisfy (each row = a layer;
-any subset of rows must stack):
-
-| layer | today | end state |
-|---|---|---|
-| optimized per-model graph | ✅ both lanes | ✅ (fingerprint-routed, unchanged) |
-| mixed-precision quantized KV | serial only | one active scheme per server, applies at any B |
-| LoRA adapters (hot-swap, per-request select) | serial only (compiled decode also skips them) | per-slot adapter state in the batched step |
-| speculative decoding (two-model + assistant + DSpark, 2026-07-06) | serial only, forces ALL requests serial; the `DraftSource` seam is now KV-borrowing-ready (target donor-KV / anchor-hidden / tapped H_ctx flow through it — the per-slot substrate is in place) | per-slot drafting behind the `DraftSource` seam |
-| structured output (grammar) | ✅ both lanes (B1 per-row matchers) | ✅ (already composes; keep the conformance gate) |
-| sampling method + values (temp/top-p/top-k/min-p/XTC/penalties/HLG/seed) | per-row samplers batch; seeds force serial | fully per-row, seeds included |
-| prompt cache / SSD tier | serial only | prefix reuse for batched rows |
-
-Ordering (by value): quantized KV under batching first (the
-agent-fan-out-with-long-context composition), then prompt cache, then
-adapters, then spec decode per slot, then chunked prefill interleaving
-(vLLM policy) so a 16k prefill doesn't stall running streams.
-`scripts/bench-matrix.ts modes` is already the composition scoreboard (its cell
-matrix spans kv × batch × grammar × cache × spec) — every layer added to
-the batched engine gets a cell there and a parity gate.
-
-## 5. Fidelity: per-SCHEME oracles (fixes "L1 can't oracle mixed")
-
-The tier ladder stops being a product mode and becomes what it always really
-was — a **map from numeric scheme to its verification oracle**:
+The tier ladder is not a product mode. It is a **map from numeric scheme to
+its verification oracle**:
 
 | scheme | oracle | verification |
 |---|---|---|
-| bf16 (default), any batch B | **mlx-lm** at same composition | bit-exact goldens (serial + B=2 landed) |
-| uniform kv 4/8 | **mlx-lm** `--kv-bits` (+ optiq's rotating cache class where upstream is NYI) | bit-exact (kv-quant.test) |
-| mixed per-layer kv (`kv_config.json`) | **mlx-optiq** `install_mixed_kv` | bit-exact (mixed-kv-parity.test, landed 2026-07-05, maxDiff 0) |
-| mixed-precision weights (knapsack/oQ/TurboQuant), original kernels, batch-invariant kernels | **none exists** → Lab gates | KL vs our own reference path + frozen eval suite (intelligence axis) + envelope tests + kill switch |
+| bf16 (default), any batch B | **mlx-lm** at the same composition | bit-exact goldens (serial + B=2) |
+| uniform kv 4/8 | **mlx-lm** `--kv-bits` (+ optiq's rotating cache class where upstream is NYI) | bit-exact (`kv-quant` tests) — `quantizedSdpaUnfused` is op-for-op mlx-lm's `quantized_scaled_dot_product_attention` |
+| mixed per-layer kv (`kv_config.json`) | **mlx-optiq** `install_mixed_kv` | bit-exact (`mixed-kv-parity` test; batched rows per-row vs the serial oracle) |
+| TurboQuant KV, rotation-folded weights, mixed-bpw weights, original kernels, batch-invariant kernels | **none exists** → Lab gates | KL vs our own reference path + frozen eval suite + envelope tests + kill switch |
 
-So: mixed-precision quantization is NOT demoted by the naked-=-L1 decision —
-it is the flagship of the row that mlx-lm cannot oracle, verified against
-optiq where optiq reaches (KV) and against the eval suite where no oracle
-exists (weights). `--l1/--l2` survive as *bench/test vocabulary* for the
-first three rows; they stop being user-facing product modes.
+`--l1`/`--l2` therefore name the first three rows' oracles. Mixed-precision
+quantization is NOT demoted by the naked-=-L1 decision — it is the flagship of
+the row that mlx-lm cannot oracle.
 
-**Composition rule (Josh, 2026-07-05): a composition inherits its scheme's
-oracle.** Batching, prompt cache, spec decode, adapters — none of them
-change a scheme's numerics, so composing them with a scheme verifies
-against THAT SCHEME'S oracle, per row. Batched bf16 anchored to mlx-lm
-(B=N token-exact goldens); batched mixed-KV anchors to the L2 oracle the
-same way: copy optiq's per-row quantization mechanics (`install_mixed_kv`'s
-per-layer map + streaming `to_quantized` + RotatingQuantizedKVCache — our
-serial `maybeQuantizeKv` is already the verified op-for-op copy), then
-gate on per-row bit-exactness against it (row cache contents; B=1 through
-the engine vs the mixed-KV golden; B>1 trajectories at the standing
-long-prefix bar). Do NOT invent Lab-style KL/teacher-forced gates for a
-composition of an oracle-backed scheme — the Lab is only for schemes with
-no oracle at all (new quant methods, original kernels).
+### The two axes (parity gates performance)
 
-## 6. The flag surface (end state — every flag with its reason)
+Every optimization has two independent coordinates, and conflating them is
+what made the flag surface unreadable:
 
-User-facing serve/generate flags after the deletion pass:
+1. **Parity** — which reference does it reproduce bit-for-bit? This sets the
+   *lowest* tier it may live in: matches mlx-lm → L1; matches optiq but not
+   mlx-lm → L2; matches neither → no oracle, Lab-gated.
+2. **Performance** — is it the fastest correct way? This sets whether it is
+   the **default (on)** within its tier or a kept-but-off opt-in.
 
-| flag | why it exists |
-|---|---|
-| `--kv-quant config\|4\|8\|off` | the ONE performance trade-off a user makes: decode speed vs context headroom (+ intelligence-per-byte with mixed). Default off (bf16). Composition (fused vs unfused quantized SDPA) is DERIVED from the scheme's oracle, not chosen. |
-| `--batch N` | cap on concurrent rows (mlx-lm's `--decode-concurrency` twin). Default 32 once Phase 2's B=1 gate passes; `--batch 1` = force-serial / determinism pin. Name kept (Josh 2026-07-05) — semantics change from mode to cap. |
-| `--draft-model`, `--num-draft-tokens` | speculative decoding (mlx-lm parity) |
-| `--adapter`, `--memory-budget`, `--kv-budget`, `--prompt-cache`, `--ssd-cache`, `--expert-offload`, `--force-wire` | capacity/serving features, not numerics levers |
-| sampling flags (`--temperature` etc., HLG family) | request-default sampling |
+**Parity gates performance.** A faster kernel that breaks mlx-lm parity is not
+"a faster L1" — it bubbles up to whatever tier its parity allows, and the user
+opts in. An *optimization* that still matches the oracle stays low:
+compiled decode is ours but is L1 because it replays the same ops bit-for-bit.
+Only nodes with no oracle are forced into the Lab.
 
-Everything else becomes either a **kill switch** (env-only, documented for
-debugging: `MLX_BUN_COMPILED_DECODE=0`, `MLX_BUN_COMPILED_GEGLU=0`,
-`MLX_BUN_NO_FUSED_SDPA=1`) or a **Lab flag** (env-only, lives with its bench
-script and expiry — §7). Kill switches are bit-exact by definition (they
-select a slower same-parity path); anything output-changing is Lab.
+### Decision procedure for any new optimization
 
-**Deleted — EXECUTED 2026-07-05** (one funeral each; ~50 files touched, 23
-deleted, suite green):
-- `--fused-decode` / `MLX_BUN_FUSED_DECODE` — 1.00×, forces uncompiled,
-  silent-wrongness footgun. Delete kernel path + flag + backstop throw.
-- `--fused-gelu` / `MLX_BUN_FUSED_GELU` + `MLX_BUN_FUSED_SWIGLU` — +0–1%;
-  the compiled closures already own the fusion win bit-exactly. Delete both
-  custom Metal kernels + flags (git history keeps the source).
-- `--perf-kernel` / `MLX_BUN_PERF_KERNEL` — **DELETE** (Josh 2026-07-05:
-  "we are going to start a full optimization program anyway… we will end up
-  redoing all the work we have currently done given that we now have a
-  different starting point"). The kernel, its frozen-oracle test scaffolding
-  (perf-kernel-oracle.test.ts, freeze-perf-oracle.ts), and the flag all go;
-  git history + the h2h evidence (+6% 12B@16k, −38% e4b@16k, KL WARN) are
-  the breadcrumb. If a flash-decode kernel returns, it's re-derived from the
-  L1 baseline in the Lab under the §7.4 program, not resurrected.
-- `MLX_BUN_CPM5_FAITHFUL` + `FaithfulMiniCPM5` — the default IS the faithful
-  path now; the A/B reference served its purpose.
-- `--l3` as a product mode — the Lab replaces it; the flag now hard-errors
-  with a pointer here. `--l1`/`--l2` stay as documented aliases.
-- Also deleted with the fused-swiglu family: `fused-mlp-kernel.ts` and
-  `steel-linear-kernel.ts` (only reachable through the deleted gates) and
-  the ~17 `scripts/experiments/swiglu-*`/geglu/steel one-off scripts.
-- Training flag sanitization (`MLX_BUN_PERF_KERNEL=0` / `MLX_BUN_FUSED_GELU=0`
-  in trainers/launchers/recipes) — obsolete; the no-vjp kernels it guarded
-  against no longer exist.
+1. **Measure its parity** (run both ways, compare — one flag, one measurement
+   per lever). The lowest oracle it matches bit-for-bit is its tier ceiling.
+2. **Measure its performance** vs that tier's current default on a stable
+   pass:
+   - faster AND holds the guarantee → becomes the **default (on)** for the tier;
+   - slower but still correct → a documented **default-off kill switch**
+     (useful for A/B; never the default);
+   - breaks the guarantee but offers a real trade-off → a **Lab item**
+     (env flag, bench script, expiry); earns a default only by beating the L1
+     baseline in a paired A/B (+ KL PASS if output-changing).
 
-**Lab lifecycle rule** (the anti-flag-pile law): every Lab experiment ships
-with (a) a hypothesis stated in frontier-axis terms, (b) a paired A/B bench
-script, (c) an expiry review date. Outcomes: promote to default (with the
-stable-pass numbers) or delete (with a breadcrumb in the design doc). No
-third state. "Off in every regime with no promotion path" — the fused-decode
-condition — is a deletion that hasn't happened yet.
+Worked: *5% less memory, still bit-for-bit* → default-on in L1. *2× tok/s at
+KL 0.0015* → Lab item. *Another way, 3% slower, still correct* → kept, off.
 
-## 7. The frontier program (AFTER stability — the order matters)
+### Composition rule: a composition inherits its scheme's oracle
 
-Phase gate: none of this starts until §8 phases 0–2 are done. "Now we
-finally have a baseline that is even and proven; investigate THAT."
+Batching, prompt cache, spec decode, adapters — none change a scheme's
+numerics, so composing them with a scheme verifies against THAT scheme's
+oracle, per row. Batched bf16 anchors to mlx-lm B=N goldens; batched mixed-KV
+anchors to optiq's per-row mechanics (our serial `maybeQuantizeKv` is the
+verified op-for-op copy) and gates on per-row bit-exactness of the unpadded
+row plus a calibrated envelope for padded rows (their noise is pre-existing
+bf16 reduction order under grid snapping, measured at the pinned join step).
+Do NOT invent Lab-style KL/teacher-forced gates for a composition of an
+oracle-backed scheme; the Lab is only for schemes with no oracle at all.
+
+### Flag classification (from the tier framing)
+
+A flag falls into exactly one of three buckets:
+
+| flag selects… | tier effect | what it IS | action |
+|---|---|---|---|
+| the only viable route | — | not a choice | always-on default; no flag |
+| between two routes at the same tier / same oracle | none | a kill switch (A/B, debugging) | default the fast one; keep the slow one documented |
+| between an oracle-backed route and a no-oracle route | tier ↔ Lab | a real parity ⇄ optimization knob | keep, document as such, group by layer |
+
+Training flags classify the same way (verified in `src/cli.ts` train help):
+`--grad-clip` is an always-on guard; `--seg N` / `--no-segment` is a
+memory↔compute knob, bit-exact either way; `--grad-accum` and `--lambda` are
+training-quality/hyperparameter knobs; `--no-flash` (flash-CCE head → the
+MLX fused head) and `--no-prefix` (prefix-shared forward → two-forward) are
+the only true parity ⇄ optimization toggles on that surface. The 2026-06-21
+"parity-tier DAG" HTML map that motivated this classification
+(`docs/dag/training-inference-map.html`) no longer exists in the tree; the
+roadmap it proposed — derive the graph from code, CI-enforce "an L1-tagged
+node has a passing bit-exact test", shrink the no-oracle surface, generate the
+flag surface from the graph — remains an idea, not a phase.
+
+### Lab lifecycle rule (the anti-flag-pile law)
+
+Every Lab experiment ships with (a) a hypothesis in frontier-axis terms, (b) a
+paired A/B bench script, (c) an expiry review date. Outcomes: promote to
+default (with stable-pass numbers) or delete (with a breadcrumb in the design
+doc). No third state. "Off in every regime with no promotion path" is a
+deletion that hasn't happened yet.
+
+## 4. Decision: the naked default IS L1 (2026-07-05, Josh)
+
+The 2026-07-05 h2h pass showed the L1 kernel set at decode parity with mlx-lm
+on every model while every output-changing lever failed to beat it in a paired
+A/B, and quantized KV measured slower than bf16 at ≤16k on both stacks (it
+buys memory headroom only). The record with numbers is PLAN.md "Decision:
+naked default = --l1".
+
+- **Naked = `--l1`.** `applyDecodeRoute` (`src/cli.ts`) defaults the tier to
+  `l1`: bf16 KV, compiled decode on, compiled activations on, fused SDPA off.
+- **Prior perf-optimization work is untrusted until re-proven** from this
+  baseline (the losers were deleted the same day — §11 History).
+- **The bar for any lever to earn a default back:** a paired A/B win vs L1 on
+  a stable pass (no `unstable` tag), plus KL PASS if output-changing.
+- **Explicit `--kv-quant` picks its oracle's composition**: `config` → optiq's
+  fused prefill SDPA + stock unfused decode (the L2 golden composition);
+  uniform `4|8` → unfused (mlx-lm's algorithm, L1-eligible); `turbo[:k.v.]` →
+  dequantize-on-fetch through stock `ops.sdpa` (Lab). `--fused-sdpa` still
+  overrides either.
+- **`--l1`/`--l2` are pure aliases.** Each expands to a fixed set of per-fork
+  values (`TIERS` in `applyDecodeRoute`), installed through
+  `configureRuntime()` into the immutable runtime snapshot before model modules
+  load; a per-fork flag overrides one value. Two invariants: a user can
+  reproduce any tier byte-for-byte from individual flags, and no preset may set
+  anything that isn't also an individual flag.
+
+## 5. The engine: concurrency IS the batch size
+
+**Decision (Josh, 2026-07-05): batching is determined by how many concurrent
+requests are in flight, not by a flag.** One request = a lone row at serial
+speed; N requests = continuous batching; rows join and leave running batches.
+This reversed `batching-v2-plan.md`'s "`--batch N` is a mode switch" decision.
+The old objection — "an idle vs loaded server produces different numerics for
+the same request" — gets a real answer:
+
+1. **The L1 oracle itself behaves this way.** `mlx_lm.server` auto-batches;
+   "drop-in for mlx-lm" *requires* concurrency-driven batching. The parity
+   contract is **bit-exact to mlx-lm at the same batch composition**.
+2. Anyone who needs load-independent numerics pins `--batch 1`.
+3. **Batch-invariant kernels** (identical numerics regardless of B) are a Lab
+   research item; if they land, determinism-under-load returns for free.
+
+**The flag stays `--batch`** (no rename); its semantics are the cap on
+concurrent rows (`--decode-concurrency` is accepted as the mlx_lm.server
+alias). **Default 8** (`serverOptions.batch ?? 8` in `src/server.ts` and
+`src/cli.ts`) — optiq's Mac-safe concurrency default and the 4–8-sub-agent
+workload, superseding the earlier 32. `--batch 1` pins the strict serial
+executor. An older draft of this doc and its diagram said 32; the code says 8.
+
+**The workload this is for**: a user's agent harness pointing sub-agents at
+one local server. Serial, the Nth agent's first token waits for N−1 full
+generations; batched, every agent starts instantly and the fleet's wall-clock
+collapses. Consequences: concurrency-driven batching (sub-agents don't
+coordinate arrivals), prefix sharing gains priority (shared system prompts),
+per-slot adapters, and batching × quantized KV first (long contexts).
+"Single-user" in this project means single user, many agents.
+
+### The B=1 fast path (the crux gate, met)
+
+The unified engine could not replace the serial lane until a lone request
+through the scheduler matched serial decode speed and bits. mlx-lm's own
+`BatchGenerator` at B=1 runs within a few percent of its `stream_generate`
+(paired A/B, PLAN.md), so the design was proven achievable; our gap was an
+implementation artifact, closed in two moves (both are now design contracts,
+§8): readbacks in a pipelined loop must not create ops, and a lone row keeps
+bare serial-class caches so the step dispatches the same graph the serial loop
+builds. Today `BatchScheduler` runs, for `B === 1 && unpadded && supports(inners)`
+with a uint32 pipeline register, the serial engine's `CompiledDecode` step
+(adopt-don't-copy: a row joining an empty batch keeps its solo caches as the
+inners; the merge copy runs only when a second row actually joins). The
+recorded scheduler/serial paired decode ratios are 0.992–0.996 (PLAN.md
+"Serving architecture consolidation"), and `GATE-B1-PARITY` (bit-exact vs the
+L1 goldens through the scheduler) is green on the curated probes.
+
+### Composition is the product
+
+Every serving capability is a STACKABLE layer on one engine — never a
+lane-routing condition, never mutually exclusive. The matrix the engine must
+satisfy, with the state of `GenerationGateway.#supportsContinuous` as read on
+2026-08-23:
+
+| layer | today (src) | end state |
+|---|---|---|
+| dedicated per-model graph | both mechanisms (profile-routed) | unchanged |
+| mixed-precision KV (`affine-config`) | continuous when every configured layer is a plain or rotating KVCache the scheme can convert (`KvScheme.batchable` + the gateway's cache probe); uniform `kvBits`, SSM-layer configs, and TurboQuant route serial | one active scheme per server, any B |
+| LoRA adapters | serial only (`shape.hasAdapters`) | per-slot adapter state (vLLM Punica/SGMV pattern: every row runs the adapter math, non-adapter rows at scale 0) |
+| speculative decoding (two-model · assistant · dspark · deepspec · native MTP · ngram) | serial only; a mounted draft routes every request serial (`shape.hasDraft`, mlx_lm.server's `is_batchable = draft is None`); GLM-5.2 MTP is on by default and pins the serial verify lane (`--mtp off` restores batching) | per-slot drafting behind the `DraftSource` seam |
+| structured output (grammar) | both (per-row matchers; `MLX_BUN_GRAMMAR_BATCH=0` forces serial) | unchanged; keep the conformance gate |
+| sampling (temp/top-p/top-k/min-p/XTC/penalties/HLG/seed) | per-row `StepSampler` batches, including repetition penalty and logits extras; a user-fixed `seed` forces serial (mlx-lm's `_is_batchable`) | fully per-row, seeds included |
+| logprobs capture | serial only (`shape.wantsLogprobs`) | per-row readback in the scheduler |
+| vision / audio media prompts | serial only (`shape.hasVision`; embeddings-prefill bypasses the prompt cache) | batched media prefill |
+| prompt cache / SSD tier | both: scheduler joiners `take()` the longest usable prefix at admission, never-merged rows `put()` back on finish; the cold tier restores inside `take()` | block-granular sharing across rows |
+| paged KV (`--paged-kv`) | serial only, Gemma4 bf16, refuses `--batch N>1`, `--kv-quant`, `--draft-model`; bypasses the prompt cache | block-level CoW prefix sharing (vLLM oracle) |
+
+Ordering of the remaining rows (by value): adapters per slot, then spec per
+slot, then logprobs, then chunked prefill interleaving (vLLM policy) so a long
+prefill doesn't stall running streams. `scripts/bench-matrix.ts modes` is the
+composition scoreboard — every layer added to the scheduler gets a cell and a
+parity gate.
+
+## 6. Request path today
+
+Modules in order, as read in `src/` on 2026-08-23:
+
+1. **`src/server.ts`** — protocol adapters. `/v1/chat/completions` calls
+   `handleChat` directly; `/v1/messages` (Anthropic) and `/v1/responses`
+   translate their bodies into the same `handleChat`; `/v1/completions` has its
+   own raw-text branch. The adapter renders the prompt (`promptIdsFor`),
+   resolves adapters, compiles the grammar controller, builds media embeddings,
+   and applies the server-wide sampling defaults — then hands everything to
+   step 2. Protocol frames and JSON shape stay here.
+2. **`src/serve/completion-executor.ts` `prepareCompletion()`** → **`src/serve/request-plan.ts` `planRequest()`** — admission (memory budget → reject or clamp `maxTokens`), capture options, adapter selection, and the `RequestShape` are derived ONCE for chat and raw-text, streaming and non-streaming. The result is an opaque, single-use `PreparedCompletion`; adapters cannot inspect or rewrite the plan. Owned resources (media arrays, grammar) dispose on rejection.
+3. **`CompletionExecutor.execute()`** — owns one completion attempt: asks the engine for placement, records the lane (`src/serve/lane-registry.ts`), builds the `CompletionSink` (semantic events: content / reasoning / tool calls / stop), collects logprobs, transfers resource ownership exactly once, runs, and settles the terminal summary (finish reason, usage, cached tokens, final lane, speculation stats). Adapters only format that summary.
+4. **`src/serve/generation-gateway.ts` `GenerationGateway.place(shape)`** — freezes one `GenerationPlacement { shape, mechanism: "serial" | "continuous" }`. `#supportsContinuous` is a capability check only (§5 matrix); it never rewrites MTP, KV scheme, TurboQuant, grammar, adapters, or sampling. `run()` rejects a placement made for another shape. One `AsyncMutex` is the single mutual-exclusion domain: a serial run holds it; the scheduler holds it for its whole active period; a waiting serial request drains the batch (mlx-lm's `drain_batch`).
+5. **`continuous` →** `src/serve/batch-scheduler.ts` — admission under `--kv-budget`, chunked interleaved solo prefill, join/merge/extend/filter over per-layer cache types, the pipelined step loop, per-row `StepSampler`, eviction. B=1 takes the adopted-cache fast path (§5). **`serial` →** `runGeneration` in `src/server.ts` → `src/generate.ts` (prompt-cache take/put, snapshot boundary, the chunked prefill, the pipelined compiled decode loop) or, when a draft is mounted and the request is spec-eligible, `src/spec/serve-loop.ts`.
+
+**The single-path rule.** Options are *declarations* carried through
+placement, never forks above the scheduler. A request's resolved settings
+(KV scheme, TurboQuant, drafting, grammar, adapters, sampling) are authoritative
+from `planRequest` onward; `place()` may only answer "does the continuous
+mechanism implement exactly this composition?" — it may not substitute a
+cheaper composition to make a request batchable (the optiq bug class: silently
+serving bf16 under a quantized scheme). The scheduler independently refuses a
+scheme it cannot execute at construction, and `KvScheme` freezes its per-layer
+entries so a caller cannot mutate conversion or accounting after resolution.
+
+**Known deviations from the single-path rule (verified 2026-08-23):**
+
+1. **Two prefill loops.** `src/generate.ts` (the chunk loop with the
+   `snapshotAt` split, the mlx-lm tail-split convention
+   `min(prefillChunkSize, remaining-1)`, per-chunk `clearCache`) and
+   `BatchScheduler.#prefillChunk` in `src/serve/batch-scheduler.ts` (the same
+   conventions re-implemented over `PrefillState` for interleaved admission).
+   Both are gated bit-exact, but a convention change must land in two places.
+2. **`handleChat` is an inline closure in `src/server.ts`** (defined inside the
+   fetch handler; the Anthropic and Responses adapters funnel through it, and
+   `/v1/completions` duplicates the prepare/execute call site). The
+   prompt/media/grammar construction that precedes `prepareCompletion` still
+   lives in the adapter, not behind the seam.
+3. **Spec eligibility is decided after placement.** `planRequest` only knows
+   `hasDraft = !!ctx.draft` (server-level), which routes every request serial
+   while a draft is mounted. The real per-request eligibility — text-only, no
+   adapters, no logprobs capture, bf16 KV (no `kvBits`/`kvConfig`/`turboQuant`),
+   not paged — is evaluated inside `runGeneration` after `place()`; ineligible
+   requests silently fall through to plain serial decode, and the lane label is
+   corrected from `serial+spec` to `serial` only when `stats.spec` is absent
+   (`finalLane` in the executor). Resolving this means lifting the eligibility
+   predicate into `RequestShape` so placement and the lane label are decided
+   once.
+
+Other seams worth knowing: `runGeneration` also decides the prompt-cache
+bypass (media, paged) and the adapter cache namespace; `--isolate` wraps the
+ENTIRE server as an engine child behind a proxy (`src/serve/isolate.ts`,
+`ModelPool` for `--model-pool` LRU residency and model switching by the
+request's `model` field) — the inter-process API is the /v1 surface itself, no
+second protocol.
+
+## 7. The flag surface (src truth, grouped by layer)
+
+Read from `SERVER_FLAGS` and `applyDecodeRoute` in `src/cli.ts`. Every
+`MLX_BUN_*` value is read through the immutable runtime snapshot
+(`src/runtime-config.ts` `runtimeValue/runtimeFlag`, `src/flags.ts` `flagOn`);
+feature code never reads `process.env`, and the CLI installs tier/fork
+overrides with `configureRuntime()` before model modules load.
+
+**Parity tier (aliases):** `--l1` (default) · `--l2`. `--l3` hard-errors with a
+pointer to this doc.
+
+**L2 — quantization:** `--kv-quant config|off|4|8|turbo[:k<bits>v<bits>]`
+(default off). An older draft of this doc listed only `config|4|8|off`; the
+`turbo` axis is real and mutually exclusive with the affine modes.
+
+**L3 — scheduler / decode policy:** `--batch <n>` (default 8;
+`--decode-concurrency` alias) · `--kv-budget <GB>` · `--draft-model <query>` ·
+`--draft-kind two-model|assistant|dspark|deepspec|mtp|ngram` ·
+`--num-draft-tokens` · `--ngram-max` / `--ngram-min` · `--mtp on|off`
+(GLM-5.2 native MTP, on by default) · `--context-length` (GLM-5.2 reservation)
+· `--paged-kv` / `--paged-kv-block-size` (env `MLX_BUN_PAGED_KV=1`).
+
+**L4 — serving surface:** `--model` · `--host` · `--port` · `--memory-budget`
+· `--prompt-cache <GB>` · `--ssd-cache <dir>` · `--ssd-cache-max` ·
+`--ssd-demote-idle` · `--ssd-cache-verify` · `--isolate` · `--model-pool` ·
+`--unix` (internal) · `--no-open` · `--allow-private-media` · `--adapter`
+(`--adapter-path` alias) · `--thinking` · `--temperature`/`--temp` · `--top-p`
+· `--top-k` · `--max-tokens` · the HLG sampler family (`--hlg-sampling`,
+`--hlg-width`, `--hlg-shoulder`, `--hlg-toe`, `--hlg-pivot-offset`).
+
+**Kill switches (bit-exact A/B levers, each selects a slower same-parity
+path):** `--compiled-decode on|off` (`MLX_BUN_COMPILED_DECODE`) ·
+`--compiled-activations on|off` (`MLX_BUN_COMPILED_GEGLU` +
+`MLX_BUN_COMPILED_SWIGLU`; only gemma geglu and MiniCPM5 swiglu have an
+uncompiled form — qwen3/qwen3.5/universal compile unconditionally) ·
+`--fused-sdpa on|off` (`MLX_BUN_NO_FUSED_SDPA`, inverted; default follows
+`--kv-quant`) · `--force-wire` (`MLX_BUN_FORCE_WIRE`) · `--expert-offload`
+(`MLX_BUN_EXPERT_OFFLOAD`). An older draft said these were env-only; the three
+decode kill switches are CLI flags as well.
+
+**Lab / diagnostic env flags (no CLI flag; live with a bench and an expiry):**
+`MLX_BUN_GRAMMAR_JUMP=1` (jump-forward decoding, serial non-spec loop),
+`MLX_BUN_GRAMMAR_BATCH=0` (grammar back to serial), `MLX_BUN_BATCH_SSM=0`
+(SSM caches back to serial), `MLX_BUN_BATCH_NO_PIPELINE`,
+`MLX_BUN_BATCH_STEP_TRACE`, `MLX_BUN_BATCH_VEC_SAMPLE`, `MLX_BUN_BATCH_EXTEND`,
+`MLX_BUN_PREFILL_TAIL_SPLIT`, `MLX_BUN_FLASH_MIN_M`, the `MLX_BUN_CCE_*`
+training-kernel switches, and the memory/trace loggers. Anything
+output-changing is Lab by definition.
+
+**Deleted (2026-07-05, §11):** `--fused-decode`, `--fused-gelu`,
+`--perf-kernel`, `--l3`, and their env twins. None exist in `src/`.
+
+## 8. Design invariants proven en route (durable, not changelog)
+
+- **Readbacks in a pipelined loop must not create ops.** `toFloat32()` on the
+  int token array enqueued a cast BEHIND the next dispatched step, stalling the
+  "overlapped" read a full GPU step per token. Use `MlxArray.toIntTokens()`.
+- **A lone row keeps bare serial-class caches.** `KVCache.makeMask(1)` is the
+  empty mask and scalar rope; the batched step then dispatches the same graph
+  the serial loop builds. The per-layer `BatchedDecodeMaskCache` wrapper is
+  only for padded batches.
+- **Rope-array step-stability contract.** A batched cache's `ropeOffsetArr`
+  must be stable within a decode step and refresh only at `releaseRopeArr()`;
+  re-reading it mid-update ropes K and Q one position apart.
+- **Generated-file guards accept batched subclasses.** The generated forwards'
+  per-layer `instanceof` guards pass any batched cache that subclasses a
+  serial class, so an all-quant gemma batch decodes through the generated
+  fast path — a feature (B=1 proved bit-exact) but a contract: batched caches
+  must behave serially under re-reads. Test with FULL configs; one bf16 layer
+  anywhere fails the guard and drops to the monolith.
+- **Quantization packs along HEAD_DIM**, so token-axis batch surgery over
+  (packed, scales, biases) triples is byte-safe; solo rows convert at serial
+  chunk boundaries (bit-exact by construction).
+- **A scheme-less path must refuse, never silently drop quantization.** The
+  gateway only threads a `KvScheme` to the scheduler when it is batchable; the
+  scheduler refuses an unsupported scheme at construction.
+- **Prefix sharing is non-consuming.** `PromptCache.take()` serves zero-copy
+  clones (ref-counted retain so a demoted donor never unmaps pages a clone
+  reads); the donor stays put; `put()` supersedes same-namespace prefix
+  ancestors when the new entry is trimmable. Kills the cannibalization flaw
+  (agent B consuming agent A's entry). v1 shares COMPUTE and durability;
+  concurrent rows still hold separate physical KV — one shared physical prefix
+  across rows is the block-KV frontier item, and whole-entry duplication in
+  the disk tier is the block-granularity revisit trigger.
+- **Prompt-boundary snapshot.** The prompt+generation entry is untrimmable
+  past a wrapped ring or under quantized KV, so every substantial request also
+  snapshots a strict prompt prefix (cap `len-1`), the mlx-lm
+  `insert_segments` invariant; a re-rendered next turn always matches.
+- **Never a JS callback as an mlx buffer destructor** — last-ref `Data` dtors
+  run on the Metal completion thread (native `dlsym(free)` dtor, process-pinned
+  mmaps).
+- **Isolation proxies the whole server**, not the gateway: grammar WASM,
+  vision arrays, and sampler closures don't serialize; the /v1 surface is the
+  IPC.
+
+## 9. The frontier program (order matters)
 
 Ranked by expected frontier shift (memory ↓ / intelligence ↑ first, then
-speed):
+speed). Each item is a Lab program with its own doc; `decode-speed-program.md`
+ranks the speed levers and is the only doc that does.
 
-1. **Mixed-precision weights** — knapsack `--target-bpw` (ours) vs oQ
-   (calibration-driven sensitivity, omlx-adoption-map §4) vs llama.cpp
-   imatrix as prior art. Gate: perplexity + frozen 6-task eval at equal bpw.
-   The purest beyond-the-frontier play we know: same memory, more
-   intelligence. (arXiv-lens candidate.)
-2. **TurboQuant KV** (Josh) — ORTHOGONAL to mixed precision and composes
-   with it: mixed precision is the ALLOCATION axis (how many bits per
-   transformer layer, optiq's sensitivity map), TurboQuant is the
-   QUANTIZER axis (how a given bit budget encodes each K/V vector, within
-   a layer — rotation-based, online, calibration-free). Composition =
-   sensitivity allocation × better quantizer: more fidelity at the same
-   KV bytes. Architecture: a layer-2 cache format + a layer-1 attention
-   kernel keyed by cache type (same shape as optiq's scheme). Oracle: the
-   paper + its reference implementation anchor the ALGORITHM (read them
-   first, per the oracle rule); the output is genuinely novel (no serving
-   stack ships it) → eval-suite gates. Composes with Phase 3.1's batched
-   quantized buffers.
-3. **Speculative decoding depth** — DFlash/DSpark behind the existing
-   `DraftSource` seam; decode tok/s at zero quality cost when drafts land.
-4. **Per-model graph work from the baseline** — the optimized-verified
-   layer's whole point: unroll a model's flat DAG, find fusion the compiler
-   misses, prove with kernel-trace diffs, promote per model. The perf-kernel
-   root-cause lives here.
-5. **Batch-invariant kernels** (research) — restores determinism-under-load;
-   novel on Apple Silicon.
+1. **Mixed-precision weights** — knapsack `--target-bpw` (ours; OptiQ-style
+   sensitivity port in `src/quantize/sensitivity.ts`) and rotation-folded
+   quantization (`turboquant-weights.md`, `--rotate-weights`). Gate:
+   perplexity + frozen 6-task eval at equal bpw.
+2. **TurboQuant KV** (`turboquant-kv.md`, landed v1) — orthogonal to
+   allocation: mixed precision is the ALLOCATION axis, TurboQuant the
+   QUANTIZER axis; they compose. Solo-only in v1.
+3. **Speculative decoding depth** — DFlash/DSpark, native MTP, behind the
+   `DraftSource` seam (`dspark-serving-program.md`).
+4. **Per-model graph work from the baseline** — unroll a model's flat DAG,
+   find fusion the compiler misses, prove with kernel-trace diffs, promote per
+   model.
+5. **Batch-invariant kernels** (research) — restores determinism under load.
 
-## 8. Migration phases (each with a hard gate)
+## 10. Decisions log and open items
 
-- **Phase 0 — measure the gap** — **DONE 2026-07-05** (M1 Max, same server
-  harness both lanes, median-of-5, bf16 KV):
+1. **Cap default 8** — flipped 2026-07-05 after the B=1 gates; `--batch 1`
+   pins arrival-independent numerics; kv-budget admission keeps 8 safe on
+   small boxes.
+2. **Flag stays `--batch`**; semantics = cap.
+3. **Perf kernel deleted**; a future flash-decode kernel re-derives from the L1
+   baseline in the Lab — no resurrection.
+4. **`--l1`/`--l2` remain user-facing CLI aliases** (`src/cli.ts` documents
+   them under "Parity tier"). The 2026-07-05 intent that they become
+   bench/test vocabulary only has not been executed; if it is, `serve --help`,
+   `docs/reference/cli.md`, and `server-config.md` change in the same commit.
+5. **Block-paged KV**: an optional serial-only v1 exists (`--paged-kv`,
+   `paged-kv-cache.md`); padded-batch waste removal and block CoW prefix
+   sharing are its follow-ups, triggered when prefix sharing under batching
+   becomes the bottleneck.
+6. **Prefix sharing scope**: must extend to the disk tier; first-class cases
+   are new-session spin-up and server restart — the shared prefix is a durable
+   object, not a property of one conversation's entry.
+7. **Open composition rows** (§5): adapters, spec, logprobs, media on the
+   continuous mechanism; chunked prefill interleaving as policy.
+8. **Open single-path deviations** (§6): unify the prefill loops; move
+   prompt/media/grammar construction behind the seam; lift spec eligibility
+   into `RequestShape`.
+9. **Debranching backlog** (§2): hoist the generated files' per-token
+   `L > 1 && fusedSdpaRuntimeOk` checks.
 
-  | model | serial B=1 | batch-lane B=1 | ratio | extra host ms/token | TTFT serial→batch |
-  |---|---|---|---|---|---|
-  | cpm5 | 281.4 tok/s | 128.8 | 0.46× | +4.2 ms | 44 → 55 ms |
-  | e4b  | 62.1 | 44.9 | 0.72× | +6.2 ms | 54 → 121 ms |
-  | 12B  | 29.8 | 25.6 | 0.86× | +5.5 ms | 82 → 251 ms |
+## 11. History
 
-  The overhead is a roughly CONSTANT ~4–6 ms per decode step, independent of
-  model size → per-step host tax, not GPU work. cpm5 (which never uses
-  compiled decode) pays it too, so compiled-decode's absence is not the
-  story. Suspects (in dispatch-site order): the `setImmediate` macrotask hop
-  per drive-loop iteration, per-step per-layer `BatchedDecodeMaskCache`
-  construction + mask materialization at B=1 (serial passes caches bare with
-  an empty mask), and the per-token emit path. TTFT gap = solo-prefill +
-  merge + admission hops. Closure worklist = profile these three, in order.
-- **Phase 1 — the deletion pass** (§6): dead kernels, flag surface, docs,
-  Lab scaffolding (move perf-kernel + its bench + oracle tests). Gate: full
-  suite green; naked defaults byte-identical to today's L1 route.
-- **Phase 2 — engine unification** — **DECODE GAP CLOSED 2026-07-05.** The
-  ~4–6 ms/step host tax decomposed into exactly two bugs, both fixed:
-  1. **The pipelined token read enqueued an `astype` kernel** —
-     `prev.toFloat32()` on the int token array created a NEW cast op that
-     queued BEHIND the entire just-dispatched next step on the GPU stream,
-     stalling the "overlapped" read for a FULL step of GPU work every
-     token (this alone was the bulk of the gap; zero host/GPU overlap,
-     proven by NO_PIPELINE ≈ pipelined). Fix: `MlxArray.toIntTokens()` —
-     eval + raw uint32/int32 buffer read, no cast (mirrors serial's
-     `itemUint32`).
-  2. **Per-layer per-step mask/rope wrapper churn**: `#step` rebuilt a
-     `BatchedDecodeMaskCache` + array mask for every full layer every
-     token even when no row had left padding. Fix: the unpadded fast path —
-     bare caches (KVCache.makeMask(1) = the empty mask, scalar rope) →
-     the batch step dispatches the SAME graph the serial loop builds.
+**2026-07-04 — faithful → L1 consolidation.** An audit found three
+overlapping "match mlx-lm" mechanisms that disagreed: the `--l1/--l2/--l3`
+tier presets, an `MLX_BUN_FAITHFUL` preset that forced the gemma monolith and
+set choices no flag could reach, and a family of unwired `Faithful*` model
+subclasses. The decisive rule that collapsed them: **"compiled" kernels
+(`@mx.compile` geglu/swiglu, compiled decode) go through the same libmlx as
+mlx-lm → bit-exact and faster → L1 defaults; custom "fused" Metal kernels were
+mlx-bun originals with a proven residual → not bit-exact.** Landed in four
+phases: compiled activations default-on everywhere (qwen3, qwen3.5, universal
+dense, gemma geglu via `MLX_BUN_COMPILED_GEGLU`, MiniCPM5 swiglu), verified
+`maxDiff === 0` vs mlx-lm; `--compiled-activations` and `--fused-gelu` added as
+per-fork flags so `--l1` became a pure alias; `MLX_BUN_FAITHFUL`, `faithful.ts`
+(→ `flags.ts`, only `flagOn` kept), and the four unwired subclasses deleted;
+docs + the "cost of removing each faithful kernel" bench matrix. The only
+family that had it right from the start was `qwen3_moe`: the production class
+IS the faithful port. Bit-exact-to-mlx-lm *wants* compiled activations (mlx-lm
+`@mx.compile`s them), so the earlier `--l1` "unfused" help text was backwards.
 
-  Measured after (B=1 through the batch lane, same SSE harness as Phase 0):
-  cpm5 129→**264** (serial 281 SSE / in-process ratio **0.994**), e4b
-  45→**57.6** (0.93 — remainder = compiled decode, serial-only today),
-  12B 25.6→**29.7** (**1.00**). Batched parity oracles green (11/11
-  applicable; the CPM extend-join golden failure PRE-EXISTS this work —
-  proven by stash/rerun — and is logged as an open item).
-  **Remaining before the `--batch` 32 default flip**: compiled decode
-  inside the B=1 step (e4b's last 7%), prompt cache for batched rows
-  (TTFT: serial hits the cache on repeat prompts, batch re-prefills —
-  e4b 126 vs 54 ms, 12B 246 vs 82 ms), then GATE-B1-SPEED ≥99% on all
-  three + GATE-B1-PARITY (bit-exact vs L1 goldens) + B=2 goldens intact.
-- **Phase 3 — composition**: quantized KV under batching — **P1 LANDED
-  2026-07-05**: src/model/batched-quant.ts (merge/extend/filter over
-  triples + BatchedQuantDecodeMaskCache), scheduler solo-conversion at the
-  serial chunk boundaries, gateway kv-batchability memo (all-full-attention
-  kvConfig batches; uniform/rotating stays serial; scheme-less gateway
-  refuses — never silently drop quantization, the optiq bug class). Gates
-  green: B=1 through the scheduler BIT-EXACT vs the cpm5 optiq golden
-  (decode steps, maxDiff 0); B=2 dynamic join — unpadded row BIT-EXACT vs
-  solo at every step, padded row within the calibrated envelope (5e-2;
-  bf16 same-harness shows ~9e-3 — the pre-existing reduction-order noise,
-  amplified by grid snapping; scripts/experiments/batched-quant-kl-profile
-  .ts). E2E: --batch 2 --kv-quant config on cpm5 = /stats active_rows 2,
-  400 tok @ 240 tok/s aggregate, coherent output. NEXT: milestone 2
-  (batched rotating-quant for gemma configs), prompt-cache reuse for
-  batched rows, chunked prefill interleaving. Gate per feature: parity +
-  no aggregate-throughput regression at B=4.
-- **Phase 3.2 — lone-request = serial (LANDED 2026-07-05)**, three moves:
-  1. **Adopt-don't-copy**: a row joining an EMPTY batch keeps its solo
-     caches as the inners (pointer handoff; the merge copy now runs only
-     when a second row actually joins — incl. a new merge branch that
-     treats an adopted serial RotatingKVCache as the first row). The
-     lone row's caches stay SERIAL-CLASS, which unlocks the next two.
-  2. **Compiled decode at B=1**: the scheduler replays the serial
-     engine's CompiledDecode step when B=1 ∧ unpadded ∧
-     supports(inners) ∧ uint32 pipeline register (same runner, same
-     traces, same MLX_BUN_COMPILED_DECODE kill switch; falls back +
-     disables on error like generate()). Gate: free-running greedy B=1
-     == serial generate() token-for-token on 12B with
-     CompiledDecode.stepsExecuted advancing (tests/batch-scheduler).
-  3. **Prompt cache on the batch lane**: joiners take() the longest
-     usable prefix at admission (suffix-only prefill — multi-turn chat
-     TTFT); rows finishing NEVER-MERGED put() back (exact prompt+fed
-     accounting, offset-checked; reject/batch-drop paths poisoned; SSD
-     retain hooks ride every disposal path). Gate: second identical
-     request reports cached_tokens=prompt-1, step-0 argmax anchored,
-     KL≤1e-2 (tests/batch-scheduler "prompt-cache reuse").
-  **Measured (apple-m1-max/32GB, paired in-process A/B, best-of):
-  B=1-through-batch-lane / serial = cpm5 0.996, e4b 0.992 (was 0.93 —
-  compiled closed the last 7%), 12B 0.993 → GATE-B1-SPEED decode met on
-  all three.** All gated suites green (scheduler CPM+12B, quant gates 1+2,
-  full per-file model-free suite 0 fail).
-  Findings: (a) gate 2's padded-row KL is JOIN-STEP dependent (grid-snap
-  bin flips compound: K=5→4.5e-2, 6→3.5e-2, 7→1.5e-1, 8→1.3e-1; bf16
-  ≤9e-3 at every K; identical on pre-3.2 main; extend vs re-merge
-  byte-identical) — the gate now PINS the join step and calibrates there;
-  padded-row KL is an envelope, the contract is the unpadded row's
-  bit-exactness + model-free triple-surgery byte-identity. (b) v1 gap:
-  an entry take()n by a row that later MERGES is consumed, not re-put —
-  fix is a zero-copy view snapshot at merge (serial's boundary-snapshot
-  trick); noted for milestone 2. (c) monolithic `bun test` can jetsam on
-  a busy 32GB box (largestProcess=bun) — per-file loop is the fallback
-  gate; not a repo defect.
-  **Remaining before the `--batch` default flip (Josh's call)**:
-  milestone 2 batched rotating-quant, then flip.
-- **Phase 3 milestone 2 — batched ROTATING-quantized KV (LANDED
-  2026-07-05)**: src/model/batched-rotating-quant.ts —
-  BatchedRotatingQuantCache subclasses RotatingQuantizedKVCache (attention
-  dispatch untouched) and runs the mlx-lm BatchRotatingKVCache ring
-  mechanics over (packed, scales, biases) triples; RotatingQuantizedKVCache
-  gains temporalView(); scheduler #quantizeSolo converts rotating layers
-  (maybeQuantizeKv dispatch) and #mergeJoiner grows a rot-quant twin
-  branch; gateway #kvBatchable accepts configs naming rotating layers →
-  **gemma's whole kv_config batches** (every shipped kv_config now does).
-  Gates: model-free byte-identity per row vs the serial oracle through
-  ring wrap, B=1+B=2+filter (tests/batched-rotating-quant.test.ts); gemma
-  12B B=2 dynamic join through the real scheduler — unpadded row KL-0 at
-  EVERY step, padded row ≤4e-3 (tests/batched-kv-quant-parity.test.ts).
-  **Findings (hard-won, 2026-07-05)**: (a) THE ROPE-ARRAY STEP-STABILITY
-  CONTRACT — a batched cache's ropeOffsetArr must be STABLE within a
-  decode step and refresh only at releaseRopeArr(): the monolith CAPTURES
-  it pre-update and ropes Q post-update (in-update dispose = use-after-
-  dispose), while the GENERATED specializations RE-READ it for Q
-  post-update (in-update refresh = K and Q roped one position apart →
-  O(10) KL garbage). (b) GENERATED-FILE GUARDS ACCEPT BATCHED SUBCLASSES:
-  the generated forwards' per-layer `instanceof` cache guards pass any
-  batched cache that subclasses a serial class — an all-quant gemma batch
-  therefore decodes through the GENERATED fast path (a feature — B=1
-  twin proved BIT-EXACT through it — but a contract: batched caches must
-  behave serially under re-reads). This is why the bug only appeared when
-  EVERY layer was configured: one bf16 layer anywhere fails the guard and
-  drops to the monolith. Diagnosis artifacts:
-  gemma-rotquant-kl-profile.ts (deleted 2026-08-23; git history) (CONFIG_FILTER/
-  ROT_KEEP/ROT_DROP/ROT_IDX bisection) and gemma-twin-b1-repro.ts
-  (TWIN_MASK/TWIN_ROPE toggles — rope isolated in two runs once the
-  B=1 repro existed).
-- **Layer 0 — the SSD tier becomes a property of the store (LANDED
-  2026-07-05)**: PromptCache gains a structural ColdTier and runs the
-  two-tier take (RAM peek vs cold find → zero-copy restore + trim)
-  INSIDE take(), so the batch scheduler restores prefixes from disk at
-  admission with zero scheduler changes (gated E2E on cpm5: demote →
-  disk → batch-lane restore, cached=prompt−1, KL 1.5e-3); onPut drives
-  the write-behind snapshot for both lanes; NEW idle demotion
-  (--ssd-demote-idle, default 300 s with the tier) spills idle entries
-  and FREES their GPU memory — RAM drains between agent bursts, every
-  prefix stays reachable. Also fixes a latent flaw: the old serial flow
-  trimmed the RAM entry before deciding the SSD copy won. The economics
-  (Josh): the SSD competes with RECOMPUTE, not RAM — 12B prefill 168
-  tok/s ⇒ a 30k agent context is ~3 min of prefill vs ~1 s of NVMe
-  restore, and the ratio grows with context. Follow-ups noted: extract
-  the generic blob-store mechanics (fingerprint dirs, atomic writes,
-  scan/recovery, LRU cap) for a second client when one lands (adapters,
-  expert offload); memory-pressure-triggered demotion (vs idle-only).
-- **Prefix sharing v1 (LANDED 2026-07-05)**: PromptCache.take() is
-  NON-CONSUMING — a hit serves zero-copy CLONES (cloneKvCaches views,
-  trimmed to the matched prefix, retain ref-counted so a demoted/evicted
-  donor can never unmap pages a clone still reads) and the donor entry
-  stays put. Safe by mlx's functional cache updates (updateAndFetch
-  reassigns fresh arrays; donation needs refcount 1 and the donor holds a
-  ref), so clones can never mutate donors. put() supersedes same-ns
-  prefix-ancestors AND exact duplicates when the new entry is trimmable
-  (untrimmable extensions preserve their prompt-boundary snapshots — the
-  drift-proof server). This kills the CANNIBALIZATION flaw: agent B
-  borrowing agent A's 2k system prompt used to consume-and-trim A's 10k
-  entry to serve it. Gates: 22 unit tests (donor persistence, clone
-  independence, supersede rules, ref-count ordering) + real-model
-  scheduler gate: B served from A's entry (cached=|SYS|, KL 1.8e-3), A's
-  NEXT TURN still hits its full entry. New-session and restart sharing
-  fall out of the (already non-consuming) SSD tier. **Scope, honestly**:
-  v1 shares the COMPUTE (one prefill serves N agents) and the durability;
-  concurrent batch rows still hold separate physical KV copies — one
-  shared physical prefix across rows is the paged/block-KV frontier item
-  (§9.4), and per §9.5 the disk tier's whole-entry duplication of shared
-  prefixes is the block-granularity revisit trigger.
-- **Runtime isolation P1 (LANDED 2026-07-05, opt-in `--isolate`)**: the
-  engine child = the ENTIRE existing server on a unix domain socket; the
-  parent = a thin reverse proxy (src/serve/isolate.ts) — zero MLX calls,
-  crash isolation (502 + auto-respawn with crash-loop backoff), abort
-  propagation, GET-retry across respawn. Decision recorded in
-  runtime-isolation.md: proxy-the-whole-server instead of the original
-  gateway-as-IPC-client sketch (grammar WASM/vision arrays/sampler
-  closures don't serialize; the inter-process API is the /v1 surface
-  itself — no second protocol). Measured paired (M1 Max, cpm5): proxied
-  197.2 vs direct 197.9 tok/s (−0.4%, noise), TTFT +2 ms, SSE per-token
-  granularity preserved (96 reads/96 tokens), parent 0.6 ms mid-decode
-  (criterion <50 ms). Gates: tests/isolate-proxy.test.ts (model-free fake
-  engine: passthrough, granularity, abort, crash→respawn) +
-  tests/isolate-e2e.test.ts (real cpm5 child). Prefill chunk loops also
-  gained macrotask yields (the last isolation-Phase-1 item). Not proxied
-  v1: /ws/chat (501). NEXT: P2 = child-per-model pool — multi-model
-  switching by SPAWN-OVERLAP (new child loads while the old one serves;
-  drain → demote-to-SSD → park; route by the request `model` field);
-  P3 = GPU-lease unification with quantize/finetune jobs.
-- **Runtime isolation P2 — CHILD-PER-MODEL POOL (LANDED 2026-07-05; task
-  #14 multi-model switching)**: ModelPool in src/serve/isolate.ts — LRU
-  residency over engine children (--model-pool, default 1), request
-  routing by the JSON `model` field on the generation endpoints (STRICT
-  exact-/v1/models-id resolution: fuzzy strings like "gpt-4" keep
-  mlx-lm's ignored-field drop-in semantics), spawn-overlap switching (the
-  new model health-gates while the old serves), and graceful lossless
-  eviction: POST /admin/drain (engine-mode-only endpoint: gateway
-  quiesce + demoteIdle(0) → the whole prompt cache to that model's SSD
-  fingerprint dir) then exit. engineArgvForModel pins --model per child.
-  **Measured (M1 Max, cpm5⇄qwen0.8b, pool 1): switch 1.5 s · switch-back
-  1.2 s · cached_tokens 103/104 on return** — the conversation's KV
-  survived full model eviction and restored from disk instead of
-  re-prefilling (tests/isolate-switch-e2e.test.ts). Model-free pool gates
-  (routing, drop-in ignore, cap-1 drain→demote→evict→respawn):
-  tests/isolate-proxy.test.ts. Defaults unaffected: without --isolate no
-  pool code exists in the request path.
-- **Phase 4 — the frontier program opens** (§7 order).
+**2026-07-05 — the Phase-1 deletion pass** (same day as the naked-=-L1
+decision; ~50 files touched, 23 deleted, suite green). Josh: "we will end up
+redoing all the work we have currently done given that we now have a different
+starting point." Deleted, one funeral each:
 
-## 9. Decisions log (was: open questions)
+- `--fused-decode` / `MLX_BUN_FUSED_DECODE` — 1.00×, forced uncompiled decode,
+  a silent-wrongness footgun.
+- `--fused-gelu` / `MLX_BUN_FUSED_GELU` and `MLX_BUN_FUSED_SWIGLU` (+
+  `fused-mlp-kernel.ts`, `steel-linear-kernel.ts`, the swiglu/geglu/steel
+  one-off scripts) — +0–1%; the compiled closures already own the fusion win
+  bit-exactly.
+- `--perf-kernel` / `MLX_BUN_PERF_KERNEL` (the fused online-softmax decode
+  SDPA) with its frozen-oracle scaffolding (`perf-kernel-oracle.test.ts`,
+  `freeze-perf-oracle.ts`) — regressed e4b in the paired A/B; its one win
+  carried a KL WARN. Its earlier placement in the L2 preset (commit `f1bf5cc`)
+  had claimed a bit-exact optiq oracle; the golden was frozen from mlx-bun's
+  own engine and the gate was argmax agreement, so 2026-07-01 had already
+  restored the rule that the bare tier is the guarantee.
+- `MLX_BUN_CPM5_FAITHFUL` + `FaithfulMiniCPM5` (`minicpm5-faithful.ts`) — the
+  default IS the faithful path; the op-for-op A/B reference served its purpose
+  (it is how the unfused-swiglu dispatch tax was found).
+- `--l3` as a product mode — the Lab replaces it; the flag hard-errors.
+- Training-side flag sanitization (`MLX_BUN_PERF_KERNEL=0` /
+  `MLX_BUN_FUSED_GELU=0` in trainers, launchers, recipes) — obsolete.
 
-1. **Cap default 8 — FLIPPED 2026-07-05** (Josh; earlier "32" note
-   superseded by the sub-agents rationale, 4–8 agents + optiq's Mac-safe
-   8). Landed after Phase 3 met every gate: lone-request = serial engine
-   (bits + speed + TTFT + prompt/SSD cache), quantized compositions
-   batch. `--batch 1` pins strict arrival-independent numerics;
-   kv-budget admission keeps 8 safe on small boxes.
-2. **Flag stays `--batch`** — no rename; semantics become the cap;
-   `--batch 1` = force-serial pin.
-3. **Perf kernel: deleted in Phase 1** (§6) — the optimization program
-   re-derives from the L1 baseline; no resurrection.
-4. Still open: PagedAttention-style block KV — Phase 3 follow-up or its own
-   design doc when prefix sharing under batching becomes the bottleneck.
-5. **Prefix sharing scope (Josh 2026-07-05)**: sharing must extend to the
-   DISK tier too — the whole-entry cold store duplicates a shared system
-   prompt across N agent conversations (blocks would dedupe; that is the
-   revisit trigger for block granularity). First-class use cases beyond
-   concurrent rows: SPINNING UP A NEW SESSION (fresh conversation, same
-   system prompt → instant prefix) and SERVER RESTART (re-attach without
-   re-prefill) — the shared prefix should be a durable object, not a
-   property of any one conversation's entry.
+**2026-07-05 — engine unification** (Phases 0–3.2 of the original migration
+plan; numbers in PLAN.md): the B=1 batch-lane gap measured, root-caused to the
+two host bugs in §8, closed; batched mixed-KV for full-attention and rotating
+layers; adopt-don't-copy + compiled decode at B=1 + prompt cache on the batch
+lane; SSD tier moved inside `PromptCache.take()`; non-consuming prefix sharing;
+`--isolate` P1 (proxy) and P2 (`ModelPool`, multi-model switching); `--batch`
+default 8.
+
+**2026-08-21 — serving architecture consolidation S0–S3** (live in PLAN.md):
+`PreparedCompletion` + `CompletionExecutor` (S0), immutable
+`GenerationPlacement` (S1), declared model profiles (S2), `serial | continuous`
+as the placement vocabulary with the scheduler's B=1 fast path as the default
+lone-request route (S3). S4 (land + post-merge verify) is the open box.

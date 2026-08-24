@@ -23,10 +23,13 @@ pnpm-debug.log*
 # generated from ../docs/reference/ by scripts/sync-reference-docs.mjs — do NOT edit/commit
 src/content/docs/reference/server-api.md
 src/content/docs/reference/server-config.md
-src/content/docs/reference/training.md
 src/content/docs/reference/cli.md
+src/content/docs/reference/models.md
+src/content/docs/reference/benchmarks.md
+src/content/docs/reference/training.md
+src/content/docs/reference/environment.md
+src/content/docs/reference/glossary.md
 src/content/docs/guides/library.md
-src/content/docs/guides/embedding.md
+src/content/docs/guides/distribution.md
 src/content/docs/guides/memory.md
-src/content/docs/guides/model-management.md
-src/content/docs/guides/fine-tuning-quickstart.md
+src/content/docs/guides/troubleshooting.md

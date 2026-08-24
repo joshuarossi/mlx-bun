@@ -1,97 +1,260 @@
-# Memory
+# Memory — the personal wiki
 
-mlx-bun memory is a local Markdown wiki that the built-in pi agents can read as durable user context.
+`mlx-bun memory` is a local, durable memory for your assistant: a wiki of
+Markdown articles at `~/.mlx-bun/wiki/` that the built-in pi agent reads to
+remember your projects, people, decisions, and history across sessions. It is
+yours — git-tracked, editable in any tool (Obsidian opens it as a vault), and it
+never leaves the machine.
 
-Core rule:
+The one rule the whole feature is built around:
 
-> Chat agents read memory articles. `mlx-bun memory synthesize` is the only writer.
+> Chat-time agents **read** memory. `mlx-bun memory synthesize` is the only
+> thing that **writes** it.
 
-The current release includes the vault, read path, Obsidian open flow, scheduler, and a live synthesis engine: `mlx-bun memory synthesize` runs the full local DAG (and the nightly job runs it on a schedule). Synthesis uses the same local models you chat with, switched into an editorial pipeline; stage-specific LoRA adapters are the hardening roadmap below.
+Articles are durable priors; conversations are evidence; synthesis is the
+deliberate, auditable step that turns evidence into updated articles. Normal
+chat never mutates an article. Nightly synthesis is called **the Dreaming**;
+its engineering design lives in
+[dreaming-nightly-pipeline.md](../design/dreaming-nightly-pipeline.md) — this
+page is the user-facing reference.
 
-## Storage
+## Quick start
 
-- Vault: `~/.mlx-bun/wiki/`
-- User articles: `~/.mlx-bun/wiki/articles/*.md`
-- Read-only reference docs: `~/.mlx-bun/wiki/Reference/*.md`
-- Meta pages: `~/.mlx-bun/wiki/Meta/*.md`
-- Talk pages: `~/.mlx-bun/wiki/Talk/`
-- Override: `MLX_BUN_WIKI=/path/to/wiki`
-- Derived synthesis DB: `~/.cache/mlx-bun/memory.sqlite`
+```bash
+mlx-bun memory init            # create the wiki; offers import + nightly job
+mlx-bun pi                     # the assistant now reads your memory automatically
+mlx-bun memory status          # where it is, how many articles, schedule state
+mlx-bun memory search <query>  # find something from the terminal
+mlx-bun memory open            # browse it in Obsidian
+```
 
-The vault is plain Markdown, git-tracked, and opens directly in Obsidian. `Reference/` contains read-only symlinks to mlx-bun's own docs so memory has useful built-in residents on day one; synthesis must never write them.
+`init` is idempotent and safe to re-run. It never overwrites files you have
+edited: the README and `Meta/` pages are written only when missing. Once a
+wiki exists, every `mlx-bun pi` session and the web chat behind `mlx-bun serve`
+pick it up with no further configuration; if it does not exist, no memory
+tools or prompt hints are exposed at all.
+
+`mlx-bun setup` is a true alias for `mlx-bun memory` (same subcommands).
+
+## What the wiki contains
+
+Everything lives under one portable folder (copy it and your memory moves
+with you):
+
+| Path | What it is |
+| --- | --- |
+| `~/.mlx-bun/wiki/` | The vault root. Override with `MLX_BUN_WIKI=/path/to/wiki`. |
+| `articles/*.md` | Your memory articles — one topic per file, `Topic_Name.md`. The only thing synthesis writes. |
+| `Reference/*.md` | Read-only symlinks to mlx-bun's own docs (README, server API/config, library API, embedding, distribution, training, ORPO quickstart, product roadmap), so the assistant can answer mlx-bun questions on day one. Synthesis never writes here. |
+| `Meta/*.md` | Operational pages the pipeline follows: editorial guidelines, article conventions, infobox schemas, category definitions, entities policy, summary style, bucketing/buckets, chunking, topics to ignore. Edit them to steer synthesis. |
+| `Talk/` | Per-article discussion and conflict notes. |
+| `README.md`, `.gitignore` | Orientation page; keeps `.DS_Store` and Obsidian workspace state out of git. |
+
+The vault is plain Markdown and a git repository (`init` runs `git init` and
+makes the initial commit). Every synthesis run commits its changes, so any
+article change is reviewable and revertible with ordinary git. You can edit
+any file directly; the next run respects your edits.
+
+Two things live **outside** the vault because they are derived or operational:
+
+- `~/.cache/mlx-bun/memory.sqlite` — the synthesis store (ingested
+  conversations, chunks, buckets, watermarks, and a rebuildable index of the
+  articles). The vault is truth; this DB is a cache plus pipeline ledger.
+- `~/.mlx-bun/logs/memory-synthesis.{out,err}.log` — output of the nightly job.
+
+Article names are **stems**: the filename without `.md`, underscores for
+spaces (`Archie_Project`). Every command and tool below takes a stem.
 
 ## CLI
 
+All subcommands are `mlx-bun memory <sub>`; with no subcommand, `status` runs.
+An unknown subcommand prints help and exits non-zero (so scripts and launchd
+jobs can detect typos).
+
+### Set up and inspect
+
 ```bash
-mlx-bun memory init              # create the wiki; optional import + schedule
-mlx-bun memory status            # path, article count, git, schedule, recent articles
-mlx-bun memory open              # open wiki in Obsidian/Finder
-mlx-bun memory open <article>    # open a specific article
-mlx-bun memory list              # list article stems + Reference/* docs
-mlx-bun memory search <query>    # search articles
-mlx-bun memory toc <article>     # headings + anchors
-mlx-bun memory section <article> <anchor>
-mlx-bun memory links <article>   # outbound/inbound wikilinks
-mlx-bun memory read <article>    # print article body
-mlx-bun memory synthesize --dry-run
-mlx-bun memory schedule --at 03:00
-mlx-bun memory unschedule
+mlx-bun memory init              # create the wiki (alias: setup)
+mlx-bun memory status            # path, article + reference counts, git, nightly state, recent articles
+mlx-bun memory open [article]    # open the wiki or one article (alias: browse)
 ```
 
-**`memory synthesize` writes to your vault.** It runs the full local synthesis DAG (segment → extract → route → create/patch → reconcile → link → wikify) and creates/patches articles under `articles/` (git-committed, so every change is reviewable and revertible). `--dry-run` is the safe, no-write mode: it reports what would happen without touching the vault. `--since` and `--model` scope/steer a run. The decomposed stage workers (`segment`/`extract`/`route`/`synthesize-stage`/`link`) run one stage each and are resumable.
+`init` walks through setup in a terminal: creates the vault, then offers to
+seed it by importing `articles/*.md` from an existing wiki you point it at
+(existing files are never overwritten), then offers to install the nightly
+synthesis job. Both offers are TTY-only and default to no import / no
+schedule, so a non-interactive `init` just creates the vault.
 
-## Agent tools
+`open` prefers Obsidian (`open -a Obsidian` for the vault, the `obsidian://`
+URL handler for a single article) and falls back to Finder / the default
+Markdown app.
 
-Both `mlx-bun pi` and the web chat expose these read-only tools, in the recommended call order — FIND the article, READ it small, follow the graph, fall back to reference docs and utilities, search only as a last resort:
+### Read from the terminal
+
+```bash
+mlx-bun memory list                        # article stems + Reference/* docs
+mlx-bun memory search <query>              # ranked article matches + sample lines
+mlx-bun memory toc <article>               # headings with their #anchors
+mlx-bun memory section <article> <anchor>  # one section's body
+mlx-bun memory links <article>             # resolved outbound + inbound [[wikilinks]]
+mlx-bun memory read <article>              # the full article
+```
+
+These are the same filesystem helpers the agent tools use. `search` is a
+substring search over articles and reference docs, not a semantic one; results
+prefixed `Reference/` are mlx-bun docs, not your memory.
+
+### Synthesize
+
+```bash
+mlx-bun memory synthesize [--dry-run]      # run the full pipeline now (aliases: pipeline, all)
+```
+
+**This writes to your vault** (only `articles/`, committed to git). It runs
+the full local DAG — segment → extract → route → create/patch → link — then an
+editorial wikify sweep over every article. `--dry-run` is the safe mode: it
+lists the planned stages, makes no model calls, and writes nothing. The
+command also accepts `--since` and `--model`, but the current pipeline does
+not apply them — a run always covers the store's whole pending corpus with the
+default model.
+
+Synthesis runs on Gemma-4-e4b (the OptiQ 4-bit release) loaded from the
+Hugging Face hub cache; if it is not downloaded the command stops with the
+exact `hf download` line to run. If a trained `memory-chunk` adapter is present
+at `~/.cache/mlx-bun/adapters/memory-chunk` the segment stage mounts it; every
+other stage runs the base model with its policy prompt. Set
+`MLX_BUN_MEMORY_BATCH=<n>` to batch model calls (default 1).
+
+Synthesis operates on conversations already loaded into the synthesis store.
+The pipeline's ingest step reports "corpus already in the store" — it does not
+scan your pi sessions on its own today, so a fresh store yields an empty run.
+
+### Run one stage
+
+The DAG is decomposed into independent, resumable workers. Each pulls its
+eligible work from the store by state, walks oldest-conversation-first,
+persists, and exits — so you can run them separately, or as separate concurrent
+processes on different conversation slices (GPU and memory allowing):
+
+```bash
+mlx-bun memory segment          [--limit N] [--convs a,b]   # conversations → topic chunks
+mlx-bun memory extract          [--limit N] [--convs a,b]   # chunks → entities
+mlx-bun memory route                       [--convs a,b]   # entities → create / capture decisions
+mlx-bun memory synthesize-stage [--limit N] [--convs a,b]   # create + patch articles (alias: stage-synthesize)
+mlx-bun memory link             [--limit N]                 # deterministic cross-linking, no model
+```
+
+`--limit` bounds the batch (segment, extract, synthesize-stage, link);
+`--convs` restricts a run to specific conversation ids. `link` inline-links
+first mentions of other articles and rebuilds each `## See also` from mentions
+and co-occurrence; it is idempotent and needs no model.
+
+### Schedule the Dreaming
+
+```bash
+mlx-bun memory schedule [--at HH:MM]   # install the nightly job (default 03:00)
+mlx-bun memory unschedule              # remove it
+```
+
+`schedule` writes a launchd agent (`~/Library/LaunchAgents/com.mlx-bun.memory.plist`,
+label `com.mlx-bun.memory`) that runs `mlx-bun memory synthesize` at the
+given local time and loads it. launchd survives reboots and runs a job missed
+while the machine was asleep on next wake. `status` shows whether the job is
+installed and loaded; if `launchctl load` fails the plist is still written and
+the command tells you to load it by hand.
+
+## The Dreaming — what nightly synthesis does
+
+From your side, the Dreaming is a nightly editor that reads what you talked
+about and keeps a wiki current. Each run:
+
+1. **Segments** each new conversation into single-topic chunks (pointer ranges
+   into the transcript, not copies).
+2. **Extracts** the subjects each chunk is about — people, projects, tools,
+   decisions — and resolves aliases so "the Lumix" and "Lumix S5" are one thing.
+3. **Routes** every subject: enough substance gets its own article; thin
+   subjects are captured so they stay searchable until they warrant one. There
+   is no notability filter — if you talk about it, it surfaces.
+4. **Creates or patches** articles: new subjects get an outline, per-section
+   drafts, and an infobox; existing articles get one section folded in at a
+   time, the rest left byte-identical. Corrections arrive as ordinary chunks,
+   and chronological processing means your latest position wins.
+5. **Cross-links** the vault (first mentions → `[[wikilinks]]`, co-occurrence →
+   See also) and commits.
+6. **Wikifies** — an editorial sweep over every article: tighten each section
+   without losing any citation or specific detail, refresh the infobox.
+
+Deterministic gates sit between every model step: citation survival, footnote
+integrity, word floors, wikilink resolution, article-structure checks. A weak
+model output is rejected and the article is left untouched — a bad night is a
+no-op, never a corrupted vault. Every article carries `conv:` citations back to
+the conversation that supported it.
+
+Everything runs locally on the same base model you chat with; no embeddings,
+no cloud. Architecture, stage contracts, and the gate definitions are in
+[dreaming-nightly-pipeline.md](../design/dreaming-nightly-pipeline.md).
+
+## Agent tools (pi and web chat)
+
+When a vault exists, `mlx-bun pi` and the web chat register these read-only
+tools plus a `memory` skill that teaches the workflow: **FIND** the article,
+**READ** it small, follow the graph, use reference docs for mlx-bun questions,
+and search only as a last resort. The system prompt gets one soft hint that
+memory is on; memory is for user-specific continuity, not a first step for
+weather, public facts, or ordinary coding tasks.
 
 **FIND** (deterministic lookup, never a vector search):
-- `memory_resolve` — name/alias → the article
-- `memory_category` — category/type/series → members
+- `memory_resolve` — name or alias → the article (stem, title, kind, lead); offers near candidates on a miss.
+- `memory_category` — one of category / type / series → member articles.
 
-**READ** (TOC → one section, not a full-article dump):
-- `memory_read` — TOC + lead by default; `force=true` for the full article
-- `memory_section` — one section's body (the default granularity)
+**READ** (TOC → one section, not a whole-article dump):
+- `memory_read` — TOC + lead by default; `force=true` for the full article (large articles still degrade to TOC + lead).
+- `memory_section` — one section by heading anchor; the default read granularity.
 
 **Follow the graph**:
-- `memory_links` — outbound/inbound wikilinks
-- `memory_infobox` — read an article's infobox fields (there is no infobox *query* tool — the infobox is content the model reads, not a filter)
+- `memory_links` — outbound `[[links]]` grouped by origin (infobox / series / see also / prose) plus inbound backlinks.
+- `memory_infobox` — an article's infobox as key:value facts to read. There is no infobox *query* tool; to find articles use `memory_resolve` or `memory_category`.
 
-**Reference docs** (mlx-bun's own docs, mirrored read-only into the vault):
-- `reference_search`
-- `reference_read`
-- `reference_list`
+**Reference docs** (mlx-bun's own docs, mirrored read-only under `Reference/`):
+- `reference_search`, `reference_read`, `reference_list`.
 
 **Utility**:
-- `memory_list` — user articles plus read-only `Reference/*` docs
-- `memory_status` — vault path, setup state, article count, git state, last synthesis run (from the vault's git log), schedule state, recent changed articles
+- `memory_list` — your article stems (an overview/fallback, not a first move).
+- `memory_status` — vault path, setup state, article count, git state, schedule state.
 
 **Last resort**:
-- `memory_search` — substring fallback when FIND failed
+- `memory_search` — substring search across articles; use only after the deterministic finders failed.
 
-The tools are always registered. If no vault exists, they return a setup message instead of disappearing. Search/read results prefixed with `Reference/` are mlx-bun docs, not user memory articles.
+All of these are read-only and auto-allowed; none can modify an article. If
+the vault is missing, the tools are not registered at all, and the skill and
+prompt hint are omitted.
 
-## Web chat REST surface
+## Web chat: Memory panel and REST routes
 
-The web chat's Memory panel talks to a separate, HTTP-only `/api/memory/*` route surface (status/list/search/article/links/history/diff + a `POST /api/memory/init` consent-card endpoint) — thin wrappers over the same vault read path above, documented in [server-api.md](server-api.md#get-apimemory--post-apimemoryinit). The agent-tool surface above is unaffected by it.
+The web chat's Memory panel talks to a loopback-only HTTP surface that wraps
+the same vault helpers: `GET /api/memory/status`, `/list`, `/search`,
+`/article`, `/links`, `/history`, `/diff`, and `POST /api/memory/init` (the
+first-run consent card; the same `setupVault` the CLI uses, minus the
+interactive import and schedule prompts). A `GET /v1/memory/synthesize`
+route streams a synthesis run as server-sent events (`?dry=1` for a dry run).
+Wire details — parameters, response shapes, the no-vault response — are owned
+by [server-api.md](server-api.md#get-apimemory--post-apimemoryinit). These
+routes never touch the agent-tool surface above.
 
-## Obsidian
+## Consent and safety
 
-```bash
-mlx-bun memory open
-mlx-bun memory open Archie_Project
-```
+- Creating the vault is explicit (`memory init` or the web consent card);
+  scheduling is explicit (`memory schedule` or the `init` prompt).
+- Chat-time tools are read-only. Article mutation by the agent during chat is
+  out of bounds by construction.
+- Opening Obsidian or Finder is you browsing and editing your own files; it is
+  not agent mutation.
+- Imports copy articles in; the source wiki is never modified.
+- Nothing — articles, conversations, synthesis — leaves the machine.
 
-The first command opens the vault. The second opens one article. Obsidian is preferred; Finder/default Markdown app is the fallback.
+## Related
 
-## Synthesis roadmap
-
-The pipeline (saved pi sessions → articles) runs today on the local model; the roadmap hardens each stage with four specialized LoRA adapters trained from existing Lucien-scale pipeline data and distributed from Hugging Face:
-
-1. deterministic ingest of saved web/terminal pi session JSONL;
-2. **memory-chunk LoRA** — conversation → topic chunks (already trained as a WIP artifact);
-3. **memory-bucket LoRA** — chunk → existing bucket or new article proposal;
-4. **memory-synthesis LoRA** — chunks + existing article → conservative article update candidate;
-5. **memory-editor LoRA** — candidate article → polished wiki Markdown;
-6. deterministic footnote/wikilink normalization, quality gates, and git commit.
-
-The adapters propose; the pipeline validates and writes. The pipeline writes only `articles/`; `Reference/` is immutable context. Synthesis is live today (`mlx-bun memory synthesize` runs the full DAG; the nightly `memory schedule` job runs it automatically); imported/hand-written user articles and the built-in read-only mlx-bun reference docs coexist with synthesized ones.
+- [cli.md](cli.md#memory--the-personal-wiki) — the `memory` command in the full CLI reference.
+- [server-api.md](server-api.md#get-apimemory--post-apimemoryinit) — `/api/memory/*` wire format.
+- [dreaming-nightly-pipeline.md](../design/dreaming-nightly-pipeline.md) — the canonical pipeline design.
+- [memory-synthesis.md](../design/memory-synthesis.md), [memory-inference-path.md](../design/memory-inference-path.md) — synthesis internals and the local inference path.

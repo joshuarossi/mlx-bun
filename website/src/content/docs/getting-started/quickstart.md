@@ -41,7 +41,7 @@ Not sure what fits your Mac? `fit` gives a deterministic answer:
 mlx-bun fit gemma --ctx 8192
 ```
 
-See [Choosing a model](/getting-started/models/) for the full list.
+See [Choosing a model](/reference/models/) for the full list.
 
 ## 3. Call the API
 
@@ -73,7 +73,7 @@ console.log(res.choices[0].message.content);
 
 ## Where to next
 
-- [The HTTP API](/guides/http-api/) — tools, vision, prompt caching, LoRA,
+- [The HTTP API](/reference/server-api/) — tools, vision, prompt caching, LoRA,
   Anthropic and Responses protocols.
 - [Using the library](/guides/library/) — drive generation directly in a Bun
   process, no server.

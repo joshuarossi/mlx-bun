@@ -1,323 +1,462 @@
 # Training / fine-tuning reference
 
-How to fine-tune a served model with LoRA adapters: the entry points, the
-data formats, every config flag, and the methodology behind the knobs.
+How to fine-tune a served model with LoRA adapters: the commands, the data
+formats, every config field, the long-context memory stack, and the
+methodology behind the knobs.
 
 mlx-bun trains **LoRA adapters** (the base quantized weights stay frozen),
-supports **SFT**, **DPO**, and **ORPO**, and runs on a single Apple-Silicon GPU. The
-output is a PEFT-compatible adapter you hot-swap into the server — see
-[adapters-end-to-end](../design/adapters-end-to-end.md) for the serving side
-and [segmented-backward-training](../design/segmented-backward-training.md)
-for the long-context memory mechanism.
+supports **SFT**, **DPO**, and **ORPO**, and runs on a single Apple-Silicon
+GPU. The output is a PEFT-compatible adapter directory you mount into the
+server (`mlx-bun serve <model> --adapter <dir>`) or fold into the base
+weights (`mlx-bun fuse`).
 
-> Source of truth: the config schema is `FinetuneSubmit` in
-> [`src/train/job.ts`](../../src/train/job.ts); defaults are
-> `DEFAULT_TRAIN_CONFIG` in [`src/train/trainer.ts`](../../src/train/trainer.ts).
-> This doc is generated against those — if they drift, the code wins.
+> Source of truth: `mlx-bun train` in [`src/cli.ts`](../../src/cli.ts)
+> (flags + defaults), the submit schema `FinetuneSubmit` in
+> [`src/train/job.ts`](../../src/train/job.ts), and `DEFAULT_TRAIN_CONFIG` in
+> [`src/train/trainer.ts`](../../src/train/trainer.ts). If this doc and the
+> code disagree, the code wins.
 
 ## Entry points
 
-Training is reachable several ways — all of them drive the **same** runner
-(`finetuneRunner` in `src/train/job.ts`):
+Every path drives the **same** runner (`finetuneRunner` in `src/train/job.ts`):
 
 | Path | How | Use when |
 |---|---|---|
-| **CLI** | `mlx-bun train <model> --data <dir> [options]` — foreground, full ORPO stack on by default; auto-detects e4b/Gemma to pick sensible `--seq`/adapter-path defaults; no env flags needed; `--save-every`, `--resume`, `--dry-run`, `--sft-scope full\|response`, `--grad-accum`, `--grad-clip`, `--seed`, `--val-size`; streams loss to the terminal. `mlx-bun help train` for all flags. Run long jobs detached: `nohup mlx-bun train … &` | **The default for CLI users** |
-| **Web UI** | `mlx-bun serve`, open `/finetune` — pick model → dataset → hyperparameters → train; watch live train/val loss; merge/export the adapter | Interactive, in the browser |
-| **HTTP API** | `POST /api/finetune/submit` (job id + SSE events); `POST /api/finetune/inspect-dataset` to probe a file; `POST /api/finetune/merge` to fold an adapter into base weights | Scripted / remote |
-| **ORPO launcher** | [`scripts/train-orpo.ts`](../../scripts/train-orpo.ts) — the same stack driven by env vars (`MODEL=`, `DATA=`, `RANK=`, `RESUME=`, …). See [orpo-quickstart](./orpo-quickstart.md) | Env-var scripting |
-| **Shell recipe** | [`scripts/examples/ft-e4b-v2.sh`](../../scripts/examples/ft-e4b-v2.sh) `probe`\|`train` — the actual e4b run we use; sets the required env (see [What we actually run](#what-we-actually-run-the-e4b-recipe)) | Reproducing our e4b fine-tune |
-| **Library** | `import { finetuneRunner } from "./src/train/job"` and call it with a config + emitter | Embedding training in your own TS |
+| **CLI** | `mlx-bun train <model> --data <dir> [options]` — foreground, streams loss to the terminal, ORPO with the full memory stack by default. `mlx-bun help train` lists every flag. | **The default.** |
+| **Live dashboard** | `mlx-bun train-watch <adapter-dir>` — tails `<adapter-dir>/metrics.jsonl` from another terminal. | Watching a detached run |
+| **Fuse** | `mlx-bun fuse <model> --adapter <dir> [--save-path <out>]` — fold the adapter into the base weights → standalone snapshot. | Shipping a merged model |
+| **Web app** | The Fine-tune tab (`#/finetune`, behind the app's Developer toggle): model → dataset → hyperparameters → train, live train/val loss, merge/export. | Interactive |
+| **HTTP API** | `POST /api/finetune/{inspect-dataset,submit,merge,export}` — same runner as a subprocess job with SSE events; documented in [server-api.md](server-api.md). | Scripted / remote |
+| **ORPO launcher** | [`scripts/train-orpo.ts`](../../scripts/train-orpo.ts) — the CLI's ORPO stack driven by env vars (`MODEL=`, `DATA=`, `SEQ=`, `SEG=`, `RESUME=`, …). | Env-var scripting |
+| **Library** | `import { finetuneRunner } from "./src/train/job"` (snake_case submit record + event emitter) or `trainLora` / `DEFAULT_TRAIN_CONFIG` from `./src/train` (camelCase `TrainConfig`). | Embedding training in your own TS |
 
-The CLI and the launcher run the runner **in-process / foreground** (stream to the
-terminal, `nohup`-able); the Web UI and HTTP API run it as a **subprocess job** (crash
-isolation + a single GPU lease across concurrent server requests).
+The CLI and the launcher run in-process in the foreground; the web app and
+HTTP API run the job as a subprocess (crash isolation, one GPU lease across
+concurrent server requests).
 
-### Quick start (HTTP API)
+## Quickstart — ORPO on preference data
 
-```bash
-curl -s localhost:8080/api/finetune/submit -X POST -H 'content-type: application/json' -d '{
-  "model_dir": "/path/to/snapshot",
-  "data_dir":  "/path/to/dataset",        // dir with train.jsonl (+ optional valid.jsonl)
-  "adapter_path": "/path/to/output-adapter",
-  "method": "sft",
-  "rank": 16, "iters": 300, "learning_rate": 2e-4, "max_seq_length": 2048
-}'
-# → { "jobId": "..." }   then stream events from the jobs SSE endpoint
-```
+ORPO is the CLI default: reference-free, two forwards per step, and the
+whole long-context stack (flash-CCE head + prefix-sharing + segmented
+backward) is on unless you turn pieces off.
 
-`model_dir`, `data_dir`, and `adapter_path` are **required**; everything else
-falls back to the defaults below.
-
-### Quick start (script)
-
-[`scripts/examples/chunk-finetune.ts`](../../scripts/examples/chunk-finetune.ts) is the worked
-example (MiniCPM5 on the chunking task). It calls `finetuneRunner` directly,
-driven by env vars:
+**1. Data.** `--data <dir>` must contain `train.jsonl` (+ optional
+`valid.jsonl`); rows are `{"prompt": "...", "chosen": "...", "rejected": "..."}`
+(`prompt` may also be a chat-messages array — it is rendered through the
+model's chat template). To build one from UltraFeedback:
 
 ```bash
-# MODEL unset → defaults to the MiniCPM5-1B-OptiQ-4bit snapshot
-DATA=/path/to/chunk ITERS=300 RANK=16 SEQ=2048 SEG=4 \
-  bun scripts/examples/chunk-finetune.ts
+# <input.jsonl> = HuggingFaceH4/ultrafeedback_binarized exported to JSONL (you fetch it)
+bun scripts/curate-ultrafeedback.ts <input.jsonl> ./prefs [maxTokens=2048] [valFrac=0.02]
 ```
 
-Env knobs — note the script applies its **own task-tuned defaults**, which
-differ from the trainer/API defaults in the table below:
+**2. Plan without training.** `--dry-run` inspects the dataset (counts,
+detected format) and prints the resolved plan box: model, loop knobs, head,
+stack, adapter path.
 
-| Env | Maps to | Script default |
+```bash
+mlx-bun train e4b --data ./prefs --dry-run
+```
+
+**3. Train — detached from your own shell.** The command blocks and streams
+per-step loss, s/step, and peak memory until done. Save a mountable
+checkpoint every N steps so a crash costs you nothing, and put the adapter
+somewhere the server discovers it (see [Outputs](#outputs)).
+
+```bash
+nohup mlx-bun train e4b --data ./prefs --iters 1000 --save-every 200 \
+  --adapter ~/.cache/mlx-bun/adapters/my-e4b > train.log 2>&1 &
+```
+
+**4. Watch it from another tab.**
+
+```bash
+mlx-bun train-watch ~/.cache/mlx-bun/adapters/my-e4b
+```
+
+**5. Resume** warm-starts the LoRA weights from a checkpoint or adapter dir
+(optimizer state + LR schedule restart; rank/targets must match).
+
+```bash
+mlx-bun train e4b --data ./prefs --iters 500 \
+  --resume ~/.cache/mlx-bun/adapters/my-e4b/checkpoints/step-00200-val<loss> \
+  --adapter ~/.cache/mlx-bun/adapters/my-e4b-2
+```
+
+**6. Serve or fuse.**
+
+```bash
+mlx-bun serve e4b --adapter ~/.cache/mlx-bun/adapters/my-e4b
+mlx-bun fuse e4b --adapter ~/.cache/mlx-bun/adapters/my-e4b --save-path ./my-e4b-merged
+mlx-bun serve ./my-e4b-merged
+```
+
+`<model>` is a registry query or a snapshot path (`e4b`, `MiniCPM5`, …);
+omit it to auto-pick the default model. Per-model defaults: Gemma/e4b gets
+`--seq 8192`, everything else `4096`. ORPO defaults `--rank 16 --scale 2.0
+--seg 2`; SFT/DPO default `--rank 8 --scale 1.0` and **no** segmented
+backward unless you pass `--seg <n>`.
+
+Measured memory/throughput for these runs live in
+[benchmarks.md](benchmarks.md) — this doc records only the ceilings that
+decide whether a run fits (see [Sequence-length ceilings](#sequence-length-ceilings-measured)).
+
+### `mlx-bun train` flags
+
+| Flag | Default | Meaning |
 |---|---|---|
-| `MODEL` | `model_dir` | MiniCPM5-1B-OptiQ-4bit snapshot (a **path** if set, not a name) |
-| `DATA` | `data_dir` | the lucien chunk dataset path |
-| `SEQ` | `max_seq_length` | `8192` |
-| `ITERS` | `iters` | `2` (probe; use 300 for a real run) |
-| `RANK` | `rank` | `16` |
-| `LR` | `learning_rate` | `1e-5` |
-| `SCALE` | `scale` | `20` |
-| `SEG` | `segment_size` | `0` (off) |
-| `EVAL_EVERY` | `steps_per_eval` | auto from `ITERS` |
-| `ADAPTER` | `adapter_path` | `~/.cache/mlx-bun-finetunes/minicpm5-chunk-seq<SEQ>` |
-| `CKPT` | `save_checkpoints` | on (`CKPT=0` disables) |
-| `GRAD_CKPT` | `grad_checkpoint` | off (`GRAD_CKPT=1` enables) |
+| `--data <dir>` | required | dataset dir with `train.jsonl` (+ `valid.jsonl`) |
+| `--method <m>` | `orpo` | `sft` · `dpo` · `orpo` |
+| `--adapter <dir>` | `~/.cache/mlx-bun/mlx-bun-finetunes/<method>-<model>` | output adapter dir (`<model>` = `e4b` for Gemma, else `cpm5`) |
+| `--iters <n>` | 100 | training iterations |
+| `--lr <f>` | orpo 1e-5 · dpo 5e-5 · sft 2e-4 | learning rate (ORPO/DPO: cosine schedule; ORPO warmup = min(10, iters/10)) |
+| `--rank <n>` | orpo 16 · else 8 | LoRA rank (`by_bits`-scaled per layer) |
+| `--scale <f>` | orpo 2.0 · else 1.0 | LoRA scale |
+| `--seq <n>` | gemma 8192 · else 4096 | max sequence length |
+| `--batch <n>` | 1 | batch size |
+| `--grad-accum <n>` | 1 | gradient accumulation steps (effective batch = batch × grad-accum at batch-1 memory) |
+| `--grad-clip <f>` | 1.0 | gradient-norm clip (0 = off) |
+| `--seed <n>` | 0 | data-shuffle / init seed |
+| `--val-size <n>` | 256 | max validation examples per eval |
+| `--lambda <f>` | 0.1 | ORPO odds-ratio weight |
+| `--sft-scope <s>` | `full` | ORPO chosen-NLL scope: `full` (paper/TRL-faithful prompt+response) · `response` (pre-2026-07 runs, bit-exact) |
+| `--seg <n>` | orpo 2 · else 0 | layers per segment (segmented backward) |
+| `--no-segment` | — | disable the segmented backward (all activations resident) |
+| `--save-every <n>` | off | crash-safe mountable checkpoint every n steps (turns on `save_checkpoints`; eval runs at the same cadence) |
+| `--resume <dir>` | — | warm-start LoRA weights from a checkpoint/adapter dir |
+| `--no-flash` | — | ORPO: use the MLX fused linear-CE head instead of the flash-CCE Metal head |
+| `--no-prefix` | — | ORPO: disable prefix-sharing (two-forward branches) |
+| `--dry-run` | — | inspect the dataset + print the plan, don't train |
 
-The script hard-codes `method=sft`, `batch_size=1`, `steps_per_report=1`, and
-uses the default `ops.sdpa` training attention (set `MLX_BUN_TRAIN_ATTN=flash`
-to override — experimental, much slower; see Methodology).
+The CLI always sets `rank_scaling: by_bits`, `num_layers: -1`,
+`steps_per_report: 1`, and for ORPO `orpo_chunk_size: 512` plus
+`orpo_flash_ce` / `orpo_fused_ce` / `orpo_prefix_shared` from the flags
+above. Anything not exposed as a flag (`lora_dropout`, `rs_lora`,
+`lora_plus_ratio`, `grad_checkpoint`, `target_modules`, …) is reachable
+through the submit record — see [Configuration reference](#configuration-reference).
+
+### The launcher (env-var alternative)
+
+[`scripts/train-orpo.ts`](../../scripts/train-orpo.ts) runs the identical
+ORPO stack from env vars. `MODEL` is a snapshot **path** (a dir with
+`config.json`), not a query.
+
+```bash
+MODEL=<snapshot-dir> DATA=./prefs ITERS=200 bun scripts/train-orpo.ts
+```
+
+| Env | Default | Meaning |
+|---|---|---|
+| `SEQ` | e4b 8192 · cpm 4096 | max sequence length |
+| `SEG` | 2 | layers per segment; `SEGOFF=1` disables the segmented backward |
+| `ITERS` / `LR` | 100 / 1e-5 | iterations / learning rate (cosine + short warmup) |
+| `RANK` / `SCALE` | 16 / 2.0 | LoRA rank (by_bits scaled) / scale |
+| `LAMBDA` | 0.1 | ORPO odds-ratio weight |
+| `SFT_SCOPE` | `full` | `full` · `response` (as `--sft-scope`) |
+| `FLASH=0` | (on) | MLX fused head instead of the flash Metal head |
+| `PREFIX=0` | (on) | disable prefix-sharing |
+| `SAVE_EVERY` | 0 (off) | mountable checkpoint every N steps |
+| `RESUME` | — | adapter/checkpoint dir to warm-start from |
+| `ADAPTER` | `~/.cache/mlx-bun/mlx-bun-finetunes/orpo-<e4b\|cpm5>` | output dir |
 
 ## Data formats
 
-Each row of `train.jsonl` (and optional `valid.jsonl`) is auto-detected by its
-keys ([`src/train/dataset.ts`](../../src/train/dataset.ts)):
+Each row of `train.jsonl` (and optional `valid.jsonl`) is auto-detected by
+its keys ([`src/train/dataset.ts`](../../src/train/dataset.ts)):
 
 | Format | Shape | Loss boundary |
 |---|---|---|
-| `messages` | `{"messages": [{"role","content"}, …]}` | response-only — loss on the final turn, prompt = chat-template render of all prior turns |
+| `messages` | `{"messages": [{"role","content"}, …]}` | response-only — loss on the final turn; prompt = chat-template render of all prior turns |
 | `prompt-completion` | `{"prompt": "...", "completion": "..."}` | loss on the completion only |
 | `text` | `{"text": "..."}` | full-sequence (no prompt mask) |
-| `dpo` *(method=dpo or orpo)* | `{"prompt", "chosen", "rejected"}` | preference loss on chosen vs rejected (the same preference format serves both DPO and ORPO) |
+| `preference` *(dpo / orpo)* | `{"prompt", "chosen", "rejected"}` | preference loss on chosen vs rejected; `prompt` may be a string or a messages array |
 
-Probe a file before submitting: `POST /api/finetune/inspect-dataset` with
-`{"path": "..."}` returns `{ ok, n_train, n_valid, format }`.
+`mlx-bun train --dry-run` (or `POST /api/finetune/inspect-dataset`) reports
+`n_train`, `n_valid`, and the detected format before any weights load.
 
 ## SFT vs DPO vs ORPO
 
-- **SFT** (`method: "sft"`, default) — supervised fine-tune; response-only
-  cross-entropy. Default LR `2e-4`. For instruction-following, formatting,
-  task adaptation.
-- **DPO** (`method: "dpo"`) — Direct Preference Optimization on
+- **SFT** (`--method sft`) — supervised fine-tune; response-only
+  cross-entropy. Default LR `2e-4`. Instruction-following, formatting, task
+  adaptation. Segmented backward is available (`--seg <n>`) but off by
+  default.
+- **DPO** (`--method dpo`) — Direct Preference Optimization on
   chosen/rejected pairs; loss `-log σ(β·((π_c − ref_c) − (π_r − ref_r)))`
-  with reference log-probs computed at LoRA scale 0. Default LR `5e-5`. Tune
-  with `dpo_beta`, `dpo_warmup_iters`, `dpo_lr_schedule`.
-- **ORPO** (`method: "orpo"`) — Odds Ratio Preference Optimization (Hong et
-  al. 2024): a **reference-free** monolithic objective combining the SFT term
-  and a preference term, `L = L_NLL(chosen) + λ·L_OR`, with
-  `L_OR = -log σ(log_odds)` and
-  `log_odds = (ℓ_w − ℓ_r) − (log1mexp(ℓ_w) − log1mexp(ℓ_r))`, where `ℓ` is the
-  **length-normalized** (mean over response tokens) log-prob. The SFT term's
-  scope is `sft_scope`: **`full`** (default; paper/TRL-faithful) computes
-  `L_NLL` as the token-mean cross-entropy over the **full prompt+response** of
-  the chosen sequence (only padding excluded — TRL's `chosen_nll_loss`),
-  from the same chosen forward (no extra forward); **`response`** uses
-  `L_NLL = −ℓ_w` (response-only — the pre-2026-07 mlx-bun behavior, kept for
-  reproducing old runs). The odds-ratio `ℓ_w/ℓ_r` stay response-only in **both**
-  modes (that also matches TRL). Uses the same
-  `{prompt, chosen, rejected}` preference data as DPO but needs **no reference
-  model** (2 forwards/step vs DPO's 4). Default LR `1e-5` (lower than DPO — the
-  loss carries a full SFT NLL term a high LR destabilizes). Tune with
-  `orpo_lambda`, `orpo_warmup_iters`, `orpo_lr_schedule`, `sft_scope`. Design +
-  optimization roadmap: [orpo-training](../design/orpo-training.md).
+  with reference log-probs computed at LoRA scale 0 (4 forwards/step).
+  Default LR `5e-5`. Tune with `dpo_beta`, `dpo_warmup_iters`,
+  `dpo_lr_schedule`. No segmented backward on this path.
+- **ORPO** (`--method orpo`, the default) — Odds Ratio Preference
+  Optimization (Hong et al. 2024): a **reference-free** objective
+  `L = L_NLL(chosen) + λ·L_OR`, `L_OR = -log σ(log_odds)`,
+  `log_odds = (ℓ_w − ℓ_r) − (log1mexp(ℓ_w) − log1mexp(ℓ_r))`, where `ℓ` is
+  the length-normalized (mean over response tokens) log-prob. `--sft-scope
+  full` (default; paper/TRL-faithful) computes `L_NLL` as the token-mean CE
+  over the **full prompt+response** of the chosen sequence from the same
+  forward; `response` uses `L_NLL = −ℓ_w` (pre-2026-07 behavior, kept for
+  reproducing old runs). The odds-ratio terms are response-only in both
+  modes. Same data as DPO, no reference model (2 forwards/step). Default LR
+  `1e-5` — the loss carries a full NLL term a high LR destabilizes. Design:
+  [orpo-training](../design/orpo-training.md).
 
-The ORPO head + long-context machinery compose into one stack (all B=1), each
-piece independently toggled and each falling back cleanly:
+## The long-context stack (ORPO defaults)
 
-- **`orpo_flash_ce`** — the [M,vocab]-free flash-CCE Metal head (steel GEMM fwd
-  **and** bwd; e4b backward 754 ms, peak 0.93 GB flat at M=8192). Implies the
-  fused head. Falls back to the MLX fused head when the tiling isn't clean.
-  **Auto-dispatch by M** (2026-07-02): batches with M below `MLX_BUN_FLASH_MIN_M`
-  (default 1024) take the exact MLX fused head instead — it is faster at short
-  M (e4b M=64 1.6×, M=512 1.13×; CPM5 at every M), while flash wins memory
-  everywhere and time at long M on e4b (M≥2048; 8K: 10.7 vs 13.2 s with the
-  filter/blockMax defaults). `MLX_BUN_FLASH_MIN_M=0` always honors flash.
-- **`segment_size`** — segmented backward (gradient-checkpointed layer
-  activations) for long context; the head is ~free in memory, the activations
-  are the wall.
-- **`orpo_prefix_shared`** — encode the shared prompt once; composes with both
-  the flash head and the segmented backward (MiniCPM5 **and** e4b/Gemma4). Per-row
-  two-forward fallback when chosen/rejected prompts differ.
-- **warm-start** — `scripts/train-orpo.ts RESUME=<adapter-dir>` continues from a
-  checkpoint's weights (optimizer + LR schedule restart).
+Each piece is independently toggled, composes with the others (all B=1),
+and falls back with a logged message when a precondition isn't met.
 
-The one-command way to run all of it is the **ORPO launcher**
-([`scripts/train-orpo.ts`](../../scripts/train-orpo.ts)) — see
-[orpo-quickstart](./orpo-quickstart.md) for the command, the per-model defaults,
-and the measured memory/throughput (e.g. e4b full stack @ 8192 ≈ 13 GB,
-~70 s/step on the M1 Max dev box). Run long jobs detached from your shell
-(`nohup … &`), not as a session-spawned background task.
+- **flash-CCE head** (`--no-flash` to disable; `orpo_flash_ce`) — the
+  `[M,vocab]`-free cross-entropy head in
+  [`src/train/flash-cce.ts`](../../src/train/flash-cce.ts): Apple's Cut
+  Cross-Entropy + Liger's fused linear-CE transpiled Triton → Metal, over
+  the **quantized** head (in-kernel dequant, MLX steel GEMM tiles, forward
+  and backward). Neither the logits nor a dequantized head ever touch HBM,
+  so head memory is flat in vocab and sequence length. Batches with
+  `M < MLX_BUN_FLASH_MIN_M` (default 1024) auto-take the exact MLX fused
+  head, which is faster at short M; `=0` always honors flash. Falls back to
+  the fused head when the tiling isn't clean. Two backward skips default ON
+  at `1e-5` (`MLX_BUN_CCE_BWD_FILTER_EPS`, the coefficient filter;
+  `MLX_BUN_CCE_BWD_BLOCK_EPS`, the lossless cold-block skip); set either to
+  `0` for exact gradients.
+- **segmented backward** (`--seg <n>` / `--no-segment`; `segment_size`) —
+  [`src/train/segmented.ts`](../../src/train/segmented.ts). The forward
+  materializes and **detaches** the residual stream every n layers; the
+  head is differentiated against the last boundary; then each segment is
+  back-propagated in reverse via `mlx_vjp` with the incoming cotangent, so
+  only one segment's activations are live. Bit-identical to the plain
+  backward on MiniCPM5; bf16-class on e4b. Wired for MiniCPM5 and Gemma4
+  (SFT and ORPO); mutually exclusive with `grad_checkpoint`. Design + proofs:
+  [segmented-backward-training](../design/segmented-backward-training.md).
+- **prefix-sharing** (`--no-prefix`; `orpo_prefix_shared`) —
+  [`src/train/prefix-shared.ts`](../../src/train/prefix-shared.ts). One
+  forward over `[prompt; chosen; rejected]` with a block-sparse mask and
+  block-wise RoPE (each response resets to position P), so the shared
+  prompt is encoded once: layer-token cost `2(P+R) → P+2R`. Bit-exact with
+  the two-forward path; a big win when the prompt dominates, ~0 when the
+  response does. Rows whose chosen/rejected prompts aren't byte-identical
+  fall back to two-forward for that row (logged once). MiniCPM5 + Gemma4;
+  other models error out rather than silently degrade.
+- **gradient checkpointing** (`grad_checkpoint`, API/library only) —
+  per-layer recompute; bit-identical. Cheaper than nothing, but it does not
+  stream the backward: at long context every layer's recompute is held at
+  once, which is what segmented backward fixes. `mlp_split` (Gemma4)
+  refines it to attention/MLP halves.
+- **warm-start** (`--resume <dir>`; `warm_start_adapter`) — load LoRA
+  weights from an adapter/checkpoint dir; optimizer + schedule restart.
 
 ## Configuration reference
 
-All fields optional except `model_dir` / `data_dir` / `adapter_path`. Defaults
-are `DEFAULT_TRAIN_CONFIG` (trainer.ts:89).
+The snake_case submit record (`FinetuneSubmit`) — what the CLI builds, what
+the web app and `POST /api/finetune/submit` accept, and what
+`finetuneRunner` takes. `model_dir`, `data_dir`, `adapter_path` are
+required; defaults are `DEFAULT_TRAIN_CONFIG` (the CLI overrides several —
+see the flags table).
 
-| Field (API) | Type | Default | Effect |
+| Field | Type | Default | Effect |
 |---|---|---|---|
-| `method` | `sft` \| `dpo` \| `orpo` | `sft` | Training objective (see above) |
+| `method` | `sft` \| `dpo` \| `orpo` | `sft` | training objective |
 | `rank` | int ≥2 | `8` | LoRA rank per adapted linear |
 | `scale` | float >0 | `1.0` | LoRA α (effective update = α·BA) |
-| `rank_scaling` | `constant` \| `by_bits` \| `by_kl` | `by_bits` | Per-layer rank policy (see Methodology) |
-| `target_modules` | string[] | `q,k,v,o,gate,up,down _proj` | Which linears get adapters |
+| `rank_scaling` | `constant` \| `by_bits` \| `by_kl` | `by_bits` | per-layer rank policy (see Methodology) |
+| `target_modules` | string[] | `q,k,v,o,gate,up,down _proj` | which linears get adapters |
 | `num_layers` | int | `-1` | `-1` = all layers; `N` = last N only |
-| `iters` | int >0 | `100` | Total training steps |
-| `learning_rate` | float >0 | `2e-4` (sft) / `1e-5` (orpo) / `5e-5` (dpo) | AdamW LR |
-| `max_seq_length` | int >0 | `512` | Truncate/pad sequences to this |
-| `batch_size` | int ≥1 | `1` | Rows per step (B=1 is the safe path; B>1 length-sorts + pads to 32) |
-| `grad_accumulation_steps` | int ≥1 | `1` | Accumulate grads over N micro-steps |
+| `iters` | int >0 | `100` | total training steps |
+| `learning_rate` | float >0 | `2e-4` | AdamW LR (CLI: orpo 1e-5 / dpo 5e-5) |
+| `max_seq_length` | int >0 | `512` | truncate/pad sequences (CLI: 8192 / 4096) |
+| `batch_size` | int ≥1 | `1` | rows per step (B=1 is the no-padding path; B>1 length-sorts + pads to 32) |
+| `grad_accumulation_steps` | int ≥1 | `1` | accumulate grads over N micro-steps |
 | `seed` | int | `0` | RNG for shuffling + LoRA init |
-| `steps_per_report` | int >0 | `10` | Emit a train-loss metric every N steps |
-| `steps_per_eval` | int >0 | `50` | Eval on `valid.jsonl` every N steps |
+| `steps_per_report` | int >0 | `10` | train-loss metric every N steps (CLI: 1) |
+| `steps_per_eval` | int >0 | `50` | eval on `valid.jsonl` every N steps (CLI: `--save-every`, else never) |
 | `weight_decay` | float ≥0 | `0.01` | AdamW weight decay (β = `[0.9, 0.999]`, fixed) |
-| `lora_dropout` | float [0,1) | `0.0` | LoRA-input dropout (PEFT-style), training-only regularizer for small sets. Recompute-safe (mask keyed by step+layer, so segmented/checkpointed backward reproduces it) |
-| `rs_lora` | bool | `false` | rsLoRA — scale the update by α/√rank instead of α, so `rank_scaling` changes capacity not step size. Recorded in the adapter config; inference applies the same per-layer scale |
-| `lora_plus_ratio` | float ≥1 | `1.0` | LoRA+ — LR multiplier for the B leaves (A stays at base LR). >1 speeds the B-driven early learning (B is zero-init). 1 = off. The same optimizer policy applies to SFT, DPO, and ORPO |
-| `grad_checkpoint` | bool | `false` | Recompute layer activations in backward (memory↔compute; bit-identical) |
-| `mlp_split` | bool | `false` | Gradient-checkpoint MLP splitting (Gemma4-only, requires `grad_checkpoint`) |
-| `segment_size` | int | `0` (off) | `>0` enables segmented backward — layers per segment (see below) |
-| `save_checkpoints` | bool | `false` | Save every eval-step checkpoint + write `metrics.json` |
-| `grad_clip_norm` | float ≥0 | `1.0` | Gradient-norm clipping (on by default); `0` = off |
-| `val_max_examples` | int >0 | `256` | Caps the validation-set size used per eval |
-| `warm_start_adapter` | string | `""` (off) | Adapter dir to warm-start/resume LoRA weights from (the API field behind the CLI's `--resume`) |
-| `dpo_beta` | float >0 | `0.1` | DPO strength (dpo only) |
-| `dpo_warmup_iters` | int ≥0 | `0` | DPO LR warmup (dpo only) |
-| `dpo_lr_schedule` | `constant` \| `cosine` | `cosine` | DPO LR schedule (dpo only) |
-| `orpo_lambda` | float >0 | `0.1` | ORPO λ — weights **only** the odds-ratio term; the SFT-NLL term stays unweighted (orpo only) |
-| `orpo_warmup_iters` | int ≥0 | `0` | ORPO LR warmup (orpo only) |
-| `orpo_lr_schedule` | `constant` \| `cosine` | `cosine` | ORPO LR schedule (orpo only) |
-| `orpo_chunk_size` | int | `0` (off) | Token-chunk the response head, bounding the `[M,vocab]` logits to `[chunk,vocab]` (defaults to 512 when a fused head is on). Exact (orpo only) |
-| `orpo_fused_ce` | bool | `false` | Fused linear-CE head: one CustomVjp with an analytic softmax−onehot backward (MLX `quantizedMatmul` both ways) — no autograd through the head, no retained `[M,vocab]`. Exact; `[chunk,vocab]` transient (orpo only) |
-| `orpo_flash_ce` | bool | `false` | Route the fused head through the **flash-CCE Metal kernel** (verbatim MLX steel GEMM + ORPO epilogue, fwd **and** bwd): neither `[M,vocab]` nor a dequantized head touches HBM → `[M,vocab]`-free (e4b 0.93 GB flat @ M=8192). Implies the fused head. The Apple-CCE coeff filter + blockMax skip default ON at 1e-5 (2026-07-02; combined bwd 1.71× CPM5 / 3.16× e4b vs exact — `MLX_BUN_CCE_BWD_FILTER_EPS=0` / `_BLOCK_EPS=0` restore exact). Batches with M < `MLX_BUN_FLASH_MIN_M` (default 1024) auto-take the exact fused head (faster at short M; `=0` always honors flash). B=1 (orpo only) |
-| `orpo_prefix_shared` | bool | `false` | Shared prompt-prefix: one forward over `[prompt; chosen; rejected]` with a block-sparse mask + block-wise RoPE, so the shared prompt is encoded **once** (a big win when the prompt dominates). Falls back to two-forward per row on prompt mismatch. Composes with the flash head and the segmented backward (MiniCPM5 + e4b). B=1 (orpo only) |
-| `sft_scope` | `full` \| `response` | `full` | Scope of ORPO's chosen-NLL term. `full` (paper/TRL-faithful): token-mean CE over the **full prompt+response** (only padding excluded), from the same chosen forward. `response`: `L_NLL = −ℓ_w` — reproduces pre-2026-07 runs bit-exactly. The odds-ratio `ℓ_w/ℓ_r` are response-only in both modes. Applies to every ORPO path (naive/chunked/fused/flash/prefix/segmented) (orpo only). CLI spelling: `mlx-bun train … --sft-scope full\|response` |
+| `lora_dropout` | float [0,1) | `0.0` | LoRA-input dropout (PEFT-style); mask keyed by step+layer so segmented/checkpointed recompute reproduces it |
+| `rs_lora` | bool | `false` | rsLoRA — scale by α/√rank so `rank_scaling` changes capacity, not step size; recorded in the adapter config and honored at inference |
+| `lora_plus_ratio` | float ≥1 | `1.0` | LoRA+ — LR multiplier for the B leaves (A stays at base LR); 1 = off |
+| `grad_checkpoint` | bool | `false` | recompute layer activations in backward (bit-identical) |
+| `mlp_split` | bool | `false` | attention/MLP split inside the checkpoint (Gemma4; needs `grad_checkpoint`) |
+| `segment_size` | int | `0` | `>0` = segmented backward, layers per segment (CLI: orpo 2) |
+| `save_checkpoints` | bool | `false` | keep every eval-step checkpoint + write `metrics.json` (CLI: on with `--save-every`) |
+| `grad_clip_norm` | float ≥0 | `1.0` | global-norm gradient clipping; `0` = off |
+| `val_max_examples` | int >0 | `256` | fixed validation subset per eval |
+| `warm_start_adapter` | string | `""` | adapter dir to warm-start from (`--resume`) |
+| `dpo_beta` | float >0 | `0.1` | DPO strength |
+| `dpo_warmup_iters` | int ≥0 | `0` | DPO LR warmup |
+| `dpo_lr_schedule` | `constant` \| `cosine` | `cosine` | DPO LR schedule |
+| `orpo_lambda` | float >0 | `0.1` | ORPO λ — weights only the odds-ratio term |
+| `orpo_warmup_iters` | int ≥0 | `0` | ORPO LR warmup (CLI: min(10, iters/10)) |
+| `orpo_lr_schedule` | `constant` \| `cosine` | `cosine` | ORPO LR schedule |
+| `orpo_chunk_size` | int | `0` | token-chunk the response head to `[chunk,vocab]`; exact (CLI: 512) |
+| `orpo_fused_ce` | bool | `false` | fused linear-CE head: one CustomVjp with the analytic softmax−onehot backward, no retained `[M,vocab]` (CLI: on when `--no-flash`) |
+| `orpo_flash_ce` | bool | `false` | route the fused head through the flash-CCE Metal kernel; implies fused (CLI: on) |
+| `orpo_prefix_shared` | bool | `false` | shared prompt-prefix single forward (CLI: on) |
+| `sft_scope` | `full` \| `response` | `full` | scope of ORPO's chosen-NLL term (`--sft-scope`) |
 
 ### Environment variables (training)
 
-| Env var | Set for training | Default | Why |
-|---|---|---|---|
-| `MLX_BUN_TRAIN_ATTN` | **leave unset** | unset → `ops.sdpa` | Default `ops.sdpa` **is** mlx's fused flash-attention kernel — the correct, working path. `flash` selects a *different* hand-rolled O(L)-memory kernel: its two port bugs (dK buffer-transpose, dQ divergent causal barrier) are fixed and FD-validated (`tests/flash-attention.test.ts`, T≤256), but it is ~30× slower and the historical e4b ≥2K crash has **not been re-validated at that scale** since the fix — leave unset unless memory-bound and re-verified. |
-| `MLX_BUN_MEM_LOG` | `1` to profile | off | Print per-step peak/active/cache memory |
-
-> Training needs **no flag sanitization**: the old requirement to export
-> `MLX_BUN_FUSED_GELU=0` / `MLX_BUN_PERF_KERNEL=0` (the no-vjp custom
-> kernels) is gone — those kernels and their env vars were deleted
-> 2026-07-05 ([unified-engine-frontier-plan.md](../design/unified-engine-frontier-plan.md)).
-> Exporting them in an old recipe is harmless but does nothing.
-
-## What we actually run (the e4b recipe)
-
-Everything above is the full surface (*what you can do*). In practice the
-fine-tune we run is [`scripts/examples/ft-e4b-v2.sh`](../../scripts/examples/ft-e4b-v2.sh):
-e4b (gemma-4-e4b-it-OptiQ-4bit, pinned snapshot) on the lucien `chunk-v2-500`
-curated set (450 train convs) through the segmented-backward trainer. It wraps
-`chunk-finetune.ts` with a two-step workflow:
-
-```bash
-scripts/examples/ft-e4b-v2.sh probe   # 2-iter memory/stability check (~1 min) — RUN FIRST
-scripts/examples/ft-e4b-v2.sh train   # the real run (~900 iters ≈ 2 epochs, batch_size 1)
-ITERS=750 SEQ=4096 SEG=1 scripts/examples/ft-e4b-v2.sh train   # override any knob inline
-```
-
-What the recipe pins (and why it differs from the bare defaults):
-
-| Knob | Recipe value | Why |
+| Env var | Default | Effect |
 |---|---|---|
-| model | e4b OptiQ-4bit, pinned snapshot `fcdb12d7…` | the validated e4b snapshot |
-| data | `chunk-v2-500` (450 train convs) | the curated chunk set |
-| `SEQ` | `8192` | long context |
-| `SEG` | `4` | **segmented backward**, 4 layers/segment — so 8K-ctx activations fit |
-| `RANK` / `SCALE` / `LR` | `16` / `20` / `1e-5` | task-tuned |
-| `ITERS` | `2` (probe) / `900` (train) | ~2 epochs over 450 examples |
-| attention | default `ops.sdpa` | mlx's fused flash kernel; **not** `MLX_BUN_TRAIN_ATTN=flash` (~30× slower; e4b ≥2K unvalidated since the kernel fix) |
+| `MLX_BUN_TRAIN_ATTN` | unset → `ops.sdpa` | `ops.sdpa` **is** mlx's fused flash-attention kernel with an exact vjp — the working path. `flash` selects a hand-rolled O(L)-memory kernel: FD-validated at T≤256 (`tests/flash-attention.test.ts`) but ~30× slower, and the trainer **refuses it for Gemma models** (e4b SIGTRAPed at seq ≥2048 and has not been re-validated at that scale). Leave unset. |
+| `MLX_BUN_MEM_LOG` | off | `1` prints per-step peak/active/cache memory |
+| `MLX_BUN_SEG_MEM_LOG` | off | `1` logs the within-step peak after each segmented phase (forward / head vjp / each segment) |
+| `MLX_BUN_SEG_HEAD` | `checkpoint` | bounded head inside the segmented vjp: `checkpoint` (per-chunk recompute) or `fused` |
+| `MLX_BUN_SEG_HEAD_CHUNK` | 512 | token-chunk for the segmented SFT head |
+| `MLX_BUN_FLASH_MIN_M` | 1024 | rows shorter than this take the exact fused head instead of flash; `0` = always flash |
+| `MLX_BUN_CCE_BWD_FILTER_EPS` / `MLX_BUN_CCE_BWD_BLOCK_EPS` | `1e-5` / `1e-5` | flash-CCE backward skips; `0` compiles each out (exact gradients) |
 
-The non-negotiable for e4b: **segmented backward** (`SEG>0`, so the
-long-context activations fit). Always run `probe` before `train`.
+`MLX_BUN_CCE_*` beyond those two (`NOSTEEL`, `BWD_NOSTEEL`, `SCALAR`,
+`LANE`, `BWD_SCALAR`, `SG_SKIPDQ`, `BWD_SKIP_P2*`) select kernel variants
+for A/B work in `flash-cce.ts`; they are not user knobs. Training needs no
+other env setup — the Gemma-specific flag sanitization older recipes
+exported is gone (those kernels were deleted 2026-07-05; exporting the old
+variables does nothing).
+
+## Sequence-length ceilings (measured)
+
+What decides whether a run fits. Full tables (peak GB and s/step per
+seq/config) are in [benchmarks.md](benchmarks.md); the mechanism and the
+measurement method are in
+[segmented-backward-training](../design/segmented-backward-training.md).
+
+- **MiniCPM5-1B (24 layers), M1 Max 32 GB, 2026-06-16** — segmented
+  backward (`segment_size` 4) @2048: peak live **10.91 → 3.29 GB** vs the
+  plain backward; @4096 the plain backward spikes to 21–26 GB while
+  segmented stays at 6–8 GB. Trains at 8192 comfortably.
+- **e4b (Gemma4, 42 layers), M1 Max 32 GB, 2026-06-16** — without
+  segmentation, `ops.sdpa` + `grad_checkpoint` peaks at **23.2 GB live @2048**
+  and crashes at 4096 (linear: ≈ 7.7 GB + 7.6 MB/token). With segmented
+  backward all 42 layers train at **8192 in 17.5 GB** (`segment_size` 2),
+  where `mlx_lm.lora --grad-checkpoint` OOMs on all-42 @8192 and needs its
+  default 16 trainable layers (25.7 GB) to fit.
+- **e4b, M1 Max 32 GB, 2026-07-02** — `segment_size` is the whole knob:
+  mlx's sdpa backward materializes O(L²) scores for every layer (sliding
+  window is only a mask), so the worst segment is set by layer count.
+  `segment_size` 1 = **14.59 GB @8K**, +3% step time, loss identical —
+  fits a 24 GB M4 Pro.
+- **e4b ORPO full stack (flash + prefix-share + seg 2), M1 Max 32 GB** —
+  fits at 8192 with headroom; prefix-sharing is what makes prompt-dominant
+  data cheap (memory and step time both drop when the prompt is encoded
+  once). Numbers are from short probe runs — they prove fit and finite
+  decreasing loss, not training quality.
+
+Rules of thumb: e4b at multi-K context **requires** segmented backward
+(`--seg`, on by default for ORPO; pass it explicitly for SFT); memory is
+linear in `--seq`; on a 24 GB machine use `--seg 1` at 8K.
+
+## Examples (task-specific recipes)
+
+These are the scripts behind our own chunk-segmentation fine-tunes. They
+carry task defaults (data paths, eval corpus) that point at a sibling
+repo — override `DATA=` / `MODEL=` / `ADAPTER=` for your own data and treat
+them as templates, not tools.
+
+- [`scripts/examples/chunk-finetune.ts`](../../scripts/examples/chunk-finetune.ts)
+  — SFT via `finetuneRunner` directly, env-driven. `MODEL` defaults to a
+  MiniCPM5-1B-OptiQ-4bit snapshot; `SEQ` 8192, `ITERS` 2 (probe), `RANK`
+  16, `LR` 1e-5, `SCALE` 20, `SEG` 0, `EVAL_EVERY` auto, `CKPT=0` disables
+  keep-all checkpoints, `GRAD_CKPT=1` enables gradient checkpointing.
+  ```bash
+  DATA=<dir> SEQ=8192 ITERS=2 bun scripts/examples/chunk-finetune.ts            # memory/stability probe
+  DATA=<dir> SEQ=8192 ITERS=300 SEG=2 bun scripts/examples/chunk-finetune.ts    # real run
+  ```
+- [`scripts/examples/ft-e4b-v2.sh`](../../scripts/examples/ft-e4b-v2.sh)
+  `probe|train` — wraps `chunk-finetune.ts` for e4b with `SEQ=8192 SEG=4
+  RANK=16 SCALE=20 LR=1e-5`, pinning the validated e4b OptiQ-4bit snapshot;
+  `probe` = 2 iters (run first), `train` = 900 iters (~2 epochs over 450
+  rows at batch 1).
+  ```bash
+  DATA=<dir> scripts/examples/ft-e4b-v2.sh probe
+  DATA=<dir> ITERS=750 SEQ=4096 SEG=1 scripts/examples/ft-e4b-v2.sh train
+  ```
+- [`scripts/examples/chunk-eval.ts`](../../scripts/examples/chunk-eval.ts)
+  — in-process task eval (no server): loads a model, optionally mounts
+  `ADAPTER=<dir>`, generates over a frozen holdout, and scores with the
+  task's metric. Its holdout/scorer imports live in the sibling repo; copy
+  the shape for your own task eval. Pick checkpoints by the task eval, not
+  by val loss.
 
 ## Methodology
 
 ### LoRA
-Adapters attach to the target linears; A is initialized uniform, B is zeros,
-so the adapted model equals the base model at step 0. Only A/B are
-differentiated — base quantized weights are frozen. Default targets are the 7
-attention+MLP projections per block (`q/k/v/o_proj`, `gate/up/down_proj`),
-following Unsloth. See [`src/train/lora-params.ts`](../../src/train/lora-params.ts).
+Adapters attach to the target linears; A is initialized uniform, B zeros,
+so the adapted model equals the base at step 0. Only A/B are differentiated.
+Default targets are the 7 attention+MLP projections per block
+(`q/k/v/o_proj`, `gate/up/down_proj`). See
+[`src/train/lora-params.ts`](../../src/train/lora-params.ts).
 
 ### Rank scaling (`rank_scaling`)
 - `constant` — every target gets `rank`.
-- `by_bits` *(default)* — `rank × (bits / 4)`, clamped ≥2; gives **wider
-  adapters to the more-sensitive (higher-bit) layers** (mixed precision: a
-  4-bit layer gets the base rank, an 8-bit layer 2×). This is optiq's "one
-  sensitivity signal, two optimizations" — the same KL pass that assigns the
-  bits also sets the rank. The per-layer bits are read straight from the loaded
-  model's quant specs (auto-wired; no metadata file needed).
-- `by_kl` — scales by per-layer KL importance, clamped to [0.5×, 2×]; reads the
-  KL values from `optiq_metadata.json` and falls back to `by_bits` if none are
-  recorded.
+- `by_bits` *(default)* — `rank × (bits / 4)`, clamped ≥2: wider adapters
+  on the more-sensitive (higher-bit) layers of a mixed-precision model. The
+  per-layer bits come from the loaded model's quant specs.
+- `by_kl` — scales by per-layer KL importance from `optiq_metadata.json`,
+  clamped to [0.5×, 2×]; falls back to `by_bits` when none is recorded.
 
-### Long-context memory: segmented backward vs gradient checkpointing
-At long `max_seq_length`, activation memory dominates. Two levers:
+### Long-context memory
+At long `max_seq_length` activation memory dominates, not the head. Two
+levers, mutually exclusive: `grad_checkpoint` (per-layer recompute, does not
+stream) and `segment_size` (segmented backward, streams one segment at a
+time — the path to multi-K context). Detail, proofs, and the `mlx_vjp`
+vs surrogate-`value_and_grad` leak lesson:
+[segmented-backward-training](../design/segmented-backward-training.md).
 
-- `grad_checkpoint: true` — recompute each layer's activations during
-  backward. Bit-identical; trades compute for memory.
-- `segment_size: N` — **segmented backward**: run the layer stack forward
-  detaching the residual stream into graph-free boundary leaves every N
-  layers, then backprop segment-by-segment via `mlx_vjp` (cotangent passed
-  directly, *not* a surrogate-loss `value_and_grad`, which leaked). Only one
-  segment's activations live at a time. This is the path to multi-K context;
-  full mechanism, proofs, and measured peaks (e.g. MiniCPM5 10.91→3.29 GB
-  @2048) are in
-  [segmented-backward-training](../design/segmented-backward-training.md).
-
-### Training attention kernel (`MLX_BUN_TRAIN_ATTN`)
-- **default `ops.sdpa`** — mlx's fused SDPA; correct (0.00% vs autograd),
-  O(L²) backward memory. Use this.
-- **`flash`** — opt-in O(L)-memory path. Its two port bugs (dK
-  buffer-transpose, dQ divergent causal barrier) were **fixed** and
-  FD-validated (`flash-fd-check.ts (deleted 2026-08-23; git history)`; regression test
-  `tests/flash-attention.test.ts`, T≤256), but it remains ~30× slower than
-  `ops.sdpa`, and the historical e4b multi-K (≥2K) SIGTRAP has **not been
-  re-validated at that scale since the fix**
-  (`segmented-grad-test-e4b.ts (deleted 2026-08-23; git history)` is the repro harness).
-  Prefer the default; treat `flash` as experimental on e4b long context.
-  Detail in segmented-backward-training §6.
+### Training attention
+`ops.sdpa` (mlx's fused SDPA, exact vjp, O(L²) backward memory) is the
+only supported path for Gemma and the default everywhere. The opt-in
+`MLX_BUN_TRAIN_ATTN=flash` kernel is an O(L)-memory experiment — ~30×
+slower and blocked for Gemma by the trainer (see the env table).
 
 ## Outputs
 
 A finished run writes a PEFT-compatible adapter directory:
 
 - `adapters.safetensors` — the `lora_a` / `lora_b` tensors
-- `optiq_lora_config.json` — mlx-bun/optiq adapter metadata (per-layer ranks)
+- `optiq_lora_config.json` — mlx-bun/optiq metadata (per-layer ranks, scale, base model)
 - `adapter_config.json` — PEFT-compatible config
+- `metrics.jsonl` — append-only per-step log (what `train-watch` tails)
 
-The save completes only after both config files are written, including
-eval-step checkpoints, so a successful process exit always leaves an
-immediately mountable directory. Serving accepts both mlx-lm tensor layout
-(`[in, rank]` / `[rank, out]`) and standard PEFT layout
-(`[rank, in]` / `[out, rank]`, including `base_model.model.*` names).
-Standard PEFT `use_rslora` metadata is honored as
-`lora_alpha / sqrt(rank)`, and saved rsLoRA adapters emit that metadata so
-their training and serving scales agree.
+The save completes only after both config files are written — including
+eval-step checkpoints — so a successful exit always leaves a mountable
+directory. With `save_checkpoints` (`--save-every`), each eval step also
+writes `checkpoints/step-<NNNNN>-val<loss>/` (each a full mountable adapter)
+and `metrics.json` (config, wall seconds, peak GB, final/best train+val
+loss, full val trajectory).
 
-When `save_checkpoints: true`, each eval step also writes
-`checkpoints/step-<NNNNN>-val<loss>/` and a durable `metrics.json` (config,
-wall seconds, peak GB, final/best train+val loss, full val trajectory).
+**Where to save.** The CLI default is
+`~/.cache/mlx-bun/mlx-bun-finetunes/<method>-<model>`. The server's adapter
+discovery (`GET /v1/adapters/available`, the web chat's adapter picker)
+scans `~/.cache/mlx-bun-finetunes` and **`~/.cache/mlx-bun/adapters`** —
+so pass `--adapter ~/.cache/mlx-bun/adapters/<name>` if you want the
+adapter selectable without typing a path. `serve --adapter <dir>` and
+`fuse --adapter <dir>` accept any directory.
 
-**Serving the adapter:** hot-swap it into a running server via the adapter
-API and select it per-request — see
-[adapters-end-to-end](../design/adapters-end-to-end.md) and the adapter
-endpoints in [server-api](server-api.md). Or fold it into the base weights
-with `POST /api/finetune/merge`.
+Serving accepts both mlx-lm tensor layout (`[in, rank]` / `[rank, out]`)
+and standard PEFT layout (`[rank, in]` / `[out, rank]`, including
+`base_model.model.*` names); PEFT `use_rslora` metadata is honored as
+`lora_alpha / sqrt(rank)`. Hot-swap and per-request selection:
+[server-api.md](server-api.md) (Adapters) and
+[adapters-end-to-end](../design/adapters-end-to-end.md).
 
 ## Memory & performance tips
 
-- Start at `batch_size: 1` (the no-padding path); raise only with headroom.
-- OOM → lower `max_seq_length`, set `segment_size` (e.g. 2–4), or reduce
-  `rank` / `num_layers`.
-- Set `MLX_BUN_MEM_LOG=1` to watch per-step peak memory.
-- `grad_accumulation_steps` raises effective batch without the memory cost.
+- Start at `--batch 1` (the no-padding path); raise only with headroom.
+  `--grad-accum` raises the effective batch at batch-1 memory.
+- OOM → lower `--seq`, lower `--seg` (1 at 8K on 24 GB), or reduce
+  `--rank`.
+- `MLX_BUN_MEM_LOG=1` for per-step peak; `MLX_BUN_SEG_MEM_LOG=1` to see
+  which phase the peak lives in.
+- Short rows already take the exact fused head automatically
+  (`MLX_BUN_FLASH_MIN_M`); on response-dominant data `--no-prefix` costs
+  nothing and `--no-flash` is worth an A/B.
+- Select checkpoints by the downstream task eval or val accuracy/loss —
+  not by preference margin, which keeps rising after the model has
+  started overfitting.
+
+## Rules for agents working alongside a run
+
+- **No GPU work while a training run is active.** The GPU is fully
+  occupied; a "quick" benchmark, parity test, or model load corrupts both
+  the probe's numbers and the run's throughput. Verify by reading source
+  and logs (`train-watch`, `train.log`, `metrics.jsonl`), not by executing.
+- Long runs are launched by the user from their own shell (`nohup … &`),
+  never as a session-spawned background task.
+- Docs for a training-surface change (flags, fields, defaults) land in the
+  same commit: this file, [cli.md](cli.md), and
+  [server-api.md](server-api.md) for the HTTP routes.

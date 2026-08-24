@@ -28,7 +28,7 @@ on Apple Silicon with **no Python** — shippable as a single signed, notarized
 binary.
 
 It's both a [library](/guides/library/) you import and an
-[HTTP server](/guides/http-api/) speaking the OpenAI, Anthropic, and OpenAI
+[HTTP server](/reference/server-api/) speaking the OpenAI, Anthropic, and OpenAI
 Responses protocols, with tool calling, vision input on Gemma-4, a byte-capped
 prompt cache, per-request LoRA hot-swap, quantized and mixed-precision KV, and
 memory admission control. It can also [create quantized models](/guides/library/)
@@ -38,7 +38,7 @@ long-context training within tight memory.
 The supported families are deliberately few — Gemma-4 (e2b/e4b/12B/26B-A4B MoE),
 MiniCPM5, and Qwen3.5 — because the whole point is holding each one bit-for-bit
 faithful to the references, which takes a hand-ported op composition per
-architecture. See [Choosing a model](/getting-started/models/).
+architecture. See [Choosing a model](/reference/models/).
 
 ## What it doesn't do (yet)
 

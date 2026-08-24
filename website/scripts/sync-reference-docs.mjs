@@ -19,32 +19,37 @@ const GH_EDIT = 'https://github.com/joshuarossi/mlx-bun/edit/main';
 
 // source file → { dest (under DEST), title, description }
 const MAP = [
-	{ src: 'server-api.md', dest: 'reference/server-api.md', title: 'Server API', description: 'OpenAI, Anthropic, and Responses HTTP endpoints, with full request/response schemas.' },
-	{ src: 'server-config.md', dest: 'reference/server-config.md', title: 'Server configuration', description: 'serve flags, environment variables, and the --batch compatibility matrix.' },
-	{ src: 'training.md', dest: 'reference/training.md', title: 'Training & fine-tuning', description: 'LoRA / SFT fine-tuning on Apple Silicon — recipes, flags, and the segmented backward pass.' },
-	{ src: 'cli.md', dest: 'reference/cli.md', title: 'CLI reference', description: 'Every mlx-bun verb — serve, get, ls, fit, train, memory, pi, and the rest.' },
-	{ src: 'library-api.md', dest: 'guides/library.md', title: 'Using the library', description: 'Embed MLX generation directly in a Bun process via loadContext / generate.' },
-	{ src: 'embedding.md', dest: 'guides/embedding.md', title: 'Embedding in a Mac app', description: 'Ship local inference as a single signed, notarized binary sidecar.' },
+	{ src: 'server-api.md', dest: 'reference/server-api.md', title: 'Server API', description: 'Every HTTP route — OpenAI, Anthropic, Responses, jobs, memory, admin — with request/response schemas.' },
+	{ src: 'server-config.md', dest: 'reference/server-config.md', title: 'Server configuration', description: 'Every serve flag, environment variable, default, and the feature/fidelity matrix.' },
+	{ src: 'cli.md', dest: 'reference/cli.md', title: 'CLI reference', description: 'Every mlx-bun verb — serve, get, ls, fit, train, memory, pi, and the rest — plus the mlx-lm compatibility map.' },
+	{ src: 'models.md', dest: 'reference/models.md', title: 'Supported models', description: 'The one supported-model roster: families, modalities, draft sources, KV schemes, and model management.' },
+	{ src: 'benchmarks.md', dest: 'reference/benchmarks.md', title: 'Benchmarks', description: 'Curated parity / performance / quality numbers, labeled by host, and how to run the benchmark.' },
+	{ src: 'training.md', dest: 'reference/training.md', title: 'Training & fine-tuning', description: 'LoRA / ORPO / SFT fine-tuning on Apple Silicon — flags, flash-CCE, segmented backward, prefix sharing.' },
+	{ src: 'library-api.md', dest: 'guides/library.md', title: 'Using the library', description: 'Embed MLX generation and embeddings directly in a Bun process — the full export surface.' },
+	{ src: 'distribution.md', dest: 'guides/distribution.md', title: 'Distribution', description: 'Signed, notarized binaries, the Homebrew tap, npm, and the native runtime pack.' },
 	{ src: 'memory.md', dest: 'guides/memory.md', title: 'Personal memory', description: 'A local, git-tracked Markdown wiki the built-in agents read as durable user context.' },
-	{ src: 'models.md', dest: 'guides/model-management.md', title: 'Model management', description: 'Downloading, indexing, listing, and reclaiming models — get, scan, ls, gc, and the HF cache layout.' },
-	{ src: 'orpo-quickstart.md', dest: 'guides/fine-tuning-quickstart.md', title: 'Fine-tuning quickstart', description: 'ORPO / DPO / SFT LoRA fine-tuning with the full preconfigured stack — one command.' },
+	{ src: 'troubleshooting.md', dest: 'guides/troubleshooting.md', title: 'Troubleshooting', description: 'Symptom → cause → fix for install, download, memory-fit, and Gatekeeper issues.' },
+	{ src: 'environment.md', dest: 'reference/environment.md', title: 'Reference environment', description: 'The pinned oracle stack, dev machines, and hard-won Bun/MLX/Metal platform facts.' },
+	{ src: 'glossary.md', dest: 'reference/glossary.md', title: 'Glossary', description: 'Serving vocabulary and the synonyms we deliberately do not use.' },
 ];
 
 function rewriteLinks(s) {
 	return s
 		.replaceAll('](../../', `](${GH}/`)
 		.replaceAll('](../design/', `](${GH}/docs/design/`)
-		.replaceAll('](../investigations/', `](${GH}/docs/investigations/`)
+		.replaceAll('](../archive/', `](${GH}/docs/archive/`)
 		.replace(/\]\((?:\.\/)?server-api\.md\)/g, '](/reference/server-api/)')
 		.replace(/\]\((?:\.\/)?server-config\.md\)/g, '](/reference/server-config/)')
 		.replace(/\]\((?:\.\/)?training\.md\)/g, '](/reference/training/)')
 		.replace(/\]\((?:\.\/)?cli\.md\)/g, '](/reference/cli/)')
 		.replace(/\]\((?:\.\/)?library-api\.md\)/g, '](/guides/library/)')
-		.replace(/\]\((?:\.\/)?embedding\.md\)/g, '](/guides/embedding/)')
+		.replace(/\]\((?:\.\/)?distribution\.md\)/g, '](/guides/distribution/)')
+		.replace(/\]\((?:\.\/)?troubleshooting\.md\)/g, '](/guides/troubleshooting/)')
+		.replace(/\]\((?:\.\/)?benchmarks\.md\)/g, '](/reference/benchmarks/)')
+		.replace(/\]\((?:\.\/)?environment\.md\)/g, '](/reference/environment/)')
+		.replace(/\]\((?:\.\/)?glossary\.md\)/g, '](/reference/glossary/)')
 		.replace(/\]\((?:\.\/)?memory\.md\)/g, '](/guides/memory/)')
-		.replace(/\]\((?:\.\/)?models\.md\)/g, '](/guides/model-management/)')
-		.replace(/\]\((?:\.\/)?orpo-quickstart\.md\)/g, '](/guides/fine-tuning-quickstart/)')
-		.replace(/\]\((?:\.\/)?distribution\.md\)/g, `](${GH}/docs/reference/distribution.md)`);
+		.replace(/\]\((?:\.\/)?models\.md\)/g, '](/reference/models/)');
 }
 
 export function syncReferenceDocs() {

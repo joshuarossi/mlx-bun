@@ -26,7 +26,7 @@ LoRA fine-tuning (SFT / DPO / ORPO) runs natively — `mlx-bun train <model>
 Together they brought an 8192-token ORPO step on a 4B model from
 out-of-memory to ~13 GB. Watch a run live with `mlx-bun train-watch`.
 
-Start here: [Fine-tuning quickstart](/guides/fine-tuning-quickstart/) · full
+Start here: [Fine-tuning quickstart](/reference/training/) · full
 [training reference](/reference/training/) · design write-ups:
 [segmented backward](https://github.com/joshuarossi/mlx-bun/blob/main/docs/design/segmented-backward-training.md),
 [ORPO training](https://github.com/joshuarossi/mlx-bun/blob/main/docs/design/orpo-training.md).

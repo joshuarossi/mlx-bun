@@ -15,6 +15,7 @@
 // thing the mask must encode is (a) causality, (b) each row's left padding,
 // and (c) the sliding window, if any.
 
+import { cacheSignature } from "./gemma4-base";
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { createCausalMask, KVCache, type Cache, type Mask } from "./gemma4-base";
@@ -91,6 +92,11 @@ export function buildBatchedDecodeMask(
 export class BatchedDecodeMaskCache implements Cache {
   #ropeArr: MlxArray | null = null;
   #ropeForOffset = -1;
+
+  /** A decorator, not a storage kind: never claims the inner cache's
+   *  identity (isPlainKvCache(wrapper) must stay false — it is not a
+   *  KVCache), but records what it wraps for diagnostics/persistence. */
+  signature(): string { return `kv:batched-mask:${cacheSignature(this.inner)}`; }
 
   constructor(
     private readonly inner: Cache,

@@ -18,6 +18,7 @@ function stubCache(
 ): Cache {
   return {
     offset: 0,
+    signature: () => "test:stub",
     updateAndFetch: () => { throw new Error("unused"); },
     makeMask: () => ({ mode: "", arr: null }),
     state: () => [{ nbytes } as never],

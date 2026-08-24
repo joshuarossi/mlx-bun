@@ -20,9 +20,16 @@ describe("cache signatures", () => {
       .toBe("kv:rotating-quant:4:64");
   });
 
-  test("unknown cache capabilities fail closed", () => {
+  test("absent cache reads as unknown; every real cache must self-identify", () => {
+    // signature() is REQUIRED on Cache (the #42/#43 bug class was a missing
+    // override failing open). Only an absent cache reads as "unknown".
     expect(cacheSignature(undefined)).toBe("unknown");
-    expect(cacheSignature({} as never)).toBe("unknown");
+    const kinds = [
+      new KVCache(), new RotatingKVCache(1024), new QuantizedKVCache(64, 4),
+      new RotatingQuantizedKVCache(1024, 64, 4), new BatchedRotatingCache(1024, [0]),
+      new SSMCache(),
+    ].map((c) => cacheSignature(c));
+    expect(kinds.every((k) => k !== "unknown" && k.length > 0)).toBe(true);
   });
 
   test("row batching is a capability instead of a scheduler class list", () => {

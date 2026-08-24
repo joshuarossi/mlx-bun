@@ -134,6 +134,9 @@ export class BlockPool {
  *  shape): head count / head dims / dtype come from the first k/v pair,
  *  so the wiring (maybePageKv) needs no per-model shape plumbing. */
 export class PagedKVCache implements Cache {
+  /** Distinct kind: paged layout is serial-only and never merges into a
+   *  batch, so no capability guard should ever match it as plain. */
+  signature(): string { return "kv:paged"; }
   /** Matches KVCache.STEP: v1's growth granularity is a permutation of
    *  today's 256-token step into fixed reusable slots, not a new tuning
    *  axis (--paged-kv-block-size overrides for experiments). */

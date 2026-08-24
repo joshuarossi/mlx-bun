@@ -1,8 +1,75 @@
-# Model management: get / scan / ls / gc
+# Models: supported roster + management (get / scan / ls / gc)
 
-How mlx-bun downloads, indexes, lists, and reclaims models. The store is
-the standard Hugging Face hub cache — nothing proprietary; `hf` and
-mlx-lm read/write the same tree.
+The one supported-model list, plus how mlx-bun downloads, indexes, lists,
+and reclaims models. The store is the standard Hugging Face hub cache —
+nothing proprietary; `hf` and mlx-lm read/write the same tree.
+
+## Supported models
+
+The source of truth is code, not this table: `src/model/profile.ts`
+(which `model_type` loads via which graph), `src/model/support.ts` (the
+support tier `mlx-bun ls` prints), `src/model/universal/archs.ts` (the
+Tier-0 descriptor table), `src/spec/source.ts` + `src/server.ts` (draft
+sources), and the `instanceof` gates in `src/server.ts` for image / video /
+audio. If this table and the code disagree, the code wins and this table
+is the bug.
+
+Scope is deliberate: a few families held to explicit oracle contracts
+(L1 = bit-exact vs mlx-lm, L2 = bit-exact vs mlx-optiq, L3 = measured, no
+oracle), plus a declared Tier-0 generic surface. There is no alias table —
+the "query" column is a substring that `resolve()` matches against
+already-downloaded repos (it must match exactly one repo; see
+[Query resolution rules](#query-resolution-rules-per-verb)).
+
+| `serve` query | Validated artifact (HF repo) | Family · load path · tier | Modalities | Draft sources | KV schemes | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| `e4b` | `mlx-community/gemma-4-e4b-it-OptiQ-4bit` | Gemma 4 (`gemma4*`) · dedicated `gemma4` graph with a **generated** specialization keyed on the config fingerprint · L1 | text · **image** (SigLIP tower in the bf16 `optiq_vision.safetensors` sidecar) · **audio** (Conformer tower in the same sidecar) | two-model · Gemma `-assistant` (L2) · locally-trained DSpark (`dspark.json`) · ngram | bf16 · uniform 4/8 · `config` (kv_config.json, batches) · turbo · `--paged-kv` | **Default model** (`DEFAULT_REPO_ID`, src/fit.ts). The only audio-capable artifact. ~7.0 GB on disk (benchmarks.md legend, 2026-06-15). Trains (LoRA / ORPO / SFT). |
+| `12B` | `mlx-community/gemma-4-12B-it-OptiQ-4bit` | Gemma 4 · generated specialization · L1 | text · **image** (encoder-free `gemma4_unified_vision` declared in config.json — no sidecar needed). No audio: the snapshot's sidecar is an audio **stub** (`embed_audio` only, no `audio_tower.*`) | two-model · `-assistant` · DSpark local · **DeepSpec released** (`deepseek-ai/dspark_gemma4_12b_block7`) · ngram | bf16 · uniform · `config` · turbo · `--paged-kv` | ~8.4 GB (2026-06-15). `largestRecommendedRepoId` pick for ≥ 24 GB RAM (src/fit.ts). Trains. |
+| `26B` | `mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit` | Gemma 4 MoE · generated specialization · L1 | text · image **only if** the snapshot ships the SigLIP sidecar (registry `has_vision_sidecar`; the tower is `gemma4_vision`). No `audio_config` → no audio | two-model · `-assistant` · ngram | bf16 · uniform · `config` · turbo · `--paged-kv` | ~18 GB (2026-06-15). `largestRecommendedRepoId` pick for ≥ 48 GB RAM. |
+| any other `gemma4*` config (1B, e2b, 31B, …) | — | Gemma 4 · the `Gemma4Model` monolith (no generated specialization) · L1 by family | per the registry's vision/audio flags | same as the family | same as the family | Loads by `model_type`; **no artifact is pinned in tests/goldens for these**, so treat as family-supported, artifact-unvalidated. |
+| `MiniCPM5` | `mlx-community/MiniCPM5-1B-OptiQ-4bit` | MiniCPM5 · `model_type: llama` matched by exact shape (`isMiniCPM5Config`) → dedicated `minicpm5` graph · L1 / L2 | text | two-model · ngram | bf16 · uniform · `config` (batches — Phase 3.1) · turbo (quality curve measured 2026-07-06, benchmarks.md §3) | Sub-GB starter (benchmarks.md legend). Trains (segmented backward). Tool calling (XML). |
+| `Qwen3.5-4B` | `mlx-community/Qwen3.5-4B-OptiQ-4bit` | Qwen3.5 (`qwen3_5` / `qwen3_5_text`, dense hybrid gated-DeltaNet) · dedicated `qwen3.5` graph · L1 | text (image/video only when the artifact ships vision weights — see Qwen3.8) | two-model · ngram · `mtp` if a `qwen3_5_mtp` companion exists | bf16 (L1) · `config` (KV-ON parity passed 2026-06-15, PLAN 14e) | Thinking + tool calling. Batches on the SSM path (`MLX_BUN_BATCH_SSM=0` reverts). The MoE variant `qwen3_5_moe` is **not** supported. |
+| `Qwen3.8` | `mlx-community/Qwen3.8-27B-OptiQ-4bit` @ `b04599de95d7a9bfbd7f208d347c0f10d9432a42` | Qwen3.5 family · **exact artifact profile** `qwen3.8-27b-optiq-4bit` (safetensors + `qwen3.5` graph) · L1 | text · **image** · **video** (`image_url` / `video_url` parts; Qwen3-VL tower + mRoPE; video decodes via the AVFoundation sidecar `mlx-bun-frame-extract`, 2 fps, ≤ 768 frames). Video never combines with audio; no audio | **native MTP head** (`mlx-community/Qwen3.8-27B-MTP-bf16`, auto-detected `qwen3_5_mtp`; `--draft-kind mtp` with no `--draft-model` uses a bundled `mtp/` subfolder) · two-model · ngram | bf16 (L1) · `config` is **Lab** — policy copied from the same-topology Qwen3.6 artifact, no model-specific oracle (benchmarks.md, 2026-08-22) | `reasoning_effort` (xhigh/medium/low) + `preserve_thinking` + tool calling. `/v1/models` advertises vision. Shipped in v0.2.0. |
+| `Qwen3-Embedding` | `mlx-community/Qwen3-Embedding-4B-4bit-DWQ` | plain `qwen3` · dedicated `qwen3` graph · L1 | text | — | — | **Embeddings only**: `/v1/embeddings` + `mlx-bun embed`. Auto-picked by `embed` when no query is given; never the chat default. |
+| `Qwen3-30B` | `mlx-community/Qwen3-30B-A3B-Thinking-2507-4bit` | Qwen3-MoE (`qwen3_moe`) · dedicated `qwen3-moe` graph · L1 (opt-in slow parity test, `MLX_BUN_TEST_QWEN3_MOE=1`) | text | two-model · ngram | bf16 (the artifact ships no kv_config.json) | Sparse top-k SwitchGLU experts. |
+| `diffusiongemma` | `mlx-community/diffusiongemma-26B-A4B-it-OptiQ-4bit` | DiffusionGemma (`diffusion_gemma`) · dedicated graph + **denoising loop** (non-autoregressive) · L2 (optiq) | text · **image** (single image; its own inline-quantized SigLIP tower). No video / audio | — (no AR verify loop) | — (canvas model; the `--kv-quant` axis does not apply) | Serial lane always. Diffusion-native LoRA trains. |
+| `GLM-5.2-colibri` | `mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp` @ `3cc8db99b1b13fc79325d987ba3c1c430766b3b8` | GLM-5.2 (`glm_moe_dsa`) · **Colibri container loader** + dedicated `glm5.2` graph (streamed experts) · **exact artifact profile**, L3 | text | **checkpoint-native MTP** (`--mtp on`, the default; mutually exclusive with `--draft-model`) | checkpoint-native compressed **MLA/DSA** cache (its own scheme; SSD tier v3 persists it) | Fixed-context admission: `--context-length` (4096) and `--max-tokens` (128) are reserved by the header-only resource equation before weights open; `--memory-budget` defaults to min(25 GiB, RAM). `--mtp off` enables ordinary batching. Embeddings, vision/audio, adapters, and training are unsupported. See [below](#direct-container-artifacts-glm-5x). |
+| Tier-0 generic | validated manifest (`tests/universal-manifest.ts`): `Llama-3.2-1B-Instruct-4bit`, `Qwen2.5-0.5B-Instruct-4bit`, `Qwen3-0.6B-4bit`, `quantized-gemma-2b-it`, `gemma-2-2b-it-4bit`, `Phi-3.5-mini-instruct-4bit`, `OLMo-2-1124-7B-Instruct-4bit`, `GLM-4-9B-0414-4bit`, `granite-3.3-2b-instruct-4bit`, `starcoder2-3b-4bit`, `SmolLM3-3B-4bit` (all `mlx-community/`) | 11 `model_type`s: `llama`, `smollm3`, `qwen2`, `qwen3`, `gemma`, `gemma2`, `phi3`, `olmo2`, `glm4`, `granite`, `starcoder2` (+ mlx-lm remaps `mistral`, `iquestcoder` → `llama`) · `universal-dense` graph · L1 | text | two-model · ngram | bf16 (the validated cell) | `ls` labels these `supported (generic)`. Batch only for plain full-attention archs (gated B=2 on Llama-3.2-3B); gemma2-family / sliding-window archs run serial. No compiled specialization. A `model_type` absent from the table refuses to load. |
+
+Rules that apply across rows (all enforced in `src/server.ts`):
+
+- **Draft sources.** Two-model and ngram work on any autoregressive target
+  (two-model requires the same tokenizer family — probe-checked at startup).
+  The KV-borrowing drafters (`-assistant`, DSpark, DeepSpec) require a
+  Gemma 4 target; `qwen3_5_mtp` heads require a Qwen3.5-family target; GLM's
+  MTP is its own row. Any quantized KV scheme excludes the speculative lane
+  (requests keep the scheme and decode serially without speculation).
+- **KV schemes.** `--kv-quant 4|8` (uniform, L1) and `config` (per-layer
+  `kv_config.json`, L2) apply to the autoregressive families that ship the
+  file; `turbo` additionally requires a full-attention `head_dim` in
+  {64, 128, 256, 512} (refused at startup otherwise) and is solo-only;
+  `--paged-kv` is Gemma 4 only, bf16, serial. Flag detail:
+  [server-config.md](server-config.md).
+- **Modalities.** Image requests reach a Gemma 4 model only when
+  `has_vision_sidecar` or a `*_unified_vision` config is present; audio only
+  when `audio_config` AND the sidecar's `audio_tower.*` tensors are both
+  present; video only on a Qwen3.5-family model. A request carrying media the
+  model cannot take is an explicit 400, never a silent text-only degrade.
+  Wire formats: [server-api.md](server-api.md).
+- **Memory.** Disk sizes above are the dated figures from
+  [benchmarks.md](benchmarks.md); for RAM, ask `mlx-bun fit <query> --ctx
+  <n>` rather than a table (src/fit.ts is the calculator).
+
+### How a new model gets here
+
+A `model_type` earns a row by landing a descriptor (Tier-0) or a dedicated
+graph (targeted) **plus a green parity manifest entry** against the oracle
+that already ships it — the process, cost per arch, and the graduation path
+from generic to targeted are in
+[docs/design/generic-model-support.md](../design/generic-model-support.md)
+(§3.1 descriptor table, §3.5 the parity gate, §3.6 graduation). Exact
+artifacts additionally get a declared profile (see
+[Declared model profiles](#declared-model-profiles)).
 
 ## The cache layout (and why duplicates happen)
 
@@ -65,7 +132,16 @@ existing prefix in chunks — no whole-file allocation):
 A mismatch deletes the partial (never resume corrupt bytes); a short
 read keeps the `.incomplete` for resume.
 
-## GLM-5.2 on a 32 GB Mac
+## Direct-container artifacts (GLM-5.x)
+
+Models that load through the Colibri container loader (`loader: "colibri"`
+in `src/model/profile.ts`) skip `Weights.open` entirely: a header-only
+resource equation runs before any resident tensor or expert slab opens, and
+an impossible plan fails without committing memory. One validated artifact
+today; a GLM-5.3+ artifact joins as a new row in the roster above plus a
+subsection here once it has a declared profile.
+
+### GLM-5.2 on a 32 GB Mac
 
 The validated direct-container artifact is
 `mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp` at revision

@@ -263,8 +263,13 @@ export type SharedKv =
 
 export interface Cache {
   offset: number;
-  /** Stable storage identity for compatibility guards and persistence. */
-  signature?(): string;
+  /** Stable storage identity for compatibility guards and persistence.
+   *  REQUIRED: every capability predicate (isPlainKvCache, isRotating*,
+   *  kv-store codecs) is a string compare on this value, so a missing
+   *  override used to fail OPEN into wrong routing (PRs #42/#43:
+   *  BatchedRotatingCache shipped without one and batched joins dropped
+   *  running rows). Wrappers report their own kind plus the inner kind. */
+  signature(): string;
   /** Physical cache storage consumed by one additional token for one row.
    *  Recurrent caches return 0 because their state does not grow with the
    *  sequence. Optional for stateless/training adapters that are never
@@ -303,7 +308,7 @@ export interface Cache {
 }
 
 export function cacheSignature(cache: Cache | undefined): string {
-  return cache?.signature?.() ?? "unknown";
+  return cache ? cache.signature() : "unknown";
 }
 
 export interface RowBatchCache extends Cache {

@@ -31,6 +31,8 @@ import type { RuntimeModel } from "../model/factory";
  *  backward recompute, and a stateful (appending) cache would corrupt on the
  *  second run. */
 export class TrainingCache implements Cache {
+  /** Training-only adapter; never admitted, merged, or persisted. */
+  signature(): string { return "train:training"; }
   offset = 0;
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
     // Return fresh views: the caller disposes its input k/v right after (its
@@ -67,6 +69,8 @@ export class TrainingCache implements Cache {
  *  threw on the missing conv/recurrent/advance surface (the recorded
  *  "mlx-bun perplexity cannot score qwen3_5" gap). */
 export class TrainingSSMCache implements Cache {
+  /** Training-only adapter; never admitted, merged, or persisted. */
+  signature(): string { return "train:training-ssm"; }
   offset = 0;
   specRound: null = null;
   get conv(): MlxArray | null { return null; }
@@ -192,6 +196,8 @@ export function buildBatchedPadMask(
  *  forwardLayers only disposes the mask it pulled from makeMask, so makeMask
  *  hands back a fresh view each call and keeps the canonical copy itself. */
 class BatchedMaskCache implements Cache {
+  /** Training-only adapter; never admitted, merged, or persisted. */
+  signature(): string { return "train:batched-mask"; }
   constructor(
     private readonly inner: Cache,
     private readonly window: number | null,
