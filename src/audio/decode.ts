@@ -1,4 +1,4 @@
-// WAV decode for audio input (A1 of docs/design/audio-input-plan.md).
+// WAV decode for audio input (A1 of docs/design/generic-model-support.md).
 //
 // Scope: RIFF/WAVE containers — PCM 16/24/32-bit and IEEE float32, any
 // channel count (mean mixdown), any sample rate (linear resample to 16 kHz).

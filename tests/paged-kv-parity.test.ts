@@ -5,7 +5,7 @@
 // and the gather reconstructs exactly the contiguous tensor the plain
 // fetch would have produced, so unlike quantized-KV parity there is no
 // knife-edge tolerance here: tol 0, full-trajectory agreement (a partial
-// match would signal a real bug, per docs/design/paged-kv-cache.md).
+// match would signal a real bug, per docs/design/kv-cache.md).
 // mlx-lm is not the oracle (it has no paged cache); mlx-bun's own plain
 // path is. Storage-layout unit parity (per-step fetch bytes, block
 // boundaries, trim) runs model-free in tests/paged-kv.test.ts.

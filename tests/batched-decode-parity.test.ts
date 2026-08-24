@@ -13,7 +13,7 @@
 //
 // One reusable harness, one test per (model × layer) matrix cell. GATED behind
 // the env + local weights, skipped by default (isolation rule: never in the
-// fast suite — model loads OOM alongside it). See docs/design/parallel-slots.md
+// fast suite — model loads OOM alongside it). See docs/design/batching.md
 // for the full matrix.
 
 import { describe, expect, test } from "bun:test";
@@ -655,7 +655,7 @@ describe.skipIf(!optIn || !haveS26)("batched decode ORACLE parity — Gemma 26B 
 //      Leading hypothesis: at Gemma's score magnitudes (headDim 256, scale 1.0)
 //      the bool mask doesn't fully clamp the zero-padding columns to -inf, so
 //      padding leaks (harmless at CPM's magnitudes). Needs layer-level
-//      instrumentation. Diagnostic only (no hard assert) — see docs/design/parallel-slots.md.
+//      instrumentation. Diagnostic only (no hard assert) — see docs/design/batching.md.
 describe.skipIf(!optIn || !haveGemma12b)("batched decode parity — Gemma 12B L1 (bf16, short-context) [WIP]", () => {
   // DIAGNOSTIC: B=1 through the wrapper (no cross-row, no left-pad) isolates
   // "is it the wrapper (array mask / ropeDynamic) on Gemma?" from "is it B=2

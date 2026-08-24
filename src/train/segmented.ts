@@ -2,7 +2,7 @@
 // segment-by-segment so only ONE segment's activations are ever live, instead
 // of holding every layer's recompute activations at once (the spike that makes
 // naive gradient checkpointing crash at long context). Design + proof:
-// docs/design/segmented-backward-training.md (mechanism validated on a toy in
+// docs/design/orpo-training.md (mechanism validated on a toy in
 // scripts/ckpt-mem-test.ts, SEG mode: 0.000% grad error, peak below per-layer
 // checkpointing; bit-exact on MiniCPM5 under flash attention).
 //
@@ -24,7 +24,7 @@
 // `value_and_grad(sum(stop_grad(dh) (.) segment_forward(...)))` is numerically
 // identical but LEAKS ~one activation buffer per segment per step at the mlx
 // level (measured; not GC/cache/synchronize/reuse reclaimable — see
-// docs/design/segmented-backward-training.md §9.4). mlx_vjp takes the cotangent
+// docs/design/orpo-training.md §9.4). mlx_vjp takes the cotangent
 // directly, needs no surrogate, and does not leak.
 //
 // IMPORTANT lifetime fact: mlx `eval` does NOT detach — an eval'd array retains

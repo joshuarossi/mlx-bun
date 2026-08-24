@@ -343,7 +343,7 @@ into its own persistent child process behind the existing
 API + routing, zero MLX calls); one GPU lease serializes all GPU consumers
 (chat, API, quantize, finetune) — reusing the spawn/lease pattern jobs
 already prove. Converges with model hot-swap (model lives off the main
-thread either way). Full design + phasing: `docs/design/runtime-isolation.md`.
+thread either way). Full design + phasing: `docs/reference/server-config.md`.
 
 ## Harness UX
 

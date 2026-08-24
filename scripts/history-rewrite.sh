@@ -1,5 +1,5 @@
 #!/bin/sh
-# history-rewrite.sh — repo-cleanup-plan.md Phase C as ONE guarded command.
+# history-rewrite.sh — CONTRIBUTING.md Phase C as ONE guarded command.
 #
 # Purges the historical golden/adapter binary blobs from git history
 # (~179 MB -> expect a <30 MB fresh clone). DESTRUCTIVE BY DESIGN: rewrites

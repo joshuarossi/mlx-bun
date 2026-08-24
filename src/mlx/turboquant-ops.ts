@@ -1,7 +1,7 @@
 // TurboQuant KV-cache codec — pure mlx-op composition, ported op-for-op
 // from the vendored vllm-metal reference
 // (lab/repro/vllm-metal-turboquant/turboquant_reference.py). See
-// docs/design/turboquant-kv.md for the algorithm writeup and
+// docs/design/turboquant.md for the algorithm writeup and
 // goldens/turboquant.json (via tests/turboquant-ops.test.ts) for the
 // bit-exactness oracle. Quantization groups run along the LAST axis
 // (head_dim) only — never the token axis, per the standing invariant.

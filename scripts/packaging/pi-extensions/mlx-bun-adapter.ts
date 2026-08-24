@@ -10,7 +10,7 @@
 // the outgoing OpenAI-compatible payload — the same field a raw curl would send.
 // Default is none (no injection → base model). This is the CLI twin of the web
 // chat's adapter selector (src/pi-web.ts installAdapterHook); both lean on Pi's
-// hook rather than any custom protocol. See docs/design/adapters-end-to-end.md.
+// hook rather than any custom protocol. See docs/design/web-chat-redesign.md.
 //
 // Points at the mlx-bun server via MLX_BUN_URL (default http://localhost:8090).
 

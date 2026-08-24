@@ -2,7 +2,7 @@
 //
 // The v1 correctness claim is storage-layout equivalence: PagedKVCache's
 // updateAndFetch returns the SAME bytes a plain KVCache returns for the
-// same write sequence (docs/design/paged-kv-cache.md — mlx-lm has no
+// same write sequence (docs/design/kv-cache.md — mlx-lm has no
 // paged cache, so mlx-bun's own KVCache is the oracle). These tests feed
 // both caches identical synthetic K/V across prefill-chunk + decode-step
 // shapes, spanning block boundaries, and assert bit-equality every step.

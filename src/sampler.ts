@@ -82,7 +82,7 @@ export interface SamplerOptions {
   seed?: number;
   /** HLG tone-curve sampling. When enabled, replaces temperature's flat slope
    *  with the piecewise curve (temperature becomes the mid gain). Off/undefined
-   *  ⇒ the plain temperature path, unchanged. docs/design/hlg-sampling.md. */
+   *  ⇒ the plain temperature path, unchanged. docs/archive/hlg-sampling.md. */
   hlg?: HlgConfig;
   /** v2 log-prob transfer-curve sampler. When set, the drawn monotone curve
    *  REPLACES temperature+softmax entirely (stochastic, seeded) — see
@@ -310,7 +310,7 @@ export function applyXtc(
 }
 
 /** HLG sampling parameters — a piecewise tone curve on the logprobs.
- *  See docs/design/hlg-sampling.md. Knobs are in nats (the logprob unit). */
+ *  See docs/archive/hlg-sampling.md. Knobs are in nats (the logprob unit). */
 export interface HlgParams {
   /** m — mid-region slope. Folds temperature: m = 1/temperature. */
   gain: number;

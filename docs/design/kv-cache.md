@@ -13,11 +13,11 @@ and their `signature()` capability model, the RAM prompt cache
 (`PromptCache.take()`), the SSD cold tier and its durability boundary, the
 optional paged block allocator, and how KV *schemes* plug into all of it.
 The TurboQuant codec itself is documented in
-[turboquant-kv.md](./turboquant-kv.md); this doc only covers how its cache
+[docs/design/turboquant.md](./turboquant.md); this doc only covers how its cache
 class participates in residency.
 
-Sources consolidated here: `ssd-kv-cold-tier.md`, `paged-kv-cache.md`, and
-the cache-integration parts of `turboquant-kv.md`. Status and changelog
+Sources consolidated here: `docs/design/kv-cache.md`, `docs/design/kv-cache.md`, and
+the cache-integration parts of `docs/design/turboquant.md`. Status and changelog
 prose lives in PLAN.md; this file keeps mechanism, invariants, decisions,
 and open items.
 
@@ -86,7 +86,7 @@ own their own dynamic-row batching — GLM's MLA/DSA state). Type guards
 | `QuantizedKVCache` | gemma4-base.ts | `kv:quant:b:g` | yes | affine triples (packed/scales/biases), groups along head_dim |
 | `RotatingKVCache` | gemma4-base.ts | `kv:rotating-plain` | **only while `offset < maxSize`** (pre-wrap) | sliding-window ring |
 | `RotatingQuantizedKVCache` | gemma4-base.ts | `kv:rotating-quant:b:g` | pre-wrap | quantized ring |
-| `TurboQuantKVCache` | gemma4-base.ts | `kv:turboquant:k:v` | yes | not a `KVCache` subclass — deliberately fails every `instanceof` gate (monolith fallback, solo-only); see turboquant-kv.md |
+| `TurboQuantKVCache` | gemma4-base.ts | `kv:turboquant:k:v` | yes | not a `KVCache` subclass — deliberately fails every `instanceof` gate (monolith fallback, solo-only); see docs/design/turboquant.md |
 | `SSMCache` | qwen3-delta.ts | `ssm` | **no** (recurrent) | `bytesPerToken()` = 0; per-row `offsets` in the batch lane |
 | `Glm52Cache` / `MLACache` | glm52-cache.ts | `kv:mla:*` | yes | `BatchableCache`; compressed latent + rope (+ DSA index) |
 | `PagedKVCache` | paged-kv.ts | **none** | yes | block pool + gather; section 6 |
@@ -485,7 +485,7 @@ This is neither of the two paging rejections already on record:
 paged KV as a *prompt-cache substitute* (rejected 2026-07-07 — `take()`'s
 zero-copy clones already share physically) and paged *blocks* as the SSD
 spill granularity (D1). It is the rung-3 allocation abstraction from
-parallel-slots.md.
+docs/design/batching.md.
 
 No external oracle exists (mlx-lm's `cache.py` has no paged cache); the
 gate is mlx-bun's own plain `KVCache`, valid because the claim is storage

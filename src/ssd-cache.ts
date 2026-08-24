@@ -1,4 +1,4 @@
-// SSD cold tier for the prompt/KV cache (docs/design/ssd-kv-cold-tier.md).
+// SSD cold tier for the prompt/KV cache (docs/design/kv-cache.md).
 //
 // Files ARE the database: no sidecar index. Layout
 //   <dir>/<configFingerprint>/<nsHash>/<uuid>.mlxkv

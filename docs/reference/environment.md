@@ -174,7 +174,7 @@ the header each group comes from (`io.h`, `map.h`, `transforms.h`); the
 `mlx_load_safetensors` row shows the shape — `(out, meta_out, path, stream)`.
 
 **libmlxc resolution order.** `MLX_BUN_LIBMLXC` env → beside the executable
-(sidecar layout, `embedding.md`) → `~/Library/Caches/mlx-bun/native-v<ver>-<arch>/`
+(sidecar layout, `docs/reference/distribution.md`) → `~/Library/Caches/mlx-bun/native-v<ver>-<arch>/`
 (downloaded on first run, sha256-verified) → `/opt/homebrew/lib` →
 `/usr/local/lib`. Dev trees and embedders never download anything. The order
 is defined twice and must stay in sync: `resolveLibmlxc()` in

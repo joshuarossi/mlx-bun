@@ -1,4 +1,4 @@
-// Feature-matrix serving benchmark — grammar-spec-batching-integration.md
+// Feature-matrix serving benchmark — docs/design/batching.md
 // Phase E. Measures the six legal composition cells (lane × feature) in ONE
 // run, with in-process short-lived servers (three configs: serial / batch=N /
 // serial+draft — they die with the script).

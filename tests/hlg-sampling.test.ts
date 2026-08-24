@@ -1,5 +1,5 @@
 // HLG sampling — pure tone-curve transform (fast tier, no weights).
-// Gates for Piece 1 (docs/design/hlg-sampling.md):
+// Gates for Piece 1 (docs/archive/hlg-sampling.md):
 //   - degeneracy to temperature / identity is BIT-EXACT (the safety anchor);
 //   - the curve is monotone in the logprob ⇒ ranking-preserving (argmax held);
 //   - `-inf` (masked) tokens survive as `-inf`, no NaN anywhere;

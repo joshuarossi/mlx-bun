@@ -1,4 +1,4 @@
-// T2 e2e audio parity (docs/design/audio-input-plan.md §3.4): fixture WAV →
+// T2 e2e audio parity (docs/design/generic-model-support.md §3.4): fixture WAV →
 // decodeAudio → USM mel → AudioTower → multimodal prompt builder (template
 // render + <|audio|> → boa + audio×n + eoa splice + merged embeddings) →
 // strictly-causal merged-embeddings prefill (per-layer id zeroing at audio

@@ -181,7 +181,7 @@ Model & quality:
                             (bf16), 4 / 8 (uniform bits), or turbo[:k<bits>v
                             <bits>] (rotation-based TurboQuant — default
                             k8v3; kBits in {2,4,5,8}, vBits in {2,3,4,5,8};
-                            docs/design/turboquant-kv.md)
+                            docs/design/turboquant.md)
                             [default: off — quantized KV measured 5-20% slower
                             decode than bf16 at ≤16k (on mlx-lm too); it buys
                             memory headroom, so opt in when context is tight.
@@ -196,7 +196,7 @@ Model & quality:
                             --kv-quant, --draft-model; bypasses the prompt
                             cache; runs uncompiled decode. Bit-exact with the
                             plain path; expect a small decode cost at batch=1
-                            (the gather copy). docs/design/paged-kv-cache.md
+                            (the gather copy). docs/design/kv-cache.md
                             [default: off]
   --paged-kv-block-size <n> Tokens per KV block  [default: 256 = the plain
                             cache's growth step]
@@ -218,7 +218,7 @@ Model & quality:
   --hlg-sampling on|off     Piecewise tone-curve sampling (HLG): rolls off the
                             top, boosts the mids, gentles the tail. Gain folds
                             from --temperature. [default: off]
-                            See docs/design/hlg-sampling.md
+                            See docs/archive/hlg-sampling.md
   --hlg-width <nats>        HLG mid-region half-width  [default: 4]
   --hlg-shoulder <nats>     HLG highlight rolloff scale  [default: 4]
   --hlg-toe <nats>          HLG shadow rolloff scale  [default: 6]
@@ -825,7 +825,7 @@ function openChatUi(url: string, hostPort: string): void {
 /** Resolve the decode ROUTE: a tier alias (--l1/--l2) sets the whole route,
  *  and an explicit per-fork flag (--kv-quant/--fused-sdpa/…) overrides the
  *  alias. Installs decode runtime options and returns the kv-quant mode. See
- *  docs/design/parity-tier-dag.md + unified-engine-frontier-plan.md.
+ *  docs/design/unified-engine-frontier-plan.md + unified-engine-frontier-plan.md.
  *  Each tier is a GUARANTEE about which reference you reproduce bit-for-bit:
  *    --l1  bit-for-bit IDENTICAL to mlx-lm    — drop-in replacement for mlx-lm
  *          (bf16 KV; THE naked default since 2026-07-05)
@@ -897,7 +897,7 @@ function applyDecodeRoute(): { kvQuant?: "off" | "config" | number; turboQuant?:
   if (kv === "off") return { kvQuant: "off" };
   if (kv === "config") return { kvQuant: "config" };
   if (kv) {
-    // TurboQuant (docs/design/turboquant-kv.md): a distinct axis from the
+    // TurboQuant (docs/design/turboquant.md): a distinct axis from the
     // affine kvQuant above — dequantize-on-fetch, stock unfused ops.sdpa,
     // no kvQuant value at all (mutually exclusive with kvBits/kvConfig).
     let turboQuant: TurboQuantScheme | null;
@@ -940,12 +940,12 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   if (kvBudgetGB > 0) serverOptions.kvBudgetBytes = kvBudgetGB * 1e9;
   const pcRaw = opt("prompt-cache"); // null if absent; an explicit value (incl. 0) wins → `--prompt-cache 0` DISABLES the cache
   if (pcRaw !== null) serverOptions.promptCacheBytes = Math.max(0, Number(pcRaw)) * 2 ** 30;
-  // Engine-child mode (runtime-isolation.md): listen on a unix socket
+  // Engine-child mode (docs/reference/server-config.md): listen on a unix socket
   // instead of TCP — the isolated parent proxies here. Internal flag,
   // spawned by --isolate; usable directly for socket-level integration.
   const unixRaw = opt("unix");
   if (unixRaw !== null) serverOptions.unixSocket = unixRaw;
-  // SSD cold tier (docs/design/ssd-kv-cold-tier.md) — off unless a dir is given.
+  // SSD cold tier (docs/design/kv-cache.md) — off unless a dir is given.
   const ssdDir = opt("ssd-cache");
   if (ssdDir !== null) {
     serverOptions.ssdCacheDir = ssdDir;
@@ -979,7 +979,7 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   if (route.kvQuant !== undefined) serverOptions.kvQuant = route.kvQuant;
   if (route.turboQuant !== undefined) serverOptions.turboQuant = route.turboQuant;
   // --paged-kv (env: MLX_BUN_PAGED_KV=1): OPTIONAL vLLM-style block-pool KV
-  // storage, default off (docs/design/paged-kv-cache.md). Serial-only in v1:
+  // storage, default off (docs/design/kv-cache.md). Serial-only in v1:
   // with no explicit --batch, pin --batch 1 (the default is 8); an explicit
   // --batch N>1 is refused loudly by createServer rather than downgraded.
   if (flag("paged-kv") || runtimeValue("MLX_BUN_PAGED_KV") === "1") {
@@ -1026,7 +1026,7 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   const maxTok = numFlag("max-tokens", 1, 10_000_000);
   if (maxTok !== null) serverOptions.defaultMaxTokens = Math.floor(maxTok);
   // HLG sampling — piecewise tone curve on the logprobs (default off). Knobs in
-  // nats; the mid gain folds from --temperature. docs/design/hlg-sampling.md.
+  // nats; the mid gain folds from --temperature. docs/archive/hlg-sampling.md.
   if (onOff("hlg-sampling") === true) {
     serverOptions.hlg = {
       enabled: true,
@@ -1538,7 +1538,7 @@ switch (cmd) {
         process.exit(1);
       }
     }
-    // Runtime isolation (--isolate, runtime-isolation.md): THIS process
+    // Runtime isolation (--isolate, docs/reference/server-config.md): THIS process
     // becomes a pure reactor — it binds the TCP port and reverse-proxies to
     // an engine CHILD (the full server on a unix socket, spawned from the
     // same argv minus parent-only flags). Zero MLX calls in the parent: the

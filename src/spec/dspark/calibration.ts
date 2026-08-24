@@ -14,7 +14,7 @@
 // survival products, feeding Alg-1's throughput-maximizing scheduler with a
 // profiled SPS(B) cost table) — that machinery lives in DeepSeek's UNRELEASED
 // production serving layer, not in DeepSpec. Paper-faithful STS/Alg-1 is a
-// future Lab item; details in docs/design/dspark-speculative-decoding.md
+// future Lab item; details in docs/design/speculative-decoding.md
 // "DeepSpec ground truth". The isotonic-style "smallest τ meeting a target
 // precision, Laplace-smoothed" fit below is ours (the reference ships no
 // calibrator at all — raw sigmoid vs a hand-set threshold).

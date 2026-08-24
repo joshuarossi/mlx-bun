@@ -15,7 +15,7 @@
 #   phase 3: {B, C}
 #
 # This is the gate's oracle for the dynamic-B cache ops the --batch N scheduler
-# needs (docs/design/parallel-slots.md): mlx-bun's mergeKVRows / filterKVRows
+# needs (docs/design/batching.md): mlx-bun's mergeKVRows / filterKVRows
 # (src/model/batched-mask.ts) must drive a real batched decode whose per-row
 # greedy trajectory matches mlx-lm's BatchKVCache here, token-for-token.
 #

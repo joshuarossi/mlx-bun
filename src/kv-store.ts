@@ -1,5 +1,5 @@
 // KV-cache persistence: save prompt caches to disk, reload by streamed copy.
-// The serialization core of the SSD cold tier (docs/design/ssd-kv-cold-tier.md).
+// The serialization core of the SSD cold tier (docs/design/kv-cache.md).
 //
 // File layout (every tensor PAGE-ALIGNED — the Phase 1 corollary: files
 // we write can be mmap'd and handed to the GPU without copies):

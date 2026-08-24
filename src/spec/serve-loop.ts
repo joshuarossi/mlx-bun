@@ -1,6 +1,6 @@
 // Serve-time speculative decoding — the ONE verify/accept executor behind
-// `serve --draft-model` (docs/design/mlx-lm-tool-parity-plan.md §7; sequenced
-// by docs/design/grammar-spec-batching-integration.md Phase B).
+// `serve --draft-model` (docs/reference/cli.md §7; sequenced
+// by docs/design/batching.md Phase B).
 //
 // Faithful to mlx-lm's speculative_generate_step (generate.py:473-654, read
 // from the oracle venv): per round, draft n tokens from the DraftSource, run
@@ -42,7 +42,7 @@
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { clearCache } from "../mlx/ffi";
-import { flagOn } from "../flags";
+import { flagOn } from "../runtime-config";
 import type { RuntimeModel } from "../model/factory";
 import type { Cache } from "../model/gemma4";
 import type { GenerateOptions, GenerateStats } from "../generate";

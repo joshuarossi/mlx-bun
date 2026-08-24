@@ -2,7 +2,7 @@
 status: landed
 axis: ON
 canonical-for: speculative-decoding
-plan-anchor: "Phase: TurboQuant weights — rotation-folded quantization, Qwen3.8-27B target" (DSpark×27B Track A/B boxes); also "Phase 14 — Qwen 3.x family bring-up" (14h)
+plan-anchor: "Phase 14 — Qwen 3.x family bring-up `[~]`"
 last-verified: 2026-08-23
 ---
 
@@ -21,9 +21,9 @@ source's oracle, and the DSpark program (our trained drafter + DeepSeek's
 released one). Status and changelog prose live in PLAN.md; this doc keeps the
 design plus a short dated History.
 
-Consolidated 2026-08-23 from `dspark-speculative-decoding.md` (base),
-`dspark-serving-program.md` (phases 0–6 + the wall-clock-negative problem
-statement) and `spec-decode-larger-targets.md` (12B assistant γ=1 result).
+Consolidated 2026-08-23 from `docs/design/speculative-decoding.md` (base),
+`docs/design/speculative-decoding.md` (phases 0–6 + the wall-clock-negative problem
+statement) and `docs/design/speculative-decoding.md` (12B assistant γ=1 result).
 The DSpark handoff (first live run, recipe) is archived at
 [docs/archive/investigations/dspark-handoff.md](../archive/investigations/dspark-handoff.md).
 
@@ -458,7 +458,7 @@ candidate (PLAN 14h, optional).
 - User-facing mirror: docs/reference/server-config.md (`--draft-model`,
   `--draft-kind`, `--num-draft-tokens`, `--ngram-*`, `--mtp`,
   `MLX_BUN_PREFILL_TAIL_SPLIT`, `MLX_BUN_DSPARK_MINCONF`), cli.md,
-  features-matrix.md.
+  docs/reference/server-config.md.
 
 ## 6. Composition rules (as served)
 
@@ -498,7 +498,7 @@ candidate (PLAN 14h, optional).
 
 - **2026-06-10** — e4b assistant drafter measured a net loss (γ=2 0.78× of
   54 tok/s, ~23% acceptance); spec ships default-off.
-- **2026-06-14** — `spec-decode-larger-targets.md` result: the verify path
+- **2026-06-14** — `docs/design/speculative-decoding.md` result: the verify path
   had targeted the WRONG oracle (per-position lm-head to match stock decode;
   no real implementation does this) — fixed with `picksBatched`, now
   bit-exact to optiq `spec_generate` on e4b γ=2 (identical output and

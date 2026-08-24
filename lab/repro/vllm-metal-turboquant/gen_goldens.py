@@ -32,7 +32,7 @@ JSON encoding note: one adversarial golden (a constant-value input row)
 triggers the reference's genuine fp16 zero_point overflow (scale==0 exactly
 -> (x_max+x_min)/(2*(0+1e-8)) overflows fp16 to +-inf, and dequant of that
 is NaN) — this is real, intentional reference behavior we must capture, not
-paper over (see docs/design/turboquant-kv.md's "deliberately drops the
+paper over (see docs/design/turboquant.md's "deliberately drops the
 +1e-8 scale epsilon" note). Standard JSON has no Infinity/NaN literal, so
 float leaves are encoded via _json_safe_float: finite values as JSON
 numbers, non-finite as the sentinel strings "Infinity"/"-Infinity"/"NaN".
@@ -67,7 +67,7 @@ import mlx.core as mx  # noqa: E402
 def _json_safe_float(v) -> float | str:
     """Standard JSON has no Infinity/NaN literals. Some adversarial goldens
     (e.g. a constant-value block, whose key scale is exactly 0) hit the
-    reference's genuine fp16 zero_point overflow — see turboquant-kv.md's
+    reference's genuine fp16 zero_point overflow — see docs/design/turboquant.md's
     "deliberately drops the +1e-8 scale epsilon because it underflows in
     fp16" note — so we must round-trip these exactly, not paper over them.
     Encode as the sentinel strings "Infinity"/"-Infinity"/"NaN" (the

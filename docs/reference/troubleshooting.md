@@ -6,7 +6,7 @@ sentence here disagrees with the code, the code wins — fix the doc.
 
 Related: [cli.md](./cli.md) (commands), [server-config.md](./server-config.md)
 (serve flags, admission), [distribution.md](./distribution.md) (install paths,
-signing), [embedding.md](./embedding.md) (sidecar layout, self-signing),
+signing), [docs/reference/distribution.md](./distribution.md) (sidecar layout, self-signing),
 [environment.md](./environment.md) (contributor/agent platform facts).
 
 ## Runtime and install
@@ -29,7 +29,7 @@ resumes and verifies. The library is resolved in this order
 
 1. `MLX_BUN_LIBMLXC=/path/to/libmlxc.dylib` — explicit override; the other
    libs are expected in the same directory.
-2. Beside the executable (the sidecar layout from `embedding.md`).
+2. Beside the executable (the sidecar layout from `docs/reference/distribution.md`).
 3. The native-pack cache dir above.
 4. Homebrew: `/opt/homebrew/lib`, then `/usr/local/lib`.
 
@@ -53,7 +53,7 @@ file, so they never prompt (`distribution.md`, "Direct download").
   from `distribution.md`).
 - Self-built binary: the bundle's dylibs must be (re)signed with the hardened
   runtime and entitlements — see "Signing & notarization" in
-  [embedding.md](./embedding.md).
+  [docs/reference/distribution.md](./distribution.md).
 
 ### Wrong Bun version / `Bun.Image` missing / FFI crashes in a source checkout
 

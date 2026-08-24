@@ -1,5 +1,5 @@
 // TurboQuant quality-vs-bpw curve — the Phase 13 exit-criterion gate
-// (docs/design/turboquant-kv.md §Gates 3). For one model, SEQUENTIALLY
+// (docs/design/turboquant.md §Gates 3). For one model, SEQUENTIALLY
 // (never two configs' models resident at once — the 32 GB box rule):
 //   bf16 baseline, then k8v8/k8v4/k8v3/k8v2/k4v3/k4v2
 // reporting per config: effective KV bits (weighted, the design doc's
@@ -15,7 +15,7 @@
 //     [--seq-len 128] [--decode-steps 32] [--ppl-samples 4]
 //
 // Keep runtime modest — a quality gate, not a benchmark (docs/design/
-// turboquant-kv.md's own non-goal: no speed claims from this script).
+// docs/design/turboquant.md's own non-goal: no speed claims from this script).
 
 import { DEFAULT_KL_PROMPTS } from "../../src/eval/kl-prompts";
 import { evaluateKlKvArm, loadRunnable } from "../../src/eval/kl";
@@ -45,7 +45,7 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
 }
 
 /** The design doc's per-token-per-head byte formula (docs/design/
- *  turboquant-kv.md "Per-token-per-head bytes"): K bytes + K scale/zero (2
+ *  docs/design/turboquant.md "Per-token-per-head bytes"): K bytes + K scale/zero (2
  *  fp16 arrays/group) + V bytes + V scale (1 fp16 array/group), against the
  *  bf16 baseline (2 tensors × head_dim × 2 bytes). Returns bits/element,
  *  weighted across K and V (2×head_dim elements per token per head). */

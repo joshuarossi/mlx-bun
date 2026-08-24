@@ -345,10 +345,10 @@ flushing are all scoped to the iteration.
 | `cache` | fresh | pre-warmed `Cache[]`; `cache[0].offset` tokens are treated as already prefilled. Caller keeps ownership |
 | `kvBits` / `kvGroupSize` / `quantizedKvStart` | off / 64 / 5000 | uniform KV quantization (4 or 8), incl. rotating caches |
 | `kvConfig` | off | per-layer mixed precision from `kv_config.json` (`config.kvQuant`); overrides `kvBits`, start 0 — optiq serve semantics |
-| `turboQuant` | off | TurboQuant KV scheme (docs/design/turboquant-kv.md), a rotation-based alternative to uniform `kvBits`; mutually exclusive with `kvBits`/`kvConfig` |
-| `pagedKv` | off | `{ blockSize? }` — OPTIONAL paged KV cache (docs/design/paged-kv-cache.md); v1 scope is serial batch=1 Gemma4-family bf16, mutually exclusive with `kvBits`/`kvConfig`/`turboQuant`/draft/compiled decode |
+| `turboQuant` | off | TurboQuant KV scheme (docs/design/turboquant.md), a rotation-based alternative to uniform `kvBits`; mutually exclusive with `kvBits`/`kvConfig` |
+| `pagedKv` | off | `{ blockSize? }` — OPTIONAL paged KV cache (docs/design/kv-cache.md); v1 scope is serial batch=1 Gemma4-family bf16, mutually exclusive with `kvBits`/`kvConfig`/`turboQuant`/draft/compiled decode |
 | `adapters` | none | mounted LoRA adapter ids, applied for exactly this generation |
-| `promptEmbeddings` / `imageMask` / `multimodalMask` / `visionPixels` | — | vision and audio paths (see `src/vision/`, docs/design/audio-input-plan.md); caller keeps ownership |
+| `promptEmbeddings` / `imageMask` / `multimodalMask` / `visionPixels` | — | vision and audio paths (see `src/vision/`, docs/design/generic-model-support.md); caller keeps ownership |
 | `logprobs` / `topLogprobs` | off | per-token logprob capture (mlx_lm.server parity): the emitted token's log-probability and the top-k (id, logprob) pairs — full-vocab log-softmax after logits processors, before the sampler |
 | `grammar` | off | a compiled `GrammarController` (`src/grammar.ts`) for structured output — masks invalid tokens to `-inf` each step (L2-class, oMLX oracle) |
 

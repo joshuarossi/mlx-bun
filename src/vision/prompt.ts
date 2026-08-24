@@ -8,7 +8,7 @@
 // n = min(ceil(duration_ms/40), 750) (processing_gemma4.py) — embed the full
 // sequence, then overwrite the soft-token rows with the towers' features.
 //
-// Attention semantics (audio-input-plan.md §3.3, resolved vs the oracle):
+// Attention semantics (docs/design/generic-model-support.md §3.3, resolved vs the oracle):
 //   - image runs attend bidirectionally among themselves (bidirMask), BUT
 //     any audio token in the prompt disables the vision overlay entirely —
 //     mixed image+audio prompts run fully causal (bidirMask = null);

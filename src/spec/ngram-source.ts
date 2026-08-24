@@ -38,7 +38,7 @@
 // speculation is structurally never worse than plain decode by more than the
 // JS scan (~µs against 30k-token histories).
 
-import { flagOn } from "../flags";
+import { flagOn } from "../runtime-config";
 import type { DraftProvider, DraftSource } from "./source";
 
 export interface NgramOptions {

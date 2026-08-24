@@ -12,10 +12,10 @@ The canonical design for concurrent serving: the scheduling seam
 (`src/serve/generation-gateway.ts`), the continuous-batching engine
 (`src/serve/batch-scheduler.ts`), the dynamic-B cache primitives
 (`src/model/batched-*.ts`), admission, and the parity discipline that
-gates all of it. Consolidates batching-perf-path.md, parallel-slots.md,
-batching-v2-plan.md, the batching items of
-grammar-spec-batching-integration.md, and the scheduler tie-in from
-paged-kv-cache.md. Status and dated progress live in PLAN.md (see the
+gates all of it. Consolidates docs/design/batching.md, docs/design/batching.md,
+docs/design/batching.md, the batching items of
+docs/design/batching.md, and the scheduler tie-in from
+docs/design/kv-cache.md. Status and dated progress live in PLAN.md (see the
 plan anchor above); this file describes the mechanism as it exists and
 what is still open.
 

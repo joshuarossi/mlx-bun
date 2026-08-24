@@ -3,7 +3,7 @@
 // Folds an orthogonal rotation offline into producer/consumer weight pairs so
 // weights are quantized in a basis where outlier channels are smeared into
 // near-Gaussian marginals. Recipe, fold table, and the decided deviations from
-// the QuaRot/SpinQuant references live in docs/design/turboquant-weights.md —
+// the QuaRot/SpinQuant references live in docs/design/turboquant.md —
 // notably: γ-fold FIRST (R1 only commutes with gain-free RMSNorm), SpinQuant's
 // fully-offline per-head R2 (NOT QuaRot's, which needs a runtime op), NO R4
 // half-fold on down_proj's input, NO embedding mean-centering (not an exact
@@ -47,7 +47,7 @@ function assertPow2(n: number, what: string): void {
   if (n < 2 || (n & (n - 1)) !== 0)
     throw new Error(
       `rotation fold: ${what}=${n} is not a power of two — the Kronecker ` +
-      `Hadamard path is not implemented (docs/design/turboquant-weights.md)`,
+      `Hadamard path is not implemented (docs/design/turboquant.md)`,
     );
 }
 
@@ -323,7 +323,7 @@ export function foldLlamaWeights(
 // elementwise in head space) does not commute with a per-head rotation, so R2
 // is architecturally off for this family — recorded in the design doc.
 //
-// Residual corridors (docs/design/turboquant-weights.md, W1 map):
+// Residual corridors (docs/design/turboquant.md, W1 map):
 //   readers  (@R1 input dim, γ premultiplied): q/k/v_proj,
 //     linear_attn.in_proj_{qkv,z,b,a}, mlp.gate/up_proj, lm_head
 //   writers  (R1ᵀ output dim): self_attn.o_proj, linear_attn.out_proj,
@@ -370,7 +370,7 @@ export interface QwenFoldPlan {
  * FoldOp — pure name analysis, no arrays. R1-ONLY (+γ): the attention output
  * gate (`o_proj(out · σ(gate))`, elementwise in head space) does not commute
  * with a per-head rotation, so R2 is architecturally off for this family.
- * Corridor map: docs/design/turboquant-weights.md §W1.
+ * Corridor map: docs/design/turboquant.md §W1.
  */
 export function planQwen35Fold(names: readonly string[], prefix = "language_model."): QwenFoldPlan {
   const P = prefix;

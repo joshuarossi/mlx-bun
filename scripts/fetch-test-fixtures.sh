@@ -1,6 +1,6 @@
 #!/bin/sh
 # fetch-test-fixtures.sh — download the untracked binary test fixtures
-# (repo-cleanup-plan.md B2) and verify their pinned SHA-256s.
+# (CONTRIBUTING.md B2) and verify their pinned SHA-256s.
 #
 # The gated suites skip cleanly when these files are absent, so this is
 # only needed to RUN those suites on a machine that doesn't already have

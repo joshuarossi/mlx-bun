@@ -16,7 +16,7 @@
 //
 // Re-chunk only conversations whose updated_at > chunked_at (NULL chunked_at = a
 // never-segmented conversation). Setting chunked_at after a successful run makes
-// re-running a no-op. See docs/design/the-dreaming-master-plan.md → P5-T2.
+// re-running a no-op. See docs/design/dreaming-nightly-pipeline.md → P5-T2.
 
 import { MemoryStore, chunkId } from "./db";
 import { callLocal, type LocalInput } from "./model";

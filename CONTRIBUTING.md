@@ -7,8 +7,13 @@ tree looks like is [ml-explore/mlx-lm](https://github.com/ml-explore/mlx-lm):
 code, tests, benchmarks (code, not results), and a handful of meta files.
 
 These rules are enforced by `scripts/check-hygiene.ts` (runs in
-`scripts/test.sh` and CI): a binary/size gate, a docs-map coverage gate,
-and a tracked-root allowlist.
+`scripts/test.sh` and CI): content-sniffed binary/size gate, root-artifact
+check (tracked or not), `docs/archive/` .md-only, `scripts/` root allowlist,
+doc script-path validity, design-doc front matter (status/axis/anchor),
+STATUS ≤150 / PLAN ≤800 line caps, and the generated `docs/README.md` map
+(`--write-docs-map`). `tests/docs-surface.test.ts` diffs the served surface
+(serve flags, HTTP routes) against `docs/reference/server-config.md` and
+`server-api.md` in CI.
 
 ## What goes where
 
@@ -37,11 +42,17 @@ and a tracked-root allowlist.
 2. **Models are outputs.** Quantized/folded/converted snapshots go to
    `~/models/<Name>/`. The repo never contains weights beyond the small
    allowlisted test fixtures.
-3. **Docs have a lifecycle.** A design doc lives in `docs/design/` while
-   its work is open and moves to `docs/archive/` when the phase closes
-   (same commit that closes the phase). Investigation write-ups are born
-   into `docs/archive/investigations/` — they document finished work by
-   definition. Every doc appears in the CLAUDE.md doc map (gate-enforced).
+3. **One fact, one home.** Flags/defaults → `docs/reference/server-config.md`;
+   routes → `server-api.md`; verbs → `cli.md`; models → `models.md`; numbers
+   → `benchmarks.md`; oracle/platform facts → `environment.md`; design → the
+   ONE `docs/design/<topic>.md` (new ports/features become sections, not
+   files). Every design doc carries front matter
+   (`status: active|landed|superseded`, `axis: ON|USING|BOTH`,
+   `canonical-for`, `plan-anchor`, `last-verified`); `status: active` must
+   name an open PLAN.md heading. When a topic closes, fold its durable design
+   into the canonical doc and delete the source; investigation write-ups go
+   to `docs/archive/investigations/` (frozen, .md only). The doc map
+   `docs/README.md` is generated — never hand-edit it.
 4. **PLAN.md is the open work, not the history.** When a phase closes,
    its block is deleted in the closing commit, leaving a one-line pointer
    with the durable conclusion (details land in the topic's design doc or
@@ -55,7 +66,7 @@ and a tracked-root allowlist.
    history rewrite that rule came from).
 6. **External environments are not repos.** The pinned Python oracle
    lives at `/Users/joshrossi/Code/mlx-lm/.venv` (mlx-lm + mlx-vlm
-   reference stacks; see CLAUDE.md "Reference environment"). It is an
+   reference stacks; pins in `docs/reference/environment.md`). It is an
    environment, not a checkout, and nothing like it ever appears inside
    this repository.
 
@@ -63,6 +74,6 @@ and a tracked-root allowlist.
 
 Whole-repo `tsc --noEmit` stays at 0, including every script under `scripts/`.
 Tests gate on fixture presence and skip cleanly when weights are absent.
-Reference docs (cli.md, server-api.md, server-config.md, features-matrix)
-update in the SAME commit as any served-surface change. Commit messages:
+Reference docs (server-config.md, server-api.md, cli.md, models.md)
+update in the SAME commit as any served-surface change (gate: tests/docs-surface.test.ts). Commit messages:
 `<type>: <description>` (feat/fix/refactor/test/docs/chore/perf).

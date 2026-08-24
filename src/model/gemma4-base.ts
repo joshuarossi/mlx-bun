@@ -1,5 +1,5 @@
 // gemma4-base — the config-INDEPENDENT machinery shared by every
-// architecture variant (docs/design/optimization_plan.md Phase B: pure code
+// architecture variant (docs/archive/investigations/optimization_plan.md Phase B: pure code
 // movement out of the gemma4.ts monolith; every definition here is
 // verbatim from it). Cache classes, quantized-KV SDPA, masks, the
 // quantized primitives + LoRA machinery, and small graph helpers live
@@ -1504,7 +1504,7 @@ export class RotatingQuantizedKVCache implements Cache {
 /** One TurboQuant-encoded (K, V) storage tuple — the 5 arrays kv-store.ts
  *  and toQuantized/fromKVCache pass around. Not `ops.QuantizedTensor`
  *  (mlx's affine int4/int8 scheme): this is the rotation + Lloyd-Max
- *  layout (docs/design/turboquant-kv.md), asymmetric-affine for keys,
+ *  layout (docs/design/turboquant.md), asymmetric-affine for keys,
  *  FWHT+Lloyd-Max for values. Field order is the kv-store.ts tensor-slot
  *  contract — do not reorder without updating snapshotCache/loadKvCache. */
 export interface TurboQuantTensor {
@@ -1523,7 +1523,7 @@ export const disposeTurboQuant = (t: TurboQuantTensor): void => {
   t.vScales.dispose();
 };
 
-/** TurboQuant KV cache — v1 (docs/design/turboquant-kv.md): dequantize-
+/** TurboQuant KV cache — v1 (docs/design/turboquant.md): dequantize-
  *  on-fetch. Deliberately does NOT subclass KVCache/RotatingKVCache (or
  *  QuantizedKVCache) — a novel class fails every generated-file
  *  `#matches()` guard and every batching `instanceof` allow-list, so it

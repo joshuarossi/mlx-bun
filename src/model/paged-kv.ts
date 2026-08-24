@@ -1,5 +1,5 @@
 // Paged KV cache — vLLM-style block-pool storage behind the standard Cache
-// interface (docs/design/paged-kv-cache.md). OPTIONAL and default-off
+// interface (docs/design/kv-cache.md). OPTIONAL and default-off
 // (`--paged-kv` / GenerateOptions.pagedKv); v1 scope is serial batch=1
 // decode on Gemma4-family plain full-attention layers, bf16 only.
 //

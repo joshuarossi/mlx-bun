@@ -1,5 +1,5 @@
 // Model-free math for the Phase-1c drafter acceptance A/B
-// (docs/design/dspark-serving-program.md; runner:
+// (docs/design/speculative-decoding.md; runner:
 // scripts/dspark.ts ab). THE gate for every drafter-quantization
 // experiment: same target, same prompts, temp 0 — drafter A vs drafter B.
 //
@@ -76,7 +76,7 @@ export function summarizeArm(results: AbPromptResult[]): AbArmSummary {
 }
 
 /** Phase-1d exit: acceptance drop ≤ maxDropPts absolute AND wall-clock
- *  strictly improves (docs/design/dspark-serving-program.md 1d). */
+ *  strictly improves (docs/design/speculative-decoding.md 1d). */
 export function pairedVerdict(
   aResults: AbPromptResult[],
   bResults: AbPromptResult[],

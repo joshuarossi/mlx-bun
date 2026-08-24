@@ -7,7 +7,7 @@
 //
 // This is the SLOWER-TARGET regime where speculation may finally pay —
 // e4b was a net loss (too-fast target). Plan + hypothesis:
-// docs/design/spec-decode-larger-targets.md.
+// docs/design/speculative-decoding.md.
 //
 // Gate = long-prefix agreement between greedy spec and greedy non-spec.
 // A mis-wired drafter does NOT corrupt output — the target verifies and

@@ -19,7 +19,7 @@
 //   - POST /api/hub/serve   — model-swap investigation (see the doc header
 //     above the handler): today this ALWAYS returns
 //     { ok:false, restart_required:true, command } — see
-//     docs/design/runtime-isolation.md for why no in-process swap seam is
+//     docs/reference/server-config.md for why no in-process swap seam is
 //     reachable from the web chat's serving path today.
 
 import { loadModelConfig } from "./config";
@@ -210,7 +210,7 @@ export async function handleHubDownload(request: Request): Promise<Response> {
 
 // ---- POST /api/hub/serve --------------------------------------------------
 
-/** Model-swap investigation (docs/design/runtime-isolation.md): the web
+/** Model-swap investigation (docs/reference/server-config.md): the web
  *  chat's `/ws/chat` is explicitly NOT proxied even under `--isolate`
  *  (src/serve/isolate.ts serves it a 501 with a pointer back to the direct,
  *  non-isolated server) and `--isolate` itself is opt-in, not the default —

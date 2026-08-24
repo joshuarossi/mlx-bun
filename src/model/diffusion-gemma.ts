@@ -10,7 +10,7 @@
 // Ported verbatim from optiq/vlm/_mlxvlm/models/diffusion_gemma/language.py.
 // Reuses mlx-bun's quantized primitives (QuantizedLinear/Embedding/SwitchLinear,
 // RMSNorm, KVCache/RotatingKVCache) from gemma4-base. Architecture deltas vs
-// gemma4 (verified against the checkpoint, see docs/design/diffusion-gemma-port.md):
+// gemma4 (verified against the checkpoint, see docs/design/generic-model-support.md):
 //   - attention scale=1.0, NO attention softcap (only final-logit softcap 30 fp32)
 //   - QK/V-norm POST-proj / PRE-RoPE; v_norm is RMSNormNoScale; V gets no RoPE
 //   - full-attention layers (5,11,17,23,29) reuse k as v (no v_proj), hd=512 kv=2,

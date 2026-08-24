@@ -1,4 +1,4 @@
-// Bucketing-stage eval instrument (step 1 of docs/design/bucketing-stage.md).
+// Bucketing-stage eval instrument (step 1 of docs/design/dreaming-nightly-pipeline.md).
 // Measures the EMBEDDING SHORTLIST RECALL CEILING for chunk→bucket: if a chunk's
 // gold bucket isn't in its embedding top-K, no number of tiny binary checks can
 // recover it. This verifies the foundation of the "narrow then decide" design

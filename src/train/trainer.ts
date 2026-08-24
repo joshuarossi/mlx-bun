@@ -82,7 +82,7 @@ export interface TrainConfig {
    *  beats per-layer checkpointing at long context, where naive checkpointing
    *  holds every layer's recompute activations at once and crashes. B=1 SFT
    *  only (the responseOnlyCe path); mutually exclusive with gradCheckpoint.
-   *  Numerically identical to off. See docs/design/segmented-backward-training.md. */
+   *  Numerically identical to off. See docs/design/orpo-training.md. */
   segmentSize: number;
   /** Keep ALL eval-step checkpoints (full mountable adapters under
    *  checkpoints/step-<NNNNN>-val<loss>/) + write metrics.json. Off by default
@@ -440,7 +440,7 @@ export async function trainLora(
 
 // ---------------------------------------------------------------------------
 // Segment planning: uniform planSegmentsBySize only. A full-attention
-// ISOLATION planner (kernel-review backlog #2 / segmented-backward-training.md
+// ISOLATION planner (kernel-review backlog #2 / docs/design/orpo-training.md
 // §5) was built and A/B-measured 2026-07-02: ZERO peak win — mlx's sdpa
 // backward is O(L²) for EVERY layer (~3.5 GB/layer @8K e4b), sliding included,
 // so the worst segment is set by layer count alone and segment_size is the
@@ -473,7 +473,7 @@ async function sftLoop(
   // Segmented backward: stream the SFT backward segment-by-segment (only one
   // segment's activations live at a time). Phase A is MiniCPM5 SFT B=1 only;
   // it replaces the single value_and_grad below and is mutually exclusive with
-  // gradient checkpointing (see docs/design/segmented-backward-training.md).
+  // gradient checkpointing (see docs/design/orpo-training.md).
   const useSegmented = cfg.segmentSize > 0;
   let segmented: SegmentedBackward | SegmentedBackwardGemma4 | null = null;
   if (useSegmented) {

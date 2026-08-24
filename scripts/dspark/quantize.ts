@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Phase 1a (docs/design/dspark-serving-program.md): quantize a DeepSpec
+// Phase 1a (docs/design/speculative-decoding.md): quantize a DeepSpec
 // drafter checkpoint to an mlx-native affine sibling.
 //
 //   bun scripts/dspark.ts quantize <drafter-dir> \

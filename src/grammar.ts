@@ -52,7 +52,7 @@ export interface GrammarRequest {
   guided_grammar?: string;
   /** vLLM/oMLX: regex. Compiled via `root ::= <regex>` EBNF embedding, so
    *  only the regex∩EBNF subset works (the F5 gap — real regex→EBNF or
-   *  structural-tag RegexFormat is the tracked fix, structured-output.md). */
+   *  structural-tag RegexFormat is the tracked fix, docs/reference/server-api.md). */
   guidedRegex?: string;
   guided_regex?: string;
   /** vLLM/oMLX: restrict output to one of these strings (enum). */
@@ -539,7 +539,7 @@ function resolveGrammarRequest(req: GrammarRequest):
           kind: "json_schema",
           schema,
           strict: js?.strict,
-          // Whitespace-stall escape hatch (structured-output.md known gaps):
+          // Whitespace-stall escape hatch (docs/reference/server-api.md known gaps):
           // any_whitespace=false compiles the schema with xgrammar's compact
           // separators — no whitespace choice points, so a whitespace-
           // degenerate base model can't greedily tab-loop to max_tokens.

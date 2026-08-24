@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # Generate the optiq e4b AUDIO ORACLE goldens (Phase A0 of
-# docs/design/audio-input-plan.md; tiers T0/T1/T2 of §3.4).
+# docs/design/generic-model-support.md; tiers T0/T1/T2 of §3.4).
 # Run with the oracle venv:
 #   /Users/joshrossi/Code/mlx-lm/.venv/bin/python scripts/oracle/gen-e4b-audio-golden.py \
 #       [model-dir] [out.json]

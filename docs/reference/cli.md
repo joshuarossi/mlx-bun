@@ -152,7 +152,7 @@ The extension reads the server URL from `MLX_BUN_URL` (its built-in fallback
 is port 8090, so set it to match your server). Default is no adapter; the
 mechanism is pi's `before_provider_request` hook, the same one the web chat's
 adapter selector uses. Serving-side detail: [server-api.md](server-api.md#adapters-lora-hot-swap)
-and [adapters-end-to-end.md](../design/adapters-end-to-end.md).
+and [docs/design/web-chat-redesign.md](../design/web-chat-redesign.md).
 
 ### `generate` (alias `gen`) — one-shot generation
 
@@ -275,7 +275,7 @@ mlx-bun fit GLM-5.2                    # streamed-artifact plan (resident weight
 ## Training & model creation
 
 Full reference: [training.md](training.md); guided walkthrough:
-[orpo-quickstart.md](orpo-quickstart.md).
+[docs/reference/training.md](./training.md).
 
 ### `train` — LoRA fine-tune
 
@@ -518,7 +518,7 @@ kv-cache` have no verb (below).
 Against the console scripts the pinned oracle ships
 (`mlx_lm-*.dist-info/entry_points.txt` in the oracle venv). The scoping
 behind each "not covered" row is in
-[mlx-lm-tool-parity-plan.md](../design/mlx-lm-tool-parity-plan.md).
+[docs/reference/cli.md](./cli.md).
 
 | Entry point | Status | Where |
 |---|---|---|

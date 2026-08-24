@@ -31,7 +31,7 @@ const SCALE = Number(process.env.SCALE ?? 20);
 const ADAPTER = process.env.ADAPTER ?? `${HOME}/.cache/mlx-bun-finetunes/minicpm5-chunk-seq${SEQ}`;
 const EVAL_EVERY = Number(process.env.EVAL_EVERY ?? (ITERS <= 5 ? 99999 : Math.max(25, Math.floor(ITERS / 6))));
 // SEG>0 enables segmented backward (layers per segment). See
-// docs/design/segmented-backward-training.md.
+// docs/design/orpo-training.md.
 const SEG = Number(process.env.SEG ?? 0);
 
 mkdirSync(ADAPTER, { recursive: true });

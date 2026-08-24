@@ -1,4 +1,4 @@
-// Memory inference-path templating + batching (docs/design/memory-inference-path.md).
+// Memory inference-path templating + batching (docs/design/dreaming-nightly-pipeline.md).
 //
 // The CORRECTNESS gate: the memory seam renders a {system, user} message array
 // through the SAME chat-template path as the server and the trainer, so the

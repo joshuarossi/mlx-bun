@@ -43,6 +43,11 @@ export function runtimeValue(name: RuntimeKey): string | undefined {
   return active.value(name);
 }
 
+/** On/off env flag: an explicit "1"/"0" always wins; otherwise `defaultOn`.
+ *  (Formerly src/flags.ts `flagOn` — same resolver, one module.) */
+export function flagOn(name: RuntimeKey, defaultOn: boolean): boolean {
+  return runtimeFlag(name, defaultOn);
+}
 export function runtimeFlag(name: RuntimeKey, defaultOn: boolean): boolean {
   return active.flag(name, defaultOn);
 }

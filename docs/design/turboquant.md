@@ -9,8 +9,8 @@ last-verified: 2026-08-23
 # TurboQuant — rotation-based quantization (KV leg landed, weights leg open)
 
 One canonical doc for both legs of the rotate-then-quantize program.
-Sources folded in: `docs/design/turboquant-kv.md` (KV, landed 2026-07-06)
-and `docs/design/turboquant-weights.md` (weights, open). Status/changelog
+Sources folded in: `docs/design/turboquant.md` (KV, landed 2026-07-06)
+and `docs/design/turboquant.md` (weights, open). Status/changelog
 prose lives in PLAN.md under the plan-anchor above (weights) and the closed
 Phase 13 entry (KV); this doc keeps mechanism, invariants, decisions with
 rationale, measured curves, and open items.
@@ -161,7 +161,7 @@ Code map:
   baseline + {k8v8,k8v4,k8v3,k8v2,k4v3,k4v2} sequentially, reusing
   `src/eval/kl.ts`'s `evaluateKlKvArm` (teacher-forced serving-decode KL,
   real `fromKVCache` conversion) and `src/eval/perplexity.ts`'s `evalPpl`.
-- Reference docs: server-config.md, cli.md, features-matrix.md carry the
+- Reference docs: server-config.md, cli.md, docs/reference/server-config.md carry the
   flag surface.
 
 ## Deferred inverse FWHT (landed 2026-07-06, post-v1)
@@ -261,7 +261,7 @@ Why weights differ from KV (the 2026-07-06 framing that opened the leg):
   gather-qmv shelving (dispatch fixed-cost ate the prize) is the precedent.
   Folding into mlx's existing affine format needs none.
 - Activation quant (W4A4) is mispriced on this hardware (no int4 tensor
-  cores, decode is weight-bandwidth-bound; w4a16-compute-precision-spike.md).
+  cores, decode is weight-bandwidth-bound; docs/design/orpo-training.md).
 
 ## Oracle chain
 
@@ -794,7 +794,7 @@ GGUF/AWQ export; group_size > 128.
   Track B (multi-token drafter on the TQ trunk; gate: beat MTP's 0.68
   generalizing acceptance or drop); ORPO LoRA on the TQ 27B (QLoRA shape:
   frozen 17 GB base + bf16 adapters; first step a one-layer-backward memory
-  probe). Designs live in dspark-speculative-decoding.md §"27B program".
+  probe). Designs live in docs/design/speculative-decoding.md §"27B program".
 
 ## Invariants (both legs)
 

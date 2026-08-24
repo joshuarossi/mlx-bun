@@ -10,7 +10,7 @@
 
 import { totalmem } from "node:os";
 import type { ModelConfig } from "./config";
-import type { MemoryPlan } from "./memory-plan";
+import type { MemoryPlan } from "./admission-plan";
 import {
   kvBytesAt,
   kvGeometry,

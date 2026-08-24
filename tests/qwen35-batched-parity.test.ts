@@ -1,5 +1,5 @@
 // GATED oracle parity for the Qwen3.5 (hybrid gated-DeltaNet) BATCHED path
-// (batching-perf-path.md P5 — SSM layers join the batch lane).
+// (docs/design/batching.md P5 — SSM layers join the batch lane).
 //
 //   MLX_BUN_TEST_BATCH_DECODE=1 bun test tests/qwen35-batched-parity.test.ts
 //

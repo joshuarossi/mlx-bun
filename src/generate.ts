@@ -24,7 +24,7 @@ import { diffusionGenerate } from "./diffusion/diffusion-generate";
 import type { RuntimeModel } from "./model/factory";
 import type { PromptResponseTrace } from "./serve/prompt-response-trace";
 import type { KvQuantSpec, TurboQuantScheme } from "./config";
-import { flagOn } from "./flags";
+import { flagOn } from "./runtime-config";
 import { runtimeValue } from "./runtime-config";
 import {
   disposeStepExtras,
@@ -61,7 +61,7 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   promptEmbeddings?: MlxArray;
   /** bool [L] marking image tokens (bidirectional attention among them).
    *  MUST be unset when the prompt contains any audio — audio prompts run
-   *  fully causal (audio-input-plan.md §3.3 Q1). */
+   *  fully causal (docs/design/generic-model-support.md §3.3 Q1). */
   imageMask?: MlxArray;
   /** bool [L] marking ALL multimodal soft tokens (image | audio) for
    *  per-layer-input id zeroing (e2b/e4b), decoupled from imageMask so
@@ -82,7 +82,7 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   /** Convert once a cache's offset reaches this (uniform-kvBits default
    *  5000 = mlx-lm; kvConfig default 0 = optiq serve). */
   quantizedKvStart?: number;
-  /** TurboQuant scheme (docs/design/turboquant-kv.md): rotation-based KV
+  /** TurboQuant scheme (docs/design/turboquant.md): rotation-based KV
    *  quantization, a CLI-only runtime lever in the same class as uniform
    *  kvBits (mutually exclusive with kvBits/kvConfig — maybeQuantizeKv
    *  checks kvBits/kvConfig first, so set at most one). Full-attention
@@ -90,7 +90,7 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
    *  RotatingKVCache (sliding-window) layers stay bf16 in v1 — a one-time
    *  warning names the limitation, never a throw. */
   turboQuant?: TurboQuantScheme;
-  /** OPTIONAL paged KV storage (docs/design/paged-kv-cache.md): fresh
+  /** OPTIONAL paged KV storage (docs/design/kv-cache.md): fresh
    *  full-attention KVCache layers are replaced with PagedKVCache (block
    *  pool + gather-to-contiguous) before prefill. v1 scope: serial batch=1
    *  Gemma4-family, bf16 — mutually exclusive with kvBits/kvConfig/
@@ -215,7 +215,7 @@ export function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void 
   }
 }
 
-/** Paged-KV conversion (docs/design/paged-kv-cache.md): swap each FRESH
+/** Paged-KV conversion (docs/design/kv-cache.md): swap each FRESH
  *  plain full-attention KVCache for a PagedKVCache sized to hold
  *  `capacityTokens` (prompt + maxTokens — known exactly at generate()
  *  setup, so pool exhaustion is unreachable absent an accounting bug).
@@ -241,7 +241,7 @@ export function maybePageKv(
 }
 
 /** Emitted once per process: RotatingKVCache (sliding-window) layers are a
- *  documented v1 non-goal (docs/design/turboquant-kv.md) — they stay bf16
+ *  documented v1 non-goal (docs/design/turboquant.md) — they stay bf16
  *  rather than throwing, so mixed full-attention/sliding-window models (e.g.
  *  Gemma) still serve correctly under --kv-quant turbo. */
 let warnedTurboRotating = false;
@@ -258,7 +258,7 @@ function maybeTurboQuantizeKv(cache: Cache[], scheme: TurboQuantScheme, start: n
         warnedTurboRotating = true;
         console.warn(
           "[turbo-quant] sliding-window (RotatingKVCache) layers stay bf16 in v1 " +
-          "(full-attention only) — docs/design/turboquant-kv.md.",
+          "(full-attention only) — docs/design/turboquant.md.",
         );
       }
       continue;
@@ -724,7 +724,7 @@ async function* generateInner(
           clearCache();
           closeChunk?.();
           pos += chunk.length;
-          // Macrotask yield between chunks (runtime-isolation.md Phase 1):
+          // Macrotask yield between chunks (docs/reference/server-config.md Phase 1):
           // each chunk is a synchronous multi-hundred-ms FFI eval; without
           // this the event loop serves no I/O for the WHOLE prefill.
           await new Promise<void>((r) => setImmediate(r));
@@ -772,7 +772,7 @@ async function* generateInner(
         pos += n;
         if (runtimeValue("MLX_BUN_PREFILL_MEM_LOG") === "1")
           console.error(`[prefill-mem] ${pos} active ${(activeMemory() / 2 ** 30).toFixed(2)} peak ${(peakMemory() / 2 ** 30).toFixed(2)}`);
-        // Macrotask yield between chunks (runtime-isolation.md Phase 1).
+        // Macrotask yield between chunks (docs/reference/server-config.md Phase 1).
         await new Promise<void>((r) => setImmediate(r));
       }
       if (needsTokenHistory) {
@@ -826,7 +826,7 @@ async function* generateInner(
     ops.asyncEvalAll([pending, ...stepExtrasArrays(pendingExtras)]);
 
     // ---- decode (pipelined) ----
-    // Compiled decode (docs/design/optimization_plan.md Phase A): replay the per-step
+    // Compiled decode (docs/archive/investigations/optimization_plan.md Phase A): replay the per-step
     // graph in C++ instead of rebuilding it through bun:ffi every token.
     // Bit-exact with the uncompiled path (tests/compiled-decode.test.ts);
     // MLX_BUN_COMPILED_DECODE=0 is the kill switch / A-B lever. LoRA

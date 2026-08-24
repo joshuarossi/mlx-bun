@@ -15,7 +15,7 @@ Three install channels ship from one release:
 | Direct download (`curl -fsSL https://mlx-bun.dev/install.sh \| sh`) | the same bundle, into `~/.mlx-bun` | one tarball, via curl |
 | npm / bunx (`bunx mlx-bun`, `bun install -g mlx-bun`) | a launcher + the TypeScript source, run under the user's Bun | the package, then the native runtime pack on first run |
 
-[embedding.md](./embedding.md) covers the *sidecar* use of the same bundle
+[docs/reference/distribution.md](./distribution.md) covers the *sidecar* use of the same bundle
 inside a Tauri/Electron app; the build and signing facts it relies on are
 documented here.
 

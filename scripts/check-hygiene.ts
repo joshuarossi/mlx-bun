@@ -501,11 +501,12 @@ if (args.has("--write-docs-map")) {
   console.log("wrote docs/README.md");
   process.exit(0);
 }
-if (runMap && args.has("--generated-map")) {
+if (runMap) {
   console.log("== hygiene: docs map (generated docs/README.md) ==");
   const f = checkDocsMapGenerated();
   if (f.length) { for (const m of f) console.log(m); exit = 1; } else console.log("  OK — docs/README.md is current and linked from CLAUDE.md.");
-} else if (runMap) {
+}
+if (false) {
   const fails = checkDocsMap();
   console.log(`== hygiene: docs-map coverage ==`);
   if (fails.length) {

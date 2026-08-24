@@ -482,7 +482,7 @@ describe("DeepspecDrafter", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Quantized checkpoint (Phase 1a/1b, docs/design/dspark-serving-program.md):
+// Quantized checkpoint (Phase 1a/1b, docs/design/speculative-decoding.md):
 // quantize the synthetic bf16 checkpoint through the drafter policy
 // (scripts/dspark.ts quantize), then verify detection, policy, and
 // that the quantized forward tracks the bf16 forward. markovRank=32 makes

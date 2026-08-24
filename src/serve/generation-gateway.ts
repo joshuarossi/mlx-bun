@@ -32,7 +32,8 @@
 // AND sliding-window (Gemma) models both batch — the scheduler assembles each
 // layer's cache by type. Prompt-cache prefix reuse works on the batch lane
 // too (Phase 3.2): joiners take() at admission; never-merged lone rows put()
-// back on finish (merged rows' KV is not extracted — their entries age out).
+// back zero-copy on finish; merged rows with ≥256 prompt tokens are extracted
+// and put back by BatchScheduler.#extractAndPut (see docs/design/batching.md).
 
 import { MlxArray } from "../mlx/array";
 import type { RuntimeModel } from "../model/factory";
@@ -85,7 +86,7 @@ export type Vision = {
   embeddings: MlxArray;
   /** bool [L] image-token mask for the bidirectional attention overlay.
    *  Absent when the prompt carries ANY audio — audio(-containing) prompts
-   *  run fully causal (audio-input-plan.md §3.3 Q1). */
+   *  run fully causal (docs/design/generic-model-support.md §3.3 Q1). */
   imageMask?: MlxArray;
   /** bool [L] union multimodal soft-token mask (image | audio) for
    *  per-layer-input id zeroing. Absent on the legacy vision-only shape,
@@ -124,7 +125,7 @@ export interface RequestShape {
   /** KV quantization is active. Per-layer configs may use the continuous
    *  scheduler; uniform schemes use the serial mechanism. */
   readonly kvQuant: boolean;
-  /** TurboQuant is active (docs/design/turboquant-kv.md). Solo-only in v1:
+  /** TurboQuant is active (docs/design/turboquant.md). Solo-only in v1:
    *  TurboQuantKVCache is a novel Cache implementation (not a KVCache/
    *  RotatingKVCache subclass), so #modelCachesBatchable() already excludes
    *  it automatically once a request's cache is converted — this flag is the
@@ -156,7 +157,7 @@ export interface RequestShape {
    *  upstream-parity: mlx_lm.server sets is_batchable = (draft is None), so
    *  every request routes serial while a draft is mounted — speculation is a
    *  B=1 latency optimization, batching a throughput one; they are different
-   *  mechanisms by design (grammar-spec-batching-integration.md). */
+   *  mechanisms by design (docs/design/batching.md). */
   readonly hasDraft: boolean;
 }
 
@@ -500,7 +501,10 @@ export class GenerationGateway {
       promptTokens: st.promptTokens,
       cachedTokens: st.cachedTokens,
       generatedTokens: st.generatedTokens,
-      prefillMs: 0, decodeMs: 0, prefillTps: 0, decodeTps: 0,
+      prefillMs: st.prefillMs,
+      decodeMs: st.decodeMs,
+      prefillTps: st.prefillMs > 0 ? ((st.promptTokens - st.cachedTokens) / st.prefillMs) * 1000 : 0,
+      decodeTps: st.decodeMs > 0 && st.generatedTokens > 1 ? ((st.generatedTokens - 1) / st.decodeMs) * 1000 : 0,
       cacheTokens: [],
     };
   }

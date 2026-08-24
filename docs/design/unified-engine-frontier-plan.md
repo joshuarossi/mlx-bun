@@ -21,8 +21,8 @@ This is the canonical architecture doc for mlx-bun's engine. It owns:
   the known deviations from it;
 - the **flag end-state** and how it maps onto the layers.
 
-Folded in (2026-08-23): `parity-tier-dag.md` (tier framing, two axes, flag
-classification) and `faithful-l1-consolidation.md` (the 2026-07-04 faithful→L1
+Folded in (2026-08-23): `docs/design/unified-engine-frontier-plan.md` (tier framing, two axes, flag
+classification) and `docs/archive/investigations/faithful-l1-consolidation.md` (the 2026-07-04 faithful→L1
 consolidation and the 2026-07-05 deletion pass, now the History section).
 Status and changelog prose lives in PLAN.md — see "Decision: naked default =
 --l1; levers must beat the baseline (2026-07-05, Josh)" for the decision
@@ -30,11 +30,11 @@ record and "Serving architecture consolidation" for the live S0–S4 work. Every
 `src/` claim below was re-read against the tree on 2026-08-23; where an older
 draft of this doc disagreed with the code, the code wins and the note says so.
 
-Companions: `batching-perf-path.md` (B=1 gap numbers), `parallel-slots.md` and
-`batching-v2-plan.md` (scheduler mechanics — the mode-switch decision there is
-superseded by §5), `mlx-lm-serving-execution-seam.md` (the S0–S3 seam),
+Companions: `docs/design/batching.md` (B=1 gap numbers), `docs/design/batching.md` and
+`docs/design/batching.md` (scheduler mechanics — the mode-switch decision there is
+superseded by §5), `docs/design/unified-engine-frontier-plan.md` (the S0–S3 seam),
 `decode-speed-program.md` (the only doc that ranks speed levers; it also
-carries the oMLX port ledger that used to be `omlx-adoption-map.md`).
+carries the oMLX port ledger that used to be `docs/design/decode-speed-program.md`).
 
 ---
 
@@ -353,7 +353,7 @@ naked default = --l1".
 **Decision (Josh, 2026-07-05): batching is determined by how many concurrent
 requests are in flight, not by a flag.** One request = a lone row at serial
 speed; N requests = continuous batching; rows join and leave running batches.
-This reversed `batching-v2-plan.md`'s "`--batch N` is a mode switch" decision.
+This reversed `docs/design/batching.md`'s "`--batch N` is a mode switch" decision.
 The old objection — "an idle vs loaded server produces different numerics for
 the same request" — gets a real answer:
 
@@ -582,13 +582,13 @@ ranks the speed levers and is the only doc that does.
 
 1. **Mixed-precision weights** — knapsack `--target-bpw` (ours; OptiQ-style
    sensitivity port in `src/quantize/sensitivity.ts`) and rotation-folded
-   quantization (`turboquant-weights.md`, `--rotate-weights`). Gate:
+   quantization (`docs/design/turboquant.md`, `--rotate-weights`). Gate:
    perplexity + frozen 6-task eval at equal bpw.
-2. **TurboQuant KV** (`turboquant-kv.md`, landed v1) — orthogonal to
+2. **TurboQuant KV** (`docs/design/turboquant.md`, landed v1) — orthogonal to
    allocation: mixed precision is the ALLOCATION axis, TurboQuant the
    QUANTIZER axis; they compose. Solo-only in v1.
 3. **Speculative decoding depth** — DFlash/DSpark, native MTP, behind the
-   `DraftSource` seam (`dspark-serving-program.md`).
+   `DraftSource` seam (`docs/design/speculative-decoding.md`).
 4. **Per-model graph work from the baseline** — unroll a model's flat DAG,
    find fusion the compiler misses, prove with kernel-trace diffs, promote per
    model.
@@ -607,7 +607,7 @@ ranks the speed levers and is the only doc that does.
    bench/test vocabulary only has not been executed; if it is, `serve --help`,
    `docs/reference/cli.md`, and `server-config.md` change in the same commit.
 5. **Block-paged KV**: an optional serial-only v1 exists (`--paged-kv`,
-   `paged-kv-cache.md`); padded-batch waste removal and block CoW prefix
+   `docs/design/kv-cache.md`); padded-batch waste removal and block CoW prefix
    sharing are its follow-ups, triggered when prefix sharing under batching
    becomes the bottleneck.
 6. **Prefix sharing scope**: must extend to the disk tier; first-class cases

@@ -89,12 +89,12 @@ export interface KvQuantSpec {
   groupSize: number;
 }
 
-/** TurboQuant scheme (docs/design/turboquant-kv.md): rotation-based KV
+/** TurboQuant scheme (docs/design/turboquant.md): rotation-based KV
  *  quantization, a distinct axis from the uniform/per-layer affine kvQuant
  *  above (composes with it in principle; v1 ships as a standalone CLI-only
  *  runtime lever, same class as uniform kvBits — see
  *  src/generate.ts maybeQuantizeKv). Valid kBits: {2,4,5,8}; vBits:
- *  {2,3,4,5,8} (docs/design/turboquant-kv.md's supported Lloyd-Max tables). */
+ *  {2,3,4,5,8} (docs/design/turboquant.md's supported Lloyd-Max tables). */
 export interface TurboQuantScheme {
   kBits: number;
   vBits: number;

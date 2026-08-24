@@ -18,7 +18,7 @@
 # The binary resolves libmlxc next to itself first (src/mlx/ffi.ts), so
 # the directory is relocatable — drop it into a Tauri/Electron app's
 # resources and spawn `mlx-bun serve` as a sidecar. Signing/notarization
-# recipe: docs/reference/embedding.md.
+# recipe: docs/reference/distribution.md.
 #
 # --- pi assets (Phase 16) --------------------------------------------
 # pi's JS is bundled by `bun build --compile` automatically; what it

@@ -224,7 +224,7 @@ and falls back with a logged message when a precondition isn't met.
   only one segment's activations are live. Bit-identical to the plain
   backward on MiniCPM5; bf16-class on e4b. Wired for MiniCPM5 and Gemma4
   (SFT and ORPO); mutually exclusive with `grad_checkpoint`. Design + proofs:
-  [segmented-backward-training](../design/segmented-backward-training.md).
+  [segmented-backward-training](../design/orpo-training.md).
 - **prefix-sharing** (`--no-prefix`; `orpo_prefix_shared`) —
   [`src/train/prefix-shared.ts`](../../src/train/prefix-shared.ts). One
   forward over `[prompt; chosen; rejected]` with a block-sparse mask and
@@ -313,7 +313,7 @@ variables does nothing).
 What decides whether a run fits. Full tables (peak GB and s/step per
 seq/config) are in [benchmarks.md](benchmarks.md); the mechanism and the
 measurement method are in
-[segmented-backward-training](../design/segmented-backward-training.md).
+[segmented-backward-training](../design/orpo-training.md).
 
 - **MiniCPM5-1B (24 layers), M1 Max 32 GB, 2026-06-16** — segmented
   backward (`segment_size` 4) @2048: peak live **10.91 → 3.29 GB** vs the
@@ -395,7 +395,7 @@ levers, mutually exclusive: `grad_checkpoint` (per-layer recompute, does not
 stream) and `segment_size` (segmented backward, streams one segment at a
 time — the path to multi-K context). Detail, proofs, and the `mlx_vjp`
 vs surrogate-`value_and_grad` leak lesson:
-[segmented-backward-training](../design/segmented-backward-training.md).
+[segmented-backward-training](../design/orpo-training.md).
 
 ### Training attention
 `ops.sdpa` (mlx's fused SDPA, exact vjp, O(L²) backward memory) is the
@@ -432,7 +432,7 @@ and standard PEFT layout (`[rank, in]` / `[out, rank]`, including
 `base_model.model.*` names); PEFT `use_rslora` metadata is honored as
 `lora_alpha / sqrt(rank)`. Hot-swap and per-request selection:
 [server-api.md](server-api.md) (Adapters) and
-[adapters-end-to-end](../design/adapters-end-to-end.md).
+[adapters-end-to-end](../design/web-chat-redesign.md).
 
 ## Memory & performance tips
 

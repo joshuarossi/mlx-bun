@@ -321,7 +321,7 @@ export class MiniCPM5Model {
    *  NEVER disposed — the caller owns it (for segmented backward `h` is a leaf
    *  whose lifetime is managed by the autograd closure); intra-range
    *  intermediates ARE disposed. Building block for `forwardLayers` and the
-   *  segmented-backward training path (docs/design/segmented-backward-training.md).
+   *  segmented-backward training path (docs/design/orpo-training.md).
    *  MiniCPM5 is plain full-attention with no KV-sharing, so each layer reads
    *  its own stateless `cache[i]` and a single causal mask. */
   runLayerRange(h: MlxArray, aIdx: number, bIdx: number, cache: Cache[]): MlxArray {

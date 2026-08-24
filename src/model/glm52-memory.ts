@@ -4,7 +4,7 @@ import {
   type Glm52Config,
 } from "./glm52-config";
 import { ColibriGlm52Container } from "./glm52-container";
-import type { MemoryPlan } from "../memory-plan";
+import type { MemoryPlan } from "../admission-plan";
 
 export const GLM52_G5_GIB = 1024 ** 3;
 export const GLM52_G5_DEFAULT_MACHINE_BYTES = 32 * GLM52_G5_GIB;

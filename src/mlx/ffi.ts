@@ -21,7 +21,7 @@ const { ptr: P, i32, u64, f32, f64, cstring } = FFIType;
 /** libmlxc resolution, in order: explicit env override → next to the
  *  executable (the `bun build --compile` sidecar layout, where
  *  libmlxc.dylib + libmlx.dylib + mlx.metallib ship beside the binary —
- *  see docs/reference/embedding.md) → the downloaded native-pack cache
+ *  see docs/reference/distribution.md) → the downloaded native-pack cache
  *  (src/native-pack.ts; populated on first run by the CLI) → homebrew
  *  (arm64, then Intel prefix). Keep in sync with nativeRuntimeDir(). */
 function resolveLibmlxc(): string {
@@ -220,7 +220,7 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_save_safetensors: { args: [cstring, u64, u64], returns: i32 },
   mlx_map_string_to_array_insert: { args: [u64, cstring, u64], returns: i32 },
   mlx_map_string_to_string_insert: { args: [u64, cstring, cstring], returns: i32 },
-  // compile via closures (Phase A compiled decode — docs/design/optimization_plan.md).
+  // compile via closures (Phase A compiled decode — docs/archive/investigations/optimization_plan.md).
   // mlx_closure is the usual one-pointer struct; the func-payload variant
   // carries an id we use to route the trace callback back to JS.
   mlx_closure_new: { args: [], returns: u64 },

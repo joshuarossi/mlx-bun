@@ -1,4 +1,4 @@
-// Runtime isolation — the parent half (docs/design/runtime-isolation.md).
+// Runtime isolation — the parent half (docs/reference/server-config.md).
 //
 // ARCHITECTURE (decision 2026-07-05, deviating from the doc's original
 // structured-IPC sketch — recorded there): the inference ENGINE is the
@@ -158,7 +158,7 @@ export class EngineChild {
  *  drop-in ignore semantics (served by the default model, like mlx-lm). */
 export type ModelResolver = (query: string) => { repoId: string; path: string } | null;
 
-/** Child-per-model pool (P2, runtime-isolation.md): LRU residency over
+/** Child-per-model pool (P2, docs/reference/server-config.md): LRU residency over
  *  engine children. Eviction is graceful and lossless — POST /admin/drain
  *  (gateway quiesce + demote the prompt cache to the SSD tier, keyed by
  *  that model's own fingerprint dir) and only then stop the child; the

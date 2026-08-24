@@ -3,7 +3,7 @@
 // The Dreaming write pipeline emits Wikipedia-shaped articles: each entity gets
 // one Markdown file with a fixed top-to-bottom skeleton —
 //   H1 → series banner → infobox → lead → sections → See also → Notes → References
-// (see docs/design/the-dreaming-master-plan.md and write-pipeline-entity.md).
+// (see docs/design/dreaming-nightly-pipeline.md and docs/design/dreaming-nightly-pipeline.md).
 // This module reads that grammar deterministically: the structured outputs the
 // read side traverses (infobox key-value facts, the [[wikilink]] graph, footnote
 // bijection) are parsed here, never by the model.

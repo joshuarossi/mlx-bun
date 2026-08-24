@@ -2,7 +2,7 @@
 // loop). Owns ONE running batch and drives it forward one decode step at a
 // time, admitting waiting requests and evicting finished ones between steps —
 // iteration-level (continuous) scheduling, not static batching. See
-// docs/design/parallel-slots.md and docs/design/batching-v2-plan.md.
+// docs/design/batching.md and docs/design/batching.md.
 //
 // The numerically-hard parts are verified primitives:
 //   - the batched FORWARD (per-row RoPE/mask) is bit-parity with mlx-lm B=N
@@ -21,7 +21,7 @@
 // mask). Full layers share one leftPad/offset (all rows advance together); the
 // rotating caches self-track per-row leftPad/offset as the ring wraps. The
 // per-row absolute position stays consistent across both (full: offset-leftPad;
-// rot: offsetArr) — see docs/design/parallel-slots.md. Hybrid gated-DeltaNet
+// rot: offsetArr) — see docs/design/batching.md. Hybrid gated-DeltaNet
 // models (Qwen3.5) add "ssm" layers: SSMCache state is plain [B,...] with no
 // temporal axis and no padding (rows solo-prefill unpadded, decode feeds one
 // real token per row), so merge/filter are B-axis concat/take and the cache
@@ -57,7 +57,7 @@
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { activeMemory, cacheMemory, clearCache, Dtype, peakMemory } from "../mlx/ffi";
-import { flagOn } from "../flags";
+import { flagOn } from "../runtime-config";
 import { runtimeValue } from "../runtime-config";
 import { CompiledDecode } from "../model/compiled-decode";
 import type { Gemma4Model } from "../model/gemma4";
@@ -117,7 +117,7 @@ export function stepTraceReport(): string {
 // step hand-off ping-pongs the GIL with asyncio/uvicorn (~1 ms/token); Bun's
 // setImmediate hop costs microseconds, so bursting here only delays socket
 // flushes. Don't re-add without new evidence — the per-yield step below is
-// the measured optimum (docs/design/batching-perf-path.md P4 notes).
+// the measured optimum (docs/design/batching.md P4 notes).
 
 /** A token sampler for one row: (logits [1,V], step) → token array [1] on
  *  device. Greedy is `(l) => ops.argmaxAxis(l, -1)`; richer closures fold in
@@ -177,6 +177,11 @@ export interface BatchStats {
    *  serial lane's runGeneration take(). 0 on a cold prefill. */
   cachedTokens: number;
   finishReason: "stop" | "length";
+  /** Wall-clock from admission (leaving the pending queue) to the first
+   *  emitted token — the row's prefill span on the batch lane. */
+  prefillMs: number;
+  /** Wall-clock from the first emitted token to finish. */
+  decodeMs: number;
 }
 
 /** The slice of PromptCache the scheduler drives (structural — the server's
@@ -204,6 +209,9 @@ interface Row {
   promptTokens: number;
   /** Prompt tokens restored from the prompt cache at admission (stats). */
   cachedTokens: number;
+  /** performance.now() marks for BatchStats timing (0 = not reached). */
+  admittedAt: number;
+  firstTokenAt: number;
   /** Generated tokens whose KV actually entered the cache (fed as a step
    *  input) — serial generate()'s `forwarded` list. promptIds+fed is the
    *  exact token coverage of the row's caches, the put() entry key.
@@ -468,6 +476,7 @@ export class BatchScheduler {
         resolve: (stats) => { cleanup(); resolve(stats); },
         reject: (error) => { cleanup(); reject(error); },
         current: 0, generated: 0, sampled: 0, promptTokens: req.promptIds.length,
+        admittedAt: 0, firstTokenAt: 0,
         cachedTokens: 0, fed: [], fedTainted: false, merged: false,
       });
       if (req.signal) {
@@ -525,6 +534,7 @@ export class BatchScheduler {
             this.#kvAdmits(this.#pending[0]!)) {
           const row = this.#pending.shift()!;
           row.req.onAdmitted?.();
+          row.admittedAt = performance.now();
           // Prompt-cache reuse (Phase 3.2): start the solo prefill from the
           // longest usable cached prefix — the serial lane's take(), same
           // semantics (entry ownership transfers; put back or dispose).
@@ -1450,6 +1460,7 @@ export class BatchScheduler {
     for (let b = 0; b < B; b++) {
       const row = rows[b]!;
       row.generated++;
+      if (row.generated === 1) row.firstTokenAt = performance.now();
       let disp: "continue" | "stop" | "length";
       try {
         disp = await this.#emit(row, toks[b]!);
@@ -1496,11 +1507,15 @@ export class BatchScheduler {
   }
 
   #finish(row: Row, reason: "stop" | "length"): void {
+    const now = performance.now();
+    const first = row.firstTokenAt || now;
     row.resolve({
       promptTokens: row.promptTokens,
       generatedTokens: row.generated,
       cachedTokens: row.cachedTokens,
       finishReason: reason,
+      prefillMs: row.admittedAt ? first - row.admittedAt : 0,
+      decodeMs: row.firstTokenAt ? now - row.firstTokenAt : 0,
     });
   }
 

@@ -1,5 +1,5 @@
 // Quantize a DeepSpec-format drafter checkpoint (Phase 1a of the DSpark
-// serving program, docs/design/dspark-serving-program.md).
+// serving program, docs/design/speculative-decoding.md).
 //
 // Thin policy layer over the house quantizer (src/quantize): the generic
 // shape-eligibility rule already captures every 2-D matmul weight — the

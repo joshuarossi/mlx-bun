@@ -14,7 +14,7 @@
 # Do NOT set MLX_BUN_TRAIN_ATTN=flash: that selects a DIFFERENT, hand-rolled custom
 # flash kernel (src/model/flash-attention.ts) which crashes on e4b at multi-K
 # context (C++ exception/SIGTRAP on the first backward; see
-# docs/design/segmented-backward-training.md §10). The default sdpa path is the
+# docs/design/orpo-training.md §10). The default sdpa path is the
 # validated e4b recipe (SEQ=2048 SEG=4 run, and the CPM5 95.10 run); segmented
 # grads are ~bf16-class, fine for LoRA.
 set -euo pipefail

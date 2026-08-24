@@ -31,7 +31,7 @@ import appJs from "./web/app.js" with { type: "text" };
 // PWA installability (plan §9 Phase 3, beat-matrix Axis 10): a manifest +
 // a single inline SVG icon (no binary PNGs — the hygiene gate forbids
 // tracked binary files; some browsers won't show an SVG app icon, which is
-// an accepted tradeoff, see docs/reference/features-matrix.md) + a shell-
+// an accepted tradeoff, see docs/reference/server-config.md) + a shell-
 // only service worker. Same with { type: "text" } + /assets/<name>-shaped
 // pattern as the vendored assets above; see src/web/sw.js's header for why
 // it deliberately does NOT cache API/WS traffic.
@@ -176,12 +176,12 @@ export interface ServerOptions {
    *  compose with continuous scheduling. A number forces uniform bits
    *  (group size 64, start 0) and uses the preserved serial executor. */
   kvQuant?: "off" | "config" | number;
-  /** TurboQuant scheme (docs/design/turboquant-kv.md): a separate axis from
+  /** TurboQuant scheme (docs/design/turboquant.md): a separate axis from
    *  kvQuant above, mutually exclusive with it (`--kv-quant turbo[:k<bits>v
    *  <bits>]` sets this instead of kvQuant). Solo-only in v1 — see
    *  GenerationGateway's explicit refusal. */
   turboQuant?: TurboQuantScheme;
-  /** OPTIONAL paged KV cache (`--paged-kv`, docs/design/paged-kv-cache.md):
+  /** OPTIONAL paged KV cache (`--paged-kv`, docs/design/kv-cache.md):
    *  vLLM-style block-pool storage for full-attention layers,
    *  gather-to-contiguous before the stock SDPA. Default off (unset = the
    *  plain KVCache path, byte-identical). v1 scope: serial batch=1,
@@ -204,7 +204,7 @@ export interface ServerOptions {
    *  warn before attaching to a server that may vanish. */
   owner?: "serve" | "pi-session" | "embedded";
   /** Listen on a UNIX DOMAIN SOCKET instead of a TCP port — the engine-
-   *  child mode of the isolation architecture (runtime-isolation.md): the
+   *  child mode of the isolation architecture (docs/reference/server-config.md): the
    *  parent process reverse-proxies HTTP to this socket. Stale socket
    *  files are unlinked before bind. When set, `hostname`/port are ignored. */
   unixSocket?: string;
@@ -244,7 +244,7 @@ export interface ServerOptions {
   defaultAdapter?: string;
   /** SSD cold tier for the prompt/KV cache (`--ssd-cache <dir>`): prefix
    *  KV survives RAM eviction AND server restarts — the coding-agent
-   *  long-context TTFT win (docs/design/ssd-kv-cold-tier.md). Off unless
+   *  long-context TTFT win (docs/design/kv-cache.md). Off unless
    *  a directory is given. Serial lane only (where the prompt cache lives). */
   ssdCacheDir?: string;
   /** Byte cap for the SSD tier (default 32 GiB). */
@@ -676,7 +676,7 @@ export async function loadContext(
       eoiTokenId: (config.raw.eoi_token_id as number) ?? 258882,
     },
     // Audio mirrors vision: lazy tower from the same sidecar, loaded on the
-    // first audio request only (docs/design/audio-input-plan.md A4).
+    // first audio request only (docs/design/generic-model-support.md A4).
     audio: null,
     loadAudio: makeAudioLoader(modelDir, model, config),
     audioTokenIds: config.raw.audio_config
@@ -739,7 +739,7 @@ function getVisionTower(ctx: ServerContext): VisionEncoder | null {
 }
 
 /** Build the on-demand audio-tower loader (gemma-4 Conformer, A4 of
- *  docs/design/audio-input-plan.md). Auto-enables — no flags — when
+ *  docs/design/generic-model-support.md). Auto-enables — no flags — when
  *  config.json carries an `audio_config` AND the optiq_vision.safetensors
  *  sidecar exists (the audio tensors ship in the same sidecar as vision).
  *  Returns null when the model can't do audio (no audio_config: 26B-A4B,
@@ -840,7 +840,7 @@ interface ChatRequest {
   /** Mounted LoRA adapter selection: "id", "a+b" (stacked), or "none". */
   adapter?: string;
   /** HLG tone-curve sampling override (per request). Snake_case wire fields,
-   *  merged over the server's --hlg-sampling config. docs/design/hlg-sampling.md. */
+   *  merged over the server's --hlg-sampling config. docs/archive/hlg-sampling.md. */
   hlg?: {
     enabled?: boolean;
     width?: number;
@@ -1714,7 +1714,7 @@ export function createServer(
     console.warn(
       `[batch] --batch ${batch} with --kv-quant turbo: TurboQuant is serial-only in v1 ` +
         `— those requests won't batch. Omit --kv-quant to batch in bf16. ` +
-        `(docs/design/turboquant-kv.md)`,
+        `(docs/design/turboquant.md)`,
     );
   // Quantized KV (any axis) excludes the spec lane: drafted requests fall to
   // the normal serial path WITH the KV scheme applied rather than losing it
@@ -1725,7 +1725,7 @@ export function createServer(
       `[spec] --draft-model with quantized KV (--kv-quant ${serverOptions.turboQuant ? "turbo" : String(serverOptions.kvQuant)}): ` +
         `the speculative lane is bf16-KV-only in v1 — requests keep the KV scheme and ` +
         `decode serially WITHOUT speculation. Omit --kv-quant to speculate. ` +
-        `(docs/design/dspark-serving-program.md Phase 4)`,
+        `(docs/design/speculative-decoding.md Phase 4)`,
     );
   // TurboQuant head-dim fail-fast (2026-07-07 review): the cache class only
   // supports {64,128,256,512} (sign-vector + Lloyd-Max table coverage) and
@@ -1740,10 +1740,10 @@ export function createServer(
       throw new Error(
         `--kv-quant turbo: this model's full-attention head_dim is ${dim}; ` +
           `TurboQuant supports {${TURBOQUANT_HEAD_DIMS.join(",")}} ` +
-          `(docs/design/turboquant-kv.md) — use --kv-quant config|4|8 or omit it`,
+          `(docs/design/turboquant.md) — use --kv-quant config|4|8 or omit it`,
       );
   }
-  // Paged KV v1 (docs/design/paged-kv-cache.md): explicit refusals, not
+  // Paged KV v1 (docs/design/kv-cache.md): explicit refusals, not
   // silent downgrades — the incompatible combos would otherwise degrade
   // quietly (batch: paged caches can't merge; kv-quant: the swap would
   // drop the scheme, the exact composition bug the kvQuant gate above
@@ -1752,22 +1752,22 @@ export function createServer(
     if (batch > 1)
       throw new Error(
         `--paged-kv is serial-only in v1 — add --batch 1 (got --batch ${batch}). ` +
-          `Batched paging is the follow-up PR (docs/design/paged-kv-cache.md).`,
+          `Batched paging is the follow-up PR (docs/design/kv-cache.md).`,
       );
     if (kvScheme.kvBits || kvScheme.kvConfig?.length || kvScheme.turboQuant)
       throw new Error(
         `--paged-kv is bf16-only in v1 — omit --kv-quant (quantized paged ` +
-          `blocks are a documented follow-up, docs/design/paged-kv-cache.md).`,
+          `blocks are a documented follow-up, docs/design/kv-cache.md).`,
       );
     if (ctx.draft)
       throw new Error(
         `--paged-kv cannot combine with --draft-model in v1 ` +
-          `(docs/design/paged-kv-cache.md non-goals).`,
+          `(docs/design/kv-cache.md non-goals).`,
       );
     if (!ctx.model.config.modelType.startsWith("gemma4"))
       throw new Error(
         `--paged-kv v1 supports Gemma4-family models only ` +
-          `(this model: ${ctx.model.config.modelType}) — docs/design/paged-kv-cache.md.`,
+          `(this model: ${ctx.model.config.modelType}) — docs/design/kv-cache.md.`,
       );
     const bs = serverOptions.pagedKv.blockSize;
     if (bs !== undefined && (!Number.isInteger(bs) || bs <= 0))
@@ -1779,7 +1779,7 @@ export function createServer(
       );
   }
 
-  // SSD cold tier (docs/design/ssd-kv-cold-tier.md): prefix KV survives RAM
+  // SSD cold tier (docs/design/kv-cache.md): prefix KV survives RAM
   // eviction and restarts. Compatibility key = configFingerprint (graph
   // shape) + the EFFECTIVE kv scheme (flags pick bf16 vs config vs uniform
   // on the same model — restored caches must match what serving produces) +
@@ -1930,7 +1930,7 @@ export function createServer(
     // Cache entries are adapter-specific: KV computed under one adapter
     // must never seed another's (or the base's) prefill.
     const cacheNs = options.adapters?.join("+") ?? "";
-    // Paged-KV request scope (docs/design/paged-kv-cache.md): media
+    // Paged-KV request scope (docs/design/kv-cache.md): media
     // prompts (bidir overlay) and LoRA-adapter requests are v1 non-goals —
     // they run the PLAIN cache path even under --paged-kv (scope the flag
     // per request, never 400). Effective value computed ONCE so the
@@ -2616,7 +2616,7 @@ export function createServer(
         let kvMode = "bf16";
         if (kvScheme.turboQuant) {
           // v1: full-attention layers only (sliding-window stays bf16 —
-          // docs/design/turboquant-kv.md non-goal).
+          // docs/design/turboquant.md non-goal).
           const fullAttn = layerTypes.filter((l) => l !== "sliding_attention").length;
           kvMode = `turbo k${kvScheme.turboQuant.kBits}v${kvScheme.turboQuant.vBits}`;
           kvLayers[`turbo-k${kvScheme.turboQuant.kBits}v${kvScheme.turboQuant.vBits}`] = fullAttn;
@@ -2857,7 +2857,7 @@ export function createServer(
             m.content.some((p: any) => p.type === "image_url" || p.type === "image"),
         );
         // Same shapes extractAudio accepts: OpenAI-canonical input_audio plus
-        // optiq's audio / audio_url aliases (audio-input-plan.md §3.2).
+        // optiq's audio / audio_url aliases (docs/design/generic-model-support.md §3.2).
         const hasAudio = body.messages.some(
           (m) => Array.isArray(m.content) &&
             m.content.some(
@@ -2919,7 +2919,7 @@ export function createServer(
           }
           if (hasAudio) {
             // Audio (and MIXED image+audio) input — A4 of
-            // docs/design/audio-input-plan.md. One buildMultimodalPrompt call
+            // docs/design/generic-model-support.md. One buildMultimodalPrompt call
             // splices both media kinds in document order. A request WITH
             // audio on a model whose tower is unavailable is an explicit 400
             // — never a silent text-only degrade (that leniency is only for

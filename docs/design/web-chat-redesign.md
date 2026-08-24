@@ -14,8 +14,8 @@ Scope: `src/web/` (app.html + `src/web/src/*.ts` built into `app.js`),
 `src/serve/model-admin-routes.ts`), `src/tool-approvals.ts`.
 
 This is the one canonical doc for the web chat. It absorbs the former
-beat matrix (`web-chat-beat-matrix.md`, kept as Appendix A), the web half
-of `adapters-end-to-end.md` (§3.6 here), and the desktop-shell idea (one
+beat matrix (`docs/design/web-chat-redesign.md`, kept as Appendix A), the web half
+of `docs/design/web-chat-redesign.md` (§3.6 here), and the desktop-shell idea (one
 History line). Status/changelog prose belongs in PLAN.md; this file holds
 the design, the as-built contract, and the open items.
 
@@ -258,8 +258,8 @@ sub-list) and article (rendered content, inbound/outbound wikilinks line,
 a History toggle backed by `/api/memory/history` and `/api/memory/diff` —
 the "watch it self-heal after a correction" moment made literal, which
 cloud memory UX structurally cannot offer). The agent-tool surface stays
-read-only; only nightly synthesis writes (`memory-system.md`,
-`memory-synthesis.md`). The plan's wikilink *graph* view is not built —
+read-only; only nightly synthesis writes (`docs/design/dreaming-nightly-pipeline.md`,
+`docs/design/dreaming-nightly-pipeline.md`). The plan's wikilink *graph* view is not built —
 the panel shows a links line (open, §5).
 
 ### 3.6 Model and adapter switching
@@ -271,12 +271,12 @@ model per process (like mlx-lm), `POST /api/hub/serve` answers
 `restart_required` with the exact `mlx-bun serve` command, and the picker
 offers that command to copy. The live-swap mechanism that exists
 (`ModelPool` spawn-overlap) lives only on the opt-in `--isolate` proxy,
-which 501s `/ws/chat` — see `runtime-isolation.md`. Model Hub (`hub.ts`)
+which 501s `/ws/chat` — see `docs/reference/server-config.md`. Model Hub (`hub.ts`)
 adds browse / HF search / download with progress; it never auto-downloads
 or auto-serves.
 
 **Adapters — the three-state model** (folded from
-`adapters-end-to-end.md`; the design keeps the states separate and lets
+`docs/design/web-chat-redesign.md`; the design keeps the states separate and lets
 the user move an adapter between them explicitly):
 
 1. **Available** — on disk, compatible or not, costs nothing.
@@ -423,7 +423,7 @@ Ordered by leverage.
 - Wikilink graph view — `/api/memory/links` exists; the panel renders a
   links line only.
 - Session-preserving live model swap — blocked on a reload seam at the
-  engine boundary (`runtime-isolation.md`); until then the Hub / picker
+  engine boundary (`docs/reference/server-config.md`); until then the Hub / picker
   hand back the restart command.
 - RAG citations persisted into history replay (`HistoryItem` field).
 - Long-thread windowing (anchored-to-bottom DOM recycling) — not built;
@@ -482,9 +482,9 @@ pause / reset one click away).
 - 2026-06-14 — chat replaced with the Pi embed over `/ws/chat`
   (`src/pi-web.ts`), unified hash-routed SPA with the Developer tabs.
 - 2026-06-16 — adapter discovery endpoint, web selector, and the Pi CLI
-  extension (`adapters-end-to-end.md` written; its web half now lives in
+  extension (`docs/design/web-chat-redesign.md` written; its web half now lives in
   §3.6, the CLI half belongs to the CLI reference). The Tauri desktop-shell
-  idea (`tauri-desktop-app.md`: separate repo, sidecar `mlx-bun serve`,
+  idea (`docs/design/web-chat-redesign.md`: separate repo, sidecar `mlx-bun serve`,
   WKWebView on `/#/chat`) was written in this period; it is tracked in
   neither PLAN.md nor STATUS.md and is not a plan — the only desktop-specific
   item kept here is that a shell must wrap the same page, no bespoke UI.

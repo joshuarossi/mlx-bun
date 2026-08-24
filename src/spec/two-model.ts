@@ -16,7 +16,7 @@
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { clearCache } from "../mlx/ffi";
-import { flagOn } from "../flags";
+import { flagOn } from "../runtime-config";
 import { loadModelConfig } from "../config";
 import { Weights } from "../weights";
 import { createModel, type RuntimeModel } from "../model/factory";

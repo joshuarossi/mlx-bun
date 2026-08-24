@@ -1,5 +1,5 @@
 // GATED integration: audio input end to end through the HTTP server (T3 of
-// docs/design/audio-input-plan.md §3.4). Ephemeral in-process server (dies
+// docs/design/generic-model-support.md §3.4). Ephemeral in-process server (dies
 // with the test), real /v1/chat/completions requests carrying base64 audio.
 //
 //   MLX_BUN_TEST_AUDIO_SERVE=1 bun test tests/e4b-audio-serve.test.ts

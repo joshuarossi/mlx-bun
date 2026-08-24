@@ -1,7 +1,7 @@
 // GATED (spawns two real model engines through the real CLI):
 //   MLX_BUN_TEST_BATCH_DECODE=1 bun test tests/isolate-switch-e2e.test.ts
 //
-// THE MULTI-MODEL SWITCH STORY, end to end (runtime-isolation.md P2 +
+// THE MULTI-MODEL SWITCH STORY, end to end (docs/reference/server-config.md P2 +
 // Josh's scenario 2026-07-05): converse with model A → request model B
 // (pool cap 1: B spawn-overlaps while A serves, then A drains, DEMOTES its
 // prompt cache to the SSD tier, and exits) → switch back to A → continue

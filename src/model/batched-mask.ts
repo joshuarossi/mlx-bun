@@ -6,7 +6,7 @@
 // DECODE case for batched serving: left-padded rows sharing one growing
 // [B,H,S,D] KV buffer, where a step forwards N new query tokens at a nonzero
 // offset. (The two builders should be consolidated when batched prefill is
-// wired into the serving path — phase S1a, docs/design/parallel-slots.md.)
+// wired into the serving path — phase S1a, docs/design/batching.md.)
 //
 // Why left-padding for decode: with rows right-aligned in the KV buffer, every
 // row's next write lands in the SAME column, so one advancing offset serves

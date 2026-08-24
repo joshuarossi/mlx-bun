@@ -11,7 +11,7 @@
 // with stock only on tie-free prompts (where batched == per-position).
 // An earlier version verified per-position to stay bit-exact to STOCK —
 // that matched no real oracle and cost an extra γ× read of the lm-head
-// weight per step; superseded. See docs/design/spec-decode-larger-targets.md.
+// weight per step; superseded. See docs/design/speculative-decoding.md.
 //
 // Limitation (same as the reference): partial-accept rollback requires
 // trimmable caches; RotatingKVCache loses trimability once its ring

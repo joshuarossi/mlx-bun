@@ -29,7 +29,7 @@ the `quantize()`/`dequantize()` asymmetric-affine key path, the
 **Golden generation only.** This file is never imported by the mlx-bun
 product (`src/`). It is driven exclusively by
 `lab/repro/vllm-metal-turboquant/gen_goldens.py`, which is in turn invoked
-only by `scripts/regen-turboquant-goldens.ts` through the oracle venv
+only by `scripts/regen.ts turboquant` through the oracle venv
 python (`/Users/joshrossi/Code/mlx-lm/.venv/bin/python`, mlx 0.31.2). Its
 role is identical to `optiq/runtime/fused_quant_sdpa.py` in the
 `scripts/regen-kvq-goldens.ts` pattern: a pure-MLX Python reference used
@@ -73,6 +73,6 @@ the oracle venv.
   vllm-metal changes the algorithm, re-run the fetch step above and
   re-generate goldens; do not hand-edit this file to "fix" anything
   (bugs/quirks in the reference, e.g. the fp16 `+1e-8` epsilon underflow
-  noted in `docs/design/turboquant-kv.md`, are intentionally preserved
+  noted in `docs/design/turboquant.md`, are intentionally preserved
   because our port's correctness oracle is "matches what this file
   actually computes," not "matches what it should compute").

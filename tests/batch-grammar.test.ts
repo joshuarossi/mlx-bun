@@ -1,6 +1,6 @@
 // GATED: grammar-constrained decoding under the batch lane (B2 gates from
-// docs/design/structured-output.md, executed per
-// docs/design/grammar-spec-batching-integration.md Phase A).
+// docs/reference/server-api.md, executed per
+// docs/design/batching.md Phase A).
 //
 //   MLX_BUN_TEST_BATCH_DECODE=1 bun test tests/batch-grammar.test.ts
 //
@@ -110,7 +110,7 @@ describe.skipIf(!optIn || !haveCpm)("batch lane × grammar (B2 gates, CPM)", () 
   // gates cover SCHEDULER orchestration (row↔matcher alignment, eviction,
   // joins), and unlimited-whitespace schemas sit on a machine-specific greedy
   // knife-edge — CPM base + raw prompt can tab-loop after a key until
-  // max_tokens (whitespace-stall mode, structured-output.md known gaps;
+  // max_tokens (whitespace-stall mode, docs/reference/server-api.md known gaps;
   // reproduced on M1 Max 2026-07-07: 96/96 tabs after `"beta"`). Compact
   // grammars have no whitespace choice points, making conformance genuinely
   // trajectory-independent as the header claims. Default-whitespace masks
@@ -277,7 +277,7 @@ describe.skipIf(!optIn || !haveCpm)("batch lane × grammar (B2 gates, CPM)", () 
     const pA = runOne(gw, "Describe a film.", { grammar: gA, maxTokens: 48 });
     await new Promise((r) => setTimeout(r, 150)); // A is decoding now
     // Joiner uses guided_choice — a whitespace-free grammar, so CPM's
-    // whitespace-stall mode (structured-output.md known gaps) can't muddy
+    // whitespace-stall mode (docs/reference/server-api.md known gaps) can't muddy
     // the regression signal. It still joins as a live grammar row.
     const gB = await compileFor({ guidedChoice: ["paris", "tokyo"] });
     const pB = runOne(gw, "Pick a city:", { grammar: gB, maxTokens: 48 });

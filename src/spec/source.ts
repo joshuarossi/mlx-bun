@@ -1,6 +1,6 @@
 // DraftSource — the seam between the serve-time speculative verify loop
 // (src/spec/serve-loop.ts) and whatever produces draft tokens. Designed in
-// docs/design/mlx-lm-tool-parity-plan.md §7 so every drafter shares ONE
+// docs/reference/cli.md §7 so every drafter shares ONE
 // verify/accept executor:
 //   - TwoModelSource (src/spec/two-model.ts) — mlx-lm parity (L1 oracle:
 //     mlx_lm.server --draft-model), a full second model. Ignores `target`.
@@ -9,7 +9,7 @@
 //     Reads the target's donor K/V + anchor hidden each step.
 //   - DflashSource (src/spec/dflash-source.ts) — DSpark (L3, KL/quality-gated).
 //     Taps the target's multi-layer hiddens (prefill + verify) into a growing
-//     H_ctx (docs/design/dspark-speculative-decoding.md).
+//     H_ctx (docs/design/speculative-decoding.md).
 //   - NgramSource (src/spec/ngram-source.ts) — model-free prompt lookup.
 //   - Glm52NativeMtpSource (src/spec/glm52-mtp-source.ts) — the target
 //     artifact's native Colibri MTP row.

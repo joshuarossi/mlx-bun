@@ -12,10 +12,10 @@ This is THE design doc for mlx-bun's memory write path: the pipeline that
 turns conversations into a personal wiki (`src/memory/`, `scripts/memory/`),
 the local-model inference seam it runs on, the read path it feeds, and the
 evaluation methodology that sits beside it. It consolidates, in supersession
-order, `memory-synthesis.md` → `write-pipeline-entity.md` →
-`bucketing-stage.md` → this doc, plus the architecture half of
-`memory-system.md`, `memory-inference-path.md`, and the still-open task list
-from `the-dreaming-master-plan.md`. Where those docs disagree, this doc wins.
+order, `docs/design/dreaming-nightly-pipeline.md` → `docs/design/dreaming-nightly-pipeline.md` →
+`docs/design/dreaming-nightly-pipeline.md` → this doc, plus the architecture half of
+`docs/design/dreaming-nightly-pipeline.md`, `docs/design/dreaming-nightly-pipeline.md`, and the still-open task list
+from `docs/design/dreaming-nightly-pipeline.md`. Where those docs disagree, this doc wins.
 
 - User-facing behaviour (CLI, tools, vault layout as the user sees it) lives
   in `docs/reference/memory.md`. Status and changelog prose belong in
@@ -519,7 +519,7 @@ stage's own judge first; train only on a measured miss; pick checkpoints by
 the task judge, never validation loss. Recipe: `scripts/examples/chunk-finetune.ts`
 (sft, rank 16, lr 1e-5, seq 8192, `ops.sdpa`; e4b needs the segmented-backward
 path — `SEG=2` as `e4b-chunk-300` was trained; see
-`docs/design/segmented-backward-training.md`). Training data uses the
+`docs/design/orpo-training.md`). Training data uses the
 trainer's `messages` row shape with loss masked to the assistant turn.
 Section-granular synthesis gold can be mined from Lucien's structured tables
 plus `~/Dreaming` git history (chunk identity from `chunks`/`chunk_buckets`/
@@ -667,13 +667,13 @@ the promotion step.
 ## History
 
 - 2026-06-19 — M0 landed: vault, read tools, CLI, launchd scheduling
-  (`memory-system.md`); synthesis a safe no-op stub.
-- 2026-06-26 — M1 design (`memory-synthesis.md`): pointer DB, create/update
+  (`docs/design/dreaming-nightly-pipeline.md`); synthesis a safe no-op stub.
+- 2026-06-26 — M1 design (`docs/design/dreaming-nightly-pipeline.md`): pointer DB, create/update
   split, wikify as its own node; bucketing decomposition
-  (`bucketing-stage.md`); entity-keyed routing (`write-pipeline-entity.md`).
+  (`docs/design/dreaming-nightly-pipeline.md`); entity-keyed routing (`docs/design/dreaming-nightly-pipeline.md`).
 - 2026-06-28 — Pipeline built end-to-end on real data; stage workers,
   chronological order, self-healing, LINK stage, templating fix; batching
-  measured and shelved (`memory-inference-path.md`); full import resumed
+  measured and shelved (`docs/design/dreaming-nightly-pipeline.md`); full import resumed
   from 720/2096 into `~/.mlx-bun/wiki-full`.
 - 2026-07-01 — Settled with Josh: no notability filter, no embeddings,
   buckets are stories, one edit per (bucket, article), replacement-section

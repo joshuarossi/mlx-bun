@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Phase 1c (docs/design/dspark-serving-program.md): the drafter acceptance
+// Phase 1c (docs/design/speculative-decoding.md): the drafter acceptance
 // A/B — THE gate for every drafter-quantization experiment (Phase 1d runs
 // 4-bit-vs-bf16 through this; Phase 5 reuses it unchanged for TurboQuant).
 //

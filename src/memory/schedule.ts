@@ -11,7 +11,7 @@
 // it. That job runs the full synthesis DAG and produces/updates articles on the
 // schedule with no further configuration.
 //
-// See docs/design/memory-system.md → "Scheduling (launchd)".
+// See docs/design/dreaming-nightly-pipeline.md → "Scheduling (launchd)".
 
 import { spawn } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";

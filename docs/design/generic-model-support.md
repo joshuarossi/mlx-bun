@@ -334,7 +334,7 @@ design-relevant facts; phase logs live in PLAN.md at the named anchor.
   `minicpm5-dedicated`, L1 (the L2 composition is a request-level KV scheme,
   not a profile property).
 - Training reference model for segmented backward and ORPO
-  (segmented-backward-training.md, orpo-training.md).
+  (docs/design/orpo-training.md, orpo-training.md).
 
 ### 6.3 Qwen3 / Qwen3-MoE / Qwen3.5-family (3.6, 3.8) — `qwen3.ts`, `qwen3-moe.ts`, `qwen3_5.ts`
 
@@ -481,7 +481,7 @@ Phase 21, closed 2026-08-17). GLM-5.3+ would extend THIS section.
 
 ### 6.5 DiffusionGemma-26B-A4B — `src/model/diffusion-gemma.ts`, `src/diffusion/`, `src/vision/diffusion-vision.ts`
 
-Summary of docs/design/diffusion-gemma-port.md (the D0 reference dossier
+Summary of docs/design/generic-model-support.md (the D0 reference dossier
 there stays the porting contract; do not extend it).
 
 - **What it is**: the first non-autoregressive model — an encoder prefill
@@ -528,7 +528,7 @@ there stays the porting contract; do not extend it).
 
 ### 6.6 Audio input (gemma-4 audio tower) — `src/audio/`
 
-Summary of docs/design/audio-input-plan.md. Scope: audio-in, text-out
+Summary of docs/design/generic-model-support.md. Scope: audio-in, text-out
 through the chat API; TTS/STT endpoints, streaming audio, >30 s, batched
 audio prefill, and 26B-A4B/DiffusionGemma audio (no `audio_config`) are
 non-goals.
@@ -611,7 +611,7 @@ non-goals.
   swiglu, fixed by `compiledSwiglu`). Code shelved to scripts/experiments
   2026-07-01 and deleted with that directory 2026-08-23 (git history); no
   megakernel code remains in `src/`. The doc
-  `minicpm5-decode-megakernel.md` is superseded by this line.
+  `docs/design/generic-model-support.md` is superseded by this line.
 - 2026-06-24 — DiffusionGemma D0–D3 + D5 landed (bit-exact forward,
   token-for-token generation, image, LoRA); D4 open.
 - 2026-06-15 → 2026-08-18 — Qwen3.5-family: 3.6 text parity both bars;

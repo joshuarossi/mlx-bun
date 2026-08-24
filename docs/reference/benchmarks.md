@@ -475,7 +475,7 @@ host instead of queueing `astype(float32)` behind the already-dispatched next
 decode step. The off control stayed flat; all 40 parity checks and all 1,280
 selected/top-k comparisons were exact. Clean commits: before `00e597e`, after
 `b1cb7cb`. Raw artifacts are recorded in the Phase 22 ledger in
-`docs/design/pre-colibri-stabilization.md`.
+`docs/archive/investigations/pre-colibri-stabilization.md`.
 
 ### Long context (gemma-4-12B) — where the gap opens
 
@@ -538,11 +538,11 @@ Read: turbo k8v3 beats uniform kv4's KL at 2.56× compression; k4v3 is
 on-curve with affine at matched bits; 2-bit values are the cliff (matches
 the TurboQuant paper's law). Codec is bit-exact vs the vendored vllm-metal
 reference (goldens/turboquant.json); details in
-docs/design/turboquant-kv.md.
+docs/design/turboquant.md.
 
 ## 4. Composition — feature-default decisions (measured, per pair)
 
-The doctrine (dspark-serving-program.md Phase 4e): a feature is ON by
+The doctrine (docs/design/speculative-decoding.md Phase 4e): a feature is ON by
 default for a (model, config) pair only when it WINS a clean-machine
 paired A/B on that pair; losing configs stay documented default-off
 levers. This section records the decisions and the numbers behind them.

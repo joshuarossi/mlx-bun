@@ -9,7 +9,7 @@
 // an already-working system at real scale — they're pure filesystem functions
 // with no MCP coupling, so they drop straight in. We keep lucien's good
 // descriptive concepts (articles, [[wikilinks]], Meta governance pages,
-// conv: citations) and drop the mythology. See docs/design/memory-system.md.
+// conv: citations) and drop the mythology. See docs/design/dreaming-nightly-pipeline.md.
 //
 // M0 is the read path: setup the vault, then list / read / search / index it.
 // Synthesis (writing articles from conversations) is M1 and lives elsewhere.
@@ -987,10 +987,8 @@ const REFERENCE_LINKS: { name: string; source: string }[] = [
   { name: "mlx-bun_Server_API", source: join(REPO_ROOT, "docs", "reference", "server-api.md") },
   { name: "mlx-bun_Server_Config", source: join(REPO_ROOT, "docs", "reference", "server-config.md") },
   { name: "mlx-bun_Library_API", source: join(REPO_ROOT, "docs", "reference", "library-api.md") },
-  { name: "mlx-bun_Embedding", source: join(REPO_ROOT, "docs", "reference", "embedding.md") },
   { name: "mlx-bun_Distribution", source: join(REPO_ROOT, "docs", "reference", "distribution.md") },
   { name: "mlx-bun_Training", source: join(REPO_ROOT, "docs", "reference", "training.md") },
-  { name: "mlx-bun_ORPO_Quickstart", source: join(REPO_ROOT, "docs", "reference", "orpo-quickstart.md") },
   { name: "mlx-bun_Product_Roadmap", source: join(REPO_ROOT, "docs", "planning", "PRODUCT_ROADMAP.md") },
 ];
 

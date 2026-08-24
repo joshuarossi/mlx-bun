@@ -56,7 +56,7 @@ export function isDrafterModelType(modelType: string): boolean {
 
 /** DiffusionGemma (model_type `diffusion_gemma`): block/masked-diffusion canvas
  *  model. Non-autoregressive — routed through the diffusion engine, not the AR
- *  loop. See docs/design/diffusion-gemma-port.md. */
+ *  loop. See docs/design/generic-model-support.md. */
 export function isDiffusionGemmaConfig(config: ModelConfig): boolean {
   return config.modelType === "diffusion_gemma";
 }

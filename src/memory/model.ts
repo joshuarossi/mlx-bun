@@ -163,7 +163,7 @@ interface MemoryRuntime {
  *  (callLocalBatch then loops on the bit-exact greedy fallback).
  *  Default 1 (serial): batching measured 1.7-1.9x SLOWER for the real
  *  extract/chunk workload (heterogeneous prefills pad) and can diverge on
- *  near-ties — see docs/design/memory-inference-path.md "Verification results".
+ *  near-ties — see docs/design/dreaming-nightly-pipeline.md "Verification results".
  *  Opt back in with MLX_BUN_MEMORY_BATCH=8 if a length-bucketed scheduler
  *  lands. (Decision: Josh, 2026-07-01.) */
 export function memoryBatchSize(): number {

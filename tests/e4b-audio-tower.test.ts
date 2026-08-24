@@ -1,4 +1,4 @@
-// T1 audio-tower parity (docs/design/audio-input-plan.md §3.4): golden mel
+// T1 audio-tower parity (docs/design/generic-model-support.md §3.4): golden mel
 // features → AudioTower (SSCP + 12 Conformer blocks + output_proj +
 // embed_audio) → compare against the oracle's language-space embeddings.
 //

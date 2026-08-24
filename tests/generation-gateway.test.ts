@@ -101,7 +101,7 @@ describe("GenerationGateway.place", () => {
     ["wantsLogprobs", "logprobs/top_logprobs capture (serial-only, batch-lane deferred)"],
     ["userSeed", "explicit seed (reproducibility ⇒ solo)"],
     ["kvQuant", "kv-quant with NO scheme threaded (would silently drop the quantization)"],
-    ["turboQuant", "TurboQuant is solo-only in v1, unconditionally (docs/design/turboquant-kv.md)"],
+    ["turboQuant", "TurboQuant is solo-only in v1, unconditionally (docs/design/turboquant.md)"],
   ];
   for (const [flag, why] of disqualifiers) {
     test(`${flag} drains to serial — ${why}`, () => {

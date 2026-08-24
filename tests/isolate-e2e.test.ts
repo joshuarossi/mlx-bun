@@ -1,7 +1,7 @@
 // GATED (loads cpm5, spawns a real engine child through the real CLI):
 //   MLX_BUN_TEST_BATCH_DECODE=1 bun test tests/isolate-e2e.test.ts
 //
-// End-to-end runtime isolation (runtime-isolation.md): the parent proxy
+// End-to-end runtime isolation (docs/reference/server-config.md): the parent proxy
 // serves a real chat completion from an engine child on a unix socket,
 // streams SSE incrementally, and stays responsive while the GPU decodes.
 // The proxy MACHINERY is gated model-free in tests/isolate-proxy.test.ts;

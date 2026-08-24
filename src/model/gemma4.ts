@@ -56,7 +56,7 @@ import { Checkpoint } from "../mlx/checkpoint";
 import { flashAttention, getTrainingAttn, flashSupported } from "./flash-attention";
 import { unrotateValues as tqUnrotateValues } from "../mlx/turboquant-ops";
 import { CompiledFunction } from "../mlx/compile";
-import { flagOn } from "../flags";
+import { flagOn } from "../runtime-config";
 
 /** Verbatim port of mlx_lm/models/gemma4_text.py:
  *    `@partial(mx.compile, shapeless=True) def geglu(gate, x): return nn.gelu_approx(gate) * x`
@@ -885,7 +885,7 @@ export class Gemma4Model {
    *  which attend bidirectionally among themselves (use_bidirectional_attention:
    *  "vision" — text stays causal; audio prompts pass NO bidir mask, and a
    *  mixed image+audio prompt drops the image overlay too, §3.3 Q1 of
-   *  docs/design/audio-input-plan.md). `ids` ([1, L], the spliced token ids)
+   *  docs/design/generic-model-support.md). `ids` ([1, L], the spliced token ids)
    *  is required for per-layer-input models (e2b/e4b): multimodal soft-token
    *  positions get token 0's per-layer embedding, and their tower content
    *  enters only through the projection term (the merged hidden). Matches
@@ -1015,7 +1015,7 @@ export class Gemma4Model {
     return h;
   }
 
-  // --- Segmented-backward support (docs/design/segmented-backward-training.md
+  // --- Segmented-backward support (docs/design/orpo-training.md
   // §4 Phase B). These are ADDITIVE — forwardLayers is untouched. The segmented
   // driver builds masks + per-layer inputs ONCE, then drives runLayerRange per
   // segment, threading the KV-shared donor K/V across segment boundaries.
