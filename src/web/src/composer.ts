@@ -200,7 +200,7 @@ function escHtml(s: unknown): string {
 
 /** Pure: builds the <option> markup for the adapter <select> from the
  *  /v1/adapters/available list. Split out from refreshAdapters() (which
- *  does the fetch + DOM write) so tests/web-app.test.ts can exercise the
+ *  does the fetch + DOM write) so tests/using/web-app.test.ts can exercise the
  *  esc() discipline on this template directly without a DOM or network —
  *  every interpolated field (id, rank, path, base_model) must be escaped,
  *  since adapter ids/paths are user-controlled (on-disk directory names). */
@@ -719,7 +719,7 @@ export function renderLane(lane: Lane | undefined): void {
    already resolves, so the agent's memory tools pick it up naturally, same
    as in the vault's own prose). No vault -> files-only picker. Pure
    query-detection/insertion helpers below are unit-tested directly
-   (tests/web-app.test.ts); DOM wiring (initMentionPicker) owns the
+   (tests/using/web-app.test.ts); DOM wiring (initMentionPicker) owns the
    picker's open/close/keyboard-nav state.
    ──────────────────────────────────────────────────────────────────── */
 

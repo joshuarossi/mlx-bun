@@ -5,7 +5,7 @@
 #
 #   /Users/joshrossi/Code/mlx-lm/.venv/bin/python scripts/oracle/gen-diffusion-golden.py [MODEL_DIR]
 #
-# Companion to tests/diffusion-parity.test.ts (the mlx-bun side runs the SAME
+# Companion to tests/parity/diffusion-parity.test.ts (the mlx-bun side runs the SAME
 # deterministic forward with our primitives and compares).
 #
 # WHY a fixed canvas (not RNG-reproduced cross-impl): the D1 gate is the static

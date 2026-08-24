@@ -31,7 +31,7 @@
 // so rejected drafts never touch grammar state and no matcher rollback is
 // needed. Grammar termination mid-burst truncates the round (the all--inf
 // guarantee). Gates (no oracle): greedy grammar+spec ≡ greedy grammar-only
-// long-prefix + 100% schema validity (tests/spec-serve.test.ts).
+// long-prefix + 100% schema validity (tests/parity/spec-serve.test.ts).
 //
 // Emission discipline: tokens flow through the caller's onToken ONE AT A
 // TIME, in order (bursts of ≤ n+1 per round) — the server's stop-sequence

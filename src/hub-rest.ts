@@ -3,7 +3,7 @@
 // Axis 3 "Hub" row). Same posture as src/memory/rest.ts: pure (request|url)
 // => Response handlers with no `ctx` dependency, dispatched from
 // src/server.ts by path+method, so they're unit-testable without booting a
-// model context (see tests/hub-rest.test.ts).
+// model context (see tests/serve/hub-rest.test.ts).
 //
 // Three sources, same as optiq Lab's Hub, plus the hardware-fit column optiq
 // lacks:
@@ -43,7 +43,7 @@ function jsonErr(error: string, status = 400): Response {
  *  fixed 8k context (the same "typical" context /fit and /library use, so
  *  the three surfaces never disagree). `reg`/`hubDir` are injectable so
  *  tests can point at a synthetic hub dir instead of the real
- *  ~/.cache/huggingface/hub (matching tests/registry-fit.test.ts's pattern);
+ *  ~/.cache/huggingface/hub (matching tests/unit/registry-fit.test.ts's pattern);
  *  the live server route omits both and gets the real registry. */
 export async function handleHubLocal(
   opts: { reg?: Registry; hubDir?: string } = {},

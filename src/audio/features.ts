@@ -3,7 +3,7 @@
 // models/gemma4/audio_feature_extractor.py, constructor DEFAULTS — §3.3 Q3
 // of docs/design/generic-model-support.md: no per-bin normalization, params are
 // fixed for all gemma-4 models). Gated bit-close against the T0 mel goldens
-// (goldens/e4b-audio-*-mel.bin) in tests/audio-features.test.ts.
+// (goldens/e4b-audio-*-mel.bin) in tests/parity/audio-features.test.ts.
 //
 // Pipeline (single waveform, 16 kHz mono float32):
 //   pad to a multiple of 128 samples (validity mask over the original part)

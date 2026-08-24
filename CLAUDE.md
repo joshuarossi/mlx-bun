@@ -42,8 +42,8 @@ must win a paired A/B before any default. Single binary; JS library too.
 goldens from the oracle · `/release` signed+notarized publish (never
 without Josh's go) · `/docs-hygiene` close a phase without sprawl.
 
-**Layout.** `src/` engine+server+CLI · `tests/` (weights-gated suites skip
-cleanly) · `scripts/` tooling + `scripts/{oracle,memory,turboquant,examples,packaging}/`
+**Layout.** `src/` engine+server+CLI · `tests/{unit,serve,using}` model-free (CI) ·
+`tests/{parity,research}` weights/oracle-gated (skip cleanly) · `scripts/` tooling + `scripts/{oracle,memory,turboquant,examples,packaging}/`
 · `docs/` per the map · `website/` generated from `docs/reference/` ·
 `goldens/` tracked manifests, untracked machine-specific blobs · `fixtures/`
 tiny CI inputs · `lab/repro/` upstream-bug repros · `bin/` npm launcher.

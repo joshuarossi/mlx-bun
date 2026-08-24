@@ -8,8 +8,8 @@
 //   <out>/logits-step<i>.bin   — full last-position logits (f32) for the
 //                                first LOGIT_STEPS decode steps
 
-import { ORACLE_PYTHON, SNAPSHOT } from "../../tests/paths";
-import { goldenOutDir } from "../../tests/goldens";
+import { ORACLE_PYTHON, SNAPSHOT } from "../../tests/support/paths";
+import { goldenOutDir } from "../../tests/support/goldens";
 import { mkdirSync } from "node:fs";
 
 const OUT = goldenOutDir();

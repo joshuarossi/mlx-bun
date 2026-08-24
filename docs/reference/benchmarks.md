@@ -64,7 +64,7 @@ median-of-N with warmups discarded.
 
 > **Legend corrected 2026-06-15.** An earlier revision had the gemma
 > hashes cycled (`5b…`→e4b, `dbfd…`→12B, `fcdb…`→26B). The mapping above is
-> the authoritative one from `tests/paths.ts` (`SNAPSHOT`=`5b…`=12B,
+> the authoritative one from `tests/support/paths.ts` (`SNAPSHOT`=`5b…`=12B,
 > `SNAPSHOT_26B`=`dbfd…`=26B) and the e4b snapshot hash used across
 > `tests/*.test.ts` (`fcdb…`=e4b), corroborated by on-disk weight size
 > (e4b 7.0G · 12B 8.4G · 26B 18G). The **Performance** rows below were
@@ -84,13 +84,13 @@ is the gate the Performance/Quality numbers are only meaningful *under*.
 
 | model | L1: mlx-lm, standard (bf16) KV | L2: mlx-optiq, mixed-precision KV | proof |
 |---|---|---|---|
-| MiniCPM5-1B | ✓ 100/100 logit vectors | ✓ 100/100 logit vectors | `tests/minicpm5-parity.test.ts`, `tests/minicpm5-kv-parity.test.ts` |
-| gemma-4-e4b | ✓ | ✓ | `tests/parity.test.ts`, `tests/kv-quant.test.ts` |
-| gemma-4-12B | ✓ | ✓ | `tests/parity.test.ts`, `tests/kv-quant.test.ts` |
-| gemma-4-26B | ✓ | ✓ (mixed per-layer scheme) | `tests/parity-26b.test.ts`, `tests/rotating-kvq.test.ts` |
+| MiniCPM5-1B | ✓ 100/100 logit vectors | ✓ 100/100 logit vectors | `tests/parity/minicpm5-parity.test.ts`, `tests/parity/minicpm5-kv-parity.test.ts` |
+| gemma-4-e4b | ✓ | ✓ | `tests/parity/parity.test.ts`, `tests/parity/kv-quant.test.ts` |
+| gemma-4-12B | ✓ | ✓ | `tests/parity/parity.test.ts`, `tests/parity/kv-quant.test.ts` |
+| gemma-4-26B | ✓ | ✓ (mixed per-layer scheme) | `tests/parity/parity-26b.test.ts`, `tests/parity/rotating-kvq.test.ts` |
 
 Fused quantized-attention prefill is separately bit-exact against
-optiq's reference (`tests/fused-sdpa.test.ts`).
+optiq's reference (`tests/parity/fused-sdpa.test.ts`).
 
 ### GLM-5.2 direct-Colibri oracle closure — M1 Max 32 GB
 

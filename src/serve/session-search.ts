@@ -258,7 +258,7 @@ export async function searchSessions(sessionDir: string, query: string): Promise
    REST handlers — pure (URL) => Response, no `ctx` dependency, same
    convention as src/memory/rest.ts / src/hub-rest.ts (dispatched from
    server.ts by path+method; unit-tested directly in
-   tests/session-search.test.ts without booting a model context).
+   tests/serve/session-search.test.ts without booting a model context).
    ──────────────────────────────────────────────────────────────────── */
 
 function jsonOk<T extends object>(body: T, init?: ResponseInit): Response {

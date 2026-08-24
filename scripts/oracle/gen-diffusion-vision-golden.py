@@ -7,7 +7,7 @@
 #
 #   <oracle-venv>/bin/python scripts/oracle/gen-diffusion-vision-golden.py
 #
-# Companion: tests/diffusion-vision.test.ts. Fixture grad-768.png (768x768,
+# Companion: tests/parity/diffusion-vision.test.ts. Fixture grad-768.png (768x768,
 # resize-free → bit-exact preprocessing).
 
 import sys, os, json, hashlib

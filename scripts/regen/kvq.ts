@@ -25,8 +25,8 @@
 //   <out>/kv-quant.json         — prompt ids + fp16/kv8/kv4 greedy ids
 //   <out>/kvq-logits-{fp16,kv8,kv4}.bin — last-position logits (f32)
 
-import { ORACLE_PYTHON, SNAPSHOT } from "../../tests/paths";
-import { goldenAt, goldenOutDir } from "../../tests/goldens";
+import { ORACLE_PYTHON, SNAPSHOT } from "../../tests/support/paths";
+import { goldenAt, goldenOutDir } from "../../tests/support/goldens";
 import { mkdirSync } from "node:fs";
 
 const OUT = goldenOutDir();

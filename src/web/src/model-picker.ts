@@ -85,7 +85,7 @@ function renderRow(m: LibraryRow): string {
 }
 
 /** Pure render of the popover body from a /library response. Exported for
- *  tests/web-app.test.ts's esc() discipline check (repo ids are
+ *  tests/using/web-app.test.ts's esc() discipline check (repo ids are
  *  user-controlled HF strings — the same class of interpolation hazard
  *  finding #15 flagged for the adapter dropdown). */
 export function renderModelPopBodyHtml(models: LibraryRow[]): string {

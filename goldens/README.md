@@ -20,7 +20,7 @@ Bit-exact oracle fixtures for the parity gates (L1 = mlx-lm, L2 = optiq).
   when a fixture is absent), so a fresh clone runs the model-free suite
   untouched and grows its local fixtures by running the regen scripts.
 
-**Layout** (`tests/goldens.ts` resolution): `goldens/<name>` is the
+**Layout** (`tests/support/goldens.ts` resolution): `goldens/<name>` is the
 reference set (the `REFERENCE_MACHINE` box, apple-m4-pro);
 `goldens/<machine-key>/<name>` overrides per machine (e.g. `apple-m1-max/`).
 

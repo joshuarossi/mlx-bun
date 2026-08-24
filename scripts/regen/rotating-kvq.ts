@@ -23,8 +23,8 @@
 // the reference box, goldens/<machine-key>/ elsewhere (bit-exactness is
 // per-GPU).
 
-import { ORACLE_PYTHON, SNAPSHOT } from "../../tests/paths";
-import { goldenOutDir } from "../../tests/goldens";
+import { ORACLE_PYTHON, SNAPSHOT } from "../../tests/support/paths";
+import { goldenOutDir } from "../../tests/support/goldens";
 import { mkdirSync } from "node:fs";
 
 const OUT = goldenOutDir();

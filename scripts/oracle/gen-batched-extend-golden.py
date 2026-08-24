@@ -13,7 +13,7 @@
 # shrink under extend), so this golden is NOT interchangeable with
 # batched-dynamic-golden-*.json — each protocol has its own oracle.
 #
-# Machine-specific like every logit golden — resolve via tests/goldens.ts.
+# Machine-specific like every logit golden — resolve via tests/support/goldens.ts.
 import sys, json
 from optiq.mlx_lm_patches._register import register
 register()

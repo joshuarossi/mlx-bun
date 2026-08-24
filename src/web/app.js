@@ -1,7 +1,7 @@
 // GENERATED — do not edit by hand.
 // Source: src/web/src/*.ts (entrypoint main.ts). To regenerate:
 //   bun scripts/build-web.ts
-// tests/web-build.test.ts enforces that this file matches the source.
+// tests/using/web-build.test.ts enforces that this file matches the source.
 // src/web/src/api.ts
 async function api(path, opts) {
   const { body, ...rest } = opts || {};

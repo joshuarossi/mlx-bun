@@ -20,7 +20,7 @@
 // temporal coordinates then ROLLED to the ring's physical layout — see
 // buildBatchedRotatingMask (a column-by-column port of mlx-lm make_mask,
 // including the `roll(shift=idx+1)`). Gated model-free against mlx-lm
-// (tests/batched-rotating.test.ts) + end-to-end vs a long-context Gemma oracle.
+// (tests/unit/batched-rotating.test.ts) + end-to-end vs a long-context Gemma oracle.
 
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";

@@ -51,12 +51,4 @@ jobs:
       # Model-free suites: pure math/logic + synthetic-checkpoint smokes.
       # No downloads, no cached-model dependencies, no oracle venv.
       - run: >
-          bun test
-          tests/sampling-params.test.ts
-          tests/cli-upload.test.ts
-          tests/universal-archs.test.ts
-          tests/universal-rope.test.ts
-          tests/universal-smoke.test.ts
-          tests/curve-sampler.test.ts
-          tests/train-rank.test.ts
-          tests/train-dataset.test.ts
+          bun test tests/unit tests/serve tests/using

@@ -1,5 +1,5 @@
 # Oracle-dumped fixtures for the model-free universal-rope unit tests
-# (tests/universal-rope.test.ts). Runs in the oracle venv:
+# (tests/parity/universal-rope.test.ts). Runs in the oracle venv:
 #
 #   /Users/joshrossi/Code/mlx-lm/.venv/bin/python scripts/oracle/gen-universal-rope-fixtures.py
 #
@@ -18,7 +18,7 @@
 # fails bit-exactness on the M4 Pro, the batched-goldens failure class).
 # The INPUTS are deterministic host math and identical everywhere.
 #
-# Layout (mirrors tests/goldens.ts): the FLAT set is the reference
+# Layout (mirrors tests/support/goldens.ts): the FLAT set is the reference
 # (apple-m1-max, per manifest.json's oracle stamp — also what CI's M1
 # runners resolve); per-machine overrides live in a subdir named by the
 # machine key. Regenerate for a disagreeing machine with:
@@ -26,7 +26,7 @@
 #   .../python scripts/oracle/gen-universal-rope-fixtures.py <machine-key>
 #
 # e.g. `... gen-universal-rope-fixtures.py apple-m4-pro` (the key from
-# tests/goldens.ts goldenMachine()). tests/universal-rope.test.ts resolves
+# tests/support/goldens.ts goldenMachine()). tests/parity/universal-rope.test.ts resolves
 # <dir>/<machine-key>/<file> first, then the flat file.
 
 import json

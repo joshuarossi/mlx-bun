@@ -119,7 +119,7 @@ function localRowHtml(m: HubLocalRow): string {
 }
 
 /** Pure render, exported for esc()-discipline + empty-state tests
- *  (tests/web-app.test.ts, mirroring renderModelPopBodyHtml's pattern). */
+ *  (tests/using/web-app.test.ts, mirroring renderModelPopBodyHtml's pattern). */
 export function renderHubLocalHtml(models: HubLocalRow[]): string {
   if (!models.length) {
     return '<div class="hub-empty">No models downloaded yet — search Hugging Face below to get one.</div>';

@@ -11,7 +11,7 @@
 //   - NaN-sensitivity handling (treat as maximally sensitive)
 //   - post-greedy block-run guard
 //
-// Verified bit-for-bit against the Python via tests/quantize-allocator.test.ts.
+// Verified bit-for-bit against the Python via tests/parity/quantize-allocator.test.ts.
 //
 // The latency-aware variants (`optimize_latency_aware`,
 // `optimize_for_latency_budget`) are intentionally NOT ported — they pull in

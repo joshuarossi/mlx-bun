@@ -5,7 +5,7 @@
 # force the ring to WRAP — and dumps, per step:
 #   - make_mask(1)            the per-row causal+window+padding+ROLL mask
 #   - per-row extracted keys  (temporal order, padding stripped) = storage check
-# tests/batched-rotating.test.ts replays the identical sequence through our
+# tests/unit/batched-rotating.test.ts replays the identical sequence through our
 # BatchedRotatingCache (src/model/batched-rotating.ts) and asserts both match.
 #
 # Tagged keys (H=D=1): row b's t-th written key = (b+1)*1000 + t, so the

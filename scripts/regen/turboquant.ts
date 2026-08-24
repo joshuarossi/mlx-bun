@@ -28,7 +28,7 @@
 //                                   and can only diverge from the oracle by
 //                                   a bug in the encode/decode math itself.
 
-import { ORACLE_PYTHON } from "../../tests/paths";
+import { ORACLE_PYTHON } from "../../tests/support/paths";
 
 const REPRO_DIR = `${import.meta.dir}/../lab/repro/vllm-metal-turboquant`;
 const GEN_SCRIPT = `${REPRO_DIR}/gen_goldens.py`;

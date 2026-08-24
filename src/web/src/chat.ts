@@ -44,7 +44,7 @@ import { isRouteId } from "./ui-catalog";
 
 /* ────────────────────────────────────────────────────────────────────
    Chat-with-files RAG v1 — Sources panel (plan §9 Phase 3, beat matrix
-   Axis 5). Pure HTML builder so tests/web-app.test.ts can exercise the
+   Axis 5). Pure HTML builder so tests/using/web-app.test.ts can exercise the
    esc() discipline directly, same reasoning as renderAdapterOptionsHtml
    etc. in composer.ts.
    ──────────────────────────────────────────────────────────────────── */

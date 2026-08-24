@@ -67,7 +67,7 @@ neither is canonical; every recorded number carries its host.
 - **Machine-layered goldens.** Logit goldens are bit-exact only on the GPU that
   produced them (M1 vs M4 metallibs diverge at the fast-SDPA dispatch boundary,
   L ≥ 16). `goldens/<name>` is the reference set; `goldens/<machine-key>/<name>`
-  overrides it. All reads go through `tests/goldens.ts`; regen scripts write to
+  overrides it. All reads go through `tests/support/goldens.ts`; regen scripts write to
   `goldenOutDir()` so a non-reference box can never clobber the reference set.
   Any new fixture that encodes logits or greedy tokens MUST go through that
   layer — bypassing it is the recurring failure (fixed twice already).
@@ -83,7 +83,7 @@ neither is canonical; every recorded number carries its host.
 
 - **License headers**: every ported file names its upstream source + license.
 - **Bun upgrade gate**: the bun#32054 regression test and the FFI soak
-  (`tests/ffi-jit.test.ts`) must pass before any version bump.
+  (`tests/unit/ffi-jit.test.ts`) must pass before any version bump.
 - **Quiet-box numbers are owed.** The current serve/prefill/decode matrix was
   measured on a loaded M1 Max; nothing enters `docs/reference/benchmarks.md` as
   canonical until it is re-run under the preflight gate.
@@ -140,7 +140,7 @@ count — this is the research part of the project.
 
 ## Phase 12 — SigLIP vision tower — remaining `[~]`
 
-e4b is served and gated (`tests/e4b-vision.test.ts`); the residual is fidelity
+e4b is served and gated (`tests/parity/e4b-vision.test.ts`); the residual is fidelity
 and coverage, not capability.
 
 - [ ] **Drive Gemma vision to bit-exact.** Every primitive already matches the
@@ -251,7 +251,7 @@ the wrap-around golden, and the tiers above L1.
       solo and merges (that reduction-order difference is why the Gemma golden
       moved to a KL gate). The training path already has the machinery,
       parity-proven: `buildBatchedPadMask` / `BatchedMaskCache` in
-      `src/train/forward.ts` (`tests/train-batch-e2e.test.ts`). Wire serving to
+      `src/train/forward.ts` (`tests/parity/train-batch-e2e.test.ts`). Wire serving to
       prefill B prompts in one forward. Exit: per-row logits bit-exact vs
       mlx-lm B=N on the CPM cell, KL-gated on Gemma.
 - [ ] **Ring-wrap golden (> sliding window).** Every batched L1 cell was
@@ -523,9 +523,7 @@ not killed on taste.
       closure at :2831. Extract the chat handler and the model-host lifecycle
       into `src/serve/` modules behind the existing route-parity tests.
 - Landed 2026-08-23: the batch lane reports real prefill/decode timing (admission→first token→finish marks in `BatchScheduler`; `GenerationGateway` derives tok/s).
-- [ ] **Tests reorg**: 250 flat files in `tests/` → `tests/{unit,serve,using,parity,research}`
-      with CI running by directory (fast tiers on every change, weights-loaded
-      tiers gated). Keep `tests/goldens.ts` resolution intact through the move.
+- Landed 2026-08-24: tests live in `tests/{unit,serve,using}` (CI, model-free) and `tests/{parity,research}` (weights/oracle-gated); `scripts/test.sh` shards by directory; hygiene check 10 keeps weights/opt-in dependencies out of the CI tiers.
 - [ ] **`src/lab/` quarantine + import lint.** Create the directory, move the
       no-oracle experiments into it, and add a lint rule forbidding
       `src/lab/**` imports from production paths. Nothing in the serving path
@@ -545,4 +543,4 @@ Landed so far:
 - 2026-08-23 — `scripts/experiments/` (178 one-offs) and the `scripts/` root
   cleanup deleted; live files homed under `scripts/{oracle,memory,turboquant}/`.
 - 2026-08-24 — one canonical doc per topic, generated docs map, front-matter
-  plan-anchor gate, STATUS/PLAN line caps, `tests/docs-surface.test.ts`.
+  plan-anchor gate, STATUS/PLAN line caps, `tests/unit/docs-surface.test.ts`.

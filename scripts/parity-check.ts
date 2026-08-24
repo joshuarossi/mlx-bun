@@ -3,8 +3,8 @@
 //
 //   bun scripts/parity-check.ts [--steps N]
 
-import { SNAPSHOT } from "../tests/paths";
-import { goldenAt } from "../tests/goldens";
+import { SNAPSHOT } from "../tests/support/paths";
+import { goldenAt } from "../tests/support/goldens";
 import { loadModelConfig } from "../src/config";
 import { Weights } from "../src/weights";
 import { argmaxLastPosition, lastPositionLogits } from "../src/model/gemma4";

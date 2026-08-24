@@ -170,7 +170,7 @@ export function ropeScaled(
  *  of a baked int — required inside compiled decode graphs, where the
  *  offset changes every step but the graph must not. Same kernel as
  *  `rope`; bit-exactness vs the static form is asserted in
- *  tests/compile.test.ts. */
+ *  tests/unit/compile.test.ts. */
 export function ropeDynamic(
   x: MlxArray, dims: number, base: number | null, offset: MlxArray,
   freqs: MlxArray | null, s: S = gpuStream,
@@ -189,7 +189,7 @@ export function ropeDynamic(
  *  the dynamic twin of `ropeScaled`, for the universal rope factory's
  *  batched-decode path (per-row [B] offsets under left-padding). Same
  *  kernel as `ropeDynamic`; static/dynamic bit-exactness is asserted in
- *  tests/compile.test.ts. */
+ *  tests/unit/compile.test.ts. */
 export function ropeScaledDynamic(
   x: MlxArray, dims: number, traditional: boolean, base: number | null,
   scale: number, offset: MlxArray, freqs: MlxArray | null, s: S = gpuStream,
@@ -611,7 +611,7 @@ export function sliceDynamic(
 /** slice_update with the start index as an ARRAY (one int32 per entry in
  *  `axes`) — the compiled-decode form of the per-step cache write. Same
  *  write as `sliceUpdate`; bit-exactness vs the static form is asserted
- *  in tests/compile.test.ts. */
+ *  in tests/unit/compile.test.ts. */
 export function sliceUpdateDynamic(
   src: MlxArray, update: MlxArray, start: MlxArray, axes: number[], s: S = gpuStream,
 ): MlxArray {

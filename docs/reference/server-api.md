@@ -644,7 +644,7 @@ any other served model the route returns `400 invalid_request_error`
   axis the geometry reflects. Omit it for plain document embeddings.
 - Pooling is last-token + L2-normalization (the vectors are unit-length);
   similarity is the dot product. Bit-exact vs the mlx-lm `qwen3` reference
-  (`tests/qwen3-embed-parity.test.ts`).
+  (`tests/parity/qwen3-embed-parity.test.ts`).
 - Response: `{ "object": "list", "data": [{ "object": "embedding", "index":
   0, "embedding": [float…] }, …], "model": "<served id>", "usage": {
   "prompt_tokens": N, "total_tokens": N } }`. Embedding is a single forward
@@ -1461,7 +1461,7 @@ The web chat (`GET /`) and everything it loads same-origin, no CDN, ever
 | Route | Content | Notes |
 | --- | --- | --- |
 | `GET /` | `src/web/app.html` | The unified SPA shell. |
-| `GET /assets/app.js` | `src/web/app.js` | GENERATED from `src/web/src/*.ts` by `bun scripts/build-web.ts` — see `tests/web-build.test.ts`'s freshness gate. |
+| `GET /assets/app.js` | `src/web/app.js` | GENERATED from `src/web/src/*.ts` by `bun scripts/build-web.ts` — see `tests/using/web-build.test.ts`'s freshness gate. |
 | `GET /assets/hljs.js`, `GET /assets/hljs.css` | `src/web/vendor/hljs*` | Vendored syntax highlighting, no CDN. |
 | `GET /manifest.webmanifest` | `src/web/manifest.webmanifest` | PWA manifest. |
 | `GET /assets/icon.svg` | `src/web/icon.svg` | A single inline SVG app icon; no binary PNGs are shipped. |

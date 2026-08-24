@@ -11,7 +11,7 @@
 // block axis + transpose + reshape) and hand that to the unchanged
 // ops.sdpa call site — identical bytes to what a plain KVCache would have
 // fetched, so the paged path is gated bit-exact, not KL-tolerated
-// (tests/paged-kv-parity.test.ts). The gather IS the cost: a full K/V copy
+// (tests/parity/paged-kv-parity.test.ts). The gather IS the cost: a full K/V copy
 // per step, pure bandwidth tax at batch=1 — v1 ships the abstraction for
 // the batched/CoW follow-ups, not a speed win (see the design doc's
 // Motivation, which says this honestly).

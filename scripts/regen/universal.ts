@@ -1,5 +1,5 @@
 // Regenerate universal (Tier-0 generic) parity goldens from the mlx-lm
-// oracle, manifest-driven (tests/universal-manifest.ts).
+// oracle, manifest-driven (tests/support/universal-manifest.ts).
 //
 //   bun scripts/regen.ts universal <prefix>   # one arch
 //   bun scripts/regen.ts universal all        # every DOWNLOADED entry
@@ -13,9 +13,9 @@
 // are downloaded by Josh (`hf download <repo>`), never from a session.
 
 import { existsSync, mkdirSync } from "node:fs";
-import { goldenOutDir } from "../../tests/goldens";
-import { ORACLE_PYTHON } from "../../tests/paths";
-import { UNIVERSAL_MANIFEST } from "../../tests/universal-manifest";
+import { goldenOutDir } from "../../tests/support/goldens";
+import { ORACLE_PYTHON } from "../../tests/support/paths";
+import { UNIVERSAL_MANIFEST } from "../../tests/support/universal-manifest";
 
 const PROMPT = "The capital of France is";
 const STEPS = 12;

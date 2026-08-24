@@ -13,7 +13,7 @@
 //     matches mlx-lm BatchRotatingKVCache (tests/batched-rotating).
 // This module is the ORCHESTRATION on top: admission, the step loop, per-row
 // sampling + token accounting, eviction, and assembling each layer's batched
-// cache by type. Gate: tests/batch-scheduler.test.ts (teacher-forced, KL).
+// cache by type. Gate: tests/parity/batch-scheduler.test.ts (teacher-forced, KL).
 //
 // Per-layer cache types: a model interleaves full-attention layers (plain
 // KVCache, wrapped per step in a BatchedDecodeMaskCache) and sliding-window

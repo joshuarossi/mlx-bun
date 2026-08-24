@@ -12,7 +12,7 @@
 #
 # The oracle is MACHINE-SPECIFIC (greedy argmax over bf16 batched logits flips
 # per-GPU — same metallib split as the logit goldens, PLAN.md "machine-specific
-# goldens"). Committed goldens go through tests/goldens.ts: trim the manifest
+# goldens"). Committed goldens go through tests/support/goldens.ts: trim the manifest
 # (drop the abs-path logits fields, keep prompts/left_padding/steps/
 # trajectories) into goldens/batched-golden-<model>.json on the reference box
 # (apple-m4-pro), or goldens/<machine-key>/ elsewhere.
@@ -32,7 +32,7 @@ MODEL = sys.argv[1] if len(sys.argv) > 1 else \
 OUT = sys.argv[2] if len(sys.argv) > 2 else "/tmp/batched-golden"
 STEPS = 8
 
-# Same prompts as tests/batched-decode-parity.test.ts (prompts[0] longest).
+# Same prompts as tests/parity/batched-decode-parity.test.ts (prompts[0] longest).
 PROMPTS = [
     [1, 100, 200, 300, 400, 500, 600],  # len 7
     [1, 150, 250, 350, 450],            # len 5

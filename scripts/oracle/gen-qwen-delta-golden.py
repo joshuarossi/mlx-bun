@@ -4,7 +4,7 @@
 Runs mlx-lm's `gated_delta_update` (the GPU-kernel path, use_kernel=True) on
 small random inputs at the REAL Qwen3.6-27B head geometry, chained across a
 prefill step (T=3, state=None) and a decode step (T=1, state=state1). Dumps the
-inputs + the y outputs so tests/qwen-delta.test.ts can assert our port is
+inputs + the y outputs so tests/unit/qwen-delta.test.ts can assert our port is
 BIT-EXACT with the reference kernel without loading the 15 GB model.
 
 Run with the oracle venv:

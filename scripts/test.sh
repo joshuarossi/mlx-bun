@@ -19,12 +19,11 @@ bun scripts/check-hygiene.ts || exit 1
 printf '== typecheck (web bundle sources) ==\n'
 bunx tsc -p tsconfig.web.json --noEmit || exit 1
 
-FILES=(tests/*.test.ts)
-N=${#FILES[@]}
-HALF=$((N / 2))
-
-echo "== shard 1/2 (${HALF} files) =="
-bun test "${FILES[@]:0:HALF}" || exit 1
-echo "== shard 2/2 ($((N - HALF)) files) =="
-bun test "${FILES[@]:HALF}" || exit 1
+# Shard by DIRECTORY (the directory IS the gate): model-free suites first,
+# then the weights/oracle-gated tiers in their own process so GPU residency
+# from one heavy suite cannot OOM the next (an uncatchable std::terminate).
+echo "== shard 1/2: tests/unit tests/serve tests/using (model-free) =="
+bun test tests/unit tests/serve tests/using || exit 1
+echo "== shard 2/2: tests/parity tests/research (weights/oracle-gated) =="
+bun test tests/parity tests/research || exit 1
 echo "== all shards green =="

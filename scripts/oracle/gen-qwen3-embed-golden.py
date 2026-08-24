@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Generate Qwen3-Embedding parity goldens from the mlx-lm reference (the L1
-# oracle). Companion to tests/qwen3-embed-parity.test.ts — the mlx-bun side runs
+# oracle). Companion to tests/parity/qwen3-embed-parity.test.ts — the mlx-bun side runs
 # the SAME token ids through its Qwen3Model and compares hidden states + the
 # pooled embedding.
 #

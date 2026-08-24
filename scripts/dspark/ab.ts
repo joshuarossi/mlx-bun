@@ -16,7 +16,7 @@
 // FINAL pre/post pair still belongs on a clean machine (house rule).
 //
 // GPU run — Josh's shell. The stats/verdict math is model-free and
-// unit-tested (src/spec/dspark/ab-stats.ts, tests/dspark-ab-stats.test.ts).
+// unit-tested (src/spec/dspark/ab-stats.ts, tests/using/dspark-ab-stats.test.ts).
 
 import { Registry } from "../../src/registry";
 import { loadModelConfig } from "../../src/config";

@@ -391,7 +391,7 @@ export class Qwen3Attention {
     // Batched decode: the scheduler's mask wrapper exposes each row's REAL
     // position as ropeOffsetArr (rows have different prompt lengths); the
     // dynamic-offset kernel is the same fast::rope, bit-exact vs the static
-    // form (tests/compile.test.ts). Serial lane: scalar offset, unchanged.
+    // form (tests/unit/compile.test.ts). Serial lane: scalar offset, unchanged.
     // Vision requests (serial lane only) install activeMrope for the current
     // forward: 3D interleaved positions via the manual apply — the reference
     // never uses the fused fast-rope kernel when position_ids are supplied,

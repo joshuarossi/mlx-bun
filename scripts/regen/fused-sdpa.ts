@@ -17,8 +17,8 @@
 // wrapper) so no fallback path can silently swap in the unfused
 // reference.
 
-import { ORACLE_PYTHON } from "../../tests/paths";
-import { goldenOutDir } from "../../tests/goldens";
+import { ORACLE_PYTHON } from "../../tests/support/paths";
+import { goldenOutDir } from "../../tests/support/goldens";
 import { mkdirSync } from "node:fs";
 
 const OUT = goldenOutDir();

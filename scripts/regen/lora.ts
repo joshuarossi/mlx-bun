@@ -11,8 +11,8 @@
 //   <out>/lora-<id>.json        — prompt ids, greedy prefix
 //   <out>/lora-<id>-logits.bin  — step-0 last-position logits (f32)
 
-import { ORACLE_PYTHON } from "../../tests/paths";
-import { goldenOutDir } from "../../tests/goldens";
+import { ORACLE_PYTHON } from "../../tests/support/paths";
+import { goldenOutDir } from "../../tests/support/goldens";
 import { mkdirSync } from "node:fs";
 
 const OUT = goldenOutDir();

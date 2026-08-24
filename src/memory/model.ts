@@ -38,7 +38,7 @@ const E4B_REPO = "models--mlx-community--gemma-4-e4b-it-OptiQ-4bit";
 /** Resolve the e4b snapshot dir by globbing snapshots/ for the one carrying
  *  config.json — so a freshly-downloaded model needs no hardcoded commit hash.
  *  Returns an _unresolved sentinel (precheck → STOP) until the download lands.
- *  Mirrors tests/paths.ts hfSnapshot / SNAPSHOT_E4B, inlined to keep src self-
+ *  Mirrors tests/support/paths.ts hfSnapshot / SNAPSHOT_E4B, inlined to keep src self-
  *  contained (no src→tests dependency). */
 function resolveE4bSnapshot(): string {
   const base = `${HF_HUB}/${E4B_REPO}/snapshots`;

@@ -34,8 +34,8 @@
 //                                      steps 0..3 (step 0 = bf16 prefill
 //                                      output; 1..3 read quantized caches)
 
-import { ORACLE_PYTHON, SNAPSHOT } from "../../tests/paths";
-import { goldenAt, goldenOutDir } from "../../tests/goldens";
+import { ORACLE_PYTHON, SNAPSHOT } from "../../tests/support/paths";
+import { goldenAt, goldenOutDir } from "../../tests/support/goldens";
 import { mkdirSync } from "node:fs";
 
 const OUT = goldenOutDir();

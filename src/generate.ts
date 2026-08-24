@@ -180,7 +180,7 @@ export function evalCacheState(cache: Cache[]): void {
  *    layers' bf16 K/V as graph inputs alongside ALL quantized outputs —
  *    the exact transient optiq's fix kills (16.35 → 7.60 GB at 32k on a
  *    24 GB Mac). Numerics untouched: same quantize math, only the eval
- *    ordering is forced (tests/kv-quant.test.ts, tests/rotating-kvq.test.ts). */
+ *    ordering is forced (tests/parity/kv-quant.test.ts, tests/parity/rotating-kvq.test.ts). */
 export function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void {
   const { kvBits, kvConfig, turboQuant } = options;
   if (turboQuant) {
@@ -780,7 +780,7 @@ async function* generateInner(
       }
       // Under tailSplit this is exactly [promptTokens[len-1]] — the L=1
       // step-0 forward (uncompiled L=1 is bit-exact with compiled decode,
-      // tests/compiled-decode.test.ts). The last prompt token's KV enters
+      // tests/parity/compiled-decode.test.ts). The last prompt token's KV enters
       // the cache HERE, so downstream bookkeeping (forwarded[], cacheTokens,
       // PromptCache.put alignment) is unchanged: after step 0 the caches
       // cover exactly the prompt, as before.
@@ -828,7 +828,7 @@ async function* generateInner(
     // ---- decode (pipelined) ----
     // Compiled decode (docs/archive/investigations/optimization_plan.md Phase A): replay the per-step
     // graph in C++ instead of rebuilding it through bun:ffi every token.
-    // Bit-exact with the uncompiled path (tests/compiled-decode.test.ts);
+    // Bit-exact with the uncompiled path (tests/parity/compiled-decode.test.ts);
     // MLX_BUN_COMPILED_DECODE=0 is the kill switch / A-B lever. LoRA
     // generations stay uncompiled (adapter weights would bake into the
     // trace as constants). Any unsupported cache state falls back for

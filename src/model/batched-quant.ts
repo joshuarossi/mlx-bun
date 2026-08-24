@@ -17,7 +17,7 @@
 // (maybeQuantizeKv at chunk boundaries — see BatchScheduler.#quantizeSolo),
 // so a row's quantized bytes are bit-exact vs serial `--kv-quant config` by
 // construction; this module only re-arranges those bytes across the batch
-// axis. Gates: tests/batched-kv-quant-parity.test.ts.
+// axis. Gates: tests/parity/batched-kv-quant-parity.test.ts.
 
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";

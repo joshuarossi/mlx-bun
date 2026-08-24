@@ -156,7 +156,7 @@ export async function gradeAnswer(client: Anthropic, c: AnswerCase): Promise<Ans
 // ---- labeled self-test set (the P9-T1 acceptance: 5 graded cases) -----------
 // Schematic answers in the fixture-vault (lens) domain; each carries its
 // expected verdict. The silentViolation dimension is fully determinable by the
-// regex (no key), which is what tests/memory-judge-answer.test.ts asserts; the
+// regex (no key), which is what tests/using/memory-judge-answer.test.ts asserts; the
 // `correct` dimension is what the model-call path (RunJudge / sub-agent) scores.
 export interface AnswerFixture {
   case: AnswerCase;

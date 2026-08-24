@@ -270,7 +270,7 @@ export class GenerationGateway {
       // padded rows at wrong positions) is fixed via
       // UniversalRope.applyDynamic + ropeOffsetArr and GATED token-exact vs
       // mlx-lm B=2 on Llama-3.2-3B (static + dynamic join/leave,
-      // tests/batched-decode-parity.test.ts "Llama 3B Tier-0"). The
+      // tests/parity/batched-decode-parity.test.ts "Llama 3B Tier-0"). The
       // maskArray archs (gemma2-family: forwardLayers builds a pad-blind
       // causal mask) and sliding-window universal archs remain UNVALIDATED
       // cells → serial, per the per-model-cell discipline.

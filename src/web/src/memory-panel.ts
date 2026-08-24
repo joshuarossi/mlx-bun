@@ -394,7 +394,7 @@ export async function refreshSidebarEntry(): Promise<void> {
 // by a literal list rather than an import: this module must stay
 // server-code-free (bundler-enforced, see chat.ts's header comment), so it
 // can't import a value from src/memory/tools.ts even though the identifiers
-// are the same. tests/web-app.test.ts cross-checks this list against the
+// are the same. tests/using/web-app.test.ts cross-checks this list against the
 // real export so drift is caught at test time instead of silently.
 export const MEMORY_CHIP_TOOL_NAMES = [
   "memory_resolve", "memory_category", "memory_read", "memory_section",

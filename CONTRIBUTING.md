@@ -11,7 +11,7 @@ These rules are enforced by `scripts/check-hygiene.ts` (runs in
 check (tracked or not), `docs/archive/` .md-only, `scripts/` root allowlist,
 doc script-path validity, design-doc front matter (status/axis/anchor),
 STATUS ≤150 / PLAN ≤800 line caps, and the generated `docs/README.md` map
-(`--write-docs-map`). `tests/docs-surface.test.ts` diffs the served surface
+(`--write-docs-map`). `tests/unit/docs-surface.test.ts` diffs the served surface
 (serve flags, HTTP routes) against `docs/reference/server-config.md` and
 `server-api.md` in CI.
 
@@ -19,7 +19,8 @@ STATUS ≤150 / PLAN ≤800 line caps, and the generated `docs/README.md` map
 
 | thing | home | tracked? |
 |---|---|---|
-| source / tests / production scripts | `src/` `tests/` `scripts/` | yes |
+| source / production scripts | `src/` `scripts/` (root allowlisted; job families in `scripts/{regen,dspark,bench,oracle,memory,turboquant,examples,packaging}/`) | yes |
+| tests — the directory IS the gate | `tests/unit` `tests/serve` `tests/using` (model-free, run in CI) · `tests/parity` `tests/research` (weights / oracle venv / opt-in; never in CI) · `tests/support` helpers · `tests/fixtures` | yes |
 | one-off research & debug scripts | nowhere — write the finding into a doc, then delete the script (git is the archive; `scripts/experiments/` removed 2026-08-23) | no |
 | user-facing docs | `docs/reference/`, `README.md` | yes |
 | engineering docs for ACTIVE work | `docs/design/` | yes — and **archived to `docs/archive/` when the work closes** |
@@ -73,7 +74,11 @@ STATUS ≤150 / PLAN ≤800 line caps, and the generated `docs/README.md` map
 ## Code standards
 
 Whole-repo `tsc --noEmit` stays at 0, including every script under `scripts/`.
-Tests gate on fixture presence and skip cleanly when weights are absent.
+Tests gate on fixture presence and skip cleanly when weights are absent;
+a test that needs weights, the oracle venv, or an `MLX_BUN_TEST_*` opt-in
+lives under `tests/parity/` or `tests/research/`, never under the CI dirs.
+`bash scripts/test.sh` runs hygiene → typecheck → the model-free tier →
+the gated tier (two processes, so GPU residency never crosses suites).
 Reference docs (server-config.md, server-api.md, cli.md, models.md)
-update in the SAME commit as any served-surface change (gate: tests/docs-surface.test.ts). Commit messages:
+update in the SAME commit as any served-surface change (gate: tests/unit/docs-surface.test.ts). Commit messages:
 `<type>: <description>` (feat/fix/refactor/test/docs/chore/perf).

@@ -8,8 +8,8 @@
 //   <goldenOutDir>/minicpm5-logits-step<i>.bin
 
 import { mkdirSync } from "node:fs";
-import { goldenOutDir } from "../../tests/goldens";
-import { ORACLE_PYTHON, SNAPSHOT_MINICPM5 } from "../../tests/paths";
+import { goldenOutDir } from "../../tests/support/goldens";
+import { ORACLE_PYTHON, SNAPSHOT_MINICPM5 } from "../../tests/support/paths";
 
 const OUT = goldenOutDir();
 mkdirSync(OUT, { recursive: true });

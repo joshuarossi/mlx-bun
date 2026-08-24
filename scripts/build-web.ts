@@ -11,7 +11,7 @@
 // Run this after editing anything under src/web/src/*.ts:
 //   bun scripts/build-web.ts
 //
-// tests/web-build.test.ts re-runs this exact Bun.build() in-memory and
+// tests/using/web-build.test.ts re-runs this exact Bun.build() in-memory and
 // byte-compares against the committed file, so a stale bundle fails CI
 // with a clear "run: bun scripts/build-web.ts" message instead of silently
 // serving drifted JS.
@@ -26,11 +26,11 @@ export const OUTFILE = join(ROOT, "src/web/app.js");
 const HEADER = `// GENERATED — do not edit by hand.
 // Source: src/web/src/*.ts (entrypoint main.ts). To regenerate:
 //   bun scripts/build-web.ts
-// tests/web-build.test.ts enforces that this file matches the source.
+// tests/using/web-build.test.ts enforces that this file matches the source.
 `;
 
 /** Runs the actual Bun.build() for the web bundle. Exported so
- *  tests/web-build.test.ts can call the identical build in-memory and
+ *  tests/using/web-build.test.ts can call the identical build in-memory and
  *  byte-compare instead of duplicating the Bun.build() call/options. */
 export async function buildWebBundle(): Promise<string> {
   const result = await Bun.build({

@@ -7,7 +7,7 @@
 #
 #   /Users/joshrossi/Code/mlx-lm/.venv/bin/python scripts/oracle/gen-diffusion-gen-golden.py
 #
-# Companion: tests/diffusion-gen-parity.test.ts.
+# Companion: tests/parity/diffusion-gen-parity.test.ts.
 
 import sys, os, json
 import numpy as np

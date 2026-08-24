@@ -3,7 +3,7 @@
 // like qwen3.ts, with every arch delta selected by the UniversalArgs
 // descriptor (archs.ts). Monolith path only: no compiled
 // decode, no kv-quant — slow, never broken. The bar is L1 bit-exactness
-// vs mlx-lm on this machine's GPU (tests/universal-parity.test.ts).
+// vs mlx-lm on this machine's GPU (tests/parity/universal-parity.test.ts).
 //
 // Porting discipline: each branch transcribes its mlx-lm source op-for-op
 // (q/k-norm before vs after reshape, rope order, scale points, softcap,

@@ -293,7 +293,7 @@ see the flags table).
 
 | Env var | Default | Effect |
 |---|---|---|
-| `MLX_BUN_TRAIN_ATTN` | unset → `ops.sdpa` | `ops.sdpa` **is** mlx's fused flash-attention kernel with an exact vjp — the working path. `flash` selects a hand-rolled O(L)-memory kernel: FD-validated at T≤256 (`tests/flash-attention.test.ts`) but ~30× slower, and the trainer **refuses it for Gemma models** (e4b SIGTRAPed at seq ≥2048 and has not been re-validated at that scale). Leave unset. |
+| `MLX_BUN_TRAIN_ATTN` | unset → `ops.sdpa` | `ops.sdpa` **is** mlx's fused flash-attention kernel with an exact vjp — the working path. `flash` selects a hand-rolled O(L)-memory kernel: FD-validated at T≤256 (`tests/unit/flash-attention.test.ts`) but ~30× slower, and the trainer **refuses it for Gemma models** (e4b SIGTRAPed at seq ≥2048 and has not been re-validated at that scale). Leave unset. |
 | `MLX_BUN_MEM_LOG` | off | `1` prints per-step peak/active/cache memory |
 | `MLX_BUN_SEG_MEM_LOG` | off | `1` logs the within-step peak after each segmented phase (forward / head vjp / each segment) |
 | `MLX_BUN_SEG_HEAD` | `checkpoint` | bounded head inside the segmented vjp: `checkpoint` (per-chunk recompute) or `fused` |

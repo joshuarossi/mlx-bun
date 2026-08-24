@@ -9,7 +9,7 @@
 //
 // Records eval-DB rows per arm.
 
-import { SNAPSHOT } from "../../tests/paths";
+import { SNAPSHOT } from "../../tests/support/paths";
 import { peakMemory, resetPeakMemory, clearCache } from "../../src/mlx/ffi";
 import { configureRuntime } from "../../src/runtime-config";
 

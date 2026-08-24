@@ -11,7 +11,7 @@
 // rest of server.ts's /api/* conventions. Route dispatch (matching
 // url.pathname + method) lives in server.ts; this file is the pure handler
 // bodies so they're unit-testable without booting a model context (see
-// tests/memory-rest.test.ts).
+// tests/using/memory-rest.test.ts).
 
 import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";

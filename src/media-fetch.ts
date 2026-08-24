@@ -17,7 +17,7 @@
 // preserving the logical Host header and HTTPS SNI, so the transport cannot
 // re-resolve to a private address between validation and connect.
 //
-// This module must stay free of mlx imports so tests/media-fetch.test.ts
+// This module must stay free of mlx imports so tests/unit/media-fetch.test.ts
 // runs model-free.
 
 import { lookup } from "node:dns/promises";

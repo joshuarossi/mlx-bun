@@ -1158,7 +1158,7 @@ function appAwareTextResult(text: string, details: unknown = {}): { content: [{ 
  *  null before the first one arrives); `notify` sends a ServerMessage
  *  (ui_navigate/ui_spotlight) to that same browser tab. Pure enough to
  *  unit test the tool -> frame mapping via a fake notify collecting sent
- *  frames (tests/pi-web.test.ts). */
+ *  frames (tests/research/pi-web.test.ts). */
 export function createAppAwareTools(
   getContext: () => AppUiContext | null,
   notify: (msg: ServerMessage) => void,
@@ -1267,7 +1267,7 @@ class PiWebSession {
    *  "Per-message sampling scope" block comment above composeSampling for
    *  the full lifecycle. Wrapped in SamplingScopeState (not two loose
    *  fields) so the exact same applySetSampling/consumeForRequest pure
-   *  functions run here and in tests/pi-web.test.ts. */
+   *  functions run here and in tests/research/pi-web.test.ts. */
   private samplingScope: SamplingScopeState = initialSamplingScopeState();
   /** User's custom system-prompt text for this connection (set via
    *  set_system_prompt), null = none. Read by the before_agent_start hook

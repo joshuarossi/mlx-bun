@@ -22,9 +22,9 @@
 // every step; it self-tracks per-row offset/leftPad and the scalar ring
 // state. N=1 decode updates only (rows solo-prefill serially, then merge).
 //
-// Gates: tests/batched-rotating-quant.test.ts (model-free byte-identity vs
+// Gates: tests/unit/batched-rotating-quant.test.ts (model-free byte-identity vs
 // the serial oracle per row, through ring wrap, B=1 and B=2) + the gemma
-// scheduler gate in tests/batched-kv-quant-parity.test.ts.
+// scheduler gate in tests/parity/batched-kv-quant-parity.test.ts.
 
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";

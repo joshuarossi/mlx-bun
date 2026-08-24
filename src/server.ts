@@ -24,7 +24,7 @@ import hljsJs from "./web/vendor/hljs.js" with { type: "text" };
 import hljsCss from "./web/vendor/hljs-theme.css" with { type: "text" };
 // The frontend bundle (plan §7/§9 Phase 2 module split): GENERATED from
 // src/web/src/*.ts by `bun scripts/build-web.ts` — see that file's header
-// and tests/web-build.test.ts (the freshness gate). Same
+// and tests/using/web-build.test.ts (the freshness gate). Same
 // with { type: "text" } + /assets/<name> pattern as the vendored assets
 // above; app.html's <script defer src="/assets/app.js"> loads it.
 import appJs from "./web/app.js" with { type: "text" };

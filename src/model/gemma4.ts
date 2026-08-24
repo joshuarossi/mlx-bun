@@ -242,7 +242,7 @@ class Attention {
   /** A number offset takes the static fast::rope; an array offset (set by
    *  compiled-decode trace adapters) takes the dynamic variant — same
    *  kernel, offset read from the array (bit-exactness asserted in
-   *  tests/compile.test.ts). */
+   *  tests/unit/compile.test.ts). */
   rope(x: MlxArray, offset: number | MlxArray): MlxArray {
     return typeof offset === "number"
       ? ops.rope(x, this.headDim, this.ropeBase, offset, this.ropeFreqs)
@@ -370,7 +370,7 @@ class Attention {
       // verified route: its dQ/dK/dV vjps are exact (finite-difference checked;
       // it's what mlx-lm's tuner differentiates). The two historical bugs were
       // in THIS flash kernel (spurious dK transpose, divergent dQ barrier),
-      // both fixed and gated by tests/flash-attention.test.ts vs the ops.sdpa
+      // both fixed and gated by tests/unit/flash-attention.test.ts vs the ops.sdpa
       // oracle — see flash-attention.ts's routing comment. Flash also remains
       // Gemma-guarded in the trainer (e4b >=2K SIGTRAP not yet re-validated).
       // Full layers → window 0 (pure causal); sliding layers → their window.

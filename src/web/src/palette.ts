@@ -39,7 +39,7 @@ interface PaletteAction {
 }
 
 /** Pure: the static action list, independent of any live session data —
- *  independently testable (tests/web-app.test.ts asserts labels/ids without
+ *  independently testable (tests/using/web-app.test.ts asserts labels/ids without
  *  needing a DOM). Session rows and message-search hits are appended
  *  dynamically in refreshResults() below, not part of this list. */
 export function staticActions(): PaletteAction[] {

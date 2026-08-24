@@ -1,6 +1,6 @@
 # Universal-parity golden generator — runs INSIDE the oracle venv
 # (/Users/joshrossi/Code/mlx-lm/.venv/bin/python; resolved by
-# scripts/regen.ts universal via tests/paths.ts ORACLE_PYTHON).
+# scripts/regen.ts universal via tests/support/paths.ts ORACLE_PYTHON).
 #
 #   python scripts/oracle/gen-universal-golden.py <snapshot> <prompt> <steps> <outdir> <prefix> <repo_id>
 #
@@ -11,7 +11,7 @@
 # Explicit token ids only (no cross-stack tokenizer dependency at test
 # time). Logit goldens are bit-exact ONLY on the GPU that produced them —
 # run this on the same machine the parity test runs on (the .ts wrapper
-# routes output through tests/goldens.ts goldenOutDir()).
+# routes output through tests/support/goldens.ts goldenOutDir()).
 
 import json
 import platform

@@ -9,9 +9,9 @@
 // docs/reference/server-api.md), with compatible-graying and a why-not
 // tooltip. Actions: mount, select, unselect, and stack two compatible
 // adapters as "a+b" — resolveSpec/injectAdapter already support composite
-// ids end to end (proved in tests/pi-web.test.ts's stacking test; the
+// ids end to end (proved in tests/research/pi-web.test.ts's stacking test; the
 // shape-validated mount is proved against real weights in the
-// MLX_BUN_TEST_LORA=1-gated tests/lora.test.ts).
+// MLX_BUN_TEST_LORA=1-gated tests/parity/lora.test.ts).
 //
 // Single source of SELECTION state, not a single fetch: composer.ts's quick
 // <select> and this table each hit /v1/adapters(+/available) independently
@@ -158,7 +158,7 @@ export function renderAdapterRow(
 }
 
 /** Full table body: a stack-mode toggle + composed-spec bar (when picks
- *  exist), then one section of rows. Exported so tests/web-app.test.ts can
+ *  exist), then one section of rows. Exported so tests/using/web-app.test.ts can
  *  exercise esc() discipline without a live DOM/network. */
 export function renderAdaptersBodyHtml(state: AdaptersPanelState): string {
   if (!state.available.length) {

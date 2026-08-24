@@ -23,14 +23,14 @@
 // automatically.
 
 import { existsSync, mkdirSync } from "node:fs";
-import { goldenOutDir } from "../../tests/goldens";
+import { goldenOutDir } from "../../tests/support/goldens";
 import {
   ORACLE_PYTHON,
   SNAPSHOT_QWEN3_MOE,
   SNAPSHOT_QWEN35,
   SNAPSHOT_QWEN35_4B,
   SNAPSHOT_QWEN38,
-} from "../../tests/paths";
+} from "../../tests/support/paths";
 
 const MODELS: Record<string, { snapshot: string; prefix: string }> = {
   "38": { snapshot: SNAPSHOT_QWEN38, prefix: "qwen38" },

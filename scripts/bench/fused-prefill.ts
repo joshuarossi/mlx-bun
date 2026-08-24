@@ -14,7 +14,7 @@
 // non-pristine machine, throughput numbers are NOT headline-quotable
 // unless machine_state is clean (standing rule).
 
-import { SNAPSHOT } from "../../tests/paths";
+import { SNAPSHOT } from "../../tests/support/paths";
 import { peakMemory, resetPeakMemory } from "../../src/mlx/ffi";
 
 const CTX = 16384;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Generate the optiq e4b SigLIP-vision ORACLE for tests/e4b-vision.test.ts.
+# Generate the optiq e4b SigLIP-vision ORACLE for tests/parity/e4b-vision.test.ts.
 # Run with the oracle venv:
 #   <oracle-venv>/bin/python scripts/oracle/gen-e4b-vision-golden.py <model-dir> [image] [out.json]
 #

@@ -19,13 +19,13 @@
 # (src/model/batched-mask.ts) must drive a real batched decode whose per-row
 # greedy trajectory matches mlx-lm's BatchKVCache here, token-for-token.
 #
-# The mlx-bun side (tests/batched-decode-parity.test.ts, realDynamicBatchedGreedy)
+# The mlx-bun side (tests/parity/batched-decode-parity.test.ts, realDynamicBatchedGreedy)
 # executes the IDENTICAL protocol with our primitives. Greedy argmax, so the
 # comparison is exact per-row token trajectories.
 #
 # The oracle is MACHINE-SPECIFIC (greedy argmax over bf16 batched logits flips
 # per-GPU — see PLAN.md "machine-specific goldens"), so the committed golden is
-# resolved via tests/goldens.ts: write <out> to
+# resolved via tests/support/goldens.ts: write <out> to
 # goldens/batched-dynamic-golden-cpm.json on the reference box (apple-m4-pro),
 # or goldens/<machine-key>/batched-dynamic-golden-cpm.json elsewhere.
 import sys, json

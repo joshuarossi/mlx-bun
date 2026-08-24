@@ -2,7 +2,7 @@
 //
 // Companion to src/train/forward.ts's buildBatchedPadMask, which builds the
 // PREFILL mask ([B,1,L,L], offset 0, right-padded — the training case, already
-// parity-proven by tests/train-batch-e2e.test.ts). This module covers the
+// parity-proven by tests/parity/train-batch-e2e.test.ts). This module covers the
 // DECODE case for batched serving: left-padded rows sharing one growing
 // [B,H,S,D] KV buffer, where a step forwards N new query tokens at a nonzero
 // offset. (The two builders should be consolidated when batched prefill is

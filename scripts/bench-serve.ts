@@ -120,7 +120,7 @@ export function scaledBudgetMs(
   return Math.max(minMs, (tokens / tps) * 1000 * safety);
 }
 
-// ---- model registry (paths mirror tests/paths.ts conventions) -------------
+// ---- model registry (paths mirror tests/support/paths.ts conventions) -------------
 const HF = `${process.env.HOME}/.cache/huggingface/hub`;
 const MODELS: Record<string, { path: string; label: string; needsOptiqRegister?: boolean }> = {
   cpm5: {
@@ -353,7 +353,7 @@ function fillerPrompt(targetTokens: number, nonce: string, charsPerTok = 3.6): s
   return s + " In one short sentence, what is this text about?";
 }
 
-// ---- parity verdicts (B2, pure — tested in tests/bench-serve-verdict.test.ts)
+// ---- parity verdicts (B2, pure — tested in tests/unit/bench-serve-verdict.test.ts)
 
 /** One verdict line for one probe of one arm pair. prompt_tokens equality
  *  is the HARD precondition: unequal counts mean the stacks tokenized (or

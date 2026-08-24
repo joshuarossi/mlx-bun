@@ -26,7 +26,7 @@
 import { checkMachine, machineStateJson } from "../src/preflight";
 import { EvalDB, gitCommit } from "../src/evaldb";
 import { Registry, type ModelRecord } from "../src/registry";
-import { ORACLE_VENV } from "../tests/paths";
+import { ORACLE_VENV } from "../tests/support/paths";
 import { existsSync } from "node:fs";
 import { hostname, totalmem } from "node:os";
 
@@ -709,7 +709,7 @@ function renderTable(sinceTs: number): string {
   out.push(
     "## Comparison 1 — mlx-bun vs mlx-lm (bf16 KV) — requirement: bit parity",
     "",
-    "Parity (per-step logits + greedy tokens vs the mlx-lm oracle): `bun scripts/parity-check.ts` / `tests/parity.test.ts`. Numbers below are speed only.",
+    "Parity (per-step logits + greedy tokens vs the mlx-lm oracle): `bun scripts/parity-check.ts` / `tests/parity/parity.test.ts`. Numbers below are speed only.",
     "",
   );
   const s1 = pairSection(cells, "mlx-lm", "off", "off");
@@ -719,7 +719,7 @@ function renderTable(sinceTs: number): string {
   out.push(
     "## Comparison 2 — mlx-bun vs optiq (mixed kv_config) — requirement: bit parity",
     "",
-    "Mixed-KV bit parity is verified against the DIRECT optiq mixed-KV golden (`tests/mixed-kv-parity.test.ts`, per-step logits bit-exact) plus ours-fast vs ours-monolith (`tests/generated-parity.test.ts`). Numbers below are speed only.",
+    "Mixed-KV bit parity is verified against the DIRECT optiq mixed-KV golden (`tests/parity/mixed-kv-parity.test.ts`, per-step logits bit-exact) plus ours-fast vs ours-monolith (`tests/parity/generated-parity.test.ts`). Numbers below are speed only.",
     "",
   );
   const s2 = pairSection(cells, "optiq", "config", "config");
@@ -853,7 +853,7 @@ function renderTable(sinceTs: number): string {
       "quoting it; pair verdicts touching it are withheld. (Preflight ‡ does NOT predict this — the " +
       "2026-07-05 pass was preflight-clean yet had a 40-min slow window; spread is the direct signal.)",
     );
-  footer.push("Comparison 2 bit parity: direct optiq mixed-KV golden verified by `tests/mixed-kv-parity.test.ts` (producer: `scripts/regen.ts mixed-kv` — bf16 prefill → per-layer quantize → stock unfused decode, logits bit-exact). Numbers above are the speed pairing on top of that verdict.");
+  footer.push("Comparison 2 bit parity: direct optiq mixed-KV golden verified by `tests/parity/mixed-kv-parity.test.ts` (producer: `scripts/regen.ts mixed-kv` — bf16 prefill → per-layer quantize → stock unfused decode, logits bit-exact). Numbers above are the speed pairing on top of that verdict.");
   if (footer.length) out.push("", ...footer);
   if (failures.length) {
     out.push("", "## attempted but failed", "");

@@ -11,8 +11,8 @@
 //   <out>/logits-26b-step<i>.bin   — full last-position logits (f32)
 //   <out>/logits-26b-kvmix.bin     — mixed-precision KV single-forward logits
 
-import { ORACLE_PYTHON, SNAPSHOT_26B } from "../../tests/paths";
-import { goldenOutDir } from "../../tests/goldens";
+import { ORACLE_PYTHON, SNAPSHOT_26B } from "../../tests/support/paths";
+import { goldenOutDir } from "../../tests/support/goldens";
 import { mkdirSync } from "node:fs";
 
 const OUT = goldenOutDir();
