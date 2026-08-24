@@ -279,11 +279,11 @@ At long `max_seq_length`, activation memory dominates. Two levers:
   O(L²) backward memory. Use this.
 - **`flash`** — opt-in O(L)-memory path. Its two port bugs (dK
   buffer-transpose, dQ divergent causal barrier) were **fixed** and
-  FD-validated (`scripts/experiments/flash-fd-check.ts`; regression test
+  FD-validated (`flash-fd-check.ts (deleted 2026-08-23; git history)`; regression test
   `tests/flash-attention.test.ts`, T≤256), but it remains ~30× slower than
   `ops.sdpa`, and the historical e4b multi-K (≥2K) SIGTRAP has **not been
   re-validated at that scale since the fix**
-  (`scripts/experiments/segmented-grad-test-e4b.ts` is the repro harness).
+  (`segmented-grad-test-e4b.ts (deleted 2026-08-23; git history)` is the repro harness).
   Prefer the default; treat `flash` as experimental on e4b long context.
   Detail in segmented-backward-training §6.
 

@@ -186,7 +186,7 @@ quant. The trivial case to validate the machinery on a real model.
 
 > **2026-07-02 CORRECTION — this section's cost model is WRONG, measured.**
 > The full-attention isolation planner was built and A/B'd @8K on real chunk
-> rows (scripts/experiments/seg-isolation-smoke.ts, MLX_BUN_SEG_MEM_LOG=1
+> rows (seg-isolation-smoke.ts (deleted 2026-08-23; git history), MLX_BUN_SEG_MEM_LOG=1
 > phase probes): ZERO peak win (18.09 vs 18.02 GB seg2). The premise "sliding
 > layers are O(L·window) in the backward" is false — mlx's sdpa BACKWARD
 > materializes the O(L²) scores for EVERY layer (~3.5 GB/layer @8K e4b; the

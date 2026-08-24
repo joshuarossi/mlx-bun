@@ -195,7 +195,7 @@ on the local UF-derived corpus, seq 512; M1 Max 32 GB)
 **Headline: rotation-only + RTN does NOT beat plain RTN at the 4-bit
 operating point; it wins decisively at 3-bit — the paper's law, reproduced.**
 Per-module function-space Frobenius error is a wash at 4-bit (~0.091 all
-arms, scripts/experiments/tq-quant-error.py — γs are tame, 0.7–2.7, no
+arms, scripts/turboquant/tq-quant-error.py — γs are tame, 0.7–2.7, no
 module class is the culprit); the 4-bit regression is the anisotropy story
 (isotropic rotated error vs activation-aligned plain error), which is
 exactly what GPTQ-style calibration fixes — the composition the paper and
@@ -252,7 +252,7 @@ group-local buffer with the GLOBAL k (mlx out-of-range slice assignment
 silently no-ops → cross-group propagation lost after block 0). Fixing
 only err DOUBLE-compensates [j, k+j) and REGRESSES below RTN (measured:
 7.22/7.50); fixing both = paper GPTQ. Worth an upstream report.
-Fork: scripts/experiments/tq-gptq.py (also restricts GPTQ+fallback to
+Fork: scripts/turboquant/tq-gptq.py (also restricts GPTQ+fallback to
 language modules — vision H is a zero scalar and stays bf16).
 
 | arm | ppl |
@@ -402,7 +402,7 @@ its serve gauntlet, quiet-box TPS, M4 Pro 24 GB cut (Josh-gated).
   `trainForward`, whose cache stub lacks the DeltaNet `SSMCache.advance`
   (`qwen3_5.ts:226` throws on BOTH plain and TQ arms identically).
   27B ppl therefore runs through stock mlx-lm
-  (scripts/experiments/tq-ppl.py) — which doubles as the cross-stack
+  (scripts/turboquant/tq-ppl.py) — which doubles as the cross-stack
   load check for the release artifact.
 - bf16 (unquantized) qwen3_5 trunks don't load in our engine:
   `QuantizedEmbedding.load`/`QuantizedLinear.load` hard-require `.scales`.
@@ -415,7 +415,7 @@ its serve gauntlet, quiet-box TPS, M4 Pro 24 GB cut (Josh-gated).
   ARTIFACTS (plain-4bit trunk + original mlx-community MTP companion,
   `serve --draft-model <companion> --draft-kind mtp`, any chat request),
   so it is a pre-existing serving-path bug, not TQ. The 14g harness path
-  (specServeRun via scripts/experiments/qwen38-mtp-ab.ts) is the green
+  (specServeRun via qwen38-mtp-ab.ts (deleted 2026-08-23; git history)) is the green
   gate; TQ MTP was validated through that.
 
 ## Non-goals

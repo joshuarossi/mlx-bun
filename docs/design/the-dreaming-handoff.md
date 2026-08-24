@@ -21,7 +21,7 @@ cross-linked, self-healing personal wiki. It **works end-to-end on real data.**
 ```
 # resumable driver; continues from cursor 720. Writes to ~/.mlx-bun/wiki-full (NOT the
 # real vault ~/.mlx-bun/wiki). ~25 min / 20-conv batch, ~50h total, SERIAL.
-bun scripts/experiments/dreaming-full-run.ts          # resume (clean-slate guarded by an init flag)
+bun scripts/memory/dreaming-full-run.ts          # resume (clean-slate guarded by an init flag)
 # state files: ~/.mlx-bun/full-run-cursor.txt, ~/.mlx-bun/full-run-initialized, ~/.mlx-bun/full-run.log
 # after the import finishes: reindex, then connect the graph:
 mlx-bun memory link
@@ -78,7 +78,7 @@ RECONCILE (infobox-ground-truth consistency) → LINK (cross-link) → WIKIFY (e
    to the latest value; KEEPS the trajectory in a `## History` section **only for the
    USER's evolving positions** — an AI *factual error* is silently overwritten (no
    history). Date-aware; `reconcile.ts` is the consistency authority (infobox = ground
-   truth). Proven via a timestamp-swap demo (`scripts/experiments/dreaming-selfheal-demo.ts`).
+   truth). Proven via a timestamp-swap demo (`scripts/memory/dreaming-selfheal-demo.ts`).
 6. **Parroting (recurred 5×).** The small model copies ANY concrete example value from
    prompts/Meta pages into unrelated articles (phantom S5IIX, "Anamorphic Video", etc.).
    **ALL prompts + Meta pages must be SCHEMATIC** (no real names/specs/dates). Purged;

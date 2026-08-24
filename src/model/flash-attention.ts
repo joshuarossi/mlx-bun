@@ -545,7 +545,7 @@ export function flashBackward(
     // (dK_j[d] → [kv_row][d]); no post-transpose. (An earlier "fix" transposed
     // it on the false belief the buffer was swapped — that transpose is only the
     // identity at Tkv==D and corrupted dK for Tkv≠D; removed after
-    // scripts/experiments/flash-dkv-debug.ts showed the raw output is correct.)
+    // flash-dkv-debug.ts (deleted 2026-08-23; git history) showed the raw output is correct.)
     return [dq[0]!, dkv[0]!, dkv[1]!];
   } finally {
     Dvec.dispose();

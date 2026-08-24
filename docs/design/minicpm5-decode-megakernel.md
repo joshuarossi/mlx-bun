@@ -246,7 +246,7 @@ down). KV read/write from `KBUF`/`VBUF`. Final: finalNorm + lmHead GEMV → logi
 **Transcribe** `src/model/minicpm5.ts` op-for-op; match dtypes: accumulate in f32,
 round to bf16 at each op boundary to track the reference (`(T)` casts, as `fusedMlp`
 does). RoPE: match `ops.rope` exactly (verify with a single-layer probe).
-**Gate (THE correctness gate):** `scripts/experiments/megakernel-teacherforced.ts`
+**Gate (THE correctness gate):** `megakernel-teacherforced.ts (deleted 2026-08-23; git history)`
 (copy `swiglu-teacherforced.ts`): drive 100 decode steps via the megakernel,
 teacher-forced on `goldens/minicpm5-parity.json`, KV cache in `KBUF`/`VBUF`. Require
 **≥98/100 argmax agreement, deterministic across 3 runs, no NaN.** If an early step
@@ -332,7 +332,7 @@ Swap `KBUF/VBUF` for the per-layer quantized-KV format. **Facts gathered:**
   q = min(round((w-bias)/scale), n_bins)     // dequant: scale*q+bias
   ```
 **Implementation steps:**
-1. ✅ **DONE — quantize formula validated** (`scripts/experiments/kv-quant-formula-check.ts`):
+1. ✅ **DONE — quantize formula validated** (`kv-quant-formula-check.ts (deleted 2026-08-23; git history)`):
    the affine_quantize transcription matches `ops.quantize` to bf16 ULP (scale/bias diff
    1.8e-3 @4-bit, 6e-5 @8-bit; dequant residual = expected bf16-storage rounding). The
    riskiest piece is de-risked. Compute scale/bias in f32, store bf16 (as mlx does).
@@ -465,9 +465,9 @@ src/model/megakernel-pack.ts            # Phase 1: weight repack + layout table
 scripts/gen-minicpm5-megakernel.ts      # Phase 2: emit per-layer-baked kernel SOURCE
 src/model/generated/minicpm5-megakernel.ts   # (generated) the kernel SOURCE + bits
 src/model/megakernel-kernel.ts          # Phase 2/3: MetalKernel + decodeMegakernel()
-scripts/experiments/megapack-check.ts        # Phase 1 gate
-scripts/experiments/megakernel-teacherforced.ts  # Phase 2/3 correctness gate
-scripts/experiments/megakernel-perf.ts       # Phase 3/5 paired tok/s A/B
+megapack-check.ts (deleted 2026-08-23; git history)        # Phase 1 gate
+megakernel-teacherforced.ts (deleted 2026-08-23; git history)  # Phase 2/3 correctness gate
+megakernel-perf.ts (deleted 2026-08-23; git history)       # Phase 3/5 paired tok/s A/B
 tests/minicpm5-megakernel.test.ts       # Phase 5 CI gate (env-gated)
 ```
 Modify: `src/model/minicpm5.ts` (add `decodeStep` megakernel branch),

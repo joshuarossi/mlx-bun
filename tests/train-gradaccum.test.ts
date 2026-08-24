@@ -4,7 +4,7 @@
 //
 // These are pure-math tests over synthetic micro-batches (no model), so they
 // run in the default suite — fast and ungated. The end-to-end + flat-peak
-// demonstration over a real model lives in scripts/experiments/parity-gradaccum.ts.
+// demonstration over a real model lives in parity-gradaccum.ts (deleted 2026-08-23; git history).
 
 import { describe, expect, test } from "bun:test";
 import { MlxArray } from "../src/mlx/array";

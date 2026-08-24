@@ -54,7 +54,7 @@ persistence (`MLXBUNKV1`, 16 KiB-aligned tensors) with zero-copy COW mmap
 reload (`MmapFile.open(path, "cow")` → `MlxArray.fromPointer` — exactly
 the Metal page-alignment constraint, proven by expert-offload), including
 mid-rotation `RotatingKVCache` restore (`restoreState`,
-`src/model/gemma4-base.ts:880`). `scripts/experiments/cold-start.ts` is a
+`src/model/gemma4-base.ts:880`). `cold-start.ts (deleted 2026-08-23; git history)` is a
 working sub-1 s cold-restore harness. The SSD tier is wiring +
 quantized-cache support + an index/eviction/recovery layer.
 

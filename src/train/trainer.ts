@@ -445,7 +445,7 @@ export async function trainLora(
 // backward is O(L²) for EVERY layer (~3.5 GB/layer @8K e4b), sliding included,
 // so the worst segment is set by layer count alone and segment_size is the
 // whole knob (seg1 = 14.59 GB @8K, +3% step time — fits the 24 GB M4 Pro).
-// Evidence: scripts/experiments/seg-isolation-smoke.ts; note in segmented.ts.
+// Evidence: seg-isolation-smoke.ts (deleted 2026-08-23; git history); note in segmented.ts.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -532,13 +532,13 @@ async function sftLoop(
   // hand-rolled flash kernel is an opt-in (MLX_BUN_TRAIN_ATTN=flash) O(L)-memory
   // path for memory-bound long context — now correct (its dK-transpose and
   // dQ-causal-barrier bugs were fixed; FD-validated in
-  // scripts/experiments/flash-fd-check.ts), though ~30× slower than ops.sdpa.
+  // flash-fd-check.ts (deleted 2026-08-23; git history)), though ~30× slower than ops.sdpa.
   // Cleared in finally.
   //
   // GEMMA GUARD (same convention as the launcher's env sanitization in
   // cli.ts / job.ts, but enforced at the trainer): e4b on this path SIGTRAPed
   // (uncatchable native crash) at multi-K sequence lengths (>=2K, reproduced in
-  // scripts/experiments/segmented-grad-test-e4b.ts; docs/reference/training.md)
+  // segmented-grad-test-e4b.ts (deleted 2026-08-23; git history); docs/reference/training.md)
   // and has NOT been re-validated at that scale since the two kernel fixes —
   // the regression tests stop at T<=256. cli.ts even defaults e4b seq to 8192,
   // so a stale `export MLX_BUN_TRAIN_ATTN=flash` from a MiniCPM5 experiment

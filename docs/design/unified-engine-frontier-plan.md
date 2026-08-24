@@ -670,7 +670,7 @@ speed):
   behave serially under re-reads). This is why the bug only appeared when
   EVERY layer was configured: one bf16 layer anywhere fails the guard and
   drops to the monolith. Diagnosis artifacts:
-  scripts/experiments/gemma-rotquant-kl-profile.ts (CONFIG_FILTER/
+  gemma-rotquant-kl-profile.ts (deleted 2026-08-23; git history) (CONFIG_FILTER/
   ROT_KEEP/ROT_DROP/ROT_IDX bisection) and gemma-twin-b1-repro.ts
   (TWIN_MASK/TWIN_ROPE toggles — rope isolated in two runs once the
   B=1 repro existed).

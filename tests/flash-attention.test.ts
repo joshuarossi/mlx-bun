@@ -21,7 +21,7 @@
 //    both the forward output and all three grads.
 // NOT covered here (kept cheap): the >=2K long-context regime where e4b
 // historically SIGTRAPed — that re-validation is a separate, Josh-gated GPU run
-// (scripts/experiments/segmented-grad-test-e4b.ts); the trainer refuses
+// (segmented-grad-test-e4b.ts (deleted 2026-08-23; git history)); the trainer refuses
 // flash on Gemma until it lands.
 //
 // CRITICAL for parity: read grads CONTIGUOUSLY (a vjp output can be a strided

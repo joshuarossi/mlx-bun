@@ -20,7 +20,7 @@ dist/
 .claude/settings.local.json
 dist-native/
 dist-release/
-# investigation scratch — regenerable from scripts/experiments/*; the write-ups
+# investigation scratch — regenerable (scripts in git history); the write-ups
 # (docs/archive/investigations/*.md) stay tracked, the raw run data does not.
 docs/archive/investigations/hlg-figs/
 docs/archive/investigations/hlg-runs/*.log

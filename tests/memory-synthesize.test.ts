@@ -4,7 +4,7 @@
 // scaffolding, OUTLINE parsing, sub-clustering, infobox seeding, article
 // assembly, and the full createArticle → NORMALIZE → gate path driven by a FAKE
 // model (so it's pure and fast). The real base-model draft is a one-load smoke
-// in scripts/experiments/dreaming-create-smoke.ts, not here.
+// in scripts/memory/dreaming-create-smoke.ts, not here.
 
 import { describe, expect, it } from "bun:test";
 import { mkdtemp, readFile } from "node:fs/promises";

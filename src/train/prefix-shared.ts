@@ -11,7 +11,7 @@
 // prompt dominates (our chunk/document fine-tunes), ~0 when the response does.
 //
 // Bit-exact with the two-forward path (validated in
-// scripts/experiments/prefix-shared-parity.ts): each predicted token uses a hidden
+// prefix-shared-parity.ts (deleted 2026-08-23; git history)): each predicted token uses a hidden
 // conditioned on exactly the same context + RoPE positions —
 //   chosen[k]   from H[P-1+k]                 (k=0..Rc-1; H[P-1] = prompt's last)
 //   rejected[k] from H[P-1] (k=0) / H[P+Rc+k-1] (k≥1)

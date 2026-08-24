@@ -215,6 +215,6 @@ also informative: "even adaptive λ can't beat the 1B capacity ceiling on UF."
 - `src/train/loss.ts:1249` `orpoMetrics` (computes `lw`,`lr`,`nll`,`or`,`accuracy`,`margin`).
 - `src/train/trainer.ts` `orpoLoop` (λ config, val emit), `DEFAULT_TRAIN_CONFIG.orpoLambda`.
 - `src/train/segmented.ts` segmented ORPO classes (λ baked in constructor).
-- `scripts/experiments/pref-control.ts` (trajectory logging — extend with `lw`,`lr`).
+- `pref-control.ts (deleted 2026-08-23; git history)` (trajectory logging — extend with `lw`,`lr`).
 - Context: [[opssdpa-dk-vjp-bug]] (validate grads vs autograd), the dynamic-λ
   discussion + the live from-base UF val trajectory (2026-06-20).

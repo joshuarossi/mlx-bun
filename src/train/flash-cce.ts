@@ -728,7 +728,7 @@ const BWD_SG_SOURCE = String.raw`
 // (flipped 2026-07-02 — the kernel-perf-review backlog #1 flip). The old
 // 0.66%→2.7% dh-accuracy scare was on RANDOM targets (flat softmax, the filter's
 // worst case — see PLAN.md "filter-on-real-data"); the real-data gate
-// (scripts/experiments/flash-cce-filter-realdata.ts) measured, on REAL chunk-ORPO
+// (flash-cce-filter-realdata.ts (deleted 2026-08-23; git history)) measured, on REAL chunk-ORPO
 // data (M1 Max, 2026-07-02): CPM5 eps 1e-5 = 0.343% dh for 1.41×; e4b = 0.158% dh
 // for 1.70× — and the teacher-forced full-logits fidelity shows the filter's added
 // error is far below the flash-vs-full fp-reassociation scatter that already
@@ -781,7 +781,7 @@ function bwdSgKernel(dimTiles: number, filterEps: string, blockEps: string): Met
 //     accumulated into D's frags LANE-LOCALLY (frag += frag — no get_coord math, the
 //     per-lane element mapping is identical between temp and D). dh atomic-added
 //     across the NBLK vocab-block programs. Validated dh ~1e-4 rel vs autograd.
-//     (Design + parity: scripts/experiments/steel-bwd-htile-test.ts.)
+//     (Design + parity: steel-bwd-htile-test.ts (deleted 2026-08-23; git history).)
 //   PHASE-2 DEQUANT: the Wd[32,HTw] staging uses MLX's vectorized+fused
 //     QuantizedBlockLoader (the SAME loader the forward uses), NOT a manual scalar
 //     dequant. The wrinkle: phase-2's GEMM contracts over vocab (K=32) and outputs H

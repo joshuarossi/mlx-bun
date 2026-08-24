@@ -15,7 +15,7 @@ and a tracked-root allowlist.
 | thing | home | tracked? |
 |---|---|---|
 | source / tests / production scripts | `src/` `tests/` `scripts/` | yes |
-| one-off research & debug scripts | `scripts/experiments/` | yes (typechecked, no dead weight) |
+| one-off research & debug scripts | nowhere — write the finding into a doc, then delete the script (git is the archive; `scripts/experiments/` removed 2026-08-23) | no |
 | user-facing docs | `docs/reference/`, `README.md` | yes |
 | engineering docs for ACTIVE work | `docs/design/` | yes — and **archived to `docs/archive/` when the work closes** |
 | closed investigations, old plans, release notes | `docs/archive/` | yes (frozen) |
@@ -61,7 +61,7 @@ and a tracked-root allowlist.
 
 ## Code standards
 
-Whole-repo `tsc --noEmit` stays at 0, including `scripts/experiments/`.
+Whole-repo `tsc --noEmit` stays at 0, including every script under `scripts/`.
 Tests gate on fixture presence and skip cleanly when weights are absent.
 Reference docs (cli.md, server-api.md, server-config.md, features-matrix)
 update in the SAME commit as any served-surface change. Commit messages:

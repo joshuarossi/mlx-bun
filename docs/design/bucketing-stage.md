@@ -143,7 +143,7 @@ future-proof empty table only.
 
 ## Eval — embeddings as the test instrument
 
-`scripts/experiments/bucket-cohesion-signal.ts` (mirrors `chunk-embedding-signal.ts`):
+`scripts/memory/bucket-cohesion-signal.ts` (mirrors `chunk-embedding-signal.ts`):
 - **[measure FIRST — the #1 risk] shortlist recall ceiling:** is each gold bucket in its
   chunk's embedding top-K? Report overall **and per bucket-size-bin** (122/379 buckets
   have <5 chunks — the global number hides tail collapse [fix C]). If low, the shortlist
@@ -186,7 +186,7 @@ Runnable now (no GPU training, no server):
 GPU-gated (only if needed): 7. build binary SFT data · 8. train `memory-bucket` · 9. re-eval.
 Integration: 10. wire `clusterChunks` into `pipeline.ts`.
 
-**First command:** `bun scripts/experiments/bucket-cohesion-signal.ts`
+**First command:** `bun scripts/memory/bucket-cohesion-signal.ts`
 
 ## Open risks
 

@@ -1190,7 +1190,7 @@ export function fusedRespLogpMean(
   // [chunk,vocabBlock]. Otherwise the whole-vocab analytic head below.
   const vb = vocabBlock > 0 && vocabBlock < V ? vocabBlock : 0;
   // Auto-dispatch by M (kernel backlog #3; measured 2026-07-02 on the M1 Max,
-  // scripts/experiments/head-dispatch-sweep.ts): the fused QM head is FASTER
+  // head-dispatch-sweep.ts (deleted 2026-08-23; git history)): the fused QM head is FASTER
   // at short M (e4b M=64 1.6×, M=512 1.13×; CPM5 faster at EVERY M) — the
   // flash head's win is residency, plus time at long M on e4b (M≥2048 after
   // the 2026-07-02 filter/blockMax flip; 8K: 10.7 vs 13.2 s). So a

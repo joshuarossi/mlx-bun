@@ -2,7 +2,7 @@
 // CREATE-target selection). The model stages (ENTITY-EXTRACT / ROUTE / CREATE)
 // reach the GPU through the live `callLocal` ESM binding, so the real end-to-end
 // cold-start is the one-load smoke in
-// scripts/experiments/dreaming-coldstart-smoke.ts — not a unit test.
+// scripts/memory/dreaming-coldstart-smoke.ts — not a unit test.
 
 import { describe, expect, it } from "bun:test";
 

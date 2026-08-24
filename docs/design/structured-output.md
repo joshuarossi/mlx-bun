@@ -42,7 +42,7 @@ FFI shim because:
   byte_fallback / Llama-3 128k byte_level / Qwen2.5 151k byte_level. <1% of
   a GPU decode step. The bitmask is CPU work either way (WASM vs C++ native
   would only differ in WASM overhead, which is negligible on M-series), so
-  the C/ABI fallback was not needed. Evidence: `scripts/experiments/xgrammar-spike.ts`.
+  the C/ABI fallback was not needed. Evidence: `xgrammar-spike.ts (deleted 2026-08-23; git history)`.
 
 ## Vocab extraction + type detection
 
@@ -120,9 +120,9 @@ discipline (`MLX_BUN_COMPILED_DECODE`, `MLX_BUN_NO_FUSED_SDPA`, …).
   accept/ready advances state; choice + EBNF + json_object + json_schema all
   mask correctly; degrade returns null on malformed grammar (abort caught);
   text/unset → null; applyMask keeps valid / -infs invalid.
-- `scripts/experiments/xgrammar-spike.ts`: phase-0 perf + correctness across
+- `xgrammar-spike.ts (deleted 2026-08-23; git history)`: phase-0 perf + correctness across
   three vocab types.
-- `scripts/experiments/xgrammar-parity.ts`: L2 parity vs oMLX through the
+- `xgrammar-parity.ts (deleted 2026-08-23; git history)`: L2 parity vs oMLX through the
   real chat template — byte-identical content, both valid JSON.
 
 ## Known gaps / follow-ups

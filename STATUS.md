@@ -111,7 +111,7 @@ optional check could not run.
 
 The self-contained HTML report is
 `reports/prompt-response-full-post-wiring-2026-08-23.html`; its generator is
-`scripts/experiments/render-p2r-html.ts`, and the raw JSONL/Markdown report live
+`scripts/render-p2r-html.ts`, and the raw JSONL/Markdown report live
 beside it. The report includes Qwen-first conclusions, full distributions,
 decode rows, and an interactive additive waterfall. It passed desktop and
 360 px browser checks. The run started with 796 MB of historical swap despite

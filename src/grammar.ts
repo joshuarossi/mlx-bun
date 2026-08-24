@@ -119,7 +119,7 @@ let cachedTokenizerInfo: {
  *  - decoder is Sequence w/ ByteFallback    → byte_fallback (Gemma/SP)
  *  - otherwise                              → raw
  *  prependSpace is true for byte_level (ByteLevel pretokenizers add a leading
- *  space). Validated in scripts/experiments/xgrammar-spike.ts across Gemma
+ *  space). Validated in xgrammar-spike.ts (deleted 2026-08-23; git history) across Gemma
  *  (byte_fallback, 256k), Llama-3 / Qwen2.5 (byte_level, 128k/151k). */
 function loadVocab(tokenizerJsonPath: string): {
   vocab: string[];

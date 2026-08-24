@@ -23,7 +23,6 @@ const TARGETS = [
   "website/.astro",
   "website/node_modules",
   "scripts/__pycache__",
-  "scripts/experiments/__pycache__",
 ];
 const GLOBS = ["goldens/**/*.bin", "goldens/**/*.npz", "benchmarks-*.md"];
 

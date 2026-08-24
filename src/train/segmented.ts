@@ -130,7 +130,7 @@ export function planSegmentsBySize(nLayers: number, segSize: number): [number, n
 // segment_size 1 measures 14.59 GB @8K (+3% step time) vs 17.5 @seg2. Below
 // that needs the [M,V]-bounded SFT head (backlog #8, ~3 GB head-vjp spike)
 // and/or an O(L)-memory attention backward. Evidence:
-// scripts/experiments/seg-isolation-smoke.ts + MLX_BUN_SEG_MEM_LOG=1 probes.
+// seg-isolation-smoke.ts (deleted 2026-08-23; git history) + MLX_BUN_SEG_MEM_LOG=1 probes.
 
 /** Detach `a` into a graph-free LEAF holding its exact (evaluated) bytes, then
  *  dispose `a`. mlx retains the upstream graph after `eval`, so a segment

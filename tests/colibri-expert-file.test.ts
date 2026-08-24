@@ -5,7 +5,7 @@ import { join } from "node:path";
 import {
   COLIBRI_EXPERT_ALIGNMENT, buildSyntheticExpertFile, validateSyntheticExpertFiles,
   validateSyntheticExpertManifest, writeSyntheticExpertFile,
-} from "../scripts/experiments/gen-colibri-expert-file";
+} from "../scripts/gen-colibri-expert-file";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });

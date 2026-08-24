@@ -11,7 +11,7 @@ import { MlxArray, gpuStream } from "../src/mlx/array";
 import { Dtype, activeMemory, cacheMemory, clearCache, synchronize } from "../src/mlx/ffi";
 import { MetalKernel } from "../src/mlx/metal-kernel";
 import * as ops from "../src/mlx/ops";
-import { buildSyntheticExpertFile } from "../scripts/experiments/gen-colibri-expert-file";
+import { buildSyntheticExpertFile } from "../scripts/gen-colibri-expert-file";
 
 const dir = mkdtempSync(join(tmpdir(), "mlx-bun-expert-io-"));
 const dylib = join(dir, "libexpert_io.dylib");

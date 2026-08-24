@@ -19,7 +19,7 @@ README.md has the pitch and scope boundaries.
 - `AGENTS.md` → symlink to this file.
 
 **Repo layout (root dirs, one line each — keep this honest):**
-- `src/` code · `tests/` gated + fast suites · `scripts/` production tooling (`scripts/experiments/` = one-off research) · `docs/` see map above · `website/` the site (deploys from main) · `benchmarks/` curated RESULTS.md.
+- `src/` code · `tests/` gated + fast suites · `scripts/` production tooling only (research one-offs live in git history, not the tree) · `docs/` see map above · `website/` the site (deploys from main) · `benchmarks/` curated RESULTS.md.
 - `goldens/` parity fixtures — `.json` manifests tracked, `.bin` blobs machine-specific + regenerable + UNTRACKED (see goldens/README.md).
 - `fixtures/` small tracked test inputs (images, tiny safetensors) used by the model-free CI suite.
 - `lab/` code that proves a point but isn't the product: `lab/repro/` minimal reproductions for UPSTREAM bug reports (e.g. `bun-ffi-f64/` = Bun FFI float64 bug, ISSUE.md inside); Self-contained, not part of the build (`lab/spikes/` deleted 2026-08-23 — closed feasibility probes).
@@ -112,4 +112,4 @@ README.md has the pitch and scope boundaries.
   pin `enable_thinking` explicitly or the rendered prompts drift.
 - pi integration: `~/.pi/agent/models.json`, provider pattern documented
   there; optiq servers require apiKey starting with `sk-optiq-`.
-- `scripts/experiments/` holds one-off research/debug scripts; production scripts, tooling, bench-*, regen-*, parity-*, gen-model, and eval/serve scripts stay at `scripts/` root.
+- `scripts/` holds production tooling only (bench-*, regen-*, parity-*, gen-*, build/release, eval/serve) plus `scripts/{oracle,memory,turboquant}/` for venv-side oracles, the Dreaming suite, and the live TurboQuant research. Research one-offs are deleted once their finding is written into a doc — `scripts/experiments/` was removed 2026-08-23.

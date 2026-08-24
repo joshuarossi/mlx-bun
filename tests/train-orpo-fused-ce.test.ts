@@ -9,7 +9,7 @@
 //   MLX_BUN_TEST_TRAIN=1 bun test tests/train-orpo-fused-ce.test.ts
 //
 // Gated like train-orpo-chunked (loads MiniCPM5-1B; no softcap — Gemma softcap is
-// exercised in scripts/experiments/fused-ce-parity.ts with E4B=1).
+// exercised in fused-ce-parity.ts (deleted 2026-08-23; git history) with E4B=1).
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
@@ -126,7 +126,7 @@ describe.skipIf(!optIn || !haveBase)("ORPO fused linear-CE head parity (MiniCPM5
   // 1e-5 since 2026-07-02) — must match the full-logits autograd dh on peaked
   // (teacher-forced) hiddens. A kernel/logic bug shifts dh by O(100%); the honest
   // fp-reassociation + filter residual measured on real data is <1% relnorm at
-  // cosine ≥0.9999 (scripts/experiments/flash-cce-filter-realdata.ts), so the 5%
+  // cosine ≥0.9999 (flash-cce-filter-realdata.ts (deleted 2026-08-23; git history)), so the 5%
   // bar has a wide margin without tolerating structural breakage.
   test("flash-CCE backward dh matches full-logits autograd dh at production defaults (teacher-forced fidelity)", async () => {
     const { loadModelConfig } = await import("../src/config");

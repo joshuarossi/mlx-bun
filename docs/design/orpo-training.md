@@ -65,7 +65,7 @@ else validates against):**
 - ✅ Dataset format renamed `"dpo"` → `"preference"` (with `"dpo"` kept as alias in
   the type); [`tests/train-dataset.test.ts`](../../tests/train-dataset.test.ts) updated.
 - ✅ Parity oracle script
-  [`scripts/experiments/parity-orpo.ts`](../../scripts/experiments/parity-orpo.ts):
+  [`parity-orpo.ts (deleted 2026-08-23; git history)`](../../parity-orpo.ts (deleted 2026-08-23; git history)):
   10/10 checks pass — scalar loss, log1mexp stability, gradient checks (finite
   differences vs autograd) at B=1 and B=3, edge cases.
 - ✅ `fusedGegluDifferentiable` in `src/model/fused-geglu-kernel.ts`
@@ -185,7 +185,7 @@ else validates against):**
   branch walks backward in reverse over its segments (donor cotangents
   accumulated in a per-branch `dKV`), and the two branches' LoRA grads are
   summed. Wired into `orpoLoop` (`segment_size > 0`, B=1) alongside the MiniCPM5
-  path. **Validated** ([`scripts/experiments/segmented-grad-test-orpo-e4b.ts`](../../scripts/experiments/segmented-grad-test-orpo-e4b.ts),
+  path. **Validated** ([`segmented-grad-test-orpo-e4b.ts (deleted 2026-08-23; git history)`](../../segmented-grad-test-orpo-e4b.ts (deleted 2026-08-23; git history)),
   grad-parity vs the monolithic ORPO `value_and_grad` on real e4b, 2026-06-18):
   loss matches to ~6 decimals; at **λ=0 the path is byte-identical** to the SFT
   `SegmentedBackwardGemma4` (relNorm 1.1341%, maxAbs 3.79e-3 — same numbers,
@@ -216,7 +216,7 @@ else validates against):**
   [`prefix-shared.ts`](../../src/train/prefix-shared.ts), reusing
   `forwardHidden` for per-layer-input + donor-KV). **The construction is proven
   correct**: the prefix-shared forward is BIT-EXACT to a plain forward over the
-  same concatenated sequence (`scripts/experiments/prefix-shared-e4b-localize.ts`:
+  same concatenated sequence (`prefix-shared-e4b-localize.ts (deleted 2026-08-23; git history)`:
   block-wise-RoPE+block-mask path `(c)` == plain-concat path `(b)` to 0.00% at
   every chosen position; per-layer-inputs bit-exact across lengths). **But it does
   NOT numerically reproduce the two-forward path on e4b**: prefix-shared forward
@@ -500,7 +500,7 @@ backward or grads diverge). ORPO's base has no dropout modules (TRL's
 Anchor the loss math to a **standalone torch/numpy reference** (the paper /
 TRL `odds_ratio_loss` + the NLL term) rather than an upstream port:
 
-- `scripts/experiments/parity-orpo.ts` (or a `.py` companion run under the
+- `parity-orpo.ts (deleted 2026-08-23; git history)` (or a `.py` companion run under the
   oracle venv): feed fixed `(chosen_logits, rejected_logits, masks)` to both
   our `orpoLoss` and a hand-written reference; assert the scalar loss,
   `log_odds`, and the nll/or split match to tolerance.
@@ -584,7 +584,7 @@ GB** at this vocab scale. This **subsumes our current `responseOnlyCe` trick**
 > (no autograd through logsumexp+gather), then `dh_c =
 > quantizedMatmul(grad, W, …, transpose=false)` — mlx's own x-vjp of the
 > transpose=true head (contracts vocab without dequantizing the 1.3 GB head).
-> **Validated** ([`scripts/experiments/fused-ce-parity.ts`](../../scripts/experiments/fused-ce-parity.ts)
+> **Validated** ([`fused-ce-parity.ts (deleted 2026-08-23; git history)`](../../fused-ce-parity.ts (deleted 2026-08-23; git history))
 > + gated [`tests/train-orpo-fused-ce.test.ts`](../../tests/train-orpo-fused-ce.test.ts)):
 > value **BIT-EXACT** vs the full-logits `branchLogpMeanB1` on BOTH MiniCPM5 (no
 > softcap) and e4b (softcap=30 — matched by reusing `logitSoftcap`'s exact
@@ -627,14 +627,14 @@ GB** at this vocab scale. This **subsumes our current `responseOnlyCe` trick**
 > vocab into `vocabBlock`-wide blocks with the [online-softmax](https://arxiv.org/abs/1805.02867)
 > running (max `m`, sumexp `d`) recurrence — the exact Cut Cross Entropy structure
 > so `[chunk, V]` is never formed. **Numerically validated**
-> ([`scripts/experiments/fused-ce-parity.ts`](../../scripts/experiments/fused-ce-parity.ts)
+> ([`fused-ce-parity.ts (deleted 2026-08-23; git history)`](../../fused-ce-parity.ts (deleted 2026-08-23; git history))
 > `VBLOCK=…`): value bf16-class vs the whole-vocab head, grads **flat at ~0.46%
 > across block sizes** (8192/2048/512) — once two precision fixes landed: the
 > online `(m,d)` accumulation must be **f32** (bf16 across many blocks corrupts the
 > exp-sensitive `lse`), and the **`dh` cross-block accumulation must be f32** (the
 > dominant grad bug — bf16 summing hundreds of block-`dh`s gave 17%→45% error
 > scaling with block count). **But it does NOT bound memory** — the head-isolated
-> peak ([`scripts/experiments/fused-ce-headmem.ts`](../../scripts/experiments/fused-ce-headmem.ts),
+> peak ([`fused-ce-headmem.ts (deleted 2026-08-23; git history)`](../../fused-ce-headmem.ts (deleted 2026-08-23; git history)),
 > MiniCPM5 M=2048) goes the WRONG way: whole-vocab **3.4 GB → 14.1 GB at
 > 512-wide blocks**, growing monotonically as blocks shrink. Root cause: the online
 > softmax is a **sequentially-dependent chain** (`m`/`d` recurrence + the `dh`
@@ -656,7 +656,7 @@ GB** at this vocab scale. This **subsumes our current `responseOnlyCe` trick**
 > mlx's `quantized.h` qdot pattern — the deleted fused-decode kernel used the same),
 > online softmax across vocab, target capture, softcap + sech², so the vocab loop
 > lives INSIDE the kernel — neither `[M,V]` nor a dequantized `[V,hidden]` head
-> touches HBM. **Validated** ([`scripts/experiments/flash-cce-parity.ts`](../../scripts/experiments/flash-cce-parity.ts)):
+> touches HBM. **Validated** ([`flash-cce-parity.ts (deleted 2026-08-23; git history)`](../../flash-cce-parity.ts (deleted 2026-08-23; git history))):
 > forward `logp` bf16-class (~0.21%) vs the MLX whole-vocab head; backward `dh`
 > ~bit-exact vs autograd (isolated 2e-4%; e4b M=512 0.40%); softcap correct on
 > e4b. **Memory bound ACHIEVED** — peak ~flat in V: MiniCPM5 M=8192 forward
@@ -677,7 +677,7 @@ GB** at this vocab scale. This **subsumes our current `responseOnlyCe` trick**
 > vocab-block) and **atomic-adds** its partial `dh` into the shared `[M,H]` output
 > (`atomicOutputs` + `initValue 0`; NBLK-way contention per dim = Apple's locked
 > atomic `dE` add — and we need only `dE`/`dh`, not `dC`, since the head is frozen).
-> **Validated** ([`scripts/experiments/flash-cce-parity.ts`](../../scripts/experiments/flash-cce-parity.ts)):
+> **Validated** ([`flash-cce-parity.ts (deleted 2026-08-23; git history)`](../../flash-cce-parity.ts (deleted 2026-08-23; git history))):
 > e4b M=1024 (NBLK=32) — watchdog GONE, deterministic, **logp 0.20% / dh 0.40%**
 > (bf16-class), **bwd peak 3.41 → 1.46 GB**, fwd peak 1.27 → 0.82 GB; MiniCPM5
 > unregressed. Dequant runs f32 in-kernel → arguably more accurate than the bf16
@@ -796,7 +796,7 @@ drops from `attn + MLP` to `max(attn, MLP) + h`.
     its own `Checkpoint` with the post-attn residual `hMid` as the boundary. The
     trainer partitions each layer's LoRA into attn (`self_attn.*`) and MLP
     sub-blocks. **Validated bit-exact** on real e4b
-    ([`scripts/experiments/mlp-split-checkpoint-e4b.ts`](../../scripts/experiments/mlp-split-checkpoint-e4b.ts)):
+    ([`mlp-split-checkpoint-e4b.ts (deleted 2026-08-23; git history)`](../../mlp-split-checkpoint-e4b.ts (deleted 2026-08-23; git history))):
     split grads == single-checkpoint grads == no-checkpoint grads to **0.000000%
     / maxAbs 0.0** (it is pure recompute), and the fused-GeGLU `CustomVjp` nests
     cleanly inside the `Checkpoint`. **Honest peak finding:** on the *per-layer*
@@ -859,7 +859,7 @@ and it saves the prefix *backward* too.
     `chosen[k]←H[P-1+k]`, `rejected[0]←H[P-1]` (shared prompt-last),
     `rejected[k≥1]←H[P+Rc+k-1]`. `splitPrefixBatch` detects an identical-prompt
     B=1 row and falls back to the two-forward `orpoLoss` otherwise.
-    **Validated** ([`scripts/experiments/prefix-shared-parity.ts`](../../scripts/experiments/prefix-shared-parity.ts),
+    **Validated** ([`prefix-shared-parity.ts (deleted 2026-08-23; git history)`](../../prefix-shared-parity.ts (deleted 2026-08-23; git history)),
     P=512/Rc=64/Rr=80): the **FORWARD is BIT-EXACT** vs the two-forward path
     (`rel=0.00e+0%`) — the construction proof; ℓw/ℓr are identical. **Grads agree
     to ~1.05% (bf16 grad class, < 2%)** — NOT ULP-exact, and confirmed at λ=0
@@ -1133,7 +1133,7 @@ segmented and gradient-checkpoint paths). `N=1` is a byte-for-byte pass-through.
 The accumulation math is proven deterministically in
 [`tests/train-gradaccum.test.ts`](../../tests/train-gradaccum.test.ts) and
 demonstrated end-to-end in
-[`scripts/experiments/parity-gradaccum.ts`](../../scripts/experiments/parity-gradaccum.ts).
+[`parity-gradaccum.ts (deleted 2026-08-23; git history)`](../../parity-gradaccum.ts (deleted 2026-08-23; git history)).
 True batched segmented backward is a larger effort (pad-aware boundaries); not
 required for a first landing.
 
