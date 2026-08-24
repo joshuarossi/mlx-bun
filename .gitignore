@@ -16,16 +16,17 @@ benchmarks/lab-verification*.json
 reports/
 runs/
 dist/
-.claude/
+.claude/worktrees/
+.claude/settings.local.json
 dist-native/
 dist-release/
 # investigation scratch — regenerable from scripts/experiments/*; the write-ups
-# (docs/investigations/*.md) stay tracked, the raw run data does not.
-docs/investigations/hlg-figs/
-docs/investigations/hlg-runs/*.log
-docs/investigations/hlg-runs/*.json
-docs/investigations/curve-runs/
-docs/investigations/*.html
+# (docs/archive/investigations/*.md) stay tracked, the raw run data does not.
+docs/archive/investigations/hlg-figs/
+docs/archive/investigations/hlg-runs/*.log
+docs/archive/investigations/hlg-runs/*.json
+docs/archive/investigations/curve-runs/
+docs/archive/investigations/*.html
 # trained adapters/checkpoints (weights, not source) + training run logs
 adapters/
 train.log

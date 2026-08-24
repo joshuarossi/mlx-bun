@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "chat-live",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["src/cli.ts", "serve", "e4b", "--port", "8090"],
+      "port": 8090
+    },
+    {
+      "name": "status-page",
+      "runtimeExecutable": "bun",
+      "runtimeArgs": ["scripts/status-page-stub.ts", "8099"],
+      "port": 8099
+    },
+    {
+      "name": "keynote",
+      "runtimeExecutable": "bunx",
+      "runtimeArgs": ["serve", "-l", "4181", "."],
+      "port": 4181
+    },
+    {
+      "name": "website",
+      "runtimeExecutable": "/Users/joshrossi/.nvm/versions/node/v22.22.0/bin/node",
+      "runtimeArgs": ["website/node_modules/astro/bin/astro.mjs", "dev", "--root", "website", "--port", "4321"],
+      "port": 4321
+    }
+  ]
+}

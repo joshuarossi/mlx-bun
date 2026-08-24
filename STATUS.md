@@ -46,8 +46,8 @@ BIT-EXACT on the sidecar-extracted fixture clip. (4) **video FILES SERVE**
 native pack v0.3.0 + dev compile-on-demand), `video_url`/`video` content
 parts decode → frames → the gated pipeline on Qwen3.5-family models, and
 the serve smoke covers image + video + text isolation on one server.
-**RELEASE BLOCKER: publish `native-v0.3.0` and bake its sha256/size into
-src/native-pack.ts before the next package tag** (PLAN 14w). A running
+The `native-v0.3.0` pack published 2026-08-22 with its sha256/size baked
+into src/native-pack.ts (former 14w release blocker — resolved). A running
 `serve` needs a restart to pick all of this up (the CLI symlink serves the
 repo working tree).
 
