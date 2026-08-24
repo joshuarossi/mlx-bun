@@ -10,6 +10,19 @@ summaries move to git history (`git show 3199c75:PLAN-archive.md`). Product/UX n
 optimizations with no external oracle, gated by KL/eval + a paired-A/B win vs
 the L1 baseline before any default (docs/design/unified-engine-frontier-plan.md).
 
+## Released: mlx-bun v0.2.0 (2026-08-24)
+
+The complete Qwen3.8 serving path (text, images, video, thinking controls,
+tool calls, native MTP), the serving-architecture consolidation, the Qwen
+wired-memory fix, SSD-cache durability, and rotation-folded quantization are
+published on GitHub, npm, and the Homebrew tap. Signed/notarized arm64 archive
+SHA-256 `4a204fd53d32be1c1edec22737397adf1f7abec295a7db06d217e405c44d086b`
+(Apple notarization: Accepted; the first submission was rejected because the
+new `mlx-bun-frame-extract` helper was ad-hoc signed — scripts/release-binary.sh
+now signs helper executables and fails on any non-Accepted status). Notes:
+docs/archive/planning/release-notes-v0.2.0.md. Requires Bun ≥ 1.4.0; npm/bunx
+use native pack v0.3.0.
+
 ## Released: mlx-bun v0.0.13 (2026-08-17)
 
 Qwen3.8-27B text support and the GLM fixed-context admission correction are
@@ -23,7 +36,7 @@ Qwen native MTP is explicitly not part of this release: review proved its
 recurrent target state cannot yet satisfy the shared verifier's rollback
 contract, so companion artifacts fail early with the precise reason.
 
-## Post-release on main (2026-08-18, unreleased)
+## Shipped in v0.2.0 (landed on main 2026-08-18 → 08-24)
 
 Serving changes landed after the v0.0.13 tag: (1) **memory admission now
 clamps instead of rejecting** — a fitting prompt with a broad client

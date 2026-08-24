@@ -73,3 +73,4 @@ bench-faithful-matrix-*
 /bench-*.json
 /tmp/
 /*.log
+.claude/launch.json
