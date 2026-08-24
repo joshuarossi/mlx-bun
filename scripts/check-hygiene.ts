@@ -23,7 +23,7 @@
 //                   (2026-08-18 sweep: six benchmarks-serve-*.md had leaked
 //                   past an incomplete gitignore pattern). Raw bench output
 //                   goes to reports/ (untracked); curated numbers to
-//                   benchmarks/RESULTS.md; built models to ~/models.
+//                   docs/reference/benchmarks.md; built models to ~/models.
 //                   See CONTRIBUTING.md.
 //
 // Usage:

@@ -8,10 +8,10 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { buildPiAgentSurface } from "../src/pi-session";
-import { buildTerminalSystemPrompt } from "../src/pi-terminal";
-import { buildWebChatSystemPrompt } from "../src/pi-web";
-import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "../src/memory/tools";
+import { buildPiAgentSurface } from "../../src/pi-session";
+import { buildTerminalSystemPrompt } from "../../src/pi-terminal";
+import { buildWebChatSystemPrompt } from "../../src/pi-web";
+import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "../../src/memory/tools";
 
 interface Check { name: string; ok: boolean; detail?: string }
 const checks: Check[] = [];

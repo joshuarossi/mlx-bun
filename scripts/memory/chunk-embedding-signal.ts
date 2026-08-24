@@ -5,7 +5,7 @@
 //   bun scripts/memory/chunk-embedding-signal.ts [--no-cache] [--dump]
 //
 // Embeddings are cached to scratchpad so metric iteration doesn't re-embed.
-// Reads lucien data by absolute path (machine-specific, like scripts/chunk-eval.ts).
+// Reads lucien data by absolute path (machine-specific, like scripts/examples/chunk-eval.ts).
 
 import { loadModelConfig } from "../../src/config";
 import { Weights } from "../../src/weights";

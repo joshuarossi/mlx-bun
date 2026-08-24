@@ -7,7 +7,7 @@
 # verify_draft_tokens: selected_target_probs/selected_draft_probs is a
 # 0/1-vs-0/1 ratio at temp 0, so accept_prob is 0.0 or 1.0 and
 # `rand < accept_prob` is decided before the draw). Round-for-round output
-# here is the ground truth scripts/dspark-deepspec-compare.ts checks our
+# here is the ground truth dspark-deepspec-compare.ts (deleted 2026-08-23; git history) checks our
 # port against (docs/investigations/dspark-handoff.md, PATH A).
 #
 # This does NOT reuse deepspec's BaseEvaluator/torch.multiprocessing.spawn
@@ -37,7 +37,7 @@
 #
 # --- run ---
 #
-#   .venv-deepspec/bin/python scripts/oracle-dspark-deepspec.py \
+#   .venv-deepspec/bin/python scripts/oracle/oracle-dspark-deepspec.py \
 #       --target <snapshot-dir-of-google/gemma-4-12B-it> \
 #       --drafter <snapshot-dir-of-deepseek-ai/dspark_gemma4_12b_block7> \
 #       --data prompts.jsonl --n 8 --max-new-tokens 128 \
@@ -45,7 +45,7 @@
 #       --out goldens/dspark-deepspec/trace-thr0.jsonl
 #
 #   # second arm, confidence-threshold pruning active:
-#   .venv-deepspec/bin/python scripts/oracle-dspark-deepspec.py \
+#   .venv-deepspec/bin/python scripts/oracle/oracle-dspark-deepspec.py \
 #       --target <...> --drafter <...> --data prompts.jsonl --n 8 \
 #       --max-new-tokens 128 --temperature 0 --confidence-threshold 0.5 \
 #       --out goldens/dspark-deepspec/trace-thr0.5.jsonl
@@ -56,7 +56,7 @@
 # docs/investigations/dspark-handoff.md "Oracle protocol" for the fixture
 # location convention (goldens/ is machine-specific + untracked).
 #
-# Syntax-checked only (no execution) via: python3 -m py_compile scripts/oracle-dspark-deepspec.py
+# Syntax-checked only (no execution) via: python3 -m py_compile scripts/oracle/oracle-dspark-deepspec.py
 
 from __future__ import annotations
 

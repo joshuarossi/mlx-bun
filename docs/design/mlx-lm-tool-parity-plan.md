@@ -485,7 +485,7 @@ sums whatever arrays the entry holds — no change needed there.
   spec-vs-stock: both runtimes' spec paths batch the verify lm-head and
   legitimately diverge from stock decode at bf16 knife-edges (documented in
   `src/spec/generate.ts` header). Extend `scripts/oracle-spec.py` +
-  `scripts/spec-bench.ts` for the A/B.
+  `spec-bench.ts (deleted 2026-08-23; git history)` for the A/B.
 - **Acceptance-rate telemetry:** emit `drafted/accepted/targetCalls` in the
   response `usage`-adjacent stats (the `SpecStats` shape already exists) and
   into the benchmark path.

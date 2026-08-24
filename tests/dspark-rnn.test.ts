@@ -1,7 +1,7 @@
 // RNN sequential head (paper Eq 6 shape, design-doc faithful — the DSpark PDF
 // is not in this repo) as a config-selected alternative to the Markov head
 // (Eq 5) in src/spec/dspark/module-dflash.ts. Model-free, CPU-only: same tiny
-// stub-model pattern as scripts/dspark-dflash-smoke.ts.
+// stub-model pattern as tests/helpers/dspark-dflash-smoke.ts.
 //
 // Gate (c) is the key faithfulness check: rnn.wO is zero-init and rnn.*
 // params are appended AFTER every shared/markov name in both buildNames()

@@ -96,7 +96,7 @@ change that state.
 | LEAK-03 | P2 | fixed | `src/mlx/{autograd,checkpoint,custom-vjp}.ts` constructors | Failure out-parameter slots are initialized with live handles that may not be freed when native constructor calls fail. | Failure-injection tests for all three constructors prove slots, closures, and callbacks return to baseline with no double free. |
 | HYG-01 | P2 | fixed | `src/train/job.ts`, empty Gemma block | A config read and stale comment claim load-bearing environment setup, but the branch is empty. | Remove the read/block/comment; job parsing and training setup tests stay green. |
 | HYG-02 | P2 | fixed | `tsconfig.json` exclusions | Shipped web sources and tests that run in the gate are excluded from the zero-error typecheck contract. | Remove the exclusions or replace them with an explicit checked project reference; repository and web typechecks are green with no hidden files. |
-| HYG-03 | P2 | fixed | `scripts/test.sh` test glob | `scripts/bench-serving-load.test.ts` is model-free but outside the gate. | Gate enumerates and runs it exactly once; a sentinel/failing-case check proves it cannot silently fall out again. |
+| HYG-03 | P2 | fixed | `scripts/test.sh` test glob | `tests/bench-serving-load.test.ts` is model-free but outside the gate. | Gate enumerates and runs it exactly once; a sentinel/failing-case check proves it cannot silently fall out again. |
 | SEC-01 | P0 | fixed | `src/web-tools.ts`, `web_fetch` | Model-selected URLs bypass the existing public-destination policy, follow redirects automatically, and buffer the full body. This permits SSRF into loopback/private services and unbounded response buffering. | Reuse one shared fetch-policy implementation: reject private literals and DNS resolutions, revalidate every redirect, combine caller abort with timeout, and stream to a byte cap. Tests cover loopback, private DNS, public-to-private redirect, redirect limit, chunked over-cap, and normal public text. |
 | SEC-02 | P1 | fixed | `src/download.ts`, `blobId` | An unvalidated blob ID reaches `join()` and symlink creation, unlike the adjacent validated digest. It requires a hostile HF-compatible endpoint. | Reject any non-lowercase-40-hex SHA-1 blob ID before path construction; traversal and malformed-ID tests fail closed. |
 | DEPLOY-01 | D | deferred | `src/server.ts`, WebSocket upgrade | No WebSocket Origin enforcement. | Deferred while bind is loopback-only. Reopen before any supported non-loopback bind, tunnel, reverse proxy, or browser origin; then add an allowlist and cross-origin rejection tests. |
@@ -127,7 +127,7 @@ change that state.
   transform constructors return slots, closures, and callbacks to zero under
   repeated failure injection. The root typecheck now includes DOM/web sources
   and the formerly excluded web tests. `scripts/test.sh` enumerates
-  `scripts/bench-serving-load.test.ts` exactly once and rejects gate drift.
+  `tests/bench-serving-load.test.ts` exactly once and rejects gate drift.
 - `bunx tsc --noEmit`, `bun scripts/check-hygiene.ts`, `bash -n
   scripts/test.sh`, and `git diff --check` are green after Wave 3. The full
   post-Wave-3 repository gate and both performance measurements remain open.
@@ -140,7 +140,7 @@ change that state.
   Standard PEFT `use_rslora` now mounts and saves at exactly
   `alpha / sqrt(rank)`. Custom-VJP also frees the first callback if allocation
   of the second callback throws.
-- **PERF-01:** `scripts/bench-stream-decoder.ts` measured the original
+- **PERF-01:** `bench-stream-decoder.ts (deleted 2026-08-23; git history)` measured the original
   full-history decoder against the bounded exact-suffix implementation with
   five paired repetitions. MiniCPM5 medians were 142.62 → 27.40 ms at 512
   tokens (5.20×), 576.01 → 56.45 ms at 1,024 (10.20×), and 2,284.57 →
@@ -148,7 +148,7 @@ change that state.
   113.62–116.06 ms). Every per-push chunk and final byte stream matched at
   64–2,048 tokens; the e4b 1,024-token check was 88.62 → 10.25 ms. Raw,
   gitignored artifacts are under `reports/perf-01-stream-decoder-*.json`.
-- **PERF-02:** `scripts/bench-logprobs-readback.ts` confirmed the reported
+- **PERF-02:** `bench-logprobs-readback.ts (deleted 2026-08-23; git history)` confirmed the reported
   barrier on a clean M1 Max 32 GB with Bun 1.3.14 and
   Qwen2.5-0.5B-Instruct-4bit (256 tokens, two warmups, five measured rounds).
   At clean base `00e597e`, off/logprobs/top-5 medians were
@@ -302,7 +302,7 @@ after any overlapping merge.
 | Adapters/training | `tests/{lora,train-*,ifeval}.test.ts`; delayed writes, PEFT + mlx-lm layouts, unequal padding, optimizer LR scales, frozen scorer corpus |
 | Grammar/Responses store | `tests/{grammar,grammar-jump,responses,server}.test.ts`; degrade forms, top-logprob alignment, fake-clock reordered LRU |
 | MLX/resource ownership | focused diffusion/weights/autograd/checkpoint/custom-VJP failure loops with handle/allocation baselines |
-| Repository gate | `bun scripts/check-hygiene.ts`, `bunx tsc --noEmit`, `bash scripts/test.sh`; prove `scripts/bench-serving-load.test.ts` is included |
+| Repository gate | `bun scripts/check-hygiene.ts`, `bunx tsc --noEmit`, `bash scripts/test.sh`; prove `tests/bench-serving-load.test.ts` is included |
 | Performance | deterministic raw artifact, paired A/B, exact output parity, quiet-machine preflight before any curated claim |
 
 ## 8. Exit gate

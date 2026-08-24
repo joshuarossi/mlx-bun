@@ -386,7 +386,7 @@ baseline.
   envelope (chunk eval = well-formedness: valid JSON, in-range anchors).
 - **Chunk-adapter behavior.** Confirm `loraState.active=["memory-chunk"]`
   is set for the chunk batch and `[]` for base batches (assert in test).
-  Re-run `scripts/chunk-eval.ts` before/after the role fix; expect
+  Re-run `scripts/examples/chunk-eval.ts` before/after the role fix; expect
   well-formedness and boundary/label quality to improve now that decode is
   on-distribution.
 - **No-leak / single-model.** Confirm the executor loads ONE model (not

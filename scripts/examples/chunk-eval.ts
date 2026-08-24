@@ -4,19 +4,19 @@
 // fine-tune training data itself (system + user-prefix from train.jsonl[0]) so
 // baseline and fine-tuned runs see the identical format the model trained on.
 //
-//   bun scripts/chunk-eval.ts                 # baseline, all 25 cases
-//   LIMIT=5 bun scripts/chunk-eval.ts         # quick smoke
-//   ADAPTER=/path/to/adapter bun scripts/chunk-eval.ts   # fine-tuned
+//   bun scripts/examples/chunk-eval.ts                 # baseline, all 25 cases
+//   LIMIT=5 bun scripts/examples/chunk-eval.ts         # quick smoke
+//   ADAPTER=/path/to/adapter bun scripts/examples/chunk-eval.ts   # fine-tuned
 //
 // MODEL defaults to MiniCPM5-1B-OptiQ-4bit.
 
 import { readFileSync, readdirSync } from "node:fs";
-import { generate } from "../src/generate";
-import { loadModelConfig } from "../src/config";
-import { Weights } from "../src/weights";
-import { createModel } from "../src/model/factory";
-import { loadTokenizer } from "../src/tokenizer";
-import { ChatTemplate } from "../src/chat-template";
+import { generate } from "../../src/generate";
+import { loadModelConfig } from "../../src/config";
+import { Weights } from "../../src/weights";
+import { createModel } from "../../src/model/factory";
+import { loadTokenizer } from "../../src/tokenizer";
+import { ChatTemplate } from "../../src/chat-template";
 // Deterministic anchor validation/repair lives in the sibling `lucien` repo
 // (absolute, machine-specific path). Import it through a NON-LITERAL specifier so
 // this repo's typecheck doesn't pull lucien's source into scope; type the one
@@ -125,7 +125,7 @@ const tok = await loadTokenizer(MODEL);
 const tmpl = await ChatTemplate.load(MODEL);
 
 if (ADAPTER) {
-  const { AdapterManager } = await import("../src/lora");
+  const { AdapterManager } = await import("../../src/lora");
   const mgr = new AdapterManager(model);
   await mgr.mount("eval", ADAPTER);
   model.loraState.active = ["eval"];

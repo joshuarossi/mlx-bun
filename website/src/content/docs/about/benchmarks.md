@@ -9,7 +9,7 @@ mlx-optiq 0.2.4), same machine (M4 Pro, 24 GB), same day, same Hugging Face
 snapshots, preflight-gated clean machine, median-of-N with warmups discarded.
 
 The curated table (parity / performance / quality) with per-row provenance lives
-in [benchmarks/RESULTS.md](https://github.com/joshuarossi/mlx-bun/blob/main/benchmarks/RESULTS.md).
+in [docs/reference/benchmarks.md](https://github.com/joshuarossi/mlx-bun/blob/main/docs/reference/benchmarks.md).
 
 ## Headline numbers
 

@@ -70,5 +70,5 @@ Write-up:
   — design docs for features and experiments.
 - [`docs/archive/investigations/`](https://github.com/joshuarossi/mlx-bun/tree/main/docs/investigations)
   — dated research journals and handoffs, including the dead ends.
-- [`benchmarks/RESULTS.md`](https://github.com/joshuarossi/mlx-bun/blob/main/benchmarks/RESULTS.md)
+- [`docs/reference/benchmarks.md`](https://github.com/joshuarossi/mlx-bun/blob/main/docs/reference/benchmarks.md)
   — the curated numbers everything above is held to.

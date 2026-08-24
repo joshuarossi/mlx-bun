@@ -26,7 +26,7 @@ Training is reachable several ways — all of them drive the **same** runner
 | **Web UI** | `mlx-bun serve`, open `/finetune` — pick model → dataset → hyperparameters → train; watch live train/val loss; merge/export the adapter | Interactive, in the browser |
 | **HTTP API** | `POST /api/finetune/submit` (job id + SSE events); `POST /api/finetune/inspect-dataset` to probe a file; `POST /api/finetune/merge` to fold an adapter into base weights | Scripted / remote |
 | **ORPO launcher** | [`scripts/train-orpo.ts`](../../scripts/train-orpo.ts) — the same stack driven by env vars (`MODEL=`, `DATA=`, `RANK=`, `RESUME=`, …). See [orpo-quickstart](./orpo-quickstart.md) | Env-var scripting |
-| **Shell recipe** | [`scripts/ft-e4b-v2.sh`](../../scripts/ft-e4b-v2.sh) `probe`\|`train` — the actual e4b run we use; sets the required env (see [What we actually run](#what-we-actually-run-the-e4b-recipe)) | Reproducing our e4b fine-tune |
+| **Shell recipe** | [`scripts/examples/ft-e4b-v2.sh`](../../scripts/examples/ft-e4b-v2.sh) `probe`\|`train` — the actual e4b run we use; sets the required env (see [What we actually run](#what-we-actually-run-the-e4b-recipe)) | Reproducing our e4b fine-tune |
 | **Library** | `import { finetuneRunner } from "./src/train/job"` and call it with a config + emitter | Embedding training in your own TS |
 
 The CLI and the launcher run the runner **in-process / foreground** (stream to the
@@ -51,14 +51,14 @@ falls back to the defaults below.
 
 ### Quick start (script)
 
-[`scripts/chunk-finetune.ts`](../../scripts/chunk-finetune.ts) is the worked
+[`scripts/examples/chunk-finetune.ts`](../../scripts/examples/chunk-finetune.ts) is the worked
 example (MiniCPM5 on the chunking task). It calls `finetuneRunner` directly,
 driven by env vars:
 
 ```bash
 # MODEL unset → defaults to the MiniCPM5-1B-OptiQ-4bit snapshot
 DATA=/path/to/chunk ITERS=300 RANK=16 SEQ=2048 SEG=4 \
-  bun scripts/chunk-finetune.ts
+  bun scripts/examples/chunk-finetune.ts
 ```
 
 Env knobs — note the script applies its **own task-tuned defaults**, which
@@ -213,15 +213,15 @@ are `DEFAULT_TRAIN_CONFIG` (trainer.ts:89).
 ## What we actually run (the e4b recipe)
 
 Everything above is the full surface (*what you can do*). In practice the
-fine-tune we run is [`scripts/ft-e4b-v2.sh`](../../scripts/ft-e4b-v2.sh):
+fine-tune we run is [`scripts/examples/ft-e4b-v2.sh`](../../scripts/examples/ft-e4b-v2.sh):
 e4b (gemma-4-e4b-it-OptiQ-4bit, pinned snapshot) on the lucien `chunk-v2-500`
 curated set (450 train convs) through the segmented-backward trainer. It wraps
 `chunk-finetune.ts` with a two-step workflow:
 
 ```bash
-scripts/ft-e4b-v2.sh probe   # 2-iter memory/stability check (~1 min) — RUN FIRST
-scripts/ft-e4b-v2.sh train   # the real run (~900 iters ≈ 2 epochs, batch_size 1)
-ITERS=750 SEQ=4096 SEG=1 scripts/ft-e4b-v2.sh train   # override any knob inline
+scripts/examples/ft-e4b-v2.sh probe   # 2-iter memory/stability check (~1 min) — RUN FIRST
+scripts/examples/ft-e4b-v2.sh train   # the real run (~900 iters ≈ 2 epochs, batch_size 1)
+ITERS=750 SEQ=4096 SEG=1 scripts/examples/ft-e4b-v2.sh train   # override any knob inline
 ```
 
 What the recipe pins (and why it differs from the bare defaults):

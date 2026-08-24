@@ -2,18 +2,18 @@
 // own trainer. Uses the default ops.sdpa training attention (mlx's fused
 // kernel — correct gradients; set MLX_BUN_TRAIN_ATTN=flash to override, but
 // flash crashes e4b at multi-K). Trains on the full chunk dataset; the adapter
-// is loadable by mlx-bun's hot-swap serving and by scripts/chunk-eval.ts
+// is loadable by mlx-bun's hot-swap serving and by scripts/examples/chunk-eval.ts
 // (ADAPTER=...).
 //
-//   SEQ=8192 ITERS=2  bun scripts/chunk-finetune.ts     # memory/stability probe
-//   SEQ=8192 ITERS=300 bun scripts/chunk-finetune.ts    # real run
+//   SEQ=8192 ITERS=2  bun scripts/examples/chunk-finetune.ts     # memory/stability probe
+//   SEQ=8192 ITERS=300 bun scripts/examples/chunk-finetune.ts    # real run
 //
 // MODEL defaults to MiniCPM5-1B-OptiQ-4bit.
 
 import { mkdirSync, readdirSync } from "node:fs";
 import { basename } from "node:path";
-import { finetuneRunner } from "../src/train/job";
-import { peakMemory, resetPeakMemory } from "../src/mlx/ffi";
+import { finetuneRunner } from "../../src/train/job";
+import { peakMemory, resetPeakMemory } from "../../src/mlx/ffi";
 
 const HOME = process.env.HOME!;
 function resolveModel(): string {

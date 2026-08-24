@@ -2,7 +2,7 @@
 // math (no MLX arrays), so this suite is fast-tier and gate-free. The final
 // test wires a fitted StsCalibration into module-dflash.ts#forwardInfer's Alg-1
 // pruning using the zero-init stub-model pattern from
-// scripts/dspark-dflash-smoke.ts (conf.w/b zero ⟹ every c_k = σ(0) = 0.5).
+// tests/helpers/dspark-dflash-smoke.ts (conf.w/b zero ⟹ every c_k = σ(0) = 0.5).
 
 import { describe, expect, test } from "bun:test";
 import { MlxArray } from "../src/mlx/array";
@@ -99,7 +99,7 @@ describe("fitStsThresholds", () => {
 describe("fitStsThresholds → forwardInfer wiring (end-to-end)", () => {
   test("fitted StsCalibration prunes a zero-init drafter to 1 token", () => {
     // Stub model: only embed.scales.dtype, embed.encode, logitsFromHidden used
-    // (pattern lifted from scripts/dspark-dflash-smoke.ts).
+    // (pattern lifted from tests/helpers/dspark-dflash-smoke.ts).
     const A = 1, G = 5, V = 64, H = 32, m = 3, dDraft = 32;
     const cfg = { ...DEFAULT_DFLASH_CONFIG, gamma: G, dDraft, nLayers: 2, nHeads: 4, markovRank: 16, tapLayers: [1, 2, 3] };
     const dims: TargetDims = { hiddenSize: H, vocabSize: V, eps: 1e-6 };

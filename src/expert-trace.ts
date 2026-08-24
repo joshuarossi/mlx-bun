@@ -2,13 +2,13 @@
 //
 // Records every MoE router decision as JSONL — one record per router call:
 //   { c: callSeq, l: layerIdx, s: [B, L, k], i: [flattened uint32 expert ids] }
-// Analyse with scripts/analyze-expert-trace.ts (coverage curve, working-set
+// Analyse with analyze-expert-trace.ts (deleted 2026-08-23; git history) (coverage curve, working-set
 // size, within-task stability, cross-task specialisation).
 //
 // Two ways to drive it:
 //   - env: `MLX_BUN_EXPERT_TRACE=<path> mlx-bun serve ...` (auto-starts here)
 //   - programmatic: beginExpertTrace(path) / endExpertTrace() per domain
-//     (scripts/run-expert-trace.ts uses this to trace several domains from
+//     (run-expert-trace.ts (deleted 2026-08-23; git history) uses this to trace several domains from
 //     one model load).
 //
 // Recording adds a per-call GPU->host sync (it reads the routed indices back),

@@ -499,7 +499,7 @@ Head-to-head against the Python stacks (mlx-lm 0.31.3, mlx-optiq 0.2.1),
 same machine (M4 Pro 24 GB), same HF snapshots, the 2026-06-14
 cleared-machine run, preflight-gated, median-of-N with warmups
 discarded. Full curated table (parity / performance / quality) with
-per-row provenance: [benchmarks/RESULTS.md](./benchmarks/RESULTS.md).
+per-row provenance: [docs/reference/benchmarks.md](./docs/reference/benchmarks.md).
 
 **Served (warm)** — how agents actually use a local model.
 decode tok/s · TTFT ms · start s:

@@ -6,7 +6,7 @@ modes"). This doc is the surface contract: every verb, the flag
 vocabulary, how optiq is absorbed, the parity harness, and **the
 matrix of what we still lack**.
 
-**Update 2026-06-17:** Several items have shipped since the 2026-06-12 snapshot: **LoRA training** is live (`src/train/`, `scripts/chunk-finetune.ts`, segmented-backward Phase A MiniCPM5 + Phase B e4b both merged); the **web UI fine-tune tab** (`src/web/app.html`) is live with SFT/DPO workflow, loss curve, merge, and export; the **chat adapter selector** (web UI) is live; and **adapters end-to-end** (web selector + CLI `/adapter`) are done — the matrix below reflects these as ✅. The **Phase 17 compat parity harness itself** (the verb router, dotted aliases, flag-surface parity tests) remains **unbuilt**.
+**Update 2026-06-17:** Several items have shipped since the 2026-06-12 snapshot: **LoRA training** is live (`src/train/`, `scripts/examples/chunk-finetune.ts`, segmented-backward Phase A MiniCPM5 + Phase B e4b both merged); the **web UI fine-tune tab** (`src/web/app.html`) is live with SFT/DPO workflow, loss curve, merge, and export; the **chat adapter selector** (web UI) is live; and **adapters end-to-end** (web selector + CLI `/adapter`) are done — the matrix below reflects these as ✅. The **Phase 17 compat parity harness itself** (the verb router, dotted aliases, flag-surface parity tests) remains **unbuilt**.
 
 ## Goal
 

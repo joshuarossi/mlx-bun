@@ -374,7 +374,7 @@ gated by validity/KL/quality instead of bit-parity.
 ## Performance characteristics & recipes
 
 Reference numbers are from this project's dev machines (loaded-machine
-numbers are directional only; `benchmarks/RESULTS.md` holds the quotable
+numbers are directional only; `docs/reference/benchmarks.md` holds the quotable
 set, and `scripts/bench-feature-matrix.ts` measures the six composition
 cells in one run).
 

@@ -71,7 +71,7 @@ interface Row { cell: string; decode: number; prefill: number; peak: number; kv:
 
 async function run(model: string, cell: Cell): Promise<Row | null> {
   const kv = cell.kv ?? "off";
-  const args = ["bun", "scripts/bench.ts", "--model", model, "--tokens", TOKENS];
+  const args = ["bun", "bench.ts (deleted 2026-08-23; git history)", "--model", model, "--tokens", TOKENS];
   if (PROMPT_TOKENS) args.push("--prompt-tokens", PROMPT_TOKENS);
   if (cell.baseline) {
     args.push("--baseline");

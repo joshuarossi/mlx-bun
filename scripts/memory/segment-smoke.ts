@@ -8,7 +8,7 @@
 //
 // Single model load (the chunk adapter). Gate: ≥95% valid JSON with in-range
 // anchors. This is the wiring proof, NOT the offline purity/cohesion eval
-// (that's scripts/chunk-eval.ts with ADAPTER=…/e4b-chunk-300).
+// (that's scripts/examples/chunk-eval.ts with ADAPTER=…/e4b-chunk-300).
 //
 //   bun scripts/memory/segment-smoke.ts [N]
 

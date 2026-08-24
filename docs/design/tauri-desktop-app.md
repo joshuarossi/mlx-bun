@@ -85,7 +85,7 @@ A `.app` is a better Gatekeeper citizen than the flat CLI binary:
 
 Reuse the core pipeline. The nested sidecar `mlx-bun` still needs the
 same entitlements as the standalone build
-([packaging/entitlements.plist](../../packaging/entitlements.plist)):
+([packaging/entitlements.plist](../../scripts/packaging/entitlements.plist)):
 
 - `com.apple.security.cs.allow-jit` + `allow-unsigned-executable-memory`
   (JavaScriptCore JIT) — without these the sidecar is killed on launch.

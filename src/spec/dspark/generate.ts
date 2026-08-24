@@ -17,9 +17,9 @@
 //     (sample.ts), so the emitted stream is distributed exactly as if e4b
 //     sampled token-by-token at that temperature — independent of draft quality.
 //
-// Verify the corresponding gate before chasing τ (scripts/dspark-ab.ts): greedy
+// Verify the corresponding gate before chasing τ (dspark-ab.ts (deleted 2026-08-23; git history)): greedy
 // output must match model.generate; the sampling rule's correctness is the
-// statistical "emit distribution == target" check in scripts/dspark-smoke.ts.
+// statistical "emit distribution == target" check in dspark-smoke.ts (deleted 2026-08-23; git history).
 // If a gate fails, the accept/reject or KV rollback is wrong — fix that first.
 
 import { MlxArray } from "../../mlx/array";

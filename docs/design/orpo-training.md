@@ -139,7 +139,7 @@ else validates against):**
 - ✅ **Benchmark + parity harness** (the perf-tracking discipline):
   [`scripts/bench-orpo.ts`](../../scripts/bench-orpo.ts) (ms/step + peak GB
   across head/segment configs on synthetic long-response data) and
-  [`scripts/bench-attn-backward.ts`](../../scripts/bench-attn-backward.ts)
+  [`bench-attn-backward.ts (deleted 2026-08-23; git history)`](../../bench-attn-backward.ts (deleted 2026-08-23; git history))
   (attention-backward dQ/dK/dV parity vs a materialized reference + timing).
   MiniCPM5-1B @ SEQ=1024: baseline 3191 ms / 9.34 GB · chunked-head(256) **2758
   ms / 8.62 GB** (faster + lower) · segmented(4) 3633 ms / **2.45 GB** (the
@@ -150,7 +150,7 @@ else validates against):**
   (mlx-lm's tuner differentiates the same `mx.fast.sdpa`); the flash kernel is
   **L2** — a port of mlx-optiq's `flash_attention_metal`, so **optiq is its
   oracle**. Confirmed end to end: optiq's flash dK == `ops.sdpa` to f16
-  (`scripts/flash-optiq-check.py`, rel **0.0%**), and mlx-bun's fixed flash ==
+  (`scripts/oracle/flash-optiq-check.py`, rel **0.0%**), and mlx-bun's fixed flash ==
   `ops.sdpa` (`tests/flash-attention.test.ts`, ≤f16) ⟹ **mlx-bun flash == optiq
   (L2 parity)**; `ops.sdpa` itself is finite-difference verified. The original
   kernel diverged ~100% from optiq on dK — a genuine **port bug**: a spurious dK

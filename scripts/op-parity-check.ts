@@ -1,4 +1,4 @@
-// Model-free op parity: load fixed inputs from scripts/op-parity-dump.py, run
+// Model-free op parity: load fixed inputs from scripts/oracle/op-parity-dump.py, run
 // them through mlx-bun's OWN libmlx kernels, and compare to the oracle's
 // outputs. BIT-IDENTICAL ⇒ the two builds' kernels match on this machine.
 //   bun scripts/op-parity-check.ts

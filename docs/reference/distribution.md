@@ -56,7 +56,7 @@ and notarized as one artifact.
 This runs [build-binary.sh](../../scripts/build-binary.sh), then:
 - signs every nested Mach-O (dylibs, any `.node`) with the hardened
   runtime, then the executable with the JIT
-  [entitlements](../../packaging/entitlements.plist) (JavaScriptCore JITs —
+  [entitlements](../../scripts/packaging/entitlements.plist) (JavaScriptCore JITs —
   without `allow-jit` the binary is killed on launch);
 - notarizes the zipped bundle via `AC_PROFILE` and waits;
 - emits `dist-release/mlx-bun-v<ver>-arm64.tar.gz` (+ `.sha256`) and
@@ -81,7 +81,7 @@ Homebrew taps must be a repo named `homebrew-<name>`. The canonical tap is
 **`joshuarossi/homebrew-tap`** (Homebrew shorthand: `joshuarossi/tap`).
 
 1. Create a public repo **`joshuarossi/homebrew-tap`** (one-time).
-2. Copy [packaging/homebrew/mlx-bun.rb](../../packaging/homebrew/mlx-bun.rb)
+2. Copy [scripts/packaging/homebrew/mlx-bun.rb](../../scripts/packaging/homebrew/mlx-bun.rb)
    to `Formula/mlx-bun.rb` in it, updating `version`/`url`/`sha256` from
    the release-script output. Commit and push.
 3. Install:
@@ -110,7 +110,7 @@ Per release:
    This builds → signs → notarizes → creates the `v<ver>` GitHub release →
    rewrites `version`/`url`/`sha256` in the tap's `Formula/mlx-bun.rb` and
    pushes it → mirrors the same fields into
-   [packaging/homebrew/mlx-bun.rb](../../packaging/homebrew/mlx-bun.rb)
+   [scripts/packaging/homebrew/mlx-bun.rb](../../scripts/packaging/homebrew/mlx-bun.rb)
    (left staged — commit it).
 
 Prefer two steps? Run `./scripts/release-binary.sh` to build, eyeball the

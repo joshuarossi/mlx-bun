@@ -7,7 +7,7 @@ venv, which has `datasets`) dumps each task's rows verbatim to
 optiq/eval/*.py — pick the fields they need, so we dump full rows here
 rather than reshaping (robust to schema drift).
 
-  /Users/joshrossi/Code/mlx-lm/.venv/bin/python scripts/eval/export-datasets.py
+  /Users/joshrossi/Code/mlx-lm/.venv/bin/python scripts/oracle/export-datasets.py
 
 Datasets + configs/splits match optiq/eval/* exactly (gsm8k.py:133,
 mmlu.py:118-119, ifeval.py:288, humaneval.py:184, bfcl.py:339-343).

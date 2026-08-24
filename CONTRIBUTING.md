@@ -20,7 +20,7 @@ and a tracked-root allowlist.
 | engineering docs for ACTIVE work | `docs/design/` | yes — and **archived to `docs/archive/` when the work closes** |
 | closed investigations, old plans, release notes | `docs/archive/` | yes (frozen) |
 | working state | `PLAN.md` (open phases), `STATUS.md` (current handoff) | yes — closed material is DELETED in the closing commit; git is the archive |
-| curated benchmark numbers | `benchmarks/RESULTS.md` | yes |
+| curated benchmark numbers | `docs/reference/benchmarks.md` | yes |
 | **raw benchmark/report output** | `reports/` | **no** (gitignored) |
 | **built model artifacts** | `~/models/<Name>/` | **never in the repo tree** |
 | experiment scratch (lab arms, corpora, run outputs) | `runs/` | no (gitignored, machine-local, deletable) |
@@ -32,7 +32,7 @@ and a tracked-root allowlist.
 1. **No dated artifacts in git.** Anything with a date or hostname in its
    filename is a work product, not source. `benchmark.sh` and the bench
    scripts write their dumps to the working dir — move them to `reports/`
-   or delete them; only distilled numbers enter `benchmarks/RESULTS.md`.
+   or delete them; only distilled numbers enter `docs/reference/benchmarks.md`.
    The root allowlist gate fails CI on new tracked root files.
 2. **Models are outputs.** Quantized/folded/converted snapshots go to
    `~/models/<Name>/`. The repo never contains weights beyond the small

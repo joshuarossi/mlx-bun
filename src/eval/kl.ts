@@ -310,7 +310,7 @@ export async function evaluateKlServingDecode(opts: {
 /** KV-scheme A/B on the teacher-forced serving-decode path: bf16 baseline
  *  (no kvOverride) vs an explicit KV scheme (e.g. TurboQuant), same model /
  *  same prompts / same weight load — the quality-vs-bpw curve gate
- *  (scripts/eval-turboquant-curve.ts). Unlike evaluateKlServingDecode (env-flag
+ *  (scripts/turboquant/eval-turboquant-curve.ts). Unlike evaluateKlServingDecode (env-flag
  *  self-flip), the two arms differ by an actual GenerateOptions kv scheme
  *  object, so this is the seam for schemes that aren't env-lever-shaped. */
 export async function evaluateKlKvArm(opts: {

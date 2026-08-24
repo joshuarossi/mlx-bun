@@ -3,7 +3,7 @@
 Status: v1 wired end-to-end (2026-07-06): codec + `TurboQuantKVCache` +
 `--kv-quant turbo[:k<bits>v<bits>]` (cli.ts, serve/generate/bench) +
 `maybeQuantizeKv` conversion + `GenerationGateway` solo-only refusal +
-`kv-store.ts` persistence + `scripts/eval-turboquant-curve.ts` (KL/ppl curve
+`kv-store.ts` persistence + `scripts/turboquant/eval-turboquant-curve.ts` (KL/ppl curve
 script; not yet RUN against a real model — that's the next stage's gate).
 Owner seam: L2 cache format, L1-unmodified attention (dequantize-on-fetch),
 eval-gated. Opt-in only — naked default stays L1.
@@ -115,7 +115,7 @@ Files (from the codebase-map seams):
   reference + model-free math props), `tests/turboquant-cache.test.ts` (cache
   invariants, growth/trim, persistence roundtrip — synthetic arrays, no
   model/golden dependency), `scripts/regen-turboquant-goldens.ts`.
-- `scripts/eval-turboquant-curve.ts` — the Gate 3 quality-vs-bpw curve script:
+- `scripts/turboquant/eval-turboquant-curve.ts` — the Gate 3 quality-vs-bpw curve script:
   bf16 baseline + {k8v8,k8v4,k8v3,k8v2,k4v3,k4v2} sequentially, reusing
   `src/eval/kl.ts`'s `evaluateKlKvArm` (teacher-forced serving-decode KL,
   real `TurboQuantKVCache.fromKVCache` conversion) and
@@ -128,7 +128,7 @@ Files (from the codebase-map seams):
 
 ## Gates — ALL PASSED 2026-07-06 (M1 Max 32 GB)
 
-Gate 3 measured curve (MiniCPM5-1B, `scripts/eval-turboquant-curve.ts`,
+Gate 3 measured curve (MiniCPM5-1B, `scripts/turboquant/eval-turboquant-curve.ts`,
 teacher-forced serving-decode KL vs bf16, 8 prompts × 128 tokens, 32 decode
 steps; affine baselines via the same `evaluateKlKvArm` harness):
 

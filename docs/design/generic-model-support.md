@@ -145,7 +145,7 @@ Audited 2026-07-01; file references are load-bearing.
   oracle venv emits `<prefix>-parity.json` (explicit prompt ids + greedy
   ids) + per-step raw logit `.bin`s; the test replays ids (no cross-stack
   tokenizer dependency) and compares bit-exact on the same GPU. Plus
-  `scripts/check-minicpm5-port.ts` (hard, no-skip port check) and
+  `check-minicpm5-port.ts (deleted 2026-08-23; git history)` (hard, no-skip port check) and
   `scripts/inspect-model.ts` (tensor name/shape/dtype dump — the seed of
   the weight audit).
 - **Tokenizer** — `src/tokenizer.ts`: `@huggingface/tokenizers` (pure JS)

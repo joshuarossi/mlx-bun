@@ -1,4 +1,4 @@
-// Promotes the DSpark CPU smoke (scripts/dspark-dflash-smoke.ts — KV-injection
+// Promotes the DSpark CPU smoke (tests/helpers/dspark-dflash-smoke.ts — KV-injection
 // forward, autograd, inference, Alg-1 pruning, multi-layer data round-trip)
 // into the model-free suite: spawn it, require a clean exit. The script is
 // kept runnable standalone (its console output is the debugging surface); this
@@ -8,7 +8,7 @@
 import { expect, test } from "bun:test";
 
 test("dspark dflash CPU smoke exits green", async () => {
-  const proc = Bun.spawn(["bun", "scripts/dspark-dflash-smoke.ts"], {
+  const proc = Bun.spawn(["bun", "tests/helpers/dspark-dflash-smoke.ts"], {
     cwd: `${import.meta.dir}/..`,
     stdout: "pipe",
     stderr: "pipe",

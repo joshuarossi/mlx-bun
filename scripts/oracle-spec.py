@@ -7,7 +7,7 @@
 #       <target_snapshot_dir> <drafter_snapshot_dir> [gamma] [maxtok]
 #
 # Prints PROMPT_IDS (exactly what spec_generate encodes internally) so the
-# TS side (scripts/spec-dump.ts) can run on the IDENTICAL prompt ids —
+# TS side (spec-dump.ts (deleted 2026-08-23; git history)) can run on the IDENTICAL prompt ids —
 # isolating the comparison to the spec loop, not tokenization.
 import sys
 from optiq.mlx_lm_patches._register import register

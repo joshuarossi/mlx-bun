@@ -23,7 +23,7 @@ import { resolveModelDir } from "./kl";
 
 export const EVAL_DATA_DIR = runtimeValue("MLX_BUN_EVAL_DATA") ?? `${homedir()}/.cache/mlx-bun/eval-data`;
 
-/** Read a jsonl dataset exported by scripts/eval/export-datasets.py. */
+/** Read a jsonl dataset exported by scripts/oracle/export-datasets.py. */
 export function loadJsonl<T = Record<string, unknown>>(name: string): T[] {
   const path = `${EVAL_DATA_DIR}/${name}.jsonl`;
   const out: T[] = [];

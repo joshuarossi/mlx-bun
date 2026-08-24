@@ -4,7 +4,7 @@
 // (github.com/deepseek-ai/DeepSpec, MIT); the module port with transcription
 // notes lives in src/spec/dspark/deepspec-module.ts. Oracle: DeepSpec's eval
 // at temperature 0 (RNG-free — verify degenerates to argmax token-match),
-// scripts/oracle-dspark-deepspec.py → scripts/dspark-deepspec-compare.ts.
+// scripts/oracle/oracle-dspark-deepspec.py → dspark-deepspec-compare.ts (deleted 2026-08-23; git history).
 //
 // Seam mapping (why this fits without serve-loop changes): the reference
 // recycles target hidden states from each verify pass into the drafter's

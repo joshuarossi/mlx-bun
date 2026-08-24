@@ -5,7 +5,7 @@
 // inactive. This test pins the PRE-TIGHTENING reference output — the
 // rewrite is a pure optimization, so every value here must stay bit-exact.
 // Model-free, CPU-only: same tiny stub-model pattern as
-// scripts/dspark-dflash-smoke.ts.
+// tests/helpers/dspark-dflash-smoke.ts.
 
 import { describe, expect, test } from "bun:test";
 import { MlxArray } from "../src/mlx/array";
@@ -23,7 +23,7 @@ const cfg = { ...DEFAULT_DFLASH_CONFIG, gamma: G, dDraft, nLayers: 2, nHeads: 4,
 const dims: TargetDims = { hiddenSize: H, vocabSize: V, eps: 1e-6 };
 
 /** Builds the stub model AND the drafter with the SAME rng(7) draw order as
- *  scripts/dspark-dflash-smoke.ts (fakeEmbed, fakeHead, fakeScales draws
+ *  tests/helpers/dspark-dflash-smoke.ts (fakeEmbed, fakeHead, fakeScales draws
  *  first from the shared stream; DflashDrafter.initFromDims seeds its own
  *  params internally at its default seed, independent of `r` — exactly as
  *  the smoke script relies on). */

@@ -65,9 +65,9 @@ fine on a loaded box; the FINAL pre/post pair must be clean-machine.
 - [ ] **0a. Oracle gate the bf16 port ONCE** (before any optimization, so
   later acceptance deltas are attributable to quant/tuning, not port bugs):
   torch venv + DeepSpec install (header of
-  `scripts/oracle-dspark-deepspec.py` documents setup), dump the temp-0
+  `scripts/oracle/oracle-dspark-deepspec.py` documents setup), dump the temp-0
   trace (threshold 0 and 0.5 arms), run
-  `scripts/dspark-deepspec-compare.ts` — target vs their reference on the
+  `dspark-deepspec-compare.ts (deleted 2026-08-23; git history)` — target vs their reference on the
   **bf16 HF 12B** (`--target` the bf16 snapshot; the OptiQ-4bit arm is
   `--acceptance-only`, a measurement not a bit gate). Fixture per
   goldens/README.md conventions. Exit: round-for-round PASS, or a filed

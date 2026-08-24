@@ -3,10 +3,10 @@
 # curated set (450 train convs, --best 500) via mlx-bun's segmented-backward
 # LoRA trainer.
 #
-#   scripts/ft-e4b-v2.sh probe   # 2-iter memory/stability check (~1 min) — RUN THIS FIRST
-#   scripts/ft-e4b-v2.sh train   # the real run (ITERS below)
+#   scripts/examples/ft-e4b-v2.sh probe   # 2-iter memory/stability check (~1 min) — RUN THIS FIRST
+#   scripts/examples/ft-e4b-v2.sh train   # the real run (ITERS below)
 #
-# Override any knob inline, e.g.:  ITERS=750 SEQ=4096 SEG=1 scripts/ft-e4b-v2.sh train
+# Override any knob inline, e.g.:  ITERS=750 SEQ=4096 SEG=1 scripts/examples/ft-e4b-v2.sh train
 #
 # Required for e4b: segmented backward (fits memory) + fused kernels OFF (no vjp).
 # Attention = flash attention via the DEFAULT ops.sdpa (mlx's fused flash kernel —
@@ -68,4 +68,4 @@ RANK="$RANK" \
 SCALE="$SCALE" \
 LR="$LR" \
 ADAPTER="$ADAPTER" \
-  bun scripts/chunk-finetune.ts
+  bun scripts/examples/chunk-finetune.ts

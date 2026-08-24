@@ -71,7 +71,7 @@ the throughput `runs` table). Each row records the active perf levers
   perf levers (NO_FUSED_SDPA) actually bite.
 - **M1 (done):** all six capability tasks ported + runtime-validated, plus
   `capability` aggregation and the `smoketest` (KL + GSM8K-50) gate. Datasets
-  exported by `scripts/eval/export-datasets.py` → `~/.cache/mlx-bun/eval-data/`.
+  exported by `scripts/oracle/export-datasets.py` → `~/.cache/mlx-bun/eval-data/`.
   Tasks run through the real quantized-KV path (`runner.ts`). HumanEval executes
   in a sandbox-exec + venv-python subprocess; HashHop reconstructs Magic AI's
   generator (`MultiHopEval` isn't on PyPI). **Open quality checks** (need a real

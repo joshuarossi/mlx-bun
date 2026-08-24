@@ -292,7 +292,7 @@ mlx-bun          18.6 tok/s      17.0 tok/s        116 ms      19.5 tok/s
 mlx-lm           16.5 tok/s      14.8 tok/s        284 ms      18.6 tok/s
 ```
 
-Add a small source line: `benchmarks/RESULTS.md`.
+Add a small source line: `docs/reference/benchmarks.md`.
 
 **Dialogue**
 
@@ -399,7 +399,7 @@ font in the diagrams and screen recordings.
 - Confirm first-run behavior still matches the narration.
 - Confirm the API request and response fields against the current reference
   docs.
-- Confirm the benchmark card still matches `benchmarks/RESULTS.md`.
+- Confirm the benchmark card still matches `docs/reference/benchmarks.md`.
 - Record room tone and five seconds of clean terminal footage for edits.
 - Capture every important terminal action twice.
 

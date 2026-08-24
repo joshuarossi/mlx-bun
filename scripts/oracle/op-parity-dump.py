@@ -3,7 +3,7 @@
 # inputs, dump inputs + outputs as raw f32, so mlx-bun can run the SAME inputs
 # through its OWN libmlx and compare op-by-op (bit-exact). Settles whether the
 # two builds' kernels diverge ON THIS MACHINE.
-#   <oracle-venv>/bin/python scripts/op-parity-dump.py
+#   <oracle-venv>/bin/python scripts/oracle/op-parity-dump.py
 import numpy as np
 import mlx.core as mx
 import mlx.nn as nn

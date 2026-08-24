@@ -1,14 +1,14 @@
 // CPU smoke for the faithful DFlash drafter: KV-injection forward, autograd
 // step, inference, and the multi-layer data round-trip — no GPU model needed.
 
-import { MlxArray } from "../src/mlx/array";
-import { Dtype } from "../src/mlx/ffi";
-import * as ops from "../src/mlx/ops";
-import { ValueAndGrad } from "../src/mlx/autograd";
-import { AdamW } from "../src/train/optimizer";
-import { DflashDrafter, DEFAULT_DFLASH_CONFIG, type TargetDims } from "../src/spec/dspark/module-dflash";
-import { dsparkLoss, positionWeights } from "../src/spec/dspark/loss";
-import { writeDflashShard, DflashShard, sampleDflashBatch, type DflashRecord } from "../src/spec/dspark/data-dflash";
+import { MlxArray } from "../../src/mlx/array";
+import { Dtype } from "../../src/mlx/ffi";
+import * as ops from "../../src/mlx/ops";
+import { ValueAndGrad } from "../../src/mlx/autograd";
+import { AdamW } from "../../src/train/optimizer";
+import { DflashDrafter, DEFAULT_DFLASH_CONFIG, type TargetDims } from "../../src/spec/dspark/module-dflash";
+import { dsparkLoss, positionWeights } from "../../src/spec/dspark/loss";
+import { writeDflashShard, DflashShard, sampleDflashBatch, type DflashRecord } from "../../src/spec/dspark/data-dflash";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,7 +30,7 @@ const fakeScales = MlxArray.fromFloat32(new Float32Array([1]), [1]).astype(Dtype
 const stub = {
   embed: { scales: fakeScales, encode: (ids: MlxArray) => ops.takeAxis(fakeEmbed, ids, 0) },
   logitsFromHidden: (h: MlxArray) => { const hf = h.dtype === Dtype.float32 ? h : h.astype(Dtype.float32); const o = ops.matmul(hf, fakeHead); if (hf !== h) hf.dispose(); return o; },
-} as unknown as import("../src/model/gemma4").Gemma4Model;
+} as unknown as import("../../src/model/gemma4").Gemma4Model;
 
 console.log("faithful DFlash module");
 {

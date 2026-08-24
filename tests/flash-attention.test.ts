@@ -4,7 +4,7 @@
 //
 // Parity target: the flash kernel is the L2 op — a port of mlx-optiq's
 // flash_attention_metal. The in-repo proxy here is ops.sdpa, which is sound
-// because optiq's flash matches ops.sdpa to f16 (scripts/flash-optiq-check.py,
+// because optiq's flash matches ops.sdpa to f16 (scripts/oracle/flash-optiq-check.py,
 // rel 0.0%); so flash == ops.sdpa here ⟹ flash == optiq (L2). ops.sdpa is itself
 // the L1 path (mlx-lm's tuner differentiates the same mx.fast.sdpa) and is
 // finite-difference verified. Tolerance is f16 precision across T / causal / GQA.

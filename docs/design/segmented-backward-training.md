@@ -35,8 +35,8 @@ All committed-worthy, validated this session:
   Baseline 11.89/100 → fine-tuned **91.70/100** on lucien's 25-case chunk holdout
   (valid-JSON rate 12% → 100%). Full mlx-bun loop: train → save adapter (hot-swap
   format) → `AdapterManager.mount` → generate. Writeup:
-  `docs/archive/investigations/chunk-finetune-experiment.md`. Scripts: `scripts/chunk-eval.ts`,
-  `scripts/chunk-finetune.ts`, `scripts/chunk-filter.ts`. Adapter:
+  `docs/archive/investigations/chunk-finetune-experiment.md`. Scripts: `scripts/examples/chunk-eval.ts`,
+  `scripts/examples/chunk-finetune.ts`, `chunk-filter.ts (deleted 2026-08-23; git history)`. Adapter:
   `~/.cache/mlx-bun-finetunes/minicpm5-chunk-final`.
 
 - **`ops.sdpa` is CORRECT** (NOT the inverse of an earlier wrong claim). Validated
@@ -247,7 +247,7 @@ returns the split indices + which donor K/V to save, computed from the above.
   one segment, so ops.sdpa may suffice; revisit flash only if the full term blows the
   budget at 8K AND its e4b crash is fixed.
 - The chunk data needs ≥4096 (median 4092; 0% ≤2048; 98% ≤8192). Success = e4b
-  trains at 8192 ≤ ~10 GB AND the chunk eval (`scripts/chunk-eval.ts`) shows a
+  trains at 8192 ≤ ~10 GB AND the chunk eval (`scripts/examples/chunk-eval.ts`) shows a
   quality delta on e4b like MiniCPM5's.
 - Training needs no env-flag sanitization (the no-vjp fused CustomKernels that
   once required `MLX_BUN_PERF_KERNEL=0 MLX_BUN_FUSED_GELU=0` were deleted
@@ -256,7 +256,7 @@ returns the split indices + which donor K/V to save, computed from the above.
 
 ## 7. Key files
 - `scripts/ckpt-mem-test.ts` — segmented-backward proof + memory harness (SEG/CKPT/REUSE, active/cache/peak).
-- `scripts/ft-chunk-smoke.ts` — e4b train/fwd/infer smoke (GRAD_CKPT, MEM_LIMIT_GB, MLX_BUN_MEM_LOG).
+- `ft-chunk-smoke.ts (deleted 2026-08-23; git history)` — e4b train/fwd/infer smoke (GRAD_CKPT, MEM_LIMIT_GB, MLX_BUN_MEM_LOG).
 - `scripts/sdpa-vs-manual.ts`, `scripts/flash-dk-debug.ts`, `scripts/flash-grad-test.ts` — gradient correctness.
 - `scripts/chunk-{eval,finetune,filter}.ts` — the chunk experiment pipeline.
 - `src/train/trainer.ts` — training loop (combined-eval, mem-log, gradCkpt ctx); contains the segmented path (`TrainConfig.segmentSize`).
@@ -269,7 +269,7 @@ returns the split indices + which donor K/V to save, computed from the above.
 ## 8. Original first action (COMPLETED)
 ~~Phase A step 1: add `runLayerRange` to `MiniCPM5Model`, then a segmented training
 path in `trainer.ts`, validate bit-exact grads + measure peak on
-`scripts/ft-chunk-smoke.ts`-style MiniCPM5 run. Then Phase B (e4b) with the §5 plan.~~
+`ft-chunk-smoke.ts (deleted 2026-08-23; git history)`-style MiniCPM5 run. Then Phase B (e4b) with the §5 plan.~~
 
 **Both Phase A and Phase B are done — see §9 and §10.** The genuine remaining work
 is `planSegments` full-attention isolation for the ~10 GB @8K e4b target: put each
@@ -296,8 +296,8 @@ Two findings landed (one a win, one a blocker). Code:
   leaf constructor via `mlx_array_new_data`, page-aligned, unlike `fromView`).
 - `src/train/loss.ts` — `responseOnlyCe` is now exported.
 - Harness: `scripts/segmented-grad-test.ts` (correctness + peak + `LEAK_LOOP`),
-  `scripts/seg-debug.ts` (forward-fidelity bisect), `scripts/vag-leak-test.ts`
-  (minimal value_and_grad leak repro). `scripts/chunk-finetune.ts` takes `SEG=n`.
+  `scripts/seg-debug.ts` (forward-fidelity bisect), `vag-leak-test.ts (deleted 2026-08-23; git history)`
+  (minimal value_and_grad leak repro). `scripts/examples/chunk-finetune.ts` takes `SEG=n`.
 
 ### 9.1 Correctness — the mechanism is exact
 `scripts/segmented-grad-test.ts` (MiniCPM5, synthetic B=1 batch):
@@ -364,7 +364,7 @@ boundary drags a whole layer-stack's activations (~0.1 GB per 4-layer segment of
 
 ### 9.5 STATUS: Phase A complete. Next actions
 Phase A (MiniCPM5) is done and production-ready: mechanism bit-exact (flash),
-memory win confirmed, no leak, trains end-to-end through `scripts/chunk-finetune.ts`
+memory win confirmed, no leak, trains end-to-end through `scripts/examples/chunk-finetune.ts`
 (`SEG=n`). Remaining:
 1. ✅ **DONE** — real 300-iter segmented fine-tune (SEG=4, SEQ=4096, ops.sdpa):
    **peak 6.51 GB** (non-seg baseline was 25.47 GB), 35.6 min, val loss 0.231→0.189,
@@ -479,8 +479,8 @@ are proven; this is a peak-optimization, not a blocker.
 
 - **PARITY vs mlx-lm — VERIFIED bit-exact (the correctness oracle).** Ran
   `mlx_lm.lora`'s actual `default_loss` and `nn.value_and_grad` against ours on the
-  SAME fixed 2048-token input (`scripts/parity-vs-mlxlm.ts`,
-  `scripts/grad-parity-vs-mlxlm.ts`; mlx-lm side in `/tmp/mlxlm-*-parity.py`):
+  SAME fixed 2048-token input (`parity-vs-mlxlm.ts (deleted 2026-08-23; git history)`,
+  `grad-parity-vs-mlxlm.ts (deleted 2026-08-23; git history)`; mlx-lm side in `/tmp/mlxlm-*-parity.py`):
   - **forward + loss:** verified across 6 mask spans (varying promptLen incl. the
     edges ntoks=2047 and ntoks=1), checking the SUMMATION not just one number:
     the **denominator** (our `M = (len-1)-max(0,promptLen-1)`) == mlx-lm's

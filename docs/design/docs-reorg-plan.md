@@ -6,7 +6,7 @@ and need a test run, so deferred to their own pass). Authored 2026-06-14.
 
 **Execution state (verified 2026-06-17):**
 - P0 #1 — **DONE**: `AGENTS.md` is a symlink → `CLAUDE.md`; drift risk resolved.
-- P0 #2 — **DONE**: `benchmarks/RESULTS.md` created; old committed benchmark artifacts `git rm`'d. Root untracked spew (`benchmarks-h2h-2026-06-13-*` etc.) is now cleaned — no untracked report files found at root.
+- P0 #2 — **DONE**: `docs/reference/benchmarks.md` created; old committed benchmark artifacts `git rm`'d. Root untracked spew (`benchmarks-h2h-2026-06-13-*` etc.) is now cleaned — no untracked report files found at root.
 - P0 #3 — **DONE**: root HTML/md spew cleared (no `benchmarks-h2h-*.md`, `benchmark-report-*.html`, `kernel-fusion-report-*.html`, or `project-review.html` at root).
 - P0 #4 — **DONE**: hardcoded test count removed from CLAUDE.md (no "All 72 tests" present).
 - P1 #5 — **DONE**: `STATUS.md` exists at root.
@@ -79,7 +79,7 @@ the project's three-tier parity model (L1/L2/L3).
    while holding ±5% on the 6-test mean"* — the perf win is only worth
    claiming alongside its measured quality cost.
 
-### B1. Create `benchmarks/RESULTS.md` (the new durable record)
+### B1. Create `docs/reference/benchmarks.md` (the new durable record)
 - Three top-level sections: **Parity** (model × mode → ✓/✗), **Performance**
   (oracle comparison + our-optimized-vs-our-compat), **Quality** (6-test
   mean + KL for non-exact paths). Each row carries provenance (machine,
@@ -90,7 +90,7 @@ the project's three-tier parity model (L1/L2/L3).
   matrix, plus the 06-13/06-14 follow-ups) into the right section
   **before** removing the raw files, so README's claims never lose their
   source.
-- Point README's "Full table" link at `benchmarks/RESULTS.md`.
+- Point README's "Full table" link at `docs/reference/benchmarks.md`.
 
 ### B2. Remove the old committed benchmark artifacts
 `git rm` the leaked raw runs and verification dumps (numbers preserved in
@@ -107,7 +107,7 @@ ignored `reports/`): `benchmarks-h2h-2026-06-13-*.md`,
 `benchmarks-h2h-2026-06-14-*.{md,html}`, `benchmark-report-*.html`,
 `kernel-fusion-report-*.html`, `project-review.html`.
 
-`scripts/verify-lab.ts` keeps writing `benchmarks/lab-verification.json`
+`verify-lab.ts (deleted 2026-08-23; git history)` keeps writing `benchmarks/lab-verification.json`
 locally — it'll just be gitignored now (add `benchmarks/lab-verification*.json`
 to `.gitignore`).
 

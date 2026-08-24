@@ -11,17 +11,17 @@
 // weight quantizer, so ppl is measured once per model load as a report-only
 // anchor column, not per KV config).
 //
-//   bun scripts/eval-turboquant-curve.ts --model <path> [--n-prompts 8]
+//   bun scripts/turboquant/eval-turboquant-curve.ts --model <path> [--n-prompts 8]
 //     [--seq-len 128] [--decode-steps 32] [--ppl-samples 4]
 //
 // Keep runtime modest — a quality gate, not a benchmark (docs/design/
 // turboquant-kv.md's own non-goal: no speed claims from this script).
 
-import { DEFAULT_KL_PROMPTS } from "../src/eval/kl-prompts";
-import { evaluateKlKvArm, loadRunnable } from "../src/eval/kl";
-import { packRows, evalPpl } from "../src/eval/perplexity";
-import { packedDim, TURBOQUANT_BLOCK_SIZE } from "../src/mlx/turboquant-ops";
-import type { TurboQuantScheme } from "../src/config";
+import { DEFAULT_KL_PROMPTS } from "../../src/eval/kl-prompts";
+import { evaluateKlKvArm, loadRunnable } from "../../src/eval/kl";
+import { packRows, evalPpl } from "../../src/eval/perplexity";
+import { packedDim, TURBOQUANT_BLOCK_SIZE } from "../../src/mlx/turboquant-ops";
+import type { TurboQuantScheme } from "../../src/config";
 
 function opt(name: string, dflt: string | null = null): string | null {
   const i = process.argv.indexOf(`--${name}`);
@@ -30,7 +30,7 @@ function opt(name: string, dflt: string | null = null): string | null {
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
-    `usage: bun scripts/eval-turboquant-curve.ts --model <path> [options]\n\n` +
+    `usage: bun scripts/turboquant/eval-turboquant-curve.ts --model <path> [options]\n\n` +
     `  --model <path>        Local model directory (config.json + weights) — required\n` +
     `  --n-prompts <n>       Prompts for the KL arms  [default: 8]\n` +
     `  --seq-len <n>         Tokens per prompt (prefill+decode window)  [default: 128]\n` +
@@ -69,7 +69,7 @@ interface Row {
 async function main(): Promise<void> {
   const modelPath = opt("model");
   if (!modelPath) {
-    console.error("usage: bun scripts/eval-turboquant-curve.ts --model <path> [--n-prompts 8] [--seq-len 128] [--decode-steps 32] [--ppl-samples 4]");
+    console.error("usage: bun scripts/turboquant/eval-turboquant-curve.ts --model <path> [--n-prompts 8] [--seq-len 128] [--decode-steps 32] [--ppl-samples 4]");
     process.exit(1);
   }
   const nPrompts = Number(opt("n-prompts", "8"));

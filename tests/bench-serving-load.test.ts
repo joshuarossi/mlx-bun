@@ -4,13 +4,13 @@
 // the harness ships; everything else in bench-serving-load.ts touches the
 // network and is exercised by Josh against his own running servers.
 //
-//   bun test scripts/bench-serving-load.test.ts
+//   bun test tests/bench-serving-load.test.ts
 
 import { describe, expect, test } from "bun:test";
 import {
   percentile, aggregate, detectKnee, maxSustainableRpm,
   type RequestResult, type SweepPoint,
-} from "./bench-serving-load";
+} from "../scripts/bench-serving-load";
 
 /** Build a synthetic OK result. sentAt/doneAt default so a list of these
  *  spans a 1 s window unless overridden. */

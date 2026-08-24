@@ -178,7 +178,7 @@ const cellKey = (c: DirectCell) => `${c.m.repoId.split("/").at(-1)}/${c.stack}/k
 async function directRun(c: DirectCell, tokens: number, promptTokens?: number): Promise<{
   prefillTps: number; decodeTps: number; peakGB: number; promptTokens: number;
 }> {
-  const args = ["bun", "scripts/bench.ts", "--model", c.m.repoId, "--tokens", String(tokens)];
+  const args = ["bun", "bench.ts (deleted 2026-08-23; git history)", "--model", c.m.repoId, "--tokens", String(tokens)];
   if (promptTokens) args.push("--prompt-tokens", String(promptTokens));
   if (c.stack === "mlx-bun") args.push("--kv", c.kv);
   else {

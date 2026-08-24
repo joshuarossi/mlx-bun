@@ -116,7 +116,7 @@ beside it. The report includes Qwen-first conclusions, full distributions,
 decode rows, and an interactive additive waterfall. It passed desktop and
 360 px browser checks. The run started with 796 MB of historical swap despite
 92% memory free and no competing model process, so these results remain outside
-curated `benchmarks/RESULTS.md` pending a canonical preflight.
+curated `docs/reference/benchmarks.md` pending a canonical preflight.
 
 ## Active: TurboQuant weights — rotation-folded quantization (opened 2026-08-17)
 

@@ -9,7 +9,7 @@
 #   1. creates (or updates) the GitHub release v<ver> with the tarball asset
 #   2. rewrites version/url/sha256 in the TAP's Formula/mlx-bun.rb and pushes
 #   3. mirrors the same three fields into the in-repo source-of-truth formula
-#      (packaging/homebrew/mlx-bun.rb) — left staged for you to commit
+#      (scripts/packaging/homebrew/mlx-bun.rb) — left staged for you to commit
 #
 # Releases are inherently local (signing/notarization need the Developer ID
 # cert + Apple creds on this Mac), so this local step is the single source
@@ -105,7 +105,7 @@ else
 fi
 
 # 3. Mirror into the in-repo source of truth (left for you to commit).
-rewrite_formula packaging/homebrew/mlx-bun.rb
+rewrite_formula scripts/packaging/homebrew/mlx-bun.rb
 
 # 4. npm — same version, same one-shot (idempotent: skip if already live).
 if [ "$(npm view mlx-bun@"$VERSION" version 2>/dev/null || true)" = "$VERSION" ]; then
@@ -125,5 +125,5 @@ echo "    GitHub release  https://github.com/$REPO/releases/tag/v$VERSION"
 echo "    Homebrew tap    brew upgrade joshuarossi/tap/mlx-bun"
 echo "    npm             mlx-bun@$VERSION"
 echo "    site            deploys from the git push (GitHub Pages)"
-echo "    packaging/homebrew/mlx-bun.rb updated — commit it:"
+echo "    scripts/packaging/homebrew/mlx-bun.rb updated — commit it:"
 echo "      git commit -am \"chore(dist): mlx-bun $VERSION\""

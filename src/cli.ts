@@ -1931,7 +1931,7 @@ switch (cmd) {
       : kvMode !== "off" ? { kvBits: Number(kvMode), quantizedKvStart: 0 } : {};
 
     // Warmup materializes weights so prefill timing measures prefill,
-    // not lazy page-in (same protocol as scripts/bench.ts).
+    // not lazy page-in (same protocol as bench.ts (deleted 2026-08-23; git history)).
     const sWarm = step("warmup");
     {
       const wCache = model.makeCache();

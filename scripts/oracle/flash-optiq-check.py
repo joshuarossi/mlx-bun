@@ -3,7 +3,7 @@
 # the divergence is inherent to optiq's kernel. If optiq's matches sdpa, my port
 # has a real bug to fix.
 #
-#   .venv/bin/python scripts/flash-optiq-check.py
+#   .venv/bin/python scripts/oracle/flash-optiq-check.py
 
 import optiq
 if hasattr(optiq, "register"):

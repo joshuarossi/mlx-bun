@@ -135,13 +135,13 @@ in the standalone `generate-dflash.ts` (the measure script). See
 - `src/spec/dspark/{loss,sample}.ts` — loss (Eq 9–12) + temp>0 sampling (shared with v1).
 - `src/spec/dspark/{module,data,generate}.ts` — v1 single-vector (superseded baseline).
 - `scripts/dspark-regen-dflash.ts` / `dspark-train-dflash.ts` (`--resume`) / `dspark-measure-dflash.ts`.
-- `scripts/dspark-dflash-smoke.ts` — CPU smoke (16/16). `scripts/dspark-smoke.ts` — v1 smoke (33/33).
+- `tests/helpers/dspark-dflash-smoke.ts` — CPU smoke (16/16). `dspark-smoke.ts (deleted 2026-08-23; git history)` — v1 smoke (33/33).
 
 ## Run sequence (faithful DFlash; GPU = Josh runs)
 ```
 bun scripts/dspark-regen-dflash.ts --topics <topics.txt> --out <data> --max-resp 320
 bun scripts/dspark-train-dflash.ts --data <data> --out <ckpt> --iters 8000 --batch 8 [--resume] [--ddraft 2560]
-bun scripts/dspark-measure-dflash.ts --drafter <ckpt> --data <prompts.jsonl>   # τ + tok/s vs vanilla
+bun dspark-measure-dflash.ts (deleted 2026-08-23; git history) --drafter <ckpt> --data <prompts.jsonl>   # τ + tok/s vs vanilla
 ```
 
 ## Paper components — Phase 2 (2026-07-06): the paper is CODE-COMPLETE

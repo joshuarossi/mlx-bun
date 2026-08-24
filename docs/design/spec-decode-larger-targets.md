@@ -26,7 +26,7 @@ implementation has, and one that re-reads the ~1 GB tied lm-head matrix
 ### Do we match optiq? YES — bit-exact (e4b)
 
 Cross-checked our `specGenerate` against optiq's `spec_generate` on the
-identical prompt ids (`scripts/oracle-spec.py` + `scripts/spec-dump.ts`),
+identical prompt ids (`scripts/oracle-spec.py` + `spec-dump.ts (deleted 2026-08-23; git history)`),
 e4b γ=2: **identical 48-token output AND identical accept/reject trace**
 (drafted 60, accepted 17, target calls 31 in both). Before the fix we
 matched *stock*, not optiq, at knife-edges; now we match optiq.
@@ -138,11 +138,11 @@ itself differently). We don't know the direction — that's why we run it.
 
 ## What is already wired (this change)
 
-- **`scripts/spec-bench.ts`** — now multi-pair, **one pair per process**
+- **`spec-bench.ts (deleted 2026-08-23; git history)`** — now multi-pair, **one pair per process**
   (memory-safe; 12B+drafter ≈ 8 GB, 26B ≈ 17 GB, never co-resident):
-  - `bun scripts/spec-bench.ts e4b` (default) — reproduces the baseline.
-  - `bun scripts/spec-bench.ts 12B` — the experiment.
-  - `bun scripts/spec-bench.ts 26B` — follow-on.
+  - `bun spec-bench.ts (deleted 2026-08-23; git history) e4b` (default) — reproduces the baseline.
+  - `bun spec-bench.ts (deleted 2026-08-23; git history) 12B` — the experiment.
+  - `bun spec-bench.ts (deleted 2026-08-23; git history) 26B` — follow-on.
   - Auto-detects whether each `(target, drafter)` snapshot pair is
     present; exits with a clear "download with: hf download …" message
     otherwise. Records baseline + γ-sweep (acceptance + tok/s) to the
@@ -190,7 +190,7 @@ tokens. This splits the validation cleanly:
 3. **Calibrate + promote (optional)** — find a tie-free prompt
    on-device, promote the 12B gate from long-prefix to exact `toEqual`
    like e4b, for a stronger standing guard.
-4. **Measure** — `bun scripts/spec-bench.ts 12B` on a clean machine
+4. **Measure** — `bun spec-bench.ts (deleted 2026-08-23; git history) 12B` on a clean machine
    (preflight matters: dirty-machine numbers are garbage). Read
    acceptance + speedup-vs-baseline per γ.
 5. **Record + decide** — numbers land in the eval DB. Promote into

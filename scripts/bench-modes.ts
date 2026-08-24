@@ -41,7 +41,7 @@
 // Prompt-cache hits are defeated with a per-request nonce so serial TTFT is
 // honest. NOT preflight-gated: loaded-machine numbers are garbage for
 // quoting (dirty-machine rule) — run the clean-machine protocol before
-// promoting anything to benchmarks/RESULTS.md.
+// promoting anything to docs/reference/benchmarks.md.
 
 import { existsSync, readdirSync } from "node:fs";
 import { configureRuntime, type RuntimeOverrides } from "../src/runtime-config";
