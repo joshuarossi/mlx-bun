@@ -224,7 +224,7 @@ after. The full gate-by-gate record (memory contract, MTP, DSA, learning
 shakeouts, serving parity, evidence paths) is archived in
 git history (`git show 3199c75:PLAN-archive.md`) under "STATUS archive 2026-08-18";
 the durable engineering record is PLAN.md Phase 21 and
-[docs/design/colibri-glm52-port.md](docs/design/colibri-glm52-port.md).
+[docs/archive/investigations/colibri-glm52-port.md](docs/archive/investigations/colibri-glm52-port.md).
 Pre-Colibri stabilization (Phase 22) is likewise closed —
 [docs/design/pre-colibri-stabilization.md](docs/design/pre-colibri-stabilization.md).
 
