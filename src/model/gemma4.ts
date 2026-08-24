@@ -23,7 +23,7 @@ import type { Weights } from "../weights";
 import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
-import { isExpertTracing, recordRouting } from "../expert-trace";
+import { isExpertTracing, recordRouting } from "../lab/expert-trace/expert-trace";
 
 // The shared, config-independent machinery lives in gemma4-base.ts
 // (Phase B extraction); this file keeps the architecture-specific

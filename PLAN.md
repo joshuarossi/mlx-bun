@@ -524,15 +524,12 @@ not killed on taste.
       into `src/serve/` modules behind the existing route-parity tests.
 - Landed 2026-08-23: the batch lane reports real prefill/decode timing (admission→first token→finish marks in `BatchScheduler`; `GenerationGateway` derives tok/s).
 - Landed 2026-08-24: tests live in `tests/{unit,serve,using}` (CI, model-free) and `tests/{parity,research}` (weights/oracle-gated); `scripts/test.sh` shards by directory; hygiene check 10 keeps weights/opt-in dependencies out of the CI tiers.
-- [ ] **`src/lab/` quarantine + import lint.** Create the directory, move the
-      no-oracle experiments into it, and add a lint rule forbidding
-      `src/lab/**` imports from production paths. Nothing in the serving path
-      may depend on a Lab module.
+- Landed 2026-08-24: `src/lab/{curve,paged-kv,expert-trace}` quarantined with hygiene check 11 (`LAB_IMPORT_ALLOWLIST` records the six existing production edges as debt; any new edge fails CI). Diffusion stays in place until D6 decides it — it is wired through factory/train/eval/gateway.
 - [ ] **D6 darlings — decide by measurement, one at a time.** Each needs either
       a demonstrated user or a deletion commit; none should sit in the default
       path unproven: `src/model/generated/*` twins vs the hand-written model
       files; `src/diffusion/` (no CLI entry point reaches it); the curve/HLG
-      sampler (`src/curve-sampler.ts`); the expert-offload cluster
+      sampler (`src/lab/curve/curve-sampler.ts`); the expert-offload cluster
       (`expert-{io,offload,offload-build,residency,trace,usage}.ts` — six files
       for one flag); paged-KV; the DSpark triplets; compiled-decode
       (`src/model/compiled-decode.ts` + `src/mlx/compile.ts`); and the three pi

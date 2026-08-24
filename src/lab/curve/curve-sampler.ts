@@ -16,8 +16,8 @@
 // BELOW lowers them (renorm makes the literal number an intent); the SLOPE across
 // a region sets how evenly the tokens inside it spread (flat<1 even, steep>1 separated).
 
-import { MlxArray } from "./mlx/array";
-import * as ops from "./mlx/ops";
+import { MlxArray } from "../../mlx/array";
+import * as ops from "../../mlx/ops";
 
 export interface CurvePoint { x_pct: number; y_pct: number; }
 export interface CurveParams {

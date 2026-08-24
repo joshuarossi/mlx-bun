@@ -21,7 +21,7 @@ describe.skipIf(!haveWeights)("paged KV parity (12B)", async () => {
   const { loadModelConfig } = await import("../../src/config");
   const { Weights } = await import("../../src/weights");
   const { Gemma4Model, KVCache, lastPositionLogits } = await import("../../src/model/gemma4");
-  const { PagedKVCache } = await import("../../src/model/paged-kv");
+  const { PagedKVCache } = await import("../../src/lab/paged-kv/paged-kv");
   const { generate, maybePageKv } = await import("../../src/generate");
 
   const config = await loadModelConfig(SNAPSHOT);

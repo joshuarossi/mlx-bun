@@ -21,10 +21,10 @@
 // gateway's #modelCachesBatchable, generated forwards' #matches() — must
 // EXCLUDE paged caches and fall back to the monolith/uncompiled path.
 
-import { MlxArray } from "../mlx/array";
-import { Dtype } from "../mlx/ffi";
-import * as ops from "../mlx/ops";
-import { createCausalMask, type Cache, type Mask } from "./gemma4-base";
+import { MlxArray } from "../../mlx/array";
+import { Dtype } from "../../mlx/ffi";
+import * as ops from "../../mlx/ops";
+import { createCausalMask, type Cache, type Mask } from "../../model/gemma4-base";
 
 /** Typed pool-exhaustion error: a generation outgrew its pool. Sizing from
  *  prompt+maxTokens at construction makes this unreachable in practice;

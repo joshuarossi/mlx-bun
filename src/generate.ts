@@ -18,7 +18,7 @@ import {
 import * as ops from "./mlx/ops";
 import { CompiledDecode } from "./model/compiled-decode";
 import { Gemma4Model, KVCache, RotatingKVCache, TurboQuantKVCache, type Cache } from "./model/gemma4";
-import { PagedKVCache } from "./model/paged-kv";
+import { PagedKVCache } from "./lab/paged-kv/paged-kv";
 import { DiffusionGemmaModel } from "./model/diffusion-gemma";
 import { diffusionGenerate } from "./diffusion/diffusion-generate";
 import type { RuntimeModel } from "./model/factory";

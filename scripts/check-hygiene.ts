@@ -496,6 +496,36 @@ function checkTestTiers(): string[] {
   return fails;
 }
 
+
+// ---------------------------------------------------------------------------
+// 11. src/lab boundary — Lab-tier (no-oracle) modules are quarantined under
+//     src/lab/. Nothing outside may import them except the recorded edges
+//     below (debt, not permission). A new edge is a decision: promote the
+//     module with an oracle/measurement, or route through an option seam.
+// ---------------------------------------------------------------------------
+
+const LAB_IMPORT_ALLOWLIST = new Set([
+  "src/sampler.ts -> lab/curve/curve-sampler",       // HLG/curve sampler wired into the sampler
+  "src/server.ts -> lab/curve/curve-sampler",        // --curve-* flags + /curves route
+  "src/server.ts -> lab/curve/curve-designer.html",  // designer page inlined into the binary
+  "src/serve/static-routes.ts -> lab/curve/curve-designer.html",
+  "src/generate.ts -> lab/paged-kv/paged-kv",        // --paged-kv (serial-only option)
+  "src/model/gemma4.ts -> lab/expert-trace/expert-trace", // MLX_BUN_EXPERT_TRACE hook
+]);
+
+function checkLabBoundary(): string[] {
+  const fails: string[] = [];
+  for (const f of listFiles().filter((f) => /^src\/.*\.ts$/.test(f) && !f.startsWith("src/lab/"))) {
+    const text = readFileSync(`${ROOT}/${f}`, "utf8");
+    for (const m of text.matchAll(/(?:from|import)\s*\(?\s*"((?:\.\.?\/)+)lab\/([^"]+)"/g)) {
+      const edge = `${f} -> lab/${m[2]}`;
+      if (!LAB_IMPORT_ALLOWLIST.has(edge))
+        fails.push(`  FAIL  ${edge} — production code importing a src/lab module (src/lab/README.md). Promote the module or route through an option seam; allowlisting is a reviewed decision.`);
+    }
+  }
+  return fails;
+}
+
 // ---------------------------------------------------------------------------
 // run
 // ---------------------------------------------------------------------------
@@ -539,7 +569,7 @@ if (false) {
 if (mode === "all" || mode === "root") {
   console.log("== hygiene: root artifacts / archive md-only / scripts root / script paths ==");
   const more = [...checkRootArtifacts(), ...checkArchiveMdOnly(), ...checkScriptsRoot(), ...checkScriptPaths(),
-    ...checkTestTiers(),
+    ...checkTestTiers(), ...checkLabBoundary(),
     ...(args.has("--no-caps") ? [] : [...checkDesignFrontMatter(), ...checkLineCaps()])];
   if (more.length) { for (const m of more) console.log(m); exit = 1; }
   else console.log("  OK — no root artifacts, archive is .md-only, scripts root allowlisted, doc script paths resolve.");

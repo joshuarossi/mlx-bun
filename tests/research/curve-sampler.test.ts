@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { MlxArray } from "../../src/mlx/array";
 import * as ops from "../../src/mlx/ops";
-import { applyCurve, buildSpline, evalSpline, curveAt, curveSecants, isMonotone, type CurveParams } from "../../src/curve-sampler";
+import { applyCurve, buildSpline, evalSpline, curveAt, curveSecants, isMonotone, type CurveParams } from "../../src/lab/curve/curve-sampler";
 import { makeSampler, toLogprobs } from "../../src/sampler";
 
 function lp(values: number[]): MlxArray { return toLogprobs(MlxArray.fromFloat32(Float32Array.from(values), [1, values.length])); }

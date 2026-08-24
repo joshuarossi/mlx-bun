@@ -14,7 +14,7 @@ import { describe, expect, test } from "bun:test";
 import { MlxArray } from "../../src/mlx/array";
 import * as ops from "../../src/mlx/ops";
 import { KVCache } from "../../src/model/gemma4-base";
-import { PagedKVCache, PagedPoolExhausted, poolBlocksFor } from "../../src/model/paged-kv";
+import { PagedKVCache, PagedPoolExhausted, poolBlocksFor } from "../../src/lab/paged-kv/paged-kv";
 
 const H = 2, D = 4;
 

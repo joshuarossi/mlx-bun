@@ -22,7 +22,7 @@ prose lives in PLAN.md; this file keeps mechanism, invariants, decisions,
 and open items.
 
 Code: `src/model/gemma4-base.ts` (Cache interface + the K/V cache family),
-`src/model/batched-*.ts`, `src/model/paged-kv.ts`, `src/prompt-cache.ts`,
+`src/model/batched-*.ts`, `src/lab/paged-kv/paged-kv.ts`, `src/prompt-cache.ts`,
 `src/kv-store.ts`, `src/ssd-cache.ts`, `src/ssd-durability.ts`,
 `src/kv-scheme.ts`, `src/generate.ts` (`maybeQuantizeKv` / `maybePageKv`),
 `src/server.ts` (wiring, `/stats`, `POST /admin/cache/flush`),
@@ -462,7 +462,7 @@ the model's prototype cache before opening the tensor mmap.
 - Stale comments: `prompt-cache.ts` still describes restore as zero-copy
   mmap (5.2).
 
-## 6. Optional paged KV (`src/model/paged-kv.ts`, `--paged-kv`)
+## 6. Optional paged KV (`src/lab/paged-kv/paged-kv.ts`, `--paged-kv`)
 
 Default off; with the flag unset no paged code executes and the plain
 `KVCache`/`RotatingKVCache` path is byte-identical.

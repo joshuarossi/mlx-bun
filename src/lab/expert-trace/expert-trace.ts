@@ -17,9 +17,9 @@
 // Router.forward is a single branch (zero overhead) — inert by default, same
 // discipline as the slots flag.
 
-import { Dtype } from "./mlx/ffi";
-import type { MlxArray } from "./mlx/array";
-import { runtimeValue } from "./runtime-config";
+import { Dtype } from "../../mlx/ffi";
+import type { MlxArray } from "../../mlx/array";
+import { runtimeValue } from "../../runtime-config";
 
 let sink: Bun.FileSink | null = null;
 let seq = 0;

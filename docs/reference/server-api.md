@@ -1466,7 +1466,7 @@ The web chat (`GET /`) and everything it loads same-origin, no CDN, ever
 | `GET /manifest.webmanifest` | `src/web/manifest.webmanifest` | PWA manifest. |
 | `GET /assets/icon.svg` | `src/web/icon.svg` | A single inline SVG app icon; no binary PNGs are shipped. |
 | `GET /sw.js` | `src/web/sw.js` | Service worker, served `cache-control: no-store` at the root scope. |
-| `GET /curves` | `src/assets/curve-designer.html` | The HLG Curve Designer page (drives `/signal` + `/generate` below); read from disk when available, embedded copy in compiled binaries. `no-store`. |
+| `GET /curves` | `src/lab/curve/curve-designer.html` | The HLG Curve Designer page (drives `/signal` + `/generate` below); read from disk when available, embedded copy in compiled binaries. `no-store`. |
 | `GET /curve-terrain` | `src/serve/assets/curve-terrain.html` | Curve terrain visualization; `404` when the artifact isn't on disk. |
 | `GET /dag` | `src/serve/assets/training-inference-map.html` | Training/inference DAG map; `404` when the artifact isn't on disk. |
 | `GET /status`, `/chat`, `/quantize`, `/finetune`, `/dataset` | — | Legacy page paths: `302` to `/#<path>` (the SPA's hash routes). |
@@ -1487,7 +1487,7 @@ to secure contexts (`https:` or `localhost`/`127.0.0.1`).
 ## Curve Designer: POST /signal · POST /generate
 
 Backends for the `/curves` page (HLG tone-curve sampling research tool,
-`src/curve-sampler.ts`). Both answer `OPTIONS` and send permissive CORS
+`src/lab/curve/curve-sampler.ts`). Both answer `OPTIONS` and send permissive CORS
 headers (`access-control-allow-origin: *`) so the page can be opened from
 a file or another origin. Both take the GPU lock (`gateway.runExclusive`)
 — they never interleave with a serving request.

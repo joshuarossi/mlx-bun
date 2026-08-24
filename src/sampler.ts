@@ -11,7 +11,7 @@
 import { Dtype } from "./mlx/ffi";
 import { MlxArray } from "./mlx/array";
 import * as ops from "./mlx/ops";
-import { applyCurve, type CurveParams } from "./curve-sampler";
+import { applyCurve, type CurveParams } from "./lab/curve/curve-sampler";
 
 /** Resolved HLG sampling config (the user-facing knobs). The mid gain is NOT
  *  here — it folds from temperature (m = 1/T) when the sampler is built. */
@@ -86,7 +86,7 @@ export interface SamplerOptions {
   hlg?: HlgConfig;
   /** v2 log-prob transfer-curve sampler. When set, the drawn monotone curve
    *  REPLACES temperature+softmax entirely (stochastic, seeded) — see
-   *  src/curve-sampler.ts. Identity curve ≡ temperature 1. */
+   *  src/lab/curve/curve-sampler.ts. Identity curve ≡ temperature 1. */
   curve?: CurveParams;
 }
 

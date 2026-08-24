@@ -411,7 +411,7 @@ Three rungs, in increasing fidelity of "who needs it most":
    (§4.1). Quantized KV multiplies the budget (~4× at 4-bit), and
    batching × quantized KV compounds.
 3. **Paged KV** — the density upgrade. `PagedKVCache`/`BlockPool`
-   (`src/model/paged-kv.ts`, `--paged-kv`) shipped as a serial-only,
+   (`src/lab/paged-kv/paged-kv.ts`, `--paged-kv`) shipped as a serial-only,
    bf16, Gemma4 full-attention block manager, bit-exact vs the plain
    path. The batching payoff is **not built**: paged caches into the
    scheduler's `LayerInner` union, block-count admission replacing byte

@@ -15,7 +15,7 @@ import type { Server } from "bun";
 // imports as HTMLBundle (the html loader), but the text attribute makes
 // the runtime value a string — hence the double cast.
 import appHtml from "./web/app.html" with { type: "text" };
-import curveDesignerHtml from "./assets/curve-designer.html" with { type: "text" };
+import curveDesignerHtml from "./lab/curve/curve-designer.html" with { type: "text" };
 // Vendored, no-CDN static assets referenced by app.html (convention: any
 // self-contained JS/CSS too big to inline gets `with { type: "text" }`
 // imported here and served under /assets/<name>; see src/web/vendor/README
@@ -83,7 +83,7 @@ import {
   compileGrammarRequest, grammarEnabled, type GrammarRequest,
 } from "./grammar";
 import type { HlgConfig } from "./sampler";
-import { isMonotone, CURVE_UMIN, type CurveParams } from "./curve-sampler";
+import { isMonotone, CURVE_UMIN, type CurveParams } from "./lab/curve/curve-sampler";
 const CURVE_PAGE = curveDesignerHtml as unknown as string;
 import { GenerationGateway } from "./serve/generation-gateway";
 import {
@@ -2778,7 +2778,7 @@ export function createServer(
 
       // ---- v2 HLG Curve Designer: POST /generate {prompt, curve, n, max_tokens, seed} ----
       // The drawn log-prob transfer curve REPLACES temperature+softmax entirely
-      // (src/curve-sampler.ts). The browser editor calls this; same curve object the
+      // (src/lab/curve/curve-sampler.ts). The browser editor calls this; same curve object the
       // tool's "Copy values" emits is the one the sampler consumes — one contract.
       if (url.pathname === "/generate" && request.method === "OPTIONS")
         return new Response(null, { headers: CURVE_CORS });

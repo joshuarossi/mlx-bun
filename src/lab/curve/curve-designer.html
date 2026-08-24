@@ -88,7 +88,7 @@ button.ghost{background:var(--card);border:1px solid var(--bd);border-radius:8px
 
 <script>
 const ln=Math.log;
-const UMIN=ln(1e-6); // bottom-left / plot floor (matches src/curve-sampler.ts CURVE_UMIN)
+const UMIN=ln(1e-6); // bottom-left / plot floor (matches src/lab/curve/curve-sampler.ts CURVE_UMIN)
 const ENGINE_BASE = location.protocol.startsWith("http") ? location.origin : "http://localhost:8080";
 // ---- curve state: 5 movable control points, sorted ascending in p_in ----
 function identityPoints(){ return [{x_pct:1e-4,y_pct:1e-4},{x_pct:0.1,y_pct:0.1},{x_pct:1,y_pct:1},{x_pct:9,y_pct:9},{x_pct:100,y_pct:100}]; }
@@ -102,7 +102,7 @@ const PROMPTS=[
   "Describe the feeling of a city at 3am in one vivid sentence.",
 ];
 
-// ---- math: monotone cubic (PCHIP), IDENTICAL to src/curve-sampler.ts ----
+// ---- math: monotone cubic (PCHIP), IDENTICAL to src/lab/curve/curve-sampler.ts ----
 const Lp=pt=>[ln(Math.max(pt.x_pct,1e-9)/100),ln(Math.max(pt.y_pct,1e-9)/100)];
 function knotArrays(c){ const k=c.points.map(Lp).sort((a,b)=>a[0]-b[0]); return {X:k.map(q=>q[0]),Y:k.map(q=>q[1])}; }
 function secants(c){ const {X,Y}=knotArrays(c),s=[]; for(let i=X.length-1;i>0;i--)s.push((Y[i]-Y[i-1])/(X[i]-X[i-1])); return s; }

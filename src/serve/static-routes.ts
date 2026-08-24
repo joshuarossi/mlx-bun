@@ -55,7 +55,7 @@ export function handleStaticRoute(
     case "/curves": {
       let html = assets.curvePage;
       try {
-        html = readFileSync(new URL("../assets/curve-designer.html", import.meta.url), "utf8");
+        html = readFileSync(new URL("../lab/curve/curve-designer.html", import.meta.url), "utf8");
       } catch {
         // Compiled binaries use the embedded copy.
       }
