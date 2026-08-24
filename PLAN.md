@@ -421,7 +421,7 @@ Landed so far:
 - 2026-08-18 — W1–W4: qwen3_5 corridor map, streaming fold at 27B scale, fold
   proven through STOCK mlx-lm (worst KL 0.0035); verdict recorded — rotation-
   only RTN loses at 4-bit, wins at ≤4 bpw.
-- 2026-08-18 — `~/models/Qwen3.8-27B-TQ` (3.86 bpw / 13.9 GB) validated
+- 2026-08-18 — `~/.cache/huggingface/hub/models--mjriii--Qwen3.8-27B-TQ` (local hub-cache staging, 14 GB — verified 2026-08-24; NOT on `~/models/`, which does not exist) (3.86 bpw / 13.9 GB) validated
   end-to-end: chat, vision over HTTP, MTP 71% accept and token-identical.
 - 2026-08-20 — MTP serve lane fixed (two defects in the one advertised
   feature); eval-runner swap-thrash root-caused and fixed.
