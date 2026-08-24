@@ -543,3 +543,36 @@ reuse across pipeline stages.
 - **What is the right install path?** All of the above — shipped: npm
   publish (v0.0.4, `bunx mlx-bun`), Homebrew release pipeline (sign,
   notarize, `joshuarossi/homebrew-tap`), and GitHub release binary.
+
+## Vision notes (merged from IDEAS.md, 2026-08-23)
+
+### Local in the deeper sense
+
+Two phrases that capture the thesis — especially **mlx-bun × Lucien**:
+
+1. **"A truly local model in a deeper sense."** Not just local *compute*
+   (runs on your Mac, nothing leaves it) — local to *you*: grounded in your
+   own context and memory, not only your hardware.
+2. **"The best model at being yours."** Not the best model in the absolute /
+   benchmark sense — the best at *being yours*. A small local model,
+   fine-tuned and wired to your personal memory, can lose every general
+   benchmark and still win the only one that matters here.
+
+Lucien (the Dreaming) is the synthesized, persistent memory of *you*;
+mlx-bun is the local, private model runtime. Combined: a model that runs
+entirely on your machine **and** is continuously grounded in your own
+accumulated context — local in both senses, and yours in a way no hosted
+frontier model can be.
+
+### Library/app split (idea only — NOT planned, Josh 2026-07-05)
+
+Two pulls: "one executable, everything you want to do with local AI" (the
+product's charm) vs "some people just want a JS ML library — do they need
+the rest?" The runtime-isolation work (2026-07-05) drew the exact boundary
+either future needs: the engine child = the GPU stuff (src/model, src/mlx,
+caches, scheduler, generate); the parent = the app (serve/UI/registry/
+jobs/proxy). If a split ever happens it is a PACKAGING decision, not a
+refactor — e.g. npm subpath exports (mlx-bun/model vs the full CLI bundle)
+so library users import only the core. Library usage is unaffected by
+isolation today (in-process generate(), no server involved). Revisit only
+if Josh decides; both directions stay open from the current structure.
