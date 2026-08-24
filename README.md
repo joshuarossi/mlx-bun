@@ -310,7 +310,7 @@ bun src/cli.ts memory synthesize    # conversations -> cross-linked wiki article
 bun src/cli.ts pi                   # built-in agentic coding CLI (pi's TUI, in-process)
 bun src/cli.ts evals                # recorded benchmark runs
 bun src/cli.ts harness pi           # connect your own pi install to the local server
-./benchmark.sh                      # head-to-head matrix vs mlx-lm/optiq (reboot first;
+bun scripts/bench-serve.ts all                      # head-to-head matrix vs mlx-lm/optiq (reboot first;
                                     #   preflight-gated, resumable, writes benchmarks-h2h-<date>-<host>.md)
 ```
 

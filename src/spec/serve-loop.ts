@@ -115,7 +115,7 @@ export interface SpecServeExtras {
   forwardsSaved: number;
   /** Per-draft-position counters (index = position within a round's block,
    *  0..γ-1): how many rounds drafted/accepted at that position. Drives the
-   *  Phase-1c per-position acceptance report (scripts/dspark-drafter-ab.ts)
+   *  Phase-1c per-position acceptance report (scripts/dspark.ts ab)
    *  — near-zero cost, always populated. */
   draftedByPos: number[];
   acceptedByPos: number[];

@@ -6,6 +6,38 @@ structured backing record is the user-local eval DB
 (`~/.cache/mlx-bun/evals.sqlite`). Promote a run into this file
 deliberately when it becomes the new reference.
 
+## Running the benchmark
+
+`bun scripts/bench-serve.ts all` is THE benchmark — one pass, real servers,
+real paths, every number that matters. Per model × arm (mlx-bun@defaults ·
+mlx-bun `--batch 1` [the control arm — `--no-serial` skips] · mlx-lm ·
+mlx-bun-mixed · optiq-mixed) it measures decode tok/s (spread/stability
+policy), TTFT cold (~1k, nonce-busted) and warm/cached (each stack's own
+prompt cache), prefill tok/s, long-context prefill/TTFT/decode (ONE measured
+prefill; decode sampled on 64 tok + 2 cached repeats), aggregate tok/s at 4
+concurrent streams, peak RSS (sampled; undercounts GPU), and load→ready time.
+From the SAME cells it checks BIT PARITY: a fixed greedy 64-token probe must
+be byte-identical between stacks of the same scheme (mlx-bun vs mlx-lm;
+mixed vs optiq; unified engine vs `--batch 1`), with prompt_tokens equality
+doubling as a chat-template-parity check.
+
+```sh
+bun scripts/bench-serve.ts all                       # cpm5 + e4b + 12B + Qwen3.8-27B, all arms
+bun scripts/bench-serve.ts all --no-serial           # skip the --batch 1 control arm
+bun scripts/bench-serve.ts all --models cpm5,qwen27b # subset
+bun scripts/bench-serve.ts all --skip-context        # drop the long-context leg
+bun scripts/bench-serve.ts all --context 8192        # shorter context leg
+```
+
+`all` runs the clean-machine preflight first (refuses headline numbers from
+a loaded or swapped box) and holds `caffeinate` for the pass. Quotable
+ABSOLUTE numbers need a quiet machine (reboot, nothing open); parity verdicts
+and ratios survive a dirty one. Results land in the eval DB
+(`~/.cache/mlx-bun/evals.sqlite`) plus a dated markdown report (gitignored;
+move it to `reports/`). Developer lever A/Bs are NOT benchmarks — run
+`scripts/bench-levers.ts <faithful-matrix|fused-prefill|compiled-decode>` or
+`scripts/bench-matrix.ts <modes|features>` directly when touching those paths.
+
 There are **three categorically different kinds of measurement** — kept in
 separate sections because they answer different questions:
 
@@ -90,14 +122,14 @@ token; `MLX_BUN_PREFILL_TAIL_SPLIT`), live HTTP probes are
 gemma-4-e4b, AND gemma-4-12B, on completion + chat probes, in both the
 unified (`--batch 8` default) and `--batch 1` lanes; script-level A/B
 shows 64/64 token ids + top-2 logprob values identical per step
-(`scripts/experiments/serve-parity-probe.ts`,
-`scripts/experiments/step0-top2-dump.ts`).
+(`serve-parity-probe.ts (deleted; git history)`,
+`step0-top2-dump.ts (deleted; git history)`).
 
 ---
 
 ## Methodology change (2026-07-05)
 
-The primary benchmark is now **`./benchmark.sh` → `scripts/bench-serve.ts`**:
+The primary benchmark is now **`bun scripts/bench-serve.ts all` → `scripts/bench-serve.ts`**:
 real servers on real paths — the mlx-bun arms spawn the ACTUAL CLI at its
 actual defaults (the old harness used a bench-local wrapper, since deleted),
 and every metric arrives over HTTP as a user would see it. One server per
@@ -107,7 +139,7 @@ prefill/TTFT/decode (ONE measured prefill; decode sampled on 64 tokens),
 aggregate tok/s at 4 concurrent streams, and load→ready time. Context
 lengths are recorded from usage.prompt_tokens (measured, not requested).
 Engine-level questions (in-process kernel parity, gen-peak memory,
-kill-switch A/Bs) live behind `./benchmark.sh --engine`. Numbers below this
+kill-switch A/Bs) live behind `bun scripts/bench-serve.ts all --engine`. Numbers below this
 note predate the redesign; the next quiet-machine pass supersedes them.
 
 ## 2. Performance — like-for-like numbers
@@ -490,7 +522,7 @@ KL PASS — see docs/design/unified-engine-frontier-plan.md §6-7).
 
 Opt-in memory/context scheme (`--kv-quant turbo[:k<bits>v<bits>]`), not a
 speed lever. Teacher-forced serving-decode KL vs bf16 KV (8×128 tokens, 32
-decode steps, `scripts/eval-turboquant-curve.ts`); affine rows same harness:
+decode steps, `eval-turboquant-curve.ts (deleted; git history)`); affine rows same harness:
 
 | scheme | effective KV bits | KV compression | mean KL vs bf16 |
 |---|---|---|---|
@@ -519,9 +551,9 @@ levers. This section records the decisions and the numbers behind them.
 
 Decision rule: spec defaults ON for a (target, drafter) pair iff
 serve-path decode ≥ 1.3× serial at the recommended γ, clean-machine
-paired (`benchmark.sh` preflight, `bench-feature-matrix.ts --cells
+paired (`scripts/bench-serve.ts all` preflight, `bench-feature-matrix.ts --cells
 serial,spec`), with acceptance within 3 pts of the bf16-drafter baseline
-(`scripts/dspark-drafter-ab.ts`). Prediction to test: ON for
+(`scripts/dspark.ts ab`). Prediction to test: ON for
 12B + quantized DeepSpec drafter, OFF for e4b + anything.
 
 | target | drafter | γ | acceptance | τ | spec tok/s | serial tok/s | verdict |
@@ -532,12 +564,12 @@ serial,spec`), with acceptance within 3 pts of the bf16-drafter baseline
 
 Runbook (Josh's shell; directional passes fine loaded, the FINAL pair
 clean-machine per the house rule):
-1. **1d acceptance A/B** (no server): `bun scripts/dspark-drafter-ab.ts
+1. **1d acceptance A/B** (no server): `bun scripts/dspark.ts ab
    --target gemma-4-12B-it-OptiQ-4bit --drafter-a <bf16-snap>
    --drafter-b <q4-snap> --json ab-q4.json` — gate: drop ≤ 3 pts AND
    wall-clock strictly improves.
 2. **0b γ sweep** (server): serve 12B `--draft-model <q4-snap>
-   --num-draft-tokens {2,3,5,7}` × `bun scripts/bench-feature-matrix.ts
+   --num-draft-tokens {2,3,5,7}` × `bun scripts/bench-matrix.ts features
    --concurrency 1 --cells serial,spec` — pick best-γ by per-request tok/s.
 3. **Phase 6 decision pair** (clean machine: reboot + `sudo purge`):
    best-γ config, `--cells serial,spec` at conc 1 AND agg×4 — fill the

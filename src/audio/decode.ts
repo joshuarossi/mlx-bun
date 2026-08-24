@@ -3,7 +3,7 @@
 // Scope: RIFF/WAVE containers — PCM 16/24/32-bit and IEEE float32, any
 // channel count (mean mixdown), any sample rate (linear resample to 16 kHz).
 // PCM16 scales by 1/32768 to match the oracle golden generator
-// (scripts/gen-e4b-audio-golden.py) exactly. Non-WAV containers (mp3/m4a/
+// (scripts/oracle/gen-e4b-audio-golden.py) exactly. Non-WAV containers (mp3/m4a/
 // flac/ogg) are transcoded to WAV by the serve layer via macOS `afconvert`
 // before reaching this parser.
 //

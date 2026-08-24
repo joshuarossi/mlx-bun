@@ -294,7 +294,7 @@ Runs mlx-bun by itself on this machine and records to the eval DB.
 mlx-bun bench e4b --tokens 256 --runs 3
 ```
 
-For quotable **cross-stack** numbers use `./benchmark.sh` from the repo — it
+For quotable **cross-stack** numbers use `bun scripts/bench-serve.ts all` from the repo — it
 preflight-gates on an idle machine and runs the mlx-lm/optiq comparison legs,
 writing `benchmarks-h2h-<date>.md`.
 

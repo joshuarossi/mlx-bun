@@ -16,7 +16,7 @@
 # (generate_decoding_sample + build_dspark_proposal + forward_dspark_draft_block,
 # imported verbatim from deepspec) around a flat single-process loop over a
 # small fixed prompt set, matching the house oracle-script shape
-# (scripts/oracle-spec.py, scripts/oracle-spec-two-model.py) instead of their
+# (scripts/oracle/oracle-spec.py, scripts/oracle/oracle-spec-two-model.py) instead of their
 # eval.py CLI. Every deepspec import below is real (fetched 2026-07-06 from
 # raw.githubusercontent.com/deepseek-ai/DeepSpec/main/...) — nothing here is
 # a guessed API.

@@ -2,7 +2,7 @@
 // oracle golden (slow tier) — closes the comparison-2 gap: before this,
 // mixed-KV was verified ours-fast vs ours-monolith and against the UNIFORM
 // kv4 golden; goldens/mixed-kv.json is produced by the optiq-side composition
-// itself (scripts/regen-mixed-kv-goldens.ts: bf16 prefill of ids[:-1] →
+// itself (scripts/regen.ts mixed-kv: bf16 prefill of ids[:-1] →
 // per-layer quantize of the populated caches, rotating included → L=1
 // step-0 forward of the last prompt token → stock unfused quantized decode
 // — the oracle serve-loop geometry our maybeQuantizeKv + tail-split prefill

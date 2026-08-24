@@ -30,7 +30,7 @@ and a tracked-root allowlist.
 ## The rules
 
 1. **No dated artifacts in git.** Anything with a date or hostname in its
-   filename is a work product, not source. `benchmark.sh` and the bench
+   filename is a work product, not source. `scripts/bench-serve.ts all` and the bench
    scripts write their dumps to the working dir — move them to `reports/`
    or delete them; only distilled numbers enter `docs/reference/benchmarks.md`.
    The root allowlist gate fails CI on new tracked root files.

@@ -218,7 +218,7 @@ describe.skipIf(!optIn || !haveCpm)("batch scheduler — CPM L1 (full-attention)
 // ALTERNATIVE (later, if a tighter gate is wanted): a protocol oracle — a gen
 // script driving mlx-lm's BatchKVCache.merge/.extract/.filter through the
 // scheduler's EXACT merged-solo-prefill + staggered-evict schedule (like
-// scripts/gen-batched-dynamic-golden.py does for the cache ops), regenerated
+// scripts/oracle/gen-batched-dynamic-golden.py does for the cache ops), regenerated
 // per machine via the goldens layer, would restore token-for-token equality.
 const GEMMA_KL_TOL = 5e-1;
 describe.skipIf(!optIn || !haveGemma)("batch scheduler — Gemma 12B (mixed sliding/full)", () => {

@@ -7,7 +7,7 @@
 //
 //   MLX_BUN_TEST_DIFFUSION=1 bun test tests/diffusion-vision.test.ts
 //
-// Golden: scripts/gen-diffusion-vision-golden.py (fixture grad-768.png).
+// Golden: scripts/oracle/gen-diffusion-vision-golden.py (fixture grad-768.png).
 // Gate: spliced ids EXACT + generation TOKEN-FOR-TOKEN vs optiq.
 
 import { describe, expect, test } from "bun:test";

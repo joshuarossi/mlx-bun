@@ -40,7 +40,7 @@ All committed-worthy, validated this session:
   `~/.cache/mlx-bun-finetunes/minicpm5-chunk-final`.
 
 - **`ops.sdpa` is CORRECT** (NOT the inverse of an earlier wrong claim). Validated
-  vs autograd ground truth (`scripts/sdpa-vs-manual.ts`): dQ/dK/dV all 0.00%. Use
+  vs autograd ground truth (`sdpa-vs-manual.ts (deleted; git history)`): dQ/dK/dV all 0.00%. Use
   it for training. It's O(L²) memory in the backward (mlx autographs the fused op).
 
 - **Flash dK kernel FIXED.** The dKV Metal kernel emitted dK with its (Tkv,D) axes
@@ -90,7 +90,7 @@ Facts established:
 
 ## 3. The fix: segmented backward (PROVEN)
 
-Reference implementation + proof: **`scripts/ckpt-mem-test.ts`** (`SEG=n` mode).
+Reference implementation + proof: **`ckpt-mem-test.ts (deleted; git history)`** (`SEG=n` mode).
 
 Algorithm:
 1. **Forward, saving boundaries.** Run the layer stack; at each segment edge (group
@@ -255,9 +255,9 @@ returns the split indices + which donor K/V to save, computed from the above.
 - MLX `Date.now()`/random caveats don't apply here; standard determinism via seed.
 
 ## 7. Key files
-- `scripts/ckpt-mem-test.ts` — segmented-backward proof + memory harness (SEG/CKPT/REUSE, active/cache/peak).
+- `ckpt-mem-test.ts (deleted; git history)` — segmented-backward proof + memory harness (SEG/CKPT/REUSE, active/cache/peak).
 - `ft-chunk-smoke.ts (deleted 2026-08-23; git history)` — e4b train/fwd/infer smoke (GRAD_CKPT, MEM_LIMIT_GB, MLX_BUN_MEM_LOG).
-- `scripts/sdpa-vs-manual.ts`, `scripts/flash-dk-debug.ts`, `scripts/flash-grad-test.ts` — gradient correctness.
+- `sdpa-vs-manual.ts (deleted; git history)`, `flash-dk-debug.ts (deleted; git history)`, `flash-grad-test.ts (deleted; git history)` — gradient correctness.
 - `scripts/chunk-{eval,finetune,filter}.ts` — the chunk experiment pipeline.
 - `src/train/trainer.ts` — training loop (combined-eval, mem-log, gradCkpt ctx); contains the segmented path (`TrainConfig.segmentSize`).
 - `src/train/forward.ts`, `src/train/loss.ts` — training forward + response-only CE.
@@ -295,12 +295,12 @@ Two findings landed (one a win, one a blocker). Code:
 - `src/mlx/array.ts` — `MlxArray.fromBytesCopy(bytes, shape, dtype)` (a COPYING
   leaf constructor via `mlx_array_new_data`, page-aligned, unlike `fromView`).
 - `src/train/loss.ts` — `responseOnlyCe` is now exported.
-- Harness: `scripts/segmented-grad-test.ts` (correctness + peak + `LEAK_LOOP`),
-  `scripts/seg-debug.ts` (forward-fidelity bisect), `vag-leak-test.ts (deleted 2026-08-23; git history)`
+- Harness: `segmented-grad-test.ts (deleted; git history)` (correctness + peak + `LEAK_LOOP`),
+  `seg-debug.ts (deleted; git history)` (forward-fidelity bisect), `vag-leak-test.ts (deleted 2026-08-23; git history)`
   (minimal value_and_grad leak repro). `scripts/examples/chunk-finetune.ts` takes `SEG=n`.
 
 ### 9.1 Correctness — the mechanism is exact
-`scripts/segmented-grad-test.ts` (MiniCPM5, synthetic B=1 batch):
+`segmented-grad-test.ts (deleted; git history)` (MiniCPM5, synthetic B=1 batch):
 - **Under flash attention: grads bit-match the full value_and_grad — relNorm
   0.0000%, maxAbs 0.0, loss identical.** The segmentation algorithm (forward
   boundaries → loss-head dh → reverse per-segment surrogate) is reverse-mode AD
@@ -310,7 +310,7 @@ Two findings landed (one a win, one a blocker). Code:
 ### 9.2 Forward-fidelity finding: `ops.sdpa` fused-eager ≠ autograd forward
 Under the default `ops.sdpa`, the segmented grads diverge ~6% (relNorm) from the
 full value_and_grad — **not** a segmentation bug. Root cause (bisected in
-`scripts/seg-debug.ts`): mlx's fused `ops.sdpa` computes a **different bf16 result
+`seg-debug.ts (deleted; git history)`): mlx's fused `ops.sdpa` computes a **different bf16 result
 in its eager forward (12.0712) than in its autograd-decomposed forward (12.0568)**
 — a 0.12% gap, independent of LoRA (holds at lora scale 0). Flash uses one forward
 for both → no gap. Consequences:
@@ -386,7 +386,7 @@ memory win confirmed, no leak, trains end-to-end through `scripts/examples/chunk
 **Status: e4b segmented backward works.** `SegmentedBackwardGemma4`
 (`src/train/segmented.ts`) + the model-side `runLayerRange` are done, wired into
 the trainer (Gemma4 path), and validated on the real e4b
-(`scripts/segmented-grad-test-e4b.ts`):
+(`segmented-grad-test-e4b.ts (deleted; git history)`):
 - **Forward bit-exact** vs the full value_and_grad (loss identical at every L).
 - **Grads: single-consumer donor reuse is BIT-EXACT** (2-segment split at 24:
   0/258 targets off). With the natural 7-segment cut the donor K/V grad is ~0.97%

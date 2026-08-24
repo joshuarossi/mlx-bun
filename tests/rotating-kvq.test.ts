@@ -13,7 +13,7 @@
 //      fused install); greedy continuation prefix vs the
 //      fused-prefill/stock-decode reference.
 //
-// Goldens: scripts/regen-rotating-kvq-goldens.ts.
+// Goldens: scripts/regen.ts rotating-kvq.
 
 import { describe, expect, test } from "bun:test";
 import { goldenAt } from "./goldens";

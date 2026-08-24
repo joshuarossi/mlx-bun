@@ -2080,7 +2080,7 @@ export function quantizedSdpaTiled(
 function fusedSdpaSupported(q: MlxArray, mask: Mask, groupSize: number, bits: number): boolean {
   // Escape hatch mirroring optiq serve's --no-fused-kv: forces the
   // stock unfused path everywhere. Also the A/B lever for
-  // scripts/bench-fused-prefill.ts. Read per call (cheap next to the
+  // scripts/bench-levers.ts fused-prefill. Read per call (cheap next to the
   // FFI work) so tests and paired A/B harnesses can flip it in-process.
   if (runtimeValue("MLX_BUN_NO_FUSED_SDPA") === "1") return false;
   if (bits !== 4 && bits !== 8) return false;

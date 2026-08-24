@@ -1,7 +1,7 @@
 // FAST (no model load): the batched sliding-window cache (BatchedRotatingCache,
 // src/model/batched-rotating.ts) vs the mlx-lm BatchRotatingKVCache oracle.
 //
-// Replays the EXACT sequence scripts/gen-rotating-golden.py drove through
+// Replays the EXACT sequence scripts/oracle/gen-rotating-golden.py drove through
 // mlx-lm — solo-prefill two rows, merge, then N=1 decode steps that force the
 // ring to WRAP — and asserts, at every step, that our make_mask AND our
 // extracted per-row temporal keys match the reference. This is the decisive

@@ -12,7 +12,7 @@
 // running a composition we never ship. The oracle (mlx-lm B=2, left-padded
 // prefill WITH its ssm_mask) must produce the same trajectories iff both
 // pad-handling strategies are equivalent — which is exactly the claim the
-// gate proves. Oracle fixture: scripts/gen-batched-golden.py (oracle venv);
+// gate proves. Oracle fixture: scripts/oracle/gen-batched-golden.py (oracle venv);
 // goldens are machine-specific (tests/goldens.ts).
 
 import { describe, expect, test } from "bun:test";

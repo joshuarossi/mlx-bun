@@ -39,7 +39,7 @@ chasing host overhead that compile already removed.
 
 **Steps:**
 
-1. **Characterize before touching anything.** Run `scripts/decode-split.ts`
+1. **Characterize before touching anything.** Run `decode-split.ts (deleted; git history)`
    (the per-step wall-time splitter that already exists) on all three models at
    @600 and @8k. Record GPU-blocked time vs JS-graph-build time per step. This
    is the control measurement; everything in Phase A is judged against it. The

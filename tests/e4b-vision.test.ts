@@ -14,7 +14,7 @@
 // scale=1.0 peaked softmax (~1% on features), which flips the greedy argmax a
 // few tokens in. NOT a kernel/cross-build issue. See src/vision/siglip.ts header.
 //
-// Oracle: goldens/e4b-vision.json (scripts/gen-e4b-vision-golden.py). Fixture
+// Oracle: goldens/e4b-vision.json (scripts/oracle/gen-e4b-vision-golden.py). Fixture
 // is 768x768 so preprocessing has no resize step (bit-exact pixels).
 
 import { describe, expect, test } from "bun:test";

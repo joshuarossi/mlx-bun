@@ -87,7 +87,7 @@ Ordered by expected payoff on this hardware:
       still loses (heavy drafter: hidden 1024, 16 heads, full-262k tied
       head every draft step). Now BIT-EXACT to optiq's spec_generate
       (e4b: identical 48-tok output + identical 60/17/31 trace, via
-      scripts/oracle-spec.py + spec-dump.ts). Also: optiq's INSTALLED
+      scripts/oracle/oracle-spec.py + spec-dump.ts). Also: optiq's INSTALLED
       runtime can't drive the 12B/26B unified drafters (config picks
       centroid path, artifact ships none → 0% accept); our tensor-presence
       tied-head detection works (29%) — we're ahead of optiq there.
@@ -117,7 +117,7 @@ Ordered by expected payoff on this hardware:
       (toBe(0), 4 steps incl. prefill over the sorted gather path) and
       12/12 greedy tokens identical vs the oracle
       (tests/parity-26b.test.ts; goldens regen:
-      scripts/regen-parity-goldens-26b.ts, chat-templated). Ported: Router
+      scripts/regen.ts parity-26b, chat-templated). Ported: Router
       (rms_norm·√H⁻¹ → 8-bit proj → argpartition top-8 → softmax →
       per_expert_scale), QuantizedSwitchLinear/SwitchGLU (gather_qmm,
       incl. the ≥64-indices token-sort path), Experts, and the parallel
@@ -608,7 +608,7 @@ Bring-up sub-phases (gate each with the parity tests; B=1 single-stream first):
 - [x] **14d — parity, KV OFF** — **PASSED on Qwen3.5-4B-OptiQ-4bit (2026-06-15,
       M1 Max).** Per-step logits bit-exact (`toBe(0)`) + greedy identical vs
       stock mlx-lm over 12 steps. Golden gen
-      `scripts/regen-qwen-parity-goldens.ts [27b|4b]`; test
+      `scripts/regen.ts qwen-parity [27b|4b]`; test
       `tests/qwen-parity.test.ts` (`MLX_BUN_TEST_QWEN35[_4B]=1`).
 - [x] **14e — parity, KV ON** — **PASSED on Qwen3.5-4B-OptiQ-4bit (2026-06-15,
       M1 Max).** Mixed-precision KV (per-layer bits over the 8 full-attn layers,
@@ -1080,7 +1080,7 @@ Matrix: stacks {mlx-bun, mlx-lm, mlx-optiq} × models {e4b, 12B,
   ~15.9k cache. Qwen bf16 restored none in either lane; Qwen mixed restored
   15,112. Investigate the scheduler/SSD restore path before quoting aggregate
   throughput as representative for e4b or 12B.
-- `benchmark.sh` now runs the existing clean-machine preflight itself, so the
+- `scripts/bench-serve.ts all` now runs the existing clean-machine preflight itself, so the
   documented gate cannot be bypassed by using the canonical entry point.
   Curated values and provenance are in `docs/reference/benchmarks.md`.
 - Bun 1.4.0 repeated the full matrix with all parity probes green and no broad
@@ -1200,7 +1200,7 @@ the localhost hop.
       `GenerationBatch`, cache lookup, detokenization, and response writes.
       Use the same trace schema and semantic boundaries. Record any boundary
       that cannot be matched exactly instead of comparing unlike spans.
-      **DONE 2026-08-23:** `scripts/oracle-p2r-serve.py` imports and wraps the
+      **DONE 2026-08-23:** `scripts/oracle/oracle-p2r-serve.py` imports and wraps the
       pinned install at runtime, including the optiq registration route needed
       by the 12B. The oracle venv is untouched. Python body parsing precedes
       the wrapped request object, so that boundary is explicitly unavailable
@@ -1403,7 +1403,7 @@ file and per row).
 
 ### Phase 15 findings (2026-06-11 — the corrected clean matrix)
 
-The post-reboot `./benchmark.sh --redo` pass (commit f23ef4e, eval
+The post-reboot `bun scripts/bench-serve.ts all --redo` pass (commit f23ef4e, eval
 rows 200–259, benchmarks/benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md). First
 clean-machine measurement of the post-rope-fix/Phase-9/10 engine.
 
@@ -1443,7 +1443,7 @@ clean-machine measurement of the post-rope-fix/Phase-9/10 engine.
 ### Decode gap RESOLVED (2026-06-11 — root cause, fix, residual)
 
 Method: per-step wall-time split of the pipelined decode loop in BOTH
-stacks (`scripts/decode-split.ts` + `oracle-decode-split.py (deleted 2026-08-23; git history)`),
+stacks (`decode-split.ts (deleted; git history)` + `oracle-decode-split.py (deleted 2026-08-23; git history)`),
 12B, @600 and @8k, same session, paired ratios (dirty machine —
 absolutes not quotable, ratios are).
 
@@ -1490,7 +1490,7 @@ is numerically invisible (allocator-only), parity gates untouched.
 23.5 → 25.1 vs python 24.0 — WE ARE NOW FASTER. 12B @8k: 23.8 vs
 python 23.9 (−0.4% — parity; was −4.5% clean / −11% dirty). Peak
 @8k unchanged (11.06 GB). Quotable absolutes: fold into the next
-cleared-machine `./benchmark.sh --redo`.
+cleared-machine `bun scripts/bench-serve.ts all --redo`.
 
 **Residual (open, characterized): e4b −5% at short context**
 (54.5 vs 57.4 paired post-fix). Mechanism: at 17 ms/step the serial
@@ -1552,7 +1552,7 @@ change, consistent with Phase 6).
   45.8–45.9).
 - The M4 "rerun" at 17:48 recorded NOTHING (resume window treated
   the morning rows as recent; all cells skipped) — re-baselining
-  post-rope-fix/Phase-9/10 code needs `./benchmark.sh --redo` on the
+  post-rope-fix/Phase-9/10 code needs `bun scripts/bench-serve.ts all --redo` on the
   next reboot. The M1 Max ran pre-Phase-10 code (6cb4a35 checkout).
 
 ### Phase 15 findings (2026-06-10, full-matrix run)
@@ -1774,7 +1774,7 @@ change, consistent with Phase 6).
       (goldens/perf-oracle/{12b,e4b,26b}.json): compat-mode greedy
       trajectories @600/@2k + top-128 logits for 4 decode steps under
       the shipped kv_config, keyed by config fingerprint
-      (scripts/freeze-perf-oracle.ts). This is the perf-mode gate's
+      (freeze-perf-oracle.ts (deleted; git history)). This is the perf-mode gate's
       oracle now that bit-exact-vs-compat won't apply to the kernel.
 - [x] **Step 3 — toolchain derisked**: mx.fast.metal_kernel works from
       Bun end-to-end (src/mlx/metal-kernel.ts wrapper;
@@ -1840,7 +1840,7 @@ change, consistent with Phase 6).
       port never had. The kernel's real prize = score/softmax
       round-trips + dispatch count ≈ 1% — captured.
 - [x] MLX_BUN_PERF_KERNEL flipped to DEFAULT ON (2026-06-11): the
-      cleared-machine ./benchmark.sh pass confirmed the win — paired
+      cleared-machine bun scripts/bench-serve.ts all pass confirmed the win — paired
       kernel vs compat 24.00 vs 23.46 tok/s (1.023×) @8k and 24.75 vs
       24.51 (1.010×) @2k, 12B serve kv_config, median-of-3
       (benchmarks/benchmarks-h2h-2026-06-11-Joshs-MBP-2025.md; eval DB
@@ -1933,7 +1933,7 @@ Users' own pi stays first-class forever; the flagship ends embedded.
       text-imported so it bundles into the single binary) polling
       /stats + /v1/models every 2 s: model + context, memory bars,
       prompt-cache hit rate, response store, KV-quant layer split.
-      `scripts/status-page-stub.ts` serves it with fake stats for
+      `status-page-stub.ts (deleted; git history)` serves it with fake stats for
       styling without a model load. First brick of the web UI surface
       (the chat page lands with P4's event plumbing). v2 same day
       (Josh: "make it look AWESOME"): rebuilt in the keynote
@@ -2294,7 +2294,7 @@ Phasing (each default-off behind `slots=1`, serialized path never removed):
             BatchRotatingKVCache(left_padding), per-row offset array → RoPE,
             mask j>=left_padding, bf16 uses the SAME fused bool-mask sdpa we do.
             So our approach matches in principle; the additive-mask "fix" is WRONG
-            (would deviate). Built scripts/gen-batched-golden.py (oracle venv) →
+            (would deviate). Built scripts/oracle/gen-batched-golden.py (oracle venv) →
             captured CPM B=2 greedy trajectories + logits golden. The KL harness
             (solo-prefill+assemble vs solo-decode) measures the WRONG oracle —
             demoted to internal-consistency check. Next: build mlx-bun REAL
@@ -2386,8 +2386,8 @@ for apps). Single-user task locality (one human, one job for minutes–hours)
 makes per-task residency viable where a multi-tenant server can't. Full
 design + reasoning: `docs/archive/investigations/expert-offload-single-user-moe.md`.
 
-**Mechanism de-risked 2026-06-14** (`scripts/probe-expert-residency.ts`,
-`scripts/probe-mmap-gather.ts`, on the M4 Pro):
+**Mechanism de-risked 2026-06-14** (`probe-expert-residency.ts (deleted; git history)`,
+`probe-mmap-gather.ts (deleted; git history)`, on the M4 Pro):
 - Disposing MLX *device* buffers does NOT reliably return RAM to the OS (rss
   flat through dispose+clearCache; `cache_memory` reads 0) ⇒ a fixed device-
   buffer slot pool is the wrong mechanism (holds less, can't give back).
@@ -2399,8 +2399,8 @@ design + reasoning: `docs/archive/investigations/expert-offload-single-user-moe.
 - ⇒ Design: bit-exact transparent offload via page-aligned, mmap-backed
   expert weights; load = fault-in on demand, evict = `munmap`/`madvise`.
 
-**Mechanism further de-risked 2026-06-14** (`scripts/probe-madvise-eviction.ts`,
-`scripts/probe-footprint.ts`):
+**Mechanism further de-risked 2026-06-14** (`probe-madvise-eviction.ts (deleted; git history)`,
+`probe-footprint.ts (deleted; git history)`):
 - `gather_qmm` is ROW-LOCAL: madvise(DONTNEED) the whole stacked [E,…] expert
   tensor, fault back in ONLY the selected experts, GPU gather is BIT-EXACT
   (max|diff|=0, no NaN, no crash) ⇒ cold experts evictable within one mapping;
@@ -2416,7 +2416,7 @@ design + reasoning: `docs/archive/investigations/expert-offload-single-user-moe.
 - madvise does NOT move `rss` and barely moves `phys_footprint` here (clean
   file pages already don't count) — so explicit eviction is a perf hint, not a
   footprint necessity. munmap definitively drops rss if ever needed.
-- **RESOLVED 2026-06-14** (`scripts/probe-metal-wire.ts`): GPU gather over a
+- **RESOLVED 2026-06-14** (`probe-metal-wire.ts (deleted; git history)`): GPU gather over a
   128 MB mmap'd quantized expert added **0.0 MB** to phys_footprint across 3×
   gathers — Metal reads mmap'd file pages as RECLAIMABLE CACHE, does NOT wire
   them. ⇒ mechanism fully de-risked end to end; the footprint win is
@@ -2649,12 +2649,12 @@ serial (upstream parity); grammar+spec = the novel constrained verify walk
 - `[x]` **Phase B** — `serve --draft-model`/`--num-draft-tokens`
   (src/spec/{source,two-model,serve-loop}.ts; parity-plan §7 executed).
   **L1 gate: 48/48 token-for-token vs mlx-lm's speculative path** (Llama
-  3B+1B, scripts/oracle-spec-two-model.py). Ring-wrap degrades pre-pollution;
+  3B+1B, scripts/oracle/oracle-spec-two-model.py). Ring-wrap degrades pre-pollution;
   prompt-cache bypassed v1 (composition = §7.6 follow-up).
 - `[x]` **Phase C** — grammar×spec constrained verify walk (mask rides the
   accept walk; matcher advances on emitted tokens only, no rollback).
   Gates: 100% validity + 12/12 token-identical to grammar-only serial.
-- `[x]` **Phase E** — scripts/bench-feature-matrix.ts (six composition
+- `[x]` **Phase E** — scripts/bench-matrix.ts features (six composition
   cells, hard conformance gate, usage.speculation telemetry). **Its first
   smoke run caught three real bugs**: snake_case wire fields never reached
   the grammar resolver (structured output was dead over HTTP since it
@@ -2692,7 +2692,7 @@ own kv8 trails its bf16; it buys memory headroom only, ~1.3 GB on 12B @16k).
   untrusted until re-proven; the L1 baseline is the base all future
   optimization is measured against.
 - Implemented: `applyDecodeRoute` defaults the tier to l1; `perfKernelEnabled`
-  code default flipped OFF; serve/library kv default bf16 (`scripts/serve.ts`
+  code default flipped OFF; serve/library kv default bf16 (`serve.ts (deleted; git history)`
   gained `--kv-config`); explicit `--kv-quant` picks its oracle's composition
   (config→fused sdpa, uniform→unfused = mlx-lm's algorithm). Docs updated in
   the same session (server-config/cli/features-matrix/README + superseding
@@ -2705,7 +2705,7 @@ own kv8 trails its bf16; it buys memory headroom only, ~1.3 GB on 12B @16k).
   labels, comparison-0 + lever-A/B report sections, python-baseline prefill
   warmup (prefill convention now symmetric), KL 24→96 steps, preflight
   high-CPU foreign-process check.
-- Comparison-2 golden gap CLOSED same session: `scripts/regen-mixed-kv-goldens.ts`
+- Comparison-2 golden gap CLOSED same session: `scripts/regen.ts mixed-kv`
   (bf16 prefill → per-layer quantize incl. rotating → stock unfused decode,
   mirroring optiq's install_mixed_kv semantics = our maybeQuantizeKv) +
   `tests/mixed-kv-parity.test.ts` — per-step logits BIT-EXACT (maxDiff 0)
@@ -2788,7 +2788,7 @@ same splice/merge seams, same parity-tier ladder.
       packed into one u64; bit-exact vs Python mlx incl. groups
       (tests/conv2d.test.ts); repro lab/repro/bun-ffi-stack-args; all
       other >8-arg bindings audited clean. Goldens live:
-      `scripts/gen-e4b-audio-golden.py` → goldens/e4b-audio.json +
+      `scripts/oracle/gen-e4b-audio-golden.py` → goldens/e4b-audio.json +
       4 .bin blobs (mel [159,128]/[267,128], embeds [40,2560]/[67,2560]);
       soft tokens 40/67 exactly as computed from duration; oracle greedy
       decodes: chirp → "cricket chirping", speech → a TOKEN-PERFECT
@@ -2864,7 +2864,7 @@ same splice/merge seams, same parity-tier ladder.
       Docs in the same commit: server-api.md, features-matrix.md,
       README. 41/41 across audio+vision+anthropic suites; tsc + hygiene
       green.
-- [ ] **A5 bench + coverage** — benchmark.sh cells (tower ms, TTFT delta,
+- [ ] **A5 bench + coverage** — scripts/bench-serve.ts all cells (tower ms, TTFT delta,
       RSS delta) → RESULTS.md; 12B audio cell (sidecar rebuild via optiq
       `build_vision_sidecar` — local 12B sidecar has 1 audio tensor);
       audio×batching=serial documented. Exit: numbers curated; e4b cell
@@ -3018,7 +3018,7 @@ verified via `mlx-bun get`).
         the context-headroom lever at fixed weight bpw.
       - Intelligence: ppl ladder (done for most arms) + frozen-eval
         subset (mmlu 100 / gsm8k 50 minimum) per arm, eval DB rows.
-      - Speed: quiet-machine benchmark.sh decode/TTFT per arm, labeled
+      - Speed: quiet-machine scripts/bench-serve.ts all decode/TTFT per arm, labeled
         host/chip/RAM (M1 Max 32 GB here; the 24 GB cut NEEDS the
         M4 Pro — Josh-gated).
       - Memory: peak footprint + max-context-that-fits at each budget
@@ -3332,7 +3332,7 @@ winning single-stream decode; possible batch-lane regression from the
 consolidation merge, needs its own eyes before any claim. (2) bench-harness
 padding drift: our filler loop stops ~7 tokens short of python's on some
 tokenizers (267 vs 274 @e4b) — template/counting nuance, makes py wins
-conservative, but benchmark.sh's prompt_tokens-equality check would flag it.
+conservative, but scripts/bench-serve.ts all's prompt_tokens-equality check would flag it.
 (3) Quiet-box confirmation of the served row before quoting absolutes.
 
 ## Qwen3.8 prefill — measurement + analysis `[~]` (2026-08-22 evening)

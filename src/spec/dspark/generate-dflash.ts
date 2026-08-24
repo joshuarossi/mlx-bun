@@ -27,7 +27,7 @@ export interface DflashGenOptions {
    *  minConf for a uniform manual override; pass thresholds:[] to disable. */
   thresholds?: number[];
   minConf?: number;
-  /** Calibration hook (scripts/dspark-calibrate.ts): called once per draft
+  /** Calibration hook (scripts/dspark.ts calibrate): called once per draft
    *  round with that round's per-position (confidence, accepted) samples,
    *  AFTER kAccept is known. Not used by ordinary decode. */
   onRound?: (samples: ConfSample[]) => void;
@@ -192,7 +192,7 @@ export function dflashGenerate(model: Gemma4Model, drafter: DflashDrafter, promp
       blockLogits = null;
       stats.accepted += kAccept; rounds++; acceptLenSum += kAccept + 1;
 
-      // Calibration hook (scripts/dspark-calibrate.ts): report this round's
+      // Calibration hook (scripts/dspark.ts calibrate): report this round's
       // per-position (confidence, accepted) outcomes now that kAccept is known.
       if (options.onRound) {
         const roundSamples: ConfSample[] = [];

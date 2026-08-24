@@ -54,7 +54,7 @@ the design rationale is in
 | `--hlg-pivot-offset` | nats | `6` | HLG pivot point: nats below the top token. Only meaningful with `--hlg-sampling on`. |
 | `--expert-offload` | (bool) | off | **MoE models only.** Serve experts from a page-aligned file mmap (built on first use). Keeps the model out of memory pressure — physical footprint ≈ active params. Ignored with a warning on dense models. Bit-exact with the resident path. |
 | `--l1` | (bool) | — | **Parity tier ALIAS:** bit-for-bit IDENTICAL to mlx-lm (bf16 KV, compiled decode + compiled activations — the faithful `@mx.compile` geglu/swiglu). **No tier given ⇒ `--l1`** (decided 2026-07-05: the L1 faithful kernel set matches mlx-lm 1.00× on every model and no output-changing lever has beaten that baseline in a paired A/B — each is opt-in until it does). Expands to the fastest set of per-fork flags that still holds the guarantee; any explicit per-fork flag (`--kv-quant`/`--fused-sdpa`/`--compiled-decode`/`--compiled-activations`) overrides one. See [docs/design/faithful-l1-consolidation.md](../design/faithful-l1-consolidation.md) and [parity-tier-dag.md](../design/parity-tier-dag.md). |
-| `--l2` | (bool) | — | **Parity tier preset:** bit-for-bit IDENTICAL to mlx-optiq (quantized KV per `kv_config.json` + fused N-tiled prefill SDPA + **stock unfused decode** — the composition the optiq goldens track, `scripts/regen-kvq-goldens.ts`). |
+| `--l2` | (bool) | — | **Parity tier preset:** bit-for-bit IDENTICAL to mlx-optiq (quantized KV per `kv_config.json` + fused N-tiled prefill SDPA + **stock unfused decode** — the composition the optiq goldens track, `scripts/regen.ts kvq`). |
 | `--compiled-decode` | on\|off | on | Replay the per-step decode graph in C++ (`MLX_BUN_COMPILED_DECODE`). Bit-exact A/B lever. **Serial lane only** (see note below). **Gemma4-dense only** — LoRA, MoE, and non-Gemma4 models (MiniCPM5 / Qwen3.5) run eager; an unsupported step falls back to eager for the rest of that generation. |
 | `--compiled-activations` | on\|off | on | Route the geglu/swiglu activation through mlx-lm's `@mx.compile` closure (`MLX_BUN_COMPILED_GEGLU` + `MLX_BUN_COMPILED_SWIGLU`) — the **faithful** kernel: same libmlx graph as mlx-lm → **bit-exact** AND one dispatch instead of ~9. `off` = the uncompiled composition (same L1 parity, slower). Toggles gemma geglu + MiniCPM5 swiglu; qwen3/qwen3.5/universal compile unconditionally. |
 | `--fused-sdpa` | on\|off | follows `--kv-quant` | Fused SDPA path for quantized prefill/continuation (inverted env `MLX_BUN_NO_FUSED_SDPA`). Defaults to the composition its oracle uses: **on** under `--kv-quant config` (the optiq-golden composition), **off** under uniform `4`/`8` (mlx-lm's `quantized_scaled_dot_product_attention`, the bit-exact L1-eligible scheme) and bf16 (no-op there). **Serial lane only.** |
@@ -375,7 +375,7 @@ gated by validity/KL/quality instead of bit-parity.
 
 Reference numbers are from this project's dev machines (loaded-machine
 numbers are directional only; `docs/reference/benchmarks.md` holds the quotable
-set, and `scripts/bench-feature-matrix.ts` measures the six composition
+set, and `scripts/bench-matrix.ts features` measures the six composition
 cells in one run).
 
 - **Serial is the fastest single stream** — prompt cache, mixed-precision

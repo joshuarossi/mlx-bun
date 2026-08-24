@@ -13,7 +13,7 @@ import { dirname } from "node:path";
 
 const ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const CLI = `${ROOT}/src/cli.ts`;
-const ORACLE = `${ROOT}/scripts/oracle-p2r-serve.py`;
+const ORACLE = `${ROOT}/scripts/oracle/oracle-p2r-serve.py`;
 const PY = `${process.env.HOME}/Code/mlx-lm/.venv/bin/python`;
 const HF = `${process.env.HOME}/.cache/huggingface/hub`;
 const TRACE_PREFIX = "[p2r] ";

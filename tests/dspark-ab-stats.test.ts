@@ -1,5 +1,5 @@
 // Model-free gate for the Phase-1c drafter A/B math
-// (src/spec/dspark/ab-stats.ts — runner: scripts/dspark-drafter-ab.ts).
+// (src/spec/dspark/ab-stats.ts — runner: scripts/dspark.ts ab).
 
 import { describe, expect, test } from "bun:test";
 import {

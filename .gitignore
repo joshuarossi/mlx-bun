@@ -74,3 +74,4 @@ bench-faithful-matrix-*
 /tmp/
 /*.log
 .claude/launch.json
+lab/**/*.dylib

@@ -108,7 +108,7 @@ a 1-token parity probe before trusting it (Phase 2 gate catches mismatch).
 **Validation goldens (ALREADY EXIST, no regen needed):**
 - L1: `goldens/minicpm5-parity.json` (prompt_ids `[0,608,4894,304,6918,357]`,
   greedy_ids[100], vocab 130560) + `goldens/minicpm5-logits-step{0..99}.bin`
-  (f32 last-position logits). Produced by `scripts/regen-minicpm5-goldens.ts`.
+  (f32 last-position logits). Produced by `scripts/regen.ts minicpm5`.
 - L2: `goldens/minicpm5-kv-parity.json` + `…-kv-logits-step*.bin`.
 
 **Reference forward to copy (the source of truth for correctness):**
@@ -132,7 +132,7 @@ All default-OFF, `bun test tests/minicpm5-*.test.ts` green. From this session:
   @ M=8–256, ~1 ULP correct.** This is a working prototype of one megakernel STAGE
   and the dequant/GEMV patterns to copy. (Note: it currently corrupts when CHAINED
   in the lazy graph — that's the whole reason for the megakernel; the kernel math
-  itself is correct, proven by `scripts/experiments/fused-mlp-check.ts`.)
+  itself is correct, proven by `fused-mlp-check.ts (deleted; git history)`.)
 - `src/model/steel-linear-kernel.ts` — `steelLinear`: plain quantized linear as our
   dispatch (q/k/v/o/down), ~1 ULP vs `ops.quantizedMatmul`. The projection GEMV
   pattern.
@@ -232,7 +232,7 @@ megapack-check.ts`.) This catches layout bugs before any kernel.
 
 ### Phase 2 — Single-threadgroup correct megakernel (G=1)
 **Files:** `src/model/megakernel-kernel.ts` (the `MetalKernel` + dispatch),
-`scripts/gen-minicpm5-megakernel.ts` (emits the per-layer-bits-baked SOURCE into
+`gen-minicpm5-megakernel.ts (deleted; git history)` (emits the per-layer-bits-baked SOURCE into
 `src/model/generated/minicpm5-megakernel.ts`).
 **Design:** ONE threadgroup (`G=1`, `TGN=256` threads). `hidden[H]` in threadgroup
 memory (6 KB). Loop layers; each stage uses `threadgroup_barrier`. GEMVs: the 256
@@ -252,7 +252,7 @@ teacher-forced on `goldens/minicpm5-parity.json`, KV cache in `KBUF`/`VBUF`. Req
 **≥98/100 argmax agreement, deterministic across 3 runs, no NaN.** If an early step
 mismatches, bisect by stage: add a debug output for `hidden` after layer L (env
 `MLX_BUN_MEGA_DUMP_LAYER=L`) and compare to the reference model's per-layer hidden
-(capture via the wrapper trick in `scripts/experiments/swiglu-layerN.ts`).
+(capture via the wrapper trick in `swiglu-layerN.ts (deleted; git history)`).
 
 ### Phase 3 — Persistent multi-threadgroup (G>1) for SPEED
 **Do:** generalize Phase 2 to `G` threadgroups. Move `hidden`,`xn`,`hn`,`q/k/v/attn/
@@ -411,7 +411,7 @@ Guard: bf16 KV (L1) only, no adapters, no vision. Add `--megakernel` CLI flag.
 of the old `tests/perf-kernel-oracle.test.ts` — deleted 2026-07-05 with its kernel,
 unified-engine-frontier-plan.md §6; the envelope-gate methodology stands on its
 own); paired decode tok/s A/B logged. Update
-`STATUS.md` + `benchmarks/RESULTS.md` (preflight-gated `benchmark.sh` for the
+`STATUS.md` + `benchmarks/RESULTS.md` (preflight-gated `scripts/bench-serve.ts all` for the
 quotable number — `[[dirty-machine-numbers-are-garbage]]`).
 
 ---
@@ -462,7 +462,7 @@ so its 1-ULP/op drift is within contract — bit-exact is a focused REBUILD, not
 
 ```
 src/model/megakernel-pack.ts            # Phase 1: weight repack + layout table
-scripts/gen-minicpm5-megakernel.ts      # Phase 2: emit per-layer-baked kernel SOURCE
+gen-minicpm5-megakernel.ts (deleted; git history)      # Phase 2: emit per-layer-baked kernel SOURCE
 src/model/generated/minicpm5-megakernel.ts   # (generated) the kernel SOURCE + bits
 src/model/megakernel-kernel.ts          # Phase 2/3: MetalKernel + decodeMegakernel()
 megapack-check.ts (deleted 2026-08-23; git history)        # Phase 1 gate

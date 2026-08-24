@@ -123,7 +123,7 @@ library is XL and permanently chasing upstream. Two-part coverage instead:
    `local-chat-completions` backend (mlx-bun's `/v1` already speaks the
    contract; needs `logprobs`/`echo` support checked for loglikelihood tasks
    — generation tasks work today). One doc page + a
-   `scripts/lm-eval-shim.sh`.
+   `lm-eval-shim.sh (deleted; git history)`.
 2. **Native (only if a gap shows):** add a `loglikelihood` scoring mode to
    `src/eval/runner.ts` (one forward, `take_along_axis` on log-softmax — the
    same scoring loop as `evaluate.py:107-138`) so our own tasks can do
@@ -328,7 +328,7 @@ follow-on if we build the shared capture instrumentation anyway.
 > `src/spec/{source,two-model,serve-loop}.ts`, flags in cli.ts, `hasDraft`
 > routing, fit admission, `usage.speculation` telemetry. **L1 gate passed:
 > 48/48 token-for-token vs mlx_lm's speculative path** (Llama 3B+1B,
-> `scripts/oracle-spec-two-model.py`, `tests/spec-serve.test.ts`). Grammar
+> `scripts/oracle/oracle-spec-two-model.py`, `tests/spec-serve.test.ts`). Grammar
 > composes (Phase C constrained verify walk). v1 deviations: prompt-cache
 > reuse bypassed on the spec path; ring-wrap degrades to plain decode
 > (pre-pollution gate) instead of raising. §7.9's assistant/DSpark sources
@@ -484,12 +484,12 @@ sums whatever arrays the entry holds — no change needed there.
   oracle venv, same target/draft pair. Compare **spec-vs-spec**, not
   spec-vs-stock: both runtimes' spec paths batch the verify lm-head and
   legitimately diverge from stock decode at bf16 knife-edges (documented in
-  `src/spec/generate.ts` header). Extend `scripts/oracle-spec.py` +
+  `src/spec/generate.ts` header). Extend `scripts/oracle/oracle-spec.py` +
   `spec-bench.ts (deleted 2026-08-23; git history)` for the A/B.
 - **Acceptance-rate telemetry:** emit `drafted/accepted/targetCalls` in the
   response `usage`-adjacent stats (the `SpecStats` shape already exists) and
   into the benchmark path.
-- **Perf gate:** `./benchmark.sh`-quality numbers on the current machine
+- **Perf gate:** `bun scripts/bench-serve.ts all`-quality numbers on the current machine
   (label host/chip/RAM per the eval-DB rule): target/draft pair from the
   local registry, decode tok/s spec vs non-spec at the same flags, recorded
   in `benchmarks/RESULTS.md` only if reproduced on an idle machine.

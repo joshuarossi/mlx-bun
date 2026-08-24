@@ -9,7 +9,7 @@
 // the 26B (16.4 GB) exceeds the 24 GB machine — the GPU command buffer
 // fails asynchronously and mlx's completion-handler check_error throw
 // is uncatchable (terminates the process). Run this file alone.
-// Regen: bun scripts/regen-parity-goldens-26b.ts (explicit, never automatic).
+// Regen: bun scripts/regen.ts parity-26b (explicit, never automatic).
 
 import { describe, expect, test } from "bun:test";
 import { goldenAt } from "./goldens";

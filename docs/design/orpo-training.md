@@ -86,7 +86,7 @@ else validates against):**
   recomputes the gelu from the primal instead of retaining the ~9 spelled-out
   intermediates, lowering the MLP activation memory the backward holds (the
   dominant resident at long context under `ops.sdpa`). **Validated** on real e4b
-  ([`scripts/experiments/fused-geglu-train-parity.ts`](../../scripts/experiments/fused-geglu-train-parity.ts)):
+  ([`fused-geglu-train-parity.ts (deleted; git history)`](../../fused-geglu-train-parity.ts (deleted; git history))):
   forward loss bit-identical to the spelled-out path (kernel is kl=0), both sites
   dispatch (168 = 42 layers × 2 sites × 2 ORPO branches), spelled arm fused-free,
   grads match in the kernel's bf16 class (~2%; the forward is exact, the backward

@@ -169,7 +169,7 @@ kernel was deleted 2026-07-05, docs/design/unified-engine-frontier-plan.md §6.)
 
 One harness answering "what does each feature — and each legal
 combination — cost or buy, per model?" Extends P0's
-`bench-serving-load.ts`; preflight-gated like benchmark.sh (dirty-machine
+`bench-serving-load.ts`; preflight-gated like scripts/bench-serve.ts all (dirty-machine
 numbers are garbage; quotable rows need the clean-machine protocol).
 
 **Cells** (skip-if-unavailable, like the model-gated suites):
@@ -198,7 +198,7 @@ feature cell is compared to the SAME model+lane baseline cell from the
 SAME run. No cross-model or cross-run speedup claims.
 
 **Output**: eval-DB rows tagged `feature-matrix[<host>]` + a dated
-markdown artifact (gitignored, like benchmark.sh's); promoted rows land
+markdown artifact (gitignored, like scripts/bench-serve.ts all's); promoted rows land
 in benchmarks/RESULTS.md under a new "composition" table. Josh-gated
 clean-machine run for anything quotable.
 
@@ -235,14 +235,14 @@ clean-machine run is queued in STATUS Josh-gated.
 - **Phase B** ✅ — `serve --draft-model`/`--num-draft-tokens`;
   `src/spec/{source,two-model,serve-loop}.ts`. **L1 gate: 48/48
   token-for-token vs mlx-lm spec** (Llama 3B+1B greedy, 65% acceptance,
-  `scripts/oracle-spec-two-model.py`). Deviations as designed (ring-wrap
+  `scripts/oracle/oracle-spec-two-model.py`). Deviations as designed (ring-wrap
   degrades pre-pollution via an offset+n+1 gate — upstream's post-hoc check
   would already have polluted the ring; prompt cache bypassed v1).
 - **Phase C** ✅ — the constrained verify walk in `samplePos`; gates green
   (100% validity; 12/12 token-identical to grammar-only serial; choice
   terminates mid-spec). Drafter-masking flag NOT built (acceptance 6/15 on
   a tight schema — usable; revisit only if Phase E's clean run says so).
-- **Phase E** ✅ (harness) — `scripts/bench-feature-matrix.ts` (the planned
+- **Phase E** ✅ (harness) — `scripts/bench-matrix.ts features` (the planned
   bench-serving-load extension became its own script: that file already
   exists as a client-only stack-vs-stack tool and stays one). Six cells
   green end-to-end on Llama 3B+1B; `usage.speculation` telemetry on all
@@ -279,7 +279,7 @@ clean-machine run is queued in STATUS Josh-gated.
   one pad + one B-axis concat, running rows untouched, pads grow) replaces
   the O(B·S) re-merge for full-attention layers in `#mergeJoiner`
   (`MLX_BUN_BATCH_EXTEND=0` = re-merge). **Own oracle** (extend's pad
-  layout ≠ re-merge's): scripts/gen-batched-extend-golden.py →
+  layout ≠ re-merge's): scripts/oracle/gen-batched-extend-golden.py →
   token-for-token on CPM AND Llama-3B (tests/batched-decode-parity.test.ts
   "EXTEND-JOIN ORACLE"); full scheduler suite incl. the grammar-churn join
   test green through the extend path AND the kill-switch path.

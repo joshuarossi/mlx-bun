@@ -114,7 +114,7 @@ Files (from the codebase-map seams):
 - Tests: `tests/turboquant-ops.test.ts` (golden bit-exactness vs vendored
   reference + model-free math props), `tests/turboquant-cache.test.ts` (cache
   invariants, growth/trim, persistence roundtrip — synthetic arrays, no
-  model/golden dependency), `scripts/regen-turboquant-goldens.ts`.
+  model/golden dependency), `scripts/regen.ts turboquant`.
 - `scripts/turboquant/eval-turboquant-curve.ts` — the Gate 3 quality-vs-bpw curve script:
   bf16 baseline + {k8v8,k8v4,k8v3,k8v2,k4v3,k4v2} sequentially, reusing
   `src/eval/kl.ts`'s `evaluateKlKvArm` (teacher-forced serving-decode KL,
@@ -183,7 +183,7 @@ and stays correct. Not bit-identical to eager (bf16 rounding in the rotated
 domain before the transform); measured k8v3 KL 0.0338 vs eager 0.0325 —
 same quality. Paired fetch-path A/B on a LOADED M1 Max: never slower,
 ~10-20% off fetch cost at 4k ctx, noise-level at 8k (dequant gather
-dominates both paths) — no speed claim until a quiet-machine benchmark.sh
+dominates both paths) — no speed claim until a quiet-machine scripts/bench-serve.ts all
 run; the win is removing the O(T) transform, which matters more once the
 gather itself is fused.
 

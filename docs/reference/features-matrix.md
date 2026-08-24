@@ -96,6 +96,6 @@ See [cli.md](cli.md) and the per-topic reference docs.
 
 Composition rules and exclusions (what combines with what):
 [server-config.md → Compatibility matrix](server-config.md#compatibility-matrix).
-Performance per mode: `scripts/bench-modes.ts` (TTFT / prefill / decode /
+Performance per mode: `scripts/bench-matrix.ts modes` (TTFT / prefill / decode /
 peak-memory across every cell above); feature-composition perf:
-`scripts/bench-feature-matrix.ts`.
+`scripts/bench-matrix.ts features`.

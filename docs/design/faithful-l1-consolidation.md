@@ -275,13 +275,13 @@ kernels, selected (or not) by the individual flags.
 ### Phase 4 — Docs + benchmark ✅ LANDED 2026-07-04 (numbers Josh-gated)
 
 Docs updated: `features-matrix.md` (new `--compiled-activations` + `--fused-gelu`
-rows), `server-config.md` + `cli.md` (Phase 2). Reworked `scripts/bench-faithful-matrix.ts`
-+ `benchmark.sh` comparison 0 for the new model — since faithful is now the default,
+rows), `server-config.md` + `cli.md` (Phase 2). Reworked `scripts/bench-levers.ts faithful-matrix`
++ `scripts/bench-serve.ts all` comparison 0 for the new model — since faithful is now the default,
 the matrix measures what **removing** each faithful kernel costs and what the L3
 custom kernels add on top (`− compiled-decode`, `− compiled activations`,
 `+ custom fused-gelu`), all vs mlx-lm; tsc 0. **The actual numbers are Josh-gated**
-(clean/rebooted machine — `./benchmark.sh --redo`, or
-`bun scripts/bench-faithful-matrix.ts`); loaded-machine absolutes are noise. Promote
+(clean/rebooted machine — `bun scripts/bench-serve.ts all --redo`, or
+`bun scripts/bench-levers.ts faithful-matrix`); loaded-machine absolutes are noise. Promote
 quotable rows to `benchmarks/RESULTS.md` after the clean run.
 
 ## Status: consolidation complete

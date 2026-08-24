@@ -9,7 +9,7 @@
 //  (1) FREE gate: adapter mounted but inactive, and active-at-scale-0,
 //      must be BYTE-IDENTICAL to no adapter (tier a, toBe(0)).
 //  (2) Adapter-applied logits bit-exact vs the mlx-lm oracle
-//      (goldens regen: bun scripts/regen-lora-goldens.ts).
+//      (goldens regen: bun scripts/regen.ts lora).
 //  (3) A→B→A switching: each result identical to that adapter run in
 //      isolation (same process, same loop shape ⇒ token-identical).
 

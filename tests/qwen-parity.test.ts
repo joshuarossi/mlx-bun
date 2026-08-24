@@ -10,7 +10,7 @@
 // Opt-in + run alone: models are large; the default suite already holds other
 // weights and the GPU command buffer fails asynchronously (uncatchable) past
 // budget. Regen goldens FIRST on this machine:
-//   bun scripts/regen-qwen-parity-goldens.ts [38|27b|4b]
+//   bun scripts/regen.ts qwen-parity [38|27b|4b]
 //
 // The 4B (8-bit, tied head, no kv_config) is the cheap end-to-end check of the
 // whole qwen3_5 graph; the 3.6-27B adds the mixed-KV bar. Qwen3.8-27B has no

@@ -5,7 +5,7 @@
 // Inputs are the GOLDEN mel .bin blobs (not a fresh extraction) so the tower
 // is gated in isolation from the 1-ulp mel noise (audio-features.test.ts owns
 // that tier). The golden embed .bin is the embed_audio output in f32 BEFORE
-// the /embed_scale pre-division (see scripts/gen-e4b-audio-golden.py — the
+// the /embed_scale pre-division (see scripts/oracle/gen-e4b-audio-golden.py — the
 // divide happens at the T2 splice), while features() returns pre-divided
 // (vision-tower convention), so the comparison re-multiplies by embedScale.
 //

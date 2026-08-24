@@ -1,7 +1,7 @@
 # Decode-speed program — the ranked path to faster tokens
 
 Status: PLANNED (2026-07-04). The single-stream decode roadmap, written
-down after the mode-matrix benchmark (scripts/bench-modes.ts) confirmed
+down after the mode-matrix benchmark (scripts/bench-matrix.ts modes) confirmed
 what the roofline work predicted: **the baseline decode path has no waste
 left** — e4b/cpm5/12B sit at the memory-bandwidth wall in every tier, so
 tier levers can't buy short-context decode speed. Faster means one of
@@ -167,6 +167,6 @@ are dispatch-bound. Don't re-litigate matmul fusion for single-stream).
 **1a AssistantSource → 2 mlx bump + re-bench → 3 oQ spike → 1b cheaper
 head → 1c DSpark** (as its training milestones land, Josh-gated runs),
 with §4 host residuals as filler between blocks. Re-run
-`scripts/bench-modes.ts` (e4b + 12B, short/2k/4k) after each lever lands —
+`scripts/bench-matrix.ts modes` (e4b + 12B, short/2k/4k) after each lever lands —
 it is this program's scoreboard; promote clean-machine rows to
 benchmarks/RESULTS.md.

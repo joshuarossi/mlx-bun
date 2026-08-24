@@ -4,7 +4,7 @@
 
 | Section | Status |
 | --- | --- |
-| §A Pi CLI extension (`extensions/mlx-bun-adapter.ts`) | ✅ DONE |
+| §A Pi CLI extension (`scripts/packaging/pi-extensions/mlx-bun-adapter.ts`) | ✅ DONE |
 | §B Web chat adapter selector (`src/web/app.html` + `before_provider_request` hook in `pi-web.ts`) | ✅ DONE |
 | §C `/v1/adapters/available` discovery (`src/server.ts:1182`, `src/lora.ts:139`) | ✅ DONE |
 | §D Overnight training from the web UI — monitor/stream endpoint + UI | ⏳ PENDING |
@@ -50,7 +50,7 @@ Wired a Pi extension using the `before_provider_request` hook to inject the `ada
 field into the outgoing OpenAI-compatible payload. `models.json` can't add arbitrary
 body fields — the hook was the right tool.
 
-Shipped as `~/.pi/agent/extensions/mlx-bun-adapter.ts` (copy in-repo + one-liner
+Shipped as `~/.pi/agent/scripts/packaging/pi-extensions/mlx-bun-adapter.ts` (copy in-repo + one-liner
 installer):
 
 ```ts

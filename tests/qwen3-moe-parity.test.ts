@@ -6,7 +6,7 @@
 //
 // Opt-in + run alone (see qwen-parity.test.ts for why). Regen goldens FIRST
 // on this machine:
-//   bun scripts/regen-qwen-parity-goldens.ts moe
+//   bun scripts/regen.ts qwen-parity moe
 
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";

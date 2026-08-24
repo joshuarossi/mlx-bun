@@ -120,7 +120,7 @@ tied 4-bit head → fp32 softcap** — is **BIT-EXACT vs the optiq golden**: arg
 maxDiff 0.0, relRMSE 0.0, meanKL 0.0 (`tests/diffusion-parity.test.ts`,
 `MLX_BUN_TEST_DIFFUSION=1`). Per-stage sub-gates (enc_hidden / dec_hidden / presoftcap /
 per-layer / layer-0 attn·dense·MoE) all 0.0 (`scripts/experiments/diffusion-{stage,layer,l0}-diag.ts`,
-golden dumps in `scripts/gen-diffusion-golden.py`).
+golden dumps in `scripts/oracle/gen-diffusion-golden.py`).
 - **The one bug found + fixed (per-model parity gotcha):** the Router pre-projection
   norm must be the literal two-step `rms_norm(x, None, eps) * scale * hidden**-0.5`,
   **NOT** the gemma4-style fold `rms_norm(x, scale*hidden**-0.5)`. The fold changes the
@@ -152,7 +152,7 @@ reuse, linear temp schedule, the un-mask loop, BOTH samplers (confidence-thresho
 OptiQ public default, entropy-bound = engine default), self-conditioning feedback,
 stability/EOS, canvas block loop. **Token-for-token parity vs the optiq engine at
 temp 0 on a fixed seed for BOTH samplers** (`tests/diffusion-gen-parity.test.ts`,
-`MLX_BUN_TEST_DIFFUSION=1`; golden `scripts/gen-diffusion-gen-golden.py`):
+`MLX_BUN_TEST_DIFFUSION=1`; golden `scripts/oracle/gen-diffusion-gen-golden.py`):
 confidence 17 tok / 7 steps, entropy 15 tok / 48 steps — both `.tokens`/`.steps`/
 `.finishReason` identical.
 - **RNG parity (the crux) SOLVED:** bound `mlx_random_randint` (+`mlx_random_seed`,
@@ -241,7 +241,7 @@ output matches optiq `generate`; HTTP test green; no regression to AR models.
 
 ### D4 — Performance (L3, optional, measured) `[ ]`
 `confidence-threshold` is already the fast path (optiq: ~58 tok/s code / ~9
-prose). Measure mlx-bun tok/s with `benchmark.sh`; fuse kernels only if a number
+prose). Measure mlx-bun tok/s with `scripts/bench-serve.ts all`; fuse kernels only if a number
 says so. KV holds only the prompt (no per-step growth → no KV-quant needed).
 **Exit:** quotable tok/s within range of optiq on this machine; any fused kernel
 gated by KL + the 6-task quality suite (no bit-exact ancestor for novel fusions).

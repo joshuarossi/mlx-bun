@@ -6,7 +6,7 @@
 //   MLX_BUN_TEST_DIFFUSION=1 bun test tests/diffusion-gen-parity.test.ts
 //
 // Regen golden first:
-//   /Users/joshrossi/Code/mlx-lm/.venv/bin/python scripts/gen-diffusion-gen-golden.py
+//   /Users/joshrossi/Code/mlx-lm/.venv/bin/python scripts/oracle/gen-diffusion-gen-golden.py
 
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";

@@ -6,7 +6,7 @@
 //   bun test tests/qwen3-embed-parity.test.ts
 //
 // Regen the golden first (needs the oracle venv):
-//   ../mlx-lm/.venv/bin/python scripts/gen-qwen3-embed-golden.py
+//   ../mlx-lm/.venv/bin/python scripts/oracle/gen-qwen3-embed-golden.py
 //
 // The model is 4-bit DWQ + bf16 compute; like the SigLIP tower, every mlx
 // primitive is bit-exact but 36-layer bf16 composition accumulates a sub-bf16

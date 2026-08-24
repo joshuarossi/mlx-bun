@@ -836,7 +836,7 @@ Ship first, blocks nothing, touches no backend:
   dropdown (`app.html:1897-1898`) — this is a live unescaped-HTML injection
   point, fix immediately regardless of the larger adapter-UI rework in
   Phase 2.
-- #16: delete dead `src/status-page.html` + `scripts/status-page-stub.ts`.
+- #16: delete dead `src/status-page.html` + `status-page-stub.ts (deleted; git history)`.
 - #18: CLI banner copy fix (`src/cli.ts:64`).
 
 ### Phase 1 — Free wins: wire existing backend, fix the render bottleneck (1-2 weeks)
@@ -1046,7 +1046,7 @@ The next tier of unmistakable bets:
   post-Phase-2 vs. pre-redesign baseline (currently near-zero given the
   dropdown's poor legibility).
 - **Render performance:** p95 time-to-paint for a 2000-token streamed
-  response, measured on the M4 Pro reference machine per the `benchmark.sh`
+  response, measured on the M4 Pro reference machine per the `scripts/bench-serve.ts all`
   discipline — before/after the block-memoization fix, quotable only from a
   preflight-gated run.
 - **Tool-approval engagement:** % of gated-tool calls that get an explicit

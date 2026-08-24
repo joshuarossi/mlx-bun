@@ -38,7 +38,7 @@ function disposing(old: MlxArray, next: MlxArray): MlxArray {
 // ---------------------------------------------------------------------------
 // Weight representation: every matmul weight and gather table loads as either
 // bf16 (the released checkpoint) or affine-quantized (a
-// scripts/dspark-quantize-drafter.ts sibling). Detection is the house
+// scripts/dspark.ts quantize sibling). Detection is the house
 // pattern — a `.scales` sibling key marks a quantized module; bits/group_size
 // come from the config's `quantization` block (per-module overrides + the
 // mlx `false` = kept-full-precision convention). Both formats flow through
@@ -366,7 +366,7 @@ export class DeepspecDrafter {
   static async load(dir: string): Promise<DeepspecDrafter> {
     const raw = (await Bun.file(`${dir}/config.json`).json()) as Record<string, any>;
     const cfg = readConfig(raw);
-    // Quantized siblings (scripts/dspark-quantize-drafter.ts) carry the house
+    // Quantized siblings (scripts/dspark.ts quantize) carry the house
     // quantization block; the released bf16 checkpoint has none → null.
     const quant = parseQuantization(raw.quantization ?? raw.quantization_config);
     const w = await Weights.open(dir);

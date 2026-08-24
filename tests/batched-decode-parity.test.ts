@@ -300,7 +300,7 @@ async function realBatchedGreedy(
 /** The DYNAMIC-B gate: drive a real mlx-bun batched decode through a scenario
  *  where rows JOIN and LEAVE mid-stream, using the continuous-batching cache
  *  ops mergeKVRows / filterKVRows (src/model/batched-mask.ts). Executes the
- *  IDENTICAL protocol to scripts/gen-batched-dynamic-golden.py (mlx-lm's
+ *  IDENTICAL protocol to scripts/oracle/gen-batched-dynamic-golden.py (mlx-lm's
  *  BatchKVCache.merge / .extract / .filter), so the per-row greedy trajectories
  *  must match the oracle token-for-token.
  *
@@ -433,7 +433,7 @@ async function realDynamicBatchedGreedy(
     if (joinOp === "extend") {
       // extend-join (mlx-lm BatchKVCache.extend protocol): the running
       // buffer stays in place, C appends; pads grow, never shrink. Oracle:
-      // scripts/gen-batched-extend-golden.py.
+      // scripts/oracle/gen-batched-extend-golden.py.
       const extInners: InstanceType<typeof KVCache>[] = [];
       let extPad: number[] = [];
       for (let layer = 0; layer < L; layer++) {
@@ -531,7 +531,7 @@ describe.skipIf(!optIn || !haveCpm)("batched decode parity — CPM L1 (bf16)", (
 
 // --- THE REAL GATE: mlx-bun's real batched prefill+decode greedy trajectory
 //     must match mlx-lm's batched B=N (BatchKVCache) exactly. Oracle fixture
-//     from scripts/gen-batched-golden.py (run in the oracle venv). ---
+//     from scripts/oracle/gen-batched-golden.py (run in the oracle venv). ---
 describe.skipIf(!optIn || !haveCpm)("batched decode ORACLE parity — CPM L1 vs mlx-lm B=2", () => {
   test("real batched greedy trajectory == mlx-lm B=2", async () => {
     const golden = await goldenAt("batched-golden-cpm.json").json();
@@ -545,7 +545,7 @@ describe.skipIf(!optIn || !haveCpm)("batched decode ORACLE parity — CPM L1 vs 
 // --- THE DYNAMIC-B GATE: rows JOIN and LEAVE mid-stream. Proves the
 //     continuous-batching cache ops (mergeKVRows / filterKVRows) drive a real
 //     batched decode bit-parity with mlx-lm's BatchKVCache.merge/.extract/.filter.
-//     Oracle: scripts/gen-batched-dynamic-golden.py (oracle venv). ---
+//     Oracle: scripts/oracle/gen-batched-dynamic-golden.py (oracle venv). ---
 describe.skipIf(!optIn || !haveCpm)("batched decode DYNAMIC-B ORACLE — CPM L1 vs mlx-lm (join/leave)", () => {
   test("merge/filter dynamic batched greedy == mlx-lm BatchKVCache", async () => {
     const golden = await goldenAt("batched-dynamic-golden-cpm.json").json();
@@ -560,7 +560,7 @@ describe.skipIf(!optIn || !haveCpm)("batched decode DYNAMIC-B ORACLE — CPM L1 
 //     the join appends the new row to the running buffer (extendKVRows) instead
 //     of extracting + re-merging every row. Different pad layout than re-merge
 //     (pads never shrink), so it has its OWN mlx-lm oracle:
-//     scripts/gen-batched-extend-golden.py (BatchKVCache.extend protocol). ---
+//     scripts/oracle/gen-batched-extend-golden.py (BatchKVCache.extend protocol). ---
 describe.skipIf(!optIn || !haveCpm)("batched decode EXTEND-JOIN ORACLE — CPM vs mlx-lm extend", () => {
   test("extend-join dynamic greedy == mlx-lm BatchKVCache.extend", async () => {
     const golden = await goldenAt("batched-extend-golden-cpm.json").json();
@@ -587,7 +587,7 @@ describe.skipIf(!optIn || !haveLlama3b)("batched decode EXTEND-JOIN ORACLE — L
 //     positions through UniversalRope.applyDynamic (ropeOffsetArr). Both the
 //     static B=2 protocol AND the dynamic join/leave protocol (a joiner
 //     mid-stream = the staggered-join production shape) must be
-//     token-for-token vs mlx-lm. Oracles: scripts/gen-batched-golden.py +
+//     token-for-token vs mlx-lm. Oracles: scripts/oracle/gen-batched-golden.py +
 //     gen-batched-dynamic-golden.py with the Llama snapshot. ---
 describe.skipIf(!optIn || !haveLlama3b)("batched decode ORACLE parity — Llama 3B Tier-0 vs mlx-lm B=2", () => {
   test("real batched greedy trajectory == mlx-lm B=2 (uneven rows)", async () => {

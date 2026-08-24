@@ -7,7 +7,7 @@
 // Downloads are a USER action (ground rules — never fetched from a
 // session):   hf download <repo>
 // then regen goldens on THIS machine:
-//   bun scripts/regen-universal-goldens.ts [<prefix>|all]
+//   bun scripts/regen.ts universal [<prefix>|all]
 // and run the gate:
 //   MLX_BUN_TEST_UNIVERSAL=1 bun test tests/universal-parity.test.ts
 

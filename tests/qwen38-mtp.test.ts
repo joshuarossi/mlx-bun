@@ -9,7 +9,7 @@
 // Also logs the paired prefill/decode TPS for both arms — the MTP-on vs
 // MTP-off comparison. NOTE on this 24 GB machine the ABSOLUTE numbers are
 // swap-garbage (dirty-machine doctrine); the paired ratio is the signal, and
-// quotable numbers come from a cleared 32 GB box via benchmark.sh.
+// quotable numbers come from a cleared 32 GB box via scripts/bench-serve.ts all.
 
 import { describe, expect, test } from "bun:test";
 import {

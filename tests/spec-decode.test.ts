@@ -1,7 +1,7 @@
 // Speculative-decoding parity (slow tier; auto-skips without the e4b
 // pair). Correctness oracle is OPTIQ's spec_generate (the only stack with
 // the assistant drafter); we verified bit-exact output + accept/reject
-// trace vs optiq on this pair (scripts/oracle-spec.py, 2026-06-14). On a
+// trace vs optiq on this pair (scripts/oracle/oracle-spec.py, 2026-06-14). On a
 // TIE-FREE prompt optiq's batched verify == stock greedy, so the toBe-vs-
 // stock check below is a valid stand-in here AND a stronger statement
 // (no oracle dependency in CI). A flip on the tie-free prompt = an

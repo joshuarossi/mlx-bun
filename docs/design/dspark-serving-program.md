@@ -89,7 +89,7 @@ fine on a loaded box; the FINAL pre/post pair must be clean-machine.
 The expected big lever: 6.9 GB → ~1.8 GB kills bandwidth AND memory pressure.
 mlx-native group quantization, no research dependency.
 
-- [x] **1a. `scripts/dspark-quantize-drafter.ts`** *(DONE 2026-07-07 — thin
+- [x] **1a. `scripts/dspark.ts quantize`** *(DONE 2026-07-07 — thin
   driver over the house quantizer: `src/spec/dspark/quantize-drafter.ts`
   adds a `quantizePredicate` overlay (confidence_head kept bf16, recorded
   as the mlx `false` convention); load smoke = DeepspecDrafter reload +
@@ -122,7 +122,7 @@ mlx-native group quantization, no research dependency.
   telemetry extended with per-position draftedByPos/acceptedByPos; the
   stats/verdict math is model-free in `src/spec/dspark/ab-stats.ts`,
   unit-tested in tests/dspark-ab-stats.test.ts; chat-template rendering
-  pins enable_thinking OFF)* — `scripts/dspark-drafter-ab.ts`:
+  pins enable_thinking OFF)* — `scripts/dspark.ts ab`:
   same target, same prompt set (≥32 prompts, temp 0), drafter A vs drafter
   B; reports per-position acceptance, τ, tok/s, and a paired verdict. This
   is THE gate for every quantization experiment from here on (Phase 5
@@ -241,7 +241,7 @@ default-off), spec = opt-in until it WINS a clean-machine paired A/B.
   acceptance, `numDraftTokens` defaults to the measured-best (per-kind
   table in code, overridable), and the handoff documents why.
 - [ ] **4b. Quantized-drafter UX**: `mlx-bun get` the bf16 →
-  `scripts/dspark-quantize-drafter.ts` is a manual step today; decide
+  `scripts/dspark.ts quantize` is a manual step today; decide
   whether `serve --draft-model <bf16-dir>` should offer/auto-run the
   4-bit conversion (like the starter-model flow) or just print the
   command. Also: registry listing shows drafters distinctly (they are not

@@ -2,7 +2,7 @@
 // confidence thresholds from real (confidence, accepted) verify outcomes, so
 // the scheduler in module-dflash.ts#forwardInfer prunes positions the
 // confidence head can't actually call. Pure math, no MLX/GPU here: the
-// caller (scripts/dspark-calibrate.ts) collects samples off a live model via
+// caller (scripts/dspark.ts calibrate) collects samples off a live model via
 // dflashGenerate's onRound hook, this module just fits.
 //
 // VERIFIED vs the paper + reference (2026-07-06 audit, arXiv:2607.05147 +

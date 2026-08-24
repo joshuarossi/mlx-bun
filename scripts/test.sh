@@ -16,6 +16,8 @@ cd "$(dirname "$0")/.."
 # allowlist + docs-map coverage). Fail fast before any test runs.
 printf '== hygiene gate ==\n'
 bun scripts/check-hygiene.ts || exit 1
+printf '== typecheck (web bundle sources) ==\n'
+bunx tsc -p tsconfig.web.json --noEmit || exit 1
 
 FILES=(tests/*.test.ts)
 N=${#FILES[@]}

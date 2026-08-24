@@ -1,7 +1,7 @@
 // FAST (no model load): the Qwen3.5 gated-DeltaNet recurrence
 // (src/model/qwen3-delta.ts) vs mlx-lm's gated_delta_update GPU-kernel oracle.
 //
-// scripts/gen-qwen-delta-golden.py ran the reference kernel at the real
+// scripts/oracle/gen-qwen-delta-golden.py ran the reference kernel at the real
 // Qwen3.6-27B head geometry across a prefill step (T=3, state=None) and a
 // chained decode step (T=1, state=state1); this asserts our ported Metal
 // kernel + compute_g produce BIT-EXACT y at both steps. The chained decode

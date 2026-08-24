@@ -18,6 +18,6 @@ export function loadDsparkDrafter(dir: string): DflashDrafter {
   if (meta.variant === "dspark" || meta.variant === "dflash") return DflashDrafter.load(dir);
   throw new Error(
     `${dir} is a v1 single-vector DSpark checkpoint (variant=${meta.variant ?? "none"}) — ` +
-      `superseded, not serveable; retrain with scripts/dspark-train-dflash.ts`,
+      `superseded, not serveable; retrain with scripts/dspark.ts train`,
   );
 }

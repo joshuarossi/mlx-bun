@@ -1,7 +1,7 @@
 // Phase 15 — head-to-head benchmark harness: mlx-bun vs mlx-lm vs optiq.
 //
 // ONE-SHOT (after a reboot, nothing else open):
-//   ./benchmark.sh            (= bun scripts/bench-h2h.ts all)
+//   bun scripts/bench-serve.ts all            (= bun scripts/bench-h2h.ts all)
 //
 // RESUMABLE: cells that already have a row (same stack/model/leg/kv,
 // same commit, < 36 h old) are SKIPPED, so a re-run after a mid-matrix
@@ -726,7 +726,7 @@ function renderTable(sinceTs: number): string {
   out.push(...(s2.length ? s2 : ["_no mlx-bun/optiq mixed pairs in this window._"]), "");
 
   // --- Comparison 0: L1 kernel matrix (faithful default ± each kernel) -----
-  // benchmark.sh runs bench-faithful-matrix.ts between the h2h legs; its
+  // scripts/bench-serve.ts all runs bench-faithful-matrix.ts between the h2h legs; its
   // rows must land HERE or the "one report" claim is false (the 2026-07-05
   // pass buried the its-levers-earn-nothing finding in stdout).
   const fm = db.db
@@ -853,7 +853,7 @@ function renderTable(sinceTs: number): string {
       "quoting it; pair verdicts touching it are withheld. (Preflight ‡ does NOT predict this — the " +
       "2026-07-05 pass was preflight-clean yet had a 40-min slow window; spread is the direct signal.)",
     );
-  footer.push("Comparison 2 bit parity: direct optiq mixed-KV golden verified by `tests/mixed-kv-parity.test.ts` (producer: `scripts/regen-mixed-kv-goldens.ts` — bf16 prefill → per-layer quantize → stock unfused decode, logits bit-exact). Numbers above are the speed pairing on top of that verdict.");
+  footer.push("Comparison 2 bit parity: direct optiq mixed-KV golden verified by `tests/mixed-kv-parity.test.ts` (producer: `scripts/regen.ts mixed-kv` — bf16 prefill → per-layer quantize → stock unfused decode, logits bit-exact). Numbers above are the speed pairing on top of that verdict.");
   if (footer.length) out.push("", ...footer);
   if (failures.length) {
     out.push("", "## attempted but failed", "");
@@ -942,7 +942,7 @@ if (cmd === "client") {
   process.exit(0);
 }
 
-// One header for BOTH writers ("all" and "table --out") — benchmark.sh's
+// One header for BOTH writers ("all" and "table --out") — scripts/bench-serve.ts all's
 // final `table --out` re-render used to drop the machine line, so the
 // shipped report said only a hostname that both of Josh's MacBooks share.
 function reportDoc(table: string): string {
@@ -967,7 +967,7 @@ if (cmd === "table") {
 
 if (cmd === "all") {
   const startedAt = Date.now();
-  // --force (benchmark.sh default): the clean-machine gate WARNS instead of
+  // --force (scripts/bench-serve.ts all default): the clean-machine gate WARNS instead of
   // refusing. Comparisons 1&2 are bit parity (machine-independent) and #3 is
   // paired/KL (noise cancels), so a dirty machine still yields valid verdicts
   // — only the absolute tok/s headline wants a clean box. Rows measured dirty

@@ -4,7 +4,7 @@
 (UniversalDense + descriptor table for 11 archs, rope factory bit-exact vs oracle
 fixtures, DenseLinear/bf16 checkpoints, weight audit, dispatch ladder in
 factory/support, manifest-driven parity harness). Parity gates light per-model
-once the small checkpoints are downloaded (`scripts/regen-universal-goldens.ts` →
+once the small checkpoints are downloaded (`scripts/regen.ts universal` →
 `MLX_BUN_TEST_UNIVERSAL=1`). Phases 2 (UniversalMoE), 3 (SSM/MLA one-offs),
 4 (`mlx-bun port` scaffold) remain design.
 
@@ -303,7 +303,7 @@ the cheap tripwire that catches descriptor mistakes before parity does
 Pattern already proven three times (gemma/minicpm5/qwen). Parameterize it
 once:
 
-1. `scripts/regen-generic-goldens.ts <snapshot> <prefix>` — oracle venv
+1. `regen-generic-goldens.ts (deleted; git history) <snapshot> <prefix>` — oracle venv
    (`/Users/joshrossi/Code/mlx-lm/.venv/bin/python`, mlx-lm `load()` +
    `make_prompt_cache`) emits `<prefix>-parity.json` (explicit prompt ids,
    greedy ids) + 12 step-logit `.bin`s. Same-machine rule applies (logit

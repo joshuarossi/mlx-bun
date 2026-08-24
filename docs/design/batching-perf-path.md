@@ -6,7 +6,7 @@ the **P3 KV-budget admission slice LANDED** (`--kv-budget` aggregate
 projection gate, queue-don't-OOM,
 `/stats.batch.{pending_rows,kv_bytes,kv_budget_bytes}`,
 tests/batch-kv-budget.test.ts) and the **P0 bench harness LANDED** as
-`scripts/bench-feature-matrix.ts` (the six-cell composition matrix;
+`scripts/bench-matrix.ts features` (the six-cell composition matrix;
 `scripts/bench-serving-load.ts` stays a client-only stack-vs-stack tool).
 Also 2026-07-03: **Tier-0 universal models (plain full-attention, e.g.
 Llama) now batch** — per-row RoPE ported (`UniversalRope.applyDynamic`)
@@ -138,15 +138,15 @@ Two more gap sources specific to the benchmark:
 
 ### P0 — Baseline + engine quick wins (no new numerics)  [S–M, 2–4 days]
 - Bench harness — **DONE 2026-07-03**: landed as
-  `scripts/bench-feature-matrix.ts` (six-cell composition matrix over live
+  `scripts/bench-matrix.ts features` (six-cell composition matrix over live
   SSE, TTFT p50/p95 + aggregate tok/s; integration-plan Phase E).
   `scripts/bench-serving-load.ts` exists as the client-only stack-vs-stack
   tool and stays one. Clean-machine run remains Josh-gated.
 - Land `extend` join (full-attention twin + `BatchedRotatingCache.extend`);
-  oracle: extend `scripts/gen-batched-dynamic-golden.py` (mlx-lm `extend`).
+  oracle: extend `scripts/oracle/gen-batched-dynamic-golden.py` (mlx-lm `extend`).
   **LANDED 2026-07-04** for full-attention layers (`extendKVRows`,
   mlx-lm `BatchKVCache.extend` semantics; own oracle
-  `scripts/gen-batched-extend-golden.py`, token-for-token CPM + Llama;
+  `scripts/oracle/gen-batched-extend-golden.py`, token-for-token CPM + Llama;
   `MLX_BUN_BATCH_EXTEND=0` = re-merge). `BatchedRotatingCache.extend`
   (sliding layers on Gemma joins) remains open.
 - Vectorize the homogeneous-sampler fast path in `#step` (all-greedy →

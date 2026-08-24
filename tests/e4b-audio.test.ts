@@ -4,7 +4,7 @@
 // strictly-causal merged-embeddings prefill (per-layer id zeroing at audio
 // positions, NO bidirectional mask — §3.3 Q1/Q2) → greedy decode.
 //
-// Bars (vs goldens/e4b-audio.json, scripts/gen-e4b-audio-golden.py):
+// Bars (vs goldens/e4b-audio.json, scripts/oracle/gen-e4b-audio-golden.py):
 //   - spliced prompt ids: EXACT (arbiter for template render + splice)
 //   - soft-token count: EXACT (ceil(duration_ms/40) from DECODED samples)
 //   - the actual bf16 splice boundary is byte-exact when driven from the

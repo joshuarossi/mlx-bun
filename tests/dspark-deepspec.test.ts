@@ -484,7 +484,7 @@ describe("DeepspecDrafter", () => {
 // ---------------------------------------------------------------------------
 // Quantized checkpoint (Phase 1a/1b, docs/design/dspark-serving-program.md):
 // quantize the synthetic bf16 checkpoint through the drafter policy
-// (scripts/dspark-quantize-drafter.ts), then verify detection, policy, and
+// (scripts/dspark.ts quantize), then verify detection, policy, and
 // that the quantized forward tracks the bf16 forward. markovRank=32 makes
 // the markov tensors and the confidence proj group-32-eligible, so the
 // policy exclusion (confidence stays bf16) is actually exercised rather

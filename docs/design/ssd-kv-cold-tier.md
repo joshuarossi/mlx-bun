@@ -134,7 +134,7 @@ docs/design/batching-perf-path.md P3's problem.
 
 ## Phases
 
-- **P0 — Baseline bench (½ d)**: `scripts/experiments/ssd-cache-bench.ts`
+- **P0 — Baseline bench (½ d)**: `ssd-cache-bench.ts (deleted; git history)`
   grown from `cold-start.ts`: ≥16k-token prefix on the standard snapshot,
   kv_config quant active; measure full-prefill TTFT / warm RAM-hit TTFT /
   steady-state decode. Exit: baseline table committed.
@@ -410,6 +410,6 @@ e4b/12B/Qwen matrix remains the acceptance run.
 Focused reproduction:
 
 ```sh
-./benchmark.sh --models e4b,12B,qwen27b \
+bun scripts/bench-serve.ts all --models e4b,12B,qwen27b \
   --arms mlx-bun,mlx-bun-serial,mlx-bun-mixed
 ```

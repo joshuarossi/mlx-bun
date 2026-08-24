@@ -25,7 +25,7 @@ import { join } from "node:path";
 
 /** STS calibration (§3.2.1) — per-position confidence thresholds fit on real
  *  (confidence, accepted) verify outcomes (src/spec/dspark/calibration.ts,
- *  scripts/dspark-calibrate.ts). Consumed by the confidence-scheduled
+ *  scripts/dspark.ts calibrate). Consumed by the confidence-scheduled
  *  draft-length pruning (Alg 1, single-user form) in forwardInfer. Stored
  *  inside DflashConfig so it round-trips through dspark.json for free.
  *  ABSENT ⟹ no pruning — an uncalibrated checkpoint drafts exactly as before. */

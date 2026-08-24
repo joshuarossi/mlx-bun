@@ -2,7 +2,7 @@
 //
 // Parity bars (PLAN.md testing strategy):
 //  1. BIT-EXACT vs the optiq oracle's _prefill_flashattn_n_tiled
-//     (goldens/fused-sdpa.*, regen: scripts/regen-fused-sdpa-goldens.ts)
+//     (goldens/fused-sdpa.*, regen: scripts/regen.ts fused-sdpa)
 //     — same ops, same composition order, tier a.
 //  2. Bounded tolerance vs our own unfused port: online softmax ≠
 //     one-shot precise softmax in bf16, so intra-stack agreement is

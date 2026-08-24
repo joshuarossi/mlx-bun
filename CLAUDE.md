@@ -9,9 +9,8 @@ README.md has the pitch and scope boundaries.
 - `PLAN.md` — durable phase log, exit criteria, findings (the engineering contract).
 - Closed-phase history is in git, not a file: `git log --oneline -- PLAN.md` and `git show 3199c75:PLAN-archive.md` (the final archive snapshot before deletion).
 - `README.md` — product pitch, quickstart, API surface, scope boundaries.
-- `CONTEXT.md` — serving domain vocabulary and rejected synonyms.
 - `docs/reference/benchmarks.md` — curated results: parity / performance / quality.
-- `docs/reference/` — benchmarks (curated numbers: parity / performance / quality), cli, server-api, server-config, features-matrix, library-api, embedding, distribution, training, orpo-quickstart, memory, models (user-facing reference).
+- `docs/reference/` — benchmarks (curated numbers: parity / performance / quality), glossary (serving vocabulary + rejected synonyms), cli, server-api, server-config, features-matrix, library-api, embedding, distribution, training, orpo-quickstart, memory, models (user-facing reference).
 - `docs/design/` — ACTIVE engineering docs (archived when their work closes — CONTRIBUTING.md rule 3): adapters-end-to-end, audio-input-plan, batching-perf-path, batching-v2-plan, bucketing-stage, compat-cli-surface-design, decode-speed-program, diffusion-gemma-port, docs-reorg-plan, dreaming-nightly-pipeline, dspark-serving-program, dspark-speculative-decoding, faithful-l1-consolidation, generic-model-support, grammar-spec-batching-integration, memory-inference-path, memory-synthesis, memory-system, minicpm5-decode-megakernel, mlx-lm-serving-execution-seam, mlx-lm-tool-parity-plan, omlx-adoption-map, optimization_plan, orpo-dynamic-lambda, orpo-future-enhancements, orpo-training, paged-kv-cache, parallel-slots, parity-tier-dag, pre-colibri-stabilization, repo-cleanup-plan, runtime-isolation, segmented-backward-training, spec-decode-larger-targets, ssd-kv-cold-tier, structured-output, tauri-desktop-app, the-dreaming-handoff, the-dreaming-master-plan, turboquant-kv, turboquant-weights, unified-engine-frontier-plan, w4a16-compute-precision-spike, web-chat-beat-matrix, web-chat-redesign, write-pipeline-entity.
 - `docs/planning/` — LIVING product/vision docs only: PRODUCT_ROADMAP (absorbed IDEAS), ResearchTopics, video-series.
 - `docs/archive/` — frozen history; read-only, never extended in place. Completed investigations (chunk-finetune-experiment, colibri-glm52-port, colibri-oracle-pin, curve-bisector-routing, decode-roofline-lookagain, dspark-handoff, expert-offload-single-user-moe, hlg-blind-prompts, hlg-sampling-investigation, indexshare-performance-spike, kernel-perf-review-2026-07, lab-build-journal, openwiki-evaluation, orpo-base-uf-experiment-and-directions, orpo-flash-cce-pin-leak, orpo-uf-testing-handoff, pareto-specialized-runtime-findings, pi-builtin-investigation, segmented-backward-handoff, starter-model-port-handoff, steel-flash-cce-handoff, trainer-validation-experiment), superseded design docs (hlg-sampling), retired planning docs (journal, chat-ui-vision, chat-ui-vision-memory-first, web-ui-pass-plan, website-readme-pass-plan, chunk-task-roadmap, curve-sampler-research-plan, memory-docs-and-dag-plan, pi-integration-review), release notes (release-notes-v0.0.9, release-notes-v0.0.10, release-notes-v0.0.11, release-notes-v0.0.12, release-notes-v0.0.13, release-notes-v0.2.0). Raw run data + generated HTML deleted 2026-08-23 — recover via `git show c61bc4b:<path>`.
@@ -24,7 +23,7 @@ README.md has the pitch and scope boundaries.
 - `fixtures/` small tracked test inputs (images, tiny safetensors) used by the model-free CI suite.
 - `lab/` code that proves a point but isn't the product: `lab/repro/` minimal reproductions for UPSTREAM bug reports (e.g. `bun-ffi-f64/` = Bun FFI float64 bug, ISSUE.md inside); Self-contained, not part of the build (`lab/spikes/` deleted 2026-08-23 — closed feasibility probes).
 - `docs/archive/` frozen one-off HTML reports (was root `archive/`).
-- `scripts/packaging/` signing entitlements + Homebrew formula source-of-truth; `bin/` the npm launcher; `extensions/` pi provider extension.
+- `scripts/packaging/` signing entitlements + Homebrew formula source-of-truth; `bin/` the npm launcher; `scripts/packaging/pi-extensions/` the shipped Pi adapter extension.
 - Untracked working dirs (gitignored, machine-local): `adapters/`, `runs/`, `reports/`, `dist*/`, `node_modules/`, stray bench artifacts.
 
 ## Ground rules
@@ -52,10 +51,10 @@ README.md has the pitch and scope boundaries.
   python: `/Users/joshrossi/Code/mlx-lm/.venv/bin/python`.
 - **Every perf claim gets a number on this machine** (M4 Pro, 24 GB,
   ~273 GB/s). Curated reference numbers live in `docs/reference/benchmarks.md`
-  (parity / performance / quality). `./benchmark.sh` (preflight-gated)
+  (parity / performance / quality). `bun scripts/bench-serve.ts all` (preflight-gated)
   writes a dated `benchmarks-h2h-<date>.md` artifact in the working dir
   during a run — those files are gitignored. Numbers on a loaded machine
-  are garbage; use benchmark.sh for anything quotable.
+  are garbage; use scripts/bench-serve.ts all for anything quotable.
 - Readable reference source (installed in the oracle venv,
   `site-packages/`): `mlx_lm/models/gemma3.py` and `mlx_lm/server.py`
   for the port targets; `optiq/runtime/fused_quant_sdpa.py` and

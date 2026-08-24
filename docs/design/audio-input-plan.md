@@ -210,7 +210,7 @@ All under `optiq/vlm/_mlxvlm/models/gemma4/` in the oracle venv:
 ### 3.4 Parity strategy (tree doctrine)
 
 Oracle = optiq internal gemma4 model in the pinned venv, driven by
-`scripts/regen-audio-goldens.py` (modeled on their calibration loader;
+`regen-audio-goldens.py (deleted; git history)` (modeled on their calibration loader;
 remember `enable_thinking` pinning for any templated prompt). Tiers follow
 the e4b vision precedent exactly:
 
@@ -238,7 +238,7 @@ Expectation (to be *measured*, not asserted): the tower is tiny —
 ≤750 mel frames → ~≤188 post-subsample positions × 12 layers × hidden
 1024 bf16 — so added TTFT should be dominated by CPU feature extraction
 plus one extra graph eval; sidecar RSS delta is the 752 bf16 tensors.
-Every number that gets quoted comes from preflight-gated `benchmark.sh`
+Every number that gets quoted comes from preflight-gated `scripts/bench-serve.ts all`
 cells (tower ms, TTFT delta vs text-only, peak RSS delta) and lands in
 `benchmarks/RESULTS.md`.
 
@@ -247,7 +247,7 @@ cells (tower ms, TTFT delta vs text-only, peak RSS delta) and lands in
 **Phase A0 — groundwork**
 - [ ] Bind `mlx_conv2d` (full header signature; CPU/GPU sanity test vs
       oracle conv output)
-- [ ] `scripts/regen-audio-goldens.py` + fixtures; dump mel golden,
+- [ ] `regen-audio-goldens.py (deleted; git history)` + fixtures; dump mel golden,
       tower-output golden, spliced ids, greedy ids
 - [ ] Resolve open questions §3.3 (write the answers into this doc)
 - Exit: goldens on disk; masking/zeroing semantics documented.
@@ -332,7 +332,7 @@ cells (tower ms, TTFT delta vs text-only, peak RSS delta) and lands in
       docs-map hygiene green. ✅ 2026-07-07
 
 **Phase A5 — bench + coverage**
-- [ ] benchmark.sh cells → RESULTS.md (tower ms, TTFT delta, RSS delta)
+- [ ] scripts/bench-serve.ts all cells → RESULTS.md (tower ms, TTFT delta, RSS delta)
 - [ ] 12B audio cell: rebuild its sidecar via optiq `build_vision_sidecar`
       (selective download), own goldens — per-model doctrine, every
       (model, quant) cell gets its own validation or an explicit deferral

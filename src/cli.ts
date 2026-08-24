@@ -391,7 +391,7 @@ Usage: mlx-bun benchmark [query] [options]
 
 Runs mlx-bun by itself (no other systems required) and records the
 result to the eval DB. For quotable, cross-stack numbers use
-./benchmark.sh from the repo — it preflight-gates on an idle machine
+bun scripts/bench-serve.ts all from the repo — it preflight-gates on an idle machine
 and runs the mlx-lm/optiq comparison legs.
 
   [query]              Model to benchmark (--query <q> is accepted for the
@@ -475,7 +475,7 @@ Options:
   --clear              Archive the eval DB (timestamped backup) and start fresh
 
 Table view: when, model, bench kind, KV mode, decode tok/s, TTFT,
-peak memory, commit. Runs are written by ./benchmark.sh.`,
+peak memory, commit. Runs are written by bun scripts/bench-serve.ts all.`,
 
   train: `mlx-bun train — fine-tune a LoRA adapter on your data
 
@@ -832,7 +832,7 @@ function openChatUi(url: string, hostPort: string): void {
  *    --l2  bit-for-bit IDENTICAL to mlx-optiq — drop-in replacement for
  *          mlx-optiq: quantized KV per kv_config.json + fused N-tiled SDPA for
  *          L>1 + STOCK unfused L=1 decode (the optiq-golden composition,
- *          scripts/regen-kvq-goldens.ts + regen-mixed-kv-goldens.ts).
+ *          scripts/regen.ts kvq + regen-mixed-kv-goldens.ts).
  *  There is no --l3: output-changing experiments live in the Lab (env flags
  *  with a bench + expiry) until one beats the L1 baseline in a paired A/B —
  *  docs/design/unified-engine-frontier-plan.md §6-7. */
@@ -1886,7 +1886,7 @@ switch (cmd) {
     const promptTokens = Number(opt("prompt-tokens", "0"));
     const kvMode = opt("kv-quant", "off")!;
     console.log(`  ${style.dim("measures THIS machine, OUR stack only — no other systems needed.")}`);
-    console.log(`  ${style.dim("numbers on a loaded machine are not quotable; ./benchmark.sh is the preflight-gated harness.")}`);
+    console.log(`  ${style.dim("numbers on a loaded machine are not quotable; bun scripts/bench-serve.ts all is the preflight-gated harness.")}`);
     const sNative = step("native runtime");
     await ensureNative(sNative);
     sNative.done("native runtime ready");
@@ -2006,7 +2006,7 @@ switch (cmd) {
     }
     const { style } = await import("./tui");
     if (rows.length === 0) {
-      console.log("no eval runs recorded yet — ./benchmark.sh writes them");
+      console.log("no eval runs recorded yet — bun scripts/bench-serve.ts all writes them");
       break;
     }
     const ago = (ts: number) => {

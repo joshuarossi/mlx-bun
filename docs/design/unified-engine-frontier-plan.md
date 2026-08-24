@@ -419,7 +419,7 @@ Ordering (by value): quantized KV under batching first (the
 agent-fan-out-with-long-context composition), then prompt cache, then
 adapters, then spec decode per slot, then chunked prefill interleaving
 (vLLM policy) so a 16k prefill doesn't stall running streams.
-`scripts/bench-modes.ts` is already the composition scoreboard (its cell
+`scripts/bench-matrix.ts modes` is already the composition scoreboard (its cell
 matrix spans kv × batch × grammar × cache × spec) — every layer added to
 the batched engine gets a cell there and a parity gate.
 

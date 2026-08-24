@@ -379,7 +379,7 @@ reports/frontier-map-2026-08-19.html)
 | **TQ-mixed** | 3.86 | 13.0 | 4.932 | 82 | 82 | 96 | 10.94 | **YES** |
 | bf16 ceiling (streamed eval) | 16 | 54.4 | 4.552 | 87 | n/a | n/a | n/a | ref |
 
-*busy-box, spreads 8–34% — directional until quiet benchmark.sh.
+*busy-box, spreads 8–34% — directional until quiet scripts/bench-serve.ts all.
 
 Findings of record: (1) the ≥4.5-bpw band sits AT the bf16 ceiling (ppl
 within ~1%, MMLU within noise — a quant scoring 90 vs ceiling 87 proves

@@ -146,9 +146,9 @@ batches Mamba-family state.
 | Behavior | Test | Tier | Gate quality |
 | --- | --- | --- | --- |
 | decode mask math (`buildBatchedDecodeMask`), `mergeKVRows`/`filterKVRows` pure | `tests/batched-decode-mask.test.ts` | FAST (no model) | unit, exact |
-| rotating merge/decode/mask/filter incl. **ring-wrap** | `tests/batched-rotating.test.ts` | FAST (fixture) | **oracle-gated** — replays `scripts/gen-rotating-golden.py` vs mlx-lm `BatchRotatingKVCache`, per-step mask + keys |
-| batched prefill+decode forward, 4 models | `tests/batched-decode-parity.test.ts` | GATED `MLX_BUN_TEST_BATCH_DECODE=1` + weights | **oracle-gated** — bit-exact vs mlx-lm B=2 goldens (`scripts/gen-batched-golden.py`) |
-| dynamic-B join/leave ({A,B}→+C→−A) | same file, CPM | GATED | **oracle-gated** — token-for-token vs `scripts/gen-batched-dynamic-golden.py` (mlx-lm merge/extract/filter) |
+| rotating merge/decode/mask/filter incl. **ring-wrap** | `tests/batched-rotating.test.ts` | FAST (fixture) | **oracle-gated** — replays `scripts/oracle/gen-rotating-golden.py` vs mlx-lm `BatchRotatingKVCache`, per-step mask + keys |
+| batched prefill+decode forward, 4 models | `tests/batched-decode-parity.test.ts` | GATED `MLX_BUN_TEST_BATCH_DECODE=1` + weights | **oracle-gated** — bit-exact vs mlx-lm B=2 goldens (`scripts/oracle/gen-batched-golden.py`) |
+| dynamic-B join/leave ({A,B}→+C→−A) | same file, CPM | GATED | **oracle-gated** — token-for-token vs `scripts/oracle/gen-batched-dynamic-golden.py` (mlx-lm merge/extract/filter) |
 | scheduler orchestration (admit/step/evict/join) | `tests/batch-scheduler.test.ts` | GATED | **KL-gated** teacher-forced (tol 1e-2) CPM; Gemma 12B greedy vs mlx-lm B=2 golden |
 | server wiring: Option-B engage, `/stats`, concurrent completion, SSE fan-out, serial-lane coexist (user-seed drain, no deadlock) | `tests/batch-serving.test.ts` | GATED (live in-process server) | **smoke** — coherence assertions, no numeric oracle |
 | prefill batched mask (training side) | `tests/train-batch{,-e2e}.test.ts` | FAST / gated | oracle (per-row loss == solo) |
@@ -306,7 +306,7 @@ verify against the golden, don't assume). Scheduler `#admit` becomes:
 solo-prefill → `inners[layer].extend(soloRow)` — no re-merge, no wrapper churn.
 **Does not touch gemma4-base.ts** (in-flight ownership).
 
-**Oracle:** extend `scripts/gen-batched-dynamic-golden.py` to drive the join
+**Oracle:** extend `scripts/oracle/gen-batched-dynamic-golden.py` to drive the join
 through mlx-lm's real `extend` (it already drives merge/extract/filter);
 assert the same {A,B}→+C→−A per-row trajectories token-for-token, CPM L1 +
 a Gemma variant for the rotating extend. Existing gated suites must stay

@@ -8,7 +8,7 @@
 //   MLX_BUN_TEST_DIFFUSION=1 bun test tests/diffusion-parity.test.ts
 //
 // Regen the golden first on this machine (loads the 14 GB checkpoint):
-//   /Users/joshrossi/Code/mlx-lm/.venv/bin/python scripts/gen-diffusion-golden.py
+//   /Users/joshrossi/Code/mlx-lm/.venv/bin/python scripts/oracle/gen-diffusion-golden.py
 //
 // Where the quantized GEMV is 1-ULP off (the known megakernel/L2 finding) we
 // gate by argmax-agreement + KL, not the bit-exact golden.

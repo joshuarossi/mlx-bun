@@ -407,7 +407,7 @@ export type DraftKind = "dspark" | "deepspec" | "assistant" | "two-model" | "ngr
 
 /** Detect the draft artifact's kind so the right provider is loaded. All
  *  providers share ONE serve loop (src/spec/serve-loop.ts). Exported for the
- *  bench harness (scripts/bench-feature-matrix.ts) — one detection, no drift.
+ *  bench harness (scripts/bench-matrix.ts features) — one detection, no drift.
  *  "ngram" is never detected — it has no artifact (model-free prompt lookup,
  *  src/spec/ngram-source.ts) and mounts via an explicit `--draft-kind ngram`. */
 export async function detectDraftKind(dir: string): Promise<DraftKind> {

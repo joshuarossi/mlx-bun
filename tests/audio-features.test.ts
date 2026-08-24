@@ -1,7 +1,7 @@
 // FAST (no model load): T0 gates for audio input (A1 of
 // docs/design/audio-input-plan.md) — WAV decode, soft-token counts, and the
 // USM mel extractor vs the oracle goldens dumped by
-// scripts/gen-e4b-audio-golden.py. The mel .bin blobs are untracked and
+// scripts/oracle/gen-e4b-audio-golden.py. The mel .bin blobs are untracked and
 // regenerable; the tensor-compare tests skip when they're absent
 // (goldens/README.md presence-gating convention). Everything else runs on
 // the tracked fixtures + manifest alone.

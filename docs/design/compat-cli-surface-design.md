@@ -209,7 +209,7 @@ mlx-bun against the Python oracle in `/Users/joshrossi/Code/mlx-lm/.venv`:
   exits non-zero with `not implemented in mlx-bun yet` — the harness
   asserts the message, so gaps are visible, not silent.
 
-Gated by `benchmark.sh`-style preflight only where it measures speed;
+Gated by `scripts/bench-serve.ts all`-style preflight only where it measures speed;
 correctness diffs need no clean machine.
 
 ## Build sequencing

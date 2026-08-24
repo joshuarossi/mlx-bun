@@ -58,7 +58,7 @@
 //                                  [--arms mlx-bun,mlx-lm,...] [--out report.md]
 //
 // Engine-level legs (in-process kernels, gen-peak memory, kill-switch A/Bs)
-// remain in bench-h2h.ts / benchmark.sh --engine — different question
+// remain in bench-h2h.ts / scripts/bench-serve.ts all --engine — different question
 // (kernel parity), different tool.
 
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -74,6 +74,13 @@ const PY = `${VENV}/python`;
 const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
 
 const argv = process.argv.slice(2);
+// `all` = THE quotable pass (was ./benchmark.sh): refuse headline numbers from
+// a loaded/swapped machine, and keep the Mac awake for the whole run.
+if (argv[0] === "all") {
+  const pre = Bun.spawnSync(["bun", new URL("./bench-h2h.ts", import.meta.url).pathname, "preflight"], { stdio: ["inherit", "inherit", "inherit"] });
+  if (pre.exitCode !== 0) process.exit(pre.exitCode ?? 1);
+  Bun.spawn(["caffeinate", "-dimsu", "-w", String(process.pid)], { stdio: ["ignore", "ignore", "ignore"] }).unref();
+}
 const opt = (name: string, dflt: string): string => {
   const i = argv.indexOf(`--${name}`);
   return i > -1 ? argv[i + 1]! : dflt;

@@ -134,13 +134,13 @@ in the standalone `generate-dflash.ts` (the measure script). See
 - `src/spec/dspark/generate-dflash.ts` — growing-H_ctx lossless decode loop.
 - `src/spec/dspark/{loss,sample}.ts` — loss (Eq 9–12) + temp>0 sampling (shared with v1).
 - `src/spec/dspark/{module,data,generate}.ts` — v1 single-vector (superseded baseline).
-- `scripts/dspark-regen-dflash.ts` / `dspark-train-dflash.ts` (`--resume`) / `dspark-measure-dflash.ts`.
+- `scripts/dspark.ts regen` / `dspark-train-dflash.ts` (`--resume`) / `dspark-measure-dflash.ts`.
 - `tests/helpers/dspark-dflash-smoke.ts` — CPU smoke (16/16). `dspark-smoke.ts (deleted 2026-08-23; git history)` — v1 smoke (33/33).
 
 ## Run sequence (faithful DFlash; GPU = Josh runs)
 ```
-bun scripts/dspark-regen-dflash.ts --topics <topics.txt> --out <data> --max-resp 320
-bun scripts/dspark-train-dflash.ts --data <data> --out <ckpt> --iters 8000 --batch 8 [--resume] [--ddraft 2560]
+bun scripts/dspark.ts regen --topics <topics.txt> --out <data> --max-resp 320
+bun scripts/dspark.ts train --data <data> --out <ckpt> --iters 8000 --batch 8 [--resume] [--ddraft 2560]
 bun dspark-measure-dflash.ts (deleted 2026-08-23; git history) --drafter <ckpt> --data <prompts.jsonl>   # τ + tok/s vs vanilla
 ```
 
@@ -165,7 +165,7 @@ reviewed; smoke 21/21, dspark test files 17/17, real-weights serve gate 3/3):
   (`fitStsThresholds`: per position, smallest τ whose Laplace-smoothed
   `P(accepted | conf ≥ τ)` ≥ target; pos 0 → 0, under-sampled → 0 (don't
   prune on thin evidence), unreachable target → 1.0) +
-  `scripts/dspark-calibrate.ts` (GPU: greedy unpruned rounds via
+  `scripts/dspark.ts calibrate` (GPU: greedy unpruned rounds via
   `dflashGenerate`'s `onRound` hook → fit → patch `config.sts` into
   dspark.json in place). ⚠ estimator shape is our reading — paper PDF absent.
 - **RNN sequential head (Eq 6 — ⚠ design-doc-faithful shape, paper PDF
@@ -174,7 +174,7 @@ reviewed; smoke 21/21, dspark test files 17/17, real-weights serve gate 3/3):
   (starts as pure DFlash, like markov.w2); shares `markov.w1` as the token
   embedding (also feeds the confidence head). Same loss, autograd-gated;
   init-equivalence gate: rnn ≡ markov token-for-token at init.
-  Train with `scripts/dspark-train-dflash.ts --seq-head rnn`.
+  Train with `scripts/dspark.ts train --seq-head rnn`.
 - **Draft loop TIGHTENED** (handoff item 3): greedy tokens chain ON-DEVICE
   (one concat + one host read after the loop, was γ syncs); confidence reads
   deferred+batched when pruning is inactive (per-position only when Alg 1
@@ -273,7 +273,7 @@ Two tracks, cheap-first:
   drafter training).** Dynamic per-step block length instead of fixed
   `--num-draft-tokens`: v0 confidence = the draft's own token probability
   (no trained head), mapped through STS calibration
-  (`scripts/dspark-calibrate.ts` pattern) to expected acceptance; the
+  (`scripts/dspark.ts calibrate` pattern) to expected acceptance; the
   scheduler stops drafting when marginal expected-accept drops below the
   verify amortization point. Calibration needs thousands of
   (confidence, accepted?) pairs from served traffic — hours, not weeks.
@@ -310,7 +310,7 @@ rotation basis (fine for our bundle; note on the card if published).
   on-distribution generations) + **retarget to 12B** (`--model` +
   `--tap-layers 5,17,29,41,46` (DeepSeek's trained taps); ~~27B memory-infeasible to train on 24 GB~~ (superseded — the 17 GB TQ trunk makes it feasible; see "27B program" above), kept
   dim-generic) + train (`--seq-head` A/B optional) + **calibrate**
-  (`scripts/dspark-calibrate.ts`) + live-τ measure. Recipe:
+  (`scripts/dspark.ts calibrate`) + live-τ measure. Recipe:
   [docs/archive/investigations/dspark-handoff.md](../archive/investigations/dspark-handoff.md).
 - [ ] Verify the Eq 6 / §3.2.1 shapes against the actual paper when the PDF
   is available (both flagged in code).

@@ -7,7 +7,7 @@
 // Manifest-driven (tests/universal-manifest.ts); every entry skips unless
 // BOTH the snapshot and its goldens exist on this machine. Regen goldens
 // FIRST (same machine — logit goldens are GPU-specific):
-//   bun scripts/regen-universal-goldens.ts all
+//   bun scripts/regen.ts universal all
 //
 // Asserts, per entry:
 //   - createModel dispatches to UniversalDenseModel (or the dedicated class

@@ -8,7 +8,7 @@
 //
 // Gates:
 //  1. L1 spec-vs-spec: token-for-token vs mlx-lm's speculative path on the
-//     SAME pair (scripts/oracle-spec-two-model.py through the oracle venv,
+//     SAME pair (scripts/oracle/oracle-spec-two-model.py through the oracle venv,
 //     when present — skipped cleanly on machines without it).
 //  2. Spec output must be a sane generation: exact-match acceptance means
 //     greedy spec reproduces the target's own greedy choices (modulo the
@@ -88,7 +88,7 @@ describe.skipIf(!optIn || !TARGET || !DRAFT)("serve --draft-model (two-model spe
       // L1 oracle (spec-vs-spec) when the venv exists on this machine
       if (existsSync(ORACLE_PY)) {
         const proc = Bun.spawnSync(
-          [ORACLE_PY, "scripts/oracle-spec-two-model.py", TARGET!, DRAFT!, "3", String(MAX), JSON.stringify(ids)],
+          [ORACLE_PY, "scripts/oracle/oracle-spec-two-model.py", TARGET!, DRAFT!, "3", String(MAX), JSON.stringify(ids)],
           { cwd: `${import.meta.dir}/..`, env: { ...process.env, HF_HUB_DISABLE_XET: "1" } },
         );
         const line = proc.stdout.toString().trim().split("\n").at(-1)!;
@@ -150,7 +150,7 @@ describe.skipIf(!optIn || !TARGET || !DRAFT)("serve --draft-model (two-model spe
               ours.push(t);
             });
             const proc = Bun.spawnSync(
-              [ORACLE_PY, "scripts/oracle-spec-two-model.py", TARGET!, DRAFT!, String(gamma), "48", JSON.stringify(ids)],
+              [ORACLE_PY, "scripts/oracle/oracle-spec-two-model.py", TARGET!, DRAFT!, String(gamma), "48", JSON.stringify(ids)],
               { cwd: `${import.meta.dir}/..`, env: { ...process.env, HF_HUB_DISABLE_XET: "1" } },
             );
             const oracle = JSON.parse(proc.stdout.toString().trim().split("\n").at(-1)!).tokens as number[];

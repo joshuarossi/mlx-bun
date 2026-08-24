@@ -1,6 +1,6 @@
 // Model-free math for the Phase-1c drafter acceptance A/B
 // (docs/design/dspark-serving-program.md; runner:
-// scripts/dspark-drafter-ab.ts). THE gate for every drafter-quantization
+// scripts/dspark.ts ab). THE gate for every drafter-quantization
 // experiment: same target, same prompts, temp 0 — drafter A vs drafter B.
 //
 // Paired design: prompts are the pairing unit, so per-prompt deltas cancel
