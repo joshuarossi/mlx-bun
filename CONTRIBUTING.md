@@ -19,7 +19,7 @@ and a tracked-root allowlist.
 | user-facing docs | `docs/reference/`, `README.md` | yes |
 | engineering docs for ACTIVE work | `docs/design/` | yes — and **archived to `docs/archive/` when the work closes** |
 | closed investigations, old plans, release notes | `docs/archive/` | yes (frozen) |
-| working state | `PLAN.md` (open phases), `STATUS.md` (current handoff) | yes — closed material moves to `PLAN-archive.md` |
+| working state | `PLAN.md` (open phases), `STATUS.md` (current handoff) | yes — closed material is DELETED in the closing commit; git is the archive |
 | curated benchmark numbers | `benchmarks/RESULTS.md` | yes |
 | **raw benchmark/report output** | `reports/` | **no** (gitignored) |
 | **built model artifacts** | `~/models/<Name>/` | **never in the repo tree** |
@@ -43,9 +43,12 @@ and a tracked-root allowlist.
    into `docs/archive/investigations/` — they document finished work by
    definition. Every doc appears in the CLAUDE.md doc map (gate-enforced).
 4. **PLAN.md is the open work, not the history.** When a phase closes,
-   its block moves to `PLAN-archive.md` with a one-line pointer left
-   behind. STATUS.md holds the CURRENT state and next actions only —
-   superseded "where we were" entries move to `PLAN-archive.md`.
+   its block is deleted in the closing commit, leaving a one-line pointer
+   with the durable conclusion (details land in the topic's design doc or
+   `docs/reference/benchmarks.md`). STATUS.md holds the CURRENT state and
+   next actions only — superseded entries are deleted, not relocated.
+   Git is the archive: `git log --oneline -- PLAN.md`, and
+   `git show 3199c75:PLAN-archive.md` for the pre-2026-08 closed history.
 5. **Binaries need an allowlist entry** with a size cap, rationale, and
    regen path (`scripts/check-hygiene.ts` header). Goldens' `.bin` blobs
    stay untracked forever (see `goldens/README.md` and the 179 MB → 20 MB

@@ -62,7 +62,7 @@ const ROOT_ALLOWLIST = new Set([
   // Single-context domain vocabulary; required by the repository's domain
   // layout and maintained as source documentation, not generated output.
   "AGENTS.md", "CLAUDE.md", "CONTEXT.md", "CONTRIBUTING.md", "LICENSE",
-  "PLAN.md", "PLAN-archive.md", "README.md", "STATUS.md",
+  "PLAN.md", "README.md", "STATUS.md",
   "THIRD_PARTY_LICENSES.md",
   "benchmark.sh", "bun.lock", "package.json",
   "tsconfig.json", "tsconfig.web.json",

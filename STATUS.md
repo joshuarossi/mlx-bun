@@ -2,7 +2,7 @@
 
 The single "what's the state, what's next" doc. Durable phase history,
 exit criteria, and findings live in [PLAN.md](PLAN.md); superseded session
-summaries move to [PLAN-archive.md](PLAN-archive.md). Product/UX north star:
+summaries move to git history (`git show 3199c75:PLAN-archive.md`). Product/UX north star:
 [docs/planning/PRODUCT_ROADMAP.md](docs/planning/PRODUCT_ROADMAP.md).
 
 **Fidelity contract:** **L1** = mlx-lm bit-exact parity (the naked default) ·
@@ -222,7 +222,7 @@ repeat the real conversation smoke on merged `main` and archive this phase.
 G0–G8 complete and shipped in v0.0.13; G6R stages 0–2 and G7a–c landed
 after. The full gate-by-gate record (memory contract, MTP, DSA, learning
 shakeouts, serving parity, evidence paths) is archived in
-[PLAN-archive.md](PLAN-archive.md) under "STATUS archive 2026-08-18";
+git history (`git show 3199c75:PLAN-archive.md`) under "STATUS archive 2026-08-18";
 the durable engineering record is PLAN.md Phase 21 and
 [docs/design/colibri-glm52-port.md](docs/design/colibri-glm52-port.md).
 Pre-Colibri stabilization (Phase 22) is likewise closed —
@@ -233,6 +233,6 @@ Pre-Colibri stabilization (Phase 22) is likewise closed —
 Open work lives in PLAN.md's unchecked phase boxes (currently: TurboQuant
 weights W5/W6, audio A5, serve-lane Qwen-MTP slice bug, frozen-eval cells
 for the TQ/GPTQ artifacts). The July-era ranked backlog and workstream
-lists were archived verbatim to [PLAN-archive.md](PLAN-archive.md)
+lists were archived verbatim to git history (`git show 3199c75:PLAN-archive.md`)
 ("STATUS archive 2026-08-18") — mine them there; do not resurrect them
 here (CONTRIBUTING.md rule 4).

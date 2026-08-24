@@ -7,7 +7,7 @@ README.md has the pitch and scope boundaries.
 **Doc map:**
 - `STATUS.md` — live handoff: current state + next action (read this for "where are we").
 - `PLAN.md` — durable phase log, exit criteria, findings (the engineering contract).
-- `PLAN-archive.md` — closed-history phases moved out of PLAN.md to keep it scannable.
+- Closed-phase history is in git, not a file: `git log --oneline -- PLAN.md` and `git show 3199c75:PLAN-archive.md` (the final archive snapshot before deletion).
 - `README.md` — product pitch, quickstart, API surface, scope boundaries.
 - `CONTEXT.md` — serving domain vocabulary and rejected synonyms.
 - `benchmarks/RESULTS.md` — curated results: parity / performance / quality.

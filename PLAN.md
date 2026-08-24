@@ -53,7 +53,7 @@ on until it's met. Status markers: `[ ]` todo, `[~]` in progress, `[x]` done.
   `sk-optiq-`; server port 8080).
 
 
-> Completed early history — Phases 0–5 and 8–11, Optimization Plans A–D, and the early session-handoff blocks — lives in [PLAN-archive.md](PLAN-archive.md). (Phases 6 `[~]` and 7 `[ ]` remain active below.)
+> Completed early history — Phases 0–5 and 8–11, Optimization Plans A–D, and the early session-handoff blocks — lives in git history (`git show 3199c75:PLAN-archive.md`). (Phases 6 `[~]` and 7 `[ ]` remain active below.)
 
 ## Phase 6 — Speed: change what gets computed `[~]`
 
@@ -477,7 +477,7 @@ Lights up e2b/e4b/26B-A4B/31B image input. The 12B unified
 
 ## Phase 13 — TurboQuant `[x]` v1 LANDED 2026-07-06 (research path — PROMOTED 2026-06-12)
 
-CLOSED — full record moved to PLAN-archive.md ("PLAN archive 2026-08-18").
+CLOSED — full record archived in git (`git show /Users/joshrossi/Code/mlx-bun/3199c75LAN-archive.md`) ("PLAN archive 2026-08-18").
 
 ## Phase 14 — Qwen 3.x family bring-up `[~]` (the MTP home — medium-term, ~Mon 2026-06-15 per Josh)
 
@@ -1032,14 +1032,14 @@ Matrix: stacks {mlx-bun, mlx-lm, mlx-optiq} × models {e4b, 12B,
       peak resident memory while serving, per-request memory growth
       over a 20-request session. Compare like-for-like: ours vs
       `mlx_lm.server` vs `optiq serve` (with `--kv-config`; mixed-precision KV
-      serving now done — see PLAN-archive.md NEXT UP block; landed Phase 9/10).
+      serving now done — see `git show 3199c75:PLAN-archive.md` NEXT UP block; landed Phase 9/10).
       First sub-step needs no Python: our
       server-vs-our-direct overhead via an ephemeral in-process server
       (e4b, idle machine) — pins the "our server adds ~nothing" half
       of the 70%-faster hypothesis.
 - **Decision (Josh, 2026-06-10): do not start ANY of these
   measurements — including the Python-free server-overhead sub-step —
-  until mixed-precision KV serving landed (see PLAN-archive.md NEXT UP block;
+  until mixed-precision KV serving landed (see `git show 3199c75:PLAN-archive.md` NEXT UP block;
   now done — Phase 9/10).** The whole matrix runs once, against the real serving config.
 - [~] **(c) Startup**: ready-time measured per stack (0.36–0.48 s vs
       0.79–0.95 s); purge-cold first-token rows still open →
@@ -1053,7 +1053,7 @@ Matrix: stacks {mlx-bun, mlx-lm, mlx-optiq} × models {e4b, 12B,
 - ~~NEXT SESSION PICKUP (2026-06-10 morning)~~ superseded — see THE
       HANDOFF BLOCK at "NEXT UP" (the morning matrix shipped, then its
       @8k baseline rows were found invalid; the corrected re-run +
-      pickup instructions live there now) (now in PLAN-archive.md).
+      pickup instructions live there now) (now in git history (`git show /Users/joshrossi/Code/mlx-bun/3199c75LAN-archive.md`)).
 - [x] Harness: `scripts/bench-h2h.ts` (built 2026-06-10):
       `preflight|direct|server|client|table`. Preflight ENFORCES the
       method rules (swap ≈ 0, free-memory floor, thermal, big foreign
@@ -2341,7 +2341,7 @@ batched-decode path (S1b).
 
 ## Phase 19 — HLG sampling (piecewise tone curve on the logits) `[x]` CLOSED — SUPERSEDED by Curve Designer (2026-06-14)
 
-CLOSED — full record moved to PLAN-archive.md ("PLAN archive 2026-08-18").
+CLOSED — full record archived in git (`git show /Users/joshrossi/Code/mlx-bun/3199c75LAN-archive.md`) ("PLAN archive 2026-08-18").
 
 ## Publishing decision (2026-06-12, Josh)
 
@@ -2518,11 +2518,11 @@ design + reasoning: `docs/archive/investigations/expert-offload-single-user-moe.
 
 ## Phase 21 — GLM-5.2 on 32 GB via the complete Colibri hierarchy `[x]` (closed 2026-08-17)
 
-CLOSED — full record moved to PLAN-archive.md ("PLAN archive 2026-08-18").
+CLOSED — full record archived in git (`git show /Users/joshrossi/Code/mlx-bun/3199c75LAN-archive.md`) ("PLAN archive 2026-08-18").
 
 ## Phase 22 — pre-Colibri stabilization burn-down `[x]` (opened 2026-07-29, closed 2026-07-29)
 
-CLOSED — full record moved to PLAN-archive.md ("PLAN archive 2026-08-18").
+CLOSED — full record archived in git (`git show /Users/joshrossi/Code/mlx-bun/3199c75LAN-archive.md`) ("PLAN archive 2026-08-18").
 
 ## Fit-model calibration status (2026-06-12, second external tester)
 
@@ -2635,7 +2635,7 @@ Exit criteria (met): parity vs autograd, integration tests green, e4b fits at 81
 
 ## Phase: oMLX adoption wave 1 — batching parity + SSD cold tier `[x]` (2026-07-02)
 
-CLOSED — full record moved to PLAN-archive.md ("PLAN archive 2026-08-18").
+CLOSED — full record archived in git (`git show /Users/joshrossi/Code/mlx-bun/3199c75LAN-archive.md`) ("PLAN archive 2026-08-18").
 
 ## Grammar × spec × batching integration (2026-07-03)
 
@@ -2761,15 +2761,15 @@ own kv8 trails its bf16; it buys memory headroom only, ~1.3 GB on 12B @16k).
 
 ## Phase: serve-bench defect sweep — cache invariant + FFI deadlock `[x]` (2026-07-06)
 
-CLOSED — full record moved to PLAN-archive.md ("PLAN archive 2026-08-18").
+CLOSED — full record archived in git (`git show /Users/joshrossi/Code/mlx-bun/3199c75LAN-archive.md`) ("PLAN archive 2026-08-18").
 
 ## Phase: finish-the-list — prefill parity, incremental encode, SSM extract, FFI safety, async persistence `[x]` (2026-07-06)
 
-CLOSED — full record moved to PLAN-archive.md ("PLAN archive 2026-08-18").
+CLOSED — full record archived in git (`git show /Users/joshrossi/Code/mlx-bun/3199c75LAN-archive.md`) ("PLAN archive 2026-08-18").
 
 ## Phase: 2026-07-07 serve-bench residuals — A7 RSS, cpm5 detok, 12B step-0 convention `[x]` (2026-07-07)
 
-CLOSED — full record moved to PLAN-archive.md ("PLAN archive 2026-08-18").
+CLOSED — full record archived in git (`git show /Users/joshrossi/Code/mlx-bun/3199c75LAN-archive.md`) ("PLAN archive 2026-08-18").
 
 ## Phase: audio input — gemma-4 audio tower, e4b first `[ ]` (opened 2026-07-07)
 
