@@ -26,6 +26,7 @@ import {
   type RequestPlanInput,
   type RequestRejection,
 } from "./request-plan";
+import type { PromptResponseTrace } from "./prompt-response-trace";
 
 export interface CompletionEngine {
   place(shape: RequestShape): GenerationPlacement;
@@ -37,6 +38,7 @@ export interface CompletionEngine {
     shape: RequestShape,
     placement: GenerationPlacement,
     signal?: AbortSignal,
+    trace?: PromptResponseTrace,
   ): Promise<GenerateStats>;
 }
 
@@ -98,6 +100,7 @@ export function prepareCompletion(data: CompletionPreparation): PreparedCompleti
 
 export interface CompletionControl {
   signal?: AbortSignal;
+  trace?: PromptResponseTrace;
   onEvents?(events: readonly CompletionEvent[]):
     | void
     | false
@@ -235,6 +238,7 @@ export class CompletionExecutor {
     preparedData.delete(prepared);
 
     const planned = input.plan;
+    const closeCompletion = control.trace?.begin("completion.total");
     const usageProgress: CompletionUsage | null = control.onUsageProgress
       ? {
           promptTokens: planned.promptIds.length,
@@ -246,7 +250,9 @@ export class CompletionExecutor {
 
     try {
       if (usageProgress) control.onUsageProgress!(usageProgress);
+      const closePlacement = control.trace?.begin("completion.placement");
       const enginePlacement = this.engine.place(planned.shape);
+      closePlacement?.();
       if (enginePlacement.shape !== planned.shape)
         throw new Error("generation placement does not belong to this request shape");
       const mechanism = enginePlacement.mechanism;
@@ -292,6 +298,7 @@ export class CompletionExecutor {
         planned.shape,
         enginePlacement,
         control.signal,
+        control.trace,
       );
 
       if (input.stream) control.signal?.throwIfAborted();
@@ -308,7 +315,7 @@ export class CompletionExecutor {
         if (stats.spec) usageProgress.speculation = stats.spec;
         else delete usageProgress.speculation;
       }
-      return {
+      const summary = {
         content: result.content,
         reasoning: result.reasoning,
         toolCalls: result.toolCalls,
@@ -328,7 +335,10 @@ export class CompletionExecutor {
         },
         logprobs: logprobs?.payload() ?? null,
       };
+      closeCompletion?.();
+      return summary;
     } catch (error) {
+      closeCompletion?.();
       planned.dispose();
       throw error;
     }

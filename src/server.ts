@@ -93,6 +93,10 @@ import {
   type CompletionSummary,
   type PreparedCompletion,
 } from "./serve/completion-executor";
+import {
+  createPromptResponseTrace,
+  type PromptResponseTrace,
+} from "./serve/prompt-response-trace";
 import { handleAdminRoute } from "./serve/admin-routes";
 import { handleAuxiliaryRoute } from "./serve/aux-routes";
 import {
@@ -1879,6 +1883,7 @@ export function createServer(
       multimodalMask?: import("./mlx/array").MlxArray;
       mrope?: MropeRequestState;
     },
+    trace?: PromptResponseTrace,
   ) => {
     // Qwen vision: install the request's mRoPE state for every forward of
     // this serial run (prefill AND decode use the 3D interleaved positions +
@@ -1937,7 +1942,12 @@ export function createServer(
     const skipPromptCache = Boolean(vision || pagedKv);
     // Both tiers in one call (Layer 0): take() prefers a strictly-longer
     // SSD prefix, restores it zero-copy, and trims — see PromptCache.take.
+    const closeCacheLookup = trace?.begin("cache.lookup_restore", {
+      mechanism: "serial",
+      bypassed: skipPromptCache,
+    });
     const entry = skipPromptCache ? null : promptCache.take(promptIds, cacheNs);
+    closeCacheLookup?.();
     const caches = entry?.caches ?? ctx.model.makeCache();
     // Prompt-boundary snapshot (the multi-turn agent fix, 2026-07-04): the
     // prompt+gen entry put() below is UNTRIMMABLE at context > sliding
@@ -1991,7 +2001,7 @@ export function createServer(
               ...(vision.multimodalMask ? { multimodalMask: vision.multimodalMask } : {}),
             }
           : {}),
-      });
+      }, { trace, mechanism: "serial" });
       for await (const t of gen) {
         if ((await onToken(t.token, t.logprobs)) === false) break;
       }
@@ -2822,6 +2832,8 @@ export function createServer(
         body: ChatRequest,
         signal: AbortSignal,
         streamProtocol?: CompletionStreamProtocol,
+        requestId?: string,
+        trace?: PromptResponseTrace,
       ): Promise<Response> => {
         if (!Array.isArray(body.messages) || body.messages.length === 0)
           return Response.json({ error: { message: "messages required" } }, { status: 400 });
@@ -2835,7 +2847,8 @@ export function createServer(
         if (effortError)
           return Response.json({ error: { message: effortError } }, { status: 400 });
 
-        const id = `chatcmpl-${crypto.randomUUID()}`;
+        const id = requestId ?? `chatcmpl-${crypto.randomUUID()}`;
+        const closePromptPrepare = trace?.begin("request.prompt_prepare");
         const created = Math.floor(Date.now() / 1000);
         const tools =
           body.tool_choice === "none" ? null : (body.tools?.length ? body.tools : null);
@@ -3136,9 +3149,12 @@ export function createServer(
             idToToken: (tokenId) => ctx.tokenizer.idToToken(tokenId),
           });
         } catch (error) {
+          closePromptPrepare?.();
+          trace?.finish("error", { stage: "prepare_completion" });
           if (!(error instanceof CompletionRejected)) throw error;
           return Response.json({ error: error.error }, { status: error.status });
         }
+        closePromptPrepare?.();
 
         if (body.stream) {
           const streamAbort = new AbortController();
@@ -3156,6 +3172,8 @@ export function createServer(
                 for (const frame of frames) controller.enqueue(enc.encode(frame));
               };
               let latestUsage: Readonly<CompletionSummary["usage"]> | null = null;
+              let wroteFirstEvent = false;
+              let traceOutcome: "success" | "error" | "abort" = "success";
               const chunk = (delta: Record<string, unknown>, finish: string | null) => ({
                 id, object: "chat.completion.chunk", created, model: ctx.modelId,
                 choices: [{ index: 0, delta, finish_reason: finish }],
@@ -3168,6 +3186,10 @@ export function createServer(
                 if (streamProtocol) emitFrames(streamProtocol.start());
                 else send(chunk({ role: "assistant", content: "" }, null));
                 const sendEvents = (events: readonly CompletionEvent[]) => {
+                  if (events.length && !wroteFirstEvent) {
+                    wroteFirstEvent = true;
+                    trace?.mark("response.first_write");
+                  }
                   if (streamProtocol) {
                     emitFrames(streamProtocol.addEvents([...events]));
                     return;
@@ -3186,6 +3208,7 @@ export function createServer(
                 };
                 const summary = await completionExecutor.execute(prepared, {
                   signal: generationSignal,
+                  trace,
                   onEvents: sendEvents,
                   ...(streamProtocol
                     ? { onUsageProgress: (usage) => { latestUsage = usage; } }
@@ -3200,7 +3223,9 @@ export function createServer(
                   // require the unquoted terminator.
                   controller.enqueue(enc.encode("data: [DONE]\n\n"));
                 }
+                trace?.mark("response.final_write");
                 } catch (e) {
+                  traceOutcome = generationSignal.aborted ? "abort" : "error";
                   if (!generationSignal.aborted) {
                     const message = (e as Error).message;
                     if (streamProtocol) {
@@ -3216,6 +3241,7 @@ export function createServer(
                     }
                   }
                 } finally {
+                  trace?.finish(traceOutcome);
                   if (!cancelled) {
                     if (generationSignal.aborted) controller.error(generationSignal.reason);
                     else controller.close();
@@ -3240,8 +3266,9 @@ export function createServer(
 
         try {
           {
-            const summary = await completionExecutor.execute(prepared, { signal });
-            return Response.json({
+            const summary = await completionExecutor.execute(prepared, { signal, trace });
+            trace?.mark("response.final_write");
+            const response = Response.json({
               id, object: "chat.completion", created, model: ctx.modelId,
               choices: [{
                 index: 0,
@@ -3256,8 +3283,11 @@ export function createServer(
               }],
               usage: completionUsage(summary),
             }, grammarWarning ? { headers: { Warning: grammarWarning } } : undefined);
+            trace?.finish("success");
+            return response;
           }
         } catch (e) {
+          trace?.finish(signal.aborted ? "abort" : "error");
           // A 500 with no server-side trace is undebuggable in the field —
           // always log the stack (the JSON body keeps only the message).
           console.error(`[serve] 500 on chat request:\n${(e as Error).stack ?? e}`);
@@ -3266,13 +3296,23 @@ export function createServer(
       };
 
       if (url.pathname === "/v1/chat/completions" && request.method === "POST") {
+        const id = `chatcmpl-${crypto.randomUUID()}`;
+        const trace = createPromptResponseTrace({
+          traceId: request.headers.get("x-mlx-bun-trace-id") ?? id,
+          requestId: id,
+          route: url.pathname,
+        });
+        const closeBodyParse = trace?.begin("request.body_parse");
         let body: ChatRequest;
         try {
           body = (await request.json()) as ChatRequest;
         } catch {
+          closeBodyParse?.();
+          trace?.finish("error", { stage: "body_parse" });
           return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
         }
-        return handleChat(body, request.signal);
+        closeBodyParse?.();
+        return handleChat(body, request.signal, undefined, id, trace);
       }
 
       // Raw text completion (mlx_lm.server's /v1/completions, request_type
@@ -3282,12 +3322,23 @@ export function createServer(
       // GenerationGateway + admission + adapter path as chat; no tool router
       // or thinking splitter (raw text in, raw text out).
       if (url.pathname === "/v1/completions" && request.method === "POST") {
+        const id = `cmpl-${crypto.randomUUID()}`;
+        const trace = createPromptResponseTrace({
+          traceId: request.headers.get("x-mlx-bun-trace-id") ?? id,
+          requestId: id,
+          route: url.pathname,
+        });
+        const closeBodyParse = trace?.begin("request.body_parse");
         let body: TextCompletionRequest;
         try {
           body = (await request.json()) as TextCompletionRequest;
         } catch {
+          closeBodyParse?.();
+          trace?.finish("error", { stage: "body_parse" });
           return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
         }
+        closeBodyParse?.();
+        const closePromptPrepare = trace?.begin("request.prompt_prepare");
         if (typeof body.prompt !== "string" || body.prompt.length === 0)
           return Response.json(
             {
@@ -3302,7 +3353,6 @@ export function createServer(
         const lpParamError = validateLogprobsParams(body);
         if (lpParamError)
           return Response.json({ error: { message: lpParamError } }, { status: 400 });
-        const id = `cmpl-${crypto.randomUUID()}`;
         const created = Math.floor(Date.now() / 1000);
         const promptIds = ctx.tokenizer.encode(body.prompt);
         const ownership = new RequestOwnership();
@@ -3377,9 +3427,12 @@ export function createServer(
             idToToken: (tokenId) => ctx.tokenizer.idToToken(tokenId),
           });
         } catch (error) {
+          closePromptPrepare?.();
+          trace?.finish("error", { stage: "prepare_completion" });
           if (!(error instanceof CompletionRejected)) throw error;
           return Response.json({ error: error.error }, { status: error.status });
         }
+        closePromptPrepare?.();
 
         if (body.stream) {
           const streamAbort = new AbortController();
@@ -3396,15 +3449,22 @@ export function createServer(
                 id, object: "text_completion", created, model: ctx.modelId,
                 choices: [{ index: 0, text, finish_reason: finish }],
               });
+              let wroteFirstEvent = false;
+              let traceOutcome: "success" | "error" | "abort" = "success";
               void (async () => {
                 try {
                 const sendEvents = (events: readonly CompletionEvent[]) => {
+                  if (events.length && !wroteFirstEvent) {
+                    wroteFirstEvent = true;
+                    trace?.mark("response.first_write");
+                  }
                   for (const event of events) {
                     if (event.type === "content") send(chunk(event.text, null));
                   }
                 };
                 const summary = await completionExecutor.execute(prepared, {
                   signal: generationSignal,
+                  trace,
                   onEvents: sendEvents,
                 });
                 // final chunk: finish_reason + usage (mlx-lm gates usage behind
@@ -3415,10 +3475,13 @@ export function createServer(
                   usage: completionUsage(summary),
                 });
                   controller.enqueue(enc.encode("data: [DONE]\n\n"));
+                trace?.mark("response.final_write");
                 } catch (e) {
+                  traceOutcome = generationSignal.aborted ? "abort" : "error";
                   if (!generationSignal.aborted)
                     send({ error: { message: (e as Error).message } });
                 } finally {
+                  trace?.finish(traceOutcome);
                   if (!cancelled) {
                     if (generationSignal.aborted) controller.error(generationSignal.reason);
                     else controller.close();
@@ -3444,8 +3507,10 @@ export function createServer(
         try {
           const summary = await completionExecutor.execute(prepared, {
             signal: request.signal,
+            trace,
           });
-          return Response.json({
+          trace?.mark("response.final_write");
+          const response = Response.json({
             id, object: "text_completion", created, model: ctx.modelId,
             choices: [{
               index: 0, text: summary.content,
@@ -3454,7 +3519,10 @@ export function createServer(
             }],
             usage: completionUsage(summary),
           }, textGrammarWarning ? { headers: { Warning: textGrammarWarning } } : undefined);
+          trace?.finish("success");
+          return response;
         } catch (e) {
+          trace?.finish(request.signal.aborted ? "abort" : "error");
           return Response.json({ error: { message: (e as Error).message } }, { status: 500 });
         }
       }
