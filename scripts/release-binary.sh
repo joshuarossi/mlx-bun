@@ -46,7 +46,10 @@ echo "==> version:  $VERSION"
 #    executable with entitlements. Nested-before-container is required.
 #    The metallib / wasm / json / png assets are data, not code — skipped.
 echo "==> signing nested code (dylibs, .node)"
-find "$BUILD_DIR" -type f \( -name '*.dylib' -o -name '*.node' \) -print0 \
+# Every nested Mach-O needs Developer ID + hardened runtime + timestamp or
+# notarization returns Invalid (v0.2.0 first attempt: the ad-hoc-signed
+# mlx-bun-frame-extract helper). Match helper executables by name here.
+find "$BUILD_DIR" -type f \( -name '*.dylib' -o -name '*.node' -o -name 'mlx-bun-frame-extract' \) -print0 \
   | xargs -0 codesign --force --timestamp --options runtime -s "$IDENTITY"
 
 echo "==> signing executable (with JIT entitlements)"
@@ -72,8 +75,16 @@ ZIP="$OUT_DIR/mlx-bun-notarize.zip"
 echo "==> zipping for notarization"
 ditto -c -k --keepParent "$BUILD_DIR" "$ZIP"
 echo "==> submitting to notary service (automated; usually 1-5 min)"
-xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+NOTARY_OUT="$(xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1 | tee /dev/stderr)"
 rm -f "$ZIP"
+# notarytool exits 0 on "Invalid"; gate on the status line so a rejected
+# bundle can never reach PUBLISH.
+echo "$NOTARY_OUT" | grep -qE '^[[:space:]]*status: Accepted' || {
+  NID="$(echo "$NOTARY_OUT" | grep -oE 'id: [0-9a-f-]{36}' | head -1 | cut -d' ' -f2)"
+  echo "notarization was NOT accepted — inspect with:" >&2
+  echo "  xcrun notarytool log $NID --keychain-profile $NOTARY_PROFILE" >&2
+  exit 1
+}
 
 # 5. package for Homebrew — clean tar.gz of the bundle CONTENTS (no parent
 #    dir) so the formula's `libexec.install Dir["*"]` stays tidy.
