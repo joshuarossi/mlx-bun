@@ -66,7 +66,7 @@ export function handleStaticRoute(
     case "/dag":
       try {
         const html = readFileSync(
-          new URL("../../docs/dag/training-inference-map.html", import.meta.url),
+          new URL("./assets/training-inference-map.html", import.meta.url),
           "utf8",
         );
         return new Response(html, {
@@ -74,14 +74,14 @@ export function handleStaticRoute(
         });
       } catch {
         return new Response(
-          "DAG map artifact not found at docs/dag/training-inference-map.html",
+          "DAG map artifact not found",
           { status: 404 },
         );
       }
     case "/curve-terrain":
       try {
         const html = readFileSync(
-          new URL("../../docs/archive/investigations/curve-terrain.html", import.meta.url),
+          new URL("./assets/curve-terrain.html", import.meta.url),
           "utf8",
         );
         return new Response(html, {
@@ -89,7 +89,7 @@ export function handleStaticRoute(
         });
       } catch {
         return new Response(
-          "curve terrain artifact not found; run scripts/experiments/curve-terrain.ts first",
+          "curve terrain artifact not found",
           { status: 404 },
         );
       }
