@@ -17,7 +17,7 @@ import {
   parseLogitBias,
   promptEndsInOpenThink,
   resolveHlg,
-  type ChatRequest,
+  type ChatRequestParams,
 } from "./chat-request";
 import type { ServerContext } from "./model-host";
 import { selectToolStreamMode, ToolAwareStream, type ToolStreamMode } from "./token-streams";
@@ -61,7 +61,7 @@ export function createRequestPrep(input: {
   // explicit chat_template_kwargs.enable_thinking → reasoning_effort ("none" =
   // off) → server --thinking default → model default (MiniCPM5 → off). undefined
   // means "not a switchable-thinking model / leave the template default".
-  const resolveEnableThinking = (req: ChatRequest): boolean | undefined => {
+  const resolveEnableThinking = (req: ChatRequestParams): boolean | undefined => {
     const explicit = req.chat_template_kwargs?.enable_thinking;
     if (typeof explicit === "boolean") return explicit;
     const effort = req.reasoning_effort;
@@ -70,7 +70,7 @@ export function createRequestPrep(input: {
     return isMiniCPM5Config(ctx.model.config) ? false : undefined;
   };
 
-  const toOptions = (req: ChatRequest): GenerateOptions & { stopSequences: string[] } => {
+  const toOptions = (req: ChatRequestParams): GenerateOptions & { stopSequences: string[] } => {
     // Sampling follows the thinking state — which the web UI's thinking button
     // drives via enable_thinking. Model authors publish a SINGLE
     // generation_config temperature (the think-mode value) but recommend a
@@ -128,7 +128,7 @@ export function createRequestPrep(input: {
    *  `degradeHint` carries a human description for the system-prompt injection
    *  + Warning header (oMLX parity — never 500). Honors MLX_BUN_GRAMMAR=0. */
   const compileGrammarForRequest = async (
-    req: ChatRequest,
+    req: ChatRequestParams,
   ): Promise<{ controller: import("../grammar").GrammarController | null; degradeHint: string | null }> => {
     if (!grammarEnabled()) {
       return {
@@ -150,7 +150,7 @@ export function createRequestPrep(input: {
   // means thinking off (handled by resolveEnableThinking), so no depth is
   // passed. Only consumed for templates with readsReasoningEffort.
   const qwenReasoningEffort = (
-    effort: ChatRequest["reasoning_effort"],
+    effort: ChatRequestParams["reasoning_effort"],
   ): "xhigh" | "medium" | "low" | undefined => {
     switch (effort) {
       case "minimal":
@@ -166,7 +166,7 @@ export function createRequestPrep(input: {
     }
   };
 
-  const templateOptionsFor = (req: ChatRequest, tools: ToolDefinition[] | null) => {
+  const templateOptionsFor = (req: ChatRequestParams, tools: ToolDefinition[] | null) => {
     // enableThinking resolution (and its precedence) lives in
     // resolveEnableThinking so template rendering and sampling stay in sync.
     return {
@@ -178,7 +178,7 @@ export function createRequestPrep(input: {
   };
 
   const promptIdsFor = (
-    req: ChatRequest,
+    req: ChatRequestParams,
     tools: ToolDefinition[] | null,
   ): { ids: number[]; startInThinking: boolean } => {
     const opts = templateOptionsFor(req, tools);
@@ -204,7 +204,7 @@ export function createRequestPrep(input: {
    *  a correctness one — any prefix ≤ len-1 is a valid snapshot point.) */
   const primerLenByMode = new Map<string, number>();
   const stableLenFor = (
-    req: ChatRequest,
+    req: ChatRequestParams,
     tools: ToolDefinition[] | null,
     trimmed: number[],
   ): number => {

@@ -4,8 +4,9 @@
 // server state. Extracted from src/server.ts (repo-taming Phase 4).
 import type { ChatMessage, ToolDefinition } from "../chat-template";
 import type { HlgConfig } from "../sampler";
+import { RequestError } from "./pipeline";
 
-export interface ChatRequest {
+export interface ChatRequestParams {
   messages: ChatMessage[];
   stream?: boolean;
   max_tokens?: number;
@@ -92,11 +93,11 @@ export interface ChatRequest {
 }
 
 /** POST /v1/completions body (mlx_lm.server's raw text completion — no chat
- *  template). Sampling/penalty/stop fields are the same names as ChatRequest;
+ *  template). Sampling/penalty/stop fields are the same names as ChatRequestParams;
  *  `prompt` replaces `messages`. mlx_lm.server accepts only a STRING prompt
  *  (it calls `tokenizer.encode(request.prompt)` directly) — token-array
  *  prompts are rejected there too, so we match. No `echo` (mlx-lm has none). */
-export type TextCompletionRequest = Omit<ChatRequest, "messages" | "tools" | "tool_choice"> & {
+export type TextCompletionParams = Omit<ChatRequestParams, "messages" | "tools" | "tool_choice"> & {
   prompt?: unknown;
 };
 
@@ -108,7 +109,7 @@ export const HLG_DEFAULTS = { width: 4, shoulder: 4, toe: 6, pivotOffset: 6 } as
  *  server's --hlg-sampling default field-by-field. Returns undefined (HLG off)
  *  unless enabled by the request or the server. */
 export function resolveHlg(
-  reqHlg: ChatRequest["hlg"],
+  reqHlg: ChatRequestParams["hlg"],
   serverHlg: HlgConfig | undefined,
 ): HlgConfig | undefined {
   const enabled = reqHlg?.enabled ?? serverHlg?.enabled ?? false;
@@ -251,7 +252,7 @@ export function nextDefaultSeed(): number {
  *  oMLX's api.tool_calling.build_json_system_prompt (used when xgrammar
  *  compile fails — the response_format degrades to prompt injection rather
  *  than a 500, oMLX parity). Returns null for {type:"text"} / unset. */
-export function degradeJsonSystemPrompt(body: ChatRequest): string | null {
+export function degradeJsonSystemPrompt(body: ChatRequestParams): string | null {
   if (body.guided_grammar) {
     return "You must respond with text matching this grammar:\n\n" + body.guided_grammar;
   }
@@ -288,9 +289,9 @@ export function degradeJsonSystemPrompt(body: ChatRequest): string | null {
 }
 
 export function applyGrammarDegrade(
-  body: ChatRequest,
+  body: ChatRequestParams,
   degradeHint: string,
-): { body: ChatRequest; warning: string } {
+): { body: ChatRequestParams; warning: string } {
   const content = degradeJsonSystemPrompt(body) ??
     "Follow the requested output constraint exactly.";
   return {
@@ -336,4 +337,50 @@ export function validateReasoningEffort(body: {
     return "reasoning_effort must be one of " +
       "'none', 'minimal', 'low', 'medium', 'high', 'xhigh'";
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// The request objects a caller constructs and hands to the pipeline. The
+// constructor is the validation boundary: structural checks that need no
+// model (mlx_lm.server parity messages) throw RequestError(400) here, so a
+// stage never sees a malformed request.
+
+export class ChatRequest {
+  readonly params: ChatRequestParams;
+
+  constructor(params: ChatRequestParams) {
+    if (!Array.isArray(params.messages) || params.messages.length === 0)
+      throw new RequestError(400, "messages required");
+    const lpParamError = validateLogprobsParams(params);
+    if (lpParamError) throw new RequestError(400, lpParamError);
+    const effortError = validateReasoningEffort(params);
+    if (effortError) throw new RequestError(400, effortError);
+    this.params = params;
+  }
+
+  get stream(): boolean {
+    return this.params.stream === true;
+  }
+}
+
+/** POST /v1/completions — raw text, no chat template (mlx_lm.server's
+ *  request_type "text"). Only a non-empty STRING prompt is accepted. */
+export class TextCompletionRequest {
+  readonly params: TextCompletionParams & { prompt: string };
+
+  constructor(params: TextCompletionParams) {
+    if (typeof params.prompt !== "string" || params.prompt.length === 0)
+      throw new RequestError(
+        400,
+        "prompt (a non-empty string) is required " +
+          "(token-array prompts are not accepted, matching mlx_lm.server)",
+      );
+    const lpParamError = validateLogprobsParams(params);
+    if (lpParamError) throw new RequestError(400, lpParamError);
+    this.params = params as TextCompletionParams & { prompt: string };
+  }
+
+  get stream(): boolean {
+    return this.params.stream === true;
+  }
 }

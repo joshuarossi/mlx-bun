@@ -518,17 +518,21 @@ not killed on taste.
       `src/serve/batch-scheduler.ts` (merged solo-prefill) implement prefill
       twice with different reduction orders — the direct cause of the batched
       Gemma golden being demoted to a KL gate. Converges with Phase 18 S1a.
-- Landed 2026-08-30: `handleChat` + model-host extracted — `src/server.ts`
-  3,690 → 1,732 lines. `createServer` builds `createRequestPrep`
-  (`src/serve/request-prep.ts`) and `createChatHandler`
-  (`src/serve/chat-handler.ts`) once with collaborators injected;
-  `loadContext` + tower getters in `src/serve/model-host.ts`, wire
-  types/validators in `chat-request.ts`, detokenizer/router/stopper/splitter in
-  `token-streams.ts`. No `src/serve/ → ../server` runtime import remains;
-  `tests/serve/chat-handler.test.ts` covers the seam. Still in `createServer`
-  (~1,000 lines): `runGeneration`, the `/fit` `/stats` `/signal` `/generate`
-  branches, and the `/v1/completions` raw-text branch that duplicates the chat
-  core's prepare/execute framing.
+- Landed 2026-08-30: the request pipeline — `src/server.ts` 3,690 → 1,541
+  lines. A request is data; each stage is one program with a declared input
+  and output, composed in order: `new ChatRequest(body)` (validates) →
+  `ChatStage.run` → `InferenceRequest` → `InferenceStage.admit` (memory
+  ceiling; seals the plan) → `InferenceStage.run` (gateway picks the lane) →
+  `InferenceResult` → wire (`openai-wire.ts` JSON/SSE; Anthropic and
+  Responses reuse `ChatStage` with their own formats; `/v1/completions` is
+  `TextCompletionStage` into the same inference stage — its duplicated
+  framing is gone, `http.ts` is the one JSON/SSE writer). Around it:
+  `model-host.ts` (`loadContext`, tower getters), `chat-request.ts` (request
+  classes + validators), `request-prep.ts` (options/template/prompt-ids),
+  `token-streams.ts`. `tests/serve/pipeline.test.ts` runs the stages with
+  a scripted engine and asserts on result objects. Still in `createServer`
+  (~900 lines): `runGeneration` (the serial engine), the `/fit` `/stats`
+  `/signal` `/generate` branches.
 - Landed 2026-08-23: the batch lane reports real prefill/decode timing (admission→first token→finish marks in `BatchScheduler`; `GenerationGateway` derives tok/s).
 - Landed 2026-08-24: tests live in `tests/{unit,serve,using}` (CI, model-free) and `tests/{parity,research}` (weights/oracle-gated); `scripts/test.sh` shards by directory; hygiene check 10 keeps weights/opt-in dependencies out of the CI tiers.
 - Landed 2026-08-24: `src/lab/{curve,paged-kv,expert-trace}` quarantined with hygiene check 11 (`LAB_IMPORT_ALLOWLIST` records the six existing production edges as debt; any new edge fails CI). Diffusion stays in place until D6 decides it — it is wired through factory/train/eval/gateway.

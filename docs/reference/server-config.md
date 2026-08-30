@@ -227,7 +227,7 @@ the server-wide default. Precedence, highest first:
 
 These ride all three protocol surfaces (`/v1/chat/completions`,
 `/v1/messages`, `/v1/responses`) because each funnels through one
-chat core (`src/serve/chat-handler.ts`). Full field list: [server-api.md](./server-api.md).
+chat stage (`src/serve/chat-stage.ts`). Full field list: [server-api.md](./server-api.md).
 
 ## Environment variables
 

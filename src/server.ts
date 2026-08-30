@@ -71,9 +71,6 @@ const CURVE_PAGE = curveDesignerHtml as unknown as string;
 import { GenerationGateway } from "./serve/generation-gateway";
 import {
   CompletionExecutor,
-  CompletionRejected,
-  prepareCompletion,
-  type PreparedCompletion,
 } from "./serve/completion-executor";
 import {
   createPromptResponseTrace,
@@ -81,14 +78,9 @@ import {
 } from "./serve/prompt-response-trace";
 import { handleAdminRoute } from "./serve/admin-routes";
 import { handleAuxiliaryRoute } from "./serve/aux-routes";
-import {
-  createTimedFlowControl,
-  type CompletionEvent,
-} from "./serve/completion-sink";
 import { createDiscoveryRoutes } from "./serve/discovery-routes";
 import { handleLabRoute } from "./serve/lab-routes";
 import { handleModelAdminRoute } from "./serve/model-admin-routes";
-import { RequestOwnership } from "./serve/request-plan";
 import { handleStaticRoute } from "./serve/static-routes";
 const STATIC_ROUTE_ASSETS = {
   appPage: APP_PAGE,
@@ -122,7 +114,13 @@ import { setMemoryLimit } from "./mlx/ffi";
 import { Qwen35Model } from "./model/qwen3_5";
 import type { MropeRequestState } from "./model/qwen3-mrope";
 import { makePiWsHandler, type PiWsData } from "./pi-web";
-import { completionUsage, createChatHandler } from "./serve/chat-handler";
+import { ChatStage } from "./serve/chat-stage";
+import { TextCompletionStage } from "./serve/text-completion-stage";
+import { InferenceStage } from "./serve/inference-request";
+import { admit, respondJson, respondStream, type ErrorFormatter } from "./serve/http";
+import {
+  chatCompletionJson, chatCompletionStream, textCompletionJson, textCompletionStream,
+} from "./serve/openai-wire";
 import { createRequestPrep } from "./serve/request-prep";
 import {
   detectDraftKind,
@@ -133,15 +131,11 @@ import {
   type ServerContext,
 } from "./serve/model-host";
 import {
-  validateLogprobsParams,
-  type ChatRequest,
-  type TextCompletionRequest,
+  ChatRequest,
+  TextCompletionRequest,
+  type ChatRequestParams,
+  type TextCompletionParams,
 } from "./serve/chat-request";
-import {
-  StopMatcher,
-  ThinkingTagSplitter,
-  ToolAwareStream,
-} from "./serve/token-streams";
 
 // The serving facade: createServer's companion loaders stay importable from
 // here (public library API via src/index.ts; bench scripts; parity tests).
@@ -928,16 +922,32 @@ export function createServer(
 
   // Per-request preparation (options/template/prompt-ids/grammar/router)
   // and the chat core, each built once with their collaborators injected.
+  // The request pipeline, composed once:
+  //   new ChatRequest(body) → chatStage.run → InferenceRequest
+  //   → inferenceStage.admit → inferenceStage.run → InferenceResult → wire
+  // (/v1/completions substitutes textStage; Anthropic and Responses reuse
+  // chatStage with their own wire formats.)
   const prep = createRequestPrep({ ctx, serverOptions, kvScheme, defaultGeneratedTokens });
-  const { toOptions, templateOptionsFor, compileGrammarForRequest } = prep;
-  const handleChat = createChatHandler({
-    ctx,
-    prep,
-    promptCache,
-    completionExecutor,
-    maxSafeContext: admission.maxSafeContext,
-    defaultAdapter: serverOptions.defaultAdapter,
-  });
+  const { templateOptionsFor } = prep;
+  const chatStage = new ChatStage(
+    ctx, prep, promptCache, admission.maxSafeContext, serverOptions.defaultAdapter);
+  const textStage = new TextCompletionStage(
+    ctx, prep, admission.maxSafeContext, defaultGeneratedTokens, serverOptions.defaultAdapter);
+  const inferenceStage = new InferenceStage(completionExecutor);
+  const openAiMeta = (id: string) => ({ id, created: Math.floor(Date.now() / 1000), model: ctx.modelId });
+  /** Parse the JSON body under the request's trace; a bad body is a 400. */
+  const parseBody = async <T,>(request: Request, trace: PromptResponseTrace | undefined): Promise<T | Response> => {
+    const closeBodyParse = trace?.begin("request.body_parse");
+    try {
+      return (await request.json()) as T;
+    } catch {
+      trace?.finish("error", { stage: "body_parse" });
+      return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
+    } finally {
+      closeBodyParse?.();
+    }
+  };
+
 
 
   if (serverOptions.unixSocket) {
@@ -1263,7 +1273,7 @@ export function createServer(
         let sbody: { prompt?: string };
         try { sbody = (await request.json()) as typeof sbody; }
         catch { return Response.json({ error: "invalid JSON" }, { status: 400, headers: CURVE_CORS }); }
-        let sids = ctx.tokenizer.encode(ctx.template.render([{ role: "user", content: typeof sbody.prompt === "string" ? sbody.prompt : "" }], templateOptionsFor({} as ChatRequest, null)));
+        let sids = ctx.tokenizer.encode(ctx.template.render([{ role: "user", content: typeof sbody.prompt === "string" ? sbody.prompt : "" }], templateOptionsFor({} as ChatRequestParams, null)));
         if (sids[0] === sids[1] && sids[0] === ctx.tokenizer.bosTokenId) sids = sids.slice(1);
         try {
           const NB = 80;
@@ -1316,7 +1326,7 @@ export function createServer(
         const n = Math.max(1, Math.min(8, Math.floor(Number(body.n) || 3)));
         const maxTokens = Math.max(1, Math.min(256, Math.floor(Number(body.max_tokens) || 80)));
         const baseSeed = Number.isFinite(body.seed) ? Number(body.seed) >>> 0 : (Date.now() & 0xffffffff);
-        let ids = ctx.tokenizer.encode(ctx.template.render([{ role: "user", content: prompt }], templateOptionsFor({} as ChatRequest, null)));
+        let ids = ctx.tokenizer.encode(ctx.template.render([{ role: "user", content: prompt }], templateOptionsFor({} as ChatRequestParams, null)));
         if (ids[0] === ids[1] && ids[0] === ctx.tokenizer.bosTokenId) ids = ids.slice(1);
         const samples: { text: string; junk: boolean }[] = [];
         try {
@@ -1344,25 +1354,19 @@ export function createServer(
           requestId: id,
           route: url.pathname,
         });
-        const closeBodyParse = trace?.begin("request.body_parse");
-        let body: ChatRequest;
-        try {
-          body = (await request.json()) as ChatRequest;
-        } catch {
-          closeBodyParse?.();
-          trace?.finish("error", { stage: "body_parse" });
-          return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
-        }
-        closeBodyParse?.();
-        return handleChat(body, request.signal, undefined, id, trace);
+        const body = await parseBody<ChatRequestParams>(request, trace);
+        if (body instanceof Response) return body;
+        const meta = openAiMeta(id);
+        const a = await admit(
+          inferenceStage, () => chatStage.run(new ChatRequest(body), id), trace, "chat request");
+        if ("response" in a) return a.response;
+        return body.stream
+          ? respondStream(inferenceStage, a.admitted, chatCompletionStream(meta), request.signal, trace)
+          : respondJson(inferenceStage, a.admitted, (r) => chatCompletionJson(r, meta), request.signal, trace);
       }
 
-      // Raw text completion (mlx_lm.server's /v1/completions, request_type
-      // "text"): NO chat template — the prompt string is tokenized directly
-      // (tokenizer.encode with the tokenizer's own special-token handling,
-      // exactly mlx-lm's `tokenizer.encode(request.prompt)`). Rides the same
-      // GenerationGateway + admission + adapter path as chat; no tool router
-      // or thinking splitter (raw text in, raw text out).
+      // Raw text completion (mlx_lm.server's /v1/completions): no chat
+      // template — TextCompletionStage tokenizes the prompt string directly.
       if (url.pathname === "/v1/completions" && request.method === "POST") {
         const id = `cmpl-${crypto.randomUUID()}`;
         const trace = createPromptResponseTrace({
@@ -1370,203 +1374,15 @@ export function createServer(
           requestId: id,
           route: url.pathname,
         });
-        const closeBodyParse = trace?.begin("request.body_parse");
-        let body: TextCompletionRequest;
-        try {
-          body = (await request.json()) as TextCompletionRequest;
-        } catch {
-          closeBodyParse?.();
-          trace?.finish("error", { stage: "body_parse" });
-          return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
-        }
-        closeBodyParse?.();
-        const closePromptPrepare = trace?.begin("request.prompt_prepare");
-        if (typeof body.prompt !== "string" || body.prompt.length === 0)
-          return Response.json(
-            {
-              error: {
-                message: "prompt (a non-empty string) is required " +
-                  "(token-array prompts are not accepted, matching mlx_lm.server)",
-              },
-            },
-            { status: 400 },
-          );
-        // mlx-lm validates logprobs params up front (ValueError → 400)
-        const lpParamError = validateLogprobsParams(body);
-        if (lpParamError)
-          return Response.json({ error: { message: lpParamError } }, { status: 400 });
-        const created = Math.floor(Date.now() / 1000);
-        const promptIds = ctx.tokenizer.encode(body.prompt);
-        const ownership = new RequestOwnership();
-        let options: ReturnType<typeof toOptions>;
-        try {
-          options = toOptions(body as unknown as ChatRequest);
-        } catch (e) {
-          // bad logit_bias (non-numeric keys/values) — mlx-lm's coercion error
-          return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
-        }
-        // Grammar-constrained decoding on raw completions too (response_format /
-        // guided_* / structured_outputs). The degrade path for /v1/completions
-        // has no chat template to inject a system message into, so a degrade
-        // only emits the Warning header (no prompt injection) — documented gap
-        // vs the chat lane, which mirrors oMLX's text-completions behavior.
-        let textGrammarWarning: string | null = null;
-        const textGrammarReq =
-          body.response_format != null || !!body.guided_grammar ||
-          !!body.guided_regex || !!body.guided_choice?.length ||
-          body.structured_outputs != null;
-        if (textGrammarReq) {
-          const g = await compileGrammarForRequest(body as unknown as ChatRequest);
-          if (g.controller) options.grammar = ownership.own(g.controller);
-          else if (g.degradeHint)
-            textGrammarWarning =
-              `grammar not enforced: ${g.degradeHint} - no prompt injection on /v1/completions`;
-        }
-        // mlx_lm.server's default max_tokens is 512 (its --max-tokens CLI
-        // default). The chat lane's very generous default is wrong for raw
-        // completion: with no template an EOS may never come.
-        const requestedMaxTokens = body.max_completion_tokens ?? body.max_tokens ??
-          defaultGeneratedTokens ?? 512;
-        let adapterIds: string[];
-        try {
-          adapterIds = ctx.adapters.resolveSpec(body.adapter ?? serverOptions.defaultAdapter);
-        } catch (e) {
-          ownership.dispose();
-          return Response.json({ error: { message: (e as Error).message } }, { status: 400 });
-        }
-        const wantLogprobs = body.logprobs === true;
-        const topLogprobs =
-          typeof body.top_logprobs === "number" && body.top_logprobs > 0
-            ? body.top_logprobs : 0;
-        let prepared: PreparedCompletion;
-        try {
-          prepared = prepareCompletion({
-            requestId: id,
-            plan: {
-              promptIds,
-              options,
-              requestedMaxTokens,
-              maxSafeContext: admission.maxSafeContext,
-              stream: body.stream === true,
-              wantLogprobs,
-              topLogprobs,
-              adapterIds,
-              hasVision: false,
-              userSeed: body.seed !== undefined,
-              hasGrammar: !!options.grammar,
-              hasDraft: !!ctx.draft,
-              ownership,
-            },
-            pipeline: {
-              router: new ToolAwareStream(ctx.tokenizer, "plain", null),
-              stopper: new StopMatcher(options.stopSequences),
-              thinking: new ThinkingTagSplitter(false),
-              collectToolCalls: false,
-            },
-            ...(body.stream
-              ? { createFlowControl: () => createTimedFlowControl(true) }
-              : {}),
-            idToToken: (tokenId) => ctx.tokenizer.idToToken(tokenId),
-          });
-        } catch (error) {
-          closePromptPrepare?.();
-          trace?.finish("error", { stage: "prepare_completion" });
-          if (!(error instanceof CompletionRejected)) throw error;
-          return Response.json({ error: error.error }, { status: error.status });
-        }
-        closePromptPrepare?.();
-
-        if (body.stream) {
-          const streamAbort = new AbortController();
-          const generationSignal = AbortSignal.any([request.signal, streamAbort.signal]);
-          let cancelled = false;
-          const stream = new ReadableStream<Uint8Array>({
-            start(controller) {
-              const enc = new TextEncoder();
-              const send = (obj: unknown) => {
-                if (!generationSignal.aborted)
-                  controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
-              };
-              const chunk = (text: string, finish: string | null) => ({
-                id, object: "text_completion", created, model: ctx.modelId,
-                choices: [{ index: 0, text, finish_reason: finish }],
-              });
-              let wroteFirstEvent = false;
-              let traceOutcome: "success" | "error" | "abort" = "success";
-              void (async () => {
-                try {
-                const sendEvents = (events: readonly CompletionEvent[]) => {
-                  if (events.length && !wroteFirstEvent) {
-                    wroteFirstEvent = true;
-                    trace?.mark("response.first_write");
-                  }
-                  for (const event of events) {
-                    if (event.type === "content") send(chunk(event.text, null));
-                  }
-                };
-                const summary = await completionExecutor.execute(prepared, {
-                  signal: generationSignal,
-                  trace,
-                  onEvents: sendEvents,
-                });
-                // final chunk: finish_reason + usage (mlx-lm gates usage behind
-                // stream_options.include_usage; we always attach it, matching
-                // our chat lane — an additive superset OpenAI clients ignore)
-                send({
-                  ...chunk("", summary.finishReason),
-                  usage: completionUsage(summary),
-                });
-                  controller.enqueue(enc.encode("data: [DONE]\n\n"));
-                trace?.mark("response.final_write");
-                } catch (e) {
-                  traceOutcome = generationSignal.aborted ? "abort" : "error";
-                  if (!generationSignal.aborted)
-                    send({ error: { message: (e as Error).message } });
-                } finally {
-                  trace?.finish(traceOutcome);
-                  if (!cancelled) {
-                    if (generationSignal.aborted) controller.error(generationSignal.reason);
-                    else controller.close();
-                  }
-                }
-              })();
-            },
-            cancel(reason) {
-              cancelled = true;
-              streamAbort.abort(reason);
-            },
-          });
-          return new Response(stream, {
-            headers: {
-              "content-type": "text/event-stream",
-              "cache-control": "no-cache",
-              connection: "keep-alive",
-              ...(textGrammarWarning ? { Warning: textGrammarWarning } : {}),
-            },
-          });
-        }
-
-        try {
-          const summary = await completionExecutor.execute(prepared, {
-            signal: request.signal,
-            trace,
-          });
-          trace?.mark("response.final_write");
-          const response = Response.json({
-            id, object: "text_completion", created, model: ctx.modelId,
-            choices: [{
-              index: 0, text: summary.content,
-              ...(summary.logprobs ? { logprobs: summary.logprobs } : {}),
-              finish_reason: summary.finishReason,
-            }],
-            usage: completionUsage(summary),
-          }, textGrammarWarning ? { headers: { Warning: textGrammarWarning } } : undefined);
-          trace?.finish("success");
-          return response;
-        } catch (e) {
-          trace?.finish(request.signal.aborted ? "abort" : "error");
-          return Response.json({ error: { message: (e as Error).message } }, { status: 500 });
-        }
+        const body = await parseBody<TextCompletionParams>(request, trace);
+        if (body instanceof Response) return body;
+        const meta = openAiMeta(id);
+        const a = await admit(
+          inferenceStage, () => textStage.run(new TextCompletionRequest(body), id), trace, "text completion");
+        if ("response" in a) return a.response;
+        return body.stream
+          ? respondStream(inferenceStage, a.admitted, textCompletionStream(meta), request.signal, trace)
+          : respondJson(inferenceStage, a.admitted, (r) => textCompletionJson(r, meta), request.signal, trace);
       }
 
       // Anthropic Messages API (Phase 11) — on by default, mirroring
@@ -1575,41 +1391,35 @@ export function createServer(
       // src/anthropic.ts. Point Claude Code at this port via
       // ANTHROPIC_BASE_URL for a fully local backend.
       if (url.pathname === "/v1/messages" && request.method === "POST") {
-        const anthropicError = (status: number, type: string, message: string) =>
-          Response.json({ type: "error", error: { type, message } }, { status });
+        const anthropicError: ErrorFormatter = (status, message) =>
+          Response.json(
+            { type: "error", error: { type: status >= 500 ? "api_error" : "invalid_request_error", message } },
+            { status },
+          );
         let anthropicBody: AnthropicRequest;
         try {
           anthropicBody = (await request.json()) as AnthropicRequest;
         } catch {
-          return anthropicError(400, "invalid_request_error", "invalid JSON body");
+          return anthropicError(400, "invalid JSON body", {});
         }
-        let chatBody: ChatRequest;
+        let chatBody: ChatRequestParams;
         try {
-          chatBody = anthropicToChatBody(anthropicBody) as unknown as ChatRequest;
+          chatBody = anthropicToChatBody(anthropicBody) as unknown as ChatRequestParams;
         } catch (e) {
-          return anthropicError(400, "invalid_request_error", (e as Error).message);
+          return anthropicError(400, (e as Error).message, {});
         }
-        const resp = await handleChat(
-          chatBody,
-          request.signal,
-          anthropicBody.stream
-            ? createAnthropicStreamProtocol(ctx.modelId)
-            : undefined,
-        );
-        if (!resp.ok) {
-          const err = (await resp.json().catch(() => null)) as
-            | { error?: { message?: string } }
-            | null;
-          return anthropicError(
-            resp.status,
-            resp.status >= 500 ? "api_error" : "invalid_request_error",
-            err?.error?.message ?? "request failed",
-          );
-        }
-        if (anthropicBody.stream) {
-          return resp;
-        }
-        return Response.json(chatJsonToAnthropic(await resp.json(), ctx.modelId));
+        const id = `chatcmpl-${crypto.randomUUID()}`;
+        const a = await admit(
+          inferenceStage, () => chatStage.run(new ChatRequest(chatBody), id), undefined,
+          "anthropic request", anthropicError);
+        if ("response" in a) return a.response;
+        if (anthropicBody.stream)
+          return respondStream(
+            inferenceStage, a.admitted, createAnthropicStreamProtocol(ctx.modelId), request.signal);
+        return respondJson(
+          inferenceStage, a.admitted,
+          (r) => chatJsonToAnthropic(chatCompletionJson(r, openAiMeta(id)), ctx.modelId),
+          request.signal, undefined, anthropicError);
       }
 
       // OpenAI Responses API (Phase 11) — Codex/Cursor/Continue speak
@@ -1617,7 +1427,7 @@ export function createServer(
       // ported in src/responses.ts. previous_response_id resumes a prior
       // conversation from the in-process store (TTL + byte-capped LRU).
       if (url.pathname === "/v1/responses" && request.method === "POST") {
-        const responsesError = (status: number, message: string) =>
+        const responsesError: ErrorFormatter = (status, message) =>
           Response.json(
             {
               error: {
@@ -1632,7 +1442,7 @@ export function createServer(
         try {
           responsesBody = (await request.json()) as ResponsesRequest;
         } catch {
-          return responsesError(400, "invalid JSON body");
+          return responsesError(400, "invalid JSON body", {});
         }
 
         // previous_response_id: prepend the prior conversation's input
@@ -1642,7 +1452,7 @@ export function createServer(
         if (prevId) {
           const prior = responseStore.get(prevId);
           if (!prior)
-            return responsesError(404, `previous_response_id '${prevId}' not found or expired`);
+            return responsesError(404, `previous_response_id '${prevId}' not found or expired`, {});
           const prepended = [...prior.input, ...outputItemsToInputItems(prior.output)];
           const newInput =
             typeof responsesBody.input === "string"
@@ -1664,44 +1474,43 @@ export function createServer(
             : [...(responsesBody.input ?? [])];
         const capturedInstructions = responsesBody.instructions ?? null;
 
-        let chatBody: ChatRequest;
+        let chatBody: ChatRequestParams;
         try {
-          chatBody = responsesToChatBody(responsesBody) as unknown as ChatRequest;
+          chatBody = responsesToChatBody(responsesBody) as unknown as ChatRequestParams;
         } catch (e) {
-          return responsesError(400, (e as Error).message);
+          return responsesError(400, (e as Error).message, {});
         }
-        const resp = await handleChat(
-          chatBody,
-          request.signal,
-          responsesBody.stream
-            ? createResponsesStreamProtocol(
-                ctx.modelId,
-                prevId,
-                (final) =>
-                  responseStore.put(final.id as string, {
-                    input: capturedInput,
-                    output: final.output as unknown[],
-                    instructions: capturedInstructions,
-                  }),
-              )
-            : undefined,
-        );
-        if (!resp.ok) {
-          const err = (await resp.json().catch(() => null)) as
-            | { error?: { message?: string } }
-            | null;
-          return responsesError(resp.status, err?.error?.message ?? "request failed");
-        }
-        if (responsesBody.stream) {
-          return resp;
-        }
-        const responses = chatJsonToResponses(await resp.json(), ctx.modelId, prevId);
-        responseStore.put(responses.id as string, {
-          input: capturedInput,
-          output: responses.output as unknown[],
-          instructions: capturedInstructions,
-        });
-        return Response.json(responses);
+        const id = `chatcmpl-${crypto.randomUUID()}`;
+        const a = await admit(
+          inferenceStage, () => chatStage.run(new ChatRequest(chatBody), id), undefined,
+          "responses request", responsesError);
+        if ("response" in a) return a.response;
+        if (responsesBody.stream)
+          return respondStream(
+            inferenceStage, a.admitted,
+            createResponsesStreamProtocol(
+              ctx.modelId,
+              prevId,
+              (final) =>
+                responseStore.put(final.id as string, {
+                  input: capturedInput,
+                  output: final.output as unknown[],
+                  instructions: capturedInstructions,
+                }),
+            ),
+            request.signal);
+        return respondJson(
+          inferenceStage, a.admitted,
+          (r) => {
+            const responses = chatJsonToResponses(chatCompletionJson(r, openAiMeta(id)), ctx.modelId, prevId);
+            responseStore.put(responses.id as string, {
+              input: capturedInput,
+              output: responses.output as unknown[],
+              instructions: capturedInstructions,
+            });
+            return responses;
+          },
+          request.signal, undefined, responsesError);
       }
 
       const labResponse = await handleLabRoute(url, request, {
