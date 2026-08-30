@@ -424,15 +424,25 @@ parity gate.
 
 ## 6. Request path today
 
-Modules in order, as read in `src/` on 2026-08-23:
+Modules in order, as read in `src/` on 2026-08-30:
 
-1. **`src/server.ts`** — protocol adapters. `/v1/chat/completions` calls
-   `handleChat` directly; `/v1/messages` (Anthropic) and `/v1/responses`
-   translate their bodies into the same `handleChat`; `/v1/completions` has its
-   own raw-text branch. The adapter renders the prompt (`promptIdsFor`),
-   resolves adapters, compiles the grammar controller, builds media embeddings,
-   and applies the server-wide sampling defaults — then hands everything to
-   step 2. Protocol frames and JSON shape stay here.
+1. **`src/server.ts`** — server assembly (`createServer`: KV scheme, prompt
+   cache + SSD tier, gateway, admission, route dispatch) and the protocol
+   adapters. `/v1/chat/completions` calls the chat core directly;
+   `/v1/messages` (Anthropic) and `/v1/responses` translate their bodies into
+   the same core; `/v1/completions` has its own raw-text branch. Protocol
+   frames and JSON shape stay here. The core is built once per server from
+   two `src/serve/` factories with their collaborators injected:
+   **`request-prep.ts` `createRequestPrep()`** — request → `GenerateOptions`
+   with server/model defaults folded in, chat-template render + prompt ids
+   (`promptIdsFor`), the stable prompt-cache boundary probe, grammar
+   compilation, the tool-call stream router (shared by chat, raw text,
+   `/signal`, `/generate`); **`chat-handler.ts` `createChatHandler()`** —
+   validation, media (vision/audio/video) prompt building, grammar degrade,
+   adapter resolution, then `prepareCompletion` → `execute` and the OpenAI
+   chat frames (SSE or JSON). Around them: `model-host.ts` (`loadContext`,
+   lazy tower getters), `chat-request.ts` (wire types, validators),
+   `token-streams.ts` (detokenizer, tool router, stop matcher, think splitter).
 2. **`src/serve/completion-executor.ts` `prepareCompletion()`** → **`src/serve/request-plan.ts` `planRequest()`** — admission (memory budget → reject or clamp `maxTokens`), capture options, adapter selection, and the `RequestShape` are derived ONCE for chat and raw-text, streaming and non-streaming. The result is an opaque, single-use `PreparedCompletion`; adapters cannot inspect or rewrite the plan. Owned resources (media arrays, grammar) dispose on rejection.
 3. **`CompletionExecutor.execute()`** — owns one completion attempt: asks the engine for placement, records the lane (`src/serve/lane-registry.ts`), builds the `CompletionSink` (semantic events: content / reasoning / tool calls / stop), collects logprobs, transfers resource ownership exactly once, runs, and settles the terminal summary (finish reason, usage, cached tokens, final lane, speculation stats). Adapters only format that summary.
 4. **`src/serve/generation-gateway.ts` `GenerationGateway.place(shape)`** — freezes one `GenerationPlacement { shape, mechanism: "serial" | "continuous" }`. `#supportsContinuous` is a capability check only (§5 matrix); it never rewrites MTP, KV scheme, TurboQuant, grammar, adapters, or sampling. `run()` rejects a placement made for another shape. One `AsyncMutex` is the single mutual-exclusion domain: a serial run holds it; the scheduler holds it for its whole active period; a waiting serial request drains the batch (mlx-lm's `drain_batch`).
@@ -456,11 +466,13 @@ entries so a caller cannot mutate conversion or accounting after resolution.
    `BatchScheduler.#prefillChunk` in `src/serve/batch-scheduler.ts` (the same
    conventions re-implemented over `PrefillState` for interleaved admission).
    Both are gated bit-exact, but a convention change must land in two places.
-2. **`handleChat` is an inline closure in `src/server.ts`** (defined inside the
-   fetch handler; the Anthropic and Responses adapters funnel through it, and
-   `/v1/completions` duplicates the prepare/execute call site). The
-   prompt/media/grammar construction that precedes `prepareCompletion` still
-   lives in the adapter, not behind the seam.
+2. **`/v1/completions` duplicates the chat core's prepare/execute framing.**
+   The chat core is `src/serve/chat-handler.ts` (extracted 2026-08-30; the
+   Anthropic and Responses adapters funnel through it), but the raw-text
+   branch in `src/server.ts` re-implements the SSE/JSON framing around the
+   same `prepareCompletion` → `execute` pair. Prompt/media/grammar
+   construction precedes `prepareCompletion` inside the chat handler, not
+   behind the executor seam.
 3. **Spec eligibility is decided after placement.** `planRequest` only knows
    `hasDraft = !!ctx.draft` (server-level), which routes every request serial
    while a draft is mounted. The real per-request eligibility — text-only, no
