@@ -530,7 +530,10 @@ not killed on taste.
   `model-host.ts` (`loadContext`, tower getters), `chat-request.ts` (request
   classes + validators), `request-prep.ts` (options/template/prompt-ids),
   `token-streams.ts`. `tests/serve/pipeline.test.ts` runs the stages with
-  a scripted engine and asserts on result objects. Still in `createServer`
+  a scripted engine and asserts on result objects. No invented token caps:
+  a request that omits `max_tokens` runs to EOS or the admitted context
+  (admission is the limit; DEVIATION from mlx_lm.server's 512 default on
+  raw completion, `--max-tokens 512` reproduces it). Still in `createServer`
   (~900 lines): `runGeneration` (the serial engine), the `/fit` `/stats`
   `/signal` `/generate` branches.
 - Landed 2026-08-23: the batch lane reports real prefill/decode timing (admission→first token→finish marks in `BatchScheduler`; `GenerationGateway` derives tok/s).

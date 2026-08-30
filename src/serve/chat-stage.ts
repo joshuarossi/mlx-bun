@@ -122,7 +122,9 @@ export class ChatStage {
     // Attach the compiled grammar controller (null when no constraint /
     // degrade — generate() runs the unmasked fast pipelined loop).
     if (grammarCtrl) options.grammar = grammarCtrl;
-    const requestedMaxTokens = options.maxTokens ?? 1024;
+    // Unset = no request-level ceiling; admission clamps to the admitted
+    // context (the program is the cap).
+    const requestedMaxTokens = options.maxTokens ?? Infinity;
     let adapterIds: string[];
     try {
       // A request's explicit `adapter` (incl. "none") wins over the

@@ -85,12 +85,12 @@ export function createRequestPrep(input: {
       ? Math.min(genTemp, NO_THINK_TEMPERATURE)
       : genTemp;
     return {
-      // A thinking turn emits <think>…</think> AND the answer, so a tight cap
-      // truncates the visible reply. Default very generously (the model's
-      // context is far larger); only an explicit max_tokens narrows it. The
-      // model still stops at its eos_token well before this in normal replies.
+      // No invented cap: unset means "generate until EOS or the admitted
+      // context is exhausted" — admission (planRequest) is the real limit
+      // and clamps to maxSafeContext − promptLen. Only an explicit request
+      // max_tokens or the operator's --max-tokens narrows it further.
       maxTokens: req.max_completion_tokens ?? req.max_tokens ??
-        defaultGeneratedTokens ?? 65_536,
+        defaultGeneratedTokens,
       temperature: req.temperature ?? serverOptions.defaultTemperature ?? defaultTemp,
       topP: req.top_p ?? serverOptions.defaultTopP ?? ctx.genDefaults.topP ?? 0,
       topK: req.top_k ?? serverOptions.defaultTopK ?? ctx.genDefaults.topK ?? 0,

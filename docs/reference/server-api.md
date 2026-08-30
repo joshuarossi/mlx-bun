@@ -110,7 +110,10 @@ Request body (OpenAI chat schema; unknown fields ignored):
 {
   "messages": [ /* role: system | user | assistant | tool */ ],
   "stream": false,
-  "max_tokens": 1024,            // or max_completion_tokens (wins)
+  "max_tokens": 1024,            // or max_completion_tokens (wins); unset =
+                                 // no cap — generate until EOS or the
+                                 // admitted context is exhausted (admission
+                                 // clamps; --max-tokens sets a server default)
   "temperature": 0.7,            // 0 = greedy
   "top_p": 0, "top_k": 0,        // 0 = off
   "seed": 1234,                  // omit for time-derived
@@ -508,9 +511,10 @@ and adapter selection as chat.
 {
   "prompt": "Once upon a time",  // REQUIRED, non-empty string only (token
                                  // arrays rejected, matching mlx_lm.server)
-  "max_tokens": 512,             // default 512 (mlx_lm.server's default) —
-                                 // NOT the chat lane's generous default;
-                                 // max_completion_tokens wins when set
+  "max_tokens": 512,             // unset = no cap: generate until EOS or the
+                                 // admitted context (DEVIATION: mlx_lm.server
+                                 // defaults 512 — pass --max-tokens 512 to
+                                 // reproduce); max_completion_tokens wins
   "stream": false,
   "stop": "\n\n",                // string or array, decoded-text matching
   // plus every sampling/penalty field from /v1/chat/completions:

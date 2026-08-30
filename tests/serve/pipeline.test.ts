@@ -135,12 +135,12 @@ describe("ChatStage: ChatRequest → InferenceRequest", () => {
 });
 
 describe("TextCompletionStage: TextCompletionRequest → InferenceRequest", () => {
-  test("tokenizes the raw prompt; mlx-lm's 512 default cap; no tool routing", async () => {
+  test("tokenizes the raw prompt; no invented cap (admission is the limit); no tool routing", async () => {
     const { text } = harness();
     const req = await text.run(new TextCompletionRequest({ prompt: "hi", stream: true }), "cmpl-x");
     expect(req).toMatchObject({
       requestId: "cmpl-x", stream: true,
-      plan: { promptIds: [7, 8, 9], requestedMaxTokens: 512, hasVision: false },
+      plan: { promptIds: [7, 8, 9], requestedMaxTokens: Infinity, hasVision: false },
       pipeline: { collectToolCalls: false },
     });
   });

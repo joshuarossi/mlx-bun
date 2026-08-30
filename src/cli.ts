@@ -212,9 +212,10 @@ Model & quality:
                             pass --temp 0 for its unset-request behavior)
                             [default: the model's generation_config.json]
   --max-tokens <n>          Completion cap when a request omits max_tokens
-                            (mlx_lm.server flag; its default is 512 there)
-                            [default: 128 GLM-5.2; otherwise 65536 chat /
-                            512 raw completion]
+                            (mlx_lm.server flag; --max-tokens 512 reproduces
+                            its default) [default: 128 GLM-5.2 (memory-plan
+                            reservation); otherwise none — a defaulted
+                            request runs to EOS or the admitted context]
   --hlg-sampling on|off     Piecewise tone-curve sampling (HLG): rolls off the
                             top, boosts the mids, gentles the tail. Gain folds
                             from --temperature. [default: off]

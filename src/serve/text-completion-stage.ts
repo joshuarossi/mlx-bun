@@ -17,10 +17,9 @@ export class TextCompletionStage {
     private readonly ctx: ServerContext,
     private readonly prep: RequestPrep,
     private readonly maxSafeContext: number,
-    /** `--max-tokens` / the GLM plan's cap; mlx_lm.server's own default for
-     *  raw completion is 512 (its --max-tokens CLI default) — the chat lane's
-     *  very generous default is wrong here: with no template an EOS may
-     *  never come. */
+    /** `--max-tokens` / the GLM plan's reservation. No invented fallback:
+     *  unset runs to EOS or the admitted context (with no template an EOS
+     *  may never come — that run is bounded by admission, the real limit). */
     private readonly defaultGeneratedTokens: number | undefined,
     private readonly defaultAdapter?: string,
   ) {}
@@ -59,8 +58,11 @@ export class TextCompletionStage {
         warnings.push(
           `grammar not enforced: ${g.degradeHint} - no prompt injection on /v1/completions`);
     }
+    // Unset = no request-level ceiling; admission clamps to the admitted
+    // context. DEVIATION from mlx_lm.server (which stops a defaulted
+    // request at 512): pass --max-tokens 512 to reproduce the reference.
     const requestedMaxTokens = body.max_completion_tokens ?? body.max_tokens ??
-      this.defaultGeneratedTokens ?? 512;
+      this.defaultGeneratedTokens ?? Infinity;
     let adapterIds: string[];
     try {
       adapterIds = ctx.adapters.resolveSpec(body.adapter ?? this.defaultAdapter);
