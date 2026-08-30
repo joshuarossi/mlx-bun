@@ -1,4 +1,4 @@
-import type { ServerContext } from "../server";
+import type { ServerContext } from "./model-host";
 import type { GenerationGateway } from "./generation-gateway";
 import { embedMany, isEmbeddingModel } from "../embed";
 import { listAvailableAdapters } from "../lora";

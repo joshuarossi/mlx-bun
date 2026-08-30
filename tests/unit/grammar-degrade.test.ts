@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applyGrammarDegrade } from "../../src/server";
+import { applyGrammarDegrade } from "../../src/serve/chat-request";
 
 describe("guided output graceful degradation", () => {
   test("every guided form injects string content and preserves a warning", () => {

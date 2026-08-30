@@ -4,7 +4,7 @@ import {
   createTimedFlowControl,
   type CompletionToolCall,
 } from "../../src/serve/completion-sink";
-import { StopMatcher, ThinkingTagSplitter, ToolAwareStream } from "../../src/server";
+import { StopMatcher, ThinkingTagSplitter, ToolAwareStream } from "../../src/serve/token-streams";
 
 class ScriptedRouter {
   readonly #tokens: Map<number, string>;

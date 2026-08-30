@@ -34,7 +34,7 @@ import {
 } from "../support/paths";
 import { CHANNEL_END, CHANNEL_START } from "../../src/tool-call";
 import { loadTokenizer } from "../../src/tokenizer";
-import { StreamDecoder, ToolAwareStream } from "../../src/server";
+import { StreamDecoder, ToolAwareStream } from "../../src/serve/token-streams";
 
 const haveCpm = await snapshotMiniCPM5Available();
 const haveE4b = await snapshotE4bAvailable();
@@ -207,7 +207,7 @@ describe.skipIf(!haveE4b)("gemma-4 e4b (SPM, no Strip): no trim + reasoning keep
 // ---------------------------------------------------------------------------
 
 describe("StreamDecoder — revised-text truncate-safe resync", () => {
-  const { StreamDecoder } = require("../src/server");
+  const { StreamDecoder } = require("../../src/serve/token-streams");
 
   // Fake cleanup-rule tokenizer: once token 3 arrives, the earlier "hello ,"
   // collapses to "hello," (the _space_matches shape).

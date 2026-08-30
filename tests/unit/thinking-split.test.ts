@@ -6,7 +6,8 @@
 
 import { describe, expect, it } from "bun:test";
 
-const { ThinkingTagSplitter, promptEndsInOpenThink, normalizeMessages } = await import("../../src/server");
+const { ThinkingTagSplitter } = await import("../../src/serve/token-streams");
+const { promptEndsInOpenThink, normalizeMessages } = await import("../../src/serve/chat-request");
 
 describe("ThinkingTagSplitter", () => {
   it("splits a normal <think>…</think> block into reasoning vs content", () => {

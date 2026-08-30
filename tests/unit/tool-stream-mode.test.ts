@@ -10,7 +10,7 @@
 // modes treat 48/49/100/101 as plain text.
 
 import { describe, expect, test } from "bun:test";
-import { selectToolStreamMode, ToolAwareStream } from "../../src/server";
+import { selectToolStreamMode, ToolAwareStream } from "../../src/serve/token-streams";
 import type { LoadedTokenizer } from "../../src/tokenizer";
 import { CHANNEL_END, CHANNEL_START, TOOL_CALL_END, TOOL_CALL_START } from "../../src/tool-call";
 

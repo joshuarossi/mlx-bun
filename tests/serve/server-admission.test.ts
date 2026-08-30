@@ -2,12 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  admitRequestContext,
-  detectDraftKind,
-  loadContext,
-  validateReasoningEffort,
-} from "../../src/server";
+import { admitRequestContext, detectDraftKind, loadContext } from "../../src/server";
+import { validateReasoningEffort } from "../../src/serve/chat-request";
 
 describe("request context admission", () => {
   test("a broad client completion cap is clamped to the remaining context", () => {

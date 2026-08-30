@@ -15,7 +15,7 @@ const have = await snapshotAvailable();
 
 describe.skipIf(!have)("gemma reasoning channel split", async () => {
   const { loadTokenizer } = await import("../../src/tokenizer");
-  const { ToolAwareStream } = await import("../../src/server");
+  const { ToolAwareStream } = await import("../../src/serve/token-streams");
   const tok = await loadTokenizer(SNAPSHOT);
 
   /** Feed a token stream through the router, returning the split. */

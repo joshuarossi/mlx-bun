@@ -1,5 +1,5 @@
 import pkgJson from "../../package.json" with { type: "json" };
-import type { ServerContext } from "../server";
+import type { ServerContext } from "./model-host";
 import type { GenerationGateway } from "./generation-gateway";
 import { fit } from "../fit";
 import { isEmbeddingModel } from "../embed";

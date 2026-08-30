@@ -9,7 +9,7 @@ const haveWeights = await snapshotAvailable();
 
 // Fast tier: StopMatcher is pure string logic — no weights needed.
 describe("StopMatcher (decoded-text stop sequences)", async () => {
-  const { StopMatcher } = await import("../../src/server");
+  const { StopMatcher } = await import("../../src/serve/token-streams");
 
   test("no sequences: pass-through", () => {
     const m = new StopMatcher([]);
@@ -56,7 +56,7 @@ describe("StopMatcher (decoded-text stop sequences)", async () => {
 
 // Fast tier: default-seed entropy — pure logic, no weights needed.
 describe("nextDefaultSeed (per-request default-seed entropy)", async () => {
-  const { nextDefaultSeed } = await import("../../src/server");
+  const { nextDefaultSeed } = await import("../../src/serve/chat-request");
 
   test("same-millisecond calls yield distinct uint32 seeds", () => {
     // Regression for the batch-lane collision: two default-seed requests in

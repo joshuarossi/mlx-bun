@@ -15,7 +15,7 @@ const MODEL_ID = "minicpm5-1b-compat";
 
 // Fast tier: logit_bias wire coercion is pure (mlx-lm's {int(k): float(v)}).
 describe("parseLogitBias (wire coercion)", async () => {
-  const { parseLogitBias } = await import("../../src/server");
+  const { parseLogitBias } = await import("../../src/serve/chat-request");
 
   test("string JSON keys coerce to int keys", () => {
     expect(parseLogitBias({ "42": -5, "7": 1.5 })).toEqual({ 42: -5, 7: 1.5 });
@@ -39,7 +39,7 @@ describe("parseLogitBias (wire coercion)", async () => {
 // Fast tier: logprobs param validation is pure (mlx-lm's _validate calls:
 // logprobs bool; top_logprobs int in [0, 11] or the -1 "unset" sentinel).
 describe("validateLogprobsParams (mlx-lm validation)", async () => {
-  const { validateLogprobsParams } = await import("../../src/server");
+  const { validateLogprobsParams } = await import("../../src/serve/chat-request");
 
   test("defaults (absent) are valid", () => {
     expect(validateLogprobsParams({})).toBeNull();
