@@ -141,6 +141,29 @@ oracle. See [Fidelity tiers](#fidelity-tiers-and-the-decode-route---l1----l2).
 The default host/port (`127.0.0.1:8080`) match `mlx_lm.server`, so running
 mlx-bun alongside the Python reference needs an explicit `--port`.
 
+## Reproducing mlx_lm.server
+
+Numeric parity (same tokens in → same logits, bit-for-bit) is unconditional
+— no flag buys it back and none is needed. **Behavior policy** (defaults,
+caps, sampling fallbacks) is mlx-bun's own; mlx_lm.server's policy is one
+configuration of it:
+
+```sh
+mlx-bun serve <model> --temp 0 --top-p 0 --top-k 0 --max-tokens 512 --batch 1
+```
+
+- `--temp 0 --top-p 0 --top-k 0` — mlx_lm.server does not read
+  `generation_config.json` (we inject its sampling defaults, optiq-style);
+  its unset-request defaults are temperature 0.0, top-p/top-k off.
+- `--max-tokens 512` — its cap when a request omits `max_tokens` (ours is
+  none: run to EOS or the admitted context). Note a defaulted mlx-bun run's
+  first 512 tokens are byte-identical to mlx-lm's capped run — the cap only
+  moves the stopping point and `finish_reason`.
+- `--batch 1` — strict serial, arrival-independent numerics. (`--batch N`
+  is itself bit-parity with mlx-lm at B=N; pin 1 for golden regeneration.)
+- Already matching without flags: host/port, bf16 KV (`--kv-quant off`),
+  the L1 kernel preset (`--l1` is the default), logprobs caps, error text.
+
 The kill switches are bit-exact A/B levers; **the naked default is the L1
 set** (2026-07-05: an output-changing lever earns a default only by beating
 the L1 baseline in a paired A/B, and none did — the losing kernels were

@@ -1,7 +1,9 @@
 # CLAUDE.md — agent entry point for mlx-bun
 
 **What.** A Bun/TypeScript inference engine + OpenAI-compatible server for
-Apple Silicon on MLX: bit-exact with mlx-lm by contract (L1), with
+Apple Silicon on MLX: numerics bit-exact vs mlx-lm by contract (L1;
+policy defaults are ours — the documented compat flags reproduce
+mlx_lm.server's behavior), with
 mlx-optiq mixed-KV as the second oracle (L2) and a no-oracle Lab tier that
 must win a paired A/B before any default. Single binary; JS library too.
 

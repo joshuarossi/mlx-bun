@@ -5,7 +5,9 @@ Open work with exit criteria: [PLAN.md](PLAN.md). Rules: [CONTRIBUTING.md](CONTR
 Docs map: [docs/README.md](docs/README.md). Superseded entries are deleted,
 not relocated — history is `git log -- STATUS.md`.
 
-**Fidelity contract:** L1 = mlx-lm bit-exact (the naked default) · L2 =
+**Fidelity contract:** L1 = mlx-lm bit-exact numerics (the naked default;
+behavior-policy defaults are ours — server-config.md "Reproducing
+mlx_lm.server" lists the compat flags) · L2 =
 mlx-optiq bit-exact (mixed-KV) · Lab = no external oracle, gated by KL/eval
 and a paired A/B win before any default
 ([unified-engine-frontier-plan](docs/design/unified-engine-frontier-plan.md)).
