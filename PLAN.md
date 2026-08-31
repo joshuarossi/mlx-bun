@@ -279,6 +279,103 @@ Landed so far:
 - 2026-08-21 — continuous scheduler declared at the placement seam; byte-budget
   admission clamps; [batching.md](docs/design/batching.md).
 
+## Phase: agentic KV reuse — semantic anchors + free draft sources `[ ]` (opened 2026-08-30)
+
+Origin: FreeToken (arXiv 2608.16157). Its headline PCIe co-execution is moot
+on unified memory; two ideas survive the port. Canonical docs on landing:
+[kv-cache.md](docs/design/kv-cache.md) (K1/K2),
+[speculative-decoding.md](docs/design/speculative-decoding.md) (K3).
+
+- [ ] **K1 — measure the miss before building.** Replay real agent
+      transcripts through the template layer and measure, per turn: LCP
+      survival vs the previous rendering, and how often the divergence point
+      sits at a semantic boundary (tool-call close, turn end, think-close —
+      where agent frameworks actually edit context). Split by cache class:
+      trimmable KV already resumes exactly at the LCP, so the payoff lives
+      entirely in the untrimmable kinds (SSMCache, wrapped rings), which
+      today serve only exact-length matches → any agentic edit is a full
+      re-prefill on Qwen3.8's 48 SSM layers. Exit: "% of re-prefill tokens
+      semantic anchors would save" per cache class, or a measured "not worth
+      it".
+- [ ] **K2 — anchor snapshots (only if K1 pays).** Generalize the existing
+      prompt-boundary snapshot (ONE trim-free entry at the template probe's
+      boundary) to N anchors at semantic boundaries: zero-copy clone-and-put
+      mid-generation, reusing `PromptCache` entries/eviction/supersession
+      as-is. Cost model first: SSM state ≈ 150 MB per anchor on Qwen3.8
+      (14r-d), so anchors need a per-conversation cap. Residency only, not
+      numerics — same caches from an earlier boundary, so the bar is
+      bit-exact continuation, no Lab gate. Trimmable-KV paths must be
+      provably unregressed.
+- [ ] **K3 — tool-call fill table (lookup, not speculation).** The model is
+      a next-token function; injected context is indistinguishable from
+      generated context. So the engine keeps a per-request fill table and,
+      whenever the stream enters a determined span, APPENDS the span's
+      tokens itself (one prefill step) and resumes decode after it — the
+      model is only consulted for tokens it doesn't already know. Table
+      rows: (a) schema-derived, compiled mechanically from each request's
+      `tools` array — call-open scaffold, name completion after its first
+      disambiguating token, sole-required-key skeletons, last-remaining-key
+      transitions, call close; (b) observed per-(model, tool) first-key
+      rows from corpus replay (pi corpus, 2,415 calls: bash first-key
+      `command` 1316/1316; first-key style is per-model house style —
+      gpt-5.5 path-first 667/667, GLM-5.2 edits/limit-first). Decode is
+      spent only at the trigger, one name token, values, and real branch
+      points (unmapped first key, array continue-vs-close). Corpus
+      estimate ~15 scaffold tokens/call ⇒ ~35–40k decode passes over the
+      corpus. Fallback: any mismatch stops injecting (1/2,415 malformed
+      calls observed). Two modes with different bars:
+      - **Strict fill** (schema rows only): token-identical by
+        construction — ships on parity evidence alone.
+      - **Greedy fill** (echo injection): a turn-scoped repeat detector —
+        when the generation tail matches a span earlier in the turn
+        (thinking, prior results) past a threshold, inject the span's
+        continuation up to a delimiter (closing quote/brace), including
+        deterministic transforms (url-encode, JSON-escape). Doctrine: the
+        model has no memory and no intent — an injected echo is
+        indistinguishable to it from its own choice; a semantically wrong
+        fill costs a wasted round trip, the same failure class as the
+        model's own typos, and self-corrects in the loop. So the bar is
+        NOT token identity (sampling never guaranteed it); it is a paired
+        A/B on task success + wall clock (Lab gate), default off.
+      Measured copy-from-context rates (pi corpus, value verbatim earlier
+      in session): edit.path 97%, read.path 65%, write.path 35%,
+      bash.command 5% whole-string (pieces are copies; whole-string is
+      the wrong granularity). Same-message thinking holds the exact value
+      only ~2% — reasoning names targets; prior tool results carry the
+      strings. At local decode rates (~10 tok/s) the injectable ~30–40
+      tokens/call ≈ 3 s/call, ~15 min over a 296-call session.
+      Replay doctrine: the transcript IS the environment — the model
+      cannot distinguish executed from mocked tool results, so the A/B
+      replays recorded sessions with results mocked verbatim from the
+      JSONL: deterministic, side-effect-free, whole-corpus.
+      Showcase: ONE large tool-dense prompt (edit/read-heavy, mocked
+      results), fill on/off paired, emitted AND decoded tok/s side by
+      side on a labeled machine. apparent = decode/(1−fillFrac); at
+      ~65% fill the emitted rate exceeds the model's bandwidth ceiling
+      (bytes ÷ GB/s) — the skeptic's own napkin math proves the filled
+      tokens never touched the weights. Quote agentic-replay numbers
+      only; chat decode is unchanged and the writeup says so.
+      Target region: the agentic tool-call loop (one prompt → ~10 tool
+      calls + reasoning → one response — most generated tokens live there,
+      and it is maximally self-similar). Phase 6's γ≥2 blocker is drafter
+      economics; a drafter that costs nothing sidesteps it: (a) session
+      self-lookup n-gram drafts — the context IS the corpus (tool names
+      from a small fixed set, argument keys repeated every call, values
+      copied from earlier tool results: paths, IDs, URLs); (b)
+      schema/grammar forced tokens inside tool-call JSON (structurally
+      determined positions — distinct from response-format structured
+      output, which is already known territory). Measurement first,
+      mechanism later: replay agent tool-loop transcripts recording at each
+      position whether each draft source proposes the accepted token;
+      acceptance heatmap split by region (tool-call span / reasoning /
+      prose) decides build-or-drop. Oracles when built: SGLang jump-forward
+      / llama.cpp grammars (forcing), HF prompt-lookup (n-gram). Drafts
+      verify through the existing spec-round contract, so a wrong guess
+      costs a rejected lane, never a wrong token (tier c); tokenizer-
+      boundary drift in forced text is likewise just lost acceptance. Exit:
+      measured acceptance ≥ break-even for γ=2 on a quiet box, or the track
+      is dropped with the numbers recorded.
+
 ## Phase 20 — Expert offload: single-user MoE residency `[~]` (2026-06-14)
 
 Single-user task locality makes per-task expert residency viable where a
