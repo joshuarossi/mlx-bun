@@ -35,6 +35,13 @@ import {
   type StepExtras,
 } from "./sampler";
 import type { GrammarController } from "./grammar";
+import {
+  fillTraceEnabled,
+  resolveFillMode,
+  type FillSession,
+  type FillStats,
+  type Proposal,
+} from "./fill/fill-session";
 
 export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions {
   maxTokens?: number;
@@ -123,6 +130,19 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
    *  advances the matcher, and awaits the async mask precompute (which overlaps
    *  the GPU forward). Non-grammar requests keep the fast pipelined loop. */
   grammar?: GrammarController;
+  /** Token fast-forwarding (src/fill/, docs/design/speculative-decoding.md
+   *  "Token fast-forwarding"): a per-request table of DETERMINED token spans
+   *  (compiled from the request's `tools` + the chat template). When the
+   *  stream enters one, the engine appends the whole span itself with ONE
+   *  multi-token forward and resumes sampling after it.
+   *
+   *  This is context extension, NOT speculation: nothing is drafted, verified,
+   *  or rolled back, and no comparison is made against what the model would
+   *  have produced. Injection bypasses the sampler, which is a documented
+   *  behavior-policy deviation at temperature > 0 — hence opt-in
+   *  (MLX_BUN_FILL=strict) and the composition refusals in shouldUseFill.
+   *  Serial lane only: the batch scheduler and the spec loop never read it. */
+  fill?: FillSession;
 }
 
 export function shouldUseGrammarJump(
@@ -132,6 +152,36 @@ export function shouldUseGrammarJump(
     flagOn("MLX_BUN_GRAMMAR_JUMP", false) &&
     !options.logprobs &&
     !(options.topLogprobs && options.topLogprobs > 0);
+}
+
+/** Composition gate for token fast-forwarding, enforced inside the engine
+ *  (the serve layer refuses more shapes it alone can see — a user-fixed seed,
+ *  a mounted draft model, continuous placement: src/serve/request-prep.ts,
+ *  src/serve/chat-stage.ts). Throws when MLX_BUN_FILL names the unbuilt echo
+ *  tier — an operator who asked for K3c must not get K3b silently.
+ *   - grammar: forced-token production is the grammar's job; two producers in
+ *     one iteration is forbidden (asserted in the loop).
+ *   - logprobs/top_logprobs: injected tokens are never sampled, so they have
+ *     no distribution row (same rule as shouldUseGrammarJump).
+ *   - promptEmbeddings: vision/audio prompts (and mRoPE) — untested shape.
+ *   - kvBits/kvConfig/turboQuant: post-conversion multi-token append is
+ *     L-generic but unvalidated; refuse in v1 rather than pay it silently. */
+export function shouldUseFill(
+  options: Pick<
+    GenerateOptions,
+    "fill" | "grammar" | "logprobs" | "topLogprobs" | "promptEmbeddings"
+    | "kvBits" | "kvConfig" | "turboQuant"
+  >,
+): boolean {
+  if (!options.fill) return false;
+  if (resolveFillMode() === "off") return false;
+  return options.grammar === undefined &&
+    !options.logprobs &&
+    !(options.topLogprobs && options.topLogprobs > 0) &&
+    options.promptEmbeddings === undefined &&
+    !options.kvBits &&
+    !options.kvConfig?.length &&
+    options.turboQuant === undefined;
 }
 
 /** Per-token logprob info (only present when GenerateOptions requested it). */
@@ -246,6 +296,24 @@ export function maybePageKv(
  *  Gemma) still serve correctly under --kv-quant turbo. */
 let warnedTurboRotating = false;
 
+/** Emitted once per process: token fast-forwarding skips models with
+ *  sliding-window layers in v1 (see the gate in generateInner). */
+let warnedFillRotating = false;
+
+/** The rewind surface a verify-policy fill needs. `Cache` declares the
+ *  spec-round trio as optional members, but the cache list is a UNION with
+ *  GLM's MLACache (which declares none of them), so the union has no such
+ *  property to read. One narrowing helper keeps the call sites honest — every
+ *  use is still optional-chained. */
+type RewindableCache = {
+  isTrimmable(): boolean;
+  trim(n: number, bypass?: boolean): void;
+  specRoundBegin?(): void;
+  specRoundCommit?(): void;
+  specRoundRollback?(keep: number): void;
+};
+const rewindable = (c: unknown): RewindableCache => c as RewindableCache;
+
 /** TurboQuant conversion chokepoint (mirrors the uniform/config branch
  *  above): only plain full-attention KVCache instances convert, via
  *  TurboQuantKVCache.fromKVCache — RotatingKVCache stays bf16 (warn once,
@@ -302,6 +370,9 @@ export interface GenerateStats {
     rejected?: number; rounds?: number; acceptanceLengths?: number[];
     tokensPerForward?: number; forwardsSaved?: number;
   };
+  /** Token fast-forwarding telemetry (serial lane, MLX_BUN_FILL=strict).
+   *  Present only when a fill table was actually armed for this generation. */
+  fill?: FillStats;
 }
 
 export interface GenerateDiagnostics {
@@ -614,6 +685,32 @@ async function* generateInner(
   // prompt + maxTokens − 1 (step maxTokens−1's forward), so this bound
   // makes pool exhaustion an accounting-bug tripwire, not a request limit.
   maybePageKv(cache, options, promptTokens.length + maxTokens);
+  // Token fast-forwarding gate (see shouldUseFill). RotatingKVCache (sliding
+  // window) layers append multi-token writes through #updateConcat — O(window)
+  // per append rather than the O(L) a plain ring pays — so v1 warns and skips
+  // the whole feature for those models rather than paying it silently.
+  let fillOn = shouldUseFill(options);
+  if (fillOn && cache.some((c) => c instanceof RotatingKVCache)) {
+    fillOn = false;
+    if (!warnedFillRotating) {
+      warnedFillRotating = true;
+      console.warn(
+        "[fill] sliding-window (RotatingKVCache) layers skip token " +
+        "fast-forwarding in v1 (multi-token append is O(window) there) — " +
+        "docs/design/speculative-decoding.md.",
+      );
+    }
+  }
+  const fillTrace = fillOn && fillTraceEnabled();
+  // Verify-policy proposals (echo tier) need the rejected tail rewound. That
+  // is the SAME contract the spec lane's rounds use: trimmable caches drop the
+  // tail; recurrent caches (SSMCache — gated-DeltaNet state, untrimmable)
+  // restore a pre-round snapshot and bit-exactly replay the accepted prefix.
+  // A model whose caches can do neither still gets assert-policy fills; verify
+  // proposals are dropped and counted (stats.verifyUnsupported).
+  const verifyCapable = fillOn && cache.every(
+    (c) => c.isTrimmable() || typeof rewindable(c).specRoundRollback === "function",
+  );
   closeBatchSetup?.();
   /** Device-side logprob capture for one step, computed from the SAME lp the
    *  sampler saw (post-processors, pre-truncation) — read back lazily with the
@@ -672,7 +769,165 @@ async function* generateInner(
     prefillTps: ((promptTokens.length - cachedTokens) / prefillMs) * 1000,
     decodeTps: (generated / decodeMs) * 1000,
     cacheTokens: [...promptTokens, ...forwarded],
+    ...(fillOn ? { fill: options.fill!.stats } : {}),
   });
+
+  /** The one invariant that makes fill safe: the caches hold exactly
+   *  prompt + everything `forwarded` records, so a fill append must forward
+   *  ONLY the injected ids — the normal step already consumed `cur` and wrote
+   *  its KV. Forwarding [token, ...ids] would duplicate a position and
+   *  silently corrupt both the KV and PromptCache.put's key. Checked under
+   *  MLX_BUN_FILL_TRACE=1 on both sides of the append. */
+  const assertFillAlignment = (where: string): void => {
+    const offset = cache[0]!.offset;
+    const want = promptTokens.length + forwarded.length;
+    if (offset !== want)
+      throw new Error(
+        `[fill] cache misalignment ${where}: cache offset ${offset} != ` +
+        `prompt ${promptTokens.length} + forwarded ${forwarded.length}`,
+      );
+  };
+
+  /** THE apply primitive for token fast-forwarding — ONE chunked forward
+   *  carries a proposal into the KV (and the recurrent state), and BOTH
+   *  policies ride it (src/fill/proposal.ts):
+   *
+   *   - assert: the span is determined (a template scaffold). Append and move
+   *     on. No readback, no checkpoint, no rewind. The in-flight sample for
+   *     the position after `token` is dropped UNEXAMINED — a discarded
+   *     pipeline dispatch, not a rejected draft.
+   *   - verify: the span is likely (a copy from earlier in the session).
+   *     Position 0 is checked BEFORE the forward against the in-flight sample
+   *     (free, and a mismatch costs nothing — nothing has been written).
+   *     Positions 1..m-1 are checked against the argmax already sitting in
+   *     THIS forward's logits, so verification adds no pass over the weights.
+   *     The rejected tail is rewound through the same cache contract the spec
+   *     lane's rounds use, and decode resumes at the first disagreement.
+   *
+   *  Returns the ids the engine must now emit (empty = no fill happened).
+   *  Mutates nextPending/nextExtras/forwarded, exactly like the normal step. */
+  const applyProposal = async (
+    proposal: Proposal, generatedNow: number,
+  ): Promise<number[]> => {
+    const fill = options.fill!;
+    const ids = proposal.ids;
+    const verify = proposal.policy === "verify";
+    if (verify && !verifyCapable) {
+      fill.noteVerifyUnsupported();
+      fill.commit(proposal, 0);
+      return [];
+    }
+    if (verify) {
+      // The in-flight sample IS the model's own choice for position 0.
+      const inFlight = ops.itemUint32(nextPending!);
+      if (inFlight !== ids[0]) {
+        fill.commit(proposal, 0);
+        return []; // nextPending survives; this becomes an ordinary step
+      }
+    } else {
+      fill.noteWastedSample();
+    }
+    if (fillTrace) assertFillAlignment("at fill entry");
+    nextPending!.dispose();
+    nextPending = null;
+    disposeStepExtras(nextExtras);
+    nextExtras = null;
+    // No-op under the fill exclusions (kv quant refuses fill); kept so the
+    // boundary stays correct if those exclusions ever loosen.
+    maybeQuantizeKv(cache, options);
+
+    let checkpointMs = 0;
+    let roundOpen = false;
+    if (verify) {
+      const t0 = performance.now();
+      for (const c of cache) rewindable(c).specRoundBegin?.();
+      roundOpen = true;
+      checkpointMs += performance.now() - t0;
+    }
+    let accepted = ids.length;
+    let hf: MlxArray | null = null;
+    let logitsAll: MlxArray | null = null;
+    try {
+      const fillIds = ops.fromInt32(ids, [1, ids.length]);
+      try {
+        hf = await forwardHiddenForGeneration(model, fillIds, cache);
+      } finally {
+        fillIds.dispose();
+      }
+      const [, Lf, Hf] = hf.shape as [number, number, number];
+      if (verify) {
+        // Free logits: this forward already computed every span position's
+        // hidden state. argmax at j is the model's continuation after ids[j],
+        // so it verifies ids[j+1].
+        logitsAll = model.logitsFromHidden(hf);
+        const argmax = ops.argmaxAxis(logitsAll, -1);
+        const pred = argmax.toIntTokens();
+        argmax.dispose();
+        for (let j = 0; j + 1 < ids.length; j++) {
+          if (pred[j] !== ids[j + 1]) { accepted = j + 1; break; }
+        }
+      }
+      const t1 = performance.now();
+      if (accepted < ids.length) {
+        // Trimmable caches drop the rejected tail; recurrent caches restore
+        // their pre-round snapshot and bit-exactly replay the accepted prefix
+        // (Cache.specRoundRollback — the same primitive src/spec/serve-loop.ts
+        // uses after its accept walk).
+        for (const c of cache) {
+          const rc = rewindable(c);
+          if (rc.specRoundRollback) rc.specRoundRollback(accepted);
+          else rc.trim(ids.length - accepted);
+        }
+        roundOpen = false;
+      } else if (roundOpen) {
+        for (const c of cache) rewindable(c).specRoundCommit?.();
+        roundOpen = false;
+      }
+      if (verify) checkpointMs += performance.now() - t1;
+      forwarded.push(...ids.slice(0, accepted));
+      if (fillTrace) assertFillAlignment("after fill append");
+      // The sampler's token history gets the ACCEPTED ids only, before the
+      // resume sample — so logits processors (repetition/presence/frequency)
+      // see exactly the sequence that was emitted.
+      stepSampler.commitNumbers(ids.slice(0, accepted));
+      // Resume from the LAST ACCEPTED position's logits: the bonus token on a
+      // full accept, the correction on a partial one. Same sampler and step
+      // index as an ordinary step — the correction's KV is written by the next
+      // iteration's forward, like any sampled token.
+      const willGen = generatedNow + accepted;
+      if (willGen < maxTokens) {
+        let logits: MlxArray;
+        if (logitsAll) {
+          const V = logitsAll.shape[2]!;
+          logits = logitsAll.slice([0, accepted - 1, 0], [1, accepted, V]);
+        } else {
+          const hLast = hf.slice([0, Lf - 1, 0], [1, Lf, Hf]);
+          logits = model.logitsFromHidden(hLast);
+          hLast.dispose();
+        }
+        const sn = sampleStep(logits, willGen);
+        nextPending = sn.tok;
+        nextExtras = sn.extras;
+        logits.dispose();
+        ops.asyncEvalAll([nextPending, ...stepExtrasArrays(nextExtras)]);
+      }
+    } finally {
+      // A throw mid-round would otherwise leave the recurrent caches armed
+      // (their next forward raises "spec round already recorded").
+      if (roundOpen) for (const c of cache) rewindable(c).specRoundCommit?.();
+      logitsAll?.dispose();
+      hf?.dispose();
+    }
+    if (verify) fill.noteVerifyEvent(checkpointMs);
+    fill.commit(proposal, accepted);
+    if (fillTrace)
+      console.error(
+        `[fill] ${proposal.origin}/${proposal.policy} ${accepted}/${ids.length} ` +
+        `after ${generatedNow} generated (events ${fill.stats.events}, ` +
+        `injected ${fill.stats.injected}, checkpoint ${checkpointMs.toFixed(2)}ms)`,
+      );
+    return ids.slice(0, accepted);
+  };
 
   try {
     // ---- prefill ----
@@ -994,6 +1249,30 @@ async function* generateInner(
         nextExtras = null;
         stop = true;
       } else {
+        // ---- token fast-forwarding (K3): APPEND, then yield ----------------
+        // The engine already knows the next m tokens, so it writes them into
+        // the KV itself with ONE forward and resumes sampling after them. No
+        // draft, no verify, no rollback: an injected token is indistinguishable
+        // to the model from one it sampled. The append happens BEFORE any of
+        // the burst's yields, which is what makes a consumer break mid-burst
+        // safe — `forwarded` already describes the cache exactly.
+        let fillEmit: number[] | null = null;
+        if (fillOn) {
+          if (jumpEmit)
+            throw new Error("fill and grammar jump-forward cannot share an iteration");
+          // A fill needs an in-flight step to ride; with nextPending null this
+          // token's KV was never written and the generation ends here. push()
+          // still runs so the session's history (and echo index) stay exact.
+          const proposal = options.fill!.push(
+            token, nextPending !== null ? maxTokens - generated : 0,
+          );
+          if (proposal && nextPending !== null) {
+            const emitted = await applyProposal(proposal, generated);
+            if (emitted.length) fillEmit = emitted;
+          } else if (proposal) {
+            options.fill!.commit(proposal, 0); // unreachable at budget 0; belt
+          }
+        }
         // readExtras before the yield: if the consumer breaks at this yield,
         // the extras are already read and disposed.
         const logprobs = readExtras(curExtras);
@@ -1010,6 +1289,17 @@ async function* generateInner(
           for (const jt of jumpEmit) {
             generated++;
             yield { token: jt, index: generated - 1 };
+            if ((generated - 1) % 256 === 0) clearCache();
+          }
+        }
+        // Fill burst: same one-yield-per-token shape as the jump burst, so
+        // CompletionSink / StopMatcher / StreamDecoder see an ordinary stream
+        // (a stop sequence inside an injected span fires exactly where it
+        // would have in an unfilled run).
+        if (fillEmit) {
+          for (const ft of fillEmit) {
+            generated++;
+            yield { token: ft, index: generated - 1 };
             if ((generated - 1) % 256 === 0) clearCache();
           }
         }

@@ -118,6 +118,8 @@ export interface CompletionUsage {
   completionTokens: number;
   totalTokens: number;
   speculation?: GenerateStats["spec"];
+  /** Token fast-forwarding telemetry (serial lane, MLX_BUN_FILL=strict). */
+  fill?: GenerateStats["fill"];
 }
 
 export interface CompletionSummary {
@@ -314,6 +316,8 @@ export class CompletionExecutor {
         usageProgress.totalTokens = stats.promptTokens + stats.generatedTokens;
         if (stats.spec) usageProgress.speculation = stats.spec;
         else delete usageProgress.speculation;
+        if (stats.fill) usageProgress.fill = stats.fill;
+        else delete usageProgress.fill;
       }
       const summary = {
         content: result.content,
@@ -332,6 +336,7 @@ export class CompletionExecutor {
           completionTokens: stats.generatedTokens,
           totalTokens: stats.promptTokens + stats.generatedTokens,
           ...(stats.spec ? { speculation: stats.spec } : {}),
+          ...(stats.fill ? { fill: stats.fill } : {}),
         },
         logprobs: logprobs?.payload() ?? null,
       };

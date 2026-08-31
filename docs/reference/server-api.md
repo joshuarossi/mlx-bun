@@ -316,6 +316,24 @@ Non-streaming response:
       "drafted": 0,                //   draft tokens proposed
       "accepted": 0,               //   drafts accepted by the verify step
       "targetCalls": 0             //   target-model forward calls
+    },
+    "fill": {                      // only under MLX_BUN_FILL=strict, when a
+                                    //   fill table was armed for the request
+      "events": 0,                 //   injected spans
+      "injected": 0,               //   tokens appended by the engine
+      "strict": 0,                 //   …of those, from schema/template rows
+      "echo": 0,                   //   …from the echo index (MLX_BUN_FILL=echo)
+      "spanLens": [],              //   length of each span, in order
+      "wastedSamples": 0,          //   in-flight samples dropped at an ASSERT fill
+      "parseFallback": 0,          //   tool-call parses rejected after a fill
+      "indexTruncated": 0,         //   spans cut by EOS / delimiter / budget / span
+      "decodeSteps": 0,            //   tokens the model actually sampled
+      "verifyEvents": 0,           //   verify-policy spans that reached the forward
+      "verifyAccepted": 0,         //   …tokens the model's own argmax agreed with
+      "verifyRejected": 0,         //   …tokens dropped and rewound
+      "verifyUnsupported": 0,      //   verify spans dropped: caches cannot rewind
+      "checkpointMs": 0,           //   time in cache checkpoint / rollback
+      "branchStops": 0             //   echo spans stopped by a history fork
     }
   }
 }
@@ -338,6 +356,26 @@ normally and omit the field. The spec path bypasses the prompt cache
 (`cached_tokens` 0), and while a draft is mounted every request routes
 through the serial lane (mlx_lm.server parity: `is_batchable = draft is
 None`) — speculation and `--batch N` are different modes.
+
+`usage.fill` reports **token fast-forwarding** (`MLX_BUN_FILL=strict|echo`).
+The default tier is not speculation: the engine appends token spans the
+request's `tools` + the chat template already determine, with no draft, verify,
+or rollback
+(design: [speculative-decoding.md](../design/speculative-decoding.md) §"Token
+fast-forwarding"). Injected tokens are billed in `completion_tokens` like any
+other generated token; `decodeSteps` is what the model actually sampled, so
+`injected / (injected + decodeSteps)` is the share of the reply that never
+touched the weights. The field is absent when the feature is off or the
+request's shape refuses it (fixed `seed`, `logprobs`, structured output,
+media, a mounted draft model, quantized KV).
+
+Under `MLX_BUN_FILL=echo` a second, weaker source joins: spans copied from
+earlier in the same session, carried under policy `verify`. Those ride the same
+single forward, are checked against the argmax already in its logits, and have
+their rejected tail rewound — so `verifyAccepted + verifyRejected` is what the
+echo index proposed and `injected` is what survived. `wastedSamples` counts
+only ASSERT fills (a verify fill consumes the in-flight sample as its first
+position's check instead of discarding it).
 
 ### logprobs / top_logprobs
 

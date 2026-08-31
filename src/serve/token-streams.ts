@@ -73,6 +73,11 @@ export class ToolAwareStream {
     readonly tokenizer: LoadedTokenizer,
     readonly mode: ToolStreamMode,
     readonly tools: ToolDefinition[] | null,
+    /** Fired when parseGeneratedToolCalls rejects the emitted markup. The
+     *  fill table (src/fill/) subscribes: a request whose tool call the
+     *  parser refuses is a request whose template rendering disagreed with
+     *  what the model emits, so its strict rows are disarmed. */
+    private readonly onParseFailure?: () => void,
   ) {
     this.#decoder = new StreamDecoder(tokenizer, mode !== "buffered-text");
     this.#channelDecoder = new StreamDecoder(tokenizer, true);
@@ -227,6 +232,7 @@ export class ToolAwareStream {
       } catch {
         this.#textToolParseFailed = true;
         this.#textToolCalls = [];
+        this.onParseFailure?.();
       }
       return this.#textToolCalls;
     }

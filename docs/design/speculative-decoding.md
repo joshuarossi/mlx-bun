@@ -3,7 +3,7 @@ status: landed
 axis: ON
 canonical-for: speculative-decoding
 plan-anchor: "Phase 14 — Qwen 3.x family bring-up `[~]`"
-last-verified: 2026-08-23
+last-verified: 2026-08-31
 ---
 
 # Speculative decoding — one verifier, every draft source
@@ -121,7 +121,7 @@ speculation for the request.
 - Prompt-cache reuse is BYPASSED on the spec path (fresh caches per spec
   request, `cachedTokens = 0`). mlx-lm composes spec with its LRU prompt
   cache; wiring ours through `PromptCache` + the SSD tier is the open item
-  in §7.
+  in §8.
 - Grammar × spec (novel — no runtime serves both): the drafter runs FREE;
   the grammar mask rides the accept walk in `samplePos` (mask before
   sample; the matcher advances on emitted tokens only, so rejected drafts
@@ -472,7 +472,212 @@ candidate (PLAN 14h, optional).
   exclusive; one provider per request so two draft histories never advance
   target or grammar state twice.
 
-## 7. Open items
+## 7. Token fast-forwarding — lookup, not speculation
+
+**No draft/verify contract is involved.** Nothing in this section routes
+through `src/spec/`; there is no drafter, no verify forward, no rollback, and
+no comparison against what the model "would have" produced. It is filed here
+only because the spec lane is the neighbouring mechanism and the two are
+routinely confused. The one fact borrowed from it is that a multi-token
+mid-decode append works — which the grammar jump-forward burst already proved.
+
+**The doctrine.** A transformer is a next-token function over a token
+sequence. It has no memory of who wrote which token, so an APPENDED token is
+indistinguishable from a sampled one: injection is pure context extension. When
+the engine already knows the next *m* tokens, consulting the model for them
+buys nothing — it writes them into the KV itself with ONE chunked forward and
+resumes sampling after them. The model is consulted only for tokens it does
+not already know.
+
+**What "already knows" means (strict tier, the only one built).** A request's
+`tools` array plus the model's own chat template determine large parts of the
+assistant turn: the tool-call opening scaffold, the remainder of a tool name
+after its first disambiguating token, the punctuation from the name to the
+arguments object, and — when the schema has exactly one required property —
+the argument key itself. Those spans are compiled per request by **scaffold
+probing**: render the same conversation several ways, tokenize each, and diff
+the token id sequences. What does not change is the template's fixed scaffold,
+by construction. The compiler knows nothing about tool-call syntax: Qwen3.5's
+`<function=NAME>`/`<parameter=KEY>` XML, a JSON `<tool_call>` template, and
+GLM's `<arg_key>`/`<arg_value>` all compile through the same diff, and a
+template that does not render `tool_calls` (or renders them without the name)
+produces identical probes, an empty diff, and no rows — degrade to no-fill,
+never wrong output. Same technique as `request-prep.ts::stableLenFor` uses on
+the generation primer, applied to the assistant turn.
+
+**Why it is safe.**
+- **Every span is sliced from a rendering the model could actually produce** —
+  real tool names, real schema keys. The diff only decides WHERE to cut; the
+  ids always come from the real-name rendering, so every cut is a token
+  boundary of a producible stream. This is not a stylistic preference. Qwen3.5
+  renders `<function=get_weather>`, which the tokenizer encodes as
+  `< function =get _weather >` — `=get` is ONE token. A probe named
+  `zzalphatoolqq` splits the same position as `… = zzalpha…`, inventing a
+  boundary after `=`. A scaffold row cut there injects a bare `=`, the model
+  then emits `get` where it would have emitted `=get`, and the result is
+  byte-identical TEXT over divergent token IDS — with KV that no longer
+  matches what a plain decode would have written. Caught on Qwen3.5-0.8B
+  (2026-08-31); the regression gate is id containment, not text containment
+  (`tests/unit/fill-schema-rows.test.ts`, `tests/parity/fill-strict.test.ts`).
+  With one tool the whole header through the sole key is one span; with
+  several, the scaffold ends exactly where the real merged name tokens diverge
+  (`=get` vs `=search`) and per-tool name rows resume from there.
+- Never `encode(fragment)` in isolation — same reason.
+- Every row is anchored at a token carrying LETTERS (e.g. `<tool_call>`,
+  `</parameter`), with leading template-join whitespace dropped from the
+  trigger. Markup alone is not enough: `</` opens every closing tag a model
+  might write in prose or a code block, so arming on it would inject tool-call
+  markup into an HTML snippet.
+- A close row exists only when EVERY tool in the request takes exactly one
+  required argument — otherwise the model may still be about to write a second
+  `<parameter=…>`, and injecting the close would silently drop it. The
+  request's own schema decides whether the row exists.
+- Ending the turn stays the model's decision: every span is cut at the first
+  EOS id (the grammar jump burst's missing EOS check is deliberately not
+  inherited).
+- A span shorter than 2 ids is rejected — it would save no forward.
+- The cache-alignment invariant: the fill forward carries ONLY the injected
+  ids. The normal step already consumed the trigger token and wrote its KV;
+  forwarding `[trigger, ...ids]` would duplicate a position and silently
+  corrupt both the KV and `PromptCache.put`'s key. `MLX_BUN_FILL_TRACE=1`
+  asserts `cache[0].offset === promptTokens.length + forwarded.length` on both
+  sides of every append.
+- Injected tokens flow through `CompletionSink.push` one at a time, in the
+  same shape as the jump burst, so `StopMatcher` fires mid-burst exactly where
+  it would have. The append happens BEFORE any of the burst's yields, which is
+  what makes a consumer break mid-burst safe — `forwarded` already describes
+  the cache exactly.
+
+**The deviation, stated plainly.** Injection bypasses the sampler. At
+`temperature > 0` a filled reply is not the same draw an unfilled one would
+have been (the sampler is never asked about those positions). That is a
+behavior-policy deviation, not a numerics one, and it is why the feature is
+opt-in (`MLX_BUN_FILL=strict`, default off). At `temperature 0` the strict
+tier is token-identical by construction; the weights gate is
+`tests/parity/fill-strict.test.ts`.
+
+**Mechanism.** `src/generate.ts::generateInner` — the same burst shape as the
+grammar `jumpEmit` branch, with the DEFERRED trigger (fill reads the token the
+pipelined loop already read back; it does not add grammar's eager readback).
+On an ASSERT fill the in-flight sample for the next position is dropped
+unexamined — a discarded pipeline dispatch, counted as `wastedSamples`, not a
+rejected draft. Grammar and fill are forbidden in the same iteration
+(asserted).
+
+### 7.1 One interface, two policies (`src/fill/proposal.ts`)
+
+Every source that can propose the next tokens implements one interface, and
+one apply primitive in the decode loop hosts both policies — because the
+EXPENSIVE half is identical: one chunked forward advancing the KV (and the
+recurrent SSM state) over the whole span.
+
+```ts
+interface ProposalSource { propose(tail: TokenView): Proposal | null }
+interface Proposal { ids: number[]; policy: "assert" | "verify"; origin: … }
+```
+
+- **assert** — the tokens are DETERMINED (a template scaffold). Append and move
+  on: no readback, no checkpoint, no rewind. Strict rows are always assert.
+- **verify** — the tokens are LIKELY (a session self-copy). Position 0 is
+  checked BEFORE the forward against the in-flight sample — free, and a
+  mismatch costs nothing because nothing has been written yet. Positions
+  1..m−1 are checked against the argmax already sitting in THAT SAME forward's
+  logits, so verification adds no pass over the weights. The rejected tail is
+  rewound and decode resumes at the first disagreement, which reproduces
+  exactly the stream an unfilled run would have produced. A wrong guess costs
+  a rewound forward, never a wrong token.
+
+**Rewind reuses the spec lane's cache contract, not its executor.** Trimmable
+caches drop the tail with `trim(n)`; NON-trimmable recurrent caches (SSMCache —
+gated-DeltaNet conv + recurrent state) go through `specRoundBegin()` before the
+forward and `specRoundRollback(keep)` after the accept walk, which restores the
+pre-round snapshot and bit-exactly REPLAYS the accepted prefix (§2). Those are
+plain `Cache`-interface methods driven by the owning layer, so nothing in
+`src/spec/serve-loop.ts` is touched. A model whose caches can do neither still
+gets assert fills; verify proposals are dropped and counted
+(`usage.fill.verifyUnsupported`). Checkpointing is real work (~48 DeltaNet
+states on Qwen3.8) and is measured: `usage.fill.checkpointMs`.
+
+**Not migrated (deliberate).** The shipped `DraftSource` roster (ngram, MTP,
+two-model, DSpark) keeps its own seam and executor. The adapter — a DraftSource
+wrapped as a verify-policy ProposalSource, so one apply primitive serves both
+lanes — is future work; rewiring it here would have put the spec lane's oracles
+at risk for no new capability.
+
+### 7.2 The echo tier (K3c, Lab, `MLX_BUN_FILL=echo`)
+
+A growing per-request k-gram index over promptIds plus everything emitted
+(injected tokens included — the model cannot tell them apart, so neither does
+the index). The structure is the TS port of `GrowingMatcher` from the corpus
+study: sequence + k-gram → positions, appended incrementally, bucket scan
+capped at the NEAREST occurrences (`src/fill/echo-index.ts`).
+
+The lookup is the boring half. The **stopping rule** is the measurement that
+made the tier worth building:
+
+- **Branch-point stopping.** A match says where this context occurred before;
+  it says nothing about how far the future agrees with the past. So a span
+  extends only while EVERY nearby occurrence continues the same way, and stops
+  the moment they disagree. That fork is exactly where old-query-vs-new-query
+  divergence lives, and delimiters fall out for free — a closing quote is where
+  histories fork.
+- **Corroboration decides the policy.** `assert` requires (a) no branch stop,
+  (b) the span ends at a delimiter-class token, AND (c) at least TWO
+  occurrences agreed across the whole span. A single occurrence is a copy, not
+  a pattern: it will happily replay whatever followed it in the transcript —
+  including another role's turn — so it is the model's call. Verified on the
+  0.8B tokenizer against a synthetic agent transcript: an uncorroborated copy
+  ran 30 tokens past `</tool_call>` into a mocked tool RESULT. Under verify
+  that costs one rewound forward; under assert it would have been wrong
+  output. Everything else is `verify`.
+- **Delimiters** are read off the template by the strict-row compiler (the
+  first non-whitespace token that follows an argument value — `"` for JSON,
+  `</` for Qwen3.5's XML). They clamp ECHO spans only: a strict scaffold
+  legitimately contains the same tokens as structure (`{"name": "` is three
+  quotes deep) and is determined by construction.
+
+Deterministic value transforms (url-encode, JSON-escape) as
+`(source-span, transform)` table entries are NOT implemented — the seam is the
+same `ProposalSource` interface, and the corpus rates that motivate them are in
+PLAN K3.
+
+The bar for this tier is NOT token identity (sampling never guaranteed that):
+it is a paired A/B on task success and wall clock over mocked-replay agent
+sessions. Default off until that lands.
+
+**Composition.** Serial lane only, and it never FORCES a request serial — a
+batch-placed request simply does not fill, because `generate()` is the only
+site that reads `options.fill`. Refused for: a compiled grammar (forced tokens
+are its job), `logprobs`/`top_logprobs` (injected tokens have no distribution
+row — the same rule as `shouldUseGrammarJump`), a user-fixed `seed`
+(reproducibility: the step index would skip injected positions), media
+prompts, a mounted draft model, quantized/TurboQuant KV (post-conversion
+multi-token append is L-generic but unvalidated), and sliding-window models
+(RotatingKVCache multi-token append is O(window) via `#updateConcat` — one
+warning, then no fill).
+
+**Mismatch policy.** If `parseGeneratedToolCalls` rejects the emitted markup
+on a request whose rows fired, `usage.fill.parseFallback` increments and
+strict rows disarm. Today the served parse runs at sink flush, i.e. after the
+generation ends, so within one request this is telemetry; the seam is wired so
+an incremental parse (or a plan cached across requests) disarms for real.
+
+**Files.** `src/fill/proposal.ts` (the interface + the two policies),
+`src/fill/fill-session.ts` (sources, clamping, flags, telemetry),
+`src/fill/schema-rows.ts` (scaffold probing + value delimiters),
+`src/fill/echo-index.ts` (k-gram index + branch-point rule), the apply
+primitive in `src/generate.ts`, `fillPlanFor` in `src/serve/request-prep.ts`,
+the attach + serve-level refusals in `src/serve/chat-stage.ts`, `usage.fill` in
+`src/serve/{completion-executor,openai-wire}.ts`. Tests:
+`tests/unit/fill-{session,schema-rows,echo-index,generate-loop}.test.ts`,
+`tests/serve/fill-{composition,stream}.test.ts`,
+`tests/parity/fill-strict.test.ts` (weights-gated).
+User-facing mirror: `docs/reference/server-config.md` (`MLX_BUN_FILL`,
+`MLX_BUN_FILL_MAX_SPAN`, `MLX_BUN_FILL_TRACE`, `MLX_BUN_FILL_K`,
+`MLX_BUN_FILL_CANDIDATES`, `MLX_BUN_FILL_INDEX_MAX`), `server-api.md`
+(`usage.fill`).
+
+## 8. Open items
 
 - DSpark serving program phases 0, 1d, 1e, 1.5, 2, 3, 4, 5, 6 (§4.5) —
   every GPU measurement is Josh's shell; Phase 3 (generated-forward tap)

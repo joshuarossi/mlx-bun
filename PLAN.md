@@ -306,7 +306,32 @@ on unified memory; two ideas survive the port. Canonical docs on landing:
       numerics — same caches from an earlier boundary, so the bar is
       bit-exact continuation, no Lab gate. Trimmable-KV paths must be
       provably unregressed.
-- [ ] **K3 — tool-call fill table (lookup, not speculation).** The model is
+- [~] **K3 — tool-call fill table (lookup, not speculation).** K3a (append
+      mechanism) + K3b (strict schema/template rows) LANDED, default off:
+      `MLX_BUN_FILL=strict`, `src/fill/{fill-session,schema-rows}.ts`, the
+      fill branch in `generate.ts`, `usage.fill`, design in
+      [speculative-decoding.md](docs/design/speculative-decoding.md) §7.
+      Rows are compiled by diffing probe renderings of the model's own
+      template, so the compiler knows no tool-call syntax. First 0.8B weights
+      run (2026-08-31): mechanism clean (12/29 tokens injected, 16 decode
+      steps vs 28) but ids diverged — placeholder-name probes split Qwen3.5's
+      merged `=get` token. Fixed: every span is now sliced from a REAL-name
+      rendering, and the regression gate is token-ID containment, not text.
+      Weights gate PASSED on Qwen3.5-0.8B (token-identical, 12/28 injected,
+      decode 15 vs 28). K3c LANDED behind `MLX_BUN_FILL=echo` (Lab, default
+      off): one `ProposalSource` interface with two policies over ONE apply
+      primitive — `assert` (determined; no readback, no checkpoint) and
+      `verify` (likely; argmax read from the same forward's free logits,
+      rejected tail rewound through the spec lane's cache contract, decode
+      resumes at the first disagreement). Echo = growing k-gram index
+      (`GrowingMatcher` port) + branch-point stopping; `assert` additionally
+      requires CORROBORATION (≥2 occurrences agreed) after an uncorroborated
+      copy was observed replaying a mocked tool RESULT 30 tokens past
+      `</tool_call>`. Not migrated: the spec lane's DraftSources (adapter is
+      future work). Remaining: deterministic value transforms (seam only), the
+      mocked-replay A/B + bandwidth-ceiling showcase below — which is what
+      decides whether echo ever becomes a default. Original brief:
+      The model is
       a next-token function; injected context is indistinguishable from
       generated context. So the engine keeps a per-request fill table and,
       whenever the stream enters a determined span, APPENDS the span's

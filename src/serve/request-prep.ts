@@ -6,6 +6,13 @@
 // captured by the route handlers. Extracted from src/server.ts (repo-taming
 // Phase 4).
 import type { ToolDefinition } from "../chat-template";
+import {
+  fillEchoConfig,
+  fillMaxSpan,
+  FillSession,
+  resolveFillMode,
+} from "../fill/fill-session";
+import { compileStrictFillRows, type StrictRowPlan } from "../fill/schema-rows";
 import type { GenerateOptions } from "../generate";
 import { compileGrammarRequest, grammarEnabled, type GrammarRequest } from "../grammar";
 import type { KvSchemeOptions } from "../kv-scheme";
@@ -241,8 +248,85 @@ export function createRequestPrep(input: {
     // — see selectToolStreamMode for why sentinel ids must stay family-gated.
     selectToolStreamMode(ctx.model.config.modelType, !!tools?.length);
 
-  const toolRouter = (tools: ToolDefinition[] | null): ToolAwareStream =>
-    new ToolAwareStream(ctx.tokenizer, toolStreamMode(tools), tools);
+  const toolRouter = (
+    tools: ToolDefinition[] | null,
+    onParseFailure?: () => void,
+  ): ToolAwareStream =>
+    new ToolAwareStream(ctx.tokenizer, toolStreamMode(tools), tools, onParseFailure);
+
+  /** Strict fill rows are a function of (template mode, tool signature) only —
+   *  they are token spans of the assistant turn, which opens with a special
+   *  token, so message content cannot shift them (the same argument that lets
+   *  stableLenFor memoize its primer length). Compiling costs several template
+   *  renders + encodes, so it happens ONCE per mode. */
+  const fillRowsByMode = new Map<string, StrictRowPlan>();
+  const toolsSignature = (tools: ToolDefinition[]): string =>
+    JSON.stringify(tools.map((t) => [
+      t.function?.name,
+      Object.keys((t.function?.parameters?.properties ?? {}) as Record<string, unknown>),
+      (t.function?.parameters?.required as unknown) ?? null,
+      (t.function?.parameters?.additionalProperties as unknown) ?? null,
+    ]));
+
+  /** Token fast-forwarding (docs/design/speculative-decoding.md "Token
+   *  fast-forwarding"): compile this request's determined-span table, or null
+   *  when the feature is off or the request's shape refuses it.
+   *
+   *  Refusals owned here (body-level); the ones only ChatStage can see —
+   *  a compiled grammar, media prompts, a mounted draft model, a quantized KV
+   *  scheme — are applied there. Continuous (batch) placement needs no
+   *  refusal: generate() is the only fill site, so a batched request simply
+   *  does not fill.
+   *
+   *  MLX_BUN_FILL=echo additionally arms the echo index (K3c, Lab tier): the
+   *  strict rows keep policy "assert", and copied spans ride the same
+   *  mechanism under policy "verify". */
+  const fillPlanFor = (
+    req: ChatRequestParams,
+    tools: ToolDefinition[] | null,
+    promptIds: number[],
+  ): FillSession | null => {
+    const mode = resolveFillMode();
+    if (mode === "off") return null;
+    if (!tools?.length) return null;
+    // A user-fixed seed means reproducibility: the sampler's step index would
+    // skip the injected positions, so an identical request could not replay.
+    if (req.seed !== undefined) return null;
+    // Injected tokens are never sampled — they have no logprob row.
+    if (req.logprobs === true) return null;
+    if (typeof req.top_logprobs === "number" && req.top_logprobs > 0) return null;
+    // Structured output owns forced-token production (grammar jump-forward).
+    if (req.response_format != null || req.guided_grammar || req.guided_regex ||
+        req.guided_choice?.length || req.structured_outputs != null) return null;
+
+    const opts = templateOptionsFor(req, tools);
+    const key = `${opts.enableThinking}|${opts.reasoningEffort ?? ""}|` +
+      `${opts.preserveThinking ?? ""}|${toolsSignature(tools)}`;
+    let plan = fillRowsByMode.get(key);
+    if (plan === undefined) {
+      plan = compileStrictFillRows({
+        template: ctx.template,
+        tokenizer: ctx.tokenizer,
+        messages: normalizeMessages(req.messages),
+        tools,
+        renderOptions: opts,
+      });
+      fillRowsByMode.set(key, plan);
+    }
+    // The echo tier can carry a request whose template yields no strict rows;
+    // strict-only mode cannot.
+    if (!plan.rows.length && mode !== "echo") return null;
+    return new FillSession(
+      {
+        rows: plan.rows,
+        echo: mode === "echo" ? fillEchoConfig() : null,
+        delimiters: new Set(plan.delimiters),
+        eos: ctx.model.config.eosTokenIds,
+      },
+      promptIds,
+      { maxSpan: fillMaxSpan() },
+    );
+  };
 
   return {
     resolveEnableThinking,
@@ -252,6 +336,7 @@ export function createRequestPrep(input: {
     promptIdsFor,
     stableLenFor,
     toolRouter,
+    fillPlanFor,
   };
 }
 

@@ -19,6 +19,7 @@ export const openAiUsage = (usage: CompletionUsage) => ({
   total_tokens: usage.totalTokens,
   prompt_tokens_details: { cached_tokens: usage.cachedTokens },
   ...(usage.speculation ? { speculation: usage.speculation } : {}),
+  ...(usage.fill ? { fill: usage.fill } : {}),
 });
 
 /** Terminal usage: the wire block plus mlx-bun's `lane` (batch|serial|…). */

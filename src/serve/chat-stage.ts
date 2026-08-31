@@ -122,6 +122,19 @@ export class ChatStage {
     // Attach the compiled grammar controller (null when no constraint /
     // degrade — generate() runs the unmasked fast pipelined loop).
     if (grammarCtrl) options.grammar = grammarCtrl;
+    // Token fast-forwarding (K3, MLX_BUN_FILL=strict): the determined-span
+    // table for this request's tools. Refused for the shapes only this stage
+    // can see — a compiled grammar (forced tokens are its job), media prompts
+    // (embeddings prefill / mRoPE), a mounted draft model (the spec loop is a
+    // different executor and never reads options.fill), and quantized-KV
+    // schemes (post-conversion multi-token append is unvalidated). The
+    // body-level refusals live in prep.fillPlanFor.
+    let fillSession: import("../fill/fill-session").FillSession | null = null;
+    if (!grammarCtrl && !vision && !diffusionPixels && !ctx.draft &&
+        !options.kvBits && !options.kvConfig?.length && !options.turboQuant) {
+      fillSession = prep.fillPlanFor(body, tools, promptIds);
+      if (fillSession) options.fill = fillSession;
+    }
     // Unset = no request-level ceiling; admission clamps to the admitted
     // context (the program is the cap).
     const requestedMaxTokens = options.maxTokens ?? Infinity;
@@ -159,7 +172,9 @@ export class ChatStage {
       },
       ...(vision ? { vision } : {}),
       pipeline: {
-        router: prep.toolRouter(tools),
+        // The router's parse-failure hook disarms this request's strict fill
+        // rows (and records `usage.fill.parseFallback`).
+        router: prep.toolRouter(tools, fillSession ? () => fillSession!.noteParseFailure() : undefined),
         stopper: new StopMatcher(options.stopSequences),
         thinking: new ThinkingTagSplitter(
           ctx.template.thinkingFormat === "think-tag",
