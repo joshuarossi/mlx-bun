@@ -3,6 +3,8 @@
 // six-task capability suite (MMLU/GSM8K/IFEval/BFCL/HumanEval/HashHop).
 //
 //   bun scripts/eval.ts kl         --candidate e4b            # KL drift gate
+//   bun scripts/eval.ts kl --candidate <m> --reference-logits runs/kl-teacher/<tag>
+//                                                             # vs a saved bf16 teacher
 //   bun scripts/eval.ts gsm8k      --candidate e4b [--n 200]  # one task
 //   bun scripts/eval.ts capability --candidate e4b            # all six + score
 //   bun scripts/eval.ts smoketest  --candidate e4b            # KL + GSM8K-50
@@ -13,7 +15,10 @@
 
 import { readFileSync } from "node:fs";
 import { DEFAULT_KL_PROMPTS } from "../src/eval/kl-prompts";
-import { evaluateKlSelfFlag, evaluateKlTwoModel, evaluateKlServingDecode, type KLResult } from "../src/eval/kl";
+import {
+  evaluateKlSelfFlag, evaluateKlTwoModel, evaluateKlServingDecode,
+  evaluateKlVsReferenceLogits, type KLResult, type RefLogitsKLResult,
+} from "../src/eval/kl";
 import { loadTaskModel, type TaskModel } from "../src/eval/runner";
 import { evaluateGsm8k } from "../src/eval/tasks/gsm8k";
 import { evaluateMmlu } from "../src/eval/tasks/mmlu";
@@ -56,6 +61,28 @@ function activeConfig(): Record<string, string> {
 
 // ---- KL drift gate -------------------------------------------------------
 
+/** One `quality_runs` row for any KL mode (self-flag / two-model /
+ *  serving-decode / saved-teacher). */
+function recordKl(candidate: string, res: KLResult, extra: { notes: string }): void {
+  const db = new QualityDB();
+  db.record({
+    modelPath: candidate, commitSha: gitCommit(), task: "kl", config: activeConfig(),
+    nSamples: res.nPrompts, klMean: res.meanKl, klMedian: res.medianKl, klP95: res.p95Kl,
+    klRef: res.refLabel, notes: extra.notes, machineState: machineStateJson(checkMachine()),
+  });
+  db.close();
+}
+
+function reportRefLogits(res: RefLogitsKLResult): void {
+  console.log(
+    `\nKL(teacher ‖ cand)  mean=${res.meanKl.toFixed(5)}  median=${res.medianKl.toFixed(5)}  ` +
+    `p95=${res.p95Kl.toFixed(5)}\n  top-1 agreement=${(res.top1Agreement * 100).toFixed(2)}%  ` +
+    `captured mass=${res.meanCapturedMass.toFixed(4)} (top-${res.topK})\n  ` +
+    `teacher=${res.refModel}  ${res.nPrompts} seqs × ${res.seqLen} ctx  ` +
+    `${res.nPositions} positions  elapsed ${res.elapsedSec.toFixed(0)}s`,
+  );
+}
+
 async function runKl(): Promise<void> {
   const candidate = opt("candidate");
   if (!candidate) { console.error("kl: --candidate <query|path> is required"); process.exit(1); }
@@ -67,6 +94,27 @@ async function runKl(): Promise<void> {
 
   const decode = process.argv.includes("--decode");
   const reference = opt("reference");
+  const referenceLogits = opt("reference-logits");
+
+  // Saved-teacher mode brings its own corpus (tokens.bin) and context length,
+  // so --prompts-file/--seq don't apply; --n caps the sequences scored.
+  if (referenceLogits) {
+    console.log(`[eval/kl] candidate=${candidate}  reference-logits=${referenceLogits}`);
+    const res = await evaluateKlVsReferenceLogits({
+      candidate,
+      referenceDir: referenceLogits,
+      nSeqs: opt("n") ? Number(opt("n")) : undefined,
+      chunkSize: Number(opt("chunk", "512")),
+    });
+    reportRefLogits(res);
+    recordKl(candidate, res, {
+      notes:
+        `eval/kl reference-logits ctx=${res.seqLen} positions=${res.nPositions} ` +
+        `topK=${res.topK} top1=${res.top1Agreement.toFixed(4)} ` +
+        `mass=${res.meanCapturedMass.toFixed(4)} teacher=${res.refModel}`,
+    });
+    return;
+  }
 
   console.log(`[eval/kl] candidate=${candidate}  prompts=${nPrompts}×${seqLen}`);
   let res: KLResult;
@@ -96,13 +144,7 @@ async function runKl(): Promise<void> {
     `elapsed ${res.elapsedSec.toFixed(0)}s`,
   );
 
-  const db = new QualityDB();
-  db.record({
-    modelPath: candidate, commitSha: gitCommit(), task: "kl", config: activeConfig(),
-    nSamples: res.nPrompts, klMean: res.meanKl, klMedian: res.medianKl, klP95: res.p95Kl,
-    klRef: res.refLabel, notes: `eval/kl seq=${res.seqLen}`, machineState: machineStateJson(checkMachine()),
-  });
-  db.close();
+  recordKl(candidate, res, { notes: `eval/kl seq=${res.seqLen}` });
 }
 
 // ---- capability tasks ----------------------------------------------------

@@ -22,14 +22,15 @@
 
 import { existsSync } from "node:fs";
 import { MlxArray } from "../mlx/array";
-import { Dtype } from "../mlx/ffi";
+import { clearCache, Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import { Registry } from "../registry";
 import { Weights } from "../weights";
 import { loadModelConfig, type ModelConfig, type TurboQuantScheme } from "../config";
 import { createModel, type RuntimeModel } from "../model/factory";
 import { loadTokenizer, type LoadedTokenizer } from "../tokenizer";
-import { maybeQuantizeKv } from "../generate";
+import { evalCacheState, maybeQuantizeKv } from "../generate";
+import { ReferenceLogitsDump, type ReferenceRecords } from "./reference-logits";
 import {
   configureRuntime,
   runtimeKey,
@@ -354,4 +355,236 @@ export async function evaluateKlKvArm(opts: {
       ? `bf16 vs turbo k${opts.candidateScheme.turboQuant.kBits}v${opts.candidateScheme.turboQuant.vBits} (${decodeSteps} steps)`
       : `bf16 vs kv-scheme (${decodeSteps} steps)`,
   };
+}
+
+// --- saved-teacher KL (--reference-logits) --------------------------------
+// The two-model mode above needs both arms resident; a bf16 teacher never
+// fits beside a candidate on 32 GB. So the teacher is dumped ONCE from
+// Python (top-k logits + full-vocab logsumexp per position; format and
+// rationale in reference-logits.ts) and every candidate is scored against
+// the dump through OUR engine.
+//
+// Per position, with the teacher's top-k slice j ∈ K:
+//   p_j     = exp(ref_logit_j − ref_logsumexp)        (full-vocab softmax)
+//   log q_j = cand_logit_j − logsumexp(cand, FULL vocab)
+//   KL      = Σ_j p_j · (log p_j − log q_j)
+// The sum is truncated to K, so it under-counts by the tail p carries
+// outside the top-k — `meanCapturedMass` (Σ_j p_j) reports exactly how much
+// of p the number covers, and a run with low captured mass is not a
+// comparable KL. Everything is float32; the candidate's logsumexp is over
+// its FULL vocab (never the top-k slice), so log q is a real log-probability.
+//
+// The forward is the SERVING path (model.makeCache + chunked forwardHidden +
+// logitsFromHidden), NOT trainForward: trainForward's cache stub has no
+// DeltaNet SSMCache.advance, which is why `mlx-bun perplexity` cannot score
+// qwen3_5 at all (docs/design/turboquant.md, "Known engine gaps"). KV stays
+// bf16 — this is a weights-only instrument.
+
+export interface RefLogitsKLResult extends KLResult {
+  /** Positions actually scored (Σ over sequences). */
+  nPositions: number;
+  /** Fraction of positions where argmax(ref) == argmax(cand) over full vocab. */
+  top1Agreement: number;
+  /** Mean Σ_{j∈topK} p_j — how much of the teacher's mass the KL sum covers. */
+  meanCapturedMass: number;
+  topK: number;
+  /** manifest.model — the teacher these numbers are against. */
+  refModel: string;
+}
+
+/** Teacher-forced candidate logits for one sequence, emitted in
+ *  position-ordered chunks: `onChunk(startPos, logits[1, C, V])`. The callee
+ *  owns the array and disposes it after `onChunk` returns. This is the seam
+ *  the model-free test replaces (no weights, no registry). */
+export type TeacherForcedLogits = (
+  tokens: number[],
+  onChunk: (startPos: number, logits: MlxArray) => void,
+) => void;
+
+/** The real engine forward: one cache for the whole sequence, prefilled in
+ *  chunks, lm_head applied per chunk so full-vocab logits for a 4k context
+ *  never exist at once (4096 × 151k × 4 B ≈ 2.5 GB). */
+export function engineTeacherForcedLogits(
+  model: RuntimeModel,
+  chunkSize: number,
+): TeacherForcedLogits {
+  return (tokens, onChunk) => {
+    const cache = model.makeCache();
+    try {
+      for (let pos = 0; pos < tokens.length; pos += chunkSize) {
+        const end = Math.min(pos + chunkSize, tokens.length);
+        const ids = ops.fromInt32(tokens.slice(pos, end), [1, end - pos]);
+        let h: MlxArray;
+        try {
+          h = model.forwardHidden(ids, cache);
+        } finally {
+          ids.dispose();
+        }
+        let logits: MlxArray;
+        try {
+          logits = model.logitsFromHidden(h);
+        } finally {
+          h.dispose();
+        }
+        try {
+          onChunk(pos, logits);
+        } finally {
+          logits.dispose();
+        }
+        evalCacheState(cache);
+        clearCache(); // mlx-lm _prefill cadence: don't let chunk transients pile up
+      }
+    } finally {
+      for (const c of cache) c.dispose();
+    }
+  };
+}
+
+interface ChunkScore {
+  kl: Float32Array;   // [rows]
+  mass: Float32Array; // [rows]
+  top1: Uint8Array;   // [rows] 1 = candidate argmax == teacher argmax
+}
+
+/** Score `rows` candidate positions against the matching teacher records.
+ *  `logits` is [1, C, V]; rows [rowLo, rowHi) of it line up with
+ *  `records` rows [0, count). */
+function scoreChunkAgainstRecords(
+  logits: MlxArray, rowLo: number, rowHi: number, records: ReferenceRecords,
+): ChunkScore {
+  const rows = rowHi - rowLo;
+  const K = records.topK;
+  const V = logits.shape[2]!;
+  if (records.count !== rows)
+    throw new Error(`reference-logits: ${records.count} records for ${rows} candidate rows`);
+
+  // Teacher indices must exist in the candidate's vocabulary.
+  let maxIdx = -1;
+  for (const v of records.indices) if (v > maxIdx) maxIdx = v;
+  if (maxIdx >= V || records.indices.some((v) => v < 0))
+    throw new Error(
+      `reference-logits: teacher index ${maxIdx} out of range for candidate vocab ${V} ` +
+      `— the dump was made with a different tokenizer`,
+    );
+
+  const owned: MlxArray[] = [];
+  try {
+    const sliced = logits.slice([0, rowLo, 0], [1, rowHi, V]);
+    owned.push(sliced);
+    const f32 = sliced.dtype === Dtype.float32 ? sliced : sliced.astype(Dtype.float32);
+    if (f32 !== sliced) owned.push(f32);
+
+    const lse = ops.logsumexpAxis(f32, -1, false); // [1, rows], full vocab
+    owned.push(lse);
+    const argmax = ops.argmaxAxis(f32, -1);        // [1, rows], full vocab
+    owned.push(argmax);
+    const idx = MlxArray.fromInt32(records.indices, [1, rows, K]);
+    owned.push(idx);
+    const gathered = ops.takeAlongAxis(f32, idx, 2); // [1, rows, K]
+    owned.push(gathered);
+
+    const candTop = gathered.toFloat32();
+    const candLse = lse.toFloat32();
+    const candArgmax = argmax.toIntTokens();
+
+    const kl = new Float32Array(rows);
+    const mass = new Float32Array(rows);
+    const top1 = new Uint8Array(rows);
+    for (let r = 0; r < rows; r++) {
+      const refLse = records.logsumexp[r]!;
+      const qLse = candLse[r]!;
+      const base = r * K;
+      let acc = 0;
+      let m = 0;
+      for (let j = 0; j < K; j++) {
+        const logP = records.logits[base + j]! - refLse;
+        const p = Math.exp(logP);
+        if (p === 0) continue;
+        m += p;
+        acc += p * (logP - (candTop[base + j]! - qLse));
+      }
+      kl[r] = acc;
+      mass[r] = m;
+      top1[r] = candArgmax[r] === records.indices[base]! ? 1 : 0;
+    }
+    return { kl, mass, top1 };
+  } finally {
+    for (const a of owned) a.dispose();
+  }
+}
+
+/** KL(saved bf16 teacher ‖ candidate) at EVERY teacher-forced position. */
+export async function evaluateKlVsReferenceLogits(opts: {
+  candidate: string;
+  /** Dump directory (runs/kl-teacher/<tag>). */
+  referenceDir: string;
+  /** Cap on sequences scored (default: all in the manifest). */
+  nSeqs?: number;
+  /** Positions per candidate forward (default 512 — see the memory note). */
+  chunkSize?: number;
+  /** Test seam: use this forward instead of loading `candidate`. */
+  forward?: TeacherForcedLogits;
+}): Promise<RefLogitsKLResult> {
+  const t0 = Date.now();
+  const dump = ReferenceLogitsDump.open(opts.referenceDir);
+  const chunkSize = Math.max(1, opts.chunkSize ?? 512);
+  const nSeqs = Math.max(1, Math.min(opts.nSeqs ?? dump.nSeqs, dump.nSeqs));
+
+  const forward = opts.forward
+    ?? engineTeacherForcedLogits((await loadRunnable(opts.candidate)).model, chunkSize);
+
+  try {
+    const perSeq: Float32Array[] = [];
+    let nPositions = 0;
+    let top1Hits = 0;
+    let massSum = 0;
+
+    for (let s = 0; s < nSeqs; s++) {
+      const tokens = dump.tokens(s);
+      const scored = Math.min(dump.positionsPerSeq, tokens.length - 1);
+      const kls = new Float32Array(scored);
+      let filled = 0;
+
+      forward(tokens, (startPos, logits) => {
+        const chunkLen = logits.shape[1]!;
+        const lo = startPos;
+        const hi = Math.min(startPos + chunkLen, scored);
+        if (hi <= lo) return; // trailing positions have no teacher record
+        const records = dump.readRecords(s, lo, hi);
+        const sc = scoreChunkAgainstRecords(logits, lo - startPos, hi - startPos, records);
+        for (let r = 0; r < sc.kl.length; r++) {
+          kls[lo + r] = sc.kl[r]!;
+          massSum += sc.mass[r]!;
+          top1Hits += sc.top1[r]!;
+        }
+        filled += hi - lo;
+      });
+
+      if (filled !== scored)
+        throw new Error(
+          `reference-logits: candidate forward covered ${filled} of ${scored} positions ` +
+          `on sequence ${s}`,
+        );
+      perSeq.push(kls);
+      nPositions += scored;
+    }
+
+    const agg = aggregate(perSeq);
+    return {
+      nPrompts: perSeq.length,
+      seqLen: dump.ctxLen,
+      meanKl: agg.mean,
+      medianKl: agg.median,
+      p95Kl: agg.p95,
+      elapsedSec: (Date.now() - t0) / 1000,
+      refLabel: `ref-logits:${dump.manifest.model} top${dump.topK} (${opts.referenceDir})`,
+      nPositions,
+      top1Agreement: nPositions ? top1Hits / nPositions : 0,
+      meanCapturedMass: nPositions ? massSum / nPositions : 0,
+      topK: dump.topK,
+      refModel: dump.manifest.model,
+    };
+  } finally {
+    dump.close();
+  }
 }
