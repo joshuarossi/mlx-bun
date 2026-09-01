@@ -1,0 +1,7 @@
+{"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "Run the fast suite."}]}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "toolCall", "name": "bash", "arguments": {"command": "bun test tests/unit"}}]}}
+{"type": "message", "message": {"role": "bashExecution", "command": "bun test tests/unit", "output": "1509 pass 0 fail", "excludeFromContext": false}}
+{"type": "message", "message": {"role": "bashExecution", "command": "echo secret", "output": "hidden", "excludeFromContext": true}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "All green."}, {"type": "toolCall", "name": "bash", "arguments": {"command": "bun test tests/serve"}}]}}
+{"type": "message", "message": {"role": "bashExecution", "command": "bun test tests/serve", "output": "88 pass 0 fail", "excludeFromContext": false}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "Both suites are green."}]}}

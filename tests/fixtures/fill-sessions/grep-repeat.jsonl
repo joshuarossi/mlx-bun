@@ -1,0 +1,6 @@
+{"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "What does the kv budget do?"}]}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "toolCall", "name": "grep", "arguments": {"pattern": "kvBudgetBytes"}}]}}
+{"type": "message", "message": {"role": "toolResult", "toolName": "grep", "content": [{"type": "text", "text": "src/serve/batch-scheduler.ts:41: kvBudgetBytes"}]}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "toolCall", "name": "grep", "arguments": {"pattern": "kvBudgetBytes"}}]}}
+{"type": "message", "message": {"role": "toolResult", "toolName": "grep", "content": [{"type": "text", "text": "src/serve/batch-scheduler.ts:41: kvBudgetBytes"}]}}
+{"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": "It caps aggregate KV across admitted batch rows."}]}}

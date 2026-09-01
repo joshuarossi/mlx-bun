@@ -662,6 +662,53 @@ strict rows disarm. Today the served parse runs at sink flush, i.e. after the
 generation ends, so within one request this is telemetry; the seam is wired so
 an incremental parse (or a plan cached across requests) disarms for real.
 
+### 7.3 Measuring it (K3d, `scripts/fill.ts`)
+
+Neither tier ships on a vibe. The harness replays RECORDED agent sessions with
+their tool results mocked verbatim from the JSONL — the transcript IS the
+environment, a model cannot tell an executed result from a recorded one — so a
+whole corpus replays deterministically and side-effect-free. The session reader
+is a straight port of the corpus study's (`reports/k3-replication/analyze.py`
+`load_session` / `serialize_tool_call`), including its `excludeFromContext` rule
+and corrupt-line tolerance, so the measured rates in PLAN K3 keep describing
+what the harness actually sends. The recordings carry no `tools` array, so the
+harness SYNTHESIZES one per session (union of observed argument keys; keys
+present in every call marked required) — a reconstruction that is itself part
+of what the A/B measures.
+
+```
+bun scripts/fill.ts replay --sessions <file|dir> --server-url <url>
+bun scripts/fill.ts ab     --sessions <file|dir> --url-a <off> --url-b <echo>
+bun scripts/fill.ts ab     --showcase fixtures/showcase-silicon-exchange.txt --url-a … --url-b …
+bun scripts/fill.ts report <runs.jsonl> [--by-tool]
+```
+
+Fill is a process-wide lever, so the two arms are two SERVERS (A without
+`MLX_BUN_FILL`, B with it). Turns interleave A, B, A, B … so load drift and
+thermal state land on both arms, and the verdict pairs on (session, turn, rep).
+
+**The echo-tier gate**: task-output agreement must not drop within CI AND
+median wall clock must strictly improve. Agreement is the CALL the model made
+(tool name + arguments, key-order independent) or a prose turn's normalized
+text — never token identity, which sampling never promised and which an agent
+loop does not care about. "Does not drop" is McNemar's paired counts with a
+one-sided 95% bound, so a tie or a swing inside the noise passes and a real
+regression does not. The strict tier keeps its own, stricter bar (token
+identity at temperature 0, `tests/parity/fill-strict.test.ts`).
+
+**The showcase** runs ONE large tool-dense prompt ×3 interleaved and reports
+emitted vs decoded tok/s, the fill fraction, time-to-first-tool-call, and the
+bandwidth-ceiling check: a pure autoregressive decode reads every weight byte
+once per token, so decoded tok/s can never exceed `memoryBandwidth ÷
+weightBytes`. An EMITTED rate above that ceiling is proof — on the skeptic's own
+napkin — that those tokens never went through the weights. `apparent =
+decoded / (1 − fillFrac)` is arithmetic, not a claim; the ceiling is what makes
+it interesting.
+
+The verdict math is model-free and unit-tested against a stub server
+(`tests/research/fill-echo-replay.test.ts`), including the ways it FAILS — a
+harness that can only produce PASS is not a gate.
+
 **Files.** `src/fill/proposal.ts` (the interface + the two policies),
 `src/fill/fill-session.ts` (sources, clamping, flags, telemetry),
 `src/fill/schema-rows.ts` (scaffold probing + value delimiters),
@@ -671,7 +718,11 @@ the attach + serve-level refusals in `src/serve/chat-stage.ts`, `usage.fill` in
 `src/serve/{completion-executor,openai-wire}.ts`. Tests:
 `tests/unit/fill-{session,schema-rows,echo-index,generate-loop}.test.ts`,
 `tests/serve/fill-{composition,stream}.test.ts`,
-`tests/parity/fill-strict.test.ts` (weights-gated).
+`tests/parity/fill-strict.test.ts` (weights-gated). Harness: `scripts/fill.ts`
++ `scripts/fill/{session-replay,runner,client,metrics,args,replay,ab,report}.ts`,
+`tests/unit/fill-session-reader.test.ts`,
+`tests/research/fill-echo-replay.test.ts`,
+`fixtures/showcase-silicon-exchange.txt`.
 User-facing mirror: `docs/reference/server-config.md` (`MLX_BUN_FILL`,
 `MLX_BUN_FILL_MAX_SPAN`, `MLX_BUN_FILL_TRACE`, `MLX_BUN_FILL_K`,
 `MLX_BUN_FILL_CANDIDATES`, `MLX_BUN_FILL_INDEX_MAX`), `server-api.md`

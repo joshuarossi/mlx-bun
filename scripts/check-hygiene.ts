@@ -340,8 +340,11 @@ const SCRIPTS_ROOT_ALLOWLIST = new Set([
   // quality + parity + training checks
   "eval.ts", "run-ifeval.ts", "parity-check.ts", "op-parity-check.ts",
   "train-orpo.ts", "curate-ultrafeedback.ts", "inspect-model.ts",
-  // dispatchers' job families live in subdirs: regen/ dspark/ bench/
+  // dispatchers' job families live in subdirs: regen/ dspark/ bench/ fill/
   "dspark.ts",
+  // token-fast-forwarding measurement harness (PLAN K3d): mocked-replay A/B
+  // over recorded agent sessions + the bandwidth-ceiling showcase.
+  "fill.ts",
 ]);
 
 function checkScriptsRoot(): string[] {

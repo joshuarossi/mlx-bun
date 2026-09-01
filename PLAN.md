@@ -328,9 +328,18 @@ on unified memory; two ideas survive the port. Canonical docs on landing:
       requires CORROBORATION (≥2 occurrences agreed) after an uncorroborated
       copy was observed replaying a mocked tool RESULT 30 tokens past
       `</tool_call>`. Not migrated: the spec lane's DraftSources (adapter is
-      future work). Remaining: deterministic value transforms (seam only), the
-      mocked-replay A/B + bandwidth-ceiling showcase below — which is what
-      decides whether echo ever becomes a default. Original brief:
+      future work). K3d LANDED: `scripts/fill.ts <replay|ab|report>` +
+      `scripts/fill/` — mocked-replay over recorded sessions (reader ported
+      from `reports/k3-replication/analyze.py`; `tools` synthesized, the JSONL
+      has none), paired interleaved arms (fill is process-wide → two servers),
+      the echo gate (agreement not dropping under McNemar's one-sided 95%
+      bound AND median wall clock strictly improving), and the showcase with
+      the bandwidth-ceiling check. Model-free and unit-tested against a stub
+      server (`tests/research/fill-echo-replay.test.ts`,
+      `tests/unit/fill-session-reader.test.ts`); NO live numbers yet — the A/B
+      is Josh's shell, two servers, and it is what decides whether echo ever
+      becomes a default. Remaining: the live run, and deterministic value
+      transforms (seam only). Original brief:
       The model is
       a next-token function; injected context is indistinguishable from
       generated context. So the engine keeps a per-request fill table and,
