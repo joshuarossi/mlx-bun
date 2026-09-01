@@ -59,12 +59,30 @@ const NATIVE_WEIGHTS: WeightsNativeBindings = {
     ),
 };
 
+/**
+ * Checkpoint-generation normalization, installed once at load.
+ *
+ * `names` maps the GRAPH's canonical tensor name onto the name the artifact
+ * actually stores; a canonical name absent from the map does not exist (the
+ * same way a reference `sanitize()` drops a tensor). `fixup` is an optional
+ * lazy value repair applied to the loaded array — return null to keep it.
+ *
+ * Weights only APPLIES a view; the rules belong to the architecture that owns
+ * the naming (see `qwen35WeightsView` in model/qwen3_5-checkpoint.ts).
+ */
+export interface WeightsView {
+  readonly names: ReadonlyMap<string, string>;
+  fixup?(canonical: string, arr: MlxArray): MlxArray | null;
+}
+
 export class Weights {
   readonly shards: ShardedSafetensors;
   /** shard filename → native mlx map handle (string → lazy array). */
   readonly #maps = new Map<string, bigint>();
+  /** Cached arrays, keyed by CANONICAL name (post-view). */
   readonly #arrays = new Map<string, MlxArray>();
   readonly #native: WeightsNativeBindings;
+  #view: WeightsView | null = null;
 
   private constructor(
     shards: ShardedSafetensors,
@@ -120,6 +138,19 @@ export class Weights {
     }
   }
 
+  /** Install the checkpoint normalization. Must precede the first tensor()
+   *  call: the array cache and every shard lookup below are keyed through it. */
+  setView(view: WeightsView): void {
+    if (this.#arrays.size > 0)
+      throw new Error("Weights.setView after tensors were materialized");
+    this.#view = view;
+  }
+
+  /** Canonical name → the stored name (identity when no view is installed). */
+  #source(name: string): string {
+    return this.#view ? this.#view.names.get(name) ?? name : name;
+  }
+
   /** Free one shard's native map AND every cached tensor from it, releasing
    *  all bytes materialized while consuming that shard. The shard transparently
    *  re-opens on the next tensor() touching it (header parse only — lazy).
@@ -130,7 +161,7 @@ export class Weights {
     const sf = this.shards.files.get(file);
     if (!sf) return;
     for (const [name, arr] of this.#arrays) {
-      if (this.shards.tensorToFile.get(name) === sf) {
+      if (this.shards.tensorToFile.get(this.#source(name)) === sf) {
         arr.dispose();
         this.#arrays.delete(name);
       }
@@ -144,29 +175,36 @@ export class Weights {
 
   /** The shard filename holding `name` (for releaseShard scheduling). */
   fileOf(name: string): string | undefined {
-    const sf = this.shards.tensorToFile.get(name);
+    const sf = this.shards.tensorToFile.get(this.#source(name));
     if (!sf) return undefined;
     for (const [file, cand] of this.shards.files) if (cand === sf) return file;
     return undefined;
   }
 
+  /** Canonical names — with a view installed, exactly the tensors the graph
+   *  can ask for (renamed, drops excluded). */
   get tensorNames(): string[] {
-    return this.shards.tensorNames;
+    return this.#view ? [...this.#view.names.keys()] : this.shards.tensorNames;
   }
 
   info(name: string): TensorInfo {
-    return this.shards.info(name);
+    return this.shards.info(this.#source(name));
   }
 
   has(name: string): boolean {
-    return this.shards.tensorToFile.has(name);
+    return this.#view
+      ? this.#view.names.has(name)
+      : this.shards.tensorToFile.has(name);
   }
 
-  /** Lazy mlx array for a tensor; cached per name. */
+  /** Lazy mlx array for a tensor; cached per canonical name. */
   tensor(name: string): MlxArray {
     let arr = this.#arrays.get(name);
     if (!arr) {
-      const sf = this.shards.tensorToFile.get(name);
+      if (this.#view && !this.#view.names.has(name))
+        throw new Error(`no tensor named ${name}`);
+      const source = this.#source(name);
+      const sf = this.shards.tensorToFile.get(source);
       if (!sf) throw new Error(`no tensor named ${name}`);
       let entry = [...this.#maps.entries()]
         .find(([file]) => this.shards.files.get(file) === sf);
@@ -179,9 +217,17 @@ export class Weights {
       const mapHandle = entry[1];
       const slot = new BigUint64Array([C.mlx_array_new()]);
       const slotPtr = ptr(slot);
-      if (C.mlx_map_string_to_array_get(slotPtr, mapHandle, ptr(cstr(name))) !== 0)
-        throw new Error(`tensor ${name} missing from native map`);
+      if (C.mlx_map_string_to_array_get(slotPtr, mapHandle, ptr(cstr(source))) !== 0)
+        throw new Error(`tensor ${source} missing from native map`);
       arr = new MlxArray(read.u64(slotPtr, 0));
+      // Value repair (γ−1 → γ, conv layout): the fixed array is a lazy graph
+      // node over the source, so the raw handle is released immediately — the
+      // node keeps its own reference to the underlying data.
+      const fixed = this.#view?.fixup?.(name, arr) ?? null;
+      if (fixed) {
+        arr.dispose();
+        arr = fixed;
+      }
       this.#arrays.set(name, arr);
     }
     return arr;

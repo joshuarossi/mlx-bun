@@ -115,9 +115,42 @@ export class Qwen3VLVisionTower {
     return names;
   }
 
+  /** Checkpoint-generation naming for the tower. Pre-5.8 artifacts store
+   *  `vision_tower.*`; the transformers-5.8 export stores `model.visual.*`
+   *  (mlx-lm's text-only qwen3_5 drops BOTH prefixes in `Model.sanitize`, so
+   *  the mapping between them is ours). Verified 2026-09-01 across
+   *  Qwen3.8-27B-tqalloc-norot vs the staged pre-5.8 artifact: 331/333
+   *  tensors byte-identical under the rename, patch_embed.proj.weight
+   *  identical under the layout permutation below, and merger.linear_fc2
+   *  differs only because the staged artifact is rotation-folded. */
+  static #sourceName(canonical: string, prefix: string): string {
+    return prefix + canonical.slice("vision_tower.".length);
+  }
+
+  /** HF stores the Conv3d patch embed as (out, in, kT, kH, kW); MLX (and this
+   *  tower) want (out, kT, kH, kW, in). Proven a pure permutation on the
+   *  artifacts above — transpose(0,2,3,4,1) of the 5.8 tensor is bit-equal to
+   *  the pre-5.8 one. */
+  static #fixPatchEmbed(w: Map<string, MlxArray>): void {
+    const key = "vision_tower.patch_embed.proj.weight";
+    const a = w.get(key);
+    if (!a || a.shape.length !== 5) return;
+    if (a.shape[4] === 3) return; // already MLX layout
+    const t = ops.transposeAxes(a, [0, 2, 3, 4, 1]);
+    const c = ops.contiguous(t);
+    t.dispose();
+    a.dispose();
+    w.set(key, c);
+  }
+
   /** Load one safetensors file's map and move `wanted` tensors into `out`
-   *  (missing names are skipped; the map is always freed). */
-  static #takeFromFile(path: string, wanted: string[], out: Map<string, MlxArray>): void {
+   *  under their CANONICAL (`vision_tower.*`) names; `source` maps each
+   *  canonical name to the stored one. Missing names are skipped; the map is
+   *  always freed. */
+  static #takeFromFile(
+    path: string, wanted: string[], out: Map<string, MlxArray>,
+    source: (canonical: string) => string = (n) => n,
+  ): void {
     const arrMap = new BigUint64Array([C.mlx_map_string_to_array_new()]);
     const metaMap = new BigUint64Array([C.mlx_map_string_to_string_new()]);
     const arrMapPtr = ptr(arrMap);
@@ -136,7 +169,7 @@ export class Qwen3VLVisionTower {
         if (out.has(name)) continue;
         const slot = new BigUint64Array([C.mlx_array_new()]);
         const slotPtr = ptr(slot);
-        if (C.mlx_map_string_to_array_get(slotPtr, handle, ptr(cstr(name))) !== 0) {
+        if (C.mlx_map_string_to_array_get(slotPtr, handle, ptr(cstr(source(name)))) !== 0) {
           C.mlx_array_free(read.u64(slotPtr, 0));
           continue;
         }
@@ -156,28 +189,37 @@ export class Qwen3VLVisionTower {
         // OptiQ-convention sidecar (their artifacts + ours pre-2026-08-18).
         Qwen3VLVisionTower.#takeFromFile(sidecar, names, weights);
       } else {
-        // In-main fallback: the bf16 vision_tower.* tensors live in the main
+        // In-main fallback: the bf16 tower tensors live in the main
         // safetensors shards (the mlx-vlm convention — one copy serves both
-        // ecosystems; sidecar duplication retired 2026-08-18).
+        // ecosystems; sidecar duplication retired 2026-08-18). The 5.8-family
+        // export names them `model.visual.*` instead of `vision_tower.*`.
         const idxPath = `${modelDir}/model.safetensors.index.json`;
         let files: string[];
+        let prefixes = ["vision_tower.", "model.visual."];
         if (existsSync(idxPath)) {
           const idx = JSON.parse(readFileSync(idxPath, "utf8")) as
             { weight_map: Record<string, string> };
-          files = [...new Set(
-            names.map((n) => idx.weight_map[n]).filter((f): f is string => !!f),
-          )];
+          prefixes = prefixes.filter((p) =>
+            Qwen3VLVisionTower.#sourceName(names[0]!, p) in idx.weight_map);
+          files = [...new Set(prefixes.flatMap((p) => names
+            .map((n) => idx.weight_map[Qwen3VLVisionTower.#sourceName(n, p)])
+            .filter((f): f is string => !!f)))];
           if (files.length === 0)
-            throw new Error(`no vision_tower tensors in ${modelDir} (index has none)`);
+            throw new Error(`no vision tower tensors in ${modelDir} (index has none)`);
         } else {
           files = ["model.safetensors"];
         }
         for (const f of files)
-          Qwen3VLVisionTower.#takeFromFile(`${modelDir}/${f}`, names, weights);
+          for (const p of prefixes)
+            Qwen3VLVisionTower.#takeFromFile(
+              `${modelDir}/${f}`, names, weights,
+              (n) => Qwen3VLVisionTower.#sourceName(n, p),
+            );
       }
       for (const name of names)
         if (!weights.has(name))
           throw new Error(`qwen vision weights missing tensor ${name} (sidecar or in-main)`);
+      Qwen3VLVisionTower.#fixPatchEmbed(weights);
     } catch (e) {
       for (const [, a] of weights) a.dispose();
       throw e;

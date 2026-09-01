@@ -44,6 +44,16 @@ Rules that apply across rows (all enforced in `src/server.ts`):
   Gemma 4 target; `qwen3_5_mtp` heads require a Qwen3.5-family target; GLM's
   MTP is its own row. Any quantized KV scheme excludes the speculative lane
   (requests keep the scheme and decode serially without speculation).
+- **Qwen3.5-family checkpoint generations.** Both ship the same graph and both
+  load: the mlx-lm-converted naming (`language_model.model.*`,
+  `language_model.lm_head`, `vision_tower.*`) and the transformers-5.8 export
+  (`model.language_model.*`, top-level `lm_head`, `model.visual.*`, in-repo
+  `mtp.*`, HF-layout `conv1d.weight` `[C,1,K]`, RMSNorm gains stored as γ−1).
+  The load seam (`src/model/qwen3_5-checkpoint.ts`) replicates mlx-lm's
+  `sanitize()` exactly: in-repo `mtp.*` and the vision tensors are dropped from
+  the text graph, and the +1.0 γ shift fires **only** when the artifact carries
+  `mtp.*` tensors **or** an unsanitized `conv1d.weight` — never on the naming
+  alone, so an old artifact can never be shifted.
 - **KV schemes.** `--kv-quant 4|8` (uniform, L1) and `config` (per-layer
   `kv_config.json`, L2) apply to the autoregressive families that ship the
   file; `turbo` additionally requires a full-attention `head_dim` in

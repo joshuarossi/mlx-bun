@@ -29,6 +29,7 @@ import {
   type Cache,
   type Mask,
 } from "./gemma4-base";
+import { qwen35WeightsView } from "./qwen3_5-checkpoint";
 import { gatedDeltaUpdate, SSMCache } from "./qwen3-delta";
 import {
   activeMrope, applyInterleavedRope, buildMropePositions, mropeInvFreq,
@@ -522,6 +523,14 @@ export class Qwen35Model {
   readonly faIdx: number;
 
   constructor(weights: Weights, config: ModelConfig) {
+    // Checkpoint-generation normalization BEFORE the first tensor() call: the
+    // 5.8-family export names the trunk `model.language_model.*` with a
+    // top-level `lm_head`, ships `mtp.*` in-repo, and stores RMSNorm gains as
+    // γ−1 with HF-layout conv1d. The view maps all of that onto the names and
+    // values this graph reads (mlx-lm's post-sanitize space). No-op — nothing
+    // installed at all — for artifacts already in that space.
+    const view = qwen35WeightsView(weights);
+    if (view) weights.setView(view);
     this.config = config;
     this.tied = config.text.tieWordEmbeddings;
     this.weightsBytes = [...weights.shards.files.values()]
