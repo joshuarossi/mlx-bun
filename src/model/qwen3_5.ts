@@ -15,7 +15,7 @@ import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import { CompiledFunction } from "../mlx/compile";
-import { TrellisLinear } from "./trellis-linear";
+import { TrellisLinear, fusedGateUpEligible, fusedGateUpSwiglu, TRELLIS_MATVEC_MAX_M } from "./trellis-linear";
 import {
   argmaxLastPosition,
   disposeTriple,
@@ -469,6 +469,17 @@ export class Qwen3MLP {
   }
 
   forward(x: MlxArray): MlxArray {
+    // Packed-trellis decode (M ≤ 4): gate, up and the swiglu in ONE kernel —
+    // x read once, no gate/up vectors materialized (same rounding as the
+    // compiled swiglu over two separate outputs).
+    if (this.gate instanceof TrellisLinear && this.up instanceof TrellisLinear &&
+        fusedGateUpEligible(this.gate, this.up) &&
+        x.shape.slice(0, -1).reduce((a, b) => a * b, 1) <= TRELLIS_MATVEC_MAX_M) {
+      const hidden = fusedGateUpSwiglu(x, this.gate, this.up);
+      const out = this.down.forward(hidden);
+      hidden.dispose();
+      return out;
+    }
     const g = this.gate.forward(x);
     const u = this.up.forward(x);
     // Oracle: down_proj(swiglu(gate_proj(x), up_proj(x))) — swiglu ALWAYS compiled
