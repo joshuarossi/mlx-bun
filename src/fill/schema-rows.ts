@@ -128,13 +128,30 @@ function compile(input: CompileStrictRowsInput): StrictRowPlan {
   const whitespace = whitespaceTest(tokenizer);
 
   // The generation prompt — everything after it is what the model produces.
-  const base = encode(template.render(messages, { ...renderOptions, addGenerationPrompt: true }));
+  const baseText = template.render(messages, { ...renderOptions, addGenerationPrompt: true });
+  const base = encode(baseText);
+  // A suffix tokenized on its own may get the post-processor's BOS prepended
+  // (llama-style tokenizers); Qwen-style ones yield [] for "".
+  const bosPrepended = (() => { const e = tokenizer.encode(""); return e.length === 1 && e[0] === tokenizer.bosTokenId; })();
+  const encodeSuffix = (text: string): number[] => {
+    const ids = tokenizer.encode(text);
+    return bosPrepended && ids[0] === tokenizer.bosTokenId ? ids.slice(1) : ids;
+  };
 
-  /** Token ids of the assistant turn that follows the generation prompt. */
+  /** Token ids of the assistant turn that follows the generation prompt.
+   *  Preferred: the whole rendering tokenized once, sliced past the primer's
+   *  ids. When the primer's last token MERGES with the reply's first (Qwen3.x
+   *  thinking templates end the primer in `<think>\n` and the reply opens with
+   *  `\n</think>`, so `\n`+`\n` becomes one `\n\n` token and the primer is no
+   *  longer a token prefix), fall back to the TEXT boundary and tokenize the
+   *  reply on its own — that is the stream the model produces after the
+   *  prompt ids anyway. Only a rendering that does not extend the primer text
+   *  at all bails. */
   const after = (rendered: string): number[] | null => {
     const ids = encode(rendered);
-    if (!startsWith(ids, base)) return null; // primer is not a prefix — bail
-    return ids.slice(base.length);
+    if (startsWith(ids, base)) return ids.slice(base.length);
+    if (!rendered.startsWith(baseText)) return null; // primer is not a prefix — bail
+    return encodeSuffix(rendered.slice(baseText.length));
   };
   const callProbe = (
     name: string, args: Record<string, unknown>, id: string,

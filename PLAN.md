@@ -338,8 +338,18 @@ on unified memory; two ideas survive the port. Canonical docs on landing:
       server (`tests/research/fill-echo-replay.test.ts`,
       `tests/unit/fill-session-reader.test.ts`); NO live numbers yet — the A/B
       is Josh's shell, two servers, and it is what decides whether echo ever
-      becomes a default. Remaining: the live run, and deterministic value
-      transforms (seam only). Original brief:
+      becomes a default. LIVE RUN 2026-09-02 (27B, serial arms, 32 paired
+      turns; speculative-decoding.md §7.3): echo injects 7.4% (read turns
+      32%) with agreement held but wall clock ×1.00 — 76% of proposed span
+      positions rejected at verify, so the multi-token forward costs more
+      than the decode it saves → echo gate FAILS, stays Lab. Found and fixed
+      on the way: batch lane never fills (A/B needs `--batch 1`); strict
+      rows compiled EMPTY on Qwen3.x thinking templates (primer `\n` merges
+      with the reply's `\n</think>`) — text-level boundary fix, 4 rows on
+      the 27B. Remaining: strict-tier A/B on the 27B, echo policy levers
+      (anchor K, candidates, span cap ≈ accepted length), the showcase,
+      the turn-8 server-crash repro, deterministic value transforms (seam
+      only). Original brief:
       The model is
       a next-token function; injected context is indistinguishable from
       generated context. So the engine keeps a per-request fill table and,

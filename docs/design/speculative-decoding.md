@@ -709,6 +709,41 @@ The verdict math is model-free and unit-tested against a stub server
 (`tests/research/fill-echo-replay.test.ts`), including the ways it FAILS — a
 harness that can only produce PASS is not a gate.
 
+**Live result, 2026-09-02 (M1 Max 32 GB, mjriii/Qwen3.8-27B 4.80 bpw, six
+recorded pi sessions, 32 paired turns, `--batch 1`).** Two servers do not fit
+the wired ceiling at 27B, so the arms ran SERIALLY (one server restarted
+between them; `fill report` now prints the paired verdict for two `replay`
+files). Two false starts are findings in their own right: (1) the default
+server lane is the batch scheduler, which never fills — an A/B on it is two
+identical arms (fill 0.0%, same 4925 tokens); the serial lane needs
+`--batch 1`. (2) The strict tier compiled ZERO rows on the 27B: Qwen3.x
+thinking templates end the primer in `<think>\n` and the reply opens with
+`\n</think>`, the tokenizer merges the two newlines, the primer stops being a
+token prefix and the compiler bailed silently. Fixed (`schema-rows.ts
+after()`: text-level boundary, suffix tokenized on its own; 4 rows compile on
+the 27B). So the run measured the ECHO tier alone:
+
+| arm | tok/s emitted · decoded | fill | median wall | agreement |
+|---|---|---|---|---|
+| fill-off | 8.0 · 8.0 | 0 | 7663 ms | 3.1% |
+| fill-echo | 8.1 · 7.5 | 7.4% (bash 10%, read 32%) | 7630 ms | 6.3% |
+
+369 tokens injected in 66 echo events; verify accepted 369 / rejected 1195
+(76% of proposed span positions), 31 branch stops, 147 ms of checkpoints.
+Agreement held (B-only agreements 1, A-only 0; the McNemar bound cannot
+resolve +3 pts at n=32). **Wall clock ×1.00 — the echo gate FAILS**: each
+event pays a multi-token forward for its whole span and a rewind, and with
+three of four proposed positions rejected the forward compute per accepted
+token exceeds a decode step. Echo stays Lab, default off. Levers before a
+rerun: a longer anchor (`MLX_BUN_FILL_K`), fewer candidates, a span cap near
+the observed accepted length (~5–6), and asserting corroborated spans instead
+of verifying. Absolute rates are not quotable: the box ran at 8 tok/s (2.3 GB
+swapped, the 16 GB server plus the day's leftovers) where 19 is predicted;
+both arms saw the same conditions. Owed: the STRICT-tier A/B on the 27B now
+that rows compile, and the showcase. Repro to file: turn 8 of session
+`2026-08-18T04-34-36-341Z_01a01326…` kills the server on either lane (bare
+MLX C++ exception, three of three runs, `runs/k3/serve-*.log`).
+
 **Files.** `src/fill/proposal.ts` (the interface + the two policies),
 `src/fill/fill-session.ts` (sources, clamping, flags, telemetry),
 `src/fill/schema-rows.ts` (scaffold probing + value delimiters),
@@ -729,6 +764,10 @@ User-facing mirror: `docs/reference/server-config.md` (`MLX_BUN_FILL`,
 (`usage.fill`).
 
 ## 8. Open items
+
+- K3 (fill): strict-tier live A/B on the 27B (rows compile since the primer-
+  boundary fix), echo-tier policy levers before any rerun (§7.3 live result),
+  the showcase, and the turn-8 server-crash repro.
 
 - DSpark serving program phases 0, 1d, 1e, 1.5, 2, 3, 4, 5, 6 (§4.5) —
   every GPU measurement is Josh's shell; Phase 3 (generated-forward tap)
@@ -795,3 +834,7 @@ User-facing mirror: `docs/reference/server-config.md` (`MLX_BUN_FILL`,
 - **2026-08-23** — DSpark scripts consolidated under `scripts/dspark.ts
   <job>`; one-off measure/compare/bench scripts deleted (git history); this
   doc consolidates the three design docs.
+- **2026-09-02** — K3 live A/B on the 27B (§7.3): echo tier injects 7.4%
+  but wall clock ×1.00 (76% verify rejection) — gate FAILS, stays Lab; batch
+  lane never fills; strict rows were silently empty on thinking templates
+  (primer newline merge) — fixed.
