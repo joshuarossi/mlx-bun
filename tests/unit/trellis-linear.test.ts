@@ -12,7 +12,8 @@ import * as ops from "../../src/mlx/ops";
 import {
   Trellis, lut1mad, packStates, stateAt, unpackDecodeHost, wordsPerBlock,
 } from "../../src/quantize/trellis";
-import { TrellisLinear, expandTrellis, trellisGeometry } from "../../src/model/trellis-linear";
+import { TrellisLinear, expandTrellis, trellisGeometry, fusedGateUpSwiglu, fusedGateUpEligible } from "../../src/model/trellis-linear";
+import { compiledSwiglu } from "../../src/model/qwen3_5";
 import type { QuantSpec } from "../../src/config";
 
 const L = 12, T = 256;
@@ -43,9 +44,9 @@ const maxAbsDiff = (a: Float32Array, b: Float32Array): number => {
 const spec = (k: number, axis: 0 | 1): QuantSpec =>
   ({ bits: k, groupSize: T, mode: "trellis", trellis: { L, code: "1mad", axis } });
 
-function encoded(k: number) {
+function encoded(k: number, seed = 7) {
   const tr = new Trellis({ L, K: k, T, code: "1mad", tailBiting: true });
-  const W = MlxArray.fromFloat32(gaussian(N * C, 7 + k), [N, C]);
+  const W = MlxArray.fromFloat32(gaussian(N * C, seed + k), [N, C]);
   const { rec, codes, scales } = tr.fakeQuantRowsPacked(W, 64);
   W.dispose();
   tr.dispose();
@@ -131,6 +132,23 @@ describe("TrellisLinear kernels", () => {
       const yc = carrier.forward(x);
       expect(maxAbsDiff(yc.toFloat32(), ref.toFloat32())).toBeLessThan(2e-2);
       for (const a of [rec, codes, scales, w, x, y, wt, x2, ref, yc]) a.dispose();
+    });
+
+    test(`k=${k}: fused gate/up/swiglu kernel matches the two-matvec + compiled swiglu graph`, () => {
+      const a = encoded(k), b = encoded(k, 17);
+      const gate = new TrellisLinear(a.codes, a.scales, spec(k, 1), "kernel");
+      const up = new TrellisLinear(b.codes, b.scales, spec(k, 1), "kernel");
+      expect(fusedGateUpEligible(gate, up)).toBe(true);
+      for (const M of [1, 4]) {
+        const x = MlxArray.fromFloat32(gaussian(M * C, 400 + M), [1, M, C]).astype(Dtype.bfloat16);
+        const fused = fusedGateUpSwiglu(x, gate, up);
+        const g = gate.forward(x), u = up.forward(x);
+        const ref = compiledSwiglu(g, u);
+        expect(fused.shape).toEqual([1, M, N]);
+        expect(maxAbsDiff(fused.toFloat32(), ref.toFloat32())).toBeLessThan(2e-3);
+        for (const t of [x, fused, g, u, ref]) t.dispose();
+      }
+      for (const t of [a.rec, a.codes, a.scales, b.rec, b.codes, b.scales]) t.dispose();
     });
   }
 });
