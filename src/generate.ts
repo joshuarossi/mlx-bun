@@ -6,6 +6,7 @@
 //   on the JS round-trip
 // - sampling stays on-device; only the chosen token id crosses to JS
 
+import { appendFileSync } from "node:fs";
 import { MlxArray, gpuStream } from "./mlx/array";
 import {
   activeMemory,
@@ -37,6 +38,8 @@ import {
 import type { GrammarController } from "./grammar";
 import {
   fillTraceEnabled,
+  fillTracePath,
+  type FillTraceRecord,
   resolveFillMode,
   type FillSession,
   type FillStats,
@@ -702,6 +705,7 @@ async function* generateInner(
     }
   }
   const fillTrace = fillOn && fillTraceEnabled();
+  const fillTraceFile = fillOn ? fillTracePath() : null;
   // Verify-policy proposals (echo tier) need the rejected tail rewound. That
   // is the SAME contract the spec lane's rounds use: trimmable caches drop the
   // tail; recurrent caches (SSMCache — gated-DeltaNet state, untrimmable)
@@ -806,6 +810,26 @@ async function* generateInner(
    *
    *  Returns the ids the engine must now emit (empty = no fill happened).
    *  Mutates nextPending/nextExtras/forwarded, exactly like the normal step. */
+  /** One trace record: the proposal next to the model's own token at every
+   *  span position (`actual[0]` = in-flight sample, `actual[j]` = argmax after
+   *  ids[j-1]). Appended as JSONL to MLX_BUN_FILL_TRACE=<file>. */
+  const traceProposal = (
+    proposal: Proposal, generatedNow: number, accepted: number, actual: number[],
+  ): void => {
+    const ids = proposal.ids;
+    let firstMismatch = -1;
+    for (let j = 0; j < ids.length && j < actual.length; j++)
+      if (actual[j] !== ids[j]) { firstMismatch = j; break; }
+    const dec = options.fill!.decode;
+    const rec: FillTraceRecord = {
+      ts: new Date().toISOString(), origin: proposal.origin, policy: proposal.policy,
+      generated: generatedNow, proposedLen: ids.length, accepted, firstMismatch,
+      proposed: ids, actual,
+      ...(dec ? { proposedText: dec(ids), actualText: dec(actual) } : {}),
+    };
+    try { appendFileSync(fillTraceFile!, JSON.stringify(rec) + "\n"); } catch { /* trace is best-effort */ }
+  };
+
   const applyProposal = async (
     proposal: Proposal, generatedNow: number,
   ): Promise<number[]> => {
@@ -817,10 +841,12 @@ async function* generateInner(
       fill.commit(proposal, 0);
       return [];
     }
+    // The in-flight sample IS the model's own choice for position 0 (read for
+    // the trace under both policies; the served assert path never checks it).
+    const inFlight = verify || fillTraceFile ? ops.itemUint32(nextPending!) : -1;
     if (verify) {
-      // The in-flight sample IS the model's own choice for position 0.
-      const inFlight = ops.itemUint32(nextPending!);
       if (inFlight !== ids[0]) {
+        if (fillTraceFile) traceProposal(proposal, generatedNow, 0, [inFlight]);
         fill.commit(proposal, 0);
         return []; // nextPending survives; this becomes an ordinary step
       }
@@ -855,18 +881,23 @@ async function* generateInner(
         fillIds.dispose();
       }
       const [, Lf, Hf] = hf.shape as [number, number, number];
-      if (verify) {
+      let pred: number[] | null = null;
+      if (verify || fillTraceFile) {
         // Free logits: this forward already computed every span position's
         // hidden state. argmax at j is the model's continuation after ids[j],
-        // so it verifies ids[j+1].
+        // so it verifies ids[j+1]. (Under assert this readback is trace-only.)
         logitsAll = model.logitsFromHidden(hf);
         const argmax = ops.argmaxAxis(logitsAll, -1);
-        const pred = argmax.toIntTokens();
+        pred = argmax.toIntTokens();
         argmax.dispose();
+      }
+      if (verify && pred) {
         for (let j = 0; j + 1 < ids.length; j++) {
           if (pred[j] !== ids[j + 1]) { accepted = j + 1; break; }
         }
       }
+      if (fillTraceFile && pred)
+        traceProposal(proposal, generatedNow, accepted, [inFlight, ...pred.slice(0, ids.length - 1)]);
       const t1 = performance.now();
       if (accepted < ids.length) {
         // Trimmable caches drop the rejected tail; recurrent caches restore

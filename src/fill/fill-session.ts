@@ -141,7 +141,35 @@ export function fillEchoConfig(): FillEchoConfig {
  *  the engine's fill path. Off by default (the invariant it checks is the
  *  easiest bug in the feature, and the check costs a JS compare). */
 export function fillTraceEnabled(): boolean {
-  return flagOn("MLX_BUN_FILL_TRACE", false);
+  return flagOn("MLX_BUN_FILL_TRACE", false) || fillTracePath() !== null;
+}
+
+/** MLX_BUN_FILL_TRACE=<file.jsonl> — additionally append one record per
+ *  proposal: the proposed ids/text next to what the model's OWN logits said
+ *  at every span position (position 0 = the in-flight sample, j>0 = argmax
+ *  after ids[j-1]), for BOTH policies. Under `assert` the readback is
+ *  trace-only (one lm_head over the span) — the served path never pays it.
+ *  This is the list that answers "would the model have produced this span?"
+ *  without a verify pass in production. */
+export function fillTracePath(): string | null {
+  const raw = runtimeValue("MLX_BUN_FILL_TRACE");
+  if (raw === undefined || raw === "" || raw === "0" || raw === "1" || raw === "true") return null;
+  return raw;
+}
+
+export interface FillTraceRecord {
+  ts: string;
+  origin: string;
+  policy: string;
+  generated: number;
+  proposedLen: number;
+  accepted: number;
+  /** Index of the first position where the model disagreed, or -1. */
+  firstMismatch: number;
+  proposed: number[];
+  actual: number[];
+  proposedText?: string;
+  actualText?: string;
 }
 
 /** Strict schema/template rows as a ProposalSource. Always policy "assert":
@@ -222,11 +250,16 @@ export class FillSession {
   #length = 0;
   #budget = Number.POSITIVE_INFINITY;
 
+  /** Optional token→text decoder for the proposal trace (set by the serve
+   *  layer, which owns the tokenizer). */
+  readonly decode: ((ids: readonly number[]) => string) | null;
+
   constructor(
     readonly plan: FillPlan,
     promptIds: readonly number[],
-    options: { maxSpan?: number; sources?: ProposalSource[] } = {},
+    options: { maxSpan?: number; sources?: ProposalSource[]; decode?: (ids: readonly number[]) => string } = {},
   ) {
+    this.decode = options.decode ?? null;
     this.#eos = new Set(plan.eos);
     this.#delimiters = plan.delimiters ?? new Set<number>();
     this.#maxSpan = Math.max(2, Math.floor(options.maxSpan ?? fillMaxSpan()));
