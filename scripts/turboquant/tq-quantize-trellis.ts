@@ -426,12 +426,12 @@ function trellisTensorLDLQ(folded: MlxArray, axis: 0 | 1, L: MlxArray, k: number
   ops.evalAll([prod, What]);
   let tripped = false;
 
-  for (let k = K - 1; k >= 0; k--) {
-    const w = rows(Wt, k * T, (k + 1) * T, m);
-    const p = rows(prod, k * T, (k + 1) * T, m);
+  for (let b = K - 1; b >= 0; b--) {
+    const w = rows(Wt, b * T, (b + 1) * T, m);
+    const p = rows(prod, b * T, (b + 1) * T, m);
     const x = ops.add(w, p, gpuStream);
     p.dispose();
-    const s = blockScale(scale, axis, k, m, T);
+    const s = blockScale(scale, axis, b, m, T);
     const batch = tileToBatch(x, axis, m, T);
     const xn = ops.div(batch, s, gpuStream);
     ops.evalAll([xn]);
@@ -455,12 +455,12 @@ function trellisTensorLDLQ(folded: MlxArray, axis: 0 | 1, L: MlxArray, k: number
 
     const err = ops.sub(w, hat, gpuStream);
     w.dispose();
-    const nw = ops.sliceUpdate(What, hat, [k * T, 0], [(k + 1) * T, m], gpuStream);
+    const nw = ops.sliceUpdate(What, hat, [b * T, 0], [(b + 1) * T, m], gpuStream);
     What.dispose(); hat.dispose();
     What = nw;
 
     // prod += L[block, :]ᵀ @ err        ([n,T] @ [T,m])
-    const Lb = rows(L, k * T, (k + 1) * T, n);
+    const Lb = rows(L, b * T, (b + 1) * T, n);
     const Lt = tContig(Lb);
     const contrib = ops.matmul(Lt, err, gpuStream);
     const np2 = ops.add(prod, contrib, gpuStream);
@@ -472,7 +472,7 @@ function trellisTensorLDLQ(folded: MlxArray, axis: 0 | 1, L: MlxArray, k: number
     if (activeMemory() > MEM_ABORT)
       throw new Error(
         `LDLQ leak guard: mlx active ${(activeMemory() / 2 ** 30).toFixed(1)} GiB > ` +
-        `${(MEM_ABORT / 2 ** 30).toFixed(0)} GiB at block ${k} — aborting instead of OOM-killing`,
+        `${(MEM_ABORT / 2 ** 30).toFixed(0)} GiB at block ${b} — aborting instead of OOM-killing`,
       );
   }
 

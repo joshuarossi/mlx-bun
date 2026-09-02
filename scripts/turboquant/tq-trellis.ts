@@ -129,6 +129,8 @@ export class Trellis {
 
   constructor(cfg: TrellisCfg) {
     this.cfg = cfg;
+    if (!Number.isInteger(cfg.K) || cfg.K < 1 || cfg.K >= cfg.L)
+      throw new Error(`Trellis: K=${cfg.K} must be an integer in [1, L=${cfg.L})`);
     const n = (this.nStates = 1 << cfg.L);
     this.G = 1 << cfg.K;
     this.J = n >> cfg.K;
