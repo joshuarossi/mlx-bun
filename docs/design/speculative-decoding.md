@@ -739,8 +739,22 @@ rerun: a longer anchor (`MLX_BUN_FILL_K`), fewer candidates, a span cap near
 the observed accepted length (~5–6), and asserting corroborated spans instead
 of verifying. Absolute rates are not quotable: the box ran at 8 tok/s (2.3 GB
 swapped, the 16 GB server plus the day's leftovers) where 19 is predicted;
-both arms saw the same conditions. Owed: the STRICT-tier A/B on the 27B now
-that rows compile, and the showcase. Repro to file: turn 8 of session
+both arms saw the same conditions.
+
+**Strict tier, same day, corrected rows** (serial arms back to back, 32 paired
+turns): fill 5.3% of emitted tokens, **100% of proposed spans accepted**
+(assert policy, no readback), identical tool calls on every paired turn,
+median wall ×0.99 (the win is bounded by the fill fraction). The proposal
+trace (`MLX_BUN_FILL_TRACE=<file.jsonl>`, `bun scripts/fill.ts trace`) is
+what made the rows right: the first strict run's list showed the scaffold row
+firing on `</think>` and asserting `<tool_call>…` where the model would have
+written prose ("Hey", "You", "I") in 10 of 47 template proposals, while the
+schema-derived name/close rows agreed 9/9. The scaffold trigger now runs
+through the first token where the call rendering diverges from a plain-
+content rendering — the model's own `<tool_call>` — and the failure class is
+gone by construction. Echo-tier list, same tool: 66 events, verify accepted
+369 / rejected 1195, survival by position falls to ~50% by position 6 — the
+policy levers named above are what the list points at. Owed: the showcase. Repro to file: turn 8 of session
 `2026-08-18T04-34-36-341Z_01a01326…` kills the server on either lane (bare
 MLX C++ exception, three of three runs, `runs/k3/serve-*.log`).
 
@@ -765,9 +779,10 @@ User-facing mirror: `docs/reference/server-config.md` (`MLX_BUN_FILL`,
 
 ## 8. Open items
 
-- K3 (fill): strict-tier live A/B on the 27B (rows compile since the primer-
-  boundary fix), echo-tier policy levers before any rerun (§7.3 live result),
-  the showcase, and the turn-8 server-crash repro.
+- K3 (fill): strict tier measured on the 27B (5.3% fill, 100% acceptance,
+  ×0.99 median wall) — its default-on gate is token identity on the 27B
+  (`tests/parity/fill-strict.test.ts`); echo-tier policy levers before any
+  rerun (§7.3); the showcase; the turn-8 server-crash repro.
 
 - DSpark serving program phases 0, 1d, 1e, 1.5, 2, 3, 4, 5, 6 (§4.5) —
   every GPU measurement is Josh's shell; Phase 3 (generated-forward tap)

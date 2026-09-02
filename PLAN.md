@@ -346,7 +346,12 @@ on unified memory; two ideas survive the port. Canonical docs on landing:
       on the way: batch lane never fills (A/B needs `--batch 1`); strict
       rows compiled EMPTY on Qwen3.x thinking templates (primer `\n` merges
       with the reply's `\n</think>`) — text-level boundary fix, 4 rows on
-      the 27B. Remaining: strict-tier A/B on the 27B, echo policy levers
+      the 27B. Strict-tier A/B (corrected rows, 2026-09-02 pm): fill 5.3%,
+      100% acceptance, identical calls, median wall ×0.99; the proposal trace
+      (`MLX_BUN_FILL_TRACE=<file>`, `fill trace`) caught a `</think>`-triggered
+      scaffold asserting tool calls the model would have answered in prose
+      (10/47) — fixed. Remaining: token-identity parity on the 27B before
+      default-on, echo policy levers
       (anchor K, candidates, span cap ≈ accepted length), the showcase,
       the turn-8 server-crash repro, deterministic value transforms (seam
       only). Original brief:
@@ -552,10 +557,19 @@ run sequentially, results labeled host/chip/RAM.
       - [~] **Q4** task columns: Q3 done (on the 8-bit eval carrier,
             `tq-repack-fakequant.ts`); q2a/q2b still owed; rawGSM EOS-cliff
             root cause on the unrotated affine arm still owed.
-      - [ ] **Q2b** packed trellis format + Metal decode kernel — now
-            unblocked; realizes the 11.9 GiB footprint. Exit: tok/s on M1 Max
-            and M4 Pro vs the 3-bit affine compact arm, KL byte-identical to
-            the fake-quant; load-time expansion to affine is the fallback.
+      - [~] **Q2b** packed trellis format + Metal decode kernels LANDED
+            (`src/quantize/trellis.ts`, `src/model/trellis-linear.ts`,
+            `tq-quantize-trellis-packed.ts`; frozen fake-quant codec/driver
+            untouched). Packed Q3 = 12.14 GiB, decode bit-identical to the
+            fake-quant, KL 0.1550 through our serving path. M1 Max: 9.3 tok/s
+            vs the flagship's 18.9 after three kernel rounds (decomposition in
+            turboquant.md "Q2b measured": the 1MAD decode and the axis-0 down
+            matvec are the cost; M1 decode is latency-bound so ALU/weight is
+            wall clock). Served weight is f32 code×scale (bf16 rounding cost
+            as much as decoding). Remaining: M4 Pro number; decide the
+            down_proj coding axis (input dim ⇒ a plain reduce kernel, but a
+            recipe change + re-encode + KL); `MLX_BUN_TRELLIS=expand` stays
+            the fallback.
       - [ ] **Q5** 2.75-budget arm (k2/k3/k4 68/104/20, ~10.8 GiB) — the size
             axis; same gate as Q3.
 - **Non-goals (pinned):** custom weight FORMAT or any new qmm kernel;

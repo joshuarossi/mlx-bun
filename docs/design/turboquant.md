@@ -876,6 +876,47 @@ load-time fallback (8-bit affine carrier). Encoding a packed artifact reruns
 the Viterbi (the fake-quant stores values, not states; a state path cannot be
 recovered from values because the 4096 states map onto 1021 distinct values).
 
+**Q2b measured (2026-09-02, M1 Max 32 GB).** Packed Q3 artifact
+(`Qwen3.8-27B-q3-trellis-ldlq-k300-packed`): **12.14 GiB** on disk (fake-quant
+38 GiB, flagship 17 GiB), LDLQ applied 192/192, 0 guard trips; decoded
+weights bit-identical to the fake-quant artifact through the expand kernel
+(0 mismatches in 89 M per tensor, k=2 and k=3, both axes). Loads and generates
+through the qwen3_5 graph; KL through OUR serving path 0.15501 (mlx-lm on the
+fake-quant: 0.15532). Decode kernels, pipelined 8-deep (the in-graph cost; an
+eval-per-call bench adds ~0.3 ms of sync and misleads), gate/up [17408×5120]
+and down [5120×17408], k=3, M=1:
+
+| kernel | no decode (floor) | inline 1MAD, f32 weight | stock affine 3-bit g64 |
+|---|---|---|---|
+| gate/up matvec (reduce) | 0.24 ms | 0.41 ms | 0.16 ms |
+| gate+up+swiglu fused | 0.37 ms | 0.73 ms | 2×0.16 |
+| down matvec (scatter) | 0.54 ms | 0.77 ms | 0.16 ms |
+
+Whole model: **9.3 tok/s** vs the 4.80-bpw affine flagship at **18.9** on the
+same box (kernels v3, `c0a1e00`); the first kernels read 4.4. What the
+decomposition says: (1) the 1MAD decode is ~12 int ops/weight and costs
+0.17 ms per 89 M weights; a precise divide cost 1 ms (replaced by y×(1/d),
+which is 1-ulp-off f32 for 398 of 1021 code values — a 2-FMA residual step
+restores exactness at +0.05 ms, `trellis_val_rcp`); (2) rounding the decoded
+weight to bf16 (to match the artifact's stored bf16) cost as much as the
+decode, so the served weight is now f32 code×scale — MORE accurate than the
+fake-quant, no longer bit-identical to it (KL re-certified through the engine
+with that decode: see the row below); (3) the threadgroup LUT (16 KB) halves
+occupancy and the device LUT gathers 32 lines per load — both slower than
+computing the code; (4) the axis-0 (down) matvec is the hard one: the code
+sequence runs along the OUTPUT dim, so a reduction over inputs is a column
+gather; lanes-over-outputs looping rows costs a full line per 16-byte
+segment, and lane-per-word (whole-line reads, shuffle for spilled windows)
+did not beat it — its no-decode floor is 3× affine. M1 decode at these sizes
+is latency/occupancy bound (affine reaches 200 GB/s of 400), so every ALU op
+per weight lands on the wall clock. Verdict: the packed format works and is
+the honest 12 GiB artifact; on M1 Max it decodes at ~half the flagship's
+speed. Levers left: code down_proj along its INPUT dim (a recipe change —
+the rotated axis is the output dim — needs a re-encode and a KL check),
+half-precision LUT (8 KB, occupancy back, +double rounding), or accept
+M4-class ALU. `MLX_BUN_TRELLIS=expand` (8-bit carrier, 23 GiB) is the
+full-speed fallback where it fits.
+
 **Eval carrier** (`scripts/turboquant/tq-repack-fakequant.ts`): a 38 GiB
 fake-quant cannot load dense on 32 GB, and `tq-evals.py` (MMLU logprob
 scoring, GSM greedy generation) needs the whole model resident. The tool
@@ -916,10 +957,11 @@ needs Q2b (packed trellis + Metal decode kernel).
   GGUF anchor. The KV axis composes: `--kv-quant turbo` (k8v3) is the
   context-headroom lever at fixed weight bpw. `scripts/turboquant/
   farm-setup.sh` provisions a rented Apple-silicon worker for these runs.
-- **Q campaign (sub-4 bpw):** Q3 passed its gate (finding 5). Owed: Q2b
-  packed trellis format + Metal decode kernel (the only way to realize the
-  11.9 GiB footprint; M1 decode-speed regression predicted — measure, and
-  keep load-time expansion to affine as the fallback); a 2.75-budget arm
+- **Q campaign (sub-4 bpw):** Q3 passed its gate (finding 5); Q2b packed
+  format landed and measured (12.1 GiB, KL 0.1550 through the engine, 9.3
+  tok/s vs 18.9 on M1 Max — "Q2b measured"). Owed: the down_proj axis
+  question (code along the input dim?) or an M4-class measurement before any
+  default; a 2.75-budget arm
   for the size axis; task columns on q2a/q2b for the ladder's completeness;
   root-cause the rawGSM EOS cliff on the unrotated affine arm. Source bf16,
   all Q artifacts, Hessians live on the external `/Volumes/MLX-Models` volume.
