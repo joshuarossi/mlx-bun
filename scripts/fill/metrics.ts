@@ -236,8 +236,9 @@ export function fillVerdict(
         `(delta ${(agreementDelta * 100).toFixed(1)} pts, 95% lower bound ` +
         `${(agreementLowerBound * 100).toFixed(1)}), median wall ×${medianWallRatio.toFixed(3)}`
       : !agreementHolds
-        ? `FAIL — task agreement dropped: ${pct(a.taskAgreement)} → ${pct(b.taskAgreement)} ` +
-          `(95% lower bound ${(agreementLowerBound * 100).toFixed(1)} pts)`
+        ? `FAIL — task agreement not shown to hold: ${pct(a.taskAgreement)} → ${pct(b.taskAgreement)} ` +
+          `(delta ${(agreementDelta * 100).toFixed(1)} pts, 95% lower bound ` +
+          `${(agreementLowerBound * 100).toFixed(1)} pts${agreementDelta >= 0 ? " — more paired turns needed" : ""})`
         : `FAIL — agreement held but median wall clock did not improve ` +
           `(×${medianWallRatio.toFixed(3)})`;
 

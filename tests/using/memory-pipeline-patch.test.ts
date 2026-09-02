@@ -13,10 +13,11 @@
 // byte-identical) and no duplicate article was created. The real base-model
 // version is the one-load smoke in scripts/experiments, not here.
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtemp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { configureRuntime } from "../../src/runtime-config";
 
 import { MemoryStore, chunkId } from "../../src/memory/db";
 import type { ExtractCall } from "../../src/memory/entity";
@@ -64,10 +65,23 @@ const HELIOS_CONV = "55556666-0000-0000-0000-000000000000"; // → conv:55556666
  *  - one 3-chunk conversation about a brand-new entity "Helios 44-2" (≥3 routed
  *    chunks ⇒ the deterministic CREATE gate fires) so the same run exercises the
  *    create-vs-patch split. */
+let restoreWiki = () => {};
+afterEach(() => {
+  restoreWiki();
+  restoreWiki = () => {};
+});
+
 async function seed(): Promise<{ root: string; store: MemoryStore; correctionId: string }> {
   const root = await mkdtemp(join(tmpdir(), "dreaming-pipeline-patch-"));
   await mkdir(join(root, "articles"), { recursive: true });
   await writeFile(join(root, "articles", "Test_Camera.md"), TEST_CAMERA);
+  // The extract stage reads Meta/Entities.md from the vault root (MLX_BUN_WIKI),
+  // not from `root` — point it at this throwaway vault so the run never touches
+  // ~/.mlx-bun/wiki (absent on CI).
+  await mkdir(join(root, "Meta"), { recursive: true });
+  await writeFile(join(root, "Meta", "Entities.md"), "# Entities\n\nName the entity each chunk is about.\n");
+  restoreWiki();
+  restoreWiki = configureRuntime({ MLX_BUN_WIKI: root });
 
   const store = new MemoryStore(":memory:");
 

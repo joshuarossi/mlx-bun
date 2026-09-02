@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -16,7 +16,8 @@ import { parseToc } from "../../src/memory/vault";
 // pure: parse it, assert the grammar, and round-trip its infobox byte-for-byte.
 
 const GOLDEN_PATH = join(homedir(), ".mlx-bun", "wiki", "articles", "Panasonic_Lumix_S5IIX.md");
-const GOLDEN = readFileSync(GOLDEN_PATH, "utf8");
+const HAVE_GOLDEN = existsSync(GOLDEN_PATH); // research tier: skips without the local vault
+const GOLDEN = HAVE_GOLDEN ? readFileSync(GOLDEN_PATH, "utf8") : "";
 
 // The infobox exactly as written in the golden (the byte-for-byte round-trip target).
 const INFOBOX = [
@@ -32,7 +33,7 @@ const INFOBOX = [
   "```",
 ].join("\n");
 
-describe("P1-T1 golden — Panasonic_Lumix_S5IIX", () => {
+describe.skipIf(!HAVE_GOLDEN)("P1-T1 golden — Panasonic_Lumix_S5IIX", () => {
   it("parses cleanly with parseToc (See also before References, References last)", () => {
     const toc = parseToc(GOLDEN);
     const h1s = toc.filter((t) => t.depth === 1);
@@ -69,7 +70,7 @@ describe("P1-T1 golden — Panasonic_Lumix_S5IIX", () => {
   });
 });
 
-describe("P1-T1 grammar rejects malformed articles", () => {
+describe.skipIf(!HAVE_GOLDEN)("P1-T1 grammar rejects malformed articles", () => {
   it("rejects References that is not the last section", () => {
     const bad = [
       "# Title",

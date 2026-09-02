@@ -21,6 +21,7 @@ import { join } from "node:path";
 
 import { MemoryStore, chunkId } from "../../src/memory/db";
 import type { ExtractCall } from "../../src/memory/entity";
+import type { SectionCall } from "../../src/memory/cluster";
 import type { SynthesisCall } from "../../src/memory/synthesize";
 import { runExtractStage, runRouteStage, runSynthesizeStage } from "../../src/memory/stages";
 
@@ -181,12 +182,16 @@ describe("stages — chronological processing (oldest conversation first)", () =
       return "NONE";
     };
 
+    // SECTION-ROUTE seam: the second pass sees Zephyr's article as a PATCH target
+    // and would otherwise ask the real model which section to fold into.
+    const noRoute: SectionCall = async () => "no";
+
     // First pass: cap at 1 → only the oldest (Zephyr) is created.
-    const r1 = await runSynthesizeStage(store, { root, limit: 1, call: mk, commit: false });
+    const r1 = await runSynthesizeStage(store, { root, limit: 1, call: mk, sectionCall: noRoute, commit: false });
     expect(r1.created.map((c) => c.stem)).toEqual(["Zephyr"]);
 
     // Second pass: Zephyr now has an article file → skipped; Charlie+Bravo remain.
-    const r2 = await runSynthesizeStage(store, { root, call: mk, commit: false });
+    const r2 = await runSynthesizeStage(store, { root, call: mk, sectionCall: noRoute, commit: false });
     expect(r2.created.map((c) => c.stem)).toEqual(["Charlie", "Bravo"]);
     store.close();
   }, 10_000);
