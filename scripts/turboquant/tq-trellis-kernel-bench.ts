@@ -7,7 +7,7 @@ import { MlxArray } from "../../src/mlx/array";
 import { Dtype } from "../../src/mlx/ffi";
 import * as ops from "../../src/mlx/ops";
 import { Trellis } from "../../src/quantize/trellis";
-import { TrellisLinear, expandTrellis } from "../../src/model/trellis-linear";
+import { TrellisLinear, expandTrellis, setTrellisVariant } from "../../src/model/trellis-linear";
 
 const argv = process.argv.slice(2);
 const opt = (k: string, d: string) => { const i = argv.indexOf(`--${k}`); return i >= 0 ? argv[i + 1]! : d; };
@@ -41,13 +41,16 @@ console.log(`k=${K} M=${M} reps=${REPS} · gate/up [${INTER}x${HID}] axis1 · do
 const g = packed(INTER, HID);                       // gate: coded along in=5120
 const gate = new TrellisLinear(g.codes, g.scales, spec(1) as any, "kernel");
 const xg = ops.randomNormal([M, HID], Dtype.float32, 0, 1, ops.randomKey(1n)).astype(Dtype.bfloat16);
-timeIt(`trellis reduce  gate k${K} M=${M}`, () => gate.forward(xg), g.codes.nbytes);
-timeIt(`trellis expand  gate k${K} (whole tensor)`, () => expandTrellis(g.codes, g.scales, gate.geometry, Dtype.bfloat16), g.codes.nbytes);
-
 const d = packed(INTER, HID);                       // down stored [in=17408, out·k/32]
 const down = new TrellisLinear(d.codes, d.scales, spec(0) as any, "kernel");
 const xd = ops.randomNormal([M, INTER], Dtype.float32, 0, 1, ops.randomKey(2n)).astype(Dtype.bfloat16);
-timeIt(`trellis scatter down k${K} M=${M}`, () => down.forward(xd), d.codes.nbytes);
+const variants = opt("variants", "0,1,2,3").split(",").map(Number);
+for (const v of variants) {
+  setTrellisVariant(v);
+  timeIt(`v${v} trellis reduce  gate k${K} M=${M}`, () => gate.forward(xg), g.codes.nbytes);
+  timeIt(`v${v} trellis scatter down k${K} M=${M}`, () => down.forward(xd), d.codes.nbytes);
+  timeIt(`v${v} trellis expand  gate k${K}`, () => expandTrellis(g.codes, g.scales, gate.geometry, Dtype.bfloat16), g.codes.nbytes);
+}
 
 // Stock affine references at the same shapes.
 for (const bits of [3, 4]) {

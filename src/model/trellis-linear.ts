@@ -31,7 +31,7 @@ import * as ops from "../mlx/ops";
 import { MetalKernel } from "../mlx/metal-kernel";
 import type { Weights } from "../weights";
 import { quantFor, type ModelConfig, type QuantSpec } from "../config";
-import { wordsPerBlock } from "../quantize/trellis";
+import { lut1mad, wordsPerBlock } from "../quantize/trellis";
 import { QuantizedLinear } from "./gemma4-base";
 
 const THREADS = 128;           // 4 SIMD groups per threadgroup
@@ -49,12 +49,21 @@ static inline float trellis_bf16(float v) {
 // y = sum of the four bytes of x - 510, value = y / 147.800537109375. Two
 // byte-pair adds replace the four extracts; precise divide matches the host
 // LUT (src/quantize/trellis.ts lut1mad) bit for bit.
-static inline float trellis_val(uint s) {
+static inline int trellis_y(uint s) {
   const uint x = s * 34038481u + 76625530u;
   const uint p = (x & 0x00FF00FFu) + ((x >> 8) & 0x00FF00FFu);
-  const uint sum = (p & 0xFFFFu) + (p >> 16);
-  return metal::precise::divide((float)((int)sum - 510), 147.800537109375f);
+  return (int)((p & 0xFFFFu) + (p >> 16)) - 510;
 }
+static inline float trellis_val(uint s) {
+  return metal::precise::divide((float)trellis_y(s), 147.800537109375f);
+}
+// VARIANT: 0 = inline 1MAD + precise divide; 1 = inline 1MAD × reciprocal
+// (1 ulp risk vs the host LUT); 2 = 4096-entry f32 LUT in threadgroup memory;
+// 3 = the same LUT gathered from device memory.
+#define TRELLIS_DECODE(win, lutTG, lut) \
+  ((VARIANT) == 0 ? trellis_val(win) : \
+   (VARIANT) == 1 ? (float)trellis_y(win) * (1.0f / 147.800537109375f) : \
+   (VARIANT) == 2 ? lutTG[win] : lut[win])
 // state_t of one packed block: L bits at offset (BT-1-t)*K, wrapping (32-bit ops).
 static inline uint trellis_state(const device uint32_t* blk, uint wpb, uint t, uint bt, uint k, uint l) {
   const uint p = (bt - 1u - t) * k;
@@ -72,6 +81,11 @@ static inline uint trellis_state(const device uint32_t* blk, uint wpb, uint t, u
  *  window of position t0+j starts at local bit (31-j)·K, so after unrolling
  *  every shift is a compile-time constant — no LUT, no threadgroup memory. */
 const REDUCE_SOURCE = String.raw`
+  threadgroup float lutTG[4096];
+  if ((VARIANT) == 2) {
+    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += 128u) lutTG[i] = lut[i];
+    threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+  }
   const uint lane = thread_index_in_simdgroup;
   const uint sg = simdgroup_index_in_threadgroup;
   const uint row = thread_position_in_grid.y * (uint)ROWS_TG + sg;
@@ -104,7 +118,7 @@ const REDUCE_SOURCE = String.raw`
       uint win = w[wi] >> off;
       if (off + (uint)L > 32u) win |= w[wi + 1] << (32u - off);
       win &= (1u << (uint)L) - 1u;
-      const float wv = trellis_bf16(trellis_val(win) * scale);
+      const float wv = trellis_bf16(TRELLIS_DECODE(win, lutTG, lut) * scale);
       acc = metal::fma(wv, float(xs[c0 + j]), acc);
     }
   }
@@ -116,6 +130,11 @@ const REDUCE_SOURCE = String.raw`
  *  32 lanes = the 32 consecutive positions of one run; every row's run words
  *  are one broadcast load, each lane extracts its own window. */
 const SCATTER_SOURCE = String.raw`
+  threadgroup float lutTG[4096];
+  if ((VARIANT) == 2) {
+    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += 128u) lutTG[i] = lut[i];
+    threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+  }
   const uint lane = thread_index_in_simdgroup;
   const uint sg = simdgroup_index_in_threadgroup;
   const uint col = (thread_position_in_grid.y * (uint)SG_TG + sg) * 32u + lane;
@@ -147,7 +166,7 @@ const SCATTER_SOURCE = String.raw`
     uint win = bw[widx0] >> off;
     if (two) win |= bw[widx1] << (32u - off);
     win &= (1u << (uint)L) - 1u;
-    const float wv = trellis_bf16(trellis_val(win) * float(scales[r]));
+    const float wv = trellis_bf16(TRELLIS_DECODE(win, lutTG, lut) * float(scales[r]));
     acc = metal::fma(wv, float(xs[r]), acc);
   }
   partial[((ulong)sample * (ulong)SPLITS + split) * (ulong)C + col] = acc;
@@ -163,7 +182,7 @@ const EXPAND_SOURCE = String.raw`
   const uint t = c - blk * (uint)BT;
   const device uint32_t* codeRow = codes + (ulong)r * (ulong)((C / BT) * wpb);
   const uint s = trellis_state(codeRow + blk * wpb, wpb, t, (uint)BT, (uint)K, (uint)L);
-  out[(ulong)r * (uint)C + c] = T(trellis_val(s) * float(scales[r]));
+  out[(ulong)r * (uint)C + c] = T(((VARIANT) >= 2 ? lut[s] : (VARIANT) == 1 ? (float)trellis_y(s) * (1.0f / 147.800537109375f) : trellis_val(s)) * float(scales[r]));
 `;
 
 let kernels: { reduce: MetalKernel; scatter: MetalKernel; expand: MetalKernel } | null = null;
@@ -171,21 +190,33 @@ function kernelSet() {
   if (!kernels) {
     kernels = {
       reduce: new MetalKernel({
-        name: "mlx_bun_trellis_reduce", inputNames: ["x", "codes", "scales"],
+        name: "mlx_bun_trellis_reduce", inputNames: ["x", "codes", "scales", "lut"],
         outputNames: ["out"], source: REDUCE_SOURCE, header: HEADER, ensureRowContiguous: true,
       }),
       scatter: new MetalKernel({
-        name: "mlx_bun_trellis_scatter", inputNames: ["x", "codes", "scales"],
+        name: "mlx_bun_trellis_scatter", inputNames: ["x", "codes", "scales", "lut"],
         outputNames: ["partial"], source: SCATTER_SOURCE, header: HEADER, ensureRowContiguous: true,
       }),
       expand: new MetalKernel({
-        name: "mlx_bun_trellis_expand", inputNames: ["codes", "scales"],
+        name: "mlx_bun_trellis_expand", inputNames: ["codes", "scales", "lut"],
         outputNames: ["out"], source: EXPAND_SOURCE, header: HEADER, ensureRowContiguous: true,
       }),
     };
   }
   return kernels;
 }
+
+const luts = new Map<number, MlxArray>();
+function lutFor(L: number): MlxArray {
+  let a = luts.get(L);
+  if (!a) { a = MlxArray.fromFloat32(lut1mad(L), [1 << L]); a.eval(); luts.set(L, a); }
+  return a;
+}
+
+/** Decode variant (see HEADER). Default is the fastest measured on M1 Max;
+ *  `MLX_BUN_TRELLIS_VARIANT` overrides for experiments. */
+let VARIANT = Number(process.env.MLX_BUN_TRELLIS_VARIANT ?? "1");
+export function setTrellisVariant(v: number): void { VARIANT = v; }
 
 export interface TrellisGeometry {
   k: number;
@@ -217,12 +248,12 @@ export function trellisGeometry(codes: MlxArray, spec: QuantSpec): TrellisGeomet
 
 /** Decode the stored matrix ([rows, cols], coded along cols) to `dtype`. */
 export function expandTrellis(codes: MlxArray, scales: MlxArray, g: TrellisGeometry, dtype: Dtype): MlxArray {
-  const [out] = kernelSet().expand.apply([codes, scales], {
+  const [out] = kernelSet().expand.apply([codes, scales, lutFor(g.L)], {
     outputs: [{ shape: [g.rows, g.cols], dtype }],
     grid: [g.cols, g.rows, 1],
     threadGroup: [Math.min(256, g.cols), 1, 1],
     templateDtypes: { T: dtype },
-    templateInts: { R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L },
+    templateInts: { R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, VARIANT },
   });
   return out!;
 }
@@ -313,24 +344,24 @@ export class TrellisLinear {
 
   #reduce(x2: MlxArray, M: number): MlxArray {
     const g = this.geometry;
-    const [out] = kernelSet().reduce.apply([x2, this.codes, this.scales], {
+    const [out] = kernelSet().reduce.apply([x2, this.codes, this.scales, lutFor(g.L)], {
       outputs: [{ shape: [M, g.rows], dtype: x2.dtype }],
       grid: [THREADS, Math.ceil(g.rows / SG_PER_TG), M],
       threadGroup: [THREADS, 1, 1],
       templateDtypes: { T: x2.dtype },
-      templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, ROWS_TG: SG_PER_TG },
+      templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, ROWS_TG: SG_PER_TG, VARIANT },
     });
     return out!;
   }
 
   #scatter(x2: MlxArray, M: number): MlxArray {
     const g = this.geometry;
-    const [partial] = kernelSet().scatter.apply([x2, this.codes, this.scales], {
+    const [partial] = kernelSet().scatter.apply([x2, this.codes, this.scales, lutFor(g.L)], {
       outputs: [{ shape: [M, SPLITS, g.cols], dtype: Dtype.float32 }],
       grid: [THREADS, Math.ceil(g.cols / (32 * SG_PER_TG)), M * SPLITS],
       threadGroup: [THREADS, 1, 1],
       templateDtypes: { T: x2.dtype },
-      templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, SG_TG: SG_PER_TG, SPLITS },
+      templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, SG_TG: SG_PER_TG, SPLITS, VARIANT },
     });
     const sum = ops.sumAxis(partial!, 1, false);
     partial!.dispose();
