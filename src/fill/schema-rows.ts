@@ -205,8 +205,26 @@ function compile(input: CompileStrictRowsInput): StrictRowPlan {
   const anchor = leadingSkip(scaffold, whitespace);
 
   const rows: FillRow[] = [];
-  const openRow = anchoredRow(scaffold, "scaffold", distinctive, whitespace);
-  if (openRow) rows.push(openRow);
+  // The scaffold is determined only AFTER the model has chosen to call a tool.
+  // Everything the call rendering shares with a plain-content rendering (the
+  // think close, the joins) is not a decision; the first token where they
+  // diverge — the tool-call opener — is the model's own commitment, and the
+  // row's trigger must run through it. Measured before this rule (27B strict
+  // trace, 2026-09-02): a row triggered on `</think>` asserted a tool call the
+  // model would have answered in prose 2 times out of 5. No content probe ⇒
+  // no open row (the name and close rows do not depend on it).
+  const content = contentProbe(CONTENT_A);
+  if (content) {
+    let decision = 0;
+    while (decision < scaffold.length && decision < content.length &&
+      scaffold[decision] === content[decision]) decision++;
+    if (decision < scaffold.length) {
+      const trigger = scaffold.slice(anchor, decision + 1);
+      const emit = scaffold.slice(decision + 1);
+      if (trigger.some(distinctive) && emit.length >= 2)
+        rows.push({ trigger, emit, kind: "scaffold" });
+    }
+  }
 
   // --- per-tool name completion ----------------------------------------
   // Fires on the shortest run of tokens after the scaffold that identifies ONE
