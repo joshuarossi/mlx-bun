@@ -525,6 +525,22 @@ run sequentially, results labeled host/chip/RAM.
         footprint + max-context-that-fits at each budget.
       - Honesty rails: paired same-corpus same-seed, per-bpw-band comparisons,
         no perf claims off a loaded box.
+- [~] **Q — sub-4-bpw frontier (opened 2026-08-31; findings in turboquant.md
+      "Q campaign").** Rotation + trellis + LDLQ + borrowed sensitivity, judged
+      by KL-vs-bf16 (screen) AND MMLU-100 / tGSM-50 / rawGSM-50 (verdict).
+      - [x] **Q0** KL-vs-bf16-teacher instrument on 32 GB (dump + two scorers,
+            self-KL 0, cross-stack byte-identical).
+      - [x] **Q1** affine arms scored: compact-norot 0.2524 (rawGSM 0/50),
+            compact-rot 0.6054; rotation hurts affine.
+      - [x] **Q2a/b** trellis k3 uniform: rot 0.4240 / norot 0.5648; rotation
+            helps the trellis. No trellis cell beats affine yet.
+      - [~] **Q2c** LDLQ: Hessians done; encode paused at 72/192; score owed.
+      - [ ] **Q3** rot + LDLQ + k-map (3.00, 3.25) — the full recipe. Gate:
+            KL < 0.2524 AND rawGSM > 0 AND MMLU/tGSM within noise of compact.
+      - [ ] **Q4** task columns on every trellis arm; rawGSM EOS-cliff
+            root cause on the unrotated affine arm.
+      - [ ] **Q2b** packed trellis Metal kernel — only after Q3 passes; M1
+            economics predict a decode regression (turboquant.md).
 - **Non-goals (pinned):** custom weight FORMAT or any new qmm kernel;
   activation quantization (no int4 tensor cores, decode is weight-bandwidth-
   bound); runtime weight rotation of any kind (weights fold offline, online
@@ -557,6 +573,8 @@ Landed so far:
 - 2026-08-20 — MTP serve lane fixed (two defects in the one advertised
   feature); eval-runner swap-thrash root-caused and fixed.
 - 2026-08-24 — `convert --rotate-weights` shipped in v0.2.0.
+- 2026-08-31/09-01 — Q0 instrument, Q1/Q2 arms measured, LDLQ + k-map drivers
+  (`scripts/turboquant/{tq-trellis,tq-quantize-trellis}.ts`, `tq-ldlq-hessians.py`).
 
 ## Serving architecture consolidation `[~]` (opened 2026-08-21)
 

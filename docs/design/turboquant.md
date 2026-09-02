@@ -754,6 +754,81 @@ GGUF/AWQ export; group_size > 128.
 
 ---
 
+## Q campaign — sub-4-bpw frontier: KL instrument, trellis, LDLQ, mixed-k (2026-08-31 → 09-01, M1 Max 32 GB)
+
+Josh's frame: the best Qwen3.8-27B for THIS 32 GB box — smallest, smartest,
+fastest — using the rotation ("that was the entire point") plus the levers
+the 900+ published quants do not combine: trellis coding (QTIP/TCQ), LDLQ,
+and borrowed sensitivity measurements (EXL3/Unsloth/OptiQ). Program tag Q.
+
+**Q0 instrument — mean KL vs a bf16 teacher, on 32 GB.** `scripts/turboquant/
+tq-dump-teacher-logits.py` streams the bf16 27B through stock mlx-lm once and
+writes, per teacher-forced position, the top-2048 logits + full-vocab
+logsumexp (fp16 lossless for bf16; captures 99.79% of full-vocab KL);
+`tq-kl-vs-teacher.py` (Python) and `bun scripts/eval.ts kl --reference-logits`
+(serving path) score any candidate; self-KL is exactly 0 and the two stacks
+read the dump byte-identically. Corpus `runs/kl-corpus/uf-4096x32` (32×4096
+UF-derived chat, sha `6594cfbf…`); dump `runs/kl-teacher/qwen38-27b-bf16`
+(1.61 GB). Calibration warning of record: this protocol runs ~25× hotter than
+the published self-generated-trace charts (RTN-4 = 0.1396 here vs ~0.005
+there) — only within-dump comparisons are valid, never cross-paper numbers.
+
+**KL ladder (mean KL(bf16‖cand), same dump, lower is better):**
+
+| arm | bpw | GiB | KL | MMLU | tGSM | rawGSM |
+|---|---|---|---|---|---|---|
+| bf16 | 16 | 54 | 0 | | | |
+| RTN-4 g64 (all 4-bit) | 4.5 | 15.0 | 0.1396 | | | |
+| flagship GPTQ+sens (mjriii/Qwen3.8-27B) | 4.80 | 17.0 | 0.1646 | 87 | 94 | 96 |
+| **compact allocation, NO rotation** (`tqalloc-norot`) | 3.858 | 13.13 | **0.2524** | 85 | 98 | **0/50** |
+| q1-latemlp, no rotation | ~3.9 | | 0.2837 | | | |
+| **trellis k3 uniform + rotation** (q2a, fake-quant) | ~3.4 | | 0.4240 | | | |
+| trellis k3 uniform, no rotation (q2b) | ~3.4 | | 0.5648 | | | |
+| compact allocation + rotation (mjriii/Qwen3.8-27B-TQ) | 3.86 | 13.9 | 0.6054 | 82 | 82 | 96 |
+| q1-latemlp + rotation | ~3.9 | | 0.6519 | | | |
+
+Findings of record: (1) **rotation is a 2×2 crossover, not a lever with a
+sign** — it HELPS the trellis (0.565 → 0.424) and HURTS affine g64
+(0.252 → 0.605): the trellis codes a Gaussian source and needs the Hadamard;
+affine's per-64 scale+bias already absorbs the outliers the rotation spreads.
+(2) **KL is the screen, not the verdict**: the lowest-KL sub-4-bpw arm scores
+0/50 on raw GSM (an EOS cliff a single-forward instrument cannot see) while the
+rotated compact arm at 2.4× the KL scores 96 — every finalist still needs the
+task columns. (3) No trellis cell beats the affine compact arm yet; the two
+open levers are LDLQ (Hessian error feedback) and mixed k — the published
+EXL3 numbers (their protocol: SC 3 bpw 0.0257 vs UD-Q3_K_XL 0.0209; 4 bpw
+0.0062) say both are worth ~20–70%. (4) Weight-MSE is NOT a screen: it
+predicted the unrotated trellis at 0.18–0.21; the measured KL was 0.5648.
+
+**Q2 trellis codec** (`scripts/turboquant/tq-trellis.ts`): QTIP bitshift
+trellis L=12, k∈{1..4}, V=1, T=256, tail-biting Viterbi, 1MAD/RPTC/random
+codebooks; `--validate` reproduces QTIP Table 2 exactly; 1.2 Mw/s on M1 Max
+after replacing `argmax` (MLX ArgReduce is 85× slower than `max`) with
+compare + uint8 max. Driver `tq-quantize-trellis.ts`: streaming fold +
+quantize, trellis on the 192 MLP tensors along the rotated axis, affine
+elsewhere per the compact allocation, fake-quant output (decoded bf16 flagged
+`false`, so stock mlx-lm loads it). Real packed kernels (Q2b) only if a recipe
+wins: Metal has no `lop3`, so decode costs 4–5 ALU ops/weight; M1 decode is
+already ALU-bound (3-bit affine at 54% of roofline) → predicted 7–9 tok/s on
+M1 (a regression), wash-to-win on M4 Pro; ~257 dispatches/token; fallback is
+load-time expansion to affine.
+
+**Q2c LDLQ** (`tq-ldlq-hessians.py` + `--ldlq <hdir>`): per-layer MLP input
+Hessians in the folded basis (gate/up captured pre-γ so H' = R1ᵀ E[nnᵀ] R1;
+down basis-free), block-LDL on CPU, BlockLDLQ error feedback at block T (=
+the trellis block, so only the objective changes vs q2a), 4× unweighted-peak
+guard, 20 GiB leak abort. Calibration = 512×128 rows of the SAME chat domain
+(disjoint from the scored rows; a domain mismatch was measured to hurt GPTQ).
+Hessians: 64 layers in 35 min, 0/128 factorization fallbacks. Encode was
+PAUSED by Josh at 72/192 tensors (97 min, 1.10 Mw/s) — not yet scored.
+
+**Q3 mixed k** (`--k-map reports/qwen38-allocation/trellis-kmap.json
+--k-budget 3.00`): per-tensor k∈{2,3,4} greedily allocated from turboderp's
+EXL3 per-tensor KLD-vs-k table for this exact model (gate/up tied like EXL3's
+own recipe; 94.3% agreement with their 3.00 bpw recipe). Budgets 2.75 / 3.00
+/ 3.25 avg-MLP-bpw = k2/k3/k4 68/104/20, 26/140/26, 2/140/50 (≈10.8 / 11.3 /
+11.8 GiB projected). Driver support landed 2026-09-01; not yet run.
+
 # Open items (weights leg — mirrors the PLAN.md phase boxes; PLAN.md owns status)
 
 - **W5 calibration composition** — PLAN sub-boxes W5a (0.8B matrix), W5b
@@ -784,6 +859,11 @@ GGUF/AWQ export; group_size > 128.
   GGUF anchor. The KV axis composes: `--kv-quant turbo` (k8v3) is the
   context-headroom lever at fixed weight bpw. `scripts/turboquant/
   farm-setup.sh` provisions a rented Apple-silicon worker for these runs.
+- **Q campaign (sub-4 bpw):** finish Q2c (LDLQ encode from the saved
+  Hessians, score, task columns), run Q3 (rot + LDLQ + k-map 3.00 and 3.25),
+  put MMLU/tGSM/rawGSM on every trellis arm, root-cause the rawGSM EOS cliff
+  on the unrotated affine arm, then decide Q2b kernels. Source bf16, all Q
+  artifacts, Hessians live on the external `/Volumes/MLX-Models` volume.
 - **Engine follow-up from the M4 rows:** serve should scale
   prefillChunkSize from fit.ts headroom automatically; prefill-rate
   oracle comparison vs mlx-lm same-box.
@@ -831,3 +911,7 @@ GGUF/AWQ export; group_size > 128.
   fixed; DeltaNet prefill leak fixed; M4 Pro 24 GB speed rows.
 - 2026-08-23 — research scripts moved to `scripts/turboquant/`; this
   consolidated doc.
+- 2026-08-31 — Q0 KL-vs-bf16-teacher instrument (both stacks); transformers-5.8
+  checkpoint loader.
+- 2026-09-01 — Q2 trellis codec + driver, rotation 2×2, Q2c LDLQ, Q3 k-map;
+  KL ladder above.
