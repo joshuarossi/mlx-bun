@@ -16,7 +16,7 @@ import { TrellisLinear, expandTrellis, trellisGeometry } from "../../src/model/t
 import type { QuantSpec } from "../../src/config";
 
 const L = 12, T = 256;
-const N = 8, C = 512;   // 8 coded rows × 2 blocks
+const N = 64, C = 512;  // 64 coded rows × 2 blocks — dense coverage of the 1021 code values
 
 function lcg(seed: number): () => number {
   let s = seed >>> 0;
