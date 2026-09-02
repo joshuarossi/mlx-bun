@@ -754,7 +754,7 @@ GGUF/AWQ export; group_size > 128.
 
 ---
 
-## Q campaign — sub-4-bpw frontier: KL instrument, trellis, LDLQ, mixed-k (2026-08-31 → 09-01, M1 Max 32 GB)
+## Q campaign — sub-4-bpw frontier: KL instrument, trellis, LDLQ, mixed-k (2026-08-31 → 09-02, M1 Max 32 GB)
 
 Josh's frame: the best Qwen3.8-27B for THIS 32 GB box — smallest, smartest,
 fastest — using the rotation ("that was the entire point") plus the levers
@@ -779,6 +779,7 @@ there) — only within-dump comparisons are valid, never cross-paper numbers.
 |---|---|---|---|---|---|---|
 | bf16 | 16 | 54 | 0 | | | |
 | RTN-4 g64 (all 4-bit) | 4.5 | 15.0 | 0.1396 | | | |
+| **Q3: rotation + LDLQ + mixed-k 3.00** (fake-quant; carrier8 dense 0.1568) | **3.55** | **~11.9 proj.** | **0.1553** | **88** | 48 | 44 |
 | flagship GPTQ+sens (mjriii/Qwen3.8-27B) | 4.80 | 17.0 | 0.1646 | 87 | 94 | 96 |
 | **compact allocation, NO rotation** (`tqalloc-norot`) | 3.858 | 13.13 | **0.2524** | 85 | 98 | **0/50** |
 | q1-latemlp, no rotation | ~3.9 | | 0.2837 | | | |
@@ -799,6 +800,14 @@ open levers are LDLQ (Hessian error feedback) and mixed k — the published
 EXL3 numbers (their protocol: SC 3 bpw 0.0257 vs UD-Q3_K_XL 0.0209; 4 bpw
 0.0062) say both are worth ~20–70%. (4) Weight-MSE is NOT a screen: it
 predicted the unrotated trellis at 0.18–0.21; the measured KL was 0.5648.
+(5) **The full recipe wins (2026-09-02):** rotation + LDLQ + EXL3-derived
+mixed k at the 3.00 MLP budget scores KL 0.1553 at 3.55 coded bpw — below
+the shipped 4.80-bpw flagship (0.1646), 38% below the previous sub-4 best
+(compact-norot 0.2524), 11% above all-4-bit RTN (0.1396) — with MMLU 88/100
+(flagship 87, compact 85), tGSM 48/50 (flagship 48), rawGSM 44/50 (flagship
+48, compact-norot 0): no EOS cliff. Each lever alone lost (q2a 0.4240); the
+levers compound. At n=100/50 a one-point gap is noise: the claim of record
+is "matches the 4.8-bpw flagship at 3.55 bpw", not "beats it". Gate Q3 PASSED.
 
 **Q2 trellis codec** (`scripts/turboquant/tq-trellis.ts`): QTIP bitshift
 trellis L=12, k∈{1..4}, V=1, T=256, tail-biting Viterbi, 1MAD/RPTC/random
@@ -819,15 +828,37 @@ down basis-free), block-LDL on CPU, BlockLDLQ error feedback at block T (=
 the trellis block, so only the objective changes vs q2a), 4× unweighted-peak
 guard, 20 GiB leak abort. Calibration = 512×128 rows of the SAME chat domain
 (disjoint from the scored rows; a domain mismatch was measured to hurt GPTQ).
-Hessians: 64 layers in 35 min, 0/128 factorization fallbacks. Encode was
-PAUSED by Josh at 72/192 tensors (97 min, 1.10 Mw/s) — not yet scored.
+Hessians: 64 layers in 35 min, 0/128 factorization fallbacks. The uniform-k3
+LDLQ arm (Q2c) was paused at 72/192 and superseded: Q3 went straight to the
+full recipe, so LDLQ's isolated contribution is not separately measured
+(q2a → Q3 is LDLQ + mixed-k together, 0.4240 → 0.1553). Bug found on resume
+(2026-09-02): the k-map refactor's block loop shadowed the codec k
+(`trellisFor(blockIdx)`); the Trellis ctor now rejects K outside [1,L), the
+L=0 selftest is byte-identical again, and the real-L probe on layer 21 runs
+at 5.6 GiB peak with the unweighted MSE +32/+46% (gate/down), as expected for
+a Hessian-weighted objective.
 
 **Q3 mixed k** (`--k-map reports/qwen38-allocation/trellis-kmap.json
 --k-budget 3.00`): per-tensor k∈{2,3,4} greedily allocated from turboderp's
 EXL3 per-tensor KLD-vs-k table for this exact model (gate/up tied like EXL3's
 own recipe; 94.3% agreement with their 3.00 bpw recipe). Budgets 2.75 / 3.00
 / 3.25 avg-MLP-bpw = k2/k3/k4 68/104/20, 26/140/26, 2/140/50 (≈10.8 / 11.3 /
-11.8 GiB projected). Driver support landed 2026-09-01; not yet run.
+11.8 GiB projected). Run 2026-09-01/02 at 3.00: 259 min (257 in the encoder,
+1.11 Mw/s), 192 trellis tensors, 3.5468 coded bpw over 27.3 G params, 38 GiB
+fake-quant on disk; artifact `mjriii/Qwen3.8-27B-q3-trellis-ldlq-k300-fakequant`
+on the external volume, KL row `rows/q3-ldlq-k300.json`. Result: see finding
+(5). 3.25 not run — 3.00 already clears the gate; a 2.75 arm is the next
+size lever, not 3.25.
+
+**Eval carrier** (`scripts/turboquant/tq-repack-fakequant.ts`): a 38 GiB
+fake-quant cannot load dense on 32 GB, and `tq-evals.py` (MMLU logprob
+scoring, GSM greedy generation) needs the whole model resident. The tool
+re-packs exactly the bf16 MLP tensors flagged `false` as 8-bit g64 affine
+(≈ −45 dB, negligible next to the ≈ −13 dB trellis error) and passes every
+other tensor through byte-identical: 23 GiB, loads in 24 s, dense KL 0.1568
+vs 0.1553 streamed (+1%, identity confirmed). All task columns for trellis
+arms are measured on the carrier. NOT a shipping format — the real footprint
+needs Q2b (packed trellis + Metal decode kernel).
 
 # Open items (weights leg — mirrors the PLAN.md phase boxes; PLAN.md owns status)
 
@@ -859,11 +890,13 @@ own recipe; 94.3% agreement with their 3.00 bpw recipe). Budgets 2.75 / 3.00
   GGUF anchor. The KV axis composes: `--kv-quant turbo` (k8v3) is the
   context-headroom lever at fixed weight bpw. `scripts/turboquant/
   farm-setup.sh` provisions a rented Apple-silicon worker for these runs.
-- **Q campaign (sub-4 bpw):** finish Q2c (LDLQ encode from the saved
-  Hessians, score, task columns), run Q3 (rot + LDLQ + k-map 3.00 and 3.25),
-  put MMLU/tGSM/rawGSM on every trellis arm, root-cause the rawGSM EOS cliff
-  on the unrotated affine arm, then decide Q2b kernels. Source bf16, all Q
-  artifacts, Hessians live on the external `/Volumes/MLX-Models` volume.
+- **Q campaign (sub-4 bpw):** Q3 passed its gate (finding 5). Owed: Q2b
+  packed trellis format + Metal decode kernel (the only way to realize the
+  11.9 GiB footprint; M1 decode-speed regression predicted — measure, and
+  keep load-time expansion to affine as the fallback); a 2.75-budget arm
+  for the size axis; task columns on q2a/q2b for the ladder's completeness;
+  root-cause the rawGSM EOS cliff on the unrotated affine arm. Source bf16,
+  all Q artifacts, Hessians live on the external `/Volumes/MLX-Models` volume.
 - **Engine follow-up from the M4 rows:** serve should scale
   prefillChunkSize from fit.ts headroom automatically; prefill-rate
   oracle comparison vs mlx-lm same-box.
@@ -915,3 +948,6 @@ own recipe; 94.3% agreement with their 3.00 bpw recipe). Budgets 2.75 / 3.00
   checkpoint loader.
 - 2026-09-01 — Q2 trellis codec + driver, rotation 2×2, Q2c LDLQ, Q3 k-map;
   KL ladder above.
+- 2026-09-02 — Q3 full recipe (rot + LDLQ + k-map 3.00) PASSED: KL 0.1553 at
+  3.55 bpw, MMLU 88 / tGSM 48 / rawGSM 44; eval-carrier repack tool; LDLQ
+  loop-shadow bug fixed.

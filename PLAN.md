@@ -534,13 +534,20 @@ run sequentially, results labeled host/chip/RAM.
             compact-rot 0.6054; rotation hurts affine.
       - [x] **Q2a/b** trellis k3 uniform: rot 0.4240 / norot 0.5648; rotation
             helps the trellis. No trellis cell beats affine yet.
-      - [~] **Q2c** LDLQ: Hessians done; encode paused at 72/192; score owed.
-      - [ ] **Q3** rot + LDLQ + k-map (3.00, 3.25) — the full recipe. Gate:
-            KL < 0.2524 AND rawGSM > 0 AND MMLU/tGSM within noise of compact.
-      - [ ] **Q4** task columns on every trellis arm; rawGSM EOS-cliff
-            root cause on the unrotated affine arm.
-      - [ ] **Q2b** packed trellis Metal kernel — only after Q3 passes; M1
-            economics predict a decode regression (turboquant.md).
+      - [x] **Q2c** LDLQ: Hessians done; uniform-k3 encode superseded by Q3
+            (LDLQ's isolated contribution not separately measured).
+      - [x] **Q3** rot + LDLQ + k-map 3.00 — PASSED 2026-09-02: KL 0.1553 at
+            3.55 bpw (flagship 0.1646 @ 4.80; compact-norot 0.2524), MMLU 88,
+            tGSM 48/50, rawGSM 44/50 (no EOS cliff). 3.25 not needed.
+      - [~] **Q4** task columns: Q3 done (on the 8-bit eval carrier,
+            `tq-repack-fakequant.ts`); q2a/q2b still owed; rawGSM EOS-cliff
+            root cause on the unrotated affine arm still owed.
+      - [ ] **Q2b** packed trellis format + Metal decode kernel — now
+            unblocked; realizes the 11.9 GiB footprint. Exit: tok/s on M1 Max
+            and M4 Pro vs the 3-bit affine compact arm, KL byte-identical to
+            the fake-quant; load-time expansion to affine is the fallback.
+      - [ ] **Q5** 2.75-budget arm (k2/k3/k4 68/104/20, ~10.8 GiB) — the size
+            axis; same gate as Q3.
 - **Non-goals (pinned):** custom weight FORMAT or any new qmm kernel;
   activation quantization (no int4 tensor cores, decode is weight-bandwidth-
   bound); runtime weight rotation of any kind (weights fold offline, online
@@ -575,6 +582,8 @@ Landed so far:
 - 2026-08-24 — `convert --rotate-weights` shipped in v0.2.0.
 - 2026-08-31/09-01 — Q0 instrument, Q1/Q2 arms measured, LDLQ + k-map drivers
   (`scripts/turboquant/{tq-trellis,tq-quantize-trellis}.ts`, `tq-ldlq-hessians.py`).
+- 2026-09-02 — Q3 full recipe passed (KL 0.1553 @ 3.55 bpw, MMLU 88, tGSM 48,
+  rawGSM 44); `tq-repack-fakequant.ts` eval carrier.
 
 ## Serving architecture consolidation `[~]` (opened 2026-08-21)
 
