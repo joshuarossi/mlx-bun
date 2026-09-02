@@ -15,6 +15,7 @@ import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import { CompiledFunction } from "../mlx/compile";
+import { TrellisLinear } from "./trellis-linear";
 import {
   argmaxLastPosition,
   disposeTriple,
@@ -446,15 +447,25 @@ export class Qwen3Attention {
   }
 }
 
+/** MLP projections are affine-quantized (QuantizedLinear) or, in a Q2b
+ *  packed-trellis artifact, TrellisLinear — chosen per module by the config's
+ *  quantization entry (`mode: "trellis"`). */
+export type MlpLinear = QuantizedLinear | TrellisLinear;
+function loadMlpLinear(weights: Weights, path: string, config: ModelConfig): MlpLinear {
+  return TrellisLinear.isTrellis(config, path)
+    ? TrellisLinear.load(weights, path, config)
+    : QuantizedLinear.load(weights, path, config);
+}
+
 export class Qwen3MLP {
-  readonly gate: QuantizedLinear;
-  readonly up: QuantizedLinear;
-  readonly down: QuantizedLinear;
+  readonly gate: MlpLinear;
+  readonly up: MlpLinear;
+  readonly down: MlpLinear;
 
   constructor(weights: Weights, config: ModelConfig, prefix: string) {
-    this.gate = QuantizedLinear.load(weights, `${prefix}.gate_proj`, config);
-    this.up = QuantizedLinear.load(weights, `${prefix}.up_proj`, config);
-    this.down = QuantizedLinear.load(weights, `${prefix}.down_proj`, config);
+    this.gate = loadMlpLinear(weights, `${prefix}.gate_proj`, config);
+    this.up = loadMlpLinear(weights, `${prefix}.up_proj`, config);
+    this.down = loadMlpLinear(weights, `${prefix}.down_proj`, config);
   }
 
   forward(x: MlxArray): MlxArray {
@@ -564,9 +575,10 @@ export class Qwen35Model {
         out.set(`${p}.linear_attn.in_proj_a`, l.linearAttn.inProjA);
         out.set(`${p}.linear_attn.out_proj`, l.linearAttn.outProj);
       }
-      out.set(`${p}.mlp.gate_proj`, l.mlp.gate);
-      out.set(`${p}.mlp.up_proj`, l.mlp.up);
-      out.set(`${p}.mlp.down_proj`, l.mlp.down);
+      // Trellis-coded MLP tensors are not LoRA targets (no adapter seam yet).
+      if (l.mlp.gate instanceof QuantizedLinear) out.set(`${p}.mlp.gate_proj`, l.mlp.gate);
+      if (l.mlp.up instanceof QuantizedLinear) out.set(`${p}.mlp.up_proj`, l.mlp.up);
+      if (l.mlp.down instanceof QuantizedLinear) out.set(`${p}.mlp.down_proj`, l.mlp.down);
     }
     return out;
   }

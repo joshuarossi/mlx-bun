@@ -850,6 +850,32 @@ on the external volume, KL row `rows/q3-ldlq-k300.json`. Result: see finding
 (5). 3.25 not run — 3.00 already clears the gate; a 2.75 arm is the next
 size lever, not 3.25.
 
+**Q2b packed format + kernels** (`src/quantize/trellis.ts`,
+`src/model/trellis-linear.ts`, driver `scripts/turboquant/
+tq-quantize-trellis-packed.ts`; the fake-quant codec/driver that produced the
+Q3 record are frozen, these are new files). On disk a trellis tensor is
+`.weight` uint32 `[rows, cols·k/32]` + `.scales` fp16 `[rows]`, config entry
+`{mode:"trellis", bits:k, group_size:T, trellis:{L, code:"1mad", axis}}`
+(axis 1 = coded along the input dim, stored `[out, in·k/32]`; axis 0 = along
+the output dim, stored as Wᵀ `[in, out·k/32]`). One block = T·k bits; symbol
+b_t sits at bit offset (T−1−t)·k — REVERSED time — so the L-bit window at that
+offset (wrapping, tail-biting) IS state_t, and any weight decodes in O(1):
+two word loads, shift, mask, LUT. No sequential dependency, hence a plain
+matvec. Three Metal kernels share that primitive: `reduce` (axis 1, one SIMD
+group per output row, lanes stride consecutive coded positions → coalesced,
+`simd_sum`), `scatter` (axis 0, 32 lanes = 32 consecutive outputs of one
+block, loop over inputs, split-K ×16 partials summed by one mlx op), and
+`expand` (whole tensor → bf16 for M>4, then a stock matmul; ≤178 MB
+transient). The reconstructed weight is bf16(f32(lut[state])·f32(scale)) in
+every path — bit-identical to the fake-quant artifact's stored bf16 (unit test
+`tests/unit/trellis-linear.test.ts`: host unpack + expand kernel exact for
+k∈{2,3,4}; matvecs within 2e-3 of a bf16 matmul). Engine wiring is additive:
+`QuantSpec.trellis`, `loadLinear`/`Qwen3MLP` pick `TrellisLinear` per module;
+trellis MLP tensors are not LoRA targets yet. `MLX_BUN_TRELLIS=expand` is the
+load-time fallback (8-bit affine carrier). Encoding a packed artifact reruns
+the Viterbi (the fake-quant stores values, not states; a state path cannot be
+recovered from values because the 4096 states map onto 1021 distinct values).
+
 **Eval carrier** (`scripts/turboquant/tq-repack-fakequant.ts`): a 38 GiB
 fake-quant cannot load dense on 32 GB, and `tq-evals.py` (MMLU logprob
 scoring, GSM greedy generation) needs the whole model resident. The tool

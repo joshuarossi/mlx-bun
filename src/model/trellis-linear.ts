@@ -1,0 +1,309 @@
+// TrellisLinear — a linear layer over PACKED trellis-coded weights (Q2b), the
+// on-disk format src/quantize/trellis.ts describes: `.weight` = uint32 bit-
+// stream [rows, cols·k/32], `.scales` = fp16 [rows], config entry
+// `{mode:"trellis", bits:k, group_size:T, trellis:{L, code:"1mad", axis}}`.
+//
+// axis=1 (gate/up): coded along the INPUT dim, stored [out, in·k/32].
+// axis=0 (down):    coded along the OUTPUT dim, stored [in, out·k/32] — i.e.
+//                   the stored matrix is Wᵀ, coded along its last axis.
+//
+// Three Metal kernels, one decode primitive: state_t is the L-bit window at
+// bit offset (T−1−t)·k of the block (wrapping), so any weight decodes in O(1):
+//   • reduce  — M≤4 matvec for axis=1: one SIMD group per output row, lanes
+//               stride consecutive coded positions (coalesced), simd_sum.
+//   • scatter — M≤4 matvec for axis=0: 32 lanes = 32 consecutive outputs of
+//               one block, loop over input rows, split-K over SPLITS partials
+//               (summed by one mlx op) for occupancy.
+//   • expand  — decode a whole tensor to bf16 for M>4 (prefill), then a stock
+//               matmul; the transient is one tensor (≤178 MB at 27B).
+// The reconstructed weight is bf16(f32(lut[state])·f32(scale)) in every path,
+// bit-identical to the fake-quant artifact's stored bf16.
+//
+// `MLX_BUN_TRELLIS=expand` decodes every trellis tensor at LOAD into 8-bit
+// g64 affine (the eval-carrier numerics, ~−45 dB) and serves it through the
+// stock QuantizedLinear — the fallback when the kernels lose on a machine.
+
+import { MlxArray, gpuStream } from "../mlx/array";
+import { Dtype } from "../mlx/ffi";
+import * as ops from "../mlx/ops";
+import { MetalKernel } from "../mlx/metal-kernel";
+import type { Weights } from "../weights";
+import { quantFor, type ModelConfig, type QuantSpec } from "../config";
+import { lut1mad, wordsPerBlock } from "../quantize/trellis";
+import { QuantizedLinear } from "./gemma4-base";
+
+const THREADS = 128;           // 4 SIMD groups per threadgroup
+const SG_PER_TG = 4;
+const MATVEC_MAX_M = 4;        // above this, expand + matmul wins (weights re-read per sample)
+const SPLITS = 16;             // scatter kernel split-K
+
+const HEADER = String.raw`
+static inline float trellis_bf16(float v) {
+  uint u = as_type<uint>(v);
+  u = (u + 0x7FFFu + ((u >> 16) & 1u)) & 0xFFFF0000u;
+  return as_type<float>(u);
+}
+// state_t of one packed block: L bits at offset (BT-1-t)*K, wrapping.
+static inline uint trellis_state(const device uint32_t* blk, uint wpb, uint t, uint bt, uint k, uint l) {
+  const uint p = (bt - 1u - t) * k;
+  const uint wi = p >> 5;
+  const uint off = p & 31u;
+  const uint w0 = blk[wi];
+  const uint w1 = blk[(wi + 1u == wpb) ? 0u : (wi + 1u)];
+  const ulong dw = ((ulong)w1 << 32) | (ulong)w0;
+  return (uint)(dw >> off) & ((1u << l) - 1u);
+}
+`;
+
+/** y[m, r] = Σ_c bf16(lut[s(r,c)]·scale[r]) · x[m, c]   (axis=1) */
+const REDUCE_SOURCE = String.raw`
+  threadgroup float lutTG[4096];
+  for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += 128u) lutTG[i] = lut[i];
+  threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+  const uint lane = thread_index_in_simdgroup;
+  const uint sg = simdgroup_index_in_threadgroup;
+  const uint row = thread_position_in_grid.y * (uint)ROWS_TG + sg;
+  const uint sample = thread_position_in_grid.z;
+  if (row >= (uint)R || sample >= (uint)M) return;
+  const uint wpb = (uint)(BT * K / 32);
+  const device uint32_t* codeRow = codes + (ulong)row * (ulong)((C / BT) * wpb);
+  const device T* xs = x + (ulong)sample * (ulong)C;
+  const float scale = float(scales[row]);
+  float acc = 0.0f;
+  for (uint c = lane; c < (uint)C; c += 32u) {
+    const uint blk = c / (uint)BT;
+    const uint t = c - blk * (uint)BT;
+    const uint s = trellis_state(codeRow + blk * wpb, wpb, t, (uint)BT, (uint)K, (uint)L);
+    const float w = trellis_bf16(lutTG[s] * scale);
+    acc = metal::fma(w, float(xs[c]), acc);
+  }
+  const float v = metal::simd_sum(acc);
+  if (lane == 0u) out[(ulong)sample * (ulong)R + row] = T(v);
+`;
+
+/** partial[m, split, c] = Σ_{r in split} bf16(lut[s(r,c)]·scale[r]) · x[m, r]   (axis=0) */
+const SCATTER_SOURCE = String.raw`
+  threadgroup float lutTG[4096];
+  for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += 128u) lutTG[i] = lut[i];
+  threadgroup_barrier(metal::mem_flags::mem_threadgroup);
+  const uint lane = thread_index_in_simdgroup;
+  const uint sg = simdgroup_index_in_threadgroup;
+  const uint col = (thread_position_in_grid.y * (uint)SG_TG + sg) * 32u + lane;
+  const uint zi = thread_position_in_grid.z;
+  const uint sample = zi / (uint)SPLITS;
+  const uint split = zi - sample * (uint)SPLITS;
+  if (col >= (uint)C || sample >= (uint)M) return;
+  const uint wpb = (uint)(BT * K / 32);
+  const uint blk = col / (uint)BT;
+  const uint t = col - blk * (uint)BT;
+  const ulong rowWords = (ulong)((C / BT) * wpb);
+  const uint rowsPer = ((uint)R + (uint)SPLITS - 1u) / (uint)SPLITS;
+  const uint r0 = split * rowsPer;
+  const uint r1 = metal::min((uint)R, r0 + rowsPer);
+  const device T* xs = x + (ulong)sample * (ulong)R;
+  float acc = 0.0f;
+  for (uint r = r0; r < r1; ++r) {
+    const uint s = trellis_state(codes + (ulong)r * rowWords + blk * wpb, wpb, t, (uint)BT, (uint)K, (uint)L);
+    const float w = trellis_bf16(lutTG[s] * float(scales[r]));
+    acc = metal::fma(w, float(xs[r]), acc);
+  }
+  partial[((ulong)sample * (ulong)SPLITS + split) * (ulong)C + col] = acc;
+`;
+
+/** out[r, c] = bf16(lut[s(r,c)]·scale[r]) — the stored matrix, decoded. */
+const EXPAND_SOURCE = String.raw`
+  const uint c = thread_position_in_grid.x;
+  const uint r = thread_position_in_grid.y;
+  if (c >= (uint)C || r >= (uint)R) return;
+  const uint wpb = (uint)(BT * K / 32);
+  const uint blk = c / (uint)BT;
+  const uint t = c - blk * (uint)BT;
+  const device uint32_t* codeRow = codes + (ulong)r * (ulong)((C / BT) * wpb);
+  const uint s = trellis_state(codeRow + blk * wpb, wpb, t, (uint)BT, (uint)K, (uint)L);
+  out[(ulong)r * (uint)C + c] = T(lut[s] * float(scales[r]));
+`;
+
+let kernels: { reduce: MetalKernel; scatter: MetalKernel; expand: MetalKernel } | null = null;
+function kernelSet() {
+  if (!kernels) {
+    kernels = {
+      reduce: new MetalKernel({
+        name: "mlx_bun_trellis_reduce", inputNames: ["x", "codes", "scales", "lut"],
+        outputNames: ["out"], source: REDUCE_SOURCE, header: HEADER, ensureRowContiguous: true,
+      }),
+      scatter: new MetalKernel({
+        name: "mlx_bun_trellis_scatter", inputNames: ["x", "codes", "scales", "lut"],
+        outputNames: ["partial"], source: SCATTER_SOURCE, header: HEADER, ensureRowContiguous: true,
+      }),
+      expand: new MetalKernel({
+        name: "mlx_bun_trellis_expand", inputNames: ["codes", "scales", "lut"],
+        outputNames: ["out"], source: EXPAND_SOURCE, header: HEADER, ensureRowContiguous: true,
+      }),
+    };
+  }
+  return kernels;
+}
+
+const luts = new Map<number, MlxArray>();
+function lutFor(L: number): MlxArray {
+  let a = luts.get(L);
+  if (!a) {
+    a = MlxArray.fromFloat32(lut1mad(L), [1 << L]);
+    a.eval();
+    luts.set(L, a);
+  }
+  return a;
+}
+
+export interface TrellisGeometry {
+  k: number;
+  L: number;
+  T: number;
+  axis: 0 | 1;
+  /** Stored-matrix rows / coded columns. */
+  rows: number;
+  cols: number;
+  inFeatures: number;
+  outFeatures: number;
+}
+
+export function trellisGeometry(codes: MlxArray, spec: QuantSpec): TrellisGeometry {
+  const tr = spec.trellis;
+  if (spec.mode !== "trellis" || !tr) throw new Error("trellisGeometry: spec is not a trellis spec");
+  const [rows, words] = codes.shape as [number, number];
+  const k = spec.bits, T = spec.groupSize;
+  if ((words * 32) % k !== 0) throw new Error(`trellis: ${words} words not a whole number of ${k}-bit symbols`);
+  const cols = (words * 32) / k;
+  if (cols % T !== 0) throw new Error(`trellis: ${cols} coded columns not a multiple of block ${T}`);
+  wordsPerBlock(T, k);
+  return {
+    k, L: tr.L, T, axis: tr.axis, rows, cols,
+    inFeatures: tr.axis === 1 ? cols : rows,
+    outFeatures: tr.axis === 1 ? rows : cols,
+  };
+}
+
+/** Decode the stored matrix ([rows, cols], coded along cols) to `dtype`. */
+export function expandTrellis(codes: MlxArray, scales: MlxArray, g: TrellisGeometry, dtype: Dtype): MlxArray {
+  const [out] = kernelSet().expand.apply([codes, scales, lutFor(g.L)], {
+    outputs: [{ shape: [g.rows, g.cols], dtype }],
+    grid: [g.cols, g.rows, 1],
+    threadGroup: [Math.min(256, g.cols), 1, 1],
+    templateDtypes: { T: dtype },
+    templateInts: { R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L },
+  });
+  return out!;
+}
+
+export type TrellisMode = "kernel" | "expand";
+
+export function trellisModeFromEnv(): TrellisMode {
+  const v = process.env.MLX_BUN_TRELLIS;
+  if (v === "expand") return "expand";
+  return "kernel";
+}
+
+export class TrellisLinear {
+  readonly geometry: TrellisGeometry;
+  readonly spec: QuantSpec;
+  /** `MLX_BUN_TRELLIS=expand`: the load-time 8-bit affine carrier. */
+  readonly fallback: QuantizedLinear | null;
+
+  constructor(
+    readonly codes: MlxArray,
+    readonly scales: MlxArray,
+    spec: QuantSpec,
+    mode: TrellisMode = trellisModeFromEnv(),
+  ) {
+    this.spec = spec;
+    this.geometry = trellisGeometry(codes, spec);
+    this.fallback = mode === "expand" ? this.#expandToAffine() : null;
+  }
+
+  static load(weights: Weights, path: string, config: ModelConfig): TrellisLinear {
+    const spec = quantFor(config.quantization, path);
+    if (!spec || spec.mode !== "trellis")
+      throw new Error(`${path}: expected a trellis quant spec`);
+    if (!weights.has(`${path}.scales`)) throw new Error(`${path}: trellis tensor has no .scales`);
+    return new TrellisLinear(weights.tensor(`${path}.weight`), weights.tensor(`${path}.scales`), spec);
+  }
+
+  static isTrellis(config: ModelConfig, path: string): boolean {
+    return quantFor(config.quantization, path)?.mode === "trellis";
+  }
+
+  get inFeatures(): number { return this.geometry.inFeatures; }
+  get outFeatures(): number { return this.geometry.outFeatures; }
+
+  /** The weight as [out, in] bf16 (decoded; transposed for axis=0). */
+  expandWeight(dtype: Dtype = Dtype.bfloat16): MlxArray {
+    const g = this.geometry;
+    const stored = expandTrellis(this.codes, this.scales, g, dtype);
+    if (g.axis === 1) return stored;
+    const t = ops.transposeAxes(stored, [1, 0]);
+    const w = ops.contiguous(t);
+    t.dispose(); stored.dispose();
+    return w;
+  }
+
+  #expandToAffine(): QuantizedLinear {
+    const w = this.expandWeight(Dtype.bfloat16);
+    const q = ops.quantize(w, 64, 8, "affine");
+    ops.evalAll([q.packed, q.scales, ...(q.biases ? [q.biases] : [])]);
+    w.dispose();
+    return new QuantizedLinear(q.packed, q.scales, q.biases, { bits: 8, groupSize: 64, mode: "affine" });
+  }
+
+  forward(x: MlxArray): MlxArray {
+    if (this.fallback) return this.fallback.forward(x);
+    const g = this.geometry;
+    const lead = x.shape.slice(0, -1);
+    const M = lead.reduce((a, b) => a * b, 1);
+    if (x.shape[x.shape.length - 1] !== g.inFeatures)
+      throw new Error(`TrellisLinear: input dim ${x.shape[x.shape.length - 1]} != ${g.inFeatures}`);
+    const x2 = ops.reshape(x, [M, g.inFeatures]);
+    let y: MlxArray;
+    if (M <= MATVEC_MAX_M) y = g.axis === 1 ? this.#reduce(x2, M) : this.#scatter(x2, M);
+    else {
+      const stored = expandTrellis(this.codes, this.scales, g, x.dtype);
+      if (g.axis === 1) {
+        const wt = ops.transposeAxes(stored, [1, 0]);
+        y = ops.matmul(x2, wt);
+        wt.dispose();
+      } else y = ops.matmul(x2, stored);
+      stored.dispose();
+    }
+    x2.dispose();
+    const out = ops.reshape(y, [...lead, g.outFeatures]);
+    y.dispose();
+    return out;
+  }
+
+  #reduce(x2: MlxArray, M: number): MlxArray {
+    const g = this.geometry;
+    const [out] = kernelSet().reduce.apply([x2, this.codes, this.scales, lutFor(g.L)], {
+      outputs: [{ shape: [M, g.rows], dtype: x2.dtype }],
+      grid: [THREADS, Math.ceil(g.rows / SG_PER_TG), M],
+      threadGroup: [THREADS, 1, 1],
+      templateDtypes: { T: x2.dtype },
+      templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, ROWS_TG: SG_PER_TG },
+    });
+    return out!;
+  }
+
+  #scatter(x2: MlxArray, M: number): MlxArray {
+    const g = this.geometry;
+    const [partial] = kernelSet().scatter.apply([x2, this.codes, this.scales, lutFor(g.L)], {
+      outputs: [{ shape: [M, SPLITS, g.cols], dtype: Dtype.float32 }],
+      grid: [THREADS, Math.ceil(g.cols / (32 * SG_PER_TG)), M * SPLITS],
+      threadGroup: [THREADS, 1, 1],
+      templateDtypes: { T: x2.dtype },
+      templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, SG_TG: SG_PER_TG, SPLITS },
+    });
+    const sum = ops.sumAxis(partial!, 1, false);
+    partial!.dispose();
+    const out = sum.astype(x2.dtype);
+    sum.dispose();
+    return out;
+  }
+}

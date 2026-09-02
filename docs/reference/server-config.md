@@ -269,6 +269,7 @@ Under `--isolate` the whole environment is inherited by the engine child.
 | `MLX_BUN_COMPILED_GEGLU` | `--compiled-activations` | on (`"0"` disables) | Gemma geglu via mlx-lm's `@mx.compile` closure. `=0` → uncompiled composition (same parity, slower). |
 | `MLX_BUN_COMPILED_SWIGLU` | `--compiled-activations` | on (`!== "0"`) | Compiled SwiGLU on MiniCPM5 decode (M=1). qwen3/qwen3.5/universal compile unconditionally. |
 | `MLX_BUN_FORCE_WIRE` | `--force-wire` | off (`=1`) | Wire weights for the generation. |
+| `MLX_BUN_TRELLIS` | — | `kernel` (`=expand`) | Packed trellis-coded weights (`mode: "trellis"` modules, Q2b — design: `docs/design/turboquant.md`). `kernel` serves them through the Metal decode kernels (M≤4 matvec; larger M expands one tensor to bf16 and runs a stock matmul). `=expand` decodes every trellis tensor at LOAD into 8-bit g64 affine (+~4 GiB at 27B, the eval-carrier numerics) and serves it through the stock quantized path — the fallback for a machine where the kernels lose. |
 | `MLX_BUN_PAGED_KV` | `--paged-kv` | off (`=1`) | Paged KV cache; the same refusals and prompt-cache bypass as the flag. |
 | `MLX_BUN_ALLOW_PRIVATE_MEDIA` | `--allow-private-media` | off (`=1`) | Permit media fetches to private/loopback/link-local hosts (timeout + size cap still apply). |
 | `MLX_BUN_EXPERT_OFFLOAD` | `--expert-offload` | off | `=<dir>` — the path of a built expert-offload file, activated at module load (`src/expert-offload.ts`) for scripts and library runs that never parse serve flags. The CLI flag builds the file and activates it itself. |

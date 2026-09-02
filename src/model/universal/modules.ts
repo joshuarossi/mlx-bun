@@ -11,6 +11,7 @@ import type { Weights } from "../../weights";
 import { MlxArray } from "../../mlx/array";
 import * as ops from "../../mlx/ops";
 import { QuantizedEmbedding, QuantizedLinear, RMSNorm } from "../gemma4-base";
+import { TrellisLinear } from "../trellis-linear";
 
 /** Records every tensor a universal load consumes; `finish` diffs against
  *  the shard index so a descriptor mistake is a LOAD error (unconsumed /
@@ -66,7 +67,7 @@ export class DenseLinear {
 }
 
 /** Either linear flavor behind one call surface. */
-export type AnyLinear = QuantizedLinear | DenseLinear;
+export type AnyLinear = QuantizedLinear | DenseLinear | TrellisLinear;
 
 /** Quantized when `.scales` exists (MLX-quantized checkpoints), else dense
  *  bf16/f16/f32 (Phase 1.5). Both flavors carry the optional ADDITIVE
@@ -74,6 +75,12 @@ export type AnyLinear = QuantizedLinear | DenseLinear;
 export function loadLinear(
   weights: Weights, path: string, config: ModelConfig, audit: WeightAudit,
 ): AnyLinear {
+  if (TrellisLinear.isTrellis(config, path)) {
+    const lin = TrellisLinear.load(weights, path, config);
+    audit.use(`${path}.weight`);
+    audit.use(`${path}.scales`);
+    return lin;
+  }
   if (weights.has(`${path}.scales`)) {
     const lin = QuantizedLinear.load(weights, path, config);
     audit.use(`${path}.weight`);

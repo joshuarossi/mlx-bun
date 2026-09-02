@@ -75,6 +75,17 @@ export interface QuantSpec {
   bits: number;
   groupSize: number;
   mode: string;
+  /** `mode: "trellis"` (packed trellis-coded weights, src/model/trellis-linear.ts):
+   *  bits = k per weight, groupSize = block T, plus the codec geometry. */
+  trellis?: TrellisSpec;
+}
+
+export interface TrellisSpec {
+  L: number;
+  code: string;
+  /** 1 = coded along the input dim (stored [out, in·k/32]); 0 = along the
+   *  output dim (stored [in, out·k/32], i.e. Wᵀ coded along its last axis). */
+  axis: 0 | 1;
 }
 
 export interface QuantizationConfig {
@@ -162,11 +173,17 @@ export function parseQuantization(raw: Record<string, any> | undefined): Quantiz
   for (const [key, value] of Object.entries(raw)) {
     if (key === "bits" || key === "group_size" || key === "mode") continue;
     if (typeof value === "object" && value !== null) {
-      perLayer.set(key, {
+      const spec: QuantSpec = {
         bits: (value as any).bits ?? def.bits,
         groupSize: (value as any).group_size ?? def.groupSize,
         mode: (value as any).mode ?? def.mode,
-      });
+      };
+      const tr = (value as any).trellis;
+      if (spec.mode === "trellis") {
+        if (!tr || typeof tr !== "object") throw new Error(`quantization.${key}: mode "trellis" needs a trellis {L, code, axis} block`);
+        spec.trellis = { L: Number(tr.L), code: String(tr.code ?? "1mad"), axis: tr.axis === 0 ? 0 : 1 };
+      }
+      perLayer.set(key, spec);
     } else if (value === false) {
       // mlx convention: `"layer": false` means not quantized
       perLayer.set(key, { bits: 0, groupSize: 0, mode: "none" });

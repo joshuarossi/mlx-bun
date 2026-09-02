@@ -220,6 +220,13 @@ sampling. Those methods remain explicit flags/request fields or documented
 defaults. If an exact profile requires a capability the running engine does not
 have, loading refuses; it never downgrades to another model path.
 
+**Packed trellis artifacts.** A `quantization` entry with `mode: "trellis"`
+(TurboQuant Q2b, `mjriii/Qwen3.8-27B-q3-…-packed`) stores that module as a
+trellis-coded bit-stream + fp16 row scales and is served by the engine's own
+Metal kernels; stock mlx-lm cannot load it. Format and kernels:
+`docs/design/turboquant.md` (Q campaign); fallback `MLX_BUN_TRELLIS=expand`:
+`server-config.md`.
+
 Fidelity labels mean L1 = bit-exact mlx-lm, L2 = bit-exact mlx-optiq, and L3 =
 measured evidence without a matching oracle. Model profiles do not imply that a
 quantized artifact retains the base model's benchmark score; quality evidence

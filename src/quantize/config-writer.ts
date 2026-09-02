@@ -13,7 +13,9 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 /** A per-module quantization override. `false` means "left unquantized". */
-export type PerLayerEntry = { bits: number; groupSize: number } | false;
+export type PerLayerEntry =
+  | { bits: number; groupSize: number; mode?: string; trellis?: { L: number; code: string; axis: 0 | 1 } }
+  | false;
 
 /** The default quantization definition for the model. */
 export interface QuantDef {
@@ -28,7 +30,7 @@ export interface QuantizationBlock {
   bits: number;
   mode: string;
   // plus per-module entries: { [modulePath]: {bits, group_size} | false }
-  [modulePath: string]: number | string | { bits: number; group_size: number } | false;
+  [modulePath: string]: number | string | { bits: number; group_size: number; mode?: string; trellis?: { L: number; code: string; axis: 0 | 1 } } | false;
 }
 
 /**
@@ -47,7 +49,12 @@ export function buildQuantizationBlock(
     mode: def.mode ?? "affine",
   };
   for (const [path, entry] of perLayer) {
-    block[path] = entry === false ? false : { bits: entry.bits, group_size: entry.groupSize };
+    if (entry === false) { block[path] = false; continue; }
+    const v: { bits: number; group_size: number; mode?: string; trellis?: { L: number; code: string; axis: 0 | 1 } } =
+      { bits: entry.bits, group_size: entry.groupSize };
+    if (entry.mode) v.mode = entry.mode;
+    if (entry.trellis) v.trellis = entry.trellis;
+    block[path] = v;
   }
   return block;
 }
