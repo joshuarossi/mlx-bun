@@ -299,6 +299,28 @@ export class Trellis {
     return out;
   }
 
+  /** encodeDecode over [B,T] in chunks of at most `maxB` rows. The caller has
+   *  already variance-matched X to the code (BlockLDLQ path). */
+  encodeDecodeChunked(X: MlxArray, maxB: number): MlxArray {
+    const [B, T] = X.shape as [number, number];
+    if (B <= maxB) return this.encodeDecode(X);
+    const parts: MlxArray[] = [];
+    for (let b0 = 0; b0 < B; b0 += maxB) {
+      const b1 = Math.min(B, b0 + maxB);
+      const sl = X.slice([b0, 0], [b1, T], S);
+      const chunk = ops.contiguous(sl, S);
+      sl.dispose();
+      ops.evalAll([chunk]);
+      parts.push(this.encodeDecode(chunk));
+      chunk.dispose();
+      clearCache();
+    }
+    const out = ops.concatAxis(parts, 0, S);
+    for (const p of parts) p.dispose();
+    ops.evalAll([out]);
+    return out;
+  }
+
   /** Fake-quant a 2-D tensor whose trellis axis is the LAST axis. Per-row
    *  (per rotated vector) fp16 scale, QTIP's Wscale = RMS(W)/RMS(lut) applied
    *  per row instead of per tensor (deviation: our incoherence processing is

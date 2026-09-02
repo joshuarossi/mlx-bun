@@ -11,12 +11,19 @@
 //   bun scripts/turboquant/tq-quantize-trellis.ts <src> <out> \
 //       [--L 12] [--k 3] [--block 256] [--batch 16384] [--no-tail-biting]
 //       [--no-trellis] [--no-rotate] [--layers N] [--probe] [--dry-run]
+//       [--ldlq <hdir>] [--k-map <trellis-kmap.json> [--k-budget 3.00]]
+//
+// --k-map: per-tensor k in {2,3,4} (mixed precision) from a sensitivity-derived
+// allocation file (reports/qwen38-allocation/trellis-kmap.json: budgets[<bpw>]
+// .kmap maps `model.layers.N.mlp.{gate,up,down}_proj` -> k). Every in-scope
+// MLP tensor must be listed; --k is the uniform fallback when no map is given.
 
 import { existsSync, mkdirSync, copyFileSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Weights } from "../../src/weights";
-import { MlxArray as Arr, cpuStream, gpuStream, type MlxArray } from "../../src/mlx/array";
-import { Dtype, clearCache, activeMemory, cacheMemory } from "../../src/mlx/ffi";
+import { ptr, read } from "bun:ffi";
+import { MlxArray as Arr, MlxArray, cpuStream, gpuStream } from "../../src/mlx/array";
+import { C, Dtype, clearCache, activeMemory, cacheMemory, peakMemory } from "../../src/mlx/ffi";
 import * as ops from "../../src/mlx/ops";
 import { quantize, dequantize } from "../../src/mlx/ops";
 import { QwenFoldContext, type FoldOp } from "../../src/quantize/rotate";
@@ -39,7 +46,7 @@ const opt = (name: string, dflt: string): string => {
   return i > -1 ? argv[i + 1]! : dflt;
 };
 const flag = (name: string): boolean => argv.includes(`--${name}`);
-if (!srcDir || (!outDir && !flag("probe"))) {
+if (!srcDir || (!outDir && !flag("probe") && !flag("ldlq-selftest"))) {
   console.error("usage: bun scripts/turboquant/tq-quantize-trellis.ts <src> <out> [flags]");
   process.exit(1);
 }
@@ -57,6 +64,11 @@ const noRotate = flag("no-rotate");
 const dryRun = flag("dry-run");
 const probe = flag("probe");
 const maxLayers = Number(opt("layers", "-1"));
+// Q2c: BlockLDLQ error feedback against per-layer L factors from
+// tq-ldlq-hessians.py. Absent -> unweighted Viterbi (the q2a objective).
+const ldlqDir = opt("ldlq", "");
+const kMapPath = opt("k-map", "");
+const kBudget = opt("k-budget", "3.00");
 
 // ---------------------------------------------------------------- config ---
 const raw = JSON.parse(readFileSync(join(srcDir, "config.json"), "utf8")) as Record<string, unknown>;
@@ -74,7 +86,29 @@ const MTP = "mtp.";
 type Treatment =
   | { kind: "bf16" }
   | { kind: "affine"; bits: number }
-  | { kind: "trellis"; axis: 0 | 1 };
+  | { kind: "trellis"; axis: 0 | 1; k: number };
+
+/** Per-tensor k from the allocation file, keyed by OUR base names
+ *  (model.language_model.layers.N.mlp.X); null = uniform --k. */
+const kMap: Map<string, number> | null = (() => {
+  if (!kMapPath) return null;
+  const doc = JSON.parse(readFileSync(kMapPath, "utf8")) as Record<string, unknown>;
+  const budgets = doc.budgets as Record<string, { kmap?: Record<string, number> }> | undefined;
+  const km = budgets?.[kBudget]?.kmap;
+  if (!km) throw new Error(`--k-map: no budgets["${kBudget}"].kmap in ${kMapPath} (have ${Object.keys(budgets ?? {}).join(", ")})`);
+  const out = new Map<string, number>();
+  for (const [name, k] of Object.entries(km)) {
+    if (!Number.isInteger(k) || k < 1 || k > 8) throw new Error(`--k-map: bad k=${k} for ${name}`);
+    out.set(name.replace(/^model\.layers\./, `${LM}layers.`), k);
+  }
+  return out;
+})();
+const kOf = (base: string): number => {
+  if (!kMap) return TRELLIS_K;
+  const k = kMap.get(base);
+  if (k === undefined) throw new Error(`--k-map: no entry for in-scope trellis tensor ${base}`);
+  return k;
+};
 
 /** Shipped-compact allocation, with the 3-bit MLP tier replaced by the trellis.
  *  Trellis axis = the ROTATED axis (R1 acts on the input dim of gate/up and on
@@ -88,9 +122,9 @@ function treat(base: string): Treatment {
     const mod = rest.slice(rest.indexOf(".") + 1);
     const inScope = maxLayers < 0 || layer < maxLayers;
     if (mod === "mlp.gate_proj" || mod === "mlp.up_proj")
-      return useTrellis && inScope ? { kind: "trellis", axis: 1 } : { kind: "affine", bits: BASE_BITS };
+      return useTrellis && inScope ? { kind: "trellis", axis: 1, k: kOf(base) } : { kind: "affine", bits: BASE_BITS };
     if (mod === "mlp.down_proj")
-      return useTrellis && inScope ? { kind: "trellis", axis: 0 } : { kind: "affine", bits: BASE_BITS };
+      return useTrellis && inScope ? { kind: "trellis", axis: 0, k: kOf(base) } : { kind: "affine", bits: BASE_BITS };
     return { kind: "affine", bits: PROT_BITS };
   }
   if (base === "lm_head" || base === `${LM}embed_tokens`) return { kind: "affine", bits: PROT_BITS };
@@ -194,10 +228,32 @@ function zerosLike(src: MlxArray): MlxArray {
   return out;
 }
 
-const trellis = new Trellis({ L: TRELLIS_L, K: TRELLIS_K, T: BLOCK_T, code: "1mad", tailBiting });
+/** One codec per distinct k (the L=12 1MAD codebook is shared; k only changes
+ *  the branching), created lazily so a uniform run still builds exactly one. */
+const codecs = new Map<number, Trellis>();
+function trellisFor(k: number): Trellis {
+  let t = codecs.get(k);
+  if (!t) codecs.set(k, (t = new Trellis({ L: TRELLIS_L, K: k, T: BLOCK_T, code: "1mad", tailBiting })));
+  return t;
+}
+const disposeCodecs = (): void => { for (const t of codecs.values()) t.dispose(); codecs.clear(); };
+if (kMap) {
+  const hist = new Map<number, number>();
+  for (const k of kMap.values()) hist.set(k, (hist.get(k) ?? 0) + 1);
+  console.log(`k-map ${kMapPath} budget ${kBudget}: ` +
+    [...hist].sort((a, b) => a[0] - b[0]).map(([k, n]) => `k${k}×${n}`).join(" "));
+}
+
+/** Calibration provenance, lifted verbatim from the Hessian stage's state.json
+ *  so the artifact records WHICH corpus the LDLQ objective was fitted on
+ *  (calibration-domain mismatch is a known confound on this eval). */
+const ldlqCalib: unknown = ldlqDir && existsSync(join(ldlqDir, "state.json"))
+  ? (JSON.parse(readFileSync(join(ldlqDir, "state.json"), "utf8")) as Record<string, unknown>).calibration
+  : null;
+if (ldlqDir) console.log("LDLQ calibration:", JSON.stringify(ldlqCalib));
 
 /** Trellis fake-quant of a folded 2-D tensor; returns bf16. */
-function trellisTensor(folded: MlxArray, axis: 0 | 1): MlxArray {
+function trellisTensor(folded: MlxArray, axis: 0 | 1, k: number = TRELLIS_K): MlxArray {
   // Every intermediate handle is disposed: an undisposed VIEW handle pins its
   // parent buffer (that leak cost ~1.4 GB per tensor on the first attempt).
   const f32 = folded.astype(Dtype.float32, gpuStream);
@@ -208,7 +264,7 @@ function trellisTensor(folded: MlxArray, axis: 0 | 1): MlxArray {
     t.dispose(); f32.dispose();
   }
   ops.evalAll([X]);
-  const rec = trellis.fakeQuantRows(X, BATCH);
+  const rec = trellisFor(k).fakeQuantRows(X, BATCH);
   X.dispose();
   let back = rec;
   if (axis === 0) {
@@ -221,6 +277,221 @@ function trellisTensor(folded: MlxArray, axis: 0 | 1): MlxArray {
   ops.evalAll([out]);
   clearCache();
   return out;
+}
+
+// ------------------------------------------------------------- BlockLDLQ ---
+// Port of Cornell-RelaxML/qtip lib/algo/ldlq.py LDLQ, at block size 256 with
+// `for_kernel=False` semantics — which is QTIP's own non-kernel path: it calls
+// `cb.quantize(WXWX.T)`, i.e. a trellis of length td_y along the INPUT dim with
+// one independent sequence per output row. Choosing td_y = T = 256 makes the
+// LDLQ column-blocks coincide exactly with the q2a trellis blocks, so this arm
+// changes ONLY the distortion objective (their td_y=16 + 16x16 tiling exists to
+// satisfy the CUDA kernel's layout, and would have changed the blocking too).
+//
+// With buf_cols == td_y the buffer degenerates to one block: all feedback
+// arrives through prod_cache, and the intra-buffer term of ldlq.py vanishes.
+//
+//   for k = K-1 .. 0:   x_k = W_k + prod_k ; Ŵ_k = Viterbi(x_k / s) * s
+//                       prod += L[k-block, :]ᵀ @ (W_k − Ŵ_k)
+// The error fed forward is (W − Ŵ) against the ORIGINAL weight, per ldlq.py.
+
+const LDLQ_CEILING = 4.0;   // tq-gptq.py's guard shape: 4x the unweighted max
+/** Hard abort if MLX's live allocation runs away — turns a silent OOM kill
+ *  (which is how the first LDLQ build died, at 86.24 GiB) into a diagnosable
+ *  failure. Working set for a down_proj tensor is ~4 GiB. */
+const MEM_ABORT = 20 * 2 ** 30;
+
+interface LdlqResult { out: MlxArray; tripped: boolean; }
+
+function loadL(path: string): MlxArray {
+  const slot = new BigUint64Array([C.mlx_map_string_to_array_new()]);
+  const meta = new BigUint64Array([C.mlx_map_string_to_string_new()]);
+  try {
+    if (C.mlx_load_safetensors(ptr(slot), ptr(meta), ptr(Buffer.from(path + "\0", "utf8")), cpuStream) !== 0)
+      throw new Error(`mlx_load_safetensors(${path}) failed`);
+    const out = new BigUint64Array([C.mlx_array_new()]);
+    if (C.mlx_map_string_to_array_get(ptr(out), read.u64(ptr(slot), 0), ptr(Buffer.from("L\0", "utf8"))) !== 0)
+      throw new Error(`tensor L missing from ${path}`);
+    return new MlxArray(read.u64(ptr(out), 0));
+  } finally {
+    C.mlx_map_string_to_string_free(read.u64(ptr(meta), 0));
+    C.mlx_map_string_to_array_free(read.u64(ptr(slot), 0));
+  }
+}
+
+/** [256, m] LDLQ tile -> [B, T] trellis batch, and back. For gate/up the
+ *  trellis axis IS the LDLQ axis (transpose); for down_proj it is the output
+ *  axis, so the tile splits into 256-long runs down `m` (reshape only). Both
+ *  reproduce the q2a block partition exactly. */
+/** contiguous(transpose(x)) with the intermediate VIEW handle disposed. An
+ *  undisposed view pins its parent buffer — leaving these unhandled is what
+ *  OOM-killed the first LDLQ build at 86 GiB (the L.slice views alone pin
+ *  1.21 GiB per down_proj tensor). */
+function tContig(x: MlxArray): MlxArray {
+  const t = ops.transposeAxes(x, [1, 0], gpuStream);
+  const c = ops.contiguous(t, gpuStream);
+  t.dispose();
+  return c;
+}
+/** owned contiguous copy of a row range; the slice view is disposed. */
+function rows(a: MlxArray, r0: number, r1: number, cols: number): MlxArray {
+  const sl = a.slice([r0, 0], [r1, cols], gpuStream);
+  const c = ops.contiguous(sl, gpuStream);
+  sl.dispose();
+  return c;
+}
+function maxAbs(a: MlxArray): number {
+  const ab = ops.abs(a, gpuStream);
+  const fl = ops.reshape(ab, [a.shape[0]! * a.shape[1]!], gpuStream);
+  const mx = ops.maxAxis(fl, 0, false, gpuStream);
+  const v = mx.toFloat32()[0]!;
+  ab.dispose(); fl.dispose(); mx.dispose();
+  return v;
+}
+
+function tileToBatch(x: MlxArray, axis: 0 | 1, m: number, T: number): MlxArray {
+  // axis 1: [T, m] -> [m, T]  (row = output row, cols = T input dims)
+  // axis 0: [T, m] -> [m, T]  by RESHAPE — row i = (input col i div (m/T),
+  //         out-block i mod (m/T)), cols = T consecutive output dims.
+  if (axis === 1) return tContig(x);
+  return ops.reshape(x, [m, T], gpuStream);
+}
+function batchToTile(b: MlxArray, axis: 0 | 1, m: number, T: number): MlxArray {
+  if (axis === 1) return tContig(b);
+  return ops.reshape(b, [T, m], gpuStream);
+}
+
+/** Per-batch-row scale for one LDLQ block. gate/up: scale is indexed by output
+ *  row (m-indexed, block-independent). down_proj: indexed by input column
+ *  (n-indexed), and each input column owns m/T consecutive batch rows. */
+function blockScale(scale: MlxArray, axis: 0 | 1, k: number, m: number, T: number): MlxArray {
+  if (axis === 1) return scale;                                  // [m,1], reused
+  const sl = scale.slice([k * T, 0], [(k + 1) * T, 1], gpuStream);   // [T,1]
+  const z = ops.zeros([T, m / T], Dtype.float32, gpuStream);
+  const b = ops.add(z, sl, gpuStream);                              // [T, m/T]
+  const out = ops.reshape(b, [m, 1], gpuStream);
+  sl.dispose(); z.dispose(); b.dispose();
+  return out;
+}
+
+/** The per-coded-row fp16 scale q2a uses, computed on the ORIGINAL folded
+ *  weight so both arms share it exactly. Returned in the LDLQ orientation:
+ *  gate/up -> [m,1] (per output row); down_proj -> [n,1] (per input column). */
+function rowScale(Wt: MlxArray, axis: 0 | 1, k: number): MlxArray {
+  // Wt is [n, m]. q2a's scale axis: gate/up = m (rows of the [m,n] folded
+  // tensor); down_proj = n (rows of the transposed [n,m] tensor).
+  const src = axis === 1 ? tContig(Wt) : Wt;
+  const sq = ops.square(src, gpuStream);
+  const ms = ops.meanAxis(sq, 1, true, gpuStream);
+  const rms = ops.sqrt(ms, gpuStream);
+  const inv = ops.mulScalar(rms, 1 / trellisFor(k).lutRms, gpuStream);
+  const zero = Arr.fromFloat32(new Float32Array([0]), []);
+  const one = Arr.fromFloat32(new Float32Array([1]), []);
+  const isz = ops.equal(inv, zero, gpuStream);
+  const guarded = ops.where(isz, one, inv, gpuStream);
+  const s16 = guarded.astype(Dtype.float16, gpuStream);
+  const out = s16.astype(Dtype.float32, gpuStream);
+  for (const a of [sq, ms, rms, inv, zero, one, isz, guarded, s16]) a.dispose();
+  if (axis === 1) src.dispose();
+  ops.evalAll([out]);
+  return out;
+}
+
+function trellisTensorLDLQ(folded: MlxArray, axis: 0 | 1, L: MlxArray, k: number = TRELLIS_K): LdlqResult {
+  const T = BLOCK_T;
+  const f32 = folded.astype(Dtype.float32, gpuStream);
+  const Wt = tContig(f32);                                  // [n, m]
+  f32.dispose();
+  ops.evalAll([Wt]);
+  const [n, m] = Wt.shape as [number, number];
+  if (L.shape[0] !== n) throw new Error(`L dim ${L.shape[0]} != LDLQ dim ${n}`);
+  const K = n / T;
+  const scale = rowScale(Wt, axis, k);
+
+  // Guard ceiling from the UNWEIGHTED normalized weight (tq-gptq.py discipline:
+  // gate the weighted path against a multiple of the unweighted magnitude).
+  let ceiling: number;
+  {
+    const s0 = blockScale(scale, axis, 0, m, T);
+    const w0 = rows(Wt, 0, T, m);
+    const b0 = tileToBatch(w0, axis, m, T);
+    const nrm = ops.div(b0, s0, gpuStream);
+    ceiling = LDLQ_CEILING * maxAbs(nrm);
+    w0.dispose(); b0.dispose(); nrm.dispose();
+    if (axis === 0) s0.dispose();
+  }
+
+  let prod = ops.zeros([n, m], Dtype.float32, gpuStream);
+  let What = ops.zeros([n, m], Dtype.float32, gpuStream);
+  ops.evalAll([prod, What]);
+  let tripped = false;
+
+  for (let k = K - 1; k >= 0; k--) {
+    const w = rows(Wt, k * T, (k + 1) * T, m);
+    const p = rows(prod, k * T, (k + 1) * T, m);
+    const x = ops.add(w, p, gpuStream);
+    p.dispose();
+    const s = blockScale(scale, axis, k, m, T);
+    const batch = tileToBatch(x, axis, m, T);
+    const xn = ops.div(batch, s, gpuStream);
+    ops.evalAll([xn]);
+    batch.dispose(); x.dispose();
+
+    const peak = maxAbs(xn);
+    if (!Number.isFinite(peak) || peak > ceiling) {
+      tripped = true;
+      for (const y of [w, xn]) y.dispose();
+      if (axis === 0) s.dispose();
+      break;
+    }
+
+    const rec = trellisFor(k).encodeDecodeChunked(xn, BATCH);
+    xn.dispose();
+    const hatB = ops.mul(rec, s, gpuStream);
+    rec.dispose();
+    if (axis === 0) s.dispose();
+    const hat = batchToTile(hatB, axis, m, T);
+    hatB.dispose();
+
+    const err = ops.sub(w, hat, gpuStream);
+    w.dispose();
+    const nw = ops.sliceUpdate(What, hat, [k * T, 0], [(k + 1) * T, m], gpuStream);
+    What.dispose(); hat.dispose();
+    What = nw;
+
+    // prod += L[block, :]ᵀ @ err        ([n,T] @ [T,m])
+    const Lb = rows(L, k * T, (k + 1) * T, n);
+    const Lt = tContig(Lb);
+    const contrib = ops.matmul(Lt, err, gpuStream);
+    const np2 = ops.add(prod, contrib, gpuStream);
+    prod.dispose();
+    prod = np2;
+    ops.evalAll([prod, What]);
+    for (const y of [err, Lb, Lt, contrib]) y.dispose();
+    clearCache();
+    if (activeMemory() > MEM_ABORT)
+      throw new Error(
+        `LDLQ leak guard: mlx active ${(activeMemory() / 2 ** 30).toFixed(1)} GiB > ` +
+        `${(MEM_ABORT / 2 ** 30).toFixed(0)} GiB at block ${k} — aborting instead of OOM-killing`,
+      );
+  }
+
+  prod.dispose();
+  scale.dispose();
+  if (tripped) {
+    Wt.dispose(); What.dispose();
+    clearCache();
+    return { out: trellisTensor(folded, axis, k), tripped: true };
+  }
+  Wt.dispose();
+  const bt = ops.transposeAxes(What, [1, 0], gpuStream);
+  const back = ops.contiguous(bt, gpuStream);
+  bt.dispose(); What.dispose();
+  const out = back.astype(Dtype.bfloat16, gpuStream);
+  back.dispose();
+  ops.evalAll([out]);
+  clearCache();
+  return { out, tripped: false };
 }
 
 function mseOf(a: MlxArray, b: MlxArray): number {
@@ -239,6 +510,48 @@ function affineRoundTrip(folded: MlxArray, bits: number): MlxArray {
   q.packed.dispose(); q.scales.dispose(); q.biases?.dispose();
   ops.evalAll([d]);
   return d;
+}
+
+// --------------------------------------------------------- ldlq selftest ---
+// With L = 0 there is no error feedback, so BlockLDLQ must degenerate to the
+// EXACT q2a unweighted path. Any mismatch means the tiling / per-row scale /
+// reshape plumbing differs, which would silently confound the paired arm.
+if (flag("ldlq-selftest")) {
+  const li = Number(opt("probe-layers", "21"));
+  let bad = 0;
+  for (const [mod, axis] of [["mlp.gate_proj", 1], ["mlp.down_proj", 0]] as const) {
+    const name = `${LM}layers.${li}.${mod}.weight`;
+    const src = weights.tensor(name);
+    const folded = ctx.apply(foldOps.get(name)!, src);
+    ops.evalAll([folded]);
+    const n = folded.shape[1]!;   // LDLQ acts on the INPUT dim for both layouts
+    // With --ldlq, use the REAL L (smoke test: bounded memory, guard, and a
+    // genuinely different objective). Without it, L = 0 must reproduce q2a.
+    const site = axis === 0 ? "down" : "mlp";
+    const real = ldlqDir
+      ? loadL(join(ldlqDir, `layer-${String(li).padStart(3, "0")}-${site}.safetensors`))
+      : null;
+    const Lm = real ?? ops.zeros([n, n], Dtype.float32, gpuStream);
+    ops.evalAll([Lm]);
+    const a = trellisTensor(folded, axis);
+    const b = trellisTensorLDLQ(folded, axis, Lm);
+    const d = mseOf(a, b.out);
+    const uwA = mseOf(a, folded), uwB = mseOf(b.out, folded);
+    if (!real && d !== 0) bad++;
+    console.log(
+      real
+        ? `  LDLQ probe   L${li} ${mod.padEnd(14)} axis=${axis}  ` +
+          `unweighted mse: q2a ${uwA.toExponential(4)} -> ldlq ${uwB.toExponential(4)} ` +
+          `(${((uwB / uwA - 1) * 100).toFixed(1)}%)  |Δrecon| mse ${d.toExponential(3)}` +
+          `${b.tripped ? "  GUARD TRIPPED" : ""}  peak ${(peakMemory() / 2 ** 30).toFixed(1)} GiB`
+        : `  L=0 selftest  L${li} ${mod.padEnd(14)} axis=${axis}  ` +
+          `mse(q2a, ldlq)=${d.toExponential(3)}  ${d === 0 ? "IDENTICAL" : "MISMATCH"}`,
+    );
+    for (const x of [folded, Lm, a, b.out]) x.dispose();
+    clearCache();
+  }
+  ctx.dispose(); one.dispose(); disposeCodecs(); weights.dispose();
+  process.exit(bad ? 1 : 0);
 }
 
 // ---------------------------------------------------------------- probe ----
@@ -268,7 +581,7 @@ if (probe) {
     weights.releaseShard(weights.fileOf(`${LM}layers.${li}.mlp.gate_proj.weight`)!);
     clearCache();
   }
-  ctx.dispose(); one.dispose(); trellis.dispose(); weights.dispose();
+  ctx.dispose(); one.dispose(); disposeCodecs(); weights.dispose();
   process.exit(0);
 }
 
@@ -276,6 +589,9 @@ if (probe) {
 const perLayer = new Map<string, PerLayerEntry>();
 let nQuant = 0, qParams = 0, qBits = 0, bf16Bytes = 0;
 let nTrellis = 0, trellisParams = 0, trellisBits = 0;
+let ldlqApplied = 0, ldlqTrips = 0, ldlqMissing = 0;
+const trippedTensors: string[] = [];
+const kHist = new Map<number, number>();
 const byBits = new Map<string, { n: number; bytes: number }>();
 const bump = (k: string, bytes: number) => {
   const e = byBits.get(k) ?? { n: 0, bytes: 0 };
@@ -284,8 +600,8 @@ const bump = (k: string, bytes: number) => {
 /** Hypothetical packed cost of a trellis tensor: k bits/weight (the tail-biting
  *  block carries no initial state) or k + L/T without tail-biting, plus one
  *  fp16 scale per coded row. */
-const trellisBpw = (rows: number, cols: number): number =>
-  TRELLIS_K + (tailBiting ? 0 : TRELLIS_L / BLOCK_T) + 16 / cols;
+const trellisBpw = (rows: number, cols: number, k: number): number =>
+  k + (tailBiting ? 0 : TRELLIS_L / BLOCK_T) + 16 / cols;
 
 if (dryRun) {
   for (const name of names) {
@@ -298,9 +614,10 @@ if (dryRun) {
     if (t.kind === "bf16") { bump("bf16", params * 2); continue; }
     if (t.kind === "trellis") {
       const cols = t.axis === 1 ? shape[1]! : shape[0]!;
-      const eff = trellisBpw(params / cols, cols);
+      const eff = trellisBpw(params / cols, cols, t.k);
       nTrellis++; trellisParams += params; trellisBits += params * eff;
-      bump(`trellis-${TRELLIS_K}`, (params * eff) / 8);
+      kHist.set(t.k, (kHist.get(t.k) ?? 0) + 1);
+      bump(`trellis-${t.k}`, (params * eff) / 8);
       continue;
     }
     const eff = t.bits + 32 / groupSize;
@@ -356,16 +673,39 @@ try {
         bump("bf16", folded.nbytes);
       } else if (t.kind === "trellis") {
         const tt = performance.now();
-        const rec = trellisTensor(folded, t.axis);
+        let rec: MlxArray;
+        if (ldlqDir) {
+          const rest = base!.slice(`${LM}layers.`.length);
+          const li = Number(rest.slice(0, rest.indexOf(".")));
+          const site = t.axis === 0 ? "down" : "mlp";
+          const lp = join(ldlqDir, `layer-${String(li).padStart(3, "0")}-${site}.safetensors`);
+          if (!existsSync(lp)) {
+            rec = trellisTensor(folded, t.axis, t.k);
+            ldlqMissing++;
+          } else {
+            const Lm = loadL(lp);
+            const r = trellisTensorLDLQ(folded, t.axis, Lm, t.k);
+            Lm.dispose();
+            clearCache();
+            rec = r.out;
+            if (r.tripped) {
+              ldlqTrips++;
+              trippedTensors.push(base!);
+            } else ldlqApplied++;
+          }
+        } else {
+          rec = trellisTensor(folded, t.axis, t.k);
+        }
         trellisSeconds += (performance.now() - tt) / 1000;
         folded.dispose();
         writer.add(name, rec);
         perLayer.set(base!, false);            // stored bf16, flagged unquantized
         const params = shape[0]! * shape[1]!;
         const cols = t.axis === 1 ? shape[1]! : shape[0]!;
-        const eff = trellisBpw(params / cols, cols);
+        const eff = trellisBpw(params / cols, cols, t.k);
         nTrellis++; trellisParams += params; trellisBits += params * eff;
-        bump(`trellis-${TRELLIS_K}`, (params * eff) / 8);
+        kHist.set(t.k, (kHist.get(t.k) ?? 0) + 1);
+        bump(`trellis-${t.k}`, (params * eff) / 8);
       } else {
         const q = quantize(folded, groupSize, t.bits, "affine", gpuStream);
         folded.dispose();
@@ -419,10 +759,31 @@ try {
     bits: BASE_BITS,
     group_size: groupSize,
     trellis: {
-      L: TRELLIS_L, k: TRELLIS_K, V: 1, block: BLOCK_T, code: "1mad",
+      L: TRELLIS_L, V: 1, block: BLOCK_T, code: "1mad",
+      k: kMap ? "mixed (see k_map)" : TRELLIS_K,
+      k_map: kMap
+        ? {
+            file: kMapPath, budget: kBudget,
+            modules_by_k: Object.fromEntries([...kHist].sort((a, b) => a[0] - b[0]).map(([k, n]) => [`k${k}`, n])),
+            per_tensor: Object.fromEntries([...kMap].map(([n, k]) => [n.replace(LM, "model."), k])),
+          }
+        : null,
       tail_biting: tailBiting,
       reference: "arXiv:2406.11235v3 (QTIP); Cornell-RelaxML/qtip lib/codebook/bitshift.py",
-      distortion: "unweighted squared error (no Hessian/LDLQ — v2 lever)",
+      distortion: ldlqDir
+        ? "BlockLDLQ Hessian-weighted error feedback (QTIP lib/algo/ldlq.py, " +
+          `block ${BLOCK_T} = trellis T, for_kernel=False path)`
+        : "unweighted squared error (no Hessian/LDLQ — v2 lever)",
+      ldlq: ldlqDir
+        ? {
+            hessians: ldlqDir,
+            applied: ldlqApplied, guard_trips: ldlqTrips, missing_L: ldlqMissing,
+            tripped_tensors: trippedTensors,
+            guard: `xn peak > ${LDLQ_CEILING}x the unweighted normalized max -> ` +
+                   "fall back to unweighted Viterbi for that tensor (tq-gptq.py discipline)",
+            calibration: ldlqCalib,
+          }
+        : null,
       scale: "per coded row, fp16 (QTIP uses one per-tensor Wscale after TWO-sided IP)",
       packaging: "fake-quant: decoded to bf16, flagged false in the quantization block",
       modules: nTrellis, params: trellisParams,
@@ -458,7 +819,7 @@ try {
 } finally {
   ctx.dispose();
   one.dispose();
-  trellis.dispose();
+  disposeCodecs();
   weights.dispose();
   clearCache();
 }
