@@ -29,7 +29,6 @@ const MAP = [
 	{ src: 'distribution.md', dest: 'guides/distribution.md', title: 'Distribution', description: 'Signed, notarized binaries, the Homebrew tap, npm, and the native runtime pack.' },
 	{ src: 'memory.md', dest: 'guides/memory.md', title: 'Personal memory', description: 'A local, git-tracked Markdown wiki the built-in agents read as durable user context.' },
 	{ src: 'troubleshooting.md', dest: 'guides/troubleshooting.md', title: 'Troubleshooting', description: 'Symptom → cause → fix for install, download, memory-fit, and Gatekeeper issues.' },
-	{ src: 'environment.md', dest: 'reference/environment.md', title: 'Reference environment', description: 'The pinned oracle stack, dev machines, and hard-won Bun/MLX/Metal platform facts.' },
 	{ src: 'glossary.md', dest: 'reference/glossary.md', title: 'Glossary', description: 'Serving vocabulary and the synonyms we deliberately do not use.' },
 ];
 
@@ -46,7 +45,8 @@ function rewriteLinks(s) {
 		.replace(/\]\((?:\.\/)?distribution\.md\)/g, '](/guides/distribution/)')
 		.replace(/\]\((?:\.\/)?troubleshooting\.md\)/g, '](/guides/troubleshooting/)')
 		.replace(/\]\((?:\.\/)?benchmarks\.md\)/g, '](/reference/benchmarks/)')
-		.replace(/\]\((?:\.\/)?environment\.md\)/g, '](/reference/environment/)')
+		// environment.md is the maintainer's oracle/machine setup (local paths, pins) — not a site page; link to the source.
+		.replace(/\]\((?:\.\/)?environment\.md\)/g, `](${GH}/docs/reference/environment.md)`)
 		.replace(/\]\((?:\.\/)?glossary\.md\)/g, '](/reference/glossary/)')
 		.replace(/\]\((?:\.\/)?memory\.md\)/g, '](/guides/memory/)')
 		.replace(/\]\((?:\.\/)?models\.md\)/g, '](/reference/models/)');

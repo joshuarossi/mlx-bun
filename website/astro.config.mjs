@@ -55,7 +55,6 @@ export default defineConfig({
 						{ label: 'Training & fine-tuning', slug: 'reference/training' },
 						{ label: 'Supported models', slug: 'reference/models' },
 						{ label: 'Benchmarks', slug: 'reference/benchmarks' },
-						{ label: 'Reference environment', slug: 'reference/environment' },
 						{ label: 'Glossary', slug: 'reference/glossary' },
 					],
 				},

@@ -10,7 +10,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { arg, flag } from "./args";
 import {
-  apparentMultiplier, armRates, byTool, renderArm, type TurnRecord,
+  apparentMultiplier, armRates, byTool, fillVerdict, renderArm, renderFillReport,
+  type TurnRecord,
 } from "./metrics";
 
 /** Positional args only: a flag consumes the token after it (`--json <out>`),
@@ -69,6 +70,18 @@ for (const [arm, rs] of arms) {
       );
     }
   }
+  console.log("");
+}
+
+// Two arms in the input (an interleaved `ab` file, or two SERIAL `replay`
+// files — one server restarted between arms when two 27B servers do not fit
+// the wired ceiling): print the same paired verdict `ab` prints, pairing on
+// (session, turn, rep). Order: the arm named first on the command line is A.
+if (arms.size === 2) {
+  const [ea, eb] = [...arms] as [[string, TurnRecord[]], [string, TurnRecord[]]];
+  const v = fillVerdict(ea[1], eb[1], { labelA: ea[0], labelB: eb[0] });
+  summary.verdict = v;
+  console.log(renderFillReport(ea[0], eb[0], v));
   console.log("");
 }
 
