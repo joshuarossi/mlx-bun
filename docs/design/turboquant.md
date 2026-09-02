@@ -900,8 +900,11 @@ which is 1-ulp-off f32 for 398 of 1021 code values — a 2-FMA residual step
 restores exactness at +0.05 ms, `trellis_val_rcp`); (2) rounding the decoded
 weight to bf16 (to match the artifact's stored bf16) cost as much as the
 decode, so the served weight is now f32 code×scale — MORE accurate than the
-fake-quant, no longer bit-identical to it (KL re-certified through the engine
-with that decode: see the row below); (3) the threadgroup LUT (16 KB) halves
+fake-quant, no longer bit-identical to it — measured on the served DECODE
+path (`eval.ts kl --decode --self MLX_BUN_TRELLIS_VARIANT 1→6`, 16 prompts ×
+32 teacher-forced steps): KL(bit-exact ‖ f32-weight) mean 0.00089, p95
+0.0025, i.e. 0.6% of the model's own 0.155 to the teacher (the prefill/expand
+path always rounds to bf16 and is unaffected); (3) the threadgroup LUT (16 KB) halves
 occupancy and the device LUT gathers 32 lines per load — both slower than
 computing the code; (4) the axis-0 (down) matvec is the hard one: the code
 sequence runs along the OUTPUT dim, so a reduction over inputs is a column

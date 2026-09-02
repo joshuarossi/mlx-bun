@@ -32,6 +32,7 @@ import * as ops from "../mlx/ops";
 import { MetalKernel } from "../mlx/metal-kernel";
 import type { Weights } from "../weights";
 import { quantFor, type ModelConfig, type QuantSpec } from "../config";
+import { runtimeNumber } from "../runtime-config";
 import { lut1mad, wordsPerBlock } from "../quantize/trellis";
 import { QuantizedLinear } from "./gemma4-base";
 
@@ -349,8 +350,14 @@ function lutFor(L: number): MlxArray {
 
 /** Decode variant (see HEADER). Default is the fastest measured on M1 Max;
  *  `MLX_BUN_TRELLIS_VARIANT` overrides for experiments. */
-let VARIANT = Number(process.env.MLX_BUN_TRELLIS_VARIANT ?? "1");
-export function setTrellisVariant(v: number): void { VARIANT = v; }
+let variantOverride: number | null = null;
+/** Explicit override (benches); otherwise the runtime flag — read per call so
+ *  the self-flag KL gate (`eval.ts kl --decode --self MLX_BUN_TRELLIS_VARIANT`)
+ *  can A/B two decodes on one loaded model. */
+export function setTrellisVariant(v: number | null): void { variantOverride = v; }
+function variant(): number {
+  return variantOverride ?? runtimeNumber("MLX_BUN_TRELLIS_VARIANT", 6);
+}
 
 export interface TrellisGeometry {
   k: number;
@@ -387,7 +394,7 @@ export function expandTrellis(codes: MlxArray, scales: MlxArray, g: TrellisGeome
     grid: [g.cols, g.rows, 1],
     threadGroup: [Math.min(256, g.cols), 1, 1],
     templateDtypes: { T: dtype },
-    templateInts: { R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, VARIANT },
+    templateInts: { R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, VARIANT: variant() },
   });
   return out!;
 }
@@ -422,7 +429,7 @@ export function fusedGateUpSwiglu(x: MlxArray, gate: TrellisLinear, up: TrellisL
     grid: [THREADS, Math.ceil(g.rows / SG_PER_TG), M],
     threadGroup: [THREADS, 1, 1],
     templateDtypes: { T: x.dtype },
-    templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, ROWS_TG: SG_PER_TG, VARIANT },
+    templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, ROWS_TG: SG_PER_TG, VARIANT: variant() },
   });
   x2.dispose();
   const out = ops.reshape(mid!, [...lead, g.rows]);
@@ -515,7 +522,7 @@ export class TrellisLinear {
       grid: [THREADS, Math.ceil(g.rows / SG_PER_TG), M],
       threadGroup: [THREADS, 1, 1],
       templateDtypes: { T: x2.dtype },
-      templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, ROWS_TG: SG_PER_TG, VARIANT },
+      templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, ROWS_TG: SG_PER_TG, VARIANT: variant() },
     });
     return out!;
   }
@@ -532,7 +539,7 @@ export class TrellisLinear {
       grid: [THREADS, Math.ceil(groups / SG_PER_TG), M * SCATTER_SPLITS],
       threadGroup: [THREADS, 1, 1],
       templateDtypes: { T: x2.dtype },
-      templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, SG_TG: SG_PER_TG, SPLITS: SCATTER_SPLITS, NP, VARIANT },
+      templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, SG_TG: SG_PER_TG, SPLITS: SCATTER_SPLITS, NP, VARIANT: variant() },
     });
     const sum = ops.sumAxis(partial!, 1, false);
     partial!.dispose();
