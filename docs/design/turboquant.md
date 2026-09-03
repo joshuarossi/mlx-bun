@@ -931,17 +931,35 @@ runs, 98 min):
 | down coded along the ROTATED output dim | 3.5468 | 12.14 | 0.15501 | 86.38% | 9.3 |
 | **down coded along the INPUT dim** | 3.5463 | 12.14 | **0.15543** | **86.59%** | **11.3** |
 
-**+22% decode for +0.0004 KL** (0.3% of the arm's own distance to the teacher,
-and top-1 agreement is marginally BETTER) — the input axis wins, and the
-scatter kernel becomes dead weight for this recipe. The finding of record:
-one-sided incoherence processing does NOT have to reach every coded axis. R1
-gaussianizes down_proj's OUTPUT dim; coding along the un-rotated input dim
-loses nothing measurable here because the trellis's per-row fp16 scale already
-adapts to each row's variance, and LDLQ's error feedback (which runs along the
-input dim either way) is what the coding order actually has to respect. Flag
-kept: `--down-axis out` reproduces the record arm. Note the driver bug this
-surfaced — the LDLQ Hessian must be chosen by MODULE, not by trellis axis
-(`2b29b18`).
+KL is a wash (+0.0004, 0.3% of the arm's own distance to the teacher) and
+top-1 is marginally BETTER — so on the screen the input axis looked like a
+free +22% decode. **The task columns overturned it** (8-bit carriers, same
+frozen items, `tq-evals.py`):
+
+| arm | MMLU-100 | tGSM-50 | rawGSM-50 |
+|---|---|---|---|
+| down along the rotated output dim | 88 | 48 | **44** |
+| down along the input dim | 88 | 47 | **29** |
+
+The rawGSM regression is STRICTLY NESTED — 15 items the output-axis arm
+answers correctly that the input-axis arm fails, **0 the other way** (McNemar
+p ≈ 3e-5) — and the failure mode is an EMPTY continuation: on those items the
+model emits EOS immediately after `A:` (verified by dumping the raw
+generations). That is the same EOS-cliff class as the unrotated affine arm
+(`tqalloc-norot`, rawGSM 0/50 at KL 0.2524), and it is invisible to MMLU
+(logprob over four letters), to templated GSM (chat template, 47 vs 48), and
+to KL (a single-forward instrument that never asks the model to STOP).
+
+**Finding of record (third instance of "KL is the screen, not the verdict"):
+one-sided incoherence processing must reach the CODED axis.** R1 gaussianizes
+down_proj's output dim; coding along the un-rotated input dim leaves that
+sequence non-Gaussian for a codebook that assumes unit-variance Gaussian
+inputs, and what breaks is not average next-token quality but the model's
+raw-format stopping behavior. **Carry-forward stays the output-axis arm**
+(`…-k300-packed`, 9.3 tok/s); `--down-axis in` is kept as the measured
+counter-example, not a default, and the scatter kernel stays load-bearing.
+The re-encode also surfaced a driver bug: the LDLQ Hessian must be chosen by
+MODULE, not by trellis axis (`2b29b18`).
 
 **Eval carrier** (`scripts/turboquant/tq-repack-fakequant.ts`): a 38 GiB
 fake-quant cannot load dense on 32 GB, and `tq-evals.py` (MMLU logprob
@@ -985,8 +1003,10 @@ needs Q2b (packed trellis + Metal decode kernel).
   farm-setup.sh` provisions a rented Apple-silicon worker for these runs.
 - **Q campaign (sub-4 bpw):** Q3 passed its gate (finding 5); Q2b packed
   format landed and measured (12.1 GiB, KL 0.1550 through the engine, 9.3
-  tok/s vs 18.9 on M1 Max — "Q2b measured"); the down_proj axis is settled
-  (input dim: +22% decode, +0.0004 KL). Owed: a 2.75-budget arm
+  tok/s vs 18.9 on M1 Max — "Q2b measured"); the down_proj axis is settled the
+  OTHER way (input-dim coding buys +22% decode but reintroduces the raw-GSM
+  EOS cliff, 29/50 vs 44/50 strictly nested — the coded axis must be the
+  rotated one). Owed: a 2.75-budget arm
   for the size axis; task columns on q2a/q2b for the ladder's completeness;
   root-cause the rawGSM EOS cliff on the unrotated affine arm. Source bf16,
   all Q artifacts, Hessians live on the external `/Volumes/MLX-Models` volume.

@@ -570,13 +570,15 @@ run sequentially, results labeled host/chip/RAM.
             matvec are the cost; M1 decode is latency-bound so ALU/weight is
             wall clock). Served weight is f32 code×scale (bf16 rounding cost
             as much as decoding). Remaining: M4 Pro number; decide the
-            down_proj coding axis — SETTLED 2026-09-02: `--down-axis in`
-            (all three projections on the plain reduce kernel) gives 11.3
-            tok/s vs 9.3 for KL 0.15543 vs 0.15501 and BETTER top-1, so
-            incoherence processing need not reach every coded axis;
-            `Qwen3.8-27B-q3-trellis-ldlq-k300-downin-packed` is the arm to
-            carry forward. `MLX_BUN_TRELLIS=expand` stays the fallback.
-            Remaining: task columns on the packed arm before any release.
+            down_proj coding axis — SETTLED 2026-09-03, keep the ROTATED
+            (output) axis. `--down-axis in` gives 11.3 tok/s vs 9.3 at
+            identical KL (0.15543 vs 0.15501), identical MMLU (88) and tGSM
+            (47 vs 48), but rawGSM 29/50 vs 44/50 — strictly nested (15
+            regressions, 0 improvements), failure mode = immediate EOS /
+            empty continuation, the `tqalloc-norot` cliff class. Incoherence
+            processing MUST reach the coded axis. Carry-forward:
+            `…-k300-packed`; the downin arm is the counter-example of record.
+            `MLX_BUN_TRELLIS=expand` stays the fallback.
       - [ ] **Q5** 2.75-budget arm (k2/k3/k4 68/104/20, ~10.8 GiB) — the size
             axis; same gate as Q3.
 - **Non-goals (pinned):** custom weight FORMAT or any new qmm kernel;
