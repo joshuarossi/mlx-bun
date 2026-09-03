@@ -920,6 +920,29 @@ half-precision LUT (8 KB, occupancy back, +double rounding), or accept
 M4-class ALU. `MLX_BUN_TRELLIS=expand` (8-bit carrier, 23 GiB) is the
 full-speed fallback where it fits.
 
+**The down_proj axis, settled (2026-09-02 night).** Re-encoded the same recipe
+with `--down-axis in` (down_proj coded along its INPUT dim — the un-rotated
+intermediate — so all three MLP projections decode with the plain reduce
+kernel; `--reuse` copied the 128 unchanged gate/up tensors, so only 64 Viterbi
+runs, 98 min):
+
+| arm | bpw | GiB | KL (engine) | top-1 | decode tok/s |
+|---|---|---|---|---|---|
+| down coded along the ROTATED output dim | 3.5468 | 12.14 | 0.15501 | 86.38% | 9.3 |
+| **down coded along the INPUT dim** | 3.5463 | 12.14 | **0.15543** | **86.59%** | **11.3** |
+
+**+22% decode for +0.0004 KL** (0.3% of the arm's own distance to the teacher,
+and top-1 agreement is marginally BETTER) — the input axis wins, and the
+scatter kernel becomes dead weight for this recipe. The finding of record:
+one-sided incoherence processing does NOT have to reach every coded axis. R1
+gaussianizes down_proj's OUTPUT dim; coding along the un-rotated input dim
+loses nothing measurable here because the trellis's per-row fp16 scale already
+adapts to each row's variance, and LDLQ's error feedback (which runs along the
+input dim either way) is what the coding order actually has to respect. Flag
+kept: `--down-axis out` reproduces the record arm. Note the driver bug this
+surfaced — the LDLQ Hessian must be chosen by MODULE, not by trellis axis
+(`2b29b18`).
+
 **Eval carrier** (`scripts/turboquant/tq-repack-fakequant.ts`): a 38 GiB
 fake-quant cannot load dense on 32 GB, and `tq-evals.py` (MMLU logprob
 scoring, GSM greedy generation) needs the whole model resident. The tool
@@ -962,9 +985,8 @@ needs Q2b (packed trellis + Metal decode kernel).
   farm-setup.sh` provisions a rented Apple-silicon worker for these runs.
 - **Q campaign (sub-4 bpw):** Q3 passed its gate (finding 5); Q2b packed
   format landed and measured (12.1 GiB, KL 0.1550 through the engine, 9.3
-  tok/s vs 18.9 on M1 Max — "Q2b measured"). Owed: the down_proj axis
-  question (code along the input dim?) or an M4-class measurement before any
-  default; a 2.75-budget arm
+  tok/s vs 18.9 on M1 Max — "Q2b measured"); the down_proj axis is settled
+  (input dim: +22% decode, +0.0004 KL). Owed: a 2.75-budget arm
   for the size axis; task columns on q2a/q2b for the ladder's completeness;
   root-cause the rawGSM EOS cliff on the unrotated affine arm. Source bf16,
   all Q artifacts, Hessians live on the external `/Volumes/MLX-Models` volume.
