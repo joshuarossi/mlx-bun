@@ -346,7 +346,10 @@ on unified memory; two ideas survive the port. Canonical docs on landing:
       on the way: batch lane never fills (A/B needs `--batch 1`); strict
       rows compiled EMPTY on Qwen3.x thinking templates (primer `\n` merges
       with the reply's `\n</think>`) — text-level boundary fix, 4 rows on
-      the 27B. Strict-tier A/B (corrected rows, 2026-09-02 pm): fill 5.3%,
+      the 27B. BUG found by the A/B (`lab/repro/serve-crash-turn8`): the 27B
+      server dies with a bare MLX C++ exception on a turn that resumes a
+      prompt-cached prefix (qwen3_5 hybrid SSM+KV); `--prompt-cache 0`
+      serves it — root cause owed. Strict-tier A/B (corrected rows, 2026-09-02 pm): fill 5.3%,
       100% acceptance, identical calls, median wall ×0.99; the proposal trace
       (`MLX_BUN_FILL_TRACE=<file>`, `fill trace`) caught a `</think>`-triggered
       scaffold asserting tool calls the model would have answered in prose
