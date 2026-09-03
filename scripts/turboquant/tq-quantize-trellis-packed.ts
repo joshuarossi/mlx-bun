@@ -653,7 +653,7 @@ try {
         } else if (ldlqDir) {
           const rest = base!.slice(`${LM}layers.`.length);
           const li = Number(rest.slice(0, rest.indexOf(".")));
-          const site = t.axis === 0 ? "down" : "mlp";
+          const site = base!.endsWith("mlp.down_proj") ? "down" : "mlp";   // by MODULE, not axis (--down-axis in)
           const lp = join(ldlqDir, `layer-${String(li).padStart(3, "0")}-${site}.safetensors`);
           if (!existsSync(lp)) {
             rec = trellisTensorPacked(folded, t.axis, t.k);
