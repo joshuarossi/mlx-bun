@@ -754,7 +754,14 @@ through the first token where the call rendering diverges from a plain-
 content rendering — the model's own `<tool_call>` — and the failure class is
 gone by construction. Echo-tier list, same tool: 66 events, verify accepted
 369 / rejected 1195, survival by position falls to ~50% by position 6 — the
-policy levers named above are what the list points at. Owed: the showcase. Repro to file: turn 8 of session
+policy levers named above are what the list points at. **Showcase measured**
+(same day, `fixtures/showcase-silicon-exchange.txt`, 1024 tokens × 2 reps,
+serial arms): echo 8.9 tok/s emitted = 8.9 decoded, off 9.0 — fill 0.0%.
+A fresh build prompt has no earlier session text to copy, so the echo index
+has nothing to propose; the bandwidth-ceiling demonstration (25.2 tok/s for
+14.76 GiB at 400 GB/s) needs a turn that REPEATS earlier context. The fixture
+is the wrong shape for the tier it was written for — a multi-turn edit loop
+is the honest showcase. Repro to file: turn 8 of session
 `2026-08-18T04-34-36-341Z_01a01326…` kills the server on either lane (bare
 MLX C++ exception, three of three runs, `runs/k3/serve-*.log`).
 
@@ -782,7 +789,8 @@ User-facing mirror: `docs/reference/server-config.md` (`MLX_BUN_FILL`,
 - K3 (fill): strict tier measured on the 27B (5.3% fill, 100% acceptance,
   ×0.99 median wall) — its default-on gate is token identity on the 27B
   (`tests/parity/fill-strict.test.ts`); echo-tier policy levers before any
-  rerun (§7.3); the showcase; the turn-8 server-crash repro.
+  rerun (§7.3); a multi-turn showcase fixture (the single-prompt one fills
+  0%); the turn-8 server-crash repro (`lab/repro/serve-crash-turn8`).
 
 - DSpark serving program phases 0, 1d, 1e, 1.5, 2, 3, 4, 5, 6 (§4.5) —
   every GPU measurement is Josh's shell; Phase 3 (generated-forward tap)
