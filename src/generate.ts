@@ -23,6 +23,9 @@ import { PagedKVCache } from "./lab/paged-kv/paged-kv";
 import { DiffusionGemmaModel } from "./model/diffusion-gemma";
 import { diffusionGenerate } from "./diffusion/diffusion-generate";
 import type { RuntimeModel } from "./model/factory";
+import { bindMlxGraph } from "./backends/mlx/graph";
+import type { TokenLogprobs } from "./contracts/generation";
+export type { TokenLogprobs } from "./contracts/generation";
 import type { PromptResponseTrace } from "./serve/prompt-response-trace";
 import type { KvQuantSpec, TurboQuantScheme } from "./config";
 import { flagOn } from "./runtime-config";
@@ -211,16 +214,6 @@ export function shouldUseFill(
     !options.kvBits &&
     !options.kvConfig?.length &&
     options.turboQuant === undefined;
-}
-
-/** Per-token logprob info (only present when GenerateOptions requested it). */
-export interface TokenLogprobs {
-  /** logprob of the emitted token (requires options.logprobs). */
-  logprob?: number;
-  /** top-k (id, logprob) pairs, sorted by logprob descending (requires
-   *  options.topLogprobs > 0). mlx-lm leaves argpartition order unspecified;
-   *  sorting is the deterministic reading of the same set. */
-  top?: { id: number; logprob: number }[];
 }
 
 /** Materialize every cache's state at a prefill chunk boundary. Unlike
@@ -653,24 +646,6 @@ export async function withModelUsageFlush<T>(
   }
 }
 
-/** Forward through either the ordinary synchronous model surface or a
- * streamed-expert model whose layer execution must cross async I/O. Keeping
- * this choice inside the shared generator preserves the complete generation
- * contract (sampling, grammar, logprobs, prompt cache, and cancellation) for
- * both execution styles. */
-async function forwardHiddenForGeneration(
-  model: RuntimeModel,
-  ids: MlxArray,
-  cache: Cache[],
-): Promise<MlxArray> {
-  const asyncModel = model as RuntimeModel & {
-    forwardHiddenAsync?: (ids: MlxArray, cache: Cache[]) => Promise<MlxArray>;
-  };
-  return typeof asyncModel.forwardHiddenAsync === "function"
-    ? await asyncModel.forwardHiddenAsync(ids, cache)
-    : model.forwardHidden(ids, cache);
-}
-
 async function* generateInner(
   model: RuntimeModel,
   promptTokens: number[],
@@ -686,6 +661,15 @@ async function* generateInner(
     eosTokenIds = model.config.eosTokenIds,
     prefillChunkSize = 2048,
   } = options;
+
+  // Bind the graph once per run. Generated, dedicated, and streamed model
+  // implementations share this structural adapter; their native kernels and
+  // lazy evaluation order remain inside the backend.
+  const graph = bindMlxGraph<Cache[]>(model, {
+    id: `legacy:${model.config.modelType}`,
+    artifact: "legacy-resident-model", // not a durable checkpoint identity
+    stateAbi: "legacy-cache-array-v1",
+  });
 
   // logprobs capture (mlx_lm.server semantics — see GenerateOptions.logprobs).
   // Everything below is gated: when neither flag is set, no extra ops, evals,
@@ -916,7 +900,7 @@ async function* generateInner(
     try {
       const fillIds = ops.fromInt32(ids, [1, ids.length]);
       try {
-        hf = await forwardHiddenForGeneration(model, fillIds, cache);
+        hf = await graph.forwardHidden(fillIds, cache);
       } finally {
         fillIds.dispose();
       }
@@ -926,7 +910,7 @@ async function* generateInner(
         // Free logits: this forward already computed every span position's
         // hidden state. argmax at j is the model's continuation after ids[j],
         // so it verifies ids[j+1]. (Under assert this readback is trace-only.)
-        logitsAll = model.logitsFromHidden(hf);
+        logitsAll = graph.projectLogits(hf, { type: "all" });
         const argmax = ops.argmaxAxis(logitsAll, -1);
         pred = argmax.toIntTokens();
         argmax.dispose();
@@ -973,7 +957,7 @@ async function* generateInner(
           logits = logitsAll.slice([0, accepted - 1, 0], [1, accepted, V]);
         } else {
           const hLast = hf.slice([0, Lf - 1, 0], [1, Lf, Hf]);
-          logits = model.logitsFromHidden(hLast);
+          logits = graph.projectLogits(hLast, { type: "all" });
           hLast.dispose();
         }
         const sn = sampleStep(logits, willGen);
@@ -1059,7 +1043,7 @@ async function* generateInner(
             tokens: chunk.length,
           });
           const ids = ops.fromInt32(chunk, [1, chunk.length]);
-          const h = await forwardHiddenForGeneration(model, ids, cache);
+          const h = await graph.forwardHidden(ids, cache);
           ids.dispose();
           h.dispose();
           evalCacheState(cache);
@@ -1100,7 +1084,7 @@ async function* generateInner(
           tokens: chunk.length,
         });
         const ids = ops.fromInt32(chunk, [1, chunk.length]);
-        const h = await forwardHiddenForGeneration(model, ids, cache);
+        const h = await graph.forwardHidden(ids, cache);
         ids.dispose();
         h.dispose(); // logits never computed for non-final chunks
         evalCacheState(cache);
@@ -1137,7 +1121,7 @@ async function* generateInner(
         final: true,
       });
       const ids0 = ops.fromInt32(lastChunk, [1, lastChunk.length]);
-      h0 = await forwardHiddenForGeneration(model, ids0, cache);
+      h0 = await graph.forwardHidden(ids0, cache);
       ids0.dispose();
       closeChunk?.();
     }
@@ -1154,7 +1138,7 @@ async function* generateInner(
     const [, L0, H] = h0.shape as [number, number, number];
     const hLast = h0.slice([0, L0 - 1, 0], [1, L0, H]);
     h0.dispose();
-    const logits0 = model.logitsFromHidden(hLast);
+    const logits0 = graph.projectLogits(hLast, { type: "all" });
     hLast.dispose();
     const s0 = sampleStep(logits0, 0); // token array [1] (+ optional extras)
     pending = s0.tok;
@@ -1260,7 +1244,7 @@ async function* generateInner(
         stepSampler.commitNumbers(jumpEmit);
         const chunk = [grammarTok, ...jumpEmit];
         const ids = ops.fromInt32(chunk, [1, chunk.length]);
-        const h = await forwardHiddenForGeneration(model, ids, cache);
+        const h = await graph.forwardHidden(ids, cache);
         ids.dispose();
         // Every chunk token's KV is in the cache regardless of what follows.
         forwarded.push(...chunk);
@@ -1269,7 +1253,7 @@ async function* generateInner(
           const [, Lj, Hj] = h.shape as [number, number, number];
           const hLast = h.slice([0, Lj - 1, 0], [1, Lj, Hj]);
           h.dispose();
-          const logits = model.logitsFromHidden(hLast);
+          const logits = graph.projectLogits(hLast, { type: "all" });
           hLast.dispose();
           const sn = sampleStep(logits, willGen);
           nextPending = sn.tok;
@@ -1301,9 +1285,9 @@ async function* generateInner(
         }
         if (!logits) {
           const ids = ops.reshape(cur, [1, 1]);
-          const h = await forwardHiddenForGeneration(model, ids, cache);
+          const h = await graph.forwardHidden(ids, cache);
           ids.dispose();
-          logits = model.logitsFromHidden(h);
+          logits = graph.projectLogits(h, { type: "all" });
           h.dispose();
         }
         const sn = sampleStep(logits, generated + 1);

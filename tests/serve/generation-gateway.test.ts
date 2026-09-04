@@ -11,6 +11,7 @@ import { SSMCache } from "../../src/model/qwen3-delta";
 import type { RuntimeModel } from "../../src/model/factory";
 import { resolveKvScheme } from "../../src/kv-scheme";
 import { configureRuntime } from "../../src/runtime-config";
+import { createLegacyInferenceEngine } from "../../src/backends/mlx/legacy-engine";
 
 // place() reads only makeCache() off the model (the capability gate) and never
 // the serialRun, so stubs are safe. The default stub models a
@@ -398,6 +399,46 @@ describe("GenerationGateway request cancellation", () => {
     await expect(g.run(
       [1], {}, () => {}, undefined, batchable, g.place(batchable), abort.signal,
     )).rejects.toHaveProperty("name", "AbortError");
+    expect(g.busy).toBe(false);
+  });
+});
+
+describe("portable session through the real legacy gateway", () => {
+  test("retains serial token order, metrics, and request snapshot", async () => {
+    const g = new GenerationGateway(stubModel, 1, async (ids, options, onToken) => {
+      expect(ids).toEqual([1, 2]);
+      expect(options.temperature).toBe(0);
+      await onToken(7); await onToken(8);
+      return { promptTokens: 2, cachedTokens: 0, generatedTokens: 2,
+        prefillMs: 0, decodeMs: 0, prefillTps: 0, decodeTps: 0, cacheTokens: [1, 2, 7] };
+    });
+    const engine = createLegacyInferenceEngine(g);
+    const request = { promptIds: [1, 2], options: { temperature: 0 }, shape: { ...batchable } };
+    const session = await engine.open(request, { output: "stream" });
+    request.promptIds[0] = 999;
+    request.options.temperature = 1;
+    const events = await Array.fromAsync(session.events);
+    expect(events.map((event) => event.type === "committed" ? event.tokenIds : [])).toEqual([[7], [8]]);
+    expect(await session.result).toMatchObject({ status: "completed", result: {
+      finishReason: "stop", metrics: { generatedTokens: 2 },
+    } });
+    await engine.close();
+    expect(g.busy).toBe(false);
+  });
+
+  test("session cancellation removes its queued gateway waiter while the holder is still running", async () => {
+    const g = gateway(1);
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const owner = g.runExclusive(() => held);
+    const engine = createLegacyInferenceEngine(g);
+    const session = await engine.open({ promptIds: [1], options: {}, shape: batchable }, { output: "collect" });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await session.cancel();
+      expect(await session.result).toMatchObject({ status: "cancelled" });
+      expect(g.busy).toBe(true);
+    } finally { release(); await owner; await engine.close(); }
     expect(g.busy).toBe(false);
   });
 });

@@ -74,7 +74,7 @@ STATUS ≤150 / PLAN ≤800 line caps, and the generated `docs/README.md` map
 ## Code standards
 
 Whole-repo `tsc --noEmit` stays at 0, including every script under `scripts/`.
-`bun run typecheck` runs the repository and web checks with the exact TypeScript
+`bun run typecheck` runs the repository, web, and portable-engine checks with the exact TypeScript
 version in package.json and bun.lock; local tests and CI use this same command.
 Tests gate on fixture presence and skip cleanly when weights are absent;
 a test that needs weights, the oracle venv, or an `MLX_BUN_TEST_*` opt-in

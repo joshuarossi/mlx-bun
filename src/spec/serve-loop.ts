@@ -206,6 +206,7 @@ export async function specServeRun(
   };
 
   try {
+    options.signal?.throwIfAborted();
     caches = model.makeCache();
     const src = provider.open({ sampler, target: { model, caches } });
     source = src;
@@ -246,6 +247,7 @@ export async function specServeRun(
       let pos = 0;
       const end = promptIds.length - 1; // last prompt token NEVER prefilled
       while (pos < end) {
+        options.signal?.throwIfAborted();
         const n = Math.min(PREFILL_CHUNK, end - pos);
         const chunk = promptIds.slice(pos, pos + n);
         const ids = ops.fromInt32(chunk, [1, chunk.length]);
@@ -265,11 +267,13 @@ export async function specServeRun(
         h.dispose(); // logits never computed during the drain
         clearCache();
         pos += n;
+        if (pos < end) await new Promise<void>((resolve) => setImmediate(resolve));
       }
     } else {
       // Legacy shape: full chunked prefill (final chunk included), token0
       // sampled from the last position below.
       for (let off = 0; off < promptIds.length; off += PREFILL_CHUNK) {
+        options.signal?.throwIfAborted();
         const chunk = promptIds.slice(off, off + PREFILL_CHUNK);
         const ids = ops.fromInt32(chunk, [1, chunk.length]);
         const { hidden: h, ctxML } = await forwardMaybeTap(
@@ -291,9 +295,12 @@ export async function specServeRun(
         }
         h.dispose();
         clearCache();
+        if (off + PREFILL_CHUNK < promptIds.length)
+          await new Promise<void>((resolve) => setImmediate(resolve));
       }
     }
     extras.targetCalls++;
+    options.signal?.throwIfAborted();
     // Seed the source: two-model prefills its own draft cache; DSpark seeds
     // H_ctx from the tapped prompt context (ownership transfers to prefill);
     // the assistant is a no-op.
@@ -347,6 +354,7 @@ export async function specServeRun(
 
     // ---- rounds ----
     decode: while (stats.generatedTokens < maxTokens) {
+      options.signal?.throwIfAborted();
       if (!speculating) {
         // plain single-token continuation (post-ring-wrap fallback)
         const ids = ops.fromInt32([pending], [1, 1]);
@@ -502,6 +510,7 @@ export async function specServeRun(
 
       // (d) emit the round's tokens through onToken, one at a time
       for (const tok of emitted) {
+        options.signal?.throwIfAborted();
         stats.generatedTokens++;
         if ((await onToken(tok)) === false) { halted = true; break; }
         if (stats.generatedTokens >= maxTokens) break;

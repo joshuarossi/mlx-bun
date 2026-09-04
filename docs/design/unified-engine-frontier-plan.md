@@ -2,7 +2,7 @@
 status: active
 axis: ON
 canonical-for: engine-architecture
-plan-anchor: "Interface-based engine refactor `[ ]`"
+plan-anchor: "Interface-based engine refactor `[~]`"
 last-verified: 2026-08-23
 ---
 
@@ -21,10 +21,11 @@ This is the canonical architecture doc for mlx-bun's engine. It owns:
   the known deviations from it;
 - the **flag end-state** and how it maps onto the layers.
 
-The proposed v2 refactor is in [§12](#12-interface-based-engine-refactor).
+The v2 refactor is in [§12](#12-interface-based-engine-refactor).
 Josh requested replaceable implementations behind interfaces on 2026-09-04.
-That section defines the target and migration; it does not describe shipped
-APIs. Earlier sections retain the current architecture and numerical contracts.
+That section defines the target and migration, with implementation status below.
+The new contracts are internal; existing public APIs remain the supported surface.
+Earlier sections retain the current architecture and numerical contracts.
 `last-verified` above dates the earlier inventory, not a whole-document reaudit.
 
 Folded in (2026-08-23): `docs/design/unified-engine-frontier-plan.md` (tier framing, two axes, flag
@@ -704,6 +705,15 @@ laptop. Interface consistency is useful when it makes those gains easier to
 build, compare, compose, and ship. It is not an independent reason to accept
 slower execution or a larger working set.
 
+The current target is **Josh's designated Qwen3.8-27B quants**. Exact artifact
+paths/revisions must be established before choosing baselines or optimizing.
+The locally cached published flagship and TQ snapshots are not those targets
+(Josh clarified this on 2026-09-04); availability must not select the product
+baseline. Quant recipes and quality findings remain in [TurboQuant](turboquant.md),
+including rejected variants and raw-EOS regressions. Interfaces must preserve
+exact packing, rotation, per-layer precision, recurrent-state, and kernel
+choices. Other artifacts/families provide compatibility coverage only.
+
 Aggressive specialization for a particular quantization is expected. A
 quant-specific layout, graph, fused kernel, cache scheme, compiled schedule,
 or complete execution method is a legitimate production implementation.
@@ -1362,3 +1372,58 @@ R0 fixes are small independent changes. R1–R4 establish and validate the
 contracts. R5–R7 perform the execution migration. R8–R10 complete applications,
 isolation, and deletion. Contract drafting must lead to the first real graph
 replacement in R2; it cannot grow indefinitely without that working proof.
+
+### 12.13 Implementation status (2026-09-04)
+
+Branch: `refactor/interface-engine-v2`. R0 fixes pin TypeScript 6.0.3 for
+local/CI checks, add stop strings and a version to generation-checkpoint
+identity, remove cancelled serial waiters immediately, and check cancellation
+between AR/spec target-prefill chunks and committed-token boundaries.
+
+`src/contracts/generation.ts` defines portable planner, method/run, session,
+output, result, cancellation, and timer ports. `src/engine/` implements lifecycle
+and delivery without model or runtime imports. The dedicated TypeScript project
+has ES2022 only and no ambient runtime types; an AST/resolved-import test also
+checks type imports, re-exports, and dynamic imports against dependency layers.
+
+Streaming starts on the first reader demand. Defaults are 32 queued events,
+256 queued token IDs, 20 top-logprob entries per token, and a 30-second
+idle-consumer deadline. Large committed spans split under backpressure.
+Collecting reserves a Uint32 buffer before method creation, with an aggregate
+65,536-token active-collection ceiling; terminal output ownership transfers to
+the caller. Collection currently returns IDs only; logprobs require streaming.
+Cancellation and early iterator return wait for run cleanup. Failure outcomes
+retain the execution error if cleanup also fails. These are internal defaults,
+not new server flags.
+
+`src/backends/mlx/legacy-engine.ts` bridges already-resolved text requests into
+the existing gateway. It snapshots request data before demand-start and keeps
+placement, serialization, native cancellation, caches, and quant execution in
+the existing implementation. Media, adapters, grammar, and caller-owned native
+resources remain with the legacy completion executor; this bridge explicitly
+refuses those requests. It is not the default HTTP path.
+
+`src/inference/graph.ts` declares the backend-bound graph ABI.
+`src/backends/mlx/graph.ts` binds synchronous/streamed forwards once and selects
+hidden positions before vocabulary projection. Serial `generate()` now uses
+that binding for ordinary forwards and head projection; existing compiled
+execution is retained. No tensor wrapper, device readback, or synchronization
+was introduced. The legacy descriptor is not a persistence identity. Typed
+media/tap/adapter contexts, complete state ABI validation, and real alternate
+graph registration remain R2 work.
+
+Artifact-parameterized native smoke gate:
+`MLX_BUN_QWEN_QUANT_PATH=/path/to/our/artifact bun test tests/parity/qwen-quant-engine.test.ts`.
+Run one artifact per process. Compatibility-only checks on the M1 Max 32 GB
+pass for the locally cached published `mjriii/Qwen3.8-27B` and
+`mjriii/Qwen3.8-27B-TQ`: direct-versus-bound logits, legacy-versus-session greedy
+output/cache coverage, and repeated recurrent-prefix borrowing. These are not
+Josh's current target quants. Target validation remains pending exact artifact
+identification. The test is a bounded smoke, not a full model oracle or the
+recorded turn-8 repro. Gemma compiled-decode checks are secondary coverage too.
+
+The session suite additionally covers final-only methods, bounded progress,
+abandoned readers, preparation cancellation, admission refusal, cleanup failure,
+and no-consumer settlement. R0's long Qwen cache-crash diagnosis and quiet-machine
+baseline remain open. R3–R10 are not implemented by these initial interfaces,
+and no speed/quality/size improvement is claimed yet.

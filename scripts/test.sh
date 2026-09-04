@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 # allowlist + docs-map coverage). Fail fast before any test runs.
 printf '== hygiene gate ==\n'
 bun scripts/check-hygiene.ts || exit 1
-printf '== typecheck (repository and web) ==\n'
+printf '== typecheck (repository, web, portable engine) ==\n'
 bun run typecheck || exit 1
 
 # Shard by DIRECTORY (the directory IS the gate): model-free suites first,

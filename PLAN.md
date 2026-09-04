@@ -638,13 +638,18 @@ Landed so far:
 - 2026-09-02 — Q3 full recipe passed (KL 0.1553 @ 3.55 bpw, MMLU 88, tGSM 48,
   rawGSM 44); `tq-repack-fakequant.ts` eval carrier.
 
-## Interface-based engine refactor `[ ]`
+## Interface-based engine refactor `[~]`
 
 Design and exit criteria: [engine architecture §12](docs/design/unified-engine-frontier-plan.md#12-interface-based-engine-refactor).
+Primary target: **Josh’s Qwen3.8-27B quants**; exact artifacts await identification.
 Goal: push speed/quality/size on Macs through replaceable graph/method/session
 contracts and aggressive quant-specific specialization. Interfaces must permit
 fused execution without extra copies, materialization, or synchronization.
-Implementation has not started. R0–R10 are ordered by the dependencies in §12.10.
+Branch: `refactor/interface-engine-v2`. R0–R10 follow the dependencies in §12.10.
+Toolchain, stop-aware checkpoint keys, queue/prefill cancellation, portable
+sessions, the text gateway bridge, and the initial MLX graph binding are implemented.
+R0 still owes the Qwen prefix-crash diagnosis and quiet-machine baseline;
+R1/R2 still owe full composition coverage and real replacement gates.
 
 - [ ] **R0** Fix/verify review findings; pin tools; freeze support, oracle and performance baselines.
 - [ ] **R1** Portable contracts and method-neutral session suite; legacy adapter and dependency gates.

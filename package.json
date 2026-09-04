@@ -47,7 +47,7 @@
   ],
   "scripts": {
     "test": "bash scripts/test.sh",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.web.json --noEmit && tsc -p src/contracts/tsconfig.json --noEmit",
     "link-cli": "chmod +x src/cli.ts && ln -sf $PWD/src/cli.ts $HOME/.bun/bin/mlx-bun && mlx-bun --version",
     "build:binary": "sh scripts/build-binary.sh",
     "release": "PUBLISH=1 sh scripts/release-binary.sh",
