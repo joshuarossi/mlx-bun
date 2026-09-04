@@ -112,6 +112,40 @@ const withFill = async <T>(env: Record<string, string | undefined>, fn: () => Pr
   try { return await fn(); } finally { restore(); }
 };
 
+describe("generate(): cancellation", () => {
+  test("cancellation between prefill chunks stops before another forward and releases owned caches", async () => {
+    const abort = new AbortController();
+    let disposals = 0;
+    class OwnedCache extends KVCache {
+      override dispose(): void { disposals++; super.dispose(); }
+    }
+    class CancellingModel extends StubModel {
+      override forwardHidden(ids: MlxArray, cache: Cache[]): MlxArray {
+        const hidden = super.forwardHidden(ids, cache);
+        abort.abort(new DOMException("cancelled during prefill", "AbortError"));
+        return hidden;
+      }
+      override logitsFromHidden(): MlxArray {
+        throw new Error("cancelled prefill must not project logits");
+      }
+    }
+    const model = new CancellingModel(SCRIPT, () => [new OwnedCache()]);
+    await expect(run({ signal: abort.signal, prefillChunkSize: 1 }, Infinity, model))
+      .rejects.toHaveProperty("name", "AbortError");
+    expect(model.forwards).toEqual([[1]]);
+    expect(disposals).toBe(1);
+  });
+
+  test("an already cancelled generation allocates no cache", async () => {
+    const abort = new AbortController();
+    abort.abort(new DOMException("cancelled", "AbortError"));
+    const model = new StubModel(SCRIPT, () => { throw new Error("must not allocate"); });
+    await expect(run({ signal: abort.signal }, Infinity, model))
+      .rejects.toHaveProperty("name", "AbortError");
+    expect(model.forwards).toEqual([]);
+  });
+});
+
 describe("generate(): the fill append", () => {
   test("injected tokens stream in order and the discarded sample never appears", async () => {
     const fill = session([row([TRIGGER], SPAN)]);

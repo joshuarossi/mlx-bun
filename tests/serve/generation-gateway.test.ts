@@ -369,16 +369,35 @@ describe("GenerationGateway request cancellation", () => {
       abort.signal,
     );
     abort.abort(new DOMException("client disconnected", "AbortError"));
-    release();
-    await owner;
-    await expect(abandoned).rejects.toHaveProperty("name", "AbortError");
-    expect(serialStarts).toBe(0);
-    expect(grammarDisposals).toBe(1);
+    try {
+      // The owner stays locked: removing this waiter must not depend on it.
+      await expect(abandoned).rejects.toHaveProperty("name", "AbortError");
+      expect(serialStarts).toBe(0);
+      expect(grammarDisposals).toBe(1);
+      expect(g.busy).toBe(true);
+    } finally {
+      release();
+      await owner;
+    }
 
     const next = await g.run(
       [1], {}, () => {}, undefined, batchable, g.place(batchable),
     );
     expect(next.generatedTokens).toBe(1);
     expect(serialStarts).toBe(1);
+  });
+
+  test("serial execution receives the request signal before producing tokens", async () => {
+    const abort = new AbortController();
+    const g = new GenerationGateway(stubModel, 1, async (_ids, options) => {
+      expect(options.signal).toBe(abort.signal);
+      abort.abort(new DOMException("client disconnected", "AbortError"));
+      options.signal!.throwIfAborted();
+      throw new Error("unreachable");
+    });
+    await expect(g.run(
+      [1], {}, () => {}, undefined, batchable, g.place(batchable), abort.signal,
+    )).rejects.toHaveProperty("name", "AbortError");
+    expect(g.busy).toBe(false);
   });
 });

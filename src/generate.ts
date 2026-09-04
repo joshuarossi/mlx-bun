@@ -47,6 +47,9 @@ import {
 } from "./fill/fill-session";
 
 export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions {
+  /** Cooperatively cancel at prefill/decode boundaries; pending native work
+   *  finishes before owned resources are released. */
+  signal?: AbortSignal;
   maxTokens?: number;
   eosTokenIds?: number[];
   prefillChunkSize?: number;
@@ -544,6 +547,7 @@ async function* generateDiffusionInner(
   promptTokens: number[],
   options: GenerateOptions,
 ): AsyncGenerator<GeneratedToken, GenerateStats> {
+  options.signal?.throwIfAborted();
   const t0 = performance.now();
   const maxTokens = options.maxTokens ?? 256;
   // A fresh random canvas seed per request unless the caller pins one.
@@ -563,7 +567,10 @@ async function* generateDiffusionInner(
   });
   const decodeMs = performance.now() - t0;
   let index = 0;
-  for (const token of result.tokens) yield { token, index: index++ };
+  for (const token of result.tokens) {
+    options.signal?.throwIfAborted();
+    yield { token, index: index++ };
+  }
   return {
     promptTokens: promptTokens.length,
     cachedTokens: 0,
@@ -670,6 +677,10 @@ async function* generateInner(
   options: GenerateOptions,
   diagnostics: GenerateDiagnostics,
 ): AsyncGenerator<GeneratedToken, GenerateStats> {
+  if (options.signal?.aborted) {
+    options.grammar?.dispose();
+    options.signal.throwIfAborted();
+  }
   const {
     maxTokens = 512,
     eosTokenIds = model.config.eosTokenIds,
@@ -1040,6 +1051,7 @@ async function* generateInner(
         : promptTokens.length;
       if (snapAt > pos && snapAt < promptTokens.length) {
         while (pos < snapAt) {
+          options.signal?.throwIfAborted();
           const chunk = promptTokens.slice(pos, Math.min(pos + prefillChunkSize, snapAt));
           const closeChunk = diagnostics.trace?.begin("prefill.chunk", {
             mechanism: diagnostics.mechanism ?? "serial",
@@ -1077,6 +1089,7 @@ async function* generateInner(
       const tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
       const drainGate = tailSplit ? 1 : prefillChunkSize;
       while (promptTokens.length - pos > drainGate) {
+        options.signal?.throwIfAborted();
         const n = tailSplit
           ? Math.min(prefillChunkSize, promptTokens.length - pos - 1)
           : prefillChunkSize;
@@ -1116,6 +1129,7 @@ async function* generateInner(
       // PromptCache.put alignment) is unchanged: after step 0 the caches
       // cover exactly the prompt, as before.
       const lastChunk = promptTokens.slice(pos);
+      options.signal?.throwIfAborted();
       const closeChunk = diagnostics.trace?.begin("prefill.chunk", {
         mechanism: diagnostics.mechanism ?? "serial",
         startToken: pos,
@@ -1194,6 +1208,7 @@ async function* generateInner(
     // (jumped tokens are never sampled, so they'd have no logprobs rows).
     const grammarJump = shouldUseGrammarJump(options);
     while (!stop) {
+      options.signal?.throwIfAborted();
       const cur = pending!;
       const curExtras = pendingExtras;
       pendingExtras = null;
@@ -1364,6 +1379,7 @@ async function* generateInner(
         // safe — `forwarded` already reflects the cache exactly.
         if (jumpEmit) {
           for (const jt of jumpEmit) {
+            options.signal?.throwIfAborted();
             generated++;
             yield { token: jt, index: generated - 1 };
             if ((generated - 1) % 256 === 0) clearCache();
@@ -1375,6 +1391,7 @@ async function* generateInner(
         // would have in an unfilled run).
         if (fillEmit) {
           for (const ft of fillEmit) {
+            options.signal?.throwIfAborted();
             generated++;
             yield { token: ft, index: generated - 1 };
             if ((generated - 1) % 256 === 0) clearCache();

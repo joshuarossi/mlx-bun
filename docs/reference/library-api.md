@@ -341,6 +341,7 @@ flushing are all scoped to the iteration.
 | `presencePenalty` / `frequencyPenalty` (+ `…ContextSize`) | off | OpenAI-style, may be negative |
 | `eosTokenIds` | from config | includes the tool-handoff token |
 | `prefillChunkSize` | 2048 | matches mlx-lm |
+| `signal` | none | `AbortSignal`; cancels before allocation, between AR prefill chunks, and between decode steps. An active native operation completes before the next cancellation check. |
 | `onPrefillDone` / `snapshotAt` | — | fired once at the stable cache boundary before further KV is written (the server's prompt-cache snapshot hook) |
 | `cache` | fresh | pre-warmed `Cache[]`; `cache[0].offset` tokens are treated as already prefilled. Caller keeps ownership |
 | `kvBits` / `kvGroupSize` / `quantizedKvStart` | off / 64 / 5000 | uniform KV quantization (4 or 8), incl. rotating caches |

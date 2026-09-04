@@ -71,6 +71,14 @@ oracle. See [Fidelity tiers](#fidelity-tiers-and-the-decode-route---l1----l2).
 | `--ssd-demote-idle` | seconds | `300` with `--ssd-cache`, else off | both | Prompt-cache entries unused this long spill to the SSD tier and free their GPU memory; the next hit restores them. Swept only when the engine is fully idle. `0` disables. Warns and is ignored without `--ssd-cache`. |
 | `--generation-checkpoint` | output tokens | off | serial | Atomically snapshots an in-flight generation every N emitted tokens. Repeating the identical request after a restart replays the saved assistant prefix and continues from its already-sampled next token. Requires `--ssd-cache` and `--batch 1`; completed generations remove their checkpoint. |
 
+Generation checkpoint identity includes the stop strings as well as sampling
+and KV policy. Changing `stop` starts a new completion. Checkpoints written
+before this identity version are not selected for automatic resume.
+
+Disconnected serial requests leave the admission queue immediately. Active AR
+requests check cancellation between prefill chunks and decode steps; a native
+operation already running completes before that boundary.
+
 ### Runtime isolation
 
 | Flag | Arg | Default | Lane/tier | What it does |

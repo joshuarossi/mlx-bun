@@ -62,18 +62,38 @@ class AsyncMutex {
   get locked(): boolean {
     return this.#pending > 0;
   }
-  acquire(): Promise<() => void> {
+  acquire(signal?: AbortSignal): Promise<() => void> {
+    if (signal?.aborted) return Promise.reject(signal.reason);
     this.#pending++;
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });
     const wait = this.#tail;
     this.#tail = this.#tail.then(() => gate);
     let released = false;
-    return wait.then(() => () => {
+    const unlock = () => {
       if (released) return; // idempotent: a double release must not skew #pending
       released = true;
       this.#pending--;
       release();
+    };
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const abort = () => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener("abort", abort);
+        // Release this waiter's gate, not its predecessor's. Later acquirers
+        // still wait for the active holder, preserving mutual exclusion.
+        unlock();
+        reject(signal!.reason);
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      wait.then(() => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener("abort", abort);
+        resolve(unlock);
+      });
     });
   }
 }
@@ -376,20 +396,23 @@ export class GenerationGateway {
   async runExclusive<T>(
     fn: () => Promise<T>,
     trace?: PromptResponseTrace,
+    signal?: AbortSignal,
   ): Promise<T> {
     this.#serialWaiters++;
-    const closeAdmission = trace?.begin("engine.admission_wait", {
+    let closeAdmission = trace?.begin("engine.admission_wait", {
       mechanism: "serial",
     });
     try {
-      const release = await this.#mutex.acquire();
+      const release = await this.#mutex.acquire(signal);
       closeAdmission?.();
+      closeAdmission = undefined;
       try {
         return await fn();
       } finally {
         release();
       }
     } finally {
+      closeAdmission?.();
       this.#serialWaiters--;
       if (this.#serialWaiters === 0) this.#scheduler?.kick(); // resume admission
     }
@@ -407,8 +430,15 @@ export class GenerationGateway {
     signal?: AbortSignal,
     trace?: PromptResponseTrace,
   ): Promise<GenerateStats> {
-    if (placement.shape !== shape) {
+    const disposeUnstarted = () => {
       options.grammar?.dispose();
+      for (const resource of new Set([
+        vision?.embeddings, vision?.imageMask, vision?.multimodalMask,
+        options.visionPixels,
+      ])) resource?.dispose();
+    };
+    if (placement.shape !== shape) {
+      disposeUnstarted();
       throw new Error("generation placement does not belong to this request shape");
     }
     try {
@@ -416,7 +446,7 @@ export class GenerationGateway {
     } catch (e) {
       // The gateway is the first component that accepts ownership of a
       // compiled controller. An already-aborted request reaches neither lane.
-      options.grammar?.dispose();
+      disposeUnstarted();
       throw e;
     }
     if (placement.mechanism === "serial") {
@@ -442,17 +472,22 @@ export class GenerationGateway {
           );
         return hop().then(() => signal?.aborted ? false : r);
       };
+      let started = false;
       return this.runExclusive(async () => {
         signal?.throwIfAborted();
+        started = true;
         const stats = await this.serialRun(
-          promptIds, options, hoppingOnToken, vision, trace,
+          promptIds, signal ? { ...options, signal } : options, hoppingOnToken, vision, trace,
         );
         signal?.throwIfAborted();
         return stats;
-      }, trace)
+      }, trace, signal)
         // Covers a serial waiter aborted before serialRun takes ownership.
         // generate() also disposes defensively; the operation is idempotent.
-        .finally(() => options.grammar?.dispose());
+        .finally(() => {
+          if (started) options.grammar?.dispose();
+          else disposeUnstarted();
+        });
     }
 
     // The scheduler owns grammar ready/accept sequencing. StepSampler owns the
