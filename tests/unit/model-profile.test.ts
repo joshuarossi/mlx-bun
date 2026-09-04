@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ModelConfig } from "../../src/config";
-import { createModel } from "../../src/model/factory";
+import { createModel, MLX_MODEL_IMPLEMENTATIONS, type RuntimeModel } from "../../src/model/factory";
+import { ModelImplementationRegistry, type ModelImplementation } from "../../src/model/implementation";
 import { configFingerprint } from "../../src/model/fingerprint";
 import type { Weights } from "../../src/weights";
 import {
@@ -9,6 +10,7 @@ import {
   externalArtifactFingerprint,
   resolveModelProfile,
   type ArtifactModelProfile,
+  type ResolvedModelProfile,
 } from "../../src/model/profile";
 
 function config(modelType: string, overrides: Partial<ModelConfig> = {}): ModelConfig {
@@ -84,6 +86,106 @@ describe("external artifact identity", () => {
     expect(externalArtifactFingerprint(
       "/cache/models--mjriii--Qwen3.8-27B/snapshots/staged",
     )).toBeNull();
+  });
+});
+
+describe("engine-owned quant implementations", () => {
+  // Synthetic identities exercise selection without pretending to identify
+  // Josh's private quant or to validate an optimized numerical implementation.
+  const cfg = config("qwen3_5");
+  const exact: ArtifactModelProfile = {
+    id: "test-quant", artifactFingerprint: "sha256:test-quant",
+    configFingerprint: configFingerprint(cfg),
+    fidelity: { tier: "l3", oracle: null, claim: "measured" },
+    requiredCapabilities: ["safetensors", "autoregressive", "qwen3.5-graph", "recurrent-state"],
+    execution: { loader: "safetensors", graph: "qwen3.5", loop: "autoregressive",
+      specialization: "artifact", implementation: "test-quant-optimized" },
+  };
+  const resolve = (fingerprint = exact.artifactFingerprint) => resolveModelProfile(cfg, {
+    artifactFingerprint: fingerprint, artifactProfiles: [exact],
+  });
+  const implementation = (create: ModelImplementation<Weights, RuntimeModel>["create"]): ModelImplementation<Weights, RuntimeModel> => ({
+    id: "test-quant-optimized", graph: "qwen3.5", loader: "safetensors", loop: "autoregressive", create,
+  });
+
+  test("the resident factory invokes the selected code with the original weights", () => {
+    const weights = {} as Weights;
+    const model = {} as RuntimeModel;
+    const profile = resolve();
+    let calls = 0;
+    const registry = MLX_MODEL_IMPLEMENTATIONS.with(implementation((source, config, resolved) => {
+      calls++;
+      expect(source).toBe(weights);
+      expect(config).toBe(cfg);
+      expect(resolved).toBe(profile);
+      return model;
+    }));
+    expect(createModel(weights, cfg, profile, registry)).toBe(model);
+    expect(calls).toBe(1);
+    expect(() => createModel(weights, cfg, profile)).toThrow(/unavailable implementation test-quant-optimized/);
+  });
+
+  test("another quant with the same config retains the family implementation", () => {
+    const registry = MLX_MODEL_IMPLEMENTATIONS.with(implementation(() => { throw new Error("must not run"); }));
+    const unknown = resolve("sha256:another-quant");
+    expect(unknown.exactArtifact).toBe(false);
+    expect(registry.select(cfg, unknown).id).toBe("qwen3.5");
+    expect(registry.select(cfg, resolveModelProfile(cfg)).id).toBe("qwen3.5");
+  });
+
+  test("missing or incompatible exact code never falls back", () => {
+    const profile = resolve();
+    expect(() => MLX_MODEL_IMPLEMENTATIONS.select(cfg, profile)).toThrow(/unavailable.*refusing to fall back/);
+    for (const mismatch of [{ graph: "qwen3" }, { loader: "colibri" }, { loop: "diffusion" }] as const) {
+      const registry = MLX_MODEL_IMPLEMENTATIONS.with({
+        ...implementation(() => { throw new Error("must not run"); }), ...mismatch,
+      });
+      expect(() => registry.select(cfg, profile)).toThrow(/incompatible.*refusing to fall back/);
+    }
+  });
+
+  test("construction errors propagate without retrying the family constructor", () => {
+    const failure = new Error("incompatible packed tensor layout");
+    const registry = MLX_MODEL_IMPLEMENTATIONS.with(implementation(() => { throw failure; }));
+    expect(() => createModel({} as Weights, cfg, resolve(), registry)).toThrow(failure);
+  });
+
+  test("registry composition rejects ambiguous IDs and snapshots the selected binding", () => {
+    const original = {} as RuntimeModel;
+    const entry = { ...implementation(() => original) };
+    const registry = new ModelImplementationRegistry([entry]);
+    const selected = registry.select(cfg, resolve());
+    entry.create = () => { throw new Error("later replacement"); };
+    entry.graph = "qwen3";
+    expect(selected.create({} as Weights, cfg, resolve())).toBe(original);
+    expect(selected.graph).toBe("qwen3.5");
+    expect(Object.isFrozen(selected)).toBe(true);
+    expect(() => registry.with(entry)).toThrow(/duplicate model implementation/);
+    expect(() => new ModelImplementationRegistry([{ ...entry, id: " " }])).toThrow(/must not be empty/);
+  });
+
+  test("a supplied profile cannot bypass exact identity or config guards", () => {
+    const resolved = resolve();
+    const registry = MLX_MODEL_IMPLEMENTATIONS.with(implementation(() => { throw new Error("must not run"); }));
+    const invalid: ResolvedModelProfile[] = [
+      { ...resolved, exactArtifact: false },
+      { ...resolved, artifact: { ...resolved.artifact, fingerprint: "sha256:another-quant" } },
+      { ...resolved, profile: { ...resolved.profile, configFingerprint: "wrong" } },
+    ];
+    for (const profile of invalid)
+      expect(() => registry.select(cfg, profile)).toThrow(/does not match artifact/);
+  });
+
+  test("named quant code requires an exact artifact declaration", () => {
+    const family = resolveModelProfile(cfg);
+    const forged: ResolvedModelProfile = { ...family, profile: {
+      ...family.profile, execution: { ...family.profile.execution, implementation: "test-quant-optimized" },
+    } };
+    expect(() => MLX_MODEL_IMPLEMENTATIONS.select(cfg, forged)).toThrow(/bind a named implementation to an exact artifact/);
+    expect(() => resolveModelProfile(cfg, {
+      artifactFingerprint: exact.artifactFingerprint,
+      artifactProfiles: [{ ...exact, execution: { ...exact.execution, implementation: " " } }],
+    })).toThrow(/bind a named implementation to an exact artifact/);
   });
 });
 

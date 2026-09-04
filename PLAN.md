@@ -641,13 +641,13 @@ Landed so far:
 ## Interface-based engine refactor `[~]`
 
 Design and exit criteria: [engine architecture §12](docs/design/unified-engine-frontier-plan.md#12-interface-based-engine-refactor).
-Primary target: **Josh’s Qwen3.8-27B quants**; exact artifacts await identification.
+Primary target: **Josh’s Qwen3.8-27B quants**; unavailable artifacts defer target validation only.
 Goal: push speed/quality/size on Macs through replaceable graph/method/session
 contracts and aggressive quant-specific specialization. Interfaces must permit
 fused execution without extra copies, materialization, or synchronization.
 Branch: `refactor/interface-engine-v2`. R0–R10 follow the dependencies in §12.10.
 Toolchain, stop-aware checkpoint keys, queue/prefill cancellation, portable
-sessions, the text gateway bridge, and the initial MLX graph binding are implemented.
+sessions, the text bridge, MLX graph binding, and engine-owned implementation selection are implemented.
 R0 still owes the Qwen prefix-crash diagnosis and quiet-machine baseline;
 R1/R2 still owe full composition coverage and real replacement gates.
 

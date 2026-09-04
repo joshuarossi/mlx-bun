@@ -692,7 +692,7 @@ lone-request route (S3). S4 (land + post-merge verify) is the open box.
 
 ## 12. Interface-based engine refactor
 
-Design requested 2026-09-04. Implementation has not started. The R0–R10
+Design requested 2026-09-04. Initial implementation is recorded in §12.13. The R0–R10
 checkboxes live in PLAN.md under "Interface-based engine refactor". This
 section owns the contracts, migration details, and acceptance criteria.
 
@@ -705,14 +705,24 @@ laptop. Interface consistency is useful when it makes those gains easier to
 build, compare, compose, and ship. It is not an independent reason to accept
 slower execution or a larger working set.
 
-The current target is **Josh's designated Qwen3.8-27B quants**. Exact artifact
-paths/revisions must be established before choosing baselines or optimizing.
+The current target is **Josh's designated Qwen3.8-27B quants**. They are on a
+drive unavailable to this session. Artifact access is needed for target-specific
+numerical and performance validation; it does not block the refactor.
 The locally cached published flagship and TQ snapshots are not those targets
 (Josh clarified this on 2026-09-04); availability must not select the product
 baseline. Quant recipes and quality findings remain in [TurboQuant](turboquant.md),
 including rejected variants and raw-EOS regressions. Interfaces must preserve
 exact packing, rotation, per-layer precision, recurrent-state, and kernel
 choices. Other artifacts/families provide compatibility coverage only.
+
+A downloaded quant supplies weights, configuration, and tokenizer data. The
+engine owns the hyperoptimized implementations and the rules for identifying
+which quant each one supports. Resolve artifact identity and configuration at
+load time, select registered engine code, then retain that binding for execution.
+The quant does not supply a graph, kernel, method, plugin, or executable manifest.
+An unknown artifact may use a compatible family implementation. An exact
+declaration with missing code or incompatible configuration must fail explicitly.
+Sessions remain independent of the selected implementation.
 
 Aggressive specialization for a particular quantization is expected. A
 quant-specific layout, graph, fused kernel, cache scheme, compiled schedule,
@@ -1160,8 +1170,10 @@ cancellation with targeted tests. Diagnose the recorded Qwen cache-reuse crash
 before migrating its state implementation. Record exact revisions, existing
 support/refusal cells, public defaults, ABI/schema versions, and resource
 ownership. Capture quiet-machine baselines using existing bench tooling.
-CPU contract work may proceed while the model-specific crash investigation is
-pending; its affected state migration and default cutover remain blocked.
+Structural refactoring and model-free validation proceed while target artifacts,
+quiet hardware, or crash diagnosis are unavailable. Preserve existing numerical
+and state behavior; changing the affected state implementation or promoting a
+default still requires its relevant correctness and performance gates.
 Exit: fixes independently verified, baseline manifest available, missing
 machine/oracle cells explicitly listed. No unverified previous-review claim
 becomes a passing gate merely by entering this plan.
@@ -1409,8 +1421,30 @@ hidden positions before vocabulary projection. Serial `generate()` now uses
 that binding for ordinary forwards and head projection; existing compiled
 execution is retained. No tensor wrapper, device readback, or synchronization
 was introduced. The legacy descriptor is not a persistence identity. Typed
-media/tap/adapter contexts, complete state ABI validation, and real alternate
-graph registration remain R2 work.
+media/tap/adapter contexts, complete state ABI validation, and native alternate
+graph conformance remain R2 work.
+
+`src/model/implementation.ts` defines the backend-parameterized
+`ModelImplementation` construction port and immutable registration table.
+`ModelExecutionComposition.implementation` lets an exact engine-owned artifact
+profile name its code. Existing identity/config guards perform the matching;
+the registry does not introduce another artifact matcher. `src/model/factory.ts`
+now registers the existing resident constructors, including generated Gemma,
+and selects one before construction. `openModel` checks the binding before
+opening weights; callers can compose profiles and implementations through its
+options. `createModel` accepts a registry for already-open weights. No selection
+is added to the token loop, and no model file format changes.
+
+Unknown artifacts retain existing family selection. Missing implementations,
+graph/loader/loop mismatches, duplicate IDs, and inconsistent exact identities
+fail explicitly. Construction failures propagate without trying another graph.
+Model-free tests exercise the factory with a synthetic exact quant identity and
+an alternate constructor; this establishes selection, not numerical or speed
+claims. No registration pretends to identify Josh's inaccessible quants.
+This step covers resident graph construction. Colibri retains its existing
+streamed opener and refuses named overrides until its loader binding exists.
+The legacy runtime model union and method-specific paths still need the full
+R2/R6 binding migration before arbitrary implementations can replace them.
 
 Artifact-parameterized native smoke gate:
 `MLX_BUN_QWEN_QUANT_PATH=/path/to/our/artifact bun test tests/parity/qwen-quant-engine.test.ts`.
@@ -1418,8 +1452,8 @@ Run one artifact per process. Compatibility-only checks on the M1 Max 32 GB
 pass for the locally cached published `mjriii/Qwen3.8-27B` and
 `mjriii/Qwen3.8-27B-TQ`: direct-versus-bound logits, legacy-versus-session greedy
 output/cache coverage, and repeated recurrent-prefix borrowing. These are not
-Josh's current target quants. Target validation remains pending exact artifact
-identification. The test is a bounded smoke, not a full model oracle or the
+Josh's current target quants. Target validation awaits access to those artifacts;
+implementation continues independently. The test is a bounded smoke, not a full model oracle or the
 recorded turn-8 repro. Gemma compiled-decode checks are secondary coverage too.
 
 The session suite additionally covers final-only methods, bounded progress,
