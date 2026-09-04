@@ -638,6 +638,31 @@ Landed so far:
 - 2026-09-02 — Q3 full recipe passed (KL 0.1553 @ 3.55 bpw, MMLU 88, tGSM 48,
   rawGSM 44); `tq-repack-fakequant.ts` eval carrier.
 
+## Interface-based engine refactor `[ ]`
+
+Design and exit criteria: [engine architecture §12](docs/design/unified-engine-frontier-plan.md#12-interface-based-engine-refactor).
+Goal: push speed/quality/size on Macs through replaceable graph/method/session
+contracts and aggressive quant-specific specialization. Interfaces must permit
+fused execution without extra copies, materialization, or synchronization.
+Implementation has not started. R0–R10 are ordered by the dependencies in §12.10.
+
+- [ ] **R0** Fix/verify review findings; pin tools; freeze support, oracle and performance baselines.
+- [ ] **R1** Portable contracts and method-neutral session suite; legacy adapter and dependency gates.
+- [ ] **R2** Real graph/backend bindings; prove graph replacement and quant-specialized execution.
+- [ ] **R3** Explicit resource/state ownership, rollback facets, codecs and checkpoint identity.
+- [ ] **R4** One capability-aware execution plan, immutable configuration and preparation reservations.
+- [ ] **R5** Shared AR prefill/session execution; cancellation at every safe boundary.
+- [ ] **R6** Speculative, fill/grammar and diffusion implementations behind method interfaces.
+- [ ] **R7** Scheduler policy separated from native batching; preserve B=1 and dynamic-row behavior.
+- [ ] **R8** Client/task interfaces for applications; shared protocol types and async library bootstrap.
+- [ ] **R9** Adapt existing isolation/model pool; coordinate managed GPU resources and failure handling.
+- [ ] **R10** Full conformance/frontier scorecard, measured specialization selection, cutover and legacy removal.
+
+Refactor PRs may be frontier-neutral; v2 product promotion needs a measured
+speed/quality/size frontier advance and a representative local-user workload.
+Shared prefill belongs to R5; true B-wide prefill remains Phase 18 S1a. D6
+decisions feed R10. The linked engine document stays canonical as phases close.
+
 ## Serving architecture consolidation `[~]` (opened 2026-08-21)
 
 Canonical docs: [unified-engine-frontier-plan.md](docs/design/unified-engine-frontier-plan.md),
@@ -652,7 +677,7 @@ exact revisions pinned and mismatches refusing rather than downgrading.
 - [ ] **S4 — land and post-merge verify.** Rerun the real server/UI conversation
       on merged `main` (streaming, tool cards, context carryover, metrics,
       composer recovery). Exit when checks are green, no server is left running,
-      and this block plus its execution-seam design doc move to the archive.
+      and this block closes; retain the canonical engine doc for the v2 refactor.
 
 Landed so far:
 - 2026-08-21 — S0/S1: `CompletionExecutor` + immutable `RequestShape`;
@@ -725,10 +750,9 @@ instructions, and the hygiene gates that enforce every rule). Phase 4 is the
 code seams. The principle throughout: darlings are QUARANTINED and measured,
 not killed on taste.
 
-- [ ] **Unify the two prefill loops.** `src/generate.ts` (serial, chunked) and
-      `src/serve/batch-scheduler.ts` (merged solo-prefill) implement prefill
-      twice with different reduction orders — the direct cause of the batched
-      Gemma golden being demoted to a KL gate. Converges with Phase 18 S1a.
+- Shared prefill extraction is tracked in **Interface-based engine refactor R5**.
+  Preserving solo prefill semantics and building true B-wide prefill are separate
+  changes; the latter remains Phase 18 S1a with its own numerical gates.
 - Landed 2026-08-30: the request pipeline — `src/server.ts` 3,690 → 1,541
   lines. A request is data; each stage is one program with a declared input
   and output, composed in order: `new ChatRequest(body)` (validates) →
