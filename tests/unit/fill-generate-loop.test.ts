@@ -18,6 +18,7 @@ import { KVCache, type Cache } from "../../src/model/gemma4";
 import type { RuntimeModel } from "../../src/model/factory";
 import { MlxArray } from "../../src/mlx/array";
 import { configureRuntime } from "../../src/runtime-config";
+import { cloneKvCaches } from "../../src/kv-store";
 
 const VOCAB = 128;
 const EOS = 2;
@@ -205,6 +206,62 @@ describe("generate(): the fill append", () => {
     expect(stats.fill).toMatchObject({
       verifyEvents: 0, verifyAccepted: 0, verifyRejected: 0, checkpointMs: 0,
     });
+  });
+});
+
+describe("generate(): durable decode resume", () => {
+  test("continues from a cache-covered prefix and its already-sampled token", async () => {
+    let saved: {
+      cacheTokens: number[];
+      caches: Cache[];
+      generatedTokens: number;
+      pendingToken: number;
+    } | null = null;
+    const before: number[] = [];
+    const interrupted = generate(
+      new StubModel(VERIFY_SCRIPT) as unknown as RuntimeModel,
+      PROMPT,
+      {
+        temperature: 0,
+        maxTokens: 10,
+        checkpointEveryTokens: 2,
+        onDecodeCheckpoint: (state) => {
+          saved = { ...state, cacheTokens: [...state.cacheTokens], caches: cloneKvCaches(state.caches) };
+          throw new Error("simulated process interruption after durable write");
+        },
+      },
+    );
+    await expect(async () => {
+      for await (const token of interrupted) before.push(token.token);
+    }).toThrow("simulated process interruption");
+    expect(before).toEqual([TRIGGER, V0]);
+    expect(saved).not.toBeNull();
+
+    const checkpoint = saved!;
+    const resumed = generate(
+      new StubModel(VERIFY_SCRIPT) as unknown as RuntimeModel,
+      checkpoint.cacheTokens,
+      {
+        temperature: 0,
+        maxTokens: 10,
+        cache: checkpoint.caches,
+        initialPendingToken: checkpoint.pendingToken,
+        initialGeneratedTokens: checkpoint.generatedTokens,
+        originalPromptTokens: PROMPT.length,
+      },
+    );
+    const after: number[] = [];
+    for await (const token of resumed) after.push(token.token);
+
+    expect([...before, ...after]).toEqual([TRIGGER, V0, V1, V2, AFTER]);
+    expect(resumed.stats).toMatchObject({
+      promptTokens: PROMPT.length,
+      generatedTokens: 6,
+    });
+    expect(resumed.stats!.cacheTokens).toEqual([
+      ...PROMPT, TRIGGER, V0, V1, V2, AFTER, EOS,
+    ]);
+    for (const cache of checkpoint.caches) cache.dispose();
   });
 });
 

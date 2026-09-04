@@ -121,6 +121,21 @@ export interface KvSaveMeta {
   ns?: string;
   /** sha256 of tokenizer.json: identical ids must mean identical text. */
   tokenizerHash?: string;
+  /** In-flight generation state. The serialized caches cover `tokens`;
+   *  pendingToken was sampled from that state but has not been emitted. */
+  generationCheckpoint?: {
+    key: string;
+    cacheNs: string;
+    originalPromptTokens: number;
+    generatedTokens: number;
+    pendingToken: number;
+    /** Actual sampler seed, including a server-generated default. Required to
+     *  continue the random stream exactly after a restart. */
+    seed: number;
+    /** True when `seed` was part of the client request rather than generated
+     *  by the server. */
+    seedWasExplicit: boolean;
+  };
 }
 
 export interface KvFileHeader extends KvSaveMeta {

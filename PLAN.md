@@ -428,6 +428,26 @@ on unified memory; two ideas survive the port. Canonical docs on landing:
       measured acceptance ≥ break-even for γ=2 on a quiet box, or the track
       is dropped with the numbers recorded.
 
+## Phase: resumable long-agent generation `[~]` (opened 2026-09-03)
+
+The 27B Kanban eval runs for hours, longer than an attached tool session and
+long enough that a laptop shutdown should not discard the decode. The engine
+now snapshots the cache-covered emitted prefix plus the already-sampled next
+token. This supports Qwen's untrimmable recurrent state without recomputation.
+
+- [x] Model-loop resume preserves the uninterrupted token sequence and sampler
+      step; original prompt/completion accounting survives replay.
+- [x] SSD checkpoint is atomic, restart-scannable, isolated from normal prompt
+      lookup, newest-only, and removed on normal completion.
+- [x] Public opt-in surface: `--generation-checkpoint N`, requiring
+      `--ssd-cache` and `--batch 1`; unsupported stateful compositions stay off.
+- [ ] Real 27B gate: interrupt after a durable checkpoint, restart server and
+      Pi with the identical request, confirm replay + continuation, then record
+      checkpoint size and stall on the M1 Max.
+- **Exit criterion:** the Kanban task completes across a real process restart
+  with no output divergence before/after the checkpoint; the persisted file
+  fits under the configured SSD cap and the measured checkpoint tax is stated.
+
 ## Phase 20 — Expert offload: single-user MoE residency `[~]` (2026-06-14)
 
 Single-user task locality makes per-task expert residency viable where a

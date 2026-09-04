@@ -123,6 +123,7 @@ export function planRequest(input: RequestPlanInput): PlanRequestResult {
 
   const options = { ...input.options };
   options.maxTokens = Math.min(input.requestedMaxTokens, available);
+  options.seedWasExplicit = input.userSeed;
   if (input.adapterIds.length) options.adapters = [...input.adapterIds];
   const captureLogprobs = !input.stream && (input.wantLogprobs || input.topLogprobs > 0);
   if (captureLogprobs) {

@@ -69,6 +69,7 @@ oracle. See [Fidelity tiers](#fidelity-tiers-and-the-decode-route---l1----l2).
 | `--ssd-cache-max` | GB (binary GiB, min 1) | `32` | both | SSD tier byte cap; oldest-mtime entries are evicted at the cap. Warns and is ignored without `--ssd-cache`. |
 | `--ssd-cache-verify` | (bool) | off | both | Verify every tensor hash on restore (reads all bytes eagerly, defeating lazy fault-in) — integrity paranoia only; the header hash is always verified. Warns and is ignored without `--ssd-cache`. |
 | `--ssd-demote-idle` | seconds | `300` with `--ssd-cache`, else off | both | Prompt-cache entries unused this long spill to the SSD tier and free their GPU memory; the next hit restores them. Swept only when the engine is fully idle. `0` disables. Warns and is ignored without `--ssd-cache`. |
+| `--generation-checkpoint` | output tokens | off | serial | Atomically snapshots an in-flight generation every N emitted tokens. Repeating the identical request after a restart replays the saved assistant prefix and continues from its already-sampled next token. Requires `--ssd-cache` and `--batch 1`; completed generations remove their checkpoint. |
 
 ### Runtime isolation
 
@@ -528,7 +529,7 @@ Everything mlx-bun serves, with its default, lane, fidelity tier, and knob.
 | OpenAI Responses shim (`/v1/responses`) | on | both | — | — |
 | Continuous batching (mlx-lm parity at the same B) | on, cap 8 | batch | L1 | `--batch <n>` (`1` pins serial) |
 | Prompt cache (prefix KV reuse) | on, 8 GiB | both | — | `--prompt-cache <GB>` (`0` = off) |
-| SSD KV cold tier (survives eviction + restarts; GLM compressed MLA/DSA state included) | off | both | — | `--ssd-cache <dir>` (+ `--ssd-cache-max`, `--ssd-cache-verify`, `--ssd-demote-idle`) |
+| SSD KV cold tier (survives eviction + restarts; GLM compressed MLA/DSA state included) | off | both | — | `--ssd-cache <dir>` (+ `--ssd-cache-max`, `--ssd-cache-verify`, `--ssd-demote-idle`, `--generation-checkpoint`) |
 | Runtime isolation (crash-isolated engine child behind a proxy parent) | off | both | — | `--isolate` |
 | Model pool (LRU-capped resident engines under `--isolate`) | 1 | both | — | `--model-pool <n>` |
 | Mixed-precision KV (`kv_config.json`, optiq's scheme) | off | serial + batch (per-layer configs batch) | L2 | `--kv-quant config`, `--l2` |

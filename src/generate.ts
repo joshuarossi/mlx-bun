@@ -50,6 +50,10 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   maxTokens?: number;
   eosTokenIds?: number[];
   prefillChunkSize?: number;
+  /** Whether the request supplied its seed explicitly. Durable generation
+   *  checkpoints use this to distinguish a reproducible user policy from the
+   *  server-generated seed that must be recovered from checkpoint metadata. */
+  seedWasExplicit?: boolean;
   /** Fired once during prefill, at `snapshotAt` tokens (default: the full
    *  prompt) and BEFORE any further KV is written — the one moment the
    *  caches hold exactly that prefix (post-wrap rings can't be rewound
@@ -61,6 +65,25 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
    *  there would make the entry untrimmable-and-divergent). Prefill is
    *  split at this index when it falls mid-prompt. */
   snapshotAt?: number;
+  /** Resume an interrupted autoregressive generation from a durable KV
+   *  checkpoint. `cache` must cover every token in `promptTokens` exactly;
+   *  `initialPendingToken` is the already-sampled next token, so no cache
+   *  rewind is required (important for recurrent/untrimmable layers). */
+  initialPendingToken?: number;
+  /** Number of completion tokens already emitted before this resumed run. */
+  initialGeneratedTokens?: number;
+  /** Original request prompt length used for protocol usage accounting when
+   *  `promptTokens` also contains replayed completion tokens. */
+  originalPromptTokens?: number;
+  /** Periodic, safe decode-boundary checkpoint hook. The cache covers
+   *  `cacheTokens`; `pendingToken` has been sampled but not emitted. */
+  checkpointEveryTokens?: number;
+  onDecodeCheckpoint?: (state: {
+    cacheTokens: number[];
+    caches: Cache[];
+    generatedTokens: number;
+    pendingToken: number;
+  }) => void | Promise<void>;
   /** Pre-warmed KV caches (e.g. from the prompt cache). cache[0].offset
    *  prompt tokens are treated as already prefilled; only the suffix is
    *  forwarded. Caller keeps ownership — generate() will not dispose. */
@@ -679,9 +702,13 @@ async function* generateInner(
   const ownsCache = !options.cache;
   const cache = options.cache ?? model.makeCache();
   const cachedTokens = cache[0]!.offset;
-  if (cachedTokens >= promptTokens.length)
+  const resuming = options.initialPendingToken !== undefined;
+  if ((!resuming && cachedTokens >= promptTokens.length) ||
+      (resuming && cachedTokens !== promptTokens.length))
     throw new Error(
-      `pre-warmed cache (${cachedTokens} tokens) must be a strict prefix of the prompt (${promptTokens.length})`,
+      resuming
+        ? `resumed cache (${cachedTokens} tokens) must exactly cover the resume prefix (${promptTokens.length})`
+        : `pre-warmed cache (${cachedTokens} tokens) must be a strict prefix of the prompt (${promptTokens.length})`,
     );
   // Paged KV (default off): swap fresh full-attention caches for paged
   // storage BEFORE prefill. Capacity is exact — the deepest write lands at
@@ -755,7 +782,7 @@ async function* generateInner(
   let prefillMs = 0;
   let tDecode = 0;
   let decodeMs = 0;
-  let generated = 0;
+  let generated = options.initialGeneratedTokens ?? 0;
   const forwarded: number[] = [];
   let pending: MlxArray | null = null;
   let nextPending: MlxArray | null = null;
@@ -765,12 +792,14 @@ async function* generateInner(
   let threw = false;
   let closeTokenZero: (() => void) | undefined;
   const makeStats = (): GenerateStats => ({
-    promptTokens: promptTokens.length,
-    cachedTokens,
+    promptTokens: options.originalPromptTokens ?? promptTokens.length,
+    cachedTokens: Math.min(cachedTokens, options.originalPromptTokens ?? promptTokens.length),
     generatedTokens: generated,
     prefillMs,
     decodeMs,
-    prefillTps: ((promptTokens.length - cachedTokens) / prefillMs) * 1000,
+    prefillTps: prefillMs > 0
+      ? ((promptTokens.length - cachedTokens) / prefillMs) * 1000
+      : 0,
     decodeTps: (generated / decodeMs) * 1000,
     cacheTokens: [...promptTokens, ...forwarded],
     ...(fillOn ? { fill: options.fill!.stats } : {}),
@@ -960,7 +989,23 @@ async function* generateInner(
     return ids.slice(0, accepted);
   };
 
+  let nextCheckpoint = options.checkpointEveryTokens && options.checkpointEveryTokens > 0
+    ? (Math.floor(generated / options.checkpointEveryTokens) + 1) * options.checkpointEveryTokens
+    : Number.POSITIVE_INFINITY;
+  let tPrefill = performance.now();
+
   try {
+    if (resuming) {
+      // The checkpoint cache already covers the complete replay prefix. Its
+      // pending token was sampled from that exact state before the snapshot,
+      // so resume starts directly at the decode loop without another forward.
+      if (needsTokenHistory) stepSampler.seedHistory(promptTokens);
+      pending = ops.fromInt32([options.initialPendingToken!], [1]);
+      ops.asyncEvalAll([pending]);
+      prefillMs = 0;
+      closePrefill?.();
+      tDecode = performance.now();
+    } else {
     // ---- prefill ----
     const closeInitialKv = diagnostics.trace?.begin("prefill.kv_maintenance", {
       mechanism: diagnostics.mechanism ?? "serial",
@@ -968,7 +1013,7 @@ async function* generateInner(
     });
     maybeQuantizeKv(cache, options);
     closeInitialKv?.();
-    const tPrefill = performance.now();
+    tPrefill = performance.now();
     let h0: MlxArray;
     if (options.promptEmbeddings) {
       if (cachedTokens !== 0)
@@ -1110,6 +1155,7 @@ async function* generateInner(
     // tok/s measure the same quantity. The boundary cost is real and
     // scales with prompt length; it belongs to "having prefilled".
     ops.asyncEvalAll([pending, ...stepExtrasArrays(pendingExtras)]);
+    }
 
     // ---- decode (pipelined) ----
     // Compiled decode (docs/archive/investigations/optimization_plan.md Phase A): replay the per-step
@@ -1341,6 +1387,21 @@ async function* generateInner(
           nextPending = null;
           pendingExtras = nextExtras;
           nextExtras = null;
+        }
+        if (
+          pending !== null &&
+          options.onDecodeCheckpoint &&
+          generated >= nextCheckpoint
+        ) {
+          const pendingToken = ops.itemUint32(pending);
+          await options.onDecodeCheckpoint({
+            cacheTokens: [...promptTokens, ...forwarded],
+            caches: cache,
+            generatedTokens: generated,
+            pendingToken,
+          });
+          const every = options.checkpointEveryTokens!;
+          while (nextCheckpoint <= generated) nextCheckpoint += every;
         }
       }
     }

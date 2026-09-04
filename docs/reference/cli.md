@@ -67,7 +67,7 @@ semantics, and which combinations compose live in
 | Group | Flags |
 |---|---|
 | Network | `--host`, `--port`, `--no-open`, `--allow-private-media` |
-| Memory & caches | `--memory-budget`, `--kv-budget`, `--prompt-cache`, `--ssd-cache`, `--ssd-cache-max`, `--ssd-cache-verify`, `--ssd-demote-idle` |
+| Memory & caches | `--memory-budget`, `--kv-budget`, `--prompt-cache`, `--ssd-cache`, `--ssd-cache-max`, `--ssd-cache-verify`, `--ssd-demote-idle`, `--generation-checkpoint` |
 | Process model | `--isolate`, `--model-pool`, `--unix` (internal — the engine half of `--isolate`) |
 | Scheduling | `--batch` (`--decode-concurrency` accepted as the mlx_lm.server alias) |
 | KV cache | `--kv-quant`, `--paged-kv`, `--paged-kv-block-size` |

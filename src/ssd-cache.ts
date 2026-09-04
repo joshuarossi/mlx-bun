@@ -39,6 +39,7 @@ export interface SsdIndexEntry {
    *  over a shorter usable one (the 2026-07-06 restart-0 defect: the
    *  [prompt+gen] file always won, always got rejected after restore). */
   trimmable: boolean;
+  generationCheckpoint?: NonNullable<KvSaveMeta["generationCheckpoint"]>;
 }
 
 export interface SsdStoreOptions {
@@ -125,6 +126,9 @@ export class SsdCacheStore {
           this.#index.push({
             path, ns: h.ns ?? "", tokens: h.tokens, bytes: st.size, mtimeMs: st.mtimeMs,
             trimmable: cacheHeadersTrimmable(h.caches),
+            ...(h.generationCheckpoint
+              ? { generationCheckpoint: h.generationCheckpoint }
+              : {}),
           });
         } catch {
           try { rmSync(path, { force: true }); } catch {}
@@ -225,6 +229,57 @@ export class SsdCacheStore {
     }
   }
 
+  /** Longest durable in-flight generation for an identical request. The
+   *  checkpoint namespace is separate from the ordinary prompt-cache tier,
+   *  so incomplete assistant output can never seed an unrelated prefill. */
+  findGenerationCheckpoint(
+    prompt: number[], key: string, cacheNs = "",
+  ): SsdIndexEntry | null {
+    let best: SsdIndexEntry | null = null;
+    for (const entry of this.#index) {
+      const checkpoint = entry.generationCheckpoint;
+      if (!checkpoint || checkpoint.key !== key || checkpoint.cacheNs !== cacheNs)
+        continue;
+      if (checkpoint.originalPromptTokens !== prompt.length) continue;
+      if (entry.tokens.length <= prompt.length) continue;
+      if (commonPrefixLength(entry.tokens, prompt) !== prompt.length) continue;
+      if (!best || entry.tokens.length > best.tokens.length) best = entry;
+    }
+    return best;
+  }
+
+  /** Persist one in-flight generation atomically. A completed newer
+   *  checkpoint supersedes older checkpoints for the same request only after
+   *  its rename succeeds, so a crash during a write leaves the prior point. */
+  async storeGenerationCheckpoint(
+    tokens: number[], caches: Cache[], checkpoint: NonNullable<KvSaveMeta["generationCheckpoint"]>,
+  ): Promise<boolean> {
+    const ns = `__generation_checkpoint__:${checkpoint.key}`;
+    const dir = join(this.#root, nsHash(ns));
+    const path = join(dir, `${randomUUID()}.mlxkv`);
+    try {
+      mkdirSync(dir, { recursive: true });
+      await saveKvCacheAsync(path, tokens, caches, {
+        ...this.#meta(ns), generationCheckpoint: checkpoint,
+      });
+      const stored = this.#indexStored(path, tokens, caches, ns, checkpoint);
+      if (stored) {
+        for (const entry of [...this.#index]) {
+          if (entry.path === path) continue;
+          if (entry.generationCheckpoint?.key === checkpoint.key) this.remove(entry.path);
+        }
+      }
+      return stored;
+    } catch (err) {
+      return this.#storeFailed(path, err);
+    }
+  }
+
+  removeGenerationCheckpoints(key: string): void {
+    for (const entry of [...this.#index])
+      if (entry.generationCheckpoint?.key === key) this.remove(entry.path);
+  }
+
   #meta(ns: string): KvSaveMeta {
     return {
       modelId: this.#opts.modelId,
@@ -234,7 +289,10 @@ export class SsdCacheStore {
     };
   }
 
-  #indexStored(path: string, tokens: number[], caches: Cache[], ns: string): boolean {
+  #indexStored(
+    path: string, tokens: number[], caches: Cache[], ns: string,
+    generationCheckpoint?: NonNullable<KvSaveMeta["generationCheckpoint"]>,
+  ): boolean {
     const st = statSync(path);
     if (st.size > this.#opts.maxBytes) {
       rmSync(path, { force: true });
@@ -260,7 +318,10 @@ export class SsdCacheStore {
         if (commonPrefixLength(e.tokens, tokens) === e.tokens.length) this.remove(e.path);
       }
     }
-    this.#index.push({ path, ns, tokens, bytes: st.size, mtimeMs: Date.now(), trimmable });
+    this.#index.push({
+      path, ns, tokens, bytes: st.size, mtimeMs: Date.now(), trimmable,
+      ...(generationCheckpoint ? { generationCheckpoint } : {}),
+    });
     this.stats.spills++;
     this.evictToCap();
     return true;

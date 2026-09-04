@@ -110,6 +110,11 @@ const SERVER_FLAGS = `Server options:
                             [default: 300 when --ssd-cache is on]
   --ssd-cache-verify        Verify tensor hashes on every restore (reads all
                             bytes eagerly — integrity paranoia only)
+  --generation-checkpoint <tokens>
+                            Snapshot an in-flight serial generation to the SSD
+                            cache every N emitted tokens. Repeating the same
+                            request after restart replays and resumes it.
+                            Requires --ssd-cache and --batch 1.
   --isolate                 Run the inference engine as a CHILD process and
                             keep this process a pure UI/API proxy — the UI
                             stays instant under GPU load and survives engine
@@ -955,9 +960,18 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
     if (flag("ssd-cache-verify")) serverOptions.ssdCacheVerify = true;
     const demoteRaw = opt("ssd-demote-idle");
     if (demoteRaw !== null) serverOptions.ssdDemoteIdleSec = Math.max(0, Number(demoteRaw));
+    const checkpointRaw = opt("generation-checkpoint");
+    if (checkpointRaw !== null) {
+      const n = Number(checkpointRaw);
+      if (!Number.isInteger(n) || n < 1) {
+        console.error(`--generation-checkpoint expects an integer >= 1 (got "${checkpointRaw}")`);
+        process.exit(1);
+      }
+      serverOptions.generationCheckpointTokens = n;
+    }
   } else {
     // Refuse-loudly house rule: sub-flags of an absent tier must not vanish.
-    for (const f of ["ssd-cache-max", "ssd-demote-idle"] as const)
+    for (const f of ["ssd-cache-max", "ssd-demote-idle", "generation-checkpoint"] as const)
       if (opt(f) !== null) console.warn(`--${f} has no effect without --ssd-cache — ignored`);
     if (flag("ssd-cache-verify"))
       console.warn("--ssd-cache-verify has no effect without --ssd-cache — ignored");
@@ -2079,7 +2093,7 @@ switch (cmd) {
     // already run their own pi connect it with `mlx-bun harness pi`.
     const OURS_VAL = new Set([
       "--query", "-q", "--model", "--port", "--host", "--memory-budget", "--kv-budget", "--prompt-cache",
-      "--ssd-cache", "--ssd-cache-max", "--ssd-demote-idle", "--kv-quant", "--unix",
+      "--ssd-cache", "--ssd-cache-max", "--ssd-demote-idle", "--generation-checkpoint", "--kv-quant", "--unix",
       "--batch", "--decode-concurrency", "--adapter", "--adapter-path",
       "--draft-model", "--num-draft-tokens", "--draft-kind", "--ngram-max", "--ngram-min",
       "--compiled-decode", "--compiled-activations", "--fused-sdpa", "--thinking",

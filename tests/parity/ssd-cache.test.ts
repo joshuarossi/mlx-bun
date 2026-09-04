@@ -70,6 +70,47 @@ describe("SsdCacheStore", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("in-flight generation checkpoint survives scan and is isolated from prompt lookup", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ssd-resume-"));
+    try {
+      const prompt = [1, 2, 3];
+      const tokens = [...prompt, 7, 8];
+      const caches = mkCaches(tokens.length);
+      expect(await new SsdCacheStore(OPTS(dir)).storeGenerationCheckpoint(
+        tokens,
+        caches,
+        {
+          key: "request-a",
+          cacheNs: "",
+          originalPromptTokens: prompt.length,
+          generatedTokens: 2,
+          pendingToken: 9,
+          seed: 42,
+          seedWasExplicit: false,
+        },
+      )).toBe(true);
+      for (const cache of caches) cache.dispose();
+
+      const restarted = new SsdCacheStore(OPTS(dir));
+      expect(restarted.scan()).toBe(1);
+      expect(restarted.find([...tokens, 10], "")).toBeNull();
+      const hit = restarted.findGenerationCheckpoint(prompt, "request-a");
+      expect(hit?.generationCheckpoint).toMatchObject({
+        generatedTokens: 2,
+        pendingToken: 9,
+        seed: 42,
+        seedWasExplicit: false,
+      });
+      const loaded = restarted.restore(hit!, model);
+      expect(loaded?.tokens).toEqual(tokens);
+      for (const cache of loaded!.caches) cache.dispose();
+      restarted.removeGenerationCheckpoints("request-a");
+      expect(restarted.entries).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("find: longest usable prefix, ns isolation, no partial-entry hits", () => {
     const dir = mkdtempSync(join(tmpdir(), "ssd-"));
     const s = new SsdCacheStore(OPTS(dir));

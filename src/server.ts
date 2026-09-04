@@ -62,6 +62,7 @@ import {
   withModelWiredLimit,
 } from "./generate";
 import { cloneKvCaches, SpillQueue } from "./kv-store";
+import type { Cache } from "./model/gemma4";
 import { resolveKvScheme } from "./kv-scheme";
 import { runtimeValue } from "./runtime-config";
 import { TURBOQUANT_HEAD_DIMS } from "./mlx/turboquant-tables";
@@ -243,6 +244,11 @@ export interface ServerOptions {
   /** Verify every tensor hash on restore (`--ssd-cache-verify`) — reads all
    *  bytes eagerly, defeating lazy fault-in; integrity paranoia only. */
   ssdCacheVerify?: boolean;
+  /** Periodically persist an in-flight serial generation every N emitted
+   *  tokens. An identical request after restart replays the saved assistant
+   *  prefix and continues from the already-sampled next token. Requires the
+   *  SSD cache and --batch 1. */
+  generationCheckpointTokens?: number;
 }
 
 interface ServerLifecycle {
@@ -361,6 +367,50 @@ function curveJunk(s: string): boolean {
   return nonLatin >= 0.02 || /�/.test(s) || /<unused\d+>/.test(s);
 }
 
+/** Stable identity for an exactly resumable generation. The prompt already
+ * includes rendered messages and tool schemas; the remaining fields cover
+ * every sampling policy that can change the continuation. */
+export function generationCheckpointKey(
+  promptIds: number[], options: GenerateOptions, cacheNs = "",
+): string {
+  const policy = {
+    cacheNs,
+    promptIds,
+    maxTokens: options.maxTokens,
+    eosTokenIds: options.eosTokenIds,
+    temperature: options.temperature,
+    topP: options.topP,
+    topK: options.topK,
+    minP: options.minP,
+    minTokensToKeep: options.minTokensToKeep,
+    xtcProbability: options.xtcProbability,
+    xtcThreshold: options.xtcThreshold,
+    xtcSpecialTokens: options.xtcSpecialTokens,
+    // A missing client seed means "fresh randomness" for a new request, but
+    // an identical RETRY must find the durable checkpoint and restore the
+    // original random stream. Keep the generated seed out of request identity;
+    // it travels in checkpoint metadata instead. Explicit seeds remain part of
+    // the policy, so changing one cannot select an incompatible checkpoint.
+    seedMode: options.seedWasExplicit ? "explicit" : "server-default",
+    seed: options.seedWasExplicit ? options.seed : undefined,
+    hlg: options.hlg,
+    curve: options.curve,
+    logitBias: options.logitBias,
+    repetitionPenalty: options.repetitionPenalty,
+    repetitionContextSize: options.repetitionContextSize,
+    presencePenalty: options.presencePenalty,
+    presenceContextSize: options.presenceContextSize,
+    frequencyPenalty: options.frequencyPenalty,
+    frequencyContextSize: options.frequencyContextSize,
+    kvBits: options.kvBits,
+    kvGroupSize: options.kvGroupSize,
+    quantizedKvStart: options.quantizedKvStart,
+    kvConfig: options.kvConfig,
+    turboQuant: options.turboQuant,
+  };
+  return Bun.hash(JSON.stringify(policy)).toString(16);
+}
+
 export function createServer(
   ctx: ServerContext, port = 0, serverOptions: ServerOptions = {},
 ): Server<unknown> {
@@ -380,6 +430,15 @@ export function createServer(
   // agentic sub-agent workload. --batch 1 pins strict serial for
   // arrival-independent numerics. 8 = optiq's Mac-safe concurrency.
   const batch = Math.max(1, Math.floor(serverOptions.batch ?? 8));
+  if (serverOptions.generationCheckpointTokens !== undefined) {
+    if (!Number.isInteger(serverOptions.generationCheckpointTokens) ||
+        serverOptions.generationCheckpointTokens < 1)
+      throw new Error("--generation-checkpoint expects a positive integer token interval");
+    if (!serverOptions.ssdCacheDir)
+      throw new Error("--generation-checkpoint requires --ssd-cache <dir>");
+    if (batch !== 1)
+      throw new Error("--generation-checkpoint requires --batch 1 (in-flight resume is serial-only)");
+  }
   const defaultGeneratedTokens =
     serverOptions.defaultMaxTokens ?? ctx.glmMemoryPlan?.maxGenerationTokens;
 
@@ -647,15 +706,35 @@ export function createServer(
     // PagedKVCache has no cloneKvCaches/restore path — the vision
     // precedent). Fresh caches per request, disposed on completion.
     const skipPromptCache = Boolean(vision || pagedKv);
+    const checkpointEvery = serverOptions.generationCheckpointTokens;
+    const checkpointEligible = Boolean(
+      checkpointEvery && ssdStore && !skipPromptCache &&
+      !options.grammar && !options.fill && !options.logprobs &&
+      !(options.topLogprobs && options.topLogprobs > 0),
+    );
+    const checkpointKey = checkpointEligible
+      ? generationCheckpointKey(promptIds, options, cacheNs)
+      : null;
     // Both tiers in one call (Layer 0): take() prefers a strictly-longer
     // SSD prefix, restores it zero-copy, and trims — see PromptCache.take.
     const closeCacheLookup = trace?.begin("cache.lookup_restore", {
       mechanism: "serial",
       bypassed: skipPromptCache,
     });
-    const entry = skipPromptCache ? null : promptCache.take(promptIds, cacheNs);
+    const checkpointEntry = checkpointKey
+      ? ssdStore!.findGenerationCheckpoint(promptIds, checkpointKey, cacheNs)
+      : null;
+    const restoredCheckpoint = checkpointEntry
+      ? ssdStore!.restore(checkpointEntry, ctx.model)
+      : null;
+    const checkpoint = restoredCheckpoint?.header.generationCheckpoint;
+    const resuming = Boolean(restoredCheckpoint && checkpoint);
+    const generationPromptIds = resuming ? restoredCheckpoint!.tokens : promptIds;
+    const entry = skipPromptCache || resuming
+      ? null
+      : promptCache.take(promptIds, cacheNs);
     closeCacheLookup?.();
-    const caches = entry?.caches ?? ctx.model.makeCache();
+    const caches = restoredCheckpoint?.caches ?? entry?.caches ?? ctx.model.makeCache();
     // Prompt-boundary snapshot (the multi-turn agent fix, 2026-07-04): the
     // prompt+gen entry put() below is UNTRIMMABLE at context > sliding
     // window (wrapped rings) and under quantized KV (mid-group), so any
@@ -676,14 +755,63 @@ export function createServer(
     // past the cached prefix; the clone is zero-copy views, so re-putting
     // is ~free.
     const snapshotBoundary =
-      !skipPromptCache && boundary >= 256 && boundary > (entry?.tokens.length ?? 0);
+      !skipPromptCache && !resuming && boundary >= 256 &&
+      boundary > (entry?.tokens.length ?? 0);
     try {
       if (vision?.mrope && ctx.model instanceof Qwen35Model)
         ctx.model.mrope = vision.mrope;
-      const gen = generate(ctx.model, promptIds, {
+      if (resuming) {
+        const replay = generationPromptIds.slice(promptIds.length);
+        console.log(
+          `[generation-checkpoint] resuming ${checkpointKey} at ` +
+          `${replay.length} emitted tokens`,
+        );
+        for (const token of replay) {
+          if ((await onToken(token)) === false)
+            throw new Error("saved generation prefix triggered a terminal stop while replaying");
+        }
+      }
+      const gen = generate(ctx.model, generationPromptIds, {
         ...options,
+        ...(resuming ? { seed: checkpoint!.seed } : {}),
         pagedKv, // request-scoped (undefined strips the server-wide flag)
         cache: caches,
+        ...(resuming
+          ? {
+              initialPendingToken: checkpoint!.pendingToken,
+              initialGeneratedTokens: checkpoint!.generatedTokens,
+              originalPromptTokens: checkpoint!.originalPromptTokens,
+            }
+          : {}),
+        ...(checkpointEligible
+          ? {
+              checkpointEveryTokens: checkpointEvery,
+              onDecodeCheckpoint: async (state: {
+                cacheTokens: number[];
+                caches: Cache[];
+                generatedTokens: number;
+                pendingToken: number;
+              }) => {
+                const stored = await ssdStore!.storeGenerationCheckpoint(
+                  state.cacheTokens,
+                  state.caches,
+                  {
+                    key: checkpointKey!,
+                    cacheNs,
+                    originalPromptTokens: promptIds.length,
+                    generatedTokens: state.generatedTokens,
+                    pendingToken: state.pendingToken,
+                    seed: options.seed ?? 0,
+                    seedWasExplicit: options.seedWasExplicit === true,
+                  },
+                );
+                if (stored)
+                  console.log(
+                    `[generation-checkpoint] saved ${state.generatedTokens} emitted tokens`,
+                  );
+              },
+            }
+          : {}),
         ...(snapshotBoundary
           ? {
               // snapshotAt MUST travel with the hook: generate() splits the
@@ -713,6 +841,7 @@ export function createServer(
         if ((await onToken(t.token, t.logprobs)) === false) break;
       }
       const s = gen.stats!; // set on completion AND on early break
+      if (checkpointKey) ssdStore!.removeGenerationCheckpoints(checkpointKey);
       if (skipPromptCache) {
         // Vision and paged-KV requests own their caches for exactly one
         // generation (paged: v1 non-goal — no PromptCache integration).

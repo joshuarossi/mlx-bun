@@ -42,8 +42,11 @@ its KV encodes:
 The prompt cache tiers over the SSD store *inside* `take()` (structural
 `ColdTier` interface), so every consumer (serial lane, batch scheduler
 joiners, `/admin/drain`) gets both tiers through the same `take()`/`put()`
-calls. Nothing runs on the token loop: spill/persist happen at request
-boundaries, evictions, idle sweeps, and explicit flushes. Paged KV
+calls. The default path does no persistence work on the token loop:
+spill/persist happen at request boundaries, evictions, idle sweeps, and
+explicit flushes. The opt-in `--generation-checkpoint N` path deliberately
+pauses at coarse, safe decode boundaries to atomically persist an in-flight
+generation (section 5.7). Paged KV
 (section 6) is a *layout* choice for the live tier and, in v1, bypasses the
 other two.
 
@@ -318,6 +321,11 @@ full prefill (GEMV-vs-GEMM reduction order). Both tiers share it.
   error). Sub-flags without `--ssd-cache` warn and are ignored.
   `--memory-budget` is unchanged (admission already assumes worst-case
   bf16). `--paged-kv` warns that the tier sees nothing (section 6).
+- **D6 — In-flight resume is explicit.** `--generation-checkpoint <tokens>`
+  requires `--ssd-cache` and `--batch 1`. It is off by default because each
+  checkpoint synchronizes and writes the live KV, trading decode speed and
+  SSD writes for bounded lost work. An identical request resumes; a changed
+  prompt or sampling policy starts normally.
 
 ### 5.2 Restore is a streamed copy (supersedes the original zero-copy plan)
 
@@ -423,7 +431,31 @@ draining active requests, and awaiting the same flush, bounded by
 `failed_spills`, `longest_durable_prefix_tokens`. The standard restart
 benchmark calls the endpoint instead of sleeping.
 
-### 5.7 Invalidation
+### 5.7 In-flight generation checkpoints
+
+At every configured token interval, `generate()` reaches a boundary where
+the live caches cover every emitted token and the next token has already been
+sampled but not emitted. The SSD entry stores both pieces atomically:
+
+- the normal token list and cache tensors encode the emitted prefix;
+- `generationCheckpoint` in the KV header records the request key, original
+  prompt length, emitted-token count, adapter namespace, and pending token.
+
+Saving the pending token is what makes the mechanism work for Qwen hybrid
+models: recurrent `SSMCache` state cannot trim one token to recompute logits.
+After restart, an identical request restores the full cache, replays the saved
+tokens through the normal completion sink so the client receives one ordinary
+assistant response, then continues directly from the pending token with the
+original sampler step and history. The request key includes rendered prompt
+IDs and every sampling/KV policy field. Grammar, token-fill, media, paged KV,
+and logprob requests are not checkpointed in v1 because they carry additional
+state or response data that cannot yet be reconstructed by token replay.
+
+Only the newest successful checkpoint for a request is retained. The old file
+remains valid until the new file's fsync+rename completes; a crash mid-write
+therefore loses at most one interval. Normal completion removes the checkpoint.
+
+### 5.8 Invalidation
 
 Compatibility key = `configFingerprint(config)` + `KvScheme.cacheKey` +
 tokenizer hash (`Bun.hash(tokenizer.json)`) + adapter ns; all enforced on
@@ -432,7 +464,7 @@ matched prefix (safe). GLM compressed caches additionally validate
 geometry (`kvLoraRank`, `ropeHeadDim`, `dsaHeadDim`, `maxTokens`) against
 the model's prototype cache before opening the tensor mmap.
 
-### 5.8 Measured (kept with labels)
+### 5.9 Measured (kept with labels)
 
 - 2026-07-02, M1 Max, MiniCPM5, 13.7k-token prefix, `kv_config` quant:
   restart TTFT 12,083 ms (full prefill) → 236 ms restored; steady-state

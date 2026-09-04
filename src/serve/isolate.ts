@@ -368,7 +368,7 @@ const SERVE_VALUE_FLAGS = new Set([
   "--batch", "--decode-concurrency", "--kv-quant",
   "--kv-group-size", "--quantized-kv-start", "--kv-budget",
   "--memory-budget", "--prompt-cache", "--ssd-cache", "--ssd-cache-max",
-  "--ssd-demote-idle", "--adapter", "--max-tokens", "--unix",
+  "--ssd-demote-idle", "--generation-checkpoint", "--adapter", "--max-tokens", "--unix",
   "--model-pool", "--compiled-decode", "--compiled-activations",
   "--fused-sdpa", "--thinking",
 ]);
