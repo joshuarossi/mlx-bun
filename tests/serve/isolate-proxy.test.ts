@@ -180,7 +180,7 @@ describe("model pool (fake engines)", () => {
   }, 30_000);
 
   test("pool cap 1: switching drains + demotes + evicts the old model, and back again", async () => {
-    const { base } = mkPool(1);
+    const { base, pool } = mkPool(1);
     const drainMarker = `${sockFor("model-a")}.drained`;
     rmSync(drainMarker, { force: true });
     expect((await ask(base, "model-a")).served_by).toBe("/models/a");
@@ -190,11 +190,21 @@ describe("model pool (fake engines)", () => {
     for (let i = 0; i < 20 && !existsSync(drainMarker); i++)
       await new Promise((r) => setTimeout(r, 100));
     expect(existsSync(drainMarker)).toBe(true);
-    const eng = await (await fetch(`${base}/engine`)).json() as { pool: { resident: string[] } };
+    const eng = await (await fetch(`${base}/engine`)).json() as {
+      pid: number | null; restarts: number | null; socket: string | null;
+      pool: { resident: string[] };
+    };
     expect(eng.pool.resident).toEqual(["model-b"]);
+    expect(eng.pid).toBeNull();
+    expect(eng.restarts).toBeNull();
+    expect(eng.socket).toBeNull();
+    expect(pool!.residentKeys).toEqual(["model-b"]);
 
     // ... and switching BACK respawns model-a (state would restore from SSD)
     expect((await ask(base)).served_by).toBe("/models/a");
+    const restored = await (await fetch(`${base}/engine`)).json() as { pid: number; socket: string };
+    expect(restored.pid).toBe(pool!.child("model-a")!.pid!);
+    expect(restored.socket).toBe(pool!.child("model-a")!.spec.socketPath);
     expect((await ask(base, "model-b")).served_by).toBe("/models/b");
     expect((await ask(base, "unknown")).served_by).toBe("/models/a");
   }, 30_000);

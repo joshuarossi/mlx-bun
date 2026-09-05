@@ -60,7 +60,7 @@ Internal routes (not part of the client contract):
 | --- | --- | --- | --- |
 | POST | `/admin/drain` | `src/server.ts` | Only registered when the server is bound to a unix socket (`--unix`, i.e. an `--isolate` engine child). Quiesces the gateway and demotes the whole prompt cache to the SSD tier; returns `{ "drained": true, "demotions": N }`. Never exposed on TCP. |
 | POST | `/admin/lease` | `src/server.ts` | Unix-socket workers only. Flushes durability, then holds the gateway's native execution lease while the response connection stays open. The isolation parent uses it for managed GPU jobs; disconnect releases the lease. Never exposed on TCP. |
-| GET | `/engine` | `src/serve/isolate.ts` | Only on the `--isolate` parent proxy: `{ isolated: true, pid, restarts, socket, pool?: { resident, default } }`. |
+| GET | `/engine` | `src/serve/isolate.ts` | Only on the `--isolate` parent proxy: `{ isolated: true, pid, restarts, socket, response_store, pool?: { resident, default } }`. Worker fields describe the current default worker, or are `null` while it is evicted; inspection never loads it. |
 
 Under `--isolate`, the parent proxies everything to the engine child;
 `/ws/chat` is answered `501` there (web chat needs a non-isolated server),

@@ -499,15 +499,19 @@ export function startProxyServer(opts: ProxyServerOptions): {
           { error: { message: "WebSocket chat is not proxied under --isolate yet; run without --isolate for the web chat UI" } },
           { status: 501 },
         );
-      if (url.pathname === "/engine" && request.method === "GET")
+      if (url.pathname === "/engine" && request.method === "GET") {
+        // A pool may have evicted and recreated the default worker. Inspect
+        // current residency without starting a worker merely for diagnostics.
+        const current = pool ? pool.child(pool.defaultKey) : engine;
         return Response.json({
           isolated: true,
           response_store: application.responseStats,
-          pid: engine.pid,
-          restarts: engine.restarts,
-          socket: engine.spec.socketPath,
+          pid: current?.pid ?? null,
+          restarts: current?.restarts ?? null,
+          socket: current?.spec.socketPath ?? null,
           ...(pool ? { pool: { resident: pool.residentKeys, default: pool.defaultKey } } : {}),
         });
+      }
       try {
         const local = await application.handle(request, forwardRequest);
         if (local) return local;

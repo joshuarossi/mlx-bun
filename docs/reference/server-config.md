@@ -220,6 +220,9 @@ Design and measurements: [docs/reference/server-config.md](./server-config.md)
   abort aborts the proxied fetch so the engine sees the disconnect).
   `GET /engine` answers from the parent:
   `{ isolated: true, pid, restarts, socket, response_store, pool?: { resident, default } }`.
+  Worker fields describe the currently resident default worker and are `null`
+  while it is evicted; inspection does not load a model. A recreated worker has
+  its own restart count.
   `/ws/chat` is **not proxied** — `501` with a pointer to run without
   `--isolate` for the web chat UI.
 - **Crashes.** A child exit (uncatchable Metal OOM/SIGTRAP included) is
