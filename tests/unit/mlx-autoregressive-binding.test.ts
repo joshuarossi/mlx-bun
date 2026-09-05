@@ -98,6 +98,75 @@ test("a resolved disabled plan never constructs the bound compiled decoder", asy
   expect(seen.disposals).toBe(1);
 });
 
+test("cancellation before execution allocates no cache", async () => {
+  const { binding, seen } = fixture();
+  const abort = new AbortController(); abort.abort(new Error("cancelled"));
+  const generation = generateAutoregressive(binding, [0, 1], { signal: abort.signal });
+  await expect(generation[Symbol.asyncIterator]().next()).rejects.toThrow("cancelled");
+  expect(seen.allocations).toBe(0);
+});
+
+test("cancellation after a prefill chunk prevents the next chunk and releases its state", async () => {
+  const { binding, seen } = fixture();
+  const abort = new AbortController();
+  const forward = binding.graph.forwardHidden.bind(binding.graph);
+  const generation = generateAutoregressive({ ...binding, graph: { ...binding.graph,
+    async forwardHidden(ids, state) {
+      const hidden = await forward(ids, state);
+      abort.abort(new Error("cancelled during prefill"));
+      return hidden;
+    },
+  } }, [0, 1, 2, 3], { signal: abort.signal, prefillChunkSize: 1 });
+  await expect(generation[Symbol.asyncIterator]().next()).rejects.toThrow("cancelled during prefill");
+  expect(seen.forwards).toBe(1);
+  expect(seen.disposals).toBe(1);
+});
+
+test("cancellation after decode dispatch emits no token and closes the decoder before state", async () => {
+  const { binding, seen, advance, logits } = fixture();
+  const abort = new AbortController();
+  let closed = false;
+  const generation = generateAutoregressive({ ...binding, createDecode: () => ({
+    tryStep(token, state) {
+      advance(state, 1);
+      const result = { logits: logits(token.toIntTokens()), evalWith: [] };
+      abort.abort(new Error("cancelled after dispatch"));
+      return result;
+    },
+    close() { expect(seen.disposals).toBe(0); closed = true; },
+  }) }, [0, 1], { signal: abort.signal, temperature: 0, maxTokens: 3, logprobs: true, topLogprobs: 2 });
+  await expect(generation[Symbol.asyncIterator]().next()).rejects.toThrow("cancelled after dispatch");
+  expect(closed).toBe(true);
+  expect(seen.disposals).toBe(1);
+});
+
+test("cancellation during checkpoint persistence waits for its borrowed state before cleanup", async () => {
+  const { binding, seen } = fixture();
+  const abort = new AbortController();
+  let start!: () => void, release!: () => void;
+  const writing = new Promise<void>((resolve) => { start = resolve; });
+  const finished = new Promise<void>((resolve) => { release = resolve; });
+  const generation = generateAutoregressive(binding, [0, 1], {
+    signal: abort.signal, temperature: 0, maxTokens: 3, checkpointEveryTokens: 1,
+    async onDecodeCheckpoint(state) {
+      expect(state.cacheTokens).toEqual([0, 1, 2]);
+      expect(state.generatedTokens).toBe(1);
+      expect(state.pendingToken).toBe(3);
+      start(); await finished;
+      expect(seen.disposals).toBe(0);
+    },
+  });
+  const iterator = generation[Symbol.asyncIterator]();
+  expect((await iterator.next()).value?.token).toBe(2);
+  const next = iterator.next();
+  await writing;
+  abort.abort(new Error("cancelled during persistence"));
+  expect(seen.disposals).toBe(0);
+  release();
+  await expect(next).rejects.toThrow("cancelled during persistence");
+  expect(seen.disposals).toBe(1);
+});
+
 test("a replacement decoder's error is not retried through an unrelated graph", async () => {
   const { binding, seen } = fixture();
   const failure = new Error("decode failed after a native write");

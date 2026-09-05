@@ -1143,7 +1143,8 @@ async function* generateInner(
       options.signal?.throwIfAborted();
       const cur = pending!;
       const curExtras = pendingExtras;
-      pendingExtras = null;
+      // Keep current extras owned by the run until readback succeeds. A
+      // forward/grammar failure must leave them reachable by finally.
       // Grammar advance (src/grammar.ts): acceptToken needs the token id as a
       // JS number, which the pipelined loop defers (it operates on device
       // arrays). So grammar requests eager-read cur here, advance the matcher,
@@ -1239,6 +1240,7 @@ async function* generateInner(
       // sync-read step n's token while n+1 computes (grammar already read it
       // eagerly above — reuse to avoid a second GPU sync)
       const token = options.grammar ? grammarTok : ops.itemUint32(cur);
+      options.signal?.throwIfAborted();
       if (generated === 0) {
         // first token arrived: prompt clock stops, decode clock starts
         // (mlx-lm stream_generate's n==0 clock swap; the first token is
@@ -1257,6 +1259,7 @@ async function* generateInner(
 
       if (eosTokenIds.includes(token)) {
         disposeStepExtras(curExtras);
+        pendingExtras = null;
         nextPending?.dispose();
         nextPending = null;
         disposeStepExtras(nextExtras);
@@ -1290,7 +1293,9 @@ async function* generateInner(
         // readExtras before the yield: if the consumer breaks at this yield,
         // the extras are already read and disposed.
         const logprobs = readExtras(curExtras);
+        pendingExtras = null;
         yield { token, index: generated - 1, ...(logprobs ? { logprobs } : {}) };
+        options.signal?.throwIfAborted();
         // mlx-lm generate_step: clear_cache after token 0 (drops the
         // remaining prefill transients) and every 256 tokens after
         if ((generated - 1) % 256 === 0) clearCache();

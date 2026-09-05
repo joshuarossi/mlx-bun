@@ -1542,7 +1542,13 @@ clears, stable-boundary snapshots, and the separate final-token forward. Batch
 admission retains its short-tail scheduling behavior. Six native scheduler
 checks pass, including dynamic rows, prompt reuse, SSD restore and compiled B=1;
 the dedicated/generated same-session test also passes on the M1 Max 32 GB.
-Method-run/checkpoint ownership and the wider R5 abort matrix remain open.
+The native AR method run owns its generator's pending tokens, history and
+checkpoint boundary. Phase-specific tests now cover cancellation before any
+cache allocation, after a prefill chunk, after decode dispatch/before emission,
+and while an asynchronous checkpoint borrows live state. Cancellation waits for
+the checkpoint to finish before releasing state. Current-token logprob arrays
+remain owned until readback succeeds, including forward/grammar failure;
+cancelled execution stops before emission or a subsequent checkpoint write.
 
 R6 now runs the speculative verifier through `MlxSpeculativeBinding`. Target
 forwards, projection, tap capture, draft construction and kernel pinning bind
