@@ -24,7 +24,8 @@ This is the canonical architecture doc for mlx-bun's engine. It owns:
 The v2 refactor is in [§12](#12-interface-based-engine-refactor).
 Josh requested replaceable implementations behind interfaces on 2026-09-04.
 That section defines the target and migration, with implementation status below.
-The new contracts are internal; existing public APIs remain the supported surface.
+The portable session and native implementation ports are documented in the
+library API; existing model-class exports remain supported.
 Earlier sections retain the current architecture and numerical contracts.
 `last-verified` above dates the earlier inventory, not a whole-document reaudit.
 
@@ -1413,8 +1414,8 @@ Outstanding evidence is explicit: Josh's designated quant artifacts, the M4 Pro
 the Qwen 4B B=2/persistence oracle fixtures, and reconciliation of the reported
 other-machine Metal-memory fix. The crash is diagnosed as a native allocation
 failure; this branch preserves the affected cache math. These missing cells
-do not prevent interface work and do prevent declaring the final cutover gate
-passed.
+do not prevent interface work. They keep the full frontier scorecard and
+production acceptance gate open after the branch implementation is complete.
 
 R0 fixes pin TypeScript 6.0.3 for
 local/CI checks, add stop strings and a version to generation-checkpoint
@@ -1762,7 +1763,7 @@ Qwen persistence fixture are absent and skip. The binary builds and its CLI/Pi
 asset smoke passes. Managed jobs now self-exec the packaged binary; literal
 runner imports retain quantize/train code in the bundle, and a compiled
 subprocess smoke verifies progress and terminal persistence. These checks do not replace the unavailable artifact/machine
-cells or the final default-cutover gate.
+cells or the final production acceptance gate.
 
 The Qwen replay now has a native exception diagnosis: Metal reports insufficient
 memory from its completion handler. Details remain in the existing turn-8 repro.
@@ -1833,3 +1834,36 @@ of the open measurement cells changes an existing numerical default:
 | Assistant/DSpark/DeepSpec/MTP | Typed draft target ports replace concrete target dispatch. Available Qwen MTP and ngram verification pass; source-specific drafter validation and the DSpark wall-clock decision remain open in the speculative program |
 | Curve/HLG and paged KV | Existing opt-in placement and refusals remain. Their experiment-specific quality/performance gates remain open; this refactor does not make them defaults |
 | Expert offload | Existing streamed GLM loading/task semantics remain behind native bindings; model-free streamed/provider tests and packaged task entry pass. The larger-model value/footprint decision remains in its own program |
+The final server cutover is implemented at `015f56d`. The model-free suite passes
+1,732 tests with 10 skips. Fresh native processes run all 109 parity/research
+files with the locally applicable opt-ins, including the published Qwen target
+and MTP paths: 720 passes, 33 skips, no failures. Nine fixture-dependent files
+register no tests and remain unavailable cells. The second published Qwen TQ
+artifact also passes the graph/session test. The public replacement and import/
+docs boundary checks pass after the final exports. Commit `d1abd60` also puts
+embeddings under the shared GPU lease. Its new ownership test, the public
+replacement test and both native embedding-route tests pass. All three
+TypeScript projects pass, as does hygiene. The standalone binary built at
+`d1abd60` passes CLI, Pi asset and managed-job subprocess smoke checks.
+
+The final HTTP comparison uses the frozen `6d45ca1` baseline and this branch on
+the M1 Max 32 GB, with MiniCPM5 and Gemma e4b, default and serial arms, a 4k
+context and 96 generated tokens. The first candidate run overlapped a repository
+hygiene scan and showed slower e4b long prefill and SSD restart. A sequential
+e4b repeat without other checks removed the long-prefill gap, but restart
+latency still varied. A further candidate-then-baseline default-arm pair removed
+that restart gap too. Completion and chat parity probes match between default
+and serial arms; every restart restores a durable prefix with no failed or
+dropped spills. These loaded-machine diagnostics do not establish a quiet
+performance acceptance result. Raw reports remain local in
+`/tmp/mlx-bun-cutover-{baseline,candidate}-report.md`,
+`/tmp/mlx-bun-cutover-repeat-{baseline,candidate}-report.md` and
+`/tmp/mlx-bun-cutover-reverse-{baseline,candidate}-report.md`.
+
+R1–R9 implementation and R10 code migration are complete. Existing model-class
+exports use backend compatibility binders; there is one default session lifecycle
+and no alternate legacy HTTP executor. R10's retained implementations keep their
+existing placement and numerical defaults. Their independent experiment programs
+still own promotion/deletion decisions. Quiet performance, exact target quants,
+unavailable oracle/drafter fixtures and the second machine remain acceptance
+work, not missing interface code. No frontier advance is claimed by this refactor.

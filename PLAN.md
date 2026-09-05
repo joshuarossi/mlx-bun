@@ -646,21 +646,20 @@ Goal: push speed/quality/size on Macs through replaceable graph/method/session
 contracts and aggressive quant-specific specialization. Interfaces must permit
 fused execution without extra copies, materialization, or synchronization.
 Branch: `refactor/interface-engine-v2`. R0–R10 follow the dependencies in §12.10.
-Toolchain, stop-aware checkpoint keys, queue/prefill cancellation, portable
-sessions, the text bridge, replaceable MLX AR bindings, and engine-owned implementation selection are implemented.
-R1/R8/R9 complete: method-neutral lifecycle, application clients/tasks, import gates and opt-in process host; details in architecture §12.13.
-Shared serial/batch prefill and portable Pi/web protocols are implemented.
-R0's revision/support/ABI baseline is frozen in architecture §12.13; quiet
-measurements and reconciliation of the other machine’s Metal OOM fix remain open.
+Implementation R1–R9 and the R10 server cutover are complete on the branch:
+model-owned loading/planning/media/diagnostics, multiple methods per model,
+shared sessions/prefill, explicit request/state ownership, native batching,
+application clients/tasks, and direct/isolated hosts. The public replacement
+exercise loads one synthetic exact registration and serves two custom methods
+without a concrete model class. Details and evidence: architecture §12.13.
+The available matrix passes: 1,732 model-free and 720 native tests, with
+unavailable fixture cells recorded separately. Binary/CLI/Pi/job smoke passes.
 
-- [ ] **R0** Fix/verify review findings; pin tools; freeze support, oracle and performance baselines.
-- [ ] **R2** Real graph/backend bindings; prove graph replacement and quant-specialized execution.
-- [ ] **R3** Explicit resource/state ownership, rollback facets, codecs and checkpoint identity.
-- [ ] **R4** One capability-aware execution plan, immutable configuration and preparation reservations.
-- [ ] **R5** Shared AR prefill/session execution; cancellation at every safe boundary.
-- [ ] **R6** Speculative, fill/grammar and diffusion implementations behind method interfaces.
-- [ ] **R7** Scheduler policy separated from native batching; preserve B=1 and dynamic-row behavior.
-- [ ] **R10** Full conformance/frontier scorecard, measured specialization selection, cutover and legacy removal.
+- [ ] **R0/R10 acceptance evidence**: quiet paired performance and the second
+      Mac's scorecard; reconcile the reported other-machine Metal OOM fix.
+- [ ] **Target frontier validation**: run Josh's designated quants when available,
+      plus the unavailable model/drafter/oracle cells. No quant recipe or numerical
+      default is promoted by the refactor's compatibility results.
 
 Refactor PRs may be frontier-neutral; v2 product promotion needs a measured
 speed/quality/size frontier advance and a representative local-user workload.
