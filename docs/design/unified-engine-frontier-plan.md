@@ -1387,7 +1387,32 @@ replacement in R2; it cannot grow indefinitely without that working proof.
 
 ### 12.13 Implementation status (2026-09-05)
 
-Branch: `refactor/interface-engine-v2`. R0 fixes pin TypeScript 6.0.3 for
+Branch: `refactor/interface-engine-v2`. The comparison baseline is
+`6d45ca1e17e825c48af9b246a37486380117f640` (`origin/main`, fetched again
+2026-09-05). Its reference docs and tests freeze the pre-refactor public
+defaults, supported combinations and refusals; use `git show <revision>:<path>`
+to inspect that baseline without consulting a moving branch.
+
+| Baseline dimension | Frozen source / compatibility rule |
+|---|---|
+| Flags, defaults and routes | Baseline `docs/reference/{server-config,server-api,cli}.md`; no new architecture mode becomes a default in this phase |
+| Families, quants and feature support | Baseline `docs/reference/models.md`, model profiles and parity tests; the locally available published Qwen artifacts supply compatibility evidence only |
+| Native oracle and machine | Baseline `docs/reference/environment.md` plus its machine-layered golden manifests; all branch numerical comparisons reported here use the M1 Max 32 GB and the pinned venv |
+| Toolchain | Bun 1.4.0 (`34cbb9a40`), TypeScript pinned to 6.0.3; Python MLX/Metal 0.31.2, mlx-lm 0.31.3, mlx-optiq 0.2.15 |
+| Graph/state representation | Existing MLX hidden `[batch, positions, width]` and legacy cache arrays; newly declared `mlx-hidden-bsh-v1` / `legacy-cache-array-v1` describe those representations without converting them. Denoising uses its distinct `mlx-denoising-v1` graph ABI |
+| Persistence | SSD prefix format 3 is retained; legacy codec identity remains readable. Generation resume identity advances from the baseline's unversioned policy hash to version 4, including stops, adapter content, implementation and resolved policy |
+| Ownership | Resident weights remain borrowed; request caches, rollback scratch, native preparation and retained prefix backing release at their existing device-safe boundaries, now expressed through owners and leases |
+| Performance | Baseline/candidate paired diagnostics exist for available artifacts; quiet-machine preflight did not pass, so none establishes a quotable regression result or frontier advance |
+
+Outstanding evidence is explicit: Josh's designated quant artifacts, the M4 Pro
+24 GB matrix, quiet paired performance, unavailable diffusion/drafter weights,
+the Qwen 4B B=2/persistence oracle fixtures, and reconciliation of the reported
+other-machine Metal-memory fix. The crash is diagnosed as a native allocation
+failure; this branch preserves the affected cache math. These missing cells
+do not prevent interface work and do prevent declaring the final cutover gate
+passed.
+
+R0 fixes pin TypeScript 6.0.3 for
 local/CI checks, add stop strings and a version to generation-checkpoint
 identity, remove cancelled serial waiters immediately, and check cancellation
 between AR/spec target-prefill chunks and committed-token boundaries.
@@ -1448,9 +1473,16 @@ copy, evaluation or device fence; its performance remains part of the paired gat
 Rejected initial state releases owned caches while preserving borrowed caches.
 Decoder cleanup completes before cache disposal, including early iterator return.
 If execution and decoder cleanup both fail, the aggregate retains both errors.
-The legacy descriptor is not a persistence identity. Rich media/tap contexts,
-provider-bound state validation, and migration beyond the legacy cache ABI remain
-R2/R3 work.
+The legacy descriptor is not a persistence identity. Rich media remains a native
+preparation input; tap capabilities and provider-bound persistence are described
+below. A different cache ABI requires its own compatible method/backend binding.
+
+Serial cache lookup, checkpoint replay/persistence and prompt-boundary snapshots
+now live in `src/backends/mlx/serial-executor.ts`. The HTTP server injects a bound
+generator/verifier, cache constructor, prefix/checkpoint stores, clone function
+and adapter namespace service. Native Qwen media context is installed/restored
+by its compatibility binder. The executor has no concrete model dispatch;
+the existing gateway still owns scheduling and exclusive execution.
 
 Model-free binding tests exercise an independent graph, a replacement fused
 decoder, declined steps, unrecovered errors, and unsupported ABI/media/adapter
@@ -1505,8 +1537,8 @@ views expose a lease; prefill and prefix-cache accounting close it without
 knowing whether handles are borrowed or temporary. Only the compatibility
 adapter reads the legacy ownership marker. No tensor copy, evaluation or device
 synchronization is added by these leases. Fault-injection tests cover transfer,
-partial view acquisition and throwing destructors. Device fences, codec binding
-and persistence identity migration remain open.
+partial view acquisition and throwing destructors. Existing native fences remain
+in place; codec binding and persistence identity are described below.
 
 R4 now resolves method, scheduling mechanism, paged-KV fallback, prompt-cache
 bypass, fill eligibility and checkpoint eligibility in one portable planner.
@@ -1690,7 +1722,7 @@ memory from its completion handler. Details remain in the existing turn-8 repro.
 Josh reports a possible fix on the other machine; reconcile it before changing
 the affected state path. The 2026-09-05 benchmark preflight found 4 GB of existing swap and high
 background CPU load. Measurements taken without that gate are diagnostic only.
-Quiet-machine baselines remain open. Remaining R2–R10
+Quiet-machine baselines remain open. Remaining R0–R10
 work is tracked in PLAN.md; no speed/quality/size improvement is claimed yet.
 
 The first per-file native matrix at `a75cd39` ran 84 local parity files with
@@ -1715,7 +1747,9 @@ A process that exits successfully without registering tests is not a passing
 matrix cell; absent large-model/drafter fixtures remain open.
 The production test runner now uses a fresh process for each native test file,
 preserving model residency and runtime isolation between cells. The complete
-default runner passed at `9b259da` with this runner change, including hygiene,
+default runner passed at `2a14021`, including hygiene,
 all TypeScript projects, the model-free suite and available parity/research
 tests. Optional cells are reported separately; a green default run does not
 imply unavailable weights or opt-in cases ran.
+That run reports 2,344 passes, 98 skips and no failures, with 109 native files
+each receiving a fresh process.

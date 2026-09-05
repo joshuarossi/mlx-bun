@@ -650,7 +650,8 @@ Toolchain, stop-aware checkpoint keys, queue/prefill cancellation, portable
 sessions, the text bridge, replaceable MLX AR bindings, and engine-owned implementation selection are implemented.
 R1/R8/R9 complete: method-neutral lifecycle, application clients/tasks, import gates and opt-in process host; details in architecture §12.13.
 Shared serial/batch prefill and portable Pi/web protocols are implemented.
-R0 still owes baseline capture and reconciliation of the other machine’s Metal OOM fix.
+R0's revision/support/ABI baseline is frozen in architecture §12.13; quiet
+measurements and reconciliation of the other machine’s Metal OOM fix remain open.
 
 - [ ] **R0** Fix/verify review findings; pin tools; freeze support, oracle and performance baselines.
 - [ ] **R2** Real graph/backend bindings; prove graph replacement and quant-specialized execution.
