@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, expectTypeOf, test } from "bun:test";
 import type { ModelConfig } from "../../src/config";
-import { createModel, MLX_MODEL_IMPLEMENTATIONS, type RuntimeModel } from "../../src/model/factory";
+import { createModel, openModel, MLX_MODEL_IMPLEMENTATIONS, type RuntimeModel } from "../../src/model/factory";
 import { ModelImplementationRegistry, type ModelImplementation } from "../../src/model/implementation";
 import { configFingerprint } from "../../src/model/fingerprint";
 import type { Weights } from "../../src/weights";
@@ -131,6 +131,35 @@ describe("engine-owned quant implementations", () => {
     expect(unknown.exactArtifact).toBe(false);
     expect(registry.select(cfg, unknown).id).toBe("qwen3.5");
     expect(registry.select(cfg, resolveModelProfile(cfg)).id).toBe("qwen3.5");
+  });
+
+  test("a replacement can expose several methods without joining the concrete model union", () => {
+    interface IndependentModel {
+      readonly methods: ReadonlyMap<string, () => string>;
+    }
+    const model: IndependentModel = {
+      methods: new Map([
+        ["ordinary", () => "ordinary execution"],
+        ["specialized", () => "specialized execution"],
+      ]),
+    };
+    const weights = {} as Weights;
+    const registry = new ModelImplementationRegistry<Weights, IndependentModel>([{
+      id: "test-quant-optimized", graph: "qwen3.5", loader: "safetensors", loop: "autoregressive",
+      create(source) {
+        expect(source).toBe(weights);
+        return model;
+      },
+    }]);
+    const selected = createModel(weights, cfg, resolve(), registry);
+    expectTypeOf(selected).toEqualTypeOf<IndependentModel>();
+    expect(selected).toBe(model);
+    expect(selected.methods.get("ordinary")!()).toBe("ordinary execution");
+    expect(selected.methods.get("specialized")!()).toBe("specialized execution");
+    // The loader must preserve the same interface at compile time. Actual
+    // loading/ownership is covered separately; this does not open a model.
+    const openReplacement = (directory: string) => openModel(directory, { implementations: registry });
+    expectTypeOf(openReplacement).returns.toEqualTypeOf<Promise<IndependentModel>>();
   });
 
   test("missing or incompatible exact code never falls back", () => {

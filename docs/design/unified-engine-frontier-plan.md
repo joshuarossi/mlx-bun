@@ -730,6 +730,10 @@ or complete execution method is a legitimate production implementation.
 Several specialized implementations can be worth maintaining when each wins
 in a useful regime. Shared orchestration must not force the fastest numerical
 implementation through an inefficient generic operator path.
+A model implementation may expose several supported execution methods. Loading
+the weights does not permanently choose one method; request planning selects
+among the compatible methods. Their private graphs, state and numerical loops
+can differ while the session contract remains the same.
 
 A session must work without knowing the model class, graph implementation,
 decoding algorithm, cache layout, or scheduling mechanism. Every replaceable
@@ -1515,6 +1519,12 @@ and selects one before construction. `openModel` checks the binding before
 opening weights; callers can compose profiles and implementations through its
 options. `createModel` accepts a registry for already-open weights. No selection
 is added to the token loop, and no model file format changes.
+Both factories preserve a supplied registry's return interface; replacement
+implementations need not join the concrete `RuntimeModel` union. Construction
+does not select the request's execution method. An implementation can support
+several methods, including quant-specific paths, while the session consumes
+the selected method's execution, output and cleanup contract. The shared
+contract does not require a shared numerical loop.
 
 Unknown artifacts retain existing family selection. Missing implementations,
 graph/loader/loop mismatches, duplicate IDs, and inconsistent exact identities
@@ -1523,9 +1533,11 @@ Model-free tests exercise the factory with a synthetic exact quant identity and
 an alternate constructor; this establishes selection, not numerical or speed
 claims. No registration pretends to identify Josh's inaccessible quants.
 This step covers resident graph construction. Colibri retains its existing
-streamed opener and refuses named overrides until its loader binding exists.
-The legacy runtime model union and method-specific paths still need the full
-R2/R6 binding migration before arbitrary implementations can replace them.
+streamed opener and refuses supplied resident registries or named overrides
+until its loader binding exists. Existing server composition still uses the
+concrete runtime model union. Its compatibility binders translate those classes
+into execution ports; moving that composition into each implementation remains
+R2/R6 work. Specialized inference methods are retained through this migration.
 
 Artifact-parameterized native smoke gate:
 `MLX_BUN_QWEN_QUANT_PATH=/path/to/our/artifact bun test tests/parity/qwen-quant-engine.test.ts`.
@@ -1771,6 +1783,18 @@ tests. Optional cells are reported separately; a green default run does not
 imply unavailable weights or opt-in cases ran.
 That run reports 2,344 passes, 98 skips and no failures, with 109 native files
 each receiving a fresh process.
+The expanded runner at `ab0db74` enabled the locally applicable model-family,
+training, quantization, LoRA and batch-decode gates: 2,427 passes, 44 skips and
+no failures across the model-free tier and 109 native files. Ten native files
+registered no tests because their configured model/drafter fixtures were absent;
+those are unavailable cells, not passes. At `b9b56aa`, the model-free suite
+passed 1,718 tests with 10 skips. All TypeScript projects, hygiene and compiled
+CLI/Pi/assets/job smokes passed. The subsequent focused native run passed 44
+tests covering batch lifecycle, SSD state, generated graphs, ngram verification,
+both available published Qwen graph/session bindings and the published Qwen MTP
+target/draft pair. Explicit MTP paths supplied one previously unavailable cell.
+These results do not close the target-artifact, second-machine or default-cutover
+gates.
 
 R10's implementation-retention review currently records these decisions. None
 of the open measurement cells changes an existing numerical default:

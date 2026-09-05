@@ -68,9 +68,9 @@ export const MLX_MODEL_IMPLEMENTATIONS = new ModelImplementationRegistry<Weights
     new UniversalDenseModel(weights, config, genericArgsFor(config)!)),
 ]);
 
-export interface ModelOpenOptions extends Glm52RuntimeOpenOptions {
+export interface ModelOpenOptions<Model = RuntimeModel> extends Glm52RuntimeOpenOptions {
   readonly profiles?: ResolveModelProfileOptions;
-  readonly implementations?: ModelImplementationProvider<Weights, RuntimeModel>;
+  readonly implementations?: ModelImplementationProvider<Weights, Model>;
 }
 
 export interface Glm52RuntimeOpenOptions {
@@ -139,15 +139,20 @@ export async function openGlm52RuntimeModel(
  * model.safetensors.index.json, so it must bypass Weights.open and use its
  * dedicated header catalog/tensor source.
  */
-export async function openModel(
+export function openModel<Model>(
   modelDir: string,
-  options: ModelOpenOptions = {},
-): Promise<RuntimeModel> {
+  options: ModelOpenOptions<Model> & { readonly implementations: ModelImplementationProvider<Weights, Model> },
+): Promise<Model>;
+export function openModel(modelDir: string, options?: ModelOpenOptions): Promise<RuntimeModel>;
+export async function openModel<Model>(
+  modelDir: string,
+  options: ModelOpenOptions<Model> = {},
+): Promise<Model | RuntimeModel> {
   const config = await loadModelConfig(modelDir);
   const profile = resolveModelProfile(config, options.profiles);
   if (profile.profile.execution.loader === "colibri") {
-    if (profile.profile.execution.implementation !== undefined)
-      throw new Error("named Colibri implementations require a streamed loader binding; refusing to fall back");
+    if (options.implementations || profile.profile.execution.implementation !== undefined)
+      throw new Error("custom Colibri implementations require a streamed loader binding; refusing to fall back");
     return (await openGlm52RuntimeModel(modelDir, options)).model;
   }
   // Resolve before opening weights; missing or incompatible code allocates nothing.
@@ -157,13 +162,23 @@ export async function openModel(
   catch (error) { weights.dispose(); throw error; }
 }
 
-/** Construct the graph named by a previously validated profile. */
+/** Construct the binding named by a validated profile. A supplied registry can
+ * return any backend-owned interface; the compatibility default returns the
+ * legacy model union. The caller retains ownership of the supplied weights. */
+export function createModel<Model>(
+  weights: Weights, config: ModelConfig, resolved: ResolvedModelProfile | undefined,
+  implementations: ModelImplementationProvider<Weights, Model>,
+): Model;
 export function createModel(
+  weights: Weights, config: ModelConfig, resolved?: ResolvedModelProfile,
+  implementations?: ModelImplementationProvider<Weights, RuntimeModel>,
+): RuntimeModel;
+export function createModel<Model>(
   weights: Weights,
   config: ModelConfig,
   resolved: ResolvedModelProfile = resolveModelProfile(config),
-  implementations: ModelImplementationProvider<Weights, RuntimeModel> = MLX_MODEL_IMPLEMENTATIONS,
-): RuntimeModel {
+  implementations: ModelImplementationProvider<Weights, Model> | ModelImplementationProvider<Weights, RuntimeModel> = MLX_MODEL_IMPLEMENTATIONS,
+): Model | RuntimeModel {
   assertResolvedModelProfile(config, resolved);
   if (resolved.profile.execution.loader === "colibri")
     throw new Error(
