@@ -14,7 +14,7 @@
 # batched-dynamic-golden-*.json — each protocol has its own oracle.
 #
 # Machine-specific like every logit golden — resolve via tests/support/goldens.ts.
-import sys, json
+import sys, json, os, importlib.metadata
 from optiq.mlx_lm_patches._register import register
 register()
 import mlx.core as mx
@@ -75,6 +75,13 @@ for _ in range(PHASE3):
     trajB.append(b); trajC.append(c)
 
 manifest = {
+    "oracle": {
+        "mlx": importlib.metadata.version("mlx"),
+        "mlx_lm": importlib.metadata.version("mlx-lm"),
+        "optiq": importlib.metadata.version("mlx-optiq"),
+        "model_revision": os.path.basename(os.path.realpath(MODEL)),
+        "generator": "scripts/oracle/gen-batched-extend-golden.py",
+    },
     "model": MODEL,
     "scenario": {
         "A": A, "B": B, "C": C,

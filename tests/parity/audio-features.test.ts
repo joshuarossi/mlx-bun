@@ -12,7 +12,7 @@ import { audioSoftTokenCount, decodeAudio, decodeWav } from "../../src/audio/dec
 import { extractMelFeatures } from "../../src/audio/features";
 import { goldenPath } from "../support/goldens";
 
-const FIXTURES = `${import.meta.dir}/../fixtures/audio`;
+const FIXTURES = `${import.meta.dir}/../../fixtures/audio`;
 const manifestPath = goldenPath("e4b-audio.json");
 const manifest = existsSync(manifestPath) ? await Bun.file(manifestPath).json() : null;
 

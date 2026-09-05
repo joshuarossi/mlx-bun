@@ -1654,3 +1654,16 @@ the affected state path. The 2026-09-05 benchmark preflight found 4 GB of existi
 background CPU load. Measurements taken without that gate are diagnostic only.
 Quiet-machine baselines remain open. Remaining R2–R10
 work is tracked in PLAN.md; no speed/quality/size improvement is claimed yet.
+
+The first per-file native matrix at `a75cd39` ran 84 local parity files with
+batch-decode opt-in: 338 passes, 44 skips and seven failed assertions. Five
+audio failures were a fixture path left behind by the test-directory move.
+The two numerical failures reproduced on baseline `6d45ca1`: the local CPM
+mixed-KV blobs did not match their manifest hashes, and CPM extend-join fell
+back to the M4 reference because no M1 override existed. The pinned Python
+oracle regenerated the mixed-KV manifest's exact hashes and an M1 extend-join
+trajectory identical to the implementation. The corrected batch suites pass
+15 tests with one unavailable e4b oracle skip. Tests now check blob hashes;
+the mixed-KV generator writes blobs and manifests to the same resolved output
+directory. Other opt-in families still require their explicit runs; a process
+that exits successfully without registering tests is not a passing matrix cell.
