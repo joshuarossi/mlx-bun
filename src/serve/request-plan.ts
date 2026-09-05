@@ -1,28 +1,23 @@
 import type { GenerateOptions } from "../generate";
 import type { RequestShape } from "./generation-gateway";
-
-export interface DisposableResource {
-  dispose(): void;
-}
+import type { DisposableResource } from "../contracts/resources";
+import { disposeResources, ownResource } from "../engine/resources";
+export type { DisposableResource } from "../contracts/resources";
 
 export class RequestOwnership {
-  #resources = new Set<DisposableResource>();
-  #transferred = false;
+  #owner = ownResource(new Set<DisposableResource>(), disposeResources);
 
   own<T extends DisposableResource | null | undefined>(resource: T): T {
-    if (resource) this.#resources.add(resource);
+    if (resource) this.#owner.borrow().add(resource);
     return resource;
   }
 
   transfer(): void {
-    this.#transferred = true;
-    this.#resources.clear();
+    this.#owner.transfer();
   }
 
   dispose(): void {
-    if (this.#transferred) return;
-    for (const resource of this.#resources) resource.dispose();
-    this.#resources.clear();
+    this.#owner.close();
   }
 }
 

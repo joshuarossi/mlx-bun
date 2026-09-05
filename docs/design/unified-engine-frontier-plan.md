@@ -1483,6 +1483,16 @@ cases for collection/streaming, blocked-consumer cancellation, partial failure,
 and no-consumer/pre-cancelled settlement. Additional tests cover preparation
 cancellation, admission refusal, metadata bounds, and cleanup failures.
 
+R3 now gives request resources one checked owner. Transfer invalidates the
+previous owner, close is idempotent even after a destructor failure, and cleanup
+attempts all releases while preserving the original execution error. MLX state
+views expose a lease; prefill and prefix-cache accounting close it without
+knowing whether handles are borrowed or temporary. Only the compatibility
+adapter reads the legacy ownership marker. No tensor copy, evaluation or device
+synchronization is added by these leases. Fault-injection tests cover transfer,
+partial view acquisition and throwing destructors. Device fences, codec binding
+and persistence identity migration remain open.
+
 R5 now shares a portable prefill program between serial AR and solo batch
 admission. Its MLX executor preserves drain evaluation, KV maintenance, allocator
 clears, stable-boundary snapshots, and the separate final-token forward. Batch

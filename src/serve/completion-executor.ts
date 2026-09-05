@@ -27,6 +27,7 @@ import {
   type RequestRejection,
 } from "./request-plan";
 import type { PromptResponseTrace } from "./prompt-response-trace";
+import { cleanupFailure } from "../engine/resources";
 
 export interface CompletionEngine {
   place(shape: RequestShape): GenerationPlacement;
@@ -344,8 +345,7 @@ export class CompletionExecutor {
       return summary;
     } catch (error) {
       closeCompletion?.();
-      planned.dispose();
-      throw error;
+      cleanupFailure(error, () => planned.dispose());
     }
   }
 }

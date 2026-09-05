@@ -1,3 +1,5 @@
+import { leaseCacheState } from "./backends/mlx/state-views";
+import { withResource } from "./engine/resources";
 // Byte-capped LRU prompt cache — the RAM tier of the Layer-0 KV store.
 //
 // The mlx-lm lesson (PLAN.md): a count-capped cache of multi-GB KV
@@ -105,14 +107,7 @@ export interface PromptCacheEntry {
 export function cacheBytes(caches: Cache[]): number {
   let total = 0;
   for (const c of caches) {
-    const state = c.state();
-    for (const a of state) total += a.nbytes;
-    // Most Cache kinds' state() returns their own live-owned arrays (safe
-    // to just read), but TurboQuantKVCache allocates fresh trimmed slice
-    // views per call (kv-store.ts snapshotCache/cloneKvCaches contract) —
-    // those must be disposed here or they leak (see generate.ts
-    // evalCacheState for the same hazard on the prefill path).
-    if (c.stateNeedsDispose) for (const a of state) a.dispose();
+    total += withResource(leaseCacheState(c), (state) => state.reduce((bytes, a) => bytes + a.nbytes, 0));
   }
   return total;
 }
