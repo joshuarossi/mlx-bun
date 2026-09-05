@@ -57,11 +57,36 @@ const batchable: RequestShape = {
 };
 
 describe("GenerationGateway.place", () => {
+  test("a binding keeps its runtime snapshot while later bindings see new flags", () => {
+    const restoreInitial = configureRuntime({ MLX_BUN_GRAMMAR_BATCH: "1" });
+    try {
+      const original = gateway(2);
+      const restoreChanged = configureRuntime({ MLX_BUN_GRAMMAR_BATCH: "0" });
+      try {
+        const shape = { ...batchable, hasGrammar: true };
+        expect(original.place(shape).mechanism).toBe("continuous");
+        expect(gateway(2).place(shape).mechanism).toBe("serial");
+      } finally { restoreChanged(); }
+    } finally { restoreInitial(); }
+  });
+
+  test("the serial callback receives the exact plan, including draft fallback", async () => {
+    let seen: unknown;
+    const g = new GenerationGateway(stubModel, 1, async (_ids, _options, _sink, _vision, _trace, execution) => {
+      seen = execution;
+      return {} as never;
+    });
+    const shape = { ...batchable, hasDraft: true, wantsLogprobs: true };
+    const placement = g.place(shape, { logprobs: true });
+    await g.run([1], { logprobs: true }, () => {}, undefined, shape, placement);
+    expect(seen).toBe(placement.execution);
+    expect(placement.execution?.method).toBe("autoregressive");
+  });
   test("place freezes one shape and declares its scheduling mechanism", () => {
     const g = gateway(2);
     const shape = { ...batchable };
     const placement = g.place(shape);
-    expect(placement).toEqual({ shape, mechanism: "continuous" });
+    expect(placement).toMatchObject({ shape, mechanism: "continuous", execution: { method: "autoregressive" } });
     expect(placement.shape).toBe(shape);
     expect(Object.isFrozen(placement)).toBe(true);
     expect(Object.isFrozen(placement.shape)).toBe(true);
@@ -71,7 +96,7 @@ describe("GenerationGateway.place", () => {
 
   test("--batch 1 declares the preserved strict-serial mechanism", () => {
     const placement = gateway(1).place(batchable);
-    expect(placement).toEqual({ shape: batchable, mechanism: "serial" });
+    expect(placement).toMatchObject({ shape: batchable, mechanism: "serial", execution: { method: "autoregressive" } });
   });
 
   test("--batch 1 never batches (serial mode), regardless of shape", () => {

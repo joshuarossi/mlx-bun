@@ -1,13 +1,29 @@
 import type { GenerateOptions } from "../generate";
+import type { ResolvedExecution } from "../contracts/execution";
+import { createHash } from "node:crypto";
+
+/** Sort object fields only; array order is meaningful for adapter composition,
+ * stop handling and quantization recipes. */
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === "object")
+    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => [key, canonical(item)]));
+  return value;
+}
 
 /** Stable identity for an exactly resumable generation. The prompt already
  * includes rendered messages and tool schemas; the remaining fields cover
  * every sampling policy that can change the continuation. */
 export function generationCheckpointKey(
   promptIds: number[], options: GenerateOptions & { stopSequences?: readonly string[] }, cacheNs = "",
+  execution?: ResolvedExecution, bindingIdentity?: unknown,
 ): string {
   const policy = {
-    version: 2,
+    version: 3,
+    execution: execution && { method: execution.method, mechanism: execution.mechanism,
+      pagedKv: execution.pagedKv, fill: execution.fill },
+    bindingIdentity,
     stopSequences: options.stopSequences ?? [],
     cacheNs,
     promptIds,
@@ -43,5 +59,5 @@ export function generationCheckpointKey(
     kvConfig: options.kvConfig,
     turboQuant: options.turboQuant,
   };
-  return Bun.hash(JSON.stringify(policy)).toString(16);
+  return createHash("sha256").update(JSON.stringify(canonical(policy))).digest("hex");
 }

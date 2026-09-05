@@ -34,8 +34,7 @@ import type { TokenLogprobs } from "./contracts/generation";
 export type { TokenLogprobs } from "./contracts/generation";
 import type { PromptResponseTrace } from "./serve/prompt-response-trace";
 import type { KvQuantSpec, TurboQuantScheme } from "./config";
-import { flagOn } from "./runtime-config";
-import { runtimeValue } from "./runtime-config";
+import { runtimeConfig, runtimeValue, type RuntimeConfig } from "./runtime-config";
 import {
   disposeStepExtras,
   makeStepSampler,
@@ -185,9 +184,10 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
 
 export function shouldUseGrammarJump(
   options: Pick<GenerateOptions, "grammar" | "logprobs" | "topLogprobs">,
+  runtime: RuntimeConfig = runtimeConfig(),
 ): boolean {
   return options.grammar !== undefined &&
-    flagOn("MLX_BUN_GRAMMAR_JUMP", false) &&
+    runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) &&
     !options.logprobs &&
     !(options.topLogprobs && options.topLogprobs > 0);
 }
@@ -210,9 +210,10 @@ export function shouldUseFill(
     "fill" | "grammar" | "logprobs" | "topLogprobs" | "promptEmbeddings"
     | "kvBits" | "kvConfig" | "turboQuant"
   >,
+  runtime: RuntimeConfig = runtimeConfig(),
 ): boolean {
   if (!options.fill) return false;
-  if (resolveFillMode() === "off") return false;
+  if (resolveFillMode(runtime.value("MLX_BUN_FILL") ?? "off") === "off") return false;
   return options.grammar === undefined &&
     !options.logprobs &&
     !(options.topLogprobs && options.topLogprobs > 0) &&
@@ -512,13 +513,15 @@ export function generateAutoregressive(
   options: GenerateOptions = {},
   diagnostics: GenerateDiagnostics = {},
 ): Generation {
-  let inner = generateInner(binding, promptTokens, options, diagnostics);
+  const runtime = binding.runtime ?? runtimeConfig();
+  let inner = generateInner(binding, promptTokens, options, diagnostics, runtime);
   if (options.adapters?.length && binding.adapters) {
     inner = adapterScoped({ loraState: binding.adapters }, options.adapters, inner);
   }
   if (binding.memory.expertRuntime?.finishUsage || binding.memory.expertRuntime?.flushUsage)
     inner = usageScoped(binding.memory, inner);
-  return new Generation(modelNeedsWiredLimit(binding.memory) ? wiredScoped(inner) : inner);
+  return new Generation(modelNeedsWiredLimit(binding.memory, undefined,
+    (binding.runtime ?? runtimeConfig()).value("MLX_BUN_FORCE_WIRE") === "1") ? wiredScoped(inner) : inner);
 }
 
 /** Denoising bindings use their own state and feedback graph. Callers hold
@@ -656,6 +659,7 @@ async function* generateInner(
   promptTokens: number[],
   options: GenerateOptions,
   diagnostics: GenerateDiagnostics,
+  runtime: RuntimeConfig,
 ): AsyncGenerator<GeneratedToken, GenerateStats> {
   if (options.signal?.aborted) {
     options.grammar?.dispose();
@@ -732,7 +736,7 @@ async function* generateInner(
   // window) layers append multi-token writes through #updateConcat — O(window)
   // per append rather than the O(L) a plain ring pays — so v1 warns and skips
   // the whole feature for those models rather than paying it silently.
-  let fillOn = shouldUseFill(options);
+  let fillOn = shouldUseFill(options, runtime);
   if (fillOn && cache.some((c) => c instanceof RotatingKVCache)) {
     fillOn = false;
     if (!warnedFillRotating) {
@@ -1048,7 +1052,7 @@ async function* generateInner(
       const snapshotAt = options.onPrefillDone && options.snapshotAt !== undefined
         ? Math.min(Math.max(options.snapshotAt, cachedTokens), promptTokens.length)
         : undefined;
-      const tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
+      const tailSplit = runtime.flag("MLX_BUN_PREFILL_TAIL_SPLIT", true);
       const forward = graph.forwardHidden.bind(graph);
       const maintain = () => maybeQuantizeKv(cache, options);
       while (true) {
@@ -1065,7 +1069,7 @@ async function* generateInner(
         finally { closeChunk?.(); }
         pos = step.end;
         if (hidden) { h0 = hidden; break; }
-        if (runtimeValue("MLX_BUN_PREFILL_MEM_LOG") === "1")
+        if (runtime.value("MLX_BUN_PREFILL_MEM_LOG") === "1")
           console.error(`[prefill-mem] ${pos} active ${(activeMemory() / 2 ** 30).toFixed(2)} peak ${(peakMemory() / 2 ** 30).toFixed(2)}`);
         await new Promise<void>((resolve) => setImmediate(resolve));
         if (step.snapshot) options.onPrefillDone?.();
@@ -1075,7 +1079,7 @@ async function* generateInner(
       options.onPrefillDone?.();
     // The trace's prefill span is the uncached model-forward portion only.
     // Token-0 lm-head, sampling, and readback are a separate additive stage.
-    if (diagnostics.trace && runtimeValue("MLX_BUN_P2R_SYNC") === "1")
+    if (diagnostics.trace && runtime.value("MLX_BUN_P2R_SYNC") === "1")
       synchronize(gpuStream);
     closePrefill?.();
     closeTokenZero = diagnostics.trace?.begin("token_zero.total", {
@@ -1118,7 +1122,7 @@ async function* generateInner(
     // (see GrammarController.jumpForward for the contract + the fidelity
     // note on why this is opt-in). Excluded when logprobs are requested
     // (jumped tokens are never sampled, so they'd have no logprobs rows).
-    const grammarJump = shouldUseGrammarJump(options);
+    const grammarJump = shouldUseGrammarJump(options, runtime);
     while (!stop) {
       options.signal?.throwIfAborted();
       const cur = pending!;

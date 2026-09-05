@@ -1493,6 +1493,25 @@ synchronization is added by these leases. Fault-injection tests cover transfer,
 partial view acquisition and throwing destructors. Device fences, codec binding
 and persistence identity migration remain open.
 
+R4 now resolves method, scheduling mechanism, paged-KV fallback, prompt-cache
+bypass, fill eligibility and checkpoint eligibility in one portable planner.
+The gateway passes that immutable decision to serial execution; lane accounting
+uses the actual method, including AR fallback with a configured draft. Request
+policy arrays/maps are copied and frozen at admission. AR runtime settings and
+batch work flags use a binding snapshot. Native grammar/media preparation takes
+the gateway execution lease before allocation; text rendering remains outside
+that lease. Cancellation before/during preparation is covered with allocation
+and cleanup assertions.
+
+Checkpoint request identity is now canonical SHA-256 over sampling/stop policy,
+resolved execution and the artifact/implementation/state ABI. Object insertion
+order is ignored; array order remains meaningful. Version-2 generation keys do
+not resume through this version; ordinary prefix-store format is unchanged.
+Nine native scheduling gates pass after planner integration, including rotating
+dynamic joins, row failure containment, serial drain, prefix sharing, SSD restore
+and compiled B=1. Adapter content revisions, preparation memory reservations,
+and provider-bound codecs are still required for R3/R4 closure.
+
 R5 now shares a portable prefill program between serial AR and solo batch
 admission. Its MLX executor preserves drain evaluation, KV maintenance, allocator
 clears, stable-boundary snapshots, and the separate final-token forward. Batch
@@ -1554,5 +1573,7 @@ from importing server implementations, including type-only imports.
 The Qwen replay now has a native exception diagnosis: Metal reports insufficient
 memory from its completion handler. Details remain in the existing turn-8 repro.
 Josh reports a possible fix on the other machine; reconcile it before changing
-the affected state path. Quiet-machine baselines remain open. Remaining R2–R10
+the affected state path. The 2026-09-05 benchmark preflight found 4 GB of existing swap and high
+background CPU load. Measurements taken without that gate are diagnostic only.
+Quiet-machine baselines remain open. Remaining R2–R10
 work is tracked in PLAN.md; no speed/quality/size improvement is claimed yet.

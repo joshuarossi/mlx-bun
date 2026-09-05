@@ -63,7 +63,7 @@ import { executeMlxPrefillStep } from "./prefill";
 import { MlxArray } from "../../mlx/array";
 import * as ops from "../../mlx/ops";
 import { activeMemory, cacheMemory, clearCache, Dtype, peakMemory } from "../../mlx/ffi";
-import { flagOn } from "../../runtime-config";
+import { runtimeConfig } from "../../runtime-config";
 import { runtimeValue } from "../../runtime-config";
 import { CompiledDecode } from "../../model/compiled-decode";
 import type { Gemma4Model } from "../../model/gemma4";
@@ -304,6 +304,7 @@ type LayerInner =
 type Row1 = { keys: MlxArray; values: MlxArray };
 
 export class MlxBatchExecutionGroup {
+  readonly #runtime = runtimeConfig();
   #running: Row[] = [];
   #inners: LayerInner[] | null = null; // per-layer batched KV; null when empty
   #fullLeftPad: number[] = []; // per-row padding for FULL layers (rot self-tracks)
@@ -352,7 +353,7 @@ export class MlxBatchExecutionGroup {
     this.#lock = opts.lock;
     this.#admissionHeld = opts.admissionHeld;
     this.#prefillChunkSize = Math.max(1, Math.floor(opts.prefillChunkSize ?? 2048));
-    this.#prefillTailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
+    this.#prefillTailSplit = this.#runtime.flag("MLX_BUN_PREFILL_TAIL_SPLIT", true);
     this.#kvBudgetBytes = opts.kvBudgetBytes;
     this.#promptCache = opts.promptCache;
     this.#kvScheme = opts.kvScheme;
@@ -387,7 +388,7 @@ export class MlxBatchExecutionGroup {
     this.#rotMaxSize = proto.map((c) => (isRotatingPlainCache(c) ? c.maxSize : 0));
     for (const c of proto) c.dispose();
     this.#compiled =
-      flagOn("MLX_BUN_COMPILED_DECODE", true) &&
+      this.#runtime.flag("MLX_BUN_COMPILED_DECODE", true) &&
       model.config.modelType.startsWith("gemma4") &&
       !model.config.text.enableMoeBlock
         ? CompiledDecode.for(model as Gemma4Model)
@@ -700,7 +701,7 @@ export class MlxBatchExecutionGroup {
     // it does not submit `h`'s graph. Attribution mode must evaluate the final
     // L=1 forward explicitly or its work is silently charged to the head/read.
     const forceAttribution = !!p.row.req.trace &&
-      runtimeValue("MLX_BUN_P2R_SYNC") === "1";
+      this.#runtime.value("MLX_BUN_P2R_SYNC") === "1";
     if (forceAttribution) {
       const closeForward = p.row.req.trace!.begin("token_zero.forward", {
         mechanism: "continuous",
@@ -843,7 +844,7 @@ export class MlxBatchExecutionGroup {
           t.packed.dispose(); t.scales.dispose(); t.biases.dispose();
         };
         const prevQ = prev?.[layer] as QuantizedKVCache | undefined;
-        if (prevQ && runtimeValue("MLX_BUN_BATCH_EXTEND") !== "0") {
+        if (prevQ && this.#runtime.value("MLX_BUN_BATCH_EXTEND") !== "0") {
           const [k0, v0] = prevQ.temporalView();
           const ext = extendQuantRows(k0, v0, prevPad, qRow);
           dispose3(k0); dispose3(v0);
@@ -876,7 +877,7 @@ export class MlxBatchExecutionGroup {
           for (const r of rows) { dispose3(r.keys); dispose3(r.values); }
         }
         // qRow views are disposed via the rows loop above or here for extend
-        if (prevQ && runtimeValue("MLX_BUN_BATCH_EXTEND") !== "0") { dispose3(qRow.keys); dispose3(qRow.values); }
+        if (prevQ && this.#runtime.value("MLX_BUN_BATCH_EXTEND") !== "0") { dispose3(qRow.keys); dispose3(qRow.values); }
         else if (!prevQ) { /* disposed in the rows loop */ }
         continue;
       }
@@ -974,7 +975,7 @@ export class MlxBatchExecutionGroup {
         for (const r of rows) { r.keys.dispose(); r.values.dispose(); }
       } else {
         const prevFull = prev?.[layer] as KVCache | undefined;
-        if (prevFull && runtimeValue("MLX_BUN_BATCH_EXTEND") !== "0") {
+        if (prevFull && this.#runtime.value("MLX_BUN_BATCH_EXTEND") !== "0") {
           // extend-join (mlx-lm BatchKVCache.extend semantics, P0): append
           // the new right-justified row to the running buffer in ONE pad +
           // ONE concat — no per-row extraction. Existing pads grow, never
@@ -1283,7 +1284,7 @@ export class MlxBatchExecutionGroup {
     const prev = this.#pendingToks;
     const prevVals: number[] =
       prev ? prev.toIntTokens() : [];
-    if (runtimeValue("MLX_BUN_GRAMMAR_DEBUG") === "1")
+    if (this.#runtime.value("MLX_BUN_GRAMMAR_DEBUG") === "1")
       console.log(`[sg] B=${B} prevVals=${JSON.stringify(prevVals)} current=${JSON.stringify(rows.map((r) => r.current))} sampled=${JSON.stringify(rows.map((r) => r.sampled))}`);
 
     // (2) accept() per live grammar row — fires that row's async bitmask fill.

@@ -51,7 +51,9 @@ import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate"
 import type { KvScheme } from "../kv-scheme";
 import { makeStepSampler } from "../sampler";
 import { MlxBatchExecutionGroup as BatchScheduler, type RowPromptCache } from "../backends/mlx/batch-group";
-import { runtimeValue } from "../runtime-config";
+import { runtimeConfig } from "../runtime-config";
+import { resolveExecution } from "../engine/execution-plan";
+import type { ExecutionRequirements, ResolvedExecution } from "../contracts/execution";
 import type { PromptResponseTrace } from "./prompt-response-trace";
 
 /** Async mutex: acquire() resolves to a release fn; releases run FIFO. */
@@ -133,53 +135,11 @@ export type SerialRun = (
   onToken: OnToken,
   vision?: Vision,
   trace?: PromptResponseTrace,
+  execution?: ResolvedExecution,
 ) => Promise<GenerateStats>;
 
 /** What the batchable decision needs from a request (cheap to compute). */
-export interface RequestShape {
-  readonly hasVision: boolean;
-  readonly hasAdapters: boolean;
-  readonly hasRepetitionPenalty: boolean;
-  /** The user explicitly set `seed` (reproducibility) — not the random default. */
-  readonly userSeed: boolean;
-  /** KV quantization is active. Per-layer configs may use the continuous
-   *  scheduler; uniform schemes use the serial mechanism. */
-  readonly kvQuant: boolean;
-  /** TurboQuant is active (docs/design/turboquant.md). Solo-only in v1:
-   *  TurboQuantKVCache is a novel Cache implementation (not a KVCache/
-   *  RotatingKVCache subclass), so #modelCachesBatchable() already excludes
-   *  it automatically once a request's cache is converted — this flag is the
-   *  BELT on top of that automatic BRACES, an explicit refusal at the
-   *  request-shape level so a turbo request never reaches the scheduler even
-   *  before any cache conversion has happened. Both layers exist on purpose. */
-  readonly turboQuant: boolean;
-  /** Any of the mlx-lm sampler/processor extensions is active: min_p, XTC,
-   *  logit_bias, presence/frequency penalty. INFORMATIONAL ONLY: since the
-   *  continuous scheduler grew per-row samplers/logits processors, these all
-   *  compose. Placement deliberately does not gate on this field (see the
-   *  repetition-penalty note in #supportsContinuous). Kept so /stats and
-   *  scheduling traces can show what
-   *  a request carries. */
-  readonly hasLogitsExtras: boolean;
-  /** A grammar controller compiled for this request (response_format /
-   *  guided_*). Degrade-path requests (compile failed → prompt injection)
-   *  have NO controller and stay batchable — the injection already happened
-   *  at the prompt level. B0 routes grammar to serial; B1 makes it batchable
-   *  (per-row matchers), with MLX_BUN_GRAMMAR_BATCH=0 forcing the B0 serial
-   *  fallback as the A/B + kill switch. */
-  readonly hasGrammar: boolean;
-  /** The request asked for logprobs/top_logprobs capture. Batch-lane logprobs
-   *  are deferred (the scheduler's per-row sampler doesn't capture or read
-   *  back logprob arrays yet), so these route to the serial lane like the
-   *  other mlx-lm request extensions above. */
-  readonly wantsLogprobs: boolean;
-  /** A draft model is configured (serve --draft-model). Server-level and
-   *  upstream-parity: mlx_lm.server sets is_batchable = (draft is None), so
-   *  every request routes serial while a draft is mounted — speculation is a
-   *  B=1 latency optimization, batching a throughput one; they are different
-   *  mechanisms by design (docs/design/batching.md). */
-  readonly hasDraft: boolean;
-}
+export interface RequestShape extends ExecutionRequirements {}
 
 export type GenerationMechanism = "serial" | "continuous";
 
@@ -188,9 +148,11 @@ export type GenerationMechanism = "serial" | "continuous";
 export interface GenerationPlacement {
   readonly shape: RequestShape;
   readonly mechanism: GenerationMechanism;
+  readonly execution?: ResolvedExecution;
 }
 
 export class GenerationGateway {
+  readonly #runtime = runtimeConfig();
   readonly #mutex = new AsyncMutex();
   readonly #batch: number;
   #scheduler: BatchScheduler | null = null;
@@ -208,6 +170,7 @@ export class GenerationGateway {
     private readonly serialRun: SerialRun,
     private readonly opts: {
       kvBudgetBytes?: number;
+      checkpoints?: boolean;
       /** The server-wide KV scheme (server.ts kvScheme) — threaded to the
        *  scheduler at construction when batchable (Phase 3.1). turboQuant is
        *  never threaded to the scheduler (always solo-only — see placement);
@@ -300,7 +263,7 @@ export class GenerationGateway {
           !a.maskArray && !a.layerTypes?.includes("sliding_attention");
         return this.#cacheBatchable;
       }
-      const ssmOk = runtimeValue("MLX_BUN_BATCH_SSM") !== "0";
+      const ssmOk = this.#runtime.value("MLX_BUN_BATCH_SSM") !== "0";
       const proto = this.model.makeCache(); // fresh caches hold no buffers
       this.#cacheBatchable = proto.every(
         (c) =>
@@ -342,49 +305,16 @@ export class GenerationGateway {
     return this.#kvSchemeBatchable;
   }
 
-  /** Whether the declared execution composition is implemented by the
-   *  continuous scheduler. This is a support check only: it never rewrites
-   *  MTP/drafting, KV, TurboQuant, grammar, adapters, or sampling. */
-  #supportsContinuous(shape: RequestShape): boolean {
-    // DiffusionGemma is non-autoregressive — the batch scheduler assumes the AR
-    // KV-cache decode path, so it always runs serially through generate().
-    if (this.model instanceof DiffusionGemmaModel) return false;
-    if (!this.batchingEnabled) return false;
-    if (!this.#modelCachesBatchable()) return false;
-    // repetitionPenalty / logits extras (min_p, XTC, logit_bias,
-    // presence/frequency penalties) batch through the same StepSampler and
-    // per-row device history as the serial lane. (Load-bearing beyond opt-in
-    // knobs: some models — Qwen3.5 — ship a default repetition penalty in
-    // generation_config.json, which used to route EVERY request serial.)
-    return (
-      !shape.hasVision &&
-      !shape.hasAdapters &&
-      !shape.wantsLogprobs &&
-      !shape.userSeed &&
-      // Phase 3.1: a kv-quant request batches when the server's scheme is
-      // the batchable kvConfig composition (the scheduler applies it);
-      // otherwise it routes serial exactly as before.
-      !(shape.kvQuant && !this.#kvBatchable()) &&
-      // TurboQuant: solo-only in v1, unconditionally — never partially
-      // batchable like kvConfig. The automatic instanceof exclusion in
-      // #modelCachesBatchable() already covers this once a cache converts;
-      // this is the explicit belt-and-braces refusal at request-shape time
-      // (mirrors the kvQuant pattern above — both layers exist on purpose).
-      !shape.turboQuant &&
-      !shape.hasDraft &&
-      // Grammar: B1 makes it batchable (per-row matchers) unless the kill
-      // switch forces serial. MLX_BUN_GRAMMAR_BATCH=0 = B0 behavior (serial),
-      // the A/B + kill lever for the new code, house style.
-      !(shape.hasGrammar && runtimeValue("MLX_BUN_GRAMMAR_BATCH") === "0")
-    );
-  }
-
-  place(shape: RequestShape): GenerationPlacement {
+  place(shape: RequestShape, options: GenerateOptions = {}): GenerationPlacement {
     const frozenShape = Object.freeze(shape);
-    return Object.freeze({
-      shape: frozenShape,
-      mechanism: this.#supportsContinuous(frozenShape) ? "continuous" : "serial",
-    });
+    const execution = resolveExecution(frozenShape, {
+      method: this.model instanceof DiffusionGemmaModel ? "denoising" : "autoregressive",
+      continuous: this.batchingEnabled,
+      quantizedBatch: shape.kvQuant && this.#kvBatchable(),
+      grammarBatch: this.#runtime.value("MLX_BUN_GRAMMAR_BATCH") !== "0",
+      checkpoints: this.opts.checkpoints === true,
+    }, { pagedKv: !!options.pagedKv, fill: !!options.fill });
+    return Object.freeze({ shape: frozenShape, mechanism: execution.mechanism, execution });
   }
 
   /** Run `fn` with exclusive ownership of the GPU + shared model state (the
@@ -477,7 +407,7 @@ export class GenerationGateway {
         signal?.throwIfAborted();
         started = true;
         const stats = await this.serialRun(
-          promptIds, signal ? { ...options, signal } : options, hoppingOnToken, vision, trace,
+          promptIds, signal ? { ...options, signal } : options, hoppingOnToken, vision, trace, placement.execution,
         );
         signal?.throwIfAborted();
         return stats;

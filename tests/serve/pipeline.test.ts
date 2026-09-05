@@ -41,7 +41,7 @@ class ScriptedEngine implements CompletionEngine {
   }
 }
 
-function harness(overrides: { maxSafeContext?: number; defaultAdapter?: string } = {}) {
+function harness(overrides: { maxSafeContext?: number; defaultAdapter?: string; preparation?: import("../../src/serve/preparation").PreparationExecutor } = {}) {
   const tokenizer: LoadedTokenizer = {
     encode: () => [7, 8, 9],
     decode: (ids) => ids.map((id) => `t${id}`).join(" "),
@@ -73,13 +73,43 @@ function harness(overrides: { maxSafeContext?: number; defaultAdapter?: string }
   const maxSafeContext = overrides.maxSafeContext ?? 4096;
   const chat = new ChatStage(
     ctx, prep, { peekPrefixLen: (ids: number[]) => { peeks.push(ids); return 0; } },
-    maxSafeContext, overrides.defaultAdapter);
+    maxSafeContext, overrides.defaultAdapter, overrides.preparation);
   const text = new TextCompletionStage(ctx, prep, maxSafeContext, undefined, overrides.defaultAdapter);
   const inference = new InferenceStage(new CompletionExecutor(engine));
-  return { chat, text, inference, engine, peeks, resolvedSpecs };
+  return { chat, text, inference, engine, peeks, resolvedSpecs, prep };
 }
 
 const user = [{ role: "user", content: "hi" }];
+test("native preparation waits for admission and an aborted waiter allocates nothing", async () => {
+  let resume!: () => void;
+  const gate = new Promise<void>((resolve) => { resume = resolve; });
+  let compilations = 0;
+  const h = harness({ preparation: { async run(work) { await gate; return work(); } } });
+  h.prep.compileGrammarForRequest = async () => { compilations++; return { controller: null, degradeHint: null }; };
+  const abort = new AbortController();
+  const pending = h.chat.run(new ChatRequest({ messages: user, response_format: { type: "json_object" } }), "queued", abort.signal)
+    .then(() => null, (error) => error);
+  await Promise.resolve();
+  expect(compilations).toBe(0);
+  abort.abort(new Error("disconnected"));
+  resume();
+  expect((await pending).message).toBe("disconnected");
+  expect(compilations).toBe(0);
+});
+
+test("cancellation during preparation releases its controller before returning", async () => {
+  let disposed = 0;
+  const abort = new AbortController();
+  const h = harness();
+  h.prep.compileGrammarForRequest = async () => {
+    abort.abort(new Error("disconnected"));
+    return { controller: { dispose() { disposed++; } } as never, degradeHint: null };
+  };
+  await expect(h.chat.run(new ChatRequest({ messages: user, response_format: { type: "json_object" } }), "active", abort.signal))
+    .rejects.toThrow("disconnected");
+  expect(disposed).toBe(1);
+});
+
 const signal = new AbortController().signal;
 const rejects = (make: () => unknown, status: number, message: string) => {
   let caught: unknown;

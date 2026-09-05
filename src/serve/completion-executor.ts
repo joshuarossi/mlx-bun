@@ -30,7 +30,7 @@ import type { PromptResponseTrace } from "./prompt-response-trace";
 import { cleanupFailure } from "../engine/resources";
 
 export interface CompletionEngine {
-  place(shape: RequestShape): GenerationPlacement;
+  place(shape: RequestShape, options?: GenerateOptions): GenerationPlacement;
   run(
     promptIds: number[],
     options: GenerateOptions & { stopSequences?: string[] },
@@ -202,7 +202,7 @@ function finalLane(
   stats: GenerateStats,
 ): Lane {
   if (mechanism === "continuous") return "batched";
-  return stats.spec ? "serial+spec" : lane;
+  return stats.spec ? "serial+spec" : "serial";
 }
 
 function finishReason(
@@ -254,12 +254,14 @@ export class CompletionExecutor {
     try {
       if (usageProgress) control.onUsageProgress!(usageProgress);
       const closePlacement = control.trace?.begin("completion.placement");
-      const enginePlacement = this.engine.place(planned.shape);
+      const enginePlacement = this.engine.place(planned.shape, planned.options);
       closePlacement?.();
       if (enginePlacement.shape !== planned.shape)
         throw new Error("generation placement does not belong to this request shape");
       const mechanism = enginePlacement.mechanism;
-      const lane = initialLane(mechanism, planned.shape);
+      const lane = enginePlacement.execution
+        ? (mechanism === "continuous" ? "batched" : enginePlacement.execution.method === "speculative" ? "serial+spec" : "serial")
+        : initialLane(mechanism, planned.shape);
       recordLane(input.requestId, lane);
       const placement = { mechanism, lane, shape: planned.shape };
       input.onPlacement?.(placement);

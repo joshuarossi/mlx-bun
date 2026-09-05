@@ -51,9 +51,29 @@ export class ChatStage {
     /** `serve --adapter <dir>` startup default; a request's explicit
      *  `adapter` (incl. "none") wins. */
     private readonly defaultAdapter?: string,
+    private readonly preparation?: import("./preparation").PreparationExecutor,
   ) {}
 
-  async run(request: ChatRequest, requestId?: string): Promise<InferenceRequest> {
+  async run(request: ChatRequest, requestId?: string, signal?: AbortSignal): Promise<InferenceRequest> {
+    signal?.throwIfAborted();
+    const body = request.params;
+    const native = body.response_format != null || !!body.guided_grammar ||
+      !!body.guided_regex || !!body.guided_choice?.length || body.structured_outputs != null ||
+      body.messages.some((message) => Array.isArray(message.content) &&
+        message.content.some((part) => part.type !== "text"));
+    const build = async () => {
+      signal?.throwIfAborted();
+      const result = await this.runPrepared(request, requestId);
+      if (signal?.aborted) {
+        result.plan.ownership.dispose();
+        signal.throwIfAborted();
+      }
+      return result;
+    };
+    return native && this.preparation ? this.preparation.run(build, signal) : build();
+  }
+
+  private async runPrepared(request: ChatRequest, requestId?: string): Promise<InferenceRequest> {
     const { ctx, prep } = this;
     let body = request.params;
     const id = requestId ?? `chatcmpl-${crypto.randomUUID()}`;

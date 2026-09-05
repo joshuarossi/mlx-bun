@@ -3,7 +3,7 @@ import type { MlxArray } from "../../mlx/array";
 import type { Cache, Gemma4Model } from "../../model/gemma4";
 import type { RuntimeModel } from "../../model/factory";
 import { CompiledDecode } from "../../model/compiled-decode";
-import { flagOn } from "../../runtime-config";
+import { runtimeConfig, type RuntimeConfig } from "../../runtime-config";
 import { bindMlxGraph } from "./graph";
 
 export interface MlxModelMemory {
@@ -30,6 +30,7 @@ export interface MlxDecodeStep {
  * Weights are borrowed for the binding's lifetime; generated caches are owned
  * by the run. Caller-provided caches and media remain borrowed. */
 export interface MlxAutoregressiveBinding {
+  readonly runtime?: RuntimeConfig;
   readonly graph: AutoregressiveGraph<MlxArray, Cache[], MlxArray>;
   readonly eosTokenIds: readonly number[];
   readonly memory: MlxModelMemory;
@@ -46,7 +47,9 @@ export interface MlxAutoregressiveBinding {
 
 /** Keep concrete model and compiled-decode decisions at the legacy boundary. */
 export function bindLegacyAutoregressiveModel(model: RuntimeModel): MlxAutoregressiveBinding {
+  const runtime = runtimeConfig();
   return {
+    runtime,
     graph: bindMlxGraph<Cache[]>(model, {
       id: `legacy:${model.config.modelType}`, artifact: "legacy-resident-model",
       stateAbi: "legacy-cache-array-v1", // not a persistence identity
@@ -59,7 +62,7 @@ export function bindLegacyAutoregressiveModel(model: RuntimeModel): MlxAutoregre
     createDecode(policy) {
       // Preserve the existing Gemma path and exclusions. MoE shapeless replay
       // retraces growing windows; adapters would bake residuals into the tape.
-      if (!flagOn("MLX_BUN_COMPILED_DECODE", true) || policy.hasAdapters || policy.pagedKv ||
+      if (!runtime.flag("MLX_BUN_COMPILED_DECODE", true) || policy.hasAdapters || policy.pagedKv ||
           !model.config.modelType.startsWith("gemma4") || model.config.text.enableMoeBlock)
         return null;
       let compiled: CompiledDecode | null = CompiledDecode.for(model as Gemma4Model);

@@ -48,7 +48,7 @@ export function createLegacyInferenceEngine(
       throwIfCancelled(cancellation);
       if (request.shape.hasVision || request.shape.hasAdapters || request.shape.hasGrammar)
         throw new Error("native request resources require the legacy completion executor");
-      const placement = gateway.place(request.shape);
+      const placement = gateway.place(request.shape, request.options);
       const maxTokens = request.options.maxTokens ?? 512;
       return {
         id: `legacy:${placement.mechanism}`, outputTokenLimit: maxTokens,

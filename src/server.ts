@@ -609,48 +609,14 @@ export function createServer(
       mrope?: MropeRequestState;
     },
     trace?: PromptResponseTrace,
+    execution?: import("./contracts/execution").ResolvedExecution,
   ) => {
-    // Qwen vision: install the request's mRoPE state for every forward of
-    // this serial run (prefill AND decode use the 3D interleaved positions +
-    // delta). Scoped inside the try below — under the serial mutex — so
-    // queued text requests never see it and a throw between here and the
-    // try (makeCache under memory pressure, spec-path early return) can't
-    // leave a DEAD request's positions installed for the next generation
-    // (2026-08-18 review).
-    // Speculative decoding (serve --draft-model): spec-ELIGIBLE requests
-    // decode through the verify loop; the rest fall through to the normal
-    // serial path (never wrong results, just no speedup — logged once per
-    // combination class would be noise, so silent). Eligibility v1:
-    // text-only, base weights, no logprobs capture, bf16 KV — ALL quantized
-    // KV axes excluded (affine kvBits/kvConfig AND turboQuant; the spec loop
-    // builds fresh bf16 caches and never calls maybeQuantizeKv, so routing a
-    // turbo request here would silently drop the operator's KV scheme —
-    // 2026-07-07 review). Grammar COMPOSES (Phase C constrained verify walk
-    // — see the serve-loop.ts header). Prompt-cache reuse is bypassed on
-    // the spec path v1.
-    if (
-      ctx.draft &&
-      !vision &&
-      !options.adapters?.length &&
-      !options.logprobs &&
-      !options.kvBits &&
-      !options.kvConfig &&
-      !options.turboQuant &&
-      // Belt: --paged-kv + --draft-model is refused at createServer; this
-      // keeps the spec lane paged-free even for programmatic callers.
-      !options.pagedKv
-    ) {
+    if (!execution) throw new Error("serial execution requires a resolved plan");
+    if (execution.method === "speculative") {
       const { specServeRun } = await import("./spec/serve-loop");
-      return withModelWiredLimit(
-        ctx.model,
-        () => withModelUsageFlush(
-          ctx.model,
-          () => specServeRun(
-            ctx.model, ctx.draft!.provider, ctx.draft!.numDraftTokens,
-            promptIds, options, onToken,
-          ),
-        ),
-      );
+      return withModelWiredLimit(ctx.model, () => withModelUsageFlush(ctx.model,
+        () => specServeRun(ctx.model, ctx.draft!.provider, ctx.draft!.numDraftTokens,
+          promptIds, options, onToken)));
     }
     // Cache entries are adapter-specific: KV computed under one adapter
     // must never seed another's (or the base's) prefill.
@@ -660,19 +626,18 @@ export function createServer(
     // they run the PLAIN cache path even under --paged-kv (scope the flag
     // per request, never 400). Effective value computed ONCE so the
     // prompt-cache bypass below and the generate() options can't disagree.
-    const pagedKv = vision || options.adapters?.length ? undefined : options.pagedKv;
+    const pagedKv = execution.pagedKv ? options.pagedKv : undefined;
     // Paged requests bypass the prompt cache entirely (v1 non-goal:
     // PagedKVCache has no cloneKvCaches/restore path — the vision
     // precedent). Fresh caches per request, disposed on completion.
-    const skipPromptCache = Boolean(vision || pagedKv);
+    const skipPromptCache = !execution.promptCache;
     const checkpointEvery = serverOptions.generationCheckpointTokens;
-    const checkpointEligible = Boolean(
-      checkpointEvery && ssdStore && !skipPromptCache &&
-      !options.grammar && !options.fill && !options.logprobs &&
-      !(options.topLogprobs && options.topLogprobs > 0),
-    );
+    const checkpointEligible = execution.checkpoint;
     const checkpointKey = checkpointEligible
-      ? generationCheckpointKey(promptIds, options, cacheNs)
+      ? generationCheckpointKey(promptIds, options, cacheNs, execution, {
+          artifact: ctx.profile.artifact, implementation: ctx.profile.profile.execution,
+          stateAbi: "legacy-cache-array-v1",
+        })
       : null;
     // Both tiers in one call (Layer 0): take() prefers a strictly-longer
     // SSD prefix, restores it zero-copy, and trims — see PromptCache.take.
@@ -733,6 +698,7 @@ export function createServer(
       const gen = generate(ctx.model, generationPromptIds, {
         ...options,
         ...(resuming ? { seed: checkpoint!.seed } : {}),
+        fill: execution.fill ? options.fill : undefined,
         pagedKv, // request-scoped (undefined strips the server-wide flag)
         cache: caches,
         ...(resuming
@@ -884,6 +850,7 @@ export function createServer(
   // its idle boundary to avoid competing with generation.
   const gateway = new GenerationGateway(ctx.model, batch, runGeneration, {
     kvBudgetBytes: serverOptions.kvBudgetBytes,
+    checkpoints: !!(serverOptions.generationCheckpointTokens && ssdStore),
     kvScheme: resolvedKvScheme,
     promptCache,
   });
@@ -1018,7 +985,8 @@ export function createServer(
   const prep = createRequestPrep({ ctx, serverOptions, kvScheme, defaultGeneratedTokens });
   const { templateOptionsFor } = prep;
   const chatStage = new ChatStage(
-    ctx, prep, promptCache, admission.maxSafeContext, serverOptions.defaultAdapter);
+    ctx, prep, promptCache, admission.maxSafeContext, serverOptions.defaultAdapter,
+    { run: (work, signal) => gateway.runExclusive(work, undefined, signal) });
   const textStage = new TextCompletionStage(
     ctx, prep, admission.maxSafeContext, defaultGeneratedTokens, serverOptions.defaultAdapter);
   const inferenceStage = new InferenceStage(completionExecutor);
@@ -1423,9 +1391,14 @@ export function createServer(
             const genOpts: GenerateOptions = useCurve
               ? { curve, seed: baseSeed + i, maxTokens, ...kvScheme }
               : { temperature: recipe.temperature, topP: recipe.topP, topK: recipe.topK, seed: baseSeed + i, maxTokens, ...kvScheme };
-            // runExclusive: runGeneration touches the GPU + prompt cache, so
-            // it needs the gateway lock (this endpoint bypasses gateway.run).
-            await gateway.runExclusive(() => runGeneration(ids, genOpts, (t) => { toks.push(t); }));
+            // The same plan and execution lease cover the Lab comparison endpoint.
+            const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false,
+              hasLogitsExtras: false, wantsLogprobs: false, userSeed: true,
+              kvQuant: !!(genOpts.kvBits || genOpts.kvConfig?.length), turboQuant: !!genOpts.turboQuant,
+              hasGrammar: false, hasDraft: !!ctx.draft };
+            const placement = gateway.place(shape, genOpts);
+            await gateway.run(ids, genOpts, (t) => { toks.push(t); }, undefined,
+              shape, placement, request.signal);
             const text = ctx.tokenizer.decode(toks, true).trim();
             samples.push({ text, junk: curveJunk(text) });
           }
@@ -1446,7 +1419,7 @@ export function createServer(
         if (body instanceof Response) return body;
         const meta = openAiMeta(id);
         const a = await admit(
-          inferenceStage, () => chatStage.run(new ChatRequest(body), id), trace, "chat request");
+          inferenceStage, () => chatStage.run(new ChatRequest(body), id, request.signal), trace, "chat request");
         if ("response" in a) return a.response;
         return body.stream
           ? respondStream(inferenceStage, a.admitted, chatCompletionStream(meta), request.signal, trace)
@@ -1498,7 +1471,7 @@ export function createServer(
         }
         const id = `chatcmpl-${crypto.randomUUID()}`;
         const a = await admit(
-          inferenceStage, () => chatStage.run(new ChatRequest(chatBody), id), undefined,
+          inferenceStage, () => chatStage.run(new ChatRequest(chatBody), id, request.signal), undefined,
           "anthropic request", anthropicError);
         if ("response" in a) return a.response;
         if (anthropicBody.stream)
@@ -1570,7 +1543,7 @@ export function createServer(
         }
         const id = `chatcmpl-${crypto.randomUUID()}`;
         const a = await admit(
-          inferenceStage, () => chatStage.run(new ChatRequest(chatBody), id), undefined,
+          inferenceStage, () => chatStage.run(new ChatRequest(chatBody), id, request.signal), undefined,
           "responses request", responsesError);
         if ("response" in a) return a.response;
         if (responsesBody.stream)
