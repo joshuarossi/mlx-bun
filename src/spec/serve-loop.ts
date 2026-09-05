@@ -47,7 +47,8 @@ import type { DisposableResource } from "../contracts/resources";
 import { assertMlxSpeculativeBinding, bindLegacySpeculativeModel, type MlxSpeculativeBinding } from "../backends/mlx/speculative";
 import type { RuntimeModel } from "../model/factory";
 import type { Cache } from "../model/gemma4";
-import type { GenerateOptions, GenerateStats } from "../generate";
+import { withModelUsageFlush, withModelWiredLimit, type GenerateOptions, type GenerateStats } from "../generate";
+import { runtimeConfig, withRuntimeConfig } from "../runtime-config";
 import { makeSampler, makeStepSampler } from "../sampler";
 import type { OnToken } from "../serve/generation-gateway";
 import type { DraftProvider } from "./source";
@@ -85,6 +86,21 @@ export async function specServeRun(
 /** The verifier consumes a bound target and source factory, independent of
  * concrete model classes. Compatibility callers use specServeRun above. */
 export async function specRun(
+  binding: MlxSpeculativeBinding,
+  numDraftTokens: number,
+  promptIds: number[],
+  options: GenerateOptions & { stopSequences?: string[] },
+  onToken: OnToken,
+): Promise<GenerateStats> {
+  return withRuntimeConfig(binding.runtime ?? runtimeConfig(), () => {
+    const run = () => specRunInner(binding, numDraftTokens, promptIds, options, onToken);
+    return binding.memory
+      ? withModelWiredLimit(binding.memory, () => withModelUsageFlush(binding.memory!, run))
+      : run();
+  });
+}
+
+async function specRunInner(
   binding: MlxSpeculativeBinding,
   numDraftTokens: number,
   promptIds: number[],

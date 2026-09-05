@@ -4,6 +4,7 @@ import type { MlxAutoregressiveBinding } from "../../src/backends/mlx/autoregres
 import { bindMlxGraph } from "../../src/backends/mlx/graph";
 import { KVCache, type Cache } from "../../src/model/gemma4";
 import { MlxArray } from "../../src/mlx/array";
+import { configureRuntime, createRuntimeConfig, runtimeValue } from "../../src/runtime-config";
 
 function fixture() {
   const seen = { forwards: 0, steps: 0, allocations: 0, disposals: 0 };
@@ -54,6 +55,36 @@ test("an independent binding runs without a RuntimeModel or class-based dispatch
   const { binding, seen } = fixture();
   expect(await run(binding)).toEqual({ tokens: [2, 3, 4], cacheTokens: [0, 1, 2, 3] });
   expect(seen).toEqual({ forwards: 4, steps: 0, allocations: 1, disposals: 1 });
+});
+
+test("bound kernels and early-close cleanup retain runtime settings across consumer awaits", async () => {
+  const { binding, seen } = fixture();
+  const observed: string[] = [];
+  const forward = binding.graph.forwardHidden.bind(binding.graph);
+  const generation = generateAutoregressive({ ...binding,
+    runtime: createRuntimeConfig({ MLX_BUN_GRAMMAR: "bound" }),
+    memory: { weightsBytes: 0, expertRuntime: { plan: { plannedBytes: 0 }, flushUsage() {
+      observed.push(`cleanup:${runtimeValue("MLX_BUN_GRAMMAR")}`);
+    } } },
+    graph: { ...binding.graph, async forwardHidden(ids, state) {
+      observed.push(`forward:${runtimeValue("MLX_BUN_GRAMMAR")}`);
+      await Promise.resolve();
+      observed.push(`await:${runtimeValue("MLX_BUN_GRAMMAR")}`);
+      return forward(ids, state);
+    } },
+  }, [0, 1], { temperature: 0, maxTokens: 5, prefillChunkSize: 1 });
+  const restore = configureRuntime({ MLX_BUN_GRAMMAR: "host" });
+  try {
+    const iter = generation[Symbol.asyncIterator]();
+    expect((await iter.next()).done).toBe(false);
+    await Promise.resolve();
+    expect(runtimeValue("MLX_BUN_GRAMMAR")).toBe("host");
+    await iter.return(undefined);
+    expect(observed.length).toBeGreaterThan(2);
+    expect(observed.every((value) => value.endsWith(":bound"))).toBe(true);
+    expect(observed.at(-1)).toBe("cleanup:bound");
+    expect(seen.disposals).toBe(1);
+  } finally { restore(); }
 });
 
 test("a replacement binding supplies its own fused decoder to the same loop", async () => {

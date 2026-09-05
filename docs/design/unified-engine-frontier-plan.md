@@ -1438,6 +1438,13 @@ batch replay also honors it, with dynamic cache geometry still allowed to
 decline replay transactionally. A lazily created batch group inherits the
 gateway's runtime snapshot. Composition and snapshot tests cover later config
 changes, adapters, paged/media fallback, speculation, denoising and logprobs.
+Legacy kernel flag reads now resolve through an execution-local runtime snapshot.
+AR/denoising generator resumes and cleanup, the speculative verifier and its
+memory scope, and each batch driver retain that snapshot across awaits. A later
+host configuration change cannot alter a running binding's kernel policy.
+Nested/concurrent scope tests and native binding tests cover early close,
+verification callbacks and lazy batch construction. The scope adds no tensor
+copy, evaluation or device fence; its performance remains part of the paired gate.
 Rejected initial state releases owned caches while preserving borrowed caches.
 Decoder cleanup completes before cache disposal, including early iterator return.
 If execution and decoder cleanup both fail, the aggregate retains both errors.
@@ -1706,3 +1713,9 @@ the original prefix threshold. All six rotating tests pass. Missing new
 continuation fixtures skip explicitly on other machines until regeneration.
 A process that exits successfully without registering tests is not a passing
 matrix cell; absent large-model/drafter fixtures remain open.
+The production test runner now uses a fresh process for each native test file,
+preserving model residency and runtime isolation between cells. The complete
+default runner passed at `9b259da` with this runner change, including hygiene,
+all TypeScript projects, the model-free suite and available parity/research
+tests. Optional cells are reported separately; a green default run does not
+imply unavailable weights or opt-in cases ran.

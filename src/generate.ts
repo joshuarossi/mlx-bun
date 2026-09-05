@@ -34,7 +34,7 @@ import type { TokenLogprobs } from "./contracts/generation";
 export type { TokenLogprobs } from "./contracts/generation";
 import type { PromptResponseTrace } from "./serve/prompt-response-trace";
 import type { KvQuantSpec, TurboQuantScheme } from "./config";
-import { runtimeConfig, runtimeValue, type RuntimeConfig } from "./runtime-config";
+import { runtimeConfig, runtimeValue, withRuntimeConfig, type RuntimeConfig } from "./runtime-config";
 import {
   disposeStepExtras,
   makeStepSampler,
@@ -401,16 +401,23 @@ export interface GeneratedToken {
 
 export class Generation implements AsyncIterable<GeneratedToken> {
   stats: GenerateStats | null = null;
-  readonly #iter: AsyncGenerator<GeneratedToken, GenerateStats>;
+  readonly #next: () => Promise<IteratorResult<GeneratedToken, GenerateStats>>;
+  readonly #return: () => Promise<IteratorResult<GeneratedToken, GenerateStats>>;
 
-  constructor(iter: AsyncGenerator<GeneratedToken, GenerateStats>) {
-    this.#iter = iter;
+  constructor(iter: AsyncGenerator<GeneratedToken, GenerateStats>, runtime = runtimeConfig()) {
+    // Async generators resume in the caller's context on every next/return.
+    // Bind both operations so consumer awaits and early close cannot change
+    // the runtime snapshot seen by kernels or their cleanup.
+    const next = iter.next.bind(iter);
+    const close = () => iter.return(undefined as unknown as GenerateStats);
+    this.#next = () => withRuntimeConfig(runtime, next);
+    this.#return = () => withRuntimeConfig(runtime, close);
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<GeneratedToken> {
     try {
       while (true) {
-        const r = await this.#iter.next();
+        const r = await this.#next();
         if (r.done) {
           this.stats = r.value;
           return;
@@ -423,7 +430,7 @@ export class Generation implements AsyncIterable<GeneratedToken> {
       // disposal, wired/adapter scopes) and capture the stats its
       // early-return path still reports.
       if (this.stats === null) {
-        const r = await this.#iter.return(undefined as unknown as GenerateStats);
+        const r = await this.#return();
         if (r.done && r.value) this.stats = r.value;
       }
     }
@@ -535,7 +542,7 @@ export function generateAutoregressive(
   if (binding.memory.expertRuntime?.finishUsage || binding.memory.expertRuntime?.flushUsage)
     inner = usageScoped(binding.memory, inner);
   return new Generation(modelNeedsWiredLimit(binding.memory, undefined,
-    runtime.value("MLX_BUN_FORCE_WIRE") === "1") ? wiredScoped(inner) : inner);
+    runtime.value("MLX_BUN_FORCE_WIRE") === "1") ? wiredScoped(inner) : inner, runtime);
 }
 
 /** Denoising bindings use their own state and feedback graph. Callers hold
@@ -550,7 +557,7 @@ export function generateDenoising<State>(
     inner = usageScoped(binding.memory, inner);
   const runtime = binding.runtime ?? runtimeConfig();
   return new Generation(modelNeedsWiredLimit(binding.memory, undefined,
-    runtime.value("MLX_BUN_FORCE_WIRE") === "1") ? wiredScoped(inner) : inner);
+    runtime.value("MLX_BUN_FORCE_WIRE") === "1") ? wiredScoped(inner) : inner, runtime);
 }
 
 /** Non-autoregressive diffusion generation, adapted to the AR Generation

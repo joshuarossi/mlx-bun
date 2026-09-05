@@ -64,7 +64,7 @@ import { executeMlxPrefillStep } from "./prefill";
 import { MlxArray } from "../../mlx/array";
 import * as ops from "../../mlx/ops";
 import { activeMemory, cacheMemory, clearCache, Dtype, peakMemory } from "../../mlx/ffi";
-import { runtimeConfig, type RuntimeConfig } from "../../runtime-config";
+import { runtimeConfig, withRuntimeConfig, type RuntimeConfig } from "../../runtime-config";
 import { CompiledDecode } from "../../model/compiled-decode";
 import { legacyCompiledDecodeAvailable } from "./autoregressive";
 import type { Gemma4Model } from "../../model/gemma4";
@@ -371,7 +371,7 @@ export class MlxBatchExecutionGroup {
     this.#kvBudgetBytes = opts.kvBudgetBytes;
     this.#promptCache = opts.promptCache;
     this.#kvScheme = opts.kvScheme;
-    const proto = model.makeCache(); // fresh caches hold no buffers
+    const proto = withRuntimeConfig(this.#runtime, () => model.makeCache()); // fresh caches hold no buffers
     if (this.#kvScheme && !this.#kvScheme.batchable(
       model.config,
       (layerIdx) =>
@@ -404,7 +404,7 @@ export class MlxBatchExecutionGroup {
     this.#compiled =
       this.#runtime.flag("MLX_BUN_COMPILED_DECODE", true) &&
       legacyCompiledDecodeAvailable(model)
-        ? CompiledDecode.for(model as Gemma4Model)
+        ? withRuntimeConfig(this.#runtime, () => CompiledDecode.for(model as Gemma4Model))
         : null;
   }
 
@@ -521,7 +521,7 @@ export class MlxBatchExecutionGroup {
     if (this.#wake) { this.#wake(); return; }
     if (this.#looping || this.#closed) return;
     this.#looping = true;
-    this.#driver = this.#drive();
+    this.#driver = withRuntimeConfig(this.#runtime, () => this.#drive());
     void this.#driver.catch((error) => console.error(`batch scheduler cleanup failed: ${error}`));
   }
 

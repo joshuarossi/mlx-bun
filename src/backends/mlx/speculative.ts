@@ -4,7 +4,8 @@ import type { Cache } from "../../model/gemma4";
 import type { RuntimeModel } from "../../model/factory";
 import type { Sampler } from "../../sampler";
 import type { DraftProvider, DraftSource } from "../../spec/source";
-import { flagOn } from "../../runtime-config";
+import { runtimeConfig, type RuntimeConfig } from "../../runtime-config";
+import type { MlxModelMemory } from "./autoregressive";
 import type { SpeculativeTransaction } from "../../inference/rollback";
 import { bindCacheRollback } from "./rollback";
 import type { GraphDescriptor } from "../../inference/graph";
@@ -14,6 +15,8 @@ import { bindLegacyDraftTarget } from "./draft-target";
  * A replacement graph supplies this entire port, including any hidden taps.
  * The verifier never needs a RuntimeModel or an artifact-family check. */
 export interface MlxSpeculativeBinding {
+  readonly runtime?: RuntimeConfig;
+  readonly memory?: MlxModelMemory;
   readonly descriptor: GraphDescriptor;
   readonly eosTokenIds: readonly number[];
   readonly prefillTailSplit: boolean;
@@ -29,11 +32,14 @@ export interface MlxSpeculativeBinding {
 
 /** Legacy mutable tap/kernel fields require the gateway's exclusive lease. */
 export function bindLegacySpeculativeModel(model: RuntimeModel, provider: DraftProvider): MlxSpeculativeBinding {
+  const runtime = runtimeConfig();
   return {
+    runtime,
+    memory: model,
     descriptor: Object.freeze({ id: `legacy-spec:${model.config.modelType}`, backend: "mlx",
       graphAbi: "mlx-hidden-bsh-v1", stateAbi: "legacy-cache-array-v1", artifact: "legacy-resident-model" }),
     eosTokenIds: model.config.eosTokenIds,
-    prefillTailSplit: flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true),
+    prefillTailSplit: runtime.flag("MLX_BUN_PREFILL_TAIL_SPLIT", true),
     makeCache: model.makeCache.bind(model),
     openDraft: (sampler, caches) => provider.open({ sampler, target: bindLegacyDraftTarget(model, caches) }),
     bindRollback: bindCacheRollback,

@@ -3,6 +3,7 @@ import { MlxBatchExecutionGroup, type BatchRequest } from "../../src/backends/ml
 import { KVCache } from "../../src/model/gemma4-base";
 import type { RuntimeModel } from "../../src/model/factory";
 import type { PromptResponseTrace } from "../../src/serve/prompt-response-trace";
+import { configureRuntime, createRuntimeConfig, runtimeValue } from "../../src/runtime-config";
 
 function fixture() {
   const calls = { allocations: 0, disposals: 0, retains: 0 };
@@ -28,6 +29,25 @@ test("admission callback failure rejects the removed request instead of losing i
     expect(group.pendingRows).toBe(0);
     expect(f.calls.allocations).toBe(1); // constructor's empty prototype only
   } finally { await group.close(); }
+});
+
+test("lazy batch construction and admission execute under the captured runtime", async () => {
+  const f = fixture();
+  const seen: (string | undefined)[] = [];
+  const makeCache = f.model.makeCache.bind(f.model);
+  f.model.makeCache = () => { seen.push(runtimeValue("MLX_BUN_GRAMMAR")); return makeCache(); };
+  const restore = configureRuntime({ MLX_BUN_GRAMMAR: "host" });
+  const group = new MlxBatchExecutionGroup(f.model, { maxBatch: 2,
+    runtime: createRuntimeConfig({ MLX_BUN_GRAMMAR: "bound" }),
+  });
+  try {
+    await expect(group.submit({ ...f.request, onAdmitted() {
+      seen.push(runtimeValue("MLX_BUN_GRAMMAR"));
+      throw new Error("admission failed");
+    } })).rejects.toThrow("admission failed");
+    expect(seen).toEqual(["bound", "bound"]);
+    expect(runtimeValue("MLX_BUN_GRAMMAR")).toBe("host");
+  } finally { await group.close(); restore(); }
 });
 
 test("failure after prefix acquisition releases both caches and backing retention", async () => {

@@ -1,14 +1,8 @@
 #!/bin/bash
-# Run the test suite in two processes (alphabetical halves).
-#
-# Why sharded: 27 model-loading test files in ONE bun process accumulate
-# enough GPU residency on a 24 GB machine that an async Metal allocation
-# eventually fails — which is the documented-UNCATCHABLE error (PLAN
-# Phase 6: the completion-handler throw is std::terminate; bun dies with
-# a crash report and zero test output). Each half passes with headroom;
-# the union deterministically crosses the line. Two processes return all
-# memory between halves. Plain `bun test` still works on machines with
-# more headroom.
+# Keep the model-free tier together; run native test files in fresh processes.
+# Models can retain process-lifetime mmap/native state, and runtime overrides
+# can affect a later file's module initialization. A whole native directory in
+# one process both crosses laptop memory limits and contaminates parity cells.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -19,11 +13,11 @@ bun scripts/check-hygiene.ts || exit 1
 printf '== typecheck (repository, web, portable engine) ==\n'
 bun run typecheck || exit 1
 
-# Shard by DIRECTORY (the directory IS the gate): model-free suites first,
-# then the weights/oracle-gated tiers in their own process so GPU residency
-# from one heavy suite cannot OOM the next (an uncatchable std::terminate).
-echo "== shard 1/2: tests/unit tests/serve tests/using (model-free) =="
+echo "== model-free: tests/unit tests/serve tests/using =="
 bun test tests/unit tests/serve tests/using || exit 1
-echo "== shard 2/2: tests/parity tests/research (weights/oracle-gated) =="
-bun test tests/parity tests/research || exit 1
-echo "== all shards green =="
+for file in tests/parity/*.test.ts tests/research/*.test.ts; do
+  [ -f "$file" ] || continue
+  echo "== native: $file =="
+  bun test "$file" || exit 1
+done
+echo "== all test tiers green =="

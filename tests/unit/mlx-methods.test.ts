@@ -10,6 +10,8 @@ import type { MlxAutoregressiveBinding } from "../../src/backends/mlx/autoregres
 import type { MlxDenoisingBinding } from "../../src/backends/mlx/diffusion";
 import type { InferenceMethod, Timer } from "../../src/contracts/generation";
 import type { GenerateStats } from "../../src/generate";
+import { specRun } from "../../src/spec/serve-loop";
+import { configureRuntime, createRuntimeConfig, runtimeValue } from "../../src/runtime-config";
 
 const timer: Timer = { after(ms, callback) { const id = setTimeout(callback, ms); return () => clearTimeout(id); } };
 
@@ -73,6 +75,31 @@ function fixture(fail = false) {
   };
   return { calls, ar, spec, denoising };
 }
+
+test("speculative execution retains bound settings through verification, callbacks and cleanup", async () => {
+  const { spec, calls } = fixture();
+  const observed: (string | undefined)[] = [];
+  const record = () => { observed.push(runtimeValue("MLX_BUN_GRAMMAR")); };
+  const binding: MlxSpeculativeBinding = { ...spec,
+    runtime: createRuntimeConfig({ MLX_BUN_GRAMMAR: "bound" }),
+    memory: { weightsBytes: 0, expertRuntime: { plan: { plannedBytes: 0 }, flushUsage: record } },
+    async forward(ids, caches, taps) {
+      record(); await Promise.resolve(); record();
+      return spec.forward(ids, caches, taps);
+    },
+  };
+  const restore = configureRuntime({ MLX_BUN_GRAMMAR: "host" });
+  try {
+    await specRun(binding, 2, [0, 1], { maxTokens: 4, temperature: 0 }, async () => {
+      await Promise.resolve(); record();
+    });
+    expect(observed.length).toBeGreaterThan(4);
+    expect(observed.every((value) => value === "bound")).toBe(true);
+    expect(runtimeValue("MLX_BUN_GRAMMAR")).toBe("host");
+    expect(calls.caches).toBe(1);
+    expect(calls.sources).toBe(1);
+  } finally { restore(); }
+});
 
 for (const method of ["AR", "speculative", "denoising"] as const) {
   describe(`${method} uses the common native method/session contract`, () => {
