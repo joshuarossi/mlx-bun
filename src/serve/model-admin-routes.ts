@@ -38,7 +38,8 @@ export async function handleModelAdminRoute(
   switch (route.kind) {
     case "embeddings": {
       const binding = modelServingBinding(ctx);
-      if (!binding.embed) {
+      const embed = binding.embed?.bind(binding);
+      if (!embed) {
         return Response.json({
           error: {
             message: `served model "${ctx.modelId}" is not an embedding model; ` +
@@ -67,7 +68,7 @@ export async function handleModelAdminRoute(
         }, { status: 400 });
       }
       const instruction = typeof body.instruction === "string" ? body.instruction : undefined;
-      const results = binding.embed(inputs, instruction);
+      const results = await gateway.runExclusive(async () => embed(inputs, instruction), undefined, request.signal);
       let totalTokens = 0;
       const data = results.map((result, index) => {
         totalTokens += result.tokens;

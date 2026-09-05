@@ -6,6 +6,8 @@ The default concurrency cap is eight. Eligible requests use continuous batching;
 `--batch 1` pins serial execution. Both use the shared generation session for
 output, cancellation and cleanup. Each model implementation supplies its own
 execution methods; protocol handlers do not select a concrete model class.
+Embedding execution also acquires the shared model/GPU lease, so it waits for
+active generation or model mutation before running.
 
 This is the canonical wire reference: every route the server registers is
 listed below, and every field documented here exists in the code that
