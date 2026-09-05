@@ -1,3 +1,9 @@
+import { ExecutionCoordinator } from "../engine/execution-coordinator";
+import { AdmissionPool, AdmissionRejected } from "../engine/admission";
+import { acquireReservation } from "./preparation";
+import { createParentApplication } from "./parent-application";
+import type { DisposableResource } from "../contracts/resources";
+import { retainResponseLease } from "./response-lease";
 import type { EngineHost } from "../contracts/host";
 // Runtime isolation — the parent half (docs/reference/server-config.md).
 //
@@ -34,6 +40,8 @@ import { join } from "node:path";
 
 /** How to (re)start the engine child. `argv[0]` is the executable. */
 export interface EngineSpec {
+  /** Parent-owned activity lease; covers startup and complete response bodies. */
+  acquire?: (signal: AbortSignal) => Promise<DisposableResource>;
   argv: string[];
   socketPath: string;
   /** Max ms to wait for the child's /health after spawn (weights load —
@@ -60,6 +68,7 @@ export class EngineChild implements EngineHost<Request, Response> {
   #proc: ReturnType<typeof Bun.spawn> | null = null;
   #ready: Promise<void>;
   #stopping = false;
+  #lifetime = new AbortController();
   restarts = 0;
   #lastSpawnAt = 0;
   #restartTimes: number[] = [];
@@ -82,55 +91,69 @@ export class EngineChild implements EngineHost<Request, Response> {
 
   async #spawn(): Promise<void> {
     if (this.#stopping) throw new Error("engine host is closed");
-    this.#lastSpawnAt = Date.now();
-    try { unlinkSync(this.spec.socketPath); } catch {}
-    const proc = Bun.spawn(this.spec.argv, {
-      stdio: ["ignore", "inherit", "inherit"], // load progress → user's terminal
-      env: process.env,
-    });
-    this.#proc = proc;
-    void proc.exited.then((code) => {
-      if (this.#stopping || this.#proc !== proc) return;
-      const now = Date.now();
-      const window = this.spec.restartWindowMs ?? 60_000;
-      this.#restartTimes = this.#restartTimes.filter((time) => now - time < window);
-      if (this.#restartTimes.length >= (this.spec.maxRestarts ?? 3)) {
-        this.#ready = Promise.reject(new Error(`engine restart limit reached after exit ${code}`));
-        void this.#ready.catch(() => {});
-        return;
-      }
-      this.#restartTimes.push(now);
-      console.error(`[isolate] engine exited (code ${code}) — respawning`);
-      this.restarts++;
-      // Crash-loop backoff: an engine that dies within 10 s of spawning
-      // (bad flags, OOM on load) waits 5 s before the retry.
-      const delay = this.spec.restartDelayMs ?? (Date.now() - this.#lastSpawnAt < 10_000 ? 5_000 : 0);
-      this.#ready = new Promise<void>((resolve) => {
-        this.#wakeBackoff = resolve;
-        this.#backoff = setTimeout(resolve, delay);
-      }).then(() => {
-        this.#backoff = undefined; this.#wakeBackoff = undefined;
-        return this.#spawn();
+    const lease = await this.spec.acquire?.(this.#lifetime.signal);
+    let starting: ReturnType<typeof Bun.spawn> | undefined;
+    let healthy = false;
+    try {
+      if (this.#stopping) throw new Error("engine host is closed");
+      this.#lastSpawnAt = Date.now();
+      try { unlinkSync(this.spec.socketPath); } catch {}
+      const proc = Bun.spawn(this.spec.argv, {
+        stdio: ["ignore", "inherit", "inherit"], // load progress → user's terminal
+        env: process.env,
       });
-      void this.#ready.catch(() => {});
-    });
-    // Health-gate: poll the child's /health over the socket until it
-    // answers — model load happens behind this.
-    const deadline = Date.now() + (this.spec.readyTimeoutMs ?? 15 * 60_000);
-    while (Date.now() < deadline) {
-      if (this.#stopping || proc.killed || proc.exitCode !== null || this.#proc !== proc)
-        throw new Error("engine died during startup");
-      try {
-        const r = await fetch("http://engine/health", {
-          unix: this.spec.socketPath,
-          signal: AbortSignal.timeout(2_000),
-        } as RequestInit & { unix: string });
-        if (r.ok) return;
-      } catch { /* not up yet */ }
-      await new Promise((r) => setTimeout(r, 250));
+      this.#proc = proc;
+      starting = proc;
+      void proc.exited.then((code) => {
+        if (this.#stopping || this.#proc !== proc) return;
+        const now = Date.now();
+        const window = this.spec.restartWindowMs ?? 60_000;
+        this.#restartTimes = this.#restartTimes.filter((time) => now - time < window);
+        if (this.#restartTimes.length >= (this.spec.maxRestarts ?? 3)) {
+          this.#ready = Promise.reject(new Error(`engine restart limit reached after exit ${code}`));
+          void this.#ready.catch(() => {});
+          return;
+        }
+        this.#restartTimes.push(now);
+        console.error(`[isolate] engine exited (code ${code}) — respawning`);
+        this.restarts++;
+        // Crash-loop backoff: an engine that dies within 10 s of spawning
+        // (bad flags, OOM on load) waits 5 s before the retry.
+        const delay = this.spec.restartDelayMs ?? (Date.now() - this.#lastSpawnAt < 10_000 ? 5_000 : 0);
+        this.#ready = new Promise<void>((resolve) => {
+          this.#wakeBackoff = resolve;
+          this.#backoff = setTimeout(resolve, delay);
+        }).then(() => {
+          this.#backoff = undefined; this.#wakeBackoff = undefined;
+          return this.#spawn();
+        });
+        void this.#ready.catch(() => {});
+      });
+      // Health-gate: poll the child's /health over the socket until it
+      // answers — model load happens behind this.
+      const deadline = Date.now() + (this.spec.readyTimeoutMs ?? 15 * 60_000);
+      while (Date.now() < deadline) {
+        if (this.#stopping || proc.killed || proc.exitCode !== null || this.#proc !== proc)
+          throw new Error("engine died during startup");
+        try {
+          const r = await fetch("http://engine/health", {
+            unix: this.spec.socketPath,
+            signal: AbortSignal.timeout(2_000),
+          } as RequestInit & { unix: string });
+          if (r.ok) { healthy = true; return; }
+        } catch { /* not up yet */ }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      proc.kill();
+      throw new Error("engine did not become healthy in time");
+    } finally {
+      if (!healthy && starting && starting.exitCode === null) {
+        starting.kill();
+        const force = setTimeout(() => { if (starting!.exitCode === null) starting!.kill("SIGKILL"); }, 3000);
+        try { await starting.exited; } finally { clearTimeout(force); }
+      }
+      lease?.dispose();
     }
-    proc.kill();
-    throw new Error("engine did not become healthy in time");
   }
 
   /** Forward one request to the child; the response streams through.
@@ -162,29 +185,55 @@ export class EngineChild implements EngineHost<Request, Response> {
     });
     if (this.#stopping) throw new Error("engine host is closed");
     request.signal.throwIfAborted();
-    const headers = new Headers();
-    request.headers.forEach((v, k) => {
-      if (!HOP_BY_HOP.has(k.toLowerCase())) headers.set(k, v);
-    });
-    const proxied = await fetch(request.url, {
-      method: request.method,
-      headers,
-      body: request.body,
-      signal: request.signal, // client abort → child sees the disconnect
-      redirect: "manual",
-      unix: this.spec.socketPath,
-      // Streaming request bodies need half-duplex; buffered bodies ignore it.
-      duplex: "half",
-    } as RequestInit & { unix: string; duplex: string });
-    const outHeaders = new Headers();
-    proxied.headers.forEach((v, k) => {
-      if (!HOP_BY_HOP.has(k.toLowerCase())) outHeaders.set(k, v);
-    });
-    return new Response(proxied.body, { status: proxied.status, headers: outHeaders });
+    const signal = AbortSignal.any([request.signal, this.#lifetime.signal]);
+    const lease = await this.spec.acquire?.(signal);
+    try {
+      signal.throwIfAborted();
+      const headers = new Headers();
+      request.headers.forEach((v, k) => {
+        if (!HOP_BY_HOP.has(k.toLowerCase())) headers.set(k, v);
+      });
+      const proxied = await fetch(request.url, {
+        method: request.method,
+        headers,
+        body: request.body,
+        signal, // client abort → child sees the disconnect
+        redirect: "manual",
+        unix: this.spec.socketPath,
+        // Streaming request bodies need half-duplex; buffered bodies ignore it.
+        duplex: "half",
+      } as RequestInit & { unix: string; duplex: string });
+      const outHeaders = new Headers();
+      proxied.headers.forEach((v, k) => {
+        if (!HOP_BY_HOP.has(k.toLowerCase())) outHeaders.set(k, v);
+      });
+      const response = new Response(proxied.body, { status: proxied.status, headers: outHeaders });
+      return lease ? retainResponseLease(response, lease) : response;
+    } catch (error) { lease?.dispose(); throw error; }
+  }
+
+  /** A live UDS response owns the worker's native lease. Disconnect releases it
+   * even if the parent crashes. External cancellation applies to acquisition;
+   * the returned owner alone releases an admitted lease after job death. */
+  async reserveExecution(signal: AbortSignal): Promise<DisposableResource> {
+    if (!this.#proc || this.#proc.exitCode !== null) return { dispose() {} };
+    const abort = new AbortController();
+    const cancel = () => abort.abort(signal.reason);
+    signal.throwIfAborted();
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      const response = await fetch("http://engine/admin/lease", {
+        method: "POST", unix: this.spec.socketPath, signal: abort.signal,
+      } as RequestInit & { unix: string });
+      if (!response.ok) { await response.body?.cancel(); throw new Error(`worker lease failed (${response.status})`); }
+      return { dispose() { abort.abort(); void response.body?.cancel().catch(() => {}); } };
+    } catch (error) { abort.abort(); throw error; }
+    finally { signal.removeEventListener("abort", cancel); }
   }
 
   stop(): void {
     this.#stopping = true;
+    this.#lifetime.abort(new Error("engine host is closed"));
     clearTimeout(this.#backoff);
     this.#wakeBackoff?.();
     this.#proc?.kill();
@@ -218,6 +267,7 @@ export class ModelPool {
   #children = new Map<string, EngineChild>(); // repoId → child
   #lru: string[] = []; // most-recent last
   #spawning = new Map<string, Promise<EngineChild>>();
+  #coldStarts = new AdmissionPool(1);
   #starting = new Set<EngineChild>();
   #stopping = false;
   readonly defaultKey: string;
@@ -273,10 +323,14 @@ export class ModelPool {
     const inflight = this.#spawning.get(resolved.repoId);
     if (inflight) return inflight.then(() => this.#use(resolved.repoId));
     const spawnP = (async () => {
+      const admission = await this.#coldStarts.acquire();
+      try {
+      if (this.#stopping) throw new Error("model pool is closed");
       const sock = this.#socketFor(resolved.repoId);
       const child = new EngineChild(resolved.repoId === this.defaultKey ? this.opts.defaultChild.spec : {
         argv: [...this.opts.selfArgv, ...engineArgvForModel(this.opts.rawArgs, sock, resolved.path)],
         socketPath: sock,
+        acquire: this.opts.defaultChild.spec.acquire,
       });
       this.#starting.add(child);
       try {
@@ -290,6 +344,7 @@ export class ModelPool {
         await child.close();
         throw error;
       } finally { this.#starting.delete(child); }
+      } finally { admission.dispose(); }
     })();
     this.#spawning.set(resolved.repoId, spawnP);
     try {
@@ -313,22 +368,28 @@ export class ModelPool {
       const victim = this.#lru.find((k) => this.#children.has(k));
       if (!victim || this.#children.size <= 1) return;
       const child = this.#children.get(victim)!;
-      this.#children.delete(victim);
-      this.#lru = this.#lru.filter((k) => k !== victim);
+      const lease = await child.spec.acquire?.(AbortSignal.timeout(120_000));
       try {
-        await fetch("http://engine/admin/drain", {
-          method: "POST",
-          unix: child.spec.socketPath,
-          signal: AbortSignal.timeout(120_000),
-        } as RequestInit & { unix: string });
-      } catch { /* best-effort — state also persists via evict-spill */ }
-      await child.close();
-      console.log(`[isolate] evicted engine ${victim} (pool cap ${this.opts.poolMax})`);
+        // Another overlapping eviction may have completed while we waited.
+        if (this.#children.get(victim) !== child) continue;
+        this.#children.delete(victim);
+        this.#lru = this.#lru.filter((k) => k !== victim);
+        try {
+          const response = await fetch("http://engine/admin/drain", {
+            method: "POST", unix: child.spec.socketPath,
+            signal: AbortSignal.timeout(120_000),
+          } as RequestInit & { unix: string });
+          await response.arrayBuffer();
+        } catch { /* best-effort — state also persists via evict-spill */ }
+        await child.close();
+        console.log(`[isolate] evicted engine ${victim} (pool cap ${this.opts.poolMax})`);
+      } finally { lease?.dispose(); }
     }
   }
 
   stopAll(): void {
     this.#stopping = true;
+    this.#coldStarts.close();
     for (const child of new Set([...this.#children.values(), ...this.#starting])) child.stop();
     this.#children.clear();
     this.#lru = [];
@@ -349,6 +410,8 @@ const MODEL_ROUTED = new Set([
 ]);
 
 export interface ProxyServerOptions {
+  /** Application-store injection for embedded hosts and model-free tests. */
+  createJobStore?: () => Promise<import("../jobs/db").JobStore>;
   port: number;
   hostname?: string;
   engine: EngineSpec;
@@ -370,11 +433,61 @@ export function startProxyServer(opts: ProxyServerOptions): {
   server: ReturnType<typeof Bun.serve>;
   engine: EngineChild;
   pool: ModelPool | null;
+  close(): Promise<void>;
 } {
-  const engine = new EngineChild(opts.engine);
+  const coordinator = new ExecutionCoordinator();
+  const acquire = (mode: "shared" | "exclusive", signal: AbortSignal) =>
+    acquireReservation({ acquire: (cancellation) => coordinator.acquire(mode, cancellation) }, signal);
+  const engine = new EngineChild({ ...opts.engine, async acquire(signal) {
+    const parent = await acquire("shared", signal);
+    try {
+      const supplied = await opts.engine.acquire?.(signal);
+      return { dispose() { try { supplied?.dispose(); } finally { parent.dispose(); } } };
+    } catch (error) { parent.dispose(); throw error; }
+  } });
   const pool = opts.pool
     ? new ModelPool({ ...opts.pool, defaultChild: engine })
     : null;
+  const children = () => pool ? pool.residentKeys.map((key) => pool.child(key)!).filter(Boolean) : [engine];
+  const forwardRequest = async (request: Request): Promise<Response> => {
+    const url = new URL(request.url);
+    // P2 routing: generation endpoints carry `model` in the JSON body —
+    // buffer it (small), pick/spawn that model's child, forward the
+    // buffered body. Everything else rides the default engine.
+    if (pool && request.method === "POST" && MODEL_ROUTED.has(url.pathname)) {
+      const raw = await request.text();
+      let modelField: string | undefined;
+      try { modelField = (JSON.parse(raw) as { model?: string }).model; } catch { /* malformed → default child answers with its own 400 */ }
+      const target = await pool.childFor(modelField);
+      return await target.forward(new Request(request.url, {
+        method: request.method,
+        headers: request.headers,
+        body: raw,
+        signal: request.signal,
+      }));
+    }
+    return await (pool ? await pool.childFor(undefined) : engine).forward(request);
+  };
+  const application = createParentApplication({
+    createJobStore: opts.createJobStore,
+    serverPort: () => server.port,
+    async acquireGpu(signal) {
+      const lease = await acquire("exclusive", signal);
+      try {
+        // Network cancellation is not a native completion fence. Explicitly
+        // drain every resident worker before the subprocess may touch the GPU.
+        const results = await Promise.allSettled(children().map((child) => child.reserveExecution(signal)));
+        const held = results.filter((result) => result.status === "fulfilled").map((result) => result.value);
+        const failed = results.find((result) => result.status === "rejected");
+        if (failed) { for (const worker of held) worker.dispose(); throw failed.reason; }
+        return { dispose() { for (const worker of held) worker.dispose(); lease.dispose(); } };
+      } catch (error) { lease.dispose(); throw error; }
+    },
+    invalidateLibrary() {
+      for (const child of children()) void child.forward(new Request("http://engine/library?refresh=1"))
+        .then((response) => response.arrayBuffer()).catch(() => {});
+    },
+  });
   const server = Bun.serve({
     port: opts.port,
     ...(opts.hostname ? { hostname: opts.hostname } : {}),
@@ -389,29 +502,19 @@ export function startProxyServer(opts: ProxyServerOptions): {
       if (url.pathname === "/engine" && request.method === "GET")
         return Response.json({
           isolated: true,
+          response_store: application.responseStats,
           pid: engine.pid,
           restarts: engine.restarts,
           socket: engine.spec.socketPath,
           ...(pool ? { pool: { resident: pool.residentKeys, default: pool.defaultKey } } : {}),
         });
       try {
-        // P2 routing: generation endpoints carry `model` in the JSON body —
-        // buffer it (small), pick/spawn that model's child, forward the
-        // buffered body. Everything else rides the default engine.
-        if (pool && request.method === "POST" && MODEL_ROUTED.has(url.pathname)) {
-          const raw = await request.text();
-          let modelField: string | undefined;
-          try { modelField = (JSON.parse(raw) as { model?: string }).model; } catch { /* malformed → default child answers with its own 400 */ }
-          const target = await pool.childFor(modelField);
-          return await target.forward(new Request(request.url, {
-            method: request.method,
-            headers: request.headers,
-            body: raw,
-            signal: request.signal,
-          }));
-        }
-        return await engine.forward(request);
+        const local = await application.handle(request, forwardRequest);
+        if (local) return local;
+        return await forwardRequest(request);
       } catch (e) {
+        if (e instanceof AdmissionRejected) return Response.json(
+          { error: { message: e.message, type: "resource_admission", code: "queue_full" } }, { status: 429 });
         if (request.signal.aborted) return new Response(null, { status: 499 });
         return Response.json(
           {
@@ -425,7 +528,13 @@ export function startProxyServer(opts: ProxyServerOptions): {
       }
     },
   });
-  return { server, engine, pool };
+  let closing: Promise<void> | undefined;
+  return { server, engine, pool, close: () => closing ??= (async () => {
+    await server.stop(true);
+    coordinator.close();
+    await application.close();
+    if (pool) await pool.close(); else await engine.close();
+  })() };
 }
 
 /** serve's value-taking flags — needed to tell a flag VALUE from the bare

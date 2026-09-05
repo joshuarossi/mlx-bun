@@ -648,7 +648,7 @@ fused execution without extra copies, materialization, or synchronization.
 Branch: `refactor/interface-engine-v2`. R0–R10 follow the dependencies in §12.10.
 Toolchain, stop-aware checkpoint keys, queue/prefill cancellation, portable
 sessions, the text bridge, replaceable MLX AR bindings, and engine-owned implementation selection are implemented.
-R1 complete: method-neutral lifecycle and import gates; details in architecture §12.13.
+R1/R8 complete: method-neutral lifecycle, application clients/tasks and import gates; details in architecture §12.13.
 Shared serial/batch prefill and portable Pi/web protocols are implemented.
 R0 still owes baseline capture and reconciliation of the other machine’s Metal OOM fix.
 
@@ -659,7 +659,6 @@ R0 still owes baseline capture and reconciliation of the other machine’s Metal
 - [ ] **R5** Shared AR prefill/session execution; cancellation at every safe boundary.
 - [ ] **R6** Speculative, fill/grammar and diffusion implementations behind method interfaces.
 - [ ] **R7** Scheduler policy separated from native batching; preserve B=1 and dynamic-row behavior.
-- [ ] **R8** Client/task interfaces for applications; shared protocol types and async library bootstrap.
 - [ ] **R9** Adapt existing isolation/model pool; coordinate managed GPU resources and failure handling.
 - [ ] **R10** Full conformance/frontier scorecard, measured specialization selection, cutover and legacy removal.
 

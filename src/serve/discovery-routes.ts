@@ -46,7 +46,7 @@ export function createDiscoveryRoutes(
     async handle(url, request) {
       switch (matchDiscoveryRoute(request.method, url.pathname)) {
         case "library": {
-          if (!libraryCache || Date.now() - libraryCache.at > 30_000) {
+          if (url.searchParams.get("refresh") === "1" || !libraryCache || Date.now() - libraryCache.at > 30_000) {
             const { Registry, visionCapable, audioCapable } = await import("../registry");
             const { loadModelConfig } = await import("../config");
             const { supportTier } = await import("../model/support");

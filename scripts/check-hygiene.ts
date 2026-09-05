@@ -510,7 +510,7 @@ function checkTestTiers(): string[] {
 const LAB_IMPORT_ALLOWLIST = new Set([
   "src/sampler.ts -> lab/curve/curve-sampler",       // HLG/curve sampler wired into the sampler
   "src/server.ts -> lab/curve/curve-sampler",        // --curve-* flags + /curves route
-  "src/server.ts -> lab/curve/curve-designer.html",  // designer page inlined into the binary
+  "src/web-assets.ts -> lab/curve/curve-designer.html",  // designer page inlined into the binary
   "src/serve/static-routes.ts -> lab/curve/curve-designer.html",
   "src/generate.ts -> lab/paged-kv/paged-kv",        // --paged-kv (serial-only option)
   "src/model/gemma4.ts -> lab/expert-trace/expert-trace", // MLX_BUN_EXPERT_TRACE hook

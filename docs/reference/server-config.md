@@ -93,7 +93,7 @@ operation already running completes before that boundary.
 
 | Flag | Arg | Default | Lane/tier | What it does |
 | --- | --- | --- | --- | --- |
-| `--isolate` | (bool) | off | both | Run the inference engine as a **child process** on a unix socket while this process stays a pure UI/API reverse proxy — instant under any GPU load, survives engine crashes (auto-respawn). Full semantics in [`--isolate` semantics](#--isolate-semantics). |
+| `--isolate` | (bool) | off | both | Run the inference engine as a **child process** on a unix socket while this process owns CPU application routes and proxies inference — instant under any GPU load, survives engine crashes (auto-respawn). Full semantics in [`--isolate` semantics](#--isolate-semantics). |
 | `--model-pool` | n (≥1) | `1` | both | With `--isolate`: max **resident** model engines. A request whose `model` field is an **exact** `/v1/models` id spawns/routes to that model's own engine child (spawn-overlap: the new model loads while the old keeps serving). Over the cap the least-recently-used engine is drained (`POST /admin/drain` over its socket), demotes its prompt cache to the SSD tier, and exits; switching back respawns it with state restored from disk. Without `--isolate` the flag warns and is ignored. |
 
 ### Scheduling
@@ -211,11 +211,15 @@ Design and measurements: [docs/reference/server-config.md](./server-config.md)
 - **Readiness.** The parent polls the child's `/health` over the socket
   (up to 15 minutes — large models take a while) and prints "engine ready
   pid N". Requests arriving earlier wait on that readiness.
-- **Proxying.** Every HTTP request is forwarded verbatim over the unix
+- **Application state.** The web shell, job submissions, records, progress streams, settings and
+  Responses conversation history live in the CPU-only parent, so worker death or model eviction does not remove
+  them. Native inspection/merge/export and generation still execute in workers.
+  WebSocket chat retains its existing unsupported status under isolation.
+- **Proxying.** Remaining HTTP requests are forwarded over the unix
   socket (hop-by-hop headers stripped, SSE streams through, a client
   abort aborts the proxied fetch so the engine sees the disconnect).
   `GET /engine` answers from the parent:
-  `{ isolated: true, pid, restarts, socket, pool?: { resident, default } }`.
+  `{ isolated: true, pid, restarts, socket, response_store, pool?: { resident, default } }`.
   `/ws/chat` is **not proxied** — `501` with a pointer to run without
   `--isolate` for the web chat UI.
 - **Crashes.** A child exit (uncatchable Metal OOM/SIGTRAP included) is
@@ -234,9 +238,16 @@ Design and measurements: [docs/reference/server-config.md](./server-config.md)
   semantics). Eviction over the cap: `POST /admin/drain` on the victim's
   socket (gateway quiesce + demote its prompt cache to the SSD tier),
   then stop; `/admin/drain` is unix-socket-only, never on the TCP
-  listener. `--model-pool` is clamped to ≥ 1.
-- **Shutdown.** `SIGINT`/`SIGTERM` on the parent stops every child and
-  unlinks the sockets.
+  listener. Cold model starts are serialized through a bounded queue while the
+  resident model keeps serving; concurrent switches cannot evict a newly loaded
+  worker before its pending request is returned. `--model-pool` is clamped to ≥ 1.
+- **Managed GPU jobs.** A FIFO parent coordinator waits for active worker
+  responses, then holds a native execution lease inside every resident worker
+  before spawning a quantization/finetuning job. Startup, restart and eviction
+  participate in admission too. Job exit releases those leases. Dataset jobs use
+  the same loopback completion API and keep their progress in the parent.
+- **Shutdown.** `SIGINT`/`SIGTERM` cancels queued jobs, stops the active GPU job,
+  waits for in-process task cleanup, then closes workers and unlinks sockets.
 
 ## Near-ceiling models on small machines (24 GB)
 
@@ -685,5 +696,5 @@ Managed quantization and finetuning jobs wait for the serving gateway to drain,
 then hold its execution lease until their subprocess exits. Generation and native
 preparation wait during that job. Shutdown cancels queued jobs and terminates the
 host's active job before releasing its lease. Resident model weights remain
-loaded; the lease coordinates execution within that server, not memory capacity
-or independent servers/model-pool workers.
+loaded. Under isolation, the parent coordinates all of its model-pool workers.
+This controls execution, not memory capacity or independently launched servers.

@@ -1596,7 +1596,7 @@ this integration, including rotating joins, failure containment, prefix/SSD reus
 and compiled B=1. The gateway's shared execution lease covers preparation,
 generation and managed GPU jobs.
 
-R8 completion/batch/task contracts are portable. Memory calls accept an injected
+R8 is complete: completion/batch/task contracts are portable. Memory calls accept an injected
 client; their existing native implementation moved behind a lazy backend import.
 Eval generation accepts a replacement completion client and retains its separate
 bit-exact greedy oracle path in the MLX backend. Training and quantization keep
@@ -1623,10 +1623,20 @@ Managed GPU subprocess jobs reserve the same gateway lease as inference: the
 current batch drains before spawn, and the job retains the lease through child
 exit, including crashes. Host shutdown cancels admission/queued jobs and terminates
 its active job before releasing the lease. Fault tests cover rejected admission,
-spawn failure, child death and shutdown. This coordination is scoped to one
-server gateway; cross-worker model-pool coordination and moving application state
-out of the existing full-server worker remain R9 work. No process-host default
-has changed.
+spawn failure, child death and shutdown. The isolation parent now owns job/settings routes and their store. A portable
+shared/exclusive coordinator covers every worker's startup, restart, response
+body and eviction. Before GPU job spawn, live UDS lease responses reserve each
+worker's gateway after durability flush; disconnect releases the worker lock.
+Those connections remain owned through subprocess exit, not merely until a
+client HTTP disconnect. Native MiniCPM checks verify that generation waits for
+the parent lease and resumes after release. Worker death does not remove parent
+job records. In-process task cancellation waits for runner cleanup before closing
+the store. The parent serves the same embedded web assets and owns Responses
+conversation history; direct and isolated serving share conversation-resolution
+policy. Workers skip duplicate history retention for parent-owned requests. A
+real worker replacement preserves previous-response continuation and streamed
+metadata. WebSocket chat remains an explicit unsupported isolation cell. No
+process-host default has changed.
 
 The current model-free suite passes; root, browser and portable typechecks pass.
 Native state checks cover mixed-KV oracle logits, wrapped-ring conversion,

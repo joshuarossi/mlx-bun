@@ -4,7 +4,7 @@ import { createMemoryCalls } from "../../src/memory/model";
 
 test("CPU entry points import with an unusable native library path", async () => {
   const process = Bun.spawn([Bun.which("bun")!, "-e",
-    'await import("mlx-bun/engine"); await import("mlx-bun/client"); await import("./src/memory/model.ts");'], {
+    'await import("mlx-bun/engine"); await import("mlx-bun/client"); await import("./src/memory/model.ts"); await import("./src/serve/isolate.ts");'], {
     cwd: new URL("../..", import.meta.url).pathname,
     env: { ...globalThis.process.env, MLX_BUN_LIBMLXC: "/nonexistent/mlx-client-import-test.dylib" },
     stdout: "pipe", stderr: "pipe",

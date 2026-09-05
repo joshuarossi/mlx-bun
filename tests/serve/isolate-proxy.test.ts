@@ -133,7 +133,8 @@ describe("model pool (fake engines)", () => {
   const mkPool = (poolMax: number) => {
     const resolve = (q: string) =>
       q === "model-a" ? { repoId: "model-a", path: "/models/a" } :
-      q === "model-b" ? { repoId: "model-b", path: "/models/b" } : null;
+      q === "model-b" ? { repoId: "model-b", path: "/models/b" } :
+      q === "model-c" ? { repoId: "model-c", path: "/models/c" } : null;
     const selfArgv = [process.execPath, "run", FIXTURE];
     const rawArgs = ["serve", "some-query", "--batch", "2"];
     const started = startProxyServer({
@@ -169,6 +170,13 @@ describe("model pool (fake engines)", () => {
     expect(b.served_by).toBe("/models/b");
     const eng = await (await fetch(`${base}/engine`)).json() as { pool: { resident: string[] } };
     expect(eng.pool.resident.sort()).toEqual(["model-a", "model-b"]);
+  }, 30_000);
+
+  test("concurrent cold switches each reach their selected worker before eviction", async () => {
+    const { base } = mkPool(1);
+    expect((await ask(base)).served_by).toBe("/models/a");
+    const results = await Promise.all([ask(base, "model-b"), ask(base, "model-c")]);
+    expect(results.map((result) => result.served_by)).toEqual(["/models/b", "/models/c"]);
   }, 30_000);
 
   test("pool cap 1: switching drains + demotes + evicts the old model, and back again", async () => {

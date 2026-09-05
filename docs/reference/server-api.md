@@ -59,6 +59,7 @@ Internal routes (not part of the client contract):
 | Method | Path | Where | Notes |
 | --- | --- | --- | --- |
 | POST | `/admin/drain` | `src/server.ts` | Only registered when the server is bound to a unix socket (`--unix`, i.e. an `--isolate` engine child). Quiesces the gateway and demotes the whole prompt cache to the SSD tier; returns `{ "drained": true, "demotions": N }`. Never exposed on TCP. |
+| POST | `/admin/lease` | `src/server.ts` | Unix-socket workers only. Flushes durability, then holds the gateway's native execution lease while the response connection stays open. The isolation parent uses it for managed GPU jobs; disconnect releases the lease. Never exposed on TCP. |
 | GET | `/engine` | `src/serve/isolate.ts` | Only on the `--isolate` parent proxy: `{ isolated: true, pid, restarts, socket, pool?: { resident, default } }`. |
 
 Under `--isolate`, the parent proxies everything to the engine child;
@@ -991,6 +992,8 @@ Without `--ssd-cache` the route still answers (`entries: 0`).
 
 ## GET /library
 
+`?refresh=1` bypasses the short response cache, including after a parent-managed job finishes.
+
 Returns all models found in the local HuggingFace hub cache (via the
 registry scan), each annotated with a fit assessment for this machine.
 Response is cached for 30 seconds (registry scan + config reads; no
@@ -1671,3 +1674,8 @@ solve.
 
 Any OpenAI SDK works the same way: `baseURL: "http://127.0.0.1:8080/v1"`,
 any non-empty `apiKey`.
+
+Under `--isolate`, the parent owns Responses continuation history and exposes its
+bounded store counters in `GET /engine` as `response_store`. Model-worker restart
+or eviction preserves that history; restarting the parent clears it. Direct
+serving retains the same process-local TTL and byte limits.

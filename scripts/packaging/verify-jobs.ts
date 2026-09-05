@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JobStore } from "../../src/jobs/db";
-import { submitSubprocess, closeSubprocessJobs } from "../../src/jobs/runner";
+import { submitSubprocess, closeSubprocessJobs, isGpuBusy } from "../../src/jobs/runner";
 import { runJobEntry } from "../../src/jobs/job-entry";
 
 if (process.argv[2] === "__job") await runJobEntry(process.argv[3]);
@@ -15,7 +15,7 @@ else {
     // runner must re-exec it with the private job-entry protocol.
     const { jobId } = submitSubprocess(store, "noop", {});
     const deadline = Date.now() + 15_000;
-    while (["queued", "running"].includes(store.get(jobId)!.status) && Date.now() < deadline)
+    while ((isGpuBusy() || ["queued", "running"].includes(store.get(jobId)!.status)) && Date.now() < deadline)
       await Bun.sleep(20);
     const row = store.get(jobId)!;
     if (row.status !== "done" || row.progress !== 1) throw new Error(JSON.stringify(row));

@@ -72,3 +72,47 @@ test("disconnect while waiting for startup rejects promptly without forwarding a
     await expect(child.forward(new Request("http://engine/health"))).rejects.toThrow("closed");
   } finally { await child.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("parent application state remains available through worker death", async () => {
+  const { startProxyServer } = await import("../../src/serve/isolate");
+  const { JobStore } = await import("../../src/jobs/db");
+  const dir = mkdtempSync(join(tmpdir(), "mlx-parent-state-"));
+  const socket = join(dir, "engine.sock");
+  const store = new JobStore(join(dir, "jobs.db"), join(dir, "logs"));
+  const row = store.create("noop", {});
+  store.setStatus(row.id, "done");
+  let opened = 0;
+  const host = startProxyServer({ port: 0,
+    createJobStore: async () => { opened++; return store; },
+    engine: { argv: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
+      socketPath: socket, maxRestarts: 0, readyTimeoutMs: 1000 },
+  });
+  try {
+    const get = async () => (await (await fetch(`http://localhost:${host.server.port}/api/jobs/${row.id}`)).json()) as any;
+    expect((await get()).job.status).toBe("done");
+    host.engine.stop();
+    const shell = await fetch(`http://localhost:${host.server.port}/`);
+    expect(shell.status).toBe(200);
+    expect(shell.headers.get("content-type")).toContain("text/html");
+    expect((await get()).job.id).toBe(row.id);
+    expect(opened).toBe(1);
+  } finally { await host.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("GPU admission also blocks worker startup; closing cancels that wait without spawning", async () => {
+  const { ExecutionCoordinator } = await import("../../src/engine/execution-coordinator");
+  const { acquireReservation } = await import("../../src/serve/preparation");
+  const coordinator = new ExecutionCoordinator();
+  const job = await coordinator.acquire("exclusive");
+  const dir = mkdtempSync(join(tmpdir(), "mlx-startup-lease-"));
+  const child = new EngineChild({ argv: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
+    socketPath: join(dir, "engine.sock"),
+    acquire: (signal) => acquireReservation({ acquire: (cancel) => coordinator.acquire("shared", cancel) }, signal),
+  });
+  try {
+    await pause(20); expect(child.pid).toBeNull();
+    await child.close();
+    await expect(child.ready).rejects.toThrow("cancelled");
+    job.dispose(); await pause(20); expect(child.pid).toBeNull();
+  } finally { await child.close(); job.dispose(); coordinator.close(); rmSync(dir, { recursive: true, force: true }); }
+});

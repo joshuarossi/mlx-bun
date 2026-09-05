@@ -1,3 +1,4 @@
+import { CancellationSource } from "../engine/cancellation";
 // Job runner: turns a registered `JobRunner` into a tracked, logged job.
 // Two execution modes — both create a row, both stream NDJSON events to the
 // log, both own terminal status:
@@ -106,18 +107,28 @@ export interface SubmitResult {
  *  on success sets 'done'/progress 1/ended_at + emits 'done', on throw sets
  *  'failed'/error/ended_at + emits 'failed'. Returns once the task is
  *  scheduled (does not await completion — poll the row / tail the log). */
+interface InProcessWork { cancellation: CancellationSource; done: Promise<void>; }
+const inProcess = new WeakMap<JobStore, Set<InProcessWork>>();
+
 export function submitInProcess(
   store: JobStore,
   kind: string,
   config: Record<string, unknown>,
   outputPath?: string,
 ): SubmitResult {
+  if (closedStores.has(store)) throw new Error("job host is closed");
   const row = store.create(kind, config, outputPath);
   const emit = makeEmit(store, row.id, row.log_path);
   store.setStatus(row.id, "running");
   emit({ type: "started", ts: Date.now() });
 
   const runner = getRunner(kind);
+  const cancellation = new CancellationSource();
+  const running = inProcess.get(store) ?? new Set<InProcessWork>();
+  inProcess.set(store, running);
+  let finish!: () => void;
+  const work = { cancellation, done: new Promise<void>((resolve) => { finish = resolve; }) };
+  running.add(work);
   void (async () => {
     if (!runner) {
       const error = `no runner registered for kind "${kind}"`;
@@ -126,7 +137,7 @@ export function submitInProcess(
       return;
     }
     try {
-      const result = await createJobTaskClient(runner).run(JSON.parse(row.config_json), emit);
+      const result = await createJobTaskClient(runner).run(JSON.parse(row.config_json), emit, cancellation);
       const out = result?.outputPath;
       if (out) store.setOutputPath(row.id, out);
       store.setProgress(row.id, 1);
@@ -137,7 +148,7 @@ export function submitInProcess(
       store.setStatus(row.id, "failed", { error, endedAt: nowIso() });
       emit({ type: "failed", error, ts: Date.now() });
     }
-  })();
+  })().finally(() => { running.delete(work); finish(); });
 
   return { jobId: row.id, outputPath };
 }
@@ -326,6 +337,14 @@ export function drainQueue(): void {
       }).finally(drainQueue);
     } else spawnNow(next);
   }
+}
+
+/** Dataset work stays in-process, but belongs to the application host too. */
+export async function closeInProcessJobs(store: JobStore): Promise<void> {
+  closedStores.add(store);
+  const active = [...inProcess.get(store) ?? []];
+  for (const work of active) work.cancellation.cancel("engine_closed");
+  await Promise.all(active.map((work) => work.done));
 }
 
 /** Stop only this host's managed GPU jobs. Await process death before releasing

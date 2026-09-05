@@ -42,10 +42,8 @@ describe.skipIf(!optIn || !haveModels)("multi-model switch E2E (cpm5 ⇄ qwen0.8
     pool: { rawArgs, selfArgv, poolMax: 1, resolve, defaultKey: A, socketFor: sockFor },
   });
   const base = `http://localhost:${started.server.port}`;
-  afterAll(() => {
-    started.pool?.stopAll();
-    started.engine.stop();
-    started.server.stop(true);
+  afterAll(async () => {
+    await started.close();
     rmSync(ssdDir, { recursive: true, force: true });
   });
 

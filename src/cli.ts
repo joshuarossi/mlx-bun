@@ -1603,7 +1603,7 @@ switch (cmd) {
       };
       const poolMaxRaw = opt("model-pool");
       const poolMax = Math.max(1, Number(poolMaxRaw ?? 1) || 1);
-      const { engine, pool } = startProxyServer({
+      const { engine, close } = startProxyServer({
         port: rt.port,
         ...(rt.serverOptions.hostname ? { hostname: rt.serverOptions.hostname } : {}),
         engine: {
@@ -1619,7 +1619,7 @@ switch (cmd) {
       const shownHost0 = rt.serverOptions.hostname ?? "localhost";
       console.log(style.dim(`  isolated mode: engine child starting (socket ${sock})`));
       console.log(`  ${style.green("●")} ${style.bold("proxy up")} http://${shownHost0}:${rt.port} ${style.dim(`· ${m0.repoId} loading behind it · model pool ${poolMax}`)}`);
-      const onExit = () => { pool?.stopAll(); engine.stop(); process.exit(0); };
+      const onExit = () => { void close().finally(() => process.exit(0)); };
       process.on("SIGINT", onExit);
       process.on("SIGTERM", onExit);
       await engine.ready;

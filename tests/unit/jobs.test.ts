@@ -4,7 +4,7 @@
 // live in a per-test tmp dir — never the real ~/.cache/mlx-bun.
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -393,4 +393,42 @@ describe("streamJobResponse", () => {
     expect(text).toContain('"type":"started"');
     expect(text).toContain("event: end");
   });
+});
+
+test("host shutdown waits for in-process task cleanup and prevents new submissions", async () => {
+  const { closeInProcessJobs, registerRunner } = await import("../../src/jobs");
+  const store = freshStore();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let cleaned = false;
+  registerRunner("shutdown-probe", async (emit) => {
+    try { await gate; emit({ type: "stage", stage: "after-wait" }); }
+    finally { cleaned = true; }
+  });
+  const { jobId } = submitInProcess(store, "shutdown-probe", {});
+  const closing = closeInProcessJobs(store);
+  expect(cleaned).toBe(false);
+  release(); await closing;
+  expect(cleaned).toBe(true);
+  expect(store.get(jobId)!.status).toBe("failed");
+  expect(store.get(jobId)!.error).toContain("cancelled");
+  expect(() => submitInProcess(store, "noop", {})).toThrow("closed");
+});
+
+test("parent submissions tolerate a child committing a job update", async () => {
+  const store = freshStore();
+  const marker = `${store.logsDir}/writer-ready`;
+  const proc = Bun.spawn([process.execPath, "-e", `
+    const { Database } = require('bun:sqlite');
+    const { writeFileSync } = require('node:fs');
+    const db = new Database(process.argv[1]);
+    db.exec('BEGIN IMMEDIATE');
+    writeFileSync(process.argv[2], 'locked');
+    setTimeout(() => { db.exec('COMMIT'); db.close(); }, 250);
+  `, store.dbPath, marker], { stdout: "ignore", stderr: "pipe" });
+  try {
+    await waitFor(() => existsSync(marker), "child writer transaction");
+    expect(store.create("noop", {}).status).toBe("queued");
+    expect(await proc.exited).toBe(0);
+  } finally { if (proc.exitCode === null) { proc.kill(); await proc.exited; } }
 });

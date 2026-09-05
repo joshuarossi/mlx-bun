@@ -623,3 +623,8 @@ one adapter must not seed another's prefill).
 - Never read a typed array that native code wrote in a hot path; use
   the `read.*` helpers (bun#32054 — see the Phase 4 findings in the PLAN
   archive: `git show 3199c75:PLAN-archive.md`).
+
+When embedding the high-level library in your own compiled application, pass
+`command: ["/path/to/mlx-bun"]` to `openIsolatedHost`. Source/package consumers
+use the installed CLI source automatically; compiled callers supply the worker
+executable explicitly because their own executable is not the mlx-bun CLI.

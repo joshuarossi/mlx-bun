@@ -8,7 +8,7 @@ export interface PreparationExecutor {
 import { AdmissionPool } from "../engine/admission";
 import { CancellationSource } from "../engine/cancellation";
 
-export async function acquireReservation(pool: AdmissionPool, signal?: AbortSignal) {
+export async function acquireReservation(pool: Pick<AdmissionPool, "acquire">, signal?: AbortSignal) {
   signal?.throwIfAborted();
   const cancellation = new CancellationSource();
   const abort = () => cancellation.cancel("requested");

@@ -11,43 +11,8 @@ export { generationCheckpointKey } from "./serve/checkpoint-identity";
 // Generation is serialized through a single queue (one GPU, batch=1).
 
 import type { Server } from "bun";
-// Embedded web app — the unified SPA (chat / quantize / finetune /
-// dataset / status). `with { type: "text" }` inlines the file in both
-// `bun run` and the compiled single binary. bun-types types *.html
-// imports as HTMLBundle (the html loader), but the text attribute makes
-// the runtime value a string — hence the double cast.
-import appHtml from "./web/app.html" with { type: "text" };
-import curveDesignerHtml from "./lab/curve/curve-designer.html" with { type: "text" };
-// Vendored, no-CDN static assets referenced by app.html (convention: any
-// self-contained JS/CSS too big to inline gets `with { type: "text" }`
-// imported here and served under /assets/<name>; see src/web/vendor/README
-// for how hljs.js was built). Add new vendored assets the same way.
-import hljsJs from "./web/vendor/hljs.js" with { type: "text" };
-import hljsCss from "./web/vendor/hljs-theme.css" with { type: "text" };
-// The frontend bundle (plan §7/§9 Phase 2 module split): GENERATED from
-// src/web/src/*.ts by `bun scripts/build-web.ts` — see that file's header
-// and tests/using/web-build.test.ts (the freshness gate). Same
-// with { type: "text" } + /assets/<name> pattern as the vendored assets
-// above; app.html's <script defer src="/assets/app.js"> loads it.
-import appJs from "./web/app.js" with { type: "text" };
-// PWA installability (plan §9 Phase 3, beat-matrix Axis 10): a manifest +
-// a single inline SVG icon (no binary PNGs — the hygiene gate forbids
-// tracked binary files; some browsers won't show an SVG app icon, which is
-// an accepted tradeoff, see docs/reference/server-config.md) + a shell-
-// only service worker. Same with { type: "text" } + /assets/<name>-shaped
-// pattern as the vendored assets above; see src/web/sw.js's header for why
-// it deliberately does NOT cache API/WS traffic.
-import manifestWebmanifest from "./web/manifest.webmanifest" with { type: "text" };
-import iconSvg from "./web/icon.svg" with { type: "text" };
-import swJs from "./web/sw.js" with { type: "text" };
+import { STATIC_ROUTE_ASSETS } from "./web-assets";
 import { readFileSync } from "node:fs";
-const APP_PAGE = appHtml as unknown as string;
-const HLJS_JS = hljsJs as unknown as string;
-const HLJS_CSS = hljsCss as unknown as string;
-const APP_JS = appJs as unknown as string;
-const MANIFEST_WEBMANIFEST = manifestWebmanifest as unknown as string;
-const ICON_SVG = iconSvg as unknown as string;
-const SW_JS = swJs as unknown as string;
 import { type TurboQuantScheme } from "./config";
 import { Glm52Model } from "./model/glm52";
 import {
@@ -71,7 +36,6 @@ import { runtimeValue } from "./runtime-config";
 import { TURBOQUANT_HEAD_DIMS } from "./mlx/turboquant-tables";
 import type { HlgConfig } from "./sampler";
 import { isMonotone, CURVE_UMIN, type CurveParams } from "./lab/curve/curve-sampler";
-const CURVE_PAGE = curveDesignerHtml as unknown as string;
 import { GenerationGateway } from "./serve/generation-gateway";
 import {
   CompletionExecutor,
@@ -86,16 +50,7 @@ import { createDiscoveryRoutes } from "./serve/discovery-routes";
 import { handleLabRoute } from "./serve/lab-routes";
 import { handleModelAdminRoute } from "./serve/model-admin-routes";
 import { handleStaticRoute } from "./serve/static-routes";
-const STATIC_ROUTE_ASSETS = {
-  appPage: APP_PAGE,
-  appJs: APP_JS,
-  hljsJs: HLJS_JS,
-  hljsCss: HLJS_CSS,
-  manifest: MANIFEST_WEBMANIFEST,
-  iconSvg: ICON_SVG,
-  serviceWorker: SW_JS,
-  curvePage: CURVE_PAGE,
-};
+
 import { PromptCache, cacheBytes } from "./prompt-cache";
 import { SsdCacheStore } from "./ssd-cache";
 import {
@@ -109,7 +64,7 @@ import {
   type AnthropicRequest,
 } from "./anthropic";
 import {
-  ResponseStore, chatJsonToResponses, outputItemsToInputItems,
+  ResponseStore, chatJsonToResponses, resolveResponsesConversation,
   responsesToChatBody, createResponsesStreamProtocol,
   type ResponsesRequest,
 } from "./responses";
@@ -1316,6 +1271,26 @@ export function createServer(
         });
       }
 
+      // A parent-managed GPU job holds this response open. The connection owns
+      // the native lease, so parent death cannot strand the worker lock.
+      if (serverOptions.unixSocket && url.pathname === "/admin/lease" && request.method === "POST") {
+        await flushDurability();
+        const lease = await gateway.acquireExecutionLease(request.signal);
+        let released = false;
+        const release = () => {
+          if (released) return;
+          released = true;
+          request.signal.removeEventListener("abort", release);
+          lease.dispose();
+        };
+        request.signal.addEventListener("abort", release, { once: true });
+        if (request.signal.aborted) release();
+        return new Response(new ReadableStream({
+          start(controller) { controller.enqueue(new TextEncoder().encode("leased\n")); },
+          cancel() { release(); },
+        }), { headers: { "content-type": "application/octet-stream" } });
+      }
+
       // Engine-mode admin (unix-socket children only — never exposed on
       // TCP): drain = quiesce the gateway + demote the whole prompt cache
       // to the SSD tier. The pool calls this before evicting a model
@@ -1517,34 +1492,17 @@ export function createServer(
           return responsesError(400, "invalid JSON body", {});
         }
 
-        // previous_response_id: prepend the prior conversation's input
-        // + output (as input items); carry instructions forward only if
-        // the new request omits them (oracle semantics).
-        const prevId = responsesBody.previous_response_id ?? null;
-        if (prevId) {
-          const prior = responseStore.get(prevId);
-          if (!prior)
-            return responsesError(404, `previous_response_id '${prevId}' not found or expired`, {});
-          const prepended = [...prior.input, ...outputItemsToInputItems(prior.output)];
-          const newInput =
-            typeof responsesBody.input === "string"
-              ? responsesBody.input
-                ? [{ type: "message", role: "user", content: responsesBody.input }]
-                : []
-              : responsesBody.input ?? [];
-          responsesBody = {
-            ...responsesBody,
-            input: [...prepended, ...newInput] as Array<Record<string, unknown>>,
-            instructions: responsesBody.instructions ?? prior.instructions ?? undefined,
-          };
-        }
-        // Remember the effective input so a later follow-up that chains
-        // off THIS response sees the full history.
-        const capturedInput: unknown[] =
-          typeof responsesBody.input === "string"
-            ? [{ type: "message", role: "user", content: responsesBody.input }]
-            : [...(responsesBody.input ?? [])];
-        const capturedInstructions = responsesBody.instructions ?? null;
+        let conversation: ReturnType<typeof resolveResponsesConversation>;
+        try { conversation = resolveResponsesConversation(responsesBody, responseStore); }
+        catch (error) { return responsesError(404, (error as Error).message, {}); }
+        responsesBody = conversation.body;
+        const prevId = conversation.previousId;
+        const capturedInput = conversation.input;
+        const capturedInstructions = conversation.instructions;
+        const storeHere = !(serverOptions.unixSocket && request.headers.get("x-mlx-bun-response-owner") === "parent");
+        const remember = (id: string, output: unknown[]) => {
+          if (storeHere) responseStore.put(id, { input: capturedInput, output, instructions: capturedInstructions });
+        };
 
         let chatBody: ChatRequestParams;
         try {
@@ -1564,22 +1522,14 @@ export function createServer(
               ctx.modelId,
               prevId,
               (final) =>
-                responseStore.put(final.id as string, {
-                  input: capturedInput,
-                  output: final.output as unknown[],
-                  instructions: capturedInstructions,
-                }),
+                remember(final.id as string, final.output as unknown[]),
             ),
             request.signal);
         return respondJson(
           inferenceStage, a.admitted,
           (r) => {
             const responses = chatJsonToResponses(chatCompletionJson(r, openAiMeta(id)), ctx.modelId, prevId);
-            responseStore.put(responses.id as string, {
-              input: capturedInput,
-              output: responses.output as unknown[],
-              instructions: capturedInstructions,
-            });
+            remember(responses.id as string, responses.output as unknown[]);
             return responses;
           },
           request.signal, undefined, responsesError);
@@ -1603,7 +1553,12 @@ export function createServer(
     },
   });
   serverLifecycles.set(serverRef, {
-    stopJobs: async () => { if (jobStore) await (await import("./jobs")).closeSubprocessJobs(jobStore); },
+    stopJobs: async () => {
+      if (jobStore) {
+        const jobs = await import("./jobs");
+        await Promise.all([jobs.closeSubprocessJobs(jobStore), jobs.closeInProcessJobs(jobStore)]);
+      }
+    },
     close: async () => { preparation.close(); await gateway.close(); },
     flush: flushDurability,
     stats: durabilityStats,

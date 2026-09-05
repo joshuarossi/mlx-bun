@@ -9,6 +9,7 @@ export {
   submitInProcess,
   submitSubprocess,
   closeSubprocessJobs,
+  closeInProcessJobs,
   makeEmit,
   isGpuBusy,
   currentGpuJob,
