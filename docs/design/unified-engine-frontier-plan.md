@@ -1636,7 +1636,13 @@ conversation history; direct and isolated serving share conversation-resolution
 policy. Workers skip duplicate history retention for parent-owned requests. A
 real worker replacement preserves previous-response continuation and streamed
 metadata. WebSocket chat remains an explicit unsupported isolation cell. No
-process-host default has changed.
+process-host default has changed. R9's direct/isolated transport comparison is
+complete on the M1 Max using the same MiniCPM artifact and CLI/request cells:
+completion and chat probes each matched 64 greedy tokens; cold, warm, SSD
+restart and concurrent legs completed. The run is diagnostic because the quiet
+gate failed. The optional `mlx-bun-isolated` benchmark arm accounts for parent
+and worker RSS; raw reports stay machine-local. R9 is complete for the retained
+opt-in host; promotion and the other machine's scorecard remain R10 gates.
 
 The current model-free suite passes; root, browser and portable typechecks pass.
 Native state checks cover mixed-KV oracle logits, wrapped-ring conversion,
