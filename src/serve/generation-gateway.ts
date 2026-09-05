@@ -50,7 +50,7 @@ import { UniversalDenseModel } from "../model/universal/dense";
 import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate";
 import type { KvScheme } from "../kv-scheme";
 import { makeStepSampler } from "../sampler";
-import { BatchScheduler, type RowPromptCache } from "./batch-scheduler";
+import { MlxBatchExecutionGroup as BatchScheduler, type RowPromptCache } from "../backends/mlx/batch-group";
 import { runtimeValue } from "../runtime-config";
 import type { PromptResponseTrace } from "./prompt-response-trace";
 

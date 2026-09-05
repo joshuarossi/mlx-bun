@@ -1530,6 +1530,21 @@ lifetime test passes. Diffusion weights are absent on this machine, so its
 weight/oracle gates remain unrun. Legacy draft providers still use their
 existing target adapters; full method-composition migration remains open.
 
+R7 now separates the portable scheduling driver from `MlxBatchExecutionGroup`.
+The driver sees queue/active counts, admission readiness and bounded work units;
+it imports no model, cache, tensor or runtime implementation. Native admission,
+merge/extract/filter, sampling and pipeline state live in `src/backends/mlx/`.
+A compatibility re-export preserves existing batch-scheduler imports.
+
+The driver retains short-admission grouping, long-prefill interleaving, serial
+drain and the 25 ms single-row responsiveness budget. Six native scheduler
+checks and two native failure-containment/serial-drain checks pass. Policy tests cover those ordering rules, execution failure and
+lease release; backend fault tests cover a request removed from the queue when
+admission fails, retained-prefix cleanup, shutdown and submission after close.
+Closing a group stops at a safe boundary, rejects pending/active requests and
+releases owned state. Queue limits, managed resource coordination and the full
+mixed-state concurrency/performance matrix remain open.
+
 R8 now shares Pi/browser messages, history, sampling data and route IDs in
 `src/contracts/pi.ts`. Compatibility re-exports preserve server-side imports.
 The browser TypeScript project has no Bun ambient types; Bun UI tests remain
